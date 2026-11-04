@@ -1,0 +1,193 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 830" width="1240" height="830" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <marker id="arB" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arG" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#16a34a"/>
+    </marker>
+    <marker id="arO" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#ea580c"/>
+    </marker>
+    <marker id="arP" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#7c3aed"/>
+    </marker>
+    <marker id="arGy" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="830" fill="#ffffff"/>
+
+  <!-- ================= 入口行：数据面（两入口同一身份） / 控制面（另一套身份） ================= -->
+  <rect x="76" y="24" width="804" height="96" rx="8" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="92" y="46" font-size="11.5" font-weight="700" fill="#334155">数据面 · 两个入口，同一套 API Key 身份</text>
+
+  <rect x="92" y="56" width="310" height="50" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="247" y="76" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">业务系统</text>
+  <text x="247" y="94" font-size="9.5" fill="#475569" text-anchor="middle">Authorization: Bearer rc_live_…</text>
+
+  <rect x="422" y="56" width="442" height="50" rx="6" fill="#f0f9ff" stroke="#7dd3fc"/>
+  <text x="643" y="76" font-size="11.5" font-weight="600" fill="#0c4a6e" text-anchor="middle">MCP 客户端 · AI Agent（Claude Desktop 等）</text>
+  <text x="643" y="94" font-size="9" fill="#0369a1" text-anchor="middle">三工具 rag_retrieve / rag_research / rag_list_knowledge_bases，入参仅 query</text>
+
+  <rect x="920" y="24" width="260" height="96" rx="8" fill="#f1f5f9" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="932" y="46" font-size="11.5" font-weight="700" fill="#475569">控制面 · 另一套身份</text>
+  <rect x="932" y="56" width="236" height="50" rx="6" fill="#ffffff" stroke="#cbd5e1"/>
+  <text x="1050" y="76" font-size="11.5" font-weight="600" fill="#1e293b" text-anchor="middle">调试台 · Vue 3</text>
+  <text x="1050" y="94" font-size="9" fill="#475569" text-anchor="middle">用户面板 / 管理员面板 · cookie: sid</text>
+
+  <!-- 入口箭头 -->
+  <line x1="247" y1="120" x2="247" y2="140" stroke="#475569" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="255" y="134" font-size="10" fill="#64748b">HTTP /rag/* · /documents/*</text>
+  <line x1="643" y1="120" x2="643" y2="140" stroke="#475569" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="651" y="134" font-size="10" fill="#0369a1">MCP /mcp（JSON-RPC）</text>
+  <line x1="1050" y1="120" x2="1050" y2="140" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1058" y="134" font-size="10" fill="#475569">cookie</text>
+
+  <!-- ================= 平台层：一条横带，两扇门 ================= -->
+  <rect x="76" y="140" width="1104" height="116" rx="8" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+  <text x="92" y="164" font-size="12" font-weight="700" fill="#b45309">平台层 · 横切面（所有请求必经，不属于任何一条链路）</text>
+  <text x="1164" y="164" font-size="10" fill="#475569" text-anchor="end">第二扇门 · 控制面 →</text>
+
+  <rect x="92" y="176" width="176" height="64" rx="6" fill="#ffffff" stroke="#fbbf24"/>
+  <text x="102" y="196" font-size="10.5" font-weight="600" fill="#92400e">① 鉴权 · 你是谁</text>
+  <text x="102" y="213" font-size="9.5" fill="#475569">Bearer → SHA-256 → api_keys</text>
+  <text x="102" y="229" font-size="9.5" fill="#475569">→ 租户上下文</text>
+
+  <rect x="276" y="176" width="176" height="64" rx="6" fill="#ffffff" stroke="#fbbf24"/>
+  <text x="286" y="196" font-size="10.5" font-weight="600" fill="#92400e">② 隔离 · 你能查什么</text>
+  <text x="286" y="213" font-size="9.5" fill="#475569">每条查询强制带 tenant_id</text>
+  <text x="286" y="229" font-size="9.5" fill="#475569">跨租户一律返回 20008</text>
+
+  <rect x="460" y="176" width="176" height="64" rx="6" fill="#ffffff" stroke="#fbbf24"/>
+  <text x="470" y="196" font-size="10.5" font-weight="600" fill="#92400e">③ 档位 · 能查多好</text>
+  <text x="470" y="213" font-size="9.5" fill="#475569">套餐 → 档位展开 → 门禁</text>
+  <text x="470" y="229" font-size="9.5" fill="#475569">裁剪结果进 tenant_policy</text>
+
+  <rect x="644" y="176" width="176" height="64" rx="6" fill="#ffffff" stroke="#fbbf24"/>
+  <text x="654" y="196" font-size="10.5" font-weight="600" fill="#92400e">④ 限流配额 · 查多少次</text>
+  <text x="654" y="213" font-size="9.5" fill="#475569">QPS（Redis）+ 日配额</text>
+  <text x="654" y="229" font-size="9.5" fill="#475569">超限回 20005 / 20014</text>
+
+  <rect x="900" y="176" width="264" height="64" rx="6" fill="#f1f5f9" stroke="#64748b"/>
+  <text x="912" y="196" font-size="9.5" fill="#334155">cookie: sid → sessions 表</text>
+  <text x="912" y="213" font-size="9.5" fill="#334155">→ accounts（role = admin / user）</text>
+  <text x="912" y="230" font-size="9.5" fill="#334155">非管理员直接 20011，不调检索</text>
+
+  <!-- ================= 分叉 ================= -->
+  <line x1="538" y1="256" x2="538" y2="272" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="206" y1="272" x2="768" y2="272" stroke="#64748b" stroke-width="1.5"/>
+  <line x1="206" y1="272" x2="206" y2="292" stroke="#2563eb" stroke-width="1.5" marker-end="url(#arB)"/>
+  <line x1="538" y1="272" x2="538" y2="292" stroke="#16a34a" stroke-width="1.5" marker-end="url(#arG)"/>
+  <line x1="768" y1="272" x2="768" y2="292" stroke="#ea580c" stroke-width="1.5" marker-end="url(#arO)"/>
+  <text x="214" y="268" font-size="10.5" fill="#1d4ed8">写 · 上传</text>
+  <text x="546" y="268" font-size="10.5" fill="#15803d">读 · 检索</text>
+  <text x="776" y="268" font-size="10.5" fill="#c2410c">研 · Research</text>
+  <line x1="1050" y1="256" x2="1050" y2="292" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1058" y="278" font-size="10.5" fill="#475569">管 · 面板</text>
+
+  <!-- ================= 索引链路 ================= -->
+  <rect x="76" y="292" width="261" height="244" rx="8" fill="#eff6ff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="90" y="314" font-size="12" font-weight="700" fill="#1d4ed8">索引链路 · 异步（写）</text>
+  <text x="90" y="338" font-size="11" font-weight="600" fill="#1e293b">POST /documents/upload</text>
+  <text x="90" y="358" font-size="10.5" fill="#334155">↓ 建文档记录 status=处理中</text>
+  <text x="90" y="377" font-size="10.5" fill="#334155">↓ Celery 投递任务（Redis 是 broker）</text>
+  <text x="90" y="396" font-size="10.5" fill="#334155">↓ 立即返回，1 秒内不等结果</text>
+  <line x1="90" y1="410" x2="323" y2="410" stroke="#93c5fd" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="90" y="428" font-size="11" font-weight="600" fill="#1d4ed8">Celery Worker 接手，依次四件事：</text>
+  <text x="90" y="447" font-size="10.5" fill="#334155">1 解析　docx / pdf / md → Markdown</text>
+  <text x="90" y="466" font-size="10.5" fill="#334155">2 切块　→ 切片（带 heading_path）</text>
+  <text x="90" y="485" font-size="10.5" fill="#334155">3 向量化　切片文本 → embedding</text>
+  <text x="90" y="504" font-size="10.5" fill="#334155">4 双写　pgvector + Elasticsearch</text>
+
+  <!-- ================= 检索链路 ================= -->
+  <rect x="357" y="292" width="261" height="244" rx="8" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="371" y="314" font-size="12" font-weight="700" fill="#15803d">检索链路 · 同步（读）</text>
+  <text x="371" y="338" font-size="11" font-weight="600" fill="#1e293b">POST /rag/retrieve</text>
+  <text x="371" y="358" font-size="10.5" fill="#334155">↓ 查询优化（LLM 改写 / 同义词）</text>
+  <text x="371" y="377" font-size="10.5" fill="#334155">↓ 双路并行召回 asyncio.gather</text>
+  <text x="371" y="396" font-size="10.5" fill="#334155">├ 向量　pgvector · 余弦相似</text>
+  <text x="371" y="415" font-size="10.5" fill="#334155">└ 关键词　ES · BM25 + IK 分词</text>
+  <text x="371" y="434" font-size="10.5" fill="#334155">↓ RRF 融合（k=60）</text>
+  <text x="371" y="453" font-size="10.5" fill="#334155">↓ 图谱候选注入（文档关系表）</text>
+  <text x="371" y="472" font-size="10.5" fill="#334155">↓ 精排 Qwen3-Rerank</text>
+  <text x="371" y="491" font-size="10.5" fill="#334155">↓ 上下文恢复 → 检索结果</text>
+  <text x="371" y="510" font-size="10.5" fill="#155e75">　（只回切片，不生成答案）</text>
+
+  <!-- ================= 受控 Research ================= -->
+  <rect x="638" y="292" width="261" height="244" rx="8" fill="#fff7ed" stroke="#ea580c" stroke-width="1.5"/>
+  <text x="652" y="314" font-size="12" font-weight="700" fill="#c2410c">受控 Research · 同步（研）</text>
+  <text x="652" y="338" font-size="11" font-weight="600" fill="#1e293b">POST /rag/research</text>
+  <text x="652" y="356" font-size="10" fill="#9a3412">（仅 pro 套餐）</text>
+  <text x="652" y="377" font-size="10.5" fill="#334155">↓ Planner 拆要点 + 初始查询</text>
+  <text x="652" y="396" font-size="10.5" fill="#334155">↓ 并行 retrieve_once ×N</text>
+  <text x="652" y="415" font-size="10.5" fill="#334155">↓ Decider 判缺证</text>
+  <text x="652" y="434" font-size="10.5" fill="#334155">↓ 补证 ≤1 轮（并行）</text>
+  <text x="652" y="453" font-size="10.5" fill="#334155">↓ Finalizer 带引用答案</text>
+  <text x="652" y="472" font-size="10.5" fill="#334155">↓ 返回 answer + 检索结果</text>
+  <line x1="652" y1="486" x2="885" y2="486" stroke="#fdba74" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="652" y="505" font-size="10.5" font-weight="600" fill="#c2410c">★ 内核 = retrieve_once</text>
+  <text x="652" y="523" font-size="10" fill="#9a3412">　与检索链路同源，只加不替</text>
+
+  <!-- ================= 控制面列 ================= -->
+  <rect x="920" y="292" width="260" height="244" rx="8" fill="#f8fafc" stroke="#64748b" stroke-width="1.5"/>
+  <text x="934" y="314" font-size="12" font-weight="700" fill="#475569">控制面 · 管（不是第四条链路）</text>
+  <text x="934" y="338" font-size="10.5" font-weight="600" fill="#1e293b">GET /console/me</text>
+  <text x="934" y="357" font-size="10.5" fill="#334155">→ 账号 + 套餐 + 本月用量</text>
+  <text x="934" y="379" font-size="10.5" font-weight="600" fill="#475569">面板能做什么：</text>
+  <text x="934" y="398" font-size="10.5" fill="#334155">　建库 · 上传文档 · 建 Key</text>
+  <text x="934" y="417" font-size="10.5" fill="#334155">　改套餐 · 看审计 · 看用量</text>
+  <text x="934" y="436" font-size="10.5" fill="#334155">　管账号（管理员专属）</text>
+  <line x1="934" y1="452" x2="1167" y2="452" stroke="#cbd5e1" stroke-width="1" stroke-dasharray="3 3"/>
+  <text x="934" y="471" font-size="10.5" font-weight="600" fill="#475569">不调检索、不碰检索链路</text>
+  <text x="934" y="490" font-size="10.5" fill="#334155">动作落到同一套表上</text>
+  <text x="934" y="509" font-size="10.5" fill="#334155">改完删缓存，立刻生效</text>
+
+  <!-- ================= 链路 → 存储 ================= -->
+  <line x1="206" y1="536" x2="206" y2="580" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arP)"/>
+  <text x="214" y="562" font-size="10" fill="#6d28d9">双写</text>
+  <line x1="487" y1="536" x2="487" y2="580" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arP)"/>
+  <text x="495" y="562" font-size="10" fill="#6d28d9">读</text>
+  <line x1="768" y1="536" x2="768" y2="580" stroke="#7c3aed" stroke-width="1.5" marker-end="url(#arP)"/>
+  <text x="776" y="562" font-size="10" fill="#6d28d9">读</text>
+  <line x1="1050" y1="536" x2="1050" y2="580" stroke="#64748b" stroke-width="1.5" marker-end="url(#ar)"/>
+  <text x="1058" y="562" font-size="10" fill="#475569">读写</text>
+
+  <!-- ================= 存储层 ================= -->
+  <rect x="76" y="580" width="1104" height="124" rx="8" fill="#faf5ff" stroke="#7c3aed" stroke-width="1.5"/>
+  <text x="92" y="604" font-size="12" font-weight="700" fill="#6d28d9">存储层 · 四类存储</text>
+
+  <text x="92" y="628" font-size="11" font-weight="600" fill="#1e293b">PostgreSQL + pgvector</text>
+  <text x="92" y="647" font-size="10.5" fill="#334155">业务表 + 切片向量列（余弦距离）</text>
+  <text x="92" y="666" font-size="10.5" fill="#334155">文档关系表（父子 / 相邻 / 引用）</text>
+  <text x="92" y="685" font-size="10" fill="#6d28d9">轻量图谱靠它，有意识不建 Neo4j</text>
+
+  <text x="470" y="628" font-size="11" font-weight="600" fill="#1e293b">Elasticsearch 8.17 + IK</text>
+  <text x="470" y="647" font-size="10.5" fill="#334155">倒排索引 / BM25</text>
+  <text x="470" y="666" font-size="11" font-weight="600" fill="#1e293b">本地磁盘</text>
+  <text x="470" y="685" font-size="10.5" fill="#334155">原始上传文件</text>
+
+  <text x="790" y="628" font-size="11" font-weight="600" fill="#1e293b">Redis</text>
+  <text x="790" y="647" font-size="10.5" fill="#334155">Celery broker（任务队列）</text>
+  <text x="790" y="666" font-size="10.5" fill="#334155">QPS 计数 + 日配额计数</text>
+  <text x="790" y="685" font-size="10.5" fill="#334155">套餐缓存（TTL 300s，改完即删）</text>
+
+  <line x1="990" y1="618" x2="990" y2="692" stroke="#e9d5ff" stroke-width="1"/>
+  <text x="1006" y="632" font-size="10" font-weight="600" fill="#6d28d9">隔离靠行级 tenant_id</text>
+  <text x="1006" y="650" font-size="9.5" fill="#475569">同一套表，不分库不分表</text>
+  <text x="1006" y="668" font-size="9.5" fill="#475569">每条查询强制带租户条件</text>
+  <text x="1006" y="686" font-size="9.5" fill="#475569">写漏一处就是越权</text>
+
+  <!-- ================= 观测层：外侧旁路 ================= -->
+  <polyline points="76,196 44,196 44,776 74,776" fill="none" stroke="#94a3b8" stroke-width="1.4" stroke-dasharray="4 3" marker-end="url(#arGy)"/>
+  <text x="86" y="722" font-size="9.5" fill="#64748b">埋点上报 · 平台层与三条链路的 trace 走这条外侧旁路，异步、不阻塞请求</text>
+
+  <rect x="76" y="734" width="1104" height="84" rx="8" fill="#f8fafc" stroke="#94a3b8" stroke-width="1.5" stroke-dasharray="6 4"/>
+  <text x="92" y="758" font-size="12" font-weight="700" fill="#475569">观测层 · 旁路（挂掉不影响主流程，绝不能串进主链路）</text>
+  <text x="92" y="782" font-size="10.5" fill="#334155">Langfuse trace：三阶段 span + 用户 1~5 分反馈打分</text>
+  <text x="92" y="802" font-size="10.5" fill="#334155">RAGAS 离线评测：context_precision / context_recall（离线跑，不在线上路径里）</text>
+</svg>

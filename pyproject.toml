@@ -1,0 +1,48 @@
+[project]
+name = "rag-center"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+    # 阶段 1
+    "fastapi==0.115.4",
+    # 教程原值 0.32.0 → 0.35.0：fastmcp 3.0 要求 uvicorn>=0.35
+    "uvicorn[standard]==0.35.0",
+    "sqlalchemy==2.0.36",
+    "alembic==1.14.0",
+    # 教程原值 2.9.2 → 2.11.7：fastmcp 3.0 要求 pydantic>=2.11.7
+    "pydantic==2.11.7",
+    "pydantic-settings==2.6.0",
+    "psycopg[binary]==3.2.3",
+    "pgvector==0.3.6",
+    # 教程原值 0.27.2 → 0.28.1：fastmcp 要求 httpx>=0.28.1（0.28 起 proxies= 改名 proxy=）
+    "httpx==0.28.1",
+    # 阶段 3
+    "python-multipart==0.0.9",
+    "mammoth==1.8.0",
+    "pdf-inspector==0.2.6",
+    "celery[redis]==5.4.0",
+    "redis==5.2.0",
+    # 阶段 4
+    "elasticsearch==8.15.1",
+    # 阶段 7
+    "langfuse==2.57.0",
+    "ragas==0.2.6",
+    "datasets==3.1.0",
+    # 阶段 10
+    # 必须钉 3.0.0：fastmcp 2.9 ~ 2.13 都没有 fastmcp.dependencies，
+    # 也没有 fastmcp.utilities.lifespan.combine_lifespans，阶段 10 的代码会 import 失败。
+    # 教程写的 "fastmcp>=2.9" 在今天解析不出来，且满足不了阶段 10。
+    "fastmcp==3.0.0",
+    # 全程
+    "pytest==8.3.3",
+]
+
+# 根目录同时有 app 与 migrations 两个 Python 包时，setuptools 无法猜主包，
+# 必须显式声明，否则 uv sync 报 Multiple top-level packages discovered in a flat-layout。
+[tool.setuptools.packages.find]
+include = ["app*"]
+exclude = ["migrations*", "tests*", "eval*", "scripts*"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"

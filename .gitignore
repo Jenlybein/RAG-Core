@@ -1,0 +1,35 @@
+# ── 密钥：.env 里有明文 Key，绝不入库 ──
+.env
+.env.local
+*.env.bak
+
+# ── Python ──
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# ── 运行时产物 ──
+logs/
+data/uploads/
+celerybeat-schedule*
+*.pid
+
+# ── 前端 ──
+node_modules/
+frontend/dist/
+.vite/
+
+# ── 评测产物 ──
+eval/runs/
+
+# ── 编辑器 / 系统 ──
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini
