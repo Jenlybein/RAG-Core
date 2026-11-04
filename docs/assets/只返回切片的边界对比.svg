@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 540" width="880" height="540" font-family="'Segoe UI','PingFang SC','Microsoft YaHei',sans-serif">
+  <defs>
+    <marker id="k1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#64748b"/>
+    </marker>
+    <marker id="k2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2563eb"/>
+    </marker>
+  </defs>
+  <rect width="880" height="540" fill="#ffffff"/>
+
+  <line x1="440" y1="24" x2="440" y2="516" stroke="#cbd5e1" stroke-width="1.5" stroke-dasharray="6 5"/>
+
+  <!-- ============ 左：改之前 ============ -->
+  <rect x="60" y="24" width="340" height="32" rx="6" fill="#fef2f2" stroke="#dc2626" stroke-width="1.2"/>
+  <text x="230" y="45" font-size="13" font-weight="700" fill="#b91c1c" text-anchor="middle">改之前 · POST /chat</text>
+
+  <rect x="60" y="72" width="340" height="46" rx="7" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="230" y="91" font-size="11.5" font-weight="600" fill="#334155" text-anchor="middle">业务系统</text>
+  <text x="230" y="108" font-size="10.5" fill="#64748b" text-anchor="middle">只提一个问题，等一个答案</text>
+  <line x1="230" y1="118" x2="230" y2="138" stroke="#64748b" stroke-width="1.5" marker-end="url(#k1)"/>
+
+  <rect x="60" y="140" width="340" height="158" rx="8" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="76" y="161" font-size="12.5" font-weight="700" fill="#334155">中台（什么都干）</text>
+  <rect x="76" y="170" width="308" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="88" y="188" font-size="11" fill="#1e293b">① 检索相关片段</text>
+  <rect x="76" y="200" width="308" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="88" y="218" font-size="11" fill="#1e293b">② 拼 Prompt　③ 调大模型生成</text>
+  <rect x="76" y="230" width="308" height="26" rx="5" fill="#fef2f2" stroke="#fecaca"/>
+  <text x="88" y="248" font-size="11" fill="#7f1d1d">④ 组织话术　⑤ 加免责声明</text>
+  <text x="76" y="284" font-size="10.5" fill="#b91c1c">边界一直溢出到「生成」——中台被迫理解业务话术</text>
+
+  <line x1="230" y1="298" x2="230" y2="318" stroke="#64748b" stroke-width="1.5" marker-end="url(#k1)"/>
+  <rect x="60" y="320" width="340" height="42" rx="7" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="230" y="346" font-size="11.5" fill="#334155" text-anchor="middle">返回：一段自然语言答案</text>
+
+  <rect x="60" y="382" width="340" height="86" rx="8" fill="#fef2f2" stroke="#f87171" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="76" y="404" font-size="12" font-weight="700" fill="#b91c1c">代价：中台被租户绑死</text>
+  <text x="76" y="425" font-size="10.5" fill="#7f1d1d">A 公司要正式话术、B 公司要活泼语气、</text>
+  <text x="76" y="442" font-size="10.5" fill="#7f1d1d">C 公司要加免责声明——每家都要改中台，</text>
+  <text x="76" y="459" font-size="10.5" fill="#7f1d1d">最后变成永远改不完的定制项目。</text>
+
+  <!-- ============ 右：改之后 ============ -->
+  <rect x="480" y="24" width="340" height="32" rx="6" fill="#eff6ff" stroke="#2563eb" stroke-width="1.2"/>
+  <text x="650" y="45" font-size="13" font-weight="700" fill="#1d4ed8" text-anchor="middle">改之后 · POST /rag/retrieve</text>
+
+  <rect x="480" y="72" width="340" height="46" rx="7" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="650" y="91" font-size="11.5" font-weight="600" fill="#334155" text-anchor="middle">业务系统</text>
+  <text x="650" y="108" font-size="10.5" fill="#64748b" text-anchor="middle">自己拼 Prompt、自己调任一模型</text>
+  <line x1="650" y1="118" x2="650" y2="138" stroke="#2563eb" stroke-width="1.5" marker-end="url(#k2)"/>
+
+  <rect x="480" y="140" width="340" height="158" rx="8" fill="#ffffff" stroke="#2563eb" stroke-width="1.5"/>
+  <text x="496" y="161" font-size="12.5" font-weight="700" fill="#1d4ed8">中台（只检索）</text>
+  <rect x="496" y="170" width="308" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="508" y="188" font-size="11" fill="#1e293b">① 解析问题（改写 / 同义词）</text>
+  <rect x="496" y="200" width="308" height="26" rx="5" fill="#eff6ff" stroke="#bfdbfe"/>
+  <text x="508" y="218" font-size="11" fill="#1e293b">② 双路召回　③ RRF 融合 + 精排</text>
+  <rect x="496" y="230" width="308" height="26" rx="5" fill="#f0fdf4" stroke="#bbf7d0"/>
+  <text x="508" y="248" font-size="11" fill="#14532d">④ 组装检索结果（切片 + 分数 + 出处）</text>
+  <text x="496" y="284" font-size="10.5" fill="#15803d">边界到此为止——不拼上下文、不调生成模型</text>
+
+  <line x1="650" y1="298" x2="650" y2="318" stroke="#2563eb" stroke-width="1.5" marker-end="url(#k2)"/>
+  <rect x="480" y="320" width="340" height="42" rx="7" fill="#f0fdf4" stroke="#16a34a" stroke-width="1.5"/>
+  <text x="650" y="346" font-size="11.5" font-weight="600" fill="#14532d" text-anchor="middle">返回：检索结果（不带答案）</text>
+
+  <rect x="480" y="382" width="340" height="86" rx="8" fill="#f0fdf4" stroke="#4ade80" stroke-width="1.5" stroke-dasharray="5 4"/>
+  <text x="496" y="404" font-size="12" font-weight="700" fill="#15803d">收益：一份能力，五家复用</text>
+  <text x="496" y="425" font-size="10.5" fill="#14532d">想换模型、换语气、加免责声明，全在业务侧改，</text>
+  <text x="496" y="442" font-size="10.5" fill="#14532d">中台一行不动。代价是中台必须做到「可追溯」：</text>
+  <text x="496" y="459" font-size="10.5" fill="#14532d">每个切片都能指回原文的哪一章、哪一块。</text>
+
+  <!-- 底部结论 -->
+  <rect x="60" y="492" width="760" height="34" rx="6" fill="#fffbeb" stroke="#fbbf24"/>
+  <text x="440" y="514" font-size="11.5" font-weight="600" fill="#92400e" text-anchor="middle">同一条检索能力，左边被绑成「应用」，右边才是「中台」——差别不在技术，在边界划在哪</text>
+</svg>

@@ -1,0 +1,72 @@
+# RAG 中台（rag-center）本地基础设施
+# 用法：docker compose -f deploy/docker-compose.yml up -d
+# 说明见同目录 README.md
+name: rag-center
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: pg16-pgvector
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: "123456"     # .env 里的 DATABASE_URL 必须一致
+      POSTGRES_DB: rag_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d:ro   # 首次初始化时自动建扩展、建 langfuse 库
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d rag_db"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: rag-center-redis
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  elasticsearch:
+    # 官方镜像 + 自建层烘入 IK：由 deploy/elasticsearch/Dockerfile 构建
+    # IK 必须与 ES 完全同版（8.17.10），否则插件装不上
+    build:
+      context: ./elasticsearch
+    image: rag-center-elasticsearch-ik:8.17.10
+    container_name: rag-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+  langfuse:
+    image: langfuse/langfuse:2
+    container_name: rag-langfuse
+    ports:
+      - "3000:3000"
+    environment:
+      - DATABASE_URL=postgresql://postgres:123456@postgres:5432/langfuse
+      - NEXTAUTH_URL=http://localhost:3000     # 必填：Langfuse 2 缺它会启动即报 Invalid environment variables
+      - NEXTAUTH_SECRET=change-me
+      - SALT=change-me
+    depends_on:
+      - postgres
+
+volumes:
+  pg_data:
+  es_data:
