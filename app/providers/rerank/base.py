@@ -1,4 +1,8 @@
-"""RerankProvider 抽象。
+"""RerankProvider 抽象（阶段 8 才有 Qwen3.7 实现）。"""
 
-步骤 4 定义；阶段 8 才有 Qwen3.7 重排实现。
-"""
+from abc import ABC, abstractmethod
+
+
+class RerankProvider(ABC):
+    @abstractmethod
+    async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]: ...

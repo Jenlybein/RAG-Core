@@ -1,4 +1,13 @@
-"""API 路由汇总。
+"""API 路由汇总：三个接口统一挂到 /api/v1 前缀下。
 
-步骤 5 填充：把 knowledge_bases / documents / rag 三个路由统一挂到 /api/v1 前缀下。
+main.py（步骤 8）只需 include_router(api_router) 一次。
 """
+
+from fastapi import APIRouter
+
+from app.api.routes import documents, knowledge_bases, rag
+
+api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(knowledge_bases.router)
+api_router.include_router(documents.router)
+api_router.include_router(rag.router)
