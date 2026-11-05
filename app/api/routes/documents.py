@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.common import ApiResponse, fail, ok
+from app.schemas.common import ApiResponse, ok
 from app.schemas.document import UploadDocumentData, UploadDocumentRequest
 from app.services import document_service
 
@@ -25,6 +25,4 @@ async def upload_document(
         title=payload.title,
         content=payload.content,
     )
-    if data is None:
-        return fail(20008, "knowledge base not found")
     return ok(UploadDocumentData.model_validate(data))

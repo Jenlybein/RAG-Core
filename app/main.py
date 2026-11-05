@@ -10,6 +10,7 @@
 
 from fastapi import FastAPI
 
+from app.api.error_handlers import install_handlers
 from app.api.router import api_router
 
 # ── T2: 结构化日志（模块级幂等初始化，不进 lifespan）──
@@ -27,6 +28,10 @@ app.add_middleware(RequestContextMiddleware)
 # ── T3 结束 ──
 
 app.include_router(api_router)
+
+# ── T4: HTTP 入口适配器（异常 → 统一响应，仅覆盖 /api/v1/*）──
+install_handlers(app)
+# ── T4 结束 ──
 
 
 @app.get("/health", include_in_schema=False)
