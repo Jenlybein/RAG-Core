@@ -4,12 +4,13 @@
 回写 status=1。索引失败时回滚向量写入，把已落库的文档改成 status=2 并记
 error_message，响应仍返回 code=0（业务失败不抛 5xx）。
 
-跨租户访问与库不存在都返回 None，由 API 层统一翻译成 20008「不存在」——
-不返回「无权限」，避免泄露资源存在性。
+跨租户访问与库不存在都抛 KNOWLEDGE_BASE_NOT_FOUND，由 HTTP 入口适配器统一
+翻译成 20008「不存在」——不返回「无权限」，避免泄露资源存在性。
 """
 
 from sqlalchemy.orm import Session
 
+from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
 from app.repositories import document_repository, knowledge_base_repository
 from app.services.indexing_service import IndexingService
@@ -19,10 +20,10 @@ from app.utils.status import DocumentStatus
 
 async def upload(
     db: Session, *, tenant_id: str, kb_id: str, title: str, content: str
-) -> dict | None:
+) -> dict:
     kb = knowledge_base_repository.get_by_id(db, kb_id)
     if kb is None or kb.tenant_id != tenant_id:
-        return None
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND, "knowledge base not found")
 
     doc = Document(
         id=new_document_id(),
