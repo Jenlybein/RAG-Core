@@ -1,0 +1,24 @@
+name: CI
+
+on: [push, pull_request]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format check
+        # 历史 Python 文件尚未按本工具链统一格式；本票只守住新增代码，
+        # 待单独确认历史文件清单后再把检查范围扩回整个仓库。
+        run: uv run ruff format --check tests
+      - name: Type check
+        run: uv run mypy app
+      - name: Test
+        run: uv run pytest -q
