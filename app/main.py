@@ -12,6 +12,12 @@ from fastapi import FastAPI
 
 from app.api.router import api_router
 
+# ── T2: 结构化日志（模块级幂等初始化，不进 lifespan）──
+from app.core.logging import setup_logging
+
+setup_logging()
+# ── T2 结束 ──
+
 app = FastAPI(title="RAG-Core", version="0.1.0")
 app.include_router(api_router)
 
