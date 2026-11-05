@@ -11,13 +11,17 @@ JSON-RPC 协议自己表达工具执行失败，不经过根 FastAPI 的异常�
 ``app.add_exception_handler(...)`` 即可，不必改动 main.py 的组装块。
 """
 
+import structlog
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.request_context import _REQUEST_ID_RE, _request_id_from
 from app.schemas.common import fail
+
+logger = structlog.get_logger(__name__)
 
 
 async def app_error_handler(request: Request, exc: Exception) -> JSONResponse:
@@ -48,8 +52,41 @@ async def request_validation_error_handler(request: Request, exc: Exception) -> 
     return JSONResponse(status_code=200, content=jsonable_encoder(envelope))
 
 
+def _request_id_for_500(request: Request) -> str:
+    """优先取中间件存进 scope 的同一个 id；取不到才按同一套规则从入站头净化。
+
+    T3 在 finally 里 clear_contextvars()，早于最外层 ServerErrorMiddleware
+    触发本 handler，所以 contextvar 此时是空的，只能读 scope。
+    """
+
+    stored = request.scope.get("state", {}).get("request_id")
+    if isinstance(stored, str) and _REQUEST_ID_RE.fullmatch(stored):
+        return stored
+    return _request_id_from(request.scope)
+
+
+async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
+    """服务异常：HTTP 500 + 50000，堆栈只进日志，绝不进响应体。
+
+    ServerErrorMiddleware 是最外层，用原始 send 构造 500 响应，绕过所有内层
+    send 包装；因此这里必须显式把 x-request-id 写进响应头。
+    """
+
+    request_id = _request_id_for_500(request)
+    logger.exception("unhandled exception", request_id=request_id, path=request.url.path)
+    envelope = fail(ErrorCode.SERVER_ERROR)
+    return JSONResponse(
+        status_code=500,
+        content=jsonable_encoder(envelope),
+        headers={"x-request-id": request_id},
+    )
+
+
 def install_handlers(app: FastAPI) -> None:
     """把 HTTP 入口的异常处理器挂到应用上；后续票在此追加一行注册即可。"""
 
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, request_validation_error_handler)
+    # ── T5: 服务异常兜底 ──
+    app.add_exception_handler(Exception, unhandled_exception_handler)
+    # ── T5 结束 ──
