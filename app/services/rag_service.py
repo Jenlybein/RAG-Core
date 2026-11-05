@@ -7,6 +7,7 @@ user_id 骨架期由调用方传入但不落库（阶段 7 才接检索日志）
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.embedding import get_embedding_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import knowledge_base_repository
@@ -14,10 +15,10 @@ from app.repositories import knowledge_base_repository
 
 async def retrieve(
     db: Session, *, tenant_id: str, kb_id: str, user_id: str, query: str
-) -> dict | None:
+) -> dict:
     kb = knowledge_base_repository.get_by_id(db, kb_id)
     if kb is None or kb.tenant_id != tenant_id:
-        return None
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND, "knowledge base not found")
 
     query_vector = await get_embedding_provider().embed_query(query)
     chunks = await get_vector_store().similarity_search(

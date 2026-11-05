@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
-from app.schemas.common import ApiResponse, fail, ok
+from app.schemas.common import ApiResponse, ok
 from app.schemas.rag import RetrieveData, RetrieveRequest
 from app.services import rag_service
 
@@ -25,6 +25,4 @@ async def retrieve(
         user_id=payload.user_id,
         query=payload.query,
     )
-    if data is None:
-        return fail(20008, "knowledge base not found")
     return ok(RetrieveData.model_validate(data))
