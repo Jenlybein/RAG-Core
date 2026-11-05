@@ -106,7 +106,9 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
 
     session = _FakeSession()
 
-    monkeypatch.setattr(kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID))
+    monkeypatch.setattr(
+        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
+    )
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(document_service, "IndexingService", _FakeIndexingService)
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
@@ -163,7 +165,9 @@ def test_failed_index_keeps_success_envelope_and_sanitizes_error_message(
     assert DOCUMENT_CONTENT not in response.text, "响应不应复制文档内容"
 
 
-def test_failed_index_writes_error_log_with_business_ids(offline_upload, monkeypatch, log_dir: Path) -> None:
+def test_failed_index_writes_error_log_with_business_ids(
+    offline_upload, monkeypatch, log_dir: Path
+) -> None:
     """静默吞掉的失败现在留痕：ERROR 文件带三个业务标识与异常堆栈。"""
 
     client, _session = offline_upload
