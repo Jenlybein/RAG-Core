@@ -19,6 +19,13 @@ setup_logging()
 # ── T2 结束 ──
 
 app = FastAPI(title="RAG-Core", version="0.1.0")
+
+# ── T3: 请求关联标识（纯 ASGI，横跨挂载子应用）──
+from app.core.request_context import RequestContextMiddleware  # noqa: E402
+
+app.add_middleware(RequestContextMiddleware)
+# ── T3 结束 ──
+
 app.include_router(api_router)
 
 
