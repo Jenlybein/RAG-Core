@@ -71,7 +71,9 @@ def test_every_response_carries_request_id(client: TestClient) -> None:
         assert all(c.isalnum() or c in "_-" for c in request_id)
 
     invalid = client.post("/api/v1/knowledge-bases/create", json={})
-    assert invalid.status_code == 422
+    # ADR-0007 / T4：校验失败是业务失败，HTTP 200 + 20002，不再是框架默认的 422。
+    assert invalid.status_code == 200
+    assert invalid.json()["code"] == 20002
     assert invalid.headers.get("x-request-id"), "校验失败响应也要带号牌"
 
 
