@@ -8,7 +8,7 @@ error_message，响应仍返回 code=0（业务失败不抛 5xx）。
 原文连同文档 / 租户 / 知识库标识只写进 ERROR 日志，便于按标识回查。
 应用日志只放 ID 与派生量，不放检索文本原文、文档内容或 API Key。
 
-跨租户访问与库不存在都抛 KNOWLEDGE_BASE_NOT_FOUND，由 HTTP 入口适配器统一
+跨租户访问与知识库不存在都抛 KNOWLEDGE_BASE_NOT_FOUND，由 HTTP 入口适配器统一
 翻译成 20008「不存在」——不返回「无权限」，避免泄露资源存在性。
 """
 
@@ -33,7 +33,7 @@ async def upload(
 ) -> dict:
     kb = knowledge_base_repository.get_by_id(db, kb_id)
     if kb is None or kb.tenant_id != tenant_id:
-        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND, "knowledge base not found")
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
     doc = Document(
         id=new_document_id(),

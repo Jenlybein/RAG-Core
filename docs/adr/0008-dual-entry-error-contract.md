@@ -1,6 +1,8 @@
-# 0008 · 双入口错误契约：共享错误词汇，各自翻译
+# 0008. 双入口错误契约：共享错误词汇，各自翻译
 
-**Status**: Accepted
+- 状态：已采纳
+- 日期：2026-11-05
+- 相关：`docs/adr/0007-business-errors-http-200.md`、`GLOSSARY.md`「错误码」、「docs/设计决策.md」错误码全表
 
 ## 一句话决定
 
@@ -31,6 +33,14 @@ raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)   # 20008
 `app/main.py` 只做组装：调 `setup_logging()`、加请求上下文中间件、调 `install_handlers(app)`。
 
 **你现在应该看到**：`AppError` 里没有 HTTP 状态码，也没有 JSON-RPC 字段。如果这里有，说明词汇表被入口污染了。
+
+## 与 ADR-0007 的关系
+
+ADR-0007 已采纳的规则——业务失败返回 HTTP 200 + 非零 `code`、全局异常处理器分三类翻译（`AppError` / `RequestValidationError` / 其余）——**只适用于 HTTP 入口**。它写的是「HTTP 状态码 + 统一响应结构 + HTTP 异常处理器」，回答的是 HTTP 调用方怎么读失败。
+
+MCP 入口是 ADR-0007 当时没有覆盖的**第二种入口**：它走 JSON-RPC，工具执行失败用 `isError: true` 加文本里的 `code` 表达，既没有 HTTP 业务状态码，也不经过根 FastAPI 的异常处理器。因此 0008 只是把这条 HTTP 规则的适用范围写明，并补上第二个入口的翻译方式，**不是推翻或修订 ADR-0007**。ADR-0007 仍然是已采纳状态，继续约束 `/api/v1/*`；两份 ADR 是并列关系，不是新旧替代。
+
+共享的部分只有 `ErrorCode` / `AppError` 这份与协议无关的词汇表。这就是「共享错误词汇，各自翻译」：HTTP 侧照 0007 办，MCP 侧按 JSON-RPC 办，编号始终同一个。
 
 ## 为什么不让两个入口用同一个响应壳
 

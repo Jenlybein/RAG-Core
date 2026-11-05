@@ -198,6 +198,43 @@ def test_500_envelope_does_not_leak_into_docs_or_health(client: TestClient) -> N
     assert client.get("/docs").status_code == 200
 
 
+def test_global_exception_handler_envelopes_unhandled_error_outside_api_prefix(
+    client: TestClient,
+) -> None:
+    """实测边界：Exception handler 全局注册，非业务路径一旦抛未捕获异常也会被包壳。
+
+    包壳范围「只覆盖 /api/v1/*」是异常类型驱动的结果——业务与校验异常只由业务
+    路由抛出，探活/文档/404 正常时保持原生形状。但生产 app 的 Exception handler
+    不看路径：非业务路径真抛异常时，同样返回 500 + 50000。这里钉住真实行为，
+    不把它写成「原生 404」。刻意不新增端点，只临时让 /health 的 endpoint 抛错。
+    """
+
+    main = importlib.import_module("app.main")
+    health_route = next(
+        route for route in main.app.routes if getattr(route, "path", None) == "/health"
+    )
+    original_call = health_route.dependant.call
+
+    async def explode() -> None:
+        raise RuntimeError(_INTERNAL_SENTINEL)
+
+    health_route.dependant.call = explode
+    try:
+        response = client.get("/health")
+    finally:
+        health_route.dependant.call = original_call
+
+    assert response.status_code == 500
+    assert response.json() == {"code": 50000, "msg": "server error", "data": None}
+    assert _INTERNAL_SENTINEL not in response.text
+    request_id = response.headers.get("x-request-id")
+    assert request_id, "500 响应必须显式带上关联标识"
+
+    # 没有异常的普通请求仍是原生形状；边界由「是否抛异常」决定，不是响应包裹。
+    assert client.get("/health").json() == {"status": "ok"}
+    assert client.get("/nope").json() == {"detail": "Not Found"}
+
+
 # ── 无回归：业务失败与校验失败仍是 HTTP 200 ──
 
 

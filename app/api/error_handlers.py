@@ -3,12 +3,12 @@
 共享的是错误词汇（app.core.exceptions），不是响应壳：MCP 入口（第 11 步）会按
 JSON-RPC 协议自己表达工具执行失败，不经过根 FastAPI 的异常处理器。
 
-本模块当前只登记两个处理器：
+本模块登记三个处理器：
   * AppError               → HTTP 200 + 对应 code（业务失败）
   * RequestValidationError → HTTP 200 + 20002（参数校验失败）
+  * Exception              → HTTP 500 + 50000（服务异常，堆栈只进日志）
 
-注册入口 install_handlers(app) 是可追加的：后续票在此函数里追加自己的一行
-``app.add_exception_handler(...)`` 即可，不必改动 main.py 的组装块。
+注册入口 install_handlers(app) 集中挂这三个处理器，main.py 只调用它。
 """
 
 import structlog
@@ -18,7 +18,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.request_context import _REQUEST_ID_RE, _request_id_from
+from app.core.request_context import (
+    REQUEST_ID_SCOPE_KEY,
+    _REQUEST_ID_RE,
+    _request_id_from,
+)
 from app.schemas.common import fail
 
 logger = structlog.get_logger(__name__)
@@ -59,7 +63,7 @@ def _request_id_for_500(request: Request) -> str:
     触发本 handler，所以 contextvar 此时是空的，只能读 scope。
     """
 
-    stored = request.scope.get("state", {}).get("request_id")
+    stored = request.scope.get("state", {}).get(REQUEST_ID_SCOPE_KEY)
     if isinstance(stored, str) and _REQUEST_ID_RE.fullmatch(stored):
         return stored
     return _request_id_from(request.scope)
