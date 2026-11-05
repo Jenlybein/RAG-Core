@@ -35,6 +35,14 @@ dependencies = [
     "fastmcp==3.0.0",
     # 全程
     "pytest==8.3.3",
+    "structlog==26.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff==0.17.3",
+    "mypy==2.4.1",
+    "pre-commit==4.7.0",
 ]
 
 # 根目录同时有 app 与 migrations 两个 Python 包时，setuptools 无法猜主包，
@@ -42,6 +50,23 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 exclude = ["migrations*", "tests*", "eval*", "scripts*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+# 骨架期的 59 个历史文件尚未按本工具链统一风格；本票不批量重写。
+# 只启用语法错误与 pyflakes 这类不会误伤历史写法的基础规则，
+# 后续章节在单独确认后再逐步放宽规则集。
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+files = ["app"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [build-system]
 requires = ["setuptools>=68"]
