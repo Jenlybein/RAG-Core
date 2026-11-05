@@ -20,6 +20,8 @@ Message = MutableMapping[str, Any]
 Receive = Callable[[], Awaitable[Message]]
 Send = Callable[[Message], Awaitable[None]]
 
+REQUEST_ID_SCOPE_KEY = "request_id"
+
 _REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 _HEADER_NAME = b"x-request-id"
 
@@ -40,7 +42,7 @@ class RequestContextMiddleware:
         # ── T5: 把同一个 id 存进 scope，供最外层 500 handler 读取 ──
         # 本中间件在 finally 里 clear_contextvars()，早于 ServerErrorMiddleware
         # 触发 Exception handler，届时 contextvar 已空；scope 会原样传到那个 handler。
-        scope.setdefault("state", {})["request_id"] = request_id
+        scope.setdefault("state", {})[REQUEST_ID_SCOPE_KEY] = request_id
         # ── T5 结束 ──
         try:
 

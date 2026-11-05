@@ -18,7 +18,7 @@ async def retrieve(
 ) -> dict:
     kb = knowledge_base_repository.get_by_id(db, kb_id)
     if kb is None or kb.tenant_id != tenant_id:
-        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND, "knowledge base not found")
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
     query_vector = await get_embedding_provider().embed_query(query)
     chunks = await get_vector_store().similarity_search(
