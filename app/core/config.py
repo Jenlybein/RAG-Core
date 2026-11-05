@@ -28,5 +28,9 @@ class Settings(BaseSettings):
     CHUNK_OVERLAP: int = 100
     TOP_K: int = 5
 
+    # 结构化日志（T2）：只新增这两项，滚动阈值/份数是 setup_logging 的参数。
+    LOG_LEVEL: str = "INFO"
+    LOG_DIR: str = "logs"
+
 
 settings = Settings()
