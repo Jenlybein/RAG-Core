@@ -60,9 +60,34 @@ def _authoritative_pairs() -> list[tuple[str, int]]:
     ]
 
 
+class _OfflineEmbeddingProvider:
+    """离线 embedding 替身：固定向量，不构造 HTTP 客户端、不发任何模型请求。
+
+    ``rag_service.retrieve`` 先 ``embed_query``、再校验知识库可见性，所以 CI（没有
+    ``.env``、``MODEL_BASE_URL=""``）必须靠它才能走到 20008，而不是在 httpx 层崩成 500。
+    """
+
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def embed_query(self, query: str) -> list[float]:
+        self.queries.append(query)
+        return [0.1, 0.2, 0.3]
+
+
 @pytest.fixture
-def client():
-    """离线 ASGI 客户端：只替换数据库依赖，其余走真实应用与真实处理器。"""
+def offline_embedding(monkeypatch: pytest.MonkeyPatch) -> _OfflineEmbeddingProvider:
+    """只换接缝：把 ``rag_service`` 真正解析到的工厂换成离线替身。"""
+
+    stub = _OfflineEmbeddingProvider()
+    service = importlib.import_module("app.services.rag_service")
+    monkeypatch.setattr(service, "get_embedding_provider", lambda: stub)
+    return stub
+
+
+@pytest.fixture
+def client(offline_embedding):
+    """离线 ASGI 客户端：替换数据库依赖与 embedding 工厂，其余走真实应用与处理器。"""
 
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
@@ -173,6 +198,35 @@ def test_cross_tenant_and_nonexistent_share_the_same_code(client, monkeypatch) -
     assert cross_tenant.status_code == nonexistent.status_code == 200
     assert cross_tenant.json() == nonexistent.json()
     assert cross_tenant.json()["code"] == 20008
+
+
+def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
+    client, monkeypatch, offline_embedding
+) -> None:
+    """CI 没有 .env：``MODEL_BASE_URL`` 为空时，未知知识库仍必须回 20008。
+
+    ``rag_service.retrieve`` 先 ``embed_query`` 再校验知识库可见性，因此这里
+    embedding 替身必须真的被调用到，否则 CI 会退化成 ``httpx.UnsupportedProtocol``。
+    """
+
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "MODEL_BASE_URL", "")
+    repo = importlib.import_module("app.repositories.knowledge_base_repository")
+    monkeypatch.setattr(repo, "get_by_id", lambda db, kb_id: None)
+
+    response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
+
+    assert settings.MODEL_BASE_URL == ""
+    assert offline_embedding.queries == ["hello"], (
+        "离线替身必须真的被调用（证明没有走真实 Provider）"
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "code": 20008,
+        "msg": "knowledge base not found",
+        "data": None,
+    }
 
 
 def test_document_upload_nonexistent_knowledge_base_uses_the_same_exit(client, monkeypatch) -> None:
