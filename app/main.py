@@ -21,7 +21,7 @@ setup_logging()
 
 app = FastAPI(title="RAG-Core", version="0.1.0")
 
-# ── T3: 请求关联标识（纯 ASGI，横跨挂载子应用）──
+# ── T3: 请求关联标识（BaseHTTPMiddleware，本项目无流式响应）──
 from app.core.request_context import RequestContextMiddleware  # noqa: E402
 
 app.add_middleware(RequestContextMiddleware)
