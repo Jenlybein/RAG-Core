@@ -28,10 +28,10 @@ dependencies = [
     "langfuse==2.57.0",
     "ragas==0.2.6",
     "datasets==3.1.0",
-    # 阶段 10
+    # 第 1 步（双入口骨架）
     # 必须钉 3.0.0：fastmcp 2.9 ~ 2.13 都没有 fastmcp.dependencies，
-    # 也没有 fastmcp.utilities.lifespan.combine_lifespans，阶段 10 的代码会 import 失败。
-    # 教程写的 "fastmcp>=2.9" 在今天解析不出来，且满足不了阶段 10。
+    # 也没有 fastmcp.utilities.lifespan.combine_lifespans，第 1 步挂载时会 import 失败。
+    # 教程写的 "fastmcp>=2.9" 在今天解析不出来，且满足不了双入口骨架。
     "fastmcp==3.0.0",
     # 全程
     "pytest==8.3.3",
