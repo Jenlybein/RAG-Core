@@ -1,8 +1,14 @@
-"""上传接口的请求 / 响应模型。
+"""上传与状态查询接口的请求 / 响应模型。
 
-骨架期只接受 JSON（title + content），文件上传留给第 3 步。
+上传是单端点按 content-type 分流：JSON 模式用 ``UploadDocumentRequest``（title、
+content 必填）；文件模式的 kb_id / title / file 走 Form，由路由手工补齐 20002。
 ``tenant_id`` 由服务端从占位 Key 解出，不进请求体。
+
+``DocumentListData`` 是异步化后调用方唯一能观测进度的形状：异步上传后前端 / 调用方
+轮询 ``GET /documents?kb_id=``，看 ``status`` 与 ``chunk_count``。
 """
+
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -21,3 +27,19 @@ class UploadDocumentData(BaseModel):
     status: int
     chunk_count: int
     error_message: str | None = None
+
+
+class DocumentListItem(BaseModel):
+    """一份文档的进度摘要；``chunk_count`` 来自切片表的分组计数。"""
+
+    document_id: str
+    title: str
+    status: int
+    chunk_count: int
+    error_message: str | None = None
+    source_type: str
+    created_at: datetime
+
+
+class DocumentListData(BaseModel):
+    items: list[DocumentListItem]
