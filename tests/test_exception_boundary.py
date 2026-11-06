@@ -56,11 +56,24 @@ def _records(path: Path) -> list[dict]:
     return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line]
 
 
+class _OfflineEmbeddingProvider:
+    """离线 embedding 替身：固定向量，不构造 HTTP 客户端、不发任何模型请求。
+
+    ``rag_service.retrieve`` 先 ``embed_query`` 再校验知识库可见性；CI 没有 ``.env``、
+    ``MODEL_BASE_URL=""``，不换掉这个工厂，业务失败分支会先在 httpx 层崩成 500。
+    """
+
+    async def embed_query(self, query: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+
 @pytest.fixture
 def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     """离线 ASGI 边界；500 会被 ServerErrorMiddleware 重新抛出，须关掉测试客户端的再抛出。"""
 
     main = importlib.import_module("app.main")
+    service = importlib.import_module("app.services.rag_service")
+    monkeypatch.setattr(service, "get_embedding_provider", lambda: _OfflineEmbeddingProvider())
     session = importlib.import_module("app.db.session")
     main.app.dependency_overrides[session.get_db] = lambda: object()
     from app.core.auth import DevKeyContext, resolve_dev_key
