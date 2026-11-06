@@ -19,6 +19,8 @@ logs/
 data/uploads/
 celerybeat-schedule*
 *.pid
+# OCR 原生运行时（deploy/ocr/fetch_runtime.sh 默认落盘位置；CI 用缓存目录覆盖）
+.ocr/
 
 # ── 前端 ──
 node_modules/
