@@ -11,6 +11,7 @@ def get_embedding_provider() -> EmbeddingProvider:
         api_key=settings.MODEL_API_KEY,
         model=settings.EMBEDDING_MODEL,
         dimensions=settings.EMBEDDING_DIMENSIONS,
+        batch_size=settings.EMBEDDING_BATCH_SIZE,
     )
 
 

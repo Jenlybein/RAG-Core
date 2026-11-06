@@ -1,6 +1,7 @@
 """OpenAI 兼容的 Embedding 实现（百炼走这个协议）。
 
-请求必须带 dimensions=1536。百炼单批上限 20 条，这里取 10 留重试余量。
+请求必须带 dimensions=1536。百炼单批上限按模型不同：text-embedding-v3/v4 = 10、
+v1/v2 = 25、qwen3.7 = 20；批次大小由 settings.EMBEDDING_BATCH_SIZE 传入，默认 10。
 骨架期不做重试（阶段 8 再加），失败直接抛。
 """
 
@@ -8,15 +9,24 @@ import httpx
 
 from app.providers.embedding.base import EmbeddingProvider
 
-BATCH_SIZE = 10
-
 
 class OpenAICompatibleEmbedding(EmbeddingProvider):
-    def __init__(self, *, base_url: str, api_key: str, model: str, dimensions: int) -> None:
+    def __init__(
+        self,
+        *,
+        base_url: str,
+        api_key: str,
+        model: str,
+        dimensions: int,
+        batch_size: int = 10,
+    ) -> None:
+        if batch_size < 1:
+            raise ValueError("batch_size must be >= 1")
         self._url = base_url.rstrip("/") + "/embeddings"
         self._api_key = api_key
         self._model = model
         self._dimensions = dimensions
+        self._batch_size = batch_size
 
     async def _post(self, inputs: list[str]) -> list[list[float]]:
         payload = {"model": self._model, "input": inputs, "dimensions": self._dimensions}
@@ -30,8 +40,8 @@ class OpenAICompatibleEmbedding(EmbeddingProvider):
 
     async def embed_texts(self, texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
-        for i in range(0, len(texts), BATCH_SIZE):
-            out.extend(await self._post(texts[i : i + BATCH_SIZE]))
+        for i in range(0, len(texts), self._batch_size):
+            out.extend(await self._post(texts[i : i + self._batch_size]))
         return out
 
     async def embed_query(self, query: str) -> list[float]:
