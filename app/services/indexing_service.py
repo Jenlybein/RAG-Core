@@ -15,6 +15,10 @@ from app.providers.vectorstores import get_vector_store
 from app.utils.id_generator import new_chunk_id
 from app.utils.text_splitter import CharacterTextSplitter
 
+# 索引链路失败时回传给调用方的唯一原因文案：不含异常对象、堆栈、路径或 SQL。
+# 失败回写由 T4 的 Celery 任务负责，它从这里 import；不要把异常原文拼进来。
+INDEXING_FAILED_MESSAGE = "document indexing failed, please retry or contact support"
+
 
 class IndexingService:
     def __init__(self) -> None:

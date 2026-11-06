@@ -1,9 +1,14 @@
-"""T6 · 索引链路失败留痕：ASGI 边界验收。
+"""T3 · 异步上传契约：ASGI 边界验收（重写旧的同步索引失败留痕断言）。
+
+异步化后上传只做登记：响应固定 ``status=3`` / ``chunk_count=0``，请求线程不解析、
+不向量化，因此**不会**再产生 ``document indexed`` / ``document indexing failed``
+记录。真正的失败留痕与脱敏文案由 T4 的 Worker 任务测试承接；本文件只守住「请求
+线程不索引」这条新契约，以及登记日志只带业务标识、不带文档内容。
 
 唯一接缝：ASGI 应用边界。用 TestClient 发真实上传请求，只观察统一响应体与
 ``logs/app.log`` / ``logs/error.log`` 的外部副作用。数据库依赖、知识库仓储、
-索引编排与文档状态回写用框架官方依赖覆盖 / monkeypatch 换成离线测试替身，
-让同一条接缝不发真实模型请求、不连 PostgreSQL——不新增第二条生产接缝。
+投递缝与文档 ID 用框架官方依赖覆盖 / monkeypatch 换成离线测试替身；投递缝被
+monkeypatch 成记录器，因此本文件不需要 Broker。
 
 日志断言照 T2 约定：显式 monkeypatch ``settings.LOG_DIR`` 指向 tmp 目录、重置
 ``app.core.logging._configured`` 再跑 ``setup_logging()``；绝不依赖全局默认目录
@@ -24,15 +29,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.utils.status import DocumentStatus
 
-# 内部异常原文：允许出现在日志里（排障线索），绝不允许出现在响应体里。
-INTERNAL_DETAIL = "T6-INTERNAL-EXCEPTION-SENTINEL"
-# 调用方提交的文档内容：绝不允许出现在任何应用日志里。
-DOCUMENT_CONTENT = "T6-CONTENT-SENTINEL"
-# 固定脱敏文案（外部契约）：不含内部异常原文，也不含文档内容。
-SANITIZED_MESSAGE = "document indexing failed, please retry or contact support"
+# 调用方提交的文档内容：绝不允许出现在响应体或任何应用日志里。
+DOCUMENT_CONTENT = "T3-CONTENT-SENTINEL"
+# 异步化后请求线程永远不该写的两类索引日志。
+INDEX_LOG_MESSAGES = ("document indexed", "document indexing failed")
+ACCEPTED_LOG_MESSAGE = "documents accepted"
 
-# 占位 Key 解出的默认租户；假仓储的租户必须与它一致才走得到成功分支。
+# 占位 Key 解出的默认租户；假仓储的租户必须与它一致才走得到登记分支。
 TENANT_ID = settings.DEV_TENANT_ID
 KB_ID = "kb-1"
 
@@ -67,6 +72,7 @@ class _FakeSession:
 
     def __init__(self) -> None:
         self.documents: dict[str, Any] = {}
+        self.commit_count = 0
 
     def add(self, doc: Any) -> None:
         self.documents[doc.id] = doc
@@ -78,7 +84,7 @@ class _FakeSession:
         return self.documents.get(document_id)
 
     def commit(self) -> None:
-        return None
+        self.commit_count += 1
 
     def rollback(self) -> None:
         return None
@@ -87,20 +93,9 @@ class _FakeSession:
         return None
 
 
-class _FakeIndexingService:
-    """索引编排替身：默认成功；``index`` 可被单条测试换成抛异常。"""
-
-    async def index(self, db, *, doc, content) -> int:
-        return 3
-
-
 @pytest.fixture
 def offline_upload(monkeypatch: pytest.MonkeyPatch):
-    """离线上传接缝：返回 ``(client, session)``，并允许替换索引编排行为。
-
-    知识库仓储 / 文档状态回写 / ID 生成 / 编排用 monkeypatch 固定，数据库用
-    框架自带的 ``dependency_overrides`` 替换；这些只是让 ASGI 这一条接缝离线。
-    """
+    """离线上传接缝：返回 ``(client, session, enqueued)``，投递缝只记录不投递。"""
 
     main = importlib.import_module("app.main")
     session_mod = importlib.import_module("app.db.session")
@@ -108,15 +103,18 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     session = _FakeSession()
+    enqueued: list[dict[str, Any]] = []
 
     monkeypatch.setattr(
         kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
     )
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
-    monkeypatch.setattr(document_service, "IndexingService", _FakeIndexingService)
+    monkeypatch.setattr(
+        document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
+    )
+
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
     from app.core.auth import DevKeyContext, resolve_dev_key
-    from app.core.config import settings
 
     main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
         tenant_id=settings.DEV_TENANT_ID
@@ -124,7 +122,7 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
 
     try:
         with TestClient(main.app) as test_client:
-            yield test_client, session
+            yield test_client, session, enqueued
     finally:
         main.app.dependency_overrides.clear()
 
@@ -141,141 +139,101 @@ def _upload(client: TestClient):
     return client.post("/api/v1/documents/upload", json=_upload_payload())
 
 
-def _explode(self, db, *, doc, content) -> int:
-    raise RuntimeError(INTERNAL_DETAIL)
-
-
-async def _success_index(self, db, *, doc, content) -> int:
-    return 3
-
-
-def test_failed_index_keeps_success_envelope_and_sanitizes_error_message(
-    offline_upload, monkeypatch, log_dir: Path
+def test_upload_registers_processing_and_never_writes_index_logs(
+    offline_upload, log_dir: Path
 ) -> None:
-    """索引失败仍是 code=0 的成功信封 + status=FAILED，原因文案脱敏。"""
+    """上传只登记：status=3、chunk_count=0、投递一次，且请求线程不写索引日志。"""
 
-    client, _session = offline_upload
-
-    monkeypatch.setattr(_FakeIndexingService, "index", _explode)
+    client, session, enqueued = offline_upload
 
     response = _upload(client)
 
-    assert response.status_code == 200
     body = response.json()
+    assert response.status_code == 200
     assert body["code"] == 0
     assert body["msg"] == "success"
-    assert body["data"]["status"] == 2  # FAILED
-    assert body["data"]["chunk_count"] == 0
-    assert body["data"]["document_id"] == "doc-1"
-    assert body["data"]["kb_id"] == KB_ID
-    assert body["data"]["error_message"] == SANITIZED_MESSAGE
-    assert INTERNAL_DETAIL not in response.text, "内部异常原文绝不能回显给调用方"
-    assert DOCUMENT_CONTENT not in response.text, "响应不应复制文档内容"
+    assert body["data"] == {
+        "document_id": "doc-1",
+        "kb_id": KB_ID,
+        "status": DocumentStatus.PROCESSING,
+        "chunk_count": 0,
+        "error_message": None,
+    }
+    assert session.commit_count == 1, "登记提交一次即返回，不写索引结果"
+    assert session.documents["doc-1"].status == DocumentStatus.PROCESSING
+    assert len(enqueued) == 1, "登记后必须投递一次索引任务"
+    assert enqueued[0]["document_id"] == "doc-1"
+    assert enqueued[0]["tenant_id"] == TENANT_ID
+    assert enqueued[0]["kb_id"] == KB_ID
+
+    index_records = [
+        record
+        for record in _records(log_dir / "app.log") + _records(log_dir / "error.log")
+        if record.get("msg") in INDEX_LOG_MESSAGES
+    ]
+    assert index_records == [], "请求线程不做索引，不该出现索引成功 / 失败日志"
+    assert not _records(log_dir / "error.log"), "成功登记不应产生 ERROR 记录"
+
+    accepted = [
+        record
+        for record in _records(log_dir / "app.log")
+        if record.get("msg") == ACCEPTED_LOG_MESSAGE
+    ]
+    assert len(accepted) == 1, "每次登记都要有一条 accepted 日志"
+    record = accepted[0]
+    assert record["level"] == "info"
+    assert set(record) >= {
+        "time",
+        "level",
+        "logger",
+        "msg",
+        "document_id",
+        "tenant_id",
+        "kb_id",
+        "source_type",
+    }
+    assert record["document_id"] == "doc-1"
+    assert record["tenant_id"] == TENANT_ID
+    assert record["kb_id"] == KB_ID
+    assert record["source_type"] == "text"
+    assert DOCUMENT_CONTENT not in json.dumps(record), "文档内容不得进日志"
 
 
-def test_failed_index_writes_error_log_with_business_ids(
-    offline_upload, monkeypatch, log_dir: Path
-) -> None:
-    """静默吞掉的失败现在留痕：ERROR 文件带三个业务标识与异常堆栈。"""
+def test_response_never_echoes_content_or_internal_detail(offline_upload) -> None:
+    """响应只回标识与状态：不回显正文、脱敏失败文案或任何内部细节。"""
 
-    client, _session = offline_upload
-
-    monkeypatch.setattr(_FakeIndexingService, "index", _explode)
-
-    _upload(client)
-
-    error_records = _records(log_dir / "error.log")
-    failures = [r for r in error_records if r.get("msg") == "document indexing failed"]
-    assert len(failures) == 1, "每次索引失败都要有一条 ERROR 记录"
-    failure = failures[0]
-    assert failure["level"] == "error"
-    assert failure["document_id"] == "doc-1"
-    assert failure["tenant_id"] == TENANT_ID
-    assert failure["kb_id"] == KB_ID
-    assert INTERNAL_DETAIL in json.dumps(failure), "内部异常细节只进日志，供排障回查"
-    assert DOCUMENT_CONTENT not in json.dumps(failure), "文档内容不得进日志"
-    assert "query" not in failure, "检索文本原文不得进日志"
-
-
-def test_successful_index_logs_business_ids_for_comparison(offline_upload, log_dir: Path) -> None:
-    """成功路径也带同样的业务标识与派生量，便于与失败记录对照。"""
-
-    client, _session = offline_upload
+    client, _session, _enqueued = offline_upload
 
     response = _upload(client)
 
     assert response.status_code == 200
-    assert response.json()["data"]["status"] == 1  # SUCCESS
-    successes = [
-        r
-        for r in _records(log_dir / "app.log")
-        if r.get("msg") == "document indexed" and r.get("level") == "info"
-    ]
-    assert len(successes) == 1, "每次索引成功都要留一条对照日志"
-    success = successes[0]
-    assert success["document_id"] == "doc-1"
-    assert success["tenant_id"] == TENANT_ID
-    assert success["kb_id"] == KB_ID
-    assert success["chunk_count"] == 3
-    assert DOCUMENT_CONTENT not in json.dumps(success), "文档内容不得进日志"
-    assert not _records(log_dir / "error.log"), "成功路径不应产生 ERROR 记录"
-
-
-def test_failed_index_row_is_written_back_and_retryable(offline_upload, monkeypatch) -> None:
-    """失败后文档行仍为 FAILED 且已提交；重试同一条链路可以成功。"""
-
-    client, session = offline_upload
-    calls: list[int] = []
-
-    async def flaky(self, db, *, doc, content) -> int:
-        calls.append(1)
-        if len(calls) == 1:
-            raise RuntimeError(INTERNAL_DETAIL)
-        return 3
-
-    monkeypatch.setattr(_FakeIndexingService, "index", flaky)
-
-    failed = _upload(client)
-    assert failed.json()["data"]["status"] == 2
-    row = session.documents["doc-1"]
-    assert row.status == 2, "失败状态必须回写并保留，供调用方轮询"
-    assert row.error_message == SANITIZED_MESSAGE
-    assert INTERNAL_DETAIL not in str(row.error_message)
-
-    retried = _upload(client)
-    assert retried.json()["data"]["status"] == 1
-    assert retried.json()["data"]["chunk_count"] == 3
-    assert retried.json()["data"]["error_message"] is None
-    assert session.documents["doc-1"].status == 1
+    assert DOCUMENT_CONTENT not in response.text, "响应不应复制文档内容"
+    assert "document indexing failed" not in response.text, "请求线程没有索引失败可报"
+    assert "Traceback" not in response.text
+    body = response.json()
+    assert set(body["data"]) == {
+        "document_id",
+        "kb_id",
+        "status",
+        "chunk_count",
+        "error_message",
+    }
 
 
 def test_application_logs_never_carry_content_query_or_api_key(
-    offline_upload, monkeypatch, log_dir: Path
+    offline_upload, log_dir: Path
 ) -> None:
-    """失败与成功两条路径的日志只带 ID / 派生量，不带文档内容、检索文本或 API Key。"""
+    """登记日志只带 ID / 派生量，不带文档内容、检索文本或 API Key。"""
 
-    client, _session = offline_upload
+    client, _session, _enqueued = offline_upload
 
-    monkeypatch.setattr(_FakeIndexingService, "index", _explode)
-    _upload_with_api_key(client)
-    # 换回默认成功实现，再发一次请求对照。
-    monkeypatch.setattr(_FakeIndexingService, "index", _success_index)
     _upload_with_api_key(client)
 
     raw = (log_dir / "app.log").read_text(encoding="utf-8")
     assert DOCUMENT_CONTENT not in raw, "文档内容不得进应用日志"
-    assert "T6-API-KEY-SENTINEL" not in raw, "API Key 不得进应用日志"
+    assert "T3-API-KEY-SENTINEL" not in raw, "API Key 不得进应用日志"
     for record in _records(log_dir / "app.log"):
-        if record.get("msg") in ("document indexed", "document indexing failed"):
-            assert set(record) >= {
-                "time",
-                "level",
-                "logger",
-                "msg",
-                "document_id",
-                "tenant_id",
-                "kb_id",
-            }
+        if record.get("msg") == ACCEPTED_LOG_MESSAGE:
             assert "query" not in record, "检索文本原文不得进日志"
 
 
@@ -283,5 +241,5 @@ def _upload_with_api_key(client: TestClient):
     return client.post(
         "/api/v1/documents/upload",
         json=_upload_payload(),
-        headers={"X-Api-Key": "T6-API-KEY-SENTINEL"},
+        headers={"X-Api-Key": "T3-API-KEY-SENTINEL"},
     )
