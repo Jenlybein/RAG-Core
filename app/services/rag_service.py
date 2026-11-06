@@ -1,7 +1,8 @@
-"""检索业务：embed_query → similarity_search → 组装检索结果。
+"""检索业务：embed_query → 逐库 similarity_search → 合并结果。
 
 边界：不拼上下文、不调大模型、不生成答案，只返回切片 + 分数 + 出处。
-user_id 骨架期由调用方传入但不落库（阶段 7 才接检索日志）。
+第 1 步起 tenant_id 从占位 Key 解出，kb_ids 是调用方显式传的列表；
+第 5 步会在这一层补 ``kb_ids ⊆ allowed_kb_ids`` 白名单校验。
 """
 
 from sqlalchemy.orm import Session
@@ -9,23 +10,26 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.providers.embedding import get_embedding_provider
 from app.providers.vectorstores import get_vector_store
-from app.repositories import knowledge_base_repository
+from app.services.knowledge_base_access import ensure_visible
 
 
-async def retrieve(
-    db: Session, *, tenant_id: str, kb_id: str, user_id: str, query: str
-) -> dict | None:
-    kb = knowledge_base_repository.get_by_id(db, kb_id)
-    if kb is None or kb.tenant_id != tenant_id:
-        return None
-
+async def retrieve(db: Session, *, tenant_id: str, kb_ids: list[str], query: str) -> dict:
     query_vector = await get_embedding_provider().embed_query(query)
-    chunks = await get_vector_store().similarity_search(
-        db, query_vector, tenant_id=tenant_id, kb_id=kb_id, top_k=settings.TOP_K
-    )
+
+    chunks: list[dict] = []
+    for kb_id in kb_ids:
+        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
+        chunks.extend(
+            await get_vector_store().similarity_search(
+                db, query_vector, tenant_id=tenant_id, kb_id=kb_id, top_k=settings.TOP_K
+            )
+        )
+
+    # 多库时按分数重新排，再截到 top_k；单库行为与骨架期一致。
+    chunks.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     return {
         "query": query,
-        "kb_id": kb_id,
-        "retrieved_chunks": chunks,
+        "kb_ids": list(kb_ids),
+        "retrieved_chunks": chunks[: settings.TOP_K],
         "metadata": {"top_k": settings.TOP_K, "vector_store": settings.VECTOR_STORE},
     }

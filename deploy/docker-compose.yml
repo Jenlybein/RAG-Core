@@ -67,6 +67,30 @@ services:
     depends_on:
       - postgres
 
+  # Celery Worker：只跑 Linux 容器（OCR 运行时只在 Linux x64 端到端被验证）。
+  # 镜像内已预灌 PDFium / ONNX Runtime / PP-OCRv6，所以 OCR_OFFLINE=true 也能命中缓存。
+  # 关键：这里必须与 API 共用同一个 DOCUMENT_STORAGE_PATH（reparse=true 时 Worker 要能找到原文件）。
+  worker:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    container_name: rag-worker
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:123456@postgres:5432/rag_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DOCUMENT_STORAGE_PATH: /app/data/uploads
+      OCR_MODE: auto
+      OCR_OFFLINE: "true"
+    volumes:
+      - ../data/uploads:/app/data/uploads
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
 volumes:
   pg_data:
   es_data:

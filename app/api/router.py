@@ -1,6 +1,7 @@
-"""API 路由汇总：三个接口统一挂到 /api/v1 前缀下。
+"""API 路由汇总：全部业务接口统一挂到 /api/v1 前缀下。
 
-main.py（步骤 8）只需 include_router(api_router) 一次。
+main.py 只需 include_router(api_router) 一次；具体端点清单以 main.py 的
+docstring 为准，避免两处数量再次漂移。
 """
 
 from fastapi import APIRouter

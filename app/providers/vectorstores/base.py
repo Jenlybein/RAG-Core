@@ -24,5 +24,5 @@ class VectorStore(ABC):
         必须带 tenant_id 与 kb_id 过滤，否则会跨库召回。"""
 
     @abstractmethod
-    async def delete_by_document_id(self, db: Session, document_id: str) -> None:
-        """删某文档的全部切片向量。"""
+    async def delete_by_document_id(self, db: Session, document_id: str, *, tenant_id: str) -> None:
+        """删某文档的全部切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。"""
