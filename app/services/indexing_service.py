@@ -4,6 +4,8 @@
 第一个扩展点。这里不 commit、不碰 HTTP，事务交给 DocumentService。
 """
 
+from typing import Any
+
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -21,24 +23,25 @@ class IndexingService:
         self._store = get_vector_store()
 
     async def index(self, db: Session, *, doc: Document, content: str) -> int:
-        texts = self._splitter.split(content)
-        if not texts:
+        pieces = self._splitter.split(content)
+        if not pieces:
             return 0
+        texts = [piece.text for piece in pieces]
         vectors = await self._embeddings.embed_texts(texts)
         if len(vectors) != len(texts):
             raise ValueError(f"embedding count mismatch: {len(texts)} texts -> {len(vectors)} vectors")
 
-        chunks = [
+        chunks: list[dict[str, Any]] = [
             {
                 "id": new_chunk_id(),
                 "tenant_id": doc.tenant_id,
                 "kb_id": doc.kb_id,
                 "document_id": doc.id,
-                "content": text,
+                "content": piece.text,
                 "embedding": vector,
-                "meta": {"title": doc.title, "index": i},
+                "meta": {**piece.metadata, "title": doc.title, "index": i},
             }
-            for i, (text, vector) in enumerate(zip(texts, vectors))
+            for i, (piece, vector) in enumerate(zip(pieces, vectors))
         ]
         await self._store.add_chunks(db, chunks)
         return len(chunks)

@@ -14,6 +14,7 @@ from app.schemas.common import ApiResponse, ok
 from app.schemas.knowledge_base import (
     CreateKBData,
     CreateKBRequest,
+    KnowledgeBaseItem,
     KnowledgeBaseListData,
 )
 from app.services import knowledge_base_service
@@ -49,7 +50,8 @@ async def list_knowledge_bases(
     rows = knowledge_base_repository.list_by_tenant(db, key.tenant_id)
     data = KnowledgeBaseListData(
         knowledge_bases=[
-            {"kb_id": row.id, "name": row.name, "tenant_id": row.tenant_id} for row in rows
+            KnowledgeBaseItem(kb_id=row.id, name=row.name, tenant_id=row.tenant_id)
+            for row in rows
         ]
     )
     return ok(data)
