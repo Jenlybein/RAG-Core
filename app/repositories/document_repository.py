@@ -27,7 +27,84 @@ def create(db: Session, doc: Document) -> Document:
 
 
 def get_by_id(db: Session, document_id: str) -> Document | None:
+    """按主键取，**不带租户过滤**：只给 Worker 任务用。
+
+    Worker 收到的 ``document_id`` 来自已经过租户校验的投递（上传 / 重建端点），
+    任务内部再查一次只认 id；任何「调用方直传 id」的数据面入口都必须改用
+    :func:`get_by_id_for_tenant`，否则会跨租户读到文档（ADR-0006）。
+    """
+
     return db.get(Document, document_id)
+
+
+def get_by_id_for_tenant(db: Session, document_id: str, *, tenant_id: str) -> Document | None:
+    """按 ``id`` **且** ``tenant_id`` 取文档，缺失与跨租户一律返回 ``None``。
+
+    ADR-0006（不做文档级 ACL，隔离只到租户 + Key 的数据范围）要求所有按 id 取
+    文档的数据面路径都强制带租户过滤，调用方拿到 ``None`` 后统一按
+    ``NOT_FOUND``（20016）处理，不泄露存在性。租户是无默认值的强制参数，不是
+    可选过滤器；无租户的 :func:`get_by_id` 只留给 Worker 任务路径。
+    """
+
+    stmt = select(Document).where(
+        Document.id == document_id, Document.tenant_id == tenant_id
+    )
+    return db.execute(stmt).scalar_one_or_none()
+
+
+def list_by_kb_and_status(
+    db: Session, kb_id: str, *, tenant_id: str, status: int
+) -> list[Document]:
+    """该租户在该库下、处于指定状态的文档，按创建时间升序。
+
+    运维脚本「全库重建」（``scripts/reindex_knowledge_base.py``）用它取出所有
+    ``SUCCESS`` 的文档；``tenant_id`` 同样是强制参数（ADR-0006），脚本在扫描时
+    显式传入，绝不跨租户。
+    """
+
+    stmt = (
+        select(Document)
+        .where(
+            Document.kb_id == kb_id,
+            Document.tenant_id == tenant_id,
+            Document.status == status,
+        )
+        .order_by(Document.created_at)
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def list_stuck(
+    db: Session,
+    *,
+    tenant_id: str | None = None,
+    lease_seconds: int = DOCUMENT_LEASE_SECONDS,
+    kb_id: str | None = None,
+) -> list[Document]:
+    """扫出「卡死」的文档：``PROCESSING`` 且租约缺失或已过期。
+
+    判定与 CAS 的可抢占条件完全一致：``index_claimed_at IS NULL`` 是「已入队但
+    Worker 还没开工」，早于 ``now - lease_seconds`` 是「Worker 崩了 / 卡住」。
+    有效租约内的处理中不算卡死，不能被这条查询救回。
+
+    这是运维兜底脚本 ``scripts/requeue_stuck_documents.py`` 的查询口：默认扫全库
+    （``tenant_id`` 缺省为 None，仅有运维权限的本地脚本会这样用），``kb_id`` 只
+    缩小范围，不改变「卡死」的定义。
+    """
+
+    lease_before = now() - timedelta(seconds=lease_seconds)
+    stmt = select(Document).where(
+        Document.status == DocumentStatus.PROCESSING,
+        or_(
+            Document.index_claimed_at.is_(None),
+            Document.index_claimed_at < lease_before,
+        ),
+    )
+    if tenant_id is not None:
+        stmt = stmt.where(Document.tenant_id == tenant_id)
+    if kb_id is not None:
+        stmt = stmt.where(Document.kb_id == kb_id)
+    return list(db.execute(stmt.order_by(Document.created_at)).scalars().all())
 
 
 def list_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> list[Document]:
