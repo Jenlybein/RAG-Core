@@ -298,7 +298,11 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
             created_at=datetime(2026, 1, 3, 3, 3, 3),
         ),
     ]
-    monkeypatch.setattr(document_repository, "list_by_kb", lambda db, kb_id: rows)
+    monkeypatch.setattr(
+        document_repository,
+        "list_by_kb",
+        lambda db, kb_id, *, tenant_id: rows,
+    )
 
     counter_calls: list[list[str]] = []
 
@@ -331,6 +335,32 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
         "created_at",
     }
     assert counter_calls == [["doc-a", "doc-b", "doc-c"]], "一次分组查询覆盖全部文档，别 N+1"
+
+
+def test_list_documents_hides_knowledge_base_of_another_tenant(
+    offline: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """跨租户的 kb_id 一律按「不存在」处理，连列表查询都不发。"""
+
+    kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
+    monkeypatch.setattr(
+        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id="tenant-other")
+    )
+
+    list_calls: list[tuple[Any, Any]] = []
+    monkeypatch.setattr(
+        document_repository,
+        "list_by_kb",
+        lambda *args, **kwargs: list_calls.append((args, kwargs)),
+    )
+
+    response = offline.client.get("/api/v1/documents", params={"kb_id": KB_ID})
+
+    body = response.json()
+    assert body["code"] == ErrorCode.KNOWLEDGE_BASE_NOT_FOUND
+    assert body["msg"] == "knowledge base not found"
+    assert body["data"] is None
+    assert list_calls == [], "跨租户一律按不存在处理，绝不能先查后过滤"
 
 
 # ── 状态守卫矩阵（纯函数）──
@@ -421,11 +451,13 @@ def _seed_document(
     status: int,
     claimed_at: datetime | None = None,
     error_message: str | None = None,
+    tenant_id: str = TENANT_ID,
+    created_at: datetime | None = None,
 ) -> None:
     db.add(
         Document(
             id=document_id,
-            tenant_id=TENANT_ID,
+            tenant_id=tenant_id,
             kb_id=KB_ID,
             title=document_id,
             content="",
@@ -433,6 +465,7 @@ def _seed_document(
             status=status,
             error_message=error_message,
             index_claimed_at=claimed_at,
+            created_at=created_at or now(),
         )
     )
     db.commit()
@@ -500,3 +533,33 @@ def test_success_document_is_only_claimable_with_allow_success(document_db: Sess
 
 def test_claim_of_missing_document_is_false(document_db: Session) -> None:
     assert _claim(document_db, "doc-missing") is False
+
+
+def test_list_by_kb_excludes_other_tenants_and_orders_by_created_at(
+    document_db: Session,
+) -> None:
+    """同一 kb_id 下其他租户的行必须被过滤掉；本租户的行按 created_at 升序。"""
+
+    _seed_document(
+        document_db,
+        "doc-mine-late",
+        status=DocumentStatus.SUCCESS,
+        created_at=datetime(2026, 1, 2, 1, 1, 1),
+    )
+    _seed_document(
+        document_db,
+        "doc-mine-early",
+        status=DocumentStatus.PROCESSING,
+        created_at=datetime(2026, 1, 1, 1, 1, 1),
+    )
+    _seed_document(
+        document_db,
+        "doc-other-tenant",
+        status=DocumentStatus.SUCCESS,
+        tenant_id="tenant-other",
+        created_at=datetime(2026, 1, 3, 1, 1, 1),
+    )
+
+    rows = document_repository.list_by_kb(document_db, KB_ID, tenant_id=TENANT_ID)
+
+    assert [row.id for row in rows] == ["doc-mine-early", "doc-mine-late"]

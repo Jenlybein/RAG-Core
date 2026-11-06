@@ -30,10 +30,18 @@ def get_by_id(db: Session, document_id: str) -> Document | None:
     return db.get(Document, document_id)
 
 
-def list_by_kb(db: Session, kb_id: str) -> list[Document]:
-    """该知识库下的全部文档，按创建时间升序（列表即轮询进度的时间线）。"""
+def list_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> list[Document]:
+    """该租户在该知识库下的全部文档，按创建时间升序（列表即轮询进度的时间线）。
 
-    stmt = select(Document).where(Document.kb_id == kb_id).order_by(Document.created_at)
+    ``tenant_id`` 是强制参数，不是可选过滤器：漏掉它就会跨租户泄露文档（ADR-0006
+    要求 Repository 方法签名强制带租户）。这里不提供无租户的变体。
+    """
+
+    stmt = (
+        select(Document)
+        .where(Document.kb_id == kb_id, Document.tenant_id == tenant_id)
+        .order_by(Document.created_at)
+    )
     return list(db.execute(stmt).scalars().all())
 
 
