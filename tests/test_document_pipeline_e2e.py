@@ -266,6 +266,9 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
         "Pipeline Notes > Chunking Contract > Worker Steps",
     ]
     assert [chunk["meta"]["chunk_type"] for chunk in chunks] == ["prose", "prose", "table", "prose"]
+    # 解析器 metadata 必须跟着切片走：否则 OCR 文档的 `metadata.engine` 无从查起
+    # （真机验收时踩过——切片里只有切块字段，engine/ocr_pages 全丢了）。
+    assert {chunk["meta"]["parser"] for chunk in chunks} == {"markdown"}
     assert [chunk["meta"]["index"] for chunk in chunks] == [0, 1, 2, 3]
 
     for chunk in chunks:
