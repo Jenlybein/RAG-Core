@@ -7,6 +7,13 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
+# 三个 job 都必须显式钉 Python 3.12：runner 默认的 `python3` 会一路升到 3.14，
+# 而 psycopg-binary 3.2.3 只有 cp312/cp313 的 wheel，uv 会以
+# "doesn't have a source distribution or wheel for the current platform" 直接失败。
+# `requires-python = ">=3.12"` 允许 3.14，光靠 pyproject 兜不住，必须在这里钉。
+env:
+  UV_PYTHON: "3.12"
+
 jobs:
   quality:
     # 纯离线：不装容器、不下载任何 OCR 资产；OCR 用例在这里是 skip 而不是 fail。
@@ -16,6 +23,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          python-version: "3.12"
       - name: Install dependencies
         run: uv sync --all-groups --frozen
       - name: Lint
@@ -62,6 +70,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          python-version: "3.12"
       - name: Install dependencies
         run: uv sync --all-groups --frozen
       - name: Test integration
@@ -81,6 +90,7 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          python-version: "3.12"
       - name: Install dependencies
         run: uv sync --frozen
       - name: Cache OCR runtime assets
