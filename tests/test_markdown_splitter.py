@@ -120,15 +120,38 @@ def test_code_block_kept_whole() -> None:
 
 
 def test_low_information_pieces_filtered() -> None:
-    """空正文 / 纯标题 / 与上一片完全重复的内容都不产出切片。"""
-    table = "| 键 | 值 |\n| --- | --- |\n| a | 1 |"
-    markdown = f"# 只有标题\n\n## 也只有标题\n\n# 表一\n\n{table}\n\n# 表二\n\n{table}\n"
+    """空正文、纯标题的 section 不产出切片。"""
+    markdown = "# 只有标题\n\n## 也只有标题\n\n### 三级标题\n\n正文。\n"
 
     pieces = MarkdownStructuredSplitter().split(markdown)
 
-    assert len(pieces) == 1, "重复表格的第二份与上一片字节相同，应被过滤"
-    assert pieces[0].text.strip()
-    assert not pieces[0].text.lstrip().startswith("#")
+    assert len(pieces) == 1
+    assert "正文" in pieces[0].text
+    assert MarkdownStructuredSplitter().split("   \n\n \n") == [], "纯空白不应产出切片"
+
+
+def test_duplicate_filter_is_scoped_to_immediately_preceding_piece() -> None:
+    """重复内容只和同一节内紧邻的上一片比较，跨节的重复正文都要保留。"""
+    paragraph = "同一段模板句。"
+    table = "| 键 | 值 |\n| --- | --- |\n| a | 1 |"
+    same_section_table = f"{table}\n\n{table}"
+    markdown = (
+        f"# 重复小节\n{paragraph}\n\n"
+        f"# 重复小节\n{paragraph}\n\n"
+        f"# 表格节\n\n{same_section_table}\n\n"
+        f"# 后续表格节\n\n{table}\n"
+    )
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    paragraphs = [piece for piece in pieces if piece.metadata["heading_path"] == "重复小节"]
+    assert len(paragraphs) == 2, "两个不同 section 里的同一段模板句都必须保留"
+    assert paragraphs[0].text == paragraphs[1].text
+
+    tables = [piece for piece in pieces if piece.metadata["chunk_type"] == "table"]
+    assert len(tables) == 2, "同一节内相邻重复表格折叠为一片，跨节的重复表格保留"
+    assert [piece.metadata["heading_path"] for piece in tables] == ["表格节", "后续表格节"]
+    assert all(piece.metadata["table_part"] == 1 for piece in tables)
 
 
 def test_long_section_split_with_overlap() -> None:
