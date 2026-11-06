@@ -13,8 +13,6 @@ C. 两者都没有 → ``DOCUMENT_PARSE_FAILED``。
 T4 的 Celery 任务包住整条流水线。
 """
 
-from pathlib import Path
-
 from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
 from app.providers.parsers import get_parser_registry
@@ -44,7 +42,12 @@ def prepare_document_content(document: Document, *, reparse: bool = False) -> Pa
 
 
 def _read_source_file(path: str) -> bytes:
+    # 库里存的是相对存储根的 POSIX 路径（上传进程与 Worker 进程共享同一个根卷），
+    # 这里统一还原成当前进程的绝对路径；直接用 str 拼会跨平台失效。
+    from app.services.document_storage import resolve_document_storage_path
+
+    resolved = resolve_document_storage_path(path)
     try:
-        return Path(path).read_bytes()
+        return resolved.read_bytes()
     except FileNotFoundError:
         raise AppError(ErrorCode.DOCUMENT_PARSE_FAILED, "source file is missing") from None
