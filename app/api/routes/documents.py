@@ -1,13 +1,19 @@
-"""文档接口：异步上传 + 状态查询。
+"""文档接口：异步上传、状态查询、重建索引与删除。
 
 只有一个模块、一个 router：
   * ``POST /documents/upload`` —— 单端点按 content-type 分流（multipart = 文件模式，
     其余 = JSON 模式）。只登记 + 投递索引任务，立即返回 ``status=3``。
   * ``GET /documents?kb_id=`` —— 该库下的文档列表，异步化后调用方唯一的进度观测口。
+  * ``POST /documents/{document_id}/reindex?reparse=&force=`` —— 单文档重建：守卫与
+    抢占后把任务重新投递，purge 与写入仍只在 Worker 的事务里发生。
+  * ``DELETE /documents/{document_id}`` —— 守卫通过后清切片、删原文件、删记录。
 
-上传的两条分支共用 ``document_service.upload``，请求线程不做解析 / 向量化。
+按 ``document_id`` 取文档一律经 ``get_by_id_for_tenant``（ADR-0006）：缺失与跨租户
+统一按「不存在」（20016）处理，不泄露存在性。守卫一律走 ``document_state`` 的
+``ensure_reindexable`` / ``ensure_deletable``，不在路由里另写 if。
 """
 
+import structlog
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
@@ -16,17 +22,26 @@ from sqlalchemy.orm import Session
 from app.core.auth import DevKeyContext, resolve_dev_key
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session import get_db
+from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository, document_repository, knowledge_base_repository
 from app.schemas.common import ApiResponse, ok
 from app.schemas.document import (
+    DeleteDocumentData,
     DocumentListData,
     DocumentListItem,
+    ReindexDocumentData,
     UploadDocumentData,
     UploadDocumentRequest,
 )
-from app.services import document_service
+from app.services import document_service, document_state
+from app.services.document_storage import remove_document_file
+from app.services.index_dispatch import enqueue_document
+from app.services.indexing_service import purge_document_chunks
+from app.utils.status import DocumentStatus
 
 router = APIRouter()
+
+logger = structlog.get_logger(__name__)
 
 _MISSING_KB_ID_ERROR = {"type": "missing", "loc": ("body", "kb_id"), "msg": "Field required"}
 _MISSING_FILE_ERROR = {"type": "missing", "loc": ("body", "file"), "msg": "Field required"}
@@ -137,3 +152,105 @@ async def list_documents(
         ]
     )
     return ok(data)
+
+
+@router.post(
+    "/documents/{document_id}/reindex",
+    response_model=ApiResponse[ReindexDocumentData],
+    summary="重建单文档索引（可强制重读原文件）",
+)
+async def reindex_document(
+    document_id: str,
+    request: Request,
+    reparse: bool = Query(False),
+    force: bool = Query(False),
+    db: Session = Depends(get_db),
+    key: DevKeyContext = Depends(resolve_dev_key),
+) -> ApiResponse[ReindexDocumentData]:
+    """守卫 → CAS 抢占 → 提交 → 投递，立即返回 ``status=3``。
+
+    顺序是契约的一部分：先按 id + 租户取文档（缺失 / 跨租户统一 20016），再走
+    ``ensure_reindexable``（有效处理中 20025；成功且未 ``force`` 20027），然后
+    ``try_claim_for_indexing`` 抢一次。抢不到说明并发请求已经先抢走（守卫看的
+    是同一行的旧快照），仍按 20025 回绝。抢到后立刻 ``commit`` 释放行锁，
+    再把任务交给 Worker。
+
+    **这里绝不 purge 切片**：purge 与写入必须在 Worker 的同一段事务里完成，
+    否则会有一段「旧切片没了、新切片还没写」的空窗。``reparse`` 只是透传给
+    Worker 的选择位，表示忽略库内 ``content``、重读落盘原文件。
+    """
+
+    doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    document_state.ensure_reindexable(doc, force=force)
+
+    claimed = document_repository.try_claim_for_indexing(
+        db, document_id, allow_success=force
+    )
+    if not claimed:
+        raise AppError(ErrorCode.DOCUMENT_IS_PROCESSING)
+    db.commit()
+
+    enqueue_document(
+        document_id=document_id,
+        tenant_id=key.tenant_id,
+        kb_id=doc.kb_id,
+        request_id=_submitted_request_id(request),
+        reparse=reparse,
+    )
+    logger.info(
+        "document reindex accepted",
+        document_id=document_id,
+        tenant_id=key.tenant_id,
+        kb_id=doc.kb_id,
+        reparse=reparse,
+        force=force,
+    )
+    return ok(
+        ReindexDocumentData(
+            document_id=document_id,
+            status=DocumentStatus.PROCESSING,
+            chunk_count=0,
+            reparse=reparse,
+        )
+    )
+
+
+@router.delete(
+    "/documents/{document_id}",
+    response_model=ApiResponse[DeleteDocumentData],
+    summary="删除单文档（清切片、删原文件、删记录）",
+)
+async def delete_document(
+    document_id: str,
+    db: Session = Depends(get_db),
+    key: DevKeyContext = Depends(resolve_dev_key),
+) -> ApiResponse[DeleteDocumentData]:
+    """守卫通过后按固定顺序清理：purge 切片 → 删原文件 → 删行 → 提交。
+
+    ``purge_document_chunks`` 遍历存储列表（本步只有 pgvector，以后加 ES 只需在
+    默认接线里追加），因此删文档不需要知道存储形态。有效处理中（租约未过期）
+    拒绝删除（20025）；租约过期视为 Worker 卡死，允许清理。
+    """
+
+    doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    document_state.ensure_deletable(doc)
+
+    await purge_document_chunks(db, document_id, stores=[get_vector_store()])
+    remove_document_file(doc.source_file_path)
+    db.delete(doc)
+    db.commit()
+
+    logger.info(
+        "document deleted",
+        document_id=document_id,
+        tenant_id=key.tenant_id,
+        kb_id=doc.kb_id,
+        source_type=doc.source_type,
+    )
+    return ok(DeleteDocumentData(document_id=document_id, deleted=True))

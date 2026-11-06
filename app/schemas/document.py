@@ -43,3 +43,24 @@ class DocumentListItem(BaseModel):
 
 class DocumentListData(BaseModel):
     items: list[DocumentListItem]
+
+
+class ReindexDocumentData(BaseModel):
+    """重建索引的受理回执：文档已被重新置为处理中并投递。
+
+    ``status`` 恒为 ``PROCESSING``、``chunk_count`` 恒为 0：重建端点只受理，
+    purge + 写入 + 状态回写全部发生在 Worker 的同一个事务里，调用方要确认终态
+    仍需轮询 ``GET /documents?kb_id=``。``reparse`` 回显是否要求重读原文件。
+    """
+
+    document_id: str
+    status: int
+    chunk_count: int
+    reparse: bool
+
+
+class DeleteDocumentData(BaseModel):
+    """删除文档的受理回执；切片、文件与记录都已清掉。"""
+
+    document_id: str
+    deleted: bool
