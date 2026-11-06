@@ -4,16 +4,18 @@
     { "code": 20008, "msg": "knowledge base not found", "data": null }
 
 依据 ADR-0007：HTTP 状态码只表达「服务在不在」，业务结果由 body 的 code 表达。
-所以业务失败是「返回 fail(...)」而不是抛 HTTPException——FastAPI 默认 200，
-不需要异常处理器就能满足约定。全局异常处理器与参数校验翻译是阶段 2 的活。
+所以业务失败不是抛 HTTPException——HTTP 入口适配器把 AppError 翻译成 fail(...)，
+FastAPI 默认 200，不改框架的状态码语义。
 
-本步骤不定义 ErrorCode 枚举（那是阶段 2 的产出）；调用方直接用最终编号
-（如 20008），阶段 2 再把字面量收进枚举。
+fail() 只被 HTTP 入口适配器调用；业务层抛 AppError，路由只写 ok(...)。
+错误码收在 app.core.exceptions.ErrorCode（与协议无关），全表一次性落地，3xxxx 仅预留。
 """
 
-from typing import Generic, TypeVar
+from typing import Any, Generic, TypeVar
 
 from pydantic import BaseModel
+
+from app.core.exceptions import ErrorCode, default_message
 
 T = TypeVar("T")
 
@@ -32,7 +34,9 @@ def ok(data: T | None = None, *, msg: str = "success") -> ApiResponse[T]:
     return ApiResponse(code=0, msg=msg, data=data)
 
 
-def fail(code: int, msg: str) -> ApiResponse[None]:
-    """业务失败响应。code 用最终分段编号（2xxxx / 4xxxx / 5xxxx）。"""
+def fail(code: ErrorCode, msg: str | None = None, *, data: Any = None) -> ApiResponse[Any]:
+    """业务失败响应。只由入口适配器调用；缺省提示由枚举名生成。"""
 
-    return ApiResponse(code=code, msg=msg, data=None)
+    return ApiResponse(
+        code=int(code), msg=msg if msg is not None else default_message(code), data=data
+    )

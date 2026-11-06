@@ -19,8 +19,14 @@ dependencies = [
     # 阶段 3
     "python-multipart==0.0.9",
     "mammoth==1.8.0",
-    "pdf-inspector==0.2.6",
-    "celery[redis]==5.4.0",
+    "pdf-inspector==1.25.2",
+    "markdownify==1.2.3",
+    # celery 5.4.0 的 redis extra 封顶 redis<6.0.0，而它允许的 kombu 窗口（<6.0）会解析到
+    # kombu 5.7.0，后者要求 redis>=6.4.0 —— 三者不可能同时满足，真实投递时会在第一次
+    # 建 channel 时报 kombu.exceptions.VersionMismatch。升到 5.5.3：它把 kombu 封在
+    # <5.6，而 kombu 5.5.x 允许 redis<=5.2.1，于是 redis-py 5.2.0 继续可用。
+    # 离线测试碰不到 broker，所以 tests/test_dependency_compat.py 专门守这条约束。
+    "celery[redis]==5.5.3",
     "redis==5.2.0",
     # 阶段 4
     "elasticsearch==8.15.1",
@@ -28,13 +34,21 @@ dependencies = [
     "langfuse==2.57.0",
     "ragas==0.2.6",
     "datasets==3.1.0",
-    # 阶段 10
+    # 第 1 步（双入口骨架）
     # 必须钉 3.0.0：fastmcp 2.9 ~ 2.13 都没有 fastmcp.dependencies，
-    # 也没有 fastmcp.utilities.lifespan.combine_lifespans，阶段 10 的代码会 import 失败。
-    # 教程写的 "fastmcp>=2.9" 在今天解析不出来，且满足不了阶段 10。
+    # 也没有 fastmcp.utilities.lifespan.combine_lifespans，第 1 步挂载时会 import 失败。
+    # 教程写的 "fastmcp>=2.9" 在今天解析不出来，且满足不了双入口骨架。
     "fastmcp==3.0.0",
     # 全程
     "pytest==8.3.3",
+    "structlog==26.1.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff==0.17.3",
+    "mypy==2.4.1",
+    "pre-commit==4.7.0",
 ]
 
 # 根目录同时有 app 与 migrations 两个 Python 包时，setuptools 无法猜主包，
@@ -42,6 +56,27 @@ dependencies = [
 [tool.setuptools.packages.find]
 include = ["app*"]
 exclude = ["migrations*", "tests*", "eval*", "scripts*"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+# 骨架期的 59 个历史文件尚未按本工具链统一风格；本票不批量重写。
+# 只启用语法错误与 pyflakes 这类不会误伤历史写法的基础规则，
+# 后续章节在单独确认后再逐步放宽规则集。
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.mypy]
+files = ["app"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "ocr: requires PDFium + ONNX Runtime + PP-OCRv6 model assets (see deploy/ocr/fetch_runtime.sh)",
+    "integration: requires a real PostgreSQL; set RAG_INTEGRATION_DATABASE_URL (see .github/workflows/ci.yml)",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

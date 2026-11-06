@@ -1,0 +1,304 @@
+"""T7 · 跨层端到端：上传 → 投递 → Worker 解析 / 切块 / 向量化 / 写入 → SUCCESS。
+
+这是唯一一条真正串起**两层**的测试（其余各层都是单点验证）：
+
+* ASGI 边界发一次 multipart ``.md`` 上传（``POST /api/v1/documents/upload``）；
+* 把 ``document_service.enqueue_document`` 换成「在同一份内存会话上跑真实 Worker
+  流水线」的替身——真实 ``IndexingService.index_existing_document`` + 真实
+  ``MarkdownStructuredSplitter`` + 真实 Markdown 解析，只把 embedding 与向量存储
+  换成离线替身；
+* 断言链条末端：切片 ``meta`` 带着 ``heading_path`` / ``chunk_type`` /
+  ``section_id`` / ``title`` / ``source_type``，表格完整留在一片里，文档状态落到
+  SUCCESS，且 purge 发生在 add 之前。
+
+为什么 Worker 跑在**独立线程**里：真实投递会被另一个进程的消息循环消费；在请求
+协程里直接 ``asyncio.run`` 会撞上「event loop already running」，用线程模拟 Worker
+的事件循环既贴近真实拓扑，又不需要 Broker。
+
+离线：``SessionLocal`` 式内存会话替身（无 PostgreSQL）、知识库仓储和 CAS 抢占换
+替身、embedding 返回固定 1536 维向量、向量存储记录调用，不发网络请求、不下载资产。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import importlib
+import threading
+from collections.abc import Iterator
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app.core.config import settings
+from app.db.base import now
+from app.models.document import Document
+from app.repositories import document_repository
+from app.services.indexing_service import IndexingService
+from app.utils.markdown_splitter import MarkdownStructuredSplitter
+from app.utils.status import DocumentStatus
+
+KB_ID = "kb-1"
+TENANT_ID = settings.DEV_TENANT_ID
+FIXTURE_PATH = Path(__file__).parent / "fixtures" / "markdown" / "structured_notes.md"
+SOURCE_FILENAME = "Pipeline Notes.md"
+EMBEDDING_DIM = 1536
+
+# 切块参数钉在测试里（不读 .env）：这条测试要验证的是「跨层串起来」，不是调参。
+SPLITTER = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100, table_max_rows=10)
+
+TABLE_LINES = [
+    "| Field | Meaning |",
+    "| --- | --- |",
+    "| document_id | stable identifier |",
+    "| heading_path | section provenance |",
+    "| chunk_type | table, list or prose |",
+]
+
+REQUIRED_META = {"heading_path", "chunk_type", "section_id", "title", "source_type"}
+
+
+class _FakeSession:
+    """``SessionLocal`` 式替身：文档行留在内存里，只记录提交 / 回滚次数。"""
+
+    def __init__(self) -> None:
+        self._rows: dict[str, Any] = {}
+        self.commits = 0
+        self.rollbacks = 0
+
+    def add(self, instance: Any) -> None:
+        self._rows[instance.id] = instance
+
+    def get(self, _model: Any, ident: Any) -> Any | None:
+        return self._rows.get(ident)
+
+    def flush(self) -> None:
+        return None
+
+    def commit(self) -> None:
+        self.commits += 1
+
+    def rollback(self) -> None:
+        self.rollbacks += 1
+
+    def close(self) -> None:
+        return None
+
+
+class _StubEmbeddings:
+    """固定 1536 维向量；记录收到的切片文本，绝不发模型请求。"""
+
+    def __init__(self) -> None:
+        self.texts: list[str] = []
+        self.vectors: list[list[float]] = []
+
+    async def embed_texts(self, texts: list[str]) -> list[list[float]]:
+        self.texts.extend(texts)
+        self.vectors = [[float(index + 1)] * EMBEDDING_DIM for index in range(len(texts))]
+        return self.vectors
+
+    async def embed_query(self, _query: str) -> list[float]:
+        raise AssertionError("索引链路不应调用单条查询向量化")
+
+
+class _RecordingStore:
+    """记录 purge / add 的向量存储替身；调用顺序即「先删后写」的证据。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+        self.deleted: list[str] = []
+        self.tenant_ids: list[str] = []
+        self.written: list[list[dict[str, Any]]] = []
+
+    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
+        self.calls.append("purge")
+        self.deleted.append(document_id)
+        self.tenant_ids.append(tenant_id)
+
+    async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
+        self.calls.append("add")
+        self.written.append(chunks)
+
+    async def similarity_search(self, *_args: Any, **_kwargs: Any) -> list[dict[str, Any]]:
+        raise AssertionError("索引链路不应调用检索")
+
+
+@pytest.fixture(autouse=True)
+def isolated_logs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """日志落到 tmp 目录，避免这条端到端测试往仓库的 logs/ 写文件。"""
+
+    import logging
+
+    logging_mod = importlib.import_module("app.core.logging")
+    monkeypatch.setattr(settings, "LOG_DIR", str(tmp_path / "logs"))
+    monkeypatch.setattr(logging_mod, "_configured", False)
+    logging_mod.setup_logging()
+    yield
+    logging.shutdown()
+    logging_mod._configured = False
+    logging_mod.setup_logging(log_dir=tmp_path / "logs-restored", log_level="INFO")
+
+
+@pytest.fixture
+def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
+    """离线上传接缝 + 「会跑真实 Worker 流水线」的投递替身。"""
+
+    main = importlib.import_module("app.main")
+    session_mod = importlib.import_module("app.db.session")
+    kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
+    document_service = importlib.import_module("app.services.document_service")
+    from app.core.auth import DevKeyContext, resolve_dev_key
+
+    session = _FakeSession()
+    embeddings = _StubEmbeddings()
+    store = _RecordingStore()
+    uploads_dir = tmp_path / "uploads"
+    claimed: list[str] = []
+
+    monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
+    monkeypatch.setattr(
+        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
+    )
+
+    def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:
+        # 唯一换掉的仓储原语：真实实现是一条 SQL UPDATE（需要 PostgreSQL 行锁），
+        # 内存会话跑不了；抢占成功后的两段事务仍由真实 IndexingService 驱动。
+        doc = db.get(Document, document_id)
+        assert doc is not None
+        doc.index_claimed_at = now()
+        claimed.append(document_id)
+        return True
+
+    monkeypatch.setattr(document_repository, "try_claim_for_indexing", _claim)
+
+    def _consume_index_task(**kwargs: Any) -> None:
+        """投递替身：在独立线程里消费任务，等价于另一个进程的 Celery Worker。"""
+
+        service = IndexingService(splitter=SPLITTER, embeddings=embeddings, stores=[store])
+        failures: list[BaseException] = []
+
+        def _run_worker() -> None:
+            try:
+                asyncio.run(service.index_existing_document(session, kwargs["document_id"]))
+            except BaseException as exc:  # noqa: BLE001 - 让 Worker 的失败在测试里原样复现
+                failures.append(exc)
+
+        worker = threading.Thread(target=_run_worker, name="t7-offline-worker")
+        worker.start()
+        worker.join()
+        if failures:
+            raise failures[0]
+
+    monkeypatch.setattr(document_service, "enqueue_document", _consume_index_task)
+
+    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    try:
+        with TestClient(main.app) as client:
+            yield SimpleNamespace(
+                client=client,
+                session=session,
+                store=store,
+                embeddings=embeddings,
+                uploads_dir=uploads_dir,
+                claimed=claimed,
+            )
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
+    pipeline_env: SimpleNamespace,
+) -> None:
+    """一次上传走完 登记 → 投递 → 解析 → 切块 → 向量化 → 先删后写 → SUCCESS。"""
+
+    body = FIXTURE_PATH.read_bytes()
+    response = pipeline_env.client.post(
+        "/api/v1/documents/upload",
+        data={"kb_id": KB_ID},
+        files={"file": (SOURCE_FILENAME, body, "text/markdown")},
+        headers={"X-Request-ID": "t7-pipeline-req"},
+    )
+
+    payload = response.json()
+    assert response.status_code == 200
+    assert payload["code"] == 0
+    assert payload["msg"] == "success"
+    data = payload["data"]
+    assert data["status"] == DocumentStatus.PROCESSING, "上传接口仍只回「已登记、处理中」"
+    assert data["chunk_count"] == 0
+    assert data["error_message"] is None
+
+    document_id = data["document_id"]
+    stored_path = pipeline_env.uploads_dir / TENANT_ID / f"{document_id}.md"
+    assert stored_path.read_bytes() == body, "上传把原始文件落盘，Worker 之后从文件解析"
+
+    doc = pipeline_env.session.get(Document, document_id)
+    assert doc is not None
+    assert doc.status == DocumentStatus.SUCCESS, "Worker 跑完后状态必须落到 SUCCESS"
+    assert doc.error_message is None
+    assert doc.index_claimed_at is not None
+    assert doc.source_filename == SOURCE_FILENAME
+    # 相对存储根的 POSIX 路径：写绝对路径会让容器里的 Worker 找不到文件。
+    assert doc.source_file_path == f"{TENANT_ID}/{document_id}.md"
+    assert "\\" not in doc.source_file_path
+    assert doc.source_type == "markdown"
+
+    assert pipeline_env.claimed == [document_id], "Worker 必须走一次 CAS 抢占"
+    assert pipeline_env.session.rollbacks == 0
+    # 上传登记 + 抢占提交 + purge/写入/状态提交：两段事务各一次，再加登记那一次。
+    assert pipeline_env.session.commits == 3
+
+    assert pipeline_env.store.calls == ["purge", "add"], "先删旧切片，再写新切片"
+    assert pipeline_env.store.deleted == [document_id]
+    assert pipeline_env.store.tenant_ids == [TENANT_ID], "purge 也必须强制带租户"
+    assert len(pipeline_env.store.written) == 1
+    chunks = pipeline_env.store.written[0]
+
+    # ── 切块：真实 Markdown 结构切块器的产物 ──
+    assert len(chunks) == 4
+    assert [chunk["meta"]["heading_path"] for chunk in chunks] == [
+        "Pipeline Notes",
+        "Pipeline Notes > Storage Layout",
+        "Pipeline Notes > Storage Layout",
+        "Pipeline Notes > Chunking Contract > Worker Steps",
+    ]
+    assert [chunk["meta"]["chunk_type"] for chunk in chunks] == ["prose", "prose", "table", "prose"]
+    # 解析器 metadata 必须跟着切片走：否则 OCR 文档的 `metadata.engine` 无从查起
+    # （真机验收时踩过——切片里只有切块字段，engine/ocr_pages 全丢了）。
+    assert {chunk["meta"]["parser"] for chunk in chunks} == {"markdown"}
+    assert [chunk["meta"]["index"] for chunk in chunks] == [0, 1, 2, 3]
+
+    for chunk in chunks:
+        assert REQUIRED_META <= set(chunk["meta"]), "切块 provenance 必须一路带进切片 meta"
+        assert chunk["meta"]["title"] == "Pipeline Notes", "标题来自上传时的文件名主干"
+        assert chunk["meta"]["source_type"] == "markdown"
+        assert chunk["document_id"] == document_id
+        assert chunk["tenant_id"] == TENANT_ID
+        assert chunk["kb_id"] == KB_ID
+        assert len(chunk["embedding"]) == EMBEDDING_DIM
+        section_id = chunk["meta"]["section_id"]
+        assert isinstance(section_id, str) and len(section_id) == 64
+
+    # 同一章节的两片共享 section_id；子章节的 parent 指回父章节的 section_id。
+    assert chunks[1]["meta"]["section_id"] == chunks[2]["meta"]["section_id"]
+    assert chunks[0]["meta"]["section_id"] != chunks[3]["meta"]["section_id"]
+    assert chunks[1]["meta"]["parent_section_id"] == chunks[0]["meta"]["section_id"]
+
+    # ── 表格：整块留在一片里，没有被行数上限或字符窗口切开 ──
+    table_chunks = [chunk for chunk in chunks if chunk["meta"]["chunk_type"] == "table"]
+    assert len(table_chunks) == 1
+    assert table_chunks[0]["content"] == "\n".join(TABLE_LINES)
+    assert [chunk["meta"]["chunk_type"] for chunk in chunks if "|" in chunk["content"]] == ["table"]
+
+    # ── h3 只加深 heading_path、不新起切片：正文归到更深处，但仍是同一片 ──
+    assert chunks[3]["meta"]["heading_path"].endswith("> Worker Steps")
+    assert "### Worker Steps" in chunks[3]["content"]
+
+    # ── 向量化：每个切片各一条 1536 维向量，数量与切片一一对应 ──
+    assert pipeline_env.embeddings.texts == [chunk["content"] for chunk in chunks]
+    assert len(pipeline_env.embeddings.vectors) == len(chunks)
+    assert all(len(vector) == EMBEDDING_DIM for vector in pipeline_env.embeddings.vectors)
+    assert chunks[0]["embedding"] == pipeline_env.embeddings.vectors[0]

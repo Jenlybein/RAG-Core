@@ -1,0 +1,11 @@
+# Shell 脚本必须 LF：Windows 上 core.autocrlf=true 会把它们转成 CRLF，
+# 而 Linux / 容器 / Git Bash 执行 CRLF 脚本会报 `bad interpreter` 或 `$'\r'` 语法错。
+# 这条是 deploy/ocr/fetch_runtime.sh 与后续运维脚本的硬要求。
+*.sh text eol=lf
+
+# Dockerfile 与 compose 同样不接受 CRLF（heredoc / 行续接会被 `\r` 打断）。
+Dockerfile text eol=lf
+*.Dockerfile text eol=lf
+
+# 二进制测试夹具（PDF）：不允许任何换行符转换，否则 xref 偏移被破坏。
+*.pdf binary

@@ -1,0 +1,111 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+    # labeled：给 PR 打上 run-ocr 标签时重新触发，OCR job 才会被选中。
+    types: [opened, synchronize, reopened, labeled]
+  workflow_dispatch:
+
+# 三个 job 都必须显式钉 Python 3.12：runner 默认的 `python3` 会一路升到 3.14，
+# 而 psycopg-binary 3.2.3 只有 cp312/cp313 的 wheel，uv 会以
+# "doesn't have a source distribution or wheel for the current platform" 直接失败。
+# `requires-python = ">=3.12"` 允许 3.14，光靠 pyproject 兜不住，必须在这里钉。
+env:
+  UV_PYTHON: "3.12"
+
+jobs:
+  quality:
+    # 纯离线：不装容器、不下载任何 OCR 资产；OCR 用例在这里是 skip 而不是 fail。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+      - name: Lint
+        run: uv run ruff check .
+      - name: Format check
+        # 历史 Python 文件尚未按本工具链统一格式；本票只守住新增代码，
+        # 待单独确认历史文件清单后再把检查范围扩回整个仓库。
+        run: uv run ruff format --check tests
+      - name: Type check
+        run: uv run mypy app
+      - name: Test
+        run: uv run pytest -q
+
+  integration:
+    # 真实 PostgreSQL 上的 CAS 集成用例：只在手工触发（workflow_dispatch）时跑，
+    # 默认流水线保持离线。redis 容器按契约随附，留给后续真实 Broker 用例。
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+      - name: Test integration
+        env:
+          RAG_INTEGRATION_DATABASE_URL: >-
+            postgresql+psycopg://postgres:postgres@localhost:5432/rag_test
+        run: uv run pytest -m integration -q
+
+  ocr:
+    # 独立 job：只有手工触发或 PR 带 run-ocr 标签时才跑，默认流水线保持离线。
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      contains(github.event.pull_request.labels.*.name, 'run-ocr')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          python-version: "3.12"
+      - name: Install dependencies
+        run: uv sync --frozen
+      - name: Cache OCR runtime assets
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/ocr/pdfium
+            ~/.cache/ocr/onnxruntime
+            ~/.cache/ocr/models
+          key: ocr-runtime-v7988-ort1270-oar07
+      - name: Fetch OCR runtime (cache miss only)
+        run: bash deploy/ocr/fetch_runtime.sh
+      - name: Test
+        env:
+          PDFIUM_LIB_PATH: ${{ github.workspace }}/.ocr/lib/libpdfium.so
+          ORT_DYLIB_PATH: ${{ github.workspace }}/.ocr/lib/libonnxruntime.so
+          PDF_INSPECTOR_MODEL_CACHE: ${{ github.workspace }}/.ocr/models
+        run: uv run pytest -m ocr -q

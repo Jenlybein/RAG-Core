@@ -25,6 +25,11 @@ class Document(Base):
     source_file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     source_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[int] = mapped_column(Integer, default=DocumentStatus.PROCESSING)
+    # 索引租约开始时间（Worker 抢占时写）。它区分「已入队但 Worker 还没开工」
+    # （NULL）与「已经被抢占、正在跑」（有时间戳）；没有这一列，仅凭 status 与
+    # 刚写过的 updated_at 无法区分两者，CAS 会永远抢不到或永远抢到，任务去重
+    # 也就无从谈起。
+    index_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
