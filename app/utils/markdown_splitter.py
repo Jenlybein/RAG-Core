@@ -104,8 +104,10 @@ class MarkdownStructuredSplitter(TextSplitter):
 
     def _assemble(self, sections: list[tuple[str, list[_Block]]]) -> list[SplitPiece]:
         pieces: list[SplitPiece] = []
-        last_text: str | None = None
         for heading_path, blocks in sections:
+            # 重复过滤只比较本节内紧邻的上一片；每节 flush 时重置基线。
+            # 跨节重复的模板内容各有各的出处，不能因为文本相同就被静默删掉。
+            last_text: str | None = None
             kept: list[tuple[str, str, int]] = []
             for text, chunk_type, table_part in self._build_section_texts(blocks):
                 if not text.strip() or _is_heading_only(text):
