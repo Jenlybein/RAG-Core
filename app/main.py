@@ -5,6 +5,7 @@ HTTP 数据面（4 个接口，/api/v1/*）：
   POST /api/v1/documents/upload
   POST /api/v1/rag/retrieve
   GET  /api/v1/knowledge-bases
+  GET  /api/v1/documents
 
 MCP 数据面（/mcp/，JSON-RPC）：rag_retrieve / rag_list_knowledge_bases。
 两个入口共用同一把占位 API Key 与同一批 Service。

@@ -1,16 +1,20 @@
-"""文档业务：同步索引闭环 + 状态机。
+"""文档业务：异步上传登记 + 状态机。
 
-流程：校验知识库 → 建 Document(status=3) 并先提交 → 调 IndexingService →
-回写 status=1。索引失败时回滚向量写入，把已落库的文档改成 status=2 并记
-error_message，响应仍返回 code=0（业务失败不抛 5xx）。
+上传只做登记：校验知识库 → 建 ``Document(status=PROCESSING)`` → 文件模式落盘 /
+JSON 模式直接落正文 → ``commit`` → 投递索引任务 → 立即返回。**请求线程不解析、
+不向量化**，进程内的耗时与文档大小无关；进度由 ``GET /documents?kb_id=`` 轮询，
+后端的解析 / 切块 / 向量化与失败留痕、脱敏文案统一由 T4 的 Worker 任务负责。
 
-索引链路失败仍属「部分成功」：调用方只拿到一句脱敏固定文案，真正的内部异常
-原文连同文档 / 租户 / 知识库标识只写进 ERROR 日志，便于按标识回查。
+落盘路径只由 ``document_storage`` 按服务端规则拼接，原始文件名只进
+``source_filename`` 列，绝不进路径。
+
 应用日志只放 ID 与派生量，不放检索文本原文、文档内容或 API Key。
 
-跨租户访问与知识库不存在都抛 KNOWLEDGE_BASE_NOT_FOUND，由 HTTP 入口适配器统一
+跨租户访问与知识库不存在都抛 ``KNOWLEDGE_BASE_NOT_FOUND``，由 HTTP 入口适配器统一
 翻译成 20008「不存在」——不返回「无权限」，避免泄露资源存在性。
 """
+
+from pathlib import Path
 
 import structlog
 from sqlalchemy.orm import Session
@@ -18,75 +22,88 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
 from app.repositories import document_repository, knowledge_base_repository
-from app.services.indexing_service import IndexingService
+from app.services.document_storage import SOURCE_TYPE_BY_EXTENSION, store_document_file
+from app.services.index_dispatch import enqueue_document
 from app.utils.id_generator import new_document_id
 from app.utils.status import DocumentStatus
 
 logger = structlog.get_logger(__name__)
 
-# 索引链路失败时回传给调用方的唯一原因文案：不含异常对象、堆栈、路径或 SQL。
-INDEXING_FAILED_MESSAGE = "document indexing failed, please retry or contact support"
-
 
 async def upload(
-    db: Session, *, tenant_id: str, kb_id: str, title: str, content: str
+    db: Session,
+    *,
+    tenant_id: str,
+    kb_id: str,
+    title: str | None = None,
+    content: str = "",
+    filename: str | None = None,
+    data: bytes = b"",
+    request_id: str | None = None,
 ) -> dict:
+    """登记一份文档并投递索引任务，返回可直接回给调用方的摘要。
+
+    两种模式由入口按 content-type 决定：``filename`` 非空 = 文件模式（正文留空，
+    Worker 从落盘文件解析）；否则 JSON 模式（``content`` 直接落库）。
+    """
+
     kb = knowledge_base_repository.get_by_id(db, kb_id)
     if kb is None or kb.tenant_id != tenant_id:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
-    doc = Document(
-        id=new_document_id(),
-        tenant_id=tenant_id,
-        kb_id=kb_id,
-        title=title,
-        content=content,
-        source_type="text",
-        status=DocumentStatus.PROCESSING,
-    )
-    document_repository.create(db, doc)
-    # 先落 PROCESSING 并提交：索引失败时这条记录仍然存在，才能回写成 FAILED。
-    # 阶段 3 改异步后，前端也靠这个已存在的状态轮询。
-    document_id = doc.id
-    db.commit()
+    document_id = new_document_id()
 
-    try:
-        chunk_count = await IndexingService().index(db, doc=doc, content=content)
-        document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
-        db.commit()
-    except Exception:
-        logger.exception(
-            "document indexing failed",
-            document_id=document_id,
+    if filename is not None:
+        source_file_path, source_filename = store_document_file(
+            tenant_id=tenant_id, document_id=document_id, filename=filename, data=data
+        )
+        source_type = SOURCE_TYPE_BY_EXTENSION[Path(filename).suffix.lower()]
+        doc = Document(
+            id=document_id,
             tenant_id=tenant_id,
             kb_id=kb_id,
+            title=title or Path(filename).stem,
+            content="",
+            source_type=source_type,
+            source_file_path=source_file_path,
+            source_filename=source_filename,
+            status=DocumentStatus.PROCESSING,
         )
-        db.rollback()
-        fresh = document_repository.get_by_id(db, document_id)
-        if fresh is not None:
-            document_repository.update_status(
-                db, fresh, DocumentStatus.FAILED, INDEXING_FAILED_MESSAGE
-            )
-            db.commit()
-        return {
-            "document_id": document_id,
-            "kb_id": kb_id,
-            "status": DocumentStatus.FAILED,
-            "chunk_count": 0,
-            "error_message": INDEXING_FAILED_MESSAGE,
-        }
+    else:
+        doc = Document(
+            id=document_id,
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            title=title or "",
+            content=content,
+            source_type="text",
+            status=DocumentStatus.PROCESSING,
+        )
 
-    logger.info(
-        "document indexed",
+    document_repository.create(db, doc)
+    # 先落 PROCESSING 并提交：状态查询在请求返回后立刻能看见这份文档；Worker
+    # 崩溃时这张行也还在，留待租约过期后的重试 / 重建。
+    db.commit()
+
+    enqueue_document(
         document_id=document_id,
         tenant_id=tenant_id,
         kb_id=kb_id,
-        chunk_count=chunk_count,
+        request_id=request_id,
+        reparse=False,
+    )
+
+    logger.info(
+        "documents accepted",
+        document_id=document_id,
+        tenant_id=tenant_id,
+        kb_id=kb_id,
+        source_type=doc.source_type,
     )
     return {
         "document_id": document_id,
         "kb_id": kb_id,
-        "status": DocumentStatus.SUCCESS,
-        "chunk_count": chunk_count,
+        "status": DocumentStatus.PROCESSING,
+        "chunk_count": 0,
         "error_message": None,
     }
