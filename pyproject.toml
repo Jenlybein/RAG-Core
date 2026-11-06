@@ -21,7 +21,12 @@ dependencies = [
     "mammoth==1.8.0",
     "pdf-inspector==1.25.2",
     "markdownify==1.2.3",
-    "celery[redis]==5.4.0",
+    # celery 5.4.0 的 redis extra 封顶 redis<6.0.0，而它允许的 kombu 窗口（<6.0）会解析到
+    # kombu 5.7.0，后者要求 redis>=6.4.0 —— 三者不可能同时满足，真实投递时会在第一次
+    # 建 channel 时报 kombu.exceptions.VersionMismatch。升到 5.5.3：它把 kombu 封在
+    # <5.6，而 kombu 5.5.x 允许 redis<=5.2.1，于是 redis-py 5.2.0 继续可用。
+    # 离线测试碰不到 broker，所以 tests/test_dependency_compat.py 专门守这条约束。
+    "celery[redis]==5.5.3",
     "redis==5.2.0",
     # 阶段 4
     "elasticsearch==8.15.1",
