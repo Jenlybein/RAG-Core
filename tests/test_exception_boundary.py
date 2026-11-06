@@ -21,9 +21,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 _VALID_PAYLOAD = {
-    "tenant_id": "tenant-a",
-    "kb_id": "kb-1",
-    "user_id": "user-1",
+    "kb_ids": ["kb-1"],
     "query": "hello",
 }
 
@@ -65,6 +63,12 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
     main.app.dependency_overrides[session.get_db] = lambda: object()
+    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.core.config import settings
+
+    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+        tenant_id=settings.DEV_TENANT_ID
+    )
     try:
         with TestClient(main.app, raise_server_exceptions=False) as test_client:
             yield test_client

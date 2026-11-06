@@ -29,6 +29,8 @@ import pytest
 import structlog
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
+
 # 三个哨兵：请求带着它们走完整条检索链路，并且确实从响应体回给调用方。
 QUERY_TEXT = "T7-QUERY-SENTINEL-9f3b"
 DOCUMENT_CONTENT = "T7-DOC-CONTENT-SENTINEL"
@@ -36,7 +38,8 @@ API_KEY = "T7-API-KEY-SENTINEL"
 # 服务异常分支：内部细节只允许进日志，用来证明日志真的来自本次请求。
 INTERNAL_DETAIL = "T7-INTERNAL-DETAIL-SENTINEL"
 
-TENANT_ID = "tenant-a"
+# 占位 Key 解出的默认租户；假仓储/假 Provider 的租户必须与它一致。
+TENANT_ID = settings.DEV_TENANT_ID
 KB_ID = "kb-1"
 REQUEST_ID = "t7-retrieval-id"
 
@@ -146,6 +149,12 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     )
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
     main.app.dependency_overrides[session_mod.get_db] = lambda: object()
+    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.core.config import settings
+
+    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+        tenant_id=settings.DEV_TENANT_ID
+    )
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield client
@@ -157,9 +166,7 @@ def _retrieve(client: TestClient):
     return client.post(
         "/api/v1/rag/retrieve",
         json={
-            "tenant_id": TENANT_ID,
-            "kb_id": KB_ID,
-            "user_id": "user-1",
+            "kb_ids": [KB_ID],
             "query": QUERY_TEXT,
         },
         headers={"X-Api-Key": API_KEY, "X-Request-ID": REQUEST_ID},

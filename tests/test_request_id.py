@@ -57,8 +57,16 @@ def client() -> TestClient:
     """真实 ASGI 边界：被测对象就是应用本身（含已注册的中间件）。"""
 
     import app.main
+    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.core.config import settings
 
-    return TestClient(app.main.app)
+    app.main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+        tenant_id=settings.DEV_TENANT_ID
+    )
+    try:
+        yield TestClient(app.main.app)
+    finally:
+        app.main.app.dependency_overrides.clear()
 
 
 def test_every_response_carries_request_id(client: TestClient) -> None:

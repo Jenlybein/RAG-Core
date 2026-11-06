@@ -26,9 +26,7 @@ AUTHORITATIVE_DOC = Path(__file__).resolve().parents[1] / "docs" / "设计决策
 
 def _retrieve_payload(**overrides: str) -> dict[str, Any]:
     payload: dict[str, Any] = {
-        "tenant_id": "tenant-a",
-        "kb_id": "kb-missing",
-        "user_id": "user-1",
+        "kb_ids": ["kb-missing"],
         "query": "hello",
     }
     payload.update(overrides)
@@ -69,6 +67,12 @@ def client():
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
     main.app.dependency_overrides[session.get_db] = lambda: object()
+    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.core.config import settings
+
+    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+        tenant_id=settings.DEV_TENANT_ID
+    )
     try:
         with TestClient(main.app) as test_client:
             yield test_client
@@ -178,7 +182,6 @@ def test_document_upload_nonexistent_knowledge_base_uses_the_same_exit(client, m
     response = client.post(
         "/api/v1/documents/upload",
         json={
-            "tenant_id": "tenant-a",
             "kb_id": "kb-missing",
             "title": "demo",
             "content": "text",
@@ -191,7 +194,7 @@ def test_document_upload_nonexistent_knowledge_base_uses_the_same_exit(client, m
 
 
 def test_missing_field_returns_validation_code_without_echoing_input(client) -> None:
-    payload = _retrieve_payload(tenant_id="RAW-INPUT-SENTINEL")
+    payload = _retrieve_payload(kb_ids=["RAW-INPUT-SENTINEL"])
     del payload["query"]
 
     response = client.post("/api/v1/rag/retrieve", json=payload)
@@ -264,7 +267,7 @@ def test_success_response_shape_is_unchanged(client, monkeypatch) -> None:
 
     response = client.post(
         "/api/v1/knowledge-bases/create",
-        json={"name": "demo", "tenant_id": "tenant-a"},
+        json={"name": "demo"},
     )
 
     body = response.json()

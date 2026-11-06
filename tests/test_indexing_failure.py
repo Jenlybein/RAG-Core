@@ -23,6 +23,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.core.config import settings
+
 # 内部异常原文：允许出现在日志里（排障线索），绝不允许出现在响应体里。
 INTERNAL_DETAIL = "T6-INTERNAL-EXCEPTION-SENTINEL"
 # 调用方提交的文档内容：绝不允许出现在任何应用日志里。
@@ -30,7 +32,8 @@ DOCUMENT_CONTENT = "T6-CONTENT-SENTINEL"
 # 固定脱敏文案（外部契约）：不含内部异常原文，也不含文档内容。
 SANITIZED_MESSAGE = "document indexing failed, please retry or contact support"
 
-TENANT_ID = "tenant-a"
+# 占位 Key 解出的默认租户；假仓储的租户必须与它一致才走得到成功分支。
+TENANT_ID = settings.DEV_TENANT_ID
 KB_ID = "kb-1"
 
 
@@ -112,6 +115,12 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(document_service, "IndexingService", _FakeIndexingService)
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.core.config import settings
+
+    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+        tenant_id=settings.DEV_TENANT_ID
+    )
 
     try:
         with TestClient(main.app) as test_client:
@@ -122,7 +131,6 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
 
 def _upload_payload() -> dict[str, str]:
     return {
-        "tenant_id": TENANT_ID,
         "kb_id": KB_ID,
         "title": "demo",
         "content": DOCUMENT_CONTENT,
