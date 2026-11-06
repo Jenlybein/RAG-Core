@@ -7,7 +7,7 @@
 后续章节只追加编号，不改既有值。
 
 本模块不放任何 HTTP 或 JSON-RPC 知识。HTTP 入口的翻译在 app/api/error_handlers.py；
-MCP 入口（第 11 步）会按自己的协议翻译同一个词汇——共享的是错误词汇，不是响应壳。
+MCP 入口（第 1 步接通、第 5 步接上真实鉴权）会按自己的协议翻译同一个词汇——共享的是错误词汇，不是响应壳。
 """
 
 from enum import IntEnum
