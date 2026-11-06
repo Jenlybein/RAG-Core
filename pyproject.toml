@@ -19,7 +19,8 @@ dependencies = [
     # 阶段 3
     "python-multipart==0.0.9",
     "mammoth==1.8.0",
-    "pdf-inspector==0.2.6",
+    "pdf-inspector==1.25.2",
+    "markdownify==1.2.3",
     "celery[redis]==5.4.0",
     "redis==5.2.0",
     # 阶段 4
