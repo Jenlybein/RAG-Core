@@ -1,0 +1,43 @@
+# 构建上下文 = 仓库根（deploy/Dockerfile 只 COPY 运行期需要的源码）。
+# 铁律：.env 里有明文 Key，绝不能进镜像。
+
+# 密钥与本地配置
+.env
+.env.*
+
+# 版本库与本地环境
+.git
+.gitattributes
+.gitignore
+.agents
+.venv
+.ocr
+
+# 运行时产物
+logs
+data
+eval/runs
+*.pid
+celerybeat-schedule*
+
+# Python / 工具链缓存
+**/__pycache__
+*.py[cod]
+*.egg-info
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+
+# 前端构建（Worker 不需要）
+node_modules
+frontend/dist
+
+# 编辑器 / 系统
+.vscode
+.idea
+Thumbs.db
+desktop.ini
+
+# 说明：uv.lock 必须保留（依赖层靠它 --frozen 复现）；tests/ 保留也无害（体积小、便于容器内排障）。
