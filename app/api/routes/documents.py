@@ -14,8 +14,9 @@ from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.core.auth import DevKeyContext, resolve_dev_key
+from app.core.exceptions import AppError, ErrorCode
 from app.db.session import get_db
-from app.repositories import chunk_repository, document_repository
+from app.repositories import chunk_repository, document_repository, knowledge_base_repository
 from app.schemas.common import ApiResponse, ok
 from app.schemas.document import (
     DocumentListData,
@@ -110,10 +111,16 @@ async def list_documents(
 ) -> ApiResponse[DocumentListData]:
     """返回该库下全部文档的 status / chunk_count / error_message 等摘要。
 
+    知识库不存在或不属于调用方租户，一律按「不存在」（20008）处理，不泄露存在性；
+    列表查询也强制带 ``tenant_id``，绝不返回其他租户的行。
     ``chunk_count`` 用一次分组计数批量取回，不对每份文档各查一次（N+1）。
     """
 
-    rows = document_repository.list_by_kb(db, kb_id)
+    kb = knowledge_base_repository.get_by_id(db, kb_id)
+    if kb is None or kb.tenant_id != key.tenant_id:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+    rows = document_repository.list_by_kb(db, kb_id, tenant_id=key.tenant_id)
     counts = chunk_repository.count_by_document_ids(db, [row.id for row in rows])
     data = DocumentListData(
         items=[
