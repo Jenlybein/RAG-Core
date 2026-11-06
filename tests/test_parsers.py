@@ -120,6 +120,35 @@ def test_pdf_parser_joins_pages_with_page_markers(monkeypatch: pytest.MonkeyPatc
     assert parsed.metadata["warnings"] == ["low confidence"]
 
 
+def test_pdf_parser_demotes_page_that_is_only_headings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """整页被 OCR 识别成标题时降级成正文，否则整篇文档会切成零个切片。
+
+    实测：扫描页的 OCR 结果常是「## SCANNED PAGE」这种整页标题；直接拼上
+    「## 第 N 页」后整页全是标题行，结构化切块器按低信息块丢弃，文档索引失败。
+    """
+
+    def _heading_only(*_args: Any, **_kwargs: Any) -> _StubOcrResult:
+        return _StubOcrResult(
+            markdown="## SCANNED PAGE",
+            pages=[_StubPage(1, "## SCANNED PAGE", _StubProvenance(1, "ocr"))],
+            page_count=1,
+            pages_routed_to_ocr=[1],
+            pages_recommending_hosted=[],
+        )
+
+    monkeypatch.setattr(pdf_inspector, "process_pdf_with_ocr_bytes", _heading_only)
+
+    parsed = PdfParser().parse(b"pdf-bytes", filename="scan.pdf")
+
+    assert "## 第 1 页\n\nSCANNED PAGE" in parsed.content
+    assert "## SCANNED PAGE" not in parsed.content
+
+    from app.utils.markdown_splitter import MarkdownStructuredSplitter
+
+    pieces = MarkdownStructuredSplitter(800, 100, 10).split(parsed.content)
+    assert pieces, "扫描页只有标题时也必须产出切片，不能让整篇索引失败"
+
+
 def test_pdf_parser_rejects_result_with_no_extractable_text(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

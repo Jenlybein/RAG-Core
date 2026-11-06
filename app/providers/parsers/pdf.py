@@ -15,6 +15,7 @@
 """
 
 import os
+import re
 from typing import Literal, cast
 
 import pdf_inspector
@@ -26,6 +27,25 @@ from app.providers.parsers.base import DocumentParser, ParsedDocument
 # Settings 里 OCR_MODE 是普通 str（来自环境变量），库的类型存根要求字面量联合；
 # 合法值由部署配置保证，这里只做类型收窄，不做运行期校验。
 _OcrMode = Literal["off", "auto", "force"]
+
+_HEADING_LINE_RE = re.compile(r"^\s{0,3}#{1,6}\s+")
+
+
+def _demote_heading_only_page(markdown: str) -> str:
+    """整页只有标题行时，把 ``#`` 标记降级成正文。
+
+    pdf-inspector 会把占据整页的大字识别成标题。若一页的 OCR 结果全都是标题行，
+    结构化切块器会把它当「纯标题的低信息块」丢掉——于是一篇只有这种页的文档会切成
+    零个切片、整篇索引失败，而页面上明明有字。这里把标题标记去掉，让文字落成正文，
+    保证扫描页的内容仍能进索引。
+    """
+
+    lines = [line for line in markdown.splitlines() if line.strip()]
+    if not lines:
+        return markdown
+    if any(not _HEADING_LINE_RE.match(line) for line in lines):
+        return markdown
+    return "\n".join(_HEADING_LINE_RE.sub("", line).strip() for line in lines)
 
 
 def _publish_native_runtime_settings() -> None:
@@ -57,7 +77,10 @@ class PdfParser(DocumentParser):
         if not pages:
             raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "OCR 之后仍无可提取文字")
 
-        content = "\n\n".join(f"## 第 {number} 页\n\n{markdown}" for number, markdown in pages)
+        content = "\n\n".join(
+            f"## 第 {number} 页\n\n{_demote_heading_only_page(markdown)}"
+            for number, markdown in pages
+        )
 
         # 每页 provenance.warnings 拍平成字符串：metadata 要能直接 JSON 序列化。
         warnings = [str(warning) for page in result.pages for warning in page.provenance.warnings]
