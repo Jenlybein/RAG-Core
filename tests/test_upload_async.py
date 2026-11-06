@@ -164,7 +164,11 @@ def test_multipart_upload_stores_file_and_leaves_content_empty(offline: SimpleNa
     doc = offline.session.documents["doc-1"]
     assert doc.content == "", "文件模式的正文留给 Worker 解析，不在请求线程读"
     assert doc.source_filename == "Notes.MD", "原始文件名只进列"
-    assert doc.source_file_path == str(stored_path)
+    # 库里存相对存储根的 POSIX 路径：API 进程（宿主机）与 Worker 进程（容器）
+    # 共享同一个存储根卷，写绝对路径会让 Worker 按自己的 CWD 解析而找不到文件。
+    assert doc.source_file_path == f"{TENANT_ID}/doc-1.md"
+    assert not doc.source_file_path.startswith("/")
+    assert "\\" not in doc.source_file_path, "不得写入平台分隔符"
     assert doc.source_type == "markdown"
     assert doc.title == "Notes", "title 缺省时用文件名主干"
     assert offline.enqueued[0]["request_id"] == "t3-file-req"

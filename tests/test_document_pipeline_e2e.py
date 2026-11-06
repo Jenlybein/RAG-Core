@@ -241,7 +241,9 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     assert doc.error_message is None
     assert doc.index_claimed_at is not None
     assert doc.source_filename == SOURCE_FILENAME
-    assert doc.source_file_path == str(stored_path)
+    # 相对存储根的 POSIX 路径：写绝对路径会让容器里的 Worker 找不到文件。
+    assert doc.source_file_path == f"{TENANT_ID}/{document_id}.md"
+    assert "\\" not in doc.source_file_path
     assert doc.source_type == "markdown"
 
     assert pipeline_env.claimed == [document_id], "Worker 必须走一次 CAS 抢占"
