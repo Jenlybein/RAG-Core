@@ -22,6 +22,7 @@ import pytest
 from structlog.contextvars import clear_contextvars, get_contextvars
 from structlog.testing import capture_logs
 
+from app.celery_app import celery_app
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.parsers.base import ParsedDocument
 from app.repositories import document_repository
@@ -507,3 +508,24 @@ def test_is_retryable_accepts_whitelisted_codes(code: ErrorCode) -> None:
 )
 def test_is_retryable_rejects_everything_else(exc: BaseException) -> None:
     assert not _is_retryable(exc)
+
+
+# ---------------------------------------------------------- Celery 应用的任务接线
+
+
+def test_celery_app_includes_task_module() -> None:
+    """Worker 从 app.celery_app 启动时必须自带任务模块，否则任务无人认领。
+
+    没有 include，Worker 进程根本不 import ``app.tasks.indexing``，
+    ``enqueue_document`` 投出去的任务会被当作 "Received unregistered task" 消费掉，
+    整条索引流水线静默不跑。
+    """
+
+    assert "app.tasks.indexing" in list(celery_app.conf.include or [])
+
+
+def test_importing_task_module_registers_task_on_app() -> None:
+    """导入任务模块后，任务必须以 Celery 派生的全名注册在 app 上。"""
+
+    key = "app.tasks.indexing.index_document_task"
+    assert key in celery_app.tasks, f"registered tasks: {sorted(celery_app.tasks)}"
