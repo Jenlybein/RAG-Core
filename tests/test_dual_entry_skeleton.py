@@ -98,9 +98,10 @@ def test_retrieve_traverses_every_kb_id(client, monkeypatch) -> None:
     """kb_ids 是列表：逐库检索、合并、按分数排序后截到 TOP_K。"""
 
     rag_service = importlib.import_module("app.services.rag_service")
+    knowledge_base_access = importlib.import_module("app.services.knowledge_base_access")
 
     monkeypatch.setattr(
-        rag_service.knowledge_base_repository,
+        knowledge_base_access.knowledge_base_repository,
         "get_by_id",
         lambda db, kb_id: SimpleNamespace(tenant_id=settings.DEV_TENANT_ID),
     )

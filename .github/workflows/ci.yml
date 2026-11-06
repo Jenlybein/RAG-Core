@@ -29,6 +29,47 @@ jobs:
       - name: Test
         run: uv run pytest -q
 
+  integration:
+    # 真实 PostgreSQL 上的 CAS 集成用例：只在手工触发（workflow_dispatch）时跑，
+    # 默认流水线保持离线。redis 容器按契约随附，留给后续真实 Broker 用例。
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: rag_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install dependencies
+        run: uv sync --all-groups --frozen
+      - name: Test integration
+        env:
+          RAG_INTEGRATION_DATABASE_URL: >-
+            postgresql+psycopg://postgres:postgres@localhost:5432/rag_test
+        run: uv run pytest -m integration -q
+
   ocr:
     # 独立 job：只有手工触发或 PR 带 run-ocr 标签时才跑，默认流水线保持离线。
     if: >-

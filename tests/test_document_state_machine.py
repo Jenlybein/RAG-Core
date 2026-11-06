@@ -191,6 +191,157 @@ def test_list_stuck_honours_kb_tenant_and_lease_filters(document_db: Session) ->
     ] == [], "更长的租约让「过期」重新变成「有效处理中」"
 
 
+# ───────────────────────────────────────── 准备入队 ≠ 抢占（Finding 0 的回归门）
+
+
+def test_prepare_then_claim_makes_a_reindex_actually_indexable(
+    document_db: Session,
+) -> None:
+    """重建必须真的可索引：准备只标记排队，不盖租约，Worker 之后仍能抢到。"""
+
+    _seed_document(document_db, "doc-reindex", status=DocumentStatus.SUCCESS)
+
+    prepared = document_repository.prepare_for_indexing(
+        document_db, "doc-reindex", tenant_id=TENANT_ID, allow_success=True
+    )
+    assert prepared is True
+    document_db.commit()
+
+    row = document_db.get(Document, "doc-reindex")
+    assert row is not None
+    assert row.status == DocumentStatus.PROCESSING
+    assert row.index_claimed_at is None, "入队侧绝不能盖租约；租约只属于 Worker"
+
+    claimed = document_repository.try_claim_for_indexing(
+        document_db, "doc-reindex", tenant_id=TENANT_ID, allow_success=False
+    )
+    assert claimed is True, "旧的双重抢占会把这里变成 rowcount=0：重建静默 no-op"
+    document_db.commit()
+
+    row = document_db.get(Document, "doc-reindex")
+    assert row is not None
+    assert row.index_claimed_at is not None, "Worker 抢到后才写租约"
+
+
+def test_prepare_is_tenant_scoped(document_db: Session) -> None:
+    """准备入队也强制带租户：跨租户的文档不能被标记。"""
+
+    _seed_document(
+        document_db,
+        "doc-other-tenant",
+        status=DocumentStatus.SUCCESS,
+        tenant_id="tenant-other",
+    )
+
+    assert (
+        document_repository.prepare_for_indexing(
+            document_db,
+            "doc-other-tenant",
+            tenant_id=TENANT_ID,
+            allow_success=True,
+        )
+        is False
+    )
+
+
+def test_prepare_refuses_while_another_worker_holds_a_live_lease(
+    document_db: Session,
+) -> None:
+    """有效租约内，准备与抢占都拒绝；``allow_success`` 也不能抢别人的活。"""
+
+    _seed_document(
+        document_db,
+        "doc-running",
+        status=DocumentStatus.PROCESSING,
+        claimed_at=now(),
+    )
+
+    for allow_success in (False, True):
+        assert (
+            document_repository.prepare_for_indexing(
+                document_db,
+                "doc-running",
+                tenant_id=TENANT_ID,
+                allow_success=allow_success,
+            )
+            is False
+        )
+    assert (
+        document_repository.try_claim_for_indexing(
+            document_db, "doc-running", tenant_id=TENANT_ID, allow_success=True
+        )
+        is False
+    )
+
+
+def test_a_second_claim_on_a_live_lease_fails(document_db: Session) -> None:
+    """并发守卫仍成立：同一份文档只有一个 Worker 能抢到。"""
+
+    _seed_document(document_db, "doc-once", status=DocumentStatus.FAILED)
+    assert (
+        document_repository.try_claim_for_indexing(
+            document_db, "doc-once", tenant_id=TENANT_ID, allow_success=False
+        )
+        is True
+    )
+    document_db.commit()
+
+    assert (
+        document_repository.try_claim_for_indexing(
+            document_db, "doc-once", tenant_id=TENANT_ID, allow_success=False
+        )
+        is False
+    )
+
+
+def test_release_then_reclaim_supports_the_retry_lifecycle(document_db: Session) -> None:
+    """claim → 可重试失败 → release_index_claim → 下一次 claim 必须再次成功。"""
+
+    _seed_document(document_db, "doc-retry", status=DocumentStatus.FAILED)
+    assert (
+        document_repository.try_claim_for_indexing(
+            document_db, "doc-retry", tenant_id=TENANT_ID, allow_success=False
+        )
+        is True
+    )
+    document_db.commit()
+
+    # 模拟可重试失败：只释放租约，status 保持 PROCESSING（失败文档重试路径）。
+    document_repository.release_index_claim(document_db, "doc-retry", tenant_id=TENANT_ID)
+    document_db.commit()
+
+    row = document_db.get(Document, "doc-retry")
+    assert row is not None
+    assert row.status == DocumentStatus.PROCESSING, "release 只清租约，不动状态"
+    assert row.index_claimed_at is None
+
+    assert (
+        document_repository.try_claim_for_indexing(
+            document_db, "doc-retry", tenant_id=TENANT_ID, allow_success=False
+        )
+        is True
+    ), "不释放租约的话，重试的 CAS 永远抢不到"
+
+
+def test_release_is_tenant_scoped(document_db: Session) -> None:
+    """释放租约也强制带租户：跨租户的 id 清不掉别人的租约。"""
+
+    _seed_document(
+        document_db,
+        "doc-other-tenant",
+        status=DocumentStatus.PROCESSING,
+        claimed_at=now(),
+        tenant_id="tenant-other",
+    )
+
+    document_repository.release_index_claim(document_db, "doc-other-tenant", tenant_id=TENANT_ID)
+    document_db.commit()
+
+    row = document_db.get(Document, "doc-other-tenant")
+    assert row is not None
+    assert row.index_claimed_at is not None
+
+
 # ───────────────────────────────────────────────────────── 端点接缝的替身与夹具
 
 
@@ -232,10 +383,12 @@ class _RecordingStore:
         self.calls = calls
         self.name = name
         self.deleted: list[str] = []
+        self.tenant_ids: list[str] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str) -> None:
+    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append(document_id)
+        self.tenant_ids.append(tenant_id)
 
     async def add_chunks(self, *_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("重建 / 删除端点不写切片；写入只属于 Worker 的单事务")
@@ -293,21 +446,21 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     calls: list[str] = []
     session = _FakeSession(calls)
     enqueued: list[dict[str, Any]] = []
-    claims: list[dict[str, Any]] = []
+    prepares: list[dict[str, Any]] = []
     store = _RecordingStore(calls)
 
     def _remove_file(path: str | None) -> None:
         calls.append("remove-file")
         document_storage.remove_document_file(path)
 
-    def _claim(_db: Any, document_id: str, **kwargs: Any) -> bool:
-        claims.append({"document_id": document_id, **kwargs})
+    def _prepare(_db: Any, document_id: str, **kwargs: Any) -> bool:
+        prepares.append({"document_id": document_id, **kwargs})
         return True
 
     monkeypatch.setattr(routes, "get_vector_store", lambda: store)
     monkeypatch.setattr(routes, "enqueue_document", lambda **kwargs: enqueued.append(kwargs))
     monkeypatch.setattr(routes, "remove_document_file", _remove_file)
-    monkeypatch.setattr(document_repository, "try_claim_for_indexing", _claim)
+    monkeypatch.setattr(document_repository, "prepare_for_indexing", _prepare)
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
     main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
@@ -318,7 +471,7 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
                 session=session,
                 calls=calls,
                 enqueued=enqueued,
-                claims=claims,
+                prepares=prepares,
                 store=store,
             )
     finally:
@@ -349,8 +502,10 @@ def test_reindex_failed_document_is_enqueued_with_reparse_forwarded(
         "chunk_count": 0,
         "reparse": True,
     }
-    assert offline_api.claims == [{"document_id": DOC_ID, "allow_success": False}]
-    assert offline_api.session.commits == 1, "抢占后立刻提交，只持锁一瞬间"
+    assert offline_api.prepares == [
+        {"document_id": DOC_ID, "tenant_id": TENANT_ID, "allow_success": False}
+    ]
+    assert offline_api.session.commits == 1, "准备入队后立刻提交，只持锁一瞬间"
     assert offline_api.enqueued == [
         {
             "document_id": DOC_ID,
@@ -375,15 +530,15 @@ def test_reindex_success_document_without_force_requires_force(
     assert body["code"] == ErrorCode.REINDEX_REQUIRES_FORCE
     assert body["msg"] == "reindex requires force"
     assert body["data"] is None
-    assert offline_api.claims == []
+    assert offline_api.prepares == []
     assert offline_api.enqueued == []
     assert offline_api.session.commits == 0
 
 
-def test_reindex_success_document_with_force_is_claimed_and_enqueued(
+def test_reindex_success_document_with_force_is_prepared_and_enqueued(
     offline_api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``?force=true`` 让成功文档也走重建：抢占时带 allow_success=True。"""
+    """``?force=true`` 让成功文档也走重建：准备入队时带 allow_success=True。"""
 
     _install_lookup(monkeypatch, _document(status=DocumentStatus.SUCCESS))
 
@@ -401,7 +556,9 @@ def test_reindex_success_document_with_force_is_claimed_and_enqueued(
         "chunk_count": 0,
         "reparse": False,
     }
-    assert offline_api.claims == [{"document_id": DOC_ID, "allow_success": True}]
+    assert offline_api.prepares == [
+        {"document_id": DOC_ID, "tenant_id": TENANT_ID, "allow_success": True}
+    ]
     assert offline_api.session.commits == 1
     assert offline_api.enqueued == [
         {
@@ -427,7 +584,7 @@ def test_reindex_live_processing_document_is_rejected(
 
     body = response.json()
     assert body["code"] == ErrorCode.DOCUMENT_IS_PROCESSING
-    assert offline_api.claims == []
+    assert offline_api.prepares == []
     assert offline_api.enqueued == []
     assert offline_api.session.commits == 0
 
@@ -444,18 +601,20 @@ def test_reindex_expired_lease_document_is_allowed(
 
     body = response.json()
     assert body["code"] == 0
-    assert offline_api.claims == [{"document_id": DOC_ID, "allow_success": False}]
+    assert offline_api.prepares == [
+        {"document_id": DOC_ID, "tenant_id": TENANT_ID, "allow_success": False}
+    ]
     assert offline_api.enqueued[0]["document_id"] == DOC_ID
 
 
-def test_reindex_lost_claim_race_returns_processing_conflict(
+def test_reindex_lost_prepare_race_returns_processing_conflict(
     offline_api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """守卫通过但 CAS 抢不到（并发请求先抢走）：20025，不提交、不投递。"""
+    """守卫通过但准备失败（并发请求先改同一行）：20025，不提交、不投递。"""
 
     _install_lookup(monkeypatch, _document(status=DocumentStatus.FAILED))
     monkeypatch.setattr(
-        document_repository, "try_claim_for_indexing", lambda *_args, **_kwargs: False
+        document_repository, "prepare_for_indexing", lambda *_args, **_kwargs: False
     )
 
     response = offline_api.client.post(f"/api/v1/documents/{DOC_ID}/reindex")
@@ -483,7 +642,7 @@ def test_reindex_missing_or_cross_tenant_document_is_not_found(
     assert body["code"] == ErrorCode.NOT_FOUND
     assert body["msg"] == "not found"
     assert body["data"] is None
-    assert offline_api.claims == []
+    assert offline_api.prepares == []
     assert offline_api.enqueued == []
     assert offline_api.session.commits == 0
 
@@ -521,7 +680,8 @@ def test_delete_allowed_document_purges_file_and_row_in_order(
     assert body["code"] == 0
     assert body["data"] == {"document_id": DOC_ID, "deleted": True}
     assert offline_api.calls == ["purge:pgvector", "remove-file", "delete-row", "commit"]
-    assert offline_api.store.deleted == [DOC_ID], "切片的清理走存储列表，不直连某个存储"
+    assert offline_api.store.deleted == [DOC_ID], "切片的清除走存储列表，不直连某个存储"
+    assert offline_api.store.tenant_ids == [TENANT_ID], "删除切片也必须强制带租户"
     assert not source.exists(), "原文件必须删掉"
     assert offline_api.session.deleted == [doc]
     assert offline_api.session.commits == 1
@@ -541,6 +701,7 @@ def test_delete_document_without_source_file_still_removes_the_row(
     assert body["code"] == 0
     assert offline_api.calls == ["purge:pgvector", "remove-file", "delete-row", "commit"]
     assert offline_api.store.deleted == [DOC_ID]
+    assert offline_api.store.tenant_ids == [TENANT_ID]
     assert offline_api.session.deleted == [doc]
 
 
@@ -663,7 +824,7 @@ def test_reindex_script_dry_run_counts_candidates_without_claim_or_dispatch(
     claims: list[str] = []
     monkeypatch.setattr(
         reindex_script.document_repository,
-        "try_claim_for_indexing",
+        "prepare_for_indexing",
         lambda _db, document_id, **_kwargs: claims.append(document_id) or True,
     )
     monkeypatch.setattr(
@@ -687,7 +848,7 @@ def test_reindex_script_dry_run_counts_candidates_without_claim_or_dispatch(
 def test_reindex_script_counts_submitted_skipped_and_failed(
     reindex_script: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """逐篇抢占：抢到即提交并投递，抢不到记 skipped，投递失败记 failed。"""
+    """逐篇准备：成功即提交并投递，准备不到记 skipped，投递失败记 failed。"""
 
     documents = _script_documents("doc-ok", "doc-lost-race", "doc-enqueue-boom")
     _patch_reindex_listing(monkeypatch, reindex_script, documents)
@@ -703,7 +864,7 @@ def test_reindex_script_counts_submitted_skipped_and_failed(
             raise RuntimeError("broker down")
         dispatched.append(kwargs)
 
-    monkeypatch.setattr(reindex_script.document_repository, "try_claim_for_indexing", _claim)
+    monkeypatch.setattr(reindex_script.document_repository, "prepare_for_indexing", _claim)
     monkeypatch.setattr(reindex_script, "enqueue_document", _enqueue)
 
     session = _FakeSession()
@@ -732,7 +893,7 @@ def test_reindex_script_limit_caps_candidates(
     _patch_reindex_listing(monkeypatch, reindex_script, documents)
     monkeypatch.setattr(
         reindex_script.document_repository,
-        "try_claim_for_indexing",
+        "prepare_for_indexing",
         lambda _db, _document_id, **_kwargs: True,
     )
     monkeypatch.setattr(reindex_script, "enqueue_document", lambda **_kwargs: None)
@@ -759,7 +920,7 @@ def test_reindex_script_exit_code_rule(
 ) -> None:
     """只有「一个都没投递成功且有失败」才退出 1，其余一律 0。"""
 
-    assert reindex_script.exit_code(reindex_script.ReindexStats(**stats)) == expected
+    assert reindex_script.exit_code_for(reindex_script.ReindexStats(**stats)) == expected
 
 
 def test_reindex_script_resolves_tenant_from_the_knowledge_base(
@@ -864,7 +1025,7 @@ def test_requeue_script_dry_run_counts_candidates_without_claim_or_dispatch(
     claims: list[str] = []
     monkeypatch.setattr(
         requeue_script.document_repository,
-        "try_claim_for_indexing",
+        "prepare_for_indexing",
         lambda _db, document_id, **_kwargs: claims.append(document_id) or True,
     )
     monkeypatch.setattr(
@@ -890,7 +1051,7 @@ def test_requeue_script_dry_run_counts_candidates_without_claim_or_dispatch(
 def test_requeue_script_counts_requeued_skipped_and_failed(
     requeue_script: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """逐篇重新抢占：抢到即提交并投递，抢不到记 skipped，投递失败记 failed。"""
+    """逐篇重新准备：成功即提交并投递，准备不到记 skipped，投递失败记 failed。"""
 
     documents = _script_documents("doc-ok", "doc-lost-race", "doc-enqueue-boom")
     _patch_requeue_listing(monkeypatch, requeue_script, documents)
@@ -904,7 +1065,7 @@ def test_requeue_script_counts_requeued_skipped_and_failed(
             raise RuntimeError("broker down")
         dispatched.append(kwargs)
 
-    monkeypatch.setattr(requeue_script.document_repository, "try_claim_for_indexing", _claim)
+    monkeypatch.setattr(requeue_script.document_repository, "prepare_for_indexing", _claim)
     monkeypatch.setattr(requeue_script, "enqueue_document", _enqueue)
 
     session = _FakeSession()
@@ -937,7 +1098,7 @@ def test_requeue_script_exit_code_rule(
 ) -> None:
     """只有「一份都没救回且有失败」才退出 1，其余一律 0。"""
 
-    assert requeue_script.exit_code(requeue_script.RequeueStats(**stats)) == expected
+    assert requeue_script.exit_code_for(requeue_script.RequeueStats(**stats)) == expected
 
 
 def test_requeue_script_main_prints_stats_and_requeued_not_completed_note(

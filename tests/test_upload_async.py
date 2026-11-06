@@ -306,7 +306,8 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
 
     counter_calls: list[list[str]] = []
 
-    def fake_counts(db: Any, document_ids: list[str]) -> dict[str, int]:
+    def fake_counts(db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
+        assert tenant_id == TENANT_ID, "切片计数必须强制带租户（ADR-0006）"
         counter_calls.append(list(document_ids))
         return {"doc-a": 5, "doc-b": 2}
 
@@ -479,7 +480,11 @@ def _claim(
     lease_seconds: int = document_repository.DOCUMENT_LEASE_SECONDS,
 ) -> bool:
     claimed = document_repository.try_claim_for_indexing(
-        db, document_id, lease_seconds=lease_seconds, allow_success=allow_success
+        db,
+        document_id,
+        tenant_id=TENANT_ID,
+        lease_seconds=lease_seconds,
+        allow_success=allow_success,
     )
     db.commit()
     return claimed

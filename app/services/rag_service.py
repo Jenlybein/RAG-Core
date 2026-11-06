@@ -8,18 +8,9 @@
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.core.exceptions import AppError, ErrorCode
 from app.providers.embedding import get_embedding_provider
 from app.providers.vectorstores import get_vector_store
-from app.repositories import knowledge_base_repository
-
-
-def _ensure_visible(db: Session, *, tenant_id: str, kb_id: str) -> None:
-    """知识库不存在或不属于该租户，一律按「不存在」处理（不泄露存在性）。"""
-
-    kb = knowledge_base_repository.get_by_id(db, kb_id)
-    if kb is None or kb.tenant_id != tenant_id:
-        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+from app.services.knowledge_base_access import ensure_visible
 
 
 async def retrieve(db: Session, *, tenant_id: str, kb_ids: list[str], query: str) -> dict:
@@ -27,7 +18,7 @@ async def retrieve(db: Session, *, tenant_id: str, kb_ids: list[str], query: str
 
     chunks: list[dict] = []
     for kb_id in kb_ids:
-        _ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
+        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
         chunks.extend(
             await get_vector_store().similarity_search(
                 db, query_vector, tenant_id=tenant_id, kb_id=kb_id, top_k=settings.TOP_K

@@ -19,11 +19,11 @@ from pathlib import Path
 import structlog
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
-from app.repositories import document_repository, knowledge_base_repository
+from app.repositories import document_repository
 from app.services.document_storage import SOURCE_TYPE_BY_EXTENSION, store_document_file
 from app.services.index_dispatch import enqueue_document
+from app.services.knowledge_base_access import ensure_visible
 from app.utils.id_generator import new_document_id
 from app.utils.status import DocumentStatus
 
@@ -47,9 +47,7 @@ async def upload(
     Worker 从落盘文件解析）；否则 JSON 模式（``content`` 直接落库）。
     """
 
-    kb = knowledge_base_repository.get_by_id(db, kb_id)
-    if kb is None or kb.tenant_id != tenant_id:
-        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+    ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
 
     document_id = new_document_id()
 

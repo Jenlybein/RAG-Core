@@ -109,11 +109,13 @@ class _RecordingStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.deleted: list[str] = []
+        self.tenant_ids: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str) -> None:
+    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)
+        self.tenant_ids.append(tenant_id)
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
         self.calls.append("add")
@@ -249,6 +251,7 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
 
     assert pipeline_env.store.calls == ["purge", "add"], "先删旧切片，再写新切片"
     assert pipeline_env.store.deleted == [document_id]
+    assert pipeline_env.store.tenant_ids == [TENANT_ID], "purge 也必须强制带租户"
     assert len(pipeline_env.store.written) == 1
     chunks = pipeline_env.store.written[0]
 
