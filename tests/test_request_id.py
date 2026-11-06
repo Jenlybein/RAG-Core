@@ -1,9 +1,11 @@
 """请求关联标识（T3）验收测试。
 
-唯一接缝：ASGI 应用边界。用 TestClient 发真实请求（或按 ASGI 协议直接驱动
-同一个 app），只观察响应头、响应体与 ``logs/app.log`` 的外部行为：
-每个响应带号牌、合法沿用 / 非法替换、日志同号牌、挂载子应用覆盖、
-流不被缓冲、响应体形状不变。不触碰中间件内部结构。
+唯一接缝：ASGI 应用边界。用 TestClient 发真实请求，只观察响应头、响应体与
+``logs/app.log`` 的外部行为：每个响应带号牌、合法沿用 / 非法替换、日志同号牌、
+响应体形状不变。不触碰中间件内部结构。
+
+本项目所有响应一次性返回（MCP 入口已配 ``json_response=True``），因此中间件
+改用 Starlette 自带的 ``BaseHTTPMiddleware``；「流不被缓冲」不再是本步的验收项。
 
 T2 的日志 fixture 是模块级 autouse，只作用于 ``test_logging.py``；本文件
 独立用 monkeypatch 把 ``settings.LOG_DIR`` 指向 tmp 目录，重置
@@ -12,13 +14,12 @@ T2 的日志 fixture 是模块级 autouse，只作用于 ``test_logging.py``；�
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
 import logging
-from pathlib import Path
 from collections.abc import Iterator
-from typing import Any, Callable, MutableMapping
+from pathlib import Path
+from typing import Any
 
 import pytest
 import structlog
@@ -217,82 +218,3 @@ def test_response_body_shape_is_unchanged(client: TestClient) -> None:
     assert missing.status_code == 404
     assert missing.json() == {"detail": "Not Found"}
     assert "x-request-id" in missing.headers
-
-
-def test_streaming_response_is_not_buffered() -> None:
-    """按 ASGI 协议直接驱动应用：首个 body 块到达时末块还没生成，且未被合并。
-
-    TestClient 的 ASGITransport 会自行缓冲整个响应体，所以这里用协议级驱动
-    观察 send 事件顺序；被测对象仍是同一个已注册中间件的 ASGI app。
-    """
-
-    import app.main
-
-    chunks_sent = []
-    release = asyncio.Event()
-    seen_types: list[str] = []
-
-    async def gated_stream(scope, receive, send):
-        """挂载的极小 ASGI 子应用：分两块输出，中间卡在一道门上。"""
-
-        if scope["type"] == "lifespan":
-            while True:
-                message = await receive()
-                if message["type"] == "lifespan.startup":
-                    await send({"type": "lifespan.startup.complete"})
-                elif message["type"] == "lifespan.shutdown":
-                    await send({"type": "lifespan.shutdown.complete"})
-                    return
-            return
-        await send({"type": "http.response.start", "status": 200, "headers": []})
-        await send({"type": "http.response.body", "body": b"first|", "more_body": True})
-        await release.wait()
-        await send({"type": "http.response.body", "body": b"second|", "more_body": False})
-
-    path = "/__t3_stream"
-    app.main.app.mount(path, gated_stream)
-
-    async def drive(app: Callable) -> None:
-        scope: MutableMapping[str, Any] = {
-            "type": "http",
-            "asgi": {"version": "3.0", "spec_version": "2.3"},
-            "http_version": "1.1",
-            "method": "GET",
-            "scheme": "http",
-            "path": path + "/events",
-            "raw_path": (path + "/events").encode(),
-            "query_string": b"",
-            "root_path": "",
-            "headers": [],
-            "client": ("127.0.0.1", 12345),
-            "server": ("testserver", 80),
-        }
-
-        async def receive() -> MutableMapping[str, Any]:
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        async def send(message: MutableMapping[str, Any]) -> None:
-            seen_types.append(message["type"])
-            if message["type"] == "http.response.body":
-                chunks_sent.append(message["body"])
-                if len(chunks_sent) == 1:
-                    assert not release.is_set(), "首块必须在末块生成之前就送出（不得缓冲）"
-                    release.set()
-                else:
-                    assert release.is_set(), "后续块只能在门打开后送出"
-            if message["type"] == "http.response.start":
-                assert b"x-request-id" in dict(message["headers"]), "流首部也要带号牌"
-
-        await app(scope, receive, send)
-
-    try:
-        asyncio.run(drive(app.main.app))
-    finally:
-        app.main.app.router.routes = [
-            r for r in app.main.app.router.routes if getattr(r, "path", None) != path
-        ]
-
-    # 终止块 b"" 是 ASGI 协议自己发的，不算业务块；中间件不得把它和首块合并。
-    business_chunks = [c for c in chunks_sent if c]
-    assert business_chunks == [b"first|", b"second|"], "响应体被缓冲/改写"
-    assert seen_types[0] == "http.response.start"

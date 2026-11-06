@@ -18,11 +18,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.request_context import (
-    REQUEST_ID_SCOPE_KEY,
-    _REQUEST_ID_RE,
-    _request_id_from,
-)
+from app.core.request_context import REQUEST_ID_SCOPE_KEY, _request_id_from
 from app.schemas.common import fail
 
 logger = structlog.get_logger(__name__)
@@ -59,14 +55,14 @@ async def request_validation_error_handler(request: Request, exc: Exception) -> 
 def _request_id_for_500(request: Request) -> str:
     """优先取中间件存进 scope 的同一个 id；取不到才按同一套规则从入站头净化。
 
-    T3 在 finally 里 clear_contextvars()，早于最外层 ServerErrorMiddleware
+    中间件在 finally 里 clear_contextvars()，早于最外层 ServerErrorMiddleware
     触发本 handler，所以 contextvar 此时是空的，只能读 scope。
     """
 
     stored = request.scope.get("state", {}).get(REQUEST_ID_SCOPE_KEY)
-    if isinstance(stored, str) and _REQUEST_ID_RE.fullmatch(stored):
+    if isinstance(stored, str):
         return stored
-    return _request_id_from(request.scope)
+    return _request_id_from(request.headers)
 
 
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
