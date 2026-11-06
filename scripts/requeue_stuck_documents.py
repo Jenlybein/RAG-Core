@@ -8,11 +8,15 @@
 
 行为（对应设计契约 §4）：
 1. 查 ``status == PROCESSING AND (index_claimed_at IS NULL OR index_claimed_at <
-   now - lease)``，可选 ``--kb-id`` 缩小范围，缺省扫全库；
-2. 逐篇 ``try_claim_for_indexing``（不带 ``allow_success``）：抢不到记 skipped，
-   抢到立刻 ``commit`` 释放行锁；
+   now - lease)``，可选 ``--kb-id`` 缩小范围，缺省扫全部知识库；
+2. 逐篇 ``prepare_for_indexing``（不带 ``allow_success``）：把文档重新标记为
+   「已排队、未开工」（``index_claimed_at=NULL``），**不盖租约**；准备不到记
+   skipped，准备成功后立刻 ``commit`` 释放行锁；
 3. ``enqueue_document`` 重新投递，行自带的 ``tenant_id`` / ``kb_id`` 原样带上；
 4. 打印 ``requeued / skipped / failed`` 统计。
+
+**租约只由 Worker 抢占**（``try_claim_for_indexing``）：脚本若自己先盖租约，
+Worker 的 CAS 会因租约新鲜而拒绝执行，恢复动作变成静默 no-op。
 
 **打印的 ``requeued`` 是「已重新投递」数量，不是「已完成」数量。** 异步链路没有
 「跑完」的同步感知，要确认终态请用 ``GET /documents?kb_id=<id>`` 或直接查库。
@@ -25,8 +29,10 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import structlog
 from sqlalchemy.orm import Session
@@ -36,6 +42,14 @@ from app.db.session import SessionLocal
 from app.repositories import document_repository
 from app.repositories.document_repository import DOCUMENT_LEASE_SECONDS
 from app.services.index_dispatch import enqueue_document
+
+# 共享报告工具与脚本同目录；scripts* 不在安装包里，显式把自己所在目录放进
+# sys.path 后再用普通导入，spec_from_file_location 的文件加载才能找到它。
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from _ops_common import exit_code_for, print_summary  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
@@ -55,11 +69,11 @@ class RequeueStats:
     skipped: int = 0
     failed: int = 0
 
+    @property
+    def delivered(self) -> int:
+        """共享退出码规则里的「已投递」口径。"""
 
-def exit_code(stats: RequeueStats) -> int:
-    """有失败且一份都没救回时为 1，否则 0（部分失败仍算跑过）。"""
-
-    return 1 if stats.failed and not stats.requeued else 0
+        return self.requeued
 
 
 def requeue_documents(
@@ -83,11 +97,15 @@ def requeue_documents(
         if dry_run:
             continue
         try:
-            # 扫描窗口与抢占窗口用同一个 lease：否则「扫出来却抢不到」会白白记 skipped。
-            claimed = document_repository.try_claim_for_indexing(
-                db, doc.id, lease_seconds=lease_seconds, allow_success=False
+            # 扫描窗口与准备窗口用同一个 lease：否则「扫出来却准备不了」会白白记 skipped。
+            prepared = document_repository.prepare_for_indexing(
+                db,
+                doc.id,
+                tenant_id=doc.tenant_id,
+                lease_seconds=lease_seconds,
+                allow_success=False,
             )
-            if not claimed:
+            if not prepared:
                 skipped += 1
                 continue
             db.commit()
@@ -113,23 +131,6 @@ def requeue_documents(
     return RequeueStats(
         considered=considered, requeued=requeued, skipped=skipped, failed=failed
     )
-
-
-def _print_summary(
-    *,
-    kb_id: str | None,
-    lease_seconds: int,
-    dry_run: bool,
-    stats: RequeueStats,
-) -> None:
-    mode = "dry-run" if dry_run else "live"
-    scope = "all knowledge bases" if kb_id is None else f"kb_id={kb_id}"
-    print(f"requeue_stuck_documents ({mode}): {scope} lease_seconds={lease_seconds}")
-    print(f"  candidates: {stats.considered}")
-    print(f"  requeued: {stats.requeued}")
-    print(f"  skipped: {stats.skipped}")
-    print(f"  failed: {stats.failed}")
-    print(REQUEUED_NOT_COMPLETED_NOTE)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -171,13 +172,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         db.close()
 
-    _print_summary(
-        kb_id=args.kb_id,
-        lease_seconds=args.lease_seconds,
-        dry_run=args.dry_run,
+    mode = "dry-run" if args.dry_run else "live"
+    scope = "all knowledge bases" if args.kb_id is None else f"kb_id={args.kb_id}"
+    print_summary(
+        f"requeue_stuck_documents ({mode}): {scope} lease_seconds={args.lease_seconds}",
         stats=stats,
+        counters=(
+            ("candidates", "considered"),
+            ("requeued", "requeued"),
+            ("skipped", "skipped"),
+            ("failed", "failed"),
+        ),
+        note=REQUEUED_NOT_COMPLETED_NOTE,
     )
-    return exit_code(stats)
+    return exit_code_for(stats)
 
 
 if __name__ == "__main__":

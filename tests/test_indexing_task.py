@@ -24,6 +24,7 @@ from structlog.testing import capture_logs
 
 from app.celery_app import celery_app
 from app.core.exceptions import AppError, ErrorCode
+from app.db.base import now
 from app.providers.parsers.base import ParsedDocument
 from app.repositories import document_repository
 from app.services import indexing_service
@@ -76,11 +77,13 @@ class _RecordingStore:
         self.calls = calls
         self.name = name
         self.deleted: list[str] = []
+        self.tenant_ids: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str) -> None:
+    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append(document_id)
+        self.tenant_ids.append(tenant_id)
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
         self.calls.append(f"add:{self.name}")
@@ -127,6 +130,7 @@ def _document() -> SimpleNamespace:
         source_file_path=None,
         source_filename=None,
         error_message=None,
+        index_claimed_at=None,
     )
 
 
@@ -146,13 +150,15 @@ def _patch_service_environment(
     if stores is None:
         stores = [_RecordingStore(calls)]
     embeddings = _RecordingEmbeddings(calls, vectors)
+    claim_calls: list[dict[str, Any]] = []
 
     def _get_by_id(_db: Any, _document_id: str) -> Any:
         calls.append("get_by_id")
         return doc
 
-    def _try_claim(_db: Any, _document_id: str, **_kwargs: Any) -> bool:
+    def _try_claim(_db: Any, _document_id: str, **kwargs: Any) -> bool:
         calls.append("claim")
+        claim_calls.append(kwargs)
         return claimed
 
     def _update_status(
@@ -178,6 +184,7 @@ def _patch_service_environment(
         document=doc,
         stores=stores,
         embeddings=embeddings,
+        claim_calls=claim_calls,
     )
 
 
@@ -215,6 +222,9 @@ def test_service_indexes_document_through_claim_purge_write_success(
     ]
     assert env.session.commits == 2, "抢占一段、写入一段，恰好两次提交"
     assert env.session.rollbacks == 0
+    assert env.claim_calls == [{"tenant_id": TENANT_ID, "allow_success": False}], (
+        "Worker 是唯一抢租约的一方，且迟到重复投递不得重新抢占 SUCCESS"
+    )
     assert env.document.status == DocumentStatus.SUCCESS
 
     written = env.stores[0].written[0]
@@ -256,6 +266,8 @@ def test_service_purges_every_store_before_writing_any(monkeypatch: pytest.Monke
     assert store_calls == ["purge:a", "purge:b", "add:a", "add:b"]
     assert env.stores[0].deleted == [DOC_ID]
     assert env.stores[1].deleted == [DOC_ID]
+    assert env.stores[0].tenant_ids == [TENANT_ID]
+    assert env.stores[1].tenant_ids == [TENANT_ID]
     assert env.stores[0].written[0][0]["content"] == "only piece"
     assert env.stores[1].written[0][0]["content"] == "only piece"
 
@@ -368,9 +380,19 @@ class _FailingService:
 
 def _patch_task_runtime(
     monkeypatch: pytest.MonkeyPatch, *, service: Any, session: _FakeSession
-) -> None:
+) -> list[dict[str, Any]]:
+    """任务体替身装配；返回 ``release_index_claim`` 的调用记录。"""
+
     monkeypatch.setattr(tasks, "SessionLocal", lambda: session)
     monkeypatch.setattr(tasks, "IndexingService", lambda: service)
+    releases: list[dict[str, Any]] = []
+
+    def _release(_db: Any, document_id: str, *, tenant_id: str) -> None:
+        session.calls.append("release-claim")
+        releases.append({"document_id": document_id, "tenant_id": tenant_id})
+
+    monkeypatch.setattr(tasks.document_repository, "release_index_claim", _release)
+    return releases
 
 
 def test_task_retries_whitelisted_error_while_retries_remain(
@@ -380,7 +402,7 @@ def test_task_retries_whitelisted_error_while_retries_remain(
 
     session = _FakeSession()
     failure = AppError(ErrorCode.EMBEDDING_FAILED, "embedding upstream timeout")
-    _patch_task_runtime(monkeypatch, service=_FailingService(failure), session=session)
+    releases = _patch_task_runtime(monkeypatch, service=_FailingService(failure), session=session)
     marked: list[tuple[Any, ...]] = []
     monkeypatch.setattr(tasks, "_mark_failed", lambda *args, **_kwargs: marked.append(args))
     task = _FakeTask(retries=0, max_retries=2)
@@ -396,6 +418,12 @@ def test_task_retries_whitelisted_error_while_retries_remain(
                 reparse=True,
             )
 
+    assert session.calls == [
+        "rollback",
+        "release-claim",
+        "commit",
+    ], "必须先释放租约并提交，再 self.retry；否则重试的 CAS 永远抢不到"
+    assert releases == [{"document_id": DOC_ID, "tenant_id": TENANT_ID}]
     assert task.retry_calls == [failure]
     assert marked == [], "可重试时不应写 status=2"
     assert [entry for entry in logs if entry.get("event") == FAILED_MESSAGE] == []
@@ -408,6 +436,7 @@ def test_task_marks_failed_for_non_retryable_error(monkeypatch: pytest.MonkeyPat
 
     session = _FakeSession()
     document = _document()
+    document.index_claimed_at = now()
     failure = AppError(ErrorCode.DOCUMENT_PARSE_FAILED, PARSE_FAILURE_TEXT)
     _patch_task_runtime(monkeypatch, service=_FailingService(failure), session=session)
     monkeypatch.setattr(document_repository, "get_by_id", lambda _db, _id: document)
@@ -423,6 +452,7 @@ def test_task_marks_failed_for_non_retryable_error(monkeypatch: pytest.MonkeyPat
     assert document.status == DocumentStatus.FAILED
     assert document.error_message == INDEXING_FAILED_MESSAGE, "只写脱敏固定文案"
     assert PARSE_FAILURE_TEXT not in (document.error_message or ""), "异常原文不得落库"
+    assert document.index_claimed_at is None, "失败终态也必须清掉租约"
     assert session.commits == 1
 
     failed = [entry for entry in logs if entry.get("event") == FAILED_MESSAGE]

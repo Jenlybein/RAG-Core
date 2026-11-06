@@ -1,4 +1,4 @@
-"""全库重建脚本：把一个知识库下所有 ``SUCCESS`` 文档重新投递索引任务。
+"""全知识库重建脚本：把一个知识库里所有 ``SUCCESS`` 文档重新投递索引任务。
 
 用途：换了切块算法 / 解析器之后，不需要重新上传就能让新逻辑生效——文档正文
 （文件模式落盘的原文，或 JSON 模式落库的 ``content``）还在，Worker 重新解析 /
@@ -7,9 +7,13 @@
 行为（对应设计契约 §3）：
 1. 查该 kb 下 ``status == SUCCESS`` 的文档（强制带租户：缺省取该 kb 的
    ``tenant_id``，也可用 ``--tenant-id`` 显式指定）；
-2. 逐篇 ``try_claim_for_indexing(allow_success=True)``：抢不到（另一个 Worker /
-   另一个脚本正在跑）记 skipped，抢到立刻 ``commit`` 释放行锁；
+2. 逐篇 ``prepare_for_indexing(allow_success=True)``：把可重建的文档标记为
+   「已排队、未开工」（``index_claimed_at=NULL``），**不盖租约**；准备不到
+   （另一个请求刚改过同一行）记 skipped。提交后释放行锁；
 3. ``enqueue_document(reparse=False)`` 投递；投递抛错记 failed 并继续下一篇。
+
+**租约只由 Worker 抢占**（``try_claim_for_indexing``）：脚本若自己先盖租约，
+Worker 的 CAS 会因租约新鲜而拒绝执行，重建变成静默 no-op。
 
 **打印的 ``submitted`` 是「已投递」数量，不是「已完成」数量。** 异步链路没有
 「跑完」的同步感知，要确认终态请用 ``GET /documents?kb_id=<id>`` 或直接查库。
@@ -26,6 +30,7 @@ import argparse
 import sys
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 import structlog
 from sqlalchemy.orm import Session
@@ -35,6 +40,14 @@ from app.db.session import SessionLocal
 from app.repositories import document_repository, knowledge_base_repository
 from app.services.index_dispatch import enqueue_document
 from app.utils.status import DocumentStatus
+
+# 共享报告工具与脚本同目录；scripts* 不在安装包里，显式把自己所在目录放进
+# sys.path 后再用普通导入，spec_from_file_location 的文件加载才能找到它。
+_SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(_SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(_SCRIPTS_DIR))
+
+from _ops_common import exit_code_for, print_summary  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
@@ -47,18 +60,18 @@ SUBMITTED_NOT_COMPLETED_NOTE = (
 
 @dataclass(frozen=True)
 class ReindexStats:
-    """一次全库重建的投递统计；``submitted`` 是已投递数，不是已完成数。"""
+    """一次全知识库重建的投递统计；``submitted`` 是已投递数，不是已完成数。"""
 
     considered: int = 0
     submitted: int = 0
     skipped: int = 0
     failed: int = 0
 
+    @property
+    def delivered(self) -> int:
+        """共享退出码规则里的「已投递」口径。"""
 
-def exit_code(stats: ReindexStats) -> int:
-    """有失败且一份都没投递成功时为 1，否则 0（部分失败仍算跑过）。"""
-
-    return 1 if stats.failed and not stats.submitted else 0
+        return self.submitted
 
 
 def resolve_tenant_id(db: Session, *, kb_id: str, tenant_id: str | None) -> str:
@@ -84,7 +97,7 @@ def reindex_documents(
     dry_run: bool = False,
     limit: int | None = None,
 ) -> ReindexStats:
-    """把该库下的 SUCCESS 文档逐篇重新投递，返回统计（不打印）。"""
+    """把该知识库下的 SUCCESS 文档逐篇重新投递，返回统计（不打印）。"""
 
     documents = document_repository.list_by_kb_and_status(
         db, kb_id, tenant_id=tenant_id, status=DocumentStatus.SUCCESS
@@ -101,11 +114,11 @@ def reindex_documents(
         if dry_run:
             continue
         try:
-            claimed = document_repository.try_claim_for_indexing(
-                db, doc.id, allow_success=True
+            prepared = document_repository.prepare_for_indexing(
+                db, doc.id, tenant_id=tenant_id, allow_success=True
             )
-            if not claimed:
-                # 另一个 Worker / 脚本已经抢走这份文档；CAS 是真正的去重手段。
+            if not prepared:
+                # 并发请求已经改过同一行；准备失败是真正的去重手段。
                 skipped += 1
                 continue
             db.commit()
@@ -131,18 +144,6 @@ def reindex_documents(
     return ReindexStats(
         considered=considered, submitted=submitted, skipped=skipped, failed=failed
     )
-
-
-def _print_summary(
-    *, kb_id: str, tenant_id: str, dry_run: bool, stats: ReindexStats
-) -> None:
-    mode = "dry-run" if dry_run else "live"
-    print(f"reindex_knowledge_base ({mode}): kb_id={kb_id} tenant_id={tenant_id}")
-    print(f"  candidates: {stats.considered}")
-    print(f"  submitted: {stats.submitted}")
-    print(f"  skipped: {stats.skipped}")
-    print(f"  failed: {stats.failed}")
-    print(SUBMITTED_NOT_COMPLETED_NOTE)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -189,10 +190,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         db.close()
 
-    _print_summary(
-        kb_id=args.kb_id, tenant_id=tenant_id, dry_run=args.dry_run, stats=stats
+    mode = "dry-run" if args.dry_run else "live"
+    print_summary(
+        f"reindex_knowledge_base ({mode}): kb_id={args.kb_id} tenant_id={tenant_id}",
+        stats=stats,
+        counters=(
+            ("candidates", "considered"),
+            ("submitted", "submitted"),
+            ("skipped", "skipped"),
+            ("failed", "failed"),
+        ),
+        note=SUBMITTED_NOT_COMPLETED_NOTE,
     )
-    return exit_code(stats)
+    return exit_code_for(stats)
 
 
 if __name__ == "__main__":

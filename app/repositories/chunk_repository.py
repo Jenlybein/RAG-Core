@@ -15,17 +15,20 @@ def count_by_kb(db: Session, kb_id: str) -> int:
     return int(db.execute(stmt).scalar_one())
 
 
-def count_by_document_ids(db: Session, document_ids: list[str]) -> dict[str, int]:
+def count_by_document_ids(
+    db: Session, document_ids: list[str], *, tenant_id: str
+) -> dict[str, int]:
     """一次分组查询拿回 ``{document_id: 切片数}``；没有切片的文档不在字典里。
 
-    文档列表接口必须用它，不能对每个文档各查一次（N+1）。
+    文档列表接口必须用它，不能对每个文档各查一次（N+1）。``tenant_id`` 是强制
+    过滤参数（ADR-0006）：即使文档 id 已被上游按租户筛过，计数也不跨租户。
     """
 
     if not document_ids:
         return {}
     stmt = (
         select(Chunk.document_id, func.count())
-        .where(Chunk.document_id.in_(document_ids))
+        .where(Chunk.document_id.in_(document_ids), Chunk.tenant_id == tenant_id)
         .group_by(Chunk.document_id)
     )
     return {document_id: int(count) for document_id, count in db.execute(stmt).all()}

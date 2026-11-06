@@ -59,6 +59,10 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
-    async def delete_by_document_id(self, db: Session, document_id: str) -> None:
-        db.execute(delete(Chunk).where(Chunk.document_id == document_id))
+    async def delete_by_document_id(
+        self, db: Session, document_id: str, *, tenant_id: str
+    ) -> None:
+        db.execute(
+            delete(Chunk).where(Chunk.document_id == document_id, Chunk.tenant_id == tenant_id)
+        )
         db.flush()

@@ -10,6 +10,12 @@
    在同一段事务里提交：调用方永远不会看到「旧切片没了、新切片还没写」或
    「切片写好了、状态还是处理中」的中间态。异常时由调用方（Celery 任务）回滚。
 
+**索引权只由 Worker 抢占。** 入队侧（重建端点 / 运维脚本）已经用
+``prepare_for_indexing`` 把文档置成「已排队、未开工」（不盖租约），Worker 进来后
+用 ``try_claim_for_indexing(allow_success=False)`` 盖租约。``allow_success=False``
+是必须的：force 重建的路由已经做过 SUCCESS→PROCESSING 的状态准备，ACK 丢失导致的
+迟到重复投递不能在 SUCCESS 之后重新抢占并重写切片。
+
 并发去重靠数据库 CAS，不靠 Celery 的 ``task_id``：``acks_late`` 让投递至少一次，
 而 ``try_claim_for_indexing`` 让重复投递里的后来者抢不到，直接返回 0。这两者是
 配套的，不要只留一半。
@@ -44,16 +50,18 @@ logger = structlog.get_logger(__name__)
 INDEXING_FAILED_MESSAGE = "document indexing failed, please retry or contact support"
 
 
-async def purge_document_chunks(db: Session, document_id: str, stores: list[VectorStore]) -> None:
-    """先删后写的第一半：遍历**存储列表**，逐个清掉该文档的旧切片。
+async def purge_document_chunks(
+    db: Session, document_id: str, *, tenant_id: str, stores: list[VectorStore]
+) -> None:
+    """先删后写的第一半：遍历**存储列表**，逐个清除该文档的旧切片。
 
     遍历的是列表而不是写死某一个存储，因此以后加 Elasticsearch 只需在默认接线里
     往 ``stores`` 追加一个元素（并让它实现 ``delete_by_document_id``），调用方一行
-    都不用改。
+    都不用改。``tenant_id`` 是强制过滤参数（ADR-0006），连删除也必须带租户。
     """
 
     for store in stores:
-        await store.delete_by_document_id(db, document_id)
+        await store.delete_by_document_id(db, document_id, tenant_id=tenant_id)
 
 
 class IndexingService:
@@ -82,9 +90,10 @@ class IndexingService:
     ) -> int:
         """把一份已经登记在库的文档索引成切片，返回写入的切片数。
 
-        ``reparse=True`` 强制重读源文件（忽略库内正文）；``allow_success=True`` 的
-        抢占条件让「显式 force 重建」也能走到这里——路由层已经做过了 ``?force``
-        守卫，这里只负责抢锁与执行。
+        ``reparse=True`` 强制重解析原始文件（忽略库内正文）；这里固定
+        ``allow_success=False``：force 重建的 SUCCESS→PROCESSING 状态准备已经在
+        路由层用 ``prepare_for_indexing`` 完成，Worker 只负责抢租约与执行，迟到
+        重复投递不能重新抢占成功文档。
         """
 
         doc = document_repository.get_by_id(db, document_id)
@@ -93,7 +102,9 @@ class IndexingService:
 
         # Tx1：抢占后立刻提交，只持锁一瞬间。抢不到说明另一个 Worker 已经在跑
         # 这份文档（重复投递 / 重试），直接跳过，绝不重复向量化。
-        claimed = document_repository.try_claim_for_indexing(db, document_id, allow_success=True)
+        claimed = document_repository.try_claim_for_indexing(
+            db, document_id, tenant_id=doc.tenant_id, allow_success=False
+        )
         db.commit()
         if not claimed:
             logger.info(
@@ -136,7 +147,7 @@ class IndexingService:
         ]
 
         # Tx2：先删后写 + 状态回写，一次提交；任一步失败都由调用方回滚。
-        await purge_document_chunks(db, document_id, self._stores)
+        await purge_document_chunks(db, document_id, tenant_id=doc.tenant_id, stores=self._stores)
         for store in self._stores:
             await store.add_chunks(db, chunks)
 

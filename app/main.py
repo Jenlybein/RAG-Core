@@ -1,11 +1,15 @@
 """FastAPI 应用入口（第 1 步：两个入口都接通）。
 
-HTTP 数据面（4 个接口，/api/v1/*）：
-  POST /api/v1/knowledge-bases/create
-  POST /api/v1/documents/upload
-  POST /api/v1/rag/retrieve
-  GET  /api/v1/knowledge-bases
-  GET  /api/v1/documents
+HTTP 数据面（7 个业务接口，/api/v1/*）：
+  POST   /api/v1/knowledge-bases/create
+  GET    /api/v1/knowledge-bases
+  POST   /api/v1/documents/upload
+  GET    /api/v1/documents
+  POST   /api/v1/documents/{document_id}/reindex
+  DELETE /api/v1/documents/{document_id}
+  POST   /api/v1/rag/retrieve
+
+另有一个不进业务契约的探活口 ``GET /health``（不出现在 OpenAPI 文档里）。
 
 MCP 数据面（/mcp/，JSON-RPC）：rag_retrieve / rag_list_knowledge_bases。
 两个入口共用同一把占位 API Key 与同一批 Service。

@@ -3,10 +3,10 @@
 只有一个模块、一个 router：
   * ``POST /documents/upload`` —— 单端点按 content-type 分流（multipart = 文件模式，
     其余 = JSON 模式）。只登记 + 投递索引任务，立即返回 ``status=3``。
-  * ``GET /documents?kb_id=`` —— 该库下的文档列表，异步化后调用方唯一的进度观测口。
-  * ``POST /documents/{document_id}/reindex?reparse=&force=`` —— 单文档重建：守卫与
-    抢占后把任务重新投递，purge 与写入仍只在 Worker 的事务里发生。
-  * ``DELETE /documents/{document_id}`` —— 守卫通过后清切片、删原文件、删记录。
+  * ``GET /documents?kb_id=`` —— 该知识库下的文档列表，异步化后调用方唯一的进度观测口。
+  * ``POST /documents/{document_id}/reindex?reparse=&force=`` —— 单文档重建：守卫 →
+    标记排队（不盖租约）→ 提交 → 投递；purge、抢占与写入仍只在 Worker 的事务里发生。
+  * ``DELETE /documents/{document_id}`` —— 守卫通过后按租户清除切片、删原文件、删记录。
 
 按 ``document_id`` 取文档一律经 ``get_by_id_for_tenant``（ADR-0006）：缺失与跨租户
 统一按「不存在」（20016）处理，不泄露存在性。守卫一律走 ``document_state`` 的
@@ -23,7 +23,7 @@ from app.core.auth import DevKeyContext, resolve_dev_key
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session import get_db
 from app.providers.vectorstores import get_vector_store
-from app.repositories import chunk_repository, document_repository, knowledge_base_repository
+from app.repositories import chunk_repository, document_repository
 from app.schemas.common import ApiResponse, ok
 from app.schemas.document import (
     DeleteDocumentData,
@@ -35,6 +35,7 @@ from app.schemas.document import (
 )
 from app.services import document_service, document_state
 from app.services.document_storage import remove_document_file
+from app.services.knowledge_base_access import ensure_visible
 from app.services.index_dispatch import enqueue_document
 from app.services.indexing_service import purge_document_chunks
 from app.utils.status import DocumentStatus
@@ -124,19 +125,19 @@ async def list_documents(
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(resolve_dev_key),
 ) -> ApiResponse[DocumentListData]:
-    """返回该库下全部文档的 status / chunk_count / error_message 等摘要。
+    """返回该知识库下全部文档的 status / chunk_count / error_message 等摘要。
 
     知识库不存在或不属于调用方租户，一律按「不存在」（20008）处理，不泄露存在性；
     列表查询也强制带 ``tenant_id``，绝不返回其他租户的行。
     ``chunk_count`` 用一次分组计数批量取回，不对每份文档各查一次（N+1）。
     """
 
-    kb = knowledge_base_repository.get_by_id(db, kb_id)
-    if kb is None or kb.tenant_id != key.tenant_id:
-        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+    ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
 
     rows = document_repository.list_by_kb(db, kb_id, tenant_id=key.tenant_id)
-    counts = chunk_repository.count_by_document_ids(db, [row.id for row in rows])
+    counts = chunk_repository.count_by_document_ids(
+        db, [row.id for row in rows], tenant_id=key.tenant_id
+    )
     data = DocumentListData(
         items=[
             DocumentListItem(
@@ -157,7 +158,7 @@ async def list_documents(
 @router.post(
     "/documents/{document_id}/reindex",
     response_model=ApiResponse[ReindexDocumentData],
-    summary="重建单文档索引（可强制重读原文件）",
+    summary="重建单文档索引（可强制重解析原始文件）",
 )
 async def reindex_document(
     document_id: str,
@@ -167,17 +168,21 @@ async def reindex_document(
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(resolve_dev_key),
 ) -> ApiResponse[ReindexDocumentData]:
-    """守卫 → CAS 抢占 → 提交 → 投递，立即返回 ``status=3``。
+    """守卫 → 标记排队（不盖租约）→ 提交 → 投递，立即返回 ``status=3``。
 
     顺序是契约的一部分：先按 id + 租户取文档（缺失 / 跨租户统一 20016），再走
     ``ensure_reindexable``（有效处理中 20025；成功且未 ``force`` 20027），然后
-    ``try_claim_for_indexing`` 抢一次。抢不到说明并发请求已经先抢走（守卫看的
-    是同一行的旧快照），仍按 20025 回绝。抢到后立刻 ``commit`` 释放行锁，
-    再把任务交给 Worker。
+    ``prepare_for_indexing`` 把可重建的行置成「已排队、未开工」
+    （``index_claimed_at=NULL``；不在这里盖租约）。准备失败说明这一行已被一个
+    有效租约占住（守卫看的是旧快照），可能刚好有 Worker 抢先；仍按 20025 回绝。
+    提交后把任务交给 Worker；
+    **Worker 是唯一的租约抢占者**（``try_claim_for_indexing``），它进来时才盖
+    ``index_claimed_at``。若路由自己先盖租约，Worker 会因租约新鲜而拒绝执行，
+    重建就变成静默 no-op。
 
     **这里绝不 purge 切片**：purge 与写入必须在 Worker 的同一段事务里完成，
     否则会有一段「旧切片没了、新切片还没写」的空窗。``reparse`` 只是透传给
-    Worker 的选择位，表示忽略库内 ``content``、重读落盘原文件。
+    Worker 的选择位，表示忽略库内 ``content``、重解析落盘原始文件。
     """
 
     doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
@@ -186,10 +191,10 @@ async def reindex_document(
 
     document_state.ensure_reindexable(doc, force=force)
 
-    claimed = document_repository.try_claim_for_indexing(
-        db, document_id, allow_success=force
+    prepared = document_repository.prepare_for_indexing(
+        db, document_id, tenant_id=key.tenant_id, allow_success=force
     )
-    if not claimed:
+    if not prepared:
         raise AppError(ErrorCode.DOCUMENT_IS_PROCESSING)
     db.commit()
 
@@ -228,11 +233,12 @@ async def delete_document(
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(resolve_dev_key),
 ) -> ApiResponse[DeleteDocumentData]:
-    """守卫通过后按固定顺序清理：purge 切片 → 删原文件 → 删行 → 提交。
+    """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删行 → 提交。
 
     ``purge_document_chunks`` 遍历存储列表（本步只有 pgvector，以后加 ES 只需在
-    默认接线里追加），因此删文档不需要知道存储形态。有效处理中（租约未过期）
-    拒绝删除（20025）；租约过期视为 Worker 卡死，允许清理。
+    默认接线里追加），因此删文档不需要知道存储形态；删除切片同样强制带租户
+    （ADR-0006）。有效处理中（租约未过期）拒绝删除（20025）；租约过期视为
+    Worker 卡死，允许删除。
     """
 
     doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
@@ -241,7 +247,9 @@ async def delete_document(
 
     document_state.ensure_deletable(doc)
 
-    await purge_document_chunks(db, document_id, stores=[get_vector_store()])
+    await purge_document_chunks(
+        db, document_id, tenant_id=key.tenant_id, stores=[get_vector_store()]
+    )
     remove_document_file(doc.source_file_path)
     db.delete(doc)
     db.commit()

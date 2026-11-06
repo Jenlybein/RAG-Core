@@ -68,7 +68,10 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["ocr: requires PDFium + ONNX Runtime + PP-OCRv6 model assets (see deploy/ocr/fetch_runtime.sh)"]
+markers = [
+    "ocr: requires PDFium + ONNX Runtime + PP-OCRv6 model assets (see deploy/ocr/fetch_runtime.sh)",
+    "integration: requires a real PostgreSQL; set RAG_INTEGRATION_DATABASE_URL (see .github/workflows/ci.yml)",
+]
 
 [build-system]
 requires = ["setuptools>=68"]
