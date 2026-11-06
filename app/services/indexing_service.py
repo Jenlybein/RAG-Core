@@ -137,6 +137,9 @@ class IndexingService:
                 "content": piece.text,
                 "embedding": vector,
                 "meta": {
+                    # 解析器产出的 metadata 必须跟着切片走，否则「元数据.engine 含 ocr」
+                    # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
+                    **parsed.metadata,
                     **piece.metadata,
                     "title": doc.title,
                     "index": index,
