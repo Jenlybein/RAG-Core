@@ -36,7 +36,14 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
   -c "CREATE EXTENSION IF NOT EXISTS vector;"          # 数据卷已存在时手动补一次
 ```
 
-`.env` 从 `.env.example` 复制后只需改 3 行：`MODEL_BASE_URL`（百炼控制台给的、含业务空间 ID）、`MODEL_API_KEY`、`LLM_API_KEY`（DeepSeek，阶段 4 才用）。库密码默认与容器一致，不用改。`.env` 已在 `.gitignore` 里。第 2 步新增的 `LOG_LEVEL` / `LOG_DIR` 保持默认即可（`INFO` / `logs`），不必改。
+`.env` 从 `.env.example` 复制后只需改 3 行：`MODEL_BASE_URL`（百炼控制台给的、含业务空间 ID）、`MODEL_API_KEY`、`LLM_API_KEY`（DeepSeek，第 4 步才用）。库密码默认与容器一致，不用改。`.env` 已在 `.gitignore` 里。第 1 步的 `DEV_API_KEY` / `DEV_TENANT_ID` 与第 2 步的 `LOG_LEVEL` / `LOG_DIR` 都保持默认即可（`dev-key` / `tenant_demo` / `INFO` / `logs`），不必改。
+
+## 第 1 步：双入口骨架（已落地）
+
+- 4 个 HTTP 接口：`POST /api/v1/knowledge-bases/create`、`POST /api/v1/documents/upload`、`POST /api/v1/rag/retrieve`、`GET /api/v1/knowledge-bases`（列这把 Key 可见的库）。
+- MCP 入口挂在 `/mcp/`，两个工具 `rag_retrieve` / `rag_list_knowledge_bases`；`json_response=True`，工具调用回普通 JSON，不走流式。
+- 两个入口头部都带 `Authorization: Bearer dev-key`；`tenant_id` 由服务端从这把占位 Key 解出（默认 `tenant_demo`），不进请求体。检索传 `kb_ids`（列表）+ `query`。第 5 步再换 `api_keys` 表真校验与 `allowed_kb_ids` 白名单。
+- `ENABLE_MCP=true` 时挂子应用（生产默认）；离线测试用 `ENABLE_MCP=false` 关掉会话管理器。
 
 ## 第 2 步：工程可维护性（已落地）
 
@@ -44,7 +51,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 - HTTP 入口适配器 `app/api/error_handlers.py` 的三个处理器：业务失败 HTTP 200 + 非零 `code`；参数校验失败 200 + `20002`（只含 `loc/msg/type`）；未捕获异常 500 + `50000`（堆栈只进日志）。成功 `msg="success"`。
 - 包壳只覆盖 `/api/v1/*`；`/health`、`/docs`、`/openapi.json`、写错路径 404 保持 FastAPI 原生。
 - `structlog 26.1.0` + 标准库 `RotatingFileHandler`：控制台彩色文本、`logs/app.log` 全量 JSON Lines、`logs/error.log` 仅 ERROR；只新增 `LOG_LEVEL`、`LOG_DIR` 两个配置项。
-- 纯 ASGI 的 `request_id` 中间件：合法 `X-Request-ID` 原样回写，只进日志字段与响应头，不进响应体；500 的响应头由 `Exception` 处理器显式补写。业务失败不写 ERROR 日志。
+- 基于 `BaseHTTPMiddleware` 的 `request_id` 中间件：合法 `X-Request-ID` 原样回写，只进日志字段与响应头，不进响应体；500 的响应头由 `Exception` 处理器显式补写。业务失败不写 ERROR 日志。
 
 ## 运行与验证（离线）
 
@@ -53,7 +60,7 @@ uv run ruff check .                                    # 静态检查
 uv run ruff format --check tests                      # 格式检查（历史文件暂不纳入）
 uv run mypy app                                       # 宽松类型检查
 uv run pytest -q                                      # 离线测试：不连 PG、不发真实模型请求
-uv run uvicorn app.main:app --reload --port 8000      # 本地起服务，再按教程跑三条 curl
+uv run uvicorn app.main:app --reload --port 8000      # 本地起服务，再按教程跑四条 curl（含列库）
 ```
 
 CI 在 push / PR 触发，依次跑 `uv sync --all-groups --frozen` → ruff 检查 → 格式检查 → mypy → pytest；不起容器、不发真实模型请求。本机网络受限时可用主 checkout 的解释器跑 `python -m pytest -q` 并设 `PYTHONPATH` 为当前 worktree 绝对路径；`mypy` / `pre-commit` 交给 CI 云端执行。

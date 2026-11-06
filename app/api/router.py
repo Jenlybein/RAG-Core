@@ -1,4 +1,4 @@
-"""API 路由汇总：三个接口统一挂到 /api/v1 前缀下。
+"""API 路由汇总：第 1 步的 4 个接口统一挂到 /api/v1 前缀下。
 
 main.py（步骤 8）只需 include_router(api_router) 一次。
 """

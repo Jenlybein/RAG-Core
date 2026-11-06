@@ -32,5 +32,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     LOG_DIR: str = "logs"
 
+    # 占位 Key（第 1 步）：数据面两个入口共用。认这个固定 token，
+    # tenant_id 取默认租户、不做真实校验；第 5 步换成 api_keys 表。
+    DEV_API_KEY: str = "dev-key"
+    DEV_TENANT_ID: str = "tenant_demo"
+    # 离线测试 / CI 不启 MCP 会话管理器（避免每个 TestClient 都启停 session manager）。
+    # 生产默认开启；仅 pytest 通过环境变量关掉。
+    ENABLE_MCP: bool = True
+
 
 settings = Settings()
