@@ -35,3 +35,6 @@ eval/runs/
 .idea/
 Thumbs.db
 desktop.ini
+
+# ── Agent 工作区（git worktree 落在这里，绝不入库）──
+.agents/

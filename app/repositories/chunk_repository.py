@@ -1,6 +1,7 @@
 """切片的普通 CRUD（向量写入与相似度检索归 PgVectorStore）。
 
 ``count_by_document_ids`` 供文档列表接口一次拿到全部文档的切片数，不做 N+1；
+``count_by_kb_ids`` 供检索层判定「空结果到底是哪种空」（票 4）；
 ``delete_by_document_id`` 由索引重建 / 删除文档复用。
 """
 
@@ -12,6 +13,33 @@ from app.models.chunk import Chunk
 
 def count_by_kb(db: Session, kb_id: str) -> int:
     stmt = select(func.count()).select_from(Chunk).where(Chunk.kb_id == kb_id)
+    return int(db.execute(stmt).scalar_one())
+
+
+def count_by_kb_ids(
+    db: Session, *, tenant_id: str, kb_ids: list[str], index_version: str | None = None
+) -> int:
+    """这些库里共有多少条可检索切片（一次 count，不按库循环）。
+
+    检索层用它区分「库内没有可检索内容」（``0``）与「有内容但本次没命中」
+    （``> 0``）。**不许用本次结果的条数去猜**：某库没有切片进入结果不是失败，
+    而结果为空时，只有数据库知道是「空库」还是「没命中」。``tenant_id`` 是强制
+    过滤参数（ADR-0006），计数绝不跨租户。
+
+    传了 ``index_version`` 就按版本过滤，**调用方必须与召回时的过滤口径一致**：
+    否则「库里只有另一个版本的切片」会被算成「有内容」，把「该换个问法」误报成
+    「没命中」，把排查引向错误的方向。
+    """
+
+    if not kb_ids:
+        return 0
+    stmt = (
+        select(func.count())
+        .select_from(Chunk)
+        .where(Chunk.tenant_id == tenant_id, Chunk.kb_id.in_(kb_ids))
+    )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
     return int(db.execute(stmt).scalar_one())
 
 

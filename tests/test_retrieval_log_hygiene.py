@@ -107,7 +107,11 @@ class _FakeEmbeddingProvider:
 
 
 class _FakeVectorStore:
-    """离线向量库替身：返回一片带文档内容的切片，不碰数据库。"""
+    """离线向量库替身：返回一片带文档内容的切片，不碰数据库。
+
+    票 5 起检索走范围版（一次覆盖全部配对）；两处都记录，且都只记 ID 与派生量
+    ——这个文件守的正是「日志里不许出现检索原文」。
+    """
 
     async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k) -> list[dict]:
         structlog.get_logger("t7.retrieval.vectorstore").info(
@@ -117,15 +121,30 @@ class _FakeVectorStore:
             top_k=top_k,
             returned=1,
         )
-        return [
-            {
-                "chunk_id": "chunk-1",
-                "document_id": "doc-1",
-                "title": "demo",
-                "content": DOCUMENT_CONTENT,
-                "score": 0.9,
-            }
-        ]
+        return [{**_row(), "kb_id": kb_id}]
+
+    async def similarity_search_scope(
+        self, db, query_vector, *, tenant_id, index_versions, top_k
+    ) -> list[dict]:
+        structlog.get_logger("t7.retrieval.vectorstore").info(
+            "chunks retrieved",
+            tenant_id=tenant_id,
+            kb_ids=sorted(index_versions),
+            top_k=top_k,
+            returned=1,
+        )
+        (kb_id,) = index_versions or (None,)
+        return [{**_row(), "kb_id": kb_id}]
+
+
+def _row() -> dict:
+    return {
+        "chunk_id": "chunk-1",
+        "document_id": "doc-1",
+        "title": "demo",
+        "content": DOCUMENT_CONTENT,
+        "score": 0.9,
+    }
 
 
 @pytest.fixture
@@ -162,13 +181,16 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
         main.app.dependency_overrides.clear()
 
 
-def _retrieve(client: TestClient):
+def _retrieve(client: TestClient, *, mode: str | None = None):
+    payload: dict[str, Any] = {
+        "kb_ids": [KB_ID],
+        "query": QUERY_TEXT,
+    }
+    if mode is not None:
+        payload["mode"] = mode
     return client.post(
         "/api/v1/rag/retrieve",
-        json={
-            "kb_ids": [KB_ID],
-            "query": QUERY_TEXT,
-        },
+        json=payload,
         headers={"X-Api-Key": API_KEY, "X-Request-ID": REQUEST_ID},
     )
 
@@ -225,7 +247,10 @@ def test_retrieval_server_error_logs_stay_clean(
         lambda: _FakeEmbeddingProvider(api_key=config_mod.settings.MODEL_API_KEY, fail=True),
     )
 
-    response = _retrieve(client)
+    # 票 4 起缺省模式是 hybrid，而混合模式下「嵌入失败」是**契约规定的降级**
+    # （对称降级：改用关键词一路，业务码仍成功），不再是 500。本测试守的是
+    # 500 兜底分支的日志卫生，所以显式走不降级的单模式。
+    response = _retrieve(client, mode="vector")
 
     assert response.status_code == 500
     assert response.json() == {"code": 50000, "msg": "server error", "data": None}

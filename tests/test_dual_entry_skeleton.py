@@ -94,8 +94,12 @@ def test_list_knowledge_bases_returns_only_default_tenant(client, monkeypatch) -
     assert [item["kb_id"] for item in body["data"]["knowledge_bases"]] == ["kb-1", "kb-2"]
 
 
-def test_retrieve_traverses_every_kb_id(client, monkeypatch) -> None:
-    """kb_ids 是列表：逐库检索、合并、按分数排序后截到 TOP_K。"""
+def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None:
+    """``kb_ids`` 是列表：一次范围召回覆盖全部库，再按分数排序后截到 TOP_K。
+
+    票 5 起不再是「逐库检索再合并」：分库召回会让不相关的库也各占名额。这里的
+    断言因此变成「一次调用 + 配对映射覆盖两个库」，合并排序的口径不变。
+    """
 
     rag_service = importlib.import_module("app.services.rag_service")
     knowledge_base_access = importlib.import_module("app.services.knowledge_base_access")
@@ -112,20 +116,29 @@ def test_retrieve_traverses_every_kb_id(client, monkeypatch) -> None:
 
     class FakeVectorStore:
         def __init__(self):
-            self.seen: list[str] = []
+            self.scopes: list[dict[str, str]] = []
+
+        async def similarity_search_scope(
+            self, db, query_vector, *, tenant_id, index_versions, top_k
+        ):
+            self.scopes.append(dict(index_versions))
+            rows = []
+            for kb_id in index_versions:
+                score = 0.9 if kb_id == "kb-a" else 0.5
+                rows.append(
+                    {
+                        "document_id": f"doc-{kb_id}",
+                        "chunk_id": f"chunk-{kb_id}",
+                        "kb_id": kb_id,
+                        "title": "title",
+                        "content": "content",
+                        "score": score,
+                    }
+                )
+            return rows
 
         async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
-            self.seen.append(kb_id)
-            score = 0.9 if kb_id == "kb-a" else 0.5
-            return [
-                {
-                    "document_id": f"doc-{kb_id}",
-                    "chunk_id": f"chunk-{kb_id}",
-                    "title": "title",
-                    "content": "content",
-                    "score": score,
-                }
-            ]
+            raise AssertionError("范围版一次就能覆盖全部库，不许按库循环")
 
     fake_store = FakeVectorStore()
     monkeypatch.setattr(rag_service, "get_embedding_provider", lambda: FakeEmbedding())
@@ -141,9 +154,12 @@ def test_retrieve_traverses_every_kb_id(client, monkeypatch) -> None:
     body = response.json()
     assert body["code"] == 0
     assert body["data"]["kb_ids"] == ["kb-b", "kb-a"]
-    assert fake_store.seen == ["kb-b", "kb-a"], "每个显式传入的库都要被检索"
+    assert fake_store.scopes == [{"kb-b": "v1", "kb-a": "v1"}], (
+        "一次范围调用；每个显式传入的库都在配对映射里"
+    )
     chunks = body["data"]["retrieved_chunks"]
     assert [c["document_id"] for c in chunks] == ["doc-kb-a", "doc-kb-b"], "按分数合并排序"
+    assert [c["kb_id"] for c in chunks] == ["kb-a", "kb-b"], "每条切片都能归属到某个库"
 
 
 def test_mcp_tools_have_the_declared_signatures() -> None:

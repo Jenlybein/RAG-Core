@@ -23,6 +23,11 @@ async def retrieve(
     key: DevKeyContext = Depends(resolve_dev_key),
 ) -> ApiResponse[RetrieveData]:
     data = await rag_service.retrieve(
-        db, tenant_id=key.tenant_id, kb_ids=payload.kb_ids, query=payload.query
+        db,
+        tenant_id=key.tenant_id,
+        kb_ids=payload.kb_ids,
+        query=payload.query,
+        mode=payload.mode,
+        top_k=payload.top_k,
     )
     return ok(RetrieveData.model_validate(data))
