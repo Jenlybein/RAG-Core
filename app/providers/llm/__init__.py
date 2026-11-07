@@ -1,4 +1,4 @@
-"""大模型能力出口：抽象 + 按「供应商 + 档位」装配的工厂。
+"""大模型能力出口：抽象 + 按「供应商 + 模型角色」装配的工厂。
 
 换供应商只改环境变量（``LLM_PROVIDER`` 与该家的 key / 模型名），业务代码零改动；
 一家都没配时返回空实现，离线环境照常启动（仓库的离线测试全都跑在这条路上）。
@@ -43,22 +43,27 @@ _VENDORS: dict[str, _Vendor] = {
     "gemini": _Vendor("google_genai", "", "GEMINI_API_KEY"),
 }
 
-# 两档：fast 用于查询改写与重排（要快、要稳），strong 留给 Research（要准）。
-_TIERS = ("fast", "strong")
+# 两种**模型角色**：fast 用于查询改写与重排（要快、要稳），strong 留给 Research（要准）。
+#
+# 为什么叫「角色」而不是「档位」（GLOSSARY 合规）：本仓库里已经有另外两个同形词，指的
+# 都不是这件事——「套餐」是计费档（``tier`` 在术语表里是它的**禁用词**），「档位」是
+# 第 5 步的质量档位（speed / balanced / quality / custom）。这里说的是「同一家供应商下
+# 哪个模型干什么活」，与计费、与质量档位都无关，所以三者必须用不同的词。
+_MODEL_ROLES = ("fast", "strong")
 
 # 「关掉思考」在配置里的写法；其余取值原样透传成框架的 reasoning_effort。
 _REASONING_OFF = ("", "off", "none", "false", "0")
 
 
-def get_llm_provider(tier: str = "fast") -> LLMProvider:
-    """按供应商与档位装配。
+def get_llm_provider(role: str = "fast") -> LLMProvider:
+    """按供应商与模型角色装配。
 
     缺任何一环（供应商未知、key 没配）都退回空实现或立刻报错，不做「半装配」——
     半装配的症状是发出去了但一直 401，比启动就缺能力难查得多。
     """
 
-    if tier not in _TIERS:
-        raise ValueError(f"未知档位 {tier!r}，只支持 {_TIERS}")
+    if role not in _MODEL_ROLES:
+        raise ValueError(f"未知模型角色 {role!r}，只支持 {_MODEL_ROLES}")
 
     # 遥测开关必须在**任何**客户端被构造之前落地，包括下面这条「没配 key、走空实现」
     # 的早退路径：审计要看的是「这个进程里的框架永远不外发」，而不是「有 key 时才
@@ -77,7 +82,7 @@ def get_llm_provider(tier: str = "fast") -> LLMProvider:
         # 也不是静默降级成「检索照常、改写悄悄不生效」。
         return NoopLLMProvider()
 
-    model_name = settings.LLM_MODEL if tier == "fast" else settings.LLM_STRONG_MODEL
+    model_name = settings.LLM_MODEL if role == "fast" else settings.LLM_STRONG_MODEL
     options: dict[str, Any] = {
         "api_key": api_key,
         "timeout": settings.LLM_TIMEOUT_SECONDS,
@@ -86,17 +91,17 @@ def get_llm_provider(tier: str = "fast") -> LLMProvider:
     if base_url:
         options["base_url"] = base_url
 
-    # fast 档写死关思考：改写与重排要的是低延迟与稳定输出，这是代码约束而不是
-    # 运维纪律（配置里写 high 也影响不到 fast）。strong 档才由配置决定。
-    if tier == "strong":
+    # fast 角色写死关思考：改写与重排要的是低延迟与稳定输出，这是代码约束而不是
+    # 运维纪律（配置里写 high 也影响不到 fast）。strong 角色才由配置决定。
+    if role == "strong":
         effort = settings.LLM_REASONING_EFFORT.strip().lower()
         if effort not in _REASONING_OFF:
             options["reasoning_effort"] = effort
     else:
         # 温度固定 0：改写与重排都是**确定性**步骤，而各家的默认温度是 1.0 量级。
         # 留默认值会让「同样的请求两次返回相同顺序」这条承诺直接失效，而 RRF 把
-        # k=60 写死、融合加 tie-breaker 全是为了同一件事。strong 档不设温度：
-        # Research 需要一点发散，且那一档的参数不该由检索链路替它决定。
+        # k=60 写死、融合加 tie-breaker 全是为了同一件事。strong 角色不设温度：
+        # Research 需要一点发散，且那个角色的参数不该由检索链路替它决定。
         options["temperature"] = 0
 
     chat_model = init_chat_model(model_name, model_provider=vendor.chat_provider, **options)
