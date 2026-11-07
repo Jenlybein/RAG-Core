@@ -1,0 +1,27 @@
+{
+  "_readme": [
+    "评测语料的落库布局：哪个文件进哪个知识库。",
+    "kb_id 全部由 eval_retrieval.py 固定并使用：重跑先按这些 id 清空再写入，",
+    "所以语料永远不会被索引两遍。三个 id 都带 eval 前缀，与真实业务库不相交。",
+    "empty_kb 刻意不挂任何文档：它只用来触发 no_indexed_chunks 这一种空结果原因。"
+  ],
+  "kbs": [
+    {
+      "kb_id": "kb-eval",
+      "name": "评测语料库·客户支持",
+      "description": "票 8 固定评测语料：错误码、型号、内部代号、退款与人事流程",
+      "documents": ["support_kb.md"]
+    },
+    {
+      "kb_id": "kb-eval-ops",
+      "name": "评测语料库·运维值班",
+      "description": "多库检索验收用的第二个库，与客户支持库主题部分重叠",
+      "documents": ["ops_handbook.md"]
+    }
+  ],
+  "empty_kb": {
+    "kb_id": "kb-eval-empty",
+    "name": "评测语料库·空库",
+    "description": "验证 no_indexed_chunks 用，不写任何文档"
+  }
+}
