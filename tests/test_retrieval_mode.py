@@ -16,6 +16,7 @@ dependency_overrides 换掉、三个 Provider 工厂用离线替身换掉，其�
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from collections.abc import Iterator
 from typing import Any
@@ -24,6 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -354,3 +356,50 @@ def test_mode_default_comes_from_server_config(
     assert body["data"]["metadata"]["mode"] == "bm25"
     assert offline_retrieval["keyword"].calls, "缺省模式来自配置，不是硬编码的 vector"
     assert offline_retrieval["embedding"].queries == []
+
+
+# ───────────────────────────────────────── mode 校验与可见性预校验的先后顺序
+
+
+class _ExplodingSession:
+    """只要被访问就炸的会话替身：用来证明「这段逻辑一次都没碰数据库」。"""
+
+    def get(self, *_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover - 访问即失败
+        raise AssertionError("顺序错了：mode 校验之后、可见性校验之前不应该访问数据库")
+
+
+def test_unknown_mode_wins_over_invisible_kb() -> None:
+    """未知 ``mode`` + 不可见 ``kb_id``：先撞参数校验（20002），不是可见性（20008）。
+
+    **为什么断言这个顺序**（票 6 把 mode 校验提到了最前面）：
+
+    * 这条组合**只能在服务层测**。HTTP 入口的请求体用 ``Literal`` 守着 ``mode``，
+      未知值在 schema 层就被 20002 挡掉了，根本到不了 ``retrieve``；能带着未知 mode
+      进来的只有 MCP 入口与内部调用，它们直接调 ``retrieve``。所以这条用例不走
+      ``TestClient``，而是对着服务函数本身断言。
+    * 顺序的两条理由：**(1)** 被拒的请求不该白烧一次改写——校验放在可见性预校验与
+      查询优化之前，一次参数拼错不会先查一次库、再调一次模型；**(2)** 参数错误的表现
+      不该取决于「这个库恰好可不可见」——反过来（先校验可见性）会让同一个拼写错误
+      有时报 20002、有时报 20008，排障时最容易被这两条来回误导。
+
+    ``_ExplodingSession`` 是这条断言的牙齿：若有人把可见性预校验提到前面，
+    ``ensure_visible`` 会先 ``db.get(...)``，用例当场炸在 ``AssertionError`` 上，
+    而不是悄悄换一个业务码继续通过。
+    """
+
+    service = importlib.import_module("app.services.rag_service")
+
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(
+            service.retrieve(
+                _ExplodingSession(),
+                tenant_id=TENANT_ID,
+                kb_ids=["kb-a"],
+                query="E1024",
+                # 未知取值：正常入口（HTTP）进不来，MCP / 内部调用可以。
+                mode="bing",
+                top_k=settings.TOP_K,
+            )
+        )
+
+    assert excinfo.value.code is ErrorCode.PARAM_ERROR
