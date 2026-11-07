@@ -162,13 +162,16 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
         main.app.dependency_overrides.clear()
 
 
-def _retrieve(client: TestClient):
+def _retrieve(client: TestClient, *, mode: str | None = None):
+    payload: dict[str, Any] = {
+        "kb_ids": [KB_ID],
+        "query": QUERY_TEXT,
+    }
+    if mode is not None:
+        payload["mode"] = mode
     return client.post(
         "/api/v1/rag/retrieve",
-        json={
-            "kb_ids": [KB_ID],
-            "query": QUERY_TEXT,
-        },
+        json=payload,
         headers={"X-Api-Key": API_KEY, "X-Request-ID": REQUEST_ID},
     )
 
@@ -225,7 +228,10 @@ def test_retrieval_server_error_logs_stay_clean(
         lambda: _FakeEmbeddingProvider(api_key=config_mod.settings.MODEL_API_KEY, fail=True),
     )
 
-    response = _retrieve(client)
+    # 票 4 起缺省模式是 hybrid，而混合模式下「嵌入失败」是**契约规定的降级**
+    # （对称降级：改用关键词一路，业务码仍成功），不再是 500。本测试守的是
+    # 500 兜底分支的日志卫生，所以显式走不降级的单模式。
+    response = _retrieve(client, mode="vector")
 
     assert response.status_code == 500
     assert response.json() == {"code": 50000, "msg": "server error", "data": None}

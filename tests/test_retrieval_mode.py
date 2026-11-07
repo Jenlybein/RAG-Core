@@ -143,10 +143,15 @@ def _post(client: TestClient, **body) -> dict:
 # ────────────────────────────────────────────── mode=vector（回归红线）
 
 
-def test_vector_mode_is_still_the_default_and_unchanged(offline_retrieval) -> None:
-    """不传 mode 就是 vector：逐库检索、合并排序、score 仍是向量分。"""
+def test_vector_mode_is_unchanged(offline_retrieval) -> None:
+    """``mode=vector`` 与之前完全一致：逐库检索、合并排序、score 仍是向量分。
 
-    body = _post(offline_retrieval["client"])
+    注意：票 4 起**不传 mode 的缺省值已是 hybrid**（父 spec：缺省值取服务端配置），
+    所以这里必须显式传 ``vector``，否则测的就不是这条回归红线了。
+    缺省值来自配置这一点由下面 ``test_mode_default_comes_from_server_config`` 守。
+    """
+
+    body = _post(offline_retrieval["client"], mode="vector")
 
     assert body["code"] == 0
     assert [c["document_id"] for c in body["data"]["retrieved_chunks"]] == ["doc-kb-a"]
@@ -244,14 +249,26 @@ def test_bm25_mode_maps_engine_errors_to_retrieval_failed(offline_retrieval) -> 
 # ─────────────────────────────────────────────────── 请求字段的边界
 
 
-def test_hybrid_mode_is_not_accepted_yet(offline_retrieval) -> None:
-    """票 4 才实现 hybrid：现在传它必须是校验失败，而不是「支持但行为不对」。"""
+def test_hybrid_mode_is_accepted_and_fuses_both_channels(offline_retrieval) -> None:
+    """票 4 起 ``hybrid`` 真的可用：两路都走，结果融合，降级标记为假。
+
+    深度覆盖（四种降级组合、对称降级、空结果原因、真并行）在
+    ``tests/test_hybrid_retrieval.py``；这里只守住「允许值放开了，行为也真的在」。
+    """
 
     body = _post(offline_retrieval["client"], mode="hybrid")
 
-    assert body["code"] == 20002
-    assert offline_retrieval["vector"].calls == []
-    assert offline_retrieval["keyword"].calls == []
+    assert body["code"] == 0
+    assert offline_retrieval["embedding"].queries == ["E1024"]
+    assert offline_retrieval["vector"].calls, "混合模式必须走向量一路"
+    assert offline_retrieval["keyword"].calls, "混合模式必须走关键词一路"
+    assert {c["chunk_id"] for c in body["data"]["retrieved_chunks"]} == {
+        "chunk-kb-a",
+        "chunk-hit",
+    }
+    retrieval = body["data"]["metadata"]["retrieval"]
+    assert retrieval["mode"] == "hybrid"
+    assert retrieval["degraded"] is False
 
 
 @pytest.mark.parametrize("top_k", [0, -1, 51, 1000])
@@ -267,7 +284,7 @@ def test_top_k_is_bounded(offline_retrieval, top_k: int) -> None:
 def test_top_k_from_the_request_reaches_the_channel(offline_retrieval) -> None:
     """显式 top_k 一路穿到通道，也回显在 metadata 里。"""
 
-    body = _post(offline_retrieval["client"], top_k=2)
+    body = _post(offline_retrieval["client"], mode="vector", top_k=2)
 
     assert offline_retrieval["vector"].calls[0]["top_k"] == 2
     assert body["data"]["metadata"]["top_k"] == 2
