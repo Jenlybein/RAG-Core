@@ -20,33 +20,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.utils.retrieval_fields import with_score_columns
+
 # 融合常数：服务端写死，绝不进请求体（父 spec「融合契约」）。
 DEFAULT_RRF_K = 60
-
-# 响应契约里的五个「分列」字段：这一条被哪一路召回、名次多少、融合分多少。
-# 名字与顺序**只在这里定义一次**——向量通道、关键词通道、融合、重排都会产出切片
-# 字典，抄四份迟早漂移（少一个字段是契约破坏，多一个字段是误导）。
-SCORE_COLUMNS = ("vector_score", "bm25_score", "vector_rank", "bm25_rank", "rrf_score")
-
-
-def with_score_columns(chunk: dict[str, Any], **overrides: Any) -> dict[str, Any]:
-    """在 ``chunk`` 上补齐五个分列字段，返回新字典（不改入参）。
-
-    ``overrides`` 里给了哪个字段就用哪个值；没给的沿用 ``chunk`` 自己已有的值
-    （重排就是这么「只搬运、不重算」的）；两者都没有就补 ``None`` ——未命中的那一路
-    是 ``None`` 而不是 0，这是契约（0 会被读成「命中了但很不相关」）。
-
-    这是五个契约字段的唯一填充点。四个调用点（向量通道、关键词通道、RRF 融合、
-    重排 Provider）都走这里，字段集合与默认值只有一个来源。
-    """
-
-    result = {**chunk}
-    for name in SCORE_COLUMNS:
-        if name in overrides:
-            result[name] = overrides[name]
-        elif name not in result:
-            result[name] = None
-    return result
 
 
 def fuse_by_rrf(
@@ -64,8 +41,9 @@ def fuse_by_rrf(
 
     每路切片只需 ``kb_id`` / ``chunk_id`` / ``document_id`` / ``score``，其余字段
     （``title`` / ``content``）原样带给调用方。返回的每条都补齐五个分列字段
-    （见 ``with_score_columns``）：``vector_score`` / ``bm25_score`` /
-    ``vector_rank`` / ``bm25_rank`` / ``rrf_score``，未命中的那一路是 ``None`` 而不是 0。
+    （见 ``app.utils.retrieval_fields.with_score_columns``）：``vector_score`` /
+    ``bm25_score`` / ``vector_rank`` / ``bm25_rank`` / ``rrf_score``，未命中的那一路
+    是 ``None`` 而不是 0。
     """
 
     if rrf_k <= 0:

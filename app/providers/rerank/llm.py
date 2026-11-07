@@ -27,10 +27,9 @@ from pydantic import BaseModel
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.base import RerankProvider
 
-# ``fusion`` 是纯函数模块（不碰数据库、不碰网络、不 import 任何 Provider），因此从
-# Provider 反向 import 它不构成循环依赖，也不把编排知识带进适配层——带进来的只有
-# 「五个契约字段叫什么」这一份定义。
-from app.services.retrieval.fusion import with_score_columns
+# 契约字段的唯一填充点在 ``app/utils``：它不依赖 app 内任何其它层，因此 Provider
+# 可以放心 import——Provider 仍然只认识自己的 ABC 与这个纯函数，不认识任何业务层。
+from app.utils.retrieval_fields import with_score_columns
 
 # 结构化输出的形状：每条候选一个 0~1 的相关性分。用 schema 而不是自由文本，
 # 是为了让「模型说了什么」有可校验的形状——各家在结构化输出上的差异由大模型层消化。
@@ -160,7 +159,7 @@ class LLMRerankProvider(RerankProvider):
             # ``vector_score`` / ``bm25_score`` / ``rrf_score`` 并排，可解释），
             # 后者是「本次最终排序分」（契约字段，重排后由它决定顺序）。
             #
-            # 五个分列字段**只搬运、不重算**，且走融合层的同一个 ``with_score_columns``：
+            # 五个分列字段**只搬运、不重算**，且走与融合层同一个 ``with_score_columns``：
             # 重排一旦自己拼一遍这些字段，契约就有第五份副本，迟早与融合层漂移。
             {
                 **with_score_columns(chunk),
