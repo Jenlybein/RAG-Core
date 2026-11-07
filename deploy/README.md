@@ -1,6 +1,6 @@
 # deploy/ — 本地基础设施
 
-四个服务一次写全，按阶段逐步打开：postgres（阶段 1）→ redis（阶段 3）→ elasticsearch（阶段 4）→ langfuse（阶段 7）。
+五个服务一次写全，按阶段逐步打开：postgres（阶段 1）→ redis + worker（阶段 3）→ elasticsearch（阶段 4）→ langfuse（阶段 7）。
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d          # 全部
@@ -13,8 +13,34 @@ docker compose -f deploy/docker-compose.yml down -v        # 连数据卷一起�
 | --- | --- | --- | --- |
 | postgres（`pgvector/pgvector:pg16`） | `pg16-pgvector` | 5432 | 阶段 1 |
 | redis（`redis:7-alpine`） | `rag-center-redis` | 6379 | 阶段 3 |
+| worker（`deploy/Dockerfile` 自建） | `rag-worker` | — | 阶段 3 |
 | elasticsearch（官方 8.17.10 + 自建 IK） | `rag-es` | 9200 | 阶段 4 |
 | langfuse（`langfuse/langfuse:2`） | `rag-langfuse` | 3000 | 阶段 7 |
+
+## worker：异步索引执行者 + OCR 运行时
+
+`worker` 与 API 共享代码镜像但跑不同命令，**必须用容器**（Celery 官方不支持 Windows，
+且 OCR 原生运行时只备了 Linux x64 资产）。
+
+```bash
+docker compose -f deploy/docker-compose.yml build worker     # 首次或代码变更后
+docker compose -f deploy/docker-compose.yml up -d worker
+docker compose -f deploy/docker-compose.yml logs -f worker   # 看到 celery@<id> ready 即就绪
+```
+
+镜像内预置、运行期不联网：
+
+| 资产 | 路径 | 版本 |
+| --- | --- | --- |
+| PDFium | `/opt/ocr/lib/libpdfium.so` | `native-v7988`（153.0.7988.0） |
+| ONNX Runtime | `/opt/ocr/lib/libonnxruntime.so` | `1.27.0` |
+| PP-OCRv6 Small 模型 | `/opt/ocr/models/pp-ocrv6-small/oar-ocr-v0.7.0` | `oar-ocr-v0.7.0`（约 31 MB） |
+
+三个环境变量由镜像固化：`PDFIUM_LIB_PATH` / `ORT_DYLIB_PATH` / `PDF_INSPECTOR_MODEL_CACHE`，
+配合 `OCR_OFFLINE=true` 保证 Worker 不去下载任何东西。
+
+宿主侧若要手工拉同一套资产（用于 `pytest -m ocr`），跑 `bash deploy/ocr/fetch_runtime.sh`
+——脚本幂等，带大小与 SHA-256 校验，第二次起全部缓存命中。
 
 ## 与教程的一处差异：ES 镜像
 
