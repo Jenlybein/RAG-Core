@@ -15,13 +15,17 @@
 * 空结果区分 ``no_indexed_chunks`` 与 ``no_chunks_matched``，HTTP 200、``code=0``；
 * 混合模式下每条切片五列分数 / 名次真的有值，``score`` 就是融合分；
 * 相同请求两次返回完全相同的顺序；
-* 融合常数 ``k`` 不进请求体。
+* 融合常数 ``k`` 不进请求体；
+* **多库（票 5）**：两条通道各查**一次**、嵌入只算一次，配对映射一次覆盖全部库；
+  两个库的切片都进结果且各自带 ``kb_id``；某库没命中不是失败；可见性每库只校验
+  一次，且先于召回——被拒的请求连嵌入都不算。
 """
 
 from __future__ import annotations
 
 import asyncio
 import importlib
+import json
 import threading
 import time
 from collections.abc import Iterator
@@ -91,7 +95,12 @@ class _FakeEmbedding:
 
 
 class _FakeVectorStore:
-    """按库返回切片；``fail=True`` 模拟向量库/数据库这一路挂了。"""
+    """按库返回切片；``fail=True`` 模拟向量库/数据库这一路挂了。
+
+    实现的是**范围版**（票 5）：一次调用覆盖全部「库 + 版本」配对。单库版的
+    ``similarity_search`` 在这里故意直接报错——混合模式一旦按库循环召回，
+    这个测试文件会同时以「按库分名额」和「多次查询」两种方式失败。
+    """
 
     def __init__(self, rows: dict[str, list[dict]] | None = None, *, fail: bool = False) -> None:
         self.rows = rows or {}
@@ -99,12 +108,24 @@ class _FakeVectorStore:
         self.calls: list[dict[str, Any]] = []
         self.db_seen: Any = None
 
-    async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
-        self.calls.append({"tenant_id": tenant_id, "kb_id": kb_id, "top_k": top_k})
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
+        self.calls.append(
+            {
+                "tenant_id": tenant_id,
+                "index_versions": dict(index_versions),
+                "top_k": top_k,
+            }
+        )
         self.db_seen = db
         if self.fail:
             raise RuntimeError("psycopg: connection refused")
-        return list(self.rows.get(kb_id, []))
+        # 一次范围召回：结果按配对顺序拼接，每行自带 kb_id（跨库结果要能归属）。
+        return [
+            {**row, "kb_id": kb_id} for kb_id in index_versions for row in self.rows.get(kb_id, [])
+        ]
+
+    async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
+        raise AssertionError("混合模式必须一次范围召回，不许按库循环")
 
 
 class _FakeKeyword:
@@ -261,7 +282,7 @@ def test_hybrid_is_the_server_default_and_calls_both_channels(monkeypatch) -> No
     recall_depth = max(settings.TOP_K, settings.HYBRID_RECALL_TOP_K)
     assert recall_depth > settings.TOP_K, "默认配置下召回深度应大于返回条数"
     assert fake["vector"].calls == [
-        {"tenant_id": TENANT_ID, "kb_id": KB_A, "top_k": recall_depth}
+        {"tenant_id": TENANT_ID, "index_versions": {KB_A: "v1"}, "top_k": recall_depth}
     ]
     assert fake["keyword"].calls == [
         {
@@ -327,6 +348,107 @@ def test_repeated_requests_return_the_same_order(monkeypatch) -> None:
         second = _post(fake["client"], mode="hybrid")
 
     assert first["data"]["retrieved_chunks"] == second["data"]["retrieved_chunks"]
+
+
+# ─────────────────────────────── 多库：一次全局召回 + 一次融合（票 5）
+
+
+def test_two_knowledge_bases_cost_one_vector_query_and_one_embedding(monkeypatch) -> None:
+    """两个库的代价：向量查询 1 次、关键词查询 1 次、嵌入 1 次。
+
+    这是「一次全局召回」最直接的证据。分库召回再合并会随库数量线性增长，
+    而嵌入本来就和库数量无关——把两者都钉在 1，才排除「按库循环」。
+    """
+
+    vector = _FakeVectorStore(
+        {KB_A: [_vector_row("a1", score=0.93)], KB_B: [_vector_row("b1", score=0.71)]}
+    )
+    keyword = _FakeKeyword([_keyword_row("a1", kb_id=KB_A, score=12.0)])
+    with _offline_client(monkeypatch, vector=vector, keyword=keyword) as fake:
+        body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
+
+    assert body["code"] == 0
+    assert len(fake["vector"].calls) == 1, "两个库也只查一次向量"
+    assert fake["vector"].calls[0]["index_versions"] == {KB_A: "v1", KB_B: "v1"}, (
+        "一次调用覆盖全部「库 + 版本」配对"
+    )
+    assert fake["embedding"].queries == ["E1024"], "嵌入只算一次，不随库数量增加"
+    assert len(fake["keyword"].calls) == 1
+    assert fake["keyword"].calls[0]["index_versions"] == {KB_A: "v1", KB_B: "v1"}
+
+
+def test_two_knowledge_bases_both_contribute_chunks_with_their_own_kb_id(monkeypatch) -> None:
+    """跨库端到端：两个库都有切片进结果，每条都带 ``kb_id``。"""
+
+    vector = _FakeVectorStore(
+        {
+            KB_A: [_vector_row("a1", score=0.93), _vector_row("a2", score=0.66)],
+            KB_B: [_vector_row("b1", score=0.71)],
+        }
+    )
+    keyword = _FakeKeyword([_keyword_row("b1", kb_id=KB_B, score=9.9)])
+    with _offline_client(monkeypatch, vector=vector, keyword=keyword) as fake:
+        body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
+
+    chunks = body["data"]["retrieved_chunks"]
+    assert {chunk["kb_id"] for chunk in chunks} == {KB_A, KB_B}
+    assert all(chunk["kb_id"] for chunk in chunks), "跨库结果必须能归属到某个库"
+    assert body["data"]["kb_ids"] == [KB_A, KB_B]
+    # 两个库的切片都在同一个融合序列里竞争名次，而不是各排各的。
+    assert [chunk["rrf_score"] for chunk in chunks] == sorted(
+        (chunk["rrf_score"] for chunk in chunks), reverse=True
+    )
+
+
+def test_a_kb_without_hits_is_not_a_failure(monkeypatch) -> None:
+    """「某库没有切片进入结果」是正常排序结果，绝不记成该库失败。"""
+
+    # KB_B 一条都没命中：这是「排序结果」，不是「这个库出事了」。
+    vector = _FakeVectorStore({KB_A: [_vector_row("a1", score=0.9)]})
+    keyword = _FakeKeyword([_keyword_row("a1", kb_id=KB_A, score=12.0)])
+    with _offline_client(monkeypatch, vector=vector, keyword=keyword) as fake:
+        body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
+
+    metadata = _retrieval_metadata(body)
+    assert metadata["degraded"] is False, "某库没结果不是降级"
+    assert [chunk["kb_id"] for chunk in body["data"]["retrieved_chunks"]] == [KB_A]
+    assert "failed_kb_ids" not in json.dumps(body), "不许按库记失败：那是按结果条数推断故障"
+
+
+def test_visibility_is_checked_once_per_kb_before_any_recall(monkeypatch) -> None:
+    """可见性：N 个库 = N 次查询（之前两条分支各一遍 = 2N 次）。"""
+
+    kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
+    seen: list[str] = []
+
+    def _visible(db, kb_id):
+        seen.append(kb_id)
+        return SimpleNamespace(tenant_id=TENANT_ID)
+
+    with _offline_client(monkeypatch) as fake:
+        monkeypatch.setattr(kb_repo, "get_by_id", _visible)
+        body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
+
+    assert body["code"] == 0
+    assert seen == [KB_A, KB_B], "两个库各校验一次，向量与关键词两条分支都不再重复"
+
+
+def test_invisible_kb_is_rejected_before_anything_is_recalled(monkeypatch) -> None:
+    """不可见的库：拒绝先于召回——两条通道都没被调用，嵌入也没算。"""
+
+    kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
+    vector = _FakeVectorStore({KB_A: [_vector_row("a1", score=0.9)]})
+    with _offline_client(monkeypatch, vector=vector) as fake:
+        monkeypatch.setattr(
+            kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id="tenant-b")
+        )
+        body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
+
+    assert body["code"] == 20008
+    assert body["data"] is None
+    assert fake["vector"].calls == [], "拒绝发生在召回之前"
+    assert fake["keyword"].calls == [], "两条通道都不该被调用"
+    assert fake["embedding"].queries == [], "被拒的请求不该白烧一次嵌入调用"
 
 
 # ───────────────────────────────────────────── 降级矩阵（四种组合）
@@ -529,13 +651,17 @@ def test_vector_branch_runs_in_a_worker_thread_with_its_own_session(monkeypatch)
     vector_finished = threading.Event()
 
     class _BlockingVectorStore(_FakeVectorStore):
-        async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
+        async def similarity_search_scope(
+            self, db, query_vector, *, tenant_id, index_versions, top_k
+        ):
             self.db_seen = db
-            self.calls.append({"tenant_id": tenant_id, "kb_id": kb_id, "top_k": top_k})
+            self.calls.append(
+                {"tenant_id": tenant_id, "index_versions": dict(index_versions), "top_k": top_k}
+            )
             vector_started.set()
             time.sleep(0.25)  # 同步阻塞：这正是「并行」必须给它的代价
             vector_finished.set()
-            return [_vector_row("c1", score=0.9)]
+            return [{**_vector_row("c1", score=0.9), "kb_id": KB_A}]
 
     class _TickingKeyword(_FakeKeyword):
         async def keyword_search(self, query, *, tenant_id, index_versions, top_k):

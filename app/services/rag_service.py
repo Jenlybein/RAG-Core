@@ -4,14 +4,21 @@
 第 1 步起 tenant_id 从占位 Key 解出，kb_ids 是调用方显式传的列表；
 第 5 步会在这一层补 ``kb_ids ⊆ allowed_kb_ids`` 白名单校验。
 
-**三种模式的边界（票 3 / 票 4）**：
+**三种模式的边界（票 3 / 票 4 / 票 5）**：
 
-* ``vector`` 与之前完全一致：先 ``embed_query``、再逐库校验可见性并召回、
-  按分数合并排序后截到 ``top_k``；``score`` 仍是向量分（回归红线）。
+* **可见性预校验**：``retrieve`` 在进入任何分支之前把 ``kb_ids`` 逐个校验一遍
+  （N 个库 = N 次查询，票 5 之前是两条通道各查一遍 = 2N 次）。拒绝（20008）先于
+  召回发生，且不参与降级。
+* ``vector`` 先 ``embed_query``、再一次范围召回覆盖全部「库 + 版本」配对、按分数
+  排序后截到 ``top_k``；单库时结果与逐库版一致，``score`` 仍是向量分（回归红线）。
 * ``bm25`` 只走关键词一路：不向量化、不查向量库，``index_versions`` 是
   「kb_id → 索引版本」的映射（配对关系只能来自映射，不能是两个平行数组）。
 * ``hybrid`` 两路并行召回，RRF 融合（融合与降级判定在
   ``app/services/retrieval/``，本模块只负责把结果翻译成响应契约）。
+* **多库是一次全局召回**：两个通道各查一次，嵌入只算一次——分库各召回一批再
+  合并是假均衡，不相关的库也各占名额。
+* **「某库没有切片进入结果」不是失败**：不记 ``failed_kb_ids``，也不按结果条数
+  推断某个库出了事；结果只按实际命中呈现。
 * **单模式不降级**：关键词引擎没配或调用失败一律 ``RETRIEVAL_FAILED``（50002），
   绝不偷偷退回向量——调用方选 bm25 往往就是在评测单路效果。
 * **混合模式对称降级**：哪一路挂了都用另一路的结果，``code`` 仍为 0，
@@ -67,6 +74,13 @@ async def retrieve(
 
     resolved_mode = mode or settings.RETRIEVAL_MODE
     resolved_top_k = top_k or settings.TOP_K
+
+    # 可见性预校验：**进入任何分支之前**只做一遍。两条通道各校验一遍时，N 个库
+    # 就是 2N 次查询；更重要的是「拒绝」会因此有两个来源、两条路径。放在这里之后，
+    # 拒绝（20008）与被拒之后有没有真的发出召回无关——它先于召回发生（父 spec
+    # 「降级矩阵」：任一知识库不可见 → 召回前拒绝）。被拒的请求连嵌入都不必算。
+    for kb_id in kb_ids:
+        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
 
     degraded = False
     degraded_reason: str | None = None
@@ -147,18 +161,23 @@ def _empty_reason(
 async def _retrieve_by_vector(
     db: Session, *, tenant_id: str, kb_ids: list[str], query: str, top_k: int
 ) -> list[dict]:
-    """向量通道：顺序与打分口径与本票之前一致（回归红线，别动）。"""
+    """向量通道：一次范围召回覆盖全部配对，**不按库循环、不按库分名额**。
+
+    单库时就是一个配对条件，SQL 语义与逐库版一致（回归红线：顺序与打分口径不变）；
+    多库时 ``top_k`` 是全局的——分库各取 top_k 再合并才是「假均衡」。
+    """
 
     query_vector = await get_embedding_provider().embed_query(query)
 
-    rows: list[dict] = []
-    for kb_id in kb_ids:
-        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
-        for row in await get_vector_store().similarity_search(
-            db, query_vector, tenant_id=tenant_id, kb_id=kb_id, top_k=top_k
-        ):
-            # kb_id 由编排层补上：跨库结果必须能归属到某个库。
-            rows.append({**row, "kb_id": kb_id})
+    rows = list(
+        await get_vector_store().similarity_search_scope(
+            db,
+            query_vector,
+            tenant_id=tenant_id,
+            index_versions={kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids},
+            top_k=top_k,
+        )
+    )
 
     # 多库时按分数重新排，再截到 top_k；单库行为与骨架期一致。
     rows.sort(key=lambda item: item.get("score", 0.0), reverse=True)
@@ -180,12 +199,10 @@ async def _retrieve_by_keyword(
 ) -> list[dict]:
     """关键词通道：租户 + 库/版本配对过滤，纯关键词打分。
 
-    可见性校验放在召回之前（与向量通道同一条 ADR-0006 约束）；关键词引擎的
-    可用性检查也在这里做——空实现是「能力不存在」，不是「查过了没命中」。
+    可见性不在这里校验：``retrieve`` 已经在进入任何分支之前统一校验过一遍
+    （ADR-0006 的先后顺序不变：不可见的库先被拒绝）。关键词引擎的可用性检查
+    仍在这里做——空实现是「能力不存在」，不是「查过了没命中」。
     """
-
-    for kb_id in kb_ids:
-        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
 
     try:
         provider = get_keyword_search_provider()

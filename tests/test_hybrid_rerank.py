@@ -69,11 +69,21 @@ class _FakeEmbedding:
 
 
 class _FakeVectorStore:
+    """离线向量库替身：这个文件只查一个库，所以行都归属同一个配对。
+
+    票 5 起混合检索走**范围版**（一次召回覆盖全部配对，行自带 ``kb_id``）；
+    单库版的 ``similarity_search`` 留作反例守卫：一旦按库循环就会在这里炸。
+    """
+
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows = rows or []
 
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
+        kb_id = next(iter(index_versions), None)
+        return [{**row, "kb_id": row.get("kb_id", kb_id)} for row in self.rows]
+
     async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
-        return [dict(row) for row in self.rows]
+        raise AssertionError("混合模式必须一次范围召回，不许按库循环")
 
 
 class _FakeKeyword:

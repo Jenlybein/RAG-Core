@@ -45,8 +45,16 @@ class _FakeEmbedding:
 
 
 class _FakeVectorStore:
+    """向量库替身：单库原语（``similarity_search``）与范围版都实现。
+
+    票 5 起 ``mode=vector`` 也走范围版（一次召回覆盖全部配对）。单库时范围里只有
+    一个配对，与旧的逐库调用等价，所以这里把每次配对记成 ``{tenant_id, kb_id,
+    top_k}``——回归断言「单库只查一次、用这个库、这个深度」的语义一个字没变。
+    """
+
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
+        self.scope_calls: list[dict[str, Any]] = []
 
     async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
         self.calls.append({"tenant_id": tenant_id, "kb_id": kb_id, "top_k": top_k})
@@ -60,6 +68,26 @@ class _FakeVectorStore:
                 "score": score,
             }
         ]
+
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
+        self.scope_calls.append(
+            {"tenant_id": tenant_id, "index_versions": dict(index_versions), "top_k": top_k}
+        )
+        rows: list[dict[str, Any]] = []
+        for kb_id in index_versions:
+            self.calls.append({"tenant_id": tenant_id, "kb_id": kb_id, "top_k": top_k})
+            score = 0.9 if kb_id == KB_A else 0.5
+            rows.append(
+                {
+                    "document_id": f"doc-{kb_id}",
+                    "chunk_id": f"chunk-{kb_id}",
+                    "kb_id": kb_id,
+                    "title": "title",
+                    "content": "content",
+                    "score": score,
+                }
+            )
+        return rows
 
 
 class _FakeKeywordSearch:
@@ -144,7 +172,11 @@ def _post(client: TestClient, **body) -> dict:
 
 
 def test_vector_mode_is_unchanged(offline_retrieval) -> None:
-    """``mode=vector`` 与之前完全一致：逐库检索、合并排序、score 仍是向量分。
+    """``mode=vector`` 与之前完全一致：单库一次召回、score 仍是向量分。
+
+    票 5 起召回换成范围版（一次覆盖全部「库 + 版本」配对）：单库时范围里只有一个
+    配对，SQL 语义与逐库版相同，所以这条回归红线（同一个库、同一个深度、同样的
+    分数口径）继续成立。
 
     注意：票 4 起**不传 mode 的缺省值已是 hybrid**（父 spec：缺省值取服务端配置），
     所以这里必须显式传 ``vector``，否则测的就不是这条回归红线了。
@@ -175,6 +207,25 @@ def test_vector_mode_fills_vector_scores_and_leaves_keyword_fields_null(
     assert chunk["bm25_rank"] is None
     assert chunk["rrf_score"] is None
     assert chunk["kb_id"] == KB_A
+
+
+def test_vector_mode_covers_all_kbs_in_one_scope_call(offline_retrieval) -> None:
+    """``mode=vector`` 的多库也是一次全局召回：一个范围调用覆盖两个配对。
+
+    如果只有 hybrid 是全局召回、vector 仍分库召回，「假均衡」就只是换了个 mode
+    藏起来——同一个 API 里不许有两套多库语义。
+    """
+
+    _post(offline_retrieval["client"], mode="vector", kb_ids=[KB_A, KB_B])
+
+    assert offline_retrieval["vector"].scope_calls == [
+        {
+            "tenant_id": TENANT_ID,
+            "index_versions": {KB_A: "v1", KB_B: "v1"},
+            "top_k": settings.TOP_K,
+        }
+    ]
+    assert offline_retrieval["embedding"].queries == ["E1024"], "多库也只嵌入一次"
 
 
 # ────────────────────────────────────────────── mode=bm25（本票新通道）

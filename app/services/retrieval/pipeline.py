@@ -4,7 +4,7 @@
 这次是不是降级），但**不负责**把它翻译成 HTTP 响应——响应壳与业务码归
 ``app.services.rag_service``。
 
-三条不许动的约定：
+四条不许动的约定：
 
 1. **两路真并行**：``asyncio.gather(..., return_exceptions=True)`` 让一路挂掉不取消
    另一路。向量分支是同步 psycopg + 同步 Session，必须 ``asyncio.to_thread`` 丢到
@@ -16,6 +16,10 @@
    ``app/services/retrieval/rerank.py`` 里的 ``rerank failed``；一律不拼异常文本——
    调用方按码做判断，异常文案变了不该影响判断。可见性拒绝（20008）不属于「通道故障」，
    照旧抛出。
+4. **多库 = 一次全局召回**：两条通道各查**一次**，各自覆盖全部「库 + 索引版本」
+   配对；嵌入也只算一次。按库循环召回再合并是假均衡——不相关的库也各占名额，
+   把真正该进来的切片挤掉。可见性校验不在这里：它在 ``rag_service.retrieve``
+   进入任何分支之前统一做一遍（票 25），两条分支内不再重复。
 """
 
 from __future__ import annotations
@@ -30,7 +34,6 @@ import structlog
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session import SessionLocal
 from app.models.chunk import DEFAULT_INDEX_VERSION
-from app.services.knowledge_base_access import ensure_visible
 from app.services.retrieval.fusion import fuse_by_rrf
 from app.services.retrieval.rerank import rerank_stage
 
@@ -218,21 +221,28 @@ async def _vector_branch(
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
 ) -> list[dict]:
-    """向量通道：先向量化，再逐库校验可见性并召回（顺序与单模式一致）。"""
+    """向量通道：向量化**一次**，然后一次范围召回覆盖全部「库 + 版本」配对。
+
+    这里没有「按库循环」：分库各召回一批再合并看着公平，实际让不相关的库也各占
+    名额，把真正该进来的切片挤掉（父 spec「多库：一次全局召回 + 一次融合」）。
+    嵌入同理只算一次——它不随知识库数量增加。
+    """
 
     # 嵌入失败发生在这里，也就是**向量分支内部**：它会被 gather 收成这一路的错误，
     # 于是混合模式降级成「仅关键词」，而不是整单失败。
     query_vector = await embedding_factory().embed_query(query)
     store = vector_factory()
 
-    rows: list[dict] = []
-    for kb_id in kb_ids:
-        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
-        for row in await store.similarity_search(
-            db, query_vector, tenant_id=tenant_id, kb_id=kb_id, top_k=top_k
-        ):
-            # kb_id 由编排层补上：跨库结果必须能归属到某个库。
-            rows.append({**row, "kb_id": kb_id})
+    rows = list(
+        await store.similarity_search_scope(
+            db,
+            query_vector,
+            tenant_id=tenant_id,
+            # 映射而不是两个平行数组：配对关系只能从映射里读出来。
+            index_versions={kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids},
+            top_k=top_k,
+        )
+    )
 
     # 显式 tie-breaker：同分时按 kb_id / chunk_id 排，名次才不会随插入顺序漂移。
     rows.sort(key=lambda item: (-item.get("score", 0.0), item.get("kb_id") or "", item["chunk_id"]))
@@ -248,12 +258,11 @@ async def _keyword_branch(
     top_k: int,
     keyword_factory: Callable[[], Any],
 ) -> list[dict]:
-    """关键词通道：租户 + 库/版本配对过滤；本身是异步 HTTP，不必进线程。"""
+    """关键词通道：租户 + 库/版本配对过滤；本身是异步 HTTP，不必进线程。
 
-    # 可见性校验放在召回之前（ADR-0006），且与单模式保持同样的先后顺序：
-    # 不可见的库先被拒绝，绝不会因为「引擎没配」而变成一个降级空结果。
-    for kb_id in kb_ids:
-        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
+    可见性不在这里校验：由 ``rag_service.retrieve`` 在进入任何分支之前统一预校验
+    一次（两条分支各查一遍 = 每库 2 次查询，且「拒绝」会有两个来源）。
+    """
 
     provider = keyword_factory()
     if not provider.available:
