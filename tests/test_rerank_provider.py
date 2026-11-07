@@ -267,6 +267,36 @@ def test_enabled_flag_distinguishes_off_from_reranked() -> None:
     assert _provider(_FakeLLM(ranking=_ranking())).enabled is True
 
 
+def test_enabled_without_any_model_key_degrades_instead_of_breaking(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """开了重排但这台机器没配任何大模型 key：拿到空实现、重排失败，服务照常启动。
+
+    父 spec 用户故事 22：没有 key 的机器（离线测试 / CI）必须能启动，能力明确
+    不可用。这里是「明确不可用」的具体长相：``LLM_FAILED`` 原样上抛，由编排层
+    降级成融合顺序——不是启动失败，也不是静默当作没配。
+    """
+
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "QWEN_API_KEY",
+        "ARK_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+    ):
+        monkeypatch.setattr(settings, name, "")
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+
+    provider = get_rerank_provider()
+    assert isinstance(provider, LLMRerankProvider)
+
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(provider.rerank(query="q", chunks=[_chunk("c1")], top_n=5))
+
+    assert excinfo.value.code == ErrorCode.LLM_FAILED
+
+
 def test_factory_wires_the_fast_tier_and_the_configured_limits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
