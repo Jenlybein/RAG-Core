@@ -7,7 +7,7 @@ score = 1 - 余弦距离，在 Python 侧换算成「越大越相关」；SQL �
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
-from app.models.chunk import Chunk
+from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk
 from app.models.document import Document
 from app.providers.vectorstores.base import VectorStore
 
@@ -24,6 +24,8 @@ class PgVectorStore(VectorStore):
                     content=c["content"],
                     embedding=c["embedding"],
                     meta=c.get("meta", {}),
+                    # 索引版本随行落库；调用方没给时用列默认值，不写 NULL。
+                    index_version=c.get("index_version", DEFAULT_INDEX_VERSION),
                 )
                 for c in chunks
             ]
