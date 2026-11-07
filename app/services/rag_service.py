@@ -44,6 +44,7 @@ from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
 from app.services.knowledge_base_access import ensure_visible
+from app.services.retrieval.fusion import with_score_columns
 from app.services.retrieval.pipeline import hybrid_retrieve
 
 logger = structlog.get_logger(__name__)
@@ -190,14 +191,9 @@ async def _retrieve_by_vector(
     # 多库时按分数重新排，再截到 top_k；单库行为与骨架期一致。
     rows.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     return [
-        {
-            **row,
-            "vector_score": row.get("score"),
-            "bm25_score": None,
-            "vector_rank": rank,
-            "bm25_rank": None,
-            "rrf_score": None,
-        }
+        # 五列契约字段统一由融合层的 ``with_score_columns`` 补齐：单模式下只有本通道
+        # 那一路是实值，另一路是 ``None``（不是 0），融合分为 ``None``（没有融合）。
+        with_score_columns(row, vector_score=row.get("score"), vector_rank=rank)
         for rank, row in enumerate(rows[:top_k], start=1)
     ]
 
@@ -238,18 +234,17 @@ async def _retrieve_by_keyword(
         raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
 
     return [
-        {
-            "document_id": row["document_id"],
-            "chunk_id": row["chunk_id"],
-            "title": row.get("title", ""),
-            "content": row.get("content", ""),
-            "kb_id": row.get("kb_id"),
-            "score": row.get("score", 0.0),
-            "vector_score": None,
-            "bm25_score": row.get("score", 0.0),
-            "vector_rank": None,
-            "bm25_rank": rank,
-            "rrf_score": None,
-        }
+        with_score_columns(
+            {
+                "document_id": row["document_id"],
+                "chunk_id": row["chunk_id"],
+                "title": row.get("title", ""),
+                "content": row.get("content", ""),
+                "kb_id": row.get("kb_id"),
+                "score": row.get("score", 0.0),
+            },
+            bm25_score=row.get("score", 0.0),
+            bm25_rank=rank,
+        )
         for rank, row in enumerate(rows[:top_k], start=1)
     ]
