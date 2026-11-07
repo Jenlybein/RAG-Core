@@ -12,7 +12,13 @@ pydantic-settings 默认忽略未声明的键（extra="ignore"），不会因多
 它只在 Dockerfile / CI 里作为环境变量设置。
 """
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# 检索模式的允许值。放在模块级而不是写成类属性：它是一份**词汇表**，校验器与
+# 报错文案共用同一份，不会出现「文案说支持 A、校验器只放 B」。票 4 把 hybrid 加进来时
+# 只改这一行。请求体那边的 `Literal` 也刻意不复制它——两处各写一遍必然漂移。
+SUPPORTED_RETRIEVAL_MODES = ("vector", "bm25")
 
 
 class Settings(BaseSettings):
@@ -105,6 +111,26 @@ class Settings(BaseSettings):
     KEYWORD_SEARCH_PROVIDER: str = "none"
     ELASTICSEARCH_URL: str = "http://localhost:9200"
     ELASTICSEARCH_INDEX: str = "rag_chunks"
+
+    @field_validator("RETRIEVAL_MODE")
+    @classmethod
+    def _validate_retrieval_mode(cls, value: str) -> str:
+        """配错的检索模式必须**启动就炸**，不能等到每个请求各自 20002。
+
+        这是真踩过的坑：请求体里的 ``mode`` 有 ``Literal`` 守着，但**缺省值**来自
+        这里，而 Pydantic 不校验 ``default_factory`` 的返回值。结果是配置写成
+        ``hybrid``（旧版 .env 模板里就是这个值）时进程照常起来，之后每个请求都
+        在业务层撞 ``PARAM_ERROR``——排查成本比启动失败高一个数量级。
+        """
+
+        allowed = SUPPORTED_RETRIEVAL_MODES
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"RETRIEVAL_MODE 只支持 {allowed}，当前是 {value!r}。"
+                "旧版 .env 模板里的 hybrid 在票 4 落地前还不能用。"
+            )
+        return normalized
 
 
 settings = Settings()

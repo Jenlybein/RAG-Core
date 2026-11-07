@@ -117,13 +117,12 @@ async def _retrieve_by_keyword(
     for kb_id in kb_ids:
         ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
 
-    provider = get_keyword_search_provider()
-    if not provider.available:
-        raise AppError(
-            ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
-        )
-
     try:
+        provider = get_keyword_search_provider()
+        if not provider.available:
+            raise AppError(
+                ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
+            )
         rows = await provider.keyword_search(
             query,
             tenant_id=tenant_id,

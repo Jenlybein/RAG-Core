@@ -27,8 +27,9 @@ RetrievalMode = Literal["vector", "bm25"]
 
 
 def _default_mode() -> RetrievalMode:
-    # 配置里的值在服务启动时不做校验（配错了就是每个请求都 20002），这里只负责
-    # 让「缺省值来自服务端配置」这句话成立；真正的允许值由 Literal 守。
+    # 「缺省值来自服务端配置」这句话的实现。配置里的值由 Settings 的校验器在
+    # **启动时**验过一遍（配错就起不来），所以这里不必再抛一次——这里的 cast 只对
+    # 类型检查器负责，不是运行时守卫。
     return cast(RetrievalMode, settings.RETRIEVAL_MODE)
 
 
