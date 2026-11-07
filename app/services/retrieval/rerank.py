@@ -69,7 +69,7 @@ async def rerank_stage(*, query: str, chunks: list[dict], top_n: int) -> RerankO
         return RerankOutcome([], None, False, 0, 0, None)
 
     provider = get_rerank_provider()
-    if not provider.enabled:
+    if not provider.available:
         # 关闭重排 = 「没有这一步」，不是「排了一遍恰好没变」：不调用、不记耗时，
         # 融合顺序原样返回。日志与元数据里的「重排是否发生」才不会被误读。
         return RerankOutcome(list(chunks), None, False, len(chunks), len(chunks), None)
