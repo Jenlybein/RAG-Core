@@ -466,6 +466,15 @@ def test_both_channels_healthy_is_not_degraded(monkeypatch) -> None:
         "degraded": False,
         "degraded_reason": None,
         "empty_reason": None,
+        # 重排默认关闭：``applied=false``，``duration_ms=null`` 表示「没有发生」，
+        # 而 candidates/returned 反映进入这一步的候选数——两者都在，才分得清
+        # 「没开」与「开了但一条没变」。
+        "rerank": {
+            "applied": False,
+            "candidates": 2,
+            "returned": 2,
+            "duration_ms": None,
+        },
     }
     assert len(body["data"]["retrieved_chunks"]) == 2
 

@@ -56,15 +56,20 @@ _REJECTION_CODES = frozenset(
 
 @dataclass(frozen=True)
 class HybridOutcome:
-    """一次混合检索的结果：切片 + 是否降级 + 降级原因。"""
+    """一次混合检索的结果：切片 + 是否降级 + 降级原因 + 重排事实。
+
+    ``rerank`` 是 ``metadata.retrieval.rerank`` 的那一份（是否发生、候选数、返回数、
+    耗时）。它和日志读的是同一个 ``RerankOutcome``，所以不会出现「日志说排了、
+    响应里没痕迹」。
+    """
 
     chunks: list[dict]
     degraded: bool
     degraded_reason: str | None
+    rerank: dict[str, object] | None = None
 
 
 async def hybrid_retrieve(
-    db: Any,
     *,
     tenant_id: str,
     kb_ids: list[str],
@@ -74,18 +79,23 @@ async def hybrid_retrieve(
     vector_factory: Callable[[], Any],
     keyword_factory: Callable[[], Any],
     recall_depth: int | None = None,
+    rerank_candidates: int | None = None,
 ) -> HybridOutcome:
-    """两路并行召回，融合后返回；一路失败不取消另一路。
+    """两路并行召回，融合、重排后返回；一路失败不取消另一路。
 
     工厂以**可调用对象**传进来，而不是在这里直接 import：``rag_service`` 是组合根，
     测试替换工厂的位置因此仍然只有一处（沿用既有 monkeypatch 接缝，不新造接缝）。
 
-    ``recall_depth`` 是**每路召回条数**，与 ``top_k``（最终返回条数）不是一回事：
-    融合要先有足够宽的候选池，否则「两路共识」根本没机会显形。它由组合根从配置
-    读出来传进来，这里不碰 settings——编排层不该知道配置从哪来。
+    ``recall_depth`` 是**每路召回条数**，``rerank_candidates`` 是**融合后保留的
+    候选数**，两者都与 ``top_k``（最终返回条数）不是一回事：召回要宽、融合池要宽，
+    「两路共识」与「重排挑得动」才有机会发生。它们由组合根从配置读出来传进来，
+    这里不碰 settings——编排层不该知道配置从哪来。
     """
 
     depth = max(top_k, recall_depth or 0)
+    # 重排开着的时候，融合池必须宽于返回条数：只有 5 条候选时，重排只能原地挪位置，
+    # 「重新挑」这件事根本无从发生。不开重排时这里就等于 top_k，行为不变。
+    fuse_pool = max(top_k, rerank_candidates or 0)
 
     gathered: list[Any] = list(
         await asyncio.gather(
@@ -99,7 +109,6 @@ async def hybrid_retrieve(
                 vector_factory=vector_factory,
             ),
             _keyword_branch(
-                db,
                 tenant_id=tenant_id,
                 kb_ids=kb_ids,
                 query=query,
@@ -143,15 +152,16 @@ async def hybrid_retrieve(
 
     # 融合之后插入重排（GLOSSARY「检索链路」：召回 → 融合 → 重排）。失败只保留融合
     # 顺序并补一个原因；**已经降级就不覆盖**——先到的原因才是根因。
-    fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=top_k)
-    ranked_chunks, rerank_reason = await rerank_stage(query=query, chunks=fused_chunks, top_n=top_k)
-    if rerank_reason is not None:
-        degraded_reason = degraded_reason or rerank_reason
+    fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
+    reranked = await rerank_stage(query=query, chunks=fused_chunks, top_n=top_k)
+    if reranked.reason is not None:
+        degraded_reason = degraded_reason or reranked.reason
 
     return HybridOutcome(
-        chunks=ranked_chunks,
+        chunks=reranked.chunks,
         degraded=degraded_reason is not None,
         degraded_reason=degraded_reason,
+        rerank=reranked.as_metadata(),
     )
 
 
@@ -250,7 +260,6 @@ async def _vector_branch(
 
 
 async def _keyword_branch(
-    db: Any,
     *,
     tenant_id: str,
     kb_ids: list[str],

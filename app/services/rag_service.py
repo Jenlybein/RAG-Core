@@ -84,10 +84,10 @@ async def retrieve(
 
     degraded = False
     degraded_reason: str | None = None
+    rerank_info: dict[str, object] | None = None
 
     if resolved_mode == MODE_HYBRID:
         outcome = await hybrid_retrieve(
-            db,
             tenant_id=tenant_id,
             kb_ids=kb_ids,
             query=query,
@@ -96,12 +96,17 @@ async def retrieve(
             embedding_factory=get_embedding_provider,
             vector_factory=get_vector_store,
             keyword_factory=get_keyword_search_provider,
-            # 「召回宽、返回窄」：只在这里读配置，编排层不碰 settings。
+            # 「召回宽、返回窄、融合池更宽」：三个深度都只在这里读配置，
+            # 编排层不碰 settings。
             recall_depth=max(resolved_top_k, settings.HYBRID_RECALL_TOP_K),
+            rerank_candidates=(
+                settings.RERANK_MAX_CANDIDATES if settings.RERANK_ENABLED else None
+            ),
         )
         chunks = outcome.chunks
         degraded = outcome.degraded
         degraded_reason = outcome.degraded_reason
+        rerank_info = outcome.rerank
     elif resolved_mode == MODE_BM25:
         chunks = await _retrieve_by_keyword(
             db, tenant_id=tenant_id, kb_ids=kb_ids, query=query, top_k=resolved_top_k
@@ -129,6 +134,9 @@ async def retrieve(
                 "degraded": degraded,
                 "degraded_reason": degraded_reason,
                 "empty_reason": _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=chunks),
+                # 重排事实（是否发生、候选数、返回数、耗时）。单模式下恒为 null：
+                # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
+                "rerank": rerank_info,
             },
         },
     }

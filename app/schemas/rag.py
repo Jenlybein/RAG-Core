@@ -72,6 +72,9 @@ class RetrievedChunk(BaseModel):
     vector_rank: int | None = None
     bm25_rank: int | None = None
     rrf_score: float | None = None
+    # 重排分（0~1）。只在重排真的发生时出现；与 ``score`` 同值，但留成独立字段
+    # 是为了让「这一路的分数」与「最终排序分」在契约上分开——前三路分数都这么给。
+    rerank_score: float | None = None
 
 
 class RetrieveData(BaseModel):

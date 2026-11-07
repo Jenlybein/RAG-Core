@@ -92,6 +92,12 @@ def get_llm_provider(tier: str = "fast") -> LLMProvider:
         effort = settings.LLM_REASONING_EFFORT.strip().lower()
         if effort not in _REASONING_OFF:
             options["reasoning_effort"] = effort
+    else:
+        # 温度固定 0：改写与重排都是**确定性**步骤，而各家的默认温度是 1.0 量级。
+        # 留默认值会让「同样的请求两次返回相同顺序」这条承诺直接失效，而 RRF 把
+        # k=60 写死、融合加 tie-breaker 全是为了同一件事。strong 档不设温度：
+        # Research 需要一点发散，且那一档的参数不该由检索链路替它决定。
+        options["temperature"] = 0
 
     chat_model = init_chat_model(model_name, model_provider=vendor.chat_provider, **options)
     return LangChainLLMProvider(chat_model=chat_model, model_name=model_name)

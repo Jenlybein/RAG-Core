@@ -82,7 +82,6 @@ def _chunk(chunk_id: str, *, content: str | None = None, rrf: float = 0.03) -> d
 def _provider(llm: LLMProvider, **overrides: Any) -> LLMRerankProvider:
     options: dict[str, Any] = {
         "llm": llm,
-        "top_n": 5,
         "max_candidates": 20,
         "chunk_max_chars": 1024,
         "timeout_seconds": 5.0,
@@ -127,15 +126,16 @@ def test_unknown_chunk_ids_are_ignored_and_missing_candidates_score_zero() -> No
     assert [c["score"] for c in result] == [7.0, 0.0, 0.0]
 
 
-def test_configured_top_n_limits_returned_chunks() -> None:
-    """返回条数不超过配置的重排条数上限，且请求更大的 ``top_n`` 也放大不了它。"""
+def test_caller_top_n_is_the_only_return_cap() -> None:
+    """返回条数只由调用方的 ``top_n`` 决定——服务端配置不再把它悄悄压小。"""
 
     llm = _FakeLLM(ranking=_ranking(("c1", 1.0)))
     chunks = [_chunk(f"c{i}") for i in range(6)]
 
-    result = asyncio.run(_provider(llm, top_n=2).rerank(query="q", chunks=chunks, top_n=6))
+    result = asyncio.run(_provider(llm).rerank(query="q", chunks=chunks, top_n=6))
 
-    assert [c["chunk_id"] for c in result] == ["c1", "c0"]
+    assert len(result) == 6, "要 6 条就给 6 条（候选足够时）"
+    assert result[0]["chunk_id"] == "c1", "打分最高的排第一"
 
 
 # ──────────────────────────────────────────── 候选封顶与单条内容截断
@@ -232,10 +232,8 @@ def test_rerank_settings_all_have_defaults() -> None:
     config = Settings(_env_file=None)
 
     assert config.RERANK_ENABLED is False, "默认关闭：默认路径不碰大模型"
-    assert config.RERANK_TOP_N == 5
     assert config.RERANK_MAX_CANDIDATES == 20
     assert config.RERANK_CHUNK_MAX_CHARS == 1024
-    assert config.RERANK_TEMPERATURE == 0.0
     assert config.RERANK_TIMEOUT_SECONDS == 15.0
 
 
@@ -306,7 +304,6 @@ def test_factory_wires_the_fast_tier_and_the_configured_limits(
     """
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
-    monkeypatch.setattr(settings, "RERANK_TOP_N", 3)
     monkeypatch.setattr(settings, "RERANK_MAX_CANDIDATES", 2)
     monkeypatch.setattr(settings, "RERANK_CHUNK_MAX_CHARS", 4)
     monkeypatch.setattr(settings, "RERANK_TIMEOUT_SECONDS", 7.0)

@@ -27,11 +27,13 @@ from pydantic import BaseModel
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.base import RerankProvider
 
-# 结构化输出的形状：每条候选一个 0~10 的相关性分。用 schema 而不是自由文本，
+# 结构化输出的形状：每条候选一个 0~1 的相关性分。用 schema 而不是自由文本，
 # 是为了让「模型说了什么」有可校验的形状——各家在结构化输出上的差异由大模型层消化。
+# 量纲取 0~1 而不是 0~10：这个分会直接落进响应的 ``score`` / ``rerank_score``，
+# 而 ``vector_score``（余弦）本来就在 0~1，两个字段同一量纲才不会误导调用方。
 _SYSTEM_PROMPT = (
     "你是检索结果重排器。给定一个用户问题和若干候选切片，"
-    "为每条切片打一个 0 到 10 的相关性分（10 表示这条最能回答该问题）。"
+    "为每条切片打一个 0 到 1 的相关性分（1 表示这条最能回答该问题）。"
     "只输出结构化结果，不要解释。chunk_id 必须原样照抄候选里的值，不要自己编。"
 )
 
@@ -96,13 +98,10 @@ class LLMRerankProvider(RerankProvider):
         self,
         *,
         llm: LLMProvider,
-        top_n: int = 5,
         max_candidates: int = 20,
         chunk_max_chars: int = 1024,
         timeout_seconds: float = 15.0,
     ) -> None:
-        if top_n < 1:
-            raise ValueError(f"重排条数必须为正数，当前是 {top_n!r}")
         if max_candidates < 1:
             raise ValueError(f"候选上限必须为正数，当前是 {max_candidates!r}")
         if chunk_max_chars < 1:
@@ -111,7 +110,6 @@ class LLMRerankProvider(RerankProvider):
             raise ValueError(f"重排超时必须为正数，当前是 {timeout_seconds!r}")
 
         self._llm = llm
-        self._top_n = top_n
         self._max_candidates = max_candidates
         self._chunk_max_chars = chunk_max_chars
         self._timeout_seconds = timeout_seconds
@@ -124,8 +122,9 @@ class LLMRerankProvider(RerankProvider):
             # 没有候选就没有可排的东西：不必花一次模型调用，也不是失败。
             return []
 
-        # 返回条数取「请求的 top_n」与「配置上限」的小值：调用方传更大的值也放不大它。
-        limit = min(top_n, self._top_n)
+        # 返回条数只由调用方的 ``top_n``（= 请求的 ``top_k``）决定：服务端配置不再
+        # 悄悄压条数。候选上限 ``max_candidates`` 管的是「送几条给模型」，不是「回几条」。
+        limit = top_n
 
         raw = await asyncio.wait_for(
             self._llm.chat_structured(
@@ -152,5 +151,10 @@ class LLMRerankProvider(RerankProvider):
             key=lambda pair: (-scores.get(pair[1]["chunk_id"], 0.0), pair[0]),
         )
         return [
-            {**chunk, "score": scores.get(chunk["chunk_id"], 0.0)} for _, chunk in ordered[:limit]
+            # ``rerank_score`` 与 ``score`` 同值：前者是「这一路的分数」（与
+            # ``vector_score`` / ``bm25_score`` / ``rrf_score`` 并排，可解释），
+            # 后者是「本次最终排序分」（契约字段，重排后由它决定顺序）。
+            {**chunk, "score": scores.get(chunk["chunk_id"], 0.0),
+             "rerank_score": scores.get(chunk["chunk_id"], 0.0)}
+            for _, chunk in ordered[:limit]
         ]

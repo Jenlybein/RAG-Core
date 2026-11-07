@@ -181,12 +181,15 @@ def test_keyword_search_sends_the_pure_query_and_maps_the_hits() -> None:
     sent = client.search_calls[0]
     assert sent["index"] == "rag_chunks"
     assert sent["size"] == 3
-    assert sent["query"] == build_bm25_query(
-        tenant_id=TENANT_ID,
-        index_versions={KB_ID: "v1"},
-        search_query="退款申请流程",
-        top_k=3,
-    )["query"]
+    assert (
+        sent["query"]
+        == build_bm25_query(
+            tenant_id=TENANT_ID,
+            index_versions={KB_ID: "v1"},
+            search_query="退款申请流程",
+            top_k=3,
+        )["query"]
+    )
 
     assert rows == [
         {

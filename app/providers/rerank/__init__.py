@@ -27,7 +27,6 @@ def get_rerank_provider() -> RerankProvider:
     return LLMRerankProvider(
         # 重排是延迟敏感的一步：固定用 fast 档（与查询改写同档，父 spec「两档模型」）。
         llm=get_llm_provider("fast"),
-        top_n=settings.RERANK_TOP_N,
         max_candidates=settings.RERANK_MAX_CANDIDATES,
         chunk_max_chars=settings.RERANK_CHUNK_MAX_CHARS,
         timeout_seconds=settings.RERANK_TIMEOUT_SECONDS,

@@ -103,18 +103,15 @@ class Settings(BaseSettings):
     # 默认关闭：关闭时工厂返回空实现，默认路径**一次大模型都不调**——离线测试、CI、
     # 没配 key 的机器都靠这一条保持全绿。
     RERANK_ENABLED: bool = False
-    # 重排返回条数上限：最终条数 = min(top_k, 它)。默认 5 与 TOP_K 一致，所以开启
-    # 重排不会改变默认返回条数；把它调小才会让重排这一档返回得更少（服务端配额口子）。
-    RERANK_TOP_N: int = 5
     # 送进模型的候选上限与单条切片截断长度：提示词长度就是延迟与成本。
     RERANK_MAX_CANDIDATES: int = 20
     RERANK_CHUNK_MAX_CHARS: int = 1024
-    # 采样温度。当前 ``LLMProvider`` 抽象不承载生成参数，所以它只存在于配置层、
-    # 没有传进模型——要接上必须动 app/providers/llm/（不属本票范围），已在报告里
-    # 列为未完成项。先声明出来是为了「配置项全部带默认值」与后续接上时不改调用方。
-    RERANK_TEMPERATURE: float = 0.0
     # 超时由重排 Provider 用 ``asyncio.wait_for`` 兜住：慢调用按失败处理，走降级。
     RERANK_TIMEOUT_SECONDS: float = 15.0
+    # 注：**返回条数只由请求的 ``top_k`` 决定**，没有「重排条数上限」这一项。
+    # 服务端配置悄悄把调用方要的 10 条压成 5 条，是意外行为而不是配额。
+    # 原先的 ``RERANK_TOP_N`` 与 ``RERANK_TEMPERATURE`` 已删除：前者压条数，后者
+    # 从没接进模型（``LLMProvider`` 不承载生成参数，重排温度在装配层固定为 0）。
 
     # 框架自带的追踪客户端读的是环境变量而不是这份配置。这里声明默认值，
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。

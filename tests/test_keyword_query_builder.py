@@ -128,7 +128,10 @@ def test_bm25_query_uses_different_versions_per_kb() -> None:
     should = query["query"]["bool"]["filter"][1]["bool"]["should"]
 
     pairs = [
-        (clause["bool"]["filter"][0]["term"]["kb_id"], clause["bool"]["filter"][1]["term"]["index_version"])
+        (
+            clause["bool"]["filter"][0]["term"]["kb_id"],
+            clause["bool"]["filter"][1]["term"]["index_version"],
+        )
         for clause in should
     ]
     assert pairs == [(KB_A, "v1"), (KB_B, "v2")]
