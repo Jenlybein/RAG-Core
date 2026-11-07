@@ -1,4 +1,4 @@
-"""混合检索的编排：两路并行召回 → 融合 → 降级判定。
+"""混合检索的编排：两路并行召回 → 融合 → 重排 → 降级判定。
 
 它是 ADR-0011 边界图里「我们自写」的那一层：**知道发生了什么**（哪一路挂了、
 这次是不是降级），但**不负责**把它翻译成 HTTP 响应——响应壳与业务码归
@@ -12,8 +12,10 @@
    「并行」只是字面上的（ADR-0011「它管不到的三件事」）。
 2. **对称降级**：嵌入失败发生在向量分支内部，必须被该分支捕获后变成「仅关键词」，
    绝不冒泡成整单失败。只兜关键词那一半是本票最容易漏掉的一条。
-3. **降级原因一因一码**：只用下面两个常量，不拼异常文本——调用方按它做判断，
-   异常文案变了不该影响判断。可见性拒绝（20008）不属于「通道故障」，照旧抛出。
+3. **降级原因一因一码**：通道故障只用下面两个常量，重排失败用
+   ``app/services/retrieval/rerank.py`` 里的 ``rerank failed``；一律不拼异常文本——
+   调用方按码做判断，异常文案变了不该影响判断。可见性拒绝（20008）不属于「通道故障」，
+   照旧抛出。
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from app.db.session import SessionLocal
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.services.knowledge_base_access import ensure_visible
 from app.services.retrieval.fusion import fuse_by_rrf
+from app.services.retrieval.rerank import rerank_stage
 
 logger = structlog.get_logger(__name__)
 
@@ -135,8 +138,15 @@ async def hybrid_retrieve(
             degraded_reason=degraded_reason,
         )
 
+    # 融合之后插入重排（GLOSSARY「检索链路」：召回 → 融合 → 重排）。失败只保留融合
+    # 顺序并补一个原因；**已经降级就不覆盖**——先到的原因才是根因。
+    fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=top_k)
+    ranked_chunks, rerank_reason = await rerank_stage(query=query, chunks=fused_chunks, top_n=top_k)
+    if rerank_reason is not None:
+        degraded_reason = degraded_reason or rerank_reason
+
     return HybridOutcome(
-        chunks=fuse_by_rrf(vector_rows, keyword_rows, top_n=top_k),
+        chunks=ranked_chunks,
         degraded=degraded_reason is not None,
         degraded_reason=degraded_reason,
     )
