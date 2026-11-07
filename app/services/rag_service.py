@@ -82,6 +82,8 @@ async def retrieve(
             embedding_factory=get_embedding_provider,
             vector_factory=get_vector_store,
             keyword_factory=get_keyword_search_provider,
+            # 「召回宽、返回窄」：只在这里读配置，编排层不碰 settings。
+            recall_depth=max(resolved_top_k, settings.HYBRID_RECALL_TOP_K),
         )
         chunks = outcome.chunks
         degraded = outcome.degraded
@@ -131,7 +133,14 @@ def _empty_reason(
 
     if chunks:
         return None
-    indexed = chunk_repository.count_by_kb_ids(db, tenant_id=tenant_id, kb_ids=kb_ids)
+    indexed = chunk_repository.count_by_kb_ids(
+        db,
+        tenant_id=tenant_id,
+        kb_ids=kb_ids,
+        # 必须和召回时的过滤口径一致：库里可能有别的索引版本的切片，但它们对这次
+        # 检索不可见。不过滤版本会让「本该叫用户换问法」的库被误判成「空库」。
+        index_version=DEFAULT_INDEX_VERSION,
+    )
     return EMPTY_NO_INDEXED_CHUNKS if indexed == 0 else EMPTY_NO_CHUNKS_MATCHED
 
 

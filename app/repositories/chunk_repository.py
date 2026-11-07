@@ -16,13 +16,19 @@ def count_by_kb(db: Session, kb_id: str) -> int:
     return int(db.execute(stmt).scalar_one())
 
 
-def count_by_kb_ids(db: Session, *, tenant_id: str, kb_ids: list[str]) -> int:
+def count_by_kb_ids(
+    db: Session, *, tenant_id: str, kb_ids: list[str], index_version: str | None = None
+) -> int:
     """这些库里共有多少条可检索切片（一次 count，不按库循环）。
 
     检索层用它区分「库内没有可检索内容」（``0``）与「有内容但本次没命中」
     （``> 0``）。**不许用本次结果的条数去猜**：某库没有切片进入结果不是失败，
     而结果为空时，只有数据库知道是「空库」还是「没命中」。``tenant_id`` 是强制
     过滤参数（ADR-0006），计数绝不跨租户。
+
+    传了 ``index_version`` 就按版本过滤，**调用方必须与召回时的过滤口径一致**：
+    否则「库里只有另一个版本的切片」会被算成「有内容」，把「该换个问法」误报成
+    「没命中」，把排查引向错误的方向。
     """
 
     if not kb_ids:
@@ -32,6 +38,8 @@ def count_by_kb_ids(db: Session, *, tenant_id: str, kb_ids: list[str]) -> int:
         .select_from(Chunk)
         .where(Chunk.tenant_id == tenant_id, Chunk.kb_id.in_(kb_ids))
     )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
     return int(db.execute(stmt).scalar_one())
 
 

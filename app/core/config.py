@@ -113,6 +113,11 @@ class Settings(BaseSettings):
     KEYWORD_SEARCH_PROVIDER: str = "none"
     ELASTICSEARCH_URL: str = "http://localhost:9200"
     ELASTICSEARCH_INDEX: str = "rag_chunks"
+    # 混合模式的**每路召回深度**。「召回宽、返回窄」：两路各找这么多条再融合，
+    # 最后仍只返回 ``top_k`` 条。它和 ``top_k`` 是两件事——池子只有 top_k 时，
+    # 在 5+5 里挑 5 条，融合几乎无事可做，混合检索的收益会被候选池的宽度吃掉。
+    # 服务端配置，不进请求体（质量参数一旦可调，同一档位就是不同链路）。
+    HYBRID_RECALL_TOP_K: int = 20
 
     @field_validator("RETRIEVAL_MODE")
     @classmethod

@@ -67,12 +67,19 @@ async def hybrid_retrieve(
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
     keyword_factory: Callable[[], Any],
+    recall_depth: int | None = None,
 ) -> HybridOutcome:
     """两路并行召回，融合后返回；一路失败不取消另一路。
 
     工厂以**可调用对象**传进来，而不是在这里直接 import：``rag_service`` 是组合根，
     测试替换工厂的位置因此仍然只有一处（沿用既有 monkeypatch 接缝，不新造接缝）。
+
+    ``recall_depth`` 是**每路召回条数**，与 ``top_k``（最终返回条数）不是一回事：
+    融合要先有足够宽的候选池，否则「两路共识」根本没机会显形。它由组合根从配置
+    读出来传进来，这里不碰 settings——编排层不该知道配置从哪来。
     """
+
+    depth = max(top_k, recall_depth or 0)
 
     gathered: list[Any] = list(
         await asyncio.gather(
@@ -81,7 +88,7 @@ async def hybrid_retrieve(
                 tenant_id=tenant_id,
                 kb_ids=kb_ids,
                 query=query,
-                top_k=top_k,
+                top_k=depth,
                 embedding_factory=embedding_factory,
                 vector_factory=vector_factory,
             ),
@@ -90,7 +97,7 @@ async def hybrid_retrieve(
                 tenant_id=tenant_id,
                 kb_ids=kb_ids,
                 query=query,
-                top_k=top_k,
+                top_k=depth,
                 keyword_factory=keyword_factory,
             ),
             return_exceptions=True,
@@ -136,9 +143,17 @@ async def hybrid_retrieve(
 
 
 def _split(result: Any) -> tuple[list[dict], BaseException | None]:
-    """``gather(return_exceptions=True)`` 的返回值拆成「结果」或「错误」。"""
+    """``gather(return_exceptions=True)`` 的返回值拆成「结果」或「错误」。
+
+    ``return_exceptions=True`` 会把**任何** ``BaseException`` 都收成返回值，包括
+    ``CancelledError`` / ``SystemExit`` / ``KeyboardInterrupt``。后三者不是「这一路
+    挂了」，而是「这个进程/请求不该继续了」——把它们当降级材料吞掉，会让一个已经
+    被取消的请求把剩下的活干完。所以只把 ``Exception`` 当故障，其余原样上抛。
+    """
 
     if isinstance(result, BaseException):
+        if not isinstance(result, Exception):
+            raise result
         return [], result
     return list(result), None
 

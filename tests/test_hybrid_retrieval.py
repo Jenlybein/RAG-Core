@@ -256,15 +256,19 @@ def test_hybrid_is_the_server_default_and_calls_both_channels(monkeypatch) -> No
     assert body["data"]["metadata"]["mode"] == "hybrid"
     assert _retrieval_metadata(body)["mode"] == "hybrid"
     assert fake["embedding"].queries == ["E1024"], "混合模式用原句向量化"
+    # 每路召回的是**召回深度**而不是 top_k：召回宽、返回窄。两路各找 20 条再融合，
+    # 最终仍只返回 top_k 条——池子只有 top_k 时融合几乎无事可做。
+    recall_depth = max(settings.TOP_K, settings.HYBRID_RECALL_TOP_K)
+    assert recall_depth > settings.TOP_K, "默认配置下召回深度应大于返回条数"
     assert fake["vector"].calls == [
-        {"tenant_id": TENANT_ID, "kb_id": KB_A, "top_k": settings.TOP_K}
+        {"tenant_id": TENANT_ID, "kb_id": KB_A, "top_k": recall_depth}
     ]
     assert fake["keyword"].calls == [
         {
             "query": "E1024",
             "tenant_id": TENANT_ID,
             "index_versions": {KB_A: "v1"},
-            "top_k": settings.TOP_K,
+            "top_k": recall_depth,
         }
     ]
 
