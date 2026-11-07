@@ -205,8 +205,10 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
 ) -> None:
     """CI 没有 .env：``MODEL_BASE_URL`` 为空时，未知知识库仍必须回 20008。
 
-    ``rag_service.retrieve`` 先 ``embed_query`` 再校验知识库可见性，因此这里
-    embedding 替身必须真的被调用到，否则 CI 会退化成 ``httpx.UnsupportedProtocol``。
+    票 5 起可见性预校验在进入任何检索分支**之前**，所以被拒的请求连嵌入都不会算
+    （``queries == []``）：拒绝先于召回，也就不该白烧一次嵌入调用。这条断言比原来
+    更强——原断言钉的是「先嵌入、后校验」那个实现顺序，不是业务意图。业务意图是
+    「没有模型 key 也要先给 20008，而不是先炸成 500」，这里同样守着。
     """
 
     from app.core.config import settings
@@ -218,9 +220,7 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
     response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
     assert settings.MODEL_BASE_URL == ""
-    assert offline_embedding.queries == ["hello"], (
-        "离线替身必须真的被调用（证明没有走真实 Provider）"
-    )
+    assert offline_embedding.queries == [], "拒绝先于召回：被拒的请求不烧嵌入"
     assert response.status_code == 200
     assert response.json() == {
         "code": 20008,

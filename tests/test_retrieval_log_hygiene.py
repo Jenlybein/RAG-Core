@@ -107,7 +107,11 @@ class _FakeEmbeddingProvider:
 
 
 class _FakeVectorStore:
-    """离线向量库替身：返回一片带文档内容的切片，不碰数据库。"""
+    """离线向量库替身：返回一片带文档内容的切片，不碰数据库。
+
+    票 5 起检索走范围版（一次覆盖全部配对）；两处都记录，且都只记 ID 与派生量
+    ——这个文件守的正是「日志里不许出现检索原文」。
+    """
 
     async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k) -> list[dict]:
         structlog.get_logger("t7.retrieval.vectorstore").info(
@@ -117,15 +121,30 @@ class _FakeVectorStore:
             top_k=top_k,
             returned=1,
         )
-        return [
-            {
-                "chunk_id": "chunk-1",
-                "document_id": "doc-1",
-                "title": "demo",
-                "content": DOCUMENT_CONTENT,
-                "score": 0.9,
-            }
-        ]
+        return [{**_row(), "kb_id": kb_id}]
+
+    async def similarity_search_scope(
+        self, db, query_vector, *, tenant_id, index_versions, top_k
+    ) -> list[dict]:
+        structlog.get_logger("t7.retrieval.vectorstore").info(
+            "chunks retrieved",
+            tenant_id=tenant_id,
+            kb_ids=sorted(index_versions),
+            top_k=top_k,
+            returned=1,
+        )
+        (kb_id,) = index_versions or (None,)
+        return [{**_row(), "kb_id": kb_id}]
+
+
+def _row() -> dict:
+    return {
+        "chunk_id": "chunk-1",
+        "document_id": "doc-1",
+        "title": "demo",
+        "content": DOCUMENT_CONTENT,
+        "score": 0.9,
+    }
 
 
 @pytest.fixture
