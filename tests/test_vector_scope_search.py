@@ -13,13 +13,21 @@
 接缝：``build_scope_filter`` 是纯函数（返回 SQLAlchemy 表达式，不碰数据库、不发
 SQL）。用 SQLite 方言编译即可离线断言；真要跑 SQL 得先有 pgvector 的
 ``cosine_distance``，那是另一层的事（见 ``tests/test_index_version.py``）。
+
+最后一个用例直接调真实实现（``PgVectorStore.similarity_search_scope``），用一个
+只记账的会话替身接住语句：不上真库，但断言的是**真的会发出去的那条 SQL**——它只
+有一条、只有一个 ``LIMIT``。「每库各取 top_k 再合并」在这里就会露出两个 ``LIMIT``
+或两次调用。
 """
 
 from __future__ import annotations
 
-from sqlalchemy.dialects import sqlite
+import asyncio
+from types import SimpleNamespace
 
-from app.providers.vectorstores.pgvector import build_scope_filter
+from sqlalchemy.dialects import postgresql, sqlite
+
+from app.providers.vectorstores.pgvector import PgVectorStore, build_scope_filter
 
 KB_A = "kb-a"
 KB_B = "kb-b"
@@ -103,3 +111,48 @@ def test_scope_filter_with_empty_scope_matches_nothing() -> None:
     sql = _normalized(_compiled(build_scope_filter({})))
 
     assert sql == "0", "不过滤等于跨库召回，是比空结果严重得多的事故"
+
+
+# ───────────────────────────── 真的会发出去的那条 SQL：只有一条、一个 LIMIT
+
+
+class _CapturingSession:
+    """会话替身：只把语句接住，不连数据库、不执行。"""
+
+    def __init__(self) -> None:
+        self.statement = None
+
+    def execute(self, statement):
+        self.statement = statement
+        return SimpleNamespace(all=lambda: [])
+
+
+def test_scope_search_sends_one_statement_with_one_global_limit() -> None:
+    """范围召回是一条 SQL + 一个 ``LIMIT``：全局截断，不是每库各截一次。
+
+    「每库各取 top_k 再合并」在这里会露馅：要么两次调用，要么 ``LIMIT`` 不止一个。
+    顺便钉住租户过滤与配对条件都真的进了 ``WHERE``——只有构造函数的单测还不够，
+    这里跑的是实现本身。
+    """
+
+    session = _CapturingSession()
+
+    rows = asyncio.run(
+        PgVectorStore().similarity_search_scope(
+            session,
+            [0.1, 0.2, 0.3],
+            tenant_id="tenant-1",
+            index_versions={KB_A: "v1", KB_B: "v2"},
+            top_k=7,
+        )
+    )
+
+    assert rows == [], "替身不返回行，这里只关心发出去的语句"
+    sql = _normalized(str(session.statement.compile(dialect=postgresql.dialect())))
+
+    assert sql.upper().count("LIMIT") == 1, "一个 LIMIT = 一次全局截断"
+    assert " ORDER BY DISTANCE LIMIT " in sql.upper(), "先全局按距离排序，再截断"
+    assert " IN " not in sql.upper(), "配对条件不是独立的 IN"
+    assert sql.count("chunks.kb_id = ") == 2 and sql.count("chunks.index_version = ") == 2
+    assert "chunks.tenant_id = " in sql, "租户过滤是强制条件（ADR-0006）"
+    assert " OR " in sql.upper()
