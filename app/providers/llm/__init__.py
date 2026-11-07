@@ -16,11 +16,9 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 
 from app.core.config import settings
+from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
-from app.providers.llm.langchain_llm import (
-    LangChainLLMProvider,
-    apply_framework_telemetry_switches,
-)
+from app.providers.llm.langchain_llm import LangChainLLMProvider
 from app.providers.llm.noop import NoopLLMProvider
 
 
@@ -62,6 +60,11 @@ def get_llm_provider(tier: str = "fast") -> LLMProvider:
     if tier not in _TIERS:
         raise ValueError(f"未知档位 {tier!r}，只支持 {_TIERS}")
 
+    # 遥测开关必须在**任何**客户端被构造之前落地，包括下面这条「没配 key、走空实现」
+    # 的早退路径：审计要看的是「这个进程里的框架永远不外发」，而不是「有 key 时才
+    # 不外发」。放在早退之前，是这个函数唯一不会漏掉的位置。
+    apply_framework_telemetry_switches()
+
     vendor = _VENDORS.get(settings.LLM_PROVIDER.strip().lower())
     if vendor is None:
         raise ValueError(
@@ -73,8 +76,6 @@ def get_llm_provider(tier: str = "fast") -> LLMProvider:
         # 没配 key = 这台机器上没有大模型能力。空实现让它明确不可用，而不是启动失败，
         # 也不是静默降级成「检索照常、改写悄悄不生效」。
         return NoopLLMProvider()
-
-    apply_framework_telemetry_switches()
 
     model_name = settings.LLM_MODEL if tier == "fast" else settings.LLM_STRONG_MODEL
     options: dict[str, Any] = {

@@ -17,6 +17,7 @@ from app.core.config import settings
 from app.providers.embedding.base import EmbeddingProvider
 from app.providers.embedding.langchain_embeddings import LangChainEmbedding
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbedding
+from app.providers.langchain_runtime import apply_framework_telemetry_switches
 
 _MODE_LANGCHAIN = "langchain"
 _MODE_OPENAI_COMPATIBLE = "openai_compatible"
@@ -34,6 +35,10 @@ _EMBEDDING_TIMEOUT_SECONDS = 60
 
 
 def get_embedding_provider() -> EmbeddingProvider:
+    # 遥测开关是框架级设置，与「用哪套嵌入实现」无关；两个构造点都要调用它，
+    # 否则「没配 key 也要关掉外发」这条审计证据会在最需要它的环境下缺席。
+    apply_framework_telemetry_switches()
+
     mode = settings.EMBEDDING_PROVIDER.strip().lower()
     if mode == _MODE_LANGCHAIN:
         return LangChainEmbedding(

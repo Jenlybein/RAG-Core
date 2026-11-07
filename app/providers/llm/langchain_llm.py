@@ -15,7 +15,6 @@
 
 from __future__ import annotations
 
-import os
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
@@ -23,25 +22,11 @@ from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage
 from langchain_core.utils.json import parse_json_markdown
 from pydantic import BaseModel
 
-from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
+from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
 
-# 框架追踪客户端读的两个开关。LANGCHAIN_* 是旧名、LANGSMITH_* 是新名，
-# 不同版本读不同的那一个，两个都同步才关得干净。
-_TRACING_SWITCHES = ("LANGCHAIN_TRACING_V2", "LANGSMITH_TRACING")
-
-
-def apply_framework_telemetry_switches() -> None:
-    """把「是否外发追踪」从配置同步到框架真正读的地方。
-
-    以配置为准（而不是 ``setdefault``）：shell 里导出了 true、.env 里写 false 时，
-    .env 是本项目的配置契约，审计「数据不出网」时只有一个答案。
-    """
-
-    flag = "true" if settings.LANGCHAIN_TRACING_V2 else "false"
-    for name in _TRACING_SWITCHES:
-        os.environ[name] = flag
+__all__ = ["LangChainLLMProvider", "apply_framework_telemetry_switches"]
 
 
 def _messages(system: str, user: str) -> list[Any]:
