@@ -19,13 +19,19 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `165 passed, 3 skipped` |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 165 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `168 passed`（④ 的 3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 165 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `176 passed, 7 skipped` |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 180 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `179 passed, 4 skipped`（④ 的 3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 180 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 179 deselected` |
 
-3 条 skip 全部来自 ④ 的资产门禁（`skipif(not os.environ.get("PDF_INSPECTOR_MODEL_CACHE"))`），
-不是失败。CI 的 `quality` job 不装资产，所以那里恒为 `165 passed, 3 skipped`。
+7 条 skip 分两类，都不是失败：
+
+- ④ 的 3 条资产门禁（`skipif(not os.environ.get("PDF_INSPECTOR_MODEL_CACHE"))`）；
+- ⑥ 的 4 条真 PostgreSQL 集成用例（`RAG_INTEGRATION_DATABASE_URL` 未设时整体跳过）。
+
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `176 passed, 7 skipped`；`ocr` 与
+`integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
 `tests/test_business_errors.py` 与 `tests/test_exception_boundary.py` 的 `client` fixture
