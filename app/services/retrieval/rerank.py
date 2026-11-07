@@ -8,7 +8,9 @@
 1. **有候选、且重排开着，才调 Provider**：空结果与「这一步没开」都不是重排失败，
    也都不必花一次大模型调用；
 2. **失败即降级**：抛错 / 空返回 / 结构不合法一律回到融合顺序，并给出原因
-   ``rerank failed``——一因一码，绝不把异常文本拼进去（调用方按码做判断）；
+   ``rerank failed``——一因一码，绝不把异常文本拼进去（调用方按码做判断）。
+   降级回的是融合顺序的**前 ``top_n`` 条**，不是整个融合池：返回条数只由 ``top_k``
+   决定，这条承诺在失败路径上同样成立；
 3. **不吞取消信号**：``except Exception`` 只兜业务失败，``CancelledError`` /
    ``SystemExit`` 这类 ``BaseException`` 继续上抛。与 pipeline 里 ``_split`` 的
    理由完全相同：被取消的请求不该把剩下的活干完；
@@ -58,10 +60,16 @@ class RerankOutcome:
 
 
 async def rerank_stage(*, query: str, chunks: list[dict], top_n: int) -> RerankOutcome:
-    """对融合后的候选重排一次；失败时原样返回融合顺序并给出原因。
+    """对融合后的候选重排一次；失败时保留融合顺序并给出原因。
 
     ``top_n`` 是**最终返回条数**（``top_k``），不是候选数：候选的封顶与单条截断在
     Provider 里（它才知道模型的上下文限制）。
+
+    **每一条返回路径都截到 ``top_n``**：开启重排时入参 ``chunks`` 是融合池
+    （``RERANK_MAX_CANDIDATES``，默认 20），远宽于 ``top_k``。降级路径若原样返回它，
+    ``top_k=5`` 的请求碰上重排失败就会拿回 20 条——「返回条数由 top_k 决定」当场失效。
+    截断放在这里而不是只放在 Provider 里，是因为失败 / 未开启这两条路径根本不经过
+    Provider。
     """
 
     if not chunks:
@@ -71,8 +79,9 @@ async def rerank_stage(*, query: str, chunks: list[dict], top_n: int) -> RerankO
     provider = get_rerank_provider()
     if not provider.available:
         # 关闭重排 = 「没有这一步」，不是「排了一遍恰好没变」：不调用、不记耗时，
-        # 融合顺序原样返回。日志与元数据里的「重排是否发生」才不会被误读。
-        return RerankOutcome(list(chunks), None, False, len(chunks), len(chunks), None)
+        # 融合顺序原样返回（截到 top_n）。日志与元数据里的「重排是否发生」才不会被误读。
+        kept = list(chunks)[:top_n]
+        return RerankOutcome(kept, None, False, len(chunks), len(kept), None)
 
     started = time.perf_counter()
     try:
@@ -86,10 +95,12 @@ async def rerank_stage(*, query: str, chunks: list[dict], top_n: int) -> RerankO
             # 只记异常类型，不记原文：异常文案可能夹带提示词或切片内容。
             error=type(exc).__name__,
         )
-        return RerankOutcome(list(chunks), REASON_RERANK_FAILED, False, len(chunks), 0, duration_ms)
+        return RerankOutcome(
+            list(chunks)[:top_n], REASON_RERANK_FAILED, False, len(chunks), 0, duration_ms
+        )
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
-    ranked_chunks = list(ranked) if ranked else []
+    ranked_chunks = list(ranked)[:top_n] if ranked else []
     if not ranked_chunks:
         # 空返回同样算失败：只回一条「重排没结果」比回半截结果更容易排查。
         logger.warning(
@@ -97,7 +108,9 @@ async def rerank_stage(*, query: str, chunks: list[dict], top_n: int) -> RerankO
             candidates=len(chunks),
             duration_ms=duration_ms,
         )
-        return RerankOutcome(list(chunks), REASON_RERANK_FAILED, False, len(chunks), 0, duration_ms)
+        return RerankOutcome(
+            list(chunks)[:top_n], REASON_RERANK_FAILED, False, len(chunks), 0, duration_ms
+        )
 
     logger.info(
         "rerank applied",
