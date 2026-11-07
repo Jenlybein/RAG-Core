@@ -16,9 +16,10 @@ from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # 检索模式的允许值。放在模块级而不是写成类属性：它是一份**词汇表**，校验器与
-# 报错文案共用同一份，不会出现「文案说支持 A、校验器只放 B」。票 4 把 hybrid 加进来时
-# 只改这一行。请求体那边的 `Literal` 也刻意不复制它——两处各写一遍必然漂移。
-SUPPORTED_RETRIEVAL_MODES = ("vector", "bm25")
+# 报错文案共用同一份，不会出现「文案说支持 A、校验器只放 B」。票 4 把 hybrid 加进来，
+# 请求体那边的 `Literal`（app/schemas/rag.py）必须同步加——`Literal` 没法从元组展开，
+# 两处写两遍是语言限制，用 tests/test_hybrid_retrieval.py 的一致性测试钉住，防漂移。
+SUPPORTED_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 
 
 class Settings(BaseSettings):
@@ -102,9 +103,10 @@ class Settings(BaseSettings):
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
     LANGCHAIN_TRACING_V2: bool = False
 
-    # ── 检索与关键词引擎（第 4 步票 3）──
-    # 默认 vector：本票只允许 vector / bm25 两种模式，hybrid 留给票 4 再翻回来。
-    RETRIEVAL_MODE: str = "vector"
+    # ── 检索与关键词引擎（第 4 步票 3 / 票 4）──
+    # 默认 hybrid：票 4 把融合与降级做完后翻回来（父 spec：缺省值取服务端配置）。
+    # 混合模式下关键词一路不可用只会降级，不会让默认配置在离线机器上直接报错。
+    RETRIEVAL_MODE: str = "hybrid"
     # 默认 none：离线测试、CI、没部署 ES 的机器照常启动，关键词能力明确不可用
     # （mode=bm25 时返回 RETRIEVAL_FAILED，绝不偷偷退回向量）。.env 模板里是
     # elasticsearch，本机起了容器就能用。
@@ -119,8 +121,8 @@ class Settings(BaseSettings):
 
         这是真踩过的坑：请求体里的 ``mode`` 有 ``Literal`` 守着，但**缺省值**来自
         这里，而 Pydantic 不校验 ``default_factory`` 的返回值。结果是配置写成
-        ``hybrid``（旧版 .env 模板里就是这个值）时进程照常起来，之后每个请求都
-        在业务层撞 ``PARAM_ERROR``——排查成本比启动失败高一个数量级。
+        ``bing`` 之类的拼错值时进程照常起来，之后每个请求都在业务层撞
+        ``PARAM_ERROR``——排查成本比启动失败高一个数量级。
         """
 
         allowed = SUPPORTED_RETRIEVAL_MODES
@@ -128,7 +130,6 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(
                 f"RETRIEVAL_MODE 只支持 {allowed}，当前是 {value!r}。"
-                "旧版 .env 模板里的 hybrid 在票 4 落地前还不能用。"
             )
         return normalized
 

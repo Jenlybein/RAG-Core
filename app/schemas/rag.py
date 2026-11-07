@@ -5,11 +5,12 @@
 不进请求体；``kb_ids`` 是列表，单库也写 ``["kb_a"]``。
 
 第 4 步票 3 起请求体多了两个字段，其余质量参数（各路召回条数、融合算法、
-改写 / 同义词 / 重排开关）仍全部是服务端配置——它们一旦可调，同一档位在不同
-调用方那里就是不同的检索链路，评测与复现都做不了。
+``rrf_k``、改写 / 同义词 / 重排开关）仍全部是服务端配置——它们一旦可调，同一档位
+在不同调用方那里就是不同的检索链路，评测与复现都做不了。
 
-``mode`` 本票只允许 ``vector`` / ``bm25``。``hybrid`` 留到票 4：先把允许值
-放进来、行为却没做好，比不支持更糟——调用方会以为自己在测混合检索。
+``mode`` 自票 4 起三种取值都真可用：``vector`` / ``bm25`` / ``hybrid``。
+``hybrid`` 的融合常数 ``k`` 写死在服务端（``app/services/retrieval/fusion.py``），
+这里刻意**没有**对应的请求字段：传了会被 ``extra="forbid"`` 直接拒掉。
 """
 
 from typing import Literal, cast
@@ -23,7 +24,9 @@ from app.core.config import settings
 MIN_TOP_K = 1
 MAX_TOP_K = 50
 
-RetrievalMode = Literal["vector", "bm25"]
+# 这份 ``Literal`` 必须与 ``app.core.config.SUPPORTED_RETRIEVAL_MODES`` 保持一致；
+# ``Literal`` 无法从元组展开，两处写两遍是语言限制，由一致性测试钉住。
+RetrievalMode = Literal["vector", "bm25", "hybrid"]
 
 
 def _default_mode() -> RetrievalMode:
@@ -44,7 +47,7 @@ class RetrieveRequest(BaseModel):
 
     kb_ids: list[str] = Field(min_length=1)
     query: str = Field(min_length=1)
-    # 缺省取服务端配置（本票默认 vector，票 4 才翻回 hybrid）。
+    # 缺省取服务端配置（票 4 起默认 hybrid）。
     mode: RetrievalMode = Field(default_factory=_default_mode)
     top_k: int = Field(default_factory=_default_top_k, ge=MIN_TOP_K, le=MAX_TOP_K)
 
@@ -52,9 +55,9 @@ class RetrieveRequest(BaseModel):
 class RetrievedChunk(BaseModel):
     """一条检索结果。
 
-    ``score`` 是「本次最终排序分」：本票单模式下就是该路的原始分，票 4 起混合
-    模式会是融合分、重排后是重排分——调用方要读具体分数请读 ``vector_score`` /
-    ``bm25_score``。没走的那一路，分数与名次是 ``null`` 而不是 0：
+    ``score`` 是「本次最终排序分」：单模式下是该路的原始分，混合模式下是融合分
+    （重排接上后是重排分）——调用方要读具体分数请读 ``vector_score`` /
+    ``bm25_score``。没命中的那一路，分数与名次是 ``null`` 而不是 0：
     「没命中」与「命中但分数为 0」必须可区分。
     """
 
