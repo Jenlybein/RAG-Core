@@ -318,6 +318,36 @@
         }
       ],
       "note": "罕见词盲区的对照题：两个随机串只差几个字符，且两节结构相似（目标 / 验收标准）。"
+    },
+    {
+      "id": "q25",
+      "type": "rare_token",
+      "query": "sha256:9f2a4c7d61b8e05f3d7a2c9e4b6f18d0 是哪一批固件的有效基准",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 固件签名核对（一）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 固件签名核对（二）"
+        }
+      ],
+      "note": "纯哈希串。两片正文逐字相同、只有摘要不同——这是「向量分不开的是内容近邻，不是标识符本身」的直接实验：内容一模一样时向量只能靠那串没见过的十六进制，而它恰好是嵌入模型最没把握的东西。"
+    },
+    {
+      "id": "q26",
+      "type": "rare_token",
+      "query": "隐患-2026-0417-A 的整改期限是几天",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 隐患整改编号规则"
+        }
+      ],
+      "note": "中文与字母数字混排、中间带连字符的编号。IK 会把「隐患-2026-0417-A」切成两段（隐患 / 2026-0417-a），所以关键词一路要么命中整串、要么只命中「隐患」——后者是典型的单常见词噪声，正好考 minimum_should_match。"
     }
   ]
 }

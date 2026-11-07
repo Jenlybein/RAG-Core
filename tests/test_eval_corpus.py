@@ -191,6 +191,81 @@ def test_random_project_codes_exist_at_least_twice() -> None:
     assert len(codes) >= 2, f"随机项目代号不足两个：{sorted(codes)}"
 
 
+# ───────────────────────────────────────── 不规整标识符（v2 补充，票 8 复核）
+
+# 三类「不规整」标识符：纯哈希、大小写混排、中文与字母数字混排（带连字符）。
+# 它们补的是**同一种失败方式的不同侧脸**：向量分不开的到底是什么。
+HASH_PATTERN = re.compile(r"\bsha256:([0-9a-f]{16,})\b")
+CJK_CODE_PATTERN = re.compile(r"隐患-\d{4}-\d{4}-[A-Z]\b")
+
+
+def test_irregular_identifiers_cover_hash_case_and_cjk_mixed_numbering() -> None:
+    """三类不规整标识符都要在语料里真实出现过。
+
+    为什么要单独补这三类：v2 的编号题都长一个样（``E1024`` 这种「字母 + 四位数字」），
+    而真实工单里的标识符长得乱得多——纯哈希串、大小写在不同文档里不一致的代号、
+    中文与字母数字混排还带连字符的编号。只测一种形状，等于只验证了最友好的那种。
+    """
+
+    text = "\n".join(path.read_text(encoding="utf-8") for path in _corpus_paths())
+
+    hashes = set(HASH_PATTERN.findall(text))
+    assert len(hashes) >= 2, f"纯哈希串不足两个：{sorted(hashes)}"
+    assert any(len(digest) >= 32 for digest in hashes), "哈希串太短，不像真实摘要"
+
+    assert CJK_CODE_PATTERN.search(text), "缺「中文 + 字母数字 + 连字符」混排的编号"
+
+
+def test_one_identifier_is_spelled_with_different_case_across_documents() -> None:
+    """同一个串在两篇文档里大小写不一致——这是真实工单里最常见的不规整。
+
+    它同时钉住一件事：IK 会把字母串统一成小写（实测 ``PRJ-7F3A91`` 与 ``prj-7f3a91``
+    产出同一个 token），所以「大小写不一致」不会让关键词一路失明；真正吃苦头的是
+    只按字符串算相似度、又没被显式规范化的那类处理。
+    """
+
+    spellings: dict[str, dict[str, set[str]]] = {}
+    for path in _corpus_paths():
+        for token in re.findall(r"\b[A-Za-z]{2,4}-[0-9A-Za-z]{5,8}\b", path.read_text("utf-8")):
+            by_case = spellings.setdefault(token.lower(), {})
+            by_case.setdefault(token, set()).add(path.stem)
+
+    inconsistent = {key: cases for key, cases in spellings.items() if len(cases) >= 2}
+    assert inconsistent, f"没有跨文档大小写不一致的标识符：{sorted(spellings)}"
+
+    # 至少有一组既换了大小写、又落在不同文档里（同一篇里换来换去不算「跨文档」）。
+    cross_document = {
+        key: cases
+        for key, cases in inconsistent.items()
+        if len({doc for docs in cases.values() for doc in docs}) >= 2
+    }
+    assert cross_document, f"大小写不一致只发生在单篇文档内：{inconsistent}"
+
+
+def test_hash_twin_pair_differs_only_by_the_digest() -> None:
+    """哈希孪生对：两片正文 90% 相同，唯一的判别信号是那串哈希。
+
+    与 ``E1024`` / ``E1025`` 那对是同一个机制，只是换成嵌入模型完全没见过的串：
+    如果两片正文几乎一样而向量仍然分得开，那说明它靠的不是「读懂内容」；
+    反过来，如果它分不开，就证明「向量分不开的是内容近邻，不是标识符本身」。
+    """
+
+    sections: dict[str, str] = {}
+    for _stem, _heading, text, _meta in _pieces():
+        for digest in HASH_PATTERN.findall(text):
+            if digest not in sections:
+                body = "\n".join(
+                    line for line in text.splitlines() if not line.lstrip().startswith("#")
+                )
+                sections[digest] = body
+    assert len(sections) >= 2, f"哈希孪生对不足两片：{sorted(sections)}"
+
+    digests = sorted(sections)[:2]
+    normalized = [re.sub(r"sha256:[0-9a-f]{16,}", "HASH", sections[d]) for d in digests]
+    ratio = difflib.SequenceMatcher(None, *normalized).ratio()
+    assert ratio >= 0.9, f"哈希孪生对正文相似度只有 {ratio:.3f}，不足以让向量分不开"
+
+
 # ───────────────────────────────────────────────────────────────── 题目
 
 
@@ -205,7 +280,9 @@ def _corpus_paths() -> list[Path]:
 def test_question_count_and_type_coverage() -> None:
     payload = _questions()
     questions = payload["questions"]
-    assert 20 <= len(questions) <= 24, f"题目数 {len(questions)} 不在 20-24 之间"
+    # 上界从 24 放到 26：票 8 复核时补了两道「不规整标识符」题（纯哈希 / 中文混排编号），
+    # 与它们对应的语料片一起进语料。下界不动——题目太少时测量没有量程。
+    assert 20 <= len(questions) <= 26, f"题目数 {len(questions)} 不在 20-26 之间"
 
     types = Counter(question["type"] for question in questions)
     assert set(types) <= ALLOWED_TYPES, f"出现未声明的题型：{sorted(set(types) - ALLOWED_TYPES)}"
