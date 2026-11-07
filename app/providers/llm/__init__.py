@@ -16,6 +16,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 
 from app.core.config import settings
+from app.core.llm_vendors import LLM_VENDORS
 from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
 from app.providers.llm.langchain_llm import LangChainLLMProvider
@@ -34,6 +35,12 @@ class _Vendor:
 # 前三家（DeepSeek / 千问 / 豆包 Ark）都讲 OpenAI 兼容协议，只是地址与 key 不同——
 # 这正是「换一家只改环境变量」能成立的现实基础。千问没有固定地址：工作空间 ID 嵌在
 # URL 里（每个租户一份），只能由运维填 LLM_BASE_URL，这里给空串表示「必须自己填」。
+#
+# **这张表的键必须与 ``app.core.llm_vendors.LLM_VENDORS`` 逐个相等**：那份名单是
+# ``LLM_PROVIDER`` 启动期校验的依据，这张表是装配知识。名单在 config 侧（那里要校验），
+# 装配知识在工厂侧（那是 LangChain 的参数），两边都不复制对方的职责；对应关系由
+# ``tests/test_llm_provider.py::test_vendor_names_have_exactly_one_source_of_truth``
+# 钉住——只在一处加一家，用例当场变红。
 _VENDORS: dict[str, _Vendor] = {
     "deepseek": _Vendor("openai", "https://api.deepseek.com/v1", "DEEPSEEK_API_KEY"),
     "qwen": _Vendor("openai", "", "QWEN_API_KEY"),
@@ -42,6 +49,14 @@ _VENDORS: dict[str, _Vendor] = {
     "anthropic": _Vendor("anthropic", "", "ANTHROPIC_API_KEY"),
     "gemini": _Vendor("google_genai", "", "GEMINI_API_KEY"),
 }
+
+# 名单与装配表的对应关系在 import 时就对一遍：两份名单漂移的症状是「启动通过了、
+# 装配时 KeyError / 未知供应商」，那样错误发生在请求链路上，比这里贵得多。
+if tuple(_VENDORS) != LLM_VENDORS:  # pragma: no cover - 名单不一致时才会命中
+    raise RuntimeError(
+        "厂商名单不一致：app.core.llm_vendors.LLM_VENDORS 与 app.providers.llm._VENDORS "
+        f"必须逐个相等，当前分别是 {LLM_VENDORS} 与 {tuple(_VENDORS)}。"
+    )
 
 # 两种**模型角色**：fast 用于查询改写与重排（要快、要稳），strong 留给 Research（要准）。
 #

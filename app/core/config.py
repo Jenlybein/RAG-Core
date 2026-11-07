@@ -16,6 +16,8 @@ pydantic-settings 默认忽略未声明的键（extra="ignore"），不会因多
 from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.llm_vendors import LLM_VENDORS
+
 # 检索模式的允许值。放在模块级而不是写成类属性：它是一份**词汇表**，校验器与
 # 报错文案共用同一份，不会出现「文案说支持 A、校验器只放 B」。票 4 把 hybrid 加进来，
 # 请求体那边的 `Literal`（app/schemas/rag.py）必须同步加——`Literal` 没法从元组展开，
@@ -161,6 +163,29 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(
                 f"RETRIEVAL_MODE 只支持 {allowed}，当前是 {value!r}。"
+            )
+        return normalized
+
+    @field_validator("LLM_PROVIDER")
+    @classmethod
+    def _validate_llm_provider(cls, value: str) -> str:
+        """配错供应商名也必须**启动就炸**，理由与 ``RETRIEVAL_MODE`` 完全同构。
+
+        这是真踩过的坑：用户本机的 ``.env`` 里写着 ``LLM_PROVIDER=openai_compatible``
+        ——一个历史名字，工厂的装配表里没有它。修复前进程照常起来，配置看着「有值」，
+        于是改写与重排永远跑不起来，直到**第一次调用模型**才炸成一次 500；从 API 日志
+        倒推回一个环境变量，比启动失败难查一个数量级。
+
+        名单来自 ``app.core.llm_vendors``：config 与工厂 import 的是同一份，这里
+        **不复制厂商名**。两处真相的代价是「加一家只改一处、另一处静默不同步」，
+        而这条链路的失败方式（模型调用 401 或 KeyError）都不会指向名单本身。
+        """
+
+        allowed = LLM_VENDORS
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"LLM_PROVIDER 只支持 {allowed}，当前是 {value!r}。"
             )
         return normalized
 
