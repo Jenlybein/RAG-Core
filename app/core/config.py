@@ -96,5 +96,15 @@ class Settings(BaseSettings):
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
     LANGCHAIN_TRACING_V2: bool = False
 
+    # ── 检索与关键词引擎（第 4 步票 3）──
+    # 默认 vector：本票只允许 vector / bm25 两种模式，hybrid 留给票 4 再翻回来。
+    RETRIEVAL_MODE: str = "vector"
+    # 默认 none：离线测试、CI、没部署 ES 的机器照常启动，关键词能力明确不可用
+    # （mode=bm25 时返回 RETRIEVAL_FAILED，绝不偷偷退回向量）。.env 模板里是
+    # elasticsearch，本机起了容器就能用。
+    KEYWORD_SEARCH_PROVIDER: str = "none"
+    ELASTICSEARCH_URL: str = "http://localhost:9200"
+    ELASTICSEARCH_INDEX: str = "rag_chunks"
+
 
 settings = Settings()

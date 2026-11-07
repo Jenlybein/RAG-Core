@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.core.auth import DevKeyContext, resolve_dev_key
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session import get_db
+from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository, document_repository
 from app.schemas.common import ApiResponse, ok
@@ -34,6 +35,7 @@ from app.schemas.document import (
     UploadDocumentRequest,
 )
 from app.services import document_service, document_state
+from app.services.chunk_store import build_chunk_stores
 from app.services.document_storage import remove_document_file
 from app.services.knowledge_base_access import ensure_visible
 from app.services.index_dispatch import enqueue_document
@@ -235,10 +237,10 @@ async def delete_document(
 ) -> ApiResponse[DeleteDocumentData]:
     """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删行 → 提交。
 
-    ``purge_document_chunks`` 遍历存储列表（本步只有 pgvector，以后加 ES 只需在
-    默认接线里追加），因此删文档不需要知道存储形态；删除切片同样强制带租户
-    （ADR-0006）。有效处理中（租约未过期）拒绝删除（20025）；租约过期视为
-    Worker 卡死，允许删除。
+    ``purge_document_chunks`` 遍历存储列表（向量存储 + 关键词检索，接线见
+    ``app.services.chunk_store.build_chunk_stores``），因此删文档不需要知道存储
+    形态；删除切片同样强制带租户（ADR-0006）。有效处理中（租约未过期）拒绝删除
+    （20025）；租约过期视为 Worker 卡死，允许删除。
     """
 
     doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
@@ -248,7 +250,10 @@ async def delete_document(
     document_state.ensure_deletable(doc)
 
     await purge_document_chunks(
-        db, document_id, tenant_id=key.tenant_id, stores=[get_vector_store()]
+        db,
+        document_id,
+        tenant_id=key.tenant_id,
+        stores=build_chunk_stores(get_vector_store(), get_keyword_search_provider()),
     )
     remove_document_file(doc.source_file_path)
     db.delete(doc)
