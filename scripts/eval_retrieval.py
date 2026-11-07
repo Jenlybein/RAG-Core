@@ -101,6 +101,12 @@ def _preload_env_file() -> str | None:
 
     用 ``setdefault``：显式传进来的环境变量优先于文件，与 pydantic-settings 的优先级
     一致，运维用 ``$env:MODEL_API_KEY=...`` 覆盖文件时不会被反咬。
+
+    直接用 ``python-dotenv`` 而不是自己切 ``KEY=VALUE``：它是 ``pydantic-settings``
+    的硬依赖（后者本来就靠它读 ``.env``），而 ``pydantic-settings`` 已在
+    ``pyproject.toml`` 里硬钉版本。自己写一个半吊子解析器，反而会在引号、行内注释、
+    ``export`` 前缀这些地方悄悄读错一个 key——那会让「评测用的是哪套环境」变成一个
+    查不出来的问题。
     """
 
     parser = argparse.ArgumentParser(add_help=False)
