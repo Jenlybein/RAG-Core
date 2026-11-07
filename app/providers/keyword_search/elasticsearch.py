@@ -15,6 +15,7 @@ from typing import Any
 
 from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
 
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.keyword_search.query_builder import (
     build_bm25_query,
@@ -79,7 +80,15 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         response = await self._get_client().bulk(operations=operations, refresh=True)
         if response.get("errors"):
             # bulk 是「部分成功」的接口：不主动抛就会留下半边数据，索引阶段必须失败。
-            raise RuntimeError("elasticsearch bulk indexing reported errors")
+            #
+            # 用 ``AppError(API_REQUEST_ERROR)`` 而不是裸 ``RuntimeError``：这个码在
+            # ``app/tasks/indexing.py`` 的 ``RETRYABLE_ERROR_CODES`` 里，Worker 会把
+            # 「ES 抖了一下」当成可重试的瞬时故障；抛 RuntimeError 则被判定为不可重试，
+            # 一次 bulk 分片失败就把文档钉成失败态。文案固定、不带响应体——失败留痕
+            # 只存固定文案，绝不把 ES 的内部报错写进库里或回给调用方。
+            raise AppError(
+                ErrorCode.API_REQUEST_ERROR, "elasticsearch bulk indexing reported errors"
+            )
 
     async def keyword_search(
         self, query: str, *, tenant_id: str, index_versions: dict[str, str], top_k: int
