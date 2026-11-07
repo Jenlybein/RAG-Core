@@ -1,4 +1,4 @@
-"""索引流水线（Worker 侧）：解析 → 切块 → 向量化 → 先删后写 → 状态回写。
+"""索引流水线（Worker 侧）：解析 → 切块 → 拼检索文本 → 向量化 → 先删后写 → 状态回写。
 
 上传请求线程只登记并投递任务，绝不进来这里；进程内的耗时（尤其是 embedding 的
 网络往返）完全由 Celery Worker 承担。
@@ -22,6 +22,11 @@
 
 所有依赖（切块器 / embedding / 向量存储）都从构造参数注入，任务里绝不在方法体
 内 ``new`` 具体类：测试靠注入替身，整份测试不需要网络、Broker 或数据库。
+
+**送进 embedding 的是检索文本，落库的 content 仍是切片原文。** 检索文本由
+``build_retrieval_text`` 用「文档名 + 章节路径 + 正文」拼成，不落库：向量与
+（后续的）关键词索引共用这一份文本，两路对比才有意义；调用方拿到的 ``content``
+必须还是原文（见 GLOSSARY 的「检索文本」与「切片原文」）。
 """
 
 from __future__ import annotations
@@ -33,12 +38,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
 from app.providers.vectorstores import VectorStore, get_vector_store
 from app.repositories import document_repository
 from app.services.document_ingestion import prepare_document_content
 from app.utils.id_generator import new_chunk_id
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
+from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import TextSplitter
 
@@ -121,11 +128,16 @@ class IndexingService:
         if not pieces:
             raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "切块之后没有可用切片")
 
-        texts = [piece.text for piece in pieces]
-        vectors = await self._embeddings.embed_texts(texts)
-        if len(vectors) != len(texts):
+        retrieval_texts = [
+            build_retrieval_text(
+                doc.title, str(piece.metadata.get("heading_path") or ""), piece.text
+            )
+            for piece in pieces
+        ]
+        vectors = await self._embeddings.embed_texts(retrieval_texts)
+        if len(vectors) != len(retrieval_texts):
             raise ValueError(
-                f"embedding count mismatch: {len(texts)} texts -> {len(vectors)} vectors"
+                f"embedding count mismatch: {len(retrieval_texts)} texts -> {len(vectors)} vectors"
             )
 
         chunks: list[dict[str, Any]] = [
@@ -136,6 +148,7 @@ class IndexingService:
                 "document_id": doc.id,
                 "content": piece.text,
                 "embedding": vector,
+                "index_version": DEFAULT_INDEX_VERSION,
                 "meta": {
                     # 解析器产出的 metadata 必须跟着切片走，否则「元数据.engine 含 ocr」
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。

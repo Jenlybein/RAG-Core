@@ -297,8 +297,20 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     assert chunks[3]["meta"]["heading_path"].endswith("> Worker Steps")
     assert "### Worker Steps" in chunks[3]["content"]
 
-    # ── 向量化：每个切片各一条 1536 维向量，数量与切片一一对应 ──
-    assert pipeline_env.embeddings.texts == [chunk["content"] for chunk in chunks]
+    # ── 向量化：送进 embedding 的是检索文本（文档名 + 章节路径 + 正文），
+    #    不是切片原文；每个切片各一条 1536 维向量，数量与切片一一对应。 ──
+    assert len(pipeline_env.embeddings.texts) == len(chunks)
+    for text, chunk in zip(pipeline_env.embeddings.texts, chunks):
+        assert text == (
+            f"文档：Pipeline Notes 章节：{chunk['meta']['heading_path']} 正文：{chunk['content']}"
+        ), "向量化输入必须是该切片的检索文本，且以标题与章节路径开头"
+    assert pipeline_env.embeddings.texts != [chunk["content"] for chunk in chunks], (
+        "检索文本与切片原文必须是两份不同的文本"
+    )
+    # 再用一条完整字面值钉死格式，避免上面的断言跟着实现一起漂移。
+    assert pipeline_env.embeddings.texts[0] == (
+        "文档：Pipeline Notes 章节：Pipeline Notes 正文：" + chunks[0]["content"]
+    )
     assert len(pipeline_env.embeddings.vectors) == len(chunks)
     assert all(len(vector) == EMBEDDING_DIM for vector in pipeline_env.embeddings.vectors)
     assert chunks[0]["embedding"] == pipeline_env.embeddings.vectors[0]
