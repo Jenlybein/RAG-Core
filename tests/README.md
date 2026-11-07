@@ -1,16 +1,16 @@
-# 测试分层与离线验证矩阵（T7）
+﻿# 测试分层与离线验证矩阵（T7）
 
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 4 步票 8 收口时实测）。
+当前 tip（第 4 步票 8 重做 · 语料 v2 时实测）。
 
 ## 分层
 
 | 层 | 接缝 / 被测对象 | 代表文件（不按票重复列举） |
 | --- | --- | --- |
-| ① 纯函数单测 | 切块器、4 个 Parser、状态守卫、错误码词汇、CAS 的 `UPDATE ... WHERE` 分支（内存 SQLite 只建 `documents` 一张表）、**RRF 融合真值表与 tie-breaker、检索文本拼装、BM25 查询体、ES mapping、同义词扩展** | `test_contracts.py`、`test_parsers.py`、`test_markdown_splitter.py`、`test_document_state_machine.py`、`test_indexing_task.py`（`_is_retryable` 真值表）、`test_business_errors.py` 的数据契约、`test_upload_async.py` 的守卫矩阵与 CAS、`test_rrf_fusion.py`、`test_retrieval_text.py`、`test_keyword_query_builder.py`、`test_query_synonyms.py` |
-| ② ASGI 接缝 | `TestClient` 发真实请求，只看响应体 / 响应头 / 日志文件副作用；数据库用 `dependency_overrides`、外部能力用 monkeypatch 换掉 | `test_business_errors.py`、`test_exception_boundary.py`、`test_request_id.py`、`test_logging.py`、`test_retrieval_log_hygiene.py`、`test_upload_async.py` 的上传与列表、`test_indexing_failure.py`、`test_dual_entry_skeleton.py`、`test_toolchain.py`、`test_retrieval_mode.py`、`test_hybrid_retrieval.py`、`test_query_optimization_retrieval.py`、`test_retrieval_log_hygiene.py` |
+| ① 纯函数单测 | 切块器、4 个 Parser、状态守卫、错误码词汇、CAS 的 `UPDATE ... WHERE` 分支（内存 SQLite 只建 `documents` 一张表）、**RRF 融合真值表与 tie-breaker、检索文本拼装、BM25 查询体、ES mapping、同义词扩展、评测算分与语料约束** | `test_contracts.py`、`test_parsers.py`、`test_markdown_splitter.py`、`test_document_state_machine.py`、`test_indexing_task.py`（`_is_retryable` 真值表）、`test_business_errors.py` 的数据契约、`test_upload_async.py` 的守卫矩阵与 CAS、`test_rrf_fusion.py`、`test_retrieval_text.py`、`test_keyword_query_builder.py`、`test_query_synonyms.py`、`test_eval_metrics.py`、`test_eval_corpus.py` |
+| ② ASGI 接缝 | `TestClient` 发真实请求，只看响应体 / 响应头 / 日志文件副作用；数据库用 `dependency_overrides`、外部能力用 monkeypatch 换掉 | `test_business_errors.py`、`test_exception_boundary.py`、`test_request_id.py`、`test_logging.py`、`test_retrieval_log_hygiene.py`、`test_upload_async.py` 的上传与列表、`test_indexing_failure.py`、`test_dual_entry_skeleton.py`、`test_toolchain.py`、`test_retrieval_mode.py`、`test_hybrid_retrieval.py`、`test_query_optimization_retrieval.py` |
 | ③ Worker 任务 | 任务体：CAS 抢占用两段事务、purge → 写入 → SUCCESS、重试白名单、失败留痕与脱敏文案、租约语义、**双写与索引阶段不降级** | `test_indexing_task.py`（`IndexingService` 流水线 + `_run_indexing`）、`test_indexing_dual_write.py`、`test_index_version.py`、`test_keyword_bulk_failure.py` |
 | ④ OCR（asset-gated） | 零路由页不碰原生运行时、缺运行时抛 `ValueError`、扫描件路由到 OCR、整篇全空是质量错误 | `test_ocr_contract.py` + `tests/fixtures/ocr/*.pdf` |
 | ⑤ 跨层 e2e | 一条链：上传 → 投递 → 解析 → 切块 → 向量化 → 先删后写 → SUCCESS，切块 provenance 与表格完整性问题只有这一层能发现 | `test_document_pipeline_e2e.py` + `tests/fixtures/markdown/structured_notes.md` |
@@ -25,12 +25,12 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `369 passed, 10 skipped` |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 376 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `372 passed, 7 skipped`（④ 的 3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 376 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `7 skipped, 372 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 3 skipped, 372 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `399 passed, 10 skipped` |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 406 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `402 passed, 7 skipped`（④ 的 3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 406 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `7 skipped, 402 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 3 skipped, 402 deselected` |
 
 10 条 skip 分**四道门禁**，都不是失败：
 
@@ -39,7 +39,7 @@
 - ⑥ 的 2 条真 Elasticsearch 用例（`RAG_INTEGRATION_ELASTICSEARCH_URL` 未设时整体跳过）；
 - ⑥ 的 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `369 passed, 10 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `399 passed, 10 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
@@ -52,10 +52,14 @@ CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `369 passe
 
 ## 评测脚本不进默认套件
 
-`scripts/eval_retrieval.py`（票 8 的固定语料 + 12 道题）**不是 pytest 用例**，也**不在
+`scripts/eval_retrieval.py`（票 8 的固定语料 + 24 道题，v2 重新校准）**不是 pytest 用例**，也**不在
 默认 `pytest -q` 里**：它必须连真 PostgreSQL、真 Elasticsearch、真嵌入，跑一次要发几十次
 网络请求。它靠「不在 `tests/` 下、不被 `testpaths` 收集」这一条天然隔离，而不是靠 marker
 ——把它做成 pytest 用例只会让「默认离线」这条红线多一个可能被误开的开关。
+
+容易被误解的一点：`tests/test_eval_corpus.py` 与 `tests/test_eval_metrics.py` **在**默认套件里，
+但它们**不跑检索**——前者只用真切块器数切片、查标题里有没有编号，后者只做算分真值表。
+「语料结构」与「怎么算分」是纯函数，可以在离线同步守住；「真链路上谁赢」只能由脚本测。
 
 复跑方式与清理边界写在脚本文件头：`uv run python scripts/eval_retrieval.py --env-file
 <主 checkout>/.env`，产物落 `eval/runs/<时间戳>/`（已 gitignore）。
