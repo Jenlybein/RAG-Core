@@ -1,4 +1,4 @@
-﻿# 测试分层与离线验证矩阵（T7）
+# 测试分层与离线验证矩阵（T7）
 
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
@@ -25,21 +25,22 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `399 passed, 10 skipped` |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 406 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `402 passed, 7 skipped`（④ 的 3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 406 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `7 skipped, 402 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 3 skipped, 402 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `418 passed, 11 skipped` |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 426 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `421 passed, 8 skipped`（④ 的 3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 426 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 421 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 421 deselected` |
 
-10 条 skip 分**四道门禁**，都不是失败：
+11 条 skip 分**四道门禁**，都不是失败：
 
 - ④ 的 3 条资产门禁（`skipif(not os.environ.get("PDF_INSPECTOR_MODEL_CACHE"))`）；
 - ⑥ 的 4 条真 PostgreSQL 用例（`RAG_INTEGRATION_DATABASE_URL` 未设时整体跳过）；
-- ⑥ 的 2 条真 Elasticsearch 用例（`RAG_INTEGRATION_ELASTICSEARCH_URL` 未设时整体跳过）；
+- ⑥ 的 3 条真 Elasticsearch 用例（`RAG_INTEGRATION_ELASTICSEARCH_URL` 未设时整体跳过；
+  其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - ⑥ 的 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `399 passed, 10 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `418 passed, 11 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
