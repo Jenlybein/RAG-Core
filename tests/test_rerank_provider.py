@@ -258,11 +258,15 @@ def test_disabled_factory_never_touches_the_llm_layer(monkeypatch: pytest.Monkey
     assert isinstance(get_rerank_provider(), NoopRerankProvider)
 
 
-def test_enabled_flag_distinguishes_off_from_reranked() -> None:
-    """``enabled`` 是编排层区分「这一步没开」与「排了但顺序没变」的唯一信号。"""
+def test_available_flag_distinguishes_off_from_reranked() -> None:
+    """``available`` 是编排层区分「这一步没开」与「排了但顺序没变」的唯一信号。
 
-    assert NoopRerankProvider().enabled is False
-    assert _provider(_FakeLLM(ranking=_ranking())).enabled is True
+    与 ``KeywordSearchProvider.available`` 同名同义：都是「这项能力在这台机器上
+    存不存在」，不是「这次跑出了什么结果」。
+    """
+
+    assert NoopRerankProvider().available is False
+    assert _provider(_FakeLLM(ranking=_ranking())).available is True
 
 
 def test_enabled_without_any_model_key_degrades_instead_of_breaking(

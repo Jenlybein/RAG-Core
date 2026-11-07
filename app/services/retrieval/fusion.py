@@ -20,6 +20,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.utils.retrieval_fields import with_score_columns
+
 # 融合常数：服务端写死，绝不进请求体（父 spec「融合契约」）。
 DEFAULT_RRF_K = 60
 
@@ -38,9 +40,10 @@ def fuse_by_rrf(
     这个字段。换句话说，`k=60` 的写死是靠「没有调用方能覆盖它」保证的，不是靠签名。
 
     每路切片只需 ``kb_id`` / ``chunk_id`` / ``document_id`` / ``score``，其余字段
-    （``title`` / ``content``）原样带给调用方。返回的每条都补齐五个分列字段：
-    ``vector_score`` / ``bm25_score`` / ``vector_rank`` / ``bm25_rank`` / ``rrf_score``，
-    未命中的那一路是 ``None`` 而不是 0。
+    （``title`` / ``content``）原样带给调用方。返回的每条都补齐五个分列字段
+    （见 ``app.utils.retrieval_fields.with_score_columns``）：``vector_score`` /
+    ``bm25_score`` / ``vector_rank`` / ``bm25_rank`` / ``rrf_score``，未命中的那一路
+    是 ``None`` 而不是 0。
     """
 
     if rrf_k <= 0:
@@ -54,18 +57,17 @@ def fuse_by_rrf(
             key: tuple[str | None, str] = (chunk.get("kb_id"), str(chunk["chunk_id"]))
             entry = merged.get(key)
             if entry is None:
-                entry = {
-                    "document_id": chunk["document_id"],
-                    "chunk_id": chunk["chunk_id"],
-                    "kb_id": chunk.get("kb_id"),
-                    "title": chunk.get("title", ""),
-                    "content": chunk.get("content", ""),
-                    "vector_score": None,
-                    "bm25_score": None,
-                    "vector_rank": None,
-                    "bm25_rank": None,
-                    "rrf_score": 0.0,
-                }
+                # 五列字段由 ``with_score_columns`` 一次性补齐（rrf 从 0.0 开始累加）。
+                entry = with_score_columns(
+                    {
+                        "document_id": chunk["document_id"],
+                        "chunk_id": chunk["chunk_id"],
+                        "kb_id": chunk.get("kb_id"),
+                        "title": chunk.get("title", ""),
+                        "content": chunk.get("content", ""),
+                    },
+                    rrf_score=0.0,
+                )
                 merged[key] = entry
             entry[f"{prefix}_rank"] = rank
             entry[f"{prefix}_score"] = chunk.get("score")

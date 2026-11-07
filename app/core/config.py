@@ -4,7 +4,8 @@
 文档入库、embedding 批次与 OCR 运行环境。.env 模板里还有更多阶段变量，
 pydantic-settings 默认忽略未声明的键（extra="ignore"），不会因多配置报错。
 
-第 4 步票 1 再补一组「模型接入」：供应商 + 模型 + per-provider key + 思考档位。
+第 4 步票 1 再补一组「模型接入」：供应商 + 模型 + per-provider key + 思考强度
+（``LLM_REASONING_EFFORT``，只作用于 strong **模型角色**）。
 它们全部是**运行时开关**而不是代码分支：换一家供应商只改 .env，不动业务代码；
 一家都没配时工厂返回空实现，离线环境照常启动。
 
@@ -83,7 +84,8 @@ class Settings(BaseSettings):
     LLM_MODEL: str = "deepseek-flash"
     LLM_STRONG_MODEL: str = "deepseek-v4-pro"
     LLM_TIMEOUT_SECONDS: float = 60.0
-    # 思考档位只作用于 strong 档；fast 档在 Provider 里写死关闭（改写与重排要低延迟）。
+    # 思考强度只作用于 strong 模型角色；fast 模型角色在 Provider 里写死关闭
+    # （改写与重排要低延迟）。
     LLM_REASONING_EFFORT: str = "off"
 
     # 各供应商的 key。哪个留空，就等于「这台机器没配这家」——工厂据此退回空实现。

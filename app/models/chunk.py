@@ -22,6 +22,21 @@ from app.db.base import Base
 DEFAULT_INDEX_VERSION = "v1"
 
 
+def default_index_versions(kb_ids: list[str]) -> dict[str, str]:
+    """把一批知识库映射成「本次检索的范围」：``kb_id → 默认索引版本``。
+
+    这是检索两路（向量 / 关键词）唯一的范围构造点。它必须只有一份：
+
+    * 配对关系只能从**映射**里读出来，两个平行数组错位就会静默越权；
+    * 本步只写默认版本 ``v1``，将来接上版本生命周期时，改的是这里而不是四个调用点。
+
+    放在模型层（与 ``DEFAULT_INDEX_VERSION`` 同源）而不是服务层：任何有知识库 ID
+    的层都能 import 它，且不引入任何循环依赖（本模块只依赖 ``app.db.base``）。
+    """
+
+    return {kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids}
+
+
 class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (

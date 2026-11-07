@@ -27,6 +27,10 @@ from pydantic import BaseModel
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.base import RerankProvider
 
+# 契约字段的唯一填充点在 ``app/utils``：它不依赖 app 内任何其它层，因此 Provider
+# 可以放心 import——Provider 仍然只认识自己的 ABC 与这个纯函数，不认识任何业务层。
+from app.utils.retrieval_fields import with_score_columns
+
 # 结构化输出的形状：每条候选一个 0~1 的相关性分。用 schema 而不是自由文本，
 # 是为了让「模型说了什么」有可校验的形状——各家在结构化输出上的差异由大模型层消化。
 # 量纲取 0~1 而不是 0~10：这个分会直接落进响应的 ``score`` / ``rerank_score``，
@@ -154,7 +158,13 @@ class LLMRerankProvider(RerankProvider):
             # ``rerank_score`` 与 ``score`` 同值：前者是「这一路的分数」（与
             # ``vector_score`` / ``bm25_score`` / ``rrf_score`` 并排，可解释），
             # 后者是「本次最终排序分」（契约字段，重排后由它决定顺序）。
-            {**chunk, "score": scores.get(chunk["chunk_id"], 0.0),
-             "rerank_score": scores.get(chunk["chunk_id"], 0.0)}
+            #
+            # 五个分列字段**只搬运、不重算**，且走与融合层同一个 ``with_score_columns``：
+            # 重排一旦自己拼一遍这些字段，契约就有第五份副本，迟早与融合层漂移。
+            {
+                **with_score_columns(chunk),
+                "score": scores.get(chunk["chunk_id"], 0.0),
+                "rerank_score": scores.get(chunk["chunk_id"], 0.0),
+            }
             for _, chunk in ordered[:limit]
         ]
