@@ -93,6 +93,14 @@ CHUNKS = [
     ),
 ]
 
+# 「值班交接」那条现场证据的离线复刻：它只命中问句里的疑问框架，一个编号都没提。
+NOISE_CHUNK = _chunk(
+    "chunk-noise",
+    DOC_B,
+    "值班交接：下一次维护窗口是什么时候，有哪些临时放行的告警。",
+    "文档：运维手册 章节：值班交接 正文：值班交接：下一次维护窗口是什么时候，有哪些临时放行的告警。",
+)
+
 
 def test_ik_analyzer_is_installed_and_splits_chinese() -> None:
     """IK 插件必须真的在：写入用细粒度分词，「退款申请流程」要切成多个词。"""
@@ -170,6 +178,85 @@ async def _end_to_end(url: str, index_name: str) -> None:
         await provider.delete_by_document_id(DOC_B, tenant_id=TENANT_ID)
         await client.indices.refresh(index=index_name)
         assert (await client.count(index=index_name))["count"] == 0
+    finally:
+        await client.indices.delete(index=index_name, ignore_unavailable=True)
+        await client.close()
+
+
+def test_query_analyzer_drops_the_question_frame_and_requires_two_terms() -> None:
+    """查询侧两道闸的真实行为（本地起了 ES 才跑，``-m integration``）。
+
+    这条用例复刻票 8 的现场：语料里有一片「值班交接」，它只命中问句里的疑问框架
+    （``是什么`` / ``有哪些``），一个编号都没提。修复前它会排在 ``E1025`` 那一片
+    前面；修复后它连**候选**都不该出现。同时验证 ``minimum_should_match``：
+    只沾上一个内容词（``到账``）的切片也进不来。
+    """
+
+    asyncio.run(_query_side_guards(_url(), _temporary_index()))
+
+
+async def _query_side_guards(url: str, index_name: str) -> None:
+    client = AsyncElasticsearch(url)
+    provider = ElasticsearchKeywordSearchProvider(url=url, index_name=index_name, client=client)
+    # 与 chunk-a1 只差一个编号的孪生片：向量分不开，字面能分开。
+    twin = _chunk(
+        "chunk-a5",
+        DOC_A,
+        "错误码 E1025 表示证书链已被吊销。",
+        "文档：售后手册 章节：错误码 正文：错误码 E1025 表示证书链已被吊销。",
+    )
+    sms_chunk = _chunk(
+        "chunk-sms",
+        DOC_B,
+        "到账短信会在处理完成后发送到预留手机号。",
+        "文档：运维手册 章节：短信 正文：到账短信会在处理完成后发送到预留手机号。",
+    )
+    try:
+        await provider.add_chunks([*CHUNKS, twin, NOISE_CHUNK, sms_chunk])
+        await client.indices.refresh(index=index_name)
+
+        # 1) 查询分析器把疑问框架整段去掉，编号原样留下。
+        analyzed = await client.indices.analyze(
+            index=index_name, analyzer="ik_smart_query", text="E1025 是什么意思"
+        )
+        assert [token["token"] for token in analyzed["tokens"]] == ["e1025"]
+
+        # 2) 索引侧没动：原词仍进倒排，所以「是什么」在文档里查得到。
+        indexed = await client.indices.analyze(
+            index=index_name, field="retrieval_text", text="是什么"
+        )
+        assert "是什么" in [token["token"] for token in indexed["tokens"]]
+
+        # 3) 问 E1025：第一名就是那个编号，噪声切片（只命中「是什么」）不出现。
+        hits = await provider.keyword_search(
+            "E1025 是什么意思",
+            tenant_id=TENANT_ID,
+            index_versions={KB_ID: INDEX_VERSION},
+            top_k=5,
+        )
+        assert [hit["chunk_id"] for hit in hits][:1] == ["chunk-a5"], "编号必须排第一"
+        assert "chunk-noise" not in [hit["chunk_id"] for hit in hits], (
+            "只命中疑问框架的切片不该进候选"
+        )
+
+        # 4) 单词查询照旧 100% 命中：minimum_should_match 不许误伤精确编号题。
+        single = await provider.keyword_search(
+            "E1025", tenant_id=TENANT_ID, index_versions={KB_ID: INDEX_VERSION}, top_k=5
+        )
+        assert [hit["chunk_id"] for hit in single][:1] == ["chunk-a5"]
+
+        # 5) 只沾上一个内容词的切片被 minimum_should_match 拦住：
+        #    问句去掉停用词后是「退款 / 申请 / 流程 / 多久 / 到账」5 个词，
+        #    50% → 至少 2 个；「到账短信」只命中 1 个。
+        multi = await provider.keyword_search(
+            "退款申请流程要多久到账",
+            tenant_id=TENANT_ID,
+            index_versions={KB_ID: INDEX_VERSION},
+            top_k=5,
+        )
+        returned = [hit["chunk_id"] for hit in multi]
+        assert returned[:1] == ["chunk-a2"], "真正答这个问题的那一片必须排第一"
+        assert "chunk-sms" not in returned, "只命中一个内容词的切片不该进候选"
     finally:
         await client.indices.delete(index=index_name, ignore_unavailable=True)
         await client.close()

@@ -7,10 +7,10 @@
 被钉死的四件事（也是教程里最常写错的地方）：
 1. 过滤维度一律 ``keyword``，不参与分词；
 2. ``title`` 与检索文本用中文分词，且**显式声明查询分词器**
-   （写入 ``ik_max_word`` 细粒度 / 查询 ``ik_smart`` 智能模式）；
+   （写入 ``ik_max_word`` 细粒度 / 查询走「``ik_smart`` + 停用词」）；
 3. 租户过滤走 ``filter``；「库 + 版本」是**配对条件**，每对之间是 ``should`` +
    ``minimum_should_match=1``，绝不用两个独立 ``IN``；
-4. 关键词打分走 ``multi_match``，标题权重高于正文。
+4. 关键词打分走 ``multi_match``，标题权重高于正文，且多词查询要求命中不止一个词。
 """
 
 from __future__ import annotations
@@ -19,6 +19,9 @@ import json
 
 from app.providers.keyword_search.query_builder import (
     DEFAULT_INDEX_VERSION,
+    MINIMUM_SHOULD_MATCH,
+    QUERY_ANALYZER,
+    QUERY_STOPWORDS,
     build_bm25_query,
     build_es_mapping,
     build_keyword_documents,
@@ -48,19 +51,109 @@ def test_mapping_keeps_every_filter_field_as_keyword() -> None:
 
 
 def test_mapping_declares_chinese_analyzers_for_title_and_retrieval_text() -> None:
-    """写入细粒度、查询智能模式：两个分词器都要显式写出来。
+    """写入细粒度、查询走「智能分词 + 停用词」：两个分词器都要显式写出来。
 
     只写 ``analyzer`` 不写 ``search_analyzer`` 时，查询也会走 ``ik_max_word``，
     一个问句会被切成一把碎词，召回率反而掉下来——这是教程原文写错的那一处。
+
+    **索引侧不动**：``analyzer`` 仍是 ``ik_max_word``，原词（包括「是什么」这种
+    疑问短语）照样进倒排；动的是查询侧，只影响「用什么词去找」。
     """
 
     properties = _properties()
 
     assert properties["title"]["analyzer"] == "ik_max_word"
-    assert properties["title"]["search_analyzer"] == "ik_smart"
     assert properties["retrieval_text"]["analyzer"] == "ik_max_word"
-    assert properties["retrieval_text"]["search_analyzer"] == "ik_smart"
+    assert properties["title"]["search_analyzer"] == QUERY_ANALYZER
+    assert properties["retrieval_text"]["search_analyzer"] == QUERY_ANALYZER
     assert properties["title"]["type"] == properties["retrieval_text"]["type"] == "text"
+
+
+def _query_analyzer() -> dict:
+    mapping = build_es_mapping()
+    return mapping["settings"]["analysis"]["analyzer"][QUERY_ANALYZER]
+
+
+def test_query_analyzer_is_ik_smart_followed_by_a_stop_filter() -> None:
+    """查询分析器 = ``ik_smart`` + ``stop``：分词器不变，只在后面接一道停用词。
+
+    为什么必须是「后面接」而不是换分词器：ik_smart 的切分是索引与查询共用的口径，
+    换掉它等于换掉整条链路的词表；停用词只是把「切出来但没用」的词丢掉。
+    """
+
+    analyzer = _query_analyzer()
+
+    assert analyzer["type"] == "custom"
+    assert analyzer["tokenizer"] == "ik_smart"
+    assert len(analyzer["filter"]) == 1
+
+    filters = build_es_mapping()["settings"]["analysis"]["filter"]
+    stop = filters[analyzer["filter"][0]]
+    assert stop["type"] == "stop"
+
+
+def test_query_stopwords_are_an_explicit_chinese_word_list() -> None:
+    """停用词必须是**显式中文词表**，不是 ``_chinese_`` 这类预置名。
+
+    这条是真踩出来的：Elasticsearch 8.x 的 ``stop`` 过滤器确实接受 ``_chinese_``，
+    但它解析到 Lucene CJK 包里的 ``stopwords.txt``——那份文件装的是英文停用词
+    （``the`` / ``and`` / ``of`` …）。实测 ``_analyze``：``"the thing"`` 只剩
+    ``thing``，而 ``"的 是 什么 怎么 哪些"`` 一个都没被去掉。用它等于什么都没做，
+    所以这里写死一份中文词表，并断言它**不**是预置名。
+    """
+
+    stop = build_es_mapping()["settings"]["analysis"]["filter"][_query_analyzer()["filter"][0]]
+
+    assert isinstance(stop["stopwords"], list)
+    assert stop["stopwords"], "停用词表不能为空，否则这道过滤器是装饰品"
+    assert all(not word.startswith("_") for word in stop["stopwords"]), (
+        "预置语言名（_chinese_ / _english_ …）会把中文词表换成英文停用词"
+    )
+
+
+def test_query_stopwords_cover_the_question_frame_that_hijacked_bm25() -> None:
+    """把票 8 现场那几个词钉住：问 ``E1025`` 时 BM25 的第一名是「值班交接」。
+
+    原因不是同义、也不是分词错，而是 IK 把问句切成了 ``[e1025, 是什么, 意思]``，
+    而 ``是什么`` 在 240 片语料里只出现 **1 次**（就在「值班交接」那节）——
+    罕见词 → IDF 极高 → 一条与问题毫无关系的切片拿了 5.33 分，压过真正命中
+    ``E1025`` 的那片（3.96）。常见词被当成罕见特征，这是 BM25 的经典翻车。
+
+    停用词表必须覆盖**问句框架**（疑问词与语气词），而不是只覆盖几个虚词：
+    IK 会把「是什么」「怎么办」「怎么回事」整体切出来，只写单字没用。
+    """
+
+    stopwords = set(QUERY_STOPWORDS)
+
+    for word in ("是什么", "什么", "意思", "怎么", "怎么办", "哪些", "怎么回事", "如何"):
+        assert word in stopwords, f"查询停用词表缺 {word!r}"
+
+    # 单字虚词同样是噪声来源（「被限速了怎么办」里的「被」「了」）。
+    for word in ("的", "了", "是", "吗", "呢"):
+        assert word in stopwords, f"查询停用词表缺 {word!r}"
+
+
+def test_query_stopwords_never_contain_a_content_word_from_the_questions() -> None:
+    """停用词表不许误伤内容词：表里一旦出现「退款」「证书」这类词，召回会被自己吃掉。
+
+    这是一条便宜的护栏：停用词表是最容易被下一个人「顺手加两个」的东西，
+    而误伤的 symptom 是「某个题突然查不到了」，很难回溯到这张表。
+    """
+
+    forbidden = {
+        "退款",
+        "退钱",
+        "证书",
+        "设备",
+        "掉线",
+        "错误码",
+        "型号",
+        "入口",
+        "时限",
+        "响应",
+    }
+
+    assert forbidden.isdisjoint(set(QUERY_STOPWORDS))
 
 
 def test_mapping_stores_the_original_content_without_indexing_it() -> None:
@@ -147,6 +240,40 @@ def test_bm25_query_scores_with_multi_match_and_title_weight() -> None:
     assert multi_match["query"] == "E1024"
     assert multi_match["fields"] == ["title^2", "retrieval_text"]
     assert multi_match["fields"][0] == "title^2"
+
+
+def test_bm25_query_caps_single_term_matches_with_minimum_should_match() -> None:
+    """多词查询要求命中不止一个词：只沾上一个常见词的切片不许进结果。
+
+    现场是这样的：问 ``E1025 是什么意思``，BM25 的第一名是「值班交接」——
+    它只命中了问句里的``是什么``，一个字都没提 ``E1025``。停用词表把这类疑问词
+    从**查询侧**去掉了，``minimum_should_match`` 是第二道闸：即使某个常见词
+    （``设备`` / ``证书`` 这种域内高频词）没被停用词覆盖，只命中它的切片也进不来。
+    """
+
+    multi_match = _bm25(search_query="E1025 是什么意思")["query"]["bool"]["must"][0]["multi_match"]
+
+    assert multi_match["minimum_should_match"] == MINIMUM_SHOULD_MATCH
+
+
+def test_minimum_should_match_keeps_single_token_queries_working() -> None:
+    """取值必须同时满足两件事，这里用算术把它钉死（ES 的百分比是**向下取整**）：
+
+    * 单词查询 ``E1025``（1 个词）：要求的最少命中数不能超过 1，否则精确编号题
+      全体查不到；
+    * 四词以上的问句（``E1024 是什么错误要怎么处理`` 去掉疑问词后剩 3-4 个词）：
+      至少要 2 个词命中，否则「只沾上一个常见词」的切片照样进得来。
+    """
+
+    percentage = int(MINIMUM_SHOULD_MATCH.removesuffix("%"))
+
+    for clauses in (1, 2, 3):
+        required = max(1, clauses * percentage // 100)
+        assert required == 1, f"{clauses} 个词时要求 {required} 个命中，单词查询会被误伤"
+
+    for clauses in (4, 5, 6):
+        required = max(1, clauses * percentage // 100)
+        assert required >= 2, f"{clauses} 个词时只要求 {required} 个命中，常见词噪声进得来"
 
 
 def test_bm25_query_carries_size_and_the_source_fields() -> None:
