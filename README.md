@@ -69,18 +69,42 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 ## 第 4 步：混合检索（已落地）
 
-一条检索请求走固定路径：**查询优化 → 两条通道各一次全局召回 → 一次 RRF 融合 → 可选重排**。
+**这一步解决什么问题**：只靠向量检索，会漏掉「字面几乎一样、只差一个编号」的东西——同一个模板下的十几段内容，向量分不出谁是谁。做法是让两条通道各查一次，再把结果合成一份。
 
-- **两条通道**：向量（pgvector，`1 - 余弦距离`）与关键词（Elasticsearch 8.17.10 + IK，BM25）并行召回；每条通道各查**一次**，查询覆盖全部「知识库 + 索引版本」配对，**不按库循环**，嵌入也只算一次。
-- **融合**：RRF，`k=60` 服务端写死、不进请求体；唯一键是 `(kb_id, chunk_id)`；同分顺序固定为 融合分降序 → 双路命中优先 → 最佳名次 → `kb_id` → `chunk_id`。完整契约见 [ADR-0010](docs/adr/0010-retrieval-contract.md)。
-- **查询优化与重排**：改写、同义词扩展、重排三者默认关闭；失败一律降级，不把整单打挂。查询改写只影响语义那一路，同义词扩展只影响关键词那一路。
-- **三种结局**：拒绝（`50002` / `20008` 等业务码）/ 降级（`code: 0` + `metadata.retrieval.degraded: true` + `degraded_reason`）/ 诚实空（HTTP 200 + `empty_reason`，取值 `no_indexed_chunks` 或 `no_chunks_matched`）。降级与诚实空可以同时出现。
-- **`score` 语义变了（破坏性）**：现在是「本次最终排序分」——未开重排时等于 `rrf_score`，重排发生时等于 `rerank_score`，单模式下是该路原始分；不再是余弦相似度。要判断某一路是否命中或拿具体分数，读 `vector_score` / `bm25_score` / `vector_rank` / `bm25_rank` / `rrf_score` / `rerank_score`；未命中为 `null`，不是 0。迁移方式见 ADR-0010 第 4 节。
-- **模型接入**：大模型与嵌入走 LangChain（`fast` / `strong` 两个角色）；**检索层不引入框架**——召回、融合、重排编排、降级与响应契约全部自写，理由、边界与可执行判据见 [ADR-0011](docs/adr/0011-langchain-boundary.md)。
-- **关键词分析器**：查询侧用 `ik_smart_query`（`ik_smart` + 75 条中文停用词）并加 `minimum_should_match="50%"`，止住「问句里的疑问词被当成罕见特征」的 BM25 噪声。mapping 的 `search_analyzer` 因此变了，**既有 ES 索引不能原地升级**：必须删掉 `rag_chunks` 重新入库；`scripts/reindex_knowledge_base.py` 只重投索引任务，不重建 mapping。修复前后数字见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md#10-bm25-分析器修复本次新增)。
-- **评测**：8 篇合成语料 / 245 片 / 26 题，三路对照（`vector` / `bm25` / `hybrid`）与九条验收矩阵留痕在 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
+合成算法叫 **RRF（倒数排名融合）**：它不看原始分数（两路量纲不同，没法直接比），只看各自排第几，把名次换成 `1/(60 + 名次)` 再相加。于是「两路都出现」比「某一路拿第一」更值钱。
 
-一次可复制的验收命令：
+一条请求走固定路径：**查询优化 → 两条通道各一次全局召回 → 一次 RRF 融合 → 可选重排**。
+
+### 做了什么
+
+- **两条通道**：向量（pgvector，`1 - 余弦距离`）与关键词（Elasticsearch 8.17.10 + IK 分词，BM25）并行召回。每条通道只查**一次**，一次覆盖全部「知识库 + 索引版本」配对，**不按库循环**；嵌入也只算一次。
+- **融合契约**：`k=60` 服务端写死、不进请求体；唯一键 `(kb_id, chunk_id)`；同分顺序固定为 融合分降序 → 双路命中优先 → 最佳名次 → `kb_id` → `chunk_id`。完整契约见 [ADR-0010](docs/adr/0010-retrieval-contract.md)。
+- **查询优化与重排**：改写、同义词扩展、重排**默认关闭**，失败一律降级、不把整单打挂。改写只影响语义那一路，同义词只影响关键词那一路——**两路拿不同的查询是设计，不是 bug**。
+- **模型接入**：大模型与嵌入走 LangChain（`fast` / `strong` 两个**模型角色**）；**检索层不引入框架**——召回、融合、重排编排、降级与响应契约全部自写，理由与可执行判据见 [ADR-0011](docs/adr/0011-langchain-boundary.md)。
+
+### 三种结局，只有这三种
+
+| 结局 | 什么时候 | 长什么样 |
+| --- | --- | --- |
+| **拒绝** | 两条通道都挂；或知识库不可见 | HTTP 200 + 非零 `code`（`50002` / `20008`） |
+| **降级** | 只挂了一条 | `code: 0` + `metadata.retrieval.degraded: true` + `degraded_reason`，**仍有结果** |
+| **诚实空** | 还没索引 / 一路没命中 | HTTP 200 + `empty_reason`（`no_indexed_chunks` / `no_chunks_matched`） |
+
+降级与诚实空**可以同时出现**：一路失败、另一路也没命中时，会同时看到 `degraded: true` 和 `empty_reason`。
+
+### ⚠️ 破坏性变更：`score` 换意思了
+
+`score` 现在是**本次最终排序分**：未开重排时等于 `rrf_score`，重排发生时等于 `rerank_score`，单模式下是该路原始分——**不再是余弦相似度**。
+
+要判断某一路是否命中、或拿具体分数，读 `vector_score` / `bm25_score` / `vector_rank` / `bm25_rank` / `rrf_score` / `rerank_score`；**未命中是 `null`，不是 0**。迁移方式见 [ADR-0010 第 4 节](docs/adr/0010-retrieval-contract.md)。
+
+### ⚠️ 运维注意：既有 ES 索引必须重建
+
+查询侧分析器改成了 `ik_smart_query`（`ik_smart` + 75 条中文停用词）并加了 `minimum_should_match="50%"`，用来止住「问句里的疑问词被当成罕见特征」的 BM25 噪声。
+
+代价是 **mapping 变了，既有索引不能原地升级**：必须删掉 `rag_chunks` 重新入库。`scripts/reindex_knowledge_base.py` 只重投索引任务，**不重建 mapping**。修复前后数字见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
+
+### 验收
 
 ```bash
 uv run pytest -q
@@ -100,7 +124,11 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
   -d '{"kb_ids":["<你的 kb_id>"],"query":"设备证书过期怎么处理","mode":"hybrid","top_k":5}'
 ```
 
-期望 `code: 0`，`data.retrieved_chunks[*]` 每条都带 `score` 与六个分列字段；未开重排时 `score == rrf_score`。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
+期望 `code: 0`，每条结果都带 `score` 与六个分列字段；未开重排时 `score == rrf_score`。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
+
+评测与验收矩阵留痕在 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)（8 篇合成语料 / 245 片 / 26 题，三路对照）。
+
+**接下来（第 5 步）**：把第 1 步占位的 API Key 换成真校验的多租户体系，并接入「质量档位」——那时现在的 `top_k` / `mode` 才会被档位接管。
 
 ## 运行与验证（离线）
 
