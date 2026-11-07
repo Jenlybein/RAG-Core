@@ -1,8 +1,8 @@
 # 0011. LangChain 只进 LLM 与 Embedding，不进检索链路
 
-- 状态：草案（第 4 步批次 8 定稿）
+- 状态：已采纳（2026-11-08 第 4 步收口）
 - 日期：2026-11-07
-- 相关：ADR-0002「六类 Provider」、`GLOSSARY.md`「检索管道」「召回」「融合」「重排」、`app/providers/llm/`、`app/services/retrieval/`、教程 `03-实现开始/04-混合检索/03-具体实现.md`
+- 相关：ADR-0002「六类 Provider」、ADR-0010「检索契约」、`GLOSSARY.md`「检索管道」「召回」「融合」「重排」「模型角色」「available」、`app/providers/llm/`、`app/providers/embedding/`、`app/providers/langchain_runtime.py`、`app/services/retrieval/`、教程 `03-实现开始/04-混合检索/03-具体实现.md`
 
 ## 一句话决定
 
@@ -106,6 +106,43 @@ ES 是不是刚挂掉、这是不是降级凑出的一半结果。
 
 一句话：**LangChain 负责「和模型说话」，我们负责「和业务说话」。**
 
+## 本步落点（实现证据，2026-11-08）
+
+### LangChain 只出现在三处
+
+| 位置 | 用途 | 关键约束 |
+| --- | --- | --- |
+| `app/providers/llm/` | `init_chat_model` 统一入口、结构化输出、`fast` / `strong` 两个模型角色 | 业务层只依赖 `LLMProvider`，不认识框架类型 |
+| `app/providers/embedding/` | `Embeddings` 适配（默认 `EMBEDDING_PROVIDER=langchain`） | `embed_query` / `embed_texts` 的签名由我方 ABC 决定 |
+| `app/providers/langchain_runtime.py` | 把追踪开关同步到框架真正读的环境变量 | 两个构造点都调用，包括「没配 key、走空实现」的路径 |
+
+### 检索链路零框架代码
+
+- `app/services/query/`：改写只调 `LLMProvider`，同义词扩展是纯函数；没有框架 import。
+- `app/services/retrieval/`：`fusion.py` 是纯函数，`pipeline.py` 与 `rerank.py` 只调 Provider 工厂；没有框架 import。
+- `app/services/rag_service.py`：组合根，只 import 各 Provider 的工厂函数；响应契约、降级与空结果原因全部在这里与 `pipeline` 里判定。
+- 因此「召回 / 融合 / 重排编排 / 降级」四件事都能离线单测，不需要模型 key，也不需要网络。
+
+### 可验证判据
+
+判据盯的是 **import**，不是普通子串：
+
+```bash
+grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -v 'app/providers/'
+# 必须为空（grep 退出码 1）
+```
+
+PowerShell 等价写法：
+
+```powershell
+Get-ChildItem app -Recurse -Filter *.py |
+  Select-String -Pattern '^\s*(from|import)\s+langchain' |
+  Where-Object { $_.Path -notmatch '\\providers\\' }
+# 必须无输出
+```
+
+**为什么不能写成 `grep -rn "langchain" app/`**：仓库里另有 7 处普通子串命中，全部不是框架调用——`EMBEDDING_PROVIDER="langchain"` 的默认值、`LANGCHAIN_TRACING_V2` 配置名，以及五处解释性注释。裸子串会把「配置名/注释里出现 langchain」误判成「业务层 import 了框架」；判据必须落在 import 上才可执行。
+
 ## 考虑过的替代方案
 
 | 方案 | 为什么不选 |
@@ -127,7 +164,7 @@ ES 是不是刚挂掉、这是不是降级凑出的一半结果。
 - **第 8 步换专业重排模型时**：LangChain 的 `DocumentCompressor` 抽象在「接 Cohere / BGE / Jina 都是一行」这件事上**确有价值**，届时单独评估、单独接，不影响本步的召回与融合契约。
 - 若将来产品需求从「可解释的检索结果」退化成「一个够用的排序列表」，`EnsembleRetriever` 的性价比会反转 —— 那意味着本项目的定位变了。
 
-## 教程落点（批次 8 照抄）
+## 教程落点（供教程侧吸收）
 
 ### 落点一：`03-实现开始/04-混合检索/03-具体实现.md` —— 步骤 5 之前插入
 
