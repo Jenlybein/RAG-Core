@@ -1,8 +1,14 @@
-"""大模型 Provider：工厂选型 + LangChain 实现的错误契约。
+"""大模型 Provider：启动期配置校验 + 工厂选型 + LangChain 实现的错误契约。
 
 全部离线。用 LangChain 自带的 Fake 聊天模型走结构化输出链路，用构造期不联网的
 ChatOpenAI / ChatAnthropic / ChatGoogleGenerativeAI 验供应商装配——真正发请求的那条路
 需要供应商 key，离线测试碰不到，它能证明的只有「参数装对了、档位选对了」。
+
+**为什么 ``LLM_PROVIDER`` 要有启动期校验**：真踩过的坑。用户本机的 ``.env`` 里写的是
+旧值 ``LLM_PROVIDER=openai_compatible``（一个历史名字，工厂根本不认）。修复前进程照常
+起来，直到「第一次调用改写 / 重排」才炸——那时已经在请求链路上，表现为一次 500，
+排查要从 API 日志倒推回一个环境变量。把校验放在 ``Settings`` 上，拼错的名字会让进程
+起不来，错误信息里直接带着允许值。
 
 「结构化输出非法」这条之所以值得单测，是因为框架在这里有个反直觉行为：模型一个 tool_call
 都不返回时，``with_structured_output`` 不抛异常、而是**返回 None**。若 Provider 不自己兜住，
@@ -18,11 +24,12 @@ import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
-from app.core.config import settings
+from app.core.config import Settings, settings
 from app.core.exceptions import AppError, ErrorCode
-from app.providers.llm import get_llm_provider
+from app.core.llm_vendors import LLM_VENDORS
+from app.providers.llm import _VENDORS, get_llm_provider
 from app.providers.llm.langchain_llm import LangChainLLMProvider
 from app.providers.llm.noop import NoopLLMProvider
 
@@ -88,6 +95,64 @@ def test_factory_returns_noop_when_no_key_configured(isolated_settings: pytest.M
 
     assert isinstance(get_llm_provider(), NoopLLMProvider)
     assert isinstance(get_llm_provider("strong"), NoopLLMProvider)
+
+
+# ─────────────────────────────────────────────────── 启动期校验（本票新增）
+
+
+def test_unknown_llm_provider_fails_at_startup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写错供应商名必须**启动就炸**，不能等到第一次改写 / 重排才 500。
+
+    现场值：用户本机 ``.env`` 是 ``LLM_PROVIDER=openai_compatible``——一个历史上
+    出现过、但工厂不支持的名字。修复前 ``Settings()`` 照常构造成功，进程照常起来，
+    错误要到请求链路上才暴露；修复后它在读完配置的那一刻就失败。
+
+    用环境变量而不是关键字参数构造：这才是「进程启动」的那条路径
+    （``settings = Settings()`` 在 import 时读环境）。
+    """
+
+    monkeypatch.setenv("LLM_PROVIDER", "openai_compatible")
+
+    with pytest.raises(ValidationError) as excinfo:
+        Settings(_env_file=None)
+
+    message = str(excinfo.value)
+    assert "LLM_PROVIDER" in message
+    assert "openai_compatible" in message
+    # 报错必须把允许值列出来，否则运维还得回代码里翻工厂支持哪几家。
+    for vendor in LLM_VENDORS:
+        assert vendor in message
+
+
+@pytest.mark.parametrize("vendor", LLM_VENDORS)
+def test_every_supported_vendor_passes_startup_validation(vendor: str) -> None:
+    """支持列表里的每一个值都要能构造成功——校验器不能比工厂更严。"""
+
+    assert Settings(_env_file=None, LLM_PROVIDER=vendor).LLM_PROVIDER == vendor
+
+
+def test_llm_provider_is_normalized_before_validation() -> None:
+    """大小写与空白不算拼错：``DeepSeek `` 与工厂的 ``deepseek`` 是同一家。"""
+
+    assert Settings(_env_file=None, LLM_PROVIDER=" DeepSeek ").LLM_PROVIDER == "deepseek"
+
+
+def test_vendor_names_have_exactly_one_source_of_truth() -> None:
+    """名单只有一份：``app.core.llm_vendors``，config 与工厂都 import 它。
+
+    这条用例是「别在 config.py 里复制一份厂商名」的牙齿：工厂的装配表按名字索引，
+    一旦有人只在一边加了一家（或写错一个字母），这里当场红。
+    """
+
+    assert tuple(_VENDORS) == LLM_VENDORS
+
+
+def test_default_llm_provider_is_a_supported_vendor() -> None:
+    """默认值本身也走校验：``Settings(_env_file=None)`` 不许抛错。"""
+
+    assert Settings(_env_file=None).LLM_PROVIDER in LLM_VENDORS
 
 
 def test_factory_maps_fast_and_strong_tiers_to_their_models(

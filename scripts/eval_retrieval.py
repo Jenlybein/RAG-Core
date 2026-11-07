@@ -1,7 +1,7 @@
-"""检索评测脚本：一组固定语料 + 12 道固定题 → 「纯向量 vs 混合」与「改写开 / 关」。
+"""检索评测脚本：一组固定语料 + 24 道固定题 → 「纯向量 / 关键词单路 / 混合」三组对照。
 
-**这是一次测量，不是功能。** 它回答的是「我们这套实现到底比纯向量强多少」，因此
-三件事必须成立，否则测出来的只是替身：
+**这是一次测量，不是功能。** 它回答的是「混合检索到底比单路强多少、强在哪一类题上」，
+因此四件事必须成立，否则测出来的只是替身：
 
 1. **真实链路**：真实 PostgreSQL（pgvector）+ 真实 Elasticsearch（IK）+ 真实百炼嵌入。
    没有任何一个 Provider 在这里被替换过——被替换的话，测的就是替身。
@@ -9,12 +9,20 @@
    重跑先清后写，绝不把同一份语料索引两遍；``chunk_id`` 虽然每次重建都会变，但题目标注
    用的是 ``(document, heading_path)``，由脚本对着**真实**切片元数据解析成 ``chunk_id``
    ——标签写错会当场失败，而不是静默算成漏召。
-3. **可解释**：每题给出命中 / 部分命中 / 漏 / 误召 / 诚实空，以及每条返回切片的
+3. **能量出差异**：语料 v2 有 200-400 片（v1 只有 39 片），每路召回深度 20。这是让
+   ``Recall@20`` 不再覆盖全库、从而让 ``Recall@5`` 不再恒为 1.0000 的前提。**编号只写在
+   正文、不写进标题**——v1 把 ``E1024`` 写进了章节标题，而检索文本 = 标题 + 章节路径 +
+   正文，等于把编号直接喂给嵌入模型，BM25 的字面优势被抹平。
+4. **可解释**：每题给出命中 / 部分命中 / 漏 / 误召 / 诚实空，以及每条返回切片的
    ``vector_rank`` / ``bm25_rank`` / ``rrf_score``，融合分可以手算对账。
+
+三组总表：``mode=vector`` / ``mode=bm25`` / ``mode=hybrid``，外加
+「模式 × 题型」的分题型拆解、编号题的 ``exact_hit@1``（第一条是不是被问的那个编号）、
+``absent`` 题的误召率。v1 漏了 ``mode=bm25`` 单路——而它才是「BM25 补洞」的直接证据。
 
 用法::
 
-    # 全量：索引语料 → vector vs hybrid →（有 LLM 凭据时）改写开/关 → 验收自动项
+    # 全量：索引语料 → vector / bm25 / hybrid →（有 LLM 凭据时）改写开/关 → 验收自动项
     uv run python scripts/eval_retrieval.py --env-file ../RAG-Core/.env
 
     # 复用已有切片，不重新索引（改题目或调参时用）
@@ -38,7 +46,7 @@
 * 产物：``eval/runs/<时间戳>/``（已在 .gitignore 里）。
 
 结果写在 ``eval/runs/<时间戳>/``：``results.json``（机器可读，含全部原始返回）、
-``report.md``（人读的汇总表 + 逐题差异）。
+``report.md``（人读的汇总表 + 分题型表 + 逐题差异）。
 
 **改写对比的诚实边界**：没配大模型 key 时不跑这一组，并在结果里写死
 ``改写对比：未执行（缺 LLM 凭据）``。绝不伪造一组数字出来。
@@ -52,6 +60,7 @@ import json
 import os
 import sys
 import time
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -61,6 +70,11 @@ from typing import Any
 import httpx
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    # 以 ``python scripts/eval_retrieval.py`` 方式运行时，sys.path[0] 是 scripts/，
+    # 仓库根不在里面；``scripts`` 是没有 __init__.py 的命名空间包，靠这行才能
+    # ``from scripts.eval_metrics import ...``（与 pytest 里 import 的路径一致）。
+    sys.path.insert(0, str(REPO_ROOT))
 EVAL_DIR = REPO_ROOT / "eval"
 CORPUS_DIR = EVAL_DIR / "corpus"
 QUESTIONS_PATH = EVAL_DIR / "questions.json"
@@ -83,6 +97,24 @@ PRIMARY_KB_ID = "kb-eval"
 MODE_VECTOR = "vector"
 MODE_BM25 = "bm25"
 MODE_HYBRID = "hybrid"
+# 报告里的固定顺序：单路 → 单路 → 混合。顺序固定，diff 才读得懂。
+MODE_ORDER = (MODE_VECTOR, MODE_BM25, MODE_HYBRID)
+MODE_LABELS = {
+    MODE_VECTOR: "纯向量",
+    MODE_BM25: "关键词单路（BM25）",
+    MODE_HYBRID: "混合（RRF）",
+}
+# 分题型表的固定顺序：编号类在前（它们是最能分辨模式的一类），absent 放最后
+# （它不进主平均，只看误召）。顺序固定，报告 diff 才读得懂。
+TYPE_ORDER = (
+    "exact_code",
+    "rare_token",
+    "model_number",
+    "colloquial",
+    "synonym",
+    "cross_section",
+    "absent",
+)
 
 # 空结果两种原因（与 ``app.services.rag_service`` 的常量同值）。这里复制字面量而不是
 # import：验收矩阵断言的是**对外契约**，实现改了常量名不该让验收跟着悄悄通过。
@@ -137,6 +169,17 @@ from app.providers.llm.noop import NoopLLMProvider  # noqa: E402
 from app.services.indexing_service import IndexingService  # noqa: E402
 from app.services.rag_service import retrieve  # noqa: E402
 from app.utils.status import DocumentStatus  # noqa: E402
+from scripts.eval_metrics import (  # noqa: E402
+    Case,
+    absent_report,
+    aggregate,
+    by_type,
+    exact_hit_at_1,
+    hit_at_1,
+    reciprocal_rank,
+    trap_report,
+    winner,
+)
 
 
 # ───────────────────────────────────────────────────────────────────── 小工具
@@ -366,22 +409,38 @@ def _first_heading(text: str) -> str | None:
 @dataclass(frozen=True)
 class Question:
     id: str
+    type: str
     query: str
     note: str
     labels: tuple[tuple[str, str], ...]  # (document stem, heading_path)
+    # 陷阱对：「语义几乎一样、但不该排第一」的那一片。只有编号题会填。
+    trap: tuple[tuple[str, str], ...] = ()
 
 
 def _load_questions() -> tuple[list[Question], int]:
     payload = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))
-    questions = [
-        Question(
-            id=item["id"],
-            query=item["query"],
-            note=item.get("note", ""),
-            labels=tuple((label["document"], label["heading_path"]) for label in item["relevant"]),
+    problems: list[str] = []
+    questions: list[Question] = []
+    for item in payload["questions"]:
+        if not item.get("type"):
+            # 题型不是装饰：分题型拆解、exact_hit@1 与 absent 的排除全靠它。
+            problems.append(f"{item.get('id')}: 缺 type 字段")
+        questions.append(
+            Question(
+                id=item["id"],
+                type=item.get("type", ""),
+                query=item["query"],
+                note=item.get("note", ""),
+                labels=tuple(
+                    (label["document"], label["heading_path"]) for label in item["relevant"]
+                ),
+                trap=tuple(
+                    (label["document"], label["heading_path"]) for label in item.get("trap", [])
+                ),
+            )
         )
-        for item in payload["questions"]
-    ]
+    if problems:
+        raise SystemExit("eval/questions.json 不合法:\n  - " + "\n  - ".join(problems))
     return questions, int(payload.get("k", DEFAULT_TOP_K))
 
 
@@ -531,10 +590,10 @@ def _load_indexed_chunks(db: Any) -> list[IndexedChunk]:
     return chunks
 
 
-def _resolve_labels(
-    questions: Sequence[Question], chunks: Sequence[IndexedChunk]
+def _resolve_question_labels(
+    questions: Sequence[Question], chunks: Sequence[IndexedChunk], *, field: str
 ) -> dict[str, list[str]]:
-    """把 (document, heading_path) 标注解析成真实 ``chunk_id``。
+    """把某一道题某一栏的 (document, heading_path) 标注解析成真实 ``chunk_id``。
 
     解析规则是「恰好一条」：0 条说明标注写错了（或语料被改了），多于 1 条说明该章节
     被切成了多片、只写 heading_path 不足以定位——两种都必须当场失败。**静默算成漏召
@@ -548,17 +607,18 @@ def _resolve_labels(
     resolved: dict[str, list[str]] = {}
     problems: list[str] = []
     for question in questions:
+        locators = question.labels if field == "relevant" else question.trap
         chunk_ids: list[str] = []
-        for stem, heading_path in question.labels:
+        for stem, heading_path in locators:
             matched = by_locator.get((f"eval-doc-{stem}", heading_path), [])
             if not matched:
                 problems.append(
-                    f"{question.id}: label not found -> document={stem} "
+                    f"{question.id}: {field} label not found -> document={stem} "
                     f"heading_path={heading_path!r}"
                 )
             elif len(matched) > 1:
                 problems.append(
-                    f"{question.id}: label matched {len(matched)} chunks -> "
+                    f"{question.id}: {field} label matched {len(matched)} chunks -> "
                     f"document={stem} heading_path={heading_path!r}；"
                     "该章节被切成了多片，标注需要更细的定位"
                 )
@@ -567,8 +627,18 @@ def _resolve_labels(
         resolved[question.id] = chunk_ids
 
     if problems:
-        raise SystemExit("题目标注与真实切片对不上:\n  - " + "\n  - ".join(problems))
+        raise SystemExit(f"题目标注与真实切片对不上（{field}）:\n  - " + "\n  - ".join(problems))
     return resolved
+
+
+def _resolve_labels(
+    questions: Sequence[Question], chunks: Sequence[IndexedChunk]
+) -> tuple[dict[str, list[str]], dict[str, list[str]]]:
+    """相关切片与陷阱对两栏分别解析；两栏都错就一次报全，不要修一个跑一次。"""
+
+    labels = _resolve_question_labels(questions, chunks, field="relevant")
+    traps = _resolve_question_labels(questions, chunks, field="trap")
+    return labels, traps
 
 
 # ─────────────────────────────────────────────────────────────────── 检索与打分
@@ -624,16 +694,25 @@ async def _run_question(
 
 
 def _score_question(
-    outcome: QuestionOutcome, *, relevant: Sequence[str], chunk_by_id: dict[str, IndexedChunk]
+    outcome: QuestionOutcome,
+    *,
+    question_type: str,
+    relevant: Sequence[str],
+    trap: Sequence[str],
+    chunk_by_id: dict[str, IndexedChunk],
 ) -> dict[str, Any]:
     """一题的打分：Precision@k / Recall@k 按**实际返回条数**算。
 
     ``k`` 取「实际返回条数」而不是「请求的 top_k」：返回 2 条时必须按 2 条算精确率，
     否则「少返回」会被算成「不精确」，把一个降级 / 空结果的问题伪装成排序问题。
+
+    这里只产出**单题事实**（命中几个、第一条是不是相关、陷阱对排第几），宏平均交给
+    ``scripts/eval_metrics.py`` 的纯函数——那条路径可以离线单测，这条路径必须连真库。
     """
 
     returned_ids = outcome.returned_ids
     relevant_set = set(relevant)
+    trap_set = set(trap)
     hits = [chunk_id for chunk_id in returned_ids if chunk_id in relevant_set]
     false_positives = [chunk_id for chunk_id in returned_ids if chunk_id not in relevant_set]
 
@@ -667,13 +746,24 @@ def _score_question(
             first_hit_rank = position
             break
     if relevant_set:
-        reciprocal_rank = 1.0 / first_hit_rank if first_hit_rank else 0.0
+        reciprocal_rank_value = reciprocal_rank(returned_ids, frozenset(relevant_set))
+        exact_hit = bool(hit_at_1(returned_ids, frozenset(relevant_set)))
     else:
         # 反向对照题：一条都不返回才算「排对了」。
-        reciprocal_rank = 1.0 if not returned_ids else 0.0
+        reciprocal_rank_value = 1.0 if not returned_ids else 0.0
+        exact_hit = None
+
+    # 陷阱对：只有编号类题会填 trap。twin 排第几与「有没有被召回」必须分开报，
+    # 否则看不出「两片同分、名次随机」这种失败方式。
+    twin_rank: int | None = None
+    for position, chunk_id in enumerate(returned_ids, start=1):
+        if chunk_id in trap_set:
+            twin_rank = position
+            break
 
     return {
         "id": outcome.id,
+        "type": question_type,
         "query": outcome.query,
         "mode": outcome.mode,
         "status": status,
@@ -683,13 +773,18 @@ def _score_question(
         "precision": _round(precision),
         "recall": _round(recall),
         "first_hit_rank": first_hit_rank,
-        "reciprocal_rank": _round(reciprocal_rank),
+        "reciprocal_rank": _round(reciprocal_rank_value),
+        "exact_hit_at_1": exact_hit,
+        "relevant_ids": list(relevant),
+        "trap_ids": list(trap),
+        "twin_rank": twin_rank,
         "returned": [
             {
                 "chunk_id": chunk["chunk_id"],
                 "heading_path": _heading_of(chunk["chunk_id"], chunk_by_id),
                 "kb_id": chunk.get("kb_id"),
                 "is_relevant": chunk["chunk_id"] in relevant_set,
+                "is_trap": chunk["chunk_id"] in trap_set,
                 "vector_score": _round(chunk.get("vector_score")),
                 "bm25_score": _round(chunk.get("bm25_score")),
                 "vector_rank": chunk.get("vector_rank"),
@@ -743,32 +838,59 @@ def _prefix_metrics(
     return precision, recall
 
 
-def _summarize(
-    per_question: Sequence[dict[str, Any]], *, relevant_totals: dict[str, int]
-) -> dict[str, Any]:
-    """汇总分两组：可答题（11 道）与反向对照题（1 道）分开看。
+def _cases_from(per_question: Sequence[dict[str, Any]]) -> list[Case]:
+    """把「逐题事实」折成纯函数要的 ``Case``：算分逻辑只认这四个字段。"""
 
-    反向对照题的 P/R 只能取 0 或 1，混进均值会让「诚实空」这一个行为左右整个分数
-    ——所以主指标只算可答题，反向对照题单独报。
+    return [
+        Case(
+            id=item["id"],
+            type=item["type"],
+            relevant=frozenset(item["relevant_ids"]),
+            returned=tuple(chunk["chunk_id"] for chunk in item["returned"]),
+            trap=frozenset(item["trap_ids"]),
+        )
+        for item in per_question
+    ]
+
+
+def _summarize(
+    per_question: Sequence[dict[str, Any]],
+    *,
+    k: int,
+    relevant_totals: dict[str, int],
+) -> dict[str, Any]:
+    """汇总：可答题的宏平均 + 分题型 + 编号精确性 + 陷阱对 + 反向对照题。
+
+    ``absent`` 题（相关为空）由 ``aggregate`` 自动排除，单独走 ``absent_report``：
+    它测的是误召，混进主平均会让「诚实空」这一个行为左右整个分数。
     """
 
-    answerable = [item for item in per_question if relevant_totals.get(item["id"], 0) > 0]
-    negative = [item for item in per_question if relevant_totals.get(item["id"], 0) == 0]
-    precision = (
-        sum(item["precision"] for item in answerable) / len(answerable) if answerable else 0.0
-    )
-    recall = sum(item["recall"] for item in answerable) / len(answerable) if answerable else 0.0
-    mrr = (
-        sum(item["reciprocal_rank"] for item in answerable) / len(answerable) if answerable else 0.0
-    )
+    cases = _cases_from(per_question)
+    overall = aggregate(cases, k=k)
     return {
-        "answerable_count": len(answerable),
-        "precision_at_k_macro": _round(precision),
-        "recall_at_k_macro": _round(recall),
-        "mrr_macro": _round(mrr),
-        "k_sweep": _k_sweep(answerable, relevant_totals=relevant_totals),
-        "status_counts": _count_statuses(answerable),
-        "negative_control": negative[0] if negative else None,
+        "answerable_count": overall["count"],
+        "precision_at_k_macro": _round(overall["precision_at_k"]),
+        "recall_at_k_macro": _round(overall["recall_at_k"]),
+        "mrr_macro": _round(overall["mrr"]),
+        "recall_at_1_macro": _round(overall["recall_at_1"]),
+        "hit_at_1_macro": _round(overall["hit_at_1"]),
+        "by_type": {
+            type_name: {
+                key: _round(value) if isinstance(value, float) else value
+                for key, value in block.items()
+            }
+            for type_name, block in by_type(cases, k=k).items()
+        },
+        "exact_hit_at_1": exact_hit_at_1(cases),
+        "trap": trap_report(cases),
+        "absent": absent_report(cases),
+        "k_sweep": _k_sweep(
+            [item for item in per_question if relevant_totals.get(item["id"], 0) > 0],
+            relevant_totals=relevant_totals,
+        ),
+        "status_counts": _count_statuses(
+            [item for item in per_question if relevant_totals.get(item["id"], 0) > 0]
+        ),
         "per_question": list(per_question),
     }
 
@@ -818,6 +940,7 @@ async def _run_group(
     db: Any,
     questions: Sequence[Question],
     labels: dict[str, list[str]],
+    traps: dict[str, list[str]],
     chunk_by_id: dict[str, IndexedChunk],
     *,
     mode: str,
@@ -828,10 +951,16 @@ async def _run_group(
     for question in questions:
         outcome = await _run_question(db, question, mode=mode, top_k=top_k, kb_ids=kb_ids)
         per_question.append(
-            _score_question(outcome, relevant=labels[question.id], chunk_by_id=chunk_by_id)
+            _score_question(
+                outcome,
+                question_type=question.type,
+                relevant=labels[question.id],
+                trap=traps[question.id],
+                chunk_by_id=chunk_by_id,
+            )
         )
     relevant_totals = {qid: len(ids) for qid, ids in labels.items()}
-    return _summarize(per_question, relevant_totals=relevant_totals)
+    return _summarize(per_question, k=top_k, relevant_totals=relevant_totals)
 
 
 # ───────────────────────────────────────────────────────────── 融合分手算对账
@@ -1000,18 +1129,20 @@ async def _run_acceptance(
     target = labels["q01"][0] if labels.get("q01") else ""
     vector_item = _find_question(groups.get(MODE_VECTOR, {}), "q01")
     hybrid_item = _find_question(hybrid, "q01")
+    bm25_item = _find_question(groups.get(MODE_BM25, {}), "q01")
+    bm25_rank = _rank_of(target, bm25_item)
     vector_rank = _rank_of(target, vector_item)
     hybrid_rank = _rank_of(target, hybrid_item)
     hybrid_hit = hybrid_rank is not None
     checks.append(
         {
             "id": "A5",
-            "title": "编号查询（E1024 命中；纯向量排在后面）",
-            "command": f"{script_cmd}  （对比 groups.vector / groups.hybrid 的 q01）",
+            "title": "编号查询（E1024 命中；三组名次并排）",
+            "command": f"{script_cmd}  （对比 groups.vector / bm25 / hybrid 的 q01）",
             "expected": "hybrid 命中 E1024 那一节，且名次不差于纯向量（BM25 给精确编号加分）",
             "actual": (
-                f"vector 首条相关名次={vector_rank or '未命中'} / "
-                f"hybrid 首条相关名次={hybrid_rank or '未命中'}"
+                f"vector={vector_rank or '未命中'} / bm25={bm25_rank or '未命中'} / "
+                f"hybrid={hybrid_rank or '未命中'}"
             ),
             "passed": hybrid_hit,
         }
@@ -1019,14 +1150,14 @@ async def _run_acceptance(
 
     empty_outcome = await _run_question(
         db,
-        Question(id="A8-no-index", query="证书过期怎么处理", note="", labels=()),
+        Question(id="A8-no-index", type="probe", query="证书过期怎么处理", note="", labels=()),
         mode=MODE_VECTOR,
         top_k=top_k,
         kb_ids=[empty_kb_id],
     )
     no_match_outcome = await _run_question(
         db,
-        Question(id="A8-no-match", query="zzzqqqxxx", note="", labels=()),
+        Question(id="A8-no-match", type="probe", query="zzzqqqxxx", note="", labels=()),
         mode=MODE_BM25,
         top_k=top_k,
         kb_ids=[PRIMARY_KB_ID],
@@ -1053,7 +1184,7 @@ async def _run_acceptance(
 
     multi = await _run_question(
         db,
-        Question(id="A9-multi-kb", query="证书过期怎么处理", note="", labels=()),
+        Question(id="A9-multi-kb", type="probe", query="证书过期怎么处理", note="", labels=()),
         mode=MODE_HYBRID,
         top_k=max(top_k, 10),
         kb_ids=[PRIMARY_KB_ID, "kb-eval-ops"],
@@ -1079,7 +1210,7 @@ async def _run_acceptance(
 async def _run_degraded_probe(db: Any, *, top_k: int) -> dict[str, dict[str, Any]]:
     """ES 真的停掉之后跑验收第 6、7 条：混合降级 vs 单模式明确失败。"""
 
-    probe = Question(id="degraded", query="E1024 是什么错误", note="", labels=())
+    probe = Question(id="degraded", type="probe", query="E1024 是什么错误", note="", labels=())
     hybrid = await _run_question(db, probe, mode=MODE_HYBRID, top_k=top_k, kb_ids=[PRIMARY_KB_ID])
     bm25 = await _run_question(db, probe, mode=MODE_BM25, top_k=top_k, kb_ids=[PRIMARY_KB_ID])
 
@@ -1127,13 +1258,14 @@ def _group_table(title: str, group: dict[str, Any]) -> list[str]:
     lines = [
         f"### {title}",
         "",
-        "| 题目 | 问句 | 命中/相关 | 返回 | 首条相关名次 | P@k | R@k | 判定 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 题目 | 题型 | 问句 | 命中/相关 | 返回 | 首条相关名次 | P@k | R@k | 判定 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for item in group["per_question"]:
         rank = item["first_hit_rank"] if item["first_hit_rank"] is not None else "—"
         lines.append(
-            f"| {item['id']} | {item['query']} | {item['hits']}/{item['relevant_total']} | "
+            f"| {item['id']} | {item['type']} | {item['query']} | "
+            f"{item['hits']}/{item['relevant_total']} | "
             f"{item['returned_total']} | {rank} | {_fmt(item['precision'])} | "
             f"{_fmt(item['recall'])} | {item['status']} |"
         )
@@ -1141,136 +1273,192 @@ def _group_table(title: str, group: dict[str, Any]) -> list[str]:
         "",
         f"**Precision@k（可答 {group['answerable_count']} 题）= "
         f"{_fmt(group['precision_at_k_macro'])}；Recall@k = {_fmt(group['recall_at_k_macro'])}；"
-        f"MRR = {_fmt(group['mrr_macro'])}**",
+        f"MRR = {_fmt(group['mrr_macro'])}；R@1 = {_fmt(group['recall_at_1_macro'])}；"
+        f"exact_hit@1 = {_fmt(group['exact_hit_at_1']['rate'])}**",
         "",
     ]
-    negative = group.get("negative_control")
-    if negative:
+    absent = group.get("absent") or {}
+    if absent.get("count"):
         tail = ""
-        if negative["returned_total"]:
-            arrows = "、".join(chunk["heading_path"] for chunk in negative["returned"][:3])
-            tail = f"；误召指向：{arrows}"
+        if absent["returned_total"]:
+            examples = [item["id"] for item in absent["per_question"] if item["returned_total"]]
+            tail = f"；有误召的题：{'、'.join(examples)}"
         lines += [
-            f"反向对照题 {negative['id']}（{negative['query']}）："
-            f"返回 {negative['returned_total']} 条，判定「{negative['status']}」{tail}。",
+            f"反向对照题（{absent['count']} 道，库里确实没有）：总返回 "
+            f"{absent['returned_total']} 条，误召率 {_fmt(absent['false_positive_rate'])}{tail}。",
             "",
         ]
     return lines
 
 
+def _ordered_types(groups: dict[str, dict[str, Any]], modes: Sequence[str]) -> list[str]:
+    present = {name for mode in modes for name in groups[mode]["by_type"]}
+    ordered = [name for name in TYPE_ORDER if name in present]
+    return ordered + sorted(present - set(ordered))
+
+
+def _mode_score(group: dict[str, Any]) -> dict[str, Any]:
+    """把一组结果折成 ``winner`` 要的三项：召回 → MRR → 精确率。"""
+
+    return {
+        "recall_at_k": group["recall_at_k_macro"],
+        "mrr": group["mrr_macro"],
+        "precision_at_k": group["precision_at_k_macro"],
+    }
+
+
+def _fmt_rank(rank: int | None) -> str:
+    return "未命中" if rank is None else f"第 {rank} 名"
+
+
 def _findings(
-    *, vector: dict[str, Any], hybrid: dict[str, Any], rrf: dict[str, Any], rewrite: dict[str, Any]
+    *, groups: dict[str, dict[str, Any]], rrf: dict[str, Any], rewrite: dict[str, Any]
 ) -> list[str]:
     """由数据算出结论段：不写死任何一句判断，数字变了结论跟着变。"""
 
+    modes = [mode for mode in MODE_ORDER if mode in groups]
     lines: list[str] = ["", "## 结论与解读", ""]
-    v_recall = vector["recall_at_k_macro"]
-    h_recall = hybrid["recall_at_k_macro"]
-    v_mrr = vector["mrr_macro"]
-    h_mrr = hybrid["mrr_macro"]
+    answerable = groups[modes[0]]["answerable_count"] if modes else 0
 
-    if v_recall == h_recall:
+    overall = {mode: _mode_score(groups[mode]) for mode in modes}
+    best = winner(overall)
+    summary = "；".join(
+        f"{mode} R@5={_fmt(groups[mode]['recall_at_k_macro'])} "
+        f"MRR={_fmt(groups[mode]['mrr_macro'])} "
+        f"R@1={_fmt(groups[mode]['recall_at_1_macro'])}"
+        for mode in modes
+    )
+    lines.append(
+        f"1. **总平均（可答 {answerable} 题，k=5）赢家：{best}**。{summary}。"
+        "三项指标全部列出来是有意的：只报召回时，名次改善会被藏起来；只报名次时，"
+        "召回下降也会被藏起来。"
+    )
+
+    # 分题型赢家：总平均会掩盖「某一类题只有关键词能救」。
+    types = _ordered_types(groups, modes)
+    type_rows: list[str] = []
+    hybrid_weak: list[str] = []
+    for type_name in types:
+        scores = {mode: groups[mode]["by_type"].get(type_name) for mode in modes}
+        if not any(score and score.get("count") for score in scores.values()):
+            continue
+        type_winner = winner(scores)
+        type_rows.append(f"{type_name}={type_winner}")
+        if MODE_HYBRID in modes:
+            hybrid_score = scores.get(MODE_HYBRID)
+            singles = [
+                score for mode, score in scores.items() if mode != MODE_HYBRID and score is not None
+            ]
+            if hybrid_score is not None and singles:
+                best_single = max(
+                    singles,
+                    key=lambda s: (
+                        float(s.get("recall_at_k") or 0.0),
+                        float(s.get("mrr") or 0.0),
+                        float(s.get("precision_at_k") or 0.0),
+                    ),
+                )
+                if float(hybrid_score.get("recall_at_k") or 0.0) < float(
+                    best_single.get("recall_at_k") or 0.0
+                ) - 1e-12 or (
+                    abs(
+                        float(hybrid_score.get("recall_at_k") or 0.0)
+                        - float(best_single.get("recall_at_k") or 0.0)
+                    )
+                    <= 1e-12
+                    and float(hybrid_score.get("mrr") or 0.0)
+                    < float(best_single.get("mrr") or 0.0) - 1e-12
+                ):
+                    hybrid_weak.append(type_name)
+    lines.append("2. **分题型赢家：" + "；".join(type_rows) + "**。")
+    if hybrid_weak:
         lines.append(
-            f"1. **Recall@k 打平（都是 {_fmt(v_recall)}）**：在这份语料与这个 top_k 上，"
-            "纯向量已经把所有相关切片都排进了前 k 条，混合没有额外把「漏掉的」捞回来。"
-            "这不是「hybrid 没用」，而是**这份语料对召回已经到顶**——它测不出召回差异。"
-        )
-    elif h_recall > v_recall:
-        lines.append(
-            f"1. **混合把召回拉高了**：Recall@k {_fmt(v_recall)} → {_fmt(h_recall)}。"
-            "相关切片本来掉出前 k 条的题，被关键词一路补了回来。"
+            "   - **混合反而不如单路的题型：" + "、".join(hybrid_weak) + "**。"
+            "这是本次评测最有价值的发现之一：RRF 只看名次、不看分数，"
+            "关键词一路把「字面像但不相关」的切片顶进前 k 时，会挤掉向量本来排对的答案。"
+            "不要把它藏起来——它说明混合的收益是有条件的。"
         )
     else:
         lines.append(
-            f"1. **混合反而降低了召回**：Recall@k {_fmt(v_recall)} → {_fmt(h_recall)}。"
-            "关键词一路把不相关切片顶进前 k，挤掉了向量本来找对的那条——"
-            "这是混合检索的典型代价，必须如实记录。"
+            "   - 没有任何题型出现「混合不如单路」：在本语料上，两路融合没有伤到任何一类题。"
         )
 
-    if v_mrr == h_mrr:
-        lines.append(
-            f"2. **排名质量也打平（MRR 都是 {_fmt(v_mrr)}）**：两路在「第一条相关切片排第几」上"
-            "没有差别。"
+    # 编号精确性：第一条是不是被问的那个编号。
+    exact_bits = []
+    for mode in modes:
+        block = groups[mode]["exact_hit_at_1"]
+        exact_bits.append(f"{mode} {block['hits']}/{block['count']}（{_fmt(block['rate'])}）")
+    lines.append(
+        "3. **编号精确性 exact_hit@1（只统计 exact_code + rare_token）："
+        + "；".join(exact_bits)
+        + "。** 这个指标回答的是「问 E1025 时第一条是不是 E1025」，"
+        "而不是「前五条里有没有某个错误码」——后者在 200+ 片的语料里几乎必然为真，"
+        "测不出任何差异。"
+    )
+
+    # 陷阱对：被问的那片排第几、孪生兄弟排第几。
+    trap_ids = sorted({entry["id"] for mode in modes for entry in groups[mode].get("trap", [])})
+    number = 4
+    for question_id in trap_ids:
+        cells = []
+        for mode in modes:
+            entry = next(
+                (item for item in groups[mode].get("trap", []) if item["id"] == question_id),
+                None,
+            )
+            if entry is None:
+                continue
+            cells.append(
+                f"{mode}: 被问的那片{'排名第 1' if entry['correct_at_1'] else '未排第一'}，"
+                f"孪生片{_fmt_rank(entry['twin_rank'])}"
+            )
+        lines.append(f"{number}. **陷阱对 {question_id}**：" + "；".join(cells) + "。")
+        number += 1
+
+    # 反向对照题：三种模式各返回几条。结论由数字决定，不预设「BM25 会诚实空」。
+    absent_bits = [
+        f"{mode} 误召率 {_fmt(groups[mode]['absent']['false_positive_rate'])}"
+        f"（平均返回 {_fmt(groups[mode]['absent']['returned_avg'])} 条）"
+        for mode in modes
+    ]
+    rates = [groups[mode]["absent"]["false_positive_rate"] for mode in modes]
+    if rates and all(rate == 1.0 for rate in rates):
+        absent_note = (
+            "三种模式都把每一道 absent 题答成了有结果：在这份语料上，"
+            "「诚实空」不是某一路的问题，而是整条链路都没有「查不到」这个状态。"
         )
+    elif rates and all(rate == 0.0 for rate in rates):
+        absent_note = "三种模式都做到了诚实空：absent 题一条都没返回。"
     else:
-        better = "混合更好" if h_mrr > v_mrr else "纯向量更好"
-        lines.append(
-            f"2. **排名质量差在 MRR：{_fmt(v_mrr)} → {_fmt(h_mrr)}（{better}）**。"
-            "召回上界相同时，这是混合唯一能量出来的净收益："
-            "同一条相关切片被提到了更靠前的位置。"
+        best_mode = min(
+            modes, key=lambda mode: groups[mode]["absent"]["false_positive_rate"] or 0.0
         )
-        improved = [
-            f"{v_item['id']}（{v_item['first_hit_rank'] or '未命中'} → "
-            f"{h_item['first_hit_rank'] or '未命中'}）"
-            for v_item, h_item in zip(vector["per_question"], hybrid["per_question"])
-            if (v_item["first_hit_rank"] or 99) > (h_item["first_hit_rank"] or 99)
-        ]
-        worsened = [
-            f"{v_item['id']}（{v_item['first_hit_rank'] or '未命中'} → "
-            f"{h_item['first_hit_rank'] or '未命中'}）"
-            for v_item, h_item in zip(vector["per_question"], hybrid["per_question"])
-            if (v_item["first_hit_rank"] or 99) < (h_item["first_hit_rank"] or 99)
-        ]
-        if improved:
-            lines.append(f"   - 名次被提前的题：{'、'.join(improved)}")
-        if worsened:
-            lines.append(f"   - 名次被推后的题：{'、'.join(worsened)}")
-        lines.append(
-            "   - 其余题名次不变。混合不是「全赢」：它靠关键词一路给精确字面加分，"
-            "所以只在「问句里有文档原样出现的字面」时才能真正占便宜。"
-        )
-
-    # 编号洞：这一条是父 spec 的前提假设，必须如实写结果，而不是复述预期。
-    e1024 = next((item for item in hybrid["per_question"] if item["id"] == "q01"), None)
-    if e1024 is not None:
-        v_rank = next(
-            (i["first_hit_rank"] for i in vector["per_question"] if i["id"] == "q01"), None
-        )
-        h_rank = e1024["first_hit_rank"]
-        if v_rank is None:
-            lines.append(
-                "3. **编号查询（E1024）：纯向量漏了，混合补上了。** "
-                f"vector 前 k 条里没有 E1024 那一节，hybrid 把它排到第 {h_rank} 名"
-                "——这正是父 spec 预期的「BM25 补洞」。"
-            )
-        else:
-            lines.append(
-                "3. **编号查询（E1024）：纯向量也命中了（排第 "
-                f"{v_rank} 名），混合排第 {h_rank or '未命中'} 名。** "
-                "也就是说父 spec 里「向量记不住那串字」这个前提，**在本项目这套嵌入 + "
-                "这份语料上没有复现**：检索文本把编号写在了切片里（票 2 的设计），"
-                "嵌入模型对这类规整标识符并不盲。要复现「向量漏」需要更大的语料或更"
-                "不规整的标识符（随机串、哈希、内部拼写），这一条留给上游决定是否补测。"
-            )
-
-    negative = hybrid.get("negative_control")
-    if negative:
-        if negative["returned_total"] == 0:
-            lines.append(
-                "4. **反向对照题（库里确实没有）：诚实空。** 这类问题只能靠关键词一路"
-                "给出「没命中」，因为向量检索永远返回离它最近的 k 条。"
-            )
-        else:
-            lines.append(
-                f"4. **反向对照题（库里确实没有）：返回了 {negative['returned_total']} 条，"
-                "判定「误召」。** 这是纯向量的结构性行为——它永远返回最近的 k 条，没有"
-                "「查不到」这个状态；混合模式继承了这一点（向量一路在，就一定有结果）。"
-                "要真正做到「诚实空」，需要一条分数阈值或「关键词一路为空即空」的策略，"
-                "本票不实现，记给上游。"
-            )
-
-    if rewrite["executed"]:
-        lines.append("5. **改写对比：已执行**，见下面的改写对比一节。")
-    else:
-        lines.append(
-            f"5. **改写对比：未执行（{rewrite['reason']}）**。{rewrite.get('detail', '')}。"
-            "这一组数字**不存在**，不要在任何地方按「改写有用 / 没用」引用本报告。"
+        absent_note = (
+            f"三种模式的误召率不同，最低的是 {best_mode}。"
+            "这说明「该不该返回」可以被测量、也可以被策略改变，不是结构宿命。"
         )
     lines.append(
-        f"6. **融合分对账：{'通过' if rrf['passed'] else '不通过'}**"
+        f"{number}. **库里确实没有的题目（absent）："
+        + "；".join(absent_bits)
+        + "。**"
+        + absent_note
+    )
+    number += 1
+
+    lines.append(
+        f"{number}. **融合分对账：{'通过' if rrf['passed'] else '不通过'}**"
         f"（核对 {rrf['checked_chunks']} 条，最大误差 "
         f"{(rrf.get('worst_case') or {}).get('abs_error', 'n/a')}）。"
     )
+    number += 1
+
+    if rewrite["executed"]:
+        lines.append(f"{number}. **改写对比：已执行**，见下面的改写对比一节。")
+    else:
+        lines.append(
+            f"{number}. **改写对比：未执行（{rewrite['reason']}）**。{rewrite.get('detail', '')}。"
+            "这一组数字**不存在**，不要在任何地方按「改写有用 / 没用」引用本报告。"
+        )
     return lines
 
 
@@ -1285,13 +1473,14 @@ def _write_report(
     rewrite: dict[str, Any],
     questions: Sequence[Question],
     labels: dict[str, list[str]],
+    traps: dict[str, list[str]],
     chunk_by_id: dict[str, IndexedChunk],
 ) -> None:
-    vector = groups[MODE_VECTOR]
-    hybrid = groups[MODE_HYBRID]
+    modes = [mode for mode in MODE_ORDER if mode in groups]
     worst = rrf.get("worst_case") or {}
+    type_counts = Counter(question.type for question in questions)
     lines: list[str] = [
-        "# 检索评测报告（票 8）",
+        "# 检索评测报告（票 8 · v2 重做）",
         "",
         f"生成时间：{datetime.now().isoformat(timespec='seconds')}",
         "",
@@ -1303,73 +1492,142 @@ def _write_report(
         "- 语料：`eval/corpus/`，"
         f"{corpus_stats['document_count']} 篇文档、{corpus_stats['chunk_count']} 个切片，"
         f"落在独立知识库 `{corpus_stats['kb_ids']}`。",
-        f"- 题目：`eval/questions.json`，{len(questions)} 道，人工标注到 "
-        "`(document, heading_path)`，由脚本解析成真实 `chunk_id`（标注对不上会当场报错）。",
+        "- **语料是合成的**：由本仓库为评测专门编写，不是真实工单或真实产品文档。"
+        "下面的结论只对这份语料成立，不能外推成「这套实现普遍如何」。",
+        f"- 题目：`eval/questions.json`，{len(questions)} 道，按题型分布 "
+        + "、".join(f"{name} {count}" for name, count in type_counts.most_common())
+        + "。人工标注到 `(document, heading_path)`，由脚本解析成真实 `chunk_id`"
+        "（标注对不上会当场报错）。",
         f"- 融合常数 `rrf_k={environment.rrf_k}`（服务端写死，不进请求体）；"
         f"`top_k={environment.top_k}`；每路召回深度 `{environment.hybrid_recall_top_k}`。",
         "- 重排："
         f"{'开' if environment.rerank_enabled else '关'}；同义词扩展："
         f"{'开' if environment.synonym_expansion_enabled else '关'}。"
         "两者都在本次对比里显式关闭——它们是第三变量，混进来就说不清是谁的功劳。",
+        "- 三组对照：`mode=vector`（纯向量）、`mode=bm25`（关键词单路）、"
+        "`mode=hybrid`（RRF 融合）。**v1 漏了 bm25 单路**，而它才是「BM25 补洞」的直接证据。",
         "",
-        "> **与教程原始项目的数字没有可比性。** 教程里那三组评测数字在本项目**未复现**"
-        "（语料、题目、模型、k 都不同）；这里给出的只是本项目自己的一组数字，"
-        "用途是「同一套代码里 vector 与 hybrid 的相对差异」。",
+        "> **与 v1 的数字没有可比性。** v1 的语料只有 39 片、每路召回深度 20，两路一捞就"
+        "覆盖大半个库，两种模式同时 `R@5 = 1.0000`——那不是实现完美，是**测量工具没有量程**。"
+        "v2 把语料扩到 200+ 片、把编号从标题挪回正文，下面的数字才有分辨力。",
         "",
-        "## 汇总",
+        "## 汇总（k=5，只算可答题）",
         "",
-        "| 模式 | Precision@k | Recall@k | MRR | 命中 | 部分命中 | 漏 |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| 模式 | 可答题 | P@5 | R@5 | MRR | R@1 | 命中 | 部分命中 | 漏 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
-    for name, group in ((MODE_VECTOR, vector), (MODE_HYBRID, hybrid)):
+    for mode in modes:
+        group = groups[mode]
         counts = group["status_counts"]
         missed = counts.get("漏", 0) + counts.get("漏（空结果）", 0)
         lines.append(
-            f"| {name} | {_fmt(group['precision_at_k_macro'])} | "
+            f"| {mode} | {group['answerable_count']} | "
+            f"{_fmt(group['precision_at_k_macro'])} | "
             f"{_fmt(group['recall_at_k_macro'])} | {_fmt(group['mrr_macro'])} | "
-            f"{counts.get('命中', 0)} | "
+            f"{_fmt(group['recall_at_1_macro'])} | {counts.get('命中', 0)} | "
             f"{counts.get('部分命中', 0)} | {missed} |"
         )
 
-    lines += _findings(vector=vector, hybrid=hybrid, rrf=rrf, rewrite=rewrite)
+    lines += [
+        "",
+        "## 分题型拆解（P@5 / R@5 / MRR / R@1）",
+        "",
+        "| 题型 | 题数 | 模式 | P@5 | R@5 | MRR | R@1 |",
+        "| --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    type_names = _ordered_types(groups, modes)
+    for type_name in type_names:
+        for mode in modes:
+            block = groups[mode]["by_type"].get(type_name)
+            if not block or not block.get("count"):
+                continue
+            lines.append(
+                f"| {type_name} | {block['count']} | {mode} | "
+                f"{_fmt(block['precision_at_k'])} | {_fmt(block['recall_at_k'])} | "
+                f"{_fmt(block['mrr'])} | {_fmt(block['recall_at_1'])} |"
+            )
 
     lines += [
         "",
-        "## 逐题差异（hybrid 相对 vector）",
+        "## 编号精确性 exact_hit@1（第一条是不是被问的那个编号）",
         "",
-        "| 题目 | vector 判定 | hybrid 判定 | 差异 |",
+        "| 模式 | 命中/总数 | 比例 |",
+        "| --- | --- | --- |",
+    ]
+    for mode in modes:
+        block = groups[mode]["exact_hit_at_1"]
+        lines.append(f"| {mode} | {block['hits']}/{block['count']} | {_fmt(block['rate'])} |")
+    lines += [
+        "",
+        "> 口径：只统计 `exact_code` 与 `rare_token`。问 `E1025` 而把 `E1024` 排第一，"
+        "**算不中**。v1 只统计「前五条里有没有某个错误码」，所以这个差别从未被量出来。",
+        "",
+        "## 陷阱对实测（问 E1025 是否召回 E1024，反之亦然）",
+        "",
+        "| 题目 | 模式 | 被问的那片排第一 | 孪生片名次 |",
         "| --- | --- | --- | --- |",
     ]
-    for vector_item, hybrid_item in zip(vector["per_question"], hybrid["per_question"]):
-        if hybrid_item["recall"] > vector_item["recall"]:
-            verdict = "hybrid 赢"
-        elif hybrid_item["recall"] < vector_item["recall"]:
-            verdict = "hybrid 输"
-        elif (hybrid_item["first_hit_rank"] or 99) < (vector_item["first_hit_rank"] or 99):
-            verdict = "hybrid 名次更好"
-        elif (hybrid_item["first_hit_rank"] or 99) > (vector_item["first_hit_rank"] or 99):
-            verdict = "hybrid 名次更差"
-        else:
-            verdict = "打平"
-        lines.append(
-            f"| {vector_item['id']} | {vector_item['status']} | "
-            f"{hybrid_item['status']} | {verdict} |"
-        )
+    trap_question_ids = sorted(
+        {entry["id"] for mode in modes for entry in groups[mode].get("trap", [])}
+    )
+    for question_id in trap_question_ids:
+        for mode in modes:
+            entry = next(
+                (item for item in groups[mode].get("trap", []) if item["id"] == question_id),
+                None,
+            )
+            if entry is None:
+                continue
+            lines.append(
+                f"| {question_id} | {mode} | {'是' if entry['correct_at_1'] else '否'} | "
+                f"{_fmt_rank(entry['twin_rank'])} |"
+            )
 
     lines += [
         "",
-        "## 排名质量：Recall@5 到顶时，混合赢在哪一格",
+        "## 库里确实没有的题（absent：测误召，不计入主平均）",
         "",
-        "Recall@5 反映「该进的进没进来」。语料只有三十几片、`top_k=5` 已经把该进的都收进来时，"
-        "它会在两边同时到顶；此时真正区分两路的是**第一条相关切片排在第几名**。",
+        "| 模式 | 题数 | 总返回条数 | 平均返回 | 误召率 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for mode in modes:
+        block = groups[mode]["absent"]
+        lines.append(
+            f"| {mode} | {block['count']} | {block['returned_total']} | "
+            f"{_fmt(block['returned_avg'])} | {_fmt(block['false_positive_rate'])} |"
+        )
+
+    lines += _findings(groups=groups, rrf=rrf, rewrite=rewrite)
+
+    lines += [
+        "",
+        "## 逐题差异（三种模式并排）",
+        "",
+        "| 题目 | 题型 | vector | bm25 | hybrid |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    by_mode_question = {
+        mode: {item["id"]: item for item in groups[mode]["per_question"]} for mode in modes
+    }
+    for question in questions:
+        cells = []
+        for mode in (MODE_VECTOR, MODE_BM25, MODE_HYBRID):
+            item = by_mode_question.get(mode, {}).get(question.id)
+            cells.append(item["status"] if item else "—")
+        lines.append(f"| {question.id} | {question.type} | " + " | ".join(cells) + " |")
+
+    lines += [
+        "",
+        "## 排名质量：Recall@5 到顶时看前几条",
         "",
         "| 模式 | MRR | Recall@1 | Recall@2 | Recall@3 | Recall@5 |",
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for name, group in ((MODE_VECTOR, vector), (MODE_HYBRID, hybrid)):
+    for mode in modes:
+        group = groups[mode]
         sweep = {row["k"]: row["recall_at_k_macro"] for row in group["k_sweep"]}
         lines.append(
-            f"| {name} | {_fmt(group['mrr_macro'])} | {_fmt(sweep.get(1))} | "
+            f"| {mode} | {_fmt(group['mrr_macro'])} | {_fmt(sweep.get(1))} | "
             f"{_fmt(sweep.get(2))} | {_fmt(sweep.get(3))} | {_fmt(sweep.get(5))} |"
         )
     lines += [
@@ -1377,18 +1635,11 @@ def _write_report(
         "（Recall@k 用的是同一次返回的前 k 条：召回深度固定、融合后的顺序与最终截断位置"
         "无关，所以前 k 条就是请求 `top_k=k` 会拿到的结果。）",
         "",
-        "| 题目 | vector 首条相关名次 | hybrid 首条相关名次 |",
-        "| --- | --- | --- |",
+        "## 三组细节",
+        "",
     ]
-    for vector_item, hybrid_item in zip(vector["per_question"], hybrid["per_question"]):
-        lines.append(
-            f"| {vector_item['id']} | {vector_item['first_hit_rank'] or '未命中'} | "
-            f"{hybrid_item['first_hit_rank'] or '未命中'} |"
-        )
-
-    lines += ["", "## 两组细节", ""]
-    lines += _group_table("mode=vector", vector)
-    lines += _group_table("mode=hybrid", hybrid)
+    for mode in modes:
+        lines += _group_table(f"mode={mode}（{MODE_LABELS[mode]}）", groups[mode])
 
     lines += [
         "## RRF 手算对账",
@@ -1410,12 +1661,12 @@ def _write_report(
         on_group = rewrite["groups"]["rewrite_on"]
         off_group = rewrite["groups"]["rewrite_off"]
         lines += [
-            "| 组 | Precision@k | Recall@k |",
-            "| --- | --- | --- |",
+            "| 组 | Precision@k | Recall@k | MRR |",
+            "| --- | --- | --- | --- |",
             f"| 改写关 | {_fmt(off_group['precision_at_k_macro'])} | "
-            f"{_fmt(off_group['recall_at_k_macro'])} |",
+            f"{_fmt(off_group['recall_at_k_macro'])} | {_fmt(off_group['mrr_macro'])} |",
             f"| 改写开 | {_fmt(on_group['precision_at_k_macro'])} | "
-            f"{_fmt(on_group['recall_at_k_macro'])} |",
+            f"{_fmt(on_group['recall_at_k_macro'])} | {_fmt(on_group['mrr_macro'])} |",
             "",
         ]
     else:
@@ -1443,16 +1694,25 @@ def _write_report(
         "",
         "## 标注与切片对照",
         "",
-        "| 题目 | 标注（heading_path） | 解析到的 chunk |",
-        "| --- | --- | --- |",
+        "| 题目 | 题型 | 标注（heading_path） | 陷阱对（heading_path） | 解析到的 chunk |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for question in questions:
         resolved = labels[question.id]
+        trap_resolved = traps[question.id]
         if not resolved:
-            lines.append(f"| {question.id} | （无，反向对照题） | — |")
+            lines.append(f"| {question.id} | {question.type} | （无，absent 题） | — | — |")
             continue
         paths = "；".join(_heading_of(cid, chunk_by_id) for cid in resolved)
-        lines.append(f"| {question.id} | {paths} | {', '.join(_short(cid) for cid in resolved)} |")
+        trap_paths = (
+            "；".join(_heading_of(cid, chunk_by_id) for cid in trap_resolved)
+            if trap_resolved
+            else "—"
+        )
+        lines.append(
+            f"| {question.id} | {question.type} | {paths} | {trap_paths} | "
+            f"{', '.join(_short(cid) for cid in resolved)} |"
+        )
     lines.append("")
 
     path.write_text("\n".join(lines), encoding="utf-8")
@@ -1520,7 +1780,7 @@ async def _run(args: argparse.Namespace) -> int:
 
         chunks = _load_indexed_chunks(db)
         chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
-        labels = _resolve_labels(questions, chunks)
+        labels, traps = _resolve_labels(questions, chunks)
         corpus_stats = {
             "document_count": len({chunk.document_id for chunk in chunks}),
             "chunk_count": len(chunks),
@@ -1540,21 +1800,24 @@ async def _run(args: argparse.Namespace) -> int:
         kb_ids = [layout.kb_id for layout in layouts]
 
         print("\n=== retrieval groups ===")
-        vector_group = await _run_group(
-            db, questions, labels, chunk_by_id, mode=MODE_VECTOR, kb_ids=kb_ids, top_k=top_k
-        )
-        hybrid_group = await _run_group(
-            db, questions, labels, chunk_by_id, mode=MODE_HYBRID, kb_ids=kb_ids, top_k=top_k
-        )
-        groups = {MODE_VECTOR: vector_group, MODE_HYBRID: hybrid_group}
-        print(
-            f"vector   : P@k={_fmt(vector_group['precision_at_k_macro'])} "
-            f"R@k={_fmt(vector_group['recall_at_k_macro'])}"
-        )
-        print(
-            f"hybrid   : P@k={_fmt(hybrid_group['precision_at_k_macro'])} "
-            f"R@k={_fmt(hybrid_group['recall_at_k_macro'])}"
-        )
+        groups: dict[str, dict[str, Any]] = {}
+        for mode in MODE_ORDER:
+            groups[mode] = await _run_group(
+                db,
+                questions,
+                labels,
+                traps,
+                chunk_by_id,
+                mode=mode,
+                kb_ids=kb_ids,
+                top_k=top_k,
+            )
+            group = groups[mode]
+            print(
+                f"{mode:<8} : P@5={_fmt(group['precision_at_k_macro'])} "
+                f"R@5={_fmt(group['recall_at_k_macro'])} "
+                f"MRR={_fmt(group['mrr_macro'])} R@1={_fmt(group['recall_at_1_macro'])}"
+            )
 
         # 改写开 / 关：只在真的配了大模型 key 时跑，绝不编造。
         rewrite: dict[str, Any] = {
@@ -1566,11 +1829,25 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"rewrite  : SKIPPED ({environment.llm_probe})")
         else:
             rewrite_off = await _run_group(
-                db, questions, labels, chunk_by_id, mode=MODE_HYBRID, kb_ids=kb_ids, top_k=top_k
+                db,
+                questions,
+                labels,
+                traps,
+                chunk_by_id,
+                mode=MODE_HYBRID,
+                kb_ids=kb_ids,
+                top_k=top_k,
             )
             settings.QUERY_REWRITE_ENABLED = True
             rewrite_on = await _run_group(
-                db, questions, labels, chunk_by_id, mode=MODE_HYBRID, kb_ids=kb_ids, top_k=top_k
+                db,
+                questions,
+                labels,
+                traps,
+                chunk_by_id,
+                mode=MODE_HYBRID,
+                kb_ids=kb_ids,
+                top_k=top_k,
             )
             settings.QUERY_REWRITE_ENABLED = False
             rewrite = {
@@ -1596,7 +1873,7 @@ async def _run(args: argparse.Namespace) -> int:
             verdict = "PASS" if check["passed"] else "FAIL"
             print(f"{check['id']}: {verdict} -- {check['title']} | {check['actual'][:100]}")
 
-        rrf = _check_rrf(hybrid_group["per_question"])
+        rrf = _check_rrf(groups[MODE_HYBRID]["per_question"])
 
         run_dir = RUNS_DIR / datetime.now().strftime("%Y%m%dT%H%M%S")
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1607,6 +1884,7 @@ async def _run(args: argparse.Namespace) -> int:
             "questions": [
                 {
                     "id": question.id,
+                    "type": question.type,
                     "query": question.query,
                     "note": question.note,
                     "labels": [
@@ -1614,6 +1892,11 @@ async def _run(args: argparse.Namespace) -> int:
                         for stem, heading_path in question.labels
                     ],
                     "resolved_chunk_ids": labels[question.id],
+                    "traps": [
+                        {"document": stem, "heading_path": heading_path}
+                        for stem, heading_path in question.trap
+                    ],
+                    "resolved_trap_chunk_ids": traps[question.id],
                 }
                 for question in questions
             ],
@@ -1635,6 +1918,7 @@ async def _run(args: argparse.Namespace) -> int:
             rewrite=rewrite,
             questions=questions,
             labels=labels,
+            traps=traps,
             chunk_by_id=chunk_by_id,
         )
         print(f"\nrun dir  : {run_dir}")

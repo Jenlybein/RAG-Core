@@ -1,148 +1,353 @@
 {
   "_readme": [
-    "12 道固定评测题 + 人工标注的相关切片。标签格式是 (document, heading_path)，",
-    "document 是 eval/corpus/ 下的文件名去掉扩展名；heading_path 是切块器产出的章节路径",
-    "（h1/h2 用 ' > ' 连接）。脚本会在索引完成之后用真实切片元数据解析标签，",
-    "断言每条标签恰好解析到一个 chunk_id —— 标签写错会当场失败，而不是静默算成漏召。",
-    "不直接写 chunk_id：chunk_id 是索引期生成的随机 ID，重建一次就全变，",
-    "拿它当标签等于让评测不可复跑。"
+    "24 道固定评测题 + 人工标注的相关切片，按题型分类（type）。",
+    "标签格式是 (document, heading_path)，document 是 eval/corpus/ 下的文件名去掉扩展名；",
+    "heading_path 是切块器产出的章节路径（h1/h2 用 ' > ' 连接）。脚本会在索引完成之后用",
+    "真实切片元数据解析标签，断言每条标签恰好解析到一个 chunk_id —— 标签写错会当场失败，",
+    "而不是静默算成漏召。tests/test_eval_corpus.py 还会在离线阶段先对一遍。",
+    "",
+    "题型（type）：",
+    "- exact_code：问错误码，考字面命中；trap 字段标注「语义几乎一样、但不该排第一」的孪生切片。",
+    "- rare_token：问随机项目代号（嵌入模型没见过这串字），是「罕见词盲区」的干净测试。",
+    "- model_number：问型号，考后缀差异（XR-2000 / XR-2000 Pro / XR-2100）。",
+    "- colloquial：口语问法，与文档措辞不共享关键字。",
+    "- synonym：同义换词（退款 / 退还 / 退钱 / 退费 / 换货）。",
+    "- cross_section：答案分散在两节，必须两片都进 top-k。",
+    "- absent：库里确实没有的主题；不计入主平均，单独报误召。",
+    "k=5：P@5 / R@5 / MRR / R@1 都在这个预算下算。"
   ],
   "k": 5,
   "questions": [
     {
       "id": "q01",
+      "type": "exact_code",
       "query": "E1024 是什么错误，要怎么处理",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 错误码 E1024：设备证书链已过期"
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
         }
       ],
-      "note": "精确编号题。考字面命中：E1024 这串字在向量里没有稳定表示，纯向量很容易落到语义相近的 E1025 那一节（两节正文几乎同构）。"
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（二）"
+        }
+      ],
+      "note": "精确编号题。标题里没有编号（编号只在正文），所以向量只能靠正文里那串字去分辨 E1024 与 E1025——而两节正文 90% 相同。"
     },
     {
       "id": "q02",
+      "type": "exact_code",
       "query": "E1025 是什么意思",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 错误码 E1025：设备证书已被吊销"
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（二）"
         }
       ],
-      "note": "精确编号题，且是与 E1024 只差一个数字的对照题。它同时验证「命中对的编号」而不只是「命中了某个编号」。"
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
+        }
+      ],
+      "note": "陷阱对的另一半：问 E1025 时看会不会把 E1024 排第一。exact_hit@1 就是为这一题设的。"
     },
     {
       "id": "q03",
+      "type": "exact_code",
       "query": "E3106 这个错误码代表什么",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 错误码 E3106：Webhook 签名校验失败"
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 回调与签名类错误（一）"
         }
       ],
-      "note": "精确编号题，编号格式与前两题不同（E3xxx）。考的是「编号本身是检索键」，不依赖章节标题里的中文词。"
+      "note": "精确编号题，编号族不同（E3xxx），且同族还有五个极易混淆的签名类错误。"
     },
     {
       "id": "q04",
-      "query": "XR-2000 Pro 有几个千兆网口",
+      "type": "exact_code",
+      "query": "E2048 是什么错误",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 型号 XR-2000 Pro 硬件规格"
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（一）"
         }
       ],
-      "note": "型号题。XR-2000 是 XR-2000 Pro 的前缀，纯向量很难把带 Pro 的那一节顶上来；关键词一路则天然按型号字面匹配。"
+      "note": "精确编号题。同族六节都在讲配额，向量很难只凭语义把「分钟级」那节挑出来。"
     },
     {
       "id": "q05",
-      "query": "XR-3000 支持万兆光口吗",
+      "type": "exact_code",
+      "query": "W0001 要不要紧",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 型号 XR-3000 硬件规格"
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 存储与介质类告警（一）"
         }
       ],
-      "note": "型号题。与 q04 同族但型号完全不同，用来确认型号命中不是「凡是 XR- 开头都算」。"
+      "note": "编号族换成 W 开头，且问句是「要不要紧」这种非标准问法；考编号仍是检索键。"
     },
     {
       "id": "q06",
-      "query": "退款几天内要提出来",
+      "type": "model_number",
+      "query": "XR-2000 Pro 有几个千兆网口",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 退款政策"
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
         }
       ],
-      "note": "口语题。用户问法是「几天内」，文档写的是「须在订单完成后 7 天内提出申请」，两侧措辞不共享关键词。"
+      "note": "型号题。XR-2000 是 XR-2000 Pro 的前缀，召回标准款规格就是答错（4 个 vs 6 个）。"
     },
     {
       "id": "q07",
-      "query": "背调要问哪些问题",
+      "type": "model_number",
+      "query": "XR-2100 支持万兆光口吗",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 背景调查标准问题清单"
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（机架款）"
         }
       ],
-      "note": "口语题 + 简称。语料里只写「背景调查」，从不出现「背调」；这是同义词扩展表本该补的洞，同时也是语义召回的机会。"
+      "note": "型号题。三款里只有机架款有万兆光口，考「后缀差异改变答案」。"
     },
     {
       "id": "q08",
-      "query": "退钱多久能到账",
+      "type": "model_number",
+      "query": "XR-2000 最多能带多少终端",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 退款政策"
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
         }
       ],
-      "note": "同义词题。语料只写「退款」，问句用「退钱」；字面一路必漏，语义一路应当能补。"
+      "note": "型号题的反向陷阱：不能因为问句里出现 XR-2000 就召回 Pro 那一节（64 vs 256）。"
     },
     {
       "id": "q09",
+      "type": "colloquial",
       "query": "被限速了怎么办",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 接口限流与重试"
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（一）"
         }
       ],
-      "note": "同义词题。语料写「限流」，问句说「限速」；中文里这类近义词是关键词一路最容易漏的地方。"
+      "note": "口语题。文档写「限流」，问句说「限速」；目标节正文里写明了「现场口语常称限速」这个映射。"
     },
     {
       "id": "q10",
-      "query": "XR-2000 Pro 的电源适配器能和 XR-2000 通用吗",
+      "type": "colloquial",
+      "query": "背调一般问哪些问题",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 配件兼容性对照表"
-        },
-        {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 型号 XR-2000 Pro 硬件规格"
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 人员背景审查"
         }
       ],
-      "note": "跨章节综合题：答案分散在「对照表」（电源适配器两列不同）与「Pro 规格」（唯一不能互换的是电源适配器）两节，需要两条都进 top-5 才算召回完整。"
+      "note": "口语 + 简称：语料里只写「背景调查」，从不出现「背调」。关键词一路必漏，语义一路应当能补。"
     },
     {
       "id": "q11",
-      "query": "证书过期了要做哪些步骤，会中断业务吗",
+      "type": "colloquial",
+      "query": "设备一到晚上就掉线是怎么回事",
       "relevant": [
         {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 证书轮换流程"
-        },
-        {
-          "document": "support_kb",
-          "heading_path": "星河客户支持知识库 > 错误码 E1024：设备证书链已过期"
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 夜间批量掉线复盘"
         }
       ],
-      "note": "跨章节综合题：E1024 那节只讲现象与入口，「四步流程 + 不中断业务」在证书轮换流程那节。两节都要进 top-5。"
+      "note": "口语题，且答案在运维库而不是支持库：考「用户描述」到「运维术语（夜间批量掉线）」的跨库语义跳跃。"
     },
     {
       "id": "q12",
-      "query": "E9999 是什么错误",
+      "type": "synonym",
+      "query": "退钱多久能到账",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        }
+      ],
+      "note": "同义词题。语料写「退款」，问句用「退钱」；同篇还有「押金退还」（1 个工作日）作为真实竞争者。"
+    },
+    {
+      "id": "q13",
+      "type": "synonym",
+      "query": "退货之后怎么申请退还货款",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款申请入口"
+        }
+      ],
+      "note": "同义词题。问句用「退还货款」，文档标题是「退款申请入口」；计费文档里的「退费申请流程」是另一条线（退到余额），是刻意设置的干扰项。"
+    },
+    {
+      "id": "q14",
+      "type": "synonym",
+      "query": "到货后不满意，货款能不能退",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款适用范围"
+        }
+      ],
+      "note": "同义词题。问句用「货款」，文档写「退款」；计费文档里的「退费」是另一条线（退到余额），是刻意设置的干扰项。"
+    },
+    {
+      "id": "q15",
+      "type": "synonym",
+      "query": "机器坏了，想直接换一台",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 换货流程"
+        }
+      ],
+      "note": "同义词 + 口语。语料写「换货」，问句说「换一台」；同篇还有维修、以旧换新两节作为竞争者。"
+    },
+    {
+      "id": "q16",
+      "type": "cross_section",
+      "query": "证书过期了要做哪些步骤，会中断业务吗",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
+        },
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 证书轮换操作步骤"
+        }
+      ],
+      "note": "跨章节：现象与入口在错误码节，四步流程与「不重启平台入口」在运维手册。两节都要进 top-5。"
+    },
+    {
+      "id": "q17",
+      "type": "cross_section",
+      "query": "XR-2000 Pro 的电源适配器能和 XR-2000 通用吗",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        },
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 配件兼容性（一）"
+        }
+      ],
+      "note": "跨章节：Pro 规格节说明「唯一不能互换的是电源适配器」，配件兼容节给出通用规则。两节都要进 top-5。"
+    },
+    {
+      "id": "q18",
+      "type": "cross_section",
+      "query": "P1 故障的响应时限是多少，超时找谁",
+      "relevant": [
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 告警分级与响应时限"
+        },
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 升级与通报路径"
+        }
+      ],
+      "note": "跨章节：时限在一节、升级对象与动作在另一节。只召回其中一节算部分命中。"
+    },
+    {
+      "id": "q19",
+      "type": "cross_section",
+      "query": "退款要几天，从哪个入口申请",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        },
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款申请入口"
+        }
+      ],
+      "note": "跨章节：时限与入口在相邻两节，且同篇还有「审核时限」「押金退还」两个时间数字作为干扰。"
+    },
+    {
+      "id": "q20",
+      "type": "absent",
+      "query": "E8888 是什么错误",
       "relevant": [],
-      "note": "库里确实没有的题（negative control）。正确答案是「没有可回答的切片」，所以 relevant 为空；用来验证「诚实空」不会被算成命中，也用来暴露「按编号相似度硬凑一条错误码」的误召。"
+      "note": "库里确实没有的编号题。考「会不会按编号相似度硬凑一个错误码」——向量永远返回最近的 k 条，这是纯向量的结构性误召。"
+    },
+    {
+      "id": "q21",
+      "type": "absent",
+      "query": "量子加密通道怎么配置",
+      "relevant": [],
+      "note": "库里确实没有的主题（且全库不出现「量子」二字）。考被语义相近的「加密 / 通道」拉走的误召。"
+    },
+    {
+      "id": "q22",
+      "type": "absent",
+      "query": "设备支持卫星回传吗",
+      "relevant": [],
+      "note": "库里确实没有的主题（全库不出现「卫星」）。与 q21 一起构成 absent 组的两个方向：编号型与语义型。"
+    },
+    {
+      "id": "q23",
+      "type": "rare_token",
+      "query": "PRJ-4K7T2M 是做什么的",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 内部专项计划（一）"
+        }
+      ],
+      "note": "罕见词盲区：PRJ-4K7T2M 是嵌入模型没见过的随机串，语义上没有任何线索，只能靠字面。"
+    },
+    {
+      "id": "q24",
+      "type": "rare_token",
+      "query": "PRJ-9QX8B3 的验收标准是什么",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 内部专项计划（二）"
+        }
+      ],
+      "note": "罕见词盲区的对照题：两个随机串只差几个字符，且两节结构相似（目标 / 验收标准）。"
+    },
+    {
+      "id": "q25",
+      "type": "rare_token",
+      "query": "sha256:9f2a4c7d61b8e05f3d7a2c9e4b6f18d0 是哪一批固件的有效基准",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 固件签名核对（一）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 固件签名核对（二）"
+        }
+      ],
+      "note": "纯哈希串。两片正文逐字相同、只有摘要不同——这是「向量分不开的是内容近邻，不是标识符本身」的直接实验：内容一模一样时向量只能靠那串没见过的十六进制，而它恰好是嵌入模型最没把握的东西。"
+    },
+    {
+      "id": "q26",
+      "type": "rare_token",
+      "query": "隐患-2026-0417-A 的整改期限是几天",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 隐患整改编号规则"
+        }
+      ],
+      "note": "中文与字母数字混排、中间带连字符的编号。IK 会把「隐患-2026-0417-A」切成两段（隐患 / 2026-0417-a），所以关键词一路要么命中整串、要么只命中「隐患」——后者是典型的单常见词噪声，正好考 minimum_should_match。"
     }
   ]
 }

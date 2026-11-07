@@ -1,108 +1,134 @@
-# 验收矩阵执行记录（第 4 步 · 票 8）
+# 验收矩阵执行记录（第 4 步 · 票 8 重做 · 语料 v2）
 
-九条逐条执行、逐条留痕。**执行时间**：2026-11-08（Asia/Shanghai）。
-**原始产物**：`eval/runs/20261108T014656/`（`results.json` 机器可读、`report.md` 人读）。
-**复跑入口**：`uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env`。
+**执行时间**：2026-11-08（Asia/Shanghai）。
+**原始产物**：`eval/runs/20261108T021930/`（`results.json` 机器可读、`report.md` 人读）。
+**复跑入口**：
 
-本文件只记录「怎么验、验出什么」。语料与题目本身见 `eval/corpus/`、`eval/questions.json`，
-两组对比的解读见上面那个 `report.md`。
+```powershell
+uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env
+```
 
-## 环境与前置
+本文件记录「v1 为什么测不出来、v2 怎么改、改完测出什么」。逐题返回与融合分对账在
+`report.md` / `results.json` 里，语料与题目见 `eval/corpus/`、`eval/questions.json`。
 
-| 项 | 实际值 |
+> **语料是合成的。** `eval/corpus/` 下 8 篇 Markdown 是为评测专门编写的，不是真实工单、
+> 真实产品文档或真实客户语料。**下面的全部结论只对这份语料成立**，不能外推成
+> 「这套实现普遍如何」，也不能拿去和教程里那三组数字对比（语料、题目、模型、k 都不同）。
+
+---
+
+## 0. 为什么重做：v1 的测量失效在哪
+
+v1 交付了完整可跑的评测（语料 / 12 题 / 脚本 / 九条验收矩阵），但它的**测量结果失效**：
+
+| 项 | v1 实际 |
 | --- | --- |
-| PostgreSQL | 容器 `pg16-pgvector`（5432，库 `rag_db`）；`uv run alembic upgrade head` 到 `6dfebeded96c` |
-| Elasticsearch | 容器 `rag-es`（9200，镜像已烘入 IK） |
-| 评测专用索引 | `rag_chunks_eval`（**不是** `rag_chunks`：脚本强制加 `_eval` 后缀） |
-| 嵌入 | 百炼 `qwen3.7-text-embedding`，1536 维，真实调用 |
-| 语料 | `eval/corpus/support_kb.md`（33 片）+ `ops_handbook.md`（6 片）= 39 片，落在 `kb-eval` / `kb-eval-ops` |
-| 题目 | 12 道（3 精确编号 / 2 型号 / 2 口语 / 2 同义词 / 2 跨章节 / 1 库里没有） |
-| 旋钮 | `rrf_k=60`、`top_k=5`、每路召回深度 20、重排关、同义词扩展关 |
+| 语料 | 2 篇 / **39 个切片** |
+| 题目 | 12 道，只有「命中了某个错误码」这一层 |
+| 模式 | `vector` / `hybrid`（**漏了 `bm25` 单路**） |
+| 纯向量 `R@5` | **1.0000** |
+| 混合 `R@5` | **1.0000** |
+| `E1024` 首条名次（vector） | **第 1 名** |
 
-> 空库 `kb-eval-empty` 只为一件事存在：触发 `no_indexed_chunks`。
+两条根因，加两条测量设计缺陷：
 
-## 九条
+1. **量程不够**：39 片、每路召回深度 20。两路一捞就覆盖大半个库，`top_k=5` 里必然有
+   相关切片——`R@5` 到顶不是实现完美，是**尺子没有量程**。
+2. **编号写进了标题**：v1 的标题是 `## 错误码 E1024：设备证书链已过期`。而检索文本 =
+   文档名 + 章节路径 + 正文（票 2 的设计），编号因此直接进了嵌入输入，BM25 的字面优势
+   被抹平。两路拿到的是同一份带编号的文本，自然测不出差别。
+3. **没有单路对照**：缺 `bm25`，混合的收益无法归因——你只知道「混合不比向量差」，
+   不知道是向量已经足够、还是两路互相抵消。
+4. **指标太粗**：只有 P/R/MRR，没有「第一条是不是被问的那个编号」。
+   问 `E1025` 却把 `E1024` 排第一，在 v1 的口径里仍然算「命中」。
+
+---
+
+## 1. 语料 v2：六条约束与证据
+
+| # | 约束 | v2 落实 | 怎么守 |
+| --- | --- | --- | --- |
+| 1 | 规模 200–400 片 | **8 篇 / 240 片** | `test_chunk_count_stays_in_the_discriminating_range`（真切块器离线数） |
+| 2 | 编号只在正文 | 标题全是泛称（`连接与证书类错误（一）`…），编号只出现在段落里 | `test_headings_never_carry_discriminating_identifiers` + 下面的人工 grep |
+| 3 | 近邻对 90% 相同 | `E1024` / `E1025` 两节正文相似度见测试 | `test_twin_pair_is_ninety_percent_identical`（difflib ≥ 0.9） |
+| 4 | 大量近义噪声 | 退款 / 退还 / 退钱 / 退费 分散在 3 篇；W 系列 11 节同模板 | `test_synonym_variants_appear_across_documents` |
+| 5 | 型号族后缀改变答案 | `XR-2000` 4 个千兆网口 / `XR-2000 Pro` 6 个 / `XR-2100` 8 个 + 2 个万兆光口 | `test_model_family_is_present_with_suffix_sensitive_answers` |
+| 6 | ≥2 个随机代号 | `PRJ-4K7T2M`、`PRJ-9QX8B3`（嵌入模型没见过的随机串） | `test_random_project_codes_exist_at_least_twice` |
+
+**切片规模**（脚本索引后实测，与离线切块器一致）：
+
+```
+support_errors 40 / support_models 32 / support_refund 28 / product_spec 27 /
+billing_policy 28 / security_compliance 29 / ops_runbook 32 / ops_change 24
+= 8 docs / 240 chunks
+```
+
+**编号只在正文的自查证据**（本机 PowerShell 等价于 `grep -n "E10" eval/corpus/*.md`）：
+
+```powershell
+$codes = Select-String -Path eval\corpus\*.md -Pattern 'E10\d\d|W00\d\d|PRJ-[A-Z0-9]{6}|XR-\d{4}'
+$codes | Where-Object { $_.Line -match '^\s*#' }
+# → 无输出
+```
+
+实测：
+
+```
+code_occurrences=25   heading_occurrences=0
+```
+
+即：编号 / 型号 / 随机代号在正文里出现 25 行，**以 `#` 开头的行里一条都没有**。
+另外 `量子` / `卫星` / `E8888` 在语料里的出现次数为 **0**——`absent` 题确实「库里没有」。
+
+---
+
+## 2. 题目 v2：24 道 / 7 类
+
+| 题型 | 题数 | 说明 |
+| --- | --- | --- |
+| `exact_code` | 5 | E1024 / E1025（陷阱对）/ E3106 / E2048 / W0001 |
+| `rare_token` | 2 | PRJ-4K7T2M / PRJ-9QX8B3 |
+| `model_number` | 3 | XR-2000 / XR-2000 Pro / XR-2100 |
+| `colloquial` | 3 | 限速 / 背调 / 晚上掉线 |
+| `synonym` | 4 | 退钱 / 退还货款 / 货款能不能退 / 换一台 |
+| `cross_section` | 4 | 证书轮换、电源适配器、P1 升级、退款时限+入口（每题 2 个相关切片） |
+| `absent` | 3 | E8888 / 量子加密通道 / 卫星回传（**不计入主平均**） |
+
+每个题型都 ≥3 题；`exact_code` 的陷阱对**双向**标注（问 E1024 标 E1025，问 E1025 标 E1024）。
+标注在**离线**就能解析：`test_every_label_resolves_to_exactly_one_chunk_offline`。
+
+---
+
+## 3. 九条验收矩阵（v2 复跑）
 
 ### 1. ES 有数据（`_count > 0`）
 
-```powershell
-docker exec rag-es curl -s "http://localhost:9200/rag_chunks_eval/_count"
-```
+- **实测**：`count=240`，与 PG 的 `chunks` 行数一致。
+- **结论**：通过。
 
-- **期望**：`count > 0`
-- **实际**：`{"count":39,"_shards":{"total":1,"successful":1,"skipped":0,"failed":0}}`
-- **结论**：**通过**。39 = 两份语料的全部切片，与 PG 里的 `chunks` 行数一致。
+### 2. IK 生效
 
-### 2. IK 生效（`_analyze` 切出中文词而非整句）
+- **实测**：`ik_max_word` → `['设备','证书','链','已过期','已过','过期']`；
+  `ik_smart` → `['设备','证书','链','已过期']`。
+- **结论**：通过（与 v1 同一段样例，分词行为未变）。
 
-```powershell
-curl.exe -s -X POST "http://localhost:9200/rag_chunks_eval/_analyze" `
-  -H "Content-Type: application/json" `
-  -d '{\"analyzer\":\"ik_max_word\",\"text\":\"设备证书链已过期\"}'
-```
+### 3. hybrid 生效（两路都有命中）
 
-- **期望**：tokens 多于一个，且不是整句
-- **实际**：
-  - `ik_max_word` → `['设备', '证书', '链', '已过期', '已过', '过期']`
-  - `ik_smart`  → `['设备', '证书', '链', '已过期']`
-- **结论**：**通过**。两套分词器都真的在切中文；`ik_max_word` 更细（`已过` / `过期`
-  这类子词也建），`ik_smart` 更粗——正是 mapping 里「写入细粒度、查询智能」的预期行为。
-  注意 `链` 被单独切出来，说明 IK 的主词典没有把「证书链」收进去，但这不影响命中：
-  短查询照样能与文档共享 `设备`/`证书` 这些词。
+- **实测**：120 条返回中 `vector_rank` 非空 **116** 条、`bm25_rank` 非空 **108** 条。
+- **结论**：通过。
 
-### 3. hybrid 生效（响应里两路都有命中数）
+### 4. RRF 数值正确（按名次手算对账）
 
-```powershell
-uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env
-# 看 groups.hybrid.per_question[*].returned 里的 vector_rank / bm25_rank
-```
+- **实测**：核对 **120** 条，最大绝对误差 **0.0**。
+  样例（q01 第 1 条，双路都第 1）：手算 `2/61 = 0.0327868852`，返回 `0.032786885`。
+- **结论**：通过（手算公式不从融合模块 import）。
 
-- **期望**：混合返回里既有 `vector_rank` 非空的切片，也有 `bm25_rank` 非空的切片
-- **实际**：12 道题的 60 条返回中，`vector_rank` 非空 **59** 条、`bm25_rank` 非空 **46** 条
-- **结论**：**通过**。两路都真的在贡献结果；`vector_rank` 比 `bm25_rank` 多，是因为关键词
-  一路对短问句更容易「一个词都没对上」，而向量一路永远返回 20 条候选。
+### 5. 编号查询（E1024 命中；三组名次并排）
 
-### 4. RRF 数值正确（用已知名次手算，与 `rrf_score` 一致）
+- **实测（q01「E1024 是什么错误，要怎么处理」）**：`vector=1 / bm25=1 / hybrid=1`。
+- **结论**：通过。**但 v1 的前提假设没有复现**：纯向量并没有「记不住编号」。见第 9 节。
 
-```powershell
-uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env
-# 见 results.json 的 rrf_check
-```
-
-- **期望**：每条 `rrf_score == 1/(60+vector_rank) + 1/(60+bm25_rank)`（未命中的一路不累加），误差 < 1e-9
-- **实际**：核对 **60 条**，最大绝对误差 **0.0**
-  - 样例（q01 第 1 条，双路都排第 1）：手算 `1/(60+1) + 1/(60+1) = 2/61 = 0.0327868852`，
-    返回 `0.032786885`
-  - 样例（q01 第 2 条，向量第 2、关键词第 3）：手算 `1/62 + 1/63 = 0.0161290323 +
-    0.0158730159 = 0.0320020481`，返回 `0.03200205`
-- **结论**：**通过**。对账用的是返回里的名次，手算公式不从融合模块 import——否则是
-  「用实现验证实现」。
-
-### 5. 编号查询（`E1024` 能命中；纯向量是否漏）
-
-```powershell
-uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env
-# 看 groups.vector / groups.hybrid 的 q01
-```
-
-- **期望**：hybrid 命中 E1024 那一节，且名次不差于纯向量
-- **实际（q01「E1024 是什么错误，要怎么处理」，`top_k=5`）**：
-
-  | 名次 | mode=vector | mode=hybrid |
-  | --- | --- | --- |
-  | 1 | **错误码 E1024：证书链已过期**（`vector_rank=1`） | **错误码 E1024：证书链已过期**（`vector_rank=1`、`bm25_rank=1`、`rrf=0.03278689`） |
-  | 2 | 错误码 E1025：证书已被吊销 | 错误码 E1025：证书已被吊销（2 / 3） |
-  | 3 | 错误码 E2048：请求频率超配额 | 错误码 W0001：存储余量告警（4 / 2） |
-  | 4 | 错误码 W0001：存储余量告警 | 错误码 E2048：请求频率超配额（3 / 8） |
-  | 5 | 星河客户支持知识库（文档导语） | 证书轮换流程（7 / 4） |
-
-- **结论**：**通过（带保留）**。E1024 确实命中，hybrid 名次不差于纯向量。
-  **但父 spec 预期的「纯向量模式下命中不了」没有复现**：纯向量把 E1024 排在第 1 名。
-  原因见 `report.md` 的「结论与解读」第 3 条：票 2 的检索文本把编号写进了切片正文，
-  这套嵌入对规整标识符并不盲。要复现「向量漏」需要更大的语料或更不规整的标识符
-  （随机串 / 哈希 / 内部拼写），本票不做，已记给上游决定是否补测。
-
-### 6. ES 降级（停 ES 后 `code:0` + `degraded:true` + 有结果）
+### 6. ES 降级（混合模式）
 
 ```powershell
 docker stop rag-es
@@ -110,70 +136,215 @@ uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env --degrade
 docker start rag-es
 ```
 
-- **期望**：`code` 仍为成功、`degraded=true`、`degraded_reason=keyword search failed`、仍有向量结果
-- **实际**：`error=None degraded=True degraded_reason=keyword search failed 返回 5 条`
-  （日志同时出现 `hybrid retrieval degraded degraded_reason='keyword search failed'`）
-- **结论**：**通过**。ES 真停着（`docker ps` 里 `rag-es` 已消失），混合模式没有报错，
-  只是把结果降级成「仅向量」并如实标注原因。
-- 备注：`docker start rag-es` 之后 10 秒恢复 `healthy`，验收结束时容器是**运行状态**。
+- **实测**：`error=None degraded=True degraded_reason=keyword search failed 返回 5 条`。
+- **结论**：通过。
 
-### 7. 单模式不降级（`mode=bm25` 且 ES 停着 → 明确失败）
+### 7. 单模式不降级（bm25 + ES 停着）
 
-```powershell
-docker stop rag-es
-uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env --degraded-probe
-docker start rag-es
+- **实测**：`error=RETRIEVAL_FAILED: keyword search failed`。
+- **结论**：通过。
+
+### 8. 空结果有原因
+
+- **实测**：空库 `mode=vector` → `no_indexed_chunks`；有内容 `mode=bm25` 查 `zzzqqqxxx`
+  → `no_chunks_matched`。
+- **结论**：通过。
+
+### 9. 多库检索（2 个 `kb_ids`）
+
+- **实测**：`top_k=10`，「证书过期怎么处理」→ 10 条，`kb_id=['kb-eval','kb-eval-ops']`。
+- **结论**：通过。
+
+---
+
+## 4. 三组总表（k=5，只算可答题；`absent` 单列）
+
+| 模式 | 可答题 | P@5 | R@5 | MRR | R@1 | 命中 | 部分命中 | 漏 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| vector | 21 | 0.2286 | **0.9524** | **0.8730** | **0.7381** | 20 | 0 | 1 |
+| bm25 | 21 | **0.2524** | 0.8333 | 0.7222 | 0.5238 | 17 | 1 | 3 |
+| hybrid | 21 | 0.2381 | **1.0000** | 0.8405 | 0.6905 | 21 | 0 | 0 |
+
+- **召回**：hybrid 1.0000 > vector 0.9524 > bm25 0.8333。
+- **名次**：vector 0.8730 > hybrid 0.8405 > bm25 0.7222。
+- 这两个方向相反，**必须一起看**：只报召回会得出「混合全面更好」，只报名次会得出
+  「纯向量更好」。
+
+---
+
+## 5. 分题型表（P@5 / R@5 / MRR / R@1）
+
+| 题型 | 题数 | vector | bm25 | hybrid | 赢家 |
+| --- | --- | --- | --- | --- | --- |
+| exact_code | 5 | 0.1600 / 0.8000 / 0.8000 / 0.8000 | 0.4200 / 1.0000 / 0.8000 / 0.6000 | 0.2000 / 1.0000 / **1.0000** / **1.0000** | **hybrid** |
+| rare_token | 2 | 0.2000 / 1.0000 / 1.0000 / 1.0000 | 同左 | 同左 | 打平 |
+| model_number | 3 | 0.2000 / 1.0000 / 1.0000 / 1.0000 | 0.2000 / 1.0000 / 0.8333 / 0.6667 | 0.2000 / 1.0000 / 1.0000 / 1.0000 | 打平（vector=hybrid） |
+| colloquial | 3 | 0.2000 / 1.0000 / **0.8333** / **0.6667** | 0.1333 / 0.6667 / 0.4444 / 0.3333 | 0.2000 / 1.0000 / 0.5667 / 0.3333 | **vector** |
+| synonym | 4 | 0.2000 / 1.0000 / **0.8750** / **0.7500** | 0.1000 / 0.5000 / 0.3333 / 0.2500 | 0.2000 / 1.0000 / 0.6125 / 0.5000 | **vector** |
+| cross_section | 4 | 0.4000 / 1.0000 / 0.8333 / 0.3750 | 0.3500 / 0.8750 / **1.0000** / **0.5000** | 0.4000 / 1.0000 / 0.8750 / 0.3750 | **hybrid** |
+
+**混合反而不如单路的题型：`colloquial` 与 `synonym`。** 这两类题里，关键词一路把
+「字面像但不相关」的切片顶进前五，RRF 只看名次、不看分数，于是向量本来排第一的答案
+被挤到第 4、第 5 名（q10 1→5、q13 2→4、q15 1→5）。这就是混合检索的代价，
+**不藏**。反过来，`cross_section` 上 BM25 的 MRR 是 1.0（两片都排在最前），混合
+只有 0.875——再次说明「两路融合」不是无条件更好。
+
+---
+
+## 6. 编号精确性 `exact_hit@1`
+
+口径：`exact_code` + `rare_token`（共 7 题）。**第一条返回必须就是被问的那一片**；
+问 `E1025` 却把 `E1024` 排第一，算不中。
+
+| 模式 | 命中/总数 | 比例 |
+| --- | --- | --- |
+| vector | 6/7 | 0.8571 |
+| bm25 | 5/7 | 0.7143 |
+| hybrid | **7/7** | **1.0000** |
+
+- vector 唯一失手的是 `W0001`：存储类告警 11 节同模板，`W0001` 被挤出前五。
+- bm25 失手的是 `E1025`（第 2 名，见下）与 `W0001` 之外的另一题（`E3106` 第 2 名）。
+- hybrid 把两类错误都补上了：这正是「BM25 给精确字面加分 + 向量兜语义」的组合效果，
+  也是 v2 才量得出来的东西。
+
+---
+
+## 7. 陷阱对实测（问 E1025 是否召回 E1024）
+
+| 题目 | 模式 | 被问的那片排第一 | 孪生片名次 |
+| --- | --- | --- | --- |
+| q01（问 E1024） | vector | 是 | 第 2 名 |
+| q01 | bm25 | 是 | 未命中 |
+| q01 | hybrid | 是 | 第 5 名 |
+| q02（问 E1025） | vector | 是 | 第 4 名 |
+| q02 | **bm25** | **否**（第 2 名） | 未命中 |
+| q02 | hybrid | 是 | 第 5 名 |
+
+**bm25 在 q02 上翻车的原因值得写进教案**：查询被 IK 切成 `e1025 / 什么 / 意思`，
+而「什么」在语料里是个**罕见词**（只在「下一次维护窗口是什么时候」这类句子里出现），
+IDF 很高，于是 `值班交接` 那一节靠「什么」拿到 5.30 分，压过了真正含 `e1025` 的
+`连接与证书类错误（二）`（3.93 分）。**关键词单路不是「精确编号就一定赢」**：
+没有停用词表时，功能词会反噬。向量与混合都没被这个坑绊倒。
+
+---
+
+## 8. `absent` 题：三种模式的误召
+
+| 模式 | 题数 | 总返回条数 | 平均返回 | 误召率 |
+| --- | --- | --- | --- | --- |
+| vector | 3 | 15 | 5.0 | **1.0000** |
+| bm25 | 3 | 15 | 5.0 | **1.0000** |
+| hybrid | 3 | 15 | 5.0 | **1.0000** |
+
+三种模式**都把「库里没有」答成了 5 条**。纯向量是结构性的（永远返回最近的 k 条，
+没有「查不到」状态）；BM25 在这份语料上也没能做到诚实空——`E8888` 被切成
+`e8888 / 什么 / 错误`，「错误」「什么」都能匹到大量切片；`量子加密通道` 的
+「加密 / 通道」、`卫星回传` 的「回传」也都能匹到。**「诚实空」不是免费得到的**，
+要一条分数阈值或「关键词一路为空即空」的策略，本票不实现（见第 12 节）。
+
+---
+
+## 9. v1 → v2 的结论差异（可直接进教程）
+
+v1 的结论是「纯向量与混合都 `R@5 = 1.0000`，测不出差异」；v2 的结论是：
+
+> **三种模式各有明确的强项与弱项，而且强弱项随题型变化。**
+> 召回：hybrid 1.0000 > vector 0.9524 > bm25 0.8333；
+> 名次：vector 0.8730 > hybrid 0.8405 > bm25 0.7222；
+> 编号精确性：hybrid 7/7 > vector 6/7 > bm25 5/7。
+> 混合不是「全面更好」：它在同义与口语题上把向量排第一的答案挤到了第 4、第 5 名。
+
+**为什么 v1 测不出来**（四条，按重要性排序）：
+
+1. **尺子没有量程。** 39 片语料、每路召回 20，`top_k=5` 时两路几乎必然覆盖所有相关
+   切片。评测的「分辨率」不是由指标决定的，是由**语料规模 / 召回深度**决定的：
+   候选池比答案大一个数量级，才谈得上区分召回。
+2. **把答案写进了标题。** 检索文本 = 标题 + 章节路径 + 正文。标题里写 `E1024`，
+   等于把判别信号同时喂给向量和 BM25，两路的输入完全一样，测出来的当然是「一样好」。
+   这也是为什么本次要额外写一条离线断言（标题不许出现编号 / 型号 / 随机代号）。
+3. **缺单路对照与分题型。** 只有 vector vs hybrid 时，「混合没赢」既可能是向量够强，
+   也可能是两路互相抵消。加上 `bm25` 单路后立刻看到：`bm25` 的召回只有 0.8333，
+   同义题 0.5——**关键词一路的洞是真实存在的**，只是 v1 没量。
+4. **指标表达不了「排第几 / 是不是被问的那个」。** `R@5=1.0` 与 `MRR` 打平时，
+   v1 没有任何指标能区分「第一条就是答案」和「第五条才是答案」。`exact_hit@1` 与
+   陷阱对把这一层补上之后，hybrid 7/7 vs vector 6/7 的差别才显现。
+
+**v2 还推翻了 v1 的一个隐含假设**：v1 认为「嵌入模型对编号是盲的，所以要靠 BM25」。
+v2 的证据是：`E1024` / `E1025` 两节正文 90% 相同、标题都不含编号，向量仍然把**正确的
+那一个**排在第 1（q01 与 q02 都是）。向量并不「记不住编号」。
+真正让向量掉出前五的是**同模板近邻的密度**：11 节存储告警用同一套句式，`W0001`
+就被挤出前五——这是「近邻结构」问题，不是「编号表示」问题。**这个区分比 v1 的结论
+更有用**：它告诉你该优化的是「同模板段落的区分度」（例如给每节补上不同的判别性正文），
+而不是「给编号加一条特殊通道」。
+
+---
+
+## 10. 复跑与方差
+
+同一配置连跑四次（一次全量重建 + 三次 `--reuse`）：
+
+| 运行 | 产物 | vector R@5 / MRR | bm25 R@5 / MRR | hybrid R@5 / MRR |
+| --- | --- | --- | --- | --- |
+| 全量重建 | `20261108T021728` | 0.9524 / 0.8730 | 0.8333 / 0.7222 | 1.0000 / 0.8405 |
+| 复用切片 | `20261108T021807` | 0.9524 / 0.8730 | 0.8333 / 0.7222 | 1.0000 / 0.8405 |
+| 复用切片（最终报告） | `20261108T021930` | 0.9524 / 0.8730 | 0.8333 / 0.7222 | 1.0000 / 0.8405 |
+| 合并 `step4-hybrid-retrieval` 后复跑 | `20261108T022222` | 0.9524 / 0.8730 | 0.8333 / 0.7222 | 1.0000 / 0.8405 |
+
+三组四项指标**逐位一致**，逐题名次也一致（`exact_hit@1` 都是 6/7、5/7、7/7）。
+合并本身是 `Already up to date`（基线分支停在 `9c2472b`，没有新提交），合并后
+`pytest -q` 仍是 `399 passed, 10 skipped`。
+
+> 早一版语料（未加 W0006–W0011）上曾观察到一次 `q15` hybrid 名次在第 5 / 第 6 名之间
+> 翻转（`R@5` 1.0000 ↔ 0.9524），其余题完全不变。RRF 的分数是 `1/(60+rank)`，
+> 单路第 1 名的 0.01639 与两路都在第 15 名的 0.02667 只差一个量级，
+> **尾部候选的微小变化就能翻转第 5 名**。这是 RRF 的固有性质，不是脚本 bug；
+> 报告里采用最终语料的稳定结果。
+>
+> 另：Windows 上偶发 `asyncio.exceptions.InvalidStateError: invalid state`
+> （proactor 事件循环在连接关闭时抛错），与检索逻辑无关，复跑即过；本次记录里出现过
+> 一次，已重跑。
+
+---
+
+## 11. 改写对比：未执行
+
+**原因**：`--env-file` 指向的主 checkout `.env` 里 `LLM_API_KEY` 为空；同时
+`LLM_PROVIDER=openai_compatible` 不在工厂支持列表（`deepseek/qwen/ark/openai/anthropic/gemini`），
+预检直接报配置错误：
+
+```
+LLM_PROVIDER 配置不可用（ValueError: 未知的大模型供应商 'openai_compatible'，只支持
+('deepseek','qwen','ark','openai','anthropic','gemini')）
 ```
 
-- **期望**：`mode=bm25` 明确失败（`RETRIEVAL_FAILED` / 50002），绝不偷偷退回向量
-- **实际**：`error=RETRIEVAL_FAILED: keyword search failed`（日志另有
-  `keyword search failed error=ConnectionError`）
-- **结论**：**通过**。调用方选 bm25 往往就是在评测单路效果，静默退回向量会把评测变成
-  假数据，所以这里必须明确失败。
+所以「改写开 / 关」这一组**没有数字**。不要在任何地方按「改写有用 / 没用」引用本报告。
+要跑这一组，需要：① 配一个非空 `LLM_API_KEY`；② 把 `LLM_PROVIDER` 改成上面列表里的值。
 
-### 8. 空结果有原因（两种 `empty_reason` 各触发一次）
+---
 
-```powershell
-uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env
-# 看 acceptance 里的 A8 探针
-```
-
-- **期望**：`no_indexed_chunks` 与 `no_chunks_matched` 各出现一次，且都是成功（非报错）
-- **实际**：
-  - 空库 `kb-eval-empty` + `mode=vector` + query「证书过期怎么处理」→
-    `empty_reason=no_indexed_chunks`，`retrieved_chunks=[]`，业务成功
-  - 有内容的 `kb-eval` + `mode=bm25` + query「zzzqqqxxx」→
-    `empty_reason=no_chunks_matched`，`retrieved_chunks=[]`，业务成功
-- **结论**：**通过**。两种「空」被区分开：前者该引导用户去传文档，后者该引导用户换个
-  问法。第二种之所以要指定 `mode=bm25`，是因为**向量一路永远返回最近的 k 条，不可能
-  出现「有内容但没命中」**——这本身就是一条值得记住的事实（见下面「需要上游决定」）。
-
-### 9. 多库检索（传 2 个 `kb_ids`，结果带不同 `kb_id`）
-
-```powershell
-uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env
-# 看 acceptance 里的 A9 探针：kb_ids=[kb-eval, kb-eval-ops]
-```
-
-- **期望**：一次调用返回的结果里带不同的 `kb_id`（两个库都真的被召回）
-- **实际**：`top_k=10`，「证书过期怎么处理」→ 返回 10 条，
-  `kb_id=['kb-eval', 'kb-eval-ops']`
-- **结论**：**通过**。两条通道各查一次、覆盖全部「库 + 索引版本」配对，不是分库召回再
-  合并；结果自带 `kb_id` 能归属到库。
-
-## 本地残留与清理
+## 12. 本地残留与清理
 
 | 残留 | 位置 | 怎么清 |
 | --- | --- | --- |
-| 39 个切片 + 2 份文档 + 3 个知识库（`kb-eval` / `kb-eval-ops` / `kb-eval-empty`，租户 `tenant_demo`） | PostgreSQL `rag_db` | `uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env --cleanup` |
-| 评测专用索引 `rag_chunks_eval`（39 个文档） | Elasticsearch | 同上（脚本先删索引再删 PG 行） |
-| 运行产物 | `eval/runs/<时间戳>/` | 已在 `.gitignore` 里，不会入库 |
+| 240 个切片 + 8 份文档 + 3 个知识库（`kb-eval` / `kb-eval-ops` / `kb-eval-empty`，租户 `tenant_demo`） | PostgreSQL `rag_db` | `uv run python scripts/eval_retrieval.py --env-file <主 checkout>/.env --cleanup` |
+| 评测专用索引 `rag_chunks_eval`（240 个文档） | Elasticsearch | 同上（脚本先删索引再删 PG 行） |
+| 运行产物（4 个 run 目录） | `eval/runs/<时间戳>/` | 已 gitignore，不会入库；需要时直接删目录 |
 
-清理命令只碰上面这些 id：**其他知识库、其他租户、`rag_chunks` 索引一行都不动**。脚本
-还会拒绝对名字里不含 `eval` 的索引执行删除。
+清理命令只碰上面这些 id：其他知识库、其他租户、`rag_chunks` 索引一行都不动；脚本还会
+拒绝对名字里不含 `eval` 的索引执行删除。
 
-## 与既有测试的关系
+---
 
-本票**没有**把评测脚本塞进 `pytest`：它必须连真 PostgreSQL + 真 ES + 真嵌入，跑一次
-要发几十次网络请求。默认 `uv run pytest -q` 仍是纯离线（`369 passed, 10 skipped`），
-守卫方式与集成用例一致——不设环境变量就整条跳过 / 不进收集范围，详见 `tests/README.md`。
+## 13. 与测试的关系
+
+评测脚本**不在**默认 `pytest -q` 里（要真 PG + 真 ES + 真嵌入）。默认套件新增了两条
+**离线**守卫，它们不跑检索：
+
+- `tests/test_eval_corpus.py`：语料规模 / 标题不含编号 / 孪生对相似度 / 题型覆盖 /
+  标注能离线解析；
+- `tests/test_eval_metrics.py`：P@k / R@k / MRR / R@1 / exact_hit@1 / 分题型 / 陷阱对 /
+  误召 / 题型赢家的真值表。
+
+默认基线从 `369 passed, 10 skipped` 变为 **`399 passed, 10 skipped`**
+（新增 30 条，全部离线）。`tests/README.md` 的层表与计数已同步，并顺手删掉了
+`test_retrieval_log_hygiene.py` 重复列出的那一行。

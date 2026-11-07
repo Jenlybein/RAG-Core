@@ -263,7 +263,8 @@ def test_add_chunks_creates_the_index_when_missing() -> None:
     assert client.indices.create_calls[0]["mappings"]["properties"]["tenant_id"] == {
         "type": "keyword"
     }
-    assert client.indices.create_calls[0]["settings"] == {
-        "number_of_shards": 1,
-        "number_of_replicas": 0,
-    }
+    settings_payload = client.indices.create_calls[0]["settings"]
+    assert settings_payload["number_of_shards"] == 1
+    assert settings_payload["number_of_replicas"] == 0
+    # 查询侧分析器随建索引一起注册（自定义分析器是索引级设置，事后补不了）。
+    assert "ik_smart_query" in settings_payload["analysis"]["analyzer"]
