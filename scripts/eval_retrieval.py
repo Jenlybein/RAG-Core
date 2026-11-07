@@ -459,6 +459,39 @@ def _reset_elasticsearch(index_name: str) -> str:
     raise SystemExit(f"failed to delete index {index_name}: {response.status_code} {response.text}")
 
 
+def _assert_query_analyzer(index_name: str) -> None:
+    """确认 ``--reuse`` 的目标索引确实是**当前** mapping 建的。
+
+    查询侧停用词与分析器改过之后，改动之前建的索引里没有 ``ik_smart_query``。
+    复用它等于「用旧口径跑新代码」：指标看着正常，新逻辑一点没生效——这是最难
+    发现的一类假绿，所以宁可拒绝执行。
+    """
+
+    from app.providers.keyword_search.query_builder import QUERY_ANALYZER
+
+    response = httpx.get(f"{_es_base()}/{index_name}/_settings", timeout=30.0)
+    if response.status_code == 404:
+        raise SystemExit(f"--reuse 指定的索引 {index_name} 不存在；去掉 --reuse 重跑。")
+    if response.status_code != 200:
+        raise SystemExit(
+            f"failed to read settings of {index_name}: {response.status_code} {response.text}"
+        )
+
+    analyzers = (
+        response.json()
+        .get(index_name, {})
+        .get("settings", {})
+        .get("index", {})
+        .get("analysis", {})
+        .get("analyzer", {})
+    )
+    if QUERY_ANALYZER not in analyzers:
+        raise SystemExit(
+            f"--reuse 的索引 {index_name} 是旧 mapping 建的（没有 {QUERY_ANALYZER} 分析器），"
+            "复用它会让查询侧停用词与 minimum_should_match 白改。去掉 --reuse 重建索引。"
+        )
+
+
 def _reset_postgres(db: Any) -> dict[str, int]:
     """删掉评测租户下三个固定知识库的全部行；其他数据一行不动。"""
 
@@ -1757,6 +1790,8 @@ async def _run(args: argparse.Namespace) -> int:
             existing = _load_indexed_chunks(db)
             if not existing:
                 raise SystemExit("--reuse 需要已有切片，但评测库里是空的；去掉 --reuse 重跑。")
+            # 只复用**同代 mapping** 的索引：跨分析器版本复用会静默测出旧口径的分数。
+            _assert_query_analyzer(index_name)
             print(f"reuse    : {len(existing)} chunks (no re-indexing)")
         else:
             began = time.perf_counter()

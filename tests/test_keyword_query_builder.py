@@ -151,6 +151,12 @@ def test_query_stopwords_never_contain_a_content_word_from_the_questions() -> No
         "入口",
         "时限",
         "响应",
+        # 语料里真实出现的业务词：它们是「一般」之外最容易被顺手加进表里的候选。
+        # 注意 ``一般`` 本身不在此列——它是**已知取舍**，理由写在 QUERY_STOPWORDS 的注释里；
+        # 这条护栏守的是「别再把内容词加进来」，不是「不许有争议」。
+        "纳税人",
+        "对账",
+        "事件",
     }
 
     assert forbidden.isdisjoint(set(QUERY_STOPWORDS))
