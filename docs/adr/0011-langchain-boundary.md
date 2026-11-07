@@ -125,20 +125,20 @@ ES 是不是刚挂掉、这是不是降级凑出的一半结果。
 
 ### 可验证判据
 
-判据盯的是 **import**，不是普通子串：
-
-```bash
-grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -v 'app/providers/'
-# 必须为空（grep 退出码 1）
-```
-
-PowerShell 等价写法：
+判据盯的是 **import**，不是普通子串。开发机是 Windows，**先把 PowerShell 版跑通**（它不依赖 GNU grep）：
 
 ```powershell
 Get-ChildItem app -Recurse -Filter *.py |
   Select-String -Pattern '^\s*(from|import)\s+langchain' |
   Where-Object { $_.Path -notmatch '\\providers\\' }
 # 必须无输出
+```
+
+Linux / macOS / CI 的等价写法（注意：Windows 上的 Git Bash **没有** `grep` 命令，照抄这条会得到 `command not found`，别误以为判据失效）：
+
+```bash
+grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -v 'app/providers/'
+# 必须为空（grep 退出码 1）
 ```
 
 **为什么不能写成 `grep -rn "langchain" app/`**：仓库里另有 7 处普通子串命中，全部不是框架调用——`EMBEDDING_PROVIDER="langchain"` 的默认值、`LANGCHAIN_TRACING_V2` 配置名，以及五处解释性注释。裸子串会把「配置名/注释里出现 langchain」误判成「业务层 import 了框架」；判据必须落在 import 上才可执行。

@@ -39,11 +39,11 @@ _Avoid_: 版本, 等级, tier, 计划
 _Avoid_: 套餐（混用时）, 模式, preset, 级别
 
 **数据范围组**：
-描述「查哪份数据」的请求参数：`kb_ids` / `index_version` / `query`。命名档位下**允许**传。能用哪些知识库由 API Key 的密钥配置圈定，请求只能在范围内收窄，不能扩大。
+描述「查哪份数据」的请求参数。**当前（第 4 步）只有 `kb_ids` 与 `query` 两个**：`index_version` 由服务端决定（`DEFAULT_INDEX_VERSION = v1`），**不是请求参数**——让调用方指定版本是第 10 步的事。命名档位下**允许**传。能用哪些知识库由 API Key 的密钥配置圈定，请求只能在范围内收窄，不能扩大。
 _Avoid_: 查询参数, 过滤条件
 
 **质量档位组**：
-描述「这次用多好」的请求参数：`top_k`、`mode`、`vector_top_k`、`bm25_top_k`、`hybrid_fusion`、`rerank`、`query_rewrite`、`synonym`，全部扁平、不嵌套。命名档位下传了会被拒（`20015`）。即使有 `hybrid_fusion`，它也只能开关融合，**不能改 `k` 或权重**——`k=60` 永远写死（见 ADR-0010）。
+描述「这次用多好」的请求参数，全部扁平、不嵌套。**当前（第 4 步）只有 `top_k` 与 `mode` 两个**；`vector_top_k` / `bm25_top_k` / `hybrid_fusion` / `rerank` / `query_rewrite` / `synonym` **尚未进请求体**——各路召回深度与融合池在服务端配置里（`HYBRID_RECALL_TOP_K` / `RERANK_MAX_CANDIDATES`），改写、同义词、重排也只有服务端开关，调用方不能按次指定。这套参数要等档位体系（第 5 步）落地后才存在，届时命名档位下传了会被拒（`20015`）。`k=60` 永远写死，任何层都不能改（见 ADR-0010）。
 _Avoid_: 调参项, 检索参数
 
 **tenant_policy**：
