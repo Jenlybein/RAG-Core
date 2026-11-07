@@ -33,7 +33,7 @@ import structlog
 
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session import SessionLocal
-from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.chunk import default_index_versions
 from app.services.retrieval.fusion import fuse_by_rrf
 from app.services.retrieval.rerank import rerank_stage
 
@@ -249,7 +249,7 @@ async def _vector_branch(
             query_vector,
             tenant_id=tenant_id,
             # 映射而不是两个平行数组：配对关系只能从映射里读出来。
-            index_versions={kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids},
+            index_versions=default_index_versions(kb_ids),
             top_k=top_k,
         )
     )
@@ -282,7 +282,7 @@ async def _keyword_branch(
         rows = await provider.keyword_search(
             query,
             tenant_id=tenant_id,
-            index_versions={kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids},
+            index_versions=default_index_versions(kb_ids),
             top_k=top_k,
         )
     except AppError:

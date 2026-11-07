@@ -38,7 +38,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
-from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.chunk import DEFAULT_INDEX_VERSION, default_index_versions
 from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
@@ -182,7 +182,7 @@ async def _retrieve_by_vector(
             db,
             query_vector,
             tenant_id=tenant_id,
-            index_versions={kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids},
+            index_versions=default_index_versions(kb_ids),
             top_k=top_k,
         )
     )
@@ -221,7 +221,7 @@ async def _retrieve_by_keyword(
         rows = await provider.keyword_search(
             query,
             tenant_id=tenant_id,
-            index_versions={kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids},
+            index_versions=default_index_versions(kb_ids),
             top_k=top_k,
         )
     except AppError:
