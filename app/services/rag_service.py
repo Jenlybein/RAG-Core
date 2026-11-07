@@ -1,14 +1,20 @@
 """检索业务：一次检索走一条路，或两条路并行融合（票 4）。
 
-边界：不拼上下文、不调大模型、不生成答案，只返回切片 + 分数 + 名次 + 出处。
-第 1 步起 tenant_id 从占位 Key 解出，kb_ids 是调用方显式传的列表；
-第 5 步会在这一层补 ``kb_ids ⊆ allowed_kb_ids`` 白名单校验。
+边界：不拼上下文、不生成答案，只返回切片 + 分数 + 名次 + 出处。第 1 步起 tenant_id
+从占位 Key 解出，kb_ids 是调用方显式传的列表；第 5 步会在这一层补
+``kb_ids ⊆ allowed_kb_ids`` 白名单校验。
+
+**唯一的大模型调用是查询改写**（票 6），而且它由 ``app/services/query/`` 负责、失败即
+降级：本模块只决定「哪一路拿哪一句」，不认识模型、不认识提示词。
 
 **三种模式的边界（票 3 / 票 4 / 票 5）**：
 
 * **可见性预校验**：``retrieve`` 在进入任何分支之前把 ``kb_ids`` 逐个校验一遍
   （N 个库 = N 次查询，票 5 之前是两条通道各查一遍 = 2N 次）。拒绝（20008）先于
-  召回发生，且不参与降级。
+  召回发生，且不参与降级。它返回的**库行**顺着往下传：票 6 要用它们的 ``settings``
+  （同义词表）与名称 / 描述（改写提示），再查一次库就等于每库两次。
+* **查询优化在召回之前**（票 6）：``effective_query`` 给向量一路与重排，
+  ``search_query`` 给关键词一路。两个开关默认关闭，关闭时这一步是恒等变换。
 * ``vector`` 先 ``embed_query``、再一次范围召回覆盖全部「库 + 版本」配对、按分数
   排序后截到 ``top_k``；单库时结果与逐库版一致，``score`` 仍是向量分（回归红线）。
 * ``bm25`` 只走关键词一路：不向量化、不查向量库，``index_versions`` 是
@@ -23,6 +29,8 @@
   绝不偷偷退回向量——调用方选 bm25 往往就是在评测单路效果。
 * **混合模式对称降级**：哪一路挂了都用另一路的结果，``code`` 仍为 0，
   ``metadata.retrieval.degraded`` 与 ``degraded_reason`` 如实说明；两路都挂才拒绝。
+* **降级原因一因一码、先到的才算根因**：改写发生在召回之前，所以它先失败时，通道
+  故障与重排失败都不覆盖它。
 
 **三种结局**（父 spec「降级矩阵」）：拒绝（业务错误）/ 降级（成功 + 标记）/
 诚实空（成功 + ``empty_reason``）。空结果不是故障：把它当故障处理会让监控
@@ -44,6 +52,8 @@ from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
 from app.services.knowledge_base_access import ensure_visible
+from app.services.query.optimizer import optimize_query
+from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
 from app.utils.retrieval_fields import with_score_columns
 
@@ -76,22 +86,44 @@ async def retrieve(
     resolved_mode = mode or settings.RETRIEVAL_MODE
     resolved_top_k = top_k or settings.TOP_K
 
+    # 模式校验放在最前面：HTTP 入口的 schema 已经用 Literal 掐掉了未知值，走 MCP /
+    # 内部调用才会到这里。校验先于可见性校验与查询优化，被拒的请求不该白烧一次改写
+    # （与「拒绝先于召回」同一条理由）。
+    if resolved_mode not in (MODE_HYBRID, MODE_BM25, MODE_VECTOR):
+        raise AppError(ErrorCode.PARAM_ERROR, f"unsupported retrieval mode: {resolved_mode!r}")
+
     # 可见性预校验：**进入任何分支之前**只做一遍。两条通道各校验一遍时，N 个库
     # 就是 2N 次查询；更重要的是「拒绝」会因此有两个来源、两条路径。放在这里之后，
     # 拒绝（20008）与被拒之后有没有真的发出召回无关——它先于召回发生（父 spec
     # 「降级矩阵」：任一知识库不可见 → 召回前拒绝）。被拒的请求连嵌入都不必算。
-    for kb_id in kb_ids:
-        ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
+    #
+    # 顺手把这几个库的**行**留下来：票 6 起要用它们的 ``settings``（同义词表）与
+    # 名称 / 描述（改写提示）。``ensure_visible`` 本来就把整行查出来了，丢掉它再去
+    # 查一次库，就把「每库一次」变成「每库两次」。
+    visible_kbs = [ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
 
-    degraded = False
-    degraded_reason: str | None = None
+    # 查询优化：召回之前把用户那句话加工成**两个**查询（GLOSSARY「检索链路」：
+    # 查询优化 → 召回 → 融合 → 重排）。两个开关默认关闭，关闭时这一步是恒等变换。
+    optimized = await optimize_query(
+        query=query,
+        # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
+        synonym_groups=collect_synonym_groups(
+            [getattr(kb, "settings", None) for kb in visible_kbs]
+        ),
+        rewrite_hint=_rewrite_hint(visible_kbs),
+    )
+
+    degraded = optimized.rewrite_degraded
+    degraded_reason: str | None = optimized.rewrite_reason
     rerank_info: dict[str, object] | None = None
 
     if resolved_mode == MODE_HYBRID:
         outcome = await hybrid_retrieve(
             tenant_id=tenant_id,
             kb_ids=kb_ids,
-            query=query,
+            # 两路各拿自己的查询：语义那侧用改写后的句子，字面那侧用扩展后的句子。
+            vector_query=optimized.effective_query,
+            keyword_query=optimized.search_query,
             top_k=resolved_top_k,
             # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有接缝）。
             embedding_factory=get_embedding_provider,
@@ -105,20 +137,28 @@ async def retrieve(
             ),
         )
         chunks = outcome.chunks
-        degraded = outcome.degraded
-        degraded_reason = outcome.degraded_reason
+        # 一因一码，先到的才是根因：改写发生在召回之前，所以它已经在场时通道故障与
+        # 重排失败都不该覆盖它。
+        reason = degraded_reason or outcome.degraded_reason
+        degraded = reason is not None
+        degraded_reason = reason
         rerank_info = outcome.rerank
     elif resolved_mode == MODE_BM25:
         chunks = await _retrieve_by_keyword(
-            db, tenant_id=tenant_id, kb_ids=kb_ids, query=query, top_k=resolved_top_k
+            db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            query=optimized.search_query,
+            top_k=resolved_top_k,
         )
-    elif resolved_mode == MODE_VECTOR:
+    else:  # MODE_VECTOR —— 剩下的唯一可能；未知模式已在函数开头被拒。
         chunks = await _retrieve_by_vector(
-            db, tenant_id=tenant_id, kb_ids=kb_ids, query=query, top_k=resolved_top_k
+            db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            query=optimized.effective_query,
+            top_k=resolved_top_k,
         )
-    else:
-        # HTTP 入口的 schema 已经用 Literal 掐掉了未知值；MCP / 内部调用走这里。
-        raise AppError(ErrorCode.PARAM_ERROR, f"unsupported retrieval mode: {resolved_mode!r}")
 
     return {
         "query": query,
@@ -141,6 +181,28 @@ async def retrieve(
             },
         },
     }
+
+
+def _rewrite_hint(kbs: list) -> str | None:
+    """把本次涉及的库的「名称（描述）」拼成一句，给改写提示词当上下文。
+
+    这是**可选**的：拿不到名称 / 描述时改写照样能做，只是提示词更短。单个库时它就是
+    「这个库是讲什么的」；多库检索时它是一句罗列——改写的目标是「用户这句话该怎么说
+    文档里的话」，知道在查什么库显然更准。
+
+    全部为空时返回 ``None`` 而不是空串：空串会被 ``if hint`` 判成「没有 hint」，
+    但拼进提示词的那一侧多一个空行总是噪音。
+    """
+
+    parts: list[str] = []
+    for kb in kbs:
+        name = (getattr(kb, "name", None) or "").strip()
+        description = (getattr(kb, "description", None) or "").strip()
+        if name and description:
+            parts.append(f"{name}（{description}）")
+        elif name or description:
+            parts.append(name or description)
+    return "；".join(parts) or None
 
 
 def _empty_reason(

@@ -4,6 +4,11 @@
 这次是不是降级），但**不负责**把它翻译成 HTTP 响应——响应壳与业务码归
 ``app.services.rag_service``。
 
+**两条通道拿两个不同的查询**（票 6）：查询优化在召回之前把用户那句话加工成
+``effective_query``（给向量一路与重排）与 ``search_query``（给关键词一路）。两者不同
+是设计而不是 bug——同义词补的是字面匹配，改写补的是语义；合成一句等于用其中一路的
+优化去污染另一路。两个开关都关时它们相等，本模块的行为与票 4 逐字段一致。
+
 四条不许动的约定：
 
 1. **两路真并行**：``asyncio.gather(..., return_exceptions=True)`` 让一路挂掉不取消
@@ -73,7 +78,8 @@ async def hybrid_retrieve(
     *,
     tenant_id: str,
     kb_ids: list[str],
-    query: str,
+    vector_query: str,
+    keyword_query: str,
     top_k: int,
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
@@ -85,6 +91,12 @@ async def hybrid_retrieve(
 
     工厂以**可调用对象**传进来，而不是在这里直接 import：``rag_service`` 是组合根，
     测试替换工厂的位置因此仍然只有一处（沿用既有 monkeypatch 接缝，不新造接缝）。
+
+    **两条通道拿两个不同的查询**（``vector_query`` / ``keyword_query``）：查询优化在
+    召回之前就把一句话加工成了两句，向量一路要语义、关键词一路要字面。重排属于语义
+    那一侧，与向量一路共用 ``vector_query``。关掉两个开关时两者相等，行为与票 4 一致；
+    这里刻意不提供一个「query」参数让人偷懒传同一个变量——那不会报错，只会静默地把
+    一半优化关掉。
 
     ``recall_depth`` 是**每路召回条数**，``rerank_candidates`` 是**融合后保留的
     候选数**，两者都与 ``top_k``（最终返回条数）不是一回事：召回要宽、融合池要宽，
@@ -103,7 +115,7 @@ async def hybrid_retrieve(
                 _run_vector_branch,
                 tenant_id=tenant_id,
                 kb_ids=kb_ids,
-                query=query,
+                query=vector_query,
                 top_k=depth,
                 embedding_factory=embedding_factory,
                 vector_factory=vector_factory,
@@ -111,7 +123,7 @@ async def hybrid_retrieve(
             _keyword_branch(
                 tenant_id=tenant_id,
                 kb_ids=kb_ids,
-                query=query,
+                query=keyword_query,
                 top_k=depth,
                 keyword_factory=keyword_factory,
             ),
@@ -153,7 +165,9 @@ async def hybrid_retrieve(
     # 融合之后插入重排（GLOSSARY「检索链路」：召回 → 融合 → 重排）。失败只保留融合
     # 顺序并补一个原因；**已经降级就不覆盖**——先到的原因才是根因。
     fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
-    reranked = await rerank_stage(query=query, chunks=fused_chunks, top_n=top_k)
+    # 重排是**语义那一侧**的一步：它看到的问题与向量一路是同一句（``vector_query``），
+    # 扩展出来的同义词只该帮关键词一路做字面匹配，塞进重排提示词只会变成噪音。
+    reranked = await rerank_stage(query=vector_query, chunks=fused_chunks, top_n=top_k)
     if reranked.reason is not None:
         degraded_reason = degraded_reason or reranked.reason
 

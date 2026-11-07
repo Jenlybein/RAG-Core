@@ -115,6 +115,16 @@ class Settings(BaseSettings):
     # 原先的 ``RERANK_TOP_N`` 与 ``RERANK_TEMPERATURE`` 已删除：前者压条数，后者
     # 从没接进模型（``LLMProvider`` 不承载生成参数，重排温度在装配层固定为 0）。
 
+    # ── 查询优化（第 4 步票 6）──
+    # 两层各自一个开关，**都默认关闭**：关掉时这一步是恒等变换，检索行为与票 4
+    # 逐字段一致；离线测试 / CI / 没配 key 的机器也靠这两条保持「一次模型都不调」。
+    QUERY_REWRITE_ENABLED: bool = False
+    # 改写的超时（毫秒）。超时按失败处理 → 回退原句并标降级。它必须小于客户端超时：
+    # 一个慢调用把整次检索拖到客户端先放弃，比降级更糟。
+    QUERY_REWRITE_TIMEOUT_MS: int = 2000
+    # 同义词扩展是纯函数，不需要模型也不需要超时；开与不开只影响关键词一路。
+    SYNONYM_EXPANSION_ENABLED: bool = False
+
     # 框架自带的追踪客户端读的是环境变量而不是这份配置。这里声明默认值，
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
     LANGCHAIN_TRACING_V2: bool = False
