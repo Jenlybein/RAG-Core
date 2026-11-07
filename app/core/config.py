@@ -4,6 +4,10 @@
 文档入库、embedding 批次与 OCR 运行环境。.env 模板里还有更多阶段变量，
 pydantic-settings 默认忽略未声明的键（extra="ignore"），不会因多配置报错。
 
+第 4 步票 1 再补一组「模型接入」：供应商 + 模型 + per-provider key + 思考档位。
+它们全部是**运行时开关**而不是代码分支：换一家供应商只改 .env，不动业务代码；
+一家都没配时工厂返回空实现，离线环境照常启动。
+
 ``PDF_INSPECTOR_MODEL_CACHE`` 由 pdf-inspector 库自己读取，因此不在这里声明；
 它只在 Dockerfile / CI 里作为环境变量设置。
 """
@@ -61,6 +65,36 @@ class Settings(BaseSettings):
     # 离线测试 / CI 不启 MCP 会话管理器（避免每个 TestClient 都启停 session manager）。
     # 生产默认开启；仅 pytest 通过环境变量关掉。
     ENABLE_MCP: bool = True
+
+    # ── 模型接入（第 4 步票 1）──
+    # 标识是「供应商 + 模型」，key 按供应商各存一份：换一家只改环境变量，业务代码零改动。
+    # 这里**每一项都必须有默认值**——tests/test_contracts.py 用 Settings(_env_file=None)
+    # 构造配置对象，任何必填项都会当场炸。
+    LLM_PROVIDER: str = "deepseek"
+    # 留空 = 用该供应商的默认地址（千问例外：工作空间 ID 嵌在 URL 里，必须自己填）。
+    LLM_BASE_URL: str = ""
+    LLM_MODEL: str = "deepseek-flash"
+    LLM_STRONG_MODEL: str = "deepseek-v4-pro"
+    LLM_TIMEOUT_SECONDS: float = 60.0
+    # 思考档位只作用于 strong 档；fast 档在 Provider 里写死关闭（改写与重排要低延迟）。
+    LLM_REASONING_EFFORT: str = "off"
+
+    # 各供应商的 key。哪个留空，就等于「这台机器没配这家」——工厂据此退回空实现。
+    # 注意 OPENAI_API_KEY 等名字与各家 SDK 自己的环境变量同名：这是刻意的，
+    # 运维不用记两套名字。
+    DEEPSEEK_API_KEY: str = ""
+    QWEN_API_KEY: str = ""
+    ARK_API_KEY: str = ""
+    OPENAI_API_KEY: str = ""
+    ANTHROPIC_API_KEY: str = ""
+    GEMINI_API_KEY: str = ""
+
+    # 嵌入实现开关：langchain（框架抽象，默认）/ openai_compatible（原有直连实现，回退）。
+    EMBEDDING_PROVIDER: str = "langchain"
+
+    # 框架自带的追踪客户端读的是环境变量而不是这份配置。这里声明默认值，
+    # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
+    LANGCHAIN_TRACING_V2: bool = False
 
 
 settings = Settings()
