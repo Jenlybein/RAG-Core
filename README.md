@@ -66,6 +66,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 - 幂等与租约：数据库 CAS 抢占 + 600 秒租约（`documents.index_claimed_at` 区分「已入队未开工」与「正在跑」）；`acks_late=True` 的重投由后到者 `rowcount=0` 直接跳过。入队侧只置队、**只有 Worker 抢占**，重试前归还租约。
 - 运维能力：`POST /documents/{id}/reindex?reparse=&force=`（有效处理中拒绝 `20025`，成功态需 `force` 否则 `20027`）、`DELETE /documents/{id}`、`scripts/reindex_knowledge_base.py`、`scripts/requeue_stuck_documents.py`。
 - OCR 运行时：Linux 容器内预装 PDFium + ONNX Runtime + PP-OCRv6 Small 模型，运行期不联网；构建与启动见 [deploy/README.md](deploy/README.md)，测试口径见 [tests/README.md](tests/README.md)。
+- 切块策略自评：scripts/eval_chunking.py 复用第 4 步的 eval/corpus 与 eval/questions.json，对比朴素字符切块与结构化切块的检索指标（实测 R@1 0.688 → 0.761、切片均长 744 → 148 字）。
 
 ## 第 4 步：混合检索（已落地）
 
