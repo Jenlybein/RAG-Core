@@ -52,6 +52,10 @@ class RetrieveRequest(BaseModel):
     top_k: int = Field(default_factory=_default_top_k, ge=MIN_TOP_K, le=MAX_TOP_K)
     # 默认开：默认关着就没人会开，small-to-big 等于没做。只有在明确只要细片、
     # 不希望响应体被父节撑大的场景才关掉。
+    #
+    # 注意「关掉」的边界：关掉时**内部结果字典**与改造前逐字一致（不再查询、不再
+    # 计算父节）；但 HTTP 响应里 `parent` 这个键仍然存在，值为 null——它由响应模型
+    # 的默认值补齐。要让旧调用方看到完全旧的响应体，需要自己按字段裁剪。
     include_parent: bool = True
     # 命中行级表片时，附带同一组的整表全文（放在 table_context 里，不动 content）。
     expand_table_rows: bool = True

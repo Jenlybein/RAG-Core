@@ -355,60 +355,65 @@ def _attach_parent_sections(
     chunks: list[dict],
     metas: dict[tuple[str, str], dict],
 ) -> None:
-    """上下文恢复：给每条结果挂上所属章节的上下文，粒度按命中情况分级。
+    """上下文恢复：给每条结果挂上它所属**父节**（h2 级）的上下文。
 
-    一刀切地返回整节会把 token 预算浪费在没命中的片上（一个细片 150 字、整节
-    1000 字，命中 1 片却返回 7 倍内容）。所以分三档：
+    三档，目标是「够用但不过量」：
 
     | 命中情况 | 返回什么 | 为什么 |
     | --- | --- | --- |
-    | 同节只命中 1 片 | 该片 + 前后各 1 片 | 邻近片常补全被切断的句子，再多就是噪声 |
-    | 同节命中 ≥2 片 | 该节全部 | 命中多处说明答案确实跨了子节 |
-    | 跨 ≥2 个节 | 各节全部 | 跨节题本来就需要多节上下文 |
+    | 整个答案只命中 1 片 | 该片 + 前后各 1 片（`neighbors`） | 邻近片常补全被切断的句子 |
+    | 同一父节命中 ≥2 片 | 整个父节（`parent`） | 命中多处说明答案确实跨了子节 |
+    | 命中跨 ≥2 个父节 | 各父节全文（`cross_section=true`） | 跨节题本来就需要多节上下文 |
 
-    索引与片数都不动，只改返回时的组装——所以不需要重建全库。
+    **父节是 h2 级**：``section_id`` 在 h3 成为边界后指向子节，所以这里按
+    ``parent_section_id`` 取整节——它一直存着却没被用上，这次补上。
+
+    只命中一片时不返回整个父节：一个 150 字的细片配 1000 字的父节是 7 倍浪费，
+    而单命中场景下邻近两片通常已经能补全被切断的句子。
+
+    索引与片数都不动，只改返回时的组装——不需要重建全库。
     """
 
-    hits_by_section: dict[tuple[str, str], list[str]] = {}
+    hits_by_parent: dict[tuple[str, str], list[str]] = {}
     heading_paths: dict[tuple[str, str], str] = {}
+    own_sections: dict[tuple[str, str], str] = {}
     for chunk in chunks:
         meta = _meta_of(chunk, metas)
-        section_id = meta.get("section_id")
         document_id = chunk.get("document_id")
-        if not isinstance(section_id, str) or not isinstance(document_id, str):
+        section_id = meta.get("section_id")
+        parent_id = meta.get("parent_section_id") or section_id
+        if (
+            not isinstance(document_id, str)
+            or not isinstance(section_id, str)
+            or not isinstance(parent_id, str)
+            or not parent_id
+        ):
             continue
-        key = (document_id, section_id)
-        hits_by_section.setdefault(key, []).append(str(chunk.get("chunk_id")))
+        key = (document_id, parent_id)
+        hits_by_parent.setdefault(key, []).append(str(chunk.get("chunk_id")))
         heading_paths.setdefault(key, str(meta.get("heading_path") or ""))
-    if not hits_by_section:
+        own_sections.setdefault(key, section_id)
+
+    if not hits_by_parent:
         return
 
-    grouped = chunk_repository.fetch_section_chunks(
-        db,
-        tenant_id=scope.tenant_id,
-        document_ids=scope.document_ids,
-        section_ids=sorted({key[1] for key in hits_by_section}),
-        # 与召回时的过滤口径保持一致：父节混进另一索引批次，调用方会拿到
-        # 「和命中片对不上」的上下文。
-        index_version=DEFAULT_INDEX_VERSION,
-    )
-
-    cross_section = len(hits_by_section) >= 2
+    cross_section = len(hits_by_parent) >= 2
     parents: dict[tuple[str, str], dict[str, object]] = {}
-    for key, hit_ids in hits_by_section.items():
-        rows = grouped.get(key)
+    for key, hit_ids in hits_by_parent.items():
+        whole_parent = cross_section or len(hit_ids) >= 2
+        rows = _parent_rows(
+            db, scope=scope, key=key, own_section=own_sections[key], whole=whole_parent
+        )
         if not rows:
             continue
-        # 命中 ≥2 片、或本次检索跨了多个节 → 整节；只命中 1 片 → 取邻居窗口。
-        whole_section = cross_section or len(hit_ids) >= 2
-        if whole_section:
+        if whole_parent:
             selected = rows
-            expansion = "section"
+            expansion = "parent"
         else:
             positions = [index for index, (_, _, cid) in enumerate(rows) if cid in hit_ids]
             if not positions:
                 selected = rows
-                expansion = "section"
+                expansion = "parent"
             else:
                 centre = positions[0]
                 selected = rows[max(0, centre - 1) : centre + 2]
@@ -424,13 +429,48 @@ def _attach_parent_sections(
 
     for chunk in chunks:
         meta = _meta_of(chunk, metas)
-        section_id = meta.get("section_id")
         document_id = chunk.get("document_id")
+        section_id = meta.get("section_id")
+        parent_id = meta.get("parent_section_id") or section_id
         chunk["parent"] = (
-            parents.get((document_id, section_id))
-            if isinstance(section_id, str) and isinstance(document_id, str)
+            parents.get((document_id, parent_id))
+            if isinstance(document_id, str) and isinstance(parent_id, str)
             else None
         )
+
+
+def _parent_rows(
+    db: Session,
+    *,
+    scope: _DecorateScope,
+    key: tuple[str, str],
+    own_section: str,
+    whole: bool,
+) -> list[tuple[int, str, str]]:
+    """取「整父节（h2）」或「命中片所在的子节（h3）」，行形态统一为 ``(序号, 正文, ID)``。
+
+    单命中且不跨节时只取子节：整个父节里其余的 h3 与这次答案无关，取出来只是让
+    调用方多读几百字。
+    """
+
+    index_version = DEFAULT_INDEX_VERSION
+    if whole:
+        grouped = chunk_repository.fetch_parent_section_chunks(
+            db,
+            tenant_id=scope.tenant_id,
+            document_ids=[key[0]],
+            parent_section_ids=[key[1]],
+            index_version=index_version,
+        )
+        return grouped.get(key, [])
+    section_rows = chunk_repository.fetch_section_chunks(
+        db,
+        tenant_id=scope.tenant_id,
+        document_ids=[key[0]],
+        section_ids=[own_section],
+        index_version=index_version,
+    )
+    return section_rows.get((key[0], own_section), [])
 
 
 def _rewrite_hint(kbs: list) -> str | None:

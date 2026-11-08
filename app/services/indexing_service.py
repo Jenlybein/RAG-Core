@@ -225,6 +225,9 @@ class IndexingService:
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
                     **parsed.metadata,
                     **piece.metadata,
+                    # 文档级序号。order_index 只在节内可比，而父节要跨 h3 拼回整个 h2，
+                    # 没有它就排不出文档顺序（ADR-0010 的确定性要求）。
+                    "chunk_index": index,
                     # 落库记下这一片是哪种策略切出来的：重建时才能复现同一套切法，
                     # 跨库检索时也解释得了片长差异。
                     "split_strategy": split_strategy,

@@ -21,6 +21,7 @@ KB = "kb-1"
 DOC = "doc-1"
 SECTION_A = "a" * 64
 SECTION_B = "b" * 64
+PARENT_ID = "p" * 64
 HEADING_A = "部署实施指南 > 设备上架"
 HEADING_B = "部署实施指南 > 供电接入"
 
@@ -106,8 +107,8 @@ def test_single_hit_gets_neighbours_not_the_whole_section() -> None:
     assert "第4片正文。" not in parent["content"]
 
 
-def test_two_hits_in_one_section_get_the_whole_section() -> None:
-    """同节命中 ≥2 片说明答案确实跨了这个节，给整节。"""
+def test_two_hits_in_one_parent_get_the_whole_parent() -> None:
+    """同一父节内命中 ≥2 片说明答案确实跨了子节，给整个父节。"""
 
     session = _Session(
         metas={
@@ -122,7 +123,7 @@ def test_two_hits_in_one_section_get_the_whole_section() -> None:
     )
 
     for row in result:
-        assert row["parent"]["expansion"] == "section"
+        assert row["parent"]["expansion"] == "parent"
         assert row["parent"]["piece_count"] == 5
     assert "第0片正文。" in result[0]["parent"]["content"]
 
@@ -146,11 +147,49 @@ def test_cross_section_hits_get_each_whole_section() -> None:
         session, [_chunk("chunk-2", "第2片正文。"), _chunk("chunk-b1", "乙节正文。")]
     )
 
-    assert all(row["parent"]["expansion"] == "section" for row in result)
+    assert all(row["parent"]["expansion"] == "parent" for row in result)
     assert all(row["parent"]["cross_section"] is True for row in result)
     assert result[0]["parent"]["section_id"] == SECTION_A
     assert result[1]["parent"]["section_id"] == SECTION_B
     assert "第0片正文。" in result[0]["parent"]["content"], "跨节时不该只给邻居"
+
+
+def test_two_h3_sections_of_one_parent_are_assembled_in_document_order() -> None:
+    """父节是 h2：同属一个 h2 的两个 h3 命中时，按文档级 chunk_index 拼回整节。
+
+    `order_index` 只是节内序号，跨 h3 用它排序会拼出错乱的上下文——所以索引期
+    另存了文档级的 `chunk_index`。
+    """
+
+    session = _Session(
+        metas={
+            "a-0": {
+                "section_id": SECTION_A,
+                "parent_section_id": PARENT_ID,
+                "heading_path": "部署实施指南 > 上架",
+            },
+            "b-1": {
+                "section_id": SECTION_B,
+                "parent_section_id": PARENT_ID,
+                "heading_path": "部署实施指南 > 供电",
+            },
+        },
+        sections=[
+            (DOC, PARENT_ID, 0, "先复核型号。", "a-0"),
+            (DOC, PARENT_ID, 1, "再上柜。", "a-1"),
+            (DOC, PARENT_ID, 2, "最后接电。", "b-0"),
+            (DOC, PARENT_ID, 3, "空开额定要够。", "b-1"),
+        ],
+    )
+
+    result = _decorate(session, [_chunk("a-0", "先复核型号。"), _chunk("b-1", "空开额定要够。")])
+
+    for row in result:
+        assert row["parent"]["expansion"] == "parent"
+        assert row["parent"]["piece_count"] == 4
+        assert row["parent"]["section_id"] == PARENT_ID
+    content = result[0]["parent"]["content"]
+    assert content.index("先复核型号。") < content.index("最后接电。")
 
 
 def test_single_piece_section_returns_that_piece() -> None:

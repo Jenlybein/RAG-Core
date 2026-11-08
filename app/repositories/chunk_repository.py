@@ -86,6 +86,56 @@ def fetch_table_chunks(
     return tables
 
 
+def fetch_parent_section_chunks(
+    db: Session,
+    *,
+    tenant_id: str,
+    document_ids: list[str],
+    parent_section_ids: list[str],
+    index_version: str | None = None,
+) -> dict[tuple[str, str], list[tuple[int, str, str]]]:
+    """一次查出这些**父节**（h2 级）下的全部切片，供上下文恢复拼回整个父节。
+
+    返回 ``{(document_id, parent_section_id): [(chunk_index, 正文, chunk_id)...]}``。
+
+    为什么按 ``parent_section_id`` 而不是 ``section_id``：h3 成为切片边界后，
+    ``section_id`` 指的是子节（h3），而「父节」在这一步的语义是 h2 级的那一节。
+    ``parent_section_id`` 正是为此存在的（见 GLOSSARY「父块」），此前一直没被用上。
+
+    为什么按 ``chunk_index``（文档级）排序：``order_index`` 只是节内序号，跨 h3 拼
+    一个 h2 时它排不出文档顺序，拼出来的上下文会是断的。
+    """
+
+    if not document_ids or not parent_section_ids:
+        return {}
+    stmt = (
+        select(
+            Chunk.document_id,
+            Chunk.meta["parent_section_id"].astext,
+            Chunk.meta["chunk_index"].astext.cast(Integer),
+            Chunk.content,
+            Chunk.id,
+        )
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.document_id.in_(document_ids),
+            Chunk.meta["parent_section_id"].astext.in_(parent_section_ids),
+        )
+        # 确定性的文档顺序（ADR-0010）：同一份输入两次拼出的父节必须一样。
+        .order_by(
+            Chunk.document_id, Chunk.meta["chunk_index"].astext.cast(Integer), Chunk.id
+        )
+    )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
+    grouped: dict[tuple[str, str], list[tuple[int, str, str]]] = {}
+    for document_id, parent_id, chunk_index, content, chunk_id in db.execute(stmt).all():
+        grouped.setdefault((str(document_id), str(parent_id)), []).append(
+            (int(chunk_index or 0), str(content), str(chunk_id))
+        )
+    return grouped
+
+
 def fetch_section_chunks(
     db: Session,
     *,
