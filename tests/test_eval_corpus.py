@@ -157,8 +157,8 @@ def test_heading_paths_are_unique_inside_each_document() -> None:
         for heading_path, count in counter.items()
         if count > 2
     }
-    assert not duplicated, (
-        "同一篇里 heading_path 出现超过 2 次：\n  - " + "\n  - ".join(sorted(duplicated))
+    assert not duplicated, "同一篇里 heading_path 出现超过 2 次：\n  - " + "\n  - ".join(
+        sorted(duplicated)
     )
 
 
