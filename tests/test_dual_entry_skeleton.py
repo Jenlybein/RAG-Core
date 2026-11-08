@@ -87,6 +87,7 @@ def test_list_knowledge_bases_returns_only_default_tenant(client, monkeypatch) -
                 name="退款政策",
                 tenant_id=tenant_id,
                 split_strategy="structure",
+                allowed_formats=["markdown"],
                 settings={"chunk_size": 800},
             ),
             SimpleNamespace(
@@ -94,6 +95,7 @@ def test_list_knowledge_bases_returns_only_default_tenant(client, monkeypatch) -
                 name="换货政策",
                 tenant_id=tenant_id,
                 split_strategy="size",
+                allowed_formats=["markdown", "text", "docx", "pdf", "html"],
                 settings={"chunk_size": 400},
             ),
         ]

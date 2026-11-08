@@ -16,9 +16,12 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.models.knowledge_base import (
+    ALL_FORMATS,
     DEFAULT_CHUNK_SIZE,
+    FORMAT_MARKDOWN,
     SPLIT_SIZE,
     SPLIT_STRUCTURE,
+    resolve_formats,
     settings_of,
 )
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
@@ -78,15 +81,33 @@ def _create(client: Any, **payload: Any) -> Any:
     return client.post(CREATE_PATH, json={"name": "demo", **payload}, headers=AUTH_HEADERS)
 
 
-def test_defaults_are_structure_and_baseline_window(client: Any) -> None:
-    """不传配置时，建库走默认：按结构切、窗口 800、合并阈值 150。"""
+def test_strategy_is_required(client: Any) -> None:
+    """建库必须选策略：缺了它就没有「这个库怎么切」这个答案。"""
 
     response = _create(client)
+
+    assert response.json()["code"] != 0, "不传策略不该被静默套上默认值"
+
+
+def test_structure_default_whitelist_is_markdown_only(client: Any) -> None:
+    """structure 不传白名单时默认只收 markdown：它的能力全建立在标题语法上。"""
+
+    response = _create(client, split_strategy=SPLIT_STRUCTURE)
 
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["split_strategy"] == SPLIT_STRUCTURE
     assert data["chunk_size"] == DEFAULT_CHUNK_SIZE == 800
+    assert data["allowed_formats"] == [FORMAT_MARKDOWN]
+
+
+def test_size_default_whitelist_is_every_format(client: Any) -> None:
+    """size 不传白名单时五种格式全开：它不依赖任何结构。"""
+
+    response = _create(client, split_strategy=SPLIT_SIZE)
+
+    assert response.status_code == 200
+    assert response.json()["data"]["allowed_formats"] == list(ALL_FORMATS)
 
 
 def test_size_strategy_and_window_are_echoed(client: Any) -> None:
@@ -100,17 +121,38 @@ def test_size_strategy_and_window_are_echoed(client: Any) -> None:
     assert data["chunk_size"] == 400
 
 
+def test_size_can_narrow_its_whitelist(client: Any) -> None:
+    """size 库可以把白名单收窄到只收某几种格式。"""
+
+    response = _create(client, split_strategy=SPLIT_SIZE, allowed_formats=["pdf"])
+
+    assert response.status_code == 200
+    assert response.json()["data"]["allowed_formats"] == ["pdf"]
+
+
+def test_structure_rejects_non_markdown_whitelist(client: Any) -> None:
+    """structure 配 pdf 是矛盾组合，建库当场拒绝而不是建出一个必然出错的值。"""
+
+    response = _create(client, split_strategy=SPLIT_STRUCTURE, allowed_formats=["markdown", "pdf"])
+
+    assert response.json()["code"] != 0
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         {"split_strategy": "structured"},  # 旧命名，不是合法取值
         {"split_strategy": "char"},
-        {"chunk_size": 100},
-        {"chunk_size": 5000},
+        {"split_strategy": SPLIT_STRUCTURE, "chunk_size": 100},
+        {"split_strategy": SPLIT_STRUCTURE, "chunk_size": 5000},
+        # 格式名拼错：白名单是枚举，不许自由文本
+        {"split_strategy": SPLIT_STRUCTURE, "allowed_formats": ["markdown", "word"]},
+        # 空白名单等于这个库什么都不收，与「建库」的目的矛盾
+        {"split_strategy": SPLIT_STRUCTURE, "allowed_formats": []},
     ],
 )
 def test_invalid_split_config_is_rejected(client: Any, payload: dict[str, Any]) -> None:
-    """非法策略或越界数值被拒绝，不静默回落到默认——静默回落的表现是「检索变差」。"""
+    """非法策略、越界数值、拼错的格式名都被拒绝，不静默回落到默认。"""
 
     response = _create(client, **payload)
 
@@ -118,17 +160,18 @@ def test_invalid_split_config_is_rejected(client: Any, payload: dict[str, Any]) 
 
 
 def test_config_is_persisted_on_the_knowledge_base_row(client: Any) -> None:
-    """配置真的落进了知识库行：策略是独立列，两个数值进 settings。"""
+    """配置真的落进了知识库行：策略与白名单是独立列，数值进 settings。"""
 
     _create(client, split_strategy="size", chunk_size=400)
 
     stored = client.fake_session.added[0]  # type: ignore[attr-defined]
     assert stored.split_strategy == "size"
+    assert stored.allowed_formats == list(ALL_FORMATS)
     assert stored.settings == {"chunk_size": 400}
 
 
 def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
-    """列库要能看到每个库用哪种策略、窗口多大。"""
+    """列库要能看到每个库用哪种策略、窗口多大、收哪些格式。"""
 
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
@@ -139,6 +182,7 @@ def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
                 name="结构库",
                 tenant_id=tenant_id,
                 split_strategy="structure",
+                allowed_formats=["markdown"],
                 settings={"chunk_size": 800},
             ),
             SimpleNamespace(
@@ -146,6 +190,7 @@ def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
                 name="字符库",
                 tenant_id=tenant_id,
                 split_strategy="size",
+                allowed_formats=list(ALL_FORMATS),
                 settings={"chunk_size": 400},
             ),
         ]
@@ -155,9 +200,11 @@ def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
     response = client.get(LIST_PATH, headers=AUTH_HEADERS)
 
     items = response.json()["data"]["knowledge_bases"]
-    assert [(item["split_strategy"], item["chunk_size"]) for item in items] == [
-        ("structure", 800),
-        ("size", 400),
+    assert [
+        (item["split_strategy"], item["chunk_size"], item["allowed_formats"]) for item in items
+    ] == [
+        ("structure", 800, ["markdown"]),
+        ("size", 400, list(ALL_FORMATS)),
     ]
 
 
@@ -235,7 +282,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     monkeypatch.setattr(
         repo,
         "get_split_config",
-        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400),
+        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400, list(ALL_FORMATS)),
     )
 
     service = service_module.IndexingService(
@@ -269,3 +316,40 @@ def test_injected_splitter_wins_over_kb_config(monkeypatch) -> None:
 
     assert splitter is injected
     assert strategy == SPLIT_STRUCTURE
+
+
+def test_resolve_formats_fills_defaults_per_strategy() -> None:
+    """不传白名单时按策略补全：structure 只 markdown，size 五种全开。"""
+
+    assert resolve_formats(SPLIT_STRUCTURE, None) == [FORMAT_MARKDOWN]
+    assert resolve_formats(SPLIT_SIZE, None) == list(ALL_FORMATS)
+
+
+@pytest.mark.parametrize(
+    "strategy, formats",
+    [
+        (SPLIT_SIZE, ["word"]),  # 拼错的名字
+        (SPLIT_SIZE, []),  # 空白名单等于什么都不收
+        (SPLIT_SIZE, ["markdown", "markdown"]),  # 重复项
+        (SPLIT_STRUCTURE, ["markdown", "pdf"]),  # 矛盾组合
+        (SPLIT_STRUCTURE, []),  # structure 也不能什么都不收
+    ],
+)
+def test_resolve_formats_rejects_bad_whitelists(strategy: str, formats: list[str]) -> None:
+    """白名单的四类非法值都在写库之前被拒。"""
+
+    with pytest.raises(ValueError):
+        resolve_formats(strategy, formats)
+
+
+def test_resolve_formats_keeps_declared_order() -> None:
+    """合法白名单按传入顺序保留：顺序即优先级，不该被重排。"""
+
+    assert resolve_formats(SPLIT_SIZE, ["pdf", "docx"]) == ["pdf", "docx"]
+
+
+def test_resolve_formats_rejects_unknown_strategy() -> None:
+    """未知策略名不能被当成某个已知策略处理。"""
+
+    with pytest.raises(ValueError):
+        resolve_formats("nonsense", None)
