@@ -324,7 +324,19 @@ def _attach_parent_sections(
     document_ids: list[str],
     section_ids: list[str],
 ) -> None:
-    """给每条结果挂上它所属的整个 h2 节（small-to-big 的「父块」）。"""
+    """给每条结果挂上「上下文」，粒度按命中情况分级。
+
+    一刀切地返回整节会把 token 预算浪费在没命中的片上（一个细片 150 字、整节
+    1000 字，命中 1 片却返回 7 倍内容）。所以分三档：
+
+    | 命中情况 | 返回什么 | 为什么 |
+    | --- | --- | --- |
+    | 同节只命中 1 片 | 该片 + 前后各 1 片 | 邻近片常补全被切断的句子，再多就是噪声 |
+    | 同节命中 ≥2 片 | 该节全部 | 命中多处说明答案确实跨了子节 |
+    | 跨 ≥2 个节 | 各节全部 | 跨节题本来就需要多节上下文 |
+
+    索引与片数都不动，只改返回时的组装——所以不需要重建全库。
+    """
 
     keys: list[tuple[str, str]] = []
     for chunk in chunks:
@@ -346,6 +358,17 @@ def _attach_parent_sections(
         index_version=DEFAULT_INDEX_VERSION,
     )
 
+    # 每节被命中几次、命中的是哪几片——决定该节的扩展粒度。
+    hits_by_section: dict[tuple[str, str], list[str]] = {}
+    for chunk in chunks:
+        chunk_id = str(chunk.get("chunk_id"))
+        meta = metas.get(chunk_id) or {}
+        section_id = meta.get("section_id")
+        document_id = chunk.get("document_id")
+        if isinstance(section_id, str) and isinstance(document_id, str):
+            hits_by_section.setdefault((document_id, section_id), []).append(chunk_id)
+
+    cross_section = len(hits_by_section) >= 2
     heading_paths: dict[tuple[str, str], str] = {}
     for chunk in chunks:
         meta = metas.get(str(chunk.get("chunk_id"))) or {}
@@ -354,15 +377,32 @@ def _attach_parent_sections(
         if isinstance(section_id, str) and isinstance(document_id, str):
             heading_paths[(document_id, section_id)] = str(meta.get("heading_path") or "")
 
-    parents: dict[tuple[str, str], dict[str, str]] = {}
-    for key in keys:
-        texts = grouped.get(key)
-        if not texts or key in parents:
+    parents: dict[tuple[str, str], dict[str, object]] = {}
+    for key, hit_ids in hits_by_section.items():
+        rows = grouped.get(key)
+        if not rows:
             continue
+        # 命中 ≥2 片、或本次检索跨了多个节 → 整节；只命中 1 片 → 取邻居窗口。
+        whole_section = cross_section or len(hit_ids) >= 2
+        if whole_section:
+            selected = rows
+            expansion = "section"
+        else:
+            positions = [index for index, (_, _, cid) in enumerate(rows) if cid in hit_ids]
+            if not positions:
+                selected = rows
+                expansion = "section"
+            else:
+                centre = positions[0]
+                selected = rows[max(0, centre - 1) : centre + 2]
+                expansion = "neighbors"
         parents[key] = {
             "section_id": key[1],
             "heading_path": heading_paths.get(key, ""),
-            "content": "\n\n".join(texts),
+            "content": "\n\n".join(row[1] for row in selected),
+            "expansion": expansion,
+            "piece_count": len(selected),
+            "cross_section": cross_section,
         }
 
     for chunk in chunks:

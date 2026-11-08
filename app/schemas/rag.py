@@ -62,11 +62,20 @@ class ParentSection(BaseModel):
 
     子切片负责「找得准」，父节负责「喂得够」：把 150 字的细片和它所属整节的全文
     一起给调用方，就不必再发一次请求，也不会让模型只看到半句话。
+
+    ``expansion`` 说明这次给了多大范围：
+
+    * ``neighbors`` —— 该节只命中这一片，给的是「该片 + 前后各一片」；
+    * ``section`` —— 该节命中多片、或本次检索跨了多个节，给的是整节。
     """
 
     section_id: str
     heading_path: str
     content: str
+    expansion: str = "section"
+    piece_count: int = 0
+    # 本次检索是否跨了多个节：跨节时每节都给整节，因为跨节题本来就需要多节上下文。
+    cross_section: bool = False
 
 
 class RetrievedChunk(BaseModel):

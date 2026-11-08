@@ -73,10 +73,11 @@ def fetch_section_chunks(
     document_ids: list[str],
     section_ids: list[str],
     index_version: str | None = None,
-) -> dict[tuple[str, str], list[str]]:
+) -> dict[tuple[str, str], list[tuple[int, str, str]]]:
     """一次查出这些文档里、这些章节的全部切片正文（按 ``order_index`` 排序）。
 
-    返回 ``{(document_id, section_id): [正文...]}``，供检索层拼「父节」用。
+    返回 ``{(document_id, section_id): [(order_index, 正文, chunk_id)...]}``，按顺序排好。
+    带上 chunk_id 是为了让上层能定位「命中的是哪一片」——分级扩展要靠它取前后邻居。
     **必须按 (文档, 章节) 而不是只按章节**：同一知识库里两篇文档完全可以共用
     同名标题（《退款政策》与《换货政策》都有「申请条件」），只按 section_id 查
     会把两篇的正文拼成一个假章节。
@@ -96,6 +97,7 @@ def fetch_section_chunks(
             Chunk.meta["section_id"].astext,
             Chunk.meta["order_index"].astext.cast(Integer),
             Chunk.content,
+            Chunk.id,
         )
         .where(
             Chunk.tenant_id == tenant_id,
@@ -107,9 +109,11 @@ def fetch_section_chunks(
     )
     if index_version is not None:
         stmt = stmt.where(Chunk.index_version == index_version)
-    grouped: dict[tuple[str, str], list[str]] = {}
-    for document_id, section_id, _order, content in db.execute(stmt).all():
-        grouped.setdefault((document_id, str(section_id)), []).append(str(content))
+    grouped: dict[tuple[str, str], list[tuple[int, str, str]]] = {}
+    for document_id, section_id, order, content, chunk_id in db.execute(stmt).all():
+        grouped.setdefault((document_id, str(section_id)), []).append(
+            (int(order or 0), str(content), str(chunk_id))
+        )
     return grouped
 
 

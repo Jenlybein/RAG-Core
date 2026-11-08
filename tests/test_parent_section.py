@@ -1,7 +1,7 @@
-"""small-to-big：检索结果带上命中切片所属的整节全文。
+"""small-to-big 的分级扩展：返回范围按命中情况分三档。
 
-只测对外行为：一次检索的响应里 ``parent`` 长什么样，以及关掉开关后响应体是否
-与改造前一致。父节的拼装顺序、去重方式属于实现细节，不在这里断言。
+只测对外行为：一次检索的响应里 ``parent`` 给了多大范围、为什么给这么大。
+具体取哪几片属于实现细节，不在这里断言。
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ import importlib
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
 
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.schemas.rag import RetrievedChunk
@@ -18,13 +19,15 @@ from app.schemas.rag import RetrievedChunk
 TENANT = "tenant-demo"
 KB = "kb-1"
 DOC = "doc-1"
-SECTION_ID = "a" * 64
-HEADING = "部署实施指南 > 设备上架"
+SECTION_A = "a" * 64
+SECTION_B = "b" * 64
+HEADING_A = "部署实施指南 > 设备上架"
+HEADING_B = "部署实施指南 > 供电接入"
 
 
-def _chunk(chunk_id: str, content: str) -> dict[str, Any]:
+def _chunk(chunk_id: str, content: str, document_id: str = DOC) -> dict[str, Any]:
     return {
-        "document_id": DOC,
+        "document_id": document_id,
         "chunk_id": chunk_id,
         "kb_id": KB,
         "title": "部署实施指南",
@@ -34,161 +37,218 @@ def _chunk(chunk_id: str, content: str) -> dict[str, Any]:
     }
 
 
-class _Session:
-    """按请求语句形态回答两种查询：切片 meta 与同节切片正文。"""
-
-    def __init__(self, *, metas: dict[str, dict], siblings: list[tuple[str, str, int, str]]):
-        self.metas = metas
-        self.siblings = siblings
-        self.calls = 0
-
-    def execute(self, _statement: Any) -> Any:
-        self.calls += 1
-        if self.calls == 1:
-            # 第一次查切片 meta：真实驱动返回的行支持属性访问，这里照做。
-            return _Rows(
-                [SimpleNamespace(id=chunk_id, meta=meta) for chunk_id, meta in self.metas.items()]
-            )
-        return _Rows(self.siblings)
-
-
 class _Rows:
-    def __init__(self, rows: list[tuple]) -> None:
+    def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
 
-    def all(self) -> list[tuple]:
+    def all(self) -> list[Any]:
         return self._rows
 
     def __iter__(self) -> Any:
         return iter(self._rows)
 
 
-def _direct(service: Any, session: _Session, chunks: list[dict], include_parent: bool):
-    """同步调用装饰函数；本文件只关心父节，表格展开关掉以减少查询次数。"""
+class _Session:
+    """按调用顺序回答两类查询：切片 meta、同节切片（带 chunk_id 便于定位）。"""
+
+    def __init__(self, *, metas: dict[str, dict], sections: list[tuple]) -> None:
+        self.metas = metas
+        self.sections = sections
+        self.calls = 0
+
+    def execute(self, _statement: Any) -> Any:
+        self.calls += 1
+        if self.calls == 1:
+            return _Rows([SimpleNamespace(id=cid, meta=meta) for cid, meta in self.metas.items()])
+        return _Rows(self.sections)
+
+
+def _decorate(session: _Session, chunks: list[dict]) -> list[dict]:
+    service = importlib.import_module("app.services.rag_service")
 
     async def run() -> list[dict]:
         return service._decorate_results(
             session,
             tenant_id=TENANT,
             chunks=chunks,
-            include_parent=include_parent,
+            include_parent=True,
             expand_table_rows=False,
         )
 
     return asyncio.run(run())
 
 
-def _session() -> _Session:
-    return _Session(
+def _five_piece_section() -> list[tuple]:
+    """同节 5 片，order 0..4。"""
+    return [(DOC, SECTION_A, order, f"第{order}片正文。", f"chunk-{order}") for order in range(5)]
+
+
+def test_single_hit_gets_neighbours_not_the_whole_section() -> None:
+    """同节只命中 1 片时，返回「该片 + 前后各一片」而不是整节。
+
+    一刀切返回整节会把 token 花在没命中的片上；命中 1 片却有 5 片时差距是 3 倍。
+    """
+
+    session = _Session(
+        metas={"chunk-2": {"section_id": SECTION_A, "heading_path": HEADING_A}},
+        sections=_five_piece_section(),
+    )
+
+    result = _decorate(session, [_chunk("chunk-2", "第2片正文。")])
+
+    parent = result[0]["parent"]
+    assert parent["expansion"] == "neighbors"
+    assert parent["piece_count"] == 3, "命中 + 前后各一 = 3 片"
+    assert "第1片正文。" in parent["content"] and "第3片正文。" in parent["content"]
+    assert "第0片正文。" not in parent["content"], "再往外就是噪声"
+    assert "第4片正文。" not in parent["content"]
+
+
+def test_two_hits_in_one_section_get_the_whole_section() -> None:
+    """同节命中 ≥2 片说明答案确实跨了这个节，给整节。"""
+
+    session = _Session(
         metas={
-            "chunk-2": {
-                "section_id": SECTION_ID,
-                "heading_path": HEADING,
-                "order_index": 1,
-            }
+            "chunk-1": {"section_id": SECTION_A, "heading_path": HEADING_A},
+            "chunk-3": {"section_id": SECTION_A, "heading_path": HEADING_A},
         },
-        siblings=[
-            (DOC, SECTION_ID, 0, "上架前先复核型号与位置。"),
-            (DOC, SECTION_ID, 1, "机架款要上柜并用导轨。"),
-            (DOC, SECTION_ID, 2, "壁挂款孔距一致，打完孔要清粉尘。"),
+        sections=_five_piece_section(),
+    )
+
+    result = _decorate(
+        session, [_chunk("chunk-1", "第1片正文。"), _chunk("chunk-3", "第3片正文。")]
+    )
+
+    for row in result:
+        assert row["parent"]["expansion"] == "section"
+        assert row["parent"]["piece_count"] == 5
+    assert "第0片正文。" in result[0]["parent"]["content"]
+
+
+def test_cross_section_hits_get_each_whole_section() -> None:
+    """跨节命中时每节都给整节：跨节题本来就需要多节上下文。"""
+
+    session = _Session(
+        metas={
+            "chunk-2": {"section_id": SECTION_A, "heading_path": HEADING_A},
+            "chunk-b1": {"section_id": SECTION_B, "heading_path": HEADING_B},
+        },
+        sections=[
+            *_five_piece_section(),
+            (DOC, SECTION_B, 0, "甲节正文。", "chunk-b0"),
+            (DOC, SECTION_B, 1, "乙节正文。", "chunk-b1"),
         ],
     )
 
-
-def test_parent_contains_the_whole_section_in_order() -> None:
-    """父节正文按 order_index 顺序拼接，且是整节而不只是命中的那一片。"""
-
-    chunks = [_chunk("chunk-2", "机架款要上柜并用导轨。")]
-
-    result = _direct(importlib.import_module("app.services.rag_service"), _session(), chunks, True)
-
-    parent = result[0]["parent"]
-    assert parent["section_id"] == SECTION_ID
-    assert parent["heading_path"] == HEADING
-    assert "上架前先复核型号与位置。" in parent["content"]
-    assert "壁挂款孔距一致" in parent["content"], "父节要包含命中片之外的其余片"
-    # 顺序：第一句在第二句之前。
-    assert parent["content"].index("上架前先复核") < parent["content"].index("机架款要上柜")
-
-
-def test_include_parent_false_leaves_the_response_untouched() -> None:
-    """关掉开关时响应体与改造前逐字一致——这是「开关有效」的定义。"""
-
-    chunks = [_chunk("chunk-2", "机架款要上柜并用导轨。")]
-    before = [dict(chunk) for chunk in chunks]
-
-    result = _direct(importlib.import_module("app.services.rag_service"), _session(), chunks, False)
-
-    assert result == before
-    assert "parent" not in result[0]
-
-
-def test_chunk_without_section_path_gets_null_parent() -> None:
-    """无标题文档没有章节，不该被塞一个假父节——调用方会以为拿到了完整上下文。"""
-
-    class _NoMetaSession(_Session):
-        def __init__(self) -> None:
-            super().__init__(metas={"chunk-9": {}}, siblings=[])
-
-    chunks = [_chunk("chunk-9", "无标题正文。")]
-
-    result = _direct(
-        importlib.import_module("app.services.rag_service"), _NoMetaSession(), chunks, True
+    result = _decorate(
+        session, [_chunk("chunk-2", "第2片正文。"), _chunk("chunk-b1", "乙节正文。")]
     )
 
-    assert result[0]["parent"] is None
+    assert all(row["parent"]["expansion"] == "section" for row in result)
+    assert all(row["parent"]["cross_section"] is True for row in result)
+    assert result[0]["parent"]["section_id"] == SECTION_A
+    assert result[1]["parent"]["section_id"] == SECTION_B
+    assert "第0片正文。" in result[0]["parent"]["content"], "跨节时不该只给邻居"
+
+
+def test_single_piece_section_returns_that_piece() -> None:
+    """整节只有一片时，邻居窗口退化为这一片本身。"""
+
+    session = _Session(
+        metas={"chunk-only": {"section_id": SECTION_B, "heading_path": HEADING_B}},
+        sections=[(DOC, SECTION_B, 0, "唯一一片正文。", "chunk-only")],
+    )
+
+    result = _decorate(session, [_chunk("chunk-only", "唯一一片正文。")])
+
+    assert result[0]["parent"]["piece_count"] == 1
+    assert result[0]["parent"]["content"] == "唯一一片正文。"
 
 
 def test_parent_never_crosses_documents() -> None:
     """两篇文档共用同名标题时不能把正文拼成一个假章节。
 
-    section_id 是 heading_path 的哈希，同库两篇文档可以有相同标题，所以父节的
-    取法必须按 (文档, 章节) 而不是只按章节。
+    section_id 是 heading_path 的哈希，同库两篇文档可以有相同标题，所以父节必须
+    按 (文档, 章节) 取，而不是只按章节。
     """
 
-    class _CrossDocSession(_Session):
-        def __init__(self) -> None:
-            super().__init__(
-                metas={"chunk-7": {"section_id": SECTION_ID, "heading_path": HEADING}},
-                siblings=[
-                    (DOC, SECTION_ID, 0, "本文档的正文。"),
-                    ("doc-other", SECTION_ID, 0, "另一篇同名章节的正文，不该出现。"),
-                ],
-            )
-
-    chunks = [_chunk("chunk-7", "本文档的正文。")]
-
-    result = _direct(
-        importlib.import_module("app.services.rag_service"), _CrossDocSession(), chunks, True
+    session = _Session(
+        metas={
+            "chunk-7": {"section_id": SECTION_A, "heading_path": HEADING_A},
+            "chunk-8": {"section_id": SECTION_A, "heading_path": HEADING_A},
+        },
+        sections=[
+            (DOC, SECTION_A, 0, "本文档的正文。", "chunk-7"),
+            ("doc-other", SECTION_A, 0, "另一篇同名章节的正文，不该出现。", "chunk-8"),
+        ],
     )
+
+    result = _decorate(session, [_chunk("chunk-7", "本文档的正文。")])
 
     assert "另一篇同名章节的正文" not in result[0]["parent"]["content"]
 
 
-def test_retrieved_chunk_accepts_the_parent_field() -> None:
-    """契约：``parent`` 能被响应模型接受，且结构与声明一致。"""
+def test_chunk_without_section_path_gets_null_parent() -> None:
+    """无标题文档没有章节，不该被塞一个假父节。"""
+
+    session = _Session(metas={"chunk-9": {}}, sections=[])
+
+    result = _decorate(session, [_chunk("chunk-9", "无标题正文。")])
+
+    assert result[0]["parent"] is None
+
+
+def test_include_parent_false_leaves_the_response_untouched() -> None:
+    """关掉开关时内部字典与改造前逐字一致——这是「开关有效」的定义。"""
+
+    session = _Session(
+        metas={"chunk-2": {"section_id": SECTION_A, "heading_path": HEADING_A}},
+        sections=_five_piece_section(),
+    )
+    chunks = [_chunk("chunk-2", "第2片正文。")]
+    before = [dict(chunk) for chunk in chunks]
+    service = importlib.import_module("app.services.rag_service")
+
+    async def run() -> list[dict]:
+        return service._decorate_results(
+            session,
+            tenant_id=TENANT,
+            chunks=chunks,
+            include_parent=False,
+            expand_table_rows=False,
+        )
+
+    result = asyncio.run(run())
+
+    assert result == before
+    assert "parent" not in result[0]
+
+
+@pytest.mark.parametrize("field", ["expansion", "piece_count", "cross_section"])
+def test_parent_payload_declares_expansion_fields(field: str) -> None:
+    """契约：扩展信息是响应的一部分，调用方据此判断「上下文给够了没有」。"""
 
     payload = {
-        **_chunk("chunk-2", "机架款要上柜并用导轨。"),
+        **_chunk("chunk-2", "第2片正文。"),
         "parent": {
-            "section_id": SECTION_ID,
-            "heading_path": HEADING,
+            "section_id": SECTION_A,
+            "heading_path": HEADING_A,
             "content": "整节正文。",
+            "expansion": "neighbors",
+            "piece_count": 3,
+            "cross_section": False,
         },
     }
 
     validated = RetrievedChunk.model_validate(payload)
 
-    assert validated.parent is not None
-    assert validated.parent.section_id == SECTION_ID
-    assert validated.parent.heading_path == HEADING
+    assert getattr(validated.parent, field) is not None
 
 
-def test_default_is_include_parent() -> None:
-    """请求默认开：默认关着就没人会开，small-to-big 等于没做。"""
+def test_request_defaults_include_parent() -> None:
+    """默认开：默认关着就没人会开，small-to-big 等于没做。"""
 
-    request = importlib.import_module("app.schemas.rag").RetrieveRequest(
-        kb_ids=[KB], query="怎么上架"
-    )
+    rag = importlib.import_module("app.schemas.rag")
+    request = rag.RetrieveRequest(kb_ids=[KB], query="怎么上架")
 
     assert request.include_parent is True
