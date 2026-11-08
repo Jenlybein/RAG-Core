@@ -50,27 +50,21 @@ class RetrieveRequest(BaseModel):
     # 缺省取服务端配置（票 4 起默认 hybrid）。
     mode: RetrievalMode = Field(default_factory=_default_mode)
     top_k: int = Field(default_factory=_default_top_k, ge=MIN_TOP_K, le=MAX_TOP_K)
-    # 默认开：默认关着就没人会开，small-to-big 等于没做。只有在明确只要细片、
-    # 不希望响应体被父节撑大的场景才关掉。
+    # 折叠开关（ADR-0013）。默认开：默认关着就没人会开，small-to-big 等于没做。
     #
-    # 注意「关掉」的边界：关掉时**内部结果字典**与改造前逐字一致（不再查询、不再
-    # 计算父节）；但 HTTP 响应里 `parent` 这个键仍然存在，值为 null——它由响应模型
-    # 的默认值补齐。要让旧调用方看到完全旧的响应体，需要自己按字段裁剪。
+    # 关掉 = **不折叠**，返回小片，响应与折叠之前逐字一致——留给「只要精确到
+    # 那一行的引用」的调用方。注意关掉的不只是「不挂字段」：它连按节归组也不做。
     include_parent: bool = True
-    # 命中行级表片时，附带同一组的整表全文（放在 table_context 里，不动 content）。
+    # 行级表片是否折回它所属的整表。关掉时每个行级片各自成一条结果。
     expand_table_rows: bool = True
 
 
 class ParentSection(BaseModel):
-    """命中切片所属的整个 h2 节（small-to-big 的「父块」）。
+    """已废弃：命中切片所属的整个 h2 节。
 
-    子切片负责「找得准」，父节负责「喂得够」：把 150 字的细片和它所属整节的全文
-    一起给调用方，就不必再发一次请求，也不会让模型只看到半句话。
-
-    ``expansion`` 说明这次给了多大范围：
-
-    * ``neighbors`` —— 该节只命中这一片，给的是「该片 + 前后各一片」；
-    * ``section`` —— 该节命中多片、或本次检索跨了多个节，给的是整节。
+    ADR-0013 起改用「折叠」：`RetrievedChunk.content` 直接就是折叠后的大块，
+    `section_id` / `expansion` 平铺在这条结果上，不再套一层 `parent`。
+    这个模型只为过渡期兼容保留，下一个大版本删除。
     """
 
     section_id: str
@@ -105,12 +99,19 @@ class RetrievedChunk(BaseModel):
     # 重排分（0~1）。只在重排真的发生时出现；与 ``score`` 同值，但留成独立字段
     # 是为了让「这一路的分数」与「最终排序分」在契约上分开——前三路分数都这么给。
     rerank_score: float | None = None
-    # 命中切片所属整节。关掉 include_parent 时为 null；没有章节路径的切片
-    # （无标题文档）也是 null——不造一个假父节出来。
+    # 这条结果代表的**节**（ADR-0013）。折叠之后一条结果 = 一节，不是一片，
+    # 所以身份是 section_id；`chunk_id` 降级为「代表片」——让它浮上来的那一片。
+    # 没有章节路径的切片（无标题文档）为 null，此时它自己就是一个单元。
+    section_id: str | None = None
+    # 这一节是被哪几片顶上来的：溯源用，不是主键。折叠会丢掉其余片的内容，
+    # 但要能回答「为什么是这一节」。
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    # 这次上下文给了多大范围：neighbors / parent / table / chunk（兜底，见折叠函数）。
+    expansion: str | None = None
+    # 已废弃：ADR-0013 起 `content` 就是折叠后的大块，`parent` 与 `table_context`
+    # 是重复数据。保留字段只为让旧调用方在过渡期不炸，下一个大版本删除。
     parent: ParentSection | None = None
-    # 命中行级表片时，同一组的整表全文放在这里；`content` 仍是那条切片的原文。
-    # 为什么分开：`content` 的契约是「切片原文，可回溯到引用」（见 GLOSSARY），
-    # 一旦被整表替换，引用就指不回原来那一片了。调用方要完整表格就取这个字段。
+    # 已废弃，理由同上。
     table_context: str | None = None
     # 引用定位：PDF 的物理页码；Markdown 无页码时为 null。
     page: int | None = None
