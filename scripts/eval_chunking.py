@@ -323,10 +323,12 @@ async def main() -> None:
             key = (doc.stem, heading)
             if _priority.get(chunk_type, 0) >= _priority.get(gold_types.get(key, "prose"), 0):
                 gold_types[key] = chunk_type
-    # (名称, 切块器, chunk_size, overlap)；结构化组固定 800/100，两个朴素组只差粒度。
+    # (名称, 切块器, chunk_size, overlap)；结构化组固定 800/100。
+    # 朴素组取 400/100（主基线）与 200/50（更细一档），重叠统一 25%：
+    # 800 那一档离结构化的均长（145 字）差得太远，无论输赢都说明不了什么。
     variants: tuple[tuple[str, str, int | None, int | None], ...] = (
-        ("naive-800/100", "naive", 800, 100),
-        ("naive-400/200", "naive", 400, 200),
+        ("naive-400/100", "naive", 400, 100),
+        ("naive-200/50", "naive", 200, 50),
         ("structured", "structured", None, None),
     )
     for label, kind, size, overlap in variants:
@@ -629,7 +631,7 @@ async def main() -> None:
 
     # 整体差值会被题型分布稀释：某一类题占比高、差距又小，就会把总和压平。
     # 拆开看才知道「结构化切块到底在哪类题上起作用」。
-    naive_types = summary["naive-800/100"].get("per_type")
+    naive_types = summary["naive-400/100"].get("per_type")
     struct_types = summary["structured"].get("per_type")
     if isinstance(naive_types, dict) and isinstance(struct_types, dict):
         print("\n=== 按题型看 hit@1 ===")
@@ -646,7 +648,7 @@ async def main() -> None:
             print(f"  {qtype:16s} {count:6d} {left:8.3f} {right:7.3f} {delta:+8.3f}")
 
     # 短章节 vs 长章节：同一批代码、同一个模型，只换语料结构。
-    naive_groups = summary["naive-800/100"].get("per_group")
+    naive_groups = summary["naive-400/100"].get("per_group")
     struct_groups = summary["structured"].get("per_group")
     if isinstance(naive_groups, dict) and isinstance(struct_groups, dict):
         print("\n=== 按语料结构看 hit@1（短章节 vs 长章节）===")
@@ -664,7 +666,7 @@ async def main() -> None:
             )
 
     # 表格专项：金标章节本身是表格的题，答案依赖表头与行列对齐。
-    naive_kinds = summary["naive-800/100"].get("per_kind")
+    naive_kinds = summary["naive-400/100"].get("per_kind")
     struct_kinds = summary["structured"].get("per_kind")
     if isinstance(naive_kinds, dict) and isinstance(struct_kinds, dict):
         print("\n=== 表格专项 vs 正文题（按金标章节的切片类型分组）===")
@@ -725,19 +727,19 @@ async def main() -> None:
                     f" {delivered_rate - chunk_rate:+8.3f}"
                 )
 
-    print("\n=== 差值（structured - naive-800/100）===")
+    print("\n=== 差值（structured - naive-400/100）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
         left = summary["structured"][key]
-        right = summary["naive-800/100"][key]
+        right = summary["naive-400/100"][key]
         if left is None or right is None:
             print(f"{key:14s} n/a")
             continue
         print(f"{key:14s} {float(left) - float(right):+.4f}")
 
-    print("\n=== 差值（structured - naive-400/200）===")
+    print("\n=== 差值（structured - naive-200/50）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
         left = summary["structured"][key]
-        right = summary["naive-400/200"][key]
+        right = summary["naive-200/50"][key]
         if left is None or right is None:
             print(f"{key:14s} n/a")
             continue
