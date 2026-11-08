@@ -229,13 +229,20 @@ def _attach_parent_sections(
         tenant_id=tenant_id,
         document_ids=sorted({document_id for document_id, _sid in keys}),
         section_ids=sorted({sid for _doc, sid in keys}),
+        # 与召回时的过滤口径保持一致：父节混进另一索引批次，调用方会拿到
+        # 「和命中片对不上」的上下文。
+        index_version=DEFAULT_INDEX_VERSION,
     )
-    heading_paths = {
-        key: str(metas[str(chunk["chunk_id"])].get("heading_path") or "")
-        for chunk in chunks
-        if chunk.get("chunk_id")
-        for key in [(chunk.get("document_id"), metas[str(chunk["chunk_id"])].get("section_id"))]
-    }
+
+    heading_paths: dict[tuple[str, str], str] = {}
+    for chunk in chunks:
+        if not chunk.get("chunk_id"):
+            continue
+        meta = metas.get(str(chunk["chunk_id"])) or {}
+        section_id = meta.get("section_id")
+        document_id = chunk.get("document_id")
+        if isinstance(section_id, str) and isinstance(document_id, str):
+            heading_paths[(document_id, section_id)] = str(meta.get("heading_path") or "")
 
     parents: dict[tuple[str, str], dict[str, str]] = {}
     for key in keys:

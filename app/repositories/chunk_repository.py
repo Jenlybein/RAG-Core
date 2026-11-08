@@ -31,7 +31,12 @@ def fetch_meta_by_chunk_ids(
 
 
 def fetch_section_chunks(
-    db: Session, *, tenant_id: str, document_ids: list[str], section_ids: list[str]
+    db: Session,
+    *,
+    tenant_id: str,
+    document_ids: list[str],
+    section_ids: list[str],
+    index_version: str | None = None,
 ) -> dict[tuple[str, str], list[str]]:
     """一次查出这些文档里、这些章节的全部切片正文（按 ``order_index`` 排序）。
 
@@ -42,6 +47,9 @@ def fetch_section_chunks(
 
     一次批量查询而不是逐条查：一次检索的 top_k 条可能全都落在同一节，逐条查
     会把同一次查询重复十几次。``tenant_id`` 是强制过滤参数（ADR-0006）。
+
+    ``index_version`` 与召回时的过滤口径保持一致：不同批次的切片正文可能不同，
+    父节若混入另一批次，调用方会拿到「和命中片对不上」的上下文。
     """
 
     if not document_ids or not section_ids:
@@ -61,6 +69,8 @@ def fetch_section_chunks(
         # 章节内必须按 order_index 排：乱序拼出来的「父节」读起来是断的。
         .order_by(Chunk.document_id, Chunk.meta["order_index"].astext.cast(Integer))
     )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
     grouped: dict[tuple[str, str], list[str]] = {}
     for document_id, section_id, _order, content in db.execute(stmt).all():
         grouped.setdefault((document_id, str(section_id)), []).append(str(content))
