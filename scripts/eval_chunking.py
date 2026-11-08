@@ -49,8 +49,10 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 EVAL_DIR = REPO_ROOT / "eval"
 CORPUS_DIR = EVAL_DIR / "corpus"
 
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 100
+# 窗口可被环境变量覆盖，用来做参数网格调优（见 docs 里的「参数调优」一节）。
+# 不设变量时就是生产默认值——所以直接跑脚本得到的就是生产口径的数字。
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE") or 800)
+CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP") or 100)
 TABLE_MAX_ROWS = 10
 DOMINANCE_RATIO = 0.6
 
