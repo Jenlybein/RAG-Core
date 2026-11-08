@@ -100,6 +100,37 @@ _Avoid_: 索引文本, 检索字段
 `documents.content`，整篇文档经解析后的 Markdown 风格全文，是重切与重建的原料。与切片原文不是一回事。
 _Avoid_: 文档原文, 原始文本（指整篇时）
 
+**markdown 文档（markdown document）**：
+用户上传的 `.md` / `.markdown` 文件，或 JSON 上传入口传进来的正文——即 `source_type = markdown` 的那一类输入。
+它是**输入格式**的概念，与内容长什么样无关。
+_Avoid_: md 文件（模糊）, 结构化文档
+
+**markdown 化文本（markdownized text）**：
+解析器把任意格式转成的那种带 `#` 标题与 `|` 表格的文本，是切块器的输入形态。
+pdf / docx / html 进来之后都变成它，但它们**不是 markdown 文档**。
+两者的区别决定了准入：`structure` 库只收 markdown 文档，不收「虽然是 markdown 化文本、但标题是版式猜出来的」那种。
+_Avoid_: 解析文本, md 内容（与 markdown 文档混淆）
+
+**固定切块（size chunking）**：
+按固定字符窗口硬切，不认标题、不认表格、不认代码，因此切片不带 `heading_path` 与 `section_id`。
+折叠、页码、章节溯源对它不生效——这是**承诺边界**，不是缺陷。
+_Avoid_: 朴素切块（评测里的对照变体另有其名）, 字符切块
+
+**结构化切块（structure chunking）**：
+按 Markdown 标题层级切，把正文 / 表格 / 代码当作原子块分别处理。
+它要求输入**真的带结构**，所以只对 markdown 文档有意义——这是 `structure` 库只收 markdown 的原因。
+_Avoid_: 智能切块, 语义切块
+
+**切块策略（split strategy）**：
+知识库级配置，只有 `structure` / `size` 两种，建库时必填、无默认值。
+它同时是一份**语料准入**：`structure` 只收 markdown，`size` 默认收全部格式。
+_Avoid_: 切块模式, 分词策略
+
+**语料准入（admission）**：
+上传时按目标库的白名单判定格式是否被接受，不在白名单就当场拒绝（`422` + `UNSUPPORTED_DOCUMENT_FORMAT`）。
+与「参数错误」不同：它的处置是**换文件或换库**，不是改字段重发。
+_Avoid_: 格式校验, 上传限制
+
 **切片原文（chunk content）**：
 `chunks.content`，切片在文档里的那段原始文本。
 第 3 步增补起它仍原样存库，但**返回给调用方的是折叠后的交付单元内容**（`content` 是整节或整表）：切片原文退到「库里的那一份」，调用方看到的大块由 `source_chunk_ids` 指回是哪几片拼出来的。

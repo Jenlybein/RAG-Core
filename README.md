@@ -60,8 +60,9 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 ## 第 3 步：文档处理链路（已落地）
 
-- 解析层：`.txt` / `.md` / `.docx` / `.pdf` 四个解析器与注册表；`.docx` 走 `mammoth → markdownify(heading_style="ATX")`，`.pdf` 走 `pdf-inspector==1.25.2` 的 `process_pdf_with_ocr_bytes`（扫描件自动路由 OCR）。全项目唯一的「文档 → 文本」入口是 `app/services/document_ingestion.py::prepare_document_content`。
+- 解析层：`.txt` / `.md` / `.docx` / `.pdf` / `.html` 五个解析器与注册表；`.docx` 走 `mammoth → markdownify(heading_style="ATX")`，`.html` 走 `bs4 + markdownify(ATX)`，`.pdf` 走 `pdf-inspector==1.25.2` 的 `process_pdf_with_ocr_bytes`（扫描件自动路由 OCR）。全项目唯一的「文档 → 文本」入口是 `app/services/document_ingestion.py::prepare_document_content`，下游只看到一条 markdown 化文本。
 - 切块层：`MarkdownStructuredSplitter` —— 标题栈维护层级、h1/h2/h3 新起切片、`####` 及以下只加深路径、表格整块或按行分组且每组重复表头、超长节内二次切；产出 `heading_path` / `section_id`（`sha256(heading_path)` 内容寻址）/ `parent_section_id` / `order_index` / `chunk_type` / `table_part` 六个字段。检索侧再把命中的片**折叠**成「一条结果代表一个 h2 级单元」（ADR-0013）。
+- **切块策略即语料准入**（ADR-0014）：建库时必须选 `structure` 或 `size`，它同时决定该库收哪些格式。`structure` 只收 markdown（它的能力全建立在标题语法上，收 pdf 只会退化成窗口硬切还不自知），`size` 默认五种全开、一律固定窗口切。上传格式不在白名单当场 `422` + `UNSUPPORTED_DOCUMENT_FORMAT`（ADR-0007「业务失败一律 200」的唯一例外）。
 - 异步索引：`POST /api/v1/documents/upload`（JSON 与 multipart 双模式）只做「登记 + 投递」，立即返回 `status=3`；Celery Worker 拉取后解析 / 切块 / 向量化，写库是「先删后写 + 状态回写」的单事务。终态靠 `GET /api/v1/documents?kb_id=` 轮询。
 - 幂等与租约：数据库 CAS 抢占 + 600 秒租约（`documents.index_claimed_at` 区分「已入队未开工」与「正在跑」）；`acks_late=True` 的重投由后到者 `rowcount=0` 直接跳过。入队侧只置队、**只有 Worker 抢占**，重试前归还租约。
 - 运维能力：`POST /documents/{id}/reindex?reparse=&force=`（有效处理中拒绝 `20025`，成功态需 `force` 否则 `20027`）、`DELETE /documents/{id}`、`scripts/reindex_knowledge_base.py`、`scripts/requeue_stuck_documents.py`。
