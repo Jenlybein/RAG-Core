@@ -165,7 +165,13 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
 ) -> None:
     """一份带标题与章节的文档：向量输入是检索文本，落库的是原文，且带 v1。"""
 
-    document = SimpleNamespace(id=DOCUMENT_ID, tenant_id=TENANT_ID, kb_id=KB_ID, title="错误码查询")
+    document = SimpleNamespace(
+        id=DOCUMENT_ID,
+        tenant_id=TENANT_ID,
+        kb_id=KB_ID,
+        title="错误码查询",
+        doc_version=1,
+    )
     pieces = [
         SplitPiece(
             text="错误码 E1024 表示证书过期。",

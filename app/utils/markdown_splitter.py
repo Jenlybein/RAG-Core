@@ -17,6 +17,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 
+from app.utils.provenance import page_from_heading
 from app.utils.text_splitter import SplitPiece, TextSplitter
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)")
@@ -86,7 +87,7 @@ class MarkdownStructuredSplitter(TextSplitter):
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         lines = normalized.split("\n")
 
-        sections: list[tuple[str, list[_Block]]] = []
+        sections: list[tuple[str, list[_Block], int | None]] = []
         stack: list[tuple[int, str]] = []
         blocks: list[_Block] = []
         # 当前分节（h1/h2/h3）的路径，以及本节内出现过的深层标题路径（h4 及更深）。
@@ -95,10 +96,15 @@ class MarkdownStructuredSplitter(TextSplitter):
         #   - 分叉 A > B1/B2  → 路径到 A（不能只写 B1，那样 B2 的内容被指错地方）
         section_path = ""
         deep_paths: list[str] = []
+        # 物理页号：由「第 N 页」标题驱动，跨节一路带下去。它不能从 heading_path
+        # 读回来，因为页标记与页内标题同级，在栈里会被后者顶掉。
+        page: int | None = None
 
         def flush_section() -> None:
             nonlocal blocks, deep_paths
-            sections.append((_resolve_heading_path(section_path, deep_paths), blocks))
+            sections.append(
+                (_resolve_heading_path(section_path, deep_paths), blocks, page)
+            )
             blocks = []
             deep_paths = []
 
@@ -109,6 +115,17 @@ class MarkdownStructuredSplitter(TextSplitter):
             if heading:
                 level = len(heading.group(1))
                 title = heading.group(2).strip()
+                marker = page_from_heading(title)
+                if marker is not None:
+                    # 先 flush 上一节（它属于上一页），再切换页号——顺序反了会把
+                    # 上一页的整节标到新页上。
+                    flush_section()
+                    page = marker
+                    _push_heading(stack, level, title)
+                    section_path = _join_stack(stack)
+                    blocks.append(_Block(kind="normal", lines=[line]))
+                    index += 1
+                    continue
                 if level <= self.SECTION_LEVEL:
                     flush_section()
                     _push_heading(stack, level, title)
@@ -139,9 +156,11 @@ class MarkdownStructuredSplitter(TextSplitter):
         flush_section()
         return self._assemble(sections)
 
-    def _assemble(self, sections: list[tuple[str, list[_Block]]]) -> list[SplitPiece]:
+    def _assemble(
+        self, sections: list[tuple[str, list[_Block], int | None]]
+    ) -> list[SplitPiece]:
         pieces: list[SplitPiece] = []
-        for heading_path, blocks in sections:
+        for heading_path, blocks, page in sections:
             # 重复过滤只比较本节内紧邻的上一片；每节 flush 时重置基线。
             # 跨节重复的模板内容各有各的出处，不能因为文本相同就被静默删掉。
             last_text: str | None = None
@@ -163,6 +182,7 @@ class MarkdownStructuredSplitter(TextSplitter):
                             piece.chunk_type,
                             piece.table_part,
                             piece.code_part,
+                            page,
                         ),
                     )
                 )
@@ -519,6 +539,7 @@ def _metadata(
     chunk_type: str,
     table_part: int,
     code_part: int = 0,
+    page: int | None = None,
 ) -> dict[str, object]:
     segments = _section_segments(heading_path)
     section_id = hashlib.sha256(heading_path.encode("utf-8")).hexdigest()
@@ -535,4 +556,5 @@ def _metadata(
         "chunk_type": chunk_type,
         "table_part": table_part,
         "code_part": code_part,
+        "page": page,
     }

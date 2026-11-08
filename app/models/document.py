@@ -25,6 +25,10 @@ class Document(Base):
     source_file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     source_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[int] = mapped_column(Integer, default=DocumentStatus.PROCESSING)
+    # 稿号（第几稿）。与 index_version（第几次重建）正交，见 ADR-0005。
+    # 本步只随切片落库，**不参与过滤**：doc_versions 表与「默认只查当前稿」的
+    # 约束留给第 10 步；在那之前按稿号过滤会拿到没有约束保护的结果。
+    doc_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     # 索引租约开始时间（Worker 抢占时写）。它区分「已入队但 Worker 还没开工」
     # （NULL）与「已经被抢占、正在跑」（有时间戳）；没有这一列，仅凭 status 与
     # 刚写过的 updated_at 无法区分两者，CAS 会永远抢不到或永远抢到，任务去重

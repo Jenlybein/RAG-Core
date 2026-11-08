@@ -194,6 +194,11 @@ class IndexingService:
                     # 落库记下这一片是哪种策略切出来的：重建时才能复现同一套切法，
                     # 跨库检索时也解释得了片长差异。
                     "split_strategy": split_strategy,
+                    # 页号由切块器从「第 N 页」标题带下来（PDF 才有）；Markdown 为空。
+                    "page": piece.metadata.get("page"),
+                    # 稿号：让引用三元组（文档 + 稿次 + 切片）里有稿次可写。
+                    # 本步不参与过滤，见 ADR-0005 与第 10 步。
+                    "doc_version": doc.doc_version,
                     "title": doc.title,
                     "index": index,
                     "source_type": parsed.source_type,

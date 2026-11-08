@@ -516,6 +516,7 @@ def test_metadata_contract_is_complete() -> None:
         "chunk_type",
         "table_part",
         "code_part",
+        "page",
     }
     for piece in pieces:
         assert set(piece.metadata) == expected_keys
