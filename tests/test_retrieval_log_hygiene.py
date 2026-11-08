@@ -26,6 +26,8 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+
+from tests.fake_db import EmptySession
 import structlog
 from fastapi.testclient import TestClient
 
@@ -167,7 +169,7 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
         lambda: _FakeEmbeddingProvider(api_key=config_mod.settings.MODEL_API_KEY),
     )
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
-    main.app.dependency_overrides[session_mod.get_db] = lambda: object()
+    main.app.dependency_overrides[session_mod.get_db] = lambda: EmptySession()
     from app.core.auth import DevKeyContext, resolve_dev_key
     from app.core.config import settings
 

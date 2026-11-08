@@ -76,6 +76,7 @@ async def retrieve(
     query: str,
     mode: str | None = None,
     top_k: int | None = None,
+    include_parent: bool = True,
 ) -> dict:
     """按 ``mode`` 走一条通道（或并行两路）；缺省值取服务端配置。
 
@@ -163,7 +164,9 @@ async def retrieve(
     return {
         "query": query,
         "kb_ids": list(kb_ids),
-        "retrieved_chunks": chunks,
+        "retrieved_chunks": _attach_parent_sections(
+            db, tenant_id=tenant_id, chunks=chunks, include_parent=include_parent
+        ),
         "metadata": {
             "mode": resolved_mode,
             "top_k": resolved_top_k,
@@ -181,6 +184,80 @@ async def retrieve(
             },
         },
     }
+
+
+def _attach_parent_sections(
+    db: Session, *, tenant_id: str, chunks: list[dict], include_parent: bool
+) -> list[dict]:
+    """给每条结果挂上它所属的整个 h2 节（small-to-big 的「父块」）。
+
+    子切片负责找得准，父节负责喂得够。拼接完全在本服务内完成，不新开存储：
+    按 ``(文档, 章节)`` 批量取同节切片，再按 ``order_index`` 顺序拼起来。
+
+    关掉时原样返回——响应体与改造前逐字一致，这是「开关有效」的定义。
+    没有章节路径的切片（无标题文档）parent 为 ``None``：不造一个假父节，
+    否则调用方会以为拿到了完整上下文。
+    """
+
+    if not include_parent or not chunks:
+        return chunks
+
+    # 先统一置空：契约里 parent 永远存在，取不到就是 null。留一个「有这个键/没这个键」
+    # 的分叉会让调用方为同一件事写两套判断。
+    for chunk in chunks:
+        chunk["parent"] = None
+
+    # 融合层只带对外字段（meta 不属于检索契约），所以按 ID 回查一次 meta。
+    chunk_ids = [str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")]
+    metas = chunk_repository.fetch_meta_by_chunk_ids(
+        db, tenant_id=tenant_id, chunk_ids=chunk_ids
+    )
+
+    keys: list[tuple[str, str]] = []
+    for chunk in chunks:
+        meta = metas.get(str(chunk.get("chunk_id"))) or {}
+        section_id = meta.get("section_id")
+        document_id = chunk.get("document_id")
+        if isinstance(section_id, str) and isinstance(document_id, str):
+            keys.append((document_id, section_id))
+
+    if not keys:
+        return chunks
+
+    grouped = chunk_repository.fetch_section_chunks(
+        db,
+        tenant_id=tenant_id,
+        document_ids=sorted({document_id for document_id, _sid in keys}),
+        section_ids=sorted({sid for _doc, sid in keys}),
+    )
+    heading_paths = {
+        key: str(metas[str(chunk["chunk_id"])].get("heading_path") or "")
+        for chunk in chunks
+        if chunk.get("chunk_id")
+        for key in [(chunk.get("document_id"), metas[str(chunk["chunk_id"])].get("section_id"))]
+    }
+
+    parents: dict[tuple[str, str], dict[str, str]] = {}
+    for key in keys:
+        texts = grouped.get(key)
+        if not texts or key in parents:
+            continue
+        parents[key] = {
+            "section_id": key[1],
+            "heading_path": heading_paths.get(key, ""),
+            "content": "\n\n".join(texts),
+        }
+
+    for chunk in chunks:
+        meta = metas.get(str(chunk.get("chunk_id"))) or {}
+        section_id = meta.get("section_id")
+        document_id = chunk.get("document_id")
+        chunk["parent"] = (
+            parents.get((document_id, section_id))
+            if isinstance(section_id, str) and isinstance(document_id, str)
+            else None
+        )
+    return chunks
 
 
 def _rewrite_hint(kbs: list) -> str | None:

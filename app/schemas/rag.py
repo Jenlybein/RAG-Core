@@ -50,6 +50,21 @@ class RetrieveRequest(BaseModel):
     # 缺省取服务端配置（票 4 起默认 hybrid）。
     mode: RetrievalMode = Field(default_factory=_default_mode)
     top_k: int = Field(default_factory=_default_top_k, ge=MIN_TOP_K, le=MAX_TOP_K)
+    # 默认开：默认关着就没人会开，small-to-big 等于没做。只有在明确只要细片、
+    # 不希望响应体被父节撑大的场景才关掉。
+    include_parent: bool = True
+
+
+class ParentSection(BaseModel):
+    """命中切片所属的整个 h2 节（small-to-big 的「父块」）。
+
+    子切片负责「找得准」，父节负责「喂得够」：把 150 字的细片和它所属整节的全文
+    一起给调用方，就不必再发一次请求，也不会让模型只看到半句话。
+    """
+
+    section_id: str
+    heading_path: str
+    content: str
 
 
 class RetrievedChunk(BaseModel):
@@ -75,6 +90,9 @@ class RetrievedChunk(BaseModel):
     # 重排分（0~1）。只在重排真的发生时出现；与 ``score`` 同值，但留成独立字段
     # 是为了让「这一路的分数」与「最终排序分」在契约上分开——前三路分数都这么给。
     rerank_score: float | None = None
+    # 命中切片所属整节。关掉 include_parent 时为 null；没有章节路径的切片
+    # （无标题文档）也是 null——不造一个假父节出来。
+    parent: ParentSection | None = None
 
 
 class RetrieveData(BaseModel):

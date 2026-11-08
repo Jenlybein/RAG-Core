@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from tests.fake_db import EmptySession
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 LIST_KB_PATH = "/api/v1/knowledge-bases"
@@ -28,7 +29,7 @@ def client():
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
 
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
     try:
         with TestClient(main.app) as test_client:
             yield test_client

@@ -29,5 +29,6 @@ async def retrieve(
         query=payload.query,
         mode=payload.mode,
         top_k=payload.top_k,
+        include_parent=payload.include_parent,
     )
     return ok(RetrieveData.model_validate(data))

@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
+from tests.fake_db import EmptySession
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
@@ -153,7 +154,7 @@ def offline_retrieval(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any
 
     from app.core.auth import DevKeyContext, resolve_dev_key
 
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
     main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
