@@ -42,6 +42,7 @@ class ErrorCode(IntEnum):
     DOCUMENT_IS_PROCESSING = 20025
     FILE_TOO_LARGE = 20026
     REINDEX_REQUIRES_FORCE = 20027
+    UNSUPPORTED_DOCUMENT_FORMAT = 20028
 
     # 3xxxx：存储段，仅预留，不定义成员（全表里没有调用点）。
 
