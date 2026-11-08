@@ -12,7 +12,7 @@ from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
     MAX_CHUNK_SIZE,
     MIN_CHUNK_SIZE,
-    SPLIT_STRUCTURE,
+    FormatKind,
 )
 
 
@@ -21,10 +21,11 @@ class CreateKBRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
-    # 切块策略在**建库时**定一次，之后该库所有文档都走同一种切法。不放到上传
-    # 接口上：同库混用两种切法会让片长分布不一致，检索时「片长」会变成与内容
-    # 无关的排序因素。
-    split_strategy: Literal["structure", "size"] = SPLIT_STRUCTURE
+    # **必填、无默认**：策略同时决定这个库收哪些格式，给默认值等于让调用方在
+    # 不知情的情况下被套上一个语料类型。
+    split_strategy: Literal["structure", "size"]
+    # 不传就按策略补全：structure → [markdown]，size → 五种全开。
+    allowed_formats: list[FormatKind] | None = None
     chunk_size: int = Field(
         default=DEFAULT_CHUNK_SIZE, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE
     )
@@ -35,6 +36,7 @@ class CreateKBData(BaseModel):
     name: str
     tenant_id: str
     split_strategy: str
+    allowed_formats: list[str]
     chunk_size: int
     created_at: datetime
 
@@ -44,6 +46,7 @@ class KnowledgeBaseItem(BaseModel):
     name: str
     tenant_id: str
     split_strategy: str
+    allowed_formats: list[str]
     chunk_size: int
 
 

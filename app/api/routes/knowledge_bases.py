@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import DevKeyContext, resolve_dev_key
 from app.db.session import get_db
-from app.models.knowledge_base import settings_of
+from app.models.knowledge_base import formats_of, settings_of
 from app.repositories import knowledge_base_repository
 from app.schemas.common import ApiResponse, ok
 from app.schemas.knowledge_base import (
@@ -40,6 +40,7 @@ async def create_knowledge_base(
         tenant_id=key.tenant_id,
         split_strategy=payload.split_strategy,
         chunk_size=payload.chunk_size,
+        allowed_formats=payload.allowed_formats,
     )
     return ok(CreateKBData.model_validate(data))
 
@@ -61,6 +62,7 @@ async def list_knowledge_bases(
                 name=row.name,
                 tenant_id=row.tenant_id,
                 split_strategy=row.split_strategy,
+                allowed_formats=formats_of(row),
                 chunk_size=settings_of(row)["chunk_size"],
             )
             for row in rows
