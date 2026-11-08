@@ -358,7 +358,7 @@ def test_same_markdown_loses_heading_path_in_a_size_kb(
     与上一条测试的唯一区别是**不注入切块器**：让 Worker 自己去读库配置。
     """
 
-    from app.models.knowledge_base import ALL_FORMATS, SPLIT_SIZE
+    from app.models.knowledge_base import SPLIT_SIZE
 
     document_service = importlib.import_module("app.services.document_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
@@ -366,7 +366,7 @@ def test_same_markdown_loses_heading_path_in_a_size_kb(
     monkeypatch.setattr(
         kb_repo,
         "get_split_config",
-        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 800, list(ALL_FORMATS)),
+        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 800),
     )
 
     session = pipeline_env.session

@@ -4,7 +4,7 @@
 """
 
 from datetime import datetime
-from typing import Literal
+
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -13,6 +13,7 @@ from app.models.knowledge_base import (
     MAX_CHUNK_SIZE,
     MIN_CHUNK_SIZE,
     FormatKind,
+    SplitStrategy,
 )
 
 
@@ -23,7 +24,7 @@ class CreateKBRequest(BaseModel):
     description: str | None = None
     # **必填、无默认**：策略同时决定这个库收哪些格式，给默认值等于让调用方在
     # 不知情的情况下被套上一个语料类型。
-    split_strategy: Literal["structure", "size"]
+    split_strategy: SplitStrategy
     # 不传就按策略补全：structure → [markdown]，size → 五种全开。
     allowed_formats: list[FormatKind] | None = None
     chunk_size: int = Field(

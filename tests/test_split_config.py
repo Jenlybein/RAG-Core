@@ -282,7 +282,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     monkeypatch.setattr(
         repo,
         "get_split_config",
-        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400, list(ALL_FORMATS)),
+        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400),
     )
 
     service = service_module.IndexingService(

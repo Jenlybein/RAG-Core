@@ -322,6 +322,7 @@ def test_multipart_without_kb_id_returns_validation_error(offline: SimpleNamespa
         ("policy.pdf", b"%PDF-1.4 fake", "pdf"),
         ("policy.docx", b"PK\x03\x04 fake", "docx"),
         ("policy.txt", b"plain text", "text"),
+        ("policy.html", b"<html><body><h1>R</h1></body></html>", "html"),
     ],
 )
 def test_structure_kb_rejects_formats_outside_its_whitelist(
@@ -357,6 +358,24 @@ def test_structure_kb_accepts_markdown_file(offline: SimpleNamespace) -> None:
     assert body["data"]["source_type"] == FORMAT_MARKDOWN
     assert (offline.uploads_dir / TENANT_ID / "doc-1.md").read_bytes() == FILE_BODY
     assert offline.enqueued and len(offline.session.added) == 1
+
+
+def test_structure_kb_ignores_a_tampered_whitelist(offline: SimpleNamespace) -> None:
+    """策略是唯一决策者：把 structure 库的白名单手工改成 [pdf]，它照样只收 markdown。
+
+    建库时的 `resolve_formats` 拦得住矛盾组合，但列可以被手工改。若读取侧照着列
+    原样放行，那个库就会悄悄收下 pdf 并退化成窗口硬切——正是本次要消除的现象。
+    """
+
+    offline.kb.allowed_formats = ["pdf"]
+
+    response = _upload_file(offline, "policy.pdf", b"%PDF-1.4 fake")
+
+    body = response.json()
+    assert response.status_code == 422
+    assert body["code"] == ErrorCode.UNSUPPORTED_DOCUMENT_FORMAT
+    assert body["data"]["allowed_formats"] == [FORMAT_MARKDOWN], "读到的白名单必须按策略强制"
+    assert offline.session.added == []
 
 
 @pytest.mark.parametrize(

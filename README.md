@@ -110,7 +110,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 ```bash
 uv run pytest -q
-# 期望：418 passed, 11 skipped, 2 warnings
+# 期望：552 passed, 11 skipped, 2 warnings
 # 11 skipped = 3 条 OCR 资产门禁 + 4 条真 PostgreSQL + 3 条真 Elasticsearch
 #             （其中 1 条是本次新增的查询分析器守卫）+ 1 条嵌入等价性
 ```
@@ -138,7 +138,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 uv run ruff check .                                    # 静态检查
 uv run ruff format --check tests                      # 格式检查（历史文件暂不纳入）
 uv run mypy app                                       # 宽松类型检查
-uv run pytest -q                                      # 离线测试：418 passed, 11 skipped；不连 PG、不发真实模型请求
+uv run pytest -q                                      # 离线测试：552 passed, 11 skipped；不连 PG、不发真实模型请求
 uv run uvicorn app.main:app --reload --port 8000      # 本地起服务，再按教程跑四条 curl（含列库）
 ```
 

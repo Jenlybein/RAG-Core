@@ -5,13 +5,7 @@
 
 from sqlalchemy.orm import Session
 
-from app.models.knowledge_base import (
-    DEFAULT_FORMATS_BY_STRATEGY,
-    SPLIT_STRUCTURE,
-    KnowledgeBase,
-    formats_of,
-    settings_of,
-)
+from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase, settings_of
 
 
 def create(db: Session, kb: KnowledgeBase) -> KnowledgeBase:
@@ -28,7 +22,7 @@ def get_by_id(db: Session, kb_id: str) -> KnowledgeBase | None:
 
 def get_split_config(
     db: Session, kb_id: str, *, tenant_id: str
-) -> tuple[str, int, list[str]]:
+) -> tuple[str, int]:
     """取该库的切块配置 (strategy, chunk_size, allowed_formats)。
 
     库不存在或跨租户时回落到默认值，而不是抛错：索引任务是异步的，库在这期间
@@ -42,13 +36,9 @@ def get_split_config(
     kb = db.get(KnowledgeBase, kb_id)
     if kb is None or kb.tenant_id != tenant_id:
         values = settings_of(None)
-        return (
-            SPLIT_STRUCTURE,
-            values["chunk_size"],
-            list(DEFAULT_FORMATS_BY_STRATEGY[SPLIT_STRUCTURE]),
-        )
+        return SPLIT_STRUCTURE, values["chunk_size"]
     values = settings_of(kb)
-    return kb.split_strategy, values["chunk_size"], formats_of(kb)
+    return kb.split_strategy, values["chunk_size"]
 
 
 def list_by_tenant(db: Session, tenant_id: str) -> list[KnowledgeBase]:

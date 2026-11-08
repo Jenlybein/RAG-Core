@@ -80,9 +80,12 @@ class KnowledgeBase(Base):
 def resolve_formats(strategy: str, formats: Sequence[str] | None) -> list[str]:
     """按策略补全并校验白名单；非法组合抛 ``ValueError``。
 
-    这是「策略决定准入」的唯一判定点：建库时用它把请求补成最终值，上传时用它
-    校验库配置是否自洽。写成纯函数，是为了在没有数据库、没有 HTTP 的情况下
-    也能把全部分支测完。
+    建库时的唯一判定点：把请求补成最终值，并拒绝矛盾组合。写成纯函数，是为了在
+    没有数据库、没有 HTTP 的情况下也能把全部分支测完。
+
+    上传侧**不再调用它**：读库时由 :func:`formats_of` 按策略强制（`structure` 一律
+    返回 `[markdown]`，不看列里存了什么）。两道防线的分工是——建库挡住写入，
+    读取挡住「列被手工改坏」；只靠哪一道都会留一个洞。
 
     六种非法情形都拒绝，而不是挑一个凑合：策略名不认识、格式名拼错、空白名单、
     重复项、structure 配了非 markdown、以及「不传」以外的任何歧义。
@@ -107,13 +110,20 @@ def resolve_formats(strategy: str, formats: Sequence[str] | None) -> list[str]:
 
 
 def formats_of(kb: KnowledgeBase | None) -> list[str]:
-    """取该库允许的上传格式；脏数据按策略默认兜底。
+    """取该库允许的上传格式。
 
-    兜底而不是抛错，与 ``settings_of`` 同一口径：白名单被手工改坏时，带着默认值
-    继续索引，好过让整篇文档永远进不了库——真正的异常留给后续流程去报。
+    **策略是唯一决策者**：`structure` 永远返回 `[markdown]`，不看列里存了什么。
+    这一条是准入的第二道防线——`resolve_formats` 只在建库时把关，而列可以被手工改
+    成 `["pdf"]`。若这里照着列原样返回，那个库就会悄悄收下 pdf 并退化成窗口硬切，
+    正是本次要消除的现象。
+
+    `size` 侧仍按列取值（它允许收窄），脏值按策略默认兜底，与 ``settings_of`` 同一
+    口径：白名单被改坏时带着默认值继续，好过让整篇文档永远进不了库。
     """
 
     strategy = (kb.split_strategy if kb is not None else None) or SPLIT_STRUCTURE
+    if strategy == SPLIT_STRUCTURE:
+        return [FORMAT_MARKDOWN]
     raw = (kb.allowed_formats if kb is not None else None) or []
     formats: list[str] = [item for item in raw if item in ALL_FORMATS]
     if not formats:

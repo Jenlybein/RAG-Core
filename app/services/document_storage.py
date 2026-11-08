@@ -16,9 +16,10 @@ from pathlib import Path, PurePosixPath
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
+from app.models.knowledge_base import FormatKind
 
 # 扩展名（小写）→ documents.source_type；与 T1 解析器注册的名字一致。
-SOURCE_TYPE_BY_EXTENSION = {
+SOURCE_TYPE_BY_EXTENSION: dict[str, FormatKind] = {
     ".md": "markdown",
     ".markdown": "markdown",
     ".txt": "text",
@@ -40,7 +41,7 @@ def extension_of(filename: str) -> str:
     return Path(filename).suffix.lower()
 
 
-def source_type_of(filename: str) -> str:
+def source_type_of(filename: str) -> FormatKind:
     """按扩展名取 ``source_type``；不认识的扩展名按「解析不了」拒绝（20023）。"""
 
     source_type = SOURCE_TYPE_BY_EXTENSION.get(extension_of(filename))
@@ -59,8 +60,9 @@ def store_document_file(
     """
 
     suffix = extension_of(filename)
-    if suffix not in ALLOWED_EXTENSIONS:
-        raise AppError(ErrorCode.DOCUMENT_PARSE_FAILED)
+    # 复用 source_type_of 的判定，不在这里再写一次白名单比对：白名单就是
+    # SOURCE_TYPE_BY_EXTENSION 的键集，两处各判一次只会有两种口径。
+    source_type_of(filename)
     if len(data) > settings.DOCUMENT_MAX_SIZE_MB * 1024 * 1024:
         raise AppError(ErrorCode.FILE_TOO_LARGE)
 
