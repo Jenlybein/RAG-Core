@@ -54,6 +54,7 @@ from app.providers.vectorstores import get_vector_store
 from app.repositories import document_repository, knowledge_base_repository
 from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import prepare_document_content
+from app.services.section_context import summarize_sections
 from app.utils.id_generator import new_chunk_id
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
@@ -159,9 +160,35 @@ class IndexingService:
         if not pieces:
             raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "切块之后没有可用切片")
 
+        # 节说明（可选增强）：按 section_id 去重后**每节一次**，不按片。
+        # 关闭时 summarize_sections 直接返回空字典，检索文本与现状逐字一致。
+        sections: dict[str, tuple[str, str]] = {}
+        for piece in pieces:
+            section_id = str(piece.metadata.get("section_id") or "")
+            if not section_id or section_id in sections:
+                continue
+            heading = str(piece.metadata.get("heading_path") or "")
+            # 同节的正文按 order_index 累积起来给模型看——只给第一片会丢掉后半节。
+            sections[section_id] = (heading, "")
+        section_texts: dict[str, list[str]] = {}
+        for piece in pieces:
+            section_id = str(piece.metadata.get("section_id") or "")
+            if section_id:
+                section_texts.setdefault(section_id, []).append(piece.text)
+        summaries = await summarize_sections(
+            [
+                (section_id, heading, "\n\n".join(section_texts.get(section_id, [])))
+                for section_id, (heading, _unused) in sections.items()
+            ],
+            title=doc.title,
+        )
+
         retrieval_texts = [
             build_retrieval_text(
-                doc.title, str(piece.metadata.get("heading_path") or ""), piece.text
+                doc.title,
+                str(piece.metadata.get("heading_path") or ""),
+                piece.text,
+                section_context=summaries.get(str(piece.metadata.get("section_id") or "")),
             )
             for piece in pieces
         ]
@@ -192,6 +219,11 @@ class IndexingService:
                     # 落库记下这一片是哪种策略切出来的：重建时才能复现同一套切法，
                     # 跨库检索时也解释得了片长差异。
                     "split_strategy": split_strategy,
+                    # 节说明也落库：排查时能看出「这条检索文本为什么这么拼」，
+                    # 重建时也不必重新调模型。
+                    "section_context": summaries.get(
+                        str(piece.metadata.get("section_id") or "")
+                    ),
                     # 页号由切块器从「第 N 页」标题带下来（PDF 才有）；Markdown 为空。
                     "page": piece.metadata.get("page"),
                     # 稿号：让引用三元组（文档 + 稿次 + 切片）里有稿次可写。

@@ -12,17 +12,26 @@
 
 _DOCUMENT_LABEL = "文档："
 _SECTION_LABEL = "章节："
+_CONTEXT_LABEL = "节说明："
 _CONTENT_LABEL = "正文："
 
 
-def build_retrieval_text(title: str, heading_path: str, content: str) -> str:
-    """拼出检索文本：``文档：X 章节：Y 正文：Z``，空段不产生空标签。"""
+def build_retrieval_text(
+    title: str, heading_path: str, content: str, section_context: str | None = None
+) -> str:
+    """拼出检索文本：``文档：X 章节：Y 节说明：S 正文：Z``，空段不产生空标签。
+
+    ``section_context`` 是可选的节级说明（见 ``app/services/section_context.py``）：
+    它给「这一节在讲什么」一句人话，让「人话提问」也能落到正确的章节。为空时
+    检索文本与补上它之前逐字一致——这是一条可选增强，不是格式变更。
+    """
 
     parts = [
         f"{label}{value.strip()}"
         for label, value in (
             (_DOCUMENT_LABEL, title),
             (_SECTION_LABEL, heading_path),
+            (_CONTEXT_LABEL, section_context or ""),
             (_CONTENT_LABEL, content),
         )
         if value.strip()

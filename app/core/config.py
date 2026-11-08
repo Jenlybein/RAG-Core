@@ -127,6 +127,15 @@ class Settings(BaseSettings):
     # 同义词扩展是纯函数，不需要模型也不需要超时；开与不开只影响关键词一路。
     SYNONYM_EXPANSION_ENABLED: bool = False
 
+    # ── 节说明（检索文本补一句上下文）──
+    # 索引期为**每个节**生成一句「本节在讲什么」，拼进检索文本。按节生成而不是按片：
+    # 456 片就是 456 次调用，成本与延迟都不可接受；节级说明已经能表达「这片属于什么场景」。
+    # 默认关闭：关掉时检索文本与现状逐字一致，离线测试也保持「一次模型都不调」。
+    SECTION_CONTEXT_ENABLED: bool = False
+    SECTION_CONTEXT_TIMEOUT_MS: int = 5000
+    # 送给模型的节正文最多这么长：节很长时全部塞进去既慢又贵，说明只需要开头。
+    SECTION_CONTEXT_MAX_INPUT_CHARS: int = 1200
+
     # 框架自带的追踪客户端读的是环境变量而不是这份配置。这里声明默认值，
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
     LANGCHAIN_TRACING_V2: bool = False
