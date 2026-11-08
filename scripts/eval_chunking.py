@@ -97,6 +97,10 @@ class Chunk:
     start: int
     end: int
     owner: str | None = None  # 归属章节；无法归属（跨章节）时为 None
+    # 下面三项供「答案单元」归并使用：行级表片要能映射回它所属的整表片。
+    chunk_type: str = ""
+    section_id: str = ""
+    table_part: int = 0
 
 
 def _load_corpus() -> list[CorpusDoc]:
@@ -212,11 +216,36 @@ def _structured_chunks(doc: CorpusDoc, sections: list[Section]) -> list[Chunk]:
             position = cursor
         cursor = position + len(piece.text)
         heading_path = str(piece.metadata.get("heading_path") or "")
-        chunks.append(Chunk(piece.text, doc.stem, heading_path, position, cursor))
+        chunks.append(
+            Chunk(
+                piece.text,
+                doc.stem,
+                heading_path,
+                position,
+                cursor,
+                chunk_type=str(piece.metadata.get("chunk_type") or ""),
+                section_id=str(piece.metadata.get("section_id") or ""),
+                table_part=int(piece.metadata.get("table_part") or 0),
+            )
+        )
     # 结构化切块的归属直接取切块器给的章节路径（它就是切块时的归属，不需要再猜）
     for chunk in chunks:
         chunk.owner = chunk.heading_path or None
     return chunks
+
+
+def _unit_of(chunk: Chunk, chunk_id: str) -> tuple[str, ...]:
+    """把切片映射成「答案单元」。
+
+    行级表片归到它所属的整表片：用户问的是表里某个单元格，答案单元是那张表。
+    这样行级片命中仍算「命中了答案」，而分母只有 1——两侧口径一致，指标才可解释。
+
+    其余片各自成一个单元（用 chunk_id 作为身份）。
+    """
+
+    if chunk.chunk_type == "table_row" and chunk.section_id:
+        return ("table", chunk.doc_stem, chunk.section_id, str(chunk.table_part))
+    return ("chunk", chunk_id)
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -355,7 +384,19 @@ async def main() -> None:
                 ((_cosine(query_vector, vector), cid) for vector, cid in zip(vectors, chunk_ids)),
                 reverse=True,
             )
-            cases.append((relevant, [cid for _, cid in scores]))
+            # 换算成「答案单元」再评测：行级表片归到它所属的整表片（见 _unit_of）。
+            # 相关单元与命中单元同一口径，行级片命中仍算对，但分母不再被行数撑大。
+            by_id = dict(zip(chunk_ids, chunks))
+            relevant_units = {_unit_of(by_id[cid], cid) for cid in relevant}
+            returned_units: list[tuple[str, ...]] = []
+            seen_units: set[tuple[str, ...]] = set()
+            for _score, cid in scores:
+                unit = _unit_of(by_id[cid], cid)
+                if unit in seen_units:
+                    continue
+                seen_units.add(unit)
+                returned_units.append(unit)
+            cases.append((relevant_units, returned_units))
             case_types.append(question.type)
             case_groups.append(
                 "long" if any(gold[0] in LONG_SECTION_DOCS for gold in question.labels) else "short"

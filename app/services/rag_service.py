@@ -77,6 +77,7 @@ async def retrieve(
     mode: str | None = None,
     top_k: int | None = None,
     include_parent: bool = True,
+    expand_table_rows: bool = True,
 ) -> dict:
     """按 ``mode`` 走一条通道（或并行两路）；缺省值取服务端配置。
 
@@ -164,8 +165,12 @@ async def retrieve(
     return {
         "query": query,
         "kb_ids": list(kb_ids),
-        "retrieved_chunks": _attach_parent_sections(
-            db, tenant_id=tenant_id, chunks=chunks, include_parent=include_parent
+        "retrieved_chunks": _decorate_results(
+            db,
+            tenant_id=tenant_id,
+            chunks=chunks,
+            include_parent=include_parent,
+            expand_table_rows=expand_table_rows,
         ),
         "metadata": {
             "mode": resolved_mode,
@@ -186,32 +191,140 @@ async def retrieve(
     }
 
 
-def _attach_parent_sections(
-    db: Session, *, tenant_id: str, chunks: list[dict], include_parent: bool
+def _decorate_results(
+    db: Session,
+    *,
+    tenant_id: str,
+    chunks: list[dict],
+    include_parent: bool,
+    expand_table_rows: bool,
 ) -> list[dict]:
-    """给每条结果挂上它所属的整个 h2 节（small-to-big 的「父块」）。
+    """给每条结果补上「可读的正文」与「所属整节」两样东西。
 
-    子切片负责找得准，父节负责喂得够。拼接完全在本服务内完成，不新开存储：
-    按 ``(文档, 章节)`` 批量取同节切片，再按 ``order_index`` 顺序拼起来。
+    两条装饰各解决一个问题，都在返回前做，都不新增存储：
 
-    关掉时原样返回——响应体与改造前逐字一致，这是「开关有效」的定义。
-    没有章节路径的切片（无标题文档）parent 为 ``None``：不造一个假父节，
-    否则调用方会以为拿到了完整上下文。
+    * **表格展开**：命中行级表片（`型号=XR-2100，配件=万兆光模块`）说明用户问的是
+      表里某个单元格，但只喂这一行给模型，它看不到列含义与相邻行。所以把正文换成
+      同一组的整表全文：行级片负责**找得准**，整表片负责**读得懂**。
+    * **父节**（small-to-big）：命中 150 字细片时把所属整节一并给出，模型不必只看
+      半句话。
+
+    两个开关都关掉时原样返回——响应体与改造前逐字一致，这是「开关有效」的定义。
+    `parent` 与 `table_expanded` 两个键**永远存在**（取不到就是 None / false）：
+    留一个「有这个键/没这个键」的分叉会让调用方为同一件事写两套判断。
     """
 
-    if not include_parent or not chunks:
+    if not chunks:
         return chunks
 
-    # 先统一置空：契约里 parent 永远存在，取不到就是 null。留一个「有这个键/没这个键」
-    # 的分叉会让调用方为同一件事写两套判断。
+    # 两个开关都关掉时原样返回：响应体与改造前逐字一致，这是「开关有效」的定义。
+    # 契约层面 parent / table_expanded 仍然存在——响应模型有默认值（null / false），
+    # 校验时自动补上；所以「内部字典不带键」与「接口一定给字段」可以同时成立。
+    if not include_parent and not expand_table_rows:
+        return chunks
+
     for chunk in chunks:
-        chunk["parent"] = None
+        if include_parent:
+            chunk["parent"] = None
+        if expand_table_rows:
+            chunk["table_expanded"] = False
 
     # 融合层只带对外字段（meta 不属于检索契约），所以按 ID 回查一次 meta。
+    # 两个装饰共用这一份：分别查会把同一次查询重复两遍。
     chunk_ids = [str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")]
     metas = chunk_repository.fetch_meta_by_chunk_ids(
         db, tenant_id=tenant_id, chunk_ids=chunk_ids
     )
+
+    document_ids = {
+        str(chunk["document_id"]) for chunk in chunks if chunk.get("document_id")
+    }
+    section_ids = {
+        str(meta.get("section_id"))
+        for meta in (metas.get(cid) or {} for cid in chunk_ids)
+        if isinstance(meta.get("section_id"), str)
+    }
+    if not document_ids or not section_ids:
+        return chunks
+
+    if expand_table_rows:
+        _expand_table_rows(
+            db,
+            tenant_id=tenant_id,
+            chunks=chunks,
+            metas=metas,
+            document_ids=sorted(document_ids),
+            section_ids=sorted(section_ids),
+        )
+
+    if include_parent:
+        _attach_parent_sections(
+            db,
+            tenant_id=tenant_id,
+            chunks=chunks,
+            metas=metas,
+            document_ids=sorted(document_ids),
+            section_ids=sorted(section_ids),
+        )
+    return chunks
+
+
+def _expand_table_rows(
+    db: Session,
+    *,
+    tenant_id: str,
+    chunks: list[dict],
+    metas: dict[str, dict],
+    document_ids: list[str],
+    section_ids: list[str],
+) -> None:
+    """把命中的行级表片换成同一组的整表全文。"""
+
+    keys: dict[str, tuple[str, str, int]] = {}
+    for chunk in chunks:
+        chunk_id = str(chunk.get("chunk_id"))
+        meta = metas.get(chunk_id) or {}
+        if str(meta.get("chunk_type") or "") != "table_row":
+            continue
+        document_id = chunk.get("document_id")
+        section_id = meta.get("section_id")
+        table_part = meta.get("table_part")
+        if (
+            isinstance(document_id, str)
+            and isinstance(section_id, str)
+            and isinstance(table_part, int)
+        ):
+            keys[chunk_id] = (document_id, section_id, table_part)
+
+    if not keys:
+        return
+
+    tables = chunk_repository.fetch_table_chunks(
+        db, tenant_id=tenant_id, document_ids=document_ids, section_ids=section_ids
+    )
+    for chunk in chunks:
+        key = keys.get(str(chunk.get("chunk_id")))
+        if key is None:
+            continue
+        table_text = tables.get(key)
+        if table_text is None:
+            # 找不到整表（比如它已被删掉）时保留原始那一行：宁可少上下文，
+            # 也不要把这条结果变成空。
+            continue
+        chunk["content"] = table_text
+        chunk["table_expanded"] = True
+
+
+def _attach_parent_sections(
+    db: Session,
+    *,
+    tenant_id: str,
+    chunks: list[dict],
+    metas: dict[str, dict],
+    document_ids: list[str],
+    section_ids: list[str],
+) -> None:
+    """给每条结果挂上它所属的整个 h2 节（small-to-big 的「父块」）。"""
 
     keys: list[tuple[str, str]] = []
     for chunk in chunks:
@@ -220,15 +333,14 @@ def _attach_parent_sections(
         document_id = chunk.get("document_id")
         if isinstance(section_id, str) and isinstance(document_id, str):
             keys.append((document_id, section_id))
-
     if not keys:
-        return chunks
+        return
 
     grouped = chunk_repository.fetch_section_chunks(
         db,
         tenant_id=tenant_id,
-        document_ids=sorted({document_id for document_id, _sid in keys}),
-        section_ids=sorted({sid for _doc, sid in keys}),
+        document_ids=document_ids,
+        section_ids=section_ids,
         # 与召回时的过滤口径保持一致：父节混进另一索引批次，调用方会拿到
         # 「和命中片对不上」的上下文。
         index_version=DEFAULT_INDEX_VERSION,
@@ -236,9 +348,7 @@ def _attach_parent_sections(
 
     heading_paths: dict[tuple[str, str], str] = {}
     for chunk in chunks:
-        if not chunk.get("chunk_id"):
-            continue
-        meta = metas.get(str(chunk["chunk_id"])) or {}
+        meta = metas.get(str(chunk.get("chunk_id"))) or {}
         section_id = meta.get("section_id")
         document_id = chunk.get("document_id")
         if isinstance(section_id, str) and isinstance(document_id, str):
@@ -264,7 +374,6 @@ def _attach_parent_sections(
             if isinstance(section_id, str) and isinstance(document_id, str)
             else None
         )
-    return chunks
 
 
 def _rewrite_hint(kbs: list) -> str | None:

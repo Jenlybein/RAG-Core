@@ -30,5 +30,6 @@ async def retrieve(
         mode=payload.mode,
         top_k=payload.top_k,
         include_parent=payload.include_parent,
+        expand_table_rows=payload.expand_table_rows,
     )
     return ok(RetrieveData.model_validate(data))

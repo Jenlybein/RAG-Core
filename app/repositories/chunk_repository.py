@@ -30,6 +30,42 @@ def fetch_meta_by_chunk_ids(
     return {str(row.id): dict(row.meta or {}) for row in db.execute(stmt).all()}
 
 
+def fetch_table_chunks(
+    db: Session, *, tenant_id: str, document_ids: list[str], section_ids: list[str]
+) -> dict[tuple[str, str, int], str]:
+    """取这些文档/章节里的**整表片**正文，供「行级召回 → 整表返回」展开。
+
+    返回 ``{(document_id, section_id, table_part): 整表文本}``。
+
+    为什么行级片要展开成整表：命中「型号=XR-2100，配件=万兆光模块」说明用户问的
+    是表里某个单元格，但只把这一行喂给模型，它看不到列含义与相邻行、也没法对比。
+    行级片负责**找得准**，整表片负责**读得懂**。
+
+    ``tenant_id`` 是强制过滤参数（ADR-0006）：展开也要按租户拦住。
+    """
+
+    if not document_ids or not section_ids:
+        return {}
+    stmt = (
+        select(
+            Chunk.document_id,
+            Chunk.meta["section_id"].astext,
+            Chunk.meta["table_part"].astext.cast(Integer),
+            Chunk.content,
+        )
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.document_id.in_(document_ids),
+            Chunk.meta["section_id"].astext.in_(section_ids),
+            Chunk.meta["chunk_type"].astext == "table",
+        )
+    )
+    tables: dict[tuple[str, str, int], str] = {}
+    for document_id, section_id, table_part, content in db.execute(stmt).all():
+        tables[(str(document_id), str(section_id), int(table_part or 0))] = str(content)
+    return tables
+
+
 def fetch_section_chunks(
     db: Session,
     *,

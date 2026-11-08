@@ -53,6 +53,8 @@ class RetrieveRequest(BaseModel):
     # 默认开：默认关着就没人会开，small-to-big 等于没做。只有在明确只要细片、
     # 不希望响应体被父节撑大的场景才关掉。
     include_parent: bool = True
+    # 命中行级表片时，把正文换成同一组的整表全文。关掉就拿到原始那一行。
+    expand_table_rows: bool = True
 
 
 class ParentSection(BaseModel):
@@ -93,6 +95,9 @@ class RetrievedChunk(BaseModel):
     # 命中切片所属整节。关掉 include_parent 时为 null；没有章节路径的切片
     # （无标题文档）也是 null——不造一个假父节出来。
     parent: ParentSection | None = None
+    # 这条结果的正文是不是由行级表片展开成了整表：行级片负责召回，整表负责阅读。
+    # 展开时 content 就是整表全文，原样喂给模型即可。
+    table_expanded: bool = False
 
 
 class RetrieveData(BaseModel):

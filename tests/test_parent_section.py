@@ -64,11 +64,15 @@ class _Rows:
 
 
 def _direct(service: Any, session: _Session, chunks: list[dict], include_parent: bool):
-    """同步调用异步的拼装函数；测试不需要事件循环的其他能力。"""
+    """同步调用装饰函数；本文件只关心父节，表格展开关掉以减少查询次数。"""
 
     async def run() -> list[dict]:
-        return service._attach_parent_sections(
-            session, tenant_id=TENANT, chunks=chunks, include_parent=include_parent
+        return service._decorate_results(
+            session,
+            tenant_id=TENANT,
+            chunks=chunks,
+            include_parent=include_parent,
+            expand_table_rows=False,
         )
 
     return asyncio.run(run())
