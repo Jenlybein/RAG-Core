@@ -6,9 +6,12 @@
 1. **真实链路**：真实 PostgreSQL（pgvector）+ 真实 Elasticsearch（IK）+ 真实百炼嵌入。
    没有任何一个 Provider 在这里被替换过——被替换的话，测的就是替身。
 2. **可复跑**：语料用固定 id 的独立知识库承载（``kb-eval`` / ``kb-eval-ops``），每次
-   重跑先清后写，绝不把同一份语料索引两遍；``chunk_id`` 虽然每次重建都会变，但题目标注
-   用的是 ``(document, heading_path)``，由脚本对着**真实**切片元数据解析成 ``chunk_id``
-   ——标签写错会当场失败，而不是静默算成漏召。
+   重跑先清后写，绝不把同一份语料索引两遍；建库时**显式指定切块策略**
+   （``--split-strategy``，默认 ``structure``）——策略是必填项、同时决定格式白名单，
+   缺了连库都建不出来（本脚本直接写库，撞的是非空约束而非接口的 422）；
+   ``chunk_id`` 虽然每次重建都会变，但题目标注用的是 ``(document, heading_path)``，
+   由脚本对着**真实**切片元数据解析成 ``chunk_id``——标签写错会当场失败，而不是
+   静默算成漏召。
 3. **能量出差异**：语料 v2 有 200-400 片（v1 只有 39 片），每路召回深度 20。这是让
    ``Recall@20`` 不再覆盖全库、从而让 ``Recall@5`` 不再恒为 1.0000 的前提。**编号只写在
    正文、不写进标题**——v1 把 ``E1024`` 写进了章节标题，而检索文本 = 标题 + 章节路径 +
@@ -35,6 +38,11 @@
 
     # 清理本脚本在本地留下的全部痕迹（PG 行 + ES 索引）
     uv run python scripts/eval_retrieval.py --env-file ../RAG-Core/.env --cleanup
+
+    # 换一个策略建评测库（默认 structure）。语料全是 markdown，structure 的格式白名单
+    # 由策略推导为 [markdown]；size 不产 heading_path，本脚本按 heading_path 解析标注，
+    # 所以 size 只在调切块参数时用，跑到标签解析那一步会明确报错而不是悄悄算成漏召。
+    uv run python scripts/eval_retrieval.py --env-file ../RAG-Core/.env --split-strategy size
 
 **清理边界（重要）**：
 
@@ -90,8 +98,12 @@ DEFAULT_TOP_K = 5
 # ``<原值>_eval``，所以 .env 里写的是生产索引名也不会污染它。
 EVAL_INDEX_SUFFIX = "_eval"
 
-# 三个固定知识库 id：重跑时先清后写靠的就是「id 固定」（随机 id 会越跑越多）。
-EVAL_KB_IDS = ("kb-eval", "kb-eval-ops", "kb-eval-empty")
+# 评测知识库 id：**从 manifest 派生**，不手写清单。
+#
+# 曾经写死成 ("kb-eval", "kb-eval-ops", "kb-eval-empty")，而语料后来扩到五个库
+# （又加了 biz / long / ref）。后果是加载切片时把后三个库整个过滤掉，标签解析
+# 成片地报 `not found`——看起来像「检索没做好」，实际是脚本自己的库清单过期了。
+# 派生之后，manifest 增删库不会再让这里漂移。
 PRIMARY_KB_ID = "kb-eval"
 
 MODE_VECTOR = "vector"
@@ -164,6 +176,11 @@ from app.core.exceptions import AppError  # noqa: E402
 from app.db.base import Base, now  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
 from app.models import Chunk, Document, KnowledgeBase  # noqa: E402
+from app.models.knowledge_base import (  # noqa: E402
+    SPLIT_STRATEGIES,
+    SPLIT_STRUCTURE,
+    resolve_formats,
+)
 from app.providers.llm import get_llm_provider  # noqa: E402
 from app.providers.llm.noop import NoopLLMProvider  # noqa: E402
 from app.services.indexing_service import IndexingService  # noqa: E402
@@ -376,6 +393,17 @@ def _load_manifest() -> tuple[list[CorpusLayout], str]:
     return layouts, payload["empty_kb"]["kb_id"]
 
 
+def _eval_kb_ids() -> tuple[str, ...]:
+    """评测要碰的全部知识库 id = manifest 里每个库 + 只用于空结果用例的空库。
+
+    清空、加载切片、删库三处都用它，所以它必须和 manifest 严格一致：少一个库，
+    那个库的文档会「索引成功却查不到」，并在标签解析阶段报成 `not found`。
+    """
+
+    layouts, empty_kb_id = _load_manifest()
+    return tuple([layout.kb_id for layout in layouts] + [empty_kb_id])
+
+
 def _load_corpus(layouts: Sequence[CorpusLayout]) -> list[CorpusDoc]:
     docs: list[CorpusDoc] = []
     for layout in layouts:
@@ -493,7 +521,7 @@ def _assert_query_analyzer(index_name: str) -> None:
 
 
 def _reset_postgres(db: Any) -> dict[str, int]:
-    """删掉评测租户下三个固定知识库的全部行；其他数据一行不动。"""
+    """删掉评测租户下 manifest 列出的全部知识库的行；其他数据一行不动。"""
 
     from sqlalchemy import delete
 
@@ -501,7 +529,7 @@ def _reset_postgres(db: Any) -> dict[str, int]:
         "chunks": int(
             db.execute(
                 delete(Chunk).where(
-                    Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(EVAL_KB_IDS)
+                    Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids())
                 )
             ).rowcount
             or 0
@@ -510,7 +538,7 @@ def _reset_postgres(db: Any) -> dict[str, int]:
             db.execute(
                 delete(Document).where(
                     Document.tenant_id == settings.DEV_TENANT_ID,
-                    Document.kb_id.in_(EVAL_KB_IDS),
+                    Document.kb_id.in_(_eval_kb_ids()),
                 )
             ).rowcount
             or 0
@@ -519,7 +547,7 @@ def _reset_postgres(db: Any) -> dict[str, int]:
             db.execute(
                 delete(KnowledgeBase).where(
                     KnowledgeBase.tenant_id == settings.DEV_TENANT_ID,
-                    KnowledgeBase.id.in_(EVAL_KB_IDS),
+                    KnowledgeBase.id.in_(_eval_kb_ids()),
                 )
             ).rowcount
             or 0
@@ -529,8 +557,28 @@ def _reset_postgres(db: Any) -> dict[str, int]:
     return counts
 
 
-def _ensure_knowledge_base(db: Any, *, kb_id: str, name: str, description: str) -> None:
-    if db.get(KnowledgeBase, kb_id) is not None:
+def _ensure_knowledge_base(
+    db: Any, *, kb_id: str, name: str, description: str, split_strategy: str
+) -> None:
+    """按给定策略建评测库；已存在且策略不同的库直接拒绝，不在旧库上凑合。
+
+    策略是建库的必填项，它同时决定这个库收哪些格式——所以白名单不在这里另写一份，
+    统一交给 ``resolve_formats`` 按策略推导（structure → ``[markdown]``，size → 全开）。
+    两处各写一份白名单的话，改默认值时会漏一处，而漏出来的恰好是准入边界。
+
+    已存在且策略不同时抛错而不是就地改：脚本的题目标注按 ``heading_path`` 解析，
+    一个 ``size`` 库里的切片没有章节路径，改配置也补不回旧的切法——那份语料还是
+    得重建，与其让标注解析在后面报一串「找不到」，不如在这里一句话说清。
+    """
+
+    existing = db.get(KnowledgeBase, kb_id)
+    if existing is not None:
+        if existing.split_strategy != split_strategy:
+            raise SystemExit(
+                f"知识库 {kb_id} 已存在且策略是 {existing.split_strategy!r}，"
+                f"本次要求 {split_strategy!r}；先删掉这个库（或重建数据卷）再跑"
+                "——改配置补不回旧的切法。"
+            )
         return
     db.add(
         KnowledgeBase(
@@ -538,6 +586,8 @@ def _ensure_knowledge_base(db: Any, *, kb_id: str, name: str, description: str) 
             tenant_id=settings.DEV_TENANT_ID,
             name=name,
             description=description,
+            split_strategy=split_strategy,
+            allowed_formats=resolve_formats(split_strategy, None),
             # 同义词表留空：本票的对比里同义词扩展是关的（第三变量），
             # 留空也顺便证明「默认配置下同义词题只能靠语义兜」。
             settings={},
@@ -605,7 +655,7 @@ def _load_indexed_chunks(db: Any) -> list[IndexedChunk]:
     from sqlalchemy import select
 
     stmt = select(Chunk).where(
-        Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(EVAL_KB_IDS)
+        Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids())
     )
     chunks: list[IndexedChunk] = []
     for row in db.execute(stmt).scalars().all():
@@ -1800,13 +1850,18 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"reset    : es index {es_state}; pg {pg_counts}")
             for layout in layouts:
                 _ensure_knowledge_base(
-                    db, kb_id=layout.kb_id, name=layout.name, description=layout.description
+                    db,
+                    kb_id=layout.kb_id,
+                    name=layout.name,
+                    description=layout.description,
+                    split_strategy=args.split_strategy,
                 )
             _ensure_knowledge_base(
                 db,
                 kb_id=empty_kb_id,
                 name="评测语料库·空库",
                 description="验证 no_indexed_chunks 用，刻意不写任何文档",
+                split_strategy=args.split_strategy,
             )
             for doc in docs:
                 _ensure_document(db, doc)
@@ -1998,6 +2053,17 @@ def _build_parser() -> argparse.ArgumentParser:
         "--reuse",
         action="store_true",
         help="reuse the already-indexed corpus instead of resetting and re-indexing it",
+    )
+    parser.add_argument(
+        "--split-strategy",
+        choices=SPLIT_STRATEGIES,
+        default=SPLIT_STRUCTURE,
+        help=(
+            "chunking strategy for the evaluation knowledge bases (required by the API, "
+            f"default {SPLIT_STRUCTURE}). 'structure' also pins the format whitelist to "
+            "[markdown]; 'size' produces no heading_path, so the question labels cannot be "
+            "resolved"
+        ),
     )
     parser.add_argument(
         "--degraded-probe",
