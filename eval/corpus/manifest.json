@@ -50,6 +50,12 @@
       "name": "评测语料库·长章节",
       "description": "对照组：每节 900-1200 字，刻意超过 chunk_size=800。前三个库的章节中位只有 144 字，一个 800 字窗口能装 5-6 节，朴素切块的错误因此很温和；这个库用来看「一节大于窗口」时差距会不会放大",
       "documents": ["deploy_guide.md", "troubleshoot_deep.md", "integration_api.md"]
+    },
+    {
+      "kb_id": "kb-eval-ref",
+      "name": "评测语料库·接口与配置参考",
+      "description": "h1>h2>h3>h4 四层嵌套：接口参考与配置手册。前面五个库最多两层，切块器的「### 及以下只加深路径、不新起切片」规则从未被真正测过。这个库让 heading_path 出现 2/3/4 段三种深度",
+      "documents": ["api_reference.md", "config_reference.md"]
     }
   ],
   "empty_kb": {

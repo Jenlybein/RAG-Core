@@ -65,6 +65,18 @@ class MarkdownStructuredSplitter(TextSplitter):
         sections: list[tuple[str, list[_Block]]] = []
         stack: list[tuple[int, str]] = []
         blocks: list[_Block] = []
+        # 当前分节（h1/h2）的路径，以及本节内出现过的深层标题路径（h3 及更深）。
+        # 片覆盖的是整节，所以路径取「本节所有叶子标题」的公共前缀：
+        #   - 单链 A > B > C  → 路径到 C（能到第 4 层）
+        #   - 分叉 A > B1/B2  → 路径到 A（不能只写 B1，那样 B2 的内容被指错地方）
+        section_path = ""
+        deep_paths: list[str] = []
+
+        def flush_section() -> None:
+            nonlocal blocks, deep_paths
+            sections.append((_resolve_heading_path(section_path, deep_paths), blocks))
+            blocks = []
+            deep_paths = []
 
         index = 0
         while index < len(lines):
@@ -74,12 +86,13 @@ class MarkdownStructuredSplitter(TextSplitter):
                 level = len(heading.group(1))
                 title = heading.group(2).strip()
                 if level <= 2:
-                    sections.append((_join_stack(stack), blocks))
-                    blocks = []
+                    flush_section()
                     _push_heading(stack, level, title)
+                    section_path = _join_stack(stack)
                     blocks.append(_Block(kind="normal", lines=[line]))
                 else:
                     _push_heading(stack, level, title)
+                    deep_paths.append(_join_stack(stack))
                     _append_normal_line(blocks, line)
                 index += 1
                 continue
@@ -99,7 +112,7 @@ class MarkdownStructuredSplitter(TextSplitter):
             _append_normal_line(blocks, line)
             index += 1
 
-        sections.append((_join_stack(stack), blocks))
+        flush_section()
         return self._assemble(sections)
 
     def _assemble(self, sections: list[tuple[str, list[_Block]]]) -> list[SplitPiece]:
@@ -175,6 +188,36 @@ class MarkdownStructuredSplitter(TextSplitter):
             [*header, *data_rows[start : start + self.table_max_rows]]
             for start in range(0, len(data_rows), self.table_max_rows)
         ]
+
+
+def _resolve_heading_path(section_path: str, deep_paths: list[str]) -> str:
+    """把「分节路径 + 本节内的深层标题路径」合成该切片真正该标注的路径。
+
+    规则：先剔除被更长路径覆盖的父级（``A > B`` 被 ``A > B > C`` 覆盖），剩下的
+    就是叶子标题；再取它们的公共前缀。
+
+    * 单链 ``A > B > C``：叶子只有 C，路径到 C——深层嵌套因此能真正体现在路径里；
+    * 分叉 ``A > B1`` 与 ``A > B2``：公共前缀到 A——不能只写 B1，否则 B2 的内容
+      会被标注到错误章节，而且不会报错，只有溯源结果会悄悄指错地方。
+    """
+
+    if not deep_paths:
+        return section_path
+    leaves = [
+        path
+        for path in deep_paths
+        if not any(other != path and other.startswith(path + " > ") for other in deep_paths)
+    ]
+    if not leaves:
+        leaves = deep_paths
+    segments = [path.split(" > ") for path in leaves]
+    prefix: list[str] = []
+    for parts in zip(*segments):
+        if len(set(parts)) != 1:
+            break
+        prefix.append(parts[0])
+    joined = " > ".join(prefix)
+    return joined or section_path
 
 
 def _push_heading(stack: list[tuple[int, str]], level: int, title: str) -> None:

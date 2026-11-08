@@ -53,6 +53,57 @@ def test_deeper_headings_do_not_start_new_sections() -> None:
     assert pieces[1].metadata["heading_path"] == "账户安全"
 
 
+def test_multiple_deeper_headings_fall_back_to_section_path() -> None:
+    """一节内含多个 h3/h4 时，heading_path 不能取「最后一个」。
+
+    切片覆盖的是整节，路径却只记最后一个子标题，就会出现「片里讲的是三个子节，
+    路径却写着第三个」——用户拿这个路径做溯源会指错地方，而系统不会报错。
+    只有一个子标题时仍然精确到它（见上一条测试），多个时回落到分节路径。
+    """
+    markdown = (
+        "# 演示文档\n\n"
+        "## 大章一\n\n"
+        "### 子节 1.1\n\n正文 A。\n\n"
+        "#### 细节 1.1.1\n\n正文 B。\n\n"
+        "### 子节 1.2\n\n正文 C。\n\n"
+        "## 大章二\n\n"
+        "### 子节 2.1\n\n正文 D。\n"
+    )
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    assert [p.metadata["heading_path"] for p in pieces] == [
+        "演示文档 > 大章一",
+        "演示文档 > 大章二 > 子节 2.1",
+    ]
+    # 三个子标题的内容都留在同一片里
+    assert "正文 A" in pieces[0].text
+    assert "正文 B" in pieces[0].text
+    assert "正文 C" in pieces[0].text
+
+
+def test_single_chain_can_reach_four_levels() -> None:
+    """单链 h2 > h3 > h4 时，路径要能到第 4 层，而不是回落到 h2。
+
+    父级标题会被更长的路径覆盖，不参与公共前缀计算；否则深层嵌套永远体现不出来。
+    """
+    markdown = (
+        "# 接口参考\n\n"
+        "## 文档管理接口\n\n"
+        "### 上传文档\n\n"
+        "#### 请求\n\n参数 A。\n\n"
+        "#### 响应\n\n字段 B。\n\n"
+        "## 检索接口\n\n"
+        "### 检索\n\n正文 C。\n"
+    )
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    # 第一节里有两个 h4 分叉（请求/响应），公共前缀到 h3
+    assert pieces[0].metadata["heading_path"] == "接口参考 > 文档管理接口 > 上传文档"
+    assert pieces[1].metadata["heading_path"] == "接口参考 > 检索接口 > 检索"
+
+
 def test_table_kept_whole() -> None:
     """小表格整块保留，不跨切片。"""
     markdown = (

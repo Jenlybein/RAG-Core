@@ -139,27 +139,23 @@ def test_headings_never_carry_discriminating_identifiers() -> None:
 
 
 def test_heading_paths_are_unique_inside_each_document() -> None:
-    """同一篇里 heading_path 至多出现 2 次，且只允许出现在长章节库。
+    """同一篇里不能有两个同名标题路径。
 
-    标签按 ``(document, heading_path)`` 定位切片，重复会让「这道题考哪一片」
-    变成二选一。常规文档必须严格唯一；``kb-eval-long`` 的那几篇是刻意让每节
-    超过 ``chunk_size`` 的对照组，一节被二次切成相邻两片是设计意图——两片都
-    归属同一节、都算相关，R@1 的分母会因此变大，这本身就是被观测的现象之一。
-    超过 2 片仍然报错：那说明该节太散，标签已无法可靠定位。
+    注意查的是**源文档的标题**，不是切片的 ``heading_path``：一节被切成多片
+    （表格、代码块各自成片，或超长节二次切）是正常的，那些片的 ``heading_path``
+    本来就相同。真正会让标注失效的是「文档里有两个同名标题」——那时
+    ``(document, heading_path)`` 指向两个不同位置，标签就变成二选一了。
     """
 
-    by_doc: dict[str, Counter[str]] = {}
-    for stem, heading_path, _text, _meta in _pieces():
-        by_doc.setdefault(stem, Counter())[heading_path] += 1
-    duplicated = {
-        f"{stem} :: {heading_path}（{count} 片）"
-        for stem, counter in by_doc.items()
-        for heading_path, count in counter.items()
-        if count > 2
-    }
-    assert not duplicated, "同一篇里 heading_path 出现超过 2 次：\n  - " + "\n  - ".join(
-        sorted(duplicated)
-    )
+    duplicated: list[str] = []
+    for path in _corpus_paths():
+        counter = Counter(_heading_paths(path.read_text(encoding="utf-8")))
+        duplicated.extend(
+            f"{path.stem} :: {heading_path}（{count} 次）"
+            for heading_path, count in counter.items()
+            if count > 1
+        )
+    assert not duplicated, "同一篇里出现同名标题：\n  - " + "\n  - ".join(sorted(duplicated))
 
 
 def test_twin_pair_is_ninety_percent_identical() -> None:
@@ -309,6 +305,28 @@ def _questions() -> dict:
 
 def _corpus_paths() -> list[Path]:
     return [CORPUS_DIR / name for name in _documents()]
+
+
+def _heading_paths(text: str) -> list[str]:
+    """从源文档里抽出每一行标题的完整路径（h1 > h2 > h3 > h4）。
+
+    刻意不复用切块器的实现：这条测试要独立于被测代码，才能发现「切块器把
+    路径拼错了」这类问题。切块器只按 h1/h2 分节，这里不关心分节，只关心
+    文档里到底有没有两个同名标题。
+    """
+
+    stack: list[tuple[int, str]] = []
+    paths: list[str] = []
+    for line in text.replace("\r\n", "\n").split("\n"):
+        match = re.match(r"^(#{1,6})\s+(\S.*)$", line)
+        if not match:
+            continue
+        level, title = len(match.group(1)), match.group(2).strip()
+        while stack and stack[-1][0] >= level:
+            stack.pop()
+        stack.append((level, title))
+        paths.append(" > ".join(name for _, name in stack))
+    return paths
 
 
 def test_question_count_and_type_coverage() -> None:
