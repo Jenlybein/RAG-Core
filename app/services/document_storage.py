@@ -17,9 +17,6 @@ from pathlib import Path, PurePosixPath
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 
-# 上传白名单（大小写不敏感）：扩展名不在其中一律按「解析不了」的 20023 拒绝。
-ALLOWED_EXTENSIONS = {".md", ".markdown", ".txt", ".docx", ".pdf"}
-
 # 扩展名（小写）→ documents.source_type；与 T1 解析器注册的名字一致。
 SOURCE_TYPE_BY_EXTENSION = {
     ".md": "markdown",
@@ -27,13 +24,29 @@ SOURCE_TYPE_BY_EXTENSION = {
     ".txt": "text",
     ".docx": "docx",
     ".pdf": "pdf",
+    ".html": "html",
+    ".htm": "html",
 }
+
+# 上传白名单（大小写不敏感）：不在其中一律按「解析不了」的 20023 拒绝。
+# 键集就是白名单本身——扩展名被收，就必定有一个来源类型；清单各写一份，迟早会
+# 出现「能传但不知道算哪种格式」。
+ALLOWED_EXTENSIONS = frozenset(SOURCE_TYPE_BY_EXTENSION)
 
 
 def extension_of(filename: str) -> str:
     """取小写扩展名（含点）；没有扩展名返回空串。"""
 
     return Path(filename).suffix.lower()
+
+
+def source_type_of(filename: str) -> str:
+    """按扩展名取 ``source_type``；不认识的扩展名按「解析不了」拒绝（20023）。"""
+
+    source_type = SOURCE_TYPE_BY_EXTENSION.get(extension_of(filename))
+    if source_type is None:
+        raise AppError(ErrorCode.DOCUMENT_PARSE_FAILED)
+    return source_type
 
 
 def store_document_file(

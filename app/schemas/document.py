@@ -22,11 +22,15 @@ class UploadDocumentRequest(BaseModel):
 
 
 class UploadDocumentData(BaseModel):
+    """登记回执。``source_type`` 是这份文档最终被归成的来源类型（JSON 入口为
+    ``markdown``，文件入口按扩展名），调用方靠它确认准入判定落在了哪一类上。"""
+
     document_id: str
     kb_id: str
     status: int
     chunk_count: int
     error_message: str | None = None
+    source_type: str
 
 
 class DocumentListItem(BaseModel):

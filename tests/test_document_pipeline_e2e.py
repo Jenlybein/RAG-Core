@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.db.base import now
 from app.models.document import Document
+from app.models.knowledge_base import FORMAT_MARKDOWN, SPLIT_STRUCTURE
 from app.repositories import document_repository
 from app.services.indexing_service import IndexingService
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
@@ -158,8 +159,18 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     claimed: list[str] = []
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
+    # 目标库是 structure（白名单只有 markdown）：上传准入会读这份配置，
+    # 所以替身必须带齐策略与白名单，不能只给 tenant_id。
     monkeypatch.setattr(
-        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
+        kb_repo,
+        "get_by_id",
+        lambda db, kb_id: SimpleNamespace(
+            id=KB_ID,
+            tenant_id=TENANT_ID,
+            split_strategy=SPLIT_STRUCTURE,
+            allowed_formats=[FORMAT_MARKDOWN],
+            settings={},
+        ),
     )
 
     def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:

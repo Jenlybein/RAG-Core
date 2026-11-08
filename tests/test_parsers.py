@@ -1,7 +1,8 @@
-"""T1 解析层：4 个 Parser、注册表选择与唯一解析入口。
+"""T1 解析层：5 个 Parser、注册表选择与唯一解析入口。
 
 全部离线：mammoth 与 pdf-inspector 一律 monkeypatch，不读真实 docx / pdf、
-不加载 PDFium / ONNX Runtime、不下载 OCR 模型、不联网。
+不加载 PDFium / ONNX Runtime、不下载 OCR 模型、不联网。HTML 走真实解析
+（bs4 + markdownify 都是纯 CPU 库，不需要替身）。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
 from app.providers.parsers import get_parser_registry
 from app.providers.parsers.docx import DocxParser
+from app.providers.parsers.html import HtmlParser
 from app.providers.parsers.pdf import PdfParser
 from app.providers.parsers.text import TextParser
 from app.services.document_ingestion import prepare_document_content
@@ -64,6 +66,77 @@ def test_docx_parser_emits_atx_headings(monkeypatch: pytest.MonkeyPatch) -> None
     assert parsed.source_type == "docx"
     assert parsed.metadata["parser"] == "docx"
     assert parsed.metadata["warnings"] == ["warning: unrecognised style"]
+
+
+HTML_PAGE = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>退款政策 - 帮助中心</title>
+  <style>body { color: #333 }</style>
+  <script>window.dataLayer = ["ad-slot"];</script>
+</head>
+<body>
+  <nav>首页 / 帮助</nav>
+  <h1>退款政策</h1>
+  <p>签收后 7 天内可申请退款。</p>
+  <h3>申请条件</h3>
+  <table>
+    <thead><tr><th>项目</th><th>金额</th></tr></thead>
+    <tbody><tr><td>运费</td><td>10</td></tr><tr><td>商品</td><td>100</td></tr></tbody>
+  </table>
+</body>
+</html>
+"""
+
+
+def test_html_parser_emits_atx_headings_and_pipe_tables() -> None:
+    """HTML 进、markdown 出：``#`` / ``###`` 与 ``|`` 管道表格，与 docx 那条路同形态。"""
+
+    parsed = HtmlParser().parse(HTML_PAGE.encode(), filename="refund.html")
+
+    assert "# 退款政策" in parsed.content
+    assert "### 申请条件" in parsed.content
+    assert "| 项目 | 金额 |" in parsed.content
+    assert "| --- | --- |" in parsed.content
+    assert "| 运费 | 10 |" in parsed.content
+    assert "| 商品 | 100 |" in parsed.content
+    assert "=====" not in parsed.content, "Setext 标题会让结构化切块器漏掉整篇章节"
+    # head 是文档外壳：页面标题与脚本都不能混进正文切片。
+    assert "退款政策 - 帮助中心" not in parsed.content
+    assert "ad-slot" not in parsed.content
+    assert parsed.source_type == "html"
+    assert parsed.metadata == {"parser": "html"}
+
+
+def test_html_parser_does_not_steal_markdown_or_text() -> None:
+    registry = get_parser_registry()
+
+    assert registry.parse("# 退款政策".encode(), filename="guide.md").source_type == "markdown"
+    assert registry.parse("纯文本".encode(), filename="notes.txt").source_type == "text"
+    assert registry.parse(HTML_PAGE.encode(), filename="page.html").source_type == "html"
+    assert registry.parse(HTML_PAGE.encode(), filename="page.HTM").source_type == "html"
+
+
+def test_html_parser_rejects_page_with_no_extractable_text() -> None:
+    # head 里只剩标题、正文全空白：与 docx 一致，报「内容为空」而不是返回空串。
+    page = b"<html><head><title>only a title</title></head><body> \n </body></html>"
+
+    with pytest.raises(AppError) as exc_info:
+        HtmlParser().parse(page, filename="blank.html")
+
+    assert exc_info.value.code is ErrorCode.DOCUMENT_CONTENT_EMPTY
+
+
+def test_html_parser_fails_decode_like_the_other_text_parsers() -> None:
+    # 不把解码错误吞成 DOCUMENT_PARSE_FAILED：text / markdown 都是让
+    # UnicodeDecodeError 冒泡，HTML 保持同一口径（编码问题要能被单独定位）。
+    bad_bytes = b"<h1>\xff\xfe</h1>"
+
+    with pytest.raises(UnicodeDecodeError):
+        TextParser().parse(bad_bytes, filename="notes.txt")
+    with pytest.raises(UnicodeDecodeError):
+        HtmlParser().parse(bad_bytes, filename="page.html")
 
 
 @dataclass
