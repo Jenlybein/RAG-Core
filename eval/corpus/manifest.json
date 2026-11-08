@@ -44,6 +44,12 @@
       "name": "评测语料库·商务与人事",
       "description": "第三类文档：入职指引（流程清单）与评审纪要（非结构化对话），与前两个库主题不重叠",
       "documents": ["onboarding.md", "meeting_minutes.md"]
+    },
+    {
+      "kb_id": "kb-eval-long",
+      "name": "评测语料库·长章节",
+      "description": "对照组：每节 900-1200 字，刻意超过 chunk_size=800。前三个库的章节中位只有 144 字，一个 800 字窗口能装 5-6 节，朴素切块的错误因此很温和；这个库用来看「一节大于窗口」时差距会不会放大",
+      "documents": ["deploy_guide.md", "troubleshoot_deep.md", "integration_api.md"]
     }
   ],
   "empty_kb": {

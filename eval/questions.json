@@ -1523,6 +1523,306 @@
         }
       ],
       "note": "复盘报告给整改项，会议纪要给验证方式；同一件事分散在两篇文档。"
+    },
+    {
+      "id": "q108",
+      "type": "colloquial",
+      "query": "上门装设备之前要先去看什么",
+      "relevant": [
+        {
+          "document": "deploy_guide",
+          "heading_path": "部署实施指南 > 现场勘查与方案确认"
+        }
+      ],
+      "note": "长章节（967 字）。一节的四块内容（位置/拓扑/供电/时间窗）都在同一段长文里。"
+    },
+    {
+      "id": "q109",
+      "type": "noise_robust",
+      "query": "网线布完之后怎么确认链路没问题",
+      "relevant": [
+        {
+          "document": "deploy_guide",
+          "heading_path": "部署实施指南 > 综合布线与链路测试"
+        }
+      ],
+      "note": "长章节（968 字）。三步测试法散在三段里，且前面还有一大段「先测通再固定」。"
+    },
+    {
+      "id": "q110",
+      "type": "negative_scope",
+      "query": "机架款上架时哪些做法会导致过热",
+      "relevant": [
+        {
+          "document": "deploy_guide",
+          "heading_path": "部署实施指南 > 设备上架与供电接入"
+        }
+      ],
+      "note": "长章节（974 字）。答案是若干个「不要」散布在全节各处。"
+    },
+    {
+      "id": "q111",
+      "type": "cross_section",
+      "query": "配置下发之后要分几层验证，验收报告写什么",
+      "relevant": [
+        {
+          "document": "deploy_guide",
+          "heading_path": "部署实施指南 > 配置下发与验收"
+        }
+      ],
+      "note": "长章节（923 字）。三层验证与验收报告都在同一节，但隔着好几段。"
+    },
+    {
+      "id": "q112",
+      "type": "counterfactual",
+      "query": "为什么故障总是凌晨发生、白天自己就好了",
+      "relevant": [
+        {
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例一：证书链断裂导致的批量离线"
+        }
+      ],
+      "note": "长章节（975 字）。「缓存 12 小时」这个解释埋在第三段，前半段全是排查过程。"
+    },
+    {
+      "id": "q113",
+      "type": "noise_robust",
+      "query": "会话表快满了，先做什么再做什么",
+      "relevant": [
+        {
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例二：会话表打满引发的连锁掉线"
+        }
+      ],
+      "note": "长章节（892 字）。止血与根因处置分属两段，中间隔着一大段排查叙述。"
+    },
+    {
+      "id": "q114",
+      "type": "synonym",
+      "query": "设备显示在线但数据传不上去",
+      "relevant": [
+        {
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例三：上行拥塞造成的伪故障"
+        }
+      ],
+      "note": "长章节（670 字）。「传不上去」对「上行拥塞」，且答案强调「在线不等于可用」。"
+    },
+    {
+      "id": "q115",
+      "type": "counterfactual",
+      "query": "断电恢复后一批设备签名校验失败是什么原因",
+      "relevant": [
+        {
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例四：时间偏移引发的签名失效"
+        }
+      ],
+      "note": "长章节（788 字）。死锁链条（时间错→签名失败→注册失败→拿不到 NTP）是本节核心。"
+    },
+    {
+      "id": "q116",
+      "type": "table_lookup",
+      "query": "请求签名的时间戳允许多少秒偏差",
+      "relevant": [
+        {
+          "document": "integration_api",
+          "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法"
+        }
+      ],
+      "note": "长章节（1085 字）。±300 秒这个数字夹在五个签名细节中间，前后都是文字。"
+    },
+    {
+      "id": "q117",
+      "type": "noise_robust",
+      "query": "回调失败了会重试几次，间隔多久",
+      "relevant": [
+        {
+          "document": "integration_api",
+          "heading_path": "接口对接与鉴权说明 > 回调通知与重试策略"
+        }
+      ],
+      "note": "长章节（982 字）。七次退避的完整序列写在段落里，不是表格。"
+    },
+    {
+      "id": "q118",
+      "type": "negative_scope",
+      "query": "哪些错误码重试也没有意义",
+      "relevant": [
+        {
+          "document": "integration_api",
+          "heading_path": "接口对接与鉴权说明 > 错误码分层与排查路径"
+        }
+      ],
+      "note": "长章节（1017 字）。答案在最后一段，列举了「不能一刀切重试」的四类。"
+    },
+    {
+      "id": "q119",
+      "type": "cross_section",
+      "query": "密钥多久轮换、宽限期多久、没切完会怎样",
+      "relevant": [
+        {
+          "document": "integration_api",
+          "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法"
+        }
+      ],
+      "note": "长章节（1085 字）。三个数字在最后一整段，前面讲的全是签名算法。"
+    },
+    {
+      "id": "q120",
+      "type": "model_number",
+      "query": "XR-2000 出厂配置几个千兆网口",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "note": "4 个。增强款 6 个、机架款 8 个，三款并列在同一类章节。"
+    },
+    {
+      "id": "q121",
+      "type": "model_number",
+      "query": "XR-2000 Pro 是几核处理器",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "note": "8 核。标准款 4 核、机架款 16 核。"
+    },
+    {
+      "id": "q122",
+      "type": "model_number",
+      "query": "XR-2100 的内存有多大",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（机架款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "note": "16 GB。与「XR-2000 内存 2 GB」是同一类问法、不同档位。"
+    },
+    {
+      "id": "q123",
+      "type": "model_number",
+      "query": "XR-2000 Pro 的存储容量是多少",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "note": "32 GB eMMC。标准款 8 GB eMMC、机架款 128 GB SSD。"
+    },
+    {
+      "id": "q124",
+      "type": "model_number",
+      "query": "XR-2100 用的是 eMMC 还是 SSD",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（机架款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "note": "128 GB SSD。这是三款里唯一用 SSD 的，另两款都是 eMMC。"
+    },
+    {
+      "id": "q125",
+      "type": "model_number",
+      "query": "XR-2000 Pro 的整机功耗大约多少瓦",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "note": "约 24 瓦。标准款 12 瓦、机架款 65 瓦；且必须用随机的 24 瓦适配器。"
+    },
+    {
+      "id": "q126",
+      "type": "model_number",
+      "query": "XR-2000 出厂固件是哪个大版本",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "release_notes",
+          "heading_path": "版本发布说明 > v5.2.0（当前版本）"
+        }
+      ],
+      "note": "3.x。增强款 4.x、机架款 5.x——与 release_notes 里的 v5.x 是两套编号，易混。"
+    },
+    {
+      "id": "q127",
+      "type": "model_number",
+      "query": "XR-1800 还能买到吗",
+      "relevant": [
+        {
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        }
+      ],
+      "note": "停产机型，只对老客户开放。这道题的答案在价格表而不是型号指南。"
+    },
+    {
+      "id": "q128",
+      "type": "model_number",
+      "query": "XR-2000 套装里包含哪些配件",
+      "relevant": [
+        {
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        }
+      ],
+      "trap": [
+        {
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        }
+      ],
+      "note": "标准款 + 壁挂件 + 网线。同表还有增强款套装，价格不同。"
     }
   ]
 }

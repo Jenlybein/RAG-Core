@@ -606,6 +606,151 @@ NEW_QUESTIONS: list[dict[str, object]] = [
         ],
         "note": "复盘报告给整改项，会议纪要给验证方式；同一件事分散在两篇文档。",
     },
+    # ══════════════════════════════════════════════════════════════════
+    # 第三批：加「长章节对照组」+ 补厚型号题。
+    # 起因是整体 hit@1 只差 18.8 点，按题型拆开才发现差距极不均匀。
+    # 一个可疑的解释：前 15 篇的章节中位只有 144 字，一个 800 字窗口能装 5-6 节，
+    # 朴素切块混了也不致命。于是新写 3 篇让每节 700-1100 字的文档（kb-eval-long），
+    # 看「一节大于窗口」时差距会不会放大。
+    # ══════════════════════════════════════════════════════════════════
+    # ── 长章节库 · 部署实施指南 ──
+    {
+        "type": "colloquial",
+        "query": "上门装设备之前要先去看什么",
+        "relevant": [("deploy_guide", "部署实施指南 > 现场勘查与方案确认")],
+        "note": "长章节（967 字）。一节的四块内容（位置/拓扑/供电/时间窗）都在同一段长文里。",
+    },
+    {
+        "type": "noise_robust",
+        "query": "网线布完之后怎么确认链路没问题",
+        "relevant": [("deploy_guide", "部署实施指南 > 综合布线与链路测试")],
+        "note": "长章节（968 字）。三步测试法散在三段里，且前面还有一大段「先测通再固定」。",
+    },
+    {
+        "type": "negative_scope",
+        "query": "机架款上架时哪些做法会导致过热",
+        "relevant": [("deploy_guide", "部署实施指南 > 设备上架与供电接入")],
+        "note": "长章节（974 字）。答案是若干个「不要」散布在全节各处。",
+    },
+    {
+        "type": "cross_section",
+        "query": "配置下发之后要分几层验证，验收报告写什么",
+        "relevant": [("deploy_guide", "部署实施指南 > 配置下发与验收")],
+        "note": "长章节（923 字）。三层验证与验收报告都在同一节，但隔着好几段。",
+    },
+    # ── 长章节库 · 深度排障案例集 ──
+    {
+        "type": "counterfactual",
+        "query": "为什么故障总是凌晨发生、白天自己就好了",
+        "relevant": [("troubleshoot_deep", "深度排障案例集 > 案例一：证书链断裂导致的批量离线")],
+        "note": "长章节（975 字）。「缓存 12 小时」这个解释埋在第三段，前半段全是排查过程。",
+    },
+    {
+        "type": "noise_robust",
+        "query": "会话表快满了，先做什么再做什么",
+        "relevant": [("troubleshoot_deep", "深度排障案例集 > 案例二：会话表打满引发的连锁掉线")],
+        "note": "长章节（892 字）。止血与根因处置分属两段，中间隔着一大段排查叙述。",
+    },
+    {
+        "type": "synonym",
+        "query": "设备显示在线但数据传不上去",
+        "relevant": [("troubleshoot_deep", "深度排障案例集 > 案例三：上行拥塞造成的伪故障")],
+        "note": "长章节（670 字）。「传不上去」对「上行拥塞」，且答案强调「在线不等于可用」。",
+    },
+    {
+        "type": "counterfactual",
+        "query": "断电恢复后一批设备签名校验失败是什么原因",
+        "relevant": [("troubleshoot_deep", "深度排障案例集 > 案例四：时间偏移引发的签名失效")],
+        "note": "长章节（788 字）。死锁链条（时间错→签名失败→注册失败→拿不到 NTP）是本节核心。",
+    },
+    # ── 长章节库 · 接口对接与鉴权说明 ──
+    {
+        "type": "table_lookup",
+        "query": "请求签名的时间戳允许多少秒偏差",
+        "relevant": [("integration_api", "接口对接与鉴权说明 > 鉴权方式与签名算法")],
+        "note": "长章节（1085 字）。±300 秒这个数字夹在五个签名细节中间，前后都是文字。",
+    },
+    {
+        "type": "noise_robust",
+        "query": "回调失败了会重试几次，间隔多久",
+        "relevant": [("integration_api", "接口对接与鉴权说明 > 回调通知与重试策略")],
+        "note": "长章节（982 字）。七次退避的完整序列写在段落里，不是表格。",
+    },
+    {
+        "type": "negative_scope",
+        "query": "哪些错误码重试也没有意义",
+        "relevant": [("integration_api", "接口对接与鉴权说明 > 错误码分层与排查路径")],
+        "note": "长章节（1017 字）。答案在最后一段，列举了「不能一刀切重试」的四类。",
+    },
+    {
+        "type": "cross_section",
+        "query": "密钥多久轮换、宽限期多久、没切完会怎样",
+        "relevant": [("integration_api", "接口对接与鉴权说明 > 鉴权方式与签名算法")],
+        "note": "长章节（1085 字）。三个数字在最后一整段，前面讲的全是签名算法。",
+    },
+    # ── 型号题补厚（6 → 15），验证之前那个 -0.167 是噪声还是真实现象 ──
+    {
+        "type": "model_number",
+        "query": "XR-2000 出厂配置几个千兆网口",
+        "relevant": [("support_models", f"{M} > 整机规格（标准款）")],
+        "note": "4 个。增强款 6 个、机架款 8 个，三款并列在同一类章节。",
+        "trap": [("support_models", f"{M} > 整机规格（增强款）")],
+    },
+    {
+        "type": "model_number",
+        "query": "XR-2000 Pro 是几核处理器",
+        "relevant": [("support_models", f"{M} > 整机规格（增强款）")],
+        "note": "8 核。标准款 4 核、机架款 16 核。",
+        "trap": [("support_models", f"{M} > 整机规格（标准款）")],
+    },
+    {
+        "type": "model_number",
+        "query": "XR-2100 的内存有多大",
+        "relevant": [("support_models", f"{M} > 整机规格（机架款）")],
+        "note": "16 GB。与「XR-2000 内存 2 GB」是同一类问法、不同档位。",
+        "trap": [("support_models", f"{M} > 整机规格（标准款）")],
+    },
+    {
+        "type": "model_number",
+        "query": "XR-2000 Pro 的存储容量是多少",
+        "relevant": [("support_models", f"{M} > 整机规格（增强款）")],
+        "note": "32 GB eMMC。标准款 8 GB eMMC、机架款 128 GB SSD。",
+        "trap": [("support_models", f"{M} > 整机规格（标准款）")],
+    },
+    {
+        "type": "model_number",
+        "query": "XR-2100 用的是 eMMC 还是 SSD",
+        "relevant": [("support_models", f"{M} > 整机规格（机架款）")],
+        "note": "128 GB SSD。这是三款里唯一用 SSD 的，另两款都是 eMMC。",
+        "trap": [("support_models", f"{M} > 整机规格（增强款）")],
+    },
+    {
+        "type": "model_number",
+        "query": "XR-2000 Pro 的整机功耗大约多少瓦",
+        "relevant": [("support_models", f"{M} > 整机规格（增强款）")],
+        "note": "约 24 瓦。标准款 12 瓦、机架款 65 瓦；且必须用随机的 24 瓦适配器。",
+        "trap": [("support_models", f"{M} > 整机规格（标准款）")],
+    },
+    {
+        "type": "model_number",
+        "query": "XR-2000 出厂固件是哪个大版本",
+        "relevant": [("support_models", f"{M} > 整机规格（标准款）")],
+        "note": "3.x。增强款 4.x、机架款 5.x——与 release_notes 里的 v5.x 是两套编号，易混。",
+        "trap": [("release_notes", "版本发布说明 > v5.2.0（当前版本）")],
+    },
+    {
+        "type": "model_number",
+        "query": "XR-1800 还能买到吗",
+        "relevant": [("price_list", "价格与折扣对照表 > 整机指导价")],
+        "note": "停产机型，只对老客户开放。这道题的答案在价格表而不是型号指南。",
+    },
+    {
+        "type": "model_number",
+        "query": "XR-2000 套装里包含哪些配件",
+        "relevant": [("price_list", "价格与折扣对照表 > 整机指导价")],
+        "note": "标准款 + 壁挂件 + 网线。同表还有增强款套装，价格不同。",
+        "trap": [("price_list", "价格与折扣对照表 > 配件价格")],
+    },
 ]
 
 
@@ -650,8 +795,13 @@ def main() -> int:
                 problems.append(f"章节不存在：{document} / {heading_path}")
             else:
                 count = pieces_per_section.get((document, heading_path), 0)
-                if count != 1:
-                    problems.append(f"章节被切成 {count} 片（应为 1）：{document} / {heading_path}")
+                # 常规是 1 片。长章节库（kb-eval-long）刻意让每节超过 800 字，
+                # 会被二次切成 2 片——两片都归属同一节、都算相关，这是设计意图，
+                # 不是标注写错。超过 2 片仍然报错，那说明该节太散、定位已不可靠。
+                if count < 1 or count > 2:
+                    problems.append(
+                        f"章节被切成 {count} 片（应为 1-2 片）：{document} / {heading_path}"
+                    )
     if problems:
         print("金标校验失败：")
         for problem in sorted(set(problems)):

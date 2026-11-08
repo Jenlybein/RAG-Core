@@ -53,6 +53,16 @@ CHUNK_OVERLAP = 100
 TABLE_MAX_ROWS = 10
 DOMINANCE_RATIO = 0.6
 
+# 长章节对照组：这三篇刻意让每节 700-1100 字（超过 chunk_size）。
+# 其余文档的章节中位只有 144 字，一个 800 字窗口能装 5-6 节。
+# 分组报告用来回答「语料结构本身是不是把差距压小了」。
+LONG_SECTION_DOCS = frozenset({"deploy_guide", "troubleshoot_deep", "integration_api"})
+
+# `false_premise` 不进主平均：它的正确行为是「识别前提有误」，而纯向量检索
+# 只会返回「最像问题本身」的切片，不会去找反驳材料。实测两组都是 0.000，
+# 留着只会白占分母、把真实差距压小。单独统计，不进平均值。
+EXCLUDED_FROM_MAIN = frozenset({"false_premise"})
+
 
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
@@ -234,16 +244,30 @@ def _manual_metrics(cases: list[tuple[set[str], list[str]]], k: int) -> dict[str
 async def main() -> None:
     docs = _load_corpus()
     questions, k = _load_questions()
-    answerable = [q for q in questions if q.labels]
+    excluded = [q for q in questions if q.type in EXCLUDED_FROM_MAIN]
+    answerable = [q for q in questions if q.labels and q.type not in EXCLUDED_FROM_MAIN]
     print(
         f"语料：{len(docs)} 篇 / {sum(len(d.text) for d in docs)} 字；题目：{len(questions)} 道"
         f"（可回答 {len(answerable)} 道）；k = {k}"
     )
+    if excluded:
+        print(
+            f"不进主平均：{len(excluded)} 道 {sorted({q.type for q in excluded})} "
+            f"——纯向量检索无法处理「前提有误」，两组实测同为 0"
+        )
 
     provider = get_embedding_provider()
     section_cache = {doc.stem: _sections(doc.text) for doc in docs}
 
     summary: dict[str, dict[str, object]] = {}
+    # 金标章节在结构化切块下的类型（table / prose / code）：给「表格专项」分组用。
+    # 只算一次，不进 variant 循环——它是语料属性，与切块粒度无关。
+    gold_types: dict[tuple[str, str], str] = {}
+    _probe = MarkdownStructuredSplitter(CHUNK_SIZE, CHUNK_OVERLAP, TABLE_MAX_ROWS)
+    for doc in docs:
+        for piece in _probe.split(doc.text):
+            heading = str(piece.metadata.get("heading_path") or "")
+            gold_types[(doc.stem, heading)] = str(piece.metadata.get("chunk_type") or "")
     # (名称, 切块器, chunk_size, overlap)；结构化组固定 800/100，两个朴素组只差粒度。
     variants: tuple[tuple[str, str, int | None, int | None], ...] = (
         ("naive-800/100", "naive", 800, 100),
@@ -281,6 +305,9 @@ async def main() -> None:
             for section in section_cache[doc.stem]
         }
         cases: list[tuple[set[str], list[str]]] = []
+        case_types: list[str] = []
+        case_groups: list[str] = []
+        case_kinds: list[str] = []
         unowned = sum(1 for chunk in chunks if chunk.owner is None)
         no_chunk_questions = 0
         for question, query_vector in zip(answerable, query_vectors):
@@ -307,6 +334,33 @@ async def main() -> None:
                 reverse=True,
             )
             cases.append((relevant, [cid for _, cid in scores]))
+            case_types.append(question.type)
+            case_groups.append(
+                "long" if any(gold[0] in LONG_SECTION_DOCS for gold in question.labels) else "short"
+            )
+            # 表格专项：金标章节在结构化切块下被判定为 table，就归到「表格题」。
+            # 这批题的答案依赖表头与行列对齐，是切块策略最该体现差异的地方。
+            case_kinds.append(
+                "table"
+                if any(gold_types.get(gold) == "table" for gold in question.labels)
+                else "prose"
+            )
+
+        # 按题型拆开看首位命中：整体差值会被题型分布稀释，
+        # 拆开才能看清「结构化切块到底在哪类题上起作用」。
+        per_type: dict[str, list[bool]] = {}
+        # 再按「金标章节是长是短」分组：长章节库每节 700-1100 字，一个 800 字窗口
+        # 装不下；短章节库每节中位 144 字，窗口能装 5-6 节。这组对照用来回答
+        # 「语料结构本身是不是把差距压小了」。
+        per_group: dict[str, list[bool]] = {}
+        per_kind: dict[str, list[bool]] = {}
+        for qtype, group, kind, (rel, ret) in zip(case_types, case_groups, case_kinds, cases):
+            if not rel:
+                continue
+            hit = bool(ret[:1] and ret[0] in rel)
+            per_type.setdefault(qtype, []).append(hit)
+            per_group.setdefault(group, []).append(hit)
+            per_kind.setdefault(kind, []).append(hit)
 
         # R@1 的分母陷阱：一道题有 N 个相关切片时，单片最多覆盖 1/N，
         # 于是 R@1 的理论上限就是 1/N。切片越碎、N 越大，R@1 天然越低。
@@ -339,6 +393,9 @@ async def main() -> None:
             "unowned": unowned,
             "no_chunk_questions": no_chunk_questions,
             "avg_relevant": avg_relevant,
+            "per_type": per_type,
+            "per_group": per_group,
+            "per_kind": per_kind,
             "ceiling": ceiling,
             "reach": (float(metrics["recall_at_1"]) / ceiling * 100) if ceiling else 0.0,
             **metrics,
@@ -413,6 +470,60 @@ async def main() -> None:
             else:
                 cells.append(f"{value!s:>12s}")
         print(" | ".join(cells) + f" | {label}")
+
+    # 整体差值会被题型分布稀释：某一类题占比高、差距又小，就会把总和压平。
+    # 拆开看才知道「结构化切块到底在哪类题上起作用」。
+    naive_types = summary["naive-800/100"].get("per_type")
+    struct_types = summary["structured"].get("per_type")
+    if isinstance(naive_types, dict) and isinstance(struct_types, dict):
+        print("\n=== 按题型看 hit@1 ===")
+        print("  题型               题数     朴素  结构化     差值")
+        rows: list[tuple[str, int, float, float, float]] = []
+        for qtype, flags_naive in naive_types.items():
+            flags_struct = struct_types.get(qtype) or []
+            if not flags_naive or not flags_struct:
+                continue
+            left = sum(flags_naive) / len(flags_naive)
+            right = sum(flags_struct) / len(flags_struct)
+            rows.append((qtype, len(flags_naive), left, right, right - left))
+        for qtype, count, left, right, delta in sorted(rows, key=lambda r: -r[4]):
+            print(f"  {qtype:16s} {count:6d} {left:8.3f} {right:7.3f} {delta:+8.3f}")
+
+    # 短章节 vs 长章节：同一批代码、同一个模型，只换语料结构。
+    naive_groups = summary["naive-800/100"].get("per_group")
+    struct_groups = summary["structured"].get("per_group")
+    if isinstance(naive_groups, dict) and isinstance(struct_groups, dict):
+        print("\n=== 按语料结构看 hit@1（短章节 vs 长章节）===")
+        print("  语料结构           题数     朴素  结构化     差值")
+        labels = {"short": "短章节（中位 144 字）", "long": "长章节（中位 974 字）"}
+        for group in ("short", "long"):
+            flags_naive = naive_groups.get(group) or []
+            flags_struct = struct_groups.get(group) or []
+            if not flags_naive or not flags_struct:
+                continue
+            left = sum(flags_naive) / len(flags_naive)
+            right = sum(flags_struct) / len(flags_struct)
+            print(
+                f"  {labels[group]:22s} {len(flags_naive):5d} {left:8.3f} {right:7.3f} {right - left:+8.3f}"
+            )
+
+    # 表格专项：金标章节本身是表格的题，答案依赖表头与行列对齐。
+    naive_kinds = summary["naive-800/100"].get("per_kind")
+    struct_kinds = summary["structured"].get("per_kind")
+    if isinstance(naive_kinds, dict) and isinstance(struct_kinds, dict):
+        print("\n=== 表格专项 vs 正文题（按金标章节的切片类型分组）===")
+        print("  金标类型           题数     朴素  结构化     差值")
+        for kind in ("table", "prose"):
+            flags_naive = naive_kinds.get(kind) or []
+            flags_struct = struct_kinds.get(kind) or []
+            if not flags_naive or not flags_struct:
+                continue
+            left = sum(flags_naive) / len(flags_naive)
+            right = sum(flags_struct) / len(flags_struct)
+            name = "表格（答案在表里）" if kind == "table" else "正文（答案在段落里）"
+            print(
+                f"  {name:20s} {len(flags_naive):5d} {left:8.3f} {right:7.3f} {right - left:+8.3f}"
+            )
 
     print("\n=== 差值（structured - naive-800/100）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
