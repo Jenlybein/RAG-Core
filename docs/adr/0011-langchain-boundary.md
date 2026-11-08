@@ -2,7 +2,7 @@
 
 - 状态：已采纳（2026-11-08 第 4 步收口）
 - 日期：2026-11-07
-- 相关：ADR-0002「六类 Provider」、ADR-0010「检索契约」、`GLOSSARY.md`「检索管道」「召回」「融合」「重排」「模型角色」「available」、`app/providers/llm/`、`app/providers/embedding/`、`app/providers/langchain_runtime.py`、`app/services/retrieval/`、教程 `03-实现开始/05-混合检索/03-具体实现.md`
+- 相关：ADR-0002「六类 Provider」、ADR-0010「检索契约」、`GLOSSARY.md`「检索管道」「召回」「融合」「重排」「模型角色」「available」、`app/providers/llm/`、`app/providers/embedding/`、`app/providers/langchain_runtime.py`、`app/services/retrieval/`、教程 `03-实现开始/06-混合检索/03-具体实现.md`
 
 ## 一句话决定
 
@@ -166,7 +166,7 @@ grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -v 'app/pro
 
 ## 教程落点（供教程侧吸收）
 
-### 落点一：`03-实现开始/05-混合检索/03-具体实现.md` —— 步骤 5 之前插入
+### 落点一：`03-实现开始/06-混合检索/03-具体实现.md` —— 步骤 5 之前插入
 
 标题建议：`### 步骤 5 之前的说明：为什么不直接用现成的混合检索`
 
