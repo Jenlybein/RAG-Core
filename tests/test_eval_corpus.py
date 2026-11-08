@@ -38,6 +38,9 @@ TABLE_MAX_ROWS = 10
 # - `counterfactual` 同代多档/新旧规则叠加（RGB 的 Counterfactual Robustness）
 # - `table_lookup` 数值与时长的精确检索
 # - `negative_scope` 否定式提问，答案藏在排除句里
+#
+# 语料扩到 15 篇后（69 → 107）又补了 `false_premise`：问题本身的前提是错的
+# （例如「标准款怎么配双机热备」，而标准款根本不支持），借的是 CRAG 的题型。
 REQUIRED_TYPES = (
     "exact_code",
     "model_number",
@@ -49,6 +52,7 @@ REQUIRED_TYPES = (
     "counterfactual",
     "table_lookup",
     "negative_scope",
+    "false_premise",
 )
 ALLOWED_TYPES = frozenset((*REQUIRED_TYPES, "rare_token"))
 
@@ -94,7 +98,10 @@ def test_corpus_is_a_synthetic_eval_set() -> None:
     """语料必须是合成的：出题人自己写的，不是从真实工单里搬出来的。"""
 
     stems = {Path(name).stem for name in _documents()}
-    assert 6 <= len(stems) <= 8, f"语料应为 6-8 篇，实际 {sorted(stems)}"
+    # 上界随语料扩充调整：v3 从 8 篇扩到 15 篇，除数量外还刻意加了文档类型
+    # （价格表 / SLA / FAQ / 复盘 / 发布说明 / 入职指引 / 会议纪要）。
+    # 下界不动——少于 6 篇时，主题重叠不足，测不出跨文档混淆。
+    assert 6 <= len(stems) <= 16, f"语料应为 6-16 篇，实际 {sorted(stems)}"
 
 
 def test_chunk_count_stays_in_the_discriminating_range() -> None:
@@ -299,9 +306,10 @@ def _corpus_paths() -> list[Path]:
 def test_question_count_and_type_coverage() -> None:
     payload = _questions()
     questions = payload["questions"]
-    # 上界随题库扩充调整：第 3 步做切块自评时把 26 道扩到 69 道（按 RGB 子任务补了四种题型）。
+    # 上界随题库扩充调整：第 3 步做切块自评时从 26 道扩到 69 道（按 RGB 子任务补四种题型），
+    # 语料扩到 15 篇后又补到 107 道（新增 false_premise 与更多跨文档多跳）。
     # 下界不动——题目太少时测量没有量程。
-    assert 20 <= len(questions) <= 80, f"题目数 {len(questions)} 不在 20-80 之间"
+    assert 20 <= len(questions) <= 120, f"题目数 {len(questions)} 不在 20-120 之间"
 
     types = Counter(question["type"] for question in questions)
     assert set(types) <= ALLOWED_TYPES, f"出现未声明的题型：{sorted(set(types) - ALLOWED_TYPES)}"

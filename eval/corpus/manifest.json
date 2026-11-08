@@ -5,27 +5,45 @@
     "所以语料永远不会被索引两遍。三个 id 都带 eval 前缀，与真实业务库不相交。",
     "v2 起语料扩到 8 篇（v1 是 2 篇 39 片）：每路召回深度 20，语料只有几十片时",
     "两路一捞就覆盖大半个库，Recall@5 必然同时到顶——v1 的 1.0000 就是这么来的。",
+    "v3 扩到 15 篇：除数量外刻意加了文档**类型**——价格表（表格密集）、SLA 条款、",
+    "FAQ 问答对、故障复盘（时间线叙事）、发布说明（版本对比）、入职指引、会议纪要。",
+    "理由是切块策略对「表格」「问答对」「时间线」的敏感度远高于普通说明文，",
+    "只用一类文档测出来的差距会偏小。扩完总切片约 330 片，仍在 200-400 的量程内。",
     "empty_kb 刻意不挂任何文档：它只用来触发 no_indexed_chunks 这一种空结果原因。"
   ],
   "kbs": [
     {
       "kb_id": "kb-eval",
       "name": "评测语料库·客户支持",
-      "description": "语义合成语料：错误码、型号、退款与计费、安全合规（均带大量近义噪声）",
+      "description": "语义合成语料：错误码、型号、退款与计费、安全合规、价格表、SLA、FAQ（均带大量近义噪声）",
       "documents": [
         "support_errors.md",
         "support_models.md",
         "support_refund.md",
         "product_spec.md",
         "billing_policy.md",
-        "security_compliance.md"
+        "security_compliance.md",
+        "price_list.md",
+        "sla_terms.md",
+        "faq_short.md"
       ]
     },
     {
       "kb_id": "kb-eval-ops",
       "name": "评测语料库·运维值班",
-      "description": "多库检索验收用的第二个库：值班处置与变更管理，与客户支持库主题部分重叠",
-      "documents": ["ops_runbook.md", "ops_change.md"]
+      "description": "多库检索验收用的第二个库：值班处置、变更管理、故障复盘与发布说明，与客户支持库主题部分重叠",
+      "documents": [
+        "ops_runbook.md",
+        "ops_change.md",
+        "incident_report.md",
+        "release_notes.md"
+      ]
+    },
+    {
+      "kb_id": "kb-eval-biz",
+      "name": "评测语料库·商务与人事",
+      "description": "第三类文档：入职指引（流程清单）与评审纪要（非结构化对话），与前两个库主题不重叠",
+      "documents": ["onboarding.md", "meeting_minutes.md"]
     }
   ],
   "empty_kb": {

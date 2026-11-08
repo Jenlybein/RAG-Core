@@ -18,6 +18,7 @@ QUESTIONS_PATH = REPO_ROOT / "eval" / "questions.json"
 CORPUS_DIR = REPO_ROOT / "eval" / "corpus"
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+from app.utils.markdown_splitter import MarkdownStructuredSplitter  # noqa: E402
 from eval_chunking import _load_corpus, _sections  # noqa: E402
 
 E = "售后故障与错误码速查"  # support_errors
@@ -327,6 +328,284 @@ NEW_QUESTIONS: list[dict[str, object]] = [
         "note": "标准款只有 Wi-Fi 5；考「哪个型号具备」而不是「参数是多少」。",
         "trap": [("support_models", f"{M} > 整机规格（标准款）")],
     },
+    # ══════════════════════════════════════════════════════════════════
+    # 第二批：语料扩到 15 篇后补的题型。三件事一起做——
+    # ① 补 billing_policy（此前 3.4K 字文档零覆盖）；
+    # ② 给七篇不同**类型**的新文档出题（价格表 / SLA / FAQ / 复盘 / 发布说明 /
+    #    入职指引 / 会议纪要），切块策略对这些文体的敏感度高于普通说明文；
+    # ③ 补 `false_premise`（借 CRAG 的题型）与更多跨文档多跳（借 MultiHop-RAG）。
+    # ══════════════════════════════════════════════════════════════════
+    # ── billing_policy：补齐此前零覆盖的一整篇文档 ──
+    {
+        "type": "table_lookup",
+        "query": "每月账单是哪天出账的",
+        "relevant": [("billing_policy", f"{B} > 计费周期")],
+        "note": "次月 3 日。同节还有出账后 5 个工作日内扣款。",
+    },
+    {
+        "type": "table_lookup",
+        "query": "发票在付款完成后几天内开具",
+        "relevant": [("billing_policy", f"{B} > 发票开具时限")],
+        "note": "5 个工作日。与「出账后 5 个工作日扣款」是同一数字、不同含义。",
+    },
+    {
+        "type": "negative_scope",
+        "query": "抵扣券可以叠加使用吗",
+        "relevant": [("billing_policy", f"{B} > 抵扣券使用")],
+        "note": "不找零、不兑现、不叠加，单笔只能用一张。",
+    },
+    {
+        "type": "synonym",
+        "query": "退回来的钱能取现吗",
+        "relevant": [("billing_policy", f"{B} > 退费申请流程")],
+        "note": "「取现」对「提现」，退费只进账户余额，提现要单独申请。",
+    },
+    {
+        "type": "colloquial",
+        "query": "欠钱了会马上给停掉吗",
+        "relevant": [("billing_policy", f"{B} > 欠费与停机")],
+        "note": "账单到期后 7 天标欠费、欠费后 3 天停机、停机保留 15 天，三个数字要分清。",
+    },
+    {
+        "type": "noise_robust",
+        "query": "退费和退款到底有什么区别",
+        "relevant": [("billing_policy", f"{B} > 退费与退款的区别")],
+        "note": "退费进余额、退款回原渠道；两个词在语料里高频混用，专设一节辨析。",
+        "trap": [("support_refund", f"{R} > 退款到账时间")],
+    },
+    {
+        "type": "counterfactual",
+        "query": "升配和降配分别什么时候生效",
+        "relevant": [("billing_policy", f"{B} > 套餐变更")],
+        "note": "升配即时生效补差价，降配下个周期生效且当期不退——同一节里两个相反规则。",
+    },
+    {
+        "type": "cross_section",
+        "query": "觉得账单金额算错了，怎么申诉、多久内要提",
+        "relevant": [
+            ("billing_policy", f"{B} > 计费争议"),
+            ("billing_policy", f"{B} > 账单出账时间"),
+        ],
+        "note": "争议时限与出账时间分属两节，缺一节就答不全。",
+    },
+    # ── price_list：表格密集，考「从并列的数字里挑对那一档」 ──
+    {
+        "type": "table_lookup",
+        "query": "机架款 XR-2100 的指导价是多少",
+        "relevant": [("price_list", "价格与折扣对照表 > 整机指导价")],
+        "note": "9600 元。三款指导价在同一张表里，且都有套装价干扰。",
+    },
+    {
+        "type": "table_lookup",
+        "query": "万兆光模块多少钱一个",
+        "relevant": [("price_list", "价格与折扣对照表 > 配件价格")],
+        "note": "1180 元。同表还有千兆光模块 320 元，是两个不同配件。",
+    },
+    {
+        "type": "noise_robust",
+        "query": "一次订 60 台能打几折",
+        "relevant": [("price_list", "价格与折扣对照表 > 阶梯折扣")],
+        "note": "9 折。阶梯表五档相邻，60 台落在 50-199 档，容易串到相邻档。",
+    },
+    {
+        "type": "negative_scope",
+        "query": "阶梯折扣能和促销价一起用吗",
+        "relevant": [("price_list", "价格与折扣对照表 > 阶梯折扣")],
+        "note": "互斥，系统自动取更优的一种。",
+    },
+    # ── sla_terms：条款型，数值与免责范围 ──
+    {
+        "type": "table_lookup",
+        "query": "企业版的月度可用性承诺是多少",
+        "relevant": [("sla_terms", "服务等级协议条款 > 可用性承诺")],
+        "note": "99.9%。四档并列，且赔偿比例与档位一一对应。",
+    },
+    {
+        "type": "noise_robust",
+        "query": "计划内维护算不算不可用时长",
+        "relevant": [("sla_terms", "服务等级协议条款 > 常见争议")],
+        "note": "判据是「有没有提前 48 小时通知」，不是维护本身。这条只写在争议一节。",
+        "trap": [("sla_terms", "服务等级协议条款 > 可用性承诺")],
+    },
+    {
+        "type": "negative_scope",
+        "query": "哪些情况不计入不可用时长",
+        "relevant": [("sla_terms", "服务等级协议条款 > 免责情形")],
+        "note": "六类免责情形，与「可用性承诺」一节的排除项互补。",
+    },
+    # ── faq_short：问答对文体，短句密集 ──
+    {
+        "type": "colloquial",
+        "query": "密码忘了进不去管理页面怎么办",
+        "relevant": [("faq_short", "高频问答速查 > 设备与网络")],
+        "note": "FAQ 每节五问，问题都短，考「短问句在长文档里怎么被召回」。",
+    },
+    {
+        "type": "synonym",
+        "query": "货到了再付钱行不行",
+        "relevant": [("faq_short", "高频问答速查 > 下单与发货")],
+        "note": "「货到再付钱」对「货到付款」，且答案是「对公可申请、个人不支持」。",
+    },
+    # ── incident_report：时间线叙事，因果链 ──
+    {
+        "type": "table_lookup",
+        "query": "3 月 14 日那次故障峰值掉了多少台设备",
+        "relevant": [("incident_report", "故障复盘报告 > 影响范围")],
+        "note": "2300 台、占 18%。与摘要里的「约 2300 台」呼应，需区分峰值与总数。",
+    },
+    {
+        "type": "cross_section",
+        "query": "会话配额隔离什么时候完成、谁负责",
+        "relevant": [
+            ("incident_report", "故障复盘报告 > 改进项与负责人"),
+            ("incident_report", "故障复盘报告 > 根因分析"),
+        ],
+        "note": "改进项在表格里、动机在根因一节，两节合起来才是完整答案。",
+    },
+    {
+        "type": "counterfactual",
+        "query": "上次同类事件为什么没能防住这次故障",
+        "relevant": [("incident_report", "故障复盘报告 > 根因分析")],
+        "note": "根因一节点明「只做了临时扩容、没有形成机制」，是本次复发的直接教训。",
+        "trap": [("incident_report", "故障复盘报告 > 事件摘要")],
+    },
+    # ── release_notes：版本对比，反事实的最佳素材 ──
+    {
+        "type": "counterfactual",
+        "query": "双机热备的快速切换是哪个版本开始有的",
+        "relevant": [("release_notes", "版本发布说明 > v5.1.0（上一版）")],
+        "note": "v5.1.0。当前版是 v5.2.0，容易答成「当前版本」。",
+        "trap": [("release_notes", "版本发布说明 > v5.2.0（当前版本）")],
+    },
+    {
+        "type": "negative_scope",
+        "query": "标准款支持双机热备吗",
+        "relevant": [("release_notes", "版本发布说明 > v5.1.0（上一版）")],
+        "note": "明确写「标准款在 5.1.0 之后仍然不支持」，与「整机规格」一节互证。",
+        "trap": [("support_models", f"{M} > 整机规格（增强款）")],
+    },
+    {
+        "type": "noise_robust",
+        "query": "默认会话老化时间在 5.2.0 改成多少了",
+        "relevant": [("release_notes", "版本发布说明 > v5.2.0（当前版本）")],
+        "note": "240 秒。product_spec 里写的是默认 300 秒，两处数字不同——考「哪个是最新的」。",
+        "trap": [("product_spec", f"{P} > 性能指标（二）并发会话")],
+    },
+    {
+        "type": "counterfactual",
+        "query": "从 v4.x 能直接升到 v5.x 吗",
+        "relevant": [("release_notes", "版本发布说明 > 升级路径与兼容性")],
+        "note": "不能，必须先升 v5.0.0 过渡版本；且跨大版本升级会清空自定义配置。",
+        "trap": [("release_notes", "版本发布说明 > v4.x 与 v5.x 的差异")],
+    },
+    # ── onboarding：流程清单，带审批人表格 ──
+    {
+        "type": "table_lookup",
+        "query": "平台只读账号由谁审批",
+        "relevant": [("onboarding", "新员工入职与权限指引 > 账号开通清单")],
+        "note": "团队负责人。六项账号的审批人各不相同，只有第 1 项无需审批。",
+    },
+    {
+        "type": "negative_scope",
+        "query": "实习期能申请可写权限吗",
+        "relevant": [("onboarding", "新员工入职与权限指引 > 常见问题")],
+        "note": "不能，实习期只能拿只读。这条只在 FAQ 一节里。",
+    },
+    {
+        "type": "cross_section",
+        "query": "转正考核要过哪几项",
+        "relevant": [
+            ("onboarding", "新员工入职与权限指引 > 转正与考核"),
+            ("onboarding", "新员工入职与权限指引 > 权限申请流程"),
+        ],
+        "note": "考核三项在考核节，而「独立完成标准变更」需要可写权限，两者相关。",
+    },
+    # ── meeting_minutes：非结构化对话，结论藏在讨论里 ──
+    {
+        "type": "counterfactual",
+        "query": "证书台账最后由哪个系统作为主维护",
+        "relevant": [("meeting_minutes", "架构评审会议纪要 > 议题一：证书台账合并")],
+        "note": "资产系统为主、安全组补丁留痕。节内有争议过程，结论在段末。",
+    },
+    {
+        "type": "negative_scope",
+        "query": "调试日志的留存时间延长了吗",
+        "relevant": [("meeting_minutes", "架构评审会议纪要 > 议题二：日志留存策略调整")],
+        "note": "没有延长，仍是 7 天；改为新增脱敏摘要入工单。",
+        "trap": [("security_compliance", f"{S} > 日志留存")],
+    },
+    {
+        "type": "table_lookup",
+        "query": "会话隔离复现验证的决议编号和期限",
+        "relevant": [("meeting_minutes", "架构评审会议纪要 > 决议汇总")],
+        "note": "R3、4 月 23 日。四条决议编号相邻，考编号与内容的对应。",
+    },
+    # ── false_premise：前提本身是错的（借 CRAG 的 false_premise 题型）──
+    {
+        "type": "false_premise",
+        "query": "E1024 会让设备反复重启，要怎么修",
+        "relevant": [("support_models", f"{M} > 常见误配（一）")],
+        "note": "假前提：E1024 是证书过期，不会导致重启；反复重启是电源适配器错配。",
+        "trap": [("support_errors", f"{E} > 连接与证书类错误（一）")],
+    },
+    {
+        "type": "false_premise",
+        "query": "标准款怎么配置双机热备",
+        "relevant": [("support_models", f"{M} > 整机规格（标准款）")],
+        "note": "假前提：标准款不支持双机热备，硬件上没有同步接口。",
+        "trap": [("support_models", f"{M} > 整机规格（增强款）")],
+    },
+    {
+        "type": "false_premise",
+        "query": "机架款怎么用壁挂件装在墙上",
+        "relevant": [("support_models", f"{M} > 配件兼容性（一）")],
+        "note": "假前提：机架款是 1U 上柜，不需要也不支持壁挂件。",
+        "trap": [("support_models", f"{M} > 壁挂与桌面安装")],
+    },
+    {
+        "type": "false_premise",
+        "query": "标准款的万兆光口要配哪种光模块",
+        "relevant": [("support_models", f"{M} > 整机规格（标准款）")],
+        "note": "假前提：标准款只有千兆网口，没有万兆光口。",
+        "trap": [("support_models", f"{M} > 整机规格（机架款）")],
+    },
+    # ── 跨文档多跳：证据分布在不同文档（借 MultiHop-RAG 的设定）──
+    {
+        "type": "cross_section",
+        "query": "退款和退费分别退到哪里去",
+        "relevant": [
+            ("billing_policy", f"{B} > 退费与退款的区别"),
+            ("support_refund", f"{R} > 退款到账时间"),
+        ],
+        "note": "跨两篇文档：退费进余额在计费文档，退款回原渠道在售后文档。",
+    },
+    {
+        "type": "cross_section",
+        "query": "固件升级要走变更流程吗，值班期间要盯什么",
+        "relevant": [
+            ("ops_runbook", f"{RUN} > 固件升级值班要求"),
+            ("ops_change", f"{C} > 变更分级"),
+        ],
+        "note": "值班手册说「升级由变更流程驱动」，变更规范给分级；跨两篇文档。",
+    },
+    {
+        "type": "cross_section",
+        "query": "万兆光模块的价格和选型要求分别在哪里看",
+        "relevant": [
+            ("price_list", "价格与折扣对照表 > 配件价格"),
+            ("support_models", f"{M} > 整机规格（机架款）"),
+        ],
+        "note": "价格在价格表、必须与端口速率匹配的约束在型号指南；跨两篇文档。",
+    },
+    {
+        "type": "cross_section",
+        "query": "会话配额隔离这件事在哪些材料里被提到",
+        "relevant": [
+            ("incident_report", "故障复盘报告 > 改进项与负责人"),
+            ("meeting_minutes", "架构评审会议纪要 > 议题三：会话配额隔离的验证"),
+        ],
+        "note": "复盘报告给整改项，会议纪要给验证方式；同一件事分散在两篇文档。",
+    },
 ]
 
 
@@ -352,6 +631,16 @@ def main() -> int:
     sections_by_doc = {
         doc.stem: {s.heading_path for s in _sections(doc.text)} for doc in _load_corpus()
     }
+    # 再校验「恰好对应一片」：判据是「切片的 owner 章节 == 金标章节」，若某节被切成
+    # 多片，一道题就会同时命中多片，R@1 的分母被凭空放大。tests/test_eval_corpus.py
+    # 里也有同样的断言，这里提前到写入前，免得写完才发现。
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100, table_max_rows=10)
+    pieces_per_section: dict[tuple[str, str], int] = {}
+    for doc in _load_corpus():
+        for piece in splitter.split(doc.text):
+            key = (doc.stem, str(piece.metadata.get("heading_path") or ""))
+            pieces_per_section[key] = pieces_per_section.get(key, 0) + 1
+
     problems: list[str] = []
     for item in pending:
         for document, heading_path in list(item["relevant"]) + list(item.get("trap") or []):
@@ -359,6 +648,10 @@ def main() -> int:
                 problems.append(f"未知文档 {document}")
             elif heading_path not in sections_by_doc[document]:
                 problems.append(f"章节不存在：{document} / {heading_path}")
+            else:
+                count = pieces_per_section.get((document, heading_path), 0)
+                if count != 1:
+                    problems.append(f"章节被切成 {count} 片（应为 1）：{document} / {heading_path}")
     if problems:
         print("金标校验失败：")
         for problem in sorted(set(problems)):
