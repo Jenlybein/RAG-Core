@@ -67,18 +67,14 @@ class MarkdownStructuredSplitter(TextSplitter):
         chunk_size: int = 800,
         chunk_overlap: int = 100,
         table_max_rows: int = 10,
-        merge_threshold: int = 150,
     ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
         if table_max_rows < 1:
             raise ValueError("table_max_rows must be at least 1")
-        if merge_threshold < 0:
-            raise ValueError("merge_threshold must not be negative")
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.table_max_rows = table_max_rows
-        self.merge_threshold = merge_threshold
 
     def split(self, text: str) -> list[SplitPiece]:
         """扫描全文，按 h1/h2/h3 边界产出一组带 provenance 的切片。"""
@@ -172,7 +168,7 @@ class MarkdownStructuredSplitter(TextSplitter):
                     continue
                 kept.append(piece)
                 last_text = piece.text
-            for order_index, piece in enumerate(self._merge_small_pieces(kept)):
+            for order_index, piece in enumerate(kept):
                 pieces.append(
                     SplitPiece(
                         text=piece.text,
@@ -187,59 +183,6 @@ class MarkdownStructuredSplitter(TextSplitter):
                     )
                 )
         return pieces
-
-    def _merge_small_pieces(self, pieces: list[_Piece]) -> list[_Piece]:
-        """把同一节内过碎的相邻片合并，减少「答案要拼三四条才够」的碎片。
-
-        **这条规则在同一节内逻辑上几乎不可能触发**，不是数据问题：
-
-        1. 同一节要产出多个同类型的片，只有一种可能——这节的总长度超过
-           ``chunk_size``，被 ``_split_normal_lines`` 切开；
-        2. 切开时切点有 ``chunk_size // 4`` 的下限，所以第一片至少 ``chunk_size // 4``
-           长（默认 200 字），已经不小于合并阈值 150；
-        3. 就算第一片恰好小于阈值，它和第二片的合计必然超过 ``chunk_size``
-           （整节都超了），于是被「合并后不超窗口」这条挡住。
-
-        实测印证：全库 456 片，阈值 150 与 0 的产物完全相同；再往 5 篇文档里注入
-        7 种「本该合并」的形态（短正文+短列表、分隔线隔开、空代码块隔开、小表格
-        夹在中间等），触发 0 次——多数形态整节只产出 1 片（短段落本来就先合成
-        一个 normal 块），产出多片的形态又是不同类型（被表格/代码隔开）。
-
-        真正能减少碎片的是「跨 h3 合并到同一 h2」，但那会推翻「路径精确到子节」，
-        而且实测会让 18 条子节级金标失去独立切片。当前选择：保持粒度，改由检索层
-        的父节（small-to-big）承担「上下文不够」的补救。
-
-        保留这段代码是因为它对 **``chunk_size`` 调小的配置**仍有意义，且行为已被
-        单测钉住；只合并 ``prose`` / ``list``：
-
-        * ``table_row`` 是按语义拆出来的，合并回去等于取消行级索引；
-        * ``code`` 分片是刻意切开的（整块塞不进窗口），合并回去等于取消递归切。
-
-        合并后仍不得超过 ``chunk_size``：否则这批内容会在别处又被二次切一次。
-        阈值设为 0 时整条逻辑退化为不合并。
-        """
-
-        if self.merge_threshold <= 0 or not pieces:
-            return pieces
-        mergeable = {"prose", "list"}
-        merged: list[_Piece] = []
-        buffer = pieces[0]
-        for piece in pieces[1:]:
-            if (
-                buffer.chunk_type in mergeable
-                and piece.chunk_type == buffer.chunk_type
-                and len(buffer.text) < self.merge_threshold
-                and len(buffer.text) + len(piece.text) + 2 <= self.chunk_size
-            ):
-                buffer = _Piece(
-                    text=f"{buffer.text}\n\n{piece.text}",
-                    chunk_type=buffer.chunk_type,
-                )
-                continue
-            merged.append(buffer)
-            buffer = piece
-        merged.append(buffer)
-        return merged
 
     def _build_section_texts(self, blocks: list[_Block]) -> list[_Piece]:
         produced: list[_Piece] = []

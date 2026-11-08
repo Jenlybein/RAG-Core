@@ -87,14 +87,14 @@ def test_list_knowledge_bases_returns_only_default_tenant(client, monkeypatch) -
                 name="退款政策",
                 tenant_id=tenant_id,
                 split_strategy="structure",
-                settings={"chunk_size": 800, "merge_threshold": 150},
+                settings={"chunk_size": 800},
             ),
             SimpleNamespace(
                 id="kb-2",
                 name="换货政策",
                 tenant_id=tenant_id,
                 split_strategy="size",
-                settings={"chunk_size": 400, "merge_threshold": 0},
+                settings={"chunk_size": 400},
             ),
         ]
 

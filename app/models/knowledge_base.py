@@ -24,14 +24,11 @@ SPLIT_STRATEGIES: Final[tuple[SplitStrategy, ...]] = (SPLIT_STRUCTURE, SPLIT_SIZ
 
 # 建库默认值。800 与既有实测基线一致，改成别的值会让历史评测不可比。
 DEFAULT_CHUNK_SIZE = 800
-DEFAULT_MERGE_THRESHOLD = 150
 
 # 数值旋钮的范围。放模型层是为了让路由（Pydantic）与索引期兜底共用同一组边界，
 # 避免两处各写一份然后慢慢漂移。
 MIN_CHUNK_SIZE = 200
 MAX_CHUNK_SIZE = 2000
-MIN_MERGE_THRESHOLD = 0
-MAX_MERGE_THRESHOLD = 500
 
 
 class KnowledgeBase(Base):
@@ -51,7 +48,7 @@ class KnowledgeBase(Base):
     split_strategy: Mapped[str] = mapped_column(
         String(32), default=SPLIT_STRUCTURE, server_default=SPLIT_STRUCTURE
     )
-    # chunk_size / merge_threshold 存在 settings 里，读取统一走 settings_of()。
+    # chunk_size 存在 settings 里，读取统一走 settings_of()。
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -66,12 +63,6 @@ def settings_of(kb: KnowledgeBase | None) -> dict[str, int]:
 
     raw = (kb.settings if kb is not None else None) or {}
     chunk_size = raw.get("chunk_size", DEFAULT_CHUNK_SIZE)
-    merge_threshold = raw.get("merge_threshold", DEFAULT_MERGE_THRESHOLD)
     if not isinstance(chunk_size, int) or not MIN_CHUNK_SIZE <= chunk_size <= MAX_CHUNK_SIZE:
         chunk_size = DEFAULT_CHUNK_SIZE
-    if (
-        not isinstance(merge_threshold, int)
-        or not MIN_MERGE_THRESHOLD <= merge_threshold <= MAX_MERGE_THRESHOLD
-    ):
-        merge_threshold = DEFAULT_MERGE_THRESHOLD
-    return {"chunk_size": chunk_size, "merge_threshold": merge_threshold}
+    return {"chunk_size": chunk_size}

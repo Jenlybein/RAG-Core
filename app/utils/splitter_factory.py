@@ -18,7 +18,6 @@ from __future__ import annotations
 
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
-    DEFAULT_MERGE_THRESHOLD,
     SPLIT_SIZE,
     SPLIT_STRUCTURE,
 )
@@ -31,7 +30,6 @@ def build_splitter(
     *,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int | None = None,
-    merge_threshold: int = DEFAULT_MERGE_THRESHOLD,
     table_max_rows: int | None = None,
 ) -> TextSplitter:
     """按策略名构造切块器；未知策略回落到 ``structure``。
@@ -54,5 +52,4 @@ def build_splitter(
         chunk_size=chunk_size,
         chunk_overlap=overlap,
         table_max_rows=max_rows,
-        merge_threshold=merge_threshold,
     )

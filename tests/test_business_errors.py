@@ -317,7 +317,6 @@ def test_success_response_shape_is_unchanged(client, monkeypatch) -> None:
             "tenant_id": kwargs["tenant_id"],
             "split_strategy": kwargs.get("split_strategy", "structure"),
             "chunk_size": kwargs.get("chunk_size", 800),
-            "merge_threshold": kwargs.get("merge_threshold", 150),
             "created_at": datetime(2024, 1, 2, 3, 4, 5),
         }
 

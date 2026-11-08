@@ -17,7 +17,6 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
-    DEFAULT_MERGE_THRESHOLD,
     SPLIT_SIZE,
     SPLIT_STRUCTURE,
     settings_of,
@@ -88,19 +87,17 @@ def test_defaults_are_structure_and_baseline_window(client: Any) -> None:
     data = response.json()["data"]
     assert data["split_strategy"] == SPLIT_STRUCTURE
     assert data["chunk_size"] == DEFAULT_CHUNK_SIZE == 800
-    assert data["merge_threshold"] == DEFAULT_MERGE_THRESHOLD == 150
 
 
 def test_size_strategy_and_window_are_echoed(client: Any) -> None:
     """显式传「按 size 切」与窗口时，响应回显的是实际生效值。"""
 
-    response = _create(client, split_strategy="size", chunk_size=400, merge_threshold=0)
+    response = _create(client, split_strategy="size", chunk_size=400)
 
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["split_strategy"] == SPLIT_SIZE
     assert data["chunk_size"] == 400
-    assert data["merge_threshold"] == 0
 
 
 @pytest.mark.parametrize(
@@ -110,8 +107,6 @@ def test_size_strategy_and_window_are_echoed(client: Any) -> None:
         {"split_strategy": "char"},
         {"chunk_size": 100},
         {"chunk_size": 5000},
-        {"merge_threshold": -1},
-        {"merge_threshold": 900},
     ],
 )
 def test_invalid_split_config_is_rejected(client: Any, payload: dict[str, Any]) -> None:
@@ -125,11 +120,11 @@ def test_invalid_split_config_is_rejected(client: Any, payload: dict[str, Any]) 
 def test_config_is_persisted_on_the_knowledge_base_row(client: Any) -> None:
     """配置真的落进了知识库行：策略是独立列，两个数值进 settings。"""
 
-    _create(client, split_strategy="size", chunk_size=400, merge_threshold=0)
+    _create(client, split_strategy="size", chunk_size=400)
 
     stored = client.fake_session.added[0]  # type: ignore[attr-defined]
     assert stored.split_strategy == "size"
-    assert stored.settings == {"chunk_size": 400, "merge_threshold": 0}
+    assert stored.settings == {"chunk_size": 400}
 
 
 def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
@@ -144,14 +139,14 @@ def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
                 name="结构库",
                 tenant_id=tenant_id,
                 split_strategy="structure",
-                settings={"chunk_size": 800, "merge_threshold": 150},
+                settings={"chunk_size": 800},
             ),
             SimpleNamespace(
                 id="kb-2",
                 name="字符库",
                 tenant_id=tenant_id,
                 split_strategy="size",
-                settings={"chunk_size": 400, "merge_threshold": 0},
+                settings={"chunk_size": 400},
             ),
         ]
 
@@ -206,23 +201,29 @@ def test_unknown_strategy_falls_back_to_structure() -> None:
 def test_settings_out_of_range_falls_back_to_defaults() -> None:
     """settings 里的越界数值回落默认，不让脏数据毁掉整条索引链路。"""
 
-    kb = SimpleNamespace(settings={"chunk_size": 99999, "merge_threshold": -5})
+    kb = SimpleNamespace(settings={"chunk_size": 99999})
 
     values = settings_of(kb)
 
-    assert values == {
-        "chunk_size": DEFAULT_CHUNK_SIZE,
-        "merge_threshold": DEFAULT_MERGE_THRESHOLD,
-    }
+    assert values == {"chunk_size": DEFAULT_CHUNK_SIZE}
+
+
+def test_legacy_merge_threshold_key_is_ignored() -> None:
+    """旧数据里残留的 merge_threshold 被忽略：不报错、也不影响切块配置。
+
+    这个键属于被撤掉的「构建期合并」（逻辑上不可能触发，见切块器注释）。
+    存量库里还留着它，读配置时不能因为它而失败。
+    """
+
+    kb = SimpleNamespace(settings={"chunk_size": 800, "merge_threshold": 150})
+
+    assert settings_of(kb) == {"chunk_size": 800}
 
 
 def test_missing_kb_settings_yields_defaults() -> None:
     """库不存在时取配置回落默认，把「库不存在」留给后续流程去报。"""
 
-    assert settings_of(None) == {
-        "chunk_size": DEFAULT_CHUNK_SIZE,
-        "merge_threshold": DEFAULT_MERGE_THRESHOLD,
-    }
+    assert settings_of(None) == {"chunk_size": DEFAULT_CHUNK_SIZE}
 
 
 def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> None:
@@ -234,7 +235,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     monkeypatch.setattr(
         repo,
         "get_split_config",
-        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400, 0),
+        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400),
     )
 
     service = service_module.IndexingService(

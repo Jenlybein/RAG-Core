@@ -114,12 +114,10 @@ class IndexingService:
 
         if self._splitter is not None:
             return self._splitter, SPLIT_STRUCTURE
-        strategy, chunk_size, merge_threshold = knowledge_base_repository.get_split_config(
+        strategy, chunk_size = knowledge_base_repository.get_split_config(
             db, doc.kb_id, tenant_id=doc.tenant_id
         )
-        splitter = build_splitter(
-            strategy, chunk_size=chunk_size, merge_threshold=merge_threshold
-        )
+        splitter = build_splitter(strategy, chunk_size=chunk_size)
         return splitter, strategy
 
     async def index_existing_document(

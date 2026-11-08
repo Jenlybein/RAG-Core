@@ -10,11 +10,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
-    DEFAULT_MERGE_THRESHOLD,
     MAX_CHUNK_SIZE,
-    MAX_MERGE_THRESHOLD,
     MIN_CHUNK_SIZE,
-    MIN_MERGE_THRESHOLD,
     SPLIT_STRUCTURE,
 )
 
@@ -31,11 +28,6 @@ class CreateKBRequest(BaseModel):
     chunk_size: int = Field(
         default=DEFAULT_CHUNK_SIZE, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE
     )
-    merge_threshold: int = Field(
-        default=DEFAULT_MERGE_THRESHOLD,
-        ge=MIN_MERGE_THRESHOLD,
-        le=MAX_MERGE_THRESHOLD,
-    )
 
 
 class CreateKBData(BaseModel):
@@ -44,7 +36,6 @@ class CreateKBData(BaseModel):
     tenant_id: str
     split_strategy: str
     chunk_size: int
-    merge_threshold: int
     created_at: datetime
 
 
@@ -54,7 +45,6 @@ class KnowledgeBaseItem(BaseModel):
     tenant_id: str
     split_strategy: str
     chunk_size: int
-    merge_threshold: int
 
 
 class KnowledgeBaseListData(BaseModel):

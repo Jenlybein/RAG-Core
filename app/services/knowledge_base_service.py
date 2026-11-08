@@ -7,7 +7,6 @@ from sqlalchemy.orm import Session
 
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
-    DEFAULT_MERGE_THRESHOLD,
     SPLIT_STRUCTURE,
     KnowledgeBase,
     settings_of,
@@ -24,7 +23,6 @@ async def create_kb(
     tenant_id: str,
     split_strategy: str = SPLIT_STRUCTURE,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
-    merge_threshold: int = DEFAULT_MERGE_THRESHOLD,
 ) -> dict:
     kb = KnowledgeBase(
         id=new_kb_id(),
@@ -32,7 +30,7 @@ async def create_kb(
         name=name,
         description=description,
         split_strategy=split_strategy,
-        settings={"chunk_size": chunk_size, "merge_threshold": merge_threshold},
+        settings={"chunk_size": chunk_size},
     )
     knowledge_base_repository.create(db, kb)
     db.commit()
@@ -43,6 +41,5 @@ async def create_kb(
         "tenant_id": kb.tenant_id,
         "split_strategy": kb.split_strategy,
         "chunk_size": values["chunk_size"],
-        "merge_threshold": values["merge_threshold"],
         "created_at": kb.created_at,
     }

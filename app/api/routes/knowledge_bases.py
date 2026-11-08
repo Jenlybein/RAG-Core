@@ -40,7 +40,6 @@ async def create_knowledge_base(
         tenant_id=key.tenant_id,
         split_strategy=payload.split_strategy,
         chunk_size=payload.chunk_size,
-        merge_threshold=payload.merge_threshold,
     )
     return ok(CreateKBData.model_validate(data))
 
@@ -63,7 +62,6 @@ async def list_knowledge_bases(
                 tenant_id=row.tenant_id,
                 split_strategy=row.split_strategy,
                 chunk_size=settings_of(row)["chunk_size"],
-                merge_threshold=settings_of(row)["merge_threshold"],
             )
             for row in rows
         ]
