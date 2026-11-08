@@ -35,30 +35,24 @@ def test_new_identity_fields_are_declared() -> None:
     assert chunk.expansion == "parent"
 
 
-def test_collapsed_result_needs_no_parent_field() -> None:
-    """折叠之后 content 就是大块，父节不该再套一层。"""
+def test_collapsed_result_carries_the_heading_path() -> None:
+    """折叠后 parent 那层没了，章节路径直接平铺在这条结果上。"""
 
-    chunk = RetrievedChunk.model_validate(_payload())
+    chunk = RetrievedChunk.model_validate(_payload(heading_path="指南 > 上架"))
 
-    assert chunk.parent is None
-    assert chunk.table_context is None
+    assert chunk.heading_path == "指南 > 上架"
 
 
-def test_deprecated_fields_still_accept_old_payloads() -> None:
-    """过渡期：旧调用方送来的 parent 字段仍能解析，不炸。"""
+def test_removed_fields_are_gone_from_the_contract() -> None:
+    """ADR-0013 删掉 parent 与 table_context：折叠后 content 就是大块，它们是重复数据。
 
-    chunk = RetrievedChunk.model_validate(
-        _payload(
-            parent={
-                "section_id": "a3f9",
-                "heading_path": "指南 > 上架",
-                "content": "整节正文。",
-            }
-        )
-    )
+    旧调用方若还在读这两个字段，会拿到 KeyError——这是破坏性变更，ADR 里写明了。
+    """
 
-    assert chunk.parent is not None
-    assert chunk.parent.section_id == "a3f9"
+    dumped = RetrievedChunk.model_validate(_payload()).model_dump()
+
+    assert "parent" not in dumped
+    assert "table_context" not in dumped
 
 
 def test_locating_fields_default_to_null_for_markdown() -> None:

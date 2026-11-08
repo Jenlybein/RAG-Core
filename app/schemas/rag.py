@@ -59,23 +59,6 @@ class RetrieveRequest(BaseModel):
     expand_table_rows: bool = True
 
 
-class ParentSection(BaseModel):
-    """已废弃：命中切片所属的整个 h2 节。
-
-    ADR-0013 起改用「折叠」：`RetrievedChunk.content` 直接就是折叠后的大块，
-    `section_id` / `expansion` 平铺在这条结果上，不再套一层 `parent`。
-    这个模型只为过渡期兼容保留，下一个大版本删除。
-    """
-
-    section_id: str
-    heading_path: str
-    content: str
-    expansion: str = "section"
-    piece_count: int = 0
-    # 本次检索是否跨了多个节：跨节时每节都给整节，因为跨节题本来就需要多节上下文。
-    cross_section: bool = False
-
-
 class RetrievedChunk(BaseModel):
     """一条检索结果。
 
@@ -108,11 +91,9 @@ class RetrievedChunk(BaseModel):
     source_chunk_ids: list[str] = Field(default_factory=list)
     # 这次上下文给了多大范围：neighbors / parent / table / chunk（兜底，见折叠函数）。
     expansion: str | None = None
-    # 已废弃：ADR-0013 起 `content` 就是折叠后的大块，`parent` 与 `table_context`
-    # 是重复数据。保留字段只为让旧调用方在过渡期不炸，下一个大版本删除。
-    parent: ParentSection | None = None
-    # 已废弃，理由同上。
-    table_context: str | None = None
+    # 这一节的章节路径：引用要能显示「出自哪一节」。折叠后 parent 那层没了，
+    # 所以路径直接平铺在这条结果上。
+    heading_path: str | None = None
     # 引用定位：PDF 的物理页码；Markdown 无页码时为 null。
     page: int | None = None
     # 稿号（ADR-0005）：检索结果每条都带，审计时能回答「当时引用的是哪一稿」。

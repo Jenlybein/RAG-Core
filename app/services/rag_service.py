@@ -42,7 +42,6 @@
 from __future__ import annotations
 
 import structlog
-from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
@@ -53,6 +52,7 @@ from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
+from app.services import result_collapse
 from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
@@ -89,6 +89,10 @@ async def retrieve(
 
     resolved_mode = mode or settings.RETRIEVAL_MODE
     resolved_top_k = top_k or settings.TOP_K
+
+    # 折叠会把同一父节的多个命中并成一条，所以召回要多取几倍，否则去重后凑不够
+    # top_k 条。关掉折叠时按原样召回——「不折叠」就该连多取也不要。
+    recall_top_k = resolved_top_k * OVERFETCH_FACTOR if include_parent else resolved_top_k
 
     # 模式校验放在最前面：HTTP 入口的 schema 已经用 Literal 掐掉了未知值，走 MCP /
     # 内部调用才会到这里。校验先于可见性校验与查询优化，被拒的请求不该白烧一次改写
@@ -128,7 +132,7 @@ async def retrieve(
             # 两路各拿自己的查询：语义那侧用改写后的句子，字面那侧用扩展后的句子。
             vector_query=optimized.effective_query,
             keyword_query=optimized.search_query,
-            top_k=resolved_top_k,
+            top_k=recall_top_k,
             # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有接缝）。
             embedding_factory=get_embedding_provider,
             vector_factory=get_vector_store,
@@ -153,7 +157,7 @@ async def retrieve(
             tenant_id=tenant_id,
             kb_ids=kb_ids,
             query=optimized.search_query,
-            top_k=resolved_top_k,
+            top_k=recall_top_k,
         )
     else:  # MODE_VECTOR —— 剩下的唯一可能；未知模式已在函数开头被拒。
         chunks = await _retrieve_by_vector(
@@ -161,19 +165,22 @@ async def retrieve(
             tenant_id=tenant_id,
             kb_ids=kb_ids,
             query=optimized.effective_query,
-            top_k=resolved_top_k,
+            top_k=recall_top_k,
         )
+
+    collapsed = _collapse_results(
+        db,
+        tenant_id=tenant_id,
+        chunks=chunks,
+        top_k=resolved_top_k,
+        include_parent=include_parent,
+        expand_table_rows=expand_table_rows,
+    )
 
     return {
         "query": query,
         "kb_ids": list(kb_ids),
-        "retrieved_chunks": _decorate_results(
-            db,
-            tenant_id=tenant_id,
-            chunks=chunks,
-            include_parent=include_parent,
-            expand_table_rows=expand_table_rows,
-        ),
+        "retrieved_chunks": collapsed,
         "metadata": {
             "mode": resolved_mode,
             "top_k": resolved_top_k,
@@ -184,7 +191,9 @@ async def retrieve(
                 "mode": resolved_mode,
                 "degraded": degraded,
                 "degraded_reason": degraded_reason,
-                "empty_reason": _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=chunks),
+                "empty_reason": _empty_reason(
+                    db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed
+                ),
                 # 重排事实（是否发生、候选数、返回数、耗时）。单模式下恒为 null：
                 # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
                 "rerank": rerank_info,
@@ -193,18 +202,10 @@ async def retrieve(
     }
 
 
-@dataclass(frozen=True)
-class _DecorateScope:
-    """一次检索里「按哪些库、哪些文档、哪些章节」取数据。
-
-    这几个值总是一起出现，一路穿过三个函数。打包成一个类型后，加一个过滤条件
-    只改一处，也不会再把参数顺序传错。
-    """
-
-    tenant_id: str
-    kb_ids: list[str]
-    document_ids: list[str]
-    section_ids: list[str]
+# 折叠时多取几倍候选：去重后可能不够 top_k 条。因子写成常量而不是配置项——
+# 15 道题的样本量下，任何可调旋钮都会被调成过拟合值。实测每题平均 1.7 片同节
+# 命中，×3 有足够余量。
+OVERFETCH_FACTOR = 3
 
 
 def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:
@@ -220,37 +221,31 @@ def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:
     return metas.get((kb_id, chunk_id)) or {}
 
 
-def _decorate_results(
+def _collapse_results(
     db: Session,
     *,
     tenant_id: str,
     chunks: list[dict],
+    top_k: int,
     include_parent: bool,
     expand_table_rows: bool,
 ) -> list[dict]:
-    """给每条结果补上「可读的表格」「所属整节」与「引用定位」。
+    """把命中的小片折成「交付单元」：一条结果代表一节（ADR-0013）。
 
-    三样装饰各解决一个问题，都在返回前做，都不新增存储：
+    检索仍按小片算分（保住「找得准」），返回前把同一父节的命中折成一条，
+    所以 ``top_k`` 的名额不会被同一节的碎片占满。
 
-    * **整表上下文**：命中行级表片（`型号=XR-2100，配件=万兆光模块`）说明用户问的
-      是表里某个单元格，只喂这一行，模型看不到列含义与相邻行。整表全文放在
-      ``table_context``，``content`` 保持切片原文——后者是可回溯的引用依据。
-    * **上下文恢复**：按命中情况分级给出整节或邻居窗口。
-    * **定位**：页码、稿号、切块策略，供引用与审计使用。
-
-    两个开关都关掉时原样返回：响应体与改造前逐字一致，这是「开关有效」的定义。
-    契约层面 ``parent`` 仍然存在——响应模型有默认值（null），校验时自动补上。
+    三件事在这里一次做完：折叠、补定位字段（页码 / 稿号 / 切块策略）、
+    拼出对外字典。折叠算法本身在 ``result_collapse`` 里——**评测调同一个函数**，
+    口径不会再和生产分叉。
     """
 
     if not chunks:
-        return chunks
+        return []
 
-    if not include_parent and not expand_table_rows:
-        return chunks
-
-    for chunk in chunks:
-        if include_parent:
-            chunk["parent"] = None
+    if not include_parent:
+        # 不折叠：返回小片，响应与折叠之前逐字一致。留给「只要精确到那一行」的调用方。
+        return _with_locating_fields(db, tenant_id=tenant_id, chunks=chunks)
 
     kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
     document_ids = sorted(
@@ -259,39 +254,131 @@ def _decorate_results(
     if not kb_ids or not document_ids:
         return chunks
 
-    # 融合层只带对外字段（meta 不属于检索契约），所以按 ID 回查一次 meta。
-    # 三样装饰共用这一份：分别查会把同一次查询重复三遍。
     metas = chunk_repository.fetch_meta_by_chunk_ids(
         db,
         tenant_id=tenant_id,
         kb_ids=kb_ids,
         chunk_ids=[str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")],
     )
-    scope = _DecorateScope(
-        tenant_id=tenant_id,
-        kb_ids=kb_ids,
-        document_ids=document_ids,
-        section_ids=sorted(
-            {
-                str(meta["section_id"])
-                for meta in metas.values()
-                if isinstance(meta.get("section_id"), str)
-            }
-        ),
+
+    hits: list[result_collapse.Hit] = []
+    for chunk in chunks:
+        meta = _meta_of(chunk, metas)
+        hits.append(
+            result_collapse.Hit(
+                chunk_id=str(chunk.get("chunk_id") or ""),
+                document_id=str(chunk.get("document_id") or ""),
+                score=float(chunk.get("score") or 0.0),
+                content=str(chunk.get("content") or ""),
+                chunk_type=str(meta.get("chunk_type") or ""),
+                section_id=str(meta.get("section_id") or ""),
+                parent_section_id=str(meta.get("parent_section_id") or ""),
+                table_part=int(meta.get("table_part") or 0),
+                heading_path=str(meta.get("heading_path") or ""),
+                kb_id=chunk.get("kb_id"),
+            )
+        )
+
+    # 只查一次：按 parent_section_id 取整节的行。单命中时要的是「该片 + 前后各一片」，
+    # 那也是这一节的切片序列里的一段，所以不必再单独查一次子节。
+    parent_ids = sorted(
+        {
+            unit_key[-1]
+            for unit_key in (
+                result_collapse.unit_key(hit, merge_table_rows=expand_table_rows)
+                for hit in hits
+            )
+            if unit_key[0] == result_collapse.UNIT_SECTION
+        }
     )
-    _attach_locating_fields(chunks, metas)
+    raw_sections = (
+        chunk_repository.fetch_parent_section_chunks(
+            db,
+            tenant_id=tenant_id,
+            document_ids=document_ids,
+            parent_section_ids=parent_ids,
+            index_version=DEFAULT_INDEX_VERSION,
+        )
+        if parent_ids
+        else {}
+    )
+    # 仓储返回的是 (文档, 节) 键与列表值；折叠函数的键带种类前缀、且要求不可变序列。
+    # 在这里对齐一次，别让两层的数据结构互相感染。
+    sections: dict[tuple[str, ...], result_collapse.SectionRows] = {
+        (result_collapse.UNIT_SECTION, str(key[0]), str(key[1])): tuple(rows)
+        for key, rows in raw_sections.items()
+    }
 
+    tables: dict[tuple[str, ...], str] = {}
     if expand_table_rows:
-        _expand_table_rows(db, scope=scope, chunks=chunks, metas=metas)
+        table_section_ids = sorted(
+            {
+                unit_key[2]
+                for unit_key in (
+                    result_collapse.unit_key(hit, merge_table_rows=True) for hit in hits
+                )
+                if unit_key[0] == result_collapse.UNIT_TABLE
+            }
+        )
+        if table_section_ids:
+            # table_part 在仓储侧是 int，折叠侧的键要求全字符串且带种类前缀。
+            tables = {
+                (
+                    result_collapse.UNIT_TABLE,
+                    str(key[0]),
+                    str(key[1]),
+                    str(key[2]),
+                ): text
+                for key, text in chunk_repository.fetch_table_chunks(
+                    db,
+                    tenant_id=tenant_id,
+                    document_ids=document_ids,
+                    section_ids=table_section_ids,
+                    index_version=DEFAULT_INDEX_VERSION,
+                ).items()
+            }
 
-    if include_parent:
-        _attach_parent_sections(db, scope=scope, chunks=chunks, metas=metas)
-    return chunks
+    units = result_collapse.collapse(
+        hits,
+        sections=sections,
+        tables=tables,
+        top_k=top_k,
+        merge_table_rows=expand_table_rows,
+    )
+
+    by_chunk_id = {str(chunk.get("chunk_id")): chunk for chunk in chunks}
+    results: list[dict] = []
+    for unit in units:
+        # 以代表片那条结果为底：向量分 / 融合分 / 名次这些对外字段要原样保留，
+        # 只把「身份、正文、分数、溯源」换成单元的。
+        row = dict(by_chunk_id.get(unit.chunk_id) or {})
+        row["chunk_id"] = unit.chunk_id
+        row["content"] = unit.content
+        row["score"] = unit.score
+        row["section_id"] = unit.section_id
+        row["heading_path"] = unit.heading_path or None
+        row["source_chunk_ids"] = list(unit.source_chunk_ids)
+        row["expansion"] = unit.expansion
+        # 折叠后 parent / table_context 是重复数据（content 已经是大的）。
+        row.pop("parent", None)
+        row.pop("table_context", None)
+        results.append(row)
+
+    return _with_locating_fields(db, tenant_id=tenant_id, chunks=results)
 
 
-def _attach_locating_fields(chunks: list[dict], metas: dict[tuple[str, str], dict]) -> None:
-    """把页码、稿号、切块策略填进结果：引用要能说清「哪一页、哪一稿、怎么切的」。"""
+def _with_locating_fields(
+    db: Session, *, tenant_id: str, chunks: list[dict]
+) -> list[dict]:
+    """补页码 / 稿号 / 切块策略：引用要能说清「哪一页、哪一稿、怎么切的」。"""
 
+    ids = [str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")]
+    kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
+    if not ids or not kb_ids:
+        return chunks
+    metas = chunk_repository.fetch_meta_by_chunk_ids(
+        db, tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=ids
+    )
     for chunk in chunks:
         meta = _meta_of(chunk, metas)
         page = meta.get("page")
@@ -300,177 +387,7 @@ def _attach_locating_fields(chunks: list[dict], metas: dict[tuple[str, str], dic
         chunk["page"] = page if isinstance(page, int) else None
         chunk["doc_version"] = doc_version if isinstance(doc_version, int) else None
         chunk["split_strategy"] = strategy if isinstance(strategy, str) else None
-
-
-def _expand_table_rows(
-    db: Session,
-    *,
-    scope: _DecorateScope,
-    chunks: list[dict],
-    metas: dict[tuple[str, str], dict],
-) -> None:
-    """命中行级表片时，附带同一组的整表全文（放在 ``table_context``）。"""
-
-    keys: dict[int, tuple[str, str, int]] = {}
-    section_ids: set[str] = set()
-    for index, chunk in enumerate(chunks):
-        meta = _meta_of(chunk, metas)
-        if str(meta.get("chunk_type") or "") != "table_row":
-            continue
-        document_id = chunk.get("document_id")
-        section_id = meta.get("section_id")
-        table_part = meta.get("table_part")
-        if (
-            isinstance(document_id, str)
-            and isinstance(section_id, str)
-            and isinstance(table_part, int)
-        ):
-            keys[index] = (document_id, section_id, table_part)
-            section_ids.add(section_id)
-
-    if not keys:
-        return
-
-    tables = chunk_repository.fetch_table_chunks(
-        db,
-        tenant_id=scope.tenant_id,
-        document_ids=scope.document_ids,
-        section_ids=sorted(section_ids),
-        # 与召回口径一致：整表混进另一索引批次，会出现「表与命中片对不上」。
-        index_version=DEFAULT_INDEX_VERSION,
-    )
-    for index, key in keys.items():
-        table_text = tables.get(key)
-        if table_text is None:
-            # 找不到整表时不给 table_context：宁可少上下文，也不要给一条空内容。
-            # content 仍是那条行级片的原文，调用方不会拿到空结果。
-            continue
-        chunks[index]["table_context"] = table_text
-
-
-def _attach_parent_sections(
-    db: Session,
-    *,
-    scope: _DecorateScope,
-    chunks: list[dict],
-    metas: dict[tuple[str, str], dict],
-) -> None:
-    """上下文恢复：给每条结果挂上它所属**父节**（h2 级）的上下文。
-
-    三档，目标是「够用但不过量」：
-
-    | 命中情况 | 返回什么 | 为什么 |
-    | --- | --- | --- |
-    | 整个答案只命中 1 片 | 该片 + 前后各 1 片（`neighbors`） | 邻近片常补全被切断的句子 |
-    | 同一父节命中 ≥2 片 | 整个父节（`parent`） | 命中多处说明答案确实跨了子节 |
-    | 命中跨 ≥2 个父节 | 各父节全文（`cross_section=true`） | 跨节题本来就需要多节上下文 |
-
-    **父节是 h2 级**：``section_id`` 在 h3 成为边界后指向子节，所以这里按
-    ``parent_section_id`` 取整节——它一直存着却没被用上，这次补上。
-
-    只命中一片时不返回整个父节：一个 150 字的细片配 1000 字的父节是 7 倍浪费，
-    而单命中场景下邻近两片通常已经能补全被切断的句子。
-
-    索引与片数都不动，只改返回时的组装——不需要重建全库。
-    """
-
-    hits_by_parent: dict[tuple[str, str], list[str]] = {}
-    heading_paths: dict[tuple[str, str], str] = {}
-    own_sections: dict[tuple[str, str], str] = {}
-    for chunk in chunks:
-        meta = _meta_of(chunk, metas)
-        document_id = chunk.get("document_id")
-        section_id = meta.get("section_id")
-        parent_id = meta.get("parent_section_id") or section_id
-        if (
-            not isinstance(document_id, str)
-            or not isinstance(section_id, str)
-            or not isinstance(parent_id, str)
-            or not parent_id
-        ):
-            continue
-        key = (document_id, parent_id)
-        hits_by_parent.setdefault(key, []).append(str(chunk.get("chunk_id")))
-        heading_paths.setdefault(key, str(meta.get("heading_path") or ""))
-        own_sections.setdefault(key, section_id)
-
-    if not hits_by_parent:
-        return
-
-    cross_section = len(hits_by_parent) >= 2
-    parents: dict[tuple[str, str], dict[str, object]] = {}
-    for key, hit_ids in hits_by_parent.items():
-        whole_parent = cross_section or len(hit_ids) >= 2
-        rows = _parent_rows(
-            db, scope=scope, key=key, own_section=own_sections[key], whole=whole_parent
-        )
-        if not rows:
-            continue
-        if whole_parent:
-            selected = rows
-            expansion = "parent"
-        else:
-            positions = [index for index, (_, _, cid) in enumerate(rows) if cid in hit_ids]
-            if not positions:
-                selected = rows
-                expansion = "parent"
-            else:
-                centre = positions[0]
-                selected = rows[max(0, centre - 1) : centre + 2]
-                expansion = "neighbors"
-        parents[key] = {
-            "section_id": key[1],
-            "heading_path": heading_paths.get(key, ""),
-            "content": "\n\n".join(row[1] for row in selected),
-            "expansion": expansion,
-            "piece_count": len(selected),
-            "cross_section": cross_section,
-        }
-
-    for chunk in chunks:
-        meta = _meta_of(chunk, metas)
-        document_id = chunk.get("document_id")
-        section_id = meta.get("section_id")
-        parent_id = meta.get("parent_section_id") or section_id
-        chunk["parent"] = (
-            parents.get((document_id, parent_id))
-            if isinstance(document_id, str) and isinstance(parent_id, str)
-            else None
-        )
-
-
-def _parent_rows(
-    db: Session,
-    *,
-    scope: _DecorateScope,
-    key: tuple[str, str],
-    own_section: str,
-    whole: bool,
-) -> list[tuple[int, str, str]]:
-    """取「整父节（h2）」或「命中片所在的子节（h3）」，行形态统一为 ``(序号, 正文, ID)``。
-
-    单命中且不跨节时只取子节：整个父节里其余的 h3 与这次答案无关，取出来只是让
-    调用方多读几百字。
-    """
-
-    index_version = DEFAULT_INDEX_VERSION
-    if whole:
-        grouped = chunk_repository.fetch_parent_section_chunks(
-            db,
-            tenant_id=scope.tenant_id,
-            document_ids=[key[0]],
-            parent_section_ids=[key[1]],
-            index_version=index_version,
-        )
-        return grouped.get(key, [])
-    section_rows = chunk_repository.fetch_section_chunks(
-        db,
-        tenant_id=scope.tenant_id,
-        document_ids=[key[0]],
-        section_ids=[own_section],
-        index_version=index_version,
-    )
-    return section_rows.get((key[0], own_section), [])
+    return chunks
 
 
 def _rewrite_hint(kbs: list) -> str | None:
