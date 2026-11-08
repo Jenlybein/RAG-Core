@@ -53,6 +53,7 @@ CHUNK_OVERLAP = 100
 TABLE_MAX_ROWS = 10
 DOMINANCE_RATIO = 0.6
 
+
 _HEADING_RE = re.compile(r"^(#{1,6})\s+(.*)$")
 
 
@@ -165,10 +166,12 @@ def _owner_of(chunk: Chunk, sections: list[Section]) -> str | None:
     return best[1]
 
 
-def _naive_chunks(doc: CorpusDoc, sections: list[Section]) -> list[Chunk]:
-    splitter = CharacterTextSplitter(chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP)
+def _naive_chunks(
+    doc: CorpusDoc, sections: list[Section], *, size: int, overlap: int
+) -> list[Chunk]:
+    splitter = CharacterTextSplitter(chunk_size=size, chunk_overlap=overlap)
     chunks: list[Chunk] = []
-    step = CHUNK_SIZE - CHUNK_OVERLAP
+    step = size - overlap
     start = 0
     for piece in splitter.split(doc.text):
         end = start + len(piece.text)
@@ -241,13 +244,25 @@ async def main() -> None:
     section_cache = {doc.stem: _sections(doc.text) for doc in docs}
 
     summary: dict[str, dict[str, object]] = {}
-    for variant in ("naive", "structured"):
+    # (名称, 切块器, chunk_size, overlap)；结构化组固定 800/100，两个朴素组只差粒度。
+    variants: tuple[tuple[str, str, int | None, int | None], ...] = (
+        ("naive-800/100", "naive", 800, 100),
+        ("naive-400/200", "naive", 400, 200),
+        ("structured", "structured", None, None),
+    )
+    for label, kind, size, overlap in variants:
         chunks: list[Chunk] = []
         for doc in docs:
-            build = _naive_chunks if variant == "naive" else _structured_chunks
-            chunks.extend(build(doc, section_cache[doc.stem]))
+            if kind == "naive":
+                assert size is not None and overlap is not None
+                chunks.extend(
+                    _naive_chunks(doc, section_cache[doc.stem], size=size, overlap=overlap)
+                )
+            else:
+                chunks.extend(_structured_chunks(doc, section_cache[doc.stem]))
 
-        chunk_ids = [f"{variant}-c{i:04d}" for i in range(len(chunks))]
+        tag = label.replace("/", "-")
+        chunk_ids = [f"{tag}-c{i:04d}" for i in range(len(chunks))]
         # 生产口径的检索文本：文档名 + 章节路径 + 正文（朴素切块没有章节段）
         retrieval_texts = [
             build_retrieval_text(
@@ -271,9 +286,9 @@ async def main() -> None:
         for question, query_vector in zip(answerable, query_vectors):
             relevant: set[str] = set()
             for cid, chunk in zip(chunk_ids, chunks):
-                for label in question.labels:
-                    section = section_map.get(label)
-                    if section is None or chunk.doc_stem != label[0]:
+                for gold in question.labels:
+                    section = section_map.get(gold)
+                    if section is None or chunk.doc_stem != gold[0]:
                         continue
                     overlap = min(chunk.end, section.end) - max(chunk.start, section.start)
                     if overlap <= 0:
@@ -293,6 +308,20 @@ async def main() -> None:
             )
             cases.append((relevant, [cid for _, cid in scores]))
 
+        # R@1 的分母陷阱：一道题有 N 个相关切片时，单片最多覆盖 1/N，
+        # 于是 R@1 的理论上限就是 1/N。切片越碎、N 越大，R@1 天然越低。
+        # 不把这条单独打出来，就会把「答案被切成好几片」误读成「检索变差了」。
+        relevant_sizes = [len(rel) for rel, _ in cases if rel]
+        avg_relevant = sum(relevant_sizes) / len(relevant_sizes) if relevant_sizes else 0.0
+        ceiling = (
+            sum(1.0 / size for size in relevant_sizes) / len(relevant_sizes)
+            if relevant_sizes
+            else 0.0
+        )
+        top1_correct = sum(1.0 for rel, ret in cases if rel and ret[:1] and ret[0] in rel) / (
+            len([1 for rel, _ in cases if rel]) or 1
+        )
+
         if Case is not None and aggregate is not None:
             metrics = aggregate(
                 [
@@ -304,30 +333,38 @@ async def main() -> None:
         else:
             metrics = _manual_metrics(cases, k)
 
-        summary[variant] = {
+        summary[label] = {
             "chunks": len(chunks),
             "avg_len": sum(len(c.text) for c in chunks) // len(chunks),
             "unowned": unowned,
             "no_chunk_questions": no_chunk_questions,
+            "avg_relevant": avg_relevant,
+            "ceiling": ceiling,
+            "reach": (float(metrics["recall_at_1"]) / ceiling * 100) if ceiling else 0.0,
             **metrics,
         }
 
-        print(f"\n=== {variant} ===")
+        print(f"\n=== {label} ===")
         print(
             f"切片数 = {len(chunks)}，均长 = {sum(len(c.text) for c in chunks) // len(chunks)} 字"
         )
         print(f"跨章节切片（归属不到任何章节）= {unowned}/{len(chunks)}")
         print(f"语料里找不到对应切片的题目 = {no_chunk_questions}/{len(answerable)}")
-        if variant == "structured":
+        print(f"平均每题相关切片数 = {avg_relevant:.2f} 片（R@1 理论上限 1/N = {ceiling:.3f}）")
+        print(
+            f"R@1 相对理论上限的达成率 = {(float(metrics['recall_at_1']) / ceiling * 100) if ceiling else 0.0:.1f}%"
+        )
+        print(f"首位落在相关切片内的比例 = {top1_correct * 100:.1f}%")
+        if kind == "structured":
             missing_labels = {
-                label
+                label_
                 for question in answerable
-                for label in question.labels
-                if label not in {(c.doc_stem, c.owner) for c in chunks}
+                for label_ in question.labels
+                if label_ not in {(c.doc_stem, c.owner) for c in chunks}
             }
             print(f"结构化切片里缺席的金标章节 = {len(missing_labels)} 个")
-            for label in sorted(missing_labels)[:5]:
-                print(f"  缺席：{label[0]} / {label[1]}")
+            for item in sorted(missing_labels)[:5]:
+                print(f"  缺席：{item[0]} / {item[1]}")
 
         def fmt(value: object) -> str:
             return f"{float(value):.4f}" if value is not None else "n/a"
@@ -338,10 +375,58 @@ async def main() -> None:
         print(f"R@1   = {fmt(metrics['recall_at_1'])}")
         print(f"hit@1 = {fmt(metrics['hit_at_1'])}")
 
-    print("\n=== 差值（结构化 - 朴素）===")
+    keys = (
+        "chunks",
+        "avg_len",
+        "avg_relevant",
+        "ceiling",
+        "reach",
+        "recall_at_k",
+        "recall_at_1",
+        "hit_at_1",
+        "mrr",
+        "precision_at_k",
+    )
+    headers = (
+        "切片数",
+        "均长",
+        "每题相关切片",
+        "R@1上限",
+        "达成率%",
+        "R@5",
+        "R@1",
+        "hit@1",
+        "MRR",
+        "P@5",
+    )
+    print("\n=== 汇总 ===")
+    print(" | ".join(f"{h:>12s}" for h in headers) + " |")
+    for label, _, _, _ in variants:
+        row = summary[label]
+        cells: list[str] = []
+        for key in keys:
+            value = row[key]
+            if isinstance(value, float):
+                cells.append(f"{value:>12.4f}")
+            elif isinstance(value, int):
+                cells.append(f"{value:>12d}")
+            else:
+                cells.append(f"{value!s:>12s}")
+        print(" | ".join(cells) + f" | {label}")
+
+    print("\n=== 差值（structured - naive-800/100）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
         left = summary["structured"][key]
-        right = summary["naive"][key]
+        right = summary["naive-800/100"][key]
+        if left is None or right is None:
+            print(f"{key:14s} n/a")
+            continue
+        print(f"{key:14s} {float(left) - float(right):+.4f}")
+
+    print("\n=== 差值（structured - naive-400/200）===")
+    for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
+        left = summary["structured"][key]
+        right = summary["naive-400/200"][key]
         if left is None or right is None:
             print(f"{key:14s} n/a")
             continue
