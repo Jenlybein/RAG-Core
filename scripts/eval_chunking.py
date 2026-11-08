@@ -45,6 +45,9 @@ except ImportError:  # pragma: no cover - 兜底：直接 import 失败时按同
     Case = None  # type: ignore[assignment]
     aggregate = None  # type: ignore[assignment]
 
+from app.services import result_collapse
+from app.services.rag_service import OVERFETCH_FACTOR
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVAL_DIR = REPO_ROOT / "eval"
 CORPUS_DIR = EVAL_DIR / "corpus"
@@ -103,6 +106,7 @@ class Chunk:
     # 下面三项供「答案单元」归并使用：行级表片要能映射回它所属的整表片。
     chunk_type: str = ""
     section_id: str = ""
+    parent_section_id: str = ""
     table_part: int = 0
 
 
@@ -228,6 +232,7 @@ def _structured_chunks(doc: CorpusDoc, sections: list[Section]) -> list[Chunk]:
                 cursor,
                 chunk_type=str(piece.metadata.get("chunk_type") or ""),
                 section_id=str(piece.metadata.get("section_id") or ""),
+                parent_section_id=str(piece.metadata.get("parent_section_id") or ""),
                 table_part=int(piece.metadata.get("table_part") or 0),
             )
         )
@@ -363,6 +368,40 @@ async def main() -> None:
             )
             for chunk in chunks
         ]
+        # 折叠输入：与生产同一套纯函数（result_collapse）。
+        # 这里只准备数据，不算分——算分口径由同一份实现保证，不再手工复刻。
+        hits_by_id = {
+            cid: result_collapse.Hit(
+                chunk_id=cid,
+                document_id=chunk.doc_stem,
+                score=0.0,
+                content=chunk.text,
+                chunk_type=chunk.chunk_type,
+                section_id=chunk.section_id,
+                parent_section_id=chunk.parent_section_id,
+                table_part=chunk.table_part,
+                heading_path=chunk.heading_path,
+            )
+            for cid, chunk in zip(chunk_ids, chunks)
+        }
+        _rows: dict[tuple[str, ...], list[tuple[int, str, str]]] = {}
+        _tables: dict[tuple[str, ...], str] = {}
+        for index, (cid, chunk) in enumerate(zip(chunk_ids, chunks)):
+            parent = chunk.parent_section_id or chunk.section_id
+            if parent:
+                key = (result_collapse.UNIT_SECTION, chunk.doc_stem, parent)
+                _rows.setdefault(key, []).append((index, chunk.text, cid))
+            if chunk.chunk_type == "table":
+                _tables[
+                    (
+                        result_collapse.UNIT_TABLE,
+                        chunk.doc_stem,
+                        chunk.section_id,
+                        str(chunk.table_part),
+                    )
+                ] = chunk.text
+        section_rows = {key: tuple(rows) for key, rows in _rows.items()}
+
         vectors = await provider.embed_texts(retrieval_texts)
         query_vectors = await provider.embed_texts([q.query for q in answerable])
 
@@ -372,6 +411,9 @@ async def main() -> None:
             for section in section_cache[doc.stem]
         }
         cases: list[tuple[set[str], list[str]]] = []
+        delivered_cases: list[tuple[set[tuple[str, ...]], list[tuple[str, ...]]]] = []
+        delivered_hits: list[bool] = []
+        delivered_per_type: dict[str, list[bool]] = {}
         case_types: list[str] = []
         case_groups: list[str] = []
         case_kinds: list[str] = []
@@ -422,6 +464,25 @@ async def main() -> None:
                 seen_units.add(unit)
                 returned_units.append(unit)
             cases.append((relevant_units, returned_units))
+
+            # 交付口径：先按生产同样的 over-fetch 取候选，再折叠，再看首位。
+            sliced = [cid for _score, cid in scores[: k * OVERFETCH_FACTOR]]
+            units = result_collapse.collapse(
+                [hits_by_id[cid] for cid in sliced],
+                sections=section_rows,
+                tables=_tables,
+                top_k=k,
+            )
+            delivered_order = [unit.unit_key for unit in units]
+            delivered_units = {
+                result_collapse.unit_key(hits_by_id[cid]) for cid in relevant
+            }
+            delivered_cases.append((delivered_units, delivered_order))
+            delivered_first_hit = bool(
+                delivered_units and delivered_order and delivered_order[0] in delivered_units
+            )
+            delivered_hits.append(delivered_first_hit)
+            delivered_per_type.setdefault(question.type, []).append(delivered_first_hit)
             case_types.append(question.type)
             case_groups.append(
                 "long" if any(gold[0] in LONG_SECTION_DOCS for gold in question.labels) else "short"
@@ -487,6 +548,13 @@ async def main() -> None:
             "per_group": per_group,
             "per_kind": per_kind,
             "ceiling": ceiling,
+            "delivered": (
+                _manual_metrics(delivered_cases, k) if delivered_cases else {}
+            ),
+            "delivered_per_type": delivered_per_type,
+            "delivered_hit_at_1": (
+                sum(delivered_hits) / len(delivered_hits) if delivered_hits else 0.0
+            ),
             "reach": (float(metrics["recall_at_1"]) / ceiling * 100) if ceiling else 0.0,
             **metrics,
         }
@@ -619,6 +687,45 @@ async def main() -> None:
                 f"  {name:20s} {len(items_struct):5d} {left:8.3f} {right:8.3f}"
                 f" {right - left:+8.3f}   {avg_naive:8.2f} {avg_struct:9.2f}"
             )
+
+    print("\n=== 两口径对照（chunk 级 vs delivered 级）===")
+    print(f"{'变体':22s} {'hit@1(chunk)':>13} {'hit@1(交付)':>13} {'R@5(交付)':>11} {'R@1(交付)':>11}")
+    for label, _builder, _kind, _variant in variants:
+        row = summary[label]
+        delivered = row.get("delivered") or {}
+        print(
+            f"{label:22s} {float(row['hit_at_1']):13.4f}"
+            f" {float(row['delivered_hit_at_1']):13.4f}"
+            f" {float(delivered.get('recall_at_k', 0.0)):11.4f}"
+            f" {float(delivered.get('recall_at_1', 0.0)):11.4f}"
+        )
+    print(
+        "  delivered 级 = 折叠之后实际交付给调用方的内容；chunk 级 = 折叠之前的小片。"
+        "\n  两个口径都要看：只报对一方有利的那个，等于换靶子。"
+    )
+
+    # 交付口径按题型拆开：整体涨了不代表每类都涨，退步的那一类必须露出来。
+    if "structured" in summary:
+        chunk_types = summary["structured"].get("per_type") or {}
+        delivered_types = summary["structured"].get("delivered_per_type") or {}
+        if chunk_types and delivered_types:
+            print("\n=== 按题型：chunk 级 → delivered 级（结构化）===")
+            print(f"  {'题型':18s} {'题数':>4} {'chunk 级':>9} {'交付级':>9} {'差值':>8}")
+            rows = []
+            for qtype, delivered_flags in delivered_types.items():
+                if not delivered_flags:
+                    continue
+                chunk_flags = chunk_types.get(qtype) or []
+                chunk_rate = sum(chunk_flags) / len(chunk_flags) if chunk_flags else 0.0
+                delivered_rate = sum(delivered_flags) / len(delivered_flags)
+                rows.append((qtype, len(delivered_flags), chunk_rate, delivered_rate))
+            for qtype, count, chunk_rate, delivered_rate in sorted(
+                rows, key=lambda r: -(r[3] - r[2])
+            ):
+                print(
+                    f"  {qtype:18s} {count:4d} {chunk_rate:9.3f} {delivered_rate:9.3f}"
+                    f" {delivered_rate - chunk_rate:+8.3f}"
+                )
 
     print("\n=== 差值（structured - naive-800/100）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
