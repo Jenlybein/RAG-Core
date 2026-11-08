@@ -38,33 +38,65 @@ def test_section_id_is_deterministic() -> None:
     assert first[0].metadata["section_id"] != other[0].metadata["section_id"]
 
 
-def test_deeper_headings_do_not_start_new_sections() -> None:
-    """### 只加深 heading_path，不触发 section flush。"""
+def test_h3_starts_new_section() -> None:
+    """### 是切片边界：一片一个子节，路径精确到子节。
+
+    h1 下的引导段落自成一片（它不属于任何 h3），这是刻意的：把引导段落塞进
+    第一个 h3 会让那片同时讲两件事。
+    """
     markdown = (
         "# 退款政策\n背景说明。\n\n### 时限要求\n七个工作日内到账。\n\n# 账户安全\n无关正文。\n"
     )
 
     pieces = MarkdownStructuredSplitter().split(markdown)
 
-    assert len(pieces) == 2
-    assert pieces[0].metadata["heading_path"] == "退款政策 > 时限要求"
+    assert [p.metadata["heading_path"] for p in pieces] == [
+        "退款政策",
+        "退款政策 > 时限要求",
+        "账户安全",
+    ]
     assert "背景说明" in pieces[0].text
-    assert "七个工作日内到账" in pieces[0].text, "### 的内容要留在父节里，不能单独成片"
-    assert pieces[1].metadata["heading_path"] == "账户安全"
+    assert "七个工作日内到账" in pieces[1].text
+    assert "背景说明" not in pieces[1].text, "引导段落不跟着 h3 走"
 
 
-def test_multiple_deeper_headings_fall_back_to_section_path() -> None:
-    """一节内含多个 h3/h4 时，heading_path 不能取「最后一个」。
+def test_h4_and_deeper_do_not_start_new_sections() -> None:
+    """#### 及更深只加深 heading_path，不触发 section flush。
 
-    切片覆盖的是整节，路径却只记最后一个子标题，就会出现「片里讲的是三个子节，
-    路径却写着第三个」——用户拿这个路径做溯源会指错地方，而系统不会报错。
-    只有一个子标题时仍然精确到它（见上一条测试），多个时回落到分节路径。
+    再深就不切：h4 往往是「请求 / 响应 / 错误码」这类同一件事的附属小节，
+    拆开会让每片只剩几个字段名，失去上下文。
+    """
+    markdown = (
+        "# 演示文档\n\n"
+        "## 大章一\n\n"
+        "### 上传文档\n\n正文 A。\n\n"
+        "#### 请求\n\n参数 B。\n\n"
+        "#### 响应\n\n字段 C。\n\n"
+        "## 大章二\n\n"
+        "### 检索\n\n正文 D。\n"
+    )
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    # 两个 h4 分叉，公共前缀到 h3
+    assert [p.metadata["heading_path"] for p in pieces] == [
+        "演示文档 > 大章一 > 上传文档",
+        "演示文档 > 大章二 > 检索",
+    ]
+    assert "参数 B" in pieces[0].text
+    assert "字段 C" in pieces[0].text
+
+
+def test_multiple_section_headings_never_collapse_into_one_piece() -> None:
+    """多个 h3 必须各自成片，不能像以前那样被并进同一个 h2 片。
+
+    旧行为下一片里装着「子节 1.1」「子节 1.2」，路径只能回落到 h2；新行为下
+    每个子节自己一片，路径精确到子节——这正是 h3 成为边界要换来的东西。
     """
     markdown = (
         "# 演示文档\n\n"
         "## 大章一\n\n"
         "### 子节 1.1\n\n正文 A。\n\n"
-        "#### 细节 1.1.1\n\n正文 B。\n\n"
         "### 子节 1.2\n\n正文 C。\n\n"
         "## 大章二\n\n"
         "### 子节 2.1\n\n正文 D。\n"
@@ -73,13 +105,12 @@ def test_multiple_deeper_headings_fall_back_to_section_path() -> None:
     pieces = MarkdownStructuredSplitter().split(markdown)
 
     assert [p.metadata["heading_path"] for p in pieces] == [
-        "演示文档 > 大章一",
+        "演示文档 > 大章一 > 子节 1.1",
+        "演示文档 > 大章一 > 子节 1.2",
         "演示文档 > 大章二 > 子节 2.1",
     ]
-    # 三个子标题的内容都留在同一片里
-    assert "正文 A" in pieces[0].text
-    assert "正文 B" in pieces[0].text
-    assert "正文 C" in pieces[0].text
+    for piece in pieces:
+        assert piece.metadata["heading_path"].count(" > ") == 2
 
 
 def test_single_chain_can_reach_four_levels() -> None:

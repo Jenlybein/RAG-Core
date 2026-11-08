@@ -1,12 +1,13 @@
 """Markdown 感知的结构化切块器。
 
 与 `CharacterTextSplitter` 的字符窗口不同，这里先认标题层级、再在节内断句：
-`#` / `##` 开启新节，`###` 及更深只加深 `heading_path`、不新起切片，
-这样一个小标题下的一句话不会变成孤零零的碎片。
+`#` / `##` / `###` 开启新节（一片一个子节，路径精确到子节），
+`####` 及更深只加深 `heading_path`、不新起切片——「请求 / 响应 / 错误码」
+这类附属小节因此不会被切得七零八落。
 
 标题栈是整条链路里最容易写错的一处：flush 早一行，后面每个切片的
 `heading_path` 都指向错误的章节，而且不会报任何错——只有检索结果会悄悄变差。
-所以栈只在 h1/h2 处 flush，且 flush 使用**遇到下一个 h1/h2 之前的**栈内容。
+所以栈只在 h1/h2/h3 处 flush，且 flush 使用**遇到下一个 h1/h2/h3 之前的**栈内容。
 
 `section_id` 刻意做成 `sha256(heading_path)` 的确定性哈希，而不是随机 ID：
 重建索引后同一章节必须仍能对上父子关系，随机 ID 会让这条关系静默断裂。
@@ -49,12 +50,16 @@ class _Piece:
 class MarkdownStructuredSplitter(TextSplitter):
     """按 Markdown 标题结构切块，并产出可溯源的 metadata。
 
-    标题栈驱动 provenance：h1/h2 触发 section flush，h3+ 只更新栈。
+    标题栈驱动 provenance：h1/h2/h3 触发 section flush，h4+ 只更新栈。
     栈维护错一处不会抛异常，却会让其后每个切片的出处都错——改动这里必须用
     「标题边界」与「同输入 section_id 稳定」两类测试兜住。
     表格与代码块整块保留；超长节在节内二次切，重叠不跨标题边界。
     `section_id` 是 heading_path 的内容哈希，重建后父子关系仍能稳定对上。
     """
+
+    # 切片边界到 h3。再深就不切了：h4 往往是「请求 / 响应 / 错误码」这类
+    # 同一件事的附属小节，拆开会让每片失去上下文，只剩几个字段名。
+    SECTION_LEVEL = 3
 
     def __init__(
         self,
@@ -71,7 +76,7 @@ class MarkdownStructuredSplitter(TextSplitter):
         self.table_max_rows = table_max_rows
 
     def split(self, text: str) -> list[SplitPiece]:
-        """扫描全文，按 h1/h2 边界产出一组带 provenance 的切片。"""
+        """扫描全文，按 h1/h2/h3 边界产出一组带 provenance 的切片。"""
         if not text:
             return []
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
@@ -80,7 +85,7 @@ class MarkdownStructuredSplitter(TextSplitter):
         sections: list[tuple[str, list[_Block]]] = []
         stack: list[tuple[int, str]] = []
         blocks: list[_Block] = []
-        # 当前分节（h1/h2）的路径，以及本节内出现过的深层标题路径（h3 及更深）。
+        # 当前分节（h1/h2/h3）的路径，以及本节内出现过的深层标题路径（h4 及更深）。
         # 片覆盖的是整节，所以路径取「本节所有叶子标题」的公共前缀：
         #   - 单链 A > B > C  → 路径到 C（能到第 4 层）
         #   - 分叉 A > B1/B2  → 路径到 A（不能只写 B1，那样 B2 的内容被指错地方）
@@ -100,7 +105,7 @@ class MarkdownStructuredSplitter(TextSplitter):
             if heading:
                 level = len(heading.group(1))
                 title = heading.group(2).strip()
-                if level <= 2:
+                if level <= self.SECTION_LEVEL:
                     flush_section()
                     _push_heading(stack, level, title)
                     section_path = _join_stack(stack)
