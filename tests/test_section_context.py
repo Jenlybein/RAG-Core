@@ -110,16 +110,31 @@ def test_failure_degrades_without_raising(monkeypatch: pytest.MonkeyPatch) -> No
     assert _run(summarize_sections(_sections(3), title="部署实施指南")) == {}
 
 
-def test_failure_stops_calling_after_the_first_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """装配或调用失败后不再逐节重试：每节都抛一次只会把索引时长翻倍。"""
+def test_one_failing_section_does_not_stop_the_rest(monkeypatch: pytest.MonkeyPatch) -> None:
+    """坏掉一节不该连累其余节失去说明——「失败即降级」是逐节的，不是整批的。"""
 
-    provider = _Provider(error=RuntimeError("模型服务 502"))
+    provider = _Provider(error=RuntimeError("这一节超时"))
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
     monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda *_a, **_k: provider)
 
-    _run(summarize_sections(_sections(10), title="部署实施指南"))
+    summaries = _run(summarize_sections(_sections(10), title="部署实施指南"))
 
-    assert provider.calls == 1
+    assert provider.calls == 10
+    assert summaries == {}
+
+
+def test_provider_assembly_failure_stops_after_one_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """拿不到 provider 时后续节必然也失败，只试一次就收手。"""
+
+    def _forbidden(*_args: Any, **_kwargs: Any) -> Any:
+        raise ValueError("未知的模型供应商")
+
+    monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)
+
+    assert _run(summarize_sections(_sections(10), title="部署实施指南")) == {}
 
 
 def test_too_short_context_is_discarded(monkeypatch: pytest.MonkeyPatch) -> None:

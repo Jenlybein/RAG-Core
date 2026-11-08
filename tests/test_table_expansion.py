@@ -39,7 +39,12 @@ class _Session:
     def execute(self, _statement: Any) -> Any:
         self.calls += 1
         if self.calls == 1:
-            return _Rows([SimpleNamespace(id=cid, meta=meta) for cid, meta in self.metas.items()])
+            return _Rows(
+                [
+                    SimpleNamespace(id=cid, meta=meta, kb_id="kb-1")
+                    for cid, meta in self.metas.items()
+                ]
+            )
         return _Rows(self.tables)
 
 
@@ -91,9 +96,10 @@ def test_row_hit_returns_the_whole_table() -> None:
 
     result = _decorate(_row_session(), chunks, expand=True)
 
-    assert result[0]["content"] == TABLE_TEXT
-    assert result[0]["table_expanded"] is True
-    assert "|" in result[0]["content"], "整表应当保留表格形态"
+    # 整表放 table_context；content 保持切片原文——后者是可回溯的引用依据。
+    assert result[0]["table_context"] == TABLE_TEXT
+    assert result[0]["content"] == "型号=XR-2100，配件=万兆光模块，单价=1180"
+    assert "|" in result[0]["table_context"], "整表应当保留表格形态"
 
 
 def test_expansion_off_keeps_the_row() -> None:
@@ -105,7 +111,7 @@ def test_expansion_off_keeps_the_row() -> None:
     result = _decorate(_row_session(), chunks, expand=False)
 
     assert result == before
-    assert "table_expanded" not in result[0]
+    assert "table_context" not in result[0]
 
 
 def test_whole_table_hit_is_not_expanded_again() -> None:
@@ -127,7 +133,7 @@ def test_whole_table_hit_is_not_expanded_again() -> None:
     result = _decorate(session, chunks, expand=True)
 
     assert result[0]["content"] == TABLE_TEXT
-    assert result[0]["table_expanded"] is False
+    assert "table_context" not in result[0], "整表片不需要再给自己配一份整表"
 
 
 def test_missing_table_falls_back_to_the_row() -> None:
@@ -149,7 +155,7 @@ def test_missing_table_falls_back_to_the_row() -> None:
     result = _decorate(session, chunks, expand=True)
 
     assert result[0]["content"] == "型号=XR-2100，配件=万兆光模块，单价=1180"
-    assert result[0]["table_expanded"] is False
+    assert "table_context" not in result[0]
 
 
 def test_request_defaults_expand_table_rows() -> None:

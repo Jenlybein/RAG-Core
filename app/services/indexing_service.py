@@ -47,7 +47,7 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppError, ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
-from app.models.knowledge_base import SPLIT_STRUCTURE
+from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
@@ -59,6 +59,7 @@ from app.utils.id_generator import new_chunk_id
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
 from app.utils.splitter_factory import build_splitter
+from app.utils.text_splitter import CharacterTextSplitter
 from app.utils.text_splitter import TextSplitter
 
 logger = structlog.get_logger(__name__)
@@ -114,7 +115,14 @@ class IndexingService:
         """
 
         if self._splitter is not None:
-            return self._splitter, SPLIT_STRUCTURE
+            # 注入的切块器如实报告它是哪一类：把按字符切的说成 structure，
+            # 会让切片 meta 里的 split_strategy 变成一句谎话，重建时对不上。
+            injected: SplitStrategy = (
+                SPLIT_SIZE
+                if isinstance(self._splitter, CharacterTextSplitter)
+                else SPLIT_STRUCTURE
+            )
+            return self._splitter, injected
         strategy, chunk_size = knowledge_base_repository.get_split_config(
             db, doc.kb_id, tenant_id=doc.tenant_id
         )
@@ -162,23 +170,21 @@ class IndexingService:
 
         # 节说明（可选增强）：按 section_id 去重后**每节一次**，不按片。
         # 关闭时 summarize_sections 直接返回空字典，检索文本与现状逐字一致。
-        sections: dict[str, tuple[str, str]] = {}
-        for piece in pieces:
-            section_id = str(piece.metadata.get("section_id") or "")
-            if not section_id or section_id in sections:
-                continue
-            heading = str(piece.metadata.get("heading_path") or "")
-            # 同节的正文按 order_index 累积起来给模型看——只给第一片会丢掉后半节。
-            sections[section_id] = (heading, "")
+        # 同节的正文按切片顺序累积给模型看——只给第一片会丢掉后半节。
+        section_headings: dict[str, str] = {}
         section_texts: dict[str, list[str]] = {}
         for piece in pieces:
             section_id = str(piece.metadata.get("section_id") or "")
-            if section_id:
-                section_texts.setdefault(section_id, []).append(piece.text)
+            if not section_id:
+                continue
+            section_headings.setdefault(
+                section_id, str(piece.metadata.get("heading_path") or "")
+            )
+            section_texts.setdefault(section_id, []).append(piece.text)
         summaries = await summarize_sections(
             [
-                (section_id, heading, "\n\n".join(section_texts.get(section_id, [])))
-                for section_id, (heading, _unused) in sections.items()
+                (section_id, section_headings[section_id], "\n\n".join(texts))
+                for section_id, texts in section_texts.items()
             ],
             title=doc.title,
         )

@@ -53,7 +53,7 @@ class RetrieveRequest(BaseModel):
     # 默认开：默认关着就没人会开，small-to-big 等于没做。只有在明确只要细片、
     # 不希望响应体被父节撑大的场景才关掉。
     include_parent: bool = True
-    # 命中行级表片时，把正文换成同一组的整表全文。关掉就拿到原始那一行。
+    # 命中行级表片时，附带同一组的整表全文（放在 table_context 里，不动 content）。
     expand_table_rows: bool = True
 
 
@@ -104,9 +104,16 @@ class RetrievedChunk(BaseModel):
     # 命中切片所属整节。关掉 include_parent 时为 null；没有章节路径的切片
     # （无标题文档）也是 null——不造一个假父节出来。
     parent: ParentSection | None = None
-    # 这条结果的正文是不是由行级表片展开成了整表：行级片负责召回，整表负责阅读。
-    # 展开时 content 就是整表全文，原样喂给模型即可。
-    table_expanded: bool = False
+    # 命中行级表片时，同一组的整表全文放在这里；`content` 仍是那条切片的原文。
+    # 为什么分开：`content` 的契约是「切片原文，可回溯到引用」（见 GLOSSARY），
+    # 一旦被整表替换，引用就指不回原来那一片了。调用方要完整表格就取这个字段。
+    table_context: str | None = None
+    # 引用定位：PDF 的物理页码；Markdown 无页码时为 null。
+    page: int | None = None
+    # 稿号（ADR-0005）：检索结果每条都带，审计时能回答「当时引用的是哪一稿」。
+    doc_version: int | None = None
+    # 这一片是用哪种策略切的：跨库检索时用来解释片长差异。
+    split_strategy: str | None = None
 
 
 class RetrieveData(BaseModel):

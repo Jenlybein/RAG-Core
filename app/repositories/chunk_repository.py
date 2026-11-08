@@ -12,9 +12,9 @@ from app.models.chunk import Chunk
 
 
 def fetch_meta_by_chunk_ids(
-    db: Session, *, tenant_id: str, chunk_ids: list[str]
-) -> dict[str, dict]:
-    """按切片 ID 一次取回它们的 ``meta``，供检索层定位所属章节。
+    db: Session, *, tenant_id: str, kb_ids: list[str], chunk_ids: list[str]
+) -> dict[tuple[str, str], dict]:
+    """按 ``(kb_id, chunk_id)`` 一次取回 ``meta``，供检索层定位与回填。
 
     检索结果一路从向量/关键词通道到融合层，只带 ``document_id`` / ``chunk_id`` /
     ``content`` 这些**对外字段**（``meta`` 不属于检索契约）。父节需要用
@@ -22,16 +22,28 @@ def fetch_meta_by_chunk_ids(
     再让它们出现在响应里。``tenant_id`` 是强制过滤参数（ADR-0006）。
     """
 
-    if not chunk_ids:
+    if not chunk_ids or not kb_ids:
         return {}
-    stmt = select(Chunk.id, Chunk.meta).where(
-        Chunk.tenant_id == tenant_id, Chunk.id.in_(chunk_ids)
+    # 唯一键是 ``(kb_id, chunk_id)``（ADR-0010），不是单独的 chunk_id：跨库同 ID
+    # 的两条结果必须能各自取到自己的 meta，不能被后到的那条覆盖。
+    stmt = select(Chunk.kb_id, Chunk.id, Chunk.meta).where(
+        Chunk.tenant_id == tenant_id,
+        Chunk.kb_id.in_(kb_ids),
+        Chunk.id.in_(chunk_ids),
     )
-    return {str(row.id): dict(row.meta or {}) for row in db.execute(stmt).all()}
+    return {
+        (str(row.kb_id), str(row.id)): dict(row.meta or {})
+        for row in db.execute(stmt).all()
+    }
 
 
 def fetch_table_chunks(
-    db: Session, *, tenant_id: str, document_ids: list[str], section_ids: list[str]
+    db: Session,
+    *,
+    tenant_id: str,
+    document_ids: list[str],
+    section_ids: list[str],
+    index_version: str | None = None,
 ) -> dict[tuple[str, str, int], str]:
     """取这些文档/章节里的**整表片**正文，供「行级召回 → 整表返回」展开。
 
@@ -59,10 +71,18 @@ def fetch_table_chunks(
             Chunk.meta["section_id"].astext.in_(section_ids),
             Chunk.meta["chunk_type"].astext == "table",
         )
+        # 确定性排序（ADR-0010）：同一份输入两次必须给出同一张表，不能取决于
+        # PG 的行序。再加 index_version 过滤：混进另一批次会出现「表与命中片
+        # 对不上」的上下文。
+        .order_by(Chunk.document_id, Chunk.meta["table_part"].astext.cast(Integer), Chunk.id)
     )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
     tables: dict[tuple[str, str, int], str] = {}
     for document_id, section_id, table_part, content in db.execute(stmt).all():
-        tables[(str(document_id), str(section_id), int(table_part or 0))] = str(content)
+        key = (str(document_id), str(section_id), int(table_part or 0))
+        # 先到先得：排序已定，重复键不该由「谁后到」决定。
+        tables.setdefault(key, str(content))
     return tables
 
 

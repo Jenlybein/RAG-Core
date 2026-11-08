@@ -59,7 +59,9 @@ class _Session:
     def execute(self, _statement: Any) -> Any:
         self.calls += 1
         if self.calls == 1:
-            return _Rows([SimpleNamespace(id=cid, meta=meta) for cid, meta in self.metas.items()])
+            return _Rows(
+                [SimpleNamespace(id=cid, meta=meta, kb_id=KB) for cid, meta in self.metas.items()]
+            )
         return _Rows(self.sections)
 
 

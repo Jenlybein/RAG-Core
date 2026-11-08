@@ -108,6 +108,9 @@ async def summarize_sections(
                 # 只记异常类型：文案可能夹带正文。
                 error=type(exc).__name__,
             )
-            # 装配失败时后续节必然也失败，直接放弃这次尝试，避免每节都抛一次。
-            break
+            # 装配失败（拿不到 provider）时后续节也必然失败，直接放弃这次尝试；
+            # 单节超时或单节返回异常则只跳过这一节——「失败即降级」意味着坏掉的
+            # 一节不该连累其余节失去说明。
+            if provider is None:
+                break
     return summaries

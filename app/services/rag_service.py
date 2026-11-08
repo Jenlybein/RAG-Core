@@ -42,6 +42,8 @@
 from __future__ import annotations
 
 import structlog
+from dataclasses import dataclass
+
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -191,6 +193,33 @@ async def retrieve(
     }
 
 
+@dataclass(frozen=True)
+class _DecorateScope:
+    """一次检索里「按哪些库、哪些文档、哪些章节」取数据。
+
+    这几个值总是一起出现，一路穿过三个函数。打包成一个类型后，加一个过滤条件
+    只改一处，也不会再把参数顺序传错。
+    """
+
+    tenant_id: str
+    kb_ids: list[str]
+    document_ids: list[str]
+    section_ids: list[str]
+
+
+def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:
+    """取这条结果的 meta；唯一键是 ``(kb_id, chunk_id)``（ADR-0010）。
+
+    单独按 chunk_id 取会让跨库同 ID 的两条结果互相覆盖。
+    """
+
+    chunk_id = chunk.get("chunk_id")
+    kb_id = chunk.get("kb_id")
+    if not isinstance(chunk_id, str) or not isinstance(kb_id, str):
+        return {}
+    return metas.get((kb_id, chunk_id)) or {}
+
+
 def _decorate_results(
     db: Session,
     *,
@@ -199,91 +228,93 @@ def _decorate_results(
     include_parent: bool,
     expand_table_rows: bool,
 ) -> list[dict]:
-    """给每条结果补上「可读的正文」与「所属整节」两样东西。
+    """给每条结果补上「可读的表格」「所属整节」与「引用定位」。
 
-    两条装饰各解决一个问题，都在返回前做，都不新增存储：
+    三样装饰各解决一个问题，都在返回前做，都不新增存储：
 
-    * **表格展开**：命中行级表片（`型号=XR-2100，配件=万兆光模块`）说明用户问的是
-      表里某个单元格，但只喂这一行给模型，它看不到列含义与相邻行。所以把正文换成
-      同一组的整表全文：行级片负责**找得准**，整表片负责**读得懂**。
-    * **父节**（small-to-big）：命中 150 字细片时把所属整节一并给出，模型不必只看
-      半句话。
+    * **整表上下文**：命中行级表片（`型号=XR-2100，配件=万兆光模块`）说明用户问的
+      是表里某个单元格，只喂这一行，模型看不到列含义与相邻行。整表全文放在
+      ``table_context``，``content`` 保持切片原文——后者是可回溯的引用依据。
+    * **上下文恢复**：按命中情况分级给出整节或邻居窗口。
+    * **定位**：页码、稿号、切块策略，供引用与审计使用。
 
-    两个开关都关掉时原样返回——响应体与改造前逐字一致，这是「开关有效」的定义。
-    `parent` 与 `table_expanded` 两个键**永远存在**（取不到就是 None / false）：
-    留一个「有这个键/没这个键」的分叉会让调用方为同一件事写两套判断。
+    两个开关都关掉时原样返回：响应体与改造前逐字一致，这是「开关有效」的定义。
+    契约层面 ``parent`` 仍然存在——响应模型有默认值（null），校验时自动补上。
     """
 
     if not chunks:
         return chunks
 
-    # 两个开关都关掉时原样返回：响应体与改造前逐字一致，这是「开关有效」的定义。
-    # 契约层面 parent / table_expanded 仍然存在——响应模型有默认值（null / false），
-    # 校验时自动补上；所以「内部字典不带键」与「接口一定给字段」可以同时成立。
     if not include_parent and not expand_table_rows:
         return chunks
 
     for chunk in chunks:
         if include_parent:
             chunk["parent"] = None
-        if expand_table_rows:
-            chunk["table_expanded"] = False
 
-    # 融合层只带对外字段（meta 不属于检索契约），所以按 ID 回查一次 meta。
-    # 两个装饰共用这一份：分别查会把同一次查询重复两遍。
-    chunk_ids = [str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")]
-    metas = chunk_repository.fetch_meta_by_chunk_ids(
-        db, tenant_id=tenant_id, chunk_ids=chunk_ids
+    kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
+    document_ids = sorted(
+        {str(chunk["document_id"]) for chunk in chunks if chunk.get("document_id")}
     )
-
-    document_ids = {
-        str(chunk["document_id"]) for chunk in chunks if chunk.get("document_id")
-    }
-    section_ids = {
-        str(meta.get("section_id"))
-        for meta in (metas.get(cid) or {} for cid in chunk_ids)
-        if isinstance(meta.get("section_id"), str)
-    }
-    if not document_ids or not section_ids:
+    if not kb_ids or not document_ids:
         return chunks
 
+    # 融合层只带对外字段（meta 不属于检索契约），所以按 ID 回查一次 meta。
+    # 三样装饰共用这一份：分别查会把同一次查询重复三遍。
+    metas = chunk_repository.fetch_meta_by_chunk_ids(
+        db,
+        tenant_id=tenant_id,
+        kb_ids=kb_ids,
+        chunk_ids=[str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")],
+    )
+    scope = _DecorateScope(
+        tenant_id=tenant_id,
+        kb_ids=kb_ids,
+        document_ids=document_ids,
+        section_ids=sorted(
+            {
+                str(meta["section_id"])
+                for meta in metas.values()
+                if isinstance(meta.get("section_id"), str)
+            }
+        ),
+    )
+    _attach_locating_fields(chunks, metas)
+
     if expand_table_rows:
-        _expand_table_rows(
-            db,
-            tenant_id=tenant_id,
-            chunks=chunks,
-            metas=metas,
-            document_ids=sorted(document_ids),
-            section_ids=sorted(section_ids),
-        )
+        _expand_table_rows(db, scope=scope, chunks=chunks, metas=metas)
 
     if include_parent:
-        _attach_parent_sections(
-            db,
-            tenant_id=tenant_id,
-            chunks=chunks,
-            metas=metas,
-            document_ids=sorted(document_ids),
-            section_ids=sorted(section_ids),
-        )
+        _attach_parent_sections(db, scope=scope, chunks=chunks, metas=metas)
     return chunks
+
+
+def _attach_locating_fields(chunks: list[dict], metas: dict[tuple[str, str], dict]) -> None:
+    """把页码、稿号、切块策略填进结果：引用要能说清「哪一页、哪一稿、怎么切的」。"""
+
+    for chunk in chunks:
+        meta = _meta_of(chunk, metas)
+        page = meta.get("page")
+        doc_version = meta.get("doc_version")
+        strategy = meta.get("split_strategy")
+        chunk["page"] = page if isinstance(page, int) else None
+        chunk["doc_version"] = doc_version if isinstance(doc_version, int) else None
+        chunk["split_strategy"] = strategy if isinstance(strategy, str) else None
 
 
 def _expand_table_rows(
     db: Session,
     *,
-    tenant_id: str,
+    scope: _DecorateScope,
     chunks: list[dict],
-    metas: dict[str, dict],
-    document_ids: list[str],
-    section_ids: list[str],
+    metas: dict[tuple[str, str], dict],
 ) -> None:
-    """把命中的行级表片换成同一组的整表全文。"""
+    """命中行级表片时，附带同一组的整表全文（放在 ``table_context``）。"""
 
-    keys: dict[str, tuple[str, str, int]] = {}
-    for chunk in chunks:
-        chunk_id = str(chunk.get("chunk_id"))
-        meta = metas.get(chunk_id) or {}
+    keys: dict[int, tuple[str, str, int]] = {}
+    section_ids: set[str] = set()
+    for index, chunk in enumerate(chunks):
+        meta = _meta_of(chunk, metas)
         if str(meta.get("chunk_type") or "") != "table_row":
             continue
         document_id = chunk.get("document_id")
@@ -294,37 +325,37 @@ def _expand_table_rows(
             and isinstance(section_id, str)
             and isinstance(table_part, int)
         ):
-            keys[chunk_id] = (document_id, section_id, table_part)
+            keys[index] = (document_id, section_id, table_part)
+            section_ids.add(section_id)
 
     if not keys:
         return
 
     tables = chunk_repository.fetch_table_chunks(
-        db, tenant_id=tenant_id, document_ids=document_ids, section_ids=section_ids
+        db,
+        tenant_id=scope.tenant_id,
+        document_ids=scope.document_ids,
+        section_ids=sorted(section_ids),
+        # 与召回口径一致：整表混进另一索引批次，会出现「表与命中片对不上」。
+        index_version=DEFAULT_INDEX_VERSION,
     )
-    for chunk in chunks:
-        key = keys.get(str(chunk.get("chunk_id")))
-        if key is None:
-            continue
+    for index, key in keys.items():
         table_text = tables.get(key)
         if table_text is None:
-            # 找不到整表（比如它已被删掉）时保留原始那一行：宁可少上下文，
-            # 也不要把这条结果变成空。
+            # 找不到整表时不给 table_context：宁可少上下文，也不要给一条空内容。
+            # content 仍是那条行级片的原文，调用方不会拿到空结果。
             continue
-        chunk["content"] = table_text
-        chunk["table_expanded"] = True
+        chunks[index]["table_context"] = table_text
 
 
 def _attach_parent_sections(
     db: Session,
     *,
-    tenant_id: str,
+    scope: _DecorateScope,
     chunks: list[dict],
-    metas: dict[str, dict],
-    document_ids: list[str],
-    section_ids: list[str],
+    metas: dict[tuple[str, str], dict],
 ) -> None:
-    """给每条结果挂上「上下文」，粒度按命中情况分级。
+    """上下文恢复：给每条结果挂上所属章节的上下文，粒度按命中情况分级。
 
     一刀切地返回整节会把 token 预算浪费在没命中的片上（一个细片 150 字、整节
     1000 字，命中 1 片却返回 7 倍内容）。所以分三档：
@@ -338,45 +369,31 @@ def _attach_parent_sections(
     索引与片数都不动，只改返回时的组装——所以不需要重建全库。
     """
 
-    keys: list[tuple[str, str]] = []
+    hits_by_section: dict[tuple[str, str], list[str]] = {}
+    heading_paths: dict[tuple[str, str], str] = {}
     for chunk in chunks:
-        meta = metas.get(str(chunk.get("chunk_id"))) or {}
+        meta = _meta_of(chunk, metas)
         section_id = meta.get("section_id")
         document_id = chunk.get("document_id")
-        if isinstance(section_id, str) and isinstance(document_id, str):
-            keys.append((document_id, section_id))
-    if not keys:
+        if not isinstance(section_id, str) or not isinstance(document_id, str):
+            continue
+        key = (document_id, section_id)
+        hits_by_section.setdefault(key, []).append(str(chunk.get("chunk_id")))
+        heading_paths.setdefault(key, str(meta.get("heading_path") or ""))
+    if not hits_by_section:
         return
 
     grouped = chunk_repository.fetch_section_chunks(
         db,
-        tenant_id=tenant_id,
-        document_ids=document_ids,
-        section_ids=section_ids,
+        tenant_id=scope.tenant_id,
+        document_ids=scope.document_ids,
+        section_ids=sorted({key[1] for key in hits_by_section}),
         # 与召回时的过滤口径保持一致：父节混进另一索引批次，调用方会拿到
         # 「和命中片对不上」的上下文。
         index_version=DEFAULT_INDEX_VERSION,
     )
 
-    # 每节被命中几次、命中的是哪几片——决定该节的扩展粒度。
-    hits_by_section: dict[tuple[str, str], list[str]] = {}
-    for chunk in chunks:
-        chunk_id = str(chunk.get("chunk_id"))
-        meta = metas.get(chunk_id) or {}
-        section_id = meta.get("section_id")
-        document_id = chunk.get("document_id")
-        if isinstance(section_id, str) and isinstance(document_id, str):
-            hits_by_section.setdefault((document_id, section_id), []).append(chunk_id)
-
     cross_section = len(hits_by_section) >= 2
-    heading_paths: dict[tuple[str, str], str] = {}
-    for chunk in chunks:
-        meta = metas.get(str(chunk.get("chunk_id"))) or {}
-        section_id = meta.get("section_id")
-        document_id = chunk.get("document_id")
-        if isinstance(section_id, str) and isinstance(document_id, str):
-            heading_paths[(document_id, section_id)] = str(meta.get("heading_path") or "")
-
     parents: dict[tuple[str, str], dict[str, object]] = {}
     for key, hit_ids in hits_by_section.items():
         rows = grouped.get(key)
@@ -406,7 +423,7 @@ def _attach_parent_sections(
         }
 
     for chunk in chunks:
-        meta = metas.get(str(chunk.get("chunk_id"))) or {}
+        meta = _meta_of(chunk, metas)
         section_id = meta.get("section_id")
         document_id = chunk.get("document_id")
         chunk["parent"] = (
