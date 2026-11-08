@@ -155,10 +155,10 @@ def test_separator_line_is_dropped() -> None:
     assert "---" not in pieces[0].text
 
 
-def test_code_block_kept_whole() -> None:
-    """代码块整块保留，即使超过 chunk_size 也不切。"""
+def test_short_code_block_kept_whole() -> None:
+    """短代码块整块保留，分片序号为 0。"""
     markdown = "# 示例\n\n```python\ndef add(a, b):\n    return a + b\n```\n"
-    splitter = MarkdownStructuredSplitter(chunk_size=20, chunk_overlap=5)
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
 
     pieces = splitter.split(markdown)
 
@@ -168,6 +168,70 @@ def test_code_block_kept_whole() -> None:
     assert "return a + b" in code_pieces[0].text
     assert code_pieces[0].text.startswith("```")
     assert code_pieces[0].metadata["heading_path"] == "示例"
+    assert code_pieces[0].metadata["code_part"] == 0
+
+
+def _long_code_block(rows: int = 400) -> str:
+    body = "\n".join(f"    value_{number} = {number}" for number in range(rows))
+    return f"# 示例\n\n```python\n{body}\n```\n"
+
+
+def test_long_code_block_is_split_within_window() -> None:
+    """上千行代码不再产出超长单片：每片都不超过 chunk_size。"""
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
+
+    pieces = splitter.split(_long_code_block())
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert len(code_pieces) > 1, "上千行代码必须被切开"
+    assert all(len(piece.text) <= 800 for piece in code_pieces)
+    assert max(len(piece.text) for piece in code_pieces) < 10_000
+
+
+def test_code_pieces_have_ascending_part_numbers() -> None:
+    """分片序号从 1 开始递增，且各片共享同一章节路径。"""
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
+
+    pieces = splitter.split(_long_code_block())
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert [piece.metadata["code_part"] for piece in code_pieces] == list(
+        range(1, len(code_pieces) + 1)
+    )
+    assert {piece.metadata["heading_path"] for piece in code_pieces} == {"示例"}
+
+
+def test_code_splits_on_blank_lines_not_mid_statement() -> None:
+    """切点优先落在空行，不切在语句中间。"""
+    blocks = "\n\n".join(f"def function_{number}():\n    return {number}" for number in range(40))
+    markdown = f"# 示例\n\n```python\n{blocks}\n```\n"
+    splitter = MarkdownStructuredSplitter(chunk_size=300, chunk_overlap=100)
+
+    pieces = splitter.split(markdown)
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert len(code_pieces) > 1
+
+    # 拼回去必须逐字还原原文：说明没有丢行、没有重复行。
+    rebuilt = "".join(piece.text for piece in code_pieces)
+    assert rebuilt == f"```python\n{blocks}\n```"
+
+    # 每片去掉前导空行后，首行必须是完整的语句起点，不能是续行。
+    for piece in code_pieces[1:]:
+        first_line = piece.text.lstrip("\n").split("\n")[0]
+        assert first_line.startswith("def function_"), first_line
+
+
+def test_code_splits_on_dedent_when_no_blank_lines() -> None:
+    """没有空行时，在缩进回退处断开。"""
+    blocks = "\n".join(f"    statement_{number} = {number}" for number in range(60))
+    markdown = f"# 示例\n\n```python\nclass Thing:\n{blocks}\n```\n"
+    splitter = MarkdownStructuredSplitter(chunk_size=600, chunk_overlap=100)
+
+    pieces = splitter.split(markdown)
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert all(len(piece.text) <= 600 for piece in code_pieces)
 
 
 def test_low_information_pieces_filtered() -> None:
@@ -260,6 +324,7 @@ def test_metadata_contract_is_complete() -> None:
         "order_index",
         "chunk_type",
         "table_part",
+        "code_part",
     }
     for piece in pieces:
         assert set(piece.metadata) == expected_keys
