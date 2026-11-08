@@ -4,8 +4,19 @@
 """
 
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.knowledge_base import (
+    DEFAULT_CHUNK_SIZE,
+    DEFAULT_MERGE_THRESHOLD,
+    MAX_CHUNK_SIZE,
+    MAX_MERGE_THRESHOLD,
+    MIN_CHUNK_SIZE,
+    MIN_MERGE_THRESHOLD,
+    SPLIT_STRUCTURE,
+)
 
 
 class CreateKBRequest(BaseModel):
@@ -13,12 +24,27 @@ class CreateKBRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=255)
     description: str | None = None
+    # 切块策略在**建库时**定一次，之后该库所有文档都走同一种切法。不放到上传
+    # 接口上：同库混用两种切法会让片长分布不一致，检索时「片长」会变成与内容
+    # 无关的排序因素。
+    split_strategy: Literal["structure", "size"] = SPLIT_STRUCTURE
+    chunk_size: int = Field(
+        default=DEFAULT_CHUNK_SIZE, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE
+    )
+    merge_threshold: int = Field(
+        default=DEFAULT_MERGE_THRESHOLD,
+        ge=MIN_MERGE_THRESHOLD,
+        le=MAX_MERGE_THRESHOLD,
+    )
 
 
 class CreateKBData(BaseModel):
     kb_id: str
     name: str
     tenant_id: str
+    split_strategy: str
+    chunk_size: int
+    merge_threshold: int
     created_at: datetime
 
 
@@ -26,6 +52,9 @@ class KnowledgeBaseItem(BaseModel):
     kb_id: str
     name: str
     tenant_id: str
+    split_strategy: str
+    chunk_size: int
+    merge_threshold: int
 
 
 class KnowledgeBaseListData(BaseModel):

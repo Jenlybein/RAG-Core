@@ -5,7 +5,7 @@
 
 from sqlalchemy.orm import Session
 
-from app.models.knowledge_base import KnowledgeBase
+from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase, settings_of
 
 
 def create(db: Session, kb: KnowledgeBase) -> KnowledgeBase:
@@ -18,6 +18,24 @@ def get_by_id(db: Session, kb_id: str) -> KnowledgeBase | None:
     """按主键取；租户是否匹配由 Service 判断（跨租户统一按「不存在」处理）。"""
 
     return db.get(KnowledgeBase, kb_id)
+
+
+def get_split_config(
+    db: Session, kb_id: str, *, tenant_id: str
+) -> tuple[str, int, int]:
+    """取该库的切块配置 (strategy, chunk_size, merge_threshold)。
+
+    库不存在或跨租户时回落到默认值，而不是抛错：索引任务是异步的，库在这期间
+    被删掉时应当按默认配置继续尝试，让后续流程报出「库不存在」这个真正的原因；
+    在取配置这一步先炸只会把原因盖掉。
+    """
+
+    kb = db.get(KnowledgeBase, kb_id)
+    if kb is None or kb.tenant_id != tenant_id:
+        values = settings_of(None)
+        return SPLIT_STRUCTURE, values["chunk_size"], values["merge_threshold"]
+    values = settings_of(kb)
+    return kb.split_strategy or SPLIT_STRUCTURE, values["chunk_size"], values["merge_threshold"]
 
 
 def list_by_tenant(db: Session, tenant_id: str) -> list[KnowledgeBase]:

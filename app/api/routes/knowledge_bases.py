@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.auth import DevKeyContext, resolve_dev_key
 from app.db.session import get_db
+from app.models.knowledge_base import settings_of
 from app.repositories import knowledge_base_repository
 from app.schemas.common import ApiResponse, ok
 from app.schemas.knowledge_base import (
@@ -33,7 +34,13 @@ async def create_knowledge_base(
     key: DevKeyContext = Depends(resolve_dev_key),
 ) -> ApiResponse[CreateKBData]:
     data = await knowledge_base_service.create_kb(
-        db, name=payload.name, description=payload.description, tenant_id=key.tenant_id
+        db,
+        name=payload.name,
+        description=payload.description,
+        tenant_id=key.tenant_id,
+        split_strategy=payload.split_strategy,
+        chunk_size=payload.chunk_size,
+        merge_threshold=payload.merge_threshold,
     )
     return ok(CreateKBData.model_validate(data))
 
@@ -50,7 +57,14 @@ async def list_knowledge_bases(
     rows = knowledge_base_repository.list_by_tenant(db, key.tenant_id)
     data = KnowledgeBaseListData(
         knowledge_bases=[
-            KnowledgeBaseItem(kb_id=row.id, name=row.name, tenant_id=row.tenant_id)
+            KnowledgeBaseItem(
+                kb_id=row.id,
+                name=row.name,
+                tenant_id=row.tenant_id,
+                split_strategy=row.split_strategy,
+                chunk_size=settings_of(row)["chunk_size"],
+                merge_threshold=settings_of(row)["merge_threshold"],
+            )
             for row in rows
         ]
     )
