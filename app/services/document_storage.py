@@ -24,6 +24,8 @@ SOURCE_TYPE_BY_EXTENSION = {
     ".txt": "text",
     ".docx": "docx",
     ".pdf": "pdf",
+    ".html": "html",
+    ".htm": "html",
 }
 
 # 上传白名单（大小写不敏感）：不在其中一律按「解析不了」的 20023 拒绝。

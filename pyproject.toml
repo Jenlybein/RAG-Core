@@ -23,6 +23,9 @@ dependencies = [
     "mammoth==1.8.0",
     "pdf-inspector==1.25.2",
     "markdownify==1.2.3",
+    # HTML 解析器（第 4 步票 5）显式声明：bs4 本来就在环境里（markdownify 的依赖），
+    # 但直接 import 的包必须自己钉住，否则 markdownify 换解析后端时会静默失效。
+    "beautifulsoup4==4.15.0",
     # celery 5.4.0 的 redis extra 封顶 redis<6.0.0，而它允许的 kombu 窗口（<6.0）会解析到
     # kombu 5.7.0，后者要求 redis>=6.4.0 —— 三者不可能同时满足，真实投递时会在第一次
     # 建 channel 时报 kombu.exceptions.VersionMismatch。升到 5.5.3：它把 kombu 封在
