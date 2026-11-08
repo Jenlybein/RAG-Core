@@ -5,7 +5,7 @@
 ``delete_by_document_id`` 由索引重建 / 删除文档复用。
 """
 
-from sqlalchemy import Integer, delete, func, select
+from sqlalchemy import Integer, delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.models.chunk import Chunk
@@ -84,6 +84,59 @@ def fetch_table_chunks(
         # 先到先得：排序已定，重复键不该由「谁后到」决定。
         tables.setdefault(key, str(content))
     return tables
+
+
+def fetch_unit_rows(
+    db: Session,
+    *,
+    tenant_id: str,
+    document_ids: list[str],
+    unit_paths: list[str],
+    index_version: str | None = None,
+) -> dict[tuple[str, str], list[tuple[int, str, str, str, int]]]:
+    """按 **h2 级章节路径**取该单元下的全部切片，含挂在这一节自己身上的片。
+
+    返回 ``{(document_id, unit_path): [(chunk_index, 正文, chunk_id, chunk_type, table_part)...]}``。
+
+    为什么按路径前缀而不是 ``parent_section_id``：后者是**上一级**，对 h2 级的
+    切片（节下没有 h3）它指向 h1，按它归组会把整篇文档并成一个单元。这里用
+    「路径等于它」或「以它开头」，两个层级都收进来。
+    """
+
+    if not document_ids or not unit_paths:
+        return {}
+    heading = Chunk.meta["heading_path"].astext
+    clauses = []
+    for path in unit_paths:
+        clauses.append(heading == path)
+        clauses.append(heading.like(f"{path} > %"))
+    stmt = (
+        select(
+            Chunk.document_id,
+            heading,
+            Chunk.meta["chunk_index"].astext.cast(Integer),
+            Chunk.content,
+            Chunk.id,
+            Chunk.meta["chunk_type"].astext,
+            Chunk.meta["table_part"].astext.cast(Integer),
+        )
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.document_id.in_(document_ids),
+            or_(*clauses),
+        )
+        .order_by(Chunk.document_id, Chunk.meta["chunk_index"].astext.cast(Integer), Chunk.id)
+    )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
+    grouped: dict[tuple[str, str], list[tuple[int, str, str, str, int]]] = {}
+    for document_id, path, index, content, chunk_id, chunk_type, table_part in (
+        db.execute(stmt).all()
+    ):
+        grouped.setdefault((str(document_id), str(path)), []).append(
+            (int(index or 0), str(content), str(chunk_id), str(chunk_type or ""), int(table_part or 0))
+        )
+    return grouped
 
 
 def fetch_parent_section_chunks(

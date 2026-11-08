@@ -22,6 +22,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
@@ -44,6 +45,10 @@ EXPANSION_CHUNK = "chunk"
 # 单元键：``(种类, 文档 ID, 节 ID[, table_part])``。用元组而不是字符串，
 # 避免把 ID 拼进字符串再猜分隔符。
 UnitKey = tuple[str, ...]
+
+# 去重后条数会变少，所以召回要多取几倍。因子是常量而不是配置项：15 道题的
+# 样本量下，任何可调旋钮都会被评测调成过拟合值。实测每题平均 1.7 片同节命中。
+OVERFETCH_FACTOR = 3
 
 # 同节切片的行形态：(序号, 正文, chunk_id)。序号是文档级 chunk_index。
 SectionRows = tuple[tuple[int, str, str], ...]
@@ -84,6 +89,32 @@ class Unit:
         return self.unit_key[0] == UNIT_TABLE
 
 
+def unit_path_of(heading_path: str) -> str:
+    """把任意深度的章节路径截到**单元层级**：前两段（文档 > 大节）。
+
+    为什么是前两段：折叠的语义是「一条结果代表一节」，而这里的「节」是 h2 级——
+    再细就是切片，再粗就跨了内容主题。
+
+    **不能用 `parent_section_id`**（上一级）来代替：对 h2 级的切片（这个节下面
+    没有 h3），它的上一级是 h1，按它归组会把整篇文档折成一个单元。这个坑真踩过：
+    40 个 h2 小节的文档被折成 1 条结果，交付口径的分数因此虚高。
+    """
+
+    segments = [part.strip() for part in heading_path.split(">") if part.strip()]
+    return " > ".join(segments[:2])
+
+
+def unit_id_of(heading_path: str) -> str:
+    """单元 id = ``sha256(单元路径)``。
+
+    与 ``section_id`` 同一套算法（见「父块」词条），好处是**不需要新增列**：
+    从每个切片已有的 ``heading_path`` 就能算出来，重建索引前后都稳定。
+    """
+
+    path = unit_path_of(heading_path)
+    return hashlib.sha256(path.encode("utf-8")).hexdigest() if path else ""
+
+
 def unit_key(hit: Hit, *, merge_table_rows: bool = True) -> UnitKey:
     """算出这条命中属于哪个单元。
 
@@ -94,15 +125,16 @@ def unit_key(hit: Hit, *, merge_table_rows: bool = True) -> UnitKey:
     ``merge_table_rows=False`` 时行级片各自成单元——留给「只要精确引用」的调用方。
     """
 
+    unit_id = unit_id_of(hit.heading_path)
     if hit.chunk_type == CHUNK_TABLE_ROW:
-        if merge_table_rows and hit.section_id:
-            return (UNIT_TABLE, hit.document_id, hit.section_id, str(hit.table_part))
+        if merge_table_rows and unit_id:
+            return (UNIT_TABLE, hit.document_id, unit_id, str(hit.table_part))
         # 关掉合并时行级片各自成单元——调用方要的是「精确到那一行」的引用，
-        # 退回按父节归组会让它们又被并成一个名额，那正是它想避免的。
+        # 退回按节归组会让它们又被并成一个名额，那正是它想避免的。
         return (UNIT_CHUNK, hit.chunk_id)
-    parent = hit.parent_section_id or hit.section_id
-    if parent:
-        return (UNIT_SECTION, hit.document_id, parent)
+    if unit_id:
+        return (UNIT_SECTION, hit.document_id, unit_id)
+    # 只有真的没有章节路径（无标题文档）才各自成单元。
     return (UNIT_CHUNK, hit.chunk_id)
 
 
@@ -147,7 +179,7 @@ def collapse(
         units.append(
             Unit(
                 unit_key=key,
-                section_id=_unit_section_id(key),
+                section_id=_unit_section_id(key, best),
                 chunk_id=best.chunk_id,
                 score=best.score,
                 content=content,
@@ -161,16 +193,21 @@ def collapse(
     return units[:top_k] if top_k is not None else units
 
 
-def _unit_section_id(key: UnitKey) -> str:
-    """单元的身份：表格单元取它的所属章节，其余取键的最后一段。
+def _unit_section_id(key: UnitKey, best: Hit) -> str:
+    """单元的身份。
 
-    注意**不能**用命中片自己的 ``section_id``：一条结果代表的是父节，而命中片
-    属于子节，用子节的 id 会让调用方以为这条结果的粒度是子节。
+    表格单元取它的所属章节；节单元取键的最后一段（父节的 id）。
+
+    第三种情况——单片自成单元（无标题文档，或关掉行级片合并）——身份只能是它
+    自己所属的那个节；**绝不能把 chunk_id 填进 section_id**，那会让调用方以为
+    拿到的是节。真有文档没有章节时返回空串，由响应层落成 null。
     """
 
     if key[0] == UNIT_TABLE:
         return key[2]
-    return key[-1]
+    if key[0] == UNIT_SECTION:
+        return key[-1]
+    return best.section_id
 
 
 def _section_content(

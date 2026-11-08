@@ -46,7 +46,7 @@ except ImportError:  # pragma: no cover - 兜底：直接 import 失败时按同
     aggregate = None  # type: ignore[assignment]
 
 from app.services import result_collapse
-from app.services.rag_service import OVERFETCH_FACTOR
+from app.services.result_collapse import OVERFETCH_FACTOR
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 EVAL_DIR = REPO_ROOT / "eval"
@@ -242,8 +242,13 @@ def _structured_chunks(doc: CorpusDoc, sections: list[Section]) -> list[Chunk]:
     return chunks
 
 
-def _unit_of(chunk: Chunk, chunk_id: str) -> tuple[str, ...]:
-    """把切片映射成「答案单元」。
+def _answer_unit_of(chunk: Chunk, chunk_id: str) -> tuple[str, ...]:
+    """把切片映射成**答案单元**——注意与 `result_collapse` 的「交付单元」不是一回事。
+
+    答案单元用来算**chunk 级**指标：一片能不能答这道题。行级表片归到它所属的整表，
+    免得一张 8 行的表把 R@1 的分母撑成 9。
+    交付单元是折叠之后的返回粒度，由生产同一个 `result_collapse.collapse` 算出来。
+    两者名字必须能区分，否则「到底是哪个口径」又会含混。
 
     行级表片归到它所属的整表片：用户问的是表里某个单元格，答案单元是那张表。
     这样行级片命中仍算「命中了答案」，而分母只有 1——两侧口径一致，指标才可解释。
@@ -342,9 +347,7 @@ async def main() -> None:
         # 真说明由大模型生成，离线跑不出来；首句同样是「一句人话的节级上下文」，
         # 足以验证拼装生效与指标方向，但不能当成模型效果。
         # 只加在结构化组：朴素组必须保持为对照基线，否则差值不干净。
-        contextual = (
-            os.environ.get("SECTION_CONTEXT_PROXY") == "1" and kind == "structured"
-        )
+        contextual = os.environ.get("SECTION_CONTEXT_PROXY") == "1" and kind == "structured"
         section_first_sentence: dict[tuple[str, str], str] = {}
         if contextual:
             for chunk in chunks:
@@ -361,7 +364,9 @@ async def main() -> None:
                 section_first_sentence.get((chunk.doc_stem, chunk.heading_path))
                 if contextual
                 else None,
-                model_tags=os.environ.get("MODEL_TAG_PROXY") == "1" and kind == "structured",
+                # 默认开着，与生产一致（indexing_service 永远传 True）。
+                # 想量「没有型号段」的旧口径时显式传 MODEL_TAG_PROXY=0。
+                model_tags=os.environ.get("MODEL_TAG_PROXY", "1") == "1" and kind == "structured",
                 # 与生产一致地传类型：行级表片不加型号段的规则在 build_retrieval_text 里，
                 # 不传类型就等于把那条规则绕过去了，量出来的数字也不算数。
                 chunk_type=chunk.chunk_type,
@@ -387,16 +392,16 @@ async def main() -> None:
         _rows: dict[tuple[str, ...], list[tuple[int, str, str]]] = {}
         _tables: dict[tuple[str, ...], str] = {}
         for index, (cid, chunk) in enumerate(zip(chunk_ids, chunks)):
-            parent = chunk.parent_section_id or chunk.section_id
-            if parent:
-                key = (result_collapse.UNIT_SECTION, chunk.doc_stem, parent)
+            unit_id = result_collapse.unit_id_of(chunk.heading_path)
+            if unit_id:
+                key = (result_collapse.UNIT_SECTION, chunk.doc_stem, unit_id)
                 _rows.setdefault(key, []).append((index, chunk.text, cid))
             if chunk.chunk_type == "table":
                 _tables[
                     (
                         result_collapse.UNIT_TABLE,
                         chunk.doc_stem,
-                        chunk.section_id,
+                        unit_id,
                         str(chunk.table_part),
                     )
                 ] = chunk.text
@@ -451,14 +456,14 @@ async def main() -> None:
                 ((_cosine(query_vector, vector), cid) for vector, cid in zip(vectors, chunk_ids)),
                 reverse=True,
             )
-            # 换算成「答案单元」再评测：行级表片归到它所属的整表片（见 _unit_of）。
+            # 换算成「答案单元」再评测：行级表片归到它所属的整表片（见 _answer_unit_of）。
             # 相关单元与命中单元同一口径，行级片命中仍算对，但分母不再被行数撑大。
             by_id = dict(zip(chunk_ids, chunks))
-            relevant_units = {_unit_of(by_id[cid], cid) for cid in relevant}
+            relevant_units = {_answer_unit_of(by_id[cid], cid) for cid in relevant}
             returned_units: list[tuple[str, ...]] = []
             seen_units: set[tuple[str, ...]] = set()
             for _score, cid in scores:
-                unit = _unit_of(by_id[cid], cid)
+                unit = _answer_unit_of(by_id[cid], cid)
                 if unit in seen_units:
                     continue
                 seen_units.add(unit)
@@ -474,9 +479,7 @@ async def main() -> None:
                 top_k=k,
             )
             delivered_order = [unit.unit_key for unit in units]
-            delivered_units = {
-                result_collapse.unit_key(hits_by_id[cid]) for cid in relevant
-            }
+            delivered_units = {result_collapse.unit_key(hits_by_id[cid]) for cid in relevant}
             delivered_cases.append((delivered_units, delivered_order))
             delivered_first_hit = bool(
                 delivered_units and delivered_order and delivered_order[0] in delivered_units
@@ -548,9 +551,7 @@ async def main() -> None:
             "per_group": per_group,
             "per_kind": per_kind,
             "ceiling": ceiling,
-            "delivered": (
-                _manual_metrics(delivered_cases, k) if delivered_cases else {}
-            ),
+            "delivered": (_manual_metrics(delivered_cases, k) if delivered_cases else {}),
             "delivered_per_type": delivered_per_type,
             "delivered_hit_at_1": (
                 sum(delivered_hits) / len(delivered_hits) if delivered_hits else 0.0
@@ -670,9 +671,7 @@ async def main() -> None:
     struct_kinds = summary["structured"].get("per_kind")
     if isinstance(naive_kinds, dict) and isinstance(struct_kinds, dict):
         print("\n=== 表格专项 vs 正文题（按金标章节的切片类型分组）===")
-        print(
-            "  金标类型               题数    朴素  结构化     差值   相关片(朴)  相关片(结构)"
-        )
+        print("  金标类型               题数    朴素  结构化     差值   相关片(朴)  相关片(结构)")
         for kind in ("table", "prose"):
             items_naive = naive_kinds.get(kind) or []
             items_struct = struct_kinds.get(kind) or []
@@ -689,7 +688,9 @@ async def main() -> None:
             )
 
     print("\n=== 两口径对照（chunk 级 vs delivered 级）===")
-    print(f"{'变体':22s} {'hit@1(chunk)':>13} {'hit@1(交付)':>13} {'R@5(交付)':>11} {'R@1(交付)':>11}")
+    print(
+        f"{'变体':22s} {'hit@1(chunk)':>13} {'hit@1(交付)':>13} {'R@5(交付)':>11} {'R@1(交付)':>11}"
+    )
     for label, _builder, _kind, _variant in variants:
         row = summary[label]
         delivered = row.get("delivered") or {}

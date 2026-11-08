@@ -202,10 +202,9 @@ async def retrieve(
     }
 
 
-# 折叠时多取几倍候选：去重后可能不够 top_k 条。因子写成常量而不是配置项——
-# 15 道题的样本量下，任何可调旋钮都会被调成过拟合值。实测每题平均 1.7 片同节
-# 命中，×3 有足够余量。
-OVERFETCH_FACTOR = 3
+# 因子住在 IO 无关的折叠模块里（评测也要用它，不该为此把 settings/DB 拖进脚本）。
+# 这里留一个别名，是为了让「检索侧的多取倍数」在本模块读起来仍然直观。
+OVERFETCH_FACTOR = result_collapse.OVERFETCH_FACTOR
 
 
 def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:
@@ -279,106 +278,102 @@ def _collapse_results(
             )
         )
 
-    # 只查一次：按 parent_section_id 取整节的行。单命中时要的是「该片 + 前后各一片」，
-    # 那也是这一节的切片序列里的一段，所以不必再单独查一次子节。
-    parent_ids = sorted(
+    # 一次查出这些单元（h2 级章节）下的全部切片，含挂在该节自己身上的片。
+    # 用路径前缀而不是 parent_section_id：后者是上一级，对 h2 级的切片会指到 h1，
+    # 按它归组会把整篇文档并成一个单元（这个坑真踩过）。
+    unit_paths = sorted(
         {
-            unit_key[-1]
-            for unit_key in (
-                result_collapse.unit_key(hit, merge_table_rows=expand_table_rows)
-                for hit in hits
-            )
-            if unit_key[0] == result_collapse.UNIT_SECTION
+            result_collapse.unit_path_of(hit.heading_path)
+            for hit in hits
+            if hit.heading_path
         }
     )
-    raw_sections = (
-        chunk_repository.fetch_parent_section_chunks(
+    raw_rows = (
+        chunk_repository.fetch_unit_rows(
             db,
             tenant_id=tenant_id,
             document_ids=document_ids,
-            parent_section_ids=parent_ids,
+            unit_paths=unit_paths,
             index_version=DEFAULT_INDEX_VERSION,
         )
-        if parent_ids
+        if unit_paths
         else {}
     )
-    # 仓储返回的是 (文档, 节) 键与列表值；折叠函数的键带种类前缀、且要求不可变序列。
-    # 在这里对齐一次，别让两层的数据结构互相感染。
-    sections: dict[tuple[str, ...], result_collapse.SectionRows] = {
-        (result_collapse.UNIT_SECTION, str(key[0]), str(key[1])): tuple(rows)
-        for key, rows in raw_sections.items()
-    }
 
+    # 一个单元键 = (种类, 文档, 单元 id[, table_part])。单元 id 由路径算出来
+    # （sha256(前两段)），所以不需要新增列，重建索引前后都稳定。
+    sections: dict[tuple[str, ...], result_collapse.SectionRows] = {}
     tables: dict[tuple[str, ...], str] = {}
-    if expand_table_rows:
-        table_section_ids = sorted(
-            {
-                unit_key[2]
-                for unit_key in (
-                    result_collapse.unit_key(hit, merge_table_rows=True) for hit in hits
-                )
-                if unit_key[0] == result_collapse.UNIT_TABLE
-            }
+    for (document_id, path), rows in raw_rows.items():
+        unit_id = result_collapse.unit_id_of(path)
+        if not unit_id:
+            continue
+        sections[(result_collapse.UNIT_SECTION, document_id, unit_id)] = tuple(
+            (index, content, chunk_id) for index, content, chunk_id, _type, _part in rows
         )
-        if table_section_ids:
-            # table_part 在仓储侧是 int，折叠侧的键要求全字符串且带种类前缀。
-            tables = {
-                (
-                    result_collapse.UNIT_TABLE,
-                    str(key[0]),
-                    str(key[1]),
-                    str(key[2]),
-                ): text
-                for key, text in chunk_repository.fetch_table_chunks(
-                    db,
-                    tenant_id=tenant_id,
-                    document_ids=document_ids,
-                    section_ids=table_section_ids,
-                    index_version=DEFAULT_INDEX_VERSION,
-                ).items()
-            }
+        for _index, content, _chunk_id, chunk_type, table_part in rows:
+            if chunk_type == "table":
+                tables[
+                    (
+                        result_collapse.UNIT_TABLE,
+                        document_id,
+                        unit_id,
+                        str(table_part),
+                    )
+                ] = content
 
     units = result_collapse.collapse(
         hits,
         sections=sections,
-        tables=tables,
+        tables=tables if expand_table_rows else None,
         top_k=top_k,
         merge_table_rows=expand_table_rows,
     )
 
-    by_chunk_id = {str(chunk.get("chunk_id")): chunk for chunk in chunks}
+    # 唯一键是 (kb_id, chunk_id)（ADR-0010）：跨库同 ID 的两条结果必须能各自取到
+    # 自己那条，否则代表片会拿错库的分数字段，甚至拿到空 dict。
+    by_result = {
+        (str(chunk.get("kb_id")), str(chunk.get("chunk_id"))): chunk for chunk in chunks
+    }
     results: list[dict] = []
     for unit in units:
         # 以代表片那条结果为底：向量分 / 融合分 / 名次这些对外字段要原样保留，
         # 只把「身份、正文、分数、溯源」换成单元的。
-        row = dict(by_chunk_id.get(unit.chunk_id) or {})
+        row = dict(by_result.get((str(unit.kb_id), unit.chunk_id)) or {})
         row["chunk_id"] = unit.chunk_id
         row["content"] = unit.content
         row["score"] = unit.score
-        row["section_id"] = unit.section_id
+        row["section_id"] = unit.section_id or None
         row["heading_path"] = unit.heading_path or None
         row["source_chunk_ids"] = list(unit.source_chunk_ids)
         row["expansion"] = unit.expansion
-        # 折叠后 parent / table_context 是重复数据（content 已经是大的）。
-        row.pop("parent", None)
-        row.pop("table_context", None)
         results.append(row)
 
-    return _with_locating_fields(db, tenant_id=tenant_id, chunks=results)
+    # meta 已经在上面查过一次，直接复用：同一次检索不为同一批 ID 查两遍库。
+    return _with_locating_fields(db, tenant_id=tenant_id, chunks=results, metas=metas)
 
 
 def _with_locating_fields(
-    db: Session, *, tenant_id: str, chunks: list[dict]
+    db: Session,
+    *,
+    tenant_id: str,
+    chunks: list[dict],
+    metas: dict[tuple[str, str], dict] | None = None,
 ) -> list[dict]:
-    """补页码 / 稿号 / 切块策略：引用要能说清「哪一页、哪一稿、怎么切的」。"""
+    """补页码 / 稿号 / 切块策略：引用要能说清「哪一页、哪一稿、怎么切的」。
 
-    ids = [str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")]
-    kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
-    if not ids or not kb_ids:
-        return chunks
-    metas = chunk_repository.fetch_meta_by_chunk_ids(
-        db, tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=ids
-    )
+    ``metas`` 可以由调用方传进来复用——折叠路径上已经查过一次，不该为同一批 ID
+    再查一遍库。
+    """
+
+    if metas is None:
+        ids = [str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")]
+        kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
+        if not ids or not kb_ids:
+            return chunks
+        metas = chunk_repository.fetch_meta_by_chunk_ids(
+            db, tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=ids
+        )
     for chunk in chunks:
         meta = _meta_of(chunk, metas)
         page = meta.get("page")
