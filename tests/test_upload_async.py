@@ -6,6 +6,10 @@
 换掉，数据库用框架依赖覆盖换成内存替身——同一条接缝离线，不连 PostgreSQL、不发真实
 模型请求。
 
+准入判定同样只在这条接缝上验：两个入口各发一次请求，看 HTTP 状态码、响应 ``code``
+与响应里的 ``source_type``，以及会话里到底有没有留下行、磁盘上有没有留下文件。
+库的白名单由夹具里的知识库替身给出，测试只改它的属性，不关心判定写在哪个函数里。
+
 状态守卫是纯函数，直接在 ``app.services.document_state`` 的公开函数上验证矩阵。
 抢占 CAS 用内存 SQLite 只建 ``documents`` 一张表，验证 ``UPDATE ... WHERE`` 的四条
 分支（失败 / 已入队未开工 / 已被抢占 / 租约过期 / 成功 + force），不连 PostgreSQL。
@@ -29,6 +33,12 @@ from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.db.base import now
 from app.models.document import Document
+from app.models.knowledge_base import (
+    ALL_FORMATS,
+    FORMAT_MARKDOWN,
+    SPLIT_SIZE,
+    SPLIT_STRUCTURE,
+)
 from app.repositories import chunk_repository, document_repository
 from app.services import document_state
 from app.utils.status import DocumentStatus
@@ -44,6 +54,7 @@ EXPECTED_UPLOAD_DATA = {
     "status": DocumentStatus.PROCESSING,
     "chunk_count": 0,
     "error_message": None,
+    "source_type": FORMAT_MARKDOWN,
 }
 
 
@@ -51,10 +62,12 @@ class _FakeSession:
     """最小会话替身：文档行留在内存里，不碰数据库，只记录提交次数。"""
 
     def __init__(self) -> None:
+        self.added: list[Any] = []
         self.documents: dict[str, Any] = {}
         self.commit_count = 0
 
     def add(self, doc: Any) -> None:
+        self.added.append(doc)
         self.documents[doc.id] = doc
 
     def flush(self) -> None:
@@ -72,7 +85,11 @@ class _FakeSession:
 
 @pytest.fixture
 def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
-    """离线上传接缝：返回 client / session / 投递记录 / 落盘目录。"""
+    """离线上传接缝：返回 client / session / 投递记录 / 落盘目录 / 目标库替身。
+
+    目标库默认是 ``structure``（白名单只有 markdown）：绝大多数既有用例传的都是
+    markdown，需要 ``size`` 的行为时直接改 ``offline.kb`` 的属性。
+    """
 
     main = importlib.import_module("app.main")
     session_mod = importlib.import_module("app.db.session")
@@ -83,11 +100,16 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
     session = _FakeSession()
     enqueued: list[dict[str, Any]] = []
     uploads_dir = tmp_path / "uploads"
+    kb = SimpleNamespace(
+        id=KB_ID,
+        tenant_id=TENANT_ID,
+        split_strategy=SPLIT_STRUCTURE,
+        allowed_formats=[FORMAT_MARKDOWN],
+        settings={},
+    )
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
-    monkeypatch.setattr(
-        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
-    )
+    monkeypatch.setattr(kb_repo, "get_by_id", lambda db, kb_id: kb)
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
@@ -98,10 +120,38 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
     try:
         with TestClient(main.app) as client:
             yield SimpleNamespace(
-                client=client, session=session, enqueued=enqueued, uploads_dir=uploads_dir
+                client=client,
+                session=session,
+                enqueued=enqueued,
+                uploads_dir=uploads_dir,
+                kb=kb,
             )
     finally:
         main.app.dependency_overrides.clear()
+
+
+def _use_whitelist(
+    offline: SimpleNamespace, *, strategy: str = SPLIT_SIZE, formats: list[str] | None = None
+) -> None:
+    """把目标库换成本次用例需要的白名单（``size`` 默认五种全开）。"""
+
+    offline.kb.split_strategy = strategy
+    offline.kb.allowed_formats = list(formats if formats is not None else ALL_FORMATS)
+
+
+def _upload_file(offline: SimpleNamespace, filename: str, payload: bytes):
+    return offline.client.post(
+        "/api/v1/documents/upload",
+        data={"kb_id": KB_ID},
+        files={"file": (filename, payload, "application/octet-stream")},
+    )
+
+
+def _upload_json(offline: SimpleNamespace, content: str = CONTENT_SENTINEL):
+    return offline.client.post(
+        "/api/v1/documents/upload",
+        json={"kb_id": KB_ID, "title": "demo", "content": content},
+    )
 
 
 # ── 上传：JSON 模式 ──
@@ -125,7 +175,7 @@ def test_json_upload_returns_processing_and_only_enqueues(offline: SimpleNamespa
     doc = offline.session.documents["doc-1"]
     assert doc.status == DocumentStatus.PROCESSING
     assert doc.content == CONTENT_SENTINEL
-    assert doc.source_type == "text"
+    assert doc.source_type == FORMAT_MARKDOWN, "JSON 入口收的就是 markdown 风格文本"
     assert doc.source_file_path is None
     assert offline.session.commit_count == 1, "请求线程只提交登记，不写索引结果"
     assert offline.enqueued == [
@@ -179,9 +229,11 @@ def test_html_upload_passes_extension_check_and_records_html_source_type(
 ) -> None:
     """``.html`` 在扩展名白名单里，来源类型是 ``html``（HTML 解析器产出的那一类）。
 
-    准入（哪个库收 html）不在这条缝上管：本票只保证「能传、能归成 html」。
+    HTML 不是 markdown 文档，所以它只能进 ``size`` 库；``structure`` 库会以 20028
+    拒绝它（那条在准入票的用例里）。这里把库切成 ``size``，验的是「能传、能归成 html」。
     """
 
+    _use_whitelist(offline)
     html_bytes = b"<html><body><h1>Refund</h1></body></html>"
 
     response = offline.client.post(
@@ -192,7 +244,8 @@ def test_html_upload_passes_extension_check_and_records_html_source_type(
 
     body = response.json()
     assert body["code"] == 0
-    assert body["data"] == EXPECTED_UPLOAD_DATA
+    # 不复用 EXPECTED_UPLOAD_DATA：它的 source_type 是 markdown，这里必须是 html。
+    assert body["data"] == {**EXPECTED_UPLOAD_DATA, "source_type": "html"}
 
     stored_path = offline.uploads_dir / TENANT_ID / "doc-1.html"
     assert stored_path.read_bytes() == html_bytes
@@ -258,6 +311,116 @@ def test_multipart_without_kb_id_returns_validation_error(offline: SimpleNamespa
     for error in errors:
         assert set(error) == {"loc", "msg", "type"}
     assert offline.session.documents == {}
+
+
+# ── 上传准入：格式不在白名单里当场拒绝 ──
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "source_type"),
+    [
+        ("policy.pdf", b"%PDF-1.4 fake", "pdf"),
+        ("policy.docx", b"PK\x03\x04 fake", "docx"),
+        ("policy.txt", b"plain text", "text"),
+    ],
+)
+def test_structure_kb_rejects_formats_outside_its_whitelist(
+    offline: SimpleNamespace, filename: str, payload: bytes, source_type: str
+) -> None:
+    """structure 只收 markdown：别的格式当场 422 + 专用错误码。
+
+    被拒的请求不留存储文件、不产生文档记录、不投递索引任务——否则库里会多出一份
+    注定切不出章节的文档，调用方却以为上传成功。
+    """
+
+    response = _upload_file(offline, filename, payload)
+
+    body = response.json()
+    assert response.status_code == 422
+    assert body["code"] == ErrorCode.UNSUPPORTED_DOCUMENT_FORMAT
+    assert body["data"] == {"source_type": source_type, "allowed_formats": [FORMAT_MARKDOWN]}
+    assert FORMAT_MARKDOWN in body["msg"], "错误信息要告诉调用方这个库收什么"
+    assert offline.session.added == []
+    assert offline.session.documents == {}
+    assert offline.enqueued == []
+    assert not offline.uploads_dir.exists(), "被拒的上传不留存储文件"
+
+
+def test_structure_kb_accepts_markdown_file(offline: SimpleNamespace) -> None:
+    """markdown 是 structure 库唯一想要的输入：传 .md 正常入库。"""
+
+    response = _upload_file(offline, "Notes.md", FILE_BODY)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["code"] == 0
+    assert body["data"]["source_type"] == FORMAT_MARKDOWN
+    assert (offline.uploads_dir / TENANT_ID / "doc-1.md").read_bytes() == FILE_BODY
+    assert offline.enqueued and len(offline.session.added) == 1
+
+
+@pytest.mark.parametrize(
+    ("filename", "payload", "source_type"),
+    [
+        ("notes.md", FILE_BODY, "markdown"),
+        ("notes.txt", b"plain text", "text"),
+        ("notes.docx", b"PK\x03\x04 fake", "docx"),
+        ("policy.pdf", b"%PDF-1.4 fake", "pdf"),
+    ],
+)
+def test_size_kb_accepts_every_format(
+    offline: SimpleNamespace, filename: str, payload: bytes, source_type: str
+) -> None:
+    """size 库不依赖结构，默认白名单里的格式都收（.html 由 #59 接通）。"""
+
+    _use_whitelist(offline)
+
+    response = _upload_file(offline, filename, payload)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["code"] == 0
+    assert body["data"]["source_type"] == source_type
+    assert offline.session.documents["doc-1"].source_type == source_type
+    assert len(offline.session.added) == 1
+    assert len(offline.enqueued) == 1
+
+
+def test_json_upload_is_markdown_and_can_enter_a_structure_kb(offline: SimpleNamespace) -> None:
+    """JSON 入口的来源类型是 markdown：手写的规范 markdown 能进 structure 库。"""
+
+    response = _upload_json(offline, "# 部署指南\n\n正文。\n")
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["code"] == 0
+    assert body["data"]["source_type"] == FORMAT_MARKDOWN
+    assert offline.session.documents["doc-1"].source_type == FORMAT_MARKDOWN
+    assert len(offline.enqueued) == 1
+
+
+def test_both_entries_share_one_rejection_shape(offline: SimpleNamespace) -> None:
+    """两个入口拒绝时是同一个错误码与同一种错误结构。
+
+    目标库用「size 但只收 pdf」这种合法配置：它既不在建库时被拒（size 可以收窄），
+    又同时挡住文件入口的 .md 与 JSON 入口的文本。
+    """
+
+    _use_whitelist(offline, formats=["pdf"])
+
+    file_response = _upload_file(offline, "notes.md", FILE_BODY)
+    json_response = _upload_json(offline)
+
+    for response in (file_response, json_response):
+        assert response.status_code == 422
+        body = response.json()
+        assert body["code"] == ErrorCode.UNSUPPORTED_DOCUMENT_FORMAT
+        assert set(body) == {"code", "msg", "data"}
+        assert body["data"] == {"source_type": FORMAT_MARKDOWN, "allowed_formats": ["pdf"]}
+    assert file_response.json()["msg"] == json_response.json()["msg"]
+    assert offline.session.added == []
+    assert offline.enqueued == []
+    assert not offline.uploads_dir.exists()
 
 
 # ── 上传：JSON 校验失败 ──
