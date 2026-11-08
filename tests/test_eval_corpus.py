@@ -30,7 +30,26 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 100
 TABLE_MAX_ROWS = 10
 
-REQUIRED_TYPES = ("exact_code", "model_number", "colloquial", "synonym", "cross_section", "absent")
+# 题型清单分两层：`REQUIRED_TYPES` 是「每种至少 3 题」的底线，加进来就等于承诺长期维护；
+# `ALLOWED_TYPES` 是白名单，防止有人随手写个新 type 却没有任何断言消费它。
+#
+# 第 3 步扩充题库（26 → 69）时按 RGB 的子任务框架补了四种：
+# - `noise_robust` 同族相似章节的精细区分（RGB 的 Noise Robustness）
+# - `counterfactual` 同代多档/新旧规则叠加（RGB 的 Counterfactual Robustness）
+# - `table_lookup` 数值与时长的精确检索
+# - `negative_scope` 否定式提问，答案藏在排除句里
+REQUIRED_TYPES = (
+    "exact_code",
+    "model_number",
+    "colloquial",
+    "synonym",
+    "cross_section",
+    "absent",
+    "noise_robust",
+    "counterfactual",
+    "table_lookup",
+    "negative_scope",
+)
 ALLOWED_TYPES = frozenset((*REQUIRED_TYPES, "rare_token"))
 
 # 标题里一律不许出现的「判别性编号」：错误码、内部项目代号、型号族。
@@ -280,9 +299,9 @@ def _corpus_paths() -> list[Path]:
 def test_question_count_and_type_coverage() -> None:
     payload = _questions()
     questions = payload["questions"]
-    # 上界从 24 放到 26：票 8 复核时补了两道「不规整标识符」题（纯哈希 / 中文混排编号），
-    # 与它们对应的语料片一起进语料。下界不动——题目太少时测量没有量程。
-    assert 20 <= len(questions) <= 26, f"题目数 {len(questions)} 不在 20-26 之间"
+    # 上界随题库扩充调整：第 3 步做切块自评时把 26 道扩到 69 道（按 RGB 子任务补了四种题型）。
+    # 下界不动——题目太少时测量没有量程。
+    assert 20 <= len(questions) <= 80, f"题目数 {len(questions)} 不在 20-80 之间"
 
     types = Counter(question["type"] for question in questions)
     assert set(types) <= ALLOWED_TYPES, f"出现未声明的题型：{sorted(set(types) - ALLOWED_TYPES)}"

@@ -348,6 +348,625 @@
         }
       ],
       "note": "中文与字母数字混排、中间带连字符的编号。IK 会把「隐患-2026-0417-A」切成两段（隐患 / 2026-0417-a），所以关键词一路要么命中整串、要么只命中「隐患」——后者是典型的单常见词噪声，正好考 minimum_should_match。"
+    },
+    {
+      "id": "q27",
+      "type": "noise_robust",
+      "query": "E1026 是什么错误，怎么处理",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（三）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（二）"
+        }
+      ],
+      "note": "同族八节正文 90% 相同，靠 certificate name mismatch 这串字分辨。"
+    },
+    {
+      "id": "q28",
+      "type": "noise_robust",
+      "query": "E1027 报 unable to get local issuer certificate 是怎么回事",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（四）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
+        }
+      ],
+      "note": "缺中间证书。与「证书过期」语义接近，容易串到（一）。"
+    },
+    {
+      "id": "q29",
+      "type": "noise_robust",
+      "query": "E1040 证书链太长超出固件解析上限怎么解决",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（六）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（四）"
+        }
+      ],
+      "note": "「链太长」与「链不完整」是相反方向，考细分。"
+    },
+    {
+      "id": "q30",
+      "type": "noise_robust",
+      "query": "E1041 签名算法不支持",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（七）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（五）"
+        }
+      ],
+      "note": "处置是先升级固件，不是续期——与同族其它节的最简答案不同。"
+    },
+    {
+      "id": "q31",
+      "type": "noise_robust",
+      "query": "E1048 证书串号与资产台账不一致",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（八）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
+        }
+      ],
+      "note": "末位章节，与首节距离最远，考长文档内的精确命中。"
+    },
+    {
+      "id": "q32",
+      "type": "noise_robust",
+      "query": "E2049 同一台设备并发会话数超限",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（二）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（一）"
+        }
+      ],
+      "note": "限流族六节结构一致只有编号与结论不同。"
+    },
+    {
+      "id": "q33",
+      "type": "noise_robust",
+      "query": "E2051 当日累计调用量用尽每日上限",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（四）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（一）"
+        }
+      ],
+      "note": "「每日上限」与「分钟级限流」结论不同（查重复投递 vs 加退避）。"
+    },
+    {
+      "id": "q34",
+      "type": "noise_robust",
+      "query": "E2053 多租户共享池被别的租户吃满",
+      "relevant": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（六）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（五）"
+        }
+      ],
+      "note": "结论是申请独立配额，与同族「加退避」不同。"
+    },
+    {
+      "id": "q35",
+      "type": "counterfactual",
+      "query": "上一代的主力机型是哪个型号",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "note": "三款章节都以「面向…」开头，只有标准款自称「上一代主力机型」。"
+    },
+    {
+      "id": "q36",
+      "type": "counterfactual",
+      "query": "增强款与标准款外观一致吗，内部差在哪",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "note": "「外观一致但内部不同」只在增强款一节写明。"
+    },
+    {
+      "id": "q37",
+      "type": "counterfactual",
+      "query": "机架款的万兆光口出厂带光模块吗",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（机架款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "product_spec",
+          "heading_path": "产品规格说明书 > 端口定义"
+        }
+      ],
+      "note": "答案是「另配、不附带」，考否定细节而非型号参数本身。"
+    },
+    {
+      "id": "q38",
+      "type": "counterfactual",
+      "query": "维修过的设备保修期是从头算还是沿用原来的",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 保修范围"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 换货流程"
+        }
+      ],
+      "note": "同一节里三条规则并列：整机新算、换货重新算、维修沿用原期。"
+    },
+    {
+      "id": "q39",
+      "type": "table_lookup",
+      "query": "标准款整机转发吞吐大概多少",
+      "relevant": [
+        {
+          "document": "product_spec",
+          "heading_path": "产品规格说明书 > 性能指标（一）吞吐"
+        }
+      ],
+      "note": "900 Mbps。同节还有开启 VPN / QoS 的衰减比例。"
+    },
+    {
+      "id": "q40",
+      "type": "table_lookup",
+      "query": "增强款的会话表容量是多少条",
+      "relevant": [
+        {
+          "document": "product_spec",
+          "heading_path": "产品规格说明书 > 性能指标（二）并发会话"
+        }
+      ],
+      "note": "10 万条。三款容量在同一句里并列，考能否定位到增强款那一档。"
+    },
+    {
+      "id": "q41",
+      "type": "table_lookup",
+      "query": "会话老化时间默认多少秒",
+      "relevant": [
+        {
+          "document": "product_spec",
+          "heading_path": "产品规格说明书 > 性能指标（二）并发会话"
+        }
+      ],
+      "note": "300 秒，且 TCP 与 UDP 分别计时。"
+    },
+    {
+      "id": "q42",
+      "type": "table_lookup",
+      "query": "标准款整机尺寸和重量是多少",
+      "relevant": [
+        {
+          "document": "product_spec",
+          "heading_path": "产品规格说明书 > 尺寸与重量（标准款）"
+        }
+      ],
+      "note": "160×110×30 毫米、420 克；与机架款一节同构。"
+    },
+    {
+      "id": "q43",
+      "type": "table_lookup",
+      "query": "审计日志要留存多久",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 日志留存"
+        }
+      ],
+      "note": "12 个月。同节并列访问日志 6 个月、调试日志 7 天，考第几档。"
+    },
+    {
+      "id": "q44",
+      "type": "table_lookup",
+      "query": "变更审批记录保存多长时间",
+      "relevant": [
+        {
+          "document": "ops_change",
+          "heading_path": "发布与变更管理规范 > 变更审批"
+        }
+      ],
+      "note": "12 个月，与审计日志的 12 个月数字相同但归属不同文档。"
+    },
+    {
+      "id": "q45",
+      "type": "table_lookup",
+      "query": "P2 告警的响应时限是多少",
+      "relevant": [
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 告警分级与响应时限"
+        }
+      ],
+      "note": "30 分钟。P1 是 15 分钟，两级并列。"
+    },
+    {
+      "id": "q46",
+      "type": "negative_scope",
+      "query": "哪些配件绝对不能跨型号混用",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 配件兼容性（一）"
+        }
+      ],
+      "note": "三条规则里只有电源适配器不能混用，网线与壁挂件反而通用。"
+    },
+    {
+      "id": "q47",
+      "type": "negative_scope",
+      "query": "备份链路不承载哪类业务",
+      "relevant": [
+        {
+          "document": "product_spec",
+          "heading_path": "产品规格说明书 > 蜂窝与备份链路"
+        }
+      ],
+      "note": "答案是「视频类大流量业务」，同节只说承载管理与关键业务。"
+    },
+    {
+      "id": "q48",
+      "type": "negative_scope",
+      "query": "保修不覆盖哪些情况",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 保修范围"
+        }
+      ],
+      "note": "进水、跌落、私自拆机、电压误接四项排除。"
+    },
+    {
+      "id": "q49",
+      "type": "negative_scope",
+      "query": "哪一级变更不需要主管审批",
+      "relevant": [
+        {
+          "document": "ops_change",
+          "heading_path": "发布与变更管理规范 > 变更分级"
+        }
+      ],
+      "note": "三级由值班确认、四级自助；一二级才要审批。"
+    },
+    {
+      "id": "q50",
+      "type": "synonym",
+      "query": "钱什么时候能退回来",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        }
+      ],
+      "note": "「退回来」对「到账」，且要区分到账从执行日算而非申请日。"
+    },
+    {
+      "id": "q51",
+      "type": "synonym",
+      "query": "机器坏了想寄回去修，要走什么流程",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 维修流程"
+        }
+      ],
+      "note": "「寄回去修」对「寄修」，前置动作是导出配置并解绑。"
+    },
+    {
+      "id": "q52",
+      "type": "synonym",
+      "query": "押金怎么拿回来",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 押金退还"
+        }
+      ],
+      "note": "押金退还不走退款审核队列，由资产部门处理。"
+    },
+    {
+      "id": "q53",
+      "type": "synonym",
+      "query": "旧机器能抵钱换新的吗",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 以旧换新"
+        }
+      ],
+      "note": "「抵钱」对「估价抵扣」，且不产生现金退款。"
+    },
+    {
+      "id": "q54",
+      "type": "colloquial",
+      "query": "磁盘快满了怎么救急",
+      "relevant": [
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 磁盘写满应急处置"
+        }
+      ],
+      "note": "「救急」对「应急处置」，且要点是先清导出文件与滚动日志。"
+    },
+    {
+      "id": "q55",
+      "type": "colloquial",
+      "query": "上线要不要两个人一起看",
+      "relevant": [
+        {
+          "document": "ops_change",
+          "heading_path": "发布与变更管理规范 > 变更分级"
+        }
+      ],
+      "note": "答案是「一级变更需双人复核」，需要把口语映射到变更分级。"
+    },
+    {
+      "id": "q56",
+      "type": "colloquial",
+      "query": "队列堆住了怎么办",
+      "relevant": [
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 消息队列积压"
+        }
+      ],
+      "note": "先分容量问题还是消费者问题，且不能清空队列。"
+    },
+    {
+      "id": "q57",
+      "type": "colloquial",
+      "query": "缓存突然不生效了数据库快扛不住",
+      "relevant": [
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 缓存击穿与降级"
+        }
+      ],
+      "note": "「不生效 + 数据库压力」指向缓存击穿，要分热点键过期与实例故障。"
+    },
+    {
+      "id": "q58",
+      "type": "cross_section",
+      "query": "平台密钥多久轮换一次，轮换时要注意什么",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 密钥轮换"
+        },
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 证书轮换操作步骤"
+        }
+      ],
+      "note": "周期在安全文档、操作与灰度比例在值班手册，两节都要。"
+    },
+    {
+      "id": "q59",
+      "type": "cross_section",
+      "query": "退款一直没到账该怎么查",
+      "relevant": [
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        },
+        {
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账异常排查"
+        }
+      ],
+      "note": "先说承诺时效，再说四步排查，同一文档两节。"
+    },
+    {
+      "id": "q60",
+      "type": "cross_section",
+      "query": "变更窗口是什么时候，窗口结束前要做什么",
+      "relevant": [
+        {
+          "document": "ops_change",
+          "heading_path": "发布与变更管理规范 > 变更窗口"
+        },
+        {
+          "document": "ops_change",
+          "heading_path": "发布与变更管理规范 > 变更后验证"
+        }
+      ],
+      "note": "窗口时间与验证三层分别在两节。"
+    },
+    {
+      "id": "q61",
+      "type": "cross_section",
+      "query": "设备成片离线怎么排查，什么时候要升级",
+      "relevant": [
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 设备离线批量排查"
+        },
+        {
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 升级与通报路径"
+        }
+      ],
+      "note": "排查顺序与升级阈值分属两节。"
+    },
+    {
+      "id": "q62",
+      "type": "absent",
+      "query": "支持刷脸支付吗",
+      "relevant": [],
+      "note": "语料没有支付方式相关章节，答案不存在。"
+    },
+    {
+      "id": "q63",
+      "type": "absent",
+      "query": "有没有手机 App 可以管理设备",
+      "relevant": [],
+      "note": "只有管理后台与工单入口，没有任何 App 相关内容。"
+    },
+    {
+      "id": "q64",
+      "type": "absent",
+      "query": "能开香港公司的发票吗",
+      "relevant": [],
+      "note": "发票章节只讲普票与专票，跨境章节讲形式发票但不涉及香港开票。"
+    },
+    {
+      "id": "q65",
+      "type": "rare_token",
+      "query": "sha256:3b7e1f9d24c8a6e0b5f7c1d9e3a80642 是哪批固件的核对基准",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 固件签名核对（二）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 固件签名核对（一）"
+        }
+      ],
+      "note": "与（一）的 sha256:9f2a… 只差前缀，考长串精确匹配。"
+    },
+    {
+      "id": "q66",
+      "type": "rare_token",
+      "query": "PRJ-9QX8B3 的验收标准是什么",
+      "relevant": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 内部专项计划（二）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 内部专项计划（一）"
+        }
+      ],
+      "note": "与 PRJ-4K7T2M 编号形状一致，靠字母数字区分。"
+    },
+    {
+      "id": "q67",
+      "type": "model_number",
+      "query": "XR-2100 最大能接多少终端",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（机架款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "note": "512 台。与 XR-2000 / XR-2000 Pro 的 64 / 256 并列。"
+    },
+    {
+      "id": "q68",
+      "type": "model_number",
+      "query": "XR-2000 的内存多大",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "note": "2 GB。增强款 4 GB、机架款 16 GB。"
+    },
+    {
+      "id": "q69",
+      "type": "model_number",
+      "query": "哪一款支持 Wi-Fi 6",
+      "relevant": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        }
+      ],
+      "trap": [
+        {
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "note": "标准款只有 Wi-Fi 5；考「哪个型号具备」而不是「参数是多少」。"
     }
   ]
 }
