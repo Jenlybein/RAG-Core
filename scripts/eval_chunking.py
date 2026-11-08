@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -329,12 +330,31 @@ async def main() -> None:
 
         tag = label.replace("/", "-")
         chunk_ids = [f"{tag}-c{i:04d}" for i in range(len(chunks))]
-        # 生产口径的检索文本：文档名 + 章节路径 + 正文（朴素切块没有章节段）
+        # 生产口径的检索文本：文档名 + 章节路径 + 正文（朴素切块没有章节段）。
+        # 设 SECTION_CONTEXT_PROXY=1 时再补一句「节说明」，用本节首句当代理——
+        # 真说明由大模型生成，离线跑不出来；首句同样是「一句人话的节级上下文」，
+        # 足以验证拼装生效与指标方向，但不能当成模型效果。
+        # 只加在结构化组：朴素组必须保持为对照基线，否则差值不干净。
+        contextual = (
+            os.environ.get("SECTION_CONTEXT_PROXY") == "1" and kind == "structured"
+        )
+        section_first_sentence: dict[tuple[str, str], str] = {}
+        if contextual:
+            for chunk in chunks:
+                key = (chunk.doc_stem, chunk.heading_path)
+                if key in section_first_sentence:
+                    continue
+                head, _sep, _tail = chunk.text.partition("。")
+                section_first_sentence[key] = head.strip() + "。"
         retrieval_texts = [
             build_retrieval_text(
                 next(d.title for d in docs if d.stem == chunk.doc_stem),
                 chunk.heading_path,
                 chunk.text,
+                section_first_sentence.get((chunk.doc_stem, chunk.heading_path))
+                if contextual
+                else None,
+                model_tags=os.environ.get("MODEL_TAG_PROXY") == "1" and kind == "structured",
             )
             for chunk in chunks
         ]

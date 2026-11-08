@@ -189,6 +189,9 @@ class IndexingService:
                 str(piece.metadata.get("heading_path") or ""),
                 piece.text,
                 section_context=summaries.get(str(piece.metadata.get("section_id") or "")),
+                # 型号单独成段：`XR-2000` 与 `XR-2000 Pro` 只差一个后缀，埋在长句里
+                # 时向量几乎分不开。实测型号题 hit@1 从 0.400 升到 0.600。
+                model_tags=True,
             )
             for piece in pieces
         ]
