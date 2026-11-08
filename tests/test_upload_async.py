@@ -174,6 +174,36 @@ def test_multipart_upload_stores_file_and_leaves_content_empty(offline: SimpleNa
     assert offline.enqueued[0]["request_id"] == "t3-file-req"
 
 
+def test_html_upload_passes_extension_check_and_records_html_source_type(
+    offline: SimpleNamespace,
+) -> None:
+    """``.html`` 在扩展名白名单里，来源类型是 ``html``（HTML 解析器产出的那一类）。
+
+    准入（哪个库收 html）不在这条缝上管：本票只保证「能传、能归成 html」。
+    """
+
+    html_bytes = b"<html><body><h1>Refund</h1></body></html>"
+
+    response = offline.client.post(
+        "/api/v1/documents/upload",
+        data={"kb_id": KB_ID},
+        files={"file": ("Policy.HTML", html_bytes, "text/html")},
+    )
+
+    body = response.json()
+    assert body["code"] == 0
+    assert body["data"] == EXPECTED_UPLOAD_DATA
+
+    stored_path = offline.uploads_dir / TENANT_ID / "doc-1.html"
+    assert stored_path.read_bytes() == html_bytes
+
+    doc = offline.session.documents["doc-1"]
+    assert doc.source_type == "html"
+    assert doc.source_file_path == f"{TENANT_ID}/doc-1.html"
+    assert doc.title == "Policy", "title 缺省时用文件名主干"
+    assert doc.content == "", "正文留给 Worker 解析"
+
+
 def test_unknown_extension_is_rejected_before_anything_is_persisted(
     offline: SimpleNamespace,
 ) -> None:

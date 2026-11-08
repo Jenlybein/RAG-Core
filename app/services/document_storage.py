@@ -18,7 +18,7 @@ from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 
 # 上传白名单（大小写不敏感）：扩展名不在其中一律按「解析不了」的 20023 拒绝。
-ALLOWED_EXTENSIONS = {".md", ".markdown", ".txt", ".docx", ".pdf"}
+ALLOWED_EXTENSIONS = {".md", ".markdown", ".txt", ".docx", ".pdf", ".html", ".htm"}
 
 # 扩展名（小写）→ documents.source_type；与 T1 解析器注册的名字一致。
 SOURCE_TYPE_BY_EXTENSION = {
@@ -27,6 +27,8 @@ SOURCE_TYPE_BY_EXTENSION = {
     ".txt": "text",
     ".docx": "docx",
     ".pdf": "pdf",
+    ".html": "html",
+    ".htm": "html",
 }
 
 
