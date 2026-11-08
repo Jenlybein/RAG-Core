@@ -166,6 +166,8 @@ class MarkdownStructuredSplitter(TextSplitter):
 
     def _build_section_texts(self, blocks: list[_Block]) -> list[_Piece]:
         produced: list[_Piece] = []
+        # 同一节内出现过的表格文本，用于把重复表格整体折叠（连同行级片）。
+        seen_tables: set[str] = set()
         for block in blocks:
             if block.kind == "code":
                 # 未分片时序号为 0，分片后才从 1 开始编号——「0 表示整块」这条
@@ -179,13 +181,29 @@ class MarkdownStructuredSplitter(TextSplitter):
                 continue
             if block.kind == "table":
                 for table_part, group in enumerate(self._table_groups(block.lines), start=1):
+                    table_text = "\n".join(group).strip("\n")
+                    # 同一节内完全相同的表格整体跳过（连同它的行级片）。行级片插在
+                    # 整表片之后，两片之间不再紧邻，_assemble 的相邻去重对表格失效，
+                    # 所以去重必须按「表格组」在这里做，保持「同节重复表格折叠为一片」
+                    # 的老行为。
+                    if table_text in seen_tables:
+                        continue
+                    seen_tables.add(table_text)
                     produced.append(
                         _Piece(
-                            text="\n".join(group).strip("\n"),
+                            text=table_text,
                             chunk_type="table",
                             table_part=table_part,
                         )
                     )
+                    for row_text in _table_row_texts(group):
+                        produced.append(
+                            _Piece(
+                                text=row_text,
+                                chunk_type="table_row",
+                                table_part=table_part,
+                            )
+                        )
                 continue
             if block.kind == "normal":
                 for text in self._split_normal_lines(block.lines):
@@ -294,6 +312,44 @@ def _resolve_heading_path(section_path: str, deep_paths: list[str]) -> str:
         prefix.append(parts[0])
     joined = " > ".join(prefix)
     return joined or section_path
+
+
+def _table_cells(line: str) -> list[str]:
+    """把 `| a | b |` 拆成 `["a", "b"]`；首尾竖线不算空单元格。"""
+
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _table_row_texts(group: list[str]) -> list[str]:
+    """把一组表格的每个数据行拼成「列名=值，列名=值」。
+
+    整表片回答「对比这几个型号」这类问题，行级片回答「XR-2100 的光模块多少钱」
+    这类问题。后者若只给一行裸数据，向量还得靠表头才知道每列是什么；拼上列名
+    之后，单元格自己就带语义，脱离表头也能读懂。
+
+    表头与分隔行不是数据；空单元格（含行尾多出来的空段）不产出 `列名=`，
+    否则会造出「配件=」这种没有信息量的噪声。
+    """
+
+    header_rows = 2 if len(group) >= 2 and _is_table_separator(group[1]) else 1
+    headers = _table_cells(group[0])
+    texts: list[str] = []
+    for row in group[header_rows:]:
+        cells = _table_cells(row)
+        pairs: list[str] = []
+        for position, value in enumerate(cells):
+            if not value:
+                continue
+            name = headers[position] if position < len(headers) else ""
+            pairs.append(f"{name}={value}" if name else value)
+        if pairs:
+            texts.append("，".join(pairs))
+    return texts
 
 
 def _code_break_point(text: str, start: int, end: int) -> int:

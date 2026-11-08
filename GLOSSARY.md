@@ -77,7 +77,7 @@ _Avoid_: 证据, 证据包, 文档片段, 命中片段, chunk（英文写法）
 _Avoid_: 标题路径, 章节链
 
 **块类型（chunk_type）**：
-切片的形态，四种：`prose` / `list` / `table` / `code`。
+切片的形态，五种：`prose` / `list` / `table` / `table_row` / `code`。`table_row` 是表格的行级片（每行拼成「列名=值」），与整表片并存。
 _Avoid_: chunk 类型, 内容类型
 
 **重解析（reparse）**：

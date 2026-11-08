@@ -258,11 +258,14 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     chunks = pipeline_env.store.written[0]
 
     # ── 切块：真实 Markdown 结构切块器的产物 ──
-    # h3 是切片边界之后，样例文档切出 5 片：h1 引导段自成一片、Storage Layout
-    # 的正文与表格各一片、Chunking Contract 的列表一片、其下的 Worker Steps 一片。
-    assert len(chunks) == 5
+    # h3 是切片边界、表格带行级片之后，样例文档切出 8 片：h1 引导段、Storage Layout
+    # 的正文 + 整表 + 3 个行级片、Chunking Contract 的列表、其下的 Worker Steps。
+    assert len(chunks) == 8
     assert [chunk["meta"]["heading_path"] for chunk in chunks] == [
         "Pipeline Notes",
+        "Pipeline Notes > Storage Layout",
+        "Pipeline Notes > Storage Layout",
+        "Pipeline Notes > Storage Layout",
         "Pipeline Notes > Storage Layout",
         "Pipeline Notes > Storage Layout",
         "Pipeline Notes > Chunking Contract",
@@ -272,13 +275,16 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
         "prose",
         "prose",
         "table",
+        "table_row",
+        "table_row",
+        "table_row",
         "list",
         "prose",
     ]
     # 解析器 metadata 必须跟着切片走：否则 OCR 文档的 `metadata.engine` 无从查起
     # （真机验收时踩过——切片里只有切块字段，engine/ocr_pages 全丢了）。
     assert {chunk["meta"]["parser"] for chunk in chunks} == {"markdown"}
-    assert [chunk["meta"]["index"] for chunk in chunks] == [0, 1, 2, 3, 4]
+    assert [chunk["meta"]["index"] for chunk in chunks] == [0, 1, 2, 3, 4, 5, 6, 7]
 
     for chunk in chunks:
         assert REQUIRED_META <= set(chunk["meta"]), "切块 provenance 必须一路带进切片 meta"
@@ -291,22 +297,27 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
         section_id = chunk["meta"]["section_id"]
         assert isinstance(section_id, str) and len(section_id) == 64
 
-    # 同一章节的两片共享 section_id；子章节的 parent 指回父章节的 section_id。
-    assert chunks[1]["meta"]["section_id"] == chunks[2]["meta"]["section_id"]
-    assert chunks[3]["meta"]["section_id"] != chunks[4]["meta"]["section_id"]
+    # 同一章节的 5 片（正文 + 整表 + 3 行级）共享 section_id；子章节的 parent 指回父章节。
+    assert {chunk["meta"]["section_id"] for chunk in chunks[1:6]} == {
+        chunks[1]["meta"]["section_id"]
+    }
+    assert chunks[6]["meta"]["section_id"] != chunks[7]["meta"]["section_id"]
     assert chunks[1]["meta"]["parent_section_id"] == chunks[0]["meta"]["section_id"]
-    assert chunks[4]["meta"]["parent_section_id"] == chunks[3]["meta"]["section_id"]
+    assert chunks[7]["meta"]["parent_section_id"] == chunks[6]["meta"]["section_id"]
 
-    # ── 表格：整块留在一片里，没有被行数上限或字符窗口切开 ──
+    # ── 表格：整块留在一片里，没有被行数上限或字符窗口切开；行级片另存 ──
     table_chunks = [chunk for chunk in chunks if chunk["meta"]["chunk_type"] == "table"]
+    row_chunks = [chunk for chunk in chunks if chunk["meta"]["chunk_type"] == "table_row"]
     assert len(table_chunks) == 1
     assert table_chunks[0]["content"] == "\n".join(TABLE_LINES)
+    assert len(row_chunks) == 3, "三个数据行各一片行级片"
+    assert row_chunks[0]["content"] == "Field=document_id，Meaning=stable identifier"
     assert [chunk["meta"]["chunk_type"] for chunk in chunks if "|" in chunk["content"]] == ["table"]
 
     # ── h3 是切片边界：Worker Steps 自成一片，路径精确到它，正文归它而不是父节 ──
-    assert chunks[4]["meta"]["heading_path"].endswith("> Worker Steps")
-    assert "### Worker Steps" in chunks[4]["content"]
-    assert "### Worker Steps" not in chunks[3]["content"]
+    assert chunks[7]["meta"]["heading_path"].endswith("> Worker Steps")
+    assert "### Worker Steps" in chunks[7]["content"]
+    assert "### Worker Steps" not in chunks[6]["content"]
 
     # ── 向量化：送进 embedding 的是检索文本（文档名 + 章节路径 + 正文），
     #    不是切片原文；每个切片各一条 1536 维向量，数量与切片一一对应。 ──

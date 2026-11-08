@@ -157,6 +157,74 @@ def test_table_kept_whole() -> None:
         assert row in tables[0].text
 
 
+def test_table_rows_are_emitted_alongside_the_whole_table() -> None:
+    """一张 8 行表产出 1 个整表片 + 8 个行级片，行级片是「列名=值」。"""
+    markdown = (
+        "# 价格表\n"
+        "\n"
+        "| 型号 | 配件 | 单价 |\n"
+        "| --- | --- | --- |\n"
+        "| XR-2100 | 万兆光模块 | 1180 |\n"
+        "| XR-2100 Pro | 万兆光模块 | 1580 |\n"
+    )
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    tables = [piece for piece in pieces if piece.metadata["chunk_type"] == "table"]
+    rows = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+
+    assert len(tables) == 1
+    assert len(rows) == 2, "两个数据行各一片"
+    assert rows[0].text == "型号=XR-2100，配件=万兆光模块，单价=1180"
+    assert rows[1].text == "型号=XR-2100 Pro，配件=万兆光模块，单价=1580"
+    for piece in rows:
+        assert piece.metadata["heading_path"] == "价格表"
+        assert piece.metadata["table_part"] == 1
+
+
+def test_table_row_skips_blank_cells() -> None:
+    """空单元格不产出 `列名=` 这种没有信息量的碎片。"""
+    markdown = "# 表\n\n| 型号 | 备注 |\n| --- | --- |\n| XR-2000 |  |\n"
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    rows = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+    assert len(rows) == 1
+    assert rows[0].text == "型号=XR-2000"
+    assert "备注=" not in rows[0].text
+
+
+def test_large_table_row_pieces_follow_their_group() -> None:
+    """分组后行级片沿用该组的 table_part，与整表片对齐。"""
+    header = "| 编号 | 名称 |\n| --- | --- |"
+    rows = "\n".join(f"| {number} | 商品{number} |" for number in range(1, 13))
+    markdown = f"# 库存\n\n{header}\n{rows}\n"
+    splitter = MarkdownStructuredSplitter(table_max_rows=5)
+
+    pieces = splitter.split(markdown)
+
+    tables = [piece for piece in pieces if piece.metadata["chunk_type"] == "table"]
+    row_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+    assert len(tables) == 3
+    assert len(row_pieces) == 12
+    assert [piece.metadata["table_part"] for piece in tables] == [1, 2, 3]
+    assert sorted({piece.metadata["table_part"] for piece in row_pieces}) == [1, 2, 3]
+    assert row_pieces[0].text == "编号=1，名称=商品1"
+
+
+def test_duplicate_table_collapses_with_its_row_pieces() -> None:
+    """同一节内重复的表格整体折叠，连同行级片一起跳过。"""
+    table = "| 套餐 | 价格 |\n| --- | --- |\n| 基础版 | 99 |\n"
+    markdown = f"# 价格\n\n{table}\n{table}"
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    tables = [piece for piece in pieces if piece.metadata["chunk_type"] == "table"]
+    rows = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+    assert len(tables) == 1
+    assert len(rows) == 1
+
+
 def test_large_table_repeats_header() -> None:
     """超过 table_max_rows 的表按行分组，每组都重复表头。"""
     header = "| 编号 | 名称 |\n| --- | --- |"

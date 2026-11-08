@@ -105,15 +105,19 @@ def test_corpus_is_a_synthetic_eval_set() -> None:
 
 
 def test_chunk_count_stays_in_the_discriminating_range() -> None:
-    """200-400 片：这是 ``Recall@20`` 不再覆盖全库的前提。
+    """200-800 片：这是 ``Recall@20`` 不再覆盖全库的前提。
 
     v1 只有 39 片，每路召回深度 20，两路一捞就覆盖大半个库，所以两种模式同时满分。
     这不是「实现已经完美」，而是**测量工具没有量程**。上界同样重要：语料太大时
     嵌入成本与单次评测时长会让人不想重跑，评测也就不会更新。
+
+    上界从 400 放宽到 800：h3 成为切片边界、表格加上行级片之后，同一份语料自然
+    切出更多片（456 片）。量程要看的是「top_k 能不能蒙中」，不是绝对片数——
+    800 片时 top-5 仍只覆盖 0.6%。
     """
 
     total = len(_pieces())
-    assert 200 <= total <= 400, f"切片数 {total} 不在 200-400 之间"
+    assert 200 <= total <= 800, f"切片数 {total} 不在 200-800 之间"
 
 
 def test_headings_never_carry_discriminating_identifiers() -> None:
@@ -364,8 +368,14 @@ def test_exact_code_questions_include_the_trap_pair_both_ways() -> None:
 def test_every_label_resolves_to_exactly_one_chunk_offline() -> None:
     """题目标注在**离线**就能对上是本测试存在的意义：先于任何一次真实评测失败。
 
-    常规是「恰好 1 片」。``kb-eval-long`` 的题允许命中 1-2 片：那几篇刻意让
-    每节超过 ``chunk_size``，一节被二次切成相邻两片，两片都算相关。
+    金标写的是「答案在这一节」，所以一个金标可能命中多片：一节超过 ``chunk_size``
+    被二次切成相邻两片、或一节里既有整表片又有一堆行级片，这些片都算相关。
+    判定标准因此是「至少 1 片，且不超过 12 片」——上界取 12 是因为
+    ``table_max_rows=10`` 下一个表格组最多展开成 1 整表片 + 10 行级片；
+    超过它就说明金标写得过粗，指向了整篇文档而不是某一节。
+
+    trap 的上界与金标相同：陷阱节如果含表格，同样会展开成「整表片 + 行级片」。
+    陷阱的作用是「这一节看着像、但答不是」，它是不是单点与该性质无关。
     """
 
     by_locator: Counter[tuple[str, str]] = Counter()
@@ -377,13 +387,18 @@ def test_every_label_resolves_to_exactly_one_chunk_offline() -> None:
         for label in question["relevant"]:
             key = (label["document"], label["heading_path"])
             count = by_locator[key]
-            if count < 1 or count > 2:
-                problems.append(f"{question['id']}: {key} 匹配到 {count} 片（应为 1-2）")
+            if count < 1 or count > 12:
+                problems.append(f"{question['id']}: {key} 匹配到 {count} 片（应为 1-12）")
         for label in question.get("trap", []):
             key = (label["document"], label["heading_path"])
             count = by_locator[key]
-            if count != 1:
-                problems.append(f"{question['id']}: trap {key} 匹配到 {count} 片（应为 1）")
+            if count < 1 or count > 12:
+                problems.append(f"{question['id']}: trap {key} 匹配到 {count} 片（应为 1-12）")
+        for label in question.get("trap", []):
+            trap_key = (label["document"], label["heading_path"])
+            for gold in question["relevant"]:
+                gold_key = (gold["document"], gold["heading_path"])
+                assert trap_key != gold_key, f"{question['id']}: 陷阱与金标是同一节"
     assert not problems, "标注与切片对不上：\n  - " + "\n  - ".join(problems)
 
 
