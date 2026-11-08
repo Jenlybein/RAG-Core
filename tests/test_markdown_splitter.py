@@ -5,7 +5,7 @@
 
 from __future__ import annotations
 
-from app.utils.markdown_splitter import MarkdownStructuredSplitter
+from app.utils.markdown_splitter import MarkdownStructuredSplitter, _Piece
 
 
 def test_split_respects_heading_boundary() -> None:
@@ -388,6 +388,98 @@ def test_long_section_split_with_overlap() -> None:
     ]
     assert [piece.metadata["order_index"] for piece in second_section] == [0]
     assert "下一节的短正文" in second_section[0].text
+
+
+def test_small_prose_pieces_in_one_section_are_merged() -> None:
+    """同一节内两个过短的 prose 片合并成一片。
+
+    走私有入口，是因为这个机制在公开入口上几乎触发不了：``_split_normal_lines``
+    只在一节超过 ``chunk_size`` 时才切开，切出来的两片各自接近 ``chunk_size``，
+    合起来必然超上限。行为仍需钉住，否则以后改阈值逻辑时无从判断对错。
+    """
+
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100, merge_threshold=150)
+    pieces = [
+        _Piece(text="短甲。" * 10, chunk_type="prose"),
+        _Piece(text="短乙。" * 10, chunk_type="prose"),
+        _Piece(text="长片。" * 300, chunk_type="prose"),
+    ]
+
+    merged = splitter._merge_small_pieces(pieces)
+
+    assert len(merged) == 2, "前两片合并，第三片太长放不下"
+    assert merged[0].text.startswith("短甲。")
+    assert "短乙。" in merged[0].text, "合并保留顺序"
+    assert merged[1].text.startswith("长片。")
+
+
+def test_merge_never_exceeds_chunk_size() -> None:
+    """合并后仍不得超过 chunk_size，否则这批内容会在别处又被切一次。"""
+
+    splitter = MarkdownStructuredSplitter(chunk_size=100, chunk_overlap=10, merge_threshold=150)
+    pieces = [
+        _Piece(text="甲" * 60, chunk_type="prose"),
+        _Piece(text="乙" * 60, chunk_type="prose"),
+    ]
+
+    merged = splitter._merge_small_pieces(pieces)
+
+    assert len(merged) == 2, "60+60 超过 chunk_size=100，不许合"
+
+
+def test_merge_skips_table_rows_and_code_parts() -> None:
+    """行级表片与代码分片不参与合并：合并回去等于取消那两项能力。"""
+
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100, merge_threshold=500)
+    pieces = [
+        _Piece(text="型号=XR-2000", chunk_type="table_row", table_part=1),
+        _Piece(text="型号=XR-2100", chunk_type="table_row", table_part=1),
+        _Piece(text="```y\na=1\n```", chunk_type="code", code_part=1),
+        _Piece(text="mid", chunk_type="code", code_part=2),
+    ]
+
+    merged = splitter._merge_small_pieces(pieces)
+
+    assert len(merged) == 4, "四片都不许合并"
+
+
+def test_merge_threshold_zero_disables_merging() -> None:
+    """阈值设为 0 时整条合并逻辑退化为不合并。"""
+
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100, merge_threshold=0)
+    pieces = [
+        _Piece(text="短甲。", chunk_type="prose"),
+        _Piece(text="短乙。", chunk_type="prose"),
+    ]
+
+    assert splitter._merge_small_pieces(pieces) == pieces
+
+
+def test_merge_threshold_never_fires_on_the_eval_corpus() -> None:
+    """当前语料上这个机制命中 0 次——把事实钉住，别让它变成「以为在起作用」。
+
+    原因很具体：362 个节里 347 个只产出一片（h3 成为边界后每节本身就是原子单位），
+    产出多片的节全是表格节，多出来的片都是 ``table_row``，按设计不参与合并。
+    那 286 个「小于 150 字」的片是**整节都短**，没有同节的邻居可合。
+    真要减少碎片，得允许跨 h3 合并到同一 h2——那是另一个决策，不是这条规则。
+    """
+
+    import sys
+    from pathlib import Path
+
+    sys.path.insert(0, str(Path(__file__).parent.parent / "scripts"))
+    from eval_chunking import _load_corpus  # noqa: PLC0415
+
+    loose = MarkdownStructuredSplitter(800, 100, 10, merge_threshold=0)
+    tight = MarkdownStructuredSplitter(800, 100, 10, merge_threshold=150)
+
+    without_merge = sum(len(loose.split(doc.text)) for doc in _load_corpus())
+    with_merge = sum(len(tight.split(doc.text)) for doc in _load_corpus())
+
+    assert with_merge == without_merge, (
+        f"合并开始生效了（{without_merge} -> {with_merge} 片）："
+        "请重新评估本测试的结论，并更新 docstring 里的数字"
+    )
 
 
 def test_list_block_chunk_type_is_list() -> None:

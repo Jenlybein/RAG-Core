@@ -66,14 +66,18 @@ class MarkdownStructuredSplitter(TextSplitter):
         chunk_size: int = 800,
         chunk_overlap: int = 100,
         table_max_rows: int = 10,
+        merge_threshold: int = 150,
     ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
         if table_max_rows < 1:
             raise ValueError("table_max_rows must be at least 1")
+        if merge_threshold < 0:
+            raise ValueError("merge_threshold must not be negative")
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.table_max_rows = table_max_rows
+        self.merge_threshold = merge_threshold
 
     def split(self, text: str) -> list[SplitPiece]:
         """扫描全文，按 h1/h2/h3 边界产出一组带 provenance 的切片。"""
@@ -149,7 +153,7 @@ class MarkdownStructuredSplitter(TextSplitter):
                     continue
                 kept.append(piece)
                 last_text = piece.text
-            for order_index, piece in enumerate(kept):
+            for order_index, piece in enumerate(self._merge_small_pieces(kept)):
                 pieces.append(
                     SplitPiece(
                         text=piece.text,
@@ -163,6 +167,40 @@ class MarkdownStructuredSplitter(TextSplitter):
                     )
                 )
         return pieces
+
+    def _merge_small_pieces(self, pieces: list[_Piece]) -> list[_Piece]:
+        """把同一节内过碎的相邻片合并，减少「答案要拼三四条才够」的碎片。
+
+        只合并 ``prose`` / ``list``，另外两类刻意不参与：
+
+        * ``table_row`` 是按语义拆出来的，合并回去等于取消行级索引；
+        * ``code`` 分片是刻意切开的（整块塞不进窗口），合并回去等于取消递归切。
+
+        合并后仍不得超过 ``chunk_size``：否则这批内容会在别处又被二次切一次，
+        等于白合。阈值设为 0 时整条逻辑退化为不合并。
+        """
+
+        if self.merge_threshold <= 0 or not pieces:
+            return pieces
+        mergeable = {"prose", "list"}
+        merged: list[_Piece] = []
+        buffer = pieces[0]
+        for piece in pieces[1:]:
+            if (
+                buffer.chunk_type in mergeable
+                and piece.chunk_type == buffer.chunk_type
+                and len(buffer.text) < self.merge_threshold
+                and len(buffer.text) + len(piece.text) + 2 <= self.chunk_size
+            ):
+                buffer = _Piece(
+                    text=f"{buffer.text}\n\n{piece.text}",
+                    chunk_type=buffer.chunk_type,
+                )
+                continue
+            merged.append(buffer)
+            buffer = piece
+        merged.append(buffer)
+        return merged
 
     def _build_section_texts(self, blocks: list[_Block]) -> list[_Piece]:
         produced: list[_Piece] = []
