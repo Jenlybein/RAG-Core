@@ -1,13 +1,12 @@
-"""用 03 那一章的配置跑一遍，和现在的配置对照：到底谁赢。
+"""最终版公平对照。
 
-03 时代的切块器配置（还原）：
-- 只有 h1/h2 是切片边界（SECTION_LEVEL = 2），h3 及更深只加深路径；
-- 表格整块一片，不产出行级片；
-- 代码块整块一片，不按窗口递归切；
-- 检索文本只有「文档 + 章节 + 正文」，没有节说明、没有型号段。
+两个必须修掉的测量错误：
+1. 用 heading_path 精确相等判相关 → 03 时代路径更粗，15 道难题被静默剔除；
+2. 行级表片的文本是拼出来的（`参数=…，值=…`），在原文里 `find` 不到，字符区间
+   是错的 → 它明明答对了也不算命中。
 
-其余条件（向量模型、语料、题目、top_k、评测口径）全部相同，只换切块器。
-算分用与主评测相同的 Case / aggregate。
+这版：统一用文本区间重叠（与朴素切块同判据）、行级片继承所属表格区间、
+两版都在 127 道题上算。
 """
 
 from __future__ import annotations
@@ -20,51 +19,72 @@ sys.path.insert(0, "scripts")
 from app.providers.embedding import get_embedding_provider
 from app.utils import markdown_splitter as ms
 from app.utils.retrieval_text import build_retrieval_text
-from eval_chunking import EXCLUDED_FROM_MAIN, _cosine, _load_corpus, _load_questions, _unit_of
+from eval_chunking import (
+    DOMINANCE_RATIO,
+    EXCLUDED_FROM_MAIN,
+    _cosine,
+    _load_corpus,
+    _load_questions,
+    _sections,
+)
 from eval_metrics import Case, aggregate
 
 K = 5
-INCLUDE_FALSE_PREMISE = False
 
 
 class _Chunk:
-    """脚本内用的轻量切片：只带评测要的字段。"""
+    __slots__ = ("text", "doc_stem", "heading_path", "chunk_type", "start", "end")
 
-    __slots__ = (
-        "text",
-        "doc_stem",
-        "heading_path",
-        "chunk_type",
-        "section_id",
-        "table_part",
-        "start",
-        "end",
-    )
-
-    def __init__(self, piece, doc_stem: str, start: int = 0, end: int = 0) -> None:
-        self.text = piece.text
+    def __init__(self, text, doc_stem, heading, start, end, kind):
+        self.text = text
         self.doc_stem = doc_stem
-        self.heading_path = str(piece.metadata.get("heading_path") or "")
-        self.chunk_type = str(piece.metadata.get("chunk_type") or "")
-        self.section_id = str(piece.metadata.get("section_id") or "")
-        self.table_part = int(piece.metadata.get("table_part") or 0)
+        self.heading_path = heading
         self.start = start
         self.end = end
+        self.chunk_type = kind
 
 
-def _structured(doc, *, level: int, rows: bool, code_split: bool, originals) -> list[_Chunk]:
+def _cut(doc, *, level: int, rows: bool, model_tags: bool, originals):
     ms._table_row_texts = originals[0]
     ms.MarkdownStructuredSplitter._split_code_lines = originals[1]
     ms.MarkdownStructuredSplitter.SECTION_LEVEL = level
     if not rows:
-        ms._table_row_texts = lambda _group: []
-    if not code_split:
+        ms._table_row_texts = lambda _g: []
+    if not model_tags:
         ms.MarkdownStructuredSplitter._split_code_lines = lambda self, lines: [
             "\n".join(lines).rstrip()
         ]
-    splitter = ms.MarkdownStructuredSplitter(800, 100, 10)
-    chunks = [_Chunk(piece, doc.stem) for piece in splitter.split(doc.text)]
-    # 还原补丁，避免影响下一组
+
+    chunks: list[_Chunk] = []
+    cursor = 0
+    last_table: tuple[int, int] = (0, 0)
+    for piece in ms.MarkdownStructuredSplitter(800, 100, 10).split(doc.text):
+        kind = str(piece.metadata.get("chunk_type") or "")
+        if kind == "table_row":
+            # 行级片的正文是按列拼出来的，原文里搜不到；它属于同一张表，
+            # 所以直接继承上一张整表片的区间。
+            start, end = last_table
+        else:
+            position = doc.text.find(piece.text, cursor)
+            if position < 0:
+                position = doc.text.find(piece.text)
+            if position < 0:
+                position = cursor
+            start = position
+            end = position + len(piece.text)
+            cursor = end
+            if kind == "table":
+                last_table = (start, end)
+        chunks.append(
+            _Chunk(
+                piece.text,
+                doc.stem,
+                str(piece.metadata.get("heading_path") or ""),
+                start,
+                end,
+                kind,
+            )
+        )
     ms._table_row_texts = originals[0]
     ms.MarkdownStructuredSplitter._split_code_lines = originals[1]
     ms.MarkdownStructuredSplitter.SECTION_LEVEL = originals[2]
@@ -74,61 +94,67 @@ def _structured(doc, *, level: int, rows: bool, code_split: bool, originals) -> 
 async def _run() -> None:
     docs = _load_corpus()
     questions, _ = _load_questions()
-    questions = [q for q in questions if q.labels]
-    if not INCLUDE_FALSE_PREMISE:
-        questions = [q for q in questions if q.type not in EXCLUDED_FROM_MAIN]
+    questions = [q for q in questions if q.labels and q.type not in EXCLUDED_FROM_MAIN]
     provider = get_embedding_provider()
+    section_map = {(d.stem, s.heading_path): s for d in docs for s in _sections(d.text)}
 
     originals = (
         ms._table_row_texts,
         ms.MarkdownStructuredSplitter._split_code_lines,
         ms.MarkdownStructuredSplitter.SECTION_LEVEL,
     )
-
     variants = {
-        "03 时代（h1/h2，整表整码）": (dict(level=2, rows=False, code_split=False), False),
-        "现在（h3+行级表+代码切+型号段）": (dict(level=3, rows=True, code_split=True), True),
+        "old": ("03 时代（h1/h2，整表整码）", dict(level=2, rows=False, model_tags=False)),
+        "new": (
+            "现在（h3+行级表+代码切+型号段）",
+            dict(level=3, rows=True, model_tags=True),
+        ),
     }
 
-    summary: dict[str, dict[str, object]] = {}
-    for label, (cfg, model_tags) in variants.items():
-        chunks = [c for doc in docs for c in _structured(doc, originals=originals, **cfg)]
+    per_type_all: dict[str, dict[str, list[bool]]] = {}
+    for key, (label, cfg) in variants.items():
+        chunks = [c for doc in docs for c in _cut(doc, originals=originals, **cfg)]
         ids = [str(i) for i in range(len(chunks))]
+        by_id = dict(zip(ids, chunks))
         texts = [
             build_retrieval_text(
                 next(d.title for d in docs if d.stem == c.doc_stem),
                 c.heading_path,
                 c.text,
-                model_tags=model_tags,
+                model_tags=cfg["model_tags"],
             )
             for c in chunks
         ]
         vectors = await provider.embed_texts(texts)
         query_vectors = await provider.embed_texts([q.query for q in questions])
-        by_id = dict(zip(ids, chunks))
+
         cases = []
         per_type: dict[str, list[bool]] = {}
+        no_rel = 0
         for question, qv in zip(questions, query_vectors):
-            relevant = {
-                _unit_of(by_id[cid], cid)
-                for cid in ids
-                if any(
-                    by_id[cid].doc_stem == g[0] and by_id[cid].heading_path == g[1]
-                    for g in question.labels
-                )
-            }
+            relevant = set()
+            for cid in ids:
+                chunk = by_id[cid]
+                for gold in question.labels:
+                    section = section_map.get(gold)
+                    if section is None or chunk.doc_stem != gold[0]:
+                        continue
+                    overlap = min(chunk.end, section.end) - max(chunk.start, section.start)
+                    if overlap > 0 and overlap >= DOMINANCE_RATIO * min(
+                        len(chunk.text), section.end - section.start
+                    ):
+                        relevant.add(cid)
+                        break
             if not relevant:
+                no_rel += 1
                 continue
-            ranked = []
-            seen: set = set()
-            for _s, cid in sorted(
-                ((_cosine(qv, vec), cid) for vec, cid in zip(vectors, ids)), reverse=True
-            ):
-                unit = _unit_of(by_id[cid], cid)
-                if unit in seen:
-                    continue
-                seen.add(unit)
-                ranked.append(unit)
+            ranked = [
+                cid
+                for _s, cid in sorted(
+                    ((_cosine(qv, vec), cid) for vec, cid in zip(vectors, ids)),
+                    reverse=True,
+                )
+            ]
             cases.append(
                 Case(
                     id=question.id,
@@ -137,46 +163,32 @@ async def _run() -> None:
                     returned=tuple(ranked),
                 )
             )
-            per_type.setdefault(question.type, []).append(bool(ranked[0] in relevant))
-        metrics = aggregate(cases, K)
-        summary[label] = {
-            "chunks": len(chunks),
-            "avg_len": sum(len(c.text) for c in chunks) / len(chunks),
-            "N": sum(len(c.relevant) for c in cases) / len(cases),
-            "metrics": metrics,
-            "per_type": per_type,
-        }
+            per_type.setdefault(question.type, []).append(ranked[0] in relevant)
 
-    print(
-        f"{'变体':36s} {'片数':>4} {'均长':>4} {'N':>4} {'R@5':>7} {'R@1':>7} {'hit@1':>7} {'MRR':>7}"
-    )
-    for label, row in summary.items():
-        m = row["metrics"]
+        m = aggregate(cases, K)
+        n = sum(len(c.relevant) for c in cases) / len(cases)
+        per_type_all[key] = per_type
         print(
-            f"{label:36s} {row['chunks']:4d} {row['avg_len']:4.0f} {row['N']:4.2f} "
-            f"{float(m['recall_at_k']):7.4f} {float(m['recall_at_1']):7.4f} "
-            f"{float(m['hit_at_1']):7.4f} {float(m['mrr']):7.4f}"
+            f"{label}\n"
+            f"  片数={len(chunks)} 均长={sum(len(c.text) for c in chunks) / len(chunks):.0f}"
+            f" 参评={len(cases)} 无相关={no_rel} N={n:.2f}\n"
+            f"  R@5={float(m['recall_at_k']):.4f} R@1={float(m['recall_at_1']):.4f}"
+            f" hit@1={float(m['hit_at_1']):.4f} MRR={float(m['mrr']):.4f}"
         )
 
-    a = summary["03 时代（h1/h2，整表整码）"]["per_type"]
-    b = summary["现在（h3+行级表+代码切+型号段）"]["per_type"]
-    print("\n按题型 hit@1")
+    a, b = per_type_all["old"], per_type_all["new"]
+    print("\n按题型 hit@1（同判据、同 127 题）")
     print(f"{'题型':18s} {'题数':>4} {'03':>7} {'现在':>7} {'差值':>8}")
-    for qtype in sorted(set(a) | set(b), key=lambda t: -_delta(a, b, t)):
-        left = _rate(a, qtype)
-        right = _rate(b, qtype)
+    for qtype in sorted(set(a) | set(b), key=lambda t: -(_r(b, t) - _r(a, t))):
         print(
-            f"{qtype:18s} {len(a.get(qtype, [])):4d} {left:7.3f} {right:7.3f} {right - left:+8.3f}"
+            f"{qtype:18s} {len(a.get(qtype, [])):4d} {_r(a, qtype):7.3f}"
+            f" {_r(b, qtype):7.3f} {_r(b, qtype) - _r(a, qtype):+8.3f}"
         )
 
 
-def _rate(side: dict[str, list[bool]], qtype: str) -> float:
+def _r(side: dict[str, list[bool]], qtype: str) -> float:
     flags = side.get(qtype) or []
     return sum(flags) / len(flags) if flags else 0.0
-
-
-def _delta(a: dict[str, list[bool]], b: dict[str, list[bool]], qtype: str) -> float:
-    return _rate(b, qtype) - _rate(a, qtype)
 
 
 if __name__ == "__main__":
