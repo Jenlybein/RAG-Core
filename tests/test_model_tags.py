@@ -53,3 +53,51 @@ def test_no_model_means_no_segment() -> None:
     text = build_retrieval_text("部署实施指南", "上架", "机架款要上柜。", model_tags=True)
 
     assert "型号：" not in text
+
+
+def test_table_row_never_gets_a_model_segment() -> None:
+    """行级表片不加型号段。
+
+    它的正文本来就是 `型号=XR-2100，指导价=9600`；再加一段「型号：XR-2100」
+    等于把问题里的关键词重复一遍。片越短，重复的占比越大，反而更容易抢答——
+    实测型号题有 4 次首位命中是 43~51 字的价格行，而问的是「几核处理器」。
+    """
+
+    row = build_retrieval_text(
+        "价格与折扣对照表",
+        "价格表 > 整机指导价",
+        "型号=XR-2100，指导价（元）=9600，起订量=1 台",
+        model_tags=True,
+        chunk_type="table_row",
+    )
+
+    assert "型号：" not in row
+    assert "正文：型号=XR-2100" in row, "型号信息仍在正文里，没被删掉"
+
+
+def test_prose_still_gets_the_model_segment() -> None:
+    """正文片照旧加型号段——那才是要治子串混淆的地方。"""
+
+    prose = build_retrieval_text(
+        "终端型号与配件指南",
+        "型号指南 > 整机规格（机架款）",
+        "XR-2100 是机架款，默认 8 个千兆网口。",
+        model_tags=True,
+        chunk_type="prose",
+    )
+
+    assert "型号：XR-2100" in prose
+
+
+def test_table_whole_chunk_keeps_the_model_segment() -> None:
+    """整表片不是行级片，仍然加型号段：它够长，重复几遍不会主导向量。"""
+
+    whole = build_retrieval_text(
+        "价格与折扣对照表",
+        "价格表 > 整机指导价",
+        "| 型号 | 指导价 |\n| XR-2100 | 9600 |",
+        model_tags=True,
+        chunk_type="table",
+    )
+
+    assert "型号：XR-2100" in whole

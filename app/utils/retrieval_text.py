@@ -18,6 +18,9 @@ _CONTEXT_LABEL = "节说明："
 _MODEL_LABEL = "型号："
 _CONTENT_LABEL = "正文："
 
+# 行级表片的正文已经是「列名=值」，不像散文那样需要单独一段型号提示。
+CHUNK_TABLE_ROW = "table_row"
+
 # 型号形态：2–4 个大写字母 + 短横 + 3–5 位数字，后面可以跟一个后缀词。
 # 覆盖 XR-2000、XR-2000 Pro、SFP-10G、AX-3000 Max 这类写法。
 _MODEL_RE = re.compile(
@@ -46,6 +49,7 @@ def build_retrieval_text(
     section_context: str | None = None,
     *,
     model_tags: bool = False,
+    chunk_type: str = "",
 ) -> str:
     """拼出检索文本：``文档：X 章节：Y 节说明：S 型号：M 正文：Z``，空段不产生空标签。
 
@@ -55,8 +59,17 @@ def build_retrieval_text(
     ``model_tags`` 打开时把正文里的型号抽出来单独成段，解决 ``XR-2000`` 与
     ``XR-2000 Pro`` 只差一个后缀时的混淆。
 
+    **行级表片例外**（``chunk_type="table_row"``）：它的正文本来就是
+    ``型号=XR-2100，指导价=9600``，再加一段「型号：XR-2100」是把问题里的关键词
+    又重复一遍——片越短，这个重复的占比越大，反而让它更容易抢答。所以行级片
+    不加型号段，规则放在这里而不是调用方，便于单测。
+
     都为空时检索文本与补上这些能力之前逐字一致——它们是可选增强，不是格式变更。
     """
+
+    model_segment = ""
+    if model_tags and chunk_type != CHUNK_TABLE_ROW:
+        model_segment = "、".join(model_tokens(content))
 
     parts = [
         f"{label}{value.strip()}"
@@ -64,7 +77,7 @@ def build_retrieval_text(
             (_DOCUMENT_LABEL, title),
             (_SECTION_LABEL, heading_path),
             (_CONTEXT_LABEL, section_context or ""),
-            (_MODEL_LABEL, "、".join(model_tokens(content)) if model_tags else ""),
+            (_MODEL_LABEL, model_segment),
             (_CONTENT_LABEL, content),
         )
         if value.strip()

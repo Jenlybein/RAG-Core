@@ -197,7 +197,10 @@ class IndexingService:
                 section_context=summaries.get(str(piece.metadata.get("section_id") or "")),
                 # 型号单独成段：`XR-2000` 与 `XR-2000 Pro` 只差一个后缀，埋在长句里
                 # 时向量几乎分不开。实测型号题 hit@1 从 0.400 升到 0.600。
+                # 行级表片例外（规则在 build_retrieval_text 里）：它的正文本来就是
+                # `型号=XR-2100`，再加一段只是把问题关键词重复一遍，片越短占比越大。
                 model_tags=True,
+                chunk_type=str(piece.metadata.get("chunk_type") or ""),
             )
             for piece in pieces
         ]

@@ -122,6 +122,9 @@ async def _run() -> None:
                 c.heading_path,
                 c.text,
                 model_tags=cfg["model_tags"],
+                # 必须传类型：行级表片不加型号段这条规则在 build_retrieval_text 里，
+                # 不传就等于把规则绕过，量出来的不是生产口径。
+                chunk_type=c.chunk_type,
             )
             for c in chunks
         ]

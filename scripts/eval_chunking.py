@@ -357,6 +357,9 @@ async def main() -> None:
                 if contextual
                 else None,
                 model_tags=os.environ.get("MODEL_TAG_PROXY") == "1" and kind == "structured",
+                # 与生产一致地传类型：行级表片不加型号段的规则在 build_retrieval_text 里，
+                # 不传类型就等于把那条规则绕过去了，量出来的数字也不算数。
+                chunk_type=chunk.chunk_type,
             )
             for chunk in chunks
         ]
