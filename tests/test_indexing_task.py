@@ -124,6 +124,7 @@ def _document() -> SimpleNamespace:
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="Demo",
+        doc_version=1,
         status=DocumentStatus.PROCESSING,
         source_type="markdown",
         content="",

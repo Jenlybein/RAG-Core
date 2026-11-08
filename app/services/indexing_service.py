@@ -44,19 +44,22 @@ from typing import Any
 import structlog
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.document import Document
+from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
-from app.repositories import document_repository
+from app.repositories import document_repository, knowledge_base_repository
 from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import prepare_document_content
+from app.services.section_context import summarize_sections
 from app.utils.id_generator import new_chunk_id
-from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
+from app.utils.splitter_factory import build_splitter
+from app.utils.text_splitter import CharacterTextSplitter
 from app.utils.text_splitter import TextSplitter
 
 logger = structlog.get_logger(__name__)
@@ -92,14 +95,9 @@ class IndexingService:
         embeddings: EmbeddingProvider | None = None,
         stores: list[ChunkStore] | None = None,
     ) -> None:
-        if splitter is not None:
-            self._splitter = splitter
-        else:
-            self._splitter = MarkdownStructuredSplitter(
-                settings.CHUNK_SIZE,
-                settings.CHUNK_OVERLAP,
-                settings.TABLE_MAX_ROWS_PER_CHUNK,
-            )
+        # 注入的切块器优先：测试用它把切块与接线解耦。生产路径不注入，
+        # 每份文档在索引时按**所属知识库**的配置现建切块器。
+        self._splitter = splitter
         self._embeddings = embeddings if embeddings is not None else get_embedding_provider()
         # 默认接线就是双写：向量存储 + 关键词检索。没配关键词引擎时拿到的是空实现，
         # 它照常占一个位置（能力明确不可用，而不是「索引链路少接了一段」）。
@@ -108,6 +106,28 @@ class IndexingService:
             if stores is not None
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
+
+    def _resolve_splitter(self, db: Session, doc: Document) -> tuple[TextSplitter, str]:
+        """按文档所属知识库的配置构造切块器，返回 (切块器, 策略名)。
+
+        策略与窗口必须来自知识库而不是全局配置：同一个库里混用两种切法会让片长
+        分布不一致，检索时「片长」会变成与内容无关的排序因素。
+        """
+
+        if self._splitter is not None:
+            # 注入的切块器如实报告它是哪一类：把按字符切的说成 structure，
+            # 会让切片 meta 里的 split_strategy 变成一句谎话，重建时对不上。
+            injected: SplitStrategy = (
+                SPLIT_SIZE
+                if isinstance(self._splitter, CharacterTextSplitter)
+                else SPLIT_STRUCTURE
+            )
+            return self._splitter, injected
+        strategy, chunk_size = knowledge_base_repository.get_split_config(
+            db, doc.kb_id, tenant_id=doc.tenant_id
+        )
+        splitter = build_splitter(strategy, chunk_size=chunk_size)
+        return splitter, strategy
 
     async def index_existing_document(
         self, db: Session, document_id: str, *, reparse: bool = False
@@ -141,13 +161,46 @@ class IndexingService:
 
         parsed = prepare_document_content(doc, reparse=reparse)
 
-        pieces = self._splitter.split(parsed.content)
+        # 切块器按**所属知识库**的配置现建：策略与窗口是库级属性，同一个库里
+        # 混用两种切法会让片长不可比。
+        splitter, split_strategy = self._resolve_splitter(db, doc)
+        pieces = splitter.split(parsed.content)
         if not pieces:
             raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "切块之后没有可用切片")
 
+        # 节说明（可选增强）：按 section_id 去重后**每节一次**，不按片。
+        # 关闭时 summarize_sections 直接返回空字典，检索文本与现状逐字一致。
+        # 同节的正文按切片顺序累积给模型看——只给第一片会丢掉后半节。
+        section_headings: dict[str, str] = {}
+        section_texts: dict[str, list[str]] = {}
+        for piece in pieces:
+            section_id = str(piece.metadata.get("section_id") or "")
+            if not section_id:
+                continue
+            section_headings.setdefault(
+                section_id, str(piece.metadata.get("heading_path") or "")
+            )
+            section_texts.setdefault(section_id, []).append(piece.text)
+        summaries = await summarize_sections(
+            [
+                (section_id, section_headings[section_id], "\n\n".join(texts))
+                for section_id, texts in section_texts.items()
+            ],
+            title=doc.title,
+        )
+
         retrieval_texts = [
             build_retrieval_text(
-                doc.title, str(piece.metadata.get("heading_path") or ""), piece.text
+                doc.title,
+                str(piece.metadata.get("heading_path") or ""),
+                piece.text,
+                section_context=summaries.get(str(piece.metadata.get("section_id") or "")),
+                # 型号单独成段：`XR-2000` 与 `XR-2000 Pro` 只差一个后缀，埋在长句里
+                # 时向量几乎分不开。实测型号题 hit@1 从 0.400 升到 0.600。
+                # 行级表片例外（规则在 build_retrieval_text 里）：它的正文本来就是
+                # `型号=XR-2100`，再加一段只是把问题关键词重复一遍，片越短占比越大。
+                model_tags=True,
+                chunk_type=str(piece.metadata.get("chunk_type") or ""),
             )
             for piece in pieces
         ]
@@ -175,6 +228,22 @@ class IndexingService:
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
                     **parsed.metadata,
                     **piece.metadata,
+                    # 文档级序号。order_index 只在节内可比，而父节要跨 h3 拼回整个 h2，
+                    # 没有它就排不出文档顺序（ADR-0010 的确定性要求）。
+                    "chunk_index": index,
+                    # 落库记下这一片是哪种策略切出来的：重建时才能复现同一套切法，
+                    # 跨库检索时也解释得了片长差异。
+                    "split_strategy": split_strategy,
+                    # 节说明也落库：排查时能看出「这条检索文本为什么这么拼」，
+                    # 重建时也不必重新调模型。
+                    "section_context": summaries.get(
+                        str(piece.metadata.get("section_id") or "")
+                    ),
+                    # 页号由切块器从「第 N 页」标题带下来（PDF 才有）；Markdown 为空。
+                    "page": piece.metadata.get("page"),
+                    # 稿号：让引用三元组（文档 + 稿次 + 切片）里有稿次可写。
+                    # 本步不参与过滤，见 ADR-0005 与第 10 步。
+                    "doc_version": doc.doc_version,
                     "title": doc.title,
                     "index": index,
                     "source_type": parsed.source_type,

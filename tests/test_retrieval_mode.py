@@ -25,8 +25,10 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.services.rag_service import OVERFETCH_FACTOR
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
+from tests.fake_db import EmptySession
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
@@ -153,7 +155,7 @@ def offline_retrieval(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any
 
     from app.core.auth import DevKeyContext, resolve_dev_key
 
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
     main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
@@ -191,7 +193,7 @@ def test_vector_mode_is_unchanged(offline_retrieval) -> None:
     assert [c["document_id"] for c in body["data"]["retrieved_chunks"]] == ["doc-kb-a"]
     assert offline_retrieval["embedding"].queries == ["E1024"]
     assert offline_retrieval["vector"].calls == [
-        {"tenant_id": TENANT_ID, "kb_id": KB_A, "top_k": settings.TOP_K}
+        {"tenant_id": TENANT_ID, "kb_id": KB_A, "top_k": settings.TOP_K * OVERFETCH_FACTOR}
     ]
 
 
@@ -224,7 +226,7 @@ def test_vector_mode_covers_all_kbs_in_one_scope_call(offline_retrieval) -> None
         {
             "tenant_id": TENANT_ID,
             "index_versions": {KB_A: "v1", KB_B: "v1"},
-            "top_k": settings.TOP_K,
+            "top_k": settings.TOP_K * OVERFETCH_FACTOR,
         }
     ]
     assert offline_retrieval["embedding"].queries == ["E1024"], "多库也只嵌入一次"
@@ -245,7 +247,7 @@ def test_bm25_mode_uses_only_the_keyword_channel(offline_retrieval) -> None:
             "query": "E1024",
             "tenant_id": TENANT_ID,
             "index_versions": {KB_A: "v1"},
-            "top_k": settings.TOP_K,
+            "top_k": settings.TOP_K * OVERFETCH_FACTOR,
         }
     ]
 
@@ -334,12 +336,14 @@ def test_top_k_is_bounded(offline_retrieval, top_k: int) -> None:
     assert offline_retrieval["vector"].calls == []
 
 
-def test_top_k_from_the_request_reaches_the_channel(offline_retrieval) -> None:
+def test_request_top_k_is_overfetched_before_collapsing(offline_retrieval) -> None:
     """显式 top_k 一路穿到通道，也回显在 metadata 里。"""
 
     body = _post(offline_retrieval["client"], mode="vector", top_k=2)
 
-    assert offline_retrieval["vector"].calls[0]["top_k"] == 2
+    # 折叠会把同一父节的命中并成一条，所以召回要多取 OVERFETCH_FACTOR 倍；
+    # 对外承诺的 top_k 不变（下一行）。
+    assert offline_retrieval["vector"].calls[0]["top_k"] == 2 * OVERFETCH_FACTOR
     assert body["data"]["metadata"]["top_k"] == 2
     assert body["data"]["metadata"]["mode"] == "vector"
 

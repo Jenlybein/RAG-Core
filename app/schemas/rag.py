@@ -50,6 +50,13 @@ class RetrieveRequest(BaseModel):
     # 缺省取服务端配置（票 4 起默认 hybrid）。
     mode: RetrievalMode = Field(default_factory=_default_mode)
     top_k: int = Field(default_factory=_default_top_k, ge=MIN_TOP_K, le=MAX_TOP_K)
+    # 折叠开关（ADR-0013）。默认开：默认关着就没人会开，small-to-big 等于没做。
+    #
+    # 关掉 = **不折叠**，返回小片，响应与折叠之前逐字一致——留给「只要精确到
+    # 那一行的引用」的调用方。注意关掉的不只是「不挂字段」：它连按节归组也不做。
+    include_parent: bool = True
+    # 行级表片是否折回它所属的整表。关掉时每个行级片各自成一条结果。
+    expand_table_rows: bool = True
 
 
 class RetrievedChunk(BaseModel):
@@ -75,6 +82,24 @@ class RetrievedChunk(BaseModel):
     # 重排分（0~1）。只在重排真的发生时出现；与 ``score`` 同值，但留成独立字段
     # 是为了让「这一路的分数」与「最终排序分」在契约上分开——前三路分数都这么给。
     rerank_score: float | None = None
+    # 这条结果代表的**节**（ADR-0013）。折叠之后一条结果 = 一节，不是一片，
+    # 所以身份是 section_id；`chunk_id` 降级为「代表片」——让它浮上来的那一片。
+    # 没有章节路径的切片（无标题文档）为 null，此时它自己就是一个单元。
+    section_id: str | None = None
+    # 这一节是被哪几片顶上来的：溯源用，不是主键。折叠会丢掉其余片的内容，
+    # 但要能回答「为什么是这一节」。
+    source_chunk_ids: list[str] = Field(default_factory=list)
+    # 这次上下文给了多大范围：neighbors / parent / table / chunk（兜底，见折叠函数）。
+    expansion: str | None = None
+    # 这一节的章节路径：引用要能显示「出自哪一节」。折叠后 parent 那层没了，
+    # 所以路径直接平铺在这条结果上。
+    heading_path: str | None = None
+    # 引用定位：PDF 的物理页码；Markdown 无页码时为 null。
+    page: int | None = None
+    # 稿号（ADR-0005）：检索结果每条都带，审计时能回答「当时引用的是哪一稿」。
+    doc_version: int | None = None
+    # 这一片是用哪种策略切的：跨库检索时用来解释片长差异。
+    split_strategy: str | None = None
 
 
 class RetrieveData(BaseModel):

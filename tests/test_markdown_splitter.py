@@ -38,33 +38,65 @@ def test_section_id_is_deterministic() -> None:
     assert first[0].metadata["section_id"] != other[0].metadata["section_id"]
 
 
-def test_deeper_headings_do_not_start_new_sections() -> None:
-    """### 只加深 heading_path，不触发 section flush。"""
+def test_h3_starts_new_section() -> None:
+    """### 是切片边界：一片一个子节，路径精确到子节。
+
+    h1 下的引导段落自成一片（它不属于任何 h3），这是刻意的：把引导段落塞进
+    第一个 h3 会让那片同时讲两件事。
+    """
     markdown = (
         "# 退款政策\n背景说明。\n\n### 时限要求\n七个工作日内到账。\n\n# 账户安全\n无关正文。\n"
     )
 
     pieces = MarkdownStructuredSplitter().split(markdown)
 
-    assert len(pieces) == 2
-    assert pieces[0].metadata["heading_path"] == "退款政策 > 时限要求"
+    assert [p.metadata["heading_path"] for p in pieces] == [
+        "退款政策",
+        "退款政策 > 时限要求",
+        "账户安全",
+    ]
     assert "背景说明" in pieces[0].text
-    assert "七个工作日内到账" in pieces[0].text, "### 的内容要留在父节里，不能单独成片"
-    assert pieces[1].metadata["heading_path"] == "账户安全"
+    assert "七个工作日内到账" in pieces[1].text
+    assert "背景说明" not in pieces[1].text, "引导段落不跟着 h3 走"
 
 
-def test_multiple_deeper_headings_fall_back_to_section_path() -> None:
-    """一节内含多个 h3/h4 时，heading_path 不能取「最后一个」。
+def test_h4_and_deeper_do_not_start_new_sections() -> None:
+    """#### 及更深只加深 heading_path，不触发 section flush。
 
-    切片覆盖的是整节，路径却只记最后一个子标题，就会出现「片里讲的是三个子节，
-    路径却写着第三个」——用户拿这个路径做溯源会指错地方，而系统不会报错。
-    只有一个子标题时仍然精确到它（见上一条测试），多个时回落到分节路径。
+    再深就不切：h4 往往是「请求 / 响应 / 错误码」这类同一件事的附属小节，
+    拆开会让每片只剩几个字段名，失去上下文。
+    """
+    markdown = (
+        "# 演示文档\n\n"
+        "## 大章一\n\n"
+        "### 上传文档\n\n正文 A。\n\n"
+        "#### 请求\n\n参数 B。\n\n"
+        "#### 响应\n\n字段 C。\n\n"
+        "## 大章二\n\n"
+        "### 检索\n\n正文 D。\n"
+    )
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    # 两个 h4 分叉，公共前缀到 h3
+    assert [p.metadata["heading_path"] for p in pieces] == [
+        "演示文档 > 大章一 > 上传文档",
+        "演示文档 > 大章二 > 检索",
+    ]
+    assert "参数 B" in pieces[0].text
+    assert "字段 C" in pieces[0].text
+
+
+def test_multiple_section_headings_never_collapse_into_one_piece() -> None:
+    """多个 h3 必须各自成片，不能像以前那样被并进同一个 h2 片。
+
+    旧行为下一片里装着「子节 1.1」「子节 1.2」，路径只能回落到 h2；新行为下
+    每个子节自己一片，路径精确到子节——这正是 h3 成为边界要换来的东西。
     """
     markdown = (
         "# 演示文档\n\n"
         "## 大章一\n\n"
         "### 子节 1.1\n\n正文 A。\n\n"
-        "#### 细节 1.1.1\n\n正文 B。\n\n"
         "### 子节 1.2\n\n正文 C。\n\n"
         "## 大章二\n\n"
         "### 子节 2.1\n\n正文 D。\n"
@@ -73,13 +105,12 @@ def test_multiple_deeper_headings_fall_back_to_section_path() -> None:
     pieces = MarkdownStructuredSplitter().split(markdown)
 
     assert [p.metadata["heading_path"] for p in pieces] == [
-        "演示文档 > 大章一",
+        "演示文档 > 大章一 > 子节 1.1",
+        "演示文档 > 大章一 > 子节 1.2",
         "演示文档 > 大章二 > 子节 2.1",
     ]
-    # 三个子标题的内容都留在同一片里
-    assert "正文 A" in pieces[0].text
-    assert "正文 B" in pieces[0].text
-    assert "正文 C" in pieces[0].text
+    for piece in pieces:
+        assert piece.metadata["heading_path"].count(" > ") == 2
 
 
 def test_single_chain_can_reach_four_levels() -> None:
@@ -126,6 +157,74 @@ def test_table_kept_whole() -> None:
         assert row in tables[0].text
 
 
+def test_table_rows_are_emitted_alongside_the_whole_table() -> None:
+    """一张 8 行表产出 1 个整表片 + 8 个行级片，行级片是「列名=值」。"""
+    markdown = (
+        "# 价格表\n"
+        "\n"
+        "| 型号 | 配件 | 单价 |\n"
+        "| --- | --- | --- |\n"
+        "| XR-2100 | 万兆光模块 | 1180 |\n"
+        "| XR-2100 Pro | 万兆光模块 | 1580 |\n"
+    )
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    tables = [piece for piece in pieces if piece.metadata["chunk_type"] == "table"]
+    rows = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+
+    assert len(tables) == 1
+    assert len(rows) == 2, "两个数据行各一片"
+    assert rows[0].text == "型号=XR-2100，配件=万兆光模块，单价=1180"
+    assert rows[1].text == "型号=XR-2100 Pro，配件=万兆光模块，单价=1580"
+    for piece in rows:
+        assert piece.metadata["heading_path"] == "价格表"
+        assert piece.metadata["table_part"] == 1
+
+
+def test_table_row_skips_blank_cells() -> None:
+    """空单元格不产出 `列名=` 这种没有信息量的碎片。"""
+    markdown = "# 表\n\n| 型号 | 备注 |\n| --- | --- |\n| XR-2000 |  |\n"
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    rows = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+    assert len(rows) == 1
+    assert rows[0].text == "型号=XR-2000"
+    assert "备注=" not in rows[0].text
+
+
+def test_large_table_row_pieces_follow_their_group() -> None:
+    """分组后行级片沿用该组的 table_part，与整表片对齐。"""
+    header = "| 编号 | 名称 |\n| --- | --- |"
+    rows = "\n".join(f"| {number} | 商品{number} |" for number in range(1, 13))
+    markdown = f"# 库存\n\n{header}\n{rows}\n"
+    splitter = MarkdownStructuredSplitter(table_max_rows=5)
+
+    pieces = splitter.split(markdown)
+
+    tables = [piece for piece in pieces if piece.metadata["chunk_type"] == "table"]
+    row_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+    assert len(tables) == 3
+    assert len(row_pieces) == 12
+    assert [piece.metadata["table_part"] for piece in tables] == [1, 2, 3]
+    assert sorted({piece.metadata["table_part"] for piece in row_pieces}) == [1, 2, 3]
+    assert row_pieces[0].text == "编号=1，名称=商品1"
+
+
+def test_duplicate_table_collapses_with_its_row_pieces() -> None:
+    """同一节内重复的表格整体折叠，连同行级片一起跳过。"""
+    table = "| 套餐 | 价格 |\n| --- | --- |\n| 基础版 | 99 |\n"
+    markdown = f"# 价格\n\n{table}\n{table}"
+
+    pieces = MarkdownStructuredSplitter().split(markdown)
+
+    tables = [piece for piece in pieces if piece.metadata["chunk_type"] == "table"]
+    rows = [piece for piece in pieces if piece.metadata["chunk_type"] == "table_row"]
+    assert len(tables) == 1
+    assert len(rows) == 1
+
+
 def test_large_table_repeats_header() -> None:
     """超过 table_max_rows 的表按行分组，每组都重复表头。"""
     header = "| 编号 | 名称 |\n| --- | --- |"
@@ -155,10 +254,10 @@ def test_separator_line_is_dropped() -> None:
     assert "---" not in pieces[0].text
 
 
-def test_code_block_kept_whole() -> None:
-    """代码块整块保留，即使超过 chunk_size 也不切。"""
+def test_short_code_block_kept_whole() -> None:
+    """短代码块整块保留，分片序号为 0。"""
     markdown = "# 示例\n\n```python\ndef add(a, b):\n    return a + b\n```\n"
-    splitter = MarkdownStructuredSplitter(chunk_size=20, chunk_overlap=5)
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
 
     pieces = splitter.split(markdown)
 
@@ -168,6 +267,70 @@ def test_code_block_kept_whole() -> None:
     assert "return a + b" in code_pieces[0].text
     assert code_pieces[0].text.startswith("```")
     assert code_pieces[0].metadata["heading_path"] == "示例"
+    assert code_pieces[0].metadata["code_part"] == 0
+
+
+def _long_code_block(rows: int = 400) -> str:
+    body = "\n".join(f"    value_{number} = {number}" for number in range(rows))
+    return f"# 示例\n\n```python\n{body}\n```\n"
+
+
+def test_long_code_block_is_split_within_window() -> None:
+    """上千行代码不再产出超长单片：每片都不超过 chunk_size。"""
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
+
+    pieces = splitter.split(_long_code_block())
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert len(code_pieces) > 1, "上千行代码必须被切开"
+    assert all(len(piece.text) <= 800 for piece in code_pieces)
+    assert max(len(piece.text) for piece in code_pieces) < 10_000
+
+
+def test_code_pieces_have_ascending_part_numbers() -> None:
+    """分片序号从 1 开始递增，且各片共享同一章节路径。"""
+    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
+
+    pieces = splitter.split(_long_code_block())
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert [piece.metadata["code_part"] for piece in code_pieces] == list(
+        range(1, len(code_pieces) + 1)
+    )
+    assert {piece.metadata["heading_path"] for piece in code_pieces} == {"示例"}
+
+
+def test_code_splits_on_blank_lines_not_mid_statement() -> None:
+    """切点优先落在空行，不切在语句中间。"""
+    blocks = "\n\n".join(f"def function_{number}():\n    return {number}" for number in range(40))
+    markdown = f"# 示例\n\n```python\n{blocks}\n```\n"
+    splitter = MarkdownStructuredSplitter(chunk_size=300, chunk_overlap=100)
+
+    pieces = splitter.split(markdown)
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert len(code_pieces) > 1
+
+    # 拼回去必须逐字还原原文：说明没有丢行、没有重复行。
+    rebuilt = "".join(piece.text for piece in code_pieces)
+    assert rebuilt == f"```python\n{blocks}\n```"
+
+    # 每片去掉前导空行后，首行必须是完整的语句起点，不能是续行。
+    for piece in code_pieces[1:]:
+        first_line = piece.text.lstrip("\n").split("\n")[0]
+        assert first_line.startswith("def function_"), first_line
+
+
+def test_code_splits_on_dedent_when_no_blank_lines() -> None:
+    """没有空行时，在缩进回退处断开。"""
+    blocks = "\n".join(f"    statement_{number} = {number}" for number in range(60))
+    markdown = f"# 示例\n\n```python\nclass Thing:\n{blocks}\n```\n"
+    splitter = MarkdownStructuredSplitter(chunk_size=600, chunk_overlap=100)
+
+    pieces = splitter.split(markdown)
+
+    code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
+    assert all(len(piece.text) <= 600 for piece in code_pieces)
 
 
 def test_low_information_pieces_filtered() -> None:
@@ -260,6 +423,8 @@ def test_metadata_contract_is_complete() -> None:
         "order_index",
         "chunk_type",
         "table_part",
+        "code_part",
+        "page",
     }
     for piece in pieces:
         assert set(piece.metadata) == expected_keys

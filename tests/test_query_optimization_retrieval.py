@@ -49,6 +49,13 @@ class _FakeResult:
     def scalar_one(self) -> int:
         return self._value
 
+    def all(self) -> list[Any]:
+        # 拼父块时会查一次同节切片；离线替身没有数据可给，返回空即可。
+        return []
+
+    def __iter__(self) -> Any:
+        return iter(())
+
 
 class _FakeDb:
     """只回答「这些库里共有多少条可检索切片」——空结果原因那一次查询要用。"""

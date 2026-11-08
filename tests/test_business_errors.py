@@ -309,11 +309,14 @@ def test_app_error_optional_data_reaches_the_response() -> None:
 def test_success_response_shape_is_unchanged(client, monkeypatch) -> None:
     service = importlib.import_module("app.services.knowledge_base_service")
 
-    async def fake_create_kb(db, *, name, description, tenant_id):
+    async def fake_create_kb(db, **kwargs):
+        # 路由把切块配置一并传下来；桩只需要回显契约要求的字段。
         return {
             "kb_id": "kb-1",
-            "name": name,
-            "tenant_id": tenant_id,
+            "name": kwargs["name"],
+            "tenant_id": kwargs["tenant_id"],
+            "split_strategy": kwargs.get("split_strategy", "structure"),
+            "chunk_size": kwargs.get("chunk_size", 800),
             "created_at": datetime(2024, 1, 2, 3, 4, 5),
         }
 

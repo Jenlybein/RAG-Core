@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import structlog
+
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -51,6 +52,7 @@ from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
+from app.services import result_collapse
 from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
@@ -76,6 +78,8 @@ async def retrieve(
     query: str,
     mode: str | None = None,
     top_k: int | None = None,
+    include_parent: bool = True,
+    expand_table_rows: bool = True,
 ) -> dict:
     """按 ``mode`` 走一条通道（或并行两路）；缺省值取服务端配置。
 
@@ -85,6 +89,10 @@ async def retrieve(
 
     resolved_mode = mode or settings.RETRIEVAL_MODE
     resolved_top_k = top_k or settings.TOP_K
+
+    # 折叠会把同一父节的多个命中并成一条，所以召回要多取几倍，否则去重后凑不够
+    # top_k 条。关掉折叠时按原样召回——「不折叠」就该连多取也不要。
+    recall_top_k = resolved_top_k * OVERFETCH_FACTOR if include_parent else resolved_top_k
 
     # 模式校验放在最前面：HTTP 入口的 schema 已经用 Literal 掐掉了未知值，走 MCP /
     # 内部调用才会到这里。校验先于可见性校验与查询优化，被拒的请求不该白烧一次改写
@@ -124,7 +132,7 @@ async def retrieve(
             # 两路各拿自己的查询：语义那侧用改写后的句子，字面那侧用扩展后的句子。
             vector_query=optimized.effective_query,
             keyword_query=optimized.search_query,
-            top_k=resolved_top_k,
+            top_k=recall_top_k,
             # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有接缝）。
             embedding_factory=get_embedding_provider,
             vector_factory=get_vector_store,
@@ -149,7 +157,7 @@ async def retrieve(
             tenant_id=tenant_id,
             kb_ids=kb_ids,
             query=optimized.search_query,
-            top_k=resolved_top_k,
+            top_k=recall_top_k,
         )
     else:  # MODE_VECTOR —— 剩下的唯一可能；未知模式已在函数开头被拒。
         chunks = await _retrieve_by_vector(
@@ -157,13 +165,22 @@ async def retrieve(
             tenant_id=tenant_id,
             kb_ids=kb_ids,
             query=optimized.effective_query,
-            top_k=resolved_top_k,
+            top_k=recall_top_k,
         )
+
+    collapsed = _collapse_results(
+        db,
+        tenant_id=tenant_id,
+        chunks=chunks,
+        top_k=resolved_top_k,
+        include_parent=include_parent,
+        expand_table_rows=expand_table_rows,
+    )
 
     return {
         "query": query,
         "kb_ids": list(kb_ids),
-        "retrieved_chunks": chunks,
+        "retrieved_chunks": collapsed,
         "metadata": {
             "mode": resolved_mode,
             "top_k": resolved_top_k,
@@ -174,13 +191,195 @@ async def retrieve(
                 "mode": resolved_mode,
                 "degraded": degraded,
                 "degraded_reason": degraded_reason,
-                "empty_reason": _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=chunks),
+                "empty_reason": _empty_reason(
+                    db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed
+                ),
                 # 重排事实（是否发生、候选数、返回数、耗时）。单模式下恒为 null：
                 # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
                 "rerank": rerank_info,
             },
         },
     }
+
+
+# 因子住在 IO 无关的折叠模块里（评测也要用它，不该为此把 settings/DB 拖进脚本）。
+# 这里留一个别名，是为了让「检索侧的多取倍数」在本模块读起来仍然直观。
+OVERFETCH_FACTOR = result_collapse.OVERFETCH_FACTOR
+
+
+def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:
+    """取这条结果的 meta；唯一键是 ``(kb_id, chunk_id)``（ADR-0010）。
+
+    单独按 chunk_id 取会让跨库同 ID 的两条结果互相覆盖。
+    """
+
+    chunk_id = chunk.get("chunk_id")
+    kb_id = chunk.get("kb_id")
+    if not isinstance(chunk_id, str) or not isinstance(kb_id, str):
+        return {}
+    return metas.get((kb_id, chunk_id)) or {}
+
+
+def _collapse_results(
+    db: Session,
+    *,
+    tenant_id: str,
+    chunks: list[dict],
+    top_k: int,
+    include_parent: bool,
+    expand_table_rows: bool,
+) -> list[dict]:
+    """把命中的小片折成「交付单元」：一条结果代表一节（ADR-0013）。
+
+    检索仍按小片算分（保住「找得准」），返回前把同一父节的命中折成一条，
+    所以 ``top_k`` 的名额不会被同一节的碎片占满。
+
+    三件事在这里一次做完：折叠、补定位字段（页码 / 稿号 / 切块策略）、
+    拼出对外字典。折叠算法本身在 ``result_collapse`` 里——**评测调同一个函数**，
+    口径不会再和生产分叉。
+    """
+
+    if not chunks:
+        return []
+
+    if not include_parent:
+        # 不折叠：返回小片，响应与折叠之前逐字一致。留给「只要精确到那一行」的调用方。
+        return _with_locating_fields(db, tenant_id=tenant_id, chunks=chunks)
+
+    kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
+    document_ids = sorted(
+        {str(chunk["document_id"]) for chunk in chunks if chunk.get("document_id")}
+    )
+    if not kb_ids or not document_ids:
+        return chunks
+
+    metas = chunk_repository.fetch_meta_by_chunk_ids(
+        db,
+        tenant_id=tenant_id,
+        kb_ids=kb_ids,
+        chunk_ids=[str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")],
+    )
+
+    hits: list[result_collapse.Hit] = []
+    for chunk in chunks:
+        meta = _meta_of(chunk, metas)
+        hits.append(
+            result_collapse.Hit(
+                chunk_id=str(chunk.get("chunk_id") or ""),
+                document_id=str(chunk.get("document_id") or ""),
+                score=float(chunk.get("score") or 0.0),
+                content=str(chunk.get("content") or ""),
+                chunk_type=str(meta.get("chunk_type") or ""),
+                section_id=str(meta.get("section_id") or ""),
+                parent_section_id=str(meta.get("parent_section_id") or ""),
+                table_part=int(meta.get("table_part") or 0),
+                heading_path=str(meta.get("heading_path") or ""),
+                kb_id=chunk.get("kb_id"),
+            )
+        )
+
+    # 一次查出这些单元（h2 级章节）下的全部切片，含挂在该节自己身上的片。
+    # 用路径前缀而不是 parent_section_id：后者是上一级，对 h2 级的切片会指到 h1，
+    # 按它归组会把整篇文档并成一个单元（这个坑真踩过）。
+    unit_paths = sorted(
+        {
+            result_collapse.unit_path_of(hit.heading_path)
+            for hit in hits
+            if hit.heading_path
+        }
+    )
+    raw_rows = (
+        chunk_repository.fetch_unit_rows(
+            db,
+            tenant_id=tenant_id,
+            document_ids=document_ids,
+            unit_paths=unit_paths,
+            index_version=DEFAULT_INDEX_VERSION,
+        )
+        if unit_paths
+        else {}
+    )
+
+    # 一个单元键 = (种类, 文档, 单元 id[, table_part])。单元 id 由路径算出来
+    # （sha256(前两段)），所以不需要新增列，重建索引前后都稳定。
+    sections: dict[result_collapse.UnitKey, result_collapse.SectionRows] = {}
+    tables: dict[result_collapse.UnitKey, str] = {}
+    for (document_id, path), rows in raw_rows.items():
+        unit_id = result_collapse.unit_id_of(path)
+        if not unit_id:
+            continue
+        sections[result_collapse.UnitKey(result_collapse.UNIT_SECTION, document_id, unit_id)] = tuple(
+            (index, content, chunk_id) for index, content, chunk_id, _type, _part in rows
+        )
+        for _index, content, _chunk_id, chunk_type, table_part in rows:
+            if chunk_type == "table":
+                tables[
+                    result_collapse.UnitKey(
+                        result_collapse.UNIT_TABLE, document_id, unit_id, str(table_part)
+                    )
+                ] = content
+
+    units = result_collapse.collapse(
+        hits,
+        sections=sections,
+        tables=tables if expand_table_rows else None,
+        top_k=top_k,
+        merge_table_rows=expand_table_rows,
+    )
+
+    # 唯一键是 (kb_id, chunk_id)（ADR-0010）：跨库同 ID 的两条结果必须能各自取到
+    # 自己那条，否则代表片会拿错库的分数字段，甚至拿到空 dict。
+    by_result = {
+        (str(chunk.get("kb_id")), str(chunk.get("chunk_id"))): chunk for chunk in chunks
+    }
+    results: list[dict] = []
+    for unit in units:
+        # 以代表片那条结果为底：向量分 / 融合分 / 名次这些对外字段要原样保留，
+        # 只把「身份、正文、分数、溯源」换成单元的。
+        row = dict(by_result.get((str(unit.kb_id), unit.chunk_id)) or {})
+        row["chunk_id"] = unit.chunk_id
+        row["content"] = unit.content
+        row["score"] = unit.score
+        row["section_id"] = unit.section_id or None
+        row["heading_path"] = unit.heading_path or None
+        row["source_chunk_ids"] = list(unit.source_chunk_ids)
+        row["expansion"] = unit.expansion
+        results.append(row)
+
+    # meta 已经在上面查过一次，直接复用：同一次检索不为同一批 ID 查两遍库。
+    return _with_locating_fields(db, tenant_id=tenant_id, chunks=results, metas=metas)
+
+
+def _with_locating_fields(
+    db: Session,
+    *,
+    tenant_id: str,
+    chunks: list[dict],
+    metas: dict[tuple[str, str], dict] | None = None,
+) -> list[dict]:
+    """补页码 / 稿号 / 切块策略：引用要能说清「哪一页、哪一稿、怎么切的」。
+
+    ``metas`` 可以由调用方传进来复用——折叠路径上已经查过一次，不该为同一批 ID
+    再查一遍库。
+    """
+
+    if metas is None:
+        ids = [str(chunk["chunk_id"]) for chunk in chunks if chunk.get("chunk_id")]
+        kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
+        if not ids or not kb_ids:
+            return chunks
+        metas = chunk_repository.fetch_meta_by_chunk_ids(
+            db, tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=ids
+        )
+    for chunk in chunks:
+        meta = _meta_of(chunk, metas)
+        page = meta.get("page")
+        doc_version = meta.get("doc_version")
+        strategy = meta.get("split_strategy")
+        chunk["page"] = page if isinstance(page, int) else None
+        chunk["doc_version"] = doc_version if isinstance(doc_version, int) else None
+        chunk["split_strategy"] = strategy if isinstance(strategy, str) else None
+    return chunks
 
 
 def _rewrite_hint(kbs: list) -> str | None:

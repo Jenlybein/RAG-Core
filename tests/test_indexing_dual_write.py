@@ -125,7 +125,7 @@ class _StubSplitter:
 
 def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]) -> None:
     document = SimpleNamespace(
-        id=DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, title="售后手册", content="raw"
+        id=DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, title="售后手册", content="raw", doc_version=1
     )
     monkeypatch.setattr(document_repository, "get_by_id", lambda _db, _id: document)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing", lambda *_a, **_k: True)
@@ -267,6 +267,7 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="售后手册",
+        doc_version=1,
         source_type="text",
         source_file_path=None,
         status=DocumentStatus.SUCCESS,

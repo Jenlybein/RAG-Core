@@ -1,12 +1,13 @@
 """Markdown 感知的结构化切块器。
 
 与 `CharacterTextSplitter` 的字符窗口不同，这里先认标题层级、再在节内断句：
-`#` / `##` 开启新节，`###` 及更深只加深 `heading_path`、不新起切片，
-这样一个小标题下的一句话不会变成孤零零的碎片。
+`#` / `##` / `###` 开启新节（一片一个子节，路径精确到子节），
+`####` 及更深只加深 `heading_path`、不新起切片——「请求 / 响应 / 错误码」
+这类附属小节因此不会被切得七零八落。
 
 标题栈是整条链路里最容易写错的一处：flush 早一行，后面每个切片的
 `heading_path` 都指向错误的章节，而且不会报任何错——只有检索结果会悄悄变差。
-所以栈只在 h1/h2 处 flush，且 flush 使用**遇到下一个 h1/h2 之前的**栈内容。
+所以栈只在 h1/h2/h3 处 flush，且 flush 使用**遇到下一个 h1/h2/h3 之前的**栈内容。
 
 `section_id` 刻意做成 `sha256(heading_path)` 的确定性哈希，而不是随机 ID：
 重建索引后同一章节必须仍能对上父子关系，随机 ID 会让这条关系静默断裂。
@@ -16,6 +17,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 
+from app.utils.provenance import page_from_heading
 from app.utils.text_splitter import SplitPiece, TextSplitter
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)")
@@ -31,15 +33,34 @@ class _Block:
     lines: list[str]
 
 
+@dataclass(slots=True)
+class _Piece:
+    """一块内容切出来的一片文本及其分片序号。
+
+    `table_part` 与 `code_part` 同构：``0`` 表示未分片，``1..n`` 表示第几段。
+    两者刻意不复用同一个字段：同一节里表格与代码块可能同时存在，共用一个序号
+    会让「按序拼回」失去边界（表格第 2 段与代码第 2 段无从区分）。
+    """
+
+    text: str
+    chunk_type: str
+    table_part: int = 0
+    code_part: int = 0
+
+
 class MarkdownStructuredSplitter(TextSplitter):
     """按 Markdown 标题结构切块，并产出可溯源的 metadata。
 
-    标题栈驱动 provenance：h1/h2 触发 section flush，h3+ 只更新栈。
+    标题栈驱动 provenance：h1/h2/h3 触发 section flush，h4+ 只更新栈。
     栈维护错一处不会抛异常，却会让其后每个切片的出处都错——改动这里必须用
     「标题边界」与「同输入 section_id 稳定」两类测试兜住。
     表格与代码块整块保留；超长节在节内二次切，重叠不跨标题边界。
     `section_id` 是 heading_path 的内容哈希，重建后父子关系仍能稳定对上。
     """
+
+    # 切片边界到 h3。再深就不切了：h4 往往是「请求 / 响应 / 错误码」这类
+    # 同一件事的附属小节，拆开会让每片失去上下文，只剩几个字段名。
+    SECTION_LEVEL = 3
 
     def __init__(
         self,
@@ -56,25 +77,30 @@ class MarkdownStructuredSplitter(TextSplitter):
         self.table_max_rows = table_max_rows
 
     def split(self, text: str) -> list[SplitPiece]:
-        """扫描全文，按 h1/h2 边界产出一组带 provenance 的切片。"""
+        """扫描全文，按 h1/h2/h3 边界产出一组带 provenance 的切片。"""
         if not text:
             return []
         normalized = text.replace("\r\n", "\n").replace("\r", "\n")
         lines = normalized.split("\n")
 
-        sections: list[tuple[str, list[_Block]]] = []
+        sections: list[tuple[str, list[_Block], int | None]] = []
         stack: list[tuple[int, str]] = []
         blocks: list[_Block] = []
-        # 当前分节（h1/h2）的路径，以及本节内出现过的深层标题路径（h3 及更深）。
+        # 当前分节（h1/h2/h3）的路径，以及本节内出现过的深层标题路径（h4 及更深）。
         # 片覆盖的是整节，所以路径取「本节所有叶子标题」的公共前缀：
         #   - 单链 A > B > C  → 路径到 C（能到第 4 层）
         #   - 分叉 A > B1/B2  → 路径到 A（不能只写 B1，那样 B2 的内容被指错地方）
         section_path = ""
         deep_paths: list[str] = []
+        # 物理页号：由「第 N 页」标题驱动，跨节一路带下去。它不能从 heading_path
+        # 读回来，因为页标记与页内标题同级，在栈里会被后者顶掉。
+        page: int | None = None
 
         def flush_section() -> None:
             nonlocal blocks, deep_paths
-            sections.append((_resolve_heading_path(section_path, deep_paths), blocks))
+            sections.append(
+                (_resolve_heading_path(section_path, deep_paths), blocks, page)
+            )
             blocks = []
             deep_paths = []
 
@@ -85,7 +111,18 @@ class MarkdownStructuredSplitter(TextSplitter):
             if heading:
                 level = len(heading.group(1))
                 title = heading.group(2).strip()
-                if level <= 2:
+                marker = page_from_heading(title)
+                if marker is not None:
+                    # 先 flush 上一节（它属于上一页），再切换页号——顺序反了会把
+                    # 上一页的整节标到新页上。
+                    flush_section()
+                    page = marker
+                    _push_heading(stack, level, title)
+                    section_path = _join_stack(stack)
+                    blocks.append(_Block(kind="normal", lines=[line]))
+                    index += 1
+                    continue
+                if level <= self.SECTION_LEVEL:
                     flush_section()
                     _push_heading(stack, level, title)
                     section_path = _join_stack(stack)
@@ -115,43 +152,120 @@ class MarkdownStructuredSplitter(TextSplitter):
         flush_section()
         return self._assemble(sections)
 
-    def _assemble(self, sections: list[tuple[str, list[_Block]]]) -> list[SplitPiece]:
+    def _assemble(
+        self, sections: list[tuple[str, list[_Block], int | None]]
+    ) -> list[SplitPiece]:
         pieces: list[SplitPiece] = []
-        for heading_path, blocks in sections:
+        for heading_path, blocks, page in sections:
             # 重复过滤只比较本节内紧邻的上一片；每节 flush 时重置基线。
             # 跨节重复的模板内容各有各的出处，不能因为文本相同就被静默删掉。
             last_text: str | None = None
-            kept: list[tuple[str, str, int]] = []
-            for text, chunk_type, table_part in self._build_section_texts(blocks):
-                if not text.strip() or _is_heading_only(text):
+            kept: list[_Piece] = []
+            for piece in self._build_section_texts(blocks):
+                if not piece.text.strip() or _is_heading_only(piece.text):
                     continue
-                if text == last_text:
+                if piece.text == last_text:
                     continue
-                kept.append((text, chunk_type, table_part))
-                last_text = text
-            for order_index, (text, chunk_type, table_part) in enumerate(kept):
+                kept.append(piece)
+                last_text = piece.text
+            for order_index, piece in enumerate(kept):
                 pieces.append(
                     SplitPiece(
-                        text=text,
-                        metadata=_metadata(heading_path, order_index, chunk_type, table_part),
+                        text=piece.text,
+                        metadata=_metadata(
+                            heading_path,
+                            order_index,
+                            piece.chunk_type,
+                            piece.table_part,
+                            piece.code_part,
+                            page,
+                        ),
                     )
                 )
         return pieces
 
-    def _build_section_texts(self, blocks: list[_Block]) -> list[tuple[str, str, int]]:
-        produced: list[tuple[str, str, int]] = []
+    def _build_section_texts(self, blocks: list[_Block]) -> list[_Piece]:
+        produced: list[_Piece] = []
+        # 同一节内出现过的表格文本，用于把重复表格整体折叠（连同行级片）。
+        seen_tables: set[str] = set()
         for block in blocks:
             if block.kind == "code":
-                produced.append(("\n".join(block.lines).strip("\n"), "code", 0))
+                # 未分片时序号为 0，分片后才从 1 开始编号——「0 表示整块」这条
+                # 语义让消费方不用先数总数才知道该不该拼回。
+                code_pieces = self._split_code_lines(block.lines)
+                if len(code_pieces) == 1:
+                    produced.append(_Piece(text=code_pieces[0], chunk_type="code"))
+                else:
+                    for code_part, text in enumerate(code_pieces, start=1):
+                        produced.append(_Piece(text=text, chunk_type="code", code_part=code_part))
                 continue
             if block.kind == "table":
                 for table_part, group in enumerate(self._table_groups(block.lines), start=1):
-                    produced.append(("\n".join(group).strip("\n"), "table", table_part))
+                    table_text = "\n".join(group).strip("\n")
+                    # 同一节内完全相同的表格整体跳过（连同它的行级片）。行级片插在
+                    # 整表片之后，两片之间不再紧邻，_assemble 的相邻去重对表格失效，
+                    # 所以去重必须按「表格组」在这里做，保持「同节重复表格折叠为一片」
+                    # 的老行为。
+                    if table_text in seen_tables:
+                        continue
+                    seen_tables.add(table_text)
+                    produced.append(
+                        _Piece(
+                            text=table_text,
+                            chunk_type="table",
+                            table_part=table_part,
+                        )
+                    )
+                    for row_text in _table_row_texts(group):
+                        produced.append(
+                            _Piece(
+                                text=row_text,
+                                chunk_type="table_row",
+                                table_part=table_part,
+                            )
+                        )
                 continue
             if block.kind == "normal":
                 for text in self._split_normal_lines(block.lines):
-                    produced.append((text, _classify_text(text), 0))
+                    produced.append(_Piece(text=text, chunk_type=_classify_text(text)))
         return produced
+
+    def _split_code_lines(self, lines: list[str]) -> list[str]:
+        """超长代码块按 chunk_size 递归切，切点优先落在语句边界。
+
+        与正文开窗的两点不同，都是刻意的：
+
+        * **切点优先空行或缩进回退处**——不切在函数中间。代码没有句子标点，
+          只有缩进结构能表达「这里是一段的结束」。
+        * **不做 overlap**——正文重叠是为了让跨片的句子仍有上下文，而代码重叠
+          会把同一行复制进两片，让 `code_part` 拼回原样时出现重复行。
+        """
+
+        text = "\n".join(lines).strip("\n")
+        if not text:
+            return []
+        if len(text) <= self.chunk_size:
+            return [text]
+
+        pieces: list[str] = []
+        start = 0
+        length = len(text)
+        while start < length:
+            end = min(start + self.chunk_size, length)
+            if end < length:
+                cut = _code_break_point(text, start, end)
+                if cut > start:
+                    end = cut
+            # 刻意不做首尾 strip：切点落在空行后时，那个空行是分隔符本身。
+            # 剥掉它，「按 code_part 拼回原样」就永远差一行，而且分不清是
+            # 「本来就没有空行」还是「被 strip 吃掉」。
+            chunk = text[start:end]
+            if chunk.strip():
+                pieces.append(chunk)
+            if end >= length:
+                break
+            start = end
+        return pieces
 
     def _split_normal_lines(self, lines: list[str]) -> list[str]:
         """节内二次切：超长正文按 chunk_size 开窗，重叠只在节内保留。"""
@@ -218,6 +332,98 @@ def _resolve_heading_path(section_path: str, deep_paths: list[str]) -> str:
         prefix.append(parts[0])
     joined = " > ".join(prefix)
     return joined or section_path
+
+
+def _table_cells(line: str) -> list[str]:
+    """把 `| a | b |` 拆成 `["a", "b"]`；首尾竖线不算空单元格。"""
+
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _table_row_texts(group: list[str]) -> list[str]:
+    """把一组表格的每个数据行拼成「列名=值，列名=值」。
+
+    整表片回答「对比这几个型号」这类问题，行级片回答「XR-2100 的光模块多少钱」
+    这类问题。后者若只给一行裸数据，向量还得靠表头才知道每列是什么；拼上列名
+    之后，单元格自己就带语义，脱离表头也能读懂。
+
+    表头与分隔行不是数据；空单元格（含行尾多出来的空段）不产出 `列名=`，
+    否则会造出「配件=」这种没有信息量的噪声。
+    """
+
+    header_rows = 2 if len(group) >= 2 and _is_table_separator(group[1]) else 1
+    headers = _table_cells(group[0])
+    texts: list[str] = []
+    for row in group[header_rows:]:
+        cells = _table_cells(row)
+        pairs: list[str] = []
+        for position, value in enumerate(cells):
+            if not value:
+                continue
+            name = headers[position] if position < len(headers) else ""
+            pairs.append(f"{name}={value}" if name else value)
+        if pairs:
+            texts.append("，".join(pairs))
+    return texts
+
+
+def _code_break_point(text: str, start: int, end: int) -> int:
+    """在 ``[start, end]`` 里挑一个代码切点，返回切点位置（0 表示没找到）。
+
+    优先级从高到低：
+    1. **空行之后**——空行是代码里最明确的段落边界；
+    2. **缩进回退处**——某行比上一非空行更浅，通常意味着一个块（函数/分支）结束；
+    3. 任意换行处——至少不切在行中间。
+
+    再设一个下限 ``start + chunk_size // 4``：允许切点落在窗口的前四分之一之内
+    会让每片变得过碎，且窗口利用率骤降。找不到任何切点就返回 0，由调用方
+    退回按字符硬切——代码行极长（压缩后的 JSON）时没有换行可依。
+    """
+
+    floor = start + max(1, (end - start) // 4)
+    blank_cut = 0
+    dedent_cut = 0
+    newline_cut = 0
+
+    index = text.find("\n", floor)
+    while index != -1 and index < end:
+        next_start = index + 1
+        if next_start >= end:
+            break
+        newline_cut = next_start
+        line_end = text.find("\n", next_start)
+        current = text[next_start : len(text) if line_end == -1 else line_end]
+        previous = _previous_nonblank_line(text, index - 1)
+        if not current.strip():
+            blank_cut = next_start
+        elif previous is not None and _indent_of(current) < _indent_of(previous):
+            dedent_cut = next_start
+        index = text.find("\n", next_start)
+
+    return blank_cut or dedent_cut or newline_cut
+
+
+def _previous_nonblank_line(text: str, before: int) -> str | None:
+    """取 ``before`` 之前最近的一个非空行（用于比较缩进）。"""
+
+    line_end = text.rfind("\n", 0, before + 1)
+    cursor = before if line_end == -1 else line_end
+    while cursor > 0:
+        previous_end = text.rfind("\n", 0, cursor)
+        line = text[previous_end + 1 : cursor]
+        if line.strip():
+            return line
+        cursor = previous_end
+    return None
+
+
+def _indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip())
 
 
 def _push_heading(stack: list[tuple[int, str]], level: int, title: str) -> None:
@@ -294,6 +500,8 @@ def _metadata(
     order_index: int,
     chunk_type: str,
     table_part: int,
+    code_part: int = 0,
+    page: int | None = None,
 ) -> dict[str, object]:
     segments = _section_segments(heading_path)
     section_id = hashlib.sha256(heading_path.encode("utf-8")).hexdigest()
@@ -309,4 +517,6 @@ def _metadata(
         "order_index": order_index,
         "chunk_type": chunk_type,
         "table_part": table_part,
+        "code_part": code_part,
+        "page": page,
     }

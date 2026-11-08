@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from tests.fake_db import EmptySession
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 LIST_KB_PATH = "/api/v1/knowledge-bases"
@@ -28,7 +29,7 @@ def client():
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
 
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
     try:
         with TestClient(main.app) as test_client:
             yield test_client
@@ -79,9 +80,22 @@ def test_list_knowledge_bases_returns_only_default_tenant(client, monkeypatch) -
 
     def fake_list(db, tenant_id):
         assert tenant_id == settings.DEV_TENANT_ID
+        # 模拟的是 knowledge_bases 表的行：切块配置是库级字段，行里必须有。
         return [
-            SimpleNamespace(id="kb-1", name="退款政策", tenant_id=tenant_id),
-            SimpleNamespace(id="kb-2", name="换货政策", tenant_id=tenant_id),
+            SimpleNamespace(
+                id="kb-1",
+                name="退款政策",
+                tenant_id=tenant_id,
+                split_strategy="structure",
+                settings={"chunk_size": 800},
+            ),
+            SimpleNamespace(
+                id="kb-2",
+                name="换货政策",
+                tenant_id=tenant_id,
+                split_strategy="size",
+                settings={"chunk_size": 400},
+            ),
         ]
 
     monkeypatch.setattr(repo, "list_by_tenant", fake_list)
@@ -92,6 +106,12 @@ def test_list_knowledge_bases_returns_only_default_tenant(client, monkeypatch) -
     assert body["code"] == 0
     assert body["msg"] == "success"
     assert [item["kb_id"] for item in body["data"]["knowledge_bases"]] == ["kb-1", "kb-2"]
+    # 切块配置要能在这把 Key 下看到：检索结果异常时先排除「切法选错了」。
+    assert [item["split_strategy"] for item in body["data"]["knowledge_bases"]] == [
+        "structure",
+        "size",
+    ]
+    assert [item["chunk_size"] for item in body["data"]["knowledge_bases"]] == [800, 400]
 
 
 def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None:
