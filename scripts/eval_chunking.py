@@ -128,20 +128,26 @@ def _load_questions() -> tuple[list[Question], int]:
 
 
 def _sections(text: str) -> list[Section]:
-    """按标题切出章节区间，与 ``MarkdownStructuredSplitter`` 同语义。
+    """列出每个标题的区间与完整路径（h1..h6，与切块器的 heading_path 同语义）。
 
-    h1/h2 关闭同级或更深的旧章节（于是 h2 不会串到上一个 h2），h3 及以下只加深路径。
-    章节路径是「祖先标题 > 本节标题」用 `` > `` 连接，和切块器写进 ``heading_path``
-    的格式一致——这是本脚本能拿标注当判据的前提。
+    为什么每个层级都要列，而不只列 h1/h2：金标已经钉到子节级（``A > B > C``），
+    一条金标必须能在表里查到它自己的区间，否则「朴素切块」那两组的命中会被算成
+    零——不是切法变差，是判据找不到对应章节。
+
+    区间终点取「下一个同级或更浅的标题」：h3 的范围到下一个 h1/h2/h3 为止，
+    h4 的范围到下一个 h1..h4 为止。这才符合「一节包含自己的子节」的直觉。
     """
 
     sections: list[Section] = []
     stack: list[tuple[int, str, int]] = []  # (level, title, start)
 
-    def close(level: int, title: str, start: int, end: int) -> None:
-        ancestors = " > ".join(t for _, t, _ in stack)
-        path = f"{ancestors} > {title}" if ancestors else title
-        sections.append(Section(heading_path=path, start=start, end=end))
+    def close(level: int, start: int, end: int) -> None:
+        # 关掉栈里所有「同级或更深」的条目：它们的区间都停在 end。
+        while stack and stack[-1][0] >= level:
+            _, title, old_start = stack.pop()
+            ancestors = " > ".join(t for _, t, _ in stack)
+            path = f"{ancestors} > {title}" if ancestors else title
+            sections.append(Section(heading_path=path, start=old_start, end=end))
 
     offset = 0
     for line in text.splitlines(keepends=True):
@@ -149,15 +155,15 @@ def _sections(text: str) -> list[Section]:
         if match:
             level = len(match.group(1))
             title = match.group(2).strip()
-            # 只关掉「同级或更深」的章节：h3 不该把外层的 h2 关掉。
-            while stack and stack[-1][0] >= level:
-                _, old_title, old_start = stack.pop()
-                close(level, old_title, old_start, offset)
+            close(level, offset, offset)
             stack.append((level, title, offset))
         offset += len(line)
+    close(1, 0, len(text))
     while stack:
         _, title, start = stack.pop()
-        close(0, title, start, len(text))
+        ancestors = " > ".join(t for _, t, _ in stack)
+        path = f"{ancestors} > {title}" if ancestors else title
+        sections.append(Section(heading_path=path, start=start, end=len(text)))
     return sections
 
 
@@ -264,10 +270,17 @@ async def main() -> None:
     # 只算一次，不进 variant 循环——它是语料属性，与切块粒度无关。
     gold_types: dict[tuple[str, str], str] = {}
     _probe = MarkdownStructuredSplitter(CHUNK_SIZE, CHUNK_OVERLAP, TABLE_MAX_ROWS)
+    # 同一节可能产出多种片（整表片 + 行级片、prose + code），后来的片会覆盖前一片的
+    # 类型。按优先级取「最能代表这节形态」的那一种：有表就是表格节，其次代码、
+    # 其次行级表、再次列表、最后才是普通正文。
+    _priority = {"table": 4, "code": 3, "table_row": 2, "list": 1, "prose": 0}
     for doc in docs:
         for piece in _probe.split(doc.text):
             heading = str(piece.metadata.get("heading_path") or "")
-            gold_types[(doc.stem, heading)] = str(piece.metadata.get("chunk_type") or "")
+            chunk_type = str(piece.metadata.get("chunk_type") or "")
+            key = (doc.stem, heading)
+            if _priority.get(chunk_type, 0) >= _priority.get(gold_types.get(key, "prose"), 0):
+                gold_types[key] = chunk_type
     # (名称, 切块器, chunk_size, overlap)；结构化组固定 800/100，两个朴素组只差粒度。
     variants: tuple[tuple[str, str, int | None, int | None], ...] = (
         ("naive-800/100", "naive", 800, 100),
@@ -312,21 +325,30 @@ async def main() -> None:
         no_chunk_questions = 0
         for question, query_vector in zip(answerable, query_vectors):
             relevant: set[str] = set()
-            for cid, chunk in zip(chunk_ids, chunks):
-                for gold in question.labels:
-                    section = section_map.get(gold)
-                    if section is None or chunk.doc_stem != gold[0]:
-                        continue
-                    overlap = min(chunk.end, section.end) - max(chunk.start, section.start)
-                    if overlap <= 0:
-                        continue
-                    # 取「切片」与「章节」里较短的那个做分母：大切片吞下小节、
-                    # 小节被长章节切出的小片，两种情况都算命中，两组对称。
-                    if overlap >= DOMINANCE_RATIO * min(
-                        len(chunk.text), section.end - section.start
-                    ):
+            if kind == "structured":
+                # 结构化切块的归属就是它写进 heading_path 的路径，精确相等即命中。
+                # 不走区间重叠：一条金标可能命中同一节的多片（整表片 + 行级片），
+                # 而它们都该算相关，这正是「片变碎」要如实反映出来的地方。
+                gold_keys = {(gold[0], gold[1]) for gold in question.labels}
+                for cid, chunk in zip(chunk_ids, chunks):
+                    if (chunk.doc_stem, chunk.heading_path) in gold_keys:
                         relevant.add(cid)
-                        break
+            else:
+                for cid, chunk in zip(chunk_ids, chunks):
+                    for gold in question.labels:
+                        section = section_map.get(gold)
+                        if section is None or chunk.doc_stem != gold[0]:
+                            continue
+                        overlap = min(chunk.end, section.end) - max(chunk.start, section.start)
+                        if overlap <= 0:
+                            continue
+                        # 取「切片」与「章节」里较短的那个做分母：大切片吞下小节、
+                        # 小节被长章节切出的小片，两种情况都算命中，两组对称。
+                        if overlap >= DOMINANCE_RATIO * min(
+                            len(chunk.text), section.end - section.start
+                        ):
+                            relevant.add(cid)
+                            break
             if not relevant:
                 no_chunk_questions += 1
             scores = sorted(
@@ -353,14 +375,16 @@ async def main() -> None:
         # 装不下；短章节库每节中位 144 字，窗口能装 5-6 节。这组对照用来回答
         # 「语料结构本身是不是把差距压小了」。
         per_group: dict[str, list[bool]] = {}
-        per_kind: dict[str, list[bool]] = {}
-        for qtype, group, kind, (rel, ret) in zip(case_types, case_groups, case_kinds, cases):
+        per_kind: dict[str, list[tuple[bool, int]]] = {}
+        for qtype, group, kind_, (rel, ret) in zip(case_types, case_groups, case_kinds, cases):
             if not rel:
                 continue
             hit = bool(ret[:1] and ret[0] in rel)
             per_type.setdefault(qtype, []).append(hit)
             per_group.setdefault(group, []).append(hit)
-            per_kind.setdefault(kind, []).append(hit)
+            # 存 (是否首位命中, 相关片数) 两项：报告要同时给 hit@1 与平均相关片数，
+            # 不然「表格节被拆成 9 片」这种事实会伪装成「检索变差」。
+            per_kind.setdefault(kind_, []).append((hit, len(rel)))
 
         # R@1 的分母陷阱：一道题有 N 个相关切片时，单片最多覆盖 1/N，
         # 于是 R@1 的理论上限就是 1/N。切片越碎、N 越大，R@1 天然越低。
@@ -512,17 +536,22 @@ async def main() -> None:
     struct_kinds = summary["structured"].get("per_kind")
     if isinstance(naive_kinds, dict) and isinstance(struct_kinds, dict):
         print("\n=== 表格专项 vs 正文题（按金标章节的切片类型分组）===")
-        print("  金标类型           题数     朴素  结构化     差值")
+        print(
+            "  金标类型               题数    朴素  结构化     差值   相关片(朴)  相关片(结构)"
+        )
         for kind in ("table", "prose"):
-            flags_naive = naive_kinds.get(kind) or []
-            flags_struct = struct_kinds.get(kind) or []
-            if not flags_naive or not flags_struct:
+            items_naive = naive_kinds.get(kind) or []
+            items_struct = struct_kinds.get(kind) or []
+            if not items_naive or not items_struct:
                 continue
-            left = sum(flags_naive) / len(flags_naive)
-            right = sum(flags_struct) / len(flags_struct)
+            left = sum(1 for hit, _n in items_naive if hit) / len(items_naive)
+            right = sum(1 for hit, _n in items_struct if hit) / len(items_struct)
+            avg_naive = sum(n for _hit, n in items_naive) / len(items_naive)
+            avg_struct = sum(n for _hit, n in items_struct) / len(items_struct)
             name = "表格（答案在表里）" if kind == "table" else "正文（答案在段落里）"
             print(
-                f"  {name:20s} {len(flags_naive):5d} {left:8.3f} {right:7.3f} {right - left:+8.3f}"
+                f"  {name:20s} {len(items_struct):5d} {left:8.3f} {right:8.3f}"
+                f" {right - left:+8.3f}   {avg_naive:8.2f} {avg_struct:9.2f}"
             )
 
     print("\n=== 差值（structured - naive-800/100）===")
