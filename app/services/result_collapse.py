@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping, NamedTuple, Sequence
 
 # 切片类型取值见 GLOSSARY 的「切片类型」（五种）。折叠只关心一种：
 # 行级表片要被折回它所属的整表。其余类型一律按父节归组。
@@ -32,6 +32,20 @@ CHUNK_TABLE = "table"
 CHUNK_TABLE_ROW = "table_row"
 
 # 单元种类：折叠的粒度由它决定，也是 ``unit_key`` 的第一段。
+class UnitKey(NamedTuple):
+    """单元键。
+
+    做成命名元组而不是裸元组：``key[2]`` / ``key[-1]`` 在 2/3/4 元组混用时
+    会静默取到错的东西，而且读代码时看不出第 3 段到底是文档还是章节。
+    它会与等值的普通元组比较相等，所以调用方按元组建索引也仍然对得上。
+    """
+
+    kind: str
+    document_id: str
+    section_id: str
+    table_part: str = ""
+
+
 UNIT_TABLE = "table"
 UNIT_SECTION = "section"
 UNIT_CHUNK = "chunk"
@@ -44,7 +58,6 @@ EXPANSION_CHUNK = "chunk"
 
 # 单元键：``(种类, 文档 ID, 节 ID[, table_part])``。用元组而不是字符串，
 # 避免把 ID 拼进字符串再猜分隔符。
-UnitKey = tuple[str, ...]
 
 # 去重后条数会变少，所以召回要多取几倍。因子是常量而不是配置项：15 道题的
 # 样本量下，任何可调旋钮都会被评测调成过拟合值。实测每题平均 1.7 片同节命中。
@@ -128,14 +141,14 @@ def unit_key(hit: Hit, *, merge_table_rows: bool = True) -> UnitKey:
     unit_id = unit_id_of(hit.heading_path)
     if hit.chunk_type == CHUNK_TABLE_ROW:
         if merge_table_rows and unit_id:
-            return (UNIT_TABLE, hit.document_id, unit_id, str(hit.table_part))
+            return UnitKey(UNIT_TABLE, hit.document_id, unit_id, str(hit.table_part))
         # 关掉合并时行级片各自成单元——调用方要的是「精确到那一行」的引用，
         # 退回按节归组会让它们又被并成一个名额，那正是它想避免的。
-        return (UNIT_CHUNK, hit.chunk_id)
+        return UnitKey(UNIT_CHUNK, hit.document_id, hit.chunk_id)
     if unit_id:
-        return (UNIT_SECTION, hit.document_id, unit_id)
+        return UnitKey(UNIT_SECTION, hit.document_id, unit_id)
     # 只有真的没有章节路径（无标题文档）才各自成单元。
-    return (UNIT_CHUNK, hit.chunk_id)
+    return UnitKey(UNIT_CHUNK, hit.document_id, hit.chunk_id)
 
 
 def collapse(
@@ -203,10 +216,8 @@ def _unit_section_id(key: UnitKey, best: Hit) -> str:
     拿到的是节。真有文档没有章节时返回空串，由响应层落成 null。
     """
 
-    if key[0] == UNIT_TABLE:
-        return key[2]
-    if key[0] == UNIT_SECTION:
-        return key[-1]
+    if key.kind in (UNIT_TABLE, UNIT_SECTION):
+        return key.section_id
     return best.section_id
 
 

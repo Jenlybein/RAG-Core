@@ -189,57 +189,6 @@ def fetch_parent_section_chunks(
     return grouped
 
 
-def fetch_section_chunks(
-    db: Session,
-    *,
-    tenant_id: str,
-    document_ids: list[str],
-    section_ids: list[str],
-    index_version: str | None = None,
-) -> dict[tuple[str, str], list[tuple[int, str, str]]]:
-    """一次查出这些文档里、这些章节的全部切片正文（按 ``order_index`` 排序）。
-
-    返回 ``{(document_id, section_id): [(order_index, 正文, chunk_id)...]}``，按顺序排好。
-    带上 chunk_id 是为了让上层能定位「命中的是哪一片」——分级扩展要靠它取前后邻居。
-    **必须按 (文档, 章节) 而不是只按章节**：同一知识库里两篇文档完全可以共用
-    同名标题（《退款政策》与《换货政策》都有「申请条件」），只按 section_id 查
-    会把两篇的正文拼成一个假章节。
-
-    一次批量查询而不是逐条查：一次检索的 top_k 条可能全都落在同一节，逐条查
-    会把同一次查询重复十几次。``tenant_id`` 是强制过滤参数（ADR-0006）。
-
-    ``index_version`` 与召回时的过滤口径保持一致：不同批次的切片正文可能不同，
-    父节若混入另一批次，调用方会拿到「和命中片对不上」的上下文。
-    """
-
-    if not document_ids or not section_ids:
-        return {}
-    stmt = (
-        select(
-            Chunk.document_id,
-            Chunk.meta["section_id"].astext,
-            Chunk.meta["order_index"].astext.cast(Integer),
-            Chunk.content,
-            Chunk.id,
-        )
-        .where(
-            Chunk.tenant_id == tenant_id,
-            Chunk.document_id.in_(document_ids),
-            Chunk.meta["section_id"].astext.in_(section_ids),
-        )
-        # 章节内必须按 order_index 排：乱序拼出来的「父节」读起来是断的。
-        .order_by(Chunk.document_id, Chunk.meta["order_index"].astext.cast(Integer))
-    )
-    if index_version is not None:
-        stmt = stmt.where(Chunk.index_version == index_version)
-    grouped: dict[tuple[str, str], list[tuple[int, str, str]]] = {}
-    for document_id, section_id, order, content, chunk_id in db.execute(stmt).all():
-        grouped.setdefault((document_id, str(section_id)), []).append(
-            (int(order or 0), str(content), str(chunk_id))
-        )
-    return grouped
-
-
 def count_by_kb(db: Session, kb_id: str) -> int:
     stmt = select(func.count()).select_from(Chunk).where(Chunk.kb_id == kb_id)
     return int(db.execute(stmt).scalar_one())

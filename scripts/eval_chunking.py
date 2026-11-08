@@ -394,15 +394,12 @@ async def main() -> None:
         for index, (cid, chunk) in enumerate(zip(chunk_ids, chunks)):
             unit_id = result_collapse.unit_id_of(chunk.heading_path)
             if unit_id:
-                key = (result_collapse.UNIT_SECTION, chunk.doc_stem, unit_id)
+                key = result_collapse.UnitKey(result_collapse.UNIT_SECTION, chunk.doc_stem, unit_id)
                 _rows.setdefault(key, []).append((index, chunk.text, cid))
             if chunk.chunk_type == "table":
                 _tables[
-                    (
-                        result_collapse.UNIT_TABLE,
-                        chunk.doc_stem,
-                        unit_id,
-                        str(chunk.table_part),
+                    result_collapse.UnitKey(
+                        result_collapse.UNIT_TABLE, chunk.doc_stem, unit_id, str(chunk.table_part)
                     )
                 ] = chunk.text
         section_rows = {key: tuple(rows) for key, rows in _rows.items()}

@@ -18,6 +18,8 @@ sys.path.insert(0, "scripts")
 
 from app.providers.embedding import get_embedding_provider
 from app.utils import markdown_splitter as ms
+from app.services import result_collapse
+from app.services.result_collapse import OVERFETCH_FACTOR
 from app.utils.retrieval_text import build_retrieval_text
 from eval_chunking import (
     DOMINANCE_RATIO,
@@ -112,6 +114,7 @@ async def _run() -> None:
     }
 
     per_type_all: dict[str, dict[str, list[bool]]] = {}
+    overall: dict[str, tuple] = {}
     for key, (label, cfg) in variants.items():
         chunks = [c for doc in docs for c in _cut(doc, originals=originals, **cfg)]
         ids = [str(i) for i in range(len(chunks))]
@@ -131,7 +134,44 @@ async def _run() -> None:
         vectors = await provider.embed_texts(texts)
         query_vectors = await provider.embed_texts([q.query for q in questions])
 
+        # 折叠输入：与生产共用 result_collapse，不在这里另写一套归组规则。
+        # `_Chunk` 没有 table_part，用**整表的起始位置**当表号——与生产里
+        # 「同一张表一个 table_part」同语义，也不会把两张表互相覆盖。
+        _rows: dict[object, list[tuple[int, str, str]]] = {}
+        _tables: dict[object, str] = {}
+        hits_by_id: dict[str, object] = {}
+        current_part: dict[str, int] = {}
+        for index, cid in enumerate(ids):
+            chunk = by_id[cid]
+            doc_stem = chunk.doc_stem
+            unit_id = result_collapse.unit_id_of(chunk.heading_path)
+            if chunk.chunk_type == "table":
+                current_part[doc_stem] = chunk.start
+                if unit_id:
+                    _tables[
+                        result_collapse.UnitKey(
+                            result_collapse.UNIT_TABLE, doc_stem, unit_id, str(chunk.start)
+                        )
+                    ] = chunk.text
+            part = current_part.get(doc_stem, 0)
+            hits_by_id[cid] = result_collapse.Hit(
+                chunk_id=cid,
+                document_id=doc_stem,
+                score=0.0,
+                content=chunk.text,
+                chunk_type=chunk.chunk_type,
+                section_id="",
+                parent_section_id="",
+                table_part=part,
+                heading_path=chunk.heading_path,
+            )
+            if unit_id:
+                unit = result_collapse.UnitKey(result_collapse.UNIT_SECTION, doc_stem, unit_id)
+                _rows.setdefault(unit, []).append((index, chunk.text, cid))
+        section_rows = {k: tuple(v) for k, v in _rows.items()}
+
         cases = []
+        delivered_cases = []
         per_type: dict[str, list[bool]] = {}
         no_rel = 0
         for question, qv in zip(questions, query_vectors):
@@ -168,15 +208,37 @@ async def _run() -> None:
             )
             per_type.setdefault(question.type, []).append(ranked[0] in relevant)
 
+            sliced = ranked[: K * OVERFETCH_FACTOR]
+            units = result_collapse.collapse(
+                [hits_by_id[cid] for cid in sliced],
+                sections=section_rows,
+                tables=_tables,
+                top_k=K,
+            )
+            delivered_cases.append(
+                Case(
+                    id=question.id,
+                    type=question.type,
+                    relevant=frozenset(
+                        {result_collapse.unit_key(hits_by_id[cid]) for cid in relevant}
+                    ),
+                    returned=tuple(unit.unit_key for unit in units),
+                )
+            )
+
         m = aggregate(cases, K)
+        dm = aggregate(delivered_cases, K)
         n = sum(len(c.relevant) for c in cases) / len(cases)
         per_type_all[key] = per_type
+        overall[key] = (m, dm)
         print(
             f"{label}\n"
             f"  片数={len(chunks)} 均长={sum(len(c.text) for c in chunks) / len(chunks):.0f}"
             f" 参评={len(cases)} 无相关={no_rel} N={n:.2f}\n"
-            f"  R@5={float(m['recall_at_k']):.4f} R@1={float(m['recall_at_1']):.4f}"
-            f" hit@1={float(m['hit_at_1']):.4f} MRR={float(m['mrr']):.4f}"
+            f"  chunk 级  R@5={float(m['recall_at_k']):.4f} R@1={float(m['recall_at_1']):.4f}"
+            f" hit@1={float(m['hit_at_1']):.4f} MRR={float(m['mrr']):.4f}\n"
+            f"  交付级  R@5={float(dm['recall_at_k']):.4f} R@1={float(dm['recall_at_1']):.4f}"
+            f" hit@1={float(dm['hit_at_1']):.4f} MRR={float(dm['mrr']):.4f}"
         )
 
     a, b = per_type_all["old"], per_type_all["new"]
@@ -186,6 +248,23 @@ async def _run() -> None:
         print(
             f"{qtype:18s} {len(a.get(qtype, [])):4d} {_r(a, qtype):7.3f}"
             f" {_r(b, qtype):7.3f} {_r(b, qtype) - _r(a, qtype):+8.3f}"
+        )
+
+    old_m, old_d = overall["old"]
+    new_m, new_d = overall["new"]
+    print("\n整体（同判据、同题数）：两个口径都要看")
+    print(f"{'':10s} {'03 时代':>9} {'现在':>9} {'差值':>8}")
+    for name, metric in (
+        ("chunk 级 hit@1", "hit_at_1"),
+        ("交付级 hit@1", "hit_at_1"),
+        ("chunk 级 MRR", "mrr"),
+        ("交付级 MRR", "mrr"),
+    ):
+        left = old_m if name.startswith("chunk") else old_d
+        right = new_m if name.startswith("chunk") else new_d
+        print(
+            f"{name:16s} {float(left[metric]):9.4f} {float(right[metric]):9.4f}"
+            f" {float(right[metric]) - float(left[metric]):+8.4f}"
         )
 
 

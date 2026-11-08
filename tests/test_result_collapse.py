@@ -17,6 +17,10 @@ from app.services.result_collapse import (
     EXPANSION_TABLE,
     Hit,
     collapse,
+    UNIT_CHUNK,
+    UNIT_SECTION,
+    UNIT_TABLE,
+    UnitKey,
     unit_id_of,
     unit_key,
     unit_path_of,
@@ -67,7 +71,7 @@ def test_three_pieces_of_one_unit_collapse_into_one_result() -> None:
     units = collapse(
         hits,
         sections={
-            ("section", DOC, UNIT_A): _rows(
+            UnitKey(UNIT_SECTION, DOC, UNIT_A): _rows(
                 (0, "第一片。", "c-1"),
             )
         },
@@ -125,7 +129,7 @@ def test_multiple_pieces_of_one_unit_give_the_whole_unit() -> None:
     rows = _rows((0, "第一片。", "c-1"), (1, "第二片。", "c-2"), (2, "第三片。", "c-3"))
     hits = [_hit("c-1", 0.9), _hit("c-2", 0.8)]
 
-    units = collapse(hits, sections={("section", DOC, UNIT_A): rows})
+    units = collapse(hits, sections={UnitKey(UNIT_SECTION, DOC, UNIT_A): rows})
 
     assert units[0].expansion == EXPANSION_PARENT
     assert units[0].content == "第一片。\n\n第二片。\n\n第三片。"
@@ -142,7 +146,7 @@ def test_single_hit_gets_the_neighbour_window() -> None:
     )
     hits = [_hit("c-1", 0.9)]
 
-    units = collapse(hits, sections={("section", DOC, UNIT_A): rows})
+    units = collapse(hits, sections={UnitKey(UNIT_SECTION, DOC, UNIT_A): rows})
 
     assert units[0].expansion == EXPANSION_NEIGHBORS
     assert units[0].content == "第零片。\n\n第一片。\n\n第二片。"
@@ -152,7 +156,7 @@ def test_single_hit_gets_the_neighbour_window() -> None:
 def test_rows_of_one_table_collapse_into_one_unit() -> None:
     """同一张表的 4 个行级片折叠成 1 个单元，内容取整表。"""
 
-    table_key = ("table", DOC, UNIT_A, "1")
+    table_key = UnitKey(UNIT_TABLE, DOC, UNIT_A, "1")
     hits = [
         _hit("row-1", 0.95, chunk_type="table_row", table_part=1),
         _hit("row-2", 0.93, chunk_type="table_row", table_part=1),
@@ -178,8 +182,8 @@ def test_two_different_tables_stay_separate() -> None:
         _hit("row-b", 0.8, chunk_type="table_row", table_part=2),
     ]
     tables = {
-        ("table", DOC, UNIT_A, "1"): "表一",
-        ("table", DOC, UNIT_A, "2"): "表二",
+        UnitKey(UNIT_TABLE, DOC, UNIT_A, "1"): "表一",
+        UnitKey(UNIT_TABLE, DOC, UNIT_A, "2"): "表二",
     }
 
     units = collapse(hits, tables=tables)
@@ -196,8 +200,10 @@ def test_hits_across_two_units_each_get_the_whole_unit() -> None:
         _hit("b-1", 0.85, heading=HEAD_B),
     ]
     sections = {
-        ("section", DOC, UNIT_A): _rows((0, "甲节第一片。", "a-1"), (1, "甲节第二片。", "a-2")),
-        ("section", DOC, UNIT_B): _rows((2, "乙节正文。", "b-1")),
+        UnitKey(UNIT_SECTION, DOC, UNIT_A): _rows(
+            (0, "甲节第一片。", "a-1"), (1, "甲节第二片。", "a-2")
+        ),
+        UnitKey(UNIT_SECTION, DOC, UNIT_B): _rows((2, "乙节正文。", "b-1")),
     }
 
     units = collapse(hits, sections=sections)
@@ -228,8 +234,8 @@ def test_collapsed_order_follows_first_appearance() -> None:
         _hit("b-2", 0.7, heading=HEAD_B),
     ]
     sections = {
-        ("section", DOC, UNIT_B): _rows((0, "乙一。", "b-1"), (1, "乙二。", "b-2")),
-        ("section", DOC, UNIT_A): _rows((2, "甲一。", "a-1")),
+        UnitKey(UNIT_SECTION, DOC, UNIT_B): _rows((0, "乙一。", "b-1"), (1, "乙二。", "b-2")),
+        UnitKey(UNIT_SECTION, DOC, UNIT_A): _rows((2, "甲一。", "a-1")),
     }
 
     units = collapse(hits, sections=sections)
@@ -246,8 +252,10 @@ def test_mixed_table_rows_and_section_pieces() -> None:
         _hit("p-1", 0.8),
         _hit("p-2", 0.7),
     ]
-    tables = {("table", DOC, UNIT_A, "1"): "整表"}
-    sections = {("section", DOC, UNIT_A): _rows((0, "正文一。", "p-1"), (1, "正文二。", "p-2"))}
+    tables = {UnitKey(UNIT_TABLE, DOC, UNIT_A, "1"): "整表"}
+    sections = {
+        UnitKey(UNIT_SECTION, DOC, UNIT_A): _rows((0, "正文一。", "p-1"), (1, "正文二。", "p-2"))
+    }
 
     units = collapse(hits, sections=sections, tables=tables)
 
@@ -300,12 +308,12 @@ def test_empty_input_yields_nothing() -> None:
 @pytest.mark.parametrize(
     ("hit", "expected"),
     [
-        (_hit("c-1", 0.9), ("section", DOC, UNIT_A)),
+        (_hit("c-1", 0.9), UnitKey(UNIT_SECTION, DOC, UNIT_A)),
         (
             _hit("row-1", 0.9, chunk_type="table_row", table_part=3),
-            ("table", DOC, UNIT_A, "3"),
+            UnitKey(UNIT_TABLE, DOC, UNIT_A, "3"),
         ),
-        (_hit("c-2", 0.9, heading=""), ("chunk", "c-2")),
+        (_hit("c-2", 0.9, heading=""), UnitKey(UNIT_CHUNK, DOC, "c-2")),
     ],
 )
 def test_unit_key_rules(hit: Hit, expected: tuple) -> None:

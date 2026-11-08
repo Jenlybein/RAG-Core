@@ -302,23 +302,20 @@ def _collapse_results(
 
     # 一个单元键 = (种类, 文档, 单元 id[, table_part])。单元 id 由路径算出来
     # （sha256(前两段)），所以不需要新增列，重建索引前后都稳定。
-    sections: dict[tuple[str, ...], result_collapse.SectionRows] = {}
-    tables: dict[tuple[str, ...], str] = {}
+    sections: dict[result_collapse.UnitKey, result_collapse.SectionRows] = {}
+    tables: dict[result_collapse.UnitKey, str] = {}
     for (document_id, path), rows in raw_rows.items():
         unit_id = result_collapse.unit_id_of(path)
         if not unit_id:
             continue
-        sections[(result_collapse.UNIT_SECTION, document_id, unit_id)] = tuple(
+        sections[result_collapse.UnitKey(result_collapse.UNIT_SECTION, document_id, unit_id)] = tuple(
             (index, content, chunk_id) for index, content, chunk_id, _type, _part in rows
         )
         for _index, content, _chunk_id, chunk_type, table_part in rows:
             if chunk_type == "table":
                 tables[
-                    (
-                        result_collapse.UNIT_TABLE,
-                        document_id,
-                        unit_id,
-                        str(table_part),
+                    result_collapse.UnitKey(
+                        result_collapse.UNIT_TABLE, document_id, unit_id, str(table_part)
                     )
                 ] = content
 
