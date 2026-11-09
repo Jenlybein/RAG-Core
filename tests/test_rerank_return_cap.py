@@ -22,10 +22,14 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.llm import RerankRanking, RerankScore
+from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
+
+# 票 #77 起质量参数由密钥配置提供：请求助手把旧写法翻译成「造一个 custom 档的假身份」。
+IDENTITY = RetrievalIdentity(TENANT_ID)
 
 # 融合池宽度与最终返回条数：这两个数字**必须**不同，否则本文件守不住任何东西。
 CANDIDATES = 20
@@ -129,10 +133,9 @@ def _offline_client(monkeypatch: pytest.MonkeyPatch, *, llm: LLMProvider) -> Ite
     monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
     from app.api.deps import get_current_key
-    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield client
@@ -141,9 +144,11 @@ def _offline_client(monkeypatch: pytest.MonkeyPatch, *, llm: LLMProvider) -> Ite
 
 
 def _retrieve(client: TestClient, *, top_k: int = TOP_K) -> dict:
+    # 票 #77：``mode`` / ``top_k`` 改由密钥配置表达（custom 档），请求体只剩两个字段。
+    IDENTITY.use(mode="hybrid", top_k=top_k)
     response = client.post(
         RETRIEVE_PATH,
-        json={"kb_ids": [KB_A], "query": "退款怎么走", "mode": "hybrid", "top_k": top_k},
+        json={"kb_ids": [KB_A], "query": "退款怎么走"},
     )
     assert response.status_code == 200
     return response.json()

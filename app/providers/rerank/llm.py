@@ -126,8 +126,9 @@ class LLMRerankProvider(RerankProvider):
             # 没有候选就没有可排的东西：不必花一次模型调用，也不是失败。
             return []
 
-        # 返回条数只由调用方的 ``top_n``（= 请求的 ``top_k``）决定：服务端配置不再
-        # 悄悄压条数。候选上限 ``max_candidates`` 管的是「送几条给模型」，不是「回几条」。
+        # 返回条数只由调用方的 ``top_n``（= 这次调用解析出的 ``top_k``，第 7 步起来自
+        # 密钥配置）决定：服务端配置不再悄悄压条数。候选上限 ``max_candidates`` 管的是
+        # 「送几条给模型」，不是「回几条」。
         limit = top_n
 
         raw = await asyncio.wait_for(

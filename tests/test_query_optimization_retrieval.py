@@ -30,11 +30,15 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.providers.llm.base import LLMProvider
 from app.services.query.rewrite import QueryRewrite
+from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
 KB_B = "kb-b"
+
+# 票 #77 起质量参数由密钥配置提供：请求助手把旧写法翻译成「造一个 custom 档的假身份」。
+IDENTITY = RetrievalIdentity(TENANT_ID)
 
 REASON_REWRITE_FAILED = "query rewrite failed"
 
@@ -197,10 +201,9 @@ def _offline_client(
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
     from app.api.deps import get_current_key
-    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {"client": client, "embedding": embedding, "keyword": keyword}
@@ -209,8 +212,8 @@ def _offline_client(
 
 
 def _post(client: TestClient, **body: Any) -> dict:
-    payload = {"kb_ids": [KB_A], "query": "退钱怎么弄", "mode": "hybrid"}
-    payload.update(body)
+    payload = {"kb_ids": [KB_A], "query": "退钱怎么弄"}
+    payload.update(IDENTITY.apply({"mode": "hybrid", **body}))
     response = client.post(RETRIEVE_PATH, json=payload)
     assert response.status_code == 200
     return response.json()

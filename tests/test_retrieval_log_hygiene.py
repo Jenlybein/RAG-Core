@@ -32,6 +32,7 @@ import structlog
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from tests.retrieval_identity import RetrievalIdentity
 
 # 三个哨兵：请求带着它们走完整条检索链路，并且确实从响应体回给调用方。
 QUERY_TEXT = "T7-QUERY-SENTINEL-9f3b"
@@ -44,6 +45,9 @@ INTERNAL_DETAIL = "T7-INTERNAL-DETAIL-SENTINEL"
 TENANT_ID = settings.DEV_TENANT_ID
 KB_ID = "kb-1"
 REQUEST_ID = "t7-retrieval-id"
+
+# 票 #77 起质量参数由密钥配置提供：请求助手把旧写法翻译成「造一个 custom 档的假身份」。
+IDENTITY = RetrievalIdentity(TENANT_ID)
 
 
 @pytest.fixture(autouse=True)
@@ -171,12 +175,8 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
     main.app.dependency_overrides[session_mod.get_db] = lambda: EmptySession()
     from app.api.deps import get_current_key
-    from app.core.auth import DevKeyContext
-    from app.core.config import settings
 
-    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(
-        tenant_id=settings.DEV_TENANT_ID
-    )
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield client
@@ -189,8 +189,9 @@ def _retrieve(client: TestClient, *, mode: str | None = None):
         "kb_ids": [KB_ID],
         "query": QUERY_TEXT,
     }
-    if mode is not None:
-        payload["mode"] = mode
+    # 票 #77：``mode`` 不再进请求体，改由密钥配置表达（custom 档）；调用点保持原样。
+    # 每次都 ``use`` 一遍（``mode=None`` 时就是「服务端缺省模式」），用例之间不互相污染。
+    IDENTITY.use(mode=mode)
     return client.post(
         "/api/v1/rag/retrieve",
         json=payload,

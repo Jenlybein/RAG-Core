@@ -41,6 +41,11 @@
 诚实空（成功 + ``empty_reason``）。空结果不是故障：把它当故障处理会让监控
 满地假警报，也让调用方误以为该重试。
 
+**质量参数从哪来（第 7 步，#77）**：请求体只有 ``kb_ids`` + ``query``；模式、返回
+条数、折叠与表格展开由平台层从密钥配置解析成一个 :class:`RetrievalOptions` 交进
+``retrieve``（见 ``app/services/retrieval_options.py``）。本模块因此**不再认识请求
+模型**，也不再为任何一个参数写「没传就取缺省」的分支。
+
 日志只放 ID 与派生量，绝不放检索原文（见 tests/test_retrieval_log_hygiene.py）。
 """
 
@@ -65,6 +70,7 @@ from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
 from app.services.retrieval.vector_recall import vector_recall
+from app.services.retrieval_options import RetrievalOptions
 from app.utils.retrieval_fields import with_score_columns
 
 logger = structlog.get_logger(__name__)
@@ -84,29 +90,34 @@ async def retrieve(
     tenant_id: str,
     kb_ids: list[str],
     query: str,
-    mode: str | None = None,
-    top_k: int | None = None,
-    include_parent: bool = True,
-    expand_table_rows: bool = True,
+    options: RetrievalOptions,
 ) -> dict:
-    """按 ``mode`` 走一条通道（或并行两路）；缺省值取服务端配置。
+    """按 ``options.mode`` 走一条通道（或并行两路）。
 
-    MCP 入口只传 ``query`` / ``kb_ids``，因此它的行为随服务端默认值变化
-    （票 4 起默认 ``hybrid``）——这正是「两个入口共用同一份业务」的体现。
+    ``options`` 是**已经解析完**的本次参数（模式、返回条数、两个结果形状开关），由
+    平台层从密钥配置解析而来（``app.services.retrieval_options``）——请求体里只剩
+    ``kb_ids`` + ``query``，质量参数没有第二个来源。
+
+    本函数仍是**组合根**：它继续读那些**不是每次调用都能选**的服务端旋钮（召回深度
+    ``HYBRID_RECALL_TOP_K``、重排候选池 ``RERANK_MAX_CANDIDATES``），并继续校验模式
+    ——MCP 与内部调用仍可能自己造一个 ``options``，模式词表那一道不能因为有了值对象
+    就省掉。
     """
 
-    resolved_mode = mode or settings.RETRIEVAL_MODE
-    resolved_top_k = top_k or settings.TOP_K
+    resolved_mode = options.mode
+    resolved_top_k = options.top_k
 
     # 折叠会把同一父节的多个命中并成一条，所以召回要多取几倍，否则去重后凑不够
     # top_k 条。关掉折叠时按原样召回——「不折叠」就该连多取也不要。
     recall_top_k = (
-        resolved_top_k * result_collapse.OVERFETCH_FACTOR if include_parent else resolved_top_k
+        resolved_top_k * result_collapse.OVERFETCH_FACTOR
+        if options.fold_to_sections
+        else resolved_top_k
     )
 
-    # 模式校验放在最前面：HTTP 入口的 schema 已经用 Literal 掐掉了未知值，走 MCP /
-    # 内部调用才会到这里。校验先于可见性校验与查询优化，被拒的请求不该白烧一次改写
-    # （与「拒绝先于召回」同一条理由）。
+    # 模式校验放在最前面：HTTP 与 MCP 入口的解析（``options_from_policy``）已经验过
+    # 词表，只有直接构造 ``options`` 的内部调用才会带着未知值到这里。校验先于可见性
+    # 校验与查询优化，被拒的请求不该白烧一次改写（与「拒绝先于召回」同一条理由）。
     if resolved_mode not in (MODE_HYBRID, MODE_BM25, MODE_VECTOR):
         raise AppError(ErrorCode.PARAM_ERROR, f"unsupported retrieval mode: {resolved_mode!r}")
 
@@ -185,9 +196,7 @@ async def retrieve(
         db,
         tenant_id=tenant_id,
         chunks=chunks,
-        top_k=resolved_top_k,
-        include_parent=include_parent,
-        expand_table_rows=expand_table_rows,
+        options=options,
     )
 
     retrieval_meta: dict[str, object] = {
@@ -252,24 +261,25 @@ def _collapse_results(
     *,
     tenant_id: str,
     chunks: list[dict],
-    top_k: int,
-    include_parent: bool,
-    expand_table_rows: bool,
+    options: RetrievalOptions,
 ) -> list[dict]:
     """把命中的小片折成「交付单元」：一条结果代表一节（ADR-0013）。
 
     检索仍按小片算分（保住「找得准」），返回前把同一父节的命中折成一条，
-    所以 ``top_k`` 的名额不会被同一节的碎片占满。
+    所以 ``options.top_k`` 的名额不会被同一节的碎片占满。
 
     三件事在这里一次做完：折叠、补定位字段（页码 / 稿号 / 切块策略）、
     拼出对外字典。折叠算法本身在 ``result_collapse`` 里——**评测调同一个函数**，
     口径不会再和生产分叉。
+
+    形状偏好读的是同一个 ``options``：折叠与「表格行折回整表」是**这次调用的参数**，
+    不是本函数的可选开关，所以它们不该再以独立参数的形式出现在这里。
     """
 
     if not chunks:
         return []
 
-    if not include_parent:
+    if not options.fold_to_sections:
         # 不折叠：返回小片，响应与折叠之前逐字一致。留给「只要精确到那一行」的调用方。
         return _with_locating_fields(db, tenant_id=tenant_id, chunks=chunks)
 
@@ -349,9 +359,9 @@ def _collapse_results(
     units = result_collapse.collapse(
         hits,
         sections=sections,
-        tables=tables if expand_table_rows else None,
-        top_k=top_k,
-        merge_table_rows=expand_table_rows,
+        tables=tables if options.expand_table_rows else None,
+        top_k=options.top_k,
+        merge_table_rows=options.expand_table_rows,
     )
 
     # 唯一键是 (kb_id, chunk_id)（ADR-0010）：跨库同 ID 的两条结果必须能各自取到
