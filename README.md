@@ -211,7 +211,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 curl --noproxy '*' -sS -c cookie.txt -X POST http://127.0.0.1:8000/console/login \
   -H "Content-Type: application/json" -d '{"username":"admin","password":"<口令>"}'
 
-# 先试算（dry_run 默认 true：只算不写，返回会超库数的租户与会失去档位的 Key）
+# 先试算（dry_run 默认 true：只算不写，返回会超库数的租户、会失去档位的租户与受影响配置条数）
 curl --noproxy '*' -sS -b cookie.txt -X PATCH "http://127.0.0.1:8000/console/plans/<plan_id>" \
   -H "x-requested-with: XMLHttpRequest" -H "Content-Type: application/json" \
   -d '{"operation":"update","allowed_profiles":["speed","balanced"]}'
