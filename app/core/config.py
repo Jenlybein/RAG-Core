@@ -20,8 +20,11 @@ from app.core.llm_vendors import LLM_VENDORS
 
 # 检索模式的允许值。放在模块级而不是写成类属性：它是一份**词汇表**，校验器与
 # 报错文案共用同一份，不会出现「文案说支持 A、校验器只放 B」。票 4 把 hybrid 加进来，
-# 请求体那边的 `Literal`（app/schemas/rag.py）必须同步加——`Literal` 没法从元组展开，
-# 两处写两遍是语言限制，用 tests/test_hybrid_retrieval.py 的一致性测试钉住，防漂移。
+# 消费方那边的 `Literal`（app/services/retrieval_options.py 的 `RetrievalMode`）必须
+# 同步加——`Literal` 没法从元组展开，两处写两遍是语言限制，用
+# tests/test_hybrid_retrieval.py 的一致性测试钉住，防漂移。
+# 第 7 步（#77）起这个值只是**缺省值**：请求体里没有 ``mode`` 字段，实际取值来自
+# 密钥配置的解析（app/services/retrieval_options.py）。
 SUPPORTED_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 
 
@@ -127,7 +130,8 @@ class Settings(BaseSettings):
     RERANK_CHUNK_MAX_CHARS: int = 1024
     # 超时由重排 Provider 用 ``asyncio.wait_for`` 兜住：慢调用按失败处理，走降级。
     RERANK_TIMEOUT_SECONDS: float = 15.0
-    # 注：**返回条数只由请求的 ``top_k`` 决定**，没有「重排条数上限」这一项。
+    # 注：**返回条数只由这次调用解析出的 ``top_k`` 决定**（第 7 步起它来自密钥配置，
+    # 不再来自请求体），没有「重排条数上限」这一项。
     # 服务端配置悄悄把调用方要的 10 条压成 5 条，是意外行为而不是配额。
     # 原先的 ``RERANK_TOP_N`` 与 ``RERANK_TEMPERATURE`` 已删除：前者压条数，后者
     # 从没接进模型（``LLMProvider`` 不承载生成参数，重排温度在装配层固定为 0）。
@@ -176,10 +180,11 @@ class Settings(BaseSettings):
     def _validate_retrieval_mode(cls, value: str) -> str:
         """配错的检索模式必须**启动就炸**，不能等到每个请求各自 20002。
 
-        这是真踩过的坑：请求体里的 ``mode`` 有 ``Literal`` 守着，但**缺省值**来自
+        这是真踩过的坑：请求体里的 ``mode`` 曾经有 ``Literal`` 守着，但**缺省值**来自
         这里，而 Pydantic 不校验 ``default_factory`` 的返回值。结果是配置写成
         ``bing`` 之类的拼错值时进程照常起来，之后每个请求都在业务层撞
-        ``PARAM_ERROR``——排查成本比启动失败高一个数量级。
+        ``PARAM_ERROR``——排查成本比启动失败高一个数量级。第 7 步（#77）之后请求体里
+        已经**没有** ``mode`` 字段，这个值成了唯一缺省，启动即校验因此更要紧。
         """
 
         allowed = SUPPORTED_RETRIEVAL_MODES

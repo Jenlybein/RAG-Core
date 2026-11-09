@@ -3,9 +3,11 @@
 - ``rag_retrieve``：入参 ``kb_ids``（列表）+ ``query``。
 - ``rag_list_knowledge_bases``：无参，列这把 Key 可见的库。
 
-**签名就是权限**：工具参数与 HTTP 请求体字面一致，``tenant_id`` / 套餐 / 档位 / 白名单
-一律不出现——签名里有什么，模型就能填什么（ADR-0018）。身份由 ``Authorization`` 头带进来，
-JSON-RPC 信封本身不带任何授权信息。
+**签名就是权限**：工具参数与 HTTP 请求体字面一致（都只有 ``kb_ids`` + ``query``），
+``tenant_id`` / 套餐 / 档位 / 白名单 / 检索方式 / 返回条数 / 结果形状一律不出现——
+签名里有什么，模型就能填什么（ADR-0018）。身份由 ``Authorization`` 头带进来，
+JSON-RPC 信封本身不带任何授权信息。这次调用「用多好」由密钥配置解析成
+``RetrievalOptions``（``app.services.retrieval_options``），与 HTTP 侧同一个函数。
 
 判定只有一份：这里从 JSON-RPC 请求上下文里取出 HTTP Request，连同本次工具调用自己的
 数据库会话一起交给判定内核 ``app.core.auth.resolve_identity``；随后按六道关卡的顺序调
@@ -30,6 +32,7 @@ from app.core.auth import KeyContext, resolve_identity
 from app.core.exceptions import AppError
 from app.schemas.rag import RetrieveData
 from app.services.data_scope import ensure_kb_scope, scoped_kb_ids
+from app.services.retrieval_options import options_from_policy
 
 
 def _key_context(db: Any) -> KeyContext:
@@ -58,7 +61,14 @@ def create_mcp_server(
             key = _key_context(db)
             # 第二道关卡与 HTTP 侧同一份实现、同一个码：白名单外与跨租户都回「不存在」。
             ensure_kb_scope(policy=key.policy, kb_ids=kb_ids)
-            payload = await retrieve(db, tenant_id=key.tenant_id, kb_ids=kb_ids, query=query)
+            payload = await retrieve(
+                db,
+                tenant_id=key.tenant_id,
+                kb_ids=kb_ids,
+                query=query,
+                # 与 HTTP 侧同一个解析函数、同一份配置：「这次用多好」不是请求能表达的。
+                options=options_from_policy(policy=key.policy),
+            )
             # 与 HTTP 出口**同一套响应形状**：HTTP 侧过 ``RetrieveData``，这里也过一遍，
             # 否则同一份业务结果会因为在两条路上被「整形成不同深浅」而悄悄漂移——缺省字段
             # 在 HTTP 上被补成 null、在 MCP 上不存在，调用方换入口就要改解析代码。

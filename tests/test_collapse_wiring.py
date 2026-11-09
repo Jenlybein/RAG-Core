@@ -11,8 +11,10 @@ import importlib
 from types import SimpleNamespace
 from typing import Any
 
+from app.core.config import settings
 from app.services import result_collapse
 from app.services.result_collapse import OVERFETCH_FACTOR
+from app.services.retrieval_options import RetrievalOptions
 
 TENANT = "tenant-demo"
 KB = "kb-1"
@@ -71,15 +73,21 @@ class _Session:
 
 def _run(session: _Session, chunks: list[dict], **kwargs) -> list[dict]:
     service = importlib.import_module("app.services.rag_service")
+    # 票 #77：折叠与表格展开不再是 ``_collapse_results`` 的散装参数，而是这次调用的
+    # 已解析参数（``RetrievalOptions``）。调用点的写法不变，助手负责翻译。
     options: dict[str, Any] = {
-        "include_parent": True,
+        # 折叠不看检索模式；值对象要求有它，填服务端缺省即可。
+        "mode": settings.RETRIEVAL_MODE,
+        "fold_to_sections": True,
         "expand_table_rows": True,
         "top_k": 5,
     }
     options.update(kwargs)
 
     async def go() -> list[dict]:
-        return service._collapse_results(session, tenant_id=TENANT, chunks=chunks, **options)
+        return service._collapse_results(
+            session, tenant_id=TENANT, chunks=chunks, options=RetrievalOptions(**options)
+        )
 
     return asyncio.run(go())
 
@@ -232,7 +240,7 @@ def test_collapse_off_returns_the_raw_pieces() -> None:
 
     chunks = [_chunk("c-1", "第一片。", 0.9), _chunk("c-2", "第二片。", 0.8)]
 
-    results = _run(_Once(metas=session.metas, rows=[]), chunks, include_parent=False)
+    results = _run(_Once(metas=session.metas, rows=[]), chunks, fold_to_sections=False)
 
     assert [row["chunk_id"] for row in results] == ["c-1", "c-2"]
     assert [row["content"] for row in results] == ["第一片。", "第二片。"]

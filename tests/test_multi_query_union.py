@@ -39,10 +39,14 @@ from app.providers.llm.base import LLMProvider
 from app.services.query.optimizer import QueryProcessResult, optimize_query
 from app.services.query.rewrite import QueryRewrite
 from app.services.query.synonyms import collect_synonym_groups
+from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
+
+# 票 #77 起质量参数由密钥配置提供：请求助手把旧写法翻译成「造一个 custom 档的假身份」。
+IDENTITY = RetrievalIdentity(TENANT_ID)
 
 RAW_QUERY = "退钱怎么弄"
 REWRITTEN = "退款的处理流程"
@@ -233,10 +237,9 @@ def _offline_client(
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
     from app.api.deps import get_current_key
-    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {
@@ -253,10 +256,10 @@ def _response(client: TestClient, **body: Any) -> Any:
     payload: dict[str, Any] = {
         "kb_ids": [KB_A],
         "query": RAW_QUERY,
-        "mode": "hybrid",
-        "top_k": 5,
     }
-    payload.update(body)
+    # 票 #77：``mode`` / ``top_k`` / ``include_parent`` 这批旧请求字段改由密钥配置表达，
+    # 助手把它们翻译成「造一个 custom 档的假身份」，调用点保持原样。
+    payload.update(IDENTITY.apply({"mode": "hybrid", "top_k": 5, **body}))
     return client.post(RETRIEVE_PATH, json=payload)
 
 

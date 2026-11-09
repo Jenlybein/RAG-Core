@@ -195,7 +195,10 @@ def test_mcp_tools_have_the_declared_signatures() -> None:
         def close(self):
             pass
 
-    async def fake_retrieve(db, *, tenant_id, kb_ids, query):
+    async def fake_retrieve(db, *, tenant_id, kb_ids, query, options):
+        # 票 #77 起组合根还收一个已解析的 ``options``（模式 / 条数 / 两个形状开关）；
+        # 这条用例只关心工具的**签名**，回调里原样收下即可。
+        assert options is not None
         return {"query": query, "kb_ids": kb_ids, "retrieved_chunks": [], "metadata": {}}
 
     def fake_list(db, tenant_id):

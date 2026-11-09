@@ -38,12 +38,17 @@ from fastapi.testclient import TestClient
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES, Settings, settings
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
-from app.schemas.rag import RetrievalMode
+from app.services.retrieval_options import RetrievalMode
+from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
 KB_B = "kb-b"
+
+# 票 #77 起质量参数由密钥配置提供：本模块的请求助手把旧写法（``mode=`` / ``top_k=``
+# 等放进请求体）翻译成「造一个 custom 档的假身份」，调用点一个字都不用改。
+IDENTITY = RetrievalIdentity(TENANT_ID)
 
 # 手算的两条参考值（k=60）：两路都第 1 名 = 2/61；单路第 2 名 = 1/62。
 BOTH_FIRST = 0.0327868852459016
@@ -229,10 +234,9 @@ def _offline_client(
     )
 
     from app.api.deps import get_current_key
-    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: request_db
-    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {
@@ -249,7 +253,7 @@ def _offline_client(
 
 def _post(client: TestClient, **body) -> dict:
     payload = {"kb_ids": [KB_A], "query": "E1024"}
-    payload.update(body)
+    payload.update(IDENTITY.apply(body))
     response = client.post(RETRIEVE_PATH, json=payload)
     assert response.status_code == 200
     return response.json()
@@ -263,7 +267,7 @@ def _retrieval_metadata(body: dict) -> dict:
 
 
 def test_mode_vocabulary_is_in_sync_everywhere() -> None:
-    """配置里的词汇表、请求体的 ``Literal``、默认值三处必须一致。"""
+    """配置里的词汇表、已解析参数里的 ``Literal``、默认值三处必须一致。"""
 
     assert (
         set(SUPPORTED_RETRIEVAL_MODES)
@@ -579,9 +583,12 @@ def test_single_vector_mode_still_fails_loudly_when_embedding_breaks(monkeypatch
 
     embedding = _FakeEmbedding(fail=True)
     keyword = _FakeKeyword([_keyword_row("c1", score=12.5)])
+    # 这条用例要断言 500，走不了那个「必须 200」的请求助手，于是直接发；模式仍由密钥
+    # 配置表达（票 #77 起请求体里没有它了）。
+    IDENTITY.use(mode="vector")
     with _offline_client(monkeypatch, embedding=embedding, keyword=keyword) as fake:
         response = fake["client"].post(
-            RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024", "mode": "vector"}
+            RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024"}
         )
 
     assert response.status_code == 500
