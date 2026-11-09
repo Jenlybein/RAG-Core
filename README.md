@@ -126,7 +126,7 @@ score = 本次最终排序分（见下表）
 
 ```bash
 uv run pytest -q
-# 期望：567 passed, 11 skipped, 2 warnings
+# 期望：574 passed, 11 skipped, 2 warnings
 # 11 skipped = 3 条 OCR 资产门禁 + 4 条真 PostgreSQL + 3 条真 Elasticsearch
 #             （其中 1 条是本次新增的查询分析器守卫）+ 1 条嵌入等价性
 ```
@@ -156,7 +156,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 uv run ruff check .                                    # 静态检查
 uv run ruff format --check tests                      # 格式检查（历史文件暂不纳入）
 uv run mypy app                                       # 宽松类型检查
-uv run pytest -q                                      # 离线测试：567 passed, 11 skipped；不连 PG、不发真实模型请求
+uv run pytest -q                                      # 离线测试：574 passed, 11 skipped；不连 PG、不发真实模型请求
 uv run uvicorn app.main:app --reload --port 8000      # 本地起服务，再按教程跑四条 curl（含列库）
 ```
 
@@ -171,7 +171,7 @@ CI 在 push / PR 触发，依次跑 `uv sync --all-groups --frozen` → ruff 检
 - [ADR-0008 双入口错误契约](docs/adr/0008-dual-entry-error-contract.md) —— 共享错误词汇、各自翻译、协议级不对称及其代价
 - [ADR-0010 检索契约](docs/adr/0010-retrieval-contract.md) —— RRF `k=60`、tie-breaker、三种结局、`score` 语义变更与索引配对范围
 - [ADR-0011 LangChain 边界](docs/adr/0011-langchain-boundary.md) —— 框架只进 LLM / Embedding，检索链路零框架代码
-- [评测验收记录](eval/ACCEPTANCE.md) —— 245 片语料 / 26 道题的三路对照与九条验收矩阵
+- [评测验收记录](eval/ACCEPTANCE.md) —— 切块改造的双口径对照、四组交叉与验收留痕
 - [GLOSSARY](GLOSSARY.md) —— 领域术语：正名与禁用词
 
 ## Agent 协作约定
