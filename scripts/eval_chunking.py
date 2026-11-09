@@ -37,7 +37,6 @@ from pathlib import Path
 from app.services.rag_service import get_embedding_provider
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.retrieval_text import build_retrieval_text
-from app.utils.text_splitter import CharacterTextSplitter
 
 try:  # 与 scripts/eval_retrieval.py 的目录约定一致：脚本目录直接可导
     from eval_metrics import Case, aggregate
@@ -193,16 +192,36 @@ def _owner_of(chunk: Chunk, sections: list[Section]) -> str | None:
     return best[1]
 
 
+def _fixed_window_slice(text: str, *, size: int, overlap: int) -> list[str]:
+    """朴素基线：纯字符窗口硬切，不认识任何结构。
+
+    这是**评测专用**的实现，刻意不从生产 import：生产正在换成按段落/句子的切法，
+    而对照必须留一个「什么都不懂」的参照物。两件事各自独立，改一边不会牵连另一边。
+
+    行为与历史上那版生产实现逐字相同（步长 = size - overlap，不回溯、不 strip），
+    所以 naive-400/100 与 naive-200/50 的历史数字仍可比。
+    """
+
+    if not text:
+        return []
+    step = size - overlap
+    pieces: list[str] = []
+    start = 0
+    while start < len(text):
+        pieces.append(text[start : start + size])
+        start += step
+    return pieces
+
+
 def _naive_chunks(
     doc: CorpusDoc, sections: list[Section], *, size: int, overlap: int
 ) -> list[Chunk]:
-    splitter = CharacterTextSplitter(chunk_size=size, chunk_overlap=overlap)
     chunks: list[Chunk] = []
     step = size - overlap
     start = 0
-    for piece in splitter.split(doc.text):
-        end = start + len(piece.text)
-        chunks.append(Chunk(piece.text, doc.stem, "", start, end))
+    for text in _fixed_window_slice(doc.text, size=size, overlap=overlap):
+        end = start + len(text)
+        chunks.append(Chunk(text, doc.stem, "", start, end))
         start += step
     for chunk in chunks:
         chunk.owner = _owner_of(chunk, sections)
