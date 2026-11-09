@@ -14,6 +14,7 @@ import difflib
 import json
 import re
 from collections import Counter
+from collections.abc import Iterable
 from pathlib import Path
 
 import pytest
@@ -98,10 +99,57 @@ def test_corpus_is_a_synthetic_eval_set() -> None:
     """语料必须是合成的：出题人自己写的，不是从真实工单里搬出来的。"""
 
     stems = {Path(name).stem for name in _documents()}
-    # 上界随语料扩充调整：v3 从 8 篇扩到 15 篇（加文档类型），
-    # 之后又加了 3 篇「长章节对照组」（每节 700-1100 字，刻意超过 chunk_size）。
+    # 票 #64：新增一篇多语言代码语料后是 21 篇。上界随语料扩充调整，
     # 下界不动——少于 6 篇时，主题重叠不足，测不出跨文档混淆。
-    assert 6 <= len(stems) <= 20, f"语料应为 6-20 篇，实际 {sorted(stems)}"
+    assert 6 <= len(stems) <= 21, f"语料应为 6-21 篇，实际 {sorted(stems)}"
+
+
+def test_code_block_corpus_is_in_the_eval_scope() -> None:
+    """三类围栏都要真的落在评测语料里，且文档被 manifest 的某个库收录。
+
+    票 #64 的验收点不是「tests/fixtures 里有一份 markdown」，而是切块评测读到的
+    ``eval/corpus/*.md`` 里也有：python / json 走 ``from_language`` 的语法分隔符，
+    无标记围栏回退正文分隔符，少任何一类都测不到那条分支。只数围栏还不够，
+    还要钉住 manifest——``eval_retrieval.py`` 与 ``eval_chunking.py`` 都只从
+    ``kbs[].documents`` 派生语料清单，没登记的文件不会被索引、也不算「评测范围内」。
+    """
+
+    fences = _opening_fences(CORPUS_DIR.glob("*.md"))
+    for language in ("python", "json", ""):
+        label = language or "无语言标记"
+        assert fences[language] >= 2, f"{label}代码块不足 2 个：{dict(fences)}"
+
+    assert "dev_code_examples.md" in _documents(), "新代码语料未登记进任何 manifest 知识库"
+    assert "dev_code_examples.md" in {
+        name
+        for kb in _manifest()["kbs"]
+        if kb["kb_id"] == "kb-eval-ref"
+        for name in kb["documents"]
+    }, "dev_code_examples.md 应登记在接口与配置参考库"
+
+
+def _opening_fences(paths: Iterable[Path]) -> Counter[str]:
+    """数每篇 md 的开围栏，按围栏上的第一个词归类；无词归到空串。
+
+    只认行首三反引号，并成对跳过闭围栏：正文里的行内反引号不算代码块，
+    一块代码也只计一次。刻意不复用切块器的私有解析函数——这条测试要独立于
+    被测代码，才能发现「切块器没认出围栏」这类问题。
+    """
+
+    counts: Counter[str] = Counter()
+    for path in paths:
+        inside = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            fence = line.lstrip()
+            if not fence.startswith("```"):
+                continue
+            if inside:
+                inside = False
+                continue
+            inside = True
+            marker = fence[len("```") :].strip().split()
+            counts[marker[0].lower() if marker else ""] += 1
+    return counts
 
 
 def test_chunk_count_stays_in_the_discriminating_range() -> None:
