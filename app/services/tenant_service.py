@@ -4,10 +4,12 @@
 Key」），改套餐时只动 ``plan_id`` 一列。「套餐三档」的口径在 ``app.models.tenant``：
 新建默认最低档、改套餐只认三个已知码。
 
-这里的错误分两类，脚本与将来的控制面都按这两类处理：
+这里的错误分三类，脚本与将来的控制面都按这三类处理：
 
 - ``ValueError``：入参本身不对（档位名拼错、租户标识重复）；
-- ``LookupError``：库里的前置事实缺失（租户不存在、档位还没播种）。
+- ``LookupError``：库里的前置事实缺失（租户不存在、档位还没播种）；
+- ``AppError``：配置**不自洽**（``20015``）——档位要的能力配置没开、配置开的比套餐允许的多、
+  或数值超过套餐上限。它带着错误码，将来的控制面可以直接翻成响应；脚本只打消息。
 """
 
 from __future__ import annotations
@@ -17,10 +19,11 @@ from dataclasses import dataclass
 
 from sqlalchemy.orm import Session
 
-from app.models.key_policy import KeyPolicy
+from app.models.key_policy import KeyPolicy, policy_snapshot_of
 from app.models.plan import Plan, check_plan_code, plan_spec_of
 from app.models.tenant import Tenant, resolve_plan_code
 from app.repositories import key_policy_repository, plan_repository, tenant_repository
+from app.services.tier_policy import ensure_policy_consistent
 from app.utils.id_generator import new_id
 
 #: 开租户时顺手建的那套配置的名字。租户内可以再建别的，所以它只是一个默认值。
@@ -64,12 +67,15 @@ def create_tenant(
         raise ValueError(f"租户已存在：{tenant_id}")
 
     plan = _require_plan(db, code)
+    row = _default_policy(tenant_id=tenant_id, plan=plan, kb_ids=kb_ids)
+    # 配置时自洽校验（ADR-0018 第 2 条）：档位所需能力 ⊆ 配置开关 ⊆ 套餐能力，数值也不得
+    # 超限。判在**落库之前**：不自洽的配置一旦进库，第一次调用就会失败，而那时改的是
+    # 客户的生产配置；创建这里失败只是一次脚本 / 面板操作，有人盯着，改一下就好。
+    ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan_spec_of(plan))
     tenant = tenant_repository.create(
         db, Tenant(id=tenant_id, name=name, plan_id=plan.id)
     )
-    policy = key_policy_repository.create(
-        db, _default_policy(tenant_id=tenant_id, plan=plan, kb_ids=kb_ids)
-    )
+    policy = key_policy_repository.create(db, row)
     db.commit()
     return CreatedTenant(tenant=tenant, policy=policy)
 

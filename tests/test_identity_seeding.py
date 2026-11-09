@@ -12,6 +12,7 @@ import re
 
 import pytest
 
+from app.core.exceptions import AppError, ErrorCode
 from app.models import Tenant
 from app.models.api_key import ApiKey
 from app.models.key_policy import KeyPolicy
@@ -209,6 +210,23 @@ def test_creating_a_tenant_twice_fails_loudly() -> None:
         create_tenant(session, tenant_id=ACME_TENANT, name="Acme")
 
     assert session.added == []
+
+
+def test_an_inconsistent_key_policy_is_rejected_before_anything_is_persisted() -> None:
+    """默认配置也得过自洽校验（票 #78）：不自洽就**一个行都不落库**。
+
+    免费档的库数上限是 1，这里给这套配置圈了 2 个库——配置一旦进库，第一次检索就会被
+    第 5 道门拒掉，而那时改的是客户的生产配置。创建这里失败只是一次有人盯着的操作。
+    """
+
+    session = _session(plans=_plan_rows())
+
+    with pytest.raises(AppError) as excinfo:
+        create_tenant(session, tenant_id=ACME_TENANT, name="Acme", kb_ids=["kb-1", "kb-2"])
+
+    assert excinfo.value.code is ErrorCode.PARAM_ERROR
+    assert session.added == [], "不自洽的配置与它的租户都不许落库"
+    assert session.commits == 0
 
 
 # ───────────────────────────────────────────────────────────────── 改套餐

@@ -1,15 +1,16 @@
 """票 #77：请求只剩 ``kb_ids`` + ``query``，质量参数改由密钥配置提供。
 
-两条接缝，与票里的口径一致：
+票 #78 在本文件里换掉了两处**故意的临时断言**：命名档位曾经等于「服务端缺省」
+（那时它们还没有预设），现在每一档都跑自己那条链路。两条接缝不变：
 
-1. **纯函数直测**（本文件上半）：``options_from_policy`` 把一份密钥配置快照解析成
-   「这次调用用什么模式、几条、折不折叠、表格展开与否」。它不碰数据库、不碰请求，
-   所以边界（缺键、值不认识、命名档位的临时缺省）都在这里逐条钉住。
+1. **纯函数直测**（本文件上半）：``tier_bundle_of`` 把一份密钥配置快照展开成「这次调用
+   用哪条链路」——模式、条数、重排、改写。它不碰数据库、不碰请求、不碰套餐，所以边界
+   （缺键、值不认识、命名档位忽略手动参数）都在这里逐条钉住。
 2. **ASGI 边界**（本文件下半）：同一件事在真实应用上的样子——旧字段进请求体拿
-   20002、``custom`` 档的手动参数真的生效、命名档位暂时等于服务端缺省。
+   20002、``custom`` 档的手动参数真的生效、命名档位跑的是它自己的链路。
 
-命名档位那几条是**故意的临时断言**：#78 引入真实预设后它们应当变红，提醒改的人
-「档位行为变了」是有意为之，而不是被顺手改坏的。
+门禁、裁剪与回显（套餐那一层）在 ``tests/test_tier_gating.py``：这里的用例一律挂最高
+套餐，只验证「展开」。
 """
 
 from __future__ import annotations
@@ -34,8 +35,15 @@ from app.models.key_policy import (
     PROFILE_SPEED,
     KeyPolicySnapshot,
 )
+from app.models.plan import PLAN_PRESETS, PLAN_PRO
 from app.services.result_collapse import OVERFETCH_FACTOR
-from app.services.retrieval_options import RetrievalOptions, options_from_policy
+from app.services.retrieval_options import (
+    MAX_TOP_K,
+    RetrievalOptions,
+    TierBundle,
+    tier_bundle_of,
+)
+from app.services.tier_policy import resolve_retrieval_options
 from tests.fake_db import EmptySession
 from tests.retrieval_identity import RetrievalIdentity
 
@@ -65,20 +73,45 @@ def _policy(
     )
 
 
-def test_custom_policy_manual_parameters_are_taken_verbatim() -> None:
-    """``custom`` 档：手动参数原样生效，两个形状开关读配置自己的那两列。"""
+def _resolve(policy: KeyPolicySnapshot) -> RetrievalOptions:
+    """最高套餐 + 一个库：本文件的纯函数用例只想看「展开」，不想撞门禁。"""
 
-    options = options_from_policy(
+    return resolve_retrieval_options(policy=policy, plan=PLAN_PRESETS[PLAN_PRO], kb_count=1)
+
+
+def test_custom_policy_manual_parameters_are_taken_verbatim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``custom`` 档：手动参数原样生效，两个形状开关读配置自己的那两列。
+
+    重排 / 改写的**意图**写的是 true，所以这台机器必须装着这两项能力（否则生效值会是
+    合取之后的 false——那是下一节 ``test_tier_gating`` 的事，不是「手动参数没读到」）。
+    """
+
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
+
+    options = _resolve(
         _policy(
-            custom_options=(("mode", "bm25"), ("top_k", 3)),
+            custom_options=(
+                ("mode", "bm25"),
+                ("top_k", 3),
+                ("rerank", True),
+                ("rewrite", True),
+            ),
             include_parent=False,
             expand_table_rows=False,
         )
     )
 
-    assert options == RetrievalOptions(
-        mode="bm25", top_k=3, fold_to_sections=False, expand_table_rows=False
-    )
+    assert (
+        options.mode,
+        options.top_k,
+        options.rerank,
+        options.rewrite,
+        options.fold_to_sections,
+        options.expand_table_rows,
+    ) == ("bm25", 3, True, True, False, False)
 
 
 def test_custom_policy_missing_keys_fall_back_to_server_defaults(
@@ -88,14 +121,15 @@ def test_custom_policy_missing_keys_fall_back_to_server_defaults(
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "vector")
     monkeypatch.setattr(settings, "TOP_K", 7)
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
-    # 只给了 mode：top_k 走缺省，形状开关仍读配置自己的列。
-    options = options_from_policy(
-        _policy(custom_options=(("mode", "bm25"),), expand_table_rows=False)
-    )
+    # 只给了 mode：top_k / 重排 / 改写都走部署缺省，形状开关仍读配置自己的列。
+    options = _resolve(_policy(custom_options=(("mode", "bm25"),), expand_table_rows=False))
 
     assert options.mode == "bm25", "给了的键必须生效"
     assert options.top_k == 7, "没给的键回落到服务端缺省"
+    assert (options.rerank, options.rewrite) == (True, False)
     assert options.fold_to_sections is True
     assert options.expand_table_rows is False
 
@@ -115,7 +149,6 @@ def test_custom_policy_unusable_values_fall_back_per_key(
 
     for bad_mode, bad_top_k in (
         ("bing", 0),
-        ("bing", 51),
         (None, True),
         (None, "3"),
         (None, None),
@@ -126,49 +159,75 @@ def test_custom_policy_unusable_values_fall_back_per_key(
         if bad_top_k is not None:
             custom_options += (("top_k", bad_top_k),)
 
-        options = options_from_policy(_policy(custom_options=custom_options))
+        options = _resolve(_policy(custom_options=custom_options))
 
         assert options.mode == "hybrid", f"mode={bad_mode!r} 应回落到服务端缺省"
         assert options.top_k == 5, f"top_k={bad_top_k!r} 应回落到服务端缺省"
 
 
-@pytest.mark.parametrize("profile", [PROFILE_SPEED, PROFILE_BALANCED, PROFILE_QUALITY])
-def test_named_tier_options_are_the_server_defaults_for_now(
-    monkeypatch: pytest.MonkeyPatch, profile: str
+@pytest.mark.parametrize(
+    ("profile", "expected"),
+    [
+        # 三档的全部内容写在票面（#78）上，这里逐字抄一遍。
+        (PROFILE_SPEED, TierBundle(mode="vector", top_k=5, rerank=False, rewrite=False)),
+        (PROFILE_BALANCED, TierBundle(mode="hybrid", top_k=5, rerank=False, rewrite=False)),
+        (PROFILE_QUALITY, TierBundle(mode="hybrid", top_k=5, rerank=True, rewrite=True)),
+    ],
+)
+def test_a_named_tier_is_its_bundle_not_the_server_defaults(
+    monkeypatch: pytest.MonkeyPatch, profile: str, expected: TierBundle
 ) -> None:
-    """**临时兜底（#77）**：命名档位暂时解析成服务端缺省值。
+    """命名档位 = 它自己那条链路（票 #78 换掉了「暂时等于服务端缺省」）。
 
-    ``speed`` / ``balanced`` / ``quality`` 的真实预设由 #78 引入。本票只收缩请求契约，
-    不许顺手改变既有调用方的检索行为：此刻这三个档位没有任何可用预设，任何「按档位
-    猜一份」的写法都会让一批既有测试的结果发生变化，773 条的基线也就证明不了
-    「契约收缩没有改变行为」。
-
-    因此命名档位**连配置里的 ``custom_options`` 与两个形状列都不读**，一律返回
-    服务端缺省（默认模式、默认条数、两个开关都开）。#78 落地预设时这条用例应当变红。
+    把部署缺省设成**与每一档都不同**的值，再把配置里塞满手动参数：结果仍然是预设那四项
+    ——命名档位是完整替换，配置里的 ``custom_options`` 一个都不生效。
     """
 
-    monkeypatch.setattr(settings, "RETRIEVAL_MODE", "hybrid")
-    monkeypatch.setattr(settings, "TOP_K", 5)
+    monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
+    monkeypatch.setattr(settings, "TOP_K", 9)
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
-    options = options_from_policy(
+    bundle = tier_bundle_of(
         _policy(
             profile=profile,
-            # 这些字段在命名档位下**不生效**，正是本票的临时口径：
             custom_options=(("mode", "bm25"), ("top_k", 1)),
             include_parent=False,
             expand_table_rows=False,
         )
     )
 
-    assert options == RetrievalOptions(
-        mode="hybrid", top_k=5, fold_to_sections=True, expand_table_rows=True
-    )
+    assert bundle == expected
+
+
+def test_the_shape_group_is_not_custom_only() -> None:
+    """两个形状列是「结果形状组」：命名档位同样读它们（不是 ``custom`` 专属）。"""
+
+    options = _resolve(_policy(profile=PROFILE_QUALITY, include_parent=False))
+
+    assert options.fold_to_sections is False, "命名档位也读配置的形状列"
+    assert options.expand_table_rows is True
+
+
+def test_custom_top_k_above_the_hard_cap_is_clamped_not_silently_dropped() -> None:
+    """条数超过平台硬上限：**夹到上限并回显**，不是悄悄回落到缺省。
+
+    #77 时代这里是「越界按缺键处理」——那对一个只关心「有没有值」的解析器是合理的，
+    但 #78 之后它变成了一条**看不见的降级**：调用方要 70 条、拿到 5 条，响应里没有
+    一处说明。裁剪 + 回显是同一件事的可解释版本（``clipped`` 里会有 ``top_k``）。
+    """
+
+    options = _resolve(_policy(custom_options=(("top_k", MAX_TOP_K + 7),)))
+
+    assert options.top_k == MAX_TOP_K
+    assert options.tenant_policy is not None
+    assert options.tenant_policy.clipped == ("top_k",)
 
 
 def test_options_are_immutable() -> None:
-    """值对象不可变：拿到它的人（组合根、日志、将来的回显）改不动它。"""
+    """值对象不可变：拿到它的人（组合根、日志、回显）改不动它。"""
 
-    options = options_from_policy(_policy())
+    options = _resolve(_policy())
 
     with pytest.raises(dataclasses.FrozenInstanceError):
         options.top_k = 1  # type: ignore[misc]
@@ -346,31 +405,31 @@ def test_a_custom_policy_shape_switch_reaches_the_recall_depth(
     assert fake["vector"].scope_calls[0]["top_k"] == 2, "不折叠就不该多取"
 
 
-def test_a_named_tier_policy_still_uses_the_server_defaults(
+def test_a_named_tier_policy_runs_its_own_chain(
     fake: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """**临时兜底（#77）**：命名档位此刻等于服务端缺省，配置里的手动参数不生效。
+    """命名档位在边界处就是它自己那条链路（票 #78 换掉了「暂时等于服务端缺省」）。
 
-    与上面那条纯函数用例同一件事，只是从 ASGI 边界再看一遍：证明「档位暂时没有预设」
-    不是某个函数内部的偶然，而是调用方真的看到的。**#78 落地真实预设时这条应当变红。**
+    部署缺省设成 ``bm25`` + 9 条，配置里还塞了 ``mode=bm25, top_k=1``：``balanced`` 档
+    仍然走混合检索、返回 5 条——预设之外的东西一个都不生效。
     """
 
-    monkeypatch.setattr(settings, "RETRIEVAL_MODE", "hybrid")
-    monkeypatch.setattr(settings, "TOP_K", 5)
+    monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
+    monkeypatch.setattr(settings, "TOP_K", 9)
     IDENTITY.use_policy(
         _policy(
-            profile=PROFILE_SPEED,
+            profile=PROFILE_BALANCED,
             custom_options=(("mode", "bm25"), ("top_k", 1)),
-            include_parent=False,
-            expand_table_rows=False,
         )
     )
 
     body = _post(fake["client"])
 
-    assert body["data"]["metadata"]["mode"] == "hybrid", "命名档位暂时等于服务端缺省模式"
-    assert body["data"]["metadata"]["top_k"] == 5, "命名档位暂时等于服务端缺省条数"
-    assert fake["keyword"].calls, "走的是缺省模式那条链路"
+    assert body["data"]["metadata"]["mode"] == "hybrid", "balanced 的链路是混合检索"
+    assert body["data"]["metadata"]["top_k"] == 5, "预设的条数是 5，不跟 TOP_K 漂"
+    assert fake["keyword"].calls, "混合链路里关键词一路真的被调了"
+    assert fake["embedding"].queries, "混合链路里向量一路真的被调了"
+    assert fake["keyword"].calls[0]["top_k"] != 1, "配置里的 top_k 不该漏进召回"
 
 
 def test_the_composition_root_receives_the_resolved_options(
@@ -379,7 +438,8 @@ def test_the_composition_root_receives_the_resolved_options(
     """组合根收到的是**解析后的值对象**，不是请求里的四个字段。
 
     请求里已经没有这四个字段可读，这条用例把这件事钉在接缝上：入口交给
-    ``rag_service.retrieve`` 的 ``options`` 必须已经由密钥配置解析完毕。
+    ``rag_service.retrieve`` 的 ``options`` 必须已经由密钥配置解析完毕（并且带着回显要
+    用的那份事实）。
     """
 
     service = importlib.import_module("app.services.rag_service")
@@ -412,10 +472,12 @@ def test_the_composition_root_receives_the_resolved_options(
 
     body = _post(fake["client"])
 
+    options = seen["options"]
     assert body["code"] == ErrorCode.SUCCESS
-    assert seen["options"] == RetrievalOptions(
-        mode="vector", top_k=4, fold_to_sections=False, expand_table_rows=True
-    )
+    assert (options.mode, options.top_k) == ("vector", 4)
+    assert (options.fold_to_sections, options.expand_table_rows) == (False, True)
+    assert options.tenant_policy is not None
+    assert options.tenant_policy.requested_tier == PROFILE_CUSTOM
 
 
 def test_http_and_mcp_accept_literally_the_same_arguments() -> None:

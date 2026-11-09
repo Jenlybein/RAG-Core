@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
-from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot, policy_snapshot_of
+from app.models.key_policy import PROFILE_CUSTOM, KeyPolicySnapshot, policy_snapshot_of
 from app.models.plan import PLAN_PRO, PLAN_PRESETS, PlanSpec
 from app.repositories import api_key_repository, key_policy_repository, tenant_repository
 from app.services.plan_service import resolve_plan
@@ -56,14 +56,21 @@ class HttpRequestLike(Protocol):
 DEV_KEY_ID: Final[str] = "dev"
 DEV_KEY_LABEL: Final[str] = "内置开发身份"
 
-#: 内置开发身份的密钥配置快照：**全能力 + 保守命名档位 + 两种形状都开**。
+#: 内置开发身份的密钥配置快照：**全能力 + custom 档 + 两种形状都开**。
 #:
 #: - 四个能力开关全开：开发身份不因配置层的开关改变现行为——重排 / 改写是否真的跑，
 #:   仍由服务端配置（``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED``）决定；
-#: - 档位取 ``speed``：命名档位是**完整替换**，挂在 ``quality`` 上会让开发身份凭空多出
-#:   重排与改写，本地迭代立刻偏离现行为；
+#: - 档位取 ``custom`` 且 ``custom_options`` 为空：**每一项都跟着 ``.env`` 走**。
+#:   这里曾经钉在 ``speed`` 上（当时它还没有预设、等于服务端缺省），#78 给了它真预设
+#:   之后 ``speed`` 就明确意味着「只走向量一路，5 条，不重排、不改写」——本地默认模式
+#:   会从 ``RETRIEVAL_MODE`` 悄悄变成 ``vector``，而本地起的服务与 CI 从此测的不是同一条
+#:   链路。凡命名档位都钉死了一段产品行为，预设值一改，开发身份就跟着漂一次；``custom``
+#:   + 全缺键才是「跟部署配置完全一致」的唯一表达（缺键 = 逐键回落部署缺省）；
 #: - 两种形状偏好都开：与既有响应默认一致（折叠成整节、表格行折回整表）；
 #: - 限额照抄最高档：开发身份没有套餐主体，额度判定不该在本地把开发自己限住。
+#:
+#: 套餐仍取最高档（``DEV_KEY_PLAN``）：它是「本地演示要看完整能力」的选择，同时保证了
+#: 五道门禁在本地永不会把开发自己拦下来。
 #:
 #: ``allowed_kb_ids`` 是空元组：仓库里的约定是「空 = 还没圈定，不是全部」，而内置开发
 #: 身份没有白名单可言。空元组在这里**只表示这一件事**——「不做范围收窄」由
@@ -77,7 +84,7 @@ DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     query_rewrite_allowed=True,
     retrieve_qps=PLAN_PRESETS[PLAN_PRO].retrieve_qps,
     retrieve_daily=PLAN_PRESETS[PLAN_PRO].retrieve_daily,
-    profile=PROFILE_SPEED,
+    profile=PROFILE_CUSTOM,
     include_parent=True,
     expand_table_rows=True,
     custom_options=(),

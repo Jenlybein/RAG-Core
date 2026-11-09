@@ -22,6 +22,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal
 from app.models.plan import PLAN_CODES
@@ -93,7 +94,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan_code=args.plan,
             kb_ids=args.kb_ids,
         )
-    except (LookupError, ValueError) as exc:
+    except (LookupError, ValueError, AppError) as exc:
+        # ``AppError`` 是「配置不自洽」（20015）：档位要的能力配置没开、配置开的比套餐
+        # 允许的多，或数值超过套餐上限。它与入参错误一样是**人改一下就好**的失败，
+        # 不是脚本故障，所以同样打一行消息、返回非零，不吐 traceback。
         db.rollback()
         print(str(exc), file=sys.stderr)
         return 1

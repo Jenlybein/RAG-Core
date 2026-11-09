@@ -5,8 +5,8 @@
 
 本模块只做四件事：
 
-1. **有候选、且重排开着，才调 Provider**：空结果与「这一步没开」都不是重排失败，
-   也都不必花一次大模型调用；
+1. **有候选、且这次调用要重排，才调 Provider**：空结果、档位不要重排（#78）、本机
+   没装重排，都不是重排失败，也都不必花一次大模型调用；
 2. **失败即降级**：抛错 / 空返回 / 结构不合法一律回到融合顺序，并给出原因
    ``rerank failed``——一因一码，绝不把异常文本拼进去（调用方按码做判断）。
    降级回的是融合顺序的**前 ``top_n`` 条**，不是整个融合池：返回条数只由 ``top_k``
@@ -59,11 +59,19 @@ class RerankOutcome:
         }
 
 
-async def rerank_stage(*, query: str, chunks: list[dict], top_n: int) -> RerankOutcome:
+async def rerank_stage(
+    *, query: str, chunks: list[dict], top_n: int, enabled: bool
+) -> RerankOutcome:
     """对融合后的候选重排一次；失败时保留融合顺序并给出原因。
 
     ``top_n`` 是**最终返回条数**（``top_k``），不是候选数：候选的封顶与单条截断在
     Provider 里（它才知道模型的上下文限制）。
+
+    ``enabled`` 是**这次调用要不要重排**，由编排层按本次的已解析参数传入（#78：档位
+    表达意图，部署开关表达「这台机器装没装」，两者的合取已经在平台层算完）。为什么
+    不能只靠 ``provider.available``：``quality`` 档要重排、``balanced`` 档不要，而在同一
+    台装了重排的机器上两者的 Provider 都是可用的——只问 Provider，就会让「不要重排」的
+    那一档也白烧一次模型，而回显里写着 ``rerank: false``。
 
     **每一条返回路径都截到 ``top_n``**：开启重排时入参 ``chunks`` 是融合池
     （``RERANK_MAX_CANDIDATES``，默认 20），远宽于 ``top_k``。降级路径若原样返回它，
@@ -75,6 +83,12 @@ async def rerank_stage(*, query: str, chunks: list[dict], top_n: int) -> RerankO
     if not chunks:
         # 没有候选：不是失败，也没有「重排发生」可言。
         return RerankOutcome([], None, False, 0, 0, None)
+
+    if not enabled:
+        # 这次调用不含重排 = 「没有这一步」，与「本机没装重排」是同一件事的两面：
+        # 不装配 Provider、不为它花时间，融合顺序原样返回（截到 top_n）。
+        kept = list(chunks)[:top_n]
+        return RerankOutcome(kept, None, False, len(chunks), len(kept), None)
 
     provider = get_rerank_provider()
     if not provider.available:
