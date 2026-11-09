@@ -42,6 +42,7 @@ async def create_knowledge_base(
         description=payload.description,
         tenant_id=key.tenant_id,
         split_strategy=payload.split_strategy,
+        plan=key.plan,
         chunk_size=payload.chunk_size,
         allowed_formats=payload.allowed_formats,
     )

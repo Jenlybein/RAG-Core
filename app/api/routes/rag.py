@@ -22,6 +22,7 @@ from app.schemas.common import ApiResponse, ok
 from app.schemas.rag import RetrieveData, RetrieveRequest
 from app.services import rag_service
 from app.services.data_scope import ensure_kb_scope
+from app.services.quota_gate import retrieval_quota
 from app.services.tier_policy import resolve_retrieval_options
 
 router = APIRouter()
@@ -45,6 +46,17 @@ async def retrieve(
         kb_count=len(payload.kb_ids),
     )
 
+    # 第五 / 六道关卡：秒级限流 → 日配额。**进门只查、成功后记账**（``record_success``），
+    # 因此被拒的请求一次都不扣额度；一次请求只记一次，与本次查了几个库无关（两级的账本
+    # 都只看「一次调用」）。开关关着时这本账是 no-op，默认套件因此不需要 Redis。
+    quota = retrieval_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    )
+    quota.ensure_available()
+
     data = await rag_service.retrieve(
         db,
         tenant_id=key.tenant_id,
@@ -52,4 +64,8 @@ async def retrieve(
         query=payload.query,
         options=options,
     )
-    return ok(RetrieveData.model_validate(data))
+    # 业务真的跑完、响应也成形之后才 +1：失败 / 异常 / 校验不通过的路径都不会走到这里
+    # （ADR-0018「成功后才计数」）。
+    result = RetrieveData.model_validate(data)
+    quota.record_success()
+    return ok(result)

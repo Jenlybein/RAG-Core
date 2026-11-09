@@ -40,6 +40,7 @@ from app.repositories import document_repository
 from app.services.indexing_service import IndexingService
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.status import DocumentStatus
+from tests.fake_db import ZERO_COUNT
 
 KB_ID = "kb-1"
 TENANT_ID = settings.DEV_TENANT_ID
@@ -77,6 +78,10 @@ class _FakeSession:
 
     def flush(self) -> None:
         return None
+
+    def execute(self, _statement: Any) -> Any:
+        # 上传前的静态配额会数行；这个替身表示空库。
+        return ZERO_COUNT
 
     def commit(self) -> None:
         self.commits += 1

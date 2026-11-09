@@ -39,7 +39,7 @@ from app.schemas.document import (
     UploadDocumentData,
     UploadDocumentRequest,
 )
-from app.services import document_service, document_state
+from app.services import document_service, document_state, static_quota
 from app.services.chunk_store import build_chunk_stores
 from app.services.data_scope import ensure_kb_scope
 from app.services.document_storage import remove_document_file
@@ -98,6 +98,7 @@ async def upload_document(
             db,
             tenant_id=key.tenant_id,
             kb_id=kb_id,
+            plan=key.plan,
             title=title,
             filename=file.filename or "",
             data=await file.read(),
@@ -122,6 +123,7 @@ async def upload_document(
         db,
         tenant_id=key.tenant_id,
         kb_id=payload.kb_id,
+        plan=key.plan,
         title=payload.title,
         content=payload.content,
         request_id=_submitted_request_id(request),
@@ -210,6 +212,10 @@ async def reindex_document(
     ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
 
     document_state.ensure_reindexable(doc, force=force)
+
+    # 静态配额：重建虽然跳过「单库文档数」（文档本来就在库里），却照样往队列塞一份
+    # 解析任务，所以必须过并发处理数——这是最容易漏、也最能饿死其他租户的一条。
+    static_quota.ensure_processing_quota(db, tenant_id=key.tenant_id, plan=key.plan)
 
     prepared = document_repository.prepare_for_indexing(
         db, document_id, tenant_id=key.tenant_id, allow_success=force

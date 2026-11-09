@@ -27,7 +27,9 @@ from sqlalchemy.orm import Session
 from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
 from app.models.knowledge_base import FORMAT_MARKDOWN, KnowledgeBase, formats_of
+from app.models.plan import PlanSpec
 from app.repositories import document_repository
+from app.services import static_quota
 from app.services.document_storage import source_type_of, store_document_file
 from app.services.index_dispatch import enqueue_document
 from app.services.knowledge_base_access import ensure_visible
@@ -65,6 +67,7 @@ async def upload(
     *,
     tenant_id: str,
     kb_id: str,
+    plan: PlanSpec,
     title: str | None = None,
     content: str = "",
     filename: str | None = None,
@@ -77,10 +80,16 @@ async def upload(
     Worker 从落盘文件解析）；否则 JSON 模式（``content`` 直接落库）。
 
     准入在**分配 ID 与落盘之前**判定：被拒的请求不留下存储文件、文档记录或索引任务。
+    静态配额（单库文档数与并发处理数）紧跟在准入之后、**同样在落行与入队之前**：
+    被拒的上传既不该占存储，也不该占一个 Worker 名额。
     """
 
     kb = ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
     source_type = admit_upload(kb, filename=filename)
+
+    # 两条静态配额在这里一起判：上传是唯一会同时撞上「单库文档数」与「并发处理数」的
+    # 动作，绑成一个函数之后，第二个上传入口很难只接一半。
+    static_quota.ensure_upload_quota(db, tenant_id=tenant_id, kb_id=kb_id, plan=plan)
 
     document_id = new_document_id()
 

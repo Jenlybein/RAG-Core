@@ -37,6 +37,7 @@ from app.models.document import Document
 from app.repositories import document_repository
 from app.services import document_storage
 from app.utils.status import DocumentStatus
+from tests.fake_db import ZERO_COUNT
 
 DOC_ID = "doc-1"
 TENANT_ID = settings.DEV_TENANT_ID
@@ -360,6 +361,10 @@ class _FakeSession:
 
     def flush(self) -> None:
         return None
+
+    def execute(self, _statement: Any) -> Any:
+        # 重建前的并发处理配额会数一次行：替身表示「没有别的文档在处理」。
+        return ZERO_COUNT
 
     def delete(self, doc: Any) -> None:
         self.deleted.append(doc)

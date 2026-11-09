@@ -33,6 +33,7 @@ from app.core.auth import KeyContext, resolve_identity
 from app.core.exceptions import AppError
 from app.schemas.rag import RetrieveData
 from app.services.data_scope import ensure_kb_scope, scoped_kb_ids
+from app.services.quota_gate import retrieval_quota
 from app.services.tier_policy import resolve_retrieval_options
 
 
@@ -67,6 +68,14 @@ def create_mcp_server(
             options = resolve_retrieval_options(
                 policy=key.policy, plan=key.plan, kb_count=len(kb_ids)
             )
+            # 第五 / 六道关卡与 HTTP 侧同一份实现：进门查、成功记，两个错误码也一样。
+            quota = retrieval_quota(
+                policy=key.policy,
+                plan=key.plan,
+                tenant_id=key.tenant_id,
+                key_id=key.key_id,
+            )
+            quota.ensure_available()
             payload = await retrieve(
                 db,
                 tenant_id=key.tenant_id,
@@ -74,10 +83,10 @@ def create_mcp_server(
                 query=query,
                 options=options,
             )
-            # 与 HTTP 出口**同一套响应形状**：HTTP 侧过 ``RetrieveData``，这里也过一遍，
-            # 否则同一份业务结果会因为在两条路上被「整形成不同深浅」而悄悄漂移——缺省字段
-            # 在 HTTP 上被补成 null、在 MCP 上不存在，调用方换入口就要改解析代码。
-            return RetrieveData.model_validate(payload).model_dump()
+            # 与 HTTP 侧同一个时点：业务跑完且响应成形之后才记账。
+            result = RetrieveData.model_validate(payload).model_dump()
+            quota.record_success()
+            return result
         except AppError as exc:
             # 业务失败不是协议错误：按 JSON-RPC 结果表达，文本里带 code。
             raise ValueError(f"{exc.code.value}|{exc.msg}") from exc

@@ -73,6 +73,20 @@ class _Rows:
         return iter(self._values)
 
 
+class CountResult:
+    """``db.execute(SELECT count(*))`` 的最小替身：一个数字就是全部。
+
+    静态资源配额（票 #79）在写路径上数行，用的是 ``scalar_one()``；替身会话因此需要
+    能回答「这个租户 / 这个库现在有多少行」。缺省 0 行，需要别的数字时由测试自己注入。
+    """
+
+    def scalar_one(self) -> int:
+        return 0
+
+
+ZERO_COUNT = CountResult()
+
+
 class _FakeQuery:
     """``db.query(Model)`` 的最小替身。
 

@@ -42,6 +42,7 @@ from app.models.knowledge_base import (
 from app.repositories import chunk_repository, document_repository
 from app.services import document_state
 from app.utils.status import DocumentStatus
+from tests.fake_db import ZERO_COUNT
 
 KB_ID = "kb-1"
 TENANT_ID = settings.DEV_TENANT_ID
@@ -72,6 +73,10 @@ class _FakeSession:
 
     def flush(self) -> None:
         return None
+
+    def execute(self, _statement: Any) -> Any:
+        # 上传前的静态配额（单库文档数 / 并发处理数）各数一次行：替身回 0。
+        return ZERO_COUNT
 
     def commit(self) -> None:
         self.commit_count += 1

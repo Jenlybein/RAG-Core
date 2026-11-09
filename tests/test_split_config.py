@@ -27,6 +27,7 @@ from app.models.knowledge_base import (
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.splitter_factory import build_splitter
 from app.utils.text_splitter import WindowTextSplitter
+from tests.fake_db import ZERO_COUNT
 
 CREATE_PATH = "/api/v1/knowledge-bases/create"
 LIST_PATH = "/api/v1/knowledge-bases"
@@ -55,6 +56,10 @@ class _FakeSession:
         for obj in self.added:
             if getattr(obj, "created_at", None) is None:
                 obj.created_at = datetime(2024, 1, 2, 3, 4, 5)
+
+    def execute(self, _statement: Any) -> Any:
+        # 建库前的静态配额（库数）会数一次行：替身回 0，行为与空库一致。
+        return ZERO_COUNT
 
     def commit(self) -> None:
         self.commits += 1
