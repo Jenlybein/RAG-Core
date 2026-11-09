@@ -13,16 +13,19 @@
   （N 个库 = N 次查询，票 5 之前是两条通道各查一遍 = 2N 次）。拒绝（20008）先于
   召回发生，且不参与降级。它返回的**库行**顺着往下传：票 6 要用它们的 ``settings``
   （同义词表）与名称 / 描述（改写提示），再查一次库就等于每库两次。
-* **查询优化在召回之前**（票 6）：``effective_query`` 给向量一路与重排，
+* **查询优化在召回之前**（票 6 / #31）：``vector_queries`` 给向量一路逐句召回
+  （改写成功 = 原句 + 改写句，关闭 / 失败 = 只有原句），``effective_query`` 给重排，
   ``search_query`` 给关键词一路。两个开关默认关闭，关闭时这一步是恒等变换。
-* ``vector`` 先 ``embed_query``、再一次范围召回覆盖全部「库 + 版本」配对、按分数
-  排序后截到 ``top_k``；单库时结果与逐库版一致，``score`` 仍是向量分（回归红线）。
+* ``vector`` 按 ``vector_queries`` 逐句 ``embed_query``、逐句一次范围召回覆盖全部
+  「库 + 版本」配对，并成一个池后按分数排序截到 ``top_k``；关闭改写时只有一句，
+  调用次数、顺序与 ``score`` 口径全部与票 4 逐字节一致（回归红线）。
 * ``bm25`` 只走关键词一路：不向量化、不查向量库，``index_versions`` 是
   「kb_id → 索引版本」的映射（配对关系只能来自映射，不能是两个平行数组）。
 * ``hybrid`` 两路并行召回，RRF 融合（融合与降级判定在
   ``app/services/retrieval/``，本模块只负责把结果翻译成响应契约）。
-* **多库是一次全局召回**：两个通道各查一次，嵌入只算一次——分库各召回一批再
-  合并是假均衡，不相关的库也各占名额。
+* **多库是每个查询一次全局召回**：关键词一路查一次；向量一路按 ``vector_queries``
+  逐句各查一次再并成一个池（#31），嵌入次数 = 句子数——分库各召回一批再合并是
+  假均衡，不相关的库也各占名额。
 * **「某库没有切片进入结果」不是失败**：不记 ``failed_kb_ids``，也不按结果条数
   推断某个库出了事；结果只按实际命中呈现。
 * **单模式不降级**：关键词引擎没配或调用失败一律 ``RETRIEVAL_FAILED``（50002），
@@ -41,6 +44,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import structlog
 
 from sqlalchemy.orm import Session
@@ -57,6 +62,7 @@ from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
+from app.services.retrieval.vector_recall import vector_recall
 from app.utils.retrieval_fields import with_score_columns
 
 logger = structlog.get_logger(__name__)
@@ -112,8 +118,9 @@ async def retrieve(
     # 查一次库，就把「每库一次」变成「每库两次」。
     visible_kbs = [ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
 
-    # 查询优化：召回之前把用户那句话加工成**两个**查询（GLOSSARY「检索链路」：
-    # 查询优化 → 召回 → 融合 → 重排）。两个开关默认关闭，关闭时这一步是恒等变换。
+    # 查询优化：召回之前把用户那句话加工成「向量逐句列表 + 关键词一句 + 重排一句」
+    # （GLOSSARY「检索链路」：查询优化 → 召回 → 融合 → 重排）。两个开关默认关闭，
+    # 关闭时 ``vector_queries`` 只有原句，这一步是恒等变换。
     optimized = await optimize_query(
         query=query,
         # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
@@ -131,8 +138,10 @@ async def retrieve(
         outcome = await hybrid_retrieve(
             tenant_id=tenant_id,
             kb_ids=kb_ids,
-            # 两路各拿自己的查询：语义那侧用改写后的句子，字面那侧用扩展后的句子。
-            vector_query=optimized.effective_query,
+            # 向量一路逐句都搜（改写成功时原句 + 改写句）；重排仍看 effective_query；
+            # 关键词一路仍拿扩展后的句子，完全不变（#31）。
+            vector_queries=optimized.vector_queries,
+            rerank_query=optimized.effective_query,
             keyword_query=optimized.search_query,
             top_k=recall_top_k,
             # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有接缝）。
@@ -166,7 +175,7 @@ async def retrieve(
             db,
             tenant_id=tenant_id,
             kb_ids=kb_ids,
-            query=optimized.effective_query,
+            queries=optimized.vector_queries,
             top_k=recall_top_k,
         )
 
@@ -430,27 +439,25 @@ def _empty_reason(
 
 
 async def _retrieve_by_vector(
-    db: Session, *, tenant_id: str, kb_ids: list[str], query: str, top_k: int
+    db: Session, *, tenant_id: str, kb_ids: list[str], queries: Sequence[str], top_k: int
 ) -> list[dict]:
-    """向量通道：一次范围召回覆盖全部配对，**不按库循环、不按库分名额**。
+    """向量通道：逐句一次范围召回覆盖全部配对，**不按库循环、不按库分名额**。
 
-    单库时就是一个配对条件，SQL 语义与逐库版一致（回归红线：顺序与打分口径不变）；
-    多库时 ``top_k`` 是全局的——分库各取 top_k 再合并才是「假均衡」。
+    多句时先并成一个池（``vector_recall`` 里去重取优）；单句（改写关闭 / 失败）时
+    走原来的快路径，SQL 语义、排序口径与打分全部与票 4 一致（回归红线）。
     """
 
-    query_vector = await get_embedding_provider().embed_query(query)
-
-    rows = list(
-        await get_vector_store().similarity_search_scope(
-            db,
-            query_vector,
-            tenant_id=tenant_id,
-            index_versions=default_index_versions(kb_ids),
-            top_k=top_k,
-        )
+    rows = await vector_recall(
+        db=db,
+        tenant_id=tenant_id,
+        kb_ids=kb_ids,
+        queries=queries,
+        top_k=top_k,
+        embedding_factory=get_embedding_provider,
+        vector_factory=get_vector_store,
     )
 
-    # 多库时按分数重新排，再截到 top_k；单库行为与骨架期一致。
+    # 单查询时这一步是稳定排序（``vector_recall`` 已按同一口径排过），逐字节不变。
     rows.sort(key=lambda item: item.get("score", 0.0), reverse=True)
     return [
         # 五列契约字段统一由 ``app.utils.retrieval_fields`` 补齐：单模式下只有本通道

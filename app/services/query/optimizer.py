@@ -13,8 +13,15 @@
 
 谁用哪一句（这一句是本模块存在的理由）：
 
-* ``effective_query`` → 向量一路**和重排**（语义那一侧，含"给模型看的原始问题"）；
+* ``vector_queries`` → 向量一路**都搜**（#31：改写开启且成功时是原句 + 改写句，
+  关闭 / 失败时只有原句；句子非空、去重、顺序固定为 ``raw → effective``）；
+* ``effective_query`` → **重排**（语义那一侧，含"给模型看的原始问题"；
+  改写成功时等于 ``vector_queries`` 的第二句）；
 * ``search_query`` → 关键词一路（字面那一侧，同义词补的就是它）。
+
+**改写不再是「替换」而是「并集」**：原先成功时用改写句把原句扔掉，q13（改写赢）
+与 q16（原句赢）二选一必亏一边。现在两句各查一次向量、合成一个候选池再进既有
+RRF，谁的那份好就留谁；关键词一路与重排拿的句子一律不变。
 """
 
 from __future__ import annotations
@@ -36,6 +43,11 @@ class QueryProcessResult:
     匹配，对语义召回没有意义；改写补的是语义，对字面匹配没好处。硬把它们合成一句，
     等于用其中一路的优化去污染另一路。
 
+    ``vector_queries`` 是向量一路要逐句搜的**全部**查询。关闭 / 失败时是单元素元组
+    ``(raw_query,)``，与票 4 的逐字节回归红线直接对齐；开启且成功时是
+    ``(raw_query, effective_query)``，两句相同时去重成一句。调用方不需要再判断开关
+    或改写状态——「这次该搜几句」是本模块的责任。
+
     ``rewrite_degraded`` / ``rewrite_reason`` 是降级的**唯一来源**：一因一码，原因写死成
     ``query rewrite failed``，不拼异常文本。上游把它原样并进 ``metadata.retrieval``，
     调用方不必自己判断「这次结果是不是打了折」。
@@ -44,6 +56,7 @@ class QueryProcessResult:
     raw_query: str
     effective_query: str
     search_query: str
+    vector_queries: tuple[str, ...]
     rewrite_applied: bool
     rewrite_degraded: bool
     rewrite_reason: str | None
@@ -71,16 +84,26 @@ async def optimize_query(
     effective_query = rewrite.query
 
     if settings.SYNONYM_EXPANSION_ENABLED:
-        # 匹配的是 ``effective_query``：改写之后的句子才是真正拿去检索的那一句。
+        # 匹配的是 ``effective_query``：改写之后的句子才是关键词一路要用的那一句。
         search_query = expand_synonyms(effective_query, synonym_groups)
     else:
-        # 关闭 = 没有这一步：关键词一路与向量一路拿同一句（与票 4 完全一致）。
+        # 关闭 = 没有这一步：关键词一路仍拿 ``effective_query``（与票 4 完全一致）。
         search_query = effective_query
+
+    # 改写成功时**两句都搜**，顺序固定为「原句 → 改写句」，两句相同时去重成一句。
+    # 关闭 / 失败只留原句：用 ``applied`` 而不是开关判断，因为开着的开关也可能失败降级。
+    if rewrite.applied:
+        vector_queries = tuple(
+            dict.fromkeys(text for text in (query, effective_query) if text.strip())
+        )
+    else:
+        vector_queries = (query,)
 
     return QueryProcessResult(
         raw_query=query,
         effective_query=effective_query,
         search_query=search_query,
+        vector_queries=vector_queries,
         rewrite_applied=rewrite.applied,
         rewrite_degraded=rewrite.reason is not None,
         rewrite_reason=rewrite.reason,
