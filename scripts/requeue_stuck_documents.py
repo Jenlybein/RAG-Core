@@ -43,11 +43,8 @@ from app.repositories import document_repository
 from app.repositories.document_repository import DOCUMENT_LEASE_SECONDS
 from app.services.index_dispatch import enqueue_document
 
-# 共享报告工具与脚本同目录；scripts* 不在安装包里，显式把自己所在目录放进
-# sys.path 后再用普通导入，spec_from_file_location 的文件加载才能找到它。
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
+# scripts* 不在安装包里，把自身目录放进 sys.path 才能导入 _ops_common（见该模块文档）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _ops_common import exit_code_for, print_summary  # noqa: E402
 

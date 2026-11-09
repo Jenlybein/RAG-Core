@@ -26,28 +26,11 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.key_policy import PROFILES
-from app.models.plan import PLAN_BUSINESS_COLUMNS, Plan
+from app.models.plan import PLAN_BUSINESS_COLUMNS, PLAN_NUMERIC_COLUMNS, Plan
 from app.repositories import (
     key_policy_repository,
     knowledge_base_repository,
     tenant_repository,
-)
-
-#: 改得到、需要校验「≥ 1」的六个数值上限。
-PLAN_NUMERIC_FIELDS: Final[tuple[str, ...]] = (
-    "retrieve_qps",
-    "retrieve_daily",
-    "max_kb",
-    "max_kb_per_retrieve",
-    "max_documents_per_kb",
-    "max_processing_documents",
-)
-#: 四个能力开关：只接受布尔值，没有额外校验。
-PLAN_BOOLEAN_FIELDS: Final[tuple[str, ...]] = (
-    "hybrid_allowed",
-    "rerank_allowed",
-    "query_rewrite_allowed",
-    "research_allowed",
 )
 
 #: 影响面里「名字最多列几个」。计数永远是全量，名字只是给人快速扫一眼的样本——
@@ -113,7 +96,7 @@ def validate_patch(patch: Mapping[str, Any]) -> None:
         if not profiles:
             raise AppError(ErrorCode.PLAN_INVALID, "allowed_profiles must not be empty")
 
-    for field in PLAN_NUMERIC_FIELDS:
+    for field in PLAN_NUMERIC_COLUMNS:
         value = patch.get(field)
         if value is not None and value < 1:
             # 「0 或负数」不是一种更严格的限制，而是一次事故：QPS=0 等于当场停服。

@@ -27,36 +27,30 @@ from app.db.session import SessionLocal
 from app.models.plan import PLAN_CODES
 from app.services.tenant_service import change_tenant_plan
 
-# 共享报告工具与脚本同目录；scripts* 不在安装包里，显式把自己所在目录放进
-# sys.path 后再用普通导入，spec_from_file_location 的文件加载才能找到它。
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
+# scripts* 不在安装包里，把自身目录放进 sys.path 才能导入 _ops_common（见该模块文档）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _ops_common import exit_code_for, print_summary  # noqa: E402
+from _ops_common import print_summary  # noqa: E402
 
 CHANGED_NOTE = (
-    "NOTE: the new tier takes effect on the next call; limits are read from the plan row "
+    "NOTE: the new plan takes effect on the next call; limits are read from the plan row "
     "every time, and API keys keep their own key policy untouched."
 )
 
 
 @dataclass(frozen=True)
 class PlanChangeStats:
-    """一次改套餐的统计：成功就动一行。"""
+    """一次改套餐的统计：成功就动一行。
+
+    没有 ``failed`` / ``delivered``：失败路径在打印之前就带非零退出码返回了，这两个字段
+    不会被写、也不会被读——留着 ``failed`` 只会让汇总行永远打印「failed: 0」。
+    """
 
     changed: int = 0
-    failed: int = 0
-
-    @property
-    def delivered(self) -> int:
-        """共享退出码规则里的「已投递」口径。"""
-
-        return self.changed
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Move a tenant to another plan tier.")
+    parser = argparse.ArgumentParser(description="Move a tenant to another plan.")
     parser.add_argument("--tenant-id", required=True, help="tenant to change")
     parser.add_argument(
         "--plan", required=True, choices=PLAN_CODES, help="target plan code"
@@ -84,10 +78,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print_summary(
         f"change_tenant_plan: {change.tenant_id}",
         stats=PlanChangeStats(changed=1),
-        counters=(("changed", "changed"), ("failed", "failed")),
+        counters=(("changed", "changed"),),
         note=CHANGED_NOTE,
     )
-    return exit_code_for(PlanChangeStats(changed=1))
+    # 失败在打印之前就带着非零退出码返回了；走到这里就是一次成功，退出码固定为 0。
+    return 0
 
 
 if __name__ == "__main__":

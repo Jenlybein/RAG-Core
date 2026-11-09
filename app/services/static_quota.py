@@ -38,9 +38,10 @@ from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
-from app.core.exceptions import AppError, ErrorCode
+from app.core.exceptions import ErrorCode
 from app.models.plan import PlanSpec
 from app.repositories import document_repository, knowledge_base_repository
+from app.services.quota_limits import ensure_under_limit
 
 
 def ensure_kb_quota(db: Session, *, tenant_id: str, plan: PlanSpec) -> None:
@@ -94,12 +95,14 @@ def ensure_processing_quota(db: Session, *, tenant_id: str, plan: PlanSpec) -> N
 def _ensure_under(*, used: int, limit: int, what: str, plan: PlanSpec) -> None:
     """``used >= limit`` 就拒绝：额度 N 表示「最多 N 行」。
 
-    与 :mod:`app.services.quota_gate` 的边界写法一致（那边是「已经记了 N 次」）：
-    这次写入会是第 ``used + 1`` 行，允许它当且仅当 ``used + 1 <= limit``。
+    判据与日配额共用 :func:`app.services.quota_limits.ensure_under_limit`（那边是
+    「已经记了 N 次」）；这里只把套餐名缀在句尾，让运维一眼看出该找哪一档。
     """
 
-    if used >= limit:
-        raise AppError(
-            ErrorCode.QUOTA_EXCEEDED,
-            f"{what} exceeded: {used} used of {limit} (plan {plan.code!r})",
-        )
+    ensure_under_limit(
+        used=used,
+        limit=limit,
+        code=ErrorCode.QUOTA_EXCEEDED,
+        what=what,
+        suffix=f"(plan {plan.code!r})",
+    )

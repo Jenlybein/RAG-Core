@@ -64,7 +64,7 @@ class RetrievalIdentity:
         """造一份 ``custom`` 档的配置：手动参数 = 原来请求里想传的那几个值。
 
         与旧请求体的缺省一一对应：没传 ``mode`` 就回到「服务端缺省模式」，没传
-        ``top_k`` 就回到「服务端缺省条数」——由 ``retrieval_options.tier_bundle_of``
+        ``top_k`` 就回到「服务端缺省条数」——由 ``retrieval_options.profile_chain_of``
         的逐键回落实现，助手这里不复制一份缺省值。
         """
 

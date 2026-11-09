@@ -23,7 +23,7 @@ from app.models.key_policy import KeyPolicy, policy_snapshot_of
 from app.models.plan import Plan, check_plan_code, plan_spec_of
 from app.models.tenant import Tenant, resolve_plan_code
 from app.repositories import key_policy_repository, plan_repository, tenant_repository
-from app.services.tier_policy import ensure_policy_consistent
+from app.services.profile_policy import ensure_policy_consistent
 from app.utils.id_generator import new_id
 
 #: 开租户时顺手建的那套配置的名字。租户内可以再建别的，所以它只是一个默认值。

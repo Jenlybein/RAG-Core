@@ -74,7 +74,7 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
 # ───────────────────────────────────────────────────────────────── 套餐播种
 
 
-def test_seeding_an_empty_plans_table_writes_the_three_tiers_and_reconciles() -> None:
+def test_seeding_an_empty_plans_table_writes_the_three_plans_and_reconciles() -> None:
     session = _session()
 
     stats = seed_plans(session)
@@ -104,7 +104,7 @@ def test_seeding_does_not_overwrite_a_table_that_already_has_rows() -> None:
 # ─────────────────────────────────────────────────────────── 升级前租户的回填
 
 
-def test_existing_tenants_get_standard_and_the_demo_tenant_gets_the_top_tier() -> None:
+def test_existing_tenants_get_standard_and_the_demo_tenant_gets_the_top_plan() -> None:
     session = _session(plans=_plan_rows(), tenant_ids=[DEMO_TENANT, ACME_TENANT])
 
     stats = backfill_tenants(session, demo_tenant_id=DEMO_TENANT)
@@ -139,7 +139,7 @@ def test_backfill_writes_only_tenant_rows() -> None:
     assert len(session.added) == len(session.added_of(Tenant))
 
 
-def test_backfill_fails_loudly_when_the_tier_was_never_seeded() -> None:
+def test_backfill_fails_loudly_when_the_plan_was_never_seeded() -> None:
     session = _session(tenant_ids=[ACME_TENANT])
 
     with pytest.raises(LookupError, match="seed_plans"):
@@ -151,7 +151,7 @@ def test_backfill_fails_loudly_when_the_tier_was_never_seeded() -> None:
 # ───────────────────────────────────────────────────────────────── 开租户
 
 
-def test_a_new_tenant_defaults_to_the_lowest_tier() -> None:
+def test_a_new_tenant_defaults_to_the_lowest_plan() -> None:
     session = _session(plans=_plan_rows())
 
     created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme 公司")
@@ -185,7 +185,7 @@ def test_a_new_tenant_gets_a_key_policy_so_a_key_can_be_issued_right_away() -> N
     ), "新配置不授予任何能力：重排与改写是最贵的两项"
 
 
-def test_a_new_tenant_can_take_a_named_tier() -> None:
+def test_a_new_tenant_can_take_a_named_plan() -> None:
     session = _session(plans=_plan_rows())
 
     created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme", plan_code="pro")
@@ -194,7 +194,7 @@ def test_a_new_tenant_can_take_a_named_tier() -> None:
     assert created.policy.profile == "speed", "档位白名单的第一档是 speed，与套餐无关"
 
 
-def test_creating_a_tenant_with_an_unknown_tier_fails_loudly() -> None:
+def test_creating_a_tenant_with_an_unknown_plan_fails_loudly() -> None:
     session = _session(plans=_plan_rows())
 
     with pytest.raises(ValueError, match="free/standard/pro"):
@@ -232,7 +232,7 @@ def test_an_inconsistent_key_policy_is_rejected_before_anything_is_persisted() -
 # ───────────────────────────────────────────────────────────────── 改套餐
 
 
-def test_changing_the_plan_moves_the_tenant_to_the_new_tier() -> None:
+def test_changing_the_plan_moves_the_tenant_to_the_new_plan() -> None:
     tenant = _tenant_row(ACME_TENANT, plan_id=1)
     session = _session(plans=_plan_rows(), tenants=[tenant])
 
@@ -244,7 +244,7 @@ def test_changing_the_plan_moves_the_tenant_to_the_new_tier() -> None:
 
 
 @pytest.mark.parametrize("plan_code", ["platinum", "Free", "", " standard"])
-def test_changing_to_an_unknown_tier_fails_loudly(plan_code: str) -> None:
+def test_changing_to_an_unknown_plan_fails_loudly(plan_code: str) -> None:
     """只认三个已知档位码：大小写与空串都不给兜底。"""
 
     tenant = _tenant_row(ACME_TENANT, plan_id=1)
@@ -263,7 +263,7 @@ def test_changing_the_plan_of_a_missing_tenant_fails_loudly() -> None:
         change_tenant_plan(session, tenant_id="tenant_ghost", plan_code="pro")
 
 
-def test_changing_the_plan_to_a_tier_that_was_not_seeded_fails_loudly() -> None:
+def test_changing_the_plan_to_an_unseeded_plan_fails_loudly() -> None:
     tenant = _tenant_row(ACME_TENANT, plan_id=1)
     session = _session(plans=_plan_rows()[:2], tenants=[tenant])  # 只有 free / standard
 

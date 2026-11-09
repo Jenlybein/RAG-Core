@@ -117,7 +117,7 @@ def change_script() -> ModuleType:
 # ───────────────────────────────────────────────────────────────── 播种命令
 
 
-def test_seed_script_seeds_the_tiers_then_backfills_old_tenants(
+def test_seed_script_seeds_the_plans_then_backfills_old_tenants(
     seed_script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     session = _SequenceSession(tenant_ids=[DEMO_TENANT, ACME_TENANT])
@@ -173,7 +173,7 @@ def test_create_tenant_script_prints_the_tenant_and_its_default_policy(
     assert f"key policy: {policy.id}" in out
 
 
-def test_create_tenant_script_defaults_to_the_lowest_tier(
+def test_create_tenant_script_defaults_to_the_lowest_plan(
     create_script: ModuleType, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     session = RecordingSession(rows={Plan: _plan_rows()})
@@ -221,7 +221,7 @@ def test_create_tenant_script_reports_a_duplicate_tenant_on_stderr(
     assert session.rollbacks == 1
 
 
-def test_create_tenant_script_explains_that_the_tiers_are_not_seeded_yet(
+def test_create_tenant_script_explains_that_the_plans_are_not_seeded_yet(
     create_script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     session = RecordingSession()
@@ -308,7 +308,7 @@ def test_issue_api_key_script_reports_a_missing_policy_on_stderr(
 # ───────────────────────────────────────────────────────────────── 改套餐
 
 
-def test_change_plan_script_moves_the_tier(
+def test_change_plan_script_moves_the_plan(
     change_script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     tenant = _tenant_row(plan_id=1)

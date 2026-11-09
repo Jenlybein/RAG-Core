@@ -6,10 +6,11 @@
 
 请求体只有 ``kb_ids`` + ``query``（ADR-0010「第三次修订」）。检索方式、返回条数、
 重排、改写与两个结果形状开关**从密钥配置解析**，而且要过五道门禁
-（``app.services.tier_policy``）——请求里既没有这些字段，也没有任何一处代码去读它们。
+（``app.services.profile_policy``）——请求里既没有这些字段，也没有任何一处代码去读它们。
 
-本路由只做两件判定之外的事：按顺序**调用**那两道关卡（白名单 → 套餐 / 档位 / 库数），
-以及把解析好的参数交给组合根。判定本身不在这里：判定写进路由，MCP 一侧就得再写一遍。
+本路由只做两件判定之外的事：把身份与请求递进 ``app.services.retrieval_gate``（白名单 →
+档位门禁 → 配额 → 召回 → 记账的唯一实现），再把已经校验成形的数据装进 ``{code, msg,
+data}`` 外壳。判定本身不在这里：判定写进路由，MCP 一侧就得再写一遍。
 """
 
 from fastapi import APIRouter, Depends
@@ -20,10 +21,7 @@ from app.core.auth import DevKeyContext
 from app.db.session import get_db
 from app.schemas.common import ApiResponse, ok
 from app.schemas.rag import RetrieveData, RetrieveRequest
-from app.services import rag_service
-from app.services.data_scope import ensure_kb_scope
-from app.services.quota_gate import retrieval_quota
-from app.services.tier_policy import resolve_retrieval_options
+from app.services.retrieval_gate import gated_retrieve
 
 router = APIRouter()
 
@@ -34,38 +32,12 @@ async def retrieve(
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[RetrieveData]:
-    # 第二道关卡：白名单。身份已经解出来（``key`` 就在手上），限流、配额与召回都还没
-    # 开始——顺序反了会让越权请求先扣掉客户当天的额度（ADR-0018「六道关卡」）。
-    ensure_kb_scope(policy=key.policy, kb_ids=payload.kb_ids)
-
-    # 第三 / 第四道关卡：套餐复核 + 档位展开与门禁 + 单次库数。同一份实现，MCP 一侧
-    # 调的也是它；越权在这里就失败，一次嵌入都不该烧。
-    options = resolve_retrieval_options(
-        policy=key.policy,
-        plan=key.plan,
-        kb_count=len(payload.kb_ids),
-    )
-
-    # 第五 / 六道关卡：秒级限流 → 日配额。**进门只查、成功后记账**（``record_success``），
-    # 因此被拒的请求一次都不扣额度；一次请求只记一次，与本次查了几个库无关（两级的账本
-    # 都只看「一次调用」）。开关关着时这本账是 no-op，默认套件因此不需要 Redis。
-    quota = retrieval_quota(
-        policy=key.policy,
-        plan=key.plan,
-        tenant_id=key.tenant_id,
-        key_id=key.key_id,
-    )
-    quota.ensure_available()
-
-    data = await rag_service.retrieve(
+    # 六道关卡的顺序与判定只在 gated_retrieve 里，MCP 一侧调的是同一个函数：越权、超限
+    # 与配额用尽都在那里失败，本路由不判规则、也不各长一套。
+    result = await gated_retrieve(
         db,
-        tenant_id=key.tenant_id,
+        key=key,
         kb_ids=payload.kb_ids,
         query=payload.query,
-        options=options,
     )
-    # 业务真的跑完、响应也成形之后才 +1：失败 / 异常 / 校验不通过的路径都不会走到这里
-    # （ADR-0018「成功后才计数」）。
-    result = RetrieveData.model_validate(data)
-    quota.record_success()
     return ok(result)

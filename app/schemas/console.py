@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.account import Account
 from app.models.audit_log import AuditLog
-from app.models.plan import Plan, PlanSpec
+from app.models.plan import Plan, PlanSpec, plan_columns_of
 from app.models.tenant import Tenant
 
 
@@ -201,41 +201,27 @@ def tenant_data(tenant: Tenant) -> TenantData:
     )
 
 
+def _business_values(source: object) -> dict[str, Any]:
+    """11 个业务列的值（``allowed_profiles`` 转成 JSON 友好的 list）。
+
+    列清单来自 ``PLAN_SPEC_COLUMNS``，所以加一列时两个映射函数一起跟上，不会出现
+    「API 少回一列而服务端算得出」这种半截状态。
+    """
+
+    values = plan_columns_of(source)
+    values["allowed_profiles"] = list(values["allowed_profiles"])
+    return values
+
+
 def plan_snapshot_data(plan: PlanSpec) -> PlanSnapshotData:
-    return PlanSnapshotData(
-        code=plan.code,
-        name=plan.name,
-        allowed_profiles=list(plan.allowed_profiles),
-        hybrid_allowed=plan.hybrid_allowed,
-        rerank_allowed=plan.rerank_allowed,
-        query_rewrite_allowed=plan.query_rewrite_allowed,
-        research_allowed=plan.research_allowed,
-        retrieve_qps=plan.retrieve_qps,
-        retrieve_daily=plan.retrieve_daily,
-        max_kb=plan.max_kb,
-        max_kb_per_retrieve=plan.max_kb_per_retrieve,
-        max_documents_per_kb=plan.max_documents_per_kb,
-        max_processing_documents=plan.max_processing_documents,
-    )
+    return PlanSnapshotData(**_business_values(plan))
 
 
 def plan_data(plan: Plan) -> PlanData:
     return PlanData(
         plan_id=plan.id,
-        code=plan.code,
-        name=plan.name,
-        allowed_profiles=list(plan.allowed_profiles),
-        hybrid_allowed=plan.hybrid_allowed,
-        rerank_allowed=plan.rerank_allowed,
-        query_rewrite_allowed=plan.query_rewrite_allowed,
-        research_allowed=plan.research_allowed,
-        retrieve_qps=plan.retrieve_qps,
-        retrieve_daily=plan.retrieve_daily,
-        max_kb=plan.max_kb,
-        max_kb_per_retrieve=plan.max_kb_per_retrieve,
-        max_documents_per_kb=plan.max_documents_per_kb,
-        max_processing_documents=plan.max_processing_documents,
         updated_at=plan.updated_at,
+        **_business_values(plan),
     )
 
 
