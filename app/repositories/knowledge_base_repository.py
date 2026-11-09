@@ -9,7 +9,7 @@
 脚本发现归属用的 :func:`get_owner_tenant_id`，它只回一个字符串，不回库行。
 """
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase, settings_of
@@ -81,3 +81,19 @@ def list_by_tenant(db: Session, tenant_id: str) -> list[KnowledgeBase]:
         .order_by(KnowledgeBase.created_at)
         .all()
     )
+
+
+def count_by_tenant(db: Session, tenant_id: str) -> int:
+    """这个租户有几个库（静态配额「库数」的唯一计数处，第 7 步票 #79）。
+
+    只数、不取行：调用方（``app.services.static_quota``）要的是数字，把整批行读出来
+    再 ``len()`` 在库多的时候是白白的 IO。``tenant_id`` 是强制参数，理由与本模块
+    其余函数相同——一条不带租户的计数会让「按套餐判库数」变成「按整个平台判」。
+    """
+
+    stmt = (
+        select(func.count())
+        .select_from(KnowledgeBase)
+        .where(KnowledgeBase.tenant_id == tenant_id)
+    )
+    return int(db.execute(stmt).scalar_one())
