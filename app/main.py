@@ -10,7 +10,8 @@
   PATCH  /console/accounts/{account_id}
   GET    /console/audit-logs
 
-HTTP 数据面（7 个业务接口，/api/v1/*）：
+HTTP 数据面（8 个业务接口，/api/v1/*）：
+  GET    /api/v1/auth/me
   POST   /api/v1/knowledge-bases/create
   GET    /api/v1/knowledge-bases
   POST   /api/v1/documents/upload

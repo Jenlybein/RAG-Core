@@ -144,7 +144,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 
 期望 `code: 0`，**默认一条结果代表一节**（`section_id` 是身份，`chunk_id` 是让它浮上来的代表片），每条都带 `score` 与分列字段。
 
-检索方式、返回条数、是否重排、是否改写现在都由这把 Key 的密钥配置决定（请求里没有 `mode` / `top_k` / `include_parent` / `expand_table_rows`，传了会被 `20002` 拒绝）。想拿回第 4 步「一条结果 = 一个切片」的形状，把密钥配置的 `include_parent` 改成 `false`——本步还没有改配置的界面，直接更新 `key_policies` 那一行（面板入口在第 8 步）。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
+检索方式、返回条数、是否重排、是否改写现在都由这把 Key 的密钥配置决定（请求里没有 `mode` / `top_k` / `include_parent` / `expand_table_rows`，传了会被 `20002` 拒绝）。想拿回第 4 步「一条结果 = 一个切片」的形状，把密钥配置的 `include_parent` 改成 `false`——本步还没有改配置的界面（面板入口在第 8 步），用 `uv run python scripts/update_key_policy.py --policy-id <policy_id> --no-include-parent` 改：它在写前跑与开租户同一个自洽校验，改完下一次调用即生效。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
 
 评测与验收矩阵留痕在 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)（**第 4 步的 8 篇 / 245 片 / 26 题是历史快照**；当前语料已扩容，以该文件为准）。
 
@@ -183,9 +183,9 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/knowledge-bases/crea
   -H "Content-Type: application/json" \
   -d '{"name":"Acme 手册","split_strategy":"size"}'
 
-# 把响应里的 kb_id 圈进这套配置（本步没有改配置的界面，面板入口在第 8 步）
-docker exec -it pg16-pgvector psql -U postgres -d rag_db -c \
-  "update key_policies set allowed_kb_ids = jsonb_build_array('<kb_id>') where id = '<policy_id>';"
+# 把响应里的 kb_id 圈进这套配置。本步没有改配置的界面（面板入口在第 8 步），用运维脚本：
+# 白名单是**替换**语义，多个库就重复 --kb-id；写前会跑与开租户同一个自洽校验。
+uv run python scripts/update_key_policy.py --policy-id <policy_id> --kb-id <kb_id>
 ```
 
 ### 4. 用真 Key 打通两扇门
@@ -203,7 +203,18 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 
 把 `kb_ids` 换成白名单外的库（或别的租户的库）：`code: 20008`、`msg: knowledge base not found`。**不是「无权限」**——可区分的拒绝等于告诉攻击者「这个库存在」。
 
-### 6. 套餐改完立刻生效
+### 6. 查自己的余量（数据面，给外部程序）
+
+外部程序拿同一把 Key 调 `GET /api/v1/auth/me`，一次拿回自己的租户、套餐快照与今日用量——集成方不必靠「再试一次看会不会超额」来探余量：
+
+```bash
+curl --noproxy '*' -sS http://127.0.0.1:8000/api/v1/auth/me \
+  -H "Authorization: Bearer rc_live_<32位hex>"
+```
+
+返回 `{code, msg, data}`，`data` 三栏：`tenant`（`tenant_id` / `name`）、`plan`（`code` / `name` / 四个能力开关 / 六个数值上限 / `allowed_profiles`）、`usage`（`used` / `limit` / `source`）。用量读的是与控制台 `/console/me` **同一个**租户级日桶，只读不扣：`RATE_LIMIT_ENABLED=true` 时 `source: "daily_counter"`；关着时 `used: null` + `source: "not_tracked"`——平台没在统计，报 0 会骗人。两扇 `/me` 的门**不合并**：这一扇只认 API Key，`/console/me` 只认会话 cookie。
+
+### 7. 套餐改完立刻生效
 
 控制台登录拿 cookie（写操作还要带防跨站的 `x-requested-with: XMLHttpRequest`）：
 

@@ -74,14 +74,28 @@ def _tenant_row(tenant_id: str = ACME_TENANT, *, plan_id: int = 1) -> Tenant:
 
 
 def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
+    """一套最小权限的配置行：能力全关、两个形状开关取默认（开）、档位 speed。
+
+    布尔列显式写出来，不靠列默认值：``KeyPolicy`` 的行对象在 flush 之前属性还是
+    ``None``，而改配置的脚本会先按快照做自洽校验——一份「还没 flush 的 None」会让
+    测试里校验出的结论与真实库里的行为不一致。
+    """
+
     return KeyPolicy(
         id=POLICY_ID,
         tenant_id=tenant_id,
         name="default",
         allowed_kb_ids=[],
+        research_allowed=False,
+        hybrid_allowed=False,
+        rerank_allowed=False,
+        query_rewrite_allowed=False,
         retrieve_qps=3,
         retrieve_daily=500,
         profile="speed",
+        include_parent=True,
+        expand_table_rows=True,
+        custom_options={},
     )
 
 
@@ -112,6 +126,11 @@ def issue_script() -> ModuleType:
 @pytest.fixture
 def change_script() -> ModuleType:
     return _load_script("change_tenant_plan")
+
+
+@pytest.fixture
+def update_policy_script() -> ModuleType:
+    return _load_script("update_key_policy")
 
 
 # ───────────────────────────────────────────────────────────────── 播种命令
@@ -350,3 +369,181 @@ def test_change_plan_script_reports_a_missing_tenant_on_stderr(
 
     assert "租户不存在" in capsys.readouterr().err
     assert session.closed
+
+
+# ───────────────────────────────────────────────────────────── 改密钥配置（#72 缺口 2）
+
+
+def _update_session(*, plan_id: int = PLAN_CODES.index("standard") + 1) -> RecordingSession:
+    """标准档租户 + 一套 speed 配置：balanced 可用、hybrid 允许，改得动的空间最大。"""
+
+    return RecordingSession(
+        rows={
+            Plan: _plan_rows(),
+            Tenant: [_tenant_row(plan_id=plan_id)],
+            KeyPolicy: [_policy_row()],
+        }
+    )
+
+
+def test_update_policy_script_writes_the_new_values(
+    update_policy_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """一次改五组内容：档位、能力开关、两个形状开关、限额、数据范围。"""
+
+    session = _update_session()
+    _patch_infrastructure(monkeypatch, update_policy_script, session)
+
+    assert update_policy_script.main(
+        [
+            "--policy-id",
+            POLICY_ID,
+            "--name",
+            "订单机器人",
+            "--profile",
+            "balanced",
+            "--hybrid",
+            "--no-include-parent",
+            "--qps",
+            "8",
+            "--daily",
+            "4000",
+            "--kb-id",
+            "kb-1",
+            "--kb-id",
+            "kb-2",
+        ]
+    ) == 0
+
+    policy = session._rows[KeyPolicy][0]
+    assert policy.name == "订单机器人"
+    assert policy.profile == "balanced"
+    assert policy.hybrid_allowed is True
+    # 没动的字段保持原样：脚本是「改这几项」，不是「整行重写」。
+    assert policy.rerank_allowed is False
+    assert policy.research_allowed is False
+    assert policy.include_parent is False
+    assert policy.expand_table_rows is True
+    assert (policy.retrieve_qps, policy.retrieve_daily) == (8, 4000)
+    assert policy.allowed_kb_ids == ["kb-1", "kb-2"]
+    assert session.commits == 1
+    assert session.closed
+
+    out = capsys.readouterr().out
+    assert f"key policy: {POLICY_ID}" in out
+    assert "profile: speed -> balanced" in out
+    assert "hybrid_allowed: False -> True" in out
+
+
+def test_update_policy_script_can_clear_the_kb_whitelist(
+    update_policy_script: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--clear-kb-ids`` 把白名单清空；空 = 一个库都不许查，不是「全部」。"""
+
+    session = _update_session()
+    policy = session._rows[KeyPolicy][0]
+    policy.allowed_kb_ids = ["kb-1"]
+    _patch_infrastructure(monkeypatch, update_policy_script, session)
+
+    assert update_policy_script.main(["--policy-id", POLICY_ID, "--clear-kb-ids"]) == 0
+
+    assert policy.allowed_kb_ids == []
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        # free 只允许 speed：换成 balanced 不自洽
+        ["--profile", "balanced"],
+        # free 的限额是 qps 3 / daily 500
+        ["--qps", "4"],
+        ["--daily", "501"],
+        # free 没有混合检索能力
+        ["--hybrid"],
+    ],
+)
+def test_update_policy_script_refuses_an_inconsistent_configuration(
+    update_policy_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    """与开租户同一份自洽校验：不自洽的请求打一行原因、退 1、且**一行都不写**。"""
+
+    session = _update_session(plan_id=PLAN_CODES.index("free") + 1)
+    _patch_infrastructure(monkeypatch, update_policy_script, session)
+
+    assert update_policy_script.main(["--policy-id", POLICY_ID, *argv]) == 1
+
+    assert capsys.readouterr().err.strip(), "不自洽必须打印原因"
+    policy = session._rows[KeyPolicy][0]
+    assert policy.profile == "speed"
+    assert (policy.retrieve_qps, policy.retrieve_daily) == (3, 500)
+    assert policy.hybrid_allowed is False
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["--profile", "balanced"],  # 少了 --policy-id
+        ["--policy-id", POLICY_ID],  # 一个字段都没给
+        ["--policy-id", POLICY_ID, "--profile", "platinum"],
+        ["--policy-id", POLICY_ID, "--kb-id", "kb-1", "--clear-kb-ids"],
+    ],
+)
+def test_update_policy_script_rejects_bad_arguments_with_a_non_zero_exit(
+    update_policy_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    argv: list[str],
+) -> None:
+    session = _update_session()
+    _patch_infrastructure(monkeypatch, update_policy_script, session)
+
+    with pytest.raises(SystemExit) as exit_info:
+        update_policy_script.main(argv)
+
+    assert exit_info.value.code == 2
+    assert capsys.readouterr().err.strip()
+    assert session.commits == 0
+
+
+def test_update_policy_script_reports_a_missing_policy_on_stderr(
+    update_policy_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    session = RecordingSession(rows={Plan: _plan_rows(), Tenant: [_tenant_row()]})
+    _patch_infrastructure(monkeypatch, update_policy_script, session)
+
+    assert update_policy_script.main(["--policy-id", POLICY_ID, "--qps", "2"]) == 1
+
+    assert "密钥配置不存在" in capsys.readouterr().err
+    assert session.commits == 0
+    assert session.rollbacks == 1
+
+
+def test_update_policy_script_help_lists_the_editable_fields(
+    update_policy_script: ModuleType, capsys: pytest.CaptureFixture[str]
+) -> None:
+    with pytest.raises(SystemExit) as exit_info:
+        update_policy_script.main(["--help"])
+
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    for flag in (
+        "--policy-id",
+        "--name",
+        "--profile",
+        "--hybrid",
+        "--include-parent",
+        "--qps",
+        "--daily",
+        "--kb-id",
+        "--clear-kb-ids",
+    ):
+        assert flag in out, f"--help 里看不到 {flag}"
