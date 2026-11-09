@@ -42,8 +42,13 @@ class Settings(BaseSettings):
     # v1/v2 = 25、qwen3.7 = 20；默认取最保守的 10。
     EMBEDDING_BATCH_SIZE: int = 10
 
+    # 切块窗口的**长度单位是 Qwen token**（与 embedding 模型同一套分词），不是字符。
+    # 800 token ≈ 1200–1500 字符，100 token ≈ 150–190 字符。
     CHUNK_SIZE: int = 800
     CHUNK_OVERLAP: int = 100
+    # Qwen 词表路径；留空则用仓库根的 .tokenizer/qwen.tiktoken。
+    # 它是**必需资产**：缺失时应用拒绝启动（见 app/utils/tokenizer.py）。
+    QWEN_TOKENIZER_PATH: str = ""
     TOP_K: int = 5
 
     # 文档入库：原始文件落盘目录、上传大小上限、单个表格切片的最大行数。

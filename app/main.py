@@ -23,6 +23,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 from app.api.error_handlers import install_handlers
 from app.api.router import api_router
 from app.core.config import settings
+from app.utils import tokenizer
 from app.db.session import SessionLocal
 from app.repositories import knowledge_base_repository
 from app.services import rag_service
@@ -38,6 +39,9 @@ setup_logging()
 async def app_lifespan(app: FastAPI):
     """主应用自己的启动逻辑；挂子应用时不能被顶掉。"""
 
+    # 切块的窗口口径依赖 Qwen 词表：缺它就只能换近似词表，而近似会让同一个库在
+    # 不同部署上切出不同的片。所以启动时就要验，带病启动比启动失败更难查。
+    tokenizer.verify_ready()
     yield
 
 

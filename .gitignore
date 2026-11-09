@@ -22,6 +22,9 @@ celerybeat-schedule*
 # OCR 原生运行时（deploy/ocr/fetch_runtime.sh 默认落盘位置；CI 用缓存目录覆盖）
 .ocr/
 
+# Qwen 分词词表（scripts/fetch_qwen_vocab.py 默认落盘位置）
+.tokenizer/
+
 # ── 前端 ──
 node_modules/
 frontend/dist/
