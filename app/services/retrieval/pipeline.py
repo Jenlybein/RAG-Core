@@ -273,6 +273,8 @@ async def _vector_branch(
         top_k=top_k,
         embedding_factory=embedding_factory,
         vector_factory=vector_factory,
+        # 混合向量分支的历史排序口径：同分按 kb_id / chunk_id 兜底（回归红线）。
+        single_query_order="tiebreak",
     )
 
 

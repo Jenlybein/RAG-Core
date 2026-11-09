@@ -33,13 +33,14 @@ def _score(row: dict) -> float:
 def _merge_rows(ranked_batches: list[list[dict]]) -> list[dict]:
     """把每句各自的召回列表并成**一个**池：唯一键 ``(kb_id, chunk_id)``。
 
-    同名取「更好」的一次有两层意思：
+    同一命中取「更好」的一次有两层意思：
 
     * **名次**：保留 rank 更小的那份整行（content / title 等跟着名次走）；
     * **分数**：取两次里更高者（不同查询的相似度可以比一比谁更有把握）。
 
     去重后按分数降序、``kb_id`` / ``chunk_id`` 兜底排序，顺序不随查询先后漂移。
-    单查询时直接返回原列表的浅拷贝，连排序 key 都与旧实现一致（回归红线）。
+    单批次时直接返回原列表的浅拷贝、**不排序**：两条调用方历史上各有自己的
+    排序口径（见 :func:`vector_recall`），这里一排序就会悄悄改变关闭时的同分顺序。
     """
 
     if len(ranked_batches) == 1:
@@ -78,11 +79,17 @@ async def vector_recall(
     top_k: int,
     embedding_factory: Any,
     vector_factory: Any,
+    single_query_order: str = "stable",
 ) -> list[dict]:
     """每句各嵌一次、各做一次范围召回，并成一个池后截到 ``top_k``。
 
-    单句时**仍走旧的快路径**：一次 ``embed_query``、一次 ``similarity_search_scope``、
-    原来的 ``(-score, kb_id, chunk_id)`` 排序与截断，响应逐字节不变。
+    单句时**仍走旧的快路径**：一次 ``embed_query``、一次 ``similarity_search_scope``，
+    调用次数与逐字节响应都不变。排序口径由 ``single_query_order`` 选，因为历史上
+    两条调用方并不相同，统一口径会在同分多行时悄悄改变关闭时的结果：
+
+    * ``"stable"``（``mode=vector`` 单模式）：``rows.sort(score, reverse=True)``，
+      稳定排序，同分保留库返回顺序；
+    * ``"tiebreak"``（混合向量分支）：``(-score, kb_id, chunk_id)`` 显式兜底。
 
     多句时嵌入并发发出，向量查询也并发发出（都是异步原语）；
     ``asyncio.gather`` 默认 ``return_exceptions=False``：任一句的嵌入 / 查询失败
@@ -115,11 +122,19 @@ async def vector_recall(
     ranked_batches = [list(batch) for batch in batches]
 
     if len(ranked_batches) == 1:
-        # 与旧实现逐行一致：显式 tie-breaker 保证同分顺序不随插入顺序漂移。
         rows = ranked_batches[0]
-        rows.sort(
-            key=lambda item: (-item.get("score", 0.0), item.get("kb_id") or "", item["chunk_id"])
-        )
+        if single_query_order == "tiebreak":
+            # 混合分支的历史口径：同分时按 kb_id / chunk_id 排，名次不随插入顺序漂移。
+            rows.sort(
+                key=lambda item: (
+                    -item.get("score", 0.0),
+                    item.get("kb_id") or "",
+                    item["chunk_id"],
+                )
+            )
+        else:
+            # 单模式的历史口径：稳定排序，同分保留库返回顺序。
+            rows.sort(key=lambda item: item.get("score", 0.0), reverse=True)
         return rows[:top_k]
 
     return _merge_rows(ranked_batches)[:top_k]

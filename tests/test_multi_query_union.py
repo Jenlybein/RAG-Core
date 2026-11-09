@@ -567,6 +567,34 @@ def test_vector_single_mode_also_searches_both_queries(
     assert fake["keyword"].queries == [], "单模式不碰另一路"
 
 
+def test_single_query_keeps_each_caller_historical_tie_break(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关闭 / 失败时同分多行：单模式稳定排序、混合分支按 kb_id / chunk_id 兜底。
+
+    两条调用方历史上排序口径不同，黄金哈希的替身没有同分行，覆盖不到这一维；
+    把它们钉住，才敢说「关闭时行为不变」不只是「关闭时那份特定响应不变」。
+    """
+
+    _switches(monkeypatch, rewrite=False)
+    # 两条同分行：库返回顺序是 Z → A；稳定排序应保留它，tiebreak 应换成 A → Z。
+    same_score_rows = [
+        _vector_row("Z", score=0.5, kb_id=KB_A),
+        _vector_row("A", score=0.5, kb_id=KB_A),
+    ]
+
+    with _offline_client(
+        monkeypatch,
+        vector=_FakeVectorStore(rows=same_score_rows),
+        keyword=_FakeKeyword(rows=[]),
+    ) as fake:
+        single = _response(fake["client"], mode="vector", include_parent=False).json()
+        hybrid = _response(fake["client"], mode="hybrid", include_parent=False).json()
+
+    assert _chunk_ids(single) == ["Z", "A"], "单模式：稳定排序，同分保留库返回顺序"
+    assert _chunk_ids(hybrid) == ["A", "Z"], "混合向量分支：同分按 kb_id / chunk_id 兜底"
+
+
 # ───────────────────────────────── 回归红线：关闭时逐字节一致
 
 
