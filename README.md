@@ -102,9 +102,19 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 ### ⚠️ 破坏性变更：`score` 换意思了
 
-`score` 现在是**本次最终排序分**：未开重排时等于 `rrf_score`，重排发生时等于 `rerank_score`，单模式下是该路原始分——**不再是余弦相似度**。
+```text
+score = 本次最终排序分（见下表）
+```
 
-要判断某一路是否命中、或拿具体分数，读 `vector_score` / `bm25_score` / `vector_rank` / `bm25_rank` / `rrf_score` / `rerank_score`；**未命中是 `null`，不是 0**。迁移方式见 [ADR-0010 第 4 节](docs/adr/0010-retrieval-contract.md)。
+| 情况 | `score` 是什么 |
+| --- | --- |
+| 单模式（`vector` / `bm25`） | 该路的原始分 |
+| 混合 + 折叠开启（默认） | **单元内命中片的最高分** |
+| 混合 + 折叠关闭 / 重排发生 | 融合分 / 重排分 |
+
+它**不再恒等于 `rrf_score`**——后者始终是代表片那条结果的融合分。**不再是余弦相似度**，别拿它做 `score >= 0.8` 这类阈值判断。
+
+要判断某一路是否命中、或拿具体分数，读 `vector_score` / `bm25_score` / `vector_rank` / `bm25_rank` / `rrf_score` / `rerank_score`；**未命中是 `null`，不是 0**。迁移方式见 [ADR-0010「后续修订」](docs/adr/0010-retrieval-contract.md)。
 
 ### ⚠️ 运维注意：既有 ES 索引必须重建
 
@@ -132,9 +142,11 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
   -d '{"kb_ids":["<你的 kb_id>"],"query":"设备证书过期怎么处理","mode":"hybrid","top_k":5}'
 ```
 
-期望 `code: 0`，每条结果都带 `score` 与六个分列字段；未开重排时 `score == rrf_score`。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
+期望 `code: 0`，**默认一条结果代表一节**（`section_id` 是身份，`chunk_id` 是让它浮上来的代表片），每条都带 `score` 与分列字段。
 
-评测与验收矩阵留痕在 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)（8 篇合成语料 / 245 片 / 26 题，三路对照）。
+想拿回第 4 步「一条结果 = 一个切片」的形状，在请求体里显式加 `"include_parent":false`（此时 `score == rrf_score`）。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
+
+评测与验收矩阵留痕在 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)（**第 4 步的 8 篇 / 245 片 / 26 题是历史快照**；当前语料已扩容，以该文件为准）。
 
 **接下来（第 5 步）**：把第 1 步占位的 API Key 换成真校验的多租户体系，并接入「质量档位」——那时现在的 `top_k` / `mode` 才会被档位接管。
 

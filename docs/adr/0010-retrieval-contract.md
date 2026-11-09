@@ -1,8 +1,8 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**
 - 日期：2026-11-08
-- 相关：父 spec #20「第 4 步」、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
+- 相关：父 spec #20「第 4 步」、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
 ## 一句话决定
 
@@ -27,7 +27,7 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 `k` 固定为 `60`：
 
 - 没有对应的环境变量，也没有请求字段；`fuse_by_rrf(..., rrf_k=...)` 的参数只给单测用，生产路径永远不传。
-- 请求体只接受 `kb_ids` / `query` / `mode` / `top_k`（`RetrieveRequest`，`extra="forbid"`）。任何 `hybrid_fusion` / `rrf_k` 一类的字段都会被参数校验拒绝。
+- **第 4 步时**请求体只接受 `kb_ids` / `query` / `mode` / `top_k`（`RetrieveRequest`，`extra="forbid"`）。**第 3 步增补（ADR-0012/0013）之后**又增加两个默认开启的开关 `include_parent` / `expand_table_rows`，见文末「后续修订」。`hybrid_fusion` / `rrf_k` 一类的字段仍然一概被参数校验拒绝——**放开的是结果形状，不是融合参数**。
 - 理由：`k` 一旦可调，同一个「质量档位」在不同调用方那里就是不同的检索链路，历史评测与线上结果再也对不上。
 
 ### 唯一键是 `(kb_id, chunk_id)`
@@ -87,14 +87,16 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 
 ## 4. `score` 语义变更（破坏性）
 
-`score` 从「余弦相似度」变成「**本次最终排序分**」：
+`score` 从「余弦相似度」变成「**本次最终排序分**」（第 4 步）：
 
-| 场景 | `score` 现在是 | 具体分数该读 |
+| 场景 | `score` 在第 4 步是 | 具体分数该读 |
 | --- | --- | --- |
 | `mode=vector` | 向量分（`1 - 余弦距离`） | `vector_score` |
 | `mode=bm25` | BM25 分（ES `_score`，无上界） | `bm25_score` |
 | `mode=hybrid`，未开重排 | 融合分（约 `0.016`~`0.033` 量级） | `rrf_score` |
 | `mode=hybrid`，重排发生 | 重排分（0~1） | `rerank_score` |
+
+**第 3 步增补（ADR-0013 决策 4）再次改变它**：折叠开启时 `score` 变成「**单元内命中片的最高分**」，不再恒等于 `rrf_score`。这是第二次破坏性变更，迁移说明见文末「后续修订」。
 
 **这是破坏性变更。** 旧调用方如果把 `score` 当余弦相似度做阈值判断（例如 `score >= 0.8` 才采用），升级后会得到完全不同的行为：混合模式下 `score` 只有 `0.03` 左右。请求体本身没变，变的是响应里这个字段的含义。
 
@@ -190,4 +192,27 @@ kb_id IN ('kb-a', 'kb-b') AND index_version IN ('v1', 'v2')
 - `tests/test_vector_scope_search.py` / `tests/test_keyword_query_builder.py`：配对条件、空映射恒假、查询分析器。
 - `tests/test_dependency_compat.py`：LangChain 1.x / ragas 0.4.3 的依赖窗口自洽，且 `langchain-community` 仍带 ragas 需要的 `vertexai` 模块（0.4.1 钉死的守卫）。
 
-真实链路与评测数字：`eval/ACCEPTANCE.md`（语料 245 片 / 26 题，基线 `418 passed, 11 skipped`）。
+真实链路与评测数字：`eval/ACCEPTANCE.md`（**第 4 步时**语料 245 片 / 26 题，基线 `418 passed, 11 skipped`；后续已扩容，以该文件当前内容为准）。
+
+## 后续修订（第 3 步增补，2026-11-09）
+
+本 ADR 写于第 4 步。之后 ADR-0012 / 0013 为「切块粒度变细」做的改造，**改了本 ADR 的三处契约，但融合、三种结局、`k=60`、配对映射一律未动**。下表是唯一权威口径：
+
+| 契约 | 第 4 步（本 ADR 初版） | 现在 | 依据 |
+| --- | --- | --- | --- |
+| 请求体 | `kb_ids` / `query` / `mode` / `top_k` | 再加 `include_parent`（默认 `True`）/ `expand_table_rows`（默认 `True`） | ADR-0012、`app/schemas/rag.py` |
+| 一条结果代表 | 一个**切片** | 一个**节**（折叠）；身份是 `section_id`，`chunk_id` 是代表片 | ADR-0013 决策 1–3 |
+| `score`（折叠开启时） | 本次最终排序分（混合 = `rrf_score`） | **单元内命中片的最高分** | ADR-0013 决策 4、`app/services/rag_service.py` |
+
+**§1 与 §4 的表格只描述第 4 步的历史状态**，不要拿它们当现状；`fuse_by_rrf`、`k=60`、五种 tie-breaker、三种结局、四个降级原因、配对映射与空映射恒假全部仍然成立。
+
+### 第二次破坏性变更的迁移方式
+
+`score` 不再恒等于 `rrf_score`：
+
+1. **要融合排序依据 → 读 `rrf_score`**（它仍是代表片那条命中结果的融合分，原样保留）。
+2. **要判断「这一节整体有多相关」 → 读 `score`**（取组内最高分，不是平均——平均会惩罚「一节里多片都命中」这种好情况）。
+3. **阈值判断请显式选字段**：`vector_score` / `rerank_score` / `rrf_score` 各有量纲，别把 `score` 当相似度。
+4. 想要第 4 步那种「一条结果 = 一片」的响应，把 `include_parent` 显式传 `false`：此时**连按节归组都不做**，响应形状与折叠之前一致，召回深度也从 `top_k × OVERFETCH_FACTOR` 降回 `top_k`。
+
+> 命名遗留：`include_parent` 这个名字来自 ADR-0012（当时准备附加 `parent` 字段）。ADR-0013 已删除 `parent` 字段，开关实际控制的是**是否折叠**。为不破坏已发布的请求契约，名字保留，语义以本表为准。

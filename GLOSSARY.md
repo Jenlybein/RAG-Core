@@ -39,11 +39,11 @@ _Avoid_: 版本, 等级, tier, 计划
 _Avoid_: 套餐（混用时）, 模式, preset, 级别
 
 **数据范围组**：
-描述「查哪份数据」的请求参数。**当前（第 4 步）只有 `kb_ids` 与 `query` 两个**：`index_version` 由服务端决定（`DEFAULT_INDEX_VERSION = v1`），**不是请求参数**——让调用方指定版本是第 10 步的事。命名档位下**允许**传。能用哪些知识库由 API Key 的密钥配置圈定，请求只能在范围内收窄，不能扩大。
+描述「查哪份数据」的请求参数。**当前只有 `kb_ids` 与 `query` 两个**：`index_version` 由服务端决定（`DEFAULT_INDEX_VERSION = v1`），**不是请求参数**——让调用方指定版本是第 12 步的事。命名档位下**允许**传。能用哪些知识库由 API Key 的密钥配置圈定，请求只能在范围内收窄，不能扩大。
 _Avoid_: 查询参数, 过滤条件
 
 **质量档位组**：
-描述「这次用多好」的请求参数，全部扁平、不嵌套。**当前（第 4 步）只有 `top_k` 与 `mode` 两个**；`vector_top_k` / `bm25_top_k` / `hybrid_fusion` / `rerank` / `query_rewrite` / `synonym` **尚未进请求体**——各路召回深度与融合池在服务端配置里（`HYBRID_RECALL_TOP_K` / `RERANK_MAX_CANDIDATES`），改写、同义词、重排也只有服务端开关，调用方不能按次指定。这套参数要等档位体系（第 5 步）落地后才存在，届时命名档位下传了会被拒（`20015`）。`k=60` 永远写死，任何层都不能改（见 ADR-0010）。
+描述「这次用多好」的请求参数，全部扁平、不嵌套。**当前是 `top_k` / `mode`，再加上第 3 步增补的两个结果形状开关 `include_parent` / `expand_table_rows`**（都默认开，见 ADR-0012/0013；前者实际控「是否折叠」，名字是历史遗留）。`vector_top_k` / `bm25_top_k` / `hybrid_fusion` / `rerank` / `query_rewrite` / `synonym` **尚未进请求体**——召回深度与融合池在服务端配置里（`HYBRID_RECALL_TOP_K` / `RERANK_MAX_CANDIDATES`），改写、同义词、重排也只有服务端开关，调用方不能按次指定。更完整的质量档位体系要等第 7 步才落地，届时命名档位下传了会被拒（`20015`）。`k=60` 永远写死，任何层都不能改（见 [ADR-0010](docs/adr/0010-retrieval-contract.md) 的「后续修订」）。
 _Avoid_: 调参项, 检索参数
 
 **tenant_policy**：
@@ -200,6 +200,7 @@ _Avoid_: 混合分, 相似度（指融合分时）, 加权分
 
 **分列字段（score columns）**：
 结果里并列给出的 `vector_score` / `bm25_score` / `vector_rank` / `bm25_rank` / `rrf_score` 五个通道字段，重排发生时再加 `rerank_score`。未命中的那一路是 `null` 而不是 0；调用方要判断「哪一路命中、排第几」只能读它们。
+折叠之后 `score` 不再恒等于 `rrf_score`：前者是**单元内命中片的最高分**，后者是代表片那条结果的融合分。要融合排序依据读 `rrf_score`，别把 `score` 当相似度做阈值（见 [ADR-0010](docs/adr/0010-retrieval-contract.md)「后续修订」）。
 _Avoid_: 附加字段, 明细分, metadata 分（口语）
 
 **候选注入**：
