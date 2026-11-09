@@ -49,6 +49,7 @@ from app.repositories import (
     tenant_repository,
 )
 from app.services import plan_admin, plan_service
+from app.services.quota_gate import read_tenant_daily_usage
 from app.utils.id_generator import new_id
 
 #: 登录失败的**唯一**对外提示：它同时覆盖「查无此人」与「口令不对」。
@@ -62,17 +63,31 @@ ACTION_ACCOUNT_UPDATE: Final[str] = "account.update"
 
 
 @dataclass(frozen=True)
-class ConsoleView:
-    """/console/me 与登录成功的同一份载荷：我在哪个租户、买的是哪一档。
+class DailyUsageView:
+    """今日租户级检索用量 + 套餐日上限。
 
-    **没有 usage 字段**：今日用量要靠限流与配额服务（另一张票），它还没落地。缺一个
-    数字就少一栏，好过编一个看起来合理的 0——面板显示「今日 0 次」而实际已经打了几千次，
-    比不显示更糟。
+    ``used=None`` 是**一个明确的状态**，不是缺值：限流开关关着时计数从未被写入，平台
+    根本不知道今天用了多少。把它当成 0 会让面板显示一个错误的「还很充裕」。
+    """
+
+    used: int | None
+    limit: int
+
+
+@dataclass(frozen=True)
+class ConsoleView:
+    """/console/me 与登录成功的同一份载荷：我在哪个租户、买的是哪一档、今天用了多少。
+
+    用量来自限流配额服务（票 #79）的**只读**路径：租户级日桶，与检索门禁判的是同一个
+    桶（UTC、按天分桶）。账号不直接对应 Key，所以面板报的是这个租户的聚合——那正是
+    「套餐日配额还剩多少」这个问题的答案。开关关着时 ``usage.used`` 为 ``None``
+    （未统计），不是 0（见 :class:`DailyUsageView`）。
     """
 
     account: Account
     tenant: Tenant | None
     plan: PlanSpec | None
+    usage: DailyUsageView | None = None
 
 
 @dataclass(frozen=True)
@@ -166,20 +181,27 @@ def me_view(db: Session, *, account_id: str, cache: PlanCache | None = None) -> 
 
 
 def view_for(db: Session, account: Account, *, cache: PlanCache | None = None) -> ConsoleView:
-    """拼「我的视图」：账号 → 它的租户 → 租户当前套餐。
+    """拼「我的视图」：账号 → 它的租户 → 租户当前套餐 → 租户今日用量。
 
     套餐走 :func:`app.services.plan_service.resolve_plan`（按 id 的缓存），于是管理员刚
-    改完的额度，面板刷新一次就看到——改套餐那条路提交后会删缓存。
+    改完的额度，面板刷新一次就看到——改套餐那条路提交后会删缓存。用量走配额服务的
+    **只读**路径（见 :func:`app.services.quota_gate.read_tenant_daily_usage`）。
     """
 
     tenant = _tenant_of(db, account)
     if tenant is None:
-        # 平台管理员不属于任何租户：没有套餐可显示，这不是错误。
-        return ConsoleView(account=account, tenant=None, plan=None)
+        # 平台管理员不属于任何租户：没有套餐、也没有租户级用量可显示，这不是错误。
+        return ConsoleView(account=account, tenant=None, plan=None, usage=None)
+    plan = plan_service.resolve_plan(db, tenant.plan_id, cache=cache)
     return ConsoleView(
         account=account,
         tenant=tenant,
-        plan=plan_service.resolve_plan(db, tenant.plan_id, cache=cache),
+        plan=plan,
+        usage=DailyUsageView(
+            # 只读路径：读一次日桶，不在任何地方 +1（见 quota_gate.read_tenant_daily_usage）。
+            used=read_tenant_daily_usage(tenant_id=tenant.id),
+            limit=plan.retrieve_daily,
+        ),
     )
 
 

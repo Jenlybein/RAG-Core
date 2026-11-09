@@ -18,6 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import passwords
+from app.core import redis_client
 from app.core.config import settings
 from app.models.account import Account
 from app.models.audit_log import AuditLog
@@ -25,6 +26,7 @@ from app.models.key_policy import KeyPolicy
 from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of, plan_spec_of
 from app.models.tenant import Tenant
+from app.services.quota_gate import QuotaCounters, daily_key
 from tests.fake_db import RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
@@ -607,3 +609,306 @@ def test_an_unknown_account_is_not_found(console: _Harness) -> None:
     )
 
     assert response.json()["code"] == 20016
+
+
+# ───────────────────────────────────────────── 今日用量：只读、可空、不编 0（Gap 2）
+
+
+class _CounterStore:
+    """与配额服务同形的内存计数器：``incr/get/expire/delete`` 四条命令 + 调用账本。
+
+    读取路径只能留下 ``get:``；``calls`` 让「面板没有在任何地方偷偷 +1」可以被直接断言。
+    """
+
+    def __init__(self) -> None:
+        self.values: dict[str, int] = {}
+        self.ttls: dict[str, int] = {}
+        self.calls: list[str] = []
+
+    def incr(self, key: str) -> int:
+        self.calls.append(f"incr:{key}")
+        self.values[key] = self.values.get(key, 0) + 1
+        return self.values[key]
+
+    def get(self, key: str) -> str | None:
+        self.calls.append(f"get:{key}")
+        value = self.values.get(key)
+        return None if value is None else str(value)
+
+    def expire(self, key: str, ttl: int) -> None:
+        self.calls.append(f"expire:{key}")
+        self.ttls[key] = ttl
+
+    def delete(self, key: str) -> None:
+        self.calls.append(f"delete:{key}")
+        self.values.pop(key, None)
+        self.ttls.pop(key, None)
+
+
+class _ExplodingCounterStore:
+    """任何命令都炸：开关关着时，登录与 ``/me`` 都不该碰 Redis 一次。"""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
+        self.calls.append(f"incr:{key}")
+        raise AssertionError(f"不该访问 Redis：incr({key})")
+
+    def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
+        self.calls.append(f"get:{key}")
+        raise AssertionError(f"不该访问 Redis：get({key})")
+
+    def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
+        self.calls.append(f"expire:{key}")
+        raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
+
+    def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
+        self.calls.append(f"delete:{key}")
+        raise AssertionError(f"不该访问 Redis：delete({key})")
+
+
+@pytest.fixture
+def counter_store() -> Any:
+    """把配额计数器的唯一注入点换成一个可观察的内存实现，用完复位。"""
+
+    store = _CounterStore()
+    redis_client.set_redis_client(store)
+    try:
+        yield store
+    finally:
+        redis_client.reset_redis_client()
+
+
+def _usage_of(response: Any) -> Any:
+    body = response.json()
+    assert body["code"] == 0, body
+    return body["data"]["usage"]
+
+
+def test_me_reports_todays_tenant_usage_when_the_counter_exists(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """开关打开、计数存在时，``/me`` 如实报出今天租户级已用次数与套餐上限。"""
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    window = QuotaCounters(counter_store).window()
+    key = daily_key(level="tenant", ident=TENANT_ALPHA, window=window)
+    counter_store.values[key] = 42
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    usage = _usage_of(console.client.get("/console/me"))
+    assert usage == {
+        "used": 42,
+        "limit": 100000,
+        "source": "daily_counter",
+        "note": None,
+    }
+
+
+def test_switch_on_without_a_counter_is_a_known_zero_not_unknown(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """开关打开时没有键 = 今天确实还没有一次成功检索，这是**已知的 0**。
+
+    与「开关关着、平台根本没数」必须可区分：前者的 0 是事实，后者报 0 是编造。
+    """
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    usage = _usage_of(console.client.get("/console/me"))
+    assert usage == {
+        "used": 0,
+        "limit": 100000,
+        "source": "daily_counter",
+        "note": None,
+    }
+
+
+def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """开关关着：计数从未被写过，此时报 ``0`` 是撒谎——如实说「没有在统计」。"""
+
+    exploding = _ExplodingCounterStore()
+    redis_client.set_redis_client(exploding)
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+    try:
+        assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+        usage = _usage_of(console.client.get("/console/me"))
+    finally:
+        redis_client.reset_redis_client()
+
+    assert usage == {
+        "used": None,
+        "limit": 100000,
+        "source": "not_tracked",
+        "note": (
+            "today's usage is not tracked: rate limiting is disabled "
+            "(RATE_LIMIT_ENABLED=false)"
+        ),
+    }
+    assert exploding.calls == [], "关掉时连一条 Redis 命令都不该发"
+
+
+def test_reading_today_usage_never_increments_anything(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """读接口只读：连读两次，键的值与原样不变，且只出现 ``get``。"""
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    window = QuotaCounters(counter_store).window()
+    key = daily_key(level="tenant", ident=TENANT_ALPHA, window=window)
+    counter_store.values[key] = 7
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    before = dict(counter_store.values)
+    counter_store.calls.clear()
+
+    for _ in range(2):
+        assert _usage_of(console.client.get("/console/me"))["used"] == 7
+
+    assert counter_store.values == before, "读路径不许改动任何计数"
+    assert counter_store.calls, "读路径确实读了计数器"
+    assert all(call.startswith("get:") for call in counter_store.calls), (
+        f"读路径只允许 GET，实际：{counter_store.calls}"
+    )
+
+
+def test_an_admin_without_a_tenant_has_no_usage(console: _Harness) -> None:
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
+
+    usage = _usage_of(console.client.get("/console/me"))
+
+    assert usage is None
+
+
+# ───────────────────────────────────────────── 登录限流：20005、可关、成功即清（Gap 3）
+
+#: ``TestClient`` 的默认对端地址；登录限流键里的 IP 分量就是它（不读 X-Forwarded-For）。
+TESTCLIENT_IP = "testclient"
+
+
+def _login_bucket_keys(username: str) -> list[str]:
+    """当前与下一个五分钟桶的键。
+
+    预置两个是为了避免「测试恰好跨过桶边界」的偶发失败：请求落在哪个桶都已经是上限。
+    """
+
+    from datetime import datetime, timezone
+
+    from app.services.login_throttle import LOGIN_WINDOW_SECONDS, login_key
+
+    bucket = int(datetime.now(timezone.utc).timestamp()) // LOGIN_WINDOW_SECONDS
+    return [
+        login_key(username=username, client_ip=TESTCLIENT_IP, window=bucket + offset)
+        for offset in (0, 1)
+    ]
+
+
+def _login_counter_keys(counter_store: _CounterStore, username: str) -> list[str]:
+    prefix = f"login:attempts:{username}:{TESTCLIENT_IP}:"
+    return [key for key in counter_store.values if key.startswith(prefix)]
+
+
+def test_login_is_rate_limited_with_20005_after_the_limit(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """到上限后**正确的口令也登不进来**：限流在验口令之前，暴力猜测没有免费尝试。"""
+
+    from app.services.login_throttle import LOGIN_MAX_ATTEMPTS, MSG_LOGIN_RATE_LIMITED
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    for key in _login_bucket_keys("alice"):
+        counter_store.values[key] = LOGIN_MAX_ATTEMPTS
+
+    response = console.login("alice", USER_PASSWORD)
+
+    body = response.json()
+    assert body["code"] == 20005
+    assert body["msg"] == MSG_LOGIN_RATE_LIMITED
+    assert "set-cookie" not in response.headers, "被限流的登录不该下发会话 cookie"
+
+
+def test_login_limit_is_a_no_op_when_the_switch_is_off(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """开关关着时登录既不限流、也一条 Redis 命令都不发（默认套件因此离线）。"""
+
+    exploding = _ExplodingCounterStore()
+    redis_client.set_redis_client(exploding)
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", False)
+    try:
+        wrong = console.login("alice", "not-the-password")
+        right = console.login("alice", USER_PASSWORD)
+    finally:
+        redis_client.reset_redis_client()
+
+    assert wrong.json()["code"] == 20010, "口令错仍是未授权，不是限流"
+    assert right.json()["code"] == 0
+    assert exploding.calls == [], "关掉时连一条 Redis 命令都不该发"
+
+
+def test_a_failed_login_counts_the_attempt(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """失败的尝试要真的记上，否则限流永远不会触发。"""
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+
+    assert console.login("alice", "not-the-password").json()["code"] == 20010
+
+    keys = _login_counter_keys(counter_store, "alice")
+    assert len(keys) == 1
+    assert counter_store.values[keys[0]] == 1
+
+
+def test_attempts_for_an_unknown_username_are_counted_too(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """不存在的账号也要计数：否则「查无此人」就是免费的无限重试入口。"""
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+
+    assert console.login("ghost-user", "whatever").json()["code"] == 20010
+
+    keys = _login_counter_keys(counter_store, "ghost-user")
+    assert len(keys) == 1
+    assert counter_store.values[keys[0]] == 1
+
+
+def test_a_successful_login_clears_the_pairs_counter(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """输错两次后登进来：这一对的计数被清掉，而不是留到下一个窗口继续惩罚。"""
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    counter_store.values[_login_bucket_keys("alice")[0]] = 2
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    assert _login_counter_keys(counter_store, "alice") == []
+
+
+def test_a_rate_limited_login_does_not_reveal_whether_the_username_exists(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _CounterStore
+) -> None:
+    """已存在的账号与不存在的账号被限流时，码与消息逐字相同。"""
+
+    from app.services.login_throttle import LOGIN_MAX_ATTEMPTS, MSG_LOGIN_RATE_LIMITED
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    for username in ("alice", "ghost-user"):
+        for key in _login_bucket_keys(username):
+            counter_store.values[key] = LOGIN_MAX_ATTEMPTS
+
+    known = console.login("alice", "whatever").json()
+    unknown = console.login("ghost-user", "whatever").json()
+
+    assert known["code"] == unknown["code"] == 20005
+    assert known["msg"] == unknown["msg"] == MSG_LOGIN_RATE_LIMITED
+    assert "alice" not in known["msg"]
+    assert "ghost-user" not in known["msg"]

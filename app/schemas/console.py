@@ -15,7 +15,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -76,10 +76,41 @@ class PlanData(PlanSnapshotData):
     updated_at: datetime | None = None
 
 
+#: 用量的来源标记：``used`` 是否是一个**被统计过**的数字，而不是「恰好没有值」。
+UsageSource = Literal["daily_counter", "not_tracked"]
+
+USAGE_SOURCE_DAILY_COUNTER: Final[UsageSource] = "daily_counter"
+USAGE_SOURCE_NOT_TRACKED: Final[UsageSource] = "not_tracked"
+
+#: 「没在统计」的对外措辞。刻意不写成 0：面板显示「今日 0 次」而实际已经跑了几千次，
+#: 比明说「不知道」更糟——用户会据此判断额度还很充裕。
+USAGE_NOTE_NOT_TRACKED: Final[str] = (
+    "today's usage is not tracked: rate limiting is disabled (RATE_LIMIT_ENABLED=false)"
+)
+
+
+class UsageData(BaseModel):
+    """今日租户级检索用量。
+
+    ``used=None`` + ``source="not_tracked"``：限流开关关着，计数从未被写入，平台不知道
+    今天用了多少；``limit`` 仍然给出（它来自套餐，与统计开关无关），让面板能如实显示
+    「上限已知、用量未知」。开关打开且今天还没有成功检索时是 ``used=0`` +
+    ``source="daily_counter"``——那是**已知的 0**，与「不知道」必须可区分。
+    """
+
+    used: int | None
+    limit: int
+    source: UsageSource
+    note: str | None = None
+
+
 class MeData(BaseModel):
     account: AccountData
     tenant: TenantData | None
     plan: PlanSnapshotData | None
+    #: 今日租户级检索用量。管理员没有租户，因此为 ``None``；租户账号一定有一份
+    #: ``UsageData``，其中 ``used=None`` 表示「开关关着、平台没在统计」。
+    usage: UsageData | None = None
 
 
 class ImpactGroupData(BaseModel):
@@ -223,6 +254,19 @@ def plan_data(plan: Plan) -> PlanData:
         updated_at=plan.updated_at,
         **_business_values(plan),
     )
+
+
+def usage_data(*, used: int | None, limit: int) -> UsageData:
+    """内部用量视图 → 对外响应：``None`` 走「未统计」，绝不补成 0。"""
+
+    if used is None:
+        return UsageData(
+            used=None,
+            limit=limit,
+            source=USAGE_SOURCE_NOT_TRACKED,
+            note=USAGE_NOTE_NOT_TRACKED,
+        )
+    return UsageData(used=used, limit=limit, source=USAGE_SOURCE_DAILY_COUNTER)
 
 
 def audit_log_item(entry: AuditLog) -> AuditLogItem:

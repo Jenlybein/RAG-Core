@@ -54,20 +54,27 @@ from app.schemas.console import (
     plan_data,
     plan_snapshot_data,
     tenant_data,
+    usage_data,
 )
 from app.services import console_service
+from app.services.login_throttle import login_throttle
 from app.services.plan_admin import PlanImpact
 
 router = APIRouter(prefix="/console", tags=["console"])
 
 
 def _me_data(view: console_service.ConsoleView) -> MeData:
-    """「我的视图」→ 响应体；管理员没有租户，于是 tenant / plan 两栏为 ``null``。"""
+    """「我的视图」→ 响应体；管理员没有租户，于是 tenant / plan / usage 三栏为 ``null``。"""
 
     return MeData(
         account=account_data(view.account),
         tenant=tenant_data(view.tenant) if view.tenant is not None else None,
         plan=plan_snapshot_data(view.plan) if view.plan is not None else None,
+        usage=(
+            usage_data(used=view.usage.used, limit=view.usage.limit)
+            if view.usage is not None
+            else None
+        ),
     )
 
 
@@ -118,21 +125,49 @@ def _delete_session_cookie(response: Response) -> None:
     )
 
 
+def _client_ip(request: Request) -> str:
+    """限流键里的 IP 分量：**传输层对端地址**，不是 ``X-Forwarded-For``。
+
+    后者在没配置可信代理拓扑时完全由请求方填写，拿它做限流键等于把「换一个头就换一份
+    额度」交给攻击者。代价是部署在反向代理之后时，所有用户共享代理地址这一个分量——
+    键里还有账号，所以「一个账号被暴力猜测」仍然按账号单独计数，那是本票的主线。
+    """
+
+    client = request.client
+    return client.host if client is not None else "unknown"
+
+
 # ─────────────────────────────────────────────────────────────────── 登录 / 登出
 
 
 @router.post("/login", response_model=ApiResponse[MeData], summary="控制台登录")
 def login(
+    request: Request,
     payload: LoginRequest,
     response: Response,
     db: Session = Depends(get_db),
     cache: PlanCache = Depends(get_plan_cache),
 ) -> ApiResponse[MeData]:
-    """账号口令 → 服务端会话行 + HttpOnly cookie；失败统一 ``20010``。"""
+    """账号口令 → 服务端会话行 + HttpOnly cookie；失败统一 ``20010``，超限 ``20005``。
+
+    限流在验口令**之前**：一次尝试先记上，失败与不存在的账号都会计数；超限时连账号表
+    都不读，所以「是否存在」不会通过耗时或错误码泄露。开关关着时 ``login_throttle``
+    返回 ``None``，整段是 no-op（默认套件因此不碰 Redis）。
+    """
+
+    client_ip = _client_ip(request)
+    throttle = login_throttle()
+    if throttle is not None:
+        # 先记这次尝试，再验口令；被拒的那一次不写（见 login_throttle 模块文档）。
+        throttle.register_attempt(username=payload.username, client_ip=client_ip)
 
     session, view = console_service.login(
         db, username=payload.username, password=payload.password, cache=cache
     )
+
+    if throttle is not None:
+        # 成功才清除这一对：合法用户输错几次后登进来，不该在下一个窗口继续被惩罚。
+        throttle.reset(username=payload.username, client_ip=client_ip)
     _set_session_cookie(response, session.id)
     return ok(_me_data(view))
 
@@ -158,13 +193,17 @@ def logout(
 # ─────────────────────────────────────────────────────────────────────── 我的视图
 
 
-@router.get("/me", response_model=ApiResponse[MeData], summary="我的账号、租户与套餐")
+@router.get("/me", response_model=ApiResponse[MeData], summary="我的账号、租户、套餐与今日用量")
 def me(
     identity: ConsoleIdentity = Depends(get_console_account),
     db: Session = Depends(get_db),
     cache: PlanCache = Depends(get_plan_cache),
 ) -> ApiResponse[MeData]:
-    """调用方的账号、所属租户与套餐快照；**不编造今日用量**（配额服务没有读接口）。"""
+    """调用方的账号、所属租户、套餐快照与今日用量。
+
+    用量读的是租户级日桶（只读、不 +1）。开关关着时 ``usage.used`` 为 ``null``、
+    ``usage.source`` 为 ``not_tracked``——平台压根没在统计，报 0 会骗人。
+    """
 
     view = console_service.me_view(db, account_id=identity.account_id, cache=cache)
     return ok(_me_data(view))
