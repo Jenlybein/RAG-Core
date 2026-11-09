@@ -70,9 +70,10 @@ from typing import Any, Final, Protocol
 
 from app.core import redis_client
 from app.core.config import settings
-from app.core.exceptions import AppError, ErrorCode
+from app.core.exceptions import ErrorCode
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
+from app.services.quota_limits import ensure_under_limit
 
 #: 两级计数的两个名字。直接用字面量拼进键里（``quota:qps:tenant:...``），
 #: 运维一眼能看出这个键属于哪一级，而不必回来读代码。
@@ -238,32 +239,37 @@ class RetrievalQuota:
 
         # 第一道：秒级限流。Key 级在前——它更窄、更可能是调用方自己要修的那件事
         # （「我这个应用打得太快」），而租户级超限往往要另一个应用的负责人一起看。
-        self._ensure_under_limit(
+        # 判据只有一份（``quota_limits.ensure_under_limit``），静态配额用的也是它。
+        ensure_under_limit(
             used=self._read_qps(LEVEL_KEY, self.key_id),
             limit=self.policy.retrieve_qps,
             code=ErrorCode.API_RATE_LIMIT,
             what=f"qps of key {self.key_id}",
+            suffix="per window",
         )
-        self._ensure_under_limit(
+        ensure_under_limit(
             used=self._read_qps(LEVEL_TENANT, self.tenant_id),
             limit=self.plan.retrieve_qps,
             code=ErrorCode.API_RATE_LIMIT,
             what=f"qps of tenant {self.tenant_id}",
+            suffix="per window",
         )
 
         # 第二道：日配额。注意**比的是当前额度**，不是某个记下来的快照：管理员把日
         # 配额改小，下一次调用就按新值判（AC「改小日配额后立刻生效，不需要重启」）。
-        self._ensure_under_limit(
+        ensure_under_limit(
             used=self._read_daily(LEVEL_KEY, self.key_id),
             limit=self.policy.retrieve_daily,
             code=ErrorCode.QUOTA_EXCEEDED,
             what=f"daily quota of key {self.key_id}",
+            suffix="per window",
         )
-        self._ensure_under_limit(
+        ensure_under_limit(
             used=self._read_daily(LEVEL_TENANT, self.tenant_id),
             limit=self.plan.retrieve_daily,
             code=ErrorCode.QUOTA_EXCEEDED,
             what=f"daily quota of tenant {self.tenant_id}",
+            suffix="per window",
         )
 
     def record_success(self) -> None:
@@ -287,18 +293,6 @@ class RetrievalQuota:
     def _read_daily(self, level: str, ident: str) -> int:
         assert self.counters is not None
         return self.counters.daily(level=level, ident=ident, window=self.window)
-
-    def _ensure_under_limit(
-        self, *, used: int, limit: int, code: ErrorCode, what: str
-    ) -> None:
-        """``used >= limit`` 就拒绝：额度 N 表示「这一天/这一秒最多 N 次成功调用」。
-
-        判据写成 ``>=`` 而不是 ``>``：``used`` 是**已经记下的次数**，这次请求会是第
-        ``used + 1`` 次。允许它当且仅当 ``used + 1 <= limit``。
-        """
-
-        if used >= limit:
-            raise AppError(code, f"{what} exceeded: {used} used of {limit} per window")
 
 
 def retrieval_quota(

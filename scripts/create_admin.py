@@ -35,13 +35,10 @@ from app.models.account import Account
 from app.repositories import account_repository
 from app.utils.id_generator import new_id
 
-# 共享报告工具与脚本同目录；scripts* 不在安装包里，显式把自己所在目录放进
-# sys.path 后再用普通导入，spec_from_file_location 的文件加载才能找到它。
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
+# scripts* 不在安装包里，把自身目录放进 sys.path 才能导入 _ops_common（见该模块文档）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _ops_common import exit_code_for, print_summary  # noqa: E402
+from _ops_common import print_summary  # noqa: E402
 
 CREATED_NOTE = (
     "NOTE: this account belongs to no tenant and can administer every tenant. "
@@ -51,16 +48,13 @@ CREATED_NOTE = (
 
 @dataclass(frozen=True)
 class CreateAdminStats:
-    """一次引导的结果：成功就落一行管理员账号。"""
+    """一次引导的结果：成功就落一行管理员账号。
+
+    没有 ``failed``：失败路径在打印之前就带非零退出码返回了，这个字段不会被写、也不会
+    被读——留着它只会让汇总行永远打印「failed: 0」。
+    """
 
     created: int = 0
-    failed: int = 0
-
-    @property
-    def delivered(self) -> int:
-        """共享退出码规则里的「已投递」口径。"""
-
-        return self.created
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -135,10 +129,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     print_summary(
         f"create_admin: {account.username}",
         stats=CreateAdminStats(created=1),
-        counters=(("created", "created"), ("failed", "failed")),
+        counters=(("created", "created"),),
         note=CREATED_NOTE,
     )
-    return exit_code_for(CreateAdminStats(created=1))
+    # 失败在打印之前就带着非零退出码返回了；走到这里就是一次成功，退出码固定为 0。
+    return 0
 
 
 if __name__ == "__main__":

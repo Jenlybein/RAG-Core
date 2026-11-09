@@ -5,22 +5,24 @@
 只能改代码发版，改错了也没有预览与审计——「界面上改得动、后端读不到」比「界面上没有
 这个字段」更糟。
 
-11 个业务列（:data:`PLAN_BUSINESS_COLUMNS`）= 档位白名单 1 + 能力开关 4 + 上限 6。
-逐列对账由 :func:`preset_mismatches` 负责：播种之后把行映射回上下文，与种子逐字段
-比对，**少一列就是可见的失败**。
+**11 个业务列的清单只写一处**（:data:`PLAN_BUSINESS_COLUMNS`），它从 :class:`PlanSpec`
+的字段推导出来：加一列 = 加一个 dataclass 字段（外加映射/缓存/控制面都从这里取，不必
+各改一遍）。逐列对账由 :func:`preset_mismatches` 负责：播种之后把行映射回上下文，与种子
+逐字段比对，**少一列就是可见的失败**。
 
 ``plan_id`` 是整数自增主键，别的表只存这个数字（不加外键，见票面「裸字符串 id、不加
 外键」的既有风格）；``code`` 唯一，是给人看与给脚本用的名字。想改用 UUID 或把三档塞进
-一张字典表都会破坏「一档一列、面板一字段一列」的对应关系。
+一张字典表都会破坏「一档一列、面板一字段一列」的对应关系——主键形态是**刻意的决定**，
+不是遗留：调用方看到的永远是 ``code``，没见过这个整数（见架构文档本步一节）。
 """
 
 from __future__ import annotations
 
 import dataclasses
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Final
+from typing import Any, Final, get_type_hints
 
 from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -41,21 +43,8 @@ PLAN_PRO: Final[str] = "pro"
 # 三档的名字就是 ``code``：脚本入参、库里的行、错误信息里出现的都是这三个词之一。
 PLAN_CODES: Final[tuple[str, ...]] = (PLAN_FREE, PLAN_STANDARD, PLAN_PRO)
 
-#: 面板上会出现输入框的 11 列；:func:`preset_mismatches` 按这个元组逐列比对。
-#: 顺序只影响对账报告的可读性，不参与任何判定。
-PLAN_BUSINESS_COLUMNS: Final[tuple[str, ...]] = (
-    "allowed_profiles",
-    "hybrid_allowed",
-    "rerank_allowed",
-    "query_rewrite_allowed",
-    "research_allowed",
-    "retrieve_qps",
-    "retrieve_daily",
-    "max_kb",
-    "max_kb_per_retrieve",
-    "max_documents_per_kb",
-    "max_processing_documents",
-)
+#: 快照/行上不属于业务列的两个身份列。它们不上面板、不参与「上限与能力」的对账。
+PLAN_IDENTITY_COLUMNS: Final[tuple[str, ...]] = ("code", "name")
 
 
 class Plan(Base):
@@ -108,6 +97,30 @@ class PlanSpec:
     max_kb_per_retrieve: int
     max_documents_per_kb: int
     max_processing_documents: int
+
+
+#: 快照的全部列名（字段顺序就是列顺序，``PLAN_SPEC_COLUMNS`` 因此也是行/缓存读取的清单）。
+PLAN_SPEC_COLUMNS: Final[tuple[str, ...]] = tuple(
+    field.name for field in dataclasses.fields(PlanSpec)
+)
+
+#: 面板上会出现输入框的 11 列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
+#: 顺序只影响对账报告的可读性，不参与任何判定。
+PLAN_BUSINESS_COLUMNS: Final[tuple[str, ...]] = tuple(
+    column for column in PLAN_SPEC_COLUMNS if column not in PLAN_IDENTITY_COLUMNS
+)
+
+#: 各列的声明类型（``from __future__ import annotations`` 让字段注解是字符串，
+#: 所以用 ``get_type_hints`` 解析一次，别在每个调用点 ``field.type == "int"``）。
+_PLAN_FIELD_TYPES: Final[dict[str, Any]] = get_type_hints(PlanSpec)
+
+#: 改得到、需要校验「≥ 1」的六个数值上限。从快照字段的类型推导：加一列数值上限不必
+#: 再改一份手写清单。四个能力开关是布尔列，没有「≥ 1」这道校验，所以不在这里。
+PLAN_NUMERIC_COLUMNS: Final[tuple[str, ...]] = tuple(
+    column
+    for column in PLAN_BUSINESS_COLUMNS
+    if _PLAN_FIELD_TYPES[column] is int
+)
 
 
 #: 三档的种子值。**只在 plans 表为空时写入**（见 ``identity_seeding.seed_plans``），
@@ -173,6 +186,30 @@ def check_plan_code(code: str) -> str:
     return code
 
 
+def plan_columns_of(source: object) -> dict[str, Any]:
+    """按 :data:`PLAN_SPEC_COLUMNS` 从任何带同名属性的对象上取一份列值（行或快照）。
+
+    逐列点名而不是 ``vars(source)``：ORM 行上还有 ``_sa_instance_state`` 这类内部状态，
+    让它进入快照或审计只会把内部结构变成对外契约。
+    """
+
+    return {column: getattr(source, column) for column in PLAN_SPEC_COLUMNS}
+
+
+def plan_spec_from_mapping(values: Mapping[str, Any]) -> PlanSpec:
+    """按列名从映射造快照（ORM 行与缓存 JSON 都走这里）。
+
+    ``allowed_profiles`` 在库里/JSON 里是数组，在快照里是元组——转换只在这里做一次。
+    少一列就是 ``KeyError``（缓存脏数据不许被静默补成兜底值），多一列被忽略。
+    """
+
+    kwargs: dict[str, Any] = {column: values[column] for column in PLAN_SPEC_COLUMNS}
+    kwargs["allowed_profiles"] = tuple(kwargs["allowed_profiles"])
+    # ``**dict[str, Any]`` 会让类型检查器左右为难；运行时的「缺列即 TypeError」才是这里
+    # 要守的契约（见 tests/test_plan_presets.py 的构造式兜底用例）。
+    return PlanSpec(**kwargs)
+
+
 def plan_spec_of(row: Plan) -> PlanSpec:
     """把一行套餐映射成上下文快照。
 
@@ -181,41 +218,15 @@ def plan_spec_of(row: Plan) -> PlanSpec:
     漏了这一列」的错误会在对账里静默通过。原样取值，``None`` 才会与常量比出差异。
     """
 
-    return PlanSpec(
-        code=row.code,
-        name=row.name,
-        allowed_profiles=tuple(row.allowed_profiles),
-        hybrid_allowed=row.hybrid_allowed,
-        rerank_allowed=row.rerank_allowed,
-        query_rewrite_allowed=row.query_rewrite_allowed,
-        research_allowed=row.research_allowed,
-        retrieve_qps=row.retrieve_qps,
-        retrieve_daily=row.retrieve_daily,
-        max_kb=row.max_kb,
-        max_kb_per_retrieve=row.max_kb_per_retrieve,
-        max_documents_per_kb=row.max_documents_per_kb,
-        max_processing_documents=row.max_processing_documents,
-    )
+    return plan_spec_from_mapping(plan_columns_of(row))
 
 
 def plan_row_of(spec: PlanSpec) -> Plan:
     """种子 → 待插入的行。只给「表为空时的首次播种」用，别拿它覆盖已有行。"""
 
-    return Plan(
-        code=spec.code,
-        name=spec.name,
-        allowed_profiles=list(spec.allowed_profiles),
-        hybrid_allowed=spec.hybrid_allowed,
-        rerank_allowed=spec.rerank_allowed,
-        query_rewrite_allowed=spec.query_rewrite_allowed,
-        research_allowed=spec.research_allowed,
-        retrieve_qps=spec.retrieve_qps,
-        retrieve_daily=spec.retrieve_daily,
-        max_kb=spec.max_kb,
-        max_kb_per_retrieve=spec.max_kb_per_retrieve,
-        max_documents_per_kb=spec.max_documents_per_kb,
-        max_processing_documents=spec.max_processing_documents,
-    )
+    values: dict[str, Any] = plan_columns_of(spec)
+    values["allowed_profiles"] = list(values["allowed_profiles"])
+    return Plan(**values)
 
 
 def preset_mismatches(rows: Iterable[Plan]) -> list[str]:

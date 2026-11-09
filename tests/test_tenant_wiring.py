@@ -620,7 +620,7 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
 
     expected = {
         "plan": PLAN_PRO,
-        "requested_tier": PROFILE_SPEED,
+        "requested_profile": PROFILE_SPEED,
         "mode": "vector",
         "top_k": 5,
         "rerank": False,
@@ -632,7 +632,7 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
     assert mcp_payload["metadata"]["tenant_policy"] == expected
 
 
-def test_both_entries_reject_a_tier_the_plan_does_not_allow(
+def test_both_entries_reject_a_profile_the_plan_does_not_allow(
     quality_on_free: EntryClient,
 ) -> None:
     """档位门禁只有一份：同一把挂 ``quality`` 的 Key 打两扇门，都是 ``20013``。"""
@@ -700,7 +700,6 @@ def test_mcp_tool_signatures_expose_no_privileged_fields() -> None:
         "plan",
         "plan_id",
         "profile",
-        "tier",
         "policy",
         "allowed_kb_ids",
         "whitelist",

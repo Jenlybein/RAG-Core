@@ -24,21 +24,18 @@ from app.core.logging import setup_logging
 from app.db.session import SessionLocal
 from app.services.identity_seeding import backfill_tenants, seed_plans
 
-# 共享报告工具与脚本同目录；scripts* 不在安装包里，显式把自己所在目录放进
-# sys.path 后再用普通导入，spec_from_file_location 的文件加载才能找到它。
-_SCRIPTS_DIR = Path(__file__).resolve().parent
-if str(_SCRIPTS_DIR) not in sys.path:
-    sys.path.insert(0, str(_SCRIPTS_DIR))
+# scripts* 不在安装包里，把自身目录放进 sys.path 才能导入 _ops_common（见该模块文档）。
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _ops_common import exit_code_for, print_summary  # noqa: E402
+from _ops_common import print_summary  # noqa: E402
 
 PLANS_NOTE = (
-    'NOTE: tiers are seeded only while the plans table is empty; an operator-edited '
+    'NOTE: plans are seeded only while the plans table is empty; an operator-edited '
     'table is left untouched, so "inserted: 0" is the normal result on a live install.'
 )
 TENANTS_NOTE = (
-    'NOTE: tenants that existed before the upgrade get the standard tier, the demo tenant '
-    'the top tier. Tenants created later start on the lowest tier; the database is the truth '
+    'NOTE: tenants that existed before the upgrade get the standard plan, the demo tenant '
+    'the top plan. Tenants created later start on the lowest plan; the database is the truth '
     'from then on.'
 )
 
@@ -46,14 +43,14 @@ TENANTS_NOTE = (
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Seed the three plan tiers (only when the table is empty) and create "
+            "Seed the three plans (only when the table is empty) and create "
             "tenant rows for tenants that existed before the upgrade."
         )
     )
     parser.add_argument(
         "--demo-tenant-id",
         default=None,
-        help="tenant id that gets the top tier (default: DEV_TENANT_ID from settings)",
+        help="tenant id that gets the top plan (default: DEV_TENANT_ID from settings)",
     )
     return parser
 
@@ -78,7 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     print_summary(
         "seed_plans (plans)",
         stats=plan_stats,
-        counters=(("inserted", "inserted"), ("skipped", "skipped"), ("failed", "failed")),
+        counters=(("inserted", "inserted"), ("skipped", "skipped")),
         note=PLANS_NOTE,
     )
     print_summary(
@@ -88,11 +85,12 @@ def main(argv: Sequence[str] | None = None) -> int:
             ("considered", "considered"),
             ("created", "created"),
             ("kept", "kept"),
-            ("failed", "failed"),
         ),
         note=TENANTS_NOTE,
     )
-    return max(exit_code_for(plan_stats), exit_code_for(tenant_stats))
+    # 两条统计都没有 ``failed``：播种 / 回填的失败会在打印之前带着非零退出码返回
+    # （``LookupError``）。走到这里就是成功，退出码固定为 0。
+    return 0
 
 
 if __name__ == "__main__":

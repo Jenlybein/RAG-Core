@@ -43,7 +43,7 @@
 
 **质量参数从哪来（第 7 步，#77 / #78）**：请求体只有 ``kb_ids`` + ``query``；模式、返回
 条数、重排、改写、折叠与表格展开由平台层从密钥配置解析、并过完五道门禁
-（``app.services.tier_policy``）后交成一个 :class:`RetrievalOptions` 进来。本模块因此
+（``app.services.profile_policy``）后交成一个 :class:`RetrievalOptions` 进来。本模块因此
 **不再认识请求模型**，也不再为任何一个参数写「没传就取缺省」的分支；两个布尔开关
 （``options.rerank`` / ``options.rewrite``）同理——它们是**生效值**（档位意图 ∧ 本机
 能力），本模块不再自己去问一次 ``settings``。
@@ -101,7 +101,7 @@ async def retrieve(
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
     ``options`` 是**已经解析完**的本次参数（模式、返回条数、重排、改写、两个结果形状
-    开关），由平台层过完门禁后交进来（``app.services.tier_policy``）——请求体里只剩
+    开关），由平台层过完门禁后交进来（``app.services.profile_policy``）——请求体里只剩
     ``kb_ids`` + ``query``，质量参数没有第二个来源。
 
     本函数仍是**组合根**：它继续读那些**不是每次调用都能选**的服务端旋钮（召回深度
@@ -110,7 +110,7 @@ async def retrieve(
     就省掉。
 
     **重排与改写的开关读 ``options``，不读 ``settings``**：这两个布尔已经是「档位想要 ∧
-    本机装了」的合取（``app.services.retrieval_options.options_from_bundle``）。链路里
+    本机装了」的合取（``app.services.retrieval_options.options_from_chain``）。链路里
     再问一次 ``settings`` 就等于有了两个真相——机器上没装重排、档位却想要，两处判断
     谁说了算会变成排障时的第一道谜题。
     """
@@ -126,7 +126,7 @@ async def retrieve(
         else resolved_top_k
     )
 
-    # 模式校验放在最前面：两个入口的解析（``tier_policy.resolve_retrieval_options``）已经
+    # 模式校验放在最前面：两个入口的解析（``profile_policy.resolve_retrieval_options``）已经
     # 验过词表，只有直接构造 ``options`` 的内部调用才会带着未知值到这里。校验先于可见性
     # 校验与查询优化，被拒的请求不该白烧一次改写（与「拒绝先于召回」同一条理由）。
     if resolved_mode not in (MODE_HYBRID, MODE_BM25, MODE_VECTOR):

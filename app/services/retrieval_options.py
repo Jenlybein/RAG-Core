@@ -6,14 +6,14 @@
 
 1. **来源只有一个**：组合根（``app.services.rag_service.retrieve``）拿到的是一个已经
    解析完的对象，调用链上不再出现「这里没传、所以去读服务端配置 / 读请求体」的分支。
-   质量参数的读取点因此只剩本模块与 ``app.services.tier_policy`` 两处（前者是展开，
+   质量参数的读取点因此只剩本模块与 ``app.services.profile_policy`` 两处（前者是展开，
    后者是门禁）。
 2. **加字段不必改一圈调用点**：后来的票往这个对象上加字段即可，构造点仍是这里与两个
    入口。
 
-**这个模块只负责「展开」，不负责「准许」。** 档位展开成一个 :class:`TierBundle`
+**这个模块只负责「展开」，不负责「准许」。** 档位展开成一个 :class:`ProfileChain`
 （命名档位 = 完整替换的预设；``custom`` = 配置里那批手动参数，逐键回落部署缺省），
-再由 ``app.services.tier_policy`` 依次过五道门、与部署能力做合取、生成回显。把两件事
+再由 ``app.services.profile_policy`` 依次过五道门、与部署能力做合取、生成回显。把两件事
 分开的理由是：展开是**纯数据**（哪个档位承诺哪条链路），门禁是**判定**（这个租户买没买
 得起）——混在一起之后，改一个预设值要连带读一遍套餐规则。
 
@@ -66,16 +66,16 @@ MODE_HYBRID: Final[str] = "hybrid"
 
 
 @dataclass(frozen=True)
-class TierBundle:
+class ProfileChain:
     """一个档位承诺的**一整条链路**：模式、返回条数、是否重排、是否查询改写。
 
     四项一起出现、一起被替换，这是「命名档位是完整替换」最直接的形式：没有「预设打底、
-    配置覆盖」的第二条路径，因为一个 :class:`TierBundle` 里没有「哪些项来自配置」这种
+    配置覆盖」的第二条路径，因为一个 :class:`ProfileChain` 里没有「哪些项来自配置」这种
     信息可用——它本来就不该有。
 
     重排与改写在这里表达的是**意图**（这个档位想要什么），不是「这台机器上会不会跑」：
     部署装没装由 ``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED`` 表达，生效值是两者的
-    合取，见 ``app.services.tier_policy``。
+    合取，见 ``app.services.profile_policy``。
     """
 
     mode: str
@@ -93,10 +93,10 @@ class TierBundle:
 #:
 #: 条数统一是 5：档位之间差的是**链路**（路数、重排、改写），不是返回多少个字。
 #: 想让调用方多拿几条是「结果形状组」的事，不是档位的事。
-TIER_PRESETS: Final[dict[str, TierBundle]] = {
-    PROFILE_SPEED: TierBundle(mode=MODE_VECTOR, top_k=5, rerank=False, rewrite=False),
-    PROFILE_BALANCED: TierBundle(mode=MODE_HYBRID, top_k=5, rerank=False, rewrite=False),
-    PROFILE_QUALITY: TierBundle(mode=MODE_HYBRID, top_k=5, rerank=True, rewrite=True),
+PROFILE_CHAINS: Final[dict[str, ProfileChain]] = {
+    PROFILE_SPEED: ProfileChain(mode=MODE_VECTOR, top_k=5, rerank=False, rewrite=False),
+    PROFILE_BALANCED: ProfileChain(mode=MODE_HYBRID, top_k=5, rerank=False, rewrite=False),
+    PROFILE_QUALITY: ProfileChain(mode=MODE_HYBRID, top_k=5, rerank=True, rewrite=True),
 }
 
 
@@ -109,13 +109,13 @@ class TenantPolicy:
     「响应说开了重排、实际没开」这类无法自证的错误。:func:`tenant_policy_echo` 直接读
     值对象，正是为了在**类型层面**没有第二个真相。
 
-    ``requested_tier`` 是配置里要求的档位（命名档位名或 ``custom``），``plan`` 是这个租户
+    ``requested_profile`` 是配置里要求的档位（命名档位名或 ``custom``），``plan`` 是这个租户
     当前套餐的 ``code``。``clipped`` 只记**套餐上限**这一层裁掉的字段；本机没装重排 /
     改写不算裁剪，那是部署事实，已经由 ``rerank`` / ``rewrite`` 两个字段如实呈现。
     """
 
     plan: str
-    requested_tier: str
+    requested_profile: str
     clipped: tuple[str, ...] = ()
 
 
@@ -123,7 +123,7 @@ class TenantPolicy:
 class RetrievalOptions:
     """一次检索的已解析参数；不可变，构造完就只读。
 
-    ``mode`` 是字符串而不是 ``RetrievalMode``：值对象由 ``app.services.tier_policy``
+    ``mode`` 是字符串而不是 ``RetrievalMode``：值对象由 ``app.services.profile_policy``
     产出时已经验过词表，但 MCP / 内部调用仍可能自己造一个——那一道校验留在组合根
     （``rag_service.retrieve``），不因为多了这个对象就省掉（ADR-0010 §2「拒绝先于
     召回」：未知模式要先撞参数错误，而不是先查一次库）。
@@ -151,10 +151,10 @@ class RetrievalOptions:
     tenant_policy: TenantPolicy | None = None
 
 
-def tier_bundle_of(policy: KeyPolicySnapshot) -> TierBundle:
+def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
     """把配置里的档位**展开**成一整条链路（五道门的第 2 道，纯数据那一步）。
 
-    * 命名档位：查 :data:`TIER_PRESETS`，**配置里的 ``custom_options`` 一个都不读**
+    * 命名档位：查 :data:`PROFILE_CHAINS`，**配置里的 ``custom_options`` 一个都不读**
       ——完整替换，不是「预设打底、配置覆盖」；
     * ``custom``：读那批手动参数，**逐键**回落部署缺省（``RETRIEVAL_MODE`` /
       ``TOP_K`` / ``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED``）；
@@ -164,7 +164,7 @@ def tier_bundle_of(policy: KeyPolicySnapshot) -> TierBundle:
 
     if policy.profile == PROFILE_CUSTOM:
         manual = dict(policy.custom_options)
-        return TierBundle(
+        return ProfileChain(
             mode=_manual_mode(manual),
             top_k=_manual_top_k(manual),
             # 缺键 = 「跟部署缺省走」：部署开关就是「这台机器有没有这项能力」的缺省意图。
@@ -174,20 +174,20 @@ def tier_bundle_of(policy: KeyPolicySnapshot) -> TierBundle:
             ),
         )
 
-    preset = TIER_PRESETS.get(policy.profile)
+    preset = PROFILE_CHAINS.get(policy.profile)
     if preset is None:
-        return server_default_bundle()
+        return server_default_chain()
     return preset
 
 
-def server_default_bundle() -> TierBundle:
+def server_default_chain() -> ProfileChain:
     """部署缺省的那条链路：四个值全部来自服务端配置。
 
     它只做三件事：``custom`` 档的逐键回落、未知档位的兜底、以及给「缺省行为」一个
     可引用的名字。**没有哪一档的预设读它**——档位是产品契约，不跟着部署配置漂。
     """
 
-    return TierBundle(
+    return ProfileChain(
         mode=_server_default_mode(),
         top_k=settings.TOP_K,
         rerank=settings.RERANK_ENABLED,
@@ -195,10 +195,10 @@ def server_default_bundle() -> TierBundle:
     )
 
 
-def options_from_bundle(
+def options_from_chain(
     *,
     policy: KeyPolicySnapshot,
-    bundle: TierBundle,
+    chain: ProfileChain,
     tenant_policy: TenantPolicy | None = None,
     rerank_capable: bool | None = None,
     rewrite_capable: bool | None = None,
@@ -221,12 +221,12 @@ def options_from_bundle(
     rewrite_on = settings.QUERY_REWRITE_ENABLED if rewrite_capable is None else rewrite_capable
 
     return RetrievalOptions(
-        mode=bundle.mode,
-        top_k=bundle.top_k,
+        mode=chain.mode,
+        top_k=chain.top_k,
         fold_to_sections=policy.include_parent,
         expand_table_rows=policy.expand_table_rows,
-        rerank=bundle.rerank and rerank_on,
-        rewrite=bundle.rewrite and rewrite_on,
+        rerank=chain.rerank and rerank_on,
+        rewrite=chain.rewrite and rewrite_on,
         tenant_policy=tenant_policy,
     )
 
@@ -245,7 +245,7 @@ def tenant_policy_echo(options: RetrievalOptions, *, kb_count: int) -> dict[str,
         return None
     return {
         "plan": policy.plan,
-        "requested_tier": policy.requested_tier,
+        "requested_profile": policy.requested_profile,
         "mode": options.mode,
         "top_k": options.top_k,
         "rerank": options.rerank,

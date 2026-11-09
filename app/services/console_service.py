@@ -172,9 +172,7 @@ def view_for(db: Session, account: Account, *, cache: PlanCache | None = None) -
     改完的额度，面板刷新一次就看到——改套餐那条路提交后会删缓存。
     """
 
-    tenant = (
-        tenant_repository.get_by_id(db, account.tenant_id) if account.tenant_id else None
-    )
+    tenant = _tenant_of(db, account)
     if tenant is None:
         # 平台管理员不属于任何租户：没有套餐可显示，这不是错误。
         return ConsoleView(account=account, tenant=None, plan=None)
@@ -183,6 +181,17 @@ def view_for(db: Session, account: Account, *, cache: PlanCache | None = None) -
         tenant=tenant,
         plan=plan_service.resolve_plan(db, tenant.plan_id, cache=cache),
     )
+
+
+def _tenant_of(db: Session, account: Account) -> Tenant | None:
+    """账号 → 它的租户；管理员不属于任何租户，返回 ``None``（不是错误）。
+
+    ``/console/me``、登录成功后的视图与账号清单问的是同一个问题，条件读法因此只写一处：
+    「没有 tenant_id」与「tenant_id 指向的行不存在」在这里是同一个答案（没有租户），
+    调用方不必各自再判一次。
+    """
+
+    return tenant_repository.get_by_id(db, account.tenant_id) if account.tenant_id else None
 
 
 # ─────────────────────────────────────────────────────────────────────── 套餐
@@ -325,9 +334,7 @@ def list_accounts(db: Session) -> list[AccountRowView]:
 
     views: list[AccountRowView] = []
     for account in account_repository.list_all(db):
-        tenant = (
-            tenant_repository.get_by_id(db, account.tenant_id) if account.tenant_id else None
-        )
+        tenant = _tenant_of(db, account)
         plan = plan_repository.get_by_id(db, tenant.plan_id) if tenant is not None else None
         views.append(AccountRowView(account=account, tenant=tenant, plan=plan))
     return views
@@ -369,11 +376,7 @@ def patch_account(
         if plan is None:
             raise AppError(ErrorCode.PLAN_NOT_FOUND, f"plan not found: {plan_id}")
 
-    before = {
-        "account_status": account.status,
-        "tenant_status": tenant.status if tenant is not None else None,
-        "tenant_plan_id": tenant.plan_id if tenant is not None else None,
-    }
+    before = _account_state(account, tenant)
 
     if status is not None:
         account.status = status
@@ -382,11 +385,7 @@ def patch_account(
     if tenant is not None and plan is not None:
         tenant.plan_id = plan.id
 
-    after = {
-        "account_status": account.status,
-        "tenant_status": tenant.status if tenant is not None else None,
-        "tenant_plan_id": tenant.plan_id if tenant is not None else None,
-    }
+    after = _account_state(account, tenant)
     _append_audit(
         db,
         actor=actor,
@@ -397,6 +396,20 @@ def patch_account(
     )
     db.commit()
     return AccountPatchResult(account_id=account_id, before=before, after=after)
+
+
+def _account_state(account: Account, tenant: Tenant | None) -> dict[str, Any]:
+    """账号 / 租户 / 套餐指针的同一份快照：改前与改后都从这里造。
+
+    审计的前后快照必须是同一个形状，否则「改了什么」要靠人肉对比两份不同键名的 JSON。
+    三键的清单因此只写一处；租户为空（管理员）时两项如实为 ``None``。
+    """
+
+    return {
+        "account_status": account.status,
+        "tenant_status": tenant.status if tenant is not None else None,
+        "tenant_plan_id": tenant.plan_id if tenant is not None else None,
+    }
 
 
 # ─────────────────────────────────────────────────────────────────────── 审计

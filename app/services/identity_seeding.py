@@ -30,17 +30,13 @@ from app.repositories import plan_repository, tenant_repository
 
 @dataclass(frozen=True)
 class PlanSeedStats:
-    """一次套餐播种的结果；``skipped`` 是「表非空所以没播种的档位数」。"""
+    """一次套餐播种的结果；``skipped`` 是「表非空所以没播种的档位数」。
+
+    没有 ``failed``：失败会先抛 ``LookupError``，调用方在打印之前就带着非零退出码返回了。
+    """
 
     inserted: int = 0
     skipped: int = 0
-    failed: int = 0
-
-    @property
-    def delivered(self) -> int:
-        """共享退出码规则里的「已投递」口径。"""
-
-        return self.inserted
 
 
 @dataclass(frozen=True)
@@ -50,13 +46,6 @@ class TenantBackfillStats:
     considered: int = 0
     created: int = 0
     kept: int = 0
-    failed: int = 0
-
-    @property
-    def delivered(self) -> int:
-        """共享退出码规则里的「已投递」口径。"""
-
-        return self.created
 
 
 def seed_plans(db: Session) -> PlanSeedStats:

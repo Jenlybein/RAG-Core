@@ -1,6 +1,6 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**
 - 日期：2026-11-08
 - 相关：父 spec #20「第 4 步」、**父 spec #72「第 7 步」、ADR-0018「三层授权与配置自洽校验」**、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
@@ -263,3 +263,15 @@ kb_id IN ('kb-a', 'kb-b') AND index_version IN ('v1', 'v2')
 - **档位判定从参数校验挪到配置解析**：档位展开与门禁发生在鉴权之后、限流之前，六道关卡的顺序不变（见 ADR-0018）。
 - **`include_parent` 这个命名遗留一并了结**：它搬进密钥配置后不再是已发布的请求契约，那一层不必再沿用这个与语义相反的名字。
 - **`tenant_policy` 回显更有必要**：请求里已经看不出这次跑了什么，它是唯一能解释「为什么这次慢了」「为什么没重排」的地方。
+
+## 第四次修订（第 7 步收尾，2026-11-10）：`requested_tier` 改名为 `requested_profile`
+
+**这是一次已发布响应字段的破坏性改名**：`metadata.tenant_policy.requested_tier` 现在叫 `requested_profile`。没有两个名字并存的过渡期——回显里同时出现两个键就等于有了第二个真相，而这正是本 ADR 反复拒绝的那类设计。读旧字段的调用方只需改读新键；值、位置与语义都不变（仍是 `speed` / `balanced` / `quality` / `custom`）。
+
+为什么必须改：
+
+- **`tier` 是术语表的禁用词。** `GLOSSARY.md` 的规范名是**档位（Profile）**，而 `tier` 同时被列为「档位」「套餐」「模型角色」三个概念的 `_Avoid_`。拿它命名档位是一处双重违规：名字既不是规范名，又让读者无法判断它指的是「这次用多好」还是「这个租户买得起多少」——这两件事在 ADR-0018 里是两层互不重叠的授权。
+- **改名之后词根一致。** 回显字段与 `TenantPolicy.requested_profile`、密钥配置的 `profile` 列、套餐的 `allowed_profiles` 白名单同词，读代码不必再翻译一次。
+- **同一轮只动名字、不动语义。** 平台层的模块与类型同理改名：`app/services/profile_policy.py`、`ProfileChain`、`PROFILE_CHAINS`（原 `tier_policy` / `TierBundle` / `TIER_PRESETS`）。它们不进响应契约，改名不影响调用方。
+
+迁移方式：把读 `metadata.tenant_policy.requested_tier` 的地方改成 `metadata.tenant_policy.requested_profile`；这段回显只在经套餐门禁解析的调用上出现，不经门禁的内部调用本来就没有这一栏（见第三次修订第 4 条）。

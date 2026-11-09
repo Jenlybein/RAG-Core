@@ -20,7 +20,7 @@ from dataclasses import asdict
 from typing import Any, Final, Protocol
 
 from app.core.config import settings
-from app.models.plan import PlanSpec
+from app.models.plan import PlanSpec, plan_spec_from_mapping
 
 #: 缓存键前缀；与 Celery 的键空间不冲突（它们不在这个库里，也各有各的前缀）。
 KEY_PREFIX: Final[str] = "plan:"
@@ -89,25 +89,11 @@ def _to_payload(plan: PlanSpec) -> dict[str, Any]:
 
 
 def _from_payload(payload: dict[str, Any]) -> PlanSpec:
-    """字典 → 快照：逐字段点名，缺一列就是 ``KeyError``。
+    """字典 → 快照：列清单来自 :data:`PLAN_SPEC_COLUMNS`，缺一列就是 ``KeyError``。
 
-    不走 ``PlanSpec(**payload)``：那就等于让缓存里的脏数据（多一个键、少一个键、
-    ``allowed_profiles`` 是个字符串）决定类型，而缓存的职责只是「把刚才读到的行原样
-    还回去」。
+    转换只有一个来源（:func:`app.models.plan.plan_spec_from_mapping`）：``allowed_profiles``
+    的数组 → 元组只在那里做一次，这里不复制一份。缓存里的脏数据（多一个键、少一个键）
+    仍然会按列清单暴露出来，而缓存的职责只是「把刚才读到的行原样还回去」。
     """
 
-    return PlanSpec(
-        code=payload["code"],
-        name=payload["name"],
-        allowed_profiles=tuple(payload["allowed_profiles"]),
-        hybrid_allowed=payload["hybrid_allowed"],
-        rerank_allowed=payload["rerank_allowed"],
-        query_rewrite_allowed=payload["query_rewrite_allowed"],
-        research_allowed=payload["research_allowed"],
-        retrieve_qps=payload["retrieve_qps"],
-        retrieve_daily=payload["retrieve_daily"],
-        max_kb=payload["max_kb"],
-        max_kb_per_retrieve=payload["max_kb_per_retrieve"],
-        max_documents_per_kb=payload["max_documents_per_kb"],
-        max_processing_documents=payload["max_processing_documents"],
-    )
+    return plan_spec_from_mapping(payload)

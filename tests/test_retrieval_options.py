@@ -3,13 +3,13 @@
 票 #78 在本文件里换掉了两处**故意的临时断言**：命名档位曾经等于「服务端缺省」
 （那时它们还没有预设），现在每一档都跑自己那条链路。两条接缝不变：
 
-1. **纯函数直测**（本文件上半）：``tier_bundle_of`` 把一份密钥配置快照展开成「这次调用
+1. **纯函数直测**（本文件上半）：``profile_chain_of`` 把一份密钥配置快照展开成「这次调用
    用哪条链路」——模式、条数、重排、改写。它不碰数据库、不碰请求、不碰套餐，所以边界
    （缺键、值不认识、命名档位忽略手动参数）都在这里逐条钉住。
 2. **ASGI 边界**（本文件下半）：同一件事在真实应用上的样子——旧字段进请求体拿
    20002、``custom`` 档的手动参数真的生效、命名档位跑的是它自己的链路。
 
-门禁、裁剪与回显（套餐那一层）在 ``tests/test_tier_gating.py``：这里的用例一律挂最高
+门禁、裁剪与回显（套餐那一层）在 ``tests/test_profile_gating.py``：这里的用例一律挂最高
 套餐，只验证「展开」。
 """
 
@@ -40,10 +40,10 @@ from app.services.result_collapse import OVERFETCH_FACTOR
 from app.services.retrieval_options import (
     MAX_TOP_K,
     RetrievalOptions,
-    TierBundle,
-    tier_bundle_of,
+    ProfileChain,
+    profile_chain_of,
 )
-from app.services.tier_policy import resolve_retrieval_options
+from app.services.profile_policy import resolve_retrieval_options
 from tests.fake_db import EmptySession
 from tests.retrieval_identity import RetrievalIdentity
 
@@ -85,7 +85,7 @@ def test_custom_policy_manual_parameters_are_taken_verbatim(
     """``custom`` 档：手动参数原样生效，两个形状开关读配置自己的那两列。
 
     重排 / 改写的**意图**写的是 true，所以这台机器必须装着这两项能力（否则生效值会是
-    合取之后的 false——那是下一节 ``test_tier_gating`` 的事，不是「手动参数没读到」）。
+    合取之后的 false——那是下一节 ``test_profile_gating`` 的事，不是「手动参数没读到」）。
     """
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
@@ -169,13 +169,13 @@ def test_custom_policy_unusable_values_fall_back_per_key(
     ("profile", "expected"),
     [
         # 三档的全部内容写在票面（#78）上，这里逐字抄一遍。
-        (PROFILE_SPEED, TierBundle(mode="vector", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_BALANCED, TierBundle(mode="hybrid", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_QUALITY, TierBundle(mode="hybrid", top_k=5, rerank=True, rewrite=True)),
+        (PROFILE_SPEED, ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False)),
+        (PROFILE_BALANCED, ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False)),
+        (PROFILE_QUALITY, ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True)),
     ],
 )
-def test_a_named_tier_is_its_bundle_not_the_server_defaults(
-    monkeypatch: pytest.MonkeyPatch, profile: str, expected: TierBundle
+def test_a_named_profile_is_its_chain_not_the_server_defaults(
+    monkeypatch: pytest.MonkeyPatch, profile: str, expected: ProfileChain
 ) -> None:
     """命名档位 = 它自己那条链路（票 #78 换掉了「暂时等于服务端缺省」）。
 
@@ -188,7 +188,7 @@ def test_a_named_tier_is_its_bundle_not_the_server_defaults(
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
-    bundle = tier_bundle_of(
+    chain = profile_chain_of(
         _policy(
             profile=profile,
             custom_options=(("mode", "bm25"), ("top_k", 1)),
@@ -197,7 +197,7 @@ def test_a_named_tier_is_its_bundle_not_the_server_defaults(
         )
     )
 
-    assert bundle == expected
+    assert chain == expected
 
 
 def test_the_shape_group_is_not_custom_only() -> None:
@@ -405,7 +405,7 @@ def test_a_custom_policy_shape_switch_reaches_the_recall_depth(
     assert fake["vector"].scope_calls[0]["top_k"] == 2, "不折叠就不该多取"
 
 
-def test_a_named_tier_policy_runs_its_own_chain(
+def test_a_named_profile_policy_runs_its_own_chain(
     fake: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """命名档位在边界处就是它自己那条链路（票 #78 换掉了「暂时等于服务端缺省」）。
@@ -477,7 +477,7 @@ def test_the_composition_root_receives_the_resolved_options(
     assert (options.mode, options.top_k) == ("vector", 4)
     assert (options.fold_to_sections, options.expand_table_rows) == (False, True)
     assert options.tenant_policy is not None
-    assert options.tenant_policy.requested_tier == PROFILE_CUSTOM
+    assert options.tenant_policy.requested_profile == PROFILE_CUSTOM
 
 
 def test_http_and_mcp_accept_literally_the_same_arguments() -> None:

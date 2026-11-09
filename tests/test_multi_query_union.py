@@ -57,11 +57,18 @@ REWRITTEN = "退款的处理流程"
 # **#78 重采过一次**：响应契约新增了 ``metadata.tenant_policy``（票 #78 的交付之一），
 # 全文哈希必然改变——那是有意的契约变更，不是检索行为变化。检索内容那一半仍由本文件
 # 其余用例守着（关闭改写时只搜一句、同一句、同一顺序），重采没有放宽任何一条。
-_BASELINE_SOURCE = "#78 落地后重采（相对 f1ddb46：仅多出 metadata.tenant_policy）"
+#
+# **第 7 步收尾又重采一次**：回显字段 ``requested_profile`` 的旧名已改成现在这个
+# （ADR-0010「第四次修订」，旧名违反术语表）。同样只动名字、不动检索内容：新基线
+# 仍然只比 #78 那版多这一个字段名的差别，其余字节未变。
+_BASELINE_SOURCE = (
+    "#78 落地后重采（相对 f1ddb46：仅多出 metadata.tenant_policy）；"
+    "第 7 步收尾再采（相对 #78：tenant_policy 的 requested_* 字段改名）"
+)
 _BASELINE_SHA256: dict[str, str] = {
-    "hybrid": "d80b1509bef6be091b8baeb610ec45e24892676e64fec8469919ea047d16cc66",
-    "vector": "0643ccbf456b6c20fcae0bb0f6a3e743ea390b22436e69692a7fda248b03db2f",
-    "bm25": "8fa0b06d0799fc1b4b5d18d5e75dec7e419af1e8248f57225aa794c0018a3d69",
+    "hybrid": "49df8f08e29401114259e067974de612040a0d7ae28a9e4bfc6b92759028e62f",
+    "vector": "5dc254efa9f0a7a0a5d2b5f6201da005cc8effe3eb1e05f962c9c587c44c9162",
+    "bm25": "e34615911395585598607a3f7354f8b924ee4ad139db9274c74d2633ee880f70",
 }
 
 
@@ -642,8 +649,9 @@ def test_rewrite_off_response_is_byte_identical_to_pre_change_baseline(
     """``QUERY_REWRITE_ENABLED=false``：三种 mode 的响应全文与采集基线逐字节相同。
 
     基线常量取于 ``_BASELINE_SOURCE``，用本文件同一个 ``_response_hashes`` 实跑采集
-    （#78 因响应新增 ``tenant_policy`` 重采过一次，见那段注释）。这条守的是本票最容易
-    出的那类 bug：并集分支顺手让**关闭时**也多搜一句，让所有默认用户白付一次嵌入费用。
+    （#78 因响应新增 ``tenant_policy``、第 7 步收尾因回显字段改名各重采一次，见那段注释）。
+    这条守的是本票最容易出的那类 bug：并集分支顺手让**关闭时**也多搜一句，让所有默认
+    用户白付一次嵌入费用。
 
     它与票 #78 的「部署开关关着时行为逐字节不变」是同一条红线的两个方向：那边守
     「档位不会凭空变出部署没配的 Provider」，这边守「没有一键顺手改掉默认路径」。

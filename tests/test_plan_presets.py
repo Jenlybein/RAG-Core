@@ -84,13 +84,13 @@ def _tampered_value(column: str, current: Any) -> Any:
 # ──────────────────────────────────────────────────────────── 种子本身符合票面
 
 
-def test_the_three_tiers_are_exactly_the_decided_codes() -> None:
+def test_the_three_plans_are_exactly_the_decided_codes() -> None:
     assert PLAN_CODES == ("free", "standard", "pro")
     assert set(PLAN_PRESETS) == set(PLAN_CODES)
 
 
 @pytest.mark.parametrize("code", PLAN_CODES)
-def test_each_tier_carries_the_decided_values(code: str) -> None:
+def test_each_plan_carries_the_decided_values(code: str) -> None:
     """逐列比对票面：11 个业务列一个不漏。"""
 
     spec = PLAN_PRESETS[code]
@@ -99,7 +99,7 @@ def test_each_tier_carries_the_decided_values(code: str) -> None:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 
 
-def test_tier_display_names_are_present_and_distinct() -> None:
+def test_plan_display_names_are_present_and_distinct() -> None:
     names = [PLAN_PRESETS[code].name for code in PLAN_CODES]
     assert all(names), "展示名不能为空：面板上要显示它"
     assert len(set(names)) == len(names)
@@ -124,7 +124,7 @@ def test_mapping_a_seeded_row_back_yields_the_constant(code: str) -> None:
     assert plan_spec_of(row) == PLAN_PRESETS[code]
 
 
-def test_reconciliation_passes_after_seeding_all_three_tiers() -> None:
+def test_reconciliation_passes_after_seeding_all_three_plans() -> None:
     rows = [plan_row_of(PLAN_PRESETS[code]) for code in PLAN_CODES]
 
     assert preset_mismatches(rows) == []
@@ -179,7 +179,7 @@ def test_two_rows_with_the_same_code_are_reported() -> None:
     assert preset_mismatches(rows) == ["free: 库里有多档同码"]
 
 
-def test_a_tier_that_was_never_seeded_is_reported() -> None:
+def test_a_plan_that_was_never_seeded_is_reported() -> None:
     """表里少一档也要报：否则最高档被误删之后，谁都不会发现。"""
 
     rows = [plan_row_of(PLAN_PRESETS[code]) for code in ("free", "standard")]
@@ -187,7 +187,7 @@ def test_a_tier_that_was_never_seeded_is_reported() -> None:
     assert preset_mismatches(rows) == ["pro: 库里没有这一档"]
 
 
-def test_a_row_whose_code_is_not_a_known_tier_is_reported() -> None:
+def test_a_row_whose_code_is_not_a_known_plan_is_reported() -> None:
     rows = [plan_row_of(PLAN_PRESETS[code]) for code in PLAN_CODES]
     extra = plan_row_of(PLAN_PRESETS["free"])
     extra.code = "platinum"
