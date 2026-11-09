@@ -97,7 +97,7 @@ def test_structure_default_whitelist_is_markdown_only(client: Any) -> None:
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["split_strategy"] == SPLIT_STRUCTURE
-    assert data["chunk_size"] == DEFAULT_CHUNK_SIZE == 800
+    assert data["chunk_size"] == DEFAULT_CHUNK_SIZE == 512
     assert data["allowed_formats"] == [FORMAT_MARKDOWN]
 
 

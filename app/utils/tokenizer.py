@@ -110,6 +110,29 @@ def token_count(text: str) -> int:
     )
 
 
+def encode_ids(text: str) -> list[int]:
+    """把文本编码成 token id 序列（硬切窗口按 token 粒度走时要它）。"""
+
+    if not text:
+        return []
+    with _lock:
+        encoding = _encoding()
+    chunk = 100_000
+    ids: list[int] = []
+    for index in range(0, len(text), chunk):
+        ids.extend(encoding.encode(text[index : index + chunk]))
+    return ids
+
+
+def decode_ids(ids: list[int]) -> str:
+    """把 token id 序列还原成文本；与 `encode_ids` 互为逆操作。"""
+
+    if not ids:
+        return ""
+    with _lock:
+        return _encoding().decode(ids)
+
+
 def verify_ready() -> None:
     """启动时调用：词表不可用就抛 `TokenizerUnavailable`，拒绝带病启动。"""
 

@@ -36,6 +36,8 @@ from pathlib import Path
 
 from app.services.rag_service import get_embedding_provider
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
+from app.utils.tokenizer import token_count
+from app.utils.window_splitter import LengthFunction, WindowMode
 from app.utils.retrieval_text import build_retrieval_text
 
 try:  # 与 scripts/eval_retrieval.py 的目录约定一致：脚本目录直接可导
@@ -192,6 +194,11 @@ def _owner_of(chunk: Chunk, sections: list[Section]) -> str | None:
     return best[1]
 
 
+# 最终形态（生产默认）：Recursive 分区 + Qwen token 计长。
+# 报告的「按题型 / 按分组 / 逐题」都围绕它展开，其余三组只出现在对照表里。
+FINAL_VARIANT = "D-rec-token"
+
+
 def _fixed_window_slice(text: str, *, size: int, overlap: int) -> list[str]:
     """朴素基线：纯字符窗口硬切，不认识任何结构。
 
@@ -228,9 +235,21 @@ def _naive_chunks(
     return chunks
 
 
-def _structured_chunks(doc: CorpusDoc, sections: list[Section]) -> list[Chunk]:
+def _structured_chunks(
+    doc: CorpusDoc,
+    sections: list[Section],
+    *,
+    size: int = CHUNK_SIZE,
+    overlap: int = CHUNK_OVERLAP,
+    length_function: LengthFunction = token_count,
+    window_mode: WindowMode = "recursive",
+) -> list[Chunk]:
     splitter = MarkdownStructuredSplitter(
-        chunk_size=CHUNK_SIZE, chunk_overlap=CHUNK_OVERLAP, table_max_rows=TABLE_MAX_ROWS
+        chunk_size=size,
+        chunk_overlap=overlap,
+        table_max_rows=TABLE_MAX_ROWS,
+        length_function=length_function,
+        window_mode=window_mode,
     )
     chunks: list[Chunk] = []
     cursor = 0
@@ -342,15 +361,25 @@ async def main() -> None:
             key = (doc.stem, heading)
             if _priority.get(chunk_type, 0) >= _priority.get(gold_types.get(key, "prose"), 0):
                 gold_types[key] = chunk_type
-    # (名称, 切块器, chunk_size, overlap)；结构化组固定 800/100。
-    # 朴素组取 400/100（主基线）与 200/50（更细一档），重叠统一 25%：
-    # 800 那一档离结构化的均长（145 字）差得太远，无论输赢都说明不了什么。
-    variants: tuple[tuple[str, str, int | None, int | None], ...] = (
-        ("naive-400/100", "naive", 400, 100),
-        ("naive-200/50", "naive", 200, 50),
-        ("structured", "structured", None, None),
+    # (名称, 切块器, chunk_size, overlap, 尺子, 窗口算法)
+    #
+    # 四组**交叉**是这一轮的核心对照：单位与算法同时改了，只跑前后两组说不清
+    # 收益来自哪边。②−① 单独隔离单位、③−① 单独隔离算法、④−① 是合并效果。
+    #
+    # 朴素组保留纯字符硬切（400/100 与 200/50）：它们是历史基线，评测侧自带实现，
+    # 与生产无关。
+    variants: tuple[
+        tuple[str, str, int | None, int | None, LengthFunction | None, WindowMode | None],
+        ...,
+    ] = (
+        ("A-hard-char", "structured", 800, 100, len, "hard"),
+        ("B-hard-token", "structured", 512, 50, token_count, "hard"),
+        ("C-rec-char", "structured", 800, 100, len, "recursive"),
+        ("D-rec-token", "structured", 512, 50, token_count, "recursive"),
+        ("naive-400/100", "naive", 400, 100, None, None),
+        ("naive-200/50", "naive", 200, 50, None, None),
     )
-    for label, kind, size, overlap in variants:
+    for label, kind, size, overlap, length_function, window_mode in variants:
         chunks: list[Chunk] = []
         for doc in docs:
             if kind == "naive":
@@ -359,7 +388,18 @@ async def main() -> None:
                     _naive_chunks(doc, section_cache[doc.stem], size=size, overlap=overlap)
                 )
             else:
-                chunks.extend(_structured_chunks(doc, section_cache[doc.stem]))
+                assert size is not None and overlap is not None
+                assert length_function is not None and window_mode is not None
+                chunks.extend(
+                    _structured_chunks(
+                        doc,
+                        section_cache[doc.stem],
+                        size=size,
+                        overlap=overlap,
+                        length_function=length_function,
+                        window_mode=window_mode,
+                    )
+                )
 
         tag = label.replace("/", "-")
         chunk_ids = [f"{tag}-c{i:04d}" for i in range(len(chunks))]
@@ -635,7 +675,7 @@ async def main() -> None:
     )
     print("\n=== 汇总 ===")
     print(" | ".join(f"{h:>12s}" for h in headers) + " |")
-    for label, _, _, _ in variants:
+    for label, *_ in variants:
         row = summary[label]
         cells: list[str] = []
         for key in keys:
@@ -651,7 +691,7 @@ async def main() -> None:
     # 整体差值会被题型分布稀释：某一类题占比高、差距又小，就会把总和压平。
     # 拆开看才知道「结构化切块到底在哪类题上起作用」。
     naive_types = summary["naive-400/100"].get("per_type")
-    struct_types = summary["structured"].get("per_type")
+    struct_types = summary[FINAL_VARIANT].get("per_type")
     if isinstance(naive_types, dict) and isinstance(struct_types, dict):
         print("\n=== 按题型看 hit@1 ===")
         print("  题型               题数     朴素  结构化     差值")
@@ -668,7 +708,7 @@ async def main() -> None:
 
     # 短章节 vs 长章节：同一批代码、同一个模型，只换语料结构。
     naive_groups = summary["naive-400/100"].get("per_group")
-    struct_groups = summary["structured"].get("per_group")
+    struct_groups = summary[FINAL_VARIANT].get("per_group")
     if isinstance(naive_groups, dict) and isinstance(struct_groups, dict):
         print("\n=== 按语料结构看 hit@1（短章节 vs 长章节）===")
         print("  语料结构           题数     朴素  结构化     差值")
@@ -686,7 +726,7 @@ async def main() -> None:
 
     # 表格专项：金标章节本身是表格的题，答案依赖表头与行列对齐。
     naive_kinds = summary["naive-400/100"].get("per_kind")
-    struct_kinds = summary["structured"].get("per_kind")
+    struct_kinds = summary[FINAL_VARIANT].get("per_kind")
     if isinstance(naive_kinds, dict) and isinstance(struct_kinds, dict):
         print("\n=== 表格专项 vs 正文题（按金标章节的切片类型分组）===")
         print("  金标类型               题数    朴素  结构化     差值   相关片(朴)  相关片(结构)")
@@ -709,7 +749,7 @@ async def main() -> None:
     print(
         f"{'变体':22s} {'hit@1(chunk)':>13} {'hit@1(交付)':>13} {'R@5(交付)':>11} {'R@1(交付)':>11}"
     )
-    for label, _builder, _kind, _variant in variants:
+    for label, *_ in variants:
         row = summary[label]
         delivered = row.get("delivered") or {}
         print(
@@ -724,11 +764,11 @@ async def main() -> None:
     )
 
     # 交付口径按题型拆开：整体涨了不代表每类都涨，退步的那一类必须露出来。
-    if "structured" in summary:
-        chunk_types = summary["structured"].get("per_type") or {}
-        delivered_types = summary["structured"].get("delivered_per_type") or {}
+    if FINAL_VARIANT in summary:
+        chunk_types = summary[FINAL_VARIANT].get("per_type") or {}
+        delivered_types = summary[FINAL_VARIANT].get("delivered_per_type") or {}
         if chunk_types and delivered_types:
-            print("\n=== 按题型：chunk 级 → delivered 级（结构化）===")
+            print(f"\n=== 按题型：chunk 级 → delivered 级（{FINAL_VARIANT}）===")
             print(f"  {'题型':18s} {'题数':>4} {'chunk 级':>9} {'交付级':>9} {'差值':>8}")
             rows = []
             for qtype, delivered_flags in delivered_types.items():
@@ -746,18 +786,18 @@ async def main() -> None:
                     f" {delivered_rate - chunk_rate:+8.3f}"
                 )
 
-    print("\n=== 差值（structured - naive-400/100）===")
+    print(f"\n=== 差值（{FINAL_VARIANT} - naive-400/100）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
-        left = summary["structured"][key]
+        left = summary[FINAL_VARIANT][key]
         right = summary["naive-400/100"][key]
         if left is None or right is None:
             print(f"{key:14s} n/a")
             continue
         print(f"{key:14s} {float(left) - float(right):+.4f}")
 
-    print("\n=== 差值（structured - naive-200/50）===")
+    print(f"\n=== 差值（{FINAL_VARIANT} - naive-200/50）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):
-        left = summary["structured"][key]
+        left = summary[FINAL_VARIANT][key]
         right = summary["naive-200/50"][key]
         if left is None or right is None:
             print(f"{key:14s} n/a")

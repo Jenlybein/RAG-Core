@@ -15,10 +15,13 @@
 
 import hashlib
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.utils.provenance import page_from_heading
 from app.utils.text_splitter import SplitPiece, TextSplitter
+from app.utils.tokenizer import token_count
+from app.utils.window_splitter import WindowMode
 from app.utils.window_splitter import code_pieces as code_pieces_of
 from app.utils.window_splitter import text_pieces as text_pieces_of
 
@@ -68,9 +71,11 @@ class MarkdownStructuredSplitter(TextSplitter):
 
     def __init__(
         self,
-        chunk_size: int = 800,
-        chunk_overlap: int = 100,
+        chunk_size: int = 512,
+        chunk_overlap: int = 50,
         table_max_rows: int = 10,
+        length_function: Callable[[str], int] = token_count,
+        window_mode: WindowMode = "recursive",
     ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
@@ -79,6 +84,10 @@ class MarkdownStructuredSplitter(TextSplitter):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.table_max_rows = table_max_rows
+        # 长度尺子与窗口算法可注入：四组交叉对照要分别跑「字符 / token」与
+        # 「硬切 / Recursive」。生产默认是 token + Recursive。
+        self._length = length_function
+        self._window_mode = window_mode
 
     def split(self, text: str) -> list[SplitPiece]:
         """扫描全文，按 h1/h2/h3 边界产出一组带 provenance 的切片。"""
@@ -210,6 +219,8 @@ class MarkdownStructuredSplitter(TextSplitter):
                     marker=block.language,
                     size=self.chunk_size,
                     overlap=self.chunk_overlap,
+                    length_function=self._length,
+                    mode=self._window_mode,
                 )
                 if len(code_pieces) == 1:
                     produced.append(_Piece(text=code_pieces[0], chunk_type="code"))
@@ -248,6 +259,8 @@ class MarkdownStructuredSplitter(TextSplitter):
                     "\n".join(block.lines),
                     size=self.chunk_size,
                     overlap=self.chunk_overlap,
+                    length_function=self._length,
+                    mode=self._window_mode,
                 ):
                     produced.append(_Piece(text=text, chunk_type=_classify_text(text)))
         return produced
