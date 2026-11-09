@@ -95,7 +95,8 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
     session_mod = importlib.import_module("app.db.session")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     session = _FakeSession()
     enqueued: list[dict[str, Any]] = []
@@ -109,14 +110,14 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
     )
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
-    monkeypatch.setattr(kb_repo, "get_by_id", lambda db, kb_id: kb)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: kb)
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
     )
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
             yield SimpleNamespace(
@@ -561,7 +562,7 @@ def test_list_documents_hides_knowledge_base_of_another_tenant(
 
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     monkeypatch.setattr(
-        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id="tenant-other")
+        kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None
     )
 
     list_calls: list[tuple[Any, Any]] = []

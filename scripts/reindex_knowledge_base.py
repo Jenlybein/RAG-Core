@@ -83,10 +83,12 @@ def resolve_tenant_id(db: Session, *, kb_id: str, tenant_id: str | None) -> str:
 
     if tenant_id is not None:
         return tenant_id
-    kb = knowledge_base_repository.get_by_id(db, kb_id)
-    if kb is None:
+    # 运维脚本是唯一「先不知道租户」的调用点：用仓储层里显式命名的归属查询发现它，
+    # 之后每一处查询都强制带这个租户。数据面路径没有这个处境，因此也没有这个函数可用。
+    owner = knowledge_base_repository.get_owner_tenant_id(db, kb_id)
+    if owner is None:
         raise LookupError(f"knowledge base not found: {kb_id}")
-    return str(kb.tenant_id)
+    return owner
 
 
 def reindex_documents(

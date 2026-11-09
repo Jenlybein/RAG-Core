@@ -149,14 +149,15 @@ def offline_retrieval(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id",
-        lambda db, kb_id: type("KB", (), {"tenant_id": TENANT_ID})(),
+        "get_by_id_for_tenant",
+        lambda db, kb_id, *, tenant_id: type("KB", (), {"tenant_id": tenant_id})(),
     )
 
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
             yield {"client": client, "embedding": embedding, "vector": vector, "keyword": keyword}
@@ -384,6 +385,10 @@ class _ExplodingSession:
     def get(self, *_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover - 访问即失败
         raise AssertionError("顺序错了：mode 校验之后、可见性校验之前不应该访问数据库")
 
+    def execute(self, *_args: Any, **_kwargs: Any) -> Any:  # pragma: no cover - 访问即失败
+        # 可见性守卫现在是 `select(...).where(id, tenant_id)` 这一次查询，走的是 execute。
+        raise AssertionError("顺序错了：mode 校验之后、可见性校验之前不应该访问数据库")
+
 
 def test_unknown_mode_wins_over_invisible_kb() -> None:
     """未知 ``mode`` + 不可见 ``kb_id``：先撞参数校验（20002），不是可见性（20008）。
@@ -400,8 +405,8 @@ def test_unknown_mode_wins_over_invisible_kb() -> None:
       有时报 20002、有时报 20008，排障时最容易被这两条来回误导。
 
     ``_ExplodingSession`` 是这条断言的牙齿：若有人把可见性预校验提到前面，
-    ``ensure_visible`` 会先 ``db.get(...)``，用例当场炸在 ``AssertionError`` 上，
-    而不是悄悄换一个业务码继续通过。
+    ``ensure_visible`` 会先 ``db.execute(...)``（按 id + 租户取库那一次查询），用例当场炸在
+    ``AssertionError`` 上，而不是悄悄换一个业务码继续通过。
     """
 
     service = importlib.import_module("app.services.rag_service")

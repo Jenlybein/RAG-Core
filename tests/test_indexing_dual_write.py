@@ -22,7 +22,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.auth import DevKeyContext, resolve_dev_key
+from app.api.deps import get_current_key
+from app.core.auth import DevKeyContext
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.providers.parsers.base import ParsedDocument
 from app.repositories import document_repository
@@ -282,7 +283,7 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(routes, "remove_document_file", lambda _path: calls.append("remove-file"))
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
             response = client.delete(f"/api/v1/documents/{DOC_ID}")

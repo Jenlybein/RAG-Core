@@ -107,9 +107,9 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
 
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id",
-        lambda db, kb_id: SimpleNamespace(
-            tenant_id=TENANT_ID,
+        "get_by_id_for_tenant",
+        lambda db, kb_id, *, tenant_id: SimpleNamespace(
+            tenant_id=tenant_id,
             split_strategy="structure",
             allowed_formats=["markdown"],
             settings={},
@@ -121,9 +121,10 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
     )
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(
         tenant_id=settings.DEV_TENANT_ID
     )
 

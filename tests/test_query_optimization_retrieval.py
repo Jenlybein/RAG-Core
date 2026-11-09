@@ -181,25 +181,26 @@ def _offline_client(
 
     tables = kb_settings or {}
 
-    def _get_by_id(_db: Any, kb_id: str) -> Any:
+    def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         rows = tables.get(kb_id)
         return SimpleNamespace(
-            tenant_id=TENANT_ID,
+            tenant_id=tenant_id,
             settings=rows or {},
             name=f"知识库-{kb_id}",
             description="制度与流程",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id", _get_by_id)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
 
     if llm is not None:
         # 改写与重排都是惰性 import 的，所以替换点仍在「大模型能力出口」上。
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {"client": client, "embedding": embedding, "keyword": keyword}

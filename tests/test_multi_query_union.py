@@ -220,22 +220,23 @@ def _offline_client(
 
     tables = kb_settings or {}
 
-    def _get_by_id(_db: Any, kb_id: str) -> Any:
+    def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return SimpleNamespace(
-            tenant_id=TENANT_ID,
+            tenant_id=tenant_id,
             settings=tables.get(kb_id) or {},
             name="",
             description="",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id", _get_by_id)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
     if llm is not None:
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {

@@ -171,17 +171,18 @@ def _offline_client(
     )
     monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeDb())
     monkeypatch.setattr(
-        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
+        kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)
     )
 
     if llm is not None:
         # 重排工厂是惰性 import 的，所以替换点在「大模型能力出口」上，而不是重排模块里。
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda tier="fast": llm)
 
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {"client": client}

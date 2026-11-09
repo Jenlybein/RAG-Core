@@ -4,12 +4,13 @@
 HTTP 从依赖注入拿，MCP 从 JSON-RPC 请求上下文拿；除此之外的规则全在
 :func:`app.core.auth.resolve_identity` 里，只有一份。
 
-``resolve_dev_key`` 这个名字是占位时代留下的。本票**不**改名：路由上的
-``Depends(resolve_dev_key)`` 与 15 个测试文件里的
-``dependency_overrides[resolve_dev_key] = ...`` 认的是**可调用对象本身**，
-一旦这里换成一个新对象而测试没跟着改，那些 override 会在无提示的情况下失效，
-测试于是改成真的走一遍鉴权（有的还会去连库）。重命名与全部调用点一起做，
-放在后续那一票。
+``get_current_key`` 就是这份适配器对路由暴露的唯一名字，返回判定结论
+:class:`app.core.auth.KeyContext`。名字里的 ``key`` 是「这次调用用的是哪把 Key」，
+不是「去查一把 Key」——查 Key 与四种未授权的判定都在内核里。
+
+改名与全部调用点一起收口（占位时代的旧名字已彻底消失，仓库里 `grep` 不到）：``Depends(...)``
+与 ``dependency_overrides[...]`` 认的是**可调用对象本身**，只改一半会让那些 override 在
+无提示的情况下失效，测试于是悄悄改成真的走一遍鉴权。
 """
 
 from __future__ import annotations
@@ -21,7 +22,7 @@ from app.core.auth import KeyContext, resolve_identity
 from app.db.session import get_db
 
 
-def resolve_dev_key(request: Request, db: Session = Depends(get_db)) -> KeyContext:
-    """路由的鉴权依赖：名字未改，行为换成判定内核。"""
+def get_current_key(request: Request, db: Session = Depends(get_db)) -> KeyContext:
+    """路由的鉴权依赖：把请求与本次会话交给判定内核，原样返回它的结论。"""
 
     return resolve_identity(request, db)

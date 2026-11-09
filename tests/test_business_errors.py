@@ -13,7 +13,6 @@ import re
 from datetime import datetime
 from enum import IntEnum
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -92,10 +91,11 @@ def client(offline_embedding):
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
     main.app.dependency_overrides[session.get_db] = lambda: object()
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
     from app.core.config import settings
 
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(
         tenant_id=settings.DEV_TENANT_ID
     )
     try:
@@ -174,7 +174,7 @@ def test_fail_and_ok_keep_the_envelope_contract() -> None:
 
 def test_nonexistent_knowledge_base_returns_business_code(client, monkeypatch) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id", lambda db, kb_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
 
     response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
@@ -189,10 +189,11 @@ def test_nonexistent_knowledge_base_returns_business_code(client, monkeypatch) -
 def test_cross_tenant_and_nonexistent_share_the_same_code(client, monkeypatch) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
-    monkeypatch.setattr(repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id="tenant-b"))
+    # 跨租户与「不存在」在仓储层是同一个结果：按（id + 租户）取，别家的库取不到。
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
     cross_tenant = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
-    monkeypatch.setattr(repo, "get_by_id", lambda db, kb_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
     nonexistent = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
     assert cross_tenant.status_code == nonexistent.status_code == 200
@@ -215,7 +216,7 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
 
     monkeypatch.setattr(settings, "MODEL_BASE_URL", "")
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id", lambda db, kb_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
 
     response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
@@ -231,7 +232,7 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
 
 def test_document_upload_nonexistent_knowledge_base_uses_the_same_exit(client, monkeypatch) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id", lambda db, kb_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
 
     response = client.post(
         "/api/v1/documents/upload",

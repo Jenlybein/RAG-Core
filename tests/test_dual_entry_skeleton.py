@@ -1,7 +1,7 @@
 """第 1 步双入口骨架的验收：占位 Key / 列库 / kb_ids / MCP 工具。
 
 唯一接缝仍是 ASGI 应用边界（TestClient）。除「缺 Key」那条用独立 app
-测真实 resolve_dev_key 外，其余请求都真实带占位 Key 头；数据库与 Provider
+测真实 get_current_key 外，其余请求都真实带占位 Key 头；数据库与 Provider
 用 dependency_overrides + monkeypatch 换掉，全程离线、不发真实模型请求。
 """
 
@@ -128,8 +128,8 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
 
     monkeypatch.setattr(
         knowledge_base_access.knowledge_base_repository,
-        "get_by_id",
-        lambda db, kb_id: SimpleNamespace(tenant_id=settings.DEV_TENANT_ID),
+        "get_by_id_for_tenant",
+        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
     )
 
     class FakeEmbedding:
