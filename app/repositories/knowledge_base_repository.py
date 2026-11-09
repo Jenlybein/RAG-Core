@@ -23,11 +23,14 @@ def get_by_id(db: Session, kb_id: str) -> KnowledgeBase | None:
 def get_split_config(
     db: Session, kb_id: str, *, tenant_id: str
 ) -> tuple[str, int]:
-    """取该库的切块配置 (strategy, chunk_size)。
+    """取该库的切块配置 (strategy, chunk_size, allowed_formats)。
 
     库不存在或跨租户时回落到默认值，而不是抛错：索引任务是异步的，库在这期间
     被删掉时应当按默认配置继续尝试，让后续流程报出「库不存在」这个真正的原因；
     在取配置这一步先炸只会把原因盖掉。
+
+    策略列非空，这里不再有「缺省就是 structure」的回退——那种回退会让
+    「没有策略」这个本该不存在的情况被悄悄掩盖。
     """
 
     kb = db.get(KnowledgeBase, kb_id)
@@ -35,7 +38,7 @@ def get_split_config(
         values = settings_of(None)
         return SPLIT_STRUCTURE, values["chunk_size"]
     values = settings_of(kb)
-    return kb.split_strategy or SPLIT_STRUCTURE, values["chunk_size"]
+    return kb.split_strategy, values["chunk_size"]
 
 
 def list_by_tenant(db: Session, tenant_id: str) -> list[KnowledgeBase]:

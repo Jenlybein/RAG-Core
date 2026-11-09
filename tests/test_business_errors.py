@@ -315,7 +315,8 @@ def test_success_response_shape_is_unchanged(client, monkeypatch) -> None:
             "kb_id": "kb-1",
             "name": kwargs["name"],
             "tenant_id": kwargs["tenant_id"],
-            "split_strategy": kwargs.get("split_strategy", "structure"),
+            "split_strategy": kwargs["split_strategy"],
+            "allowed_formats": kwargs.get("allowed_formats") or ["markdown"],
             "chunk_size": kwargs.get("chunk_size", 800),
             "created_at": datetime(2024, 1, 2, 3, 4, 5),
         }
@@ -324,7 +325,7 @@ def test_success_response_shape_is_unchanged(client, monkeypatch) -> None:
 
     response = client.post(
         "/api/v1/knowledge-bases/create",
-        json={"name": "demo"},
+        json={"name": "demo", "split_strategy": "structure"},
     )
 
     body = response.json()

@@ -35,6 +35,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.db.base import now
 from app.models.document import Document
+from app.models.knowledge_base import FORMAT_MARKDOWN, SPLIT_STRUCTURE
 from app.repositories import document_repository
 from app.services.indexing_service import IndexingService
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
@@ -158,8 +159,18 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     claimed: list[str] = []
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
+    # 目标库是 structure（白名单只有 markdown）：上传准入会读这份配置，
+    # 所以替身必须带齐策略与白名单，不能只给 tenant_id。
     monkeypatch.setattr(
-        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
+        kb_repo,
+        "get_by_id",
+        lambda db, kb_id: SimpleNamespace(
+            id=KB_ID,
+            tenant_id=TENANT_ID,
+            split_strategy=SPLIT_STRUCTURE,
+            allowed_formats=[FORMAT_MARKDOWN],
+            settings={},
+        ),
     )
 
     def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:
@@ -336,3 +347,64 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     assert len(pipeline_env.embeddings.vectors) == len(chunks)
     assert all(len(vector) == EMBEDDING_DIM for vector in pipeline_env.embeddings.vectors)
     assert chunks[0]["embedding"] == pipeline_env.embeddings.vectors[0]
+
+
+def test_same_markdown_loses_heading_path_in_a_size_kb(
+    pipeline_env: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """同一份 markdown、同一套 Worker：structure 库留章节路径，size 库不留。
+
+    这是「策略即准入」的兑现——库级策略不只是个配置项，它真的换了切块器。
+    与上一条测试的唯一区别是**不注入切块器**：让 Worker 自己去读库配置。
+    """
+
+    from app.models.knowledge_base import SPLIT_SIZE
+
+    document_service = importlib.import_module("app.services.document_service")
+    kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
+
+    monkeypatch.setattr(
+        kb_repo,
+        "get_split_config",
+        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 800),
+    )
+
+    session = pipeline_env.session
+    store = pipeline_env.store
+    embeddings = pipeline_env.embeddings
+    failures: list[BaseException] = []
+
+    def _consume(**kwargs: Any) -> None:
+        service = IndexingService(splitter=None, embeddings=embeddings, stores=[store])
+
+        def _run() -> None:
+            try:
+                asyncio.run(service.index_existing_document(session, kwargs["document_id"]))
+            except BaseException as exc:  # noqa: BLE001 - 让 Worker 的失败原样复现
+                failures.append(exc)
+
+        worker = threading.Thread(target=_run, name="t7-size-worker")
+        worker.start()
+        worker.join()
+        if failures:
+            raise failures[0]
+
+    monkeypatch.setattr(document_service, "enqueue_document", _consume)
+
+    response = pipeline_env.client.post(
+        "/api/v1/documents/upload",
+        data={"kb_id": KB_ID},
+        files={"file": (SOURCE_FILENAME, FIXTURE_PATH.read_bytes(), "text/markdown")},
+        headers={"X-Request-ID": "t7-size-req"},
+    )
+
+    assert response.status_code == 200
+    chunks = store.written[-1]
+
+    assert all(chunk["meta"].get("heading_path") in (None, "") for chunk in chunks), (
+        "size 切块不认标题，不该产出章节路径"
+    )
+    assert all(chunk["meta"].get("section_id") in (None, "") for chunk in chunks), (
+        "没有章节边界就没有 section_id，折叠与页码对这类切片不生效"
+    )
+    assert len(chunks) != 8, "两种策略切出来的形状必须不同，而不是同一份结果换个名字"

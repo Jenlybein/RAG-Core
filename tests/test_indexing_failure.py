@@ -106,7 +106,14 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
     enqueued: list[dict[str, Any]] = []
 
     monkeypatch.setattr(
-        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
+        kb_repo,
+        "get_by_id",
+        lambda db, kb_id: SimpleNamespace(
+            tenant_id=TENANT_ID,
+            split_strategy="structure",
+            allowed_formats=["markdown"],
+            settings={},
+        ),
     )
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(
@@ -158,6 +165,7 @@ def test_upload_registers_processing_and_never_writes_index_logs(
         "status": DocumentStatus.PROCESSING,
         "chunk_count": 0,
         "error_message": None,
+        "source_type": "markdown",
     }
     assert session.commit_count == 1, "登记提交一次即返回，不写索引结果"
     assert session.documents["doc-1"].status == DocumentStatus.PROCESSING
@@ -195,7 +203,7 @@ def test_upload_registers_processing_and_never_writes_index_logs(
     assert record["document_id"] == "doc-1"
     assert record["tenant_id"] == TENANT_ID
     assert record["kb_id"] == KB_ID
-    assert record["source_type"] == "text"
+    assert record["source_type"] == "markdown"
     assert DOCUMENT_CONTENT not in json.dumps(record), "文档内容不得进日志"
 
 
@@ -217,6 +225,7 @@ def test_response_never_echoes_content_or_internal_detail(offline_upload) -> Non
         "status",
         "chunk_count",
         "error_message",
+        "source_type",
     }
 
 
