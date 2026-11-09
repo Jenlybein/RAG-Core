@@ -13,8 +13,9 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
-from typing import Final
+from typing import Any, Final
 
 from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
@@ -67,3 +68,53 @@ class KeyPolicy(Base):
     custom_options: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
+
+
+@dataclass(frozen=True)
+class KeyPolicySnapshot:
+    """一套密钥配置的**只读快照**：判定内核把它随身带着，下游只读不写。
+
+    与 :class:`app.models.plan.PlanSpec` 同一套做法：字段一一对应行里的列、没有默认值
+    （映射漏一列就是 ``TypeError``），且**不做 ``bool()`` / ``int()`` 兜底**——行里某列
+    是 ``NULL`` 时兜底会把它变成 ``False`` 或 ``0``，而「能力全关」恰好是合法组合，
+    于是一个播种 / 落库错误会静静通过。
+
+    为什么单独做一个快照而不是直接拿着 ORM 行：行绑在会话生命周期上，请求结束就过期；
+    而判定结论要被后面的关卡（白名单、套餐复核、限流、配额）在同一个请求里反复读，
+    读到一个已经 detach 的行只会得到 ``DetachedInstanceError``，比「读到旧值」更难查。
+
+    ``custom_options`` 用「（键, 值）对」而不是 ``dict``：frozen 的 dataclass 里塞一个
+    可变 dict，等于给「冻结」留了个后门——拿到快照的人可以顺手改掉它，而这份快照可能
+    正被同一个请求里的其它关卡共享。要字典形状时调用方自己 ``dict(...)`` 造一份。
+    """
+
+    allowed_kb_ids: tuple[str, ...]
+    research_allowed: bool
+    hybrid_allowed: bool
+    rerank_allowed: bool
+    query_rewrite_allowed: bool
+    retrieve_qps: int
+    retrieve_daily: int
+    profile: str
+    include_parent: bool
+    expand_table_rows: bool
+    custom_options: tuple[tuple[str, Any], ...] = ()
+
+
+def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
+    """把一行密钥配置映射成快照；逐字段搬运，不做任何类型兜底（理由见上）。"""
+
+    return KeyPolicySnapshot(
+        allowed_kb_ids=tuple(row.allowed_kb_ids),
+        research_allowed=row.research_allowed,
+        hybrid_allowed=row.hybrid_allowed,
+        rerank_allowed=row.rerank_allowed,
+        query_rewrite_allowed=row.query_rewrite_allowed,
+        retrieve_qps=row.retrieve_qps,
+        retrieve_daily=row.retrieve_daily,
+        profile=row.profile,
+        include_parent=row.include_parent,
+        expand_table_rows=row.expand_table_rows,
+        # 按键排序：JSONB 本来就重排键，这里再稳定一次，快照相等性才不依赖读出顺序。
+        custom_options=tuple(sorted((row.custom_options or {}).items())),
+    )

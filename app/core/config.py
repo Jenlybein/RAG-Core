@@ -78,6 +78,15 @@ class Settings(BaseSettings):
     # tenant_id 取默认租户、不做真实校验；第 5 步换成 api_keys 表。
     DEV_API_KEY: str = "dev-key"
     DEV_TENANT_ID: str = "tenant_demo"
+    # 鉴权开关（第 7 步）：关闭时落进内置开发身份，但**仍然要求**带上上面那把占位 token
+    # ——退回「谁都不用带」意味着一个被意外暴露的开发实例对整个网络敞开，而要求这把固定
+    # token 对开发者零成本（它本来就在 .env 里），还让既有测试保持有意义。
+    # **生产必须打开**：打开后只认 api_keys 表里的真 Key，开发身份不可达。
+    AUTH_ENABLED: bool = False
+    # 套餐缓存（第 7 步）：与 Celery 的 0/1 号库分开，避免哪天有人在那两个库上 FLUSHDB
+    # 顺手把套餐缓存清空（或反过来）。读走缓存、改完删缓存，TTL 只是兜底。
+    REDIS_URL: str = "redis://localhost:6379/2"
+    PLAN_CACHE_TTL_SECONDS: int = 60
     # 离线测试 / CI 不启 MCP 会话管理器（避免每个 TestClient 都启停 session manager）。
     # 生产默认开启；仅 pytest 通过环境变量关掉。
     ENABLE_MCP: bool = True

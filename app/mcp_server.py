@@ -3,9 +3,10 @@
 - ``rag_retrieve``：入参 ``kb_ids``（列表）+ ``query``。
 - ``rag_list_knowledge_bases``：无参，列这把 Key 可见的库。
 
-占位鉴权与 HTTP 侧共用 ``resolve_dev_key``：从 JSON-RPC 请求上下文里取出
-HTTP Request，校验头部 ``Authorization: Bearer dev-key``，解出默认租户。
-第 5 步会把这里换成 ``api_keys`` 表与 ``allowed_kb_ids`` 白名单；
+占位鉴权与 HTTP 侧共用同一份判定内核 ``app.core.auth.resolve_identity``：从 JSON-RPC
+请求上下文里取出 HTTP Request，连同本次工具调用自己的数据库会话一起交进去。这里只做
+「取请求 + 取会话」两件事——判定规则只有一份，两个入口不允许各自长出一套。
+真实 Key、``allowed_kb_ids`` 白名单与套餐复核都发生在那份核心里（第 7 步）。
 第 9 步再挂第三个工具 ``rag_research``。
 
 本项目没有流式响应，``json_response=True`` 让工具调用回普通 JSON。
@@ -19,14 +20,14 @@ from typing import Any
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 
-from app.core.auth import resolve_dev_key
+from app.core.auth import resolve_identity
 from app.core.exceptions import AppError
 
 
-def _key_context() -> Any:
-    """从 MCP 的 HTTP 请求上下文取占位 Key；不走真实鉴权。"""
+def _key_context(db: Any) -> Any:
+    """MCP 侧的薄适配器：从请求上下文取 HTTP Request，交给判定内核。"""
 
-    return resolve_dev_key(get_http_request())
+    return resolve_identity(get_http_request(), db)
 
 
 def create_mcp_server(
@@ -43,9 +44,10 @@ def create_mcp_server(
     async def rag_retrieve(kb_ids: list[str], query: str) -> dict:
         """在指定知识库里检索切片（不生成答案）。"""
 
-        key = _key_context()
         db = get_db()
         try:
+            # 先取会话再判身份：真实 Key 的租户与套餐都在库里，判定本身要读它。
+            key = _key_context(db)
             return await retrieve(db, tenant_id=key.tenant_id, kb_ids=kb_ids, query=query)
         except AppError as exc:
             # 业务失败不是协议错误：按 JSON-RPC 结果表达，文本里带 code。
@@ -57,9 +59,9 @@ def create_mcp_server(
     async def rag_list_knowledge_bases() -> dict:
         """列这把 Key 可见的知识库（与 HTTP 的 GET /api/v1/knowledge-bases 对称）。"""
 
-        key = _key_context()
         db = get_db()
         try:
+            key = _key_context(db)
             rows = list_kbs(db, key.tenant_id)
             return {
                 "knowledge_bases": [

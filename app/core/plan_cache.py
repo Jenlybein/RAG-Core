@@ -1,0 +1,113 @@
+"""套餐缓存的接缝：只有 ``get`` / ``set`` / ``delete`` 三个方法。
+
+为什么要有这个接口：套餐解析在每一次调用的热路径上（ADR-0018「运行时只复核套餐」），
+读一次 Redis 比读一次库便宜，而「少读一次库」这件事又必须在测试里看得见——所以缓存
+做成注入的，测试塞一个内存假实现就能断言「命中缓存时一次数据库都没碰」，不必连真 Redis
+也不必 monkeypatch 全局。
+
+**缓存键只由 ``plan_id`` 组成，不含 ``code``。** 管理员改一个套餐的 code（``pro`` →
+``pro-max``）时，若键里带 code，旧键会整批变成孤儿：它们既不会被读到，也不会在删缓存
+时被删掉，只能等过期；而键只认 id，改名就是一次纯展示层改动。
+
+**失效一律靠删，不靠写。** 写缓存要求每一处修改都记得同步，漏一处就留下一个「看起来
+更新过、实际是旧值」的条目；删则让下一次读自然拿到新值，漏不掉。
+"""
+
+from __future__ import annotations
+
+import json
+from dataclasses import asdict
+from typing import Any, Final, Protocol
+
+from app.core.config import settings
+from app.models.plan import PlanSpec
+
+#: 缓存键前缀；与 Celery 的键空间不冲突（它们不在这个库里，也各有各的前缀）。
+KEY_PREFIX: Final[str] = "plan:"
+
+
+def cache_key(plan_id: int) -> str:
+    """套餐缓存的键：**只有 id**，理由见模块文档。"""
+
+    return f"{KEY_PREFIX}{plan_id}"
+
+
+class ExpiringKeyValueClient(Protocol):
+    """redis-py 里套餐缓存真正用到的那三条命令。
+
+    刻意不写成 ``Redis``：这个模块因此不 import redis 包，测试传一个字典伪装的对象就够，
+    也不会有人顺手在缓存实现里加一条只有真 Redis 才认的命令。
+    """
+
+    def get(self, key: str) -> str | bytes | None: ...
+
+    def setex(self, key: str, ttl: int, value: str) -> Any: ...
+
+    def delete(self, key: str) -> Any: ...
+
+
+class PlanCache(Protocol):
+    """判定内核与套餐服务之间的缓存契约：三个方法，不接受第四个。"""
+
+    def get(self, plan_id: int) -> PlanSpec | None: ...
+
+    def set(self, plan_id: int, plan: PlanSpec) -> None: ...
+
+    def delete(self, plan_id: int) -> None: ...
+
+
+class RedisPlanCache:
+    """生产实现：Redis 里存一份 JSON 快照，短期过期只是兜底（真正生效靠删）。"""
+
+    def __init__(
+        self,
+        client: ExpiringKeyValueClient,
+        *,
+        ttl_seconds: int | None = None,
+    ) -> None:
+        self._client = client
+        self._ttl = settings.PLAN_CACHE_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+
+    def get(self, plan_id: int) -> PlanSpec | None:
+        raw = self._client.get(cache_key(plan_id))
+        if raw is None:
+            return None
+        text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+        return _from_payload(json.loads(text))
+
+    def set(self, plan_id: int, plan: PlanSpec) -> None:
+        self._client.setex(cache_key(plan_id), self._ttl, json.dumps(_to_payload(plan)))
+
+    def delete(self, plan_id: int) -> None:
+        self._client.delete(cache_key(plan_id))
+
+
+def _to_payload(plan: PlanSpec) -> dict[str, Any]:
+    """快照 → 可 JSON 化的字典；``allowed_profiles`` 的元组由 ``json`` 自然写成数组。"""
+
+    return asdict(plan)
+
+
+def _from_payload(payload: dict[str, Any]) -> PlanSpec:
+    """字典 → 快照：逐字段点名，缺一列就是 ``KeyError``。
+
+    不走 ``PlanSpec(**payload)``：那就等于让缓存里的脏数据（多一个键、少一个键、
+    ``allowed_profiles`` 是个字符串）决定类型，而缓存的职责只是「把刚才读到的行原样
+    还回去」。
+    """
+
+    return PlanSpec(
+        code=payload["code"],
+        name=payload["name"],
+        allowed_profiles=tuple(payload["allowed_profiles"]),
+        hybrid_allowed=payload["hybrid_allowed"],
+        rerank_allowed=payload["rerank_allowed"],
+        query_rewrite_allowed=payload["query_rewrite_allowed"],
+        research_allowed=payload["research_allowed"],
+        retrieve_qps=payload["retrieve_qps"],
+        retrieve_daily=payload["retrieve_daily"],
+        max_kb=payload["max_kb"],
+        max_kb_per_retrieve=payload["max_kb_per_retrieve"],
+        max_documents_per_kb=payload["max_documents_per_kb"],
+        max_processing_documents=payload["max_processing_documents"],
+    )
