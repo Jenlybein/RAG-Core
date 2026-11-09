@@ -678,9 +678,12 @@ def _resolve_question_labels(
 ) -> dict[str, list[str]]:
     """把某一道题某一栏的 (document, heading_path) 标注解析成真实 ``chunk_id``。
 
-    解析规则是「恰好一条」：0 条说明标注写错了（或语料被改了），多于 1 条说明该章节
-    被切成了多片、只写 heading_path 不足以定位——两种都必须当场失败。**静默算成漏召
-    是评测里最坏的一种错**：它看起来像「检索没做好」，实际是标注没对齐。
+    解析规则（issue #62 后）：**0 片必须当场失败**，说明标注写错或语料被改了——
+    静默算成漏召是评测里最坏的一种错，它看起来像「检索没做好」，实际是标注没对齐。
+    **多片则全部纳入**：切块策略改细之后，同一 ``heading_path`` 下会有「整表片 +
+    每个数据行各一片」或「超长节按窗口切成多片」，而标注本来就是按**节**写的。
+    这里放行多片、并把节内的片按 ``order_index`` 排定（保持确定性），评测侧
+    再按命中判定；分母口径由 ``_score_question`` 统一，不在这里偷偷去重。
     """
 
     by_locator: dict[tuple[str, str], list[str]] = {}
@@ -699,14 +702,10 @@ def _resolve_question_labels(
                     f"{question.id}: {field} label not found -> document={stem} "
                     f"heading_path={heading_path!r}"
                 )
-            elif len(matched) > 1:
-                problems.append(
-                    f"{question.id}: {field} label matched {len(matched)} chunks -> "
-                    f"document={stem} heading_path={heading_path!r}；"
-                    "该章节被切成了多片，标注需要更细的定位"
-                )
             else:
-                chunk_ids.append(matched[0])
+                # 一节多片是切块器的正常产物，不是标注错误；全部算这一栏的相关片。
+                # by_locator 按 _load_indexed_chunks 的行序追加，保持确定性。
+                chunk_ids.extend(matched)
         resolved[question.id] = chunk_ids
 
     if problems:

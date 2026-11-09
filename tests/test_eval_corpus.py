@@ -365,7 +365,7 @@ def test_exact_code_questions_include_the_trap_pair_both_ways() -> None:
     assert len(by_trap) >= 2, f"陷阱对没有双向覆盖：{by_trap}"
 
 
-def test_every_label_resolves_to_exactly_one_chunk_offline() -> None:
+def test_every_label_resolves_to_at_least_one_chunk_offline() -> None:
     """题目标注在**离线**就能对上是本测试存在的意义：先于任何一次真实评测失败。
 
     金标写的是「答案在这一节」，所以一个金标可能命中多片：一节超过 ``chunk_size``
