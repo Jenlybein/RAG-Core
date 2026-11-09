@@ -81,6 +81,9 @@ def _run(session: _Session, chunks: list[dict], **kwargs) -> list[dict]:
         "fold_to_sections": True,
         "expand_table_rows": True,
         "top_k": 5,
+        # 折叠路径不碰重排与改写：填 False 只是让这个值对象完整（#78 起它们是必填项）。
+        "rerank": False,
+        "rewrite": False,
     }
     options.update(kwargs)
 

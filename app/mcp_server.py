@@ -11,8 +11,9 @@ JSON-RPC 信封本身不带任何授权信息。这次调用「用多好」由�
 
 判定只有一份：这里从 JSON-RPC 请求上下文里取出 HTTP Request，连同本次工具调用自己的
 数据库会话一起交给判定内核 ``app.core.auth.resolve_identity``；随后按六道关卡的顺序调
-**同一个**数据范围关卡 ``app.services.data_scope.ensure_kb_scope``（HTTP 侧的路由调的
-也是它）。这里只做「取请求 + 取会话 + 递参数」三件事，不判规则，也不各长一套。
+**同一个**数据范围关卡 ``app.services.data_scope.ensure_kb_scope`` 与**同一个**档位门禁
+``app.services.tier_policy.resolve_retrieval_options``（HTTP 侧的路由调的是同一对函数）。
+这里只做「取请求 + 取会话 + 递参数」三件事，不判规则，也不各长一套。
 
 业务失败（如 20008 / 20010）不是协议错误：按工具执行失败表达，文本里带错误码。第 9 步
 再挂第三个工具 ``rag_research``。
@@ -32,7 +33,7 @@ from app.core.auth import KeyContext, resolve_identity
 from app.core.exceptions import AppError
 from app.schemas.rag import RetrieveData
 from app.services.data_scope import ensure_kb_scope, scoped_kb_ids
-from app.services.retrieval_options import options_from_policy
+from app.services.tier_policy import resolve_retrieval_options
 
 
 def _key_context(db: Any) -> KeyContext:
@@ -61,13 +62,17 @@ def create_mcp_server(
             key = _key_context(db)
             # 第二道关卡与 HTTP 侧同一份实现、同一个码：白名单外与跨租户都回「不存在」。
             ensure_kb_scope(policy=key.policy, kb_ids=kb_ids)
+            # 第三 / 第四道关卡也是同一份实现（套餐复核 + 档位门禁 + 单次库数）：
+            # 「这次用多好」不是请求能表达的，两条入口因此也不可能判出两种答案。
+            options = resolve_retrieval_options(
+                policy=key.policy, plan=key.plan, kb_count=len(kb_ids)
+            )
             payload = await retrieve(
                 db,
                 tenant_id=key.tenant_id,
                 kb_ids=kb_ids,
                 query=query,
-                # 与 HTTP 侧同一个解析函数、同一份配置：「这次用多好」不是请求能表达的。
-                options=options_from_policy(policy=key.policy),
+                options=options,
             )
             # 与 HTTP 出口**同一套响应形状**：HTTP 侧过 ``RetrieveData``，这里也过一遍，
             # 否则同一份业务结果会因为在两条路上被「整形成不同深浅」而悄悄漂移——缺省字段

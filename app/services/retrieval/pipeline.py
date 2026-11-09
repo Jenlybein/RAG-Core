@@ -91,6 +91,7 @@ async def hybrid_retrieve(
     keyword_factory: Callable[[], Any],
     recall_depth: int | None = None,
     rerank_candidates: int | None = None,
+    rerank_enabled: bool,
 ) -> HybridOutcome:
     """两路并行召回，融合、重排后返回；一路失败不取消另一路。
 
@@ -111,6 +112,11 @@ async def hybrid_retrieve(
     候选数**，两者都与 ``top_k``（最终返回条数）不是一回事：召回要宽、融合池要宽，
     「两路共识」与「重排挑得动」才有机会发生。它们由组合根从配置读出来传进来，
     这里不碰 settings——编排层不该知道配置从哪来。
+
+    ``rerank_enabled`` 是**这次调用要不要重排**，同样由组合根按已解析参数传入（#78：
+    档位意图 ∧ 本机能力，合取在平台层算完）。它必须显式给：这台机器装了重排，不代表
+    每一个档位都该用——``balanced`` 与 ``quality`` 在同一个部署上跑，两者的区别恰好
+    就是这一步。靠 ``provider.available`` 一个信号判断，会把「本次不要」静默变成「本次跑了」。
     """
 
     depth = max(top_k, recall_depth or 0)
@@ -177,7 +183,10 @@ async def hybrid_retrieve(
     fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
     # 重排是**语义那一侧**的一步：它看到的是 ``effective_query``（改写成功时是改写句），
     # 扩展出来的同义词只该帮关键词一路做字面匹配，塞进重排提示词只会变成噪音。
-    reranked = await rerank_stage(query=rerank_query, chunks=fused_chunks, top_n=top_k)
+    # ``rerank_enabled`` 来自本次的已解析参数：不要重排的档位在装了重排的机器上也不跑。
+    reranked = await rerank_stage(
+        query=rerank_query, chunks=fused_chunks, top_n=top_k, enabled=rerank_enabled
+    )
     if reranked.reason is not None:
         degraded_reason = degraded_reason or reranked.reason
 

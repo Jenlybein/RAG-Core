@@ -9,9 +9,9 @@
 为什么身份必须走真内核：本票要证明的正是「两边只有一份判定」。若在 MCP 一侧把
 ``resolve_identity`` 换掉，被测掉的恰好就是这份判定本身。
 
-**``tenant_policy`` 回显还不在响应契约里**（那是第 7 步之后「请求契约收缩」与「档位」两张
-票的事），所以同源断言比的是**整份 data 载荷**而不是手挑的几个字段：两份载荷相等，
-``tenant_policy`` 落地那天就自动落进这条断言里，不必回来改测试。
+**同源断言比的是整份 data 载荷**：两份载荷相等，于是后来往契约里加的每一栏（例如票
+#78 的 ``metadata.tenant_policy``）都自动落进这条断言里，不必回来改测试——回显只在一边
+出现，这里当场就红。
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.api_key import ApiKey
-from app.models.key_policy import PROFILE_SPEED, KeyPolicy
+from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED, KeyPolicy
 from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_STANDARD, Plan, plan_row_of
 from app.models.tenant import Tenant
@@ -83,11 +83,13 @@ def _key_row(*, tenant_id: str = TENANT_ID) -> ApiKey:
     )
 
 
-def _tenant_row(*, tenant_id: str = TENANT_ID) -> Tenant:
-    return Tenant(id=tenant_id, name="Acme 公司", plan_id=PLAN_IDS[PLAN_PRO], status="active")
+def _tenant_row(*, tenant_id: str = TENANT_ID, plan_code: str = PLAN_PRO) -> Tenant:
+    return Tenant(
+        id=tenant_id, name="Acme 公司", plan_id=PLAN_IDS[plan_code], status="active"
+    )
 
 
-def _policy_row(*, allowed_kb_ids: list[str]) -> KeyPolicy:
+def _policy_row(*, allowed_kb_ids: list[str], profile: str = PROFILE_SPEED) -> KeyPolicy:
     return KeyPolicy(
         id=POLICY_ID,
         tenant_id=TENANT_ID,
@@ -99,7 +101,7 @@ def _policy_row(*, allowed_kb_ids: list[str]) -> KeyPolicy:
         query_rewrite_allowed=False,
         retrieve_qps=10,
         retrieve_daily=100,
-        profile=PROFILE_SPEED,
+        profile=profile,
         include_parent=True,
         expand_table_rows=True,
         custom_options={},
@@ -132,15 +134,21 @@ def _doc_row(document_id: str, *, kb_id: str) -> SimpleNamespace:
     )
 
 
-def _session(*, allowed_kb_ids: list[str], kb_ids: list[str]) -> RecordingSession:
+def _session(
+    *,
+    allowed_kb_ids: list[str],
+    kb_ids: list[str],
+    profile: str = PROFILE_SPEED,
+    plan_code: str = PLAN_PRO,
+) -> RecordingSession:
     """一份假会话：既供判定内核读身份，也供列库读 ``knowledge_bases`` 行。"""
 
     return RecordingSession(
         rows={
             Plan: _plan_rows(),
             ApiKey: [_key_row()],
-            Tenant: [_tenant_row()],
-            KeyPolicy: [_policy_row(allowed_kb_ids=allowed_kb_ids)],
+            Tenant: [_tenant_row(plan_code=plan_code)],
+            KeyPolicy: [_policy_row(allowed_kb_ids=allowed_kb_ids, profile=profile)],
             # 列库按租户过滤：这里预置「本项目租户 + 别家租户」各一个库。
             KnowledgeBase: [_kb_row(kb_id) for kb_id in kb_ids]
             + [_kb_row(KB_OUT_OF_SCOPE, tenant_id=OTHER_TENANT_ID)],
@@ -311,7 +319,22 @@ def unrestricted_entries(monkeypatch: pytest.MonkeyPatch):
     yield from _entries_with(monkeypatch, allowed_kb_ids=None)
 
 
-def _entries_with(monkeypatch: pytest.MonkeyPatch, *, allowed_kb_ids: list[str] | None):
+@pytest.fixture
+def quality_on_free(monkeypatch: pytest.MonkeyPatch):
+    """一把挂着 ``quality`` 的 Key + 免费套餐：档位门禁在两条入口上都该拒绝。"""
+
+    yield from _entries_with(
+        monkeypatch, allowed_kb_ids=[KB_IN_SCOPE], profile=PROFILE_QUALITY, plan_code=PLAN_FREE
+    )
+
+
+def _entries_with(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    allowed_kb_ids: list[str] | None,
+    profile: str = PROFILE_SPEED,
+    plan_code: str = PLAN_PRO,
+):
     """搭一个同时挂 HTTP 与 MCP 的应用；``allowed_kb_ids=None`` = 内置开发身份。"""
 
     main = importlib.import_module("app.api.router")
@@ -326,6 +349,8 @@ def _entries_with(monkeypatch: pytest.MonkeyPatch, *, allowed_kb_ids: list[str] 
         return _session(
             allowed_kb_ids=[] if allowed_kb_ids is None else allowed_kb_ids,
             kb_ids=[KB_IN_SCOPE],
+            profile=profile,
+            plan_code=plan_code,
         )
 
     # 内置开发身份的租户标识来自服务端配置，与假行里的租户不同（它就是「本地那一个」）。
@@ -575,6 +600,50 @@ def test_both_entries_reject_the_same_scope_violation_with_the_same_code(
     mcp_code = _mcp_code(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_OUT_OF_SCOPE], "query": "q"}))
 
     assert http_code == mcp_code == ErrorCode.KNOWLEDGE_BASE_NOT_FOUND
+
+
+# ───────────────────────────────────────────── 档位门禁与回显：两条入口同一份判定
+
+
+def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryClient) -> None:
+    """``tenant_policy`` 在两条入口上都出现，且逐字段相同（票 #78）。
+
+    这条用**显式字段**再断言一遍，而不只靠 ``test_both_entries_answer_the_same_question_
+    the_same_way`` 的整份载荷相等：整份相等证明「一致」，这里证明「这一栏确实存在且是
+    那几项」——两者缺一，回显消失时后者仍然能报出来。
+    """
+
+    http_body = entries.retrieve([KB_IN_SCOPE])
+    mcp_payload = _mcp_payload(
+        entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"})
+    )
+
+    expected = {
+        "plan": PLAN_PRO,
+        "requested_tier": PROFILE_SPEED,
+        "mode": "vector",
+        "top_k": 5,
+        "rerank": False,
+        "rewrite": False,
+        "kb_count": 1,
+        "clipped": [],
+    }
+    assert http_body["data"]["metadata"]["tenant_policy"] == expected
+    assert mcp_payload["metadata"]["tenant_policy"] == expected
+
+
+def test_both_entries_reject_a_tier_the_plan_does_not_allow(
+    quality_on_free: EntryClient,
+) -> None:
+    """档位门禁只有一份：同一把挂 ``quality`` 的 Key 打两扇门，都是 ``20013``。"""
+
+    http_code = quality_on_free.retrieve([KB_IN_SCOPE])["code"]
+    result = quality_on_free.mcp_call(
+        "rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"}
+    )
+
+    assert result["isError"] is True
+    assert http_code == _mcp_code(result) == ErrorCode.FEATURE_NOT_ALLOWED
 
 
 def test_each_entry_keeps_exactly_one_adapter_and_the_kernel_keeps_no_shim() -> None:

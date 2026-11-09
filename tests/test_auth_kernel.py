@@ -19,7 +19,7 @@ import pytest
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.models.api_key import ApiKey
-from app.models.key_policy import PROFILE_BALANCED, PROFILE_SPEED, KeyPolicy
+from app.models.key_policy import PROFILE_BALANCED, PROFILE_CUSTOM, KeyPolicy
 from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_STANDARD, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import RecordingSession
@@ -158,17 +158,20 @@ def test_context_is_constructible_from_a_tenant_id_alone() -> None:
     assert context.plan == DEV_KEY_PLAN
 
 
-def test_development_snapshot_is_a_full_pro_policy_at_a_conservative_profile() -> None:
-    """开发身份的配置=「全能力 + 保守命名档位 + 两种形状都开」，套餐=最高档。
+def test_development_snapshot_is_a_full_pro_policy_at_custom_following_the_deployment() -> None:
+    """开发身份的配置=「全能力 + ``custom`` 档且不给手动参数 + 两种形状都开」，套餐=最高档。
 
     能力全开是为了「开发身份不因配置层的开关改变现行为」：重排 / 改写是否真的跑，
-    仍由服务端配置决定。档位取保守的那一档，则是因为命名档位是**完整替换**——挂在
-    ``quality`` 上会让开发身份凭空多出重排与改写，本地迭代立刻偏离现行为。
+    仍由服务端配置决定。档位取 ``custom`` 而**不是**任何一个命名档位，则是因为命名档位
+    是完整替换：#78 之后 ``speed`` 意味着「只走向量一路」，钉在它上面会让本地默认模式从
+    ``RETRIEVAL_MODE`` 悄悄变成 ``vector``；预设值将来再改一次，开发身份又漂一次。
+    ``custom`` + 空 ``custom_options`` 是「逐键跟着部署缺省走」的唯一表达。
     """
 
     from app.core.auth import DEV_KEY_POLICY
 
-    assert DEV_KEY_POLICY.profile == PROFILE_SPEED
+    assert DEV_KEY_POLICY.profile == PROFILE_CUSTOM
+    assert DEV_KEY_POLICY.custom_options == (), "不许钉任何手动参数：缺键 = 跟 .env 走"
     assert (
         DEV_KEY_POLICY.research_allowed,
         DEV_KEY_POLICY.hybrid_allowed,

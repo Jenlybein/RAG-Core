@@ -440,6 +440,8 @@ def test_unknown_mode_wins_over_invisible_kb() -> None:
                     top_k=settings.TOP_K,
                     fold_to_sections=True,
                     expand_table_rows=True,
+                    rerank=False,
+                    rewrite=False,
                 ),
             )
         )

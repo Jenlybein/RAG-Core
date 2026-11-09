@@ -41,10 +41,16 @@
 诚实空（成功 + ``empty_reason``）。空结果不是故障：把它当故障处理会让监控
 满地假警报，也让调用方误以为该重试。
 
-**质量参数从哪来（第 7 步，#77）**：请求体只有 ``kb_ids`` + ``query``；模式、返回
-条数、折叠与表格展开由平台层从密钥配置解析成一个 :class:`RetrievalOptions` 交进
-``retrieve``（见 ``app/services/retrieval_options.py``）。本模块因此**不再认识请求
-模型**，也不再为任何一个参数写「没传就取缺省」的分支。
+**质量参数从哪来（第 7 步，#77 / #78）**：请求体只有 ``kb_ids`` + ``query``；模式、返回
+条数、重排、改写、折叠与表格展开由平台层从密钥配置解析、并过完五道门禁
+（``app.services.tier_policy``）后交成一个 :class:`RetrievalOptions` 进来。本模块因此
+**不再认识请求模型**，也不再为任何一个参数写「没传就取缺省」的分支；两个布尔开关
+（``options.rerank`` / ``options.rewrite``）同理——它们是**生效值**（档位意图 ∧ 本机
+能力），本模块不再自己去问一次 ``settings``。
+
+**每次响应都带 ``tenant_policy``**：套餐名、要求的档位、实际模式、条数、重排、改写、
+本次用到的库数、被裁字段。它从**同一个** ``options`` 上读出（``tenant_policy_echo``），
+所以「回显说开了重排」与「链路真的开了重排」不可能分叉——这份回显不是另存的一份事实。
 
 日志只放 ID 与派生量，绝不放检索原文（见 tests/test_retrieval_log_hygiene.py）。
 """
@@ -70,7 +76,7 @@ from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
 from app.services.retrieval.vector_recall import vector_recall
-from app.services.retrieval_options import RetrievalOptions
+from app.services.retrieval_options import RetrievalOptions, tenant_policy_echo
 from app.utils.retrieval_fields import with_score_columns
 
 logger = structlog.get_logger(__name__)
@@ -94,14 +100,19 @@ async def retrieve(
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
-    ``options`` 是**已经解析完**的本次参数（模式、返回条数、两个结果形状开关），由
-    平台层从密钥配置解析而来（``app.services.retrieval_options``）——请求体里只剩
+    ``options`` 是**已经解析完**的本次参数（模式、返回条数、重排、改写、两个结果形状
+    开关），由平台层过完门禁后交进来（``app.services.tier_policy``）——请求体里只剩
     ``kb_ids`` + ``query``，质量参数没有第二个来源。
 
     本函数仍是**组合根**：它继续读那些**不是每次调用都能选**的服务端旋钮（召回深度
     ``HYBRID_RECALL_TOP_K``、重排候选池 ``RERANK_MAX_CANDIDATES``），并继续校验模式
     ——MCP 与内部调用仍可能自己造一个 ``options``，模式词表那一道不能因为有了值对象
     就省掉。
+
+    **重排与改写的开关读 ``options``，不读 ``settings``**：这两个布尔已经是「档位想要 ∧
+    本机装了」的合取（``app.services.retrieval_options.options_from_bundle``）。链路里
+    再问一次 ``settings`` 就等于有了两个真相——机器上没装重排、档位却想要，两处判断
+    谁说了算会变成排障时的第一道谜题。
     """
 
     resolved_mode = options.mode
@@ -115,8 +126,8 @@ async def retrieve(
         else resolved_top_k
     )
 
-    # 模式校验放在最前面：HTTP 与 MCP 入口的解析（``options_from_policy``）已经验过
-    # 词表，只有直接构造 ``options`` 的内部调用才会带着未知值到这里。校验先于可见性
+    # 模式校验放在最前面：两个入口的解析（``tier_policy.resolve_retrieval_options``）已经
+    # 验过词表，只有直接构造 ``options`` 的内部调用才会带着未知值到这里。校验先于可见性
     # 校验与查询优化，被拒的请求不该白烧一次改写（与「拒绝先于召回」同一条理由）。
     if resolved_mode not in (MODE_HYBRID, MODE_BM25, MODE_VECTOR):
         raise AppError(ErrorCode.PARAM_ERROR, f"unsupported retrieval mode: {resolved_mode!r}")
@@ -132,8 +143,8 @@ async def retrieve(
     visible_kbs = [ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
 
     # 查询优化：召回之前把用户那句话加工成「向量逐句列表 + 关键词一句 + 重排一句」
-    # （GLOSSARY「检索链路」：查询优化 → 召回 → 融合 → 重排）。两个开关默认关闭，
-    # 关闭时 ``vector_queries`` 只有原句，这一步是恒等变换。
+    # （GLOSSARY「检索链路」：查询优化 → 召回 → 融合 → 重排）。改写开关读 ``options``：
+    # 它是「档位想要 ∧ 本机装了」的合取，关闭时这一步是恒等变换。
     optimized = await optimize_query(
         query=query,
         # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
@@ -141,6 +152,7 @@ async def retrieve(
             [getattr(kb, "settings", None) for kb in visible_kbs]
         ),
         rewrite_hint=_rewrite_hint(visible_kbs),
+        rewrite_enabled=options.rewrite,
     )
 
     degraded = optimized.rewrite_degraded
@@ -162,11 +174,14 @@ async def retrieve(
             vector_factory=get_vector_store,
             keyword_factory=get_keyword_search_provider,
             # 「召回宽、返回窄、融合池更宽」：三个深度都只在这里读配置，
-            # 编排层不碰 settings。
+            # 编排层不碰 settings。融合池宽度只在**这次要重排**时才加宽——不重排时
+            # 让它等于 top_k，与加宽之前逐字节一致（候选多了也不会有下次重排去挑）。
             recall_depth=max(resolved_top_k, settings.HYBRID_RECALL_TOP_K),
-            rerank_candidates=(
-                settings.RERANK_MAX_CANDIDATES if settings.RERANK_ENABLED else None
-            ),
+            rerank_candidates=settings.RERANK_MAX_CANDIDATES if options.rerank else None,
+            # 「这次要不要重排」由本次的已解析参数说了算：装了重排的机器上，不要重排
+            # 的那一档也不该被顺手排一遍（pipeline 里靠 provider 可用性判断会把
+            # 「本次不要」静默变成「本次跑了」）。
+            rerank_enabled=options.rerank,
         )
         chunks = outcome.chunks
         # 一因一码，先到的才是根因：改写发生在召回之前，所以它已经在场时通道故障与
@@ -228,15 +243,37 @@ async def retrieve(
         "query": query,
         "kb_ids": list(kb_ids),
         "retrieved_chunks": collapsed,
-        "metadata": {
-            "mode": resolved_mode,
-            "top_k": resolved_top_k,
-            "vector_store": settings.VECTOR_STORE,
-            # 降级与空结果统一挂在这一层（父 spec「响应契约」）：调用方读一个地方
-            # 就能判断「这是不是完整结果」「为什么是空的」。
-            "retrieval": retrieval_meta,
-        },
+        "metadata": _metadata_of(
+            options,
+            kb_ids=kb_ids,
+            retrieval=retrieval_meta,
+        ),
     }
+
+
+def _metadata_of(
+    options: RetrievalOptions, *, kb_ids: list[str], retrieval: dict[str, object]
+) -> dict[str, object]:
+    """响应的 ``metadata``：这次实际用了什么。
+
+    ``tenant_policy``（GLOSSARY）回答「为什么这次慢了 / 为什么没重排 / 哪些参数被裁掉了」。
+    它在**每一次**经套餐门禁解析的调用上都出现，且与 ``metadata.mode`` / ``top_k`` 同源；
+    只有不经门禁的内部调用（自造 ``options`` 的评测脚本）没有它——那时编一个套餐名出来
+    只会更糟。
+    """
+
+    metadata: dict[str, object] = {
+        "mode": options.mode,
+        "top_k": options.top_k,
+        "vector_store": settings.VECTOR_STORE,
+        # 降级与空结果统一挂在这一层（父 spec「响应契约」）：调用方读一个地方
+        # 就能判断「这是不是完整结果」「为什么是空的」。
+        "retrieval": retrieval,
+    }
+    echo = tenant_policy_echo(options, kb_count=len(kb_ids))
+    if echo is not None:
+        metadata["tenant_policy"] = echo
+    return metadata
 
 
 # 多取倍数住在 IO 无关的折叠模块里（评测也要用它，不该为此把 settings/DB 拖进
