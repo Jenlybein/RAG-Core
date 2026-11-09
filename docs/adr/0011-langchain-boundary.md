@@ -115,6 +115,7 @@ ES 是不是刚挂掉、这是不是降级凑出的一半结果。
 | `app/providers/llm/` | `init_chat_model` 统一入口、结构化输出、`fast` / `strong` 两个模型角色 | 业务层只依赖 `LLMProvider`，不认识框架类型 |
 | `app/providers/embedding/` | `Embeddings` 适配（默认 `EMBEDDING_PROVIDER=langchain`） | `embed_query` / `embed_texts` 的签名由我方 ABC 决定 |
 | `app/providers/langchain_runtime.py` | 把追踪开关同步到框架真正读的环境变量 | 两个构造点都调用，包括「没配 key、走空实现」的路径 |
+| `app/utils/window_splitter.py` | `RecursiveCharacterTextSplitter`：正文与代码的**片内切分** | **只接管片内怎么再切**；标题栈、`section_id`、表格整组仍是自研（详见下方「索引侧的例外」） |
 
 ### 检索链路零框架代码
 
@@ -123,6 +124,22 @@ ES 是不是刚挂掉、这是不是降级凑出的一半结果。
 - `app/services/rag_service.py`：组合根，只 import 各 Provider 的工厂函数；响应契约、降级与空结果原因全部在这里与 `pipeline` 里判定。
 - 因此「召回 / 融合 / 重排编排 / 降级」四件事都能离线单测，不需要模型 key，也不需要网络。
 
+### 索引侧的例外：切块器
+
+切块器在 `app/utils/window_splitter.py`，不在 `app/providers/` 下，但它确实 import
+了 `langchain_text_splitters`。这条**不是对本 ADR 的违反**，而是 ADR 原本只覆盖
+「检索链路」——切块属**索引侧**，不在这张图里。
+
+边界仍然清楚：框架只接管「一段文本内部怎么再切」（`RecursiveCharacterTextSplitter`
+的分隔符优先级、按语言切代码）。它**不产出**以下任何东西，这些全是我们自研：
+
+- 标题栈与 `heading_path`（ADR-0013 折叠的前提）；
+- `section_id`（`sha256(heading_path)` 的确定性哈希）；
+- 表格整组保留 + 行级片；
+- `chunk_type` / `table_part` / `code_part` / `page`。
+
+一句话：**结构判断归我们，窗口切分归框架。**
+
 ### 可验证判据
 
 判据盯的是 **import**，不是普通子串。开发机是 Windows，**先把 PowerShell 版跑通**（它不依赖 GNU grep）：
@@ -130,14 +147,14 @@ ES 是不是刚挂掉、这是不是降级凑出的一半结果。
 ```powershell
 Get-ChildItem app -Recurse -Filter *.py |
   Select-String -Pattern '^\s*(from|import)\s+langchain' |
-  Where-Object { $_.Path -notmatch '\\providers\\' }
+  Where-Object { $_.Path -notmatch '\\providers\\|\\utils\\window_splitter' }
 # 必须无输出
 ```
 
 Linux / macOS / CI 的等价写法（注意：Windows 上的 Git Bash **没有** `grep` 命令，照抄这条会得到 `command not found`，别误以为判据失效）：
 
 ```bash
-grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -v 'app/providers/'
+grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -vE 'app/providers/|app/utils/window_splitter.py'
 # 必须为空（grep 退出码 1）
 ```
 
@@ -151,7 +168,7 @@ grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -v 'app/pro
 | 只用 `Document` 作为内部传输对象 | 我们已有 dict + Pydantic schema，两套模型互转纯粹是成本。 |
 | 用 LangChain 的 `PGVector` 替掉自研 SQL | 会丢掉租户过滤、`(kb_id, index_version)` 配对、`<=>` 距离换算、以及「先删后写」的事务不变量。 |
 | 用 `BM25Retriever`（纯 Python）替掉 Elasticsearch | 第 4 步的核心就是 ES + IK 中文分词；纯 Python BM25 给不了中文分词与倒排索引。 |
-| 用 `RecursiveCharacterTextSplitter` 替掉自研切块器 | 第 3 步的标题栈、`section_id` 内容哈希、表格整组保留，它一样都给不了。 |
+| 用 `RecursiveCharacterTextSplitter` **替掉整个**切块器 | 第 3 步的标题栈、`section_id` 内容哈希、表格整组保留，它一样都给不了。所以只让它接管「片内怎么再切」，结构判断仍自研（见「索引侧的例外」）。 |
 
 ## 代价
 
