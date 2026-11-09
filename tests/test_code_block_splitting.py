@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
+from app.utils.tokenizer import token_count
 
 FIXTURE = Path(__file__).parent / "fixtures" / "markdown" / "code_blocks.md"
 
@@ -22,9 +23,15 @@ def markdown() -> str:
     return FIXTURE.read_text(encoding="utf-8")
 
 
+# 用小窗口强制切分：语料里的 python 块约 511 token，默认 512 的窗口刚好装得下，
+# 那样测不出「切开之后断点对不对」。这里的目的是验证切分行为，不是验证体感。
+WINDOW = 200
+OVERLAP = 20
+
+
 @pytest.fixture(scope="module")
 def pieces(markdown: str):
-    return MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100).split(markdown)
+    return MarkdownStructuredSplitter(chunk_size=WINDOW, chunk_overlap=OVERLAP).split(markdown)
 
 
 def test_long_python_block_is_split_into_parts(pieces) -> None:
@@ -43,13 +50,15 @@ def test_long_python_block_is_split_into_parts(pieces) -> None:
 def test_every_piece_stays_within_the_window(pieces) -> None:
     """任何一片都不该超过窗口——包括代码块。"""
 
-    limits = {"prose": 800, "code": 800, "table": 800}
+    limits = {"prose": WINDOW, "code": WINDOW, "table": WINDOW}
     for piece in pieces:
         kind = piece.metadata["chunk_type"]
         limit = limits.get(kind)
         if limit is None:
             continue
-        assert len(piece.text) <= limit, f"{kind} 片超过窗口：{len(piece.text)}"
+        assert token_count(piece.text) <= limit, (
+            f"{kind} 片超过窗口：{token_count(piece.text)} token"
+        )
 
 
 def test_code_pieces_break_on_line_boundaries(markdown: str, pieces) -> None:

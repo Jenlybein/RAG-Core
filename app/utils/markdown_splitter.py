@@ -1,6 +1,6 @@
 """Markdown 感知的结构化切块器。
 
-与 `CharacterTextSplitter` 的字符窗口不同，这里先认标题层级、再在节内断句：
+与固定窗口（`WindowTextSplitter`）不同，这里先认标题层级、再在节内断句：
 `#` / `##` / `###` 开启新节（一片一个子节，路径精确到子节），
 `####` 及更深只加深 `heading_path`、不新起切片——「请求 / 响应 / 错误码」
 这类附属小节因此不会被切得七零八落。
@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 from app.utils.provenance import page_from_heading
 from app.utils.text_splitter import SplitPiece, TextSplitter
+from app.utils.window_splitter import code_pieces as code_pieces_of
+from app.utils.window_splitter import text_pieces as text_pieces_of
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)")
 _LIST_LINE_RE = re.compile(r"^\s*(?:[-*+]\s|\d+\.\s)")
@@ -31,6 +33,8 @@ class _Block:
 
     kind: str
     lines: list[str]
+    # 代码块围栏上的语言标记（```````python`` → ``python``）；其它块为空串。
+    language: str = ""
 
 
 @dataclass(slots=True)
@@ -138,7 +142,13 @@ class MarkdownStructuredSplitter(TextSplitter):
                 continue
             if line.lstrip().startswith("```"):
                 code_lines, index = _collect_code_block(lines, index)
-                blocks.append(_Block(kind="code", lines=code_lines))
+                blocks.append(
+                    _Block(
+                        kind="code",
+                        lines=code_lines,
+                        language=_fence_language(code_lines[0]),
+                    )
+                )
                 continue
             if "|" in line:
                 table_lines, next_index = _collect_table_run(lines, index)
@@ -192,7 +202,15 @@ class MarkdownStructuredSplitter(TextSplitter):
             if block.kind == "code":
                 # 未分片时序号为 0，分片后才从 1 开始编号——「0 表示整块」这条
                 # 语义让消费方不用先数总数才知道该不该拼回。
-                code_pieces = self._split_code_lines(block.lines)
+                #
+                # 剥掉首尾两根围栏行：每片应当是**纯代码**，否则 `from_language`
+                # 的语法分隔符匹配不上行首（围栏行以 ``` 开头，会打断规则）。
+                code_pieces = code_pieces_of(
+                    _code_body(block.lines),
+                    marker=block.language,
+                    size=self.chunk_size,
+                    overlap=self.chunk_overlap,
+                )
                 if len(code_pieces) == 1:
                     produced.append(_Piece(text=code_pieces[0], chunk_type="code"))
                 else:
@@ -226,70 +244,13 @@ class MarkdownStructuredSplitter(TextSplitter):
                         )
                 continue
             if block.kind == "normal":
-                for text in self._split_normal_lines(block.lines):
+                for text in text_pieces_of(
+                    "\n".join(block.lines),
+                    size=self.chunk_size,
+                    overlap=self.chunk_overlap,
+                ):
                     produced.append(_Piece(text=text, chunk_type=_classify_text(text)))
         return produced
-
-    def _split_code_lines(self, lines: list[str]) -> list[str]:
-        """超长代码块按 chunk_size 递归切，切点优先落在语句边界。
-
-        与正文开窗的两点不同，都是刻意的：
-
-        * **切点优先空行或缩进回退处**——不切在函数中间。代码没有句子标点，
-          只有缩进结构能表达「这里是一段的结束」。
-        * **不做 overlap**——正文重叠是为了让跨片的句子仍有上下文，而代码重叠
-          会把同一行复制进两片，让 `code_part` 拼回原样时出现重复行。
-        """
-
-        text = "\n".join(lines).strip("\n")
-        if not text:
-            return []
-        if len(text) <= self.chunk_size:
-            return [text]
-
-        pieces: list[str] = []
-        start = 0
-        length = len(text)
-        while start < length:
-            end = min(start + self.chunk_size, length)
-            if end < length:
-                cut = _code_break_point(text, start, end)
-                if cut > start:
-                    end = cut
-            # 刻意不做首尾 strip：切点落在空行后时，那个空行是分隔符本身。
-            # 剥掉它，「按 code_part 拼回原样」就永远差一行，而且分不清是
-            # 「本来就没有空行」还是「被 strip 吃掉」。
-            chunk = text[start:end]
-            if chunk.strip():
-                pieces.append(chunk)
-            if end >= length:
-                break
-            start = end
-        return pieces
-
-    def _split_normal_lines(self, lines: list[str]) -> list[str]:
-        """节内二次切：超长正文按 chunk_size 开窗，重叠只在节内保留。"""
-        text = "\n".join(lines).strip("\n")
-        if not text:
-            return []
-        if len(text) <= self.chunk_size:
-            return [text]
-        pieces: list[str] = []
-        start = 0
-        length = len(text)
-        while start < length:
-            end = min(start + self.chunk_size, length)
-            if end < length:
-                newline = text.rfind("\n", start + self.chunk_size // 4, end)
-                if newline > start:
-                    end = newline
-            chunk = text[start:end].strip("\n")
-            if chunk:
-                pieces.append(chunk)
-            if end >= length:
-                break
-            start = max(end - self.chunk_overlap, start + 1)
-        return pieces
 
     def _table_groups(self, rows: list[str]) -> list[list[str]]:
         """把表格切成若干组；每组顶部保留表头（header + 分隔行）。"""
@@ -372,58 +333,7 @@ def _table_row_texts(group: list[str]) -> list[str]:
     return texts
 
 
-def _code_break_point(text: str, start: int, end: int) -> int:
-    """在 ``[start, end]`` 里挑一个代码切点，返回切点位置（0 表示没找到）。
 
-    优先级从高到低：
-    1. **空行之后**——空行是代码里最明确的段落边界；
-    2. **缩进回退处**——某行比上一非空行更浅，通常意味着一个块（函数/分支）结束；
-    3. 任意换行处——至少不切在行中间。
-
-    再设一个下限 ``start + chunk_size // 4``：允许切点落在窗口的前四分之一之内
-    会让每片变得过碎，且窗口利用率骤降。找不到任何切点就返回 0，由调用方
-    退回按字符硬切——代码行极长（压缩后的 JSON）时没有换行可依。
-    """
-
-    floor = start + max(1, (end - start) // 4)
-    blank_cut = 0
-    dedent_cut = 0
-    newline_cut = 0
-
-    index = text.find("\n", floor)
-    while index != -1 and index < end:
-        next_start = index + 1
-        if next_start >= end:
-            break
-        newline_cut = next_start
-        line_end = text.find("\n", next_start)
-        current = text[next_start : len(text) if line_end == -1 else line_end]
-        previous = _previous_nonblank_line(text, index - 1)
-        if not current.strip():
-            blank_cut = next_start
-        elif previous is not None and _indent_of(current) < _indent_of(previous):
-            dedent_cut = next_start
-        index = text.find("\n", next_start)
-
-    return blank_cut or dedent_cut or newline_cut
-
-
-def _previous_nonblank_line(text: str, before: int) -> str | None:
-    """取 ``before`` 之前最近的一个非空行（用于比较缩进）。"""
-
-    line_end = text.rfind("\n", 0, before + 1)
-    cursor = before if line_end == -1 else line_end
-    while cursor > 0:
-        previous_end = text.rfind("\n", 0, cursor)
-        line = text[previous_end + 1 : cursor]
-        if line.strip():
-            return line
-        cursor = previous_end
-    return None
-
-
-def _indent_of(line: str) -> int:
-    return len(line) - len(line.lstrip())
 
 
 def _push_heading(stack: list[tuple[int, str]], level: int, title: str) -> None:
@@ -434,6 +344,30 @@ def _push_heading(stack: list[tuple[int, str]], level: int, title: str) -> None:
 
 def _join_stack(stack: list[tuple[int, str]]) -> str:
     return " > ".join(title for _, title in stack)
+
+
+def _fence_language(open_fence: str) -> str:
+    """从开围栏行取语言标记：```````python`` → ``python``；``````` `` → 空串。
+
+    只取第一个词：```````python title="x"`` 这类写法里，语言总在最前面。
+    """
+
+    body = open_fence.lstrip()[3:].strip()
+    return body.split()[0].lower() if body else ""
+
+
+def _code_body(lines: list[str]) -> str:
+    """剥掉首尾围栏，返回纯代码文本。
+
+    保留围栏会让每片都以 ```` ``` ```` 开头，`from_language` 的语法分隔符按行首
+    匹配，围栏行会把规则打断——于是长代码块可能一片都不切。
+    """
+
+    if not lines:
+        return ""
+    head = lines[1:] if lines[0].lstrip().startswith("```") else lines
+    tail = head[:-1] if head and head[-1].lstrip().startswith("```") else head
+    return "\n".join(tail)
 
 
 def _collect_code_block(lines: list[str], start: int) -> tuple[list[str], int]:
