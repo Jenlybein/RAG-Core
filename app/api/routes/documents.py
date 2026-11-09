@@ -11,6 +11,10 @@
 按 ``document_id`` 取文档一律经 ``get_by_id_for_tenant``（ADR-0006）：缺失与跨租户
 统一按「不存在」（20016）处理，不泄露存在性。守卫一律走 ``document_state`` 的
 ``ensure_reindexable`` / ``ensure_deletable``，不在路由里另写 if。
+
+四个入口都先过**第二道关卡**（数据范围白名单，``app.services.data_scope``）：上传与
+列文档按请求里的 ``kb_id`` 判，重建与删除按文档所属的库判。越界与跨租户同一个码
+（20008），理由与 ``ensure_visible`` 相同——可区分的拒绝会泄露资源存在性。
 """
 
 import structlog
@@ -19,7 +23,8 @@ from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from app.core.auth import DevKeyContext, resolve_dev_key
+from app.api.deps import get_current_key
+from app.core.auth import DevKeyContext
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session import get_db
 from app.providers.keyword_search import get_keyword_search_provider
@@ -36,6 +41,7 @@ from app.schemas.document import (
 )
 from app.services import document_service, document_state
 from app.services.chunk_store import build_chunk_stores
+from app.services.data_scope import ensure_kb_scope
 from app.services.document_storage import remove_document_file
 from app.services.knowledge_base_access import ensure_visible
 from app.services.index_dispatch import enqueue_document
@@ -69,7 +75,7 @@ async def upload_document(
     title: str | None = Form(None),
     file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
-    key: DevKeyContext = Depends(resolve_dev_key),
+    key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[UploadDocumentData]:
     """单端点按 content-type 分流：multipart 走文件模式，其余走 JSON 模式。
 
@@ -85,6 +91,9 @@ async def upload_document(
             raise RequestValidationError([_MISSING_KB_ID_ERROR])
         if file is None:
             raise RequestValidationError([_MISSING_FILE_ERROR])
+        # 第二道关卡：白名单。FastAPI 在进本函数之前已经解析完 multipart，这里能拦下的
+        # 最早位置就是「读正文 / 落库」之前——被拒的上传不写行、也不把字节读进来。
+        ensure_kb_scope(policy=key.policy, kb_ids=[kb_id])
         data = await document_service.upload(
             db,
             tenant_id=key.tenant_id,
@@ -106,6 +115,9 @@ async def upload_document(
         # 半截 / 非法 JSON 也归入 20002，不要让它穿成未捕获异常的 500。
         raise RequestValidationError([_INVALID_JSON_ERROR]) from None
 
+    # 第二道关卡：白名单（JSON 分支与文件分支同一份判定，同一个码）。
+    ensure_kb_scope(policy=key.policy, kb_ids=[payload.kb_id])
+
     data = await document_service.upload(
         db,
         tenant_id=key.tenant_id,
@@ -125,7 +137,7 @@ async def upload_document(
 async def list_documents(
     kb_id: str = Query(..., min_length=1),
     db: Session = Depends(get_db),
-    key: DevKeyContext = Depends(resolve_dev_key),
+    key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[DocumentListData]:
     """返回该知识库下全部文档的 status / chunk_count / error_message 等摘要。
 
@@ -134,6 +146,8 @@ async def list_documents(
     ``chunk_count`` 用一次分组计数批量取回，不对每份文档各查一次（N+1）。
     """
 
+    # 第二道关卡：白名单（先于任何库行查询），然后才是租户可见性。
+    ensure_kb_scope(policy=key.policy, kb_ids=[kb_id])
     ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
 
     rows = document_repository.list_by_kb(db, kb_id, tenant_id=key.tenant_id)
@@ -168,7 +182,7 @@ async def reindex_document(
     reparse: bool = Query(False),
     force: bool = Query(False),
     db: Session = Depends(get_db),
-    key: DevKeyContext = Depends(resolve_dev_key),
+    key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[ReindexDocumentData]:
     """守卫 → 标记排队（不盖租约）→ 提交 → 投递，立即返回 ``status=3``。
 
@@ -190,6 +204,10 @@ async def reindex_document(
     doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
+
+    # 第二道关卡：白名单。这条入口按 ``document_id`` 进来，因此范围要看**它所属的库**；
+    # 取文档那一句已经强制带了租户，范围判定紧接着做，之后才轮到状态守卫。
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
 
     document_state.ensure_reindexable(doc, force=force)
 
@@ -233,7 +251,7 @@ async def reindex_document(
 async def delete_document(
     document_id: str,
     db: Session = Depends(get_db),
-    key: DevKeyContext = Depends(resolve_dev_key),
+    key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[DeleteDocumentData]:
     """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删行 → 提交。
 
@@ -246,6 +264,9 @@ async def delete_document(
     doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
+
+    # 第二道关卡：白名单（同重建：按文档进来，范围看它所属的库）。
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
 
     document_state.ensure_deletable(doc)
 

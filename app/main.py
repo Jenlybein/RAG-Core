@@ -12,7 +12,9 @@ HTTP 数据面（7 个业务接口，/api/v1/*）：
 另有一个不进业务契约的探活口 ``GET /health``（不出现在 OpenAPI 文档里）。
 
 MCP 数据面（/mcp/，JSON-RPC）：rag_retrieve / rag_list_knowledge_bases。
-两个入口共用同一把占位 API Key 与同一批 Service。
+两条入口只共用**同一份**判定内核与**同一套**关卡（身份 → 数据范围白名单 → 业务）：
+HTTP 由 ``app/api/deps.py`` 取请求，MCP 由 ``app/mcp_server.py`` 取请求，其余全在
+``app.core.auth`` 与 ``app.services.data_scope`` 里，各只有一份。
 """
 
 from contextlib import asynccontextmanager

@@ -28,7 +28,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Final, Mapping, Protocol
+from typing import Final, Mapping, Protocol
 
 from sqlalchemy.orm import Session
 
@@ -66,8 +66,9 @@ DEV_KEY_LABEL: Final[str] = "内置开发身份"
 #: - 限额照抄最高档：开发身份没有套餐主体，额度判定不该在本地把开发自己限住。
 #:
 #: ``allowed_kb_ids`` 是空元组：仓库里的约定是「空 = 还没圈定，不是全部」，而内置开发
-#: 身份没有白名单可言。白名单关卡那一票（T4）接上时，要在这里明确「开发身份不做范围
-#: 收窄」的口径，而不是靠一条空列表悄悄表达两种意思。
+#: 身份没有白名单可言。空元组在这里**只表示这一件事**——「不做范围收窄」由
+#: ``unrestricted_scope=True`` 显式声明（数据范围关卡读的就是它）。若靠空列表兼职表达
+#: 「全部」，真实配置清空白名单就会变成开闸，而那是要失败关闭的一侧。
 DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     allowed_kb_ids=(),
     research_allowed=True,
@@ -80,6 +81,7 @@ DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     include_parent=True,
     expand_table_rows=True,
     custom_options=(),
+    unrestricted_scope=True,
 )
 
 #: 内置开发身份的套餐快照：最高档（演示要看的是完整能力）。
@@ -91,10 +93,9 @@ class KeyContext:
     """判定结论：这次是谁、能用哪套密钥配置、买的是哪一档。
 
     ``tenant_id`` 之后的字段**全部有默认值**，默认值就是内置开发身份的那一份快照。
-    这不是为了好看：既有 15 个测试文件用 ``DevKeyContext(tenant_id=TENANT_ID)`` 造上下文，
-    而 ``dependency_overrides`` 认的是可调用对象本身——为了让它们的构造点一行都不改，
-    新上下文必须能只凭一个租户标识造出来。等重命名那一票统一改掉全部调用点，这些默认
-    值就可以删。
+    这不是为了好看：16 个既有测试文件用 ``DevKeyContext(tenant_id=TENANT_ID)`` 造上下文
+    来覆盖依赖，构造点只给一个租户标识。依赖函数名已经收口成 ``get_current_key``，但
+    构造点不变，所以这些默认值继续留着——删它们要另改 16 处，收益只是「字段都得显式写」。
 
     展示字段（``tenant_name`` / ``key_label``）默认为空：只给了一个租户标识的构造点
     并不知道这些值，填一个「看起来合理」的假名字比留空更糟。
@@ -108,8 +109,9 @@ class KeyContext:
     plan: PlanSpec = DEV_KEY_PLAN
 
 
-#: 旧名字：既有路由与测试都 ``from app.core.auth import DevKeyContext``。
-#: 重命名与 15 处调用点一起做，留到后续那一票；这里先只做别名。
+#: 兼容别名：路由与既有测试按 ``DevKeyContext`` 引用这个上下文类型。
+#: 本票收口的是**依赖函数名**（``get_current_key``，可调用对象身份）；类型名不在其中——
+#: 改它要连带 16 个测试文件的构造点，收益只是名字更好听。
 DevKeyContext = KeyContext
 
 # 四种未授权情形各自的提示。**同一档错误码、不同消息**：调用方分得清是哪一步拦下的，
@@ -208,20 +210,3 @@ def _bearer_token(request: HttpRequestLike) -> str | None:
     if scheme.lower() != "bearer":
         return None
     return token.strip() or None
-
-
-def __getattr__(name: str) -> Any:
-    """把 HTTP 侧的薄适配器 ``resolve_dev_key`` 以**延迟导入**的方式挂在旧名字上。
-
-    这里必须绕一道，不能直接 ``from app.api.deps import resolve_dev_key``：那样本模块
-    就 import 了 FastAPI，「判定内核不认识 Web 框架」这条约束当场破功。PEP 562 的模块级
-    ``__getattr__`` 让名字照样可用（``from app.core.auth import resolve_dev_key`` 照旧
-    生效），而且每次返回的是**同一个函数对象**——``dependency_overrides`` 认的就是它，
-    若在这里包一层新的可调用对象，15 处测试的 override 会静默失效、退化成真的鉴权。
-    """
-
-    if name == "resolve_dev_key":
-        from app.api.deps import resolve_dev_key
-
-        return resolve_dev_key
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

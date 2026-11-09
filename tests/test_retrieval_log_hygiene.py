@@ -161,7 +161,7 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
 
     monkeypatch.setattr(config_mod.settings, "MODEL_API_KEY", API_KEY)
     monkeypatch.setattr(
-        kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID)
+        kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)
     )
     monkeypatch.setattr(
         service,
@@ -170,10 +170,11 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     )
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
     main.app.dependency_overrides[session_mod.get_db] = lambda: EmptySession()
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
     from app.core.config import settings
 
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(
         tenant_id=settings.DEV_TENANT_ID
     )
     try:

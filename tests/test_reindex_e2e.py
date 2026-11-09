@@ -89,7 +89,8 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
     main = importlib.import_module("app.main")
     session_mod = importlib.import_module("app.db.session")
     routes = importlib.import_module("app.api.routes.documents")
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     engine = create_engine(
         f"sqlite:///{tmp_path / 'reindex.db'}", connect_args={"check_same_thread": False}
@@ -115,7 +116,7 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
     monkeypatch.setattr(routes, "enqueue_document", lambda **kwargs: enqueued.append(kwargs))
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
             yield SimpleNamespace(

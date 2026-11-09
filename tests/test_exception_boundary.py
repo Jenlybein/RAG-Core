@@ -76,10 +76,11 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _OfflineEmbeddingProvider())
     session = importlib.import_module("app.db.session")
     main.app.dependency_overrides[session.get_db] = lambda: object()
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
     from app.core.config import settings
 
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(
         tenant_id=settings.DEV_TENANT_ID
     )
     try:
@@ -259,7 +260,7 @@ def test_business_and_validation_failures_still_return_http_200(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id", lambda db, kb_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
 
     business = client.post("/api/v1/rag/retrieve", json=_VALID_PAYLOAD)
     assert business.status_code == 200

@@ -86,6 +86,12 @@ class KeyPolicySnapshot:
     ``custom_options`` 用「（键, 值）对」而不是 ``dict``：frozen 的 dataclass 里塞一个
     可变 dict，等于给「冻结」留了个后门——拿到快照的人可以顺手改掉它，而这份快照可能
     正被同一个请求里的其它关卡共享。要字典形状时调用方自己 ``dict(...)`` 造一份。
+
+    ``unrestricted_scope`` 是「这把 Key 不做数据范围收窄」的**显式标记**，默认
+    ``False``（受限）。它存在是因为内置开发身份没有白名单可言，而 ``allowed_kb_ids``
+    的空元组在仓库里的含义是「什么都没圈定、所以什么都不许」——让同一个空值兼职表达
+    「全部」会让「清空白名单」变成开闸。真实配置经 :func:`policy_snapshot_of` 映射
+    出来永远是受限的；只有合成的开发快照把它置为 ``True``。
     """
 
     allowed_kb_ids: tuple[str, ...]
@@ -99,6 +105,8 @@ class KeyPolicySnapshot:
     include_parent: bool
     expand_table_rows: bool
     custom_options: tuple[tuple[str, Any], ...] = ()
+    #: 只有内置开发身份的那份快照把它打开（见类文档末段）；缺省 = 受限。
+    unrestricted_scope: bool = False
 
 
 def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
