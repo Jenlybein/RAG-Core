@@ -288,9 +288,7 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
     return hashes
 
 
-def _switches(
-    monkeypatch: pytest.MonkeyPatch, *, rewrite: bool, synonyms: bool = False
-) -> None:
+def _switches(monkeypatch: pytest.MonkeyPatch, *, rewrite: bool, synonyms: bool = False) -> None:
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", rewrite)
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", synonyms)
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
@@ -355,9 +353,7 @@ def test_synonym_expansion_still_only_touches_the_keyword_query(
 
     _switches(monkeypatch, rewrite=True, synonyms=True)
     _install_llm(monkeypatch, _RewriteLLM(rewritten=REWRITTEN))
-    groups = collect_synonym_groups(
-        [{"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}]
-    )
+    groups = collect_synonym_groups([{"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}])
 
     result = asyncio.run(optimize_query(query=RAW_QUERY, synonym_groups=groups))
 
@@ -565,6 +561,41 @@ def test_vector_single_mode_also_searches_both_queries(
     assert fake["vector"].seen == [1.0, 2.0]
     assert set(_chunk_ids(vector_body)) == {"A", "B"}
     assert fake["keyword"].queries == [], "单模式不碰另一路"
+
+
+def test_one_failing_embedding_degrades_the_whole_vector_branch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两句里有一句嵌入失败：整路降级，绝不拿另一句的半份结果冒充完整池。"""
+
+    _switches(monkeypatch, rewrite=True)
+
+    class _OneFails(_RecordingEmbedding):
+        async def embed_query(self, query: str) -> list[float]:
+            if query == REWRITTEN:
+                raise RuntimeError("embedding endpoint refused the connection")
+            return await super().embed_query(query)
+
+    vector = _FakeVectorStore(
+        pools={
+            1.0: [_vector_row("A", score=0.91)],
+            2.0: [_vector_row("B", score=0.82)],
+        }
+    )
+
+    with _offline_client(
+        monkeypatch,
+        embedding=_OneFails(),
+        vector=vector,
+        keyword=_FakeKeyword(rows=[_keyword_row("k1")]),
+        llm=_RewriteLLM(rewritten=REWRITTEN),
+    ) as fake:
+        body = _response(fake["client"], include_parent=False).json()
+
+    assert body["code"] == 0
+    assert _metadata(body)["degraded"] is True
+    assert _metadata(body)["degraded_reason"] == "vector search failed"
+    assert _chunk_ids(body) == ["k1"], "只剩关键词一路，向量半份结果不参与融合"
 
 
 def test_single_query_keeps_each_caller_historical_tie_break(

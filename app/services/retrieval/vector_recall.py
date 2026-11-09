@@ -20,8 +20,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Sequence
-from typing import Any
+from collections.abc import Callable, Sequence
+from typing import Any, Literal
 
 from app.models.chunk import default_index_versions
 
@@ -77,9 +77,9 @@ async def vector_recall(
     kb_ids: list[str],
     queries: Sequence[str],
     top_k: int,
-    embedding_factory: Any,
-    vector_factory: Any,
-    single_query_order: str = "stable",
+    embedding_factory: Callable[[], Any],
+    vector_factory: Callable[[], Any],
+    single_query_order: Literal["stable", "tiebreak"] = "stable",
 ) -> list[dict]:
     """每句各嵌一次、各做一次范围召回，并成一个池后截到 ``top_k``。
 
