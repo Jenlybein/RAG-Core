@@ -739,6 +739,12 @@ class QuestionOutcome:
     empty_reason: str | None = None
     error: str | None = None
     duration_ms: float = 0.0
+    # 实际检索用的句子（#31）：改写成功时 ``vector_queries`` 是两句（原句 + 改写句），
+    # 关闭 / 失败时只有原句；``effective_query`` 是重排看的那一句。留档是为了让
+    # 「这一题为什么变差」能归因，而不是只能猜。
+    effective_query: str | None = None
+    rewrite_applied: bool = False
+    vector_queries: list[str] = field(default_factory=list)
 
     @property
     def returned_ids(self) -> list[str]:
@@ -772,6 +778,13 @@ async def _run_question(
     outcome.degraded_reason = retrieval_meta["degraded_reason"]
     outcome.empty_reason = retrieval_meta["empty_reason"]
     outcome.returned = list(response["retrieved_chunks"])
+    # 记录**实际用于检索的句子**（#31）：没有它，「名次变了」就无法归因到
+    # 「检索不行」还是「改写把问题改坏了」——q16 的退化当年正是卡在这里。
+    # 改写未发生时这一栏不存在（恒等变换，用句就是原话），此时留 None。
+    optimization = retrieval_meta.get("query_optimization") or {}
+    outcome.effective_query = optimization.get("effective_query") or question.query
+    outcome.rewrite_applied = bool(optimization.get("rewrite_applied"))
+    outcome.vector_queries = list(optimization.get("vector_queries") or [question.query])
     return outcome
 
 
@@ -848,6 +861,10 @@ def _score_question(
         "type": question_type,
         "query": outcome.query,
         "mode": outcome.mode,
+        # 实际检索用句（#31）：改写开了就只有这一栏能解释名次变化。
+        "effective_query": outcome.effective_query,
+        "rewrite_applied": outcome.rewrite_applied,
+        "vector_queries": list(outcome.vector_queries),
         "status": status,
         "hits": len(hits),
         "relevant_total": len(relevant_set),

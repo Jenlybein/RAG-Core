@@ -249,6 +249,11 @@ def test_hybrid_mode_feeds_each_channel_its_own_query(monkeypatch: pytest.Monkey
     assert _retrieval_metadata(body)["degraded"] is False
     # 响应里的 query 仍是**原话**：调用方看到的是自己问的那句。
     assert body["data"]["query"] == "退钱怎么弄"
+    # #31：实际检索用句也留档——没有它，「这题为什么变差」无法归因。
+    optimization = _retrieval_metadata(body)["query_optimization"]
+    assert optimization["rewrite_applied"] is True
+    assert optimization["effective_query"] == "退款的处理流程"
+    assert optimization["vector_queries"] == ["退钱怎么弄", "退款的处理流程"]
 
 
 def test_rerank_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> None:

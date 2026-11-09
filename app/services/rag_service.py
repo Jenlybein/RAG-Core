@@ -188,6 +188,31 @@ async def retrieve(
         expand_table_rows=expand_table_rows,
     )
 
+    retrieval_meta: dict[str, object] = {
+        "mode": resolved_mode,
+        "degraded": degraded,
+        "degraded_reason": degraded_reason,
+        "empty_reason": _empty_reason(
+            db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed
+        ),
+        # 重排事实（是否发生、候选数、返回数、耗时）。单模式下恒为 null：
+        # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
+        "rerank": rerank_info,
+    }
+    if optimized.rewrite_applied:
+        # 查询优化的**实际用句**（#31）：不记录它，评测里就分不清「名次变了是因为
+        # 检索不行，还是因为改写把问题改坏了」——q16 的退化当年正是因此无法归因。
+        #
+        # 只在改写**真的发生**时才加这一栏：改写关闭 / 失败时它是恒等变换（用句就是
+        # 原话），加进去只会让「关闭改写时响应逐字节不变」那条回归红线失效，而
+        # 没有任何可归因的信息增加。
+        retrieval_meta["query_optimization"] = {
+            "rewrite_applied": True,
+            "rewrite_degraded": optimized.rewrite_degraded,
+            "effective_query": optimized.effective_query,
+            "vector_queries": list(optimized.vector_queries),
+        }
+
     return {
         "query": query,
         "kb_ids": list(kb_ids),
@@ -198,17 +223,7 @@ async def retrieve(
             "vector_store": settings.VECTOR_STORE,
             # 降级与空结果统一挂在这一层（父 spec「响应契约」）：调用方读一个地方
             # 就能判断「这是不是完整结果」「为什么是空的」。
-            "retrieval": {
-                "mode": resolved_mode,
-                "degraded": degraded,
-                "degraded_reason": degraded_reason,
-                "empty_reason": _empty_reason(
-                    db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed
-                ),
-                # 重排事实（是否发生、候选数、返回数、耗时）。单模式下恒为 null：
-                # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
-                "rerank": rerank_info,
-            },
+            "retrieval": retrieval_meta,
         },
     }
 

@@ -326,6 +326,19 @@ def test_hybrid_mode_is_accepted_and_fuses_both_channels(offline_retrieval) -> N
     assert retrieval["degraded"] is False
 
 
+def test_metadata_omits_optimization_block_when_rewrite_is_off(offline_retrieval) -> None:
+    """改写关闭时**不加** ``query_optimization``（#31）。
+
+    关闭时查询优化是恒等变换（用句就是原话），加这一栏不增加任何可归因信息，
+    只会让「关闭改写时响应逐字节不变」那条回归红线失效。这条用例钉的是「不加」，
+    「加了且内容正确」由 ``tests/test_query_optimization_retrieval.py`` 钉。
+    """
+
+    body = _post(offline_retrieval["client"])
+
+    assert "query_optimization" not in body["data"]["metadata"]["retrieval"]
+
+
 @pytest.mark.parametrize("top_k", [0, -1, 51, 1000])
 def test_top_k_is_bounded(offline_retrieval, top_k: int) -> None:
     """top_k 有上下界：越界走既有的 20002 校验失败，不进检索链路。"""

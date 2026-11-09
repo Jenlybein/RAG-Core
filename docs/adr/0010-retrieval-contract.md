@@ -208,6 +208,8 @@ kb_id IN ('kb-a', 'kb-b') AND index_version IN ('v1', 'v2')
 
 **#31 修订（2026-11-09）**：`QUERY_REWRITE_ENABLED=true` 现在是「**原句 + 改写句都搜**」，不再是「用改写句替换原句」——向量一路逐句各做一次嵌入与一次范围召回，按 `(kb_id, chunk_id)` 去重、同名次取更好的一次、分数取更高者，合成**一个池**后直接交给既有的 `fuse_by_rrf`（不新增内层 RRF）。关键词一路仍用 `search_query`，重排仍用 `effective_query`，改写失败仍只剩原句并标 `query rewrite failed`；关闭时响应逐字节不变。落地在 `app/services/query/optimizer.py`、`app/services/retrieval/vector_recall.py`。
 
+同一修订还补上一个**观测缺口**：改写真的发生时，响应 `metadata.retrieval` 多一栏 `query_optimization`（`effective_query` / `vector_queries` / `rewrite_degraded`），评测把它逐题落盘，这样「名次变了」能归因到检索还是改写，而不是只能猜（q16 当年就卡在这里）。**改写未发生时这一栏不出现**，恒等变换不新增字段，以免破坏「关闭改写时响应逐字节不变」这条红线。
+
 ### 第二次破坏性变更的迁移方式
 
 `score` 不再恒等于 `rrf_score`：
