@@ -24,6 +24,8 @@ from app.utils.window_splitter import Slicer, default_slicer
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)")
 _LIST_LINE_RE = re.compile(r"^\s*(?:[-*+]\s|\d+\.\s)")
 _SEPARATOR_LINE = "---"
+# 代码围栏的开头。写成常量而不是裸的 [3:]：长度是「语言的约定」而不是巧合数字。
+_FENCE = "```"
 
 
 @dataclass(slots=True)
@@ -349,9 +351,6 @@ def _push_heading(stack: list[tuple[int, str]], level: int, title: str) -> None:
 
 def _join_stack(stack: list[tuple[int, str]]) -> str:
     return " > ".join(title for _, title in stack)
-
-
-_FENCE = "```"
 
 
 def _fence_language(open_fence: str) -> str:
