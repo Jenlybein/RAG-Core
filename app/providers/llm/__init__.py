@@ -62,7 +62,7 @@ if tuple(_VENDORS) != LLM_VENDORS:  # pragma: no cover - 名单不一致时才�
 #
 # 为什么叫「角色」而不是「档位」（GLOSSARY 合规）：本仓库里已经有另外两个同形词，指的
 # 都不是这件事——「套餐」是计费档（术语表里那个计费档的禁用词，本仓库不这么写），「档位」
-# 是第 5 步的质量档位（speed / balanced / quality / custom）。这里说的是「同一家供应商下
+# 是第 7 步的质量档位（speed / balanced / quality / custom）。这里说的是「同一家供应商下
 # 哪个模型干什么活」，与计费、与质量档位都无关，所以三者必须用不同的词。
 _MODEL_ROLES = ("fast", "strong")
 

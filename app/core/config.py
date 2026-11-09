@@ -78,7 +78,7 @@ class Settings(BaseSettings):
     LOG_DIR: str = "logs"
 
     # 占位 Key（第 1 步）：数据面两个入口共用。认这个固定 token，
-    # tenant_id 取默认租户、不做真实校验；第 5 步换成 api_keys 表。
+    # tenant_id 取默认租户、不做真实校验；第 7 步换成 api_keys 表真校验。
     DEV_API_KEY: str = "dev-key"
     DEV_TENANT_ID: str = "tenant_demo"
     # 鉴权开关（第 7 步）：关闭时落进内置开发身份，但**仍然要求**带上上面那把占位 token
