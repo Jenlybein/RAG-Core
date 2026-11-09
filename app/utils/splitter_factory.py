@@ -7,7 +7,7 @@
 
 * ``structure`` —— 认 Markdown 标题层级（h1/h2/h3 为边界），表格整表 + 行级片，
   代码块整块或递归切；
-* ``size`` —— 纯字符窗口硬切，不认标题、不认表格、不认代码。
+* ``size`` —— 固定 token 窗口，不认标题、不认表格、不认代码（片内按段落/句子回退）。
 
 ``size`` 刻意**不给原子块保护**：一旦它也开始认表格与代码，它和 ``structure``
 的差别就只剩「认不认标题」，配置项也就失去意义。它存在的价值是给没有标题结构的
@@ -22,7 +22,7 @@ from app.models.knowledge_base import (
     SPLIT_STRUCTURE,
 )
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
-from app.utils.text_splitter import CharacterTextSplitter, TextSplitter
+from app.utils.text_splitter import TextSplitter, WindowTextSplitter
 
 
 def build_splitter(
@@ -47,7 +47,7 @@ def build_splitter(
     )
 
     if strategy == SPLIT_SIZE:
-        return CharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap)
+        return WindowTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap)
     return MarkdownStructuredSplitter(
         chunk_size=chunk_size,
         chunk_overlap=overlap,

@@ -36,10 +36,15 @@ HTTP 入口与 MCP 入口共用 `ErrorCode` / `AppError`，但响应契约不同
 ```bash
 uv sync                                                # 装全量依赖（一次装完，含阶段 10 的 fastmcp）
 uv sync --all-groups                                   # 连开发组（ruff / mypy / pre-commit）一起装
+uv run python scripts/fetch_qwen_vocab.py              # 取 Qwen 分词词表（2.56 MB，带 SHA256 校验）
 docker compose -f deploy/docker-compose.yml up -d      # 四个容器：PG / Redis / ES(+IK) / Langfuse
 docker exec -it pg16-pgvector psql -U postgres -d rag_db \
   -c "CREATE EXTENSION IF NOT EXISTS vector;"          # 数据卷已存在时手动补一次
 ```
+
+第三条**不能省**：切块窗口按 Qwen token 计长，词表是必需资产。缺它时应用会拒绝启动
+（报 `TokenizerUnavailable` 并提示执行该脚本），而不是悄悄换成近似词表——近似会让
+同一个库在不同部署上切出不同的片，且那种差异完全静默。产物落 `.tokenizer/`，不入库。
 
 `.env` 从 `.env.example` 复制后只需改 3 行：`MODEL_BASE_URL`（百炼控制台给的、含业务空间 ID）、`MODEL_API_KEY`、`LLM_API_KEY`（DeepSeek，第 4 步才用）。库密码默认与容器一致，不用改。`.env` 已在 `.gitignore` 里。第 1 步的 `DEV_API_KEY` / `DEV_TENANT_ID` 与第 2 步的 `LOG_LEVEL` / `LOG_DIR` 都保持默认即可（`dev-key` / `tenant_demo` / `INFO` / `logs`），不必改。
 
@@ -61,13 +66,14 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 ## 第 3 步：文档处理链路（已落地）
 
 - 解析层：`.txt` / `.md` / `.docx` / `.pdf` / `.html` 五个解析器与注册表；`.docx` 走 `mammoth → markdownify(heading_style="ATX")`，`.html` 走 `bs4 + markdownify(ATX)`，`.pdf` 走 `pdf-inspector==1.25.2` 的 `process_pdf_with_ocr_bytes`（扫描件自动路由 OCR）。全项目唯一的「文档 → 文本」入口是 `app/services/document_ingestion.py::prepare_document_content`，下游只看到一条 markdown 化文本。
-- 切块层：`MarkdownStructuredSplitter` —— 标题栈维护层级、h1/h2/h3 新起切片、`####` 及以下只加深路径、表格整块或按行分组且每组重复表头、超长节内二次切；产出 `heading_path` / `section_id`（`sha256(heading_path)` 内容寻址）/ `parent_section_id` / `order_index` / `chunk_type` / `table_part` 六个字段。检索侧再把命中的片**折叠**成「一条结果代表一个 h2 级单元」（ADR-0013）。
+- 切块层：`MarkdownStructuredSplitter` —— 标题栈维护层级、h1/h2/h3 新起切片、`####` 及以下只加深路径、表格整块或按行分组且每组重复表头；**片内窗口**交给 `RecursiveCharacterTextSplitter`（正文按段落→中文句末标点，代码按围栏语言走 `from_language`），所以片不会从句子中间断开
+- **切块窗口按 Qwen token 计长**（ADR-0015）：`chunk_size` 的单位是 token 而不是字符，计数与 DashScope 官方分词器逐 token 一致；词表由构建期脚本下载并校验，**缺失即拒绝启动**，不降级成近似词表（那会让同一个库在不同部署上切出不同的片）。
 - **切块策略即语料准入**（ADR-0014）：建库时必须选 `structure` 或 `size`，它同时决定该库收哪些格式。`structure` 只收 markdown（它的能力全建立在标题语法上，收 pdf 只会退化成窗口硬切还不自知），`size` 默认五种全开、一律固定窗口切。上传格式不在白名单当场 `422` + `UNSUPPORTED_DOCUMENT_FORMAT`（ADR-0007「业务失败一律 200」的唯一例外）。
 - 异步索引：`POST /api/v1/documents/upload`（JSON 与 multipart 双模式）只做「登记 + 投递」，立即返回 `status=3`；Celery Worker 拉取后解析 / 切块 / 向量化，写库是「先删后写 + 状态回写」的单事务。终态靠 `GET /api/v1/documents?kb_id=` 轮询。
 - 幂等与租约：数据库 CAS 抢占 + 600 秒租约（`documents.index_claimed_at` 区分「已入队未开工」与「正在跑」）；`acks_late=True` 的重投由后到者 `rowcount=0` 直接跳过。入队侧只置队、**只有 Worker 抢占**，重试前归还租约。
 - 运维能力：`POST /documents/{id}/reindex?reparse=&force=`（有效处理中拒绝 `20025`，成功态需 `force` 否则 `20027`）、`DELETE /documents/{id}`、`scripts/reindex_knowledge_base.py`、`scripts/requeue_stuck_documents.py`。
 - OCR 运行时：Linux 容器内预装 PDFium + ONNX Runtime + PP-OCRv6 Small 模型，运行期不联网；构建与启动见 [deploy/README.md](deploy/README.md)，测试口径见 [tests/README.md](tests/README.md)。
-- 切块策略自评：scripts/eval_chunking.py 复用第 4 步的 eval/corpus 与 eval/questions.json，对比朴素字符切块与结构化切块的检索指标（实测 R@1 0.688 → 0.761、切片均长 744 → 148 字）。
+- 切块策略自评：scripts/eval_chunking.py 复用第 4 步的 eval/corpus 与 eval/questions.json，对比朴素字符切块（评测侧自带实现）与结构化切块，并跑四组交叉（算法 × 单位）的检索指标（实测 R@1 0.688 → 0.761、切片均长 744 → 148 字）。
 
 ## 第 4 步：混合检索（已落地）
 
@@ -110,7 +116,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 ```bash
 uv run pytest -q
-# 期望：552 passed, 11 skipped, 2 warnings
+# 期望：567 passed, 11 skipped, 2 warnings
 # 11 skipped = 3 条 OCR 资产门禁 + 4 条真 PostgreSQL + 3 条真 Elasticsearch
 #             （其中 1 条是本次新增的查询分析器守卫）+ 1 条嵌入等价性
 ```
@@ -138,7 +144,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 uv run ruff check .                                    # 静态检查
 uv run ruff format --check tests                      # 格式检查（历史文件暂不纳入）
 uv run mypy app                                       # 宽松类型检查
-uv run pytest -q                                      # 离线测试：552 passed, 11 skipped；不连 PG、不发真实模型请求
+uv run pytest -q                                      # 离线测试：567 passed, 11 skipped；不连 PG、不发真实模型请求
 uv run uvicorn app.main:app --reload --port 8000      # 本地起服务，再按教程跑四条 curl（含列库）
 ```
 

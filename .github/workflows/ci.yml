@@ -16,7 +16,8 @@ env:
 
 jobs:
   quality:
-    # 纯离线：不装容器、不下载任何 OCR 资产；OCR 用例在这里是 skip 而不是 fail。
+    # 半离线：不装容器、不下载任何 OCR 资产（OCR 用例 skip）；但会取一次 2.56 MB 的
+# Qwen 分词词表——切块按 token 计长，缺词表等于没有窗口口径。
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +35,11 @@ jobs:
         run: uv run ruff format --check tests
       - name: Type check
         run: uv run mypy app
+      - name: Fetch Qwen tokenizer vocab
+        # 切块窗口按 Qwen token 计长，词表是必需资产（2.56 MB，带 SHA256 校验）。
+        # 缺它所有切块用例都会失败，所以这一步放在 Test 之前。
+        run: uv run python scripts/fetch_qwen_vocab.py
+
       - name: Test
         run: uv run pytest -q
 

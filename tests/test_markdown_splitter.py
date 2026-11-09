@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
+from app.utils.tokenizer import token_count
 
 
 def test_split_respects_heading_boundary() -> None:
@@ -255,7 +256,11 @@ def test_separator_line_is_dropped() -> None:
 
 
 def test_short_code_block_kept_whole() -> None:
-    """短代码块整块保留，分片序号为 0。"""
+    """短代码块整块保留，分片序号为 0，且**不含围栏行**。
+
+    围栏被剥掉是刻意的：保留它会让每片都以 ```` ``` ```` 开头，而按语言切分的
+    分隔符是按行首匹配的，会被围栏行打断。
+    """
     markdown = "# 示例\n\n```python\ndef add(a, b):\n    return a + b\n```\n"
     splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
 
@@ -265,7 +270,7 @@ def test_short_code_block_kept_whole() -> None:
     assert len(code_pieces) == 1
     assert "def add(a, b):" in code_pieces[0].text
     assert "return a + b" in code_pieces[0].text
-    assert code_pieces[0].text.startswith("```")
+    assert not code_pieces[0].text.lstrip().startswith("```"), "围栏不该进切片正文"
     assert code_pieces[0].metadata["heading_path"] == "示例"
     assert code_pieces[0].metadata["code_part"] == 0
 
@@ -276,15 +281,14 @@ def _long_code_block(rows: int = 400) -> str:
 
 
 def test_long_code_block_is_split_within_window() -> None:
-    """上千行代码不再产出超长单片：每片都不超过 chunk_size。"""
-    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100)
+    """上千行代码不再产出超长单片：每片都不超过 chunk_size（**按 token** 计）。"""
+    splitter = MarkdownStructuredSplitter(chunk_size=300, chunk_overlap=50)
 
     pieces = splitter.split(_long_code_block())
 
     code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
     assert len(code_pieces) > 1, "上千行代码必须被切开"
-    assert all(len(piece.text) <= 800 for piece in code_pieces)
-    assert max(len(piece.text) for piece in code_pieces) < 10_000
+    assert all(token_count(piece.text) <= 300 for piece in code_pieces)
 
 
 def test_code_pieces_have_ascending_part_numbers() -> None:
@@ -304,16 +308,21 @@ def test_code_splits_on_blank_lines_not_mid_statement() -> None:
     """切点优先落在空行，不切在语句中间。"""
     blocks = "\n\n".join(f"def function_{number}():\n    return {number}" for number in range(40))
     markdown = f"# 示例\n\n```python\n{blocks}\n```\n"
-    splitter = MarkdownStructuredSplitter(chunk_size=300, chunk_overlap=100)
+    splitter = MarkdownStructuredSplitter(chunk_size=300, chunk_overlap=50)
 
     pieces = splitter.split(markdown)
 
     code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
     assert len(code_pieces) > 1
 
-    # 拼回去必须逐字还原原文：说明没有丢行、没有重复行。
-    rebuilt = "".join(piece.text for piece in code_pieces)
-    assert rebuilt == f"```python\n{blocks}\n```"
+    # 每片都必须是**原文的连续子串**（重叠是刻意的：代码片与正文共用同一套
+    # overlap，片间会有重复行，所以不能要求「首尾相接拼回原文」）。
+    for piece in code_pieces:
+        assert blocks.find(piece.text.strip("\n")) >= 0, "切片必须是原文的子串"
+
+    # 首片从第一行开始，末片到最后一个语句结束——说明既没漏头也没漏尾。
+    assert code_pieces[0].text.lstrip("\n").startswith("def function_0():")
+    assert code_pieces[-1].text.rstrip().endswith("return 39")
 
     # 每片去掉前导空行后，首行必须是完整的语句起点，不能是续行。
     for piece in code_pieces[1:]:
@@ -322,15 +331,16 @@ def test_code_splits_on_blank_lines_not_mid_statement() -> None:
 
 
 def test_code_splits_on_dedent_when_no_blank_lines() -> None:
-    """没有空行时，在缩进回退处断开。"""
+    """没有空行时也要能切开（按语言的规则回退），且每片不超窗口。"""
     blocks = "\n".join(f"    statement_{number} = {number}" for number in range(60))
     markdown = f"# 示例\n\n```python\nclass Thing:\n{blocks}\n```\n"
-    splitter = MarkdownStructuredSplitter(chunk_size=600, chunk_overlap=100)
+    splitter = MarkdownStructuredSplitter(chunk_size=200, chunk_overlap=20)
 
     pieces = splitter.split(markdown)
 
     code_pieces = [piece for piece in pieces if piece.metadata["chunk_type"] == "code"]
-    assert all(len(piece.text) <= 600 for piece in code_pieces)
+    assert all(token_count(piece.text) <= 200 for piece in code_pieces)
+    assert len(code_pieces) > 1, "没有空行的长代码块也必须被切开"
 
 
 def test_low_information_pieces_filtered() -> None:

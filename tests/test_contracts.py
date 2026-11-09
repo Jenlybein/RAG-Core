@@ -10,18 +10,25 @@ import pytest
 from app.core.config import Settings
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbedding
 from app.providers.parsers.base import ParsedDocument
-from app.utils.text_splitter import CharacterTextSplitter, SplitPiece
+from app.utils.text_splitter import SplitPiece, WindowTextSplitter
+from app.utils.tokenizer import token_count
 
 
-def test_character_text_splitter_returns_pieces_with_empty_metadata() -> None:
-    splitter = CharacterTextSplitter(chunk_size=4, chunk_overlap=1)
-    pieces = splitter.split("abcdef")
+def test_window_splitter_returns_pieces_with_empty_metadata() -> None:
+    """`size` 策略的契约：只出片、不带结构化信息、遵守 token 窗口。
+
+    窗口单位是 token 而不是字符，所以「不超过窗口」要按 token 判——按字符判会让
+    中文片悄悄变长 1.5–1.9 倍。
+    """
+
+    splitter = WindowTextSplitter(chunk_size=20, chunk_overlap=5)
+    body = "第一句话在这里。第二句话在这里。第三句话在这里。第四句话在这里。"
+    pieces = splitter.split(body)
 
     assert all(isinstance(piece, SplitPiece) for piece in pieces)
-    assert [piece.text for piece in pieces] == ["abcd", "def"]
-    assert all(piece.metadata == {} for piece in pieces)
-    assert all(len(piece.text) <= 4 for piece in pieces)
-    assert pieces[0].text[-1] == pieces[1].text[0], "相邻切片必须保留 overlap 字符"
+    assert all(piece.metadata == {} for piece in pieces), "size 库不产任何章节信息"
+    assert all(token_count(piece.text) <= 20 for piece in pieces), "片不得超过窗口"
+    assert all(piece.text.strip() for piece in pieces), "不该产出空白片"
     assert splitter.split("") == []
 
 

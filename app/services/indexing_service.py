@@ -59,7 +59,7 @@ from app.utils.id_generator import new_chunk_id
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
 from app.utils.splitter_factory import build_splitter
-from app.utils.text_splitter import CharacterTextSplitter
+from app.utils.text_splitter import WindowTextSplitter
 from app.utils.text_splitter import TextSplitter
 
 logger = structlog.get_logger(__name__)
@@ -119,7 +119,7 @@ class IndexingService:
             # 会让切片 meta 里的 split_strategy 变成一句谎话，重建时对不上。
             injected: SplitStrategy = (
                 SPLIT_SIZE
-                if isinstance(self._splitter, CharacterTextSplitter)
+                if isinstance(self._splitter, WindowTextSplitter)
                 else SPLIT_STRUCTURE
             )
             return self._splitter, injected

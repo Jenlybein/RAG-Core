@@ -26,7 +26,7 @@ from app.models.knowledge_base import (
 )
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.splitter_factory import build_splitter
-from app.utils.text_splitter import CharacterTextSplitter
+from app.utils.text_splitter import WindowTextSplitter
 
 CREATE_PATH = "/api/v1/knowledge-bases/create"
 LIST_PATH = "/api/v1/knowledge-bases"
@@ -97,7 +97,7 @@ def test_structure_default_whitelist_is_markdown_only(client: Any) -> None:
     assert response.status_code == 200
     data = response.json()["data"]
     assert data["split_strategy"] == SPLIT_STRUCTURE
-    assert data["chunk_size"] == DEFAULT_CHUNK_SIZE == 800
+    assert data["chunk_size"] == DEFAULT_CHUNK_SIZE == 512
     assert data["allowed_formats"] == [FORMAT_MARKDOWN]
 
 
@@ -214,7 +214,7 @@ def test_size_strategy_really_ignores_headings() -> None:
     size_splitter = build_splitter(SPLIT_SIZE, chunk_size=120)
     structure_splitter = build_splitter(SPLIT_STRUCTURE, chunk_size=120)
 
-    assert isinstance(size_splitter, CharacterTextSplitter)
+    assert isinstance(size_splitter, WindowTextSplitter)
 
     size_pieces = size_splitter.split(MARKDOWN_DOC)
     structure_pieces = structure_splitter.split(MARKDOWN_DOC)
@@ -295,7 +295,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     splitter, strategy = service._resolve_splitter(None, doc)
 
     assert strategy == SPLIT_SIZE
-    assert isinstance(splitter, CharacterTextSplitter)
+    assert isinstance(splitter, WindowTextSplitter)
     assert splitter.chunk_size == 400
 
 

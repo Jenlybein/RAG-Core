@@ -26,8 +26,8 @@ QUESTIONS_PATH = EVAL_DIR / "questions.json"
 MANIFEST_PATH = CORPUS_DIR / "manifest.json"
 
 # 与生产默认值一致；显式写出来，避免本测试跟着 .env 的偶发配置漂移。
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 100
+CHUNK_SIZE = 512
+CHUNK_OVERLAP = 50
 TABLE_MAX_ROWS = 10
 
 # 题型清单分两层：`REQUIRED_TYPES` 是「每种至少 3 题」的底线，加进来就等于承诺长期维护；
