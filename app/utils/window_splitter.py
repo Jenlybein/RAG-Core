@@ -91,11 +91,11 @@ def _hard_slice(
 ) -> list[str]:
     """硬切：按传入的**尺子**决定粒度。
 
-    尺子是字符（`len`）就切字符，是 token 就切 token——这正是对照实验要分开的
-    那个变量。
+    判据是**函数身份**（`length_function is len`），不是「数值上等于长度」——
+    后者在短文本上会误判：`"a"` 的 token 数恰好也是 1，会被当成字符尺子。
     """
 
-    if length_function(text) == len(text):
+    if length_function is len:
         return _hard_char_slice(text, size=size, overlap=overlap)
     return _hard_token_slice(text, size=size, overlap=overlap)
 

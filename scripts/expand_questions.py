@@ -841,7 +841,9 @@ def main() -> int:
     # 再校验「恰好对应一片」：判据是「切片的 owner 章节 == 金标章节」，若某节被切成
     # 多片，一道题就会同时命中多片，R@1 的分母被凭空放大。tests/test_eval_corpus.py
     # 里也有同样的断言，这里提前到写入前，免得写完才发现。
-    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100, table_max_rows=10)
+    # 用**生产默认窗口**（token 计长），与线上口径一致。刻意不显式传值：
+    # 写死 800/100 会在默认值调整后悄悄与线上脱节，而这里的判据正是「线上会切成几片」。
+    splitter = MarkdownStructuredSplitter(table_max_rows=10)
     pieces_per_section: dict[tuple[str, str], int] = {}
     for doc in _load_corpus():
         for piece in splitter.split(doc.text):

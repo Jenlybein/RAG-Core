@@ -24,8 +24,10 @@ Worker 启动入口：
 """
 
 from celery import Celery
+from celery.signals import worker_process_init
 
 from app.core.config import settings
+from app.utils import tokenizer
 
 celery_app = Celery(
     "rag_center",
@@ -41,3 +43,15 @@ celery_app.conf.update(
     task_track_started=True,
     broker_connection_retry_on_startup=True,
 )
+
+
+@worker_process_init.connect
+def _verify_tokenizer(**_kwargs: object) -> None:
+    """Worker 是真正做切块的进程：词表不可用就连子进程都不该起来。
+
+    API 侧由 `app/main.py` 的 lifespan 校验过，但 Worker 不走 FastAPI 生命周期——
+    没有这一处，词表缺失会拖到「第一次索引失败」才暴露，而那时错误信息指向的是
+    「文档处理失败」，不是「部署缺资产」。
+    """
+
+    tokenizer.verify_ready()
