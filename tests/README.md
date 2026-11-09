@@ -25,12 +25,12 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `574 passed, 11 skipped`（共收集 585 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 582 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `577 passed, 8 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 582 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 577 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 577 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `578 passed, 11 skipped`（共收集 589 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 586 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `581 passed, 8 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 586 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 581 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 581 deselected` |
 
 11 条 skip 分**四道门禁**，都不是失败：
 
@@ -40,10 +40,10 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `574 passed, 11 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `578 passed, 11 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 585 条，`-m ocr` 收集 3 条、
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 589 条，`-m ocr` 收集 3 条、
 > `-m integration` 收集 8 条。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
