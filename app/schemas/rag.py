@@ -18,7 +18,11 @@
 多好」，做成可调项会让同一个档位名在不同租户那里变成不同链路。
 """
 
-from pydantic import BaseModel, ConfigDict, Field
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+
+from app.core.exceptions import AppError, ErrorCode
 
 
 class RetrieveRequest(BaseModel):
@@ -28,6 +32,35 @@ class RetrieveRequest(BaseModel):
 
     kb_ids: list[str] = Field(min_length=1)
     query: str = Field(min_length=1)
+
+    @field_validator("query")
+    @classmethod
+    def _reject_blank_query(cls, value: str) -> str:
+        """纯空白不是「一个问题」。
+
+        ``min_length=1`` 只挡住空串：``"   "`` 长度是 3，会一路走到召回，然后被当成一个
+        没有词的查询静默产出空结果。两条入口共用一个值对象，这条规则才只写一遍。
+        """
+
+        if not value.strip():
+            raise ValueError("query must not be blank or whitespace-only")
+        return value
+
+
+def parse_retrieve_request(*, kb_ids: Any, query: Any) -> RetrieveRequest:
+    """两条入口共用的解析入口：校验规则只来自 :class:`RetrieveRequest`。
+
+    HTTP 侧由 FastAPI 把同一个模型接在请求体上（失败由异常处理器翻成 ``20002``）；
+    MCP 的工具签名只有类型、没有 ``Field`` 约束，因此必须显式走一遍同一个值对象，再把
+    ``ValidationError`` 翻成同一个业务码。**不在这里复制一份字段规则**——复制出去的那
+    一份迟早和 HTTP 侧漂移，而漂移的形态正是「同一份请求，两扇门两种答案」。
+    """
+
+    try:
+        return RetrieveRequest(kb_ids=kb_ids, query=query)
+    except ValidationError as exc:
+        # 与 HTTP 的 20002 同一个码、同一个缺省消息（``request validation error``）。
+        raise AppError(ErrorCode.REQUEST_VALIDATION_ERROR) from exc
 
 
 class RetrievedChunk(BaseModel):

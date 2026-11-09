@@ -295,6 +295,35 @@ class RetrievalQuota:
         return self.counters.daily(level=level, ident=ident, window=self.window)
 
 
+def read_tenant_daily_usage(
+    *,
+    tenant_id: str,
+    counters: QuotaCounters | None = None,
+    enabled: bool | None = None,
+) -> int | None:
+    """读租户级「今日已用」：**只发一条 GET**，绝不 ``INCR`` / ``EXPIRE``。
+
+    面板刷新不是一次检索，读路径因此不能借「顺手初始化」把计数 +1，也不能靠写操作
+    去探测键是否存在。这里与 :func:`retrieval_quota` 共用同一个窗口口径
+    （UTC、按天分桶），所以控制台看到的数与门禁判的数一定是同一个桶。
+
+    返回 ``None`` 表示**平台现在没有在数**：``RATE_LIMIT_ENABLED`` 关着时
+    ``record_success`` 整段是 no-op，计数键根本不会被写出来。此时报 ``0`` 是编造——
+    面板会显示「今日 0 次」，而实际用量可能已经几千次、只是没人统计。``0`` 只在开关
+    打开、键确实不存在时出现，那才是「今天还没有一次成功检索」，是**已知的 0**。
+
+    开关关着时连客户端都不构造（与 :func:`retrieval_quota` 同一条理由）：默认套件因此
+    不需要 Redis，也不会因为一条「反正不用也先连上」的路径在无 Redis 的机器上卡住。
+    """
+
+    limiter_on = settings.RATE_LIMIT_ENABLED if enabled is None else enabled
+    if not limiter_on:
+        return None
+    active = counters if counters is not None else QuotaCounters(redis_client.get_redis_client())
+    window = active.window()
+    return active.daily(level=LEVEL_TENANT, ident=tenant_id, window=window)
+
+
 def retrieval_quota(
     *,
     policy: KeyPolicySnapshot,

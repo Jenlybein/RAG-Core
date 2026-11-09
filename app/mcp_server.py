@@ -31,6 +31,7 @@ from fastmcp.server.dependencies import get_http_request
 
 from app.core.auth import KeyContext, resolve_identity
 from app.core.exceptions import AppError
+from app.schemas.rag import parse_retrieve_request
 from app.services.data_scope import scoped_kb_ids
 from app.services.retrieval_gate import gated_retrieve
 
@@ -59,6 +60,9 @@ def create_mcp_server(
         try:
             # 先取会话再判身份：真实 Key 的租户与套餐都在库里，判定本身要读它。
             key = _key_context(db)
+            # 与 HTTP 侧**同一个值对象**：工具签名只有类型，挡不住空列表与纯空白，所以
+            # 这里显式走一遍 RetrieveRequest；失败是 20002，与 REST 同一个码。
+            payload = parse_retrieve_request(kb_ids=kb_ids, query=query)
             # 白名单 → 档位门禁 → 配额 → 召回 → 记账，全部在同一个共享函数里
             # （与 HTTP 侧同一份实现、同一个码）：两条入口因此不可能判出两种答案。
             # ``retrieve`` 是既有的注入点（app.main 传 rag_service.retrieve），
@@ -66,8 +70,8 @@ def create_mcp_server(
             result = await gated_retrieve(
                 db,
                 key=key,
-                kb_ids=kb_ids,
-                query=query,
+                kb_ids=payload.kb_ids,
+                query=payload.query,
                 retrieve=retrieve,
             )
             # 与 HTTP 侧同一个时点：业务跑完、响应也校验成形之后才记账（在共享函数里）。
