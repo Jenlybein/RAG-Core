@@ -142,6 +142,45 @@ def _build(
     )
 
 
+def _slice(
+    text: str,
+    *,
+    size: int,
+    overlap: int,
+    separators: tuple[str, ...],
+    marker: str,
+    length_function: LengthFunction,
+    mode: WindowMode,
+) -> list[str]:
+    """正文与代码共用的切分骨架。
+
+    两者的差别只有两处：用哪组分隔符、要不要按围栏语言切。其余（空文本、
+    不超窗口直接返回、硬切分派、剥首尾换行、丢空白片）完全一样，所以只有一份。
+    """
+
+    stripped = text.strip("\n")
+    if not stripped:
+        return []
+    if length_function(stripped) <= size:
+        return [stripped]
+    if mode == "hard":
+        return [
+            _trim(piece)
+            for piece in _hard_slice(
+                stripped, size=size, overlap=overlap, length_function=length_function
+            )
+            if piece.strip()
+        ]
+    splitter = _build(
+        size=size,
+        overlap=overlap,
+        separators=separators,
+        language=language_of(marker),
+        length_function=length_function,
+    )
+    return [_trim(piece) for piece in splitter.split_text(stripped) if piece.strip()]
+
+
 def text_pieces(
     text: str,
     *,
@@ -150,25 +189,20 @@ def text_pieces(
     length_function: LengthFunction = token_count,
     mode: WindowMode = "recursive",
 ) -> list[str]:
-    """把一段正文切成不超过 `size` 个 token 的片；空文本返回空列表。"""
+    """把一段正文切成不超过 `size` 个长度单位的片；空文本返回空列表。
 
-    stripped = text.strip("\n")
-    if not stripped:
-        return []
-    if length_function(stripped) <= size:
-        return [stripped]
-    if mode == "hard":
-        return [_trim(piece) for piece in _hard_slice(
-            stripped, size=size, overlap=overlap, length_function=length_function
-        ) if piece.strip()]
-    splitter = _build(
+    长度单位由 `length_function` 决定（生产是 Qwen token，对照实验里可能是字符）。
+    """
+
+    return _slice(
+        text,
         size=size,
         overlap=overlap,
         separators=TEXT_SEPARATORS,
-        language=None,
+        marker="",
         length_function=length_function,
+        mode=mode,
     )
-    return [_trim(piece) for piece in splitter.split_text(stripped) if piece.strip()]
 
 
 def code_pieces(
@@ -180,22 +214,14 @@ def code_pieces(
     length_function: LengthFunction = token_count,
     mode: WindowMode = "recursive",
 ) -> list[str]:
-    """把一段代码切成不超过 `size` 个 token 的片；按围栏语言选择分隔符。"""
+    """把一段代码切成不超过 `size` 个长度单位的片；按围栏语言选择分隔符。"""
 
-    stripped = text.strip("\n")
-    if not stripped:
-        return []
-    if length_function(stripped) <= size:
-        return [stripped]
-    if mode == "hard":
-        return [_trim(piece) for piece in _hard_slice(
-            stripped, size=size, overlap=overlap, length_function=length_function
-        ) if piece.strip()]
-    splitter = _build(
+    return _slice(
+        text,
         size=size,
         overlap=overlap,
         separators=CODE_SEPARATORS,
-        language=language_of(marker),
+        marker=marker,
         length_function=length_function,
+        mode=mode,
     )
-    return [_trim(piece) for piece in splitter.split_text(stripped) if piece.strip()]
