@@ -31,6 +31,7 @@ import asyncio
 import json
 import os
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -883,4 +884,11 @@ async def main() -> None:
 
 
 if __name__ == "__main__":
+    # Windows 的 GBK 控制台编不了 U+2212（"−"）这类字符，默认 errors="strict"
+    # 会让整次评测在打印「交叉归因」时抛 UnicodeEncodeError —— 数字算完了却拿不到
+    # 完整报告。保持原编码不动，只把编不了的字符替换掉：UTF-8 环境下输出逐字不变，
+    # GBK 环境下至多一个字符显示成 "?"，不再中断评测。
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(errors="replace")
     asyncio.run(main())
