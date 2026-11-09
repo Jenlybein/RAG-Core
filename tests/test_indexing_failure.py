@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.utils.status import DocumentStatus
+from tests.fake_db import ZERO_COUNT
 
 # 调用方提交的文档内容：绝不允许出现在响应体或任何应用日志里。
 DOCUMENT_CONTENT = "T3-CONTENT-SENTINEL"
@@ -79,6 +80,9 @@ class _FakeSession:
 
     def flush(self) -> None:
         return None
+
+    def execute(self, _statement: Any) -> Any:
+        return ZERO_COUNT
 
     def get(self, _model: Any, document_id: str) -> Any:
         return self.documents.get(document_id)
