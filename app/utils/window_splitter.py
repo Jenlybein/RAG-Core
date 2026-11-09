@@ -175,6 +175,10 @@ def text_pieces(text: str, *, size: int, overlap: int) -> list[str]:
 
 
 def code_pieces(text: str, *, marker: str, size: int, overlap: int) -> list[str]:
-    """把一段代码切成不超过 `size` 个 token 的片；按围栏语言选择分隔符。"""
+    """把一段代码切成不超过 `size` 个 token 的片；按围栏语言选择分隔符。
+
+    生产路径由 ``markdown_splitter`` 经 ``default_slicer`` 调用，测试也会直接
+    import 它来钉「代码块必须按行边界断开」这条性质——两者缺一不可。
+    """
 
     return default_slicer(text, size, overlap, marker)

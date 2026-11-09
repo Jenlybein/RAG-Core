@@ -92,7 +92,9 @@ async def retrieve(
 
     # 折叠会把同一父节的多个命中并成一条，所以召回要多取几倍，否则去重后凑不够
     # top_k 条。关掉折叠时按原样召回——「不折叠」就该连多取也不要。
-    recall_top_k = resolved_top_k * OVERFETCH_FACTOR if include_parent else resolved_top_k
+    recall_top_k = (
+        resolved_top_k * result_collapse.OVERFETCH_FACTOR if include_parent else resolved_top_k
+    )
 
     # 模式校验放在最前面：HTTP 入口的 schema 已经用 Literal 掐掉了未知值，走 MCP /
     # 内部调用才会到这里。校验先于可见性校验与查询优化，被拒的请求不该白烧一次改写
@@ -202,9 +204,8 @@ async def retrieve(
     }
 
 
-# 因子住在 IO 无关的折叠模块里（评测也要用它，不该为此把 settings/DB 拖进脚本）。
-# 这里留一个别名，是为了让「检索侧的多取倍数」在本模块读起来仍然直观。
-OVERFETCH_FACTOR = result_collapse.OVERFETCH_FACTOR
+# 多取倍数住在 IO 无关的折叠模块里（评测也要用它，不该为此把 settings/DB 拖进
+# 脚本）。检索侧直接引用，不再留一个只做转发的别名。
 
 
 def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:

@@ -25,7 +25,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.services.rag_service import OVERFETCH_FACTOR
+from app.services.result_collapse import OVERFETCH_FACTOR
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from tests.fake_db import EmptySession

@@ -37,55 +37,6 @@ def fetch_meta_by_chunk_ids(
     }
 
 
-def fetch_table_chunks(
-    db: Session,
-    *,
-    tenant_id: str,
-    document_ids: list[str],
-    section_ids: list[str],
-    index_version: str | None = None,
-) -> dict[tuple[str, str, int], str]:
-    """取这些文档/章节里的**整表片**正文，供「行级召回 → 整表返回」展开。
-
-    返回 ``{(document_id, section_id, table_part): 整表文本}``。
-
-    为什么行级片要展开成整表：命中「型号=XR-2100，配件=万兆光模块」说明用户问的
-    是表里某个单元格，但只把这一行喂给模型，它看不到列含义与相邻行、也没法对比。
-    行级片负责**找得准**，整表片负责**读得懂**。
-
-    ``tenant_id`` 是强制过滤参数（ADR-0006）：展开也要按租户拦住。
-    """
-
-    if not document_ids or not section_ids:
-        return {}
-    stmt = (
-        select(
-            Chunk.document_id,
-            Chunk.meta["section_id"].astext,
-            Chunk.meta["table_part"].astext.cast(Integer),
-            Chunk.content,
-        )
-        .where(
-            Chunk.tenant_id == tenant_id,
-            Chunk.document_id.in_(document_ids),
-            Chunk.meta["section_id"].astext.in_(section_ids),
-            Chunk.meta["chunk_type"].astext == "table",
-        )
-        # 确定性排序（ADR-0010）：同一份输入两次必须给出同一张表，不能取决于
-        # PG 的行序。再加 index_version 过滤：混进另一批次会出现「表与命中片
-        # 对不上」的上下文。
-        .order_by(Chunk.document_id, Chunk.meta["table_part"].astext.cast(Integer), Chunk.id)
-    )
-    if index_version is not None:
-        stmt = stmt.where(Chunk.index_version == index_version)
-    tables: dict[tuple[str, str, int], str] = {}
-    for document_id, section_id, table_part, content in db.execute(stmt).all():
-        key = (str(document_id), str(section_id), int(table_part or 0))
-        # 先到先得：排序已定，重复键不该由「谁后到」决定。
-        tables.setdefault(key, str(content))
-    return tables
-
-
 def fetch_unit_rows(
     db: Session,
     *,
@@ -135,56 +86,6 @@ def fetch_unit_rows(
     ):
         grouped.setdefault((str(document_id), str(path)), []).append(
             (int(index or 0), str(content), str(chunk_id), str(chunk_type or ""), int(table_part or 0))
-        )
-    return grouped
-
-
-def fetch_parent_section_chunks(
-    db: Session,
-    *,
-    tenant_id: str,
-    document_ids: list[str],
-    parent_section_ids: list[str],
-    index_version: str | None = None,
-) -> dict[tuple[str, str], list[tuple[int, str, str]]]:
-    """一次查出这些**父节**（h2 级）下的全部切片，供上下文恢复拼回整个父节。
-
-    返回 ``{(document_id, parent_section_id): [(chunk_index, 正文, chunk_id)...]}``。
-
-    为什么按 ``parent_section_id`` 而不是 ``section_id``：h3 成为切片边界后，
-    ``section_id`` 指的是子节（h3），而「父节」在这一步的语义是 h2 级的那一节。
-    ``parent_section_id`` 正是为此存在的（见 GLOSSARY「父块」），此前一直没被用上。
-
-    为什么按 ``chunk_index``（文档级）排序：``order_index`` 只是节内序号，跨 h3 拼
-    一个 h2 时它排不出文档顺序，拼出来的上下文会是断的。
-    """
-
-    if not document_ids or not parent_section_ids:
-        return {}
-    stmt = (
-        select(
-            Chunk.document_id,
-            Chunk.meta["parent_section_id"].astext,
-            Chunk.meta["chunk_index"].astext.cast(Integer),
-            Chunk.content,
-            Chunk.id,
-        )
-        .where(
-            Chunk.tenant_id == tenant_id,
-            Chunk.document_id.in_(document_ids),
-            Chunk.meta["parent_section_id"].astext.in_(parent_section_ids),
-        )
-        # 确定性的文档顺序（ADR-0010）：同一份输入两次拼出的父节必须一样。
-        .order_by(
-            Chunk.document_id, Chunk.meta["chunk_index"].astext.cast(Integer), Chunk.id
-        )
-    )
-    if index_version is not None:
-        stmt = stmt.where(Chunk.index_version == index_version)
-    grouped: dict[tuple[str, str], list[tuple[int, str, str]]] = {}
-    for document_id, parent_id, chunk_index, content, chunk_id in db.execute(stmt).all():
-        grouped.setdefault((str(document_id), str(parent_id)), []).append(
-            (int(chunk_index or 0), str(content), str(chunk_id))
         )
     return grouped
 
