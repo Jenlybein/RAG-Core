@@ -26,7 +26,7 @@ import hashlib
 from dataclasses import dataclass
 from typing import Mapping, NamedTuple, Sequence
 
-# 切片类型取值见 GLOSSARY 的「切片类型」（五种）。折叠只关心一种：
+# 块类型（chunk_type）取值见 GLOSSARY 的「块类型」（五种）。折叠只关心一种：
 # 行级表片要被折回它所属的整表。其余类型一律按父节归组。
 CHUNK_TABLE = "table"
 CHUNK_TABLE_ROW = "table_row"
