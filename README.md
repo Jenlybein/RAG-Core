@@ -1,4 +1,4 @@
-﻿# RAG-Core
+# RAG-Core
 
 面向业务系统的 **RAG 能力中台**。
 

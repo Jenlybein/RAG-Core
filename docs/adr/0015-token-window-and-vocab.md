@@ -2,7 +2,7 @@
 
 - 状态：已采纳
 - 日期：2026-11-09
-- 相关：ADR-0014「切块策略即语料准入」、`GLOSSARY.md`「Qwen token」「朴素基线」、`app/utils/tokenizer.py`
+- 相关：ADR-0014「切块策略即语料准入」、`GLOSSARY.md`「切块单位」「朴素基线」、`app/utils/tokenizer.py`
 
 ## 背景
 
@@ -109,8 +109,9 @@ B 组差 0.0007，落在 127 题的单题噪声内。归因：
 「④ 明显差于 ①」没有出现（D − A = 0.0000），因此不触发回退。单位换成 Qwen token
 让窗口与 embedding 模型共用一把尺子，这是独立成立的工程理由；Recursive 的收益只在
 200/20 的小窗口下可见，属于可读性与人工核对的价值，不作为采纳依据。生产默认值维持
-`CHUNK_SIZE=512` / `CHUNK_OVERLAP=50`，`SECTION_CONTEXT_ENABLED` 仍为 `False`
-（节说明消融的结论是「部分采纳」，见 `eval/ACCEPTANCE.md`）。
+`CHUNK_SIZE=512` / `CHUNK_OVERLAP=50`。
+
+**节说明那半条（#46 / #67）单独说清**：`SECTION_CONTEXT_ENABLED` 仍为 `False`，但理由**不是**「测过之后决定不用」，而是**没有可用读数**——离线只跑了「本节首句」代理，代理文本抄自正文、与切片原文同源，涨的 0.4 / 0.8 个百分点无法区分「真实增益」与「同一句话出现两次」，题型上还有反向证据（`table_lookup` 0.882 → 0.765）。功能保留（已接入索引链路、失败即降级），默认关闭；翻案条件是「用大模型为每个节生成真说明后重测」或「在线按题型观测」，见 `eval/ACCEPTANCE.md`「节说明消融」。，`SECTION_CONTEXT_ENABLED` 仍为 `False`
 
 ## 备选方案
 

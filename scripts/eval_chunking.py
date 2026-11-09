@@ -377,17 +377,17 @@ def _manual_metrics(cases: list[tuple[set[str], list[str]]], k: int) -> dict[str
 
 
 async def _run_grid() -> None:
-    """参数档位网格（``EVAL_GRID=1``）：同一批题、同一套生产切块算法，只换窗口。
+    """参数网格（窗口取值，``EVAL_GRID=1``）：同一批题、同一套生产切块算法，只换窗口。
 
     与 ``main()`` 的六组交叉是**两种用途**，用显式开关隔开：默认跑四组交叉 +
     两个朴素基线（逐字不变），只有设了 ``EVAL_GRID=1`` 才进这里。
 
     口径：
 
-    - 档位来自 ``CHUNK_GRID``（逗号分隔，默认 ``200,300,400,512,600,800``），
+    - 窗口取值来自 ``CHUNK_GRID``（逗号分隔，默认 ``200,300,400,512,600,800``），
       单位是 Qwen token（与生产 ``CHUNK_SIZE`` 同一把尺子）；
     - ``overlap = size // 8``（12.5%，与生产 512/50 的约 10% 同量级；写成整数
-      比例而不是 0.1 倍，是为了避免浮点档位）；
+      比例而不是 0.1 倍，是为了避免浮点窗口）；
     - 算法固定 ``REC_TOKEN``（生产口径），检索文本、答案单元、算分函数全部复用
       ``main()`` 里的同一套实现，不另造评分口径；
     - **平均上下文 token** 用离线 ``token_count()`` 对「送进 embedding 的检索文本」
@@ -403,14 +403,14 @@ async def _run_grid() -> None:
     if not sizes:
         sizes = [200, 300, 400, 512, 600, 800]
     if any(size < 2 for size in sizes):
-        raise ValueError(f"CHUNK_GRID 的档位必须 >= 2，当前是 {sizes!r}")
+        raise ValueError(f"CHUNK_GRID 的窗口取值必须 >= 2，当前是 {sizes!r}")
 
     docs = _load_corpus()
     questions, k = _load_questions()
     answerable = [q for q in questions if q.labels and q.type not in EXCLUDED_FROM_MAIN]
     section_cache = {doc.stem: _sections(doc.text) for doc in docs}
     provider = get_embedding_provider()
-    # 题目向量只算一次：它与切块档位无关，按档位重复嵌入只是白花钱。
+    # 题目向量只算一次：它与切块窗口无关，按窗口重复嵌入只是白花钱。
     query_vectors = await provider.embed_texts([q.query for q in answerable])
 
     print(
