@@ -1,6 +1,6 @@
 """SQLAlchemy 声明式基类。
 
-四张表的 ORM 模型都继承它；alembic autogenerate 读的就是 Base.metadata。
+所有表的 ORM 模型都继承它；alembic autogenerate 读的就是 Base.metadata。
 """
 
 from datetime import datetime

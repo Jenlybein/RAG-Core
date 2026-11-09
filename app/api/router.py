@@ -6,9 +6,10 @@ docstring 为准，避免两处数量再次漂移。
 
 from fastapi import APIRouter
 
-from app.api.routes import documents, knowledge_bases, rag
+from app.api.routes import auth, documents, knowledge_bases, rag
 
 api_router = APIRouter(prefix="/api/v1")
+api_router.include_router(auth.router)
 api_router.include_router(knowledge_bases.router)
 api_router.include_router(documents.router)
 api_router.include_router(rag.router)

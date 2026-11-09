@@ -18,7 +18,7 @@
    相同：被取消的请求不该把剩下的活干完）。
 
 **用 fast 模型角色**：改写是召回之前的必经一步，延迟直接加在用户等待上。角色 ≠ 套餐
-≠ 第 5 步的质量档位（GLOSSARY）；温度在 Provider 里对 fast 角色固定为 0，所以同样的
+≠ 第 7 步的质量档位（GLOSSARY）；温度在 Provider 里对 fast 角色固定为 0，所以同样的
 请求两次改写结果一致，「可复现」这条承诺不会在这里破功。
 """
 
@@ -118,10 +118,19 @@ def _llm_provider() -> LLMProvider:
     return get_llm_provider("fast")
 
 
-async def rewrite_query(*, query: str, hint: str | None = None) -> RewriteOutcome:
-    """改写成文档表述；任何失败都回退原句并给出固定原因。"""
+async def rewrite_query(
+    *, query: str, hint: str | None = None, enabled: bool | None = None
+) -> RewriteOutcome:
+    """改写成文档表述；任何失败都回退原句并给出固定原因。
 
-    if not settings.QUERY_REWRITE_ENABLED:
+    ``enabled`` 是**这次调用**要不要改写，缺省读服务端开关。做成入参的理由是 #78 之后
+    「要不要改写」不再只有部署一个来源：它是「档位想要 ∧ 本机装了」的合取，而合取的
+    计算在平台层（``app.services.profile_policy``）已经做完了。这里再自己去读一次
+    ``settings`` 就等于有第二个真相——档位说不要、机器说装了，谁说了算会变成排障时的
+    第一道谜题，而且两条入口可能各读出不同的答案。
+    """
+
+    if not (settings.QUERY_REWRITE_ENABLED if enabled is None else enabled):
         # 关闭 = 「没有这一步」，不是「改了一遍恰好没变」：不装配模型、不记耗时。
         return RewriteOutcome(query, applied=False, reason=None, duration_ms=None)
 

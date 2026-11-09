@@ -4,6 +4,9 @@ Service 是全链路唯一 commit 的地方；Repository 与 Provider 都不提�
 
 策略与白名单在这里一次性定下来：``resolve_formats`` 既补默认值也拒绝矛盾组合。
 把校验放服务层而不是路由：将来若有第二个建库入口（CLI、导入），它同样受约束。
+
+静态配额（库数）也在这里，理由同上：它是「这个租户买得起几个库」，必须落在写路径上，
+而不是只挂在控制台接口上——否则脚本与将来的第二个入口就成了绕过套餐的后门。
 """
 
 from __future__ import annotations
@@ -19,7 +22,9 @@ from app.models.knowledge_base import (
     resolve_formats,
     settings_of,
 )
+from app.models.plan import PlanSpec
 from app.repositories import knowledge_base_repository
+from app.services import static_quota
 from app.utils.id_generator import new_kb_id
 
 
@@ -30,6 +35,7 @@ async def create_kb(
     description: str | None,
     tenant_id: str,
     split_strategy: str,
+    plan: PlanSpec,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     allowed_formats: Sequence[str] | None = None,
 ) -> dict:
@@ -38,6 +44,9 @@ async def create_kb(
     except ValueError as exc:
         # 矛盾组合（structure 配 pdf）与拼错的格式名都是调用方的参数问题，不是系统故障。
         raise AppError(ErrorCode.PARAM_ERROR, str(exc)) from exc
+
+    # 套餐校验在构造行之前：被拒的请求不生成 id、不落行（建第 N+1 个库是 20014）。
+    static_quota.ensure_kb_quota(db, tenant_id=tenant_id, plan=plan)
 
     kb = KnowledgeBase(
         id=new_kb_id(),

@@ -185,6 +185,7 @@ from app.providers.llm import get_llm_provider  # noqa: E402
 from app.providers.llm.noop import NoopLLMProvider  # noqa: E402
 from app.services.indexing_service import IndexingService  # noqa: E402
 from app.services.rag_service import retrieve  # noqa: E402
+from app.services.retrieval_options import RetrievalOptions  # noqa: E402
 from app.utils.status import DocumentStatus  # noqa: E402
 from scripts.eval_metrics import (  # noqa: E402
     Case,
@@ -762,8 +763,23 @@ async def _run_question(
             tenant_id=settings.DEV_TENANT_ID,
             kb_ids=list(kb_ids),
             query=question.query,
-            mode=mode,
-            top_k=top_k,
+            # 第 7 步（#77）起组合根收的是一个**已解析**的参数对象，不再逐项收
+            # ``mode`` / ``top_k``。评测脚本自己就是「解析者」：它要逐档对比，
+            # 所以直接构造，两个形状开关保持与新缺省一致（折叠 + 表格行折回整表），
+            # 这样历史评测口径不变。
+            #
+            # #78 起 ``rerank`` / ``rewrite`` 也是这个对象上的**生效值**（档位意图 ∧
+            # 本机能力）。评测没有租户、没有套餐，所以它自己承担「本机能力」这一半：
+            # 直接照抄服务端开关，历史评测跑的还是这台机器上那条链路。
+            # ``tenant_policy`` 留空——这一次没有套餐参与判定，编一个出来只会误导。
+            options=RetrievalOptions(
+                mode=mode,
+                top_k=top_k,
+                fold_to_sections=True,
+                expand_table_rows=True,
+                rerank=settings.RERANK_ENABLED,
+                rewrite=settings.QUERY_REWRITE_ENABLED,
+            ),
         )
     except AppError as exc:
         # 单模式失败是**预期结果**（验收第 7 条就是要求它明确失败），不是脚本故障：

@@ -38,12 +38,17 @@ from fastapi.testclient import TestClient
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES, Settings, settings
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
-from app.schemas.rag import RetrievalMode
+from app.services.retrieval_options import RetrievalMode
+from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
 KB_B = "kb-b"
+
+# 票 #77 起质量参数由密钥配置提供：本模块的请求助手把旧写法（``mode=`` / ``top_k=``
+# 等放进请求体）翻译成「造一个 custom 档的假身份」，调用点一个字都不用改。
+IDENTITY = RetrievalIdentity(TENANT_ID)
 
 # 手算的两条参考值（k=60）：两路都第 1 名 = 2/61；单路第 2 名 = 1/62。
 BOTH_FIRST = 0.0327868852459016
@@ -224,14 +229,14 @@ def _offline_client(
     monkeypatch.setattr(pipeline, "SessionLocal", lambda: work_db)
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id",
-        lambda db, kb_id: SimpleNamespace(tenant_id=TENANT_ID),
+        "get_by_id_for_tenant",
+        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
     )
 
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: request_db
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {
@@ -248,7 +253,7 @@ def _offline_client(
 
 def _post(client: TestClient, **body) -> dict:
     payload = {"kb_ids": [KB_A], "query": "E1024"}
-    payload.update(body)
+    payload.update(IDENTITY.apply(body))
     response = client.post(RETRIEVE_PATH, json=payload)
     assert response.status_code == 200
     return response.json()
@@ -262,7 +267,7 @@ def _retrieval_metadata(body: dict) -> dict:
 
 
 def test_mode_vocabulary_is_in_sync_everywhere() -> None:
-    """配置里的词汇表、请求体的 ``Literal``、默认值三处必须一致。"""
+    """配置里的词汇表、已解析参数里的 ``Literal``、默认值三处必须一致。"""
 
     assert (
         set(SUPPORTED_RETRIEVAL_MODES)
@@ -428,12 +433,12 @@ def test_visibility_is_checked_once_per_kb_before_any_recall(monkeypatch) -> Non
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     seen: list[str] = []
 
-    def _visible(db, kb_id):
+    def _visible(db, kb_id, *, tenant_id):
         seen.append(kb_id)
-        return SimpleNamespace(tenant_id=TENANT_ID)
+        return SimpleNamespace(tenant_id=tenant_id)
 
     with _offline_client(monkeypatch) as fake:
-        monkeypatch.setattr(kb_repo, "get_by_id", _visible)
+        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible)
         body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
 
     assert body["code"] == 0
@@ -447,7 +452,7 @@ def test_invisible_kb_is_rejected_before_anything_is_recalled(monkeypatch) -> No
     vector = _FakeVectorStore({KB_A: [_vector_row("a1", score=0.9)]})
     with _offline_client(monkeypatch, vector=vector) as fake:
         monkeypatch.setattr(
-            kb_repo, "get_by_id", lambda db, kb_id: SimpleNamespace(tenant_id="tenant-b")
+            kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None
         )
         body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
 
@@ -578,9 +583,12 @@ def test_single_vector_mode_still_fails_loudly_when_embedding_breaks(monkeypatch
 
     embedding = _FakeEmbedding(fail=True)
     keyword = _FakeKeyword([_keyword_row("c1", score=12.5)])
+    # 这条用例要断言 500，走不了那个「必须 200」的请求助手，于是直接发；模式仍由密钥
+    # 配置表达（票 #77 起请求体里没有它了）。
+    IDENTITY.use(mode="vector")
     with _offline_client(monkeypatch, embedding=embedding, keyword=keyword) as fake:
         response = fake["client"].post(
-            RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024", "mode": "vector"}
+            RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024"}
         )
 
     assert response.status_code == 500
@@ -595,7 +603,7 @@ def test_visibility_rejection_is_not_degraded(monkeypatch) -> None:
 
     with _offline_client(monkeypatch) as fake:
         # 在客户端就绪之后再换仓储，确保覆盖掉 fixture 里「库可见」的默认替身。
-        monkeypatch.setattr(kb_repo, "get_by_id", lambda db, kb_id: None)
+        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
         body = _post(fake["client"], mode="hybrid")
 
     assert body["code"] == 20008

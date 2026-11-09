@@ -1,8 +1,8 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**
 - 日期：2026-11-08
-- 相关：父 spec #20「第 4 步」、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
+- 相关：父 spec #20「第 4 步」、**父 spec #72「第 7 步」、ADR-0018「三层授权与配置自洽校验」**、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
 ## 一句话决定
 
@@ -219,4 +219,59 @@ kb_id IN ('kb-a', 'kb-b') AND index_version IN ('v1', 'v2')
 3. **阈值判断请显式选字段**：`vector_score` / `rerank_score` / `rrf_score` 各有量纲，别把 `score` 当相似度。
 4. 想要第 4 步那种「一条结果 = 一片」的响应，把 `include_parent` 显式传 `false`：此时**连按节归组都不做**，响应形状与折叠之前一致，召回深度也从 `top_k × OVERFETCH_FACTOR` 降回 `top_k`。
 
-> 命名遗留：`include_parent` 这个名字来自 ADR-0012（当时准备附加 `parent` 字段）。ADR-0013 已删除 `parent` 字段，开关实际控制的是**是否折叠**。为不破坏已发布的请求契约，名字保留，语义以本表为准。
+> 命名遗留：`include_parent` 这个名字来自 ADR-0012（当时准备附加 `parent` 字段）。ADR-0013 已删除 `parent` 字段，开关实际控制的是**是否折叠**。为不破坏已发布的请求契约，名字保留，语义以本表为准。（第 7 步之后这条保留理由已经消失：开关搬进了密钥配置，不再是已发布的请求字段，见下节。）
+
+## 第三次修订（第 7 步，#73，2026-11-10）：请求只剩两个字段
+
+**本节取代四处旧口径**：§1「`k=60` 写死，不进请求体」里那句「请求体只接受 `kb_ids` / `query` / `mode` / `top_k`」、§1 中「第 3 步增补又增加 `include_parent` / `expand_table_rows`」、上面「后续修订」表格的「请求体」一行，以及「第二次破坏性变更的迁移方式」第 4 条（想让响应回到「一条结果 = 一片」就显式传 `include_parent=false`）。那几处现在**只描述第 4 步与第 3 步的历史状态**，不要再照它们实现。
+
+### 1. 契约
+
+一次检索请求只有两个字段，`extra="forbid"` 照旧：
+
+| 字段 | 表达什么 |
+| --- | --- |
+| `kb_ids` | 查哪些知识库（必填） |
+| `query` | 问什么（必填） |
+
+- 检索方式、返回条数、是否重排、是否查询改写、是否折叠成整节、是否把表格行折回整表——**全部来自密钥配置**，请求里一个都没有。同义词扩展**不在其中**：它是部署级开关（`SYNONYM_EXPANSION_ENABLED`），不按 Key 分配。两篇结果装饰 ADR 里的两个开关因此换了归属，见 ADR-0012 / ADR-0013 文末的第 7 步修订。
+- 旧调用方继续传 `mode` / `top_k` / `include_parent` / `expand_table_rows`，拿到的是参数校验失败（`20002`），**不是被忽略**。静默忽略比报错更糟：调用方会以为自己的参数生效了，直到某天发现 `quality` 档根本没照它想的跑。
+- HTTP 与 MCP 两条入口字面一致：工具签名里有什么，模型就能填什么（见 ADR-0018）。
+- 唯一的例外是**链路常数**：召回深度与融合池仍由服务端配置决定（`HYBRID_RECALL_TOP_K` / `RERANK_MAX_CANDIDATES`），既不进请求，也不按 Key 分配。它们决定「池子里有多少料」，不是「这次用多好」；做成可调项会让同一个档位名在不同租户那里变成不同链路。
+
+§6 的「`top_k` 是全局返回条数」仍然成立，变的是这个数的**来源**：它来自密钥配置（命名档位，或 `custom` 档下的那批手动参数），不再来自请求。
+
+### 2. 为什么：档位名必须处处是同一条链路
+
+命名档位（`speed` / `balanced` / `quality`）承诺的是一整条链路，例如 `quality` = 混合检索 + 重排 + 查询改写（三个档位的返回条数都是 5，档位之间差的是链路，不是返回多少个字）。这个承诺要成立，前提是「同一个档位名在任何一把 Key、任何一条入口、任何一次调用上都是同一条链路」。
+
+只要请求还能带质量参数，这个前提立刻就碎：同一把 Key 上的 `quality`，在 A 应用那里是混合 + 重排 + 改写，在 B 应用那里被它自己传的 `mode=bm25` 削成单通道。于是评测量到的 `quality` 与线上跑着的 `quality` 不再是同一个东西，历史数字与线上现象再也对不上——本项目已经在 `score` 语义上付过一次这种代价（§4），不该在档位上再付一次。
+
+档位锁在 Key 上另有一个好副作用：调用方拿不到旋钮，也就不必理解 embedding、重排、融合这些底层细节，只需要回答「问什么、查哪些库」。
+
+### 3. 被否决的三种做法
+
+| 做法 | 为何不选 |
+| --- | --- |
+| 请求里带 `profile`（档位名） | 档位一旦能按次指定，它就从「这套集成的配置」退化成「这次调用的建议值」：同一把 Key 的两次调用可能跑不同链路，服务端无法预测、评测无法复现；而且「这个档位是否在套餐白名单内」这条门禁要在每次请求上重复判，判定点从建 Key 时前移到热路径上。 |
+| 请求保留 `mode` / `top_k` | 这两个正是命名档位要承诺的内容。留着它们等于允许调用方半途改写档位：`quality` 配 `mode=bm25` 既不是 `quality` 也不是 `custom`，成了第三种没人定义过的东西；`top_k` 留着则「返回条数」这半条承诺也守不住。 |
+| 只删其中一个（只删 `mode` 或只删 `top_k`） | 这两个参数是同一件事的两半，删一半等于留一个后门：只删 `top_k` 时调用方仍能翻转 `mode`，「单模式不降级」的语义可以被请求改写；只删 `mode` 时返回条数仍由调用方定，档位承诺的链路被削掉一半，召回成本也不再可控。何况「一半参数在请求、一半在配置」的契约还得在文档里额外解释哪一半算哪一半——这本身就是不可复现的迹象。 |
+
+### 4. 后果
+
+- **破坏性变更**：`mode` / `top_k` / `include_parent` / `expand_table_rows` 从请求体删除，旧调用方会拿到 `20002` 而不是结果。迁移方式是「把这次调用想要的行为写进这把 Key 的密钥配置」，不是把字段加回来。
+- **档位判定从参数校验挪到配置解析**：档位展开与门禁发生在鉴权之后、限流之前，六道关卡的顺序不变（见 ADR-0018）。
+- **`include_parent` 这个命名遗留一并了结**：它搬进密钥配置后不再是已发布的请求契约，那一层不必再沿用这个与语义相反的名字。
+- **`tenant_policy` 回显更有必要**：请求里已经看不出这次跑了什么，它是唯一能解释「为什么这次慢了」「为什么没重排」的地方。
+
+## 第四次修订（第 7 步收尾，2026-11-10）：`requested_tier` 改名为 `requested_profile`
+
+**这是一次已发布响应字段的破坏性改名**：`metadata.tenant_policy.requested_tier` 现在叫 `requested_profile`。没有两个名字并存的过渡期——回显里同时出现两个键就等于有了第二个真相，而这正是本 ADR 反复拒绝的那类设计。读旧字段的调用方只需改读新键；值、位置与语义都不变（仍是 `speed` / `balanced` / `quality` / `custom`）。
+
+为什么必须改：
+
+- **`tier` 是术语表的禁用词。** `GLOSSARY.md` 的规范名是**档位（Profile）**，而 `tier` 同时被列为「档位」「套餐」「模型角色」三个概念的 `_Avoid_`。拿它命名档位是一处双重违规：名字既不是规范名，又让读者无法判断它指的是「这次用多好」还是「这个租户买得起多少」——这两件事在 ADR-0018 里是两层互不重叠的授权。
+- **改名之后词根一致。** 回显字段与 `TenantPolicy.requested_profile`、密钥配置的 `profile` 列、套餐的 `allowed_profiles` 白名单同词，读代码不必再翻译一次。
+- **同一轮只动名字、不动语义。** 平台层的模块与类型同理改名：`app/services/profile_policy.py`、`ProfileChain`、`PROFILE_CHAINS`（原 `tier_policy` / `TierBundle` / `TIER_PRESETS`）。它们不进响应契约，改名不影响调用方。
+
+迁移方式：把读 `metadata.tenant_policy.requested_tier` 的地方改成 `metadata.tenant_policy.requested_profile`；这段回显只在经套餐门禁解析的调用上出现，不经门禁的内部调用本来就没有这一栏（见第三次修订第 4 条）。

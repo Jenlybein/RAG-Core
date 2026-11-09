@@ -37,6 +37,7 @@ from app.models.document import Document
 from app.repositories import document_repository
 from app.services import document_storage
 from app.utils.status import DocumentStatus
+from tests.fake_db import ZERO_COUNT
 
 DOC_ID = "doc-1"
 TENANT_ID = settings.DEV_TENANT_ID
@@ -361,6 +362,10 @@ class _FakeSession:
     def flush(self) -> None:
         return None
 
+    def execute(self, _statement: Any) -> Any:
+        # 重建前的并发处理配额会数一次行：替身表示「没有别的文档在处理」。
+        return ZERO_COUNT
+
     def delete(self, doc: Any) -> None:
         self.deleted.append(doc)
         self.calls.append("delete-row")
@@ -441,7 +446,8 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     main = importlib.import_module("app.main")
     session_mod = importlib.import_module("app.db.session")
     routes = importlib.import_module("app.api.routes.documents")
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     calls: list[str] = []
     session = _FakeSession(calls)
@@ -463,7 +469,7 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     monkeypatch.setattr(document_repository, "prepare_for_indexing", _prepare)
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
             yield SimpleNamespace(
@@ -928,10 +934,12 @@ def test_reindex_script_resolves_tenant_from_the_knowledge_base(
 ) -> None:
     """``--tenant-id`` 缺省时取该 kb 的 tenant_id；显式值优先；kb 不存在则报错。"""
 
+    # 归属发现走仓储层里显式命名的运维函数（它只回租户标识，不回库行）；
+    # 数据面上的「按 id 取库」已经不存在，必须带租户。
     monkeypatch.setattr(
         reindex_script.knowledge_base_repository,
-        "get_by_id",
-        lambda _db, _kb_id: SimpleNamespace(tenant_id=TENANT_ID),
+        "get_owner_tenant_id",
+        lambda _db, _kb_id: TENANT_ID,
     )
 
     assert (
@@ -946,7 +954,7 @@ def test_reindex_script_resolves_tenant_from_the_knowledge_base(
     )
 
     monkeypatch.setattr(
-        reindex_script.knowledge_base_repository, "get_by_id", lambda _db, _kb_id: None
+        reindex_script.knowledge_base_repository, "get_owner_tenant_id", lambda _db, _kb_id: None
     )
     with pytest.raises(LookupError):
         reindex_script.resolve_tenant_id(SimpleNamespace(), kb_id=KB_ID, tenant_id=None)

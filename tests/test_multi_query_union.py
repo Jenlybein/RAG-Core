@@ -39,22 +39,36 @@ from app.providers.llm.base import LLMProvider
 from app.services.query.optimizer import QueryProcessResult, optimize_query
 from app.services.query.rewrite import QueryRewrite
 from app.services.query.synonyms import collect_synonym_groups
+from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
 
+# 票 #77 起质量参数由密钥配置提供：请求助手把旧写法翻译成「造一个 custom 档的假身份」。
+IDENTITY = RetrievalIdentity(TENANT_ID)
+
 RAW_QUERY = "退钱怎么弄"
 REWRITTEN = "退款的处理流程"
 
-# 关闭改写时三种 mode 的响应全文 SHA-256。取值方式见 ``_BASELINE_SOURCE``：
-# 在 f1ddb46（本票开工前、生产代码未改）上，用本文件同一个 ``_response_hashes``
-# 实跑采集，不是手写的期望字符串。
-_BASELINE_SOURCE = "f1ddb46 (feat/step4-t31-multi-query 开工点, 生产代码未改)"
+# 关闭改写时三种 mode 的响应全文 SHA-256。取值方式见 ``_BASELINE_SOURCE``：用本文件
+# 同一个 ``_response_hashes`` 实跑采集，不是手写的期望字符串。
+#
+# **#78 重采过一次**：响应契约新增了 ``metadata.tenant_policy``（票 #78 的交付之一），
+# 全文哈希必然改变——那是有意的契约变更，不是检索行为变化。检索内容那一半仍由本文件
+# 其余用例守着（关闭改写时只搜一句、同一句、同一顺序），重采没有放宽任何一条。
+#
+# **第 7 步收尾又重采一次**：回显字段 ``requested_profile`` 的旧名已改成现在这个
+# （ADR-0010「第四次修订」，旧名违反术语表）。同样只动名字、不动检索内容：新基线
+# 仍然只比 #78 那版多这一个字段名的差别，其余字节未变。
+_BASELINE_SOURCE = (
+    "#78 落地后重采（相对 f1ddb46：仅多出 metadata.tenant_policy）；"
+    "第 7 步收尾再采（相对 #78：tenant_policy 的 requested_* 字段改名）"
+)
 _BASELINE_SHA256: dict[str, str] = {
-    "hybrid": "78fb011de37e97b37257f19c48c3b2d176bdf45f842b96d961c2cb8d09c144c8",
-    "vector": "8bbc63b426b4fff1529261388951abd11f6d9960f00a82e924608a8479f8a180",
-    "bm25": "5c08c56cd144374803f7c53a22cba85a3be7f8736ee3baf1fb15eade7fc95259",
+    "hybrid": "49df8f08e29401114259e067974de612040a0d7ae28a9e4bfc6b92759028e62f",
+    "vector": "5dc254efa9f0a7a0a5d2b5f6201da005cc8effe3eb1e05f962c9c587c44c9162",
+    "bm25": "e34615911395585598607a3f7354f8b924ee4ad139db9274c74d2633ee880f70",
 }
 
 
@@ -220,22 +234,22 @@ def _offline_client(
 
     tables = kb_settings or {}
 
-    def _get_by_id(_db: Any, kb_id: str) -> Any:
+    def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return SimpleNamespace(
-            tenant_id=TENANT_ID,
+            tenant_id=tenant_id,
             settings=tables.get(kb_id) or {},
             name="",
             description="",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id", _get_by_id)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
     if llm is not None:
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {
@@ -252,10 +266,10 @@ def _response(client: TestClient, **body: Any) -> Any:
     payload: dict[str, Any] = {
         "kb_ids": [KB_A],
         "query": RAW_QUERY,
-        "mode": "hybrid",
-        "top_k": 5,
     }
-    payload.update(body)
+    # 票 #77：``mode`` / ``top_k`` / ``include_parent`` 这批旧请求字段改由密钥配置表达，
+    # 助手把它们翻译成「造一个 custom 档的假身份」，调用点保持原样。
+    payload.update(IDENTITY.apply({"mode": "hybrid", "top_k": 5, **body}))
     return client.post(RETRIEVE_PATH, json=payload)
 
 
@@ -632,11 +646,15 @@ def test_single_query_keeps_each_caller_historical_tie_break(
 def test_rewrite_off_response_is_byte_identical_to_pre_change_baseline(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``QUERY_REWRITE_ENABLED=false``：三种 mode 的响应全文与 f1ddb46 逐字节相同。
+    """``QUERY_REWRITE_ENABLED=false``：三种 mode 的响应全文与采集基线逐字节相同。
 
-    基线常量取于 ``_BASELINE_SOURCE``，用本文件同一个 ``_response_hashes`` 在未改
-    生产代码的提交上实跑采集。这条守的是本票最容易出的那类 bug：并集分支顺手让
-    **关闭时**也多搜一句，让所有默认用户白付一次嵌入费用。
+    基线常量取于 ``_BASELINE_SOURCE``，用本文件同一个 ``_response_hashes`` 实跑采集
+    （#78 因响应新增 ``tenant_policy``、第 7 步收尾因回显字段改名各重采一次，见那段注释）。
+    这条守的是本票最容易出的那类 bug：并集分支顺手让**关闭时**也多搜一句，让所有默认
+    用户白付一次嵌入费用。
+
+    它与票 #78 的「部署开关关着时行为逐字节不变」是同一条红线的两个方向：那边守
+    「档位不会凭空变出部署没配的 Provider」，这边守「没有一键顺手改掉默认路径」。
     """
 
     assert "PENDING" not in _BASELINE_SHA256.values(), "基线必须来自实跑，不能留占位"

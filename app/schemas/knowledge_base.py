@@ -52,6 +52,6 @@ class KnowledgeBaseItem(BaseModel):
 
 
 class KnowledgeBaseListData(BaseModel):
-    """这把 Key 可见的库；第 1 步占位期返回默认租户下的全部库。"""
+    """这把 Key 可见的库：本租户的库再按密钥配置的数据范围收窄（越界的库不出现）。"""
 
     knowledge_bases: list[KnowledgeBaseItem]

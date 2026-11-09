@@ -1,7 +1,7 @@
 """Alembic 环境配置。
 
 连接串从 app.core.config.settings 注入（.env 是唯一真相，alembic.ini 不写密码）；
-target_metadata 指向 Base.metadata，import app.models 确保四张表都注册进来。
+target_metadata 指向 Base.metadata，import app.models 确保每张表都注册进来。
 """
 
 from logging.config import fileConfig

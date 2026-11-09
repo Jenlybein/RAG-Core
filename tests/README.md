@@ -3,34 +3,43 @@
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 4 步票 8 重做 · 语料 v2 时实测）。
+当前 tip（第 7 步收尾，2026-11-10 实测：945 条用例，**934 passed / 11 skipped**）。
 
 ## 分层
 
 | 层 | 接缝 / 被测对象 | 代表文件（不按票重复列举） |
 | --- | --- | --- |
-| ① 纯函数单测 | 切块器、4 个 Parser、状态守卫、错误码词汇、CAS 的 `UPDATE ... WHERE` 分支（内存 SQLite 只建 `documents` 一张表）、**RRF 融合真值表与 tie-breaker、检索文本拼装、BM25 查询体、ES mapping、同义词扩展、评测算分与语料约束** | `test_contracts.py`、`test_parsers.py`、`test_markdown_splitter.py`、`test_document_state_machine.py`、`test_indexing_task.py`（`_is_retryable` 真值表）、`test_business_errors.py` 的数据契约、`test_upload_async.py` 的守卫矩阵与 CAS、`test_rrf_fusion.py`、`test_retrieval_text.py`、`test_keyword_query_builder.py`、`test_query_synonyms.py`、`test_eval_metrics.py`、`test_eval_corpus.py` |
-| ② ASGI 接缝 | `TestClient` 发真实请求，只看响应体 / 响应头 / 日志文件副作用；数据库用 `dependency_overrides`、外部能力用 monkeypatch 换掉 | `test_business_errors.py`、`test_exception_boundary.py`、`test_request_id.py`、`test_logging.py`、`test_retrieval_log_hygiene.py`、`test_upload_async.py` 的上传与列表、`test_indexing_failure.py`、`test_dual_entry_skeleton.py`、`test_toolchain.py`、`test_retrieval_mode.py`、`test_hybrid_retrieval.py`、`test_query_optimization_retrieval.py` |
+| ① 纯函数单测 | 切块器、4 个 Parser、状态守卫、错误码词汇、CAS 的 `UPDATE ... WHERE` 分支（内存 SQLite 只建 `documents` 一张表）、**RRF 融合真值表与 tie-breaker、检索文本拼装、BM25 查询体、ES mapping、同义词扩展、评测算分与语料约束、鉴权内核、数据范围白名单、档位展开与五道门禁、配置自洽校验、配额计数与静态配额边界、套餐三档对账、口令哈希** | `test_contracts.py`、`test_parsers.py`、`test_markdown_splitter.py`、`test_document_state_machine.py`、`test_indexing_task.py`（`_is_retryable` 真值表）、`test_business_errors.py` 的数据契约、`test_upload_async.py` 的守卫矩阵与 CAS、`test_rrf_fusion.py`、`test_retrieval_text.py`、`test_keyword_query_builder.py`、`test_query_synonyms.py`、`test_eval_metrics.py`、`test_eval_corpus.py`、`test_auth_kernel.py`、`test_data_scope.py`、`test_profile_gating.py`、`test_quota_gate.py`、`test_static_quota.py`、`test_plan_presets.py`、`test_console_password.py` |
+| ② ASGI 接缝 | `TestClient` 发真实请求，只看响应体 / 响应头 / cookie 行为 / 日志文件副作用；数据库用 `dependency_overrides` + `tests/fake_db.RecordingSession`、外部能力用 monkeypatch 换掉 | `test_business_errors.py`、`test_exception_boundary.py`、`test_request_id.py`、`test_logging.py`、`test_retrieval_log_hygiene.py`、`test_upload_async.py` 的上传与列表、`test_indexing_failure.py`、`test_dual_entry_skeleton.py`、`test_toolchain.py`、`test_retrieval_mode.py`、`test_hybrid_retrieval.py`、`test_query_optimization_retrieval.py`、`test_tenant_wiring.py`、`test_quota_wiring.py`、`test_console_api.py` |
 | ③ Worker 任务 | 任务体：CAS 抢占用两段事务、purge → 写入 → SUCCESS、重试白名单、失败留痕与脱敏文案、租约语义、**双写与索引阶段不降级** | `test_indexing_task.py`（`IndexingService` 流水线 + `_run_indexing`）、`test_indexing_dual_write.py`、`test_index_version.py`、`test_keyword_bulk_failure.py` |
 | ④ OCR（asset-gated） | 零路由页不碰原生运行时、缺运行时抛 `ValueError`、扫描件路由到 OCR、整篇全空是质量错误 | `test_ocr_contract.py` + `tests/fixtures/ocr/*.pdf` |
 | ⑤ 跨层 e2e | 一条链：上传 → 投递 → 解析 → 切块 → 向量化 → 先删后写 → SUCCESS，切块 provenance 与表格完整性问题只有这一层能发现 | `test_document_pipeline_e2e.py` + `tests/fixtures/markdown/structured_notes.md` |
 | ⑥ 真实引擎集成（env-gated） | 真 PostgreSQL 上的 CAS/租约与范围召回、真 Elasticsearch 上的建索引 → 写入 → 中文命中 → 按文档删除 → 计数归零、两套嵌入实现的等价性。**不注入传输层 mock**：那测的是别人库的实现细节，升级就碎 | `test_integration_cas.py`、`test_keyword_search_es.py`、`test_embedding_equivalence.py` |
 | ⑦ 依赖元数据守卫 | 硬钉版本组合可解析、`langchain` / `ragas` / `langchain-community` 这类「一升就碎」的链条没被悄悄抬高 | `test_dependency_compat.py` |
+| ⑧ 表形状 / 迁移 / 运维脚本（离线） | 直接对 `Base.metadata` 断言七张身份与控制面表的列、类型与「无外键、裸字符串 id」；迁移文件一表一迁移、可升可降对称、不碰既有四张业务表；`seed_plans` / `create_tenant` / `issue_api_key` / `create_admin` 的入参与退出码 | `test_identity_tables.py`、`test_identity_migrations.py`、`test_identity_seeding.py`、`test_identity_ops_scripts.py`、`test_console_tables.py`、`test_console_migrations.py`、`test_console_bootstrap.py` |
 
 第 4 步（双路召回）的测试重心在 ① 与 ②：融合与查询构造是纯函数，走真值表；三种
 `mode`、降级矩阵、空结果两种原因、多库配对全部在 ASGI 接缝上按响应体断言。**没有
 新增生产接缝**——替身仍然只换工厂函数（大模型 / 嵌入 / 向量存储 / 关键词检索 / 重排）。
 
+第 7 步（多租户）新增的测试落在三处，仍然守着同一条「只看外部可观察行为」的口径：
+
+- **纯函数（①）**：鉴权内核的四种未授权、白名单三种语义（越界 = 不存在、空白 = 关闭、只有内置开发身份显式放开）、五道门禁与两种超限反应（命名档位拒绝 / `custom` 裁剪回显）、两级配额的边界与「成功才记账」、静态配额的三条写路径、配置自洽校验、三档种子逐列对账。
+- **ASGI（②）**：同一把真实 Key 打 HTTP 与 MCP，整份 data 载荷逐字段相等；白名单越权、档位越权、QPS / 日配额超限在真实路由上的错误码；控制面的 cookie / 防跨站头 / 试算与落库 / 删缓存 / 审计。
+- **表与运维脚本（⑧）**：七张表的形状（裸字符串 id、无外键、无 ORM 关系）、一表一迁移、`seed_plans` 的三条分档口径与四条运维命令的退出码。
+
+**第 7 步唯一新增的接缝是「注入式假 Redis」**（`app.core.redis_client.set_redis_client`），不是 monkeypatch 全局：限流与配额服务通过构造参数收客户端，测试注入内存假实现；默认套件因此不碰 Redis。鉴权那条缝则完全没有新增——它本来就是纯函数，测试直接把假行交给 `resolve_identity`。
+
 ## 当前基线
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `593 passed, 11 skipped`（共收集 604 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 601 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `596 passed, 8 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 601 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 596 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 596 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `934 passed, 11 skipped`（共收集 945 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 942 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `937 passed, 8 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 942 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 937 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 937 deselected` |
 
 11 条 skip 分**四道门禁**，都不是失败：
 
@@ -40,10 +49,10 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `593 passed, 11 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `934 passed, 11 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 604 条，`-m ocr` 收集 3 条、
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 945 条，`-m ocr` 收集 3 条、
 > `-m integration` 收集 8 条。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
@@ -107,13 +116,18 @@ docker compose -f deploy/docker-compose.yml up -d
 
 ## 离线约定（默认 `pytest -q` 的硬约束）
 
-- **默认 `pytest -q` 必须保持离线**：不连 PostgreSQL、不连 Elasticsearch、不发真实
+- **默认 `pytest -q` 必须保持离线**：不连 PostgreSQL、不连 Elasticsearch、不连 Redis、不发真实
   模型 / embedding 请求、不下载任何原生资产。③⑤ 的数据库依赖都换成了内存替身或只建
   一张表的内存 SQLite；**ES 在默认套件里永远是 `NoopKeywordSearchProvider`**
   （`KEYWORD_SEARCH_PROVIDER` 缺省 `none`），混合模式因此只会走「关键词一路不可用」
   这条降级分支，不会偷偷发网络请求。
-- 唯一接缝仍是 ASGI 应用边界（`TestClient` 发真实请求，看响应 + 日志文件副作用）；
-  外部能力只换**工厂函数**，不新增生产接缝。
+- **第 7 步的两个开关默认都关**：`AUTH_ENABLED=false` 走内置开发身份、`RATE_LIMIT_ENABLED=false`
+  让限流与配额整段 no-op。默认套件因此不需要真 Key、也不需要 Redis；要测开 / 关两种行为，
+  把参数显式传进纯函数或注入假客户端，不改全局配置。
+- 主要接缝仍是 ASGI 应用边界（`TestClient` 发真实请求，看响应 + 日志文件副作用）；
+  外部能力只换**工厂函数**。第 7 步的例外是**注入式假 Redis**（`set_redis_client`）与
+  假数据库行（`RecordingSession` 传给纯函数 / 依赖覆盖）：两者都是显式构造参数或
+  `dependency_overrides`，不是 monkeypatch 私有全局，也不会在用例之间留下污染。
 - 夹具保持**模块内**定义，不在 `tests/conftest.py` 里养夹具动物园。项目级 `conftest.py`
   只做一件事：在任何 `app.main` 导入前设置 `ENABLE_MCP=false`，避免每个 `TestClient`
   起停 MCP 会话管理器。

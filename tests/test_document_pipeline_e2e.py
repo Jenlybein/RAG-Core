@@ -40,6 +40,7 @@ from app.repositories import document_repository
 from app.services.indexing_service import IndexingService
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.status import DocumentStatus
+from tests.fake_db import ZERO_COUNT
 
 KB_ID = "kb-1"
 TENANT_ID = settings.DEV_TENANT_ID
@@ -77,6 +78,10 @@ class _FakeSession:
 
     def flush(self) -> None:
         return None
+
+    def execute(self, _statement: Any) -> Any:
+        # 上传前的静态配额会数行；这个替身表示空库。
+        return ZERO_COUNT
 
     def commit(self) -> None:
         self.commits += 1
@@ -150,7 +155,8 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     session_mod = importlib.import_module("app.db.session")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
+    from app.core.auth import DevKeyContext
 
     session = _FakeSession()
     embeddings = _StubEmbeddings()
@@ -163,10 +169,10 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     # 所以替身必须带齐策略与白名单，不能只给 tenant_id。
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id",
-        lambda db, kb_id: SimpleNamespace(
+        "get_by_id_for_tenant",
+        lambda db, kb_id, *, tenant_id: SimpleNamespace(
             id=KB_ID,
-            tenant_id=TENANT_ID,
+            tenant_id=tenant_id,
             split_strategy=SPLIT_STRUCTURE,
             allowed_formats=[FORMAT_MARKDOWN],
             settings={},
@@ -205,7 +211,7 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     monkeypatch.setattr(document_service, "enqueue_document", _consume_index_task)
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: session
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
             yield SimpleNamespace(

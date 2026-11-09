@@ -1,17 +1,27 @@
 """检索接口：POST /api/v1/rag/retrieve。
 
 只返回结构化切片 + 分数 + 元数据；不返回 context_text，不生成答案。
-头部带占位 API Key，tenant_id 由服务端从 Key 解出，不进请求体。
+头部带 API Key，tenant_id 由服务端从 Key 解出，不进请求体；哪些库能查由这把 Key 的
+密钥配置圈定（六道关卡的第二道，见 ``app.services.data_scope``）。
+
+请求体只有 ``kb_ids`` + ``query``（ADR-0010「第三次修订」）。检索方式、返回条数、
+重排、改写与两个结果形状开关**从密钥配置解析**，而且要过五道门禁
+（``app.services.profile_policy``）——请求里既没有这些字段，也没有任何一处代码去读它们。
+
+本路由只做两件判定之外的事：把身份与请求递进 ``app.services.retrieval_gate``（白名单 →
+档位门禁 → 配额 → 召回 → 记账的唯一实现），再把已经校验成形的数据装进 ``{code, msg,
+data}`` 外壳。判定本身不在这里：判定写进路由，MCP 一侧就得再写一遍。
 """
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.core.auth import DevKeyContext, resolve_dev_key
+from app.api.deps import get_current_key
+from app.core.auth import DevKeyContext
 from app.db.session import get_db
 from app.schemas.common import ApiResponse, ok
 from app.schemas.rag import RetrieveData, RetrieveRequest
-from app.services import rag_service
+from app.services.retrieval_gate import gated_retrieve
 
 router = APIRouter()
 
@@ -20,16 +30,14 @@ router = APIRouter()
 async def retrieve(
     payload: RetrieveRequest,
     db: Session = Depends(get_db),
-    key: DevKeyContext = Depends(resolve_dev_key),
+    key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[RetrieveData]:
-    data = await rag_service.retrieve(
+    # 六道关卡的顺序与判定只在 gated_retrieve 里，MCP 一侧调的是同一个函数：越权、超限
+    # 与配额用尽都在那里失败，本路由不判规则、也不各长一套。
+    result = await gated_retrieve(
         db,
-        tenant_id=key.tenant_id,
+        key=key,
         kb_ids=payload.kb_ids,
         query=payload.query,
-        mode=payload.mode,
-        top_k=payload.top_k,
-        include_parent=payload.include_parent,
-        expand_table_rows=payload.expand_table_rows,
     )
-    return ok(RetrieveData.model_validate(data))
+    return ok(result)

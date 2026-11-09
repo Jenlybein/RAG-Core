@@ -68,17 +68,22 @@ async def optimize_query(
     query: str,
     synonym_groups: Iterable[SynonymGroup] = (),
     rewrite_hint: str | None = None,
+    rewrite_enabled: bool | None = None,
 ) -> QueryProcessResult:
     """改写 → 同义词扩展，返回两路各自该用的查询。
 
     ``synonym_groups`` 与 ``rewrite_hint`` 都由调用方传进来：本模块不查库、不认识
     ``KnowledgeBase``。多库检索时调用方在可见性预校验那一次已经把 ``settings`` 拿在手上，
     这里再查一次库就会变成「每个库两次查询」。
+
+    ``rewrite_enabled`` 由调用方决定「这次要不要改写」（#78：档位意图 ∧ 本机能力的合取
+    在平台层算完），缺省读服务端开关。同义词扩展没有这个入参：它由库级配置决定，
+    与档位无关。
     """
 
     started = time.perf_counter()
 
-    rewrite = await rewrite_query(query=query, hint=rewrite_hint)
+    rewrite = await rewrite_query(query=query, hint=rewrite_hint, enabled=rewrite_enabled)
     # 失败路径上 ``rewrite.query`` 已经是原句——回退这件事在改写阶段就做完了，
     # 这里不需要（也不该）再判断一次。
     effective_query = rewrite.query

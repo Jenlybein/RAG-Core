@@ -20,8 +20,11 @@ from app.core.llm_vendors import LLM_VENDORS
 
 # 检索模式的允许值。放在模块级而不是写成类属性：它是一份**词汇表**，校验器与
 # 报错文案共用同一份，不会出现「文案说支持 A、校验器只放 B」。票 4 把 hybrid 加进来，
-# 请求体那边的 `Literal`（app/schemas/rag.py）必须同步加——`Literal` 没法从元组展开，
-# 两处写两遍是语言限制，用 tests/test_hybrid_retrieval.py 的一致性测试钉住，防漂移。
+# 消费方那边的 `Literal`（app/services/retrieval_options.py 的 `RetrievalMode`）必须
+# 同步加——`Literal` 没法从元组展开，两处写两遍是语言限制，用
+# tests/test_hybrid_retrieval.py 的一致性测试钉住，防漂移。
+# 第 7 步（#77）起这个值只是**缺省值**：请求体里没有 ``mode`` 字段，实际取值来自
+# 密钥配置的解析（app/services/retrieval_options.py）。
 SUPPORTED_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 
 
@@ -75,9 +78,31 @@ class Settings(BaseSettings):
     LOG_DIR: str = "logs"
 
     # 占位 Key（第 1 步）：数据面两个入口共用。认这个固定 token，
-    # tenant_id 取默认租户、不做真实校验；第 5 步换成 api_keys 表。
+    # tenant_id 取默认租户、不做真实校验；第 7 步换成 api_keys 表真校验。
     DEV_API_KEY: str = "dev-key"
     DEV_TENANT_ID: str = "tenant_demo"
+    # 鉴权开关（第 7 步）：关闭时落进内置开发身份，但**仍然要求**带上上面那把占位 token
+    # ——退回「谁都不用带」意味着一个被意外暴露的开发实例对整个网络敞开，而要求这把固定
+    # token 对开发者零成本（它本来就在 .env 里），还让既有测试保持有意义。
+    # **生产必须打开**：打开后只认 api_keys 表里的真 Key，开发身份不可达。
+    AUTH_ENABLED: bool = False
+    # 限流与日配额开关（第 7 步票 #79）：**默认关闭**，与上面那个开关同一个精神——
+    # 本地开发与默认测试套件全程离线，一条真实 Redis 都不需要，既有用例因此一行不改。
+    # 关掉时两道关卡（秒级限流、按天配额）整段是 no-op：**所有租户都是无限额度**。
+    # **生产必须打开**：这是部署方的决定，不是代码能替它猜的。
+    # 刻意做成一个显式开关，而不是「连不上 Redis 时自动放行」——Redis 一挂就让所有人
+    # 解除限流，是本票最坏的失败模式：平台看起来完全健康（每次调用都成功），直到账单
+    # 或 Worker 队列把真相捅出来。「现在到底有没有在限流」必须有人配过，而不是网络
+    # 抖动的副产品。
+    RATE_LIMIT_ENABLED: bool = False
+    # 套餐缓存（第 7 步）：与 Celery 的 0/1 号库分开，避免哪天有人在那两个库上 FLUSHDB
+    # 顺手把套餐缓存清空（或反过来）。读走缓存、改完删缓存，TTL 只是兜底。
+    REDIS_URL: str = "redis://localhost:6379/2"
+    PLAN_CACHE_TTL_SECONDS: int = 60
+    # 控制台会话（第 7 步控制面）：有效期只有一个来源——登录时发 cookie 与写会话行的
+    # ``expires_at`` 读的是同一个值，两处各写一遍迟早出现「cookie 还活着、行已过期」。
+    # 停用账号不靠它生效（那是每个请求回账号表现读），它只回答「多久不用就自动掉线」。
+    CONSOLE_SESSION_TTL_SECONDS: int = 28800
     # 离线测试 / CI 不启 MCP 会话管理器（避免每个 TestClient 都启停 session manager）。
     # 生产默认开启；仅 pytest 通过环境变量关掉。
     ENABLE_MCP: bool = True
@@ -118,7 +143,8 @@ class Settings(BaseSettings):
     RERANK_CHUNK_MAX_CHARS: int = 1024
     # 超时由重排 Provider 用 ``asyncio.wait_for`` 兜住：慢调用按失败处理，走降级。
     RERANK_TIMEOUT_SECONDS: float = 15.0
-    # 注：**返回条数只由请求的 ``top_k`` 决定**，没有「重排条数上限」这一项。
+    # 注：**返回条数只由这次调用解析出的 ``top_k`` 决定**（第 7 步起它来自密钥配置，
+    # 不再来自请求体），没有「重排条数上限」这一项。
     # 服务端配置悄悄把调用方要的 10 条压成 5 条，是意外行为而不是配额。
     # 原先的 ``RERANK_TOP_N`` 与 ``RERANK_TEMPERATURE`` 已删除：前者压条数，后者
     # 从没接进模型（``LLMProvider`` 不承载生成参数，重排温度在装配层固定为 0）。
@@ -167,10 +193,11 @@ class Settings(BaseSettings):
     def _validate_retrieval_mode(cls, value: str) -> str:
         """配错的检索模式必须**启动就炸**，不能等到每个请求各自 20002。
 
-        这是真踩过的坑：请求体里的 ``mode`` 有 ``Literal`` 守着，但**缺省值**来自
+        这是真踩过的坑：请求体里的 ``mode`` 曾经有 ``Literal`` 守着，但**缺省值**来自
         这里，而 Pydantic 不校验 ``default_factory`` 的返回值。结果是配置写成
         ``bing`` 之类的拼错值时进程照常起来，之后每个请求都在业务层撞
-        ``PARAM_ERROR``——排查成本比启动失败高一个数量级。
+        ``PARAM_ERROR``——排查成本比启动失败高一个数量级。第 7 步（#77）之后请求体里
+        已经**没有** ``mode`` 字段，这个值成了唯一缺省，启动即校验因此更要紧。
         """
 
         allowed = SUPPORTED_RETRIEVAL_MODES

@@ -2,14 +2,14 @@
 
 面向业务系统的 **RAG 能力中台**。
 
-核心边界一句话：**文档进来，切片出去**。它不生成最终答案，只返回「最相关的切片 + 相似度分数 + 出处」——怎么拼 Prompt、调大模型、组织成自然语言答复，是租户自己的事。
+核心边界一句话：**文档进来，切片出去**。它不生成最终答案，只返回「最相关的切片 + 排序分与分列分数 + 出处」——怎么拼 Prompt、调大模型、组织成自然语言答复，是租户自己的事。
 
 ## 三种接入面
 
 | 接入面 | 入口 | 面向 |
 | --- | --- | --- |
 | HTTP API | `POST /api/v1/rag/retrieve` | 业务系统后端 |
-| MCP 入口 | `POST /mcp/`（JSON-RPC，三个工具，入参仅 `query`；第 11 步挂载，本步只留接缝） | AI Agent（Claude Desktop 等） |
+| MCP 入口 | `POST /mcp/`（JSON-RPC，两个工具：`rag_retrieve` / `rag_list_knowledge_bases`；检索入参 `kb_ids` + `query`，`rag_research` 留给第 9 步） | AI Agent（Claude Desktop 等） |
 | 控制台 | Vue 3 调试台：用户面板 / 管理员面板（需 `admin` 角色） | 人 |
 
 HTTP 入口与 MCP 入口共用 `ErrorCode` / `AppError`，但响应契约不同：HTTP 入口返回 `{code, msg, data}` 加 HTTP 状态码，MCP 入口走 JSON-RPC `isError: true` + 文本带 code。见 [ADR-0008](docs/adr/0008-dual-entry-error-contract.md)。
@@ -52,7 +52,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 - 4 个 HTTP 接口：`POST /api/v1/knowledge-bases/create`、`POST /api/v1/documents/upload`、`POST /api/v1/rag/retrieve`、`GET /api/v1/knowledge-bases`（列这把 Key 可见的库）。
 - MCP 入口挂在 `/mcp/`，两个工具 `rag_retrieve` / `rag_list_knowledge_bases`；`json_response=True`，工具调用回普通 JSON，不走流式。
-- 两个入口头部都带 `Authorization: Bearer dev-key`；`tenant_id` 由服务端从这把占位 Key 解出（默认 `tenant_demo`），不进请求体。检索传 `kb_ids`（列表）+ `query`。第 5 步再换 `api_keys` 表真校验与 `allowed_kb_ids` 白名单。
+- 两个入口头部都带 `Authorization: Bearer dev-key`；`tenant_id` 由服务端从这把占位 Key 解出（默认 `tenant_demo`），不进请求体。检索传 `kb_ids`（列表）+ `query`。**第 7 步已把占位 Key 换成 `api_keys` 表真校验与密钥配置白名单**；`AUTH_ENABLED=false`（默认）时仍走这个内置开发身份，打开开关后只认真 Key。
 - `ENABLE_MCP=true` 时挂子应用（生产默认）；离线测试用 `ENABLE_MCP=false` 关掉会话管理器。
 
 ## 第 2 步：工程可维护性（已落地）
@@ -126,9 +126,9 @@ score = 本次最终排序分（见下表）
 
 ```bash
 uv run pytest -q
-# 期望：593 passed, 11 skipped, 2 warnings
+# 期望：934 passed, 11 skipped, 2 warnings
 # 11 skipped = 3 条 OCR 资产门禁 + 4 条真 PostgreSQL + 3 条真 Elasticsearch
-#             （其中 1 条是本次新增的查询分析器守卫）+ 1 条嵌入等价性
+#             （其中 1 条是查询分析器守卫）+ 1 条嵌入等价性
 ```
 
 真实链路自测（先按上面的 `docker compose` 起 PG / ES，并至少入库一篇文档；把 `kb_ids` 换成自己的库 ID）：
@@ -139,16 +139,101 @@ uv run uvicorn app.main:app --port 8000
 curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
   -H "Authorization: Bearer dev-key" \
   -H "Content-Type: application/json" \
-  -d '{"kb_ids":["<你的 kb_id>"],"query":"设备证书过期怎么处理","mode":"hybrid","top_k":5}'
+  -d '{"kb_ids":["<你的 kb_id>"],"query":"设备证书过期怎么处理"}'
 ```
 
 期望 `code: 0`，**默认一条结果代表一节**（`section_id` 是身份，`chunk_id` 是让它浮上来的代表片），每条都带 `score` 与分列字段。
 
-想拿回第 4 步「一条结果 = 一个切片」的形状，在请求体里显式加 `"include_parent":false`（此时 `score == rrf_score`）。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
+检索方式、返回条数、是否重排、是否改写现在都由这把 Key 的密钥配置决定（请求里没有 `mode` / `top_k` / `include_parent` / `expand_table_rows`，传了会被 `20002` 拒绝）。想拿回第 4 步「一条结果 = 一个切片」的形状，把密钥配置的 `include_parent` 改成 `false`——本步还没有改配置的界面（面板入口在第 8 步），用 `uv run python scripts/update_key_policy.py --policy-id <policy_id> --no-include-parent` 改：它在写前跑与开租户同一个自洽校验，改完下一次调用即生效。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
 
 评测与验收矩阵留痕在 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)（**第 4 步的 8 篇 / 245 片 / 26 题是历史快照**；当前语料已扩容，以该文件为准）。
 
-**接下来（第 5 步）**：把第 1 步占位的 API Key 换成真校验的多租户体系，并接入「质量档位」——那时现在的 `top_k` / `mode` 才会被档位接管。
+**第 7 步已完成**：占位 Key 换成 `api_keys` 表真校验，「质量档位」锁在密钥配置上；`mode` / `top_k` 已经不在请求体里。做法与可复现步骤见下节。
+
+## 第 7 步：多租户（已落地）
+
+这一步把「一把假钥匙」换成三层授权：**请求只说问什么、查哪些库**（`kb_ids` + `query`），**密钥配置**（`key_policies`，由 Key 通过 `policy_id` 引用）决定这套集成能用多好、能用多少，**套餐**（`plans`）决定这个租户买得起多少。三层互不重叠，套餐与密钥配置都在库里。
+
+### 1. 播种与开租户
+
+```bash
+uv run python scripts/seed_plans.py                    # 首次启动：写 free/standard/pro，并给旧租户建档
+uv run python scripts/create_tenant.py --id tenant_acme --name "Acme 公司" --plan standard
+uv run python scripts/issue_api_key.py --tenant-id tenant_acme --policy-id <上一步打印的 policy id>
+uv run python scripts/create_admin.py --username admin   # 控制台第一个管理员（口令只存 scrypt 哈希）
+```
+
+`create_tenant.py` 会顺手建一套**最小权限**的密钥配置：能力全关、上限照抄套餐、档位取套餐白名单的第一档；**空白名单 = 一个库都不许查**（不是「全部」）。所以新租户的第一个库要走「建库 → 把 `kb_id` 圈进白名单」两步。
+
+### 2. 打开真实鉴权（`.env`，生产必须）
+
+```dotenv
+AUTH_ENABLED=true          # 关着时仍落进 tenant_demo 的内置开发身份
+RATE_LIMIT_ENABLED=true    # 两级限流与日配额；需要 Redis
+```
+
+### 3. 建第一个库并圈定白名单
+
+```bash
+uv run uvicorn app.main:app --port 8000          # 改了 .env 之后要重启服务
+
+# 建库本身不判白名单——白名单管的是「查哪些库」
+curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/knowledge-bases/create \
+  -H "Authorization: Bearer rc_live_<32位hex>" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme 手册","split_strategy":"size"}'
+
+# 把响应里的 kb_id 圈进这套配置。本步没有改配置的界面（面板入口在第 8 步），用运维脚本：
+# 白名单是**替换**语义，多个库就重复 --kb-id；写前会跑与开租户同一个自洽校验。
+uv run python scripts/update_key_policy.py --policy-id <policy_id> --kb-id <kb_id>
+```
+
+### 4. 用真 Key 打通两扇门
+
+```bash
+curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
+  -H "Authorization: Bearer rc_live_<32位hex>" \
+  -H "Content-Type: application/json" \
+  -d '{"kb_ids":["<kb_id>"],"query":"设备证书过期怎么处理"}'
+```
+
+成功时 `code: 0`，`metadata.tenant_policy` 回显本次实际生效的 `plan` / `requested_profile` / `mode` / `top_k` / `rerank` / `rewrite` / `kb_count` / `clipped`。MCP 侧用同一把 Key：先 `initialize`（响应头里的 `mcp-session-id` 要带回），再 `notifications/initialized`，然后 `tools/call` 调 `rag_retrieve`，参数仍是 `{"kb_ids":[...],"query":"..."}`；两条入口的鉴权、白名单与档位门禁是同一份实现，拿到的 data 载荷逐字段相同（见 `tests/test_tenant_wiring.py`）。
+
+### 5. 越权回「不存在」
+
+把 `kb_ids` 换成白名单外的库（或别的租户的库）：`code: 20008`、`msg: knowledge base not found`。**不是「无权限」**——可区分的拒绝等于告诉攻击者「这个库存在」。
+
+### 6. 查自己的余量（数据面，给外部程序）
+
+外部程序拿同一把 Key 调 `GET /api/v1/auth/me`，一次拿回自己的租户、套餐快照与今日用量——集成方不必靠「再试一次看会不会超额」来探余量：
+
+```bash
+curl --noproxy '*' -sS http://127.0.0.1:8000/api/v1/auth/me \
+  -H "Authorization: Bearer rc_live_<32位hex>"
+```
+
+返回 `{code, msg, data}`，`data` 三栏：`tenant`（`tenant_id` / `name`）、`plan`（`code` / `name` / 四个能力开关 / 六个数值上限 / `allowed_profiles`）、`usage`（`used` / `limit` / `source`）。用量读的是与控制台 `/console/me` **同一个**租户级日桶，只读不扣：`RATE_LIMIT_ENABLED=true` 时 `source: "daily_counter"`；关着时 `used: null` + `source: "not_tracked"`——平台没在统计，报 0 会骗人。两扇 `/me` 的门**不合并**：这一扇只认 API Key，`/console/me` 只认会话 cookie。
+
+### 7. 套餐改完立刻生效
+
+控制台登录拿 cookie（写操作还要带防跨站的 `x-requested-with: XMLHttpRequest`）：
+
+```bash
+curl --noproxy '*' -sS -c cookie.txt -X POST http://127.0.0.1:8000/console/login \
+  -H "Content-Type: application/json" -d '{"username":"admin","password":"<口令>"}'
+
+# 先试算（dry_run 默认 true：只算不写，返回会超库数的租户、会失去档位的租户与受影响配置条数）
+curl --noproxy '*' -sS -b cookie.txt -X PATCH "http://127.0.0.1:8000/console/plans/<plan_id>" \
+  -H "x-requested-with: XMLHttpRequest" -H "Content-Type: application/json" \
+  -d '{"operation":"update","allowed_profiles":["speed","balanced"]}'
+
+# 再落库：dry_run=false。落库与审计同一事务，提交后删套餐缓存。
+curl --noproxy '*' -sS -b cookie.txt -X PATCH "http://127.0.0.1:8000/console/plans/<plan_id>?dry_run=false" \
+  -H "x-requested-with: XMLHttpRequest" -H "Content-Type: application/json" \
+  -d '{"operation":"update","allowed_profiles":["speed","balanced"]}'
+```
+
+把某个正在被用的档位从白名单里去掉之后，挂着那个档位的 Key **下一次调用**就是 `20013`；把日配额改小，**下一次超限就是 `20014`**——不需要重启，也不需要等缓存过期。运维侧也可以 `uv run python scripts/change_tenant_plan.py --tenant-id tenant_acme --plan free`（它改的是租户的 `plan_id` 指针）。
 
 ## 运行与验证（离线）
 
@@ -156,7 +241,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 uv run ruff check .                                    # 静态检查
 uv run ruff format --check tests                      # 格式检查（历史文件暂不纳入）
 uv run mypy app                                       # 宽松类型检查
-uv run pytest -q                                      # 离线测试：593 passed, 11 skipped；不连 PG、不发真实模型请求
+uv run pytest -q                                      # 离线测试：934 passed, 11 skipped；不连 PG、不发真实模型请求
 uv run uvicorn app.main:app --reload --port 8000      # 本地起服务，再按教程跑四条 curl（含列库）
 ```
 
@@ -171,6 +256,7 @@ CI 在 push / PR 触发，依次跑 `uv sync --all-groups --frozen` → ruff 检
 - [ADR-0008 双入口错误契约](docs/adr/0008-dual-entry-error-contract.md) —— 共享错误词汇、各自翻译、协议级不对称及其代价
 - [ADR-0010 检索契约](docs/adr/0010-retrieval-contract.md) —— RRF `k=60`、tie-breaker、三种结局、`score` 语义变更与索引配对范围
 - [ADR-0011 LangChain 边界](docs/adr/0011-langchain-boundary.md) —— 框架只进 LLM / Embedding，检索链路零框架代码
+- [ADR-0017 套餐定义进库](docs/adr/0017-plans-in-database.md) / [ADR-0018 三层授权](docs/adr/0018-three-layer-authority.md) —— 第 7 步的两条核心决策
 - [评测验收记录](eval/ACCEPTANCE.md) —— 切块改造的双口径对照、四组交叉与验收留痕
 - [GLOSSARY](GLOSSARY.md) —— 领域术语：正名与禁用词
 

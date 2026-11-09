@@ -30,11 +30,15 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.providers.llm.base import LLMProvider
 from app.services.query.rewrite import QueryRewrite
+from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
 KB_B = "kb-b"
+
+# 票 #77 起质量参数由密钥配置提供：请求助手把旧写法翻译成「造一个 custom 档的假身份」。
+IDENTITY = RetrievalIdentity(TENANT_ID)
 
 REASON_REWRITE_FAILED = "query rewrite failed"
 
@@ -181,25 +185,25 @@ def _offline_client(
 
     tables = kb_settings or {}
 
-    def _get_by_id(_db: Any, kb_id: str) -> Any:
+    def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         rows = tables.get(kb_id)
         return SimpleNamespace(
-            tenant_id=TENANT_ID,
+            tenant_id=tenant_id,
             settings=rows or {},
             name=f"知识库-{kb_id}",
             description="制度与流程",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id", _get_by_id)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
 
     if llm is not None:
         # 改写与重排都是惰性 import 的，所以替换点仍在「大模型能力出口」上。
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
-    from app.core.auth import DevKeyContext, resolve_dev_key
+    from app.api.deps import get_current_key
 
     main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
-    main.app.dependency_overrides[resolve_dev_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
+    main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             yield {"client": client, "embedding": embedding, "keyword": keyword}
@@ -208,8 +212,8 @@ def _offline_client(
 
 
 def _post(client: TestClient, **body: Any) -> dict:
-    payload = {"kb_ids": [KB_A], "query": "退钱怎么弄", "mode": "hybrid"}
-    payload.update(body)
+    payload = {"kb_ids": [KB_A], "query": "退钱怎么弄"}
+    payload.update(IDENTITY.apply({"mode": "hybrid", **body}))
     response = client.post(RETRIEVE_PATH, json=payload)
     assert response.status_code == 200
     return response.json()

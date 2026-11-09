@@ -1,62 +1,66 @@
 """检索接口的请求 / 响应模型。
 
 响应里有 retrieved_chunks 与 metadata，没有 context_text，也没有答案。
-第 1 步起：头部带占位 API Key，``tenant_id`` 由服务端从 Key 解出、
+第 1 步起：头部带 API Key，``tenant_id`` 由服务端从 Key 解出、
 不进请求体；``kb_ids`` 是列表，单库也写 ``["kb_a"]``。
 
-第 4 步票 3 起请求体多了两个字段，其余质量参数（各路召回条数、融合算法、
-``rrf_k``、改写 / 同义词 / 重排开关）仍全部是服务端配置——它们一旦可调，同一档位
-在不同调用方那里就是不同的检索链路，评测与复现都做不了。
+**第 7 步起请求体只有两个字段**（ADR-0010「第三次修订」、ADR-0018）：``kb_ids``
+（查哪些库）+ ``query``（问什么）。检索方式、返回条数、是否重排、是否改写、是否折叠
+成整节、表格行是否折回整表——全部来自**这把 Key 的密钥配置**，请求里一个都没有。
 
-``mode`` 自票 4 起三种取值都真可用：``vector`` / ``bm25`` / ``hybrid``。
-``hybrid`` 的融合常数 ``k`` 写死在服务端（``app/services/retrieval/fusion.py``），
-这里刻意**没有**对应的请求字段：传了会被 ``extra="forbid"`` 直接拒掉。
+旧调用方继续传其中任何一个（四个质量字段的名字见 ADR-0010）会拿到参数校验失败
+（``20002``），**不是被静默忽略**：静默忽略会让调用方以为自己的参数生效了，直到某天
+发现结果跟想的不一样。迁移方式是「把这次调用想要的行为写进这把 Key 的密钥配置」，
+不是把字段加回来。这次调用的已解析参数由 ``app/services/retrieval_options.py`` 提供。
+
+融合常数 ``k``、各路召回深度、融合池宽度仍是**链路常数**，由服务端配置决定
+（``app/services/retrieval/fusion.py``）：它们决定「池子里有多少料」，不是「这次用
+多好」，做成可调项会让同一个档位名在不同租户那里变成不同链路。
 """
 
-from typing import Literal, cast
+from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from app.core.config import settings
-
-# ``top_k`` 的硬上下界：下界保证「至少召回一条」，上界防止一个请求把整个库拖回来。
-# 它是接口契约里的常量，不进配置：改了它，调用方拿到的结果条数上限就变了。
-MIN_TOP_K = 1
-MAX_TOP_K = 50
-
-# 这份 ``Literal`` 必须与 ``app.core.config.SUPPORTED_RETRIEVAL_MODES`` 保持一致；
-# ``Literal`` 无法从元组展开，两处写两遍是语言限制，由一致性测试钉住。
-RetrievalMode = Literal["vector", "bm25", "hybrid"]
-
-
-def _default_mode() -> RetrievalMode:
-    # 「缺省值来自服务端配置」这句话的实现。配置里的值由 Settings 的校验器在
-    # **启动时**验过一遍（配错就起不来），所以这里不必再抛一次——这里的 cast 只对
-    # 类型检查器负责，不是运行时守卫。
-    return cast(RetrievalMode, settings.RETRIEVAL_MODE)
-
-
-def _default_top_k() -> int:
-    return settings.TOP_K
+from app.core.exceptions import AppError, ErrorCode
 
 
 class RetrieveRequest(BaseModel):
-    """调用参数；tenant_id 从 Key 解，硬传会被拒（extra=forbid）。"""
+    """调用参数：只表达「问什么、查哪些库」；tenant_id 从 Key 解，硬传会被拒。"""
 
     model_config = ConfigDict(extra="forbid")
 
     kb_ids: list[str] = Field(min_length=1)
     query: str = Field(min_length=1)
-    # 缺省取服务端配置（票 4 起默认 hybrid）。
-    mode: RetrievalMode = Field(default_factory=_default_mode)
-    top_k: int = Field(default_factory=_default_top_k, ge=MIN_TOP_K, le=MAX_TOP_K)
-    # 折叠开关（ADR-0013）。默认开：默认关着就没人会开，small-to-big 等于没做。
-    #
-    # 关掉 = **不折叠**，返回小片，响应与折叠之前逐字一致——留给「只要精确到
-    # 那一行的引用」的调用方。注意关掉的不只是「不挂字段」：它连按节归组也不做。
-    include_parent: bool = True
-    # 行级表片是否折回它所属的整表。关掉时每个行级片各自成一条结果。
-    expand_table_rows: bool = True
+
+    @field_validator("query")
+    @classmethod
+    def _reject_blank_query(cls, value: str) -> str:
+        """纯空白不是「一个问题」。
+
+        ``min_length=1`` 只挡住空串：``"   "`` 长度是 3，会一路走到召回，然后被当成一个
+        没有词的查询静默产出空结果。两条入口共用一个值对象，这条规则才只写一遍。
+        """
+
+        if not value.strip():
+            raise ValueError("query must not be blank or whitespace-only")
+        return value
+
+
+def parse_retrieve_request(*, kb_ids: Any, query: Any) -> RetrieveRequest:
+    """两条入口共用的解析入口：校验规则只来自 :class:`RetrieveRequest`。
+
+    HTTP 侧由 FastAPI 把同一个模型接在请求体上（失败由异常处理器翻成 ``20002``）；
+    MCP 的工具签名只有类型、没有 ``Field`` 约束，因此必须显式走一遍同一个值对象，再把
+    ``ValidationError`` 翻成同一个业务码。**不在这里复制一份字段规则**——复制出去的那
+    一份迟早和 HTTP 侧漂移，而漂移的形态正是「同一份请求，两扇门两种答案」。
+    """
+
+    try:
+        return RetrieveRequest(kb_ids=kb_ids, query=query)
+    except ValidationError as exc:
+        # 与 HTTP 的 20002 同一个码、同一个缺省消息（``request validation error``）。
+        raise AppError(ErrorCode.REQUEST_VALIDATION_ERROR) from exc
 
 
 class RetrievedChunk(BaseModel):
