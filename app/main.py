@@ -1,5 +1,15 @@
 """FastAPI 应用入口（第 1 步：两个入口都接通）。
 
+控制面（第 7 步，/console/*，会话 cookie 鉴权）：
+  POST   /console/login
+  POST   /console/logout
+  GET    /console/me
+  GET    /console/plans
+  PATCH  /console/plans/{plan_id}?dry_run=
+  GET    /console/accounts
+  PATCH  /console/accounts/{account_id}
+  GET    /console/audit-logs
+
 HTTP 数据面（7 个业务接口，/api/v1/*）：
   POST   /api/v1/knowledge-bases/create
   GET    /api/v1/knowledge-bases
@@ -24,6 +34,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 
 from app.api.error_handlers import install_handlers
 from app.api.router import api_router
+from app.api.routes.console import router as console_router
 from app.core.config import settings
 from app.utils import tokenizer
 from app.db.session import SessionLocal
@@ -70,7 +81,10 @@ app.add_middleware(RequestContextMiddleware)
 
 app.include_router(api_router)
 
-# ── T4: HTTP 入口适配器（异常 → 统一响应，仅覆盖 /api/v1/*）──
+# 控制面不进 /api/v1：它是「人」的门，与数据面共用响应壳但不共用鉴权依赖。
+app.include_router(console_router)
+
+# ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)
 # ── T4 结束 ──
 
