@@ -28,6 +28,16 @@ def get_by_id(db: Session, tenant_id: str) -> Tenant | None:
     return db.get(Tenant, tenant_id)
 
 
+def list_by_plan_id(db: Session, plan_id: int) -> list[Tenant]:
+    """这个套餐上挂着哪些租户：控制面「删除被引用的套餐」与「改套餐影响面」的入口。
+
+    返回整行而不是只回 id：影响面预览要拿租户名给人看（「哪两个账号会当场超限」），
+    而再按 id 逐个回查一遍正好是 N+1。
+    """
+
+    return db.query(Tenant).filter(Tenant.plan_id == plan_id).order_by(Tenant.id).all()
+
+
 def existing_tenant_ids(db: Session) -> list[str]:
     """既有四张业务表上出现过的租户标识（只读，不去重写它们的数据）。
 

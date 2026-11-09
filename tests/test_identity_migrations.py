@@ -144,7 +144,8 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
 
     heads = set(revisions) - down_revisions
     assert len(heads) == 1, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
-    assert heads == {_revision_of(_migration_path("create_api_keys"))}
+    # #80 在 #74 的五条之后追加了 sessions / audit_logs，链尾因此前移到审计表。
+    assert heads == {_revision_of(_migration_path("create_audit_logs"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
