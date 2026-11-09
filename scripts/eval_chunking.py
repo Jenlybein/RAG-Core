@@ -36,8 +36,8 @@ from pathlib import Path
 
 from app.services.rag_service import get_embedding_provider
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
-from app.utils.tokenizer import token_count
-from app.utils.window_splitter import LengthFunction, WindowMode
+from app.utils.tokenizer import decode_ids, encode_ids, token_count
+from app.utils.window_splitter import Slicer, make_slicer
 from app.utils.retrieval_text import build_retrieval_text
 
 try:  # 与 scripts/eval_retrieval.py 的目录约定一致：脚本目录直接可导
@@ -55,8 +55,8 @@ CORPUS_DIR = EVAL_DIR / "corpus"
 
 # 窗口可被环境变量覆盖，用来做参数网格调优（见 docs 里的「参数调优」一节）。
 # 不设变量时就是生产默认值——所以直接跑脚本得到的就是生产口径的数字。
-CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE") or 800)
-CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP") or 100)
+CHUNK_SIZE = int(os.environ.get("CHUNK_SIZE") or 512)
+CHUNK_OVERLAP = int(os.environ.get("CHUNK_OVERLAP") or 50)
 TABLE_MAX_ROWS = 10
 DOMINANCE_RATIO = 0.6
 
@@ -199,6 +199,56 @@ def _owner_of(chunk: Chunk, sections: list[Section]) -> str | None:
 FINAL_VARIANT = "D-rec-token"
 
 
+def _hard_char_slicer(text: str, size: int, overlap: int, marker: str) -> list[str]:
+    """固定字符窗口硬切：不认识段落、句子、行。
+
+    这是四组交叉里「纯字符硬切」那一侧，**评测专用**——生产不提供这种切法
+    （ADR-0015 §三：基线只活在评测里）。
+    """
+
+    del marker  # 硬切不区分正文与代码
+    if not text:
+        return []
+    step = size - overlap
+    pieces: list[str] = []
+    start = 0
+    while start < len(text):
+        pieces.append(text[start : start + size])
+        if start + size >= len(text):
+            break
+        start += step
+    return pieces
+
+
+def _hard_token_slicer(text: str, size: int, overlap: int, marker: str) -> list[str]:
+    """固定 token 窗口硬切：先编码、按 token 索引取窗、再解码。
+
+    与 `_hard_char_slicer` 合起来回答「只换单位」这个问题：同一套硬切，
+    尺子从字符换成 token。
+    """
+
+    del marker
+    if not text:
+        return []
+    ids = encode_ids(text)
+    step = size - overlap
+    pieces: list[str] = []
+    start = 0
+    while start < len(ids):
+        pieces.append(decode_ids(ids[start : start + size]))
+        if start + size >= len(ids):
+            break
+        start += step
+    return pieces
+
+
+# 四个切片器：硬切 × 两把尺子，Recursive × 两把尺子。
+HARD_CHAR: Slicer = _hard_char_slicer
+HARD_TOKEN: Slicer = _hard_token_slicer
+REC_CHAR: Slicer = make_slicer(len)
+REC_TOKEN: Slicer = make_slicer(token_count)
+
+
 def _fixed_window_slice(text: str, *, size: int, overlap: int) -> list[str]:
     """朴素基线：纯字符窗口硬切，不认识任何结构。
 
@@ -241,15 +291,13 @@ def _structured_chunks(
     *,
     size: int = CHUNK_SIZE,
     overlap: int = CHUNK_OVERLAP,
-    length_function: LengthFunction = token_count,
-    window_mode: WindowMode = "recursive",
+    slicer: Slicer = REC_TOKEN,
 ) -> list[Chunk]:
     splitter = MarkdownStructuredSplitter(
         chunk_size=size,
         chunk_overlap=overlap,
         table_max_rows=TABLE_MAX_ROWS,
-        length_function=length_function,
-        window_mode=window_mode,
+        slicer=slicer,
     )
     chunks: list[Chunk] = []
     cursor = 0
@@ -361,25 +409,25 @@ async def main() -> None:
             key = (doc.stem, heading)
             if _priority.get(chunk_type, 0) >= _priority.get(gold_types.get(key, "prose"), 0):
                 gold_types[key] = chunk_type
-    # (名称, 切块器, chunk_size, overlap, 尺子, 窗口算法)
+    # (名称, 切块器, chunk_size, overlap, 切片器)
     #
     # 四组**交叉**是这一轮的核心对照：单位与算法同时改了，只跑前后两组说不清
-    # 收益来自哪边。②−① 单独隔离单位、③−① 单独隔离算法、④−① 是合并效果。
+    # 收益来自哪边。B−A 单独隔离单位、C−A 单独隔离算法、D−A 是合并效果。
     #
-    # 朴素组保留纯字符硬切（400/100 与 200/50）：它们是历史基线，评测侧自带实现，
-    # 与生产无关。
+    # 四组的切片器**全部定义在本文件里**（含两种硬切），生产只留 Recursive + token。
+    # 朴素组保留纯字符硬切（400/100 与 200/50）：历史基线，与生产无关。
     variants: tuple[
-        tuple[str, str, int | None, int | None, LengthFunction | None, WindowMode | None],
+        tuple[str, str, int | None, int | None, Slicer | None],
         ...,
     ] = (
-        ("A-hard-char", "structured", 800, 100, len, "hard"),
-        ("B-hard-token", "structured", 512, 50, token_count, "hard"),
-        ("C-rec-char", "structured", 800, 100, len, "recursive"),
-        ("D-rec-token", "structured", 512, 50, token_count, "recursive"),
-        ("naive-400/100", "naive", 400, 100, None, None),
-        ("naive-200/50", "naive", 200, 50, None, None),
+        ("A-hard-char", "structured", 800, 100, HARD_CHAR),
+        ("B-hard-token", "structured", 512, 50, HARD_TOKEN),
+        ("C-rec-char", "structured", 800, 100, REC_CHAR),
+        ("D-rec-token", "structured", 512, 50, REC_TOKEN),
+        ("naive-400/100", "naive", 400, 100, None),
+        ("naive-200/50", "naive", 200, 50, None),
     )
-    for label, kind, size, overlap, length_function, window_mode in variants:
+    for label, kind, size, overlap, slicer in variants:
         chunks: list[Chunk] = []
         for doc in docs:
             if kind == "naive":
@@ -389,15 +437,14 @@ async def main() -> None:
                 )
             else:
                 assert size is not None and overlap is not None
-                assert length_function is not None and window_mode is not None
+                assert slicer is not None
                 chunks.extend(
                     _structured_chunks(
                         doc,
                         section_cache[doc.stem],
                         size=size,
                         overlap=overlap,
-                        length_function=length_function,
-                        window_mode=window_mode,
+                        slicer=slicer,
                     )
                 )
 
@@ -785,6 +832,36 @@ async def main() -> None:
                     f"  {qtype:18s} {count:4d} {chunk_rate:9.3f} {delivered_rate:9.3f}"
                     f" {delivered_rate - chunk_rate:+8.3f}"
                 )
+
+    # 交叉归因：三行各自只动一个变量，最后一行是合并效果。
+    #
+    #   B − A = 只换单位（硬切 + 字符 → 硬切 + token）
+    #   C − A = 只换算法（硬切 → Recursive，都在字符尺子下）
+    #   D − A = 上面两件事一起做
+    #
+    # 只报 D−A 会把两个变量的贡献混成一团：涨了不知道是谁的功劳，
+    # 跌了也不知道该回退哪一边。
+    print("\n=== 交叉归因（四组，Δhit@1 / ΔR@5 / ΔMRR）===")
+    pairs = (
+        ("B−A 只换单位", "B-hard-token", "A-hard-char"),
+        ("C−A 只换算法", "C-rec-char", "A-hard-char"),
+        ("D−A 合计", "D-rec-token", "A-hard-char"),
+        ("D−B 算法（token 下）", "D-rec-token", "B-hard-token"),
+        ("D−C 单位（Rec 下）", "D-rec-token", "C-rec-char"),
+    )
+    for note, newer, older in pairs:
+        a_row = summary.get(newer) or {}
+        b_row = summary.get(older) or {}
+        cells: list[str] = []
+        for key in ("hit_at_1", "recall_at_k", "mrr"):
+            a_value = a_row.get(key)
+            b_value = b_row.get(key)
+            cells.append(
+                f"{float(a_value) - float(b_value):+.4f}"
+                if a_value is not None and b_value is not None
+                else "n/a"
+            )
+        print(f"  {note:26s} " + "  ".join(cells))
 
     print(f"\n=== 差值（{FINAL_VARIANT} - naive-400/100）===")
     for key in ("precision_at_k", "recall_at_k", "mrr", "recall_at_1", "hit_at_1"):

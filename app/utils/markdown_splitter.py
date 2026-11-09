@@ -15,15 +15,11 @@
 
 import hashlib
 import re
-from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.utils.provenance import page_from_heading
 from app.utils.text_splitter import SplitPiece, TextSplitter
-from app.utils.tokenizer import token_count
-from app.utils.window_splitter import WindowMode
-from app.utils.window_splitter import code_pieces as code_pieces_of
-from app.utils.window_splitter import text_pieces as text_pieces_of
+from app.utils.window_splitter import Slicer, default_slicer
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)")
 _LIST_LINE_RE = re.compile(r"^\s*(?:[-*+]\s|\d+\.\s)")
@@ -37,6 +33,7 @@ class _Block:
     kind: str
     lines: list[str]
     # 代码块围栏上的语言标记（```````python`` → ``python``）；其它块为空串。
+    # 与切片器的 `marker` 参数是同一个东西，统一叫 language。
     language: str = ""
 
 
@@ -74,8 +71,7 @@ class MarkdownStructuredSplitter(TextSplitter):
         chunk_size: int = 512,
         chunk_overlap: int = 50,
         table_max_rows: int = 10,
-        length_function: Callable[[str], int] = token_count,
-        window_mode: WindowMode = "recursive",
+        slicer: Slicer = default_slicer,
     ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
@@ -84,10 +80,9 @@ class MarkdownStructuredSplitter(TextSplitter):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.table_max_rows = table_max_rows
-        # 长度尺子与窗口算法可注入：四组交叉对照要分别跑「字符 / token」与
-        # 「硬切 / Recursive」。生产默认是 token + Recursive。
-        self._length = length_function
-        self._window_mode = window_mode
+        # 片内窗口的接缝：默认按 Qwen token + 分隔符回退。评测要跑「硬切」或
+        # 「字符尺子」时，把自己的切片器传进来——生产代码里不留这些分支。
+        self._slicer = slicer
 
     def split(self, text: str) -> list[SplitPiece]:
         """扫描全文，按 h1/h2/h3 边界产出一组带 provenance 的切片。"""
@@ -214,13 +209,11 @@ class MarkdownStructuredSplitter(TextSplitter):
                 #
                 # 剥掉首尾两根围栏行：每片应当是**纯代码**，否则 `from_language`
                 # 的语法分隔符匹配不上行首（围栏行以 ``` 开头，会打断规则）。
-                code_pieces = code_pieces_of(
+                code_pieces = self._slicer(
                     _code_body(block.lines),
-                    marker=block.language,
-                    size=self.chunk_size,
-                    overlap=self.chunk_overlap,
-                    length_function=self._length,
-                    mode=self._window_mode,
+                    self.chunk_size,
+                    self.chunk_overlap,
+                    block.language,
                 )
                 if len(code_pieces) == 1:
                     produced.append(_Piece(text=code_pieces[0], chunk_type="code"))
@@ -255,12 +248,11 @@ class MarkdownStructuredSplitter(TextSplitter):
                         )
                 continue
             if block.kind == "normal":
-                for text in text_pieces_of(
+                for text in self._slicer(
                     "\n".join(block.lines),
-                    size=self.chunk_size,
-                    overlap=self.chunk_overlap,
-                    length_function=self._length,
-                    mode=self._window_mode,
+                    self.chunk_size,
+                    self.chunk_overlap,
+                    "",
                 ):
                     produced.append(_Piece(text=text, chunk_type=_classify_text(text)))
         return produced
@@ -359,13 +351,16 @@ def _join_stack(stack: list[tuple[int, str]]) -> str:
     return " > ".join(title for _, title in stack)
 
 
+_FENCE = "```"
+
+
 def _fence_language(open_fence: str) -> str:
     """从开围栏行取语言标记：```````python`` → ``python``；``````` `` → 空串。
 
     只取第一个词：```````python title="x"`` 这类写法里，语言总在最前面。
     """
 
-    body = open_fence.lstrip()[3:].strip()
+    body = open_fence.lstrip()[len(_FENCE) :].strip()
     return body.split()[0].lower() if body else ""
 
 

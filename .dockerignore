@@ -12,6 +12,7 @@
 .agents
 .venv
 .ocr
+.tokenizer
 
 # 运行时产物
 logs

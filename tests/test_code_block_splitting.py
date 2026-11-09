@@ -111,3 +111,23 @@ def test_heading_path_is_present_on_every_piece(pieces) -> None:
 
     assert all(piece.metadata.get("heading_path") for piece in pieces)
     assert any(piece.metadata["heading_path"].endswith("> 索引重建脚本") for piece in pieces)
+
+
+@pytest.mark.parametrize("marker", ["perl", "python", "json", "yaml", "toml", "sql", ""])
+def test_unknown_or_unimplemented_languages_do_not_crash(marker: str) -> None:
+    """枚举里有但框架没实现的语言（实测 `perl`）不能把索引搞崩。
+
+    这是踩过的坑：`Language.PERL` 是枚举成员，`from_language` 却抛
+    `ValueError: Language Language.PERL is not implemented yet!`——整篇文档的
+    索引会直接失败，而错误信息看起来像「文档坏了」。
+    另外 `json` / `yaml` / `toml` / `sql` 根本不在枚举里，走通用分隔符。
+    """
+
+    from app.utils.window_splitter import code_pieces
+
+    body = "def a():\n    return 1\n\ndef b():\n    return 2\n\ndef c():\n    return 3\n"
+    pieces = code_pieces(body, marker=marker, size=8, overlap=1)
+
+    assert pieces, f"{marker or '(无标记)'} 应当能切出片"
+    assert all(piece.strip() for piece in pieces)
+    assert pieces[0].lstrip().startswith("def a():"), "首片应当从代码开头开始"

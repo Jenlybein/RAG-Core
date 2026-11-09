@@ -61,14 +61,19 @@ def test_chinese_density_is_above_character_ratio() -> None:
 
 
 def test_token_count_is_additive() -> None:
-    """分段编码不影响结果：逐段相加等于整体。"""
+    """分段编码与整体编码可能差 1–2 个 token——钉住这个**已知近似**。
+
+    BPE 在切点处会重新配对，所以「分段相加 == 整体」不是恒等式（实测个别切点差 1）。
+    窗口是 512 量级，这点误差不影响「片是否超窗口」；写成断言是为了防止有人日后
+    把它当成精确等式去算账。
+    """
 
     body = (CORPUS / "support_refund.md").read_text(encoding="utf-8")
-    half = len(body) // 2
+    whole = tokenizer.token_count(body)
 
-    assert tokenizer.token_count(body[:half]) + tokenizer.token_count(body[half:]) == (
-        tokenizer.token_count(body)
-    )
+    for cut in (len(body) // 2, 1000, len(body) - 1):
+        parts = tokenizer.token_count(body[:cut]) + tokenizer.token_count(body[cut:])
+        assert abs(parts - whole) <= 2, f"切点 {cut} 处误差过大：{parts} vs {whole}"
 
 
 def test_missing_vocab_refuses_to_start(

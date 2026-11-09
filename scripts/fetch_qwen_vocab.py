@@ -27,11 +27,15 @@ import tempfile
 import urllib.request
 import zipfile
 
+from app.utils.tokenizer import EXPECTED_SHA256 as EXPECTED_SHA256_FROM_APP
+from app.utils.tokenizer import EXPECTED_SIZE as EXPECTED_SIZE_FROM_APP
+
 DASHSCOPE_VERSION = "2.0.4"
 WHEEL_PATH_IN_ARCHIVE = "dashscope/legacy_1x/tokenizers/qwen.tiktoken"
 VOCAB_NAME = "qwen.tiktoken"
-EXPECTED_SIZE = 2_561_218
-EXPECTED_SHA256 = "B2B1B8DFB5CC5F024BAFC373121C6ABA3F66F9A5A0269E243470A1DE16A33186"
+# 字节数与 SHA-256 只从 tokenizer 那边取一份：两个地方各写一遍，迟早有一个没跟上。
+EXPECTED_SIZE = EXPECTED_SIZE_FROM_APP
+EXPECTED_SHA256 = EXPECTED_SHA256_FROM_APP
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
 

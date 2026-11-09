@@ -74,6 +74,14 @@ RUN set -eux; \
 
 # 4) 项目本体。
 COPY . .
+# 4b) Qwen 分词词表：切块窗口按 token 计长，词表是**必需资产**（ADR-0015）。
+#     缺它 Worker 会在 `worker_process_init` 里直接拒绝启动——这是有意的，
+#     比起「跑起来之后切出不可复现的片」，启动失败更好查。
+#     脚本自带字节数与 SHA256 双重校验，运行期零网络。
+RUN set -eux; \
+    QWEN_VOCAB_DIR=/app/.tokenizer uv run --no-sync python scripts/fetch_qwen_vocab.py; \
+    test "$(stat -c%s /app/.tokenizer/qwen.tiktoken)" = 2561218
+ENV QWEN_TOKENIZER_PATH=/app/.tokenizer/qwen.tiktoken
 RUN uv sync --frozen --no-group dev
 
 # 5) 非 root 运行；上传目录与宿主机共享（API 与 Worker 必须指向同一个 DOCUMENT_STORAGE_PATH）。

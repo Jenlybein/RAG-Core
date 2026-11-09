@@ -42,9 +42,9 @@ DEFAULT_FORMATS_BY_STRATEGY: Final[dict[str, tuple[str, ...]]] = {
     SPLIT_SIZE: ALL_FORMATS,
 }
 
-# 建库默认值。800 与既有实测基线一致，改成别的值会让历史评测不可比。
-# 切块窗口的**长度单位是 token**（Qwen 分词，与 embedding 同口径），不是字符。
-# 512 token ≈ 768–983 个汉字，与旧的 800 字符体感相当。
+# 建库默认值。切块窗口的**长度单位是 token**（Qwen 分词，与 embedding 同口径），不是字符。
+# 512 token ≈ 768–983 个汉字，与旧的 800 字符体感相当——数值是换算过的，
+# 直接沿用 800 会让片长涨 1.5–1.9 倍。
 DEFAULT_CHUNK_SIZE = 512
 
 # 数值旋钮的范围。放模型层是为了让路由（Pydantic）与索引期兜底共用同一组边界，
