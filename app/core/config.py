@@ -99,6 +99,10 @@ class Settings(BaseSettings):
     # 顺手把套餐缓存清空（或反过来）。读走缓存、改完删缓存，TTL 只是兜底。
     REDIS_URL: str = "redis://localhost:6379/2"
     PLAN_CACHE_TTL_SECONDS: int = 60
+    # 控制台会话（第 7 步控制面）：有效期只有一个来源——登录时发 cookie 与写会话行的
+    # ``expires_at`` 读的是同一个值，两处各写一遍迟早出现「cookie 还活着、行已过期」。
+    # 停用账号不靠它生效（那是每个请求回账号表现读），它只回答「多久不用就自动掉线」。
+    CONSOLE_SESSION_TTL_SECONDS: int = 28800
     # 离线测试 / CI 不启 MCP 会话管理器（避免每个 TestClient 都启停 session manager）。
     # 生产默认开启；仅 pytest 通过环境变量关掉。
     ENABLE_MCP: bool = True

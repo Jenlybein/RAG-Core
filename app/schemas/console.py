@@ -1,0 +1,251 @@
+"""控制面（``/console/*``）的请求与响应模型。
+
+与数据面同一套壳（``{code, msg, data}``），但**没有一处复用数据面的入参**：那一边的请求
+体只允许 ``kb_ids`` + ``query``，这一边是人手动填的表单。
+
+两处刻意的写法：
+
+- 套餐的六个数值上限**不写** ``ge=1``。写在 schema 上时，``0`` 会先被判成「参数结构错误」
+  （``20002``），而票面要求的是「套餐非法」（``20018``）。校验放在
+  :func:`app.services.plan_admin.validate_patch` 里，错误码才是对的那个；
+- PATCH 的字段全部可空，且 ``None`` 表示「这次不动它」（``exclude_none``）。客户端发
+  ``"max_kb": null`` 与不发这个键是同一件事——「把它改成空」不是一种合法意图。
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+from app.models.account import Account
+from app.models.audit_log import AuditLog
+from app.models.plan import Plan, PlanSpec
+from app.models.tenant import Tenant
+
+
+class LoginRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=256)
+
+
+class AccountData(BaseModel):
+    account_id: str
+    username: str
+    role: str
+    status: str
+    tenant_id: str | None
+
+
+class TenantData(BaseModel):
+    tenant_id: str
+    name: str
+    status: str
+    plan_id: int
+
+
+class PlanSnapshotData(BaseModel):
+    """``/console/me`` 里的套餐快照：**没有 plan_id**，租户那一栏里已经有了。
+
+    快照来自缓存/解析结果（:class:`app.models.plan.PlanSpec`），它刻意不带主键——判定内核
+    只关心「这一档的 11 个值」。
+    """
+
+    code: str
+    name: str
+    allowed_profiles: list[str]
+    hybrid_allowed: bool
+    rerank_allowed: bool
+    query_rewrite_allowed: bool
+    research_allowed: bool
+    retrieve_qps: int
+    retrieve_daily: int
+    max_kb: int
+    max_kb_per_retrieve: int
+    max_documents_per_kb: int
+    max_processing_documents: int
+
+
+class PlanData(PlanSnapshotData):
+    """管理员视角的一行套餐：多一个主键与更新时间（面板按它渲染与排序）。"""
+
+    plan_id: int
+    updated_at: datetime | None = None
+
+
+class MeData(BaseModel):
+    account: AccountData
+    tenant: TenantData | None
+    plan: PlanSnapshotData | None
+
+
+class ImpactGroupData(BaseModel):
+    count: int
+    sample: list[str]
+
+
+class PlanImpactData(BaseModel):
+    tenants_checked: int
+    over_max_kb: ImpactGroupData
+    lose_profile: ImpactGroupData
+    policies_losing_profile: int
+
+
+class PlanPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: ``delete`` 也走这条入口：删与改共用一套校验、审计与缓存失效，不给第二条写路径。
+    operation: Literal["update", "delete"] = "update"
+    code: str | None = Field(default=None, min_length=1, max_length=32)
+    name: str | None = Field(default=None, min_length=1, max_length=128)
+    allowed_profiles: list[str] | None = None
+    hybrid_allowed: bool | None = None
+    rerank_allowed: bool | None = None
+    query_rewrite_allowed: bool | None = None
+    research_allowed: bool | None = None
+    retrieve_qps: int | None = None
+    retrieve_daily: int | None = None
+    max_kb: int | None = None
+    max_kb_per_retrieve: int | None = None
+    max_documents_per_kb: int | None = None
+    max_processing_documents: int | None = None
+
+    def provided(self) -> dict[str, Any]:
+        """这次真的要写的字段：没发的、以及发了 ``null`` 的都不算。"""
+
+        return self.model_dump(exclude_unset=True, exclude_none=True, exclude={"operation"})
+
+
+class PlanPatchData(BaseModel):
+    plan_id: int
+    dry_run: bool
+    deleted: bool
+    before: PlanData | None
+    after: PlanData | None
+    impact: PlanImpactData | None
+
+
+class PlanListData(BaseModel):
+    plans: list[PlanData]
+
+
+class AccountItem(BaseModel):
+    account_id: str
+    username: str
+    role: str
+    status: str
+    tenant_id: str | None
+    tenant_name: str | None
+    tenant_status: str | None
+    plan: PlanData | None
+
+
+class AccountListData(BaseModel):
+    accounts: list[AccountItem]
+
+
+class AccountPatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: 换的是**这个账号所属租户**的套餐：套餐挂在租户上，不挂在账号上。
+    plan_id: int | None = None
+    status: str | None = None
+    tenant_status: str | None = None
+
+
+class AccountPatchData(BaseModel):
+    account_id: str
+    before: dict[str, Any]
+    after: dict[str, Any]
+
+
+class AuditLogItem(BaseModel):
+    audit_id: str
+    actor_id: str | None
+    action: str
+    target: str
+    before: dict[str, Any] | None
+    after: dict[str, Any] | None
+    created_at: datetime
+
+
+class AuditLogListData(BaseModel):
+    audit_logs: list[AuditLogItem]
+
+
+# ─────────────────────────────────────────────────────────── 行 → 响应体
+#
+# 逐个字段点名，不用 ``model_validate(row)``：ORM 行上还有 ``_sa_instance_state`` 与
+# 将来会新增的内部属性，让它们进入响应体只是把「内部结构」变成了对外契约。
+
+
+def account_data(account: Account) -> AccountData:
+    return AccountData(
+        account_id=account.id,
+        username=account.username,
+        role=account.role,
+        status=account.status,
+        tenant_id=account.tenant_id,
+    )
+
+
+def tenant_data(tenant: Tenant) -> TenantData:
+    return TenantData(
+        tenant_id=tenant.id,
+        name=tenant.name,
+        status=tenant.status,
+        plan_id=tenant.plan_id,
+    )
+
+
+def plan_snapshot_data(plan: PlanSpec) -> PlanSnapshotData:
+    return PlanSnapshotData(
+        code=plan.code,
+        name=plan.name,
+        allowed_profiles=list(plan.allowed_profiles),
+        hybrid_allowed=plan.hybrid_allowed,
+        rerank_allowed=plan.rerank_allowed,
+        query_rewrite_allowed=plan.query_rewrite_allowed,
+        research_allowed=plan.research_allowed,
+        retrieve_qps=plan.retrieve_qps,
+        retrieve_daily=plan.retrieve_daily,
+        max_kb=plan.max_kb,
+        max_kb_per_retrieve=plan.max_kb_per_retrieve,
+        max_documents_per_kb=plan.max_documents_per_kb,
+        max_processing_documents=plan.max_processing_documents,
+    )
+
+
+def plan_data(plan: Plan) -> PlanData:
+    return PlanData(
+        plan_id=plan.id,
+        code=plan.code,
+        name=plan.name,
+        allowed_profiles=list(plan.allowed_profiles),
+        hybrid_allowed=plan.hybrid_allowed,
+        rerank_allowed=plan.rerank_allowed,
+        query_rewrite_allowed=plan.query_rewrite_allowed,
+        research_allowed=plan.research_allowed,
+        retrieve_qps=plan.retrieve_qps,
+        retrieve_daily=plan.retrieve_daily,
+        max_kb=plan.max_kb,
+        max_kb_per_retrieve=plan.max_kb_per_retrieve,
+        max_documents_per_kb=plan.max_documents_per_kb,
+        max_processing_documents=plan.max_processing_documents,
+        updated_at=plan.updated_at,
+    )
+
+
+def audit_log_item(entry: AuditLog) -> AuditLogItem:
+    return AuditLogItem(
+        audit_id=entry.id,
+        actor_id=entry.actor_id,
+        action=entry.action,
+        target=entry.target,
+        before=entry.before_snapshot,
+        after=entry.after_snapshot,
+        created_at=entry.created_at,
+    )

@@ -80,8 +80,11 @@ class CountResult:
     能回答「这个租户 / 这个库现在有多少行」。缺省 0 行，需要别的数字时由测试自己注入。
     """
 
+    def __init__(self, value: int = 0) -> None:
+        self._value = value
+
     def scalar_one(self) -> int:
-        return 0
+        return self._value
 
 
 ZERO_COUNT = CountResult()
@@ -98,6 +101,7 @@ class _FakeQuery:
     def __init__(self, rows: list[Any]) -> None:
         self._rows = rows
         self._criterion: Any = None
+        self._limit: int | None = None
 
     def filter(self, criterion: Any) -> _FakeQuery:
         self._criterion = criterion
@@ -106,8 +110,15 @@ class _FakeQuery:
     def order_by(self, *_args: Any) -> _FakeQuery:
         return self
 
+    def limit(self, count: int) -> _FakeQuery:
+        """只记上限，取行时才截断（顺序由 ``order_by`` 的语义决定，这里不模拟排序）。"""
+
+        self._limit = count
+        return self
+
     def all(self) -> list[Any]:
-        return [row for row in self._rows if self._matches(row)]
+        rows = [row for row in self._rows if self._matches(row)]
+        return rows if self._limit is None else rows[: self._limit]
 
     def first(self) -> Any:
         rows = self.all()
@@ -129,6 +140,9 @@ class RecordingSession(EmptySession):
     播种、回填、开租户这类运维动作的可观测结果就是「加进去哪些行」，所以这里记
     ``added``；查询侧沿用 ``_FakeQuery``。``tenant_ids`` 是给「从既有四张业务表里
     读出已存在租户」那条读路径用的预置结果。
+
+    ``deleted`` 是「这一行真的不在了」的记录（登出、删套餐）。假会话越像真会话，越容易
+    让人误以为测过的是数据库，所以这里只实现仓储层真正用到的那几个方法。
     """
 
     def __init__(
@@ -140,6 +154,7 @@ class RecordingSession(EmptySession):
         self._rows = {model: list(items) for model, items in (rows or {}).items()}
         self._tenant_ids = list(tenant_ids or [])
         self.added: list[Any] = []
+        self.deleted: list[Any] = []
         self.commits = 0
         self.closed = False
         self.rollbacks = 0
@@ -153,8 +168,39 @@ class RecordingSession(EmptySession):
                 return row
         return None
 
-    def execute(self, _statement: Any, *_args: Any, **_kwargs: Any) -> _Rows:
+    def execute(self, statement: Any, *_args: Any, **_kwargs: Any) -> _Rows | CountResult:
+        """``existing_tenant_ids`` 的 union 查询返回预置值；``SELECT count(*)`` 真实数行。
+
+        控制面「改套餐影响面」用 ``knowledge_base_repository.count_by_tenant`` 数库数，
+        它走的是 ``execute(...).scalar_one()``。假会话如果只回空结果，「哪几个账号会超限」
+        这一半就永远测不到。这里只模拟 ``SELECT count(*) ... WHERE 列 = 字面量`` 这一种
+        形状，别的语句仍退回 ``_tenant_ids``（沿用本模块的「只实现被用到的那几种写法」）。
+        """
+
+        if str(statement).lstrip().upper().startswith("SELECT COUNT("):
+            return CountResult(self._count_rows(statement))
         return _Rows(self._tenant_ids)
+
+    def _count_rows(self, statement: Any) -> int:
+        try:
+            table = statement.get_final_froms()[0]
+        except (AttributeError, IndexError):
+            return 0
+        model = next(
+            (candidate for candidate in self._rows if candidate.__tablename__ == table.name),
+            None,
+        )
+        if model is None:
+            return 0
+        rows = self._rows.get(model, [])
+        criterion = getattr(statement, "whereclause", None)
+        if criterion is None:
+            return len(rows)
+        return sum(
+            1
+            for row in rows
+            if getattr(row, criterion.left.key) == criterion.right.value
+        )
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)
@@ -166,6 +212,17 @@ class RecordingSession(EmptySession):
 
     def rollback(self) -> None:
         self.rollbacks += 1
+
+    def delete(self, obj: Any) -> None:
+        """真删行：登出与删套餐的可观测结果就是「这一行不在了」。
+
+        同时记进 ``deleted``——断言「删掉的正是那一行」比只断言「提交了一次」准。
+        """
+
+        self.deleted.append(obj)
+        rows = self._rows.get(type(obj), [])
+        if obj in rows:
+            rows.remove(obj)
 
     def close(self) -> None:
         self.closed = True

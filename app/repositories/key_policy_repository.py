@@ -16,3 +16,12 @@ def create(db: Session, policy: KeyPolicy) -> KeyPolicy:
 
 def get_by_id(db: Session, policy_id: str) -> KeyPolicy | None:
     return db.get(KeyPolicy, policy_id)
+
+
+def list_by_tenant(db: Session, tenant_id: str) -> list[KeyPolicy]:
+    """这个租户的全部密钥配置。控制面「改套餐影响面」要数「谁会失去档位」。
+
+    按 id 排序只为让两次读的结果稳定；顺序不参与任何判定。
+    """
+
+    return db.query(KeyPolicy).filter(KeyPolicy.tenant_id == tenant_id).order_by(KeyPolicy.id).all()
