@@ -376,6 +376,118 @@ def _manual_metrics(cases: list[tuple[set[str], list[str]]], k: int) -> dict[str
     }
 
 
+async def _run_grid() -> None:
+    """参数档位网格（``EVAL_GRID=1``）：同一批题、同一套生产切块算法，只换窗口。
+
+    与 ``main()`` 的六组交叉是**两种用途**，用显式开关隔开：默认跑四组交叉 +
+    两个朴素基线（逐字不变），只有设了 ``EVAL_GRID=1`` 才进这里。
+
+    口径：
+
+    - 档位来自 ``CHUNK_GRID``（逗号分隔，默认 ``200,300,400,512,600,800``），
+      单位是 Qwen token（与生产 ``CHUNK_SIZE`` 同一把尺子）；
+    - ``overlap = size // 8``（12.5%，与生产 512/50 的约 10% 同量级；写成整数
+      比例而不是 0.1 倍，是为了避免浮点档位）；
+    - 算法固定 ``REC_TOKEN``（生产口径），检索文本、答案单元、算分函数全部复用
+      ``main()`` 里的同一套实现，不另造评分口径；
+    - **平均上下文 token** 用离线 ``token_count()`` 对「送进 embedding 的检索文本」
+      真算后取算术平均（不是片长、不是估算），不发额外网络请求。
+
+    需要真嵌入（``.env`` 里的 ``MODEL_API_KEY``）：这不是离线确定性替身，
+    重跑前请确认凭据可用。不连 PG / ES。
+    """
+
+    sizes = [
+        int(part.strip()) for part in os.environ.get("CHUNK_GRID", "").split(",") if part.strip()
+    ]
+    if not sizes:
+        sizes = [200, 300, 400, 512, 600, 800]
+    if any(size < 2 for size in sizes):
+        raise ValueError(f"CHUNK_GRID 的档位必须 >= 2，当前是 {sizes!r}")
+
+    docs = _load_corpus()
+    questions, k = _load_questions()
+    answerable = [q for q in questions if q.labels and q.type not in EXCLUDED_FROM_MAIN]
+    section_cache = {doc.stem: _sections(doc.text) for doc in docs}
+    provider = get_embedding_provider()
+    # 题目向量只算一次：它与切块档位无关，按档位重复嵌入只是白花钱。
+    query_vectors = await provider.embed_texts([q.query for q in answerable])
+
+    print(
+        f"参数网格：{len(docs)} 篇 / {sum(len(d.text) for d in docs)} 字；"
+        f"题目 {len(questions)} 道（可回答 {len(answerable)} 道）；k = {k}"
+    )
+    print(
+        "口径：Recursive + Qwen token；overlap = size // 8；"
+        "平均上下文 token = 送进 embedding 的检索文本按 token_count() 真算的平均值"
+    )
+    print("嵌入：真实 provider（需要 .env 里的 MODEL_API_KEY），非离线确定性替身\n")
+    print(
+        f"{'size/overlap':>14} {'切片数':>7} {'平均上下文 token':>18} "
+        f"{'平均片长(字)':>13} {'hit@1':>8} {'R@5':>8}"
+    )
+    for size in sizes:
+        overlap = size // 8
+        chunks: list[Chunk] = []
+        for doc in docs:
+            chunks.extend(
+                _structured_chunks(
+                    doc,
+                    section_cache[doc.stem],
+                    size=size,
+                    overlap=overlap,
+                    slicer=REC_TOKEN,
+                )
+            )
+        chunk_ids = [f"grid-{size}-c{i:04d}" for i in range(len(chunks))]
+        retrieval_texts = [
+            build_retrieval_text(
+                next(d.title for d in docs if d.stem == chunk.doc_stem),
+                chunk.heading_path,
+                chunk.text,
+                model_tags=True,  # 与生产一致（indexing_service 永远传 True）
+                chunk_type=chunk.chunk_type,
+            )
+            for chunk in chunks
+        ]
+        vectors = await provider.embed_texts(retrieval_texts)
+        # 与 main() 同口径：相关单元 / 返回单元都是「答案单元」元组（见 _answer_unit_of）。
+        cases: list[tuple[set[tuple[str, ...]], list[tuple[str, ...]]]] = []
+        for question, query_vector in zip(answerable, query_vectors):
+            gold_keys = {(gold[0], gold[1]) for gold in question.labels}
+            relevant = {
+                _answer_unit_of(chunk, cid)
+                for cid, chunk in zip(chunk_ids, chunks)
+                if (chunk.doc_stem, chunk.heading_path) in gold_keys
+            }
+            scores = sorted(
+                ((_cosine(query_vector, vector), cid) for vector, cid in zip(vectors, chunk_ids)),
+                reverse=True,
+            )
+            by_id = dict(zip(chunk_ids, chunks))
+            returned: list[tuple[str, ...]] = []
+            seen: set[tuple[str, ...]] = set()
+            for _score, cid in scores:
+                unit = _answer_unit_of(by_id[cid], cid)
+                if unit in seen:
+                    continue
+                seen.add(unit)
+                returned.append(unit)
+            cases.append((relevant, returned))
+        # _manual_metrics 只做集合/前缀运算，对单元的元素类型没有要求；它的签名写的是
+        # set[str]（main() 传入的同样是答案单元元组），这里沿用同一套身份，不另造口径。
+        metrics = _manual_metrics(cases, k)  # type: ignore[arg-type]
+        avg_context_tokens = sum(token_count(text) for text in retrieval_texts) / len(
+            retrieval_texts
+        )
+        avg_len = sum(len(chunk.text) for chunk in chunks) / len(chunks)
+        print(
+            f"{f'{size}/{overlap}':>14} {len(chunks):7d} {avg_context_tokens:18.1f} "
+            f"{avg_len:13.1f} {float(metrics['hit_at_1']):8.4f} "
+            f"{float(metrics['recall_at_k']):8.4f}"
+        )
+
+
 async def main() -> None:
     docs = _load_corpus()
     questions, k = _load_questions()
@@ -891,4 +1003,7 @@ if __name__ == "__main__":
     for stream in (sys.stdout, sys.stderr):
         if hasattr(stream, "reconfigure"):
             stream.reconfigure(errors="replace")
-    asyncio.run(main())
+    if os.environ.get("EVAL_GRID") == "1":
+        asyncio.run(_run_grid())
+    else:
+        asyncio.run(main())
