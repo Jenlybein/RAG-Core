@@ -175,6 +175,8 @@ RATE_LIMIT_ENABLED=true    # 两级限流与日配额；需要 Redis
 ### 3. 建第一个库并圈定白名单
 
 ```bash
+uv run uvicorn app.main:app --port 8000          # 改了 .env 之后要重启服务
+
 # 建库本身不判白名单——白名单管的是「查哪些库」
 curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/knowledge-bases/create \
   -H "Authorization: Bearer rc_live_<32位hex>" \
@@ -189,8 +191,6 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db -c \
 ### 4. 用真 Key 打通两扇门
 
 ```bash
-uv run uvicorn app.main:app --port 8000
-
 curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
   -H "Authorization: Bearer rc_live_<32位hex>" \
   -H "Content-Type: application/json" \
