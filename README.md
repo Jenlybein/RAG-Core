@@ -183,7 +183,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/knowledge-bases/crea
 
 # 把响应里的 kb_id 圈进这套配置（本步没有改配置的界面，面板入口在第 8 步）
 docker exec -it pg16-pgvector psql -U postgres -d rag_db -c \
-  "update key_policies set allowed_kb_ids='[\"<kb_id>\"]'::jsonb where id='<policy_id>';"
+  "update key_policies set allowed_kb_ids = jsonb_build_array('<kb_id>') where id = '<policy_id>';"
 ```
 
 ### 4. 用真 Key 打通两扇门
