@@ -241,7 +241,9 @@ def test_hybrid_mode_feeds_each_channel_its_own_query(monkeypatch: pytest.Monkey
         body = _post(fake["client"])
 
     assert body["code"] == 0
-    assert fake["embedding"].queries == ["退款的处理流程"], "向量一路拿改写后的句子"
+    # #31：改写开启是「原句 + 改写句都搜」而不是替换；顺序固定为 raw → effective。
+    # 旧断言钉的是替换语义（只有改写句），这里改成两句是收紧而非放宽。
+    assert fake["embedding"].queries == ["退钱怎么弄", "退款的处理流程"]
     assert fake["keyword"].queries == ["退款的处理流程 退款流程"], "关键词一路拿扩展后的句子"
     assert fake["embedding"].queries != fake["keyword"].queries, "两路拿不同的查询是设计"
     assert _retrieval_metadata(body)["degraded"] is False
@@ -344,7 +346,8 @@ def test_vector_mode_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -
         body = _post(fake["client"], mode="vector")
 
     assert body["code"] == 0
-    assert fake["embedding"].queries == ["退款的处理流程"]
+    # #31：单模式同样吃并集，顺序固定；改写句仍在其中（effective_query 语义保留）。
+    assert fake["embedding"].queries == ["退钱怎么弄", "退款的处理流程"]
     assert fake["keyword"].queries == [], "单模式不碰另一路"
 
 

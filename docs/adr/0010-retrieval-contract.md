@@ -206,6 +206,8 @@ kb_id IN ('kb-a', 'kb-b') AND index_version IN ('v1', 'v2')
 
 **§1 与 §4 的表格只描述第 4 步的历史状态**，不要拿它们当现状；`fuse_by_rrf`、`k=60`、五种 tie-breaker、三种结局、四个降级原因、配对映射与空映射恒假全部仍然成立。
 
+**#31 修订（2026-11-09）**：`QUERY_REWRITE_ENABLED=true` 现在是「**原句 + 改写句都搜**」，不再是「用改写句替换原句」——向量一路逐句各做一次嵌入与一次范围召回，按 `(kb_id, chunk_id)` 去重、同名次取更好的一次、分数取更高者，合成**一个池**后直接交给既有的 `fuse_by_rrf`（不新增内层 RRF）。关键词一路仍用 `search_query`，重排仍用 `effective_query`，改写失败仍只剩原句并标 `query rewrite failed`；关闭时响应逐字节不变。落地在 `app/services/query/optimizer.py`、`app/services/retrieval/vector_recall.py`。
+
 ### 第二次破坏性变更的迁移方式
 
 `score` 不再恒等于 `rrf_score`：

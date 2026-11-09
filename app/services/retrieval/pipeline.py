@@ -4,10 +4,11 @@
 这次是不是降级），但**不负责**把它翻译成 HTTP 响应——响应壳与业务码归
 ``app.services.rag_service``。
 
-**两条通道拿两个不同的查询**（票 6）：查询优化在召回之前把用户那句话加工成
-``effective_query``（给向量一路与重排）与 ``search_query``（给关键词一路）。两者不同
-是设计而不是 bug——同义词补的是字面匹配，改写补的是语义；合成一句等于用其中一路的
-优化去污染另一路。两个开关都关时它们相等，本模块的行为与票 4 逐字段一致。
+**两条通道拿不同的查询**（票 6 / #31）：查询优化在召回之前把用户那句话加工成
+``vector_queries``（向量一路逐句都搜；改写成功时是原句 + 改写句）、``effective_query``
+（给重排）与 ``search_query``（给关键词一路）。三者不同是设计而不是 bug——同义词补的
+是字面匹配，改写补的是语义；合成一句等于用其中一路的优化去污染另一路。两个开关都关
+时 ``vector_queries`` 只有原句，本模块的行为与票 4 逐字段一致。
 
 四条不许动的约定：
 
@@ -15,22 +16,24 @@
    另一路。向量分支是同步 psycopg + 同步 Session，必须 ``asyncio.to_thread`` 丢到
    独立线程，并且**持有自己的 ``SessionLocal()``**——否则它会卡住事件循环，
    「并行」只是字面上的（ADR-0011「它管不到的三件事」）。
-2. **对称降级**：嵌入失败发生在向量分支内部，必须被该分支捕获后变成「仅关键词」，
-   绝不冒泡成整单失败。只兜关键词那一半是本票最容易漏掉的一条。
+2. **对称降级**：嵌入失败（含多查询里任意一句）发生在向量分支内部，必须被该分支
+   捕获后变成「仅关键词」，绝不冒泡成整单失败。只兜关键词那一半是本票最容易漏掉的一条。
 3. **降级原因一因一码**：通道故障只用下面两个常量，重排失败用
    ``app/services/retrieval/rerank.py`` 里的 ``rerank failed``；一律不拼异常文本——
    调用方按码做判断，异常文案变了不该影响判断。可见性拒绝（20008）不属于「通道故障」，
    照旧抛出。
-4. **多库 = 一次全局召回**：两条通道各查**一次**，各自覆盖全部「库 + 索引版本」
-   配对；嵌入也只算一次。按库循环召回再合并是假均衡——不相关的库也各占名额，
-   把真正该进来的切片挤掉。可见性校验不在这里：它在 ``rag_service.retrieve``
-   进入任何分支之前统一做一遍（票 25），两条分支内不再重复。
+4. **多库 = 每个查询一次全局召回**：关键词一路查一次；向量一路按 ``vector_queries``
+   逐句各查一次，每次都覆盖全部「库 + 索引版本」配对，再并成**一个**池进既有 RRF
+   （#31；池内去重与取优在 ``vector_recall.py``，**不是**再嵌一层融合）。
+   按库循环召回再合并是假均衡——不相关的库也各占名额，把真正该进来的切片挤掉。
+   可见性校验不在这里：它在 ``rag_service.retrieve`` 进入任何分支之前统一做一遍
+   （票 25），两条分支内不再重复。
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +44,7 @@ from app.db.session import SessionLocal
 from app.models.chunk import default_index_versions
 from app.services.retrieval.fusion import fuse_by_rrf
 from app.services.retrieval.rerank import rerank_stage
+from app.services.retrieval.vector_recall import vector_recall
 
 logger = structlog.get_logger(__name__)
 
@@ -78,7 +82,8 @@ async def hybrid_retrieve(
     *,
     tenant_id: str,
     kb_ids: list[str],
-    vector_query: str,
+    vector_queries: Sequence[str],
+    rerank_query: str,
     keyword_query: str,
     top_k: int,
     embedding_factory: Callable[[], Any],
@@ -92,10 +97,14 @@ async def hybrid_retrieve(
     工厂以**可调用对象**传进来，而不是在这里直接 import：``rag_service`` 是组合根，
     测试替换工厂的位置因此仍然只有一处（沿用既有 monkeypatch 接缝，不新造接缝）。
 
-    **两条通道拿两个不同的查询**（``vector_query`` / ``keyword_query``）：查询优化在
-    召回之前就把一句话加工成了两句，向量一路要语义、关键词一路要字面。重排属于语义
-    那一侧，与向量一路共用 ``vector_query``。关掉两个开关时两者相等，行为与票 4 一致；
-    这里刻意不提供一个「query」参数让人偷懒传同一个变量——那不会报错，只会静默地把
+    **两条通道拿不同的查询**（``vector_queries`` / ``keyword_query``）：查询优化在
+    召回之前就把一句话加工成「向量逐句列表 + 关键词一句 + 重排一句」。改写成功时
+    ``vector_queries`` 是原句与改写句两句，两句各自召回并成一个池（#31）；关掉开关时
+    它是单元素序列，行为与票 4 逐字节一致。重排仍只看 ``rerank_query``（``effective_query``：
+    「用户最终想问什么」），不看召回用的两句。
+
+    为什么不留 ``vector_query: str`` 的单数别名：唯一调用方是组合根，双形态只会把
+    「这次到底是替换还是并集」变成调用方的隐式选择——那不会报错，只会静默地把
     一半优化关掉。
 
     ``recall_depth`` 是**每路召回条数**，``rerank_candidates`` 是**融合后保留的
@@ -115,7 +124,7 @@ async def hybrid_retrieve(
                 _run_vector_branch,
                 tenant_id=tenant_id,
                 kb_ids=kb_ids,
-                query=vector_query,
+                queries=vector_queries,
                 top_k=depth,
                 embedding_factory=embedding_factory,
                 vector_factory=vector_factory,
@@ -164,10 +173,11 @@ async def hybrid_retrieve(
 
     # 融合之后插入重排（GLOSSARY「检索链路」：召回 → 融合 → 重排）。失败只保留融合
     # 顺序并补一个原因；**已经降级就不覆盖**——先到的原因才是根因。
+    # 合成后的向量池直接作为「向量一路」进既有的 ``fuse_by_rrf``，不新增内层融合。
     fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
-    # 重排是**语义那一侧**的一步：它看到的问题与向量一路是同一句（``vector_query``），
+    # 重排是**语义那一侧**的一步：它看到的是 ``effective_query``（改写成功时是改写句），
     # 扩展出来的同义词只该帮关键词一路做字面匹配，塞进重排提示词只会变成噪音。
-    reranked = await rerank_stage(query=vector_query, chunks=fused_chunks, top_n=top_k)
+    reranked = await rerank_stage(query=rerank_query, chunks=fused_chunks, top_n=top_k)
     if reranked.reason is not None:
         degraded_reason = degraded_reason or reranked.reason
 
@@ -206,7 +216,7 @@ def _run_vector_branch(
     *,
     tenant_id: str,
     kb_ids: list[str],
-    query: str,
+    queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
@@ -225,7 +235,7 @@ def _run_vector_branch(
                 db,
                 tenant_id=tenant_id,
                 kb_ids=kb_ids,
-                query=query,
+                queries=queries,
                 top_k=top_k,
                 embedding_factory=embedding_factory,
                 vector_factory=vector_factory,
@@ -240,37 +250,32 @@ async def _vector_branch(
     *,
     tenant_id: str,
     kb_ids: list[str],
-    query: str,
+    queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
 ) -> list[dict]:
-    """向量通道：向量化**一次**，然后一次范围召回覆盖全部「库 + 版本」配对。
+    """向量通道：每句各嵌一次、各做一次范围召回，合成**一个**池（#31）。
 
     这里没有「按库循环」：分库各召回一批再合并看着公平，实际让不相关的库也各占
     名额，把真正该进来的切片挤掉（父 spec「多库：一次全局召回 + 一次融合」）。
-    嵌入同理只算一次——它不随知识库数量增加。
+    嵌入不随知识库数量增加，只随 ``queries`` 的句子数增加（关闭改写时仍是 1 次）。
+
+    嵌入失败发生在这里，也就是**向量分支内部**：它会被 gather 收成这一路的错误，
+    于是混合模式降级成「仅关键词」，而不是整单失败。
     """
 
-    # 嵌入失败发生在这里，也就是**向量分支内部**：它会被 gather 收成这一路的错误，
-    # 于是混合模式降级成「仅关键词」，而不是整单失败。
-    query_vector = await embedding_factory().embed_query(query)
-    store = vector_factory()
-
-    rows = list(
-        await store.similarity_search_scope(
-            db,
-            query_vector,
-            tenant_id=tenant_id,
-            # 映射而不是两个平行数组：配对关系只能从映射里读出来。
-            index_versions=default_index_versions(kb_ids),
-            top_k=top_k,
-        )
+    return await vector_recall(
+        db=db,
+        tenant_id=tenant_id,
+        kb_ids=kb_ids,
+        queries=queries,
+        top_k=top_k,
+        embedding_factory=embedding_factory,
+        vector_factory=vector_factory,
+        # 混合向量分支的历史排序口径：同分按 kb_id / chunk_id 兜底（回归红线）。
+        single_query_order="tiebreak",
     )
-
-    # 显式 tie-breaker：同分时按 kb_id / chunk_id 排，名次才不会随插入顺序漂移。
-    rows.sort(key=lambda item: (-item.get("score", 0.0), item.get("kb_id") or "", item["chunk_id"]))
-    return rows[:top_k]
 
 
 async def _keyword_branch(
