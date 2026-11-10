@@ -88,6 +88,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             plan_code=args.plan,
             kb_ids=args.kb_ids,
         )
+        # **在会话还活着时**把要打印的字段抄成普通值。
+        # 这里曾经直接 print(created.tenant.id)：``create_tenant`` 内部 commit 过，行在
+        # commit 时被 expire，紧接着 ``db.close()`` 又把它 detach，于是最后这几行必然抛
+        # ``DetachedInstanceError``——数据其实已经落库，脚本却以非零码退出，且把「开租户
+        # 成功」报成一次失败。新建的库里一定会遇到，所以抄值这一步不能省。
+        report = (
+            created.tenant.id,
+            created.tenant.plan_id,
+            created.tenant.name,
+            created.policy.id,
+            created.policy.profile,
+            created.policy.retrieve_qps,
+            created.policy.retrieve_daily,
+            list(created.policy.allowed_kb_ids),
+        )
     except (LookupError, ValueError, AppError) as exc:
         # ``AppError`` 是「配置不自洽」（20015）：档位要的能力配置没开、配置开的比套餐
         # 允许的多，或数值超过套餐上限。它与入参错误一样是**人改一下就好**的失败，
@@ -98,17 +113,23 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         db.close()
 
+    (
+        tenant_id,
+        plan_id,
+        tenant_name,
+        policy_id,
+        profile,
+        qps,
+        daily,
+        kb_ids,
+    ) = report
+    print(f"tenant: {tenant_id} plan_id={plan_id} name={tenant_name}")
     print(
-        f"tenant: {created.tenant.id} plan_id={created.tenant.plan_id} "
-        f"name={created.tenant.name}"
-    )
-    print(
-        f"key policy: {created.policy.id} profile={created.policy.profile} "
-        f"qps={created.policy.retrieve_qps} daily={created.policy.retrieve_daily} "
-        f"kb_ids={created.policy.allowed_kb_ids}"
+        f"key policy: {policy_id} profile={profile} "
+        f"qps={qps} daily={daily} kb_ids={kb_ids}"
     )
     print_summary(
-        f"create_tenant: {created.tenant.id}",
+        f"create_tenant: {tenant_id}",
         stats=CreateTenantStats(created=1),
         counters=(("created", "created"),),
         note=CREATED_NOTE,

@@ -115,6 +115,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         account_repository.create(db, account)
         db.commit()
+        # **在会话还活着时**抄成普通值：commit 会把行 expire，随后 ``db.close()`` 又
+        # detach，之后再读 ``account.id`` 必然 ``DetachedInstanceError``——账号其实已经
+        # 建好，脚本却以失败退出。新建的库里一定遇到。
+        created = (account.id, account.username, account.role, account.tenant_id)
     except (AppError, ValueError) as exc:
         db.rollback()
         print(str(exc), file=sys.stderr)
@@ -122,12 +126,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         db.close()
 
+    account_id, account_username, account_role, account_tenant_id = created
     print(
-        f"account: {account.id} username={account.username} role={account.role} "
-        f"tenant_id={account.tenant_id}"
+        f"account: {account_id} username={account_username} role={account_role} "
+        f"tenant_id={account_tenant_id}"
     )
     print_summary(
-        f"create_admin: {account.username}",
+        f"create_admin: {account_username}",
         stats=CreateAdminStats(created=1),
         counters=(("created", "created"),),
         note=CREATED_NOTE,
