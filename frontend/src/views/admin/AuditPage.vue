@@ -11,6 +11,7 @@ import { useQuery } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 
 import { auditLogsQueryKey, fetchAuditLogs } from '../../services/consoleAdmin'
+import type { AuditLogItem } from '../../types/consoleAdmin'
 import { formatDateTime } from '../../utils/datetime'
 import { errorText } from '../../utils/errorText'
 
@@ -53,6 +54,39 @@ const actionOptions = computed(() => {
 function actorLabel(actorId: string | null): string {
   // 系统动作（播种、回填）没有操作者，账本如实为空。显示「系统」而不是编一个账号 id。
   return actorId ?? '系统'
+}
+
+// —— 展开：改成了什么 ——
+//
+// 这一页的副标题承诺了「把哪个对象改成了什么」，而 `before` / `after` 两个快照后端一直都在
+// 返回，之前却从没渲染过——于是「改成了什么」这一半是缺的。
+//
+// 不把 JSON 直接塞进列表：一条配置改动能有十几个键，铺在行里会把整张表撑变形。改成
+// 「点一行展开」：列表保持一行一条的扫读节奏，展开才付看快照的成本。同一时刻只展开一行，
+// 免得两三条长 JSON 叠在一起又看不懂了。
+const expandedId = ref<string | null>(null)
+
+function toggleExpand(auditId: string): void {
+  expandedId.value = expandedId.value === auditId ? null : auditId
+}
+
+/** 这次改动涉及哪些键。before / after 都缺席时返回空数组（这类记录不展示「改动」列）。 */
+function changedKeys(log: AuditLogItem): string[] {
+  const before = log.before ?? {}
+  const after = log.after ?? {}
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)])
+  return [...keys].filter(
+    (key) => JSON.stringify(before[key]) !== JSON.stringify(after[key]),
+  )
+}
+
+function hasSnapshot(log: AuditLogItem): boolean {
+  return log.before !== null || log.after !== null
+}
+
+function prettyJson(value: Record<string, unknown> | null): string {
+  if (value === null) return '（无）'
+  return JSON.stringify(value, null, 2)
 }
 
 async function refresh(): Promise<void> {
@@ -123,35 +157,80 @@ async function refresh(): Promise<void> {
     </div>
 
     <template v-else>
-      <div class="mt-4 overflow-x-auto">
+      <div v-if="rows.length === 0" class="py-10 text-center">
+        <p class="text-[15px] font-semibold text-ink">没有记录</p>
+        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          {{
+            actionFilter === ''
+              ? '还没有审计记录。控制面第一次改动之后这里就会有内容。'
+              : '没有匹配这个动作的记录。换一个动作，或清空筛选看全部。'
+          }}
+        </p>
+      </div>
+
+      <div v-else class="mt-5 overflow-x-auto">
         <table class="min-w-full text-sm">
-          <thead class="bg-[#F8F9FA] text-[#6B7280]">
+          <thead>
             <tr>
-              <th class="px-3 py-2 text-left font-medium">时间</th>
-              <th class="px-3 py-2 text-left font-medium">动作</th>
-              <th class="px-3 py-2 text-left font-medium">目标</th>
-              <th class="px-3 py-2 text-left font-medium">操作者</th>
+              <th class="th-label px-3 py-2 text-left">时间</th>
+              <th class="th-label px-3 py-2 text-left">动作</th>
+              <th class="th-label px-3 py-2 text-left">目标</th>
+              <th class="th-label px-3 py-2 text-left">操作者</th>
+              <th class="th-label px-3 py-2 text-left">改动</th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="log in rows" :key="log.audit_id" class="border-t border-line align-top">
-              <td class="whitespace-nowrap px-3 py-3 text-slate-600">
-                {{ formatDateTime(log.created_at) }}
-              </td>
-              <td class="px-3 py-3 font-mono text-slate-800">{{ log.action }}</td>
-              <td class="break-all px-3 py-3 font-mono text-slate-600">{{ log.target }}</td>
-              <td class="break-all px-3 py-3 text-slate-600">
-                <span :class="log.actor_id === null ? 'text-slate-400' : ''">
-                  {{ actorLabel(log.actor_id) }}
-                </span>
-              </td>
-            </tr>
+            <!-- 每条记录是「主行 + 可折叠的快照行」：列表保持一行一条，展开才看 before / after。 -->
+            <template v-for="log in rows" :key="log.audit_id">
+              <tr
+                class="border-t border-line align-top"
+                :class="hasSnapshot(log) ? 'cursor-pointer hover:bg-surface-muted' : ''"
+                @click="hasSnapshot(log) ? toggleExpand(log.audit_id) : undefined"
+              >
+                <td class="whitespace-nowrap px-3 py-3 text-[11px] text-muted">
+                  {{ formatDateTime(log.created_at) }}
+                </td>
+                <td class="px-3 py-3 font-mono text-[12px] font-medium text-ink">
+                  {{ log.action }}
+                </td>
+                <td class="break-all px-3 py-3 font-mono text-[11px] text-slate-600">
+                  {{ log.target }}
+                </td>
+                <td class="break-all px-3 py-3 text-[11px] text-slate-600">
+                  <span :class="log.actor_id === null ? 'text-slate-400' : ''">
+                    {{ actorLabel(log.actor_id) }}
+                  </span>
+                </td>
+                <td class="px-3 py-3 text-[11px]">
+                  <button
+                    v-if="hasSnapshot(log)"
+                    type="button"
+                    class="inline-flex items-center gap-1.5 rounded-full border border-line bg-surface-muted px-2 py-0.5 text-slate-600 hover:border-line-strong"
+                    @click.stop="toggleExpand(log.audit_id)"
+                  >
+                    <span v-if="changedKeys(log).length > 0">{{ changedKeys(log).length }} 项变更</span>
+                    <span v-else>查看快照</span>
+                    <span class="text-[9px]">{{ expandedId === log.audit_id ? '▲' : '▼' }}</span>
+                  </button>
+                  <span v-else class="text-slate-400">—</span>
+                </td>
+              </tr>
 
-            <tr v-if="rows.length === 0">
-              <td colspan="4" class="px-3 py-8 text-center text-sm text-slate-500">
-                {{ actionFilter === '' ? '还没有审计记录。' : '没有匹配这个动作的记录。' }}
-              </td>
-            </tr>
+              <tr v-if="expandedId === log.audit_id" class="bg-surface-muted">
+                <td colspan="5" class="px-3 pb-4">
+                  <div class="grid gap-3 sm:grid-cols-2">
+                    <div>
+                      <p class="mb-1 text-[11px] font-medium text-muted">改动前</p>
+                      <pre class="max-h-64 overflow-auto rounded-control border border-line bg-surface p-3 font-mono text-[11px] leading-relaxed text-slate-700">{{ prettyJson(log.before) }}</pre>
+                    </div>
+                    <div>
+                      <p class="mb-1 text-[11px] font-medium text-muted">改动后</p>
+                      <pre class="max-h-64 overflow-auto rounded-control border border-line bg-surface p-3 font-mono text-[11px] leading-relaxed text-slate-700">{{ prettyJson(log.after) }}</pre>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </template>
           </tbody>
         </table>
       </div>

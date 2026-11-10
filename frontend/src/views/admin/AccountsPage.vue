@@ -184,17 +184,24 @@ async function refresh(): Promise<void> {
       <el-button class="mt-2" size="small" @click="refresh">重试</el-button>
     </div>
 
-    <div v-else class="mt-4 overflow-x-auto">
-      <table class="min-w-full text-sm">
-        <thead class="bg-[#F8F9FA] text-[#6B7280]">
+    <div v-else class="mt-5 overflow-x-auto">
+      <div v-if="accounts.length === 0" class="py-10 text-center">
+        <p class="text-[15px] font-semibold text-ink">还没有账号</p>
+        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          管理员账号由 <span class="font-mono">scripts/create_admin.py</span> 创建，租户账号由后续工具创建。
+        </p>
+      </div>
+
+      <table v-else class="min-w-full text-sm">
+        <thead>
           <tr>
-            <th class="px-3 py-2 text-left font-medium">用户名</th>
-            <th class="px-3 py-2 text-left font-medium">角色</th>
-            <th class="px-3 py-2 text-left font-medium">账号状态</th>
-            <th class="px-3 py-2 text-left font-medium">所属租户</th>
-            <th class="px-3 py-2 text-left font-medium">租户状态</th>
-            <th class="px-3 py-2 text-left font-medium">当前套餐</th>
-            <th class="px-3 py-2 text-left font-medium">操作</th>
+            <th class="th-label px-3 py-2 text-left">用户名</th>
+            <th class="th-label px-3 py-2 text-left">角色</th>
+            <th class="th-label px-3 py-2 text-left">账号状态</th>
+            <th class="th-label px-3 py-2 text-left">所属租户</th>
+            <th class="th-label px-3 py-2 text-left">租户状态</th>
+            <th class="th-label px-3 py-2 text-left">当前套餐</th>
+            <th class="th-label px-3 py-2 text-left">操作</th>
           </tr>
         </thead>
         <tbody>
@@ -203,7 +210,7 @@ async function refresh(): Promise<void> {
             :key="row.account_id"
             class="border-t border-line align-top"
           >
-            <td class="px-3 py-3 font-medium text-slate-800">{{ row.username }}</td>
+            <td class="px-3 py-3 font-medium text-ink">{{ row.username }}</td>
             <td class="px-3 py-3 text-slate-600">{{ roleLabel(row.role) }}</td>
             <td class="px-3 py-3">
               <span
@@ -225,40 +232,45 @@ async function refresh(): Promise<void> {
               <span v-else class="text-slate-400">—</span>
             </td>
             <td class="px-3 py-3 text-slate-600">{{ planLabel(row) }}</td>
+            <!--
+              三个入口（停用账号 / 停用租户 / 换套餐）并排放在一行时会挤出表格：
+              下拉本身就有 176px，加上两个按钮再折行，操作列被撑得很宽。改成两行：
+              第一行两个「停用 / 启用」，第二行换套餐下拉。
+            -->
             <td class="px-3 py-3">
-              <div class="flex flex-wrap items-center gap-2">
-                <el-button size="small" :disabled="saving" @click="toggleAccount(row)">
-                  {{ row.status === 'active' ? '停用账号' : '启用账号' }}
-                </el-button>
+              <div class="flex flex-col gap-2">
+                <div class="flex flex-wrap items-center gap-2">
+                  <el-button size="small" :disabled="saving" @click="toggleAccount(row)">
+                    {{ row.status === 'active' ? '停用账号' : '启用账号' }}
+                  </el-button>
 
-                <!-- 管理员不属于任何租户：租户那两项对他是 20002，所以不渲染入口，不让点了才报错。 -->
-                <template v-if="row.tenant_id !== null">
-                  <el-button size="small" :disabled="saving" @click="toggleTenant(row)">
+                  <!-- 管理员不属于任何租户：租户那两项对他是 20002，所以不渲染入口，不让点了才报错。 -->
+                  <el-button
+                    v-if="row.tenant_id !== null"
+                    size="small"
+                    :disabled="saving"
+                    @click="toggleTenant(row)"
+                  >
                     {{ row.tenant_status === 'active' ? '停用租户' : '启用租户' }}
                   </el-button>
-                  <el-select
-                    :model-value="row.plan?.plan_id"
-                    placeholder="换套餐"
-                    size="small"
-                    class="w-44"
-                    :disabled="saving || plans.length === 0"
-                    @change="(value) => onPlanChange(row, value)"
-                  >
-                    <el-option
-                      v-for="plan in plans"
-                      :key="plan.plan_id"
-                      :value="plan.plan_id"
-                      :label="`${plan.name}（${plan.code}）`"
-                    />
-                  </el-select>
-                </template>
+                </div>
+                <el-select
+                  v-if="row.tenant_id !== null"
+                  :model-value="row.plan?.plan_id"
+                  placeholder="换套餐"
+                  size="small"
+                  class="w-44"
+                  :disabled="saving || plans.length === 0"
+                  @change="(value) => onPlanChange(row, value)"
+                >
+                  <el-option
+                    v-for="plan in plans"
+                    :key="plan.plan_id"
+                    :value="plan.plan_id"
+                    :label="`${plan.name}（${plan.code}）`"
+                  />
+                </el-select>
               </div>
-            </td>
-          </tr>
-
-          <tr v-if="accounts.length === 0">
-            <td colspan="7" class="px-3 py-8 text-center text-sm text-slate-500">
-              还没有账号。管理员账号由 `scripts/create_admin.py` 创建，租户账号由后续工具创建。
             </td>
           </tr>
         </tbody>

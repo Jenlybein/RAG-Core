@@ -80,6 +80,21 @@ const routes = [
     // 档位预设：四个质量档位的参数（平台级配置，改完对下一次检索立即生效）。
     component: () => import('../views/admin/ProfilesPage.vue'),
   },
+  /**
+   * 兜底路由：没匹配上任何一条就落到这里。
+   *
+   * 没有它的时候，手输一个错地址（例如 `/admin/audit-logs`，而真实路径是 `/admin/audit`）
+   * 会得到一个**完全空白的 main**：顶栏还在、导航也还亮着，用户只能判断「这页坏了」，
+   * 却不知道自己只是走错了门。这条路由的成本只有一个小页面，换来的是「地址写错了」
+   * 与「页面挂了」能被区分开。
+   *
+   * 必须放在数组**最后**：Vue Router 按声明顺序匹配，通配符在前会吃掉所有真路由。
+   */
+  {
+    path: '/:pathMatch(.*)*',
+    name: 'not-found',
+    component: () => import('../views/NotFoundPage.vue'),
+  },
 ]
 
 const router = createRouter({
