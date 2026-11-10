@@ -34,7 +34,8 @@ NEW_MIGRATIONS = (
 )
 
 # 升级前就存在的四张业务表：这五条迁移一个字都不许动它们（不建、不改、不删、不写数据）。
-EXISTING_TABLES = ("knowledge_bases", "documents", "chunks", "retrieval_logs")
+# 第四张在 #101 由 ``retrieval_logs`` 改名为 ``retrieval_traces``（只留结构），清单跟着改名。
+EXISTING_TABLES = ("knowledge_bases", "documents", "chunks", "retrieval_traces")
 
 PREVIOUS_HEAD = "cecd88875297"
 
@@ -146,8 +147,9 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     assert len(heads) == 1, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
     # #80 在 #74 的五条之后追加了 sessions / audit_logs；#93 追加 runtime_settings、
     # #94 再追加 model_configs，链尾因此继续前移。这里只守「唯一的 head 是链上最新那条」。
-    # 链尾随新表继续前移：档位预设（profile_presets）接在 model_configs 之后。
-    assert heads == {_revision_of(_migration_path("create_profile_presets"))}
+    # 链尾随新表继续前移：档位预设（profile_presets）接在 model_configs 之后，#101 的
+    # 归属索引改名（rename_to_retrieval_traces）再接在档位预设之后。
+    assert heads == {_revision_of(_migration_path("rename_to_retrieval_traces"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
