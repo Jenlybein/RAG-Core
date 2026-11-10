@@ -571,7 +571,13 @@ const emptyCopy = computed(() =>
             <span>文档 ID：<span class="font-mono">{{ chunk.document_id }}</span></span>
             <span>切片 ID：<span class="font-mono">{{ chunk.chunk_id }}</span></span>
             <span>章节：{{ chunk.heading_path ?? '—' }}</span>
-            <span>块类型：{{ chunk.expansion ?? '—' }}</span>
+            <!--
+              这里是 `expansion`（这次上下文给了多大范围：neighbors / parent / table / chunk），
+              不是「块类型」。GLOSSARY 里「块类型」是切片形态（prose / list / table / table_row /
+              code），而响应里根本没有这个字段。两者一旦混用，读结果的人会以为切片被解析成了
+              “parent” 这种类型。
+            -->
+            <span>扩展范围：{{ chunk.expansion ?? '—' }}</span>
           </div>
         </li>
       </ul>

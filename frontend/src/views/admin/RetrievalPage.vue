@@ -350,7 +350,9 @@ async function refresh(): Promise<void> {
                 <th class="px-3 py-2 text-left font-medium">有效值</th>
                 <th class="px-3 py-2 text-left font-medium">来源</th>
                 <th class="px-3 py-2 text-left font-medium">为什么在这一档</th>
-                <th class="px-3 py-2 text-left font-medium">状态</th>
+                <!-- 状态列给最小宽度：不然「状态」两个字被挤成竖排，而它恰好是这张表最该
+                     一眼看清的一列（只读 / 面板只读 / 可热改）。 -->
+                <th class="w-28 px-3 py-2 text-left font-medium">状态</th>
               </tr>
             </thead>
             <tbody>
