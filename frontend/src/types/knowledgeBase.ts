@@ -75,3 +75,27 @@ export interface KnowledgeBaseNode {
   chunk_size: number
   documents: DocumentListItem[]
 }
+
+/**
+ * 控制面树接口（`GET /console/knowledge-bases/tree`）的响应 data。
+ *
+ * 与 `KnowledgeBaseNode` 是同一形状——这正是 #89 只换实现、不动页面的前提
+ * （`app/schemas/console_kbs.py` 的 `KnowledgeBaseTreeData` 照着前端类型定的）。
+ *
+ * 数组与 `error_message` 标成可选，是因为下面三个类型同时是**映射层的入参**：
+ * 后端契约里它们恒在，但映射是页面渲染前最后一个能给安全默认的地方，
+ * 老缓存或半截负载缺字段时宁可给 `[]`/`null`，也别让页面读到 `undefined`。
+ */
+export type ConsoleTreeDocument = Omit<DocumentListItem, 'error_message'> & {
+  /** 后端恒在；只有失败文档有文案，其余是 `null`。 */
+  error_message?: string | null
+}
+
+export type ConsoleTreeKnowledgeBase = Omit<KnowledgeBaseNode, 'allowed_formats' | 'documents'> & {
+  allowed_formats?: string[]
+  documents?: ConsoleTreeDocument[]
+}
+
+export interface ConsoleTreeData {
+  knowledge_bases: ConsoleTreeKnowledgeBase[]
+}
