@@ -260,7 +260,7 @@ def patch_plan(
                 impact=None,
             )
         db.delete(row)
-        _append_audit(
+        append_audit(
             db,
             actor=actor,
             action=ACTION_PLAN_DELETE,
@@ -298,7 +298,7 @@ def patch_plan(
         )
 
     plan_admin.apply_patch(row, patch)
-    _append_audit(
+    append_audit(
         db,
         actor=actor,
         action=ACTION_PLAN_UPDATE,
@@ -408,7 +408,7 @@ def patch_account(
         tenant.plan_id = plan.id
 
     after = _account_state(account, tenant)
-    _append_audit(
+    append_audit(
         db,
         actor=actor,
         action=ACTION_ACCOUNT_UPDATE,
@@ -441,7 +441,7 @@ def list_audit_logs(db: Session, *, limit: int) -> list[AuditLog]:
     return audit_log_repository.list_recent(db, limit=limit)
 
 
-def _append_audit(
+def append_audit(
     db: Session,
     *,
     actor: ConsoleIdentity | None,
