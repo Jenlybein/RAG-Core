@@ -4,9 +4,10 @@ import { fetchMe } from '../services/console'
 import { decideRedirect, probeFromError, type MeProbe } from '../utils/access'
 
 /**
- * 路由表：管理员面板的三条真实路由在本票（T13 / #95）落地 —— 账号、套餐、审计。
+ * 路由表：T6 建立「能点得到」的 6 条路由，T2 把 `/` 换成真实上传页，本票（T13 / #95）
+ * 补齐管理员面板账号 / 套餐 / 审计三条真实路由。
  *
- * `/`、`/knowledge-bases`、`/keys`、`/retrieve` 仍是占位页（各自由 #84/#86/#92/#87 替换）；
+ * `/knowledge-bases`、`/keys`、`/retrieve` 仍是占位页（各自由 #86/#92/#87 替换）；
  * `/admin/models`、`/admin/retrieval` 由 #96 补。守卫与顶栏都必须能在真实路径上命中，
  * 否则「未登录跳登录页」「普通账号被拦回列表」这两条验收就没有对象可验。
  *
@@ -23,8 +24,8 @@ const routes = [
   {
     path: '/',
     name: 'upload',
-    meta: { placeholderTitle: '上传文档', placeholderIssue: '#84 / T2' },
-    component: () => import('../views/PlaceholderPage.vue'),
+    // 本票的真实页：建库 + 上传闭环；它自动套上 AppHeader，并由守卫按登录态放行。
+    component: () => import('../views/KnowledgeUploadPage.vue'),
   },
   {
     path: '/knowledge-bases',
