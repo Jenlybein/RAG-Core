@@ -2,9 +2,12 @@
 /**
  * 上传页：建库 → 自动回填 kb_id → 批量上传 → 逐行异步回执。
  *
- * 只走数据面（Bearer API Key）：不做列表页、检索页、登录或任何 /admin。
- * 结果行只用文案表达状态，不在这里写「status === 1 用什么颜色」——状态徽章是后续
- * 统一组件的事，本票提前分色会让两个地方的映射慢慢漂移。
+ * 两条写路径都走**控制面会话门**（`services/consoleKb.ts`）：建库与上传按会话租户
+ * 归属，不再用构建期 dev-key。数据面只剩「拿选中 Key 打真实检索」一件事（#92 的
+ * 身份收口），所以本页不 import `lib/dataHttp`。
+ *
+ * 结果行只用文案表达状态，不在这里写「status === 1 用什么颜色」——状态徽章由
+ * `StatusBadge` 统一映射。
  */
 import { ElMessage } from 'element-plus'
 import { computed, onMounted, reactive, ref, watch } from 'vue'
@@ -18,8 +21,7 @@ import {
   type UploadRowStatus,
 } from '../composables/useUploadDocuments'
 import { ApiError } from '../lib/envelope'
-import { uploadDocumentFile } from '../services/documentService'
-import { createKnowledgeBase } from '../services/knowledgeBaseService'
+import { createKbConsole, uploadConsole } from '../services/consoleKb'
 import {
   KB_CHUNK_SIZE_DEFAULT,
   KB_CHUNK_SIZE_MAX,
@@ -130,7 +132,7 @@ async function submitCreate(): Promise<void> {
     // 后端 description 可选；空串按「没填」发，别把一个无意义的空字段塞进 extra=forbid 的请求。
     if (parsed.data.description !== '') payload.description = parsed.data.description
 
-    const kb = await createKnowledgeBase(payload)
+    const kb = await createKbConsole(payload)
     created.value = kb
     // 建库的终点是「不用复制粘贴」：同一个动作里把 ID 交给上传表单。
     kbId.value = kb.kb_id
@@ -152,7 +154,7 @@ const filteredCount = ref(0)
 const uploader = useUploadDocuments({
   upload: (item, targetKbId) =>
     // 标题用文件基名：选文件夹时 item.fileName 含相对路径，整条路径当文档标题只是噪声。
-    uploadDocumentFile({ kb_id: targetKbId, title: item.file.name, file: item.file }),
+    uploadConsole({ kb_id: targetKbId, title: item.file.name, file: item.file }),
 })
 const { results, running, succeededCount, failedCount, uploadAll } = uploader
 

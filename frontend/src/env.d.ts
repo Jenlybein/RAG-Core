@@ -1,9 +1,9 @@
 /// <reference types="vite/client" />
 
-// 给 import.meta.env 补上两个自定义变量；没有这行声明，TS 会把 API_KEY 当成拼写错误。
+// 只声明这一个自定义变量；`.env` 里的 API_KEY 兜底已随 #92 删除——数据面的身份
+// 只来自页面选中的 Key（`lib/activeKey.ts`），不再有构建期兜底。
 interface ImportMetaEnv {
   readonly VITE_API_BASE_URL: string
-  readonly API_KEY: string
 }
 
 interface ImportMeta {

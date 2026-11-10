@@ -1,14 +1,23 @@
 import axios, { type AxiosRequestConfig } from 'axios'
 
+import { getActiveKey } from './activeKey'
 import { toApiError } from './axiosError'
 import { ApiError, unwrapEnvelope } from './envelope'
 import { asPayload } from './httpPayload'
 
 /**
- * 数据面客户端：身份**只有** API Key，注入 `Authorization: Bearer`。
+ * 数据面客户端：身份**只有**用户当前选中的 API Key，注入 `Authorization: Bearer`。
  *
- * 与 consoleHttp 是两个实例、两段拦截器，不共用一个「按条件加头」的入口：
- * 一旦合并，就会出现「控制面请求顺手带上了明文 Key」这种事故，而它是不可撤回的泄露。
+ * **只给真实检索用。** 这个文件现在只应被 `services/ragService.ts` import——
+ * 全仓库唯一的调用点是 `POST /api/v1/rag/retrieve`。出现第二个调用点就是身份混了：
+ * 登录 / 我的 / 树 / 建库 / 上传 / 重建 / 删文档 / Key 与配置全部走控制面会话门
+ * （`lib/consoleHttp.ts`），那扇门不认 Bearer。为什么把这件事写成一句注释而不是
+ * 一个共享开关：共享开关会让「这一次到底用哪个身份」出现两个可能的答案，而一旦
+ * 控制面请求顺手带上明文 Key，就是一次不可撤回的泄露。
+ *
+ * 与 `consoleHttp` 是两个实例、两段拦截器，不共用一个「按条件加头」的入口。
+ * Key 来自内存（`lib/activeKey.ts`），不是构建期环境变量：`.env` 的 `API_KEY` 兜底
+ * 已按本票删除，没有「没选也能跑」的后门。
  */
 const instance = axios.create({
   // 留空即相对路径，由 Vite 的 /api 代理同源转发；填绝对地址会绕开代理。
@@ -17,14 +26,14 @@ const instance = axios.create({
 })
 
 instance.interceptors.request.use((config) => {
-  // 本票 Key 来自构建期环境变量；T10 会换成页面选中的那把 Key，但注入点保持在这一处。
-  const key = (import.meta.env.API_KEY ?? '').trim()
-  if (key === '') {
+  const key = getActiveKey()
+  if (key === null) {
+    // 不给「空 Bearer」：那会拿到 20010，看起来像 Key 失效，而实际只是还没选。
     throw new ApiError(
       -1,
       'data',
       '',
-      '数据面缺少 API_KEY：检查 frontend/.env 的 API_KEY，并与后端的 DEV_API_KEY 对齐',
+      '还没有选 Key：去 /keys 选一把，再回到检索页',
     )
   }
   config.headers.set('Authorization', `Bearer ${key}`)

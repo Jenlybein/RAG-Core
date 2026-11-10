@@ -11,19 +11,11 @@ export interface DocumentUploadReceipt {
   source_type: string
 }
 
-/** JSON 入口的请求体：正文直接落库，入口固定按 markdown 准入。 */
-export interface UploadDocumentJsonRequest {
-  kb_id: string
-  title: string
-  content: string
-}
-
-/** 文件入口的请求体：multipart 表单，`file` 由浏览器提供字节。 */
-export interface UploadDocumentFileRequest {
-  kb_id: string
-  title: string
-  file: File
-}
+/*
+ * 上传请求体的两种形态（JSON / multipart）随 `documentService.ts` 一起搬到了
+ * `services/consoleKb.ts` 的 `UploadConsolePayload`：控制面把 `kb_id` 放进路径，
+ * 请求体只收 `title` / `content` / `file`，与数据面那套入参不同，所以这里不再声明它们。
+ */
 
 /**
  * 文档列表行（`GET /documents?kb_id=`）。
