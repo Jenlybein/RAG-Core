@@ -1,11 +1,11 @@
 {
   "schema": "eval-run/1",
-  "run_id": "20261110T223339Z",
+  "run_id": "20261110T224302Z",
   "run_dir": "eval/baseline",
-  "generated_at": "2026-11-10T22:33:40+00:00",
+  "generated_at": "2026-11-10T22:43:04+00:00",
   "status": "ok",
   "failure": null,
-  "duration_seconds": 76.02,
+  "duration_seconds": 65.34,
   "experiment": {
     "name": "gate-baseline",
     "mode": "hybrid",
@@ -34,8 +34,8 @@
     "labels": 146
   },
   "environment": {
-    "run_id": "20261110T223339Z",
-    "generated_at": "2026-11-10T22:33:40+00:00",
+    "run_id": "20261110T224302Z",
+    "generated_at": "2026-11-10T22:43:04+00:00",
     "schema": "eval-run/1",
     "retrieval": {
       "mode": "hybrid",
@@ -99,9 +99,9 @@
     "runtime": {
       "python": "3.12.14",
       "platform": "Windows-11-10.0.26300-SP0",
-      "git_commit": "7cf2715",
+      "git_commit": "3d60f00",
       "git_branch": "t9/107-eval-runner",
-      "git_dirty": true,
+      "git_dirty": false,
       "database": "postgresql+psycopg://postgres:***@localhost:5432/rag_db",
       "env_file": "C:\\StudyProjects\\RAG-Core\\.env"
     }
@@ -370,7 +370,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 363.14,
+      "duration_ms": 683.54,
       "returned_ids": [
         "253094a7-d448-4005-9fa0-87740f25043c",
         "ee0560a3-0b65-4dde-82c3-bc559dc3c5ea",
@@ -394,7 +394,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 456.12,
+      "duration_ms": 558.12,
       "returned_ids": [
         "a6d05715-eda0-4661-80d8-3c845048377e",
         "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
@@ -418,7 +418,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 388.42,
+      "duration_ms": 414.95,
       "returned_ids": [
         "aa317d5d-ac36-4b90-922b-4a4388560bba",
         "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
@@ -442,7 +442,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 375.8,
+      "duration_ms": 414.79,
       "returned_ids": [
         "1037fb63-8168-474f-8232-7b182b99ec79",
         "253094a7-d448-4005-9fa0-87740f25043c",
@@ -466,7 +466,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 385.55,
+      "duration_ms": 483.48,
       "returned_ids": [
         "9fae04bb-1797-4031-8e39-76a66710eaff",
         "dcb196ac-d4bd-4b5f-954b-1d310e48aa5b",
@@ -490,12 +490,12 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 465.41,
+      "duration_ms": 437.5,
       "returned_ids": [
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
         "574be1f0-c299-4c91-bff5-1c1be7141847",
-        "94d4983f-bd05-4720-966f-169c19d6267a",
         "05985c24-40d9-4649-a790-6872995dc4d4",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
         "1e951739-6965-41ec-a1ed-288cc478b257"
       ],
       "reference_ids": [
@@ -514,7 +514,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 390.44,
+      "duration_ms": 434.94,
       "returned_ids": [
         "1e951739-6965-41ec-a1ed-288cc478b257",
         "85886e21-155b-49e8-908b-8a905a660abf",
@@ -538,7 +538,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 428.92,
+      "duration_ms": 436.25,
       "returned_ids": [
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
         "574be1f0-c299-4c91-bff5-1c1be7141847",
@@ -562,7 +562,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 362.93,
+      "duration_ms": 372.07,
       "returned_ids": [
         "ec9ae528-7fcd-4043-9094-78aee320af68",
         "bad0fd87-f27d-475a-8ce2-29a581d6218f",
@@ -586,7 +586,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 422.86,
+      "duration_ms": 395.88,
       "returned_ids": [
         "00257daa-94a6-4036-af21-31e97bfd9a6e",
         "23993d2d-8d50-4b13-9442-17846cdd2c50",
@@ -610,7 +610,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 383.47,
+      "duration_ms": 472.69,
       "returned_ids": [
         "323e6c86-f361-490a-b72d-005dc6b888f4",
         "0a8445e0-6135-4e58-bde2-98d129740c0f",
@@ -634,7 +634,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 486.71,
+      "duration_ms": 386.08,
       "returned_ids": [
         "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
         "083a8b0c-49f4-4c73-93b8-81a2f493631d",
@@ -658,7 +658,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 442.19,
+      "duration_ms": 401.71,
       "returned_ids": [
         "c9c17715-b4a6-43dc-9cca-fb2220c93b8d",
         "75c25eef-5463-49a2-8e99-e3589ce44bed",
@@ -682,7 +682,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 376.47,
+      "duration_ms": 406.24,
       "returned_ids": [
         "1cc80a48-26d0-4d48-9c06-874c80782504",
         "70f68558-f4ce-4a6e-90f2-3dd10cf6c16d",
@@ -706,7 +706,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 370.08,
+      "duration_ms": 369.22,
       "returned_ids": [
         "4650535e-cd2f-447b-aac4-ea6d58a2bcc0",
         "e502da6f-e303-4f8b-8ab9-2a594b635aed",
@@ -730,7 +730,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 388.81,
+      "duration_ms": 379.35,
       "returned_ids": [
         "1c96838f-61cc-4e26-97ca-96da59e2d0b0",
         "63095b03-500a-494c-9521-20a90e45c5f4",
@@ -755,7 +755,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 361.07,
+      "duration_ms": 413.34,
       "returned_ids": [
         "997d5162-2fbc-4186-bbbf-3ec1b72d2a34",
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
@@ -780,7 +780,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 374.35,
+      "duration_ms": 386.71,
       "returned_ids": [
         "e6686fbe-b55e-45ba-9cc9-4a4a38fb3d13",
         "cc65a410-d60f-42e3-af1d-3fb93319f8e1",
@@ -805,7 +805,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 380.21,
+      "duration_ms": 388.27,
       "returned_ids": [
         "b48c2f91-d836-4800-8054-551a127b62bb",
         "d9e5035a-27df-4e15-b9e2-1116454ada12",
@@ -830,7 +830,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 392.72,
+      "duration_ms": 362.69,
       "returned_ids": [
         "21175efe-b3b4-4412-911a-bc1cee07771c",
         "39bf587c-020c-4534-96b5-8b3047828bb4",
@@ -854,7 +854,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 383.15,
+      "duration_ms": 437.0,
       "returned_ids": [
         "ed0dc6a7-4f55-4143-a2ea-3a65990a30ae",
         "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b",
@@ -878,7 +878,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 362.95,
+      "duration_ms": 430.37,
       "returned_ids": [
         "dc3f0123-8c19-4f2d-9e70-0db5ab1f1227",
         "417c86bd-ec81-4aaa-921f-b8ead3b07eba",
@@ -902,7 +902,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 369.12,
+      "duration_ms": 346.56,
       "returned_ids": [
         "5ecda617-21fe-4872-a837-20201ff4381b",
         "4387d634-5701-40d3-a1aa-f212a08debe1",
@@ -926,7 +926,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 396.93,
+      "duration_ms": 424.09,
       "returned_ids": [
         "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
         "ee0560a3-0b65-4dde-82c3-bc559dc3c5ea",
@@ -950,7 +950,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 362.49,
+      "duration_ms": 398.34,
       "returned_ids": [
         "07ea6a51-eaa6-48ce-af52-adf5d3f4ffb0",
         "a6d05715-eda0-4661-80d8-3c845048377e",
@@ -974,7 +974,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 351.75,
+      "duration_ms": 437.89,
       "returned_ids": [
         "4650535e-cd2f-447b-aac4-ea6d58a2bcc0",
         "63095b03-500a-494c-9521-20a90e45c5f4",
@@ -998,7 +998,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 355.21,
+      "duration_ms": 368.06,
       "returned_ids": [
         "47d4c608-d374-41de-bee2-d9a4ccba7106",
         "a1e8a0e7-36e4-4665-a938-7eddb3a17b67",
@@ -1022,7 +1022,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 360.37,
+      "duration_ms": 384.01,
       "returned_ids": [
         "bede6e9c-bfd5-4a28-9d6c-87220aa0d346",
         "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
@@ -1046,7 +1046,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 352.04,
+      "duration_ms": 399.32,
       "returned_ids": [
         "7630e49e-f09a-4821-b262-d87bf058b7a0",
         "68dc7a92-9368-4a51-8485-e3cb46d9d423",
@@ -1070,7 +1070,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 355.12,
+      "duration_ms": 393.97,
       "returned_ids": [
         "2d1c0a7b-4ea7-4994-94c6-4cc86adffafd",
         "c0a0bfd4-e8c8-4a8b-8ac2-ce71969a9ca5",
@@ -1094,7 +1094,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 416.87,
+      "duration_ms": 433.0,
       "returned_ids": [
         "6bb8bd6d-46a2-4423-9704-552b9763f13d",
         "ff75eca4-b19b-44a4-a88a-ab3f8e3cdd15",
@@ -1118,7 +1118,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 607.89,
+      "duration_ms": 371.17,
       "returned_ids": [
         "f0cd3d4a-aa72-4f0c-ba43-e6f4a9c28658",
         "ae4e650d-ba49-42c4-a33a-76593fafcce2",
@@ -1142,7 +1142,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 351.55,
+      "duration_ms": 394.01,
       "returned_ids": [
         "04e3c505-8bef-473a-a28d-796c128873a2",
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
@@ -1166,7 +1166,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 373.05,
+      "duration_ms": 371.61,
       "returned_ids": [
         "1e951739-6965-41ec-a1ed-288cc478b257",
         "45ebc32a-aac0-46f2-bc8e-73bfa162664f",
@@ -1190,7 +1190,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 380.93,
+      "duration_ms": 412.01,
       "returned_ids": [
         "d0d9a077-1893-44b4-a272-1e031ce9cc00",
         "81458447-b20f-434c-ac47-597498f874f4",
@@ -1214,7 +1214,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 383.69,
+      "duration_ms": 407.75,
       "returned_ids": [
         "ccc7c013-1d38-46f6-8622-a41ecf3ba737",
         "be05e4ea-525e-461d-9db4-fab489b26c52",
@@ -1238,7 +1238,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 443.38,
+      "duration_ms": 421.81,
       "returned_ids": [
         "6e71972f-fb23-4967-b590-71309fec29e7",
         "68dc7a92-9368-4a51-8485-e3cb46d9d423",
@@ -1262,7 +1262,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 370.07,
+      "duration_ms": 417.42,
       "returned_ids": [
         "6e71972f-fb23-4967-b590-71309fec29e7",
         "dbfa8d7e-668c-425c-9e5d-7de8d693d102",
@@ -1286,7 +1286,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 371.34,
+      "duration_ms": 395.31,
       "returned_ids": [
         "e5a404ea-e5fc-450f-8521-0731121257a2",
         "631c5abd-b171-421d-b0ac-3bd4257a6ace",
@@ -1310,7 +1310,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 352.53,
+      "duration_ms": 393.2,
       "returned_ids": [
         "a3b4b2f2-6750-4a36-9242-fcc33580a433",
         "47970ddf-fba6-4fd9-809a-943c55518bef",
@@ -1334,7 +1334,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 364.97,
+      "duration_ms": 367.59,
       "returned_ids": [
         "67720505-1e6b-467b-9ff0-e0c11d41260c",
         "fabefcd9-73ee-46df-baac-99cbbe75feac",
@@ -1358,7 +1358,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 394.56,
+      "duration_ms": 360.22,
       "returned_ids": [
         "1a18e8f5-1400-476f-b04c-ef8b77532486",
         "618f12f1-53b2-4d44-bb71-8c43fe3e0ec4",
@@ -1382,7 +1382,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 435.96,
+      "duration_ms": 495.62,
       "returned_ids": [
         "0e7da242-2a0b-4791-83bf-bad73918f8d5",
         "c5b747a4-7f2c-4858-8884-7efbe7cc47c0",
@@ -1406,7 +1406,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 347.61,
+      "duration_ms": 416.45,
       "returned_ids": [
         "49a01449-89a3-404f-8379-857fefa3abf1",
         "8fae93ac-f265-493b-b4e1-aede6f950997",
@@ -1430,7 +1430,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 540.68,
+      "duration_ms": 445.45,
       "returned_ids": [
         "d0d9a077-1893-44b4-a272-1e031ce9cc00",
         "84248210-236f-4cb3-8661-9a411b4b24e7",
@@ -1454,7 +1454,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 439.53,
+      "duration_ms": 410.44,
       "returned_ids": [
         "311edb45-b633-45cf-92c2-8035c02f3d1d",
         "d57a7518-35c4-49dd-9699-ce957455d1db",
@@ -1478,7 +1478,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 367.48,
+      "duration_ms": 406.18,
       "returned_ids": [
         "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
         "394d3457-c528-4173-8d8b-7f22db961253",
@@ -1502,12 +1502,12 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 359.29,
+      "duration_ms": 380.57,
       "returned_ids": [
         "cb2e2a1e-22c5-42fb-9375-b917ac3ee0e7",
         "c9c17715-b4a6-43dc-9cca-fb2220c93b8d",
-        "2cf2ede5-a601-4fbf-9d13-5b2a57b1ddd9",
         "e502da6f-e303-4f8b-8ab9-2a594b635aed",
+        "2cf2ede5-a601-4fbf-9d13-5b2a57b1ddd9",
         "70f68558-f4ce-4a6e-90f2-3dd10cf6c16d"
       ],
       "reference_ids": [
@@ -1526,7 +1526,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 366.11,
+      "duration_ms": 370.72,
       "returned_ids": [
         "9f4cefa7-7fe4-46e2-8db6-50d8b130f125",
         "def70706-908a-4b0d-a05e-438ecb58e0c4",
@@ -1550,7 +1550,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 379.23,
+      "duration_ms": 425.25,
       "returned_ids": [
         "35087a50-9be2-403d-8514-dbb89995b0b9",
         "e502da6f-e303-4f8b-8ab9-2a594b635aed",
@@ -1574,7 +1574,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 378.41,
+      "duration_ms": 373.12,
       "returned_ids": [
         "4a12f18e-9518-486b-9202-5698144a7aed",
         "1b98e8f4-585a-4e79-9a2a-5a42c7e59ffa",
@@ -1598,7 +1598,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 389.23,
+      "duration_ms": 389.68,
       "returned_ids": [
         "8fae93ac-f265-493b-b4e1-aede6f950997",
         "f00928b0-0513-42d9-9a96-f8803902b335",
@@ -1622,7 +1622,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 504.49,
+      "duration_ms": 438.54,
       "returned_ids": [
         "1ef22a25-74a4-4cf1-83cc-39595da27ca9",
         "74af5fc4-c9b3-4042-818a-9c9ca87143ad",
@@ -1646,7 +1646,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 371.18,
+      "duration_ms": 431.21,
       "returned_ids": [
         "90eba4db-f83e-4128-af8b-e71688cb34c3",
         "6cb6a367-c175-4b80-95f2-9829a080195a",
@@ -1670,7 +1670,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 471.75,
+      "duration_ms": 376.12,
       "returned_ids": [
         "78dfe4cf-b478-495c-895c-8c5e46201394",
         "b3084f05-c52b-44b1-9d59-aebb7f86061f",
@@ -1695,7 +1695,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 374.23,
+      "duration_ms": 437.59,
       "returned_ids": [
         "80699fe7-8d78-4b46-99c6-e2f14c807aed",
         "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
@@ -1720,7 +1720,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 391.42,
+      "duration_ms": 379.72,
       "returned_ids": [
         "d57a7518-35c4-49dd-9699-ce957455d1db",
         "eeb55161-a30e-4569-a9c3-b158e7e14e9a",
@@ -1745,7 +1745,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 349.33,
+      "duration_ms": 373.25,
       "returned_ids": [
         "d8a0d03a-3a3d-4b38-8845-66dd921ee083",
         "b3d57526-d45a-45f1-b467-1d66d1982cb2",
@@ -1770,7 +1770,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 421.68,
+      "duration_ms": 428.7,
       "returned_ids": [
         "417c86bd-ec81-4aaa-921f-b8ead3b07eba",
         "dc3f0123-8c19-4f2d-9e70-0db5ab1f1227",
@@ -1794,7 +1794,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 414.15,
+      "duration_ms": 385.41,
       "returned_ids": [
         "ed0dc6a7-4f55-4143-a2ea-3a65990a30ae",
         "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b",
@@ -1818,7 +1818,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 397.02,
+      "duration_ms": 373.32,
       "returned_ids": [
         "1e951739-6965-41ec-a1ed-288cc478b257",
         "574be1f0-c299-4c91-bff5-1c1be7141847",
@@ -1842,7 +1842,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 386.55,
+      "duration_ms": 417.45,
       "returned_ids": [
         "574be1f0-c299-4c91-bff5-1c1be7141847",
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
@@ -1866,7 +1866,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 379.78,
+      "duration_ms": 371.49,
       "returned_ids": [
         "19c7ee71-6617-42f8-b2be-ad2615304a52",
         "7ba3f1c8-0fd9-4602-aa5f-1d8a3bfa8caf",
@@ -1890,7 +1890,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 340.38,
+      "duration_ms": 393.88,
       "returned_ids": [
         "b53d32e9-8b58-4fea-80a0-1ef65fb15d42",
         "01b6f320-a175-4eff-afba-faae2185d7ef",
@@ -1914,7 +1914,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 361.75,
+      "duration_ms": 359.52,
       "returned_ids": [
         "f81076dd-5a94-4c54-bfda-bb65a882cb52",
         "441e63fb-e33a-4881-9c86-f3ff4eea8c20",
@@ -1938,7 +1938,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 367.66,
+      "duration_ms": 406.86,
       "returned_ids": [
         "85121862-13fd-4586-95cc-34f302908825",
         "c7f6080c-77ef-4aec-a574-20d10423b6d7",
@@ -1962,7 +1962,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 414.01,
+      "duration_ms": 376.97,
       "returned_ids": [
         "75c25eef-5463-49a2-8e99-e3589ce44bed",
         "0b92375d-c3f5-4d29-b03d-8d7634a57b3d",
@@ -1986,7 +1986,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 473.31,
+      "duration_ms": 363.15,
       "returned_ids": [
         "0ce23c39-65fa-4e97-bc55-924bb523b25f",
         "fe48882a-9a82-416a-a5a8-80b4f837e471",
@@ -2010,7 +2010,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 393.08,
+      "duration_ms": 439.5,
       "returned_ids": [
         "0b92375d-c3f5-4d29-b03d-8d7634a57b3d",
         "048be0a9-5c24-4341-b8a8-f8d0507c62fb",
@@ -2034,7 +2034,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 553.39,
+      "duration_ms": 361.77,
       "returned_ids": [
         "9d2139ed-c504-4915-9adc-b596767357f2",
         "c9a66dce-b41c-41f7-9510-0f70122b7747",
@@ -2058,7 +2058,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 380.82,
+      "duration_ms": 349.04,
       "returned_ids": [
         "502e63d1-a06c-46f5-9a4d-2c42667a6a3a",
         "c0c0f147-2bd2-46ce-b689-1d9b06d47e93",
@@ -2083,7 +2083,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 382.98,
+      "duration_ms": 345.14,
       "returned_ids": [
         "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
         "05985c24-40d9-4649-a790-6872995dc4d4",
@@ -2113,7 +2113,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 409.94,
+      "duration_ms": 378.9,
       "returned_ids": [
         "85886e21-155b-49e8-908b-8a905a660abf",
         "45ebc32a-aac0-46f2-bc8e-73bfa162664f",
@@ -2145,7 +2145,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 362.38,
+      "duration_ms": 395.57,
       "returned_ids": [
         "b36591ee-4ba2-42f6-9c4f-73fb99549a59",
         "33b51a90-14aa-4802-8774-d7818955b667",
@@ -2174,7 +2174,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 384.88,
+      "duration_ms": 366.11,
       "returned_ids": [
         "9010f864-44e1-4f04-bcdd-84563ece83ee",
         "b36591ee-4ba2-42f6-9c4f-73fb99549a59",
@@ -2203,7 +2203,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 375.58,
+      "duration_ms": 354.27,
       "returned_ids": [
         "f66b2f44-0ec3-44b7-8359-7e9f7a9dc30e",
         "ff85e1c1-c466-464a-be92-b339944bfa9d",
@@ -2231,7 +2231,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 347.6,
+      "duration_ms": 373.3,
       "returned_ids": [
         "37f75282-0c6e-435c-a1f5-e1417f96d11e",
         "288b1ca9-769f-44ed-84d9-bd2948074dc9",
@@ -2255,7 +2255,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 357.5,
+      "duration_ms": 418.87,
       "returned_ids": [
         "2978d2c2-bf79-483f-8a08-67a6f6ae02f2",
         "37f75282-0c6e-435c-a1f5-e1417f96d11e",
@@ -2279,7 +2279,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 559.38,
+      "duration_ms": 373.04,
       "returned_ids": [
         "7ea40e9f-513c-4f87-8e86-ce087a3b580f",
         "e133eebb-a54d-4774-856f-b3695147eef4",
@@ -2303,7 +2303,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 379.98,
+      "duration_ms": 376.97,
       "returned_ids": [
         "394d3457-c528-4173-8d8b-7f22db961253",
         "c86dc865-bdf9-4023-a2dc-80e464334c56",
@@ -2327,7 +2327,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 394.87,
+      "duration_ms": 422.28,
       "returned_ids": [
         "508b5073-1f1b-40b5-83b3-ee22dd0400b9",
         "27b4bf40-a7ec-4d97-b414-ee4519e3024c",
@@ -2351,7 +2351,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 397.67,
+      "duration_ms": 434.6,
       "returned_ids": [
         "00797915-cf6e-4550-9286-8a49982b2ce7",
         "179cc67d-ecbe-4d0a-aae2-9c8fa8f921f2",
@@ -2381,7 +2381,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 454.17,
+      "duration_ms": 422.06,
       "returned_ids": [
         "747d9915-7c9c-4917-b267-bcd8574f6d04",
         "846dc55c-55d9-4a2d-a0b0-3d30342d6349",
@@ -2405,7 +2405,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 383.42,
+      "duration_ms": 448.39,
       "returned_ids": [
         "d5755c5e-c3d9-4ebe-b99e-41d17326b926",
         "644e83c8-75dd-4f9b-833a-4045d67e5029",
@@ -2429,7 +2429,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 371.03,
+      "duration_ms": 452.07,
       "returned_ids": [
         "d5755c5e-c3d9-4ebe-b99e-41d17326b926",
         "644e83c8-75dd-4f9b-833a-4045d67e5029",
@@ -2453,7 +2453,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 404.83,
+      "duration_ms": 369.2,
       "returned_ids": [
         "dbfa8d7e-668c-425c-9e5d-7de8d693d102",
         "6e71972f-fb23-4967-b590-71309fec29e7",
@@ -2477,7 +2477,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 333.4,
+      "duration_ms": 371.89,
       "returned_ids": [
         "21fc7b4e-e353-48ef-87b0-c1fccf47cdd2",
         "a2e1b678-a740-411d-8146-6079b84a704d",
@@ -2501,7 +2501,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 339.74,
+      "duration_ms": 534.04,
       "returned_ids": [
         "0dbc8f30-ece4-40cb-aad9-2e12ccd6a081",
         "272bc2a8-538f-4860-b677-a2e3c2ccb0e8",
@@ -2531,7 +2531,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 356.4,
+      "duration_ms": 364.95,
       "returned_ids": [
         "9463320e-24cd-4bb5-8b36-f811115f3abc",
         "d3c61b66-fcad-4c77-b9c3-59b0c80ad094",
@@ -2555,7 +2555,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 381.65,
+      "duration_ms": 1363.55,
       "returned_ids": [
         "00257daa-94a6-4036-af21-31e97bfd9a6e",
         "3e026dad-dc9b-4ffb-a7ae-ebb41d8af16e",
@@ -2580,7 +2580,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 390.35,
+      "duration_ms": 375.89,
       "returned_ids": [
         "cf4a1037-aafa-4494-b46f-a14b63ecf7da",
         "d670c726-e17b-4bdf-aeb8-0851bcd16b17",
@@ -2604,7 +2604,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 373.51,
+      "duration_ms": 390.44,
       "returned_ids": [
         "47970ddf-fba6-4fd9-809a-943c55518bef",
         "a3b4b2f2-6750-4a36-9242-fcc33580a433",
@@ -2628,7 +2628,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 374.79,
+      "duration_ms": 448.55,
       "returned_ids": [
         "e11f4206-e24a-4846-b137-e225bbe3ead7",
         "33d9f28b-f2bd-4314-a532-013a8d510e52",
@@ -2656,7 +2656,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 370.61,
+      "duration_ms": 400.76,
       "returned_ids": [
         "048be0a9-5c24-4341-b8a8-f8d0507c62fb",
         "0b92375d-c3f5-4d29-b03d-8d7634a57b3d",
@@ -2681,7 +2681,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 420.46,
+      "duration_ms": 405.43,
       "returned_ids": [
         "0535a0dd-542a-4e67-ba30-8161b2fa3194",
         "47d4c608-d374-41de-bee2-d9a4ccba7106",
@@ -2706,7 +2706,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 378.14,
+      "duration_ms": 406.5,
       "returned_ids": [
         "45ebc32a-aac0-46f2-bc8e-73bfa162664f",
         "85886e21-155b-49e8-908b-8a905a660abf",
@@ -2739,7 +2739,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 369.95,
+      "duration_ms": 571.05,
       "returned_ids": [
         "00797915-cf6e-4550-9286-8a49982b2ce7",
         "6cb6a367-c175-4b80-95f2-9829a080195a",
@@ -2769,7 +2769,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 381.24,
+      "duration_ms": 441.84,
       "returned_ids": [
         "e6ad9473-3382-4db2-9c7f-9573dbd260bb",
         "e6546304-8b7e-4583-932c-fdf4709756a2",
@@ -2793,7 +2793,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 348.37,
+      "duration_ms": 513.15,
       "returned_ids": [
         "f00928b0-0513-42d9-9a96-f8803902b335",
         "ddac1001-e3b6-49e5-8454-6efe0bdea6e5",
@@ -2817,7 +2817,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 373.53,
+      "duration_ms": 490.32,
       "returned_ids": [
         "8a4bccc6-c13e-48df-b3e9-fa9e2ccea284",
         "9b73c744-8166-4f9f-963d-83ae32e6c5b4",
@@ -2841,7 +2841,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 401.5,
+      "duration_ms": 440.5,
       "returned_ids": [
         "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b",
         "1c96838f-61cc-4e26-97ca-96da59e2d0b0",
@@ -2865,7 +2865,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 362.66,
+      "duration_ms": 408.67,
       "returned_ids": [
         "323e6c86-f361-490a-b72d-005dc6b888f4",
         "afe9842f-90ae-41fe-b5d6-d93512b55a12",
@@ -2889,7 +2889,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 434.15,
+      "duration_ms": 406.48,
       "returned_ids": [
         "6cb6a367-c175-4b80-95f2-9829a080195a",
         "6e71972f-fb23-4967-b590-71309fec29e7",
@@ -2913,7 +2913,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 378.88,
+      "duration_ms": 430.11,
       "returned_ids": [
         "3a4e0e14-b07d-4482-905d-8b253c3adbfb",
         "0a8445e0-6135-4e58-bde2-98d129740c0f",
@@ -2937,7 +2937,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 394.1,
+      "duration_ms": 430.15,
       "returned_ids": [
         "9af15963-c5f6-4e36-9f0f-8a2ae962553d",
         "ecdf1ce7-34c1-4f33-97d4-95bfc9897065",
@@ -2961,7 +2961,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 361.83,
+      "duration_ms": 592.06,
       "returned_ids": [
         "36a04666-2e26-43bb-80ab-7d8aab4cadeb",
         "1800354c-d5bd-4e26-bf3f-98527cf95815",
@@ -2985,7 +2985,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 335.75,
+      "duration_ms": 440.78,
       "returned_ids": [
         "600eeead-f14f-431b-9fdb-f01a81c2c04f",
         "8b87ca0b-ab1c-420a-ba84-1c7dee9b45a1",
@@ -3009,7 +3009,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 346.13,
+      "duration_ms": 487.18,
       "returned_ids": [
         "0da6a424-bc98-4e69-a477-f6afe7d0c9b4",
         "8b87ca0b-ab1c-420a-ba84-1c7dee9b45a1",
@@ -3033,7 +3033,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 382.7,
+      "duration_ms": 737.38,
       "returned_ids": [
         "78dfe4cf-b478-495c-895c-8c5e46201394",
         "b3084f05-c52b-44b1-9d59-aebb7f86061f",
@@ -3057,7 +3057,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 370.17,
+      "duration_ms": 519.12,
       "returned_ids": [
         "574be1f0-c299-4c91-bff5-1c1be7141847",
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
@@ -3081,7 +3081,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 396.73,
+      "duration_ms": 477.25,
       "returned_ids": [
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
         "05985c24-40d9-4649-a790-6872995dc4d4",
@@ -3105,7 +3105,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 442.3,
+      "duration_ms": 772.3,
       "returned_ids": [
         "1e951739-6965-41ec-a1ed-288cc478b257",
         "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
@@ -3129,7 +3129,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 338.17,
+      "duration_ms": 671.84,
       "returned_ids": [
         "05985c24-40d9-4649-a790-6872995dc4d4",
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
@@ -3153,7 +3153,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 439.15,
+      "duration_ms": 709.13,
       "returned_ids": [
         "1e951739-6965-41ec-a1ed-288cc478b257",
         "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
@@ -3177,7 +3177,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 427.12,
+      "duration_ms": 724.35,
       "returned_ids": [
         "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
         "05985c24-40d9-4649-a790-6872995dc4d4",
@@ -3201,7 +3201,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 372.47,
+      "duration_ms": 603.92,
       "returned_ids": [
         "0959af60-312c-4369-90f3-7c1256352cf3",
         "574be1f0-c299-4c91-bff5-1c1be7141847",
@@ -3225,7 +3225,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 350.68,
+      "duration_ms": 553.69,
       "returned_ids": [
         "f49fd4c2-d2dd-4b86-ac00-1ae5ca393b95",
         "05985c24-40d9-4649-a790-6872995dc4d4",
@@ -3255,7 +3255,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 346.43,
+      "duration_ms": 833.65,
       "returned_ids": [
         "48b6bea6-e44f-4cce-ac9c-36d0f0db7758",
         "05985c24-40d9-4649-a790-6872995dc4d4",
@@ -3285,7 +3285,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 355.98,
+      "duration_ms": 808.29,
       "returned_ids": [
         "d768ddd8-a509-4bf4-b8af-f15206a3cd93",
         "6bf4d1ac-ddea-409a-8ad6-fcc7e2a8d636",
@@ -3309,7 +3309,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 379.94,
+      "duration_ms": 789.6,
       "returned_ids": [
         "043fddc3-9654-4750-9456-11c3a19635a9",
         "0cf10270-8146-45c5-a905-27c9ed9a2e15",
@@ -3333,7 +3333,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 443.48,
+      "duration_ms": 457.88,
       "returned_ids": [
         "0cf10270-8146-45c5-a905-27c9ed9a2e15",
         "0959af60-312c-4369-90f3-7c1256352cf3",
@@ -3357,7 +3357,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 427.36,
+      "duration_ms": 665.7,
       "returned_ids": [
         "663dac26-76a6-488b-b0ae-f04b83fb0f8c",
         "01c318e0-06d1-4039-b3e0-60a319e224b5",
@@ -3381,7 +3381,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 401.48,
+      "duration_ms": 630.91,
       "returned_ids": [
         "600eeead-f14f-431b-9fdb-f01a81c2c04f",
         "166e77f7-1b74-4f96-877d-0faec233908c",
@@ -3405,7 +3405,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 366.32,
+      "duration_ms": 552.43,
       "returned_ids": [
         "1a6e2c7a-b817-47ec-b6d3-8b0c60b3ea58",
         "6cb6a367-c175-4b80-95f2-9829a080195a",
@@ -3429,7 +3429,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 372.44,
+      "duration_ms": 475.04,
       "returned_ids": [
         "47970ddf-fba6-4fd9-809a-943c55518bef",
         "a3b4b2f2-6750-4a36-9242-fcc33580a433",
@@ -3453,7 +3453,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 404.15,
+      "duration_ms": 586.18,
       "returned_ids": [
         "e35892f8-af9d-4d27-b949-ccff6889c99e",
         "166e77f7-1b74-4f96-877d-0faec233908c",
@@ -3477,7 +3477,7 @@
       "empty_reason": null,
       "degraded": false,
       "degraded_reason": null,
-      "duration_ms": 466.02,
+      "duration_ms": 528.17,
       "returned_ids": [
         "a453fafb-e08c-4b6e-8fb4-05be741ce247",
         "1800354c-d5bd-4e26-bf3f-98527cf95815",
@@ -3491,20 +3491,285 @@
     }
   ],
   "gate": {
-    "verdict": "no_baseline",
-    "passed": null,
-    "reason": "no_baseline",
+    "verdict": "pass",
+    "passed": true,
+    "reason": null,
     "thresholds": {
       "overall_pp": 1.0,
       "per_type_pp": 3.0
     },
-    "baseline": null,
-    "overall": [],
-    "by_type": [],
+    "baseline": {
+      "run_id": "20261110T223339Z",
+      "generated_at": "2026-11-10T22:33:40+00:00",
+      "run_dir": "eval/baseline",
+      "source": "eval/baseline/results.json"
+    },
+    "overall": [
+      {
+        "metric": "context_precision",
+        "current": 0.2220472440944882,
+        "baseline": 0.2220472440944882,
+        "delta_pp": 0.0,
+        "threshold_pp": 1.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "metric": "context_recall",
+        "current": 0.8716785401824771,
+        "baseline": 0.8716785401824771,
+        "delta_pp": 0.0,
+        "threshold_pp": 1.0,
+        "status": "pass",
+        "detail": ""
+      }
+    ],
+    "by_type": [
+      {
+        "type": "colloquial",
+        "metric": "context_precision",
+        "count": 11,
+        "count_baseline": 11,
+        "current": 0.16363636363636364,
+        "baseline": 0.16363636363636364,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "colloquial",
+        "metric": "context_recall",
+        "count": 11,
+        "count_baseline": 11,
+        "current": 0.8181818181818182,
+        "baseline": 0.8181818181818182,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "counterfactual",
+        "metric": "context_precision",
+        "count": 13,
+        "count_baseline": 13,
+        "current": 0.18461538461538465,
+        "baseline": 0.18461538461538465,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "counterfactual",
+        "metric": "context_recall",
+        "count": 13,
+        "count_baseline": 13,
+        "current": 0.9230769230769231,
+        "baseline": 0.9230769230769231,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "cross_section",
+        "metric": "context_precision",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.3058823529411765,
+        "baseline": 0.3058823529411765,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "cross_section",
+        "metric": "context_recall",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.6394957983193278,
+        "baseline": 0.6394957983193278,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "exact_code",
+        "metric": "context_precision",
+        "count": 5,
+        "count_baseline": 5,
+        "current": 0.2,
+        "baseline": 0.2,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "exact_code",
+        "metric": "context_recall",
+        "count": 5,
+        "count_baseline": 5,
+        "current": 1.0,
+        "baseline": 1.0,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "model_number",
+        "metric": "context_precision",
+        "count": 15,
+        "count_baseline": 15,
+        "current": 0.22666666666666668,
+        "baseline": 0.22666666666666668,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "model_number",
+        "metric": "context_recall",
+        "count": 15,
+        "count_baseline": 15,
+        "current": 0.9047619047619048,
+        "baseline": 0.9047619047619048,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "negative_scope",
+        "metric": "context_precision",
+        "count": 14,
+        "count_baseline": 14,
+        "current": 0.21428571428571427,
+        "baseline": 0.21428571428571427,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "negative_scope",
+        "metric": "context_recall",
+        "count": 14,
+        "count_baseline": 14,
+        "current": 0.9523809523809524,
+        "baseline": 0.9523809523809524,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "noise_robust",
+        "metric": "context_precision",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.2,
+        "baseline": 0.2,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "noise_robust",
+        "metric": "context_recall",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.9019607843137255,
+        "baseline": 0.9019607843137255,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "rare_token",
+        "metric": "context_precision",
+        "count": 6,
+        "count_baseline": 6,
+        "current": 0.20000000000000004,
+        "baseline": 0.20000000000000004,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "rare_token",
+        "metric": "context_recall",
+        "count": 6,
+        "count_baseline": 6,
+        "current": 1.0,
+        "baseline": 1.0,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "synonym",
+        "metric": "context_precision",
+        "count": 12,
+        "count_baseline": 12,
+        "current": 0.20000000000000004,
+        "baseline": 0.20000000000000004,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "synonym",
+        "metric": "context_recall",
+        "count": 12,
+        "count_baseline": 12,
+        "current": 1.0,
+        "baseline": 1.0,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "table_lookup",
+        "metric": "context_precision",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.25882352941176473,
+        "baseline": 0.25882352941176473,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "table_lookup",
+        "metric": "context_recall",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.799626517273576,
+        "baseline": 0.799626517273576,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      }
+    ],
     "regressions": [],
-    "summary": "没有可比的基线：本次不判红，但它**不代表通过**——把这次归档成基线（见复现命令里的 --update-baseline），下一次才有闸门。"
+    "summary": "绿：整体与 10 个题型全部在阈值内（整体 ≥ -1.00pp、单题型退化 ≤ 3.00pp，127 道题参与平均）。"
   },
   "http_smoke": null,
   "retrieval_failures": [],
-  "promoted_from": "eval/runs/20261110T223339Z"
+  "promoted_from": "eval/runs/20261110T224302Z"
 }

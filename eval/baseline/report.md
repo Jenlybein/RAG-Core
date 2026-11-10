@@ -1,9 +1,9 @@
-# 评测门禁报告 · 20261110T223339Z
+# 评测门禁报告 · 20261110T224302Z
 
-- 生成时间：2026-11-10T22:33:40+00:00
+- 生成时间：2026-11-10T22:43:04+00:00
 - 归档目录：`eval/baseline`（`report.md` + `results.json` + `environment.json`）
-- 来源 run：`eval/runs/20261110T223339Z`（本目录是它的基线副本）
-- 状态：**无基线（本次不判红，但也不代表通过）**
+- 来源 run：`eval/runs/20261110T224302Z`（本目录是它的基线副本）
+- 状态：**绿（通过）**
 
 > 门禁指标零 LLM 依赖：两个数只用 chunk id 与标注算，不需要裁判模型。
 
@@ -25,34 +25,33 @@
 
 ## 门禁判定
 
-**无基线（本次不判红，但也不代表通过）**
+**绿（通过）**
 
 - 判据：整体不低于基线 −1.00pp；单题型退化不超过 3.00pp。
-- 结论：没有可比的基线：本次不判红，但它**不代表通过**——把这次归档成基线（见复现命令里的 --update-baseline），下一次才有闸门。
+- 结论：绿：整体与 10 个题型全部在阈值内（整体 ≥ -1.00pp、单题型退化 ≤ 3.00pp，127 道题参与平均）。
+- 基线：`20261110T223339Z`（来源 `eval/baseline/results.json`，生成于 2026-11-10T22:33:40+00:00）
 - 参与平均：127 道题；已评分 CP 127/127、CR 127/127。
 - 口径：CP = 本次返回的**不同**切片里有多少在标注内（分母是返回条数），CR = 标注的切片被找回了几成（分母是标注条数）。两者都是**集合**口径，与 `eval/ACCEPTANCE.md` 里按行算的 P@5 / R@5 同量级、但不是同一把尺子——跨文档比较前先看分母。
 
 | 指标 | 本次 | 基线 | Δ(pp) | 判据 | 结论 | 复现命令 |
 | --- | --- | --- | --- | --- | --- | --- |
-| context_precision | 0.2220 | n/a | — | ≥ -1.00pp | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.overall.context_precision` |
-| context_recall | 0.8717 | n/a | — | ≥ -1.00pp | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.overall.context_recall` |
-
-（本次还没有可比基线，所以「Δ」与「结论」是空的；本次的 CP / CR 仍然照实列出——报告不因为还没基线就少一列数字。）
+| context_precision | 0.2220 | 0.2220 | +0.00 | ≥ -1.00pp | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.overall.context_precision` |
+| context_recall | 0.8717 | 0.8717 | +0.00 | ≥ -1.00pp | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.overall.context_recall` |
 
 ### 分题型（单类退化 > 3pp 判红；题数为本次进平均的题数）
 
 | 题型 | 题数 | CP | ΔCP(pp) | CR | ΔCR(pp) | 结论 | 复现命令 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| colloquial | 11 | 0.1636 | — | 0.8182 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.colloquial` |
-| counterfactual | 13 | 0.1846 | — | 0.9231 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.counterfactual` |
-| cross_section | 17 | 0.3059 | — | 0.6395 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.cross_section` |
-| exact_code | 5 | 0.2000 | — | 1.0000 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.exact_code` |
-| model_number | 15 | 0.2267 | — | 0.9048 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.model_number` |
-| negative_scope | 14 | 0.2143 | — | 0.9524 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.negative_scope` |
-| noise_robust | 17 | 0.2000 | — | 0.9020 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.noise_robust` |
-| rare_token | 6 | 0.2000 | — | 1.0000 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.rare_token` |
-| synonym | 12 | 0.2000 | — | 1.0000 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.synonym` |
-| table_lookup | 17 | 0.2588 | — | 0.7996 | — | — | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.table_lookup` |
+| colloquial | 11 | 0.1636 | +0.00 | 0.8182 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.colloquial` |
+| counterfactual | 13 | 0.1846 | +0.00 | 0.9231 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.counterfactual` |
+| cross_section | 17 | 0.3059 | +0.00 | 0.6395 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.cross_section` |
+| exact_code | 5 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.exact_code` |
+| model_number | 15 | 0.2267 | +0.00 | 0.9048 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.model_number` |
+| negative_scope | 14 | 0.2143 | +0.00 | 0.9524 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.negative_scope` |
+| noise_robust | 17 | 0.2000 | +0.00 | 0.9020 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.noise_robust` |
+| rare_token | 6 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.rare_token` |
+| synonym | 12 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.synonym` |
+| table_lookup | 17 | 0.2588 | +0.00 | 0.7996 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/baseline --select metrics.by_type.table_lookup` |
 
 ## 未评分记录（不计入平均）
 
