@@ -204,11 +204,17 @@ function formatValue(row: SettingRow): string {
   return String(row.value)
 }
 
-/** 档位徽章：颜色只取事实底座 §10 的三组语义色，不新造一套。 */
+/**
+ * 档位徽章配色。暖色令牌，与 StatusBadge / statusPill 同一组语义色：
+ * 热生效=成功绿、待重启=警示黄、只读=中性。
+ *
+ * 这三组颜色原来还是重构前的冷色（#D1FAE5 / #FEF3C7 / #F3F4F6），压在这套米白上
+ * 像贴上去的标签；换成暖色后与卡片底同色系。
+ */
 function tierBadgeClass(tier: string): string {
-  if (tier === 'hot') return 'bg-[#D1FAE5] text-[#065F46]'
-  if (tier === 'restart') return 'bg-[#FEF3C7] text-[#92400E]'
-  return 'bg-[#F3F4F6] text-[#6B7280]'
+  if (tier === 'hot') return 'bg-[#E4EDDD] text-[#3C5228]'
+  if (tier === 'restart') return 'bg-[#F7E9C9] text-[#6E4E12]'
+  return 'bg-[#F0ECE4] text-[#6B6558]'
 }
 
 function tierBadgeText(tier: string): string {
@@ -220,13 +226,15 @@ function tierBadgeText(tier: string): string {
 /** 某一档的说明：页头那句总说明之外，每档还要写清楚它为什么这样。 */
 function tierHint(tier: string): string {
   if (tier === 'locked') {
-    return '这些改了等于换基础设施或能关掉鉴权，面板不提供入口，只能由部署方改 .env。'
+    return '改了等于换基础设施或能关掉鉴权：面板不提供入口，只能由部署方改 .env。'
   }
   if (tier === 'restart') {
-    return '面板不提供写入口：这一档要改请走运维流程。' +
-      '已写入库的值会显示在这里，但运行中的进程仍按旧值跑，直到重启 + 数据重建。'
+    return (
+      '面板不提供写入口：要改请走运维流程（重启 + 数据重建后生效）。' +
+      '已写入库的值会显示出来，但运行中的进程仍按旧值跑。'
+    )
   }
-  return `可热改：下次刷新即用新值，各进程最多 ${cacheTtl.value}s 内收敛。`
+  return `可热改：保存后各进程最多 ${cacheTtl.value}s 内收敛，下一次检索即按新值跑。`
 }
 
 /**
@@ -292,31 +300,20 @@ async function refresh(): Promise<void> {
       <div>
         <h2 class="page-title">检索参数</h2>
         <p class="page-subtitle">
-          到底哪些能热改、哪些要重启、哪些不许改：<span class="font-medium text-slate-700">只读档</span>
-          改了等于换基础设施或能关掉鉴权，面板不提供入口；
-          <span class="font-medium text-slate-700">需重启档</span>
-          只显示当前值，要改请走运维流程（重启 + 数据重建后生效）；
-          <span class="font-medium text-slate-700">热生效档</span>
-          保存后各进程 {{ cacheTtl }}s 内收敛。
+          按「改了之后要做什么」分三档：<b class="font-medium text-ink">只读</b>改了等于换基础设施或能关掉鉴权，
+          <b class="font-medium text-ink">待重启</b>只显示当前值、要改走运维流程，
+          <b class="font-medium text-ink">热生效</b>保存后各进程 {{ cacheTtl }}s 内收敛。
         </p>
-        <p class="mt-1 text-xs text-[#92400E]">
-          重启档要改请走运维流程（面板不提供入口）。
-        </p>
-        <p class="mt-1 text-xs text-slate-400">
-          每行的「为什么在这一档」由服务端的配置白名单给出，本页不自己编理由。
+        <p class="mt-1 text-[11px] text-muted">
+          每行「为什么在这一档」由服务端的配置白名单给出，本页不自己编理由。
         </p>
       </div>
       <div class="flex items-center gap-2">
         <el-button size="small" :loading="settingsQuery.isFetching.value" @click="refresh">
           刷新
         </el-button>
-        <el-button
-          type="primary"
-          size="small"
-          :loading="saving"
-          :disabled="!dirty"
-          @click="save"
-        >
+        <!-- 只在有改动时出现：常驻的灰色禁用按钮不传达任何信息。 -->
+        <el-button v-if="dirty" type="primary" size="small" :loading="saving" @click="save">
           保存改动
         </el-button>
       </div>
@@ -332,27 +329,29 @@ async function refresh(): Promise<void> {
       <el-button class="mt-2" size="small" @click="refresh">重试</el-button>
     </div>
 
-    <div v-else class="mt-4 space-y-8">
+    <div v-else class="mt-6 space-y-8">
       <div v-for="group in groups" :key="group.tier">
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <h3 class="text-sm font-semibold text-slate-800">{{ group.title }}</h3>
-          <span class="rounded px-2 py-0.5 text-xs" :class="tierBadgeClass(group.tier)">
+          <h3 class="section-title">{{ group.title }}</h3>
+          <span class="rounded-full px-2 py-0.5 text-[11px]" :class="tierBadgeClass(group.tier)">
             {{ tierBadgeText(group.tier) }}
           </span>
         </div>
-        <p class="mt-1 text-xs text-slate-500">{{ tierHint(group.tier) }}</p>
+        <p class="mt-1 text-[11px] leading-relaxed text-muted">{{ tierHint(group.tier) }}</p>
 
         <div class="mt-3 overflow-x-auto">
+          <!--
+            四列而不是五列：原来还有一列「状态」（只读 / 面板只读 / 可热改），而**分区标题
+            已经说明了这件事**——这一列永远是同一个值，重复了一遍又挤掉了右边。异常信息
+            （invalid、待重启）挪到「来源」列下面，它们本来就与来源同源。
+          -->
           <table class="min-w-full text-sm">
-            <thead class="bg-[#F8F9FA] text-[#6B7280]">
+            <thead>
               <tr>
-                <th class="px-3 py-2 text-left font-medium">配置项</th>
-                <th class="px-3 py-2 text-left font-medium">有效值</th>
-                <th class="px-3 py-2 text-left font-medium">来源</th>
-                <th class="px-3 py-2 text-left font-medium">为什么在这一档</th>
-                <!-- 状态列给最小宽度：不然「状态」两个字被挤成竖排，而它恰好是这张表最该
-                     一眼看清的一列（只读 / 面板只读 / 可热改）。 -->
-                <th class="w-28 px-3 py-2 text-left font-medium">状态</th>
+                <th class="th-label px-3 py-2 text-left">配置项</th>
+                <th class="th-label px-3 py-2 text-left">有效值</th>
+                <th class="th-label px-3 py-2 text-left">来源</th>
+                <th class="th-label w-[38%] px-3 py-2 text-left">为什么在这一档</th>
               </tr>
             </thead>
             <tbody>
@@ -361,36 +360,33 @@ async function refresh(): Promise<void> {
                 v-for="row in group.rows"
                 :key="row.key"
                 class="border-t border-line align-top"
-                :class="row.invalid ? 'bg-[#FEE2E2]' : ''"
+                :class="row.invalid ? 'bg-[#FDF0EC]' : ''"
               >
                 <td class="px-3 py-3">
-                  <p class="font-mono text-xs text-slate-800">{{ row.key }}</p>
-                  <p v-if="isRolePointerKey(row.key)" class="mt-1 text-xs text-slate-400">
+                  <p class="font-mono text-[12px] font-medium text-ink">{{ row.key }}</p>
+                  <p v-if="isRolePointerKey(row.key)" class="mt-1 text-[11px] text-muted">
                     角色指向；也能去
-                    <RouterLink to="/admin/models" class="text-[#045B89] hover:underline">
+                    <RouterLink to="/admin/models" class="underline hover:text-accent">
                       模型配置页
                     </RouterLink>
                     用下拉改
                   </p>
                 </td>
 
-                <td class="px-3 py-3">
+                <td class="max-w-[22rem] px-3 py-3">
                   <!-- 可写的行渲染输入控件；只读行显示后端给的有效值。 -->
                   <template v-if="isEditable(row)">
-                    <el-switch
-                      v-if="kindOf(row) === 'boolean'"
-                      v-model="boolDrafts[row.key]"
-                    />
+                    <el-checkbox v-if="kindOf(row) === 'boolean'" v-model="boolDrafts[row.key]" />
                     <el-input-number
                       v-else-if="kindOf(row) === 'number'"
                       v-model="numberDrafts[row.key]"
                       controls-position="right"
-                      class="w-40"
+                      style="width: 140px"
                     />
                     <el-select
                       v-else-if="domainOf(row) !== null"
                       v-model="textDrafts[row.key]"
-                      class="w-52"
+                      style="width: 180px"
                     >
                       <el-option
                         v-for="option in domainOf(row) ?? []"
@@ -402,48 +398,43 @@ async function refresh(): Promise<void> {
                     <el-input
                       v-else
                       v-model="textDrafts[row.key]"
-                      class="w-64"
+                      style="max-width: 260px"
                       :placeholder="
                         isRolePointerKey(row.key) ? '留空 = 不指向（回落 .env）' : ''
                       "
                     />
                   </template>
-                  <span v-else class="text-slate-600">{{ formatValue(row) }}</span>
+                  <!-- 只读值：连接串很长，限宽 + break-all，别把「为什么」那列挤没。 -->
+                  <span
+                    v-else
+                    class="break-all font-mono text-[11px] leading-relaxed text-slate-600"
+                  >
+                    {{ formatValue(row) }}
+                  </span>
 
                   <!-- 角色指向显示的是 id；给一行小字说明它是什么，避免被当成乱码。 -->
-                  <p v-if="isRolePointerKey(row.key)" class="mt-1 font-mono text-xs text-slate-400">
+                  <p v-if="isRolePointerKey(row.key)" class="mt-1 font-mono text-[11px] text-muted">
                     当前：{{ row.value === null || row.value === '' ? '不指向' : row.value }}
                   </p>
                 </td>
 
-                <td class="px-3 py-3 whitespace-nowrap text-xs">
-                  <span v-if="row.source === 'db'" class="text-[#045B89]">已被面板覆盖</span>
-                  <span v-else class="text-slate-500">来自 .env</span>
+                <td class="px-3 py-3 text-[11px] whitespace-nowrap">
+                  <span v-if="row.source === 'db'" class="font-medium text-ink">已被面板覆盖</span>
+                  <span v-else class="text-muted">来自 .env</span>
                   <!-- restart 档不许在面板上改，但库里可能已有旧写入：标出来是「待生效」，
                        否则这里看起来与 .env 值一样，没人知道它在等一次重启。 -->
                   <span
                     v-if="group.tier === 'restart' && row.source === 'db'"
-                    class="mt-1 block rounded bg-[#FEF3C7] px-1.5 py-0.5 text-[#92400E]"
+                    class="mt-1 block rounded bg-[#F7E9C9] px-1.5 py-0.5 text-[#6E4E12]"
                   >
                     已写入库，待重启生效
                   </span>
+                  <span v-if="row.invalid" class="mt-1 block rounded bg-[#F7E2DD] px-1.5 py-0.5 text-[#8C2F22]">
+                    库里那一行被丢弃：{{ row.invalid_reason }}；已回退到 .env 值
+                  </span>
                 </td>
 
-                <td class="px-3 py-3 text-slate-500">{{ row.why }}</td>
-
-                <td class="px-3 py-3 text-xs">
-                  <div class="flex flex-col gap-1">
-                    <span v-if="group.tier === 'restart'" class="text-[#92400E]">
-                      面板只读
-                    </span>
-                    <span v-if="row.invalid" class="text-[#B91C1C]">
-                      库里那一行被丢弃：{{ row.invalid_reason }}；已回退到 .env 值
-                    </span>
-                    <span v-if="!row.invalid && group.tier === 'hot'" class="text-[#065F46]">
-                      可热改
-                    </span>
-                  </div>
-                </td>
+                <td class="px-3 py-3 text-[11px] leading-relaxed text-muted">{{ row.why }}</td>
               </tr>
             </tbody>
           </table>

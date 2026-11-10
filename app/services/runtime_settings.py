@@ -413,7 +413,9 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
     "RETRIEVAL_MODE": _spec(
         TIER_HOT,
         TARGET_SETTINGS,
-        "它只是**缺省值**（请求体没有 mode 字段）；改了下一次调用就按新缺省",
+        # 这段 why 会**原样**渲染到面板表格里，所以不带 Markdown 标记：星号会以字面
+        # 「**缺省值**」出现，用户看到的是排版错误而不是强调。
+        "它只是「缺省值」（请求体没有 mode 字段）；改了下一次调用就按新缺省",
     ),
     "TOP_K": _spec(
         TIER_HOT,
