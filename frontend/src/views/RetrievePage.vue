@@ -1,25 +1,33 @@
 <script setup lang="ts">
 /**
- * 检索页：勾库 → 发检索 → 结果卡片 + 只读运行摘要。
+ * 检索页：选 Key → 勾库 → 发检索 → 结果卡片 + 只读运行摘要。
  *
- * 三条不许越过的线（issue #87 / spec #82）：
+ * 四条不许越过的线（issue #87 / #92 / spec #82）：
  * 1. 请求体只有 `kb_ids` + `query`：本页没有任何档位按钮或高级参数输入，
  *    `profile` / `top_k` / `mode` / `rerank` / `rewrite` 一律不进请求体；
  * 2. 运行摘要只读响应 `metadata`，**不看页面输入**——摘要回答的是「后端这次实际
  *    生效了什么」，拿页面配置冒充它就等于把调试台变成许愿台；
- * 3. 只走数据面客户端（Bearer Key）。选哪把 Key、改密钥配置是 #92 的票。
+ * 3. 身份只有「选中的那把 Key」：本页是全仓库唯一的数据面入口的使用者
+ *    （`ragService.retrieve()`），未选 Key 时请求层会抛可操作的错误；
+ * 4. 可勾选的库来自**控制面树**（会话身份），但只有当前 Key 的 `allowed_kb_ids`
+ *    白名单里的库能勾选；白名单外的置灰 + hover 说明原因，换 Key 时自动摘掉不在
+ *    新白名单里的已选库并提示（留着它们只会在下一次检索撞 20008）。
  *
  * 结果卡片只展示契约里有的字段；`latency_ms` / `log_id` / `trace_id` 等字段后端没有
  * （00-facts §5 明确列过），这里也不编造。
  */
 import { useMutation, useQuery } from '@tanstack/vue-query'
+import { ElMessage } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ComparePanel from '../components/ComparePanel.vue'
 import { ApiError } from '../lib/envelope'
-import { fetchPickableKnowledgeBases, retrieve } from '../services/ragService'
+import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
+import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
+import { retrieve } from '../services/ragService'
 import { useRetrieveStore } from '../stores/retrieve'
+import type { KbOption, KeyData } from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
@@ -41,11 +49,13 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-// —— ① 检索范围 ——
+// —— ① 选 Key 与检索范围 ——
 
 /**
  * `?kb_id=` 预填。同样的坑上传页已经踩过：同一路由只改 query 不会重新挂载组件，
  * 只读一次会让勾选停在上一个库，所以初次读一次、之后再 watch。
+ * 预填发生在选 Key 之前时可能落在空里（不在任何白名单）；那是「未选 Key」的正常状态，
+ * 选 Key 之后由 store 的白名单裁剪统一处理。
  */
 function prefillFromQuery(value: unknown): void {
   const raw = Array.isArray(value) ? value[0] : value
@@ -58,33 +68,142 @@ watch(
   (value) => prefillFromQuery(value),
 )
 
-const {
-  data: kbData,
-  error: kbErrorRaw,
-  isPending: kbLoading,
-  isSuccess: kbLoaded,
-} = useQuery({
-  // 本页自己的缓存键：同一个接口在列表页也有一份读数，各自失效互不影响。
-  queryKey: ['retrieve', 'pickable-knowledge-bases'],
-  queryFn: fetchPickableKnowledgeBases,
+// 本页自己的缓存键：与 /keys、列表页共用同一份 Key / 树缓存，失效时一起更新。
+const keysQuery = useQuery({
+  queryKey: KEYS_QUERY_KEY,
+  queryFn: fetchKeys,
   retry: false,
 })
-const kbs = computed(() => kbData.value ?? [])
-const kbError = computed(() => (kbErrorRaw.value === null ? '' : errorText(kbErrorRaw.value)))
+const keys = computed<KeyData[]>(() => keysQuery.data.value ?? [])
+const keysPending = keysQuery.isPending
+const keysLoaded = keysQuery.isSuccess
+const keysError = computed(() =>
+  keysQuery.error.value === null ? '' : errorText(keysQuery.error.value),
+)
 
-const visibleKbIds = computed(() => new Set(kbs.value.map((kb) => kb.kb_id)))
+const treeQuery = useQuery({
+  queryKey: KNOWLEDGE_BASE_TREE_QUERY_KEY,
+  queryFn: fetchTree,
+  retry: false,
+})
+const kbs = computed<KbOption[]>(() =>
+  (treeQuery.data.value ?? []).map((node) => ({ kb_id: node.kb_id, name: node.name })),
+)
+const treePending = treeQuery.isPending
+const treeLoaded = treeQuery.isSuccess
+const treeError = computed(() =>
+  treeQuery.error.value === null ? '' : errorText(treeQuery.error.value),
+)
+
+const selectedKey = computed<KeyData | null>(
+  () => keys.value.find((key) => key.key_id === store.selectedKeyId) ?? null,
+)
+const policy = computed(() => selectedKey.value?.policy ?? null)
+const allowedKbIds = computed(() => new Set(policy.value?.allowed_kb_ids ?? []))
+const knownKbIds = computed(() => new Set(kbs.value.map((kb) => kb.kb_id)))
+
 /**
- * 已选但不在数据面可见清单里的库（比如 URL 预填的旧库 ID）。
+ * 把选中的 Key 同步进 store（id + 原文 + 白名单），并把白名单外的已选库摘掉。
  *
- * 不静默删掉它们：用户可能正想查一个不在这把 Key 白名单里的库；但必须提前说明
- * 检索大概率会失败，并给一个「移除」的动作。
+ * 为什么在 watch 里也调一次：`/keys` 改完白名单回到本页时，`['keys']` 会重新拉取，
+ * 同一把 Key 的白名单可能已经变了；只靠「用户手动切 Key」不会重算，于是已选库里会留着
+ * 一个刚被移除授权的库，下一次检索才会以 20008 失败。
+ */
+function syncSelectedKey(key: KeyData): void {
+  const removed = store.selectKey({
+    keyId: key.key_id,
+    keyValue: key.key_value,
+    allowedKbIds: key.policy?.allowed_kb_ids ?? [],
+  })
+  if (removed.length > 0) {
+    ElMessage.warning(`这些库不在新 Key 的白名单里，已移出选择：${removed.join('、')}`)
+  }
+}
+
+watch(
+  selectedKey,
+  (key) => {
+    if (key === null) return
+    // 只在「页面认定的那把」与 store 里的一致时同步：切换 Key 由 onKeyChange 负责，
+    // 这里管的是「同一把 Key 的数据刷新了」（例如刚在 /keys 改过白名单）。
+    if (key.key_id !== store.selectedKeyId) return
+    syncSelectedKey(key)
+  },
+  { immediate: true },
+)
+
+// 之前选中的 Key 被删掉（例如在 /keys 删了它）：清掉选择并说明原因，别让下一次检索
+// 拿一把已删除的 Key 去撞 20010（那个码看起来像「Key 失效」）。
+watch(
+  [keys, keysLoaded],
+  ([rows, loaded]) => {
+    if (!loaded || !store.selectedKeyId) return
+    if (rows.some((key) => key.key_id === store.selectedKeyId)) return
+    ElMessage.warning('之前选中的 Key 已不在列表里（可能已被删除），请重新选择一把')
+    store.clearKey()
+  },
+  { immediate: true },
+)
+
+function onKeyChange(value: unknown): void {
+  const keyId = typeof value === 'string' ? value : null
+  if (keyId === null || keyId === '') {
+    store.clearKey()
+    return
+  }
+  const key = keys.value.find((item) => item.key_id === keyId)
+  if (key === undefined) return
+  syncSelectedKey(key)
+}
+
+/** 选中 Key 的**只读**配置摘要：档位 / 能力 / 白名单 / 限额 / 形状。 */
+const policyRows = computed(() => {
+  const value = policy.value
+  if (value === null) return []
+  const capabilities: string[] = []
+  if (value.research_allowed) capabilities.push('research')
+  if (value.hybrid_allowed) capabilities.push('hybrid')
+  if (value.rerank_allowed) capabilities.push('rerank')
+  if (value.query_rewrite_allowed) capabilities.push('query_rewrite')
+  const whitelist =
+    value.allowed_kb_ids.length === 0
+      ? '（空：什么都没圈定，所以一个库都勾不了）'
+      : value.allowed_kb_ids
+          .map((kbId) => {
+            const found = kbs.value.find((kb) => kb.kb_id === kbId)
+            return found === undefined ? kbId : `${found.name}（${kbId}）`
+          })
+          .join('、')
+  return [
+    { label: '档位', value: value.profile },
+    { label: '能力开关', value: capabilities.length === 0 ? '全关' : capabilities.join(' / ') },
+    { label: '限额', value: `${value.retrieve_qps} 次/秒、${value.retrieve_daily} 次/天` },
+    { label: '数据范围', value: whitelist },
+    {
+      label: '结果形状',
+      value: `include_parent=${value.include_parent}，expand_table_rows=${value.expand_table_rows}`,
+    },
+  ]
+})
+
+/**
+ * 已选但这一次勾不上的库（例如 URL 预填了一个不在这把 Key 白名单里的旧库 ID）。
+ *
+ * 不静默删掉它们：用户可能正想查一个不在这把 Key 范围里的库；但必须提前说明检索
+ * 大概率会失败，并给一个「移除」的动作。
  */
 const unpickableSelected = computed(() =>
-  store.selectedKbIds.filter((kbId) => !visibleKbIds.value.has(kbId)),
+  store.selectedKbIds.filter(
+    (kbId) => !knownKbIds.value.has(kbId) || !allowedKbIds.value.has(kbId),
+  ),
 )
 
 function dropUnpickable(): void {
-  store.setSelection(store.selectedKbIds.filter((kbId) => visibleKbIds.value.has(kbId)))
+  store.setSelection(
+    store.selectedKbIds.filter(
+      (kbId) => knownKbIds.value.has(kbId) && allowedKbIds.value.has(kbId),
+    ),
+  )
 }
 
 /** el-checkbox-group 的事件载荷是联合类型；本页的选项值全是字符串，这里只做类型收窄。 */
@@ -98,6 +217,8 @@ const queryText = ref('')
 const trimmedQuery = computed(() => queryText.value.trim())
 /** 按钮禁用时把原因说出来：只灰掉按钮不说原因，用户会以为自己点错了。 */
 const blockReason = computed(() => {
+  if (selectedKey.value === null) return '先在上方选一把 Key（它决定能查哪些库、用哪档配置）'
+  if (policy.value === null) return '这把 Key 没有可用的密钥配置：去 /keys 编辑配置或换一把'
   if (store.selectedCount === 0) return '先在上方勾选至少一个知识库'
   if (trimmedQuery.value === '') return '先输入要检索的问题（全空白不算问题）'
   return ''
@@ -181,15 +302,15 @@ const hasTenantPolicy = computed(() => result.value?.metadata.tenant_policy !== 
 
 <template>
   <section class="space-y-4">
-    <!-- ① 检索范围 -->
+    <!-- ① 选 Key 与检索范围 -->
     <el-card shadow="never">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 class="text-sm font-semibold text-slate-800">检索范围</h2>
             <p class="mt-1 text-xs text-slate-500">
-              列出数据面可见的库（已按这把 Key 的密钥配置白名单收窄）；检索方式、条数、重排与
-              查询改写都由密钥配置决定，本页不设这些参数。
+              列出控制面里本租户的全部库；只有当前 Key 白名单里的库能勾选。检索方式、条数、重排与
+              查询改写都由这把 Key 的密钥配置决定，本页不设这些参数。
             </p>
           </div>
           <span class="shrink-0 text-sm text-slate-600">
@@ -198,37 +319,126 @@ const hasTenantPolicy = computed(() => result.value?.metadata.tenant_policy !== 
         </div>
       </template>
 
-      <p v-if="kbLoading" class="text-sm text-slate-400">正在读取可勾选的知识库…</p>
+      <!-- 选 Key -->
+      <p v-if="keysPending" class="text-sm text-slate-400">正在读取 Key 列表…</p>
       <div
-        v-else-if="kbError !== ''"
+        v-else-if="keysError !== ''"
         class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
       >
-        {{ kbError }}
+        {{ keysError }}
+      </div>
+      <div
+        v-else-if="keys.length === 0"
+        class="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+      >
+        还没有任何 API Key：先去
+        <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
+        签发一把，再回来选它。
+      </div>
+      <template v-else>
+        <div class="flex flex-wrap items-end gap-3">
+          <div class="min-w-64 flex-1">
+            <label class="mb-1 block text-xs text-slate-500">当前选中的 Key</label>
+            <el-select
+              :model-value="store.selectedKeyId ?? undefined"
+              class="w-full"
+              clearable
+              filterable
+              placeholder="选择一把 Key 来发起检索"
+              @change="onKeyChange"
+            >
+              <el-option
+                v-for="key in keys"
+                :key="key.key_id"
+                :value="key.key_id"
+                :label="`${key.label ?? '（未命名）'} · ${key.key_masked}`"
+              >
+                <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
+                <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
+                <span v-if="key.policy === null" class="ml-2 text-xs text-amber-700">
+                  配置缺失
+                </span>
+              </el-option>
+            </el-select>
+          </div>
+          <RouterLink
+            v-if="selectedKey !== null"
+            :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
+            class="text-sm text-brand underline"
+          >
+            去改这把 Key 的配置
+          </RouterLink>
+        </div>
+
+        <div
+          v-if="policy === null && selectedKey !== null"
+          class="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+        >
+          这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，
+          去
+          <RouterLink
+            :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
+            class="text-brand underline"
+          >
+            Key 管理页
+          </RouterLink>
+          重新签发一把，或选中另一把。
+        </div>
+
+        <div
+          v-else-if="policy !== null"
+          class="mt-3 rounded border border-line bg-slate-50 px-3 py-2"
+        >
+          <p class="text-xs font-medium text-slate-600">这把 Key 的配置（只读，改它去 /keys）</p>
+          <dl class="mt-1 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
+            <div v-for="row in policyRows" :key="row.label">
+              <dt class="text-slate-400">{{ row.label }}</dt>
+              <dd class="break-all font-mono text-slate-700">{{ row.value }}</dd>
+            </div>
+          </dl>
+        </div>
+      </template>
+
+      <!-- 勾库 -->
+      <p v-if="treePending" class="mt-4 text-sm text-slate-400">正在读取本租户的知识库…</p>
+      <div
+        v-else-if="treeError !== ''"
+        class="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+      >
+        {{ treeError }}
       </div>
       <div
         v-else-if="kbs.length === 0"
-        class="rounded border border-line bg-slate-50 px-3 py-2 text-sm text-slate-600"
+        class="mt-4 rounded border border-line bg-slate-50 px-3 py-2 text-sm text-slate-600"
       >
-        数据面看不到任何知识库：先创建知识库并上传文档，再回来检索。
+        本租户还没有知识库：先去创建知识库并上传文档，再回来检索。
         <RouterLink to="/" class="text-brand underline">去建库 / 上传文档</RouterLink>
       </div>
       <el-checkbox-group
         v-else
-        class="grid gap-2 sm:grid-cols-2"
+        class="mt-4 grid gap-2 sm:grid-cols-2"
         :model-value="store.selectedKbIds"
         @update:model-value="onSelectionChange"
       >
-        <el-checkbox v-for="kb in kbs" :key="kb.kb_id" :value="kb.kb_id" class="!mr-0">
-          <span class="text-sm text-slate-700">{{ kb.name }}</span>
-          <span class="ml-2 font-mono text-xs text-slate-400">{{ kb.kb_id }}</span>
-        </el-checkbox>
+        <el-tooltip
+          v-for="kb in kbs"
+          :key="kb.kb_id"
+          :disabled="allowedKbIds.has(kb.kb_id)"
+          content="这个库不在当前 Key 的 allowed_kb_ids 白名单里：去 /keys 改这把 Key 的配置后才能勾选"
+          placement="top"
+        >
+          <el-checkbox :value="kb.kb_id" :disabled="!allowedKbIds.has(kb.kb_id)" class="!mr-0">
+            <span class="text-sm text-slate-700">{{ kb.name }}</span>
+            <span class="ml-2 font-mono text-xs text-slate-400">{{ kb.kb_id }}</span>
+          </el-checkbox>
+        </el-tooltip>
       </el-checkbox-group>
 
       <div
-        v-if="kbLoaded && unpickableSelected.length > 0"
+        v-if="treeLoaded && unpickableSelected.length > 0"
         class="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
       >
-        <p>这些已选库不在数据面可见清单里（可能不在这把 Key 的白名单里），带它们检索大概率会失败：</p>
+        <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
         <p class="mt-1 break-all font-mono">{{ unpickableSelected.join('、') }}</p>
         <el-button class="mt-2" size="small" @click="dropUnpickable">移除这些选择</el-button>
       </div>
@@ -301,7 +511,7 @@ const hasTenantPolicy = computed(() => result.value?.metadata.tenant_policy !== 
       </div>
 
       <p v-else-if="result === null" class="text-sm text-slate-400">
-        还没发起检索：先勾库、写问题，再点「检索」。
+        还没发起检索：先选 Key、勾库、写问题，再点「检索」。
       </p>
 
       <div

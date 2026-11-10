@@ -2,12 +2,12 @@
 /**
  * 知识库列表页：知识库（父）→ 文档（子）两级树 + 三态状态 + 有处理中才轮询。
  *
- * 只走数据面（Bearer API Key）：本票是阶段 1，不切控制面会话，也不做知识库编辑
- * （数据面没有改库接口）。父行的「去上传 / 去检索」把 `kb_id` 带进 query，
- * 两个目标页只读 URL，不依赖任何跨页全局状态。
+ * 读与写都走**控制面会话门**：#89 把树换成 `GET /console/knowledge-bases/tree` 一次拿全，
+ * #92 把删文档 / 重建也换成 `/console/documents/...`。数据面只剩「用选中 Key 打真实
+ * 检索」一件事，本页不 import `lib/dataHttp`。
  *
- * 状态色只由 `StatusBadge` 决定；本页只决定「按状态给哪些操作」——那是业务规则，
- * 与「成功/失败长什么样」是两件事。
+ * 父行的「去上传 / 去检索」把 `kb_id` 带进 query，两个目标页只读 URL，
+ * 不依赖任何跨页全局状态。状态色只由 `StatusBadge` 决定；本页只决定「按状态给哪些操作」。
  */
 import { Loading, Search } from '@element-plus/icons-vue'
 import { useMutation, useQueryClient } from '@tanstack/vue-query'
@@ -19,7 +19,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useTreePolling } from '../composables/useTreePolling'
 import { ApiError } from '../lib/envelope'
-import { deleteDocument, reindexDocument } from '../services/documentService'
+import { deleteDocumentConsole, reindexDocumentConsole } from '../services/consoleKb'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
 import type { DocumentListItem } from '../types/document'
 import type { KnowledgeBaseNode } from '../types/knowledgeBase'
@@ -120,7 +120,7 @@ function closeDialog(): void {
 // 成功文档的重建需要 force=true（否则后端回 20027），但验收要求成功行只有「删除」，
 // 因此这里不提供那条入口，force 的语义留在 service 层，等有入口时再传。
 const deleteMutation = useMutation({
-  mutationFn: (document: DocumentListItem) => deleteDocument(document.document_id),
+  mutationFn: (document: DocumentListItem) => deleteDocumentConsole(document.document_id),
   onSuccess: () => {
     ElMessage.success('文档已删除，列表已刷新')
     closeDialog()
@@ -134,7 +134,7 @@ const deleteMutation = useMutation({
 
 const reindexMutation = useMutation({
   mutationFn: (document: DocumentListItem) =>
-    reindexDocument(document.document_id, { force: false }),
+    reindexDocumentConsole(document.document_id, { force: false }),
   onSuccess: () => {
     // 回执 status=3 只代表已排队投递；行状态要等下一次树查询变成「索引中」。
     ElMessage.success('已重新提交索引，稍后自动刷新')

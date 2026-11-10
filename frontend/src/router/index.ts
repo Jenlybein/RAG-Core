@@ -6,13 +6,14 @@ import { decideRedirect, probeFromError, type MeProbe } from '../utils/access'
 /**
  * 路由表：T6 建立「能点得到」的路由，T2 把 `/` 换成真实上传页，T3 把
  * `/knowledge-bases` 换成两级树列表页，T13（#95）补齐管理员面板的账号 / 套餐 / 审计三条真实路由，
- * #87 把 `/retrieve` 换成真实检索页。
+ * #87 把 `/retrieve` 换成真实检索页，#92 把 `/keys` 换成 Key 页。
  *
- * `/keys` 仍是占位页（#92）；`/admin/models`、`/admin/retrieval` 由 #96 补。
+ * `/admin/models`、`/admin/retrieval` 由 #96 补。
  * 守卫与顶栏都必须能在这些真实路径上命中，
  * 否则「未登录跳登录页」「普通账号被拦回列表」这两条验收就没有对象可验。
  *
- * `/probe` 是 T1 的临时探针页，留着但不进任何导航，等收尾票删除。
+ * T1 的临时探针页（`/probe`）已随 #92 删除：它的两件验收物（数据面 Bearer、控制面
+ * cookie + 防跨站头）现在由真实页面承担，留着它就是数据面客户端上的第二个调用点。
  */
 const routes = [
   {
@@ -37,13 +38,13 @@ const routes = [
   {
     path: '/keys',
     name: 'keys',
-    meta: { placeholderTitle: 'Key 与密钥配置', placeholderIssue: '#92 / T10' },
-    component: () => import('../views/PlaceholderPage.vue'),
+    // #92：列 / 签发 / 编辑密钥配置 / 删 Key；`?key_id=` 直接打开那一把的配置编辑器。
+    component: () => import('../views/KeysPage.vue'),
   },
   {
     path: '/retrieve',
     name: 'retrieve',
-    // #87 换成了真实检索页：勾库 → 发检索 → 结果卡片 + 只读运行摘要。
+    // #87 换成了真实检索页：选 Key / 勾库 → 发检索 → 结果卡片 + 只读运行摘要。
     component: () => import('../views/RetrievePage.vue'),
   },
   {
@@ -60,12 +61,6 @@ const routes = [
     path: '/admin/audit',
     name: 'admin-audit',
     component: () => import('../views/admin/AuditPage.vue'),
-  },
-  {
-    path: '/probe',
-    name: 'probe',
-    // T1 留下的临时探针页，本票不动它；它不进导航，收尾票自行删除。
-    component: () => import('../views/ProbePage.vue'),
   },
 ]
 
