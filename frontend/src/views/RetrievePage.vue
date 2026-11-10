@@ -321,6 +321,25 @@ function shortId(value: string): string {
 /** 运行摘要默认收起：它是调试元信息，第一次读结果的人不需要它。 */
 const summaryOpen = ref(false)
 
+/**
+ * 「修改配置」弹窗。选 Key 这件事被收进弹窗之后，卡片上只留一行只读摘要。
+ *
+ * 为什么这样分：选 Key 与改 Key 的配置属于「**设置**」，而勾库、写问题、点检索是
+ * 「**动作**」。设置是做一次就不再碰的东西，把它常驻在动作流的最上方，会让每次检索
+ * 都先经过一个与本次无关的下拉框。
+ */
+const configDialogOpen = ref(false)
+
+/** 卡片上那一行只读摘要：当前这把 Key 是谁、档位是什么。 */
+const currentKeySummary = computed(() => {
+  if (selectedKey.value === null) return null
+  return {
+    label: selectedKey.value.label ?? '（未命名）',
+    masked: selectedKey.value.key_masked,
+    profile: policy.value?.profile ?? null,
+  }
+})
+
 const chunks = computed(() => result.value?.retrieved_chunks ?? [])
 const emptyReason = computed(() => result.value?.metadata.retrieval.empty_reason ?? null)
 const emptyCopy = computed(() =>
@@ -349,7 +368,11 @@ const emptyCopy = computed(() =>
         </div>
       </template>
 
-      <!-- 选 Key -->
+      <!--
+        Key 区收成一行只读摘要。选 Key 与改它的配置属于「设置」，勾库 / 写问题 / 点检索
+        才是「动作」；设置做一次就不再碰，常驻在动作流最上方会让每次检索都先经过一个
+        与本次无关的下拉框。选择器挪进「修改配置」弹窗，这里只回答「现在是哪把 Key」。
+      -->
       <p v-if="keysPending" class="text-sm text-slate-400">正在读取 Key 列表…</p>
       <div
         v-else-if="keysError !== ''"
@@ -365,72 +388,32 @@ const emptyCopy = computed(() =>
         <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
         签发一把，再回来选它。
       </div>
-      <template v-else>
-        <!--
-          Key 行的两处调整：
-          1. 「去改这把 Key 的配置」从 select 右侧挪到标签行右端。原来它与 select 底对齐，
-            贴着控件外沿，看起来不像这一行的动作，倒像溢出到卡片外的散字。
-          2. 配置摘要从两列网格压成一行内联文本。两列时标签与值是同色同重的 11px 灰，
-            「档位 quality」读起来像一个词；而且 3 + 2 两项排下来高度不齐，右列吊在半空。
-        -->
-        <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
-          <label class="text-[11px] text-muted">当前选中的 Key</label>
-          <RouterLink
-            v-if="selectedKey !== null"
-            :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
-            class="shrink-0 text-[11px] text-brand underline underline-offset-2 hover:text-accent-hover"
-          >
-            去改这把 Key 的配置 →
-          </RouterLink>
-        </div>
-        <el-select
-          :model-value="store.selectedKeyId ?? undefined"
-          class="mt-1.5 w-full"
-          clearable
-          filterable
-          placeholder="选择一把 Key 来发起检索"
-          @change="onKeyChange"
-        >
-          <el-option
-            v-for="key in keys"
-            :key="key.key_id"
-            :value="key.key_id"
-            :label="`${key.label ?? '（未命名）'} · ${key.key_masked}`"
-          >
-            <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
-            <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
-            <span v-if="key.policy === null" class="ml-2 text-xs text-[#6E4E12]">
-              配置缺失
-            </span>
-          </el-option>
-        </el-select>
-
-        <div
-          v-if="policy === null && selectedKey !== null"
-          class="mt-2.5 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
-        >
-          这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，去
-          <RouterLink
-            :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
-            class="text-brand underline"
-          >
-            Key 管理页
-          </RouterLink>
-          重新签发一把，或选中另一把。
-        </div>
-
-        <!-- 配置摘要：一行内联，标签淡、值深，扫一眼就够。 -->
-        <div
-          v-else-if="policy !== null"
-          class="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-control bg-surface-muted px-3 py-2 text-[11px] leading-relaxed"
-        >
-          <span v-for="(row, index) in policyRows" :key="row.label" class="flex items-baseline">
-            <span class="text-muted">{{ row.label }}</span>
-            <span class="ml-1 font-mono text-slate-700">{{ row.value }}</span>
-            <span v-if="index < policyRows.length - 1" class="mx-2 text-line-strong">·</span>
+      <div
+        v-else-if="currentKeySummary === null"
+        class="rounded-control border border-dashed border-line-strong bg-surface-muted px-3 py-2.5 text-[11px] leading-relaxed text-muted"
+      >
+        还没有选 Key —— 点右下角「修改配置」选一把；检索会按那把 Key 的密钥配置执行。
+      </div>
+      <div
+        v-else
+        class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-control bg-surface-muted px-3 py-2.5"
+      >
+        <div class="flex flex-wrap items-baseline gap-2">
+          <span class="text-[11px] text-muted">当前 Key</span>
+          <span class="font-mono text-[12px] font-medium text-ink">
+            {{ currentKeySummary.label }}
+          </span>
+          <span class="font-mono text-[10px] text-slate-400">
+            {{ currentKeySummary.masked }}
           </span>
         </div>
-      </template>
+        <span
+          class="text-[11px]"
+          :class="currentKeySummary.profile === null ? 'text-[#6E4E12]' : 'text-muted'"
+        >
+          {{ currentKeySummary.profile === null ? '配置缺失' : `档位 ${currentKeySummary.profile}` }}
+        </span>
+      </div>
 
       <!--
         勾库。这一段原来只有一排勾选框，前面的「检索范围」小标题在我把两张卡并成一张时
@@ -525,7 +508,17 @@ const emptyCopy = computed(() =>
             placeholder="要检索的问题（可多行）· 例如：退款申请提交后，一般几天能到账？"
           />
         </el-form-item>
-        <div class="flex flex-wrap items-center gap-3">
+        <!--
+          动作行右对齐：左侧留一句「为什么现在点不了」，右侧是这一卡的两个出口。
+          「修改配置」放在「检索」左边：改配置是为检索服务的准备动作，主按钮永远在最右。
+        -->
+        <div class="flex flex-wrap items-center justify-end gap-2">
+          <span v-if="blockReason !== ''" class="mr-auto text-[11px] text-muted">
+            {{ blockReason }}
+          </span>
+          <el-button :disabled="keys.length === 0" @click="configDialogOpen = true">
+            修改配置
+          </el-button>
           <el-button
             type="primary"
             native-type="submit"
@@ -534,11 +527,94 @@ const emptyCopy = computed(() =>
           >
             检索
           </el-button>
-          <span v-if="blockReason !== ''" class="text-xs text-muted">{{ blockReason }}</span>
         </div>
       </el-form>
       </div>
     </el-card>
+
+    <!--
+      「修改配置」弹窗：选 Key + 读它的密钥配置。改动立即生效（change 即 onKeyChange），
+      所以底部只有「关闭」——这里没有「保存」这回事，多一个确认按钮反而让人以为刚才
+      的选择还没落地。
+    -->
+    <el-dialog
+      v-model="configDialogOpen"
+      append-to-body
+      title="修改检索配置"
+      width="560px"
+    >
+      <div class="space-y-4 text-sm">
+        <div>
+          <label class="mb-1.5 block text-[11px] text-muted">当前选中的 Key</label>
+          <p v-if="keysPending" class="text-[11px] text-muted">正在读取 Key 列表…</p>
+          <p v-else-if="keys.length === 0" class="text-[11px] text-[#6E4E12]">
+            还没有任何 API Key：先去
+            <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
+            签发一把。
+          </p>
+          <el-select
+            v-else
+            :model-value="store.selectedKeyId ?? undefined"
+            class="w-full"
+            clearable
+            filterable
+            placeholder="选择一把 Key 来发起检索"
+            @change="onKeyChange"
+          >
+            <el-option
+              v-for="key in keys"
+              :key="key.key_id"
+              :value="key.key_id"
+              :label="`${key.label ?? '（未命名）'} · ${key.key_masked}`"
+            >
+              <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
+              <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
+              <span v-if="key.policy === null" class="ml-2 text-xs text-[#6E4E12]">
+                配置缺失
+              </span>
+            </el-option>
+          </el-select>
+          <p class="mt-1.5 text-[11px] leading-relaxed text-muted">
+            检索方式、条数、重排与改写都由这把 Key 决定；要改这些，去 Key 管理页改它的密钥配置。
+          </p>
+        </div>
+
+        <div
+          v-if="policy === null && selectedKey !== null"
+          class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+        >
+          这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，去
+          <RouterLink
+            :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
+            class="text-brand underline"
+          >
+            Key 管理页
+          </RouterLink>
+          重新签发一把，或选中另一把。
+        </div>
+
+        <div v-else-if="policy !== null">
+          <p class="mb-1.5 text-[11px] text-muted">这把 Key 的密钥配置（只读）</p>
+          <dl class="grid gap-x-6 gap-y-2 rounded-control bg-surface-muted px-3 py-2.5 text-[11px] sm:grid-cols-2">
+            <div v-for="row in policyRows" :key="row.label" class="flex flex-col gap-0.5">
+              <dt class="text-muted">{{ row.label }}</dt>
+              <dd class="break-all font-mono text-slate-700">{{ row.value }}</dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      <template #footer>
+        <RouterLink
+          v-if="selectedKey !== null"
+          :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
+          class="mr-auto text-[11px] text-brand underline underline-offset-2"
+        >
+          去 Key 管理页改配置 →
+        </RouterLink>
+        <el-button @click="configDialogOpen = false">关闭</el-button>
+      </template>
+    </el-dialog>
 
     <!-- ③ 召回结果 -->
     <el-card shadow="never">
