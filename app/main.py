@@ -9,6 +9,10 @@
   GET    /console/accounts
   PATCH  /console/accounts/{account_id}
   GET    /console/audit-logs
+  GET    /console/keys                 （票 #91：明文 + masked + 配置，独立路由模块）
+  POST   /console/keys                 （签发：连带建密钥配置）
+  DELETE /console/keys/{key_id}        （删 Key，不删配置）
+  PATCH  /console/key-policies/{policy_id}
 
 控制面「管库管文档」（第 8 步票 #90，另起一个路由模块）：
   GET    /console/knowledge-bases/tree
@@ -45,6 +49,7 @@ from app.api.error_handlers import install_handlers
 from app.api.router import api_router
 from app.api.routes.console import router as console_router
 from app.api.routes.console_kbs import router as console_kbs_router
+from app.api.routes.console_keys import router as console_keys_router
 from app.core.config import settings
 from app.utils import tokenizer
 from app.db.session import SessionLocal
@@ -92,9 +97,11 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(api_router)
 
 # 控制面不进 /api/v1：它是「人」的门，与数据面共用响应壳但不共用鉴权依赖。
+# 票 #91 的 Key / 密钥配置接口放在独立模块里，与共用文件平级挂载（同一前缀）。
 app.include_router(console_router)
 # 管库管文档的六条单独成模块（并行票各自 include，不把别人的路由挤进 console.py）。
 app.include_router(console_kbs_router)
+app.include_router(console_keys_router)
 
 # ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)
