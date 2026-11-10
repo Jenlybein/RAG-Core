@@ -198,11 +198,15 @@ const policyRows = computed(() => {
   return [
     { label: '档位', value: value.profile },
     { label: '能力开关', value: capabilities.length === 0 ? '全关' : capabilities.join(' / ') },
-    { label: '限额', value: `${value.retrieve_qps} 次/秒、${value.retrieve_daily} 次/天` },
+    { label: '限额', value: `${value.retrieve_qps} 次/秒 · ${value.retrieve_daily} 次/天` },
     { label: '数据范围', value: whitelist },
     {
+      // 用**概念名**而不是请求体字段名：这两个开关在界面上叫 small-to-big / rows-to-table
+      // （与 Key 编辑器同一套说法）。一屏里两处用不同名字，用户会以为它们是两个东西。
       label: '结果形状',
-      value: `include_parent=${value.include_parent}，expand_table_rows=${value.expand_table_rows}`,
+      value: `${value.include_parent ? 'small-to-big' : '不折叠'} · ${
+        value.expand_table_rows ? 'rows-to-table' : '表格行不折回'
+      }`,
     },
   ]
 })
@@ -349,7 +353,7 @@ const emptyCopy = computed(() =>
       </div>
       <div
         v-else-if="keys.length === 0"
-        class="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+        class="rounded border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-sm text-[#6E4E12]"
       >
         还没有任何 API Key：先去
         <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
@@ -375,7 +379,7 @@ const emptyCopy = computed(() =>
               >
                 <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
                 <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
-                <span v-if="key.policy === null" class="ml-2 text-xs text-amber-700">
+                <span v-if="key.policy === null" class="ml-2 text-xs text-[#6E4E12]">
                   配置缺失
                 </span>
               </el-option>
@@ -392,7 +396,7 @@ const emptyCopy = computed(() =>
 
         <div
           v-if="policy === null && selectedKey !== null"
-          class="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+          class="mt-3 rounded border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
         >
           这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，
           去
@@ -405,14 +409,15 @@ const emptyCopy = computed(() =>
           重新签发一把，或选中另一把。
         </div>
 
-        <div
-          v-else-if="policy !== null"
-          class="mt-3 rounded border border-line bg-slate-50 px-3 py-2"
-        >
-          <p class="text-xs font-medium text-slate-600">这把 Key 的配置（只读，改它去 /keys）</p>
-          <dl class="mt-1 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-2">
-            <div v-for="row in policyRows" :key="row.label">
-              <dt class="text-slate-400">{{ row.label }}</dt>
+        <!--
+          这把 Key 的配置：**只读回显**，改它去 /keys。四条信息用两列网格而不是五行竖排——
+          竖排读起来像说明书，而这里只需要「扫一眼确认这次检索会按什么参数跑」。
+        -->
+        <div v-else-if="policy !== null" class="mt-3 rounded-control bg-surface-muted px-4 py-3">
+          <p class="mb-2 text-[11px] text-muted">这把 Key 的配置（只读，要改去 Key 管理页）</p>
+          <dl class="grid gap-x-8 gap-y-2 text-[11px] sm:grid-cols-2">
+            <div v-for="row in policyRows" :key="row.label" class="flex flex-col gap-0.5">
+              <dt class="text-muted">{{ row.label }}</dt>
               <dd class="break-all font-mono text-slate-700">{{ row.value }}</dd>
             </div>
           </dl>
@@ -456,7 +461,7 @@ const emptyCopy = computed(() =>
 
       <div
         v-if="treeLoaded && unpickableSelected.length > 0"
-        class="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+        class="mt-3 rounded border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
       >
         <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
         <p class="mt-1 break-all font-mono">{{ unpickableSelected.join('、') }}</p>
