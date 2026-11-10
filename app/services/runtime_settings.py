@@ -51,7 +51,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Final, Mapping
+from typing import Any, Callable, Final, Literal, Mapping
 
 import structlog
 from pydantic import ValidationError
@@ -59,12 +59,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, settings
 from app.core.exceptions import AppError, ErrorCode
+from app.core.model_roles import MODEL_FAST, MODEL_STRONG, role_pointer_key
 from app.core.runtime_settings_cache import (
     CACHE_TTL_SECONDS,
     RuntimeSettingsCache,
     get_settings_cache,
 )
 from app.db.base import now
+from app.db.session_factory import session_factory, set_session_factory as _set_session_factory
 from app.models.key_policy import KeyPolicy, policy_snapshot_of
 from app.models.plan import Plan
 from app.repositories import (
@@ -75,6 +77,7 @@ from app.repositories import (
 )
 from app.services.plan_admin import IMPACT_SAMPLE_LIMIT, ImpactGroup
 from app.services.console_service import append_audit
+from app.services import model_config_service
 from app.services.retrieval_options import MODE_HYBRID, profile_chain_of
 
 logger = structlog.get_logger(__name__)
@@ -105,8 +108,12 @@ TARGET_SETTINGS: Final[str] = "settings"
 TARGET_POINTER: Final[str] = "pointer"
 
 #: 值来自哪里：`.env` 是缺省，库是覆盖。它是界面上看得见的一条规则。
-SOURCE_ENV: Final[str] = "env"
-SOURCE_DB: Final[str] = "db"
+#: 用 ``Literal`` 而不是裸 ``str``：响应模型（``app/schemas/console_settings.py``）里这
+#: 一项是枚举下拉，服务层的视图类型必须是同一个窄类型，否则 mypy 会在路由那一层报
+#: 「str 赋给 Literal」——那正是 #93 合并后留下的一条真实类型错。
+SettingSource = Literal["env", "db"]
+SOURCE_ENV: Final[SettingSource] = "env"
+SOURCE_DB: Final[SettingSource] = "db"
 
 
 @dataclass(frozen=True)
@@ -438,12 +445,14 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
         minimum=60,
     ),
     # ── 角色指向（#94 写、这里只登记档位与理由，不参与 Settings 合并）──
-    "model.role.fast": _spec(
+    # 键名来自 app.core.model_roles 的推导（写死字面量等于第二份真相：
+    # 工厂、删除判定与面板都按同一对名字读，改名时只允许改一处）。
+    role_pointer_key(MODEL_FAST): _spec(
         TIER_HOT,
         TARGET_POINTER,
         "指向哪条模型配置；fast 同时承担重排（重排没有独立配置，ADR-0002）",
     ),
-    "model.role.strong": _spec(
+    role_pointer_key(MODEL_STRONG): _spec(
         TIER_HOT,
         TARGET_POINTER,
         "指向哪条模型配置；strong 用于需要思考的生成，思考强度只作用于它",
@@ -505,9 +514,14 @@ def _type_reason(key: str, value: Any) -> str | None:
     """
 
     if SETTING_SPECS[key].target == TARGET_POINTER:
-        if isinstance(value, str) and value.strip():
+        # 指针值的语义是「一条 model_configs 的 id，或空值（= 不指向，回落 .env）」。
+        # `None` 与空串都被接受：它们正是「改回默认」这个动作的两种写法（null / ""）。
+        # 非空值只要求是字符串；**它指向的行是否存在由写入收口再判一次**（`_classify`
+        # 还负责读库，读到一个已被删掉的 id 不该把这一行标红——那样面板会把一次
+        # 绕过接口的删除显示成「配置非法」，而运行时的正确行为是回落到 .env）。
+        if value is None:
             return None
-        return "指针值必须是非空字符串（它是 model_configs 的一行 id）"
+        return None if isinstance(value, str) else "指针值必须是字符串或空值"
 
     annotation = _FIELD_TYPES.get(key)
     if annotation is None:
@@ -552,7 +566,10 @@ def _check_value(key: str, value: Any) -> tuple[Any, str | None]:
     if spec.minimum is not None and value < spec.minimum:
         return None, f"必须 ≥ {spec.minimum}（当前 {value}）"
     if spec.target == TARGET_POINTER:
-        return value, None
+        # 规范化：空值一律落成空串。库里 ``value`` 列非空，把「清空指向」写成 SQL NULL
+        # 会撞 NOT NULL（JSON null 与 SQL NULL 在 SQLAlchemy 的绑定里是两件事）；
+        # 空串既满足列约束，又让「空串 = 不指向」这条语义只有一个表示。
+        return ("" if value is None else value.strip()), None
 
     # 跑的是**同一批 validator**：把当前值换掉这一项再构造一次 Settings。基准用启动期
     # 的 `.env` 快照（见 ENV_BASELINE），这样每个键都是拿缺省判断自己，不会因为上一次
@@ -644,28 +661,26 @@ def _cache_or_default(cache: RuntimeSettingsCache | None) -> RuntimeSettingsCach
 
 
 def _resolve_session_factory() -> Callable[[], Session]:
-    """默认会话工厂：中间件与 Worker 拿不到 ``Depends``，只能自己开一个会话。"""
+    """默认会话工厂：中间件与 Worker 拿不到 ``Depends``，只能自己开一个会话。
 
-    global _session_factory_override
-    if _session_factory_override is not None:
-        return _session_factory_override
-    from app.db.session import SessionLocal
+    实际实现收在 :mod:`app.db.session_factory`（与 #94 的 Provider 装配共用一个注入点：
+    两处各开一个口子的话，测试只注入其中一个时，另一条路径就会悄悄连真 Postgres）。
+    """
 
-    return SessionLocal
-
-
-_session_factory_override: Callable[[], Session] | None = None
+    return session_factory()
 
 
 def set_session_factory(factory: Callable[[], Session] | None) -> None:
     """注入会话工厂（测试用假会话；生产复位成 ``SessionLocal``）。
 
+    转发到进程级注入点（见 ``app/db/session_factory.py``）：这是 #93 的**公开**接口，
+    既有测试与中间件都按这个名字注入，内部实现改成共享之后它们一行都不用改。
+
     这是一个**显式的注入点**而不是 monkeypatch 私有名字：中间件在请求路径上自己开会话，
     测试若不能替换它，就只能靠「本地恰好没有 Postgres」让套件变绿——那测到的是机器。
     """
 
-    global _session_factory_override
-    _session_factory_override = factory
+    _set_session_factory(factory)
 
 
 def _read_db_rows(db: Session | None) -> dict[str, Any]:
@@ -865,7 +880,7 @@ class SettingRowView:
     tier: str
     editable: bool
     value: Any
-    source: str
+    source: SettingSource
     invalid: bool
     why: str
     invalid_reason: str | None = None
@@ -1083,6 +1098,23 @@ def _assert_values_valid(values: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
+def _assert_pointer_targets(db: Session, values: Mapping[str, Any]) -> None:
+    """角色指向的目标必须是一条**现存**的 ``model_configs`` 行（票 #94）。
+
+    放在服务层而不是路由里：指针还有别的写入口（未来的 CLI / 迁移脚本），而「指向一个
+    不存在的 id」在任何入口上都是同一个错误。空值不在这里判——它表示「不指向」，
+    是「改回 .env」这个动作本身，合法且必须可用。
+
+    判定本体在 :func:`app.services.model_config_service.ensure_pointer_target`，与删除
+    被引用配置时的拒绝逻辑共用同一份「谁是角色、谁指着谁」的知识，这里只负责按白名单
+    挑出指针键。
+    """
+
+    for key, value in values.items():
+        if SETTING_SPECS[key].target == TARGET_POINTER:
+            model_config_service.ensure_pointer_target(db, key, value)
+
+
 def _assert_merge_valid(db: Session, values: Mapping[str, Any]) -> None:
     """键间冲突检查：把「库里的合法覆盖 + 这次的新值」整体过一遍 validator。
 
@@ -1141,6 +1173,9 @@ def patch_runtime_settings(
 
     _assert_writable(values)
     normalized = _assert_values_valid(values)
+    # 指针的存在性校验排在逐键校验之后、键间校验之前：值本身先要合法（字符串 / 空值），
+    # 才谈得上「它指向的那一行在不在」。两项都失败时先报前一项，错误信息才是第一现场。
+    _assert_pointer_targets(db, normalized)
     _assert_merge_valid(db, normalized)
 
     specs = {key: SETTING_SPECS[key] for key in normalized}
