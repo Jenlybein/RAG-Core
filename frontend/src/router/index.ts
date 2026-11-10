@@ -4,10 +4,11 @@ import { fetchMe } from '../services/console'
 import { decideRedirect, probeFromError, type MeProbe } from '../utils/access'
 
 /**
- * 路由表：T6 建立「能点得到」的 6 条路由，T2 把 `/` 从占位页换成真实上传页。
+ * 路由表：T6 建立「能点得到」的 6 条路由，T2 把 `/` 从占位页换成真实上传页，
+ * T3 把 `/knowledge-bases` 换成两级树列表页。
  *
- * `/knowledge-bases`、`/keys`、`/retrieve` 仍是占位页（各自由 #86/#92/#87 替换），
- * `/admin/accounts` 是 #95 的占位。守卫与顶栏都必须能在这些真实路径上命中，
+ * `/keys`、`/retrieve` 仍是占位页（各自由 #92/#87 替换），`/admin/accounts` 是 #95 的占位。
+ * 守卫与顶栏都必须能在这些真实路径上命中，
  * 否则「未登录跳登录页」「普通账号被拦回列表」这两条验收就没有对象可验。
  *
  * `/probe` 是 T1 的临时探针页，留着但不进任何导航，等收尾票删除。
@@ -29,8 +30,8 @@ const routes = [
   {
     path: '/knowledge-bases',
     name: 'knowledge-bases',
-    meta: { placeholderTitle: '知识库列表', placeholderIssue: '#86 / T3' },
-    component: () => import('../views/PlaceholderPage.vue'),
+    // 本票的真实页：两级树 + 三态状态 + 有处理中才轮询。
+    component: () => import('../views/KnowledgeFileTreePage.vue'),
   },
   {
     path: '/keys',
