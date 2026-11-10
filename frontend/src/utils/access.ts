@@ -25,12 +25,17 @@ export const USER_NAV: readonly NavItem[] = [
 ]
 
 /**
- * 管理员入口。这里刻意只放**真实存在**的唯一一条路由：`/admin/accounts`。
+ * 管理员入口。这里只放**真实存在**的路由：本票（#95）落地了账号、套餐、审计三条。
  *
- * #95 会补齐其余四条（`/admin/plans`、`/admin/audit`、`/admin/models`、`/admin/retrieval`）——
- * 届时只改这个常量，不要把入口先指向还没实现的路由：点了就是一片空白，比没有入口更糟。
+ * `/admin/models`、`/admin/retrieval` 由 #96 补——届时只改这个常量，不要把入口先指向
+ * 还没实现的路由：点了就是一片空白，比没有入口更糟。顶栏 `AppHeader.vue` 直接渲染
+ * `navFor(role)` 的结果，所以补入口只改这一处，不要在组件里再抄一份。
  */
-export const ADMIN_NAV: readonly NavItem[] = [{ to: '/admin/accounts', label: '账号管理' }]
+export const ADMIN_NAV: readonly NavItem[] = [
+  { to: '/admin/accounts', label: '账号管理' },
+  { to: '/admin/plans', label: '套餐管理' },
+  { to: '/admin/audit', label: '审计日志' },
+]
 
 /**
  * 当前角色能看到的入口。未登录 / 角色不在已知取值里时返回空列表：

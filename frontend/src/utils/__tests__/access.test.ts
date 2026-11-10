@@ -57,8 +57,14 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
     },
   )
 
-  it('管理员当前唯一真实入口是 /admin/accounts（其余由 #95 补，不能先指向不存在的路由）', () => {
-    expect(navFor('admin').map((item) => item.to)).toContain('/admin/accounts')
+  it('管理员入口是 #95 已落地的三条真实路由；#96 的两条仍不能先指过去', () => {
+    expect(navFor('admin').map((item) => item.to)).toEqual([
+      '/admin/accounts',
+      '/admin/plans',
+      '/admin/audit',
+    ])
+    expect(navFor('admin').map((item) => item.to)).not.toContain('/admin/models')
+    expect(navFor('admin').map((item) => item.to)).not.toContain('/admin/retrieval')
   })
 })
 
@@ -78,12 +84,9 @@ describe('decideRedirect：守卫的判定全在这里，页面只做执行', ()
   })
 
   it('普通账号进管理员路由被拦回知识库列表', () => {
-    expect(decideRedirect({ path: '/admin/accounts', me: { status: 'ok', me: normalMe } })).toBe(
-      '/knowledge-bases',
-    )
-    expect(decideRedirect({ path: '/admin/plans', me: { status: 'ok', me: normalMe } })).toBe(
-      '/knowledge-bases',
-    )
+    for (const path of ['/admin/accounts', '/admin/plans', '/admin/audit']) {
+      expect(decideRedirect({ path, me: { status: 'ok', me: normalMe } })).toBe('/knowledge-bases')
+    }
   })
 
   it('管理员进用户面板路由被拦回管理员首页（管理员 tenant_id 为空，那些接口对他是 20011）', () => {
@@ -96,7 +99,9 @@ describe('decideRedirect：守卫的判定全在这里，页面只做执行', ()
   it('角色与路径对得上时放行（返回 null）', () => {
     expect(decideRedirect({ path: '/knowledge-bases', me: { status: 'ok', me: normalMe } })).toBeNull()
     expect(decideRedirect({ path: '/', me: { status: 'ok', me: normalMe } })).toBeNull()
-    expect(decideRedirect({ path: '/admin/accounts', me: { status: 'ok', me: adminMe } })).toBeNull()
+    for (const path of ['/admin/accounts', '/admin/plans', '/admin/audit']) {
+      expect(decideRedirect({ path, me: { status: 'ok', me: adminMe } })).toBeNull()
+    }
   })
 
   it('20011 永不触发跳登录：那是「没权限 / 缺防跨站头」，会话还活着', () => {
