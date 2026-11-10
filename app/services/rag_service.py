@@ -59,6 +59,15 @@
 
 除 ``metadata.trace_id`` 之外，检索响应逐字节不变；阶段耗时**不进**响应（那是观测的事）。
 
+**六段耗时从这里开始、也在这里交出去**（#102）：本函数创建一个
+:class:`app.observability.stage_timing.StageTimer` 并**显式**传给需要计时的每一层
+（``hybrid_retrieve`` / 两个单模式通道 / 折叠），最后把收集到的段交给当前去向
+（``app.observability.emit_retrieval_trace``）。两条性质因此成立：
+
+* **度量常开**：收集器**无条件**创建，与 ``TRACE_SINK`` 无关——关掉观测不等于关掉计时；
+* **没有全局可变状态**：一次检索一份收集器，两次并发请求的六段不会串到一个列表里
+  （这也是它能被测试注入、并直接断言「拿到了哪几段」的原因）。
+
 日志只放 ID 与派生量，绝不放检索原文（见 tests/test_retrieval_log_hygiene.py）。
 """
 
@@ -74,6 +83,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION, default_index_versions
+from app.observability import emit_retrieval_trace
+from app.observability.stage_timing import (
+    STAGE_COLLAPSE,
+    STAGE_KEYWORD_RECALL,
+    STAGE_QUERY_OPTIMIZATION,
+    STAGE_VECTOR_RECALL,
+    StageTimer,
+)
 from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
@@ -108,6 +125,7 @@ async def retrieve(
     kb_ids: list[str],
     query: str,
     options: RetrievalOptions,
+    stage_timer: StageTimer | None = None,
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
@@ -124,7 +142,14 @@ async def retrieve(
     本机装了」的合取（``app.services.retrieval_options.options_from_chain``）。链路里
     再问一次 ``settings`` 就等于有了两个真相——机器上没装重排、档位却想要，两处判断
     谁说了算会变成排障时的第一道谜题。
+
+    ``stage_timer`` 是**可选的**收集器（#102）：不传就自己造一个，六段照样计时，只是
+    这份计量没有别人收下（去向是 ``none`` 时正是如此）。测试传一个进来，就能直接断言
+    「这一次到底记到了哪几段」——「度量常开」因此是可观察的事实，而不是注释里的承诺。
     """
+
+    # 度量常开：收集器无条件创建，与 ``TRACE_SINK`` 无关。去向只决定这份计量送到哪。
+    timer = stage_timer if stage_timer is not None else StageTimer()
 
     resolved_mode = options.mode
     resolved_top_k = options.top_k
@@ -165,15 +190,16 @@ async def retrieve(
     # 查询优化：召回之前把用户那句话加工成「向量逐句列表 + 关键词一句 + 重排一句」
     # （GLOSSARY「检索链路」：查询优化 → 召回 → 融合 → 重排）。改写开关读 ``options``：
     # 它是「档位想要 ∧ 本机装了」的合取，关闭时这一步是恒等变换。
-    optimized = await optimize_query(
-        query=query,
-        # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
-        synonym_groups=collect_synonym_groups(
-            [getattr(kb, "settings", None) for kb in visible_kbs]
-        ),
-        rewrite_hint=_rewrite_hint(visible_kbs),
-        rewrite_enabled=options.rewrite,
-    )
+    with timer.measure(STAGE_QUERY_OPTIMIZATION):
+        optimized = await optimize_query(
+            query=query,
+            # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
+            synonym_groups=collect_synonym_groups(
+                [getattr(kb, "settings", None) for kb in visible_kbs]
+            ),
+            rewrite_hint=_rewrite_hint(visible_kbs),
+            rewrite_enabled=options.rewrite,
+        )
 
     degraded = optimized.rewrite_degraded
     degraded_reason: str | None = optimized.rewrite_reason
@@ -202,6 +228,8 @@ async def retrieve(
             # 的那一档也不该被顺手排一遍（pipeline 里靠 provider 可用性判断会把
             # 「本次不要」静默变成「本次跑了」）。
             rerank_enabled=options.rerank,
+            # 收集器显式传进去：两路召回与融合在编排层计时，段名与本模块用的是同一组常量。
+            stage_timer=timer,
         )
         chunks = outcome.chunks
         # 一因一码，先到的才是根因：改写发生在召回之前，所以它已经在场时通道故障与
@@ -217,6 +245,7 @@ async def retrieve(
             kb_ids=kb_ids,
             query=optimized.search_query,
             top_k=recall_top_k,
+            stage_timer=timer,
         )
     else:  # MODE_VECTOR —— 剩下的唯一可能；未知模式已在函数开头被拒。
         chunks = await _retrieve_by_vector(
@@ -225,14 +254,16 @@ async def retrieve(
             kb_ids=kb_ids,
             queries=optimized.vector_queries,
             top_k=recall_top_k,
+            stage_timer=timer,
         )
 
-    collapsed = _collapse_results(
-        db,
-        tenant_id=tenant_id,
-        chunks=chunks,
-        options=options,
-    )
+    with timer.measure(STAGE_COLLAPSE):
+        collapsed = _collapse_results(
+            db,
+            tenant_id=tenant_id,
+            chunks=chunks,
+            options=options,
+        )
 
     empty_reason = _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed)
     retrieval_meta: dict[str, object] = {
@@ -263,6 +294,21 @@ async def retrieve(
         kb_ids=kb_ids,
         retrieval=retrieval_meta,
         trace_id=trace_id,
+    )
+
+    # 观测旁路（#102）：六段耗时交出去。放在这里是因为「这次是个什么结局」刚刚成形；
+    # 与下面那次写库一样，它**不影响返回值**——收集器早已计完时，去向那边连不上也只留
+    # 一条 warning（``app.observability.emit_retrieval_trace``）。属性只有结构化事实：
+    # 模式、条数、降级与空结果原因，问句原文一个字都不进来。
+    emit_retrieval_trace(
+        trace_id=trace_id,
+        spans=timer.spans(),
+        attributes={
+            "mode": resolved_mode,
+            "top_k": resolved_top_k,
+            "degraded_reason": degraded_reason,
+            "empty_reason": empty_reason,
+        },
     )
 
     # 归属索引的写入是**旁路**（ADR-0021 决策 2）：独立短事务、失败只留 warning。
@@ -551,7 +597,13 @@ def _empty_reason(
 
 
 async def _retrieve_by_vector(
-    db: Session, *, tenant_id: str, kb_ids: list[str], queries: Sequence[str], top_k: int
+    db: Session,
+    *,
+    tenant_id: str,
+    kb_ids: list[str],
+    queries: Sequence[str],
+    top_k: int,
+    stage_timer: StageTimer,
 ) -> list[dict]:
     """向量通道：逐句一次范围召回覆盖全部配对，**不按库循环、不按库分名额**。
 
@@ -559,15 +611,16 @@ async def _retrieve_by_vector(
     走原来的快路径，SQL 语义、排序口径与打分全部与票 4 一致（回归红线）。
     """
 
-    rows = await vector_recall(
-        db=db,
-        tenant_id=tenant_id,
-        kb_ids=kb_ids,
-        queries=queries,
-        top_k=top_k,
-        embedding_factory=get_embedding_provider,
-        vector_factory=get_vector_store,
-    )
+    with stage_timer.measure(STAGE_VECTOR_RECALL):
+        rows = await vector_recall(
+            db=db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            queries=queries,
+            top_k=top_k,
+            embedding_factory=get_embedding_provider,
+            vector_factory=get_vector_store,
+        )
 
     # 单查询时这一步是稳定排序（``vector_recall`` 已按同一口径排过），逐字节不变。
     rows.sort(key=lambda item: item.get("score", 0.0), reverse=True)
@@ -580,7 +633,13 @@ async def _retrieve_by_vector(
 
 
 async def _retrieve_by_keyword(
-    db: Session, *, tenant_id: str, kb_ids: list[str], query: str, top_k: int
+    db: Session,
+    *,
+    tenant_id: str,
+    kb_ids: list[str],
+    query: str,
+    top_k: int,
+    stage_timer: StageTimer,
 ) -> list[dict]:
     """关键词通道：租户 + 库/版本配对过滤，纯关键词打分。
 
@@ -589,30 +648,31 @@ async def _retrieve_by_keyword(
     仍在这里做——空实现是「能力不存在」，不是「查过了没命中」。
     """
 
-    try:
-        provider = get_keyword_search_provider()
-        if not provider.available:
-            raise AppError(
-                ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
+    with stage_timer.measure(STAGE_KEYWORD_RECALL):
+        try:
+            provider = get_keyword_search_provider()
+            if not provider.available:
+                raise AppError(
+                    ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
+                )
+            rows = await provider.keyword_search(
+                query,
+                tenant_id=tenant_id,
+                index_versions=default_index_versions(kb_ids),
+                top_k=top_k,
             )
-        rows = await provider.keyword_search(
-            query,
-            tenant_id=tenant_id,
-            index_versions=default_index_versions(kb_ids),
-            top_k=top_k,
-        )
-    except AppError:
-        raise
-    except Exception as exc:
-        # 引擎故障属于「这一路不可用」，不是整单 500：错误分类固定为 50002。
-        # 日志只记类型与范围，不记检索原文。
-        logger.warning(
-            "keyword search failed",
-            tenant_id=tenant_id,
-            kb_ids=list(kb_ids),
-            error=type(exc).__name__,
-        )
-        raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
+        except AppError:
+            raise
+        except Exception as exc:
+            # 引擎故障属于「这一路不可用」，不是整单 500：错误分类固定为 50002。
+            # 日志只记类型与范围，不记检索原文。
+            logger.warning(
+                "keyword search failed",
+                tenant_id=tenant_id,
+                kb_ids=list(kb_ids),
+                error=type(exc).__name__,
+            )
+            raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
 
     return [
         with_score_columns(

@@ -23,6 +23,21 @@ docker compose 起过容器），套件就会真的去连 ES：结果取决于�
 于是**后面**那些「默认不重排」的检索用例开始看到重排被打开（区间内随机红几条，且只在跑
 得够久的套件里出现，单跑必绿——最难查的那类）。这同样不是套件自己的事实。缺省给一份空
 内存缓存之后，覆盖层读到的永远是「一行都没有」，与「这台机器上恰好有什么」彻底解耦。
+
+**为什么观测去向也固定成 ``none``**：``TRACE_SINK`` 的缺省值是 ``jsonl``（生产缺省：
+默认开启观测但不依赖外部服务），于是**每跑一次检索都会往 ``logs/traces/`` 写一行**。
+在套件里这既不是被测行为，也不是套件自己的事实：跑一次全量测试就多出上千行文件、
+把开发机的磁盘与目录弄脏，而这份文件的内容还取决于「今天跑了哪些用例」。更隐蔽的是
+反方向——开发者本机 ``.env`` 里写着 ``TRACE_SINK=langfuse``，那每跑一次检索就会往一个
+可能正开着的观测栈推六段 span，套件于是变慢，甚至把测试数据混进真实 trace 里。
+观测那几张票自己的用例会把去向**显式**指到临时目录或假客户端（见
+``tests/test_observability_sink.py`` / ``tests/test_retrieval_observability.py``），
+其余用例只该看见「丢弃」这个去向。强制覆盖而不是 ``setdefault``，理由与上面那条一字不差。
+
+**为什么每条例行前还要 ``reset_trace_sink()``**：去向是进程级缓存（SDK 客户端不该每个
+请求新建一个）。某个用例用 ``set_trace_sink`` 注入过替身之后，缓存里就留着它——下一个
+用例即使什么都没做，也会把 span 交给那个替身。夹具在每个用例开始时清掉注入与缓存，
+于是「这个用例看到的去向」只由它自己（或上面的环境变量）决定。
 """
 
 import os
@@ -33,6 +48,8 @@ import pytest
 os.environ.setdefault("ENABLE_MCP", "false")
 # 强制覆盖：见上。这一行让「无 ES」成为套件自己的事实，而不是机器的巧合。
 os.environ["KEYWORD_SEARCH_PROVIDER"] = "none"
+# 强制覆盖：见上最后两段。这一行让「观测去向是丢弃」成为套件自己的事实。
+os.environ["TRACE_SINK"] = "none"
 
 
 class _MemorySettingsCache:
@@ -50,21 +67,25 @@ class _MemorySettingsCache:
 
 @pytest.fixture(autouse=True)
 def _offline_process_state():
-    """进程级注入点全部换成离线替身：会话工厂与运行时配置缓存（见模块文档后两段）。
+    """进程级注入点全部换成离线替身：会话工厂、运行时配置缓存与观测去向（见模块文档后三段）。
 
     用例自己注入时（``session_factory.set_session_factory(...)`` /
-    ``runtime_settings.set_settings_cache(...)``）会覆盖本夹具；夹具在**每个**用例开始时
-    重新注入，所以也不会把上一个用例注入的东西漏给下一个。
+    ``runtime_settings.set_settings_cache(...)`` / ``observability.set_trace_sink(...)``）
+    会覆盖本夹具；夹具在**每个**用例开始时重新注入 / 清场，所以也不会把上一个用例注入的
+    东西漏给下一个。
     """
 
     from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
     from app.db import session_factory as factory_mod
+    from app.observability import reset_trace_sink
     from tests.fake_db import RecordingSession
 
     factory_mod.set_session_factory(RecordingSession)
     set_settings_cache(_MemorySettingsCache())
+    reset_trace_sink()
     try:
         yield
     finally:
         factory_mod.set_session_factory(None)
         reset_settings_cache()
+        reset_trace_sink()
