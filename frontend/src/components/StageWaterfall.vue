@@ -127,5 +127,13 @@ const emptyCopy = computed(() => {
     >
       {{ data.note }}
     </p>
+
+    <!--
+      「有段、但观测现在是关的」：这份六段来自早先写下的本地记录。不说这一句的话，
+      读的人会以为「关掉观测也照样在记」，下一次检索找不到记录时才来问为什么。
+    -->
+    <p v-if="hasStages && !data.enabled" class="mt-2 text-[11px] text-muted">
+      当前观测去向是 none：以上六段来自本地记录，新的检索不会再记下新的阶段耗时。
+    </p>
   </div>
 </template>
