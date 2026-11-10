@@ -1,0 +1,13 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: light;
+  /* Element Plus 的主色与设计令牌对齐；不写这行，按钮会是它自带的蓝色。 */
+  --el-color-primary: #045b89;
+}
+
+body {
+  @apply bg-canvas text-slate-800 antialiased;
+}
