@@ -223,10 +223,18 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
             <p class="mb-2 text-[11px] leading-relaxed text-muted">
               只改返回的上下文形状，不影响召回与排序。
             </p>
+            <!--
+              这里显示的是**概念名**（small-to-big / rows-to-table），不是请求体字段名。
+              字段仍然是 `include_parent` / `expand_table_rows`：后端那两个 schema 是
+              `extra="forbid"`，把字段名一起改掉会立刻 20002。概念名是给人看的口径，
+              字段名是契约，两者不必同名——但改契约要单独做一次迁移，不混在这次改文案里。
+            -->
             <div class="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
-              <el-checkbox v-model="form.include_parent">include_parent · 折叠成整节</el-checkbox>
+              <el-checkbox v-model="form.include_parent">
+                small-to-big · 检索小块返回大块
+              </el-checkbox>
               <el-checkbox v-model="form.expand_table_rows">
-                expand_table_rows · 表格行折回整表
+                rows-to-table · 检索表行返回整表
               </el-checkbox>
             </div>
           </div>
