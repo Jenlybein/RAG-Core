@@ -1,0 +1,38 @@
+# 统一评测运行器（#107）的实验配置：一次跑的全部「实验条件」都在这里。
+#
+# 为什么要有这份文件：数字要能复现，前提是「跑的时候条件是什么」可被复核、可被 diff。
+# 散在命令行参数里，下一次没人说得清当时用的是哪种模式、哪个阈值。
+#
+# 校验命令（离线，不连库、不发网络）：
+#   uv run python scripts/eval_runner.py validate-config
+
+[experiment]
+# 这次实验的名字：写进报告与 results.json，用于区分「同一天跑的两组不同条件」。
+name = "gate-baseline"
+
+# 检索模式。门禁跑**一条**链路（生产缺省 hybrid），不做消融：
+# 三路对照（vector / bm25 / hybrid）属于 scripts/eval_retrieval.py 的活。
+mode = "hybrid"
+
+# 返回条数，同时是 CP/CR 的口径深度（与 eval/questions.json 的 k 一致）。
+top_k = 5
+
+# 切块策略。只能是 structure：本运行器按 (document, heading_path) 解析标注，
+# size 切不出章节路径，标注在第一步就会解析失败。
+split_strategy = "structure"
+
+[gate]
+# 判据是**相对基线**，单位是百分点（pp）：
+#   整体不低于基线 −1pp；单题型退化不超过 3pp。两条都不满足即红。
+# 不设绝对分数线：换语料 / 换库时绝对线会整片误报（#98）。
+overall_pp = 1.0
+per_type_pp = 3.0
+
+# 固定基线。留空 = 自动：先用 eval/baseline/（随仓库走的那份），
+# 没有就退到 eval/runs/ 下最近一次全量归档。
+# 填相对仓库根的路径（如 "eval/runs/20261111T062000Z"）可临时钉死某一次。
+baseline = ""
+
+[http]
+# --via-http 冒烟只跑这几道题：它不参与门禁，只回答「序列化之后字段还全不全」。
+samples = 3
