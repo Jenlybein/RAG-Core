@@ -34,6 +34,7 @@ const emit = defineEmits<{ confirm: [] }>()
 <template>
   <el-dialog
     v-model="open"
+    append-to-body
     :title="title"
     width="420px"
     :close-on-click-modal="loading !== true"

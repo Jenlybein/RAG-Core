@@ -466,6 +466,7 @@ async function refresh(): Promise<void> {
 
     <el-dialog
       v-model="dialogVisible"
+      append-to-body
       :title="dialogMode === 'create' ? '新增模型配置' : '编辑模型配置'"
       width="560px"
       :close-on-click-modal="false"
@@ -538,6 +539,7 @@ async function refresh(): Promise<void> {
 
     <el-dialog
       v-model="secretVisible"
+      append-to-body
       title="Key 明文（只显示这一次）"
       width="640px"
       :close-on-click-modal="false"

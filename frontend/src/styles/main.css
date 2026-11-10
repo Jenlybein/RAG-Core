@@ -43,6 +43,13 @@
   --el-fill-color-light: #f7f5f0;
   --el-fill-color-lighter: #fbfaf6;
 
+  /**
+   * 遮罩。默认是纯黑 50%，压在这套米白暖调上会显出一层脏灰。
+   * 换成同色相的暖黑，透明度也调低一点：既要说明「底下不能操作」，又不必把整页压死。
+   */
+  --el-overlay-color-lighter: rgba(28, 26, 21, 0.32);
+  --el-overlay-color: rgba(28, 26, 21, 0.5);
+
   --el-table-header-bg-color: #fbfaf6;
   --el-table-border-color: #eee9df;
   --el-table-row-hover-bg-color: #faf8f3;
@@ -268,12 +275,44 @@ input:-webkit-autofill:focus {
  * 外层再加一圈就成了「双重留白」，弹窗里的表单会被挤窄。这里只定圆角、阴影与标题排版，
  * 内边距统一走 `--el-dialog-padding-primary`。
  */
+/**
+ * 弹窗遮罩的硬契约：**必须盖住整个视口，包括吸顶顶栏**。
+ *
+ * 现场是这样的：`el-dialog` 默认 `append-to-body=false`，把遮罩渲染在页面里；即使
+ * 挂到 body，Element 的遮罩也可能与页面里 z-index 更高的元素（这里是 `sticky z-30`
+ * 的顶栏）发生层级竞争，结果是「对话框开了，顶栏还是亮的」——用户看到的是一个没盖住
+ * 的遮罩，像界面坏了。
+ *
+ * 这里用 `!important` 覆盖 Element 写在元素上的内联 `z-index`（内联值没带 important，
+ * 所以 CSS 的 important 声明能赢），并把尺寸钉成视口：
+ *
+ * - `position: fixed` + `inset: 0` + `height: 100vh`：不受任何祖先的包含块影响；
+ * - `z-index` 抬到 3000：高于站内一切常规层级（顶栏 30、提示条 ~2000）。
+ *
+ * 多个弹窗叠加（详情弹窗里再开原文弹窗）时，两个遮罩同 z-index 也没问题：同层级按
+ * DOM 顺序绘制，后开的天然在上面。
+ */
+.el-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  height: 100vh !important;
+  z-index: 3000 !important;
+}
+
 .el-dialog {
   --el-dialog-padding-primary: 24px;
   --el-dialog-border-radius: 20px;
   border-radius: 20px;
   overflow: hidden;
   box-shadow: 0 2px 6px rgba(28, 26, 21, 0.06), 0 18px 48px -24px rgba(28, 26, 21, 0.24);
+  /*
+   * 长弹窗不能超出视口：模型配置、套餐编辑这些表单比一屏还高，撑出屏幕后底部的
+   * 「保存」按钮就点不到了——而它恰恰是唯一能完成操作的地方。
+   * 这里把弹窗变成 flex 列，只让 body 滚动，标题与底部按钮始终可见。
+   */
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
 }
 .el-dialog__title {
   font-size: 17px;
@@ -283,9 +322,16 @@ input:-webkit-autofill:focus {
 }
 .el-dialog__header {
   padding-bottom: 14px;
+  flex: none;
+}
+.el-dialog__body {
+  overflow-y: auto;
+  flex: 1 1 auto;
 }
 .el-dialog__footer {
-  padding-top: 10px;
+  padding-top: 16px;
+  flex: none;
+  border-top: 1px solid #f0ece4;
 }
 
 .el-tooltip__popper,

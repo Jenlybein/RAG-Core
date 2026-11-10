@@ -114,6 +114,7 @@ function bindFolderInput(element: unknown): void {
 <template>
   <el-dialog
     v-model="open"
+    append-to-body
     title="上传文档"
     width="640px"
     :close-on-click-modal="false"

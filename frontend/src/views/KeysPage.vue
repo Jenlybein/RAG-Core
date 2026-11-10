@@ -36,6 +36,7 @@ import {
   type PolicyForm,
 } from '../types/key'
 import { buildPolicyPatch, policyFormFrom, toPolicyInput } from '../utils/keyPolicy'
+import { keyStatusLabel, statusPillStyle } from '../utils/statusPill'
 
 const route = useRoute()
 const router = useRouter()
@@ -116,17 +117,29 @@ function isKeyRow(row: unknown): row is KeyData {
   )
 }
 
-function policySummary(row: unknown): string {
+/**
+ * 配置摘要拆成若干「标签块」（chips），而不是一整串文字。
+ *
+ * 原来那是一句话：`quality · hybrid / rerank / query_rewrite · 白名单 1 个库 · 10 次/秒 /
+ * 5000 次/天`。它放在表格列里，列一窄就折行，而且会折在「hybrid /」中间——看着像坏了。
+ * 拆成 chips 之后，换行只发生在块与块之间，每一块都是完整语义，怎么折都不难看。
+ */
+function policyChips(row: unknown): string[] {
   const key = row as KeyData
   const policy: KeyPolicyData | null = key.policy
-  if (policy === null) return '—（配置缺失）'
+  if (policy === null) return ['配置缺失']
   const capabilities: string[] = []
   if (policy.research_allowed) capabilities.push('research')
   if (policy.hybrid_allowed) capabilities.push('hybrid')
   if (policy.rerank_allowed) capabilities.push('rerank')
   if (policy.query_rewrite_allowed) capabilities.push('query_rewrite')
-  const capabilityText = capabilities.length === 0 ? '无额外能力' : capabilities.join(' / ')
-  return `${policy.profile} · ${capabilityText} · 白名单 ${policy.allowed_kb_ids.length} 个库 · ${policy.retrieve_qps} 次/秒 / ${policy.retrieve_daily} 次/天`
+  return [
+    policy.profile,
+    capabilities.length === 0 ? '无额外能力' : capabilities.join(' / '),
+    `白名单 ${policy.allowed_kb_ids.length} 个库`,
+    `${policy.retrieve_qps} 次/秒`,
+    `${policy.retrieve_daily} 次/天`,
+  ]
 }
 
 function keyLabel(row: unknown): string {
@@ -134,10 +147,10 @@ function keyLabel(row: unknown): string {
   return key.label === null || key.label.trim() === '' ? '（未命名）' : key.label
 }
 
-/** 状态是字符串（`active` 等）；本页只做「生效中 / 其它」两档，不编造一套状态机。 */
-function statusText(row: unknown): string {
-  const key = row as KeyData
-  return key.status === 'active' ? '生效中' : key.status
+/** 只显示 id 的前 8 位：完整的 UUID 会把这一行撑开；要全的在 title 里悬停看。 */
+function shortKeyId(row: unknown): string {
+  const id = (row as KeyData).key_id
+  return id.length <= 8 ? id : `${id.slice(0, 8)}…`
 }
 
 // —— 签发 / 编辑对话框 ——
@@ -364,7 +377,6 @@ watch(
   />
     <el-card shadow="never">
       <template #header>
-        <!-- 标题与说明在页面头，这里只放计数与主操作。 -->
         <div class="flex flex-wrap items-center justify-between gap-2">
           <span class="th-label">共 {{ keys.length }} 把</span>
           <el-button type="primary" @click="openIssue">签发新 Key</el-button>
@@ -374,85 +386,104 @@ watch(
       <p v-if="keysPending" class="text-sm text-slate-400">正在读取 Key 列表…</p>
       <div
         v-else-if="keysError !== ''"
-        class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+        class="rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
       >
         {{ keysError }}
       </div>
-      <p v-else-if="keys.length === 0" class="text-sm text-slate-500">
-        还没有任何 Key。签发一把之后，去「检索调试台」选中它就能用它的原文打真实接口。
-      </p>
 
-      <el-table v-else :data="keys" row-key="key_id" class="w-full">
-        <el-table-column label="备注名" min-width="160">
-          <template #default="{ row }">
-            <span class="text-sm font-medium text-slate-800">{{ keyLabel(row) }}</span>
-            <p class="mt-0.5 text-xs text-slate-400">{{ row.key_id }}</p>
-          </template>
-        </el-table-column>
+      <!-- 空态说下一步，不堆一句「还没有任何 Key」就完事 -->
+      <div v-else-if="keys.length === 0" class="py-8 text-center">
+        <p class="text-[15px] font-semibold text-ink">还没有 Key</p>
+        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          签发一把之后，去「检索调试台」选中它就能用它的原文打真实接口。
+        </p>
+        <el-button type="primary" class="!mt-5" @click="openIssue">签发新 Key</el-button>
+      </div>
 
-        <el-table-column label="Key" min-width="200">
-          <template #default="{ row }">
+      <!--
+        列表做成卡片行而不是表格：原来「配置摘要」一列塞着一整句话，列一窄就折行、
+        还断在词中间。改成卡片后每一行的信息按「名字 → Key → 配置块」三层排下来，
+        宽度不够时只有 chips 会在块之间换行，永远是完整的语义块。
+      -->
+      <ul v-else class="divide-y divide-line">
+        <li
+          v-for="row in keys"
+          :key="row.key_id"
+          class="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 py-4 first:pt-1 last:pb-1"
+        >
+          <div class="min-w-0 flex-1 space-y-2">
+            <!-- 第一层：名字 + 状态 -->
             <div class="flex flex-wrap items-center gap-2">
-              <code class="font-mono text-xs text-slate-700">{{ row.key_masked }}</code>
+              <span class="text-sm font-semibold text-ink">{{ keyLabel(row) }}</span>
+              <span
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                :style="statusPillStyle(row.status)"
+              >
+                {{ keyStatusLabel(row.status) }}
+              </span>
+              <span class="font-mono text-[11px] text-muted" :title="row.key_id">
+                {{ shortKeyId(row) }}
+              </span>
+            </div>
+
+            <!-- 第二层：masked Key + 看原文 -->
+            <div class="flex flex-wrap items-center gap-2">
+              <code
+                class="rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-[11px] text-slate-600"
+              >
+                {{ row.key_masked }}
+              </code>
               <el-button link type="primary" size="small" @click="askReveal(row)">
                 显示原文
               </el-button>
             </div>
-          </template>
-        </el-table-column>
 
-        <el-table-column label="状态" width="100">
-          <template #default="{ row }">
-            <span
-              class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
-              :style="
-                row.status === 'active'
-                  ? { backgroundColor: '#D1FAE5', color: '#065F46' }
-                  : { backgroundColor: '#F3F4F6', color: '#6B7280' }
-              "
-            >
-              {{ statusText(row) }}
-            </span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="配置摘要" min-width="260">
-          <template #default="{ row }">
-            <span class="text-xs text-slate-600">{{ policySummary(row) }}</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="180">
-          <template #default="{ row }">
-            <div class="flex flex-wrap items-center gap-3 text-sm">
-              <el-button
-                link
-                type="primary"
-                size="small"
-                :disabled="row.policy === null"
-                @click="openEdit(row)"
+            <!-- 第三层：配置摘要拆成 chips，换行只在块之间发生 -->
+            <div class="flex flex-wrap items-center gap-1.5">
+              <span
+                v-for="chip in policyChips(row)"
+                :key="chip"
+                class="inline-flex items-center rounded-full border border-line bg-surface-muted px-2 py-0.5 text-[11px] text-slate-600"
               >
-                编辑配置
-              </el-button>
-              <el-button link type="danger" size="small" @click="askDelete(row)">删除</el-button>
+                {{ chip }}
+              </span>
             </div>
-          </template>
-        </el-table-column>
-      </el-table>
+          </div>
+
+          <div class="flex shrink-0 items-center gap-1">
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :disabled="row.policy === null"
+              @click="openEdit(row)"
+            >
+              编辑配置
+            </el-button>
+            <el-button link type="danger" size="small" @click="askDelete(row)">删除</el-button>
+          </div>
+        </li>
+      </ul>
     </el-card>
 
     <!-- 签发 / 编辑 -->
     <el-dialog
       v-model="editorOpen"
+      append-to-body
       :title="editorTitle"
-      width="720px"
+      width="760px"
       :close-on-click-modal="!saving"
       :close-on-press-escape="!saving"
       :show-close="!saving"
     >
-      <el-form v-if="editingKey === null" label-position="top">
-        <el-form-item label="备注名（label，可选；鉴权不读它）">
-          <el-input v-model="issueLabel" maxlength="128" show-word-limit placeholder="例如：集成 A" />
+      <el-form v-if="editingKey === null" label-position="top" class="!mb-1">
+        <el-form-item label="备注名（可选）">
+          <el-input
+            v-model="issueLabel"
+            maxlength="128"
+            show-word-limit
+            placeholder="例如：集成 A —— 只给人看，鉴权不读它"
+          />
         </el-form-item>
       </el-form>
       <p v-else class="mb-3 text-xs text-slate-500">
@@ -510,7 +541,7 @@ watch(
     />
 
     <!-- 原文弹窗：关掉即丢弃（`revealOpen` 的 setter 会清空 revealed） -->
-    <el-dialog v-model="revealOpen" title="Key 原文（关闭后不再保留）" width="560px">
+    <el-dialog v-model="revealOpen" append-to-body title="Key 原文（关闭后不再保留）" width="560px">
       <el-input
         :model-value="revealed?.value ?? ''"
         readonly

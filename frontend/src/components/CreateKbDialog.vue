@@ -163,6 +163,7 @@ function continueUpload(): void {
 <template>
   <el-dialog
     v-model="open"
+    append-to-body
     title="新建知识库"
     width="560px"
     :close-on-click-modal="false"

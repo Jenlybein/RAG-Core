@@ -340,6 +340,7 @@ async function refresh(): Promise<void> {
 
     <el-dialog
       v-model="dialogVisible"
+      append-to-body
       title="编辑套餐"
       width="640px"
       :close-on-click-modal="false"

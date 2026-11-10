@@ -25,6 +25,7 @@ import {
 } from '../../services/consoleAdmin'
 import type { AccountItem, AccountPatchRequest } from '../../types/consoleAdmin'
 import { errorText } from '../../utils/errorText'
+import { statusLabel as sharedStatusLabel, statusPillStyle } from '../../utils/statusPill'
 
 const queryClient = useQueryClient()
 
@@ -74,26 +75,20 @@ async function confirmThen(message: string, run: () => void): Promise<void> {
   run()
 }
 
-/** 账号/租户状态的对外文案。未知状态原样显示：不猜（猜错会让人以为账号「正常」）。 */
-const STATUS_LABELS: Record<string, string> = { active: '正常', disabled: '已停用' }
-
+/**
+ * 状态文案与配色都来自 `utils/statusPill.ts`（与 Key 列表同一份）。
+ *
+ * 之前这里有一份 `STATUS_LABELS` + `statusClass`，KeysPage 又自己拼了一个胶囊——
+ * 同一件事两处实现，改配色必然漏一处。现在只剩本地这一层：把「空值」显示成「—」。
+ */
 function statusLabel(status: string | null): string {
   if (status === null || status === '') return '—'
-  return STATUS_LABELS[status] ?? status
+  return sharedStatusLabel(status)
 }
 
-/**
- * 颜色只取事实底座 §10 与前端约定 §状态与颜色 的语义色：正常用「成功」绿，
- * 已停用用「失败」红。账号状态不是文档三态，所以不走 `StatusBadge.vue`（那张表
- * 的 1/2/3 是文档处理状态），但配色的出处仍是同一组令牌。
- *
- * 文字色从原来的 #065F46 / #B91C1C 换成暖色系的同义色：冷绿冷红压在米白底上会
- * 显出「系统自带控件」的味道，也与 StatusBadge 的暖色徽章对不上。对比度都 ≥4.5:1。
- */
-function statusClass(status: string | null): string {
-  if (status === 'active') return 'text-[#3C5228]'
-  if (status === 'disabled') return 'text-[#8C2F22]'
-  return 'text-slate-500'
+/** 空状态不摆胶囊：一个空的彩色块会被读成「某种状态」。 */
+function hasStatus(status: string | null): boolean {
+  return status !== null && status !== ''
 }
 
 function roleLabel(role: string): string {
@@ -211,13 +206,23 @@ async function refresh(): Promise<void> {
             <td class="px-3 py-3 font-medium text-slate-800">{{ row.username }}</td>
             <td class="px-3 py-3 text-slate-600">{{ roleLabel(row.role) }}</td>
             <td class="px-3 py-3">
-              <span :class="statusClass(row.status)">{{ statusLabel(row.status) }}</span>
+              <span
+                v-if="hasStatus(row.status)"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                :style="statusPillStyle(row.status)"
+                >{{ statusLabel(row.status) }}</span
+              >
+              <span v-else class="text-slate-400">—</span>
             </td>
             <td class="px-3 py-3 text-slate-600">{{ tenantLabel(row) }}</td>
             <td class="px-3 py-3">
-              <span :class="statusClass(row.tenant_status)">
-                {{ statusLabel(row.tenant_status) }}
-              </span>
+              <span
+                v-if="hasStatus(row.tenant_status)"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                :style="statusPillStyle(row.tenant_status)"
+                >{{ statusLabel(row.tenant_status) }}</span
+              >
+              <span v-else class="text-slate-400">—</span>
             </td>
             <td class="px-3 py-3 text-slate-600">{{ planLabel(row) }}</td>
             <td class="px-3 py-3">
