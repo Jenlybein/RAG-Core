@@ -50,3 +50,21 @@ export interface DocumentDeleteReceipt {
   document_id: string
   deleted: boolean
 }
+
+/**
+ * 一份文档的原文（`GET /console/documents/{id}/content`，控制面只读）。
+ *
+ * `truncated` 与 `length` 是一对：前者只说「给全了没有」，后者是**原文真实长度**。
+ * 页面必须把截断说出来——只显示截断后的文本会让人以为文档就这么长。
+ */
+export interface DocumentContent {
+  document_id: string
+  title: string
+  source_type: string
+  source_filename: string | null
+  /** 1 成功 / 2 失败 / 3 索引中；原文能看与索引成功是两件事。 */
+  status: number
+  content: string
+  truncated: boolean
+  length: number
+}

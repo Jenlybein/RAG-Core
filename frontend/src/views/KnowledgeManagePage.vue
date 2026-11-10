@@ -41,11 +41,12 @@ import { ApiError } from '../lib/envelope'
 import {
   deleteDocumentConsole,
   deleteKbConsole,
+  fetchDocumentContentConsole,
   reindexDocumentConsole,
   uploadConsole,
 } from '../services/consoleKb'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
-import type { DocumentListItem } from '../types/document'
+import type { DocumentContent, DocumentListItem } from '../types/document'
 import type { KnowledgeBaseNode } from '../types/knowledgeBase'
 
 const SPLIT_LABELS: Record<string, string> = {
@@ -138,6 +139,35 @@ function openDetail(row: unknown): void {
   detailKbId.value = row.kb_id
   docKeyword.value = ''
   detailOpen.value = true
+}
+
+// ───────── 查看原文 ─────────
+const contentOpen = ref(false)
+const contentLoading = ref(false)
+const contentError = ref('')
+const contentData = ref<DocumentContent | null>(null)
+
+/**
+ * 「查看」= 读原文。
+ *
+ * 不复用 vue-query：这是一次性的、按需的读，缓存下来只会让人看到过期的原文
+ * （刚重建过索引的文档，用户最想看的恰恰是「现在这份是什么」）。
+ */
+async function openContent(row: unknown): Promise<void> {
+  if (!isDocRow(row)) return
+  contentData.value = null
+  contentError.value = ''
+  contentOpen.value = true
+  contentLoading.value = true
+  try {
+    contentData.value = await fetchDocumentContentConsole(row.document_id)
+  } catch (error) {
+    // 20016（跨租户/已删）、20023（没有解析器）、20024（解析失败）都走这里：
+    // 原文读不出来是**业务结果**，把后端原文展示出来比一句「加载失败」有用得多。
+    contentError.value = errorText(error)
+  } finally {
+    contentLoading.value = false
+  }
 }
 
 // ───────── 新建 / 上传弹窗 ─────────
@@ -459,7 +489,7 @@ function goRetrieve(kbId: string): void {
     </el-card>
 
     <!-- ───────── 详情：库内文档的增删查改 ───────── -->
-    <el-dialog v-model="detailOpen" width="760px" :close-on-click-modal="false">
+    <el-dialog v-model="detailOpen" append-to-body width="760px" :close-on-click-modal="false">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-3 pr-6">
           <div>
@@ -528,11 +558,16 @@ function goRetrieve(kbId: string): void {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="150">
+          <el-table-column label="操作" width="220">
             <template #default="{ row }">
               <div class="flex flex-wrap items-center gap-1">
+                <!-- 查看原文对处理中也可用：读不改状态。失败文档的原文恰恰是判断
+                     「为什么解析出错」的唯一依据，所以它不跟写操作一起被藏起来。 -->
+                <el-button link type="primary" size="small" @click="openContent(row)">
+                  查看原文
+                </el-button>
                 <!-- 处理中没有任何写操作：此刻重建会回 20025、删除会回 20025，按钮只是陷阱。 -->
-                <span v-if="row.status === 3" class="text-xs text-slate-400">处理中，无操作</span>
+                <span v-if="row.status === 3" class="text-xs text-slate-400">处理中</span>
                 <template v-else-if="row.status === 1 || row.status === 2">
                   <el-button link type="primary" size="small" @click="askReindex(row)">
                     重建
@@ -551,6 +586,67 @@ function goRetrieve(kbId: string): void {
 
       <template #footer>
         <el-button @click="detailOpen = false">关闭</el-button>
+      </template>
+    </el-dialog>
+
+    <!-- ───────── 原文：只读，独立弹窗叠在详情之上 ───────── -->
+    <el-dialog
+      v-model="contentOpen"
+      width="820px"
+      append-to-body
+      :close-on-click-modal="false"
+    >
+      <template #header>
+        <div class="pr-6">
+          <h2 class="text-[17px] font-semibold tracking-tight text-ink">
+            {{ contentData?.title ?? '原文' }}
+          </h2>
+          <p v-if="contentData !== null" class="mt-0.5 text-xs text-muted">
+            {{ contentData.source_type }}
+            <span v-if="contentData.source_filename"> · {{ contentData.source_filename }}</span>
+            · 共 {{ contentData.length }} 字符
+          </p>
+        </div>
+      </template>
+
+      <div class="space-y-3">
+        <p v-if="contentLoading" class="py-8 text-center text-sm text-slate-500">正在读取原文…</p>
+
+        <!-- 读不出来也要说清是哪一步：20016 已删除 / 20023 没有解析器 / 20024 解析失败 -->
+        <div
+          v-else-if="contentError !== ''"
+          class="rounded-control border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700"
+        >
+          <p class="m-0">{{ contentError }}</p>
+        </div>
+
+        <template v-else-if="contentData !== null">
+          <div
+            v-if="contentData.truncated"
+            class="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+          >
+            原文共 {{ contentData.length }} 字符，这里只显示前 {{ contentData.content.length }} 字符。
+            需要全文请下载原件或调整服务端上限。
+          </div>
+
+          <div
+            v-if="contentData.content.trim() === ''"
+            class="rounded-control border border-line px-3 py-6 text-center text-sm text-slate-500"
+          >
+            这份文档解析后没有可显示的正文。
+          </div>
+
+          <!-- 用 pre 而不是渲染 Markdown：这段文字的价值是「原样」，渲染会引入第二套
+               解释（标题层级、表格），与切块实际吃到的文本反而不一致。 -->
+          <pre
+            v-else
+            class="max-h-[58vh] overflow-auto whitespace-pre-wrap break-words rounded-control border border-line bg-surface-muted p-4 font-mono text-[12.5px] leading-relaxed text-slate-700"
+          >{{ contentData.content }}</pre>
+        </template>
+      </div>
+
+      <template #footer>
+        <el-button @click="contentOpen = false">关闭</el-button>
       </template>
     </el-dialog>
 

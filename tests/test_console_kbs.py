@@ -65,6 +65,7 @@ CREATE_PATH = "/console/knowledge-bases"
 UPLOAD_PATH = "/console/knowledge-bases/{kb_id}/documents"
 REINDEX_PATH = "/console/documents/{document_id}/reindex"
 DELETE_DOC_PATH = "/console/documents/{document_id}"
+READ_CONTENT_PATH = "/console/documents/{document_id}/content"
 
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 CONTENT_SENTINEL = "CONSOLE-UPLOAD-CONTENT-SENTINEL"
@@ -244,6 +245,7 @@ def _doc(
     error_message: str | None = None,
     index_claimed_at: datetime | None = None,
     source_file_path: str | None = None,
+    content: str = "",
 ) -> Any:
     """文档行替身：字段形状与 ``app.models.document.Document`` 对齐。
 
@@ -257,7 +259,7 @@ def _doc(
         tenant_id=tenant_id,
         kb_id=kb_id,
         title=title,
-        content="",
+        content=content,
         source_type="markdown",
         source_file_path=source_file_path,
         source_filename=None,
@@ -1096,3 +1098,98 @@ def test_a_second_tenant_sees_only_its_own_tree_and_documents(kbs: _Harness) -> 
         KB_ALPHA_ONE,
         KB_ALPHA_EMPTY,
     }
+
+
+# ──────────────────────────────────────────────────────────────── 读文档原文（只读）
+
+ALPHA_BODY = "# 退款政策\n\n签收后 7 天内可申请无理由退款。\n"
+
+
+def test_read_content_returns_the_body_stored_in_the_database(kbs: _Harness) -> None:
+    """JSON 模式（贴正文上传）：库里就有 content，直接读，不碰磁盘。"""
+
+    kbs.document(DOC_ALPHA_DONE).content = ALPHA_BODY
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = kbs.client.get(READ_CONTENT_PATH.format(document_id=DOC_ALPHA_DONE))
+
+    data = kbs.data(response)
+    assert data["content"] == ALPHA_BODY
+    assert data["length"] == len(ALPHA_BODY)
+    assert data["truncated"] is False
+    assert data["status"] == DocumentStatus.SUCCESS
+    assert data["source_type"] == "markdown"
+
+
+def test_read_content_parses_the_source_file_for_file_mode(kbs: _Harness, tmp_path: Path) -> None:
+    """文件模式：库里 content 是空串，正文现场解析落盘文件——与 Worker 切块用的是同一个函数。"""
+
+    source = tmp_path / "alpha-file.md"
+    source.write_text("# 标题\n\n正文一段。\n", encoding="utf-8")
+    document = kbs.document(DOC_ALPHA_DONE)
+    assert document.content == "", "文件模式下库里不该有正文"
+    document.source_file_path = str(source)
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    data = kbs.data(kbs.client.get(READ_CONTENT_PATH.format(document_id=DOC_ALPHA_DONE)))
+
+    assert "正文一段" in data["content"]
+    assert data["length"] == len(data["content"])
+    assert data["truncated"] is False
+
+
+def test_read_content_truncates_but_reports_the_real_length(kbs: _Harness) -> None:
+    """截断必须说出来：只给截断后的文本而不说原文多长，会让人以为文档就这么长。"""
+
+    kbs.document(DOC_ALPHA_DONE).content = "x" * 50
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    data = kbs.data(kbs.client.get(READ_CONTENT_PATH.format(document_id=DOC_ALPHA_DONE)))
+
+    # 上限是服务层常量（20 万字符），这里用 50 字符造不出截断，所以直接断言「没截断」，
+    # 真正的截断路径由下面那条用 monkeypatch 的用例覆盖。
+    assert data["truncated"] is False
+    assert data["length"] == 50
+
+
+def test_read_content_honours_the_character_cap(
+    kbs: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """把上限压到 10 字符，验证 truncation 与 length 这一对字段的语义。"""
+
+    console_kb_service = importlib.import_module("app.services.console_kb_service")
+    monkeypatch.setattr(console_kb_service, "DOCUMENT_CONTENT_MAX_CHARS", 10)
+
+    kbs.document(DOC_ALPHA_DONE).content = "0123456789abcdef"
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    data = kbs.data(kbs.client.get(READ_CONTENT_PATH.format(document_id=DOC_ALPHA_DONE)))
+
+    assert data["content"] == "0123456789"
+    assert data["truncated"] is True
+    assert data["length"] == 16, "length 是原文真实长度，不是截断后的长度"
+
+
+@pytest.mark.parametrize("document_id", [DOC_BETA_DONE, "no-such-document"])
+def test_read_content_of_another_tenant_or_missing_is_not_found(
+    kbs: _Harness, document_id: str
+) -> None:
+    """跨租户与不存在同码（20016）：可区分的拒绝会泄露资源存在性。"""
+
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = kbs.client.get(READ_CONTENT_PATH.format(document_id=document_id))
+
+    assert response.json()["code"] == ErrorCode.NOT_FOUND
+
+
+def test_read_content_needs_no_anti_csrf_header(kbs: _Harness) -> None:
+    """读接口走读门：不带 x-requested-with 也能看原文（那个头是给写操作防跨站用的）。"""
+
+    kbs.document(DOC_ALPHA_DONE).content = ALPHA_BODY
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = kbs.client.get(READ_CONTENT_PATH.format(document_id=DOC_ALPHA_DONE))
+
+    assert response.json()["code"] == 0
+    assert kbs.audit_entries() == [], "读原文不写账本"

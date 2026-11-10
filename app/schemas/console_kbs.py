@@ -49,3 +49,26 @@ class DeleteKnowledgeBaseData(BaseModel):
 
     kb_id: str
     deleted: bool
+
+
+class DocumentContentData(BaseModel):
+    """一份文档的原文（控制面只读）。
+
+    只读接口，所以形状照着「看清这份文档本身」来给，而不是照某个写回执：
+
+    - ``content`` 是**被切块的那份文本**（JSON 模式读库里的 content，文件模式现场解析
+      落盘文件），与 Worker 用同一个函数产出，因此和检索命中的切片同源。
+    - ``truncated`` / ``length`` 是一对：前者只说「给全了没有」，后者是**原文真实长度**。
+      只给截断后的内容而不说长度，会让用户以为文档只有这么长。
+    - ``status`` 带上是因为「原文能看」与「索引成功」是两件事：失败文档照样有原文，
+      而用户正是要靠这份原文判断解析有没有出错。
+    """
+
+    document_id: str
+    title: str
+    source_type: str
+    source_filename: str | None
+    status: int
+    content: str
+    truncated: bool
+    length: int

@@ -58,6 +58,7 @@ from app.services import (
 )
 from app.services.chunk_store import build_chunk_stores
 from app.services.console_service import append_audit
+from app.services.document_ingestion import prepare_document_content
 from app.services.document_storage import remove_document_file
 from app.services.index_dispatch import enqueue_document
 from app.services.indexing_service import purge_document_chunks
@@ -414,4 +415,57 @@ def _document_submission_snapshot(
         "title": resolved_title,
         "status": result["status"],
         "source_type": result["source_type"],
+    }
+
+
+#: 单次回显的正文上限（字符）。
+#:
+#: 上传上限是 20MB，一份 PDF 解析出来几十万字并不罕见；整份塞进一个 JSON 响应对浏览器
+#: 是硬的负担（前端要把它放进 DOM）。超过就截断并**明确告诉调用方截断了**——静默截断
+#: 会让人以为文档只有这么长，进而怀疑索引漏了内容。
+DOCUMENT_CONTENT_MAX_CHARS: Final[int] = 200_000
+
+
+def read_document_content(
+    db: Session,
+    *,
+    tenant_id: str,
+    document_id: str,
+    max_chars: int | None = None,
+) -> dict[str, Any]:
+    """读一份文档的**原文**（只读：不改状态、不写审计、不碰索引）。
+
+    正文从哪来，完全交给 Worker 用的同一个函数 ``prepare_document_content``：
+
+    - **JSON 模式**（贴正文上传）：``documents.content`` 里就有，直接读库；
+    - **文件模式**（md / txt / docx / pdf）：库里 ``content`` 是空串，正文只在落盘文件里，
+      这里现场解析。
+
+    复用同一个函数而不是「库里没有就读文件」再写一遍：解析口径必须与切块时一致，
+    否则用户看到「原文」和检索命中的切片对不上，就会怀疑是检索漏了。
+
+    ``max_chars`` 默认取模块常量而**不写成默认参数值**：默认参数在函数定义时求值，
+    写成 ``max_chars: int = DOCUMENT_CONTENT_MAX_CHARS`` 会让常量从此不可调整
+    （测试里改常量也不生效），这类「看起来能配、其实不能」的常量比没有更糟。
+    """
+
+    cap = DOCUMENT_CONTENT_MAX_CHARS if max_chars is None else max_chars
+
+    document = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=tenant_id)
+    if document is None:
+        # 跨租户与不存在同码（20016）：可区分的拒绝会泄露资源存在性。
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    parsed = prepare_document_content(document)
+    text = parsed.content
+    truncated = len(text) > cap
+    return {
+        "document_id": document.id,
+        "title": document.title,
+        "source_type": document.source_type or "text",
+        "source_filename": document.source_filename,
+        "status": document.status,
+        "content": text[:cap],
+        "truncated": truncated,
+        "length": len(text),
     }

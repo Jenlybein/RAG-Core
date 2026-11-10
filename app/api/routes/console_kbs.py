@@ -40,6 +40,7 @@ from app.schemas.common import ApiResponse, ok
 from app.schemas.console_kbs import (
     ConsoleUploadDocumentRequest,
     DeleteKnowledgeBaseData,
+    DocumentContentData,
     KnowledgeBaseNode,
     KnowledgeBaseTreeData,
 )
@@ -227,3 +228,24 @@ async def delete_document(
         db, tenant_id=tenant_id_of(identity), document_id=document_id, actor=identity
     )
     return ok(DeleteDocumentData.model_validate(data))
+
+
+@router.get(
+    "/documents/{document_id}/content",
+    response_model=ApiResponse[DocumentContentData],
+    summary="读一份文档的原文（只读；文件模式的正文现场解析，与切块同源）",
+)
+def read_document_content(
+    document_id: str = Path(..., min_length=1),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: Session = Depends(get_db),
+) -> ApiResponse[DocumentContentData]:
+    """走**读门**（`require_console_tenant`）而不是写门：看原文不改任何状态，也不该要求
+    `x-requested-with`——那个头是给写操作防跨站用的，加在读接口上只会让「查看」多一步
+    无意义的配合。跨租户与不存在同为 20016。
+    """
+
+    data = console_kb_service.read_document_content(
+        db, tenant_id=tenant_id_of(identity), document_id=document_id
+    )
+    return ok(DocumentContentData.model_validate(data))

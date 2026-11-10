@@ -1,5 +1,6 @@
 import { consoleHttp } from '../lib/consoleHttp'
 import type {
+  DocumentContent,
   DocumentDeleteReceipt,
   DocumentListItem,
   DocumentReindexReceipt,
@@ -80,6 +81,19 @@ export function uploadConsole(payload: UploadConsolePayload): Promise<DocumentUp
  */
 export function deleteDocumentConsole(documentId: string): Promise<DocumentDeleteReceipt> {
   return consoleHttp.delete<DocumentDeleteReceipt>(`/console/documents/${documentId}`)
+}
+
+/**
+ * 读一份文档的原文（只读）。
+ *
+ * 走**读门**：不带 `x-requested-with`——那个头是写操作的防跨站要求，加在读接口上
+ * 只会让「看一眼原文」多一步没意义的配合。
+ *
+ * 后端保证返回的是「被切块的那份文本」（JSON 模式读库里 content，文件模式现场解析
+ * 落盘文件，与 Worker 同一个函数），所以看到的原文与检索命中的切片同源。
+ */
+export function fetchDocumentContentConsole(documentId: string): Promise<DocumentContent> {
+  return consoleHttp.get<DocumentContent>(`/console/documents/${documentId}/content`)
 }
 
 /**
