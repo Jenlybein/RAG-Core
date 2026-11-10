@@ -6,8 +6,8 @@ import { decideRedirect, probeFromError, type MeProbe } from '../utils/access'
 /**
  * 路由表：T6 建立「能点得到」的 6 条路由，T2 把 `/` 从占位页换成真实上传页。
  *
- * `/knowledge-bases`、`/keys`、`/retrieve` 仍是占位页（各自由 #86/#92/#87 替换），
- * `/admin/accounts` 是 #95 的占位。守卫与顶栏都必须能在这些真实路径上命中，
+ * `/knowledge-bases`、`/keys` 仍是占位页（各自由 #86/#92 替换），`/retrieve` 已由 #87
+ * 换成真实检索页，`/admin/accounts` 是 #95 的占位。守卫与顶栏都必须能在这些真实路径上命中，
  * 否则「未登录跳登录页」「普通账号被拦回列表」这两条验收就没有对象可验。
  *
  * `/probe` 是 T1 的临时探针页，留着但不进任何导航，等收尾票删除。
@@ -41,8 +41,8 @@ const routes = [
   {
     path: '/retrieve',
     name: 'retrieve',
-    meta: { placeholderTitle: '检索调试台', placeholderIssue: '#87 / T4' },
-    component: () => import('../views/PlaceholderPage.vue'),
+    // #87 换成了真实检索页：勾库 → 发检索 → 结果卡片 + 只读运行摘要。
+    component: () => import('../views/RetrievePage.vue'),
   },
   {
     path: '/admin/accounts',
