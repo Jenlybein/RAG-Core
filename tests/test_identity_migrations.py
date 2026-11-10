@@ -144,9 +144,9 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
 
     heads = set(revisions) - down_revisions
     assert len(heads) == 1, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
-    # #80 在 #74 的五条之后追加了 sessions / audit_logs；#93 再追加 runtime_settings，
-    # 链尾因此继续前移到配置覆盖表。这里只守「唯一的 head 是链上最新那条」。
-    assert heads == {_revision_of(_migration_path("create_runtime_settings"))}
+    # #80 在 #74 的五条之后追加了 sessions / audit_logs；#93 追加 runtime_settings、
+    # #94 再追加 model_configs，链尾因此继续前移。这里只守「唯一的 head 是链上最新那条」。
+    assert heads == {_revision_of(_migration_path("create_model_configs"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

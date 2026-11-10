@@ -3,9 +3,26 @@
 换供应商只改环境变量（``LLM_PROVIDER`` 与该家的 key / 模型名），业务代码零改动；
 一家都没配时返回空实现，离线环境照常启动（仓库的离线测试全都跑在这条路上）。
 
-**为什么参数装配写在这里而不是散在调用点**：``init_chat_model`` 的 provider 名、
-默认地址、key 落在哪个配置项，是一张「事实表」。它只该有一份，否则换一家供应商就
-要改 N 处调用点，而这份表恰好就是「只改环境变量」这句话的实现。
+## 解析顺序（#94 起，顺序本身就是契约）
+
+1. ``runtime_settings`` 的**角色指针**（``model.role.fast`` / ``model.role.strong``）指向
+   一条 ``model_configs`` 行 → 用那一行的 provider / base_url / model / api_key 装配；
+2. 没有指针、或指针指向的行已经消失 → 回落 ``.env`` 的单供应商（改造前的行为）；
+3. ``.env`` 也没配 key → 空实现（**离线与 CI 的行为必须逐字不变**，这是 #94 的回归红线）。
+
+「指针指向的行不见了」只记一条 warning 并回落第 2 步，**不在请求路径上抛异常**：手工删
+库、回滚失败的迁移都能造出这个状态，而一个正在服务的进程不该因为库里有半条脏数据就让
+所有租户的检索 500（与配置中台「丢弃那一行、保留上一份好值」同一条纪律）。
+
+**重排没有独立的模型配置**：一期 ``RerankProvider`` 包着 ``LLMProvider``（ADR-0002），
+它调的就是 ``get_llm_provider("fast")``。不要在这里加「重排模型」这一档——加了也没有
+任何调用点会去读它，而面板上多一个下拉框，用户会以为改了生效。
+
+## 为什么参数装配写在这里而不是散在调用点
+
+``init_chat_model`` 的 provider 名、默认地址、key 落在哪个配置项，是一张「事实表」。
+它只该有一份，否则换一家供应商就要改 N 处调用点，而这份表恰好就是「只改环境变量」
+这句话的实现。
 """
 
 from __future__ import annotations
@@ -13,14 +30,19 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
 from langchain.chat_models import init_chat_model
 
 from app.core.config import settings
 from app.core.llm_vendors import LLM_VENDORS
+from app.core.model_roles import MODEL_ROLES
 from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
 from app.providers.llm.langchain_llm import LangChainLLMProvider
 from app.providers.llm.noop import NoopLLMProvider
+from app.services import model_config_service
+
+logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -64,14 +86,17 @@ if tuple(_VENDORS) != LLM_VENDORS:  # pragma: no cover - 名单不一致时才�
 # 都不是这件事——「套餐」是计费档（术语表里那个计费档的禁用词，本仓库不这么写），「档位」
 # 是第 7 步的质量档位（speed / balanced / quality / custom）。这里说的是「同一家供应商下
 # 哪个模型干什么活」，与计费、与质量档位都无关，所以三者必须用不同的词。
-_MODEL_ROLES = ("fast", "strong")
+#
+# 名字本身来自 ``app.core.model_roles``：角色指针的键名（``model.role.<role>``）、
+# 白名单、删除被引用判定都按同一份词汇表读，这里 import 而不是再写一遍元组。
+_MODEL_ROLES = MODEL_ROLES
 
 # 「关掉思考」在配置里的写法；其余取值原样透传成框架的 reasoning_effort。
 _REASONING_OFF = ("", "off", "none", "false", "0")
 
 
 def get_llm_provider(role: str = "fast") -> LLMProvider:
-    """按供应商与模型角色装配。
+    """按「角色指针 → 模型配置行 → 回落 .env」装配（顺序见模块文档）。
 
     缺任何一环（供应商未知、key 没配）都退回空实现或立刻报错，不做「半装配」——
     半装配的症状是发出去了但一直 401，比启动就缺能力难查得多。
@@ -85,6 +110,39 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
     # 不外发」。放在早退之前，是这个函数唯一不会漏掉的位置。
     apply_framework_telemetry_switches()
 
+    # 1. 角色指针 → 那一条配置行。指针为空 / 行已消失时返回 None，落到下面的 `.env`。
+    config = model_config_service.resolve_role_config(role)
+    if config is not None:
+        vendor = _VENDORS.get(config.provider.strip().lower())
+        if vendor is None:
+            # 行是绕过写入校验造出来的（手工改库 / 旧版本迁移）。与「指针指向的行消失」
+            # 同一条处理：告警 + 回落 `.env`，不在请求链路上抛。
+            logger.warning(
+                "model config has an unknown vendor; falling back to .env",
+                role=role,
+                model_config_id=config.id,
+                provider=config.provider,
+            )
+        elif not config.api_key:
+            # 这一条还没填 Key：能力明确不可用（空实现），**不**回落到 `.env` 的 key。
+            # 回退会让「我明明选了这条新配置」变成「实际用的还是旧的」，那是最难解释的
+            # 一类静默行为；空实现至少让降级路径与原因一致（见 GLOSSARY「available」）。
+            logger.warning(
+                "model config has no api key; the role is unavailable",
+                role=role,
+                model_config_id=config.id,
+            )
+            return NoopLLMProvider()
+        else:
+            return _assemble(
+                role,
+                vendor=vendor,
+                api_key=config.api_key,
+                model_name=config.model,
+                base_url=config.base_url,
+            )
+
+    # 2. `.env` 的单供应商（改造前的行为，逐字保留）。
     vendor = _VENDORS.get(settings.LLM_PROVIDER.strip().lower())
     if vendor is None:
         raise ValueError(
@@ -98,13 +156,37 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
         return NoopLLMProvider()
 
     model_name = settings.LLM_MODEL if role == "fast" else settings.LLM_STRONG_MODEL
+    return _assemble(
+        role,
+        vendor=vendor,
+        api_key=api_key,
+        model_name=model_name,
+        base_url=settings.LLM_BASE_URL,
+    )
+
+
+def _assemble(
+    role: str,
+    *,
+    vendor: _Vendor,
+    api_key: str,
+    model_name: str,
+    base_url: str,
+) -> LLMProvider:
+    """把「一家供应商 + 一个具体接入」拼成 LangChain 聊天模型。
+
+    ``.env`` 路径与 ``model_configs`` 路径**共用这一段**：两条路径只差「参数从哪来」，
+    温度、超时、思考强度、telemetry 这些装配知识必须一模一样，否则「换到多模型配置」
+    会顺手改掉请求的形状（那是两件事）。
+    """
+
     options: dict[str, Any] = {
         "api_key": api_key,
         "timeout": settings.LLM_TIMEOUT_SECONDS,
     }
-    base_url = settings.LLM_BASE_URL or vendor.default_base_url
-    if base_url:
-        options["base_url"] = base_url
+    resolved_base_url = base_url or vendor.default_base_url
+    if resolved_base_url:
+        options["base_url"] = resolved_base_url
 
     # fast 角色写死关思考：改写与重排要的是低延迟与稳定输出，这是代码约束而不是
     # 运维纪律（配置里写 high 也影响不到 fast）。strong 角色才由配置决定。

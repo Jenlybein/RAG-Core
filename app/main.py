@@ -11,6 +11,11 @@
   GET    /console/audit-logs
   GET    /console/settings            （第 8 步 #93：配置中台）
   PATCH  /console/settings?dry_run=
+  GET    /console/model-configs        （第 8 步 #94：多模型配置 + 角色指向）
+  POST   /console/model-configs
+  PATCH  /console/model-configs/{id}
+  DELETE /console/model-configs/{id}
+  GET    /console/model-configs/{id}/secret
   GET    /console/keys                 （票 #91：明文 + masked + 配置，独立路由模块）
   POST   /console/keys                 （签发：连带建密钥配置）
   DELETE /console/keys/{key_id}        （删 Key，不删配置）
@@ -52,6 +57,7 @@ from app.api.router import api_router
 from app.api.routes.console import router as console_router
 from app.api.routes.console_kbs import router as console_kbs_router
 from app.api.routes.console_keys import router as console_keys_router
+from app.api.routes.console_models import router as console_models_router
 from app.api.routes.console_settings import router as console_settings_router
 from app.core.config import settings
 from app.utils import tokenizer
@@ -115,6 +121,8 @@ app.include_router(console_kbs_router)
 app.include_router(console_keys_router)
 # 配置中台走自己的路由模块（并行票的生命线：不往 console.py 里追加路由）。
 app.include_router(console_settings_router)
+# 多模型配置（#94）同样自带前缀：六条接口与配置中台平级挂载。
+app.include_router(console_models_router)
 
 # ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)
