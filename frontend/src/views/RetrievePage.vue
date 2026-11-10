@@ -177,7 +177,13 @@ function onKeyChange(value: unknown): void {
   syncSelectedKey(key)
 }
 
-/** 选中 Key 的**只读**配置摘要：档位 / 能力 / 白名单 / 限额 / 形状。 */
+/**
+ * 选中 Key 的**只读**配置摘要：档位 / 能力 / 限额 / 结果形状。
+ *
+ * 这里**故意不列数据范围**：那把 Key 圈了哪些库，下方「勾选知识库」逐条摆着同一份
+ * 信息（名字 + id + 能不能勾）。同一件事在一屏里写两遍，读者要花时间确认「这两处
+ * 是不是一回事」——去重比补全更重要。
+ */
 const policyRows = computed(() => {
   const value = policy.value
   if (value === null) return []
@@ -186,24 +192,17 @@ const policyRows = computed(() => {
   if (value.hybrid_allowed) capabilities.push('hybrid')
   if (value.rerank_allowed) capabilities.push('rerank')
   if (value.query_rewrite_allowed) capabilities.push('query_rewrite')
-  const whitelist =
-    value.allowed_kb_ids.length === 0
-      ? '（空：什么都没圈定，所以一个库都勾不了）'
-      : value.allowed_kb_ids
-          .map((kbId) => {
-            const found = kbs.value.find((kb) => kb.kb_id === kbId)
-            return found === undefined ? kbId : `${found.name}（${kbId}）`
-          })
-          .join('、')
   return [
     { label: '档位', value: value.profile },
-    { label: '能力开关', value: capabilities.length === 0 ? '全关' : capabilities.join(' / ') },
+    {
+      label: '生效能力',
+      value: capabilities.length === 0 ? '全关' : capabilities.join(' / '),
+    },
     { label: '限额', value: `${value.retrieve_qps} 次/秒 · ${value.retrieve_daily} 次/天` },
-    { label: '数据范围', value: whitelist },
     {
       // 用**概念名**而不是请求体字段名：这两个开关在界面上叫 small-to-big / rows-to-table
       // （与 Key 编辑器同一套说法）。一屏里两处用不同名字，用户会以为它们是两个东西。
-      label: '结果形状',
+      label: '形状',
       value: `${value.include_parent ? 'small-to-big' : '不折叠'} · ${
         value.expand_table_rows ? 'rows-to-table' : '表格行不折回'
       }`,
@@ -330,15 +329,10 @@ const emptyCopy = computed(() =>
     <!-- ① 选 Key 与检索范围 -->
     <el-card shadow="never">
       <template #header>
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 class="text-sm font-semibold text-slate-800">检索范围</h2>
-            <p class="mt-1 text-xs text-slate-500">
-              只有当前 Key 白名单里的库能勾选；白名单外的库置灰并给出原因。
-            </p>
-          </div>
-          <span class="shrink-0 text-sm text-slate-600">
-            已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <h2 class="text-sm font-semibold text-ink">检索范围</h2>
+          <span class="shrink-0 text-[11px] text-muted">
+            已选 {{ store.selectedCount }} / 共 {{ kbs.length }} 个库
           </span>
         </div>
       </template>
@@ -347,59 +341,63 @@ const emptyCopy = computed(() =>
       <p v-if="keysPending" class="text-sm text-slate-400">正在读取 Key 列表…</p>
       <div
         v-else-if="keysError !== ''"
-        class="rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-sm text-[#6E4E12]"
       >
         {{ keysError }}
       </div>
       <div
         v-else-if="keys.length === 0"
-        class="rounded border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-sm text-[#6E4E12]"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-sm text-[#6E4E12]"
       >
         还没有任何 API Key：先去
         <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
         签发一把，再回来选它。
       </div>
       <template v-else>
-        <div class="flex flex-wrap items-end gap-3">
-          <div class="min-w-64 flex-1">
-            <label class="mb-1 block text-xs text-slate-500">当前选中的 Key</label>
-            <el-select
-              :model-value="store.selectedKeyId ?? undefined"
-              class="w-full"
-              clearable
-              filterable
-              placeholder="选择一把 Key 来发起检索"
-              @change="onKeyChange"
-            >
-              <el-option
-                v-for="key in keys"
-                :key="key.key_id"
-                :value="key.key_id"
-                :label="`${key.label ?? '（未命名）'} · ${key.key_masked}`"
-              >
-                <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
-                <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
-                <span v-if="key.policy === null" class="ml-2 text-xs text-[#6E4E12]">
-                  配置缺失
-                </span>
-              </el-option>
-            </el-select>
-          </div>
+        <!--
+          Key 行的两处调整：
+          1. 「去改这把 Key 的配置」从 select 右侧挪到标签行右端。原来它与 select 底对齐，
+            贴着控件外沿，看起来不像这一行的动作，倒像溢出到卡片外的散字。
+          2. 配置摘要从两列网格压成一行内联文本。两列时标签与值是同色同重的 11px 灰，
+            「档位 quality」读起来像一个词；而且 3 + 2 两项排下来高度不齐，右列吊在半空。
+        -->
+        <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+          <label class="text-[11px] text-muted">当前选中的 Key</label>
           <RouterLink
             v-if="selectedKey !== null"
             :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
-            class="text-sm text-brand underline"
+            class="shrink-0 text-[11px] text-brand underline underline-offset-2 hover:text-accent-hover"
           >
-            去改这把 Key 的配置
+            去改这把 Key 的配置 →
           </RouterLink>
         </div>
+        <el-select
+          :model-value="store.selectedKeyId ?? undefined"
+          class="mt-1.5 w-full"
+          clearable
+          filterable
+          placeholder="选择一把 Key 来发起检索"
+          @change="onKeyChange"
+        >
+          <el-option
+            v-for="key in keys"
+            :key="key.key_id"
+            :value="key.key_id"
+            :label="`${key.label ?? '（未命名）'} · ${key.key_masked}`"
+          >
+            <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
+            <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
+            <span v-if="key.policy === null" class="ml-2 text-xs text-[#6E4E12]">
+              配置缺失
+            </span>
+          </el-option>
+        </el-select>
 
         <div
           v-if="policy === null && selectedKey !== null"
-          class="mt-3 rounded border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
+          class="mt-2.5 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
         >
-          这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，
-          去
+          这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，去
           <RouterLink
             :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
             class="text-brand underline"
@@ -409,32 +407,30 @@ const emptyCopy = computed(() =>
           重新签发一把，或选中另一把。
         </div>
 
-        <!--
-          这把 Key 的配置：**只读回显**，改它去 /keys。四条信息用两列网格而不是五行竖排——
-          竖排读起来像说明书，而这里只需要「扫一眼确认这次检索会按什么参数跑」。
-        -->
-        <div v-else-if="policy !== null" class="mt-3 rounded-control bg-surface-muted px-4 py-3">
-          <p class="mb-2 text-[11px] text-muted">这把 Key 的配置（只读，要改去 Key 管理页）</p>
-          <dl class="grid gap-x-8 gap-y-2 text-[11px] sm:grid-cols-2">
-            <div v-for="row in policyRows" :key="row.label" class="flex flex-col gap-0.5">
-              <dt class="text-muted">{{ row.label }}</dt>
-              <dd class="break-all font-mono text-slate-700">{{ row.value }}</dd>
-            </div>
-          </dl>
+        <!-- 配置摘要：一行内联，标签淡、值深，扫一眼就够。 -->
+        <div
+          v-else-if="policy !== null"
+          class="mt-2.5 flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-control bg-surface-muted px-3 py-2 text-[11px] leading-relaxed"
+        >
+          <span v-for="(row, index) in policyRows" :key="row.label" class="flex items-baseline">
+            <span class="text-muted">{{ row.label }}</span>
+            <span class="ml-1 font-mono text-slate-700">{{ row.value }}</span>
+            <span v-if="index < policyRows.length - 1" class="mx-2 text-line-strong">·</span>
+          </span>
         </div>
       </template>
 
       <!-- 勾库 -->
-      <p v-if="treePending" class="mt-4 text-sm text-slate-400">正在读取本租户的知识库…</p>
+      <p v-if="treePending" class="mt-5 text-sm text-slate-400">正在读取本租户的知识库…</p>
       <div
         v-else-if="treeError !== ''"
-        class="mt-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
+        class="mt-5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
       >
         {{ treeError }}
       </div>
       <div
         v-else-if="kbs.length === 0"
-        class="mt-4 rounded border border-line bg-slate-50 px-3 py-2 text-sm text-slate-600"
+        class="mt-5 rounded-control border border-line bg-surface-muted px-3 py-2 text-sm text-slate-600"
       >
         本租户还没有知识库：先去创建知识库并上传文档，再回来检索。
         <RouterLink to="/" class="text-brand underline">去建库 / 上传文档</RouterLink>
@@ -454,14 +450,15 @@ const emptyCopy = computed(() =>
         >
           <el-checkbox :value="kb.kb_id" :disabled="!allowedKbIds.has(kb.kb_id)" class="!mr-0">
             <span class="text-sm text-slate-700">{{ kb.name }}</span>
-            <span class="ml-2 font-mono text-xs text-slate-400">{{ kb.kb_id }}</span>
+            <!-- id 用更小更淡的字 + 前置分隔点：不加分隔时「kb 名字」与 UUID 会连成一片。 -->
+            <span class="ml-2 font-mono text-[10px] text-slate-400">· {{ kb.kb_id }}</span>
           </el-checkbox>
         </el-tooltip>
       </el-checkbox-group>
 
       <div
         v-if="treeLoaded && unpickableSelected.length > 0"
-        class="mt-3 rounded border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
+        class="mt-3 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
       >
         <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
         <p class="mt-1 break-all font-mono">{{ unpickableSelected.join('、') }}</p>
@@ -469,27 +466,24 @@ const emptyCopy = computed(() =>
       </div>
     </el-card>
 
-    <!-- ② 问题 -->
+    <!--
+      ② 问题。原来标题下还有一句「请求体只有 kb_ids 与 query…」——页头已经说了「本页不设
+      这些参数」，这句是把同一件事换个说法再说一遍。删掉，只留标题与一次动作。
+    -->
     <el-card shadow="never">
       <template #header>
-        <div>
-          <h2 class="text-sm font-semibold text-slate-800">问题</h2>
-          <p class="mt-1 text-xs text-slate-500">
-            请求体只有 <code class="rounded bg-slate-100 px-1">kb_ids</code> 与
-            <code class="rounded bg-slate-100 px-1">query</code>；任何质量参数都不随请求发送。
-          </p>
-        </div>
+        <h2 class="text-sm font-semibold text-ink">问题</h2>
       </template>
 
       <el-form label-position="top" @submit.prevent="submitRetrieve">
-        <el-form-item label="要检索的问题（可多行）">
+        <el-form-item>
           <el-input
             v-model="queryText"
             type="textarea"
             :rows="3"
             maxlength="2000"
             show-word-limit
-            placeholder="例如：退款申请提交后，一般几天能到账？"
+            placeholder="要检索的问题（可多行）· 例如：退款申请提交后，一般几天能到账？"
           />
         </el-form-item>
         <div class="flex flex-wrap items-center gap-3">
@@ -501,7 +495,7 @@ const emptyCopy = computed(() =>
           >
             检索
           </el-button>
-          <span v-if="blockReason !== ''" class="text-xs text-slate-500">{{ blockReason }}</span>
+          <span v-if="blockReason !== ''" class="text-xs text-muted">{{ blockReason }}</span>
           <span v-else class="text-xs text-slate-400">以已选库为范围发一次检索</span>
         </div>
       </el-form>
