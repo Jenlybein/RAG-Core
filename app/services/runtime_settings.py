@@ -79,6 +79,7 @@ from app.services.plan_admin import IMPACT_SAMPLE_LIMIT, ImpactGroup
 from app.services.console_service import append_audit
 from app.services import model_config_service
 from app.services.retrieval_options import MODE_HYBRID, profile_chain_of
+from app.utils.id_generator import MASK_HIDDEN, mask_secret
 
 logger = structlog.get_logger(__name__)
 
@@ -592,19 +593,19 @@ def _first_error(exc: ValidationError) -> str:
     return f"validator 拒绝：{message}"
 
 
-def _mask(value: Any) -> str:
-    """打码：保留末尾 4 个字符，其余隐去。空值原样（没有东西可泄露）。"""
-
-    if not isinstance(value, str) or not value:
-        return "••••"
-    tail = value[-4:]
-    return f"••••{tail}"
-
-
 def _visible_value(spec: SettingSpec, value: Any) -> Any:
-    """面板与审计里能看到的那个值：密钥类字段打码，其余原样。"""
+    """面板与审计里能看到的那个值：密钥类字段走**唯一**的打码规则，其余原样。
 
-    return _mask(value) if spec.secret else value
+    ``mask_secret`` 是 API Key、模型 ``api_key`` 与本模块共同的那一份规则（#82 修复：
+    以前这里只露末 4 位、模型配置露前 3 + 末 4，两处都叫 masked 却不是同一个泄露面）。
+    空值与非字符串保留原来的「••••」：那是「这一项没配」，不是一段可截断的凭证。
+    """
+
+    if not spec.secret:
+        return value
+    if not isinstance(value, str) or not value:
+        return MASK_HIDDEN
+    return mask_secret(value)
 
 
 # ───────────────────────────────────────────────────────────────────────────────

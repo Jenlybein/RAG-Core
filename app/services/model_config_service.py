@@ -6,9 +6,10 @@
    指向时的目标校验都从这一份判定出发——「有没有人指着它」只该有一个答案；
 2. **现在该用哪一条**（:func:`resolve_role_config`）。装配 Provider 的**唯一**入口，
    顺序是「角色指针 → 那一行」，指针为空或指向的行已经消失就返回 ``None``，让调用方
-   回落 ``.env`` 的单供应商（见 :mod:`app.providers.llm`）；
-3. **密钥怎么打码**（:func:`mask_key`）。列表、审计、日志都从这一份派生，明文只有
-   ``reveal_secret`` 一条出口。
+   回落 ``.env`` 的单供应商（见 :mod:`app.providers.llm`）。Provider 不 import 本模块
+   （层向），所以组合根注入的是它的适配器 :func:`role_endpoint`（#82 修复）；
+3. **密钥怎么打码**（:func:`app.utils.id_generator.mask_secret`）。列表、审计、日志都从
+   那一份派生，本模块不再自己写规则；明文只有 ``reveal_secret`` 一条出口。
 
 ## 平台级资源：写入口只给管理员
 
@@ -29,7 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 import structlog
 from sqlalchemy.orm import Session
@@ -46,9 +47,12 @@ from app.db.session_factory import session_factory
 from app.models.model_config import ModelConfig, ModelConfigSpec, spec_of
 from app.repositories import model_config_repository, runtime_setting_repository
 from app.services.console_service import append_audit
-from app.utils.id_generator import new_id
+from app.utils.id_generator import mask_secret, new_id
 
 logger = structlog.get_logger(__name__)
+
+if TYPE_CHECKING:  # pragma: no cover - 只给类型检查看，运行期不 import Provider
+    from app.providers.llm import RoleEndpoint
 
 #: 审计里的动作名。``model.`` 前缀让「动的是模型接入」一眼可分；``model.reveal`` 是
 #: 唯一一条「看了明文」的账本，事后追「谁把 Key 看过」就靠它。
@@ -89,21 +93,6 @@ def _close_if_temporary(session: Session, db: Session | None) -> None:
 # ───────────────────────────────────────────────────────────── 打码与快照
 
 
-def mask_key(value: str) -> str:
-    """``sk-…abcd``：保留前 3 位与末 4 位。**列表与审计只允许出现这一形态。**
-
-    为什么不是「末 4 位前面一律 ``••••``」：模型 Key 的前缀（``sk-`` / ``sk-ant-``）本身
-    就能说明是哪家的凭证，运维在面板上要认出「这是 DeepSeek 还是 Ark 那条」；而前缀
-    单独拿出来不足以使用。短于 8 位的值整体隐去：太短的值保留任何一段都接近泄露原文。
-    """
-
-    if not value:
-        return ""
-    if len(value) <= 8:
-        return "••••"
-    return f"{value[:3]}…{value[-4:]}"
-
-
 def _masked_snapshot(spec: ModelConfigSpec) -> dict[str, Any]:
     """审计快照里的那一行：``api_key`` 打码，其余原样。
 
@@ -117,7 +106,7 @@ def _masked_snapshot(spec: ModelConfigSpec) -> dict[str, Any]:
         "provider": spec.provider,
         "base_url": spec.base_url,
         "model": spec.model,
-        "api_key": mask_key(spec.api_key),
+        "api_key": mask_secret(spec.api_key),
     }
 
 
@@ -434,7 +423,7 @@ def reveal_secret(db: Session, *, actor: Any, config_id: str) -> str:
         after={
             "id": config_id,
             "label": row.label,
-            "api_key": mask_key(row.api_key or ""),
+            "api_key": mask_secret(row.api_key or ""),
         },
     )
     db.commit()
@@ -483,3 +472,29 @@ def resolve_role_config(role: str, db: Session | None = None) -> ModelConfigSpec
         return spec_of(row)
     finally:
         _close_if_temporary(session, db)
+
+
+def role_endpoint(role: str) -> RoleEndpoint | None:
+    """``resolve_role_config`` 的适配器：服务层形状 → Provider 层的 ``RoleEndpoint``。
+
+    这是**唯一**的翻译点，也是 ``app/main.py`` 与 Celery Worker 注入给
+    :func:`app.providers.llm.set_role_resolver` 的那个函数。放在服务层而不是 Provider 里：
+    Provider 不认识 ``ModelConfigSpec``（``app/providers/**`` 不许 import ``app.services``，
+    #82 修复的层向倒置），而服务层认识 Provider 的类型是正当的方向。
+
+    适配是纯字段搬运（provider / base_url / model / api_key + 日志用的 id），没有任何判定：
+    指针为空、行已消失、库读不到都由 :func:`resolve_role_config` 统一折成 ``None``。
+    """
+
+    from app.providers.llm import RoleEndpoint
+
+    spec = resolve_role_config(role)
+    if spec is None:
+        return None
+    return RoleEndpoint(
+        provider=spec.provider,
+        base_url=spec.base_url,
+        model=spec.model,
+        api_key=spec.api_key,
+        config_id=spec.id,
+    )

@@ -43,9 +43,10 @@ from app.models.model_config import ModelConfig
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.runtime_setting import RuntimeSetting
 from app.models.tenant import Tenant
-from app.providers.llm import get_llm_provider
+from app.providers.llm import get_llm_provider, set_role_resolver
 from app.providers.llm.noop import NoopLLMProvider
 from app.services import model_config_service, runtime_settings
+from app.utils.id_generator import mask_secret
 from tests.fake_db import RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
@@ -243,6 +244,9 @@ def console() -> Any:
     # 于是「改指针之后下一次装配按新行跑」这条在测试里也走真实路径（注入点是
     # 进程级共享的，见 app/db/session_factory.py）。
     runtime_settings.set_session_factory(lambda: db)
+    # 角色解析器是**组合根注入**的（#82）：生产里 app.main 启动时注入一次；这里显式再注入
+    # 一遍，让装配点用例不依赖「哪个测试文件先 import 了 app.main」这种顺序。
+    set_role_resolver(model_config_service.role_endpoint)
     main.app.dependency_overrides[session_module.get_db] = lambda: db
     main.app.dependency_overrides[console_deps.get_runtime_settings_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: plan_cache
@@ -251,6 +255,7 @@ def console() -> Any:
             yield _Harness(client=client, db=db, cache=cache)
     finally:
         main.app.dependency_overrides.clear()
+        set_role_resolver(None)
         runtime_settings.reset_runtime_state()
         runtime_settings.set_session_factory(None)
         reset_settings_cache()
@@ -353,13 +358,32 @@ def test_a_write_without_the_anti_csrf_header_is_rejected(console: _Harness) -> 
     assert (
         console.client.delete("/console/model-configs/config-deepseek").json()["code"] == 20011
     )
-    # 「显示原文」也是写操作（它会留下一条审计），所以同样要防跨站头。
-    assert (
-        console.client.get("/console/model-configs/config-deepseek/secret").json()["code"]
-        == 20011
-    )
     assert console.db.added_of(ModelConfig) == []
     assert console.db.commits == commits_before
+
+
+def test_revealing_the_secret_is_a_read_gate_and_needs_no_anti_csrf_header(
+    console: _Harness,
+) -> None:
+    """「显示原文」是**读**接口（``get_console_admin``）：不查防跨站头，但每次留一条审计。
+
+    #82 修复前这条 GET 挂的是 ``require_console_admin_write``（把「会留审计」当成写操作，
+    属于越界）；spec 的边界是「写操作才要防跨站头，读走 ``get_console_admin``」。
+    """
+
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
+    commits_before = console.db.commits
+
+    response = console.client.get("/console/model-configs/config-deepseek/secret")
+
+    body = response.json()
+    assert body["code"] == 0, body
+    assert body["data"] == {"id": "config-deepseek", "api_key": SECRET_SENTINEL}
+
+    audit = console.audit_entries()[-1]
+    assert (audit.action, audit.target) == ("model.reveal", "model:config-deepseek")
+    assert SECRET_SENTINEL not in str(audit.after_snapshot)
+    assert console.db.commits == commits_before + 1
 
 
 def test_an_admin_can_read_the_model_config_list(console: _Harness) -> None:
@@ -374,7 +398,7 @@ def test_an_admin_can_read_the_model_config_list(console: _Harness) -> None:
     assert rows[1]["roles"] == []
     # 列表里永远只有 masked 形态：明文 Key 连一个子串都不许出现。
     assert SECRET_SENTINEL not in console.client.get("/console/model-configs").text
-    assert rows[0]["api_key"] == model_config_service.mask_key(SECRET_SENTINEL)
+    assert rows[0]["api_key"] == mask_secret(SECRET_SENTINEL)
     assert rows[0]["api_key"].endswith("abcd")
 
 

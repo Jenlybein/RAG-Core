@@ -1,11 +1,12 @@
 """控制面 Key 与密钥配置的业务层（票 #91）：列 / 签发 / 删 / 改配置。
 
-这一层只做三件路由不该做的事：
+这一层只做三件路由不该做的事（租户门禁不在其中，它归 HTTP 层，见第 1 条）：
 
-1. **租户判定只写一处**。``/console/keys`` 与 ``/console/key-policies`` 都是用户面板接口，
-   对 ``tenant_id IS NULL`` 的平台管理员一律 ``20011``；四条入口各写一遍这段判定，迟早有
-   一条漏掉，于是管理员就能看到某个租户的明文 Key 或改掉它的配置。四个服务函数都先过
-   :func:`_tenant_of`，漏不掉；
+1. **只接收已校验的身份**。``/console/keys`` 与 ``/console/key-policies`` 都是用户面板接口，
+   对 ``tenant_id IS NULL`` 的平台管理员一律 ``20011``，但这条判定只在 HTTP 层的
+   ``require_console_tenant`` / ``require_console_tenant_write`` 里写一次（#82 修复前它
+   在本模块又写了一遍，两套实现迟早会漂移）。四个服务函数从传进来的 ``ConsoleIdentity``
+   取 ``tenant_id`` 与 ``account_id``（审计要后者）；漏掉门禁是路由的错，不是这里的第二道闸；
 2. **跨租户按「不存在」处理**（``20016``）。Key / 配置的主键是全局唯一的裸字符串，
    「不属于你」与「不存在」对外必须是同一个答案，否则枚举一遍 id 就知道谁的 Key 在哪；
 3. **改动与审计同一个事务**（与套餐 / 账号那两条写入口同一套收口）。签发会同时写
@@ -42,10 +43,6 @@ ACTION_KEY_POLICY_UPDATE = "key_policy.update"
 #: 用这个默认值。名字只给人看，不参与任何判定。
 DEFAULT_POLICY_NAME = "default"
 
-#: 「这个接口只对租户账号开放」的对外措辞。与「角色不足」同码（``20011``）不同消息：
-#: 排障时分得清是被角色拦下，还是被「管理员没有租户」拦下。
-MSG_TENANT_REQUIRED = "tenant account required for this console endpoint"
-
 
 @dataclass(frozen=True)
 class KeyRowView:
@@ -80,15 +77,14 @@ class PolicyPatchResult:
     changed: tuple[str, ...]
 
 
-def _tenant_of(actor: ConsoleIdentity) -> str:
-    """用户面板接口的租户门禁：管理员（无租户）→ ``20011``，其余返回本租户 id。
+def _verified_tenant_id(actor: ConsoleIdentity) -> str:
+    """已校验身份 → 裸 ``tenant_id``（**只做类型收窄**，不再产生 ``20011``）。
 
-    放在服务层而不是写成四条路由上的依赖，是刻意：判定必须**在四条入口里都生效**，
-    而「四个装饰器各写一次」正是漏一条的典型形态。
+    租户判定由 HTTP 依赖（``require_console_tenant`` / ``require_console_tenant_write``）
+    完成；本模块是业务层，不该认识「HTTP 请求」这件事，也不该有第二套拒绝文案。
     """
 
-    if actor.tenant_id is None:
-        raise AppError(ErrorCode.FORBIDDEN, MSG_TENANT_REQUIRED)
+    assert actor.tenant_id is not None, "租户门禁应已拒绝无租户的管理员"
     return actor.tenant_id
 
 
@@ -99,7 +95,7 @@ def list_keys(db: Session, *, actor: ConsoleIdentity) -> list[KeyRowView]:
     坏数据，此时如实回 ``policy=None``，而不是把别人的配置回显给这个租户。
     """
 
-    tenant_id = _tenant_of(actor)
+    tenant_id = _verified_tenant_id(actor)
     policies = {
         policy.id: policy for policy in key_policy_repository.list_by_tenant(db, tenant_id)
     }
@@ -124,7 +120,7 @@ def issue_key(
     ``AppError(20015)``（配置不自洽）原样上抛，错误码本来就是对的。
     """
 
-    tenant_id = _tenant_of(actor)
+    tenant_id = _verified_tenant_id(actor)
     try:
         created = key_policy_service.create_key_policy(
             db,
@@ -160,7 +156,7 @@ def delete_key(db: Session, *, actor: ConsoleIdentity, key_id: str) -> DeletedKe
     而它们对外必须是同一个 ``20016``。
     """
 
-    tenant_id = _tenant_of(actor)
+    tenant_id = _verified_tenant_id(actor)
     api_key = api_key_repository.get_by_id(db, key_id)
     if api_key is None or api_key.tenant_id != tenant_id:
         raise AppError(ErrorCode.NOT_FOUND, f"key not found: {key_id}")
@@ -207,7 +203,7 @@ def patch_key_policy(
     否则枚举 id 就能知道谁有哪些配置。
     """
 
-    tenant_id = _tenant_of(actor)
+    tenant_id = _verified_tenant_id(actor)
     policy = key_policy_repository.get_by_id(db, policy_id)
     if policy is None or policy.tenant_id != tenant_id:
         raise AppError(ErrorCode.NOT_FOUND, f"key policy not found: {policy_id}")
