@@ -241,10 +241,10 @@ const queryText = ref('')
 const trimmedQuery = computed(() => queryText.value.trim())
 /** 按钮禁用时把原因说出来：只灰掉按钮不说原因，用户会以为自己点错了。 */
 const blockReason = computed(() => {
-  if (selectedKey.value === null) return '先在上方选一把 Key（它决定能查哪些库、用哪档配置）'
-  if (policy.value === null) return '这把 Key 没有可用的密钥配置：去 /keys 编辑配置或换一把'
-  if (store.selectedCount === 0) return '先在上方勾选至少一个知识库'
-  if (trimmedQuery.value === '') return '先输入要检索的问题（全空白不算问题）'
+  if (selectedKey.value === null) return '还没选 Key —— 点「修改配置」选一把'
+  if (policy.value === null) return '这把 Key 没有可用的密钥配置 —— 去 Key 管理页改一下'
+  if (store.selectedCount === 0) return '还没勾库 —— 点「修改配置」勾选至少一个知识库'
+  if (trimmedQuery.value === '') return '先写要检索的问题（全空白不算问题）'
   return ''
 })
 
@@ -359,191 +359,105 @@ const emptyCopy = computed(() =>
     subtitle="选 Key、勾库、写问题，发一次真实检索。检索方式、条数、重排与改写全部由这把 Key 的密钥配置决定，本页只回显后端实际生效的值。"
   />
     <!-- ① 选 Key 与检索范围 -->
+    <!--
+      卡片只留「动作」：读一行当前配置、写问题、点检索。
+      选 Key、改它的配置、勾库都属于「设置」——设置做一次就不再碰，全部收进
+      「修改配置」弹窗；常驻在动作流最上方，会让每次检索都先经过一组与本次无关的控件。
+    -->
     <el-card shadow="never">
       <template #header>
-        <div class="flex flex-wrap items-baseline justify-between gap-2">
-          <!-- 标题不再是「检索范围」：这张卡已经包含选 Key、勾库与提问三件事。
-               计数也不放在这里——它属于「要查的知识库」那一段，挪到那里贴着勾选框。 -->
-          <h2 class="text-sm font-semibold text-ink">发起检索</h2>
-        </div>
+        <h2 class="text-sm font-semibold text-ink">发起检索</h2>
       </template>
 
-      <!--
-        Key 区收成一行只读摘要。选 Key 与改它的配置属于「设置」，勾库 / 写问题 / 点检索
-        才是「动作」；设置做一次就不再碰，常驻在动作流最上方会让每次检索都先经过一个
-        与本次无关的下拉框。选择器挪进「修改配置」弹窗，这里只回答「现在是哪把 Key」。
-      -->
-      <p v-if="keysPending" class="text-sm text-slate-400">正在读取 Key 列表…</p>
+      <!-- 一行只读摘要。不显示的话，用户每次检索前都得开弹窗确认用的是哪把 Key、哪些库。 -->
+      <p v-if="keysPending" class="text-[11px] text-muted">正在读取 Key 列表…</p>
       <div
         v-else-if="keysError !== ''"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-sm text-[#6E4E12]"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] text-[#6E4E12]"
       >
         {{ keysError }}
       </div>
       <div
         v-else-if="keys.length === 0"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-sm text-[#6E4E12]"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
       >
         还没有任何 API Key：先去
         <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
-        签发一把，再回来选它。
+        签发一把。
       </div>
-      <div
-        v-else-if="currentKeySummary === null"
-        class="rounded-control border border-dashed border-line-strong bg-surface-muted px-3 py-2.5 text-[11px] leading-relaxed text-muted"
-      >
-        还没有选 Key —— 点右下角「修改配置」选一把；检索会按那把 Key 的密钥配置执行。
-      </div>
-      <div
-        v-else
-        class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 rounded-control bg-surface-muted px-3 py-2.5"
-      >
-        <div class="flex flex-wrap items-baseline gap-2">
-          <span class="text-[11px] text-muted">当前 Key</span>
-          <span class="font-mono text-[12px] font-medium text-ink">
-            {{ currentKeySummary.label }}
+      <div v-else class="rounded-control bg-surface-muted px-3 py-2.5">
+        <div
+          class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-[11px]"
+        >
+          <span class="flex flex-wrap items-baseline gap-2">
+            <span class="text-muted">当前 Key</span>
+            <template v-if="currentKeySummary !== null">
+              <span class="font-mono text-[12px] font-medium text-ink">
+                {{ currentKeySummary.label }}
+              </span>
+              <span class="font-mono text-[10px] text-slate-400">
+                {{ currentKeySummary.masked }}
+              </span>
+              <span class="text-line-strong">·</span>
+              <span :class="currentKeySummary.profile === null ? 'text-[#6E4E12]' : 'text-muted'">
+                档位 {{ currentKeySummary.profile ?? '缺失' }}
+              </span>
+            </template>
+            <span v-else class="text-[#6E4E12]">未选择 —— 点「修改配置」选一把</span>
           </span>
-          <span class="font-mono text-[10px] text-slate-400">
-            {{ currentKeySummary.masked }}
-          </span>
+          <span class="text-muted">已选 {{ store.selectedCount }} 个库</span>
         </div>
-        <span
-          class="text-[11px]"
-          :class="currentKeySummary.profile === null ? 'text-[#6E4E12]' : 'text-muted'"
-        >
-          {{ currentKeySummary.profile === null ? '配置缺失' : `档位 ${currentKeySummary.profile}` }}
-        </span>
       </div>
 
-      <!--
-        勾库。这一段原来只有一排勾选框，前面的「检索范围」小标题在我把两张卡并成一张时
-        被删掉了——结果是一个裸露的复选框，不说明它是什么、为什么在这里、为什么有的灰了。
-        现在补回三件东西：小标题（这是要查的库）、计数（贴着它自己，不在卡片顶角）、
-        以及一句白名单说明（灰掉的库为什么灰）。
-      -->
-      <div
-        v-if="treeLoaded && kbs.length > 0"
-        class="mt-5 flex flex-wrap items-baseline justify-between gap-2 border-t border-line pt-5"
-      >
-        <h3 class="text-[12px] font-semibold text-ink">要查的知识库</h3>
-        <span class="text-[11px] text-muted">
-          已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
-        </span>
-      </div>
-      <p
-        v-if="treeLoaded && kbs.length > 0"
-        class="mt-1 text-[11px] leading-relaxed text-muted"
-      >
-        只能勾这把 Key 白名单里的库；置灰的那些不在白名单里，去 Key 管理页改配置后才能勾。
-      </p>
-
-      <p v-if="treePending" class="mt-5 text-sm text-slate-400">正在读取本租户的知识库…</p>
-      <div
-        v-else-if="treeError !== ''"
-        class="mt-5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
-      >
-        {{ treeError }}
-      </div>
-      <div
-        v-else-if="kbs.length === 0"
-        class="mt-5 rounded-control border border-line bg-surface-muted px-3 py-2 text-sm text-slate-600"
-      >
-        本租户还没有知识库：先去创建知识库并上传文档，再回来检索。
-        <RouterLink to="/" class="text-brand underline">去建库 / 上传文档</RouterLink>
-      </div>
-      <el-checkbox-group
-        v-else
-        class="mt-2.5 grid gap-2 sm:grid-cols-2"
-        :model-value="store.selectedKbIds"
-        @update:model-value="onSelectionChange"
-      >
-        <el-tooltip
-          v-for="kb in kbs"
-          :key="kb.kb_id"
-          :disabled="allowedKbIds.has(kb.kb_id)"
-          content="这个库不在当前 Key 的 allowed_kb_ids 白名单里：去 /keys 改这把 Key 的配置后才能勾选"
-          placement="top"
-        >
+      <div class="mt-5 border-t border-line pt-5">
+        <el-form label-position="top" @submit.prevent="submitRetrieve">
+          <el-form-item>
+            <el-input
+              v-model="queryText"
+              type="textarea"
+              :rows="3"
+              maxlength="2000"
+              show-word-limit
+              placeholder="要检索的问题（可多行）· 例如：退款申请提交后，一般几天能到账？"
+            />
+          </el-form-item>
           <!--
-            每个库是一张可选中的小卡（边框随选中态变化），而不是裸复选框。
-            裸框加上「名字 · UUID」读起来像一行无关文本；有了边框，它是「可以点的对象」。
+            动作行右对齐：左端是「为什么现在点不了」，右端是这一卡的两个出口。
+            「修改配置」在「检索」左边——改配置是为检索服务的准备动作，主按钮永远在最右。
           -->
-          <el-checkbox
-            :value="kb.kb_id"
-            :disabled="!allowedKbIds.has(kb.kb_id)"
-            class="kb-option !mr-0"
-            :class="{
-              'kb-option--on': store.selectedKbIds.includes(kb.kb_id),
-              'kb-option--off': !allowedKbIds.has(kb.kb_id),
-            }"
-          >
-            <span class="flex flex-col leading-tight">
-              <span class="text-[13px] text-ink">{{ kb.name }}</span>
-              <span class="mt-0.5 font-mono text-[10px] text-slate-400">{{ kb.kb_id }}</span>
+          <div class="flex flex-wrap items-center justify-end gap-2">
+            <span v-if="blockReason !== ''" class="mr-auto text-[11px] text-muted">
+              {{ blockReason }}
             </span>
-          </el-checkbox>
-        </el-tooltip>
-      </el-checkbox-group>
-
-      <div
-        v-if="treeLoaded && unpickableSelected.length > 0"
-        class="mt-3 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
-      >
-        <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
-        <p class="mt-1 break-all font-mono">{{ unpickableSelected.join('、') }}</p>
-        <el-button class="mt-2" size="small" @click="dropUnpickable">移除这些选择</el-button>
-      </div>
-
-      <!-- ② 问题：与上面同一张卡——「选 Key / 勾库 / 写问题」是发一次检索的三个输入，
-           拆成两张卡只是把一次动作变成两次「标题 + 内容」，页面上因此有四段一样高的节奏。 -->
-      <div class="mt-6 border-t border-line pt-5">
-      <el-form label-position="top" @submit.prevent="submitRetrieve">
-        <el-form-item>
-          <el-input
-            v-model="queryText"
-            type="textarea"
-            :rows="3"
-            maxlength="2000"
-            show-word-limit
-            placeholder="要检索的问题（可多行）· 例如：退款申请提交后，一般几天能到账？"
-          />
-        </el-form-item>
-        <!--
-          动作行右对齐：左侧留一句「为什么现在点不了」，右侧是这一卡的两个出口。
-          「修改配置」放在「检索」左边：改配置是为检索服务的准备动作，主按钮永远在最右。
-        -->
-        <div class="flex flex-wrap items-center justify-end gap-2">
-          <span v-if="blockReason !== ''" class="mr-auto text-[11px] text-muted">
-            {{ blockReason }}
-          </span>
-          <el-button :disabled="keys.length === 0" @click="configDialogOpen = true">
-            修改配置
-          </el-button>
-          <el-button
-            type="primary"
-            native-type="submit"
-            :disabled="blockReason !== '' || running"
-            :loading="running"
-          >
-            检索
-          </el-button>
-        </div>
-      </el-form>
+            <el-button :disabled="keys.length === 0" @click="configDialogOpen = true">
+              修改配置
+            </el-button>
+            <el-button
+              type="primary"
+              native-type="submit"
+              :disabled="blockReason !== '' || running"
+              :loading="running"
+            >
+              检索
+            </el-button>
+          </div>
+        </el-form>
       </div>
     </el-card>
 
     <!--
-      「修改配置」弹窗：选 Key + 读它的密钥配置。改动立即生效（change 即 onKeyChange），
-      所以底部只有「关闭」——这里没有「保存」这回事，多一个确认按钮反而让人以为刚才
-      的选择还没落地。
+      「修改配置」弹窗：这张卡的所有「设置」都在这儿——选 Key、读它的密钥配置、勾要查的库。
+      改动立即生效（change 即同步 store），所以底部只有「关闭」：这里没有「保存」这回事，
+      多一个确认按钮反而让人以为刚才的选择还没落地。
     -->
     <el-dialog
       v-model="configDialogOpen"
       append-to-body
       title="修改检索配置"
-      width="560px"
+      width="600px"
     >
-      <div class="space-y-4 text-sm">
+      <div class="space-y-5 text-sm">
+        <!-- ① Key -->
         <div>
           <label class="mb-1.5 block text-[11px] text-muted">当前选中的 Key</label>
           <p v-if="keysPending" class="text-[11px] text-muted">正在读取 Key 列表…</p>
@@ -574,9 +488,6 @@ const emptyCopy = computed(() =>
               </span>
             </el-option>
           </el-select>
-          <p class="mt-1.5 text-[11px] leading-relaxed text-muted">
-            检索方式、条数、重排与改写都由这把 Key 决定；要改这些，去 Key 管理页改它的密钥配置。
-          </p>
         </div>
 
         <div
@@ -595,12 +506,83 @@ const emptyCopy = computed(() =>
 
         <div v-else-if="policy !== null">
           <p class="mb-1.5 text-[11px] text-muted">这把 Key 的密钥配置（只读）</p>
-          <dl class="grid gap-x-6 gap-y-2 rounded-control bg-surface-muted px-3 py-2.5 text-[11px] sm:grid-cols-2">
+          <dl
+            class="grid gap-x-6 gap-y-2 rounded-control bg-surface-muted px-3 py-2.5 text-[11px] sm:grid-cols-2"
+          >
             <div v-for="row in policyRows" :key="row.label" class="flex flex-col gap-0.5">
               <dt class="text-muted">{{ row.label }}</dt>
               <dd class="break-all font-mono text-slate-700">{{ row.value }}</dd>
             </div>
           </dl>
+        </div>
+
+        <!-- ② 要查的知识库 -->
+        <div class="border-t border-line pt-4">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <span class="text-[11px] font-medium text-ink">要查的知识库</span>
+            <span class="text-[11px] text-muted">
+              已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
+            </span>
+          </div>
+          <p class="mt-1 text-[11px] leading-relaxed text-muted">
+            只能勾这把 Key 白名单里的库；置灰的那些不在白名单里，去 Key 管理页改配置后才能勾。
+          </p>
+
+          <p v-if="treePending" class="mt-2.5 text-[11px] text-muted">
+            正在读取本租户的知识库…
+          </p>
+          <div
+            v-else-if="treeError !== ''"
+            class="mt-2.5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700"
+          >
+            {{ treeError }}
+          </div>
+          <div
+            v-else-if="kbs.length === 0"
+            class="mt-2.5 rounded-control border border-line bg-surface-muted px-3 py-2 text-[11px] text-slate-600"
+          >
+            本租户还没有知识库：先去创建知识库并上传文档，再回来检索。
+            <RouterLink to="/" class="text-brand underline">去建库 / 上传文档</RouterLink>
+          </div>
+          <el-checkbox-group
+            v-else
+            class="mt-2.5 grid gap-2 sm:grid-cols-2"
+            :model-value="store.selectedKbIds"
+            @update:model-value="onSelectionChange"
+          >
+            <el-tooltip
+              v-for="kb in kbs"
+              :key="kb.kb_id"
+              :disabled="allowedKbIds.has(kb.kb_id)"
+              content="这个库不在当前 Key 的 allowed_kb_ids 白名单里：去 /keys 改这把 Key 的配置后才能勾选"
+              placement="top"
+            >
+              <!-- 可点的小卡而不是裸复选框：有边框才读得出「这是一个可以点的对象」。 -->
+              <el-checkbox
+                :value="kb.kb_id"
+                :disabled="!allowedKbIds.has(kb.kb_id)"
+                class="kb-option !mr-0"
+                :class="{
+                  'kb-option--on': store.selectedKbIds.includes(kb.kb_id),
+                  'kb-option--off': !allowedKbIds.has(kb.kb_id),
+                }"
+              >
+                <span class="flex flex-col leading-tight">
+                  <span class="text-[13px] text-ink">{{ kb.name }}</span>
+                  <span class="mt-0.5 font-mono text-[10px] text-slate-400">{{ kb.kb_id }}</span>
+                </span>
+              </el-checkbox>
+            </el-tooltip>
+          </el-checkbox-group>
+
+          <div
+            v-if="treeLoaded && unpickableSelected.length > 0"
+            class="mt-3 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+          >
+            <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
+            <p class="mt-1 text-slate-700">{{ unpickableSelected.join('、') }}</p>
+            <el-button class="mt-2" size="small" @click="dropUnpickable">移除这些选择</el-button>
+          </div>
         </div>
       </div>
 
