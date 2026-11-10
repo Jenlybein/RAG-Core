@@ -57,14 +57,16 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
     },
   )
 
-  it('管理员入口是 #95 已落地的三条真实路由；#96 的两条仍不能先指过去', () => {
+  it('管理员入口恰好是已落地的五条真实路由', () => {
+    // #95 落地账号 / 套餐 / 审计，#96 补模型配置与检索参数：五条都必须有对应路由，
+    // 否则顶栏点过去就是一片空白。
     expect(navFor('admin').map((item) => item.to)).toEqual([
       '/admin/accounts',
       '/admin/plans',
       '/admin/audit',
+      '/admin/models',
+      '/admin/retrieval',
     ])
-    expect(navFor('admin').map((item) => item.to)).not.toContain('/admin/models')
-    expect(navFor('admin').map((item) => item.to)).not.toContain('/admin/retrieval')
   })
 })
 
