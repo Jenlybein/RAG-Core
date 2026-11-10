@@ -74,6 +74,12 @@ const routes = [
     // #96：运行时配置的三档清单；只有热更 / 待重启两档给写入口。
     component: () => import('../views/admin/RetrievalPage.vue'),
   },
+  {
+    path: '/admin/profiles',
+    name: 'admin-profiles',
+    // 档位预设：四个质量档位的参数（平台级配置，改完对下一次检索立即生效）。
+    component: () => import('../views/admin/ProfilesPage.vue'),
+  },
 ]
 
 const router = createRouter({

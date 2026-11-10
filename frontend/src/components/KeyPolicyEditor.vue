@@ -35,6 +35,8 @@ import {
   type KeyProfile,
   type PolicyForm,
 } from '../types/key'
+import type { ProfilePresetData } from '../types/profilePreset'
+import { describePreset } from '../services/consoleProfiles'
 import { disabledProfiles, visibleCustomOptions } from '../utils/keyPolicy'
 
 /** 父级持有的表单对象：子组件直接改它，保存时读的是同一份状态。 */
@@ -45,6 +47,12 @@ const props = defineProps<{
   allowedProfiles: string[]
   /** 控制面树里的库：`allowed_kb_ids` 的候选来源。 */
   kbOptions: KbOption[]
+  /**
+   * 四个档位的当前参数（`me.profile_presets`）。**这是「档位能干什么」的唯一数据源**：
+   * 后台能改它，所以前端不能写死「quality = 含重排」——那样后台关掉重排之后界面还在
+   * 承诺它。空数组时退回只显示档位名（旧后端不返回这个字段）。
+   */
+  presets?: ProfilePresetData[]
   /** 套餐的能力/限额提示；缺省（例如还没读到 `me`）时只显示不块状的说明。 */
   planHint: {
     hybridAllowed: boolean
@@ -85,6 +93,35 @@ const planCapabilityText = computed(() => {
 const qpsCap = computed(() => props.planHint?.retrieveQps ?? null)
 const dailyCap = computed(() => props.planHint?.retrieveDaily ?? null)
 
+/** 档位名 → 参数。空数组或漏一档时返回 `undefined`，由模板决定怎么退化。 */
+function presetOf(profile: string): ProfilePresetData | undefined {
+  const list = props.presets ?? []
+  return list.find((item) => item.profile === profile)
+}
+
+/**
+ * 卡片上那一行小字：**档位实际会做什么**（来自后台可改的参数），而不是写死的文案。
+ * 拿不到参数时退回原来的静态说明——「不知道」不该显示成「什么都没配」。
+ */
+function cardHint(profile: KeyProfile): string {
+  const preset = presetOf(profile)
+  if (preset === undefined) return PROFILE_CARDS[profile].hint
+  return describePreset(preset)
+}
+
+/**
+ * 悬浮提示的正文：参数 + 一句「这是意图不是生效值」。
+ * 为什么补这句：套餐允许 rerank、档位想要 rerank，但本机没装重排时它**不会跑**，
+ * 而用户看到「结果重排」会以为一定会重排。
+ */
+function presetTooltip(profile: KeyProfile): string {
+  const preset = presetOf(profile)
+  if (preset === undefined) {
+    return `${PROFILE_CARDS[profile].title}：${PROFILE_CARDS[profile].hint}（还没读到参数）`
+  }
+  return `${preset.profile} 档位的参数：${describePreset(preset)}。重排与改写是「想要」，实际还要本机装了才会跑。`
+}
+
 /** 只有一个库时不必让用户展开下拉：省掉一次没有信息量的点击。 */
 const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[0].kb_id : null))
 </script>
@@ -101,38 +138,49 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
       </div>
 
       <div class="grid gap-2 sm:grid-cols-2">
-        <button
+        <!--
+          档位卡片。悬浮（或键盘聚焦）时给一条提示，把这一档的参数说出来——
+          「能干什么」不是名字能回答的问题，而展开四张卡片的细节会把弹窗撑爆。
+          按钮本身仍然可点：提示是补充信息，不是一层拦截。
+        -->
+        <el-tooltip
           v-for="profile in KEY_PROFILES"
           :key="profile"
-          type="button"
-          class="rounded-control border px-3.5 py-2.5 text-left transition-colors duration-150"
-          :class="[
-            form.profile === profile
-              ? 'border-accent bg-accent-soft'
-              : 'border-line bg-surface hover:border-line-strong',
-            blockedProfiles.has(profile) ? 'cursor-not-allowed opacity-45' : '',
-          ]"
-          :disabled="blockedProfiles.has(profile)"
-          :title="blockedProfiles.has(profile) ? '当前套餐不支持该档位' : undefined"
-          @click="form.profile = profile"
+          :content="presetTooltip(profile)"
+          placement="top"
+          :show-after="300"
+          :hide-after="0"
+          popper-class="max-w-[320px]"
         >
-          <span class="flex items-center justify-between gap-2">
-            <span class="text-[13px] font-semibold text-ink">{{ PROFILE_CARDS[profile].title }}</span>
-            <!-- 单选的可视化：一个圆点，选中时内圈填实 -->
-            <span
-              class="grid h-3.5 w-3.5 shrink-0 place-items-center rounded-full border"
-              :class="form.profile === profile ? 'border-accent' : 'border-line-strong'"
-            >
+          <button
+            type="button"
+            class="w-full rounded-control border px-3.5 py-2.5 text-left transition-colors duration-150"
+            :class="[
+              form.profile === profile
+                ? 'border-accent bg-accent-soft'
+                : 'border-line bg-surface hover:border-line-strong',
+              blockedProfiles.has(profile) ? 'cursor-not-allowed opacity-45' : '',
+            ]"
+            :disabled="blockedProfiles.has(profile)"
+            @click="form.profile = profile"
+          >
+            <span class="flex items-center justify-between gap-2">
+              <span class="text-[13px] font-semibold text-ink">{{
+                PROFILE_CARDS[profile].title
+              }}</span>
+              <!-- 单选的可视化：一个圆点，选中时内圈填实 -->
               <span
-                v-if="form.profile === profile"
-                class="h-1.5 w-1.5 rounded-full bg-accent"
-              />
+                class="grid h-3.5 w-3.5 shrink-0 place-items-center rounded-full border"
+                :class="form.profile === profile ? 'border-accent' : 'border-line-strong'"
+              >
+                <span v-if="form.profile === profile" class="h-1.5 w-1.5 rounded-full bg-accent" />
+              </span>
             </span>
-          </span>
-          <span class="mt-0.5 block text-[11px] leading-snug text-muted">
-            {{ blockedProfiles.has(profile) ? '当前套餐不支持' : PROFILE_CARDS[profile].hint }}
-          </span>
-        </button>
+            <span class="mt-0.5 block text-[11px] leading-snug text-muted">
+              {{ blockedProfiles.has(profile) ? '当前套餐不支持' : cardHint(profile) }}
+            </span>
+          </button>
+        </el-tooltip>
       </div>
 
       <p class="mt-2 text-[11px] leading-relaxed text-muted">
