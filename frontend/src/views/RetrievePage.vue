@@ -146,6 +146,26 @@ watch(
   { immediate: true },
 )
 
+/**
+ * 只有一把 Key 时直接选上。
+ *
+ * 与上传页「清单里只有一个库就不再让用户点一次」是同一条规矩：这里点一次没有任何
+ * 信息量，而不选就没法检索——多出来的这一次点击纯粹是摩擦。两把以上**不猜**：
+ * 那时候选哪把是有意义的决定。
+ *
+ * 条件里的 `store.selectedKeyId === null` 保证它不会覆盖用户的选择（含从别处带过来的）。
+ */
+watch(
+  [keys, keysLoaded],
+  ([rows, loaded]) => {
+    if (!loaded) return
+    if (store.selectedKeyId !== null) return
+    if (rows.length !== 1) return
+    syncSelectedKey(rows[0])
+  },
+  { immediate: true },
+)
+
 function onKeyChange(value: unknown): void {
   const keyId = typeof value === 'string' ? value : null
   if (keyId === null || keyId === '') {
