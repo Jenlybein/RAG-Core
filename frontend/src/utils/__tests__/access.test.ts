@@ -28,13 +28,18 @@ const normalMe = meOf('user', 'tenant-a')
 const adminMe = meOf('admin', null)
 
 describe('navFor：入口按角色分流，未知身份一个入口都不给', () => {
-  it('普通账号拿到用户面板的四条入口', () => {
+  it('普通账号拿到用户面板的三条入口', () => {
+    // 建库与上传已并入「知识库管理」，所以是三条而不是四条：入口数要跟着页面数走，
+    // 多出来的一条只会让人在两页之间找「这个动作在哪一页」。
     expect(navFor('user').map((item) => item.to)).toEqual([
-      '/',
       '/knowledge-bases',
       '/keys',
       '/retrieve',
     ])
+  })
+
+  it('用户面板不再直接暴露根路径：`/` 只做重定向', () => {
+    expect(navFor('user').map((item) => item.to)).not.toContain('/')
   })
 
   it('管理员只拿管理员入口，绝不混入用户面板的路由', () => {

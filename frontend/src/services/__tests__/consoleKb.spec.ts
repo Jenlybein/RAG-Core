@@ -27,7 +27,7 @@ beforeEach(() => {
 })
 
 /**
- * 映射是「页面渲不渲得出来」的最后一道门：`KnowledgeFileTreePage` 会直接读
+ * 映射是「页面渲不渲得出来」的最后一道门：`KnowledgeManagePage` 会直接读
  * `node.documents.length`、遍历 `allowed_formats`，缺一个数组就是白屏。
  * 期望值全部写成字面量，不复用被测函数的中间对象（否则断言只是回显）。
  */

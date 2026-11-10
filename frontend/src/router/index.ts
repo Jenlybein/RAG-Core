@@ -1,4 +1,4 @@
-import { createRouter, createWebHistory } from 'vue-router'
+import { createRouter, createWebHistory, type RouteLocation } from 'vue-router'
 
 import { fetchMe } from '../services/console'
 import { decideRedirect, probeFromError, type MeProbe } from '../utils/access'
@@ -24,16 +24,16 @@ const routes = [
     component: () => import('../views/LoginPage.vue'),
   },
   {
+    // `/` 不再是一张独立页面：建库与上传已并进「知识库管理」。
+    // 保留这条重定向是为了不打断旧链接（含带 `?kb_id=` 的深链）。
     path: '/',
-    name: 'upload',
-    // 本票的真实页：建库 + 上传闭环；它自动套上 AppHeader，并由守卫按登录态放行。
-    component: () => import('../views/KnowledgeUploadPage.vue'),
+    redirect: (to: RouteLocation) => ({ path: '/knowledge-bases', query: to.query }),
   },
   {
     path: '/knowledge-bases',
     name: 'knowledge-bases',
-    // 本票的真实页：两级树 + 三态状态 + 有处理中才轮询。
-    component: () => import('../views/KnowledgeFileTreePage.vue'),
+    // 知识库管理：列表 + 详情弹窗（库内文档的增删查改）+ 建库 / 上传弹窗。
+    component: () => import('../views/KnowledgeManagePage.vue'),
   },
   {
     path: '/keys',

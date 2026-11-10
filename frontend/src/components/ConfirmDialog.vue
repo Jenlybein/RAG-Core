@@ -18,6 +18,14 @@ defineProps<{
   danger?: boolean
   /** 请求在途时锁住弹窗：避免重复点确认或点了取消但请求已经发出。 */
   loading?: boolean
+  /**
+   * 确认按钮不可用（动作在当前状态下不被后端接受）。
+   *
+   * 与 `loading` 分开：`loading` 是「正在做」，这里是「做不了」。例如删库只允许空库，
+   * 库内还有文档时后端会回 20015——按钮留着但点不动，比藏起来更能说清规则：
+   * 用户看到的是「删不了」而不是「没有删除这回事」。
+   */
+  confirmDisabled?: boolean
 }>()
 
 const emit = defineEmits<{ confirm: [] }>()
@@ -41,6 +49,7 @@ const emit = defineEmits<{ confirm: [] }>()
         <el-button :disabled="loading === true" @click="open = false">取消</el-button>
         <el-button
           :type="danger === true ? 'danger' : 'primary'"
+          :disabled="confirmDisabled === true"
           :loading="loading === true"
           @click="emit('confirm')"
         >

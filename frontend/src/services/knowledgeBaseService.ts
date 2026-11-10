@@ -17,7 +17,7 @@ export const KNOWLEDGE_BASE_TREE_QUERY_KEY = ['knowledge-bases', 'tree'] as cons
  *
  * 签名**刻意保持** `Promise<KnowledgeBaseNode[]>`：页面、轮询、
  * `KNOWLEDGE_BASE_TREE_QUERY_KEY` 都只认这个类型与这个函数，所以从阶段 1
- * （1 次列库 + 每库 1 次列文档）切到一次请求时，`KnowledgeFileTreePage.vue` 与
+ * （1 次列库 + 每库 1 次列文档）切到一次请求时，`KnowledgeManagePage.vue` 与
  * `useTreePolling.ts` 一行都不用改——变的是「怎么拿」而不是「拿到什么」。
  *
  * 为什么页面能安全地用会话身份读树：路由守卫（#85）已让列表页只在登录控制面后

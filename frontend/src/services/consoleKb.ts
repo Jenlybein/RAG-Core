@@ -10,6 +10,7 @@ import type {
   ConsoleTreeDocument,
   CreatedKnowledgeBase,
   CreateKnowledgeBaseRequest,
+  KnowledgeBaseDeleteReceipt,
   KnowledgeBaseNode,
 } from '../types/knowledgeBase'
 
@@ -79,6 +80,17 @@ export function uploadConsole(payload: UploadConsolePayload): Promise<DocumentUp
  */
 export function deleteDocumentConsole(documentId: string): Promise<DocumentDeleteReceipt> {
   return consoleHttp.delete<DocumentDeleteReceipt>(`/console/documents/${documentId}`)
+}
+
+/**
+ * 删除空知识库。
+ *
+ * **只对空库有效**：库内还有文档时后端回 `20015`（提示先删文档），而不是级联删除。
+ * 级联会跨越「清向量 / 清关键词 / 删文件 / 删记录」四件事，中途失败就留下一半一半的
+ * 状态——所以这条拒绝是有意的，页面要把 20015 的原文展示出来，不要翻译成「删除失败」。
+ */
+export function deleteKbConsole(kbId: string): Promise<KnowledgeBaseDeleteReceipt> {
+  return consoleHttp.delete<KnowledgeBaseDeleteReceipt>(`/console/knowledge-bases/${kbId}`)
 }
 
 export interface ReindexDocumentOptions {

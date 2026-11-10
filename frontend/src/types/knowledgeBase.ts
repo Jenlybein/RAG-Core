@@ -40,6 +40,12 @@ export interface CreatedKnowledgeBase {
   created_at: string
 }
 
+/** `DELETE /console/knowledge-bases/{kb_id}` 的回执；只对空库成功（库内有文档是 20015）。 */
+export interface KnowledgeBaseDeleteReceipt {
+  kb_id: string
+  deleted: boolean
+}
+
 /**
  * 列表页的两级树节点：父是知识库，`documents` 是它的子行。
  *
