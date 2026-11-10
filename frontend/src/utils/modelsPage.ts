@@ -1,12 +1,15 @@
 import type { ModelConfigData, ModelRole } from '../types/modelConfig'
-import type { SettingsImpact } from '../types/runtimeSettings'
 
 /**
- * 模型配置页的判定与展示规则（纯函数）。
+ * **模型配置页专用**的判定与展示规则（纯函数）。
  *
- * 与 #95 的 `utils/adminPlans.ts` 同形：影响面用 `count`、展示文案在纯函数里生成、
- * 组件只负责「什么时候调用、拿到结果怎么展示」。这样「不指向」这个可选项、被引用角色
- * 的顺序、确认弹窗的条件都能用 vitest 直接钉死。
+ * 影响面预览（`shouldConfirmImpact` / `impactLines`）已移到 `utils/impactPreview.ts`：
+ * 它也被检索参数页使用，不属于本页。这里只剩真正与模型接入相关的三件事——角色下拉、
+ * 被引用角色、出厂供应商表。
+ *
+ * 与 #95 的 `utils/adminPlans.ts` 同形：展示文案在纯函数里生成、组件只负责
+ * 「什么时候调用、拿到结果怎么展示」，这样「不指向」这个可选项与被引用角色的顺序
+ * 都能用 vitest 直接钉死。
  */
 
 /** 两个模型角色，顺序与后端 `app/core/model_roles.MODEL_ROLES` 一致（先快后准）。 */
@@ -88,51 +91,4 @@ export function roleOptions(configs: readonly RoleOptionSource[]): RoleOption[] 
  */
 export function referencedRolesOf(config: Pick<ModelConfigData, 'roles'>): ModelRole[] {
   return MODEL_ROLES.filter((role) => config.roles.includes(role))
-}
-
-/**
- * 影响面是否值得停下来问一句：与 #95 的 `shouldConfirm` 同一形状。
- *
- * **一律用 `count`**。后端 `sample` 最多只放 5 个名字，拿它的长度判断会在受影响对象
- * 更多、或样本恰好为空时漏掉弹窗——那正是这张票要防的事故。
- */
-export function shouldConfirmImpact(impact: SettingsImpact | null | undefined): boolean {
-  if (impact === null || impact === undefined) return false
-  return impact.quality_degraded.count > 0 || impact.keyword_channel_lost.count > 0
-}
-
-/**
- * 确认弹窗的正文：只列真正非零的组，数字用 `count`，样本作为「示例」附后。
- *
- * 返回字符串数组而不是拼好的 HTML：`ElMessageBox` 按纯文本渲染，租户名是用户可控的
- * 数据，不能被当成 HTML 插进页面。
- */
-export function impactLines(impact: SettingsImpact | null | undefined): string[] {
-  if (impact === null || impact === undefined) return []
-
-  const lines: string[] = []
-
-  if (impact.quality_degraded.count > 0) {
-    lines.push(
-      `${impact.quality_degraded.count} 个租户的 quality 档会少一步能力` +
-        '（重排或改写被关掉）' +
-        sampleHint(impact.quality_degraded.sample),
-    )
-  }
-
-  if (impact.keyword_channel_lost.count > 0) {
-    lines.push(
-      `${impact.keyword_channel_lost.count} 个租户的 hybrid 档会失去关键词通道` +
-        '（只剩向量一路召回）' +
-        sampleHint(impact.keyword_channel_lost.sample),
-    )
-  }
-
-  return lines
-}
-
-function sampleHint(sample: readonly string[]): string {
-  if (sample.length === 0) return ''
-  // 明确写「示例」：它是名单的前几个，不是全部，也不是计数。
-  return `；示例：${sample.join('、')}`
 }
