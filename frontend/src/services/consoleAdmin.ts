@@ -29,8 +29,10 @@ export const PLANS_QUERY_KEY = ['console', 'plans'] as const
  * 审计列表的 query key。`limit` 是后端唯一的分页参数（没有 offset），所以它是 key 的一部分：
  * 改条数就是另一次请求，不该命中旧条数的那份缓存。
  */
-export function auditLogsQueryKey(limit: number) {
-  return ['console', 'audit-logs', limit] as const
+export function auditLogsQueryKey(limit: number, offset: number, action: string) {
+  // 三个参数都进 key：翻页、换页大小、换动作过滤各自是一份独立的缓存，
+  // 少一个就会出现「翻到第 2 页却拿到第 1 页的缓存」。
+  return ['console', 'audit-logs', limit, offset, action] as const
 }
 
 /** 管理员跨租户看全部账号；每行带所属租户与该租户当前的套餐。 */
@@ -90,6 +92,14 @@ export function deletePlan(planId: number): Promise<PlanPatchData> {
  * 审计列表。`limit` 是后端唯一支持的参数（缺省 50、上限 200）；没有 offset/动作过滤接口，
  * 所以「按动作过滤」在页面里对已载入的这批记录做，不伪造一个后端不存在的分页协议。
  */
-export function fetchAuditLogs(limit: number): Promise<AuditLogListData> {
-  return consoleHttp.get<AuditLogListData>('/console/audit-logs', { params: { limit } })
+export function fetchAuditLogs(
+  limit: number,
+  offset: number,
+  action: string,
+): Promise<AuditLogListData> {
+  // 分页与动作过滤都在后端做：`offset` 是服务端分页，不是「先拉全量再切片」。
+  // `action` 传空串时**不放进参数**——后端把它当成「不过滤」，传空串反而会去匹配空动作。
+  const params: Record<string, string | number> = { limit, offset }
+  if (action !== '') params.action = action
+  return consoleHttp.get<AuditLogListData>('/console/audit-logs', { params })
 }

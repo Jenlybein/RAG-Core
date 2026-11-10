@@ -131,6 +131,10 @@ export interface AuditLogItem {
 /** `GET /console/audit-logs` 的 data。 */
 export interface AuditLogListData {
   audit_logs: AuditLogItem[]
+  /** 当前筛选条件下的**全量**条数（不是本页条数）：分页器据此画页码。 */
+  total: number
+  /** 本页起点，原样回显请求参数——响应自解释，页面不必记住上一次的入参。 */
+  offset: number
 }
 
 /** 六个「≥ 1」的数值上限；清单来自后端 `PLAN_NUMERIC_COLUMNS`。 */
