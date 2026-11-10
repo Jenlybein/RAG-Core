@@ -441,6 +441,27 @@ def list_audit_logs(db: Session, *, limit: int) -> list[AuditLog]:
     return audit_log_repository.list_recent(db, limit=limit)
 
 
+def append_audit(
+    db: Session,
+    *,
+    actor: ConsoleIdentity | None,
+    action: str,
+    target: str,
+    before: dict[str, Any] | None,
+    after: dict[str, Any] | None,
+) -> AuditLog:
+    """对外暴露的审计收口：配置中台等新的写入口复用**同一份**写法。
+
+    只加一个公开名字，不搬动实现：审计行的形状（动作名 + 目标 + 改前/改后快照 + 可空
+    actor）已经在这里定过一次，第二个写入口各自复制一份，迟早有一条忘了填 ``created_at``
+    或忘了「不 commit」那条约定。
+    """
+
+    return _append_audit(
+        db, actor=actor, action=action, target=target, before=before, after=after
+    )
+
+
 def _append_audit(
     db: Session,
     *,

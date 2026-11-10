@@ -11,10 +11,16 @@
 - ``get_console_admin``：同上，但必须是管理员；
 - ``require_console_write`` / ``require_console_admin_write``：同上，并且这个请求带了
   防跨站的显式头。**写操作**用这两个，读操作用前两个；
+- ``require_console_tenant`` / ``require_console_tenant_write``：**用户面板类接口**（keys /
+  kbs / documents / settings / models）用这两个——管理员不属于任何租户，它的
+  ``tenant_id`` 是 ``None``，这类接口对它一律 ``20011``；
 - ``require_console_write_header``：登出这种「不需要先认出是谁、但仍然是写操作」的
   接口用它——没有会话也要能清掉 cookie，否则共用电脑上永远退不干净；
 - ``get_plan_cache``：套餐缓存的构造点。测试注入内存假实现，于是「改完缓存里没有了」
-  可以被直接断言，而生产走 Redis。
+  可以被直接断言，而生产走 Redis；
+- ``get_runtime_settings_cache``：运行时配置覆盖层的缓存构造点。它与进程级注入点是
+  **同一个对象**（见 ``app.core.runtime_settings_cache``）：刷新发生在请求中间件里，
+  中间件拿不到 ``Depends``，两条构造点分叉会让测试里的中间件永远去连真 Redis。
 """
 
 from __future__ import annotations
@@ -28,9 +34,18 @@ from app.core.console_auth import (
     require_write_header,
     resolve_console_identity,
 )
+from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
+from app.core.runtime_settings_cache import (
+    RuntimeSettingsCache,
+    get_settings_cache,
+)
 from app.db.session import get_db
 from app.services import plan_service
+
+#: 「管理员不属于任何租户」时的提示。与管理员的角色判定分开写：两者都出 ``20011``
+#: 但原因不同（一个是「你不是管理员」，一个是「这类接口要租户身份」），排障时看得出。
+MSG_TENANT_REQUIRED = "tenant identity required (platform admins belong to no tenant)"
 
 
 def get_console_account(
@@ -76,7 +91,45 @@ def require_console_write_header(request: Request) -> None:
     require_write_header(request)
 
 
+def require_console_tenant(
+    identity: ConsoleIdentity = Depends(get_console_account),
+) -> ConsoleIdentity:
+    """用户面板类读接口的门禁：先认出是谁，再要求它有租户身份（``20011``）。
+
+    只写一处而不是每票各写一遍：`keys / kbs / documents / settings / models` 都对
+    「管理员空租户」同一条答案，五个地方各判一次的结果迟早有一个漏掉。
+
+    顺序是「先认人、后判租户」：没有会话时正确的码是 ``20010``（去登录），不是
+    ``20011``——先判租户会把一个未登录的请求报成「你没有权限」，前端就不会跳登录页了。
+    """
+
+    if identity.tenant_id is None:
+        raise AppError(ErrorCode.FORBIDDEN, MSG_TENANT_REQUIRED)
+    return identity
+
+
+def require_console_tenant_write(
+    request: Request,
+    identity: ConsoleIdentity = Depends(require_console_write),
+) -> ConsoleIdentity:
+    """用户面板类写接口的门禁：防跨站头 +（先认人后判租户）。
+
+    复用 :func:`require_console_write` 而不是自己再查一次头：``WRITE_HEADER_NAME`` 与
+    固定值只该有一个出处，写两遍就有一个会先漂移。
+    """
+
+    if identity.tenant_id is None:
+        raise AppError(ErrorCode.FORBIDDEN, MSG_TENANT_REQUIRED)
+    return identity
+
+
 def get_plan_cache() -> PlanCache:
     """套餐缓存的生产构造点；测试用 ``dependency_overrides`` 换成内存假实现。"""
 
     return plan_service.default_plan_cache()
+
+
+def get_runtime_settings_cache() -> RuntimeSettingsCache:
+    """运行时配置覆盖层的缓存构造点（与中间件看到的是同一个进程级实例）。"""
+
+    return get_settings_cache()
