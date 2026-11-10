@@ -42,11 +42,6 @@ export interface DocumentListItem {
   created_at: string
 }
 
-/** 文档列表响应体：服务层在这里剥掉外层 `items`，页面只拿到数组。 */
-export interface DocumentListData {
-  items: DocumentListItem[]
-}
-
 /**
  * 重建回执。`status` 恒为 3：路由只做「排队 + 投递」，purge 与写入仍归 Worker，
  * 因此重建成功后也要等轮询看到终态，不能就地改成成功。

@@ -1,8 +1,6 @@
 import { dataHttp } from '../lib/dataHttp'
 import type {
   DocumentDeleteReceipt,
-  DocumentListItem,
-  DocumentListData,
   DocumentReindexReceipt,
   DocumentUploadReceipt,
   UploadDocumentFileRequest,
@@ -35,17 +33,12 @@ export function uploadDocumentFile(
   return dataHttp.post<DocumentUploadReceipt>('/api/v1/documents/upload', form)
 }
 
-/**
- * 某库下的文档列表：列表页轮询的进度观测口。
- *
- * 没有 `/documents/tree` 之类的聚合接口（`00-facts.md` §4 已点名），
- * 所以阶段 1 只能按库逐个拉；剥掉 `items` 外壳后再交给拼树的地方。
+/*
+ * 这里不再有「按库列文档」的读函数：列表页的树查询已在 #89 整体切到控制面
+ * `GET /console/knowledge-bases/tree`（见 `consoleKb.ts`），数据面这条例行请求
+ * 已无调用点，留着只会给下一个人一个「好像还在用这套 N+1」的错觉。
+ * 文档项的 `DocumentListItem` 类型仍留在 `types/document.ts`：控制面树用它。
  */
-export function fetchDocuments(kbId: string): Promise<DocumentListItem[]> {
-  return dataHttp
-    .get<DocumentListData>('/api/v1/documents', { params: { kb_id: kbId } })
-    .then((data) => data.items)
-}
 
 /**
  * 删除单文档：后端会清切片、删原文件、删记录，三步都不回滚。

@@ -6,7 +6,7 @@ import type {
   KnowledgeBaseNode,
   KnowledgeBaseSummary,
 } from '../types/knowledgeBase'
-import { fetchDocuments } from './documentService'
+import { fetchConsoleTree, toKnowledgeBaseNodes } from './consoleKb'
 
 /**
  * 创建知识库。
@@ -20,7 +20,7 @@ export function createKnowledgeBase(
   return dataHttp.post<CreatedKnowledgeBase>('/api/v1/knowledge-bases/create', payload)
 }
 
-/** 列表页树的 query key。#89 把接口换成控制面一次请求时，缓存键不变，页面无需改。 */
+/** 列表页树的 query key。换实现时缓存键刻意不变：#89 只动「怎么拿」，缓存行为与页面无需改。 */
 export const KNOWLEDGE_BASE_TREE_QUERY_KEY = ['knowledge-bases', 'tree'] as const
 
 /**
@@ -36,31 +36,18 @@ export function fetchKnowledgeBases(): Promise<KnowledgeBaseSummary[]> {
 }
 
 /**
- * 列表页两级树（阶段 1 实现）。
+ * 列表页两级树（阶段 2：控制面一次拿全，见 #89）。
  *
- * **对外只暴露 `Promise<KnowledgeBaseNode[]>`**：页面与轮询不许知道它是
- * 「1 次库列表 + 每库 1 次文档列表」拼出来的。T7/#89 会把它换成控制面
- * `/console/knowledge-bases/tree` 的一次请求，那时只改本函数的实现，
- * 页面、`useTreePolling`、`StatusBadge` 一行都不用动。
+ * 签名**刻意保持** `Promise<KnowledgeBaseNode[]>`：页面、轮询、
+ * `KNOWLEDGE_BASE_TREE_QUERY_KEY` 都只认这个类型与这个函数，所以从阶段 1
+ * （1 次列库 + 每库 1 次列文档）切到一次请求时，`KnowledgeFileTreePage.vue` 与
+ * `useTreePolling.ts` 一行都不用改——变的是「怎么拿」而不是「拿到什么」。
  *
- * 各库的文档请求并发发出而不是串行：结果只是拼树，库之间没有先后依赖，
- * 串行会让「N 个库」把列表页首屏拉成 N 倍的往返延迟。
+ * 跨门说明：本文件其余函数仍走数据面 `dataHttp`；只有这条树查询走控制面，
+ * 而控制面入口与映射函数集中在 `consoleKb.ts`，这样「哪扇门」在文件粒度可辨。
+ * 页面为什么能安全地用会话身份读树：路由守卫（#85）已让列表页只在登录控制面后
+ * 才可达，未登录会被跳 `/login`；「Key 页 / 身份切换」是 #92 的事，本票不碰。
  */
 export async function fetchTree(): Promise<KnowledgeBaseNode[]> {
-  const knowledgeBases = await fetchKnowledgeBases()
-  const documentsByKb = await Promise.all(
-    knowledgeBases.map(
-      async (kb) => [kb.kb_id, await fetchDocuments(kb.kb_id)] as const,
-    ),
-  )
-  const documents = new Map(documentsByKb)
-
-  return knowledgeBases.map((kb) => ({
-    kb_id: kb.kb_id,
-    name: kb.name,
-    split_strategy: kb.split_strategy,
-    allowed_formats: kb.allowed_formats,
-    chunk_size: kb.chunk_size,
-    documents: documents.get(kb.kb_id) ?? [],
-  }))
+  return toKnowledgeBaseNodes(await fetchConsoleTree())
 }
