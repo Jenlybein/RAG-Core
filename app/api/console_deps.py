@@ -11,14 +11,22 @@
 - ``get_console_admin``：同上，但必须是管理员；
 - ``require_console_write`` / ``require_console_admin_write``：同上，并且这个请求带了
   防跨站的显式头。**写操作**用这两个，读操作用前两个；
+- ``require_console_tenant`` / ``require_console_tenant_write``：**用户面板类接口**
+  （库 / 文档 / 密钥 / 模型）的租户门禁，返回裸 ``tenant_id``。管理员（``tenant_id IS
+  NULL``）能登录、能看 ``/console/me``，但它不属于任何租户，这些接口对它一律 ``20011``
+  ——写成共用依赖而不是每条各判一遍，是因为「少写一条」的结果是管理员悄悄拿到一个空
+  租户的写权限；
+- **平台级接口**（账号 / 套餐 / 审计 / 配置中台 ``settings``）用
+  ``get_console_admin`` / ``require_console_admin_write``，**不套**上面那对租户依赖。
+  ``runtime_settings`` 不属于任何租户：``RERANK_ENABLED`` 一关，所有租户的 ``quality``
+  档位一起退化，所以它恰恰只能给管理员；给「任意租户」开写口就是跨租户越权；
 - ``require_console_write_header``：登出这种「不需要先认出是谁、但仍然是写操作」的
   接口用它——没有会话也要能清掉 cookie，否则共用电脑上永远退不干净；
-- ``require_console_tenant`` / ``require_console_tenant_write``：用户面板类接口
-  （库 / 文档 / 密钥 / 配置 / 模型）的租户门禁。管理员（``tenant_id IS NULL``）能登录、
-  能看 ``/console/me``，但它不属于任何租户，这些接口对它一律 ``20011``——写成共用依赖
-  而不是每条各判一遍，是因为「少写一条」的结果是管理员悄悄拿到一个空租户的写权限；
 - ``get_plan_cache``：套餐缓存的构造点。测试注入内存假实现，于是「改完缓存里没有了」
-  可以被直接断言，而生产走 Redis。
+  可以被直接断言，而生产走 Redis；
+- ``get_runtime_settings_cache``：运行时配置覆盖层的缓存构造点。它与进程级注入点是
+  **同一个对象**（见 ``app.core.runtime_settings_cache``）：刷新发生在请求中间件里，
+  中间件拿不到 ``Depends``，两条构造点分叉会让测试里的中间件永远去连真 Redis。
 """
 
 from __future__ import annotations
@@ -36,6 +44,10 @@ from app.core.console_auth import (
 )
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
+from app.core.runtime_settings_cache import (
+    RuntimeSettingsCache,
+    get_settings_cache,
+)
 from app.db.session import get_db
 from app.services import plan_service
 
@@ -122,3 +134,9 @@ def get_plan_cache() -> PlanCache:
     """套餐缓存的生产构造点；测试用 ``dependency_overrides`` 换成内存假实现。"""
 
     return plan_service.default_plan_cache()
+
+
+def get_runtime_settings_cache() -> RuntimeSettingsCache:
+    """运行时配置覆盖层的缓存构造点（与中间件看到的是同一个进程级实例）。"""
+
+    return get_settings_cache()

@@ -18,6 +18,15 @@ def get_by_id(db: Session, policy_id: str) -> KeyPolicy | None:
     return db.get(KeyPolicy, policy_id)
 
 
+def list_all(db: Session) -> list[KeyPolicy]:
+    """全部密钥配置。控制面「改部署能力开关的影响面」（#93）要横扫所有配置。
+
+    按 id 排序只为让两次读的结果稳定；顺序不参与任何判定。
+    """
+
+    return db.query(KeyPolicy).order_by(KeyPolicy.id).all()
+
+
 def list_by_tenant(db: Session, tenant_id: str) -> list[KeyPolicy]:
     """这个租户的全部密钥配置。控制面「改套餐影响面」要数「谁会失去档位」。
 
