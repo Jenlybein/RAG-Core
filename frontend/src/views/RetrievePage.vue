@@ -22,6 +22,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ComparePanel from '../components/ComparePanel.vue'
+import PageHeader from '../components/PageHeader.vue'
 import RunSummary from '../components/RunSummary.vue'
 import { ApiError } from '../lib/envelope'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
@@ -297,7 +298,11 @@ const emptyCopy = computed(() =>
 </script>
 
 <template>
-  <section class="space-y-4">
+  <section class="space-y-6">
+  <PageHeader
+    title="调试台"
+    subtitle="选一把 Key、勾要查的库、发一次真实检索。检索方式、条数、重排与改写都由这把 Key 的密钥配置决定——本页不设这些参数，跑完只看后端回显的真实生效值。"
+  />
     <!-- ① 选 Key 与检索范围 -->
     <el-card shadow="never">
       <template #header>
@@ -305,8 +310,7 @@ const emptyCopy = computed(() =>
           <div>
             <h2 class="text-sm font-semibold text-slate-800">检索范围</h2>
             <p class="mt-1 text-xs text-slate-500">
-              列出控制面里本租户的全部库；只有当前 Key 白名单里的库能勾选。检索方式、条数、重排与
-              查询改写都由这把 Key 的密钥配置决定，本页不设这些参数。
+              只有当前 Key 白名单里的库能勾选；白名单外的库置灰并给出原因。
             </p>
           </div>
           <span class="shrink-0 text-sm text-slate-600">

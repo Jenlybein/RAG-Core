@@ -21,6 +21,7 @@ import {
   type UploadRowStatus,
 } from '../composables/useUploadDocuments'
 import { ApiError } from '../lib/envelope'
+import PageHeader from '../components/PageHeader.vue'
 import { createKbConsole, uploadConsole } from '../services/consoleKb'
 import {
   KB_CHUNK_SIZE_DEFAULT,
@@ -219,7 +220,11 @@ function rowErrorText(row: UploadResultRow): string {
 </script>
 
 <template>
-  <section class="space-y-4">
+  <section class="space-y-6">
+  <PageHeader
+    title="上传文档"
+    subtitle="先建一个知识库（切块策略决定它收哪些格式），再把文档丢进去。上传是异步的：提交成功即返回，索引在后台跑，进度去列表页看。"
+  />
     <div class="grid gap-4 lg:grid-cols-2">
       <!-- 1. 创建知识库 -->
       <el-card shadow="never">

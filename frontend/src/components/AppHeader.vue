@@ -59,26 +59,58 @@ async function logout(): Promise<void> {
 </script>
 
 <template>
-  <header class="border-b border-line bg-white">
-    <div class="mx-auto flex max-w-5xl flex-wrap items-center justify-between gap-3 px-6 py-3">
-      <div class="flex flex-wrap items-center gap-6">
-        <span class="text-sm font-semibold text-brand">RAG-Core 调试台</span>
+  <!--
+    吸顶 + 半透明模糊：滚动时内容从顶栏底下穿过，层级关系不用阴影也能读懂。
+    只在有内容可滚的页面才看得出效果，所以不加 scroll 监听去切换样式。
+  -->
+  <header
+    class="sticky top-0 z-30 border-b border-line/80 bg-canvas/85 backdrop-blur-md backdrop-saturate-150"
+  >
+    <div
+      class="mx-auto flex w-full max-w-page flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8"
+    >
+      <div class="flex flex-wrap items-center gap-5">
+        <!--
+          品牌标记：一个近黑圆角方块里放一个极简的字形。不引图标库——这类位置一个字母
+          就够，vector 图标反而会抢走标题的注意力。
+        -->
+        <RouterLink to="/" class="flex items-center gap-2.5">
+          <span
+            class="grid h-7 w-7 place-items-center rounded-[9px] bg-accent text-[13px] font-semibold leading-none text-white shadow-[0_1px_2px_rgba(28,26,21,0.22)]"
+            aria-hidden="true"
+            >R</span
+          >
+          <span class="text-[13px] font-semibold tracking-tight text-ink">RAG-Core</span>
+          <span class="hidden text-[13px] text-muted sm:inline">调试台</span>
+        </RouterLink>
+
         <!-- 未登录或角色未知时 items 为空，导航整块不渲染：不做「猜一个角色」的兜底入口。 -->
-        <nav v-if="items.length > 0" class="flex flex-wrap items-center gap-4 text-sm">
+        <nav v-if="items.length > 0" class="flex flex-wrap items-center gap-0.5">
           <RouterLink
             v-for="item in items"
             :key="item.to"
             :to="item.to"
-            class="hover:text-brand"
-            :class="isCurrent(item.to) ? 'font-medium text-brand' : 'text-slate-600'"
+            class="nav-pill"
+            :class="
+              isCurrent(item.to)
+                ? 'bg-accent-soft font-semibold text-ink'
+                : 'text-slate-600 hover:bg-accent-soft/60 hover:text-ink'
+            "
           >
             {{ item.label }}
           </RouterLink>
         </nav>
       </div>
+
       <div class="flex items-center gap-3 text-sm">
-        <span v-if="account !== null" class="text-slate-500">
-          {{ account.username }}（{{ roleLabel }}）
+        <!-- 身份做成一个胶囊：名字是主色，角色是灰字——比「bob（租户账号）」整串更易扫读 -->
+        <span
+          v-if="account !== null"
+          class="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1 text-[12px] shadow-[0_1px_1px_rgba(28,26,21,0.03)]"
+        >
+          <span class="font-medium text-ink">{{ account.username }}</span>
+          <span class="text-muted">·</span>
+          <span class="text-muted">{{ roleLabel }}</span>
         </span>
         <el-button size="small" :loading="loggingOut" @click="logout">登出</el-button>
       </div>

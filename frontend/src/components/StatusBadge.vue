@@ -22,12 +22,14 @@ const props = defineProps<{
 }>()
 
 // 颜色来自 `00-facts.md` §10 / 前端约定「状态与颜色」，不引入第二套令牌。
+// 底色与文字色整体暖化一档：原来的 #D1FAE5 / #FEE2E2 是荧光色系的浅底，压在米白画布上
+// 像贴纸；换成偏灰的鼠尾草 / 陶土后，与卡片同一温度。四组对比度均 ≥4.5:1。
 const STATUS_STYLES: Record<number, StatusStyle> = {
-  1: { text: '成功', background: '#D1FAE5', color: '#065F46' },
-  2: { text: '失败', background: '#FEE2E2', color: '#B91C1C' },
-  3: { text: '索引中', background: '#FEF3C7', color: '#92400E' },
+  1: { text: '成功', background: '#E4EDDD', color: '#3C5228' },
+  2: { text: '失败', background: '#F7E2DD', color: '#8C2F22' },
+  3: { text: '索引中', background: '#F7E9C9', color: '#6E4E12' },
 }
-const UNKNOWN_STYLE: StatusStyle = { text: '未知', background: '#F3F4F6', color: '#6B7280' }
+const UNKNOWN_STYLE: StatusStyle = { text: '未知', background: '#F0ECE4', color: '#6B6558' }
 
 const badgeStyle = computed(() => STATUS_STYLES[props.status] ?? UNKNOWN_STYLE)
 
@@ -46,7 +48,7 @@ const detail = computed(() => {
   <el-popover v-if="detail !== null" trigger="click" placement="top" :width="320">
     <template #reference>
       <span
-        class="inline-flex cursor-pointer items-center gap-1 rounded px-2 py-0.5 text-xs font-medium"
+        class="inline-flex cursor-pointer items-center gap-1 rounded-full px-2.5 py-0.5 text-xs font-medium"
         :style="{ backgroundColor: badgeStyle.background, color: badgeStyle.color }"
       >
         {{ badgeStyle.text }}
@@ -60,7 +62,7 @@ const detail = computed(() => {
 
   <span
     v-else
-    class="inline-flex items-center rounded px-2 py-0.5 text-xs font-medium"
+    class="inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium"
     :style="{ backgroundColor: badgeStyle.background, color: badgeStyle.color }"
   >
     {{ badgeStyle.text }}

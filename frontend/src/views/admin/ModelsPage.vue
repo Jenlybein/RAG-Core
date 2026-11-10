@@ -320,11 +320,11 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="rounded-lg border border-line bg-white p-6">
+  <section class="card card-body">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 class="text-base font-semibold text-slate-800">模型配置</h2>
-        <p class="mt-1 text-sm text-slate-500">
+        <h2 class="page-title">模型配置</h2>
+        <p class="page-subtitle">
           模型接入是平台级配置（不属于任何租户）：一条配置里写着用哪家模型、哪个端点、哪把 Key。
           改完下一次装配即生效，不需要重启。
         </p>

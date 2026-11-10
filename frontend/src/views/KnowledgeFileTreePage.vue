@@ -19,6 +19,7 @@ import ConfirmDialog from '../components/ConfirmDialog.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import { useTreePolling } from '../composables/useTreePolling'
 import { ApiError } from '../lib/envelope'
+import PageHeader from '../components/PageHeader.vue'
 import { deleteDocumentConsole, reindexDocumentConsole } from '../services/consoleKb'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
 import type { DocumentListItem } from '../types/document'
@@ -169,16 +170,16 @@ function goRetrieve(row: unknown): void {
 </script>
 
 <template>
-  <section class="space-y-4">
+  <section class="space-y-6">
+  <PageHeader
+    title="知识库与文档"
+    subtitle="展开知识库查看其文档。有文档在索引时每 3 秒自动刷新，全部进入终态后停止——不会留一个空转的标签页。"
+  />
     <el-card shadow="never">
       <template #header>
+        <!-- 标题与说明在页面头（PageHeader）里，卡片头只留操作，避免同一句话出现两次。 -->
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <div>
-            <h2 class="text-sm font-semibold text-slate-800">知识库与文档</h2>
-            <p class="mt-1 text-xs text-slate-500">
-              展开知识库查看其文档；有文档在索引时每 3 秒自动刷新，全部进入终态后停止。
-            </p>
-          </div>
+          <span class="th-label">全部知识库</span>
           <el-input
             v-model="keyword"
             class="w-64"

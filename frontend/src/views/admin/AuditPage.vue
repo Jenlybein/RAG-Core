@@ -61,11 +61,11 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="rounded-lg border border-line bg-white p-6">
+  <section class="card card-body">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 class="text-base font-semibold text-slate-800">审计日志</h2>
-        <p class="mt-1 text-sm text-slate-500">
+        <h2 class="page-title">审计日志</h2>
+        <p class="page-subtitle">
           控制面每一次改动的账本：谁、什么时候、把哪个对象改成了什么。本页只读。
         </p>
         <p class="mt-1 text-xs text-slate-400">

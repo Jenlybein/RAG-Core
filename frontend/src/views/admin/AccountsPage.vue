@@ -86,10 +86,13 @@ function statusLabel(status: string | null): string {
  * 颜色只取事实底座 §10 与前端约定 §状态与颜色 的语义色：正常用「成功」绿，
  * 已停用用「失败」红。账号状态不是文档三态，所以不走 `StatusBadge.vue`（那张表
  * 的 1/2/3 是文档处理状态），但配色的出处仍是同一组令牌。
+ *
+ * 文字色从原来的 #065F46 / #B91C1C 换成暖色系的同义色：冷绿冷红压在米白底上会
+ * 显出「系统自带控件」的味道，也与 StatusBadge 的暖色徽章对不上。对比度都 ≥4.5:1。
  */
 function statusClass(status: string | null): string {
-  if (status === 'active') return 'text-[#065F46]'
-  if (status === 'disabled') return 'text-[#B91C1C]'
+  if (status === 'active') return 'text-[#3C5228]'
+  if (status === 'disabled') return 'text-[#8C2F22]'
   return 'text-slate-500'
 }
 
@@ -153,11 +156,11 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="rounded-lg border border-line bg-white p-6">
+  <section class="card card-body">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 class="text-base font-semibold text-slate-800">账号管理</h2>
-        <p class="mt-1 text-sm text-slate-500">
+        <h2 class="page-title">账号管理</h2>
+        <p class="page-subtitle">
           跨租户查看全部账号。停用账号 / 停用租户 / 换套餐都改服务端判定，下一次请求即生效，不需要重启。
         </p>
       </div>

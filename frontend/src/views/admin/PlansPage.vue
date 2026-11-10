@@ -244,11 +244,11 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="rounded-lg border border-line bg-white p-6">
+  <section class="card card-body">
     <div class="flex flex-wrap items-start justify-between gap-3">
       <div>
-        <h2 class="text-base font-semibold text-slate-800">套餐管理</h2>
-        <p class="mt-1 text-sm text-slate-500">
+        <h2 class="page-title">套餐管理</h2>
+        <p class="page-subtitle">
           保存分两步：先试算影响面（多少租户会超库数、多少密钥配置会失去档位），确认后才落库。
           改动即时生效，不需要重启。
         </p>

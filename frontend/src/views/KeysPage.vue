@@ -22,6 +22,7 @@ import { useRoute, useRouter } from 'vue-router'
 
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import KeyPolicyEditor from '../components/KeyPolicyEditor.vue'
+import PageHeader from '../components/PageHeader.vue'
 import { ApiError } from '../lib/envelope'
 import { CONSOLE_ME_QUERY_KEY, fetchMe } from '../services/console'
 import { KEYS_QUERY_KEY, createKey, deleteKey, fetchKeys, patchPolicy } from '../services/keyService'
@@ -356,17 +357,16 @@ watch(
 </script>
 
 <template>
-  <section class="space-y-4">
+  <section class="space-y-6">
+  <PageHeader
+    title="API Key"
+    subtitle="一把 Key 绑定一套密钥配置：能查哪些库、开哪些能力、多大的限额、默认档位都写在配置里。改配置会立刻作用于用它发起的下一次检索，不必重签 Key。"
+  />
     <el-card shadow="never">
       <template #header>
+        <!-- 标题与说明在页面头，这里只放计数与主操作。 -->
         <div class="flex flex-wrap items-center justify-between gap-2">
-          <div>
-            <h2 class="text-sm font-semibold text-slate-800">API Key</h2>
-            <p class="mt-1 text-xs text-slate-500">
-              一把 Key 绑定一套密钥配置：能查哪些库、开哪些能力、多大的限额、默认档位都写在
-              配置里。改配置会立刻作用于用它发起的下一次检索。
-            </p>
-          </div>
+          <span class="th-label">共 {{ keys.length }} 把</span>
           <el-button type="primary" @click="openIssue">签发新 Key</el-button>
         </div>
       </template>

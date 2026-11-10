@@ -2,12 +2,264 @@
 @tailwind components;
 @tailwind utilities;
 
+/**
+ * 全局：字体渲染 + 暖色画布 + Element Plus 的令牌对齐。
+ *
+ * Element Plus 的默认观感是「蓝色主色 + 4px 圆角 + 灰色阴影」，与这套界面（近黑实心按钮、
+ * 20px 卡片、几乎不可见的投影）完全不搭。这里不靠 !important 去一个个压组件，而是把它的
+ * CSS 变量改到同一套令牌上：一次对齐，之后所有 el-* 组件自动跟着走。
+ */
 :root {
   color-scheme: light;
-  /* Element Plus 的主色与设计令牌对齐；不写这行，按钮会是它自带的蓝色。 */
-  --el-color-primary: #045b89;
+
+  /* 主色：近黑。苹果的克制感很大程度来自「整页只有两三种颜色」，彩色留给语义状态。 */
+  --el-color-primary: #2c2921;
+  --el-color-primary-light-3: #55503f;
+  --el-color-primary-light-5: #7a7360;
+  --el-color-primary-light-7: #a8a090;
+  --el-color-primary-light-8: #c9c2b2;
+  --el-color-primary-light-9: #f0ece2;
+  --el-color-primary-dark-2: #1c1a15;
+
+  /* 圆角：控件 12px、小元素 8px，与卡片 20px 形成层级 */
+  --el-border-radius-base: 12px;
+  --el-border-radius-small: 8px;
+
+  /* 文字与描边：全部换成暖灰，否则冷灰字压在米白底上会显脏 */
+  --el-text-color-primary: #1c1a15;
+  --el-text-color-regular: #4a443a;
+  --el-text-color-secondary: #8a8275;
+  --el-text-color-placeholder: #a8a093;
+  --el-text-color-disabled: #b8b1a4;
+
+  --el-border-color: #e7e2d7;
+  --el-border-color-light: #ebe6dc;
+  --el-border-color-lighter: #f0ece4;
+  --el-border-color-extra-light: #f5f2ea;
+
+  --el-bg-color: #ffffff;
+  --el-bg-color-overlay: #ffffff;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-light: #f7f5f0;
+  --el-fill-color-lighter: #fbfaf6;
+
+  --el-table-header-bg-color: #fbfaf6;
+  --el-table-border-color: #eee9df;
+  --el-table-row-hover-bg-color: #faf8f3;
+
+  --el-box-shadow-light: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
+  --el-box-shadow: 0 2px 6px rgba(28, 26, 21, 0.06), 0 18px 48px -24px rgba(28, 26, 21, 0.24);
+
+  --el-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
 }
 
 body {
-  @apply bg-canvas text-slate-800 antialiased;
+  @apply bg-canvas font-sans text-ink antialiased;
+  /* 苹果的正文视觉重量比默认值略轻，靠 -webkit-font-smoothing 而不是字号 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'tnum' 1; /* 表格里的数字等宽，列才对得齐 */
+}
+
+::selection {
+  background: #f0ece2;
+  color: #1c1a15;
+}
+
+/**
+ * 键盘焦点必须看得见。默认的 Element Plus 焦点只在输入框上明显，链接与表格里的文字按钮
+ * 基本没有反馈——Tab 走过去会跟丢。这里给一套统一的外描边，且只在 :focus-visible 生效，
+ * 鼠标点击不会平白多出一圈。
+ */
+:where(a, button, [role='button'], [tabindex]):focus-visible {
+  outline: 2px solid #2c2921;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* 可点击的东西光标要是手型；Element 的部分内部元素默认是箭头 */
+a[href],
+button:not(:disabled),
+[role='button'],
+.el-checkbox:not(.is-disabled),
+.el-radio:not(.is-disabled),
+.el-switch:not(.is-disabled) {
+  cursor: pointer;
+}
+
+/* 尊重系统的减少动态偏好：动效一律关掉，但**不改变最终视觉状态** */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 细滚动条：默认那种 12px 灰条会把这套界面的克制感一次性破坏 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #ddd6c8;
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #c9c2b2;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@layer components {
+  /* 卡片：整站唯一的「面」。页面里不要再各写一遍 rounded-lg border bg-white。 */
+  .card {
+    @apply rounded-card border border-line bg-surface shadow-card;
+  }
+
+  /* 卡片内边距：比原来的 p-6 松一点，留白是这套观感的主要来源 */
+  .card-body {
+    @apply p-6 sm:p-7;
+  }
+
+  /* 页面标题：大、半粗、收紧字距（苹果标题的骨架），配一行灰色说明 */
+  .page-title {
+    @apply text-[26px] font-semibold leading-tight tracking-tightest text-ink sm:text-[30px];
+  }
+  .page-subtitle {
+    @apply mt-2 max-w-2xl text-sm leading-relaxed text-muted;
+  }
+
+  /* 卡片小标题 */
+  .section-title {
+    @apply text-[15px] font-semibold tracking-tight text-ink;
+  }
+  .section-hint {
+    @apply mt-1 text-xs leading-relaxed text-muted;
+  }
+
+  /* 顶栏导航：胶囊 + 选中实底，不做下划线（下划线在暖色系里显得廉价） */
+  .nav-pill {
+    @apply rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-colors duration-150;
+  }
+
+  /* 表头：大写小字 + 宽字距，编辑部气质的来源之一 */
+  .th-label {
+    @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-muted;
+  }
+}
+
+/* ───────────────────────── Element Plus 微调 ───────────────────────── */
+
+/* 按钮：默认按钮是白底细边，主按钮是近黑实底；圆角与内边距按苹果的节奏放一点 */
+.el-button {
+  --el-button-font-weight: 500;
+  border-radius: var(--el-border-radius-base);
+  padding-left: 16px;
+  padding-right: 16px;
+}
+.el-button--primary {
+  --el-button-bg-color: var(--el-color-primary);
+  --el-button-border-color: var(--el-color-primary);
+  --el-button-hover-bg-color: var(--el-color-primary-light-3);
+  --el-button-hover-border-color: var(--el-color-primary-light-3);
+  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.12);
+}
+/* 文字按钮（表格行里的操作）不占方框，hover 时才浮出一层浅底 */
+.el-button.is-text {
+  padding-left: 8px;
+  padding-right: 8px;
+  border-radius: 8px;
+}
+/**
+ * 禁用的主按钮。Element 默认把它刷成 primary 的中间调（近黑 → 灰橄榄），看上去仍然
+ * 「像是能点」，还和旁边真的可点的按钮抢注意力。这里改成浅底 + 灰字，一眼是「现在不行」。
+ */
+.el-button.is-disabled,
+.el-button.is-disabled:hover {
+  --el-button-disabled-bg-color: #f0ece4;
+  --el-button-disabled-border-color: #e7e2d7;
+  --el-button-disabled-text-color: #a8a093;
+  box-shadow: none;
+}
+
+/* 输入框：去掉默认的内阴影描边感，改成一条干净的细线 + 聚焦时加深 */
+.el-input__wrapper,
+.el-textarea__inner {
+  border-radius: var(--el-border-radius-base);
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+  background-color: #fff;
+}
+.el-input__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px var(--el-border-color-darker, #d9d2c3) inset;
+}
+
+/* 表格：外框去掉，只留行间细线；表头用浅暖底 */
+.el-card {
+  /* el-card 是 el-card 的默认观感：4px 圆角 + 灰边 + 几乎为零的阴影。
+     这里把它对齐到 .card 那一套，页面里就不用为了圆角再去手写一层 div。 */
+  --el-card-border-radius: 20px;
+  --el-card-border-color: #e7e2d7;
+  --el-card-padding: 24px;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
+}
+.el-card__header {
+  border-bottom: 1px solid #f0ece4;
+  padding: 18px 24px;
+}
+.el-card.is-never-shadow {
+  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
+}
+/* 卡片标题：比默认的 14px 大一号、字距收一点，与 .section-title 同一个节奏 */
+.el-card__header h2 {
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.el-table {
+  --el-table-border-color: #eee9df;
+  --el-table-header-text-color: #8a8275;
+  --el-table-text-color: #2c2921;
+  border-radius: 12px;
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
+.el-table__inner-wrapper::before {
+  display: none; /* 底部那条通栏线在无外框的卡片里是多余的 */
+}
+
+.el-tag {
+  border-radius: 9999px;
+  font-weight: 500;
+}
+
+.el-dialog {
+  border-radius: var(--radius, 20px);
+  padding: 24px;
+  box-shadow: var(--el-box-shadow);
+}
+
+.el-tooltip__popper,
+.el-popper.is-light {
+  border-radius: 10px;
+  border-color: var(--el-border-color);
+  box-shadow: var(--el-box-shadow-light);
+}
+
+.el-pagination {
+  --el-pagination-button-bg-color: transparent;
+  font-weight: 500;
 }
