@@ -46,9 +46,7 @@ def upgrade() -> None:
     op.drop_index("ix_retrieval_logs_tenant_id", table_name="retrieval_traces")
 
     # ``trace_id`` 先按可空加：存量行还没有值，NOT NULL 要等回填之后再上。
-    op.add_column(
-        "retrieval_traces", sa.Column("trace_id", sa.String(length=32), nullable=True)
-    )
+    op.add_column("retrieval_traces", sa.Column("trace_id", sa.String(length=32), nullable=True))
     # 这三个用**临时** server_default 让存量行直接成立，回填完立刻收回（见文件末尾）：
     # 永久默认值会让「新行忘了带这个值」变成静默的空数组 / 0，而那是要当场报错的 bug。
     op.add_column(
@@ -101,9 +99,7 @@ def upgrade() -> None:
         existing_type=postgresql.JSONB(astext_type=sa.Text()),
         server_default=None,
     )
-    op.alter_column(
-        "retrieval_traces", "top_k", existing_type=sa.Integer(), server_default=None
-    )
+    op.alter_column("retrieval_traces", "top_k", existing_type=sa.Integer(), server_default=None)
     op.alter_column(
         "retrieval_traces", "latency_ms", existing_type=sa.Integer(), server_default=None
     )
@@ -111,9 +107,7 @@ def upgrade() -> None:
     op.create_index(
         "ix_retrieval_traces_tenant_id", "retrieval_traces", ["tenant_id"], unique=False
     )
-    op.create_index(
-        "ix_retrieval_traces_trace_id", "retrieval_traces", ["trace_id"], unique=True
-    )
+    op.create_index("ix_retrieval_traces_trace_id", "retrieval_traces", ["trace_id"], unique=True)
 
 
 def downgrade() -> None:
@@ -129,17 +123,11 @@ def downgrade() -> None:
     op.drop_index("ix_retrieval_traces_tenant_id", table_name="retrieval_traces")
 
     # 两个 NOT NULL 列分两步加：先可空、回填、再收紧（旧库里已经有行了）。
-    op.add_column(
-        "retrieval_traces", sa.Column("kb_id", sa.String(length=36), nullable=True)
-    )
+    op.add_column("retrieval_traces", sa.Column("kb_id", sa.String(length=36), nullable=True))
     op.add_column("retrieval_traces", sa.Column("query", sa.Text(), nullable=True))
-    op.execute(
-        "UPDATE retrieval_traces SET kb_id = kb_ids->>0 WHERE kb_id IS NULL"
-    )
+    op.execute("UPDATE retrieval_traces SET kb_id = kb_ids->>0 WHERE kb_id IS NULL")
     op.execute("UPDATE retrieval_traces SET query = '' WHERE query IS NULL")
-    op.alter_column(
-        "retrieval_traces", "kb_id", existing_type=sa.String(length=36), nullable=False
-    )
+    op.alter_column("retrieval_traces", "kb_id", existing_type=sa.String(length=36), nullable=False)
     op.alter_column("retrieval_traces", "query", existing_type=sa.Text(), nullable=False)
 
     for column in ("trace_id", "kb_ids", "top_k", "latency_ms", "degraded_reason", "empty_reason"):

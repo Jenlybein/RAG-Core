@@ -78,9 +78,7 @@ IDENTITY = RetrievalIdentity(TENANT_ID)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 #: 唯一允许提到旧表名的两处：initial 迁移（历史不改写）与本票的改名迁移（它必须说出旧名）。
-_OLD_NAME_IN_HISTORY = (
-    Path("migrations") / "versions" / "d657b09304ca_initial.py",
-)
+_OLD_NAME_IN_HISTORY = (Path("migrations") / "versions" / "d657b09304ca_initial.py",)
 _OLD_NAME_RE = re.compile(r"retrieval_logs")
 
 
@@ -136,7 +134,9 @@ class _FakeVectorStore:
         (kb_id,) = index_versions
         return [{**row, "kb_id": kb_id} for row in self._rows[:top_k]]
 
-    async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):  # pragma: no cover
+    async def similarity_search(
+        self, db, query_vector, *, tenant_id, kb_id, top_k
+    ):  # pragma: no cover
         raise AssertionError("检索走范围版，不许按库循环")
 
 
@@ -183,7 +183,9 @@ def _offline_client(
 
     trace_session = trace_session if trace_session is not None else RecordingSession()
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _FakeEmbedding())
-    monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore(_rows() if rows is None else rows))
+    monkeypatch.setattr(
+        service, "get_vector_store", lambda: _FakeVectorStore(_rows() if rows is None else rows)
+    )
     monkeypatch.setattr(
         kb_repo,
         "get_by_id_for_tenant",
@@ -209,9 +211,7 @@ def _retrieve(client: TestClient, *, mode: str = "vector") -> dict:
     """缺省走 ``vector`` 单模式、不折叠：结果是两片，与写入行的字段一一对应。"""
 
     IDENTITY.use(mode=mode, top_k=2, include_parent=False)
-    response = client.post(
-        RETRIEVE_PATH, json={"kb_ids": [KB_ID], "query": QUERY_SENTINEL}
-    )
+    response = client.post(RETRIEVE_PATH, json={"kb_ids": [KB_ID], "query": QUERY_SENTINEL})
     assert response.status_code == 200
     return response.json()
 

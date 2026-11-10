@@ -23,7 +23,6 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-import pytest
 
 VERSIONS_DIR = Path(__file__).resolve().parent.parent / "migrations" / "versions"
 
@@ -49,12 +48,8 @@ EXPECTED_COLUMNS = frozenset(
     }
 )
 #: 改造前那两条索引；改名不应把它们顺手留在库里的新表上。
-INITIAL_INDEXES = frozenset(
-    {"ix_retrieval_logs_kb_id", "ix_retrieval_logs_tenant_id"}
-)
-EXPECTED_INDEXES = frozenset(
-    {"ix_retrieval_traces_tenant_id", "ix_retrieval_traces_trace_id"}
-)
+INITIAL_INDEXES = frozenset({"ix_retrieval_logs_kb_id", "ix_retrieval_logs_tenant_id"})
+EXPECTED_INDEXES = frozenset({"ix_retrieval_traces_tenant_id", "ix_retrieval_traces_trace_id"})
 
 _REVISION_RE = re.compile(r"""^revision(?::\s*str)?\s*=\s*['"](?P<revision>[^'"]+)['"]""", re.M)
 _DOWN_REVISION_RE = re.compile(
@@ -117,9 +112,7 @@ class _RecordingOp:
         if server_default is not _UNSET:
             spec["default"] = None if server_default is None else str(server_default)
 
-    def create_index(
-        self, index_name: str, table_name: str, columns: Any, **kwargs: Any
-    ) -> None:
+    def create_index(self, index_name: str, table_name: str, columns: Any, **kwargs: Any) -> None:
         assert table_name in self.tables, table_name
         self.indexes[index_name] = {
             "table": table_name,
@@ -127,13 +120,13 @@ class _RecordingOp:
             "unique": bool(kwargs.get("unique")),
         }
 
-    def drop_index(
-        self, index_name: str, table_name: str | None = None, **_kwargs: Any
-    ) -> None:
+    def drop_index(self, index_name: str, table_name: str | None = None, **_kwargs: Any) -> None:
         spec = self.indexes.pop(index_name, None)
         assert spec is not None, f"要删的索引不存在：{index_name}"
         if table_name is not None:
-            assert spec["table"] == table_name, f"{index_name} 属于 {spec['table']}，不是 {table_name}"
+            assert spec["table"] == table_name, (
+                f"{index_name} 属于 {spec['table']}，不是 {table_name}"
+            )
 
     def execute(self, statement: Any) -> None:
         self.executed.append(str(statement))
@@ -147,9 +140,7 @@ class _RecordingOp:
         return frozenset(self.tables[table_name])
 
     def indexes_of(self, table_name: str) -> frozenset[str]:
-        return frozenset(
-            name for name, spec in self.indexes.items() if spec["table"] == table_name
-        )
+        return frozenset(name for name, spec in self.indexes.items() if spec["table"] == table_name)
 
     def snapshot(self) -> tuple[dict[str, frozenset[str]], dict[str, str]]:
         """除本票那张表之外的「库的形状」：列集合 + 每张表上的索引名。"""

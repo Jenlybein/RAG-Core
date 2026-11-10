@@ -10,13 +10,13 @@
 | 层 | 接缝 / 被测对象 | 代表文件（不按票重复列举） |
 | --- | --- | --- |
 | ① 纯函数单测 | 切块器、4 个 Parser、状态守卫、错误码词汇、CAS 的 `UPDATE ... WHERE` 分支（内存 SQLite 只建 `documents` 一张表）、**RRF 融合真值表与 tie-breaker、检索文本拼装、BM25 查询体、ES mapping、同义词扩展、评测算分与语料约束、鉴权内核、数据范围白名单、档位展开与五道门禁、配置自洽校验、配额计数与静态配额边界、套餐三档对账、口令哈希** | `test_contracts.py`、`test_parsers.py`、`test_markdown_splitter.py`、`test_document_state_machine.py`、`test_indexing_task.py`（`_is_retryable` 真值表）、`test_business_errors.py` 的数据契约、`test_upload_async.py` 的守卫矩阵与 CAS、`test_rrf_fusion.py`、`test_retrieval_text.py`、`test_keyword_query_builder.py`、`test_query_synonyms.py`、`test_eval_metrics.py`、`test_eval_corpus.py`、`test_auth_kernel.py`、`test_data_scope.py`、`test_profile_gating.py`、`test_quota_gate.py`、`test_static_quota.py`、`test_plan_presets.py`、`test_console_password.py` |
-| ② ASGI 接缝 | `TestClient` 发真实请求，只看响应体 / 响应头 / cookie 行为 / 日志文件副作用；数据库用 `dependency_overrides` + `tests/fake_db.RecordingSession`、外部能力用 monkeypatch 换掉 | `test_business_errors.py`、`test_exception_boundary.py`、`test_request_id.py`、`test_logging.py`、`test_retrieval_log_hygiene.py`、`test_upload_async.py` 的上传与列表、`test_indexing_failure.py`、`test_dual_entry_skeleton.py`、`test_toolchain.py`、`test_retrieval_mode.py`、`test_hybrid_retrieval.py`、`test_query_optimization_retrieval.py`、`test_tenant_wiring.py`、`test_quota_wiring.py`、`test_console_api.py` |
+| ② ASGI 接缝 | `TestClient` 发真实请求，只看响应体 / 响应头 / cookie 行为 / 日志文件副作用；数据库用 `dependency_overrides` + `tests/fake_db.RecordingSession`、外部能力用 monkeypatch 换掉 | `test_business_errors.py`、`test_exception_boundary.py`、`test_request_id.py`、`test_logging.py`、`test_retrieval_log_hygiene.py`、`test_upload_async.py` 的上传与列表、`test_indexing_failure.py`、`test_dual_entry_skeleton.py`、`test_toolchain.py`、`test_retrieval_mode.py`、`test_hybrid_retrieval.py`、`test_query_optimization_retrieval.py`、`test_tenant_wiring.py`、`test_quota_wiring.py`、`test_console_api.py`、`test_trace_identity.py` |
 | ③ Worker 任务 | 任务体：CAS 抢占用两段事务、purge → 写入 → SUCCESS、重试白名单、失败留痕与脱敏文案、租约语义、**双写与索引阶段不降级** | `test_indexing_task.py`（`IndexingService` 流水线 + `_run_indexing`）、`test_indexing_dual_write.py`、`test_index_version.py`、`test_keyword_bulk_failure.py` |
 | ④ OCR（asset-gated） | 零路由页不碰原生运行时、缺运行时抛 `ValueError`、扫描件路由到 OCR、整篇全空是质量错误 | `test_ocr_contract.py` + `tests/fixtures/ocr/*.pdf` |
 | ⑤ 跨层 e2e | 一条链：上传 → 投递 → 解析 → 切块 → 向量化 → 先删后写 → SUCCESS，切块 provenance 与表格完整性问题只有这一层能发现 | `test_document_pipeline_e2e.py` + `tests/fixtures/markdown/structured_notes.md` |
 | ⑥ 真实引擎集成（env-gated） | 真 PostgreSQL 上的 CAS/租约与范围召回、真 Elasticsearch 上的建索引 → 写入 → 中文命中 → 按文档删除 → 计数归零、两套嵌入实现的等价性。**不注入传输层 mock**：那测的是别人库的实现细节，升级就碎 | `test_integration_cas.py`、`test_keyword_search_es.py`、`test_embedding_equivalence.py` |
 | ⑦ 依赖元数据守卫 | 硬钉版本组合可解析、`langchain` / `ragas` / `langchain-community` 这类「一升就碎」的链条没被悄悄抬高 | `test_dependency_compat.py` |
-| ⑧ 表形状 / 迁移 / 运维脚本（离线） | 直接对 `Base.metadata` 断言七张身份与控制面表的列、类型与「无外键、裸字符串 id」；迁移文件一表一迁移、可升可降对称、不碰既有四张业务表；`seed_plans` / `create_tenant` / `issue_api_key` / `create_admin` 的入参与退出码 | `test_identity_tables.py`、`test_identity_migrations.py`、`test_identity_seeding.py`、`test_identity_ops_scripts.py`、`test_console_tables.py`、`test_console_migrations.py`、`test_console_bootstrap.py` |
+| ⑧ 表形状 / 迁移 / 运维脚本（离线） | 直接对 `Base.metadata` 断言七张身份与控制面表的列、类型与「无外键、裸字符串 id」；迁移文件一表一迁移、可升可降对称、不碰既有四张业务表；`seed_plans` / `create_tenant` / `issue_api_key` / `create_admin` 的入参与退出码 | `test_identity_tables.py`、`test_identity_migrations.py`、`test_identity_seeding.py`、`test_identity_ops_scripts.py`、`test_console_tables.py`、`test_console_migrations.py`、`test_console_bootstrap.py`、`test_retrieval_trace_migration.py` |
 
 第 4 步（双路召回）的测试重心在 ① 与 ②：融合与查询构造是纯函数，走真值表；三种
 `mode`、降级矩阵、空结果两种原因、多库配对全部在 ASGI 接缝上按响应体断言。**没有
@@ -129,8 +129,11 @@ docker compose -f deploy/docker-compose.yml up -d
   假数据库行（`RecordingSession` 传给纯函数 / 依赖覆盖）：两者都是显式构造参数或
   `dependency_overrides`，不是 monkeypatch 私有全局，也不会在用例之间留下污染。
 - 夹具保持**模块内**定义，不在 `tests/conftest.py` 里养夹具动物园。项目级 `conftest.py`
-  只做一件事：在任何 `app.main` 导入前设置 `ENABLE_MCP=false`，避免每个 `TestClient`
-  起停 MCP 会话管理器。
+  只做三件事：在任何 `app.main` 导入前设置 `ENABLE_MCP=false` 与 `KEYWORD_SEARCH_PROVIDER=none`；
+  把**进程级注入点**换成离线替身——`app.db.session_factory`（拿不到 `Depends` 的路径用，
+  含 #101 的归属索引旁路写入）与运行时配置缓存（每 30 秒一次的覆盖层刷新会先读缓存，
+  本机 Redis 里留着旧覆盖时会让跑得够久的套件随机红几条）。这两处都是既有的注入点，
+  不是 monkeypatch 私有全局。
 - 日志文件断言一律显式 monkeypatch `settings.LOG_DIR` 到 `tmp_path`、重置
   `app.core.logging._configured = False`、再跑 `setup_logging()`——绝不依赖全局默认目录。
 - 新增跨层测试（⑤）把 Worker 放在独立线程里消费任务：真实投递由另一个进程的消息循环
