@@ -26,6 +26,7 @@ import { ElMessage } from 'element-plus'
 import { computed, reactive, watch } from 'vue'
 
 import PageHeader from '../../components/PageHeader.vue'
+import { CONSOLE_ME_QUERY_KEY } from '../../services/console'
 import { PROFILE_PRESETS_QUERY_KEY, fetchProfilePresets, patchProfilePreset } from '../../services/consoleProfiles'
 import type { ProfilePresetData } from '../../types/profilePreset'
 import { errorText } from '../../utils/errorText'
@@ -97,6 +98,10 @@ const saveMutation = useMutation({
   mutationFn: (item: ProfilePresetData) => patchProfilePreset(item.profile, patchBodyOf(item)),
   onSuccess: async (result, item) => {
     await queryClient.invalidateQueries({ queryKey: PROFILE_PRESETS_QUERY_KEY })
+    // `me` 里也带着一份 `profile_presets`：Key 编辑器的档位悬浮说明读的是它。
+    // 只失效上面那一个 key 的话，管理员改完、切到 /keys 看到的还是旧参数——
+    // 而「改完即时生效」正是这一页承诺的唯一一件事。
+    await queryClient.invalidateQueries({ queryKey: CONSOLE_ME_QUERY_KEY })
     const changed = result.changed
     ElMessage.success(
       changed.length === 0
