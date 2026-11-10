@@ -62,14 +62,23 @@ from app.api.routes.console_settings import router as console_settings_router
 from app.core.config import settings
 from app.utils import tokenizer
 from app.db.session import SessionLocal
+from app.providers.llm import set_role_resolver
 from app.repositories import knowledge_base_repository
-from app.services import rag_service
+from app.services import model_config_service, rag_service
 
 # ── T2: 结构化日志（模块级幂等初始化，不进 lifespan）──
 from app.core.logging import setup_logging
 
 setup_logging()
 # ── T2 结束 ──
+
+# ── #94/#82: 模型角色解析器在**组合根**注入一次 ──
+# Provider 层不许 import services（层向），而「角色指针 → 模型配置行」本来就只在服务层
+# 有一份实现。这里把那份实现（及其 Provider 形状适配器）接到 Provider 的可注入解析器上：
+# 不注入 = 没有角色指针 = 只用 .env，于是「谁先 import 谁」不再影响装配结果。
+# Worker 是另一个进程、不走 app.main，在 ``app/tasks/indexing.py`` 里再注入一次。
+set_role_resolver(model_config_service.role_endpoint)
+# ── #94/#82 结束 ──
 
 
 @asynccontextmanager

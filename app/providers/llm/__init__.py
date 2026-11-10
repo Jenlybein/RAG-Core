@@ -14,6 +14,22 @@
 库、回滚失败的迁移都能造出这个状态，而一个正在服务的进程不该因为库里有半条脏数据就让
 所有租户的检索 500（与配置中台「丢弃那一行、保留上一份好值」同一条纪律）。
 
+## 解析器是**注入**的（组合根注入，#82 修复层向倒置）
+
+第 1 步要读库，但本层**不许 import ``app.services``**：``app.providers`` 是依赖链的最内层，
+``app.services`` 才是它的上层；反过来 import 会让「换一家供应商只改环境变量」这句话的
+实现被业务层绑住，也会在 import 时把一整套服务层拖进任何只想要一个 Provider 的地方。
+
+所以「角色 → 一条接入」是一条可注入的回调：:data:`RoleResolver`（``Callable[[str],
+RoleEndpoint | None]``），由 :func:`set_role_resolver` 写入。``get_llm_provider`` **只用**
+注入的解析器；没注入、或解析器返回 ``None`` → 回落第 2 步的 ``.env``（离线 / CI / 全新部署
+都落到这里，行为与改造前逐字一致）。解析器**不许抛**：读库失败应返回 ``None``（回落
+``.env`` 是这条路径的既定行为，不是调用方的错误）。
+
+注入点只有两个组合根：``app/main.py``（API 进程启动处）与 ``app/tasks/indexing.py``
+（Celery Worker 入口）。其它入口（离线脚本 / 评测）没注入就是「没有角色指针」，
+这与它们本来也不读 ``model_configs`` 的现状一致。
+
 **重排没有独立的模型配置**：一期 ``RerankProvider`` 包着 ``LLMProvider``（ADR-0002），
 它调的就是 ``get_llm_provider("fast")``。不要在这里加「重排模型」这一档——加了也没有
 任何调用点会去读它，而面板上多一个下拉框，用户会以为改了生效。
@@ -27,6 +43,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -40,9 +57,48 @@ from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
 from app.providers.llm.langchain_llm import LangChainLLMProvider
 from app.providers.llm.noop import NoopLLMProvider
-from app.services import model_config_service
 
 logger = structlog.get_logger(__name__)
+
+
+@dataclass(frozen=True)
+class RoleEndpoint:
+    """Provider 层眼里的「一条模型接入」：装配所需的四个字段 + 一个给告警用的 id。
+
+    刻意不复用服务层的 ``ModelConfigSpec``：那是 ``model_config_service`` 的数据形状。
+    Provider 认识它会立刻把层向倒过来（``app.services`` 依赖 ``app.providers``，不是反过来），
+    而这条倒置正是 #82 修掉的东西。``config_id`` 只进日志，不参与任何判定。
+    """
+
+    provider: str
+    base_url: str
+    model: str
+    api_key: str
+    config_id: str = ""
+
+
+#: 「角色 → 它现在该用的那一条」的解析器签名。返回 ``None`` = 没有指向，调用方回落 ``.env``。
+RoleResolver = Callable[[str], RoleEndpoint | None]
+
+#: 进程级注入点；``None`` 表示未注入（只用 ``.env``）。唯一写入口是 :func:`set_role_resolver`。
+_role_resolver: RoleResolver | None = None
+
+
+def set_role_resolver(resolver: RoleResolver | None) -> None:
+    """注入角色解析器（**组合根**的事，见模块文档）。
+
+    ``None`` 是复位：测试与离线脚本用它确定性地回到「没有角色指针」的单供应商路径，
+    不依赖「哪个模块先被 import」这种顺序。
+    """
+
+    global _role_resolver
+    _role_resolver = resolver
+
+
+def _resolved_endpoint(role: str) -> RoleEndpoint | None:
+    """当前注入的解析器给出的那一条；没注入就是 ``None``（等价于「库里没有指针」）。"""
+
+    return None if _role_resolver is None else _role_resolver(role)
 
 
 @dataclass(frozen=True)
@@ -110,36 +166,37 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
     # 不外发」。放在早退之前，是这个函数唯一不会漏掉的位置。
     apply_framework_telemetry_switches()
 
-    # 1. 角色指针 → 那一条配置行。指针为空 / 行已消失时返回 None，落到下面的 `.env`。
-    config = model_config_service.resolve_role_config(role)
-    if config is not None:
-        vendor = _VENDORS.get(config.provider.strip().lower())
+    # 1. 注入的解析器 → 那一条配置行（见模块文档：读库不在这层，靠组合根注入）。
+    #    指针为空 / 行已消失 / 解析器没注入时返回 None，落到下面的 `.env`。
+    endpoint = _resolved_endpoint(role)
+    if endpoint is not None:
+        vendor = _VENDORS.get(endpoint.provider.strip().lower())
         if vendor is None:
             # 行是绕过写入校验造出来的（手工改库 / 旧版本迁移）。与「指针指向的行消失」
             # 同一条处理：告警 + 回落 `.env`，不在请求链路上抛。
             logger.warning(
                 "model config has an unknown vendor; falling back to .env",
                 role=role,
-                model_config_id=config.id,
-                provider=config.provider,
+                model_config_id=endpoint.config_id,
+                provider=endpoint.provider,
             )
-        elif not config.api_key:
+        elif not endpoint.api_key:
             # 这一条还没填 Key：能力明确不可用（空实现），**不**回落到 `.env` 的 key。
             # 回退会让「我明明选了这条新配置」变成「实际用的还是旧的」，那是最难解释的
             # 一类静默行为；空实现至少让降级路径与原因一致（见 GLOSSARY「available」）。
             logger.warning(
                 "model config has no api key; the role is unavailable",
                 role=role,
-                model_config_id=config.id,
+                model_config_id=endpoint.config_id,
             )
             return NoopLLMProvider()
         else:
             return _assemble(
                 role,
                 vendor=vendor,
-                api_key=config.api_key,
-                model_name=config.model,
-                base_url=config.base_url,
+                api_key=endpoint.api_key,
+                model_name=endpoint.model,
+                base_url=endpoint.base_url,
             )
 
     # 2. `.env` 的单供应商（改造前的行为，逐字保留）。
@@ -205,4 +262,11 @@ def _assemble(
     return LangChainLLMProvider(chat_model=chat_model, model_name=model_name)
 
 
-__all__ = ["LLMProvider", "LangChainLLMProvider", "get_llm_provider"]
+__all__ = [
+    "LLMProvider",
+    "LangChainLLMProvider",
+    "RoleEndpoint",
+    "RoleResolver",
+    "get_llm_provider",
+    "set_role_resolver",
+]

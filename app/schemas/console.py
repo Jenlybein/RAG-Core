@@ -204,7 +204,16 @@ class AuditLogItem(BaseModel):
 
 
 class AuditLogListData(BaseModel):
+    """审计列表的一页：行 + 总数 + 本页起点。
+
+    ``total`` 是**当前筛选条件下**的总条数（不是全表）；前端用 ``offset + len(audit_logs)``
+    与本页 ``limit`` 一起判断「还有没有下一页」，用 ``ceil(total / limit)`` 画页码。
+    ``offset`` 原样回显请求里的起点：响应自解释，不必让前端自己记住上一次的入参。
+    """
+
     audit_logs: list[AuditLogItem]
+    total: int
+    offset: int
 
 
 # ─────────────────────────────────────────────────────────── 行 → 响应体

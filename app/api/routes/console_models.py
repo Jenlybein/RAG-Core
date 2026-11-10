@@ -11,9 +11,10 @@
 换掉或删掉，这是跨租户越权而不是权限粒度问题。理由与配置中台（#93）逐字同源，长论证
 写在 ``app/api/routes/console_settings.py`` 的模块文档里，这里只引用不再重复。
 
-写操作一律 ``require_console_admin_write``（它已含管理员角色与防跨站头，缺头 → ``20011``）；
-**显示原文也是写操作**：它会留下一条审计，所以同样要防跨站头，也同样是
-``require_console_admin_write`` 而不是只读依赖。
+写操作一律 ``require_console_admin_write``（它已含管理员角色与防跨站头，缺头 → ``20011``）。
+**显示原文是读操作**：它只是把库里那一行读出来给人看一眼，路由用 ``get_console_admin``
+（与列表读接口同一条门）；但服务层每次都会写一条 ``model.reveal`` 审计——**读一个敏感值
+留痕是合理的**，这不改变「写操作才要防跨站头」这条边界。
 
 默认不新增「重排模型」这一项：重排一期包着 ``LLMProvider``（ADR-0002），**跟随 fast**。
 面板与文档都写这一句，否则用户会去找一个不存在的下拉。
@@ -39,6 +40,7 @@ from app.schemas.console_models import (
 )
 from app.services import model_config_service
 from app.services.model_config_service import ConfigPatchResult, ConfigRowView
+from app.utils.id_generator import mask_secret
 
 router = APIRouter(prefix="/console", tags=["console"])
 
@@ -52,7 +54,7 @@ def _row_data(row: ConfigRowView) -> ModelConfigData:
         provider=row.spec.provider,
         base_url=row.spec.base_url,
         model=row.spec.model,
-        api_key=model_config_service.mask_key(row.spec.api_key),
+        api_key=mask_secret(row.spec.api_key),
         roles=list(row.roles),
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -150,10 +152,13 @@ def delete_model_config(
 )
 def reveal_model_config_secret(
     config_id: str,
-    identity: ConsoleIdentity = Depends(require_console_admin_write),
+    identity: ConsoleIdentity = Depends(get_console_admin),
     db: Session = Depends(get_db),
 ) -> ApiResponse[ModelConfigSecretData]:
-    """返回一次明文。二次确认由前端负责；后端每次都记账（``model.reveal``）。"""
+    """返回一次明文。**读门**（管理员即可，不查防跨站头）；后端每次都记账（``model.reveal``）。
+
+    二次确认由前端负责：服务端能保证的是「每一次看都留痕」，不是「每次看都要点两下」。
+    """
 
     plaintext = model_config_service.reveal_secret(db, actor=identity, config_id=config_id)
     return ok(ModelConfigSecretData(id=config_id, api_key=plaintext))

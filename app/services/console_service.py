@@ -437,8 +437,23 @@ def _account_state(account: Account, tenant: Tenant | None) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────── 审计
 
 
-def list_audit_logs(db: Session, *, limit: int) -> list[AuditLog]:
-    return audit_log_repository.list_recent(db, limit=limit)
+def list_audit_logs(
+    db: Session, *, limit: int, offset: int, action: str | None = None
+) -> AuditPage:
+    """审计列表的一页：SQL 层分页（``LIMIT`` / ``OFFSET``）+ 同一筛选条件下的总数。
+
+    ``offset`` 与 ``limit`` 一起决定「现在看的是哪一页」；两者都必须下推到 SQL，
+    不在 Python 里取全量再切片（原因见 :mod:`app.repositories.audit_log_repository`）。
+    ``action`` 是精确匹配的动作名，``None`` = 不过滤。总数由仓储层用**同一个筛选条件**
+    数一次，于是「页数」与「这一页里有什么」不会各说一套。
+    """
+
+    return AuditPage(
+        rows=audit_log_repository.list_page(
+            db, limit=limit, offset=offset, action=action
+        ),
+        total=audit_log_repository.count(db, action=action),
+    )
 
 
 def append_audit(
@@ -472,9 +487,18 @@ def append_audit(
     )
 
 
-#: 审计列表的默认条数与硬上限：面板上没有分页控件，一次拉太多只会把浏览器拖住。
+#: 审计列表的默认条数与硬上限：面板按 ``limit`` / ``offset`` 分页，一次拉太多只会把
+#: 浏览器与响应体一起拖住。
 AUDIT_LOG_DEFAULT_LIMIT: Final[int] = 50
 AUDIT_LOG_MAX_LIMIT: Final[int] = 200
+
+
+@dataclass(frozen=True)
+class AuditPage:
+    """审计列表的一页：本页的行 + **这个筛选条件下**的总条数（前端据此算页数）。"""
+
+    rows: list[AuditLog]
+    total: int
 
 
 def audit_limit(requested: int | None) -> int:

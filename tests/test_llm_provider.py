@@ -19,6 +19,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
+from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 from langchain_core.language_models.fake_chat_models import FakeListChatModel
@@ -29,7 +32,12 @@ from pydantic import BaseModel, ValidationError
 from app.core.config import Settings, settings
 from app.core.exceptions import AppError, ErrorCode
 from app.core.llm_vendors import LLM_VENDORS
-from app.providers.llm import _VENDORS, get_llm_provider
+from app.providers.llm import (
+    _VENDORS,
+    RoleEndpoint,
+    get_llm_provider,
+    set_role_resolver,
+)
 from app.providers.llm.langchain_llm import LangChainLLMProvider
 from app.providers.llm.noop import NoopLLMProvider
 
@@ -41,6 +49,20 @@ _VENDOR_KEYS = (
     "ANTHROPIC_API_KEY",
     "GEMINI_API_KEY",
 )
+
+
+@pytest.fixture(autouse=True)
+def _no_injected_role_resolver() -> Iterator[None]:
+    """Provider 单测只测 ``.env`` 路径：复位组合根可能已经注入的角色解析器。
+
+    ``app/main.py`` 启动时会注入 ``model_config_service.role_endpoint``，而它是进程级
+    注入点。这里复位成 ``None``，每个用例都从「没有角色指针」这个确定性状态出发，
+    不依赖 test 文件的 import / 执行顺序。
+    """
+
+    set_role_resolver(None)
+    yield
+    set_role_resolver(None)
 
 
 class _RewriteResult(BaseModel):
@@ -95,6 +117,82 @@ def test_factory_returns_noop_when_no_key_configured(isolated_settings: pytest.M
 
     assert isinstance(get_llm_provider(), NoopLLMProvider)
     assert isinstance(get_llm_provider("strong"), NoopLLMProvider)
+
+
+# ───────────────────────────────────── 角色解析器：注入点与回落（#82 的层向修复）
+
+
+def test_without_an_injected_resolver_the_factory_uses_the_env_vendor(
+    isolated_settings: pytest.MonkeyPatch,
+) -> None:
+    """没注入解析器 = 没有角色指针：装配走 ``.env``，与改造前逐字一致。"""
+
+    isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
+    isolated_settings.setattr(settings, "LLM_MODEL", "deepseek-flash")
+
+    assert get_llm_provider().model_name == "deepseek-flash"
+
+
+def test_a_resolver_returning_none_falls_back_to_env(
+    isolated_settings: pytest.MonkeyPatch,
+) -> None:
+    """解析器返回 ``None``（没有指针 / 候选取行已消失）时回落 ``.env``，不是「能力缺失」。
+
+    这是 Provider 与组合根的契约：读不到配置由解析器折成 ``None``，Provider 不把
+    「没有配置」当错误，更不在请求路径上抛。
+    """
+
+    set_role_resolver(lambda role: None)
+    isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
+    isolated_settings.setattr(settings, "LLM_MODEL", "env-fast-model")
+
+    provider = get_llm_provider("fast")
+
+    assert isinstance(provider, LangChainLLMProvider)
+    assert provider.model_name == "env-fast-model"
+
+
+def test_an_injected_endpoint_is_assembled_without_the_services_layer(
+    isolated_settings: pytest.MonkeyPatch,
+) -> None:
+    """注入的非空端点直接用：provider 层的形状就够了，不需要 ``app.services``。"""
+
+    set_role_resolver(
+        lambda role: RoleEndpoint(
+            provider="ark",
+            base_url="https://ark.example.com/v3",
+            model="doubao-pro",
+            api_key="sk-ark-abcd",
+            config_id="config-ark",
+        )
+    )
+    # `.env` 里给的是另一家的 key：装配必须只看注入的那一条，不许把它和 env 混在一起。
+    isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
+
+    provider = get_llm_provider("fast")
+
+    assert provider.model_name == "doubao-pro"
+    assert type(provider.chat_model).__name__ == "ChatOpenAI"
+    assert str(provider.chat_model.openai_api_base) == "https://ark.example.com/v3"
+
+
+def test_the_provider_layer_does_not_import_the_services_layer() -> None:
+    """``app/providers/**`` 里不许出现 ``from app.services`` / ``import app.services``。
+
+    层向：``app.services`` 依赖 ``app.providers``，反过来 import 会把服务层（以及它的
+    DB / 审计 / 事务）拖进任何只想拿一个 Provider 的地方——#82 修掉的就是这一条。
+    """
+
+    providers_dir = Path(__file__).resolve().parent.parent / "app" / "providers"
+    import_from_services = re.compile(r"^\s*(?:from|import)\s+app\.services\b", re.M)
+
+    offenders = sorted(
+        str(path.relative_to(providers_dir.parent.parent))
+        for path in providers_dir.rglob("*.py")
+        if import_from_services.search(path.read_text(encoding="utf-8"))
+    )
+
+    assert offenders == [], offenders
 
 
 # ─────────────────────────────────────────────────── 启动期校验（本票新增）

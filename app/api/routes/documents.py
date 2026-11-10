@@ -19,11 +19,10 @@
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
-from fastapi.exceptions import RequestValidationError
-from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_key
+from app.api.upload_parsing import parse_upload_request, submitted_request_id
 from app.core.auth import DevKeyContext
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session import get_db
@@ -52,17 +51,6 @@ router = APIRouter()
 
 logger = structlog.get_logger(__name__)
 
-_MISSING_KB_ID_ERROR = {"type": "missing", "loc": ("body", "kb_id"), "msg": "Field required"}
-_MISSING_FILE_ERROR = {"type": "missing", "loc": ("body", "file"), "msg": "Field required"}
-_INVALID_JSON_ERROR = {"type": "json_invalid", "loc": ("body",), "msg": "JSON decode error"}
-
-
-def _submitted_request_id(request: Request) -> str | None:
-    """关联标识来自中间件写进 scope 的同一个值，不直接读 structlog contextvars。"""
-
-    stored = request.scope.get("state", {}).get("request_id")
-    return stored if isinstance(stored, str) else None
-
 
 @router.post(
     "/documents/upload",
@@ -80,53 +68,37 @@ async def upload_document(
     """单端点按 content-type 分流：multipart 走文件模式，其余走 JSON 模式。
 
     FastAPI 不能在同一次操作里既声明 Pydantic body 又声明 Form/File，因此这里声明
-    只有 Form/File，JSON 分支手工 ``model_validate(await request.json())``。表单解析
-    对非 multipart 的 content-type 不读 body，所以 JSON 分支之后仍能取到完整正文。
+    只有 Form/File，JSON 分支由 ``parse_upload_request`` 手工 ``model_validate`` 请求正文
+    （表单解析对非 multipart 的 content-type 不读 body，所以 JSON 分支仍能取到完整正文）。
+    分流的细节、缺字段的 20002 与非法 JSON 的兜底都在 :mod:`app.api.upload_parsing`，
+    与控制面那份上传共用同一段实现。
     """
 
-    content_type = request.headers.get("content-type", "")
+    upload = await parse_upload_request(
+        request,
+        kb_id_field=kb_id,
+        title_field=title,
+        file=file,
+        json_model=UploadDocumentRequest,
+        require_form_kb_id=True,
+    )
+    uploaded_kb_id = upload.kb_id
+    assert uploaded_kb_id is not None, "require_form_kb_id=True：解析器必然给出 kb_id"
 
-    if content_type.startswith("multipart/form-data"):
-        if kb_id is None or not kb_id.strip():
-            raise RequestValidationError([_MISSING_KB_ID_ERROR])
-        if file is None:
-            raise RequestValidationError([_MISSING_FILE_ERROR])
-        # 第二道关卡：白名单。FastAPI 在进本函数之前已经解析完 multipart，这里能拦下的
-        # 最早位置就是「读正文 / 落库」之前——被拒的上传不写行、也不把字节读进来。
-        ensure_kb_scope(policy=key.policy, kb_ids=[kb_id])
-        data = await document_service.upload(
-            db,
-            tenant_id=key.tenant_id,
-            kb_id=kb_id,
-            plan=key.plan,
-            title=title,
-            filename=file.filename or "",
-            data=await file.read(),
-            request_id=_submitted_request_id(request),
-        )
-        return ok(UploadDocumentData.model_validate(data))
-
-    try:
-        payload = UploadDocumentRequest.model_validate(await request.json())
-    except ValidationError as exc:
-        # 交给既有的 RequestValidationError 处理器：20002 + 只挑 loc/msg/type，
-        # 不回显 input / ctx / url。
-        raise RequestValidationError(exc.errors()) from None
-    except ValueError:
-        # 半截 / 非法 JSON 也归入 20002，不要让它穿成未捕获异常的 500。
-        raise RequestValidationError([_INVALID_JSON_ERROR]) from None
-
-    # 第二道关卡：白名单（JSON 分支与文件分支同一份判定，同一个码）。
-    ensure_kb_scope(policy=key.policy, kb_ids=[payload.kb_id])
+    # 第二道关卡：白名单。两种分流同一份判定、同一个码，位置在**落库与落盘之前**：
+    # 被拒的上传不写行、不建索引任务。
+    ensure_kb_scope(policy=key.policy, kb_ids=[uploaded_kb_id])
 
     data = await document_service.upload(
         db,
         tenant_id=key.tenant_id,
-        kb_id=payload.kb_id,
+        kb_id=uploaded_kb_id,
         plan=key.plan,
-        title=payload.title,
-        content=payload.content,
-        request_id=_submitted_request_id(request),
+        title=upload.title,
+        filename=upload.filename,
+        data=upload.data,
+        content=upload.content,
+        request_id=upload.request_id,
     )
     return ok(UploadDocumentData.model_validate(data))
 
@@ -228,7 +200,7 @@ async def reindex_document(
         document_id=document_id,
         tenant_id=key.tenant_id,
         kb_id=doc.kb_id,
-        request_id=_submitted_request_id(request),
+        request_id=submitted_request_id(request),
         reparse=reparse,
     )
     logger.info(

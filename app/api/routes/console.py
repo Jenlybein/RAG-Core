@@ -317,12 +317,34 @@ def patch_account(
 @router.get(
     "/audit-logs",
     response_model=ApiResponse[AuditLogListData],
-    summary="审计列表（管理员）",
+    summary="审计列表（管理员；limit / offset 分页 + action 精确过滤）",
 )
 def list_audit_logs(
     limit: int | None = Query(default=None, description="最多返回几条，缺省 50、上限 200"),
+    offset: int = Query(default=0, ge=0, description="跳过几条（分页起点，从 0 开始）"),
+    action: str | None = Query(
+        default=None,
+        description="按动作名**精确**过滤（如 model.reveal / key.issue）；不给就是全部",
+    ),
     identity: ConsoleIdentity = Depends(get_console_admin),
     db: Session = Depends(get_db),
 ) -> ApiResponse[AuditLogListData]:
-    rows = console_service.list_audit_logs(db, limit=console_service.audit_limit(limit))
-    return ok(AuditLogListData(audit_logs=[audit_log_item(row) for row in rows]))
+    """返回一页审计行，并带上「当前筛选条件下的总数」与本次的 ``offset``。
+
+    分页与过滤都在 SQL 层完成；``total`` 是全量统计（带 ``action`` 时是那个动作的条数），
+    让前端能算页数而不必再发一次计数请求。
+    """
+
+    page = console_service.list_audit_logs(
+        db,
+        limit=console_service.audit_limit(limit),
+        offset=offset,
+        action=action,
+    )
+    return ok(
+        AuditLogListData(
+            audit_logs=[audit_log_item(row) for row in page.rows],
+            total=page.total,
+            offset=offset,
+        )
+    )

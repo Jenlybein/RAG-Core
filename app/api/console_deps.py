@@ -12,10 +12,11 @@
 - ``require_console_write`` / ``require_console_admin_write``：同上，并且这个请求带了
   防跨站的显式头。**写操作**用这两个，读操作用前两个；
 - ``require_console_tenant`` / ``require_console_tenant_write``：**用户面板类接口**
-  （库 / 文档 / 密钥 / 模型）的租户门禁，返回裸 ``tenant_id``。管理员（``tenant_id IS
-  NULL``）能登录、能看 ``/console/me``，但它不属于任何租户，这些接口对它一律 ``20011``
-  ——写成共用依赖而不是每条各判一遍，是因为「少写一条」的结果是管理员悄悄拿到一个空
-  租户的写权限；
+  （**知识库 / 文档 / 密钥**；模型配置是平台级资源，走管理员那条门）的租户门禁，返回
+  已校验的 ``ConsoleIdentity``。管理员（``tenant_id IS NULL``）能登录、能看 ``/console/me``，
+  但它不属于任何租户，这些接口对它一律 ``20011`` ——写成共用依赖而不是每条各判一遍，
+  是因为「少写一条」的结果是管理员悄悄拿到一个空租户的写权限。服务层**只接收**这个已
+  校验的身份，不再自己判一遍租户（那是同一判定的第二套实现，正是 #82 修掉的东西）；
 - **平台级接口**（账号 / 套餐 / 审计 / 配置中台 ``settings``）用
   ``get_console_admin`` / ``require_console_admin_write``，**不套**上面那对租户依赖。
   ``runtime_settings`` 不属于任何租户：``RERANK_ENABLED`` 一关，所有租户的 ``quality``
@@ -98,20 +99,22 @@ def require_console_write_header(request: Request) -> None:
 
 def require_console_tenant(
     identity: ConsoleIdentity = Depends(get_console_account),
-) -> str:
+) -> ConsoleIdentity:
     """用户面板的读接口：先认出是谁，再要求它属于某个租户（管理员一律 ``20011``）。
 
-    返回裸 ``tenant_id`` 而不是身份对象：路由只需要它去查库/文档，接着写审计时再取
-    ``Depends(get_console_account)``——FastAPI 的依赖缓存会让同一个请求里的身份只解析
-    一次，不会因为多声明一个依赖就多读一次会话行。
+    返回**身份对象**而不是裸 ``tenant_id``：路由与它调用的服务层都要 ``account_id`` 去写
+    审计，拆成两半会让「读接口多声明一个 ``Depends(get_console_account)``」变成惯例，
+    而那条惯例一旦漏掉，审计的 actor 就悄悄变成 ``None``。FastAPI 的依赖缓存保证同一个
+    请求里身份只解析一次，多一层依赖不多读一次会话行。
     """
 
-    return _tenant_id_of(identity)
+    _ensure_tenant_account(identity)
+    return identity
 
 
 def require_console_tenant_write(
     identity: ConsoleIdentity = Depends(require_console_write),
-) -> str:
+) -> ConsoleIdentity:
     """用户面板的写接口：防跨站头通过后，再要求它是租户账号。
 
     顺序是刻意的：``require_console_write`` 内部先解析会话、再查头，于是——
@@ -119,15 +122,27 @@ def require_console_tenant_write(
     （不该被当成掉线）。管理员带着头进来时才走到这里的租户判定，同样 ``20011``。
     """
 
-    return _tenant_id_of(identity)
+    _ensure_tenant_account(identity)
+    return identity
 
 
-def _tenant_id_of(identity: ConsoleIdentity) -> str:
+def tenant_id_of(identity: ConsoleIdentity) -> str:
+    """已过租户门禁的身份 → 裸 ``tenant_id``（**只做类型收窄**，不重复判定）。
+
+    判定已经在 :func:`require_console_tenant` / :func:`require_console_tenant_write` 里做完，
+    所以这里没有第二种错误分支；写成函数只是为了让 mypy 在一个地方收窄
+    ``str | None``，而不是让每个路由各写一次 ``assert``。
+    """
+
+    assert identity.tenant_id is not None, "租户门禁应已拒绝无租户的管理员"
+    return identity.tenant_id
+
+
+def _ensure_tenant_account(identity: ConsoleIdentity) -> None:
     """租户门禁的**唯一**实现：管理员（``tenant_id is None``）不是「无权限」，是「用错了门」。"""
 
     if identity.tenant_id is None:
         raise AppError(ErrorCode.FORBIDDEN, MSG_TENANT_ACCOUNT_REQUIRED)
-    return identity.tenant_id
 
 
 def get_plan_cache() -> PlanCache:
