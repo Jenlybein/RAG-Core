@@ -16,10 +16,12 @@ import { useMutation, useQuery } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import ComparePanel from '../components/ComparePanel.vue'
 import { ApiError } from '../lib/envelope'
 import { fetchPickableKnowledgeBases, retrieve } from '../services/ragService'
 import { useRetrieveStore } from '../stores/retrieve'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
+import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
   buildRunSummary,
   describeEmptyReason,
@@ -105,6 +107,26 @@ const blockReason = computed(() => {
 const result = ref<RetrieveData | null>(null)
 const runError = ref<{ message: string; limitHint: boolean } | null>(null)
 
+// —— ⑤ 对比历史（只在内存） ——
+/**
+ * 为什么只活在组件 `ref` 里：对比是排障时「刚刚改了什么」的会话内手段，不是持久化
+ * 报表 —— 刷新 / 退出页面即清空，**刻意不写 localStorage/sessionStorage**。
+ * 上一次会话的基准拿来对照新的响应，会把「配置其实变了」看成「没变」，恰好与本面板
+ * 的用途相反。上限 5 由 `pushHistory` 保证：超出丢最旧，留下的都是「刚刚」。
+ */
+const history = ref<CompareHistoryEntry[]>([])
+const pinnedSeq = ref<number | null>(null)
+/** 会话内的检索序号；从 1 开始，只进内存，不进 URL / storage。 */
+let nextSeq = 1
+
+function pinBase(seq: number): void {
+  pinnedSeq.value = seq
+}
+
+function unpinBase(): void {
+  pinnedSeq.value = null
+}
+
 const { mutate, isPending: running } = useMutation({
   mutationFn: (payload: RetrieveRequest) => retrieve(payload),
   onMutate: () => {
@@ -112,6 +134,17 @@ const { mutate, isPending: running } = useMutation({
   },
   onSuccess: (data) => {
     result.value = data
+    // 只有成功的检索才进历史：失败没有 `RetrieveData` 可对比，硬造一条空记录会让
+    // 「第 N 次」名不副实，也会把基准的编号整体错位。
+    const seq = nextSeq
+    nextSeq += 1
+    // 只存响应引用本身：`result` 与历史都只读这份数据，页面从不修改它，
+    // 所以两份引用指向同一份快照是安全的（真去深拷贝一遍只会多一份可能被改的副本）。
+    history.value = pushHistory(history.value, {
+      seq,
+      at: new Date().toISOString(),
+      data,
+    })
   },
   onError: (error) => {
     // 本次失败就清掉上一次的结果：旧卡片配新报错会让人以为「这次也成功了一部分」，
@@ -337,6 +370,15 @@ const hasTenantPolicy = computed(() => result.value?.metadata.tenant_policy !== 
         </li>
       </ul>
     </el-card>
+
+    <!-- ⑤ 对比面板（会话内，放在结果区下方；没有历史时整块不渲染，不占位） -->
+    <ComparePanel
+      v-if="history.length > 0"
+      :history="history"
+      :pinned-seq="pinnedSeq"
+      @pin="pinBase"
+      @unpin="unpinBase"
+    />
 
     <!-- ④ 运行摘要（只读） -->
     <el-card shadow="never">
