@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import threading
 import time
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Final
@@ -97,6 +97,16 @@ class StageTimer:
 
         with self._lock:
             collected = list(self._spans)
-        return tuple(
-            sorted(collected, key=lambda span: _ORDER_INDEX.get(span.name, len(STAGE_ORDER)))
-        )
+        return order_spans(collected)
+
+
+def order_spans(spans: Iterable[StageSpan]) -> tuple[StageSpan, ...]:
+    """按链路顺序排一组段；不认识的段名稳定地排在最后（不抛）。
+
+    读回通道（控制台瀑布，#103）也要这一份顺序：观测栈按 ``start_time`` 回给我们的顺序，
+    与文件里写下的顺序，都只是「什么时候记的」；而要看的是**链路顺序**——两路召回并行，
+    谁先返回取决于网络抖动，同一份输入的瀑布不该因此变样。顺序只有这一份实现，
+    调用点不各自 ``sorted``。
+    """
+
+    return tuple(sorted(spans, key=lambda span: _ORDER_INDEX.get(span.name, len(STAGE_ORDER))))
