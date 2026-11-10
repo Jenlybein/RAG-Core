@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES, settings
+from app.core.profile_presets import profile_preset_of
 from app.models.key_policy import (
     PROFILE_BALANCED,
     PROFILE_CUSTOM,
@@ -84,7 +85,9 @@ class ProfileChain:
     rewrite: bool
 
 
-#: 三个命名档位的全部内容。**完整替换**：选它就等于选了这一整条链路。
+#: 三个命名档位**改造前**的那份硬编码链路。现在档位由 ``profile_presets`` 表提供
+#: （见 ``app.core.profile_presets``），这份常量只作为注册表的内置种子保留，
+#: 并由测试钉住「种子 = 迁移播种行 = 注册表默认值」三者一致。
 #:
 #: * ``speed``：只走向量一路，5 条，不重排、不改写——最便宜、最可预测；
 #: * ``balanced``：混合检索（两路融合），5 条，不重排、不改写；
@@ -92,8 +95,7 @@ class ProfileChain:
 #:   和我问的不是一个说法」这类问题。
 #:
 #: 条数统一是 5：档位之间差的是**链路**（路数、重排、改写），不是返回多少个字。
-#: 想让调用方多拿几条是「结果形状组」的事，不是档位的事。
-PROFILE_CHAINS: Final[dict[str, ProfileChain]] = {
+SEED_PROFILE_CHAINS: Final[dict[str, ProfileChain]] = {
     PROFILE_SPEED: ProfileChain(mode=MODE_VECTOR, top_k=5, rerank=False, rewrite=False),
     PROFILE_BALANCED: ProfileChain(mode=MODE_HYBRID, top_k=5, rerank=False, rewrite=False),
     PROFILE_QUALITY: ProfileChain(mode=MODE_HYBRID, top_k=5, rerank=True, rewrite=True),
@@ -154,8 +156,9 @@ class RetrievalOptions:
 def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
     """把配置里的档位**展开**成一整条链路（五道门的第 2 道，纯数据那一步）。
 
-    * 命名档位：查 :data:`PROFILE_CHAINS`，**配置里的 ``custom_options`` 一个都不读**
-      ——完整替换，不是「预设打底、配置覆盖」；
+    * 命名档位：查档位注册表（``app.core.profile_presets``，真相是 ``profile_presets``
+      表），**配置里的 ``custom_options`` 一个都不读**——完整替换，不是「预设打底、
+      配置覆盖」；
     * ``custom``：读那批手动参数，**逐键**回落部署缺省（``RETRIEVAL_MODE`` /
       ``TOP_K`` / ``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED``）；
     * 未知档位名：回落到部署缺省。配置写入时已经验过词表，这里只兜底，不把调用当场
@@ -174,10 +177,18 @@ def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
             ),
         )
 
-    preset = PROFILE_CHAINS.get(policy.profile)
+    preset = profile_preset_of(policy.profile)
     if preset is None:
         return server_default_chain()
-    return preset
+    # 注册表里的参数是**档位意图**；这里只是把它搬成一个不可变的 ProfileChain。
+    # 为什么不直接用注册表里的对象：ProfileChain 是这个模块的值对象，它的不可变性与
+    # 四项齐备由构造处保证；注册表那份是可被管理端替换的普通 dataclass，两者不该混用。
+    return ProfileChain(
+        mode=preset.mode,
+        top_k=preset.top_k,
+        rerank=preset.rerank,
+        rewrite=preset.rewrite,
+    )
 
 
 def server_default_chain() -> ProfileChain:

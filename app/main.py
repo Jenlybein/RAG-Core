@@ -49,6 +49,7 @@ HTTP 由 ``app/api/deps.py`` 取请求，MCP 由 ``app/mcp_server.py`` 取请求
 
 from contextlib import asynccontextmanager
 
+import structlog
 from fastapi import FastAPI
 from fastmcp.utilities.lifespan import combine_lifespans
 
@@ -58,18 +59,21 @@ from app.api.routes.console import router as console_router
 from app.api.routes.console_kbs import router as console_kbs_router
 from app.api.routes.console_keys import router as console_keys_router
 from app.api.routes.console_models import router as console_models_router
+from app.api.routes.console_profiles import router as console_profiles_router
 from app.api.routes.console_settings import router as console_settings_router
 from app.core.config import settings
+from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
 from app.db.session import SessionLocal
 from app.providers.llm import set_role_resolver
 from app.repositories import knowledge_base_repository
-from app.services import model_config_service, rag_service
+from app.services import model_config_service, profile_preset_service, rag_service
 
 # ── T2: 结构化日志（模块级幂等初始化，不进 lifespan）──
 from app.core.logging import setup_logging
 
 setup_logging()
+logger = structlog.get_logger(__name__)
 # ── T2 结束 ──
 
 # ── #94/#82: 模型角色解析器在**组合根**注入一次 ──
@@ -81,6 +85,17 @@ set_role_resolver(model_config_service.role_endpoint)
 # ── #94/#82 结束 ──
 
 
+def _load_profile_presets_from_db() -> None:
+    """档位参数装载器。组合根是唯一知道 ``SessionLocal`` 的地方，所以连接在这里给，
+    注册表那边只留一个可注入的钩子（见 ``app.core.profile_presets``）。"""
+
+    with SessionLocal() as db:
+        profile_preset_service.load_into_registry(db)
+
+
+set_profile_preset_loader(_load_profile_presets_from_db)
+
+
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
     """主应用自己的启动逻辑；挂子应用时不能被顶掉。"""
@@ -88,6 +103,10 @@ async def app_lifespan(app: FastAPI):
     # 切块的窗口口径依赖 Qwen 词表：缺它就只能换近似词表，而近似会让同一个库在
     # 不同部署上切出不同的片。所以启动时就要验，带病启动比启动失败更难查。
     tokenizer.verify_ready()
+
+    # 档位参数装载一次。失败由 `load_profile_presets` 自己吞掉并记 warning（迁移没跑的
+    # 库要能启动），这里不做二次兜底——两处兜底会让人分不清是哪一处救回的。
+    load_profile_presets()
     yield
 
 
@@ -132,6 +151,8 @@ app.include_router(console_keys_router)
 app.include_router(console_settings_router)
 # 多模型配置（#94）同样自带前缀：六条接口与配置中台平级挂载。
 app.include_router(console_models_router)
+# 档位预设（平台级配置，只有管理员读写）：两条接口。
+app.include_router(console_profiles_router)
 
 # ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)
