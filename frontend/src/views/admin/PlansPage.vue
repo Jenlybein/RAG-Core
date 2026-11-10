@@ -28,12 +28,7 @@ import {
   fetchPlans,
   updatePlan,
 } from '../../services/consoleAdmin'
-import type {
-  PlanData,
-  PlanEditableFields,
-  PlanImpact,
-  PlanNumericField,
-} from '../../types/consoleAdmin'
+import type { PlanData, PlanEditableFields, PlanImpact } from '../../types/consoleAdmin'
 import { KEY_PROFILES } from '../../types/key'
 import {
   PLAN_CAPABILITIES,
@@ -121,15 +116,11 @@ function openEdit(plan: PlanData): void {
   dialogVisible.value = true
 }
 
-function unitOf(key: PlanNumericField): string {
-  return PLAN_NUMBER_FIELDS.find((field) => field.key === key)?.unit ?? ''
-}
-
-function capabilityText(plan: PlanData): string {
-  const enabled = PLAN_CAPABILITIES.filter((capability) => plan[capability.key]).map(
+/** 这一档开了哪些能力。返回标签数组，空数组表示一个都没开。 */
+function enabledCapabilities(plan: PlanData): string[] {
+  return PLAN_CAPABILITIES.filter((capability) => plan[capability.key]).map(
     (capability) => capability.label,
   )
-  return enabled.length === 0 ? '—' : enabled.join('、')
 }
 
 /**
@@ -220,50 +211,86 @@ async function refresh(): Promise<void> {
       <el-button class="mt-2" size="small" @click="refresh">重试</el-button>
     </div>
 
-    <div v-else class="mt-4 overflow-x-auto">
-      <table class="min-w-full text-sm">
-        <thead class="bg-[#F8F9FA] text-[#6B7280]">
+    <div v-else class="mt-5 overflow-x-auto">
+      <div v-if="plans.length === 0" class="py-10 text-center">
+        <p class="text-[15px] font-semibold text-ink">还没有套餐</p>
+        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          套餐行由 <span class="font-mono">scripts/seed_plans.py</span> 首次播种。
+        </p>
+      </div>
+
+      <table v-else class="min-w-full text-sm">
+        <thead>
           <tr>
-            <th class="px-3 py-2 text-left font-medium">套餐</th>
-            <th class="px-3 py-2 text-left font-medium">档位白名单</th>
-            <th class="px-3 py-2 text-left font-medium">能力开关</th>
-            <th class="px-3 py-2 text-left font-medium">上限</th>
-            <th class="px-3 py-2 text-left font-medium">更新时间</th>
-            <th class="px-3 py-2 text-left font-medium">操作</th>
+            <th class="th-label px-3 py-2 text-left">套餐</th>
+            <th class="th-label px-3 py-2 text-left">档位白名单</th>
+            <th class="th-label px-3 py-2 text-left">能力开关</th>
+            <th class="th-label px-3 py-2 text-left">上限</th>
+            <th class="th-label px-3 py-2 text-left">更新时间</th>
+            <th class="th-label px-3 py-2 text-left">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="plan in plans" :key="plan.plan_id" class="border-t border-line align-top">
             <td class="px-3 py-3">
-              <p class="font-medium text-slate-800">{{ plan.name }}</p>
-              <p class="font-mono text-xs text-slate-500">{{ plan.code }}</p>
+              <p class="font-medium text-ink">{{ plan.name }}</p>
+              <p class="font-mono text-[11px] text-muted">{{ plan.code }}</p>
             </td>
-            <td class="px-3 py-3 text-slate-600">
-              {{ plan.allowed_profiles.length === 0 ? '—' : plan.allowed_profiles.join(' / ') }}
-            </td>
-            <td class="px-3 py-3 text-slate-600">{{ capabilityText(plan) }}</td>
+
+            <!-- 档位用 chips：`speed / balanced / custom` 这种长串在列里会折在斜杠中间。 -->
             <td class="px-3 py-3">
-              <!-- 每个数值都带单位：库里只有数字，单位只由列名暗示，不写出来就要人回去查。 -->
-              <div
-                v-for="field in PLAN_NUMBER_FIELDS"
-                :key="field.key"
-                class="whitespace-nowrap text-slate-600"
-              >
-                {{ field.label }}：{{ plan[field.key] }} {{ field.unit }}
+              <div class="flex flex-wrap gap-1">
+                <span
+                  v-for="code in plan.allowed_profiles"
+                  :key="code"
+                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-[11px] text-slate-600"
+                >
+                  {{ code }}
+                </span>
+                <span v-if="plan.allowed_profiles.length === 0" class="text-xs text-slate-400">
+                  —
+                </span>
               </div>
             </td>
-            <td class="px-3 py-3 whitespace-nowrap text-slate-600">
+
+            <td class="px-3 py-3">
+              <div class="flex flex-wrap gap-1">
+                <span
+                  v-for="capability in enabledCapabilities(plan)"
+                  :key="capability"
+                  class="rounded-full bg-[#E4EDDD] px-2 py-0.5 text-[11px] text-[#3C5228]"
+                >
+                  {{ capability }}
+                </span>
+                <span v-if="enabledCapabilities(plan).length === 0" class="text-xs text-slate-400">
+                  —
+                </span>
+              </div>
+            </td>
+
+            <!--
+              上限原来是六个「标签：值 单位」各占一行，行高被撑到三倍、扫读时像在读数表。
+              改成 chips：每个数值自带完整语义（值 + 单位 + 短标签），换行只发生在块之间。
+            -->
+            <td class="px-3 py-3">
+              <div class="flex flex-wrap gap-1">
+                <span
+                  v-for="field in PLAN_NUMBER_FIELDS"
+                  :key="field.key"
+                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 text-[11px] whitespace-nowrap text-slate-600"
+                  :title="field.label"
+                >
+                  {{ field.short }} {{ plan[field.key] }} {{ field.unit }}
+                </span>
+              </div>
+            </td>
+
+            <td class="px-3 py-3 text-[11px] whitespace-nowrap text-muted">
               {{ formatDateTime(plan.updated_at) }}
             </td>
             <td class="px-3 py-3">
               <!-- 只有「编辑」：删除入口暂时下线，理由见本文件顶部模块文档。 -->
               <el-button size="small" @click="openEdit(plan)">编辑</el-button>
-            </td>
-          </tr>
-
-          <tr v-if="plans.length === 0">
-            <td colspan="6" class="px-3 py-8 text-center text-sm text-slate-500">
-              还没有套餐。套餐行由 `scripts/seed_plans.py` 首次播种。
             </td>
           </tr>
         </tbody>
@@ -277,22 +304,24 @@ async function refresh(): Promise<void> {
       width="640px"
       :close-on-click-modal="false"
     >
-      <div class="space-y-4 text-sm">
-        <div class="flex flex-wrap items-center gap-2">
-          <span class="w-24 text-slate-500">套餐标识</span>
-          <span class="font-mono text-slate-700">{{ editingPlan?.code ?? '—' }}</span>
-          <span class="text-xs text-slate-400">
-            （code 是脚本与日志的指代，本页不提供改名）
-          </span>
+      <div class="space-y-5 text-sm">
+        <!-- 套餐标识只读：code 是脚本与日志的指代，改名要连脚本一起动。 -->
+        <div class="flex flex-wrap items-baseline gap-2">
+          <span class="w-20 shrink-0 text-[11px] text-muted">套餐标识</span>
+          <span class="font-mono text-[13px] text-ink">{{ editingPlan?.code ?? '—' }}</span>
+          <span class="text-[11px] text-muted">（脚本与日志的指代，本页不提供改名）</span>
         </div>
 
         <label class="flex items-center gap-2">
-          <span class="w-24 text-slate-500">套餐名</span>
+          <span class="w-20 shrink-0 text-[11px] text-muted">套餐名</span>
           <el-input v-model="draft.name" maxlength="128" />
         </label>
 
         <div>
-          <p class="mb-1 text-slate-500">档位白名单（四个勾选框，没有自由输入）</p>
+          <p class="mb-2 text-[11px] text-muted">
+            档位白名单
+            <span class="ml-1">（四个勾选框，没有自由输入）</span>
+          </p>
           <el-checkbox-group v-model="draft.allowed_profiles">
             <el-checkbox-button v-for="code in KEY_PROFILES" :key="code" :value="code">
               {{ code }}
@@ -301,41 +330,44 @@ async function refresh(): Promise<void> {
         </div>
 
         <div>
-          <p class="mb-1 text-slate-500">能力开关</p>
-          <div class="flex flex-wrap gap-x-6 gap-y-2">
-            <label
+          <p class="mb-2 text-[11px] text-muted">能力开关</p>
+          <!--
+            用勾选框而不是开关：Element 的 switch 关闭态是一块浅粉，压在这套米白上很扎眼，
+            而「这个能力开没开」本来就是勾选语义。四个并排也更好一眼扫完。
+          -->
+          <div class="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
+            <el-checkbox
               v-for="capability in PLAN_CAPABILITIES"
               :key="capability.key"
-              class="flex items-center gap-2"
+              v-model="draft[capability.key]"
             >
-              <el-switch v-model="draft[capability.key]" />
-              <span class="text-slate-600">{{ capability.label }}</span>
-            </label>
+              {{ capability.label }}
+            </el-checkbox>
           </div>
         </div>
 
         <div>
-          <p class="mb-1 text-slate-500">上限（每项都必须 ≥ 1）</p>
-          <div class="grid grid-cols-2 gap-3">
+          <p class="mb-2 text-[11px] text-muted">上限 <span class="ml-1">（每项都必须 ≥ 1）</span></p>
+          <div class="grid gap-3 sm:grid-cols-2">
             <label
               v-for="field in PLAN_NUMBER_FIELDS"
               :key="field.key"
               class="flex items-center gap-2"
             >
-              <span class="w-32 shrink-0 text-slate-600">{{ field.label }}</span>
+              <span class="w-28 shrink-0 text-[11px] text-muted">{{ field.label }}</span>
               <el-input-number
                 v-model="draft[field.key]"
                 :min="1"
                 :step="1"
                 controls-position="right"
-                class="w-32"
+                style="width: 96px"
               />
-              <span class="text-xs text-slate-400">{{ unitOf(field.key) }}</span>
+              <span class="text-[11px] text-muted">{{ field.unit }}</span>
             </label>
           </div>
         </div>
 
-        <p class="rounded bg-[#F8F9FA] px-3 py-2 text-xs text-slate-500">
+        <p class="rounded-control bg-surface-muted px-3 py-2 text-[11px] leading-relaxed text-muted">
           点「保存」只先试算：有租户会超库数或失去档位时，会再弹一次确认，确认后才落库。
         </p>
       </div>

@@ -38,15 +38,22 @@ export interface PlanNumberField {
   readonly key: PlanNumericField
   readonly label: string
   readonly unit: string
+  /**
+   * 列表里用的短名。**为什么需要第二个名字**：`label` 是编辑器里的完整说法（"每库文档
+   * 上限"），六个并排放在表格一列里会堆成六行文字、把行高撑到三倍；列表只需要能扫读
+   * 的标签，完整含义留给弹窗。两套名字放在同一张表里，才不会出现「列表改了一次、弹窗
+   * 忘了改」。
+   */
+  readonly short: string
 }
 
 export const PLAN_NUMBER_FIELDS: readonly PlanNumberField[] = [
-  { key: 'retrieve_qps', label: '检索 QPS', unit: '次/秒' },
-  { key: 'retrieve_daily', label: '日检索上限', unit: '次/天' },
-  { key: 'max_kb', label: '知识库上限', unit: '个' },
-  { key: 'max_kb_per_retrieve', label: '单次检索库数', unit: '个' },
-  { key: 'max_documents_per_kb', label: '每库文档上限', unit: '个' },
-  { key: 'max_processing_documents', label: '并发处理文档', unit: '个' },
+  { key: 'retrieve_qps', label: '检索 QPS', unit: '次/秒', short: 'QPS' },
+  { key: 'retrieve_daily', label: '日检索上限', unit: '次/天', short: '日上限' },
+  { key: 'max_kb', label: '知识库上限', unit: '个', short: '库' },
+  { key: 'max_kb_per_retrieve', label: '单次检索库数', unit: '个', short: '单次库' },
+  { key: 'max_documents_per_kb', label: '每库文档上限', unit: '个', short: '每库文档' },
+  { key: 'max_processing_documents', label: '并发处理文档', unit: '个', short: '并发' },
 ]
 
 /** 四个能力开关的展示配置；与六个上限一样，字段名到中文标签的映射只写这一处。 */
