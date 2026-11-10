@@ -27,6 +27,12 @@ from app.core.llm_vendors import LLM_VENDORS
 # 密钥配置的解析（app/services/retrieval_options.py）。
 SUPPORTED_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 
+# 观测去向的三个取值（#102）。与检索模式同一个理由放在模块级：校验器与报错文案共用
+# 一份，不会出现「文案说支持 A、校验器只放 B」。三个实现见 ``app/observability/``。
+# 名字按票面写 ``none``：ADR-0021 里那个 ``null`` 指的是同一个去向（丢弃），
+# 只是当时用的是 SQL / 语料里的叫法，落地时统一成这个。
+SUPPORTED_TRACE_SINKS = ("none", "jsonl", "langfuse")
+
 
 class Settings(BaseSettings):
     """从 .env 加载的运行时配置。"""
@@ -172,6 +178,30 @@ class Settings(BaseSettings):
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
     LANGCHAIN_TRACING_V2: bool = False
 
+    # ── 观测旁路（第 9 步，#102）──
+    # 一个配置项切三个去向：观测服务（``langfuse``）/ 本地文件（``jsonl``）/ 丢弃（``none``）。
+    # **切换不改链路代码**：链路只管「六段各花了多久」，送到哪由这里决定。
+    #
+    # 默认 ``jsonl`` 的理由要连起来读：**默认开启观测，但不依赖任何外部服务**。
+    # 观测栈是自托管的一整套 five-container（ADR-0021 决策 4），没起栈的机器上选 ``langfuse``
+    # 只会让每次检索都留一条 warning；而完全关掉（``none``）又等于默认部署里「哪一步慢」
+    # 根本没有答案。``jsonl`` 是这个缺口里唯一两全的选择：一行一次检索、本机可 grep。
+    # ``none`` 是测试与 CI 的去向（见 ``tests/conftest.py``），不是生产缺省。
+    #
+    # 注意它**不是**「计时开关」：任何取值下六段耗时都会被算出（父 spec「度量常开」），
+    # 这个值只决定这份计量送到哪。所以别把它接进任何 ``if`` 里省掉计时。
+    TRACE_SINK: str = "jsonl"
+    # JSONL 去向的目录与保留天数。保留天数有两处用处：写入时清掉超期文件、读取时只扫
+    # 这个窗口（``app.observability.jsonl_sink.read_recent_records``）。单行 ≤ 2 KB 是
+    # 契约常量，不在这里配（见 ``jsonl_sink.MAX_LINE_BYTES``）。
+    TRACE_JSONL_DIR: str = "logs/traces"
+    TRACE_JSONL_RETENTION_DAYS: int = 7
+    # 自托管观测栈的连接信息。留空 = 这台机器没配：``langfuse`` 去向会在第一次用时失败，
+    # 失败只留 warning（观测是旁路，ADR-0021）。名字与上游 SDK 的环境变量同名，是刻意的。
+    LANGFUSE_HOST: str = "http://localhost:3000"
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+
     # ── 检索与关键词引擎（第 4 步票 3 / 票 4）──
     # 默认 hybrid：票 4 把融合与降级做完后翻回来（父 spec：缺省值取服务端配置）。
     # 混合模式下关键词一路不可用只会降级，不会让默认配置在离线机器上直接报错。
@@ -205,6 +235,24 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(
                 f"RETRIEVAL_MODE 只支持 {allowed}，当前是 {value!r}。"
+            )
+        return normalized
+
+    @field_validator("TRACE_SINK")
+    @classmethod
+    def _validate_trace_sink(cls, value: str) -> str:
+        """配错的观测去向必须**启动就炸**，理由与 ``RETRIEVAL_MODE`` / ``LLM_PROVIDER`` 同构。
+
+        这个值决定「六段耗时送到哪」，而它的失败方式格外隐蔽：写成 ``json``（少一个 l）
+        之后进程照常起来、检索照常返回，只是**一条 trace 都没有**——没有报错、没有告警，
+        要等到有人翻观测栈时才发现这一整段时间是空白。启动失败比这便宜得多。
+        """
+
+        allowed = SUPPORTED_TRACE_SINKS
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"TRACE_SINK 只支持 {allowed}，当前是 {value!r}。"
             )
         return normalized
 
