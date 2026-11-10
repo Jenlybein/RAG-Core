@@ -36,7 +36,13 @@ dependencies = [
     # 阶段 4
     "elasticsearch==8.15.1",
     # 阶段 7
-    "langfuse==2.57.0",
+    # 票 100：2.57.0 → 5.2.0，跨大版本。5.x 把 SDK 换成 OpenTelemetry 底座（依赖表里
+    # 会多出一串 opentelemetry-*）。装包本身的门槛只有 Python：它的元数据写着
+    # Requires-Python >=3.11,<4.0，本仓库 requires-python >=3.12 已满足；配套服务端要
+    # ≥4.59 是票面上的部署前提，离线测不出来。不升的代价是：2.x 的 trace/span 口径与
+    # 5.x 是两套 API，埋点会照着就要消失的那套写。守大版本的测试见
+    # tests/test_dependency_compat.py，防止有人无声降回 2.x。
+    "langfuse==5.2.0",
     # 第 4 步票 1：评测库升到 0.4.3。ragas 0.2.6 拖着 langchain 0.2/0.3 时代的
     # langchain-community，与 langchain 1.x 不可能共存——这两半是同一次升级。
     "ragas==0.4.3",
