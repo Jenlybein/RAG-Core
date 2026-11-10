@@ -1,9 +1,9 @@
 <script setup lang="ts">
 /**
  * 检索参数页：按后端返回的三档（不可迁移 / 需重启 / 可热生效）渲染白名单里的全部运行时
- * 配置，只允许改真正能热更或能「记下意图待重启」的那些。
+ * 配置，**只允许改可热生效的那些**。
  *
- * 六处刻意的写法：
+ * 七处刻意的写法：
  *
  * 1. **分组顺序照后端**：`GET /console/settings` 已按 locked → restart → hot 排好，并且
  *    每档都返回（哪怕空组）。这里用 `groupByTier` 重新按行归组，只是为了不渲染空标题，
@@ -12,29 +12,41 @@
  *    页面不再自己编理由——编一份就会与后端的写入边界漂移。
  * 3. **保存是两步**：先 `PATCH ?dry_run=true` 拿影响面，有影响才 `ElMessageBox` 确认，
  *    确认后才 `?dry_run=false` 真写。影响面的数字一律用 `count`（`sample` 最多 5 个名字）。
+ *    这段顺序由 `composables/useDryRunSave.ts` 统一实现；确认判定与文案仍在页面。
  * 4. **保存后的提示按档位分开**：热更写「已推送（各进程 Ns 内生效）」，N 来自后端的
  *    `cache_ttl_seconds`（不写死 30）；需重启写「已保存，待重启生效」。不写「立即生效」。
  * 5. **非法行标红**：`invalid=true` 表示库里那一行读时校验失败、运行期已回退到 `.env`
  *    值；页面显示 `invalid_reason` 与「已回退到 .env 值」，管理员据此去修那一行。
  * 6. **角色指针行在这里也能改**：它们是热更键，保存走同一条 PATCH；但更顺手的方式是
  *    到模型配置页用下拉改指向，所以输入框旁给了一条链接与说明。
+ * 7. **需重启档在面板上只读**：#93/#96 的验收都要求「需重启重建档在面板上不可编辑」。
+ *    这一档不渲染任何输入控件，只显示当前值与来源；`source === 'db'` 的行标
+ *    「已写入库，待重启生效」，要改请走运维流程。保存时因此只提交 hot 档的改动，
+ *    没有 hot 改动时保存按钮禁用。
  */
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import { computed, h, reactive, ref, watch } from 'vue'
+import { ElMessage } from 'element-plus'
+import { computed, h, reactive, watch } from 'vue'
 
+import { useDryRunSave } from '../../composables/useDryRunSave'
 import {
   SETTINGS_QUERY_KEY,
   fetchSettings,
   updateSettings,
 } from '../../services/consoleSettings'
-import type { SettingRow, SettingValue } from '../../types/runtimeSettings'
+import type {
+  SettingRow,
+  SettingValue,
+  SettingsImpact,
+} from '../../types/runtimeSettings'
 import { errorText } from '../../utils/errorText'
-import { MODEL_VENDORS, impactLines, shouldConfirmImpact } from '../../utils/modelsPage'
+import { impactLines, shouldConfirmImpact } from '../../utils/impactPreview'
+import { MODEL_VENDORS } from '../../utils/modelsPage'
 import {
   groupByTier,
   isEditable,
   isRolePointerKey,
+  kindOf,
   validateHotValue,
 } from '../../utils/settingsTier'
 
@@ -81,14 +93,6 @@ const groups = computed(() => {
 const textDrafts = reactive<Record<string, string>>({})
 const numberDrafts = reactive<Record<string, number>>({})
 const boolDrafts = reactive<Record<string, boolean>>({})
-
-/** 这一行输入框绑的是哪一种草稿。 */
-function kindOf(row: SettingRow): 'boolean' | 'number' | 'string' {
-  if (isRolePointerKey(row.key)) return 'string'
-  if (typeof row.value === 'boolean') return 'boolean'
-  if (typeof row.value === 'number') return 'number'
-  return 'string'
-}
 
 /**
  * 个别键的取值域来自后端的常量（不是从响应里能推出来的）：渲染成下拉，省得管理员敲错
@@ -151,7 +155,12 @@ function sameValue(row: SettingRow, next: SettingValue): boolean {
   return row.value === next
 }
 
-/** 这次提交的差异：只发真动过的行，没动的键不写库也不进审计。 */
+/**
+ * 这次提交的差异：只发真动过的 **hot** 行，没动的键不写库也不进审计。
+ *
+ * `isEditable` 已经把 locked 与 restart 排除在外，所以这里天然只收集热更档：
+ * restart 档在面板上只读，改它要走运维流程。
+ */
 const changes = computed<Record<string, SettingValue>>(() => {
   const values: Record<string, SettingValue> = {}
   for (const group of groups.value) {
@@ -166,8 +175,27 @@ const changes = computed<Record<string, SettingValue>>(() => {
   return values
 })
 
+/** 只有 hot 档有改动时才允许保存；按钮的禁用条件就是它。 */
 const dirty = computed(() => Object.keys(changes.value).length > 0)
-const saving = ref(false)
+
+/**
+ * 两步保存走通用组合式函数：试算 → （有影响才）确认 → 真写。
+ *
+ * 判定与文案仍留在本页：`SettingsImpact`（档位少一步能力 / 失去关键词通道）与套餐页的
+ * `PlanImpact` 形状不同，只有本页知道哪些影响面值得停下来问。组合式函数负责顺序与 loading。
+ */
+const { saving, save: runDryRunSave } = useDryRunSave<SettingsImpact>({
+  formatImpact: (impact) => {
+    if (!shouldConfirmImpact(impact)) return null
+    return {
+      title: '保存前确认影响面',
+      message: h('div', { class: 'text-sm leading-6' }, [
+        ...impactLines(impact).map((line) => h('p', line)),
+        h('p', { class: 'mt-2 text-slate-500' }, '确认后才会真正落库；取消不会写入。'),
+      ]),
+    }
+  },
+})
 
 function formatValue(row: SettingRow): string {
   if (row.value === null) return '不指向（回落 .env）'
@@ -195,17 +223,17 @@ function tierHint(tier: string): string {
     return '这些改了等于换基础设施或能关掉鉴权，面板不提供入口，只能由部署方改 .env。'
   }
   if (tier === 'restart') {
-    return '保存后会写库并留审计：这里显示的将是库里的新值，但运行中的进程仍按旧值跑，' +
-      '要在重启 + 本步所需的数据重建后才真正生效。'
+    return '面板不提供写入口：这一档要改请走运维流程。' +
+      '已写入库的值会显示在这里，但运行中的进程仍按旧值跑，直到重启 + 数据重建。'
   }
   return `可热改：下次刷新即用新值，各进程最多 ${cacheTtl.value}s 内收敛。`
 }
 
 /**
- * 保存：校验 → 试算 →（有影响才）确认 → 真写。
+ * 保存：校验 → 两步保存（试算 → 有影响才确认 → 真写）。
  *
- * 取消确认时**不落库**；`ElMessageBox` 的 reject 是用户的决定，不是请求失败，所以单独
- * 捕获并直接返回，不能被下面统一的 catch 当成一次错误弹窗。
+ * `values` 只含 hot 档的改动（`changes` 已排除 restart / locked）。两步顺序与 loading
+ * 交给 `useDryRunSave`；本页只负责逐行校验、影响面文案，以及成功后的提示与缓存刷新。
  */
 async function save(): Promise<void> {
   const values = { ...changes.value }
@@ -228,40 +256,18 @@ async function save(): Promise<void> {
     }
   }
 
-  saving.value = true
-  try {
-    // 第一步：只试算。后端 dry_run 默认也是 true，这里显式传，让「这是试算」写在代码里。
-    const preview = await updateSettings(values, true)
-
-    if (shouldConfirmImpact(preview.impact)) {
-      const message = h('div', { class: 'text-sm leading-6' }, [
-        ...impactLines(preview.impact).map((line) => h('p', line)),
-        h(
-          'p',
-          { class: 'mt-2 text-slate-500' },
-          '确认后才会真正落库；取消不会写入。',
-        ),
-      ])
-      try {
-        await ElMessageBox.confirm(message, '保存前确认影响面', {
-          type: 'warning',
-          confirmButtonText: '确认保存',
-          cancelButtonText: '取消',
-        })
-      } catch {
-        return
-      }
-    }
-
-    // 第二步：真写。
-    const result = await updateSettings(values, false)
-    notifySaved(result.hot.length > 0, result.restart.length > 0, result.note)
-    await queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY })
-  } catch (error) {
-    ElMessage.error(errorText(error))
-  } finally {
-    saving.value = false
+  // 把这一轮点保存时的 values 捕进闭包里：试算与真写必须是同一份改动，
+  // 不能因为用户在请求途中又改了某个输入框而悄悄换成另一份。
+  const outcome = await runDryRunSave((dryRun) => updateSettings(values, dryRun))
+  if (outcome.status === 'failed') {
+    ElMessage.error(errorText(outcome.error))
+    return
   }
+  if (outcome.status === 'cancelled') return
+
+  const result = outcome.result
+  notifySaved(result.hot.length > 0, result.restart.length > 0, result.note)
+  await queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY })
 }
 
 /**
@@ -289,9 +295,12 @@ async function refresh(): Promise<void> {
           到底哪些能热改、哪些要重启、哪些不许改：<span class="font-medium text-slate-700">只读档</span>
           改了等于换基础设施或能关掉鉴权，面板不提供入口；
           <span class="font-medium text-slate-700">需重启档</span>
-          保存后要重启 + 重建才生效；
+          只显示当前值，要改请走运维流程（重启 + 数据重建后生效）；
           <span class="font-medium text-slate-700">热生效档</span>
           保存后各进程 {{ cacheTtl }}s 内收敛。
+        </p>
+        <p class="mt-1 text-xs text-[#92400E]">
+          重启档要改请走运维流程（面板不提供入口）。
         </p>
         <p class="mt-1 text-xs text-slate-400">
           每行的「为什么在这一档」由服务端的配置白名单给出，本页不自己编理由。
@@ -408,6 +417,14 @@ async function refresh(): Promise<void> {
                 <td class="px-3 py-3 whitespace-nowrap text-xs">
                   <span v-if="row.source === 'db'" class="text-[#045B89]">已被面板覆盖</span>
                   <span v-else class="text-slate-500">来自 .env</span>
+                  <!-- restart 档不许在面板上改，但库里可能已有旧写入：标出来是「待生效」，
+                       否则这里看起来与 .env 值一样，没人知道它在等一次重启。 -->
+                  <span
+                    v-if="group.tier === 'restart' && row.source === 'db'"
+                    class="mt-1 block rounded bg-[#FEF3C7] px-1.5 py-0.5 text-[#92400E]"
+                  >
+                    已写入库，待重启生效
+                  </span>
                 </td>
 
                 <td class="px-3 py-3 text-slate-500">{{ row.why }}</td>
@@ -415,7 +432,7 @@ async function refresh(): Promise<void> {
                 <td class="px-3 py-3 text-xs">
                   <div class="flex flex-col gap-1">
                     <span v-if="group.tier === 'restart'" class="text-[#92400E]">
-                      保存后待重启
+                      面板只读
                     </span>
                     <span v-if="row.invalid" class="text-[#B91C1C]">
                       库里那一行被丢弃：{{ row.invalid_reason }}；已回退到 .env 值

@@ -5,6 +5,7 @@ import type {
   PlanNumericField,
   PlanPatchBody,
 } from '../types/consoleAdmin'
+import { KEY_PROFILES, type KeyProfile } from '../types/key'
 
 /**
  * 套餐页与账号页的判定规则，全部放在这里，不散在组件里。
@@ -18,10 +19,14 @@ import type {
  * 当条件会在受影响对象更多、或样本恰好为空时漏掉弹窗，那正是这张票要防的事故。
  */
 
-/** 档位白名单的四个已知值，与后端 `app/models/key_policy.PROFILES` 一一对应。 */
-export const PROFILE_CODES = ['speed', 'balanced', 'quality', 'custom'] as const
-
-export type ProfileCode = (typeof PROFILE_CODES)[number]
+/**
+ * 档位白名单的四个已知值。
+ *
+ * **名单只写在 `types/key.ts` 的 `KEY_PROFILES` 一处**（密钥配置的那份契约的真相），
+ * 这里只 import 过来用，不再抄第二份——套餐页与 Key 页必须永远认同同一组档位名，
+ * 多写一份就会在加档位时漏掉其中一处。
+ */
+export type ProfileCode = KeyProfile
 
 /**
  * 六个数值上限的展示配置：面板上一字段一行，单位必须写出来。
@@ -62,11 +67,11 @@ export const PLAN_CAPABILITIES: readonly PlanCapability[] = [
  *
  * 两个作用：渲染勾选框时不被库里的脏值（手改库、旧枚举）带出一个不存在的勾选项；
  * 保存时也绝不把这些值发回后端（后端会判 20018「未知档位」）。
- * 输出按 `PROFILE_CODES` 的固定顺序，于是「集合相同、顺序不同」在 `buildPlanPatch` 里
+ * 输出按 `KEY_PROFILES` 的固定顺序，于是「集合相同、顺序不同」在 `buildPlanPatch` 里
  * 可以直接按数组比较，不会被误判成一次改动。
  */
 export function pickKnownProfiles(values: readonly string[]): ProfileCode[] {
-  return PROFILE_CODES.filter((code) => values.includes(code))
+  return KEY_PROFILES.filter((code) => values.includes(code))
 }
 
 /**

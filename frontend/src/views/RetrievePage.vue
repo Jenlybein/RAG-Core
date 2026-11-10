@@ -22,6 +22,7 @@ import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ComparePanel from '../components/ComparePanel.vue'
+import RunSummary from '../components/RunSummary.vue'
 import { ApiError } from '../lib/envelope'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
@@ -31,7 +32,6 @@ import type { KbOption, KeyData } from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
-  buildRunSummary,
   describeEmptyReason,
   formatPercent,
   formatRank,
@@ -292,12 +292,8 @@ const emptyCopy = computed(() =>
     : null,
 )
 
-const summaryRows = computed(() =>
-  result.value === null ? [] : buildRunSummary(result.value.metadata),
-)
-const degradedReason = computed(() => result.value?.metadata.retrieval.degraded_reason ?? null)
-const degraded = computed(() => result.value?.metadata.retrieval.degraded ?? false)
-const hasTenantPolicy = computed(() => result.value?.metadata.tenant_policy !== undefined)
+// 摘要的渲染整体在 `RunSummary.vue` 里（纯 props，只收 metadata）：页面不自己摊
+// `metadata`，也就不可能顺手把页面输入混进摘要。
 </script>
 
 <template>
@@ -606,42 +602,7 @@ const hasTenantPolicy = computed(() => result.value?.metadata.tenant_policy !== 
         还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
       </p>
 
-      <div v-else>
-        <div
-          v-if="degraded"
-          class="mb-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
-        >
-          本次结果不完整（degraded = true）：{{ degradedReason ?? '后端没有给出原因' }}。
-          降级那一路的分数、名次会是「—」。
-        </div>
-
-        <dl class="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
-          <div v-for="row in summaryRows" :key="row.field">
-            <dt class="text-xs text-slate-400">
-              {{ row.label }}
-              <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-[11px] text-slate-500">
-                {{ row.field }}
-              </code>
-            </dt>
-            <dd class="mt-0.5 break-all font-mono text-slate-800">
-              <el-tooltip v-if="row.hint !== null" :content="row.hint" placement="top">
-                <span class="cursor-help underline decoration-slate-300 decoration-dotted">
-                  {{ row.value }}
-                </span>
-              </el-tooltip>
-              <span v-else>{{ row.value }}</span>
-            </dd>
-          </div>
-        </dl>
-
-        <p v-if="!hasTenantPolicy" class="mt-3 text-xs text-slate-400">
-          这次响应没有 <code>tenant_policy</code>：只有经套餐门禁解析的调用才有这一栏。
-        </p>
-        <p v-else class="mt-3 text-xs text-slate-400">
-          <code>tenant_policy</code> 是「本次实际生效」的唯一真相：档位想要的重排 / 改写
-          可能被部署能力或套餐上限裁掉，以上面显示的值为准。
-        </p>
-      </div>
+      <RunSummary v-else :metadata="result.metadata" />
     </el-card>
   </section>
 </template>

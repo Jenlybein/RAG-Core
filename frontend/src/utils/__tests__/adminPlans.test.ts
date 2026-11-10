@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
 import type { PlanEditableFields, PlanImpact } from '../../types/consoleAdmin'
+import { KEY_PROFILES } from '../../types/key'
 import {
-  PROFILE_CODES,
   buildPlanPatch,
   impactLines,
   pickKnownProfiles,
@@ -130,8 +130,8 @@ describe('pickKnownProfiles：allowed_profiles 只接受四个已知值', () => 
     ])
   })
 
-  it('常量本身就是后端 PROFILES 的那四个值', () => {
-    expect([...PROFILE_CODES]).toEqual(['speed', 'balanced', 'quality', 'custom'])
+  it('档位名单只来自 types/key.ts 的 KEY_PROFILES（后端 PROFILES 的那四个值）', () => {
+    expect([...KEY_PROFILES]).toEqual(['speed', 'balanced', 'quality', 'custom'])
   })
 })
 
@@ -152,7 +152,7 @@ describe('buildPlanPatch：只发差异，且绝不把未知档位写进请求',
 
     expect(patch.allowed_profiles).toEqual(['speed', 'quality'])
     for (const profile of patch.allowed_profiles ?? []) {
-      expect(PROFILE_CODES).toContain(profile)
+      expect(KEY_PROFILES).toContain(profile)
     }
   })
 

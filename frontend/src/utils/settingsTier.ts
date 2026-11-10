@@ -39,15 +39,19 @@ export function groupByTier(rows: readonly SettingRow[]): TierGroup[] {
 }
 
 /**
- * 这一行能不能编辑。
+ * 这一行在面板上能不能编辑。
  *
- * 不直接信任后端的 `editable`：它表达的是「PATCH 会不会接受它」（restart 档是 true，
- * 因为写库本身合法，只是要重启才生效），而页面还要额外守一条「locked 档绝不提供写入口」
- * ——那一档的 `why` 里就有「能关掉鉴权」，把安全边界交给一个布尔字段是错的。restart 档
- * 允许保存并显示「待重启」，这正是后端「把意图记下来」的设计。
+ * 只有**热生效档**给写入口，两个原因都不依赖后端的 `editable` 字段：
+ *
+ * 1. `locked` 档的 `why` 里就有「能关掉鉴权」这类话，把安全边界交给一个布尔字段是错的；
+ * 2. `restart` 档的 `editable` 是 true（后端接受写库，只是要重启才生效），但 #93/#96
+ *    的验收明确要求「需重启重建档在面板上不可编辑」——改它属于运维流程。面板上只读展示
+ *    当前值与来源，`source === 'db'` 的行标出「已写入库，待重启生效」。
+ *
+ * 于是保存时提交的天然只剩 hot 档的改动，「没有 hot 改动就禁用保存」不需要页面再判一次。
  */
 export function isEditable(row: SettingRow): boolean {
-  return row.tier !== 'locked' && row.editable
+  return row.tier === 'hot' && row.editable
 }
 
 /** 校验结果：`ok` 时带回**要发出去的值**，失败时给人话原因。 */
@@ -63,7 +67,8 @@ export function isRolePointerKey(key: string): boolean {
   return key.startsWith(ROLE_POINTER_PREFIX)
 }
 
-type Kind = 'boolean' | 'number' | 'string'
+/** 一行输入控件对应的值类型。 */
+export type SettingValueKind = 'boolean' | 'number' | 'string'
 
 /**
  * 推断这一行期望的输入种类。
@@ -72,8 +77,11 @@ type Kind = 'boolean' | 'number' | 'string'
  * `SETTING_SPECS` / `Settings.model_fields`，前端再抄一张「哪个键是数字」的表，加一个键
  * 就要改两处。角色指针的值为 `null`（还不指向任何一条），但它的输入是一段 id 文本，
  * 所以单独按字符串处理。
+ *
+ * 导出而不是留在页面里：草稿用哪种容器、模板里渲染哪个控件、发请求前的校验，
+ * 这三处必须认同同一个判断，页面里再写一份 `typeof` 分支就会慢慢漂移。
  */
-function kindOf(row: SettingRow): Kind {
+export function kindOf(row: SettingRow): SettingValueKind {
   if (isRolePointerKey(row.key)) return 'string'
   if (typeof row.value === 'boolean') return 'boolean'
   if (typeof row.value === 'number') return 'number'

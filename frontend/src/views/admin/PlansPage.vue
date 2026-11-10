@@ -22,6 +22,7 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, h, reactive, ref } from 'vue'
 
+import { useDryRunSave } from '../../composables/useDryRunSave'
 import {
   ACCOUNTS_QUERY_KEY,
   PLANS_QUERY_KEY,
@@ -30,11 +31,16 @@ import {
   fetchPlans,
   updatePlan,
 } from '../../services/consoleAdmin'
-import type { PlanData, PlanEditableFields, PlanNumericField } from '../../types/consoleAdmin'
+import type {
+  PlanData,
+  PlanEditableFields,
+  PlanImpact,
+  PlanNumericField,
+} from '../../types/consoleAdmin'
+import { KEY_PROFILES } from '../../types/key'
 import {
   PLAN_CAPABILITIES,
   PLAN_NUMBER_FIELDS,
-  PROFILE_CODES,
   buildPlanPatch,
   impactLines,
   pickKnownProfiles,
@@ -116,8 +122,26 @@ function emptyDraft(): PlanEditableFields {
 const draft = reactive<PlanEditableFields>(emptyDraft())
 const editingPlan = ref<PlanData | null>(null)
 const dialogVisible = ref(false)
-const saving = ref(false)
 const deletingPlanId = ref<number | null>(null)
+
+/**
+ * 两步保存走通用组合式函数：试算 → （有影响才）确认 → 真写。
+ *
+ * 判定与文案仍留在本页：套餐的 `PlanImpact` 形状（租户超库数 / 失去档位）与检索参数页
+ * 的 `SettingsImpact` 不同，确认条件也只有本页能判。组合式函数只负责顺序与 loading。
+ */
+const { saving, save: runDryRunSave } = useDryRunSave<PlanImpact>({
+  formatImpact: (impact) => {
+    if (!shouldConfirm(impact)) return null
+    return {
+      title: '保存前确认影响面',
+      message: h('div', { class: 'text-sm leading-6' }, [
+        ...impactLines(impact).map((line) => h('p', line)),
+        h('p', { class: 'mt-2 text-slate-500' }, '确认后才会真正落库；取消不会写入。'),
+      ]),
+    }
+  },
+})
 
 function openEdit(plan: PlanData): void {
   Object.assign(draft, editableOf(plan))
@@ -137,10 +161,11 @@ function capabilityText(plan: PlanData): string {
 }
 
 /**
- * 保存：校验 → 试算 → （有影响才）确认 → 真写。
+ * 保存：校验 → 两步保存（试算 → 有影响才确认 → 真写）。
  *
- * 取消确认时**不落库**：`ElMessageBox` 的 reject 被单独捕获并直接返回，不能被下面那个
- * 统一的 `catch` 当成请求失败而弹一条错误——那会让用户以为「取消把保存弄坏了」。
+ * 两步顺序与 loading 交给 `useDryRunSave`；本页只负责校验、影响面文案，以及保存成功后
+ * 关对话框 / 失效查询缓存。「取消确认」与「请求失败」在组合式函数里已经分开返回，
+ * 前者不落库也不弹错误。
  */
 async function save(): Promise<void> {
   const plan = editingPlan.value
@@ -162,7 +187,7 @@ async function save(): Promise<void> {
       return
     }
   }
-  if (!draft.allowed_profiles.every((code) => (PROFILE_CODES as readonly string[]).includes(code))) {
+  if (!draft.allowed_profiles.every((code) => (KEY_PROFILES as readonly string[]).includes(code))) {
     ElMessage.warning('档位只能从 speed / balanced / quality / custom 里选')
     return
   }
@@ -173,43 +198,18 @@ async function save(): Promise<void> {
     return
   }
 
-  saving.value = true
-  try {
-    // 第一步：只试算。后端 dry_run 默认就是 true，这里仍然显式传，
-    // 让「这是试算」写在代码里而不是依赖一个默认值。
-    const preview = await updatePlan(plan.plan_id, patch, true)
-
-    if (shouldConfirm(preview.impact)) {
-      const message = h('div', { class: 'text-sm leading-6' }, [
-        ...impactLines(preview.impact).map((line) => h('p', line)),
-        h(
-          'p',
-          { class: 'mt-2 text-slate-500' },
-          '确认后才会真正落库；取消不会写入。',
-        ),
-      ])
-      try {
-        await ElMessageBox.confirm(message, '保存前确认影响面', {
-          type: 'warning',
-          confirmButtonText: '确认保存',
-          cancelButtonText: '取消',
-        })
-      } catch {
-        // 用户取消：不落库，也不当错误。
-        return
-      }
-    }
-
-    // 第二步：真写。
-    await updatePlan(plan.plan_id, patch, false)
-    ElMessage.success('已保存：下一次读取即按新配置判定')
-    dialogVisible.value = false
-    await queryClient.invalidateQueries({ queryKey: PLANS_QUERY_KEY })
-  } catch (error) {
-    ElMessage.error(errorText(error))
-  } finally {
-    saving.value = false
+  // 把这一轮点保存时的 patch 捕进闭包里：用户若在试算途中改了输入框，
+  // 确认后发出的真写必须仍是刚刚预览的那一份改动。
+  const outcome = await runDryRunSave((dryRun) => updatePlan(plan.plan_id, patch, dryRun))
+  if (outcome.status === 'failed') {
+    ElMessage.error(errorText(outcome.error))
+    return
   }
+  if (outcome.status === 'cancelled') return
+
+  ElMessage.success('已保存：下一次读取即按新配置判定')
+  dialogVisible.value = false
+  await queryClient.invalidateQueries({ queryKey: PLANS_QUERY_KEY })
 }
 
 async function remove(plan: PlanData): Promise<void> {
@@ -361,7 +361,7 @@ async function refresh(): Promise<void> {
         <div>
           <p class="mb-1 text-slate-500">档位白名单（四个勾选框，没有自由输入）</p>
           <el-checkbox-group v-model="draft.allowed_profiles">
-            <el-checkbox-button v-for="code in PROFILE_CODES" :key="code" :value="code">
+            <el-checkbox-button v-for="code in KEY_PROFILES" :key="code" :value="code">
               {{ code }}
             </el-checkbox-button>
           </el-checkbox-group>
