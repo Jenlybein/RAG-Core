@@ -468,6 +468,12 @@ def _append_audit(
     )
 
 
+#: 其它控制面模块（库 / 文档 / 密钥 / 配置 / 模型）复用的公开入口。
+#: 名字去掉下划线只是让它成为可被别的模块调用的入口，账本怎么写仍只有上面那一处：
+#: 谁写进了哪个文件、快照该带哪些键，都不该在第二份实现里再讲一遍。
+append_audit = _append_audit
+
+
 #: 审计列表的默认条数与硬上限：面板上没有分页控件，一次拉太多只会把浏览器拖住。
 AUDIT_LOG_DEFAULT_LIMIT: Final[int] = 50
 AUDIT_LOG_MAX_LIMIT: Final[int] = 200
