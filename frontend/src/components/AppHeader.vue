@@ -60,11 +60,18 @@ async function logout(): Promise<void> {
 
 <template>
   <!--
-    吸顶 + 半透明模糊：滚动时内容从顶栏底下穿过，层级关系不用阴影也能读懂。
-    只在有内容可滚的页面才看得出效果，所以不加 scroll 监听去切换样式。
+    吸顶实心顶栏。三条都是刻意的，别再改回去：
+
+    - `bg-canvas` 是**不透明**的。之前用 bg-canvas/85 + backdrop-blur 做「毛玻璃」，
+      结果内容会从顶栏底下透出来；滚动时看到的是一片半透明的移动色块，很容易被读成
+      「顶栏自己在动」。毛玻璃在内容区确实好看，但顶栏是固定的参照物，它必须完全遮住
+      从下面经过的东西。
+    - 不加 backdrop-filter。它会把顶栏提升成独立的合成层，Chrome 上贴着 sticky 用时
+      滚动会出现重绘抖动（看得出 1px 级别的跳动），收益又只是那点模糊。
+    - 底边一条 1px 细线 + 极淡投影定形，靠层级而不是靠模糊区分「栏」与「纸」。
   -->
   <header
-    class="sticky top-0 z-30 border-b border-line/80 bg-canvas/85 backdrop-blur-md backdrop-saturate-150"
+    class="sticky top-0 z-30 border-b border-line bg-canvas shadow-[0_1px_0_rgba(28,26,21,0.03)]"
   >
     <div
       class="mx-auto flex w-full max-w-page flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8"
