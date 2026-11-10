@@ -1,0 +1,2061 @@
+{
+  "name": "answers",
+  "schema": "eval-answers/1",
+  "version": "v1",
+  "generated_at": "2026-11-10T22:56:33.441795+00:00",
+  "judge_model": "deepseek-v4-1-flash-economy-261017",
+  "judge": {
+    "provider": "openai",
+    "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "model": "deepseek-v4-1-flash-economy-261017",
+    "config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "questions_version": {
+    "path": "eval/questions.json",
+    "sha256": "c08e20533382154b197141a4a6702987fbe6bbaa7b7fd875d4d40cdd4648f883",
+    "count": 137
+  },
+  "corpus": {
+    "version": "522be854b307",
+    "documents": 21,
+    "chunks": 469
+  },
+  "seed": 20261111,
+  "selection": {
+    "total": 50,
+    "requested": 50,
+    "per_type_min": 2,
+    "per_type_max": "pool",
+    "types": "all(answerable)",
+    "quotas": "colloquial=4 counterfactual=5 cross_section=6 exact_code=3 false_premise=2 model_number=5 negative_scope=5 noise_robust=6 rare_token=3 synonym=5 table_lookup=6"
+  },
+  "warnings": [],
+  "stats": {
+    "requested": 50,
+    "ok": 50,
+    "refused": 0,
+    "failed": 0,
+    "checked": 50,
+    "check_passed": 47,
+    "check_pass_rate": 0.94
+  },
+  "per_type": {
+    "colloquial": {
+      "count": 4,
+      "ok": 4,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 3
+    },
+    "counterfactual": {
+      "count": 5,
+      "ok": 5,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 5
+    },
+    "cross_section": {
+      "count": 6,
+      "ok": 6,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 6
+    },
+    "exact_code": {
+      "count": 3,
+      "ok": 3,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 3
+    },
+    "false_premise": {
+      "count": 2,
+      "ok": 2,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 1
+    },
+    "model_number": {
+      "count": 5,
+      "ok": 5,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 5
+    },
+    "negative_scope": {
+      "count": 5,
+      "ok": 5,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 5
+    },
+    "noise_robust": {
+      "count": 6,
+      "ok": 6,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 5
+    },
+    "rare_token": {
+      "count": 3,
+      "ok": 3,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 3
+    },
+    "synonym": {
+      "count": 5,
+      "ok": 5,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 5
+    },
+    "table_lookup": {
+      "count": 6,
+      "ok": 6,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 6
+    }
+  },
+  "cases": [
+    {
+      "id": "q10",
+      "type": "colloquial",
+      "question": "背调一般问哪些问题",
+      "status": "ok",
+      "answer": "片段提到背景调查的标准问题包括：过往任职与离职原因、是否有竞业限制、是否有与岗位相关的违规记录、教育经历与证书是否属实、是否存在利益冲突。调查只采集与岗位相关的信息，不涉及婚姻、生育与健康状况。",
+      "source_chunk_ids": [
+        "security_compliance::025"
+      ],
+      "sources": [
+        {
+          "chunk_id": "security_compliance::025",
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 人员背景审查"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1584.6
+    },
+    {
+      "id": "q54",
+      "type": "colloquial",
+      "question": "磁盘快满了怎么救急",
+      "status": "ok",
+      "answer": "磁盘使用率超过 90% 时，先清理过期的导出文件与滚动日志，再确认备份任务没有卡在临时目录；不要直接删除数据库数据目录，否则会导致无法启动。清理后需确认使用率回落到 80% 以下，若增长速度较快，应先定位是哪个目录在写，再决定扩容还是修代码。",
+      "source_chunk_ids": [
+        "ops_runbook::007"
+      ],
+      "sources": [
+        {
+          "chunk_id": "ops_runbook::007",
+          "document": "ops_runbook",
+          "heading_path": "值班处置手册 > 磁盘写满应急处置"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "90%",
+            "surface": "90%"
+          },
+          {
+            "kind": "number",
+            "text": "80%",
+            "surface": "80%"
+          }
+        ]
+      },
+      "elapsed_ms": 1533.15
+    },
+    {
+      "id": "q55",
+      "type": "colloquial",
+      "question": "上线要不要两个人一起看",
+      "status": "ok",
+      "answer": "片段按变更级别区分：一级变更需要双人复核与主管审批，二级变更只需主管审批，三级由值班确认，四级走自助流程。因此是否要两人一起复核取决于变更分级，一级才明确要求双人复核。分级由变更发起人填写，审批人可以上调。",
+      "source_chunk_ids": [
+        "ops_change::001"
+      ],
+      "sources": [
+        {
+          "chunk_id": "ops_change::001",
+          "document": "ops_change",
+          "heading_path": "发布与变更管理规范 > 变更分级"
+        }
+      ],
+      "checks": {
+        "passed": false,
+        "missing": [
+          {
+            "kind": "number",
+            "text": "2",
+            "surface": "2"
+          }
+        ],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "2",
+            "surface": "2"
+          }
+        ]
+      },
+      "elapsed_ms": 2386.82
+    },
+    {
+      "id": "q74",
+      "type": "colloquial",
+      "question": "欠钱了会马上给停掉吗",
+      "status": "ok",
+      "answer": "不会马上停机。片段写明后付费客户在账单到期后 7 天未付款会被标记为欠费，欠费后 3 天停机，因此并非欠款即刻停掉。停机期间资源保留 15 天，超过 15 天释放。",
+      "source_chunk_ids": [
+        "billing_policy::014"
+      ],
+      "sources": [
+        {
+          "chunk_id": "billing_policy::014",
+          "document": "billing_policy",
+          "heading_path": "计费与账务政策 > 欠费与停机"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "7",
+            "surface": "7"
+          },
+          {
+            "kind": "number",
+            "text": "3",
+            "surface": "3"
+          },
+          {
+            "kind": "number",
+            "text": "15",
+            "surface": "15"
+          }
+        ]
+      },
+      "elapsed_ms": 1871.86
+    },
+    {
+      "id": "q112",
+      "type": "counterfactual",
+      "question": "为什么故障总是凌晨发生、白天自己就好了",
+      "status": "ok",
+      "answer": "片段未提及故障总在凌晨发生、白天自愈的具体原因。片段只说明该区域门店在凌晨集中离线、次日营业前自动恢复并连续三天重复，初步排查排除了平台入口问题和区域链路割接，随后转向设备侧。",
+      "source_chunk_ids": [
+        "troubleshoot_deep::000"
+      ],
+      "sources": [
+        {
+          "chunk_id": "troubleshoot_deep::000",
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例一：证书链断裂导致的批量离线 > 现象与初查"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "3",
+            "surface": "3"
+          }
+        ]
+      },
+      "elapsed_ms": 5185.32
+    },
+    {
+      "id": "q115",
+      "type": "counterfactual",
+      "question": "断电恢复后一批设备签名校验失败是什么原因",
+      "status": "ok",
+      "answer": "原因是这批设备经历长时间停电后，设备时间恢复为出厂默认值而非当前时间；而签名校验依赖时间戳，当设备时间偏差超过容忍窗口时，签名会被判为过期或者来自未来，导致校验失败。设备恢复后没有自动对时，是因为NTP配置出厂时为空、依赖注册成功后下发，而注册又需要签名校验通过，形成死锁。",
+      "source_chunk_ids": [
+        "troubleshoot_deep::013"
+      ],
+      "sources": [
+        {
+          "chunk_id": "troubleshoot_deep::013",
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例四：时间偏移引发的签名失效 > 排查与定位"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1609.17
+    },
+    {
+      "id": "q76",
+      "type": "counterfactual",
+      "question": "升配和降配分别什么时候生效",
+      "status": "ok",
+      "answer": "升配即时生效，费用按剩余周期折算补收。降配在下一个计费周期生效，当期费用不退。",
+      "source_chunk_ids": [
+        "billing_policy::004"
+      ],
+      "sources": [
+        {
+          "chunk_id": "billing_policy::004",
+          "document": "billing_policy",
+          "heading_path": "计费与账务政策 > 套餐变更"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          }
+        ]
+      },
+      "elapsed_ms": 1371.44
+    },
+    {
+      "id": "q93",
+      "type": "counterfactual",
+      "question": "从 v4.x 能直接升到 v5.x 吗",
+      "status": "ok",
+      "answer": "不能直接升级。片段说明升级支持跨次版本直升但不支持跨大版本直升，v4.x 到 v5.x 需要先升到 v5.0.0 过渡版本，再升到目标版本。跨大版本升级会清空自定义配置，升级前必须导出配置。",
+      "source_chunk_ids": [
+        "release_notes::011"
+      ],
+      "sources": [
+        {
+          "chunk_id": "release_notes::011",
+          "document": "release_notes",
+          "heading_path": "版本发布说明 > 升级路径与兼容性"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1797.08
+    },
+    {
+      "id": "q97",
+      "type": "counterfactual",
+      "question": "证书台账最后由哪个系统作为主维护",
+      "status": "ok",
+      "answer": "最终折中方案是资产系统作为主维护，安全组可以打补丁，且补丁记录要留痕。此前平台组主张由资产系统单向推送，安全组则因现场会临时换证而要求双向同步。",
+      "source_chunk_ids": [
+        "meeting_minutes::001"
+      ],
+      "sources": [
+        {
+          "chunk_id": "meeting_minutes::001",
+          "document": "meeting_minutes",
+          "heading_path": "架构评审会议纪要 > 议题一：证书台账合并"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1953.73
+    },
+    {
+      "id": "q104",
+      "type": "cross_section",
+      "question": "退款和退费分别退到哪里去",
+      "status": "ok",
+      "answer": "退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道，原路退回是最常见的方式。两者不能互相替代，同一笔订单不能同时申请退费与退款。",
+      "source_chunk_ids": [
+        "support_refund::003",
+        "billing_policy::008"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_refund::003",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        },
+        {
+          "chunk_id": "billing_policy::008",
+          "document": "billing_policy",
+          "heading_path": "计费与账务政策 > 退费与退款的区别"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1752.53
+    },
+    {
+      "id": "q111",
+      "type": "cross_section",
+      "question": "配置下发之后要分几层验证，验收报告写什么",
+      "status": "ok",
+      "answer": "片段未提及配置下发后要分几层验证，也未提及验收报告需要写什么内容。片段只说明配置下发推荐使用平台统一模板而非逐台手工配置，并解释了手工配置不可复现的问题。",
+      "source_chunk_ids": [
+        "deploy_guide::008"
+      ],
+      "sources": [
+        {
+          "chunk_id": "deploy_guide::008",
+          "document": "deploy_guide",
+          "heading_path": "部署实施指南 > 配置下发与验收"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 2306.87
+    },
+    {
+      "id": "q119",
+      "type": "cross_section",
+      "question": "密钥多久轮换、宽限期多久、没切完会怎样",
+      "status": "ok",
+      "answer": "密钥轮换每 6 个月一次，采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期，具体的宽限期时长片段未提及。平台会在轮换前 30 天通过公告与邮件同步给所有集成方，宽限期结束前必须完成全部调用方切换。宽限期结束后旧密钥立即失效，未完成切换的调用方会收到签名不匹配的错误，该错误与密钥写错的表现完全一样。",
+      "source_chunk_ids": [
+        "integration_api::002"
+      ],
+      "sources": [
+        {
+          "chunk_id": "integration_api::002",
+          "document": "integration_api",
+          "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法 > 密钥轮换 > 轮换周期"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "6",
+            "surface": "6"
+          },
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          },
+          {
+            "kind": "number",
+            "text": "30",
+            "surface": "30"
+          }
+        ]
+      },
+      "elapsed_ms": 3012.9
+    },
+    {
+      "id": "q17",
+      "type": "cross_section",
+      "question": "XR-2000 Pro 的电源适配器能和 XR-2000 通用吗",
+      "status": "ok",
+      "answer": "不能通用。片段说明 XR-2000 Pro 与标准款配件基本通用，但电源适配器是唯一不能互换的，因为功率要求不同；配件兼容性规则也指出标准款与增强款的适配器电压不同，绝不能互换。",
+      "source_chunk_ids": [
+        "support_models::001",
+        "support_models::015"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_models::001",
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+        },
+        {
+          "chunk_id": "support_models::015",
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 配件兼容性（一）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "model_number",
+            "text": "XR-2000PRO",
+            "surface": "XR-2000 PRO"
+          }
+        ]
+      },
+      "elapsed_ms": 1956.12
+    },
+    {
+      "id": "q19",
+      "type": "cross_section",
+      "question": "退款要几天，从哪个入口申请",
+      "status": "ok",
+      "answer": "审核通过后，退款会在 3 到 5 个工作日内到账，到账时间从退款执行日开始计算，而不是从申请日开始计算。退款申请有三个入口：管理后台的订单详情页、客服工单，以及线下签署的退款申请单；其中管理后台入口最快，线下申请单只用于对公客户与跨境订单。",
+      "source_chunk_ids": [
+        "support_refund::003",
+        "support_refund::004"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_refund::003",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        },
+        {
+          "chunk_id": "support_refund::004",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款申请入口"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "5",
+            "surface": "5"
+          },
+          {
+            "kind": "number",
+            "text": "3",
+            "surface": "3"
+          }
+        ]
+      },
+      "elapsed_ms": 2138.43
+    },
+    {
+      "id": "q59",
+      "type": "cross_section",
+      "question": "退款一直没到账该怎么查",
+      "status": "ok",
+      "answer": "退款到账时间从退款执行日开始计算，超过 5 个工作日仍未到账时，先查支付渠道的退款流水，再联系客服发起查询。排查可分四步：确认退款状态是否为已执行、核对支付渠道的退款流水、确认收款账户是否已注销或变更、联系渠道客服查询。若退款状态为已执行但渠道无流水，属于渠道异常，需要我方发起查询单；收款账户已注销时资金会退回我方账户，需客户提供新的账户信息重新打款。",
+      "source_chunk_ids": [
+        "support_refund::003",
+        "support_refund::024"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_refund::003",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        },
+        {
+          "chunk_id": "support_refund::024",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账异常排查"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "5",
+            "surface": "5"
+          }
+        ]
+      },
+      "elapsed_ms": 3610.11
+    },
+    {
+      "id": "q01",
+      "type": "exact_code",
+      "question": "E1024 是什么错误，要怎么处理",
+      "status": "ok",
+      "answer": "E1024 表示设备本地保存的证书链已经超过有效期，典型现象是设备联网上报时被服务端拒绝，日志中出现 certificate has expired 字样，连接被直接关闭。处理方式是触发一次在线续期；如果设备长期离线无法自动完成，则按证书轮换流程人工导入新证书。这属于可自愈的瞬时错误，但重试之前必须先把续期做完，排查时先确认设备时钟是否正常。",
+      "source_chunk_ids": [
+        "support_errors::000"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_errors::000",
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "error_code",
+            "text": "E1024",
+            "surface": "E1024"
+          },
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          }
+        ]
+      },
+      "elapsed_ms": 3251.27
+    },
+    {
+      "id": "q02",
+      "type": "exact_code",
+      "question": "E1025 是什么意思",
+      "status": "ok",
+      "answer": "E1025 表示设备本地保存的证书链已被服务端标记为失效。典型现象是设备联网上报时被服务端拒绝，设备日志中出现 certificate revoked 字样，业务侧看到的是连接被直接关闭。这属于吊销问题，需要先解除吊销再重新签发，处理方式是触发一次在线续期；如果设备长期离线、无法自动完成续期，则按证书轮换流程人工导入新证书。",
+      "source_chunk_ids": [
+        "support_errors::001"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_errors::001",
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（二）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "error_code",
+            "text": "E1025",
+            "surface": "E1025"
+          },
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          }
+        ]
+      },
+      "elapsed_ms": 2665.92
+    },
+    {
+      "id": "q05",
+      "type": "exact_code",
+      "question": "W0001 要不要紧",
+      "status": "ok",
+      "answer": "W0001 是存储与介质类告警，设备本地存储余量低于 10% 时上报；它不会中断业务，只是日志写入速度会变慢，属于余量告警，无需更换设备。处理方式是清理历史日志或者扩容，建议在余量低于 15% 时就介入。需要注意的是它不伴随业务错误，只有在真正需要写入时才暴露，所以结论是先清理再扩容。",
+      "source_chunk_ids": [
+        "support_errors::020"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_errors::020",
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 存储与介质类告警（一）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "error_code",
+            "text": "W0001",
+            "surface": "W0001"
+          },
+          {
+            "kind": "number",
+            "text": "10%",
+            "surface": "10%"
+          },
+          {
+            "kind": "number",
+            "text": "15%",
+            "surface": "15%"
+          }
+        ]
+      },
+      "elapsed_ms": 2692.73
+    },
+    {
+      "id": "q100",
+      "type": "false_premise",
+      "question": "E1024 会让设备反复重启，要怎么修",
+      "status": "ok",
+      "answer": "前提不成立：片段未提及 E1024，也没有给出任何错误码。片段里设备反复重启的原因是误配——把标准款适配器插到增强款上，且日志里没有任何错误码；片段没有说明这种误配该怎么修，只提到发货前的型号核对是最便宜的防线。",
+      "source_chunk_ids": [
+        "support_models::030"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_models::030",
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 常见误配（一）"
+        }
+      ],
+      "checks": {
+        "passed": false,
+        "missing": [
+          {
+            "kind": "error_code",
+            "text": "E1024",
+            "surface": "E1024"
+          }
+        ],
+        "atoms": [
+          {
+            "kind": "error_code",
+            "text": "E1024",
+            "surface": "E1024"
+          }
+        ]
+      },
+      "elapsed_ms": 2672.03
+    },
+    {
+      "id": "q103",
+      "type": "false_premise",
+      "question": "标准款的万兆光口要配哪种光模块",
+      "status": "ok",
+      "answer": "前提不成立：片段中标准款（型号 XR-2000）只写明出厂配置 4 个千兆网口，并未提及万兆光口，也没有提到任何光模块型号或配套要求，因此无法据此确定该配哪种光模块。",
+      "source_chunk_ids": [
+        "support_models::000"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_models::000",
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "model_number",
+            "text": "XR-2000",
+            "surface": "XR-2000"
+          },
+          {
+            "kind": "number",
+            "text": "4",
+            "surface": "4"
+          }
+        ]
+      },
+      "elapsed_ms": 2547.07
+    },
+    {
+      "id": "q08",
+      "type": "model_number",
+      "question": "XR-2000 最多能带多少终端",
+      "status": "ok",
+      "answer": "片段显示 XR-2000 的最大接入终端数为 64。因此它能带的终端上限就是 64 个；片段没有给出其它容量数值。",
+      "source_chunk_ids": [
+        "support_models::000"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_models::000",
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "model_number",
+            "text": "XR-2000",
+            "surface": "XR-2000"
+          },
+          {
+            "kind": "number",
+            "text": "64",
+            "surface": "64"
+          }
+        ]
+      },
+      "elapsed_ms": 1741.05
+    },
+    {
+      "id": "q122",
+      "type": "model_number",
+      "question": "XR-2100 的内存有多大",
+      "status": "ok",
+      "answer": "XR-2100 为机架款型号，其出厂配置的内存为 16 GB。同一规格中还标注了 16 核处理器与 128 GB SSD。",
+      "source_chunk_ids": [
+        "support_models::002"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_models::002",
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（机架款）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "model_number",
+            "text": "XR-2100",
+            "surface": "XR-2100"
+          },
+          {
+            "kind": "number",
+            "text": "16",
+            "surface": "16"
+          },
+          {
+            "kind": "number",
+            "text": "128",
+            "surface": "128"
+          }
+        ]
+      },
+      "elapsed_ms": 2000.1
+    },
+    {
+      "id": "q127",
+      "type": "model_number",
+      "question": "XR-1800 还能买到吗",
+      "status": "ok",
+      "answer": "片段显示 XR-1800 为停产机型，备注为「仅备件供应」，指导价 860 元、起订量 1 台。片段未提及该机型整机目前是否仍可购买。",
+      "source_chunk_ids": [
+        "price_list::000",
+        "price_list::001",
+        "price_list::002",
+        "price_list::003",
+        "price_list::004",
+        "price_list::005",
+        "price_list::006"
+      ],
+      "sources": [
+        {
+          "chunk_id": "price_list::000",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::001",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::002",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::003",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::004",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::005",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::006",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "model_number",
+            "text": "XR-1800",
+            "surface": "XR-1800"
+          },
+          {
+            "kind": "number",
+            "text": "860",
+            "surface": "860"
+          },
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          }
+        ]
+      },
+      "elapsed_ms": 3288.38
+    },
+    {
+      "id": "q128",
+      "type": "model_number",
+      "question": "XR-2000 套装里包含哪些配件",
+      "status": "ok",
+      "answer": "片段提到 XR-2000 套装的备注为「标准款 + 壁挂件 + 网线」，即包含标准款主机、壁挂件和网线。片段未提及其他配件。",
+      "source_chunk_ids": [
+        "price_list::000",
+        "price_list::001",
+        "price_list::002",
+        "price_list::003",
+        "price_list::004",
+        "price_list::005",
+        "price_list::006"
+      ],
+      "sources": [
+        {
+          "chunk_id": "price_list::000",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::001",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::002",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::003",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::004",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::005",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        },
+        {
+          "chunk_id": "price_list::006",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 整机指导价"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "model_number",
+            "text": "XR-2000",
+            "surface": "XR-2000"
+          }
+        ]
+      },
+      "elapsed_ms": 1422.68
+    },
+    {
+      "id": "q68",
+      "type": "model_number",
+      "question": "XR-2000 的内存多大",
+      "status": "ok",
+      "answer": "片段写明标准款 XR-2000 的出厂配置内存为 2 GB。",
+      "source_chunk_ids": [
+        "support_models::000"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_models::000",
+          "document": "support_models",
+          "heading_path": "终端型号与配件指南 > 整机规格（标准款）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "model_number",
+            "text": "XR-2000",
+            "surface": "XR-2000"
+          }
+        ]
+      },
+      "elapsed_ms": 1117.56
+    },
+    {
+      "id": "q118",
+      "type": "negative_scope",
+      "question": "哪些错误码重试也没有意义",
+      "status": "ok",
+      "answer": "片段提到 4xx 中的参数错误、签名错误和权限错误重试没有意义，只会浪费配额；回调类错误的重试由平台侧负责，调用方不要自行再重试一遍，否则会造成重复处理。",
+      "source_chunk_ids": [
+        "integration_api::010"
+      ],
+      "sources": [
+        {
+          "chunk_id": "integration_api::010",
+          "document": "integration_api",
+          "heading_path": "接口对接与鉴权说明 > 错误码分层与排查路径 > 错误处理约定"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1140.68
+    },
+    {
+      "id": "q134",
+      "type": "negative_scope",
+      "question": "OCR 和索引任务放同一个队列有什么问题",
+      "status": "ok",
+      "answer": "片段提到索引任务和 OCR 任务共用同一队列，而 OCR 任务耗时长，因此建议单独部署一组 worker 并指定不同队列；否则 OCR 会把索引任务的并发吃满。",
+      "source_chunk_ids": [
+        "config_reference::009"
+      ],
+      "sources": [
+        {
+          "chunk_id": "config_reference::009",
+          "document": "config_reference",
+          "heading_path": "配置项参考手册 > 异步任务配置 > Celery"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1134.37
+    },
+    {
+      "id": "q81",
+      "type": "negative_scope",
+      "question": "阶梯折扣能和促销价一起用吗",
+      "status": "ok",
+      "answer": "按片段中的对照表，单次订购 10 - 49 台（95 折）和 50 - 199 台（9 折）都标注为「不与促销价叠加」；200 - 499 台（85 折）标注为「需商务审批」，500 台以上（一事一议）标注为「需合同评审」；1 - 9 台为无折扣，叠加栏为「—」。片段未提及这些审批或评审通过后能否与促销价一起使用。",
+      "source_chunk_ids": [
+        "price_list::018",
+        "price_list::019",
+        "price_list::020",
+        "price_list::021",
+        "price_list::022",
+        "price_list::023"
+      ],
+      "sources": [
+        {
+          "chunk_id": "price_list::018",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::019",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::020",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::021",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::022",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::023",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "10",
+            "surface": "10"
+          },
+          {
+            "kind": "number",
+            "text": "49",
+            "surface": "49"
+          },
+          {
+            "kind": "number",
+            "text": "95",
+            "surface": "95"
+          },
+          {
+            "kind": "number",
+            "text": "50",
+            "surface": "50"
+          },
+          {
+            "kind": "number",
+            "text": "199",
+            "surface": "199"
+          },
+          {
+            "kind": "number",
+            "text": "9",
+            "surface": "9"
+          },
+          {
+            "kind": "number",
+            "text": "200",
+            "surface": "200"
+          },
+          {
+            "kind": "number",
+            "text": "499",
+            "surface": "499"
+          },
+          {
+            "kind": "number",
+            "text": "85",
+            "surface": "85"
+          }
+        ]
+      },
+      "elapsed_ms": 2950.23
+    },
+    {
+      "id": "q91",
+      "type": "negative_scope",
+      "question": "标准款支持双机热备吗",
+      "status": "ok",
+      "answer": "不支持。片段说明双机热备仅增强款与机架款支持，标准款在 5.1.0 之后仍然不支持，原因是硬件上缺少所需的同步接口。",
+      "source_chunk_ids": [
+        "release_notes::002"
+      ],
+      "sources": [
+        {
+          "chunk_id": "release_notes::002",
+          "document": "release_notes",
+          "heading_path": "版本发布说明 > v5.1.0（上一版）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1467.38
+    },
+    {
+      "id": "q95",
+      "type": "negative_scope",
+      "question": "实习期能申请可写权限吗",
+      "status": "ok",
+      "answer": "不能，实习期只能拿只读权限。",
+      "source_chunk_ids": [
+        "onboarding::011"
+      ],
+      "sources": [
+        {
+          "chunk_id": "onboarding::011",
+          "document": "onboarding",
+          "heading_path": "新员工入职与权限指引 > 常见问题"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1306.27
+    },
+    {
+      "id": "q109",
+      "type": "noise_robust",
+      "question": "网线布完之后怎么确认链路没问题",
+      "status": "ok",
+      "answer": "片段给出的原则是「先测通再固定」，即在把线槽钉好、线缆穿好、面板封好之前先测通断，避免某根线有问题时整段拆开重来。片段未提及具体的测试工具、测试项目或判定标准。",
+      "source_chunk_ids": [
+        "deploy_guide::003"
+      ],
+      "sources": [
+        {
+          "chunk_id": "deploy_guide::003",
+          "document": "deploy_guide",
+          "heading_path": "部署实施指南 > 综合布线与链路测试"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 3159.35
+    },
+    {
+      "id": "q132",
+      "type": "noise_robust",
+      "question": "业务出错时 HTTP 状态码是多少",
+      "status": "ok",
+      "answer": "片段未提及具体业务错误对应的 HTTP 状态码；只说明 HTTP 状态码统一为 200，业务错误放在 `code` 字段中，`code=0` 表示成功，其余都是业务错误。",
+      "source_chunk_ids": [
+        "api_reference::035"
+      ],
+      "sources": [
+        {
+          "chunk_id": "api_reference::035",
+          "document": "api_reference",
+          "heading_path": "对外接口参考 > 通用约定 > 错误返回格式"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "200",
+            "surface": "200"
+          }
+        ]
+      },
+      "elapsed_ms": 1570.96
+    },
+    {
+      "id": "q28",
+      "type": "noise_robust",
+      "question": "E1027 报 unable to get local issuer certificate 是怎么回事",
+      "status": "ok",
+      "answer": "E1027 表示设备本地保存的证书链缺少中间证书，设备联网上报时会被服务端拒绝，设备日志中会出现 unable to get local issuer certificate 字样，业务侧看到的是连接被直接关闭。处理方式是补发一份完整的证书链；若设备长期离线无法自动完成，则按证书轮换流程人工导入新证书。结论是链不完整，重试前须先补齐中间证书。",
+      "source_chunk_ids": [
+        "support_errors::003"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_errors::003",
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（四）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "error_code",
+            "text": "E1027",
+            "surface": "E1027"
+          }
+        ]
+      },
+      "elapsed_ms": 2855.31
+    },
+    {
+      "id": "q31",
+      "type": "noise_robust",
+      "question": "E1048 证书串号与资产台账不一致",
+      "status": "ok",
+      "answer": "E1048 表示设备本地保存的证书链与资产台账登记的不是同一份，设备日志里会出现 certificate serial mismatch 字样，并且设备联网上报时会被服务端拒绝，连接被直接关闭。处理方式是核对串号后重新绑定证书；如果设备长期离线无法自动完成，则按证书轮换流程人工导入新证书。该错误属于不可自愈的瞬时错误，重试之前必须先把绑定关系改对，处置完成后要在资产台账里标注本次操作，并把告警静默窗口打开 30 分钟。",
+      "source_chunk_ids": [
+        "support_errors::007"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_errors::007",
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 连接与证书类错误（八）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "error_code",
+            "text": "E1048",
+            "surface": "E1048"
+          },
+          {
+            "kind": "number",
+            "text": "30",
+            "surface": "30"
+          }
+        ]
+      },
+      "elapsed_ms": 3845.23
+    },
+    {
+      "id": "q34",
+      "type": "noise_robust",
+      "question": "E2053 多租户共享池被别的租户吃满",
+      "status": "ok",
+      "answer": "E2053 表示多租户共享池被其他租户的突发流量吃满。响应头里会带上剩余配额与建议等待秒数，客户端应按指数退避重试，而不是立刻切换凭据，因为切换凭据只会把压力摊到所有凭据上，让整条链路一起被拒绝。排查时先看这一分钟的请求分布，确认是突发流量还是重试风暴；若是后者，退避参数写错往往才是根因，结论是先申请独立配额。",
+      "source_chunk_ids": [
+        "support_errors::013"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_errors::013",
+          "document": "support_errors",
+          "heading_path": "售后故障与错误码速查 > 配额与限流类错误（六）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "error_code",
+            "text": "E2053",
+            "surface": "E2053"
+          },
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          }
+        ]
+      },
+      "elapsed_ms": 2165.56
+    },
+    {
+      "id": "q80",
+      "type": "noise_robust",
+      "question": "一次订 60 台能打几折",
+      "status": "ok",
+      "answer": "一次订 60 台属于 50 - 199 台这一档，折扣率是 9 折，并且不与促销价叠加。",
+      "source_chunk_ids": [
+        "price_list::018",
+        "price_list::019",
+        "price_list::020",
+        "price_list::021",
+        "price_list::022",
+        "price_list::023"
+      ],
+      "sources": [
+        {
+          "chunk_id": "price_list::018",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::019",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::020",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::021",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::022",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        },
+        {
+          "chunk_id": "price_list::023",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 阶梯折扣"
+        }
+      ],
+      "checks": {
+        "passed": false,
+        "missing": [
+          {
+            "kind": "number",
+            "text": "60",
+            "surface": "60"
+          }
+        ],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          },
+          {
+            "kind": "number",
+            "text": "60",
+            "surface": "60"
+          },
+          {
+            "kind": "number",
+            "text": "50",
+            "surface": "50"
+          },
+          {
+            "kind": "number",
+            "text": "199",
+            "surface": "199"
+          },
+          {
+            "kind": "number",
+            "text": "9",
+            "surface": "9"
+          }
+        ]
+      },
+      "elapsed_ms": 1222.8
+    },
+    {
+      "id": "q23",
+      "type": "rare_token",
+      "question": "PRJ-4K7T2M 是做什么的",
+      "status": "ok",
+      "answer": "PRJ-4K7T2M 是一项内部专项计划，目标是把分散在各业务线的证书台账合并成一份权威清单。该计划分三期推进，依次为梳理存量资产、打通自动发现和接入到期预警；验收标准是台账与实物一致率达到 99% 以上，且到期前 30 天预警覆盖全部在网设备。",
+      "source_chunk_ids": [
+        "security_compliance::023"
+      ],
+      "sources": [
+        {
+          "chunk_id": "security_compliance::023",
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 内部专项计划（一）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "project_code",
+            "text": "PRJ-4K7T2M",
+            "surface": "PRJ-4K7T2M"
+          },
+          {
+            "kind": "number",
+            "text": "99%",
+            "surface": "99%"
+          },
+          {
+            "kind": "number",
+            "text": "30",
+            "surface": "30"
+          }
+        ]
+      },
+      "elapsed_ms": 3000.13
+    },
+    {
+      "id": "q24",
+      "type": "rare_token",
+      "question": "PRJ-9QX8B3 的验收标准是什么",
+      "status": "ok",
+      "answer": "片段提到 PRJ-9QX8B3 的验收标准是任意一条日志被篡改都能在 1 小时内被发现，且查询行为全部留痕。",
+      "source_chunk_ids": [
+        "security_compliance::024"
+      ],
+      "sources": [
+        {
+          "chunk_id": "security_compliance::024",
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 内部专项计划（二）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "project_code",
+            "text": "PRJ-9QX8B3",
+            "surface": "PRJ-9QX8B3"
+          },
+          {
+            "kind": "number",
+            "text": "1",
+            "surface": "1"
+          }
+        ]
+      },
+      "elapsed_ms": 1108.6
+    },
+    {
+      "id": "q65",
+      "type": "rare_token",
+      "question": "sha256:3b7e1f9d24c8a6e0b5f7c1d9e3a80642 是哪批固件的核对基准",
+      "status": "ok",
+      "answer": "该摘要是发布单上登记的固件签名核对基准：固件包入库前须从发布单抄下此 sha256 值，再用校验工具对制品库中同一份固件包重新计算并逐字符比对，一致才允许进入灰度。片段只说明这一批固件中只有该摘要是有效基准，其余摘要一律按不一致处理，但未提及该批固件的具体批次名称或编号。",
+      "source_chunk_ids": [
+        "security_compliance::030"
+      ],
+      "sources": [
+        {
+          "chunk_id": "security_compliance::030",
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 固件签名核对（二）"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 2875.49
+    },
+    {
+      "id": "q114",
+      "type": "synonym",
+      "question": "设备显示在线但数据传不上去",
+      "status": "ok",
+      "answer": "片段仅描述了表面现象：门店反馈「设备显示在线但业务系统传不上数据」，时好时坏、没有规律；平台侧显示设备在线、心跳正常、指令下发成功，各项指标都正常。片段未提及该问题的具体原因和解决办法。",
+      "source_chunk_ids": [
+        "troubleshoot_deep::008"
+      ],
+      "sources": [
+        {
+          "chunk_id": "troubleshoot_deep::008",
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例三：上行拥塞造成的伪故障 > 现象与初查 > 表面现象"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 2489.1
+    },
+    {
+      "id": "q129",
+      "type": "synonym",
+      "question": "创建好的知识库还能改切块大小吗",
+      "status": "ok",
+      "answer": "可以改。知识库创建后 `chunk_size` 可以修改，但只对之后上传的文档生效，存量文档不会自动重切。创建接口为 `POST /api/v1/knowledge_bases`，`chunk_size` 为可选字段，默认 800。",
+      "source_chunk_ids": [
+        "api_reference::031"
+      ],
+      "sources": [
+        {
+          "chunk_id": "api_reference::031",
+          "document": "api_reference",
+          "heading_path": "对外接口参考 > 知识库接口 > 创建知识库"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "800",
+            "surface": "800"
+          }
+        ]
+      },
+      "elapsed_ms": 1982.76
+    },
+    {
+      "id": "q15",
+      "type": "synonym",
+      "question": "机器坏了，想直接换一台",
+      "status": "ok",
+      "answer": "不能直接换新机：换货需先提交换货申请，审核通过后按退货单寄回，入库验收后才发出新机。该流程适用于到货即损、型号发错、以及保修期内同一故障反复出现的情况，换货一般不产生退款，差价按原订单价格多退少补，周期一般为 5 到 7 个工作日，视库存而定。",
+      "source_chunk_ids": [
+        "support_refund::015"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_refund::015",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 换货流程"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "7",
+            "surface": "7"
+          }
+        ]
+      },
+      "elapsed_ms": 2829.99
+    },
+    {
+      "id": "q53",
+      "type": "synonym",
+      "question": "旧机器能抵钱换新的吗",
+      "status": "ok",
+      "answer": "可以。以旧换新适用于存量老机型升级，旧机按型号与成色估价，估价金额直接抵扣新机售价，不产生现金退款。该估价有效期为 7 天，过期需要重新估价。",
+      "source_chunk_ids": [
+        "support_refund::017"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_refund::017",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 以旧换新"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "7",
+            "surface": "7"
+          }
+        ]
+      },
+      "elapsed_ms": 1461.89
+    },
+    {
+      "id": "q86",
+      "type": "synonym",
+      "question": "货到了再付钱行不行",
+      "status": "ok",
+      "answer": "片段中提到货到付款的问题：对公客户可以申请，个人订单不支持。因此个人订单不能货到再付钱，只有对公客户可申请该方式。",
+      "source_chunk_ids": [
+        "faq_short::000"
+      ],
+      "sources": [
+        {
+          "chunk_id": "faq_short::000",
+          "document": "faq_short",
+          "heading_path": "高频问答速查 > 下单与发货"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 1919.95
+    },
+    {
+      "id": "q116",
+      "type": "table_lookup",
+      "question": "请求签名的时间戳允许多少秒偏差",
+      "status": "ok",
+      "answer": "服务端容忍的时间戳偏差为 ±300 秒，时间戳采用 Unix 秒级时间戳。超出该窗口的请求会被直接拒绝，并返回时间偏差类错误。片段还建议客户侧配置 NTP，把偏差控制在 5 秒以内。",
+      "source_chunk_ids": [
+        "integration_api::001"
+      ],
+      "sources": [
+        {
+          "chunk_id": "integration_api::001",
+          "document": "integration_api",
+          "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法 > 签名计算"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "300",
+            "surface": "300"
+          },
+          {
+            "kind": "number",
+            "text": "5",
+            "surface": "5"
+          }
+        ]
+      },
+      "elapsed_ms": 1441.63
+    },
+    {
+      "id": "q39",
+      "type": "table_lookup",
+      "question": "标准款整机转发吞吐大概多少",
+      "status": "ok",
+      "answer": "标准款整机转发吞吐约为 900 Mbps，该数据是在 64 字节小包条件下实测得到的。开启 VPN 后吞吐下降约 40%，开启 QoS 后下降约 10%。",
+      "source_chunk_ids": [
+        "product_spec::018"
+      ],
+      "sources": [
+        {
+          "chunk_id": "product_spec::018",
+          "document": "product_spec",
+          "heading_path": "产品规格说明书 > 性能指标（一）吞吐"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "900",
+            "surface": "900"
+          },
+          {
+            "kind": "number",
+            "text": "64",
+            "surface": "64"
+          },
+          {
+            "kind": "number",
+            "text": "40%",
+            "surface": "40%"
+          },
+          {
+            "kind": "number",
+            "text": "10%",
+            "surface": "10%"
+          }
+        ]
+      },
+      "elapsed_ms": 1351.82
+    },
+    {
+      "id": "q43",
+      "type": "table_lookup",
+      "question": "审计日志要留存多久",
+      "status": "ok",
+      "answer": "审计日志留存 12 个月；留存期满后按流程销毁，销毁记录保留 3 年。涉及安全事件的日志在事件关闭后额外保留 12 个月。",
+      "source_chunk_ids": [
+        "security_compliance::007"
+      ],
+      "sources": [
+        {
+          "chunk_id": "security_compliance::007",
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 日志留存"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "12",
+            "surface": "12"
+          },
+          {
+            "kind": "number",
+            "text": "3",
+            "surface": "3"
+          }
+        ]
+      },
+      "elapsed_ms": 1206.71
+    },
+    {
+      "id": "q70",
+      "type": "table_lookup",
+      "question": "每月账单是哪天出账的",
+      "status": "ok",
+      "answer": "每月账单的出账时间是次月 3 日。账单生成后 5 个工作日内完成扣款。",
+      "source_chunk_ids": [
+        "billing_policy::001"
+      ],
+      "sources": [
+        {
+          "chunk_id": "billing_policy::001",
+          "document": "billing_policy",
+          "heading_path": "计费与账务政策 > 计费周期"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "3",
+            "surface": "3"
+          },
+          {
+            "kind": "number",
+            "text": "5",
+            "surface": "5"
+          }
+        ]
+      },
+      "elapsed_ms": 1207.01
+    },
+    {
+      "id": "q79",
+      "type": "table_lookup",
+      "question": "万兆光模块多少钱一个",
+      "status": "ok",
+      "answer": "万兆光模块的单价为 1180 元，适用型号是 XR-2100。",
+      "source_chunk_ids": [
+        "price_list::008",
+        "price_list::009",
+        "price_list::010",
+        "price_list::011",
+        "price_list::012",
+        "price_list::013",
+        "price_list::014",
+        "price_list::015",
+        "price_list::016"
+      ],
+      "sources": [
+        {
+          "chunk_id": "price_list::008",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::009",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::010",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::011",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::012",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::013",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::014",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::015",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        },
+        {
+          "chunk_id": "price_list::016",
+          "document": "price_list",
+          "heading_path": "价格与折扣对照表 > 配件价格"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "1180",
+            "surface": "1180"
+          },
+          {
+            "kind": "model_number",
+            "text": "XR-2100",
+            "surface": "XR-2100"
+          }
+        ]
+      },
+      "elapsed_ms": 1647.12
+    },
+    {
+      "id": "q82",
+      "type": "table_lookup",
+      "question": "企业版的月度可用性承诺是多少",
+      "status": "ok",
+      "answer": "片段中给出企业版的月度可用性为 99.9%，对应的月度赔偿比例为 20%。",
+      "source_chunk_ids": [
+        "sla_terms::001",
+        "sla_terms::002",
+        "sla_terms::003",
+        "sla_terms::004",
+        "sla_terms::005"
+      ],
+      "sources": [
+        {
+          "chunk_id": "sla_terms::001",
+          "document": "sla_terms",
+          "heading_path": "服务等级协议条款 > 可用性承诺"
+        },
+        {
+          "chunk_id": "sla_terms::002",
+          "document": "sla_terms",
+          "heading_path": "服务等级协议条款 > 可用性承诺"
+        },
+        {
+          "chunk_id": "sla_terms::003",
+          "document": "sla_terms",
+          "heading_path": "服务等级协议条款 > 可用性承诺"
+        },
+        {
+          "chunk_id": "sla_terms::004",
+          "document": "sla_terms",
+          "heading_path": "服务等级协议条款 > 可用性承诺"
+        },
+        {
+          "chunk_id": "sla_terms::005",
+          "document": "sla_terms",
+          "heading_path": "服务等级协议条款 > 可用性承诺"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": [
+          {
+            "kind": "number",
+            "text": "99.9%",
+            "surface": "99.9%"
+          },
+          {
+            "kind": "number",
+            "text": "20%",
+            "surface": "20%"
+          }
+        ]
+      },
+      "elapsed_ms": 1192.51
+    }
+  ],
+  "failures": [],
+  "check_failures": [
+    {
+      "id": "q55",
+      "type": "colloquial",
+      "missing": [
+        {
+          "kind": "number",
+          "text": "2",
+          "surface": "2"
+        }
+      ],
+      "answer": "片段按变更级别区分：一级变更需要双人复核与主管审批，二级变更只需主管审批，三级由值班确认，四级走自助流程。因此是否要两人一起复核取决于变更分级，一级才明确要求双人复核。分级由变更发起人填写，审批人可以上调。"
+    },
+    {
+      "id": "q100",
+      "type": "false_premise",
+      "missing": [
+        {
+          "kind": "error_code",
+          "text": "E1024",
+          "surface": "E1024"
+        }
+      ],
+      "answer": "前提不成立：片段未提及 E1024，也没有给出任何错误码。片段里设备反复重启的原因是误配——把标准款适配器插到增强款上，且日志里没有任何错误码；片段没有说明这种误配该怎么修，只提到发货前的型号核对是最便宜的防线。"
+    },
+    {
+      "id": "q80",
+      "type": "noise_robust",
+      "missing": [
+        {
+          "kind": "number",
+          "text": "60",
+          "surface": "60"
+        }
+      ],
+      "answer": "一次订 60 台属于 50 - 199 台这一档，折扣率是 9 折，并且不与促销价叠加。"
+    }
+  ],
+  "spot_checks": [
+    {
+      "id": "q10",
+      "type": "colloquial",
+      "question": "背调一般问哪些问题",
+      "answer": "片段提到背景调查的标准问题包括：过往任职与离职原因、是否有竞业限制、是否有与岗位相关的违规记录、教育经历与证书是否属实、是否存在利益冲突。调查只采集与岗位相关的信息，不涉及婚姻、生育与健康状况。",
+      "excerpt": "## 人员背景审查\n\n涉及核心数据与高权限岗位的人员在入职前必须完成背景调查，调查由人力资源与安全团队共同发起。背景调查的标准问题包括：过往任职与离职原因、是否有竞业限制、是否有与岗位相关的违规记录、教育经历与证书是否属实、是否存在利益冲突。调查只采集与岗位相关的信息，不涉及婚姻、生育与健康状况。调查结论分为通过、有条件通过与不通过三类，有条件通过需要设定观察期。调查材料单独存放，保存期限为离职后",
+      "check_passed": true
+    },
+    {
+      "id": "q100",
+      "type": "false_premise",
+      "question": "E1024 会让设备反复重启，要怎么修",
+      "answer": "前提不成立：片段未提及 E1024，也没有给出任何错误码。片段里设备反复重启的原因是误配——把标准款适配器插到增强款上，且日志里没有任何错误码；片段没有说明这种误配该怎么修，只提到发货前的型号核对是最便宜的防线。",
+      "excerpt": "## 常见误配（一）\n\n把标准款适配器插到增强款上是最常见的误配，现象是设备反复重启，日志里没有任何错误码。第二种是把增强款的 24 伏适配器插到标准款上，现象是设备直接不亮，电源模块烧毁。第三种是把机架款当桌面设备用，塞进弱电箱后过热关机。三种误配都不在保修范围内，发货前的型号核对是最便宜的防线。",
+      "check_passed": false
+    },
+    {
+      "id": "q34",
+      "type": "noise_robust",
+      "question": "E2053 多租户共享池被别的租户吃满",
+      "answer": "E2053 表示多租户共享池被其他租户的突发流量吃满。响应头里会带上剩余配额与建议等待秒数，客户端应按指数退避重试，而不是立刻切换凭据，因为切换凭据只会把压力摊到所有凭据上，让整条链路一起被拒绝。排查时先看这一分钟的请求分布，确认是突发流量还是重试风暴；若是后者，退避参数写错往往才是根因，结论是先申请独立配额。",
+      "excerpt": "## 配额与限流类错误（六）\n\n配额与限流类错误（六）对应 E2053：多租户共享池被其他租户的突发流量吃满。响应头里会带上剩余配额与建议等待秒数，客户端应当按指数退避重试，而不是立刻切换凭据。切换凭据只会把压力摊到所有凭据上，让整条链路一起被 E2053 拒绝。排查时先看这一分钟的请求分布，确认是突发流量还是重试风暴；如果是后者，退避参数写错往往才是根因。结论：这是共享池争用，先申请独立配额。",
+      "check_passed": true
+    },
+    {
+      "id": "q112",
+      "type": "counterfactual",
+      "question": "为什么故障总是凌晨发生、白天自己就好了",
+      "answer": "片段未提及故障总在凌晨发生、白天自愈的具体原因。片段只说明该区域门店在凌晨集中离线、次日营业前自动恢复并连续三天重复，初步排查排除了平台入口问题和区域链路割接，随后转向设备侧。",
+      "excerpt": "### 现象与初查\n\n#### 表面现象\n\n现象是某个区域的门店在凌晨集中离线，次日营业前又自动恢复，连续三天重复。平台侧看到的现象是设备心跳中断，日志里没有任何错误码；现场看到的是设备指示灯正常，但管理页面打不开。\n\n#### 初步排查\n\n初步排查走的是常规路径：先看时间分布——不是同一秒集中离线，而是逐台陆续掉，排除了平台入口问题；再看地理位置——集中在同一城区，跨区域没有，指向区域网络。联系",
+      "check_passed": true
+    },
+    {
+      "id": "q129",
+      "type": "synonym",
+      "question": "创建好的知识库还能改切块大小吗",
+      "answer": "可以改。知识库创建后 `chunk_size` 可以修改，但只对之后上传的文档生效，存量文档不会自动重切。创建接口为 `POST /api/v1/knowledge_bases`，`chunk_size` 为可选字段，默认 800。",
+      "excerpt": "### 创建知识库\n\n#### 请求\n\n`POST /api/v1/knowledge_bases`，字段 `name`（必填）、`description`（可选）、`chunk_size`（可选，默认 800）。知识库创建后 `chunk_size` 可以改，但只对之后上传的文档生效，存量文档不会自动重切。\n\n#### 响应\n\n返回 `kb_id`。`kb_id` 一旦生成不可修改，重命名只改 ",
+      "check_passed": true
+    },
+    {
+      "id": "q68",
+      "type": "model_number",
+      "question": "XR-2000 的内存多大",
+      "answer": "片段写明标准款 XR-2000 的出厂配置内存为 2 GB。",
+      "excerpt": "## 整机规格（标准款）\n\n标准款是上一代主力机型，面向小型门店与独立办公点。标准款型号为 XR-2000 出厂配置 4 个千兆网口，4 核处理器、2 GB 内存、8 GB eMMC，无线只支持 Wi-Fi 5，出厂固件 3.x 版本，不支持双机热备，最大接入终端数为 64。现场终端数可能超过 64 时应直接选增强款，而不是靠堆叠标准款来凑容量。标准款的整机功耗约 12 瓦，可用普通桌面电源适配器",
+      "check_passed": true
+    },
+    {
+      "id": "q114",
+      "type": "synonym",
+      "question": "设备显示在线但数据传不上去",
+      "answer": "片段仅描述了表面现象：门店反馈「设备显示在线但业务系统传不上数据」，时好时坏、没有规律；平台侧显示设备在线、心跳正常、指令下发成功，各项指标都正常。片段未提及该问题的具体原因和解决办法。",
+      "excerpt": "### 现象与初查\n\n#### 表面现象\n\n现象是某门店反馈「设备显示在线但业务系统传不上数据」，时好时坏，没有规律。平台侧看到设备在线、心跳正常、指令下发成功，一切指标都正常。",
+      "check_passed": true
+    },
+    {
+      "id": "q95",
+      "type": "negative_scope",
+      "question": "实习期能申请可写权限吗",
+      "answer": "不能，实习期只能拿只读权限。",
+      "excerpt": "## 常见问题\n\n问：入职多久能独立值班？答：通过值班考核后，通常在第 4 到 6 周。\n问：能带自己的电脑吗？答：可以接入办公网，但不能接入生产网。\n问：权限审批被拒怎么办？答：先问审批人缺什么材料，补齐后重新提交，不要换一个审批人重复提交。\n问：实习期能申请可写权限吗？答：不能，实习期只能拿只读权限。\n问：离职时权限怎么处理？答：由管理员统一停用，停用当天生效，历史操作记录保留。",
+      "check_passed": true
+    },
+    {
+      "id": "q15",
+      "type": "synonym",
+      "question": "机器坏了，想直接换一台",
+      "answer": "不能直接换新机：换货需先提交换货申请，审核通过后按退货单寄回，入库验收后才发出新机。该流程适用于到货即损、型号发错、以及保修期内同一故障反复出现的情况，换货一般不产生退款，差价按原订单价格多退少补，周期一般为 5 到 7 个工作日，视库存而定。",
+      "excerpt": "## 换货流程\n\n换货适用于到货即损、型号发错、以及保修期内同一故障反复出现的情况。换货需要先提交换货申请，审核通过后按退货单寄回，入库验收后发出新机。换货不产生退款，差价按原订单价格多退少补。新机享受重新计算的保修期，旧机的保修期随之终止。换货周期一般为 5 到 7 个工作日，视库存而定。",
+      "check_passed": true
+    },
+    {
+      "id": "q103",
+      "type": "false_premise",
+      "question": "标准款的万兆光口要配哪种光模块",
+      "answer": "前提不成立：片段中标准款（型号 XR-2000）只写明出厂配置 4 个千兆网口，并未提及万兆光口，也没有提到任何光模块型号或配套要求，因此无法据此确定该配哪种光模块。",
+      "excerpt": "## 整机规格（标准款）\n\n标准款是上一代主力机型，面向小型门店与独立办公点。标准款型号为 XR-2000 出厂配置 4 个千兆网口，4 核处理器、2 GB 内存、8 GB eMMC，无线只支持 Wi-Fi 5，出厂固件 3.x 版本，不支持双机热备，最大接入终端数为 64。现场终端数可能超过 64 时应直接选增强款，而不是靠堆叠标准款来凑容量。标准款的整机功耗约 12 瓦，可用普通桌面电源适配器",
+      "check_passed": true
+    }
+  ]
+}
