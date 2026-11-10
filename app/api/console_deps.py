@@ -11,12 +11,15 @@
 - ``get_console_admin``：同上，但必须是管理员；
 - ``require_console_write`` / ``require_console_admin_write``：同上，并且这个请求带了
   防跨站的显式头。**写操作**用这两个，读操作用前两个；
-- ``require_console_tenant`` / ``require_console_tenant_write``：**用户面板类接口**（keys /
-  kbs / documents / models）用这两个——管理员不属于任何租户，它的 ``tenant_id`` 是
-  ``None``，这类接口对它一律 ``20011``；
-- ``get_console_admin`` / ``require_console_admin_write``：**平台级接口**（账号 / 套餐 /
-  审计 / 配置中台 settings）用这两个。配置中台是平台级、无租户归属的配置，一次修改横跨
-  所有租户，所以它恰恰只能给管理员，**不能**套用上面那对租户依赖；
+- ``require_console_tenant`` / ``require_console_tenant_write``：**用户面板类接口**
+  （库 / 文档 / 密钥 / 模型）的租户门禁，返回裸 ``tenant_id``。管理员（``tenant_id IS
+  NULL``）能登录、能看 ``/console/me``，但它不属于任何租户，这些接口对它一律 ``20011``
+  ——写成共用依赖而不是每条各判一遍，是因为「少写一条」的结果是管理员悄悄拿到一个空
+  租户的写权限；
+- **平台级接口**（账号 / 套餐 / 审计 / 配置中台 ``settings``）用
+  ``get_console_admin`` / ``require_console_admin_write``，**不套**上面那对租户依赖。
+  ``runtime_settings`` 不属于任何租户：``RERANK_ENABLED`` 一关，所有租户的 ``quality``
+  档位一起退化，所以它恰恰只能给管理员；给「任意租户」开写口就是跨租户越权；
 - ``require_console_write_header``：登出这种「不需要先认出是谁、但仍然是写操作」的
   接口用它——没有会话也要能清掉 cookie，否则共用电脑上永远退不干净；
 - ``get_plan_cache``：套餐缓存的构造点。测试注入内存假实现，于是「改完缓存里没有了」
@@ -27,6 +30,8 @@
 """
 
 from __future__ import annotations
+
+from typing import Final
 
 from fastapi import Depends, Request
 from sqlalchemy.orm import Session
@@ -46,14 +51,11 @@ from app.core.runtime_settings_cache import (
 from app.db.session import get_db
 from app.services import plan_service
 
-#: 「管理员不属于任何租户」时的提示。与管理员的角色判定分开写：两者都出 ``20011``
-#: 但原因不同（一个是「你不是管理员」，一个是「这类接口要租户身份」），排障时看得出。
-MSG_TENANT_REQUIRED = "tenant identity required (platform admins belong to no tenant)"
+#: 用户面板接口对管理员（无租户）的拒绝文案；错误码统一 ``20011``。
+MSG_TENANT_ACCOUNT_REQUIRED: Final[str] = "a tenant account is required for this console endpoint"
 
 
-def get_console_account(
-    request: Request, db: Session = Depends(get_db)
-) -> ConsoleIdentity:
+def get_console_account(request: Request, db: Session = Depends(get_db)) -> ConsoleIdentity:
     """面板接口的鉴权依赖：只读会话 cookie，原样返回判定结论。"""
 
     return resolve_console_identity(request, db)
@@ -96,34 +98,36 @@ def require_console_write_header(request: Request) -> None:
 
 def require_console_tenant(
     identity: ConsoleIdentity = Depends(get_console_account),
-) -> ConsoleIdentity:
-    """用户面板类读接口的门禁：先认出是谁，再要求它有租户身份（``20011``）。
+) -> str:
+    """用户面板的读接口：先认出是谁，再要求它属于某个租户（管理员一律 ``20011``）。
 
-    只写一处而不是每票各写一遍：`keys / kbs / documents / settings / models` 都对
-    「管理员空租户」同一条答案，五个地方各判一次的结果迟早有一个漏掉。
-
-    顺序是「先认人、后判租户」：没有会话时正确的码是 ``20010``（去登录），不是
-    ``20011``——先判租户会把一个未登录的请求报成「你没有权限」，前端就不会跳登录页了。
+    返回裸 ``tenant_id`` 而不是身份对象：路由只需要它去查库/文档，接着写审计时再取
+    ``Depends(get_console_account)``——FastAPI 的依赖缓存会让同一个请求里的身份只解析
+    一次，不会因为多声明一个依赖就多读一次会话行。
     """
 
-    if identity.tenant_id is None:
-        raise AppError(ErrorCode.FORBIDDEN, MSG_TENANT_REQUIRED)
-    return identity
+    return _tenant_id_of(identity)
 
 
 def require_console_tenant_write(
-    request: Request,
     identity: ConsoleIdentity = Depends(require_console_write),
-) -> ConsoleIdentity:
-    """用户面板类写接口的门禁：防跨站头 +（先认人后判租户）。
+) -> str:
+    """用户面板的写接口：防跨站头通过后，再要求它是租户账号。
 
-    复用 :func:`require_console_write` 而不是自己再查一次头：``WRITE_HEADER_NAME`` 与
-    固定值只该有一个出处，写两遍就有一个会先漂移。
+    顺序是刻意的：``require_console_write`` 内部先解析会话、再查头，于是——
+    未登录的写请求仍是 ``20010``（前端该去登录），登录了但缺头的仍是 ``20011``
+    （不该被当成掉线）。管理员带着头进来时才走到这里的租户判定，同样 ``20011``。
     """
 
+    return _tenant_id_of(identity)
+
+
+def _tenant_id_of(identity: ConsoleIdentity) -> str:
+    """租户门禁的**唯一**实现：管理员（``tenant_id is None``）不是「无权限」，是「用错了门」。"""
+
     if identity.tenant_id is None:
-        raise AppError(ErrorCode.FORBIDDEN, MSG_TENANT_REQUIRED)
-    return identity
+        raise AppError(ErrorCode.FORBIDDEN, MSG_TENANT_ACCOUNT_REQUIRED)
+    return identity.tenant_id
 
 
 def get_plan_cache() -> PlanCache:
