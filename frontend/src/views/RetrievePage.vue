@@ -308,6 +308,19 @@ function submitRetrieve(): void {
   mutate({ kb_ids: [...store.selectedKbIds], query: trimmedQuery.value })
 }
 
+/**
+ * UUID 只显示前 8 位。
+ *
+ * 结果列表里两条 36 字符的 UUID 会各占半行，而它们几乎从不是阅读目标——需要的时候
+ * 悬停看全长即可。这一条同时把「切片 ID / 文档 ID」从主行降到底部小字。
+ */
+function shortId(value: string): string {
+  return value.slice(0, 8)
+}
+
+/** 运行摘要默认收起：它是调试元信息，第一次读结果的人不需要它。 */
+const summaryOpen = ref(false)
+
 const chunks = computed(() => result.value?.retrieved_chunks ?? [])
 const emptyReason = computed(() => result.value?.metadata.retrieval.empty_reason ?? null)
 const emptyCopy = computed(() =>
@@ -324,13 +337,14 @@ const emptyCopy = computed(() =>
   <section class="space-y-6">
   <PageHeader
     title="调试台"
-    subtitle="选一把 Key、勾要查的库、发一次真实检索。检索方式、条数、重排与改写都由这把 Key 的密钥配置决定——本页不设这些参数，跑完只看后端回显的真实生效值。"
+    subtitle="选 Key、勾库、写问题，发一次真实检索。检索方式、条数、重排与改写全部由这把 Key 的密钥配置决定，本页只回显后端实际生效的值。"
   />
     <!-- ① 选 Key 与检索范围 -->
     <el-card shadow="never">
       <template #header>
         <div class="flex flex-wrap items-baseline justify-between gap-2">
-          <h2 class="text-sm font-semibold text-ink">检索范围</h2>
+          <!-- 标题不再是「检索范围」：这张卡已经包含选 Key、勾库与提问三件事。 -->
+          <h2 class="text-sm font-semibold text-ink">发起检索</h2>
           <span class="shrink-0 text-[11px] text-muted">
             已选 {{ store.selectedCount }} / 共 {{ kbs.length }} 个库
           </span>
@@ -464,17 +478,10 @@ const emptyCopy = computed(() =>
         <p class="mt-1 break-all font-mono">{{ unpickableSelected.join('、') }}</p>
         <el-button class="mt-2" size="small" @click="dropUnpickable">移除这些选择</el-button>
       </div>
-    </el-card>
 
-    <!--
-      ② 问题。原来标题下还有一句「请求体只有 kb_ids 与 query…」——页头已经说了「本页不设
-      这些参数」，这句是把同一件事换个说法再说一遍。删掉，只留标题与一次动作。
-    -->
-    <el-card shadow="never">
-      <template #header>
-        <h2 class="text-sm font-semibold text-ink">问题</h2>
-      </template>
-
+      <!-- ② 问题：与上面同一张卡——「选 Key / 勾库 / 写问题」是发一次检索的三个输入，
+           拆成两张卡只是把一次动作变成两次「标题 + 内容」，页面上因此有四段一样高的节奏。 -->
+      <div class="mt-6 border-t border-line pt-5">
       <el-form label-position="top" @submit.prevent="submitRetrieve">
         <el-form-item>
           <el-input
@@ -496,9 +503,9 @@ const emptyCopy = computed(() =>
             检索
           </el-button>
           <span v-if="blockReason !== ''" class="text-xs text-muted">{{ blockReason }}</span>
-          <span v-else class="text-xs text-slate-400">以已选库为范围发一次检索</span>
         </div>
       </el-form>
+      </div>
     </el-card>
 
     <!-- ③ 召回结果 -->
@@ -546,67 +553,78 @@ const emptyCopy = computed(() =>
       </div>
 
       <ul v-else class="divide-y divide-line">
-        <li v-for="(chunk, index) in chunks" :key="chunk.chunk_id" class="py-4">
-          <div class="flex flex-wrap items-baseline gap-x-3 gap-y-1">
-            <span class="shrink-0 rounded bg-slate-100 px-1.5 py-0.5 text-xs text-slate-600">
-              {{ formatRank(index + 1) }}
-            </span>
-            <h3 class="text-sm font-medium text-slate-800">{{ chunk.title || '（无标题）' }}</h3>
-            <span v-if="chunk.kb_id !== null" class="text-xs text-slate-400">
-              库：<span class="font-mono">{{ chunk.kb_id }}</span>
-            </span>
+        <!--
+          每条结果重排成「主行 / 正文 / 底注」三段。旧版把 5 个分数指标铺成两行 dl、
+          再把两个 UUID 铺成一行，整块看下来是**一堆元数据而没有正文**——`chunk.content`
+          后端一直在返回，却从没被渲染过。人来做检索是为了看命中什么，不是看分数表。
+        -->
+        <li v-for="(chunk, index) in chunks" :key="chunk.chunk_id" class="py-5">
+          <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+            <div class="flex min-w-0 items-baseline gap-2.5">
+              <span
+                class="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[11px] font-medium text-ink"
+              >
+                {{ index + 1 }}
+              </span>
+              <h3 class="truncate text-[13px] font-semibold text-ink">
+                {{ chunk.title || '（无标题）' }}
+              </h3>
+              <span v-if="chunk.heading_path !== null" class="truncate text-[11px] text-muted">
+                › {{ chunk.heading_path }}
+              </span>
+            </div>
+
+            <!-- 分数只留三个：主排序分大、两路分解小。名次留在底注。 -->
+            <div class="flex shrink-0 items-baseline gap-3">
+              <span class="font-mono text-[13px] font-medium text-ink">
+                {{ formatScore(chunk.score) }}
+              </span>
+              <span class="font-mono text-[10px] text-muted">
+                语义 {{ formatPercent(chunk.vector_score) }}
+              </span>
+              <span class="font-mono text-[10px] text-muted">
+                关键词 {{ formatScore(chunk.bm25_score) }}
+              </span>
+            </div>
           </div>
 
-          <dl class="mt-2 grid gap-x-6 gap-y-1 text-xs sm:grid-cols-3 lg:grid-cols-5">
-            <div>
-              <dt class="text-slate-400">综合排序分</dt>
-              <dd class="font-mono text-slate-700">{{ formatScore(chunk.score) }}</dd>
-            </div>
-            <div>
-              <dt class="text-slate-400">语义相似度</dt>
-              <dd
-                class="font-mono"
-                :class="chunk.vector_score === null ? 'text-slate-400' : 'text-slate-700'"
-              >
-                {{ formatPercent(chunk.vector_score) }}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-slate-400">关键词匹配分</dt>
-              <dd
-                class="font-mono"
-                :class="chunk.bm25_score === null ? 'text-slate-400' : 'text-slate-700'"
-              >
-                {{ formatScore(chunk.bm25_score) }}
-              </dd>
-            </div>
-            <div>
-              <dt class="text-slate-400">语义名次</dt>
-              <dd class="font-mono text-slate-700">{{ formatRank(chunk.vector_rank) }}</dd>
-            </div>
-            <div>
-              <dt class="text-slate-400">关键词名次</dt>
-              <dd class="font-mono text-slate-700">{{ formatRank(chunk.bm25_rank) }}</dd>
-            </div>
-          </dl>
+          <!-- 命中正文。保留换行与空白：切片的形状（列表、表格行）是它的一半信息。 -->
+          <p class="mt-2.5 whitespace-pre-wrap break-words text-[13px] leading-[1.8] text-slate-700">
+            {{ chunk.content }}
+          </p>
 
-          <div class="mt-2 flex flex-wrap gap-x-5 gap-y-1 text-xs text-slate-500">
-            <span>文档 ID：<span class="font-mono">{{ chunk.document_id }}</span></span>
-            <span>切片 ID：<span class="font-mono">{{ chunk.chunk_id }}</span></span>
-            <span>章节：{{ chunk.heading_path ?? '—' }}</span>
-            <!--
-              这里是 `expansion`（这次上下文给了多大范围：neighbors / parent / table / chunk），
-              不是「块类型」。GLOSSARY 里「块类型」是切片形态（prose / list / table / table_row /
-              code），而响应里根本没有这个字段。两者一旦混用，读结果的人会以为切片被解析成了
-              “parent” 这种类型。
-            -->
-            <span>扩展范围：{{ chunk.expansion ?? '—' }}</span>
+          <div class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
+            <span v-if="chunk.expansion !== null">扩展：{{ chunk.expansion }}</span>
+            <span>语义名次 {{ formatRank(chunk.vector_rank) }}</span>
+            <span>关键词名次 {{ formatRank(chunk.bm25_rank) }}</span>
+            <span :title="chunk.chunk_id">切片 {{ shortId(chunk.chunk_id) }}</span>
+            <span :title="chunk.document_id">文档 {{ shortId(chunk.document_id) }}</span>
+            <span v-if="chunk.kb_id !== null" :title="chunk.kb_id">库 {{ shortId(chunk.kb_id) }}</span>
           </div>
         </li>
       </ul>
+
+      <!--
+        运行摘要收进结果卡底部、默认收起。它原来自己占一张卡，与结果并列——但它是
+        「这次为什么这样跑」的元信息，读结果的当下不需要，需要一个入口就够了。
+      -->
+      <div class="mt-4 border-t border-line pt-3">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 text-[11px] text-muted transition hover:text-ink"
+          @click="summaryOpen = !summaryOpen"
+        >
+          <span class="text-[9px]">{{ summaryOpen ? '▼' : '▶' }}</span>
+          运行摘要 · 这次后端实际生效的值
+        </button>
+        <RunSummary v-if="summaryOpen && result !== null" class="mt-3" :metadata="result.metadata" />
+        <p v-if="summaryOpen && result === null" class="mt-2 text-[11px] text-muted">
+          还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
+        </p>
+      </div>
     </el-card>
 
-    <!-- ⑤ 对比面板（会话内，放在结果区下方；没有历史时整块不渲染，不占位） -->
+    <!-- ④ 对比面板（会话内，放在结果区下方；没有历史时整块不渲染，不占位） -->
     <ComparePanel
       v-if="history.length > 0"
       :history="history"
@@ -614,24 +632,5 @@ const emptyCopy = computed(() =>
       @pin="pinBase"
       @unpin="unpinBase"
     />
-
-    <!-- ④ 运行摘要（只读） -->
-    <el-card shadow="never">
-      <template #header>
-        <div>
-          <h2 class="text-sm font-semibold text-slate-800">运行摘要（只读）</h2>
-          <p class="mt-1 text-xs text-slate-500">
-            每个值都取自这一次响应的 metadata，不读页面上的任何输入；英文码照原文显示，中文只进
-            tooltip。
-          </p>
-        </div>
-      </template>
-
-      <p v-if="result === null" class="text-sm text-slate-400">
-        还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
-      </p>
-
-      <RunSummary v-else :metadata="result.metadata" />
-    </el-card>
   </section>
 </template>
