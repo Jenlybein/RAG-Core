@@ -13,8 +13,9 @@
  *    白名单里的库能勾选；白名单外的置灰 + hover 说明原因，换 Key 时自动摘掉不在
  *    新白名单里的已选库并提示（留着它们只会在下一次检索撞 20008）。
  *
- * 结果卡片只展示契约里有的字段；`latency_ms` / `log_id` / `trace_id` 等字段后端没有
- * （00-facts §5 明确列过），这里也不编造。
+ * 结果卡片只展示契约里有的字段；`latency_ms` / `log_id` 后端没有（00-facts §5 明确列过），
+ * 这里也不编造。`metadata.trace_id` 从 #101 起有了，但本页不摊它——它在这张卡上的用途只有
+ * 一个：与瀑布图里那根线对上（见下方「阶段耗时」面板的说明）。
  */
 import { useMutation, useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
@@ -24,13 +25,16 @@ import { useRoute } from 'vue-router'
 import ComparePanel from '../components/ComparePanel.vue'
 import PageHeader from '../components/PageHeader.vue'
 import RunSummary from '../components/RunSummary.vue'
+import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
+import { fetchWaterfall } from '../services/consoleTraces'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { retrieve } from '../services/ragService'
 import { useRetrieveStore } from '../stores/retrieve'
 import type { KbOption, KeyData } from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
+import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
   describeEmptyReason,
@@ -350,6 +354,44 @@ const emptyCopy = computed(() =>
 
 // 摘要的渲染整体在 `RunSummary.vue` 里（纯 props，只收 metadata）：页面不自己摊
 // `metadata`，也就不可能顺手把页面输入混进摘要。
+
+// —— ⑥ 阶段耗时（瀑布图，#103） ——
+/**
+ * 一个输入框 + 一个按钮，按 `log_id` 去控制面读回六段耗时。
+ *
+ * 为什么是一个**手填的 `log_id`**：检索响应里没有 `log_id`（契约只有
+ * `metadata.trace_id`，而 `log_id` → `trace_id` 是单向派生，反过来推不出来）。归属索引的
+ * 行 id 是报障时能拿到的那一个（工单 / 库 / 观测侧），所以这里就按它查——本页不编一个
+ * 「自动填好」的假象出来。
+ *
+ * 失败与「未启用」分开处理：前者是 `waterfallError`（业务码原样带上），后者是
+ * `code=0` 的正常响应，由 `StageWaterfall` 按 `reason` 说清是哪一种。
+ */
+const waterfallOpen = ref(false)
+const logIdInput = ref('')
+const waterfall = ref<RetrievalWaterfall | null>(null)
+const waterfallError = ref<string | null>(null)
+const trimmedLogId = computed(() => logIdInput.value.trim())
+
+const { mutate: requestWaterfall, isPending: waterfallLoading } = useMutation({
+  mutationFn: (logId: string) => fetchWaterfall(logId),
+  onMutate: () => {
+    waterfallError.value = null
+  },
+  onSuccess: (data) => {
+    waterfall.value = data
+  },
+  onError: (error) => {
+    // 上一次的瀑布必须一起清掉：留着它会让「查不到这个 log_id」看起来像查到了另一条。
+    waterfall.value = null
+    waterfallError.value = errorText(error)
+  },
+})
+
+function loadWaterfall(): void {
+  if (trimmedLogId.value === '' || waterfallLoading.value) return
+  requestWaterfall(trimmedLogId.value)
+}
 </script>
 
 <template>
@@ -711,6 +753,61 @@ const emptyCopy = computed(() =>
         <p v-if="summaryOpen && result === null" class="mt-2 text-[11px] text-muted">
           还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
         </p>
+      </div>
+
+      <!--
+        阶段耗时（#103）：与运行摘要并列的第二个入口，同样是「需要时才展开」。
+        它按 log_id 去控制面读回六段耗时——关掉观测也能从本地记录看到，
+        没开 / 没记上时这里给明确文案，不留空白。
+      -->
+      <div class="mt-3 border-t border-line pt-3">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 text-[11px] text-muted transition hover:text-ink"
+          @click="waterfallOpen = !waterfallOpen"
+        >
+          <span class="text-[9px]">{{ waterfallOpen ? '▼' : '▶' }}</span>
+          阶段耗时 · 按 log_id 看六段瀑布
+        </button>
+
+        <div v-if="waterfallOpen" class="mt-3">
+          <p class="text-[11px] leading-relaxed text-muted">
+            填这次检索的
+            <code class="rounded bg-slate-100 px-1 font-mono text-[10px] text-slate-500">log_id</code>
+            （归属索引里那一行的 id）。它与响应里的
+            <code class="rounded bg-slate-100 px-1 font-mono text-[10px] text-slate-500">trace_id</code>
+            一一对应，但只能从 log_id 推出 trace_id，反过来推不出来。
+          </p>
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <el-input
+              v-model="logIdInput"
+              size="small"
+              class="max-w-sm"
+              clearable
+              placeholder="log_id（36 位 UUID）"
+              @keyup.enter="loadWaterfall"
+            />
+            <el-button
+              size="small"
+              :loading="waterfallLoading"
+              :disabled="trimmedLogId === ''"
+              @click="loadWaterfall"
+            >
+              看瀑布
+            </el-button>
+          </div>
+
+          <p
+            v-if="waterfallError !== null"
+            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700"
+          >
+            {{ waterfallError }}
+          </p>
+          <p v-else-if="trimmedLogId === ''" class="mt-2 text-[11px] text-muted">
+            还没填 log_id。填上之后再点「看瀑布」。
+          </p>
+          <StageWaterfall v-else-if="waterfall !== null" class="mt-3" :data="waterfall" />
+        </div>
       </div>
     </el-card>
 

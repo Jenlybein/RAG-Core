@@ -61,6 +61,7 @@ from app.api.routes.console_keys import router as console_keys_router
 from app.api.routes.console_models import router as console_models_router
 from app.api.routes.console_profiles import router as console_profiles_router
 from app.api.routes.console_settings import router as console_settings_router
+from app.api.routes.console_traces import router as console_traces_router
 from app.core.config import settings
 from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
@@ -153,6 +154,8 @@ app.include_router(console_settings_router)
 app.include_router(console_models_router)
 # 档位预设（平台级配置，只有管理员读写）：两条接口。
 app.include_router(console_profiles_router)
+# 瀑布图（#103）：按 log_id 读回六段耗时，先本地记录、后观测服务。
+app.include_router(console_traces_router)
 
 # ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)

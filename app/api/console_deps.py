@@ -27,7 +27,10 @@
   可以被直接断言，而生产走 Redis；
 - ``get_runtime_settings_cache``：运行时配置覆盖层的缓存构造点。它与进程级注入点是
   **同一个对象**（见 ``app.core.runtime_settings_cache``）：刷新发生在请求中间件里，
-  中间件拿不到 ``Depends``，两条构造点分叉会让测试里的中间件永远去连真 Redis。
+  中间件拿不到 ``Depends``，两条构造点分叉会让测试里的中间件永远去连真 Redis；
+- ``get_langfuse_reader``：控制台瀑布「本地没命中时去问观测服务」那一步的构造点
+  （#103）。测试注入一个假客户端，于是这条路径能在离线套件里被逐项断言；生产实现是
+  ``app.observability.langfuse_reader.read_stage_spans``。
 """
 
 from __future__ import annotations
@@ -50,7 +53,9 @@ from app.core.runtime_settings_cache import (
     get_settings_cache,
 )
 from app.db.session import get_db
+from app.observability.langfuse_reader import read_stage_spans
 from app.services import plan_service
+from app.services.retrieval_waterfall import RemoteStageReader
 
 #: 用户面板接口对管理员（无租户）的拒绝文案；错误码统一 ``20011``。
 MSG_TENANT_ACCOUNT_REQUIRED: Final[str] = "a tenant account is required for this console endpoint"
@@ -155,3 +160,15 @@ def get_runtime_settings_cache() -> RuntimeSettingsCache:
     """运行时配置覆盖层的缓存构造点（与中间件看到的是同一个进程级实例）。"""
 
     return get_settings_cache()
+
+
+def get_langfuse_reader() -> RemoteStageReader:
+    """观测服务读回的生产构造点（#103）：返回「按 trace_id 取段」的那个函数本身。
+
+    为什么返回**函数**而不是客户端：读回只需要「给我 trace_id，还我段」。把一个 SDK 客户端
+    交到路由层，路由就有了「顺手多做一次查询」的可能，而这一层的职责只有一句「问不到就降级」。
+    测试用 ``dependency_overrides`` 换掉它，于是「本地命中时到底有没有去打网络」可以被直接断言
+    （替身在那种情况下会抛 ``AssertionError``）。
+    """
+
+    return read_stage_spans
