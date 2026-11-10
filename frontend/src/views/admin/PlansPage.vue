@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 套餐管理页：列出全部套餐、编辑一档、删除未被引用的套餐。
+ * 套餐管理页：列出全部套餐、编辑一档。
  *
  * 三处刻意的实现，都是票面点名的：
  *
@@ -12,22 +12,19 @@
  * 3. **档位只勾选、不自由输入**：四个勾选框来自常量，保存前再用 `buildPlanPatch` 过滤
  *    一遍，未知值不可能发到后端。
  *
- * 删除按钮的显示依赖「引用信息」：`GET /console/plans` 的 `PlanData` **没有**引用计数/租户
- * 列表字段，所以只能从账号列表（`account.plan.plan_id`）反推出可见的引用关系。这个推断
- * 有一个已知盲区：一个租户若没有任何账号，它引用的套餐在这里看起来是「未引用」的，点删除
- * 会被后端的 `20019` 拒绝并给出提示。宁可这样，也不要为了一个不存在的接口去猜。
- * 反过来，引用信息没读到时**一个删除入口都不给**：删除不可撤销，不能拿「大概没被引用」去赌。
+ * **删除入口暂时下线**。后端 `DELETE /console/plans/{plan_id}` 仍在（还被 `20019` 引用
+ * 判定守着），但界面上不提供入口：删掉一个套餐的后果是「用它判定的所有租户当场换档」，
+ * 而这件事在产品侧还没定清楚怎么确认与回滚。原来那套「从账号列表反推引用、猜不出来就
+ * 让后端 20019 兜底」的做法本身就是这个不确定性的体现。真要做，应是一次带影响面预览的
+ * 完整流程，而不是把按钮加回来。
  */
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 import { computed, h, reactive, ref } from 'vue'
 
 import { useDryRunSave } from '../../composables/useDryRunSave'
 import {
-  ACCOUNTS_QUERY_KEY,
   PLANS_QUERY_KEY,
-  deletePlan,
-  fetchAccounts,
   fetchPlans,
   updatePlan,
 } from '../../services/consoleAdmin'
@@ -52,36 +49,12 @@ import { errorText } from '../../utils/errorText'
 const queryClient = useQueryClient()
 
 const plansQuery = useQuery({ queryKey: PLANS_QUERY_KEY, queryFn: fetchPlans })
-// 只为反推「哪些套餐还被租户引用」而读：账号行里带着它所属租户的当前套餐。
-const accountsQuery = useQuery({ queryKey: ACCOUNTS_QUERY_KEY, queryFn: fetchAccounts })
 
 const plans = computed(() => plansQuery.data.value?.plans ?? [])
 const loading = computed(() => plansQuery.isPending.value)
 const loadError = computed(() =>
   plansQuery.isError.value ? errorText(plansQuery.error.value) : '',
 )
-
-/** 已载入的账号里仍然指向的套餐 id。 */
-const referencedPlanIds = computed(() => {
-  const ids = new Set<number>()
-  for (const account of accountsQuery.data.value?.accounts ?? []) {
-    if (account.tenant_id !== null && account.plan !== null) {
-      ids.add(account.plan.plan_id)
-    }
-  }
-  return ids
-})
-
-/** 引用信息是否可信：账号列表读成功之前，不显示任何删除入口。 */
-const referenceKnown = computed(() => accountsQuery.isSuccess.value)
-
-function isReferenced(plan: PlanData): boolean {
-  return referencedPlanIds.value.has(plan.plan_id)
-}
-
-function canDelete(plan: PlanData): boolean {
-  return referenceKnown.value && !isReferenced(plan)
-}
 
 function editableOf(plan: PlanData): PlanEditableFields {
   return {
@@ -122,7 +95,6 @@ function emptyDraft(): PlanEditableFields {
 const draft = reactive<PlanEditableFields>(emptyDraft())
 const editingPlan = ref<PlanData | null>(null)
 const dialogVisible = ref(false)
-const deletingPlanId = ref<number | null>(null)
 
 /**
  * 两步保存走通用组合式函数：试算 → （有影响才）确认 → 真写。
@@ -212,34 +184,8 @@ async function save(): Promise<void> {
   await queryClient.invalidateQueries({ queryKey: PLANS_QUERY_KEY })
 }
 
-async function remove(plan: PlanData): Promise<void> {
-  try {
-    await ElMessageBox.confirm(
-      `确认删除套餐「${plan.name}」（${plan.code}）？删除不可撤销。` +
-        '若仍有租户引用它，后端会拒绝并提示。',
-      '删除套餐',
-      { type: 'warning', confirmButtonText: '删除', cancelButtonText: '取消' },
-    )
-  } catch {
-    return
-  }
-
-  deletingPlanId.value = plan.plan_id
-  try {
-    await deletePlan(plan.plan_id)
-    ElMessage.success('套餐已删除')
-    await queryClient.invalidateQueries({ queryKey: PLANS_QUERY_KEY })
-  } catch (error) {
-    // 20019（仍被引用）在这里兜底：账号列表推不出「没有账号的租户」，
-    // 所以「没显示删除按钮」不是后端判定的替代品，这条错误提示才是最后一道说明。
-    ElMessage.error(errorText(error))
-  } finally {
-    deletingPlanId.value = null
-  }
-}
-
 async function refresh(): Promise<void> {
-  await Promise.all([plansQuery.refetch(), accountsQuery.refetch()])
+  await plansQuery.refetch()
 }
 </script>
 
@@ -253,7 +199,7 @@ async function refresh(): Promise<void> {
           改动即时生效，不需要重启。
         </p>
         <p class="mt-1 text-xs text-slate-400">
-          删除入口依据「账号列表里仍指向它的租户」推断；没有账号的租户推不出来，删除时由后端 20019 兜底。
+          删除暂未开放：删掉一档套餐会让引用它的租户当场换档，这个流程需要影响面预览与回滚，还没定。
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -310,22 +256,8 @@ async function refresh(): Promise<void> {
               {{ formatDateTime(plan.updated_at) }}
             </td>
             <td class="px-3 py-3">
-              <div class="flex flex-wrap items-center gap-2">
-                <el-button size="small" @click="openEdit(plan)">编辑</el-button>
-                <el-button
-                  v-if="canDelete(plan)"
-                  size="small"
-                  type="danger"
-                  plain
-                  :loading="deletingPlanId === plan.plan_id"
-                  @click="remove(plan)"
-                >
-                  删除
-                </el-button>
-                <span v-else class="text-xs text-slate-400">
-                  {{ referenceKnown ? '有租户引用，不显示删除' : '引用信息未载入' }}
-                </span>
-              </div>
+              <!-- 只有「编辑」：删除入口暂时下线，理由见本文件顶部模块文档。 -->
+              <el-button size="small" @click="openEdit(plan)">编辑</el-button>
             </td>
           </tr>
 
