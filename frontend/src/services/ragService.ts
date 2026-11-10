@@ -1,10 +1,9 @@
 import { dataHttp } from '../lib/dataHttp'
-import type {
-  KnowledgeBaseListData,
-  PickableKnowledgeBase,
-  RetrieveData,
-  RetrieveRequest,
-} from '../types/retrieval'
+// 同一个数据面接口（GET /knowledge-bases）#86 已经有唯一实现；清单怎么解析（信封、
+// 白名单收窄）在那一处说得清楚，这里不再写第二份。
+import { fetchKnowledgeBases } from './knowledgeBaseService'
+import type { KnowledgeBaseSummary } from '../types/knowledgeBase'
+import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 
 /**
  * 发一次检索。
@@ -24,12 +23,11 @@ export function retrieve(payload: RetrieveRequest): Promise<RetrieveData> {
 /**
  * 本页可勾选的库清单（阶段 1）。
  *
- * 用数据面的 `GET /knowledge-bases`：它已经按这把 Key 的密钥配置白名单收窄过，
- * 所以「列出来的库」就是「这次检索能查的库」，不需要页面再自己过滤一遍。
- * 阶段 2 换成控制面的 tree 接口时只换这个函数的实现，页面与勾选状态都不用动。
+ * 用数据面的 `GET /knowledge-bases`：后端已按这把 Key 的密钥配置白名单收窄，
+ * 所以「列出来的库」就是「这次检索能查的库」，页面不再自己过滤一遍。
+ * 函数名是本页的语义（勾选清单），实现直接复用列表页那一个——两个函数都打同一个
+ * 接口、解析同一份信封时，第二份实现迟早会与第一份漂移。
  */
-export async function fetchPickableKnowledgeBases(): Promise<PickableKnowledgeBase[]> {
-  const data = await dataHttp.get<KnowledgeBaseListData>('/api/v1/knowledge-bases')
-  // 服务返回 `{knowledge_bases: [...]}`；页面只关心数组，壳在这一层剥掉。
-  return data.knowledge_bases
+export function fetchPickableKnowledgeBases(): Promise<KnowledgeBaseSummary[]> {
+  return fetchKnowledgeBases()
 }

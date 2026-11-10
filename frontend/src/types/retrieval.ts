@@ -101,24 +101,3 @@ export interface RetrieveData {
   retrieved_chunks: RetrievedChunk[]
   metadata: RetrievalMetadata
 }
-
-/**
- * 本页可勾选的库。字段与 `GET /knowledge-bases` 的单项一致（00-facts §4）。
- *
- * 没复用 `types/knowledgeBase.ts` 里的建库类型：那份由 #86 并行改动（它会加列表 /
- * 树相关类型），这里只需要「勾选用的四个字段 + kb_id」，自己声明一份更不容易冲突，
- * 也不会让本页跟着那一边的类型变更一起漂。
- */
-export interface PickableKnowledgeBase {
-  kb_id: string
-  name: string
-  tenant_id: string
-  split_strategy: string
-  allowed_formats: string[]
-  chunk_size: number
-}
-
-/** `GET /knowledge-bases` 的响应 data。 */
-export interface KnowledgeBaseListData {
-  knowledge_bases: PickableKnowledgeBase[]
-}

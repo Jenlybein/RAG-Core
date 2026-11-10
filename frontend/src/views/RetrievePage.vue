@@ -62,8 +62,7 @@ const {
   isPending: kbLoading,
   isSuccess: kbLoaded,
 } = useQuery({
-  // 与 #86 的列表查询分开一个 key：它们将来会走不同的接口（本页只用数据面），
-  // 共用一个 key 会让两边的缓存互相覆盖。
+  // 本页自己的缓存键：同一个接口在列表页也有一份读数，各自失效互不影响。
   queryKey: ['retrieve', 'pickable-knowledge-bases'],
   queryFn: fetchPickableKnowledgeBases,
   retry: false,
