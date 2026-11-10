@@ -10,7 +10,8 @@ vi.mock('../../lib/dataHttp', () => ({
   },
 }))
 
-import { fetchPickableKnowledgeBases, retrieve } from '../ragService'
+import * as ragServiceModule from '../ragService'
+import { retrieve } from '../ragService'
 
 beforeEach(() => {
   mocks.post.mockReset()
@@ -42,21 +43,10 @@ describe('retrieve', () => {
     // 质量字段一个都不许出现：它们只能来自这把 Key 的密钥配置。
     expect(Object.keys(body)).toEqual(['kb_ids', 'query'])
   })
-})
 
-describe('fetchPickableKnowledgeBases', () => {
-  it('GET /api/v1/knowledge-bases，并把信封里的 knowledge_bases 摊平返回', async () => {
-    const item = {
-      kb_id: 'kb_1',
-      name: '产品手册',
-      tenant_id: 'tenant_1',
-      split_strategy: 'structure',
-      allowed_formats: ['markdown'],
-      chunk_size: 512,
-    }
-    mocks.get.mockResolvedValue({ knowledge_bases: [item] })
-
-    await expect(fetchPickableKnowledgeBases()).resolves.toEqual([item])
-    expect(mocks.get.mock.calls[0][0]).toBe('/api/v1/knowledge-bases')
+  it('这是唯一的数据面调用点：服务模块不再导出「列库」等第二条数据面入口', () => {
+    // #92 之后，可勾选的库来自控制面树（`fetchTree()`），数据面只剩检索这一条。
+    // 用模块的导出面把这条边界钉住：有人把 `fetchPickableKnowledgeBases` 加回来会先变红。
+    expect(Object.keys(ragServiceModule)).toEqual(['retrieve'])
   })
 })

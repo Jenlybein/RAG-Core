@@ -41,31 +41,14 @@ export interface CreatedKnowledgeBase {
 }
 
 /**
- * `GET /knowledge-bases` 的列表项。
- *
- * 与建库回执相比少了 `created_at`，多了 `tenant_id`；列表页不展示这两项，
- * 但服务层仍需按后端原样声明，免得解析阶段丢掉真实存在的字段。
- */
-export interface KnowledgeBaseSummary {
-  kb_id: string
-  name: string
-  tenant_id: string
-  split_strategy: string
-  allowed_formats: string[]
-  chunk_size: number
-}
-
-/** `GET /knowledge-bases` 的响应体外壳。 */
-export interface KnowledgeBaseListData {
-  knowledge_bases: KnowledgeBaseSummary[]
-}
-
-/**
  * 列表页的两级树节点：父是知识库，`documents` 是它的子行。
  *
  * 字段清单来自 `step8/00-facts.md` §11 的接缝约定：阶段 1 由客户端拼装，
  * #89 的 `/console/knowledge-bases/tree` 会直出同一形状。页面与轮询只认这个类型，
  * 所以换实现时它们不需要改。
+ *
+ * 数据面的 `GET /knowledge-bases` 列表类型（`KnowledgeBaseSummary` / `KnowledgeBaseListData`）
+ * 已随 #92 删除：那个端点前端不再调用，留着只会让人以为还有第二个取库入口。
  */
 export interface KnowledgeBaseNode {
   kb_id: string

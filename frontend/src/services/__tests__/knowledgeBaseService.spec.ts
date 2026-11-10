@@ -1,15 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-const mocks = vi.hoisted(() => ({ consoleGet: vi.fn(), dataGet: vi.fn() }))
+const mocks = vi.hoisted(() => ({ consoleGet: vi.fn() }))
 
-// 两个客户端的 get 都换成 spy：断言「只发 1 个请求」必须同时看到两扇门，
-// 否则老实现（数据面 1 + N 次）可能悄悄混进来。
+// 只替换控制面客户端：本票之后 `knowledgeBaseService` 不再有数据面调用，
+// 所以这里不需要第二个 spy——「只发 1 个请求」由调用次数本身保证。
 vi.mock('../../lib/consoleHttp', () => ({
   consoleHttp: { get: mocks.consoleGet },
-}))
-
-vi.mock('../../lib/dataHttp', () => ({
-  dataHttp: { get: mocks.dataGet },
 }))
 
 import type { ConsoleTreeData } from '../../types/knowledgeBase'
@@ -17,7 +13,6 @@ import { fetchTree } from '../knowledgeBaseService'
 
 beforeEach(() => {
   mocks.consoleGet.mockReset()
-  mocks.dataGet.mockReset()
 })
 
 /**
@@ -91,7 +86,7 @@ describe('fetchTree', () => {
     ])
     expect(mocks.consoleGet).toHaveBeenCalledTimes(1)
     expect(mocks.consoleGet.mock.calls[0]).toEqual(['/console/knowledge-bases/tree'])
-    // 数据面一次都不许被调用：列表页已经整体切到控制面这一扇门。
-    expect(mocks.dataGet).not.toHaveBeenCalled()
+    // 列表页整棵树只经控制面这一扇门；数据面在本模块里也没有调用点了
+    // （`fetchKnowledgeBases` / `createKnowledgeBase` 已随 #92 删除）。
   })
 })
