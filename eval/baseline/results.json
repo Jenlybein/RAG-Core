@@ -1,0 +1,3775 @@
+{
+  "schema": "eval-run/1",
+  "run_id": "20261110T224302Z",
+  "run_dir": "eval/baseline",
+  "generated_at": "2026-11-10T22:43:04+00:00",
+  "status": "ok",
+  "failure": null,
+  "duration_seconds": 65.34,
+  "experiment": {
+    "name": "gate-baseline",
+    "mode": "hybrid",
+    "top_k": 5,
+    "split_strategy": "structure",
+    "limit": null,
+    "gate": {
+      "overall_pp": 1.0,
+      "per_type_pp": 3.0
+    }
+  },
+  "corpus": {
+    "version": "1946e4e5954f",
+    "documents": 21,
+    "chunks": 469,
+    "kb_ids": [
+      "kb-eval",
+      "kb-eval-ops",
+      "kb-eval-biz",
+      "kb-eval-long",
+      "kb-eval-ref"
+    ],
+    "questions": 137,
+    "answerable": 131,
+    "gate_questions": 127,
+    "labels": 146
+  },
+  "environment": {
+    "run_id": "20261110T224302Z",
+    "generated_at": "2026-11-10T22:43:04+00:00",
+    "schema": "eval-run/1",
+    "retrieval": {
+      "mode": "hybrid",
+      "top_k": 5,
+      "fold_to_sections": true,
+      "expand_table_rows": true,
+      "rerank_enabled": false,
+      "query_rewrite_enabled": false,
+      "synonym_expansion_enabled": false,
+      "vector_store": "pgvector",
+      "hybrid_recall_top_k": 20,
+      "fusion": "rrf"
+    },
+    "embedding": {
+      "provider": "langchain",
+      "model": "qwen3.7-text-embedding",
+      "dimensions": 1536
+    },
+    "keyword": {
+      "provider": "elasticsearch",
+      "url": "http://localhost:9200",
+      "index": "rag_chunks_eval"
+    },
+    "chunking": {
+      "split_strategy": "structure",
+      "chunk_size": 800,
+      "chunk_overlap": 100,
+      "table_max_rows": 10
+    },
+    "gate_metrics": {
+      "context_precision": "ragas.metrics._context_precision.IDBasedContextPrecision",
+      "context_recall": "ragas.metrics._context_recall.IDBasedContextRecall",
+      "ragas_version": "0.4.3",
+      "needs_llm": false,
+      "needs_reference_answer": false
+    },
+    "judge": {
+      "model": null,
+      "note": "LLM 裁判是旁证指标（只提示、不阻断），不在本票范围；见 #108 / #109。"
+    },
+    "corpus": {
+      "version": "1946e4e5954f",
+      "documents": 21,
+      "chunks": 469,
+      "kb_ids": [
+        "kb-eval",
+        "kb-eval-ops",
+        "kb-eval-biz",
+        "kb-eval-long",
+        "kb-eval-ref"
+      ],
+      "questions": 137,
+      "answerable": 131,
+      "gate_questions": 127,
+      "labels": 146
+    },
+    "dataset": {
+      "questions_file": "eval/questions.json",
+      "version": "1946e4e5954f"
+    },
+    "runtime": {
+      "python": "3.12.14",
+      "platform": "Windows-11-10.0.26300-SP0",
+      "git_commit": "3d60f00",
+      "git_branch": "t9/107-eval-runner",
+      "git_dirty": false,
+      "database": "postgresql+psycopg://postgres:***@localhost:5432/rag_db",
+      "env_file": "C:\\StudyProjects\\RAG-Core\\.env"
+    }
+  },
+  "scope": {
+    "full": true,
+    "question_ids": [
+      "q01",
+      "q02",
+      "q03",
+      "q04",
+      "q05",
+      "q06",
+      "q07",
+      "q08",
+      "q09",
+      "q10",
+      "q11",
+      "q12",
+      "q13",
+      "q14",
+      "q15",
+      "q16",
+      "q17",
+      "q18",
+      "q19",
+      "q23",
+      "q24",
+      "q25",
+      "q26",
+      "q27",
+      "q28",
+      "q29",
+      "q30",
+      "q31",
+      "q32",
+      "q33",
+      "q34",
+      "q35",
+      "q36",
+      "q37",
+      "q38",
+      "q39",
+      "q40",
+      "q41",
+      "q42",
+      "q43",
+      "q44",
+      "q45",
+      "q46",
+      "q47",
+      "q48",
+      "q49",
+      "q50",
+      "q51",
+      "q52",
+      "q53",
+      "q54",
+      "q55",
+      "q56",
+      "q57",
+      "q58",
+      "q59",
+      "q60",
+      "q61",
+      "q65",
+      "q66",
+      "q67",
+      "q68",
+      "q69",
+      "q70",
+      "q71",
+      "q72",
+      "q73",
+      "q74",
+      "q75",
+      "q76",
+      "q77",
+      "q78",
+      "q79",
+      "q80",
+      "q81",
+      "q82",
+      "q83",
+      "q84",
+      "q85",
+      "q86",
+      "q87",
+      "q88",
+      "q89",
+      "q90",
+      "q91",
+      "q92",
+      "q93",
+      "q94",
+      "q95",
+      "q96",
+      "q97",
+      "q98",
+      "q99",
+      "q104",
+      "q105",
+      "q106",
+      "q107",
+      "q108",
+      "q109",
+      "q110",
+      "q111",
+      "q112",
+      "q113",
+      "q114",
+      "q115",
+      "q116",
+      "q117",
+      "q118",
+      "q119",
+      "q120",
+      "q121",
+      "q122",
+      "q123",
+      "q124",
+      "q125",
+      "q126",
+      "q127",
+      "q128",
+      "q129",
+      "q130",
+      "q131",
+      "q132",
+      "q133",
+      "q134",
+      "q135",
+      "q136",
+      "q137"
+    ],
+    "question_count": 127,
+    "dataset_questions": 137,
+    "excluded_types": {
+      "absent": 6,
+      "false_premise": 4
+    },
+    "scored": {
+      "context_precision": 127,
+      "context_recall": 127
+    },
+    "unscored": []
+  },
+  "metrics": {
+    "overall": {
+      "context_precision": 0.2220472440944882,
+      "context_recall": 0.8716785401824771,
+      "scored": {
+        "context_precision": 127,
+        "context_recall": 127
+      },
+      "total": 127
+    },
+    "by_type": {
+      "colloquial": {
+        "context_precision": 0.16363636363636364,
+        "context_recall": 0.8181818181818182,
+        "scored": {
+          "context_precision": 11,
+          "context_recall": 11
+        },
+        "total": 11
+      },
+      "counterfactual": {
+        "context_precision": 0.18461538461538465,
+        "context_recall": 0.9230769230769231,
+        "scored": {
+          "context_precision": 13,
+          "context_recall": 13
+        },
+        "total": 13
+      },
+      "cross_section": {
+        "context_precision": 0.3058823529411765,
+        "context_recall": 0.6394957983193278,
+        "scored": {
+          "context_precision": 17,
+          "context_recall": 17
+        },
+        "total": 17
+      },
+      "exact_code": {
+        "context_precision": 0.2,
+        "context_recall": 1.0,
+        "scored": {
+          "context_precision": 5,
+          "context_recall": 5
+        },
+        "total": 5
+      },
+      "model_number": {
+        "context_precision": 0.22666666666666668,
+        "context_recall": 0.9047619047619048,
+        "scored": {
+          "context_precision": 15,
+          "context_recall": 15
+        },
+        "total": 15
+      },
+      "negative_scope": {
+        "context_precision": 0.21428571428571427,
+        "context_recall": 0.9523809523809524,
+        "scored": {
+          "context_precision": 14,
+          "context_recall": 14
+        },
+        "total": 14
+      },
+      "noise_robust": {
+        "context_precision": 0.2,
+        "context_recall": 0.9019607843137255,
+        "scored": {
+          "context_precision": 17,
+          "context_recall": 17
+        },
+        "total": 17
+      },
+      "rare_token": {
+        "context_precision": 0.20000000000000004,
+        "context_recall": 1.0,
+        "scored": {
+          "context_precision": 6,
+          "context_recall": 6
+        },
+        "total": 6
+      },
+      "synonym": {
+        "context_precision": 0.20000000000000004,
+        "context_recall": 1.0,
+        "scored": {
+          "context_precision": 12,
+          "context_recall": 12
+        },
+        "total": 12
+      },
+      "table_lookup": {
+        "context_precision": 0.25882352941176473,
+        "context_recall": 0.799626517273576,
+        "scored": {
+          "context_precision": 17,
+          "context_recall": 17
+        },
+        "total": 17
+      }
+    },
+    "excluded": {
+      "absent": 6,
+      "false_premise": 4
+    },
+    "unscored": []
+  },
+  "per_question": [
+    {
+      "id": "q01",
+      "type": "exact_code",
+      "query": "E1024 是什么错误，要怎么处理",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 683.54,
+      "returned_ids": [
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "ee0560a3-0b65-4dde-82c3-bc559dc3c5ea",
+        "a6d05715-eda0-4661-80d8-3c845048377e",
+        "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
+        "6ab8e6d3-2f44-4390-8f68-e64daec96598"
+      ],
+      "reference_ids": [
+        "253094a7-d448-4005-9fa0-87740f25043c"
+      ]
+    },
+    {
+      "id": "q02",
+      "type": "exact_code",
+      "query": "E1025 是什么意思",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 558.12,
+      "returned_ids": [
+        "a6d05715-eda0-4661-80d8-3c845048377e",
+        "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
+        "07ea6a51-eaa6-48ce-af52-adf5d3f4ffb0",
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "f13ac6fa-2acc-4866-a59e-a97d78893cfe"
+      ],
+      "reference_ids": [
+        "a6d05715-eda0-4661-80d8-3c845048377e"
+      ]
+    },
+    {
+      "id": "q03",
+      "type": "exact_code",
+      "query": "E3106 这个错误码代表什么",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 414.95,
+      "returned_ids": [
+        "aa317d5d-ac36-4b90-922b-4a4388560bba",
+        "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
+        "f13ac6fa-2acc-4866-a59e-a97d78893cfe",
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "a6d05715-eda0-4661-80d8-3c845048377e"
+      ],
+      "reference_ids": [
+        "aa317d5d-ac36-4b90-922b-4a4388560bba"
+      ]
+    },
+    {
+      "id": "q04",
+      "type": "exact_code",
+      "query": "E2048 是什么错误",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 414.79,
+      "returned_ids": [
+        "1037fb63-8168-474f-8232-7b182b99ec79",
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "bede6e9c-bfd5-4a28-9d6c-87220aa0d346",
+        "4650535e-cd2f-447b-aac4-ea6d58a2bcc0",
+        "7630e49e-f09a-4821-b262-d87bf058b7a0"
+      ],
+      "reference_ids": [
+        "1037fb63-8168-474f-8232-7b182b99ec79"
+      ]
+    },
+    {
+      "id": "q05",
+      "type": "exact_code",
+      "query": "W0001 要不要紧",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 483.48,
+      "returned_ids": [
+        "9fae04bb-1797-4031-8e39-76a66710eaff",
+        "dcb196ac-d4bd-4b5f-954b-1d310e48aa5b",
+        "d8a0d03a-3a3d-4b38-8845-66dd921ee083",
+        "ee0560a3-0b65-4dde-82c3-bc559dc3c5ea",
+        "1a56c598-5630-4b81-9535-2ba3f48a23c3"
+      ],
+      "reference_ids": [
+        "9fae04bb-1797-4031-8e39-76a66710eaff"
+      ]
+    },
+    {
+      "id": "q06",
+      "type": "model_number",
+      "query": "XR-2000 Pro 有几个千兆网口",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 437.5,
+      "returned_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ],
+      "reference_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35"
+      ]
+    },
+    {
+      "id": "q07",
+      "type": "model_number",
+      "query": "XR-2100 支持万兆光口吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 434.94,
+      "returned_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "85886e21-155b-49e8-908b-8a905a660abf",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
+        "d5755c5e-c3d9-4ebe-b99e-41d17326b926"
+      ],
+      "reference_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ]
+    },
+    {
+      "id": "q08",
+      "type": "model_number",
+      "query": "XR-2000 最多能带多少终端",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 436.25,
+      "returned_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "bcb4b6d0-5aa5-4fd0-bc36-a333dd72fe6d",
+        "05985c24-40d9-4649-a790-6872995dc4d4"
+      ],
+      "reference_ids": [
+        "574be1f0-c299-4c91-bff5-1c1be7141847"
+      ]
+    },
+    {
+      "id": "q09",
+      "type": "colloquial",
+      "query": "被限速了怎么办",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 372.07,
+      "returned_ids": [
+        "ec9ae528-7fcd-4043-9094-78aee320af68",
+        "bad0fd87-f27d-475a-8ce2-29a581d6218f",
+        "1037fb63-8168-474f-8232-7b182b99ec79",
+        "74af5fc4-c9b3-4042-818a-9c9ca87143ad",
+        "b4b87006-4f00-41e3-ae0d-c121d1f4c305"
+      ],
+      "reference_ids": [
+        "1037fb63-8168-474f-8232-7b182b99ec79"
+      ]
+    },
+    {
+      "id": "q10",
+      "type": "colloquial",
+      "query": "背调一般问哪些问题",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 395.88,
+      "returned_ids": [
+        "00257daa-94a6-4036-af21-31e97bfd9a6e",
+        "23993d2d-8d50-4b13-9442-17846cdd2c50",
+        "9463320e-24cd-4bb5-8b36-f811115f3abc",
+        "083a8b0c-49f4-4c73-93b8-81a2f493631d",
+        "2f2a455d-75ea-4561-be04-1de95c58a942"
+      ],
+      "reference_ids": [
+        "23993d2d-8d50-4b13-9442-17846cdd2c50"
+      ]
+    },
+    {
+      "id": "q11",
+      "type": "colloquial",
+      "query": "设备一到晚上就掉线是怎么回事",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 472.69,
+      "returned_ids": [
+        "323e6c86-f361-490a-b72d-005dc6b888f4",
+        "0a8445e0-6135-4e58-bde2-98d129740c0f",
+        "9f988074-c272-49fe-b090-f2d7714c47f5",
+        "1afd94d9-6f56-453a-96a3-ca76ae9cb35d",
+        "33383e18-0f1e-480e-beba-6d62ab474325"
+      ],
+      "reference_ids": [
+        "323e6c86-f361-490a-b72d-005dc6b888f4"
+      ]
+    },
+    {
+      "id": "q12",
+      "type": "synonym",
+      "query": "退钱多久能到账",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 386.08,
+      "returned_ids": [
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
+        "083a8b0c-49f4-4c73-93b8-81a2f493631d",
+        "394d3457-c528-4173-8d8b-7f22db961253",
+        "423ed276-0f8d-4e70-86cd-426919293532",
+        "80699fe7-8d78-4b46-99c6-e2f14c807aed"
+      ],
+      "reference_ids": [
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11"
+      ]
+    },
+    {
+      "id": "q13",
+      "type": "synonym",
+      "query": "退货之后怎么申请退还货款",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 401.71,
+      "returned_ids": [
+        "c9c17715-b4a6-43dc-9cca-fb2220c93b8d",
+        "75c25eef-5463-49a2-8e99-e3589ce44bed",
+        "b48c2f91-d836-4800-8054-551a127b62bb",
+        "e502da6f-e303-4f8b-8ab9-2a594b635aed",
+        "394d3457-c528-4173-8d8b-7f22db961253"
+      ],
+      "reference_ids": [
+        "b48c2f91-d836-4800-8054-551a127b62bb"
+      ]
+    },
+    {
+      "id": "q14",
+      "type": "synonym",
+      "query": "到货后不满意，货款能不能退",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 406.24,
+      "returned_ids": [
+        "1cc80a48-26d0-4d48-9c06-874c80782504",
+        "70f68558-f4ce-4a6e-90f2-3dd10cf6c16d",
+        "739e3999-abb5-4ff8-b30e-d516d6176b31",
+        "c9c17715-b4a6-43dc-9cca-fb2220c93b8d",
+        "646aa52c-5e84-44d3-8086-5efe4c2b01de"
+      ],
+      "reference_ids": [
+        "1cc80a48-26d0-4d48-9c06-874c80782504"
+      ]
+    },
+    {
+      "id": "q15",
+      "type": "synonym",
+      "query": "机器坏了，想直接换一台",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 369.22,
+      "returned_ids": [
+        "4650535e-cd2f-447b-aac4-ea6d58a2bcc0",
+        "e502da6f-e303-4f8b-8ab9-2a594b635aed",
+        "81458447-b20f-434c-ac47-597498f874f4",
+        "35087a50-9be2-403d-8514-dbb89995b0b9",
+        "70f68558-f4ce-4a6e-90f2-3dd10cf6c16d"
+      ],
+      "reference_ids": [
+        "e502da6f-e303-4f8b-8ab9-2a594b635aed"
+      ]
+    },
+    {
+      "id": "q16",
+      "type": "cross_section",
+      "query": "证书过期了要做哪些步骤，会中断业务吗",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.4,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 379.35,
+      "returned_ids": [
+        "1c96838f-61cc-4e26-97ca-96da59e2d0b0",
+        "63095b03-500a-494c-9521-20a90e45c5f4",
+        "4cdcf7cb-c9a9-4bc8-a549-949bc705d34a",
+        "39cb8f09-a451-4559-a26c-380dd4c881b3",
+        "253094a7-d448-4005-9fa0-87740f25043c"
+      ],
+      "reference_ids": [
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "1c96838f-61cc-4e26-97ca-96da59e2d0b0"
+      ]
+    },
+    {
+      "id": "q17",
+      "type": "cross_section",
+      "query": "XR-2000 Pro 的电源适配器能和 XR-2000 通用吗",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.2,
+      "context_recall": 0.5,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 413.34,
+      "returned_ids": [
+        "997d5162-2fbc-4186-bbbf-3ec1b72d2a34",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "e8b60c2b-5818-4714-bea1-7d87231df9b9",
+        "05985c24-40d9-4649-a790-6872995dc4d4"
+      ],
+      "reference_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "0e7da242-2a0b-4791-83bf-bad73918f8d5"
+      ]
+    },
+    {
+      "id": "q18",
+      "type": "cross_section",
+      "query": "P1 故障的响应时限是多少，超时找谁",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.2,
+      "context_recall": 0.5,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 386.71,
+      "returned_ids": [
+        "e6686fbe-b55e-45ba-9cc9-4a4a38fb3d13",
+        "cc65a410-d60f-42e3-af1d-3fb93319f8e1",
+        "c1b46a15-795f-4587-88dd-dc50a078ec55",
+        "1a18e8f5-1400-476f-b04c-ef8b77532486",
+        "04cdf290-588f-4277-8559-571a7ab68288"
+      ],
+      "reference_ids": [
+        "1a18e8f5-1400-476f-b04c-ef8b77532486",
+        "3959dc6f-1817-4d23-be37-5de5349f33dc"
+      ]
+    },
+    {
+      "id": "q19",
+      "type": "cross_section",
+      "query": "退款要几天，从哪个入口申请",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.4,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 388.27,
+      "returned_ids": [
+        "b48c2f91-d836-4800-8054-551a127b62bb",
+        "d9e5035a-27df-4e15-b9e2-1116454ada12",
+        "67f33db7-f6bd-4ea6-a4fb-7f91ccf34fdb",
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
+        "db1fd8e5-9e0f-4607-9236-e5d98a5559aa"
+      ],
+      "reference_ids": [
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
+        "b48c2f91-d836-4800-8054-551a127b62bb"
+      ]
+    },
+    {
+      "id": "q23",
+      "type": "rare_token",
+      "query": "PRJ-4K7T2M 是做什么的",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 362.69,
+      "returned_ids": [
+        "21175efe-b3b4-4412-911a-bc1cee07771c",
+        "39bf587c-020c-4534-96b5-8b3047828bb4",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "166e77f7-1b74-4f96-877d-0faec233908c",
+        "05985c24-40d9-4649-a790-6872995dc4d4"
+      ],
+      "reference_ids": [
+        "21175efe-b3b4-4412-911a-bc1cee07771c"
+      ]
+    },
+    {
+      "id": "q24",
+      "type": "rare_token",
+      "query": "PRJ-9QX8B3 的验收标准是什么",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 437.0,
+      "returned_ids": [
+        "ed0dc6a7-4f55-4143-a2ea-3a65990a30ae",
+        "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b",
+        "21175efe-b3b4-4412-911a-bc1cee07771c",
+        "8ad8fa87-e1df-4918-bf73-c389da6b0f95",
+        "bf6b064e-3ca3-4a53-9709-4d6c0840685f"
+      ],
+      "reference_ids": [
+        "ed0dc6a7-4f55-4143-a2ea-3a65990a30ae"
+      ]
+    },
+    {
+      "id": "q25",
+      "type": "rare_token",
+      "query": "sha256:9f2a4c7d61b8e05f3d7a2c9e4b6f18d0 是哪一批固件的有效基准",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 430.37,
+      "returned_ids": [
+        "dc3f0123-8c19-4f2d-9e70-0db5ab1f1227",
+        "417c86bd-ec81-4aaa-921f-b8ead3b07eba",
+        "f7ae6b1f-fa3a-494e-aeb9-57eadaee5297",
+        "0959af60-312c-4369-90f3-7c1256352cf3",
+        "b9026f33-6c26-495c-af0c-371370969505"
+      ],
+      "reference_ids": [
+        "dc3f0123-8c19-4f2d-9e70-0db5ab1f1227"
+      ]
+    },
+    {
+      "id": "q26",
+      "type": "rare_token",
+      "query": "隐患-2026-0417-A 的整改期限是几天",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 346.56,
+      "returned_ids": [
+        "5ecda617-21fe-4872-a837-20201ff4381b",
+        "4387d634-5701-40d3-a1aa-f212a08debe1",
+        "57bea977-200b-4dfa-810b-71e852c4ed71",
+        "f3248f7c-be5c-4f0a-8281-98a151a8ce63",
+        "33d9f28b-f2bd-4314-a532-013a8d510e52"
+      ],
+      "reference_ids": [
+        "5ecda617-21fe-4872-a837-20201ff4381b"
+      ]
+    },
+    {
+      "id": "q27",
+      "type": "noise_robust",
+      "query": "E1026 是什么错误，怎么处理",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 424.09,
+      "returned_ids": [
+        "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
+        "ee0560a3-0b65-4dde-82c3-bc559dc3c5ea",
+        "a6d05715-eda0-4661-80d8-3c845048377e",
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "716457b4-1e2e-4661-958b-b6b09e8b223f"
+      ],
+      "reference_ids": [
+        "6e7ae989-9bbe-455b-9090-69605a8f7c0a"
+      ]
+    },
+    {
+      "id": "q28",
+      "type": "noise_robust",
+      "query": "E1027 报 unable to get local issuer certificate 是怎么回事",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 398.34,
+      "returned_ids": [
+        "07ea6a51-eaa6-48ce-af52-adf5d3f4ffb0",
+        "a6d05715-eda0-4661-80d8-3c845048377e",
+        "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "f13ac6fa-2acc-4866-a59e-a97d78893cfe"
+      ],
+      "reference_ids": [
+        "07ea6a51-eaa6-48ce-af52-adf5d3f4ffb0"
+      ]
+    },
+    {
+      "id": "q29",
+      "type": "noise_robust",
+      "query": "E1040 证书链太长超出固件解析上限怎么解决",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 437.89,
+      "returned_ids": [
+        "4650535e-cd2f-447b-aac4-ea6d58a2bcc0",
+        "63095b03-500a-494c-9521-20a90e45c5f4",
+        "47d4c608-d374-41de-bee2-d9a4ccba7106",
+        "253094a7-d448-4005-9fa0-87740f25043c",
+        "bede6e9c-bfd5-4a28-9d6c-87220aa0d346"
+      ],
+      "reference_ids": [
+        "4650535e-cd2f-447b-aac4-ea6d58a2bcc0"
+      ]
+    },
+    {
+      "id": "q30",
+      "type": "noise_robust",
+      "query": "E1041 签名算法不支持",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 368.06,
+      "returned_ids": [
+        "47d4c608-d374-41de-bee2-d9a4ccba7106",
+        "a1e8a0e7-36e4-4665-a938-7eddb3a17b67",
+        "aa317d5d-ac36-4b90-922b-4a4388560bba",
+        "36a04666-2e26-43bb-80ab-7d8aab4cadeb",
+        "07d8e694-4e0e-4b3f-8765-84b2e6547059"
+      ],
+      "reference_ids": [
+        "47d4c608-d374-41de-bee2-d9a4ccba7106"
+      ]
+    },
+    {
+      "id": "q31",
+      "type": "noise_robust",
+      "query": "E1048 证书串号与资产台账不一致",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 384.01,
+      "returned_ids": [
+        "bede6e9c-bfd5-4a28-9d6c-87220aa0d346",
+        "6e7ae989-9bbe-455b-9090-69605a8f7c0a",
+        "cf4a1037-aafa-4494-b46f-a14b63ecf7da",
+        "39cb8f09-a451-4559-a26c-380dd4c881b3",
+        "47d4c608-d374-41de-bee2-d9a4ccba7106"
+      ],
+      "reference_ids": [
+        "bede6e9c-bfd5-4a28-9d6c-87220aa0d346"
+      ]
+    },
+    {
+      "id": "q32",
+      "type": "noise_robust",
+      "query": "E2049 同一台设备并发会话数超限",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 399.32,
+      "returned_ids": [
+        "7630e49e-f09a-4821-b262-d87bf058b7a0",
+        "68dc7a92-9368-4a51-8485-e3cb46d9d423",
+        "0a8445e0-6135-4e58-bde2-98d129740c0f",
+        "747d9915-7c9c-4917-b267-bcd8574f6d04",
+        "6e71972f-fb23-4967-b590-71309fec29e7"
+      ],
+      "reference_ids": [
+        "7630e49e-f09a-4821-b262-d87bf058b7a0"
+      ]
+    },
+    {
+      "id": "q33",
+      "type": "noise_robust",
+      "query": "E2051 当日累计调用量用尽每日上限",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 393.97,
+      "returned_ids": [
+        "2d1c0a7b-4ea7-4994-94c6-4cc86adffafd",
+        "c0a0bfd4-e8c8-4a8b-8ac2-ce71969a9ca5",
+        "e12c35a5-6cf0-4b41-9800-e5ce62be6929",
+        "01eb4caa-ccbd-4588-946b-43fd6babb18c",
+        "1037fb63-8168-474f-8232-7b182b99ec79"
+      ],
+      "reference_ids": [
+        "2d1c0a7b-4ea7-4994-94c6-4cc86adffafd"
+      ]
+    },
+    {
+      "id": "q34",
+      "type": "noise_robust",
+      "query": "E2053 多租户共享池被别的租户吃满",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 433.0,
+      "returned_ids": [
+        "6bb8bd6d-46a2-4423-9704-552b9763f13d",
+        "ff75eca4-b19b-44a4-a88a-ab3f8e3cdd15",
+        "01eb4caa-ccbd-4588-946b-43fd6babb18c",
+        "7630e49e-f09a-4821-b262-d87bf058b7a0",
+        "e12c35a5-6cf0-4b41-9800-e5ce62be6929"
+      ],
+      "reference_ids": [
+        "6bb8bd6d-46a2-4423-9704-552b9763f13d"
+      ]
+    },
+    {
+      "id": "q35",
+      "type": "counterfactual",
+      "query": "上一代的主力机型是哪个型号",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 371.17,
+      "returned_ids": [
+        "f0cd3d4a-aa72-4f0c-ba43-e6f4a9c28658",
+        "ae4e650d-ba49-42c4-a33a-76593fafcce2",
+        "f7ae6b1f-fa3a-494e-aeb9-57eadaee5297",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "04e3c505-8bef-473a-a28d-796c128873a2"
+      ],
+      "reference_ids": [
+        "574be1f0-c299-4c91-bff5-1c1be7141847"
+      ]
+    },
+    {
+      "id": "q36",
+      "type": "counterfactual",
+      "query": "增强款与标准款外观一致吗，内部差在哪",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 394.01,
+      "returned_ids": [
+        "04e3c505-8bef-473a-a28d-796c128873a2",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "0a6ab7e4-0c9f-4bc8-a56b-decccf35b0db",
+        "5494fe13-72a7-43af-bacd-51f73b0ba9d5",
+        "19c7ee71-6617-42f8-b2be-ad2615304a52"
+      ],
+      "reference_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35"
+      ]
+    },
+    {
+      "id": "q37",
+      "type": "counterfactual",
+      "query": "机架款的万兆光口出厂带光模块吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 371.61,
+      "returned_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "45ebc32a-aac0-46f2-bc8e-73bfa162664f",
+        "ffe7541c-1a20-4613-b22a-10def87c083e",
+        "35d084a5-51ef-44e4-8ff5-efa074a85fda",
+        "85886e21-155b-49e8-908b-8a905a660abf"
+      ],
+      "reference_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ]
+    },
+    {
+      "id": "q38",
+      "type": "counterfactual",
+      "query": "维修过的设备保修期是从头算还是沿用原来的",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 412.01,
+      "returned_ids": [
+        "d0d9a077-1893-44b4-a272-1e031ce9cc00",
+        "81458447-b20f-434c-ac47-597498f874f4",
+        "e502da6f-e303-4f8b-8ab9-2a594b635aed",
+        "35087a50-9be2-403d-8514-dbb89995b0b9",
+        "cb2e2a1e-22c5-42fb-9375-b917ac3ee0e7"
+      ],
+      "reference_ids": [
+        "d0d9a077-1893-44b4-a272-1e031ce9cc00"
+      ]
+    },
+    {
+      "id": "q39",
+      "type": "table_lookup",
+      "query": "标准款整机转发吞吐大概多少",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 407.75,
+      "returned_ids": [
+        "ccc7c013-1d38-46f6-8622-a41ecf3ba737",
+        "be05e4ea-525e-461d-9db4-fab489b26c52",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "644e83c8-75dd-4f9b-833a-4045d67e5029",
+        "af390d00-43a4-4a3d-9e9b-4f3d539e92e7"
+      ],
+      "reference_ids": [
+        "ccc7c013-1d38-46f6-8622-a41ecf3ba737"
+      ]
+    },
+    {
+      "id": "q40",
+      "type": "table_lookup",
+      "query": "增强款的会话表容量是多少条",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 421.81,
+      "returned_ids": [
+        "6e71972f-fb23-4967-b590-71309fec29e7",
+        "68dc7a92-9368-4a51-8485-e3cb46d9d423",
+        "6cb6a367-c175-4b80-95f2-9829a080195a",
+        "be05e4ea-525e-461d-9db4-fab489b26c52",
+        "4d6729b9-0580-4301-9131-b447ab1cc4f9"
+      ],
+      "reference_ids": [
+        "6e71972f-fb23-4967-b590-71309fec29e7"
+      ]
+    },
+    {
+      "id": "q41",
+      "type": "table_lookup",
+      "query": "会话老化时间默认多少秒",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 417.42,
+      "returned_ids": [
+        "6e71972f-fb23-4967-b590-71309fec29e7",
+        "dbfa8d7e-668c-425c-9e5d-7de8d693d102",
+        "0a8445e0-6135-4e58-bde2-98d129740c0f",
+        "14b4994a-8868-401f-8b8c-87b874b96107",
+        "1afd94d9-6f56-453a-96a3-ca76ae9cb35d"
+      ],
+      "reference_ids": [
+        "6e71972f-fb23-4967-b590-71309fec29e7"
+      ]
+    },
+    {
+      "id": "q42",
+      "type": "table_lookup",
+      "query": "标准款整机尺寸和重量是多少",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 395.31,
+      "returned_ids": [
+        "e5a404ea-e5fc-450f-8521-0731121257a2",
+        "631c5abd-b171-421d-b0ac-3bd4257a6ace",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "04e3c505-8bef-473a-a28d-796c128873a2",
+        "8f0b5429-dd50-494e-8099-2d0b4529ddf3"
+      ],
+      "reference_ids": [
+        "e5a404ea-e5fc-450f-8521-0731121257a2"
+      ]
+    },
+    {
+      "id": "q43",
+      "type": "table_lookup",
+      "query": "审计日志要留存多久",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 393.2,
+      "returned_ids": [
+        "a3b4b2f2-6750-4a36-9242-fcc33580a433",
+        "47970ddf-fba6-4fd9-809a-943c55518bef",
+        "d23bec2c-fab9-48eb-aa32-d677a2a449e3",
+        "51794a73-2fe7-4d66-ba89-472b63ba4863",
+        "1af6f60b-69f7-4782-a85b-7720f664991b"
+      ],
+      "reference_ids": [
+        "a3b4b2f2-6750-4a36-9242-fcc33580a433"
+      ]
+    },
+    {
+      "id": "q44",
+      "type": "table_lookup",
+      "query": "变更审批记录保存多长时间",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 367.59,
+      "returned_ids": [
+        "67720505-1e6b-467b-9ff0-e0c11d41260c",
+        "fabefcd9-73ee-46df-baac-99cbbe75feac",
+        "7b12bf6f-93ae-4460-9cb3-089909889a15",
+        "f032ee4d-ec8f-4779-a187-06ff454a15b5",
+        "d57a7518-35c4-49dd-9699-ce957455d1db"
+      ],
+      "reference_ids": [
+        "67720505-1e6b-467b-9ff0-e0c11d41260c"
+      ]
+    },
+    {
+      "id": "q45",
+      "type": "table_lookup",
+      "query": "P2 告警的响应时限是多少",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 360.22,
+      "returned_ids": [
+        "1a18e8f5-1400-476f-b04c-ef8b77532486",
+        "618f12f1-53b2-4d44-bb71-8c43fe3e0ec4",
+        "cc65a410-d60f-42e3-af1d-3fb93319f8e1",
+        "c1b46a15-795f-4587-88dd-dc50a078ec55",
+        "3959dc6f-1817-4d23-be37-5de5349f33dc"
+      ],
+      "reference_ids": [
+        "1a18e8f5-1400-476f-b04c-ef8b77532486"
+      ]
+    },
+    {
+      "id": "q46",
+      "type": "negative_scope",
+      "query": "哪些配件绝对不能跨型号混用",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 495.62,
+      "returned_ids": [
+        "0e7da242-2a0b-4791-83bf-bad73918f8d5",
+        "c5b747a4-7f2c-4858-8884-7efbe7cc47c0",
+        "5ca5e412-b25c-4342-a594-a2c729cd2f2c",
+        "f7ae6b1f-fa3a-494e-aeb9-57eadaee5297",
+        "5494fe13-72a7-43af-bacd-51f73b0ba9d5"
+      ],
+      "reference_ids": [
+        "0e7da242-2a0b-4791-83bf-bad73918f8d5"
+      ]
+    },
+    {
+      "id": "q47",
+      "type": "negative_scope",
+      "query": "备份链路不承载哪类业务",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 416.45,
+      "returned_ids": [
+        "49a01449-89a3-404f-8379-857fefa3abf1",
+        "8fae93ac-f265-493b-b4e1-aede6f950997",
+        "ada7e8be-d4ed-4489-94c0-904847e9a617",
+        "2978d2c2-bf79-483f-8a08-67a6f6ae02f2",
+        "1e7ed0d5-115d-41d0-9cda-89b4dfd3fa28"
+      ],
+      "reference_ids": [
+        "49a01449-89a3-404f-8379-857fefa3abf1"
+      ]
+    },
+    {
+      "id": "q48",
+      "type": "negative_scope",
+      "query": "保修不覆盖哪些情况",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 445.45,
+      "returned_ids": [
+        "d0d9a077-1893-44b4-a272-1e031ce9cc00",
+        "84248210-236f-4cb3-8661-9a411b4b24e7",
+        "e502da6f-e303-4f8b-8ab9-2a594b635aed",
+        "c6ac52b8-4944-40ee-80a9-aa6d0a5efb79",
+        "239f501e-ea38-412c-b5e2-496c4a3af25d"
+      ],
+      "reference_ids": [
+        "d0d9a077-1893-44b4-a272-1e031ce9cc00"
+      ]
+    },
+    {
+      "id": "q49",
+      "type": "negative_scope",
+      "query": "哪一级变更不需要主管审批",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 410.44,
+      "returned_ids": [
+        "311edb45-b633-45cf-92c2-8035c02f3d1d",
+        "d57a7518-35c4-49dd-9699-ce957455d1db",
+        "51a917c4-1efd-42b3-b5fb-ce3d5d03294f",
+        "67720505-1e6b-467b-9ff0-e0c11d41260c",
+        "7b12bf6f-93ae-4460-9cb3-089909889a15"
+      ],
+      "reference_ids": [
+        "311edb45-b633-45cf-92c2-8035c02f3d1d"
+      ]
+    },
+    {
+      "id": "q50",
+      "type": "synonym",
+      "query": "钱什么时候能退回来",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 406.18,
+      "returned_ids": [
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
+        "394d3457-c528-4173-8d8b-7f22db961253",
+        "def70706-908a-4b0d-a05e-438ecb58e0c4",
+        "8902e351-a02a-4ab3-861c-e95ed26bc9a9",
+        "67f33db7-f6bd-4ea6-a4fb-7f91ccf34fdb"
+      ],
+      "reference_ids": [
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11"
+      ]
+    },
+    {
+      "id": "q51",
+      "type": "synonym",
+      "query": "机器坏了想寄回去修，要走什么流程",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 380.57,
+      "returned_ids": [
+        "cb2e2a1e-22c5-42fb-9375-b917ac3ee0e7",
+        "c9c17715-b4a6-43dc-9cca-fb2220c93b8d",
+        "e502da6f-e303-4f8b-8ab9-2a594b635aed",
+        "2cf2ede5-a601-4fbf-9d13-5b2a57b1ddd9",
+        "70f68558-f4ce-4a6e-90f2-3dd10cf6c16d"
+      ],
+      "reference_ids": [
+        "cb2e2a1e-22c5-42fb-9375-b917ac3ee0e7"
+      ]
+    },
+    {
+      "id": "q52",
+      "type": "synonym",
+      "query": "押金怎么拿回来",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 370.72,
+      "returned_ids": [
+        "9f4cefa7-7fe4-46e2-8db6-50d8b130f125",
+        "def70706-908a-4b0d-a05e-438ecb58e0c4",
+        "394d3457-c528-4173-8d8b-7f22db961253",
+        "8902e351-a02a-4ab3-861c-e95ed26bc9a9",
+        "c9c17715-b4a6-43dc-9cca-fb2220c93b8d"
+      ],
+      "reference_ids": [
+        "def70706-908a-4b0d-a05e-438ecb58e0c4"
+      ]
+    },
+    {
+      "id": "q53",
+      "type": "synonym",
+      "query": "旧机器能抵钱换新的吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 425.25,
+      "returned_ids": [
+        "35087a50-9be2-403d-8514-dbb89995b0b9",
+        "e502da6f-e303-4f8b-8ab9-2a594b635aed",
+        "81458447-b20f-434c-ac47-597498f874f4",
+        "43e6eafb-59f4-4b24-915b-d39ae38aba08",
+        "9f4cefa7-7fe4-46e2-8db6-50d8b130f125"
+      ],
+      "reference_ids": [
+        "35087a50-9be2-403d-8514-dbb89995b0b9"
+      ]
+    },
+    {
+      "id": "q54",
+      "type": "colloquial",
+      "query": "磁盘快满了怎么救急",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 373.12,
+      "returned_ids": [
+        "4a12f18e-9518-486b-9202-5698144a7aed",
+        "1b98e8f4-585a-4e79-9a2a-5a42c7e59ffa",
+        "912a658d-adb6-4573-aa17-d6a8efed6e9f",
+        "2d38a4ac-8476-40d2-949b-601fefd4544c",
+        "2e823635-0e2d-4aa8-94eb-834bc2492e5e"
+      ],
+      "reference_ids": [
+        "4a12f18e-9518-486b-9202-5698144a7aed"
+      ]
+    },
+    {
+      "id": "q55",
+      "type": "colloquial",
+      "query": "上线要不要两个人一起看",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.0,
+      "context_recall": 0.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 389.68,
+      "returned_ids": [
+        "8fae93ac-f265-493b-b4e1-aede6f950997",
+        "f00928b0-0513-42d9-9a96-f8803902b335",
+        "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b",
+        "8c209c0a-f671-436c-b1e0-8d99742523b7",
+        "0535a0dd-542a-4e67-ba30-8161b2fa3194"
+      ],
+      "reference_ids": [
+        "311edb45-b633-45cf-92c2-8035c02f3d1d"
+      ]
+    },
+    {
+      "id": "q56",
+      "type": "colloquial",
+      "query": "队列堆住了怎么办",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 438.54,
+      "returned_ids": [
+        "1ef22a25-74a4-4cf1-83cc-39595da27ca9",
+        "74af5fc4-c9b3-4042-818a-9c9ca87143ad",
+        "6cb6a367-c175-4b80-95f2-9829a080195a",
+        "bad0fd87-f27d-475a-8ce2-29a581d6218f",
+        "1a6e2c7a-b817-47ec-b6d3-8b0c60b3ea58"
+      ],
+      "reference_ids": [
+        "1ef22a25-74a4-4cf1-83cc-39595da27ca9"
+      ]
+    },
+    {
+      "id": "q57",
+      "type": "colloquial",
+      "query": "缓存突然不生效了数据库快扛不住",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 431.21,
+      "returned_ids": [
+        "90eba4db-f83e-4128-af8b-e71688cb34c3",
+        "6cb6a367-c175-4b80-95f2-9829a080195a",
+        "2e823635-0e2d-4aa8-94eb-834bc2492e5e",
+        "57681720-c456-4687-89de-180a7fface44",
+        "9619bc64-3e79-40c1-a8db-b35f7a1d8dee"
+      ],
+      "reference_ids": [
+        "90eba4db-f83e-4128-af8b-e71688cb34c3"
+      ]
+    },
+    {
+      "id": "q58",
+      "type": "cross_section",
+      "query": "平台密钥多久轮换一次，轮换时要注意什么",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.4,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 376.12,
+      "returned_ids": [
+        "78dfe4cf-b478-495c-895c-8c5e46201394",
+        "b3084f05-c52b-44b1-9d59-aebb7f86061f",
+        "8e459196-3ebd-4770-82e2-7680ed99667b",
+        "07d8e694-4e0e-4b3f-8765-84b2e6547059",
+        "1c96838f-61cc-4e26-97ca-96da59e2d0b0"
+      ],
+      "reference_ids": [
+        "78dfe4cf-b478-495c-895c-8c5e46201394",
+        "1c96838f-61cc-4e26-97ca-96da59e2d0b0"
+      ]
+    },
+    {
+      "id": "q59",
+      "type": "cross_section",
+      "query": "退款一直没到账该怎么查",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.4,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 437.59,
+      "returned_ids": [
+        "80699fe7-8d78-4b46-99c6-e2f14c807aed",
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
+        "67f33db7-f6bd-4ea6-a4fb-7f91ccf34fdb",
+        "8902e351-a02a-4ab3-861c-e95ed26bc9a9",
+        "394d3457-c528-4173-8d8b-7f22db961253"
+      ],
+      "reference_ids": [
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11",
+        "80699fe7-8d78-4b46-99c6-e2f14c807aed"
+      ]
+    },
+    {
+      "id": "q60",
+      "type": "cross_section",
+      "query": "变更窗口是什么时候，窗口结束前要做什么",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.2,
+      "context_recall": 0.5,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 379.72,
+      "returned_ids": [
+        "d57a7518-35c4-49dd-9699-ce957455d1db",
+        "eeb55161-a30e-4569-a9c3-b158e7e14e9a",
+        "2be6a05f-d995-47e8-8491-d5f951a88319",
+        "bc6570f5-4d6e-442e-b3cb-e520cf29829f",
+        "18392d16-6b31-4172-9f40-b9f3a69537f2"
+      ],
+      "reference_ids": [
+        "d57a7518-35c4-49dd-9699-ce957455d1db",
+        "bf6b064e-3ca3-4a53-9709-4d6c0840685f"
+      ]
+    },
+    {
+      "id": "q61",
+      "type": "cross_section",
+      "query": "设备成片离线怎么排查，什么时候要升级",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.2,
+      "context_recall": 0.5,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 373.25,
+      "returned_ids": [
+        "d8a0d03a-3a3d-4b38-8845-66dd921ee083",
+        "b3d57526-d45a-45f1-b467-1d66d1982cb2",
+        "afe9842f-90ae-41fe-b5d6-d93512b55a12",
+        "ecdf1ce7-34c1-4f33-97d4-95bfc9897065",
+        "0a8445e0-6135-4e58-bde2-98d129740c0f"
+      ],
+      "reference_ids": [
+        "b3d57526-d45a-45f1-b467-1d66d1982cb2",
+        "3959dc6f-1817-4d23-be37-5de5349f33dc"
+      ]
+    },
+    {
+      "id": "q65",
+      "type": "rare_token",
+      "query": "sha256:3b7e1f9d24c8a6e0b5f7c1d9e3a80642 是哪批固件的核对基准",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 428.7,
+      "returned_ids": [
+        "417c86bd-ec81-4aaa-921f-b8ead3b07eba",
+        "dc3f0123-8c19-4f2d-9e70-0db5ab1f1227",
+        "f7ae6b1f-fa3a-494e-aeb9-57eadaee5297",
+        "0959af60-312c-4369-90f3-7c1256352cf3",
+        "192fa3d5-af09-47c2-8ac4-0f0782fe6d01"
+      ],
+      "reference_ids": [
+        "417c86bd-ec81-4aaa-921f-b8ead3b07eba"
+      ]
+    },
+    {
+      "id": "q66",
+      "type": "rare_token",
+      "query": "PRJ-9QX8B3 的验收标准是什么",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 385.41,
+      "returned_ids": [
+        "ed0dc6a7-4f55-4143-a2ea-3a65990a30ae",
+        "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b",
+        "21175efe-b3b4-4412-911a-bc1cee07771c",
+        "8ad8fa87-e1df-4918-bf73-c389da6b0f95",
+        "bf6b064e-3ca3-4a53-9709-4d6c0840685f"
+      ],
+      "reference_ids": [
+        "ed0dc6a7-4f55-4143-a2ea-3a65990a30ae"
+      ]
+    },
+    {
+      "id": "q67",
+      "type": "model_number",
+      "query": "XR-2100 最大能接多少终端",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 373.32,
+      "returned_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "f0cd3d4a-aa72-4f0c-ba43-e6f4a9c28658",
+        "be05e4ea-525e-461d-9db4-fab489b26c52"
+      ],
+      "reference_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ]
+    },
+    {
+      "id": "q68",
+      "type": "model_number",
+      "query": "XR-2000 的内存多大",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 417.45,
+      "returned_ids": [
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "ae241992-f8bb-4762-a9eb-042feda842ac",
+        "94d4983f-bd05-4720-966f-169c19d6267a"
+      ],
+      "reference_ids": [
+        "574be1f0-c299-4c91-bff5-1c1be7141847"
+      ]
+    },
+    {
+      "id": "q69",
+      "type": "model_number",
+      "query": "哪一款支持 Wi-Fi 6",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 371.49,
+      "returned_ids": [
+        "19c7ee71-6617-42f8-b2be-ad2615304a52",
+        "7ba3f1c8-0fd9-4602-aa5f-1d8a3bfa8caf",
+        "959cd911-c765-4ece-8494-7ec8b3f001c5",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "9e011bfc-767c-492b-a61f-db85b4fde8a1"
+      ],
+      "reference_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35"
+      ]
+    },
+    {
+      "id": "q70",
+      "type": "table_lookup",
+      "query": "每月账单是哪天出账的",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 393.88,
+      "returned_ids": [
+        "b53d32e9-8b58-4fea-80a0-1ef65fb15d42",
+        "01b6f320-a175-4eff-afba-faae2185d7ef",
+        "8902e351-a02a-4ab3-861c-e95ed26bc9a9",
+        "f81076dd-5a94-4c54-bfda-bb65a882cb52",
+        "9b07514f-71c9-48ad-bce6-7194ce0f46f8"
+      ],
+      "reference_ids": [
+        "b53d32e9-8b58-4fea-80a0-1ef65fb15d42"
+      ]
+    },
+    {
+      "id": "q71",
+      "type": "table_lookup",
+      "query": "发票在付款完成后几天内开具",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 359.52,
+      "returned_ids": [
+        "f81076dd-5a94-4c54-bfda-bb65a882cb52",
+        "441e63fb-e33a-4881-9c86-f3ff4eea8c20",
+        "8902e351-a02a-4ab3-861c-e95ed26bc9a9",
+        "01b6f320-a175-4eff-afba-faae2185d7ef",
+        "b53d32e9-8b58-4fea-80a0-1ef65fb15d42"
+      ],
+      "reference_ids": [
+        "f81076dd-5a94-4c54-bfda-bb65a882cb52"
+      ]
+    },
+    {
+      "id": "q72",
+      "type": "negative_scope",
+      "query": "抵扣券可以叠加使用吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 406.86,
+      "returned_ids": [
+        "85121862-13fd-4586-95cc-34f302908825",
+        "c7f6080c-77ef-4aec-a574-20d10423b6d7",
+        "e59fee0b-407c-400a-bd4c-45c5d3c143df",
+        "736c0096-cd3e-42e2-a169-9863c774567c",
+        "35087a50-9be2-403d-8514-dbb89995b0b9"
+      ],
+      "reference_ids": [
+        "85121862-13fd-4586-95cc-34f302908825"
+      ]
+    },
+    {
+      "id": "q73",
+      "type": "synonym",
+      "query": "退回来的钱能取现吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 376.97,
+      "returned_ids": [
+        "75c25eef-5463-49a2-8e99-e3589ce44bed",
+        "0b92375d-c3f5-4d29-b03d-8d7634a57b3d",
+        "394d3457-c528-4173-8d8b-7f22db961253",
+        "646aa52c-5e84-44d3-8086-5efe4c2b01de",
+        "8902e351-a02a-4ab3-861c-e95ed26bc9a9"
+      ],
+      "reference_ids": [
+        "75c25eef-5463-49a2-8e99-e3589ce44bed"
+      ]
+    },
+    {
+      "id": "q74",
+      "type": "colloquial",
+      "query": "欠钱了会马上给停掉吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 363.15,
+      "returned_ids": [
+        "0ce23c39-65fa-4e97-bc55-924bb523b25f",
+        "fe48882a-9a82-416a-a5a8-80b4f837e471",
+        "2978d2c2-bf79-483f-8a08-67a6f6ae02f2",
+        "e0fc2041-a44e-4a28-b07b-881226e78648",
+        "874f10a1-4790-401f-96a1-cf94489fd421"
+      ],
+      "reference_ids": [
+        "0ce23c39-65fa-4e97-bc55-924bb523b25f"
+      ]
+    },
+    {
+      "id": "q75",
+      "type": "noise_robust",
+      "query": "退费和退款到底有什么区别",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 439.5,
+      "returned_ids": [
+        "0b92375d-c3f5-4d29-b03d-8d7634a57b3d",
+        "048be0a9-5c24-4341-b8a8-f8d0507c62fb",
+        "394d3457-c528-4173-8d8b-7f22db961253",
+        "441e63fb-e33a-4881-9c86-f3ff4eea8c20",
+        "75c25eef-5463-49a2-8e99-e3589ce44bed"
+      ],
+      "reference_ids": [
+        "0b92375d-c3f5-4d29-b03d-8d7634a57b3d"
+      ]
+    },
+    {
+      "id": "q76",
+      "type": "counterfactual",
+      "query": "升配和降配分别什么时候生效",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 361.77,
+      "returned_ids": [
+        "9d2139ed-c504-4915-9adc-b596767357f2",
+        "c9a66dce-b41c-41f7-9510-0f70122b7747",
+        "ce668aa1-8d93-49e0-a916-8f4844058eee",
+        "68dc7a92-9368-4a51-8485-e3cb46d9d423",
+        "ff36e090-de84-4663-b050-07cdf9104bd0"
+      ],
+      "reference_ids": [
+        "9d2139ed-c504-4915-9adc-b596767357f2"
+      ]
+    },
+    {
+      "id": "q77",
+      "type": "cross_section",
+      "query": "觉得账单金额算错了，怎么申诉、多久内要提",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.4,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 349.04,
+      "returned_ids": [
+        "502e63d1-a06c-46f5-9a4d-2c42667a6a3a",
+        "c0c0f147-2bd2-46ce-b689-1d9b06d47e93",
+        "01b6f320-a175-4eff-afba-faae2185d7ef",
+        "15f1e635-220f-4471-a53e-cb775d8818d1",
+        "b1ec93d1-e12d-4d5c-8afb-aed6b464d23c"
+      ],
+      "reference_ids": [
+        "502e63d1-a06c-46f5-9a4d-2c42667a6a3a",
+        "01b6f320-a175-4eff-afba-faae2185d7ef"
+      ]
+    },
+    {
+      "id": "q78",
+      "type": "table_lookup",
+      "query": "机架款 XR-2100 的指导价是多少",
+      "returned_count": 5,
+      "reference_count": 7,
+      "context_precision": 0.4,
+      "context_recall": 0.2857142857142857,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 345.14,
+      "returned_ids": [
+        "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "631c5abd-b171-421d-b0ac-3bd4257a6ace"
+      ],
+      "reference_ids": [
+        "f49fd4c2-d2dd-4b86-ac00-1ae5ca393b95",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "ae241992-f8bb-4762-a9eb-042feda842ac",
+        "e8b60c2b-5818-4714-bea1-7d87231df9b9",
+        "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
+        "48b6bea6-e44f-4cce-ac9c-36d0f0db7758",
+        "39bf587c-020c-4534-96b5-8b3047828bb4"
+      ]
+    },
+    {
+      "id": "q79",
+      "type": "table_lookup",
+      "query": "万兆光模块多少钱一个",
+      "returned_count": 5,
+      "reference_count": 9,
+      "context_precision": 0.4,
+      "context_recall": 0.2222222222222222,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 378.9,
+      "returned_ids": [
+        "85886e21-155b-49e8-908b-8a905a660abf",
+        "45ebc32a-aac0-46f2-bc8e-73bfa162664f",
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "c5b747a4-7f2c-4858-8884-7efbe7cc47c0",
+        "94d4983f-bd05-4720-966f-169c19d6267a"
+      ],
+      "reference_ids": [
+        "491e5a00-a350-4646-8219-5f63f7ac45fe",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "450910e9-000a-4e65-849f-e7dc70aa8172",
+        "997d5162-2fbc-4186-bbbf-3ec1b72d2a34",
+        "7c1e91b8-959d-4108-bd6a-461b15fb2c9e",
+        "61d5354e-6224-419e-8b41-f1fc704b4a47",
+        "85886e21-155b-49e8-908b-8a905a660abf",
+        "0a6ab7e4-0c9f-4bc8-a56b-decccf35b0db",
+        "ef1de196-efa5-4448-838d-d9182795a62c"
+      ]
+    },
+    {
+      "id": "q80",
+      "type": "noise_robust",
+      "query": "一次订 60 台能打几折",
+      "returned_count": 5,
+      "reference_count": 6,
+      "context_precision": 0.4,
+      "context_recall": 0.3333333333333333,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 395.57,
+      "returned_ids": [
+        "b36591ee-4ba2-42f6-9c4f-73fb99549a59",
+        "33b51a90-14aa-4802-8774-d7818955b667",
+        "9010f864-44e1-4f04-bcdd-84563ece83ee",
+        "083a8b0c-49f4-4c73-93b8-81a2f493631d",
+        "ff65a6ce-a8f5-45ac-9f77-c6ad3b3d8659"
+      ],
+      "reference_ids": [
+        "b36591ee-4ba2-42f6-9c4f-73fb99549a59",
+        "8d0dd8b9-c995-4121-a3d7-17d0b5edb68e",
+        "a0030ee5-6dc4-4e84-a2a5-d762d37e5750",
+        "ae51999b-a725-41d0-b6c1-51b0dbe7e6a0",
+        "0f5b4763-b012-470e-b8a1-88d8bfe27f9c",
+        "33b51a90-14aa-4802-8774-d7818955b667"
+      ]
+    },
+    {
+      "id": "q81",
+      "type": "negative_scope",
+      "query": "阶梯折扣能和促销价一起用吗",
+      "returned_count": 5,
+      "reference_count": 6,
+      "context_precision": 0.4,
+      "context_recall": 0.3333333333333333,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 366.11,
+      "returned_ids": [
+        "9010f864-44e1-4f04-bcdd-84563ece83ee",
+        "b36591ee-4ba2-42f6-9c4f-73fb99549a59",
+        "a0030ee5-6dc4-4e84-a2a5-d762d37e5750",
+        "ce668aa1-8d93-49e0-a916-8f4844058eee",
+        "083a8b0c-49f4-4c73-93b8-81a2f493631d"
+      ],
+      "reference_ids": [
+        "b36591ee-4ba2-42f6-9c4f-73fb99549a59",
+        "8d0dd8b9-c995-4121-a3d7-17d0b5edb68e",
+        "a0030ee5-6dc4-4e84-a2a5-d762d37e5750",
+        "ae51999b-a725-41d0-b6c1-51b0dbe7e6a0",
+        "0f5b4763-b012-470e-b8a1-88d8bfe27f9c",
+        "33b51a90-14aa-4802-8774-d7818955b667"
+      ]
+    },
+    {
+      "id": "q82",
+      "type": "table_lookup",
+      "query": "企业版的月度可用性承诺是多少",
+      "returned_count": 5,
+      "reference_count": 5,
+      "context_precision": 0.4,
+      "context_recall": 0.4,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 354.27,
+      "returned_ids": [
+        "f66b2f44-0ec3-44b7-8359-7e9f7a9dc30e",
+        "ff85e1c1-c466-464a-be92-b339944bfa9d",
+        "37f75282-0c6e-435c-a1f5-e1417f96d11e",
+        "c9a66dce-b41c-41f7-9510-0f70122b7747",
+        "9b07514f-71c9-48ad-bce6-7194ce0f46f8"
+      ],
+      "reference_ids": [
+        "59cb1353-5b3e-475b-be67-834987bb08f4",
+        "ff85e1c1-c466-464a-be92-b339944bfa9d",
+        "c555d91c-740a-4bef-bd20-2f50d5c1778a",
+        "f66b2f44-0ec3-44b7-8359-7e9f7a9dc30e",
+        "eeaf9e90-934e-4259-9e93-466d487458d9"
+      ]
+    },
+    {
+      "id": "q83",
+      "type": "noise_robust",
+      "query": "计划内维护算不算不可用时长",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 373.3,
+      "returned_ids": [
+        "37f75282-0c6e-435c-a1f5-e1417f96d11e",
+        "288b1ca9-769f-44ed-84d9-bd2948074dc9",
+        "2978d2c2-bf79-483f-8a08-67a6f6ae02f2",
+        "c1b46a15-795f-4587-88dd-dc50a078ec55",
+        "9b07514f-71c9-48ad-bce6-7194ce0f46f8"
+      ],
+      "reference_ids": [
+        "288b1ca9-769f-44ed-84d9-bd2948074dc9"
+      ]
+    },
+    {
+      "id": "q84",
+      "type": "negative_scope",
+      "query": "哪些情况不计入不可用时长",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 418.87,
+      "returned_ids": [
+        "2978d2c2-bf79-483f-8a08-67a6f6ae02f2",
+        "37f75282-0c6e-435c-a1f5-e1417f96d11e",
+        "c1b46a15-795f-4587-88dd-dc50a078ec55",
+        "9b07514f-71c9-48ad-bce6-7194ce0f46f8",
+        "288b1ca9-769f-44ed-84d9-bd2948074dc9"
+      ],
+      "reference_ids": [
+        "2978d2c2-bf79-483f-8a08-67a6f6ae02f2"
+      ]
+    },
+    {
+      "id": "q85",
+      "type": "colloquial",
+      "query": "密码忘了进不去管理页面怎么办",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 373.04,
+      "returned_ids": [
+        "7ea40e9f-513c-4f87-8e86-ce087a3b580f",
+        "e133eebb-a54d-4774-856f-b3695147eef4",
+        "4d6729b9-0580-4301-9131-b447ab1cc4f9",
+        "e16a3c5e-faef-454f-8c1e-60b6ca89cdcb",
+        "cb8fe63f-f551-42f1-8df1-c2e01c74e0d8"
+      ],
+      "reference_ids": [
+        "7ea40e9f-513c-4f87-8e86-ce087a3b580f"
+      ]
+    },
+    {
+      "id": "q86",
+      "type": "synonym",
+      "query": "货到了再付钱行不行",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 376.97,
+      "returned_ids": [
+        "394d3457-c528-4173-8d8b-7f22db961253",
+        "c86dc865-bdf9-4023-a2dc-80e464334c56",
+        "739e3999-abb5-4ff8-b30e-d516d6176b31",
+        "e0fc2041-a44e-4a28-b07b-881226e78648",
+        "083a8b0c-49f4-4c73-93b8-81a2f493631d"
+      ],
+      "reference_ids": [
+        "c86dc865-bdf9-4023-a2dc-80e464334c56"
+      ]
+    },
+    {
+      "id": "q87",
+      "type": "table_lookup",
+      "query": "3 月 14 日那次故障峰值掉了多少台设备",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 422.28,
+      "returned_ids": [
+        "508b5073-1f1b-40b5-83b3-ee22dd0400b9",
+        "27b4bf40-a7ec-4d97-b414-ee4519e3024c",
+        "afca5405-4fa0-4372-b09f-2ab2da0e6378",
+        "323e6c86-f361-490a-b72d-005dc6b888f4",
+        "0a8445e0-6135-4e58-bde2-98d129740c0f"
+      ],
+      "reference_ids": [
+        "afca5405-4fa0-4372-b09f-2ab2da0e6378"
+      ]
+    },
+    {
+      "id": "q88",
+      "type": "cross_section",
+      "query": "会话配额隔离什么时候完成、谁负责",
+      "returned_count": 5,
+      "reference_count": 7,
+      "context_precision": 0.6,
+      "context_recall": 0.42857142857142855,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 434.6,
+      "returned_ids": [
+        "00797915-cf6e-4550-9286-8a49982b2ce7",
+        "179cc67d-ecbe-4d0a-aae2-9c8fa8f921f2",
+        "6cb6a367-c175-4b80-95f2-9829a080195a",
+        "da400480-3437-4b8b-90bc-c2b52dbb133f",
+        "747d9915-7c9c-4917-b267-bcd8574f6d04"
+      ],
+      "reference_ids": [
+        "179cc67d-ecbe-4d0a-aae2-9c8fa8f921f2",
+        "da400480-3437-4b8b-90bc-c2b52dbb133f",
+        "b1f42094-fced-4aa4-96bc-3b5d27680f6a",
+        "da4766a7-eb8d-4061-b5d3-4e7f5e38aa09",
+        "f3248f7c-be5c-4f0a-8281-98a151a8ce63",
+        "7cf2679b-a274-411c-8302-a66d417fe161",
+        "747d9915-7c9c-4917-b267-bcd8574f6d04"
+      ]
+    },
+    {
+      "id": "q89",
+      "type": "counterfactual",
+      "query": "上次同类事件为什么没能防住这次故障",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 422.06,
+      "returned_ids": [
+        "747d9915-7c9c-4917-b267-bcd8574f6d04",
+        "846dc55c-55d9-4a2d-a0b0-3d30342d6349",
+        "7cf2679b-a274-411c-8302-a66d417fe161",
+        "a3329162-a0fc-41b9-a632-d1a2919ff3ed",
+        "179cc67d-ecbe-4d0a-aae2-9c8fa8f921f2"
+      ],
+      "reference_ids": [
+        "747d9915-7c9c-4917-b267-bcd8574f6d04"
+      ]
+    },
+    {
+      "id": "q90",
+      "type": "counterfactual",
+      "query": "双机热备的快速切换是哪个版本开始有的",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 448.39,
+      "returned_ids": [
+        "d5755c5e-c3d9-4ebe-b99e-41d17326b926",
+        "644e83c8-75dd-4f9b-833a-4045d67e5029",
+        "f0cd3d4a-aa72-4f0c-ba43-e6f4a9c28658",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "21f88b4d-d5ef-4c0b-8e0d-f59af9fb4c80"
+      ],
+      "reference_ids": [
+        "d5755c5e-c3d9-4ebe-b99e-41d17326b926"
+      ]
+    },
+    {
+      "id": "q91",
+      "type": "negative_scope",
+      "query": "标准款支持双机热备吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 452.07,
+      "returned_ids": [
+        "d5755c5e-c3d9-4ebe-b99e-41d17326b926",
+        "644e83c8-75dd-4f9b-833a-4045d67e5029",
+        "8c209c0a-f671-436c-b1e0-8d99742523b7",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "647ace66-9671-4da3-b4ee-261c8197b4ac"
+      ],
+      "reference_ids": [
+        "d5755c5e-c3d9-4ebe-b99e-41d17326b926"
+      ]
+    },
+    {
+      "id": "q92",
+      "type": "noise_robust",
+      "query": "默认会话老化时间在 5.2.0 改成多少了",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 369.2,
+      "returned_ids": [
+        "dbfa8d7e-668c-425c-9e5d-7de8d693d102",
+        "6e71972f-fb23-4967-b590-71309fec29e7",
+        "06cee242-28ce-40d7-b0d5-ce3fdd739505",
+        "14b4994a-8868-401f-8b8c-87b874b96107",
+        "d5755c5e-c3d9-4ebe-b99e-41d17326b926"
+      ],
+      "reference_ids": [
+        "dbfa8d7e-668c-425c-9e5d-7de8d693d102"
+      ]
+    },
+    {
+      "id": "q93",
+      "type": "counterfactual",
+      "query": "从 v4.x 能直接升到 v5.x 吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 371.89,
+      "returned_ids": [
+        "21fc7b4e-e353-48ef-87b0-c1fccf47cdd2",
+        "a2e1b678-a740-411d-8146-6079b84a704d",
+        "712bab32-816d-43cf-8b25-4eb346da7826",
+        "62f2b97f-d594-4c3e-a9a9-e21ada9be1f8",
+        "f7ae6b1f-fa3a-494e-aeb9-57eadaee5297"
+      ],
+      "reference_ids": [
+        "a2e1b678-a740-411d-8146-6079b84a704d"
+      ]
+    },
+    {
+      "id": "q94",
+      "type": "table_lookup",
+      "query": "平台只读账号由谁审批",
+      "returned_count": 5,
+      "reference_count": 7,
+      "context_precision": 0.4,
+      "context_recall": 0.2857142857142857,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 534.04,
+      "returned_ids": [
+        "0dbc8f30-ece4-40cb-aad9-2e12ccd6a081",
+        "272bc2a8-538f-4860-b677-a2e3c2ccb0e8",
+        "d3c61b66-fcad-4c77-b9c3-59b0c80ad094",
+        "0d285369-632e-4c88-8660-9f8945c82fa5",
+        "9463320e-24cd-4bb5-8b36-f811115f3abc"
+      ],
+      "reference_ids": [
+        "272bc2a8-538f-4860-b677-a2e3c2ccb0e8",
+        "b5a63d99-7f86-4971-860b-abd62093c3ce",
+        "0dbc8f30-ece4-40cb-aad9-2e12ccd6a081",
+        "043546cc-e50f-438a-903e-3333f06f00a8",
+        "c2fcd6c0-d24b-49d0-9d0d-d273eebdb98d",
+        "bd016ee0-cad6-413f-9e10-6e8ce152a311",
+        "be9346f8-1079-4b28-b690-ff3f0a59d595"
+      ]
+    },
+    {
+      "id": "q95",
+      "type": "negative_scope",
+      "query": "实习期能申请可写权限吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 364.95,
+      "returned_ids": [
+        "9463320e-24cd-4bb5-8b36-f811115f3abc",
+        "d3c61b66-fcad-4c77-b9c3-59b0c80ad094",
+        "272bc2a8-538f-4860-b677-a2e3c2ccb0e8",
+        "c2fcd6c0-d24b-49d0-9d0d-d273eebdb98d",
+        "fdfc66dc-ada9-4510-afd5-2ab992325819"
+      ],
+      "reference_ids": [
+        "9463320e-24cd-4bb5-8b36-f811115f3abc"
+      ]
+    },
+    {
+      "id": "q96",
+      "type": "cross_section",
+      "query": "转正考核要过哪几项",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.4,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 1363.55,
+      "returned_ids": [
+        "00257daa-94a6-4036-af21-31e97bfd9a6e",
+        "3e026dad-dc9b-4ffb-a7ae-ebb41d8af16e",
+        "0d285369-632e-4c88-8660-9f8945c82fa5",
+        "9463320e-24cd-4bb5-8b36-f811115f3abc",
+        "d3c61b66-fcad-4c77-b9c3-59b0c80ad094"
+      ],
+      "reference_ids": [
+        "00257daa-94a6-4036-af21-31e97bfd9a6e",
+        "d3c61b66-fcad-4c77-b9c3-59b0c80ad094"
+      ]
+    },
+    {
+      "id": "q97",
+      "type": "counterfactual",
+      "query": "证书台账最后由哪个系统作为主维护",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 375.89,
+      "returned_ids": [
+        "cf4a1037-aafa-4494-b46f-a14b63ecf7da",
+        "d670c726-e17b-4bdf-aeb8-0851bcd16b17",
+        "33d9f28b-f2bd-4314-a532-013a8d510e52",
+        "39cb8f09-a451-4559-a26c-380dd4c881b3",
+        "21175efe-b3b4-4412-911a-bc1cee07771c"
+      ],
+      "reference_ids": [
+        "cf4a1037-aafa-4494-b46f-a14b63ecf7da"
+      ]
+    },
+    {
+      "id": "q98",
+      "type": "negative_scope",
+      "query": "调试日志的留存时间延长了吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 390.44,
+      "returned_ids": [
+        "47970ddf-fba6-4fd9-809a-943c55518bef",
+        "a3b4b2f2-6750-4a36-9242-fcc33580a433",
+        "1c8d372c-aa53-423a-ab79-32cc6a7452c5",
+        "9f4f0495-f387-41f8-8c50-6b9d9e8cff49",
+        "51794a73-2fe7-4d66-ba89-472b63ba4863"
+      ],
+      "reference_ids": [
+        "47970ddf-fba6-4fd9-809a-943c55518bef"
+      ]
+    },
+    {
+      "id": "q99",
+      "type": "table_lookup",
+      "query": "会话隔离复现验证的决议编号和期限",
+      "returned_count": 5,
+      "reference_count": 5,
+      "context_precision": 0.4,
+      "context_recall": 0.4,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 448.55,
+      "returned_ids": [
+        "e11f4206-e24a-4846-b137-e225bbe3ead7",
+        "33d9f28b-f2bd-4314-a532-013a8d510e52",
+        "00797915-cf6e-4550-9286-8a49982b2ce7",
+        "57bea977-200b-4dfa-810b-71e852c4ed71",
+        "27b4bf40-a7ec-4d97-b414-ee4519e3024c"
+      ],
+      "reference_ids": [
+        "d670c726-e17b-4bdf-aeb8-0851bcd16b17",
+        "33d9f28b-f2bd-4314-a532-013a8d510e52",
+        "9f4f0495-f387-41f8-8c50-6b9d9e8cff49",
+        "e11f4206-e24a-4846-b137-e225bbe3ead7",
+        "a04fb1bc-ab62-4a2a-9afa-4353eb413c11"
+      ]
+    },
+    {
+      "id": "q104",
+      "type": "cross_section",
+      "query": "退款和退费分别退到哪里去",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.2,
+      "context_recall": 0.5,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 400.76,
+      "returned_ids": [
+        "048be0a9-5c24-4341-b8a8-f8d0507c62fb",
+        "0b92375d-c3f5-4d29-b03d-8d7634a57b3d",
+        "9f4cefa7-7fe4-46e2-8db6-50d8b130f125",
+        "394d3457-c528-4173-8d8b-7f22db961253",
+        "441e63fb-e33a-4881-9c86-f3ff4eea8c20"
+      ],
+      "reference_ids": [
+        "0b92375d-c3f5-4d29-b03d-8d7634a57b3d",
+        "3dd7c5c3-4121-4bac-970b-202b3a97dc11"
+      ]
+    },
+    {
+      "id": "q105",
+      "type": "cross_section",
+      "query": "固件升级要走变更流程吗，值班期间要盯什么",
+      "returned_count": 5,
+      "reference_count": 2,
+      "context_precision": 0.2,
+      "context_recall": 0.5,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 405.43,
+      "returned_ids": [
+        "0535a0dd-542a-4e67-ba30-8161b2fa3194",
+        "47d4c608-d374-41de-bee2-d9a4ccba7106",
+        "2be6a05f-d995-47e8-8491-d5f951a88319",
+        "b9026f33-6c26-495c-af0c-371370969505",
+        "d57a7518-35c4-49dd-9699-ce957455d1db"
+      ],
+      "reference_ids": [
+        "0535a0dd-542a-4e67-ba30-8161b2fa3194",
+        "311edb45-b633-45cf-92c2-8035c02f3d1d"
+      ]
+    },
+    {
+      "id": "q106",
+      "type": "cross_section",
+      "query": "万兆光模块的价格和选型要求分别在哪里看",
+      "returned_count": 5,
+      "reference_count": 10,
+      "context_precision": 0.6,
+      "context_recall": 0.3,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 406.5,
+      "returned_ids": [
+        "45ebc32a-aac0-46f2-bc8e-73bfa162664f",
+        "85886e21-155b-49e8-908b-8a905a660abf",
+        "c5b747a4-7f2c-4858-8884-7efbe7cc47c0",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ],
+      "reference_ids": [
+        "491e5a00-a350-4646-8219-5f63f7ac45fe",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "450910e9-000a-4e65-849f-e7dc70aa8172",
+        "997d5162-2fbc-4186-bbbf-3ec1b72d2a34",
+        "7c1e91b8-959d-4108-bd6a-461b15fb2c9e",
+        "61d5354e-6224-419e-8b41-f1fc704b4a47",
+        "85886e21-155b-49e8-908b-8a905a660abf",
+        "0a6ab7e4-0c9f-4bc8-a56b-decccf35b0db",
+        "ef1de196-efa5-4448-838d-d9182795a62c",
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ]
+    },
+    {
+      "id": "q107",
+      "type": "cross_section",
+      "query": "会话配额隔离这件事在哪些材料里被提到",
+      "returned_count": 5,
+      "reference_count": 7,
+      "context_precision": 0.2,
+      "context_recall": 0.14285714285714285,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 571.05,
+      "returned_ids": [
+        "00797915-cf6e-4550-9286-8a49982b2ce7",
+        "6cb6a367-c175-4b80-95f2-9829a080195a",
+        "747d9915-7c9c-4917-b267-bcd8574f6d04",
+        "dbfa8d7e-668c-425c-9e5d-7de8d693d102",
+        "57bea977-200b-4dfa-810b-71e852c4ed71"
+      ],
+      "reference_ids": [
+        "179cc67d-ecbe-4d0a-aae2-9c8fa8f921f2",
+        "da400480-3437-4b8b-90bc-c2b52dbb133f",
+        "b1f42094-fced-4aa4-96bc-3b5d27680f6a",
+        "da4766a7-eb8d-4061-b5d3-4e7f5e38aa09",
+        "f3248f7c-be5c-4f0a-8281-98a151a8ce63",
+        "7cf2679b-a274-411c-8302-a66d417fe161",
+        "00797915-cf6e-4550-9286-8a49982b2ce7"
+      ]
+    },
+    {
+      "id": "q108",
+      "type": "colloquial",
+      "query": "上门装设备之前要先去看什么",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.0,
+      "context_recall": 0.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 441.84,
+      "returned_ids": [
+        "e6ad9473-3382-4db2-9c7f-9573dbd260bb",
+        "e6546304-8b7e-4583-932c-fdf4709756a2",
+        "33383e18-0f1e-480e-beba-6d62ab474325",
+        "146c4f91-cfa1-43b3-a81b-d510d13bbda6",
+        "8a4bccc6-c13e-48df-b3e9-fa9e2ccea284"
+      ],
+      "reference_ids": [
+        "928909e1-9792-4e46-93e6-f40c443828cd"
+      ]
+    },
+    {
+      "id": "q109",
+      "type": "noise_robust",
+      "query": "网线布完之后怎么确认链路没问题",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.0,
+      "context_recall": 0.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 513.15,
+      "returned_ids": [
+        "f00928b0-0513-42d9-9a96-f8803902b335",
+        "ddac1001-e3b6-49e5-8454-6efe0bdea6e5",
+        "1b67a4b5-6121-4c56-ae3f-55b7cf151f1c",
+        "928909e1-9792-4e46-93e6-f40c443828cd",
+        "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b"
+      ],
+      "reference_ids": [
+        "12d7e78a-24a8-4022-9a83-f4252b01c0d8"
+      ]
+    },
+    {
+      "id": "q110",
+      "type": "negative_scope",
+      "query": "机架款上架时哪些做法会导致过热",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 490.32,
+      "returned_ids": [
+        "8a4bccc6-c13e-48df-b3e9-fa9e2ccea284",
+        "9b73c744-8166-4f9f-963d-83ae32e6c5b4",
+        "f89afcb0-4369-413e-87b8-701d726f227d",
+        "ffe7541c-1a20-4613-b22a-10def87c083e",
+        "631c5abd-b171-421d-b0ac-3bd4257a6ace"
+      ],
+      "reference_ids": [
+        "8a4bccc6-c13e-48df-b3e9-fa9e2ccea284"
+      ]
+    },
+    {
+      "id": "q111",
+      "type": "cross_section",
+      "query": "配置下发之后要分几层验证，验收报告写什么",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.0,
+      "context_recall": 0.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 440.5,
+      "returned_ids": [
+        "4a3dcc75-d259-4ac5-9cf9-442ec1931a8b",
+        "1c96838f-61cc-4e26-97ca-96da59e2d0b0",
+        "bf6b064e-3ca3-4a53-9709-4d6c0840685f",
+        "e6ad9473-3382-4db2-9c7f-9573dbd260bb",
+        "f00928b0-0513-42d9-9a96-f8803902b335"
+      ],
+      "reference_ids": [
+        "353fcd50-1bfa-4b2a-b011-b6f693e62510"
+      ]
+    },
+    {
+      "id": "q112",
+      "type": "counterfactual",
+      "query": "为什么故障总是凌晨发生、白天自己就好了",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 408.67,
+      "returned_ids": [
+        "323e6c86-f361-490a-b72d-005dc6b888f4",
+        "afe9842f-90ae-41fe-b5d6-d93512b55a12",
+        "9af15963-c5f6-4e36-9f0f-8a2ae962553d",
+        "8003b61c-3c69-48c5-aa4a-aaae93b32b8a",
+        "747d9915-7c9c-4917-b267-bcd8574f6d04"
+      ],
+      "reference_ids": [
+        "afe9842f-90ae-41fe-b5d6-d93512b55a12"
+      ]
+    },
+    {
+      "id": "q113",
+      "type": "noise_robust",
+      "query": "会话表快满了，先做什么再做什么",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 406.48,
+      "returned_ids": [
+        "6cb6a367-c175-4b80-95f2-9829a080195a",
+        "6e71972f-fb23-4967-b590-71309fec29e7",
+        "14b4994a-8868-401f-8b8c-87b874b96107",
+        "da4766a7-eb8d-4061-b5d3-4e7f5e38aa09",
+        "1afd94d9-6f56-453a-96a3-ca76ae9cb35d"
+      ],
+      "reference_ids": [
+        "6cb6a367-c175-4b80-95f2-9829a080195a"
+      ]
+    },
+    {
+      "id": "q114",
+      "type": "synonym",
+      "query": "设备显示在线但数据传不上去",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 430.11,
+      "returned_ids": [
+        "3a4e0e14-b07d-4482-905d-8b253c3adbfb",
+        "0a8445e0-6135-4e58-bde2-98d129740c0f",
+        "7ea40e9f-513c-4f87-8e86-ce087a3b580f",
+        "d8a0d03a-3a3d-4b38-8845-66dd921ee083",
+        "33383e18-0f1e-480e-beba-6d62ab474325"
+      ],
+      "reference_ids": [
+        "3a4e0e14-b07d-4482-905d-8b253c3adbfb"
+      ]
+    },
+    {
+      "id": "q115",
+      "type": "counterfactual",
+      "query": "断电恢复后一批设备签名校验失败是什么原因",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.0,
+      "context_recall": 0.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 430.15,
+      "returned_ids": [
+        "9af15963-c5f6-4e36-9f0f-8a2ae962553d",
+        "ecdf1ce7-34c1-4f33-97d4-95bfc9897065",
+        "9f988074-c272-49fe-b090-f2d7714c47f5",
+        "1a56c598-5630-4b81-9535-2ba3f48a23c3",
+        "dc3f0123-8c19-4f2d-9e70-0db5ab1f1227"
+      ],
+      "reference_ids": [
+        "757c08cf-bfe2-40f3-94ff-af43b7f5f0ab"
+      ]
+    },
+    {
+      "id": "q116",
+      "type": "table_lookup",
+      "query": "请求签名的时间戳允许多少秒偏差",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 592.06,
+      "returned_ids": [
+        "36a04666-2e26-43bb-80ab-7d8aab4cadeb",
+        "1800354c-d5bd-4e26-bf3f-98527cf95815",
+        "757c08cf-bfe2-40f3-94ff-af43b7f5f0ab",
+        "aa317d5d-ac36-4b90-922b-4a4388560bba",
+        "d9b09e8e-1ab5-49c0-845d-4ac9ca9654bd"
+      ],
+      "reference_ids": [
+        "36a04666-2e26-43bb-80ab-7d8aab4cadeb"
+      ]
+    },
+    {
+      "id": "q117",
+      "type": "noise_robust",
+      "query": "回调失败了会重试几次，间隔多久",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 440.78,
+      "returned_ids": [
+        "600eeead-f14f-431b-9fdb-f01a81c2c04f",
+        "8b87ca0b-ab1c-420a-ba84-1c7dee9b45a1",
+        "c92372d4-f49d-4c03-b5fa-fcfc304d49ac",
+        "40092097-d81d-4e0d-b91d-0aabe1d3c39e",
+        "aa317d5d-ac36-4b90-922b-4a4388560bba"
+      ],
+      "reference_ids": [
+        "600eeead-f14f-431b-9fdb-f01a81c2c04f"
+      ]
+    },
+    {
+      "id": "q118",
+      "type": "negative_scope",
+      "query": "哪些错误码重试也没有意义",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 487.18,
+      "returned_ids": [
+        "0da6a424-bc98-4e69-a477-f6afe7d0c9b4",
+        "8b87ca0b-ab1c-420a-ba84-1c7dee9b45a1",
+        "c92372d4-f49d-4c03-b5fa-fcfc304d49ac",
+        "01eb4caa-ccbd-4588-946b-43fd6babb18c",
+        "e12c35a5-6cf0-4b41-9800-e5ce62be6929"
+      ],
+      "reference_ids": [
+        "0da6a424-bc98-4e69-a477-f6afe7d0c9b4"
+      ]
+    },
+    {
+      "id": "q119",
+      "type": "cross_section",
+      "query": "密钥多久轮换、宽限期多久、没切完会怎样",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 737.38,
+      "returned_ids": [
+        "78dfe4cf-b478-495c-895c-8c5e46201394",
+        "b3084f05-c52b-44b1-9d59-aebb7f86061f",
+        "39cb8f09-a451-4559-a26c-380dd4c881b3",
+        "1c96838f-61cc-4e26-97ca-96da59e2d0b0",
+        "8e459196-3ebd-4770-82e2-7680ed99667b"
+      ],
+      "reference_ids": [
+        "b3084f05-c52b-44b1-9d59-aebb7f86061f"
+      ]
+    },
+    {
+      "id": "q120",
+      "type": "model_number",
+      "query": "XR-2000 出厂配置几个千兆网口",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 519.12,
+      "returned_ids": [
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "f0cd3d4a-aa72-4f0c-ba43-e6f4a9c28658",
+        "35d084a5-51ef-44e4-8ff5-efa074a85fda"
+      ],
+      "reference_ids": [
+        "574be1f0-c299-4c91-bff5-1c1be7141847"
+      ]
+    },
+    {
+      "id": "q121",
+      "type": "model_number",
+      "query": "XR-2000 Pro 是几核处理器",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 477.25,
+      "returned_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "e8b60c2b-5818-4714-bea1-7d87231df9b9"
+      ],
+      "reference_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35"
+      ]
+    },
+    {
+      "id": "q122",
+      "type": "model_number",
+      "query": "XR-2100 的内存有多大",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 772.3,
+      "returned_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
+        "85886e21-155b-49e8-908b-8a905a660abf",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "574be1f0-c299-4c91-bff5-1c1be7141847"
+      ],
+      "reference_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ]
+    },
+    {
+      "id": "q123",
+      "type": "model_number",
+      "query": "XR-2000 Pro 的存储容量是多少",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 671.84,
+      "returned_ids": [
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "e8b60c2b-5818-4714-bea1-7d87231df9b9",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "997d5162-2fbc-4186-bbbf-3ec1b72d2a34"
+      ],
+      "reference_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35"
+      ]
+    },
+    {
+      "id": "q124",
+      "type": "model_number",
+      "query": "XR-2100 用的是 eMMC 还是 SSD",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 709.13,
+      "returned_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257",
+        "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
+        "85886e21-155b-49e8-908b-8a905a660abf",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "05985c24-40d9-4649-a790-6872995dc4d4"
+      ],
+      "reference_ids": [
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ]
+    },
+    {
+      "id": "q125",
+      "type": "model_number",
+      "query": "XR-2000 Pro 的整机功耗大约多少瓦",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 724.35,
+      "returned_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "e8b60c2b-5818-4714-bea1-7d87231df9b9",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "94d4983f-bd05-4720-966f-169c19d6267a"
+      ],
+      "reference_ids": [
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35"
+      ]
+    },
+    {
+      "id": "q126",
+      "type": "model_number",
+      "query": "XR-2000 出厂固件是哪个大版本",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 603.92,
+      "returned_ids": [
+        "0959af60-312c-4369-90f3-7c1256352cf3",
+        "574be1f0-c299-4c91-bff5-1c1be7141847",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35",
+        "f7ae6b1f-fa3a-494e-aeb9-57eadaee5297",
+        "1e951739-6965-41ec-a1ed-288cc478b257"
+      ],
+      "reference_ids": [
+        "574be1f0-c299-4c91-bff5-1c1be7141847"
+      ]
+    },
+    {
+      "id": "q127",
+      "type": "model_number",
+      "query": "XR-1800 还能买到吗",
+      "returned_count": 5,
+      "reference_count": 7,
+      "context_precision": 0.4,
+      "context_recall": 0.2857142857142857,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 553.69,
+      "returned_ids": [
+        "f49fd4c2-d2dd-4b86-ac00-1ae5ca393b95",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "70f68558-f4ce-4a6e-90f2-3dd10cf6c16d",
+        "f0cd3d4a-aa72-4f0c-ba43-e6f4a9c28658",
+        "85886e21-155b-49e8-908b-8a905a660abf"
+      ],
+      "reference_ids": [
+        "f49fd4c2-d2dd-4b86-ac00-1ae5ca393b95",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "ae241992-f8bb-4762-a9eb-042feda842ac",
+        "e8b60c2b-5818-4714-bea1-7d87231df9b9",
+        "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
+        "48b6bea6-e44f-4cce-ac9c-36d0f0db7758",
+        "39bf587c-020c-4534-96b5-8b3047828bb4"
+      ]
+    },
+    {
+      "id": "q128",
+      "type": "model_number",
+      "query": "XR-2000 套装里包含哪些配件",
+      "returned_count": 5,
+      "reference_count": 7,
+      "context_precision": 0.4,
+      "context_recall": 0.2857142857142857,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 833.65,
+      "returned_ids": [
+        "48b6bea6-e44f-4cce-ac9c-36d0f0db7758",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "450910e9-000a-4e65-849f-e7dc70aa8172",
+        "94d4983f-bd05-4720-966f-169c19d6267a",
+        "2201e3d2-b90a-4af2-8f61-ad5199a88c35"
+      ],
+      "reference_ids": [
+        "f49fd4c2-d2dd-4b86-ac00-1ae5ca393b95",
+        "05985c24-40d9-4649-a790-6872995dc4d4",
+        "ae241992-f8bb-4762-a9eb-042feda842ac",
+        "e8b60c2b-5818-4714-bea1-7d87231df9b9",
+        "acf8f45f-ed7a-4522-8e9f-57dd59be2b13",
+        "48b6bea6-e44f-4cce-ac9c-36d0f0db7758",
+        "39bf587c-020c-4534-96b5-8b3047828bb4"
+      ]
+    },
+    {
+      "id": "q129",
+      "type": "synonym",
+      "query": "创建好的知识库还能改切块大小吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 808.29,
+      "returned_ids": [
+        "d768ddd8-a509-4bf4-b8af-f15206a3cd93",
+        "6bf4d1ac-ddea-409a-8ad6-fcc7e2a8d636",
+        "dfcb6cb3-f216-43d9-8aa6-1906de3f92ba",
+        "0bc30b92-b9a7-42d9-8edd-bb8ab4effcd9",
+        "e35892f8-af9d-4d27-b949-ccff6889c99e"
+      ],
+      "reference_ids": [
+        "d768ddd8-a509-4bf4-b8af-f15206a3cd93"
+      ]
+    },
+    {
+      "id": "q130",
+      "type": "negative_scope",
+      "query": "健康检查接口会不会顺带检查数据库",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 789.6,
+      "returned_ids": [
+        "043fddc3-9654-4750-9456-11c3a19635a9",
+        "0cf10270-8146-45c5-a905-27c9ed9a2e15",
+        "d1cae6a6-3ef1-4531-ad03-d90d9d40d6e5",
+        "b778a3b9-c00f-4aa3-8088-77f366ab5b6d",
+        "8ead0755-18f3-46b4-9c70-65fb839bdb2b"
+      ],
+      "reference_ids": [
+        "043fddc3-9654-4750-9456-11c3a19635a9"
+      ]
+    },
+    {
+      "id": "q131",
+      "type": "colloquial",
+      "query": "线上跑的到底是哪个版本",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 457.88,
+      "returned_ids": [
+        "0cf10270-8146-45c5-a905-27c9ed9a2e15",
+        "0959af60-312c-4369-90f3-7c1256352cf3",
+        "bc651e03-2e31-4b96-8e59-84fec72521dd",
+        "ada7e8be-d4ed-4489-94c0-904847e9a617",
+        "dbfa8d7e-668c-425c-9e5d-7de8d693d102"
+      ],
+      "reference_ids": [
+        "0cf10270-8146-45c5-a905-27c9ed9a2e15"
+      ]
+    },
+    {
+      "id": "q132",
+      "type": "noise_robust",
+      "query": "业务出错时 HTTP 状态码是多少",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 665.7,
+      "returned_ids": [
+        "663dac26-76a6-488b-b0ae-f04b83fb0f8c",
+        "01c318e0-06d1-4039-b3e0-60a319e224b5",
+        "34229a0c-65b7-4f2e-80cc-689327b91d7b",
+        "0da6a424-bc98-4e69-a477-f6afe7d0c9b4",
+        "dcb196ac-d4bd-4b5f-954b-1d310e48aa5b"
+      ],
+      "reference_ids": [
+        "663dac26-76a6-488b-b0ae-f04b83fb0f8c"
+      ]
+    },
+    {
+      "id": "q133",
+      "type": "counterfactual",
+      "query": "RRF 的 k 值可以按业务调吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 630.91,
+      "returned_ids": [
+        "600eeead-f14f-431b-9fdb-f01a81c2c04f",
+        "166e77f7-1b74-4f96-877d-0faec233908c",
+        "28a89631-0a39-448f-a86a-264af59e8b13",
+        "8b87ca0b-ab1c-420a-ba84-1c7dee9b45a1",
+        "311edb45-b633-45cf-92c2-8035c02f3d1d"
+      ],
+      "reference_ids": [
+        "166e77f7-1b74-4f96-877d-0faec233908c"
+      ]
+    },
+    {
+      "id": "q134",
+      "type": "negative_scope",
+      "query": "OCR 和索引任务放同一个队列有什么问题",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 552.43,
+      "returned_ids": [
+        "1a6e2c7a-b817-47ec-b6d3-8b0c60b3ea58",
+        "6cb6a367-c175-4b80-95f2-9829a080195a",
+        "822e66fb-3ece-407a-9ec5-bff7e3e66bc2",
+        "28d9ff31-a2a3-474b-b3f2-ce89716062fa",
+        "747d9915-7c9c-4917-b267-bcd8574f6d04"
+      ],
+      "reference_ids": [
+        "1a6e2c7a-b817-47ec-b6d3-8b0c60b3ea58"
+      ]
+    },
+    {
+      "id": "q135",
+      "type": "table_lookup",
+      "query": "调试日志保留多长时间",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 475.04,
+      "returned_ids": [
+        "47970ddf-fba6-4fd9-809a-943c55518bef",
+        "a3b4b2f2-6750-4a36-9242-fcc33580a433",
+        "1c8d372c-aa53-423a-ab79-32cc6a7452c5",
+        "51794a73-2fe7-4d66-ba89-472b63ba4863",
+        "9f4f0495-f387-41f8-8c50-6b9d9e8cff49"
+      ],
+      "reference_ids": [
+        "51794a73-2fe7-4d66-ba89-472b63ba4863"
+      ]
+    },
+    {
+      "id": "q136",
+      "type": "noise_robust",
+      "query": "哪些配置改了不生效也不报错",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 586.18,
+      "returned_ids": [
+        "e35892f8-af9d-4d27-b949-ccff6889c99e",
+        "166e77f7-1b74-4f96-877d-0faec233908c",
+        "1a56c598-5630-4b81-9535-2ba3f48a23c3",
+        "407c1a48-11b4-4aed-845e-45083226c558",
+        "c6ac52b8-4944-40ee-80a9-aa6d0a5efb79"
+      ],
+      "reference_ids": [
+        "e35892f8-af9d-4d27-b949-ccff6889c99e"
+      ]
+    },
+    {
+      "id": "q137",
+      "type": "counterfactual",
+      "query": "重排超时会返回错误吗",
+      "returned_count": 5,
+      "reference_count": 1,
+      "context_precision": 0.2,
+      "context_recall": 1.0,
+      "unscored_reason": null,
+      "empty_reason": null,
+      "degraded": false,
+      "degraded_reason": null,
+      "duration_ms": 528.17,
+      "returned_ids": [
+        "a453fafb-e08c-4b6e-8fb4-05be741ce247",
+        "1800354c-d5bd-4e26-bf3f-98527cf95815",
+        "c92372d4-f49d-4c03-b5fa-fcfc304d49ac",
+        "34229a0c-65b7-4f2e-80cc-689327b91d7b",
+        "600eeead-f14f-431b-9fdb-f01a81c2c04f"
+      ],
+      "reference_ids": [
+        "a453fafb-e08c-4b6e-8fb4-05be741ce247"
+      ]
+    }
+  ],
+  "gate": {
+    "verdict": "pass",
+    "passed": true,
+    "reason": null,
+    "thresholds": {
+      "overall_pp": 1.0,
+      "per_type_pp": 3.0
+    },
+    "baseline": {
+      "run_id": "20261110T223339Z",
+      "generated_at": "2026-11-10T22:33:40+00:00",
+      "run_dir": "eval/baseline",
+      "source": "eval/baseline/results.json"
+    },
+    "overall": [
+      {
+        "metric": "context_precision",
+        "current": 0.2220472440944882,
+        "baseline": 0.2220472440944882,
+        "delta_pp": 0.0,
+        "threshold_pp": 1.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "metric": "context_recall",
+        "current": 0.8716785401824771,
+        "baseline": 0.8716785401824771,
+        "delta_pp": 0.0,
+        "threshold_pp": 1.0,
+        "status": "pass",
+        "detail": ""
+      }
+    ],
+    "by_type": [
+      {
+        "type": "colloquial",
+        "metric": "context_precision",
+        "count": 11,
+        "count_baseline": 11,
+        "current": 0.16363636363636364,
+        "baseline": 0.16363636363636364,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "colloquial",
+        "metric": "context_recall",
+        "count": 11,
+        "count_baseline": 11,
+        "current": 0.8181818181818182,
+        "baseline": 0.8181818181818182,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "counterfactual",
+        "metric": "context_precision",
+        "count": 13,
+        "count_baseline": 13,
+        "current": 0.18461538461538465,
+        "baseline": 0.18461538461538465,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "counterfactual",
+        "metric": "context_recall",
+        "count": 13,
+        "count_baseline": 13,
+        "current": 0.9230769230769231,
+        "baseline": 0.9230769230769231,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "cross_section",
+        "metric": "context_precision",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.3058823529411765,
+        "baseline": 0.3058823529411765,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "cross_section",
+        "metric": "context_recall",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.6394957983193278,
+        "baseline": 0.6394957983193278,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "exact_code",
+        "metric": "context_precision",
+        "count": 5,
+        "count_baseline": 5,
+        "current": 0.2,
+        "baseline": 0.2,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "exact_code",
+        "metric": "context_recall",
+        "count": 5,
+        "count_baseline": 5,
+        "current": 1.0,
+        "baseline": 1.0,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "model_number",
+        "metric": "context_precision",
+        "count": 15,
+        "count_baseline": 15,
+        "current": 0.22666666666666668,
+        "baseline": 0.22666666666666668,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "model_number",
+        "metric": "context_recall",
+        "count": 15,
+        "count_baseline": 15,
+        "current": 0.9047619047619048,
+        "baseline": 0.9047619047619048,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "negative_scope",
+        "metric": "context_precision",
+        "count": 14,
+        "count_baseline": 14,
+        "current": 0.21428571428571427,
+        "baseline": 0.21428571428571427,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "negative_scope",
+        "metric": "context_recall",
+        "count": 14,
+        "count_baseline": 14,
+        "current": 0.9523809523809524,
+        "baseline": 0.9523809523809524,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "noise_robust",
+        "metric": "context_precision",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.2,
+        "baseline": 0.2,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "noise_robust",
+        "metric": "context_recall",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.9019607843137255,
+        "baseline": 0.9019607843137255,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "rare_token",
+        "metric": "context_precision",
+        "count": 6,
+        "count_baseline": 6,
+        "current": 0.20000000000000004,
+        "baseline": 0.20000000000000004,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "rare_token",
+        "metric": "context_recall",
+        "count": 6,
+        "count_baseline": 6,
+        "current": 1.0,
+        "baseline": 1.0,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "synonym",
+        "metric": "context_precision",
+        "count": 12,
+        "count_baseline": 12,
+        "current": 0.20000000000000004,
+        "baseline": 0.20000000000000004,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "synonym",
+        "metric": "context_recall",
+        "count": 12,
+        "count_baseline": 12,
+        "current": 1.0,
+        "baseline": 1.0,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "table_lookup",
+        "metric": "context_precision",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.25882352941176473,
+        "baseline": 0.25882352941176473,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      },
+      {
+        "type": "table_lookup",
+        "metric": "context_recall",
+        "count": 17,
+        "count_baseline": 17,
+        "current": 0.799626517273576,
+        "baseline": 0.799626517273576,
+        "delta_pp": 0.0,
+        "threshold_pp": 3.0,
+        "status": "pass",
+        "detail": ""
+      }
+    ],
+    "regressions": [],
+    "summary": "绿：整体与 10 个题型全部在阈值内（整体 ≥ -1.00pp、单题型退化 ≤ 3.00pp，127 道题参与平均）。"
+  },
+  "http_smoke": null,
+  "retrieval_failures": [],
+  "promoted_from": "eval/runs/20261110T224302Z"
+}
