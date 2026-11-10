@@ -18,7 +18,9 @@ export interface NavItem {
 
 /** 用户面板的四条入口（spec #82「页面与路由」）。 */
 export const USER_NAV: readonly NavItem[] = [
-  { to: '/', label: '上传文档' },
+  // `/` 已经不只是「上传」：建库也在这一页，而且两者都收在按钮后面。
+  // 标签跟着页面实际职责走，别让用户点「上传文档」进去看到的是一张库清单。
+  { to: '/', label: '建库与上传' },
   { to: '/knowledge-bases', label: '知识库列表' },
   { to: '/keys', label: 'Key 与密钥配置' },
   { to: '/retrieve', label: '检索调试台' },

@@ -203,6 +203,21 @@ button:not(:disabled),
   box-shadow: 0 0 0 1px var(--el-border-color-darker, #d9d2c3) inset;
 }
 
+/**
+ * Chrome 的自动填充会把输入框刷成浅蓝（或黄）并覆盖文字色，和这套暖色界面撞得很明显——
+ * 登录页尤其难看：整页只有那一个框是蓝的。界面本身没有第二处蓝色，所以这里用超长
+ * 过渡把填充底色顶掉，只保留文字色（`-webkit-text-fill-color` 必须显式给，
+ * 否则 Chrome 用自己算的对比色）。
+ */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #1c1a15;
+  -webkit-box-shadow: 0 0 0 1000px #fff inset;
+  box-shadow: 0 0 0 1000px #fff inset;
+  transition: background-color 9999s ease-out 0s;
+}
+
 /* 表格：外框去掉，只留行间细线；表头用浅暖底 */
 .el-card {
   /* el-card 是 el-card 的默认观感：4px 圆角 + 灰边 + 几乎为零的阴影。
@@ -246,10 +261,31 @@ button:not(:disabled),
   font-weight: 500;
 }
 
+/**
+ * 弹窗：这套界面里「偶发动作」的容器（建库、上传、签发 Key、改套餐都走它）。
+ *
+ * 注意不要在 `.el-dialog` 上加 padding——Element 的 header/body/footer 各自有内边距，
+ * 外层再加一圈就成了「双重留白」，弹窗里的表单会被挤窄。这里只定圆角、阴影与标题排版，
+ * 内边距统一走 `--el-dialog-padding-primary`。
+ */
 .el-dialog {
-  border-radius: var(--radius, 20px);
-  padding: 24px;
-  box-shadow: var(--el-box-shadow);
+  --el-dialog-padding-primary: 24px;
+  --el-dialog-border-radius: 20px;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(28, 26, 21, 0.06), 0 18px 48px -24px rgba(28, 26, 21, 0.24);
+}
+.el-dialog__title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #1c1a15;
+}
+.el-dialog__header {
+  padding-bottom: 14px;
+}
+.el-dialog__footer {
+  padding-top: 10px;
 }
 
 .el-tooltip__popper,
