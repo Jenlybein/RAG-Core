@@ -3,10 +3,11 @@
 接缝是**真实应用 + ``TestClient``**：只看 HTTP 响应体与数据库里真正落了什么。存储换成
 ``RecordingSession``、缓存换成内存假实现——不连真库、不连 Redis。
 
-这一组覆盖四类端点用例：正常 / 跨租户不适用（配置是平台级，没有跨租户这一说，故以
-「同一份配置被两个租户共用」为对照）/ 管理员空租户 ``20011`` / 未登录 ``20010``；
-写请求另加缺 ``x-requested-with`` → ``20011``。业务判定的细节（合并四步、逐键校验、
-影响预览口径）在 ``tests/test_runtime_settings.py``。
+**权限口径是这一组用例的主线**：配置中台是**平台级**配置（不属于任何租户），一次修改
+横跨所有租户，所以它只给管理员——管理员能读能写；**租户账号读/写都必须是 ``20011``**
+（这正是要钉住的跨租户越权边）；未登录 ``20010``；写请求缺 ``x-requested-with`` →
+``20011``。业务判定的细节（合并四步、逐键校验、影响预览口径）在
+``tests/test_runtime_settings.py``。
 """
 
 from __future__ import annotations
@@ -246,44 +247,57 @@ def test_a_settings_call_without_a_session_is_unauthorized(console: _Harness) ->
     )
 
 
-def test_an_admin_without_a_tenant_is_forbidden(console: _Harness) -> None:
-    """管理员 ``tenant_id`` 为 ``None``：用户面板类接口对它一律 ``20011``。
+def test_a_tenant_account_cannot_read_or_write_platform_settings(console: _Harness) -> None:
+    """**跨租户越权边**：租户账号读/写配置中台一律 ``20011``。
 
-    两个理由：配置中台的写入要写明「谁改的」，一个不属于任何租户的平台管理员没有
-    租户上下文；而且把「平台管理员」当成万能租户会让那套数据面身份凭空存在。
+    这条比「管理员没有租户」重要得多：``runtime_settings`` 是平台级配置，``RERANK_ENABLED``
+    一关就是**所有租户**的 quality 档位一起退化。让一个租户账号能 PATCH 它，等于给每个
+    租户一把改别人服务质量的钥匙。所以两个租户账号（Alpha / Beta）都必须被挡在 20011，
+    而且被挡的写操作不许留下任何库行。
+    """
+
+    for username in ("alice", "bob"):
+        assert console.login(username, USER_PASSWORD).json()["code"] == 0
+
+        assert console.client.get("/console/settings").json()["code"] == 20011, username
+        assert (
+            console.client.patch(
+                "/console/settings?dry_run=false",
+                json={"values": {"TOP_K": 9}},
+                headers=WRITE_HEADERS,
+            ).json()["code"]
+            == 20011
+        ), username
+
+    assert console.db.added_of(RuntimeSetting) == []
+
+
+def test_an_admin_without_a_tenant_can_read_and_write_platform_settings(
+    console: _Harness,
+) -> None:
+    """管理员 ``tenant_id is None`` **正是**这份配置唯一合理的归属：平台级配置没有租户。
+
+    所以这里不叠加任何租户判定——叠加上去会把唯一合法的写者挡在 20011 门外。管理员能读、
+    能写，写出来的审计 actor 是它自己的账号 id。
     """
 
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
-    assert console.client.get("/console/settings").json()["code"] == 20011
-    assert (
-        console.client.patch(
-            "/console/settings?dry_run=false",
-            json={"values": {"TOP_K": 9}},
-            headers=WRITE_HEADERS,
-        ).json()["code"]
-        == 20011
+    rows = console.settings(console.client.get("/console/settings"))
+    assert rows["TOP_K"]["tier"] == "hot"
+
+    response = console.client.patch(
+        "/console/settings?dry_run=false",
+        json={"values": {"TOP_K": 9}},
+        headers=WRITE_HEADERS,
     )
-    assert console.db.added_of(RuntimeSetting) == []
-
-
-def test_a_tenant_user_can_read_and_a_second_tenant_sees_the_same_config(
-    console: _Harness,
-) -> None:
-    """配置是平台级的：Alpha 与 Beta 看到同一份值（没有「跨租户越权」这一形态）。"""
-
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
-    alice_view = console.settings(console.client.get("/console/settings"))
-
-    assert console.login("bob", USER_PASSWORD).json()["code"] == 0
-    bob_view = console.settings(console.client.get("/console/settings"))
-
-    assert alice_view["TOP_K"]["value"] == bob_view["TOP_K"]["value"]
-    assert alice_view["TOP_K"]["tier"] == "hot"
+    assert response.json()["code"] == 0
+    assert console.setting_row("TOP_K").updated_by == ADMIN_ID
+    assert console.audit_entries()[-1].actor_id == ADMIN_ID
 
 
 def test_a_patch_without_the_anti_csrf_header_is_rejected(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
     commits_before = console.db.commits  # 登录本身会提交一条会话行
 
     response = console.client.patch(
@@ -299,7 +313,7 @@ def test_a_patch_without_the_anti_csrf_header_is_rejected(console: _Harness) -> 
 
 
 def test_the_listing_returns_three_tiers_with_editable_and_why_columns(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     data = console.data(console.client.get("/console/settings"))
 
@@ -329,7 +343,7 @@ def test_an_illegal_row_marks_the_line_red_and_falls_back_to_the_env_value(
     """有人绕过接口把库里写成 ``-1``：读时回退 + 标红，列表照常返回、服务不崩。"""
 
     console.add_setting("RERANK_TIMEOUT_SECONDS", -1)
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     row = console.settings(console.client.get("/console/settings"))["RERANK_TIMEOUT_SECONDS"]
 
@@ -344,7 +358,7 @@ def test_an_illegal_row_marks_the_line_red_and_falls_back_to_the_env_value(
 
 def test_a_valid_db_override_is_reported_with_source_db(console: _Harness) -> None:
     console.add_setting("TOP_K", 8)
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     row = console.settings(console.client.get("/console/settings"))["TOP_K"]
 
@@ -355,7 +369,7 @@ def test_a_secret_override_is_masked_in_the_listing(console: _Harness) -> None:
     """面板与审计里都不许出现明文 Key；这是 #82「密钥类字段必须 masked」的那一条。"""
 
     console.add_setting("MODEL_API_KEY", "sk-plaintext-abcd")
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     response = console.client.get("/console/settings")
 
@@ -371,7 +385,7 @@ def test_dry_run_is_the_default_and_nothing_is_written(console: _Harness) -> Non
 
     console.add_setting("TOP_K", 5)
     updated_before = console.setting_row("TOP_K").updated_at
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
     commits_before = console.db.commits  # 登录本身会提交一条会话行
 
     response = console.client.patch(
@@ -388,7 +402,7 @@ def test_dry_run_is_the_default_and_nothing_is_written(console: _Harness) -> Non
 
 
 def test_a_key_outside_the_whitelist_is_a_param_error(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     response = console.client.patch(
         "/console/settings?dry_run=false",
@@ -403,7 +417,7 @@ def test_a_key_outside_the_whitelist_is_a_param_error(console: _Harness) -> None
 def test_a_locked_security_switch_is_a_param_error(console: _Harness) -> None:
     """``AUTH_ENABLED`` 在白名单里（面板要展示），但**写入**一律 ``20015``。"""
 
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     response = console.client.patch(
         "/console/settings?dry_run=false",
@@ -416,7 +430,7 @@ def test_a_locked_security_switch_is_a_param_error(console: _Harness) -> None:
 
 
 def test_an_illegal_value_is_a_param_error(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     for values in ({"TOP_K": "abc"}, {"RERANK_TIMEOUT_SECONDS": -1}, {"RERANK_ENABLED": "false"}):
         response = console.client.patch(
@@ -426,7 +440,7 @@ def test_an_illegal_value_is_a_param_error(console: _Harness) -> None:
 
 
 def test_a_real_patch_writes_audits_and_deletes_the_cache(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
     commits_before = console.db.commits  # 登录本身会提交一条会话行
 
     response = console.client.patch(
@@ -445,10 +459,10 @@ def test_a_real_patch_writes_audits_and_deletes_the_cache(console: _Harness) -> 
 
     row = console.setting_row("TOP_K")
     assert row.value == 9
-    assert row.updated_by == ALICE_ID
+    assert row.updated_by == ADMIN_ID
 
     audit = console.audit_entries()[-1]
-    assert (audit.action, audit.target, audit.actor_id) == ("settings.patch", "settings", ALICE_ID)
+    assert (audit.action, audit.target, audit.actor_id) == ("settings.patch", "settings", ADMIN_ID)
     assert audit.before_snapshot == {"TOP_K": None}
     assert audit.after_snapshot == {"TOP_K": 9}
 
@@ -458,7 +472,7 @@ def test_a_hot_patch_takes_effect_on_the_next_request_without_the_ttl(
 ) -> None:
     """验收原话：改掉一项热生效配置后，**下一次请求**就按新值跑（不用重启、不等 30 秒）。"""
 
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
     assert settings.TOP_K == runtime_settings.ENV_BASELINE["TOP_K"]
 
     console.client.patch(
@@ -475,7 +489,7 @@ def test_a_hot_patch_takes_effect_on_the_next_request_without_the_ttl(
 def test_a_restart_tier_patch_reports_pending_restart_and_keeps_the_cache(
     console: _Harness,
 ) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     response = console.client.patch(
         "/console/settings?dry_run=false",
@@ -497,7 +511,7 @@ def test_dry_run_previews_the_impact_of_turning_off_rerank(
     """改能力开关前必须走影响预览：列出哪些租户的 quality 会退化。"""
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     response = console.client.patch(
         "/console/settings", json={"values": {"RERANK_ENABLED": False}}, headers=WRITE_HEADERS
@@ -513,7 +527,7 @@ def test_dry_run_previews_the_keyword_channel_loss(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "KEYWORD_SEARCH_PROVIDER", "elasticsearch")
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     impact = console.data(
         console.client.patch(

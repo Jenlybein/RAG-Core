@@ -12,8 +12,11 @@
 - ``require_console_write`` / ``require_console_admin_write``：同上，并且这个请求带了
   防跨站的显式头。**写操作**用这两个，读操作用前两个；
 - ``require_console_tenant`` / ``require_console_tenant_write``：**用户面板类接口**（keys /
-  kbs / documents / settings / models）用这两个——管理员不属于任何租户，它的
-  ``tenant_id`` 是 ``None``，这类接口对它一律 ``20011``；
+  kbs / documents / models）用这两个——管理员不属于任何租户，它的 ``tenant_id`` 是
+  ``None``，这类接口对它一律 ``20011``；
+- ``get_console_admin`` / ``require_console_admin_write``：**平台级接口**（账号 / 套餐 /
+  审计 / 配置中台 settings）用这两个。配置中台是平台级、无租户归属的配置，一次修改横跨
+  所有租户，所以它恰恰只能给管理员，**不能**套用上面那对租户依赖；
 - ``require_console_write_header``：登出这种「不需要先认出是谁、但仍然是写操作」的
   接口用它——没有会话也要能清掉 cookie，否则共用电脑上永远退不干净；
 - ``get_plan_cache``：套餐缓存的构造点。测试注入内存假实现，于是「改完缓存里没有了」

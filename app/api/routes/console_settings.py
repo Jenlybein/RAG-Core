@@ -4,12 +4,19 @@
 全在 :mod:`app.services.runtime_settings` 里。路由里出现 ``if spec.tier == ...`` 的那一刻，
 #96 的页面、下一个入口（CLI / MCP）就得再写一遍同样的规则。
 
-两道纪律：
+**为什么这两条接口只给管理员（admin-only），而不是给「有租户身份的账号」**：
 
-- **读接口也要租户身份**：配置中台是「用户面板类」接口，管理员（``tenant_id is None``）
-  一律 ``20011``（共用依赖 :func:`app.api.console_deps.require_console_tenant`）；
-- **``dry_run`` 默认 True**：忘记传这个参数时最坏结果是「只试算、没保存」，与改套餐
-  同一条纪律（``app/api/routes/console.py`` 里的注释是同一句）。
+``runtime_settings`` 是**平台级、无租户归属**的配置。``RERANK_ENABLED`` 一关，
+**所有租户**的 ``quality`` 档位都会从「重排」退化到「降级」；``LLM_MODEL`` 一改，
+所有租户的下一次调用都换了模型。让任意一个租户账号能 PATCH 它，等于给每个租户一把
+改别人服务质量的钥匙——这是**跨租户越权**，比「谁的权限粒度粗一点」严重得多。
+所以这里用 ``get_console_admin`` / ``require_console_admin_write``（后者已内含
+``require_console_admin`` + 防跨站头），并且**不再叠加租户判定**：平台管理员
+（``tenant_id is None``）正是这份配置唯一合理的归属，叠加上去只会把唯一合法的写者
+挡在 20011 门外。租户账号读/写这里一律 ``20011``。
+
+另一条纪律：**``dry_run`` 默认 True**——忘记传这个参数时最坏结果是「只试算、没保存」，
+与改套餐同一条纪律（``app/api/routes/console.py`` 里的注释是同一句）。
 """
 
 from __future__ import annotations
@@ -18,9 +25,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.api.console_deps import (
+    get_console_admin,
     get_runtime_settings_cache,
-    require_console_tenant,
-    require_console_tenant_write,
+    require_console_admin_write,
 )
 from app.core.console_auth import ConsoleIdentity
 from app.core.runtime_settings_cache import CACHE_TTL_SECONDS, RuntimeSettingsCache
@@ -109,10 +116,13 @@ def _patch_data(result: SettingsPatchResult) -> SettingsPatchData:
     summary="运行时配置的三档清单（含来源与非法行标记）",
 )
 def list_settings(
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(get_console_admin),
     db: Session = Depends(get_db),
 ) -> ApiResponse[SettingsListData]:
     """按三档列出白名单的每一行：有效值、来源（env / db）、是否非法、为什么在这一档。
+
+    面板本身**也是管理员才能看的**：它把平台的全部运行时开关（含供应商地址、模型名）
+    摆在一页上，本身不是给租户用的视图。
 
     读的是库里的真相（不经过缓存）：这一页要回答「库里现在是什么」，而缓存最多比库晚
     30 秒；刚保存完就刷新却看到旧来源标记，会让人以为保存没成功。
@@ -130,11 +140,16 @@ def list_settings(
 def patch_settings(
     payload: SettingsPatchRequest,
     dry_run: bool = Query(default=True, description="true 只试算，false 才落库"),
-    identity: ConsoleIdentity = Depends(require_console_tenant_write),
+    identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
     cache: RuntimeSettingsCache = Depends(get_runtime_settings_cache),
 ) -> ApiResponse[SettingsPatchData]:
     """配置的**唯一**写入口：白名单与档位 → 逐键校验 → 键间校验 → 落库 + 审计 → 删缓存。
+
+    **只给管理员**：一次修改会横跨所有租户（关掉重排 = 所有租户的 quality 档位退化），
+    所以它不能是「任意租户都能调的平台级写口」。``require_console_admin_write`` 已含
+    管理员角色与防跨站头；这里**不再叠加租户判定**——平台管理员没有租户，正是这份配置
+    唯一合理的归属。
 
     白名单外的键或 LOCKED 档一律 ``20015``（且整批不写）；``dry_run=true`` 只试算、
     不落库、不删缓存，返回 ``impact``。
