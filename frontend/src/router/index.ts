@@ -5,12 +5,12 @@ import { decideRedirect, probeFromError, type MeProbe } from '../utils/access'
 
 /**
  * 路由表：T6 建立「能点得到」的路由，T2 把 `/` 换成真实上传页，T3 把
- * `/knowledge-bases` 换成两级树列表页，T13（#95）补齐管理员面板的账号 / 套餐 / 审计三条真实路由，
- * #87 把 `/retrieve` 换成真实检索页，#92 把 `/keys` 换成 Key 页。
+ * `/knowledge-bases` 换成两级树列表页，T13（#95）补齐管理员面板的账号 / 套餐 / 审计三条，
+ * #96 再补模型配置与检索参数两条，#87 把 `/retrieve` 换成真实检索页，#92 把 `/keys`
+ * 换成 Key 页。
  *
- * `/admin/models`、`/admin/retrieval` 由 #96 补。
- * 守卫与顶栏都必须能在这些真实路径上命中，
- * 否则「未登录跳登录页」「普通账号被拦回列表」这两条验收就没有对象可验。
+ * 十条路径全部落地。守卫与顶栏都必须能在这些真实路径上命中，否则「未登录跳登录页」
+ * 「普通账号被拦回列表」这两条验收就没有对象可验。
  *
  * T1 的临时探针页（`/probe`）已随 #92 删除：它的两件验收物（数据面 Bearer、控制面
  * cookie + 防跨站头）现在由真实页面承担，留着它就是数据面客户端上的第二个调用点。
@@ -61,6 +61,18 @@ const routes = [
     path: '/admin/audit',
     name: 'admin-audit',
     component: () => import('../views/admin/AuditPage.vue'),
+  },
+  {
+    path: '/admin/models',
+    name: 'admin-models',
+    // #96：模型接入的增删改 + 角色指向 + 二次确认后显示一次明文 Key。
+    component: () => import('../views/admin/ModelsPage.vue'),
+  },
+  {
+    path: '/admin/retrieval',
+    name: 'admin-retrieval',
+    // #96：运行时配置的三档清单；只有热更 / 待重启两档给写入口。
+    component: () => import('../views/admin/RetrievalPage.vue'),
   },
 ]
 
