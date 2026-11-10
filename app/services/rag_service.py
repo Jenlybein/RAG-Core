@@ -52,11 +52,19 @@
 本次用到的库数、被裁字段。它从**同一个** ``options`` 上读出（``tenant_policy_echo``），
 所以「回显说开了重排」与「链路真的开了重排」不可能分叉——这份回显不是另存的一份事实。
 
+**每次响应都带 ``trace_id``，而且它先于写库产生**（#101，ADR-0010「第五次修订」）：
+``log_id`` 先生成（UUID v4），``trace_id`` 立刻由它确定性派生（``trace_identity``），
+然后才在最后尝试往归属索引里写一行结构记录。顺序不能倒：写入是旁路，写失败只留 warning，
+响应里的 ``trace_id`` 照样有值——「写成功才拿到 id」等于把契约挂在旁路的健康度上。
+
+除 ``metadata.trace_id`` 之外，检索响应逐字节不变；阶段耗时**不进**响应（那是观测的事）。
+
 日志只放 ID 与派生量，绝不放检索原文（见 tests/test_retrieval_log_hygiene.py）。
 """
 
 from __future__ import annotations
 
+import time
 from collections.abc import Sequence
 
 import structlog
@@ -77,6 +85,9 @@ from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
 from app.services.retrieval.vector_recall import vector_recall
 from app.services.retrieval_options import RetrievalOptions, tenant_policy_echo
+from app.services.retrieval_trace import record_retrieval_trace
+from app.services.trace_identity import delivered_chunk_ids, trace_id_for
+from app.utils.id_generator import new_retrieval_log_id
 from app.utils.retrieval_fields import with_score_columns
 
 logger = structlog.get_logger(__name__)
@@ -117,6 +128,15 @@ async def retrieve(
 
     resolved_mode = options.mode
     resolved_top_k = options.top_k
+
+    # ── 身份先于旁路：id 与 trace_id 在任何一次写库尝试**之前**就有值 ──
+    # 计时也从这里开始：``latency_ms`` 要的是「这次检索多慢」，不是「写完日志多慢」。
+    started_at = time.perf_counter()
+    # ``log_id`` 是这张表的对外身份（响应里不出现），``trace_id`` 由它确定性派生。
+    # 两行代码写在一起是刻意的：换掉派生方式或换掉种子，都会同时破掉「同一 log_id 恒等」
+    # 与「库里那一行能和响应那根线对上」这两条性质。
+    log_id = new_retrieval_log_id()
+    trace_id = trace_id_for(log_id)
 
     # 折叠会把同一父节的多个命中并成一条，所以召回要多取几倍，否则去重后凑不够
     # top_k 条。关掉折叠时按原样召回——「不折叠」就该连多取也不要。
@@ -214,13 +234,12 @@ async def retrieve(
         options=options,
     )
 
+    empty_reason = _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed)
     retrieval_meta: dict[str, object] = {
         "mode": resolved_mode,
         "degraded": degraded,
         "degraded_reason": degraded_reason,
-        "empty_reason": _empty_reason(
-            db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed
-        ),
+        "empty_reason": empty_reason,
         # 重排事实（是否发生、候选数、返回数、耗时）。单模式下恒为 null：
         # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
         "rerank": rerank_info,
@@ -239,20 +258,44 @@ async def retrieve(
             "vector_queries": list(optimized.vector_queries),
         }
 
+    metadata = _metadata_of(
+        options,
+        kb_ids=kb_ids,
+        retrieval=retrieval_meta,
+        trace_id=trace_id,
+    )
+
+    # 归属索引的写入是**旁路**（ADR-0021 决策 2）：独立短事务、失败只留 warning。
+    # 放在这里而不是更早，是因为它要记「这次检索的结局」——降级原因与空结果原因在上一行
+    # 才最终成形；而 ``trace_id`` 早在函数开头就派生好了，所以这次写入失败不影响响应。
+    record_retrieval_trace(
+        log_id=log_id,
+        trace_id=trace_id,
+        tenant_id=tenant_id,
+        kb_ids=list(kb_ids),
+        chunk_ids=delivered_chunk_ids(collapsed),
+        top_k=resolved_top_k,
+        latency_ms=int((time.perf_counter() - started_at) * 1000),
+        # 两个原因都从本次响应的那一层取，不另算一遍：库里那一行与回给调用方的响应
+        # 对同一件事必须只有一个答案。
+        degraded_reason=degraded_reason,
+        empty_reason=empty_reason,
+    )
+
     return {
         "query": query,
         "kb_ids": list(kb_ids),
         "retrieved_chunks": collapsed,
-        "metadata": _metadata_of(
-            options,
-            kb_ids=kb_ids,
-            retrieval=retrieval_meta,
-        ),
+        "metadata": metadata,
     }
 
 
 def _metadata_of(
-    options: RetrievalOptions, *, kb_ids: list[str], retrieval: dict[str, object]
+    options: RetrievalOptions,
+    *,
+    kb_ids: list[str],
+    retrieval: dict[str, object],
+    trace_id: str,
 ) -> dict[str, object]:
     """响应的 ``metadata``：这次实际用了什么。
 
@@ -260,6 +303,10 @@ def _metadata_of(
     它在**每一次**经套餐门禁解析的调用上都出现，且与 ``metadata.mode`` / ``top_k`` 同源；
     只有不经门禁的内部调用（自造 ``options`` 的评测脚本）没有它——那时编一个套餐名出来
     只会更糟。
+
+    ``trace_id`` 挂在**顶层且最后**（#101）：它是「这一次调用的身份」，不是「这一次检索的
+    细节」，所以不进 ``retrieval``；放最后是为了让「把它摘掉之后与原响应逐字节相同」这件事
+    在字节层面直接成立（黄金哈希就是这么比的）。
     """
 
     metadata: dict[str, object] = {
@@ -273,6 +320,7 @@ def _metadata_of(
     echo = tenant_policy_echo(options, kb_count=len(kb_ids))
     if echo is not None:
         metadata["tenant_policy"] = echo
+    metadata["trace_id"] = trace_id
     return metadata
 
 

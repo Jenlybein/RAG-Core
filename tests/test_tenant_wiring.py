@@ -583,14 +583,30 @@ def test_mcp_listing_hides_what_the_key_cannot_see(entries: EntryClient) -> None
 
 
 def test_both_entries_answer_the_same_question_the_same_way(entries: EntryClient) -> None:
-    """同一把 Key、同一个问题：切片、业务码、回显全部一致——因为判定与业务只有一份。"""
+    """同一把 Key、同一个问题：切片、业务码、回显全部一致——因为判定与业务只有一份。
+
+    #101 起每条**响应**多一个 ``metadata.trace_id``，而它是**每次调用**的身份：两次
+    独立的调用本来就不该拿到同一个值，所以整份载荷相等的断言把它摘掉再比。这不是放宽——
+    下面单独钉住「两条入口都带、都是 32 位十六进制、而且不是同一个」，比原来的整份相等
+    更严：原来那版根本不知道有这根线。
+    """
 
     http_body = entries.retrieve([KB_IN_SCOPE])
     mcp_payload = _mcp_payload(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"}))
 
     assert http_body["code"] == ErrorCode.SUCCESS
+
+    http_trace_id = http_body["data"]["metadata"].pop("trace_id")
+    mcp_trace_id = mcp_payload["metadata"].pop("trace_id")
+
     assert mcp_payload == http_body["data"], "整份载荷相等（tenant_policy 落地当天自动纳入）"
     assert http_body["data"]["retrieved_chunks"] == mcp_payload["retrieved_chunks"]
+
+    # 两条入口各带各的那根线：形状相同、值不同（不同调用的 log_id 不同，派生自然不同）。
+    for trace_id in (http_trace_id, mcp_trace_id):
+        assert isinstance(trace_id, str)
+        assert len(trace_id) == 32 and all(c in "0123456789abcdef" for c in trace_id)
+    assert http_trace_id != mcp_trace_id, "两次独立调用不该共用一根线"
 
 
 def test_both_entries_reject_the_same_scope_violation_with_the_same_code(

@@ -9,13 +9,13 @@ from sqlalchemy.orm import Session
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.models.knowledge_base import KnowledgeBase
-from app.models.retrieval_log import RetrievalLog
+from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 
 # 「升级前就已经存在的租户」只能从既有四张业务表里认出来：那时候没有 tenants 表，
 # 租户就是一个写在业务行上的字符串。四个来源都要看，不能只看 knowledge_bases——
 # 手工造过文档或日志、却没有库的租户是真实存在的。
-_TENANT_SOURCES = (KnowledgeBase, Document, Chunk, RetrievalLog)
+_TENANT_SOURCES = (KnowledgeBase, Document, Chunk, RetrievalTrace)
 
 
 def create(db: Session, tenant: Tenant) -> Tenant:
