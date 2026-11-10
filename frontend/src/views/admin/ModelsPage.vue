@@ -35,7 +35,7 @@ import type { ModelConfigCreateRequest, ModelConfigData, ModelConfigPatchRequest
 import { errorText } from '../../utils/errorText'
 import {
   MODEL_ROLES,
-  MODEL_ROLE_LABELS,
+  MODEL_ROLE_HINTS,
   MODEL_VENDORS,
   referencedRolesOf,
   roleOptions,
@@ -325,12 +325,10 @@ async function refresh(): Promise<void> {
       <div>
         <h2 class="page-title">模型配置</h2>
         <p class="page-subtitle">
-          模型接入是平台级配置（不属于任何租户）：一条配置里写着用哪家模型、哪个端点、哪把 Key。
-          改完下一次装配即生效，不需要重启。
+          平台级配置：一条写着用哪家模型、哪个端点、哪把 Key。改完下一次装配即生效，不需要重启。
         </p>
-        <p class="mt-1 text-xs text-slate-400">
-          重排跟随 <span class="font-mono">fast</span>，没有独立的重排模型配置：重排一期包着
-          LLMProvider（ADR-0002），所以这里没有「重排模型」这个下拉。
+        <p class="mt-1 text-[11px] text-muted">
+          重排跟随 <span class="font-mono">fast</span> 这档，没有独立的重排模型配置（ADR-0002）。
         </p>
       </div>
       <div class="flex items-center gap-2">
@@ -354,43 +352,60 @@ async function refresh(): Promise<void> {
       <el-button class="mt-2" size="small" @click="refresh">重试</el-button>
     </div>
 
-    <div v-else class="mt-4 overflow-x-auto">
-      <table class="min-w-full text-sm">
-        <thead class="bg-[#F8F9FA] text-[#6B7280]">
+    <div v-else class="mt-5 overflow-x-auto">
+      <!--
+        空态与表格分开写：把「还没有配置」塞进表格的最后一行会让它读起来像一条数据，
+        而且 colspan 上那行字在窄屏会被压成一条细线。
+      -->
+      <div v-if="configs.length === 0" class="py-10 text-center">
+        <p class="text-[15px] font-semibold text-ink">还没有模型配置</p>
+        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+          没有配置时运行时回落到
+          <span class="font-mono">.env</span>
+          的单供应商（离线 / CI 的行为不变）。新增一条之后，下面的「模型角色」就能指向它。
+        </p>
+        <el-button type="primary" class="!mt-5" @click="openCreate">新增模型配置</el-button>
+      </div>
+
+      <table v-else class="min-w-full text-sm">
+        <thead>
           <tr>
-            <th class="px-3 py-2 text-left font-medium">备注名</th>
-            <th class="px-3 py-2 text-left font-medium">供应商</th>
-            <th class="px-3 py-2 text-left font-medium">模型</th>
-            <th class="px-3 py-2 text-left font-medium">接入地址</th>
-            <th class="px-3 py-2 text-left font-medium">Key</th>
-            <th class="px-3 py-2 text-left font-medium">被哪些角色引用</th>
-            <th class="px-3 py-2 text-left font-medium">操作</th>
+            <th class="th-label px-3 py-2 text-left">备注名</th>
+            <th class="th-label px-3 py-2 text-left">供应商</th>
+            <th class="th-label px-3 py-2 text-left">模型</th>
+            <th class="th-label px-3 py-2 text-left">接入地址</th>
+            <th class="th-label px-3 py-2 text-left">Key</th>
+            <th class="th-label px-3 py-2 text-left">被哪些角色引用</th>
+            <th class="th-label px-3 py-2 text-left">操作</th>
           </tr>
         </thead>
         <tbody>
           <tr v-for="config in configs" :key="config.id" class="border-t border-line align-top">
             <td class="px-3 py-3">
-              <p class="font-medium text-slate-800">{{ config.label }}</p>
-              <p class="font-mono text-xs text-slate-400">{{ config.id }}</p>
+              <p class="font-medium text-ink">{{ config.label }}</p>
+              <p class="font-mono text-[11px] text-muted" :title="config.id">
+                {{ config.id.length > 10 ? `${config.id.slice(0, 10)}…` : config.id }}
+              </p>
             </td>
             <td class="px-3 py-3 text-slate-600">{{ vendorLabel(config.provider) }}</td>
             <td class="px-3 py-3 font-mono text-slate-600">{{ config.model }}</td>
             <td class="px-3 py-3 text-slate-600">
               <span v-if="config.base_url === ''" class="text-slate-400">默认地址</span>
-              <span v-else class="break-all font-mono text-xs">{{ config.base_url }}</span>
+              <span v-else class="break-all font-mono text-[11px]">{{ config.base_url }}</span>
             </td>
             <td class="px-3 py-3">
               <!-- 列表里永远是后端给的回显形态（sk-…abcd），本页不存也不展示明文。 -->
-              <span class="font-mono text-xs text-slate-500">
+              <span class="font-mono text-[11px] text-slate-500">
                 {{ config.api_key === '' ? '—（未填 Key）' : config.api_key }}
               </span>
             </td>
             <td class="px-3 py-3">
               <div class="flex flex-wrap gap-1">
+                <!-- 中性胶囊而不是成功绿：被引用是事实，不是「好」或「成功」。 -->
                 <span
                   v-for="role in referencedRolesOf(config)"
                   :key="role"
-                  class="rounded bg-[#D1FAE5] px-2 py-0.5 text-xs text-[#065F46]"
+                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-[11px] text-slate-600"
                 >
                   {{ role }}
                 </span>
@@ -409,33 +424,31 @@ async function refresh(): Promise<void> {
               </div>
             </td>
           </tr>
-
-          <tr v-if="configs.length === 0">
-            <td colspan="7" class="px-3 py-8 text-center text-sm text-slate-500">
-              还没有模型配置。没有配置时运行时回落到 <span class="font-mono">.env</span>
-              的单供应商（离线 / CI 的行为不变）。
-            </td>
-          </tr>
         </tbody>
       </table>
     </div>
 
-    <div class="mt-8 rounded border border-line p-4">
+    <!--
+      角色指向区。三处收拢：
+      - 保存按钮只在有改动时出现（常驻的灰色禁用按钮不传达任何信息）；
+      - 角色标题拆成「名字 + 半句解释」两行，两个角色并排时才读得出这是两档；
+      - 三句提示（键名、只能选不指向、已与服务器一致）合并成一条，按当前状态只显示相关的那句。
+    -->
+    <div class="mt-8 rounded-card border border-line bg-surface-muted p-5">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
-          <h3 class="text-sm font-semibold text-slate-800">模型角色</h3>
-          <p class="mt-1 text-xs text-slate-500">
-            角色指向保存在运行时配置里（键名
-            <span class="font-mono">model.role.fast</span> /
-            <span class="font-mono">model.role.strong</span>，值是上面某条配置的 id）。
-            选「不指向（回落 .env）」即可撤销指向，回到 .env 的单供应商。
+          <h3 class="section-title">模型角色</h3>
+          <p class="mt-1 text-[11px] leading-relaxed text-muted">
+            指向存在运行时配置里（<span class="font-mono">model.role.fast</span> /
+            <span class="font-mono">model.role.strong</span>）。选「不指向（回落 .env）」即撤销指向。
           </p>
         </div>
         <el-button
+          v-if="roleDirty"
           type="primary"
           size="small"
+          class="shrink-0"
           :loading="savingRoles"
-          :disabled="!roleDirty"
           @click="saveRoles"
         >
           保存角色指向
@@ -443,8 +456,11 @@ async function refresh(): Promise<void> {
       </div>
 
       <div class="mt-4 grid gap-4 sm:grid-cols-2">
-        <label v-for="role in MODEL_ROLES" :key="role" class="block text-sm">
-          <span class="mb-1 block text-slate-500">{{ MODEL_ROLE_LABELS[role] }}</span>
+        <div v-for="role in MODEL_ROLES" :key="role">
+          <label class="mb-1 flex flex-wrap items-baseline gap-1.5">
+            <span class="font-mono text-[12px] font-semibold text-ink">{{ role }}</span>
+            <span class="text-[11px] text-muted">{{ MODEL_ROLE_HINTS[role] }}</span>
+          </label>
           <el-select v-model="roleDraft[role]" class="w-full" :disabled="options.length === 1">
             <el-option
               v-for="option in options"
@@ -453,14 +469,14 @@ async function refresh(): Promise<void> {
               :label="option.label"
             />
           </el-select>
-        </label>
+        </div>
       </div>
 
-      <p v-if="options.length === 1" class="mt-2 text-xs text-slate-400">
+      <p v-if="options.length === 1" class="mt-3 text-[11px] text-muted">
         还没有任何模型配置，只能选「不指向（回落 .env）」。
       </p>
-      <p v-if="!roleDirty" class="mt-2 text-xs text-slate-400">
-        当前指向与服务端一致；改了下拉后按钮才会可用。
+      <p v-else-if="roleDirty" class="mt-3 text-[11px] text-amber-700">
+        有未保存的改动；保存后对下一次装配生效。
       </p>
     </div>
 
@@ -471,10 +487,21 @@ async function refresh(): Promise<void> {
       width="560px"
       :close-on-click-modal="false"
     >
-      <div class="space-y-4 text-sm">
+      <!--
+        `autocomplete="off"` 不是装饰：Chrome 的密码管理器会把「接入地址」「Key」当成
+        登录表单，自动填进账号与口令——实测里 `接入地址` 被填成 `admin`、`Key` 被填成
+        登录密码。用户不注意就会保存出一条指向 `admin` 的配置，而界面看起来「已经填好了」。
+        Key 那栏另外用 `new-password`：Chrome 对形似口令的输入框只认这个值才会放过。
+      -->
+      <div class="space-y-4 text-sm" autocomplete="off">
         <label class="flex items-center gap-3">
           <span class="w-24 shrink-0 text-slate-500">备注名</span>
-          <el-input v-model="draft.label" maxlength="128" placeholder="例如：生产 / 备用" />
+          <el-input
+            v-model="draft.label"
+            maxlength="128"
+            autocomplete="off"
+            placeholder="例如：生产 / 备用"
+          />
         </label>
 
         <label class="flex items-center gap-3">
@@ -489,13 +516,17 @@ async function refresh(): Promise<void> {
           </el-select>
         </label>
         <p class="-mt-2 pl-24 text-xs text-slate-400">
-          只支持这六家。自定义端点也选其中一家，把下面的接入地址填成自建网关（后端按供应商名
-          索引装配知识，任意字符串会让第一次调用才报错）。
+          只支持这六家。自定义端点也选其中一家，把接入地址填成自建网关（后端按供应商名索引装配）。
         </p>
 
         <label class="flex items-center gap-3">
           <span class="w-24 shrink-0 text-slate-500">模型名</span>
-          <el-input v-model="draft.model" maxlength="128" placeholder="例如：deepseek-v4-pro" />
+          <el-input
+            v-model="draft.model"
+            maxlength="128"
+            autocomplete="off"
+            placeholder="例如：deepseek-v4-pro"
+          />
         </label>
 
         <label class="flex items-center gap-3">
@@ -503,6 +534,7 @@ async function refresh(): Promise<void> {
           <el-input
             v-model="draft.base_url"
             maxlength="255"
+            autocomplete="off"
             placeholder="留空 = 用该供应商的默认地址"
           />
         </label>
@@ -514,6 +546,7 @@ async function refresh(): Promise<void> {
             type="password"
             show-password
             maxlength="255"
+            autocomplete="new-password"
             :placeholder="
               dialogMode === 'edit'
                 ? `留空 = 不修改（当前 ${editingConfig?.api_key || '未填'}）`

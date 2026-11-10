@@ -287,16 +287,18 @@ input:-webkit-autofill:focus {
  * 所以 CSS 的 important 声明能赢），并把尺寸钉成视口：
  *
  * - `position: fixed` + `inset: 0` + `height: 100vh`：不受任何祖先的包含块影响；
- * - `z-index` 抬到 3000：高于站内一切常规层级（顶栏 30、提示条 ~2000）。
+ * - **`z-index: 2000`（Element 的默认值，刻意不往上抬）**。
  *
- * 多个弹窗叠加（详情弹窗里再开原文弹窗）时，两个遮罩同 z-index 也没问题：同层级按
- * DOM 顺序绘制，后开的天然在上面。
+ * 为什么第二版把 z-index 从 3000 改回 2000：抬到 3000 之后，**弹窗里的下拉面板全被
+ * 遮罩压住了**——Element 的 popper 从 2000 起递增（2001、2002…），永远追不上 3000，
+ * 于是「点供应商没有下拉出来」其实只是选项被盖在遮罩下面。遮罩只需高于页面常规层级
+ * （顶栏 30），不必高于 Element 自己的弹层；这两类元素本来就该由 Element 统一排序。
  */
 .el-overlay {
   position: fixed !important;
   inset: 0 !important;
   height: 100vh !important;
-  z-index: 3000 !important;
+  z-index: 2000 !important;
 }
 
 .el-dialog {

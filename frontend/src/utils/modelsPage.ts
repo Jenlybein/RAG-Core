@@ -22,6 +22,18 @@ export const MODEL_ROLE_LABELS: Record<ModelRole, string> = {
 }
 
 /**
+ * 角色的**一行说明**（取标签括号里的那半句）。
+ *
+ * 为什么要拆：`MODEL_ROLE_LABELS` 是「名字 + 解释」一体，直接当下拉标题会把标题撑成
+ * 一行长句，两个角色并排时更难扫。面板上名字用等宽小字、解释单独一行，才读得出
+ * 「这是两档角色」。
+ */
+export const MODEL_ROLE_HINTS: Record<ModelRole, string> = {
+  fast: '快速调用，同时承担重排',
+  strong: '需要思考的生成',
+}
+
+/**
  * 六个出厂供应商，与后端 `app/core/llm_vendors.py` 的 `LLM_VENDORS` 逐字一致。
  *
  * 为什么前端也有一份：供应商是**写入时**的校验（后端拒掉不在注册表里的名字），而这
