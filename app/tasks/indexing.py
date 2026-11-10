@@ -33,6 +33,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.db.session import SessionLocal
 from app.repositories import document_repository
 from app.services.indexing_service import INDEXING_FAILED_MESSAGE, IndexingService
+from app.services import runtime_settings
 from app.utils.status import DocumentStatus
 
 logger = structlog.get_logger(__name__)
@@ -93,6 +94,10 @@ def _run_indexing(
         bind_contextvars(request_id=request_id)
     db = SessionLocal()
     try:
+        # Worker 进程也要跟上配置：与 app 侧中间件调同一个入口（#93）。放在最前面是因为
+        # 索引链路读的每一个配置项（切块窗口、嵌入批次、节说明开关）都可能在上一分钟被
+        # 管理员改过；刷新失败不拦任务（ensure 内部保留上一份好值并告警）。
+        runtime_settings.ensure_runtime_overrides(db)
         asyncio.run(IndexingService().index_existing_document(db, document_id, reparse=reparse))
     except Exception as exc:
         if _is_retryable(exc) and self.request.retries < self.max_retries:

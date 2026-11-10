@@ -450,7 +450,11 @@ def append_audit(
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
 ) -> AuditLog:
-    """写一条账本行（不 commit）。``actor=None`` 表示系统动作——不塞假账号。"""
+    """写一条账本行（不 commit）。``actor=None`` 表示系统动作——不塞假账号。
+
+    公开名字（票 #91 起的约定）：配置中台、Key 管理这些新写入口复用**同一份**写法，
+    避免每个入口各复制一份之后忘了「不 commit」或多写一个时间戳。
+    """
 
     return audit_log_repository.create(
         db,

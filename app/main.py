@@ -9,6 +9,8 @@
   GET    /console/accounts
   PATCH  /console/accounts/{account_id}
   GET    /console/audit-logs
+  GET    /console/settings            （第 8 步 #93：配置中台）
+  PATCH  /console/settings?dry_run=
   GET    /console/keys                 （票 #91：明文 + masked + 配置，独立路由模块）
   POST   /console/keys                 （签发：连带建密钥配置）
   DELETE /console/keys/{key_id}        （删 Key，不删配置）
@@ -50,6 +52,7 @@ from app.api.router import api_router
 from app.api.routes.console import router as console_router
 from app.api.routes.console_kbs import router as console_kbs_router
 from app.api.routes.console_keys import router as console_keys_router
+from app.api.routes.console_settings import router as console_settings_router
 from app.core.config import settings
 from app.utils import tokenizer
 from app.db.session import SessionLocal
@@ -88,6 +91,14 @@ else:
 
 app = FastAPI(title="RAG-Core", version="0.1.0", lifespan=combined_lifespan)
 
+# ── #93: 运行时配置热更新（每请求一次 TTL 比较，不读库）──
+# 注册顺序决定内外层（后注册的在最外层）：先注册本中间件、再注册请求标识中间件，
+# 于是刷新发生在请求标识绑定之后——刷新告警能带上 request_id。
+from app.api.runtime_settings_middleware import RuntimeSettingsRefreshMiddleware  # noqa: E402
+
+app.add_middleware(RuntimeSettingsRefreshMiddleware)
+# ── #93 结束 ──
+
 # ── T3: 请求关联标识（BaseHTTPMiddleware，本项目无流式响应）──
 from app.core.request_context import RequestContextMiddleware  # noqa: E402
 
@@ -97,11 +108,13 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(api_router)
 
 # 控制面不进 /api/v1：它是「人」的门，与数据面共用响应壳但不共用鉴权依赖。
-# 票 #91 的 Key / 密钥配置接口放在独立模块里，与共用文件平级挂载（同一前缀）。
+# 票 #91 的 Key / 密钥配置接口与 #93 的配置中台各走自己的路由模块，与共用文件平级挂载。
 app.include_router(console_router)
 # 管库管文档的六条单独成模块（并行票各自 include，不把别人的路由挤进 console.py）。
 app.include_router(console_kbs_router)
 app.include_router(console_keys_router)
+# 配置中台走自己的路由模块（并行票的生命线：不往 console.py 里追加路由）。
+app.include_router(console_settings_router)
 
 # ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)

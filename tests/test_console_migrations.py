@@ -138,14 +138,15 @@ def test_each_new_migration_is_named_after_its_twelve_hex_revision() -> None:
         assert path.name == f"{revision}_{slug}.py"
 
 
-def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_audit_table() -> None:
+def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_runtime_settings_table() -> None:
     paths = sorted(VERSIONS_DIR.glob("*.py"))
     revisions = {_revision_of(path): path for path in paths}
     down_revisions = {_down_revision_of(path) for path in paths} - {None}
 
     heads = set(revisions) - down_revisions
     assert len(heads) == 1, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
-    assert heads == {_revision_of(_migration_path("create_audit_logs"))}
+    # #93 在本票之后追加了 runtime_settings，链尾因此从审计表前移到配置覆盖表。
+    assert heads == {_revision_of(_migration_path("create_runtime_settings"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
