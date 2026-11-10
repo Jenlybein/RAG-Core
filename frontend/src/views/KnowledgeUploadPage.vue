@@ -151,8 +151,8 @@ const filteredCount = ref(0)
 
 const uploader = useUploadDocuments({
   upload: (item, targetKbId) =>
-    // title 用展示名（含扩展名），后端拿它当文档标题；kb_id 来自当前输入框。
-    uploadDocumentFile({ kb_id: targetKbId, title: item.fileName, file: item.file }),
+    // 标题用文件基名：选文件夹时 item.fileName 含相对路径，整条路径当文档标题只是噪声。
+    uploadDocumentFile({ kb_id: targetKbId, title: item.file.name, file: item.file }),
 })
 const { results, running, succeededCount, failedCount, uploadAll } = uploader
 
