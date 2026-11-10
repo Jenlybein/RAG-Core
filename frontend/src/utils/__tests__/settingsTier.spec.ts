@@ -1,15 +1,16 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SettingRow } from '../../types/runtimeSettings'
-import { groupByTier, isEditable, validateHotValue } from '../settingsTier'
+import { groupByTier, isEditable, kindOf, validateHotValue } from '../settingsTier'
 
 /**
  * 这些用例钉的是检索参数页的渲染与保存规则，不碰组件：
  *
  * - 分组顺序必须跟后端给的行序（后端按 locked → restart → hot 排，前端不再排一次）；
  * - 某一档一行都没有时**不造空组**（否则页面上出现一个没有内容的标题，读者以为坏了）；
- * - 只读档绝不允许前端提交，数字/布尔的边界在发请求前拦住，省得把 20015 变成一次
- *   「看起来点了保存、其实后端拒了」的往返。
+ * - locked 与 restart 两档都绝不允许前端提交（restart 档在面板上只读，改它走运维流程），
+ *   数字/布尔的边界在发请求前拦住，省得把 20015 变成一次「看起来点了保存、其实后端拒了」
+ *   的往返。
  */
 
 function rowOf(overrides: Partial<SettingRow> = {}): SettingRow {
@@ -63,7 +64,7 @@ describe('groupByTier：顺序照后端，缺档不造空组', () => {
   })
 })
 
-describe('isEditable：只有后端允许且不是 locked 的行才可写', () => {
+describe('isEditable：只有 hot 档可写，locked / restart 在面板上只读', () => {
   it('locked 档一律只读', () => {
     // 即使后端将来把 editable 错报成 true，页面也不给写入口：这一档的 why 就是
     // 「能关掉鉴权」，前端不该把安全边界交给一个布尔字段。
@@ -71,10 +72,28 @@ describe('isEditable：只有后端允许且不是 locked 的行才可写', () =
     expect(isEditable(rowOf({ tier: 'locked', editable: true }))).toBe(false)
   })
 
-  it('hot / restart 档按后端的 editable 决定', () => {
+  it('restart 档即使后端 editable=true 也只读：#93/#96 要求面板不可编辑', () => {
+    // 后端接受 restart 档的写库请求（它只表达「把意图记下来」），但验收要求面板上
+    // 不给入口，改它得走运维流程；保存时因此也不能出现 restart 的改动。
+    expect(isEditable(rowOf({ tier: 'restart', editable: true }))).toBe(false)
+    expect(isEditable(rowOf({ tier: 'restart', editable: false }))).toBe(false)
+  })
+
+  it('hot 档仍按后端的 editable 决定', () => {
     expect(isEditable(rowOf({ tier: 'hot', editable: true }))).toBe(true)
-    expect(isEditable(rowOf({ tier: 'restart', editable: true }))).toBe(true)
     expect(isEditable(rowOf({ tier: 'hot', editable: false }))).toBe(false)
+  })
+})
+
+describe('kindOf：按有效值类型推断输入控件，角色指针单独按字符串', () => {
+  it('布尔 / 数字 / 字符串各归各', () => {
+    expect(kindOf(rowOf({ key: 'A', value: true }))).toBe('boolean')
+    expect(kindOf(rowOf({ key: 'B', value: 3 }))).toBe('number')
+    expect(kindOf(rowOf({ key: 'C', value: 'hybrid' }))).toBe('string')
+  })
+
+  it('角色指针的值是 null 时仍按字符串（它的输入是一段 id 文本）', () => {
+    expect(kindOf(rowOf({ key: 'model.role.fast', value: null }))).toBe('string')
   })
 })
 
