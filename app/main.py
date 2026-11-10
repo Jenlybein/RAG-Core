@@ -11,6 +11,10 @@
   GET    /console/audit-logs
   GET    /console/settings            （第 8 步 #93：配置中台）
   PATCH  /console/settings?dry_run=
+  GET    /console/keys                 （票 #91：明文 + masked + 配置，独立路由模块）
+  POST   /console/keys                 （签发：连带建密钥配置）
+  DELETE /console/keys/{key_id}        （删 Key，不删配置）
+  PATCH  /console/key-policies/{policy_id}
 
 HTTP 数据面（8 个业务接口，/api/v1/*）：
   GET    /api/v1/auth/me
@@ -38,6 +42,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 from app.api.error_handlers import install_handlers
 from app.api.router import api_router
 from app.api.routes.console import router as console_router
+from app.api.routes.console_keys import router as console_keys_router
 from app.api.routes.console_settings import router as console_settings_router
 from app.core.config import settings
 from app.utils import tokenizer
@@ -94,7 +99,9 @@ app.add_middleware(RequestContextMiddleware)
 app.include_router(api_router)
 
 # 控制面不进 /api/v1：它是「人」的门，与数据面共用响应壳但不共用鉴权依赖。
+# 票 #91 的 Key / 密钥配置接口与 #93 的配置中台各走自己的路由模块，与共用文件平级挂载。
 app.include_router(console_router)
+app.include_router(console_keys_router)
 # 配置中台走自己的路由模块（并行票的生命线：不往 console.py 里追加路由）。
 app.include_router(console_settings_router)
 

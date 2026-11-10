@@ -66,6 +66,7 @@ from app.repositories import (
     tenant_repository,
 )
 from app.services.plan_admin import IMPACT_SAMPLE_LIMIT, ImpactGroup
+from app.services.console_service import append_audit
 from app.services.retrieval_options import MODE_HYBRID, profile_chain_of
 
 logger = structlog.get_logger(__name__)
@@ -1162,8 +1163,6 @@ def patch_runtime_settings(
         )
     # 审计与改动同一个事务：不允许出现「改了但没有审计」的窗口。审计落库失败就让整次
     # 改动一起回滚——没有账本的改动本来就不该生效（与改套餐同一条纪律）。
-    from app.services.console_service import append_audit
-
     append_audit(
         db,
         actor=actor,

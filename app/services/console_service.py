@@ -260,7 +260,7 @@ def patch_plan(
                 impact=None,
             )
         db.delete(row)
-        _append_audit(
+        append_audit(
             db,
             actor=actor,
             action=ACTION_PLAN_DELETE,
@@ -298,7 +298,7 @@ def patch_plan(
         )
 
     plan_admin.apply_patch(row, patch)
-    _append_audit(
+    append_audit(
         db,
         actor=actor,
         action=ACTION_PLAN_UPDATE,
@@ -408,7 +408,7 @@ def patch_account(
         tenant.plan_id = plan.id
 
     after = _account_state(account, tenant)
-    _append_audit(
+    append_audit(
         db,
         actor=actor,
         action=ACTION_ACCOUNT_UPDATE,
@@ -450,28 +450,11 @@ def append_audit(
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
 ) -> AuditLog:
-    """对外暴露的审计收口：配置中台等新的写入口复用**同一份**写法。
+    """写一条账本行（不 commit）。``actor=None`` 表示系统动作——不塞假账号。
 
-    只加一个公开名字，不搬动实现：审计行的形状（动作名 + 目标 + 改前/改后快照 + 可空
-    actor）已经在这里定过一次，第二个写入口各自复制一份，迟早有一条忘了填 ``created_at``
-    或忘了「不 commit」那条约定。
+    公开名字（票 #91 起的约定）：配置中台、Key 管理这些新写入口复用**同一份**写法，
+    避免每个入口各复制一份之后忘了「不 commit」或多写一个时间戳。
     """
-
-    return _append_audit(
-        db, actor=actor, action=action, target=target, before=before, after=after
-    )
-
-
-def _append_audit(
-    db: Session,
-    *,
-    actor: ConsoleIdentity | None,
-    action: str,
-    target: str,
-    before: dict[str, Any] | None,
-    after: dict[str, Any] | None,
-) -> AuditLog:
-    """写一条账本行（不 commit）。``actor=None`` 表示系统动作——不塞假账号。"""
 
     return audit_log_repository.create(
         db,

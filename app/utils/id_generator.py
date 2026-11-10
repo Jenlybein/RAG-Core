@@ -18,12 +18,29 @@ from typing import Final
 API_KEY_PREFIX: Final[str] = "rc_live_"
 #: 前缀之后的十六进制位数（``secrets.token_hex`` 每字节两位，所以要除以 2）。
 API_KEY_HEX_LENGTH: Final[int] = 32
+#: masked 形态保留末几位；4 位足够在同一面板里区分几把 Key，又不构成可用凭证。
+API_KEY_MASK_TAIL: Final[int] = 4
+#: masked 形态里的省略号。用单字符「…」而不是三个点：固定宽度截断时不会数错位数。
+API_KEY_MASK_ELLIPSIS: Final[str] = "…"
 
 
 def new_id() -> str:
     """生成一个 UUID v4 字符串。"""
 
     return str(uuid.uuid4())
+
+
+def mask_api_key_value(key_value: str) -> str:
+    """``rc_live_…9f2c``：保留前缀与末 4 位，中间截掉。
+
+    规则与原文格式放在同一个文件里：面板摘要、日志与审计都用这一份，散着写就会各自漂移
+    （一处露出 8 位、另一处露出 2 位，看起来都像「masked」）。短于前缀的异常值不在这里炸：
+    它只可能是手写进库的坏数据，原样回显比 500 更可查。
+    """
+
+    if len(key_value) <= len(API_KEY_PREFIX) + API_KEY_MASK_TAIL:
+        return key_value
+    return f"{API_KEY_PREFIX}{API_KEY_MASK_ELLIPSIS}{key_value[-API_KEY_MASK_TAIL:]}"
 
 
 def new_kb_id() -> str:
