@@ -224,6 +224,32 @@ class _Harness:
         )
 
 
+@pytest.fixture(autouse=True)
+def _isolate_env_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把「回落 ``.env``」这条路固定成一套**与机器无关**的参数。
+
+    本文件有几条用例专门验证「没有指针时装配产物与 ``.env`` 路径逐字一致」，它们只
+    monkeypatch 了 ``DEEPSEEK_API_KEY``。可 ``LLM_PROVIDER`` 与另外五家的 Key 是**从本机
+    ``.env`` 读进来的**：开发者 `.env` 里写着 ``LLM_PROVIDER=ark``（模板默认就是），这些
+    用例就会去装配 ark 并拿到 ``ARK_API_KEY``，断言当场变红——而 CI 上没有 `.env`，同一套
+    代码全绿。**「测试是绿的」不能取决于这台机器上有没有 `.env`**，所以这里无条件铺平：
+    供应商钉 ``deepseek``、六家 Key 全部清空，需要哪家由用例自己 monkeypatch。
+
+    与 ``tests/conftest.py`` 里强制 ``KEYWORD_SEARCH_PROVIDER=none`` 是同一条纪律：
+    用**强制覆盖**而不是 ``setdefault``——变量已经存在时 ``setdefault`` 什么都不做。
+    """
+
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "deepseek")
+    for name in ("DEEPSEEK_API_KEY", "QWEN_API_KEY", "ARK_API_KEY"):
+        monkeypatch.setattr(settings, name, "")
+    for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
+        monkeypatch.setattr(settings, name, "")
+    monkeypatch.setattr(settings, "LLM_MODEL", "deepseek-flash")
+    monkeypatch.setattr(settings, "LLM_STRONG_MODEL", "deepseek-v4-pro")
+    monkeypatch.setattr(settings, "LLM_BASE_URL", "")
+    monkeypatch.setattr(settings, "LLM_REASONING_EFFORT", "off")
+
+
 @pytest.fixture
 def console() -> Any:
     """真实应用 + 假数据库 + 假缓存 + 假会话工厂；每个用例一套全新的世界与状态。"""
