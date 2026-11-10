@@ -305,7 +305,7 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
-// —— 显示原文（默认 masked；二次确认；看完不缓存） ——
+// —— 获取密钥（默认只给 masked；二次确认；看完不缓存） ——
 
 const revealTarget = ref<KeyData | null>(null)
 const revealConfirmOpen = ref(false)
@@ -316,7 +316,7 @@ const revealConfirmMessage = computed(() => {
   const key = revealTarget.value
   if (key === null) return ''
   return (
-    `这把 Key 的原文会以明文显示在当前页面（${key.key_masked}）。` +
+    `《${keyLabel(key)}》的密钥会以明文显示在当前页面（列表里只显示 ${key.key_masked}）。` +
     '请勿录屏或截图；关闭这个窗口后页面不再保留它。'
   )
 })
@@ -402,8 +402,11 @@ watch(
 
       <!--
         列表做成卡片行而不是表格：原来「配置摘要」一列塞着一整句话，列一窄就折行、
-        还断在词中间。改成卡片后每一行的信息按「名字 → Key → 配置块」三层排下来，
+        还断在词中间。改成卡片后每一行的信息按「名字 → 配置块 → 操作」排下来，
         宽度不够时只有 chips 会在块之间换行，永远是完整的语义块。
+
+        masked Key 不再单独占一行：它只是「这是哪一把」的辅助信息，而短 id 已经承担了
+        同一件事。把「看原文」留在右侧操作里，左列就只剩真正要扫读的两行。
       -->
       <ul v-else class="divide-y divide-line">
         <li
@@ -412,7 +415,7 @@ watch(
           class="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 py-4 first:pt-1 last:pb-1"
         >
           <div class="min-w-0 flex-1 space-y-2">
-            <!-- 第一层：名字 + 状态 -->
+            <!-- 第一层：名字 + 状态 + 短 id -->
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-sm font-semibold text-ink">{{ keyLabel(row) }}</span>
               <span
@@ -426,19 +429,7 @@ watch(
               </span>
             </div>
 
-            <!-- 第二层：masked Key + 看原文 -->
-            <div class="flex flex-wrap items-center gap-2">
-              <code
-                class="rounded-md bg-surface-muted px-1.5 py-0.5 font-mono text-[11px] text-slate-600"
-              >
-                {{ row.key_masked }}
-              </code>
-              <el-button link type="primary" size="small" @click="askReveal(row)">
-                显示原文
-              </el-button>
-            </div>
-
-            <!-- 第三层：配置摘要拆成 chips，换行只在块之间发生 -->
+            <!-- 第二层：配置摘要拆成 chips，换行只在块之间发生 -->
             <div class="flex flex-wrap items-center gap-1.5">
               <span
                 v-for="chip in policyChips(row)"
@@ -450,7 +441,7 @@ watch(
             </div>
           </div>
 
-          <div class="flex shrink-0 items-center gap-1">
+          <div class="flex shrink-0 flex-wrap items-center gap-1">
             <el-button
               link
               type="primary"
@@ -460,7 +451,15 @@ watch(
             >
               编辑配置
             </el-button>
-            <el-button link type="danger" size="small" @click="askDelete(row)">删除</el-button>
+            <el-button link type="primary" size="small" @click="askReveal(row)">
+              获取密钥
+            </el-button>
+            <!--
+              文案刻意是「删除 Key」而不是「删除配置」：这个按钮删的是凭证行，
+              密钥配置（key_policy）会原样保留——确认框里也是这么写的。写成「删除配置」
+              会让人以为按下去是把那套配置清掉，正好说反。
+            -->
+            <el-button link type="danger" size="small" @click="askDelete(row)">删除 Key</el-button>
           </div>
         </li>
       </ul>
@@ -531,17 +530,17 @@ watch(
       @confirm="confirmDelete"
     />
 
-    <!-- 显示原文的二次确认 -->
+    <!-- 获取密钥的二次确认 -->
     <ConfirmDialog
       v-model="revealConfirmOpen"
-      title="显示 Key 原文"
+      title="获取密钥"
       :message="revealConfirmMessage"
-      confirm-text="显示原文"
+      confirm-text="获取密钥"
       @confirm="revealNow"
     />
 
-    <!-- 原文弹窗：关掉即丢弃（`revealOpen` 的 setter 会清空 revealed） -->
-    <el-dialog v-model="revealOpen" append-to-body title="Key 原文（关闭后不再保留）" width="560px">
+    <!-- 明文弹窗：关掉即丢弃（`revealOpen` 的 setter 会清空 revealed） -->
+    <el-dialog v-model="revealOpen" append-to-body title="密钥明文（关闭后不再保留）" width="560px">
       <el-input
         :model-value="revealed?.value ?? ''"
         readonly
