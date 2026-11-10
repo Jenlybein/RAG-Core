@@ -382,3 +382,48 @@ input:-webkit-autofill:focus {
   --el-pagination-button-bg-color: transparent;
   font-weight: 500;
 }
+
+/**
+ * 「要查的知识库」里的可选项：把裸复选框做成一张可以点的小卡。
+ *
+ * 为什么需要：`☐ lian diao kb · a6cf720a-…` 这样一行读起来像一段无关文本——没有边框
+ * 就没有「这是一个可以点的对象」的暗示，也没法表达「选中 / 置灰」两种状态。加上边框
+ * 之后，选中与禁用都只需改边框与底色，不必依赖那个 14px 的小方块。
+ *
+ * 用 `.kb-option.el-checkbox` 双类名提高特异性，不去动全局 `.el-checkbox`：同一个页面
+ * 里其它复选框（如果有）不该跟着变形。
+ */
+.kb-option.el-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  height: auto;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--el-border-color);
+  border-radius: 12px;
+  background: #fff;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.kb-option.el-checkbox:hover:not(.is-disabled) {
+  border-color: var(--el-border-color-darker);
+}
+/* 选中：实线深边 + 浅底，与全站「强调」用同一套颜色。 */
+.kb-option--on.el-checkbox {
+  border-color: #2c2921;
+  background: #fbfaf6;
+}
+/* 不可选（不在白名单）：虚线边，视觉上「这里本来有东西，但对你关着」。 */
+.kb-option--off.el-checkbox {
+  border-style: dashed;
+  background: #fbfaf6;
+}
+.kb-option .el-checkbox__input {
+  margin-top: 1px;
+}
+/* Element 给 label 加了左内边距和 nowrap；卡片里的两行文字需要换行与正常行高。 */
+.kb-option .el-checkbox__label {
+  padding-left: 0;
+  white-space: normal;
+  line-height: 1.3;
+}

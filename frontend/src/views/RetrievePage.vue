@@ -343,11 +343,9 @@ const emptyCopy = computed(() =>
     <el-card shadow="never">
       <template #header>
         <div class="flex flex-wrap items-baseline justify-between gap-2">
-          <!-- 标题不再是「检索范围」：这张卡已经包含选 Key、勾库与提问三件事。 -->
+          <!-- 标题不再是「检索范围」：这张卡已经包含选 Key、勾库与提问三件事。
+               计数也不放在这里——它属于「要查的知识库」那一段，挪到那里贴着勾选框。 -->
           <h2 class="text-sm font-semibold text-ink">发起检索</h2>
-          <span class="shrink-0 text-[11px] text-muted">
-            已选 {{ store.selectedCount }} / 共 {{ kbs.length }} 个库
-          </span>
         </div>
       </template>
 
@@ -434,7 +432,28 @@ const emptyCopy = computed(() =>
         </div>
       </template>
 
-      <!-- 勾库 -->
+      <!--
+        勾库。这一段原来只有一排勾选框，前面的「检索范围」小标题在我把两张卡并成一张时
+        被删掉了——结果是一个裸露的复选框，不说明它是什么、为什么在这里、为什么有的灰了。
+        现在补回三件东西：小标题（这是要查的库）、计数（贴着它自己，不在卡片顶角）、
+        以及一句白名单说明（灰掉的库为什么灰）。
+      -->
+      <div
+        v-if="treeLoaded && kbs.length > 0"
+        class="mt-5 flex flex-wrap items-baseline justify-between gap-2 border-t border-line pt-5"
+      >
+        <h3 class="text-[12px] font-semibold text-ink">要查的知识库</h3>
+        <span class="text-[11px] text-muted">
+          已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
+        </span>
+      </div>
+      <p
+        v-if="treeLoaded && kbs.length > 0"
+        class="mt-1 text-[11px] leading-relaxed text-muted"
+      >
+        只能勾这把 Key 白名单里的库；置灰的那些不在白名单里，去 Key 管理页改配置后才能勾。
+      </p>
+
       <p v-if="treePending" class="mt-5 text-sm text-slate-400">正在读取本租户的知识库…</p>
       <div
         v-else-if="treeError !== ''"
@@ -451,7 +470,7 @@ const emptyCopy = computed(() =>
       </div>
       <el-checkbox-group
         v-else
-        class="mt-4 grid gap-2 sm:grid-cols-2"
+        class="mt-2.5 grid gap-2 sm:grid-cols-2"
         :model-value="store.selectedKbIds"
         @update:model-value="onSelectionChange"
       >
@@ -462,10 +481,23 @@ const emptyCopy = computed(() =>
           content="这个库不在当前 Key 的 allowed_kb_ids 白名单里：去 /keys 改这把 Key 的配置后才能勾选"
           placement="top"
         >
-          <el-checkbox :value="kb.kb_id" :disabled="!allowedKbIds.has(kb.kb_id)" class="!mr-0">
-            <span class="text-sm text-slate-700">{{ kb.name }}</span>
-            <!-- id 用更小更淡的字 + 前置分隔点：不加分隔时「kb 名字」与 UUID 会连成一片。 -->
-            <span class="ml-2 font-mono text-[10px] text-slate-400">· {{ kb.kb_id }}</span>
+          <!--
+            每个库是一张可选中的小卡（边框随选中态变化），而不是裸复选框。
+            裸框加上「名字 · UUID」读起来像一行无关文本；有了边框，它是「可以点的对象」。
+          -->
+          <el-checkbox
+            :value="kb.kb_id"
+            :disabled="!allowedKbIds.has(kb.kb_id)"
+            class="kb-option !mr-0"
+            :class="{
+              'kb-option--on': store.selectedKbIds.includes(kb.kb_id),
+              'kb-option--off': !allowedKbIds.has(kb.kb_id),
+            }"
+          >
+            <span class="flex flex-col leading-tight">
+              <span class="text-[13px] text-ink">{{ kb.name }}</span>
+              <span class="mt-0.5 font-mono text-[10px] text-slate-400">{{ kb.kb_id }}</span>
+            </span>
           </el-checkbox>
         </el-tooltip>
       </el-checkbox-group>
