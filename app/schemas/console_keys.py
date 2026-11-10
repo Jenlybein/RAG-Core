@@ -112,9 +112,14 @@ class KeyDeleteData(BaseModel):
 class KeyPolicyPatchRequest(BaseModel):
     """改一套配置：**部分字段更新**，没发的（以及发 ``null`` 的）都表示「这次不动它」。
 
-    ``custom_options`` 不在这条入口上：它由档位演进单独管理（见
-    :data:`app.services.key_policy_service.POLICY_FIELDS` 的注释）。把它塞进一条「改档位 /
-    改限额」的 PATCH 里，会让「选了 quality 又留着一套 custom 参数」这种自相矛盾更容易发生。
+    ``custom_options`` 也在这条入口上，并且**不要求当前 ``profile`` 已经是 ``custom``**：
+    它是延后生效的数据，面板可以先写好这批手动参数、下一次请求再切档位。若这里按当前
+    档位拒绝，「切档位」与「写参数」就被迫压进同一个请求，而面板做不到原子。命名档位
+    是完整替换、只有 ``custom`` 档才读这批键——这是 GLOSSARY「档位」那条的契约。
+
+    ``custom_options`` 声明成 ``dict[str, Any]`` 而不是四个具名字段：键级校验放在服务层
+    （:func:`app.services.key_policy_service._validated_custom_options`），失败才是业务错误
+    ``20015``。写成具名字段会让 ``mode="bing"`` 这类值先被判成参数结构错误 ``20002``。
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -129,6 +134,9 @@ class KeyPolicyPatchRequest(BaseModel):
     profile: str | None = None
     include_parent: bool | None = None
     expand_table_rows: bool | None = None
+    #: 键为 ``mode`` / ``top_k`` / ``rerank`` / ``rewrite``，允许只传其中几个；
+    #: 部分更新是**合并**，不是整份替换。``null`` 表示「这次不动它」。
+    custom_options: dict[str, Any] | None = None
 
     def provided(self) -> dict[str, Any]:
         """这次真的要写的字段：没发的、以及发了 ``null`` 的都不算。"""

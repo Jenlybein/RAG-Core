@@ -1,8 +1,11 @@
-"""改一套密钥配置（票 #72 收尾）：写之前跑与开租户同一份自洽校验。
+"""改 / 建密钥配置（票 #72 收尾，票 #91 补上自定义档的手动参数）：写之前跑与开租户同一份自洽校验。
 
 为什么规则落在服务层而不是脚本里：控制面第 8 步要改的是同一件事，而「改配置前必须
 自洽」这条规则只能有一处。脚本只是它的 CLI 适配器（读参数、打印、退码），与
-``create_tenant`` / ``change_tenant_plan`` 的分层一致。
+``create_tenant`` / ``change_tenant_plan`` 的分层一致。票 #91 起本模块多了两个入口：
+``create_key_policy``（签发 Key 时连带建配置，不 commit）与
+``apply_key_policy_update``（改配置但不提交，供控制面把改动与审计放进同一个事务）。
+脚本用的 ``update_key_policy`` 仍是「apply + commit」，语义不变。
 
 写顺序（与控制面两条写入口同一套收口）：
 
@@ -30,6 +33,7 @@ from typing import Any, Final, Mapping
 
 from sqlalchemy.orm import Session
 
+from app.core.config import SUPPORTED_RETRIEVAL_MODES
 from app.models.key_policy import (
     PROFILES,
     KeyPolicy,
@@ -39,11 +43,17 @@ from app.models.key_policy import (
 from app.models.plan import plan_spec_of
 from app.repositories import key_policy_repository, plan_repository, tenant_repository
 from app.services.profile_policy import ensure_policy_consistent
+from app.services.retrieval_options import (
+    CUSTOM_OPTION_MODE,
+    CUSTOM_OPTION_RERANK,
+    CUSTOM_OPTION_REWRITE,
+    CUSTOM_OPTION_TOP_K,
+    MIN_TOP_K,
+)
 from app.utils.id_generator import new_id
 
-#: 能通过本函数改的**快照**字段：自定义档的手动参数与「不受限」标记刻意除外。
-#: 后者是内置开发身份的显式标记，真实配置只有受限一种；前者由档位演进单独管理，
-#: 不该在一条「改档位 / 改限额」的命令里被顺手覆盖。
+#: 能通过本函数改的**快照标量**字段：自定义档的手动参数（``custom_options``）不是标量，
+#: 它走单独的「逐键校验 + 合并」，所以不在这个元组里；``unrestricted_scope`` 仍然刻意除外。
 POLICY_FIELDS: Final[tuple[str, ...]] = tuple(
     field.name
     for field in fields(KeyPolicySnapshot)
@@ -54,7 +64,16 @@ POLICY_FIELDS: Final[tuple[str, ...]] = tuple(
 ROW_FIELDS: Final[tuple[str, ...]] = ("name",)
 
 #: 本函数接受的**全部**字段：未知字段直接报错，避免拼错一个列名却悄悄没改。
-EDITABLE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ROW_FIELDS
+EDITABLE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ROW_FIELDS + ("custom_options",)
+
+#: ``custom_options`` 的四个合法键（与 :mod:`app.services.retrieval_options` 的
+#: ``CUSTOM_OPTION_*`` 常量同源）。未知键直接拒绝：拼错一个键等于「写了但没生效」。
+CUSTOM_OPTION_KEYS: Final[tuple[str, ...]] = (
+    CUSTOM_OPTION_MODE,
+    CUSTOM_OPTION_TOP_K,
+    CUSTOM_OPTION_RERANK,
+    CUSTOM_OPTION_REWRITE,
+)
 
 #: 签发时新建配置接受的字段：改配置能改的十个 + ``custom_options``（只在新建时确定）。
 CREATE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ("custom_options",)
@@ -146,11 +165,20 @@ def apply_key_policy_update(
         raise LookupError(f"租户 {tenant.id} 的套餐不存在：{tenant.plan_id}")
 
     values = _validated(changes)
+    custom_options = values.pop("custom_options", None)
     # 校验用的是**快照**（判定内核看到的那份形状），而不是还没 flush 的行：行上的
     # 布尔属性在写入前可能是 None，拿它做包含关系判断会得到「关着」的假结论。
     # ``name`` 只落在行上，不参与自洽校验，所以只把快照字段交给 ``replace``。
     snapshot_values = {column: values[column] for column in POLICY_FIELDS if column in values}
     candidate = replace(policy_snapshot_of(policy), **snapshot_values)
+    if custom_options is not None:
+        merged_options = {
+            **dict(policy_snapshot_of(policy).custom_options),
+            **custom_options,
+        }
+        candidate = replace(
+            candidate, custom_options=tuple(sorted(merged_options.items()))
+        )
     ensure_policy_consistent(policy=candidate, plan=plan_spec_of(plan))
 
     before = policy_values_of(policy)
@@ -159,9 +187,17 @@ def apply_key_policy_update(
         setattr(policy, column, list(value) if column == "allowed_kb_ids" else value)
     if "name" in values:
         policy.name = values["name"]
+    if custom_options is not None:
+        # 部分更新：只覆盖这次给出的键，其余保持原样（面板一次只改一个输入框）。
+        policy.custom_options = {**dict(policy.custom_options or {}), **custom_options}
 
     after = policy_values_of(policy)
-    changed = tuple(sorted(column for column in values if before[column] != after[column]))
+    changed_fields = list(values)
+    if custom_options is not None:
+        changed_fields.append("custom_options")
+    changed = tuple(
+        sorted(column for column in changed_fields if before[column] != after[column])
+    )
     return PolicyUpdate(
         policy_id=policy.id,
         tenant_id=policy.tenant_id,
@@ -265,15 +301,68 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("配置名不能为空")
         values["name"] = name
 
+    if "custom_options" in values:
+        values["custom_options"] = _validated_custom_options(values["custom_options"])
+
+    return values
+
+
+def _validated_custom_options(raw: Any) -> dict[str, Any]:
+    """逐键校验 ``custom_options``，返回**只含合法键**的字典。
+
+    四个键各自校验：``mode`` 必须落在 :data:`SUPPORTED_RETRIEVAL_MODES`，``top_k`` 是
+    ≥ ``MIN_TOP_K`` 的整数（``bool`` 是 ``int`` 的子类，``True`` 不能当成 1 放行），
+    ``rerank`` / ``rewrite`` 是布尔。未知键直接拒绝——拼错一个键等于「写了但没生效」，
+    而面板上看到的是「已保存」。
+
+    **不因为当前 ``profile`` 不是 ``custom`` 就拒绝**：这批手动参数是「延后生效的数据」，
+    面板可以先写好参数、下一次请求再切档位；若这里按当前档位拒绝，前端就被迫把「切档位」
+    与「写参数」压进同一个请求，而两个 PATCH 本来就不在一个事务里、面板也做不到原子。
+    命名档位是**完整替换**、只有 ``custom`` 档才读这批键，这是产品契约（见 GLOSSARY
+    「档位」那条），不是这里的校验职责。
+    """
+
+    if not isinstance(raw, dict):
+        raise ValueError(f"custom_options 必须是对象，收到：{type(raw).__name__}")
+
+    unknown = sorted(set(raw) - set(CUSTOM_OPTION_KEYS))
+    if unknown:
+        raise ValueError(
+            f"custom_options 里有未知键：{', '.join(unknown)}"
+            f"（可选：{', '.join(CUSTOM_OPTION_KEYS)}）"
+        )
+
+    values: dict[str, Any] = {}
+    if CUSTOM_OPTION_MODE in raw:
+        mode = raw[CUSTOM_OPTION_MODE]
+        if mode not in SUPPORTED_RETRIEVAL_MODES:
+            raise ValueError(
+                f"custom_options.mode 只能是 {'/'.join(SUPPORTED_RETRIEVAL_MODES)}，"
+                f"收到：{mode!r}"
+            )
+        values[CUSTOM_OPTION_MODE] = mode
+    if CUSTOM_OPTION_TOP_K in raw:
+        top_k = raw[CUSTOM_OPTION_TOP_K]
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < MIN_TOP_K:
+            raise ValueError(
+                f"custom_options.top_k 必须是 ≥ {MIN_TOP_K} 的整数，收到：{top_k!r}"
+            )
+        values[CUSTOM_OPTION_TOP_K] = top_k
+    for flag in (CUSTOM_OPTION_RERANK, CUSTOM_OPTION_REWRITE):
+        if flag in raw:
+            flag_value = raw[flag]
+            if not isinstance(flag_value, bool):
+                raise ValueError(f"custom_options.{flag} 必须是布尔值，收到：{flag_value!r}")
+            values[flag] = flag_value
     return values
 
 
 def _validated_create(values: Mapping[str, Any]) -> dict[str, Any]:
     """校验并规整「新建配置」的入参，返回可直接落到行上的完整 11 个值。
 
-    与 :func:`_validated` 共用同一套逐字段校验（档位名、限额 ≥ 1、白名单非空串），只是
-    新建时字段可以省略、由 :data:`CREATE_DEFAULTS` 补齐；``custom_options`` 是新建路径
-    独有的一个（改配置那条路刻意不动它）。
+    与 :func:`_validated` 共用同一套逐字段校验（档位名、限额 ≥ 1、白名单非空串、
+    ``custom_options`` 的逐键校验），只是新建时字段可以省略、由 :data:`CREATE_DEFAULTS`
+    补齐。
     """
 
     provided = dict(values)
@@ -289,11 +378,9 @@ def _validated_create(values: Mapping[str, Any]) -> dict[str, Any]:
 
     merged = {**CREATE_DEFAULTS, **provided}
     custom_options = merged.pop("custom_options", None) or {}
-    if not isinstance(custom_options, dict):
-        raise ValueError(f"custom_options 必须是对象，收到：{type(custom_options).__name__}")
 
     checked = _validated(merged)
-    checked["custom_options"] = dict(custom_options)
+    checked["custom_options"] = _validated_custom_options(custom_options)
     return checked
 
 

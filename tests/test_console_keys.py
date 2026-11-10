@@ -631,4 +631,94 @@ def test_a_policy_patch_without_the_anti_csrf_header_is_rejected(console: _Harne
     assert console.audit_entries() == []
 
 
+# ────────────────────────────────────── custom_options（custom 档的手动参数，票 #91 补充）
+
+
+def _patch_policy(console: _Harness, policy_id: str, payload: dict[str, Any]) -> Any:
+    return console.client.patch(
+        f"/console/key-policies/{policy_id}", json=payload, headers=WRITE_HEADERS
+    )
+
+
+def test_custom_options_are_writeable_and_read_back_off_the_custom_profile(
+    console: _Harness,
+) -> None:
+    """不要求 ``profile == custom``：参数可以先写好，下一次再切档位（延后生效的数据）。
+
+    这里用的还是 ``quality`` 档——正因如此才证明「写参数」与「当前档位」是两件事。
+    """
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    options = {"mode": "hybrid", "top_k": 5, "rerank": True, "rewrite": True}
+    data = console.data(_patch_policy(console, POLICY_ALPHA, {"custom_options": options}))
+
+    assert data["after"]["custom_options"] == options
+    assert data["before"]["custom_options"] == {}
+    assert data["changed"] == ["custom_options"]
+    # 档位没被这次请求改掉：写参数不是切档位的副作用。
+    assert data["after"]["profile"] == "quality"
+
+    assert console.policy_row(POLICY_ALPHA).custom_options == options
+    listed = console.data(console.client.get("/console/keys"))["keys"][0]["policy"]
+    assert listed["custom_options"] == options
+
+    entry = console.audit_entries()[-1]
+    assert entry.action == "key_policy.update"
+    assert entry.after_snapshot["custom_options"] == options
+
+
+def test_a_custom_options_top_k_below_one_is_a_20015(console: _Harness) -> None:
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = _patch_policy(console, POLICY_ALPHA, {"custom_options": {"top_k": 0}})
+
+    assert console.code(response) == 20015
+    assert console.policy_row(POLICY_ALPHA).custom_options == {}
+    assert console.audit_entries() == []
+
+
+def test_an_unknown_custom_mode_is_a_20015(console: _Harness) -> None:
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = _patch_policy(console, POLICY_ALPHA, {"custom_options": {"mode": "bing"}})
+
+    assert console.code(response) == 20015
+    assert console.policy_row(POLICY_ALPHA).custom_options == {}
+    assert console.audit_entries() == []
+
+
+def test_an_unknown_custom_option_key_is_a_20015(console: _Harness) -> None:
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = _patch_policy(console, POLICY_ALPHA, {"custom_options": {"max_kb": 3}})
+
+    assert console.code(response) == 20015
+    assert console.policy_row(POLICY_ALPHA).custom_options == {}
+    assert console.audit_entries() == []
+
+
+def test_a_partial_custom_options_patch_merges_instead_of_replacing(console: _Harness) -> None:
+    """只传 ``rerank`` 时，已经写好的 ``mode`` / ``top_k`` 不被清空。"""
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    first = console.data(
+        _patch_policy(console, POLICY_ALPHA, {"custom_options": {"mode": "bm25", "top_k": 7}})
+    )
+    assert first["after"]["custom_options"] == {"mode": "bm25", "top_k": 7}
+
+    second = console.data(
+        _patch_policy(console, POLICY_ALPHA, {"custom_options": {"rerank": True}})
+    )
+    assert second["after"]["custom_options"] == {"mode": "bm25", "top_k": 7, "rerank": True}
+    assert second["changed"] == ["custom_options"]
+    assert console.policy_row(POLICY_ALPHA).custom_options == {
+        "mode": "bm25",
+        "top_k": 7,
+        "rerank": True,
+    }
+
+
+
 
