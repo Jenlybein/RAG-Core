@@ -26,7 +26,7 @@
  */
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
-import { computed, h, reactive, watch } from 'vue'
+import { computed, h, reactive, ref, watch } from 'vue'
 
 import { useDryRunSave } from '../../composables/useDryRunSave'
 import {
@@ -204,6 +204,32 @@ function formatValue(row: SettingRow): string {
   return String(row.value)
 }
 
+// —— 折叠 ——
+//
+// 三组加起来五十多项，一屏放不下；而日常真正要动的只有「热生效」那一组，另外两组是
+// 查证用的（只读 / 待重启）。默认只展开能改的那一组，另外两组收起。
+const openGroups = ref<string[]>(['hot'])
+
+/** 全部展开 / 收起：五十行的清单里，逐个点开三组很烦。 */
+const allOpen = computed(() => groups.value.length > 0 && openGroups.value.length === groups.value.length)
+
+function toggleAll(): void {
+  openGroups.value = allOpen.value ? [] : groups.value.map((group) => group.tier)
+}
+
+/**
+ * 这一组有几项「不对劲」。
+ *
+ * 收起之后异常会被一起藏起来，所以标题上必须留个数字：`invalid`（库里那一行被丢弃、
+ * 已回退到 .env）和「已写入库、待重启生效」都属于「页面显示的值不是进程正在用的值」，
+ * 恰恰是最该被看到的一类。
+ */
+function alertCountOf(group: { tier: string; rows: readonly SettingRow[] }): number {
+  return group.rows.filter(
+    (row) => row.invalid || (group.tier === 'restart' && row.source === 'db'),
+  ).length
+}
+
 /**
  * 档位徽章配色。暖色令牌，与 StatusBadge / statusPill 同一组语义色：
  * 热生效=成功绿、待重启=警示黄、只读=中性。
@@ -309,6 +335,9 @@ async function refresh(): Promise<void> {
         </p>
       </div>
       <div class="flex items-center gap-2">
+        <el-button v-if="groups.length > 1" size="small" @click="toggleAll">
+          {{ allOpen ? '全部收起' : '全部展开' }}
+        </el-button>
         <el-button size="small" :loading="settingsQuery.isFetching.value" @click="refresh">
           刷新
         </el-button>
@@ -329,23 +358,47 @@ async function refresh(): Promise<void> {
       <el-button class="mt-2" size="small" @click="refresh">重试</el-button>
     </div>
 
-    <div v-else class="mt-6 space-y-8">
-      <div v-for="group in groups" :key="group.tier">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <h3 class="section-title">{{ group.title }}</h3>
-          <span class="rounded-full px-2 py-0.5 text-[11px]" :class="tierBadgeClass(group.tier)">
-            {{ tierBadgeText(group.tier) }}
-          </span>
-        </div>
-        <p class="mt-1 text-[11px] leading-relaxed text-muted">{{ tierHint(group.tier) }}</p>
+    <!--
+      三组可折叠。默认只展开「热生效」——日常真正会动的只有那一组（另外两组是查证用的
+      只读 / 待重启），五十多行一屏放不下时，把不动的收起来比让人一直滚更合理。
 
-        <div class="mt-3 overflow-x-auto">
-          <!--
-            四列而不是五列：原来还有一列「状态」（只读 / 面板只读 / 可热改），而**分区标题
-            已经说明了这件事**——这一列永远是同一个值，重复了一遍又挤掉了右边。异常信息
-            （invalid、待重启）挪到「来源」列下面，它们本来就与来源同源。
-          -->
-          <table class="min-w-full text-sm">
+      收起态的标题必须自带状态：组名、档位徽章、条目数，以及**异常计数**——收起来之后
+      「库里那一行被丢弃」和「已写入库、待重启生效」会被一起藏掉，而它们恰恰是「屏幕上的
+      值不是进程正在用的值」这类最该被看到的信息。
+    -->
+    <div v-else class="mt-6">
+      <el-collapse v-model="openGroups">
+        <el-collapse-item v-for="group in groups" :key="group.tier" :name="group.tier">
+          <template #title>
+            <div class="flex flex-wrap items-center gap-2.5 py-1">
+              <span class="text-[14px] font-semibold tracking-tight text-ink">
+                {{ group.title }}
+              </span>
+              <span
+                class="rounded-full px-2 py-0.5 text-[11px]"
+                :class="tierBadgeClass(group.tier)"
+              >
+                {{ tierBadgeText(group.tier) }}
+              </span>
+              <span class="text-[11px] text-muted">{{ group.rows.length }} 项</span>
+              <span
+                v-if="alertCountOf(group) > 0"
+                class="rounded-full bg-[#F7E2DD] px-2 py-0.5 text-[11px] text-[#8C2F22]"
+              >
+                {{ alertCountOf(group) }} 项需注意
+              </span>
+            </div>
+          </template>
+
+          <p class="text-[11px] leading-relaxed text-muted">{{ tierHint(group.tier) }}</p>
+
+          <div class="mt-3 overflow-x-auto">
+            <!--
+              四列而不是五列：原来还有一列「状态」（只读 / 面板只读 / 可热改），而分区标题
+              已经说明了这件事——这一列永远是同一个值，重复了一遍又挤掉了右边。异常信息
+              （invalid、待重启）挪到「来源」列下面，它们本来就与来源同源。
+            -->
+            <table class="min-w-full text-sm">
             <thead>
               <tr>
                 <th class="th-label px-3 py-2 text-left">配置项</th>
@@ -438,8 +491,9 @@ async function refresh(): Promise<void> {
               </tr>
             </tbody>
           </table>
-        </div>
-      </div>
+          </div>
+        </el-collapse-item>
+      </el-collapse>
     </div>
   </section>
 </template>

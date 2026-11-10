@@ -336,6 +336,41 @@ input:-webkit-autofill:focus {
   border-top: 1px solid #f0ece4;
 }
 
+/**
+ * 折叠面板（`el-collapse`）：去掉 Element 自带的上下通栏边框，改成「组与组之间一条线」。
+ *
+ * 默认的 `.el-collapse` 在整块上下各画一条 border，放在卡片里会出现两条与卡片边缘
+ * 平行的多余横线；而每组之间没有分隔，收起三组时它们会糊成一片。
+ */
+.el-collapse {
+  border-top: none;
+  border-bottom: none;
+}
+.el-collapse-item__header {
+  border-bottom: 1px solid #e7e2d7;
+  background: transparent;
+  padding-left: 0;
+  /*
+   * Element 给标题行写死了 `height: 48px; line-height: 48px`，而标题里放的是自定义
+   * flex 内容（名字 + 徽章 + 计数）。子元素继承那个 48px 行高，徽章就会被撑成一个
+   * 竖椭圆——看起来像排版坏了。所以这里把行高交还给内容自己。
+   */
+  height: auto;
+  min-height: 48px;
+  line-height: normal;
+}
+.el-collapse-item__header.is-active {
+  border-bottom-color: transparent;
+}
+.el-collapse-item__wrap {
+  background: transparent;
+  border-bottom: 1px solid #e7e2d7;
+}
+.el-collapse-item__content {
+  padding-bottom: 20px;
+  padding-left: 0;
+}
+
 .el-tooltip__popper,
 .el-popper.is-light {
   border-radius: 10px;
