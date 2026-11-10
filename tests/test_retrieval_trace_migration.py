@@ -250,7 +250,14 @@ def test_the_migration_is_named_after_its_twelve_hex_revision() -> None:
     assert path.name == f"{revision}_{SLUG}.py"
 
 
-def test_it_chains_onto_the_previous_head_and_is_now_the_only_head() -> None:
+def test_it_chains_onto_the_previous_head_and_stays_in_the_single_chain() -> None:
+    """本条迁移接在旧 head 之后，并且仍然待在**唯一一条链**上。
+
+    这里不写「它的 revision 就是当前 head」：链尾会随新迁移继续前移（#105 的反馈表就
+    接在它后面），而本条迁移要守的性质是「接得上、不另起一头」，不是「永远在最后」。
+    所以改成沿 ``down_revision`` 从当前 head 往回走，确认本条的 revision 在路径上。
+    """
+
     path = _migration_path(SLUG)
     assert _down_revision_of(path) == PREVIOUS_HEAD
 
@@ -259,7 +266,20 @@ def test_it_chains_onto_the_previous_head_and_is_now_the_only_head() -> None:
     down_revisions = {_down_revision_of(candidate) for candidate in paths} - {None}
     heads = set(revisions) - down_revisions
 
-    assert heads == {_revision_of(path)}, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
+    assert len(heads) == 1, f"迁移链必须只有一条，实际 head={sorted(heads)}"
+
+    # 从唯一 head 往回走到底，本条必须在路径上：既接得上，又没把自己变成一头。
+    walked: list[str] = []
+    cursor: str | None = next(iter(heads))
+    while cursor is not None:
+        walked.append(cursor)
+        parent = _down_revision_of(revisions[cursor])
+        if parent is not None:
+            assert parent in revisions, f"{parent}: down_revision 指向一条不存在的迁移"
+        cursor = parent
+
+    assert _revision_of(path) in walked, "本条迁移不在链上（说明它被孤立了）"
+    assert PREVIOUS_HEAD in walked, "旧 head 不在链上"
 
 
 # ────────────────────────────────────────────────────────────── upgrade：改名 + 十列
