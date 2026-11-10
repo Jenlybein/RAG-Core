@@ -86,12 +86,10 @@ def _ensure_owns_trace(
     「随便填一个别人的」——这也是三种失败合并成一个判定的原因（它在本地一次读完）。
     """
 
-    trace = retrieval_trace_repository.get_by_log_id(db, log_id)
-    if (
-        trace is None
-        or trace.trace_id != trace_id
-        or trace.tenant_id != tenant_id
-    ):
+    # 租户作为**强制参数**传进去：跨租户在仓储层就已经是 None，这里不再有「查到了但
+    # 不是你的」这种中间态可判，也就没有把它答成别的码的机会。
+    trace = retrieval_trace_repository.get_by_id_for_tenant(db, log_id, tenant_id=tenant_id)
+    if trace is None or trace.trace_id != trace_id:
         raise AppError(ErrorCode.FEEDBACK_LOG_MISMATCH)
 
 

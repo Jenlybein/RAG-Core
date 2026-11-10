@@ -1,7 +1,60 @@
 # RAG 中台（rag-center）本地基础设施
-# 用法：docker compose -f deploy/docker-compose.yml up -d
-# 说明见同目录 README.md
+#
+# 两套栈，一个文件、两种起法：
+#
+#   业务最小部署      docker compose -f deploy/docker-compose.yml up -d
+#   加上观测栈        docker compose -f deploy/docker-compose.yml --profile obs up -d
+#
+# 观测栈（Langfuse v4 全家桶，ADR-0021 决策 4）整组挂在 `profiles: ["obs"]` 下：
+# 不带 `--profile obs` 时那五个容器**根本不会被创建**，业务最小部署不背这排中间件。
+# 反过来说 `--profile obs` 会把无 profile 的业务服务一起带上——这是刻意的：观测栈要用的
+# Postgres 就是业务那一个（独立**库**，不是独立实例，见 deploy/init/02-langfuse-db.sql）。
+#
+# 起停、端口、内存占用与「起不来怎么降级」都写在同目录 README.md。
 name: rag-center
+
+# ── 观测栈的公共环境 ────────────────────────────────────────────────────────────
+# 写在一处是因为 web 与 worker **必须同版本、同配置**（ADR-0021「版本要成对」）：
+# 两端对 ClickHouse 列形状或密钥的理解差一次发布，写入就会静默丢字段。
+#
+# 下面每一个 `local-dev-only-*` 都是**占位值**：本地调试够用，别带到线上。
+# 换成真值的方式：openssl rand -hex 32（NEXTAUTH_SECRET / SALT / ENCRYPTION_KEY）、
+# openssl rand -base64 24（两个密码）。
+x-langfuse-env: &langfuse-env
+  # 观测数据进独立的 langfuse 库：业务库 rag_db 里一张观测表都不该多出来（ADR-0021 决策 2）。
+  # 这个库由 deploy/init/02-langfuse-db.sql 在数据卷全新时建好。
+  DATABASE_URL: postgresql://postgres:123456@postgres:5432/langfuse
+  # v4 缺 NEXTAUTH_URL / NEXTAUTH_SECRET / SALT / ENCRYPTION_KEY 会启动即报
+  # Invalid environment variables（与 v2 时代同一个坑，只是项更多了）。
+  NEXTAUTH_URL: http://localhost:3000
+  NEXTAUTH_SECRET: local-dev-only-nextauth-secret
+  SALT: local-dev-only-salt
+  # 必须**加引号**：64 个 0 不加引号会被 YAML 读成数字 0，v4 于是报
+  # 「ENCRYPTION_KEY must be 256 bits, 64 string characters in hex format」。
+  ENCRYPTION_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
+  # 不回传用量：本机常驻的服务不该有出网请求。
+  TELEMETRY_ENABLED: "false"
+  CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+  CLICKHOUSE_URL: http://clickhouse:8123
+  CLICKHOUSE_USER: clickhouse
+  CLICKHOUSE_PASSWORD: local-dev-only-clickhouse
+  CLICKHOUSE_CLUSTER_ENABLED: "false"
+  REDIS_HOST: langfuse-redis
+  REDIS_PORT: "6379"
+  REDIS_AUTH: local-dev-only-redis
+  # 事件落 MinIO 的 `langfuse` 桶；MinIO 容器启动时自己 mkdir 这个桶（见下面的 command）。
+  LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: local-dev-only-minio
+  LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+  LANGFUSE_S3_MEDIA_UPLOAD_BUCKET: langfuse
+  LANGFUSE_S3_MEDIA_UPLOAD_ACCESS_KEY_ID: minio
+  LANGFUSE_S3_MEDIA_UPLOAD_SECRET_ACCESS_KEY: local-dev-only-minio
+  LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://minio:9000
+  LANGFUSE_S3_MEDIA_UPLOAD_FORCE_PATH_STYLE: "true"
+  LANGFUSE_S3_MEDIA_UPLOAD_REGION: auto
 
 services:
   postgres:
@@ -54,19 +107,6 @@ services:
       timeout: 5s
       retries: 12
 
-  langfuse:
-    image: langfuse/langfuse:2
-    container_name: rag-langfuse
-    ports:
-      - "3000:3000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:123456@postgres:5432/langfuse
-      - NEXTAUTH_URL=http://localhost:3000     # 必填：Langfuse 2 缺它会启动即报 Invalid environment variables
-      - NEXTAUTH_SECRET=change-me
-      - SALT=change-me
-    depends_on:
-      - postgres
-
   # Celery Worker：只跑 Linux 容器（OCR 运行时只在 Linux x64 端到端被验证）。
   # 镜像内已预灌 PDFium / ONNX Runtime / PP-OCRv6，所以 OCR_OFFLINE=true 也能命中缓存。
   # 关键：这里必须与 API 共用同一个 DOCUMENT_STORAGE_PATH（reparse=true 时 Worker 要能找到原文件）。
@@ -91,6 +131,126 @@ services:
       redis:
         condition: service_healthy
 
+  # ── 观测栈（profile: obs）──────────────────────────────────────────────────────
+  # 上游 v4 自托管 compose 的五个容器，一个不少也一个不多：
+  #   langfuse-web / langfuse-worker   两个应用进程，共用 LANGFUSE_IMAGE_TAG
+  #   clickhouse                       事件与 observation 的存储（涨磁盘最快的是它）
+  #   minio                            事件对象存储
+  #   langfuse-redis                   worker 的队列，与业务 Redis 分开
+  # Postgres 不新起：复用上面那个实例的 langfuse 库（独立库，不混业务表）。
+
+  langfuse-web:
+    profiles: ["obs"]
+    # 版本必须 ≥ 4.59.0：Python SDK v5 只用 v4 的 Public API（官方兼容矩阵）。
+    # 想钉死某个小版本就改 LANGFUSE_IMAGE_TAG，别直接改这一行。
+    image: langfuse/langfuse:${LANGFUSE_IMAGE_TAG:-4}
+    container_name: rag-langfuse-web
+    restart: unless-stopped
+    environment:
+      <<: *langfuse-env
+      # 预签名 URL 里的地址要给**浏览器/宿主机**用，所以这里指向宿主机映射出来的 9090；
+      # 进程自己读事件仍走内网 minio:9000（下面的 *_INTERNAL_ENDPOINT）。
+      LANGFUSE_S3_MEDIA_UPLOAD_ENDPOINT: http://localhost:9090
+      LANGFUSE_S3_MEDIA_UPLOAD_INTERNAL_ENDPOINT: http://minio:9000
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  langfuse-worker:
+    profiles: ["obs"]
+    image: langfuse/langfuse-worker:${LANGFUSE_IMAGE_TAG:-4}
+    container_name: rag-langfuse-worker
+    restart: unless-stopped
+    environment:
+      <<: *langfuse-env
+    # 3030 只在栈内可达：宿主侧不需要直连 worker。
+    expose:
+      - "3030"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+      langfuse-redis:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+
+  clickhouse:
+    profiles: ["obs"]
+    # 上游 compose 钉住的版本；ClickHouse 的表结构在迁移里有版本要求，别随手升。
+    image: clickhouse/clickhouse-server:26.3.62.3
+    container_name: rag-langfuse-clickhouse
+    restart: unless-stopped
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: local-dev-only-clickhouse
+    volumes:
+      - langfuse_clickhouse_data:/var/lib/clickhouse
+      - langfuse_clickhouse_logs:/var/log/clickhouse-server
+    ports:
+      # 只映射 HTTP 端口给宿主调试用（clickhouse-client --query）；原生 9000 留在栈内。
+      - "127.0.0.1:8123:8123"
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    profiles: ["obs"]
+    # 上游 v4 compose 用的是 Chainguard 的 MinIO（MinIO 官方 Docker Hub 镜像已不再随版本发布）。
+    # 上游写 `:latest`；这里按 digest 钉住同一个构建，避免「今天拉到的和下周拉到的不是同一份」。
+    image: cgr.dev/chainguard/minio@sha256:fb893e36fc369d41e92f678b17ec27378fa5bf0576aeef7ac15460c13629ab5a
+    container_name: rag-langfuse-minio
+    restart: unless-stopped
+    entrypoint: sh
+    # 启动前先把 langfuse 桶建好：Langfuse 自己不建桶，桶不在就没有事件对象存储。
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: local-dev-only-minio
+    volumes:
+      - langfuse_minio_data:/data
+    ports:
+      - "9090:9000"              # S3 API：预签名 URL 就写到这个地址上
+      - "127.0.0.1:9091:9001"    # 控制台
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  langfuse-redis:
+    profiles: ["obs"]
+    image: redis:7-alpine
+    container_name: rag-langfuse-redis
+    restart: unless-stopped
+    # noeviction：队列条目被淘汰等于静默丢 trace，宁可写入失败（worker 会重试）也不丢。
+    command: redis-server --requirepass local-dev-only-redis --maxmemory-policy noeviction
+    # 不映射宿主端口：业务 Redis 已经占着 6379，而且这个 Redis 只服务栈内的 worker。
+    volumes:
+      - langfuse_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "local-dev-only-redis", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
 volumes:
   pg_data:
   es_data:
+  langfuse_clickhouse_data:
+  langfuse_clickhouse_logs:
+  langfuse_minio_data:
+  langfuse_redis_data:
