@@ -87,7 +87,7 @@ uv run python scripts/eval_side_evidence.py --env-file ../RAG-Core/.env         
 
 | 项 | 状态 | 翻案条件 |
 | --- | --- | --- |
-| Langfuse v4 全家桶**整栈起来跑一次检索** | 编排已完成（`--profile obs` 服务清单正确、compose config 通过），但**未实机起栈**：本机国际出口不稳，镜像没拉全 | 网络恢复后 `docker compose --profile obs up -d`，发一次检索，核对 UI 里的 trace id 与响应 `metadata.trace_id` 一致 |
+| 观测栈**经 HTTP 检索端点**跑通完整链路 | 栈**已起过并实测**：5 个容器（web / worker / clickhouse / minio / redis）在跑，`docker stats` 读到合计 ≈1.8 GB（见 `deploy/README.md`「资源占用」）；trace 注入与读回也验过——`emit_retrieval_trace` + 真 `LangfuseTraceSink` + 真栈，六段耗时齐全、`traceId` 与 `trace_id_for(log_id)` 逐字符相同。**未做的那一步**：本机 worktree 没有 `.env`，嵌入与 LLM 的 key 都不在，`POST /api/v1/rag/retrieve` 这条真实检索链路起不来，所以「响应里的 `trace_id` → 栈里那条 trace」这条端到端链路没跑过 | 有 `.env` 的机器上发一次真实检索，核对 UI/lifecycle API 里的 trace id 与响应 `metadata.trace_id` 一致、且含六段 |
 | `--via-http` 评测冒烟 | 已实现（3 道题、断言字段清单），离线测试覆盖**挑题顺序与缺字段**，但未起 API 服务真跑 | 起服务 + 签一把 Key 后跑一次 |
 
 ## 六、口径提醒（读这份表前先知道）
