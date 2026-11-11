@@ -8,8 +8,9 @@ import { asPayload } from './httpPayload'
 /**
  * 数据面客户端：身份**只有**用户当前选中的 API Key，注入 `Authorization: Bearer`。
  *
- * **只给真实检索用。** 这个文件现在只应被 `services/ragService.ts` import——
- * 全仓库唯一的调用点是 `POST /api/v1/rag/retrieve`。出现第二个调用点就是身份混了：
+ * **只给数据面的业务动作用。** 当前有两个调用点，都是「拿真实 Key 打真实请求」：
+ * `POST /api/v1/rag/retrieve`（ragService）与 `POST /api/v1/rag/feedback`（feedbackService，
+ * #106 起）。除此之外**不该有第三个**：出现别的调用点就是身份混了：
  * 登录 / 我的 / 树 / 建库 / 上传 / 重建 / 删文档 / Key 与配置全部走控制面会话门
  * （`lib/consoleHttp.ts`），那扇门不认 Bearer。为什么把这件事写成一句注释而不是
  * 一个共享开关：共享开关会让「这一次到底用哪个身份」出现两个可能的答案，而一旦

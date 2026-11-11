@@ -62,6 +62,7 @@ from app.api.routes.console_models import router as console_models_router
 from app.api.routes.console_profiles import router as console_profiles_router
 from app.api.routes.console_settings import router as console_settings_router
 from app.api.routes.console_traces import router as console_traces_router
+from app.api.routes.console_eval import router as console_eval_router
 from app.core.config import settings
 from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
@@ -156,6 +157,8 @@ app.include_router(console_models_router)
 app.include_router(console_profiles_router)
 # 瀑布图（#103）：按 log_id 读回六段耗时，先本地记录、后观测服务。
 app.include_router(console_traces_router)
+# 语义旁证（#109）：触发一次旁证跑批并读它的状态。
+app.include_router(console_eval_router)
 
 # ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)
