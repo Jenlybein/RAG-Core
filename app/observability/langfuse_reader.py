@@ -84,7 +84,24 @@ def read_stage_spans(trace_id: str, *, client: Any | None = None) -> tuple[Stage
         client = _resolve_client()
 
     try:
-        response = client.observations.get_many(trace_id=trace_id, limit=_OBSERVATION_LIMIT)
+        # ``fields`` 不能省，而且**两个都要点名**：
+        #
+        # - 不传 ``fields`` 时 v2 的 observations 接口**默认不返回 metadata**，于是
+        #   ``metadata`` 永远是 ``None``，每一段都退回 ``end_time - start_time``——而那对
+        #   时刻在「事后补记」里几乎相同，结果是瀑布图**全部显示 0.0 ms**，看起来像
+        #   「观测栈里没有耗时数据」。
+        # - 传了 ``fields`` 它就是**白名单**：只写 ``["metadata"]`` 会把 ``name`` 一起滤掉，
+        #   于是每一段都因为「名字不认识」被丢弃，瀑布图变成空数组。
+        #
+        # ``basic`` 带 ``name``（也带 type / level），``metadata`` 带我们自己写进去的
+        # ``duration_ms``。这条组合是实机对着自托管 v4 栈试出来的（2026-11-11）：
+        # 同一个 trace 带上它之后六段立刻回真值
+        # （0.154 / 12.246 / 8483.89 / 474.568 / 9372.298 / 0.09 ms）。
+        response = client.observations.get_many(
+            trace_id=trace_id,
+            limit=_OBSERVATION_LIMIT,
+            fields=["basic", "metadata"],
+        )
     except LangfuseReadError:
         raise
     except Exception as exc:  # noqa: BLE001 - 任何网络 / 认证失败都归为「读不到」
