@@ -128,6 +128,18 @@ MSG_MISSING_TOKEN = "missing bearer token"
 MSG_UNKNOWN_KEY = "invalid api key"
 MSG_KEY_DISABLED = "api key disabled"
 MSG_TENANT_DISABLED = "tenant disabled"
+#: 开发身份模式下收到了一把**真实 Key**。它与「Key 不存在」是两件事，必须分开说。
+#:
+#: 踩过的坑：控制台能签发 Key、能显示、能选中，但 `AUTH_ENABLED=false` 时服务端只认内置
+#: 占位 Key，于是真实 Key 一律 `20010`。原来的文案是 `invalid api key`，界面把它翻成
+#: 「去 Key 管理页换一把」——**而换多少把都没用**，因为开关不在 Key 上。这条消息把原因
+#: 直接点名，省掉一整圈无效排查。
+#:
+#: 不含占位 Key 的**值**：那是凭据，不该由一条错误消息发出去。
+MSG_DEV_MODE_REJECTS_REAL_KEY = (
+    "服务端处于开发身份模式（AUTH_ENABLED=false）：只接受内置占位 Key，"
+    "控制台签发的 Key 在此模式下不参与鉴权。要用真实 Key，请把 AUTH_ENABLED 设为 true 并重启 API"
+)
 
 
 def resolve_identity(
@@ -153,7 +165,10 @@ def resolve_identity(
     enabled = settings.AUTH_ENABLED if auth_enabled is None else auth_enabled
     if not enabled:
         if token != settings.DEV_API_KEY:
-            raise AppError(ErrorCode.UNAUTHORIZED, MSG_UNKNOWN_KEY)
+            # 开关关着时**任何**真实 Key 都到不了 `api_keys` 那张表，所以不能回
+            # `MSG_UNKNOWN_KEY`：那句话会让调用方以为 Key 本身有问题，于是反复重签——
+            # 而真正要改的是服务端开关。这条消息是本轮根据真实反馈补的。
+            raise AppError(ErrorCode.UNAUTHORIZED, MSG_DEV_MODE_REJECTS_REAL_KEY)
         return _dev_identity()
 
     return _identity_from_key(db, token, plan_cache=plan_cache)

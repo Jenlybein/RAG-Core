@@ -21,9 +21,9 @@ import { computed, ref } from 'vue'
 import StageWaterfall from '../components/StageWaterfall.vue'
 import { fetchWaterfall } from '../services/consoleTraces'
 import {
-  fetchObservability,
+  fetchRuntimeInfo,
   fetchRecentTraces,
-  observabilityQueryKey,
+  runtimeInfoQueryKey,
   recentTracesQueryKey,
   type RecentTrace,
 } from '../services/traceService'
@@ -39,9 +39,9 @@ const tracesQuery = useQuery({
   queryFn: () => fetchRecentTraces(limit.value),
 })
 
-const observabilityQuery = useQuery({
-  queryKey: computed(() => observabilityQueryKey()),
-  queryFn: fetchObservability,
+const runtimeQuery = useQuery({
+  queryKey: computed(() => runtimeInfoQueryKey()),
+  queryFn: fetchRuntimeInfo,
 })
 
 const rows = computed(() => tracesQuery.data.value?.items ?? [])
@@ -50,7 +50,7 @@ const loadError = computed(() =>
   tracesQuery.isError.value ? errorText(tracesQuery.error.value) : '',
 )
 
-const langfuseHost = computed(() => observabilityQuery.data.value?.langfuse_host ?? null)
+const langfuseHost = computed(() => runtimeQuery.data.value?.langfuse_host ?? null)
 
 // —— 单条瀑布 ——
 const openLogId = ref<string | null>(null)

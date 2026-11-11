@@ -33,7 +33,7 @@ from tests.fake_db import RecordingSession
 
 LOGIN_PATH = "/console/login"
 RECENT_PATH = "/console/retrieval-traces/recent"
-OBSERVABILITY_PATH = "/console/observability"
+RUNTIME_INFO_PATH = "/console/runtime-info"
 USER_PASSWORD = "user-password"
 TENANT_ALPHA = "tenant_alpha"
 TENANT_BETA = "tenant_beta"
@@ -101,8 +101,8 @@ class _Harness:
     def recent(self, limit: int = 20) -> Any:
         return self.client.get(RECENT_PATH, params={"limit": limit})
 
-    def observability(self) -> Any:
-        return self.client.get(OBSERVABILITY_PATH)
+    def runtime_info(self) -> Any:
+        return self.client.get(RUNTIME_INFO_PATH)
 
 
 @pytest.fixture
@@ -196,21 +196,21 @@ def test_recent_rejects_a_limit_outside_the_allowed_range(console: _Harness) -> 
     assert console.recent(limit=101).json()["code"] == 20002
 
 
-def test_observability_reports_no_host_when_the_sink_is_not_langfuse(
+def test_runtime_info_reports_no_host_when_the_sink_is_not_langfuse(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "TRACE_SINK", "jsonl")
     monkeypatch.setattr(settings, "LANGFUSE_HOST", "http://localhost:3000")
 
     assert console.login("alice").json()["code"] == 0
-    data = console.observability().json()["data"]
+    data = console.runtime_info().json()["data"]
 
     assert data["trace_sink"] == "jsonl"
     # 去向不是 langfuse 时栈里没有这条 trace，给地址只会点出 404。
     assert data["langfuse_host"] is None
 
 
-def test_observability_prefers_the_public_url_for_the_browser(
+def test_runtime_info_prefers_the_public_url_for_the_browser(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """容器里 `LANGFUSE_HOST` 是服务名，浏览器解析不了——对外地址必须单独给。"""
@@ -220,14 +220,14 @@ def test_observability_prefers_the_public_url_for_the_browser(
     monkeypatch.setattr(settings, "LANGFUSE_PUBLIC_URL", "http://localhost:3000")
 
     assert console.login("alice").json()["code"] == 0
-    data = console.observability().json()["data"]
+    data = console.runtime_info().json()["data"]
 
     assert data["langfuse_host"] == "http://localhost:3000"
     # 密钥一个都不出这个进程。
     assert "key" not in str(data).lower()
 
 
-def test_observability_falls_back_to_host_when_no_public_url(
+def test_runtime_info_falls_back_to_host_when_no_public_url(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "TRACE_SINK", "langfuse")
@@ -236,4 +236,21 @@ def test_observability_falls_back_to_host_when_no_public_url(
 
     assert console.login("alice").json()["code"] == 0
     # 末尾斜杠要去掉，否则前端拼出来是 //traces/xxx。
-    assert console.observability().json()["data"]["langfuse_host"] == "http://localhost:3000"
+    assert console.runtime_info().json()["data"]["langfuse_host"] == "http://localhost:3000"
+
+
+def test_runtime_info_reports_whether_real_keys_are_enforced(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`auth_enabled` 必须如实下发：界面据它在**试之前**说明「控制台的 Key 不生效」。
+
+    真实反馈：服务端 `AUTH_ENABLED=false`，使用者从控制台选了 Key 去检索，得到 20010
+    「Key 无效」，于是反复重签——而真正要改的是服务端开关。这条字段就是让界面能提前说清。
+    """
+
+    monkeypatch.setattr(settings, "AUTH_ENABLED", False)
+    assert console.login("alice").json()["code"] == 0
+    assert console.runtime_info().json()["data"]["auth_enabled"] is False
+
+    monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+    assert console.runtime_info().json()["data"]["auth_enabled"] is True

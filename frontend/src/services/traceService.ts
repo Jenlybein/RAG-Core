@@ -28,7 +28,7 @@ export interface RecentTracesPayload {
   limit: number
 }
 
-export interface ObservabilityInfo {
+export interface RuntimeInfo {
   /** `jsonl` / `langfuse` / `none`，原样来自 `TRACE_SINK`。 */
   trace_sink: string
   /**
@@ -38,14 +38,21 @@ export interface ObservabilityInfo {
    * 服务端决定，前端不自己拼。密钥一个都不在这里。
    */
   langfuse_host: string | null
+  /**
+   * 数据面是否开着真实鉴权。
+   *
+   * **`false` 时控制台签发的 Key 一律不生效**：服务端落进内置开发身份，只认占位 Key。
+   * 界面必须提前说清，否则使用者会看到「Key 无效」然后反复重签——真实踩过。
+   */
+  auth_enabled: boolean
 }
 
 export function recentTracesQueryKey(limit: number): readonly unknown[] {
   return ['console', 'retrieval-traces', 'recent', limit]
 }
 
-export function observabilityQueryKey(): readonly unknown[] {
-  return ['console', 'observability']
+export function runtimeInfoQueryKey(): readonly unknown[] {
+  return ['console', 'runtime-info']
 }
 
 export function fetchRecentTraces(limit = 20): Promise<RecentTracesPayload> {
@@ -54,6 +61,6 @@ export function fetchRecentTraces(limit = 20): Promise<RecentTracesPayload> {
   })
 }
 
-export function fetchObservability(): Promise<ObservabilityInfo> {
-  return consoleHttp.get<ObservabilityInfo>('/console/observability')
+export function fetchRuntimeInfo(): Promise<RuntimeInfo> {
+  return consoleHttp.get<RuntimeInfo>('/console/runtime-info')
 }

@@ -92,6 +92,15 @@ const CODE_COPY: Record<number, string | Record<Face, string>> = {
 }
 
 function humanMessage(code: number, face: Face, backendMsg: string): string {
+  // 数据面的 20010 有**四种**原因（缺 token / Key 不存在 / Key 停用 / 服务端还在开发身份
+  // 模式），只有服务端知道是哪一种，而四种的下一步完全不同。通用文案在这里会盖掉唯一
+  // 有用的那句话——真实反馈就是这样来的：服务端说「开发身份模式只认占位 Key」，界面却说
+  // 「去 Key 管理页换一把」，于是用户反复重签 Key，永远修不好。
+  //
+  // 所以：数据面 20010 **有后端原文就照用**；没原文才退回下面那句通用文案。
+  // 控制面不适用（那边 20010 恒等于「会话没了」，与后端原文无关）。
+  if (code === 20010 && face === 'data' && backendMsg !== '') return backendMsg
+
   const copy = CODE_COPY[code]
   if (copy !== undefined) {
     return typeof copy === 'string' ? copy : copy[face]

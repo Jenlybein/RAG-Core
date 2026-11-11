@@ -39,6 +39,7 @@ import {
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { retrieve } from '../services/ragService'
+import { fetchRuntimeInfo, runtimeInfoQueryKey } from '../services/traceService'
 import { useRetrieveStore } from '../stores/retrieve'
 import type { KbOption, KeyData } from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
@@ -94,6 +95,17 @@ const keysLoaded = keysQuery.isSuccess
 const keysError = computed(() =>
   keysQuery.error.value === null ? '' : errorText(keysQuery.error.value),
 )
+
+/**
+ * 服务端是不是「开发身份模式」。读不到就当作**开着**（不显示警告）：
+ * 这条提示只是预防性的，读失败时弹一条红字反而会盖掉真正的问题。
+ */
+const runtimeQuery = useQuery({
+  queryKey: runtimeInfoQueryKey(),
+  queryFn: fetchRuntimeInfo,
+  retry: false,
+})
+const authDisabled = computed(() => runtimeQuery.data.value?.auth_enabled === false)
 
 const treeQuery = useQuery({
   queryKey: KNOWLEDGE_BASE_TREE_QUERY_KEY,
@@ -675,6 +687,20 @@ onUnmounted(() => {
 
       <!-- 一行只读摘要。不显示的话，用户每次检索前都得开弹窗确认用的是哪把 Key、哪些库。 -->
       <p v-if="keysPending" class="text-[11px] text-muted">正在读取 Key 列表…</p>
+      <!--
+        服务端在「开发身份模式」时，控制台签发的 Key **一把都不生效**（只认内置占位 Key）。
+        这件事必须在这里说，而不是等检索失败后再说：失败时看到的「Key 无效」会把人送去
+        反复重签一把永远不会生效的 Key。真实踩过。
+      -->
+      <div
+        v-if="authDisabled"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+      >
+        <strong>服务端当前是开发身份模式（AUTH_ENABLED=false）</strong>：检索会用内置开发身份，
+        下面选的 Key <strong>不参与鉴权</strong>，所以拿真实 Key 直接调接口会得到 20010。
+        要用真实 Key，把 <code class="font-mono">AUTH_ENABLED</code> 设为
+        <code class="font-mono">true</code> 并重启 API。
+      </div>
       <div
         v-else-if="keysError !== ''"
         class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] text-[#6E4E12]"

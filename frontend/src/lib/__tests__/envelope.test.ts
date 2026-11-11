@@ -29,10 +29,43 @@ describe('unwrapEnvelope：业务码是唯一真相，HTTP 状态不参与判断
       unwrapEnvelope({ code: 20010, msg: 'missing console session', data: null }, 'console'),
     )
 
-    expect(dataSide.message).toContain('Key 管理页')
+    // 数据面有后端原文就照用（见下一条用例），没原文才用这句通用文案。
+    expect(dataSide.message).toBe('invalid api key')
     expect(dataSide.message).not.toContain('登录')
     expect(consoleSide.message).toContain('登录')
     expect(consoleSide.message).not.toContain('Key 管理页')
+  })
+
+  it('数据面 20010 照用后端原文：四种原因只有服务端知道是哪一种', () => {
+    // 真实反馈：服务端说「开发身份模式（AUTH_ENABLED=false）只认占位 Key」，界面却用
+    // 通用文案说「去 Key 管理页换一把」——用户于是反复重签 Key，永远修不好。
+    const devMode = catchError(() =>
+      unwrapEnvelope(
+        {
+          code: 20010,
+          msg: '服务端处于开发身份模式（AUTH_ENABLED=false）：只接受内置占位 Key',
+          data: null,
+        },
+        'data',
+      ),
+    )
+
+    expect(devMode.message).toContain('AUTH_ENABLED')
+    expect(devMode.message).not.toContain('Key 管理页')
+  })
+
+  it('数据面 20010 没有后端原文时仍退回通用文案，而不是空白', () => {
+    const bare = catchError(() => unwrapEnvelope({ code: 20010, msg: '', data: null }, 'data'))
+
+    expect(bare.message).toContain('Key 管理页')
+  })
+
+  it('控制面的 20010 不受后端原文影响：那个码恒等于「会话没了」', () => {
+    const consoleSide = catchError(() =>
+      unwrapEnvelope({ code: 20010, msg: 'invalid console session', data: null }, 'console'),
+    )
+
+    expect(consoleSide.message).toContain('登录')
   })
 
   it('20011 是「没权限」，不是「掉登录」', () => {

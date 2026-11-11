@@ -207,6 +207,26 @@ def test_dev_mode_still_requires_the_placeholder_token() -> None:
     assert wrong_exc.value.code is ErrorCode.UNAUTHORIZED
 
 
+def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
+    """关掉开关时收到一把真实 Key：消息必须**点名「开发身份模式」**，不能只说「Key 无效」。
+
+    踩过的坑（真实反馈）：控制台能签发 Key、能选中、能显示，但 ``AUTH_ENABLED=false`` 时
+    服务端只认内置占位 Key，于是真实 Key 一律 ``20010``。原来回的是 ``MSG_UNKNOWN_KEY``
+    （``invalid api key``），界面又把它翻成「去 Key 管理页换一把」——**换多少把都没用**，
+    因为开关不在 Key 上，而在服务端。这条断言钉住「消息要说出真正的原因」。
+    """
+
+    from app.core.auth import MSG_DEV_MODE_REJECTS_REAL_KEY, resolve_identity
+
+    with pytest.raises(AppError) as exc:
+        resolve_identity(_Request("Bearer rc_live_0000_9188"), None, auth_enabled=False)
+
+    assert exc.value.code is ErrorCode.UNAUTHORIZED
+    assert exc.value.msg == MSG_DEV_MODE_REJECTS_REAL_KEY
+    # 消息里不能出现占位 Key 的**值**：那是凭据，不该由一条错误消息发出去。
+    assert settings.DEV_API_KEY not in exc.value.msg
+
+
 def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() -> None:
     """开关关闭：占位 token 直接换成内置开发身份，连一次查询都不发。"""
 

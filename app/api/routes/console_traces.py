@@ -159,21 +159,26 @@ def recent_retrieval_traces(
 
 
 @router.get(
-    "/observability",
+    "/runtime-info",
     response_model=ApiResponse[dict],
-    summary="观测去向与观测栈地址（只读；密钥不下发）",
+    summary="控制台需要知道的运行时事实（观测去向 / 观测栈地址 / 鉴权是否开启）",
 )
-def observability_info(
+def runtime_info(
     identity: ConsoleIdentity = Depends(require_console_tenant),
 ) -> ApiResponse[dict]:
-    """告诉前端「六段耗时现在往哪送」以及「观测栈 UI 在哪」。
+    """把「这个服务现在是怎么配的」里，界面必须知道的那几项一次说清。
 
-    **只下发地址，不下发任何密钥**：``LANGFUSE_HOST`` 是一个 URL，前端拿它拼
-    「在观测栈里打开这条 trace」的链接；``LANGFUSE_PUBLIC_KEY`` / ``SECRET_KEY`` 一个都
-    不出这个进程——它们能读整栈，进浏览器就等于公开。
+    三条都是**界面会据以改变行为**的事实，不是给排障看的全量配置：
 
-    ``trace_sink`` 原样返回（``jsonl`` / ``langfuse`` / ``none``）：前端据此决定那条外链
-    显不显示——去向是 ``jsonl`` 时栈里根本没有这条 trace，给个链接只会点出 404。
+    - ``trace_sink``：六段耗时往哪送。去向是 ``jsonl`` / ``none`` 时观测栈里没有这条 trace，
+      「在观测栈里打开」的链接不该画出来（画了只会点出 404）。
+    - ``langfuse_host``：观测栈 UI 的**对外**地址，只下发地址、不下发任何密钥。
+    - ``auth_enabled``：数据面是否在「开发身份模式」。**关着的时候，控制台签发的 Key
+      一律不参与鉴权**（只认内置占位 Key）。界面必须提前说清这件事——否则使用者会看到
+      「Key 无效」，然后反复重签一把永远不会生效的 Key。
+
+    ``identity`` 只用来套租户门禁（管理员无租户，对它 ``20011``）；这条端点本身不返回
+    任何租户数据。
     """
 
     sink = settings.TRACE_SINK
@@ -185,5 +190,6 @@ def observability_info(
             "trace_sink": sink,
             # 只有去向真的是 langfuse 且地址非空时才给地址，否则前端拿到的会是空串。
             "langfuse_host": host if (sink == "langfuse" and host) else None,
+            "auth_enabled": settings.AUTH_ENABLED,
         }
     )
