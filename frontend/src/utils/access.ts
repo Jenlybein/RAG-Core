@@ -32,6 +32,9 @@ export const USER_NAV: readonly NavItem[] = [
   { to: '/keys', label: 'Key 与密钥配置' },
   { to: '/retrieve', label: '检索调试台' },
   { to: '/traces', label: '检索记录' },
+  // 「语义评测」而不是「语义旁证」：后者是术语表里的**指标类型**（旁证指标 vs 门禁指标），
+  // 对使用者是黑话。入口名说人话，把「旁证」留在解释里。
+  { to: '/evaluation', label: '语义评测' },
 ]
 
 /**

@@ -144,10 +144,12 @@ def aggregate(results: Sequence[CaseResult]) -> dict[str, Any]:
 def build_report(
     *, run_id: str, judge_model: str, summary: Mapping[str, Any], results: Sequence[CaseResult]
 ) -> str:
-    """人读报告。第一行就是「这是旁证、不阻断」与「哪把尺子」，防止被当成门禁读数。"""
+    """人读报告。第一行就是「这是评测、不阻断」与「哪把尺子」，防止被当成门禁读数。"""
 
     lines = [
-        f"# 语义旁证报告 · {run_id}",
+        # 标题用「语义评测」而不是「语义旁证」：后者是**指标类型**（旁证指标 vs 门禁指标），
+        # 是术语表里的内部分类；报告是给人读的，标题说人话，分类放在下面那句引用里。
+        f"# 语义评测报告 · {run_id}",
         "",
         "> **旁证指标：只提示、不阻断。** 门禁是确定性口径（ragas ID 版 CP/CR，零裁判、"
         "同配置两跑一致），那一份在 `eval/baseline/` 里。",

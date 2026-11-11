@@ -20,7 +20,7 @@
  */
 import { useMutation, useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
-import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import CollapsibleCard from '../components/CollapsibleCard.vue'
@@ -32,13 +32,6 @@ import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
-import {
-  fetchSideEvidence,
-  fetchSideEvidenceReport,
-  fetchSideEvidenceRuns,
-  triggerSideEvidence,
-  type SideEvidenceRun,
-} from '../services/sideEvidenceService'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { retrieve } from '../services/ragService'
 import {
@@ -53,7 +46,6 @@ import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import { feedbackErrorCopy, isValidScore, scoreStars } from '../utils/feedback'
 import { DATA_PLANE_ENDPOINTS } from '../utils/dataPlaneEndpoints'
-import { renderMarkdown } from '../utils/markdown'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
   describeEmptyReason,
@@ -581,183 +573,6 @@ async function sendRating(): Promise<void> {
   }
 }
 
-// —— ⑧ 语义旁证（#109） ——
-/**
- * 触发一次旁证跑批并轮询状态。
- *
- * 三条约束来自后端契约（`app/api/routes/console_eval.py`）：
- * 1. 触发**只投递任务**、立刻回 `run_id`——跑批是分钟级的，挂在请求上必然超时；
- * 2. `queued` 是正常状态（任务还在队列里），不是「没有这次跑批」；
- * 3. `partial` 也是终态：裁判配额/超时会让部分题没评上，那**不是**检索退化，
- *    所以界面上不把它读成「失败」，只是如实显示已评分/未评分数。
- */
-const sideEvidenceRunId = ref<string | null>(null)
-const sideEvidenceStatus = ref<string>('')
-/**
- * 跑批进度（`{done, total}`）。跑批是分钟级偏上的（一轮上千次裁判请求），没有它界面
- * 只能显示一个没有尽头的「running」。结束/未开始时为 `null`——那时进度条没有意义。
- */
-const sideEvidenceProgress = ref<{ done: number; total: number } | null>(null)
-const sideEvidenceJudgeModel = ref<string | null>(null)
-const sideEvidenceSummary = ref<{
-  context_precision?: number | null
-  context_recall?: number | null
-  count?: number
-  scored?: number
-  unscored?: number
-} | null>(null)
-/** 触发/轮询这条路自己出的错（网络、权限、任务投递失败）——「没跑起来」。 */
-const sideEvidenceError = ref<string | null>(null)
-/** 跑批本身跑完但判了 failed/partial 时，``status.json`` 里写的那个 ``error``——「跑了但没跑好」。 */
-const sideEvidenceRunError = ref<string | null>(null)
-const sideEvidenceStarting = ref(false)
-let sideEvidenceTimer: ReturnType<typeof setTimeout> | null = null
-
-/**
- * 「投递出去多久了」——只为了说出那句「队列里没人消费」。
- *
- * 为什么需要它：触发成功只代表**任务进了队列**，不代表有人跑。只起 API 不起 Worker 时，
- * 状态会永远停在 `queued`，而界面上「正在排队」和「根本没人跑」长得一模一样。前端无法
- * 直接问「有没有 Worker」，但可以按时间说：`queued` 超过 45 秒，基本就不是排队了。
- */
-const sideEvidenceQueuedSince = ref<number | null>(null)
-const sideEvidenceNow = ref(Date.now())
-let sideEvidenceClock: ReturnType<typeof setInterval> | null = null
-
-const SIDE_EVIDENCE_QUEUE_HINT_SECONDS = 45
-
-const sideEvidenceQueuedFor = computed(() => {
-  if (sideEvidenceStatus.value !== 'queued' || sideEvidenceQueuedSince.value === null) return 0
-  return Math.max(0, Math.round((sideEvidenceNow.value - sideEvidenceQueuedSince.value) / 1000))
-})
-
-const sideEvidenceQueueHint = computed(() => {
-  if (sideEvidenceQueuedFor.value < SIDE_EVIDENCE_QUEUE_HINT_SECONDS) return ''
-  return `已排队 ${sideEvidenceQueuedFor.value} 秒还没开始跑：多半是队列里没有 Worker 在消费（检查 worker 容器 / celery 进程）。`
-})
-
-/** 历史跑批：刷新页面后仍能看到「上次那轮」的结果，而不是只剩一片空白。 */
-const sideEvidenceRuns = ref<SideEvidenceRun[]>([])
-const sideEvidenceRunsError = ref<string | null>(null)
-
-async function loadSideEvidenceRuns(): Promise<void> {
-  try {
-    sideEvidenceRuns.value = (await fetchSideEvidenceRuns(10)).items
-    sideEvidenceRunsError.value = null
-  } catch (error) {
-    sideEvidenceRunsError.value = errorText(error)
-  }
-}
-
-/** 报告弹窗：内容由后端按 `run_id` 读出来，前端不拼文件路径。 */
-const reportRunId = ref<string | null>(null)
-const reportText = ref<string | null>(null)
-const reportLoading = ref(false)
-const reportError = ref<string | null>(null)
-
-async function openReport(runId: string): Promise<void> {
-  reportRunId.value = runId
-  reportText.value = null
-  reportError.value = null
-  reportLoading.value = true
-  try {
-    const payload = await fetchSideEvidenceReport(runId)
-    reportText.value = payload.report
-  } catch (error) {
-    reportError.value = errorText(error)
-  } finally {
-    reportLoading.value = false
-  }
-}
-
-function closeReport(): void {
-  reportRunId.value = null
-  reportText.value = null
-  reportError.value = null
-}
-
-/**
- * 报告正文渲染成 HTML。渲染器关掉了原始 HTML（`html: false`），所以 `v-html` 不需要
- * 再来一层 sanitizer——这条前提有测试钉着（`utils/__tests__/markdown.test.ts`）。
- */
-const renderedReport = computed(() => renderMarkdown(reportText.value))
-
-const SIDE_EVIDENCE_TERMINAL = new Set(['ok', 'partial', 'failed'])
-
-function stopSideEvidencePolling(): void {
-  if (sideEvidenceTimer !== null) {
-    clearTimeout(sideEvidenceTimer)
-    sideEvidenceTimer = null
-  }
-}
-
-async function pollSideEvidence(runId: string): Promise<void> {
-  try {
-    const state = await fetchSideEvidence(runId)
-    if (sideEvidenceRunId.value !== runId) return
-    sideEvidenceStatus.value = state.status
-    const progress = state.progress
-    sideEvidenceProgress.value =
-      progress && typeof progress.done === 'number' && typeof progress.total === 'number'
-        ? { done: progress.done, total: progress.total }
-        : null
-    sideEvidenceJudgeModel.value = state.judge_model ?? null
-    sideEvidenceSummary.value = state.summary ?? null
-    sideEvidenceRunError.value = state.error ?? null
-    if (SIDE_EVIDENCE_TERMINAL.has(state.status)) {
-      stopSideEvidencePolling()
-      // 跑完就刷一次历史：刚这轮应当立刻出现在列表里，不需要用户手动刷新。
-      void loadSideEvidenceRuns()
-      return
-    }
-  } catch (error) {
-    sideEvidenceError.value = errorText(error)
-    stopSideEvidencePolling()
-    return
-  }
-  // 3 秒一轮：跑批本身是分钟级，再密只是白打接口；页面离开时由 onUnmounted 收尾。
-  sideEvidenceTimer = setTimeout(() => void pollSideEvidence(runId), 3000)
-}
-
-async function startSideEvidence(): Promise<void> {
-  if (sideEvidenceStarting.value) return
-  sideEvidenceStarting.value = true
-  sideEvidenceError.value = null
-  sideEvidenceRunError.value = null
-  stopSideEvidencePolling()
-  try {
-    const started = await triggerSideEvidence()
-    sideEvidenceRunId.value = started.run_id
-    sideEvidenceStatus.value = started.status
-    sideEvidenceSummary.value = null
-    sideEvidenceJudgeModel.value = null
-    // 记下投递时刻：`queued` 停留过久时要能说出「队列里没人消费」。
-    sideEvidenceQueuedSince.value = Date.now()
-    sideEvidenceNow.value = Date.now()
-    void pollSideEvidence(started.run_id)
-  } catch (error) {
-    sideEvidenceError.value = errorText(error)
-  } finally {
-    sideEvidenceStarting.value = false
-  }
-}
-
-onMounted(() => {
-  void loadSideEvidenceRuns()
-  // 每秒推进一次「已排队多久」：只在 queued 时才有人读它，但计时器本身开销可以忽略，
-  // 比「按需启停」少一条要维护的状态。
-  sideEvidenceClock = setInterval(() => {
-    sideEvidenceNow.value = Date.now()
-  }, 1000)
-})
-
-onUnmounted(() => {
-  stopSideEvidencePolling()
-  if (sideEvidenceClock !== null) {
-    clearInterval(sideEvidenceClock)
-    sideEvidenceClock = null
-  }
-})
 </script>
 
 <template>
@@ -1116,266 +931,173 @@ onUnmounted(() => {
         </li>
       </ul>
 
-      <!--
-        运行摘要收进结果卡底部、默认收起。它原来自己占一张卡，与结果并列——但它是
-        「这次为什么这样跑」的元信息，读结果的当下不需要，需要一个入口就够了。
-      -->
-      <div class="mt-4 border-t border-line pt-3">
-        <button
-          type="button"
-          class="flex items-center gap-1.5 text-xs text-muted transition hover:text-ink"
-          @click="summaryOpen = !summaryOpen"
-        >
-          <span class="text-[9px]">{{ summaryOpen ? '▼' : '▶' }}</span>
-          运行摘要 · 这次后端实际生效的值
-        </button>
-        <RunSummary v-if="summaryOpen && result !== null" class="mt-3" :metadata="result.metadata" />
-        <p v-if="summaryOpen && result === null" class="mt-2 text-xs text-muted">
-          还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
-        </p>
-      </div>
-
-      <!--
-        六段耗时（#103）：与运行摘要并列的第二个入口，同样是「需要时才展开」。
-        它按 log_id 去控制面读回六段耗时——关掉观测也能从本地记录看到，
-        没开 / 没记上时这里给明确文案，不留空白。
-      -->
-      <div class="mt-3 border-t border-line pt-3">
-        <button
-          type="button"
-          class="flex items-center gap-1.5 text-xs text-muted transition hover:text-ink"
-          @click="waterfallOpen = !waterfallOpen"
-        >
-          <span class="text-[9px]">{{ waterfallOpen ? '▼' : '▶' }}</span>
-          六段耗时 · 按 log_id 看六段瀑布
-        </button>
-
-        <div v-if="waterfallOpen" class="mt-3">
-          <!-- 有这次检索的响应时：一键看，不用抄 UUID（与评分控件共用同一个反查结果）。 -->
-          <template v-if="ratingLogId !== null">
-            <p class="text-xs leading-relaxed text-muted">
-              看
-              <span class="font-mono text-xs text-slate-500">{{ ratingLogId.slice(0, 8) }}…</span>
-              这次检索的六段耗时（关掉观测也能从本地记录看）。
-            </p>
-            <div class="mt-2">
-              <el-button size="small" :loading="waterfallLoading" @click="loadWaterfall">
-                看这次检索的瀑布
-              </el-button>
-            </div>
-          </template>
-          <!-- 没有响应（例如只在工单里拿到一个 log_id）时，才退回手填。 -->
-          <template v-else>
-            <p class="text-xs leading-relaxed text-muted">
-              手填
-              <code class="rounded bg-slate-100 px-1 font-mono text-xs text-slate-500">log_id</code>
-              （归属索引里那一行的 id）。这次的检索记录还没定位到，所以没有可一键查看的目标。
-            </p>
-            <div class="mt-2 flex flex-wrap items-center gap-2">
-              <el-input
-                v-model="logIdInput"
-                size="small"
-                class="max-w-sm"
-                clearable
-                placeholder="log_id（36 位 UUID）"
-                @keyup.enter="loadWaterfall"
-              />
-              <el-button
-                size="small"
-                :loading="waterfallLoading"
-                :disabled="trimmedLogId === ''"
-                @click="loadWaterfall"
-              >
-                看瀑布
-              </el-button>
-            </div>
-          </template>
-
-          <p
-            v-if="waterfallError !== null"
-            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
-          >
-            {{ waterfallError }}
-          </p>
-          <p v-else-if="ratingLogId === null && trimmedLogId === ''" class="mt-2 text-xs text-muted">
-            还没填 log_id。填上之后再点「看瀑布」。
-          </p>
-          <StageWaterfall v-else-if="waterfall !== null" class="mt-3" :data="waterfall" />
-        </div>
-      </div>
-
-      <!--
-        评分（#106）：与运行摘要、瀑布图并列的第三个入口。
-        它绑定的是**当前这次检索**（trace_id → 反查 log_id），不需要手填 UUID；
-        观测开关不参与可用性判断——反馈以本地为准，观测栈挂了照样能打分。
-      -->
-      <div class="mt-3 border-t border-line pt-3">
-        <p class="text-xs font-medium text-slate-600">给这次检索打分</p>
-
-        <p v-if="ratingDisabledCopy !== ''" class="mt-2 text-xs leading-relaxed text-muted">
-          {{ ratingDisabledCopy }}
-        </p>
-        <div v-else class="mt-2">
-          <div class="flex flex-wrap items-center gap-1">
-            <button
-              v-for="score in [1, 2, 3, 4, 5]"
-              :key="score"
-              type="button"
-              class="rounded-control border px-2 py-1 text-[13px] leading-none transition"
-              :class="
-                ratingScore === score
-                  ? 'border-brand bg-brand/10 text-brand'
-                  : 'border-line bg-white text-slate-400 hover:text-[#B7791F]'
-              "
-              :aria-label="`打 ${score} 分`"
-              @click="ratingScore = score"
-            >
-              {{ scoreStars(score)[score - 1] }}
-            </button>
-            <span class="ml-2 text-xs text-muted">
-              {{ ratingScore === 0 ? '还没选分数' : `${ratingScore} 分` }}
-            </span>
-          </div>
-          <el-input
-            v-model="ratingComment"
-            class="mt-2 max-w-sm"
-            size="small"
-            maxlength="512"
-            show-word-limit
-            placeholder="一句话说明（可不填）"
-          />
-          <div class="mt-2 flex flex-wrap items-center gap-2">
-            <el-button
-              size="small"
-              type="primary"
-              :disabled="ratingScore === 0 || ratingSubmitting"
-              :loading="ratingSubmitting"
-              @click="sendRating"
-            >
-              提交评分
-            </el-button>
-            <span v-if="ratingSaved !== null" class="text-xs text-emerald-700">
-              已评 {{ ratingSaved }} 分（再提交一次可改分）
-            </span>
-          </div>
-          <p
-            v-if="ratingError !== null"
-            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
-          >
-            {{ ratingError }}
-          </p>
-        </div>
-      </div>
     </el-card>
       </div>
 
       <!-- 右栏：诊断。默认就在视线外，不抢主路径的注意力。 -->
       <div class="min-w-0 space-y-6">
     <!--
-      ⑤ 语义旁证（#109）：一个触发入口 + 状态轮询。
-      它**不进闸门**——门禁是确定性那一套（零 LLM、可复现），这里只是「阶段性体检」，
-      所以文案里不说「通过 / 不通过」，只说数字与裁判模型。跑批是分钟级的，触发只投递
-      任务，结论靠轮询 status.json。
+      右栏：**这次检索的诊断**（运行摘要 / 六段耗时 / 打分）。
+      这三块原来塞在「召回结果」卡底部，把正文挤到上面去了。它们回答的是
+      「这次为什么这样跑」「哪一段慢」「这次结果好不好」，都是同一次检索的旁注，
+      所以合成一张卡放在右栏，与正文并排而不是压在正文下面。
     -->
-    <CollapsibleCard title="语义旁证" subtitle="LLM 裁判跑 50 题，出 CP / CR">
-      <template #actions>
-        <el-button
-          size="small"
-          :loading="sideEvidenceStarting"
-          :disabled="sideEvidenceStatus === 'running' || sideEvidenceStatus === 'queued'"
-          @click="startSideEvidence"
-        >
-          触发一次旁证
-        </el-button>
-      </template>
-
-      <p v-if="sideEvidenceError !== null" class="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
-        {{ sideEvidenceError }}
-      </p>
-      <p v-else-if="sideEvidenceRunId === null" class="text-sm text-slate-400">
-        还没触发过。点右上角「触发一次旁证」跑一轮（约几分钟）。
-      </p>
-      <div v-else class="space-y-1.5 text-xs">
-        <p>
-          <span class="text-muted">run</span>
-          <span class="ml-1 font-mono text-slate-500">{{ sideEvidenceRunId }}</span>
-          <span class="ml-2 text-muted">状态</span>
-          <span class="ml-1 font-medium">{{ sideEvidenceStatus }}</span>
-          <el-button
-            v-if="SIDE_EVIDENCE_TERMINAL.has(sideEvidenceStatus)"
-            link
-            size="small"
-            class="ml-2"
-            @click="openReport(sideEvidenceRunId!)"
-          >
-            看报告
-          </el-button>
-        </p>
-        <p v-if="sideEvidenceJudgeModel" class="text-muted">
-          裁判模型 {{ sideEvidenceJudgeModel }}（换模型 = 换尺子，与旧报告不可比）
-        </p>
+    <section class="card px-5 py-4">
+      <h2 class="section-title">这次的诊断</h2>
+      <p class="mt-1 text-xs text-muted">运行摘要 · 六段耗时 · 打分</p>
+      <div class="mt-3 space-y-3">
         <!--
-          进度只在「还在跑」时显示：一轮上千次裁判请求，给个分母人才能判断还要不要等。
-          结束时进度条没有意义（下面已经有结论了）。
+          运行摘要收进结果卡底部、默认收起。它原来自己占一张卡，与结果并列——但它是
+          「这次为什么这样跑」的元信息，读结果的当下不需要，需要一个入口就够了。
         -->
-        <div v-if="sideEvidenceStatus === 'running' && sideEvidenceProgress !== null" class="space-y-1">
-          <p class="text-muted">
-            已完成 {{ sideEvidenceProgress.done }} / {{ sideEvidenceProgress.total }} 题
+        <div class="mt-4 border-t border-line pt-3">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 text-xs text-muted transition hover:text-ink"
+            @click="summaryOpen = !summaryOpen"
+          >
+            <span class="text-[9px]">{{ summaryOpen ? '▼' : '▶' }}</span>
+            运行摘要 · 这次后端实际生效的值
+          </button>
+          <RunSummary v-if="summaryOpen && result !== null" class="mt-3" :metadata="result.metadata" />
+          <p v-if="summaryOpen && result === null" class="mt-2 text-xs text-muted">
+            还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
           </p>
-          <el-progress
-            :percentage="Math.round((sideEvidenceProgress.done / Math.max(1, sideEvidenceProgress.total)) * 100)"
-            :stroke-width="6"
-            :show-text="false"
-          />
         </div>
-        <p v-if="sideEvidenceSummary" class="font-mono text-slate-600">
-          CP {{ formatPercent(sideEvidenceSummary.context_precision) }} ·
-          CR {{ formatPercent(sideEvidenceSummary.context_recall) }} ·
-          已评分 {{ sideEvidenceSummary.scored }} / 未评分 {{ sideEvidenceSummary.unscored }}
-        </p>
-        <!--
-          样本量必须和 CP/CR 一起看：分母是「真正评上的题数」，不是「跑了几道题」。
-          把 n=5 读成「50 题的平均」是这套旁证最容易被误读的地方。
-        -->
-        <p v-if="sideEvidenceSummary?.scored !== undefined" class="text-muted">
-          上面两个数的分母是「已评分」那一列，不是题目总数。
-        </p>
-        <p v-if="sideEvidenceRunError" class="text-[#7a5b00]">{{ sideEvidenceRunError }}</p>
-        <p v-if="sideEvidenceQueueHint" class="text-[#B45309]">{{ sideEvidenceQueueHint }}</p>
-      </div>
 
-      <!-- 历史：刷新页面后仍能看到上一轮，而不是只剩空白 -->
-      <div class="mt-3 border-t border-line pt-2">
-        <div class="flex items-center justify-between">
-          <p class="text-xs font-medium text-slate-600">最近跑过的几轮</p>
-          <el-button link size="small" @click="loadSideEvidenceRuns">刷新</el-button>
-        </div>
-        <p v-if="sideEvidenceRunsError !== null" class="mt-1 text-xs text-red-700">
-          {{ sideEvidenceRunsError }}
-        </p>
-        <p v-else-if="sideEvidenceRuns.length === 0" class="mt-1 text-xs text-muted">
-          还没有跑批记录。
-        </p>
-        <ul v-else class="mt-1 space-y-1">
-          <li
-            v-for="run in sideEvidenceRuns"
-            :key="run.run_id"
-            class="flex flex-wrap items-baseline gap-2 text-xs"
+        <!--
+          六段耗时（#103）：与运行摘要并列的第二个入口，同样是「需要时才展开」。
+          它按 log_id 去控制面读回六段耗时——关掉观测也能从本地记录看到，
+          没开 / 没记上时这里给明确文案，不留空白。
+        -->
+        <div class="mt-3 border-t border-line pt-3">
+          <button
+            type="button"
+            class="flex items-center gap-1.5 text-xs text-muted transition hover:text-ink"
+            @click="waterfallOpen = !waterfallOpen"
           >
-            <span class="font-mono text-slate-500">{{ run.run_id }}</span>
-            <span class="font-medium">{{ run.status }}</span>
-            <span v-if="run.summary" class="font-mono text-slate-600">
-              CP {{ formatPercent(run.summary.context_precision) }} ·
-              CR {{ formatPercent(run.summary.context_recall) }} ·
-              {{ run.summary.scored }}/{{ run.summary.unscored }}
-            </span>
-            <el-button v-if="run.has_report" link size="small" @click="openReport(run.run_id)">
-              看报告
-            </el-button>
-          </li>
-        </ul>
+            <span class="text-[9px]">{{ waterfallOpen ? '▼' : '▶' }}</span>
+            六段耗时 · 按 log_id 看六段瀑布
+          </button>
+
+          <div v-if="waterfallOpen" class="mt-3">
+            <!-- 有这次检索的响应时：一键看，不用抄 UUID（与评分控件共用同一个反查结果）。 -->
+            <template v-if="ratingLogId !== null">
+              <p class="text-xs leading-relaxed text-muted">
+                看
+                <span class="font-mono text-xs text-slate-500">{{ ratingLogId.slice(0, 8) }}…</span>
+                这次检索的六段耗时（关掉观测也能从本地记录看）。
+              </p>
+              <div class="mt-2">
+                <el-button size="small" :loading="waterfallLoading" @click="loadWaterfall">
+                  看这次检索的瀑布
+                </el-button>
+              </div>
+            </template>
+            <!-- 没有响应（例如只在工单里拿到一个 log_id）时，才退回手填。 -->
+            <template v-else>
+              <p class="text-xs leading-relaxed text-muted">
+                手填
+                <code class="rounded bg-slate-100 px-1 font-mono text-xs text-slate-500">log_id</code>
+                （归属索引里那一行的 id）。这次的检索记录还没定位到，所以没有可一键查看的目标。
+              </p>
+              <div class="mt-2 flex flex-wrap items-center gap-2">
+                <el-input
+                  v-model="logIdInput"
+                  size="small"
+                  class="max-w-sm"
+                  clearable
+                  placeholder="log_id（36 位 UUID）"
+                  @keyup.enter="loadWaterfall"
+                />
+                <el-button
+                  size="small"
+                  :loading="waterfallLoading"
+                  :disabled="trimmedLogId === ''"
+                  @click="loadWaterfall"
+                >
+                  看瀑布
+                </el-button>
+              </div>
+            </template>
+
+            <p
+              v-if="waterfallError !== null"
+              class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+            >
+              {{ waterfallError }}
+            </p>
+            <p v-else-if="ratingLogId === null && trimmedLogId === ''" class="mt-2 text-xs text-muted">
+              还没填 log_id。填上之后再点「看瀑布」。
+            </p>
+            <StageWaterfall v-else-if="waterfall !== null" class="mt-3" :data="waterfall" />
+          </div>
+        </div>
+
+        <!--
+          评分（#106）：与运行摘要、瀑布图并列的第三个入口。
+          它绑定的是**当前这次检索**（trace_id → 反查 log_id），不需要手填 UUID；
+          观测开关不参与可用性判断——反馈以本地为准，观测栈挂了照样能打分。
+        -->
+        <div class="mt-3 border-t border-line pt-3">
+          <p class="text-xs font-medium text-slate-600">给这次检索打分</p>
+
+          <p v-if="ratingDisabledCopy !== ''" class="mt-2 text-xs leading-relaxed text-muted">
+            {{ ratingDisabledCopy }}
+          </p>
+          <div v-else class="mt-2">
+            <div class="flex flex-wrap items-center gap-1">
+              <button
+                v-for="score in [1, 2, 3, 4, 5]"
+                :key="score"
+                type="button"
+                class="rounded-control border px-2 py-1 text-[13px] leading-none transition"
+                :class="
+                  ratingScore === score
+                    ? 'border-brand bg-brand/10 text-brand'
+                    : 'border-line bg-white text-slate-400 hover:text-[#B7791F]'
+                "
+                :aria-label="`打 ${score} 分`"
+                @click="ratingScore = score"
+              >
+                {{ scoreStars(score)[score - 1] }}
+              </button>
+              <span class="ml-2 text-xs text-muted">
+                {{ ratingScore === 0 ? '还没选分数' : `${ratingScore} 分` }}
+              </span>
+            </div>
+            <el-input
+              v-model="ratingComment"
+              class="mt-2 max-w-sm"
+              size="small"
+              maxlength="512"
+              show-word-limit
+              placeholder="一句话说明（可不填）"
+            />
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <el-button
+                size="small"
+                type="primary"
+                :disabled="ratingScore === 0 || ratingSubmitting"
+                :loading="ratingSubmitting"
+                @click="sendRating"
+              >
+                提交评分
+              </el-button>
+              <span v-if="ratingSaved !== null" class="text-xs text-emerald-700">
+                已评 {{ ratingSaved }} 分（再提交一次可改分）
+              </span>
+            </div>
+            <p
+              v-if="ratingError !== null"
+              class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+            >
+              {{ ratingError }}
+            </p>
+          </div>
+        </div>
       </div>
-    </CollapsibleCard>
+    </section>
       </div>
     </div>
 
@@ -1391,34 +1113,6 @@ onUnmounted(() => {
       <DataPlanePanel :kb-id="firstSelectedKbId" :has-key="store.selectedKeyId !== null" />
     </CollapsibleCard>
 
-    <!-- 报告弹窗：Markdown 渲染成结构（标题 / 表格 / 列表），样式由渲染器注入的类名带来 -->
-    <el-dialog
-      :model-value="reportRunId !== null"
-      append-to-body
-      title="旁证报告"
-      width="880px"
-      @update:model-value="closeReport"
-    >
-      <p v-if="reportRunId !== null" class="mb-2 font-mono text-xs text-slate-500">
-        run {{ reportRunId }}
-      </p>
-      <p v-if="reportError !== null" class="text-xs text-red-700">{{ reportError }}</p>
-      <p v-else-if="reportLoading" class="text-xs text-muted">读取中…</p>
-      <p v-else-if="reportText === null" class="text-xs text-muted">
-        这一轮没有报告文件（跑批可能还在排队，或中途失败没落地）。
-      </p>
-      <!--
-        报告是 Markdown，渲染成结构（标题 / 表格 / 列表），而不是原样吐一段带 `##` 的文本。
-        样式由 `renderMarkdown` 注入的 Tailwind 类名带来——仓库里没有 `<style>` 块，这里也
-        不新开一个。`v-html` 的安全前提是渲染器关掉了原始 HTML（见 utils/markdown.ts），
-        那条有测试钉着。
-      -->
-      <div
-        v-else
-        class="max-h-[60vh] overflow-auto rounded-control bg-surface px-3 py-2"
-        v-html="renderedReport"
-      />
-    </el-dialog>
 
     <!-- ④ 对比面板（会话内，放在结果区下方；没有历史时整块不渲染，不占位） -->
     <ComparePanel

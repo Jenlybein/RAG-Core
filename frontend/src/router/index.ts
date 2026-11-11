@@ -55,6 +55,13 @@ const routes = [
     component: () => import('../views/TracesPage.vue'),
   },
   {
+    path: '/evaluation',
+    name: 'evaluation',
+    // 语义评测（#109 从检索页独立出来）：LLM 裁判跑 50 题，只提示、不阻断。
+    // 独立成页的原因：它的结论按「轮」成立，不按「这一次检索」成立。
+    component: () => import('../views/EvaluationPage.vue'),
+  },
+  {
     path: '/admin/accounts',
     name: 'admin-accounts',
     component: () => import('../views/admin/AccountsPage.vue'),
