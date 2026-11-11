@@ -88,14 +88,17 @@ def _offline_process_state():
     from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
     from app.db import session_factory as factory_mod
     from app.observability import reset_trace_sink
+    from app.providers.keyword_search import reset_keyword_search_provider_cache
     from tests.fake_db import RecordingSession
 
     factory_mod.set_session_factory(RecordingSession)
     set_settings_cache(_MemorySettingsCache())
     reset_trace_sink()
+    reset_keyword_search_provider_cache()
     try:
         yield
     finally:
         factory_mod.set_session_factory(None)
         reset_settings_cache()
         reset_trace_sink()
+        reset_keyword_search_provider_cache()

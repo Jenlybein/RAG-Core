@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import sys
 from pathlib import Path
@@ -59,7 +60,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     run_id = new_run_id()
     out_dir = Path(args.out or f"eval/runs/side-evidence/{run_id}")
-    result = run_once(cases=cases, out_dir=out_dir, run_id=run_id, limit=args.limit)
+    result = asyncio.run(
+        run_once(cases=cases, out_dir=out_dir, run_id=run_id, limit=args.limit)
+    )
 
     block = result["summary"]
     print(f"状态：{result['status']}  报告：{out_dir / 'report.md'}")

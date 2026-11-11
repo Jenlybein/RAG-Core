@@ -17,7 +17,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
@@ -41,20 +40,34 @@ class RagasJudge:
     def model(self) -> str:
         return self._model
 
-    def _score(self, metric: Any, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
-        result = asyncio.run(
-            metric.ascore(user_input=question, retrieved_contexts=list(contexts), reference=reference)
+    async def _score(
+        self, metric: Any, *, question: str, contexts: Sequence[str], reference: str
+    ) -> float | None:
+        # **直接 await，不再 asyncio.run**：每次调用新起一个事件循环，等于每次丢掉 HTTP
+        # 连接池（于是每次重做 TLS 握手），而且拆 loop 时会刷出一片
+        # `RuntimeError: Event loop is closed` / `Unclosed client session`——那些噪音不是
+        # 无害的，它们会把真正要看的那行日志淹掉。整轮跑批现在共用一个 loop。
+        result = await metric.ascore(
+            user_input=question, retrieved_contexts=list(contexts), reference=reference
         )
         value = getattr(result, "value", None)
         if value is None or value != value:  # NaN 自己不等于自己
             return None
         return float(value)
 
-    def context_precision(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
-        return self._score(self._precision, question=question, contexts=contexts, reference=reference)
+    async def context_precision(
+        self, *, question: str, contexts: Sequence[str], reference: str
+    ) -> float | None:
+        return await self._score(
+            self._precision, question=question, contexts=contexts, reference=reference
+        )
 
-    def context_recall(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
-        return self._score(self._recall, question=question, contexts=contexts, reference=reference)
+    async def context_recall(
+        self, *, question: str, contexts: Sequence[str], reference: str
+    ) -> float | None:
+        return await self._score(
+            self._recall, question=question, contexts=contexts, reference=reference
+        )
 
 
 #: 库里没有模型配置、``.env`` 也没填 ``LLM_BASE_URL`` 时的兜底地址。
@@ -146,10 +159,10 @@ def build_retriever():
             )
         return [str(chunk.get("content") or "") for chunk in response["retrieved_chunks"]]
 
-    return lambda question: asyncio.run(_run(question))
+    return _run
 
 
-def run_once(
+async def run_once(
     *,
     cases: Sequence[dict[str, Any]],
     out_dir: Path,
@@ -160,9 +173,14 @@ def run_once(
     """一次完整跑批：装配裁判与召回 → 跑 → 落盘。控制台触发与命令行共用这一条。
 
     ``tenant_id`` 只在控制台触发时传：它决定状态文件里记多少归属信息，不参与「怎么跑」。
+
+    **它是异步的**，因为整轮要共用一个事件循环（见 ``RagasJudge._score`` 的注释）。
+    同步的调用方（Celery 任务、命令行脚本）各自 ``asyncio.run(run_once(...))`` 一次。
     """
 
-    return run_side_evidence(
+    from app.core.config import settings
+
+    return await run_side_evidence(
         cases=cases,
         judge=build_judge(),
         retrieve=build_retriever(),
@@ -170,6 +188,7 @@ def run_once(
         run_id=run_id,
         limit=limit,
         tenant_id=tenant_id,
+        concurrency=settings.SIDE_EVIDENCE_CONCURRENCY,
     )
 
 

@@ -153,3 +153,45 @@ def test_the_hybrid_keyword_channel_records_the_failed_stage() -> None:
         )
 
     assert any(span.name == "keyword_recall" for span in timer.spans())
+
+
+def test_the_provider_factory_reuses_one_client(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一个配置反复取 Provider，必须拿到**同一个实例**。
+
+    每次新建一个 ``AsyncElasticsearch`` 等于每次丢掉连接池：每题重做 TLS 握手，进程里攒下
+    一堆从不关闭的客户端（跑批结束刷出一串 `Unclosed client session`，把真日志淹掉）。
+    """
+
+    from app.core.config import settings as live_settings
+    from app.providers.keyword_search import (
+        get_keyword_search_provider,
+        reset_keyword_search_provider_cache,
+    )
+
+    monkeypatch.setattr(live_settings, "KEYWORD_SEARCH_PROVIDER", "elasticsearch")
+    reset_keyword_search_provider_cache()
+
+    first = get_keyword_search_provider()
+    second = get_keyword_search_provider()
+
+    assert first is second
+
+
+def test_changing_the_address_yields_a_fresh_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    """改了地址就必须换实例：否则「配置改了但连接还指着旧地址」。"""
+
+    from app.core.config import settings as live_settings
+    from app.providers.keyword_search import (
+        get_keyword_search_provider,
+        reset_keyword_search_provider_cache,
+    )
+
+    monkeypatch.setattr(live_settings, "KEYWORD_SEARCH_PROVIDER", "elasticsearch")
+    monkeypatch.setattr(live_settings, "ELASTICSEARCH_URL", "http://es-a:9200")
+    reset_keyword_search_provider_cache()
+    before = get_keyword_search_provider()
+
+    monkeypatch.setattr(live_settings, "ELASTICSEARCH_URL", "http://es-b:9200")
+    after = get_keyword_search_provider()
+
+    assert before is not after

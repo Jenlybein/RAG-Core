@@ -88,6 +88,8 @@ def _queued(run_id: str) -> ApiResponse[dict]:
             "error": None,
             "summary": None,
             "report_path": None,
+            # 形状与有结论时**完全一致**，只是值一律为空：多一个字段不会让前端分支变形。
+            "progress": None,
         }
     )
 
@@ -233,5 +235,8 @@ def side_evidence_status(
             "error": status.get("error"),
             "summary": _summary_of(run_dir),
             "report_path": str(run_dir / "report.md") if (run_dir / "report.md").is_file() else None,
+            # 跑批过程中由跑批一侧每题原子更新一次（`{"done": n, "total": 50}`）：
+            # 界面据此画进度，而不是让「running」悬在那里让人猜还要多久。
+            "progress": status.get("progress"),
         }
     )

@@ -17,8 +17,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
+from collections.abc import Awaitable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -40,11 +43,11 @@ class Judge(Protocol):
     def model(self) -> str:
         """裁判模型名（含大版本即可；报告里要能一眼看出换没换尺子）。"""
 
-    def context_precision(
+    async def context_precision(
         self, *, question: str, contexts: Sequence[str], reference: str
     ) -> float | None: ...
 
-    def context_recall(
+    async def context_recall(
         self, *, question: str, contexts: Sequence[str], reference: str
     ) -> float | None: ...
 
@@ -187,16 +190,56 @@ def _fmt(value: Any) -> str:
     return as_metric(value)
 
 
+def write_status(
+    *,
+    out_dir: Path,
+    run_id: str,
+    status: str,
+    error: str | None,
+    judge_model: str,
+    tenant_id: str | None,
+    progress: Mapping[str, Any] | None = None,
+) -> None:
+    """写 ``status.json``——**原子替换**，因为它是别人正在读的唯一事实。
+
+    跑批过程中每完成一题就更新一次进度，而控制台每 3 秒读一次同一个文件。直接
+    ``write_text`` 会让读侧有机会读到写了一半的 JSON（`json.loads` 抛错 → 控制台把它当成
+    「还没有结论」，于是进度闪回 ``queued``）。先写临时文件再 ``os.replace``：读侧要么看到
+    旧的完整内容，要么看到新的完整内容。
+    """
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    payload: dict[str, Any] = {
+        "run_id": run_id,
+        "status": status,
+        "error": error,
+        "judge_model": judge_model,
+        # 归属：控制台查状态时必须能证明「这次跑批是发起它那个租户的」。进度写入同样要带，
+        # 否则中途那几秒里租户校验会因为缺字段而放行——那是一段真实的越权窗口。
+        "tenant_id": tenant_id,
+    }
+    if progress is not None:
+        payload["progress"] = dict(progress)
+
+    target = out_dir / "status.json"
+    temporary = out_dir / ".status.json.tmp"
+    temporary.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    os.replace(temporary, target)
+
+
 def write_run(
     *, out_dir: Path, run_id: str, judge_model: str, summary: Mapping[str, Any],
     results: Sequence[CaseResult], status: str, error: str | None = None,
     tenant_id: str | None = None,
+    progress: Mapping[str, Any] | None = None,
 ) -> None:
     """把一次旁证落成三个文件：报告、机读结果、状态。
 
     状态文件是控制台轮询的唯一依据：它由**跑批这一侧**写，而不是由触发它的请求写——
     于是「请求成功但跑批失败」不会被记成一次成功的旁证。``tenant_id`` 也写在这里，
-    让读状态的人能证明归属（见下面 ``status.json`` 那段注释）。
+    让读状态的人能证明归属（见 `write_status` 的注释）。
     """
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -217,69 +260,96 @@ def write_run(
         ),
         encoding="utf-8",
     )
-    (out_dir / "status.json").write_text(
-        json.dumps(
-            {
-                "status": status,
-                "error": error,
-                "judge_model": judge_model,
-                # 归属（本轮 code-review 补的）：控制台查状态时必须能证明「这次跑批是发起它
-                # 那个租户的」。否则任一租户凭一个时间戳形状的 run_id 就能读到别人的旁证产物
-                # ——而产物里有**题库问句**。这跟「跨租户与不存在同一个答复」是同一条口径。
-                "tenant_id": tenant_id,
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        encoding="utf-8",
+    write_status(
+        out_dir=out_dir,
+        run_id=run_id,
+        status=status,
+        error=error,
+        judge_model=judge_model,
+        tenant_id=tenant_id,
+        progress=progress,
     )
 
 
-def run_side_evidence(
+async def run_side_evidence(
     *,
     cases: Sequence[Mapping[str, Any]],
     judge: Judge,
-    retrieve: Callable[[str], Sequence[str]],
+    retrieve: Callable[[str], Awaitable[Sequence[str]]],
     out_dir: Path,
     run_id: str,
     limit: int | None = None,
     tenant_id: str | None = None,
+    concurrency: int = 1,
 ) -> dict[str, Any]:
-    """跑一遍旁证并落盘；返回汇总。
+    """跑一遍旁证并落盘；返回汇总。**异步 + 有界并发**。
+
+    为什么是异步（一次实测换来的）：ragas 的 ContextPrecision / ContextRecall 不是
+    每题一次调用，而是把每个片段拆成陈述句逐句判相关性——50 题粗算 1000+ 次请求，单次
+    1.5 秒、全程 CPU 不到 1%。串行就是干等半小时。``concurrency`` 把「等」叠起来。
 
     ``retrieve`` 只回「这次真正召回到的片段正文」——**不要**拿标注切片当召回结果，
     那样两指标必然接近 1.0，等于自己跟自己比。裁判与检索都从参数进来，于是这层可以离线测。
+
+    每完成一题就原子更新一次 ``status.json`` 的 ``progress``：控制台据此画进度条，而不是
+    让「running」悬在那里让人猜还要多久。
     """
 
     selected = list(cases)[:limit] if limit else list(cases)
-    results: list[CaseResult] = []
-    for case in selected:
+    total = len(selected)
+    slots = max(1, concurrency)
+    semaphore = asyncio.Semaphore(slots)
+    done = 0
+
+    def _progress() -> None:
+        write_status(
+            out_dir=out_dir,
+            run_id=run_id,
+            status="running",
+            error=None,
+            judge_model=judge.model,
+            tenant_id=tenant_id,
+            progress={"done": done, "total": total},
+        )
+
+    # 先写一次 0/total：界面在第一批结果回来之前就该知道「一共多少题」。
+    _progress()
+
+    async def _one(index: int, case: Mapping[str, Any]) -> CaseResult:
+        nonlocal done
         question = str(case.get("question") or "")
         reference = str(case.get("answer") or "")
         try:
-            contexts = list(retrieve(question))
-            cp = judge.context_precision(question=question, contexts=contexts, reference=reference)
-            cr = judge.context_recall(question=question, contexts=contexts, reference=reference)
-            results.append(
-                CaseResult(
-                    id=str(case.get("id") or ""),
-                    type=str(case.get("type") or "unknown"),
-                    question=question,
-                    cp=cp,
-                    cr=cr,
+            async with semaphore:
+                contexts = list(await retrieve(question))
+                cp = await judge.context_precision(
+                    question=question, contexts=contexts, reference=reference
                 )
+                cr = await judge.context_recall(
+                    question=question, contexts=contexts, reference=reference
+                )
+            return CaseResult(
+                id=str(case.get("id") or ""),
+                type=str(case.get("type") or "unknown"),
+                question=question,
+                cp=cp,
+                cr=cr,
             )
         except Exception as exc:  # noqa: BLE001 - 单题失败不该炸掉整轮，但必须留痕
-            results.append(
-                CaseResult(
-                    id=str(case.get("id") or ""),
-                    type=str(case.get("type") or "unknown"),
-                    question=question,
-                    cp=None,
-                    cr=None,
-                    error=f"{type(exc).__name__}: {exc}",
-                )
+            return CaseResult(
+                id=str(case.get("id") or ""),
+                type=str(case.get("type") or "unknown"),
+                question=question,
+                cp=None,
+                cr=None,
+                error=f"{type(exc).__name__}: {exc}",
             )
+        finally:
+            done += 1
+            _progress()
+
+    # `gather` 保序：结果与 `selected` 一一对应，报告的顺序因此不随调度漂移。
+    results = list(await asyncio.gather(*(_one(i, c) for i, c in enumerate(selected))))
 
     summary = aggregate(results)
     scored = int(summary.get("scored") or 0)
@@ -300,6 +370,7 @@ def run_side_evidence(
     write_run(
         out_dir=out_dir, run_id=run_id, judge_model=judge.model, summary=summary,
         results=results, status=status, error=error, tenant_id=tenant_id,
+        progress={"done": total, "total": total},
     )
     return {"summary": summary, "status": status, "error": error}
 

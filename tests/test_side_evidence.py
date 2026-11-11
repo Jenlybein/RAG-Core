@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from pathlib import Path
@@ -50,11 +51,20 @@ class _Judge:
                 return table.get(qid)
         raise AssertionError(f"未预置的问题：{question}")
 
-    def context_precision(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
+    async def context_precision(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
         return self._pick(self._cp, question, "precision")
 
-    def context_recall(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
+    async def context_recall(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
         return self._pick(self._cr, question, "recall")
+
+
+def _retrieve_of(*contexts: str):
+    """固定召回结果的异步替身（跑批是异步的，`retrieve` 也必须是 awaitable）。"""
+
+    async def _retrieve(question: str) -> list[str]:
+        return list(contexts)
+
+    return _retrieve
 
 
 def test_unscored_cases_are_excluded_from_the_mean_not_counted_as_zero() -> None:
@@ -104,8 +114,14 @@ def test_report_says_it_is_side_evidence_and_names_the_ruler() -> None:
 def test_per_case_failure_is_recorded_and_does_not_abort_the_run(tmp_path: Path) -> None:
     judge = _Judge(cp={"q1": 1.0, "q2": 0.0, "q3": 1.0}, cr={"q1": 1.0, "q2": 0.0, "q3": 1.0}, raise_for=("q2",))
 
-    result = run_side_evidence(
-        cases=CASES, judge=judge, retrieve=lambda question: ["片段一", "片段二"], out_dir=tmp_path, run_id="r1"
+    result = asyncio.run(
+        run_side_evidence(
+            cases=CASES,
+            judge=judge,
+            retrieve=_retrieve_of("片段一", "片段二"),
+            out_dir=tmp_path,
+            run_id="r1",
+        )
     )
 
     # 一题失败不该让整轮「全绿」：是 partial，有效分照留、缺的那题单列。
@@ -125,8 +141,14 @@ def test_a_partially_scored_run_is_neither_ok_nor_failed(tmp_path: Path) -> None
         raise_for=("q2", "q3"),
     )
 
-    result = run_side_evidence(
-        cases=CASES, judge=judge, retrieve=lambda question: ["片段"], out_dir=tmp_path, run_id="r5"
+    result = asyncio.run(
+        run_side_evidence(
+            cases=CASES,
+            judge=judge,
+            retrieve=_retrieve_of("片段"),
+            out_dir=tmp_path,
+            run_id="r5",
+        )
     )
 
     assert result["status"] == "partial"
@@ -140,8 +162,14 @@ def test_nothing_scored_marks_the_run_failed_with_a_reason(tmp_path: Path) -> No
 
     judge = _Judge(cp={"q1": 1.0, "q2": 1.0, "q3": 1.0}, cr={"q1": 1.0, "q2": 1.0, "q3": 1.0}, raise_for=("q1", "q2", "q3"))
 
-    result = run_side_evidence(
-        cases=CASES, judge=judge, retrieve=lambda question: ["片段"], out_dir=tmp_path, run_id="r2"
+    result = asyncio.run(
+        run_side_evidence(
+            cases=CASES,
+            judge=judge,
+            retrieve=_retrieve_of("片段"),
+            out_dir=tmp_path,
+            run_id="r2",
+        )
     )
 
     assert result["status"] == "failed"
@@ -153,7 +181,15 @@ def test_nothing_scored_marks_the_run_failed_with_a_reason(tmp_path: Path) -> No
 def test_run_writes_three_files_and_never_stores_source_text_outside_them(tmp_path: Path) -> None:
     judge = _Judge(cp={"q1": 1.0, "q2": 0.5, "q3": 1.0}, cr={"q1": 1.0, "q2": 0.5, "q3": 1.0})
 
-    run_side_evidence(cases=CASES, judge=judge, retrieve=lambda question: ["机密片段"], out_dir=tmp_path, run_id="r3")
+    asyncio.run(
+        run_side_evidence(
+            cases=CASES,
+            judge=judge,
+            retrieve=_retrieve_of("机密片段"),
+            out_dir=tmp_path,
+            run_id="r3",
+        )
+    )
 
     assert {"report.md", "results.json", "status.json"} <= {path.name for path in tmp_path.iterdir()}
     payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
@@ -166,8 +202,15 @@ def test_run_writes_three_files_and_never_stores_source_text_outside_them(tmp_pa
 def test_limit_runs_only_the_first_n_cases(tmp_path: Path) -> None:
     judge = _Judge(cp={case["id"]: 1.0 for case in CASES}, cr={case["id"]: 1.0 for case in CASES})
 
-    result = run_side_evidence(
-        cases=CASES, judge=judge, retrieve=lambda question: ["片段"], out_dir=tmp_path, run_id="r4", limit=2
+    result = asyncio.run(
+        run_side_evidence(
+            cases=CASES,
+            judge=judge,
+            retrieve=_retrieve_of("片段"),
+            out_dir=tmp_path,
+            run_id="r4",
+            limit=2,
+        )
     )
 
     assert result["summary"]["count"] == 2
@@ -339,3 +382,143 @@ def test_unrecognised_failures_point_at_the_per_case_errors_file() -> None:
     message = diagnose_all_unscored(["TimeoutError: x"])
 
     assert "results.json" in message
+
+
+# ───────────────────────────────────────── 并发与进度（性能事故之后补的）
+
+class _ConcurrencyProbe:
+    """数「同一时刻有几题在飞」：并行与串行的区别用峰值表达，不靠计时猜。"""
+
+    def __init__(self) -> None:
+        self.active = 0
+        self.peak = 0
+
+    async def retrieve(self, question: str) -> list[str]:
+        self.active += 1
+        self.peak = max(self.peak, self.active)
+        # 让出控制权，好让其它任务也拿到信号量——没有这一步就看不出并发。
+        await asyncio.sleep(0.01)
+        self.active -= 1
+        return ["片段"]
+
+    async def context_precision(self, *, question: str, contexts: Sequence[str], reference: str):
+        return 1.0
+
+    async def context_recall(self, *, question: str, contexts: Sequence[str], reference: str):
+        return 1.0
+
+
+def _probe_judge(probe: _ConcurrencyProbe):
+    class _JudgeLike:
+        @property
+        def model(self) -> str:
+            return "fake-judge-v1"
+
+        async def context_precision(self, **kwargs):
+            return await probe.context_precision(**kwargs)
+
+        async def context_recall(self, **kwargs):
+            return await probe.context_recall(**kwargs)
+
+    return _JudgeLike()
+
+
+def test_cases_run_concurrently_up_to_the_limit(tmp_path: Path) -> None:
+    """`concurrency=4` 时应当**真的有 4 题同时在飞**。
+
+    为什么用「同时在飞的最大值」而不是计时：计时会随机器负载抖动（CI 上必红），
+    而峰值并发是确定性的。串行实现这里峰值会是 1——这正是修复前后要区分的东西。
+    """
+
+    probe = _ConcurrencyProbe()
+    cases = [
+        {"id": f"q{i}", "type": "colloquial", "question": f"问题{i}", "answer": "答案"}
+        for i in range(8)
+    ]
+
+    asyncio.run(
+        run_side_evidence(
+            cases=cases,
+            judge=_probe_judge(probe),
+            retrieve=probe.retrieve,
+            out_dir=tmp_path,
+            run_id="r-concurrent",
+            concurrency=4,
+        )
+    )
+
+    assert probe.peak == 4, f"并发没生效，峰值为 {probe.peak}"
+
+
+def test_concurrency_of_one_stays_serial(tmp_path: Path) -> None:
+    """下限要守得住：`concurrency=1` 时峰值必须还是 1（配置写了 1 就不能偷偷并发）。"""
+
+    probe = _ConcurrencyProbe()
+    cases = [{"id": "q1", "type": "colloquial", "question": "问题", "answer": "答案"}]
+
+    asyncio.run(
+        run_side_evidence(
+            cases=cases,
+            judge=_probe_judge(probe),
+            retrieve=probe.retrieve,
+            out_dir=tmp_path,
+            run_id="r-serial",
+            concurrency=1,
+        )
+    )
+
+    assert probe.peak == 1
+
+
+def test_progress_is_visible_while_the_run_is_still_going(tmp_path: Path) -> None:
+    """跑批**进行中**就要能读到 `done/total`。
+
+    事故现场：界面只有一个没有尽头的「running」，人只能猜还要多久。这里在第一次裁判
+    调用时去读 `status.json`——那一刻必须已经有 `running` + `progress`，且 `total` 已知。
+    """
+
+    seen: list[dict[str, Any]] = []
+
+    class _SpyJudge:
+        @property
+        def model(self) -> str:
+            return "fake-judge-v1"
+
+        async def _snapshot(self) -> None:
+            if not seen:
+                seen.append(
+                    json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+                )
+
+        async def context_precision(self, **_: Any) -> float:
+            await self._snapshot()
+            return 1.0
+
+        async def context_recall(self, **_: Any) -> float:
+            return 1.0
+
+    async def _retrieve(question: str) -> list[str]:
+        return ["片段"]
+
+    cases = [
+        {"id": f"q{i}", "type": "colloquial", "question": f"问题{i}", "answer": "答案"}
+        for i in range(3)
+    ]
+
+    asyncio.run(
+        run_side_evidence(
+            cases=cases,
+            judge=_SpyJudge(),
+            retrieve=_retrieve,
+            out_dir=tmp_path,
+            run_id="r-progress",
+            concurrency=1,
+        )
+    )
+
+    assert seen, "第一次裁判调用时没读到 status.json"
+    assert seen[0]["status"] == "running"
+    assert seen[0]["progress"] == {"done": 0, "total": 3}
+
+    final = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
+    assert final["progress"] == {"done": 3, "total": 3}

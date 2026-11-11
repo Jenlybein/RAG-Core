@@ -22,6 +22,13 @@ export interface SideEvidenceStatus {
     unscored?: number
   } | null
   report_path?: string | null
+  /**
+   * 跑批进行中的进度（`{"done": 12, "total": 50}`）；还没开始或已结束时可能为 `null`。
+   *
+   * 为什么需要它：一轮旁证要发上千次裁判请求，分钟级偏上。没有进度时界面只能显示一个
+   * 没有尽头的「running」，人只能猜。
+   */
+  progress?: { done?: number; total?: number } | null
 }
 
 export interface SideEvidenceTrigger {

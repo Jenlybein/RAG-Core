@@ -1,15 +1,19 @@
 """Celery 旁证任务（#109）：Worker 里跑一遍 50 题语义旁证。
 
-为什么放在 Worker 而不是请求线程里：一次 50 题 × 每题两指标，按实测约每题 5~14 秒，
-整轮是分钟级。挂在 HTTP 请求上要么超时，要么让浏览器等一个不知道什么时候回来的请求。
+为什么放在 Worker 而不是请求线程里：一次 50 题，每题要跑检索 + 两个 ragas 指标，而 ragas
+的 ContextPrecision / ContextRecall **不是每题一次调用**——它把每个片段拆成陈述句逐句
+判相关性，实测粗算每题 20~30 次请求、单次 1.5 秒。50 题串行就是半小时量级（CPU 全程
+不到 1%），所以跑批是异步的并且并发几题（``SIDE_EVIDENCE_CONCURRENCY``）。
 
 任务**先写 ``running`` 状态再开跑**：控制台轮询靠这个文件区分「排队中」与「在跑」，
-而不是靠「文件还没出现」去猜。跑完（无论成败）都会再写一次终态，所以状态文件永远是
-最后落地的那个事实——请求成功不等于跑批成功。
+而不是靠「文件还没出现」去猜。跑的过程中每完成一题就原子更新一次 ``progress``，
+界面因此能画进度条；跑完（无论成败）都会再写一次终态，所以状态文件永远是最后落地的
+那个事实——请求成功不等于跑批成功。
 """
 
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -36,22 +40,18 @@ def run_side_evidence_task(
     answers_path: str | None = None,
     tenant_id: str | None = None,
 ) -> dict[str, Any]:
-    from app.services.side_evidence import write_run
+    from app.services.side_evidence import write_run, write_status
     from app.services.side_evidence_run import run_once
 
     target = Path(out_dir)
     target.mkdir(parents=True, exist_ok=True)
-    (target / "status.json").write_text(
-        json.dumps(
-            {
-                "status": "running",
-                "error": None,
-                "judge_model": "unknown",
-                "tenant_id": tenant_id,
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
+    write_status(
+        out_dir=target,
+        run_id=run_id,
+        status="running",
+        error=None,
+        judge_model="unknown",
+        tenant_id=tenant_id,
     )
 
     try:
@@ -64,7 +64,10 @@ def run_side_evidence_task(
                 tenant_id=tenant_id,
             )
             return {"status": "failed", "run_id": run_id}
-        result = run_once(cases=cases, out_dir=target, run_id=run_id, limit=limit, tenant_id=tenant_id)
+        # 整轮一个事件循环：`run_once` 是异步的，这里只在最外层起一次 loop。
+        result = asyncio.run(
+            run_once(cases=cases, out_dir=target, run_id=run_id, limit=limit, tenant_id=tenant_id)
+        )
         logger.info(
             "side evidence finished",
             run_id=run_id,

@@ -517,6 +517,11 @@ async function sendRating(): Promise<void> {
  */
 const sideEvidenceRunId = ref<string | null>(null)
 const sideEvidenceStatus = ref<string>('')
+/**
+ * 跑批进度（`{done, total}`）。跑批是分钟级偏上的（一轮上千次裁判请求），没有它界面
+ * 只能显示一个没有尽头的「running」。结束/未开始时为 `null`——那时进度条没有意义。
+ */
+const sideEvidenceProgress = ref<{ done: number; total: number } | null>(null)
 const sideEvidenceJudgeModel = ref<string | null>(null)
 const sideEvidenceSummary = ref<{
   context_precision?: number | null
@@ -609,6 +614,11 @@ async function pollSideEvidence(runId: string): Promise<void> {
     const state = await fetchSideEvidence(runId)
     if (sideEvidenceRunId.value !== runId) return
     sideEvidenceStatus.value = state.status
+    const progress = state.progress
+    sideEvidenceProgress.value =
+      progress && typeof progress.done === 'number' && typeof progress.total === 'number'
+        ? { done: progress.done, total: progress.total }
+        : null
     sideEvidenceJudgeModel.value = state.judge_model ?? null
     sideEvidenceSummary.value = state.summary ?? null
     sideEvidenceRunError.value = state.error ?? null
@@ -1227,6 +1237,20 @@ onUnmounted(() => {
         <p v-if="sideEvidenceJudgeModel" class="text-muted">
           裁判模型 {{ sideEvidenceJudgeModel }}（换模型 = 换尺子，与旧报告不可比）
         </p>
+        <!--
+          进度只在「还在跑」时显示：一轮上千次裁判请求，给个分母人才能判断还要不要等。
+          结束时进度条没有意义（下面已经有结论了）。
+        -->
+        <div v-if="sideEvidenceStatus === 'running' && sideEvidenceProgress !== null" class="space-y-1">
+          <p class="text-muted">
+            已完成 {{ sideEvidenceProgress.done }} / {{ sideEvidenceProgress.total }} 题
+          </p>
+          <el-progress
+            :percentage="Math.round((sideEvidenceProgress.done / Math.max(1, sideEvidenceProgress.total)) * 100)"
+            :stroke-width="6"
+            :show-text="false"
+          />
+        </div>
         <p v-if="sideEvidenceSummary" class="font-mono text-slate-600">
           CP {{ formatPercent(sideEvidenceSummary.context_precision) }} ·
           CR {{ formatPercent(sideEvidenceSummary.context_recall) }} ·
