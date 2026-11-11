@@ -78,8 +78,7 @@ async function submit(): Promise<void> {
     >
       <p class="font-semibold">后端连不上</p>
       <p class="mt-1 leading-relaxed">
-        登录请求拿不到业务码（不是账号问题）。确认后端已启动在 127.0.0.1:8000，并且是从 5173
-        经 Vite 代理访问。
+        登录请求没有拿到业务码（不是账号问题）。确认后端已启动后再试。
       </p>
     </div>
 
@@ -93,7 +92,7 @@ async function submit(): Promise<void> {
         登录调试台
       </h1>
       <p class="mt-1.5 text-[13px] leading-relaxed text-muted">
-        登录态由服务端会话 cookie 维护（HttpOnly、Path=/console），刷新页面不会掉登录。
+        用控制台账号登录。登录态由服务端会话维护，刷新不会掉。
       </p>
 
       <form class="mt-7 space-y-4" @submit.prevent="submit">

@@ -22,6 +22,8 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { computed, h, reactive, ref } from 'vue'
 
+import PageHeader from '../../components/PageHeader.vue'
+
 import { useDryRunSave } from '../../composables/useDryRunSave'
 import {
   PLANS_QUERY_KEY,
@@ -181,26 +183,17 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="card card-body">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="page-title">套餐管理</h2>
-        <p class="page-subtitle">
-          保存分两步：先试算影响面（多少租户会超库数、多少密钥配置会失去档位），确认后才落库。
-          改动即时生效，不需要重启。
-        </p>
-        <p class="mt-1 text-xs text-slate-400">
-          删除暂未开放：删掉一档套餐会让引用它的租户当场换档，这个流程需要影响面预览与回滚，还没定。
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
-        <span v-if="plans.length > 0" class="text-sm text-slate-500">共 {{ plans.length }} 档</span>
+  <section class="space-y-6">
+    <PageHeader title="套餐管理" subtitle="改套餐先试算影响面，确认后才落库。">
+      <template #actions>
+        <span v-if="plans.length > 0" class="text-sm text-muted">{{ plans.length }} 档</span>
         <el-button size="small" :loading="plansQuery.isFetching.value" @click="refresh">
           刷新
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
+    <section class="card card-body">
     <div v-if="loading" class="py-10 text-center text-sm text-slate-500">加载套餐…</div>
 
     <div
@@ -377,5 +370,6 @@ async function refresh(): Promise<void> {
         <el-button type="primary" :loading="saving" @click="save">保存</el-button>
       </template>
     </el-dialog>
+    </section>
   </section>
 </template>

@@ -21,6 +21,8 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed, reactive, ref, watch } from 'vue'
 
+import PageHeader from '../../components/PageHeader.vue'
+
 import { ApiError } from '../../lib/envelope'
 import {
   MODEL_CONFIGS_QUERY_KEY,
@@ -320,28 +322,20 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="card card-body">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="page-title">模型配置</h2>
-        <p class="page-subtitle">
-          平台级配置：一条写着用哪家模型、哪个端点、哪把 Key。改完下一次装配即生效，不需要重启。
-        </p>
-        <p class="mt-1 text-xs text-muted">
-          重排跟随 <span class="font-mono">fast</span> 这档，没有独立的重排模型配置（ADR-0002）。
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
-        <span v-if="configs.length > 0" class="text-sm text-slate-500">
-          共 {{ configs.length }} 条
+  <section class="space-y-6">
+    <PageHeader title="模型配置" subtitle="平台级：用哪家模型、哪个端点、哪把 Key。">
+      <template #actions>
+        <span v-if="configs.length > 0" class="text-sm text-muted">
+          {{ configs.length }} 条
         </span>
         <el-button size="small" @click="openCreate">新增模型配置</el-button>
         <el-button size="small" :loading="configsQuery.isFetching.value" @click="refresh">
           刷新
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
+    <section class="card card-body">
     <div v-if="loading" class="py-10 text-center text-sm text-slate-500">加载模型配置…</div>
 
     <div
@@ -600,5 +594,6 @@ async function refresh(): Promise<void> {
         <el-button type="primary" @click="secretVisible = false">关闭并丢弃</el-button>
       </template>
     </el-dialog>
+    </section>
   </section>
 </template>

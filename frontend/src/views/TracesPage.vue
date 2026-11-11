@@ -18,6 +18,7 @@
 import { useQuery } from '@tanstack/vue-query'
 import { computed, ref } from 'vue'
 
+import PageHeader from '../components/PageHeader.vue'
 import StageWaterfall from '../components/StageWaterfall.vue'
 import { fetchWaterfall } from '../services/consoleTraces'
 import {
@@ -122,15 +123,9 @@ function asTrace(row: unknown): RecentTrace {
 </script>
 
 <template>
-  <section class="space-y-4">
-    <div class="flex flex-wrap items-end justify-between gap-3">
-      <div>
-        <h1 class="text-lg font-semibold text-slate-800">检索记录</h1>
-        <p class="mt-1 text-xs text-slate-500">
-          本租户最近 {{ limit }} 次检索。点一行看它的六段耗时；这一页不显示问句与切片正文。
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+  <section class="space-y-6">
+    <PageHeader title="检索记录" subtitle="本租户最近的检索；点一行看六段耗时。">
+      <template #actions>
         <el-select v-model="limit" size="small" class="w-24">
           <el-option :value="10" label="10 条" />
           <el-option :value="20" label="20 条" />
@@ -140,8 +135,8 @@ function asTrace(row: unknown): RecentTrace {
         <el-button size="small" :loading="loading" @click="tracesQuery.refetch()">
           刷新
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <p
       v-if="loadError !== ''"
@@ -237,7 +232,7 @@ function asTrace(row: unknown): RecentTrace {
       </p>
       <div v-else-if="waterfallLoading" class="text-xs text-muted">读取中…</div>
       <template v-else-if="waterfall !== null">
-        <p class="text-xs text-muted">
+        <p class="hint">
           来源：{{ describeSource(waterfall.source) }}
           <span v-if="waterfall.note">· {{ waterfall.note }}</span>
         </p>

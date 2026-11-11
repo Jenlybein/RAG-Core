@@ -16,6 +16,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { computed } from 'vue'
 
+import PageHeader from '../../components/PageHeader.vue'
 import {
   ACCOUNTS_QUERY_KEY,
   PLANS_QUERY_KEY,
@@ -151,22 +152,19 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="card card-body">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="page-title">账号管理</h2>
-        <p class="page-subtitle">
-          跨租户查看全部账号。停用账号 / 停用租户 / 换套餐都改服务端判定，下一次请求即生效，不需要重启。
-        </p>
-      </div>
-      <div class="flex items-center gap-2 text-sm text-slate-500">
-        <span v-if="accounts.length > 0">共 {{ accounts.length }} 个账号</span>
+  <section class="space-y-6">
+    <PageHeader title="账号管理" subtitle="跨租户查看与调整账号，改动下一次请求即生效。">
+      <template #actions>
+        <span v-if="accounts.length > 0" class="text-sm text-muted">
+          {{ accounts.length }} 个账号
+        </span>
         <el-button size="small" :loading="accountsQuery.isFetching.value" @click="refresh">
           刷新
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
+    <section class="card card-body">
     <p
       v-if="plansError !== ''"
       class="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
@@ -276,5 +274,6 @@ async function refresh(): Promise<void> {
         </tbody>
       </table>
     </div>
+    </section>
   </section>
 </template>

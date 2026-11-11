@@ -10,6 +10,8 @@
 import { useQuery } from '@tanstack/vue-query'
 import { computed, ref, watch } from 'vue'
 
+import PageHeader from '../../components/PageHeader.vue'
+
 import { auditLogsQueryKey, fetchAuditLogs } from '../../services/consoleAdmin'
 import type { AuditLogItem } from '../../types/consoleAdmin'
 import { formatDateTime } from '../../utils/datetime'
@@ -95,29 +97,17 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="card card-body">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="page-title">审计日志</h2>
-        <p class="page-subtitle">
-          控制面每一次改动的账本：谁、什么时候、把哪个对象改成了什么。本页只读。
-        </p>
-        <p class="mt-1 text-xs text-slate-400">
-          分页与动作过滤都由后端完成（
-          <code class="rounded bg-slate-100 px-1 py-0.5">limit</code>
-          /
-          <code class="rounded bg-slate-100 px-1 py-0.5">offset</code>
-          /
-          <code class="rounded bg-slate-100 px-1 py-0.5">action</code>
-          ）；动作是精确匹配，不是前缀。
-        </p>
-      </div>
-      <el-button size="small" :loading="auditQuery.isFetching.value" @click="refresh">
-        刷新
-      </el-button>
-    </div>
+  <section class="space-y-6">
+    <PageHeader title="审计日志" subtitle="控制面每一次改动的账本。本页只读。">
+      <template #actions>
+        <el-button size="small" :loading="auditQuery.isFetching.value" @click="refresh">
+          刷新
+        </el-button>
+      </template>
+    </PageHeader>
 
-    <div class="mt-4 flex flex-wrap items-center gap-3 text-sm">
+    <section class="card card-body">
+    <div class="flex flex-wrap items-center gap-3 text-sm">
       <label class="flex items-center gap-2 text-slate-500">
         <span>每页</span>
         <el-select v-model="pageSize" size="small" class="w-28">
@@ -246,5 +236,6 @@ async function refresh(): Promise<void> {
         />
       </div>
     </template>
+    </section>
   </section>
 </template>

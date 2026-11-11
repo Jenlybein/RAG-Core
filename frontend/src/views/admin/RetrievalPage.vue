@@ -28,6 +28,8 @@ import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { computed, h, reactive, ref, watch } from 'vue'
 
+import PageHeader from '../../components/PageHeader.vue'
+
 import { useDryRunSave } from '../../composables/useDryRunSave'
 import {
   SETTINGS_QUERY_KEY,
@@ -321,20 +323,9 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <section class="card card-body">
-    <div class="flex flex-wrap items-start justify-between gap-3">
-      <div>
-        <h2 class="page-title">检索参数</h2>
-        <p class="page-subtitle">
-          按「改了之后要做什么」分三档：<b class="font-medium text-ink">只读</b>改了等于换基础设施或能关掉鉴权，
-          <b class="font-medium text-ink">待重启</b>只显示当前值、要改走运维流程，
-          <b class="font-medium text-ink">热生效</b>保存后各进程 {{ cacheTtl }}s 内收敛。
-        </p>
-        <p class="mt-1 text-xs text-muted">
-          每行「为什么在这一档」由服务端的配置白名单给出，本页不自己编理由。
-        </p>
-      </div>
-      <div class="flex items-center gap-2">
+  <section class="space-y-6">
+    <PageHeader title="检索参数" subtitle="按「改完要做什么」分只读 / 待重启 / 热生效三档。">
+      <template #actions>
         <el-button v-if="groups.length > 1" size="small" @click="toggleAll">
           {{ allOpen ? '全部收起' : '全部展开' }}
         </el-button>
@@ -345,9 +336,10 @@ async function refresh(): Promise<void> {
         <el-button v-if="dirty" type="primary" size="small" :loading="saving" @click="save">
           保存改动
         </el-button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
+    <section class="card card-body">
     <div v-if="loading" class="py-10 text-center text-sm text-slate-500">加载检索参数…</div>
 
     <div
@@ -495,5 +487,6 @@ async function refresh(): Promise<void> {
         </el-collapse-item>
       </el-collapse>
     </div>
+    </section>
   </section>
 </template>

@@ -363,8 +363,8 @@ function goRetrieve(kbId: string): void {
     <el-card shadow="never">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span class="th-label">共 {{ tree.length }} 个知识库</span>
-          <el-input v-model="keyword" class="w-64" placeholder="搜索知识库名称" clearable>
+          <span class="th-label">{{ tree.length }} 个知识库</span>
+          <el-input v-model="keyword" class="w-64" placeholder="搜索知识库" clearable>
             <template #prefix>
               <el-icon><Search /></el-icon>
             </template>
@@ -375,83 +375,88 @@ function goRetrieve(kbId: string): void {
       <!-- 处理中提示：只在确实有 status=3 时出现，不是常驻横幅。 -->
       <div
         v-if="hasProcessing"
-        class="mb-3 flex items-center gap-2 rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-800"
+        class="mb-4 flex items-center gap-2 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
       >
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span>有文档正在后台索引：页面每 3 秒自动刷新，全部完成后停止。</span>
+        <span>后台索引中，每 3 秒自动刷新</span>
       </div>
 
-      <p v-if="treePending" class="py-6 text-center text-sm text-slate-500">正在读取知识库…</p>
+      <p v-if="treePending" class="py-8 text-center text-sm text-muted">正在读取知识库…</p>
 
       <!-- 读取失败不假装空列表：空列表会让人以为库被删了。 -->
       <div
         v-else-if="treeError !== null"
-        class="rounded-control border border-red-200 bg-red-50 px-3 py-3 text-sm text-red-700"
+        class="rounded-control border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
       >
         <p class="m-0">{{ errorText(treeError) }}</p>
         <el-button class="mt-2" size="small" @click="refetchTree()">重试</el-button>
       </div>
 
-      <div v-else-if="tree.length === 0" class="py-10 text-center">
-        <p class="text-[15px] font-semibold text-ink">还没有知识库</p>
-        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-          文档必须放进一个知识库才能被检索。先建一个：切块策略决定它收哪些格式，建好后可以直接把文档传进去。
+      <div v-else-if="tree.length === 0" class="py-12 text-center">
+        <p class="text-base font-semibold text-ink">还没有知识库</p>
+        <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted">
+          文档要放进知识库才能被检索。
         </p>
         <el-button type="primary" class="!mt-5" @click="createOpen = true">新建知识库</el-button>
       </div>
 
-      <div v-else-if="filteredTree.length === 0" class="py-8 text-center text-sm text-slate-500">
+      <p v-else-if="filteredTree.length === 0" class="py-8 text-center text-sm text-muted">
         没有名称匹配「{{ keyword.trim() }}」的知识库。
-      </div>
+      </p>
 
-      <el-table
-        v-else
-        :data="filteredTree"
-        row-key="kb_id"
-        class="w-full cursor-pointer"
-        @row-click="openDetail"
-      >
-        <el-table-column label="知识库" min-width="240">
-          <template #default="{ row }">
-            <span class="text-sm font-medium text-ink">{{ row.name }}</span>
-            <p class="mt-0.5 text-xs text-muted">{{ row.allowed_formats.join('、') || '（无格式）' }}</p>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="类型" width="120">
-          <template #default="{ row }">
-            <!-- 原文照 show：structure / size 是请求里的取值，同时给中文标签，免得用户猜 -->
-            <span class="text-sm text-slate-700">{{ SPLIT_LABELS[row.split_strategy] ?? row.split_strategy }}</span>
-            <p class="mt-0.5 text-xs text-muted">{{ row.split_strategy }}</p>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="文档数 / 分块数" width="150">
-          <template #default="{ row }">
-            <span class="text-sm text-slate-700">
-              {{ row.documents.length }} 篇 / {{ chunkTotal(row.documents) }} 块
-            </span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="分块窗口" width="120">
-          <template #default="{ row }">
-            <span class="text-sm text-slate-700">{{ row.chunk_size }} token</span>
-          </template>
-        </el-table-column>
-
-        <el-table-column label="操作" width="240">
-          <template #default="{ row }">
-            <!-- el-button 的点击要阻止冒泡，否则会顺带触发整行的「详情」 -->
-            <div class="flex flex-wrap items-center gap-1" @click.stop>
-              <el-button link type="primary" size="small" @click="openDetail(row)">详情</el-button>
-              <el-button link type="primary" size="small" @click="openUpload(row.kb_id)">上传</el-button>
-              <el-button link type="primary" size="small" @click="goRetrieve(row.kb_id)">检索</el-button>
-              <el-button link type="danger" size="small" @click="askDeleteKb(row)">删除</el-button>
+      <!--
+        库列表用卡片而不是表格：知识库是「一个个实体」（各自的格式、窗口、文档量），
+        表格把它们压成一行行数字，个数少时整页空得慌。卡片还给「进详情」一个大的点击面。
+      -->
+      <div v-else class="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+        <!--
+          外层用 div 而不是 button：卡片里还有「上传 / 检索 / 删除」三个按钮，button 套 button
+          是非法结构（浏览器会重排 DOM，点击行为变得难预测）。用 role+tabindex 保留键盘可达。
+        -->
+        <div
+          v-for="row in filteredTree"
+          :key="row.kb_id"
+          role="button"
+          tabindex="0"
+          class="group flex cursor-pointer flex-col gap-3 rounded-control border border-line bg-surface p-4 text-left transition-colors hover:border-line-strong hover:bg-surface-muted/60 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-line-strong"
+          @click="openDetail(row)"
+          @keydown.enter="openDetail(row)"
+          @keydown.space.prevent="openDetail(row)"
+        >
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <p class="truncate text-[15px] font-semibold text-ink">{{ row.name }}</p>
+              <p class="mt-0.5 truncate text-xs text-muted">
+                {{ row.allowed_formats.join('、') || '（无格式）' }}
+              </p>
             </div>
-          </template>
-        </el-table-column>
-      </el-table>
+            <span class="chip shrink-0">{{ SPLIT_LABELS[row.split_strategy] ?? row.split_strategy }}</span>
+          </div>
+
+          <div class="flex items-end gap-5">
+            <div>
+              <p class="metric-value">{{ row.documents.length }}</p>
+              <p class="metric-label">篇文档</p>
+            </div>
+            <div>
+              <p class="metric-value">{{ chunkTotal(row.documents) }}</p>
+              <p class="metric-label">个分块</p>
+            </div>
+            <div>
+              <p class="metric-value">{{ row.chunk_size }}</p>
+              <p class="metric-label">token 窗口</p>
+            </div>
+          </div>
+
+          <!-- 按钮要阻止冒泡，否则会顺带触发整卡的「详情」 -->
+          <div class="mt-1 flex flex-wrap items-center gap-1 border-t border-line pt-2.5" @click.stop>
+            <el-button link type="primary" size="small" @click="openUpload(row.kb_id)">上传</el-button>
+            <el-button link type="primary" size="small" @click="goRetrieve(row.kb_id)">检索</el-button>
+            <el-button link type="danger" size="small" @click="askDeleteKb(row)">删除</el-button>
+            <span class="ml-auto text-xs text-muted group-hover:text-ink">详情 →</span>
+          </div>
+        </div>
+      </div>
     </el-card>
 
     <!-- 本次上传回执：只在真传过之后出现 -->

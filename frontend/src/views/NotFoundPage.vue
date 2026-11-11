@@ -13,14 +13,15 @@ const route = useRoute()
 </script>
 
 <template>
-  <section class="card card-body">
-    <h2 class="page-title">这个地址没有对应页面</h2>
-    <p class="page-subtitle">
-      路径 <span class="font-mono text-ink">{{ route.fullPath }}</span> 不在调试台的任何一条路由里。
-      可能是地址写错了，也可能这一页在重构里被并进了别的页面。
+  <section class="card card-body py-16 text-center sm:py-20">
+    <p class="text-[56px] font-semibold leading-none tracking-tightest text-line-strong">404</p>
+    <h2 class="page-title mt-4">这个地址没有对应页面</h2>
+    <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+      路径 <code class="mono-tag">{{ route.fullPath }}</code> 不在调试台的路由里。
+      可能是地址写错了，也可能这一页在重构里被并进了别处。
     </p>
 
-    <div class="mt-6 flex flex-wrap gap-2">
+    <div class="mt-7 flex flex-wrap justify-center gap-2">
       <RouterLink to="/">
         <el-button type="primary">回到首页</el-button>
       </RouterLink>

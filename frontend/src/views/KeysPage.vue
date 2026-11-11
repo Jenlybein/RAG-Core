@@ -401,7 +401,7 @@ watch(
       <!-- 空态说下一步，不堆一句「还没有任何 Key」就完事 -->
       <div v-else-if="keys.length === 0" class="py-8 text-center">
         <p class="text-[15px] font-semibold text-ink">还没有 Key</p>
-        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
+        <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted">
           签发一把之后，去「检索调试台」选中它就能用它的原文打真实接口。
         </p>
         <el-button type="primary" class="!mt-5" @click="openIssue">签发新 Key</el-button>
@@ -438,11 +438,7 @@ watch(
 
             <!-- 第二层：配置摘要拆成 chips，换行只在块之间发生 -->
             <div class="flex flex-wrap items-center gap-1.5">
-              <span
-                v-for="chip in policyChips(row)"
-                :key="chip"
-                class="inline-flex items-center rounded-full border border-line bg-surface-muted px-2 py-0.5 text-xs text-slate-600"
-              >
+              <span v-for="chip in policyChips(row)" :key="chip" class="chip">
                 {{ chip }}
               </span>
             </div>
