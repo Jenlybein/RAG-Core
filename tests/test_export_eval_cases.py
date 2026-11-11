@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -148,6 +149,36 @@ def test_cli_writes_a_file_that_shape_check_accepts(tmp_path: Path, monkeypatch:
     payload = json.loads(out.read_text(encoding="utf-8"))
     assert len(payload["questions"]) == 1
     assert validate_candidates(payload["questions"]) == []
+
+
+def test_query_source_goes_through_the_shared_reader_and_can_actually_read(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_LangfuseQuerySource`` 必须走 ``fetch_observations``，且真能读到 ``metadata.query``。
+
+    这条守的是一次真实的「修了但没修好」：导出端原先自己写了一份 ``observations.get_many``，
+    **漏了 ``fields`` 参数**，而 v2 的 observations 接口默认不返回 metadata——于是每次导出
+    都报「观测服务里没有问句原文」。同一个坑在瀑布图那边表现为「耗时全 0」，两处互不相干地
+    各踩一次。现在取数收在 ``langfuse_reader.fetch_observations``，这里钉住它真的被用上。
+    """
+
+    import scripts.export_eval_cases as cli
+    from app.observability import langfuse_reader
+
+    called: list[str] = []
+
+    def _fake_fetch(trace_id: str, *, client: Any = None) -> list[Any]:
+        called.append(trace_id)
+        return [SimpleNamespace(metadata={"query": "退款多久到账"})]
+
+    monkeypatch.setattr(langfuse_reader, "fetch_observations", _fake_fetch)
+    # 构造时不去连栈：直接给一个占位客户端。
+    monkeypatch.setattr(langfuse_reader, "_resolve_client", lambda: object())
+
+    source = cli._LangfuseQuerySource()
+
+    assert source.query_of("t-a") == "退款多久到账"
+    assert called == ["t-a"], "必须走共用的取数函数，而不是自己再写一份 get_many"
 
 
 def test_cli_does_not_write_anything_when_the_observation_service_is_down(

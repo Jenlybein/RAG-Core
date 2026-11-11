@@ -15,7 +15,7 @@
  *
  * 结果卡片只展示契约里有的字段；`latency_ms` / `log_id` 后端没有（00-facts §5 明确列过），
  * 这里也不编造。`metadata.trace_id` 从 #101 起有了，但本页不摊它——它在这张卡上的用途只有
- * 一个：与瀑布图里那根线对上（见下方「阶段耗时」面板的说明）。
+ * 一个：与瀑布图里那根线对上（见下方「六段耗时」面板的说明）。
  */
 import { useMutation, useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
@@ -365,7 +365,7 @@ const emptyCopy = computed(() =>
 // 摘要的渲染整体在 `RunSummary.vue` 里（纯 props，只收 metadata）：页面不自己摊
 // `metadata`，也就不可能顺手把页面输入混进摘要。
 
-// —— ⑥ 阶段耗时（瀑布图，#103） ——
+// —— ⑥ 六段耗时（瀑布图，#103） ——
 /**
  * 一个输入框 + 一个按钮，按 `log_id` 去控制面读回六段耗时。
  *
@@ -507,8 +507,10 @@ const sideEvidenceSummary = ref<{
   scored?: number
   unscored?: number
 } | null>(null)
+/** 触发/轮询这条路自己出的错（网络、权限、任务投递失败）——「没跑起来」。 */
 const sideEvidenceError = ref<string | null>(null)
-const sideEvidenceError2 = ref<string | null>(null)
+/** 跑批本身跑完但判了 failed/partial 时，``status.json`` 里写的那个 ``error``——「跑了但没跑好」。 */
+const sideEvidenceRunError = ref<string | null>(null)
 const sideEvidenceStarting = ref(false)
 let sideEvidenceTimer: ReturnType<typeof setTimeout> | null = null
 
@@ -528,7 +530,7 @@ async function pollSideEvidence(runId: string): Promise<void> {
     sideEvidenceStatus.value = state.status
     sideEvidenceJudgeModel.value = state.judge_model ?? null
     sideEvidenceSummary.value = state.summary ?? null
-    sideEvidenceError2.value = state.error ?? null
+    sideEvidenceRunError.value = state.error ?? null
     if (SIDE_EVIDENCE_TERMINAL.has(state.status)) {
       stopSideEvidencePolling()
       return
@@ -546,7 +548,7 @@ async function startSideEvidence(): Promise<void> {
   if (sideEvidenceStarting.value) return
   sideEvidenceStarting.value = true
   sideEvidenceError.value = null
-  sideEvidenceError2.value = null
+  sideEvidenceRunError.value = null
   stopSideEvidencePolling()
   try {
     const started = await triggerSideEvidence()
@@ -927,7 +929,7 @@ onUnmounted(() => stopSideEvidencePolling())
       </div>
 
       <!--
-        阶段耗时（#103）：与运行摘要并列的第二个入口，同样是「需要时才展开」。
+        六段耗时（#103）：与运行摘要并列的第二个入口，同样是「需要时才展开」。
         它按 log_id 去控制面读回六段耗时——关掉观测也能从本地记录看到，
         没开 / 没记上时这里给明确文案，不留空白。
       -->
@@ -938,7 +940,7 @@ onUnmounted(() => stopSideEvidencePolling())
           @click="waterfallOpen = !waterfallOpen"
         >
           <span class="text-[9px]">{{ waterfallOpen ? '▼' : '▶' }}</span>
-          阶段耗时 · 按 log_id 看六段瀑布
+          六段耗时 · 按 log_id 看六段瀑布
         </button>
 
         <div v-if="waterfallOpen" class="mt-3">
@@ -1106,7 +1108,7 @@ onUnmounted(() => stopSideEvidencePolling())
           CR {{ formatPercent(sideEvidenceSummary.context_recall) }} ·
           已评分 {{ sideEvidenceSummary.scored }} / 未评分 {{ sideEvidenceSummary.unscored }}
         </p>
-        <p v-if="sideEvidenceError2" class="text-[#6E4E12]">{{ sideEvidenceError2 }}</p>
+        <p v-if="sideEvidenceRunError" class="text-[#6E4E12]">{{ sideEvidenceRunError }}</p>
       </div>
     </el-card>
 

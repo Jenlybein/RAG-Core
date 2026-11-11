@@ -187,7 +187,7 @@ def _round(value: float | None, digits: int = 4) -> float | None:
 
 
 def _fmt(value: float | None) -> str:
-    """本地别名，指向 :func:`app.utils.report_format.as_metric`（三份重复收成一份）。"""
+    """报告里的分数渲染：``None`` 印成 ``n/a``，不是 0。"""
 
     return as_metric(value)
 

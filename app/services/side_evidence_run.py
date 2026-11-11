@@ -22,7 +22,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
+import structlog
+
 from app.services.side_evidence import run_side_evidence
+
+logger = structlog.get_logger(__name__)
 
 
 class RagasJudge:
@@ -53,32 +57,49 @@ class RagasJudge:
         return self._score(self._recall, question=question, contexts=contexts, reference=reference)
 
 
+#: 库里没有模型配置、``.env`` 也没填 ``LLM_BASE_URL`` 时的兜底地址。
+#:
+#: 它**镜像** ``app/providers/llm/__init__.py`` 里 ``_VENDORS["ark"].default_base_url``：
+#: 那张表是「供应商 → 默认地址」的唯一真相，但它对工厂是私有的，而这里只需要一个兜底值。
+#: 与其把私有表 import 出来，不如把这份重复摆明面：改供应商地址时，两处一起改，
+#: 且有 ``tests/test_llm_provider.py`` 那条名单守卫提醒你别忘。
+ARK_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
+
+
 def build_judge() -> RagasJudge:
     """按运行时同一套配置装配裁判：库里的模型配置优先，``.env`` 兜底。"""
 
     from openai import AsyncOpenAI
     from ragas.llms import llm_factory
     from ragas.metrics.collections import ContextPrecisionWithReference, ContextRecall
-    from sqlalchemy import text
 
     from app.core.config import settings
     from app.db.session import SessionLocal
+    from app.repositories import model_config_repository
 
     base_url = api_key = model = None
     try:
         with SessionLocal() as db:
-            row = db.execute(
-                text("select base_url, model, api_key from model_configs order by created_at limit 1")
-            ).mappings().first()
-        if row:
-            base_url, model, api_key = row["base_url"], row["model"], row["api_key"]
-    except Exception:  # noqa: BLE001 - 读配置失败不该让旁证整轮跑不了
-        pass
+            # 走仓储而不是自己拼 SQL：``model_config_repository`` 自称「唯一能碰
+            # ``model_configs`` 的一层」，绕过去就没人再守那条约定了。
+            rows = model_config_repository.list_all(db)
+        if rows:
+            first = rows[0]
+            base_url, model, api_key = first.base_url, first.model, first.api_key
+    except Exception as exc:  # noqa: BLE001 - 读配置失败不该让旁证整轮跑不了
+        # 但**必须留痕**：静默 pass 会让「裁判用的是 .env 还是库里那套」变成一个
+        # 查不出来的问题——那正是本轮实跑踩过的坑（.env 过期 key vs 库里有效 key）。
+        logger.warning(
+            "side_evidence_model_config_unreadable", error=type(exc).__name__
+        )
 
     if not (base_url and model and api_key):
-        base_url = settings.LLM_BASE_URL or "https://ark.cn-beijing.volces.com/api/v3"
+        base_url = settings.LLM_BASE_URL or ARK_DEFAULT_BASE_URL
         model = settings.LLM_MODEL
         api_key = getattr(settings, "ARK_API_KEY", "")
+        logger.warning(
+            "side_evidence_judge_falls_back_to_env", model=model, has_key=bool(api_key)
+        )
 
     client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=120)
     llm = llm_factory(model, client=client)

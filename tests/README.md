@@ -30,8 +30,16 @@
 
 **第 7 步唯一新增的接缝是「注入式假 Redis」**（`app.core.redis_client.set_redis_client`），不是 monkeypatch 全局：限流与配额服务通过构造参数收客户端，测试注入内存假实现；默认套件因此不碰 Redis。鉴权那条缝则完全没有新增——它本来就是纯函数，测试直接把假行交给 `resolve_identity`。
 
-第 9 步（观测与评测）新增的测试仍落在既有三层，**新增生产接缝只有一处**：
-`app.observability.set_trace_sink` / `reset_trace_sink`（与第 7 步的注入式假 Redis 同一套做法——把「去向」做成可注入，而不是 monkeypatch 全局）。`tests/conftest.py` 的 autouse 夹具靠它把每个用例的观测去向固定成 `none`、并在结束时清场；没有这条缝，「这台机器上恰好起着观测栈」就会渗进套件的结论。
+第 9 步（观测与评测）新增的测试仍落在既有三层。**新增的生产接缝逐条列在这里**——说「没有新增」是错的，说「只有一处」也是错的，所以干脆把清单摆出来，下一个人加缝时照着更新：
+
+- `app.observability.set_trace_sink` / `reset_trace_sink`：**进程级**注入点，与第 7 步的注入式假 Redis 同一套做法（把「去向」做成可注入，而不是 monkeypatch 全局）。`tests/conftest.py` 的 autouse 夹具靠它把每个用例的观测去向固定成 `none`、并在结束时清场；没有这条缝，「这台机器上恰好起着观测栈」就会渗进套件的结论。
+- `rag_service.retrieve(..., stage_timer=...)`：计时器可注入（默认真计时器），用来断言「六段都开过」而不必真的等。
+- `retrieval_waterfall.waterfall_of(..., remote_reader=...)`：读观测服务那一步由组合根显式交进来，测试才能换掉「去不去问栈」。
+- `console_deps.get_langfuse_reader`：路由的 `Depends`，测试用 `dependency_overrides` 换掉它。
+- `LangfuseTraceSink(client=...)` / `read_stage_spans(client=...)`：SDK 客户端可注入，观测路径因此能在不发网络、不起栈的情况下被逐项断言。
+- `JsonlTraceSink(clock=...)`：时钟可注入，轮转与保留期不必等真实时间。
+
+前六条里，**只有第一条是进程级的**（会影响同一进程里后续所有用例，所以必须由 autouse 夹具兜底清场）；其余都是构造参数或 `Depends`，作用域限于单个调用——这也是本仓一贯的偏好：优先把依赖做成参数，而不是改全局状态。
 
 - **纯函数（①）**：`trace_id` 派生恒等、六段计时与排序、门禁判据（相对退化 / 未评分排除 / 分题型）、旁证聚合与部分失败、导出筛选 / 合并 / 产物形状、反馈错误码文案 → `test_trace_identity.py`、`test_observability_sink.py`、`test_eval_gate.py`、`test_eval_runner.py`、`test_side_evidence.py`、`test_build_answer_set.py`、`test_export_eval_cases.py`、`frontend/src/utils/__tests__/feedback.spec.ts`。
 - **ASGI（②）**：写库失败仍返回 `trace_id`、观测旁路失败只 warning、瀑布图与反馈的归属校验、评分反查、控制台旁证触发 → `test_retrieval_observability.py`、`test_feedback.py`、`test_console_waterfall.py`、`test_console_trace_lookup.py`。

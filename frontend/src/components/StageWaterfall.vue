@@ -38,7 +38,7 @@ const hasStages = computed(() => props.data.stages.length > 0)
 const emptyCopy = computed(() => {
   if (props.data.reason === 'sink_disabled') {
     return {
-      title: '观测未启用：这次没有阶段耗时可看',
+      title: '观测未启用：这次没有六段耗时可看',
       hint:
         '当前观测去向是 none（TRACE_SINK=none），本地也没有这条记录。' +
         '把 TRACE_SINK 设成 jsonl 或 langfuse、重跑一次检索，就能看到六段各花了多久。',
@@ -46,7 +46,7 @@ const emptyCopy = computed(() => {
   }
   if (props.data.reason === 'no_record') {
     return {
-      title: '观测开着，但这条记录没留下阶段耗时',
+      title: '观测开着，但这条记录没留下六段耗时',
       hint:
         '本地记录与观测服务里都没有这根 trace。常见原因：记录已过保留期被清掉，' +
         '或这次检索的观测写入失败（旁路失败只留 warning，检索本身仍会正常返回）。',
@@ -54,7 +54,7 @@ const emptyCopy = computed(() => {
   }
   // 后端的理由是「两处都有 / 都没有」的枚举；出现第三种就按最保守的说法显示，不猜。
   return {
-    title: '这条记录里没有阶段耗时',
+    title: '这条记录里没有六段耗时',
     hint: '后端没有给出原因；去看看服务端日志里与这根 trace_id 相关的 warning。',
   }
 })
@@ -133,7 +133,7 @@ const emptyCopy = computed(() => {
       读的人会以为「关掉观测也照样在记」，下一次检索找不到记录时才来问为什么。
     -->
     <p v-if="hasStages && !data.enabled" class="mt-2 text-[11px] text-muted">
-      当前观测去向是 none：以上六段来自本地记录，新的检索不会再记下新的阶段耗时。
+      当前观测去向是 none：以上六段来自本地记录，新的检索不会再记下新的六段耗时。
     </p>
   </div>
 </template>

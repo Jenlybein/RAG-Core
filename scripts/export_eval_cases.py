@@ -99,12 +99,19 @@ class _LangfuseQuerySource:
             raise RuntimeError(f"观测服务不可用（{exc.reason}）：拿不到问句原文，导出中止") from exc
 
     def query_of(self, trace_id: str) -> str:
-        try:
-            response = self._client.observations.get_many(trace_id=trace_id, limit=100)
-        except Exception as exc:  # noqa: BLE001 - 连不上 / 认证失败都归为「读不到」
-            raise RuntimeError(f"trace {trace_id} 读取失败：观测服务不可用，导出中止") from exc
+        # 取数走 ``langfuse_reader.fetch_observations``，**不自己写一份**：``fields`` 漏了
+        # 就永远读不到 metadata（这里表现为「没有问句原文」，瀑布图那边表现为「耗时全 0」），
+        # 这个坑已经踩过一次，收在一处才不会踩第三次。
+        from app.observability.langfuse_reader import LangfuseReadError, fetch_observations
 
-        for observation in getattr(response, "data", None) or ():
+        try:
+            observations = fetch_observations(trace_id, client=self._client)
+        except LangfuseReadError as exc:
+            raise RuntimeError(
+                f"trace {trace_id} 读取失败（{exc.reason}）：观测服务不可用，导出中止"
+            ) from exc
+
+        for observation in observations or ():
             metadata = getattr(observation, "metadata", None)
             if not isinstance(metadata, dict):
                 continue

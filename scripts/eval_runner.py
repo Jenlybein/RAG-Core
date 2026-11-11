@@ -211,19 +211,14 @@ def preload_env_file(path: str | None) -> str | None:
     ``settings`` 是模块级单例（``app/core/config.py`` 末尾 ``settings = Settings()``），
     导入即定型；所以这条只能在导入之前做。``setdefault`` 让显式环境变量优先于文件，
     与 pydantic-settings 的优先级一致。
+
+    实现收在 :func:`scripts.env_bootstrap.preload_env_file_from`——本文件原先自己抄了一份
+    ``dotenv_values`` + ``os.environ.setdefault``，与本仓另外三个脚本同一套逻辑。
     """
 
-    if not path:
-        return None
-    candidate = Path(path)
-    if not candidate.is_file():
-        raise FileNotFoundError(f"--env-file 不存在：{path}")
-    from dotenv import dotenv_values
+    from scripts.env_bootstrap import preload_env_file_from
 
-    for key, value in dotenv_values(candidate).items():
-        if value is not None:
-            os.environ.setdefault(key, value)
-    return str(candidate)
+    return preload_env_file_from(path)
 
 
 def load_experiment(path: Path) -> dict[str, Any]:
@@ -780,7 +775,7 @@ async def _score_questions(
 
 
 def _fmt(value: float | None) -> str:
-    """渲染分数；实现指向 :func:`app.utils.report_format.as_metric`（三份重复收成一份）。
+    """报告里的分数渲染：``None`` 印成 ``n/a``，不是 0。
 
     局部 import：本模块的 ``settings`` 必须晚于 ``--env-file`` 载入（见文件顶部那段），
     而这条渲染函数与配置无关，放在函数里就不必跟着那套时序走。

@@ -543,14 +543,18 @@ def _fake_langfuse_client(
 
 
 def test_reader_asks_the_api_for_name_and_metadata_explicitly() -> None:
-    """``fields`` 必须同时点名 ``basic`` 与 ``metadata``，两个都不能少。
+    """``fields`` 必须同时点名 ``basic`` 与 ``metadata``，``expand_metadata`` 也必须开。
 
     这是实机踩出来的（2026-11-11，自托管 v4）：v2 的 observations 接口**默认不返回
     metadata**，漏了就每段都退回 ``end - start``（事后补记里几乎相同）→ 瀑布图全是
     ``0.0 ms``；而 ``fields`` 一旦传了就是**白名单**，只写 ``metadata`` 会把 ``name``
     滤掉 → 每段都因为「名字不认识」被丢弃 → 瀑布图变成空数组。
 
-    两种坏法都不报错，只看假客户端的行为也发现不了（它照旧把 metadata 塞回来），
+    另外 metadata **默认按 200 字符截断**（实机量过：482 字的 ``query`` 只回 200 字）。
+    对瀑布图无所谓，但 #110 的低分导出要拿 ``metadata.query`` 当问句原文，截断等于静默
+    产出一道残缺的题，所以 ``expand_metadata=True`` 也是契约的一部分。
+
+    三种坏法都不报错，只看假客户端的行为也发现不了（它照旧把 metadata 塞回来），
     所以这里直接钉住**发出去的请求参数**。
     """
 
@@ -558,10 +562,12 @@ def test_reader_asks_the_api_for_name_and_metadata_explicitly() -> None:
 
     read_stage_spans("0" * 32, client=client)
 
-    fields = client.observations.kwargs.get("fields")
+    kwargs = client.observations.kwargs
+    fields = kwargs.get("fields")
     assert fields is not None, "不传 fields 就永远读不到 metadata.duration_ms"
     assert "metadata" in fields, "不点名 metadata 的话 duration_ms 读不回来"
     assert "basic" in fields, "不点名 basic 的话 name 会被白名单滤掉"
+    assert kwargs.get("expand_metadata") is True, "不开 expand_metadata，长 query 会被截成 200 字"
 
 
 def test_reader_without_credentials_reports_not_configured(

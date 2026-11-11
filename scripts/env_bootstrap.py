@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from pathlib import Path
 
 
 def preload_env_file() -> str | None:
@@ -45,7 +46,25 @@ def preload_env_file() -> str | None:
     return known.env_file
 
 
-#: 旧名保留：三个脚本原先各自定义 ``_preload_env_file``，调用点按旧名写。
-_preload_env_file = preload_env_file
+def preload_env_file_from(path: str | None) -> str | None:
+    """按**显式给的路径**预读（``eval_runner`` 用它：那边路径来自 ``--env-file`` 的解析结果）。
 
-__all__ = ["preload_env_file"]
+    路径不存在时抛 :class:`FileNotFoundError`：调用方传了一个不存在的文件，是使用者错误，
+    该当场说清，而不是静默当成「没配」。
+    """
+
+    if not path:
+        return None
+    candidate = Path(path)
+    if not candidate.is_file():
+        raise FileNotFoundError(f"--env-file 不存在：{path}")
+
+    from dotenv import dotenv_values
+
+    for key, value in dotenv_values(candidate).items():
+        if value is not None:
+            os.environ.setdefault(key, value)
+    return str(candidate)
+
+
+__all__ = ["preload_env_file", "preload_env_file_from"]

@@ -75,25 +75,46 @@ def trigger_side_evidence(
     response_model=ApiResponse[dict],
     summary="读一次旁证跑批的状态与汇总",
 )
+def _queued(run_id: str) -> ApiResponse[dict]:
+    """「还没有结论」的统一答复：形状与有结论时**完全一致**，只是值都是空的。
+
+    三种情况都走这里——``run_id`` 形状不对、目录里还没有 ``status.json``、状态文件属于
+    别的租户。它们的对外答复必须一模一样（不区分「不存在」与「不属于你」），所以用同一个
+    构造函数而不是三份字面量：三份字面量迟早在字段上漂移，而漂移的表现是「前端某次拿到
+    的键少一个」，最难查的那种。
+    """
+
+    return ok(
+        {
+            "run_id": run_id,
+            "status": "queued",
+            "judge_model": None,
+            "error": None,
+            "summary": None,
+            "report_path": None,
+        }
+    )
+
+
 def side_evidence_status(
     run_id: str = PathParam(..., description="触发时返回的 run_id"),
     identity: ConsoleIdentity = Depends(require_console_tenant),
 ) -> ApiResponse[dict]:
     if not _RUN_ID.match(run_id):
         # 不属于本服务生成的形状：当作不存在，与跨租户同一个答复口径。
-        return ok({"run_id": run_id, "status": "queued", "summary": None, "error": None})
+        return _queued(run_id)
 
     run_dir = RUNS_ROOT / run_id
     status_path = run_dir / "status.json"
     if not status_path.is_file():
-        return ok({"run_id": run_id, "status": "queued", "summary": None, "error": None})
+        return _queued(run_id)
 
     status = json.loads(status_path.read_text(encoding="utf-8"))
     # 归属校验（本轮 code-review 补的）：``run_id`` 只是一个时间戳形状的字符串，谁都能编一个
     # 去猜别人的目录。状态文件里记着发起它那个租户，对不上就按「不存在」处理——与瀑布、
     # 反查、反馈同一口径：不区分「不存在」与「不属于你」。
     if status.get("tenant_id") not in (None, tenant_id_of(identity)):
-        return ok({"run_id": run_id, "status": "queued", "summary": None, "error": None})
+        return _queued(run_id)
     results_path = run_dir / "results.json"
     summary = None
     if results_path.is_file():

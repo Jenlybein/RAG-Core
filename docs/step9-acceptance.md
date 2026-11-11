@@ -37,11 +37,11 @@
 | #103 | 控制台按 `log_id` 读回瀑布、先本地后观测、跨租户同「不存在」 | `test_console_waterfall.py` |
 | #104 | 观测栈独立 profile（默认不背 6 个容器） | `docker compose -f deploy/docker-compose.yml config --services` → 默认 4 个；`--profile obs` → 9 个 |
 | #105 | 反馈本地权威、三种失败同一码、观测挂掉仍成功 | `test_feedback.py`；迁移 `a91f3c7e2058` 已应用到共享开发库 |
-| #106 | 评分控件按 `trace_id` 反查 `log_id`，三种失败各一句人话 | `test_console_trace_lookup.py` 7 条 + `frontend/.../feedback.spec.ts` 5 条；vue-tsc 0 errors |
+| #106 | 评分控件按 `trace_id` 反查 `log_id`，三种失败各一句人话 | `test_console_trace_lookup.py` 7 条 + `frontend/.../feedback.spec.ts` 5 条；vue-tsc 0 errors。**票外必要补充**：`GET /console/retrieval-traces?trace_id=` 这个反查端点不在 #105/#106 的 AC 里——检索响应只有 `trace_id`（ADR-0010 红线），而 `trace_id` 是 `log_id` 的单向派生，推不回去；不加这条端点就没有「点一下就能打分」的合法路径 |
 | #107 | 确定性门禁（零 LLM）、相对判据、可复现报告 | **首次基线**：`CP 0.2220 / CR 0.8717`（127 题全部评分）；合并前后两次全量跑逐项 **+0.00pp** |
-| #108 | 50 题旁证答案集、机械校验、抽检留档 | `eval/answers_v1.json`：50 题、**47/50 校验通过**，3 条硬失败（`q55`/`q100`/`q80`）原样留档不凑数 |
+| #108 | 50 题旁证答案集、机械校验、抽检留档 | `eval/answers_v1.json`：50 题、**47/50 校验通过**，3 条硬失败（`q55`/`q100`/`q80`）原样留档不凑数。**偏离**：票面写「12 个题型各 2~3 题」，实际是 11 个题型（`absent` 不进旁证）、每型 2~6 题——50 题 ÷ 12 型 × 2~3 题在算术上不可同时成立，`eval/answers_v1.report.md` 已自陈并取「下限口径」。AC 未随之修订，属**未闭环**，留给下一轮改票 |
 | #109 | 旁证跑批 + 控制台触发；未评分不按 0 分算 | `test_side_evidence.py` 12 条；实跑见下节 |
-| #110 | 低分导出；观测不可用即明确失败、不落空文件 | `test_export_eval_cases.py` 9 条 |
+| #110 | 低分导出；观测不可用即明确失败、不落空文件 | `test_export_eval_cases.py` 10 条；**实机跑通整条闭环**（见第六节）：真实反馈 → 反查 → 从栈取回问句原文 → 落候选集 |
 
 ## 四、真实跑（带出处，能复现）
 
@@ -79,7 +79,11 @@ uv run python scripts/eval_side_evidence.py --env-file ../RAG-Core/.env         
 ※ 这一跑发生在 `partial` 档加上**之前**，所以当时写的是 `ok`。按现在的代码，
 `unscored > 0` 一律判 `partial` 并非零退出——同一批结果今天重跑会显示 `partial`。
 两处记录都留着，因为改档位这件事本身要看得出痕迹。
-| 全量（2026-11-11 07:5x） | 50 | 0.8000（5 题） | 1.0000（5 题） | **partial** |
+| 全量（2026-11-11 07:5x） | 50 | 0.8000（**n=5**） | 1.0000（**n=5**） | **partial** |
+
+> **n=5，不是 50。** 这两列的分母是「真正评上的题数」，不是「跑了几道题」——引用这两个
+> 数字时必须连 n 一起说，否则会被读成「50 题的平均」。控制台面板也同时显示
+> `已评分 / 未评分`，就是为此。
 
 - 裁判：`deepseek-v4-1-flash-economy-261017`，取自数据库 `model_configs`（与运行时同一套）。
 - 全量跑到第 5 题后撞 **5 小时配额** `429 AccountQuotaExceeded`（10:39 重置），
@@ -123,6 +127,34 @@ observations 接口默认不返回 `metadata`——于是每段都退回 `end - 
 
 > 本次环境里 ES 没起，所以 `degraded_reason=keyword search failed`、`keyword_recall`
 > 花了 9372 ms 才失败——这正好验证了「失败的那一路仍然记录耗时」（#102 的设计决定）。
+
+### 顺带跑通 #110 的整条闭环
+
+同一次环境里，从「用户打差评」一路跑到「候选评测题落盘」：
+
+```powershell
+# 1) 给那次检索打 2 分（真实数据面端点）
+curl -s -X POST http://127.0.0.1:8899/api/v1/rag/feedback \
+  -H 'Authorization: Bearer dev-key' -H 'Content-Type: application/json' \
+  -d '{"log_id":"44db034a-…","trace_id":"d6f23460…","score":2,"comment":"关键词那路挂了，结果不准"}'
+# 2) 导出候选评测题
+uv run python scripts/export_eval_cases.py --env-file .env --max-score 3 --days 30 \
+  --out "$env:TEMP\candidates.json"
+```
+
+结果：`新增 1 条`，产出的候选题里 `query` 正确取回了 `"退款多久到账"`，
+`source` 带 `trace_id` / `log_id` / `kb_ids` / `score`，`relevant: []` 待人工标注。
+
+这一跑又抓出**两个**会让 #110 永远失败（或静默产出残缺数据）的坑，都在读端：
+
+| 坑 | 表现 | 修法 |
+| --- | --- | --- |
+| 导出脚本自己写了一份 `get_many`，**漏 `fields`** | 每次报「观测服务里没有问句原文」，导出中止 | 取数收进 `langfuse_reader.fetch_observations`，脚本不再自己拼 |
+| metadata **默认按 200 字符截断** | 482 字的问句只回 200 字——不报错，静默产出一道**残缺的题** | `expand_metadata=True`（实机量过：加它之后 482 字完整回来） |
+
+两个坑都是「不报错的坏」，所以都进了守卫测试：
+`test_query_source_goes_through_the_shared_reader_and_can_actually_read`（钉住必须走共用取数）、
+`test_reader_asks_the_api_for_name_and_metadata_explicitly`（钉住 `fields` 与 `expand_metadata`）。
 
 ## 六、仍未实机验证的一条（如实留档）
 

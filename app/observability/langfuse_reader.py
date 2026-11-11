@@ -83,31 +83,7 @@ def read_stage_spans(trace_id: str, *, client: Any | None = None) -> tuple[Stage
     if client is None:
         client = _resolve_client()
 
-    try:
-        # ``fields`` 不能省，而且**两个都要点名**：
-        #
-        # - 不传 ``fields`` 时 v2 的 observations 接口**默认不返回 metadata**，于是
-        #   ``metadata`` 永远是 ``None``，每一段都退回 ``end_time - start_time``——而那对
-        #   时刻在「事后补记」里几乎相同，结果是瀑布图**全部显示 0.0 ms**，看起来像
-        #   「观测栈里没有耗时数据」。
-        # - 传了 ``fields`` 它就是**白名单**：只写 ``["metadata"]`` 会把 ``name`` 一起滤掉，
-        #   于是每一段都因为「名字不认识」被丢弃，瀑布图变成空数组。
-        #
-        # ``basic`` 带 ``name``（也带 type / level），``metadata`` 带我们自己写进去的
-        # ``duration_ms``。这条组合是实机对着自托管 v4 栈试出来的（2026-11-11）：
-        # 同一个 trace 带上它之后六段立刻回真值
-        # （0.154 / 12.246 / 8483.89 / 474.568 / 9372.298 / 0.09 ms）。
-        response = client.observations.get_many(
-            trace_id=trace_id,
-            limit=_OBSERVATION_LIMIT,
-            fields=["basic", "metadata"],
-        )
-    except LangfuseReadError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - 任何网络 / 认证失败都归为「读不到」
-        raise LangfuseReadError(REASON_UNREACHABLE, detail=type(exc).__name__) from exc
-
-    observations = getattr(response, "data", None)
+    observations = fetch_observations(trace_id, client=client)
     if observations is None:
         raise LangfuseReadError(REASON_BAD_RESPONSE, detail="no data")
 
@@ -121,6 +97,54 @@ def read_stage_spans(trace_id: str, *, client: Any | None = None) -> tuple[Stage
             continue
         stages.append(StageSpan(name=name, duration_ms=duration_ms))
     return order_spans(stages)
+
+
+def fetch_observations(trace_id: str, *, client: Any | None = None) -> list[Any] | None:
+    """取一条 trace 的全部 observation，**带上 ``name`` 与 ``metadata``**。
+
+    这是本模块里唯一该发 ``observations.get_many`` 的地方：``fields`` 的两个坑
+    （漏了它 metadata 永远是 ``None``；只写 ``metadata`` 会把 ``name`` 白名单滤掉）
+    在别处重演过一次——``scripts/export_eval_cases.py`` 当初自己写了一份取数逻辑，
+    于是 #110 的低分导出永远报「观测服务里没有问句原文」。收在这里，别人就不必再记。
+
+    失败一律抛 :class:`LangfuseReadError`（与 ``read_stage_spans`` 同一套语义）：
+    「栈里没有」与「连不上」必须分得开。
+    """
+
+    if client is None:
+        client = _resolve_client()
+
+    try:
+        # ``fields`` 不能省，而且**两个都要点名**：
+        #
+        # - 不传 ``fields`` 时 v2 的 observations 接口**默认不返回 metadata**，于是
+        #   ``metadata`` 永远是 ``None``，每一段都退回 ``end_time - start_time``——而那对
+        #   时刻在「事后补记」里几乎相同，结果是瀑布图**全部显示 0.0 ms**，看起来像
+        #   「观测栈里没有耗时数据」。
+        # - 传了 ``fields`` 它就是**白名单**：只写 ``["metadata"]`` 会把 ``name`` 一起滤掉，
+        #   于是每一段都因为「名字不认识」被丢弃，瀑布图变成空数组。
+        #
+        # ``basic`` 带 ``name``（也带 type / level），``metadata`` 带我们自己写进去的
+        # ``duration_ms`` 与 ``query``。这条组合是实机对着自托管 v4 栈试出来的（2026-11-11）：
+        # 同一个 trace 带上它之后六段立刻回真值
+        # （0.154 / 12.246 / 8483.89 / 474.568 / 9372.298 / 0.09 ms）。
+        #
+        # ``expand_metadata=True`` 也不能省：**metadata 默认按 200 字符截断**（实机量过：
+        # 482 字的 ``query`` 只回 200 字）。对瀑布图无所谓——``duration_ms`` 只有几个字符；
+        # 但 #110 的低分导出要拿 ``metadata.query`` 当评测题的问句原文，截断就等于静默
+        # 产出一道残缺的题。加上它之后 482 字完整回来。
+        response = client.observations.get_many(
+            trace_id=trace_id,
+            limit=_OBSERVATION_LIMIT,
+            fields=["basic", "metadata"],
+            expand_metadata=True,
+        )
+    except LangfuseReadError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 任何网络 / 认证失败都归为「读不到」
+        raise LangfuseReadError(REASON_UNREACHABLE, detail=type(exc).__name__) from exc
+
+    return getattr(response, "data", None)
 
 
 def _resolve_client() -> Any:
