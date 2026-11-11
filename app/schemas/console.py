@@ -23,6 +23,7 @@ from app.models.account import Account
 from app.models.audit_log import AuditLog
 from app.models.plan import Plan, PlanSpec, plan_columns_of
 from app.models.tenant import Tenant
+from app.schemas.console_profiles import ProfilePresetData
 
 
 class LoginRequest(BaseModel):
@@ -111,6 +112,11 @@ class MeData(BaseModel):
     #: 今日租户级检索用量。管理员没有租户，因此为 ``None``；租户账号一定有一份
     #: ``UsageData``，其中 ``used=None`` 表示「开关关着、平台没在统计」。
     usage: UsageData | None = None
+    #: 四个档位的当前参数（含 ``custom``）。**放在这里而不是让前台去读管理端接口**：
+    #: `/console/profile-presets` 是管理员专属（平台级配置），租户读它要 20011；而
+    #: 「这个档位能干什么」恰恰是租户签发 Key 时必须看到的信息。缺省空列表是为了
+    #: 让其它构造点（测试、旧客户端）不必立刻跟进。
+    profile_presets: list[ProfilePresetData] = []
 
 
 class ImpactGroupData(BaseModel):
@@ -204,7 +210,16 @@ class AuditLogItem(BaseModel):
 
 
 class AuditLogListData(BaseModel):
+    """审计列表的一页：行 + 总数 + 本页起点。
+
+    ``total`` 是**当前筛选条件下**的总条数（不是全表）；前端用 ``offset + len(audit_logs)``
+    与本页 ``limit`` 一起判断「还有没有下一页」，用 ``ceil(total / limit)`` 画页码。
+    ``offset`` 原样回显请求里的起点：响应自解释，不必让前端自己记住上一次的入参。
+    """
+
     audit_logs: list[AuditLogItem]
+    total: int
+    offset: int
 
 
 # ─────────────────────────────────────────────────────────── 行 → 响应体

@@ -260,7 +260,7 @@ def patch_plan(
                 impact=None,
             )
         db.delete(row)
-        _append_audit(
+        append_audit(
             db,
             actor=actor,
             action=ACTION_PLAN_DELETE,
@@ -298,7 +298,7 @@ def patch_plan(
         )
 
     plan_admin.apply_patch(row, patch)
-    _append_audit(
+    append_audit(
         db,
         actor=actor,
         action=ACTION_PLAN_UPDATE,
@@ -408,7 +408,7 @@ def patch_account(
         tenant.plan_id = plan.id
 
     after = _account_state(account, tenant)
-    _append_audit(
+    append_audit(
         db,
         actor=actor,
         action=ACTION_ACCOUNT_UPDATE,
@@ -437,11 +437,26 @@ def _account_state(account: Account, tenant: Tenant | None) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────── 审计
 
 
-def list_audit_logs(db: Session, *, limit: int) -> list[AuditLog]:
-    return audit_log_repository.list_recent(db, limit=limit)
+def list_audit_logs(
+    db: Session, *, limit: int, offset: int, action: str | None = None
+) -> AuditPage:
+    """审计列表的一页：SQL 层分页（``LIMIT`` / ``OFFSET``）+ 同一筛选条件下的总数。
+
+    ``offset`` 与 ``limit`` 一起决定「现在看的是哪一页」；两者都必须下推到 SQL，
+    不在 Python 里取全量再切片（原因见 :mod:`app.repositories.audit_log_repository`）。
+    ``action`` 是精确匹配的动作名，``None`` = 不过滤。总数由仓储层用**同一个筛选条件**
+    数一次，于是「页数」与「这一页里有什么」不会各说一套。
+    """
+
+    return AuditPage(
+        rows=audit_log_repository.list_page(
+            db, limit=limit, offset=offset, action=action
+        ),
+        total=audit_log_repository.count(db, action=action),
+    )
 
 
-def _append_audit(
+def append_audit(
     db: Session,
     *,
     actor: ConsoleIdentity | None,
@@ -450,7 +465,11 @@ def _append_audit(
     before: dict[str, Any] | None,
     after: dict[str, Any] | None,
 ) -> AuditLog:
-    """写一条账本行（不 commit）。``actor=None`` 表示系统动作——不塞假账号。"""
+    """写一条账本行（不 commit）。``actor=None`` 表示系统动作——不塞假账号。
+
+    公开名字（票 #91 起的约定）：配置中台、Key 管理这些新写入口复用**同一份**写法，
+    避免每个入口各复制一份之后忘了「不 commit」或多写一个时间戳。
+    """
 
     return audit_log_repository.create(
         db,
@@ -468,9 +487,18 @@ def _append_audit(
     )
 
 
-#: 审计列表的默认条数与硬上限：面板上没有分页控件，一次拉太多只会把浏览器拖住。
+#: 审计列表的默认条数与硬上限：面板按 ``limit`` / ``offset`` 分页，一次拉太多只会把
+#: 浏览器与响应体一起拖住。
 AUDIT_LOG_DEFAULT_LIMIT: Final[int] = 50
 AUDIT_LOG_MAX_LIMIT: Final[int] = 200
+
+
+@dataclass(frozen=True)
+class AuditPage:
+    """审计列表的一页：本页的行 + **这个筛选条件下**的总条数（前端据此算页数）。"""
+
+    rows: list[AuditLog]
+    total: int
 
 
 def audit_limit(requested: int | None) -> int:

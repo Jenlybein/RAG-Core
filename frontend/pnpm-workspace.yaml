@@ -1,0 +1,4 @@
+allowBuilds:
+  vue-demi: true
+# pnpm 12 不再读 package.json 里的 pnpm 字段，构建脚本白名单只能落在这里。
+# vue-demi 的 postinstall 要按实际 Vue 版本切换入口，不跑它会让 @tanstack/vue-query 拿到错的那份。

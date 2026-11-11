@@ -61,6 +61,7 @@ from dataclasses import replace
 from typing import Any, Final
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.profile_presets import profile_preset_of
 from app.models.key_policy import (
     PROFILES,
     PROFILE_CUSTOM,
@@ -73,7 +74,6 @@ from app.services.retrieval_options import (
     CUSTOM_OPTION_REWRITE,
     MAX_TOP_K,
     MODE_HYBRID,
-    PROFILE_CHAINS,
     ProfileChain,
     RetrievalOptions,
     TenantPolicy,
@@ -302,8 +302,17 @@ def _needed_capabilities(policy: KeyPolicySnapshot) -> frozenset[str]:
     """
 
     if policy.profile != PROFILE_CUSTOM:
-        preset = PROFILE_CHAINS.get(policy.profile)
-        return _capabilities_of_chain(server_default_chain() if preset is None else preset)
+        preset = profile_preset_of(policy.profile)
+        # 预设来自注册表（可被后台改），所以这里必须与 `profile_chain_of` 读同一份：
+        # 「档位需要哪些能力」与「档位展开成什么链路」若各读一处，后台把 quality 的
+        # rerank 关掉之后，门禁会继续要求 rerank 能力，保存被拒而界面看不出原因。
+        return _capabilities_of_chain(
+            server_default_chain()
+            if preset is None
+            else ProfileChain(
+                mode=preset.mode, top_k=preset.top_k, rerank=preset.rerank, rewrite=preset.rewrite
+            )
+        )
 
     manual = dict(policy.custom_options)
     return _capabilities_of(

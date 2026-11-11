@@ -136,3 +136,53 @@ def test_langchain_community_keeps_ragas_importable() -> None:
         "langchain-community 太新：ragas 依赖的 chat_models.vertexai 已被删除，"
         "评测库会 import 失败（pyproject 里钉住 0.4.1 就是为这条）"
     )
+
+
+# ── 票 100：观测 SDK 升 5.x，以及它顺带暴露的两处「无声失效」 ──
+#
+# 下面两条守的都不是版本号对不对，而是「上游换掉我们依赖的那点东西时，套件要先红」。
+# 两处都没有运行时症状：一个是评测库的私有导入，一个是仓库里没有任何模块 import 的 SDK。
+
+
+def test_ragas_id_based_metrics_are_importable() -> None:
+    """评测报告的 context_precision / context_recall 靠 ragas 的两个 ID 版指标。
+
+    为什么要守：`IDBasedContextPrecision` / `IDBasedContextRecall` 住在上划线开头的
+    私有模块（`ragas.metrics._context_precision` / `_context_recall`）里，**不在
+    `ragas.metrics.__all__`** 中；从 `ragas.metrics` 上直接取虽然还能拿到，但会触发
+    DeprecationWarning，明确写着 v1.0 会删掉。0.4.3 里它建议的替代路径
+    （`ragas.metrics.collections`）还没有导出这两个类，所以私有模块是目前唯一能用的入口。
+
+    这两个指标是我们「拿检索返回的 chunk id 直接对标注」的唯一途径——不带 ID 的版本
+    要再跑一次 LLM 判分，成本与口径都不同。真到 ragas 1.0 那天，评测脚本会 ImportError；
+    可如果当期没人手动跑评测，报告只会变成一排空值，看起来像「检索退化了」。
+    所以这里守导入本身：让套件当场红，而不是让报告悄悄变空。
+    """
+
+    from ragas.metrics._context_precision import IDBasedContextPrecision
+    from ragas.metrics._context_recall import IDBasedContextRecall
+    from ragas.metrics.base import Metric
+
+    for metric_class in (IDBasedContextPrecision, IDBasedContextRecall):
+        # 只断言「确实是我们认识的那个指标类」，不碰它的打分实现。
+        assert issubclass(metric_class, Metric), (
+            f"{metric_class.__name__} 不再是 ragas 的 Metric 子类：ragas 改了指标基类，"
+            "评测脚本的用法要跟着改"
+        )
+
+
+def test_langfuse_stays_on_major_version_five() -> None:
+    """观测 SDK 必须留在 5.x：这是唯一「降级了也没人会发现」的依赖。
+
+    为什么要守大版本：langfuse 5.x 整体换成 OpenTelemetry 底座，trace / span 的取用
+    口径与 2.x 是两套 API。而本仓库的观测层是**旁路**（见 docs/架构.md：所有打点包在
+    try/except 里，异常只记日志、绝不外抛），当前也没有任何模块 import langfuse——
+    意思是把它降回 2.x 既不会让任何测试变红，也不会让检索失败，只会在生产上让埋点
+    静默失效。埋点是按 5.x 写的，所以这里把「大版本 5」钉进套件。
+    """
+
+    installed = Version(metadata.version("langfuse"))
+    assert installed.major == 5, (
+        f"已安装 langfuse=={installed}：埋点按 5.x 的 API 写，"
+        "降回 2.x 不会有任何测试报错，只会让 trace 静默失效"
+    )

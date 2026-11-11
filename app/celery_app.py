@@ -18,7 +18,7 @@ Worker 启动入口：
 ``-A app.celery_app`` 虽然能靠 Celery ``find_app`` 扫描模块属性碰巧猜中，但显式后缀
 不依赖那套猜测。
 
-``include=["app.tasks.indexing"]`` 是 Worker 能认出任务的前提：Worker 从本模块启动
+``include=["app.tasks.indexing", "app.tasks.side_evidence"]`` 是 Worker 能认出任务的前提：Worker 从本模块启动
 时只会 import 这里显式列出的模块；缺了它，``enqueue_document`` 投出去的任务会被
 当作 "Received unregistered task" 消费掉，整条索引流水线静默不跑。
 """
@@ -35,7 +35,7 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
     # 没有 include，Worker 进程永远不会 import 任务模块：enqueue_document 投出去的
     # 任务会被当成 "Received unregistered task" 直接消费掉，索引流水线静默不跑。
-    include=["app.tasks.indexing"],
+    include=["app.tasks.indexing", "app.tasks.side_evidence"],
 )
 celery_app.conf.update(
     task_acks_late=True,

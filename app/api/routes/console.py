@@ -33,7 +33,9 @@ from app.core.console_auth import (
     session_ttl_seconds,
 )
 from app.core.plan_cache import PlanCache
+from app.core.profile_presets import get_profile_presets
 from app.db.session import get_db
+from app.models.key_policy import PROFILES
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import (
     AccountItem,
@@ -56,6 +58,7 @@ from app.schemas.console import (
     tenant_data,
     usage_data,
 )
+from app.schemas.console_profiles import ProfilePresetData
 from app.services import console_service
 from app.services.login_throttle import login_throttle
 from app.services.plan_admin import PlanImpact
@@ -64,8 +67,14 @@ router = APIRouter(prefix="/console", tags=["console"])
 
 
 def _me_data(view: console_service.ConsoleView) -> MeData:
-    """「我的视图」→ 响应体；管理员没有租户，于是 tenant / plan / usage 三栏为 ``null``。"""
+    """「我的视图」→ 响应体；管理员没有租户，于是 tenant / plan / usage 三栏为 ``null``。
 
+    档位参数取自进程级注册表（启动时装载过，管理端写入后即时刷新），所以这里不需要一个
+    数据库会话——这也是把「这个档位能干什么」并进``me``而不另开租户接口的原因：
+    ``/console/profile-presets`` 是管理员专属，租户读它要 20011。
+    """
+
+    presets = get_profile_presets()
     return MeData(
         account=account_data(view.account),
         tenant=tenant_data(view.tenant) if view.tenant is not None else None,
@@ -75,6 +84,18 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
             if view.usage is not None
             else None
         ),
+        # 顺序沿用 `PROFILES`，与 `/console/profile-presets` 同一条词表。
+        profile_presets=[
+            ProfilePresetData(
+                profile=profile,
+                mode=spec.mode,
+                top_k=spec.top_k,
+                rerank=spec.rerank,
+                rewrite=spec.rewrite,
+            )
+            for profile in PROFILES
+            if (spec := presets.get(profile)) is not None
+        ],
     )
 
 
@@ -317,12 +338,34 @@ def patch_account(
 @router.get(
     "/audit-logs",
     response_model=ApiResponse[AuditLogListData],
-    summary="审计列表（管理员）",
+    summary="审计列表（管理员；limit / offset 分页 + action 精确过滤）",
 )
 def list_audit_logs(
     limit: int | None = Query(default=None, description="最多返回几条，缺省 50、上限 200"),
+    offset: int = Query(default=0, ge=0, description="跳过几条（分页起点，从 0 开始）"),
+    action: str | None = Query(
+        default=None,
+        description="按动作名**精确**过滤（如 model.reveal / key.issue）；不给就是全部",
+    ),
     identity: ConsoleIdentity = Depends(get_console_admin),
     db: Session = Depends(get_db),
 ) -> ApiResponse[AuditLogListData]:
-    rows = console_service.list_audit_logs(db, limit=console_service.audit_limit(limit))
-    return ok(AuditLogListData(audit_logs=[audit_log_item(row) for row in rows]))
+    """返回一页审计行，并带上「当前筛选条件下的总数」与本次的 ``offset``。
+
+    分页与过滤都在 SQL 层完成；``total`` 是全量统计（带 ``action`` 时是那个动作的条数），
+    让前端能算页数而不必再发一次计数请求。
+    """
+
+    page = console_service.list_audit_logs(
+        db,
+        limit=console_service.audit_limit(limit),
+        offset=offset,
+        action=action,
+    )
+    return ok(
+        AuditLogListData(
+            audit_logs=[audit_log_item(row) for row in page.rows],
+            total=page.total,
+            offset=offset,
+        )
+    )

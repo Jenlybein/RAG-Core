@@ -7,7 +7,7 @@ on:
     types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
-# 三个 job 都必须显式钉 Python 3.12：runner 默认的 `python3` 会一路升到 3.14，
+# 三个 Python job 都必须显式钉 Python 3.12：runner 默认的 `python3` 会一路升到 3.14，
 # 而 psycopg-binary 3.2.3 只有 cp312/cp313 的 wheel，uv 会以
 # "doesn't have a source distribution or wheel for the current platform" 直接失败。
 # `requires-python = ">=3.12"` 允许 3.14，光靠 pyproject 兜不住，必须在这里钉。
@@ -42,6 +42,36 @@ jobs:
 
       - name: Test
         run: uv run pytest -q
+
+  frontend:
+    # 为什么单独一个 job：前端没有 Python 依赖（只要 Node + pnpm），混进 quality 会让
+    # 每次只改 markdown、模板或前端样式的提交也装一遍 uv 与 Python 依赖；拆开后两个 job
+    # 并行跑，前端红与后端红也各自看得见，不用在一长串步骤里找是哪一步挂的。
+    # 版本对齐本机实测的 Node 22.23.2 / pnpm 12.5.1（前端 lockfile 由它生成）。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          # 不写 run_install：安装统一在下面那步显式跑，才能拿到 --frozen-lockfile。
+          version: "12.5.1"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: pnpm
+          # 锁文件在子目录里：不给这一行，setup-node 会去仓库根找 pnpm-lock.yaml 而缓存键落空。
+          cache-dependency-path: frontend/pnpm-lock.yaml
+      - name: Install dependencies
+        working-directory: frontend
+        # 依赖树完全按 lockfile 装：lockfile 漂移时宁可红，也不在 CI 里悄悄解析出新版本。
+        run: pnpm install --frozen-lockfile
+      - name: Build
+        working-directory: frontend
+        # build 里含 `vue-tsc --noEmit`：类型错也让这条红，不留给运行时。
+        run: pnpm build
+      - name: Test
+        working-directory: frontend
+        run: pnpm test
 
   integration:
     # 真实 PostgreSQL 上的 CAS 集成用例：只在手工触发（workflow_dispatch）时跑，

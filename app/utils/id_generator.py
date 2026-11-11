@@ -18,12 +18,56 @@ from typing import Final
 API_KEY_PREFIX: Final[str] = "rc_live_"
 #: 前缀之后的十六进制位数（``secrets.token_hex`` 每字节两位，所以要除以 2）。
 API_KEY_HEX_LENGTH: Final[int] = 32
+#: masked 形态保留末几位；4 位足够在同一面板里区分几把 Key，又不构成可用凭证。
+API_KEY_MASK_TAIL: Final[int] = 4
+#: masked 形态里的省略号。用单字符「…」而不是三个点：固定宽度截断时不会数错位数。
+API_KEY_MASK_ELLIPSIS: Final[str] = "…"
+#: 太短、无法「保留头尾仍不泄露」的值整体隐去。空值不在此列（空值没有东西可泄露）。
+MASK_HIDDEN: Final[str] = "••••"
 
 
 def new_id() -> str:
     """生成一个 UUID v4 字符串。"""
 
     return str(uuid.uuid4())
+
+
+def mask_secret(value: str, *, keep_head: int = 3, keep_tail: int = 4) -> str:
+    """``sk-…abcd``：保留前 ``keep_head`` 位与末 ``keep_tail`` 位，中间截掉。
+
+    密钥类值的**唯一**打码规则（#82 修复）：API Key、模型接入的 ``api_key``、配置中台里
+    带 ``secret`` 标记的运行时配置都调这一个函数。以前三处各写一份，保留位数各不相同
+    （一处露 3 位、一处只露末 4 位），看起来都像「masked」，实际泄露面不一样。
+
+    值短于 ``keep_head + keep_tail`` 时**整体隐去**（``••••``）：这种情况下保留任何一段
+    都接近原文，而按位截断还可能把很短的值整个回显出去。空值原样返回空串——空串没有
+    可泄露的内容，也不该在面板上显示成一块黑方块。
+    """
+
+    if keep_head < 0 or keep_tail < 0:
+        raise ValueError("mask_secret 的保留位数不能为负")
+
+    if not value:
+        return ""
+    if len(value) <= keep_head + keep_tail:
+        return MASK_HIDDEN
+
+    head = value[:keep_head] if keep_head else ""
+    tail = value[-keep_tail:] if keep_tail else ""
+    return f"{head}{API_KEY_MASK_ELLIPSIS}{tail}"
+
+
+def mask_api_key_value(key_value: str) -> str:
+    """``rc_live_…9f2c``：保留前缀与末 4 位，中间截掉（``mask_secret`` 的薄封装）。
+
+    规则与原文格式放在同一个文件里：面板摘要、日志与审计都用这一份，散着写就会各自漂移
+    （一处露出 8 位、另一处露出 2 位，看起来都像「masked」）。短于「前缀 + 末位」的异常值
+    与其它密钥同一条规则：整体隐去（它只可能是手写进库的坏数据）。
+    """
+
+    return mask_secret(
+        key_value, keep_head=len(API_KEY_PREFIX), keep_tail=API_KEY_MASK_TAIL
+    )
 
 
 def new_kb_id() -> str:

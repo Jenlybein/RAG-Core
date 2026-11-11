@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
@@ -912,3 +913,88 @@ def test_a_rate_limited_login_does_not_reveal_whether_the_username_exists(
     assert known["msg"] == unknown["msg"] == MSG_LOGIN_RATE_LIMITED
     assert "alice" not in known["msg"]
     assert "ghost-user" not in known["msg"]
+
+
+# ─────────────────────────────────── 审计列表：limit / offset / action / total（#82 的分页）
+
+#: 5 条审计，**按创建时间倒序**给出（与仓储层 ``order_by(created_at.desc())`` 的结果同序；
+#: 假会话不模拟排序，所以这里直接按「查询会返回的顺序」摆好，两种实现对得上）。
+_AUDIT_SEEDS: tuple[tuple[str, str, str], ...] = (
+    ("audit-5", "model.reveal", "model:cfg-a"),
+    ("audit-4", "model.create", "model:cfg-b"),
+    ("audit-3", "key.issue", "key:k1"),
+    ("audit-2", "model.reveal", "model:cfg-a"),
+    ("audit-1", "plan.update", "plan:3"),
+)
+
+
+def _audit_rows() -> list[AuditLog]:
+    stamp = datetime(2026, 1, 5, 8, 0, 0)
+    return [
+        AuditLog(
+            id=audit_id,
+            actor_id=ADMIN_ID,
+            action=action,
+            target=target,
+            before_snapshot=None,
+            after_snapshot=None,
+            created_at=stamp - timedelta(minutes=index),
+        )
+        for index, (audit_id, action, target) in enumerate(_AUDIT_SEEDS)
+    ]
+
+
+def _seed_audits(console: _Harness) -> None:
+    console.db._rows[AuditLog] = _audit_rows()
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
+
+
+def test_the_audit_list_paginates_by_limit_and_offset(console: _Harness) -> None:
+    """``limit=2&offset=2`` 取到列表里的第 3、4 条，``total`` 仍是被筛选的全量。"""
+
+    _seed_audits(console)
+
+    body = console.client.get("/console/audit-logs?limit=2&offset=2").json()
+    data = body["data"]
+
+    assert body["code"] == 0
+    assert [item["audit_id"] for item in data["audit_logs"]] == ["audit-3", "audit-2"]
+    assert (data["total"], data["offset"]) == (5, 2)
+
+    first_page = console.client.get("/console/audit-logs?limit=2").json()["data"]
+    assert [item["audit_id"] for item in first_page["audit_logs"]] == ["audit-5", "audit-4"]
+    assert (first_page["total"], first_page["offset"]) == (5, 0)
+
+
+def test_the_audit_total_is_the_whole_filtered_set_not_the_page(console: _Harness) -> None:
+    """``total`` 是全量（5 条）而不是本页条数：前端靠它才能算出「总共几页」。"""
+
+    _seed_audits(console)
+
+    data = console.client.get("/console/audit-logs?limit=1&offset=4").json()["data"]
+
+    assert [item["audit_id"] for item in data["audit_logs"]] == ["audit-1"]
+    assert data["total"] == 5
+
+
+def test_the_audit_action_filter_is_exact_match(console: _Harness) -> None:
+    """``action=`` 是**精确匹配**：``model.reveal`` 不会把 ``model.create`` 带进来。"""
+
+    _seed_audits(console)
+
+    filtered = console.client.get("/console/audit-logs?action=model.reveal").json()["data"]
+    assert [item["audit_id"] for item in filtered["audit_logs"]] == ["audit-5", "audit-2"]
+    assert (filtered["total"], filtered["offset"]) == (2, 0)
+
+    # 前缀本身不是动作名：精确匹配下它就是「没有这个动作」，而不是「筛一族」。
+    prefix = console.client.get("/console/audit-logs?action=model").json()["data"]
+    assert (prefix["audit_logs"], prefix["total"]) == ([], 0)
+
+
+def test_a_negative_audit_offset_is_a_parameter_error(console: _Harness) -> None:
+    """``offset`` 是分页起点（``ge=0``）：负数不是「从末尾倒数」，是参数非法（20002）。"""
+
+    _seed_audits(console)
+
+    assert console.client.get("/console/audit-logs?offset=-1").json()["code"] == 20002
+

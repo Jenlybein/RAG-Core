@@ -142,6 +142,15 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
   -d '{"kb_ids":["<你的 kb_id>"],"query":"设备证书过期怎么处理"}'
 ```
 
+上面这条用的是内置开发身份（`AUTH_ENABLED=false`，只认 `dev-key`）。**想用调试台里
+签发的真实 Key**（`rc_live_…`）时必须开着鉴权开关，否则数据面只认 `dev-key`，每一把
+真实 Key 都会被判 `20010`。这个开关靠命令行前缀传，忘了会静默降级，所以固化成脚本：
+
+```bash
+./scripts/dev-api.sh            # Linux / macOS，等价于 AUTH_ENABLED=true RATE_LIMIT_ENABLED=true uvicorn --reload
+powershell -File scripts/dev-api.ps1   # Windows
+```
+
 期望 `code: 0`，**默认一条结果代表一节**（`section_id` 是身份，`chunk_id` 是让它浮上来的代表片），每条都带 `score` 与分列字段。
 
 检索方式、返回条数、是否重排、是否改写现在都由这把 Key 的密钥配置决定（请求里没有 `mode` / `top_k` / `include_parent` / `expand_table_rows`，传了会被 `20002` 拒绝）。想拿回第 4 步「一条结果 = 一个切片」的形状，把密钥配置的 `include_parent` 改成 `false`——本步还没有改配置的界面（面板入口在第 8 步），用 `uv run python scripts/update_key_policy.py --policy-id <policy_id> --no-include-parent` 改：它在写前跑与开租户同一个自洽校验，改完下一次调用即生效。把 ES 停掉再发一次，应看到 `degraded: true` / `degraded_reason: "keyword search failed"` 和基于向量的结果，而**不是** `50002`。
