@@ -96,7 +96,7 @@ const rows = computed(() => DATA_PLANE_ENDPOINTS)
       误点就真的改了东西。写操作请去知识库管理页做，那里有确认与回执。
     </p>
 
-    <p v-if="!hasKey" class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]">
+    <p v-if="!hasKey" class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]">
       先选一把 Key —— 这些接口的身份就是那把 Key。
     </p>
 

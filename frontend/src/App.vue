@@ -22,14 +22,19 @@ const withHeader = computed(() => route.meta.layout !== 'blank')
       用 `absolute` 而不是 `fixed`——fixed 会跟着视口走，滚动时页面顶部一直被洗白，
       看着像有东西在动；absolute 让它随内容一起滚走，只在页面顶端出现一次。
     -->
+    <!--
+      顶部一层极淡的白色：苹果的页面是**纯平**的，没有渐变；这里只留一层几乎看不见的
+      提亮，让内容列与画布之间有一点呼吸。去掉原来那层暖色（#FDFCF8）——换到冷灰画布后
+      它会显出一块黄。
+    -->
     <div
-      class="pointer-events-none absolute inset-x-0 top-0 h-64 bg-gradient-to-b from-[#FDFCF8] to-transparent"
+      class="pointer-events-none absolute inset-x-0 top-0 h-72 bg-gradient-to-b from-white to-transparent opacity-70"
       aria-hidden="true"
     />
 
     <AppHeader v-if="withHeader" />
 
-    <main class="relative mx-auto w-full max-w-page px-5 py-8 sm:px-8 sm:py-10">
+    <main class="relative mx-auto w-full max-w-page px-5 py-10 sm:px-8 sm:py-14">
       <RouterView />
     </main>
   </div>

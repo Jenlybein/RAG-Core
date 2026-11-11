@@ -15,8 +15,8 @@ import type { CSSProperties } from 'vue'
  */
 
 /** 两档就够：`active` 与「其余」。后端将来加状态时不会静默显示成绿色。 */
-const ACTIVE: CSSProperties = { backgroundColor: '#E4EDDD', color: '#3C5228' }
-const INACTIVE: CSSProperties = { backgroundColor: '#F0ECE4', color: '#6B6558' }
+const ACTIVE: CSSProperties = { backgroundColor: '#e3f6e8', color: '#1d7a3a' }
+const INACTIVE: CSSProperties = { backgroundColor: '#f5f5f7', color: '#6e6e73' }
 
 /** 对外文案：未知状态原样显示，不猜（猜错会让人以为账号「正常」）。 */
 const LABELS: Record<string, string> = { active: '正常', disabled: '已停用' }

@@ -25,9 +25,9 @@ function renderBootFailure(title: string, detail: string): void {
   const panel = document.createElement('div')
   panel.setAttribute('role', 'alert')
   panel.style.cssText =
-    'max-width:44rem;margin:12vh auto;padding:28px;border:1px solid #E7E2D7;border-radius:20px;' +
+    'max-width:44rem;margin:12vh auto;padding:28px;border:1px solid #d2d2d7;border-radius:20px;' +
     'background:#fff;box-shadow:0 1px 2px rgba(28,26,21,.04),0 12px 32px -18px rgba(28,26,21,.18);' +
-    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;color:#1C1A15;"
+    "font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','PingFang SC',sans-serif;color:#1d1d1f;"
   const heading = document.createElement('h1')
   heading.textContent = title
   heading.style.cssText = 'margin:0 0 8px;font-size:20px;font-weight:600;letter-spacing:-0.02em;'
@@ -38,7 +38,7 @@ function renderBootFailure(title: string, detail: string): void {
   const pre = document.createElement('pre')
   pre.textContent = detail
   pre.style.cssText =
-    'margin:0;padding:14px;border-radius:12px;background:#FBFAF6;border:1px solid #E7E2D7;' +
+    'margin:0;padding:14px;border-radius:12px;background:#fafafc;border:1px solid #d2d2d7;' +
     'font-size:12px;line-height:1.55;white-space:pre-wrap;word-break:break-word;color:#8C2F22;' +
     "font-family:ui-monospace,'SF Mono',Menlo,Consolas,monospace;"
   panel.append(heading, hint, pre)

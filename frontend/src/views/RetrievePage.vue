@@ -786,7 +786,7 @@ onUnmounted(() => {
       -->
       <div
         v-if="authDisabled"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
+        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
       >
         <strong>服务端当前是开发身份模式（AUTH_ENABLED=false）</strong>：检索会用内置开发身份，
         下面选的 Key <strong>不参与鉴权</strong>，所以拿真实 Key 直接调接口会得到 20010。
@@ -795,13 +795,13 @@ onUnmounted(() => {
       </div>
       <div
         v-else-if="keysError !== ''"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
+        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
         {{ keysError }}
       </div>
       <div
         v-else-if="keys.length === 0"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
+        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
       >
         还没有任何 API Key：先去
         <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
@@ -821,11 +821,11 @@ onUnmounted(() => {
                 {{ currentKeySummary.masked }}
               </span>
               <span class="text-line-strong">·</span>
-              <span :class="currentKeySummary.profile === null ? 'text-[#6E4E12]' : 'text-muted'">
+              <span :class="currentKeySummary.profile === null ? 'text-[#7a5b00]' : 'text-muted'">
                 档位 {{ currentKeySummary.profile ?? '缺失' }}
               </span>
             </template>
-            <span v-else class="text-[#6E4E12]">未选择 —— 点「修改配置」选一把</span>
+            <span v-else class="text-[#7a5b00]">未选择 —— 点「修改配置」选一把</span>
           </span>
           <span class="text-muted">已选 {{ store.selectedCount }} 个库</span>
         </div>
@@ -883,7 +883,7 @@ onUnmounted(() => {
         <div>
           <label class="mb-1.5 block text-xs text-muted">当前选中的 Key</label>
           <p v-if="keysPending" class="text-xs text-muted">正在读取 Key 列表…</p>
-          <p v-else-if="keys.length === 0" class="text-xs text-[#6E4E12]">
+          <p v-else-if="keys.length === 0" class="text-xs text-[#7a5b00]">
             还没有任何 API Key：先去
             <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
             签发一把。
@@ -905,7 +905,7 @@ onUnmounted(() => {
             >
               <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
               <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
-              <span v-if="key.policy === null" class="ml-2 text-xs text-[#6E4E12]">
+              <span v-if="key.policy === null" class="ml-2 text-xs text-[#7a5b00]">
                 配置缺失
               </span>
             </el-option>
@@ -914,7 +914,7 @@ onUnmounted(() => {
 
         <div
           v-if="policy === null && selectedKey !== null"
-          class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
+          class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
         >
           这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，去
           <RouterLink
@@ -995,7 +995,7 @@ onUnmounted(() => {
 
           <div
             v-if="treeLoaded && unpickableSelected.length > 0"
-            class="mt-3 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
+            class="mt-3 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
           >
             <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
             <p class="mt-1 text-slate-700">{{ unpickableSelected.join('、') }}</p>
@@ -1340,7 +1340,7 @@ onUnmounted(() => {
         <p v-if="sideEvidenceSummary?.scored !== undefined" class="text-muted">
           上面两个数的分母是「已评分」那一列，不是题目总数。
         </p>
-        <p v-if="sideEvidenceRunError" class="text-[#6E4E12]">{{ sideEvidenceRunError }}</p>
+        <p v-if="sideEvidenceRunError" class="text-[#7a5b00]">{{ sideEvidenceRunError }}</p>
         <p v-if="sideEvidenceQueueHint" class="text-[#B45309]">{{ sideEvidenceQueueHint }}</p>
       </div>
 

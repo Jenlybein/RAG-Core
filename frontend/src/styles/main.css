@@ -3,62 +3,61 @@
 @tailwind utilities;
 
 /**
- * 全局：字体渲染 + 暖色画布 + Element Plus 的令牌对齐。
+ * 全局：字体渲染 + 苹果式浅灰画布 + Element Plus 的令牌对齐。
  *
- * Element Plus 的默认观感是「蓝色主色 + 4px 圆角 + 灰色阴影」，与这套界面（近黑实心按钮、
- * 20px 卡片、几乎不可见的投影）完全不搭。这里不靠 !important 去一个个压组件，而是把它的
- * CSS 变量改到同一套令牌上：一次对齐，之后所有 el-* 组件自动跟着走。
+ * Element Plus 的默认观感（蓝主色 + 4px 圆角 + 灰阴影）本来就和这里要做的事接近，
+ * 但**细节全不对**：它的蓝偏深、圆角太小、阴影太重、表单边框太黑。这里不靠 !important
+ * 一个个压组件，而是把它的 CSS 变量改到同一套令牌上：一次对齐，之后所有 el-* 自动跟着走。
  */
 :root {
   color-scheme: light;
 
-  /* 主色：近黑。苹果的克制感很大程度来自「整页只有两三种颜色」，彩色留给语义状态。 */
-  --el-color-primary: #2c2921;
-  --el-color-primary-light-3: #55503f;
-  --el-color-primary-light-5: #7a7360;
-  --el-color-primary-light-7: #a8a090;
-  --el-color-primary-light-8: #c9c2b2;
-  --el-color-primary-light-9: #f0ece2;
-  --el-color-primary-dark-2: #1c1a15;
+  /* 主色：苹果蓝。整页只有「蓝（可操作）」与「灰（其余）」两种色相。 */
+  --el-color-primary: #0071e3;
+  --el-color-primary-light-3: #3d93ec;
+  --el-color-primary-light-5: #66aef1;
+  --el-color-primary-light-7: #99c9f6;
+  --el-color-primary-light-8: #b3d6f8;
+  --el-color-primary-light-9: #e8f2ff;
+  --el-color-primary-dark-2: #005bb5;
 
-  /* 圆角：控件 12px、小元素 8px，与卡片 20px 形成层级 */
+  /* 圆角：控件 12px、小元素 8px，与卡片 18px 形成层级 */
   --el-border-radius-base: 12px;
   --el-border-radius-small: 8px;
 
-  /* 文字与描边：全部换成暖灰，否则冷灰字压在米白底上会显脏 */
-  --el-text-color-primary: #1c1a15;
-  --el-text-color-regular: #4a443a;
-  --el-text-color-secondary: #8a8275;
-  --el-text-color-placeholder: #a8a093;
-  --el-text-color-disabled: #b8b1a4;
+  /* 文字与描边：苹果的中性灰阶 */
+  --el-text-color-primary: #1d1d1f;
+  --el-text-color-regular: #3a3a3c;
+  --el-text-color-secondary: #6e6e73;
+  --el-text-color-placeholder: #86868b;
+  --el-text-color-disabled: #b8b8bf;
 
-  --el-border-color: #e7e2d7;
-  --el-border-color-light: #ebe6dc;
-  --el-border-color-lighter: #f0ece4;
-  --el-border-color-extra-light: #f5f2ea;
+  --el-border-color: #d2d2d7;
+  --el-border-color-light: #e0e0e5;
+  --el-border-color-lighter: #e8e8ed;
+  --el-border-color-extra-light: #f2f2f5;
 
   --el-bg-color: #ffffff;
   --el-bg-color-overlay: #ffffff;
   --el-fill-color-blank: #ffffff;
-  --el-fill-color-light: #f7f5f0;
-  --el-fill-color-lighter: #fbfaf6;
+  --el-fill-color-light: #f5f5f7;
+  --el-fill-color-lighter: #fafafc;
 
   /**
-   * 遮罩。默认是纯黑 50%，压在这套米白暖调上会显出一层脏灰。
-   * 换成同色相的暖黑，透明度也调低一点：既要说明「底下不能操作」，又不必把整页压死。
+   * 遮罩：苹果的弹窗遮罩是干净的半透黑，不带任何色相。
    */
-  --el-overlay-color-lighter: rgba(28, 26, 21, 0.32);
-  --el-overlay-color: rgba(28, 26, 21, 0.5);
+  --el-overlay-color-lighter: rgba(0, 0, 0, 0.28);
+  --el-overlay-color: rgba(0, 0, 0, 0.48);
 
-  --el-table-header-bg-color: #fbfaf6;
-  --el-table-border-color: #eee9df;
-  --el-table-row-hover-bg-color: #faf8f3;
+  --el-table-header-bg-color: #fafafc;
+  --el-table-border-color: #e8e8ed;
+  --el-table-row-hover-bg-color: #f5f5f7;
 
-  --el-box-shadow-light: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
-  --el-box-shadow: 0 2px 6px rgba(28, 26, 21, 0.06), 0 18px 48px -24px rgba(28, 26, 21, 0.24);
+  --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.04), 0 12px 32px -20px rgba(0, 0, 0, 0.12);
+  --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 24px 56px -24px rgba(0, 0, 0, 0.28);
 
-  --el-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'PingFang SC',
-    'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --el-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue',
+    'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
 }
 
 body {
@@ -70,8 +69,8 @@ body {
 }
 
 ::selection {
-  background: #f0ece2;
-  color: #1c1a15;
+  background: #f5f5f7;
+  color: #1d1d1f;
 }
 
 /**
@@ -80,7 +79,7 @@ body {
  * 鼠标点击不会平白多出一圈。
  */
 :where(a, button, [role='button'], [tabindex]):focus-visible {
-  outline: 2px solid #2c2921;
+  outline: 2px solid #1d1d1f;
   outline-offset: 2px;
   border-radius: 6px;
 }
@@ -113,13 +112,13 @@ button:not(:disabled),
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #ddd6c8;
+  background: #d2d2d7;
   border-radius: 9999px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #c9c2b2;
+  background: #e8e8ed;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
@@ -127,19 +126,24 @@ button:not(:disabled),
 }
 
 @layer components {
-  /* 卡片：整站唯一的「面」。页面里不要再各写一遍 rounded-lg border bg-white。 */
+  /**
+   * 卡片：整站唯一的「面」。
+   *
+   * 苹果的卡片**没有描边**：白面直接浮在 #f5f5f7 上，形状靠 18px 圆角与一层几乎看不见的
+   * 投影定下来。这里去掉 border、保留极淡投影——加了描边会立刻从「苹果」退回「后台管理」。
+   */
   .card {
-    @apply rounded-card border border-line bg-surface shadow-card;
+    @apply rounded-card bg-surface shadow-card;
   }
 
-  /* 卡片内边距：比原来的 p-6 松一点，留白是这套观感的主要来源 */
+  /* 卡片内边距：留白是苹果观感的主要来源，宁可松一点 */
   .card-body {
-    @apply p-6 sm:p-7;
+    @apply p-6 sm:p-8;
   }
 
   /**
-   * 紧凑面板：控制台里一块一块的「区」用它。比 `.card` 内距小一档、标题自带一行说明位，
-   * 目的是让一屏能放下更多**真实信息**——但不再靠把字号压到 10px 来换空间。
+   * 紧凑面板：控制台里一块一块的「区」用它。比 `.card` 内距小一档，
+   * 目的是一屏放下更多**真实信息**——但不靠把字号压到 10px 来换空间。
    */
   .panel {
     @apply rounded-control border border-line bg-surface;
@@ -148,34 +152,33 @@ button:not(:disabled),
     @apply flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-4 py-3;
   }
 
-  /* 页面标题：大、半粗、收紧字距（苹果标题的骨架），配一行灰色说明 */
+  /**
+   * 页面标题：苹果的 hero 字号——很大、很紧的字距、600 而不是 700。
+   * 这一段是「像不像苹果」最吃紧的地方：字号不够大、字距不收，立刻变成普通后台。
+   */
   .page-title {
-    @apply text-[26px] font-semibold leading-tight tracking-tightest text-ink sm:text-[30px];
+    @apply text-[34px] font-semibold leading-[1.08] tracking-[-0.025em] text-ink sm:text-[44px];
   }
   .page-subtitle {
-    @apply mt-2 max-w-2xl text-sm leading-relaxed text-muted;
+    @apply mt-3 max-w-2xl text-[15px] leading-relaxed text-muted;
   }
 
   /* 卡片小标题 */
   .section-title {
-    @apply text-[15px] font-semibold tracking-tight text-ink;
+    @apply text-[17px] font-semibold tracking-[-0.01em] text-ink;
   }
   .section-hint {
     @apply mt-1 text-xs leading-relaxed text-muted;
   }
 
   /**
-   * 字段标签与值。
-   *
-   * 之前整站用 `text-[10px]` / `text-[11px]` 铺满标签，读起来像在看一张缩印表格。
-   * 这里把两档分开：标签 11px 灰色（**只在需要并列时用**），值 13px 主色。
-   * 正文一律 ≥13px：小字号省下的那点空间，远不值得让人眯眼。
+   * 字段标签与值。标签 12px 灰、值 14px 主色；正文一律 ≥13px。
    */
   .field-label {
-    @apply text-[11px] font-medium uppercase tracking-[0.06em] text-muted;
+    @apply text-[12px] text-muted;
   }
   .field-value {
-    @apply text-[13px] text-ink;
+    @apply text-[14px] text-ink;
   }
   .hint {
     @apply text-xs leading-relaxed text-muted;
@@ -183,25 +186,25 @@ button:not(:disabled),
 
   /** 指标：数值大、标签小。诊断面板里的一屏读数靠它拉层级。 */
   .metric-value {
-    @apply text-[15px] font-semibold tabular-nums text-ink;
+    @apply text-[17px] font-semibold tabular-nums text-ink;
   }
   .metric-label {
-    @apply text-[11px] text-muted;
+    @apply text-[12px] text-muted;
   }
 
-  /** 小胶囊：库名、档位、能力这类短标签。 */
+  /** 小胶囊：库名、档位、能力这类短标签。苹果的标签也走药丸形。 */
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full border border-line bg-surface-muted px-2 py-0.5 text-[11px] text-slate-600;
+    @apply inline-flex items-center gap-1 rounded-full bg-surface-muted px-2.5 py-1 text-[12px] text-slate-600;
   }
 
-  /* 顶栏导航：胶囊 + 选中实底，不做下划线（下划线在暖色系里显得廉价） */
+  /* 顶栏导航：药丸 + 选中浅灰底（苹果的导航选中就是一块浅灰） */
   .nav-pill {
-    @apply rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-colors duration-150;
+    @apply rounded-full px-3.5 py-1.5 text-[13px] font-normal transition-colors duration-150;
   }
 
-  /* 表头：大写小字 + 宽字距，编辑部气质的来源之一 */
+  /* 表头：苹果不用全大写，用 12px 中灰 */
   .th-label {
-    @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-muted;
+    @apply text-[12px] font-medium text-muted;
   }
 
   /** 行内代码：报告、诊断面板里到处是路径与字段名。 */
@@ -212,19 +215,26 @@ button:not(:disabled),
 
 /* ───────────────────────── Element Plus 微调 ───────────────────────── */
 
-/* 按钮：默认按钮是白底细边，主按钮是近黑实底；圆角与内边距按苹果的节奏放一点 */
+/**
+ * 按钮：苹果的药丸形 + 蓝色实底主按钮。
+ *
+ * 这是「像不像苹果」的第二处关键：苹果站上没有方角按钮。圆角拉到 980px（药丸），
+ * 主按钮是蓝底白字、hover 只提亮一点点，没有投影。
+ */
 .el-button {
-  --el-button-font-weight: 500;
-  border-radius: var(--el-border-radius-base);
-  padding-left: 16px;
-  padding-right: 16px;
+  --el-button-font-weight: 400;
+  border-radius: 980px;
+  padding-left: 18px;
+  padding-right: 18px;
 }
 .el-button--primary {
   --el-button-bg-color: var(--el-color-primary);
   --el-button-border-color: var(--el-color-primary);
   --el-button-hover-bg-color: var(--el-color-primary-light-3);
   --el-button-hover-border-color: var(--el-color-primary-light-3);
-  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.12);
+  --el-button-active-bg-color: var(--el-color-primary-dark-2);
+  --el-button-active-border-color: var(--el-color-primary-dark-2);
+  box-shadow: none;
 }
 /* 文字按钮（表格行里的操作）不占方框，hover 时才浮出一层浅底 */
 .el-button.is-text {
@@ -233,18 +243,18 @@ button:not(:disabled),
   border-radius: 8px;
 }
 /**
- * 禁用的主按钮。Element 默认把它刷成 primary 的中间调（近黑 → 灰橄榄），看上去仍然
- * 「像是能点」，还和旁边真的可点的按钮抢注意力。这里改成浅底 + 灰字，一眼是「现在不行」。
+ * 禁用的主按钮：Element 默认把它刷成 primary 的中间调，看上去仍然「像是能点」。
+ * 这里改成浅灰底 + 灰字，一眼是「现在不行」。
  */
 .el-button.is-disabled,
 .el-button.is-disabled:hover {
-  --el-button-disabled-bg-color: #f0ece4;
-  --el-button-disabled-border-color: #e7e2d7;
-  --el-button-disabled-text-color: #a8a093;
+  --el-button-disabled-bg-color: #f5f5f7;
+  --el-button-disabled-border-color: #e8e8ed;
+  --el-button-disabled-text-color: #b8b8bf;
   box-shadow: none;
 }
 
-/* 输入框：去掉默认的内阴影描边感，改成一条干净的细线 + 聚焦时加深 */
+/* 输入框：一条干净的细线 + 聚焦时蓝色描边（苹果的表单就是这种「无框感 + 蓝色对焦」） */
 .el-input__wrapper,
 .el-textarea__inner {
   border-radius: var(--el-border-radius-base);
@@ -253,7 +263,7 @@ button:not(:disabled),
 }
 .el-input__wrapper:hover,
 .el-textarea__inner:hover {
-  box-shadow: 0 0 0 1px var(--el-border-color-darker, #d9d2c3) inset;
+  box-shadow: 0 0 0 1px var(--el-border-color-darker, #b8b8bf) inset;
 }
 
 /**
@@ -265,7 +275,7 @@ button:not(:disabled),
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
 input:-webkit-autofill:focus {
-  -webkit-text-fill-color: #1c1a15;
+  -webkit-text-fill-color: #1d1d1f;
   -webkit-box-shadow: 0 0 0 1000px #fff inset;
   box-shadow: 0 0 0 1000px #fff inset;
   transition: background-color 9999s ease-out 0s;
@@ -276,14 +286,14 @@ input:-webkit-autofill:focus {
   /* el-card 是 el-card 的默认观感：4px 圆角 + 灰边 + 几乎为零的阴影。
      这里把它对齐到 .card 那一套，页面里就不用为了圆角再去手写一层 div。 */
   --el-card-border-radius: 20px;
-  --el-card-border-color: #e7e2d7;
+  --el-card-border-color: #d2d2d7;
   --el-card-padding: 24px;
   border-radius: 20px;
   background: #fff;
   box-shadow: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
 }
 .el-card__header {
-  border-bottom: 1px solid #f0ece4;
+  border-bottom: 1px solid #f2f2f5;
   padding: 18px 24px;
 }
 .el-card.is-never-shadow {
@@ -296,9 +306,9 @@ input:-webkit-autofill:focus {
 }
 
 .el-table {
-  --el-table-border-color: #eee9df;
-  --el-table-header-text-color: #8a8275;
-  --el-table-text-color: #2c2921;
+  --el-table-border-color: #e8e8ed;
+  --el-table-header-text-color: #6e6e73;
+  --el-table-text-color: #1d1d1f;
   border-radius: 12px;
   font-size: 13px;
 }
@@ -366,7 +376,7 @@ input:-webkit-autofill:focus {
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: #1c1a15;
+  color: #1d1d1f;
 }
 .el-dialog__header {
   padding-bottom: 14px;
@@ -379,7 +389,7 @@ input:-webkit-autofill:focus {
 .el-dialog__footer {
   padding-top: 16px;
   flex: none;
-  border-top: 1px solid #f0ece4;
+  border-top: 1px solid #f2f2f5;
 }
 
 /**
@@ -393,7 +403,7 @@ input:-webkit-autofill:focus {
   border-bottom: none;
 }
 .el-collapse-item__header {
-  border-bottom: 1px solid #e7e2d7;
+  border-bottom: 1px solid #d2d2d7;
   background: transparent;
   padding-left: 0;
   /*
@@ -410,7 +420,7 @@ input:-webkit-autofill:focus {
 }
 .el-collapse-item__wrap {
   background: transparent;
-  border-bottom: 1px solid #e7e2d7;
+  border-bottom: 1px solid #d2d2d7;
 }
 .el-collapse-item__content {
   padding-bottom: 20px;
@@ -456,13 +466,13 @@ input:-webkit-autofill:focus {
 }
 /* 选中：实线深边 + 浅底，与全站「强调」用同一套颜色。 */
 .kb-option--on.el-checkbox {
-  border-color: #2c2921;
-  background: #fbfaf6;
+  border-color: #1d1d1f;
+  background: #fafafc;
 }
 /* 不可选（不在白名单）：虚线边，视觉上「这里本来有东西，但对你关着」。 */
 .kb-option--off.el-checkbox {
   border-style: dashed;
-  background: #fbfaf6;
+  background: #fafafc;
 }
 .kb-option .el-checkbox__input {
   margin-top: 1px;

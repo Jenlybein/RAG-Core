@@ -123,7 +123,7 @@ const emptyCopy = computed(() => {
     <!-- 观测服务读不到时的一句说明（后端只在那种情况下给 note）。 -->
     <p
       v-if="data.note !== null && data.note !== ''"
-      class="mt-2 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
+      class="mt-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
     >
       {{ data.note }}
     </p>

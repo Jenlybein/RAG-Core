@@ -60,18 +60,16 @@ async function logout(): Promise<void> {
 
 <template>
   <!--
-    吸顶实心顶栏。三条都是刻意的，别再改回去：
+    吸顶磨砂顶栏（apple.com 的招牌）。三条取舍：
 
-    - `bg-canvas` 是**不透明**的。之前用 bg-canvas/85 + backdrop-blur 做「毛玻璃」，
-      结果内容会从顶栏底下透出来；滚动时看到的是一片半透明的移动色块，很容易被读成
-      「顶栏自己在动」。毛玻璃在内容区确实好看，但顶栏是固定的参照物，它必须完全遮住
-      从下面经过的东西。
-    - 不加 backdrop-filter。它会把顶栏提升成独立的合成层，Chrome 上贴着 sticky 用时
-      滚动会出现重绘抖动（看得出 1px 级别的跳动），收益又只是那点模糊。
-    - 底边一条 1px 细线 + 极淡投影定形，靠层级而不是靠模糊区分「栏」与「纸」。
+    - **半透明白 + backdrop-blur**：苹果的导航就是内容从底下微微透上来。上一版这里是
+      不透明的，理由是「滚动时半透明色块像在动」；这次按设计语言的要求改回磨砂，并把
+      不透明度提到 80%、叠一层 saturate，透出来的内容足够模糊，不会被读成「栏在动」。
+    - **保留一条 1px 底边**：模糊之外还需要一条硬边界，否则浅色页面上栏与内容会糊在一起。
+    - 不再加投影：苹果的导航没有投影，靠模糊 + 细线定形。
   -->
   <header
-    class="sticky top-0 z-30 border-b border-line bg-canvas shadow-[0_1px_0_rgba(28,26,21,0.03)]"
+    class="sticky top-0 z-30 border-b border-line/70 bg-white/80 backdrop-blur-xl backdrop-saturate-150"
   >
     <div
       class="mx-auto flex w-full max-w-page flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8"
@@ -100,8 +98,8 @@ async function logout(): Promise<void> {
             class="nav-pill"
             :class="
               isCurrent(item.to)
-                ? 'bg-accent-soft font-semibold text-ink'
-                : 'text-slate-600 hover:bg-accent-soft/60 hover:text-ink'
+                ? 'bg-slate-100 font-medium text-ink'
+                : 'text-slate-600 hover:bg-slate-100 hover:text-ink'
             "
           >
             {{ item.label }}

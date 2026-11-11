@@ -375,7 +375,7 @@ function goRetrieve(kbId: string): void {
       <!-- 处理中提示：只在确实有 status=3 时出现，不是常驻横幅。 -->
       <div
         v-if="hasProcessing"
-        class="mb-4 flex items-center gap-2 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
+        class="mb-4 flex items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
         <el-icon class="is-loading"><Loading /></el-icon>
         <span>后台索引中，每 3 秒自动刷新</span>

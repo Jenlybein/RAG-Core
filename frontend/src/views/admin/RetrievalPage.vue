@@ -241,7 +241,7 @@ function alertCountOf(group: { tier: string; rows: readonly SettingRow[] }): num
  */
 function tierBadgeClass(tier: string): string {
   if (tier === 'hot') return 'bg-[#E4EDDD] text-[#3C5228]'
-  if (tier === 'restart') return 'bg-[#F7E9C9] text-[#6E4E12]'
+  if (tier === 'restart') return 'bg-[#fff8e6] text-[#7a5b00]'
   return 'bg-[#F0ECE4] text-[#6B6558]'
 }
 
@@ -470,7 +470,7 @@ async function refresh(): Promise<void> {
                        否则这里看起来与 .env 值一样，没人知道它在等一次重启。 -->
                   <span
                     v-if="group.tier === 'restart' && row.source === 'db'"
-                    class="mt-1 block rounded bg-[#F7E9C9] px-1.5 py-0.5 text-[#6E4E12]"
+                    class="mt-1 block rounded bg-[#fff8e6] px-1.5 py-0.5 text-[#7a5b00]"
                   >
                     已写入库，待重启生效
                   </span>

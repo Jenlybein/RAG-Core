@@ -27,7 +27,7 @@ const props = defineProps<{
 const STATUS_STYLES: Record<number, StatusStyle> = {
   1: { text: '成功', background: '#E4EDDD', color: '#3C5228' },
   2: { text: '失败', background: '#F7E2DD', color: '#8C2F22' },
-  3: { text: '索引中', background: '#F7E9C9', color: '#6E4E12' },
+  3: { text: '索引中', background: '#fff8e6', color: '#7a5b00' },
 }
 const UNKNOWN_STYLE: StatusStyle = { text: '未知', background: '#F0ECE4', color: '#6B6558' }
 
