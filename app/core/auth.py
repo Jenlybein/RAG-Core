@@ -124,10 +124,10 @@ DevKeyContext = KeyContext
 # 四种未授权情形各自的提示。**同一档错误码、不同消息**：调用方分得清是哪一步拦下的，
 # 运维看日志也不用靠猜。措辞刻意避开「Key 不属于这个租户」之类的信息——那等于告诉
 # 攻击者「这把 Key 是真的，只是不属于你」。
-MSG_MISSING_TOKEN = "missing bearer token"
-MSG_UNKNOWN_KEY = "invalid api key"
-MSG_KEY_DISABLED = "api key disabled"
-MSG_TENANT_DISABLED = "tenant disabled"
+MSG_MISSING_TOKEN = "请求没带 Bearer 令牌：把 API Key 放进 Authorization: Bearer <key>"
+MSG_UNKNOWN_KEY = "这把 API Key 不存在：去 Key 管理页确认它是否已被删除，或重新签发一把"
+MSG_KEY_DISABLED = "这把 API Key 已被停用：去 Key 管理页把它启用，或换一把"
+MSG_TENANT_DISABLED = "这把 Key 所属的租户已被停用：联系管理员恢复租户后再用"
 #: 开发身份模式下收到了一把**真实 Key**。它与「Key 不存在」是两件事，必须分开说。
 #:
 #: 踩过的坑：控制台能签发 Key、能显示、能选中，但 `AUTH_ENABLED=false` 时服务端只认内置

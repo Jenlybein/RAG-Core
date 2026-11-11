@@ -50,6 +50,16 @@ os.environ.setdefault("ENABLE_MCP", "false")
 os.environ["KEYWORD_SEARCH_PROVIDER"] = "none"
 # 强制覆盖：见上最后两段。这一行让「观测去向是丢弃」成为套件自己的事实。
 os.environ["TRACE_SINK"] = "none"
+# 强制覆盖：**鉴权开关也必须由套件自己说了算**，理由与上面三条一字不差。
+#
+# 不固定它，套件的结果就取决于本机 `.env` 里 `AUTH_ENABLED` 写的是什么：写成 `true`
+# 之后，一批「带占位 Key 调数据面」的用例会突然全红（占位 Key 在 `api_keys` 表里不存在，
+# 一律 20010），而代码一行没改——这正是本项目最怕的那种「红绿取决于这台机器今天有什么」。
+#
+# 基线定成 `false`（内置开发身份），因为绝大多数用例关心的不是鉴权，而是鉴权**之后**的
+# 业务行为；需要真实 Key 那条路的用例会**显式**把开关拨过去（见
+# `tests/test_tenant_wiring.py` 里两种身份各走一遍的用例），所以这里写死不会掩盖任何东西。
+os.environ["AUTH_ENABLED"] = "false"
 
 
 class _MemorySettingsCache:

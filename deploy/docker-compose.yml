@@ -157,6 +157,11 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       ELASTICSEARCH_URL: http://elasticsearch:9200
       DOCUMENT_STORAGE_PATH: /app/data/uploads
+      # 鉴权开关**在这里钉死**，与 scripts/dev-api.ps1 / dev-api.sh 同一个理由：容器里
+      # 静默回落成 false 的代价太大——那时数据面只认内置占位 Key，控制台里选的每一把真实
+      # Key 都被判 20010「无效或已停用」，而界面上看起来像 Key 本身坏了（真踩过）。
+      # 想跑开发身份模式（curl 一行就通）：把这一行改成 "false"。
+      AUTH_ENABLED: "true"
       # 观测栈：容器内按服务名连，浏览器按对外地址跳（见 LANGFUSE_PUBLIC_URL 的注释）。
       LANGFUSE_HOST: http://langfuse-web:3000
       LANGFUSE_PUBLIC_URL: http://localhost:3000

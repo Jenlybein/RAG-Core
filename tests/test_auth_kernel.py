@@ -212,8 +212,8 @@ def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
 
     踩过的坑（真实反馈）：控制台能签发 Key、能选中、能显示，但 ``AUTH_ENABLED=false`` 时
     服务端只认内置占位 Key，于是真实 Key 一律 ``20010``。原来回的是 ``MSG_UNKNOWN_KEY``
-    （``invalid api key``），界面又把它翻成「去 Key 管理页换一把」——**换多少把都没用**，
-    因为开关不在 Key 上，而在服务端。这条断言钉住「消息要说出真正的原因」。
+    （当时的原文是 ``invalid api key``），界面又把它翻成「去 Key 管理页换一把」——**换多少把
+    都没用**，因为开关不在 Key 上，而在服务端。这条断言钉住「消息要说出真正的原因」。
     """
 
     from app.core.auth import MSG_DEV_MODE_REJECTS_REAL_KEY, resolve_identity
@@ -225,6 +225,32 @@ def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
     assert exc.value.msg == MSG_DEV_MODE_REJECTS_REAL_KEY
     # 消息里不能出现占位 Key 的**值**：那是凭据，不该由一条错误消息发出去。
     assert settings.DEV_API_KEY not in exc.value.msg
+
+
+def test_unauthorized_messages_each_name_a_next_step() -> None:
+    """四种 20010 的下一步**完全不同**，每条消息都要自带那一步。
+
+    为什么值得单独钉：这些消息现在会**原样显示在控制台**（前端对数据面 20010 照用后端
+    原文，见 `frontend/src/lib/envelope.ts` 的 `humanMessage`）。所以「只回一个状态词」
+    等于让使用者自己去猜该改哪里——而四种原因的下一步是四件事：补请求头 / 重新签发 /
+    启用 Key / 找管理员。断言的不是措辞，是「有没有指向一个具体动作」。
+    """
+
+    from app.core import auth
+
+    messages = {
+        "missing": auth.MSG_MISSING_TOKEN,
+        "unknown": auth.MSG_UNKNOWN_KEY,
+        "disabled": auth.MSG_KEY_DISABLED,
+        "tenant": auth.MSG_TENANT_DISABLED,
+    }
+
+    # 四种原因不能共用一句话：共用就意味着界面再也分不出该做哪件事。
+    assert len(set(messages.values())) == 4
+    for name, message in messages.items():
+        assert any(
+            hint in message for hint in ("Authorization", "Key 管理页", "管理员")
+        ), f"{name} 的消息没有指向任何具体动作：{message}"
 
 
 def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() -> None:

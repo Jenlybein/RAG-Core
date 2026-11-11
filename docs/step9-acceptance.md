@@ -109,6 +109,11 @@ curl -s -X POST http://127.0.0.1:8899/api/v1/rag/retrieve \
   -d '{"query":"退款多久到账","kb_ids":["kb-eval"]}'
 ```
 
+> 上面这几条是**当时如实跑过**的记录，用的 `dev-key`（内置开发身份，
+> `AUTH_ENABLED=false`）。现在 `.env` 默认改成了 `AUTH_ENABLED=true`：同样的调用要把
+> `Bearer` 换成 Key 管理页签发的真实 Key，否则会得到 `20010`。记录本身不改——它记的是
+> 那一次跑的时候环境是什么样。
+
 结果：
 
 | 项 | 值 |
