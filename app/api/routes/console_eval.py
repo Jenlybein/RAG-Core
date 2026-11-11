@@ -71,11 +71,6 @@ def trigger_side_evidence(
     )
 
 
-@router.get(
-    "/eval/side-evidence/{run_id}",
-    response_model=ApiResponse[dict],
-    summary="读一次旁证跑批的状态与汇总",
-)
 def _queued(run_id: str) -> ApiResponse[dict]:
     """「还没有结论」的统一答复：形状与有结论时**完全一致**，只是值都是空的。
 
@@ -197,10 +192,25 @@ def read_side_evidence_report(
     return ok({"run_id": run_id, "report": path.read_text(encoding="utf-8")})
 
 
+@router.get(
+    "/eval/side-evidence/{run_id}",
+    response_model=ApiResponse[dict],
+    summary="读一次旁证跑批的状态与汇总",
+)
 def side_evidence_status(
     run_id: str = PathParam(..., description="触发时返回的 run_id"),
     identity: ConsoleIdentity = Depends(require_console_tenant),
 ) -> ApiResponse[dict]:
+    """读一轮跑批的状态、裁判模型与汇总；``queued`` 表示「还没有结论」，不是错误。
+
+    **这个装饰器曾经挂错了函数**（挂在内部助手 ``_queued`` 上），于是这条端点从 #109
+    实现那天起就一直回 ``queued``：界面上「正在排队」永远不结束，计时器无限增长，而
+    下面那个读目录的历史列表却如实显示 ``failed``——同一份文件、两个答案。
+    它之所以长期没被发现，是因为测试直接调 ``side_evidence_status(...)`` 而**没发请求**：
+    函数本身是对的，错的是「谁被注册到了这个路径上」。回归用例因此必须是 ASGI 级的
+    （见 `tests/test_console_side_evidence_runs.py` 里那条真请求）。
+    """
+
     if not _RUN_ID.match(run_id):
         # 不属于本服务生成的形状：当作不存在，与跨租户同一个答复口径。
         return _queued(run_id)

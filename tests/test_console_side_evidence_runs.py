@@ -38,6 +38,111 @@ def _run(root: Path, run_id: str, *, tenant_id: str | None = "tenant_demo", stat
     return run_dir
 
 
+# ───────────────────────────────────────── 路由绑定：必须发真请求才测得出来
+
+"""
+这一组的由来（真实事故）：`@router.get("/eval/side-evidence/{run_id}")` 这个装饰器
+一直被挂在内部助手 `_queued` 头上，真正的 `side_evidence_status` 从来没被路由过。
+于是状态端点**恒返回 `queued`**：界面上「正在排队」永不结束、计时器无限增长，而下面
+读目录的历史列表如实显示 `failed`——同一份文件、两个答案。
+
+它从 #109 实现起就存在，长期没被发现，因为测试是**直接调函数**的：
+`console_eval.side_evidence_status(...)` 一直是绿的，错的是「谁被注册到了这个路径上」。
+结论与 `tests/README.md` ② 一字不差：这一层必须发真请求。
+"""
+
+
+def _plan_rows() -> list[Any]:
+    from app.models.plan import PLAN_CODES, PLAN_PRESETS, plan_row_of
+
+    rows: list[Any] = []
+    for index, code in enumerate(PLAN_CODES, start=1):
+        row = plan_row_of(PLAN_PRESETS[code])
+        row.id = index
+        rows.append(row)
+    return rows
+
+
+def _world() -> dict[Any, list[Any]]:
+    from app.core import passwords
+    from app.models.account import Account
+    from app.models.plan import Plan
+    from app.models.tenant import Tenant
+
+    tenant = Tenant(id="tenant_demo", name="Demo", plan_id=3, status="active")
+    account = Account(
+        id="00000000-0000-4000-8000-000000000002",
+        tenant_id="tenant_demo",
+        username="alice",
+        password_hash=passwords.hash_password("user-password"),
+        role="user",
+        status="active",
+    )
+    return {Plan: _plan_rows(), Tenant: [tenant], Account: [account]}
+
+
+@pytest.fixture
+def asgi(runs_root: Path):
+    """真应用 + 真登录拿到的会话 cookie；数据库换成内存假会话。"""
+
+    import importlib
+
+    from fastapi.testclient import TestClient
+
+    from tests.fake_db import RecordingSession
+
+    main = importlib.import_module("app.main")
+    session_module = importlib.import_module("app.db.session")
+    console_deps = importlib.import_module("app.api.console_deps")
+
+    session = RecordingSession(rows=_world())
+    main.app.dependency_overrides[session_module.get_db] = lambda: session
+    main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
+    try:
+        with TestClient(main.app) as client:
+            assert (
+                client.post(
+                    "/console/login", json={"username": "alice", "password": "user-password"}
+                ).json()["code"]
+                == 0
+            )
+            yield client
+    finally:
+        main.app.dependency_overrides.clear()
+
+
+def test_the_status_route_reports_a_finished_run_not_queued(asgi, runs_root: Path) -> None:
+    """回归的那一条：状态文件说 `failed`，端点就必须回 `failed`。
+
+    装饰器挂错函数时，这里拿到的是 `_queued` 的答复（永远是 `queued`）——测试因此会红。
+    """
+
+    _run(runs_root, "20260101T000000Z", status="failed", report="# r")
+
+    body = asgi.get("/console/eval/side-evidence/20260101T000000Z").json()
+
+    assert body["code"] == 0
+    assert body["data"]["status"] == "failed"
+
+
+def test_the_status_route_passes_the_judge_model_through(asgi, runs_root: Path) -> None:
+    """顺带钉住「回的是真数据」：`judge_model` 只有真读文件才会有。"""
+
+    run_dir = _run(runs_root, "20260102T000000Z", status="ok")
+    (run_dir / "status.json").write_text(
+        json.dumps(
+            {"run_id": "20260102T000000Z", "status": "ok", "judge_model": "fake-judge-v1",
+             "tenant_id": "tenant_demo"}
+        ),
+        encoding="utf-8",
+    )
+
+    body = asgi.get("/console/eval/side-evidence/20260102T000000Z").json()
+
+    assert body["data"]["status"] == "ok"
+    assert body["data"]["judge_model"] == "fake-judge-v1"
+
+
 @pytest.fixture
 def runs_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     root = tmp_path / "side-evidence"
