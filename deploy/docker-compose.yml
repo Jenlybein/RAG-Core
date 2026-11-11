@@ -114,6 +114,8 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    # 与 api 共用同一个镜像标签：Docker 只构建一次，两边跑同一份代码。
+    image: rag-core-app:local
     container_name: rag-worker
     env_file: ../.env
     environment:
@@ -125,11 +127,62 @@ services:
       OCR_OFFLINE: "true"
     volumes:
       - ../data/uploads:/app/data/uploads
+      # 旁证跑批的产物目录：**必须与 api 共享**。状态由 Worker 写、由 API 读；不共享时
+      # API 永远读不到 status.json，前端看到的就是「一直 queued」。
+      - eval_runs:/app/eval/runs
     depends_on:
       postgres:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # ── API：与 Worker 同一个镜像，只换启动命令 ────────────────────────────────────
+  # 镜像里有 OCR 运行时（那是 Worker 才需要的），复用它是刻意的：一份镜像、一份代码，
+  # 不会出现「API 跑的是昨天的代码、Worker 跑的是今天的」这种最难查的错。
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: rag-core-app:local
+    container_name: rag-api
+    # 容器内 0.0.0.0 才能被 nginx 与宿主机端口映射访问；127.0.0.1 只在本容器内可见。
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info"]
+    env_file: ../.env
+    environment:
+      # `.env` 里写的是 localhost（给宿主机直连用）。容器内 localhost 指向容器自己，
+      # 所以下面这些**必须**覆盖成服务名——否则 API 会连自己的 5432 然后失败。
+      DATABASE_URL: postgresql+psycopg://postgres:123456@postgres:5432/rag_db
+      REDIS_URL: redis://redis:6379/2
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      DOCUMENT_STORAGE_PATH: /app/data/uploads
+      # 观测栈：容器内按服务名连，浏览器按对外地址跳（见 LANGFUSE_PUBLIC_URL 的注释）。
+      LANGFUSE_HOST: http://langfuse-web:3000
+      LANGFUSE_PUBLIC_URL: http://localhost:3000
+    volumes:
+      - ../data/uploads:/app/data/uploads
+      - eval_runs:/app/eval/runs
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── 前端：nginx 静态服务 + 把 /api 与 /console 反代给 api ──────────────────────
+  # 浏览器只看到一个 origin（:8080），控制面 cookie 的 Path=/console 因此天然同源。
+  frontend:
+    build:
+      context: ..
+      dockerfile: deploy/frontend.Dockerfile
+    image: rag-core-frontend:local
+    container_name: rag-console
+    ports:
+      - "8080:80"
+    depends_on:
+      - api
 
   # ── 观测栈（profile: obs）──────────────────────────────────────────────────────
   # 上游 v4 自托管 compose 的五个容器，一个不少也一个不多：
@@ -250,6 +303,8 @@ services:
 volumes:
   pg_data:
   es_data:
+  # 旁证跑批产物（status.json / results.json / report.md）：api 与 worker 必须看到同一份。
+  eval_runs:
   langfuse_clickhouse_data:
   langfuse_clickhouse_logs:
   langfuse_minio_data:

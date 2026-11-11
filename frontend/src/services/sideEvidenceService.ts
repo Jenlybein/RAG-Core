@@ -41,3 +41,49 @@ export function fetchSideEvidence(runId: string): Promise<SideEvidenceStatus> {
     `/console/eval/side-evidence/${encodeURIComponent(runId)}`,
   )
 }
+
+/** 历史列表里的一行：与状态端点同形，外加「有没有报告可看」。 */
+export interface SideEvidenceRun {
+  run_id: string
+  status: string
+  judge_model?: string | null
+  error?: string | null
+  summary?: SideEvidenceStatus['summary']
+  has_report: boolean
+}
+
+export interface SideEvidenceRunsPayload {
+  items: SideEvidenceRun[]
+  limit: number
+}
+
+/**
+ * 最近若干次跑批（控制台历史）。
+ *
+ * 为什么要它：状态端点只能查**一个** `run_id`，而 `run_id` 是秒级时间戳、刷新页面就丢。
+ * 没有列表的话，「昨天跑的那轮 CP 是多少」只能去服务器上翻目录。
+ */
+export function fetchSideEvidenceRuns(limit = 10): Promise<SideEvidenceRunsPayload> {
+  return consoleHttp.get<SideEvidenceRunsPayload>('/console/eval/side-evidence', {
+    params: { limit },
+  })
+}
+
+export interface SideEvidenceReport {
+  run_id: string
+  /** Markdown 原文；没有报告时是 `null`（不是空串——「没有」与「空文件」要分得开）。 */
+  report: string | null
+}
+
+/**
+ * 读报告原文，由前端在弹窗里渲染。
+ *
+ * **不拼文件路径**：`report.md` 在服务端磁盘上，浏览器没有那条路径；而把 `eval/runs/` 当
+ * 静态目录挂出去，等于把「按名字读任意文件」交给调用方。这条端点只认 `run_id` 形状、
+ * 只读那一个固定文件名、并校验归属。
+ */
+export function fetchSideEvidenceReport(runId: string): Promise<SideEvidenceReport> {
+  return consoleHttp.get<SideEvidenceReport>(
+    `/console/eval/side-evidence/${encodeURIComponent(runId)}/report`,
+  )
+}

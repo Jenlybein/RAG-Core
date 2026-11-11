@@ -48,6 +48,13 @@ const routes = [
     component: () => import('../views/RetrievePage.vue'),
   },
   {
+    path: '/traces',
+    name: 'traces',
+    // 检索记录：本租户最近若干次检索 + 单条瀑布 + 观测栈外链。
+    // 补的是「瀑布 / 评分 / 旁证都得先知道一个 id」这个缺口——在此之前只能回调用方系统里翻。
+    component: () => import('../views/TracesPage.vue'),
+  },
+  {
     path: '/admin/accounts',
     name: 'admin-accounts',
     component: () => import('../views/admin/AccountsPage.vue'),

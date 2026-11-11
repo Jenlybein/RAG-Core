@@ -4,8 +4,12 @@
 
 | 栈 | 起法 | 里面有什么 |
 | --- | --- | --- |
-| 业务栈（默认） | `docker compose -f deploy/docker-compose.yml up -d` | postgres（pgvector）、redis、worker、（按阶段再开）elasticsearch |
+| 业务栈（默认） | `docker compose -f deploy/docker-compose.yml up -d` | postgres（pgvector）、redis、worker、api、frontend、elasticsearch |
 | 观测栈（`obs`） | `docker compose -f deploy/docker-compose.yml --profile obs up -d` | langfuse-web、langfuse-worker、clickhouse、minio、langfuse-redis |
+
+**打开 `http://localhost:8080` 就是控制台**：`frontend` 容器（nginx）把静态资源与 `/api`、
+`/console` 两条反代都收在同一个 origin 下，浏览器只看到一个站点——控制面 cookie 的
+`Path=/console` 因此天然同源，不用改 SameSite、不用开 CORS。
 
 业务最小部署**不需要**观测栈：不带 `--profile obs` 时那五个容器根本不会被创建
 （`docker compose ... config --services` 里看不到它们）。观测栈只写文件也能过活，
@@ -37,7 +41,42 @@ compose 定义）。这是刻意的：观测栈要用的 Postgres 就是业务�
 | postgres（`pgvector/pgvector:pg16`） | `pg16-pgvector` | 5432 | 阶段 1 |
 | redis（`redis:7-alpine`） | `rag-center-redis` | 6379 | 阶段 3 |
 | worker（`deploy/Dockerfile` 自建） | `rag-worker` | — | 阶段 3 |
+| **api**（同一个镜像，`uvicorn` 启动） | `rag-api` | **8000** | 阶段 9 |
+| **frontend**（`deploy/frontend.Dockerfile` 自建，nginx） | `rag-console` | **8080** | 阶段 9 |
 | elasticsearch（官方 8.17.10 + 自建 IK） | `rag-es` | 9200 | 阶段 4 |
+
+`api` 与 `worker` **共用同一个镜像标签**（`rag-core-app:local`）：Docker 只构建一次，两边跑
+同一份代码。镜像里带 OCR 运行时（那是 worker 才需要的），复用它是刻意的——「API 跑昨天的
+代码、worker 跑今天的」是最难查的一类错，比多占几百 MB 严重得多。
+
+两个容器必须**看到同一份 `eval/runs`**（命名卷 `eval_runs`）：旁证跑批的 `status.json` 由
+worker 写、由 api 读。不共享时 API 永远读不到状态，前端看到的就是「一直 queued」——
+这是本轮实机验证时才想到的一条，写在 `docs/step9-acceptance.md`。
+
+### 前端镜像的两个构建细节
+
+**1. npm 源**：默认走 npmmirror（`NPM_REGISTRY` 构建参数可覆盖）。官方源在部分网络下只有
+几十 KiB/s，一次 `pnpm install` 要十几分钟，而构建期是最不该赌网络的地方：
+
+```bash
+docker compose -f deploy/docker-compose.yml build frontend \
+  --build-arg NPM_REGISTRY=https://registry.npmjs.org
+```
+
+**2. `vue-demi` 的构建脚本必须显式批准**。它有 postinstall（在 Vue 2 / Vue 3 之间切实现），
+而 pnpm 默认**拒绝**执行依赖的构建脚本并把它当成**失败**（`ERR_PNPM_IGNORED_BUILDS`），
+不是警告。所以 Dockerfile 里写的是：
+
+```dockerfile
+RUN pnpm install --frozen-lockfile --allow-build=vue-demi
+```
+
+> 试过但**不生效**的两条路，别再走一遍：`package.json` 的 `pnpm.onlyBuiltDependencies`
+> （pnpm 10+ 已不读这个字段）、`pnpm-workspace.yaml` 的 `onlyBuiltDependencies`
+> （pnpm 12 下实测无效）。只有 `--allow-build=<pkg>` 这条 CLI 参数管用。
+>
+> 宿主机上干净克隆后第一次装依赖也要带它：
+> `pnpm install --allow-build=vue-demi`。
 
 观测栈（`profiles: ["obs"]`）：
 
@@ -53,6 +92,24 @@ compose 定义）。这是刻意的：观测栈要用的 Postgres 就是业务�
 ClickHouse 的 8123 与 MinIO 控制台的 9091 只绑在 `127.0.0.1`，方便用
 `clickhouse-client` 查一眼，不对外。观测栈的 Redis 不映射端口：业务 Redis 已经占着 6379，
 而这个 Redis 只服务栈内的 worker。
+
+## 浏览器打开哪几个地址
+
+| 地址 | 是什么 | 需要哪个容器 |
+| --- | --- | --- |
+| **`http://localhost:8080`** | 控制台（知识库 / Key / 检索调试台 / **检索记录**） | `frontend` + `api` |
+| `http://localhost:8000/docs` | API 的 OpenAPI 文档（调试用，控制台不经过它） | `api` |
+| `http://localhost:3000` | 观测栈 UI（Langfuse） | `--profile obs` 的五个容器 |
+
+控制台里「检索记录」页每行有一个**「在观测栈里打开」**外链，跳到那条 trace。它能不能显示
+取决于两件事，都在 `api` 的环境里：
+
+- `TRACE_SINK=langfuse`：去向不是 langfuse 时，栈里根本没有这条 trace，前端不画链接
+  （画了只会点出 404）；
+- `LANGFUSE_PUBLIC_URL`：**浏览器**该用哪个地址打开观测栈。容器里 `LANGFUSE_HOST` 是
+  `http://langfuse-web:3000`（服务名，浏览器解析不了），所以对外地址要单独给
+  （compose 里设的是 `http://localhost:3000`）。单机部署不设它也行——留空时退回
+  `LANGFUSE_HOST`。
 
 ## 观测栈：资源占用、版本、首次使用
 

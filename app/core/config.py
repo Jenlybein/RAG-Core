@@ -199,6 +199,12 @@ class Settings(BaseSettings):
     # 自托管观测栈的连接信息。留空 = 这台机器没配：``langfuse`` 去向会在第一次用时失败，
     # 失败只留 warning（观测是旁路，ADR-0021）。名字与上游 SDK 的环境变量同名，是刻意的。
     LANGFUSE_HOST: str = "http://localhost:3000"
+    # 浏览器该用哪个地址打开观测栈 UI。留空 = 与 ``LANGFUSE_HOST`` 相同。
+    #
+    # **为什么需要两个**：容器里 API 要按服务名找栈（``http://langfuse-web:3000``），而浏览器
+    # 解析不了那个名字。控制台「在观测栈里打开」的链接因此不能直接用 ``LANGFUSE_HOST``——
+    # 那会给出一个只有容器内能访问的地址。分出一个「对外地址」，两边各说各的那一份。
+    LANGFUSE_PUBLIC_URL: str = ""
     LANGFUSE_PUBLIC_KEY: str = ""
     LANGFUSE_SECRET_KEY: str = ""
 

@@ -156,14 +156,53 @@ uv run python scripts/export_eval_cases.py --env-file .env --max-score 3 --days 
 `test_query_source_goes_through_the_shared_reader_and_can_actually_read`（钉住必须走共用取数）、
 `test_reader_asks_the_api_for_name_and_metadata_explicitly`（钉住 `fields` 与 `expand_metadata`）。
 
-## 六、仍未实机验证的一条（如实留档）
+## 六、控制台入口补全（本轮新增）
+
+此前这套能力只在**接口层**完整：瀑布、评分、旁证都要先知道一个 `log_id` / `trace_id`，
+而那个 id 只能回调用方系统里翻。这一轮把三个入口补到了界面上：
+
+| 入口 | 位置 | 补的是什么 |
+| --- | --- | --- |
+| **检索记录**页 | `/traces`（顶栏第四条） | 本租户最近 N 次检索的列表；点一行看六段瀑布；每行一个「在观测栈里打开」外链 |
+| 旁证**历史** | `/retrieve` 页面「语义旁证」卡片下半部 | 刷新页面后仍能看到上一轮；每轮带「看报告」 |
+| 旁证**报告** | 同卡片 / 历史列表的「看报告」 | 弹窗显示 `report.md` 原文（后端按 `run_id` 读，前端不拼路径） |
+| **没有 Worker** 的提示 | 同上，`queued` 超过 45 秒 | 说清「多半是队列里没人消费」——此前 `queued` 与「没人跑」长得一模一样 |
+
+配套后端（都在控制面、都带租户过滤）：
+
+- `GET /console/retrieval-traces/recent?limit=`：列表，`limit` 上限 100；`score` 未评分时是
+  `null`（不是 0）。
+- `GET /console/observability`：只下发 `trace_sink` 与 `langfuse_host`，**密钥一个都不出进程**。
+- `GET /console/eval/side-evidence?limit=`：历史列表，只列本租户。
+- `GET /console/eval/side-evidence/{run_id}/report`：报告原文，只认 `run_id` 形状、
+  只读那一个固定文件名。
+
+`LANGFUSE_PUBLIC_URL` 是这轮新加的配置项：容器里 `LANGFUSE_HOST` 是服务名
+（`http://langfuse-web:3000`），浏览器解析不了；「在观测栈里打开」必须用对外地址。
+
+### Docker 直接访问
+
+`api` 与 `frontend` 两个服务已进 compose，**打开 `http://localhost:8080` 就是控制台**：
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d --build api frontend
+```
+
+三条与这一轮强相关的取舍：
+
+1. `api` 与 `worker` **共用镜像标签** `rag-core-app:local`：只构建一次，两边跑同一份代码。
+2. 两个容器**共享命名卷 `eval_runs`**（挂在 `/app/eval/runs`）：旁证的 `status.json` 由 worker
+   写、api 读；不共享时前端永远看到 `queued`。
+3. 前端镜像的 npm 源默认走 npmmirror（`--build-arg NPM_REGISTRY=` 可覆盖）：官方源在部分
+   网络下只有几十 KiB/s，构建期不该赌网络。
+
+## 七、仍未实机验证的一条（如实留档）
 
 | 项 | 状态 | 翻案条件 |
 | --- | --- | --- |
 | `--via-http` 评测冒烟 | 已实现（3 道题、断言字段清单），离线测试覆盖**挑题顺序与缺字段**，但未起 API 服务真跑 | 起服务 + 签一把 Key 后跑一次 |
 
-## 七、口径提醒（读这份表前先知道）
-
+## 八、口径提醒（读这份表前先知道）
 - **门禁指标**（零外部依赖、可复现、会阻断）与**旁证指标**（LLM 裁判、有随机性、只提示）
   是两类东西，见 `GLOSSARY.md`。本文件里所有 CP/CR 都标了是哪一类、用哪把尺子。
 - 任何数字换过语料版本 / 裁判模型 / 切块窗口，就是**另一把尺子**，不与旧数字并排比。

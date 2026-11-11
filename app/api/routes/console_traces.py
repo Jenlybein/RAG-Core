@@ -29,12 +29,13 @@ from app.api.console_deps import (
     require_console_tenant,
     tenant_id_of,
 )
+from app.core.config import settings
 from app.core.console_auth import ConsoleIdentity
 from app.db.session import get_db
+from app.repositories import retrieval_feedback_repository, retrieval_trace_repository
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_traces import RetrievalWaterfallData, waterfall_data
 from app.services.retrieval_waterfall import RemoteStageReader, waterfall_of
-from app.repositories import retrieval_trace_repository
 
 router = APIRouter(prefix="/console", tags=["console"])
 
@@ -105,3 +106,84 @@ def retrieval_trace_by_trace_id(
     )
     # 跨租户与不存在同一个答复：不泄漏「这条 trace 在别人那儿存在」。
     return ok({"log_id": row.id if row else None, "trace_id": normalized})
+
+
+@router.get(
+    "/retrieval-traces/recent",
+    response_model=ApiResponse[dict],
+    summary="最近若干次检索（控制台列表：时间 / 耗时 / 结局 / 是否已评分）",
+)
+def recent_retrieval_traces(
+    limit: int = Query(20, ge=1, le=100, description="返回条数上限"),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: Session = Depends(get_db),
+) -> ApiResponse[dict]:
+    """本租户最近若干条归属索引，按时间倒序。
+
+    **为什么需要它**：瀑布、评分、旁证三条路都要先知道一个 ``log_id`` 或 ``trace_id``。
+    没有列表时，使用者只能回到调用方系统里翻 id 再抄过来——那等于把「看一眼最近的检索」
+    做成一件需要另一个系统配合的事。
+
+    ``limit`` 有上限（100）：「最近几次」是给人看的，不是导出接口；没有上限的列表查询在
+    表长大之后会变成一次全表扫。
+
+    列表里**没有任何原文**：归属索引本来就不存（ADR-0021 决策 1），所以这里不需要额外脱敏。
+    """
+
+    rows = retrieval_trace_repository.list_recent_for_tenant(
+        db, tenant_id=tenant_id_of(identity), limit=limit
+    )
+    scores = retrieval_feedback_repository.scores_for_log_ids(
+        db, [row.id for row in rows], tenant_id=tenant_id_of(identity)
+    )
+    return ok(
+        {
+            "items": [
+                {
+                    "log_id": row.id,
+                    "trace_id": row.trace_id,
+                    "created_at": row.created_at.isoformat() if row.created_at else None,
+                    "latency_ms": row.latency_ms,
+                    "top_k": row.top_k,
+                    "kb_count": len(row.kb_ids or []),
+                    "degraded_reason": row.degraded_reason,
+                    "empty_reason": row.empty_reason,
+                    # 未评分是 ``None``（不是 0）：列表页据此画「还没人评」，而不是画 0 星。
+                    "score": scores.get(row.id),
+                }
+                for row in rows
+            ],
+            "limit": limit,
+        }
+    )
+
+
+@router.get(
+    "/observability",
+    response_model=ApiResponse[dict],
+    summary="观测去向与观测栈地址（只读；密钥不下发）",
+)
+def observability_info(
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+) -> ApiResponse[dict]:
+    """告诉前端「六段耗时现在往哪送」以及「观测栈 UI 在哪」。
+
+    **只下发地址，不下发任何密钥**：``LANGFUSE_HOST`` 是一个 URL，前端拿它拼
+    「在观测栈里打开这条 trace」的链接；``LANGFUSE_PUBLIC_KEY`` / ``SECRET_KEY`` 一个都
+    不出这个进程——它们能读整栈，进浏览器就等于公开。
+
+    ``trace_sink`` 原样返回（``jsonl`` / ``langfuse`` / ``none``）：前端据此决定那条外链
+    显不显示——去向是 ``jsonl`` 时栈里根本没有这条 trace，给个链接只会点出 404。
+    """
+
+    sink = settings.TRACE_SINK
+    # 给浏览器用的是**对外地址**：容器里 `LANGFUSE_HOST` 可能是服务名（`langfuse-web`），
+    # 浏览器解析不了。`LANGFUSE_PUBLIC_URL` 留空时才退回 `LANGFUSE_HOST`（单机部署两者相同）。
+    host = (settings.LANGFUSE_PUBLIC_URL or settings.LANGFUSE_HOST).rstrip("/")
+    return ok(
+        {
+            "trace_sink": sink,
+            # 只有去向真的是 langfuse 且地址非空时才给地址，否则前端拿到的会是空串。
+            "langfuse_host": host if (sink == "langfuse" and host) else None,
+        }
+    )

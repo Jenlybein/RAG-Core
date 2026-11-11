@@ -19,7 +19,7 @@
  */
 import { useMutation, useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
-import { computed, onUnmounted, ref, watch } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ComparePanel from '../components/ComparePanel.vue'
@@ -29,7 +29,13 @@ import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
-import { fetchSideEvidence, triggerSideEvidence } from '../services/sideEvidenceService'
+import {
+  fetchSideEvidence,
+  fetchSideEvidenceReport,
+  fetchSideEvidenceRuns,
+  triggerSideEvidence,
+  type SideEvidenceRun,
+} from '../services/sideEvidenceService'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { retrieve } from '../services/ragService'
@@ -514,6 +520,69 @@ const sideEvidenceRunError = ref<string | null>(null)
 const sideEvidenceStarting = ref(false)
 let sideEvidenceTimer: ReturnType<typeof setTimeout> | null = null
 
+/**
+ * 「投递出去多久了」——只为了说出那句「队列里没人消费」。
+ *
+ * 为什么需要它：触发成功只代表**任务进了队列**，不代表有人跑。只起 API 不起 Worker 时，
+ * 状态会永远停在 `queued`，而界面上「正在排队」和「根本没人跑」长得一模一样。前端无法
+ * 直接问「有没有 Worker」，但可以按时间说：`queued` 超过 45 秒，基本就不是排队了。
+ */
+const sideEvidenceQueuedSince = ref<number | null>(null)
+const sideEvidenceNow = ref(Date.now())
+let sideEvidenceClock: ReturnType<typeof setInterval> | null = null
+
+const SIDE_EVIDENCE_QUEUE_HINT_SECONDS = 45
+
+const sideEvidenceQueuedFor = computed(() => {
+  if (sideEvidenceStatus.value !== 'queued' || sideEvidenceQueuedSince.value === null) return 0
+  return Math.max(0, Math.round((sideEvidenceNow.value - sideEvidenceQueuedSince.value) / 1000))
+})
+
+const sideEvidenceQueueHint = computed(() => {
+  if (sideEvidenceQueuedFor.value < SIDE_EVIDENCE_QUEUE_HINT_SECONDS) return ''
+  return `已排队 ${sideEvidenceQueuedFor.value} 秒还没开始跑：多半是队列里没有 Worker 在消费（检查 worker 容器 / celery 进程）。`
+})
+
+/** 历史跑批：刷新页面后仍能看到「上次那轮」的结果，而不是只剩一片空白。 */
+const sideEvidenceRuns = ref<SideEvidenceRun[]>([])
+const sideEvidenceRunsError = ref<string | null>(null)
+
+async function loadSideEvidenceRuns(): Promise<void> {
+  try {
+    sideEvidenceRuns.value = (await fetchSideEvidenceRuns(10)).items
+    sideEvidenceRunsError.value = null
+  } catch (error) {
+    sideEvidenceRunsError.value = errorText(error)
+  }
+}
+
+/** 报告弹窗：内容由后端按 `run_id` 读出来，前端不拼文件路径。 */
+const reportRunId = ref<string | null>(null)
+const reportText = ref<string | null>(null)
+const reportLoading = ref(false)
+const reportError = ref<string | null>(null)
+
+async function openReport(runId: string): Promise<void> {
+  reportRunId.value = runId
+  reportText.value = null
+  reportError.value = null
+  reportLoading.value = true
+  try {
+    const payload = await fetchSideEvidenceReport(runId)
+    reportText.value = payload.report
+  } catch (error) {
+    reportError.value = errorText(error)
+  } finally {
+    reportLoading.value = false
+  }
+}
+
+function closeReport(): void {
+  reportRunId.value = null
+  reportText.value = null
+  reportError.value = null
+}
+
 const SIDE_EVIDENCE_TERMINAL = new Set(['ok', 'partial', 'failed'])
 
 function stopSideEvidencePolling(): void {
@@ -533,6 +602,8 @@ async function pollSideEvidence(runId: string): Promise<void> {
     sideEvidenceRunError.value = state.error ?? null
     if (SIDE_EVIDENCE_TERMINAL.has(state.status)) {
       stopSideEvidencePolling()
+      // 跑完就刷一次历史：刚这轮应当立刻出现在列表里，不需要用户手动刷新。
+      void loadSideEvidenceRuns()
       return
     }
   } catch (error) {
@@ -556,6 +627,9 @@ async function startSideEvidence(): Promise<void> {
     sideEvidenceStatus.value = started.status
     sideEvidenceSummary.value = null
     sideEvidenceJudgeModel.value = null
+    // 记下投递时刻：`queued` 停留过久时要能说出「队列里没人消费」。
+    sideEvidenceQueuedSince.value = Date.now()
+    sideEvidenceNow.value = Date.now()
     void pollSideEvidence(started.run_id)
   } catch (error) {
     sideEvidenceError.value = errorText(error)
@@ -564,7 +638,22 @@ async function startSideEvidence(): Promise<void> {
   }
 }
 
-onUnmounted(() => stopSideEvidencePolling())
+onMounted(() => {
+  void loadSideEvidenceRuns()
+  // 每秒推进一次「已排队多久」：只在 queued 时才有人读它，但计时器本身开销可以忽略，
+  // 比「按需启停」少一条要维护的状态。
+  sideEvidenceClock = setInterval(() => {
+    sideEvidenceNow.value = Date.now()
+  }, 1000)
+})
+
+onUnmounted(() => {
+  stopSideEvidencePolling()
+  if (sideEvidenceClock !== null) {
+    clearInterval(sideEvidenceClock)
+    sideEvidenceClock = null
+  }
+})
 </script>
 
 <template>
@@ -1099,6 +1188,15 @@ onUnmounted(() => stopSideEvidencePolling())
           <span class="ml-1 font-mono text-slate-500">{{ sideEvidenceRunId }}</span>
           <span class="ml-2 text-muted">状态</span>
           <span class="ml-1 font-medium">{{ sideEvidenceStatus }}</span>
+          <el-button
+            v-if="SIDE_EVIDENCE_TERMINAL.has(sideEvidenceStatus)"
+            link
+            size="small"
+            class="ml-2"
+            @click="openReport(sideEvidenceRunId!)"
+          >
+            看报告
+          </el-button>
         </p>
         <p v-if="sideEvidenceJudgeModel" class="text-muted">
           裁判模型 {{ sideEvidenceJudgeModel }}（换模型 = 换尺子，与旧报告不可比）
@@ -1108,9 +1206,70 @@ onUnmounted(() => stopSideEvidencePolling())
           CR {{ formatPercent(sideEvidenceSummary.context_recall) }} ·
           已评分 {{ sideEvidenceSummary.scored }} / 未评分 {{ sideEvidenceSummary.unscored }}
         </p>
+        <!--
+          样本量必须和 CP/CR 一起看：分母是「真正评上的题数」，不是「跑了几道题」。
+          把 n=5 读成「50 题的平均」是这套旁证最容易被误读的地方。
+        -->
+        <p v-if="sideEvidenceSummary?.scored !== undefined" class="text-muted">
+          上面两个数的分母是「已评分」那一列，不是题目总数。
+        </p>
         <p v-if="sideEvidenceRunError" class="text-[#6E4E12]">{{ sideEvidenceRunError }}</p>
+        <p v-if="sideEvidenceQueueHint" class="text-[#B45309]">{{ sideEvidenceQueueHint }}</p>
+      </div>
+
+      <!-- 历史：刷新页面后仍能看到上一轮，而不是只剩空白 -->
+      <div class="mt-3 border-t border-line pt-2">
+        <div class="flex items-center justify-between">
+          <p class="text-[11px] font-medium text-slate-600">最近跑过的几轮</p>
+          <el-button link size="small" @click="loadSideEvidenceRuns">刷新</el-button>
+        </div>
+        <p v-if="sideEvidenceRunsError !== null" class="mt-1 text-[11px] text-red-700">
+          {{ sideEvidenceRunsError }}
+        </p>
+        <p v-else-if="sideEvidenceRuns.length === 0" class="mt-1 text-[11px] text-muted">
+          还没有跑批记录。
+        </p>
+        <ul v-else class="mt-1 space-y-1">
+          <li
+            v-for="run in sideEvidenceRuns"
+            :key="run.run_id"
+            class="flex flex-wrap items-baseline gap-2 text-[11px]"
+          >
+            <span class="font-mono text-slate-500">{{ run.run_id }}</span>
+            <span class="font-medium">{{ run.status }}</span>
+            <span v-if="run.summary" class="font-mono text-slate-600">
+              CP {{ formatPercent(run.summary.context_precision) }} ·
+              CR {{ formatPercent(run.summary.context_recall) }} ·
+              {{ run.summary.scored }}/{{ run.summary.unscored }}
+            </span>
+            <el-button v-if="run.has_report" link size="small" @click="openReport(run.run_id)">
+              看报告
+            </el-button>
+          </li>
+        </ul>
       </div>
     </el-card>
+
+    <!-- 报告弹窗：Markdown 原文，用等宽字体原样显示（不引 markdown 渲染器，少一份依赖） -->
+    <el-dialog
+      :model-value="reportRunId !== null"
+      title="旁证报告"
+      width="820px"
+      @update:model-value="closeReport"
+    >
+      <p v-if="reportRunId !== null" class="mb-2 font-mono text-[11px] text-slate-500">
+        run {{ reportRunId }}
+      </p>
+      <p v-if="reportError !== null" class="text-[11px] text-red-700">{{ reportError }}</p>
+      <p v-else-if="reportLoading" class="text-[11px] text-muted">读取中…</p>
+      <p v-else-if="reportText === null" class="text-[11px] text-muted">
+        这一轮没有报告文件（跑批可能还在排队，或中途失败没落地）。
+      </p>
+      <pre
+        v-else
+        class="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-control bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-700"
+      >{{ reportText }}</pre>
+    </el-dialog>
 
     <!-- ④ 对比面板（会话内，放在结果区下方；没有历史时整块不渲染，不占位） -->
     <ComparePanel

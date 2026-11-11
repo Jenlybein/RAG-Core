@@ -1,14 +1,39 @@
 """反馈表的数据访问：唯一能碰 ``retrieval_feedback`` 的一层。
 
-只有两个动作：按 ``log_id`` 取那一行（覆盖判断要用）、写入或覆盖。事务由 Service 收口
+三个动作：按 ``log_id`` 取那一行（覆盖判断要用，私有）、写入或覆盖、批量取分数
+（控制台「最近检索」列表要显示每行打了几分）。事务由 Service 收口
 （与其它仓储一致：这里只 ``flush``，不 ``commit``）。
 """
 
+from collections.abc import Sequence
+
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.db.base import now
 from app.models.retrieval_feedback import RetrievalFeedback
 from app.utils.id_generator import new_id
+
+
+def scores_for_log_ids(
+    db: Session, log_ids: Sequence[str], *, tenant_id: str
+) -> dict[str, int]:
+    """批量取这些 ``log_id`` 各自的分数，返回 ``{log_id: score}``；没打分的**不出现**。
+
+    「没出现」与「0 分」必须分得开：前者是「还没人评」，后者在 1~5 的取值域里根本不存在
+    （越界会被 ``20022`` 拒）。列表页因此能把「未评分」画成一个空档，而不是画成一颗星。
+
+    带租户：这些 ``log_id`` 通常来自已经按租户筛过的归属索引，但这一层不假设调用方
+    做过什么——ADR-0006 决策 1 要求签名上就带 ``tenant_id``。
+    """
+
+    if not log_ids:
+        return {}
+    statement = select(RetrievalFeedback.log_id, RetrievalFeedback.score).where(
+        RetrievalFeedback.log_id.in_(list(log_ids)),
+        RetrievalFeedback.tenant_id == tenant_id,
+    )
+    return {row.log_id: row.score for row in db.execute(statement).all()}
 
 
 def _get_by_log_id(db: Session, log_id: str) -> RetrievalFeedback | None:

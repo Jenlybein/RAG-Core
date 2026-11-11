@@ -56,3 +56,25 @@ def get_by_trace_id_for_tenant(db: Session, trace_id: str, *, tenant_id: str) ->
         RetrievalTrace.trace_id == trace_id, RetrievalTrace.tenant_id == tenant_id
     )
     return db.execute(statement).scalar_one_or_none()
+
+
+def list_recent_for_tenant(
+    db: Session, *, tenant_id: str, limit: int = 20
+) -> list[RetrievalTrace]:
+    """按时间倒序取本租户最近若干条归属索引（控制台「最近检索」列表）。
+
+    **这是本模块唯一的「列表」读法，也是唯一一处不按 id 点查的地方**——所以它必须自带
+    ``limit``：没有上限的列表查询在表长大之后会变成一次全表扫，而控制台只是让人「看最近
+    几次」。上限由路由层的 query 参数给，默认 20、最大 100。
+
+    只返回结构字段（`id` / `trace_id` / 时间 / 耗时 / 结局），**没有任何原文**：这张表本来
+    就没有原文可返回（ADR-0021 决策 1），列表页因此不需要额外脱敏。
+    """
+
+    statement = (
+        select(RetrievalTrace)
+        .where(RetrievalTrace.tenant_id == tenant_id)
+        .order_by(RetrievalTrace.created_at.desc())
+        .limit(limit)
+    )
+    return list(db.execute(statement).scalars().all())

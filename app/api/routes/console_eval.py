@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import re
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, Path as PathParam
 
@@ -96,6 +97,106 @@ def _queued(run_id: str) -> ApiResponse[dict]:
     )
 
 
+def _read_status(run_dir: Path) -> dict | None:
+    """读一个 run 目录的 ``status.json``；没有 / 读坏都返回 ``None``（按「还没落地」处理）。"""
+
+    path = run_dir / "status.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        return None
+
+
+def _summary_of(run_dir: Path) -> dict | None:
+    path = run_dir / "results.json"
+    if not path.is_file():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8")).get("summary")
+    except (ValueError, OSError):
+        return None
+
+
+@router.get(
+    "/eval/side-evidence",
+    response_model=ApiResponse[dict],
+    summary="最近若干次旁证跑批（控制台历史列表）",
+)
+def list_side_evidence_runs(
+    limit: int = 10,
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+) -> ApiResponse[dict]:
+    """按 run_id 倒序列出最近的跑批，**只列本租户的**。
+
+    归属口径与状态端点一致：状态文件里记着发起它那个租户，对不上就不列出来。老文件可能
+    没有 ``tenant_id``（加这个字段之前的产物），这类按「无主」保留——它们是本机历史，
+    不列出来反而让人以为「跑过的都丢了」。
+
+    ``run_id`` 是秒级时间戳形状，目录名排序即时间排序，不需要读文件里的时间戳。
+    """
+
+    if not RUNS_ROOT.is_dir():
+        return ok({"items": [], "limit": limit})
+
+    wanted = tenant_id_of(identity)
+    items: list[dict] = []
+    for run_dir in sorted(
+        (p for p in RUNS_ROOT.iterdir() if p.is_dir() and _RUN_ID.match(p.name)),
+        key=lambda p: p.name,
+        reverse=True,
+    ):
+        if len(items) >= limit:
+            break
+        status = _read_status(run_dir)
+        if status is not None and status.get("tenant_id") not in (None, wanted):
+            continue
+        items.append(
+            {
+                "run_id": run_dir.name,
+                "status": (status or {}).get("status", "queued"),
+                "judge_model": (status or {}).get("judge_model"),
+                "error": (status or {}).get("error"),
+                "summary": _summary_of(run_dir),
+                "has_report": (run_dir / "report.md").is_file(),
+            }
+        )
+    return ok({"items": items, "limit": limit})
+
+
+@router.get(
+    "/eval/side-evidence/{run_id}/report",
+    response_model=ApiResponse[dict],
+    summary="读一次旁证跑批的报告原文（Markdown 文本）",
+)
+def read_side_evidence_report(
+    run_id: str = PathParam(..., description="触发时返回的 run_id"),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+) -> ApiResponse[dict]:
+    """把 ``report.md`` 的正文交给前端，由它在弹窗里渲染。
+
+    **为什么不让前端直接拼文件路径去取**：``report.md`` 在服务端磁盘上，浏览器没有那条
+    路径；而把 ``eval/runs/`` 整个目录当静态资源挂出去，等于把「按名字读任意文件」的能力
+    交给调用方。这里只认 ``_RUN_ID`` 形状、只读那一个固定文件名、并校验归属。
+
+    报告里**没有原文**（旁证只算分、不落问句正文），所以整段下发是安全的。
+    """
+
+    if not _RUN_ID.match(run_id):
+        return ok({"run_id": run_id, "report": None})
+
+    run_dir = RUNS_ROOT / run_id
+    status = _read_status(run_dir)
+    if status is not None and status.get("tenant_id") not in (None, tenant_id_of(identity)):
+        return ok({"run_id": run_id, "report": None})
+
+    path = run_dir / "report.md"
+    if not path.is_file():
+        return ok({"run_id": run_id, "report": None})
+    return ok({"run_id": run_id, "report": path.read_text(encoding="utf-8")})
+
+
 def side_evidence_status(
     run_id: str = PathParam(..., description="触发时返回的 run_id"),
     identity: ConsoleIdentity = Depends(require_console_tenant),
@@ -105,27 +206,22 @@ def side_evidence_status(
         return _queued(run_id)
 
     run_dir = RUNS_ROOT / run_id
-    status_path = run_dir / "status.json"
-    if not status_path.is_file():
+    status = _read_status(run_dir)
+    if status is None:
         return _queued(run_id)
 
-    status = json.loads(status_path.read_text(encoding="utf-8"))
-    # 归属校验（本轮 code-review 补的）：``run_id`` 只是一个时间戳形状的字符串，谁都能编一个
-    # 去猜别人的目录。状态文件里记着发起它那个租户，对不上就按「不存在」处理——与瀑布、
-    # 反查、反馈同一口径：不区分「不存在」与「不属于你」。
+    # 归属校验：``run_id`` 只是一个时间戳形状的字符串，谁都能编一个去猜别人的目录。
+    # 状态文件里记着发起它那个租户，对不上就按「不存在」处理——与瀑布、反查、反馈同一口径：
+    # 不区分「不存在」与「不属于你」。
     if status.get("tenant_id") not in (None, tenant_id_of(identity)):
         return _queued(run_id)
-    results_path = run_dir / "results.json"
-    summary = None
-    if results_path.is_file():
-        summary = json.loads(results_path.read_text(encoding="utf-8")).get("summary")
     return ok(
         {
             "run_id": run_id,
             "status": status.get("status", "queued"),
             "judge_model": status.get("judge_model"),
             "error": status.get("error"),
-            "summary": summary,
+            "summary": _summary_of(run_dir),
             "report_path": str(run_dir / "report.md") if (run_dir / "report.md").is_file() else None,
         }
     )
