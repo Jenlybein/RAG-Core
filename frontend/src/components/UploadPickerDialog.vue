@@ -105,9 +105,18 @@ function start(): void {
   emit('upload', target, batch)
 }
 
-/** 目录选择是浏览器扩展属性，类型里没有；用原生 API 打上，不为此引依赖。 */
+/**
+ * 目录选择是浏览器扩展属性，类型里没有；用原生 API 打上，不为此引依赖。
+ *
+ * **这里必须同时把元素写进 `folderInput`**。原来只设置了属性、没赋值，而按钮写的是
+ * `@click="folderInput?.click()"` —— ref 恒为 `null`，可选链把这次点击悄悄吞掉，
+ * 界面上就是「点了没反应」，控制台连报错都没有。函数 ref 与模板 ref 是两份东西：
+ * 用了 `:ref="fn"` 就不会再自动填 `ref="name"` 对应的那个 ref。
+ */
 function bindFolderInput(element: unknown): void {
-  if (element instanceof HTMLInputElement) element.setAttribute('webkitdirectory', '')
+  const input = element instanceof HTMLInputElement ? element : null
+  folderInput.value = input
+  if (input !== null) input.setAttribute('webkitdirectory', '')
 }
 </script>
 
