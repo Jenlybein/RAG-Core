@@ -18,6 +18,7 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
@@ -62,6 +63,47 @@ class CaseResult:
     @property
     def scored(self) -> bool:
         return self.cp is not None or self.cr is not None
+
+
+#: 判分全部失败时的原因分类。顺序即优先级：**额度优先于凭据**——一轮里同时凑齐两件事时，
+#: 「去查 Key」会把一个其实只是等额度的账号拖去翻配置。
+_QUOTA_MARKERS = ("AccountQuotaExceeded", "429", "TooManyRequests", "quota")
+_AUTH_MARKERS = ("401", "403", "Unauthorized", "invalid_api_key", "AuthenticationError")
+#: 供应商在 429 里会写恢复时间（`reset at 2026-11-16 00:00:00 +0800 CST`）。
+#: 抽取是**尽力而为**：抽不到就不提时间，绝不让它是这条诊断的前提。
+_RESET_AT = re.compile(
+    r"reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})"
+)
+
+
+def diagnose_all_unscored(errors: Sequence[str]) -> str:
+    """一道题都没评上时，按**真实原因**给出一句话。
+
+    为什么需要它（真实事故）：50 道题全部 429 `AccountQuotaExceeded`，而状态里写的是
+    「检查裁判凭据 / 模型可用性」。于是人去翻 Key、翻 base_url、翻模型配置——全都不对，
+    真正要做的是等额度恢复。同一类错误（把原因指错地方）在密钥那条路上也犯过。
+
+    分类只做粗粒度，且**额度优先**：一轮里如果同时出现鉴权与额度问题，先说额度。
+    """
+
+    joined = " ".join(errors)
+    if any(marker in joined for marker in _QUOTA_MARKERS):
+        reset = _RESET_AT.search(joined)
+        when = f"，额度将于 {reset.group(1)} 恢复" if reset else ""
+        return (
+            f"裁判配额已用尽（HTTP 429 AccountQuotaExceeded）{when}。"
+            "这不是凭据或模型配置的问题：额度恢复前这道旁证取不到分数；"
+            "门禁口径的 CP/CR（ID 匹配、不调 LLM）不受影响"
+        )
+    if any(marker in joined for marker in _AUTH_MARKERS):
+        return (
+            "裁判鉴权失败（401/403）：检查裁判模型的 API Key 与 base_url，"
+            "以及模型配置里指向的那一项是否已停用"
+        )
+    return (
+        "裁判一道题都没评上：逐题原因见 results.json 的 error 字段"
+        "（常见原因：凭据 / 模型名 / 网络超时）"
+    )
 
 
 def aggregate(results: Sequence[CaseResult]) -> dict[str, Any]:
@@ -247,7 +289,8 @@ def run_side_evidence(
     # 又抹掉了那几题有效分。partial 把两件事都说清楚，退出码也单独一档。
     if scored == 0:
         status = "failed"
-        error = "裁判一道题都没评上：检查裁判凭据 / 模型可用性"
+        # 按真实原因说话：50 题全 429 时写「检查裁判凭据」会把人送去翻一个没问题的配置。
+        error = diagnose_all_unscored([r.error for r in results if r.error])
     elif unscored > 0:
         status = "partial"
         error = f"{unscored} 道题没评上（裁判配额 / 超时 / 限流），已从平均里排除"

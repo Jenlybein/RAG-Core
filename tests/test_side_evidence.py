@@ -18,6 +18,7 @@ from app.services.side_evidence import (
     CaseResult,
     aggregate,
     build_report,
+    diagnose_all_unscored,
     run_side_evidence,
 )
 
@@ -291,3 +292,50 @@ def test_a_run_without_a_tenant_record_is_still_readable(tmp_path: Path, monkeyp
     body = console_eval.side_evidence_status(run_id="20260101T000000Z", identity=_identity())
 
     assert body.data["status"] == "ok"
+
+
+# ───────────────────────────────────────── 全是「没评上」时，原因要指对地方
+
+_QUOTA_ERROR = (
+    "InstructorRetryException: Error code: 429 - {'error': {'code': 'AccountQuotaExceeded', "
+    "'message': 'You have exceeded the weekly usage quota. It will reset at "
+    "2026-11-16 00:00:00 +0800 CST.'}}"
+)
+
+
+def test_all_unscored_because_of_quota_says_quota_not_credentials() -> None:
+    """真实事故：50 题全 429，状态却写「检查裁判凭据 / 模型可用性」。
+
+    人会去翻 Key、翻 base_url、翻模型配置——全都不对，真正要做的是等额度恢复。
+    这条断言钉住「原因指向额度」，并且把恢复时间带出来。
+    """
+
+    message = diagnose_all_unscored([_QUOTA_ERROR])
+
+    assert "配额" in message
+    assert "2026-11-16 00:00:00 +0800" in message
+    # 不能再把人送去查凭据。
+    assert "凭据" not in message.split("这不是")[0]
+
+
+def test_all_unscored_because_of_auth_points_at_credentials() -> None:
+    message = diagnose_all_unscored(["AuthenticationError: Error code: 401 - invalid api key"])
+
+    assert "鉴权失败" in message
+    assert "API Key" in message
+
+
+def test_quota_wins_when_both_quota_and_auth_appear_in_one_run() -> None:
+    """一轮里同时凑齐两件事时先说额度：反过来的顺序会把一个只是没额度的账号拖去翻配置。"""
+
+    message = diagnose_all_unscored([_QUOTA_ERROR, "AuthenticationError: 401 unauthorized"])
+
+    assert "配额" in message
+
+
+def test_unrecognised_failures_point_at_the_per_case_errors_file() -> None:
+    """认不出原因时，至少告诉人去哪儿看逐题原因，而不是编一个。"""
+
+    message = diagnose_all_unscored(["TimeoutError: x"])
+
+    assert "results.json" in message

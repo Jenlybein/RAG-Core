@@ -123,6 +123,12 @@ services:
       CELERY_BROKER_URL: redis://redis:6379/0
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       DOCUMENT_STORAGE_PATH: /app/data/uploads
+      # 这一行曾经漏了，代价是「旁证跑批里关键词那一路永远是死的」：`.env` 写的是
+      # `localhost:9200`，而在**容器里** localhost 指向 worker 自己。api 覆盖了它，
+      # worker 没有，于是同一个仓库在两个容器里连的不是同一个 ES。
+      # 凡是 `.env` 里指向 localhost 的服务地址，api 与 worker 都必须同样覆盖。
+      REDIS_URL: redis://redis:6379/2
+      ELASTICSEARCH_URL: http://elasticsearch:9200
       OCR_MODE: auto
       OCR_OFFLINE: "true"
     volumes:
