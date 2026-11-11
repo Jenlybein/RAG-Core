@@ -374,7 +374,7 @@ async function refresh(): Promise<void> {
           </tr>
         </thead>
         <tbody>
-          <tr v-for="config in configs" :key="config.id" class="border-t border-line align-top">
+          <tr v-for="config in configs" :key="config.id" class="border-t border-line align-top transition-colors hover:bg-surface-muted/60">
             <td class="px-3 py-3">
               <p class="font-medium text-ink">{{ config.label }}</p>
               <p class="font-mono text-xs text-muted" :title="config.id">

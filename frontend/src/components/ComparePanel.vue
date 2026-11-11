@@ -116,11 +116,8 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
     <template #header>
       <div class="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h2 class="text-sm font-semibold text-slate-800">对比面板（会话内）</h2>
-          <p class="mt-1 text-xs text-slate-500">
-            左右两列分别是「基准」与「当前」；有值的差异才上色。历史只留在内存，刷新或退出页面即清空
-            —— 对比是会话内的调试手段，不是持久化报表。
-          </p>
+          <h2 class="text-sm font-semibold text-slate-800">对比面板</h2>
+          <p class="mt-1 text-xs text-slate-500">左「基准」右「当前」，只给有值的差异上色。</p>
         </div>
         <span v-if="latest !== null" class="shrink-0 text-xs text-slate-500">
           当前：第 {{ latest.seq }} 次 · {{ formatDateTime(latest.at) }}
@@ -242,9 +239,6 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
               </tbody>
             </table>
           </div>
-          <p class="mt-1 text-xs text-slate-400">
-            没变的行也留着：只列变化项时，「没变」与「这一字段没取到」在界面上无法区分。
-          </p>
 
           <!-- 结果集 diff -->
           <div class="mt-4 flex flex-wrap items-center justify-between gap-2 border-t border-line pt-3">

@@ -206,7 +206,7 @@ async function refresh(): Promise<void> {
           <tr
             v-for="row in accounts"
             :key="row.account_id"
-            class="border-t border-line align-top"
+            class="border-t border-line align-top transition-colors hover:bg-surface-muted/60"
           >
             <td class="px-3 py-3 font-medium text-ink">{{ row.username }}</td>
             <td class="px-3 py-3 text-slate-600">{{ roleLabel(row.role) }}</td>
