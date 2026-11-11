@@ -23,6 +23,7 @@ import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ComparePanel from '../components/ComparePanel.vue'
+import DataPlanePanel from '../components/DataPlanePanel.vue'
 import PageHeader from '../components/PageHeader.vue'
 import RunSummary from '../components/RunSummary.vue'
 import StageWaterfall from '../components/StageWaterfall.vue'
@@ -49,6 +50,7 @@ import type { KbOption, KeyData } from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import { feedbackErrorCopy, isValidScore, scoreStars } from '../utils/feedback'
+import { DATA_PLANE_ENDPOINTS } from '../utils/dataPlaneEndpoints'
 import { renderMarkdown } from '../utils/markdown'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
@@ -156,6 +158,13 @@ const policy = computed(() => selectedKey.value?.policy ?? null)
  * 能否勾选看结果，不看意图。
  */
 const availableKbIds = computed(() => new Set(kbs.value.map((kb) => kb.kb_id)))
+
+/** 接口清单里 `GET /documents` 的试跑用「当前勾选的第一个库」——没勾就没有按钮。 */
+const firstSelectedKbId = computed<string | null>(() => store.selectedKbIds[0] ?? null)
+/** 可试跑的只读接口数：标题右侧那行文案用它，省得两个数字各自漂。 */
+const trialableCount = computed(
+  () => DATA_PLANE_ENDPOINTS.filter((endpoint) => endpoint.trial !== undefined).length,
+)
 
 /**
  * 把选中的 Key 同步进 store（id + 原文 + 白名单），并把白名单外的已选库摘掉。
@@ -1353,6 +1362,23 @@ onUnmounted(() => {
             </el-button>
           </li>
         </ul>
+      </div>
+    </el-card>
+
+    <!-- ⑨ 数据面接口清单：这把 Key 能调什么、受什么限制、其中只读的可以就地试一次 -->
+    <el-card shadow="never">
+      <div class="flex flex-wrap items-baseline justify-between gap-2">
+        <h2 class="text-sm font-semibold text-slate-800">这把 Key 能调哪些接口</h2>
+        <span class="text-[11px] text-muted">
+          共 {{ DATA_PLANE_ENDPOINTS.length }} 条 · 只读的 {{ trialableCount }} 条可试
+        </span>
+      </div>
+      <p class="mt-1 text-[11px] leading-relaxed text-slate-500">
+        完整清单见下方表格；「要查的知识库」那一块用的就是其中的
+        <code class="font-mono text-[10px]">GET /api/v1/knowledge-bases</code>。
+      </p>
+      <div class="mt-3">
+        <DataPlanePanel :kb-id="firstSelectedKbId" :has-key="store.selectedKeyId !== null" />
       </div>
     </el-card>
 

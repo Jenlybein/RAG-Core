@@ -46,3 +46,22 @@ export const MY_KB_QUERY_KEY = ['data-plane', 'knowledge-bases'] as const
 export function fetchMyKnowledgeBases(): Promise<MyKnowledgeBaseList> {
   return dataHttp.get<MyKnowledgeBaseList>('/api/v1/knowledge-bases')
 }
+
+/**
+ * 调试台的「试一下」用到的另外两个**只读**端点。
+ *
+ * 这里把它们刻意声明成 `Record<string, unknown>` 而不是逐字段建模：这两次调用是
+ * **诊断**（「服务端到底会回什么样子」），界面上是原样展示 JSON，不是业务渲染。
+ * 建模成一个 TypeScript 类型会让「字段少了」在编译期就静默通过，反而掩盖了真正
+ * 需要看的东西——真实响应长什么样。
+ */
+
+/** `GET /api/v1/auth/me`：这把 Key 是谁、什么租户、什么套餐、今天用了多少。 */
+export function fetchDataPlaneAuthMe(): Promise<Record<string, unknown>> {
+  return dataHttp.get<Record<string, unknown>>('/api/v1/auth/me')
+}
+
+/** `GET /api/v1/documents?kb_id=…`：某个库下的文档与索引进度。 */
+export function fetchDocumentList(kbId: string): Promise<Record<string, unknown>> {
+  return dataHttp.get<Record<string, unknown>>('/api/v1/documents', { params: { kb_id: kbId } })
+}
