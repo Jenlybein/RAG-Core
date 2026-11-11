@@ -45,6 +45,7 @@ import type { KbOption, KeyData } from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import { feedbackErrorCopy, isValidScore, scoreStars } from '../utils/feedback'
+import { renderMarkdown } from '../utils/markdown'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
   describeEmptyReason,
@@ -599,6 +600,12 @@ function closeReport(): void {
   reportText.value = null
   reportError.value = null
 }
+
+/**
+ * 报告正文渲染成 HTML。渲染器关掉了原始 HTML（`html: false`），所以 `v-html` 不需要
+ * 再来一层 sanitizer——这条前提有测试钉着（`utils/__tests__/markdown.test.ts`）。
+ */
+const renderedReport = computed(() => renderMarkdown(reportText.value))
 
 const SIDE_EVIDENCE_TERMINAL = new Set(['ok', 'partial', 'failed'])
 
@@ -1300,7 +1307,7 @@ onUnmounted(() => {
       </div>
     </el-card>
 
-    <!-- 报告弹窗：Markdown 原文，用等宽字体原样显示（不引 markdown 渲染器，少一份依赖） -->
+    <!-- 报告弹窗：Markdown 渲染成结构（标题 / 表格 / 列表），样式由渲染器注入的类名带来 -->
     <el-dialog
       :model-value="reportRunId !== null"
       title="旁证报告"
@@ -1315,10 +1322,17 @@ onUnmounted(() => {
       <p v-else-if="reportText === null" class="text-[11px] text-muted">
         这一轮没有报告文件（跑批可能还在排队，或中途失败没落地）。
       </p>
-      <pre
+      <!--
+        报告是 Markdown，渲染成结构（标题 / 表格 / 列表），而不是原样吐一段带 `##` 的文本。
+        样式由 `renderMarkdown` 注入的 Tailwind 类名带来——仓库里没有 `<style>` 块，这里也
+        不新开一个。`v-html` 的安全前提是渲染器关掉了原始 HTML（见 utils/markdown.ts），
+        那条有测试钉着。
+      -->
+      <div
         v-else
-        class="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-control bg-slate-50 p-3 text-[11px] leading-relaxed text-slate-700"
-      >{{ reportText }}</pre>
+        class="max-h-[60vh] overflow-auto rounded-control bg-surface px-3 py-2"
+        v-html="renderedReport"
+      />
     </el-dialog>
 
     <!-- ④ 对比面板（会话内，放在结果区下方；没有历史时整块不渲染，不占位） -->
