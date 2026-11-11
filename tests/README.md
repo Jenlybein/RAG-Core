@@ -3,7 +3,7 @@
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 9 步 `#107` 收尾，2026-11-11 实测：1280 条用例，**1269 passed / 11 skipped**）。
+当前 tip（第 9 步 `#111` 收尾，2026-11-11 实测：1363 条用例，**1352 passed / 11 skipped**）。
 
 ## 分层
 
@@ -30,16 +30,24 @@
 
 **第 7 步唯一新增的接缝是「注入式假 Redis」**（`app.core.redis_client.set_redis_client`），不是 monkeypatch 全局：限流与配额服务通过构造参数收客户端，测试注入内存假实现；默认套件因此不碰 Redis。鉴权那条缝则完全没有新增——它本来就是纯函数，测试直接把假行交给 `resolve_identity`。
 
+第 9 步（观测与评测）新增的测试仍落在既有三层，**没有新增生产接缝**：
+
+- **纯函数（①）**：`trace_id` 派生恒等、六段计时与排序、门禁判据（相对退化 / 未评分排除 / 分题型）、旁证聚合与部分失败、导出筛选 / 合并 / 产物形状、反馈错误码文案 → `test_trace_identity.py`、`test_observability_sink.py`、`test_eval_gate.py`、`test_eval_runner.py`、`test_side_evidence.py`、`test_build_answer_set.py`、`test_export_eval_cases.py`、`frontend/src/utils/__tests__/feedback.spec.ts`。
+- **ASGI（②）**：写库失败仍返回 `trace_id`、观测旁路失败只 warning、瀑布图与反馈的归属校验、评分反查、控制台旁证触发 → `test_retrieval_observability.py`、`test_feedback.py`、`test_console_waterfall.py`、`test_console_trace_lookup.py`。
+- **表形状 / 迁移（⑧）**：`retrieval_traces` 十列与逐列原文哨兵、`retrieval_feedback` 一表一迁移 → `test_retrieval_trace_migration.py`、`test_console_migrations.py`、`test_identity_migrations.py`。
+
+四条回归红线（响应逐字节不变、`trace_id` 恒非空、归属索引无原文、观测挂掉反馈仍成功）分别钉在上述文件里，汇总见 `docs/step9-acceptance.md`。
+
 ## 当前基线
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1269 passed, 11 skipped`（共收集 1280 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1277 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1272 passed, 8 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1277 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 1272 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 1272 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1352 passed, 11 skipped`（共收集 1363 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1360 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1355 passed, 8 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1360 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 1355 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 1355 deselected` |
 
 11 条 skip 分**四道门禁**，都不是失败：
 
@@ -49,10 +57,10 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1269 passed, 11 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1352 passed, 11 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1280 条，`-m ocr` 收集 3 条、
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1363 条，`-m ocr` 收集 3 条、
 > `-m integration` 收集 8 条。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
