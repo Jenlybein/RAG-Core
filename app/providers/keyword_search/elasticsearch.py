@@ -11,8 +11,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
+import structlog
 from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
 
 from app.core.exceptions import AppError, ErrorCode
@@ -24,15 +26,37 @@ from app.providers.keyword_search.query_builder import (
     build_purge_query,
 )
 
+logger = structlog.get_logger(__name__)
+
 
 class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
-    """ES 8.x 实现。客户端惰性构造：装配阶段绝不发网络请求。"""
+    """ES 8.x 实现。客户端惰性构造：装配阶段绝不发网络请求。
 
-    def __init__(self, *, url: str, index_name: str, client: Any | None = None) -> None:
+    ``timeout_s`` 是**查询的时间预算**，由组合根从配置注入（不在这里读全局配置：这个类
+    因此能在测试里被直接构造，也就不用 monkeypatch 环境）。
+
+    为什么预算必须落在这里而不是调用方：关键词通道有**两份实现**——单通道走
+    ``rag_service._retrieve_by_keyword``，混合模式走 ``pipeline._keyword_channel``
+    （控制台看到的就是后者）。预算写在调用方，就得写两遍，而写两遍的下场是漂移。
+    真正知道「我在跟 ES 说话」的是这个类，所以由它兜住。
+
+    实测事故（2026-11-11）：ES 容器被杀后，客户端自己重试 4 次、每次 DNS 失败约 3.8 秒，
+    合计让一次检索等了 **19.4 秒**，而其它五段加起来不到 600 ms。预算就是防这个的。
+    """
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        index_name: str,
+        client: Any | None = None,
+        timeout_s: float = 2.0,
+    ) -> None:
         self._url = url
         self._index_name = index_name
         self._client = client
         self._index_ready = False
+        self._timeout_s = timeout_s
 
     @property
     def available(self) -> bool:
@@ -100,10 +124,22 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             top_k=top_k,
         )
         try:
-            response = await self._get_client().search(index=self._index_name, **payload)
+            response = await asyncio.wait_for(
+                self._get_client().search(index=self._index_name, **payload),
+                # 有界预算见类文档。超时抛 ``TimeoutError``，由调用方按「这一路挂了」处理
+                # ——不在这里翻译成业务码：Provider 不认识业务码。
+                timeout=self._timeout_s,
+            )
         except NotFoundError:
             # 索引还没建 = 关键词库里一个字都没有。这不是故障，是诚实的空结果。
             return []
+        except TimeoutError:
+            logger.warning(
+                "elasticsearch keyword search exceeded its budget",
+                timeout_s=self._timeout_s,
+                index=self._index_name,
+            )
+            raise
 
         return [
             {

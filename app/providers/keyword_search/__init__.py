@@ -29,6 +29,8 @@ def get_keyword_search_provider() -> KeywordSearchProvider:
         return ElasticsearchKeywordSearchProvider(
             url=settings.ELASTICSEARCH_URL,
             index_name=settings.ELASTICSEARCH_INDEX,
+            # 时间预算在这里注入（组合根读配置），Provider 自己不读全局配置。
+            timeout_s=settings.KEYWORD_SEARCH_TIMEOUT_S,
         )
 
     raise ValueError(

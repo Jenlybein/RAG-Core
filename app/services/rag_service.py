@@ -660,6 +660,8 @@ async def _retrieve_by_keyword(
                 raise AppError(
                     ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
                 )
+            # 预算由 Provider 自己兜住（`ElasticsearchKeywordSearchProvider.timeout_s`）：
+            # 关键词通道有单通道与混合两份调用点，写在这里就得写两遍，写两遍必漂移。
             rows = await provider.keyword_search(
                 query,
                 tenant_id=tenant_id,
