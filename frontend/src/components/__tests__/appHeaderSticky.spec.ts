@@ -1,19 +1,22 @@
 import { describe, expect, it } from 'vitest'
 
 /**
- * 顶栏的定位契约：**吸顶、实心、不靠模糊**。
+ * 顶栏的定位契约：**吸顶、磨砂但必须够实、并且有一条硬边界**。
  *
- * 这三条都不是审美偏好，是被用户当成 bug 报过一遍的现场：
+ * 历史：这条测试原本守的是「顶栏必须完全不透明、不许 backdrop-blur」——那时半透明的
+ * 做法被当成 bug 报过（滚动时内容从栏下透出来，像栏在动）。后来整站换成 apple.com 的
+ * 设计语言，磨砂顶栏是那套观感的标志之一，于是**契约本身改了**，测试跟着改，而不是把
+ * 测试删掉：
  *
- * 1. 没有 `sticky top-0` 时，顶栏会跟着页面一起滚走——导航和「当前是谁」直接消失，
- *    这不是风格问题，是可用性问题。
- * 2. 用 `bg-canvas/85 + backdrop-blur` 做半透明时，内容会从顶栏底下透出来；滚动中看到
- *    的是一片半透明的移动色块，读起来像「顶栏自己在动」。
- * 3. `backdrop-filter` 会把顶栏提升成独立合成层，贴着 sticky 用时 Chrome 上有重绘抖动。
+ * 1. `sticky top-0` + 非零 z-index：没有它，顶栏会跟着页面滚走、或被后面的内容盖住。
+ *    这一条与设计语言无关，是可用性。
+ * 2. **磨砂要有底**：允许 `backdrop-blur`，但必须叠在一层**足够不透明**的白底上
+ *    （≥70%），否则又回到「内容在栏下流动」的老问题。
+ * 3. **必须有一条底边**：纯模糊在浅色页面上会让栏与内容糊在一起。
  *
- * 用源码扫描而不是渲染测试：`AppHeader` 依赖 vue-query、router 与 ElMessage，为一条
+ * 用源码扫描而不是渲染测试：`AppHeader` 依赖 vue-query、router 与 ElMessage，为几条
  * class 断言把整套上下文搭起来不值得；而这条契约恰好是「模板里写了什么」，扫文本足够，
- * 且和 `dataPlaneBoundary.spec.ts` 是同一套做法。
+ * 且与 `dataPlaneBoundary.spec.ts` 是同一套做法。
  */
 const SOURCES = import.meta.glob('../../**/*.vue', {
   query: '?raw',
@@ -43,11 +46,18 @@ describe('顶栏定位契约', () => {
     expect(tag).toMatch(/\bz-\d+/)
   })
 
-  it('顶栏背景不透明：不出现半透明底色与 backdrop-blur', () => {
+  it('磨砂可以，但底色必须够实（≥70%）', () => {
     const tag = headerOpenTag()
-    // `bg-canvas/85` 这种带斜杠的透明度一旦回归，内容就会从顶栏底下透出来
-    expect(tag).toMatch(/\bbg-[a-z-]+(?!\/)/)
-    expect(tag).not.toMatch(/bg-[a-z-]+\/\d+/)
-    expect(tag).not.toContain('backdrop-blur')
+    const translucent = tag.match(/bg-[a-z-]+\/(\d+)/)
+    expect(translucent, '顶栏应当是「半透明底 + 模糊」的组合').not.toBeNull()
+
+    // 关键：不许回到 10%~50% 那种「内容在栏下流动」的做法。
+    expect(Number(translucent![1])).toBeGreaterThanOrEqual(70)
+    expect(tag).toContain('backdrop-blur')
+  })
+
+  it('磨砂之外还要有一条硬边界（底边细线）', () => {
+    // 只有模糊时，浅色页面上的栏与内容会糊在一起；这条线是「栏到哪儿结束」的唯一硬信号。
+    expect(headerOpenTag()).toMatch(/\bborder-b\b/)
   })
 })
