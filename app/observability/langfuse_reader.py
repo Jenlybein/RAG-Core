@@ -35,6 +35,14 @@ REASON_BAD_RESPONSE: Final[str] = "bad_response"
 #: 六段之外不会有我们的 span；给一个够用的上限，避免一条畸形 trace 拖回几千条。
 _OBSERVATION_LIMIT: Final[int] = 100
 
+#: 管理端「按时间窗聚合」的采样上限。
+#:
+#: **实测出来的数**（2026-11-12，自托管 v4）：`limit=1000` 正常，`limit=2000` 直接 400。
+#: 超限时 SDK 抛异常，我们这一层会把它归成「不可达」——于是整块观测栈层显示「取不到」，
+#: 而真相只是「一次要得太多」。取 500 是留余量：它远低于上限，又足够算分位数。
+#: 看板要的是趋势，不是全量审计；样本量会在响应里如实带出。
+_WINDOW_LIMIT: Final[int] = 500
+
 
 class LangfuseReadError(RuntimeError):
     """读观测服务失败：没配凭据、连不上、返回体不认识。
@@ -172,3 +180,40 @@ def _duration_of(observation: Any) -> float | None:
     if isinstance(started, datetime) and isinstance(ended, datetime):
         return round((ended - started).total_seconds() * 1000, 3)
     return None
+
+
+def fetch_window_observations(
+    *, since: datetime, limit: int = _WINDOW_LIMIT, client: Any | None = None
+) -> list[Any]:
+    """按**时间窗**取 observation（管理端六段聚合用），带上 ``name`` 与 ``metadata``。
+
+    与 :func:`fetch_observations` 同一套 ``fields`` / ``expand_metadata`` 约定——那两个坑
+    在这里一模一样（漏 ``fields`` 则 metadata 全空；``metadata`` 默认截断 200 字符）。
+
+    为什么不是「按 trace 一条条读」：一屏看板要的是「最近 24 小时所有 span 的分位数」，
+    逐 trace 取会变成 N 次往返；这里一次取回窗口内的样本，聚合在服务端做。
+    ``limit`` 是**采样上限**而不是分页：看板要的是趋势，不是全量审计；超过上限时
+    返回的是「最近的若干条」，页面上的样本量会如实标出来。
+
+    失败一律抛 :class:`LangfuseReadError`（调用方降级成 ``source=none``）。
+    """
+
+    if client is None:
+        client = _resolve_client()
+
+    try:
+        response = client.observations.get_many(
+            from_start_time=since,
+            limit=limit,
+            fields=["basic", "metadata"],
+            expand_metadata=True,
+        )
+    except LangfuseReadError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - SDK 的异常文本带 URL 与认证头，不外传
+        raise LangfuseReadError(REASON_UNREACHABLE, detail=type(exc).__name__) from exc
+
+    data = getattr(response, "data", None)
+    if data is None:
+        raise LangfuseReadError(REASON_BAD_RESPONSE, detail="no data")
+    return list(data)

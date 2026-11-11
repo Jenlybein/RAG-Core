@@ -328,3 +328,27 @@ docker exec -it pg16-pgvector psql -U postgres -c "CREATE DATABASE langfuse;"
 ## 本机配了 HTTP 代理时
 
 `curl` 测本地端口会被代理接管并返回假的 502，测本地服务一律加 `--noproxy '*'`。
+
+## 开启「检索 → 观测栈」的写入
+
+控制台的**观测页**（`/admin/observability`）分两层：本地事实层（我们自己库里的检索量与耗时，
+零外部依赖）与观测栈层（六段耗时，来自 Langfuse）。要让后者有数据，需要三件事：
+
+```bash
+# 1. 在 Langfuse UI（http://localhost:3000）里建一个 project，拿到 pk-lf-… / sk-lf-…
+# 2. 写进 .env
+TRACE_SINK=langfuse
+LANGFUSE_HOST=http://langfuse-web:3000      # 容器内按服务名连
+LANGFUSE_PUBLIC_URL=http://localhost:3000   # 浏览器按对外地址跳
+LANGFUSE_PUBLIC_KEY=pk-lf-…
+LANGFUSE_SECRET_KEY=sk-lf-…
+# 3. 重启 api（sink 类型是启动时读的）
+docker compose -f deploy/docker-compose.yml up -d --force-recreate api
+```
+
+两条实测坑，写在这里省一次排查：
+
+- **`limit` 上限是 1000**（自托管 v4）：观测页按时间窗聚合时一次要 2000 条会被 400 拒掉，
+  表现为整块「观测栈取不到」。代码里已收敛到 500。
+- **`fields` 必须同时点名 `basic` 与 `metadata`**：只写 `metadata` 会把 `name` 一起滤掉，
+  于是六段全被丢弃、瀑布图空掉；不写 `fields` 则 metadata 恒为空、每段耗时读成 0。

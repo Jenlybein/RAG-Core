@@ -69,9 +69,10 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
     },
   )
 
-  it('管理员入口恰好是已落地的六条真实路由', () => {
+  it('管理员入口恰好是已落地的七条真实路由', () => {
     // #95 落地账号 / 套餐 / 审计，#96 补模型配置与检索参数，档位预设（/admin/profiles）
-    // 再接一条：六条都必须有对应路由，否则顶栏点过去就是一片空白。
+    // 再接一条；观测总览（/admin/observability）是最后加的。七条都必须有对应路由，
+    // 否则顶栏点过去就是一片空白。
     expect(navFor('admin').map((item) => item.to)).toEqual([
       '/admin/accounts',
       '/admin/plans',
@@ -79,6 +80,7 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
       '/admin/models',
       '/admin/retrieval',
       '/admin/profiles',
+      '/admin/observability',
     ])
   })
 })

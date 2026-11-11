@@ -51,6 +51,7 @@ export const ADMIN_NAV: readonly NavItem[] = [
   { to: '/admin/models', label: '模型配置' },
   { to: '/admin/retrieval', label: '检索参数' },
   { to: '/admin/profiles', label: '档位预设' },
+  { to: '/admin/observability', label: '观测' },
 ]
 
 /**

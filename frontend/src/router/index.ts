@@ -94,6 +94,13 @@ const routes = [
     // 档位预设：四个质量档位的参数（平台级配置，改完对下一次检索立即生效）。
     component: () => import('../views/admin/ProfilesPage.vue'),
   },
+  {
+    path: '/admin/observability',
+    name: 'admin-observability',
+    // 观测总览：跨租户的检索量 / 耗时 / 降级 / 评分 + 观测栈层（后者可降级）。
+    // 与「检索记录」的区别：那页是单租户、按单条 trace 看；这页是平台级、按窗口看趋势。
+    component: () => import('../views/admin/ObservabilityPage.vue'),
+  },
   /**
    * 兜底路由：没匹配上任何一条就落到这里。
    *

@@ -103,7 +103,11 @@ from app.services.retrieval.pipeline import hybrid_retrieve
 from app.services.retrieval.vector_recall import vector_recall
 from app.services.retrieval_options import RetrievalOptions, tenant_policy_echo
 from app.services.retrieval_trace import record_retrieval_trace
-from app.services.trace_identity import delivered_chunk_ids, trace_id_for
+from app.services.trace_identity import (
+    delivered_chunk_ids,
+    tenant_fingerprint,
+    trace_id_for,
+)
 from app.utils.id_generator import new_retrieval_log_id
 from app.utils.retrieval_fields import with_score_columns
 
@@ -313,6 +317,9 @@ async def retrieve(
             "top_k": resolved_top_k,
             "degraded_reason": degraded_reason,
             "empty_reason": empty_reason,
+            # 租户**指纹**（不是明文）：管理端要按租户看趋势，而观测数据常常要导出给别人，
+            # 明文租户标识会让「这份数据能发给谁」多一道合规问题。控制台侧可反查。
+            "tenant": tenant_fingerprint(tenant_id),
         },
     )
 

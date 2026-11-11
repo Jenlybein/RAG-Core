@@ -36,6 +36,31 @@ def trace_id_for(log_id: str) -> str:
     return digest[:TRACE_ID_LENGTH]
 
 
+#: 租户指纹的长度：16 位十六进制 = 64 位。碰撞概率对「租户数」这个量级绰绰有余。
+TENANT_FINGERPRINT_LENGTH: Final[int] = 16
+
+
+def tenant_fingerprint(tenant_id: str) -> str:
+    """把 ``tenant_id`` 变成**观测栈里的稳定指纹**，而不是明文。
+
+    为什么要指纹（而不是明文、也不是不加）：
+
+    - **不加**：Langfuse 侧就永远只能看平台总量，没法按租户切分——而管理端监控最想回答
+      的恰恰是「哪个租户在拖慢 / 在大量降级」。历史数据补不回来，所以这件事开始推之前
+      就得定下来。
+    - **明文**：观测栈是自托管的，明文其实也能接受；但观测数据常常要导出给别人看
+      （排障、给外部做容量评估），明文租户标识会让「这份数据能发给谁」多一道合规问题。
+    - **指纹**：同一个租户恒等，于是能在观测栈里按它分组、筛选、看趋势；而它本身不含
+      租户名与 id，导出去也不泄露客户身份。控制台侧有一张映射表（`tenants` 表）可以把
+      指纹翻回租户名。
+
+    与 ``trace_id_for`` 一样是纯函数：不读配置、不碰库，因此能在离线套件里逐字节断言。
+    """
+
+    digest = hashlib.sha256(tenant_id.encode("utf-8")).hexdigest()
+    return digest[:TENANT_FINGERPRINT_LENGTH]
+
+
 def delivered_chunk_ids(results: Iterable[Mapping[str, object]]) -> list[str]:
     """这次交给调用方的**交付单元**里涉及哪些切片 id（代表片在前，溯源片随后）。
 
