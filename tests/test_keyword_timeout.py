@@ -195,3 +195,59 @@ def test_changing_the_address_yields_a_fresh_provider(monkeypatch: pytest.Monkey
     after = get_keyword_search_provider()
 
     assert before is not after
+
+
+def test_each_event_loop_gets_its_own_client() -> None:
+    """**一个事件循环一个客户端**：Celery 每个任务 `asyncio.run` 一次，跨 loop 复用会炸。
+
+    真实事故（2026-11-12）：为了修「每题重建客户端」给 Provider 加了进程级缓存，于是
+    整个进程只留一个 `AsyncElasticsearch`。它的连接池绑在第一个任务的循环上；第二个任务
+    在新循环里用它发请求，直接：
+
+        RuntimeError: Event loop is closed
+
+    表现是「上传一个文件夹，第一篇成功、其余全失败」，而界面上只有一句通用的
+    `document indexing failed`。
+
+    这条用例复现的就是那个形状：两次独立的 `asyncio.run` 必须拿到**不同的**客户端。
+    """
+
+    provider = ElasticsearchKeywordSearchProvider(
+        url="http://elasticsearch:9200", index_name="rag_chunks", timeout_s=2.0
+    )
+
+    async def client_id() -> int:
+        return id(provider._get_client())
+
+    first = asyncio.run(client_id())
+    second = asyncio.run(client_id())
+
+    assert first != second, "跨事件循环复用了同一个客户端：第二个任务会撞 Event loop is closed"
+
+
+def test_the_same_loop_reuses_one_client() -> None:
+    """同一个循环内仍然复用：这才是缓存想要的效果（不每题握手）。"""
+
+    provider = ElasticsearchKeywordSearchProvider(
+        url="http://elasticsearch:9200", index_name="rag_chunks", timeout_s=2.0
+    )
+
+    async def two_calls() -> tuple[int, int]:
+        return id(provider._get_client()), id(provider._get_client())
+
+    first, second = asyncio.run(two_calls())
+
+    assert first == second
+
+
+def test_an_injected_client_is_always_used_as_is() -> None:
+    """注入的假客户端优先，且不参与按 loop 的缓存（生命周期归调用方）。"""
+
+    fake = _FastClient()
+    provider = _provider(fake, timeout_s=2.0)
+
+    async def get_id() -> int:
+        return id(provider._get_client())
+
+    assert asyncio.run(get_id()) != 0
+    assert provider._get_client() is fake

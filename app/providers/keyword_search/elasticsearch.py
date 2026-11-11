@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import weakref
 from typing import Any
 
 import structlog
@@ -57,6 +58,11 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         self._client = client
         self._index_ready = False
         self._timeout_s = timeout_s
+        # **一个事件循环一个客户端**。见 `_get_client` 的注释：Celery 每个任务各
+        # `asyncio.run` 一次，跨 loop 复用同一个 `AsyncElasticsearch` 会让连接池绑在
+        # 一个已经关闭的 loop 上，任务直接 `RuntimeError: Event loop is closed`。
+        # 用弱引用键：loop 被回收后条目自动消失，不会把死循环留在字典里。
+        self._clients: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
 
     @property
     def available(self) -> bool:
@@ -67,9 +73,31 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         return self._index_name
 
     def _get_client(self) -> AsyncElasticsearch:
-        if self._client is None:
-            self._client = AsyncElasticsearch(self._url)
-        return self._client
+        """取当前事件循环该用的客户端。
+
+        **必须按 loop 隔离**（一次真实事故换来的）：Provider 现在是进程级缓存，
+        而 Celery 每个任务都 `asyncio.run(...)` 一次——也就是每个任务一个新事件循环，
+        循环结束即关闭。如果整个进程只留一个 `AsyncElasticsearch`，它的连接池就绑在
+        **第一个**循环上；第二个任务拿它发请求会立刻炸：
+
+            RuntimeError: Event loop is closed
+
+        表现是「同一批上传，第一篇成功、其余全失败」（每篇一个任务），而错误在界面上
+        只是一句通用的 `document indexing failed`。
+
+        注入的 `_client`（测试用假客户端）优先，且不参与按 loop 的缓存：那是调用方
+        自己造的对象，生命周期由调用方负责。
+        """
+
+        if self._client is not None:
+            return self._client
+
+        loop = asyncio.get_running_loop()
+        client = self._clients.get(loop)
+        if client is None:
+            client = AsyncElasticsearch(self._url)
+            self._clients[loop] = client
+        return client
 
     async def ensure_index(self) -> None:
         """幂等建索引：已存在就跳过；并发建索引时把「已存在」当作成功。"""
