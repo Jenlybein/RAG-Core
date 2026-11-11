@@ -37,8 +37,12 @@ import {
   type SideEvidenceRun,
 } from '../services/sideEvidenceService'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
-import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { retrieve } from '../services/ragService'
+import {
+  MY_KB_QUERY_KEY,
+  fetchMyKnowledgeBases,
+  type MyKnowledgeBase,
+} from '../services/scopeService'
 import { fetchRuntimeInfo, runtimeInfoQueryKey } from '../services/traceService'
 import { useRetrieveStore } from '../stores/retrieve'
 import type { KbOption, KeyData } from '../types/key'
@@ -108,26 +112,50 @@ const runtimeQuery = useQuery({
 })
 const authDisabled = computed(() => runtimeQuery.data.value?.auth_enabled === false)
 
-const treeQuery = useQuery({
-  queryKey: KNOWLEDGE_BASE_TREE_QUERY_KEY,
-  queryFn: fetchTree,
+/**
+ * 「这把 Key 能查哪些库」——**问服务端**，不在前端自己筛。
+ *
+ * 原来这里拉的是控制面的库树（会话身份、不做范围收窄），再用 `/console/keys` 里的
+ * `allowed_kb_ids` 在前端把白名单外的置灰。那是客户端算的答案：配置一改、库一删、
+ * 或者 `unrestricted_scope` 之类生效，界面就会显示一个服务端并不认可的集合，而错误
+ * 要等检索撞 20008 才出现。
+ *
+ * 现在这条 `GET /api/v1/knowledge-bases`（Bearer 这把 Key）返回的就是服务端按同一份
+ * policy 过滤后的结果，与检索用的是同一个判定。链路上服务端是唯一真相。
+ *
+ * 没有选 Key 时不发请求（`enabled`）：那时请求头里没有可用的 Key，发出去只会换一个
+ * 看起来像「Key 失效」的 20010。
+ */
+const myKbsQuery = useQuery({
+  queryKey: computed(() => [...MY_KB_QUERY_KEY, store.selectedKeyId ?? '']),
+  queryFn: fetchMyKnowledgeBases,
+  enabled: computed(() => store.selectedKeyId !== null),
   retry: false,
 })
-const kbs = computed<KbOption[]>(() =>
-  (treeQuery.data.value ?? []).map((node) => ({ kb_id: node.kb_id, name: node.name })),
+const myKbs = computed<MyKnowledgeBase[]>(
+  () => myKbsQuery.data.value?.knowledge_bases ?? [],
 )
-const treePending = treeQuery.isPending
-const treeLoaded = treeQuery.isSuccess
+const kbs = computed<KbOption[]>(() =>
+  myKbs.value.map((kb) => ({ kb_id: kb.kb_id, name: kb.name })),
+)
+const treePending = computed(() => store.selectedKeyId !== null && myKbsQuery.isPending)
+const treeLoaded = myKbsQuery.isSuccess
 const treeError = computed(() =>
-  treeQuery.error.value === null ? '' : errorText(treeQuery.error.value),
+  myKbsQuery.error.value === null ? '' : errorText(myKbsQuery.error.value),
 )
 
 const selectedKey = computed<KeyData | null>(
   () => keys.value.find((key) => key.key_id === store.selectedKeyId) ?? null,
 )
 const policy = computed(() => selectedKey.value?.policy ?? null)
-const allowedKbIds = computed(() => new Set(policy.value?.allowed_kb_ids ?? []))
-const knownKbIds = computed(() => new Set(kbs.value.map((kb) => kb.kb_id)))
+/**
+ * 「当前可勾的库」= 服务端刚返回的那一份。
+ *
+ * 注意它**不是** `policy.allowed_kb_ids`：那是控制面配置里的白名单，是配置的**意图**；
+ * 服务端返回的是同一份 policy 应用到真实库表之后的**结果**（库可能被删、可能被租户过滤）。
+ * 能否勾选看结果，不看意图。
+ */
+const availableKbIds = computed(() => new Set(kbs.value.map((kb) => kb.kb_id)))
 
 /**
  * 把选中的 Key 同步进 store（id + 原文 + 白名单），并把白名单外的已选库摘掉。
@@ -140,6 +168,9 @@ function syncSelectedKey(key: KeyData): void {
   const removed = store.selectKey({
     keyId: key.key_id,
     keyValue: key.key_value,
+    // 这一轮先按**配置里的白名单**裁一次（快，不用等网络），等服务端那份真实清单回来
+    // 再裁一次（准）。两次都用同一个 store 方法，所以「请求层用的 Key」与「页面上勾的库」
+    // 只有一条同步路径。
     allowedKbIds: key.policy?.allowed_kb_ids ?? [],
   })
   if (removed.length > 0) {
@@ -157,6 +188,35 @@ watch(
     syncSelectedKey(key)
   },
   { immediate: true },
+)
+
+/**
+ * 服务端清单回来之后**再裁一次**——这一次用的是真答案。
+ *
+ * 第一轮（`syncSelectedKey`）只能按配置里的白名单裁，因为那时网络还没回来；而配置是
+ * 「意图」，服务端返回的是「意图应用到真实库表之后的结果」（库可能被删、被租户过滤）。
+ * 两轮都走同一个 `store.selectKey`，所以不会出现两套裁剪逻辑。
+ *
+ * 只在 `isSuccess` 时裁：请求还在飞时 `myKbs` 是空数组，拿它当「一个库都没有」会把用户
+ * 的选择清空——那是把「还没问到」当成「没有」。
+ */
+watch(
+  [myKbs, () => myKbsQuery.isSuccess.value],
+  ([rows, loaded]) => {
+    if (!loaded) return
+    const key = selectedKey.value
+    if (key === null) return
+    const removed = store.selectKey({
+      keyId: key.key_id,
+      keyValue: key.key_value,
+      allowedKbIds: rows.map((kb) => kb.kb_id),
+    })
+    if (removed.length > 0) {
+      ElMessage.warning(
+        `这些库已不在这把 Key 的可用范围内，已移出选择：${removed.join('、')}`,
+      )
+    }
+  },
 )
 
 // 之前选中的 Key 被删掉（例如在 /keys 删了它）：清掉选择并说明原因，别让下一次检索
@@ -243,17 +303,11 @@ const policyRows = computed(() => {
  * 大概率会失败，并给一个「移除」的动作。
  */
 const unpickableSelected = computed(() =>
-  store.selectedKbIds.filter(
-    (kbId) => !knownKbIds.value.has(kbId) || !allowedKbIds.value.has(kbId),
-  ),
+  store.selectedKbIds.filter((kbId) => !availableKbIds.value.has(kbId)),
 )
 
 function dropUnpickable(): void {
-  store.setSelection(
-    store.selectedKbIds.filter(
-      (kbId) => knownKbIds.value.has(kbId) && allowedKbIds.value.has(kbId),
-    ),
-  )
+  store.setSelection(store.selectedKbIds.filter((kbId) => availableKbIds.value.has(kbId)))
 }
 
 /** el-checkbox-group 的事件载荷是联合类型；本页的选项值全是字符串，这里只做类型收窄。 */
@@ -872,11 +926,15 @@ onUnmounted(() => {
             </span>
           </div>
           <p class="mt-1 text-[11px] leading-relaxed text-muted">
-            只能勾这把 Key 白名单里的库；置灰的那些不在白名单里，去 Key 管理页改配置后才能勾。
+            这份清单是**服务端**按这把 Key 的配置过滤后的结果（`GET /api/v1/knowledge-bases`）：
+            列出来的都能勾，没列出来的这把 Key 查不到。
           </p>
 
-          <p v-if="treePending" class="mt-2.5 text-[11px] text-muted">
-            正在读取本租户的知识库…
+          <p v-if="store.selectedKeyId === null" class="mt-2.5 text-[11px] text-muted">
+            先选一把 Key —— 可用库清单要按那把 Key 的范围去问服务端。
+          </p>
+          <p v-else-if="treePending" class="mt-2.5 text-[11px] text-muted">
+            正在问服务端：这把 Key 能查哪些库…
           </p>
           <div
             v-else-if="treeError !== ''"
@@ -888,8 +946,9 @@ onUnmounted(() => {
             v-else-if="kbs.length === 0"
             class="mt-2.5 rounded-control border border-line bg-surface-muted px-3 py-2 text-[11px] text-slate-600"
           >
-            本租户还没有知识库：先去创建知识库并上传文档，再回来检索。
-            <RouterLink to="/" class="text-brand underline">去建库 / 上传文档</RouterLink>
+            这把 Key 目前查不到任何库：可能这把 Key 一个库都没授权（去 Key 管理页改配置），
+            也可能本租户还没有库（先去建库并上传文档）。
+            <RouterLink to="/keys" class="text-brand underline">去改 Key 配置</RouterLink>
           </div>
           <el-checkbox-group
             v-else
@@ -897,29 +956,19 @@ onUnmounted(() => {
             :model-value="store.selectedKbIds"
             @update:model-value="onSelectionChange"
           >
-            <el-tooltip
-              v-for="kb in kbs"
-              :key="kb.kb_id"
-              :disabled="allowedKbIds.has(kb.kb_id)"
-              content="这个库不在当前 Key 的 allowed_kb_ids 白名单里：去 /keys 改这把 Key 的配置后才能勾选"
-              placement="top"
-            >
+            <template v-for="kb in kbs" :key="kb.kb_id">
               <!-- 可点的小卡而不是裸复选框：有边框才读得出「这是一个可以点的对象」。 -->
               <el-checkbox
                 :value="kb.kb_id"
-                :disabled="!allowedKbIds.has(kb.kb_id)"
                 class="kb-option !mr-0"
-                :class="{
-                  'kb-option--on': store.selectedKbIds.includes(kb.kb_id),
-                  'kb-option--off': !allowedKbIds.has(kb.kb_id),
-                }"
+                :class="{ 'kb-option--on': store.selectedKbIds.includes(kb.kb_id) }"
               >
                 <span class="flex flex-col leading-tight">
                   <span class="text-[13px] text-ink">{{ kb.name }}</span>
                   <span class="mt-0.5 font-mono text-[10px] text-slate-400">{{ kb.kb_id }}</span>
                 </span>
               </el-checkbox>
-            </el-tooltip>
+            </template>
           </el-checkbox-group>
 
           <div
