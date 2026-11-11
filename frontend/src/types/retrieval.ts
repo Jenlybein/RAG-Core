@@ -88,6 +88,11 @@ export interface RetrievalMetadata {
   vector_store: string
   retrieval: RetrievalBlock
   /**
+   * 本次调用的身份线（#101，ADR-0010「第五次修订」）。**永远非空**，由中台以 log_id
+   * 确定性派生；关掉观测也有值。评分控件靠它反查 log_id，瀑布图靠它对上那根线。
+   */
+  trace_id: string
+  /**
    * 只有经套餐门禁解析的调用才有这一栏；内部 / 评测调用没有套餐可回显。
    * 摘要里「若有才显示」的就是它。
    */

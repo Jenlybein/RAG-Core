@@ -19,7 +19,10 @@
 
 from __future__ import annotations
 
+import re
+
 from fastapi import APIRouter, Depends, Path
+from fastapi import Path as PathParam
 from sqlalchemy.orm import Session
 
 from app.api.console_deps import (
@@ -32,8 +35,12 @@ from app.db.session import get_db
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_traces import RetrievalWaterfallData, waterfall_data
 from app.services.retrieval_waterfall import RemoteStageReader, waterfall_of
+from app.repositories import retrieval_trace_repository
 
 router = APIRouter(prefix="/console", tags=["console"])
+
+#: ``trace_id`` 的合法形状（32 位十六进制）。校验它不是洁癖：它决定「查不查库」。
+_TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 
 
 @router.get(
@@ -61,3 +68,35 @@ def retrieval_waterfall(
         remote_reader=remote_reader,
     )
     return ok(waterfall_data(waterfall))
+
+
+@router.get(
+    "/retrieval-traces",
+    response_model=ApiResponse[dict],
+    summary="按 trace_id 反查 log_id（控制面，只读）",
+)
+def retrieval_trace_by_trace_id(
+    trace_id: str = PathParam(..., min_length=1, description="检索响应 metadata.trace_id"),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: Session = Depends(get_db),
+) -> ApiResponse[dict]:
+    """把「这根线」翻回「那一行」，供反馈与瀑布使用（#106）。
+
+    **为什么加这条端点而不是往检索响应里塞 ``log_id``**：ADR-0010 第五次修订的红线是
+    「除 ``metadata.trace_id`` 外响应逐字节不变」，加字段要再开一次修订并重采黄金哈希；
+    而 ``trace_id`` 是 ``log_id`` 的**单向**派生，推不回去，于是反查只能放在控制面。
+    这里只读、走会话身份，因此不碰数据面契约。
+
+    非法形状**直接当不存在**：它不拼 SQL（按等值查），但仍然先挡一道，避免把「随便一串」
+    当成一次查询去打库。
+    """
+
+    normalized = trace_id.strip().lower()
+    if not _TRACE_ID.fullmatch(normalized):
+        return ok({"log_id": None, "trace_id": normalized})
+
+    row = retrieval_trace_repository.get_by_trace_id_for_tenant(
+        db, normalized, tenant_id=tenant_id_of(identity)
+    )
+    # 跨租户与不存在同一个答复：不泄漏「这条 trace 在别人那儿存在」。
+    return ok({"log_id": row.id if row else None, "trace_id": normalized})

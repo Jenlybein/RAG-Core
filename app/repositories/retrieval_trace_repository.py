@@ -9,6 +9,7 @@
 路的依赖，而这张表的意义正是「链路不需要它也能跑完」。
 """
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models.retrieval_trace import RetrievalTrace
@@ -38,3 +39,20 @@ def get_by_id_for_tenant(db: Session, log_id: str, *, tenant_id: str) -> Retriev
     if row is None or row.tenant_id != tenant_id:
         return None
     return row
+
+
+def get_by_trace_id_for_tenant(db: Session, trace_id: str, *, tenant_id: str) -> RetrievalTrace | None:
+    """按 ``trace_id`` 且 ``tenant_id`` 取一行（#106 的反查）。
+
+    **为什么需要反查**：检索响应里只有 ``metadata.trace_id``（ADR-0010 第五次修订的红线：
+    除该字段外逐字节不变），反馈与瀑布要的却是 ``log_id``；而 ``trace_id`` 是 ``log_id``
+    的单向派生（sha256 前 32 位），**推不回去**。于是在控制面开一个只读反查，把「这根线」
+    翻回「那一行」，而不是往数据面响应里加字段。
+
+    租户同样是强制参数：跨租户与不存在一律 ``None``，与 ``get_by_id_for_tenant`` 同一口径。
+    """
+
+    statement = select(RetrievalTrace).where(
+        RetrievalTrace.trace_id == trace_id, RetrievalTrace.tenant_id == tenant_id
+    )
+    return db.execute(statement).scalar_one_or_none()

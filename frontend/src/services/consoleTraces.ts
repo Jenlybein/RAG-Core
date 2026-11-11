@@ -1,4 +1,5 @@
 import { consoleHttp } from '../lib/consoleHttp'
+import type { TraceLookup } from '../types/feedback'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
 
 /**
@@ -17,4 +18,17 @@ export function waterfallPath(logId: string): string {
 /** 按 `log_id` 取瀑布；「未启用 / 无记录」也是成功响应（`code=0`），不是异常。 */
 export function fetchWaterfall(logId: string): Promise<RetrievalWaterfall> {
   return consoleHttp.get<RetrievalWaterfall>(waterfallPath(logId))
+}
+
+/**
+ * 按 `trace_id` 反查 `log_id`（`GET /console/retrieval-traces`，#106）。
+ *
+ * 检索响应里只有 `trace_id`，而评分与瀑布都要 `log_id`；`trace_id` 是 `log_id` 的**单向**
+ * 派生，推不回去，于是这层只读反查是唯一合法入口。它走会话身份、带租户过滤，
+ * 所以「查不到」同时意味着「不存在」或「不属于你」——两者不分开答。
+ */
+export function resolveLogId(traceId: string): Promise<TraceLookup> {
+  return consoleHttp.get<TraceLookup>('/console/retrieval-traces', {
+    params: { trace_id: traceId },
+  })
 }
