@@ -234,7 +234,7 @@ async function refresh(): Promise<void> {
           <tr v-for="plan in plans" :key="plan.plan_id" class="border-t border-line align-top">
             <td class="px-3 py-3">
               <p class="font-medium text-ink">{{ plan.name }}</p>
-              <p class="font-mono text-[11px] text-muted">{{ plan.code }}</p>
+              <p class="font-mono text-xs text-muted">{{ plan.code }}</p>
             </td>
 
             <!-- 档位用 chips：`speed / balanced / custom` 这种长串在列里会折在斜杠中间。 -->
@@ -243,7 +243,7 @@ async function refresh(): Promise<void> {
                 <span
                   v-for="code in plan.allowed_profiles"
                   :key="code"
-                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-[11px] text-slate-600"
+                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-xs text-slate-600"
                 >
                   {{ code }}
                 </span>
@@ -258,7 +258,7 @@ async function refresh(): Promise<void> {
                 <span
                   v-for="capability in enabledCapabilities(plan)"
                   :key="capability"
-                  class="rounded-full bg-[#E4EDDD] px-2 py-0.5 text-[11px] text-[#3C5228]"
+                  class="rounded-full bg-[#E4EDDD] px-2 py-0.5 text-xs text-[#3C5228]"
                 >
                   {{ capability }}
                 </span>
@@ -277,7 +277,7 @@ async function refresh(): Promise<void> {
                 <span
                   v-for="field in PLAN_NUMBER_FIELDS"
                   :key="field.key"
-                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 text-[11px] whitespace-nowrap text-slate-600"
+                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 text-xs whitespace-nowrap text-slate-600"
                   :title="field.label"
                 >
                   {{ field.short }} {{ plan[field.key] }} {{ field.unit }}
@@ -285,7 +285,7 @@ async function refresh(): Promise<void> {
               </div>
             </td>
 
-            <td class="px-3 py-3 text-[11px] whitespace-nowrap text-muted">
+            <td class="px-3 py-3 text-xs whitespace-nowrap text-muted">
               {{ formatDateTime(plan.updated_at) }}
             </td>
             <td class="px-3 py-3">
@@ -307,18 +307,18 @@ async function refresh(): Promise<void> {
       <div class="space-y-5 text-sm">
         <!-- 套餐标识只读：code 是脚本与日志的指代，改名要连脚本一起动。 -->
         <div class="flex flex-wrap items-baseline gap-2">
-          <span class="w-20 shrink-0 text-[11px] text-muted">套餐标识</span>
+          <span class="w-20 shrink-0 text-xs text-muted">套餐标识</span>
           <span class="font-mono text-[13px] text-ink">{{ editingPlan?.code ?? '—' }}</span>
-          <span class="text-[11px] text-muted">（脚本与日志的指代，本页不提供改名）</span>
+          <span class="text-xs text-muted">（脚本与日志的指代，本页不提供改名）</span>
         </div>
 
         <label class="flex items-center gap-2">
-          <span class="w-20 shrink-0 text-[11px] text-muted">套餐名</span>
+          <span class="w-20 shrink-0 text-xs text-muted">套餐名</span>
           <el-input v-model="draft.name" maxlength="128" />
         </label>
 
         <div>
-          <p class="mb-2 text-[11px] text-muted">
+          <p class="mb-2 text-xs text-muted">
             档位白名单
             <span class="ml-1">（四个勾选框，没有自由输入）</span>
           </p>
@@ -330,7 +330,7 @@ async function refresh(): Promise<void> {
         </div>
 
         <div>
-          <p class="mb-2 text-[11px] text-muted">能力开关</p>
+          <p class="mb-2 text-xs text-muted">能力开关</p>
           <!--
             用勾选框而不是开关：Element 的 switch 关闭态是一块浅粉，压在这套米白上很扎眼，
             而「这个能力开没开」本来就是勾选语义。四个并排也更好一眼扫完。
@@ -347,14 +347,14 @@ async function refresh(): Promise<void> {
         </div>
 
         <div>
-          <p class="mb-2 text-[11px] text-muted">上限 <span class="ml-1">（每项都必须 ≥ 1）</span></p>
+          <p class="mb-2 text-xs text-muted">上限 <span class="ml-1">（每项都必须 ≥ 1）</span></p>
           <div class="grid gap-3 sm:grid-cols-2">
             <label
               v-for="field in PLAN_NUMBER_FIELDS"
               :key="field.key"
               class="flex items-center gap-2"
             >
-              <span class="w-28 shrink-0 text-[11px] text-muted">{{ field.label }}</span>
+              <span class="w-28 shrink-0 text-xs text-muted">{{ field.label }}</span>
               <el-input-number
                 v-model="draft[field.key]"
                 :min="1"
@@ -362,12 +362,12 @@ async function refresh(): Promise<void> {
                 controls-position="right"
                 style="width: 96px"
               />
-              <span class="text-[11px] text-muted">{{ field.unit }}</span>
+              <span class="text-xs text-muted">{{ field.unit }}</span>
             </label>
           </div>
         </div>
 
-        <p class="rounded-control bg-surface-muted px-3 py-2 text-[11px] leading-relaxed text-muted">
+        <p class="rounded-control bg-surface-muted px-3 py-2 text-xs leading-relaxed text-muted">
           点「保存」只先试算：有租户会超库数或失去档位时，会再弹一次确认，确认后才落库。
         </p>
       </div>

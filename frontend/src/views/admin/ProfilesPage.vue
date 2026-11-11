@@ -142,7 +142,7 @@ const NAME_HINTS: Record<string, string> = {
   <section class="space-y-6">
     <PageHeader
       title="档位预设"
-      subtitle="四个质量档位的参数。改动对之后发起的每一次检索立即生效，已发出的请求不受影响。"
+      subtitle="四个质量档位的参数，改动对之后发起的检索生效。"
     />
 
     <!--
@@ -193,7 +193,7 @@ const NAME_HINTS: Record<string, string> = {
 
         <div class="grid gap-3 sm:grid-cols-2">
           <div>
-            <label class="mb-1 block text-[11px] text-muted">检索方式</label>
+            <label class="mb-1 block text-xs text-muted">检索方式</label>
             <el-select v-model="drafts[item.profile].mode" class="w-full">
               <el-option
                 v-for="option in MODE_OPTIONS"
@@ -205,7 +205,7 @@ const NAME_HINTS: Record<string, string> = {
           </div>
 
           <div>
-            <label class="mb-1 block text-[11px] text-muted">返回条数</label>
+            <label class="mb-1 block text-xs text-muted">返回条数</label>
             <el-input-number
               v-model="drafts[item.profile].top_k"
               :min="1"

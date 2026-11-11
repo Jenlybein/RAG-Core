@@ -132,7 +132,7 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
     <section>
       <div class="mb-2 flex flex-wrap items-baseline justify-between gap-2">
         <h3 class="section-title">档位</h3>
-        <span v-if="allowedProfiles.length > 0" class="text-[11px] text-muted">
+        <span v-if="allowedProfiles.length > 0" class="text-xs text-muted">
           套餐允许 {{ allowedProfiles.join(' / ') }}
         </span>
       </div>
@@ -176,14 +176,14 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
                 <span v-if="form.profile === profile" class="h-1.5 w-1.5 rounded-full bg-accent" />
               </span>
             </span>
-            <span class="mt-0.5 block text-[11px] leading-snug text-muted">
+            <span class="mt-0.5 block text-xs leading-snug text-muted">
               {{ blockedProfiles.has(profile) ? '当前套餐不支持' : cardHint(profile) }}
             </span>
           </button>
         </el-tooltip>
       </div>
 
-      <p class="mt-2 text-[11px] leading-relaxed text-muted">
+      <p class="mt-2 text-xs leading-relaxed text-muted">
         档位决定「能用到多好」；命名档位要求它所需的能力已在下方的开关里打开，否则保存会被拒。
       </p>
     </section>
@@ -207,7 +207,7 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
           :value="kb.kb_id"
         />
       </el-select>
-      <p class="mt-1.5 text-[11px] leading-relaxed text-muted">
+      <p class="mt-1.5 text-xs leading-relaxed text-muted">
         只有圈进来的库能被这把 Key 检索；留空表示「什么都没圈定」，不是「全部」。
         <template v-if="onlyKbId !== null">
           <el-button link type="primary" size="small" class="!ml-1" @click="form.allowed_kb_ids = [onlyKbId]">
@@ -220,7 +220,7 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
     <!-- ③ 能力开关：必须可见（命名档位依赖它），压成两列 -->
     <section>
       <h3 class="section-title mb-0.5">能力开关</h3>
-      <p class="mb-2 text-[11px] leading-relaxed text-muted">
+      <p class="mb-2 text-xs leading-relaxed text-muted">
         只能在套餐上限内分配。<template v-if="planCapabilityText !== ''">
           本套餐可用：{{ planCapabilityText }}。
         </template>
@@ -239,7 +239,7 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
         <template #title>
           <span class="flex flex-wrap items-baseline gap-2">
             <span class="section-title">高级设置</span>
-            <span class="text-[11px] text-muted">{{ advancedSummary }}</span>
+            <span class="text-xs text-muted">{{ advancedSummary }}</span>
           </span>
         </template>
 
@@ -248,27 +248,27 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
             <h4 class="mb-2 text-[12px] font-semibold text-slate-700">限额</h4>
             <div class="grid gap-3 sm:grid-cols-2">
               <div>
-                <label class="mb-1 block text-[11px] text-muted">每秒请求上限</label>
+                <label class="mb-1 block text-xs text-muted">每秒请求上限</label>
                 <div class="flex items-center gap-2">
                   <el-input-number v-model="form.retrieve_qps" :min="1" :step="1" controls-position="right" />
-                  <span class="text-[11px] text-muted">次/秒</span>
+                  <span class="text-xs text-muted">次/秒</span>
                 </div>
-                <p v-if="qpsCap !== null" class="mt-1 text-[11px] text-muted">套餐上限 {{ qpsCap }}</p>
+                <p v-if="qpsCap !== null" class="mt-1 text-xs text-muted">套餐上限 {{ qpsCap }}</p>
               </div>
               <div>
-                <label class="mb-1 block text-[11px] text-muted">每日请求上限</label>
+                <label class="mb-1 block text-xs text-muted">每日请求上限</label>
                 <div class="flex items-center gap-2">
                   <el-input-number v-model="form.retrieve_daily" :min="1" :step="100" controls-position="right" />
-                  <span class="text-[11px] text-muted">次/天</span>
+                  <span class="text-xs text-muted">次/天</span>
                 </div>
-                <p v-if="dailyCap !== null" class="mt-1 text-[11px] text-muted">套餐上限 {{ dailyCap }}</p>
+                <p v-if="dailyCap !== null" class="mt-1 text-xs text-muted">套餐上限 {{ dailyCap }}</p>
               </div>
             </div>
           </div>
 
           <div>
             <h4 class="mb-1 text-[12px] font-semibold text-slate-700">结果形状</h4>
-            <p class="mb-2 text-[11px] leading-relaxed text-muted">
+            <p class="mb-2 text-xs leading-relaxed text-muted">
               只改返回的上下文形状，不影响召回与排序。
             </p>
             <!--
@@ -297,13 +297,13 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
             </h4>
             <div class="grid gap-3 sm:grid-cols-2">
               <div>
-                <label class="mb-1 block text-[11px] text-muted">检索方式</label>
+                <label class="mb-1 block text-xs text-muted">检索方式</label>
                 <el-select v-model="form.custom_options.mode" class="w-full">
                   <el-option v-for="mode in CUSTOM_OPTION_MODES" :key="mode" :label="mode" :value="mode" />
                 </el-select>
               </div>
               <div>
-                <label class="mb-1 block text-[11px] text-muted">返回条数</label>
+                <label class="mb-1 block text-xs text-muted">返回条数</label>
                 <el-input-number
                   v-model="form.custom_options.top_k"
                   :min="CUSTOM_TOP_K_MIN"
@@ -314,7 +314,7 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
               <el-checkbox v-model="form.custom_options.rerank">rerank · 重排</el-checkbox>
               <el-checkbox v-model="form.custom_options.rewrite">rewrite · 查询改写</el-checkbox>
             </div>
-            <p class="mt-1 text-[11px] leading-relaxed text-muted">
+            <p class="mt-1 text-xs leading-relaxed text-muted">
               命名档位是完整替换：切回 speed / balanced / quality 后这批参数不生效，但也不会被删。
             </p>
           </div>

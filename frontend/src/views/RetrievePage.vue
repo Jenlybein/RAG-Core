@@ -763,7 +763,7 @@ onUnmounted(() => {
   <section class="space-y-6">
   <PageHeader
     title="调试台"
-    subtitle="选 Key、勾库、写问题，发一次真实检索。检索方式、条数、重排与改写全部由这把 Key 的密钥配置决定，本页只回显后端实际生效的值。"
+    subtitle="用这把 Key 打一次真实检索，并检查召回质量。"
   />
     <!-- ① 选 Key 与检索范围 -->
     <!--
@@ -777,7 +777,7 @@ onUnmounted(() => {
       </template>
 
       <!-- 一行只读摘要。不显示的话，用户每次检索前都得开弹窗确认用的是哪把 Key、哪些库。 -->
-      <p v-if="keysPending" class="text-[11px] text-muted">正在读取 Key 列表…</p>
+      <p v-if="keysPending" class="text-xs text-muted">正在读取 Key 列表…</p>
       <!--
         服务端在「开发身份模式」时，控制台签发的 Key **一把都不生效**（只认内置占位 Key）。
         这件事必须在这里说，而不是等检索失败后再说：失败时看到的「Key 无效」会把人送去
@@ -785,7 +785,7 @@ onUnmounted(() => {
       -->
       <div
         v-if="authDisabled"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
       >
         <strong>服务端当前是开发身份模式（AUTH_ENABLED=false）</strong>：检索会用内置开发身份，
         下面选的 Key <strong>不参与鉴权</strong>，所以拿真实 Key 直接调接口会得到 20010。
@@ -794,13 +794,13 @@ onUnmounted(() => {
       </div>
       <div
         v-else-if="keysError !== ''"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] text-[#6E4E12]"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]"
       >
         {{ keysError }}
       </div>
       <div
         v-else-if="keys.length === 0"
-        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+        class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
       >
         还没有任何 API Key：先去
         <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
@@ -808,7 +808,7 @@ onUnmounted(() => {
       </div>
       <div v-else class="rounded-control bg-surface-muted px-3 py-2.5">
         <div
-          class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-[11px]"
+          class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs"
         >
           <span class="flex flex-wrap items-baseline gap-2">
             <span class="text-muted">当前 Key</span>
@@ -816,7 +816,7 @@ onUnmounted(() => {
               <span class="font-mono text-[12px] font-medium text-ink">
                 {{ currentKeySummary.label }}
               </span>
-              <span class="font-mono text-[10px] text-slate-400">
+              <span class="font-mono text-xs text-slate-400">
                 {{ currentKeySummary.masked }}
               </span>
               <span class="text-line-strong">·</span>
@@ -847,7 +847,7 @@ onUnmounted(() => {
             「修改配置」在「检索」左边——改配置是为检索服务的准备动作，主按钮永远在最右。
           -->
           <div class="flex flex-wrap items-center justify-end gap-2">
-            <span v-if="blockReason !== ''" class="mr-auto text-[11px] text-muted">
+            <span v-if="blockReason !== ''" class="mr-auto text-xs text-muted">
               {{ blockReason }}
             </span>
             <el-button :disabled="keys.length === 0" @click="configDialogOpen = true">
@@ -880,9 +880,9 @@ onUnmounted(() => {
       <div class="space-y-5 text-sm">
         <!-- ① Key -->
         <div>
-          <label class="mb-1.5 block text-[11px] text-muted">当前选中的 Key</label>
-          <p v-if="keysPending" class="text-[11px] text-muted">正在读取 Key 列表…</p>
-          <p v-else-if="keys.length === 0" class="text-[11px] text-[#6E4E12]">
+          <label class="mb-1.5 block text-xs text-muted">当前选中的 Key</label>
+          <p v-if="keysPending" class="text-xs text-muted">正在读取 Key 列表…</p>
+          <p v-else-if="keys.length === 0" class="text-xs text-[#6E4E12]">
             还没有任何 API Key：先去
             <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
             签发一把。
@@ -913,7 +913,7 @@ onUnmounted(() => {
 
         <div
           v-if="policy === null && selectedKey !== null"
-          class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+          class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
         >
           这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，去
           <RouterLink
@@ -926,9 +926,9 @@ onUnmounted(() => {
         </div>
 
         <div v-else-if="policy !== null">
-          <p class="mb-1.5 text-[11px] text-muted">这把 Key 的密钥配置（只读）</p>
+          <p class="mb-1.5 text-xs text-muted">这把 Key 的密钥配置（只读）</p>
           <dl
-            class="grid gap-x-6 gap-y-2 rounded-control bg-surface-muted px-3 py-2.5 text-[11px] sm:grid-cols-2"
+            class="grid gap-x-6 gap-y-2 rounded-control bg-surface-muted px-3 py-2.5 text-xs sm:grid-cols-2"
           >
             <div v-for="row in policyRows" :key="row.label" class="flex flex-col gap-0.5">
               <dt class="text-muted">{{ row.label }}</dt>
@@ -940,32 +940,32 @@ onUnmounted(() => {
         <!-- ② 要查的知识库 -->
         <div class="border-t border-line pt-4">
           <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <span class="text-[11px] font-medium text-ink">要查的知识库</span>
-            <span class="text-[11px] text-muted">
+            <span class="text-xs font-medium text-ink">要查的知识库</span>
+            <span class="text-xs text-muted">
               已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
             </span>
           </div>
-          <p class="mt-1 text-[11px] leading-relaxed text-muted">
+          <p class="mt-1 text-xs leading-relaxed text-muted">
             这份清单是<strong class="text-ink">服务端</strong>按这把 Key 的配置过滤后的结果
-            （<code class="font-mono text-[10px]">GET /api/v1/knowledge-bases</code>）：
+            （<code class="font-mono text-xs">GET /api/v1/knowledge-bases</code>）：
             列出来的都能勾，没列出来的这把 Key 查不到。
           </p>
 
-          <p v-if="store.selectedKeyId === null" class="mt-2.5 text-[11px] text-muted">
+          <p v-if="store.selectedKeyId === null" class="mt-2.5 text-xs text-muted">
             先选一把 Key —— 可用库清单要按那把 Key 的范围去问服务端。
           </p>
-          <p v-else-if="treePending" class="mt-2.5 text-[11px] text-muted">
+          <p v-else-if="treePending" class="mt-2.5 text-xs text-muted">
             正在问服务端：这把 Key 能查哪些库…
           </p>
           <div
             v-else-if="treeError !== ''"
-            class="mt-2.5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700"
+            class="mt-2.5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
           >
             {{ treeError }}
           </div>
           <div
             v-else-if="kbs.length === 0"
-            class="mt-2.5 rounded-control border border-line bg-surface-muted px-3 py-2 text-[11px] text-slate-600"
+            class="mt-2.5 rounded-control border border-line bg-surface-muted px-3 py-2 text-xs text-slate-600"
           >
             这把 Key 目前查不到任何库：可能这把 Key 一个库都没授权（去 Key 管理页改配置），
             也可能本租户还没有库（先去建库并上传文档）。
@@ -986,7 +986,7 @@ onUnmounted(() => {
               >
                 <span class="flex flex-col leading-tight">
                   <span class="text-[13px] text-ink">{{ kb.name }}</span>
-                  <span class="mt-0.5 font-mono text-[10px] text-slate-400">{{ kb.kb_id }}</span>
+                  <span class="mt-0.5 font-mono text-xs text-slate-400">{{ kb.kb_id }}</span>
                 </span>
               </el-checkbox>
             </template>
@@ -994,7 +994,7 @@ onUnmounted(() => {
 
           <div
             v-if="treeLoaded && unpickableSelected.length > 0"
-            class="mt-3 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+            class="mt-3 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
           >
             <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
             <p class="mt-1 text-slate-700">{{ unpickableSelected.join('、') }}</p>
@@ -1007,7 +1007,7 @@ onUnmounted(() => {
         <RouterLink
           v-if="selectedKey !== null"
           :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
-          class="mr-auto text-[11px] text-brand underline underline-offset-2"
+          class="mr-auto text-xs text-brand underline underline-offset-2"
         >
           去 Key 管理页改配置 →
         </RouterLink>
@@ -1015,15 +1015,19 @@ onUnmounted(() => {
       </template>
     </el-dialog>
 
+    <!--
+      主体两栏：左边是「这一次检索的答案」，右边是「诊断」（旁证 / 接口清单）。
+      窄屏自动落成单列。之前四张卡一路往下堆，一屏里既有正文又有仪表读数和接口表，
+      眼睛没有落点；拆成两栏之后主路径（配置 → 提问 → 结果）始终在左栏一条线上。
+    -->
+    <div class="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+      <div class="min-w-0 space-y-6">
     <!-- ③ 召回结果 -->
     <el-card shadow="never">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-2">
           <div>
             <h2 class="text-sm font-semibold text-slate-800">召回结果</h2>
-            <p class="mt-1 text-xs text-slate-500">
-              分数保留 4 位、语义相似度 1 位；某一格是「—」表示那一路没命中，不是 0 分。
-            </p>
           </div>
           <span v-if="result !== null" class="shrink-0 text-sm text-slate-600">
             共 {{ chunks.length }} 条
@@ -1069,14 +1073,14 @@ onUnmounted(() => {
           <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
             <div class="flex min-w-0 items-baseline gap-2.5">
               <span
-                class="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 font-mono text-[11px] font-medium text-ink"
+                class="shrink-0 rounded-full bg-accent-soft px-2 py-0.5 font-mono text-xs font-medium text-ink"
               >
                 {{ index + 1 }}
               </span>
               <h3 class="truncate text-[13px] font-semibold text-ink">
                 {{ chunk.title || '（无标题）' }}
               </h3>
-              <span v-if="chunk.heading_path !== null" class="truncate text-[11px] text-muted">
+              <span v-if="chunk.heading_path !== null" class="truncate text-xs text-muted">
                 › {{ chunk.heading_path }}
               </span>
             </div>
@@ -1086,10 +1090,10 @@ onUnmounted(() => {
               <span class="font-mono text-[13px] font-medium text-ink">
                 {{ formatScore(chunk.score) }}
               </span>
-              <span class="font-mono text-[10px] text-muted">
+              <span class="font-mono text-xs text-muted">
                 语义 {{ formatPercent(chunk.vector_score) }}
               </span>
-              <span class="font-mono text-[10px] text-muted">
+              <span class="font-mono text-xs text-muted">
                 关键词 {{ formatScore(chunk.bm25_score) }}
               </span>
             </div>
@@ -1100,7 +1104,7 @@ onUnmounted(() => {
             {{ chunk.content }}
           </p>
 
-          <div class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-slate-400">
+          <div class="mt-2.5 flex flex-wrap gap-x-4 gap-y-1 text-xs text-slate-400">
             <span v-if="chunk.expansion !== null">扩展：{{ chunk.expansion }}</span>
             <span>语义名次 {{ formatRank(chunk.vector_rank) }}</span>
             <span>关键词名次 {{ formatRank(chunk.bm25_rank) }}</span>
@@ -1118,14 +1122,14 @@ onUnmounted(() => {
       <div class="mt-4 border-t border-line pt-3">
         <button
           type="button"
-          class="flex items-center gap-1.5 text-[11px] text-muted transition hover:text-ink"
+          class="flex items-center gap-1.5 text-xs text-muted transition hover:text-ink"
           @click="summaryOpen = !summaryOpen"
         >
           <span class="text-[9px]">{{ summaryOpen ? '▼' : '▶' }}</span>
           运行摘要 · 这次后端实际生效的值
         </button>
         <RunSummary v-if="summaryOpen && result !== null" class="mt-3" :metadata="result.metadata" />
-        <p v-if="summaryOpen && result === null" class="mt-2 text-[11px] text-muted">
+        <p v-if="summaryOpen && result === null" class="mt-2 text-xs text-muted">
           还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
         </p>
       </div>
@@ -1138,7 +1142,7 @@ onUnmounted(() => {
       <div class="mt-3 border-t border-line pt-3">
         <button
           type="button"
-          class="flex items-center gap-1.5 text-[11px] text-muted transition hover:text-ink"
+          class="flex items-center gap-1.5 text-xs text-muted transition hover:text-ink"
           @click="waterfallOpen = !waterfallOpen"
         >
           <span class="text-[9px]">{{ waterfallOpen ? '▼' : '▶' }}</span>
@@ -1148,9 +1152,9 @@ onUnmounted(() => {
         <div v-if="waterfallOpen" class="mt-3">
           <!-- 有这次检索的响应时：一键看，不用抄 UUID（与评分控件共用同一个反查结果）。 -->
           <template v-if="ratingLogId !== null">
-            <p class="text-[11px] leading-relaxed text-muted">
+            <p class="text-xs leading-relaxed text-muted">
               看
-              <span class="font-mono text-[10px] text-slate-500">{{ ratingLogId.slice(0, 8) }}…</span>
+              <span class="font-mono text-xs text-slate-500">{{ ratingLogId.slice(0, 8) }}…</span>
               这次检索的六段耗时（关掉观测也能从本地记录看）。
             </p>
             <div class="mt-2">
@@ -1161,9 +1165,9 @@ onUnmounted(() => {
           </template>
           <!-- 没有响应（例如只在工单里拿到一个 log_id）时，才退回手填。 -->
           <template v-else>
-            <p class="text-[11px] leading-relaxed text-muted">
+            <p class="text-xs leading-relaxed text-muted">
               手填
-              <code class="rounded bg-slate-100 px-1 font-mono text-[10px] text-slate-500">log_id</code>
+              <code class="rounded bg-slate-100 px-1 font-mono text-xs text-slate-500">log_id</code>
               （归属索引里那一行的 id）。这次的检索记录还没定位到，所以没有可一键查看的目标。
             </p>
             <div class="mt-2 flex flex-wrap items-center gap-2">
@@ -1188,11 +1192,11 @@ onUnmounted(() => {
 
           <p
             v-if="waterfallError !== null"
-            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700"
+            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
           >
             {{ waterfallError }}
           </p>
-          <p v-else-if="ratingLogId === null && trimmedLogId === ''" class="mt-2 text-[11px] text-muted">
+          <p v-else-if="ratingLogId === null && trimmedLogId === ''" class="mt-2 text-xs text-muted">
             还没填 log_id。填上之后再点「看瀑布」。
           </p>
           <StageWaterfall v-else-if="waterfall !== null" class="mt-3" :data="waterfall" />
@@ -1205,9 +1209,9 @@ onUnmounted(() => {
         观测开关不参与可用性判断——反馈以本地为准，观测栈挂了照样能打分。
       -->
       <div class="mt-3 border-t border-line pt-3">
-        <p class="text-[11px] font-medium text-slate-600">给这次检索打分</p>
+        <p class="text-xs font-medium text-slate-600">给这次检索打分</p>
 
-        <p v-if="ratingDisabledCopy !== ''" class="mt-2 text-[11px] leading-relaxed text-muted">
+        <p v-if="ratingDisabledCopy !== ''" class="mt-2 text-xs leading-relaxed text-muted">
           {{ ratingDisabledCopy }}
         </p>
         <div v-else class="mt-2">
@@ -1227,7 +1231,7 @@ onUnmounted(() => {
             >
               {{ scoreStars(score)[score - 1] }}
             </button>
-            <span class="ml-2 text-[11px] text-muted">
+            <span class="ml-2 text-xs text-muted">
               {{ ratingScore === 0 ? '还没选分数' : `${ratingScore} 分` }}
             </span>
           </div>
@@ -1249,20 +1253,23 @@ onUnmounted(() => {
             >
               提交评分
             </el-button>
-            <span v-if="ratingSaved !== null" class="text-[11px] text-emerald-700">
+            <span v-if="ratingSaved !== null" class="text-xs text-emerald-700">
               已评 {{ ratingSaved }} 分（再提交一次可改分）
             </span>
           </div>
           <p
             v-if="ratingError !== null"
-            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700"
+            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
           >
             {{ ratingError }}
           </p>
         </div>
       </div>
     </el-card>
+      </div>
 
+      <!-- 右栏：诊断。默认就在视线外，不抢主路径的注意力。 -->
+      <div class="min-w-0 space-y-6">
     <!--
       ⑤ 语义旁证（#109）：一个触发入口 + 状态轮询。
       它**不进闸门**——门禁是确定性那一套（零 LLM、可复现），这里只是「阶段性体检」，
@@ -1274,9 +1281,7 @@ onUnmounted(() => {
         <div class="flex flex-wrap items-baseline justify-between gap-2">
           <div>
             <h2 class="text-sm font-semibold text-slate-800">语义旁证</h2>
-            <p class="mt-1 text-xs text-slate-500">
-              用 LLM 裁判跑固定 50 题，出 CP / CR。只提示、不阻断；门禁另有确定性口径。
-            </p>
+            <p class="mt-1 text-xs text-slate-500">LLM 裁判跑 50 题，出 CP / CR。</p>
           </div>
           <el-button
             size="small"
@@ -1289,13 +1294,13 @@ onUnmounted(() => {
         </div>
       </template>
 
-      <p v-if="sideEvidenceError !== null" class="rounded border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+      <p v-if="sideEvidenceError !== null" class="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
         {{ sideEvidenceError }}
       </p>
       <p v-else-if="sideEvidenceRunId === null" class="text-sm text-slate-400">
         还没触发过。点右上角「触发一次旁证」跑一轮（约几分钟）。
       </p>
-      <div v-else class="space-y-1.5 text-[11px]">
+      <div v-else class="space-y-1.5 text-xs">
         <p>
           <span class="text-muted">run</span>
           <span class="ml-1 font-mono text-slate-500">{{ sideEvidenceRunId }}</span>
@@ -1347,20 +1352,20 @@ onUnmounted(() => {
       <!-- 历史：刷新页面后仍能看到上一轮，而不是只剩空白 -->
       <div class="mt-3 border-t border-line pt-2">
         <div class="flex items-center justify-between">
-          <p class="text-[11px] font-medium text-slate-600">最近跑过的几轮</p>
+          <p class="text-xs font-medium text-slate-600">最近跑过的几轮</p>
           <el-button link size="small" @click="loadSideEvidenceRuns">刷新</el-button>
         </div>
-        <p v-if="sideEvidenceRunsError !== null" class="mt-1 text-[11px] text-red-700">
+        <p v-if="sideEvidenceRunsError !== null" class="mt-1 text-xs text-red-700">
           {{ sideEvidenceRunsError }}
         </p>
-        <p v-else-if="sideEvidenceRuns.length === 0" class="mt-1 text-[11px] text-muted">
+        <p v-else-if="sideEvidenceRuns.length === 0" class="mt-1 text-xs text-muted">
           还没有跑批记录。
         </p>
         <ul v-else class="mt-1 space-y-1">
           <li
             v-for="run in sideEvidenceRuns"
             :key="run.run_id"
-            class="flex flex-wrap items-baseline gap-2 text-[11px]"
+            class="flex flex-wrap items-baseline gap-2 text-xs"
           >
             <span class="font-mono text-slate-500">{{ run.run_id }}</span>
             <span class="font-medium">{{ run.status }}</span>
@@ -1376,19 +1381,17 @@ onUnmounted(() => {
         </ul>
       </div>
     </el-card>
+      </div>
+    </div>
 
-    <!-- ⑨ 数据面接口清单：这把 Key 能调什么、受什么限制、其中只读的可以就地试一次 -->
+    <!-- ⑨ 数据面接口清单：通栏。它是一张四列表格，塞进 380px 的右栏会被挤成一列字。 -->
     <el-card shadow="never">
       <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 class="text-sm font-semibold text-slate-800">这把 Key 能调哪些接口</h2>
-        <span class="text-[11px] text-muted">
-          共 {{ DATA_PLANE_ENDPOINTS.length }} 条 · 只读的 {{ trialableCount }} 条可试
+        <h2 class="text-sm font-semibold text-slate-800">能调的接口</h2>
+        <span class="text-xs text-muted">
+          共 {{ DATA_PLANE_ENDPOINTS.length }} 条 · 只读 {{ trialableCount }} 条可试
         </span>
       </div>
-      <p class="mt-1 text-[11px] leading-relaxed text-slate-500">
-        完整清单见下方表格；「要查的知识库」那一块用的就是其中的
-        <code class="font-mono text-[10px]">GET /api/v1/knowledge-bases</code>。
-      </p>
       <div class="mt-3">
         <DataPlanePanel :kb-id="firstSelectedKbId" :has-key="store.selectedKeyId !== null" />
       </div>
@@ -1401,12 +1404,12 @@ onUnmounted(() => {
       width="820px"
       @update:model-value="closeReport"
     >
-      <p v-if="reportRunId !== null" class="mb-2 font-mono text-[11px] text-slate-500">
+      <p v-if="reportRunId !== null" class="mb-2 font-mono text-xs text-slate-500">
         run {{ reportRunId }}
       </p>
-      <p v-if="reportError !== null" class="text-[11px] text-red-700">{{ reportError }}</p>
-      <p v-else-if="reportLoading" class="text-[11px] text-muted">读取中…</p>
-      <p v-else-if="reportText === null" class="text-[11px] text-muted">
+      <p v-if="reportError !== null" class="text-xs text-red-700">{{ reportError }}</p>
+      <p v-else-if="reportLoading" class="text-xs text-muted">读取中…</p>
+      <p v-else-if="reportText === null" class="text-xs text-muted">
         这一轮没有报告文件（跑批可能还在排队，或中途失败没落地）。
       </p>
       <!--

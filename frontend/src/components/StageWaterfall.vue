@@ -62,7 +62,7 @@ const emptyCopy = computed(() => {
 
 <template>
   <div>
-    <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-[11px]">
+    <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs">
       <span class="flex flex-wrap items-baseline gap-2 text-muted">
         <span>
           来源
@@ -90,7 +90,7 @@ const emptyCopy = computed(() => {
           日志却搜不到；而第一次看的人需要一个中文说法。
         -->
         <span
-          class="w-[9.5rem] shrink-0 truncate font-mono text-[11px] text-slate-700"
+          class="w-[9.5rem] shrink-0 truncate font-mono text-xs text-slate-700"
           :title="row.label"
         >
           {{ row.name }}
@@ -102,7 +102,7 @@ const emptyCopy = computed(() => {
             :style="{ width: row.width }"
           ></span>
         </span>
-        <span class="w-14 shrink-0 text-right font-mono text-[11px] text-ink">
+        <span class="w-14 shrink-0 text-right font-mono text-xs text-ink">
           {{ row.ms }} ms
         </span>
       </li>
@@ -114,8 +114,8 @@ const emptyCopy = computed(() => {
       class="mt-3 rounded-control border border-line bg-surface-muted px-3 py-2.5"
     >
       <p class="text-[12px] font-medium text-ink">{{ emptyCopy.title }}</p>
-      <p class="mt-1 text-[11px] leading-relaxed text-slate-600">{{ emptyCopy.hint }}</p>
-      <p class="mt-1.5 font-mono text-[10px] text-slate-400">
+      <p class="mt-1 text-xs leading-relaxed text-slate-600">{{ emptyCopy.hint }}</p>
+      <p class="mt-1.5 font-mono text-xs text-slate-400">
         enabled = {{ data.enabled }} · reason = {{ data.reason ?? '—' }}
       </p>
     </div>
@@ -123,7 +123,7 @@ const emptyCopy = computed(() => {
     <!-- 观测服务读不到时的一句说明（后端只在那种情况下给 note）。 -->
     <p
       v-if="data.note !== null && data.note !== ''"
-      class="mt-2 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] leading-relaxed text-[#6E4E12]"
+      class="mt-2 rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs leading-relaxed text-[#6E4E12]"
     >
       {{ data.note }}
     </p>
@@ -132,7 +132,7 @@ const emptyCopy = computed(() => {
       「有段、但观测现在是关的」：这份六段来自早先写下的本地记录。不说这一句的话，
       读的人会以为「关掉观测也照样在记」，下一次检索找不到记录时才来问为什么。
     -->
-    <p v-if="hasStages && !data.enabled" class="mt-2 text-[11px] text-muted">
+    <p v-if="hasStages && !data.enabled" class="mt-2 text-xs text-muted">
       当前观测去向是 none：以上六段来自本地记录，新的检索不会再记下新的六段耗时。
     </p>
   </div>

@@ -215,7 +215,7 @@ async function refresh(): Promise<void> {
             <td class="px-3 py-3">
               <span
                 v-if="hasStatus(row.status)"
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
                 :style="statusPillStyle(row.status)"
                 >{{ statusLabel(row.status) }}</span
               >
@@ -225,7 +225,7 @@ async function refresh(): Promise<void> {
             <td class="px-3 py-3">
               <span
                 v-if="hasStatus(row.tenant_status)"
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
                 :style="statusPillStyle(row.tenant_status)"
                 >{{ statusLabel(row.tenant_status) }}</span
               >

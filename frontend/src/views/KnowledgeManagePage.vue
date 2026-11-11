@@ -353,7 +353,7 @@ function goRetrieve(kbId: string): void {
   <section class="space-y-6">
     <PageHeader
       title="知识库管理"
-      subtitle="一个页面管完：建库、往库里传文档、看库里有什么、删库。点任意一行看详情；上传与索引都是异步的，有任务在跑时每 3 秒自动刷新。"
+      subtitle="建库、传文档、看索引进度。"
     >
       <template #actions>
         <el-button type="primary" @click="createOpen = true">新建知识库</el-button>
@@ -422,7 +422,7 @@ function goRetrieve(kbId: string): void {
           <template #default="{ row }">
             <!-- 原文照 show：structure / size 是请求里的取值，同时给中文标签，免得用户猜 -->
             <span class="text-sm text-slate-700">{{ SPLIT_LABELS[row.split_strategy] ?? row.split_strategy }}</span>
-            <p class="mt-0.5 text-[11px] text-muted">{{ row.split_strategy }}</p>
+            <p class="mt-0.5 text-xs text-muted">{{ row.split_strategy }}</p>
           </template>
         </el-table-column>
 
@@ -460,9 +460,6 @@ function goRetrieve(kbId: string): void {
         <div class="flex flex-wrap items-center justify-between gap-4">
           <div>
             <h2 class="section-title">本次上传</h2>
-            <p class="section-hint">
-              status=3 表示后端已受理、正在后台索引，不是失败；切片数要等索引结束后才可查。
-            </p>
           </div>
           <div class="shrink-0 text-sm text-slate-600">
             <span>成功 {{ succeededCount }}</span>
@@ -542,7 +539,7 @@ function goRetrieve(kbId: string): void {
           <el-table-column label="文档" min-width="240">
             <template #default="{ row }">
               <span class="break-all text-sm text-ink">{{ row.title }}</span>
-              <p class="mt-0.5 text-[11px] text-muted">{{ row.source_type }}</p>
+              <p class="mt-0.5 text-xs text-muted">{{ row.source_type }}</p>
             </template>
           </el-table-column>
 

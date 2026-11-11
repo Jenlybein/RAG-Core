@@ -150,13 +150,13 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
               <span class="text-slate-400">{{ formatDateTime(entry.at) }}</span>
               <span
                 v-if="isLatest(history, entry.seq)"
-                class="rounded bg-white px-1 text-[11px] text-brand"
+                class="rounded bg-white px-1 text-xs text-brand"
               >
                 当前
               </span>
               <span
                 v-if="pinnedSeq === entry.seq"
-                class="rounded px-1 text-[11px] text-white"
+                class="rounded px-1 text-xs text-white"
                 style="background-color: #045b89"
               >
                 基准
@@ -193,12 +193,12 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
             </h3>
             <span
               v-if="pinnedApplied"
-              class="rounded px-1.5 py-0.5 text-[11px] text-white"
+              class="rounded px-1.5 py-0.5 text-xs text-white"
               style="background-color: #045b89"
             >
               已钉为基准
             </span>
-            <span v-else-if="pinnedSeq !== null" class="text-[11px] text-slate-500">
+            <span v-else-if="pinnedSeq !== null" class="text-xs text-slate-500">
               已钉住第 {{ pinnedSeq }} 次，下一次检索会自动与它对比
             </span>
           </div>
@@ -222,7 +222,7 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
                 >
                   <td class="py-1.5 pr-3">
                     <span class="text-slate-700">{{ row.label }}</span>
-                    <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-[11px] text-slate-400">
+                    <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-xs text-slate-400">
                       {{ row.field }}
                     </code>
                   </td>
@@ -267,7 +267,7 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
             <div v-if="resultDiff.added.length > 0" class="mt-3">
               <h5 class="flex items-center gap-2 text-xs font-semibold">
                 <span
-                  class="rounded px-1.5 py-0.5 text-[11px] text-white"
+                  class="rounded px-1.5 py-0.5 text-xs text-white"
                   style="background-color: #045b89"
                 >
                   新增 {{ resultDiff.added.length }} 条
@@ -296,7 +296,7 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
             <div v-if="resultDiff.removed.length > 0" class="mt-3">
               <h5 class="flex items-center gap-2 text-xs font-semibold">
                 <span
-                  class="rounded px-1.5 py-0.5 text-[11px] text-white"
+                  class="rounded px-1.5 py-0.5 text-xs text-white"
                   style="background-color: #fa5252"
                 >
                   消失 {{ resultDiff.removed.length }} 条

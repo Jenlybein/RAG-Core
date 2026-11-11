@@ -137,6 +137,17 @@ button:not(:disabled),
     @apply p-6 sm:p-7;
   }
 
+  /**
+   * 紧凑面板：控制台里一块一块的「区」用它。比 `.card` 内距小一档、标题自带一行说明位，
+   * 目的是让一屏能放下更多**真实信息**——但不再靠把字号压到 10px 来换空间。
+   */
+  .panel {
+    @apply rounded-control border border-line bg-surface;
+  }
+  .panel-head {
+    @apply flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-4 py-3;
+  }
+
   /* 页面标题：大、半粗、收紧字距（苹果标题的骨架），配一行灰色说明 */
   .page-title {
     @apply text-[26px] font-semibold leading-tight tracking-tightest text-ink sm:text-[30px];
@@ -153,6 +164,36 @@ button:not(:disabled),
     @apply mt-1 text-xs leading-relaxed text-muted;
   }
 
+  /**
+   * 字段标签与值。
+   *
+   * 之前整站用 `text-[10px]` / `text-[11px]` 铺满标签，读起来像在看一张缩印表格。
+   * 这里把两档分开：标签 11px 灰色（**只在需要并列时用**），值 13px 主色。
+   * 正文一律 ≥13px：小字号省下的那点空间，远不值得让人眯眼。
+   */
+  .field-label {
+    @apply text-[11px] font-medium uppercase tracking-[0.06em] text-muted;
+  }
+  .field-value {
+    @apply text-[13px] text-ink;
+  }
+  .hint {
+    @apply text-xs leading-relaxed text-muted;
+  }
+
+  /** 指标：数值大、标签小。诊断面板里的一屏读数靠它拉层级。 */
+  .metric-value {
+    @apply text-[15px] font-semibold tabular-nums text-ink;
+  }
+  .metric-label {
+    @apply text-[11px] text-muted;
+  }
+
+  /** 小胶囊：库名、档位、能力这类短标签。 */
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border border-line bg-surface-muted px-2 py-0.5 text-[11px] text-slate-600;
+  }
+
   /* 顶栏导航：胶囊 + 选中实底，不做下划线（下划线在暖色系里显得廉价） */
   .nav-pill {
     @apply rounded-full px-3.5 py-1.5 text-[13px] font-medium transition-colors duration-150;
@@ -161,6 +202,11 @@ button:not(:disabled),
   /* 表头：大写小字 + 宽字距，编辑部气质的来源之一 */
   .th-label {
     @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-muted;
+  }
+
+  /** 行内代码：报告、诊断面板里到处是路径与字段名。 */
+  .mono-tag {
+    @apply rounded bg-surface-muted px-1 py-0.5 font-mono text-[11px] text-slate-700;
   }
 }
 

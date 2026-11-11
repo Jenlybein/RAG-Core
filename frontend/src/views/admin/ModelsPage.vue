@@ -327,7 +327,7 @@ async function refresh(): Promise<void> {
         <p class="page-subtitle">
           平台级配置：一条写着用哪家模型、哪个端点、哪把 Key。改完下一次装配即生效，不需要重启。
         </p>
-        <p class="mt-1 text-[11px] text-muted">
+        <p class="mt-1 text-xs text-muted">
           重排跟随 <span class="font-mono">fast</span> 这档，没有独立的重排模型配置（ADR-0002）。
         </p>
       </div>
@@ -383,7 +383,7 @@ async function refresh(): Promise<void> {
           <tr v-for="config in configs" :key="config.id" class="border-t border-line align-top">
             <td class="px-3 py-3">
               <p class="font-medium text-ink">{{ config.label }}</p>
-              <p class="font-mono text-[11px] text-muted" :title="config.id">
+              <p class="font-mono text-xs text-muted" :title="config.id">
                 {{ config.id.length > 10 ? `${config.id.slice(0, 10)}…` : config.id }}
               </p>
             </td>
@@ -391,11 +391,11 @@ async function refresh(): Promise<void> {
             <td class="px-3 py-3 font-mono text-slate-600">{{ config.model }}</td>
             <td class="px-3 py-3 text-slate-600">
               <span v-if="config.base_url === ''" class="text-slate-400">默认地址</span>
-              <span v-else class="break-all font-mono text-[11px]">{{ config.base_url }}</span>
+              <span v-else class="break-all font-mono text-xs">{{ config.base_url }}</span>
             </td>
             <td class="px-3 py-3">
               <!-- 列表里永远是后端给的回显形态（sk-…abcd），本页不存也不展示明文。 -->
-              <span class="font-mono text-[11px] text-slate-500">
+              <span class="font-mono text-xs text-slate-500">
                 {{ config.api_key === '' ? '—（未填 Key）' : config.api_key }}
               </span>
             </td>
@@ -405,7 +405,7 @@ async function refresh(): Promise<void> {
                 <span
                   v-for="role in referencedRolesOf(config)"
                   :key="role"
-                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-[11px] text-slate-600"
+                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-xs text-slate-600"
                 >
                   {{ role }}
                 </span>
@@ -438,7 +438,7 @@ async function refresh(): Promise<void> {
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 class="section-title">模型角色</h3>
-          <p class="mt-1 text-[11px] leading-relaxed text-muted">
+          <p class="mt-1 text-xs leading-relaxed text-muted">
             指向存在运行时配置里（<span class="font-mono">model.role.fast</span> /
             <span class="font-mono">model.role.strong</span>）。选「不指向（回落 .env）」即撤销指向。
           </p>
@@ -459,7 +459,7 @@ async function refresh(): Promise<void> {
         <div v-for="role in MODEL_ROLES" :key="role">
           <label class="mb-1 flex flex-wrap items-baseline gap-1.5">
             <span class="font-mono text-[12px] font-semibold text-ink">{{ role }}</span>
-            <span class="text-[11px] text-muted">{{ MODEL_ROLE_HINTS[role] }}</span>
+            <span class="text-xs text-muted">{{ MODEL_ROLE_HINTS[role] }}</span>
           </label>
           <el-select v-model="roleDraft[role]" class="w-full" :disabled="options.length === 1">
             <el-option
@@ -472,10 +472,10 @@ async function refresh(): Promise<void> {
         </div>
       </div>
 
-      <p v-if="options.length === 1" class="mt-3 text-[11px] text-muted">
+      <p v-if="options.length === 1" class="mt-3 text-xs text-muted">
         还没有任何模型配置，只能选「不指向（回落 .env）」。
       </p>
-      <p v-else-if="roleDirty" class="mt-3 text-[11px] text-amber-700">
+      <p v-else-if="roleDirty" class="mt-3 text-xs text-amber-700">
         有未保存的改动；保存后对下一次装配生效。
       </p>
     </div>

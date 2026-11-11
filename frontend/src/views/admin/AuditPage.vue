@@ -187,21 +187,21 @@ async function refresh(): Promise<void> {
                 :class="hasSnapshot(log) ? 'cursor-pointer hover:bg-surface-muted' : ''"
                 @click="hasSnapshot(log) ? toggleExpand(log.audit_id) : undefined"
               >
-                <td class="whitespace-nowrap px-3 py-3 text-[11px] text-muted">
+                <td class="whitespace-nowrap px-3 py-3 text-xs text-muted">
                   {{ formatDateTime(log.created_at) }}
                 </td>
                 <td class="px-3 py-3 font-mono text-[12px] font-medium text-ink">
                   {{ log.action }}
                 </td>
-                <td class="break-all px-3 py-3 font-mono text-[11px] text-slate-600">
+                <td class="break-all px-3 py-3 font-mono text-xs text-slate-600">
                   {{ log.target }}
                 </td>
-                <td class="break-all px-3 py-3 text-[11px] text-slate-600">
+                <td class="break-all px-3 py-3 text-xs text-slate-600">
                   <span :class="log.actor_id === null ? 'text-slate-400' : ''">
                     {{ actorLabel(log.actor_id) }}
                   </span>
                 </td>
-                <td class="px-3 py-3 text-[11px]">
+                <td class="px-3 py-3 text-xs">
                   <button
                     v-if="hasSnapshot(log)"
                     type="button"
@@ -220,12 +220,12 @@ async function refresh(): Promise<void> {
                 <td colspan="5" class="px-3 pb-4">
                   <div class="grid gap-3 sm:grid-cols-2">
                     <div>
-                      <p class="mb-1 text-[11px] font-medium text-muted">改动前</p>
-                      <pre class="max-h-64 overflow-auto rounded-control border border-line bg-surface p-3 font-mono text-[11px] leading-relaxed text-slate-700">{{ prettyJson(log.before) }}</pre>
+                      <p class="mb-1 text-xs font-medium text-muted">改动前</p>
+                      <pre class="max-h-64 overflow-auto rounded-control border border-line bg-surface p-3 font-mono text-xs leading-relaxed text-slate-700">{{ prettyJson(log.before) }}</pre>
                     </div>
                     <div>
-                      <p class="mb-1 text-[11px] font-medium text-muted">改动后</p>
-                      <pre class="max-h-64 overflow-auto rounded-control border border-line bg-surface p-3 font-mono text-[11px] leading-relaxed text-slate-700">{{ prettyJson(log.after) }}</pre>
+                      <p class="mb-1 text-xs font-medium text-muted">改动后</p>
+                      <pre class="max-h-64 overflow-auto rounded-control border border-line bg-surface p-3 font-mono text-xs leading-relaxed text-slate-700">{{ prettyJson(log.after) }}</pre>
                     </div>
                   </div>
                 </td>

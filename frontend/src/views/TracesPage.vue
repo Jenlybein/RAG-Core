@@ -145,7 +145,7 @@ function asTrace(row: unknown): RecentTrace {
 
     <p
       v-if="loadError !== ''"
-      class="rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700"
+      class="rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
     >
       {{ loadError }}
     </p>
@@ -165,7 +165,7 @@ function asTrace(row: unknown): RecentTrace {
         </el-table-column>
         <el-table-column label="trace_id" min-width="130">
           <template #default="{ row }">
-            <span class="font-mono text-[11px] text-slate-500" :title="row.trace_id">
+            <span class="font-mono text-xs text-slate-500" :title="row.trace_id">
               {{ shortId(row.trace_id) }}
             </span>
           </template>
@@ -206,12 +206,12 @@ function asTrace(row: unknown): RecentTrace {
               :href="traceUrl(row.trace_id)!"
               target="_blank"
               rel="noopener noreferrer"
-              class="text-[11px] text-brand underline"
+              class="text-xs text-brand underline"
               @click.stop
             >
               在观测栈里打开
             </a>
-            <span v-else class="text-[11px] text-slate-400" title="当前观测去向不是 langfuse">
+            <span v-else class="text-xs text-slate-400" title="当前观测去向不是 langfuse">
               —
             </span>
           </template>
@@ -229,20 +229,20 @@ function asTrace(row: unknown): RecentTrace {
       width="760px"
       @update:model-value="closeWaterfall"
     >
-      <p v-if="openLogId !== null" class="mb-2 font-mono text-[11px] text-slate-500">
+      <p v-if="openLogId !== null" class="mb-2 font-mono text-xs text-slate-500">
         log_id {{ openLogId }}
       </p>
-      <p v-if="waterfallError !== null" class="text-[11px] text-red-700">
+      <p v-if="waterfallError !== null" class="text-xs text-red-700">
         {{ waterfallError }}
       </p>
-      <div v-else-if="waterfallLoading" class="text-[11px] text-muted">读取中…</div>
+      <div v-else-if="waterfallLoading" class="text-xs text-muted">读取中…</div>
       <template v-else-if="waterfall !== null">
-        <p class="text-[11px] text-muted">
+        <p class="text-xs text-muted">
           来源：{{ describeSource(waterfall.source) }}
           <span v-if="waterfall.note">· {{ waterfall.note }}</span>
         </p>
         <StageWaterfall v-if="waterfall.stages.length > 0" class="mt-3" :data="waterfall" />
-        <p v-else class="mt-2 text-[11px] text-muted">
+        <p v-else class="mt-2 text-xs text-muted">
           这条记录没有六段耗时（观测没开，或这一条没记上）。
         </p>
       </template>

@@ -90,18 +90,18 @@ const rows = computed(() => DATA_PLANE_ENDPOINTS)
 
 <template>
   <div class="space-y-3">
-    <p class="text-[11px] leading-relaxed text-muted">
+    <p class="text-xs leading-relaxed text-muted">
       数据面（`Authorization: Bearer` 这把 Key 的明文）。每条都注明受什么限制；
       <strong class="text-ink">写入类端点只列出、不代跑</strong>——真实 Key 打的是真实数据，
       误点就真的改了东西。写操作请去知识库管理页做，那里有确认与回执。
     </p>
 
-    <p v-if="!hasKey" class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-[11px] text-[#6E4E12]">
+    <p v-if="!hasKey" class="rounded-control border border-[#E8D9AE] bg-[#F7E9C9] px-3 py-2 text-xs text-[#6E4E12]">
       先选一把 Key —— 这些接口的身份就是那把 Key。
     </p>
 
     <div class="overflow-hidden rounded-control border border-line">
-      <table class="w-full border-collapse text-[11px]">
+      <table class="w-full border-collapse text-xs">
         <thead class="bg-surface-muted">
           <tr>
             <th class="border-b border-line px-2 py-1.5 text-left font-medium text-slate-600">方法</th>
@@ -112,18 +112,18 @@ const rows = computed(() => DATA_PLANE_ENDPOINTS)
         </thead>
         <tbody>
           <tr v-for="endpoint in rows" :key="endpointKey(endpoint)" class="align-top">
-            <td class="border-b border-line px-2 py-1.5 font-mono text-[10px] text-slate-500">
+            <td class="border-b border-line px-2 py-1.5 font-mono text-xs text-slate-500">
               {{ endpoint.method }}
             </td>
-            <td class="border-b border-line px-2 py-1.5 font-mono text-[10px] text-ink">
+            <td class="border-b border-line px-2 py-1.5 font-mono text-xs text-ink">
               {{ endpoint.path }}
             </td>
             <td class="border-b border-line px-2 py-1.5">
               <div class="text-slate-700">{{ endpoint.purpose }}</div>
-              <div class="mt-0.5 text-[10px] text-muted">限制：{{ endpoint.gate }}</div>
+              <div class="mt-0.5 text-xs text-muted">限制：{{ endpoint.gate }}</div>
             </td>
             <td class="border-b border-line px-2 py-1.5">
-              <span v-if="endpoint.write === true" class="text-[10px] text-muted">写：不代跑</span>
+              <span v-if="endpoint.write === true" class="text-xs text-muted">写：不代跑</span>
               <template v-else-if="endpoint.trial !== undefined">
                 <el-button
                   v-if="canTrial(endpoint, { kbId: props.kbId }) && hasKey"
@@ -134,11 +134,11 @@ const rows = computed(() => DATA_PLANE_ENDPOINTS)
                 >
                   试一下
                 </el-button>
-                <span v-else class="text-[10px] text-muted">
+                <span v-else class="text-xs text-muted">
                   {{ endpoint.trialNeeds ?? '先选 Key' }}
                 </span>
               </template>
-              <span v-else class="text-[10px] text-muted">—</span>
+              <span v-else class="text-xs text-muted">—</span>
             </td>
           </tr>
         </tbody>
@@ -151,18 +151,18 @@ const rows = computed(() => DATA_PLANE_ENDPOINTS)
       :key="`result-${endpointKey(endpoint)}`"
     >
       <template v-if="stateOf(endpointKey(endpoint)).data !== null || stateOf(endpointKey(endpoint)).error !== null">
-        <p class="mt-1 font-mono text-[10px] text-slate-500">
+        <p class="mt-1 font-mono text-xs text-slate-500">
           {{ endpoint.method }} {{ endpoint.path }} 返回
         </p>
         <p
           v-if="stateOf(endpointKey(endpoint)).error !== null"
-          class="mt-1 rounded-control border border-red-200 bg-red-50 px-2 py-1.5 text-[11px] text-red-700"
+          class="mt-1 rounded-control border border-red-200 bg-red-50 px-2 py-1.5 text-xs text-red-700"
         >
           {{ stateOf(endpointKey(endpoint)).error }}
         </p>
         <pre
           v-else
-          class="mt-1 max-h-52 overflow-auto rounded-control bg-slate-50 p-2 text-[10px] leading-relaxed text-slate-700"
+          class="mt-1 max-h-52 overflow-auto rounded-control bg-slate-50 p-2 text-xs leading-relaxed text-slate-700"
         >{{ prettyJson(stateOf(endpointKey(endpoint)).data) }}</pre>
       </template>
     </div>

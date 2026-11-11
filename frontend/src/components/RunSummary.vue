@@ -44,7 +44,7 @@ const hasTenantPolicy = computed(() => props.metadata.tenant_policy !== undefine
       <div v-for="row in rows" :key="row.field">
         <dt class="text-xs text-slate-400">
           {{ row.label }}
-          <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-[11px] text-slate-500">
+          <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-xs text-slate-500">
             {{ row.field }}
           </code>
         </dt>

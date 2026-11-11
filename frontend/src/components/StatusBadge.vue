@@ -52,7 +52,7 @@ const detail = computed(() => {
         :style="{ backgroundColor: badgeStyle.background, color: badgeStyle.color }"
       >
         {{ badgeStyle.text }}
-        <span class="text-[10px] font-normal opacity-70">详情</span>
+        <span class="text-xs font-normal opacity-70">详情</span>
       </span>
     </template>
     <p class="m-0 whitespace-pre-wrap break-words text-xs leading-relaxed text-red-700">

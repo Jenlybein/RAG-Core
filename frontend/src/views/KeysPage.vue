@@ -380,7 +380,7 @@ watch(
   <section class="space-y-6">
   <PageHeader
     title="API Key"
-    subtitle="一把 Key 绑定一套密钥配置：能查哪些库、开哪些能力、多大的限额、默认档位都写在配置里。改配置会立刻作用于用它发起的下一次检索，不必重签 Key。"
+    subtitle="一把 Key 绑一套配置：库范围、能力、限额、档位。"
   />
     <el-card shadow="never">
       <template #header>
@@ -426,12 +426,12 @@ watch(
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-sm font-semibold text-ink">{{ keyLabel(row) }}</span>
               <span
-                class="inline-flex items-center rounded-full px-2 py-0.5 text-[11px] font-medium"
+                class="inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium"
                 :style="statusPillStyle(row.status)"
               >
                 {{ keyStatusLabel(row.status) }}
               </span>
-              <span class="font-mono text-[11px] text-muted" :title="row.key_id">
+              <span class="font-mono text-xs text-muted" :title="row.key_id">
                 {{ shortKeyId(row) }}
               </span>
             </div>
@@ -441,7 +441,7 @@ watch(
               <span
                 v-for="chip in policyChips(row)"
                 :key="chip"
-                class="inline-flex items-center rounded-full border border-line bg-surface-muted px-2 py-0.5 text-[11px] text-slate-600"
+                class="inline-flex items-center rounded-full border border-line bg-surface-muted px-2 py-0.5 text-xs text-slate-600"
               >
                 {{ chip }}
               </span>

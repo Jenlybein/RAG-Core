@@ -330,7 +330,7 @@ async function refresh(): Promise<void> {
           <b class="font-medium text-ink">待重启</b>只显示当前值、要改走运维流程，
           <b class="font-medium text-ink">热生效</b>保存后各进程 {{ cacheTtl }}s 内收敛。
         </p>
-        <p class="mt-1 text-[11px] text-muted">
+        <p class="mt-1 text-xs text-muted">
           每行「为什么在这一档」由服务端的配置白名单给出，本页不自己编理由。
         </p>
       </div>
@@ -375,22 +375,22 @@ async function refresh(): Promise<void> {
                 {{ group.title }}
               </span>
               <span
-                class="rounded-full px-2 py-0.5 text-[11px]"
+                class="rounded-full px-2 py-0.5 text-xs"
                 :class="tierBadgeClass(group.tier)"
               >
                 {{ tierBadgeText(group.tier) }}
               </span>
-              <span class="text-[11px] text-muted">{{ group.rows.length }} 项</span>
+              <span class="text-xs text-muted">{{ group.rows.length }} 项</span>
               <span
                 v-if="alertCountOf(group) > 0"
-                class="rounded-full bg-[#F7E2DD] px-2 py-0.5 text-[11px] text-[#8C2F22]"
+                class="rounded-full bg-[#F7E2DD] px-2 py-0.5 text-xs text-[#8C2F22]"
               >
                 {{ alertCountOf(group) }} 项需注意
               </span>
             </div>
           </template>
 
-          <p class="text-[11px] leading-relaxed text-muted">{{ tierHint(group.tier) }}</p>
+          <p class="text-xs leading-relaxed text-muted">{{ tierHint(group.tier) }}</p>
 
           <div class="mt-3 overflow-x-auto">
             <!--
@@ -417,7 +417,7 @@ async function refresh(): Promise<void> {
               >
                 <td class="px-3 py-3">
                   <p class="font-mono text-[12px] font-medium text-ink">{{ row.key }}</p>
-                  <p v-if="isRolePointerKey(row.key)" class="mt-1 text-[11px] text-muted">
+                  <p v-if="isRolePointerKey(row.key)" class="mt-1 text-xs text-muted">
                     角色指向；也能去
                     <RouterLink to="/admin/models" class="underline hover:text-accent">
                       模型配置页
@@ -460,18 +460,18 @@ async function refresh(): Promise<void> {
                   <!-- 只读值：连接串很长，限宽 + break-all，别把「为什么」那列挤没。 -->
                   <span
                     v-else
-                    class="break-all font-mono text-[11px] leading-relaxed text-slate-600"
+                    class="break-all font-mono text-xs leading-relaxed text-slate-600"
                   >
                     {{ formatValue(row) }}
                   </span>
 
                   <!-- 角色指向显示的是 id；给一行小字说明它是什么，避免被当成乱码。 -->
-                  <p v-if="isRolePointerKey(row.key)" class="mt-1 font-mono text-[11px] text-muted">
+                  <p v-if="isRolePointerKey(row.key)" class="mt-1 font-mono text-xs text-muted">
                     当前：{{ row.value === null || row.value === '' ? '不指向' : row.value }}
                   </p>
                 </td>
 
-                <td class="px-3 py-3 text-[11px] whitespace-nowrap">
+                <td class="px-3 py-3 text-xs whitespace-nowrap">
                   <span v-if="row.source === 'db'" class="font-medium text-ink">已被面板覆盖</span>
                   <span v-else class="text-muted">来自 .env</span>
                   <!-- restart 档不许在面板上改，但库里可能已有旧写入：标出来是「待生效」，
@@ -487,7 +487,7 @@ async function refresh(): Promise<void> {
                   </span>
                 </td>
 
-                <td class="px-3 py-3 text-[11px] leading-relaxed text-muted">{{ row.why }}</td>
+                <td class="px-3 py-3 text-xs leading-relaxed text-muted">{{ row.why }}</td>
               </tr>
             </tbody>
           </table>
