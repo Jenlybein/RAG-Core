@@ -27,7 +27,8 @@ import PageHeader from '../components/PageHeader.vue'
 import RunSummary from '../components/RunSummary.vue'
 import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
-import { fetchWaterfall } from '../services/consoleTraces'
+import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
+import { submitFeedback } from '../services/feedbackService'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { retrieve } from '../services/ragService'
@@ -35,6 +36,7 @@ import { useRetrieveStore } from '../stores/retrieve'
 import type { KbOption, KeyData } from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
+import { feedbackErrorCopy, isValidScore, scoreStars } from '../utils/feedback'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
 import {
   describeEmptyReason,
@@ -294,11 +296,18 @@ const { mutate, isPending: running } = useMutation({
       at: new Date().toISOString(),
       data,
     })
+    // 这一次的线换掉了：重新反查 log_id，评分控件随之绑定到**这次**结果。
+    // 反查失败不报错弹窗（那只是「不能打分」），由控件里的文案说明。
+    void prepareRating(data.metadata.trace_id)
   },
   onError: (error) => {
     // 本次失败就清掉上一次的结果：旧卡片配新报错会让人以为「这次也成功了一部分」，
     // 而摘要更必须永远对应最近一次响应，不能停在上一次。
     result.value = null
+    ratingLogId.value = null
+    ratingSaved.value = null
+    ratingScore.value = 0
+    ratingError.value = null
     runError.value = {
       message: errorText(error),
       limitHint: error instanceof ApiError && error.code === 20013,
@@ -391,6 +400,85 @@ const { mutate: requestWaterfall, isPending: waterfallLoading } = useMutation({
 function loadWaterfall(): void {
   if (trimmedLogId.value === '' || waterfallLoading.value) return
   requestWaterfall(trimmedLogId.value)
+}
+
+// —— ⑦ 给这次检索打分（#106） ——
+/**
+ * 为什么不用手填 `log_id`：检索响应里有 `metadata.trace_id`（#101），控制面能按它反查
+ * 回 `log_id`。让人再抄一遍 36 位 UUID，等于把「把分挂到别的检索上」做成一个正常操作。
+ *
+ * 三步都不碰观测开关：反查读的是归属索引，提交写的是本地反馈表；观测栈全挂时
+ * 打分照样成功——这正是「反馈以本地为准」（#105）的意义。
+ */
+const ratingScore = ref(0)
+const ratingComment = ref('')
+const ratingLogId = ref<string | null>(null)
+const ratingError = ref<string | null>(null)
+const ratingSaved = ref<number | null>(null)
+const ratingResolving = ref(false)
+const ratingSubmitting = ref(false)
+
+/** 当前这次检索的 `trace_id`（响应里永远有值）。换一次检索就换一根线。 */
+const currentTraceId = computed(() => result.value?.metadata.trace_id ?? null)
+
+const ratingDisabledCopy = computed(() => {
+  if (result.value === null) return '先发一次检索，再给这次结果打分。'
+  if (currentTraceId.value === null) return '这次响应没有 trace_id，无法定位到那一次检索。'
+  if (ratingResolving.value) return '正在定位这次检索…'
+  if (ratingLogId.value === null) return '这次检索记录不存在或不属于当前账号，不能打分。'
+  return ''
+})
+
+/** 每次成功检索都重新反查，并清掉上一轮的评分状态。 */
+async function prepareRating(traceId: string): Promise<void> {
+  ratingResolving.value = true
+  ratingLogId.value = null
+  ratingError.value = null
+  ratingSaved.value = null
+  ratingScore.value = 0
+  ratingComment.value = ''
+  try {
+    const lookup = await resolveLogId(traceId)
+    // 只接受「当前这根线」的答案：请求在途时用户又发了一次检索，旧响应不能覆盖新状态。
+    if (currentTraceId.value === traceId) {
+      ratingLogId.value = lookup.log_id
+    }
+  } catch (error) {
+    if (currentTraceId.value === traceId) {
+      ratingError.value = errorText(error)
+    }
+  } finally {
+    ratingResolving.value = false
+  }
+}
+
+async function sendRating(): Promise<void> {
+  const logId = ratingLogId.value
+  const traceId = currentTraceId.value
+  if (logId === null || traceId === null || ratingSubmitting.value) return
+  if (!isValidScore(ratingScore.value)) {
+    ratingError.value = feedbackErrorCopy(20022) || '分数需在 1~5 之间'
+    return
+  }
+  ratingSubmitting.value = true
+  ratingError.value = null
+  try {
+    const saved = await submitFeedback({
+      log_id: logId,
+      trace_id: traceId,
+      score: ratingScore.value,
+      comment: ratingComment.value.trim() || undefined,
+    })
+    ratingSaved.value = saved.score
+  } catch (error) {
+    // 三种失败各说各的：越界 / 归属不符 / 写入失败，下一步完全不同。
+    ratingError.value =
+      error instanceof ApiError
+        ? feedbackErrorCopy(error.code) || errorText(error)
+        : errorText(error)
+  } finally {
+    ratingSubmitting.value = false
+  }
 }
 </script>
 
@@ -807,6 +895,69 @@ function loadWaterfall(): void {
             还没填 log_id。填上之后再点「看瀑布」。
           </p>
           <StageWaterfall v-else-if="waterfall !== null" class="mt-3" :data="waterfall" />
+        </div>
+      </div>
+
+      <!--
+        评分（#106）：与运行摘要、瀑布图并列的第三个入口。
+        它绑定的是**当前这次检索**（trace_id → 反查 log_id），不需要手填 UUID；
+        观测开关不参与可用性判断——反馈以本地为准，观测栈挂了照样能打分。
+      -->
+      <div class="mt-3 border-t border-line pt-3">
+        <p class="text-[11px] font-medium text-slate-600">给这次检索打分</p>
+
+        <p v-if="ratingDisabledCopy !== ''" class="mt-2 text-[11px] leading-relaxed text-muted">
+          {{ ratingDisabledCopy }}
+        </p>
+        <div v-else class="mt-2">
+          <div class="flex flex-wrap items-center gap-1">
+            <button
+              v-for="score in [1, 2, 3, 4, 5]"
+              :key="score"
+              type="button"
+              class="rounded-control border px-2 py-1 text-[13px] leading-none transition"
+              :class="
+                ratingScore === score
+                  ? 'border-brand bg-brand/10 text-brand'
+                  : 'border-line bg-white text-slate-400 hover:text-[#B7791F]'
+              "
+              :aria-label="`打 ${score} 分`"
+              @click="ratingScore = score"
+            >
+              {{ scoreStars(score)[score - 1] }}
+            </button>
+            <span class="ml-2 text-[11px] text-muted">
+              {{ ratingScore === 0 ? '还没选分数' : `${ratingScore} 分` }}
+            </span>
+          </div>
+          <el-input
+            v-model="ratingComment"
+            class="mt-2 max-w-sm"
+            size="small"
+            maxlength="512"
+            show-word-limit
+            placeholder="一句话说明（可不填）"
+          />
+          <div class="mt-2 flex flex-wrap items-center gap-2">
+            <el-button
+              size="small"
+              type="primary"
+              :disabled="ratingScore === 0 || ratingSubmitting"
+              :loading="ratingSubmitting"
+              @click="sendRating"
+            >
+              提交评分
+            </el-button>
+            <span v-if="ratingSaved !== null" class="text-[11px] text-emerald-700">
+              已评 {{ ratingSaved }} 分（再提交一次可改分）
+            </span>
+          </div>
+          <p
+            v-if="ratingError !== null"
+            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700"
+          >
+            {{ ratingError }}
+          </p>
         </div>
       </div>
     </el-card>
