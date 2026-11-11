@@ -30,7 +30,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.auth import KeyContext
-from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.retrieval_feedback import RetrievalFeedback
 from app.models.retrieval_trace import RetrievalTrace

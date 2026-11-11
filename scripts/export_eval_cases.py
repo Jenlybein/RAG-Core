@@ -100,7 +100,6 @@ class _LangfuseQuerySource:
     """
 
     def __init__(self) -> None:
-        from app.core.config import settings as cfg
         from app.observability.langfuse_reader import LangfuseReadError, _resolve_client
 
         try:

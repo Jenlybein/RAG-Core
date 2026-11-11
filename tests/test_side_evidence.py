@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -172,7 +173,6 @@ def test_limit_runs_only_the_first_n_cases(tmp_path: Path) -> None:
 
 
 
-import re
 # ──────────────────────────────────────────────── 控制台两端点（直接调函数，绕开认证脚手架）
 
 def _identity() -> Any:
