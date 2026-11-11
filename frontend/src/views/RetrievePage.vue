@@ -9,9 +9,10 @@
  *    生效了什么」，拿页面配置冒充它就等于把调试台变成许愿台；
  * 3. 身份只有「选中的那把 Key」：本页是全仓库唯一的数据面入口的使用者
  *    （`ragService.retrieve()`），未选 Key 时请求层会抛可操作的错误；
- * 4. 可勾选的库来自**控制面树**（会话身份），但只有当前 Key 的 `allowed_kb_ids`
- *    白名单里的库能勾选；白名单外的置灰 + hover 说明原因，换 Key 时自动摘掉不在
- *    新白名单里的已选库并提示（留着它们只会在下一次检索撞 20008）。
+ * 4. 可勾选的库由**服务端**决定：选完 Key 先调 `GET /api/v1/knowledge-bases`（Bearer 这把
+ *    Key），拿回来的就是这把 Key 真正能查的库。不再用控制面的库树 + 前端筛白名单——
+ *    那是客户端算的答案，与服务端判定漂了会显示一个并不被认可的集合（详见
+ *    `services/scopeService.ts`）。
  *
  * 结果卡片只展示契约里有的字段；`latency_ms` / `log_id` 后端没有（00-facts §5 明确列过），
  * 这里也不编造。`metadata.trace_id` 从 #101 起有了，但本页不摊它——它在这张卡上的用途只有
@@ -140,8 +141,18 @@ const myKbs = computed<MyKnowledgeBase[]>(
 const kbs = computed<KbOption[]>(() =>
   myKbs.value.map((kb) => ({ kb_id: kb.kb_id, name: kb.name })),
 )
-const treePending = computed(() => store.selectedKeyId !== null && myKbsQuery.isPending)
-const treeLoaded = myKbsQuery.isSuccess
+/**
+ * 三个状态都显式标 `computed<boolean>`：它们是**布尔**，不是 vue-query 的 ref。
+ *
+ * 这里踩过一次：写成 `store.selectedKeyId !== null && myKbsQuery.isPending`（漏了
+ * `.value`）时，`&&` 返回的是那个 **ref 对象**，永远为真——于是请求明明成功（日志里
+ * 有 200），界面却永远停在「正在问服务端…」。TypeScript 也拦不住：`boolean | Ref`
+ * 对模板里的真值判断完全合法。标上 `computed<boolean>` 之后，同样的笔误会是类型错误。
+ */
+const treePending = computed<boolean>(
+  () => store.selectedKeyId !== null && myKbsQuery.isPending.value,
+)
+const treeLoaded = computed<boolean>(() => myKbsQuery.isSuccess.value)
 const treeError = computed(() =>
   myKbsQuery.error.value === null ? '' : errorText(myKbsQuery.error.value),
 )
@@ -935,7 +946,8 @@ onUnmounted(() => {
             </span>
           </div>
           <p class="mt-1 text-[11px] leading-relaxed text-muted">
-            这份清单是**服务端**按这把 Key 的配置过滤后的结果（`GET /api/v1/knowledge-bases`）：
+            这份清单是<strong class="text-ink">服务端</strong>按这把 Key 的配置过滤后的结果
+            （<code class="font-mono text-[10px]">GET /api/v1/knowledge-bases</code>）：
             列出来的都能勾，没列出来的这把 Key 查不到。
           </p>
 
