@@ -780,7 +780,15 @@ async def _score_questions(
 
 
 def _fmt(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.4f}"
+    """渲染分数；实现指向 :func:`app.utils.report_format.as_metric`（三份重复收成一份）。
+
+    局部 import：本模块的 ``settings`` 必须晚于 ``--env-file`` 载入（见文件顶部那段），
+    而这条渲染函数与配置无关，放在函数里就不必跟着那套时序走。
+    """
+
+    from app.utils.report_format import as_metric
+
+    return as_metric(value)
 
 
 async def _http_smoke(

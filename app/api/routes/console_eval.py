@@ -18,13 +18,13 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import Path
 
 from fastapi import APIRouter, Depends, Path as PathParam
 
-from app.api.console_deps import require_console_tenant
+from app.api.console_deps import require_console_tenant, tenant_id_of
 from app.core.console_auth import ConsoleIdentity
 from app.schemas.common import ApiResponse, ok
+from app.services.eval_manifest import REPO_ROOT
 from app.services.side_evidence_dispatch import enqueue_side_evidence
 from app.services.side_evidence_run import new_run_id
 
@@ -33,7 +33,13 @@ router = APIRouter(prefix="/console", tags=["console"])
 #: 服务自己生成的 run_id 形状。校验它不是洁癖：它会拼进 ``eval/runs/`` 的路径。
 _RUN_ID = re.compile(r"^\d{8}T\d{6}Z$")
 
-RUNS_ROOT = Path("eval/runs/side-evidence")
+#: 跑批产物的根目录，**锚在仓库根**而不是进程 cwd。
+#:
+#: 这个路径不是只在本地用：触发端算出 ``out_dir`` 后随任务投递给 Worker，由**另一个进程**
+#: 去写 ``status.json``。如果两边都用相对路径，Worker 从别的目录启动时就会写到别处——而
+#: 触发端随后去读自己的相对路径，看到的是「任务一直 running」。锚死之后传给 Worker 的
+#: 是绝对路径，两边指的是同一个地方。
+RUNS_ROOT = REPO_ROOT / "eval" / "runs" / "side-evidence"
 
 
 @router.post(
@@ -49,7 +55,12 @@ def trigger_side_evidence(
 
     run_id = new_run_id()
     out_dir = RUNS_ROOT / run_id
-    enqueue_side_evidence(run_id=run_id, out_dir=str(out_dir), limit=limit)
+    enqueue_side_evidence(
+        run_id=run_id,
+        out_dir=str(out_dir),
+        limit=limit,
+        tenant_id=tenant_id_of(identity),
+    )
     return ok(
         {
             "run_id": run_id,
@@ -78,6 +89,11 @@ def side_evidence_status(
         return ok({"run_id": run_id, "status": "queued", "summary": None, "error": None})
 
     status = json.loads(status_path.read_text(encoding="utf-8"))
+    # 归属校验（本轮 code-review 补的）：``run_id`` 只是一个时间戳形状的字符串，谁都能编一个
+    # 去猜别人的目录。状态文件里记着发起它那个租户，对不上就按「不存在」处理——与瀑布、
+    # 反查、反馈同一口径：不区分「不存在」与「不属于你」。
+    if status.get("tenant_id") not in (None, tenant_id_of(identity)):
+        return ok({"run_id": run_id, "status": "queued", "summary": None, "error": None})
     results_path = run_dir / "results.json"
     summary = None
     if results_path.is_file():

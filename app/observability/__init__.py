@@ -36,6 +36,9 @@ logger = structlog.get_logger(__name__)
 #: 一条说的是「业务库那一行没落下」，这一条说的是「观测栈 / 文件没收到这次计量」。
 #: 测试按它筛记录，运维按它告警，所以它是**固定的一句话**，不拼异常文本。
 OBSERVABILITY_SINK_FAILED_MESSAGE: Final[str] = "observability trace not recorded"
+#: 推分数失败时的固定消息。与上面那条分开，是因为两者的排障含义不同：前者是「这次检索
+#: 没留下痕迹」，后者是「这条反馈没进观测栈，但本地已经收下了」。
+OBSERVABILITY_SCORE_FAILED_MESSAGE: Final[str] = "observability score not recorded"
 
 
 def emit_retrieval_trace(
@@ -43,6 +46,7 @@ def emit_retrieval_trace(
     trace_id: str,
     spans: Sequence[StageSpan],
     attributes: Mapping[str, object],
+    query: str | None = None,
 ) -> None:
     """把这一次检索的六段耗时交给当前去向；**任何失败都只留一条 warning**。
 
@@ -60,7 +64,7 @@ def emit_retrieval_trace(
 
     sink = get_trace_sink()
     try:
-        sink.record_trace(trace_id, attributes)
+        sink.record_trace(trace_id, attributes, query=query)
         for span in spans:
             sink.record_span(trace_id, span.name, span.duration_ms)
         sink.flush(trace_id)
@@ -96,6 +100,29 @@ def get_trace_sink() -> TraceSink:
         _SINK = _build_sink()
         _SINK_KEY = key
     return _SINK
+
+
+def emit_feedback_score(*, trace_id: str, score: int, comment: str | None = None) -> None:
+    """把一次反馈的分数推给去向；**任何失败都只留一条 warning**（#105 决策 2）。
+
+    它是旁路，而且**排在本地写入之后**：本地 ``retrieval_feedback`` 才是权威，观测栈里
+    那条 score 只是方便在栈里按分数筛 trace。这条落差是本轮 code-review 查出来的——
+    注释与 ADR 都说「推 score 是旁路」，实现却压根没推；少了这一步，#105 的「观测挂了
+    反馈仍成功」就不再是被验证的行为，而是「因为根本没推，所以也没得挂」。
+
+    ``jsonl`` 去向丢弃它：本地文件是「哪一步慢」的记录，不是分数台账（分数在业务库里）。
+    """
+
+    sink = get_trace_sink()
+    try:
+        sink.record_score(trace_id, score, comment=comment)
+    except Exception as exc:  # noqa: BLE001 - 旁路：任何异常都不许冒到反馈响应上
+        logger.warning(
+            OBSERVABILITY_SCORE_FAILED_MESSAGE,
+            trace_id=trace_id,
+            sink=type(sink).__name__,
+            error=type(exc).__name__,
+        )
 
 
 def _build_sink() -> TraceSink:

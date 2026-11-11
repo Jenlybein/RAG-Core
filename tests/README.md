@@ -30,7 +30,8 @@
 
 **第 7 步唯一新增的接缝是「注入式假 Redis」**（`app.core.redis_client.set_redis_client`），不是 monkeypatch 全局：限流与配额服务通过构造参数收客户端，测试注入内存假实现；默认套件因此不碰 Redis。鉴权那条缝则完全没有新增——它本来就是纯函数，测试直接把假行交给 `resolve_identity`。
 
-第 9 步（观测与评测）新增的测试仍落在既有三层，**没有新增生产接缝**：
+第 9 步（观测与评测）新增的测试仍落在既有三层，**新增生产接缝只有一处**：
+`app.observability.set_trace_sink` / `reset_trace_sink`（与第 7 步的注入式假 Redis 同一套做法——把「去向」做成可注入，而不是 monkeypatch 全局）。`tests/conftest.py` 的 autouse 夹具靠它把每个用例的观测去向固定成 `none`、并在结束时清场；没有这条缝，「这台机器上恰好起着观测栈」就会渗进套件的结论。
 
 - **纯函数（①）**：`trace_id` 派生恒等、六段计时与排序、门禁判据（相对退化 / 未评分排除 / 分题型）、旁证聚合与部分失败、导出筛选 / 合并 / 产物形状、反馈错误码文案 → `test_trace_identity.py`、`test_observability_sink.py`、`test_eval_gate.py`、`test_eval_runner.py`、`test_side_evidence.py`、`test_build_answer_set.py`、`test_export_eval_cases.py`、`frontend/src/utils/__tests__/feedback.spec.ts`。
 - **ASGI（②）**：写库失败仍返回 `trace_id`、观测旁路失败只 warning、瀑布图与反馈的归属校验、评分反查、控制台旁证触发 → `test_retrieval_observability.py`、`test_feedback.py`、`test_console_waterfall.py`、`test_console_trace_lookup.py`。

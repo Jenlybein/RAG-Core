@@ -308,11 +308,15 @@ class _RecordingLangfuseClient:
 
     def __init__(self) -> None:
         self.observations: list[dict[str, Any]] = []
+        self.scores: list[dict[str, Any]] = []
         self.flushes = 0
 
     def start_as_current_observation(self, **kwargs: Any) -> Any:
         self.observations.append(kwargs)
         return _NullContext()
+
+    def create_score(self, **kwargs: Any) -> None:
+        self.scores.append(kwargs)
 
     def flush(self) -> None:
         self.flushes += 1
@@ -429,3 +433,62 @@ def test_a_sink_that_raises_only_leaves_one_warning(log_dir: Path) -> None:
     assert warnings[0]["level"] == "warning"
     assert warnings[0]["trace_id"] == TRACE_ID, "warning 里要能看出是哪一次"
     assert not _records(log_dir, "error.log"), "旁路失败不是 ERROR"
+
+
+# ──────────────────────────────────────── 原文与分数：去向决定收不收（#110 / #105 复盘）
+
+SENTINEL_QUERY = "退款申请提交后几天能到账（哨兵 9f3b）"
+
+
+def test_the_langfuse_sink_carries_the_query_in_every_span(tmp_path: Path) -> None:
+    """原文只进观测栈：低分样本导出要靠它把差评变回题目（#110）。
+
+    v5 没有 trace 级 IO setter，六段又是并列的兄弟 span，所以写进**每一段**的 metadata。
+    重复六份是为让导出器读任意一段都拿得到。
+    """
+
+    client = _RecordingLangfuseClient()
+    sink = LangfuseTraceSink(client=client)
+
+    sink.record_trace(TRACE_ID, ATTRIBUTES, query=SENTINEL_QUERY)
+    for name, duration_ms in SIX_SPANS:
+        sink.record_span(TRACE_ID, name, duration_ms)
+
+    assert [obs["metadata"]["query"] for obs in client.observations] == [SENTINEL_QUERY] * len(SIX_SPANS)
+
+
+def test_the_jsonl_sink_drops_the_query(tmp_path: Path) -> None:
+    """本地文件**进不去原文**：它会跟着备份与排查包一起走，而导出只认观测栈。"""
+
+    directory = tmp_path / "traces"
+    sink = JsonlTraceSink(str(directory), retention_days=7)
+
+    sink.record_trace(TRACE_ID, ATTRIBUTES, query=SENTINEL_QUERY)
+    for name, duration_ms in SIX_SPANS:
+        sink.record_span(TRACE_ID, name, duration_ms)
+    sink.flush(TRACE_ID)
+
+    raw = "".join(path.read_text(encoding="utf-8") for path in directory.glob("*.jsonl"))
+    assert SENTINEL_QUERY not in raw
+    assert "9f3b" not in raw, "连哨兵片段都不该出现，否则是部分泄漏"
+
+
+def test_a_score_is_pushed_to_the_langfuse_sink_and_dropped_by_jsonl(tmp_path: Path) -> None:
+    """分数推送是旁路（#105 决策 2）：栈里成一条 score，本地文件不收。"""
+
+    client = _RecordingLangfuseClient()
+    sink = LangfuseTraceSink(client=client)
+
+    sink.record_score(TRACE_ID, 2, comment="答非所问")
+    sink.record_score(TRACE_ID, 4)
+
+    assert client.scores == [
+        {"trace_id": TRACE_ID, "name": "user_feedback", "value": 2, "comment": "答非所问"},
+        {"trace_id": TRACE_ID, "name": "user_feedback", "value": 4, "comment": None},
+    ]
+
+    directory = tmp_path / "traces"
+    jsonl = JsonlTraceSink(str(directory), retention_days=7)
+    jsonl.record_score(TRACE_ID, 2)
+    jsonl.flush(TRACE_ID)
+    assert list(directory.glob("*.jsonl")) == []

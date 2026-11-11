@@ -29,15 +29,38 @@ class TraceSink(Protocol):
     兜一层会让「这个去向真的坏了」变成静默，那条 warning 正是运维唯一能看到的信号。
     """
 
-    def record_trace(self, trace_id: str, attributes: Mapping[str, object]) -> None:
+    def record_trace(
+        self,
+        trace_id: str,
+        attributes: Mapping[str, object],
+        *,
+        query: str | None = None,
+    ) -> None:
         """记下这条 trace 的结构化事实（模式、条数、降级 / 空结果原因）。
 
-        **不含原文**，也不含切片内容：这里是旁路，不是第二份业务数据。
+        ``query`` 是**唯一的原文通道**，而它收不收取决于去向（#110 复盘后补的这一层）：
+
+        * 观测栈去向**收下它**——ADR-0021 决策 1 允许原文进内网自托管观测栈，低分样本
+          导出要靠它把一次差评变回一道评测题；
+        * 本地文件去向**丢弃它**——这个文件是给人 grep 的，不该成为第二份业务数据；
+        * 空实现自然也不收。
+
+        所以「能不能取到原文」是**去向的属性**，不是调用方每次自己判断的开关。这条落差是
+        本轮 code-review 查出来的：门面曾经压根不透传 query，于是 #110 的导出链路永远取
+        不到原文、只能「导出中止」。
         """
         ...
 
     def record_span(self, trace_id: str, name: str, duration_ms: float) -> None:
         """记一段耗时。``name`` 取自 ``stage_timing`` 的六个常量。"""
+        ...
+
+    def record_score(self, trace_id: str, score: int, *, comment: str | None = None) -> None:
+        """把一次反馈的分数挂到这条 trace 上（#105 决策 2 的旁路推送）。
+
+        只有观测栈去向会真的推（``create_score``）；本地文件去向丢弃它——分数已经在
+        ``retrieval_feedback`` 表里，文件里再存一份只会多一处会过期的副本。
+        """
         ...
 
     def flush(self, trace_id: str) -> None:
@@ -53,10 +76,19 @@ class NoneTraceSink:
     起着什么」从结果里摘出去。
     """
 
-    def record_trace(self, trace_id: str, attributes: Mapping[str, object]) -> None:
+    def record_trace(
+        self,
+        trace_id: str,
+        attributes: Mapping[str, object],
+        *,
+        query: str | None = None,
+    ) -> None:
         return None
 
     def record_span(self, trace_id: str, name: str, duration_ms: float) -> None:
+        return None
+
+    def record_score(self, trace_id: str, score: int, *, comment: str | None = None) -> None:
         return None
 
     def flush(self, trace_id: str) -> None:

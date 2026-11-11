@@ -19,7 +19,7 @@
  */
 import { useMutation, useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
-import { computed, ref, watch } from 'vue'
+import { computed, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
 import ComparePanel from '../components/ComparePanel.vue'
@@ -29,6 +29,7 @@ import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
+import { fetchSideEvidence, triggerSideEvidence } from '../services/sideEvidenceService'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { retrieve } from '../services/ragService'
@@ -368,10 +369,12 @@ const emptyCopy = computed(() =>
 /**
  * 一个输入框 + 一个按钮，按 `log_id` 去控制面读回六段耗时。
  *
- * 为什么是一个**手填的 `log_id`**：检索响应里没有 `log_id`（契约只有
- * `metadata.trace_id`，而 `log_id` → `trace_id` 是单向派生，反过来推不出来）。归属索引的
- * 行 id 是报障时能拿到的那一个（工单 / 库 / 观测侧），所以这里就按它查——本页不编一个
- * 「自动填好」的假象出来。
+ * 优先用**这次检索的 `log_id`**（与评分控件同一个反查结果，见下方 `ratingLogId`）；反查没
+ * 成时退回手填。手填这条路径保留下来是给「报障时只拿到一个工单里的 `log_id`」用的——
+ * 那时页面根本没有这一次的响应，也就没有可反查的 `trace_id`。
+ *
+ * 当初只能手填，是因为 `trace_id` 是 `log_id` 的单向派生、推不回去；而控制面的反查端点
+ * （#106 起）把这条补上了，code-review 之后这里才接上去。
  *
  * 失败与「未启用」分开处理：前者是 `waterfallError`（业务码原样带上），后者是
  * `code=0` 的正常响应，由 `StageWaterfall` 按 `reason` 说清是哪一种。
@@ -398,8 +401,11 @@ const { mutate: requestWaterfall, isPending: waterfallLoading } = useMutation({
 })
 
 function loadWaterfall(): void {
-  if (trimmedLogId.value === '' || waterfallLoading.value) return
-  requestWaterfall(trimmedLogId.value)
+  if (waterfallLoading.value) return
+  // 优先用「这次检索」那一个（与评分控件同一个反查结果）；没有响应时才读手填框。
+  const target = ratingLogId.value ?? trimmedLogId.value
+  if (target === '') return
+  requestWaterfall(target)
 }
 
 // —— ⑦ 给这次检索打分（#106） ——
@@ -480,6 +486,83 @@ async function sendRating(): Promise<void> {
     ratingSubmitting.value = false
   }
 }
+
+// —— ⑧ 语义旁证（#109） ——
+/**
+ * 触发一次旁证跑批并轮询状态。
+ *
+ * 三条约束来自后端契约（`app/api/routes/console_eval.py`）：
+ * 1. 触发**只投递任务**、立刻回 `run_id`——跑批是分钟级的，挂在请求上必然超时；
+ * 2. `queued` 是正常状态（任务还在队列里），不是「没有这次跑批」；
+ * 3. `partial` 也是终态：裁判配额/超时会让部分题没评上，那**不是**检索退化，
+ *    所以界面上不把它读成「失败」，只是如实显示已评分/未评分数。
+ */
+const sideEvidenceRunId = ref<string | null>(null)
+const sideEvidenceStatus = ref<string>('')
+const sideEvidenceJudgeModel = ref<string | null>(null)
+const sideEvidenceSummary = ref<{
+  context_precision?: number | null
+  context_recall?: number | null
+  count?: number
+  scored?: number
+  unscored?: number
+} | null>(null)
+const sideEvidenceError = ref<string | null>(null)
+const sideEvidenceError2 = ref<string | null>(null)
+const sideEvidenceStarting = ref(false)
+let sideEvidenceTimer: ReturnType<typeof setTimeout> | null = null
+
+const SIDE_EVIDENCE_TERMINAL = new Set(['ok', 'partial', 'failed'])
+
+function stopSideEvidencePolling(): void {
+  if (sideEvidenceTimer !== null) {
+    clearTimeout(sideEvidenceTimer)
+    sideEvidenceTimer = null
+  }
+}
+
+async function pollSideEvidence(runId: string): Promise<void> {
+  try {
+    const state = await fetchSideEvidence(runId)
+    if (sideEvidenceRunId.value !== runId) return
+    sideEvidenceStatus.value = state.status
+    sideEvidenceJudgeModel.value = state.judge_model ?? null
+    sideEvidenceSummary.value = state.summary ?? null
+    sideEvidenceError2.value = state.error ?? null
+    if (SIDE_EVIDENCE_TERMINAL.has(state.status)) {
+      stopSideEvidencePolling()
+      return
+    }
+  } catch (error) {
+    sideEvidenceError.value = errorText(error)
+    stopSideEvidencePolling()
+    return
+  }
+  // 3 秒一轮：跑批本身是分钟级，再密只是白打接口；页面离开时由 onUnmounted 收尾。
+  sideEvidenceTimer = setTimeout(() => void pollSideEvidence(runId), 3000)
+}
+
+async function startSideEvidence(): Promise<void> {
+  if (sideEvidenceStarting.value) return
+  sideEvidenceStarting.value = true
+  sideEvidenceError.value = null
+  sideEvidenceError2.value = null
+  stopSideEvidencePolling()
+  try {
+    const started = await triggerSideEvidence()
+    sideEvidenceRunId.value = started.run_id
+    sideEvidenceStatus.value = started.status
+    sideEvidenceSummary.value = null
+    sideEvidenceJudgeModel.value = null
+    void pollSideEvidence(started.run_id)
+  } catch (error) {
+    sideEvidenceError.value = errorText(error)
+  } finally {
+    sideEvidenceStarting.value = false
+  }
+}
+
+onUnmounted(() => stopSideEvidencePolling())
 </script>
 
 <template>
@@ -859,31 +942,45 @@ async function sendRating(): Promise<void> {
         </button>
 
         <div v-if="waterfallOpen" class="mt-3">
-          <p class="text-[11px] leading-relaxed text-muted">
-            填这次检索的
-            <code class="rounded bg-slate-100 px-1 font-mono text-[10px] text-slate-500">log_id</code>
-            （归属索引里那一行的 id）。它与响应里的
-            <code class="rounded bg-slate-100 px-1 font-mono text-[10px] text-slate-500">trace_id</code>
-            一一对应，但只能从 log_id 推出 trace_id，反过来推不出来。
-          </p>
-          <div class="mt-2 flex flex-wrap items-center gap-2">
-            <el-input
-              v-model="logIdInput"
-              size="small"
-              class="max-w-sm"
-              clearable
-              placeholder="log_id（36 位 UUID）"
-              @keyup.enter="loadWaterfall"
-            />
-            <el-button
-              size="small"
-              :loading="waterfallLoading"
-              :disabled="trimmedLogId === ''"
-              @click="loadWaterfall"
-            >
-              看瀑布
-            </el-button>
-          </div>
+          <!-- 有这次检索的响应时：一键看，不用抄 UUID（与评分控件共用同一个反查结果）。 -->
+          <template v-if="ratingLogId !== null">
+            <p class="text-[11px] leading-relaxed text-muted">
+              看
+              <span class="font-mono text-[10px] text-slate-500">{{ ratingLogId.slice(0, 8) }}…</span>
+              这次检索的六段耗时（关掉观测也能从本地记录看）。
+            </p>
+            <div class="mt-2">
+              <el-button size="small" :loading="waterfallLoading" @click="loadWaterfall">
+                看这次检索的瀑布
+              </el-button>
+            </div>
+          </template>
+          <!-- 没有响应（例如只在工单里拿到一个 log_id）时，才退回手填。 -->
+          <template v-else>
+            <p class="text-[11px] leading-relaxed text-muted">
+              手填
+              <code class="rounded bg-slate-100 px-1 font-mono text-[10px] text-slate-500">log_id</code>
+              （归属索引里那一行的 id）。这次的检索记录还没定位到，所以没有可一键查看的目标。
+            </p>
+            <div class="mt-2 flex flex-wrap items-center gap-2">
+              <el-input
+                v-model="logIdInput"
+                size="small"
+                class="max-w-sm"
+                clearable
+                placeholder="log_id（36 位 UUID）"
+                @keyup.enter="loadWaterfall"
+              />
+              <el-button
+                size="small"
+                :loading="waterfallLoading"
+                :disabled="trimmedLogId === ''"
+                @click="loadWaterfall"
+              >
+                看瀑布
+              </el-button>
+            </div>
+          </template>
 
           <p
             v-if="waterfallError !== null"
@@ -891,7 +988,7 @@ async function sendRating(): Promise<void> {
           >
             {{ waterfallError }}
           </p>
-          <p v-else-if="trimmedLogId === ''" class="mt-2 text-[11px] text-muted">
+          <p v-else-if="ratingLogId === null && trimmedLogId === ''" class="mt-2 text-[11px] text-muted">
             还没填 log_id。填上之后再点「看瀑布」。
           </p>
           <StageWaterfall v-else-if="waterfall !== null" class="mt-3" :data="waterfall" />
@@ -959,6 +1056,57 @@ async function sendRating(): Promise<void> {
             {{ ratingError }}
           </p>
         </div>
+      </div>
+    </el-card>
+
+    <!--
+      ⑤ 语义旁证（#109）：一个触发入口 + 状态轮询。
+      它**不进闸门**——门禁是确定性那一套（零 LLM、可复现），这里只是「阶段性体检」，
+      所以文案里不说「通过 / 不通过」，只说数字与裁判模型。跑批是分钟级的，触发只投递
+      任务，结论靠轮询 status.json。
+    -->
+    <el-card shadow="never">
+      <template #header>
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <div>
+            <h2 class="text-sm font-semibold text-slate-800">语义旁证</h2>
+            <p class="mt-1 text-xs text-slate-500">
+              用 LLM 裁判跑固定 50 题，出 CP / CR。只提示、不阻断；门禁另有确定性口径。
+            </p>
+          </div>
+          <el-button
+            size="small"
+            :loading="sideEvidenceStarting"
+            :disabled="sideEvidenceStatus === 'running' || sideEvidenceStatus === 'queued'"
+            @click="startSideEvidence"
+          >
+            触发一次旁证
+          </el-button>
+        </div>
+      </template>
+
+      <p v-if="sideEvidenceError !== null" class="rounded border border-red-200 bg-red-50 px-3 py-2 text-[11px] text-red-700">
+        {{ sideEvidenceError }}
+      </p>
+      <p v-else-if="sideEvidenceRunId === null" class="text-sm text-slate-400">
+        还没触发过。点右上角「触发一次旁证」跑一轮（约几分钟）。
+      </p>
+      <div v-else class="space-y-1.5 text-[11px]">
+        <p>
+          <span class="text-muted">run</span>
+          <span class="ml-1 font-mono text-slate-500">{{ sideEvidenceRunId }}</span>
+          <span class="ml-2 text-muted">状态</span>
+          <span class="ml-1 font-medium">{{ sideEvidenceStatus }}</span>
+        </p>
+        <p v-if="sideEvidenceJudgeModel" class="text-muted">
+          裁判模型 {{ sideEvidenceJudgeModel }}（换模型 = 换尺子，与旧报告不可比）
+        </p>
+        <p v-if="sideEvidenceSummary" class="font-mono text-slate-600">
+          CP {{ formatPercent(sideEvidenceSummary.context_precision) }} ·
+          CR {{ formatPercent(sideEvidenceSummary.context_recall) }} ·
+          已评分 {{ sideEvidenceSummary.scored }} / 未评分 {{ sideEvidenceSummary.unscored }}
+        </p>
+        <p v-if="sideEvidenceError2" class="text-[#6E4E12]">{{ sideEvidenceError2 }}</p>
       </div>
     </el-card>
 

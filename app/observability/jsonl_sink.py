@@ -75,8 +75,20 @@ class JsonlTraceSink:
         self._pending: dict[str, dict[str, Any]] = {}
 
     # ── 协议 ──
-    def record_trace(self, trace_id: str, attributes: Mapping[str, object]) -> None:
-        """记下这次检索的结构化事实；真正的落盘在 ``flush``。"""
+    def record_trace(
+        self,
+        trace_id: str,
+        attributes: Mapping[str, object],
+        *,
+        query: str | None = None,
+    ) -> None:
+        """记下这次检索的结构化事实；真正的落盘在 ``flush``。
+
+        ``query`` **收下但丢掉**（#110 复盘后显式化的决定）：这个文件是给人 grep 的
+        「哪一步慢」，不是低分样本导出的取数源——导出只认观测栈。原文一旦落进本地文件，
+        它就跟着备份 / 排查包一起走，而红线是「原文不进业务库、也不进随手能带的副本」。
+        参数照协议收，是为了让「去向决定原文去留」只有一处判断（见 ``sink.py``）。
+        """
 
         self._pending[trace_id] = {
             "ts": self._clock(),
@@ -91,6 +103,15 @@ class JsonlTraceSink:
         if pending is None:
             return
         pending["spans"].append(StageSpan(name=name, duration_ms=duration_ms))
+
+    def record_score(self, trace_id: str, score: int, *, comment: str | None = None) -> None:
+        """**丢弃**：分数在 ``retrieval_feedback`` 表里，本文件不是分数台账。
+
+        而且这里也没法「补写」——一行在 ``flush`` 时就落盘了，而反馈往往晚几秒甚至几天
+        才来。真要把它塞进去就得重写已落盘的行，那会让「一次检索一行」这条形状失效。
+        """
+
+        return None
 
     def flush(self, trace_id: str) -> None:
         """写一行，并按保留天数清掉超期文件；没见过这条 trace 时什么也不做。"""

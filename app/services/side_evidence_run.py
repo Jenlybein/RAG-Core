@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from app.services.side_evidence import SIDE_EVIDENCE_CASE_COUNT, run_side_evidence, write_run
+from app.services.side_evidence import run_side_evidence
 
 
 class RagasJudge:
@@ -94,14 +94,17 @@ def build_retriever():
 
     from app.core.config import settings
     from app.db.session import SessionLocal
+    from app.services.eval_manifest import load_manifest
     from app.services.rag_service import retrieve
     from app.services.retrieval_options import RetrievalOptions
 
-    from scripts.eval_retrieval import _load_manifest
-
-    # 只取 manifest 里**有语料**的那几个库：``_eval_kb_ids()`` 还会带上留给「空结果」用例的
+    # 只取 manifest 里**有语料**的那几个库：清单还会带上留给「空结果」用例的空库
     # ``kb-eval-empty``，那个库不在就不再建，检索会以「knowledge base not found」整单拒绝。
-    layouts, _empty_kb_id = _load_manifest()
+    #
+    # 清单从 ``app.services.eval_manifest`` 读，**不是** ``scripts.eval_retrieval``：这条路径由
+    # Worker 执行，应用不该依赖评测脚本的私有函数（``scripts/`` 也没有 ``__init__.py``，
+    # 能不能 import 取决于 cwd）。
+    layouts, _empty_kb_id = load_manifest()
     kb_ids = [layout.kb_id for layout in layouts]
 
     async def _run(question: str) -> list[str]:
@@ -125,29 +128,29 @@ def build_retriever():
     return lambda question: asyncio.run(_run(question))
 
 
-def run_once(*, cases: Sequence[dict[str, Any]], out_dir: Path, run_id: str, limit: int | None = None) -> dict[str, Any]:
-    """一次完整跑批：装配裁判与召回 → 跑 → 落盘。控制台触发与命令行共用这一条。"""
+def run_once(
+    *,
+    cases: Sequence[dict[str, Any]],
+    out_dir: Path,
+    run_id: str,
+    limit: int | None = None,
+    tenant_id: str | None = None,
+) -> dict[str, Any]:
+    """一次完整跑批：装配裁判与召回 → 跑 → 落盘。控制台触发与命令行共用这一条。
+
+    ``tenant_id`` 只在控制台触发时传：它决定状态文件里记多少归属信息，不参与「怎么跑」。
+    """
 
     return run_side_evidence(
-        cases=cases, judge=build_judge(), retrieve=build_retriever(), out_dir=out_dir, run_id=run_id, limit=limit
+        cases=cases,
+        judge=build_judge(),
+        retrieve=build_retriever(),
+        out_dir=out_dir,
+        run_id=run_id,
+        limit=limit,
+        tenant_id=tenant_id,
     )
 
 
 def new_run_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-
-
-def mark_failed(*, out_dir: Path, run_id: str, error: str) -> None:
-    """触发成功但跑批没能开始（如题集缺失）时，把状态写成 ``failed`` 并说明原因。"""
-
-    write_run(
-        out_dir=out_dir, run_id=run_id, judge_model="unknown", summary={}, results=[],
-        status="failed", error=error,
-    )
-
-
-def case_count_of(cases: Sequence[dict[str, Any]]) -> int:
-    return len([case for case in cases if case.get("status") == "ok"])
-
-
-SUBSET_SIZE = SIDE_EVIDENCE_CASE_COUNT

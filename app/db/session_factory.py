@@ -41,4 +41,27 @@ def set_session_factory(factory: Callable[[], Session] | None) -> None:
     _override = factory
 
 
-__all__ = ["session_factory", "set_session_factory"]
+def close_quietly(session: Session | None, *, on_failure: Callable[[str], None]) -> None:
+    """关掉一个**独立短事务**的会话；``close`` 自己失败也只报给 ``on_failure``。
+
+    两个旁路写者（归属索引 ``retrieval_trace``、反馈 ``retrieval_feedback``）此前各写了一份
+    逐字相同的这段逻辑（#101 / #105），差别只在 warning 的消息常量——于是「关会话失败也不
+    许把异常带回去」这条纪律存在两份，改一份就会漏一份。本轮 code-review 把它收到这里。
+
+    ``on_failure`` 收的是**异常类型名**而不是异常对象：调用方按自己的消息常量记 warning，
+    而把异常本身传出去会让「连接串进了日志」这类事重新有可能（见 ``tests/
+    test_retrieval_log_hygiene.py``）。
+
+    没有单独 ``rollback``：未提交的事务随 ``close`` 一起结束，多一步显式回滚只是多一个
+    可能抛异常的位置。
+    """
+
+    if session is None:
+        return
+    try:
+        session.close()
+    except Exception as exc:  # noqa: BLE001 - 旁路：关会话失败只许降级
+        on_failure(type(exc).__name__)
+
+
+__all__ = ["close_quietly", "session_factory", "set_session_factory"]

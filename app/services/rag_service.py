@@ -299,10 +299,15 @@ async def retrieve(
     # 观测旁路（#102）：六段耗时交出去。放在这里是因为「这次是个什么结局」刚刚成形；
     # 与下面那次写库一样，它**不影响返回值**——收集器早已计完时，去向那边连不上也只留
     # 一条 warning（``app.observability.emit_retrieval_trace``）。属性只有结构化事实：
-    # 模式、条数、降级与空结果原因，问句原文一个字都不进来。
+    # 模式、条数、降级与空结果原因。
+    #
+    # ``query`` 单独一个参数（#110 复盘后补）：它是**原文通道**，收不收由去向决定——
+    # 观测栈收（低分样本导出要靠它），本地文件丢。放进 attributes 会让「结构化事实」
+    # 与原文混成一份，也让 jsonl 那一路无法把它们分开。
     emit_retrieval_trace(
         trace_id=trace_id,
         spans=timer.spans(),
+        query=query,
         attributes={
             "mode": resolved_mode,
             "top_k": resolved_top_k,

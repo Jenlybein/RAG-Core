@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 import time
 from datetime import date, datetime, timezone
@@ -30,20 +29,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-def _preload_env_file() -> str | None:
-    import argparse
-
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--env-file", default=None)
-    known, _ = parser.parse_known_args()
-    if not known.env_file:
-        return None
-    from dotenv import dotenv_values
-
-    for key, value in dotenv_values(known.env_file).items():
-        if value is not None:
-            os.environ.setdefault(key, value)
-    return known.env_file
+# ``--env-file`` 的预读收在 ``scripts/env_bootstrap.py``（三处同构实现已合并，见那边的说明）。
+from scripts.env_bootstrap import preload_env_file as _preload_env_file  # noqa: E402
 
 
 _ENV_FILE = _preload_env_file()
@@ -95,8 +82,12 @@ def load_samples() -> list[LowScoreSample]:
 class _LangfuseQuerySource:
     """按 trace_id 取「这次检索的问句」；取不到就抛，让整轮明确失败。
 
-    观测服务的 trace 上，问句写在 trace 的 input 里（`langfuse_sink` 推 span 时带的是
-    属性，不含原文；原文在 trace 级 input）。这里用 REST 客户端读 trace，再取 input.query。
+    **读的是 observations，不是 trace**（这是本轮 code-review 修掉的第二处）：
+    SDK v5 移除了 ``api.trace.get``（v4→v5 升级说明里明确列在 removed 一栏），
+    而原文也不在 trace 级 input 里——v5 同时删掉了 trace IO setter，trace 的 input
+    由根 observation 推出来，而我们六段是并列的兄弟 span、没有根。所以写入侧把
+    ``query`` 放进**每一段** span 的 metadata（见 ``app.observability.langfuse_sink``），
+    这里按 ``trace_id`` 取任意一段再读 ``metadata.query``。
     """
 
     def __init__(self) -> None:
@@ -108,21 +99,18 @@ class _LangfuseQuerySource:
             raise RuntimeError(f"观测服务不可用（{exc.reason}）：拿不到问句原文，导出中止") from exc
 
     def query_of(self, trace_id: str) -> str:
-        from app.observability.langfuse_reader import LangfuseReadError
-
         try:
-            trace = self._client.trace.get(trace_id)
-        except LangfuseReadError:
-            raise
-        except Exception as exc:  # noqa: BLE001
+            response = self._client.observations.get_many(trace_id=trace_id, limit=100)
+        except Exception as exc:  # noqa: BLE001 - 连不上 / 认证失败都归为「读不到」
             raise RuntimeError(f"trace {trace_id} 读取失败：观测服务不可用，导出中止") from exc
-        payload = getattr(trace, "input", None)
-        if isinstance(payload, dict):
-            query = payload.get("query")
+
+        for observation in getattr(response, "data", None) or ():
+            metadata = getattr(observation, "metadata", None)
+            if not isinstance(metadata, dict):
+                continue
+            query = metadata.get("query")
             if isinstance(query, str) and query.strip():
                 return query
-        if isinstance(payload, str) and payload.strip():
-            return payload
         raise RuntimeError(f"trace {trace_id}: 观测服务里没有问句原文，导出中止")
 
 

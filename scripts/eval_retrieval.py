@@ -65,7 +65,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 import time
 from collections import Counter
@@ -86,7 +85,7 @@ if str(REPO_ROOT) not in sys.path:
 EVAL_DIR = REPO_ROOT / "eval"
 CORPUS_DIR = EVAL_DIR / "corpus"
 QUESTIONS_PATH = EVAL_DIR / "questions.json"
-MANIFEST_PATH = CORPUS_DIR / "manifest.json"
+# 清单路径随读取点一起搬到了 ``app/services/eval_manifest.py``（见下方 import 处的说明）。
 RUNS_DIR = EVAL_DIR / "runs"
 
 # RRF 常数：与 ``app.services.retrieval.fusion`` 同值，这里只用来**手算对账**。
@@ -137,34 +136,9 @@ EMPTY_NO_CHUNKS_MATCHED = "no_chunks_matched"
 # ─────────────────────────────────────────────────────── 环境变量必须先于 settings
 
 
-def _preload_env_file() -> str | None:
-    """把 ``--env-file`` 里的键灌进 ``os.environ``，**必须**早于 ``app.core.config``。
-
-    ``settings`` 是模块级单例（``app/core/config.py`` 末尾 ``settings = Settings()``），
-    导入即定型。所以 --env-file 只能在导入之前处理，不能「导入后再 reload」。
-
-    用 ``setdefault``：显式传进来的环境变量优先于文件，与 pydantic-settings 的优先级
-    一致，运维用 ``$env:MODEL_API_KEY=...`` 覆盖文件时不会被反咬。
-
-    直接用 ``python-dotenv`` 而不是自己切 ``KEY=VALUE``：它是 ``pydantic-settings``
-    的硬依赖（后者本来就靠它读 ``.env``），而 ``pydantic-settings`` 已在
-    ``pyproject.toml`` 里硬钉版本。自己写一个半吊子解析器，反而会在引号、行内注释、
-    ``export`` 前缀这些地方悄悄读错一个 key——那会让「评测用的是哪套环境」变成一个
-    查不出来的问题。
-    """
-
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--env-file", default=None)
-    known, _ = parser.parse_known_args()
-    if not known.env_file:
-        return None
-
-    from dotenv import dotenv_values
-
-    for key, value in dotenv_values(known.env_file).items():
-        if value is not None:
-            os.environ.setdefault(key, value)
-    return known.env_file
+# ``--env-file`` 的预读收在 ``scripts/env_bootstrap.py``：三个命令行工具原先各抄一份同样的
+# 实现，改一处忘两处时不会报错，只会让「这次跑的是哪套环境」变成查不出来的问题。
+from scripts.env_bootstrap import preload_env_file as _preload_env_file  # noqa: E402
 
 
 _ENV_FILE = _preload_env_file()
@@ -172,6 +146,7 @@ _ENV_FILE = _preload_env_file()
 # 下面这些 import 必须排在 ``_preload_env_file()`` 之后（E402），否则 settings 会先按
 # 空环境定型，--env-file 就白传了。
 from app.core.config import settings  # noqa: E402
+from app.utils.report_format import as_metric  # noqa: E402
 from app.core.exceptions import AppError  # noqa: E402
 from app.db.base import Base, now  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
@@ -183,6 +158,10 @@ from app.models.knowledge_base import (  # noqa: E402
 )
 from app.providers.llm import get_llm_provider  # noqa: E402
 from app.providers.llm.noop import NoopLLMProvider  # noqa: E402
+from app.services.eval_manifest import (  # noqa: E402
+    CorpusLayout,
+    load_manifest as _load_manifest,
+)
 from app.services.indexing_service import IndexingService  # noqa: E402
 from app.services.rag_service import retrieve  # noqa: E402
 from app.services.retrieval_options import RetrievalOptions  # noqa: E402
@@ -208,7 +187,9 @@ def _round(value: float | None, digits: int = 4) -> float | None:
 
 
 def _fmt(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.4f}"
+    """本地别名，指向 :func:`app.utils.report_format.as_metric`（三份重复收成一份）。"""
+
+    return as_metric(value)
 
 
 def _short(chunk_id: str | None) -> str:
@@ -372,26 +353,9 @@ class CorpusDoc:
         return f"eval-doc-{self.stem}"
 
 
-@dataclass(frozen=True)
-class CorpusLayout:
-    kb_id: str
-    name: str
-    description: str
-    documents: tuple[str, ...]
-
-
-def _load_manifest() -> tuple[list[CorpusLayout], str]:
-    payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    layouts = [
-        CorpusLayout(
-            kb_id=kb["kb_id"],
-            name=kb["name"],
-            description=kb.get("description", ""),
-            documents=tuple(kb["documents"]),
-        )
-        for kb in payload["kbs"]
-    ]
-    return layouts, payload["empty_kb"]["kb_id"]
+# 清单的读取点在 ``app/services/eval_manifest.py``：旁证跑批由 Worker 执行，那里也要读同一份
+# 清单，而 ``app/`` 不该反过来 import 脚本的私有函数（依赖方向）。这里保留 ``CorpusLayout``
+# 与 ``_load_manifest`` 两个旧名字，``eval_runner`` 等仍按旧名调用，行为完全不变。
 
 
 def _eval_kb_ids() -> tuple[str, ...]:

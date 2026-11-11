@@ -27,27 +27,8 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 
-def _preload_env_file() -> str | None:
-    """把 ``--env-file`` 灌进 ``os.environ``，**必须早于** ``app.core.config`` 的导入。
-
-    与 ``scripts/eval_retrieval.py`` 同一套做法（那边解释了为什么用 ``setdefault`` 而不是
-    覆盖：显式传入的环境变量优先，运维临时覆盖文件时不会被反咬）。
-    """
-
-    import os
-
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--env-file", default=None)
-    known, _ = parser.parse_known_args()
-    if not known.env_file:
-        return None
-
-    from dotenv import dotenv_values
-
-    for key, value in dotenv_values(known.env_file).items():
-        if value is not None:
-            os.environ.setdefault(key, value)
-    return known.env_file
+# ``--env-file`` 的预读收在 ``scripts/env_bootstrap.py``（三处同构实现已合并，见那边的说明）。
+from scripts.env_bootstrap import preload_env_file as _preload_env_file  # noqa: E402
 
 
 _ENV_FILE = _preload_env_file()

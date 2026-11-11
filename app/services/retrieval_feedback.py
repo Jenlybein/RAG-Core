@@ -22,7 +22,8 @@ import structlog
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
-from app.db.session_factory import session_factory
+from app.db.session_factory import close_quietly, session_factory
+from app.observability import emit_feedback_score
 from app.repositories import retrieval_feedback_repository, retrieval_trace_repository
 
 logger = structlog.get_logger(__name__)
@@ -50,6 +51,9 @@ def submit_feedback(
     _ensure_score_in_range(score)
     _ensure_owns_trace(db, tenant_id=tenant_id, log_id=log_id, trace_id=trace_id)
     _write_locally(log_id=log_id, tenant_id=tenant_id, score=score, comment=comment)
+    # 本地已经是权威了，这一步才是旁路（顺序不能反：先推后写，就变成「观测挂了这次反馈
+    # 就不算数」）。推失败只留 warning，响应照常返回（#105 决策 2）。
+    emit_feedback_score(trace_id=trace_id, score=score, comment=comment)
     return {"log_id": log_id, "score": score, "comment": comment}
 
 
@@ -127,19 +131,10 @@ def _write_locally(
         )
         raise AppError(ErrorCode.FEEDBACK_FAILED) from exc
     finally:
-        _close_quietly(session)
+        close_quietly(session, on_failure=_report_close_failure)
 
 
-def _close_quietly(session: Session | None) -> None:
-    """关会话也在同一条边界上：已经提交成功的事不该被一次 ``close`` 失败改写。
+def _report_close_failure(error_type: str) -> None:
+    """关会话失败也报在这条消息上：它和「写库失败」对读日志的人是同一件事。"""
 
-    改写成异常只会让调用方以为「没写上」而重试；而重试是覆盖，本来也无害——但把一次
-    成功报成失败仍然是错的。没有单独 ``rollback``：未提交的事务随 ``close`` 一起结束。
-    """
-
-    if session is None:
-        return
-    try:
-        session.close()
-    except Exception as exc:  # noqa: BLE001 - 同上
-        logger.warning(FEEDBACK_WRITE_FAILED_MESSAGE, error=type(exc).__name__)
+    logger.warning(FEEDBACK_WRITE_FAILED_MESSAGE, error=error_type)

@@ -22,7 +22,7 @@ from __future__ import annotations
 import structlog
 from sqlalchemy.orm import Session
 
-from app.db.session_factory import session_factory
+from app.db.session_factory import close_quietly, session_factory
 from app.models.retrieval_trace import RetrievalTrace
 from app.repositories import retrieval_trace_repository
 
@@ -78,19 +78,10 @@ def record_retrieval_trace(
             error=type(exc).__name__,
         )
     finally:
-        _close_quietly(session)
+        close_quietly(session, on_failure=_report_close_failure)
 
 
-def _close_quietly(session: Session | None) -> None:
-    """关会话本身也在旁路上：它失败同样只许降级，不许把异常带回去。
+def _report_close_failure(error_type: str) -> None:
+    """把「关会话失败」翻译成一条 warning（消息与写库失败共用同一条固定文本）。"""
 
-    没有单独 ``rollback``：未提交的事务会随 ``close`` 一起结束，而多一步显式回滚只是
-    多一个可能抛异常的位置。
-    """
-
-    if session is None:
-        return
-    try:
-        session.close()
-    except Exception as exc:  # noqa: BLE001 - 同上
-        logger.warning(TRACE_WRITE_FAILED_MESSAGE, error=type(exc).__name__)
+    logger.warning(TRACE_WRITE_FAILED_MESSAGE, error=error_type)

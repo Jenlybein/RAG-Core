@@ -18,10 +18,11 @@
 from __future__ import annotations
 
 import json
-from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol, Sequence
+
+from app.utils.report_format import as_metric
 
 #: 旁证子集固定 50 题（#98 已定）。少于这个数不是「跑得快」，是「另一把尺子」。
 SIDE_EVIDENCE_CASE_COUNT = 50
@@ -139,17 +140,21 @@ def build_report(
 
 
 def _fmt(value: Any) -> str:
-    return "n/a" if value is None else f"{float(value):.4f}"
+    """本地别名，指向 :func:`app.utils.report_format.as_metric`（三份重复收成一份）。"""
+
+    return as_metric(value)
 
 
 def write_run(
     *, out_dir: Path, run_id: str, judge_model: str, summary: Mapping[str, Any],
     results: Sequence[CaseResult], status: str, error: str | None = None,
+    tenant_id: str | None = None,
 ) -> None:
     """把一次旁证落成三个文件：报告、机读结果、状态。
 
     状态文件是控制台轮询的唯一依据：它由**跑批这一侧**写，而不是由触发它的请求写——
-    于是「请求成功但跑批失败」不会被记成一次成功的旁证。
+    于是「请求成功但跑批失败」不会被记成一次成功的旁证。``tenant_id`` 也写在这里，
+    让读状态的人能证明归属（见下面 ``status.json`` 那段注释）。
     """
 
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -171,7 +176,19 @@ def write_run(
         encoding="utf-8",
     )
     (out_dir / "status.json").write_text(
-        json.dumps({"status": status, "error": error, "judge_model": judge_model}, ensure_ascii=False, indent=2),
+        json.dumps(
+            {
+                "status": status,
+                "error": error,
+                "judge_model": judge_model,
+                # 归属（本轮 code-review 补的）：控制台查状态时必须能证明「这次跑批是发起它
+                # 那个租户的」。否则任一租户凭一个时间戳形状的 run_id 就能读到别人的旁证产物
+                # ——而产物里有**题库问句**。这跟「跨租户与不存在同一个答复」是同一条口径。
+                "tenant_id": tenant_id,
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
         encoding="utf-8",
     )
 
@@ -184,6 +201,7 @@ def run_side_evidence(
     out_dir: Path,
     run_id: str,
     limit: int | None = None,
+    tenant_id: str | None = None,
 ) -> dict[str, Any]:
     """跑一遍旁证并落盘；返回汇总。
 
@@ -238,24 +256,9 @@ def run_side_evidence(
         error = None
     write_run(
         out_dir=out_dir, run_id=run_id, judge_model=judge.model, summary=summary,
-        results=results, status=status, error=error,
+        results=results, status=status, error=error, tenant_id=tenant_id,
     )
     return {"summary": summary, "status": status, "error": error}
-
-
-def case_coverage(types: Counter[str], *, expected: int = SIDE_EVIDENCE_CASE_COUNT) -> dict[str, Any]:
-    """子集覆盖情况的自检：题型是否落空、总量是否够。
-
-    只在报告里提示，**不拦跑批**：题库增删时，先看到「这次只有 48 题」比先崩掉一次
-    跑批有用得多。
-    """
-
-    return {
-        "cases": sum(types.values()),
-        "expected": expected,
-        "short": sum(types.values()) < expected,
-        "types": dict(sorted(types.items())),
-    }
 
 
 __all__ = [
@@ -264,7 +267,6 @@ __all__ = [
     "SIDE_EVIDENCE_CASE_COUNT",
     "aggregate",
     "build_report",
-    "case_coverage",
     "run_side_evidence",
     "write_run",
 ]

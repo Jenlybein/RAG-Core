@@ -74,7 +74,11 @@ uv run python scripts/eval_side_evidence.py --env-file ../RAG-Core/.env         
 
 | 跑次 | 题数 | CP | CR | 状态 |
 | --- | --- | --- | --- | --- |
-| `--limit 3` 通路 | 3 | 0.6833 | 1.0000 | ok（2 题评分、1 题未评） |
+| `--limit 3` 通路 | 3 | 0.6833 | 1.0000 | `ok`（2 题评分、1 题未评）※ |
+
+※ 这一跑发生在 `partial` 档加上**之前**，所以当时写的是 `ok`。按现在的代码，
+`unscored > 0` 一律判 `partial` 并非零退出——同一批结果今天重跑会显示 `partial`。
+两处记录都留着，因为改档位这件事本身要看得出痕迹。
 | 全量（2026-11-11 07:5x） | 50 | 0.8000（5 题） | 1.0000（5 题） | **partial** |
 
 - 裁判：`deepseek-v4-1-flash-economy-261017`，取自数据库 `model_configs`（与运行时同一套）。
@@ -83,14 +87,50 @@ uv run python scripts/eval_side_evidence.py --env-file ../RAG-Core/.env         
 - **这不是一次「全量绿」**。代码对这种情况给 `partial` 状态与非零退出码；
   配额重置后重跑即可得完整数。旁证只提示、不阻断，门禁不受影响。
 
-## 五、仍未实机验证的两条（如实留档）
+## 五、端到端实机验证（2026-11-11，已补齐）
+
+原先留档为「未验证」的那条**已经做掉了**：观测栈起来、真实 HTTP 检索端点发请求、同一个
+`trace_id` 在栈里读回六段真值。
+
+```powershell
+# 观测栈（v4 全家桶）
+docker compose -f deploy/docker-compose.yml --profile obs up -d
+# API（TRACE_SINK 是启动时读的，所以要带环境变量重启）
+$env:TRACE_SINK='langfuse'; $env:LANGFUSE_HOST='http://localhost:3000'
+$env:LANGFUSE_PUBLIC_KEY='pk-lf-...'; $env:LANGFUSE_SECRET_KEY='sk-lf-...'
+uv run uvicorn app.main:app --port 8899
+# 真实检索（走数据面端点，Bearer 身份）
+curl -s -X POST http://127.0.0.1:8899/api/v1/rag/retrieve \
+  -H 'Authorization: Bearer dev-key' -H 'Content-Type: application/json' \
+  -d '{"query":"退款多久到账","kb_ids":["kb-eval"]}'
+```
+
+结果：
+
+| 项 | 值 |
+| --- | --- |
+| 响应 `code` | `0` |
+| 响应 `metadata.trace_id` | `d6f2346098fdf5f60079b7f83f6c5747` |
+| 栈里同 `trace_id` 的 observation 数 | **6** |
+| 六段耗时（ms） | `query_optimization 0.09` / `vector_recall 474.568` / `keyword_recall 9372.298` / `fusion 0.154` / `rerank 8483.89` / `collapse 12.246` |
+
+这一跑还顺手抓出一个**真 bug**：`langfuse_reader` 读栈时没传 `fields`，而 v2 的
+observations 接口默认不返回 `metadata`——于是每段都退回 `end - start`（事后补记里几乎
+相同），瀑布图从栈里读时**全是 0.0 ms**。修复是 `fields=["basic", "metadata"]`（两个都要：
+只写 `metadata` 会把 `name` 一起白名单滤掉，六段全被丢弃），并由
+`test_reader_asks_the_api_for_name_and_metadata_explicitly` 钉住——把 `fields` 删掉那条
+测试立刻变红（已做变异验证）。
+
+> 本次环境里 ES 没起，所以 `degraded_reason=keyword search failed`、`keyword_recall`
+> 花了 9372 ms 才失败——这正好验证了「失败的那一路仍然记录耗时」（#102 的设计决定）。
+
+## 六、仍未实机验证的一条（如实留档）
 
 | 项 | 状态 | 翻案条件 |
 | --- | --- | --- |
-| 观测栈**经 HTTP 检索端点**跑通完整链路 | 栈**已起过并实测**：5 个容器（web / worker / clickhouse / minio / redis）在跑，`docker stats` 读到合计 ≈1.8 GB（见 `deploy/README.md`「资源占用」）；trace 注入与读回也验过——`emit_retrieval_trace` + 真 `LangfuseTraceSink` + 真栈，六段耗时齐全、`traceId` 与 `trace_id_for(log_id)` 逐字符相同。**未做的那一步**：本机 worktree 没有 `.env`，嵌入与 LLM 的 key 都不在，`POST /api/v1/rag/retrieve` 这条真实检索链路起不来，所以「响应里的 `trace_id` → 栈里那条 trace」这条端到端链路没跑过 | 有 `.env` 的机器上发一次真实检索，核对 UI/lifecycle API 里的 trace id 与响应 `metadata.trace_id` 一致、且含六段 |
 | `--via-http` 评测冒烟 | 已实现（3 道题、断言字段清单），离线测试覆盖**挑题顺序与缺字段**，但未起 API 服务真跑 | 起服务 + 签一把 Key 后跑一次 |
 
-## 六、口径提醒（读这份表前先知道）
+## 七、口径提醒（读这份表前先知道）
 
 - **门禁指标**（零外部依赖、可复现、会阻断）与**旁证指标**（LLM 裁判、有随机性、只提示）
   是两类东西，见 `GLOSSARY.md`。本文件里所有 CP/CR 都标了是哪一类、用哪把尺子。

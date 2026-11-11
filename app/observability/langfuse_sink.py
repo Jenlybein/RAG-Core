@@ -40,17 +40,36 @@ class LangfuseTraceSink:
         # trace 级事实（模式、条数、结局）。它们在栈里没有单独的落点，所以随每一段一起
         # 带过去：按 trace_id 聚合时，读的人不必先找到某一根「主 span」才能知道这次是什么。
         self._attributes: dict[str, dict[str, object]] = {}
+        # 原文单独一份（#110 复盘后补）。它**只进观测栈**：低分样本导出要靠它把一次差评
+        # 变回一道评测题。不混进 ``_attributes``，是因为后者的语义是「这次检索的结构化
+        # 事实」；原文塞进去，读的人就分不清哪些字段是结论、哪些是输入了。
+        self._queries: dict[str, str] = {}
 
     # ── 协议 ──
-    def record_trace(self, trace_id: str, attributes: Mapping[str, object]) -> None:
+    def record_trace(
+        self,
+        trace_id: str,
+        attributes: Mapping[str, object],
+        *,
+        query: str | None = None,
+    ) -> None:
         self._attributes[trace_id] = {
             key: value for key, value in attributes.items() if value is not None
         }
+        if query:
+            self._queries[trace_id] = query
 
     def record_span(self, trace_id: str, name: str, duration_ms: float) -> None:
         client = self._client_or_create()
         metadata: dict[str, object] = {"duration_ms": duration_ms}
         metadata.update(self._attributes.get(trace_id) or {})
+        # 原文随**每一段**带过去，而不是只挂第一段：v5 移除了 trace 级 IO setter
+        # （``set_current_trace_io`` 已删），trace 的 input 由根 observation 推出来，
+        # 而六段是并列的兄弟 span、没有根。重复六份的代价是几十字节，换来的是
+        # 「导出器读任意一段都拿得到」。
+        question = self._queries.get(trace_id)
+        if question:
+            metadata["query"] = question
         # ``trace_context`` 是我们注入的那根线；``as_type="span"`` 让它在栈里是一段而不是
         # 一次模型调用（六段里没有一段是 generation）。
         with client.start_as_current_observation(
@@ -61,8 +80,25 @@ class LangfuseTraceSink:
         ):
             pass
 
+    def record_score(self, trace_id: str, score: int, *, comment: str | None = None) -> None:
+        """把反馈分推成一条 trace score（#105 决策 2 的旁路）。
+
+        SDK v5 里 ``create_score`` 仍在（v5 只改了 ``api.scores.create`` 的签名，这个便捷
+        方法是 ``span.score()`` 同一族）；``name="user_feedback"`` 与 ADR 里写的名字一致，
+        栈里按它筛「≤3 分的 trace」就是低分样本导出的上游。
+        """
+
+        client = self._client_or_create()
+        client.create_score(
+            trace_id=trace_id,
+            name="user_feedback",
+            value=score,
+            comment=comment,
+        )
+
     def flush(self, trace_id: str) -> None:
         self._attributes.pop(trace_id, None)
+        self._queries.pop(trace_id, None)
         # 没建过客户端就不必 flush：那说明这条 trace 一段都没记上（或去向是空实现）。
         if self._client is not None:
             self._client.flush()

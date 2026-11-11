@@ -21,8 +21,7 @@ from __future__ import annotations
 
 import re
 
-from fastapi import APIRouter, Depends, Path
-from fastapi import Path as PathParam
+from fastapi import APIRouter, Depends, Path, Query
 from sqlalchemy.orm import Session
 
 from app.api.console_deps import (
@@ -76,11 +75,17 @@ def retrieval_waterfall(
     summary="按 trace_id 反查 log_id（控制面，只读）",
 )
 def retrieval_trace_by_trace_id(
-    trace_id: str = PathParam(..., min_length=1, description="检索响应 metadata.trace_id"),
+    trace_id: str = Query(..., min_length=1, description="检索响应 metadata.trace_id"),
     identity: ConsoleIdentity = Depends(require_console_tenant),
     db: Session = Depends(get_db),
 ) -> ApiResponse[dict]:
     """把「这根线」翻回「那一行」，供反馈与瀑布使用（#106）。
+
+    ``trace_id`` 是 **query 参数，不是路径参数**：这条路由的路径里没有 ``{trace_id}``
+    占位符（上一条瀑布用的是 ``{log_id}/waterfall``），前端 ``consoleTraces.ts`` 也按
+    query 传。声明成 ``Path`` 会让 FastAPI 把它登记成一个不存在的路径段，实际调用
+    直接 20002 —— 这个错法离线也能全绿（测试若直接调函数就绕过了路由），所以这里
+    写明，并由走 TestClient 的用例守着。
 
     **为什么加这条端点而不是往检索响应里塞 ``log_id``**：ADR-0010 第五次修订的红线是
     「除 ``metadata.trace_id`` 外响应逐字节不变」，加字段要再开一次修订并重采黄金哈希；
