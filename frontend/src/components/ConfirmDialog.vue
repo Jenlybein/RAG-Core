@@ -36,7 +36,7 @@ const emit = defineEmits<{ confirm: [] }>()
     v-model="open"
     append-to-body
     :title="title"
-    width="420px"
+    width="480px"
     :close-on-click-modal="loading !== true"
     :close-on-press-escape="loading !== true"
     :show-close="loading !== true"

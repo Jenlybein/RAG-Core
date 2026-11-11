@@ -23,6 +23,7 @@ import { ElMessage } from 'element-plus'
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
 
+import CollapsibleCard from '../components/CollapsibleCard.vue'
 import ComparePanel from '../components/ComparePanel.vue'
 import DataPlanePanel from '../components/DataPlanePanel.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -875,7 +876,7 @@ onUnmounted(() => {
       v-model="configDialogOpen"
       append-to-body
       title="修改检索配置"
-      width="600px"
+      width="880px"
     >
       <div class="space-y-5 text-sm">
         <!-- ① Key -->
@@ -1276,22 +1277,16 @@ onUnmounted(() => {
       所以文案里不说「通过 / 不通过」，只说数字与裁判模型。跑批是分钟级的，触发只投递
       任务，结论靠轮询 status.json。
     -->
-    <el-card shadow="never">
-      <template #header>
-        <div class="flex flex-wrap items-baseline justify-between gap-2">
-          <div>
-            <h2 class="text-sm font-semibold text-slate-800">语义旁证</h2>
-            <p class="mt-1 text-xs text-slate-500">LLM 裁判跑 50 题，出 CP / CR。</p>
-          </div>
-          <el-button
-            size="small"
-            :loading="sideEvidenceStarting"
-            :disabled="sideEvidenceStatus === 'running' || sideEvidenceStatus === 'queued'"
-            @click="startSideEvidence"
-          >
-            触发一次旁证
-          </el-button>
-        </div>
+    <CollapsibleCard title="语义旁证" subtitle="LLM 裁判跑 50 题，出 CP / CR">
+      <template #actions>
+        <el-button
+          size="small"
+          :loading="sideEvidenceStarting"
+          :disabled="sideEvidenceStatus === 'running' || sideEvidenceStatus === 'queued'"
+          @click="startSideEvidence"
+        >
+          触发一次旁证
+        </el-button>
       </template>
 
       <p v-if="sideEvidenceError !== null" class="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
@@ -1380,28 +1375,28 @@ onUnmounted(() => {
           </li>
         </ul>
       </div>
-    </el-card>
+    </CollapsibleCard>
       </div>
     </div>
 
     <!-- ⑨ 数据面接口清单：通栏。它是一张四列表格，塞进 380px 的右栏会被挤成一列字。 -->
-    <el-card shadow="never">
-      <div class="flex flex-wrap items-baseline justify-between gap-2">
-        <h2 class="text-sm font-semibold text-slate-800">能调的接口</h2>
-        <span class="text-xs text-muted">
-          共 {{ DATA_PLANE_ENDPOINTS.length }} 条 · 只读 {{ trialableCount }} 条可试
-        </span>
-      </div>
-      <div class="mt-3">
-        <DataPlanePanel :kb-id="firstSelectedKbId" :has-key="store.selectedKeyId !== null" />
-      </div>
-    </el-card>
+    <CollapsibleCard
+      title="能调的接口"
+      :default-open="false"
+      :summary="`${DATA_PLANE_ENDPOINTS.length} 条`"
+    >
+      <template #actions>
+        <span class="chip">只读 {{ trialableCount }} 条可试</span>
+      </template>
+      <DataPlanePanel :kb-id="firstSelectedKbId" :has-key="store.selectedKeyId !== null" />
+    </CollapsibleCard>
 
     <!-- 报告弹窗：Markdown 渲染成结构（标题 / 表格 / 列表），样式由渲染器注入的类名带来 -->
     <el-dialog
       :model-value="reportRunId !== null"
+      append-to-body
       title="旁证报告"
-      width="820px"
+      width="880px"
       @update:model-value="closeReport"
     >
       <p v-if="reportRunId !== null" class="mb-2 font-mono text-xs text-slate-500">

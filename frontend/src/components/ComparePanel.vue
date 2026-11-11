@@ -22,6 +22,7 @@ import {
   type DiffDirection,
   type ResultFieldName,
 } from '../utils/retrieveCompare'
+import CollapsibleCard from './CollapsibleCard.vue'
 import { formatDateTime } from '../utils/datetime'
 import { formatRank, formatScore } from '../utils/format'
 
@@ -112,17 +113,16 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
 </script>
 
 <template>
-  <el-card v-if="history.length > 0" shadow="never">
-    <template #header>
-      <div class="flex flex-wrap items-center justify-between gap-2">
-        <div>
-          <h2 class="text-sm font-semibold text-slate-800">对比面板</h2>
-          <p class="mt-1 text-xs text-slate-500">左「基准」右「当前」，只给有值的差异上色。</p>
-        </div>
-        <span v-if="latest !== null" class="shrink-0 text-xs text-slate-500">
-          当前：第 {{ latest.seq }} 次 · {{ formatDateTime(latest.at) }}
-        </span>
-      </div>
+  <CollapsibleCard
+    v-if="history.length > 0"
+    title="对比面板"
+    subtitle="左「基准」右「当前」，只给有值的差异上色"
+    :default-open="true"
+  >
+    <template #actions>
+      <span v-if="latest !== null" class="text-xs text-muted">
+        当前：第 {{ latest.seq }} 次 · {{ formatDateTime(latest.at) }}
+      </span>
     </template>
 
     <div class="space-y-4">
@@ -384,5 +384,5 @@ function fieldValue(field: ResultFieldName, value: number | null): string {
         再跑一次检索，这里就会自动拿「上一次」做对照；把某一次钉为基准后，之后每一次都会跟它比。
       </p>
     </div>
-  </el-card>
+  </CollapsibleCard>
 </template>

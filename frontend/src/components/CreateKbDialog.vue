@@ -165,7 +165,7 @@ function continueUpload(): void {
     v-model="open"
     append-to-body
     title="新建知识库"
-    width="560px"
+    width="640px"
     :close-on-click-modal="false"
   >
     <!-- 成功后的下一步：不要求用户去别处复制那个 ID -->

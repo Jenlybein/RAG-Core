@@ -220,8 +220,9 @@ function asTrace(row: unknown): RecentTrace {
     -->
     <el-dialog
       :model-value="openLogId !== null"
+      append-to-body
       title="六段耗时"
-      width="760px"
+      width="880px"
       @update:model-value="closeWaterfall"
     >
       <p v-if="openLogId !== null" class="mb-2 font-mono text-xs text-slate-500">

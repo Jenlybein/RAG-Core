@@ -491,7 +491,7 @@ function goRetrieve(kbId: string): void {
     </el-card>
 
     <!-- ───────── 详情：库内文档的增删查改 ───────── -->
-    <el-dialog v-model="detailOpen" append-to-body width="760px" :close-on-click-modal="false">
+    <el-dialog v-model="detailOpen" append-to-body width="880px" :close-on-click-modal="false">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-3 pr-6">
           <div>
@@ -594,7 +594,7 @@ function goRetrieve(kbId: string): void {
     <!-- ───────── 原文：只读，独立弹窗叠在详情之上 ───────── -->
     <el-dialog
       v-model="contentOpen"
-      width="820px"
+      width="880px"
       append-to-body
       :close-on-click-modal="false"
     >

@@ -478,7 +478,7 @@ async function refresh(): Promise<void> {
       v-model="dialogVisible"
       append-to-body
       :title="dialogMode === 'create' ? '新增模型配置' : '编辑模型配置'"
-      width="560px"
+      width="640px"
       :close-on-click-modal="false"
     >
       <!--

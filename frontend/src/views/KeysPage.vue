@@ -473,7 +473,7 @@ watch(
       v-model="editorOpen"
       append-to-body
       :title="editorTitle"
-      width="760px"
+      width="880px"
       :close-on-click-modal="!saving"
       :close-on-press-escape="!saving"
       :show-close="!saving"
@@ -544,7 +544,7 @@ watch(
     />
 
     <!-- 明文弹窗：关掉即丢弃（`revealOpen` 的 setter 会清空 revealed） -->
-    <el-dialog v-model="revealOpen" append-to-body title="密钥明文（关闭后不再保留）" width="560px">
+    <el-dialog v-model="revealOpen" append-to-body title="密钥明文（关闭后不再保留）" width="640px">
       <el-input
         :model-value="revealed?.value ?? ''"
         readonly
