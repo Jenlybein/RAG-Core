@@ -2,12 +2,18 @@
 
 score = 1 - 余弦距离，在 Python 侧换算成「越大越相关」；SQL 只按距离升序排。
 写入只 flush，不 commit——事务由调用它的 Service 统一提交。
+
+**写路径的会话类型是 ``DBSession``**（第 11 步票 #132）：索引链路与数据面删除已经是
+``AsyncSession``，控制面删除要到票 #130 才换（见 ``app/db/dual_session.py``）。读路径
+（``similarity_search*``）**仍是同步 ``Session``**——那是检索链路，随票 #127 一起搬。
 """
 
 from sqlalchemy import and_, delete, false, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.db import dual_session
+from app.db.dual_session import DBSession
 from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk
 from app.models.document import Document
 from app.providers.vectorstores.base import VectorStore
@@ -36,7 +42,7 @@ def build_scope_filter(index_versions: dict[str, str]) -> ColumnElement[bool]:
 
 
 class PgVectorStore(VectorStore):
-    async def add_chunks(self, db: Session, chunks: list[dict]) -> None:
+    async def add_chunks(self, db: DBSession, chunks: list[dict]) -> None:
         db.add_all(
             [
                 Chunk(
@@ -53,7 +59,7 @@ class PgVectorStore(VectorStore):
                 for c in chunks
             ]
         )
-        db.flush()
+        await dual_session.flush(db)
 
     async def similarity_search(
         self, db: Session, query_vector: list[float], *, tenant_id: str, kb_id: str, top_k: int
@@ -132,9 +138,10 @@ class PgVectorStore(VectorStore):
         ]
 
     async def delete_by_document_id(
-        self, db: Session, document_id: str, *, tenant_id: str
+        self, db: DBSession, document_id: str, *, tenant_id: str
     ) -> None:
-        db.execute(
-            delete(Chunk).where(Chunk.document_id == document_id, Chunk.tenant_id == tenant_id)
+        await dual_session.execute(
+            db,
+            delete(Chunk).where(Chunk.document_id == document_id, Chunk.tenant_id == tenant_id),
         )
-        db.flush()
+        await dual_session.flush(db)

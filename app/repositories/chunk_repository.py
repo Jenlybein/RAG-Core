@@ -3,11 +3,16 @@
 ``count_by_document_ids`` 供文档列表接口一次拿到全部文档的切片数，不做 N+1；
 ``count_by_kb_ids`` 供检索层判定「空结果到底是哪种空」（票 4）；
 ``delete_by_document_id`` 由索引重建 / 删除文档复用。
+
+``async_count_by_document_ids`` 是第 11 步票 #132 的异步孪生：上传 / 列文档那条链路换栈后
+用它；同步版留给控制面与检索链路，删除条件见 ``app/db/dual_session.py``。
 """
 
 from sqlalchemy import Integer, delete, func, or_, select
 from sqlalchemy.orm import Session
 
+from app.db import dual_session
+from app.db.dual_session import DBSession
 from app.models.chunk import Chunk
 
 
@@ -133,12 +138,31 @@ def count_by_document_ids(
 
     if not document_ids:
         return {}
-    stmt = (
+    stmt = _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
+    return {document_id: int(count) for document_id, count in db.execute(stmt).all()}
+
+
+def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str):
+    """「每份文档各有几片」的那一条分组计数（同步与异步孪生共用）。"""
+
+    return (
         select(Chunk.document_id, func.count())
         .where(Chunk.document_id.in_(document_ids), Chunk.tenant_id == tenant_id)
         .group_by(Chunk.document_id)
     )
-    return {document_id: int(count) for document_id, count in db.execute(stmt).all()}
+
+
+async def async_count_by_document_ids(
+    db: DBSession, document_ids: list[str], *, tenant_id: str
+) -> dict[str, int]:
+    """一次分组查询拿回 ``{document_id: 切片数}``（语义同 :func:`count_by_document_ids`）。"""
+
+    if not document_ids:
+        return {}
+    result = await dual_session.execute(
+        db, _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
+    )
+    return {document_id: int(count) for document_id, count in result.all()}
 
 
 def delete_by_document_id(db: Session, document_id: str) -> None:

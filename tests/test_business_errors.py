@@ -92,9 +92,18 @@ def client(offline_embedding):
 
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: object()
 
     main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
+    # 数据面上传从票 #132 起走异步会话：两条依赖都要挡，否则这条用例会去连本机
+    # PostgreSQL——而它要断言的只是「不存在的知识库返回哪个码」。
+    async_session = importlib.import_module("app.db.async_session")
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: object()
+
+    async def _no_async_transaction():
+        yield object()
+
+    main.app.dependency_overrides[async_session.get_async_transaction] = _no_async_transaction
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
     from app.core.config import settings
@@ -236,7 +245,12 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
 
 def test_document_upload_nonexistent_knowledge_base_uses_the_same_exit(client, monkeypatch) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+
+    async def _missing(_db, kb_id, *, tenant_id):
+        return None
+
+    # 上传链路是异步栈（票 #132），所以换的是异步孪生；同步那个留给检索链路。
+    monkeypatch.setattr(repo, "async_get_by_id_for_tenant", _missing)
 
     response = client.post(
         "/api/v1/documents/upload",

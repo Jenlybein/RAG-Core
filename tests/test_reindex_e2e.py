@@ -6,8 +6,12 @@
 （``prepare_for_indexing``，不盖租约），**Worker 是唯一抢占者**。
 
 接缝：ASGI 边界发一次真实 reindex 请求；投递缝换成记录器；随后在同一个内存
-SQLite 会话上跑真实的 ``IndexingService.index_existing_document``，只把切块器 /
+SQLite 库上跑真实的 ``IndexingService.index_existing_document``，只把切块器 /
 embedding / 向量存储换成离线替身。不连 PostgreSQL、不发网络请求。
+
+**两条会话来自两套栈**（票 #132）：reindex 路由仍是同步会话（随票 #130 搬），Worker
+流水线已经是 ``AsyncSession``——同一个库文件上各开一个引擎，前后串行，所以「路由只准备
+入队、Worker 才抢租约」这件事仍然是在真 SQL 上验的。
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
@@ -124,11 +129,24 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
                 session=session,
                 enqueued=enqueued,
                 store=store,
+                database_path=tmp_path / "reindex.db",
             )
     finally:
         main.app.dependency_overrides.clear()
         session.close()
         engine.dispose()
+
+
+async def _run_worker_pipeline(service: IndexingService, database_path: Path) -> int:
+    """在**异步**引擎上跑真实流水线（Worker 那一侧的会话类型），跑完即 dispose。"""
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        async with session_factory() as async_session:
+            return await service.index_existing_document(async_session, DOC_ID)
+    finally:
+        await engine.dispose()
 
 
 def test_reindex_route_then_worker_produces_chunks_and_success(
@@ -170,7 +188,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
         embeddings=_StubEmbeddings(),
         stores=[reindex_env.store],
     )
-    count = asyncio.run(service.index_existing_document(reindex_env.session, DOC_ID))
+    count = asyncio.run(_run_worker_pipeline(service, reindex_env.database_path))
 
     assert count == len(PIECES), "Worker 必须真的抢到索引权并写入切片"
     assert reindex_env.store.calls == ["purge", "add"], "先删旧切片，再写新切片"

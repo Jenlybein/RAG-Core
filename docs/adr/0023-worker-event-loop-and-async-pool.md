@@ -1,6 +1,6 @@
 # 0023. Worker 进程的事件循环归属：一个进程一个常驻循环，异步连接池跟着它活
 
-- 状态：草稿（决策已定；接线与验收在 #132 完成后转「已采纳」）
+- 状态：**已采纳**（探针与决策在 #131；接线与验收在 #132 完成，落地清单一节见文末「接线落地」）
 - 日期：2026-11-13
 - 相关：父 spec #122「第 11 步」、票 #131（探针）、#132（接线）、**ADR-0009「异步索引用 Celery + `asyncio.run`」**（本文修订它「每任务一个循环只是丑、不是不安全」那句）、ADR-0022「连接复用按事件循环隔离」、`GLOSSARY.md`「Worker 常驻循环」「检索执行池」「索引链路」、`app/db/async_session.py`、`app/db/worker_loop.py`、`app/tasks/indexing.py`、`app/celery_app.py`、`docs/架构.md`「双栈期的数据库连接预算」、`tests/test_worker_loop.py`、`tests/test_integration_worker_loop.py`
 
@@ -84,11 +84,14 @@ Worker 每个子进程**一个常驻事件循环**（`app/db/worker_loop.py` 的
 
 ```python
 @worker_process_init.connect
-def _start_worker_loop(**_kwargs): get_worker_loop()          # 起不来就在启动阶段暴露
+def _start_worker_loop(**_kwargs): get_worker_loop().start()   # 起不来就在启动阶段暴露
 
 @worker_process_shutdown.connect
 def _stop_worker_loop(**_kwargs): shutdown_worker_loop()      # 确定性释放
 ```
+
+`start()` 而不是只拿单例：线程要**真的起来**，「起不来」才会在启动阶段炸，而不是等第一条
+任务撞超时（`run()` 里的惰性 `start()` 是幂等的，这条只是把失败提前）。
 
 `app/db/worker_loop.py` 已经在模块级 `atexit.register(shutdown_worker_loop)`：没有信号、也没有 lifespan 的进程（脚本、排障、评测）靠它兜底。
 
@@ -124,7 +127,28 @@ RAG_INTEGRATION_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:54
 对照阅读：
 
 - `app/db/worker_loop.py`：应能看到 `run()` 用 `run_coroutine_threadsafe` 投**工厂函数**、`shutdown()` 的四步顺序、win32 的 `SelectorEventLoop` 分支；
-- `tests/test_integration_worker_loop.py`：应能看到三条用例分别对应 A / B / 现状，且断言的是 `connect` 事件数、后端 pid 与 `pg_stat_activity`，不是「跑通了」；
-- `app/tasks/indexing.py`：**本票没改**——它仍然是 `asyncio.run(...)`，接线是 #132。
+- `tests/test_integration_worker_loop.py`：应能看到三条用例分别对应 A / B / 现状，加一条并发连接上限（票 #132 加的），且断言的是 `connect` 事件数、后端 pid、`pg_stat_activity` 与 `pool.checkedout()`，不是「跑通了」；
+- `app/tasks/indexing.py`：**#132 起已接线**——任务体把工厂投进 `get_worker_loop().run(...)`，那句 `finally: await aclose_current_loop_clients()` 已经删掉（见下节）。
+
+## 接线落地（#132）
+
+接线本身只有三处，加上一处**必须删掉的收尾**：
+
+| 位置 | 接线 | 为什么是这里 |
+| --- | --- | --- |
+| `app/celery_app.py` | `worker_process_init` → `get_worker_loop().start()`；`worker_process_shutdown` → `shutdown_worker_loop()` | 让「起不来」暴露在启动阶段（线程要**真的**起来）；让 `dispose` 发生在**循环还活着**的时候。`atexit` 只是兜底（prefork 子进程可能走 `os._exit`）。 |
+| `app/tasks/indexing.py` | `get_worker_loop().run(lambda: _index_in_the_worker_loop(...))`——投**工厂**，协程与连接从这一刻起属于常驻循环 | 投协程对象等于在任务线程里把协程绑到另一个循环上；工厂让「第一次 `connect` 发生在 `run` 里面」（决策三）。 |
+| `app/tasks/indexing.py` | 任务会话 `async_session_factory()()` 在**循环里**开、在 `finally` 里 `await close()` | 复用的是**连接池**（归循环），不是会话（归任务）。关会话不能省：被放弃的 checked-out 连接连 `dispose` 都救不回来（会停在 `idle in transaction`）。 |
+| `app/tasks/indexing.py` | **删掉** `_index_in_its_own_loop` 的 `finally: await aclose_current_loop_clients()` | 那句是为「每任务一个循环」写的；接线之后它等于每个任务把共享客户端关掉，复用立刻归零。收尾上移到 `WorkerLoop.shutdown`。 |
+
+**证据**（都在默认套件里，除最后两条走 `RAG_INTEGRATION_DATABASE_URL` 门禁）：
+
+- `tests/test_http_clients.py::test_the_worker_task_keeps_the_clients_it_built_across_tasks`：两个任务共用一个客户端，任务结束时**不关**，`shutdown_worker_loop()` 才关；
+- `tests/test_indexing_task.py`：任务体跑在**真的** `WorkerLoop` 上（只有会话工厂与仓储是替身），重试 / 失败留痕 / `request_id` 关联照旧；
+- `tests/test_document_pipeline_e2e.py`：上传 → 投递（真的常驻循环）→ 解析 → 切块 → 写入 → SUCCESS 一条链；
+- `tests/test_integration_worker_loop.py::test_concurrent_tasks_stay_under_the_pool_ceiling_and_return_every_connection`：24 个并发任务、池上限 15，物理连接不超过上限、跑完 `checkedout() == 0`——「连接风暴」那一条的硬证据；
+- `tests/test_integration_cas.py` 的异步孪生两条：CAS 与重试生命周期在 `AsyncSession` 上同样成立。
+
+**观测**：`WorkerLoop.shutdown()` 在 `dispose` 之前记一行 `worker_loop_pool_state`（`pool_size` / `checked_out`）。上限是配置，读数是这一行；泄漏的样子就是关停时 `checked_out` 还不为 0。
 
 **自检**：一个没读过本项目的人，能否只看这份 ADR 说清「为什么不能每个任务 `asyncio.run` 一次就完事」「为什么没选 `NullPool`」「Worker 退出时连接是谁关的、在哪一刻关」？说不清就补大白话，不要补术语。

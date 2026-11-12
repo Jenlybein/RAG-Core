@@ -19,6 +19,7 @@
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
+from app.db.dual_session import DBSession
 from app.models.knowledge_base import KnowledgeBase
 from app.repositories import knowledge_base_repository
 
@@ -27,6 +28,21 @@ def ensure_visible(db: Session, *, tenant_id: str, kb_id: str) -> KnowledgeBase:
     """返回该租户可见的知识库，否则抛 20008；不泄露它是否存在。"""
 
     kb = knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
+    if kb is None:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+    return kb
+
+
+async def async_ensure_visible(db: DBSession, *, tenant_id: str, kb_id: str) -> KnowledgeBase:
+    """:func:`ensure_visible` 的异步孪生（上传登记链路，第 11 步票 #132）。
+
+    判定与错误码逐字相同：缺失与跨租户一律 ``KNOWLEDGE_BASE_NOT_FOUND``（20008），
+    绝不返回「无权限」。
+    """
+
+    kb = await knowledge_base_repository.async_get_by_id_for_tenant(
+        db, kb_id, tenant_id=tenant_id
+    )
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
     return kb

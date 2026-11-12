@@ -62,30 +62,38 @@
 
 对应的替身与契约：`tests/fake_db.AsyncRecordingSession`（同一份语义的异步面；`add` 是**同步**方法，因为真 `AsyncSession` 上只有它没变成 `await`）与 `tests/test_session_double_contract.py`。已经用上异步会话的请求路径是 `/console/retrieval-traces*` 三条与 `/api/v1/rag/feedback`；`test_console_waterfall.py` / `test_console_trace_lookup.py` 的夹具把归属索引的行**只放进异步替身**，所以「这条读退回同步会话」会让用例当场红，而不是悄悄照样绿。
 
+票 #132（入库与索引异步）把**写路径**也搬了过来，新增的接缝有三条：
+
+- `Depends(get_async_db)` + `Depends(get_async_transaction)`（`app/db/async_session.py`）：上传端点的两条依赖。用例用 `dependency_overrides` 换成异步替身；**两条都要挡**——只挡 `get_async_db` 不够，因为事务依赖会自己解析出同一个会话，而漏挡的那一个会真的去连本机 PostgreSQL。
+- `app/db/dual_session.py`（临时接缝）：控制面与数据面共用同一批服务函数（`document_service.upload` / `purge_document_chunks`），一边是同步会话、一边是异步会话。它按「结果可不可 await」判断，所以**异步替身也走 await 分支**；反过来按 `isinstance` 分叉时，异步替身会被判成同步、把 `flush` 的协程丢掉，用例仍然绿而写入没发生。契约见 `tests/test_dual_session.py`。
+- `app.db.worker_loop.get_worker_loop()`（**进程级**，conftest 每例前后 `reset_worker_loop()`）：任务体把工厂投进常驻循环。`test_indexing_task.py` / `test_document_pipeline_e2e.py` / `test_http_clients.py` 用的是**真的** `WorkerLoop`，只换会话工厂与仓储——于是「投工厂、在常驻循环里跑、客户端跨任务复用、关停才关」这条接线本身也在被断言。
+
+写路径的 SQL 级证据不在离线套件里（内存 SQLite 只覆盖同步孪生）：`tests/test_integration_cas.py` 有两条 `AsyncSession` 上的 CAS / 重试生命周期用例，`tests/test_integration_worker_loop.py` 有一条并发 24 任务、池上限 15 的连接数用例，都走 `RAG_INTEGRATION_DATABASE_URL` 门禁。
+
 ## 当前基线
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1550 passed, 11 skipped`（共收集 1561 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1558 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1553 passed, 8 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1558 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `8 skipped, 1553 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `4 passed, 4 skipped, 1553 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1615 passed, 17 skipped`（共收集 1632 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1629 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1618 passed, 14 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1629 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 1618 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 1618 deselected` |
 
-11 条 skip 分**四道门禁**，都不是失败：
+17 条 skip 分**四道门禁**，都不是失败：
 
 - 3 条 OCR 资产门禁（`skipif(not os.environ.get("PDF_INSPECTOR_MODEL_CACHE"))`）；
-- 4 条真 PostgreSQL 用例（`RAG_INTEGRATION_DATABASE_URL` 未设时整体跳过）；
+- 10 条真 PostgreSQL 用例（`RAG_INTEGRATION_DATABASE_URL` 未设时整体跳过：索引权 CAS 6 条 + Worker 常驻循环探针 4 条）；
 - 3 条真 Elasticsearch 用例（`RAG_INTEGRATION_ELASTICSEARCH_URL` 未设时整体跳过；
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1550 passed, 11 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1615 passed, 17 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1561 条，`-m ocr` 收集 3 条、
-> `-m integration` 收集 8 条。任何一条测试增减后按这三行重算，不要照抄上一版。
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1632 条，`-m ocr` 收集 3 条、
+> `-m integration` 收集 14 条。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
 `tests/test_business_errors.py` 与 `tests/test_exception_boundary.py` 的 `client` fixture

@@ -9,8 +9,16 @@
     的事务里发生。
   * ``DELETE /documents/{document_id}`` —— 守卫通过后按租户清除切片、删原文件、删记录。
 
-三条写入口都声明 ``Depends(get_transaction)``：一个请求一笔事务，成功提交、异常回滚，
-提交点只在 :mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
+三条写入口都声明事务依赖：一个请求一笔事务，成功提交、异常回滚，提交点只在
+:mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
+
+**上传这一条已经是异步栈**（第 11 步票 #132）：``Depends(get_async_db)`` +
+``Depends(get_async_transaction)``，会话是 ``AsyncSession``，写路径的提交点是
+``app.db.transaction`` 的异步孪生。其余三条入口仍用同步会话——它们与**控制面**共用
+同一批服务函数（``console_kb_service`` 的重建 / 删除 / 列文档），控制面要等票 #130 才换栈；
+两边共用同一份实现这一点没有变，差异收在 ``app/db/dual_session.py``。同一个路由文件里
+同时存在两个会话依赖是**迁移期的形状，不是设计**：最后一条入口换完时，同步那两个依赖
+会从这个文件里消失。
 
 按 ``document_id`` 取文档一律经 ``get_by_id_for_tenant``（ADR-0006）：缺失与跨租户
 统一按「不存在」（20016）处理，不泄露存在性。守卫一律走 ``document_state`` 的
@@ -23,14 +31,16 @@
 
 import structlog
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_key
 from app.api.upload_parsing import parse_upload_request, submitted_request_id
 from app.core.auth import DevKeyContext
 from app.core.exceptions import AppError, ErrorCode
+from app.db.async_session import get_async_db, get_async_transaction
 from app.db.session import get_db, get_transaction
-from app.db.transaction import Transaction, after_commit
+from app.db.transaction import AsyncTransaction, Transaction, after_commit
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository, document_repository
@@ -67,9 +77,9 @@ async def upload_document(
     kb_id: str | None = Form(None),
     title: str | None = Form(None),
     file: UploadFile | None = File(None),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     key: DevKeyContext = Depends(get_current_key),
-    tx: Transaction = Depends(get_transaction),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[UploadDocumentData]:
     """单端点按 content-type 分流：multipart 走文件模式，其余走 JSON 模式。
 

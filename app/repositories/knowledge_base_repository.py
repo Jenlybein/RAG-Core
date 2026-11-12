@@ -7,11 +7,17 @@
 「一行库」的入口只有 :func:`get_by_id_for_tenant`，租户是**无默认值的强制参数**——名字里
 带租户，签名里必须有租户，忘记过滤在代码层就写不出来（ADR-0006）。唯一不带租户的是运维
 脚本发现归属用的 :func:`get_owner_tenant_id`，它只回一个字符串，不回库行。
+
+**异步孪生（第 11 步票 #132）**：上传登记链路走 ``AsyncSession``，所以 :func:`get_by_id_for_tenant`
+与 :func:`get_split_config` 各有一个 ``async_*`` 孪生，执行同一条语句（见
+``app/db/dual_session.py`` 的删除条件）。同步版留给检索链路、控制面与运维脚本。
 """
 
-from sqlalchemy import func, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
+from app.db import dual_session
+from app.db.dual_session import DBSession
 from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase, settings_of
 
 
@@ -30,10 +36,16 @@ def get_by_id_for_tenant(db: Session, kb_id: str, *, tenant_id: str) -> Knowledg
     口径，两个入口都只经过那一个守卫。
     """
 
-    statement = select(KnowledgeBase).where(
+    statement = _kb_for_tenant_statement(kb_id, tenant_id=tenant_id)
+    return db.execute(statement).scalar_one_or_none()
+
+
+def _kb_for_tenant_statement(kb_id: str, *, tenant_id: str) -> Select[tuple[KnowledgeBase]]:
+    """按 id + 租户取库的那一条查询（同步与异步孪生共用）。"""
+
+    return select(KnowledgeBase).where(
         KnowledgeBase.id == kb_id, KnowledgeBase.tenant_id == tenant_id
     )
-    return db.execute(statement).scalar_one_or_none()
 
 
 def get_owner_tenant_id(db: Session, kb_id: str) -> str | None:
@@ -97,3 +109,28 @@ def count_by_tenant(db: Session, tenant_id: str) -> int:
         .where(KnowledgeBase.tenant_id == tenant_id)
     )
     return int(db.execute(stmt).scalar_one())
+
+
+# ───────────────────────────────────── 异步孪生（第 11 步票 #132：上传登记链路）
+
+
+async def async_get_by_id_for_tenant(
+    db: DBSession, kb_id: str, *, tenant_id: str
+) -> KnowledgeBase | None:
+    """按 ``id`` **且** ``tenant_id`` 取库（语义同 :func:`get_by_id_for_tenant`）。"""
+
+    statement = _kb_for_tenant_statement(kb_id, tenant_id=tenant_id)
+    result = await dual_session.execute(db, statement)
+    kb: KnowledgeBase | None = result.scalar_one_or_none()
+    return kb
+
+
+async def async_get_split_config(db: DBSession, kb_id: str, *, tenant_id: str) -> tuple[str, int]:
+    """取该库的切块配置 ``(strategy, chunk_size)``（语义同 :func:`get_split_config`）。"""
+
+    kb: KnowledgeBase | None = await dual_session.get(db, KnowledgeBase, kb_id)
+    if kb is None or kb.tenant_id != tenant_id:
+        values = settings_of(None)
+        return SPLIT_STRUCTURE, values["chunk_size"]
+    values = settings_of(kb)
+    return kb.split_strategy, values["chunk_size"]

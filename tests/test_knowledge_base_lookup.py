@@ -57,7 +57,9 @@ def test_the_repository_no_longer_exposes_a_tenant_less_lookup() -> None:
     assert not hasattr(kb_repo, "get_by_id"), "按 id 裸取库的函数必须保持删除状态"
 
     lookup_names = {name for name in dir(kb_repo) if "get_by_id" in name}
-    assert lookup_names == {"get_by_id_for_tenant"}
+    assert lookup_names == {"get_by_id_for_tenant", "async_get_by_id_for_tenant"}, (
+        "取库只有带租户的两个入口（同步 / 异步孪生，票 #132 起上传链路走异步那个）"
+    )
 
 
 def test_the_tenant_is_a_required_keyword_argument() -> None:

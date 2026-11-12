@@ -107,6 +107,16 @@ class _Rows:
 
         return self._values[0] if self._values else None
 
+    def scalar_one_or_none(self) -> Any:
+        """「按 id + 租户取一行」那条查询的收尾（票 #132 起上传链路走异步孪生）。
+
+        替身只回第一行或 ``None``：真 SQLAlchemy 在多于一行时抛 ``MultipleResultsFound``，
+        但这类查询的 ``id`` 是主键，真库上不可能多行——把那条纪律搬进替身只会让假数据的
+        构造多一条约束，换不来任何保护。
+        """
+
+        return self.first()
+
     def __iter__(self) -> Any:
         return iter(self._values)
 

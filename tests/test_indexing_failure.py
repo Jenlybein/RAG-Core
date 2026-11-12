@@ -69,7 +69,7 @@ def _records(path: Path) -> list[dict[str, Any]]:
 
 
 class _FakeSession:
-    """最小会话替身：文档行留在内存里，不碰数据库。"""
+    """最小**异步**会话替身：文档行留在内存里，不碰数据库（票 #132 起上传走异步会话）。"""
 
     def __init__(self) -> None:
         self.info: dict[str, Any] = {}
@@ -79,22 +79,22 @@ class _FakeSession:
     def add(self, doc: Any) -> None:
         self.documents[doc.id] = doc
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         return None
 
-    def execute(self, _statement: Any) -> Any:
+    async def execute(self, _statement: Any) -> Any:
         return ZERO_COUNT
 
     def get(self, _model: Any, document_id: str) -> Any:
         return self.documents.get(document_id)
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         self.commit_count += 1
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         return None
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
 
 
@@ -103,29 +103,28 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
     """离线上传接缝：返回 ``(client, session, enqueued)``，投递缝只记录不投递。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     document_service = importlib.import_module("app.services.document_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     session = _FakeSession()
     enqueued: list[dict[str, Any]] = []
 
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(
+    async def _visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return SimpleNamespace(
             tenant_id=tenant_id,
             split_strategy="structure",
             allowed_formats=["markdown"],
             settings={},
-        ),
-    )
+        )
+
+    monkeypatch.setattr(kb_repo, "async_get_by_id_for_tenant", _visible_kb)
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
     )
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: session
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
 

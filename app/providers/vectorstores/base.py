@@ -2,18 +2,25 @@
 
 判据：向量写入与相似度检索归它，普通 CRUD 归 ChunkRepository。
 业务层只依赖这个 ABC，换 Milvus / Qdrant 只改实现与工厂函数。
+
+**写路径的会话类型是 ``DBSession``，读路径仍是同步 ``Session``**（第 11 步票 #132）：
+索引链路与数据面删除已经换成 ``AsyncSession``，控制面删除与检索链路各自随票 #130 / #127
+搬。两个方向刻意不共用同一个类型：写方法一旦接受同步会话，索引链路就会在迁移里悄悄退回
+阻塞事件循环的那一侧。
 """
 
 from abc import ABC, abstractmethod
 
 from sqlalchemy.orm import Session
 
+from app.db.dual_session import DBSession
+
 
 class VectorStore(ABC):
     """向量存储能力。"""
 
     @abstractmethod
-    async def add_chunks(self, db: Session, chunks: list[dict]) -> None:
+    async def add_chunks(self, db: DBSession, chunks: list[dict]) -> None:
         """批量写入切片向量。"""
 
     @abstractmethod
@@ -46,5 +53,7 @@ class VectorStore(ABC):
         """
 
     @abstractmethod
-    async def delete_by_document_id(self, db: Session, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, db: DBSession, document_id: str, *, tenant_id: str
+    ) -> None:
         """删某文档的全部切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。"""

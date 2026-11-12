@@ -9,14 +9,28 @@
 不盖租约）；Worker 才是唯一的抢占者，调用 :func:`try_claim_for_indexing` 盖租约。
 若入队侧也抢先盖租约，Worker 的 WHERE 会因「租约新鲜」而拒绝它，重建与重试都会
 变成静默 no-op。
+
+## 异步孪生（第 11 步票 #132）
+
+入库与索引链路（上传登记、Worker 抢占 / 回写 / 释放租约）走 ``AsyncSession``，所以本模块
+新增一组 ``async_*`` 孪生。**语句本身只写一遍**（``_claim_statement`` /
+``_release_statement`` / 两个计数的 statement builder），同步与异步两个入口执行的是同一条
+SQL——CAS 的判定条件与租约语义因此不可能在两套入口之间漂移。
+
+同步的那几个**暂时保留**：控制面（``console_kb_service``，票 #130）与两个运维脚本还在用
+同步会话。删除条件与 ``app/db/dual_session.py`` 同一条：控制面写异步落地后，把同步函数删掉、
+把调用点收窄成 ``async_*``。
 """
 
 from datetime import datetime, timedelta
 
 from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.orm import Session
+from sqlalchemy.sql import Update
 
+from app.db import dual_session
 from app.db.base import now
+from app.db.dual_session import DBSession
 from app.models.document import Document
 from app.utils.status import DocumentStatus
 
@@ -139,12 +153,18 @@ def count_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> int:
     失败的行也占着存储与用户的认知，把它排除掉就等于「失败可以无限重传」。
     """
 
-    stmt = (
+    stmt = _count_by_kb_statement(kb_id, tenant_id=tenant_id)
+    return int(db.execute(stmt).scalar_one())
+
+
+def _count_by_kb_statement(kb_id: str, *, tenant_id: str):
+    """「这个库有多少份文档」的那一条计数（同步与异步孪生共用）。"""
+
+    return (
         select(func.count())
         .select_from(Document)
         .where(Document.kb_id == kb_id, Document.tenant_id == tenant_id)
     )
-    return int(db.execute(stmt).scalar_one())
 
 
 def count_processing_for_tenant(
@@ -162,7 +182,14 @@ def count_processing_for_tenant(
     """
 
     lease_before = now() - timedelta(seconds=lease_seconds)
-    stmt = (
+    stmt = _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
+    return int(db.execute(stmt).scalar_one())
+
+
+def _count_processing_statement(*, tenant_id: str, lease_before: datetime):
+    """「这个租户真的在占用 Worker 的文档数」的那一条计数（同步与异步孪生共用）。"""
+
+    return (
         select(func.count())
         .select_from(Document)
         .where(
@@ -174,7 +201,6 @@ def count_processing_for_tenant(
             ),
         )
     )
-    return int(db.execute(stmt).scalar_one())
 
 
 def update_status(db: Session, doc: Document, status: int, error_message: str | None = None) -> None:
@@ -264,9 +290,23 @@ def try_claim_for_indexing(
     迟到重复投递必须抢不到，否则会在 SUCCESS 之后重写切片。
     """
 
+    stmt = _claim_statement(
+        document_id,
+        tenant_id=tenant_id,
+        lease_seconds=lease_seconds,
+        allow_success=allow_success,
+    )
+    return int(db.execute(stmt).rowcount or 0) > 0
+
+
+def _claim_statement(
+    document_id: str, *, tenant_id: str, lease_seconds: int, allow_success: bool
+) -> Update:
+    """抢占索引权的那一条 ``UPDATE``（同步与异步孪生共用，见模块文档「异步孪生」）。"""
+
     claimed_at = now()
     lease_before = claimed_at - timedelta(seconds=lease_seconds)
-    stmt = (
+    return (
         update(Document)
         .where(
             Document.id == document_id,
@@ -281,7 +321,6 @@ def try_claim_for_indexing(
         )
         .execution_options(synchronize_session=False)
     )
-    return int(db.execute(stmt).rowcount or 0) > 0
 
 
 def release_index_claim(db: Session, document_id: str, *, tenant_id: str) -> None:
@@ -293,13 +332,18 @@ def release_index_claim(db: Session, document_id: str, *, tenant_id: str) -> Non
     「已排队未开工」。``tenant_id`` 是强制过滤参数（ADR-0006）。
     """
 
-    stmt = (
+    db.execute(_release_statement(document_id, tenant_id=tenant_id))
+
+
+def _release_statement(document_id: str, *, tenant_id: str) -> Update:
+    """释放租约的那一条 ``UPDATE``（同步与异步孪生共用）。"""
+
+    return (
         update(Document)
         .where(Document.id == document_id, Document.tenant_id == tenant_id)
         .values(index_claimed_at=None)
         .execution_options(synchronize_session=False)
     )
-    db.execute(stmt)
 
 
 def is_lease_alive(document: Document, *, lease_seconds: int = DOCUMENT_LEASE_SECONDS) -> bool:
@@ -315,3 +359,81 @@ def is_lease_alive(document: Document, *, lease_seconds: int = DOCUMENT_LEASE_SE
     if document.index_claimed_at is None:
         return False
     return document.index_claimed_at >= now() - timedelta(seconds=lease_seconds)
+
+
+# ───────────────────────────────────── 异步孪生（第 11 步票 #132：入库与索引链路）
+#
+# 每一条都与上面的同步版**执行同一条语句**（共用 statement builder），差别只有「等不等」。
+# 同步版暂时留给控制面与运维脚本，删除条件见模块文档。
+
+
+async def async_create(db: DBSession, doc: Document) -> Document:
+    """登记一份文档（只 flush，不提交——提交点是 ``app.db.transaction``）。"""
+
+    db.add(doc)
+    await dual_session.flush(db)
+    return doc
+
+
+async def async_get_by_id(db: DBSession, document_id: str) -> Document | None:
+    """按主键取，**不带租户过滤**：只给 Worker 任务用（语义同 :func:`get_by_id`）。"""
+
+    document: Document | None = await dual_session.get(db, Document, document_id)
+    return document
+
+
+async def async_update_status(
+    db: DBSession, doc: Document, status: int, error_message: str | None = None
+) -> None:
+    """回写状态与错误文案（只 flush，不提交）。"""
+
+    doc.status = status
+    doc.error_message = error_message
+    await dual_session.flush(db)
+
+
+async def async_try_claim_for_indexing(
+    db: DBSession,
+    document_id: str,
+    *,
+    tenant_id: str,
+    lease_seconds: int = DOCUMENT_LEASE_SECONDS,
+    allow_success: bool,
+) -> bool:
+    """Worker 侧抢占索引权；``rowcount > 0`` 即抢到（语义同 :func:`try_claim_for_indexing`）。"""
+
+    result = await dual_session.execute(
+        db,
+        _claim_statement(
+            document_id,
+            tenant_id=tenant_id,
+            lease_seconds=lease_seconds,
+            allow_success=allow_success,
+        ),
+    )
+    return int(result.rowcount or 0) > 0
+
+
+async def async_release_index_claim(db: DBSession, document_id: str, *, tenant_id: str) -> None:
+    """释放索引租约（语义同 :func:`release_index_claim`）。"""
+
+    await dual_session.execute(db, _release_statement(document_id, tenant_id=tenant_id))
+
+
+async def async_count_by_kb(db: DBSession, kb_id: str, *, tenant_id: str) -> int:
+    """该租户在该知识库下的文档总数（语义同 :func:`count_by_kb`）。"""
+
+    result = await dual_session.execute(db, _count_by_kb_statement(kb_id, tenant_id=tenant_id))
+    return int(result.scalar_one())
+
+
+async def async_count_processing_for_tenant(
+    db: DBSession, *, tenant_id: str, lease_seconds: int = DOCUMENT_LEASE_SECONDS
+) -> int:
+    """本租户真的在占用 Worker 的文档数（语义同 :func:`count_processing_for_tenant`）。"""
+
+    lease_before = now() - timedelta(seconds=lease_seconds)
+    result = await dual_session.execute(
+        db, _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
+    )
+    return int(result.scalar_one())

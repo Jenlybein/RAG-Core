@@ -37,15 +37,18 @@ SQL 一字不改。换 asyncpg 只需要改 dialect 与 URL、业务代码零改
 * 服务层继续不提交——**不允许**在服务层出现提交调用，异步化不等于把提交散出去；
   结构守卫扫的是全仓的提交与回滚调用，异步写法（前面多个 ``await``）一样会被它抓到。
 
-**目前还没有 ``get_async_transaction`` 这个请求级依赖**：异步写接口要到控制面写那一片
-（第 11 步的 S4）才出现，那时按 ``get_transaction`` 的形状加一个即可。已经用上异步提交点的
-是**反馈写入**（自己开会话的旁路短事务）；归属索引的写入在检索路径上，随票 #127 搬。
+**请求级依赖 :func:`get_async_transaction`**（第 11 步票 #132 加的）：形状与同步版
+``get_transaction`` 逐条同构——写接口在签名上声明它，一个请求恰好一笔，成功出块提交、
+异常回滚。数据面上传（``POST /documents/upload``）是第一条用它的写路径；控制面写要等到
+S4 那一片。已经用上异步提交点的还有**反馈写入**（自己开会话的旁路短事务），归属索引的
+写入在检索路径上，随票 #127 搬。
 """
 
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
+from fastapi import Depends
 from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     AsyncSession,
@@ -54,6 +57,7 @@ from sqlalchemy.ext.asyncio import (
 )
 
 from app.core.config import settings
+from app.db.transaction import AsyncTransaction, async_transaction
 
 #: 每进程的**稳态**连接数（与同步池的默认值一致，双栈期不改变既有容量）。
 POOL_SIZE: int = 5
@@ -91,7 +95,7 @@ async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI 依赖：yield 一个 ``AsyncSession``，请求结束后关闭（含异常路径）。
 
     与同步版 :func:`app.db.session.get_db` 同形：不提交、不回滚，只负责生命周期——
-    提交点是 ``app.db.transaction``（异步版见模块文档最后一节）。
+    提交点是 ``app.db.transaction``（异步版见模块文档）。
     """
 
     session = AsyncSessionLocal()
@@ -99,6 +103,23 @@ async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
     finally:
         await session.close()
+
+
+async def get_async_transaction(
+    db: AsyncSession = Depends(get_async_db),
+) -> AsyncGenerator[AsyncTransaction, None]:
+    """FastAPI 依赖：把这次请求圈进**一笔**异步事务（异步写接口专用）。
+
+    与同步版 :func:`app.db.session.get_transaction` 逐条同构：出块提交（并执行
+    ``after_commit`` 登记的动作），端点抛异常时整笔回滚后再把异常原样抛回去——错误码与
+    响应形状仍由异常处理器决定，与事务无关。FastAPI 会缓存同一请求内的依赖结果，所以
+    同一请求里多处声明它仍然只有一笔。
+
+    声明它**同时**意味着「这条路径会写库」：读接口不该声明，也不该顺手提交。
+    """
+
+    async with async_transaction(db) as opened:
+        yield opened
 
 
 __all__ = [
@@ -109,4 +130,5 @@ __all__ = [
     "AsyncSessionLocal",
     "async_engine",
     "get_async_db",
+    "get_async_transaction",
 ]

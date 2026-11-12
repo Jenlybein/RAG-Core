@@ -148,8 +148,44 @@ def test_the_resident_loop_reuses_one_physical_connection() -> None:
     assert noise == [], f"关停不该刷连接噪音：{noise}"
 
 
-# ───────────────────────────────────────────── B：任务级 NullPool（没选的方案）
+# ─────────────────────────── 并发索引：连接数有上限，超出的排队而不是再开（票 #132）
 
+
+async def _concurrent_sessions(sessions: object, count: int) -> None:
+    """一个常驻循环里同时跑 ``count`` 个「任务」：每个开一个会话、做一次查询。"""
+
+    async def _one() -> None:
+        async with sessions() as session:  # type: ignore[operator]
+            await session.execute(text("select 1"))
+
+    await asyncio.gather(*[_one() for _ in range(count)])
+
+
+def test_concurrent_tasks_stay_under_the_pool_ceiling_and_return_every_connection() -> None:
+    """并发索引不会变成连接风暴：超过池上限的那些**排队**，跑完池里一条不剩。
+
+    这是票 #132 的验收里「连接数有上限、有观测」那一条的硬证据：24 个并发任务、池上限
+    15（``POOL_SIZE + MAX_OVERFLOW``），物理连接不会超过 15 条；跑完之后
+    ``checkedout() == 0``（每任务 ``finally`` 关会话没被省掉），关停后池里也归零。
+    """
+
+    engine = _pooled_engine()
+    opened = _count_physical_connects(engine)
+    sessions = async_sessionmaker(bind=engine, expire_on_commit=False)
+    worker = WorkerLoop(name="concurrent-probe-worker", engine=engine)
+    ceiling = POOL_SIZE + MAX_OVERFLOW
+    try:
+        worker.run(lambda: _concurrent_sessions(sessions, ceiling + 9))
+
+        assert len(opened) <= ceiling, f"并发不该超过池上限 {ceiling}，实际开了 {len(opened)} 条"
+        assert engine.pool.checkedout() == 0, "跑完之后连接必须全部还回池里"
+    finally:
+        worker.shutdown()
+
+    assert "Connections in pool: 0" in engine.pool.status()
+
+
+# ───────────────────────────────────────────── B：任务级 NullPool（没选的方案）
 
 def test_the_task_level_nullpool_opens_a_new_connection_per_task() -> None:
     """每任务一条新连接（两次 connect、两个后端 pid），但每次都关得干净。"""

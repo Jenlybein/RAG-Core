@@ -33,7 +33,7 @@ from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import QuotaCounters, QuotaWindow, daily_key, qps_key
 from app.utils.status import DocumentStatus
-from tests.fake_db import EmptySession
+from tests.fake_db import AsyncRecordingSession, EmptySession
 
 TENANT_ID = "tenant_acme"
 KEY_A = "key-a"
@@ -187,11 +187,14 @@ class _Entry:
         holder: dict[str, KeyContext],
         store: _FakeCounterStore,
         enqueued: list[dict[str, Any]],
+        async_session: Any = None,
     ):
         self.client = client
         self.session = session
         self.store = store
         self.enqueued = enqueued
+        #: 上传那条路径的**异步**会话（票 #132）：被拒的上传同样不该在它上面留下行。
+        self.async_session = async_session
         self._holder = holder
         self._mcp_headers: dict[str, str] = {}
 
@@ -322,6 +325,21 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
     )
 
+    # 上传链路是异步栈（票 #132）：库可见性与静态配额读的是异步孪生，会话来自异步依赖。
+    async def _visible_kb(_db, kb_id, *, tenant_id: str) -> Any:
+        return SimpleNamespace(
+            id=kb_id,
+            tenant_id=tenant_id,
+            name=f"库 {kb_id}",
+            description=None,
+            split_strategy="size",
+            allowed_formats=["markdown"],
+            settings={"chunk_size": 400},
+        )
+
+    monkeypatch.setattr(kb_repo, "async_get_by_id_for_tenant", _visible_kb)
+    async_session = AsyncRecordingSession()
+
     holder: dict[str, KeyContext] = {}
     holder["context"] = KeyContext(
         tenant_id=TENANT_ID, key_id=KEY_A, policy=_policy(), plan=_plan()
@@ -347,11 +365,18 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
     app.dependency_overrides[db_session.get_db] = lambda: session
+    async_db = importlib.import_module("app.db.async_session")
+    app.dependency_overrides[async_db.get_async_db] = lambda: async_session
+
+    async def _async_transaction_dep():
+        yield async_session
+
+    app.dependency_overrides[async_db.get_async_transaction] = _async_transaction_dep
     app.dependency_overrides[get_current_key] = lambda: holder["context"]
 
     try:
         with TestClient(app) as client:
-            result = _Entry(client, session, holder, store, enqueued)
+            result = _Entry(client, session, holder, store, enqueued, async_session)
             result.initialize_mcp()
             yield result
     finally:
@@ -603,15 +628,20 @@ def test_uploading_over_documents_per_kb_is_a_quota_error(
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_documents_per_kb=30))
-    monkeypatch.setattr(doc_repo, "count_by_kb", lambda _db, _kb_id, *, tenant_id: 30)
-    monkeypatch.setattr(
-        doc_repo, "count_processing_for_tenant", lambda _db, *, tenant_id: 0
-    )
+
+    async def _count_docs(_db, _kb_id, *, tenant_id: str) -> int:
+        return 30
+
+    async def _count_processing(_db, *, tenant_id: str) -> int:
+        return 0
+
+    monkeypatch.setattr(doc_repo, "async_count_by_kb", _count_docs)
+    monkeypatch.setattr(doc_repo, "async_count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
     assert body["code"] == ErrorCode.QUOTA_EXCEEDED
-    assert entry.session.added == []
+    assert entry.async_session.added == [], "被拒的上传不该在异步会话上留下行"
     assert entry.enqueued == [], "被拒的上传不该往队列里塞任务"
 
 
@@ -622,10 +652,15 @@ def test_uploading_over_the_concurrent_processing_allowance_is_a_quota_error(
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_processing_documents=1))
-    monkeypatch.setattr(doc_repo, "count_by_kb", lambda _db, _kb_id, *, tenant_id: 0)
-    monkeypatch.setattr(
-        doc_repo, "count_processing_for_tenant", lambda _db, *, tenant_id: 1
-    )
+
+    async def _count_docs(_db, _kb_id, *, tenant_id: str) -> int:
+        return 0
+
+    async def _count_processing(_db, *, tenant_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(doc_repo, "async_count_by_kb", _count_docs)
+    monkeypatch.setattr(doc_repo, "async_count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
