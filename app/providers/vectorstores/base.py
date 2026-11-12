@@ -2,10 +2,17 @@
 
 判据：向量写入与相似度检索归它，普通 CRUD 归 ChunkRepository。
 业务层只依赖这个 ABC，换 Milvus / Qdrant 只改实现与工厂函数。
+
+**两种会话**（第 11 步票 #127）：读侧（两个 ``similarity_search*``）收 ``AsyncSession``
+——检索链路已经在异步栈上；写侧（``add_chunks`` / ``delete_by_document_id``）仍收同步
+``Session``——索引链路跑在 Celery 里，由它自己的票搬。同一个 ABC 里两种会话不是笔误，
+是迁移按垂直切片推进的**中间状态**：两侧的调用方不同、生命周期也不同，合成一个签名
+只会让「这次该不该 await」变成运行期的事。
 """
 
 from abc import ABC, abstractmethod
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 
@@ -18,7 +25,13 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def similarity_search(
-        self, db: Session, query_vector: list[float], *, tenant_id: str, kb_id: str, top_k: int
+        self,
+        db: AsyncSession,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        kb_id: str,
+        top_k: int,
     ) -> list[dict]:
         """返回相似度结果，score = 1 - 余弦距离（越大越相关）；
         必须带 tenant_id 与 kb_id 过滤，否则会跨库召回。"""
@@ -26,7 +39,7 @@ class VectorStore(ABC):
     @abstractmethod
     async def similarity_search_scope(
         self,
-        db: Session,
+        db: AsyncSession,
         query_vector: list[float],
         *,
         tenant_id: str,

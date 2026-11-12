@@ -52,16 +52,24 @@ class _RecordingSession:
 
 
 def test_the_repository_no_longer_exposes_a_tenant_less_lookup() -> None:
-    """``get_by_id`` 被删掉，且没有换个名字复活成「返回库行」的函数。"""
+    """``get_by_id`` 被删掉，且没有换个名字复活成「返回库行」的函数。
+
+    第 11 步票 #127 多了一个**异步面** ``get_by_id_for_tenant_async``（检索链路走它）。
+    它同样把租户写在名字里、写在签名里——两个面都是租户强制，所以这条守卫的口径不变：
+    **凡是按 id 取库行的函数，名字里必须带租户**。
+    """
 
     assert not hasattr(kb_repo, "get_by_id"), "按 id 裸取库的函数必须保持删除状态"
 
     lookup_names = {name for name in dir(kb_repo) if "get_by_id" in name}
-    assert lookup_names == {"get_by_id_for_tenant"}
+    assert lookup_names == {"get_by_id_for_tenant", "get_by_id_for_tenant_async"}
 
 
-def test_the_tenant_is_a_required_keyword_argument() -> None:
-    parameters = inspect.signature(kb_repo.get_by_id_for_tenant).parameters
+@pytest.mark.parametrize(
+    "lookup", [kb_repo.get_by_id_for_tenant, kb_repo.get_by_id_for_tenant_async]
+)
+def test_the_tenant_is_a_required_keyword_argument(lookup: Any) -> None:
+    parameters = inspect.signature(lookup).parameters
 
     tenant = parameters["tenant_id"]
     assert tenant.kind is inspect.Parameter.KEYWORD_ONLY, "关键字强制，读调用点就知道带了租户"
@@ -90,6 +98,32 @@ def test_the_lookup_filters_on_id_and_tenant_in_one_statement() -> None:
     sql = session.statements[0]
     assert "knowledge_bases.id = 'kb-1'" in sql
     assert "knowledge_bases.tenant_id = 'tenant-a'" in sql
+
+
+@pytest.mark.asyncio
+async def test_the_async_lookup_emits_the_very_same_statement() -> None:
+    """异步面与同步面**共用一条语句**（第 11 步票 #127）：租户过滤不会在两面之间漂移。"""
+
+    from tests.fake_db import AsyncRecordingSession
+
+    class _SameShapeSyncSession(_RecordingSession):
+        """与异步替身记同一份东西：``str(statement)``（不带字面量绑定）。"""
+
+        def execute(self, statement: Any) -> _Result:
+            self.statements.append(str(statement))
+            return _Result(self._row)
+
+    sync_session = _SameShapeSyncSession(row=None)
+    kb_repo.get_by_id_for_tenant(sync_session, "kb-1", tenant_id="tenant-a")
+
+    async_session = AsyncRecordingSession()
+    assert (
+        await kb_repo.get_by_id_for_tenant_async(async_session, "kb-1", tenant_id="tenant-a")
+        is None
+    )
+
+    assert len(async_session.statements) == 1
+    assert async_session.statements[0] == sync_session.statements[0]
 
 
 def test_a_visible_row_is_returned_as_is() -> None:

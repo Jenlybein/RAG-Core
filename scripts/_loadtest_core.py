@@ -1,4 +1,4 @@
-"""S0 压测入口的**纯逻辑**：延迟口径、主循环同步 DB 的占比、报告渲染（#123）。
+"""S0 压测入口的**纯逻辑**：延迟口径、数据库调用是否阻塞事件循环、报告渲染（#123）。
 
 这个模块刻意不 import 任何 ``app.*``：它只做「把样本算成读数」和「把读数写成 markdown」
 两件事，因此可以被纯函数直接测（见 ``tests/test_loadtest_baseline.py``），也可以被
@@ -10,11 +10,11 @@
 1. **P50 / P95 用最近秩法**：升序第 ``⌈p/100 × N⌉`` 个，**不插值**。与
    ``scripts/eval_gate.py`` 的延迟口径逐字相同——两把尺子口径不同的时候，新旧读数就
    没法比，而「第 10 步单请求 P95 1177.9 ms」正是拿来对照的那一个数。
-2. **「主循环同步 DB 占比」是近似**：分子是**主循环线程上**的同步会话调用耗时之和
-   （插桩在会话替身上，按调用计时），分母是同一批请求的**墙钟耗时之和**。执行池线程上
-   的调用（混合模式的向量分支）单独记、**不进分子**——那一段不占主循环，正是第 10 步
-   用执行池换来的东西。这个比值的含义是「请求的时间里，有多少是被主循环上的同步数据库
-   调用占住的」，不是「数据库占了 CPU 多少」。
+2. **「阻塞事件循环的 DB 占比」是近似**：分子是**同步**会话调用的耗时之和（插桩在会话
+   替身上，按调用计时），分母是同一批请求的**墙钟耗时之和**。第 11 步票 #127 之后检索链路
+   上的每一次数据库访问都是 ``await`` 的，所以这个分子应当是 **0**——它不是「数据库占了
+   多少时间」（那是 ``awaited_ms``，仍然可读），而是「事件循环被数据库**卡住**了多久」。
+   两者刻意分开记：把「等 I/O」和「占住循环」混成一个数，正是这一票要消掉的那种混淆。
 3. **吞吐 = 完成请求数 / 该档墙钟**；**错误率 = 非 200 或业务码非 0 的占比**；
    **降级率**单列：混合模式降级是**成功**响应（``code=0`` + ``degraded_reason``），把它
    算进错误率会让「这条链路在并发下悄悄只剩一路」这件事看不见。
@@ -38,8 +38,9 @@ STEP10_REFERENCE_SOURCE: Final[str] = (
 
 #: 报告里「占比」一节的固定说法。报告与代码读同一份，避免两处口径漂移。
 SHARE_CAVEAT: Final[str] = (
-    "这是**近似**：分子是主循环线程上同步会话调用的耗时之和（插桩在会话替身上，按调用计时），"
-    "分母是同一批请求的墙钟耗时之和。执行池线程上的调用不进分子。"
+    "这是**近似**：分子是**同步**会话调用的耗时之和（插桩在会话替身上，按调用计时），"
+    "分母是同一批请求的墙钟耗时之和。检索链路上的数据库访问全部是 ``await`` 的，"
+    "所以分子应当是 0；被 await 的等待单独记一列，它**不占**事件循环。"
 )
 
 
@@ -80,70 +81,64 @@ def summarize_latency(samples: Sequence[float]) -> dict[str, float]:
 
 @dataclass(frozen=True)
 class DbCall:
-    """一次同步会话调用：谁（线程）、哪个方法、花了多久。"""
+    """一次会话调用：哪个方法、花了多久、以及**它有没有卡住事件循环**。
 
-    thread: str
+    ``blocking=True`` 只可能来自同步会话（``Session.execute`` 之类）；异步会话上的
+    调用一律 ``blocking=False``——它让出循环，别的请求照跑。
+    """
+
     method: str
     duration_ms: float
+    blocking: bool
 
 
 @dataclass(frozen=True)
 class DbShare:
-    """主循环同步 DB 的读数：分子、分母、以及「执行池那一段」的对照。
+    """数据库调用的读数：**阻塞事件循环**的那一半，与**被 await** 的那一半。
 
     ``share`` 的分母是 ``total_request_ms``（同一批请求的墙钟之和），所以它回答的是
-    「请求时间里有多少被主循环上的同步数据库调用占住」，不是「数据库占了多少 CPU」。
+    「请求时间里有多少被同步数据库调用**卡住**了事件循环」。异步栈上这个数应当是 0；
+    ``awaited_ms`` 才是「这次请求等了数据库多久」，它不占循环，因此不进分子。
     """
 
-    main_loop_calls: int
-    main_loop_ms: float
-    off_loop_calls: int
-    off_loop_ms: float
+    blocking_calls: int
+    blocking_ms: float
+    awaited_calls: int
+    awaited_ms: float
     total_request_ms: float
     by_method: dict[str, float] = field(default_factory=dict)
     share: float = 0.0
 
     def as_dict(self) -> dict[str, Any]:
         return {
-            "main_loop_calls": self.main_loop_calls,
-            "main_loop_ms": round(self.main_loop_ms, 3),
-            "off_loop_calls": self.off_loop_calls,
-            "off_loop_ms": round(self.off_loop_ms, 3),
+            "blocking_calls": self.blocking_calls,
+            "blocking_ms": round(self.blocking_ms, 3),
+            "awaited_calls": self.awaited_calls,
+            "awaited_ms": round(self.awaited_ms, 3),
             "total_request_ms": round(self.total_request_ms, 3),
             "by_method": {name: round(ms, 3) for name, ms in self.by_method.items()},
             "share": round(self.share, 6),
         }
 
 
-class SyncDbLedger:
-    """同步会话调用的账本：插桩点只有一个（会话替身的每个方法）。
+class DbLedger:
+    """会话调用的账本：插桩点只有一个（会话替身的每个方法）。
 
-    按线程名分类，而不是按调用栈：主循环同步调用与执行池线程上的调用在**同一个进程**里，
-    唯一能分开它们的稳定事实就是「这条线程是不是主循环那条」。线程名由压测入口在开跑时
-    取一次传进来（``threading.current_thread().name``）。
+    分类靠**调用形态**，不靠线程名：异步会话上的调用 ``blocking=False``（让出循环），
+    同步会话上的 ``blocking=True``（卡住循环）。第 11 步票 #127 之前还要按线程名把
+    「主循环」与「执行池线程」分开；池删掉之后，剩下的唯一区别就是这一位。
     """
 
-    def __init__(self, *, main_thread: str | None = None) -> None:
-        self._main_thread = main_thread
+    def __init__(self) -> None:
         self._calls: list[DbCall] = []
 
     @property
     def calls(self) -> list[DbCall]:
         return list(self._calls)
 
-    def record(
-        self,
-        method: str,
-        duration_ms: float,
-        *,
-        thread: str | None = None,
-    ) -> None:
+    def record(self, method: str, duration_ms: float, *, blocking: bool) -> None:
         self._calls.append(
-            DbCall(
-                thread=self._main_thread if thread is None else thread,
-                method=method,
-                duration_ms=float(duration_ms),
-            )
+            DbCall(method=method, duration_ms=float(duration_ms), blocking=blocking)
         )
 
     def reset(self) -> None:
@@ -152,21 +147,21 @@ class SyncDbLedger:
     def share(self, *, total_request_ms: float) -> DbShare:
         """把账本算成占比；``total_request_ms`` 是同一批请求的墙钟之和（分母）。"""
 
-        main_loop = [call for call in self._calls if call.thread == self._main_thread]
-        off_loop = [call for call in self._calls if call.thread != self._main_thread]
-        main_ms = sum(call.duration_ms for call in main_loop)
+        blocking = [call for call in self._calls if call.blocking]
+        awaited = [call for call in self._calls if not call.blocking]
+        blocking_ms = sum(call.duration_ms for call in blocking)
         by_method: dict[str, float] = {}
-        for call in main_loop:
+        for call in blocking:
             by_method[call.method] = by_method.get(call.method, 0.0) + call.duration_ms
         denominator = max(0.0, float(total_request_ms))
         return DbShare(
-            main_loop_calls=len(main_loop),
-            main_loop_ms=main_ms,
-            off_loop_calls=len(off_loop),
-            off_loop_ms=sum(call.duration_ms for call in off_loop),
+            blocking_calls=len(blocking),
+            blocking_ms=blocking_ms,
+            awaited_calls=len(awaited),
+            awaited_ms=sum(call.duration_ms for call in awaited),
             total_request_ms=denominator,
             by_method=by_method,
-            share=(main_ms / denominator) if denominator > 0 else 0.0,
+            share=(blocking_ms / denominator) if denominator > 0 else 0.0,
         )
 
 
@@ -183,10 +178,11 @@ class LevelResult:
     wall_ms: float
     latency: dict[str, float]
     db: DbShare
-    #: 两个**实测**派生量：每请求在主循环上串行做多少毫秒同步 DB 调用；以及整档墙钟里事件
-    #: 循环有多少比例卡在这些调用里（后者才是「吞吐为什么封顶」的那个数）。
+    #: 两个**实测**派生量：每请求有多少毫秒被同步 DB 调用卡住；以及整档墙钟里事件循环有
+    #: 多少比例被它们占住。异步栈上两者都应当是 0——它们不是「数据库等了多久」，
+    #: 而是「事件循环被卡了多久」。
     cross_check: dict[str, float] = field(default_factory=dict)
-    #: 这一档用的「单次同步 DB 调用」模拟值（ms）。敏感性表靠它标行；普通档位也填上，
+    #: 这一档用的「单次 DB 调用」模拟值（ms）。敏感性表靠它标行；普通档位也填上，
     #: 免得读报告的人要回到命令行才想得起这组数是怎么来的。
     db_call_ms: float = 0.0
 
@@ -255,12 +251,11 @@ def _profile_rows(params: dict[str, Any]) -> Iterable[tuple[str, str]]:
 
     yield ("每档请求数", str(params.get("requests", "—")))
     yield ("预热请求数", str(params.get("warmup", "—")))
-    yield ("单次同步 DB 调用（模拟）", f"{params.get('db_call_ms', '—')} ms")
+    yield ("单次 DB 调用（模拟，异步 await）", f"{params.get('db_call_ms', '—')} ms")
     yield ("嵌入调用（模拟）", f"{params.get('embed_ms', '—')} ms")
-    yield ("向量召回 / pgvector（模拟，执行池线程）", f"{params.get('vector_ms', '—')} ms")
+    yield ("向量召回 / pgvector（模拟，请求会话）", f"{params.get('vector_ms', '—')} ms")
     yield ("关键词召回（模拟）", f"{params.get('keyword_ms', '—')} ms")
-    yield ("检索执行池规模", str(params.get("pool_size", "—")))
-    yield ("执行池排队预算", f"{params.get('queue_budget_ms', '—')} ms")
+    yield ("检索执行池", "已删除（#127：向量分支回到普通 await）")
 
 
 def render_report(
@@ -325,8 +320,8 @@ def render_report(
         "（`code=0` + `degraded_reason`），算进错误率会让「并发下悄悄只剩一路」看不见。"
     )
     lines.append(
-        "- **主循环同步 DB 占比**：见第四节。它有两个口径（占请求时间 / 占整档墙钟），"
-        "**都是近似**，分子分母在那一节写清。"
+        "- **阻塞事件循环的 DB 占比**：见第四节。它有两个口径（占请求时间 / 占整档墙钟），"
+        "**都是近似**，分子分母在那一节写清；异步栈上它应当恒为 0。"
     )
     lines.append("")
 
@@ -398,17 +393,17 @@ def render_report(
                 "「同样的活，排队方式不同」，不是失败或降级掩盖出来的。".format(ok=total_ok)
             )
             lines.append("")
-    lines.append("## 四、主循环同步 DB：占比与口径")
+    lines.append("## 四、数据库调用：阻塞事件循环的那一半（应当是 0）")
     lines.append("")
     lines.append(SHARE_CAVEAT)
     lines.append("")
     lines.append(
-        "| 并发 | 每请求主循环同步 DB 次数 | 每请求主循环同步 DB 耗时 (ms) | 占请求时间 | 占整档墙钟（主循环被占住） | 执行池线程上的同步 DB 调用 (次) |"
+        "| 并发 | 每请求阻塞主循环的 DB 次数 | 每请求阻塞耗时 (ms) | 占请求时间 | 占整档墙钟（主循环被占住） | 被 await 的 DB 等待 (次) |"
     )
     lines.append("| --- | --- | --- | --- | --- | --- |")
     for level in levels:
         per_request = (
-            level.db.main_loop_calls / level.requests if level.requests else 0.0
+            level.db.blocking_calls / level.requests if level.requests else 0.0
         )
         serial_ms = level.cross_check.get("serial_ms_per_request", 0.0)
         busy = level.cross_check.get("loop_busy_share", 0.0)
@@ -419,7 +414,7 @@ def render_report(
                 serial=_fmt_ms(serial_ms),
                 share=_fmt_pct(level.db.share),
                 busy=_fmt_pct(busy),
-                off=level.db.off_loop_calls,
+                off=level.db.awaited_calls,
             )
         )
     lines.append("")
@@ -442,9 +437,9 @@ def render_report(
             lines.append(
                 "按最高一档推一下每请求的主循环份额：实测吞吐 {rps:.1f} req/s 的倒数是"
                 " **{wall:.1f} ms/请求**——主循环被占满时，这就是一条请求摊到的串行时间，"
-                "也就是这条链路的上限。其中 **{serial:.1f} ms（{share}）是同步数据库调用**，"
-                "剩下约 {other:.1f} ms 是框架本身（JSON 解析、pydantic 校验、两个中间件）。"
-                "后面那一半不在本报告的分子里，所以「占整档墙钟」是**下限**而不是全部。".format(
+                "也就是这条链路的上限。其中 **{serial:.1f} ms（{share}）是同步数据库调用**"
+                "（异步栈上应当是 0），剩下约 {other:.1f} ms 是框架本身（JSON 解析、pydantic"
+                "校验、两个中间件）。".format(
                     rps=top.throughput_rps,
                     wall=per_request_wall,
                     serial=serial_ms,
@@ -456,7 +451,7 @@ def render_report(
             lines.append(
                 "次数那一列包含会话上的**全部**方法：`add` 与 `close` 不产生往返"
                 "（方法分解里它们的耗时约等于 0），真正花时间的是 `execute` / `flush` / "
-                "`commit` 这几次往返。"
+                "`commit` 这几次往返。它们现在都是 `await` 的，因此记在最后一列。"
             )
             lines.append("")
     lines.append(
@@ -464,34 +459,32 @@ def render_report(
     )
     lines.append("")
     lines.append(
-        "- **占请求时间** = 同步 DB 耗时 ÷ 这次请求的墙钟。它回答票面上的问题"
-        "「其中多少时间花在主循环上的同步数据库调用」。**并发越高它越小**——不是因为它变快了，"
-        "而是因为请求越来越多的时间花在**排队**上（排在别人那次同步调用后面），分母被排队撑大。"
+        "- **占请求时间** = 阻塞耗时 ÷ 这次请求的墙钟。它回答「这次请求里有多少时间被同步"
+        "数据库调用**卡住**了事件循环」。异步栈上它应当是 0：每次访问都让出循环，别的请求照跑。"
     )
     lines.append(
-        "- **占整档墙钟** = 同步 DB 耗时 ÷ 这一档的墙钟。它回答「事件循环有多少比例正卡在这些"
-        "调用里」。这个数不随并发稀释：它是吞吐被封顶的**直接原因**——主循环被占住的时候，"
-        "第 2、第 64 个请求一步都推不动。"
+        "- **占整档墙钟** = 阻塞耗时 ÷ 这一档的墙钟。它回答「事件循环有多少比例被这些调用"
+        "**占住**」。第 11 步票 #127 之前这个数会随并发升高而上升（主循环被同步查询占满，"
+        "第 2、第 64 个请求一步都推不动）；之后它应当一直是 0。"
     )
     lines.append("")
     lines.append(
-        "读法：如果两列都在涨/都贴住高位，说明「并发上限不是数据库，是主循环」；如果"
-        "「占整档墙钟」在 64 并发时明显低于「占请求时间」的推断，说明瓶颈在别处（框架 CPU、"
-        "模型调用）。注意主循环上的串行时间不止这一段：JSON 解析、pydantic 校验、中间件也都"
-        "在主循环上，本报告只量了**同步 DB 那一半**——「占整档墙钟」因此是同步 DB 的**下限**"
-        "贡献，不是主循环占用率的全部。"
+        "读法：两列都应当是 **0**（这就是票面「并发下不再出现排队超预算降级」的那半证据）。"
+        "如果它们不是 0，说明检索路径上又出现了一次**同步**数据库调用——那正是第 10 步用执行池"
+        "掩盖、第 11 步要根除的东西。剩下占主循环的是框架本身（JSON 解析、pydantic 校验、"
+        "中间件），本报告不量它。"
     )
     lines.append("")
 
     if db_sweep:
-        lines.append("### 敏感性：单次同步 DB 调用的耗时不是测出来的，是假设")
+        lines.append("### 敏感性：单次 DB 调用的耗时不是测出来的，是假设")
         lines.append("")
         lines.append(
-            "同一个并发档下把「单次同步 DB 调用」换几个值再跑一遍：占比与 P95 都跟着它走，"
+            "同一个并发档下把「单次 DB 调用」换几个值再跑一遍：占比与 P95 都跟着它走，"
             "所以绝对数只在这组假设下成立。形状（并发越高越差、吞吐封顶）不随它改变。"
         )
         lines.append("")
-        lines.append("| 单次同步 DB (ms) | 并发 | P50 (ms) | P95 (ms) | 吞吐 (req/s) | 主循环被占住的墙钟比例 |")
+        lines.append("| 单次 DB (ms) | 并发 | P50 (ms) | P95 (ms) | 吞吐 (req/s) | 阻塞主循环的墙钟比例 |")
         lines.append("| --- | --- | --- | --- | --- | --- |")
         for level in db_sweep:
             lines.append(
@@ -546,12 +539,13 @@ def render_report(
     lines.append("## 七、局限（读之前先看这一节）")
     lines.append("")
     lines.append(
-        "- **延迟是模拟的**：单次同步 DB 调用、嵌入、向量召回、关键词召回都是固定睡眠，"
+        "- **延迟是模拟的**：单次 DB 调用、嵌入、向量召回、关键词召回都是固定睡眠，"
         "不是实测的网络与数据库延迟。绝对数不能当容量规划，只能当形状与占比的尺子。"
     )
     lines.append(
         "- **进程内单进程**：没有 uvicorn、没有多 worker、没有真实连接池上限。"
-        "「并发上限是池」这件事在这里体现为执行池（4 条线程）的排队，而不是数据库连接数。"
+        "检索执行池在 #127 之后已经删除，所以这一档的并发上限是数据库连接池与模型端点，"
+        "不再是 4 条常驻线程。"
     )
     lines.append(
         "- **替身只实现检索路径真正用到的那几种语句形状**：遇到新的形状会**当场报错**，"
@@ -572,7 +566,7 @@ def render_report(
     lines.append(
         "同一条命令、同一组参数，改完再跑一次，对比三件事："
         "（1）64 并发吞吐是否 ≥ 2×；（2）单请求 P95 是否 ±5% 以内；"
-        "（3）「主循环同步 DB 占比」是否趋近 0。三条都是 S7 的验收数字。"
+        "（3）「阻塞事件循环的 DB 占比」是否为 0（#127 之后应当恒为 0）。三条都是 S7 的验收数字。"
     )
     lines.append("")
     return "\n".join(lines)

@@ -16,7 +16,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from tests import fake_db
-from tests.fake_db import EmptySession
+from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 LIST_KB_PATH = "/api/v1/knowledge-bases"
@@ -29,9 +29,13 @@ def client():
 
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
 
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
-
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+    # 检索链路走异步依赖（第 11 步票 #127）。
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
+        AsyncSessionAdapter(EmptySession())
+    )
 
     main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     try:
@@ -132,8 +136,8 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
 
     monkeypatch.setattr(
         knowledge_base_access.knowledge_base_repository,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
+        "get_by_id_for_tenant_async",
+        async_visible_kb,
     )
 
     class FakeEmbedding:
@@ -208,7 +212,12 @@ def test_mcp_tools_have_the_declared_signatures() -> None:
     def fake_list(db, tenant_id):
         return []
 
-    mcp = create_mcp_server(get_db=FakeSession, retrieve=fake_retrieve, list_kbs=fake_list)
+    mcp = create_mcp_server(
+        get_db=FakeSession,
+        get_async_db=lambda: AsyncSessionAdapter(FakeSession()),
+        retrieve=fake_retrieve,
+        list_kbs=fake_list,
+    )
     tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
 
     assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases"}

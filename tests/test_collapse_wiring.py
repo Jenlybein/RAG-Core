@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.services import result_collapse
 from app.services.result_collapse import OVERFETCH_FACTOR
 from app.services.retrieval_options import RetrievalOptions
+from tests.fake_db import AsyncSessionAdapter
 
 TENANT = "tenant-demo"
 KB = "kb-1"
@@ -88,8 +89,12 @@ def _run(session: _Session, chunks: list[dict], **kwargs) -> list[dict]:
     options.update(kwargs)
 
     async def go() -> list[dict]:
-        return service._collapse_results(
-            session, tenant_id=TENANT, chunks=chunks, options=RetrievalOptions(**options)
+        # 第 11 步票 #127：折叠在异步栈上（``await``），会话替身因此包一层异步面。
+        return await service._collapse_results(
+            AsyncSessionAdapter(session),
+            tenant_id=TENANT,
+            chunks=chunks,
+            options=RetrievalOptions(**options),
         )
 
     return asyncio.run(go())

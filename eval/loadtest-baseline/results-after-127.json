@@ -1,0 +1,129 @@
+{
+  "generated_at": "2026-11-12T18:24:28Z",
+  "params": {
+    "levels": [
+      2,
+      4,
+      64
+    ],
+    "requests": 64,
+    "warmup": 8,
+    "db_call_ms": 0.5,
+    "embed_ms": 2.0,
+    "vector_ms": 2.0,
+    "keyword_ms": 2.0,
+    "db_stack": "async"
+  },
+  "reference": {
+    "p95_ms": 1177.9,
+    "source": "docs/架构.md「评测」· eval/runs/20261112T135017Z（重排开 · qwen3.7 端点；127 题；hybrid / top_k=5；真 PostgreSQL + Elasticsearch + 嵌入；最近秩法）"
+  },
+  "levels": [
+    {
+      "concurrency": 2,
+      "requests": 64,
+      "ok": 64,
+      "failed": 0,
+      "error_rate": 0.0,
+      "degraded": 0,
+      "degraded_rate": 0.0,
+      "throughput_rps": 195.548,
+      "wall_ms": 327.285,
+      "db_call_ms": 0.5,
+      "latency": {
+        "count": 64,
+        "p50_ms": 9.802,
+        "p95_ms": 16.204,
+        "mean_ms": 10.158,
+        "max_ms": 20.593
+      },
+      "db": {
+        "blocking_calls": 0,
+        "blocking_ms": 0,
+        "awaited_calls": 512,
+        "awaited_ms": 226.297,
+        "total_request_ms": 650.142,
+        "by_method": {},
+        "share": 0.0
+      },
+      "cross_check": {
+        "serial_ms_per_request": 0.0,
+        "loop_busy_share": 0.0
+      }
+    },
+    {
+      "concurrency": 4,
+      "requests": 64,
+      "ok": 64,
+      "failed": 0,
+      "error_rate": 0.0,
+      "degraded": 0,
+      "degraded_rate": 0.0,
+      "throughput_rps": 258.071,
+      "wall_ms": 247.994,
+      "db_call_ms": 0.5,
+      "latency": {
+        "count": 64,
+        "p50_ms": 15.411,
+        "p95_ms": 17.491,
+        "mean_ms": 15.401,
+        "max_ms": 17.753
+      },
+      "db": {
+        "blocking_calls": 0,
+        "blocking_ms": 0,
+        "awaited_calls": 512,
+        "awaited_ms": 345.863,
+        "total_request_ms": 985.65,
+        "by_method": {},
+        "share": 0.0
+      },
+      "cross_check": {
+        "serial_ms_per_request": 0.0,
+        "loop_busy_share": 0.0
+      }
+    },
+    {
+      "concurrency": 64,
+      "requests": 64,
+      "ok": 64,
+      "failed": 0,
+      "error_rate": 0.0,
+      "degraded": 0,
+      "degraded_rate": 0.0,
+      "throughput_rps": 178.927,
+      "wall_ms": 357.688,
+      "db_call_ms": 0.5,
+      "latency": {
+        "count": 64,
+        "p50_ms": 345.071,
+        "p95_ms": 348.741,
+        "mean_ms": 345.244,
+        "max_ms": 351.173
+      },
+      "db": {
+        "blocking_calls": 0,
+        "blocking_ms": 0,
+        "awaited_calls": 512,
+        "awaited_ms": 3239.562,
+        "total_request_ms": 22095.6,
+        "by_method": {},
+        "share": 0.0
+      },
+      "cross_check": {
+        "serial_ms_per_request": 0.0,
+        "loop_busy_share": 0.0
+      }
+    }
+  ],
+  "sweep": [],
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+    "cpu_count": 16,
+    "git_commit": "f55de7d",
+    "offline": true,
+    "note": "进程内 ASGI + 离线替身；无真库、无真 Redis、无网络"
+  }
+}

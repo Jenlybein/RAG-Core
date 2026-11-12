@@ -22,16 +22,15 @@ import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from tests.fake_db import EmptySession
 import structlog
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
 # 三个哨兵：请求带着它们走完整条检索链路，并且确实从响应体回给调用方。
@@ -158,14 +157,14 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     """离线 ASGI 边界；500 会被 ServerErrorMiddleware 重新抛出，关掉客户端再抛出。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     config_mod = importlib.import_module("app.core.config")
 
     monkeypatch.setattr(config_mod.settings, "MODEL_API_KEY", API_KEY)
     monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)
+        kb_repo, "get_by_id_for_tenant_async", async_visible_kb
     )
     monkeypatch.setattr(
         service,
@@ -173,7 +172,9 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
         lambda: _FakeEmbeddingProvider(api_key=config_mod.settings.MODEL_API_KEY),
     )
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
-    main.app.dependency_overrides[session_mod.get_db] = lambda: EmptySession()
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        EmptySession()
+    )
     from app.api.deps import get_current_key
 
     main.app.dependency_overrides[get_current_key] = IDENTITY.context

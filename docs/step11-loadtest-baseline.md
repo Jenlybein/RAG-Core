@@ -96,3 +96,5 @@ uv run python scripts/loadtest_baseline.py --levels 2,4 --requests 8 --warmup 2 
 ## 八、后面每一张票怎么用它
 
 同一条命令、同一组参数，改完再跑一次，对比三件事：（1）64 并发吞吐是否 ≥ 2×；（2）单请求 P95 是否 ±5% 以内；（3）「主循环同步 DB 占比」是否趋近 0。三条都是 S7 的验收数字。
+
+**已经有人跑过第一轮**：第 11 步票 #127（检索链路全异步、删除执行池）之后的读数在 [`docs/step11-loadtest-after-127.md`](step11-loadtest-after-127.md)，机读那份在 `eval/loadtest-baseline/results-after-127.json`。对照结论见那份文档的第九节：单请求 P95 变快（−59% ~ −64%），64 并发下错误 0 / 降级 0，「阻塞事件循环的 DB 占比」三档全为 0（基线是 24% ~ 33%）。

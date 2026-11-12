@@ -68,9 +68,9 @@ from app.api.routes.console_observability import (
 )
 from app.core.config import settings
 from app.core.http_clients import aclose_current_loop_clients
-from app.core.loop_pool import aclose_retrieval_pool
 from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
+from app.db.async_session import AsyncSessionLocal
 from app.db.session import SessionLocal
 from app.providers.llm import set_role_resolver
 from app.repositories import knowledge_base_repository
@@ -111,6 +111,10 @@ async def app_lifespan(app: FastAPI):
     不再把新请求交给这个应用），再关这一轮攒下的 HTTP 客户端。顺序固定、且必须走
     ``try/finally``——启动期的校验抛错时也要把已经建起来的连接收掉；反过来（先关客户端
     再停接收）会让正在飞的请求拿到一个已关闭的池子。
+
+    **第 11 步票 #127 起这里少了一件事**：检索执行池（``app/core/loop_pool.py``）已经删除，
+    向量分支不再跑在池里的常驻循环上，所以没有「池名下的客户端」要收。剩下的是主循环
+    自己的那一份——Celery Worker 有它自己的一套，绝不能把这里的客户端带过去。
     """
 
     # 切块的窗口口径依赖 Qwen 词表：缺它就只能换近似词表，而近似会让同一个库在
@@ -123,10 +127,7 @@ async def app_lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # 先关执行池：池里那几个常驻循环各自持有客户端，必须由池自己收（关客户端 →
-        # 停循环 → join 线程）。反过来先关主循环的、再关池，池里那几份就没人认领了。
-        await aclose_retrieval_pool()
-        # 再关**当前 loop** 名下的客户端：API 进程的主循环是这一个，别的进程（Worker）
+        # 关**当前 loop** 名下的客户端：API 进程的主循环是这一个，别的进程（Worker）
         # 有自己的一套，绝不能把这里的客户端带过去。
         await aclose_current_loop_clients()
 
@@ -135,7 +136,9 @@ if settings.ENABLE_MCP:
     from app.mcp_server import create_mcp_http_app  # noqa: E402
 
     mcp_app = create_mcp_http_app(
+        # 两个会话工厂各管一段：同步的给身份判定，异步的给检索链路（见 mcp_server 的模块文档）。
         get_db=SessionLocal,
+        get_async_db=AsyncSessionLocal,
         retrieve=rag_service.retrieve,
         list_kbs=knowledge_base_repository.list_by_tenant,
     )

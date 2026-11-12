@@ -127,7 +127,7 @@ def build_retriever():
     """进程内真实链路：给定问题，回「这次真正返回的片段正文」。"""
 
     from app.core.config import settings
-    from app.db.session import SessionLocal
+    from app.db.async_session import AsyncSessionLocal
     from app.services.eval_manifest import load_manifest
     from app.services.rag_service import retrieve
     from app.services.retrieval_options import RetrievalOptions
@@ -142,7 +142,9 @@ def build_retriever():
     kb_ids = [layout.kb_id for layout in layouts]
 
     async def _run(question: str) -> list[str]:
-        with SessionLocal() as db:
+        # 检索链路在异步栈上（第 11 步票 #127）：旁证由 Worker 执行，会话跟着 Worker 的
+        # 常驻循环走（``app/db/worker_loop.py``），连接池因此跨任务复用。
+        async with AsyncSessionLocal() as db:
             response = await retrieve(
                 db,
                 tenant_id=settings.DEV_TENANT_ID,

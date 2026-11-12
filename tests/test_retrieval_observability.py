@@ -24,7 +24,6 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -43,6 +42,7 @@ from app.observability.stage_timing import (
     StageTimer,
 )
 from app.services.retrieval_options import RetrievalOptions
+from tests.fake_db import AsyncSessionAdapter, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -163,9 +163,8 @@ def _offline_client(
     """离线 ASGI 客户端；旁路写库的会话由 conftest 的进程级替身接管。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
     rerank_module = importlib.import_module("app.services.retrieval.rerank")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
@@ -179,19 +178,17 @@ def _offline_client(
     if rerank is not None:
         # 重排模块在 import 时就把工厂名字绑进了自己的命名空间，所以替换点在那里。
         monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: rerank)
-    # 向量分支在自己的线程里取会话，与请求会话不是同一个（既有接缝）。
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeDb())
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(
-            tenant_id=tenant_id, settings={}, name="", description=""
-        ),
+        "get_by_id_for_tenant_async",
+        async_visible_kb,
     )
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        _FakeDb()
+    )
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
@@ -400,27 +397,23 @@ async def _retrieve_with_timer(
     """用**注入的**收集器跑一次组合根，返回记到的段名（顺序即报告顺序）。"""
 
     service = importlib.import_module("app.services.rag_service")
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
     rerank_module = importlib.import_module("app.services.retrieval.rerank")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _FakeEmbedding())
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: _FakeKeyword())
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeDb())
     if rerank:
         monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: _FakeRerankProvider())
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(
-            tenant_id=tenant_id, settings={}, name="", description=""
-        ),
+        "get_by_id_for_tenant_async",
+        async_visible_kb,
     )
 
     timer = StageTimer()
     await service.retrieve(
-        _FakeDb(),
+        AsyncSessionAdapter(_FakeDb()),
         tenant_id=TENANT_ID,
         kb_ids=[KB_ID],
         query=QUERY_SENTINEL,

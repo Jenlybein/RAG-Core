@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import KeyContext
 from app.schemas.rag import RetrieveData
@@ -45,7 +45,7 @@ RetrieveCallable = Callable[..., Awaitable[dict[str, Any]]]
 
 
 async def gated_retrieve(
-    db: Session,
+    db: AsyncSession,
     *,
     key: KeyContext,
     kb_ids: list[str],
@@ -53,6 +53,9 @@ async def gated_retrieve(
     retrieve: RetrieveCallable | None = None,
 ) -> RetrieveData:
     """按六道关卡的顺序跑完整次检索，返回**已经校验成形**的响应数据。
+
+    ``db`` 是**请求级异步会话**（第 11 步票 #127）：第 1~3 步不碰库，第 4 步把它原样交给
+    组合根。身份判定仍然走同步会话——那是 ``get_current_key`` 自己的依赖，不在本函数里。
 
     ``key`` 是判定内核的结论（租户、套餐、密钥配置都在上面）。``kb_ids`` / ``query`` 是
     请求的全部内容——质量参数由 ``profile_policy`` 从密钥配置解析，调用方看不到。

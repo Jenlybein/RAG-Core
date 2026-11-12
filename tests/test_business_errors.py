@@ -92,7 +92,8 @@ def client(offline_embedding):
 
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: object()
+
 
     main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     from app.api.deps import get_current_key
@@ -178,7 +179,7 @@ def test_fail_and_ok_keep_the_envelope_contract() -> None:
 
 def test_nonexistent_knowledge_base_returns_business_code(client, monkeypatch) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant_async", fake_db.async_invisible_kb)
 
     response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
@@ -194,10 +195,10 @@ def test_cross_tenant_and_nonexistent_share_the_same_code(client, monkeypatch) -
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     # 跨租户与「不存在」在仓储层是同一个结果：按（id + 租户）取，别家的库取不到。
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant_async", fake_db.async_invisible_kb)
     cross_tenant = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant_async", fake_db.async_invisible_kb)
     nonexistent = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
     assert cross_tenant.status_code == nonexistent.status_code == 200
@@ -220,7 +221,7 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
 
     monkeypatch.setattr(settings, "MODEL_BASE_URL", "")
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant_async", fake_db.async_invisible_kb)
 
     response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 

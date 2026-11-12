@@ -8,24 +8,27 @@
 「跨租户」多一次泄露的机会。回读**不进检索链路**：链路一旦开始读这张表，旁路就变回主链
 路的依赖，而这张表的意义正是「链路不需要它也能跑完」。
 
-**迁移期这个模块是「异步读 + 同步写」**（第 11 步）：三个读法已经换成 ``AsyncSession``
-（票 #128，控制台与反馈那两条旁路），而 :func:`create` 还在同步栈上——它属于检索链路，
-由票 #127 连同那条路径一起搬。同一条路径不许有两种写法，所以这个过渡态只跨一个模块、
-两个读法，并在 ``create`` 上写明归属；#127 落地后本模块应当只剩异步一种。
+**读写都只有异步一种**（第 11 步）：三个读法在票 #128 换成 ``AsyncSession``，写侧
+:func:`create` 随检索链路在票 #127 一起搬过来——同一条路径不许有两种写法，所以那个
+「异步读 + 同步写」的过渡态没有留下来。
 """
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.models.retrieval_trace import RetrievalTrace
 
 
-def create(db: Session, trace: RetrievalTrace) -> RetrievalTrace:
-    """写入一行归属索引（**同步**，属于检索链路，随票 #127 一起异步化）。"""
+async def create(db: AsyncSession, trace: RetrievalTrace) -> RetrievalTrace:
+    """写入一行归属索引：只 ``add`` + ``flush``，**不提交**（提交点是 ``app.db.transaction``）。
+
+    ``add`` 是同步的（真 ``AsyncSession.add`` 也是同步），``flush`` 才要 ``await``——
+    写成 ``await db.add(...)`` 会在真会话上当场 TypeError，而假替身若替它兜底就永远
+    暴露不出来（见 ``tests/fake_db.py`` 里 ``AsyncRecordingSession`` 的说明）。
+    """
 
     db.add(trace)
-    db.flush()
+    await db.flush()
     return trace
 
 

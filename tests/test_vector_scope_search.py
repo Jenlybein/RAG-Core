@@ -117,12 +117,12 @@ def test_scope_filter_with_empty_scope_matches_nothing() -> None:
 
 
 class _CapturingSession:
-    """会话替身：只把语句接住，不连数据库、不执行。"""
+    """**异步**会话替身：只把语句接住，不连数据库、不执行（#127 起读侧是 ``await``）。"""
 
     def __init__(self) -> None:
         self.statement = None
 
-    def execute(self, statement):
+    async def execute(self, statement):
         self.statement = statement
         return SimpleNamespace(all=lambda: [])
 

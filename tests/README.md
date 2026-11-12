@@ -46,7 +46,7 @@
 - `rag_service.retrieve(..., rerank_factory=...)` → `hybrid_retrieve` → `rerank_stage(provider_factory=...)`：重排实现由组合根交进来，评测才能在不碰生产工厂的前提下装旧的大模型重排做对照。
 - `Qwen3RerankProvider(client=...)`：HTTP 客户端可注入（测试用 `httpx.MockTransport`，不发网络）。
 - `LangChainEmbedding(embeddings_factory=...)` / `LangChainLLMProvider(chat_model_factory=...)`：模型每次现装，工厂可换。
-- `app.core.http_clients.reset_http_clients()` 与 `app.core.loop_pool.reset_retrieval_pool()`：**进程级**，前后各清一次——注册表里挂着一个已关闭 loop 的客户端，会让下一个用例莫名其妙地红。
+- `app.core.http_clients.reset_http_clients()` 与 `app.db.worker_loop.reset_worker_loop()`：**进程级**，前后各清一次——注册表里挂着一个已关闭 loop 的客户端、或一个属于上一个用例的常驻循环，都会让下一个用例莫名其妙地红。（`app.core.loop_pool.reset_retrieval_pool()` 在 #127 随执行池一起删除。）
 - `reset_llm_provider_cache` / `reset_rerank_provider_cache` / `reset_embedding_provider_cache`：三个 Provider 工厂按配置指纹缓存，同样每例清场。
 - `tests/conftest.py` 另外**强制** `RERANK_BASE_URL=""`：开发机 `.env` 里写着真实端点与真 key，不钉死的话任何「打开重排」的用例都会真发一次**计费**请求。
 

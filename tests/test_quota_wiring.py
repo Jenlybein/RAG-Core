@@ -33,7 +33,7 @@ from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import QuotaCounters, QuotaWindow, daily_key, qps_key
 from app.utils.status import DocumentStatus
-from tests.fake_db import EmptySession
+from tests.fake_db import AsyncSessionAdapter, EmptySession
 
 TENANT_ID = "tenant_acme"
 KEY_A = "key-a"
@@ -296,6 +296,7 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
     db_session = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
@@ -304,10 +305,8 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     monkeypatch.setattr(service, "get_embedding_provider", _FakeEmbedding)
     monkeypatch.setattr(service, "get_vector_store", _FakeVectorStore)
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda _db, kb_id, *, tenant_id: SimpleNamespace(
+    def _visible_row(kb_id: str, tenant_id: str) -> Any:
+        return SimpleNamespace(
             id=kb_id,
             tenant_id=tenant_id,
             name=f"库 {kb_id}",
@@ -315,8 +314,18 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
             split_strategy="size",
             allowed_formats=["markdown"],
             settings={"chunk_size": 400},
-        ),
+        )
+
+    async def _visible_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        return _visible_row(kb_id, tenant_id)
+
+    # 检索链路走异步守卫（第 11 步票 #127）；上传仍走同步那条，两个面都要有替身。
+    monkeypatch.setattr(
+        kb_repo,
+        "get_by_id_for_tenant",
+        lambda _db, kb_id, *, tenant_id: _visible_row(kb_id, tenant_id),
     )
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible_kb)
     enqueued: list[dict[str, Any]] = []
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
@@ -339,6 +348,8 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     # 两扇门挂到同一个应用：MCP 是子应用，判定内核与配额门禁都是同一份实现。
     mcp_app = mcp_server.create_mcp_http_app(
         get_db=lambda: session,
+        # 检索链路用异步会话（第 11 步票 #127）：与 HTTP 侧同一个替身，包一层异步面。
+        get_async_db=lambda: AsyncSessionAdapter(session),
         retrieve=service.retrieve,
         list_kbs=kb_repo.list_by_tenant,
     )
@@ -347,6 +358,7 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
     app.dependency_overrides[db_session.get_db] = lambda: session
+    app.dependency_overrides[async_session.get_async_db] = lambda: AsyncSessionAdapter(session)
     app.dependency_overrides[get_current_key] = lambda: holder["context"]
 
     try:

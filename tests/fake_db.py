@@ -19,7 +19,26 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from types import SimpleNamespace
 from typing import Any
+
+
+async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+    """「库可见」的**异步**替身：租户原样回传，``settings`` 为空、名称与描述为空。
+
+    检索链路的可见性校验走 ``knowledge_base_repository.get_by_id_for_tenant_async``
+    （第 11 步票 #127），于是各用例里那句
+    ``lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)``
+    换成它即可——返回的东西与原来那份等价，只是可 ``await``。
+    """
+
+    return SimpleNamespace(tenant_id=tenant_id, settings={}, name="", description="")
+
+
+async def async_invisible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+    """「库不可见」的**异步**替身：仓储按口径回 ``None``，守卫据此抛 20008。"""
+
+    return None
 
 
 def no_transaction() -> Iterator[Any]:
@@ -106,6 +125,21 @@ class _Rows:
         """
 
         return self._values[0] if self._values else None
+
+    def scalar_one_or_none(self) -> Any:
+        """按 id + 租户点查一行的收尾（``execute(select(...)).scalar_one_or_none()``）。
+
+        第 11 步票 #127 起请求会话（异步替身）要回答「这个库对这个租户可不可见」——
+        真 ``Result`` 本来就有这个方法。空行回 ``None``、恰好一行回那一行，多于一行
+        按 SQLAlchemy 的口径**报错**：多行说明查询条件写错了，静默取第一条正是最难查的
+        那类假绿。
+        """
+
+        if not self._values:
+            return None
+        if len(self._values) > 1:
+            raise AssertionError(f"期望 0 或 1 行，实际 {len(self._values)} 行")
+        return self._values[0]
 
     def __iter__(self) -> Any:
         return iter(self._values)
@@ -344,6 +378,40 @@ class TransactionalSession(RecordingSession):
             self.deleted = list(deleted)
             self._snapshot = None
         super().rollback()
+
+
+class AsyncSessionAdapter:
+    """把一个**同步**替身包成异步面：请求会话用（第 11 步票 #127）。
+
+    迁移期每个用例模块都有一份「只回答检索路径那几种语句」的假会话，而且各写各的。
+    把它们逐个改写成异步类，等于让同一份语义存在两处；这里只加一层薄适配：
+    ``await session.execute(...)`` 落到被包的那个替身上，状态（记了几条 SQL、关没关、
+    加了几行）仍记在**同一个对象**里——于是用例里的断言一行都不用改。
+
+    ``execute`` 必须是 ``async def``：忘了 ``await`` 的调用点会拿到一个协程对象，在套件里
+    表现为「那段副作用没发生」，而不是静默通过。
+
+    这不是给「异步会话」造第二个实现：真正的语义替身是 :class:`AsyncRecordingSession`
+    （它与同步版共享同一份契约，见 ``tests/test_session_double_contract.py``）。这里包的
+    是**每个用例自己的预置答案**，包一层只是为了让它们能被 ``await``。
+    """
+
+    def __init__(self, inner: Any) -> None:
+        self._inner = inner
+
+    def __getattr__(self, name: str) -> Any:
+        # 其余属性（``info`` / ``closed`` / ``executed`` / 用例自己的计数器）一律透传，
+        # 断言因此仍然打在**同一个**对象上。
+        return getattr(self._inner, name)
+
+    async def execute(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.execute(*args, **kwargs)
+
+    async def get(self, *args: Any, **kwargs: Any) -> Any:
+        return self._inner.get(*args, **kwargs)
+
+    async def close(self) -> Any:
+        return self._inner.close()
 
 
 class AsyncRecordingSession(RecordingSession):

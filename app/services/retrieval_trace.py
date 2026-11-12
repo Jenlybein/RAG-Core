@@ -2,16 +2,21 @@
 
 三条约束都是从红线直接推出来的，改这里之前先看 ADR-0021 决策 2 与 ADR-0010 第五次修订：
 
-1. **不能用请求会话**。``get_db`` 产出的事务语义是只读的，而且从不 ``commit``——在它上面
-   顺手 ``INSERT`` 会被 ``db.close()`` 丢掉（看起来「写过了」，其实什么都没留下）。所以这里
-   自己开一个会话、自己 ``commit``、自己 ``close``：这是一次**独立短事务**，与请求事务无关。
+1. **不能用请求会话**。``get_async_db`` 产出的事务语义是只读的，而且从不 ``commit``——
+   在它上面顺手 ``INSERT`` 会被 ``close()`` 丢掉（看起来「写过了」，其实什么都没留下）。
+   所以这里自己开一个会话、自己提交、自己关：这是一次**独立短事务**，与请求事务无关。
 2. **会话工厂只能有一个入口**。拿不到 ``Depends`` 的路径都走 :func:`app.db.session_factory
-   .session_factory`（中间件、Celery、Provider 装配已经在这条路上），测试也就只需要换掉这
-   一处，不必让整个离线套件真的去连 PostgreSQL。**不要在业务函数里写 ``if testing:``**：
-   那种分支一旦存在，生产路径与测试路径就是两条代码。
+   .async_session_factory`（中间件、Celery、Provider 装配走的是它的同步孪生），测试也就
+   只需要换掉这一处，不必让整个离线套件真的去连 PostgreSQL。**不要在业务函数里写
+   ``if testing:``**：那种分支一旦存在，生产路径与测试路径就是两条代码。
 3. **这里永远不抛**。写入是旁路：开不出会话、写不进去、``commit`` 失败、连 ``close`` 失败，
    都只记一条 ``warning``。响应里的 ``trace_id`` 在调用本函数**之前**就已经派生好了，所以
    「写库失败」不会让那个字段缺席——反过来「写成功才拿到 id」就等于把契约挂在旁路的健康度上。
+
+**第 11 步票 #127 起这一条写入也是异步的**：检索链路整体在异步栈上，而它曾经的同步
+``session_factory()`` + 同步 ``commit_now`` 会在事件循环里做一次阻塞往返（压测里那 7 次
+「主循环同步 DB 调用」中有一次就是它）。现在它走异步会话工厂与 :func:`app.db.transaction
+.acommit_now`——**提交点仍是那一个文件**，只是换成了 ``await``。
 
 日志里只放 id 与错误**类型**：异常文本可能夹带连接串，问句原文更是一个字都不许进日志
 （见 ``tests/test_retrieval_log_hygiene.py``）。
@@ -20,10 +25,10 @@
 from __future__ import annotations
 
 import structlog
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.transaction import commit_now
-from app.db.session_factory import close_quietly, session_factory
+from app.db.session_factory import async_session_factory, close_quietly_async
+from app.db.transaction import async_transaction
 from app.models.retrieval_trace import RetrievalTrace
 from app.repositories import retrieval_trace_repository
 
@@ -34,7 +39,7 @@ logger = structlog.get_logger(__name__)
 TRACE_WRITE_FAILED_MESSAGE = "retrieval trace not recorded"
 
 
-def record_retrieval_trace(
+async def record_retrieval_trace(
     *,
     log_id: str,
     trace_id: str,
@@ -53,24 +58,25 @@ def record_retrieval_trace(
     于是「库里那一行」与「回给调用方的那个响应」不会各说一套。
     """
 
-    session: Session | None = None
+    session: AsyncSession | None = None
     try:
-        session = session_factory()()
-        retrieval_trace_repository.create(
-            session,
-            RetrievalTrace(
-                id=log_id,
-                tenant_id=tenant_id,
-                trace_id=trace_id,
-                kb_ids=list(kb_ids),
-                chunk_ids=list(chunk_ids),
-                top_k=top_k,
-                latency_ms=latency_ms,
-                degraded_reason=degraded_reason,
-                empty_reason=empty_reason,
-            ),
-        )
-        commit_now(session)
+        session = async_session_factory()()
+        # 一笔独立短事务：入口仍是 ``app.db.transaction``（异步孪生），不是裸提交。
+        async with async_transaction(session):
+            await retrieval_trace_repository.create(
+                session,
+                RetrievalTrace(
+                    id=log_id,
+                    tenant_id=tenant_id,
+                    trace_id=trace_id,
+                    kb_ids=list(kb_ids),
+                    chunk_ids=list(chunk_ids),
+                    top_k=top_k,
+                    latency_ms=latency_ms,
+                    degraded_reason=degraded_reason,
+                    empty_reason=empty_reason,
+                ),
+            )
     except Exception as exc:  # noqa: BLE001 - 旁路：任何失败都不许冒到检索返回值上
         logger.warning(
             TRACE_WRITE_FAILED_MESSAGE,
@@ -79,7 +85,7 @@ def record_retrieval_trace(
             error=type(exc).__name__,
         )
     finally:
-        close_quietly(session, on_failure=_report_close_failure)
+        await close_quietly_async(session, on_failure=_report_close_failure)
 
 
 def _report_close_failure(error_type: str) -> None:

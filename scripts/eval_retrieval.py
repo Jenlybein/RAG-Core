@@ -149,6 +149,7 @@ from app.core.config import settings  # noqa: E402
 from app.utils.report_format import as_metric  # noqa: E402
 from app.core.exceptions import AppError  # noqa: E402
 from app.db.base import Base, now  # noqa: E402
+from app.db.async_session import AsyncSessionLocal  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
 from app.models import Chunk, Document, KnowledgeBase  # noqa: E402
 from app.models.knowledge_base import (  # noqa: E402
@@ -724,7 +725,7 @@ class QuestionOutcome:
 
 
 async def _run_question(
-    db: Any,
+    async_db: Any,
     question: Question,
     *,
     mode: str,
@@ -736,7 +737,7 @@ async def _run_question(
     outcome = QuestionOutcome(id=question.id, query=question.query, mode=mode)
     try:
         response = await retrieve(
-            db,
+            async_db,
             tenant_id=settings.DEV_TENANT_ID,
             kb_ids=list(kb_ids),
             query=question.query,
@@ -1036,7 +1037,7 @@ def _count_statuses(items: Sequence[dict[str, Any]]) -> dict[str, int]:
 
 
 async def _run_group(
-    db: Any,
+    async_db: Any,
     questions: Sequence[Question],
     labels: dict[str, list[str]],
     traps: dict[str, list[str]],
@@ -1048,7 +1049,9 @@ async def _run_group(
 ) -> dict[str, Any]:
     per_question: list[dict[str, Any]] = []
     for question in questions:
-        outcome = await _run_question(db, question, mode=mode, top_k=top_k, kb_ids=kb_ids)
+        outcome = await _run_question(
+            async_db, question, mode=mode, top_k=top_k, kb_ids=kb_ids
+        )
         per_question.append(
             _score_question(
                 outcome,
@@ -1151,7 +1154,7 @@ def _rank_of(chunk_id: str, item: dict[str, Any] | None) -> int | None:
 
 
 async def _run_acceptance(
-    db: Any,
+    async_db: Any,
     *,
     groups: dict[str, dict[str, Any]],
     labels: dict[str, list[str]],
@@ -1248,14 +1251,14 @@ async def _run_acceptance(
     )
 
     empty_outcome = await _run_question(
-        db,
+        async_db,
         Question(id="A8-no-index", type="probe", query="证书过期怎么处理", note="", labels=()),
         mode=MODE_VECTOR,
         top_k=top_k,
         kb_ids=[empty_kb_id],
     )
     no_match_outcome = await _run_question(
-        db,
+        async_db,
         Question(id="A8-no-match", type="probe", query="zzzqqqxxx", note="", labels=()),
         mode=MODE_BM25,
         top_k=top_k,
@@ -1282,7 +1285,7 @@ async def _run_acceptance(
     )
 
     multi = await _run_question(
-        db,
+        async_db,
         Question(id="A9-multi-kb", type="probe", query="证书过期怎么处理", note="", labels=()),
         mode=MODE_HYBRID,
         top_k=max(top_k, 10),
@@ -1306,12 +1309,16 @@ async def _run_acceptance(
 # ─────────────────────────────────────────────────────── 降级探针（ES 停着时跑）
 
 
-async def _run_degraded_probe(db: Any, *, top_k: int) -> dict[str, dict[str, Any]]:
+async def _run_degraded_probe(async_db: Any, *, top_k: int) -> dict[str, dict[str, Any]]:
     """ES 真的停掉之后跑验收第 6、7 条：混合降级 vs 单模式明确失败。"""
 
     probe = Question(id="degraded", type="probe", query="E1024 是什么错误", note="", labels=())
-    hybrid = await _run_question(db, probe, mode=MODE_HYBRID, top_k=top_k, kb_ids=[PRIMARY_KB_ID])
-    bm25 = await _run_question(db, probe, mode=MODE_BM25, top_k=top_k, kb_ids=[PRIMARY_KB_ID])
+    hybrid = await _run_question(
+        async_db, probe, mode=MODE_HYBRID, top_k=top_k, kb_ids=[PRIMARY_KB_ID]
+    )
+    bm25 = await _run_question(
+        async_db, probe, mode=MODE_BM25, top_k=top_k, kb_ids=[PRIMARY_KB_ID]
+    )
 
     hybrid_ok = (
         hybrid.error is None
@@ -1836,9 +1843,12 @@ async def _run(args: argparse.Namespace) -> int:
     docs = _load_corpus(layouts)
 
     db = SessionLocal()
+    # 检索链路在异步栈上（第 11 步票 #127）：索引与既有读仍走同步 ``db``，
+    # 召回走这一条。两个会话各管一段，评测口径不变。
+    async_db = AsyncSessionLocal()
     try:
         if args.degraded_probe:
-            probe = await _run_degraded_probe(db, top_k=top_k)
+            probe = await _run_degraded_probe(async_db, top_k=top_k)
             print("\n=== degraded probe (A6 / A7) ===")
             for key in ("A6", "A7"):
                 item = probe[key]
@@ -1909,7 +1919,7 @@ async def _run(args: argparse.Namespace) -> int:
         groups: dict[str, dict[str, Any]] = {}
         for mode in MODE_ORDER:
             groups[mode] = await _run_group(
-                db,
+                async_db,
                 questions,
                 labels,
                 traps,
@@ -1935,7 +1945,7 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"rewrite  : SKIPPED ({environment.llm_probe})")
         else:
             rewrite_off = await _run_group(
-                db,
+                async_db,
                 questions,
                 labels,
                 traps,
@@ -1946,7 +1956,7 @@ async def _run(args: argparse.Namespace) -> int:
             )
             settings.QUERY_REWRITE_ENABLED = True
             rewrite_on = await _run_group(
-                db,
+                async_db,
                 questions,
                 labels,
                 traps,
@@ -1968,7 +1978,7 @@ async def _run(args: argparse.Namespace) -> int:
 
         print("\n=== acceptance ===")
         acceptance = await _run_acceptance(
-            db,
+            async_db,
             groups=groups,
             labels=labels,
             top_k=top_k,
@@ -2033,6 +2043,7 @@ async def _run(args: argparse.Namespace) -> int:
         failed = [check["id"] for check in acceptance if not check["passed"]]
         return 1 if failed else 0
     finally:
+        await async_db.close()
         db.close()
 
 

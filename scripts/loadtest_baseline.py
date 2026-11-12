@@ -37,7 +37,6 @@ import itertools
 import json
 import os
 import sys
-import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -56,8 +55,8 @@ from scripts._loadtest_core import (  # noqa: E402 - 上面的 sys.path 引导�
     CONCURRENCY_LEVELS,
     STEP10_REFERENCE_P95_MS,
     STEP10_REFERENCE_SOURCE,
+    DbLedger,
     LevelResult,
-    SyncDbLedger,
     render_report,
     summarize_latency,
 )
@@ -201,6 +200,34 @@ def _build_corpus() -> Corpus:
     )
 
 
+#: 定时器交给 ``asyncio.sleep`` 的那一段（秒）。剩下的用 ``await asyncio.sleep(0)`` 收尾。
+#: Windows 的定时器粒度约 15.6ms：**0.5ms 的模拟往返会被睡成 15.6ms**（实测 ×31），
+#: 那会把「异步栈的 P95」整体污染掉。基线（第 10 步）用的是 ``time.sleep(0.5ms)``，
+#: 精确到微秒级；这里用同一把尺子，只是不阻塞事件循环。
+_TIMER_SLEEP_SLACK = 0.0015
+
+
+async def _precise_async_sleep(seconds: float) -> None:
+    """等待 ``seconds`` 秒：不阻塞事件循环，也不受 Windows 定时器粒度影响。
+
+    大间隔交给 ``asyncio.sleep``（它让出循环）；最后两毫秒用 ``await asyncio.sleep(0)``
+    轮询——每次迭代都让出控制权，所以别的请求照跑，只是这一小段会占用一点 CPU。
+    模拟延迟本来就是仪器开销，不该让仪器决定读数的形状。
+    """
+
+    if seconds <= 0:
+        return
+    deadline = time.perf_counter() + seconds
+    while True:
+        remaining = deadline - time.perf_counter()
+        if remaining <= 0:
+            return
+        if remaining > _TIMER_SLEEP_SLACK:
+            await asyncio.sleep(remaining - _TIMER_SLEEP_SLACK)
+        else:
+            await asyncio.sleep(0)
+
+
 class ScriptedResult:
     """SQLAlchemy ``Result`` 的最小替身：只回答检索路径用到的那几种取值方式。"""
 
@@ -234,32 +261,33 @@ class ScriptedResult:
         return iter(self._rows)
 
 
-#: 向量替身发的那条 SQL。真实实现是同步 psycopg 的 pgvector 查询，这里同样是**一条同步
-#: 语句**（``TextClause``，与真实实现的形状一致）——它跑在执行池线程上，所以会计进
-#: 「执行池线程上的同步 DB 调用」那一列。
+#: 向量替身发的那条 SQL。真实实现（``PgVectorStore.similarity_search_scope``）在异步栈上
+#: ``await db.execute(...)``，这里同样是**一条被 await 的语句**（``TextClause``，与真实实现
+#: 的形状一致）——所以它记进「被 await 的 DB 等待」那一列，而不是「阻塞主循环」那一列。
 VECTOR_SQL = text(
     "SELECT chunk_id FROM chunks WHERE tenant_id = :tenant_id "
     "ORDER BY embedding <=> :query_vector LIMIT :top_k"
 )
 
 class ScriptedSession:
-    """会话替身：**只回答检索路径真正用到的那几种语句形状**。
+    """**异步**会话替身：只回答检索路径真正用到的那几种语句形状（第 11 步票 #127）。
 
     两种失败方式刻意不同：
 
-    * 语句形状不认识 → **当场 ``AssertionError``**。静默返回空结果会让「后续票往主循环上
+    * 语句形状不认识 → **当场 ``AssertionError``**。静默返回空结果会让「后续票往检索路径上
       新增了一次查询」这件事在读数里完全看不见；报错则会先红一次，逼人先想清楚那条查询
-      该不该在主循环上。
+      该不该在那里。
     * 语句认识但形状不对（比如 count 语句走了 ``all()``）→ 也报错。
 
-    每个方法都在 ``_timed`` 里：先把「这一段的耗时」睡出来（模拟一次往返），再记账。所以
-    记账里的数就是**真实阻塞了事件循环多久**，不是算出来的。
+    每个方法都先 ``await`` 一次精确睡眠（模拟一次往返），再记账。**睡眠是异步的**：这正是
+    「异步数据库访问不阻塞事件循环」的形状，记账时因此记成 ``blocking=False``。真出现同步
+    调用（``time.sleep``）时账本会记 ``blocking=True``，读数立刻不为 0。
     """
 
     def __init__(
         self,
         *,
-        ledger: SyncDbLedger,
+        ledger: DbLedger,
         corpus: Corpus,
         latency_ms: float,
     ) -> None:
@@ -268,27 +296,27 @@ class ScriptedSession:
         self._latency_ms = latency_ms
         self.added: list[Any] = []
         self.closed = False
+        #: 事务入口把「当前这一笔」挂在 ``session.info`` 上（``app/db/transaction.py``）。
+        #: 归属索引的旁路短事务走的就是 ``async with async_transaction(session)``，替身
+        #: 没有这个字典的话，每次检索都会多一条「写不进去」的 warning，而读数照旧。
+        self.info: dict[str, Any] = {}
 
     # ── 记账 ──────────────────────────────────────────────────
     def _record(self, method: str, started: float) -> None:
-        self._ledger.record(
-            method,
-            (time.perf_counter() - started) * 1000,
-            thread=threading.current_thread().name,
-        )
+        # 这一层全是异步会话上的调用：``blocking=False``（让出循环，不占主循环）。
+        self._ledger.record(method, (time.perf_counter() - started) * 1000, blocking=False)
 
-    def _sleep(self) -> None:
-        if self._latency_ms > 0:
-            time.sleep(self._latency_ms / 1000)
+    async def _sleep(self) -> None:
+        await _precise_async_sleep(self._latency_ms / 1000)
 
     # ── 读 ────────────────────────────────────────────────────
-    def execute(self, statement: Any, *_args: Any, **_kwargs: Any) -> ScriptedResult:
+    async def execute(self, statement: Any, *_args: Any, **_kwargs: Any) -> ScriptedResult:
         # 语句分派**在计时之外**：那是替身自己的记账开销（一次 compile 约 0.1~0.5ms），
         # 算进「数据库花了多久」会让读数凭空多出十几个百分点。
         shape = _shape_of(statement)
         started = time.perf_counter()
         try:
-            self._sleep()
+            await self._sleep()
             return self._answer(shape, statement)
         finally:
             self._record("execute", started)
@@ -329,28 +357,28 @@ class ScriptedSession:
         finally:
             self._record("add", started)
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         started = time.perf_counter()
         try:
-            self._sleep()
+            await self._sleep()
         finally:
             self._record("flush", started)
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         started = time.perf_counter()
         try:
-            self._sleep()
+            await self._sleep()
         finally:
             self._record("commit", started)
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         started = time.perf_counter()
         try:
             pass
         finally:
             self._record("rollback", started)
 
-    def close(self) -> None:
+    async def close(self) -> None:
         started = time.perf_counter()
         try:
             self.closed = True
@@ -443,10 +471,10 @@ class LatencyKeyword:
 
 
 class LatencyVectorStore:
-    """向量库替身：**同步** pgvector 查询——跑在执行池线程上，这正是第 10 步的形状。
+    """向量库替身：``await`` 一次范围召回——第 11 步票 #127 之后的真实形状。
 
-    它真的用会话替身发一条语句（``VECTOR_SQL``），于是「执行池线程上也有同步 DB 调用」
-    这件事在账本里是实测的，而不是靠注释声明的。
+    它真的用**请求那个异步会话**发一条语句（``VECTOR_SQL``），于是「向量召回也在异步栈上」
+    这件事在账本里是实测的（``blocking=False``），而不是靠注释声明的。
     """
 
     def __init__(self, latency_ms: float) -> None:
@@ -463,8 +491,8 @@ class LatencyVectorStore:
         top_k: int,
     ) -> list[dict]:
         self.calls += 1
-        # 同步调用：与真实实现一致（psycopg 的同步 execute 会卡住所在循环）。
-        result = db.execute(VECTOR_SQL)
+        # 异步调用：与真实实现一致（``await db.execute(...)``，不卡住循环）。
+        result = await db.execute(VECTOR_SQL)
         rows = []
         for row in result.all():
             row = dict(row)
@@ -481,19 +509,22 @@ class Harness:
 
     只碰**既有注入缝**（与离线套件用的是同一组），所以生产代码一行不用改：
 
-    * ``app.dependency_overrides[get_db]`` / ``[get_current_key]``：请求会话与身份；
+    * ``app.dependency_overrides[get_async_db]`` / ``[get_current_key]``：请求会话与身份；
     * ``app.services.rag_service`` 上的三个 Provider 工厂：嵌入 / 向量库 / 关键词；
-    * ``app.services.retrieval.pipeline.SessionLocal``：向量分支自己那个会话；
-    * ``app.db.session_factory.set_session_factory``：拿不到 ``Depends`` 的归属索引写入；
+    * ``app.db.session_factory.set_async_session_factory``：拿不到 ``Depends`` 的归属索引写入
+      （第 11 步票 #127 起它在异步栈上）；
     * ``app.core.runtime_settings_cache.set_settings_cache``：配置刷新不读真 Redis。
+
+    ``app.services.retrieval.pipeline.SessionLocal`` 那条注入**已经没有了**：向量分支不再
+    另开会话，也不再有执行池。
     """
 
-    def __init__(self, *, ledger: SyncDbLedger, corpus: Corpus, profile: dict[str, float]) -> None:
+    def __init__(self, *, ledger: DbLedger, corpus: Corpus, profile: dict[str, float]) -> None:
         self.ledger = ledger
         self.corpus = corpus
         self.profile = profile
         self._restore: list[tuple[Any, str, Any]] = []
-        self._session_factory_restore: Any = None
+        self._async_session_factory_restore: Any = None
         self._settings_cache_restore: Any = None
 
     # ── 装配 ──────────────────────────────────────────────────
@@ -501,10 +532,9 @@ class Harness:
         import app.main as main_module
         from app.api.deps import get_current_key
         from app.core import runtime_settings_cache
-        from app.db import session as session_module
+        from app.db import async_session as async_session_module
         from app.db import session_factory as factory_module
         from app.services import rag_service
-        from app.services.retrieval import pipeline
         from tests.retrieval_identity import RetrievalIdentity
 
         self.app = main_module.app
@@ -526,20 +556,21 @@ class Harness:
         identity.use()
 
         # 两处都**间接**调用 ``self._new_session``：敏感性跑换的是这个属性，注入缝本身不动。
-        self.app.dependency_overrides[session_module.get_db] = lambda: self._new_session()
+        self.app.dependency_overrides[async_session_module.get_async_db] = (
+            lambda: self._new_session()
+        )
         self.app.dependency_overrides[get_current_key] = identity.context
 
         for module, name, replacement in (
             (rag_service, "get_embedding_provider", lambda: self.embedding),
             (rag_service, "get_vector_store", lambda: self.vector),
             (rag_service, "get_keyword_search_provider", lambda: self.keyword),
-            (pipeline, "SessionLocal", lambda: self._new_session()),
         ):
             self._restore.append((module, name, getattr(module, name)))
             setattr(module, name, replacement)
 
-        self._session_factory_restore = factory_module.session_factory()
-        factory_module.set_session_factory(lambda: self._new_session())
+        self._async_session_factory_restore = factory_module.async_session_factory()
+        factory_module.set_async_session_factory(lambda: self._new_session())
         self._settings_cache_restore = runtime_settings_cache.get_settings_cache()
         runtime_settings_cache.set_settings_cache(_MemorySettingsCache())
         return self
@@ -551,7 +582,7 @@ class Harness:
         self.app.dependency_overrides.clear()
         for module, name, original in reversed(self._restore):
             setattr(module, name, original)
-        factory_module.set_session_factory(self._session_factory_restore)
+        factory_module.set_async_session_factory(self._async_session_factory_restore)
         runtime_settings_cache.set_settings_cache(self._settings_cache_restore)
 
 
@@ -648,7 +679,7 @@ async def _run_level(
     concurrency: int,
     requests: int,
     warmup: int,
-    ledger: SyncDbLedger,
+    ledger: DbLedger,
     db_call_ms: float,
 ) -> LevelResult:
     """一档并发：先预热（不进读数），再清账本、跑满、把读数算成 ``LevelResult``。"""
@@ -676,7 +707,7 @@ async def _run_level(
 
     total_ms = sum(samples)
     share = ledger.share(total_request_ms=total_ms)
-    per_request_ms = (share.main_loop_ms / requests) if requests else 0.0
+    per_request_ms = (share.blocking_ms / requests) if requests else 0.0
     throughput = (requests / (wall_ms / 1000)) if wall_ms > 0 else 0.0
     return LevelResult(
         concurrency=concurrency,
@@ -693,7 +724,7 @@ async def _run_level(
         # 事件循环有多少比例正卡在这些调用里（后者才是「吞吐为什么封顶」的那个数）。
         cross_check={
             "serial_ms_per_request": per_request_ms,
-            "loop_busy_share": (share.main_loop_ms / wall_ms) if wall_ms > 0 else 0.0,
+            "loop_busy_share": (share.blocking_ms / wall_ms) if wall_ms > 0 else 0.0,
         },
     )
 
@@ -778,12 +809,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     pin_offline_env()
 
-    # 这两行必须在 pin_offline_env 之后：settings 在 import 时就把环境读成对象了。
-    from app.core.config import settings
-
     questions = load_questions(Path(args.questions))
     corpus = _build_corpus()
-    ledger = SyncDbLedger(main_thread=threading.current_thread().name)
+    ledger = DbLedger()
     profile = {
         "db_call_ms": args.db_call_ms,
         "embed_ms": args.embed_ms,
@@ -813,8 +841,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "embed_ms": args.embed_ms,
         "vector_ms": args.vector_ms,
         "keyword_ms": args.keyword_ms,
-        "pool_size": settings.RETRIEVAL_POOL_SIZE,
-        "queue_budget_ms": settings.RETRIEVAL_QUEUE_BUDGET_MS,
+        "db_stack": "async",
     }
     reference = {"p95_ms": STEP10_REFERENCE_P95_MS, "source": STEP10_REFERENCE_SOURCE}
     report = render_report(
@@ -855,7 +882,7 @@ async def _run_all(
     levels: Sequence[int],
     requests: int,
     warmup: int,
-    ledger: SyncDbLedger,
+    ledger: DbLedger,
     profile: dict[str, float],
     sweep_values: Sequence[float],
 ) -> dict[str, list[LevelResult]]:
@@ -900,8 +927,6 @@ async def _run_all(
 def _repatch_sessions(harness: Harness, db_call_ms: float) -> None:
     """敏感性跑之前把会话替身的延迟换掉（注入缝不变，只换替身参数）。"""
 
-    from app.services.retrieval import pipeline
-
     def _new_session() -> ScriptedSession:
         return ScriptedSession(
             ledger=harness.ledger,
@@ -910,7 +935,6 @@ def _repatch_sessions(harness: Harness, db_call_ms: float) -> None:
         )
 
     harness._new_session = _new_session
-    pipeline.SessionLocal = lambda: harness._new_session()
 
 
 def _environment_snapshot() -> dict[str, Any]:

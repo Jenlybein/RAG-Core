@@ -3,8 +3,9 @@
 被测的是**脚本的外部行为**，不是它的内部结构：
 
 * 延迟口径：P50 / P95 用**最近秩法**（与 `scripts/eval_gate.py` 同一把尺子，不插值）；
-* 「主循环同步 DB 占比」：从会话替身的插桩读数算出来，并且**只有主循环线程上**的调用
-  算进分子——执行池线程上的调用不算（那正是第 10 步买来的东西）；
+* 「阻塞事件循环的 DB 占比」：从会话替身的插桩读数算出来，**只有同步调用**算进分子——
+  被 ``await`` 的调用不算（它们让出循环）。第 11 步票 #127 之后检索链路全是后者，
+  所以这个分子应当恒为 0；
 * 报告：三档并发（4 / 16 / 64）的 P50 / P95 / 吞吐 / 错误率、占比与口径、第 10 步既有
   读数（P95 1177.9 ms）对照，全部出现在 markdown 里；
 * 整条链路离线：不连真库、不连真 Redis、不写任何库（会话替身 + 既有注入缝）。
@@ -25,9 +26,9 @@ import pytest
 
 from scripts._loadtest_core import (
     CONCURRENCY_LEVELS,
+    DbLedger,
     DbShare,
     LevelResult,
-    SyncDbLedger,
     percentile_nearest_rank,
     render_report,
     summarize_latency,
@@ -80,35 +81,50 @@ def test_summarize_reports_count_p50_p95_mean_and_max() -> None:
     assert stats["max_ms"] == 40.0
 
 
-# ─────────────────────────────────────────── 主循环同步 DB 占比（插桩口径）
+# ───────────────────────────────────── 阻塞事件循环的 DB 占比（插桩口径）
 
 
-def test_ledger_counts_only_main_loop_calls_in_the_share() -> None:
-    """分子只算主循环线程上的调用；执行池线程上的调用单独记、不进占比。"""
+def test_ledger_counts_only_blocking_calls_in_the_share() -> None:
+    """分子只算**同步**调用；被 ``await`` 的调用单独记、不进占比。"""
 
-    ledger = SyncDbLedger(main_thread="MainThread")
-    ledger.record("execute", 1.0)  # 可见性校验（主循环）
-    ledger.record("execute", 2.0)  # 折叠回查（主循环）
-    ledger.record("execute", 10.0, thread="retrieval-pool-1")  # 向量查询（执行池线程）
+    ledger = DbLedger()
+    ledger.record("execute", 1.0, blocking=True)  # 同步调用：卡住循环
+    ledger.record("execute", 2.0, blocking=True)
+    ledger.record("execute", 10.0, blocking=False)  # 异步调用：让出循环
 
     share = ledger.share(total_request_ms=100.0)
 
     assert isinstance(share, DbShare)
-    assert share.main_loop_calls == 2
-    assert share.main_loop_ms == pytest.approx(3.0)
-    assert share.off_loop_calls == 1
-    assert share.off_loop_ms == pytest.approx(10.0)
+    assert share.blocking_calls == 2
+    assert share.blocking_ms == pytest.approx(3.0)
+    assert share.awaited_calls == 1
+    assert share.awaited_ms == pytest.approx(10.0)
     assert share.share == pytest.approx(0.03)
     assert share.by_method == {"execute": pytest.approx(3.0)}
+
+
+def test_an_all_async_ledger_reads_zero() -> None:
+    """异步栈上的读数：一次阻塞都没有，等待时间仍然看得见。"""
+
+    ledger = DbLedger()
+    ledger.record("execute", 4.0, blocking=False)
+    ledger.record("flush", 1.0, blocking=False)
+
+    share = ledger.share(total_request_ms=50.0)
+
+    assert share.blocking_calls == 0
+    assert share.share == 0.0
+    assert share.awaited_calls == 2
+    assert share.awaited_ms == pytest.approx(5.0)
 
 
 def test_ledger_keeps_method_breakdown_and_resets_between_levels() -> None:
     """按方法分解（execute / commit…），且每一档并发重新记——不把上一档的读数带进来。"""
 
-    ledger = SyncDbLedger(main_thread="MainThread")
-    ledger.record("execute", 1.5)
-    ledger.record("commit", 0.5)
-    ledger.record("add", 0.0)
+    ledger = DbLedger()
+    ledger.record("execute", 1.5, blocking=True)
+    ledger.record("commit", 0.5, blocking=True)
+    ledger.record("add", 0.0, blocking=False)
 
     share = ledger.share(total_request_ms=10.0)
     assert share.by_method["execute"] == pytest.approx(1.5)
@@ -122,7 +138,7 @@ def test_ledger_keeps_method_breakdown_and_resets_between_levels() -> None:
 def test_share_is_zero_instead_of_dividing_by_zero() -> None:
     """没有测到请求时占比是 0，而不是 ZeroDivisionError。"""
 
-    assert SyncDbLedger(main_thread="MainThread").share(total_request_ms=0.0).share == 0.0
+    assert DbLedger().share(total_request_ms=0.0).share == 0.0
 
 
 # ───────────────────────────────────────────────────────── 报告：可复算的读数
@@ -139,10 +155,10 @@ def _level(concurrency: int, *, p95: float = 120.0, share: float = 0.25) -> Leve
         wall_ms=2500.0,
         latency={"count": 160, "p50_ms": 40.0, "p95_ms": p95, "mean_ms": 55.0, "max_ms": 900.0},
         db=DbShare(
-            main_loop_calls=640,
-            main_loop_ms=640.0,
-            off_loop_calls=160,
-            off_loop_ms=1920.0,
+            blocking_calls=640,
+            blocking_ms=640.0,
+            awaited_calls=160,
+            awaited_ms=1920.0,
             total_request_ms=8800.0,
             by_method={"execute": 480.0, "commit": 160.0},
             share=share,
@@ -160,8 +176,7 @@ def _params() -> dict[str, Any]:
         "embed_ms": 18.0,
         "vector_ms": 12.0,
         "keyword_ms": 15.0,
-        "pool_size": 4,
-        "queue_budget_ms": 2000,
+        "db_stack": "async",
     }
 
 
@@ -187,11 +202,11 @@ def test_report_states_the_db_share_is_an_approximation_and_how_it_is_computed()
 
     report = render_report(levels=[_level(4)], params=_params(), reference={"p95_ms": 1177.9})
 
-    assert "主循环同步 DB" in report
+    assert "阻塞事件循环" in report
     assert "近似" in report
-    # 口径三件套：分子、分母、以及「执行池线程上的调用不算」这条边界
-    assert "主循环线程" in report
-    assert "执行池" in report
+    # 口径三件套：分子、分母、以及「被 await 的调用不算」这条边界
+    assert "同步" in report
+    assert "await" in report
     assert "分母" in report
 
 
@@ -270,9 +285,10 @@ def test_cli_runs_the_whole_chain_offline_and_reports_zero_errors(tmp_path: Path
         assert level["failed"] == 0
         assert level["error_rate"] == 0.0
         assert level["latency"]["count"] == 8
-        # 主循环上确实有同步 DB 调用被记到（可见性 / 折叠 / 归属索引写入）
-        assert level["db"]["main_loop_calls"] >= 8
-        assert level["db"]["share"] > 0.0
+        # 检索链路上的 DB 调用全是被 await 的：它们被记到，而且一次都不阻塞循环。
+        assert level["db"]["awaited_calls"] >= 8
+        assert level["db"]["blocking_calls"] == 0
+        assert level["db"]["share"] == 0.0
         assert level["throughput_rps"] > 0.0
 
 

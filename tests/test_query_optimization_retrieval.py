@@ -31,6 +31,7 @@ from app.core.config import settings
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.llm import LLMRerankProvider
 from app.services.query.rewrite import QueryRewrite
+from tests.fake_db import AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -168,9 +169,8 @@ def _offline_client(
     """离线客户端：``kb_settings`` 是「kb_id → 那一行的 settings（含同义词表）」。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     embedding = _RecordingEmbedding()
@@ -182,11 +182,10 @@ def _offline_client(
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore([_vector_row("c1")]))
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeDb())
 
     tables = kb_settings or {}
 
-    def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+    async def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         rows = tables.get(kb_id)
         return SimpleNamespace(
             tenant_id=tenant_id,
@@ -195,7 +194,7 @@ def _offline_client(
             description="制度与流程",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _kb_for_tenant)
 
     if llm is not None:
         # 改写与重排都是惰性 import 的，所以替换点仍在「大模型能力出口」上。
@@ -213,7 +212,9 @@ def _offline_client(
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        _FakeDb()
+    )
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:

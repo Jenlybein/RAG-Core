@@ -2,7 +2,7 @@
 
 - 状态：草稿（决策已定；接线与验收在 #132 完成后转「已采纳」）
 - 日期：2026-11-13
-- 相关：父 spec #122「第 11 步」、票 #131（探针）、#132（接线）、**ADR-0009「异步索引用 Celery + `asyncio.run`」**（本文修订它「每任务一个循环只是丑、不是不安全」那句）、ADR-0022「连接复用按事件循环隔离」、`GLOSSARY.md`「Worker 常驻循环」「检索执行池」「索引链路」、`app/db/async_session.py`、`app/db/worker_loop.py`、`app/tasks/indexing.py`、`app/celery_app.py`、`docs/架构.md`「双栈期的数据库连接预算」、`tests/test_worker_loop.py`、`tests/test_integration_worker_loop.py`
+- 相关：父 spec #122「第 11 步」、票 #131（探针）、#132（接线）、**ADR-0009「异步索引用 Celery + `asyncio.run`」**（本文修订它「每任务一个循环只是丑、不是不安全」那句）、ADR-0022「连接复用按事件循环隔离」、`GLOSSARY.md`「Worker 常驻循环」「索引链路」、`app/db/async_session.py`、`app/db/worker_loop.py`、`app/tasks/indexing.py`、`app/celery_app.py`、`docs/架构.md`「双栈期的数据库连接预算」、`tests/test_worker_loop.py`、`tests/test_integration_worker_loop.py`
 
 ## 一句话决定
 
@@ -51,7 +51,7 @@ Worker 每个子进程**一个常驻事件循环**（`app/db/worker_loop.py` 的
 | --- | --- |
 | 现状：模块级引擎 + 每任务 `asyncio.run`（任务里不 dispose） | 连接由最后一个任务的循环持有，而那个循环已经关闭：任务路径里没有活着的循环可以 `dispose()`，连接只能等 GC 或进程退出（实测 `ResourceWarning`）。被取消 / 中断的任务还会把池里的槽位永久标成 checked out（实测 `Checked out connections: 1`），`pool_size` 个之后下一个任务卡在 `pool_timeout`（缺省 30 秒）上超时——症状是「Worker 偶尔一条任务超时，重启就好」。 |
 | 任务级 `NullPool`（B） | **正确**（每任务建毁、无残留，探针也证明了），但每任务一次完整握手；更麻烦的是它把「每进程一个池」这条预算前提拆掉了：连接上限变成一个随任务浮动的数，`pg_stat_activity` 里本库连接数不再可预期。索引任务是分钟级长活，省下的那点复杂度换来的是每次任务多一次建连。 |
-| 把索引任务塞进 `app/core/loop_pool.py` 的检索执行池 | 那个池是为「同步查询会卡住循环」的向量分支准备的，固定 4 条循环、排队预算 2 秒；索引任务要的是「一条循环 + 分钟级预算」。塞进去等于连接预算乘 4、语义也错位。`GLOSSARY.md` 里本来就写着「索引链路与 Celery 不进这个池」。 |
+| 把索引任务塞进 `app/core/loop_pool.py` 的检索执行池（**该池已在第 11 步票 #127 删除**，见 ADR-0022 修订；这条比较留作历史） | 那个池是为「同步查询会卡住循环」的向量分支准备的，固定 4 条循环、排队预算 2 秒；索引任务要的是「一条循环 + 分钟级预算」。塞进去等于连接预算乘 4、语义也错位。`GLOSSARY.md` 里本来就写着「索引链路与 Celery 不进这个池」。 |
 | 每任务新建引擎但保留 `QueuePool` | 等于 B 的代价，还多一条「池永远留不下连接」的浪费：每任务一个池，任务结束池就没人管了。 |
 | 换成 asyncpg 驱动 | ADR-0022 已把「换驱动」留作翻案条件；换驱动不改变「池绑循环」这件事，本文的结论不因它而变。 |
 | 让 Celery 换成 async 框架（arq 等） | ADR-0009 已经否掉（maintenance-only），本票不改这个前提。 |
@@ -106,7 +106,7 @@ def _stop_worker_loop(**_kwargs): shutdown_worker_loop()      # 确定性释放
 
 ## 翻案条件
 
-- **索引任务变成一个任务内高并发多文档**：那时单个常驻循环就是并发上限，需要按 loop 数的池——应当复用 `app/core/loop_pool.py` 的形状，而不是再发明一个。
+- **索引任务变成一个任务内高并发多文档**：那时单个常驻循环就是并发上限，需要按 loop 数的池——那时可以回看第 10 步那个固定规模池的形状（`app/core/loop_pool.py`，已在 #127 删除），而不是再发明一个。
 - **换成 asyncpg 之后**跨 loop 复用的隐患换了形状（asyncpg 的连接确实记着自己的 loop）：那时重新评估「每任务 `NullPool` + 预热」是否反而更简单。
 - **Celery 换成 async 框架**（arq / dramatiq async）：循环本来就是框架的，`WorkerLoop` 退化成薄封装，本文的决策二可以删掉。
 

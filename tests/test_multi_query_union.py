@@ -40,6 +40,7 @@ from app.providers.llm.base import LLMProvider
 from app.services.query.optimizer import QueryProcessResult, optimize_query
 from app.services.query.rewrite import QueryRewrite
 from app.services.query.synonyms import collect_synonym_groups
+from tests.fake_db import AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -104,7 +105,11 @@ class _FakeResult:
 
 
 class _FakeDb:
-    """只回答「库里有多少条可检索切片」；检索两侧都是替身，不真连 PostgreSQL。"""
+    """只回答「库里有多少条可检索切片」；检索两侧都是替身，不真连 PostgreSQL。
+
+    第 11 步票 #127 起检索跑在异步会话上：这个替身由 ``AsyncSessionAdapter``
+    包成异步面（见 ``tests/fake_db.py``），语义与预置答案一行没改。
+    """
 
     def execute(self, _statement: Any) -> _FakeResult:
         return _FakeResult(1)
@@ -232,9 +237,8 @@ def _offline_client(
     kb_settings: dict[str, dict] | None = None,
 ) -> Iterator[dict[str, Any]]:
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     embedding = embedding or _RecordingEmbedding()
@@ -244,11 +248,10 @@ def _offline_client(
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: vector)
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeDb())
 
     tables = kb_settings or {}
 
-    def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+    async def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return SimpleNamespace(
             tenant_id=tenant_id,
             settings=tables.get(kb_id) or {},
@@ -256,13 +259,15 @@ def _offline_client(
             description="",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _kb_for_tenant)
     if llm is not None:
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        _FakeDb()
+    )
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:

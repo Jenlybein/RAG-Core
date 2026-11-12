@@ -20,7 +20,6 @@ from __future__ import annotations
 import dataclasses
 import importlib
 from collections.abc import Iterator
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -46,7 +45,7 @@ from app.services.retrieval_options import (
 )
 from app.services.profile_policy import ensure_policy_consistent, resolve_retrieval_options
 from tests import fake_db
-from tests.fake_db import EmptySession
+from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 
 TENANT_ID = "tenant_demo"
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -692,24 +691,26 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     monkeypatch.setattr(service, "get_embedding_provider", _FakeEmbedding)
     monkeypatch.setattr(service, "get_vector_store", _FakeVectorStore)
     monkeypatch.setattr(service, "get_keyword_search_provider", _FakeKeyword)
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
-    )
+    # 可见性走异步仓储（第 11 步票 #127）：替身因此也得是 ``async def``。
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", async_visible_kb)
 
     from app.api.deps import get_current_key
 
     holder: dict[str, KeyContext] = {
         "context": KeyContext(tenant_id=TENANT_ID, policy=DEV_KEY_POLICY, plan=DEV_KEY_PLAN)
     }
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+    # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
+        AsyncSessionAdapter(EmptySession())
+    )
 
     main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     main.app.dependency_overrides[get_current_key] = lambda: holder["context"]

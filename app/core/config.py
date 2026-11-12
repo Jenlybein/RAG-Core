@@ -254,11 +254,9 @@ class Settings(BaseSettings):
     # 在 5+5 里挑 5 条，融合几乎无事可做，混合检索的收益会被候选池的宽度吃掉。
     # 服务端配置，不进请求体（质量参数一旦可调，同一档位就是不同链路）。
     HYBRID_RECALL_TOP_K: int = 20
-    # 检索执行池的规模与排队预算（第 10 步票 5）。它们是**并发护栏**：同时在跑的向量
-    # 分支不超过 worker 数，超出的排队；排队超预算按「这一路失败」降级，不无限等。
-    # 面板可改，改完下一次取池时重建（旧池同步关停）。
-    RETRIEVAL_POOL_SIZE: int = 4
-    RETRIEVAL_QUEUE_BUDGET_MS: int = 2000
+    # 第 11 步票 #127 删掉了两个键：``RETRIEVAL_POOL_SIZE`` / ``RETRIEVAL_QUEUE_BUDGET_MS``。
+    # 它们是固定规模检索执行池的旋钮，而池本身已经删除（向量分支回到普通 ``await``，
+    # 见 ADR-0022「第五次修订」）。留着两个「改了也不生效」的键，比删掉更容易误导运维。
 
     @field_validator("RETRIEVAL_MODE")
     @classmethod

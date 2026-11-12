@@ -69,6 +69,12 @@
   （这也是它能被测试注入、并直接断言「拿到了哪几段」的原因）。
 
 日志只放 ID 与派生量，绝不放检索原文（见 tests/test_retrieval_log_hygiene.py）。
+
+**整条链路在异步栈上**（第 11 步票 #127）：``db`` 是请求级 ``AsyncSession``
+（``app.db.async_session.get_async_db``），可见性校验、向量召回（pgvector）、折叠回查、
+空结果计数与归属索引写入全部 ``await``。第 10 步的「固定规模检索执行池 + 线程包装」因此
+被删除——它存在的唯一理由（同步 pgvector 查询会卡住事件循环）已经不存在了。响应契约
+一个字节都没动：三种模式的黄金哈希仍然绿（``tests/test_multi_query_union.py``）。
 """
 
 from __future__ import annotations
@@ -79,7 +85,7 @@ from typing import Any
 
 import structlog
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
@@ -97,7 +103,7 @@ from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
 from app.services import result_collapse
-from app.services.knowledge_base_access import ensure_visible
+from app.services.knowledge_base_access import ensure_visible_async
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
@@ -124,7 +130,7 @@ EMPTY_NO_CHUNKS_MATCHED = "no_chunks_matched"
 
 
 async def retrieve(
-    db: Session,
+    db: AsyncSession,
     *,
     tenant_id: str,
     kb_ids: list[str],
@@ -196,7 +202,9 @@ async def retrieve(
     # 顺手把这几个库的**行**留下来：票 6 起要用它们的 ``settings``（同义词表）与
     # 名称 / 描述（改写提示）。``ensure_visible`` 本来就把整行查出来了，丢掉它再去
     # 查一次库，就把「每库一次」变成「每库两次」。
-    visible_kbs = [ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
+    visible_kbs = [
+        await ensure_visible_async(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids
+    ]
 
     # 查询优化：召回之前把用户那句话加工成「向量逐句列表 + 关键词一句 + 重排一句」
     # （GLOSSARY「检索链路」：查询优化 → 召回 → 融合 → 重排）。改写开关读 ``options``：
@@ -218,6 +226,7 @@ async def retrieve(
 
     if resolved_mode == MODE_HYBRID:
         outcome = await hybrid_retrieve(
+            db=db,
             tenant_id=tenant_id,
             kb_ids=kb_ids,
             # 向量一路逐句都搜（改写成功时原句 + 改写句）；重排仍看 effective_query；
@@ -271,14 +280,14 @@ async def retrieve(
         )
 
     with timer.measure(STAGE_COLLAPSE):
-        collapsed = _collapse_results(
+        collapsed = await _collapse_results(
             db,
             tenant_id=tenant_id,
             chunks=chunks,
             options=options,
         )
 
-    empty_reason = _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed)
+    empty_reason = await _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed)
     retrieval_meta: dict[str, object] = {
         "mode": resolved_mode,
         "degraded": degraded,
@@ -335,7 +344,7 @@ async def retrieve(
     # 归属索引的写入是**旁路**（ADR-0021 决策 2）：独立短事务、失败只留 warning。
     # 放在这里而不是更早，是因为它要记「这次检索的结局」——降级原因与空结果原因在上一行
     # 才最终成形；而 ``trace_id`` 早在函数开头就派生好了，所以这次写入失败不影响响应。
-    record_retrieval_trace(
+    await record_retrieval_trace(
         log_id=log_id,
         trace_id=trace_id,
         tenant_id=tenant_id,
@@ -408,8 +417,8 @@ def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:
     return metas.get((kb_id, chunk_id)) or {}
 
 
-def _collapse_results(
-    db: Session,
+async def _collapse_results(
+    db: AsyncSession,
     *,
     tenant_id: str,
     chunks: list[dict],
@@ -433,7 +442,7 @@ def _collapse_results(
 
     if not options.fold_to_sections:
         # 不折叠：返回小片，响应与折叠之前逐字一致。留给「只要精确到那一行」的调用方。
-        return _with_locating_fields(db, tenant_id=tenant_id, chunks=chunks)
+        return await _with_locating_fields(db, tenant_id=tenant_id, chunks=chunks)
 
     kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
     document_ids = sorted(
@@ -442,7 +451,7 @@ def _collapse_results(
     if not kb_ids or not document_ids:
         return chunks
 
-    metas = chunk_repository.fetch_meta_by_chunk_ids(
+    metas = await chunk_repository.fetch_meta_by_chunk_ids_async(
         db,
         tenant_id=tenant_id,
         kb_ids=kb_ids,
@@ -478,7 +487,7 @@ def _collapse_results(
         }
     )
     raw_rows = (
-        chunk_repository.fetch_unit_rows(
+        await chunk_repository.fetch_unit_rows_async(
             db,
             tenant_id=tenant_id,
             document_ids=document_ids,
@@ -536,11 +545,11 @@ def _collapse_results(
         results.append(row)
 
     # meta 已经在上面查过一次，直接复用：同一次检索不为同一批 ID 查两遍库。
-    return _with_locating_fields(db, tenant_id=tenant_id, chunks=results, metas=metas)
+    return await _with_locating_fields(db, tenant_id=tenant_id, chunks=results, metas=metas)
 
 
-def _with_locating_fields(
-    db: Session,
+async def _with_locating_fields(
+    db: AsyncSession,
     *,
     tenant_id: str,
     chunks: list[dict],
@@ -557,7 +566,7 @@ def _with_locating_fields(
         kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
         if not ids or not kb_ids:
             return chunks
-        metas = chunk_repository.fetch_meta_by_chunk_ids(
+        metas = await chunk_repository.fetch_meta_by_chunk_ids_async(
             db, tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=ids
         )
     for chunk in chunks:
@@ -593,8 +602,8 @@ def _rewrite_hint(kbs: list) -> str | None:
     return "；".join(parts) or None
 
 
-def _empty_reason(
-    db: Session, *, tenant_id: str, kb_ids: list[str], chunks: list[dict]
+async def _empty_reason(
+    db: AsyncSession, *, tenant_id: str, kb_ids: list[str], chunks: list[dict]
 ) -> str | None:
     """空结果的原因：查一次 count，绝不按结果条数猜。
 
@@ -606,7 +615,7 @@ def _empty_reason(
 
     if chunks:
         return None
-    indexed = chunk_repository.count_by_kb_ids(
+    indexed = await chunk_repository.count_by_kb_ids_async(
         db,
         tenant_id=tenant_id,
         kb_ids=kb_ids,
@@ -618,7 +627,7 @@ def _empty_reason(
 
 
 async def _retrieve_by_vector(
-    db: Session,
+    db: AsyncSession,
     *,
     tenant_id: str,
     kb_ids: list[str],
@@ -654,7 +663,7 @@ async def _retrieve_by_vector(
 
 
 async def _retrieve_by_keyword(
-    db: Session,
+    db: AsyncSession,
     *,
     tenant_id: str,
     kb_ids: list[str],

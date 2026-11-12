@@ -35,7 +35,7 @@ from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED, KeyPolicy
 from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_STANDARD, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncSessionAdapter, RecordingSession
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
@@ -340,6 +340,7 @@ def _entries_with(
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
     db_session = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     doc_repo = importlib.import_module("app.repositories.document_repository")
@@ -362,7 +363,12 @@ def _entries_with(
             return _kb_row(kb_id)
         return None
 
+    async def _visible_async(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        # 检索链路走异步守卫（第 11 步票 #127）：同一个判定，两个面。
+        return _visible(_db, kb_id, tenant_id=tenant_id)
+
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible_async)
     monkeypatch.setattr(
         doc_repo,
         "get_by_id_for_tenant",
@@ -397,6 +403,8 @@ def _entries_with(
 
     mcp_app = mcp_server.create_mcp_http_app(
         get_db=_get_db,
+        # 检索链路用异步会话（第 11 步票 #127）：同一个替身，包一层异步面。
+        get_async_db=lambda: AsyncSessionAdapter(_get_db()),
         retrieve=service.retrieve,
         list_kbs=kb_repo.list_by_tenant,
     )
@@ -405,6 +413,9 @@ def _entries_with(
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
     app.dependency_overrides[db_session.get_db] = _get_db
+    app.dependency_overrides[async_session.get_async_db] = lambda: AsyncSessionAdapter(
+        _get_db()
+    )
 
     with TestClient(app) as client:
         entry = EntryClient(client)
@@ -702,7 +713,10 @@ def test_mcp_tool_signatures_expose_no_privileged_fields() -> None:
         return {}
 
     mcp = create_mcp_server(
-        get_db=_FakeSession, retrieve=_retrieve, list_kbs=lambda *_a, **_k: []
+        get_db=_FakeSession,
+        get_async_db=lambda: AsyncSessionAdapter(_FakeSession()),
+        retrieve=_retrieve,
+        list_kbs=lambda *_a, **_k: [],
     )
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 

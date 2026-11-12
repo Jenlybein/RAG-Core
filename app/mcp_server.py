@@ -15,6 +15,10 @@ JSON-RPC 信封本身不带任何授权信息。这次调用「用多好」由�
 调的也是它，白名单 / 档位门禁 / 配额 / 召回 / 记账的顺序都封在里面）。这里只做「取请求
 + 取会话 + 递参数」三件事，不判规则，也不各长一套。
 
+**两个会话**（第 11 步票 #127）：身份判定用同步会话，检索链路用异步会话——HTTP 侧也是
+这么分的（``get_db`` 给 ``get_current_key``，``get_async_db`` 给检索）。两条入口共用同一个
+门禁化检索函数，所以「哪一步该用哪个会话」在两侧是同一份决定。
+
 业务失败（如 20008 / 20010）不是协议错误：按工具执行失败表达，文本里带错误码。第 9 步
 再挂第三个工具 ``rag_research``。
 
@@ -45,10 +49,16 @@ def _key_context(db: Any) -> KeyContext:
 def create_mcp_server(
     *,
     get_db: Callable,
+    get_async_db: Callable,
     retrieve: Callable,
     list_kbs: Callable,
 ) -> FastMCP:
-    """把两个工具挂到一个 FastMCP 实例上；业务规则全在回调里。"""
+    """把两个工具挂到一个 FastMCP 实例上；业务规则全在回调里。
+
+    两个会话工厂：``get_db``（同步）给身份判定，``get_async_db``（异步）给检索链路
+    （第 11 步票 #127）。它们**刻意分开**——判定内核还在同步栈上，而检索已经搬走了；
+    合并成一个只会把「这次该不该 await」变成运行期的事。
+    """
 
     mcp = FastMCP("rag-core")
 
@@ -57,6 +67,7 @@ def create_mcp_server(
         """在指定知识库里检索切片（不生成答案）。"""
 
         db = get_db()
+        retrieval_db = get_async_db()
         try:
             # 先取会话再判身份：真实 Key 的租户与套餐都在库里，判定本身要读它。
             key = _key_context(db)
@@ -68,7 +79,7 @@ def create_mcp_server(
             # ``retrieve`` 是既有的注入点（app.main 传 rag_service.retrieve），
             # 这里原样递进去，共享函数自己不知道调用方是谁。
             result = await gated_retrieve(
-                db,
+                retrieval_db,
                 key=key,
                 kb_ids=payload.kb_ids,
                 query=payload.query,
@@ -80,6 +91,7 @@ def create_mcp_server(
             # 业务失败不是协议错误：按 JSON-RPC 结果表达，文本里带 code。
             raise ValueError(f"{exc.code.value}|{exc.msg}") from exc
         finally:
+            await retrieval_db.close()
             db.close()
 
     @mcp.tool(name="rag_list_knowledge_bases")
@@ -105,8 +117,12 @@ def create_mcp_server(
     return mcp
 
 
-def create_mcp_http_app(*, get_db: Callable, retrieve: Callable, list_kbs: Callable):
-    """挂成子应用；path=\"/\" 让外层 mount 成为唯一的前缀来源。"""
+def create_mcp_http_app(
+    *, get_db: Callable, get_async_db: Callable, retrieve: Callable, list_kbs: Callable
+):
+    """挂成子应用；path="/" 让外层 mount 成为唯一的前缀来源。"""
 
-    mcp = create_mcp_server(get_db=get_db, retrieve=retrieve, list_kbs=list_kbs)
+    mcp = create_mcp_server(
+        get_db=get_db, get_async_db=get_async_db, retrieve=retrieve, list_kbs=list_kbs
+    )
     return mcp.http_app(path="/", transport="streamable-http", json_response=True)

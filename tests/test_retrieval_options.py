@@ -19,7 +19,6 @@ import asyncio
 import dataclasses
 import importlib
 from collections.abc import Iterator
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -45,7 +44,7 @@ from app.services.retrieval_options import (
 )
 from app.services.profile_policy import resolve_retrieval_options
 from tests import fake_db
-from tests.fake_db import EmptySession
+from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -312,6 +311,7 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
 
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
@@ -322,16 +322,16 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: vector)
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
-    )
+    # 可见性走异步仓储（第 11 步票 #127）：替身因此也得是 ``async def``。
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", async_visible_kb)
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
-
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+    # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
+        AsyncSessionAdapter(EmptySession())
+    )
 
     main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
@@ -507,7 +507,10 @@ def test_http_and_mcp_accept_literally_the_same_arguments() -> None:
         return {}
 
     mcp = create_mcp_server(
-        get_db=_FakeSession, retrieve=_retrieve, list_kbs=lambda *_a, **_k: []
+        get_db=_FakeSession,
+        get_async_db=lambda: AsyncSessionAdapter(_FakeSession()),
+        retrieve=_retrieve,
+        list_kbs=lambda *_a, **_k: [],
     )
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
     mcp_properties = set(getattr(tools["rag_retrieve"], "parameters", {})["properties"])

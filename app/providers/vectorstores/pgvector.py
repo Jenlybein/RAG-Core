@@ -2,9 +2,16 @@
 
 score = 1 - 余弦距离，在 Python 侧换算成「越大越相关」；SQL 只按距离升序排。
 写入只 flush，不 commit——事务由调用它的 Service 统一提交。
+
+**读侧是异步的**（第 11 步票 #127）：``similarity_search*`` 收的是 ``AsyncSession``，
+``await db.execute(...)`` 之后那条同步 psycopg 查询不再存在——检索链路上因此没有任何
+「会卡住事件循环的同步调用」，第 10 步的执行池（``app/core/loop_pool.py``）也就不需要了。
+写侧（``add_chunks`` / ``delete_by_document_id``）仍收同步 ``Session``：索引链路跑在
+Celery 里，那一侧由它自己的票搬。
 """
 
 from sqlalchemy import and_, delete, false, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
@@ -56,7 +63,13 @@ class PgVectorStore(VectorStore):
         db.flush()
 
     async def similarity_search(
-        self, db: Session, query_vector: list[float], *, tenant_id: str, kb_id: str, top_k: int
+        self,
+        db: AsyncSession,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        kb_id: str,
+        top_k: int,
     ) -> list[dict]:
         distance = Chunk.embedding.cosine_distance(query_vector).label("distance")
         stmt = (
@@ -72,7 +85,7 @@ class PgVectorStore(VectorStore):
             .order_by(distance)
             .limit(top_k)
         )
-        rows = db.execute(stmt).all()
+        rows = (await db.execute(stmt)).all()
         return [
             {
                 "chunk_id": r.chunk_id,
@@ -86,7 +99,7 @@ class PgVectorStore(VectorStore):
 
     async def similarity_search_scope(
         self,
-        db: Session,
+        db: AsyncSession,
         query_vector: list[float],
         *,
         tenant_id: str,
@@ -118,7 +131,7 @@ class PgVectorStore(VectorStore):
             .order_by(distance)
             .limit(top_k)
         )
-        rows = db.execute(stmt).all()
+        rows = (await db.execute(stmt)).all()
         return [
             {
                 "chunk_id": r.chunk_id,

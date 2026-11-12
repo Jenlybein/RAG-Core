@@ -273,6 +273,10 @@ def test_only_the_transaction_module_commits() -> None:
     这条守卫守的不是洁癖，是**换栈的成本边界**：下一票把同步会话换成异步会话时，
     ``session.commit()`` 会变成 ``await session.commit()``。散在几十处的提交点会变成
     几十处 async 传染；集中在一个模块时，改的是这一个文件。
+
+    第 11 步票 #127 起检索链路已经是异步的，守卫**一个字都没改**仍然成立——异步提交
+    （``acommit_now`` 里的 ``await session.commit()``）也在这个文件里，所以「提交散出去」
+    在代码层依然走不通。
     """
 
     allowed = Path("app/db/transaction.py")
@@ -285,3 +289,5 @@ def test_only_the_transaction_module_commits() -> None:
                 offenders.append(f"{path}:{number}: {line.strip()}")
 
     assert offenders == [], "提交点必须集中在 app/db/transaction.py：\n" + "\n".join(offenders)
+
+

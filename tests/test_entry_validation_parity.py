@@ -26,7 +26,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 
 from app.core.auth import KeyContext
 from app.core.exceptions import ErrorCode
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncSessionAdapter, RecordingSession
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 MCP_PATH = "/mcp/"
@@ -121,6 +121,7 @@ def entries(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entries]:
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
     db_session = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     mcp_server = importlib.import_module("app.mcp_server")
     from app.api.deps import get_current_key
 
@@ -137,6 +138,8 @@ def entries(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entries]:
     session = RecordingSession()
     mcp_app = mcp_server.create_mcp_http_app(
         get_db=lambda: session,
+        # 检索链路用异步会话（第 11 步票 #127）。
+        get_async_db=lambda: AsyncSessionAdapter(session),
         retrieve=must_not_run,
         list_kbs=fake_list,
     )
@@ -145,6 +148,7 @@ def entries(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entries]:
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
     app.dependency_overrides[db_session.get_db] = lambda: session
+    app.dependency_overrides[async_session.get_async_db] = lambda: AsyncSessionAdapter(session)
     app.dependency_overrides[get_current_key] = lambda: identity
 
     try:

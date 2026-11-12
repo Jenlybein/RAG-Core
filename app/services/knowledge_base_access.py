@@ -14,8 +14,12 @@
 这个守卫管的是「这个库归不归你」；「这把 Key 能不能查这个库」是**另一道关卡**，在
 :mod:`app.services.data_scope`（六道关卡的第二道），两个入口都按 鉴权 → 白名单 → ……
 的顺序调用它。
+
+**两个面**（第 11 步票 #127）：检索链路走 :func:`ensure_visible_async`，上传与控制面
+仍走同步版。判定只有一句（见两个函数的实现），两个面不会给出两种答案。
 """
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
@@ -27,6 +31,22 @@ def ensure_visible(db: Session, *, tenant_id: str, kb_id: str) -> KnowledgeBase:
     """返回该租户可见的知识库，否则抛 20008；不泄露它是否存在。"""
 
     kb = knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
+    if kb is None:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+    return kb
+
+
+async def ensure_visible_async(db: AsyncSession, *, tenant_id: str, kb_id: str) -> KnowledgeBase:
+    """:func:`ensure_visible` 的异步面：检索链路（第 11 步票 #127）走这一条。
+
+    两条守卫**共用同一句判定**（取行在仓储层，缺失与跨租户都回 ``None``），所以
+    「不可见 → 20008」这件事不会因为走了哪条栈而分叉。拒绝先于召回：调用方（
+    ``rag_service.retrieve``）在任何一次嵌入之前调用它。
+    """
+
+    kb = await knowledge_base_repository.get_by_id_for_tenant_async(
+        db, kb_id, tenant_id=tenant_id
+    )
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
     return kb
