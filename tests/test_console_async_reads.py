@@ -98,8 +98,12 @@ def test_every_console_read_takes_its_session_from_the_async_stack(path: str) ->
 
 
 @pytest.mark.parametrize(("method", "path"), WRITE_PATHS)
-def test_console_writes_stay_on_the_sync_stack(method: str, path: str) -> None:
-    """写入归 #130：这条断言是**范围守卫**，防止本票顺手把写路径也改了。"""
+def test_console_writes_are_on_the_async_stack_too(method: str, path: str) -> None:
+    """票 #130 之后，控制面的**写入**也走异步栈。
+
+    这条断言的作用从「范围守卫，防止本票顺手改写入」翻成了「收口守卫，防止写入又退回
+    同步栈」——两个方向都是同一条纪律：一次请求只许有一条连接，控制面不再有第二种写法。
+    """
 
     from app.db.async_session import get_async_db
     from app.db.session import get_db
@@ -107,8 +111,8 @@ def test_console_writes_stay_on_the_sync_stack(method: str, path: str) -> None:
     route = _routes()[(method, path)]
     calls = _dependant_calls(route.dependant)
 
-    assert get_db in calls
-    assert get_async_db not in calls
+    assert get_async_db in calls, f"{method} {path} 还在从同步栈取会话"
+    assert get_db not in calls, f"{method} {path} 退回同步会话了（一次请求两条连接）"
 
 
 # ───────────────────────────────────────────────────────────── 套餐缓存改异步
@@ -215,7 +219,8 @@ async def test_resolve_plan_is_awaitable() -> None:
     row.id = 5
 
     class _RowSession:
-        def get(self, _model: Any, plan_id: int) -> Any:
+        # 票 #130 起套餐那次读也走 ``await db.get(...)``，替身必须是协程。
+        async def get(self, _model: Any, plan_id: int) -> Any:
             return row if plan_id == 5 else None
 
     class _Cache:

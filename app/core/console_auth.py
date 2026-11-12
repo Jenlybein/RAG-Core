@@ -16,11 +16,10 @@
 自定义头，跨站脚本发之前要先过 CORS 预检——两类都过不来。登录接口本身不带 cookie，
 因此不在这一条之内（它另外要口令，见 ``console_service.login``）。
 
-**两份入口、一套判定**（票 #129）：控制面的读接口已经换到 ``AsyncSession``，写接口与
-「我的视图」仍在同步栈上，于是「认出这次是谁」有两个入口
-（:func:`resolve_console_identity` / :func:`resolve_console_identity_async`）。它们只差
-「怎么读那两行」，四条判定（缺 cookie / 会话不存在 / 会话过期 / 账号停用）收在三个私有
-函数里，只有一份实现——这是这条边界的纪律：**判定可以有两个执行方式，规则不能有两份**。
+**一个入口、一套判定**（第 11 步票 #129 → #130）：控制面的读与写都已经换到
+``AsyncSession``，于是「认出这次是谁」只剩 :func:`resolve_console_identity` 一份协程实现。
+迁移期那个同步孪生随它的最后一个同步调用点一起删掉：判定可以有两个执行方式，规则不能
+有两份——而现在已经不需要两种执行方式了。
 """
 
 from __future__ import annotations
@@ -29,7 +28,6 @@ from dataclasses import dataclass
 from typing import Final, Mapping, Protocol
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
@@ -106,7 +104,9 @@ def identity_of(account: Account) -> ConsoleIdentity:
     )
 
 
-def resolve_console_identity(request: ConsoleRequestLike, db: Session) -> ConsoleIdentity:
+async def resolve_console_identity(
+    request: ConsoleRequestLike, db: AsyncSession
+) -> ConsoleIdentity:
     """读会话 cookie → 会话行 → 账号行；任何一步不成立都是 ``20010``。
 
     四步缺一不可：
@@ -117,35 +117,17 @@ def resolve_console_identity(request: ConsoleRequestLike, db: Session) -> Consol
     4. 账号不存在或已停用 → 未授权（**这里就是「停用立刻生效」**的那一行：账号状态是
        每个请求现读的，不是登录时快照下来的）。
 
-    这是**同步会话**上的那一份：登录 / 登出、控制面的写接口与「我的视图」还在同步栈上。
-    控制面的**读**接口走 :func:`resolve_console_identity_async`——两份只差「怎么读那两行」，
     四条判定本身在 :func:`_ensure_session_usable` / :func:`_ensure_account_usable` 里，
-    只有一份实现。
-    """
-
-    session_id = _session_id_of(request)
-    session = _ensure_session_usable(console_session_repository.get_by_id(db, session_id))
-    return identity_of(
-        _ensure_account_usable(account_repository.get_by_id(db, session.account_id))
-    )
-
-
-async def resolve_console_identity_async(
-    request: ConsoleRequestLike, db: AsyncSession
-) -> ConsoleIdentity:
-    """:func:`resolve_console_identity` 的异步孪生（控制面读，票 #129）。
-
-    判定顺序、错误码与消息与同步版逐字一致——两个入口读的是同一份会话行与账号行，差别
-    只有「用哪套会话读」。这条孪生随控制面写入异步化（#130）一起收掉：那时全仓只剩这一份。
+    只有一份实现；这次读的两行来自 ``AsyncSession``（票 #130 之后控制面只有这一种会话）。
     """
 
     session_id = _session_id_of(request)
     session = _ensure_session_usable(
-        await console_session_repository.get_by_id_async(db, session_id)
+        await console_session_repository.get_by_id(db, session_id)
     )
     return identity_of(
         _ensure_account_usable(
-            await account_repository.get_by_id_async(db, session.account_id)
+            await account_repository.get_by_id(db, session.account_id)
         )
     )
 

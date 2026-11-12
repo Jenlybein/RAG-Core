@@ -174,7 +174,7 @@ def _offline_client(
         ),
     )
     monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant_async", async_visible_kb
+        kb_repo, "get_by_id_for_tenant", async_visible_kb
     )
 
     if llm is not None:

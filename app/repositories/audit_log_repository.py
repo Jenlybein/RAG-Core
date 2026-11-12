@@ -2,22 +2,24 @@
 
 只写不改：审计是账本，**没有 update 也没有 delete**——能被改的账本不算账本。
 
-读接口只有「一页 + 总数」这一对，两个都是 ``async``（票 #129）：控制面审计列表是这张表
-唯一的读者，所以这里没有同步孪生——搬一次就搬完。分页必须在 SQL 里做（``LIMIT`` /
-``OFFSET``），不是在应用层取全量再切片：审计表只会一直变长，而「先取全量」的实现还会让
-``offset`` 的语义在数据量大一点时悄悄失效（它的代价随历史线性上升，测试里永远看不出来）。
+三个动作全是 ``async``（票 #129 / #130）：控制面的审计列表是这张表唯一的读者，而写它的
+两条路径（控制面各写入口、数据面上传）也都在异步栈上——搬一次就搬完，这里没有同步面。
+分页必须在 SQL 里做（``LIMIT`` / ``OFFSET``），不是在应用层取全量再切片：审计表只会一直
+变长，而「先取全量」的实现还会让 ``offset`` 的语义在数据量大一点时悄悄失效（它的代价随
+历史线性上升，测试里永远看不出来）。
 """
 
 from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
 
 
-def create(db: Session, entry: AuditLog) -> AuditLog:
+async def create(db: AsyncSession, entry: AuditLog) -> AuditLog:
+    """写一条账本行（只 flush，不提交——它必须与业务写入同一笔事务）。"""
+
     db.add(entry)
-    db.flush()
+    await db.flush()
     return entry
 
 

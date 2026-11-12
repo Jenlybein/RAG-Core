@@ -47,7 +47,7 @@ from app.providers.llm import get_llm_provider, set_role_resolver
 from app.providers.llm.noop import NoopLLMProvider
 from app.services import model_config_service, runtime_settings
 from app.utils.id_generator import mask_secret
-from tests.fake_db import MemoryPlanCache, RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -241,7 +241,6 @@ def console() -> Any:
     import importlib
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     saved = settings.model_dump()
@@ -257,7 +256,8 @@ def console() -> Any:
     # 角色解析器是**组合根注入**的（#82）：生产里 app.main 启动时注入一次；这里显式再注入
     # 一遍，让装配点用例不依赖「哪个测试文件先 import 了 app.main」这种顺序。
     set_role_resolver(model_config_service.role_endpoint)
-    main.app.dependency_overrides[session_module.get_db] = lambda: db
+    # 控制面的读与写都在异步栈上（票 #130）：四条会话入口一起换、喂同一个假库。
+    override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_runtime_settings_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: plan_cache
     try:

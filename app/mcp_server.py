@@ -15,9 +15,9 @@ JSON-RPC 信封本身不带任何授权信息。这次调用「用多好」由�
 调的也是它，白名单 / 档位门禁 / 配额 / 召回 / 记账的顺序都封在里面）。这里只做「取请求
 + 取会话 + 递参数」三件事，不判规则，也不各长一套。
 
-**两个会话**（第 11 步票 #127）：身份判定用同步会话，检索链路用异步会话——HTTP 侧也是
-这么分的（``get_db`` 给 ``get_current_key``，``get_async_db`` 给检索）。两条入口共用同一个
-门禁化检索函数，所以「哪一步该用哪个会话」在两侧是同一份决定。
+**一个会话**（第 11 步票 #130）：身份判定与检索链路都在异步栈上，所以工具只开一个
+``AsyncSession``，与 HTTP 侧完全同形——那边 ``get_current_key`` 与路由参数拿到的是
+**同一个** ``get_async_db``（FastAPI 的依赖缓存），这里就显式用同一个会话对象。
 
 业务失败（如 20008 / 20010）不是协议错误：按工具执行失败表达，文本里带错误码。第 9 步
 再挂第三个工具 ``rag_research``。
@@ -30,7 +30,6 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from fastapi.concurrency import run_in_threadpool
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 
@@ -41,39 +40,27 @@ from app.services.data_scope import scoped_kb_ids
 from app.services.retrieval_gate import gated_retrieve
 
 
-def _key_context(db: Any) -> KeyContext:
-    """MCP 侧的薄适配器：从请求上下文取 HTTP Request，交给判定内核。"""
+async def _key_context(db: Any) -> KeyContext:
+    """MCP 侧的薄适配器：从请求上下文取 HTTP Request，交给判定内核。
 
-    return resolve_identity(get_http_request(), db)
-
-
-async def _key_context_async(db: Any) -> KeyContext:
-    """同上，但在**线程池**里跑判定内核（票 #129 起必须如此）。
-
-    判定内核是同步函数，并且它要解析套餐——套餐缓存自 #129 起是 ``redis.asyncio``，
-    同步上下文里的那一段由 :func:`app.core.sync_bridge.run_blocking` 交回主事件循环执行。
-    那个桥要求「调用它的线程不是事件循环线程」，而 MCP 工具本身是 ``async def``：
-    直接在工具里调内核会撞上「循环线程上不许阻塞等待」的守卫。
-
-    所以这里显式跳一次线程池（与 FastAPI 跑同步依赖用的是同一套机制）：内核的同步库读
-    因此**离开事件循环**，套餐解析又能回到主循环上 ``await`` 同一个异步 Redis 客户端。
+    判定内核自票 #130 起是 ``async``（套餐缓存与库读都在事件循环上），所以这里只差
+    「从哪拿请求」——不再需要线程池，也不再需要跨回主循环的过渡桥。
     """
 
-    return await run_in_threadpool(_key_context, db)
+    return await resolve_identity(get_http_request(), db)
 
 
 def create_mcp_server(
     *,
-    get_db: Callable,
     get_async_db: Callable,
     retrieve: Callable,
     list_kbs: Callable,
 ) -> FastMCP:
     """把两个工具挂到一个 FastMCP 实例上；业务规则全在回调里。
 
-    两个会话工厂：``get_db``（同步）给身份判定，``get_async_db``（异步）给检索链路
-    （第 11 步票 #127）。它们**刻意分开**——判定内核还在同步栈上，而检索已经搬走了；
-    合并成一个只会把「这次该不该 await」变成运行期的事。
+    ``get_async_db`` 是唯一一个会话工厂：判定内核与检索链路都在异步栈上（第 11 步
+    票 #127 / #130），所以这里不再有「两个会话各管一段」的分工——那正是迁移期的形状。
+    ``list_kbs`` 也是异步的（控制面与数据面列库现在都读 ``AsyncSession``）。
     """
 
     mcp = FastMCP("rag-core")
@@ -82,11 +69,10 @@ def create_mcp_server(
     async def rag_retrieve(kb_ids: list[str], query: str) -> dict:
         """在指定知识库里检索切片（不生成答案）。"""
 
-        db = get_db()
-        retrieval_db = get_async_db()
+        db = get_async_db()
         try:
             # 先取会话再判身份：真实 Key 的租户与套餐都在库里，判定本身要读它。
-            key = await _key_context_async(db)
+            key = await _key_context(db)
             # 与 HTTP 侧**同一个值对象**：工具签名只有类型，挡不住空列表与纯空白，所以
             # 这里显式走一遍 RetrieveRequest；失败是 20002，与 REST 同一个码。
             payload = parse_retrieve_request(kb_ids=kb_ids, query=query)
@@ -95,7 +81,7 @@ def create_mcp_server(
             # ``retrieve`` 是既有的注入点（app.main 传 rag_service.retrieve），
             # 这里原样递进去，共享函数自己不知道调用方是谁。
             result = await gated_retrieve(
-                retrieval_db,
+                db,
                 key=key,
                 kb_ids=payload.kb_ids,
                 query=payload.query,
@@ -107,17 +93,16 @@ def create_mcp_server(
             # 业务失败不是协议错误：按 JSON-RPC 结果表达，文本里带 code。
             raise ValueError(f"{exc.code.value}|{exc.msg}") from exc
         finally:
-            await retrieval_db.close()
-            db.close()
+            await db.close()
 
     @mcp.tool(name="rag_list_knowledge_bases")
     async def rag_list_knowledge_bases() -> dict:
         """列这把 Key 可见的知识库（与 HTTP 的 GET /api/v1/knowledge-bases 对称）。"""
 
-        db = get_db()
+        db = get_async_db()
         try:
-            key = await _key_context_async(db)
-            rows = list_kbs(db, key.tenant_id)
+            key = await _key_context(db)
+            rows = await list_kbs(db, key.tenant_id)
             # 与 HTTP 列库同一套收窄：清单本身就是「你能看哪些库」的答案。
             visible = set(scoped_kb_ids(policy=key.policy, kb_ids=[row.id for row in rows]))
             return {
@@ -128,18 +113,17 @@ def create_mcp_server(
                 ]
             }
         finally:
-            db.close()
+            await db.close()
 
     return mcp
 
 
 def create_mcp_http_app(
-    *, get_db: Callable, get_async_db: Callable, retrieve: Callable, list_kbs: Callable
+    *, get_async_db: Callable, retrieve: Callable, list_kbs: Callable
 ):
     """挂成子应用；path="/" 让外层 mount 成为唯一的前缀来源。"""
 
     mcp = create_mcp_server(
-        get_db=get_db, get_async_db=get_async_db, retrieve=retrieve, list_kbs=list_kbs
+        get_async_db=get_async_db, retrieve=retrieve, list_kbs=list_kbs
     )
     return mcp.http_app(path="/", transport="streamable-http", json_response=True)
-

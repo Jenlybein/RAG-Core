@@ -17,10 +17,9 @@
 阻塞，而套餐解析在**每一次调用**的热路径上。改成异步之后，同步 Redis 客户端只剩运行时
 配置覆盖层一个用户（它跑在 Celery 与线程池里，见 ``app/core/redis_client``）。
 
-调用方因此分两类：异步上下文 ``await``（控制面读、检索链路）；同步上下文（判定内核
-:func:`app.core.auth.resolve_identity`、同步服务函数）走
-:func:`app.services.plan_service.resolve_plan_blocking` 那个显式过渡桥，理由与删除条件
-写在那个函数上。
+调用方**全部**是 ``await``（票 #130 收尾）：判定内核、控制面（登录 / 我的视图 / 改套餐）
+与检索链路都在事件循环上。迁移期那个「同步上下文里跑协程」的过渡桥随最后一个同步调用点
+一起删掉了——它存在的理由（有函数还不是 ``async``）已经不存在。
 """
 
 from __future__ import annotations

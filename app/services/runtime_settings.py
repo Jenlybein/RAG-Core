@@ -1011,16 +1011,16 @@ def _turning_off_keyword(values: Mapping[str, Any]) -> bool:
     return current != "none"
 
 
-def _plan_of(db: Session, policy: KeyPolicy) -> Plan | None:
+async def _plan_of(db: AsyncSession, policy: KeyPolicy) -> Plan | None:
     """一条密钥配置所属租户的套餐；租户或套餐缺失时返回 ``None``（预演跳过它）。"""
 
-    tenant = tenant_repository.get_by_id(db, policy.tenant_id)
+    tenant = await tenant_repository.get_by_id_async(db, policy.tenant_id)
     if tenant is None:
         return None
-    return plan_repository.get_by_id(db, tenant.plan_id)
+    return await plan_repository.get_by_id_async(db, tenant.plan_id)
 
 
-def preview_impact(db: Session, values: Mapping[str, Any]) -> SettingsImpact:
+async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> SettingsImpact:
     """只读试算：这一批改动会让哪些**租户**的质量档位退化、哪些会丢掉关键词通道。
 
     判定口径（与 #82 的「能力开关影响预览」一节同一句）：
@@ -1048,12 +1048,12 @@ def preview_impact(db: Session, values: Mapping[str, Any]) -> SettingsImpact:
 
     degraded: list[str] = []
     lost: list[str] = []
-    for policy in key_policy_repository.list_all(db):
-        plan = _plan_of(db, policy)
+    for policy in await key_policy_repository.list_all(db):
+        plan = await _plan_of(db, policy)
         if plan is None:
             continue
         chain = profile_chain_of(policy_snapshot_of(policy))
-        name = _tenant_name(db, policy.tenant_id)
+        name = await _tenant_name(db, policy.tenant_id)
 
         quality_loss = (
             (turning_off_rerank and chain.rerank and plan.rerank_allowed)
@@ -1074,10 +1074,10 @@ def preview_impact(db: Session, values: Mapping[str, Any]) -> SettingsImpact:
     )
 
 
-def _tenant_name(db: Session, tenant_id: str) -> str:
+async def _tenant_name(db: AsyncSession, tenant_id: str) -> str:
     """租户的显示名；读不到行时用 id。影响面是给人看的，id 至少还能拿去查。"""
 
-    tenant = tenant_repository.get_by_id(db, tenant_id)
+    tenant = await tenant_repository.get_by_id_async(db, tenant_id)
     if tenant is None:
         return tenant_id
     return tenant.name or tenant.id
@@ -1138,7 +1138,7 @@ def _assert_values_valid(values: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _assert_pointer_targets(db: Session, values: Mapping[str, Any]) -> None:
+async def _assert_pointer_targets(db: AsyncSession, values: Mapping[str, Any]) -> None:
     """角色指向的目标必须是一条**现存**的 ``model_configs`` 行（票 #94）。
 
     放在服务层而不是路由里：指针还有别的写入口（未来的 CLI / 迁移脚本），而「指向一个
@@ -1152,17 +1152,17 @@ def _assert_pointer_targets(db: Session, values: Mapping[str, Any]) -> None:
 
     for key, value in values.items():
         if SETTING_SPECS[key].target == TARGET_POINTER:
-            model_config_service.ensure_pointer_target(db, key, value)
+            await model_config_service.ensure_pointer_target(db, key, value)
 
 
-def _assert_merge_valid(db: Session, values: Mapping[str, Any]) -> None:
+async def _assert_merge_valid(db: AsyncSession, values: Mapping[str, Any]) -> None:
     """键间冲突检查：把「库里的合法覆盖 + 这次的新值」整体过一遍 validator。
 
     这一步与逐键校验是两件事：逐键只看自己，整体能发现「A 改成 1、B 改成 2 之后互相
     矛盾」这种只有一起看才成立的错误。
     """
 
-    report = _classify(_read_db_rows(db))
+    report = _classify(await _read_db_rows_async(db))
     merged = dict(ENV_BASELINE)
     merged.update(
         {
@@ -1180,19 +1180,19 @@ def _assert_merge_valid(db: Session, values: Mapping[str, Any]) -> None:
         ) from exc
 
 
-def _override_snapshot(db: Session, key: str) -> Any:
+async def _override_snapshot(db: AsyncSession, key: str) -> Any:
     """改前这一键**在覆盖层里的样子**：有行就是那一行的值，没有行就是 ``None``。
 
     审计要回答「这次是新增一条覆盖，还是改掉一条已有覆盖」，所以这里报的是覆盖层的值
     而不是生效值——生效值在 before 里看不出来「之前根本没配过」。
     """
 
-    row = runtime_setting_repository.get_by_key(db, key)
+    row = await runtime_setting_repository.get_by_key(db, key)
     return None if row is None else row.value
 
 
-def patch_runtime_settings(
-    db: Session,
+async def patch_runtime_settings(
+    db: AsyncSession,
     *,
     values: Mapping[str, Any],
     dry_run: bool,
@@ -1215,12 +1215,12 @@ def patch_runtime_settings(
     normalized = _assert_values_valid(values)
     # 指针的存在性校验排在逐键校验之后、键间校验之前：值本身先要合法（字符串 / 空值），
     # 才谈得上「它指向的那一行在不在」。两项都失败时先报前一项，错误信息才是第一现场。
-    _assert_pointer_targets(db, normalized)
-    _assert_merge_valid(db, normalized)
+    await _assert_pointer_targets(db, normalized)
+    await _assert_merge_valid(db, normalized)
 
     specs = {key: SETTING_SPECS[key] for key in normalized}
     before = {
-        key: _visible_value(specs[key], _override_snapshot(db, key)) for key in normalized
+        key: _visible_value(specs[key], await _override_snapshot(db, key)) for key in normalized
     }
     after = {key: _visible_value(specs[key], value) for key, value in normalized.items()}
     hot = tuple(key for key, spec in specs.items() if spec.tier == TIER_HOT)
@@ -1234,19 +1234,19 @@ def patch_runtime_settings(
             restart=restart,
             before=before,
             after=after,
-            impact=preview_impact(db, normalized),
+            impact=await preview_impact(db, normalized),
             note=NOTE_DRY_RUN,
         )
 
     stamp = at if at is not None else now()
     actor_id = str(getattr(actor, "account_id", actor))
     for key, value in normalized.items():
-        runtime_setting_repository.upsert(
+        await runtime_setting_repository.upsert(
             db, key=key, value=value, updated_by=actor_id, updated_at=stamp
         )
     # 审计与改动同一个事务：不允许出现「改了但没有审计」的窗口。审计落库失败就让整次
     # 改动一起回滚——没有账本的改动本来就不该生效（与改套餐同一条纪律）。
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_SETTINGS_PATCH,

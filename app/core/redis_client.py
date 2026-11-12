@@ -26,14 +26,13 @@
   （``run_in_threadpool``），Celery 任务（``app.tasks.indexing``）也直接同步调用它——
   两条都不在事件循环上，所以同步 Redis 在那里不会阻塞任何请求。
 
-套餐缓存（:mod:`app.core.plan_cache`）已在 #129 改成异步：它背后的 ``resolve_plan``
-被控制面的异步读路径直接 ``await``；判定内核那类**同步**调用方走
-:func:`app.services.plan_service.resolve_plan_blocking` 的过渡桥，协程仍在主事件循环上
-执行，因此不存在「第二个循环用同一个异步客户端」的问题。
+套餐缓存（:mod:`app.core.plan_cache`）在 #129 就改成了异步；它的全部调用方（判定内核、
+控制面、检索链路）自 #130 起都是 ``await``，迁移期那个把协程交回主循环的过渡桥也随最后
+一个同步调用点删掉了。
 
 **在此之前不许有新的调用点用它**：判据是「这个函数是不是 ``async def``」——是，就必须用
-:func:`get_redis_client`。运行时配置缓存这条随 #131（入库与索引搬常驻循环）一起改异步，
-那时这个同步客户端与它的注入缝一并删除。
+:func:`get_redis_client`。运行时配置缓存这条随 #134（同步栈退役）一起改异步，那时这个同步
+客户端与它的注入缝一并删除。
 """
 
 from __future__ import annotations

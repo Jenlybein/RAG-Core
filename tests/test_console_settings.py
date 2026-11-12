@@ -38,7 +38,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.runtime_setting import RuntimeSetting
 from app.models.tenant import Tenant
 from app.services import runtime_settings
-from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -194,8 +194,6 @@ def console() -> Any:
     import importlib
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
-    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     saved = settings.model_dump()
@@ -206,9 +204,8 @@ def console() -> Any:
     set_settings_cache(cache)
     # 中间件自己开会话（它拿不到 Depends）；注入同一个假会话，于是刷新路径也在测试里。
     runtime_settings.set_session_factory(lambda: db)
-    main.app.dependency_overrides[session_module.get_db] = lambda: db
-    # 配置清单的 GET 走异步会话（票 #129），PATCH 仍是同步；两个替身共享同一份行。
-    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(db)
+    # 配置清单的 GET 与 PATCH 都在异步栈上（票 #129 / #130）：四条会话入口一起换。
+    override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_runtime_settings_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: plan_cache
     try:

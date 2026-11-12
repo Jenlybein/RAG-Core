@@ -53,10 +53,17 @@ docker compose 起过容器），套件就会真的去连 ES：结果取决于�
 ``reset_keyword_search_provider_cache()`` 是同一条纪律，只是覆盖面从关键词扩到了模型类。
 """
 
+import asyncio
 import os
+import sys
 from typing import Any
 
 import pytest
+
+#: Windows 的缺省 Proactor 循环跑不了 psycopg 的异步连接（第一条查询就 InterfaceError）。
+#: 只在**测试进程**里换策略：生产在 Linux 上跑，与本机无关。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 os.environ.setdefault("ENABLE_MCP", "false")
 # 强制覆盖：见上。这一行让「无 ES」成为套件自己的事实，而不是机器的巧合。

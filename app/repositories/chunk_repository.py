@@ -9,11 +9,10 @@
 迁移期最容易漂移的东西——两边的租户过滤、版本过滤、排序一旦分叉，症状是「异步路径偶尔
 多出几条别人的切片」这种事后极难查的故障。
 
-**文档列表的分组计数也有异步孪生**（第 11 步票 #132）：``count_by_document_ids_async``
-与同步版共用 ``_count_by_document_ids_statement``。列文档那条路由目前仍走同步版，孪生
-留给它换栈时用；会话类型是 ``DBSession``（同步或异步），删除条件见
-``app/db/dual_session.py``。写侧的 ``delete_by_document_id`` 仍只有同步面——purge 走的是
-存储抽象（``app/services/chunk_store.py``），不经过它。
+**文档列表的分组计数已经在异步面上**（第 11 步票 #130）：列文档（数据面）与控制面的树
+都换了 ``AsyncSession``，所以 ``count_by_document_ids`` 只剩这一份实现。写侧的
+``delete_by_document_id`` 仍只有同步面——purge 走的是存储抽象
+（``app/services/chunk_store.py``），不经过它。
 """
 
 from collections.abc import Iterable, Sequence
@@ -23,8 +22,6 @@ from sqlalchemy import Integer, Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.db import dual_session
-from app.db.dual_session import DBSession
 from app.models.chunk import Chunk
 
 
@@ -231,42 +228,29 @@ async def count_by_kb_ids_async(
     return int((await db.execute(stmt)).scalar_one())
 
 
-def count_by_document_ids(
-    db: Session, document_ids: list[str], *, tenant_id: str
+async def count_by_document_ids(
+    db: AsyncSession, document_ids: list[str], *, tenant_id: str
 ) -> dict[str, int]:
     """一次分组查询拿回 ``{document_id: 切片数}``；没有切片的文档不在字典里。
 
-    文档列表接口必须用它，不能对每个文档各查一次（N+1）。``tenant_id`` 是强制
-    过滤参数（ADR-0006）：即使文档 id 已被上游按租户筛过，计数也不跨租户。
+    文档列表接口（数据面与控制面树）必须用它，不能对每个文档各查一次（N+1）。
+    ``tenant_id`` 是强制过滤参数（ADR-0006）：即使文档 id 已被上游按租户筛过，计数也不跨租户。
     """
 
     if not document_ids:
         return {}
     stmt = _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
-    return {document_id: int(count) for document_id, count in db.execute(stmt).all()}
+    return {document_id: int(count) for document_id, count in (await db.execute(stmt)).all()}
 
 
 def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str):
-    """「每份文档各有几片」的那一条分组计数（同步与异步孪生共用）。"""
+    """「每份文档各有几片」的那一条分组计数。"""
 
     return (
         select(Chunk.document_id, func.count())
         .where(Chunk.document_id.in_(document_ids), Chunk.tenant_id == tenant_id)
         .group_by(Chunk.document_id)
     )
-
-
-async def count_by_document_ids_async(
-    db: DBSession, document_ids: list[str], *, tenant_id: str
-) -> dict[str, int]:
-    """一次分组查询拿回 ``{document_id: 切片数}``（语义同 :func:`count_by_document_ids`）。"""
-
-    if not document_ids:
-        return {}
-    result = await dual_session.execute(
-        db, _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
-    )
-    return {document_id: int(count) for document_id, count in result.all()}
 
 
 def delete_by_document_id(db: Session, document_id: str) -> None:

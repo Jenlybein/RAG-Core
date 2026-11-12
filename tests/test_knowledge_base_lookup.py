@@ -54,7 +54,7 @@ class _RecordingSession:
 def test_the_repository_no_longer_exposes_a_tenant_less_lookup() -> None:
     """``get_by_id`` 被删掉，且没有换个名字复活成「返回库行」的函数。
 
-    第 11 步票 #127 多了一个**异步面** ``get_by_id_for_tenant_async``（检索链路走它），
+    第 11 步票 #127 多了一个**异步面** ``get_by_id_for_tenant``（检索链路走它），
     票 #132 起上传登记也走同一个异步面。它同样把租户写在名字里、写在签名里——两个面
     都是租户强制，所以这条守卫的口径不变：**凡是按 id 取库行的函数，名字里必须带租户**。
     """
@@ -62,13 +62,13 @@ def test_the_repository_no_longer_exposes_a_tenant_less_lookup() -> None:
     assert not hasattr(kb_repo, "get_by_id"), "按 id 裸取库的函数必须保持删除状态"
 
     lookup_names = {name for name in dir(kb_repo) if "get_by_id" in name}
-    assert lookup_names == {"get_by_id_for_tenant", "get_by_id_for_tenant_async"}, (
+    assert lookup_names == {"get_by_id_for_tenant", "get_by_id_for_tenant"}, (
         "取库只有带租户的两个入口（同步 / 异步孪生：检索链路与上传登记走异步那个）"
     )
 
 
 @pytest.mark.parametrize(
-    "lookup", [kb_repo.get_by_id_for_tenant, kb_repo.get_by_id_for_tenant_async]
+    "lookup", [kb_repo.get_by_id_for_tenant, kb_repo.get_by_id_for_tenant]
 )
 def test_the_tenant_is_a_required_keyword_argument(lookup: Any) -> None:
     parameters = inspect.signature(lookup).parameters
@@ -120,7 +120,7 @@ async def test_the_async_lookup_emits_the_very_same_statement() -> None:
 
     async_session = AsyncRecordingSession()
     assert (
-        await kb_repo.get_by_id_for_tenant_async(async_session, "kb-1", tenant_id="tenant-a")
+        await kb_repo.get_by_id_for_tenant(async_session, "kb-1", tenant_id="tenant-a")
         is None
     )
 

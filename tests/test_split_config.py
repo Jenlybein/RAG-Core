@@ -76,7 +76,7 @@ def client() -> Any:
     session = importlib.import_module("app.db.session")
     fake = _FakeSession()
 
-    main.app.dependency_overrides[session.get_db] = lambda: fake
+    fake_db.override_all_db(main.app, fake)
 
 
     main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
@@ -294,7 +294,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
         return (SPLIT_SIZE, 400)
 
     # 票 #132 起索引流水线走异步会话，库级切块配置读的是异步孪生。
-    monkeypatch.setattr(repo, "get_split_config_async", _split_config)
+    monkeypatch.setattr(repo, "get_split_config", _split_config)
 
     service = service_module.IndexingService(
         splitter=None,

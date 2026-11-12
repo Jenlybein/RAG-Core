@@ -16,11 +16,11 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import get_console_admin
 from app.core.console_auth import ConsoleIdentity
-from app.db.session import get_db
+from app.db.async_session import get_async_db
 from app.schemas.common import ApiResponse, ok
 from app.services import admin_observability
 
@@ -32,10 +32,10 @@ router = APIRouter(prefix="/console/admin", tags=["console"])
     response_model=ApiResponse[dict],
     summary="观测总览（本地事实：量、耗时、降级、评分、租户榜、趋势）",
 )
-def observability_overview(
+async def observability_overview(
     hours: int = Query(24, description="窗口小时数，取值 1/6/24/72/168；非法值收敛到 24"),
     identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """跨租户的检索量与质量概况。
 
@@ -44,7 +44,7 @@ def observability_overview(
     的请求是几点」。
     """
 
-    return ok(admin_observability.overview(db, hours=hours))
+    return ok(await admin_observability.overview(db, hours=hours))
 
 
 @router.get(

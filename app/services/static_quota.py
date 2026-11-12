@@ -32,23 +32,26 @@
 超限一律 :attr:`~app.core.exceptions.ErrorCode.QUOTA_EXCEEDED`（``20014``）：与日配额
 同一个码，因为调用方的反应是同一个——「提额或换套餐」，重试没有意义。它与秒级限流
 （``20005``，该退避重试）刻意分开。
+
+**三条都只剩异步面**（第 11 步票 #130）：它们数行的三个调用点（建库、上传、重建）全部
+在事件循环上，迁移期那对同步孪生已经删掉——判定与文案本来就只有一份，现在连会话也只有
+一种。
 """
 
 from __future__ import annotations
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import ErrorCode
-from app.db.dual_session import DBSession
 from app.models.plan import PlanSpec
 from app.repositories import document_repository, knowledge_base_repository
 from app.services.quota_limits import ensure_under_limit
 
 
-def ensure_kb_quota(db: Session, *, tenant_id: str, plan: PlanSpec) -> None:
+async def ensure_kb_quota(db: AsyncSession, *, tenant_id: str, plan: PlanSpec) -> None:
     """建库之前：这个租户的库数还够不够（``plan.max_kb``）。"""
 
-    used = knowledge_base_repository.count_by_tenant(db, tenant_id)
+    used = await knowledge_base_repository.count_by_tenant(db, tenant_id)
     _ensure_under(
         used=used,
         limit=plan.max_kb,
@@ -57,8 +60,8 @@ def ensure_kb_quota(db: Session, *, tenant_id: str, plan: PlanSpec) -> None:
     )
 
 
-def ensure_upload_quota(
-    db: Session, *, tenant_id: str, kb_id: str, plan: PlanSpec
+async def ensure_upload_quota(
+    db: AsyncSession, *, tenant_id: str, kb_id: str, plan: PlanSpec
 ) -> None:
     """上传之前：这个库装得下（``max_documents_per_kb``），且租户还有并发名额。
 
@@ -67,24 +70,28 @@ def ensure_upload_quota(
     正是本票说的「最容易忘的那一条」）。
     """
 
-    used_documents = document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id)
+    used_documents = await document_repository.count_by_kb_async(
+        db, kb_id, tenant_id=tenant_id
+    )
     _ensure_under(
         used=used_documents,
         limit=plan.max_documents_per_kb,
         what=f"document count of knowledge base {kb_id}",
         plan=plan,
     )
-    ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
+    await ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
 
 
-def ensure_processing_quota(db: Session, *, tenant_id: str, plan: PlanSpec) -> None:
+async def ensure_processing_quota(db: AsyncSession, *, tenant_id: str, plan: PlanSpec) -> None:
     """再入队一份解析任务之前：这个租户还有没有并发处理名额。
 
     上传与重建都调它。重建尤其不能漏：它跳过「单库文档数」（文档本来就在库里），
     却照样往队列里塞一份工作。
     """
 
-    used = document_repository.count_processing_for_tenant(db, tenant_id=tenant_id)
+    used = await document_repository.count_processing_for_tenant_async(
+        db, tenant_id=tenant_id
+    )
     _ensure_under(
         used=used,
         limit=plan.max_processing_documents,
@@ -106,43 +113,4 @@ def _ensure_under(*, used: int, limit: int, what: str, plan: PlanSpec) -> None:
         code=ErrorCode.QUOTA_EXCEEDED,
         what=what,
         suffix=f"(plan {plan.code!r})",
-    )
-
-
-# ───────────────────────────────────── 异步孪生（第 11 步票 #132：上传登记链路）
-#
-# 判据、错误码（20014）与文案逐字相同，只是数行那两次查询走异步会话。``ensure_kb_quota``
-# 没有孪生：建库在控制面，随票 #130 一起搬。
-
-
-async def ensure_upload_quota_async(
-    db: DBSession, *, tenant_id: str, kb_id: str, plan: PlanSpec
-) -> None:
-    """:func:`ensure_upload_quota` 的异步孪生：两条上限**都在这里**，不拆给调用方。"""
-
-    used_documents = await document_repository.count_by_kb_async(
-        db, kb_id, tenant_id=tenant_id
-    )
-    _ensure_under(
-        used=used_documents,
-        limit=plan.max_documents_per_kb,
-        what=f"document count of knowledge base {kb_id}",
-        plan=plan,
-    )
-    await ensure_processing_quota_async(db, tenant_id=tenant_id, plan=plan)
-
-
-async def ensure_processing_quota_async(
-    db: DBSession, *, tenant_id: str, plan: PlanSpec
-) -> None:
-    """:func:`ensure_processing_quota` 的异步孪生（上传与重建都调它）。"""
-
-    used = await document_repository.count_processing_for_tenant_async(
-        db, tenant_id=tenant_id
-    )
-    _ensure_under(
-        used=used,
-        limit=plan.max_processing_documents,
-        what=f"concurrently processing documents of tenant {tenant_id}",
-        plan=plan,
     )

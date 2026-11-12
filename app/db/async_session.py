@@ -6,21 +6,23 @@
 ``async_sessionmaker``、一个请求级依赖 :func:`get_async_db`。票 #126 只把地基铺好并证明
 它可用（探针见 ``tests/test_async_probe.py``）；从票 #127 起按垂直切片往上搬。
 
-已经用上它的两片：**观测与反馈**（票 #128：归属索引的读、反馈的读写、控制台的 trace 读）
-与**控制面的只读查询**（票 #129：密钥 / 套餐 / 档位 / 运行时设置 / 审计 / traces 的列表
-与详情，身份判定走 ``app.api.console_deps`` 里带 ``_async`` 后缀的那三个依赖）。检索链路
-（#127）、控制面的写（#130）与入库索引（#131）仍在同步栈上，所以现在两套池并存——连接
-预算见下一节。
+到票 #130，**HTTP 的每一条入口**（控制面与数据面，读与写）都已经在异步栈上：
+检索链路（#127）、观测与反馈（#128）、控制面（#129 读 / #130 写）、入库索引（#131 / #132）、
+身份判定（数据面 ``get_current_key`` 与控制面 ``get_console_account``）。同步会话如今只剩
+**不在请求路径上**的三处：运维脚本、组合根启动时的档位装载、Provider 装配的角色指针解析
+——它们随 #134（同步栈退役）一起搬。
 
 ## 迁移期的命名约定（写给后面几张票）
 
 * **搬完就搬完**：一条操作的全部调用点都在同一片里时，直接把函数改成 ``async``、**名字不动**
   （``audit_log_repository.list_page``、``retrieval_waterfall.waterfall_of`` 就是这样）。
 * **两种会话必须并存时**才加后缀：异步那一份叫 ``xxx_async``
-  （``account_repository.get_by_id_async``、``console_deps.get_console_account_async``），
+  （``account_repository.get_by_username_async``、``document_repository.list_by_kb_async``），
   同步那一份保持原名。后缀是**过渡标记**，不是设计——同步那一份消失时它也该消失。
 * 同一张表**不允许**出现「同一个操作的两条实现」：要么搬（改原函数），要么留一份带后缀的
   孪生并在模块文档里写明同步版还归谁、什么时候删。
+* **反向也成立**：一条路径搬完之后，它留下的 ``_async`` 后缀要收掉（票 #129 → #130 就把
+  ``get_console_account_async`` / ``resolve_console_identity_async`` 这一族收了回去）。
 
 ## 为什么驱动还是 psycopg3
 
@@ -48,18 +50,16 @@ SQL 一字不改。换 asyncpg 只需要改 dialect 与 URL、业务代码零改
   ``__aexit__`` 对应同步版的 ``__enter__`` / ``__exit__``，落库与撤销都是 ``await``；
   入口是 ``async with async_transaction(session):``；
 * ``after_commit`` 的登记点不变（``session.info`` 上的同一笔），副作用仍然在提交之后执行；
+  异步版额外允许动作返回协程（删套餐缓存、重读档位表都走这条）；
 * 服务层继续不提交——**不允许**在服务层出现提交调用，异步化不等于把提交散出去；
   结构守卫扫的是全仓的提交与回滚调用，异步写法（前面多个 ``await``）一样会被它抓到。
 
-**请求级依赖 :func:`get_async_transaction`**（第 11 步票 #132 加的）：形状与同步版
+**请求级依赖 :func:`get_async_transaction`**（票 #132 加的）：形状与同步版
 ``get_transaction`` 逐条同构——写接口在签名上声明它，一个请求恰好一笔，成功出块提交、
-异常回滚。数据面上传（``POST /documents/upload``）是第一条用它的写路径；控制面写要等到
-S4 那一片（票 #130）。已经用上异步提交点的还有**反馈写入**（自己开会话的旁路短事务），
-归属索引的写入在检索路径上，随票 #127 搬。
+异常回滚。控制面的每一条写入口（票 #130）都用它，数据面上传也一样。
 
 :func:`get_async_db` 本身只负责 yield 与关闭，所以「新栈上有人偷偷提交」在结构上不可能
-发生——票 #129 搬的全是**读**，而读不开事务。控制面写（#130）落地时，套餐缓存那条提交后
-回调上的 ``plan_service.invalidate_plan_blocking`` 过渡桥也应一并换成 ``await``。
+发生——提交只能经过上面那两个入口。
 """
 
 from __future__ import annotations

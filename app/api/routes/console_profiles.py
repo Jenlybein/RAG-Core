@@ -21,17 +21,15 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.api.console_deps import (
-    get_console_admin_async,
+    get_console_admin,
     require_console_admin_write,
 )
 from app.core.console_auth import ConsoleIdentity
 from app.core.profile_presets import ProfilePresetSpec
-from app.db.async_session import get_async_db
-from app.db.session import get_db, get_transaction
-from app.db.transaction import Transaction
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.models.key_policy import PROFILES
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_profiles import (
@@ -59,7 +57,7 @@ def _data(profile: str, spec: ProfilePresetSpec) -> ProfilePresetData:
     summary="四个质量档位的参数",
 )
 async def list_profile_presets(
-    _identity: ConsoleIdentity = Depends(get_console_admin_async),
+    _identity: ConsoleIdentity = Depends(get_console_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[ProfilePresetListData]:
     """四个档位的参数。只读，因此整条路径在异步栈上（票 #129）。"""
@@ -76,14 +74,14 @@ async def list_profile_presets(
     response_model=ApiResponse[ProfilePresetPatchData],
     summary="改一个档位的参数",
 )
-def patch_profile_preset(
+async def patch_profile_preset(
     payload: ProfilePresetPatchRequest,
     profile: str = Path(description="档位名：speed / balanced / quality / custom"),
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
-    tx: Transaction = Depends(get_transaction),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ProfilePresetPatchData]:
-    result = profile_preset_service.patch_preset(
+    result = await profile_preset_service.patch_preset(
         db,
         profile=profile,
         mode=payload.mode,

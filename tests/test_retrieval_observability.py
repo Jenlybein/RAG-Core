@@ -180,7 +180,7 @@ def _offline_client(
         monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: rerank)
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id_for_tenant_async",
+        "get_by_id_for_tenant",
         async_visible_kb,
     )
 
@@ -407,7 +407,7 @@ async def _retrieve_with_timer(
         monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: _FakeRerankProvider())
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id_for_tenant_async",
+        "get_by_id_for_tenant",
         async_visible_kb,
     )
 

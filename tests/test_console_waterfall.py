@@ -57,7 +57,7 @@ from app.observability.stage_timing import (
     StageSpan,
 )
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 WATERFALL_PATH = "/console/retrieval-traces/{log_id}/waterfall"
 LOGIN_PATH = "/console/login"
@@ -218,8 +218,6 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
     """
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
-    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     jsonl_dir = tmp_path / "traces"
@@ -230,14 +228,12 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
 
     world = _world()
     world[RetrievalTrace] = _trace_rows()
-    # 同步的给登录（会话行写在这里），异步的给身份判定与归属校验；两个替身共享同一份行。
+    # 登录（写会话行）、身份判定与归属校验都在**同一个假库**上（票 #130 起读写全在异步栈）。
     session = RecordingSession(rows=world)
-    trace_session = async_mirror(session)
     cache = MemoryPlanCache()
     reader = _FakeObservations()
 
-    main.app.dependency_overrides[session_module.get_db] = lambda: session
-    main.app.dependency_overrides[async_session.get_async_db] = lambda: trace_session
+    override_all_db(main.app, session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_langfuse_reader] = lambda: reader
     try:

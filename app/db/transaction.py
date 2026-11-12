@@ -36,9 +36,10 @@
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Callable
 from types import TracebackType
-from typing import Final, Literal
+from typing import Any, Final, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -46,8 +47,11 @@ from sqlalchemy.orm import Session
 #: ``session.info`` 里的键。``info`` 是 SQLAlchemy 给调用方留的字典，值随会话走。
 _SESSION_KEY: Final[str] = "transaction"
 
-#: 提交之后才允许执行的动作。返回 ``None``：它只做副作用，没有结果要回给调用方。
-AfterCommit = Callable[[], None]
+#: 提交之后才允许执行的动作。返回 ``None`` 或一个协程：**同步与异步动作都收**——同步那
+#: 一侧（Celery 投递、进程内注册表重载）原样调用；异步那一侧（删套餐缓存、重读档位表）
+#: 交回一个协程，由 :meth:`AsyncTransaction.commit` ``await`` 掉。写成联合类型而不是两份
+#: 登记表，是因为「提交之后做什么」这件事本身与它会阻塞多久无关。
+AfterCommit = Callable[[], Any]
 
 
 class NoTransactionError(RuntimeError):
@@ -161,6 +165,10 @@ class AsyncTransaction:
     ``rollback`` 需要 ``await``。它服务的正是**旁路短事务**（反馈、归属索引）：那些路径
     自己开会话、自己收尾，而它们的会话是 ``AsyncSession``——所以提交点必须也是异步的，
     否则那两条路径只能裸 ``await session.commit()``，把「提交点只有一个」这条纪律破掉。
+
+    与同步版的**唯一**差别（票 #130）：提交后动作可以是协程。异步 Redis 的删除、异步
+    会话上的重读都只能 ``await``，而它们又必须排在提交之后；在这里统一 await 掉，比让
+    每个服务各自记着「先提交再 await」要可靠得多。
     """
 
     def __init__(self, session: AsyncSession) -> None:
@@ -201,12 +209,20 @@ class AsyncTransaction:
         self._after.append(action)
 
     async def commit(self) -> None:
-        """落库，然后按登记顺序执行提交后动作（提交失败时动作一个都不执行）。"""
+        """落库，然后按登记顺序执行提交后动作（提交失败时动作一个都不执行）。
+
+        动作**可以返回协程**（票 #130）：删套餐缓存、重读档位表这些副作用背后是异步
+        Redis / 异步会话，它们必须在同一个事件循环上 ``await``。同步动作（Celery 投递、
+        进程内注册表写入）照旧直接调用——这里按返回值判断，不按动作的来源判断，于是
+        「这个动作是同步还是异步」不需要登记方多写一行。
+        """
 
         await self._session.commit()
         actions, self._after = self._after, []
         for action in actions:
-            action()
+            result = action()
+            if inspect.isawaitable(result):
+                await result
 
     async def rollback(self) -> None:
         """丢弃这一笔的全部改动与全部提交后动作。"""

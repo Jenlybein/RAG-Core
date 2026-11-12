@@ -6,7 +6,7 @@
 
 两条边界写在这里，因为它们都是「少一个参数」的事故：
 
-- **走读门 ``require_console_tenant_async``**：会话 cookie + 租户账号。管理员（``tenant_id IS
+- **走读门 ``require_console_tenant``**：会话 cookie + 租户账号。管理员（``tenant_id IS
   NULL``）一律 ``20011``——它不属于任何租户，而瀑布图恰恰是租户内的数据；不带防跨站头，
   因为看瀑布不改任何状态。（``/runtime-info`` 是唯一不碰数据库的一条，仍用同步那一份
   门禁——同一个判定，见 ``app/core/console_auth``。）
@@ -18,7 +18,7 @@
 密钥不进这一层，也就不可能进响应。
 
 **会话只有一个，是这条切片收口之后的事实**（第 11 步票 #128 搬读、票 #129 搬身份）：三条读
-都用异步会话 ``get_async_db``，身份判定走 ``require_console_tenant_async``，于是**一个请求
+都用异步会话 ``get_async_db``，身份判定走 ``require_console_tenant``，于是**一个请求
 一条连接**。``/runtime-info`` 是唯一不碰数据库的一条，仍用同步那份门禁（同一个判定，见
 ``app/core/console_auth``）——它不声明任何会话依赖，所以不存在「两条连接」的问题。
 """
@@ -33,7 +33,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.console_deps import (
     get_langfuse_reader,
     require_console_tenant,
-    require_console_tenant_async,
     tenant_id_of,
 )
 from app.core.config import settings
@@ -57,7 +56,7 @@ _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 )
 async def retrieval_waterfall(
     log_id: str = Path(..., min_length=1, description="归属索引的行 id，即 log_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant_async),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
     remote_reader: RemoteStageReader = Depends(get_langfuse_reader),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[RetrievalWaterfallData]:
@@ -87,7 +86,7 @@ async def retrieval_waterfall(
 )
 async def retrieval_trace_by_trace_id(
     trace_id: str = Query(..., min_length=1, description="检索响应 metadata.trace_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant_async),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """把「这根线」翻回「那一行」，供反馈与瀑布使用（#106）。
@@ -125,7 +124,7 @@ async def retrieval_trace_by_trace_id(
 )
 async def recent_retrieval_traces(
     limit: int = Query(20, ge=1, le=100, description="返回条数上限"),
-    identity: ConsoleIdentity = Depends(require_console_tenant_async),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """本租户最近若干条归属索引，按时间倒序。

@@ -136,8 +136,7 @@ if settings.ENABLE_MCP:
     from app.mcp_server import create_mcp_http_app  # noqa: E402
 
     mcp_app = create_mcp_http_app(
-        # 两个会话工厂各管一段：同步的给身份判定，异步的给检索链路（见 mcp_server 的模块文档）。
-        get_db=SessionLocal,
+        # 一个会话工厂：身份判定与检索链路都在异步栈上（见 mcp_server 的模块文档）。
         get_async_db=AsyncSessionLocal,
         retrieve=rag_service.retrieve,
         list_kbs=knowledge_base_repository.list_by_tenant,

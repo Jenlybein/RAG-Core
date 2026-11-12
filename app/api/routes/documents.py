@@ -12,13 +12,10 @@
 三条写入口都声明事务依赖：一个请求一笔事务，成功提交、异常回滚，提交点只在
 :mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
 
-**上传这一条已经是异步栈**（第 11 步票 #132）：``Depends(get_async_db)`` +
+四条入口全部在异步栈上（第 11 步票 #130 收尾）：``Depends(get_async_db)`` +
 ``Depends(get_async_transaction)``，会话是 ``AsyncSession``，写路径的提交点是
-``app.db.transaction`` 的异步孪生。其余三条入口仍用同步会话——它们与**控制面**共用
-同一批服务函数（``console_kb_service`` 的重建 / 删除 / 列文档），控制面要等票 #130 才换栈；
-两边共用同一份实现这一点没有变，差异收在 ``app/db/dual_session.py``。同一个路由文件里
-同时存在两个会话依赖是**迁移期的形状，不是设计**：最后一条入口换完时，同步那两个依赖
-会从这个文件里消失。
+``app.db.transaction`` 的异步孪生。同一个路由文件里只剩一套会话依赖——迁移期那种
+「两个会话依赖并存」的形状随最后一个同步入口一起消失了。
 
 按 ``document_id`` 取文档一律经 ``get_by_id_for_tenant``（ADR-0006）：缺失与跨租户
 统一按「不存在」（20016）处理，不泄露存在性。守卫一律走 ``document_state`` 的
@@ -32,15 +29,13 @@
 import structlog
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_key
 from app.api.upload_parsing import parse_upload_request, submitted_request_id
 from app.core.auth import DevKeyContext
 from app.core.exceptions import AppError, ErrorCode
 from app.db.async_session import get_async_db, get_async_transaction
-from app.db.session import get_db, get_transaction
-from app.db.transaction import AsyncTransaction, Transaction, after_commit
+from app.db.transaction import AsyncTransaction, after_commit
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository, document_repository
@@ -126,7 +121,7 @@ async def upload_document(
 )
 async def list_documents(
     kb_id: str = Query(..., min_length=1),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[DocumentListData]:
     """返回该知识库下全部文档的 status / chunk_count / error_message 等摘要。
@@ -138,10 +133,10 @@ async def list_documents(
 
     # 第二道关卡：白名单（先于任何库行查询），然后才是租户可见性。
     ensure_kb_scope(policy=key.policy, kb_ids=[kb_id])
-    ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
+    await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
 
-    rows = document_repository.list_by_kb(db, kb_id, tenant_id=key.tenant_id)
-    counts = chunk_repository.count_by_document_ids(
+    rows = await document_repository.list_by_kb_async(db, kb_id, tenant_id=key.tenant_id)
+    counts = await chunk_repository.count_by_document_ids(
         db, [row.id for row in rows], tenant_id=key.tenant_id
     )
     data = DocumentListData(
@@ -171,9 +166,9 @@ async def reindex_document(
     request: Request,
     reparse: bool = Query(False),
     force: bool = Query(False),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     key: DevKeyContext = Depends(get_current_key),
-    tx: Transaction = Depends(get_transaction),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ReindexDocumentData]:
     """守卫 → 标记排队（不盖租约）→ 由 ``tx`` 提交 → 投递，立即返回 ``status=3``。
 
@@ -192,7 +187,9 @@ async def reindex_document(
     Worker 的选择位，表示忽略库内 ``content``、重解析落盘原始文件。
     """
 
-    doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
@@ -204,9 +201,9 @@ async def reindex_document(
 
     # 静态配额：重建虽然跳过「单库文档数」（文档本来就在库里），却照样往队列塞一份
     # 解析任务，所以必须过并发处理数——这是最容易漏、也最能饿死其他租户的一条。
-    static_quota.ensure_processing_quota(db, tenant_id=key.tenant_id, plan=key.plan)
+    await static_quota.ensure_processing_quota(db, tenant_id=key.tenant_id, plan=key.plan)
 
-    prepared = document_repository.prepare_for_indexing(
+    prepared = await document_repository.prepare_for_indexing_async(
         db, document_id, tenant_id=key.tenant_id, allow_success=force
     )
     if not prepared:
@@ -247,9 +244,9 @@ async def reindex_document(
 )
 async def delete_document(
     document_id: str,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     key: DevKeyContext = Depends(get_current_key),
-    tx: Transaction = Depends(get_transaction),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[DeleteDocumentData]:
     """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删行 → 由 ``tx`` 提交。
 
@@ -259,7 +256,9 @@ async def delete_document(
     （20025）；租约过期视为 Worker 卡死，允许删除。
     """
 
-    doc = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=key.tenant_id)
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
@@ -275,7 +274,7 @@ async def delete_document(
         stores=build_chunk_stores(get_vector_store(), get_keyword_search_provider()),
     )
     remove_document_file(doc.source_file_path)
-    db.delete(doc)
+    await db.delete(doc)
 
     logger.info(
         "document deleted",

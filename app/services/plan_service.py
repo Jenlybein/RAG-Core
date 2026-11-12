@@ -11,33 +11,21 @@
 缓存未命中时读库失败（行不存在）映射成 ``20017``：一个 ``plan_id`` 指向不存在的套餐是
 数据被手工改坏的征兆，报「套餐不存在」比让后续每一道关卡拿着 ``None`` 崩掉更好查。
 
-## 两个入口：``await`` 的那个与过渡桥（票 #129）
-
-套餐缓存改成了 ``redis.asyncio``（见 :mod:`app.core.plan_cache`），所以解析本身是
-:func:`resolve_plan`（``async``）。异步调用方直接 ``await``；**同步上下文**里的调用方
-（判定内核 :func:`app.core.auth.resolve_identity` 这个同步依赖、``console_kb_service``
-里那条同步的重建索引路径、改套餐提交后删缓存的回调）走
-:func:`resolve_plan_blocking` / :func:`invalidate_plan_blocking`。
-
-那两个桥**不是第二套实现**：它们只是把同一个协程交给事件循环跑完再取结果
-（:func:`app.core.sync_bridge.run_blocking`），业务规则仍然只有一份。它们随 #127 / #130
-把剩下的同步调用点搬完一起删除——判据与完整理由写在 ``app/core/sync_bridge.py``。
-
-**套餐行的读仍然是同步的**（``db`` 是同步 ``Session``）：本票只把 Redis 那一半换成异步，
-会话的迁移是 #130 / #127 的事。为了不让这次读落在事件循环上，它被
-:func:`asyncio.to_thread` 挪进线程池——「谁在等」变了，「谁在读库」没变。
+**两个动作都是 ``async``，且只有一份**（第 11 步票 #129 / #130）：缓存背后是
+``redis.asyncio``（见 :mod:`app.core.plan_cache`），套餐行读的是 ``AsyncSession``——
+判定内核、控制面、检索链路与 Celery 侧调用方全部在事件循环上 ``await``。迁移期那两个
+「在同步上下文里把协程跑完」的过渡桥（``resolve_plan_blocking`` / ``invalidate_plan_blocking``）
+随最后一个同步调用点一起删掉了：它们存在的唯一理由是「有函数还不是 ``async``」，
+而这个理由在票 #130 之后不再成立。
 """
 
 from __future__ import annotations
 
-import asyncio
-
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache, RedisPlanCache
 from app.core.redis_client import get_redis_client
-from app.core.sync_bridge import run_blocking
 from app.models.plan import PlanSpec, plan_spec_of
 from app.repositories import plan_repository
 
@@ -75,14 +63,16 @@ def set_default_plan_cache(cache: PlanCache | None) -> None:
     _default_cache = cache
 
 
-async def resolve_plan(db: Session, plan_id: int, *, cache: PlanCache | None = None) -> PlanSpec:
+async def resolve_plan(
+    db: AsyncSession, plan_id: int, *, cache: PlanCache | None = None
+) -> PlanSpec:
     """按 ``plan_id`` 取套餐快照：先缓存、后库，未命中时回填。
 
     ``cache`` 缺省取 Redis 实现。测试传内存假实现，于是「命中缓存时不读库」「未命中时
     读一次库并回填」都能被直接断言，不需要真 Redis。
 
-    命中缓存时**一次数据库都不碰**（``to_thread`` 只在未命中时才发生）：这条路径在每一次
-    数据面调用的热路径上，省下的那次库读就是它存在的理由。
+    命中缓存时**一次数据库都不碰**：这条路径在每一次数据面调用的热路径上，省下的那次
+    库读就是它存在的理由。未命中时那次读也是 ``await``（异步会话），不再借道线程池。
     """
 
     plan_cache = default_plan_cache() if cache is None else cache
@@ -91,8 +81,7 @@ async def resolve_plan(db: Session, plan_id: int, *, cache: PlanCache | None = N
     if cached is not None:
         return cached
 
-    # 同步会话读库：本票没搬会话（见模块文档最后一节），所以把它挪出事件循环。
-    row = await asyncio.to_thread(plan_repository.get_by_id, db, plan_id)
+    row = await plan_repository.get_by_id_async(db, plan_id)
     if row is None:
         raise AppError(ErrorCode.PLAN_NOT_FOUND, f"plan not found: {plan_id}")
 
@@ -111,34 +100,9 @@ async def invalidate_plan(cache: PlanCache, plan_id: int) -> None:
     await cache.delete(plan_id)
 
 
-# ─────────────────────────────────────────── 同步上下文的过渡桥（票 #129，随 #127/#130 删除）
-
-
-def resolve_plan_blocking(
-    db: Session, plan_id: int, *, cache: PlanCache | None = None
-) -> PlanSpec:
-    """同步上下文里的套餐解析：把 :func:`resolve_plan` 交给事件循环跑完再取结果。
-
-    两个调用方，都在**同步**函数里：判定内核 ``resolve_identity``（同步 FastAPI 依赖，
-    跑在 anyio 工作线程上）与 ``console_kb_service`` 里那条同步的重建索引路径。它们不该
-    为了一个缓存读变成 ``async``——那会把 ``async`` 传染进数据面的整棵依赖树，而那正是
-    #127 的活。
-    """
-
-    return run_blocking(resolve_plan(db, plan_id, cache=cache))
-
-
-def invalidate_plan_blocking(cache: PlanCache, plan_id: int) -> None:
-    """同步上下文里删套餐缓存（改套餐的提交后回调）；理由见 :func:`resolve_plan_blocking`。"""
-
-    run_blocking(invalidate_plan(cache, plan_id))
-
-
 __all__ = [
     "default_plan_cache",
     "invalidate_plan",
-    "invalidate_plan_blocking",
     "resolve_plan",
-    "resolve_plan_blocking",
     "set_default_plan_cache",
 ]

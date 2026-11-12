@@ -23,18 +23,16 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.api.console_deps import (
-    get_console_admin_async,
+    get_console_admin,
     get_runtime_settings_cache,
     require_console_admin_write,
 )
 from app.core.console_auth import ConsoleIdentity
 from app.core.runtime_settings_cache import CACHE_TTL_SECONDS, RuntimeSettingsCache
-from app.db.async_session import get_async_db
-from app.db.session import get_db, get_transaction
-from app.db.transaction import Transaction
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import ImpactGroupData
 from app.schemas.console_settings import (
@@ -119,7 +117,7 @@ def _patch_data(result: SettingsPatchResult) -> SettingsPatchData:
     summary="运行时配置的三档清单（含来源与非法行标记）",
 )
 async def list_settings(
-    identity: ConsoleIdentity = Depends(get_console_admin_async),
+    identity: ConsoleIdentity = Depends(get_console_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[SettingsListData]:
     """按三档列出白名单的每一行：有效值、来源（env / db）、是否非法、为什么在这一档。
@@ -142,12 +140,12 @@ async def list_settings(
     response_model=ApiResponse[SettingsPatchData],
     summary="改运行时配置（先试算、后落库；dry_run 默认 true）",
 )
-def patch_settings(
+async def patch_settings(
     payload: SettingsPatchRequest,
     dry_run: bool = Query(default=True, description="true 只试算，false 才落库"),
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
-    tx: Transaction = Depends(get_transaction),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
     cache: RuntimeSettingsCache = Depends(get_runtime_settings_cache),
 ) -> ApiResponse[SettingsPatchData]:
     """配置的**唯一**写入口：白名单与档位 → 逐键校验 → 键间校验 → 落库 + 审计 → 删缓存。
@@ -161,7 +159,7 @@ def patch_settings(
     不落库、不删缓存，返回 ``impact``。
     """
 
-    result = runtime_settings.patch_runtime_settings(
+    result = await runtime_settings.patch_runtime_settings(
         db,
         values=payload.values,
         dry_run=dry_run,

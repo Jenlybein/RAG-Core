@@ -3,33 +3,27 @@
 判据：向量写入与相似度检索归它，普通 CRUD 归 ChunkRepository。
 业务层只依赖这个 ABC，换 Milvus / Qdrant 只改实现与工厂函数。
 
-**两种会话，两个方向**（第 11 步票 #127 / #132）：
+**四个方法的会话类型都是 ``AsyncSession``**（第 11 步票 #127 / #130 / #132）：
 
-- **读侧**（两个 ``similarity_search*``）收 ``AsyncSession``——检索链路已经在异步栈上，
-  向量查询就是一次 ``await db.execute(...)``，检索路径上因此没有任何会卡住事件循环的
-  同步调用。
-- **写侧**（``add_chunks`` / ``delete_by_document_id``）收 ``DBSession``——索引链路与
-  数据面删除（票 #132）已经是 ``AsyncSession``，而控制面删除要到票 #130 才换，两边
-  共用同一份实现，差异收在 ``app/db/dual_session.py``。
+- **读侧**（两个 ``similarity_search*``）：向量查询就是一次 ``await db.execute(...)``，
+  检索路径上没有任何会卡住事件循环的同步调用；
+- **写侧**（``add_chunks`` / ``delete_by_document_id``）：索引链路、数据面删除与控制面
+  删除都在异步栈上，迁移期那个「同步与异步都喂」的联合类型已经收窄成这一种。
 
-同一个 ABC 里两种会话不是笔误，是迁移按垂直切片推进的**中间状态**：两侧的调用方不同、
-生命周期也不同，合成一个签名只会让「这次该不该 await」变成运行期的事。两个方向刻意
-不共用同一个类型：写方法一旦收窄成同步 ``Session``，索引链路就会在迁移里悄悄退回阻塞
-事件循环的那一侧；读侧若改收 ``DBSession``，检索链路上又会多一次运行期判断。
+类型只剩一种不是简化设计，而是迁移走完那一刀的**结果**：写侧一旦退回同步 ``Session``，
+索引链路就会悄悄重新阻塞事件循环。
 """
 
 from abc import ABC, abstractmethod
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.dual_session import DBSession
-
 
 class VectorStore(ABC):
     """向量存储能力。"""
 
     @abstractmethod
-    async def add_chunks(self, db: DBSession, chunks: list[dict]) -> None:
+    async def add_chunks(self, db: AsyncSession, chunks: list[dict]) -> None:
         """批量写入切片向量。"""
 
     @abstractmethod
@@ -69,6 +63,6 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def delete_by_document_id(
-        self, db: DBSession, document_id: str, *, tenant_id: str
+        self, db: AsyncSession, document_id: str, *, tenant_id: str
     ) -> None:
         """删某文档的全部切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。"""

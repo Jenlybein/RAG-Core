@@ -1,6 +1,6 @@
 """建库业务：生成 kb_id → 校验配置 → 落库。
 
-**这里不提交**：提交点是调用方的边界（数据面路由的 ``Depends(get_transaction)``，
+**这里不提交**：提交点是调用方的边界（数据面路由的 ``Depends(get_async_transaction)``，
 或控制面那条把「建库 + 审计」圈进同一笔的路由依赖）。仓储只 ``flush``，服务只写，
 全仓唯一的提交点在 :mod:`app.db.transaction`。
 
@@ -9,13 +9,16 @@
 
 静态配额（库数）也在这里，理由同上：它是「这个租户买得起几个库」，必须落在写路径上，
 而不是只挂在控制台接口上——否则脚本与将来的第二个入口就成了绕过套餐的后门。
+
+**会话是 ``AsyncSession``**（第 11 步票 #130）：两个入口（数据面、控制面）都换到了异步
+栈上，这一份实现只有一种会话可用。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.knowledge_base import (
@@ -31,7 +34,7 @@ from app.utils.id_generator import new_kb_id
 
 
 async def create_kb(
-    db: Session,
+    db: AsyncSession,
     *,
     name: str,
     description: str | None,
@@ -54,7 +57,7 @@ async def create_kb(
         raise AppError(ErrorCode.PARAM_ERROR, str(exc)) from exc
 
     # 套餐校验在构造行之前：被拒的请求不生成 id、不落行（建第 N+1 个库是 20014）。
-    static_quota.ensure_kb_quota(db, tenant_id=tenant_id, plan=plan)
+    await static_quota.ensure_kb_quota(db, tenant_id=tenant_id, plan=plan)
 
     kb = KnowledgeBase(
         id=new_kb_id(),
@@ -65,7 +68,7 @@ async def create_kb(
         allowed_formats=formats,
         settings={"chunk_size": chunk_size},
     )
-    knowledge_base_repository.create(db, kb)
+    await knowledge_base_repository.create(db, kb)
     values = settings_of(kb)
     return {
         "kb_id": kb.id,

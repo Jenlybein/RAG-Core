@@ -260,7 +260,7 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
     async def _no_trace(**kwargs: Any) -> None:
         return None
 
-    monkeypatch.setattr(service, "ensure_visible_async", _visible)
+    monkeypatch.setattr(service, "ensure_visible", _visible)
     monkeypatch.setattr(service, "_collapse_results", _no_collapse)
     monkeypatch.setattr(service, "_empty_reason", _empty)
     monkeypatch.setattr(service, "record_retrieval_trace", _no_trace)

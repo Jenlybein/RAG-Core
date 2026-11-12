@@ -28,7 +28,7 @@ from sqlalchemy.sql import operators
 async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     """「库可见」的**异步**替身：租户原样回传，``settings`` 为空、名称与描述为空。
 
-    检索链路的可见性校验走 ``knowledge_base_repository.get_by_id_for_tenant_async``
+    检索链路的可见性校验走 ``knowledge_base_repository.get_by_id_for_tenant``
     （第 11 步票 #127），于是各用例里那句
     ``lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)``
     换成它即可——返回的东西与原来那份等价，只是可 ``await``。
@@ -124,7 +124,14 @@ class _Rows:
         异步仓储只能走 ``execute(select(...))``（``AsyncSession`` 没有 ``db.query``），
         而「这一行在不在」这类判断最自然的收尾就是 ``.first()``。少了它，那些地方要么
         被写成 ``.all()[0]``，要么只能绕开替身——两者都会让用例离真实调用形状更远。
+
+        **空行回 ``None``、否则回第一行**——真 ``Result.first()`` 就是这个口径。票 #130
+        之前这个方法是空的（只有文档），于是「按用户名找账号」在替身上永远查不到人，
+        症状是登录一律 ``20010``，看着像口令错。按用户名读的仓储正是走
+        ``execute(select(...)).scalars().first()`` 的那条路。
         """
+
+        return self._values[0] if self._values else None
 
     def scalar_one(self) -> Any:
         """``select(...)`` 只该命中一行时用（``SELECT count(*)`` 那条走 :class:`CountResult`）。"""
@@ -167,6 +174,22 @@ class CountResult:
 
     def scalar_one(self) -> int:
         return self._value
+
+    def scalar_one_or_none(self) -> int:
+        """「按 id 查一行再看有没有」的同一批调用也会落到替身上；计数场景恒有一个值。"""
+
+        return self._value
+
+    def scalars(self) -> "CountResult":
+        """有些查询走 ``.scalars().all()``（列表页）；计数替身没有行，回空。"""
+
+        return self
+
+    def all(self) -> list[Any]:
+        return []
+
+    def first(self) -> None:
+        return None
 
 
 ZERO_COUNT = CountResult()
@@ -527,6 +550,17 @@ class AsyncSessionAdapter:
     async def get(self, *args: Any, **kwargs: Any) -> Any:
         return self._inner.get(*args, **kwargs)
 
+    async def delete(self, *args: Any, **kwargs: Any) -> Any:
+        """``AsyncSession.delete`` 是要 ``await`` 的（登出、删套餐都走它）。
+
+        不显式写成 ``async def`` 的话，``__getattr__`` 会把被包对象的**同步** ``delete``
+        透传出去，调用点 ``await db.delete(row)`` 于是拿到 ``None`` 并炸成
+        ``TypeError: object NoneType can't be used in 'await' expression``——而那条路径
+        想断言的只是「这一行不在了」。
+        """
+
+        return self._inner.delete(*args, **kwargs)
+
     # 收尾三件套也必须是 ``async def``：票 #132 起数据面上传声明了请求级的
     # ``Depends(get_async_transaction)``，那条依赖在出块时 ``await session.commit()`` /
     # ``rollback()``。只透传同步方法的话，``await None`` 会在**被拒的请求**上炸成
@@ -598,8 +632,46 @@ def async_mirror(session: RecordingSession) -> AsyncRecordingSession:
     控制面只读接口走异步会话、登录与写入仍走同步会话（票 #129）。用例里两种会话都要
     换掉，而它们必须看到**同一批行**——否则登录刚写下的会话行在异步那侧不存在，症状是
     「登录成功、下一个请求 20010」（见 :meth:`RecordingSession.share_rows_with`）。
+
+    票 #130 之后请求路径上不再有同步会话，控制面用例的夹具改用 :func:`override_all_db`；
+    这个函数留给「一个用例里真的要两套栈」的场合（直接调同步仓储的用例）。
     """
 
     mirror = AsyncRecordingSession()
     mirror.share_rows_with(session)
     return mirror
+
+
+def override_all_db(app: Any, session: Any) -> AsyncSessionAdapter:
+    """把请求里的**全部**会话入口指向同一个假库（票 #130 之后控制面夹具的统一写法）。
+
+    **为什么必须一次换全**：``Depends`` 与 ``dependency_overrides[...]`` 认的是可调用对象
+    本身。控制面的身份判定（``get_console_account``）与写入的事务边界
+    （``get_async_transaction``）都从 ``get_async_db`` 取会话，只覆写 ``session.get_db``
+    的那份夹具因此会**真的去连 PostgreSQL**：默认套件离线，症状是登录一律 ``20010``
+    （读不到账号）或 ``InterfaceError``（没有库可连），而不是「夹具少了一行」。
+
+    **四个入口都是同一个库**：``get_db`` / ``get_async_db`` 给读，``get_transaction`` /
+    ``get_async_transaction`` 给写。后两条**不另外造替身**——生产的事务入口只要会话上有
+    ``info`` / ``commit`` / ``rollback`` 就能跑，于是「一笔请求 = 一笔事务、异常整笔回滚」
+    这些纪律在离线套件里照旧被真实代码执行一遍，而不是被一个假的 no-op 事务糊过去。
+
+    **异步那一面是同一个对象的薄适配**（:class:`AsyncSessionAdapter`），不是第二个替身：
+    行、``added``、``statements``、``commits`` 全都记在**同一个**对象上，于是用例既有的
+    断言（「只写了一张表」「提交了一次」）一行都不用改，而且读写看到的是同一个库。
+
+    返回那个异步视图，调用方一般不关心（夹具里保留它只是为了让「同一个库」这件事可读）。
+    """
+
+    from app.db.async_session import get_async_db, get_async_transaction
+    from app.db.session import get_db, get_transaction
+
+    view = AsyncSessionAdapter(session)
+    app.dependency_overrides[get_db] = lambda: session
+    app.dependency_overrides[get_async_db] = lambda: view
+    # 事务入口用**生产实现**（它们只依赖上面两个会话入口），这里显式置回默认值：
+    # 上一个用例若把它们换成了 no-op（失败路径那些用例会这么做），``clear()`` 之外的
+    # 残留会让这条写路径悄悄「没有事务边界」。
+    app.dependency_overrides.pop(get_transaction, None)
+    app.dependency_overrides.pop(get_async_transaction, None)
+    return view

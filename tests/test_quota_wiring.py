@@ -329,7 +329,7 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
         "get_by_id_for_tenant",
         lambda _db, kb_id, *, tenant_id: _visible_row(kb_id, tenant_id),
     )
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible_kb)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
     enqueued: list[dict[str, Any]] = []
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
@@ -354,7 +354,6 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     # 两扇门挂到同一个应用：MCP 是子应用，判定内核与配额门禁都是同一份实现。
     mcp_app = mcp_server.create_mcp_http_app(
-        get_db=lambda: session,
         # 检索链路用异步会话（第 11 步票 #127）：与 HTTP 侧同一个替身，包一层异步面。
         get_async_db=lambda: AsyncSessionAdapter(session),
         retrieve=service.retrieve,

@@ -37,6 +37,7 @@ from app.models.document import Document
 from app.repositories import document_repository
 from app.services import document_storage
 from app.utils.status import DocumentStatus
+from tests import fake_db
 from tests.fake_db import ZERO_COUNT
 
 DOC_ID = "doc-1"
@@ -445,7 +446,6 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     """把端点接缝全部换成离线替身：假会话、假存储、投递记录、文件删除记录。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
     routes = importlib.import_module("app.api.routes.documents")
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
@@ -469,7 +469,7 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     monkeypatch.setattr(routes, "remove_document_file", _remove_file)
     monkeypatch.setattr(document_repository, "prepare_for_indexing", _prepare)
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    fake_db.override_all_db(main.app, session)
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:

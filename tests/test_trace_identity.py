@@ -185,7 +185,7 @@ def _offline_client(
     monkeypatch.setattr(
         service, "get_vector_store", lambda: _FakeVectorStore(_rows() if rows is None else rows)
     )
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", async_visible_kb)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
     # 归属索引写入在异步栈上（第 11 步票 #127）：注入点因此是**异步**会话工厂。
     factory_mod.set_async_session_factory(session_factory or (lambda: trace_session))
 

@@ -14,9 +14,13 @@
 档位是平台级配置，所以只有管理员能读写（见路由的 ``require_console_admin``）。
 
 **读有两个入口**（票 #129）：``GET /console/profile-presets`` 走异步会话
-（:func:`list_presets_async`），启动装载与写入后重载仍走同步会话
-（:func:`list_presets`，它们不在请求的异步路径上）。两者共用 :func:`_shaped`，
-「空表回落种子」与「缺档补种子」两条规则只有一份实现。
+（:func:`list_presets_async`），启动装载仍走同步会话（:func:`list_presets`，它在组合根
+启动时跑、不在请求的异步路径上）。两者共用 :func:`_shaped`，「空表回落种子」与「缺档
+补种子」两条规则只有一份实现。
+
+**写入在异步栈上**（第 11 步票 #130）：``PATCH`` 用 ``AsyncSession``，写完的重载也走异步
+孪生（:func:`load_into_registry_async`）——它是提交之后的动作，而提交之后我们仍然在事件
+循环上（见 ``app/db/transaction.AsyncTransaction.commit``）。
 """
 
 from __future__ import annotations
@@ -80,9 +84,21 @@ async def list_presets_async(db: AsyncSession) -> dict[str, ProfilePresetSpec]:
 
 
 def load_into_registry(db: Session) -> dict[str, ProfilePresetSpec]:
-    """装载进进程级注册表（组合根启动时与每次写入后用）。"""
+    """装载进进程级注册表（组合根启动时用；同步会话）。"""
 
     presets = list_presets(db)
+    set_profile_presets(presets)
+    return presets
+
+
+async def load_into_registry_async(db: AsyncSession) -> dict[str, ProfilePresetSpec]:
+    """装载进进程级注册表（写入后的重载；异步会话，票 #130）。
+
+    与 :func:`load_into_registry` 共用 :func:`list_presets_async` / :func:`_shaped`，
+    差别只有「行怎么读出来」。注册表本身是进程级快照，写入是同步的。
+    """
+
+    presets = await list_presets_async(db)
     set_profile_presets(presets)
     return presets
 
@@ -103,8 +119,8 @@ def _validate(*, profile: str, mode: str | None, top_k: int | None) -> None:
         )
 
 
-def patch_preset(
-    db: Session,
+async def patch_preset(
+    db: AsyncSession,
     *,
     profile: str,
     mode: str | None = None,
@@ -121,9 +137,11 @@ def patch_preset(
 
     _validate(profile=profile, mode=mode, top_k=top_k)
 
-    # 用 query+filter 而不是 ``db.get``：这张表的主键是档位名（不是 ``id``），而仓储层
-    # 全仓统一走 ``query(...).filter(...)`` 的写法；离线测试的假会话也只认这一种。
-    row = db.query(ProfilePreset).filter(ProfilePreset.profile == profile).first()
+    # 用 select+where 而不是 ``db.get``：这张表的主键是档位名（不是 ``id``），而异步会话
+    # 只能走 ``execute(select(...))``。离线测试的假会话也认这一种写法。
+    row = (
+        await db.execute(select(ProfilePreset).where(ProfilePreset.profile == profile))
+    ).scalars().first()
     if row is None:
         # 表里没有这一档（种子没灌到、或这档还没被播种）：以种子为基准新建一行，
         # 而不是拒绝——拒绝会让「把 speed 的条数从 5 改成 8」这种最普通的操作失败，
@@ -161,7 +179,7 @@ def patch_preset(
     }
     changed = sorted(key for key in before if before[key] != after[key])
 
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_PROFILE_UPDATE,
@@ -170,9 +188,6 @@ def patch_preset(
         after=after,
     )
     # 装载必须等库先落地：注册表是本进程的快照，提交前装载会把旧值读回去。
-    def _reload() -> None:
-        load_into_registry(db)
-
-    after_commit(db, _reload)
+    after_commit(db, lambda: load_into_registry_async(db))
 
     return {"before": before, "after": after, "changed": changed}

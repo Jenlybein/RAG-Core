@@ -17,28 +17,21 @@
 登录那条路对账号是否存在**不做区分**：账号不存在时也跑一遍哈希（
 ``app.core.passwords.dummy_verify``），耗时相同才不构成用户名枚举接口。
 
-**「我的视图」是异步的，数据库那半边留在同步里**（票 #133）：视图里要读租户的今日用量，
-而那条只读路径走的是异步 Redis 计数（:func:`app.services.quota_gate.read_tenant_daily_usage`），
-于是视图本身必须能 ``await``。视图里的另外两件事——读租户行、解析套餐——其中读租户行仍是
-同步的数据库读，被 :func:`asyncio.to_thread` 挪出事件循环；套餐解析自票 #129 起本身就是
-``async``（缓存换成了 ``redis.asyncio``），直接 ``await``。等控制面整体换成异步会话
-（#130）之后，那一处 ``to_thread`` 应当一起消失。
-
-**只读查询在异步会话上**（票 #129）：:func:`list_plans` / :func:`list_audit_logs` 收的是
-``AsyncSession``，它们的调用点是控制面的两条只读端点。写入（:func:`patch_plan` /
-:func:`patch_account`）与「我的视图」仍收同步 ``Session``——那是 #130 的范围。
+**整条控制面都在异步栈上**（第 11 步票 #129 → #130）：会话是 ``AsyncSession``，套餐缓存是
+``redis.asyncio``，用量读的是异步 Redis。于是这里没有一处 ``asyncio.to_thread``——迁移期
+那些「把同步库读挪出事件循环」的包装随控制面换栈一起删掉了（它们本来只是过渡的补丁）。
+提交点仍然不在这里：路由声明 ``Depends(get_async_transaction)``，一个请求恰好一笔。
 """
 
 from __future__ import annotations
 
-import asyncio
 import secrets
+from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Final
 
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.core import passwords
 from app.core.console_auth import (
@@ -138,7 +131,7 @@ class AccountRowView:
 
 
 async def login(
-    db: Session, *, username: str, password: str, cache: PlanCache | None = None
+    db: AsyncSession, *, username: str, password: str, cache: PlanCache | None = None
 ) -> tuple[ConsoleSession, ConsoleView]:
     """账号口令 → 服务端会话行。返回会话（路由拿它的 id 发 cookie）与「我的视图」。
 
@@ -146,22 +139,21 @@ async def login(
     知道正确口令的人本来就知道这个账号存在，此时告诉他「账号已停用」不泄露任何东西，
     却能让真正的用户知道该找谁。
 
-    写库那一段（查账号、验口令、插会话行、提交）留在同步函数 :func:`_authenticate` 里，
-    由 ``to_thread`` 跑在线程池上；这里 ``await`` 的只有随后的视图（见模块文档）。
+    查账号、验口令、插会话行与拼视图都在同一条协程里：它们共用一个 ``AsyncSession``，
+    会话行由请求边界那一笔事务兜住（路由声明 ``Depends(get_async_transaction)``）。
     """
 
-    session, account = await asyncio.to_thread(
-        _authenticate, db, username=username, password=password
-    )
+    account = await _authenticate(db, username=username, password=password)
+    session = await _open_session(db, account)
     return session, await view_for(db, account, cache=cache)
 
 
-def _authenticate(
-    db: Session, *, username: str, password: str
-) -> tuple[ConsoleSession, Account]:
-    """:func:`login` 的同步半边：验口令并落一行会话，**不拼视图**（视图要读异步用量）。"""
+async def _authenticate(
+    db: AsyncSession, *, username: str, password: str
+) -> Account:
+    """:func:`login` 的第一步：验口令；失败一律 ``20010``。"""
 
-    account = account_repository.get_by_username(db, username)
+    account = await account_repository.get_by_username_async(db, username)
     if account is None:
         # 等时：账号不存在也要付一次哈希的代价，否则「查无此人」比「口令不对」快一个数量级。
         passwords.dummy_verify(password)
@@ -172,45 +164,51 @@ def _authenticate(
 
     if account.status != STATUS_ACTIVE:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_ACCOUNT_DISABLED)
+    return account
+
+
+async def _open_session(db: AsyncSession, account: Account) -> ConsoleSession:
+    """口令验过之后落一行服务端会话（只 flush，不提交）。"""
 
     session = ConsoleSession(
         id=secrets.token_urlsafe(SESSION_ID_BYTES),
         account_id=account.id,
         expires_at=now() + timedelta(seconds=session_ttl_seconds()),
     )
-    console_session_repository.create(db, session)
-    # 不在这里提交：会话行由请求边界那一笔事务兜住（写接口声明 Depends(get_transaction)）。
-    # 视图也不在这里拼：``login`` 在事件循环上 await 它（用量那条是异步只读路径）。
-    return session, account
+    await console_session_repository.create(db, session)
+    # 不在这里提交：会话行由请求边界那一笔事务兜住（写接口声明 Depends(get_async_transaction)）。
+    return session
 
 
-def logout(db: Session, *, session_id: str | None) -> None:
+async def logout(db: AsyncSession, *, session_id: str | None) -> None:
     """删服务端会话行。浏览器那一半（删 cookie）由路由做——**两半都要**。"""
 
     if not session_id:
         return
-    session = console_session_repository.get_by_id(db, session_id)
+    session = await console_session_repository.get_by_id(db, session_id)
     if session is None:
         # 已经登出过：幂等，不报错。cookie 仍然会被路由清掉。
         return
-    console_session_repository.delete(db, session)
+    await console_session_repository.delete(db, session)
 
 
-async def me_view(db: Session, *, account_id: str, cache: PlanCache | None = None) -> ConsoleView:
+async def me_view(
+    db: AsyncSession, *, account_id: str, cache: PlanCache | None = None
+) -> ConsoleView:
     """``/console/me``：判定结论里只有 id，这里再读一次账号行拼「我的视图」。
 
     这次重读不是多余：判定依赖刻意只回答「谁、什么角色、哪个租户」，而响应还要
     账号的显示状态。把状态塞进判定结论会让「改状态」必须在两个地方同时生效。
     """
 
-    account = await asyncio.to_thread(_account_or_disabled, db, account_id)
+    account = await _account_or_disabled(db, account_id)
     return await view_for(db, account, cache=cache)
 
 
-def _account_or_disabled(db: Session, account_id: str) -> Account:
+async def _account_or_disabled(db: AsyncSession, account_id: str) -> Account:
     """读账号行；读不到就按「账号已停用」拒绝（与判定内核同码同消息）。"""
 
-    account = account_repository.get_by_id(db, account_id)
+    account = await account_repository.get_by_id(db, account_id)
     if account is None:
         # 判定刚读过同一行，这里仍可能为空（并发停用 + 删除）。与判定同码同消息。
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_ACCOUNT_DISABLED)
@@ -218,7 +216,7 @@ def _account_or_disabled(db: Session, account_id: str) -> Account:
 
 
 async def view_for(
-    db: Session, account: Account, *, cache: PlanCache | None = None
+    db: AsyncSession, account: Account, *, cache: PlanCache | None = None
 ) -> ConsoleView:
     """拼「我的视图」：账号 → 它的租户 → 租户当前套餐 → 租户今日用量。
 
@@ -226,12 +224,11 @@ async def view_for(
     改完的额度，面板刷新一次就看到——改套餐那条路提交后会删缓存。用量走配额服务的
     **只读**路径（见 :func:`app.services.quota_gate.read_tenant_daily_usage`）。
 
-    读租户行仍在同步上下文里（同步会话），所以那一次读交给 ``to_thread``；套餐解析本身
-    已经是 ``async``（票 #129，缓存是异步 Redis），直接 ``await``——命中缓存时它一次库都
-    不碰，未命中时它自己把那次行读取挪出事件循环（见 ``plan_service`` 的模块文档）。
+    三件事都在事件循环上 ``await``：读租户行（异步会话）、解析套餐（异步缓存 + 异步库读）、
+    读今日用量（异步 Redis）。
     """
 
-    tenant = await asyncio.to_thread(_tenant_of, db, account)
+    tenant = await _tenant_of(db, account)
     if tenant is None:
         # 平台管理员不属于任何租户：没有套餐、也没有租户级用量可显示，这不是错误。
         return ConsoleView(account=account, tenant=None, plan=None, usage=None)
@@ -248,7 +245,7 @@ async def view_for(
     )
 
 
-def _tenant_of(db: Session, account: Account) -> Tenant | None:
+async def _tenant_of(db: AsyncSession, account: Account) -> Tenant | None:
     """账号 → 它的租户；管理员不属于任何租户，返回 ``None``（不是错误）。
 
     ``/console/me``、登录成功后的视图与账号清单问的是同一个问题，条件读法因此只写一处：
@@ -256,7 +253,9 @@ def _tenant_of(db: Session, account: Account) -> Tenant | None:
     调用方不必各自再判一次。
     """
 
-    return tenant_repository.get_by_id(db, account.tenant_id) if account.tenant_id else None
+    if not account.tenant_id:
+        return None
+    return await tenant_repository.get_by_id_async(db, account.tenant_id)
 
 
 # ─────────────────────────────────────────────────────────────────────── 套餐
@@ -272,8 +271,8 @@ async def list_plans(db: AsyncSession) -> list[Plan]:
     return await plan_repository.list_all(db)
 
 
-def patch_plan(
-    db: Session,
+async def patch_plan(
+    db: AsyncSession,
     *,
     plan_id: int,
     operation: str,
@@ -288,7 +287,7 @@ def patch_plan(
     结果是「少改了一次」，而不是「改错了生产配置」。
     """
 
-    row = plan_repository.get_by_id(db, plan_id)
+    row = await plan_repository.get_by_id_async(db, plan_id)
     if row is None:
         raise AppError(ErrorCode.PLAN_NOT_FOUND, f"plan not found: {plan_id}")
     before = plan_admin.plan_snapshot(row)
@@ -296,7 +295,7 @@ def patch_plan(
     if operation == "delete":
         if patch:
             raise AppError(ErrorCode.PARAM_ERROR, "delete takes no fields")
-        plan_admin.ensure_deletable(db, plan_id=plan_id)
+        await plan_admin.ensure_deletable(db, plan_id=plan_id)
         if dry_run:
             return PlanPatchResult(
                 plan_id=plan_id,
@@ -306,8 +305,8 @@ def patch_plan(
                 after=None,
                 impact=None,
             )
-        db.delete(row)
-        append_audit(
+        await db.delete(row)
+        await append_audit(
             db,
             actor=actor,
             action=ACTION_PLAN_DELETE,
@@ -317,7 +316,7 @@ def patch_plan(
         )
         # 删缓存，不写缓存（ADR-0017）：写要每处修改都记得同步，漏一处就留下「看起来更新过、
         # 实际是旧值」的条目；删让下一次读自然拿到新值。排在提交之后（见模块文档）。
-        after_commit(db, lambda: _invalidate(cache, plan_id))
+        after_commit(db, _invalidation_of(cache, plan_id))
         return PlanPatchResult(
             plan_id=plan_id, dry_run=False, deleted=True, before=before, after=None, impact=None
         )
@@ -326,11 +325,11 @@ def patch_plan(
         raise AppError(ErrorCode.PARAM_ERROR, f"unknown operation: {operation}")
 
     plan_admin.validate_patch(patch)
-    _ensure_code_free(db, plan_id=plan_id, patch=patch)
+    await _ensure_code_free(db, plan_id=plan_id, patch=patch)
     after = plan_admin.merged_snapshot(before, patch)
 
     if dry_run:
-        impact = plan_admin.preview_impact(
+        impact = await plan_admin.preview_impact(
             db,
             plan_id=plan_id,
             max_kb=after["max_kb"],
@@ -346,7 +345,7 @@ def patch_plan(
         )
 
     plan_admin.apply_patch(row, patch)
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_PLAN_UPDATE,
@@ -356,7 +355,7 @@ def patch_plan(
     )
     # 删缓存，不写缓存（ADR-0017）：写要每处修改都记得同步，漏一处就留下「看起来更新过、
     # 实际是旧值」的条目；删让下一次读自然拿到新值。排在提交之后（见模块文档）。
-    after_commit(db, lambda: _invalidate(cache, plan_id))
+    after_commit(db, _invalidation_of(cache, plan_id))
     return PlanPatchResult(
         plan_id=plan_id,
         dry_run=False,
@@ -367,7 +366,9 @@ def patch_plan(
     )
 
 
-def _ensure_code_free(db: Session, *, plan_id: int, patch: dict[str, Any]) -> None:
+async def _ensure_code_free(
+    db: AsyncSession, *, plan_id: int, patch: dict[str, Any]
+) -> None:
     """改 ``code`` 时不许撞上另一档：``code`` 是脚本与日志指代套餐的名字。
 
     「另一档」按主键比，不按 code 比：把自己改成自己原来那个 code 是合法的空改动。
@@ -376,20 +377,20 @@ def _ensure_code_free(db: Session, *, plan_id: int, patch: dict[str, Any]) -> No
     code = patch.get("code")
     if code is None:
         return
-    existing = plan_repository.get_by_code(db, code)
+    existing = await plan_repository.get_by_code_async(db, code)
     if existing is not None and str(existing.id) != str(plan_id):
         raise AppError(ErrorCode.PLAN_INVALID, f"plan code already in use: {code}")
 
 
-def _invalidate(cache: PlanCache | None, plan_id: int) -> None:
-    """提交之后删套餐缓存。这里仍是同步上下文（写路径归 #130），所以走过渡桥。
+def _invalidation_of(cache: PlanCache | None, plan_id: int) -> Callable[[], Coroutine[Any, Any, None]]:
+    """提交之后删套餐缓存的那个动作（一个协程，由异步事务 ``await`` 它）。
 
-    套餐缓存是异步 Redis（票 #129）：``after_commit`` 的回调在请求线程里跑，没有循环可
-    ``await``，于是把它交给事件循环执行完再返回（:func:`app.core.sync_bridge.run_blocking`）。
-    等 #130 把写路径整体异步化，这一句变成 ``await plan_service.invalidate_plan(...)``。
+    套餐缓存是异步 Redis（票 #129）：``after_commit`` 的回调在**提交之后**的同一个事件
+    循环上执行，所以这里可以直接交一个协程出去——不需要再把协程跨线程递回主循环
+    （那个过渡桥已随票 #130 删除）。
     """
 
-    plan_service.invalidate_plan_blocking(_cache_or_default(cache), plan_id)
+    return lambda: plan_service.invalidate_plan(_cache_or_default(cache), plan_id)
 
 
 def _cache_or_default(cache: PlanCache | None) -> PlanCache:
@@ -405,19 +406,23 @@ def _cache_or_default(cache: PlanCache | None) -> PlanCache:
 # ─────────────────────────────────────────────────────────────────────── 账号
 
 
-def list_accounts(db: Session) -> list[AccountRowView]:
+async def list_accounts(db: AsyncSession) -> list[AccountRowView]:
     """全部账号 + 各自租户与套餐。管理员跨租户看，所以这里**故意**不按租户过滤。"""
 
     views: list[AccountRowView] = []
-    for account in account_repository.list_all(db):
-        tenant = _tenant_of(db, account)
-        plan = plan_repository.get_by_id(db, tenant.plan_id) if tenant is not None else None
+    for account in await account_repository.list_all(db):
+        tenant = await _tenant_of(db, account)
+        plan = (
+            await plan_repository.get_by_id_async(db, tenant.plan_id)
+            if tenant is not None
+            else None
+        )
         views.append(AccountRowView(account=account, tenant=tenant, plan=plan))
     return views
 
 
-def patch_account(
-    db: Session,
+async def patch_account(
+    db: AsyncSession,
     *,
     account_id: str,
     plan_id: int | None,
@@ -432,13 +437,17 @@ def patch_account(
     请求就失效；删会话只是清理，不该成为「停用是否生效」的前提。
     """
 
-    account = account_repository.get_by_id(db, account_id)
+    account = await account_repository.get_by_id(db, account_id)
     if account is None:
         raise AppError(ErrorCode.NOT_FOUND, f"account not found: {account_id}")
     if plan_id is None and status is None and tenant_status is None:
         raise AppError(ErrorCode.PARAM_ERROR, "no fields to change")
 
-    tenant = tenant_repository.get_by_id(db, account.tenant_id) if account.tenant_id else None
+    tenant = (
+        await tenant_repository.get_by_id_async(db, account.tenant_id)
+        if account.tenant_id
+        else None
+    )
     if (plan_id is not None or tenant_status is not None) and tenant is None:
         raise AppError(ErrorCode.PARAM_ERROR, "account belongs to no tenant")
 
@@ -448,7 +457,7 @@ def patch_account(
         raise AppError(ErrorCode.PARAM_ERROR, f"unknown tenant status: {tenant_status}")
     plan: Plan | None = None
     if plan_id is not None:
-        plan = plan_repository.get_by_id(db, plan_id)
+        plan = await plan_repository.get_by_id_async(db, plan_id)
         if plan is None:
             raise AppError(ErrorCode.PLAN_NOT_FOUND, f"plan not found: {plan_id}")
 
@@ -462,7 +471,7 @@ def patch_account(
         tenant.plan_id = plan.id
 
     after = _account_state(account, tenant)
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_ACCOUNT_UPDATE,
@@ -511,8 +520,8 @@ async def list_audit_logs(
     )
 
 
-def append_audit(
-    db: Session,
+async def append_audit(
+    db: AsyncSession,
     *,
     actor: ConsoleIdentity | None,
     action: str,
@@ -524,9 +533,13 @@ def append_audit(
 
     公开名字（票 #91 起的约定）：配置中台、Key 管理这些新写入口复用**同一份**写法，
     避免每个入口各复制一份之后忘了「不 commit」或多写一个时间戳。
+
+    ``async`` 是因为它必须和业务写入共用**同一个** ``AsyncSession``（票 #130）：
+    账本行与改动要么都落库、要么都不落库，而这条保证靠的是同一个会话 + 同一笔事务，
+    不是靠「先写业务再写账本」的调用顺序。
     """
 
-    return audit_log_repository.create(
+    return await audit_log_repository.create(
         db,
         AuditLog(
             id=new_id(),

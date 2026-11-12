@@ -137,7 +137,6 @@ def entries(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entries]:
 
     session = RecordingSession()
     mcp_app = mcp_server.create_mcp_http_app(
-        get_db=lambda: session,
         # 检索链路用异步会话（第 11 步票 #127）。
         get_async_db=lambda: AsyncSessionAdapter(session),
         retrieve=must_not_run,

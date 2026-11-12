@@ -259,7 +259,7 @@ def _offline_client(
             description="",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _kb_for_tenant)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
     if llm is not None:
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
 

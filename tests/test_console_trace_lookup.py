@@ -28,7 +28,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import async_mirror, RecordingSession
+from tests.fake_db import RecordingSession, override_all_db
 
 LOGIN_PATH = "/console/login"
 LOOKUP_PATH = "/console/retrieval-traces"
@@ -109,19 +109,15 @@ class _Harness:
 @pytest.fixture
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
-    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     world = _world()
     world[RetrievalTrace] = _trace_rows()
-    # 同步的给登录（它把会话行写进这个假库），异步的给身份判定与 trace_id 反查——
-    # 两个替身**共享同一份行**：身份判定自票 #129 起也走异步会话，它必须能读回登录刚
-    # 写下的那一行，而两套栈看到同一个库正是生产里的形状（两套连接池，一个库）。
+    # 登录（写会话行）、身份判定与 trace_id 反查都在**同一个假库**上：身份判定自票 #129
+    # 起走异步会话，它必须能读回登录刚写下的那一行，而读写看到同一个库正是生产里的形状
+    # （两套连接池，一个库）。
     session = RecordingSession(rows=world)
-    trace_session = async_mirror(session)
-    main.app.dependency_overrides[session_module.get_db] = lambda: session
-    main.app.dependency_overrides[async_session.get_async_db] = lambda: trace_session
+    override_all_db(main.app, session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:

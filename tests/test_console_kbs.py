@@ -41,7 +41,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from app.repositories import document_repository
 from app.utils.status import DocumentStatus
-from tests.fake_db import MemoryPlanCache, RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -317,7 +317,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     """
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
     kb_repository = importlib.import_module("app.repositories.knowledge_base_repository")
     chunk_repository = importlib.import_module("app.repositories.chunk_repository")
@@ -397,7 +396,9 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         doc.error_message = None
         return True
 
-    def _count_chunks(_db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
+    def _count_chunks(
+        _db: Any, document_ids: list[str], *, tenant_id: str
+    ) -> dict[str, int]:
         assert tenant_id == Tenants.alpha_or_beta(document_ids), "切片计数必须强制带租户"
         count_calls.append(list(document_ids))
         return {document_id: CHUNK_COUNTS.get(document_id, 0) for document_id in document_ids}
@@ -413,34 +414,48 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     async def _kb_lookup_async(db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return _kb_lookup(db, kb_id, tenant_id=tenant_id)
 
+    async def _document_lookup_async(db: Any, document_id: str, *, tenant_id: str) -> Any:
+        return _document_lookup(db, document_id, tenant_id=tenant_id)
+
+    async def _list_documents_async(_db: Any, kb_id: str, *, tenant_id: str) -> list[Any]:
+        return _list_documents(_db, kb_id, tenant_id=tenant_id)
+
     async def _count_documents_async(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return _count_documents(_db, kb_id, tenant_id=tenant_id)
 
     async def _count_processing_async(_db: Any, *, tenant_id: str, **_kwargs: Any) -> int:
         return _count_processing(_db, tenant_id=tenant_id)
 
+    async def _prepare_async(
+        db: Any, document_id: str, *, tenant_id: str, allow_success: bool, **kwargs: Any
+    ) -> bool:
+        return _prepare(db, document_id, tenant_id=tenant_id, allow_success=allow_success, **kwargs)
+
+    async def _count_chunks_async(
+        _db: Any, document_ids: list[str], *, tenant_id: str
+    ) -> dict[str, int]:
+        return _count_chunks(_db, document_ids, tenant_id=tenant_id)
+
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
-    monkeypatch.setattr(kb_repository, "get_by_id_for_tenant", _kb_lookup)
-    # 控制面上传复用的是数据面那个 ``document_service.upload``，它已经是异步栈（票 #132）：
-    # 于是同一条路径既要同步孪生（控制面自己的守卫 / 列表）也要异步孪生（共用的登记）。
-    monkeypatch.setattr(kb_repository, "get_by_id_for_tenant_async", _kb_lookup_async)
-    monkeypatch.setattr(document_repository, "get_by_id_for_tenant", _document_lookup)
-    monkeypatch.setattr(document_repository, "list_by_kb", _list_documents)
-    monkeypatch.setattr(document_repository, "count_by_kb", _count_documents)
-    monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing)
+    # 控制面的读与写都已经在异步栈上（票 #130）：被替换的仓储函数因此**只有一个面**，
+    # 全部是 ``async`` 的那份（``_async`` 后缀只在同步版还活着时才留）。
+    monkeypatch.setattr(kb_repository, "get_by_id_for_tenant", _kb_lookup_async)
+    monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _document_lookup_async)
+    monkeypatch.setattr(document_repository, "list_by_kb_async", _list_documents_async)
     monkeypatch.setattr(document_repository, "count_by_kb_async", _count_documents_async)
     monkeypatch.setattr(
         document_repository, "count_processing_for_tenant_async", _count_processing_async
     )
-    monkeypatch.setattr(document_repository, "prepare_for_indexing", _prepare)
-    monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks)
+    monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
+    monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks_async)
     monkeypatch.setattr(console_kb_service, "get_vector_store", lambda: store)
     monkeypatch.setattr(console_kb_service, "enqueue_document", _enqueue)
     monkeypatch.setattr(console_kb_service, "remove_document_file", _remove_file)
     monkeypatch.setattr(document_service, "enqueue_document", _enqueue)
 
-    main.app.dependency_overrides[session_module.get_db] = lambda: session
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
+    # 读与写都在异步栈上（票 #130）：四条会话入口一起换、喂同一个假库。
+    override_all_db(main.app, session)
     try:
         with TestClient(main.app) as client:
             yield _Harness(
@@ -958,7 +973,10 @@ def test_reindex_lost_prepare_race_is_processing_conflict(
 ) -> None:
     """守卫通过但准备失败（并发请求先改了同一行）：20025，不投递、不审计。"""
 
-    monkeypatch.setattr(document_repository, "prepare_for_indexing", lambda *_a, **_k: False)
+    async def _losing_prepare(*_a: Any, **_k: Any) -> bool:
+        return False
+
+    monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _losing_prepare)
     assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
 
     response = kbs.client.post(

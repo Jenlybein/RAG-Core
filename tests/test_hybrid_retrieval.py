@@ -237,7 +237,7 @@ def _offline_client(
     # 可见性走异步仓储（第 11 步票 #127）：替身因此也得是 ``async def``。
     monkeypatch.setattr(
         kb_repo,
-        "get_by_id_for_tenant_async",
+        "get_by_id_for_tenant",
         _visible_kb,
     )
 
@@ -446,7 +446,7 @@ def test_visibility_is_checked_once_per_kb_before_any_recall(monkeypatch) -> Non
         return SimpleNamespace(tenant_id=tenant_id)
 
     with _offline_client(monkeypatch) as fake:
-        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible)
+        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible)
         body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
 
     assert body["code"] == 0
@@ -459,7 +459,7 @@ def test_invisible_kb_is_rejected_before_anything_is_recalled(monkeypatch) -> No
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     vector = _FakeVectorStore({KB_A: [_vector_row("a1", score=0.9)]})
     with _offline_client(monkeypatch, vector=vector) as fake:
-        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _invisible_kb)
+        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _invisible_kb)
         body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
 
     assert body["code"] == 20008
@@ -612,7 +612,7 @@ def test_visibility_rejection_is_not_degraded(monkeypatch) -> None:
 
     with _offline_client(monkeypatch) as fake:
         # 在客户端就绪之后再换仓储，确保覆盖掉 fixture 里「库可见」的默认替身。
-        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _invisible_kb)
+        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _invisible_kb)
         body = _post(fake["client"], mode="hybrid")
 
     assert body["code"] == 20008

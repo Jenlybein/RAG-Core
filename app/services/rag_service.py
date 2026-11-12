@@ -103,7 +103,7 @@ from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
 from app.services import result_collapse
-from app.services.knowledge_base_access import ensure_visible_async
+from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
@@ -203,7 +203,7 @@ async def retrieve(
     # 名称 / 描述（改写提示）。``ensure_visible`` 本来就把整行查出来了，丢掉它再去
     # 查一次库，就把「每库一次」变成「每库两次」。
     visible_kbs = [
-        await ensure_visible_async(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids
+        await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids
     ]
 
     # 查询优化：召回之前把用户那句话加工成「向量逐句列表 + 关键词一句 + 重排一句」

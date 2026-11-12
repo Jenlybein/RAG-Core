@@ -32,7 +32,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import async_mirror, RecordingSession
+from tests.fake_db import RecordingSession, override_all_db
 
 LOGIN_PATH = "/console/login"
 RECENT_PATH = "/console/retrieval-traces/recent"
@@ -111,19 +111,15 @@ class _Harness:
 @pytest.fixture
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
-    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
-    # **一个同步会话实例贯穿整个用例**：登录会把会话行写进这个假库，后续请求要能读回同一行。
+    # **一个假库实例贯穿整个用例**：登录会把会话行写进它，后续请求要能读回同一行。
     # 每次请求新建一个 ``RecordingSession`` 会让登录「成功」而下一个请求 20010，
     # 排查时看着像 cookie 没带上，实际是库被换掉了。
     session = RecordingSession(rows=_world())
-    # 「最近检索」那条读（含身份判定）走异步会话；两个替身共享同一份行，于是登录写下的
-    # 会话行在只读请求里读得到。
-    trace_session = async_mirror(session)
-    main.app.dependency_overrides[session_module.get_db] = lambda: session
-    main.app.dependency_overrides[async_session.get_async_db] = lambda: trace_session
+    # 「最近检索」那条读（含身份判定）走异步会话（票 #129 / #130）：四条会话入口一起换，
+    # 喂同一个假库，于是登录写下的会话行在只读请求里读得到。
+    override_all_db(main.app, session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:

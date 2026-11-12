@@ -194,7 +194,7 @@ def _offline_client(
             description="制度与流程",
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _kb_for_tenant)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
 
     if llm is not None:
         # 改写与重排都是惰性 import 的，所以替换点仍在「大模型能力出口」上。

@@ -131,7 +131,7 @@ def _offline_client(
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: vector)
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _kb_for_tenant)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
 
     request_session = AsyncRecordingSession()
     trace_session = AsyncRecordingSession()
@@ -211,7 +211,7 @@ def test_the_visibility_guard_is_the_async_one(monkeypatch: pytest.MonkeyPatch) 
     async def _reject(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _reject)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _reject)
 
     from app.api.deps import get_current_key
 
@@ -289,7 +289,7 @@ async def _cancelled_retrieval(
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: vector)
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: _FakeKeyword())
-    monkeypatch.setattr(service, "ensure_visible_async", _visible)
+    monkeypatch.setattr(service, "ensure_visible", _visible)
     factory_mod.set_async_session_factory(lambda: trace_session)
 
     options = RetrievalOptions(

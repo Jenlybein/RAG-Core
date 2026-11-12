@@ -699,7 +699,7 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     monkeypatch.setattr(service, "get_vector_store", _FakeVectorStore)
     monkeypatch.setattr(service, "get_keyword_search_provider", _FakeKeyword)
     # 可见性走异步仓储（第 11 步票 #127）：替身因此也得是 ``async def``。
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", async_visible_kb)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
 
     from app.api.deps import get_current_key
 

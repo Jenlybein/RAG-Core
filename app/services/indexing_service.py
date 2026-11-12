@@ -51,7 +51,6 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.db.dual_session import DBSession
 from app.db.transaction import async_commit_now
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
@@ -79,7 +78,7 @@ INDEXING_FAILED_MESSAGE = "document indexing failed, please retry or contact sup
 
 
 async def purge_document_chunks(
-    db: DBSession, document_id: str, *, tenant_id: str, stores: list[ChunkStore]
+    db: AsyncSession, document_id: str, *, tenant_id: str, stores: list[ChunkStore]
 ) -> None:
     """先删后写的第一半：遍历**存储列表**，逐个清除该文档的旧切片。
 
@@ -88,8 +87,8 @@ async def purge_document_chunks(
     往 ``stores`` 追加一个元素，调用方一行都不用改。``tenant_id`` 是强制过滤参数
     （ADR-0006），连删除也必须带租户。
 
-    会话类型是 ``DBSession``：数据面删除与 Worker 索引走 ``AsyncSession``，控制面删除
-    要到票 #130 才换（见 ``app/db/dual_session.py``）。
+    会话类型是 ``AsyncSession``：Worker 索引、数据面删除与控制面删除都在异步栈上
+    （第 11 步票 #132 / #130）。
     """
 
     for store in stores:
@@ -118,7 +117,7 @@ class IndexingService:
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
 
-    async def _resolve_splitter(self, db: DBSession, doc: Document) -> tuple[TextSplitter, str]:
+    async def _resolve_splitter(self, db: AsyncSession, doc: Document) -> tuple[TextSplitter, str]:
         """按文档所属知识库的配置构造切块器，返回 (切块器, 策略名)。
 
         策略与窗口必须来自知识库而不是全局配置：同一个库里混用两种切法会让片长
@@ -134,7 +133,7 @@ class IndexingService:
                 else SPLIT_STRUCTURE
             )
             return self._splitter, injected
-        strategy, chunk_size = await knowledge_base_repository.get_split_config_async(
+        strategy, chunk_size = await knowledge_base_repository.get_split_config(
             db, doc.kb_id, tenant_id=doc.tenant_id
         )
         splitter = build_splitter(strategy, chunk_size=chunk_size)

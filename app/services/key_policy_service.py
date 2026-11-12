@@ -7,6 +7,12 @@
 ``apply_key_policy_update``（改配置但不提交，供控制面把改动与审计放进同一个事务）。
 脚本用的 ``update_key_policy`` 仍是「apply + commit」，语义不变。
 
+**规则只有一份，会话有两种**（第 11 步票 #130）：写之前的校验、候选快照与自洽判定全在
+:func:`_apply_validated` / :func:`_build_policy_row` 这两个**纯函数**里，它们不认识会话。
+外面是两层薄壳：同步那一层给运维脚本（``update_key_policy`` / ``apply_key_policy_update``），
+异步那一层给控制面（``apply_key_policy_update_async`` / ``create_key_policy``）。壳的差别
+只有「三行怎么读、行怎么落」，规则与错误形状逐字相同。
+
 写顺序（与控制面两条写入口同一套收口）：
 
 ```text
@@ -31,6 +37,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import Any, Final, Mapping
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES
@@ -40,7 +47,7 @@ from app.models.key_policy import (
     KeyPolicySnapshot,
     policy_snapshot_of,
 )
-from app.models.plan import plan_spec_of
+from app.models.plan import Plan, plan_spec_of
 from app.repositories import key_policy_repository, plan_repository, tenant_repository
 from app.services.profile_policy import ensure_policy_consistent
 from app.services.retrieval_options import (
@@ -133,24 +140,41 @@ def update_key_policy(
 
     - ``LookupError``：配置、它所属的租户、租户的套餐任一不存在；
     - ``ValueError``：入参本身不对（未知字段、未知档位、限额 ≤ 0、空配置名）；
-    - ``AppError(20015)``：改完的配置**不自洽**（档位要的能力配置没开、配置开的比套餐
-      允许的多、限额超过套餐上限）。它带着错误码，控制面第 8 步可以直接翻成响应。
+    - ``AppError(20015)``：改完的配置**不自洽**（档位要的能力配置没开，配置开的比套餐
+      允许的多，限额超过套餐上限）。它带着错误码，控制面可以直接翻成响应。
+
+    这是**脚本的同步外壳**（``scripts/update_key_policy.py``）：规则本体在
+    :func:`_apply_validated` 里只有一份，控制面走 :func:`apply_key_policy_update_async`。
     """
 
-    result = apply_key_policy_update(db, policy_id=policy_id, changes=changes)
-    # 同上：提交点不在这里。
-    return result
+    return apply_key_policy_update(db, policy_id=policy_id, changes=changes)
 
 
 def apply_key_policy_update(
     db: Session, *, policy_id: str, changes: Mapping[str, Any]
 ) -> PolicyUpdate:
-    """与 :func:`update_key_policy` 同一套校验与写入，但**不提交**。
+    """同步外壳：读三行（配置 / 租户 / 套餐）后交给规则本体；**不提交**。"""
 
-    控制面（票 #91）要把这次改动与它的一条审计放进同一个事务：先提交再写账本会留下
-    「改了但没有审计」的窗口，而审计落库失败时整次改动应当一起回滚。校验在第一次写之前
-    完成，所以不提交的版本同样不会留下「改了一半」的库。
+    policy, plan = _policy_bundle(db, policy_id)
+    return _apply_validated(policy, plan, changes)
+
+
+async def apply_key_policy_update_async(
+    db: AsyncSession, *, policy_id: str, changes: Mapping[str, Any]
+) -> PolicyUpdate:
+    """控制面的同一件事（票 #130）：三行读在异步会话上，规则本体与同步外壳共用。
+
+    控制面要把这次改动与它的一条审计放进同一个事务：先提交再写账本会留下「改了但没有
+    审计」的窗口，而审计落库失败时整次改动应当一起回滚。校验在第一次写之前完成，所以
+    不提交的版本同样不会留下「改了一半」的库。
     """
+
+    policy, plan = await _policy_bundle_async(db, policy_id)
+    return _apply_validated(policy, plan, changes)
+
+
+def _policy_bundle(db: Session, policy_id: str) -> tuple[KeyPolicy, Plan]:
+    """同步读三行：配置 → 它所属的租户 → 租户的套餐（任一缺失都是 ``LookupError``）。"""
 
     policy = key_policy_repository.get_by_id(db, policy_id)
     if policy is None:
@@ -163,6 +187,34 @@ def apply_key_policy_update(
     plan = plan_repository.get_by_id(db, tenant.plan_id)
     if plan is None:
         raise LookupError(f"租户 {tenant.id} 的套餐不存在：{tenant.plan_id}")
+    return policy, plan
+
+
+async def _policy_bundle_async(db: AsyncSession, policy_id: str) -> tuple[KeyPolicy, Plan]:
+    """:func:`_policy_bundle` 的异步面：三行读都 ``await``，错误形状逐字相同。"""
+
+    policy = await key_policy_repository.get_by_id_async(db, policy_id)
+    if policy is None:
+        raise LookupError(f"密钥配置不存在：{policy_id}")
+
+    tenant = await tenant_repository.get_by_id_async(db, policy.tenant_id)
+    if tenant is None:
+        raise LookupError(f"密钥配置所属租户不存在：{policy.tenant_id}")
+
+    plan = await plan_repository.get_by_id_async(db, tenant.plan_id)
+    if plan is None:
+        raise LookupError(f"租户 {tenant.id} 的套餐不存在：{tenant.plan_id}")
+    return policy, plan
+
+
+def _apply_validated(
+    policy: KeyPolicy, plan: Plan, changes: Mapping[str, Any]
+) -> PolicyUpdate:
+    """规则本体：校验 → 候选快照 → 自洽校验 → 写进行。会话类型在这里不存在。
+
+    「先校验、后写行」的顺序是这条路径的全部安全性来源：不自洽的请求连「改了一半」
+    的库都留不下。
+    """
 
     values = _validated(changes)
     custom_options = values.pop("custom_options", None)
@@ -207,10 +259,10 @@ def apply_key_policy_update(
     )
 
 
-def create_key_policy(
-    db: Session, *, tenant_id: str, name: str, values: Mapping[str, Any]
+async def create_key_policy(
+    db: AsyncSession, *, tenant_id: str, name: str, values: Mapping[str, Any]
 ) -> CreatedPolicy:
-    """给租户新建一套密钥配置；失败时一行都不落库。
+    """给租户新建一套密钥配置；失败时一行都不落库（控制面签发 Key 走它）。
 
     与 :func:`update_key_policy` 共用同一份自洽校验（:func:`ensure_policy_consistent`），
     所以控制面签发出来的配置与 ``create_tenant`` 开租户时建的那套遵守**完全相同的**
@@ -226,18 +278,28 @@ def create_key_policy(
     if not policy_name:
         raise ValueError("配置名不能为空")
 
-    tenant = tenant_repository.get_by_id(db, tenant_id)
+    tenant = await tenant_repository.get_by_id_async(db, tenant_id)
     if tenant is None:
         raise LookupError(f"租户不存在：{tenant_id}")
-    plan = plan_repository.get_by_id(db, tenant.plan_id)
+    plan = await plan_repository.get_by_id_async(db, tenant.plan_id)
     if plan is None:
         raise LookupError(f"租户 {tenant_id} 的套餐不存在：{tenant.plan_id}")
+
+    row = _build_policy_row(tenant_id=tenant_id, plan=plan, name=policy_name, values=values)
+    await key_policy_repository.create_async(db, row)
+    return CreatedPolicy(policy=row, values=policy_values_of(row))
+
+
+def _build_policy_row(
+    *, tenant_id: str, plan: Plan, name: str, values: Mapping[str, Any]
+) -> KeyPolicy:
+    """校验入参、造出「将来那一行」并跑自洽校验（**纯函数**：不碰会话）。"""
 
     checked = _validated_create(values)
     row = KeyPolicy(
         id=new_id(),
         tenant_id=tenant_id,
-        name=policy_name,
+        name=name,
         allowed_kb_ids=list(checked["allowed_kb_ids"]),
         research_allowed=checked["research_allowed"],
         hybrid_allowed=checked["hybrid_allowed"],
@@ -251,9 +313,7 @@ def create_key_policy(
         custom_options=checked["custom_options"],
     )
     ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan_spec_of(plan))
-
-    key_policy_repository.create(db, row)
-    return CreatedPolicy(policy=row, values=policy_values_of(row))
+    return row
 
 
 def policy_values_of(policy: KeyPolicy) -> dict[str, Any]:

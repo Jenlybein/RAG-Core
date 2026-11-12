@@ -182,7 +182,7 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
             settings={},
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible_kb)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
 
     async def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:
         # 唯一换掉的仓储原语：真实实现是一条 SQL UPDATE（需要 PostgreSQL 行锁），
@@ -367,7 +367,7 @@ def test_same_markdown_loses_heading_path_in_a_size_kb(
     async def _split_config(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
         return (SPLIT_SIZE, 800)
 
-    monkeypatch.setattr(kb_repo, "get_split_config_async", _split_config)
+    monkeypatch.setattr(kb_repo, "get_split_config", _split_config)
 
     session = pipeline_env.session
     store = pipeline_env.store

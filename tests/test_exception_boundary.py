@@ -265,7 +265,7 @@ def test_business_and_validation_failures_still_return_http_200(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant_async", fake_db.async_invisible_kb)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", fake_db.async_invisible_kb)
 
     business = client.post("/api/v1/rag/retrieve", json=_VALID_PAYLOAD)
     assert business.status_code == 200

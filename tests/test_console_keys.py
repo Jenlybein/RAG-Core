@@ -25,7 +25,7 @@ from app.models.audit_log import AuditLog
 from app.models.key_policy import KeyPolicy
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -194,15 +194,13 @@ def console() -> Any:
     import importlib
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
-    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     db = RecordingSession(rows=_world())
     cache = MemoryPlanCache()
-    main.app.dependency_overrides[session_module.get_db] = lambda: db
-    # Key 列表走异步会话（票 #129），替身与同步那个共享同一份行。
-    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(db)
+    # 读与写都在异步栈上（票 #130）：四条会话入口一起换、喂同一个假库，于是登录写下的
+    # 会话行在下一条请求里读得到。
+    override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     try:
         with TestClient(main.app) as client:

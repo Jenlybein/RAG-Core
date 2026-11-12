@@ -136,7 +136,7 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
 
     monkeypatch.setattr(
         knowledge_base_access.knowledge_base_repository,
-        "get_by_id_for_tenant_async",
+        "get_by_id_for_tenant",
         async_visible_kb,
     )
 

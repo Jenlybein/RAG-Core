@@ -372,7 +372,7 @@ def _entries_with(
         return _visible(_db, kb_id, tenant_id=tenant_id)
 
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible)
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible_async)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_async)
     monkeypatch.setattr(
         doc_repo,
         "get_by_id_for_tenant",
@@ -406,7 +406,6 @@ def _entries_with(
         bearer = KEY_VALUE
 
     mcp_app = mcp_server.create_mcp_http_app(
-        get_db=_get_db,
         # 检索链路用异步会话（第 11 步票 #127）：同一个替身，包一层异步面。
         get_async_db=lambda: AsyncSessionAdapter(_get_db()),
         retrieve=service.retrieve,
@@ -717,7 +716,6 @@ def test_mcp_tool_signatures_expose_no_privileged_fields() -> None:
         return {}
 
     mcp = create_mcp_server(
-        get_db=_FakeSession,
         get_async_db=lambda: AsyncSessionAdapter(_FakeSession()),
         retrieve=_retrieve,
         list_kbs=lambda *_a, **_k: [],

@@ -89,14 +89,14 @@ def asgi(runs_root: Path):
 
     from fastapi.testclient import TestClient
 
-    from tests.fake_db import RecordingSession
+    from tests.fake_db import RecordingSession, override_all_db
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     session = RecordingSession(rows=_world())
-    main.app.dependency_overrides[session_module.get_db] = lambda: session
+    # 登录写会话行、之后的读走都异步栈（票 #130）：喂同一个假库。
+    override_all_db(main.app, session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:

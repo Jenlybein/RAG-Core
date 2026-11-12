@@ -24,6 +24,15 @@
 在请求路径上炸**：检索是一个正在服务的过程，库里有半条脏数据不该让所有租户的检索 500。
 所以「指向的行不见了」按「没有指向」处理，记一条 warning 并回落 ``.env``——这与
 ``runtime_settings`` 对非法行的处理同一条纪律（丢弃那一行、保留上一份好值、照常服务）。
+
+## 两种会话：面板异步、装配同步（第 11 步票 #130）
+
+面板那六条接口（列表 / 新增 / 改 / 删 / 看明文）全在异步栈上，所以它们的读写是
+``async``；而 :func:`resolve_role_config` 是 **Provider 装配**的入口——它拿不到
+``Depends``、也不在请求的异步路径上（`app/main.py` 与 Worker 在启动时注入），所以那条
+路径仍用同步会话，:func:`pointer_map` 因此保留同步面，异步面是它的孪生
+:func:`pointer_map_async`。「谁是角色、谁指着谁」的解释仍然只有一份
+（:func:`_pointers_of`）。
 """
 
 from __future__ import annotations
@@ -33,6 +42,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Final
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
@@ -114,15 +124,30 @@ def _masked_snapshot(spec: ModelConfigSpec) -> dict[str, Any]:
 
 
 def pointer_map(db: Session) -> dict[str, str]:
-    """角色 → 它现在指向的配置 id；**空值 / 非法值不出现**（等于「不指向」）。
+    """角色 → 它现在指向的配置 id（同步面：Provider 装配与旁证跑批）。
 
     这是读指针的**唯一**位置：``runtime_settings`` 把指针存在自己的表里，但两张表之间的
     关系（「谁指着谁」）只能在这里被解释一次，否则删除校验、装配解析、面板展示会各写
     一遍「空串算不算指向」。
     """
 
+    return _pointers_of(runtime_setting_repository.list_all(db))
+
+
+async def pointer_map_async(db: AsyncSession) -> dict[str, str]:
+    """:func:`pointer_map` 的异步孪生（控制面列表与删除校验，票 #130）。
+
+    解释规则只有一份（:func:`_pointers_of`），两个面只差「行怎么读出来」。
+    """
+
+    return _pointers_of(await runtime_setting_repository.list_all_async(db))
+
+
+def _pointers_of(rows: list[Any]) -> dict[str, str]:
+    """「哪些键是角色指针、指向谁」的**唯一**解释：同步与异步两个面共用。"""
+
     pointers: dict[str, str] = {}
-    for row in runtime_setting_repository.list_all(db):
+    for row in rows:
         role = role_of_pointer_key(row.key)
         if role is None:
             continue
@@ -132,7 +157,7 @@ def pointer_map(db: Session) -> dict[str, str]:
     return pointers
 
 
-def roles_referencing(db: Session, config_id: str) -> tuple[str, ...]:
+async def roles_referencing(db: AsyncSession, config_id: str) -> tuple[str, ...]:
     """指向这条配置的角色名（按 ``MODEL_ROLES`` 的顺序）。**「被引用」的唯一判定。**
 
     删除一条仍被角色引用的配置会让运行时在下一次装配时静默回落到 ``.env``——那是一次
@@ -140,11 +165,11 @@ def roles_referencing(db: Session, config_id: str) -> tuple[str, ...]:
     管理员先把指向改掉。写入角色指针时也用它：目标必须是一条**有人可以用**的行。
     """
 
-    pointers = pointer_map(db)
+    pointers = await pointer_map_async(db)
     return tuple(role for role in MODEL_ROLES if pointers.get(role) == config_id)
 
 
-def ensure_pointer_target(db: Session, key: str, value: Any) -> None:
+async def ensure_pointer_target(db: AsyncSession, key: str, value: Any) -> None:
     """写入角色指针前的目标校验：空值允许（清空 → 回落 .env），非空必须是现存的行。
 
     校验点放在服务层（由 :mod:`app.services.runtime_settings` 的写入收口调用）而不是
@@ -159,7 +184,7 @@ def ensure_pointer_target(db: Session, key: str, value: Any) -> None:
     target = role_pointer_target(value)
     if target is None:
         return
-    if model_config_repository.get_by_id(db, target) is not None:
+    if await model_config_repository.get_by_id_async(db, target) is not None:
         return
     raise AppError(ErrorCode.PARAM_ERROR, MSG_UNKNOWN_TARGET.format(value=target, key=key))
 
@@ -184,15 +209,15 @@ class ConfigPatchResult:
     changed: tuple[str, ...]
 
 
-def list_configs(db: Session) -> list[ConfigRowView]:
+async def list_configs(db: AsyncSession) -> list[ConfigRowView]:
     """全部配置行 + 各自被哪个角色引用。
 
-    指针**只读一次**（``pointer_map``）而不是每行各读一次：面板要的是「这张表现在长
-    什么样」，N 行各读一次两张指针键纯属多余，而且行与行之间可能读到同一次改动的前后
+    指针**只读一次**（``pointer_map_async``）而不是每行各读一次：面板要的是「这张表现在
+    长什么样」，N 行各读一次两张指针键纯属多余，而且行与行之间可能读到同一次改动的前后
     两个状态。
     """
 
-    pointers = pointer_map(db)
+    pointers = await pointer_map_async(db)
     # 一个配置可以被**两个**角色同时指向（fast 与 strong 用同一家、同一个模型是常见
     # 配置）。所以这里按键收集而不是 `{config_id: role}` 覆盖写——后者会让面板只显示
     # 最后读到的那个角色，而「这条同时被 fast 和 strong 引用」恰好是删除时最该看到的。
@@ -202,7 +227,7 @@ def list_configs(db: Session) -> list[ConfigRowView]:
         if target is not None:
             referenced_by.setdefault(target, []).append(role)
     views: list[ConfigRowView] = []
-    for row in model_config_repository.list_all(db):
+    for row in await model_config_repository.list_all_async(db):
         views.append(
             ConfigRowView(
                 spec=spec_of(row),
@@ -277,14 +302,14 @@ def _validated_fields(values: dict[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _config_of(db: Session, config_id: str) -> ModelConfig:
+async def _config_of(db: AsyncSession, config_id: str) -> ModelConfig:
     """按 id 找一行；不存在 → ``20016``。
 
     **没有「跨租户」这一分支**：这张表不属于任何租户，所以「不存在」是唯一一种找不到
     的理由（与账户/套餐之外的平台级资源同一个口径）。
     """
 
-    row = model_config_repository.get_by_id(db, config_id)
+    row = await model_config_repository.get_by_id_async(db, config_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, f"model config not found: {config_id}")
     return row
@@ -293,8 +318,8 @@ def _config_of(db: Session, config_id: str) -> ModelConfig:
 # ───────────────────────────────────────────────────────────────────────── 写入
 
 
-def create_config(
-    db: Session,
+async def create_config(
+    db: AsyncSession,
     *,
     actor: Any,
     label: str,
@@ -329,9 +354,9 @@ def create_config(
         created_at=stamp,
         updated_at=stamp,
     )
-    model_config_repository.create(db, row)
+    await model_config_repository.create(db, row)
     spec = spec_of(row)
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_CREATE,
@@ -344,8 +369,8 @@ def create_config(
     )
 
 
-def patch_config(
-    db: Session, *, actor: Any, config_id: str, changes: dict[str, Any]
+async def patch_config(
+    db: AsyncSession, *, actor: Any, config_id: str, changes: dict[str, Any]
 ) -> ConfigPatchResult:
     """部分更新一条配置：只改给出的字段，其余保持原值（``api_key`` 也走这条）。
 
@@ -353,7 +378,7 @@ def patch_config(
     之后这条配置长什么样」，而两份「只有被改字段」的 diff 拼不出那一行。
     """
 
-    row = _config_of(db, config_id)
+    row = await _config_of(db, config_id)
     if not changes:
         raise AppError(ErrorCode.PARAM_ERROR, "no fields to change")
     values = _validated_fields(changes)
@@ -366,7 +391,7 @@ def patch_config(
     if changed:
         row.updated_at = now()
     after = _masked_snapshot(spec_of(row))
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_PATCH,
@@ -379,20 +404,20 @@ def patch_config(
     )
 
 
-def delete_config(db: Session, *, actor: Any, config_id: str) -> str:
+async def delete_config(db: AsyncSession, *, actor: Any, config_id: str) -> str:
     """删一条配置。**被任一角色指向时拒绝**（``20015``），先改指向。
 
     为什么不做成「删掉配置、顺手把指向清空」：那会在一次点击里同时改两处平台级配置，
     而管理员看到的只是「删掉了一条」。先拒绝并给出下一步，让「换指向」成为一次显式操作。
     """
 
-    row = _config_of(db, config_id)
-    roles = roles_referencing(db, config_id)
+    row = await _config_of(db, config_id)
+    roles = await roles_referencing(db, config_id)
     if roles:
         raise AppError(ErrorCode.PARAM_ERROR, MSG_REFERENCED.format(roles="/".join(roles)))
     before = _masked_snapshot(spec_of(row))
-    db.delete(row)
-    append_audit(
+    await db.delete(row)
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_DELETE,
@@ -403,15 +428,15 @@ def delete_config(db: Session, *, actor: Any, config_id: str) -> str:
     return config_id
 
 
-def reveal_secret(db: Session, *, actor: Any, config_id: str) -> str:
+async def reveal_secret(db: AsyncSession, *, actor: Any, config_id: str) -> str:
     """显示一次明文（``api_key``），**每次都写一条审计**。
 
     明文只在响应体里出现这一次，不回写任何表；审计快照里仍然打码——它是「谁、什么时候
     看了哪一条的明文」，不是明文本身（审计列表是管理员都能读的一页）。
     """
 
-    row = _config_of(db, config_id)
-    append_audit(
+    row = await _config_of(db, config_id)
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_REVEAL,

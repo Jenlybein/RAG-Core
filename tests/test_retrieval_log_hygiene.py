@@ -164,7 +164,7 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
 
     monkeypatch.setattr(config_mod.settings, "MODEL_API_KEY", API_KEY)
     monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant_async", async_visible_kb
+        kb_repo, "get_by_id_for_tenant", async_visible_kb
     )
     monkeypatch.setattr(
         service,

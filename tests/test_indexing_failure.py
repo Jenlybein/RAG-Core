@@ -118,7 +118,7 @@ def offline_upload(monkeypatch: pytest.MonkeyPatch):
             settings={},
         )
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible_kb)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
