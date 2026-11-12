@@ -105,6 +105,7 @@ def _offline_process_state():
 
     from app.core.http_clients import reset_http_clients
     from app.core.loop_pool import reset_retrieval_pool
+    from app.db.worker_loop import reset_worker_loop
     from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
     from app.db import session_factory as factory_mod
     from app.observability import reset_trace_sink
@@ -123,6 +124,10 @@ def _offline_process_state():
     reset_embedding_provider_cache()
     reset_http_clients()
     reset_retrieval_pool()
+    # Worker 常驻循环（#131 / ADR-0023）同样是**进程级**状态：它在自己的线程里持有一个
+    # 事件循环与一个引擎的连接池。用例忘了清场，下一个用例就会看到一个属于**上一个**
+    # 用例的循环——症状与 reset_retrieval_pool 那条一字不差。没用过时是安静的 no-op。
+    reset_worker_loop()
     try:
         yield
     finally:
@@ -135,3 +140,4 @@ def _offline_process_state():
         reset_embedding_provider_cache()
         reset_http_clients()
         reset_retrieval_pool()
+        reset_worker_loop()
