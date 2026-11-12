@@ -310,6 +310,51 @@ def _git(*arguments: str) -> str | None:
     return completed.stdout.strip() or None
 
 
+#: 「这一轮的模型接入来自哪一条」的两种取值。两条路的 key 可能属于**不同账号**，
+#: 所以读数必须能区分：只看 ``rerank failed`` 是分不出「重排代码坏了」与「这副钥匙欠费」的。
+ENDPOINT_SOURCE_MODEL_CONFIGS = "model_configs"
+ENDPOINT_SOURCE_ENV = "env"
+
+
+def bind_llm_role_resolver(resolver: Any = None) -> dict[str, Any]:
+    """把评测接进**生产那条**模型接入链，并回报「用的是哪一条」。
+
+    ``set_role_resolver`` 已经接在 ``app/main.py``（API 组合根）、
+    ``app/tasks/indexing.py``（Worker 入口）与 ``scripts/build_answer_set.py``（脚本先例），
+    唯独评测入口没接——于是评测一直回落 ``.env`` 的单供应商：**生产与评测量的不是同一条
+    接入链**。本机那份 ``ARK_API_KEY`` 所属账号欠费（403），而 ``model_configs`` 里
+    ``model.role.fast`` 指向的那一行是好的；症状就是「生产正常、评测 10/10 题 rerank
+    failed」，看代码怎么看都像重排有 bug。所以这里照抄 ``build_answer_set`` 的写法接上，
+    并把来源记进环境快照。
+
+    ``resolver`` 是给离线用例的接缝：不传就走 ``model_config_service.role_endpoint``，
+    传了就用它（不连库）。解析器返回 ``None``（没有指针 / 库读不到）时**如实**记
+    ``env``——回落 ``.env`` 是既定行为，不是错误，但不能悄悄记成 ``model_configs``。
+    """
+
+    from app.core.config import settings
+    from app.providers.llm import set_role_resolver
+
+    if resolver is None:
+        from app.services import model_config_service
+
+        resolver = model_config_service.role_endpoint
+
+    set_role_resolver(resolver)
+    endpoint = resolver("fast")
+    if endpoint is None:
+        return {
+            "llm_endpoint_source": ENDPOINT_SOURCE_ENV,
+            # 回落时模型名就在单供应商配置里（``get_llm_provider`` 的 `.env` 分支读的
+            # 正是 ``LLM_MODEL``）。如实照抄，不编一个「未知」。
+            "llm_model": str(settings.LLM_MODEL),
+        }
+    return {
+        "llm_endpoint_source": ENDPOINT_SOURCE_MODEL_CONFIGS,
+        "llm_model": str(endpoint.model),
+    }
+
+
 def environment_snapshot(
     *,
     run_id: str,
@@ -318,12 +363,19 @@ def environment_snapshot(
     corpus: Mapping[str, Any],
     dataset_version: str,
     env_file: str | None,
+    llm_endpoint_source: str,
+    llm_model: str | None,
 ) -> dict[str, Any]:
     """环境快照：**这次数字是在什么条件下算出来的**。
 
     票面点名的五件事都在：检索模型（模式 / 开关 / 融合常数）、嵌入模型、语料版本与题数、
     开关状态、以及门禁指标用的是哪个实现（ragas 私有路径 + 版本）。另附运行时与 git
     提交——「同配置两跑一致」这句话，得先说得清「配置」指哪些行。
+
+    另有两项（#115）：``llm_endpoint_source`` / ``llm_model``——这一轮的 LLM 接入究竟
+    走 ``model_configs`` 还是 ``.env``。没有它们，「生产好好的、评测全挂」只能靠猜。
+    ``retrieval`` 段另记重排预算三项（超时 / 候选封顶 / 单条截断）：同一份题集在 15 秒
+    与 60 秒超时下会呈现「有题降级」与「全排过」两种状态，不记下来就无法复现同一份读数。
     """
 
     from importlib.metadata import version
@@ -345,12 +397,23 @@ def environment_snapshot(
             "fold_to_sections": True,
             "expand_table_rows": True,
             "rerank_enabled": bool(settings.RERANK_ENABLED),
+            # 重排预算三项（#115）：超时 / 候选封顶 / 单条截断。少了它们，「clone 之后
+            # 能复现同一份数字」就不成立——15 秒与 60 秒超时下，同一份题集会出现
+            # 「全排过」与「有一题降级」两种状态，质量差异会归因到「谁没超时」而不是
+            # 「重排模型好坏」。这里记的是**本轮实际生效**的值（进程内抬高也会如实体现）。
+            "rerank_timeout_seconds": float(settings.RERANK_TIMEOUT_SECONDS),
+            "rerank_max_candidates": int(settings.RERANK_MAX_CANDIDATES),
+            "rerank_chunk_max_chars": int(settings.RERANK_CHUNK_MAX_CHARS),
             "query_rewrite_enabled": bool(settings.QUERY_REWRITE_ENABLED),
             "synonym_expansion_enabled": bool(settings.SYNONYM_EXPANSION_ENABLED),
             "vector_store": settings.VECTOR_STORE,
             "hybrid_recall_top_k": settings.HYBRID_RECALL_TOP_K,
             "fusion": "rrf",
         },
+        # 这一轮的 LLM 接入来自哪条（#115）：``model_configs`` = 应用自己的那套（角色
+        # 指针 → 配置行），``env`` = 回落单供应商。两条路的 key 可能属于不同账号。
+        "llm_endpoint_source": llm_endpoint_source,
+        "llm_model": llm_model,
         "embedding": {
             "provider": settings.EMBEDDING_PROVIDER,
             "model": settings.EMBEDDING_MODEL,
@@ -784,6 +847,63 @@ def _thresholds_from_payload(payload: Mapping[str, Any]) -> GateThresholds:
 # ─────────────────────────────────────────────────────────────── 子命令：跑
 
 
+#: 探测用的两条假文档：只回答「端点真的答得上来吗」。不进任何评分、不带真实题面，
+#: 因此探测本身不会把评测数据写进日志或归档。
+PROBE_CHUNKS: tuple[dict[str, str], ...] = (
+    {"chunk_id": "probe-0", "title": "连通性探测", "content": "第一条假文档：与探测问题直接相关。"},
+    {"chunk_id": "probe-1", "title": "连通性探测", "content": "第二条假文档：与探测问题无关。"},
+)
+
+
+async def probe_rerank(provider: Any = None) -> float:
+    """正式跑题之前先问一次重排端点：通不了就当场停，不把整轮跑成降级。
+
+    为什么非要有这一步：重排失败在编排层是**降级**（保留融合顺序、原因 ``rerank failed``），
+    这在线上是正确行为，却让评测最坏的一种失败长得像「跑完了」——10 题全降级也照样出
+    CP/CR。几秒钟的探测换掉一轮「127 题全是降级」的读数，是划算的。
+
+    失败原因**只写异常类型**：``str(exc)`` 常夹带提示词（题面与候选内容），抄进终端与
+    归档等于把评测数据写进日志。类型名足够区分「401 / 超时 / 结构不合法」。
+
+    返回探测本身的耗时（毫秒），供终端读数用。``provider`` 是离线用例的接缝。
+    """
+
+    from app.core.config import settings
+
+    if provider is None:
+        from app.providers.rerank import get_rerank_provider
+
+        provider = get_rerank_provider()
+
+    if not provider.available:
+        raise SystemExit(
+            "重排连通性探测未通过：装配出来的是空实现（Noop）。"
+            f"RERANK_ENABLED={settings.RERANK_ENABLED!r}，这一轮不可能真的重排。"
+        )
+
+    started = time.perf_counter()
+    try:
+        ranked = await provider.rerank(
+            query="连通性探测：这两条假文档哪一条更相关？",
+            chunks=[dict(chunk) for chunk in PROBE_CHUNKS],
+            top_n=len(PROBE_CHUNKS),
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 探测的意义就是把任何异常折成一句人话
+        raise SystemExit(
+            f"重排连通性探测未通过（{type(exc).__name__}）：端点没答上来，"
+            "这一轮会全程降级成「按融合顺序返回」，所以停在跑题之前。"
+            "先修好模型接入再跑：同目录 environment.json 的 llm_endpoint_source 说明"
+            "这一轮走的是哪条路（model_configs / env）。"
+        ) from None
+    elapsed_ms = (time.perf_counter() - started) * 1000
+
+    if not ranked:
+        raise SystemExit("重排连通性探测未通过：端点返回了空排序。")
+    return elapsed_ms
+
+
 def _apply_eval_switches(args: argparse.Namespace, *, top_k: int) -> bool:
     """把本轮旋钮钉死（**先于**环境快照），返回**实际生效**的重排开关。
 
@@ -859,6 +979,10 @@ async def _score_questions(
                 "empty_reason": outcome.empty_reason,
                 "degraded": outcome.degraded,
                 "degraded_reason": outcome.degraded_reason,
+                # #115：重排事实（是否发生 / 候选数 / 返回数 / 重排耗时）原样进逐题明细。
+                # 纯增量键——「这一轮重排真的发生了」必须能从归档里事后核对，而不是
+                # 只在当次响应的 metadata 里出现过就该消失。
+                "rerank": outcome.rerank,
                 "duration_ms": outcome.duration_ms,
                 "returned_ids": outcome.returned_ids,
                 "reference_ids": reference,
@@ -1011,7 +1135,11 @@ async def _run(args: argparse.Namespace) -> int:
     # 先把本轮旋钮钉死**再**拍环境快照：顺序反了，快照记的就是 .env 里的偶然值
     # （比如 RERANK_ENABLED=true），而实际跑的是一次重排关闭的检索——环境快照说假话，
     # 比没有环境快照更糟。
-    _apply_eval_switches(args, top_k=top_k)
+    rerank_enabled = _apply_eval_switches(args, top_k=top_k)
+    # 模型接入接在**生产同一条链**上（#115）：评测以前只吃 .env，量的是另一条路。
+    # 同时早于环境快照——快照要记的就是「这一轮走的是哪条」。
+    llm_access = bind_llm_role_resolver()
+    print(f"model     : {llm_access['llm_endpoint_source']} / {llm_access['llm_model'] or '未知'}")
     environment = environment_snapshot(
         run_id=run_id,
         generated_at=generated_at,
@@ -1019,6 +1147,7 @@ async def _run(args: argparse.Namespace) -> int:
         corpus=corpus_block,
         dataset_version=dataset_version,
         env_file=env_file,
+        **llm_access,
     )
 
     # ── 2. 真实链路：进程内检索（PG + ES + 嵌入全部是真的） ──
@@ -1033,6 +1162,13 @@ async def _run(args: argparse.Namespace) -> int:
         "url": live.elasticsearch_url,
         "index": live.elasticsearch_index,
     }
+
+    # ── 2.5 重排连通性探测：开着重排跑时，先确认端点真的答得上来 ──
+    # 位置放在重建索引**之前**：探测失败时连嵌入与重排的钱都还没花，也没写坏 ES 索引。
+    # 不探测的后果是「127 题全降级」也能出一份看起来正常的 CP/CR——那是最坏的假绿。
+    if rerank_enabled:
+        probe_ms = await probe_rerank()
+        print(f"rerank    : 连通性探测通过（{len(PROBE_CHUNKS)} 条假文档，{probe_ms:.0f}ms）")
 
     questions, _question_k = ev._load_questions()
     layouts, _empty_kb_id = ev._load_manifest()

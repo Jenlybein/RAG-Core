@@ -35,6 +35,7 @@ from scripts.eval_gate import (
     latency_stats,
     mean_scored,
     render_report,
+    rerank_stats,
     score_run,
     select_value,
     validate_dataset,
@@ -188,6 +189,89 @@ def test_report_renders_p50_and_p95_from_the_per_question_durations() -> None:
     # P50 = 第 1 个 = 120，P95 = 第 2 个 = 480；两个都从逐题耗时算出来
     assert "120.0" in report and "480.0" in report
     assert "7.5" in report  # 整轮总时长作为对照，而不是唯一的时间数字
+
+
+def test_rerank_stats_counts_the_applied_ratio_over_the_questions_that_recorded_it() -> None:
+    """应用率的分母是「留下重排事实的题」，耗时只算真的排过的那几道。
+
+    手算：4 道有事实（3 道 applied、1 道降级），1 道检索失败没记录 → 3/4 = 75%。
+    耗时取 100 / 200 / 900：P50 = 第 2 个 = 200、P95 = 第 3 个 = 900。降级那道记的
+    15000ms 是「失败那次尝试」，混进来会把均值抬成 4200——那就不再是「重排要多久」。
+    """
+
+    stats = rerank_stats(
+        [
+            {"rerank": {"applied": True, "candidates": 15, "returned": 15, "duration_ms": 100.0}},
+            {"rerank": {"applied": True, "candidates": 15, "returned": 15, "duration_ms": 900.0}},
+            {"rerank": {"applied": True, "candidates": 15, "returned": 15, "duration_ms": 200.0}},
+            {"rerank": {"applied": False, "candidates": 15, "returned": 5, "duration_ms": 15000.0}},
+            {"rerank": None, "unscored_reason": "retrieval_failed"},
+        ]
+    )
+
+    assert stats["questions"] == 5
+    assert stats["recorded"] == 4
+    assert stats["applied"] == 3
+    assert stats["applied_ratio"] == pytest.approx(0.75)
+    assert stats["duration"]["count"] == 3
+    assert stats["duration"]["mean_ms"] == pytest.approx(400.0)
+    assert stats["duration"]["p50_ms"] == pytest.approx(200.0)
+    assert stats["duration"]["p95_ms"] == pytest.approx(900.0)
+    assert stats["duration"]["max_ms"] == pytest.approx(900.0)
+
+
+def test_rerank_stats_without_any_facts_says_unknown_not_zero() -> None:
+    """一条重排事实都没有（#115 之前的老档案）→ 比例是未知，不是「0% 排过」。"""
+
+    stats = rerank_stats([{"id": "q1"}, {"id": "q2"}])
+
+    assert stats["recorded"] == 0
+    assert stats["applied_ratio"] is None
+    assert stats["duration"] == {
+        "count": 0,
+        "mean_ms": None,
+        "p50_ms": None,
+        "p95_ms": None,
+        "max_ms": None,
+    }
+
+
+def test_report_prints_the_rerank_applied_ratio_and_its_own_timing() -> None:
+    """报告里要能一眼看出「这份基线是不是每题都排过」，以及重排自己有多慢。"""
+
+    payload = _payload([_score("q1"), _score("q2")])
+    payload["environment"]["retrieval"]["rerank_enabled"] = True
+    payload["per_question"][0]["rerank"] = {
+        "applied": True,
+        "candidates": 15,
+        "returned": 15,
+        "duration_ms": 800.0,
+    }
+    payload["per_question"][1]["rerank"] = {
+        "applied": True,
+        "candidates": 15,
+        "returned": 15,
+        "duration_ms": 1200.0,
+    }
+    payload["metrics"]["rerank"] = rerank_stats(payload["per_question"])
+
+    report = render_report(payload)
+
+    assert "## 重排（应用率与它自己的耗时）" in report
+    assert "**应用率 100.0%**（2/2 道真的排过）" in report
+    assert "| 重排耗时均值（ms） | 1000.0 |" in report
+    assert "| 重排耗时 P50（ms） | 800.0 |" in report
+    assert "| 重排耗时 P95（ms） | 1200.0 |" in report
+
+
+def test_report_leaves_the_rerank_section_out_when_nothing_was_recorded() -> None:
+    """老归档没记重排事实：不渲染这一节。摆一张 0% 的表会被读成「重排关着跑」。"""
+
+    payload = _payload([_score("q1"), _score("q2")])
+
+    report = render_report(payload)
+
+    assert "## 重排（应用率与它自己的耗时）" not in report
 
 
 def test_the_reproduction_command_carries_the_rerank_switch_only_when_it_was_on() -> None:

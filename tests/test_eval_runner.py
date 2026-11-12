@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import subprocess
@@ -149,9 +150,48 @@ def test_the_environment_snapshot_records_the_rerank_switch_as_it_ran(monkeypatc
         corpus={"version": "v1"},
         dataset_version="v1",
         env_file=None,
+        llm_endpoint_source=eval_runner.ENDPOINT_SOURCE_ENV,
+        llm_model="deepseek-flash",
     )
 
     assert snapshot["retrieval"]["rerank_enabled"] is True
+
+
+def test_the_environment_snapshot_records_the_rerank_budget_as_it_ran(monkeypatch) -> None:
+    """重排预算三项（超时 / 候选封顶 / 单条截断）必须在快照里，且是**本轮实际生效**的值。
+
+    为什么不是「可有可无的补充字段」：15 秒超时下重排会有一题超时降级，60 秒下同一份
+    题集全部排过。两条读数的质量差异会因此归因到「谁没超时」而不是「重排模型好坏」。
+    记的是 ``settings`` 上钉完之后的真值——这一轮进程里抬高的上限也要如实体现，
+    否则「clone 后照这份快照能复现」就是句空话。
+    """
+
+    _restore_settings(monkeypatch)
+    from app.core.config import settings
+
+    for name in ("RERANK_TIMEOUT_SECONDS", "RERANK_MAX_CANDIDATES", "RERANK_CHUNK_MAX_CHARS"):
+        monkeypatch.setattr(settings, name, getattr(settings, name))
+
+    # 模拟「这一轮评测进程里把上限抬到 60 秒」：环境变量 + .env 都不动，只钉进程内的值。
+    monkeypatch.setattr(settings, "RERANK_TIMEOUT_SECONDS", 60.0)
+    monkeypatch.setattr(settings, "RERANK_MAX_CANDIDATES", 30)
+    monkeypatch.setattr(settings, "RERANK_CHUNK_MAX_CHARS", 512)
+
+    snapshot = eval_runner.environment_snapshot(
+        run_id="20261112T000000Z",
+        generated_at="2026-11-12T00:00:00+00:00",
+        experiment={"mode": "hybrid", "top_k": 5},
+        corpus={"version": "v1"},
+        dataset_version="v1",
+        env_file=None,
+        llm_endpoint_source=eval_runner.ENDPOINT_SOURCE_ENV,
+        llm_model="deepseek-flash",
+    )
+
+    retrieval = snapshot["retrieval"]
+    assert retrieval["rerank_timeout_seconds"] == 60.0
+    assert retrieval["rerank_max_candidates"] == 30
+    assert retrieval["rerank_chunk_max_chars"] == 512
 
 
 def test_the_run_parser_defaults_to_rerank_off_and_the_repo_baseline() -> None:
@@ -164,6 +204,272 @@ def test_the_run_parser_defaults_to_rerank_off_and_the_repo_baseline() -> None:
     args = parser.parse_args(["run", "--rerank", "--baseline-dir", "eval/baseline-rerank"])
     assert args.rerank is True
     assert args.baseline_dir == "eval/baseline-rerank"
+
+
+# ───────────────────────────────────── 逐题明细记录重排事实（#115 的验收读数）
+
+
+def test_the_archived_per_question_detail_keeps_the_rerank_facts_verbatim(monkeypatch) -> None:
+    """冒烟与基线的验收都读逐题明细：重排发生与否、候选数、返回数、耗时必须在里面。
+
+    #114 之前逐题明细只有 ``degraded``；「这一轮开了重排」在归档里无处可查，只能
+    回头去看当次响应——而响应跑完就没了。这里钉住的是**原样**照抄
+    ``metadata.retrieval.rerank``：不在明细里另算一份，否则两处口径迟早分叉。
+    """
+
+    import asyncio
+
+    from scripts import eval_retrieval as ev
+
+    rerank = {"applied": True, "candidates": 30, "returned": 5, "duration_ms": 812.34}
+
+    async def fake_run_question(db, question, *, mode, top_k, kb_ids):
+        return ev.QuestionOutcome(
+            id=question.id,
+            query=question.query,
+            mode=mode,
+            returned=[{"chunk_id": f"{question.id}-c1"}],
+            duration_ms=1234.5,
+            # 第二道题模拟「响应里没有重排事实」（例如检索本身失败）：如实留 None，
+            # 不编一个 applied=False 出来——「没记录」和「确实没开」是两件事。
+            rerank=rerank if question.id == "q1" else None,
+        )
+
+    monkeypatch.setattr(ev, "_run_question", fake_run_question)
+
+    questions = [
+        SimpleNamespace(id="q1", type="colloquial", query="怎么装"),
+        SimpleNamespace(id="q2", type="colloquial", query="坏了"),
+    ]
+    _scores, detail, failures = asyncio.run(
+        eval_runner._score_questions(
+            None,
+            questions=questions,
+            labels={"q1": ["q1-c1"]},
+            mode="hybrid",
+            top_k=1,
+            kb_ids=["kb-eval"],
+        )
+    )
+
+    assert failures == []
+    assert detail[0]["rerank"] == rerank  # 原样照抄，不是折算过的摘要
+    assert detail[0]["rerank"]["applied"] is True
+    assert detail[0]["rerank"]["duration_ms"] == 812.34
+    assert detail[1]["rerank"] is None
+    # 既有键一个都没动（纯增量）：旧归档的读者按老键取值仍然成立
+    assert set(detail[0]) >= {
+        "id",
+        "type",
+        "query",
+        "returned_count",
+        "reference_count",
+        "context_precision",
+        "context_recall",
+        "unscored_reason",
+        "empty_reason",
+        "degraded",
+        "degraded_reason",
+        "duration_ms",
+        "returned_ids",
+        "reference_ids",
+    }
+
+
+def test_the_retrieval_matrix_detail_carries_the_same_rerank_facts() -> None:
+    """另一条逐题明细（``eval_retrieval`` 自己的矩阵/诊断）也读同一份事实。
+
+    两条明细的可信度取决于它们说的是同一件事：都从 ``QuestionOutcome.rerank`` 取，
+    不各算一份。
+    """
+
+    from scripts import eval_retrieval as ev
+
+    rerank = {"applied": True, "candidates": 30, "returned": 5, "duration_ms": 812.34}
+    outcome = ev.QuestionOutcome(
+        id="q1", query="怎么装", mode="hybrid", duration_ms=1234.5, rerank=rerank
+    )
+
+    item = ev._score_question(
+        outcome,
+        question_type="colloquial",
+        relevant=["c1"],
+        trap=[],
+        chunk_by_id={},
+    )
+
+    assert item["rerank"] == rerank
+    assert item["duration_ms"] == 1234.5  # 检索耗时与重排耗时是两个数，别混
+
+
+# ────────────────────── 评测与生产走同一条模型接入链（#115 的根因修复）
+
+
+def _restore_role_resolver(monkeypatch) -> None:
+    """``set_role_resolver`` 写的是**进程级全局**：用例结束后必须复位，否则污染邻居。
+
+    先把当前值登记给 monkeypatch，它会在拆解时连同用例里的写入一起还原——与
+    ``tests/test_llm_provider.py`` 手工 ``set_role_resolver(None)`` 是同一件事，
+    只是不用指望每个用例的作者都记得写最后那一行。
+    """
+
+    from app.providers import llm as llm_module
+
+    monkeypatch.setattr(llm_module, "_role_resolver", llm_module._role_resolver)
+
+
+def _snapshot_with(**access: Any) -> dict[str, Any]:
+    """只有「模型接入来自哪一条」在变的快照；其余条件固定，读数才可比。"""
+
+    return eval_runner.environment_snapshot(
+        run_id="20261112T000000Z",
+        generated_at="2026-11-12T00:00:00+00:00",
+        experiment={"mode": "hybrid", "top_k": 5},
+        corpus={"version": "v1"},
+        dataset_version="v1",
+        env_file=None,
+        **access,
+    )
+
+
+def test_no_role_pointer_keeps_the_eval_on_env_and_records_env(monkeypatch) -> None:
+    """解析器说「没有指向」时：行为不变（回落 ``.env``），快照**如实**写 ``env``。
+
+    钉住的是「不许把回落说成 model_configs」：两者用的 key 可能属于**不同账号**，
+    混起来之后，下一次「生产好、评测全挂」又只能靠猜。
+    """
+
+    from app.core.config import settings
+    from app.providers import llm as llm_module
+
+    _restore_role_resolver(monkeypatch)
+    monkeypatch.setattr(settings, "LLM_MODEL", "env-model-x")
+
+    access = eval_runner.bind_llm_role_resolver(lambda role: None)
+
+    assert access == {"llm_endpoint_source": "env", "llm_model": "env-model-x"}
+    # 行为不变：解析器确实被注入了，只是它给出的答案是「没有指向」→ Provider 走 .env
+    assert llm_module._resolved_endpoint("fast") is None
+
+    snapshot = _snapshot_with(**access)
+    assert snapshot["llm_endpoint_source"] == "env"
+    assert snapshot["llm_model"] == "env-model-x"
+
+
+def test_the_injected_resolver_points_the_eval_at_the_model_configs_row(monkeypatch) -> None:
+    """注入之后：快照写 ``model_configs`` + 那一行的模型名，且 Provider 层真的会用它。
+
+    只写标签不注入，是最坏的一种「修好了」：归档说走库里的配置，钱还在花 ``.env`` 的
+    那把 key。所以这里同时断言「Provider 层拿到的就是这一条」。
+    """
+
+    from app.providers import llm as llm_module
+    from app.providers.llm import RoleEndpoint
+
+    _restore_role_resolver(monkeypatch)
+    endpoint = RoleEndpoint(
+        provider="openai",
+        base_url="https://model-configs.invalid/v1",
+        model="fast-model-y",
+        api_key="test-key-not-a-real-secret",
+        config_id="cfg-test",
+    )
+
+    access = eval_runner.bind_llm_role_resolver(lambda role: endpoint if role == "fast" else None)
+
+    assert access == {"llm_endpoint_source": "model_configs", "llm_model": "fast-model-y"}
+    assert llm_module._resolved_endpoint("fast") is endpoint  # 真的接上了，不是只记了个标签
+
+    snapshot = _snapshot_with(**access)
+    assert snapshot["llm_endpoint_source"] == "model_configs"
+    assert snapshot["llm_model"] == "fast-model-y"
+
+
+class _StubRerank:
+    """重排端点的替身：只在用例里出现，不连网、不花钱。"""
+
+    def __init__(
+        self,
+        *,
+        error: Exception | None = None,
+        rows: list[dict[str, Any]] | None = None,
+        available: bool = True,
+    ) -> None:
+        self.available = available
+        self._error = error
+        self._rows = rows
+        self.calls: list[dict[str, Any]] = []
+
+    async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]:
+        self.calls.append({"query": query, "chunks": chunks, "top_n": top_n})
+        if self._error is not None:
+            raise self._error
+        return list(self._rows if self._rows is not None else chunks[:top_n])
+
+
+def test_a_failed_rerank_probe_stops_the_run_before_any_question_runs() -> None:
+    """探测失败 = 当场中止，而不是把整轮跑成降级；原因只留异常**类型**。
+
+    ``str(exc)`` 常夹带提示词（题面 + 候选内容）。把它抄进终端与归档，等于把评测数据
+    写进仓库日志——所以这里连同「原文不该出现」一起钉住。
+    """
+
+    leaky = RuntimeError("401 Unauthorized：user=怎么装电脑 候选=第一条假文档")
+    provider = _StubRerank(error=leaky)
+
+    with pytest.raises(SystemExit) as excinfo:
+        asyncio.run(eval_runner.probe_rerank(provider))
+
+    message = str(excinfo.value)
+    assert "RuntimeError" in message  # 类型名在：够区分 401 / 超时 / 结构不合法
+    assert "401 Unauthorized" not in message  # 原文不在
+    assert "怎么装电脑" not in message
+
+
+def test_the_rerank_probe_refuses_a_noop_provider() -> None:
+    """空实现（重排开关其实没打开）也必须在这里停：跑下去只会得到一轮「没排过」。"""
+
+    class _Noop:
+        available = False
+
+        async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]:
+            raise AssertionError("空实现不该被调用")
+
+    with pytest.raises(SystemExit) as excinfo:
+        asyncio.run(eval_runner.probe_rerank(_Noop()))
+
+    assert "Noop" in str(excinfo.value)
+
+
+def test_the_rerank_probe_sends_two_fake_documents_and_reports_its_own_timing() -> None:
+    """探测只用两条**假**文档：够证明端点答得上来，又不烧掉一道真题的钱。"""
+
+    provider = _StubRerank()
+
+    elapsed_ms = asyncio.run(eval_runner.probe_rerank(provider))
+
+    assert elapsed_ms >= 0
+    (call,) = provider.calls
+    assert call["top_n"] == 2
+    assert [chunk["chunk_id"] for chunk in call["chunks"]] == ["probe-0", "probe-1"]
+    assert all("假文档" in chunk["content"] for chunk in call["chunks"])
+
+
+def test_the_offline_subcommands_never_bind_the_model_resolver(monkeypatch) -> None:
+    """``validate-dataset`` / ``validate-config`` 必须保持离线：不许连库、不许注入解析器。
+
+    注入一旦挪进 ``main`` 或模块导入，离线子命令就会去读 ``model_configs``；CI 没有库，
+    于是「离线校验」变成「没有库就红」——那正是这两个子命令存在的理由。
+    """
+
+    def _forbidden(*args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("离线子命令不许连库 / 注入角色解析器")
+
+    monkeypatch.setattr(eval_runner, "bind_llm_role_resolver", _forbidden)
+    monkeypatch.setattr(eval_runner, "probe_rerank", _forbidden)
+
+    assert eval_runner.main(["validate-dataset"]) == 0
+    assert eval_runner.main(["validate-config"]) == 0
 
 
 # ───────────────────────────────────────────────────────── 离线可导入（硬约束）

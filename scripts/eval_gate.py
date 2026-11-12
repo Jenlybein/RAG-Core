@@ -187,6 +187,59 @@ def latency_stats(per_question: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+# ─────────────────────────────────────────── 重排发生率与它自己的耗时（零新采集）
+
+
+def rerank_stats(per_question: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """从 ``per_question[*].rerank`` 折出「这一轮重排真的发生了吗、它自己花了多久」。
+
+    为什么报告里必须有这一块：基线是「重排开着跑出来的」这句话，只有在**每一道题都
+    真的排过**时才成立。只要有一道题超时降级（``applied=false``），这份 CP / CR 就
+    混着两种状态——质量差异会归因到「谁没超时」，而不是「重排模型好坏」。所以应用率
+    不是修辞，它是这份基线值不值得信的前提，必须印在报告里给人核对。
+
+    分母是**留下了重排事实的题数**（``recorded``），不是进平均的题数：检索本身失败的
+    题根本没有重排可言（``rerank`` 为 ``null``），把「没测到」算进分母会把一次环境
+    故障读成一次「重排没生效」。``questions`` 与 ``recorded`` 都印出来，落差自有解释。
+
+    耗时只对 ``applied=true`` 的题统计：降级路径里的 ``duration_ms`` 要么为空、要么是
+    「失败那次尝试」的时长，混进来就不是「重排要多久」了。分位数与延迟表用同一套
+    最近秩法（{@link latency_stats}），两处口径一致，读数才对得上。
+    """
+
+    facts: list[Mapping[str, Any]] = []
+    for item in per_question:
+        if not isinstance(item, Mapping):
+            continue
+        fact = item.get("rerank")
+        if isinstance(fact, Mapping):
+            facts.append(fact)
+
+    applied = [fact for fact in facts if fact.get("applied") is True]
+    durations = sorted(
+        float(fact["duration_ms"])
+        for fact in applied
+        if is_scored(fact.get("duration_ms"))
+    )
+    count = len(durations)
+    duration = {
+        "count": count,
+        "mean_ms": sum(durations) / count if count else None,
+        "p50_ms": durations[_percentile_rank(count, 50) - 1] if count else None,
+        "p95_ms": durations[_percentile_rank(count, 95) - 1] if count else None,
+        "max_ms": durations[-1] if count else None,
+    }
+    return {
+        "questions": len(per_question),
+        "recorded": len(facts),
+        "applied": len(applied),
+        # 一个记录都没有时回 None 而不是 0.0：``0.0`` 读起来是「一道都没排」，
+        # 而事实是「这一轮没记这件事」——两件事的下一步完全不同。
+        "applied_ratio": (len(applied) / len(facts)) if facts else None,
+        "duration": duration,
+    }
+
+
 # ─────────────────────────────────────────────── ragas ID 版双指标（零 LLM）
 
 
@@ -774,6 +827,9 @@ def build_results_payload(
     # 延迟也进 metrics：它和 CP/CR 读的是同一份 per_question，报告里的每个数
     # 都能用一条 --select 打印出来（metrics.latency）。它只是读数，不参与判据。
     metrics["latency"] = latency_stats(per_question)
+    # 重排事实同样只做统计（不另采）：应用率是「这份基线配不配拿来谈重排好坏」的前提，
+    # 报告里要能直接读到，而不是让读者自己数 127 行 ``applied``。
+    metrics["rerank"] = rerank_stats(per_question)
     # 排除统计以**题库**为准：这次没跑 absent / false_premise（它们不进闸门），
     # 但那 10 道题确实在题库里——报告里必须说清「排除了哪些、各几道」，
     # 而不是因为它们没被评分就显示成「无排除」。
@@ -1128,6 +1184,58 @@ def _total_text(value: Any) -> str:
     return f"{float(value):.2f}s" if isinstance(value, (int, float)) else "未记录"
 
 
+def _rerank_section(payload: Mapping[str, Any]) -> list[str]:
+    """重排段：应用率 + 重排自己的耗时分布。
+
+    没有一条重排事实的老档案（#115 之前跑的）**不渲染这一节**——「没记录」不是
+    「没发生」，摆一张 0% 的表比不摆更容易被误读成「重排关着跑」。
+    """
+
+    run_dir = str(payload.get("run_dir") or f"eval/runs/{payload.get('run_id')}")
+    per_question = payload.get("per_question") or []
+    stats = (payload.get("metrics") or {}).get("rerank") or rerank_stats(per_question)
+    if not stats.get("recorded"):
+        return []
+
+    # 复现命令要指向**这份归档真有的那一路**：老归档的 metrics 里没有 rerank，
+    # 印一条 `--select metrics.rerank` 只会让人以为「这个数字本来就是空的」。
+    source_key = "metrics.rerank" if (payload.get("metrics") or {}).get("rerank") else "per_question"
+    duration = stats.get("duration") or {}
+    ratio = stats.get("applied_ratio")
+    switches = (payload.get("environment") or {}).get("retrieval") or {}
+    lines = ["## 重排（应用率与它自己的耗时）", ""]
+    lines += [
+        f"- 重排开关：{'开' if switches.get('rerank_enabled') else '关'}；"
+        f"逐题明细里留下重排事实的题数 {stats.get('recorded')}/{stats.get('questions')} 道。",
+        f"- **应用率 {_num((ratio or 0) * 100 if ratio is not None else None, 1)}%**"
+        f"（{stats.get('applied')}/{stats.get('recorded')} 道真的排过）。"
+        "它不是修辞：只要有一道题降级成「按融合顺序返回」，这份 CP / CR 就混着两种状态，"
+        "质量差异会归因到「谁没超时」而不是「重排模型好不好」。",
+        "",
+        "| 指标 | 值 | 复现命令 |",
+        "| --- | --- | --- |",
+    ]
+    rows = (
+        ("应用率（%）", (ratio * 100) if ratio is not None else None),
+        ("重排耗时均值（ms）", duration.get("mean_ms")),
+        ("重排耗时 P50（ms）", duration.get("p50_ms")),
+        ("重排耗时 P95（ms）", duration.get("p95_ms")),
+        ("重排耗时最慢（ms）", duration.get("max_ms")),
+    )
+    for label, value in rows:
+        lines.append(f"| {label} | {_num(value, 1)} | `{_cell(_command(run_dir, source_key))}` |")
+    lines += [
+        "",
+        "口径：耗时只统计 `applied=true` 那些题（降级路径里的时长是「失败那次尝试」，"
+        "混进来就不是「重排要多久」）；分母是**留下了重排事实的题**，检索本身失败的题"
+        "没有重排可言，不计入。逐题的 `candidates` / `returned` 见 `per_question[*].rerank`"
+        "——`returned` 是重排吐出的条数（折叠前，开着折叠时是 `top_k × 3`），"
+        "不是最终返回条数。",
+        "",
+    ]
+    return lines
+
+
 def _unscored_section(payload: Mapping[str, Any]) -> list[str]:
     metrics = payload.get("metrics") or {}
     unscored = metrics.get("unscored") or []
@@ -1283,6 +1391,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
     lines += _environment_section(payload)
     lines += _gate_section(payload)
     lines += _latency_section(payload)
+    lines += _rerank_section(payload)
     lines += _unscored_section(payload)
     lines += _per_question_section(payload)
     lines += _http_smoke_section(payload)

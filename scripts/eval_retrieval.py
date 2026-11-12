@@ -705,6 +705,12 @@ class QuestionOutcome:
     empty_reason: str | None = None
     error: str | None = None
     duration_ms: float = 0.0
+    # 重排事实（#115）：``metadata.retrieval.rerank`` **原样**留档（``applied`` /
+    # ``candidates`` / ``returned`` / ``duration_ms``）。以前逐题明细只记「降级了吗」，
+    # 开了重排之后「这一题到底用没用上重排、重排自己花了多久」只存在于响应里，而响应
+    # 跑完就没了——基线要能事后回答「这一轮重排真的发生了」，所以它必须落进逐题明细。
+    # 原样照抄而不是另算一份：两处口径一旦分叉，读数的人就不知道该信哪个。
+    rerank: dict[str, Any] | None = None
     # 实际检索用的句子（#31）：改写成功时 ``vector_queries`` 是两句（原句 + 改写句），
     # 关闭 / 失败时只有原句；``effective_query`` 是重排看的那一句。留档是为了让
     # 「这一题为什么变差」能归因，而不是只能猜。
@@ -758,6 +764,8 @@ async def _run_question(
     outcome.degraded = bool(retrieval_meta["degraded"])
     outcome.degraded_reason = retrieval_meta["degraded_reason"]
     outcome.empty_reason = retrieval_meta["empty_reason"]
+    # #115：重排事实原样带走，逐题明细才有「重排已发生 / 候选数 / 返回数 / 重排耗时」。
+    outcome.rerank = retrieval_meta.get("rerank")
     outcome.returned = list(response["retrieved_chunks"])
     # 记录**实际用于检索的句子**（#31）：没有它，「名次变了」就无法归因到
     # 「检索不行」还是「改写把问题改坏了」——q16 的退化当年正是卡在这里。
@@ -885,6 +893,8 @@ def _score_question(
         "degraded": outcome.degraded,
         "degraded_reason": outcome.degraded_reason,
         "empty_reason": outcome.empty_reason,
+        # #115 纯增量键：重排事实原样写入。既有键一个都没动，读旧归档的代码不受影响。
+        "rerank": outcome.rerank,
         "error": outcome.error,
         "duration_ms": outcome.duration_ms,
     }
