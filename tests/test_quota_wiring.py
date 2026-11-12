@@ -55,21 +55,24 @@ JSONRPC_HEADERS = {
 
 
 class _FakeCounterStore:
-    """计数器真正用到的那三条命令：一个 dict 加一份 TTL 账本。"""
+    """计数器真正用到的那三条命令：一个 dict 加一份 TTL 账本。
+
+    命令是**异步**的（票 #133）：生产客户端是 ``redis.asyncio``，注入缝认的就是这个形状。
+    """
 
     def __init__(self) -> None:
         self.values: dict[str, int] = {}
         self.ttls: dict[str, int] = {}
 
-    def incr(self, key: str) -> int:
+    async def incr(self, key: str) -> int:
         self.values[key] = self.values.get(key, 0) + 1
         return self.values[key]
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         value = self.values.get(key)
         return None if value is None else str(value)
 
-    def expire(self, key: str, ttl: int) -> None:
+    async def expire(self, key: str, ttl: int) -> None:
         self.ttls[key] = ttl
 
 
@@ -79,15 +82,15 @@ class _ExplodingStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def incr(self, key: str) -> int:
+    async def incr(self, key: str) -> int:
         self.calls.append(f"incr:{key}")
         raise AssertionError(f"不该访问 Redis：incr({key})")
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         self.calls.append(f"get:{key}")
         raise AssertionError(f"不该访问 Redis：get({key})")
 
-    def expire(self, key: str, ttl: int) -> None:
+    async def expire(self, key: str, ttl: int) -> None:
         self.calls.append(f"expire:{key}")
         raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
 

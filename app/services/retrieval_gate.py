@@ -75,14 +75,15 @@ async def gated_retrieve(
     )
 
     # 第 3 步：秒级限流 → 日配额。**进门只查**，成功后记账由第 5 步负责。开关关着时这本账
-    # 是 no-op，默认套件因此不需要 Redis。
+    # 是 no-op，默认套件因此不需要 Redis。计数命令是异步的（票 #133）：它们在这条异步
+    # 链路上，同步 Redis 会把整个事件循环按住。
     quota = retrieval_quota(
         policy=key.policy,
         plan=key.plan,
         tenant_id=key.tenant_id,
         key_id=key.key_id,
     )
-    quota.ensure_available()
+    await quota.ensure_available()
 
     # 第 4 步：召回。组合根拿到的是已经解析完的参数，它不再读请求体、也不再读请求里的质量
     # 字段（那些字段根本不存在）。
@@ -97,5 +98,5 @@ async def gated_retrieve(
     # 第 5 步：响应成形之后才 +1。校验失败的响应不是一次成功调用，所以顺序不能倒过来；
     # 失败 / 异常 / 校验不通过的路径都不会走到这里（ADR-0018「成功后才计数」）。
     result = RetrieveData.model_validate(payload)
-    quota.record_success()
+    await quota.record_success()
     return result
