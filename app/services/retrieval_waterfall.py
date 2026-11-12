@@ -98,9 +98,9 @@ async def waterfall_of(
     （路由的 ``Depends``）显式交进来，测试才有地方换掉它；写成默认值会让「这次到底去没去
     问观测栈」在运行时不可见。
 
-    归属那一行读在**异步会话**上（票 #129），而本地 JSONL 与观测服务两处仍是同步 I/O：
-    它们各自被 :func:`asyncio.to_thread` 挪出事件循环。文件读与网络读都属于「会等很久、
-    但不等数据库」的那一类，留在循环上就是拿一个慢盘换掉整台进程的并发。
+    归属那一行读在**异步会话**上（票 #128 起），本地 JSONL 与观测服务两处仍是同步 I/O：
+    它们各自被 :func:`asyncio.to_thread` 挪出事件循环（票 #129）。文件读与网络读都属于
+    「会等很久、但不等数据库」的那一类，留在循环上就是拿一个慢盘换掉整台进程的并发。
     """
 
     row = await retrieval_trace_repository.get_by_id_for_tenant(db, log_id, tenant_id=tenant_id)
