@@ -4,11 +4,16 @@
 `object()`，什么都不实现，所以一旦有真实查询走进去就会 `AttributeError`。
 
 这里的假会话刻意**只实现被用到的那几个方法**：离线测试关心的是「查询有没有按正确参数
-发出去」和「响应契约是否稳定」，不关心数据本身。两个变体：
+发出去」和「响应契约是否稳定」，不关心数据本身。三个变体：
 
 - ``EmptySession``：一律返回空结果（读路径的默认替身）；
 - ``RecordingSession``：记下 ``add`` 进来的行，并能按模型返回预置行——运维脚本与播种
-  这类「可观测结果就是落了哪些行」的场景用它（见 ``test_identity_seeding.py``）。
+  这类「可观测结果就是落了哪些行」的场景用它（见 ``test_identity_seeding.py``）；
+- ``AsyncRecordingSession``：同一个替身的**异步面**（票 #126）。语义只写一遍，见下。
+
+**为什么 ``statements`` 记的是 SQL 文本**：迁移期同一组操作要能在同步与异步两套替身上
+逐字比对（``tests/test_session_double_contract.py``）。只记「execute 被调了几次」看不出
+「同一次调用发的是不是同一条语句」。
 """
 
 from __future__ import annotations
@@ -177,6 +182,9 @@ class RecordingSession(EmptySession):
 
     ``deleted`` 是「这一行真的不在了」的记录（登出、删套餐）。假会话越像真会话，越容易
     让人误以为测过的是数据库，所以这里只实现仓储层真正用到的那几个方法。
+
+    ``statements`` 按调用顺序记下 SQL 文本（见模块文档最后一段）。``EmptySession`` 不记：
+    它本来就什么都不做。
     """
 
     def __init__(
@@ -193,6 +201,7 @@ class RecordingSession(EmptySession):
         self.commits = 0
         self.closed = False
         self.rollbacks = 0
+        self.statements: list[str] = []
 
     def query(self, model: type) -> _FakeQuery:
         return _FakeQuery(self._rows.get(model, []))
@@ -212,9 +221,15 @@ class RecordingSession(EmptySession):
         形状，别的语句仍退回 ``_tenant_ids``（沿用本模块的「只实现被用到的那几种写法」）。
         """
 
+        self._record(statement)
         if str(statement).lstrip().upper().startswith("SELECT COUNT("):
             return CountResult(self._count_rows(statement))
         return _Rows(self._tenant_ids)
+
+    def _record(self, statement: Any) -> None:
+        """记下一条 SQL 文本（按调用顺序）。"""
+
+        self.statements.append(str(statement))
 
     def _count_rows(self, statement: Any) -> int:
         try:
@@ -319,3 +334,48 @@ class TransactionalSession(RecordingSession):
             self.deleted = list(deleted)
             self._snapshot = None
         super().rollback()
+
+
+class AsyncRecordingSession(RecordingSession):
+    """``RecordingSession`` 的**异步面**：语义只写一遍，这里只把同一组方法变成可 ``await`` 的。
+
+    **为什么继承而不是另写一份**：两套替身各写一遍语义，漂移是迟早的事（异步那份少记一条
+    SQL、``rollback`` 只数了个寂寞，而用例全绿）。这里让状态与记录逻辑只有一份，异步替身
+    只负责「这些方法必须被 ``await``」——于是「忘了 await」在套件里表现为
+    ``RuntimeWarning: coroutine was never awaited`` 加上「那段副作用没发生」，而不是静默通过。
+
+    共享契约测试见 ``tests/test_session_double_contract.py``：同一组操作在同步与异步替身上
+    必须产生同一组 SQL 与同一组结果。
+
+    ``query`` **故意留在同步面**：真 ``AsyncSession`` 没有 ``db.query(...)``，异步仓储只能走
+    ``execute(select(...))``。替身如果替它兜底，迁移时那些「照抄同步写法」的地方就永远暴露
+    不出来——那是 #127 起要显式改的代码。
+
+    **还没有 ``AsyncTransactionalSession``**：票 #124 的事务语义（提交才落库、回滚撤销写入）
+    目前只有同步版 ``TransactionalSession``。异步写路径开始被断言的那一票按同样的形状加一个
+    即可；先把「同一组方法可 await」这条地基铺好，不预先造第二个变体。
+    """
+
+    async def execute(self, statement: Any, *_args: Any, **_kwargs: Any) -> _Rows | CountResult:
+        return super().execute(statement, *_args, **_kwargs)
+
+    async def get(self, model: type, primary_key: Any) -> Any:
+        return super().get(model, primary_key)
+
+    async def add(self, obj: Any) -> None:
+        super().add(obj)
+
+    async def delete(self, obj: Any) -> None:
+        super().delete(obj)
+
+    async def flush(self) -> None:
+        super().flush()
+
+    async def commit(self) -> None:
+        super().commit()
+
+    async def rollback(self) -> None:
+        super().rollback()
+
+    async def close(self) -> None:
+        super().close()
