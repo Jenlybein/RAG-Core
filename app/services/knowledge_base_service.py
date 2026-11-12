@@ -38,7 +38,15 @@ async def create_kb(
     plan: PlanSpec,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     allowed_formats: Sequence[str] | None = None,
+    commit: bool = True,
 ) -> dict:
+    """建库；``commit=False`` 交给调用方把「写入 + 审计」收进同一个事务。
+
+    控制面的建库要连同一条审计一起提交（不允许出现「建了库、却没账本」的窗口），
+    而数据面没有审计、照旧由这里提交。判定（策略 / 配额 / 格式）与提交时机无关，
+    因此两个入口共用同一份实现。
+    """
+
     try:
         formats = resolve_formats(split_strategy, allowed_formats)
     except ValueError as exc:
@@ -58,7 +66,8 @@ async def create_kb(
         settings={"chunk_size": chunk_size},
     )
     knowledge_base_repository.create(db, kb)
-    db.commit()
+    if commit:
+        db.commit()
     values = settings_of(kb)
     return {
         "kb_id": kb.id,

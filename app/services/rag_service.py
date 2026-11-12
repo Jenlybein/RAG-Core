@@ -52,12 +52,30 @@
 本次用到的库数、被裁字段。它从**同一个** ``options`` 上读出（``tenant_policy_echo``），
 所以「回显说开了重排」与「链路真的开了重排」不可能分叉——这份回显不是另存的一份事实。
 
+**每次响应都带 ``trace_id``，而且它先于写库产生**（#101，ADR-0010「第五次修订」）：
+``log_id`` 先生成（UUID v4），``trace_id`` 立刻由它确定性派生（``trace_identity``），
+然后才在最后尝试往归属索引里写一行结构记录。顺序不能倒：写入是旁路，写失败只留 warning，
+响应里的 ``trace_id`` 照样有值——「写成功才拿到 id」等于把契约挂在旁路的健康度上。
+
+除 ``metadata.trace_id`` 之外，检索响应逐字节不变；六段耗时**不进**响应（那是观测的事）。
+
+**六段耗时从这里开始、也在这里交出去**（#102）：本函数创建一个
+:class:`app.observability.stage_timing.StageTimer` 并**显式**传给需要计时的每一层
+（``hybrid_retrieve`` / 两个单模式通道 / 折叠），最后把收集到的段交给当前去向
+（``app.observability.emit_retrieval_trace``）。两条性质因此成立：
+
+* **度量常开**：收集器**无条件**创建，与 ``TRACE_SINK`` 无关——关掉观测不等于关掉计时；
+* **没有全局可变状态**：一次检索一份收集器，两次并发请求的六段不会串到一个列表里
+  （这也是它能被测试注入、并直接断言「拿到了哪几段」的原因）。
+
 日志只放 ID 与派生量，绝不放检索原文（见 tests/test_retrieval_log_hygiene.py）。
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import structlog
 
@@ -66,6 +84,14 @@ from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION, default_index_versions
+from app.observability import emit_retrieval_trace
+from app.observability.stage_timing import (
+    STAGE_COLLAPSE,
+    STAGE_KEYWORD_RECALL,
+    STAGE_QUERY_OPTIMIZATION,
+    STAGE_VECTOR_RECALL,
+    StageTimer,
+)
 from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
@@ -77,6 +103,13 @@ from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.pipeline import hybrid_retrieve
 from app.services.retrieval.vector_recall import vector_recall
 from app.services.retrieval_options import RetrievalOptions, tenant_policy_echo
+from app.services.retrieval_trace import record_retrieval_trace
+from app.services.trace_identity import (
+    delivered_chunk_ids,
+    tenant_fingerprint,
+    trace_id_for,
+)
+from app.utils.id_generator import new_retrieval_log_id
 from app.utils.retrieval_fields import with_score_columns
 
 logger = structlog.get_logger(__name__)
@@ -97,6 +130,8 @@ async def retrieve(
     kb_ids: list[str],
     query: str,
     options: RetrievalOptions,
+    stage_timer: StageTimer | None = None,
+    rerank_factory: Callable[[], Any] | None = None,
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
@@ -113,10 +148,31 @@ async def retrieve(
     本机装了」的合取（``app.services.retrieval_options.options_from_chain``）。链路里
     再问一次 ``settings`` 就等于有了两个真相——机器上没装重排、档位却想要，两处判断
     谁说了算会变成排障时的第一道谜题。
+
+    ``stage_timer`` 是**可选的**收集器（#102）：不传就自己造一个，六段照样计时，只是
+    这份计量没有别人收下（去向是 ``none`` 时正是如此）。测试传一个进来，就能直接断言
+    「这一次到底记到了哪几段」——「度量常开」因此是可观察的事实，而不是注释里的承诺。
+
+    ``rerank_factory`` 是重排的**注入缝**（#116）：缺省 ``None`` 时编排层用既有工厂出口
+    （``get_rerank_provider``），传一个别的工厂进来就换实现——评测靠它显式装配旧的大模型
+    重排做对照，生产路径一行不用改。它只影响**混合模式**：重排的定义就是对融合后的候选
+    重排，单模式没有这一步。
     """
+
+    # 度量常开：收集器无条件创建，与 ``TRACE_SINK`` 无关。去向只决定这份计量送到哪。
+    timer = stage_timer if stage_timer is not None else StageTimer()
 
     resolved_mode = options.mode
     resolved_top_k = options.top_k
+
+    # ── 身份先于旁路：id 与 trace_id 在任何一次写库尝试**之前**就有值 ──
+    # 计时也从这里开始：``latency_ms`` 要的是「这次检索多慢」，不是「写完日志多慢」。
+    started_at = time.perf_counter()
+    # ``log_id`` 是这张表的对外身份（响应里不出现），``trace_id`` 由它确定性派生。
+    # 两行代码写在一起是刻意的：换掉派生方式或换掉种子，都会同时破掉「同一 log_id 恒等」
+    # 与「库里那一行能和响应那根线对上」这两条性质。
+    log_id = new_retrieval_log_id()
+    trace_id = trace_id_for(log_id)
 
     # 折叠会把同一父节的多个命中并成一条，所以召回要多取几倍，否则去重后凑不够
     # top_k 条。关掉折叠时按原样召回——「不折叠」就该连多取也不要。
@@ -145,15 +201,16 @@ async def retrieve(
     # 查询优化：召回之前把用户那句话加工成「向量逐句列表 + 关键词一句 + 重排一句」
     # （GLOSSARY「检索链路」：查询优化 → 召回 → 融合 → 重排）。改写开关读 ``options``：
     # 它是「档位想要 ∧ 本机装了」的合取，关闭时这一步是恒等变换。
-    optimized = await optimize_query(
-        query=query,
-        # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
-        synonym_groups=collect_synonym_groups(
-            [getattr(kb, "settings", None) for kb in visible_kbs]
-        ),
-        rewrite_hint=_rewrite_hint(visible_kbs),
-        rewrite_enabled=options.rewrite,
-    )
+    with timer.measure(STAGE_QUERY_OPTIMIZATION):
+        optimized = await optimize_query(
+            query=query,
+            # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
+            synonym_groups=collect_synonym_groups(
+                [getattr(kb, "settings", None) for kb in visible_kbs]
+            ),
+            rewrite_hint=_rewrite_hint(visible_kbs),
+            rewrite_enabled=options.rewrite,
+        )
 
     degraded = optimized.rewrite_degraded
     degraded_reason: str | None = optimized.rewrite_reason
@@ -182,6 +239,10 @@ async def retrieve(
             # 的那一档也不该被顺手排一遍（pipeline 里靠 provider 可用性判断会把
             # 「本次不要」静默变成「本次跑了」）。
             rerank_enabled=options.rerank,
+            # 重排实现也由工厂给出（#116）：缺省 None 时编排层走既有工厂出口。
+            rerank_factory=rerank_factory,
+            # 收集器显式传进去：两路召回与融合在编排层计时，段名与本模块用的是同一组常量。
+            stage_timer=timer,
         )
         chunks = outcome.chunks
         # 一因一码，先到的才是根因：改写发生在召回之前，所以它已经在场时通道故障与
@@ -197,6 +258,7 @@ async def retrieve(
             kb_ids=kb_ids,
             query=optimized.search_query,
             top_k=recall_top_k,
+            stage_timer=timer,
         )
     else:  # MODE_VECTOR —— 剩下的唯一可能；未知模式已在函数开头被拒。
         chunks = await _retrieve_by_vector(
@@ -205,22 +267,23 @@ async def retrieve(
             kb_ids=kb_ids,
             queries=optimized.vector_queries,
             top_k=recall_top_k,
+            stage_timer=timer,
         )
 
-    collapsed = _collapse_results(
-        db,
-        tenant_id=tenant_id,
-        chunks=chunks,
-        options=options,
-    )
+    with timer.measure(STAGE_COLLAPSE):
+        collapsed = _collapse_results(
+            db,
+            tenant_id=tenant_id,
+            chunks=chunks,
+            options=options,
+        )
 
+    empty_reason = _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed)
     retrieval_meta: dict[str, object] = {
         "mode": resolved_mode,
         "degraded": degraded,
         "degraded_reason": degraded_reason,
-        "empty_reason": _empty_reason(
-            db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed
-        ),
+        "empty_reason": empty_reason,
         # 重排事实（是否发生、候选数、返回数、耗时）。单模式下恒为 null：
         # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
         "rerank": rerank_info,
@@ -239,20 +302,67 @@ async def retrieve(
             "vector_queries": list(optimized.vector_queries),
         }
 
+    metadata = _metadata_of(
+        options,
+        kb_ids=kb_ids,
+        retrieval=retrieval_meta,
+        trace_id=trace_id,
+    )
+
+    # 观测旁路（#102）：六段耗时交出去。放在这里是因为「这次是个什么结局」刚刚成形；
+    # 与下面那次写库一样，它**不影响返回值**——收集器早已计完时，去向那边连不上也只留
+    # 一条 warning（``app.observability.emit_retrieval_trace``）。属性只有结构化事实：
+    # 模式、条数、降级与空结果原因。
+    #
+    # ``query`` 单独一个参数（#110 复盘后补）：它是**原文通道**，收不收由去向决定——
+    # 观测栈收（低分样本导出要靠它），本地文件丢。放进 attributes 会让「结构化事实」
+    # 与原文混成一份，也让 jsonl 那一路无法把它们分开。
+    emit_retrieval_trace(
+        trace_id=trace_id,
+        spans=timer.spans(),
+        query=query,
+        attributes={
+            "mode": resolved_mode,
+            "top_k": resolved_top_k,
+            "degraded_reason": degraded_reason,
+            "empty_reason": empty_reason,
+            # 租户**指纹**（不是明文）：管理端要按租户看趋势，而观测数据常常要导出给别人，
+            # 明文租户标识会让「这份数据能发给谁」多一道合规问题。控制台侧可反查。
+            "tenant": tenant_fingerprint(tenant_id),
+        },
+    )
+
+    # 归属索引的写入是**旁路**（ADR-0021 决策 2）：独立短事务、失败只留 warning。
+    # 放在这里而不是更早，是因为它要记「这次检索的结局」——降级原因与空结果原因在上一行
+    # 才最终成形；而 ``trace_id`` 早在函数开头就派生好了，所以这次写入失败不影响响应。
+    record_retrieval_trace(
+        log_id=log_id,
+        trace_id=trace_id,
+        tenant_id=tenant_id,
+        kb_ids=list(kb_ids),
+        chunk_ids=delivered_chunk_ids(collapsed),
+        top_k=resolved_top_k,
+        latency_ms=int((time.perf_counter() - started_at) * 1000),
+        # 两个原因都从本次响应的那一层取，不另算一遍：库里那一行与回给调用方的响应
+        # 对同一件事必须只有一个答案。
+        degraded_reason=degraded_reason,
+        empty_reason=empty_reason,
+    )
+
     return {
         "query": query,
         "kb_ids": list(kb_ids),
         "retrieved_chunks": collapsed,
-        "metadata": _metadata_of(
-            options,
-            kb_ids=kb_ids,
-            retrieval=retrieval_meta,
-        ),
+        "metadata": metadata,
     }
 
 
 def _metadata_of(
-    options: RetrievalOptions, *, kb_ids: list[str], retrieval: dict[str, object]
+    options: RetrievalOptions,
+    *,
+    kb_ids: list[str],
+    retrieval: dict[str, object],
+    trace_id: str,
 ) -> dict[str, object]:
     """响应的 ``metadata``：这次实际用了什么。
 
@@ -260,6 +370,10 @@ def _metadata_of(
     它在**每一次**经套餐门禁解析的调用上都出现，且与 ``metadata.mode`` / ``top_k`` 同源；
     只有不经门禁的内部调用（自造 ``options`` 的评测脚本）没有它——那时编一个套餐名出来
     只会更糟。
+
+    ``trace_id`` 挂在**顶层且最后**（#101）：它是「这一次调用的身份」，不是「这一次检索的
+    细节」，所以不进 ``retrieval``；放最后是为了让「把它摘掉之后与原响应逐字节相同」这件事
+    在字节层面直接成立（黄金哈希就是这么比的）。
     """
 
     metadata: dict[str, object] = {
@@ -273,6 +387,7 @@ def _metadata_of(
     echo = tenant_policy_echo(options, kb_count=len(kb_ids))
     if echo is not None:
         metadata["tenant_policy"] = echo
+    metadata["trace_id"] = trace_id
     return metadata
 
 
@@ -503,7 +618,13 @@ def _empty_reason(
 
 
 async def _retrieve_by_vector(
-    db: Session, *, tenant_id: str, kb_ids: list[str], queries: Sequence[str], top_k: int
+    db: Session,
+    *,
+    tenant_id: str,
+    kb_ids: list[str],
+    queries: Sequence[str],
+    top_k: int,
+    stage_timer: StageTimer,
 ) -> list[dict]:
     """向量通道：逐句一次范围召回覆盖全部配对，**不按库循环、不按库分名额**。
 
@@ -511,15 +632,16 @@ async def _retrieve_by_vector(
     走原来的快路径，SQL 语义、排序口径与打分全部与票 4 一致（回归红线）。
     """
 
-    rows = await vector_recall(
-        db=db,
-        tenant_id=tenant_id,
-        kb_ids=kb_ids,
-        queries=queries,
-        top_k=top_k,
-        embedding_factory=get_embedding_provider,
-        vector_factory=get_vector_store,
-    )
+    with stage_timer.measure(STAGE_VECTOR_RECALL):
+        rows = await vector_recall(
+            db=db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            queries=queries,
+            top_k=top_k,
+            embedding_factory=get_embedding_provider,
+            vector_factory=get_vector_store,
+        )
 
     # 单查询时这一步是稳定排序（``vector_recall`` 已按同一口径排过），逐字节不变。
     rows.sort(key=lambda item: item.get("score", 0.0), reverse=True)
@@ -532,7 +654,13 @@ async def _retrieve_by_vector(
 
 
 async def _retrieve_by_keyword(
-    db: Session, *, tenant_id: str, kb_ids: list[str], query: str, top_k: int
+    db: Session,
+    *,
+    tenant_id: str,
+    kb_ids: list[str],
+    query: str,
+    top_k: int,
+    stage_timer: StageTimer,
 ) -> list[dict]:
     """关键词通道：租户 + 库/版本配对过滤，纯关键词打分。
 
@@ -541,30 +669,33 @@ async def _retrieve_by_keyword(
     仍在这里做——空实现是「能力不存在」，不是「查过了没命中」。
     """
 
-    try:
-        provider = get_keyword_search_provider()
-        if not provider.available:
-            raise AppError(
-                ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
+    with stage_timer.measure(STAGE_KEYWORD_RECALL):
+        try:
+            provider = get_keyword_search_provider()
+            if not provider.available:
+                raise AppError(
+                    ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
+                )
+            # 预算由 Provider 自己兜住（`ElasticsearchKeywordSearchProvider.timeout_s`）：
+            # 关键词通道有单通道与混合两份调用点，写在这里就得写两遍，写两遍必漂移。
+            rows = await provider.keyword_search(
+                query,
+                tenant_id=tenant_id,
+                index_versions=default_index_versions(kb_ids),
+                top_k=top_k,
             )
-        rows = await provider.keyword_search(
-            query,
-            tenant_id=tenant_id,
-            index_versions=default_index_versions(kb_ids),
-            top_k=top_k,
-        )
-    except AppError:
-        raise
-    except Exception as exc:
-        # 引擎故障属于「这一路不可用」，不是整单 500：错误分类固定为 50002。
-        # 日志只记类型与范围，不记检索原文。
-        logger.warning(
-            "keyword search failed",
-            tenant_id=tenant_id,
-            kb_ids=list(kb_ids),
-            error=type(exc).__name__,
-        )
-        raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
+        except AppError:
+            raise
+        except Exception as exc:
+            # 引擎故障属于「这一路不可用」，不是整单 500：错误分类固定为 50002。
+            # 日志只记类型与范围，不记检索原文。
+            logger.warning(
+                "keyword search failed",
+                tenant_id=tenant_id,
+                kb_ids=list(kb_ids),
+                error=type(exc).__name__,
+            )
+            raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
 
     return [
         with_score_columns(

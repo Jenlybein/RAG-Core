@@ -1,0 +1,485 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/**
+ * 全局：字体渲染 + 苹果式浅灰画布 + Element Plus 的令牌对齐。
+ *
+ * Element Plus 的默认观感（蓝主色 + 4px 圆角 + 灰阴影）本来就和这里要做的事接近，
+ * 但**细节全不对**：它的蓝偏深、圆角太小、阴影太重、表单边框太黑。这里不靠 !important
+ * 一个个压组件，而是把它的 CSS 变量改到同一套令牌上：一次对齐，之后所有 el-* 自动跟着走。
+ */
+:root {
+  color-scheme: light;
+
+  /* 主色：苹果蓝。整页只有「蓝（可操作）」与「灰（其余）」两种色相。 */
+  --el-color-primary: #0071e3;
+  --el-color-primary-light-3: #3d93ec;
+  --el-color-primary-light-5: #66aef1;
+  --el-color-primary-light-7: #99c9f6;
+  --el-color-primary-light-8: #b3d6f8;
+  --el-color-primary-light-9: #e8f2ff;
+  --el-color-primary-dark-2: #005bb5;
+
+  /* 圆角：控件 12px、小元素 8px，与卡片 18px 形成层级 */
+  --el-border-radius-base: 12px;
+  --el-border-radius-small: 8px;
+
+  /* 文字与描边：苹果的中性灰阶 */
+  --el-text-color-primary: #1d1d1f;
+  --el-text-color-regular: #3a3a3c;
+  --el-text-color-secondary: #6e6e73;
+  --el-text-color-placeholder: #86868b;
+  --el-text-color-disabled: #b8b8bf;
+
+  --el-border-color: #d2d2d7;
+  --el-border-color-light: #e0e0e5;
+  --el-border-color-lighter: #e8e8ed;
+  --el-border-color-extra-light: #f2f2f5;
+
+  --el-bg-color: #ffffff;
+  --el-bg-color-overlay: #ffffff;
+  --el-fill-color-blank: #ffffff;
+  --el-fill-color-light: #f5f5f7;
+  --el-fill-color-lighter: #fafafc;
+
+  /**
+   * 遮罩：苹果的弹窗遮罩是干净的半透黑，不带任何色相。
+   */
+  --el-overlay-color-lighter: rgba(0, 0, 0, 0.28);
+  --el-overlay-color: rgba(0, 0, 0, 0.48);
+
+  --el-table-header-bg-color: #fafafc;
+  --el-table-border-color: #e8e8ed;
+  --el-table-row-hover-bg-color: #f5f5f7;
+
+  --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.04), 0 12px 32px -20px rgba(0, 0, 0, 0.12);
+  --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 24px 56px -24px rgba(0, 0, 0, 0.28);
+
+  --el-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue',
+    'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+body {
+  @apply bg-canvas font-sans text-ink antialiased;
+  /* 苹果的正文视觉重量比默认值略轻，靠 -webkit-font-smoothing 而不是字号 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'tnum' 1; /* 表格里的数字等宽，列才对得齐 */
+}
+
+::selection {
+  background: #f5f5f7;
+  color: #1d1d1f;
+}
+
+/**
+ * 键盘焦点必须看得见。默认的 Element Plus 焦点只在输入框上明显，链接与表格里的文字按钮
+ * 基本没有反馈——Tab 走过去会跟丢。这里给一套统一的外描边，且只在 :focus-visible 生效，
+ * 鼠标点击不会平白多出一圈。
+ */
+:where(a, button, [role='button'], [tabindex]):focus-visible {
+  outline: 2px solid #1d1d1f;
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* 可点击的东西光标要是手型；Element 的部分内部元素默认是箭头 */
+a[href],
+button:not(:disabled),
+[role='button'],
+.el-checkbox:not(.is-disabled),
+.el-radio:not(.is-disabled),
+.el-switch:not(.is-disabled) {
+  cursor: pointer;
+}
+
+/* 尊重系统的减少动态偏好：动效一律关掉，但**不改变最终视觉状态** */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* 细滚动条：默认那种 12px 灰条会把这套界面的克制感一次性破坏 */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d2d2d7;
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #e8e8ed;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+@layer components {
+  /**
+   * 卡片：整站唯一的「面」。
+   *
+   * 苹果的卡片**没有描边**：白面直接浮在 #f5f5f7 上，形状靠 18px 圆角与一层几乎看不见的
+   * 投影定下来。这里去掉 border、保留极淡投影——加了描边会立刻从「苹果」退回「后台管理」。
+   */
+  .card {
+    @apply rounded-card bg-surface shadow-card;
+  }
+
+  /* 卡片内边距：留白是苹果观感的主要来源，宁可松一点 */
+  .card-body {
+    @apply p-6 sm:p-8;
+  }
+
+  /**
+   * 紧凑面板：控制台里一块一块的「区」用它。比 `.card` 内距小一档，
+   * 目的是一屏放下更多**真实信息**——但不靠把字号压到 10px 来换空间。
+   */
+  .panel {
+    @apply rounded-control border border-line bg-surface;
+  }
+  .panel-head {
+    @apply flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-4 py-3;
+  }
+
+  /**
+   * 页面标题：苹果的 hero 字号——很大、很紧的字距、600 而不是 700。
+   * 这一段是「像不像苹果」最吃紧的地方：字号不够大、字距不收，立刻变成普通后台。
+   */
+  .page-title {
+    @apply text-[34px] font-semibold leading-[1.08] tracking-[-0.025em] text-ink sm:text-[44px];
+  }
+  .page-subtitle {
+    @apply mt-3 max-w-2xl text-[15px] leading-relaxed text-muted;
+  }
+
+  /* 卡片小标题 */
+  .section-title {
+    @apply text-[17px] font-semibold tracking-[-0.01em] text-ink;
+  }
+  .section-hint {
+    @apply mt-1 text-xs leading-relaxed text-muted;
+  }
+
+  /**
+   * 字段标签与值。标签 12px 灰、值 14px 主色；正文一律 ≥13px。
+   */
+  .field-label {
+    @apply text-[12px] text-muted;
+  }
+  .field-value {
+    @apply text-[14px] text-ink;
+  }
+  .hint {
+    @apply text-xs leading-relaxed text-muted;
+  }
+
+  /** 指标：数值大、标签小。诊断面板里的一屏读数靠它拉层级。 */
+  .metric-value {
+    @apply text-[17px] font-semibold tabular-nums text-ink;
+  }
+  .metric-label {
+    @apply text-[12px] text-muted;
+  }
+
+  /** 小胶囊：库名、档位、能力这类短标签。苹果的标签也走药丸形。 */
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full bg-surface-muted px-2.5 py-1 text-[12px] text-slate-600;
+  }
+
+  /* 顶栏导航：药丸 + 选中浅灰底（苹果的导航选中就是一块浅灰） */
+  .nav-pill {
+    @apply rounded-full px-3.5 py-1.5 text-[13px] font-normal transition-colors duration-150;
+  }
+
+  /* 表头：苹果不用全大写，用 12px 中灰 */
+  .th-label {
+    @apply text-[12px] font-medium text-muted;
+  }
+
+  /** 行内代码：报告、诊断面板里到处是路径与字段名。 */
+  .mono-tag {
+    @apply rounded bg-surface-muted px-1 py-0.5 font-mono text-[11px] text-slate-700;
+  }
+}
+
+/* ───────────────────────── Element Plus 微调 ───────────────────────── */
+
+/**
+ * 按钮：苹果的药丸形 + 蓝色实底主按钮。
+ *
+ * 这是「像不像苹果」的第二处关键：苹果站上没有方角按钮。圆角拉到 980px（药丸），
+ * 主按钮是蓝底白字、hover 只提亮一点点，没有投影。
+ */
+.el-button {
+  --el-button-font-weight: 400;
+  border-radius: 980px;
+  padding-left: 18px;
+  padding-right: 18px;
+}
+.el-button--primary {
+  --el-button-bg-color: var(--el-color-primary);
+  --el-button-border-color: var(--el-color-primary);
+  --el-button-hover-bg-color: var(--el-color-primary-light-3);
+  --el-button-hover-border-color: var(--el-color-primary-light-3);
+  --el-button-active-bg-color: var(--el-color-primary-dark-2);
+  --el-button-active-border-color: var(--el-color-primary-dark-2);
+  box-shadow: none;
+}
+/* 文字按钮（表格行里的操作）不占方框，hover 时才浮出一层浅底 */
+.el-button.is-text {
+  padding-left: 8px;
+  padding-right: 8px;
+  border-radius: 8px;
+}
+/**
+ * 禁用的主按钮：Element 默认把它刷成 primary 的中间调，看上去仍然「像是能点」。
+ * 这里改成浅灰底 + 灰字，一眼是「现在不行」。
+ */
+.el-button.is-disabled,
+.el-button.is-disabled:hover {
+  --el-button-disabled-bg-color: #f5f5f7;
+  --el-button-disabled-border-color: #e8e8ed;
+  --el-button-disabled-text-color: #b8b8bf;
+  box-shadow: none;
+}
+
+/* 输入框：一条干净的细线 + 聚焦时蓝色描边（苹果的表单就是这种「无框感 + 蓝色对焦」） */
+.el-input__wrapper,
+.el-textarea__inner {
+  border-radius: var(--el-border-radius-base);
+  box-shadow: 0 0 0 1px var(--el-border-color) inset;
+  background-color: #fff;
+}
+.el-input__wrapper:hover,
+.el-textarea__inner:hover {
+  box-shadow: 0 0 0 1px var(--el-border-color-darker, #b8b8bf) inset;
+}
+
+/**
+ * Chrome 的自动填充会把输入框刷成浅蓝（或黄）并覆盖文字色，和这套暖色界面撞得很明显——
+ * 登录页尤其难看：整页只有那一个框是蓝的。界面本身没有第二处蓝色，所以这里用超长
+ * 过渡把填充底色顶掉，只保留文字色（`-webkit-text-fill-color` 必须显式给，
+ * 否则 Chrome 用自己算的对比色）。
+ */
+input:-webkit-autofill,
+input:-webkit-autofill:hover,
+input:-webkit-autofill:focus {
+  -webkit-text-fill-color: #1d1d1f;
+  -webkit-box-shadow: 0 0 0 1000px #fff inset;
+  box-shadow: 0 0 0 1000px #fff inset;
+  transition: background-color 9999s ease-out 0s;
+}
+
+/* 表格：外框去掉，只留行间细线；表头用浅暖底 */
+.el-card {
+  /* el-card 是 el-card 的默认观感：4px 圆角 + 灰边 + 几乎为零的阴影。
+     这里把它对齐到 .card 那一套，页面里就不用为了圆角再去手写一层 div。 */
+  --el-card-border-radius: 20px;
+  --el-card-border-color: #d2d2d7;
+  --el-card-padding: 24px;
+  border-radius: 20px;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
+}
+.el-card__header {
+  border-bottom: 1px solid #f2f2f5;
+  padding: 18px 24px;
+}
+.el-card.is-never-shadow {
+  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
+}
+/* 卡片标题：比默认的 14px 大一号、字距收一点，与 .section-title 同一个节奏 */
+.el-card__header h2 {
+  font-size: 15px;
+  letter-spacing: -0.01em;
+}
+
+.el-table {
+  --el-table-border-color: #e8e8ed;
+  --el-table-header-text-color: #6e6e73;
+  --el-table-text-color: #1d1d1f;
+  border-radius: 12px;
+  font-size: 13px;
+}
+.el-table th.el-table__cell {
+  font-weight: 600;
+}
+.el-table__inner-wrapper::before {
+  display: none; /* 底部那条通栏线在无外框的卡片里是多余的 */
+}
+
+.el-tag {
+  border-radius: 9999px;
+  font-weight: 500;
+}
+
+/**
+ * 弹窗：这套界面里「偶发动作」的容器（建库、上传、签发 Key、改套餐都走它）。
+ *
+ * 注意不要在 `.el-dialog` 上加 padding——Element 的 header/body/footer 各自有内边距，
+ * 外层再加一圈就成了「双重留白」，弹窗里的表单会被挤窄。这里只定圆角、阴影与标题排版，
+ * 内边距统一走 `--el-dialog-padding-primary`。
+ */
+/**
+ * 弹窗遮罩的硬契约：**必须盖住整个视口，包括吸顶顶栏**。
+ *
+ * 现场是这样的：`el-dialog` 默认 `append-to-body=false`，把遮罩渲染在页面里；即使
+ * 挂到 body，Element 的遮罩也可能与页面里 z-index 更高的元素（这里是 `sticky z-30`
+ * 的顶栏）发生层级竞争，结果是「对话框开了，顶栏还是亮的」——用户看到的是一个没盖住
+ * 的遮罩，像界面坏了。
+ *
+ * 这里用 `!important` 覆盖 Element 写在元素上的内联 `z-index`（内联值没带 important，
+ * 所以 CSS 的 important 声明能赢），并把尺寸钉成视口：
+ *
+ * - `position: fixed` + `inset: 0` + `height: 100vh`：不受任何祖先的包含块影响；
+ * - **`z-index: 2000`（Element 的默认值，刻意不往上抬）**。
+ *
+ * 为什么第二版把 z-index 从 3000 改回 2000：抬到 3000 之后，**弹窗里的下拉面板全被
+ * 遮罩压住了**——Element 的 popper 从 2000 起递增（2001、2002…），永远追不上 3000，
+ * 于是「点供应商没有下拉出来」其实只是选项被盖在遮罩下面。遮罩只需高于页面常规层级
+ * （顶栏 30），不必高于 Element 自己的弹层；这两类元素本来就该由 Element 统一排序。
+ */
+.el-overlay {
+  position: fixed !important;
+  inset: 0 !important;
+  height: 100vh !important;
+  z-index: 2000 !important;
+}
+
+.el-dialog {
+  --el-dialog-padding-primary: 24px;
+  --el-dialog-border-radius: 20px;
+  border-radius: 20px;
+  overflow: hidden;
+  box-shadow: 0 2px 6px rgba(28, 26, 21, 0.06), 0 18px 48px -24px rgba(28, 26, 21, 0.24);
+  /*
+   * 长弹窗不能超出视口：模型配置、套餐编辑这些表单比一屏还高，撑出屏幕后底部的
+   * 「保存」按钮就点不到了——而它恰恰是唯一能完成操作的地方。
+   * 这里把弹窗变成 flex 列，只让 body 滚动，标题与底部按钮始终可见。
+   */
+  max-height: 86vh;
+  display: flex;
+  flex-direction: column;
+}
+.el-dialog__title {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: #1d1d1f;
+}
+.el-dialog__header {
+  padding-bottom: 14px;
+  flex: none;
+}
+.el-dialog__body {
+  overflow-y: auto;
+  flex: 1 1 auto;
+}
+.el-dialog__footer {
+  padding-top: 16px;
+  flex: none;
+  border-top: 1px solid #f2f2f5;
+}
+
+/**
+ * 折叠面板（`el-collapse`）：去掉 Element 自带的上下通栏边框，改成「组与组之间一条线」。
+ *
+ * 默认的 `.el-collapse` 在整块上下各画一条 border，放在卡片里会出现两条与卡片边缘
+ * 平行的多余横线；而每组之间没有分隔，收起三组时它们会糊成一片。
+ */
+.el-collapse {
+  border-top: none;
+  border-bottom: none;
+}
+.el-collapse-item__header {
+  border-bottom: 1px solid #d2d2d7;
+  background: transparent;
+  padding-left: 0;
+  /*
+   * Element 给标题行写死了 `height: 48px; line-height: 48px`，而标题里放的是自定义
+   * flex 内容（名字 + 徽章 + 计数）。子元素继承那个 48px 行高，徽章就会被撑成一个
+   * 竖椭圆——看起来像排版坏了。所以这里把行高交还给内容自己。
+   */
+  height: auto;
+  min-height: 48px;
+  line-height: normal;
+}
+.el-collapse-item__header.is-active {
+  border-bottom-color: transparent;
+}
+.el-collapse-item__wrap {
+  background: transparent;
+  border-bottom: 1px solid #d2d2d7;
+}
+.el-collapse-item__content {
+  padding-bottom: 20px;
+  padding-left: 0;
+}
+
+.el-tooltip__popper,
+.el-popper.is-light {
+  border-radius: 10px;
+  border-color: var(--el-border-color);
+  box-shadow: var(--el-box-shadow-light);
+}
+
+.el-pagination {
+  --el-pagination-button-bg-color: transparent;
+  font-weight: 500;
+}
+
+/**
+ * 「要查的知识库」里的可选项：把裸复选框做成一张可以点的小卡。
+ *
+ * 为什么需要：`☐ lian diao kb · a6cf720a-…` 这样一行读起来像一段无关文本——没有边框
+ * 就没有「这是一个可以点的对象」的暗示，也没法表达「选中 / 置灰」两种状态。加上边框
+ * 之后，选中与禁用都只需改边框与底色，不必依赖那个 14px 的小方块。
+ *
+ * 用 `.kb-option.el-checkbox` 双类名提高特异性，不去动全局 `.el-checkbox`：同一个页面
+ * 里其它复选框（如果有）不该跟着变形。
+ */
+.kb-option.el-checkbox {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  height: auto;
+  margin: 0;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--el-border-color);
+  border-radius: 12px;
+  background: #fff;
+  transition: border-color 0.15s, background-color 0.15s;
+}
+.kb-option.el-checkbox:hover:not(.is-disabled) {
+  border-color: var(--el-border-color-darker);
+}
+/* 选中：实线深边 + 浅底，与全站「强调」用同一套颜色。 */
+.kb-option--on.el-checkbox {
+  border-color: #1d1d1f;
+  background: #fafafc;
+}
+/* 不可选（不在白名单）：虚线边，视觉上「这里本来有东西，但对你关着」。 */
+.kb-option--off.el-checkbox {
+  border-style: dashed;
+  background: #fafafc;
+}
+.kb-option .el-checkbox__input {
+  margin-top: 1px;
+}
+/* Element 给 label 加了左内边距和 nowrap；卡片里的两行文字需要换行与正常行高。 */
+.kb-option .el-checkbox__label {
+  padding-left: 0;
+  white-space: normal;
+  line-height: 1.3;
+}

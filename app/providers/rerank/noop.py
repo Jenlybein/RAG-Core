@@ -9,6 +9,13 @@ from app.providers.rerank.base import RerankProvider
 
 class NoopRerankProvider(RerankProvider):
     @property
+    def provider_name(self) -> str:
+        """``none``：这一步没有实现。响应元数据里署的是 ``None``（见 ``RerankOutcome``），
+        这个名字只给「现在装的是哪种重排」这类问题用（评测快照）。"""
+
+        return "none"
+
+    @property
     def available(self) -> bool:
         return False
 

@@ -27,6 +27,12 @@ from app.core.llm_vendors import LLM_VENDORS
 # 密钥配置的解析（app/services/retrieval_options.py）。
 SUPPORTED_RETRIEVAL_MODES = ("vector", "bm25", "hybrid")
 
+# 观测去向的三个取值（#102）。与检索模式同一个理由放在模块级：校验器与报错文案共用
+# 一份，不会出现「文案说支持 A、校验器只放 B」。三个实现见 ``app/observability/``。
+# 名字按票面写 ``none``：ADR-0021 里那个 ``null`` 指的是同一个去向（丢弃），
+# 只是当时用的是 SQL / 语料里的叫法，落地时统一成这个。
+SUPPORTED_TRACE_SINKS = ("none", "jsonl", "langfuse")
+
 
 class Settings(BaseSettings):
     """从 .env 加载的运行时配置。"""
@@ -134,11 +140,23 @@ class Settings(BaseSettings):
     # 嵌入实现开关：langchain（框架抽象，默认）/ openai_compatible（原有直连实现，回退）。
     EMBEDDING_PROVIDER: str = "langchain"
 
-    # ── 重排（第 4 步票 7）──
-    # 默认关闭：关闭时工厂返回空实现，默认路径**一次大模型都不调**——离线测试、CI、
+    # ── 重排（第 4 步票 7；第 10 步票 3 换成专用端点）──
+    # 默认关闭：关闭时工厂返回空实现，默认路径**一次模型都不调**——离线测试、CI、
     # 没配 key 的机器都靠这一条保持全绿。
     RERANK_ENABLED: bool = False
+    # 专用 Cross-Encoder 端点（OpenAI 兼容 ``POST {base}/reranks``）。留空 = 这台机器
+    # **没有**重排端点：``RERANK_ENABLED=true`` 也只会拿到空实现（明确不可用），
+    # 不再回落「让通用大模型逐条打分」——那个实现还在（评测要拿它做对照），但生产工厂
+    # 不再返回它。
+    #
+    # ⚠️ 路径段与 embedding 不同：嵌入是 ``…/compatible-mode/v1``，重排是
+    # ``…/compatible-api/v1``。两者不能互相顶替，必须单独配（见 .env.example）。
+    RERANK_BASE_URL: str = ""
+    RERANK_MODEL: str = "qwen3.7-text-rerank"
+    # 重排端点自己的 key；留空则回落 ``MODEL_API_KEY``（同一把百炼 key 通常两处都通）。
+    RERANK_API_KEY: str = ""
     # 送进模型的候选上限与单条切片截断长度：提示词长度就是延迟与成本。
+    # 候选数另有一层硬上限 50（``app/providers/rerank/qwen.py``），配置写多大都越不过去。
     RERANK_MAX_CANDIDATES: int = 20
     RERANK_CHUNK_MAX_CHARS: int = 1024
     # 超时由重排 Provider 用 ``asyncio.wait_for`` 兜住：慢调用按失败处理，走降级。
@@ -172,6 +190,36 @@ class Settings(BaseSettings):
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
     LANGCHAIN_TRACING_V2: bool = False
 
+    # ── 观测旁路（第 9 步，#102）──
+    # 一个配置项切三个去向：观测服务（``langfuse``）/ 本地文件（``jsonl``）/ 丢弃（``none``）。
+    # **切换不改链路代码**：链路只管「六段各花了多久」，送到哪由这里决定。
+    #
+    # 默认 ``jsonl`` 的理由要连起来读：**默认开启观测，但不依赖任何外部服务**。
+    # 观测栈是自托管的一整套 five-container（ADR-0021 决策 4），没起栈的机器上选 ``langfuse``
+    # 只会让每次检索都留一条 warning；而完全关掉（``none``）又等于默认部署里「哪一步慢」
+    # 根本没有答案。``jsonl`` 是这个缺口里唯一两全的选择：一行一次检索、本机可 grep。
+    # ``none`` 是测试与 CI 的去向（见 ``tests/conftest.py``），不是生产缺省。
+    #
+    # 注意它**不是**「计时开关」：任何取值下六段耗时都会被算出（父 spec「度量常开」），
+    # 这个值只决定这份计量送到哪。所以别把它接进任何 ``if`` 里省掉计时。
+    TRACE_SINK: str = "jsonl"
+    # JSONL 去向的目录与保留天数。保留天数有两处用处：写入时清掉超期文件、读取时只扫
+    # 这个窗口（``app.observability.jsonl_sink.read_recent_records``）。单行 ≤ 2 KB 是
+    # 契约常量，不在这里配（见 ``jsonl_sink.MAX_LINE_BYTES``）。
+    TRACE_JSONL_DIR: str = "logs/traces"
+    TRACE_JSONL_RETENTION_DAYS: int = 7
+    # 自托管观测栈的连接信息。留空 = 这台机器没配：``langfuse`` 去向会在第一次用时失败，
+    # 失败只留 warning（观测是旁路，ADR-0021）。名字与上游 SDK 的环境变量同名，是刻意的。
+    LANGFUSE_HOST: str = "http://localhost:3000"
+    # 浏览器该用哪个地址打开观测栈 UI。留空 = 与 ``LANGFUSE_HOST`` 相同。
+    #
+    # **为什么需要两个**：容器里 API 要按服务名找栈（``http://langfuse-web:3000``），而浏览器
+    # 解析不了那个名字。控制台「在观测栈里打开」的链接因此不能直接用 ``LANGFUSE_HOST``——
+    # 那会给出一个只有容器内能访问的地址。分出一个「对外地址」，两边各说各的那一份。
+    LANGFUSE_PUBLIC_URL: str = ""
+    LANGFUSE_PUBLIC_KEY: str = ""
+    LANGFUSE_SECRET_KEY: str = ""
+
     # ── 检索与关键词引擎（第 4 步票 3 / 票 4）──
     # 默认 hybrid：票 4 把融合与降级做完后翻回来（父 spec：缺省值取服务端配置）。
     # 混合模式下关键词一路不可用只会降级，不会让默认配置在离线机器上直接报错。
@@ -182,11 +230,35 @@ class Settings(BaseSettings):
     KEYWORD_SEARCH_PROVIDER: str = "none"
     ELASTICSEARCH_URL: str = "http://localhost:9200"
     ELASTICSEARCH_INDEX: str = "rag_chunks"
+    # 关键词这一路的**时间预算**（秒）：超过就当作「这一路挂了」，走既有降级。
+    #
+    # 为什么需要它（一次真实的 19 秒）：ES 容器被杀之后，每次检索都在等一条永远不会通的
+    # 渠道——客户端自己的重试把 DNS 失败累计成 ~19 秒，而其它五段加起来不到 600ms。
+    # 界面上表现为「检索突然变得极慢」，而真相是关键词渠道已经不在了。
+    #
+    # 关键词是**可降级**的一路（ADR-0021 同一口径：旁路挂了不该拖垮主路），所以这里给出
+    # 一个显式预算，而不是把「等多久」交给客户端库的默认值与它内部的重试策略。
+    # 健康集群上 BM25 查询是毫秒级，2 秒已经非常宽松。
+    KEYWORD_SEARCH_TIMEOUT_S: float = 2.0
+    # 旁证跑批的并发题数（#109）。**默认 4 而不是 1**。
+    #
+    # 实测（2026-11-11）：单次模型往返只有 1.5 秒，但 ragas 的 ContextPrecision /
+    # ContextRecall **不是每题一次调用**——它把每个片段拆成陈述句逐句判相关性，粗算每题
+    # 20~30 次请求。于是 50 题串行 ≈ 1000+ 次调用 ≈ 半小时，而 CPU 全程不到 1%
+    # （纯等网络）。这里并发几题，等于把「等」叠起来，收益接近线性。
+    #
+    # 上限别开太大：额度与限流是共享的，4~8 已经能把半小时压到几分钟。
+    SIDE_EVIDENCE_CONCURRENCY: int = 4
     # 混合模式的**每路召回深度**。「召回宽、返回窄」：两路各找这么多条再融合，
     # 最后仍只返回 ``top_k`` 条。它和 ``top_k`` 是两件事——池子只有 top_k 时，
     # 在 5+5 里挑 5 条，融合几乎无事可做，混合检索的收益会被候选池的宽度吃掉。
     # 服务端配置，不进请求体（质量参数一旦可调，同一档位就是不同链路）。
     HYBRID_RECALL_TOP_K: int = 20
+    # 检索执行池的规模与排队预算（第 10 步票 5）。它们是**并发护栏**：同时在跑的向量
+    # 分支不超过 worker 数，超出的排队；排队超预算按「这一路失败」降级，不无限等。
+    # 面板可改，改完下一次取池时重建（旧池同步关停）。
+    RETRIEVAL_POOL_SIZE: int = 4
+    RETRIEVAL_QUEUE_BUDGET_MS: int = 2000
 
     @field_validator("RETRIEVAL_MODE")
     @classmethod
@@ -205,6 +277,24 @@ class Settings(BaseSettings):
         if normalized not in allowed:
             raise ValueError(
                 f"RETRIEVAL_MODE 只支持 {allowed}，当前是 {value!r}。"
+            )
+        return normalized
+
+    @field_validator("TRACE_SINK")
+    @classmethod
+    def _validate_trace_sink(cls, value: str) -> str:
+        """配错的观测去向必须**启动就炸**，理由与 ``RETRIEVAL_MODE`` / ``LLM_PROVIDER`` 同构。
+
+        这个值决定「六段耗时送到哪」，而它的失败方式格外隐蔽：写成 ``json``（少一个 l）
+        之后进程照常起来、检索照常返回，只是**一条 trace 都没有**——没有报错、没有告警，
+        要等到有人翻观测栈时才发现这一整段时间是空白。启动失败比这便宜得多。
+        """
+
+        allowed = SUPPORTED_TRACE_SINKS
+        normalized = value.strip().lower()
+        if normalized not in allowed:
+            raise ValueError(
+                f"TRACE_SINK 只支持 {allowed}，当前是 {value!r}。"
             )
         return normalized
 

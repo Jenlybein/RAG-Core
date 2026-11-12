@@ -31,11 +31,12 @@ NEW_MIGRATIONS = (
 PREVIOUS_HEAD = "bd5a6e3b8fa4"
 
 #: 本票之前就已经存在的表：这两条迁移一个字都不许动它们。
+#: ``retrieval_traces`` 在 #101 由 ``retrieval_logs`` 改名（并只留结构），清单跟着改名。
 EXISTING_TABLES = (
     "knowledge_bases",
     "documents",
     "chunks",
-    "retrieval_logs",
+    "retrieval_traces",
     "tenants",
     "plans",
     "accounts",
@@ -138,14 +139,19 @@ def test_each_new_migration_is_named_after_its_twelve_hex_revision() -> None:
         assert path.name == f"{revision}_{slug}.py"
 
 
-def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_audit_table() -> None:
+def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_presets_table() -> None:
     paths = sorted(VERSIONS_DIR.glob("*.py"))
     revisions = {_revision_of(path): path for path in paths}
     down_revisions = {_down_revision_of(path) for path in paths} - {None}
 
     heads = set(revisions) - down_revisions
     assert len(heads) == 1, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
-    assert heads == {_revision_of(_migration_path("create_audit_logs"))}
+    # #93 追加了 runtime_settings、#94 追加了 model_configs，档位预设（profile_presets）
+    # 又接在它们后面，所以链尾继续前移。这条断言每加一条迁移就要改一次——这是刻意的：
+    # 「链尾是哪个文件」必须是人看过一眼才确认的事，不该由代码自动推导出来。
+    # #101 的归属索引改名（``rename_to_retrieval_traces``）再接在档位预设之后；
+    # #105 的反馈表（``create_retrieval_feedback``）又接在改名之后。
+    assert heads == {_revision_of(_migration_path("create_retrieval_feedback"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

@@ -27,7 +27,7 @@
 
 **选择的理由**：项目处在「照着既有教程复现 + 学习」的阶段，Celery 是教程主线，换框架等于推倒这一章的核心叙事。更关键的是，`asyncio.run` 的经典坑在本项目**不会发生**：
 
-- Provider 每次 `_post` 都新建 `httpx.AsyncClient`（`async with`），没有跨事件循环复用的异步连接池；
+- 异步 HTTP 客户端按**事件循环**注册（`app/core/http_clients.py`）：同一个 loop 复用同一个连接池，不同 loop 各自隔离；Worker 每个任务在自己的 loop 里建、也在自己的 loop 里关（`app/tasks/indexing.py` 的 `finally`）。所以「跨事件循环复用同一个客户端」这条经典故障不会发生——它是靠注册表的形状保证的，不是靠「每次都新建」绕开的（第 10 步票 4 之前这里写的是后者）；
 - 数据库是同步 `Session`，任务里用独立 `SessionLocal()`。
 
 所以「每任务新建 / 销毁事件循环」在这里只是丑，不是不安全。
@@ -36,7 +36,7 @@
 
 - `Celery("rag_center", broker=settings.CELERY_BROKER_URL, backend=settings.CELERY_RESULT_BACKEND, include=["app.tasks.indexing"])`
 - `task_acks_late=True`（至少一次投递）、`worker_prefetch_multiplier=1`、`task_track_started=True`、`broker_connection_retry_on_startup=True`
-- 任务 `bind=True, max_retries=2, default_retry_delay=10`，任务体 `asyncio.run(IndexingService().index_existing_document(...))`
+- 任务 `bind=True, max_retries=2, default_retry_delay=10`，任务体 `asyncio.run(_index_in_its_own_loop(...))`（协程的 `finally` 关掉本任务 loop 上的 HTTP 客户端）
 - 并发去重靠数据库 CAS（`try_claim_for_indexing`），**不靠 Celery 的 `task_id`**；`acks_late` 与 CAS 是配套的一对
 
 **代价**：

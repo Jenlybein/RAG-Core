@@ -1,0 +1,78 @@
+{
+  "run_id": "20261112T125728Z",
+  "generated_at": "2026-11-12T12:57:29+00:00",
+  "schema": "eval-run/1",
+  "retrieval": {
+    "mode": "hybrid",
+    "top_k": 5,
+    "fold_to_sections": true,
+    "expand_table_rows": true,
+    "rerank_enabled": true,
+    "rerank_timeout_seconds": 60.0,
+    "rerank_max_candidates": 20,
+    "rerank_chunk_max_chars": 1024,
+    "query_rewrite_enabled": false,
+    "synonym_expansion_enabled": false,
+    "vector_store": "pgvector",
+    "hybrid_recall_top_k": 20,
+    "fusion": "rrf"
+  },
+  "llm_endpoint_source": "model_configs",
+  "llm_model": "deepseek-v4-1-flash-economy-261017",
+  "embedding": {
+    "provider": "langchain",
+    "model": "qwen3.7-text-embedding",
+    "dimensions": 1536
+  },
+  "keyword": {
+    "provider": "elasticsearch",
+    "url": "http://localhost:9200",
+    "index": "rag_chunks_eval"
+  },
+  "chunking": {
+    "split_strategy": "structure",
+    "chunk_size": 800,
+    "chunk_overlap": 100,
+    "table_max_rows": 10
+  },
+  "gate_metrics": {
+    "context_precision": "ragas.metrics._context_precision.IDBasedContextPrecision",
+    "context_recall": "ragas.metrics._context_recall.IDBasedContextRecall",
+    "ragas_version": "0.4.3",
+    "needs_llm": false,
+    "needs_reference_answer": false
+  },
+  "judge": {
+    "model": null,
+    "note": "LLM 裁判是旁证指标（只提示、不阻断），不在本票范围；见 #108 / #109。"
+  },
+  "corpus": {
+    "version": "1946e4e5954f",
+    "documents": 21,
+    "chunks": 469,
+    "kb_ids": [
+      "kb-eval",
+      "kb-eval-ops",
+      "kb-eval-biz",
+      "kb-eval-long",
+      "kb-eval-ref"
+    ],
+    "questions": 137,
+    "answerable": 131,
+    "gate_questions": 127,
+    "labels": 146
+  },
+  "dataset": {
+    "questions_file": "eval/questions.json",
+    "version": "1946e4e5954f"
+  },
+  "runtime": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "git_commit": "4ddc148",
+    "git_branch": "step10/perf-rerank-connection",
+    "git_dirty": false,
+    "database": "postgresql+psycopg://postgres:***@localhost:5432/rag_db",
+    "env_file": ".env"
+  }
+}

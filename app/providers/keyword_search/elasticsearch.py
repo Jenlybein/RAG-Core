@@ -11,8 +11,11 @@
 
 from __future__ import annotations
 
+import asyncio
+import weakref
 from typing import Any
 
+import structlog
 from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
 
 from app.core.exceptions import AppError, ErrorCode
@@ -24,15 +27,42 @@ from app.providers.keyword_search.query_builder import (
     build_purge_query,
 )
 
+logger = structlog.get_logger(__name__)
+
 
 class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
-    """ES 8.x 实现。客户端惰性构造：装配阶段绝不发网络请求。"""
+    """ES 8.x 实现。客户端惰性构造：装配阶段绝不发网络请求。
 
-    def __init__(self, *, url: str, index_name: str, client: Any | None = None) -> None:
+    ``timeout_s`` 是**查询的时间预算**，由组合根从配置注入（不在这里读全局配置：这个类
+    因此能在测试里被直接构造，也就不用 monkeypatch 环境）。
+
+    为什么预算必须落在这里而不是调用方：关键词通道有**两份实现**——单通道走
+    ``rag_service._retrieve_by_keyword``，混合模式走 ``pipeline._keyword_channel``
+    （控制台看到的就是后者）。预算写在调用方，就得写两遍，而写两遍的下场是漂移。
+    真正知道「我在跟 ES 说话」的是这个类，所以由它兜住。
+
+    实测事故（2026-11-11）：ES 容器被杀后，客户端自己重试 4 次、每次 DNS 失败约 3.8 秒，
+    合计让一次检索等了 **19.4 秒**，而其它五段加起来不到 600 ms。预算就是防这个的。
+    """
+
+    def __init__(
+        self,
+        *,
+        url: str,
+        index_name: str,
+        client: Any | None = None,
+        timeout_s: float = 2.0,
+    ) -> None:
         self._url = url
         self._index_name = index_name
         self._client = client
         self._index_ready = False
+        self._timeout_s = timeout_s
+        # **一个事件循环一个客户端**。见 `_get_client` 的注释：Celery 每个任务各
+        # `asyncio.run` 一次，跨 loop 复用同一个 `AsyncElasticsearch` 会让连接池绑在
+        # 一个已经关闭的 loop 上，任务直接 `RuntimeError: Event loop is closed`。
+        # 用弱引用键：loop 被回收后条目自动消失，不会把死循环留在字典里。
+        self._clients: weakref.WeakKeyDictionary[Any, Any] = weakref.WeakKeyDictionary()
 
     @property
     def available(self) -> bool:
@@ -43,9 +73,31 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         return self._index_name
 
     def _get_client(self) -> AsyncElasticsearch:
-        if self._client is None:
-            self._client = AsyncElasticsearch(self._url)
-        return self._client
+        """取当前事件循环该用的客户端。
+
+        **必须按 loop 隔离**（一次真实事故换来的）：Provider 现在是进程级缓存，
+        而 Celery 每个任务都 `asyncio.run(...)` 一次——也就是每个任务一个新事件循环，
+        循环结束即关闭。如果整个进程只留一个 `AsyncElasticsearch`，它的连接池就绑在
+        **第一个**循环上；第二个任务拿它发请求会立刻炸：
+
+            RuntimeError: Event loop is closed
+
+        表现是「同一批上传，第一篇成功、其余全失败」（每篇一个任务），而错误在界面上
+        只是一句通用的 `document indexing failed`。
+
+        注入的 `_client`（测试用假客户端）优先，且不参与按 loop 的缓存：那是调用方
+        自己造的对象，生命周期由调用方负责。
+        """
+
+        if self._client is not None:
+            return self._client
+
+        loop = asyncio.get_running_loop()
+        client = self._clients.get(loop)
+        if client is None:
+            client = AsyncElasticsearch(self._url)
+            self._clients[loop] = client
+        return client
 
     async def ensure_index(self) -> None:
         """幂等建索引：已存在就跳过；并发建索引时把「已存在」当作成功。"""
@@ -100,10 +152,22 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             top_k=top_k,
         )
         try:
-            response = await self._get_client().search(index=self._index_name, **payload)
+            response = await asyncio.wait_for(
+                self._get_client().search(index=self._index_name, **payload),
+                # 有界预算见类文档。超时抛 ``TimeoutError``，由调用方按「这一路挂了」处理
+                # ——不在这里翻译成业务码：Provider 不认识业务码。
+                timeout=self._timeout_s,
+            )
         except NotFoundError:
             # 索引还没建 = 关键词库里一个字都没有。这不是故障，是诚实的空结果。
             return []
+        except TimeoutError:
+            logger.warning(
+                "elasticsearch keyword search exceeded its budget",
+                timeout_s=self._timeout_s,
+                index=self._index_name,
+            )
+            raise
 
         return [
             {

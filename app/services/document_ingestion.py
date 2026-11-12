@@ -13,6 +13,8 @@ C. 两者都没有 → ``DOCUMENT_PARSE_FAILED``。
 T4 的 Celery 任务包住整条流水线。
 """
 
+from pathlib import Path
+
 from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
 from app.providers.parsers import get_parser_registry
@@ -30,7 +32,11 @@ def prepare_document_content(document: Document, *, reparse: bool = False) -> Pa
 
     if document.source_file_path:
         data = _read_source_file(document.source_file_path)
-        parsed = get_parser_registry().parse(data, filename=document.source_filename or "")
+        # 解析器按扩展名选。正常上传一定有 source_filename；但历史行、人手修过的行可能没有，
+        # 那时退回落盘路径自己的扩展名——否则错误码是「no parser supports: 」(空名字)，
+        # 读的人完全看不出该补什么。这个兜底只在这种缺名字的情况下生效。
+        filename = document.source_filename or Path(document.source_file_path).name
+        parsed = get_parser_registry().parse(data, filename=filename)
         if not parsed.content.strip():
             raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "解析之后没有可提取文字")
         return parsed

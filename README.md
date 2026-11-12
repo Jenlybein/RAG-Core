@@ -52,7 +52,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 - 4 个 HTTP 接口：`POST /api/v1/knowledge-bases/create`、`POST /api/v1/documents/upload`、`POST /api/v1/rag/retrieve`、`GET /api/v1/knowledge-bases`（列这把 Key 可见的库）。
 - MCP 入口挂在 `/mcp/`，两个工具 `rag_retrieve` / `rag_list_knowledge_bases`；`json_response=True`，工具调用回普通 JSON，不走流式。
-- 两个入口头部都带 `Authorization: Bearer dev-key`；`tenant_id` 由服务端从这把占位 Key 解出（默认 `tenant_demo`），不进请求体。检索传 `kb_ids`（列表）+ `query`。**第 7 步已把占位 Key 换成 `api_keys` 表真校验与密钥配置白名单**；`AUTH_ENABLED=false`（默认）时仍走这个内置开发身份，打开开关后只认真 Key。
+- 两个入口头部都带 `Authorization: Bearer <Key>`；`tenant_id` 由服务端从这把 Key 解出，不进请求体。检索传 `kb_ids`（列表）+ `query`。**第 7 步已把占位 Key 换成 `api_keys` 表真校验与密钥配置白名单**：`AUTH_ENABLED=true`（默认）时只认真 Key；改成 `false` 才回落到内置开发身份（`dev-key` / `tenant_demo`）。
 - `ENABLE_MCP=true` 时挂子应用（生产默认）；离线测试用 `ENABLE_MCP=false` 关掉会话管理器。
 
 ## 第 2 步：工程可维护性（已落地）
@@ -137,10 +137,26 @@ uv run pytest -q
 uv run uvicorn app.main:app --port 8000
 
 curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
-  -H "Authorization: Bearer dev-key" \
+  -H "Authorization: Bearer rc_live_<你在 Key 管理页签发的>" \
   -H "Content-Type: application/json" \
   -d '{"kb_ids":["<你的 kb_id>"],"query":"设备证书过期怎么处理"}'
 ```
+
+`.env` 默认 `AUTH_ENABLED=true`，所以数据面认的是 `api_keys` 表里的**真实 Key**
+（`rc_live_…`）：`tenant_id`、密钥配置白名单、档位、配额都由那把 Key 决定。
+
+**内置开发身份**（`Authorization: Bearer dev-key`，固定租户 `tenant_demo`、配置全开）只在
+`AUTH_ENABLED=false` 时可达。这个开关一旦漏配会**静默降级**——数据面只认占位 Key，调试台
+里选中的每一把真实 Key 都被判 `20010`「无效或已停用」，看起来像 Key 坏了。所以两条路都
+固化成脚本，别靠命令行前缀：
+
+```bash
+./scripts/dev-api.sh            # Linux / macOS，等价于 AUTH_ENABLED=true RATE_LIMIT_ENABLED=true uvicorn --reload
+powershell -File scripts/dev-api.ps1   # Windows
+```
+
+> Docker 那条路同理：`deploy/docker-compose.yml` 的 `api` 服务把 `AUTH_ENABLED: "true"`
+> 钉死，不受 `.env` 改来改去影响。
 
 期望 `code: 0`，**默认一条结果代表一节**（`section_id` 是身份，`chunk_id` 是让它浮上来的代表片），每条都带 `score` 与分列字段。
 

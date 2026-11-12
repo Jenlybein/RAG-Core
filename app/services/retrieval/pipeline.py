@@ -13,9 +13,11 @@
 四条不许动的约定：
 
 1. **两路真并行**：``asyncio.gather(..., return_exceptions=True)`` 让一路挂掉不取消
-   另一路。向量分支是同步 psycopg + 同步 Session，必须 ``asyncio.to_thread`` 丢到
-   独立线程，并且**持有自己的 ``SessionLocal()``**——否则它会卡住事件循环，
-   「并行」只是字面上的（ADR-0011「它管不到的三件事」）。
+   另一路。向量分支是同步 psycopg + 同步 Session，必须丢到**检索执行池**（固定规模的
+   常驻线程 + 常驻事件循环，见 ``app.core.loop_pool``），并且**持有自己的
+   ``SessionLocal()``**——否则它会卡住事件循环，「并行」只是字面上的（ADR-0011
+   「它管不到的三件事」）。**不能**再用「每请求 ``asyncio.to_thread`` + ``asyncio.run``」：
+   那会给每个请求新建一个循环，绑定循环的 HTTP 客户端永远复用不了（票 5）。
 2. **对称降级**：嵌入失败（含多查询里任意一句）发生在向量分支内部，必须被该分支
    捕获后变成「仅关键词」，绝不冒泡成整单失败。只兜关键词那一半是本票最容易漏掉的一条。
 3. **降级原因一因一码**：通道故障只用下面两个常量，重排失败用
@@ -35,13 +37,22 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import structlog
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.loop_pool import get_retrieval_pool
 from app.db.session import SessionLocal
 from app.models.chunk import default_index_versions
+from app.observability.stage_timing import (
+    STAGE_FUSION,
+    STAGE_KEYWORD_RECALL,
+    STAGE_RERANK,
+    STAGE_VECTOR_RECALL,
+    StageTimer,
+)
 from app.services.retrieval.fusion import fuse_by_rrf
 from app.services.retrieval.rerank import rerank_stage
 from app.services.retrieval.vector_recall import vector_recall
@@ -92,6 +103,8 @@ async def hybrid_retrieve(
     recall_depth: int | None = None,
     rerank_candidates: int | None = None,
     rerank_enabled: bool,
+    rerank_factory: Callable[[], Any] | None = None,
+    stage_timer: StageTimer | None = None,
 ) -> HybridOutcome:
     """两路并行召回，融合、重排后返回；一路失败不取消另一路。
 
@@ -117,23 +130,39 @@ async def hybrid_retrieve(
     档位意图 ∧ 本机能力，合取在平台层算完）。它必须显式给：这台机器装了重排，不代表
     每一个档位都该用——``balanced`` 与 ``quality`` 在同一个部署上跑，两者的区别恰好
     就是这一步。靠 ``provider.available`` 一个信号判断，会把「本次不要」静默变成「本次跑了」。
+
+    ``stage_timer`` 是可选的收集器（#102）：组合根传进来就记两路召回与融合的耗时。
+    不传时本模块**自己造一个**——「度量常开」不该依赖调用方记得传：那会让「有人忘了传」
+    悄悄变成「这次没有耗时」。造出来的那个没人收，效果等同于丢弃去向。
+
+    ``rerank_factory`` 是重排的**注入缝**（#116）：缺省 ``None`` 时 ``rerank_stage``
+    用既有工厂出口（``get_rerank_provider``），评测传一个别的工厂进来就能跑旧实现做
+    对照。它和上面三个工厂同形——「重排用哪种实现」在这条链路上只有一个开关。
     """
+
+    timer = stage_timer if stage_timer is not None else StageTimer()
 
     depth = max(top_k, recall_depth or 0)
     # 重排开着的时候，融合池必须宽于返回条数：只有 5 条候选时，重排只能原地挪位置，
     # 「重新挑」这件事根本无从发生。不开重排时这里就等于 top_k，行为不变。
     fuse_pool = max(top_k, rerank_candidates or 0)
 
+    # 向量分支进执行池：池里是常驻线程 + 常驻循环，客户端因此能跨请求复用；排队超预算
+    # 时池会抛 ``TimeoutError``，被 gather 收成「这一路失败」，走既有降级。
+    pool = get_retrieval_pool()
     gathered: list[Any] = list(
         await asyncio.gather(
-            asyncio.to_thread(
-                _run_vector_branch,
-                tenant_id=tenant_id,
-                kb_ids=kb_ids,
-                queries=vector_queries,
-                top_k=depth,
-                embedding_factory=embedding_factory,
-                vector_factory=vector_factory,
+            pool.run(
+                partial(
+                    _vector_branch_in_pool,
+                    tenant_id=tenant_id,
+                    kb_ids=kb_ids,
+                    queries=vector_queries,
+                    top_k=depth,
+                    embedding_factory=embedding_factory,
+                    vector_factory=vector_factory,
+                    stage_timer=timer,
+                )
             ),
             _keyword_branch(
                 tenant_id=tenant_id,
@@ -141,6 +170,7 @@ async def hybrid_retrieve(
                 query=keyword_query,
                 top_k=depth,
                 keyword_factory=keyword_factory,
+                stage_timer=timer,
             ),
             return_exceptions=True,
         )
@@ -180,13 +210,23 @@ async def hybrid_retrieve(
     # 融合之后插入重排（GLOSSARY「检索链路」：召回 → 融合 → 重排）。失败只保留融合
     # 顺序并补一个原因；**已经降级就不覆盖**——先到的原因才是根因。
     # 合成后的向量池直接作为「向量一路」进既有的 ``fuse_by_rrf``，不新增内层融合。
-    fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
+    with timer.measure(STAGE_FUSION):
+        fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
     # 重排是**语义那一侧**的一步：它看到的是 ``effective_query``（改写成功时是改写句），
     # 扩展出来的同义词只该帮关键词一路做字面匹配，塞进重排提示词只会变成噪音。
     # ``rerank_enabled`` 来自本次的已解析参数：不要重排的档位在装了重排的机器上也不跑。
     reranked = await rerank_stage(
-        query=rerank_query, chunks=fused_chunks, top_n=top_k, enabled=rerank_enabled
+        query=rerank_query,
+        chunks=fused_chunks,
+        top_n=top_k,
+        enabled=rerank_enabled,
+        provider_factory=rerank_factory,
     )
+    # 「重排发生没发生」只有一个答案：``RerankOutcome.duration_ms``。它为空就说明这一步
+    # 根本没走（关闭 / 没装 / 没有候选），于是**不记录这一段**，而不是记一个 0。
+    # 耗时也直接用它，不另量一次：两处数字不一样会立刻变成「哪个才是真的」的问题。
+    if reranked.duration_ms is not None:
+        timer.record(STAGE_RERANK, reranked.duration_ms)
     if reranked.reason is not None:
         degraded_reason = degraded_reason or reranked.reason
 
@@ -221,7 +261,7 @@ def _reraise_rejection(error: BaseException | None) -> None:
         raise error
 
 
-def _run_vector_branch(
+async def _vector_branch_in_pool(
     *,
     tenant_id: str,
     kb_ids: list[str],
@@ -229,26 +269,29 @@ def _run_vector_branch(
     top_k: int,
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
+    stage_timer: StageTimer,
 ) -> list[dict]:
-    """独立线程里的向量分支入口：**自己开会话、自己关会话**。
+    """执行池里跑的那一段：**自己开会话、自己关会话**。
 
-    ``SessionLocal`` 在调用时从模块命名空间取，因此测试可以整体替换它而不必
-    连一个真的 PostgreSQL。``asyncio.run`` 在这个工作线程里新建一个事件循环：
-    主线程的事件循环正忙着服务其他请求，不能被这里 await。
+    这个协程在池里某个 worker 的常驻循环上执行，所以它 await 出来的异步 HTTP 客户端
+    属于那个循环、能跨请求复用（票 5 的目的）。会话仍然每任务一个：``SessionLocal``
+    在**这里**取，因此测试替换它仍只有一处（既有接缝不变）。
+
+    收集器也一起过线程：它自己带锁（``StageTimer``），向量这一段的耗时因此记在主循环
+    事件循环那个收集器上——「两路并行」在观测里仍然是同一份 trace 的两段。
     """
 
     db = SessionLocal()
     try:
-        return asyncio.run(
-            _vector_branch(
-                db,
-                tenant_id=tenant_id,
-                kb_ids=kb_ids,
-                queries=queries,
-                top_k=top_k,
-                embedding_factory=embedding_factory,
-                vector_factory=vector_factory,
-            )
+        return await _vector_branch(
+            db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            queries=queries,
+            top_k=top_k,
+            embedding_factory=embedding_factory,
+            vector_factory=vector_factory,
+            stage_timer=stage_timer,
         )
     finally:
         db.close()
@@ -263,6 +306,7 @@ async def _vector_branch(
     top_k: int,
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
+    stage_timer: StageTimer,
 ) -> list[dict]:
     """向量通道：每句各嵌一次、各做一次范围召回，合成**一个**池（#31）。
 
@@ -274,17 +318,18 @@ async def _vector_branch(
     于是混合模式降级成「仅关键词」，而不是整单失败。
     """
 
-    return await vector_recall(
-        db=db,
-        tenant_id=tenant_id,
-        kb_ids=kb_ids,
-        queries=queries,
-        top_k=top_k,
-        embedding_factory=embedding_factory,
-        vector_factory=vector_factory,
-        # 混合向量分支的历史排序口径：同分按 kb_id / chunk_id 兜底（回归红线）。
-        single_query_order="tiebreak",
-    )
+    with stage_timer.measure(STAGE_VECTOR_RECALL):
+        return await vector_recall(
+            db=db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            queries=queries,
+            top_k=top_k,
+            embedding_factory=embedding_factory,
+            vector_factory=vector_factory,
+            # 混合向量分支的历史排序口径：同分按 kb_id / chunk_id 兜底（回归红线）。
+            single_query_order="tiebreak",
+        )
 
 
 async def _keyword_branch(
@@ -294,28 +339,35 @@ async def _keyword_branch(
     query: str,
     top_k: int,
     keyword_factory: Callable[[], Any],
+    stage_timer: StageTimer,
 ) -> list[dict]:
     """关键词通道：租户 + 库/版本配对过滤；本身是异步 HTTP，不必进线程。
 
     可见性不在这里校验：由 ``rag_service.retrieve`` 在进入任何分支之前统一预校验
     一次（两条分支各查一遍 = 每库 2 次查询，且「拒绝」会有两个来源）。
+
+    失败的那一路也留下这一段耗时：它确实被走过、也的确花了时间（哪怕只是拒绝服务），
+    把失败从计量里抹掉会让「这一次为什么慢」少掉最该看的那一行。
     """
 
-    provider = keyword_factory()
-    if not provider.available:
-        # 空实现是「能力不存在」，不是「查过了没命中」——混合模式下它是这一路失败。
-        raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured")
+    with stage_timer.measure(STAGE_KEYWORD_RECALL):
+        provider = keyword_factory()
+        if not provider.available:
+            # 空实现是「能力不存在」，不是「查过了没命中」——混合模式下它是这一路失败。
+            raise AppError(
+                ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
+            )
 
-    try:
-        rows = await provider.keyword_search(
-            query,
-            tenant_id=tenant_id,
-            index_versions=default_index_versions(kb_ids),
-            top_k=top_k,
-        )
-    except AppError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - 引擎故障一律归为「这一路不可用」
-        raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
+        try:
+            rows = await provider.keyword_search(
+                query,
+                tenant_id=tenant_id,
+                index_versions=default_index_versions(kb_ids),
+                top_k=top_k,
+            )
+        except AppError:
+            raise
+        except Exception as exc:  # noqa: BLE001 - 引擎故障一律归为「这一路不可用」
+            raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
 
     return list(rows[:top_k])

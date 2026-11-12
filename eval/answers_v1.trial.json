@@ -1,0 +1,170 @@
+{
+  "name": "answers",
+  "schema": "eval-answers/1",
+  "version": "v1",
+  "generated_at": "2026-11-10T22:55:29.935442+00:00",
+  "judge_model": "deepseek-v4-1-flash-economy-261017",
+  "judge": {
+    "provider": "openai",
+    "base_url": "https://ark.cn-beijing.volces.com/api/plan/v3",
+    "model": "deepseek-v4-1-flash-economy-261017",
+    "config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "questions_version": {
+    "path": "eval/questions.json",
+    "sha256": "c08e20533382154b197141a4a6702987fbe6bbaa7b7fd875d4d40cdd4648f883",
+    "count": 137
+  },
+  "corpus": {
+    "version": "522be854b307",
+    "documents": 21,
+    "chunks": 469
+  },
+  "seed": 20261111,
+  "selection": {
+    "total": 50,
+    "requested": 3,
+    "per_type_min": 2,
+    "per_type_max": "pool",
+    "types": "all(answerable)",
+    "quotas": "colloquial=4 counterfactual=5 cross_section=6 exact_code=3 false_premise=2 model_number=5 negative_scope=5 noise_robust=6 rare_token=3 synonym=5 table_lookup=6"
+  },
+  "warnings": [],
+  "stats": {
+    "requested": 3,
+    "ok": 3,
+    "refused": 0,
+    "failed": 0,
+    "checked": 3,
+    "check_passed": 3,
+    "check_pass_rate": 1.0
+  },
+  "per_type": {
+    "colloquial": {
+      "count": 1,
+      "ok": 1,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 1
+    },
+    "counterfactual": {
+      "count": 1,
+      "ok": 1,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 1
+    },
+    "cross_section": {
+      "count": 1,
+      "ok": 1,
+      "refused": 0,
+      "failed": 0,
+      "check_passed": 1
+    }
+  },
+  "cases": [
+    {
+      "id": "q10",
+      "type": "colloquial",
+      "question": "背调一般问哪些问题",
+      "status": "ok",
+      "answer": "片段列出的背景调查标准问题包括：过往任职与离职原因、是否有竞业限制、是否有与岗位相关的违规记录、教育经历与证书是否属实、是否存在利益冲突。调查只采集与岗位相关的信息，不涉及婚姻、生育与健康状况。",
+      "source_chunk_ids": [
+        "security_compliance::025"
+      ],
+      "sources": [
+        {
+          "chunk_id": "security_compliance::025",
+          "document": "security_compliance",
+          "heading_path": "安全合规与审计说明 > 人员背景审查"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 2064.91
+    },
+    {
+      "id": "q112",
+      "type": "counterfactual",
+      "question": "为什么故障总是凌晨发生、白天自己就好了",
+      "status": "ok",
+      "answer": "片段只记录了门店在凌晨集中离线、次日营业前自动恢复且连续三天重复的现象，以及初步排查的部分过程，但没有说明故障为何总在凌晨发生、白天自行恢复。因此该问题的原因片段未提及。",
+      "source_chunk_ids": [
+        "troubleshoot_deep::000"
+      ],
+      "sources": [
+        {
+          "chunk_id": "troubleshoot_deep::000",
+          "document": "troubleshoot_deep",
+          "heading_path": "深度排障案例集 > 案例一：证书链断裂导致的批量离线 > 现象与初查"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 3424.2
+    },
+    {
+      "id": "q104",
+      "type": "cross_section",
+      "question": "退款和退费分别退到哪里去",
+      "status": "ok",
+      "answer": "退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道。两者不能互相替代，同一笔订单不能同时申请退费与退款。退款最常见的方式是原路退回，到账时间从退款执行日开始计算。",
+      "source_chunk_ids": [
+        "support_refund::003",
+        "billing_policy::008"
+      ],
+      "sources": [
+        {
+          "chunk_id": "support_refund::003",
+          "document": "support_refund",
+          "heading_path": "退款与售后受理规则 > 退款到账时间"
+        },
+        {
+          "chunk_id": "billing_policy::008",
+          "document": "billing_policy",
+          "heading_path": "计费与账务政策 > 退费与退款的区别"
+        }
+      ],
+      "checks": {
+        "passed": true,
+        "missing": [],
+        "atoms": []
+      },
+      "elapsed_ms": 2054.92
+    }
+  ],
+  "failures": [],
+  "check_failures": [],
+  "spot_checks": [
+    {
+      "id": "q10",
+      "type": "colloquial",
+      "question": "背调一般问哪些问题",
+      "answer": "片段列出的背景调查标准问题包括：过往任职与离职原因、是否有竞业限制、是否有与岗位相关的违规记录、教育经历与证书是否属实、是否存在利益冲突。调查只采集与岗位相关的信息，不涉及婚姻、生育与健康状况。",
+      "excerpt": "## 人员背景审查\n\n涉及核心数据与高权限岗位的人员在入职前必须完成背景调查，调查由人力资源与安全团队共同发起。背景调查的标准问题包括：过往任职与离职原因、是否有竞业限制、是否有与岗位相关的违规记录、教育经历与证书是否属实、是否存在利益冲突。调查只采集与岗位相关的信息，不涉及婚姻、生育与健康状况。调查结论分为通过、有条件通过与不通过三类，有条件通过需要设定观察期。调查材料单独存放，保存期限为离职后",
+      "check_passed": true
+    },
+    {
+      "id": "q112",
+      "type": "counterfactual",
+      "question": "为什么故障总是凌晨发生、白天自己就好了",
+      "answer": "片段只记录了门店在凌晨集中离线、次日营业前自动恢复且连续三天重复的现象，以及初步排查的部分过程，但没有说明故障为何总在凌晨发生、白天自行恢复。因此该问题的原因片段未提及。",
+      "excerpt": "### 现象与初查\n\n#### 表面现象\n\n现象是某个区域的门店在凌晨集中离线，次日营业前又自动恢复，连续三天重复。平台侧看到的现象是设备心跳中断，日志里没有任何错误码；现场看到的是设备指示灯正常，但管理页面打不开。\n\n#### 初步排查\n\n初步排查走的是常规路径：先看时间分布——不是同一秒集中离线，而是逐台陆续掉，排除了平台入口问题；再看地理位置——集中在同一城区，跨区域没有，指向区域网络。联系",
+      "check_passed": true
+    },
+    {
+      "id": "q104",
+      "type": "cross_section",
+      "question": "退款和退费分别退到哪里去",
+      "answer": "退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道。两者不能互相替代，同一笔订单不能同时申请退费与退款。退款最常见的方式是原路退回，到账时间从退款执行日开始计算。",
+      "excerpt": "## 退款到账时间\n\n审核通过后，退款会在 3 到 5 个工作日内到账，具体取决于支付渠道。原路退回是最常见的方式：银行卡一般 3 个工作日，第三方支付一般 1 到 2 个工作日，对公转账可能到 5 个工作日。到账时间从退款执行日开始计算，不是从申请日开始计算。超过 5 个工作日仍未到账时，先查支付渠道的退款流水，再联系客服发起查询。\n## 退费与退款的区别\n\n退费退的是服务费用，落点是账户余额，",
+      "check_passed": true
+    }
+  ]
+}

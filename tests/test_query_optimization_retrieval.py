@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.providers.llm.base import LLMProvider
+from app.providers.rerank.llm import LLMRerankProvider
 from app.services.query.rewrite import QueryRewrite
 from tests.retrieval_identity import RetrievalIdentity
 
@@ -199,6 +200,16 @@ def _offline_client(
     if llm is not None:
         # 改写与重排都是惰性 import 的，所以替换点仍在「大模型能力出口」上。
         monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
+        # #116 起生产工厂装的是专用端点，不再返回大模型重排；要测「重排看到哪一句」就得
+        # 显式装配旧实现，并且接在**既有**的工厂出口上（同一个替身大模型）。
+        rerank_module = importlib.import_module("app.services.retrieval.rerank")
+        provider = LLMRerankProvider(
+            llm=llm,
+            max_candidates=settings.RERANK_MAX_CANDIDATES,
+            chunk_max_chars=settings.RERANK_CHUNK_MAX_CHARS,
+            timeout_seconds=settings.RERANK_TIMEOUT_SECONDS,
+        )
+        monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: provider)
 
     from app.api.deps import get_current_key
 
@@ -265,7 +276,10 @@ def test_rerank_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
 
     llm = _SchemaAwareLLM(rewritten="退款的处理流程")
 

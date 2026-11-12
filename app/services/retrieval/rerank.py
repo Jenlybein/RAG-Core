@@ -24,11 +24,12 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import structlog
 
-from app.providers.rerank import get_rerank_provider
+from app.providers.rerank import RerankProvider, get_rerank_provider
 
 logger = structlog.get_logger(__name__)
 
@@ -39,7 +40,13 @@ REASON_RERANK_FAILED = "rerank failed"
 
 @dataclass(frozen=True)
 class RerankOutcome:
-    """一次重排尝试的全部事实：结果、失败原因、以及「发生了什么」。"""
+    """一次重排尝试的全部事实：结果、失败原因、以及「发生了什么」。
+
+    ``provider`` / ``model`` 是**身份**（这次是哪种重排、哪个模型），不是状态：状态由
+    ``applied`` 与 ``reason`` 表达。没跑重排时它们都是 ``None``——「没有实现可署名」，
+    而不是编一个名字出来让人以为排过一遍。失败时仍署名：降级之后最该能回答的，就是
+    「刚才试的是哪一种重排」。
+    """
 
     chunks: list[dict]
     reason: str | None
@@ -47,6 +54,8 @@ class RerankOutcome:
     candidates: int
     returned: int
     duration_ms: float | None
+    provider: str | None = None
+    model: str | None = None
 
     def as_metadata(self) -> dict[str, object]:
         """给响应 ``metadata.retrieval.rerank`` 用：只放可观测的事实，不放内容。"""
@@ -56,16 +65,26 @@ class RerankOutcome:
             "candidates": self.candidates,
             "returned": self.returned,
             "duration_ms": self.duration_ms,
+            "provider": self.provider,
+            "model": self.model,
         }
 
 
 async def rerank_stage(
-    *, query: str, chunks: list[dict], top_n: int, enabled: bool
+    *,
+    query: str,
+    chunks: list[dict],
+    top_n: int,
+    enabled: bool,
+    provider_factory: Callable[[], RerankProvider] | None = None,
 ) -> RerankOutcome:
     """对融合后的候选重排一次；失败时保留融合顺序并给出原因。
 
-    ``top_n`` 是**最终返回条数**（``top_k``），不是候选数：候选的封顶与单条截断在
-    Provider 里（它才知道模型的上下文限制）。
+    ``top_n`` 是**重排吐出的条数（折叠前）**，不是候选数；**最终返回条数由 ``top_k``
+    与折叠共同决定**——折叠开着时召回的深度是 ``top_k × OVERFETCH_FACTOR``，重排对这
+    一整池排序后才会折叠回 ``top_k`` 条，所以 ``RerankOutcome.returned`` 记的往往大于
+    ``top_k``，这是如实记录而不是多返回。候选的封顶与单条截断在 Provider 里（它才知道
+    模型的上下文限制）。
 
     ``enabled`` 是**这次调用要不要重排**，由编排层按本次的已解析参数传入（#78：档位
     表达意图，部署开关表达「这台机器装没装」，两者的合取已经在平台层算完）。为什么
@@ -78,6 +97,11 @@ async def rerank_stage(
     ``top_k=5`` 的请求碰上重排失败就会拿回 20 条——「返回条数由 top_k 决定」当场失效。
     截断放在这里而不是只放在 Provider 里，是因为失败 / 未开启这两条路径根本不经过
     Provider。
+
+    ``provider_factory`` 是**注入缝**（票 #116）：缺省仍是 ``get_rerank_provider``
+    （既有 monkeypatch 接缝，一行不用改），评测可以显式装配旧的大模型重排做对照。
+    工厂以可调用对象传进来而不是在这里直接 import，与 ``hybrid_retrieve`` 里几个
+    工厂同形——替换点因此仍然只有一处。
     """
 
     if not chunks:
@@ -90,7 +114,10 @@ async def rerank_stage(
         kept = list(chunks)[:top_n]
         return RerankOutcome(kept, None, False, len(chunks), len(kept), None)
 
-    provider = get_rerank_provider()
+    # 缺省走模块级名字（不是默认参数）：既有用例 monkeypatch 的就是这个名字，默认参数
+    # 会在 import 期把旧函数对象焊死在签名里，那条接缝就失效了。
+    factory = get_rerank_provider if provider_factory is None else provider_factory
+    provider = factory()
     if not provider.available:
         # 关闭重排 = 「没有这一步」，不是「排了一遍恰好没变」：不调用、不记耗时，
         # 融合顺序原样返回（截到 top_n）。日志与元数据里的「重排是否发生」才不会被误读。
@@ -108,9 +135,17 @@ async def rerank_stage(
             duration_ms=duration_ms,
             # 只记异常类型，不记原文：异常文案可能夹带提示词或切片内容。
             error=type(exc).__name__,
+            provider=provider.provider_name,
         )
         return RerankOutcome(
-            list(chunks)[:top_n], REASON_RERANK_FAILED, False, len(chunks), 0, duration_ms
+            list(chunks)[:top_n],
+            REASON_RERANK_FAILED,
+            False,
+            len(chunks),
+            0,
+            duration_ms,
+            provider=provider.provider_name,
+            model=provider.model_name,
         )
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
@@ -121,9 +156,17 @@ async def rerank_stage(
             "rerank returned nothing",
             candidates=len(chunks),
             duration_ms=duration_ms,
+            provider=provider.provider_name,
         )
         return RerankOutcome(
-            list(chunks)[:top_n], REASON_RERANK_FAILED, False, len(chunks), 0, duration_ms
+            list(chunks)[:top_n],
+            REASON_RERANK_FAILED,
+            False,
+            len(chunks),
+            0,
+            duration_ms,
+            provider=provider.provider_name,
+            model=provider.model_name,
         )
 
     logger.info(
@@ -131,5 +174,16 @@ async def rerank_stage(
         candidates=len(chunks),
         returned=len(ranked_chunks),
         duration_ms=duration_ms,
+        provider=provider.provider_name,
+        model=provider.model_name,
     )
-    return RerankOutcome(ranked_chunks, None, True, len(chunks), len(ranked_chunks), duration_ms)
+    return RerankOutcome(
+        ranked_chunks,
+        None,
+        True,
+        len(chunks),
+        len(ranked_chunks),
+        duration_ms,
+        provider=provider.provider_name,
+        model=provider.model_name,
+    )

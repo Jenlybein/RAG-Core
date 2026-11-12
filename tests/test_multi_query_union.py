@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import importlib
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -61,6 +62,11 @@ REWRITTEN = "退款的处理流程"
 # **第 7 步收尾又重采一次**：回显字段 ``requested_profile`` 的旧名已改成现在这个
 # （ADR-0010「第四次修订」，旧名违反术语表）。同样只动名字、不动检索内容：新基线
 # 仍然只比 #78 那版多这一个字段名的差别，其余字节未变。
+#
+# **#101 没有重采**，而且刻意不重采：响应多出的 ``metadata.trace_id`` 每次调用都不同，
+# 没法进黄金哈希，所以 ``_response_hashes`` 在比对前把它归一化成一个占位符。基线常量因此
+# 仍是上面那三行——「除该字段外逐字节不变」这句话于是由**同一组数字**继续证明，而不是靠
+# 「重采一遍、新哈希自然对得上」自我确认。
 _BASELINE_SOURCE = (
     "#78 落地后重采（相对 f1ddb46：仅多出 metadata.tenant_policy）；"
     "第 7 步收尾再采（相对 #78：tenant_policy 的 requested_* 字段改名）"
@@ -70,6 +76,14 @@ _BASELINE_SHA256: dict[str, str] = {
     "vector": "5dc254efa9f0a7a0a5d2b5f6201da005cc8effe3eb1e05f962c9c587c44c9162",
     "bm25": "e34615911395585598607a3f7354f8b924ee4ad139db9274c74d2633ee880f70",
 }
+
+#: #101 起响应多出的那个字段（每次调用都不同）。比对前先把它**整段摘掉**，见 ``_without_trace_id``。
+_TRACE_ID_RE = re.compile(r',"trace_id":"[0-9a-f]{32}"')
+
+#: #116 起 ``metadata.retrieval.rerank`` 多出的两个**实现身份**键（``provider`` / ``model``）。
+#: 它们与 ``trace_id`` 是同一类东西：有意的契约新增，不是检索行为变化。比对前整段摘掉，
+#: 基线常量因此一个都不用重采——「除这两个新键外逐字节不变」由同一组数字继续证明。
+_RERANK_IDENTITY_RE = re.compile(r',"provider":(?:null|"[^"]*"),"model":(?:null|"[^"]*")')
 
 
 # ─────────────────────────────────────────────────────────────── 替身
@@ -281,8 +295,32 @@ def _metadata(body: dict) -> dict:
     return body["data"]["metadata"]["retrieval"]
 
 
+def _without_trace_id(text: str) -> str:
+    """把新字段 ``metadata.trace_id`` **整段摘掉**，其余字节原样保留。
+
+    #101 起响应多一个 ``trace_id``（ADR-0010 第五次修订），它的值是本次检索的派生 id，
+    天然每次都不同。黄金哈希要守的是「**除该字段外**逐字节不变」，所以：
+
+    * 摘掉的是 ``,"trace_id":"…"`` 这一整段（该字段在 ``metadata`` 里是**最后**一个键，
+      摘掉不吃掉任何相邻的逗号或括号），而不是把它替换成一个占位值——替换之后响应仍然
+      多一个键，哈希就不可能等于旧基线；
+    * 用**字符串替换**而不是重新序列化 JSON：重新序列化会顺手动到空白与转义，那就不是
+      「逐字节」了；
+    * 摘掉之后哈希**仍等于 #78 那版基线**：这正是本次改动没有碰到别的字节的证据，
+      因此基线常量一个都不用重采（重采会把「只多了这一个字段」这件事从证据里抹掉）。
+
+    #116 起 ``metadata.retrieval.rerank`` 又多出两个身份键（``provider`` / ``model``，
+    见 :data:`_RERANK_IDENTITY_RE`），处理方式与 ``trace_id`` **完全相同**：它们是有意的
+    契约新增，摘掉之后仍与旧基线逐字节相同。这两段摘除各自都要求「至少命中一次」——
+    否则这条比对会退化成「什么也没摘、什么也没比」。
+    """
+
+    without_trace = _TRACE_ID_RE.sub("", text)
+    return _RERANK_IDENTITY_RE.sub("", without_trace)
+
+
 def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
-    """同一份 ASGI 请求，三种 mode 各自的响应全文 SHA-256。
+    """同一份 ASGI 请求，三种 mode 各自的响应全文 SHA-256（``trace_id`` 已摘掉）。
 
     这个函数同时是基线采集脚本的入口：在 ``f1ddb46`` 上直接调它取到的字典，
     就是上面 ``_BASELINE_SHA256`` 的来源，因此测试与基线共用完全相同的替身与请求。
@@ -298,7 +336,14 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
         with _offline_client(monkeypatch) as fake:
             response = _response(fake["client"], mode=mode)
         assert response.status_code == 200
-        hashes[mode] = hashlib.sha256(response.text.encode("utf-8")).hexdigest()
+        assert _TRACE_ID_RE.search(response.text), "摘除必须真的命中一次，否则这条比对是空比对"
+        if mode == "hybrid":
+            # 重排关着时 ``rerank`` 仍是字典（applied=false …），身份键是 null；它们必须
+            # 真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了这两个键」。
+            assert _RERANK_IDENTITY_RE.search(response.text), "身份键摘除也必须真的命中"
+        hashes[mode] = hashlib.sha256(
+            _without_trace_id(response.text).encode("utf-8")
+        ).hexdigest()
     return hashes
 
 
@@ -649,7 +694,8 @@ def test_rewrite_off_response_is_byte_identical_to_pre_change_baseline(
     """``QUERY_REWRITE_ENABLED=false``：三种 mode 的响应全文与采集基线逐字节相同。
 
     基线常量取于 ``_BASELINE_SOURCE``，用本文件同一个 ``_response_hashes`` 实跑采集
-    （#78 因响应新增 ``tenant_policy``、第 7 步收尾因回显字段改名各重采一次，见那段注释）。
+    （#78 因响应新增 ``tenant_policy``、第 7 步收尾因回显字段改名各重采一次，见那段注释；
+    #101 的 ``trace_id`` 靠归一化吸收，不重采——见 ``_normalized_text``）。
     这条守的是本票最容易出的那类 bug：并集分支顺手让**关闭时**也多搜一句，让所有默认
     用户白付一次嵌入费用。
 

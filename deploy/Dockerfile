@@ -78,16 +78,28 @@ COPY . .
 #     缺它 Worker 会在 `worker_process_init` 里直接拒绝启动——这是有意的，
 #     比起「跑起来之后切出不可复现的片」，启动失败更好查。
 #     脚本自带字节数与 SHA256 双重校验，运行期零网络。
+#
+#     `PYTHONPATH=/app` 不能省：脚本要 `from app.utils.tokenizer import EXPECTED_SHA256`
+#     （校验值只有一份真相，不在这里抄第二份），而这一步排在 `uv sync` 装项目**之前**
+#     ——`--no-install-project` 的依赖层只装了第三方包。缺它 `import app` 直接
+#     ModuleNotFoundError，镜像构建在这一行失败。
 RUN set -eux; \
-    QWEN_VOCAB_DIR=/app/.tokenizer uv run --no-sync python scripts/fetch_qwen_vocab.py; \
+    PYTHONPATH=/app QWEN_VOCAB_DIR=/app/.tokenizer \
+    uv run --no-sync python scripts/fetch_qwen_vocab.py; \
     test "$(stat -c%s /app/.tokenizer/qwen.tiktoken)" = 2561218
 ENV QWEN_TOKENIZER_PATH=/app/.tokenizer/qwen.tiktoken
 RUN uv sync --frozen --no-group dev
 
 # 5) 非 root 运行；上传目录与宿主机共享（API 与 Worker 必须指向同一个 DOCUMENT_STORAGE_PATH）。
+#
+# 三个目录都要**先建好并 chown**，否则进程一启动就 PermissionError：
+#   - data/uploads：上传原件（与宿主机绑定挂载）
+#   - logs/：structlog 的三路文件日志（`setup_logging()` 会 mkdir）
+#   - eval/runs：旁证跑批产物（命名卷挂在这里；卷的属主从镜像里这一层继承）
+# 只 chown /app/data 是不够的——那正是 api 容器第一次起来就 Exited(1) 的原因。
 RUN useradd -m -u 10001 app \
- && mkdir -p /app/data/uploads \
- && chown -R app:app /app/data
+ && mkdir -p /app/data/uploads /app/logs /app/eval/runs \
+ && chown -R app:app /app/data /app/logs /app/eval
 USER app
 
 # Celery app 的变量名是 celery_app（不是 app），所以必须写 app.celery_app:celery_app。

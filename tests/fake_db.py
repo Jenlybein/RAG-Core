@@ -102,6 +102,7 @@ class _FakeQuery:
         self._rows = rows
         self._criterion: Any = None
         self._limit: int | None = None
+        self._offset: int = 0
 
     def filter(self, criterion: Any) -> _FakeQuery:
         self._criterion = criterion
@@ -116,8 +117,18 @@ class _FakeQuery:
         self._limit = count
         return self
 
+    def offset(self, count: int) -> _FakeQuery:
+        """分页起点：与 ``limit`` 一样只记参数，``all()`` 时才切片。
+
+        审计列表（#82）在 SQL 里做 ``LIMIT`` / ``OFFSET``，所以假会话必须认识后者；
+        只在取行时「先跳过 offset 再截 limit」，与真实 SQL 的语义一致。
+        """
+
+        self._offset = count
+        return self
+
     def all(self) -> list[Any]:
-        rows = [row for row in self._rows if self._matches(row)]
+        rows = [row for row in self._rows if self._matches(row)][self._offset :]
         return rows if self._limit is None else rows[: self._limit]
 
     def first(self) -> Any:

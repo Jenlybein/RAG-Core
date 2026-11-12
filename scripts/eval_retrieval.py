@@ -65,11 +65,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import os
 import sys
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -86,7 +85,7 @@ if str(REPO_ROOT) not in sys.path:
 EVAL_DIR = REPO_ROOT / "eval"
 CORPUS_DIR = EVAL_DIR / "corpus"
 QUESTIONS_PATH = EVAL_DIR / "questions.json"
-MANIFEST_PATH = CORPUS_DIR / "manifest.json"
+# 清单路径随读取点一起搬到了 ``app/services/eval_manifest.py``（见下方 import 处的说明）。
 RUNS_DIR = EVAL_DIR / "runs"
 
 # RRF 常数：与 ``app.services.retrieval.fusion`` 同值，这里只用来**手算对账**。
@@ -137,34 +136,9 @@ EMPTY_NO_CHUNKS_MATCHED = "no_chunks_matched"
 # ─────────────────────────────────────────────────────── 环境变量必须先于 settings
 
 
-def _preload_env_file() -> str | None:
-    """把 ``--env-file`` 里的键灌进 ``os.environ``，**必须**早于 ``app.core.config``。
-
-    ``settings`` 是模块级单例（``app/core/config.py`` 末尾 ``settings = Settings()``），
-    导入即定型。所以 --env-file 只能在导入之前处理，不能「导入后再 reload」。
-
-    用 ``setdefault``：显式传进来的环境变量优先于文件，与 pydantic-settings 的优先级
-    一致，运维用 ``$env:MODEL_API_KEY=...`` 覆盖文件时不会被反咬。
-
-    直接用 ``python-dotenv`` 而不是自己切 ``KEY=VALUE``：它是 ``pydantic-settings``
-    的硬依赖（后者本来就靠它读 ``.env``），而 ``pydantic-settings`` 已在
-    ``pyproject.toml`` 里硬钉版本。自己写一个半吊子解析器，反而会在引号、行内注释、
-    ``export`` 前缀这些地方悄悄读错一个 key——那会让「评测用的是哪套环境」变成一个
-    查不出来的问题。
-    """
-
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument("--env-file", default=None)
-    known, _ = parser.parse_known_args()
-    if not known.env_file:
-        return None
-
-    from dotenv import dotenv_values
-
-    for key, value in dotenv_values(known.env_file).items():
-        if value is not None:
-            os.environ.setdefault(key, value)
-    return known.env_file
+# ``--env-file`` 的预读收在 ``scripts/env_bootstrap.py``：三个命令行工具原先各抄一份同样的
+# 实现，改一处忘两处时不会报错，只会让「这次跑的是哪套环境」变成查不出来的问题。
+from scripts.env_bootstrap import preload_env_file as _preload_env_file  # noqa: E402
 
 
 _ENV_FILE = _preload_env_file()
@@ -172,6 +146,7 @@ _ENV_FILE = _preload_env_file()
 # 下面这些 import 必须排在 ``_preload_env_file()`` 之后（E402），否则 settings 会先按
 # 空环境定型，--env-file 就白传了。
 from app.core.config import settings  # noqa: E402
+from app.utils.report_format import as_metric  # noqa: E402
 from app.core.exceptions import AppError  # noqa: E402
 from app.db.base import Base, now  # noqa: E402
 from app.db.session import SessionLocal, engine  # noqa: E402
@@ -183,6 +158,10 @@ from app.models.knowledge_base import (  # noqa: E402
 )
 from app.providers.llm import get_llm_provider  # noqa: E402
 from app.providers.llm.noop import NoopLLMProvider  # noqa: E402
+from app.services.eval_manifest import (  # noqa: E402
+    CorpusLayout,
+    load_manifest as _load_manifest,
+)
 from app.services.indexing_service import IndexingService  # noqa: E402
 from app.services.rag_service import retrieve  # noqa: E402
 from app.services.retrieval_options import RetrievalOptions  # noqa: E402
@@ -208,7 +187,9 @@ def _round(value: float | None, digits: int = 4) -> float | None:
 
 
 def _fmt(value: float | None) -> str:
-    return "n/a" if value is None else f"{value:.4f}"
+    """报告里的分数渲染：``None`` 印成 ``n/a``，不是 0。"""
+
+    return as_metric(value)
 
 
 def _short(chunk_id: str | None) -> str:
@@ -264,14 +245,15 @@ class LiveEnvironment:
         return {name: getattr(self, name) for name in self.__dataclass_fields__}
 
 
-def _isolate_settings(*, top_k: int) -> None:
+def _isolate_settings(*, top_k: int, rerank: bool = False) -> None:
     """把评测要用的旋钮**显式钉死**，不吃 .env 的偶然值。
 
     钉死的四项都不是「顺手」：
 
     * ``ELASTICSEARCH_INDEX`` → ``*_eval``：绝不写生产索引；
-    * ``RERANK_ENABLED=False``：重排会让 ``score`` 变成重排分、``rrf_score`` 只是历史值，
-      「融合分手算对账」（验收第 4 条）就没法做了；
+    * ``RERANK_ENABLED``：默认 ``False``——重排会让 ``score`` 变成重排分、``rrf_score``
+      只是历史值，「融合分手算对账」（验收第 4 条）就没法做了；但「重排开 vs 关」本身
+      是要测的一件事（#114），所以它是个**参数**而不是写死的常量，由调用方显式传；
     * ``SYNONYM_EXPANSION_ENABLED=False``：同义词只影响关键词一路，开着它做
       「vector vs hybrid」等于在对比里混进第三个变量；
     * ``QUERY_REWRITE_ENABLED=False``：主对比先给出**关掉一切可选优化**的基线，
@@ -279,7 +261,7 @@ def _isolate_settings(*, top_k: int) -> None:
     """
 
     settings.ELASTICSEARCH_INDEX = _eval_index_name()
-    settings.RERANK_ENABLED = False
+    settings.RERANK_ENABLED = bool(rerank)
     settings.SYNONYM_EXPANSION_ENABLED = False
     settings.QUERY_REWRITE_ENABLED = False
     settings.TOP_K = top_k
@@ -372,26 +354,9 @@ class CorpusDoc:
         return f"eval-doc-{self.stem}"
 
 
-@dataclass(frozen=True)
-class CorpusLayout:
-    kb_id: str
-    name: str
-    description: str
-    documents: tuple[str, ...]
-
-
-def _load_manifest() -> tuple[list[CorpusLayout], str]:
-    payload = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
-    layouts = [
-        CorpusLayout(
-            kb_id=kb["kb_id"],
-            name=kb["name"],
-            description=kb.get("description", ""),
-            documents=tuple(kb["documents"]),
-        )
-        for kb in payload["kbs"]
-    ]
-    return layouts, payload["empty_kb"]["kb_id"]
+# 清单的读取点在 ``app/services/eval_manifest.py``：旁证跑批由 Worker 执行，那里也要读同一份
+# 清单，而 ``app/`` 不该反过来 import 脚本的私有函数（依赖方向）。这里保留 ``CorpusLayout``
+# 与 ``_load_manifest`` 两个旧名字，``eval_runner`` 等仍按旧名调用，行为完全不变。
 
 
 def _eval_kb_ids() -> tuple[str, ...]:
@@ -740,6 +705,12 @@ class QuestionOutcome:
     empty_reason: str | None = None
     error: str | None = None
     duration_ms: float = 0.0
+    # 重排事实（#115）：``metadata.retrieval.rerank`` **原样**留档（``applied`` /
+    # ``candidates`` / ``returned`` / ``duration_ms``）。以前逐题明细只记「降级了吗」，
+    # 开了重排之后「这一题到底用没用上重排、重排自己花了多久」只存在于响应里，而响应
+    # 跑完就没了——基线要能事后回答「这一轮重排真的发生了」，所以它必须落进逐题明细。
+    # 原样照抄而不是另算一份：两处口径一旦分叉，读数的人就不知道该信哪个。
+    rerank: dict[str, Any] | None = None
     # 实际检索用的句子（#31）：改写成功时 ``vector_queries`` 是两句（原句 + 改写句），
     # 关闭 / 失败时只有原句；``effective_query`` 是重排看的那一句。留档是为了让
     # 「这一题为什么变差」能归因，而不是只能猜。
@@ -753,7 +724,13 @@ class QuestionOutcome:
 
 
 async def _run_question(
-    db: Any, question: Question, *, mode: str, top_k: int, kb_ids: Sequence[str]
+    db: Any,
+    question: Question,
+    *,
+    mode: str,
+    top_k: int,
+    kb_ids: Sequence[str],
+    rerank_factory: Callable[[], Any] | None = None,
 ) -> QuestionOutcome:
     started = time.perf_counter()
     outcome = QuestionOutcome(id=question.id, query=question.query, mode=mode)
@@ -780,6 +757,9 @@ async def _run_question(
                 rerank=settings.RERANK_ENABLED,
                 rewrite=settings.QUERY_REWRITE_ENABLED,
             ),
+            # 重排实现由调用方决定（#116）：``--rerank-provider llm`` 时这里是一个显式
+            # 装配旧实现的工厂；缺省 ``None`` 表示走生产工厂（专用端点那条链）。
+            rerank_factory=rerank_factory,
         )
     except AppError as exc:
         # 单模式失败是**预期结果**（验收第 7 条就是要求它明确失败），不是脚本故障：
@@ -793,6 +773,8 @@ async def _run_question(
     outcome.degraded = bool(retrieval_meta["degraded"])
     outcome.degraded_reason = retrieval_meta["degraded_reason"]
     outcome.empty_reason = retrieval_meta["empty_reason"]
+    # #115：重排事实原样带走，逐题明细才有「重排已发生 / 候选数 / 返回数 / 重排耗时」。
+    outcome.rerank = retrieval_meta.get("rerank")
     outcome.returned = list(response["retrieved_chunks"])
     # 记录**实际用于检索的句子**（#31）：没有它，「名次变了」就无法归因到
     # 「检索不行」还是「改写把问题改坏了」——q16 的退化当年正是卡在这里。
@@ -920,6 +902,8 @@ def _score_question(
         "degraded": outcome.degraded,
         "degraded_reason": outcome.degraded_reason,
         "empty_reason": outcome.empty_reason,
+        # #115 纯增量键：重排事实原样写入。既有键一个都没动，读旧归档的代码不受影响。
+        "rerank": outcome.rerank,
         "error": outcome.error,
         "duration_ms": outcome.duration_ms,
     }
