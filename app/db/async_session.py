@@ -1,11 +1,12 @@
 """异步引擎、异步会话工厂与请求级依赖——第 11 步（票 #126）铺的地基。
 
-## 这一票做了什么、没做什么
+## 这个模块是什么
 
 三样东西：一个复用现有连接串的 ``AsyncEngine``、一个 ``expire_on_commit=False`` 的
-``async_sessionmaker``、一个请求级依赖 :func:`get_async_db`。**没有任何生产路由改用它**——
-迁移按垂直切片推进（#127 起，一条请求路径一次），这一票只把地基铺好并证明它可用
-（探针见 ``tests/test_async_probe.py``）。
+``async_sessionmaker``、一个请求级依赖 :func:`get_async_db`。票 #126 只把地基铺好并证明
+它可用（探针见 ``tests/test_async_probe.py``）；从票 #127 起按垂直切片往上搬——已经用上
+它的是**观测与反馈那一片**（票 #128：归属索引的读、反馈的读写、控制台的 trace 读），
+检索链路与控制面其余部分仍在同步栈上。
 
 ## 为什么驱动还是 psycopg3
 
@@ -24,19 +25,21 @@ SQL 一字不改。换 asyncpg 只需要改 dialect 与 URL、业务代码零改
 ``pool_pre_ping`` 与 ``pool_recycle`` 在同步池上都没有显式设（用的是默认值）：异步池要跨
 事件循环活得更久，连接被中间层掐掉时**当场**发现比在业务查询里发现便宜。
 
-## 异步版的事务怎么收口（**尚未实现**，写给 #127 之后的人）
+## 异步版的事务怎么收口
 
 同步栈的提交点只有一个（``app.db.transaction``，结构守卫见 ``tests/test_transaction.py``），
-异步版走**同一个收口点**，形状是它的孪生：
+异步版走**同一个收口点**，形状是它的孪生（票 #128 落地）：
 
-* 事务对象持有 ``AsyncSession``，``__aenter__`` / ``__aexit__`` 对应现有的
-  ``__enter__`` / ``__exit__``，落库与撤销都是 ``await``；
-* 请求边界仍然是依赖：写接口声明 ``Depends(get_async_transaction)``，一个请求一笔事务；
+* :class:`app.db.transaction.AsyncTransaction` 持有 ``AsyncSession``，``__aenter__`` /
+  ``__aexit__`` 对应同步版的 ``__enter__`` / ``__exit__``，落库与撤销都是 ``await``；
+  入口是 ``async with async_transaction(session):``；
 * ``after_commit`` 的登记点不变（``session.info`` 上的同一笔），副作用仍然在提交之后执行；
-* 服务层继续不提交——**不允许**在服务层出现提交调用，异步化不等于把提交散出去。
+* 服务层继续不提交——**不允许**在服务层出现提交调用，异步化不等于把提交散出去；
+  结构守卫扫的是全仓的提交与回滚调用，异步写法（前面多个 ``await``）一样会被它抓到。
 
-在它落地之前，这一票不提供任何提交入口：:func:`get_async_db` 只负责 yield 与关闭，所以
-「新栈上有人偷偷提交」在结构上还不可能发生。
+**目前还没有 ``get_async_transaction`` 这个请求级依赖**：异步写接口要到控制面写那一片
+（第 11 步的 S4）才出现，那时按 ``get_transaction`` 的形状加一个即可。已经用上异步提交点的
+是**反馈写入**（自己开会话的旁路短事务）；归属索引的写入在检索路径上，随票 #127 搬。
 """
 
 from __future__ import annotations

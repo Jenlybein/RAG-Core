@@ -113,9 +113,11 @@ def _offline_process_state():
     from app.providers.keyword_search import reset_keyword_search_provider_cache
     from app.providers.llm import reset_llm_provider_cache
     from app.providers.rerank import reset_rerank_provider_cache
-    from tests.fake_db import RecordingSession
+    from tests.fake_db import AsyncRecordingSession, RecordingSession
 
     factory_mod.set_session_factory(RecordingSession)
+    # 异步那一路同理（票 #128 起反馈写入走它）：不注入的话，旁路短事务会真的去连 PostgreSQL。
+    factory_mod.set_async_session_factory(AsyncRecordingSession)
     set_settings_cache(_MemorySettingsCache())
     reset_trace_sink()
     reset_keyword_search_provider_cache()
@@ -132,6 +134,7 @@ def _offline_process_state():
         yield
     finally:
         factory_mod.set_session_factory(None)
+        factory_mod.set_async_session_factory(None)
         reset_settings_cache()
         reset_trace_sink()
         reset_keyword_search_provider_cache()

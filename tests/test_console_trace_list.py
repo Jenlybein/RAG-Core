@@ -10,6 +10,9 @@
 
 接缝是 ASGI 边界（真请求 + 真登录），与 `test_console_trace_lookup.py` 同一套理由：
 直接调函数会绕过路由声明，而「路径参数写成 query」这类错法只有发真请求才暴露。
+
+**两个会话替身是双栈期的显式事实**（第 11 步票 #128）：控制面身份仍走同步 `get_db`，
+「最近检索」这条读已经走异步 `get_async_db`；两条都注入内存替身。
 """
 
 from __future__ import annotations
@@ -29,7 +32,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncRecordingSession, RecordingSession
 
 LOGIN_PATH = "/console/login"
 RECENT_PATH = "/console/retrieval-traces/recent"
@@ -109,13 +112,17 @@ class _Harness:
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session_module = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
-    # **一个会话实例贯穿整个用例**：登录会把会话行写进这个假库，后续请求要能读回同一行。
+    # **一个同步会话实例贯穿整个用例**：登录会把会话行写进这个假库，后续请求要能读回同一行。
     # 每次请求新建一个 ``RecordingSession`` 会让登录「成功」而下一个请求 20010，
     # 排查时看着像 cookie 没带上，实际是库被换掉了。
     session = RecordingSession(rows=_world())
+    # 「最近检索」那条读走异步会话；本文件把两个仓储都换成桩，所以它只需要存在。
+    trace_session = AsyncRecordingSession()
     main.app.dependency_overrides[session_module.get_db] = lambda: session
+    main.app.dependency_overrides[async_session_module.get_async_db] = lambda: trace_session
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:
@@ -127,18 +134,22 @@ def console() -> Iterator[_Harness]:
 def _stub_repositories(
     monkeypatch: pytest.MonkeyPatch, *, rows: list[RetrievalTrace], scores: dict[str, int]
 ) -> dict[str, Any]:
-    """把两个仓储换成记录参数的桩：这一层要验的是「路由怎么调仓储」，不是 SQL。"""
+    """把两个仓储换成记录参数的桩：这一层要验的是「路由怎么调仓储」，不是 SQL。
+
+    桩是 ``async def``：两个读法已经换到 ``AsyncSession`` 上（票 #128），同步桩会被
+    路由 ``await`` 到但永远拿不到结果——那样失败的是「没 await」，不是这张票要守的行为。
+    """
 
     trace_repo = importlib.import_module("app.repositories.retrieval_trace_repository")
     feedback_repo = importlib.import_module("app.repositories.retrieval_feedback_repository")
     seen: dict[str, Any] = {}
 
-    def _list_recent(db: Any, *, tenant_id: str, limit: int) -> list[RetrievalTrace]:
+    async def _list_recent(db: Any, *, tenant_id: str, limit: int) -> list[RetrievalTrace]:
         seen["tenant_id"] = tenant_id
         seen["limit"] = limit
         return rows
 
-    def _scores(db: Any, log_ids: Any, *, tenant_id: str) -> dict[str, int]:
+    async def _scores(db: Any, log_ids: Any, *, tenant_id: str) -> dict[str, int]:
         seen["score_tenant_id"] = tenant_id
         seen["score_log_ids"] = list(log_ids)
         return scores

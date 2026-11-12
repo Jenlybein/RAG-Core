@@ -7,21 +7,31 @@
 （存在 / ``trace_id`` 对得上 / 是当前租户的）本来就要在同一行上读完，分成两次查只会让
 「跨租户」多一次泄露的机会。回读**不进检索链路**：链路一旦开始读这张表，旁路就变回主链
 路的依赖，而这张表的意义正是「链路不需要它也能跑完」。
+
+**迁移期这个模块是「异步读 + 同步写」**（第 11 步）：三个读法已经换成 ``AsyncSession``
+（票 #128，控制台与反馈那两条旁路），而 :func:`create` 还在同步栈上——它属于检索链路，
+由票 #127 连同那条路径一起搬。同一条路径不许有两种写法，所以这个过渡态只跨一个模块、
+两个读法，并在 ``create`` 上写明归属；#127 落地后本模块应当只剩异步一种。
 """
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.retrieval_trace import RetrievalTrace
 
 
 def create(db: Session, trace: RetrievalTrace) -> RetrievalTrace:
+    """写入一行归属索引（**同步**，属于检索链路，随票 #127 一起异步化）。"""
+
     db.add(trace)
     db.flush()
     return trace
 
 
-def get_by_id_for_tenant(db: Session, log_id: str, *, tenant_id: str) -> RetrievalTrace | None:
+async def get_by_id_for_tenant(
+    db: AsyncSession, log_id: str, *, tenant_id: str
+) -> RetrievalTrace | None:
     """按 ``id``（对外即 ``log_id``）**且** ``tenant_id`` 取一行；缺失与跨租户都返回 ``None``。
 
     租户是**强制参数、不是可选过滤器**：调用方拿到 ``None`` 一律按「不存在」处理，
@@ -32,16 +42,18 @@ def get_by_id_for_tenant(db: Session, log_id: str, *, tenant_id: str) -> Retriev
     实现上先按主键取、再在**这里**判租户，而不是把条件拼进一条 ``select``：主键查询走
     会话的 identity map，少一次 SQL 往返；而「不属于你就当不存在」是**这一层**的结论，
     拼不拼进 SQL 都得出同一个答案——放在一处，跨租户的口径就只有一份。真库与离线替身
-    （``RecordingSession.get``）走的也是同一条路径。
+    （``AsyncRecordingSession.get``）走的也是同一条路径。
     """
 
-    row = db.get(RetrievalTrace, log_id)
+    row = await db.get(RetrievalTrace, log_id)
     if row is None or row.tenant_id != tenant_id:
         return None
     return row
 
 
-def get_by_trace_id_for_tenant(db: Session, trace_id: str, *, tenant_id: str) -> RetrievalTrace | None:
+async def get_by_trace_id_for_tenant(
+    db: AsyncSession, trace_id: str, *, tenant_id: str
+) -> RetrievalTrace | None:
     """按 ``trace_id`` 且 ``tenant_id`` 取一行（#106 的反查）。
 
     **为什么需要反查**：检索响应里只有 ``metadata.trace_id``（ADR-0010 第五次修订的红线：
@@ -55,11 +67,11 @@ def get_by_trace_id_for_tenant(db: Session, trace_id: str, *, tenant_id: str) ->
     statement = select(RetrievalTrace).where(
         RetrievalTrace.trace_id == trace_id, RetrievalTrace.tenant_id == tenant_id
     )
-    return db.execute(statement).scalar_one_or_none()
+    return (await db.execute(statement)).scalar_one_or_none()
 
 
-def list_recent_for_tenant(
-    db: Session, *, tenant_id: str, limit: int = 20
+async def list_recent_for_tenant(
+    db: AsyncSession, *, tenant_id: str, limit: int = 20
 ) -> list[RetrievalTrace]:
     """按时间倒序取本租户最近若干条归属索引（控制台「最近检索」列表）。
 
@@ -77,4 +89,4 @@ def list_recent_for_tenant(
         .order_by(RetrievalTrace.created_at.desc())
         .limit(limit)
     )
-    return list(db.execute(statement).scalars().all())
+    return list((await db.execute(statement)).scalars().all())

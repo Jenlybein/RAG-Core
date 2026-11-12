@@ -13,15 +13,23 @@
 ``settings.DATABASE_URL`` 建引擎；如果每个想拿会话的模块都顶层 import 它，配置的错误
 会以「import 顺序」的形式在不同入口上表现不同。局部 import 让「建引擎」只发生在真正
 要用会话的那一刻，而测试可以在那之前注入假实现。
+
+**异步那一路是同一套做法**（第 11 步票 #128）：:func:`async_session_factory` 与
+:func:`set_async_session_factory` 是上面两个函数的孪生，指向 ``AsyncSessionLocal``。
+两个注入点**刻意分开**，而不是合成一个「看会话类型返回」的函数：一个进程在迁移期同时
+有同步与异步两条路径，合成一个之后「这条路径到底拿到了哪一套」只能靠运行期类型去猜，
+而猜错的形态是「离线套件悄悄连了真库」。
 """
 
 from __future__ import annotations
 
 from typing import Callable
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 _override: Callable[[], Session] | None = None
+_async_override: Callable[[], AsyncSession] | None = None
 
 
 def session_factory() -> Callable[[], Session]:
@@ -39,6 +47,23 @@ def set_session_factory(factory: Callable[[], Session] | None) -> None:
 
     global _override
     _override = factory
+
+
+def async_session_factory() -> Callable[[], AsyncSession]:
+    """当前该用的**异步**会话工厂：注入的假实现优先，否则 ``AsyncSessionLocal``。"""
+
+    if _async_override is not None:
+        return _async_override
+    from app.db.async_session import AsyncSessionLocal
+
+    return AsyncSessionLocal
+
+
+def set_async_session_factory(factory: Callable[[], AsyncSession] | None) -> None:
+    """注入异步会话工厂（测试用假会话；生产复位成 ``None`` 即回到 ``AsyncSessionLocal``）。"""
+
+    global _async_override
+    _async_override = factory
 
 
 def close_quietly(session: Session | None, *, on_failure: Callable[[str], None]) -> None:
@@ -64,4 +89,30 @@ def close_quietly(session: Session | None, *, on_failure: Callable[[str], None])
         on_failure(type(exc).__name__)
 
 
-__all__ = ["close_quietly", "session_factory", "set_session_factory"]
+async def close_quietly_async(
+    session: AsyncSession | None, *, on_failure: Callable[[str], None]
+) -> None:
+    """:func:`close_quietly` 的异步孪生：关一个异步的**独立短事务**会话。
+
+    同样的三条：没有单独 ``rollback``（未提交的事务随 ``close`` 结束）、``close`` 自己
+    失败也只报给 ``on_failure``、传出去的是异常**类型名**而不是异常对象。写成两个函数
+    而不是一个「看类型再 await」的函数：后者在「同步会话被传进异步收尾」时会静默跳过关闭，
+    而那正是连接泄漏的形状。
+    """
+
+    if session is None:
+        return
+    try:
+        await session.close()
+    except Exception as exc:  # noqa: BLE001 - 旁路：关会话失败只许降级
+        on_failure(type(exc).__name__)
+
+
+__all__ = [
+    "async_session_factory",
+    "close_quietly",
+    "close_quietly_async",
+    "session_factory",
+    "set_async_session_factory",
+    "set_session_factory",
+]
