@@ -269,6 +269,11 @@ _Avoid_: 导入链路, 写入链路, 文档链路
 读侧链路，必须同步：查询优化 → 召回 → 融合 → 重排 → 上下文恢复 → 组装检索结果。
 _Avoid_: 查询链路, 读取链路, 搜索链路
 
+**检索执行池**：
+为混合检索的**向量分支**准备的固定规模常驻执行池（自带事件循环、排队有预算）：同步查询因此不占主循环，连接也能跨请求复用。
+**边界：只服务混合模式的向量分支。** 单模式向量留在主循环（它用的是请求的 Session，而 Session 不是线程安全的）；索引链路与 Celery 不进这个池（Worker 每个任务自带循环，自建自关）。
+_Avoid_: 线程池（它不是通用线程池）, 连接池（它不持连接）, 事件循环池
+
 **数据面**：
 面向业务系统的接口面，身份由 API Key 认定。HTTP 与 MCP 两种入口都属于数据面。
 _Avoid_: 业务面, 开放面, 外部接口
@@ -278,19 +283,24 @@ _Avoid_: 业务面, 开放面, 外部接口
 _Avoid_: 管理面, 后台, 运维面
 
 **Provider（六类）**：
-外部依赖的适配抽象，共六类：Embedding / VectorStore / KeywordSearch / LLM / Rerank / DocumentParser。判据是**有没有自己的外部依赖**，且按**最终生产形态**算（Rerank 一期是包着 `LLMProvider` 的 `LLMRerankProvider`，二期才有独立端点）。查询改写与同义词没有自己的外部依赖，归属 `app/services/query/`，**不计入六类**。
+外部依赖的适配抽象，共六类：Embedding / VectorStore / KeywordSearch / LLM / Rerank / DocumentParser。判据是**有没有自己的外部依赖**，且按**最终生产形态**算（Rerank 二期已落地：生产装的是打自己端点的 `Qwen3RerankProvider`；一期那种包着 `LLMProvider` 的 `LLMRerankProvider` 只留在评测对照里，生产工厂不返回它）。查询改写与同义词没有自己的外部依赖，归属 `app/services/query/`，**不计入六类**。
 _Avoid_: 七类, 七个子类, 七个子目录
 
 ## 模型接入
 
 **模型配置（ModelConfig）**：
 一行 = 一套可用的模型接入：供应商、端点、模型名与凭证。它是**可增删的配置数据，不是部署常量**——管理员在控制台增删多条，再由两个**模型角色**各指向一条。它与「模型角色」不是一回事：角色是用途（fast / strong），配置是这台机器上有哪些接入可用。
-**重排没有独立的模型配置**，它跟随 `fast`（Rerank 一期包着大模型 Provider，见 [ADR-0002](docs/adr/0002-six-provider-categories.md)）。库里一行都没有时，回落 `.env` 的单供应商；`.env` 也没配，就是空实现（离线与 CI 行为不变）。
+**重排既没有独立的模型配置，也不进这张表**：它是 chat 供应商语义的表，重排走的是部署配置（`RERANK_*` 一组，见「重排端点」），硬加一个用途位只会多出「改了也不生效」的配置项（[ADR-0022](docs/adr/0022-rerank-endpoint-and-loop-isolation.md)）。库里一行都没有时，回落 `.env` 的单供应商；`.env` 也没配，就是空实现（离线与 CI 行为不变）。
 _Avoid_: 模型列表, provider 配置, 模型源
 
 **模型角色（model role）**：
-大模型用途的两个固定角色：`fast`（查询改写、重排：要快、要稳，DeepSeek 上写死关闭思考）与 `strong`（留给 Research：要准）。配置名分别是 `LLM_MODEL` 与 `LLM_STRONG_MODEL`。它是**用途角色**，与「套餐」「质量档位」都不是一回事。
+大模型用途的两个固定角色：`fast`（查询改写：要快、要稳，DeepSeek 上写死关闭思考）与 `strong`（留给 Research：要准）。配置名分别是 `LLM_MODEL` 与 `LLM_STRONG_MODEL`。它是**用途角色**，与「套餐」「质量档位」都不是一回事。**重排不在其中**：重排打的是自己的端点，不指向任何角色（见「重排端点」）。
 _Avoid_: tier, 档位（已被「质量档位」占用）, 级别, 套餐
+
+**重排端点**：
+重排请求打的那台服务：OpenAI 兼容的 `/reranks` 端点，模型是专用的 Cross-Encoder（`qwen3.7-text-rerank`），由**部署配置**决定地址、模型与超时，密钥留空时回落 `MODEL_API_KEY`。
+它与「模型角色」不是一回事：角色是**用途**（fast / strong），端点是**这套用途自己的一台服务**；重排不指向任何角色，因此也不是「模型配置」里的一行。**路径段与嵌入不同**——嵌入是 `compatible-mode/v1`、重排是 `compatible-api/v1`，两者不能互相顶替。
+_Avoid_: 重排模型配置, 重排角色, rerank provider 配置
 
 **available**：
 Provider 的能力存在性信号：`True` 表示这个能力已装配，`False` 表示当前是空实现（没配 key、没配引擎）。它与「这次查到了没有」无关。`mode=bm25` 遇到 `available=False` 是硬失败（`50002`），混合模式则把这一路记为降级。
