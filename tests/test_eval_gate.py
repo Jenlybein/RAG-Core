@@ -274,6 +274,87 @@ def test_report_leaves_the_rerank_section_out_when_nothing_was_recorded() -> Non
     assert "## 重排（应用率与它自己的耗时）" not in report
 
 
+def test_the_report_states_the_rerank_budget_and_demands_it_back_in_the_command() -> None:
+    """重排上限被抬高过的那一轮：报告要写清预算，复现命令要带上那个环境变量。
+
+    否则照抄命令重跑会在同一批题上得到「有几道超时降级」的另一份读数——数字看着都合理，
+    没人会想到差异来自一个没写下来的环境变量。
+    """
+
+    payload = _payload([_score("q1")])
+    payload["environment"]["retrieval"].update(
+        {
+            "rerank_enabled": True,
+            "rerank_timeout_seconds": 60.0,
+            "rerank_max_candidates": 20,
+            "rerank_chunk_max_chars": 1024,
+        }
+    )
+
+    report = render_report(payload)
+
+    assert "超时 60s / 候选封顶 20 片 / 单条截断 1024 字符" in report
+    assert "评测抬高过上限" in report and "生产预算 15s" in report
+    assert '$env:RERANK_TIMEOUT_SECONDS = "60"' in report
+
+
+def test_the_reproduction_command_stays_quiet_when_the_budget_is_the_production_one() -> None:
+    """预算就是生产那档（15 秒）时不多印一行——多印会让人以为「这里有个特殊设置」。"""
+
+    payload = _payload([_score("q1")])
+    payload["environment"]["retrieval"].update(
+        {"rerank_enabled": True, "rerank_timeout_seconds": 15.0}
+    )
+
+    report = render_report(payload)
+
+    assert "超时 15s" in report
+    assert "评测抬高过上限" not in report
+    assert "RERANK_TIMEOUT_SECONDS" not in report
+
+
+def test_the_report_counts_how_many_questions_the_production_budget_would_degrade() -> None:
+    """60 秒跑出来的基线要自己说清：按生产 15 秒会有几道降级（下限，不是定值）。"""
+
+    payload = _payload([_score("q1"), _score("q2"), _score("q3")])
+    payload["environment"]["retrieval"].update(
+        {"rerank_enabled": True, "rerank_timeout_seconds": 60.0}
+    )
+    for item, duration in zip(payload["per_question"], (5000.0, 20000.0, 30000.0)):
+        item["rerank"] = {
+            "applied": True,
+            "candidates": 20,
+            "returned": 15,
+            "duration_ms": duration,
+        }
+    payload["metrics"]["rerank"] = rerank_stats(payload["per_question"])
+
+    report = render_report(payload)
+
+    assert "按生产预算 15 秒会有多少道降级" in report
+    assert "至少 2/3 道（q2、q3）" in report
+
+
+def test_the_report_skips_the_production_budget_note_on_a_production_budget_run() -> None:
+    """预算就是 15 秒的一轮：没有「会降级几道」这件事可推，不该印一段噪音。"""
+
+    payload = _payload([_score("q1")])
+    payload["environment"]["retrieval"].update(
+        {"rerank_enabled": True, "rerank_timeout_seconds": 15.0}
+    )
+    payload["per_question"][0]["rerank"] = {
+        "applied": True,
+        "candidates": 20,
+        "returned": 15,
+        "duration_ms": 5000.0,
+    }
+    payload["metrics"]["rerank"] = rerank_stats(payload["per_question"])
+
+    report = render_report(payload)
+
+    assert "按生产预算 15 秒会有多少道降级" not in report
+
+
 def test_the_reproduction_command_carries_the_rerank_switch_only_when_it_was_on() -> None:
     """重排关的一轮：复现命令与历史一模一样；开的一轮：必须带 ``--rerank``。"""
 

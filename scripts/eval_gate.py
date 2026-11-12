@@ -1032,6 +1032,31 @@ def _chunking_text(environment: Mapping[str, Any]) -> str:
     return f"{size}（overlap {overlap}，表格行上限 {chunking.get('table_max_rows')}）"
 
 
+#: 生产里的重排超时预算（``RERANK_TIMEOUT_SECONDS`` 的缺省值）。评测为了拿到
+#: 「全部题目都真的排过」的基线，会在**那一轮的进程里**把上限抬到 60 秒——
+#: 这个差异本身就是结论，所以报告要把它写成一行，而不是藏进 environment.json。
+PRODUCTION_RERANK_TIMEOUT_SECONDS = 15.0
+
+
+def _rerank_budget_text(retrieval: Mapping[str, Any]) -> str:
+    """重排预算（超时 / 候选封顶 / 单条截断）的一行描述。
+
+    老归档没有这三项：如实写「未记录」，不补一个看起来合规的 15 秒——补出来的默认值
+    会让「这一轮到底按什么预算跑的」变成一句猜出来的话。
+    """
+
+    timeout = retrieval.get("rerank_timeout_seconds")
+    if timeout is None:
+        return "超时未记录（#115 之前的老归档）"
+    text = (
+        f"超时 {float(timeout):g}s / 候选封顶 {retrieval.get('rerank_max_candidates')} 片 / "
+        f"单条截断 {retrieval.get('rerank_chunk_max_chars')} 字符"
+    )
+    if float(timeout) != PRODUCTION_RERANK_TIMEOUT_SECONDS:
+        text += f"（**评测抬高过上限**；生产预算 {PRODUCTION_RERANK_TIMEOUT_SECONDS:g}s）"
+    return text
+
+
 def _scope_text(payload: Mapping[str, Any], overall: Mapping[str, Any]) -> str:
     """「进主平均几道」要说清分母：全量跑是 127 道，``--limit`` 跑是「5 / 127」。"""
 
@@ -1103,6 +1128,11 @@ def _environment_section(payload: Mapping[str, Any]) -> list[str]:
             f"{corpus.get('questions')} 道（{_scope_text(payload, overall)}；"
             f"排除 {excluded_text or '无'}）",
             "metrics.excluded",
+        ),
+        (
+            "重排预算",
+            _rerank_budget_text(retrieval),
+            "environment.retrieval.rerank_timeout_seconds",
         ),
         (
             "开关状态",
@@ -1224,8 +1254,11 @@ def _rerank_section(payload: Mapping[str, Any]) -> list[str]:
     )
     for label, value in rows:
         lines.append(f"| {label} | {_num(value, 1)} | `{_cell(_command(run_dir, source_key))}` |")
+    lines.append("")
+    budget = switches.get("rerank_timeout_seconds")
+    if budget is not None and float(budget) != PRODUCTION_RERANK_TIMEOUT_SECONDS:
+        lines += _production_budget_note(per_question, float(budget))
     lines += [
-        "",
         "口径：耗时只统计 `applied=true` 那些题（降级路径里的时长是「失败那次尝试」，"
         "混进来就不是「重排要多久」）；分母是**留下了重排事实的题**，检索本身失败的题"
         "没有重排可言，不计入。逐题的 `candidates` / `returned` 见 `per_question[*].rerank`"
@@ -1234,6 +1267,43 @@ def _rerank_section(payload: Mapping[str, Any]) -> list[str]:
         "",
     ]
     return lines
+
+
+def _production_budget_note(
+    per_question: Sequence[Mapping[str, Any]], budget: float
+) -> list[str]:
+    """把「这一轮抬高了上限」换算成「按生产预算会有几道降级」。
+
+    能算是因为逐题留下了重排自己的耗时：超过生产预算的那些题，在生产预算下**一定会**
+    超时降级。措辞要留住这个推断的边界——这是「至少这么多」，不是「正好这么多」：
+    15 秒的那一轮会在 15 秒掐断请求，后面的题不再排队等，耗时分布本身会变。
+    """
+
+    durations = [
+        float(item["rerank"]["duration_ms"])
+        for item in per_question
+        if isinstance(item, Mapping)
+        and isinstance(item.get("rerank"), Mapping)
+        and is_scored(item["rerank"].get("duration_ms"))
+    ]
+    budget_ms = PRODUCTION_RERANK_TIMEOUT_SECONDS * 1000.0
+    over = [item for item in per_question
+            if isinstance(item, Mapping)
+            and isinstance(item.get("rerank"), Mapping)
+            and is_scored(item["rerank"].get("duration_ms"))
+            and float(item["rerank"]["duration_ms"]) > budget_ms]
+    if not durations:
+        return ["- 按生产预算会降级几道：无法从本次数据推断（逐题重排耗时没留下）。", ""]
+    ids = "、".join(str(item.get("id")) for item in over) or "无"
+    return [
+        f"- **按生产预算 {PRODUCTION_RERANK_TIMEOUT_SECONDS:g} 秒会有多少道降级**："
+        f"至少 {len(over)}/{len(durations)} 道（{ids}）——这些题的重排耗时已超过 "
+        f"{PRODUCTION_RERANK_TIMEOUT_SECONDS:g} 秒，在生产预算下一定超时、降级成"
+        "「按融合顺序返回」。**这是下限不是定值**：掐断后不再排队等，那一轮的耗时分布会变。",
+        f"- 本轮用的是 {budget:g} 秒上限（只在这一次评测进程里抬高，`.env` 与生产预算都没动）："
+        "所以这份基线是「每题都真的排过」的读数，不能与 15 秒下的读数直接相减。",
+        "",
+    ]
 
 
 def _unscored_section(payload: Mapping[str, Any]) -> list[str]:
@@ -1319,6 +1389,9 @@ def _reproduce_section(payload: Mapping[str, Any]) -> list[str]:
     extra = f" --limit {limit}" if limit else ""
     # 开着重排跑的那一轮，复现命令里必须带上开关：不带就复现出另一把尺子的数字
     switch = " --rerank" if _rerank_on(payload) else ""
+    # 重排上限被抬高过的那一轮，复现命令还得带上环境变量——否则照着跑会在同一批题上
+    # 得到「有几道超时降级」的另一份读数，而报告里没有任何东西提示这一点。
+    timeout_line = _timeout_env_line(payload)
     return [
         "## 复现命令（照抄即可）",
         "",
@@ -1329,6 +1402,7 @@ def _reproduce_section(payload: Mapping[str, Any]) -> list[str]:
         f"{RUNNER_COMMAND} validate-dataset",
         f"{RUNNER_COMMAND} validate-config",
         "# 2. 真实跑（进程内检索；需要 PG / ES / 嵌入凭据）",
+        *([timeout_line] if timeout_line else []),
         f"{RUNNER_COMMAND} run --env-file <主 checkout>\\.env{extra}{switch}",
         "# 3. 重出这份报告（只读归档，不再跑检索）",
         f"{RUNNER_COMMAND} report --run {run_dir}",
@@ -1339,6 +1413,19 @@ def _reproduce_section(payload: Mapping[str, Any]) -> list[str]:
         "上面每个数字都来自同一份 `results.json`：报告是它的渲染，不是另算一遍。",
         "",
     ]
+
+
+def _timeout_env_line(payload: Mapping[str, Any]) -> str | None:
+    """抬高过重排上限的那一轮：给一行可以直接粘的环境变量，没有就什么都不加。"""
+
+    retrieval = (payload.get("environment") or {}).get("retrieval") or {}
+    timeout = retrieval.get("rerank_timeout_seconds")
+    if timeout is None or float(timeout) == PRODUCTION_RERANK_TIMEOUT_SECONDS:
+        return None
+    return (
+        f'$env:RERANK_TIMEOUT_SECONDS = "{float(timeout):g}"'
+        f"  # 本轮评测的预算；生产是 {PRODUCTION_RERANK_TIMEOUT_SECONDS:g} 秒"
+    )
 
 
 def render_report(payload: Mapping[str, Any]) -> str:
