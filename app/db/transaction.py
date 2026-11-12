@@ -25,6 +25,13 @@
 **为什么在会话上而不是全局变量里**：一笔事务属于**一个会话**。旁路短事务（归属索引、
 反馈）在一个请求里另开会话，它的事务不能并进请求那一笔；挂在 ``session.info`` 上，
 两笔各归各的，嵌套的入口自然并入外层。
+
+**异步孪生（第 11 步票 #128）**：:class:`AsyncTransaction` 与 :class:`Transaction` 逐条
+同构——同一份嵌套规则、同一份 ``after_commit`` 登记、同一个 ``session.info`` 键。差别只在
+``commit`` / ``rollback`` 要 ``await``。**不并成一个类**：一个类里靠 ``isinstance`` 分叉
+会让「这笔到底是哪一套」在运行期才可知，而两套的收尾动作（一个立刻返回、一个要 await）
+恰恰是最不该猜的那一步。两份实现的风险是漂移，由 ``tests/test_transaction.py`` 的共享契约
+用例守着（同一组操作 → 同一串事件）。
 """
 
 from __future__ import annotations
@@ -33,6 +40,7 @@ from collections.abc import Callable
 from types import TracebackType
 from typing import Final, Literal
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 #: ``session.info`` 里的键。``info`` 是 SQLAlchemy 给调用方留的字典，值随会话走。
@@ -125,7 +133,7 @@ def transaction(session: Session) -> Transaction:
     """
 
     opened = current(session)
-    return opened if opened is not None else Transaction(session)
+    return opened if isinstance(opened, Transaction) else Transaction(session)
 
 
 def commit_now(session: Session) -> None:
@@ -145,14 +153,95 @@ def rollback_now(session: Session) -> None:
     session.rollback()
 
 
-def current(session: Session) -> Transaction | None:
+class AsyncTransaction:
+    """:class:`Transaction` 的**异步孪生**：``async with async_transaction(session):``。
+
+    契约与同步那份逐条相同（正常出块提交一次、异常回滚并原样抛出、嵌套并入外层、
+    ``after_commit`` 只在提交之后执行、登记在 ``session.info`` 上），只有 ``commit`` /
+    ``rollback`` 需要 ``await``。它服务的正是**旁路短事务**（反馈、归属索引）：那些路径
+    自己开会话、自己收尾，而它们的会话是 ``AsyncSession``——所以提交点必须也是异步的，
+    否则那两条路径只能裸 ``await session.commit()``，把「提交点只有一个」这条纪律破掉。
+    """
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+        self._depth = 0
+        self._after: list[AfterCommit] = []
+
+    # ── 上下文管理
+
+    async def __aenter__(self) -> AsyncTransaction:
+        if self._depth == 0:
+            self._session.info[_SESSION_KEY] = self
+        self._depth += 1
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> Literal[False]:
+        self._depth -= 1
+        if self._depth:
+            return False
+        self._session.info.pop(_SESSION_KEY, None)
+        if exc_type is None:
+            await self.commit()
+        else:
+            await self.rollback()
+        # 与同步版同一口径：事务不吞异常，错误码与响应形状由异常处理器决定。
+        return False
+
+    # ── 提交点
+
+    def after_commit(self, action: AfterCommit) -> None:
+        """登记一个「提交成功之后」才执行的动作；回滚时整批丢弃。"""
+
+        self._after.append(action)
+
+    async def commit(self) -> None:
+        """落库，然后按登记顺序执行提交后动作（提交失败时动作一个都不执行）。"""
+
+        await self._session.commit()
+        actions, self._after = self._after, []
+        for action in actions:
+            action()
+
+    async def rollback(self) -> None:
+        """丢弃这一笔的全部改动与全部提交后动作。"""
+
+        self._after.clear()
+        await self._session.rollback()
+
+
+def async_transaction(session: AsyncSession) -> AsyncTransaction:
+    """异步事务入口：``async with async_transaction(db):``；已有一笔时并入外层。"""
+
+    opened = current(session)
+    return opened if isinstance(opened, AsyncTransaction) else AsyncTransaction(session)
+
+
+async def async_commit_now(session: AsyncSession) -> None:
+    """非请求边界的**显式**异步提交（:func:`commit_now` 的孪生，同一理由）。"""
+
+    await session.commit()
+
+
+async def async_rollback_now(session: AsyncSession) -> None:
+    """非请求边界的显式异步回滚（与 :func:`async_commit_now` 同一理由）。"""
+
+    await session.rollback()
+
+
+def current(session: Session | AsyncSession) -> Transaction | AsyncTransaction | None:
     """这个会话上正在跑的那一笔；不在任何入口里时是 ``None``。"""
 
     found = session.info.get(_SESSION_KEY)
-    return found if isinstance(found, Transaction) else None
+    return found if isinstance(found, (Transaction, AsyncTransaction)) else None
 
 
-def after_commit(session: Session, action: AfterCommit) -> None:
+def after_commit(session: Session | AsyncSession, action: AfterCommit) -> None:
     """把 ``action`` 登记到**当前这一笔**的提交之后。
 
     没有当前事务时抛 :class:`NoTransactionError`：那条写路径缺了事务边界，先补边界
@@ -170,9 +259,13 @@ def after_commit(session: Session, action: AfterCommit) -> None:
 
 __all__ = [
     "AfterCommit",
+    "AsyncTransaction",
     "NoTransactionError",
     "Transaction",
     "after_commit",
+    "async_commit_now",
+    "async_rollback_now",
+    "async_transaction",
     "current",
     "transaction",
 ]

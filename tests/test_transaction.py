@@ -10,6 +10,11 @@
 
 第 4 条是服务层能拿到它的唯一途径：请求边界由路由的 ``Depends(get_transaction)`` 开，
 服务层只问「这一笔在不在」并往上登记，自己不提交。
+
+**异步孪生**（第 11 步票 #128）守着**同一组**契约：``async with async_transaction(session):``。
+两者必须逐条一致——否则「换了栈之后事务语义变了」这件事只会在生产上以半提交的形态出现。
+所以最后一节把同一组操作在同步与异步两笔事务上各跑一遍，断言**事件序列逐字相同**；
+期望值写成字面量，而不是「用另一套算一遍」。
 """
 
 from __future__ import annotations
@@ -153,6 +158,113 @@ def test_repeated_entry_on_the_same_session_does_not_leave_state_behind() -> Non
         pass
 
     assert db.events == ["commit", "commit"]
+
+
+# ──────────────────────────────────────────── 异步孪生：同一组契约，另一套语法
+
+
+class _AsyncSession:
+    """``_Session`` 的异步面：只把 ``commit`` / ``rollback`` 变成可 ``await`` 的。
+
+    事件列表而不是计数器，理由与同步那份一字不差：契约是**顺序**。
+    """
+
+    def __init__(self) -> None:
+        self.info: dict[str, object] = {}
+        self.events: list[str] = []
+
+    async def commit(self) -> None:
+        self.events.append("commit")
+
+    async def rollback(self) -> None:
+        self.events.append("rollback")
+
+
+@pytest.mark.asyncio
+async def test_the_async_twin_commits_once_when_the_block_succeeds() -> None:
+    db = _AsyncSession()
+
+    async with tx.async_transaction(db):
+        db.events.append("work")
+
+    assert db.events == ["work", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_the_async_twin_rolls_back_and_reraises_when_the_block_fails() -> None:
+    db = _AsyncSession()
+
+    with pytest.raises(RuntimeError, match="boom"):
+        async with tx.async_transaction(db):
+            db.events.append("half-done")
+            raise RuntimeError("boom")
+
+    assert db.events == ["half-done", "rollback"]
+
+
+@pytest.mark.asyncio
+async def test_async_nested_entries_join_the_outer_transaction() -> None:
+    db = _AsyncSession()
+
+    async with tx.async_transaction(db):
+        async with tx.async_transaction(db):
+            db.events.append("inner")
+        db.events.append("outer")
+
+    assert db.events == ["inner", "outer", "commit"]
+
+
+@pytest.mark.asyncio
+async def test_async_after_commit_runs_only_after_the_commit() -> None:
+    db = _AsyncSession()
+
+    async with tx.async_transaction(db):
+        tx.after_commit(db, lambda: db.events.append("dispatch"))
+
+    assert db.events == ["commit", "dispatch"]
+
+
+@pytest.mark.asyncio
+async def test_async_after_commit_actions_are_dropped_when_the_block_fails() -> None:
+    db = _AsyncSession()
+
+    with pytest.raises(RuntimeError):
+        async with tx.async_transaction(db):
+            tx.after_commit(db, lambda: db.events.append("dispatch"))
+            raise RuntimeError("write failed")
+
+    assert db.events == ["rollback"]
+
+
+@pytest.mark.asyncio
+async def test_async_after_commit_outside_any_entry_is_a_programming_error() -> None:
+    db = _AsyncSession()
+
+    with pytest.raises(tx.NoTransactionError):
+        tx.after_commit(db, lambda: db.events.append("dispatch"))
+
+
+@pytest.mark.asyncio
+async def test_the_two_twins_produce_the_same_event_sequence() -> None:
+    """共享契约本身：同一组操作在同步与异步两笔事务上产生**同一串**事件。
+
+    两笔事务各写一份实现（一份 ``with``、一份 ``async with``），漂移的症状是「异步那笔
+    少了提交后动作」或「嵌套时提前提交」——两者都只在生产上以半提交的形态出现。期望值
+    写成字面量：用另一套算出来的期望，在漂移时仍然是绿的。
+    """
+
+    sync_db = _Session()
+    async_db = _AsyncSession()
+
+    with tx.transaction(sync_db):
+        sync_db.events.append("work")
+        tx.after_commit(sync_db, lambda: sync_db.events.append("dispatch"))
+    async with tx.async_transaction(async_db):
+        async_db.events.append("work")
+        tx.after_commit(async_db, lambda: async_db.events.append("dispatch"))
+
+    assert sync_db.events == ["work", "commit", "dispatch"]
+    assert async_db.events == sync_db.events
 
 
 def test_only_the_transaction_module_commits() -> None:
