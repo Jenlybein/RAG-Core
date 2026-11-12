@@ -1092,9 +1092,13 @@ def test_json_safe_turns_non_finite_floats_into_none() -> None:
     )
     assert cleaned == {"a": None, "b": None, "c": [1.0, None], "d": "NaN"}
 
+
 # ────────────────────── 重排实现的选择与注入（票 #116）
 
-def _pin_rerank_settings(monkeypatch, *, enabled: bool, base_url: str = "", api_key: str = "") -> None:
+
+def _pin_rerank_settings(
+    monkeypatch, *, enabled: bool, base_url: str = "", api_key: str = ""
+) -> None:
     """把「这一轮用的是哪种重排」钉死，不依赖本机 ``.env`` 里恰好有什么。"""
 
     from app.core.config import settings
@@ -1252,9 +1256,7 @@ def test_build_rerank_factory_llm_really_builds_the_old_implementation(
         async def chat_json(self, *, system: str, user: str) -> dict:  # pragma: no cover
             raise AssertionError("重排只走结构化输出")
 
-    monkeypatch.setattr(
-        "app.providers.llm.get_llm_provider", lambda role="fast": _FakeLLM()
-    )
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": _FakeLLM())
 
     factory = eval_runner.build_rerank_factory(provider_name="llm")
     assert factory is not None

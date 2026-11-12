@@ -252,7 +252,9 @@ def _configure_qwen_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
     """把「端点已配」这件事钉死，不依赖本机 ``.env`` 里恰好有什么。"""
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
-    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example.test/compatible-api/v1")
+    monkeypatch.setattr(
+        settings, "RERANK_BASE_URL", "https://rerank.example.test/compatible-api/v1"
+    )
     monkeypatch.setattr(settings, "RERANK_API_KEY", "rerank-key")
     monkeypatch.setattr(settings, "RERANK_MODEL", "qwen3.7-text-rerank")
 
