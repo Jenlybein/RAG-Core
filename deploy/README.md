@@ -5,7 +5,7 @@
 | 栈 | 起法 | 里面有什么 |
 | --- | --- | --- |
 | 业务栈（默认） | `docker compose -f deploy/docker-compose.yml up -d` | postgres（pgvector）、redis、worker、api、frontend、elasticsearch |
-| 观测栈（`obs`） | `docker compose -f deploy/docker-compose.yml --profile obs up -d` | langfuse-web、langfuse-worker、clickhouse、minio、langfuse-redis |
+| 观测栈（`obs`） | `docker compose -f deploy/docker-compose.yml --profile obs up -d` | langfuse-web、langfuse-worker、clickhouse、minio |
 
 **打开 `http://localhost:8080` 就是控制台**：`frontend` 容器（nginx）把静态资源与 `/api`、
 `/console` 两条反代都收在同一个 origin 下，浏览器只看到一个站点——控制面 cookie 的
@@ -86,12 +86,23 @@ RUN pnpm install --frozen-lockfile --allow-build=vue-demi
 | langfuse-worker（`langfuse/langfuse-worker:$LANGFUSE_IMAGE_TAG`） | `rag-langfuse-worker` | 仅栈内 3030 | 消费写入队列、跑 ClickHouse 迁移 |
 | clickhouse（`clickhouse/clickhouse-server:26.3.62.3`） | `rag-langfuse-clickhouse` | `127.0.0.1:8123` | 事件与 observation 存储 |
 | minio（Chainguard，按 digest 钉住） | `rag-langfuse-minio` | **9090**（S3 API）、`127.0.0.1:9091`（控制台） | 事件对象存储 |
-| langfuse-redis（`redis:7-alpine`） | `rag-langfuse-redis` | — | worker 队列（不映射宿主端口） |
 
 宿主侧真正需要打开的就两个：**3000**（UI / API）与 **9090**（MinIO S3，预签名 URL 用的就是它）。
-ClickHouse 的 8123 与 MinIO 控制台的 9091 只绑在 `127.0.0.1`，方便用
-`clickhouse-client` 查一眼，不对外。观测栈的 Redis 不映射端口：业务 Redis 已经占着 6379，
-而这个 Redis 只服务栈内的 worker。
+
+> **观测栈的队列与业务 Redis 共用实例**（原本单起 `langfuse-redis` 容器）。
+>
+> 隔离方式是 **key 前缀** `langfuse:`，**不是库号**——实测 v4 没有「选库」的配置项
+>（镜像里 `REDIS_DATABASE_INDEX` 只作为 OpenTelemetry 的遥测属性名出现），所有键都落在 db0，
+> 与 Celery 的 `_kombu.*` 靠前缀分开。
+>
+> 共用之后有一条必须保持：业务 Redis 的 `--maxmemory-policy noeviction`——队列条目被淘汰
+> 等于静默丢 trace；业务缓存被淘汰顶多变慢。
+>
+> 自查两侧各说各话：`docker exec -it rag-center-redis redis-cli --scan --pattern "langfuse*" | head`
+> 与 `docker exec -it rag-center-redis redis-cli -n 0 KEYS "_kombu*" | head`。
+
+ClickHouse 的 8123 与 MinIO 控制台的 9091 只绑在 `127.0.0.1`，方便用 `clickhouse-client` 查一眼，不对外。
+观测栈不再有独立的 Redis 端口：它与业务共用 6379，靠前缀区分。
 
 ## 浏览器打开哪几个地址
 
@@ -123,8 +134,7 @@ ClickHouse 的 8123 与 MinIO 控制台的 9091 只绑在 `127.0.0.1`，方便�
 | `rag-langfuse-worker` | ≈ 660 MB |
 | `rag-langfuse-clickhouse` | ≈ 375 MB |
 | `rag-langfuse-minio` | ≈ 73 MB |
-| `rag-langfuse-redis` | ≈ 8 MB |
-| **合计** | **≈ 1.8 GB** |
+| **合计** | **≈ 1.8 GB**（合并 Redis 后 ≈ 1.79 GB） |
 
 所以按 **1.5~2 GB** 估：够跑，但和 PG + ES（ES 单机就 ~1.3 GB）同机时，16 GB 的机器勉强，
 8 GB 的机器会开始换页。三个提示：
@@ -174,7 +184,7 @@ openssl rand -hex 32      # NEXTAUTH_SECRET / SALT / ENCRYPTION_KEY
 openssl rand -base64 24   # CLICKHOUSE_PASSWORD / MINIO_ROOT_PASSWORD / REDIS_AUTH
 ```
 
-改了 `minio` / `clickhouse` / `langfuse-redis` 的密码，**同一个值要改三处**：对应容器的
+改了 `minio` / `clickhouse` 的密码，**同一个值要改三处**：对应容器的
 自己的环境变量、`x-langfuse-env` 里 web/worker 读的那一项、以及
 `LANGFUSE_S3_*_SECRET_ACCESS_KEY`。少改一处表现为「栈起来了但事件写不进去」。
 

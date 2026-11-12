@@ -39,9 +39,21 @@ x-langfuse-env: &langfuse-env
   CLICKHOUSE_USER: clickhouse
   CLICKHOUSE_PASSWORD: local-dev-only-clickhouse
   CLICKHOUSE_CLUSTER_ENABLED: "false"
-  REDIS_HOST: langfuse-redis
+  # 与业务 Redis **共用实例**（不再单起一个 langfuse-redis 容器）。
+  #
+  # 隔离靠 **key 前缀**，不是库号：实测 v4 没有「选库」这一类配置项（镜像里
+  # `REDIS_DATABASE_INDEX` 只以 `SEMATTRS_DB_REDIS_DATABASE_INDEX` 的形式出现在
+  # OpenTelemetry 的遥测属性表里，读环境变量的那条路不存在）。所以栈里所有键都落在 db0，
+  # 由 `REDIS_KEY_PREFIX` 与 Celery 的 `_kombu.*` 分开——实测键名形如
+  # `langfuse::trace-upsert:...`，与业务零重叠。
+  #
+  # 为什么前缀在这里是**承重**的、不能当装饰：db0 一旦被 FLUSHDB 清掉，业务缓存与观测队列
+  # 会一起没。前缀至少让「谁的东西」可辨认，也让误操作的范围看得见。
+  REDIS_HOST: redis
   REDIS_PORT: "6379"
-  REDIS_AUTH: local-dev-only-redis
+  REDIS_KEY_PREFIX: "langfuse:"
+  # 没有 REDIS_AUTH：业务 Redis 是本机开发实例，不开密码；共用后认证必须跟它对齐。
+  # 要开密码就两边一起开（业务侧 redis-server --requirepass + 这里 REDIS_AUTH）。
   # 事件落 MinIO 的 `langfuse` 桶；MinIO 容器启动时自己 mkdir 这个桶（见下面的 command）。
   LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
   LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
@@ -78,6 +90,11 @@ services:
   redis:
     image: redis:7-alpine
     container_name: rag-center-redis
+    # `noeviction` 是**共用之后必须钉死**的一条：观测栈的队列条目是待处理事件，
+    # 被淘汰等于静默丢 trace；而业务缓存被淘汰顶多变慢。Redis 的默认策略本来就是
+    # noeviction，这里显式写出来——默认值是会变的，而这件事的正确性不能寄存在默认值上。
+    # 同时不设 maxmemory：设了就需要调策略，而两侧的最优策略不同，不如都不限。
+    command: redis-server --maxmemory-policy noeviction
     ports:
       - "6379:6379"
     healthcheck:
@@ -200,7 +217,7 @@ services:
   #   langfuse-web / langfuse-worker   两个应用进程，共用 LANGFUSE_IMAGE_TAG
   #   clickhouse                       事件与 observation 的存储（涨磁盘最快的是它）
   #   minio                            事件对象存储
-  #   langfuse-redis                   worker 的队列，与业务 Redis 分开
+  #   不再单起 langfuse-redis：观测栈的队列与业务 Redis 共用实例（库号 3 + key 前缀）
   # Postgres 不新起：复用上面那个实例的 langfuse 库（独立库，不混业务表）。
 
   langfuse-web:
@@ -223,7 +240,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      langfuse-redis:
+      redis:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
@@ -243,7 +260,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-      langfuse-redis:
+      redis:
         condition: service_healthy
       clickhouse:
         condition: service_healthy
@@ -295,22 +312,6 @@ services:
       timeout: 5s
       retries: 10
 
-  langfuse-redis:
-    profiles: ["obs"]
-    image: redis:7-alpine
-    container_name: rag-langfuse-redis
-    restart: unless-stopped
-    # noeviction：队列条目被淘汰等于静默丢 trace，宁可写入失败（worker 会重试）也不丢。
-    command: redis-server --requirepass local-dev-only-redis --maxmemory-policy noeviction
-    # 不映射宿主端口：业务 Redis 已经占着 6379，而且这个 Redis 只服务栈内的 worker。
-    volumes:
-      - langfuse_redis_data:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "local-dev-only-redis", "ping"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
 volumes:
   pg_data:
   es_data:
@@ -319,4 +320,5 @@ volumes:
   langfuse_clickhouse_data:
   langfuse_clickhouse_logs:
   langfuse_minio_data:
-  langfuse_redis_data:
+  # 不再有 langfuse_redis_data：观测栈的队列与业务 Redis 共用实例，按库号 3 隔离。
+  # 旧的命名卷（如果之前起过栈）会留在 `docker volume ls` 里，可以手工 `docker volume rm`。
