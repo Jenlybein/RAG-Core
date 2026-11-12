@@ -67,6 +67,7 @@ from app.api.routes.console_observability import (
     router as console_observability_router,
 )
 from app.core.config import settings
+from app.core.http_clients import aclose_current_loop_clients
 from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
 from app.db.session import SessionLocal
@@ -103,7 +104,13 @@ set_profile_preset_loader(_load_profile_presets_from_db)
 
 @asynccontextmanager
 async def app_lifespan(app: FastAPI):
-    """主应用自己的启动逻辑；挂子应用时不能被顶掉。"""
+    """主应用自己的启动逻辑；挂子应用时不能被顶掉。
+
+    **关闭动作是确定性的**（第 10 步票 4）：先停接收（``yield`` 返回就意味着 uvicorn 已经
+    不再把新请求交给这个应用），再关这一轮攒下的 HTTP 客户端。顺序固定、且必须走
+    ``try/finally``——启动期的校验抛错时也要把已经建起来的连接收掉；反过来（先关客户端
+    再停接收）会让正在飞的请求拿到一个已关闭的池子。
+    """
 
     # 切块的窗口口径依赖 Qwen 词表：缺它就只能换近似词表，而近似会让同一个库在
     # 不同部署上切出不同的片。所以启动时就要验，带病启动比启动失败更难查。
@@ -112,7 +119,12 @@ async def app_lifespan(app: FastAPI):
     # 档位参数装载一次。失败由 `load_profile_presets` 自己吞掉并记 warning（迁移没跑的
     # 库要能启动），这里不做二次兜底——两处兜底会让人分不清是哪一处救回的。
     load_profile_presets()
-    yield
+    try:
+        yield
+    finally:
+        # 只关**当前 loop** 名下的客户端：API 进程的主循环是这一个，别的进程（Worker）
+        # 有自己的一套，绝不能把这里的客户端带过去。
+        await aclose_current_loop_clients()
 
 
 if settings.ENABLE_MCP:

@@ -45,6 +45,12 @@ docker compose 起过容器），套件就会真的去连 ES：结果取决于�
 今天通不通，账单上还会出现一行没人认领的费用。需要端点的用例自己 monkeypatch 这几行
 （见 ``tests/test_rerank_provider.py``），所以这不是「禁掉重排」，而是「把端点这件事变成
 用例显式声明的输入」。
+
+**为什么每条例行前后要清三类 Provider 缓存与客户端注册表**：第 10 步票 4 起，三个 Provider
+工厂都按配置指纹做进程级缓存，连接也按事件循环注册。不清的话，某个用例用 monkeypatch
+改过配置后装出来的 Provider（甚至一个已经绑在**它自己那个**已关闭 loop 上的客户端）会留给
+下一个用例——症状是「单跑必绿、全量随机红」，而且红的是一条跟配置无关的用例。这与
+``reset_keyword_search_provider_cache()`` 是同一条纪律，只是覆盖面从关键词扩到了模型类。
 """
 
 import os
@@ -97,16 +103,24 @@ def _offline_process_state():
     东西漏给下一个。
     """
 
+    from app.core.http_clients import reset_http_clients
     from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
     from app.db import session_factory as factory_mod
     from app.observability import reset_trace_sink
+    from app.providers.embedding import reset_embedding_provider_cache
     from app.providers.keyword_search import reset_keyword_search_provider_cache
+    from app.providers.llm import reset_llm_provider_cache
+    from app.providers.rerank import reset_rerank_provider_cache
     from tests.fake_db import RecordingSession
 
     factory_mod.set_session_factory(RecordingSession)
     set_settings_cache(_MemorySettingsCache())
     reset_trace_sink()
     reset_keyword_search_provider_cache()
+    reset_llm_provider_cache()
+    reset_rerank_provider_cache()
+    reset_embedding_provider_cache()
+    reset_http_clients()
     try:
         yield
     finally:
@@ -114,3 +128,7 @@ def _offline_process_state():
         reset_settings_cache()
         reset_trace_sink()
         reset_keyword_search_provider_cache()
+        reset_llm_provider_cache()
+        reset_rerank_provider_cache()
+        reset_embedding_provider_cache()
+        reset_http_clients()

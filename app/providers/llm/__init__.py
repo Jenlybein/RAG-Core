@@ -49,8 +49,10 @@ from typing import Any
 
 import structlog
 from langchain.chat_models import init_chat_model
+from langchain_core.language_models import BaseChatModel
 
 from app.core.config import settings
+from app.core.http_clients import model_traffic_client_options
 from app.core.llm_vendors import LLM_VENDORS
 from app.core.model_roles import MODEL_ROLES
 from app.providers.langchain_runtime import apply_framework_telemetry_switches
@@ -151,11 +153,43 @@ _MODEL_ROLES = MODEL_ROLES
 _REASONING_OFF = ("", "off", "none", "false", "0")
 
 
+#: 空实现的缓存键前缀：与指纹键共用一张表，但两者永远不会相撞。
+_NOOP_KEY: tuple[Any, ...] = ("noop",)
+
+#: 已装配过的 Provider，按「角色 + 端点指纹 + 超时」做键（见 ``get_llm_provider``）。
+#:
+#: 这张表里**只有 Provider 对象**，没有模型、也没有 HTTP 客户端：模型对象在构造时就把
+#: 连接池焊在一个事件循环上，缓存它等于把第一个 loop 的池子交给第二个 loop（一次真实
+#: 事故换来的约束，见 ``app/core/http_clients.py``）。
+_PROVIDER_CACHE: dict[tuple[Any, ...], LLMProvider] = {}
+
+
+def reset_llm_provider_cache() -> None:
+    """清掉缓存。**只给测试用**：进程级缓存不该在用例之间串味。"""
+
+    _PROVIDER_CACHE.clear()
+
+
+def _cached(key: tuple[Any, ...], build: Callable[[], LLMProvider]) -> LLMProvider:
+    """取缓存；没有就装一个放进去。"""
+
+    provider = _PROVIDER_CACHE.get(key)
+    if provider is None:
+        provider = build()
+        _PROVIDER_CACHE[key] = provider
+    return provider
+
+
 def get_llm_provider(role: str = "fast") -> LLMProvider:
     """按「角色指针 → 模型配置行 → 回落 .env」装配（顺序见模块文档）。
 
     缺任何一环（供应商未知、key 没配）都退回空实现或立刻报错，不做「半装配」——
     半装配的症状是发出去了但一直 401，比启动就缺能力难查得多。
+
+    **按配置指纹缓存**（第 10 步票 4）：键里带上角色、供应商、地址、模型、key 与超时
+    （强档再加上思考强度）——它们就是「这次装配会打出什么请求」的全部输入。配置一改，
+    键就变了，于是拿到的是新实例，不会出现「面板上换了端点、连接还指着旧地址」。
+    缓存里**只有 Provider 对象**：模型与客户端按调用现取（见 ``_assemble`` 的注释）。
     """
 
     if role not in _MODEL_ROLES:
@@ -165,6 +199,24 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
     # 的早退路径：审计要看的是「这个进程里的框架永远不外发」，而不是「有 key 时才
     # 不外发」。放在早退之前，是这个函数唯一不会漏掉的位置。
     apply_framework_telemetry_switches()
+
+    def _cached_assembly(
+        *, vendor: _Vendor, api_key: str, model_name: str, base_url: str
+    ) -> LLMProvider:
+        """按指纹取 / 装一次远端接入。
+
+        两个参数分别喂给缓存键与装配动作，**同一个来源**：键与装配分头算一遍的话，
+        「键说 A、装配用 B」这种错会在配置改过之后才现形，表现为随机拿到旧地址。
+        """
+
+        return _cached(
+            _assembly_key(
+                role, vendor=vendor, api_key=api_key, model_name=model_name, base_url=base_url
+            ),
+            lambda: _assemble(
+                role, vendor=vendor, api_key=api_key, model_name=model_name, base_url=base_url
+            ),
+        )
 
     # 1. 注入的解析器 → 那一条配置行（见模块文档：读库不在这层，靠组合根注入）。
     #    指针为空 / 行已消失 / 解析器没注入时返回 None，落到下面的 `.env`。
@@ -189,10 +241,9 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
                 role=role,
                 model_config_id=endpoint.config_id,
             )
-            return NoopLLMProvider()
+            return _cached(_NOOP_KEY + (role,), NoopLLMProvider)
         else:
-            return _assemble(
-                role,
+            return _cached_assembly(
                 vendor=vendor,
                 api_key=endpoint.api_key,
                 model_name=endpoint.model,
@@ -210,15 +261,43 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
     if not api_key:
         # 没配 key = 这台机器上没有大模型能力。空实现让它明确不可用，而不是启动失败，
         # 也不是静默降级成「检索照常、改写悄悄不生效」。
-        return NoopLLMProvider()
+        return _cached(_NOOP_KEY + (role,), NoopLLMProvider)
 
     model_name = settings.LLM_MODEL if role == "fast" else settings.LLM_STRONG_MODEL
-    return _assemble(
-        role,
+    return _cached_assembly(
         vendor=vendor,
         api_key=api_key,
         model_name=model_name,
         base_url=settings.LLM_BASE_URL,
+    )
+
+
+def _assembly_key(
+    role: str,
+    *,
+    vendor: _Vendor,
+    api_key: str,
+    model_name: str,
+    base_url: str,
+) -> tuple[Any, ...]:
+    """决定「这次装配会打出什么请求」的全部输入。
+
+    少一项的后果都是同一类故障：改了配置却还拿到旧实例，表现为「面板说改了、实际没变」。
+    地址用**解析后**的那一个（``base_url`` 为空时是供应商的默认地址），否则「填默认地址」
+    与「留空」会被当成两条不同的接入，白装一次。
+    """
+
+    resolved_base_url = base_url or vendor.default_base_url
+    return (
+        "llm",
+        role,
+        vendor.chat_provider,
+        resolved_base_url,
+        model_name,
+        api_key,
+        settings.LLM_TIMEOUT_SECONDS,
+        # 强档的思考强度进装配参数（fast 写死关思考，不受配置影响，所以不进键）。
+        settings.LLM_REASONING_EFFORT if role == "strong" else None,
     )
 
 
@@ -230,11 +309,15 @@ def _assemble(
     model_name: str,
     base_url: str,
 ) -> LLMProvider:
-    """把「一家供应商 + 一个具体接入」拼成 LangChain 聊天模型。
+    """把「一家供应商 + 一个具体接入」拼成**一次装配动作**（不是一个模型对象）。
 
     ``.env`` 路径与 ``model_configs`` 路径**共用这一段**：两条路径只差「参数从哪来」，
     温度、超时、思考强度、telemetry 这些装配知识必须一模一样，否则「换到多模型配置」
     会顺手改掉请求的形状（那是两件事）。
+
+    返回的 Provider 只持有参数；模型在**每次调用**时现装，并把连接注册表给的客户端
+    传进去——这是「缓存 Provider 但不缓存连接池」的唯一实现方式（见
+    ``app/core/http_clients.py`` 与 ``LangChainLLMProvider`` 的文档）。
     """
 
     options: dict[str, Any] = {
@@ -258,8 +341,18 @@ def _assemble(
         # Research 需要一点发散，且那个角色的参数不该由检索链路替它决定。
         options["temperature"] = 0
 
-    chat_model = init_chat_model(model_name, model_provider=vendor.chat_provider, **options)
-    return LangChainLLMProvider(chat_model=chat_model, model_name=model_name)
+    # OpenAI 兼容的那几家接受调用方提供的连接（LangChain 的 ``http_client`` /
+    # ``http_async_client``）。anthropic / google_genai 的字段里没有这两个名字，传进去
+    # 会直接构造失败——那两家的 SDK 自己持有连接，本部署（百炼 / Ark）也用不到。
+    accepts_injected_client = vendor.chat_provider == "openai"
+
+    def _build_chat_model() -> BaseChatModel:
+        kwargs = dict(options)
+        if accepts_injected_client:
+            kwargs.update(model_traffic_client_options())
+        return init_chat_model(model_name, model_provider=vendor.chat_provider, **kwargs)
+
+    return LangChainLLMProvider(chat_model_factory=_build_chat_model, model_name=model_name)
 
 
 __all__ = [
@@ -268,5 +361,6 @@ __all__ = [
     "RoleEndpoint",
     "RoleResolver",
     "get_llm_provider",
+    "reset_llm_provider_cache",
     "set_role_resolver",
 ]

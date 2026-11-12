@@ -30,6 +30,7 @@ from structlog.contextvars import bind_contextvars, clear_contextvars
 
 from app.celery_app import celery_app
 from app.core.exceptions import AppError, ErrorCode
+from app.core.http_clients import aclose_current_loop_clients
 from app.db.session import SessionLocal
 from app.providers.llm import set_role_resolver
 from app.repositories import document_repository
@@ -76,6 +77,24 @@ def _mark_failed(db: Session, document_id: str, exc: BaseException | None = None
     db.commit()
 
 
+async def _index_in_its_own_loop(db: Session, document_id: str, *, reparse: bool) -> None:
+    """在**这一次任务的** loop 里跑流水线，并在同一个 loop 里收掉它建的 HTTP 客户端。
+
+    Worker 每个任务 ``asyncio.run`` 一次 = 一个 loop（跑完即关闭）。不在这里关，注册表里
+    这个 loop 名下的客户端就再也没人关得掉：进程收尾时它只会被 gc，然后刷一句
+    ``httpx AsyncClient.aclose() → RuntimeError: Event loop is closed``。所以收尾必须写在
+    协程的 ``finally`` 里——它跑在**这个 loop 还活着**的时候。
+
+    ``finally`` 而不是 ``except``：索引失败 / 重试 / 被取消同样要关客户端，否则「失败得
+    越多、漏得越多」。
+    """
+
+    try:
+        await IndexingService().index_existing_document(db, document_id, reparse=reparse)
+    finally:
+        await aclose_current_loop_clients()
+
+
 def _run_indexing(
     self: Any,
     document_id: str,
@@ -103,7 +122,7 @@ def _run_indexing(
         # 少了这一行，Worker 里的改写 / 重排会永远只看到 ``.env``，而面板上改的指向看起来
         # 「保存成功、不生效」。注入是幂等的，每个任务调一次即可（解析器本身每次现读库）。
         set_role_resolver(model_config_service.role_endpoint)
-        asyncio.run(IndexingService().index_existing_document(db, document_id, reparse=reparse))
+        asyncio.run(_index_in_its_own_loop(db, document_id, reparse=reparse))
     except Exception as exc:
         if _is_retryable(exc) and self.request.retries < self.max_retries:
             # 先释放租约再重试：否则下一次尝试的 CAS 会看到仍然新鲜的租约而

@@ -788,6 +788,9 @@ def test_writing_an_existing_config_id_moves_the_pointer_and_the_next_call_uses_
 
     captured = _capture_chat_model(monkeypatch)
     provider = get_llm_provider("fast")
+    # 装配发生在**第一次要用模型**的时候（#117：Provider 缓存、模型每次现装），
+    # 所以这里显式取一次模型——捕获到的就是这次检索真会用的那组参数。
+    assert provider.chat_model is not None
 
     assert provider.model_name == "doubao-pro"
     assert captured == [
@@ -831,6 +834,8 @@ def test_a_cleared_pointer_makes_the_next_provider_use_the_env_single_vendor(
 
     captured = _capture_chat_model(monkeypatch)
     provider = get_llm_provider("fast")
+    # 模型在第一次要用时才现装（#117），先把它取出来再断言「拼了什么参数」。
+    assert provider.chat_model is not None
 
     assert provider.model_name == "env-fast-model"
     assert captured[0][1]["api_key"] == "sk-env-deepseek"
@@ -859,8 +864,9 @@ def test_no_model_config_and_no_pointer_reproduces_the_env_path(
 
     captured = _capture_chat_model(monkeypatch)
 
-    get_llm_provider("fast")
-    get_llm_provider("strong")
+    # 模型在第一次要用时才现装（#117）：两档各取一次，捕获顺序才是 fast → strong。
+    assert get_llm_provider("fast").chat_model is not None
+    assert get_llm_provider("strong").chat_model is not None
 
     assert captured[0] == (
         "deepseek-flash",
@@ -913,6 +919,8 @@ def test_a_pointer_to_a_row_deleted_behind_the_api_falls_back_to_env_without_rai
 
     captured = _capture_chat_model(monkeypatch)
     provider = get_llm_provider("fast")
+    # 模型在第一次要用时才现装（#117），先把它取出来再断言「拼了什么参数」。
+    assert provider.chat_model is not None
 
     assert provider.model_name == "env-fast-model"
     assert captured[0][1]["api_key"] == "sk-env-deepseek"
@@ -948,7 +956,12 @@ def _capture_chat_model(
     calls: list[tuple[str, dict[str, Any]]] = []
 
     def _fake_init(model_name: str, **kwargs: Any) -> FakeListChatModel:
-        calls.append((model_name, dict(kwargs)))
+        kwargs = dict(kwargs)
+        # 连接来自注册表（异步按 loop、同步进程级），它不是「用哪条配置」的证据，而且
+        # 对象身份没法写进期望值里；连接这件事由 ``tests/test_provider_cache.py`` 钉。
+        for name in ("http_client", "http_async_client"):
+            kwargs.pop(name, None)
+        calls.append((model_name, kwargs))
         return FakeListChatModel(responses=["unused"])
 
     monkeypatch.setattr("app.providers.llm.init_chat_model", _fake_init)

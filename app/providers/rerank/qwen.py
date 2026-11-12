@@ -20,9 +20,10 @@ ADR-0011 的边界图里 ``RerankProvider`` 是「我们自写」的那一类：
    「按原顺序返回」。降级是编排层（``app/services/retrieval/rerank.py``）的职责——Provider
    一降级，上层就不知道「这次没重排」，降级标记与原因也就丢了。
 
-**连接生命周期留给下一张票（#117）**：没有注入客户端时按调用新建、用完关掉。注入的
-客户端归调用方管，本类不替它决定什么时候关。这刻意不是「顺手做的优化」：连接复用要
-先回答「谁持有、绑哪个事件循环、应用关闭时谁负责收尾」，那是 #117 的问题。
+**连接从注册表来**（第 10 步票 4）：没有注入客户端时向 ``app.core.http_clients`` 要
+「当前事件循环的客户端」，超时（``RERANK_TIMEOUT_SECONDS``）按请求传——同一个池子服务
+不同预算的调用，预算不该焊在客户端上。注入的客户端仍优先，且**归调用方管**：本类不替
+它决定什么时候关。
 """
 
 from __future__ import annotations
@@ -33,6 +34,7 @@ from typing import Any
 
 import httpx
 
+from app.core import http_clients
 from app.providers.rerank.base import RerankProvider
 
 # 契约字段的唯一填充点在 ``app/utils``：它不依赖 app 内任何其它层，因此 Provider 可以
@@ -204,12 +206,13 @@ class Qwen3RerankProvider(RerankProvider):
         """发一次请求并返回解析后的 JSON；非 2xx 由 ``raise_for_status`` 抛出。"""
 
         headers = {"Authorization": f"Bearer {self._api_key}"}
-        if self._client is not None:
-            response = await self._client.post(self._url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
-
-        async with httpx.AsyncClient(timeout=self._timeout_seconds) as client:
-            response = await client.post(self._url, headers=headers, json=payload)
-            response.raise_for_status()
-            return response.json()
+        client = self._client if self._client is not None else http_clients.get_http_client()
+        response = await client.post(
+            self._url,
+            headers=headers,
+            json=payload,
+            # 预算按用途传：注册表里的客户端是共用的，超时不能写死在它身上。
+            timeout=self._timeout_seconds,
+        )
+        response.raise_for_status()
+        return response.json()

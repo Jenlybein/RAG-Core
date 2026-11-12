@@ -21,6 +21,9 @@
 它只知道「调重排，失败就降级」。
 """
 
+from collections.abc import Callable
+from typing import Any
+
 from app.core.config import settings
 from app.providers.rerank.base import RerankProvider
 from app.providers.rerank.noop import NoopRerankProvider
@@ -35,6 +38,7 @@ __all__ = [
     "configured_rerank_provider_name",
     "get_rerank_provider",
     "qwen_rerank_configured",
+    "reset_rerank_provider_cache",
 ]
 
 #: 三种实现的名字。它们同时是响应元数据 ``rerank.provider`` 与评测环境快照
@@ -60,14 +64,58 @@ def qwen_rerank_configured() -> bool:
     return bool(settings.RERANK_BASE_URL.strip()) and bool(_rerank_api_key())
 
 
+#: 已装配过的 Provider，按「实现 + 端点指纹 + 超时 + 候选上限 + 截断长度」做键。
+#:
+#: 为什么必须缓存（一次实测）：改造前每次检索都现装一个 Provider（开启时还连带一个
+#: 大模型），每一题都重做一次 TLS 握手。缓存里**只有 Provider**：模型与 HTTP 客户端按
+#: 调用现取——客户端绑在事件循环上，缓存它等于把第一个 loop 的池子交给第二个 loop。
+_PROVIDER_CACHE: dict[tuple[Any, ...], RerankProvider] = {}
+
+#: 空实现的缓存键：与开启时的指纹键共用一张表，但永远不会相撞。
+_NOOP_KEY: tuple[Any, ...] = ("noop",)
+
+
+def reset_rerank_provider_cache() -> None:
+    """清掉缓存。**只给测试用**：进程级缓存不该在用例之间串味。"""
+
+    _PROVIDER_CACHE.clear()
+
+
 def get_rerank_provider() -> RerankProvider:
-    """生产工厂：关闭 / 端点没配都返回空实现，配齐才装专用端点。"""
+    """生产工厂：关闭 / 端点没配都返回空实现，配齐才装专用端点。
+
+    按配置指纹缓存：实现、地址、key、模型、超时、候选上限、截断长度——改任何一个都
+    拿不到旧实例（那几种「面板上改了、实际没变」的故障里最难查的一类）。
+    """
 
     if not settings.RERANK_ENABLED or not qwen_rerank_configured():
-        return NoopRerankProvider()
+        return _cached(_NOOP_KEY, NoopRerankProvider)
 
-    # 惰性 import：关闭重排时（缺省路径）不加载 httpx 与那个模块，离线启动不为一项
-    # 没开的能力付出 import 代价。与关键词工厂对 ES 客户端用的是同一条约定。
+    key = (
+        PROVIDER_QWEN3,
+        settings.RERANK_BASE_URL,
+        _rerank_api_key(),
+        settings.RERANK_MODEL,
+        settings.RERANK_TIMEOUT_SECONDS,
+        settings.RERANK_MAX_CANDIDATES,
+        settings.RERANK_CHUNK_MAX_CHARS,
+    )
+    return _cached(key, _build_qwen_rerank)
+
+
+def _cached(key: tuple[Any, ...], build: Callable[[], RerankProvider]) -> RerankProvider:
+    """取缓存；没有就装一个放进去。"""
+
+    provider = _PROVIDER_CACHE.get(key)
+    if provider is None:
+        provider = build()
+        _PROVIDER_CACHE[key] = provider
+    return provider
+
+
+def _build_qwen_rerank() -> RerankProvider:
+    """装专用端点（惰性 import：关闭重排时不为一项没开的能力付 import 代价）。"""
+
     from app.providers.rerank.qwen import Qwen3RerankProvider
 
     return Qwen3RerankProvider(

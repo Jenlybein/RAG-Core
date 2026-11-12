@@ -26,6 +26,7 @@ from typing import Any
 import httpx
 import pytest
 
+from app.core import http_clients
 from app.providers.rerank.qwen import (
     INSTRUCT,
     MAX_DOCUMENTS,
@@ -323,10 +324,14 @@ def test_an_injected_client_is_reused_and_never_closed() -> None:
     assert asyncio.run(_run())
 
 
-def test_without_an_injected_client_every_call_builds_its_own(
+def test_without_an_injected_client_the_registry_client_is_shared(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """没注入时按调用新建客户端（连接复用是下一张票，别在这里提前做）。"""
+    """没注入时走连接注册表：一个 loop 只造一个池子，连续调用复用它，Provider 不关它。
+
+    这是第 10 步票 4 的行为（改造前是「每次调用各建一个」）：重排是延迟敏感的一步，
+    每题重做一次 TLS 握手等于把「换专用端点」省下来的时间又还回去。
+    """
 
     recorder = _Recorder(lambda _request: _ranking_response((0, 0.9)))
     built: list[httpx.AsyncClient] = []
@@ -339,6 +344,7 @@ def test_without_an_injected_client_every_call_builds_its_own(
         built.append(client)
         return client
 
+    # 注册表用的是同一个 ``httpx`` 模块对象，所以这一行同时接住了它的构造点。
     monkeypatch.setattr("app.providers.rerank.qwen.httpx.AsyncClient", _factory)
 
     async def _run() -> None:
@@ -351,10 +357,15 @@ def test_without_an_injected_client_every_call_builds_its_own(
         for _ in range(2):
             await provider.rerank(query="q", chunks=[_chunk("c1")], top_n=1)
 
+        client = http_clients.get_http_client()
+        assert client.is_closed is False, "注册表的客户端归 loop 收尾，Provider 不许关它"
+        await http_clients.aclose_current_loop_clients()
+        assert client.is_closed is True, "收尾由注册表那侧做"
+
     asyncio.run(_run())
 
-    assert len(built) == 2, "每次调用各建一个（#117 才做复用）"
-    assert all(client.is_closed for client in built), "自建的客户端必须自己关掉"
+    assert len(built) == 1, "同一 loop 内只该造一个客户端（复用）"
+    assert len(recorder.requests) == 2, "两次调用都发在同一个客户端上"
 
 
 def test_the_endpoint_url_is_joined_from_the_configured_base() -> None:
