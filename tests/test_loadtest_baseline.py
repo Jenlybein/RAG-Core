@@ -227,6 +227,7 @@ def _run_cli(tmp_path: Path, *extra: str) -> tuple[int, dict[str, Any], str]:
     from scripts import loadtest_baseline
 
     json_out = tmp_path / "results.json"
+    report_out = tmp_path / "report.md"
     code = loadtest_baseline.main(
         [
             "--levels",
@@ -246,6 +247,9 @@ def _run_cli(tmp_path: Path, *extra: str) -> tuple[int, dict[str, Any], str]:
             *extra,
             "--json-out",
             str(json_out),
+            # 报告也必须写到临时目录：CLI 的缺省值是仓库里那份，用例不许改仓库里的文件。
+            "--report-out",
+            str(report_out),
         ]
     )
     assert code == 0
@@ -311,6 +315,9 @@ def test_cli_prints_a_markdown_report_that_can_be_committed(tmp_path: Path) -> N
             "1",
             "--report-out",
             str(report_path),
+            # 机读读数同理：缺省值是仓库里那份，用例一律写到临时目录。
+            "--json-out",
+            str(tmp_path / "results.json"),
         ]
     )
 

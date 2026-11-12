@@ -31,7 +31,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from types import TracebackType
-from typing import Final
+from typing import Final, Literal
 
 from sqlalchemy.orm import Session
 
@@ -78,7 +78,7 @@ class Transaction:
         exc_type: type[BaseException] | None,
         exc: BaseException | None,
         tb: TracebackType | None,
-    ) -> bool:
+    ) -> Literal[False]:
         self._depth -= 1
         if self._depth:
             # 内层：把异常交给外层决定提交还是回滚，自己不做任何收尾。

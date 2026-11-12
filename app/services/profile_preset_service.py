@@ -148,6 +148,9 @@ def patch_preset(
         after=after,
     )
     # 装载必须等库先落地：注册表是本进程的快照，提交前装载会把旧值读回去。
-    after_commit(db, lambda: load_into_registry(db))
+    def _reload() -> None:
+        load_into_registry(db)
+
+    after_commit(db, _reload)
 
     return {"before": before, "after": after, "changed": changed}
