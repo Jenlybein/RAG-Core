@@ -4,15 +4,16 @@
 （控制台「最近检索」列表要显示每行打了几分）。事务由 Service 收口
 （与其它仓储一致：这里只 ``flush``，不 ``commit``）。
 
-**迁移期的两种会话**（票 #129）：批量取分数（只给控制面列表读）已经换到 ``AsyncSession``；
-写入与那一次私有读取仍在同步会话上，由 #128 搬。同一个操作只有一份实现。
+**异步**（第 11 步票 #128）：这一层的读写都走 ``AsyncSession``，于是三处写法跟着变——
+``execute`` / ``get`` / ``flush`` 都要 ``await``，而 ``select(...)`` 取代 ``db.query(...)``
+（``AsyncSession`` 上根本没有 ``query``）。唯一**没有**变的是 ``add``：它在
+``AsyncSession`` 上仍是同步方法，写成 ``await db.add(...)`` 会让整行静默不进去。
 """
 
 from collections.abc import Sequence
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.db.base import now
 from app.models.retrieval_feedback import RetrievalFeedback
@@ -29,9 +30,6 @@ async def scores_for_log_ids(
 
     带租户：这些 ``log_id`` 通常来自已经按租户筛过的归属索引，但这一层不假设调用方
     做过什么——ADR-0006 决策 1 要求签名上就带 ``tenant_id``。
-
-    这是这张表**唯一的批量读**，也是控制面「最近检索」列表要的那一份；它随列表一起换到
-    异步会话（票 #129），没有同步孪生——写入那一半（``upsert``）仍在同步栈上，#128 搬它。
     """
 
     if not log_ids:
@@ -43,7 +41,7 @@ async def scores_for_log_ids(
     return {row.log_id: row.score for row in (await db.execute(statement)).all()}
 
 
-def _get_by_log_id(db: Session, log_id: str) -> RetrievalFeedback | None:
+async def _get_by_log_id(db: AsyncSession, log_id: str) -> RetrievalFeedback | None:
     """按 ``log_id`` 取那一行；没有就是 ``None``（第一次打分）。
 
     **私有，且只给 ``upsert`` 用**：它不带 ``tenant_id``，而 ADR-0006 决策 1 要求
@@ -57,11 +55,12 @@ def _get_by_log_id(db: Session, log_id: str) -> RetrievalFeedback | None:
     ``tests/test_feedback.py`` 的越权用例守着。
     """
 
-    return db.query(RetrievalFeedback).filter(RetrievalFeedback.log_id == log_id).first()
+    statement = select(RetrievalFeedback).where(RetrievalFeedback.log_id == log_id)
+    return (await db.execute(statement)).scalars().first()
 
 
-def upsert(
-    db: Session,
+async def upsert(
+    db: AsyncSession,
     *,
     log_id: str,
     tenant_id: str,
@@ -78,7 +77,7 @@ def upsert(
     时才生效，而「覆盖之后这一行马上就是新的」不该取决于事务什么时候落盘。
     """
 
-    row = _get_by_log_id(db, log_id)
+    row = await _get_by_log_id(db, log_id)
     if row is None:
         row = RetrievalFeedback(
             id=new_id(),
@@ -92,5 +91,5 @@ def upsert(
         row.score = score
         row.comment = comment
         row.updated_at = now()
-    db.flush()
+    await db.flush()
     return row

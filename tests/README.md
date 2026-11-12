@@ -56,6 +56,12 @@
 
 四条回归红线（响应逐字节不变、`trace_id` 恒非空、归属索引无原文、观测挂掉反馈仍成功）分别钉在上述文件里，汇总见 `docs/step9-acceptance.md`。
 
+**第 11 步（端到端异步）新增的接缝**只有一条，也是**进程级**的：
+
+- `app.db.session_factory.set_async_session_factory`：异步会话工厂的注入点，与同步那条 `set_session_factory` 是孪生（刻意分开，见该模块文档）。`tests/conftest.py` 的 autouse 夹具把它固定成 `AsyncRecordingSession` 并在结束时复位——不注入的话，反馈那条**旁路短事务**会真的去连 PostgreSQL，套件就会取决于「这台机器今天开没开库」。
+
+对应的替身与契约：`tests/fake_db.AsyncRecordingSession`（同一份语义的异步面；`add` 是**同步**方法，因为真 `AsyncSession` 上只有它没变成 `await`）与 `tests/test_session_double_contract.py`。已经用上异步会话的请求路径是 `/console/retrieval-traces*` 三条与 `/api/v1/rag/feedback`；`test_console_waterfall.py` / `test_console_trace_lookup.py` 的夹具把归属索引的行**只放进异步替身**，所以「这条读退回同步会话」会让用例当场红，而不是悄悄照样绿。
+
 ## 当前基线
 
 | 场景 | 命令 | 期望 |

@@ -10,6 +10,9 @@
 
 接缝是 ASGI 边界（真请求 + 真登录），与 `test_console_trace_lookup.py` 同一套理由：
 直接调函数会绕过路由声明，而「路径参数写成 query」这类错法只有发真请求才暴露。
+
+**两个会话替身是双栈期的显式事实**（第 11 步票 #128）：控制面身份仍走同步 `get_db`，
+「最近检索」这条读已经走异步 `get_async_db`；两条都注入内存替身。
 """
 
 from __future__ import annotations
@@ -112,13 +115,15 @@ def console() -> Iterator[_Harness]:
     async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
-    # **一个会话实例贯穿整个用例**：登录会把会话行写进这个假库，后续请求要能读回同一行。
+    # **一个同步会话实例贯穿整个用例**：登录会把会话行写进这个假库，后续请求要能读回同一行。
     # 每次请求新建一个 ``RecordingSession`` 会让登录「成功」而下一个请求 20010，
     # 排查时看着像 cookie 没带上，实际是库被换掉了。
     session = RecordingSession(rows=_world())
+    # 「最近检索」那条读（含身份判定）走异步会话；两个替身共享同一份行，于是登录写下的
+    # 会话行在只读请求里读得到。
+    trace_session = async_mirror(session)
     main.app.dependency_overrides[session_module.get_db] = lambda: session
-    # 列表读走异步会话（票 #129），替身与同步那个共享同一份行。
-    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(session)
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: trace_session
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:
@@ -132,8 +137,8 @@ def _stub_repositories(
 ) -> dict[str, Any]:
     """把两个仓储换成记录参数的桩：这一层要验的是「路由怎么调仓储」，不是 SQL。
 
-    两个桩都是 ``async``（票 #129）：控制台这两条读走的是异步会话，仓储函数是协程。
-    写成同步桩会让「忘了 await」变成一条 500，而不是这条用例想断言的东西。
+    桩是 ``async def``：两个读法已经换到 ``AsyncSession`` 上（票 #128 起），同步桩会被
+    路由 ``await`` 到但永远拿不到结果——那样失败的是「没 await」，不是这张票要守的行为。
     """
 
     trace_repo = importlib.import_module("app.repositories.retrieval_trace_repository")

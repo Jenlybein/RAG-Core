@@ -74,7 +74,9 @@ def _run_sync(session: RecordingSession) -> dict[str, Any]:
 async def _run_async(session: AsyncRecordingSession) -> dict[str, Any]:
     ids = list((await session.execute(_QUERY, {"tid": "t-1"})).scalars().all())
     row = _Row(id="kb-9")
-    await session.add(row)
+    # ``add`` 是 ``AsyncSession`` 上**唯一**仍是同步的写方法（其余写方法都要 await）：
+    # 替身跟着真实 API 走，于是「生产代码漏了 await」与「替身写错了一侧」不会互相抵消。
+    session.add(row)
     await session.flush()
     await session.execute(_INSERT, {"id": row.id})
     await session.commit()

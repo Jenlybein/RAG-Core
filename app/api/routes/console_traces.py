@@ -16,6 +16,11 @@
 
 观测服务的读入口由 :func:`app.api.console_deps.get_langfuse_reader` 注入（测试的接缝），
 密钥不进这一层，也就不可能进响应。
+
+**会话有两个，是双栈期的显式事实**（第 11 步票 #128）：本模块的**读**（归属索引三处）已经
+换到异步会话 ``get_async_db``；而 ``require_console_tenant`` 里的会话解析仍是同步的
+``get_db``（控制面身份那一片由别的票搬）。所以这三条路由会同时声明两个会话依赖——这是
+迁移期的形状，不是设计；等身份那一片搬完，同步那一个就该从签名上消失。
 """
 
 from __future__ import annotations
