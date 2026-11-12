@@ -163,24 +163,27 @@ def me(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 class _ReadOnlyCounterStore:
-    """与配额服务同形的内存计数器；读路径只该出现 ``get:``，写入直接判失败。"""
+    """与配额服务同形的内存计数器；读路径只该出现 ``get:``，写入直接判失败。
+
+    命令是**异步**的（票 #133）：注入缝换成了 ``redis.asyncio`` 的客户端。
+    """
 
     def __init__(self) -> None:
         self.values: dict[str, int] = {}
         self.calls: list[str] = []
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         self.calls.append(f"get:{key}")
         value = self.values.get(key)
         return None if value is None else str(value)
 
-    def incr(self, key: str) -> int:  # pragma: no cover - 读路径访问即失败
+    async def incr(self, key: str) -> int:  # pragma: no cover - 读路径访问即失败
         raise AssertionError(f"读用量不许写计数：incr({key})")
 
-    def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 读路径访问即失败
+    async def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 读路径访问即失败
         raise AssertionError(f"读用量不许写计数：expire({key}, {ttl})")
 
-    def delete(self, key: str) -> None:  # pragma: no cover - 读路径访问即失败
+    async def delete(self, key: str) -> None:  # pragma: no cover - 读路径访问即失败
         raise AssertionError(f"读用量不许写计数：delete({key})")
 
 
@@ -190,19 +193,19 @@ class _ExplodingCounterStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
+    async def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
         self.calls.append(f"get:{key}")
         raise AssertionError(f"不该访问 Redis：get({key})")
 
-    def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
+    async def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
         self.calls.append(f"incr:{key}")
         raise AssertionError(f"不该访问 Redis：incr({key})")
 
-    def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
+    async def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"expire:{key}")
         raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
 
-    def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
+    async def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"delete:{key}")
         raise AssertionError(f"不该访问 Redis：delete({key})")
 

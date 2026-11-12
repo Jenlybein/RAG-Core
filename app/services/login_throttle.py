@@ -42,6 +42,17 @@
 ``RATE_LIMIT_ENABLED`` 默认关闭，与检索限流同一个开关、同一个精神：本地开发与默认
 测试套件全程离线。关着时 :func:`login_throttle` 返回 ``None``，路由连客户端都不构造，
 因此一次 Redis 命令都不会发。生产必须打开它。
+
+## 计数命令是异步的（票 #133）
+
+四条命令（``get`` / ``incr`` / ``expire`` / ``delete``）全部 ``await``，客户端来自
+:func:`app.core.redis_client.get_redis_client`（``redis.asyncio``）。登录路由已经
+``async def``，同步 Redis 会在验口令之前就把事件循环按住——而这里恰好是**未授权流量**
+最集中的一处，被按住的不只是正常用户。
+
+**换成异步不改任何判定**：键（账号 + 客户端 IP）、五分钟固定桶、UTC 口径、阈值
+（:data:`LOGIN_MAX_ATTEMPTS`）、超限错误码（``20005``）、「被拒的那次不记」、
+「成功才清除」全部原样保留。
 """
 
 from __future__ import annotations
@@ -72,19 +83,19 @@ MSG_LOGIN_RATE_LIMITED: Final[str] = "too many login attempts; try again later"
 
 
 class LoginCounterClient(Protocol):
-    """登录限流真正用到的四条 Redis 命令。
+    """登录限流真正用到的四条 Redis 命令（异步形状，见模块文档「计数命令是异步的」）。
 
     比 :class:`~app.services.quota_gate.CounterClient` 多一条 ``delete``（成功登录要清
-    计数）。测试传一个 dict 伪装的对象就够；这里不 import redis 包。
+    计数）。测试传一个 dict 伪装的**异步**对象就够；这里不 import redis 包。
     """
 
-    def incr(self, key: str) -> Any: ...
+    async def incr(self, key: str) -> Any: ...
 
-    def get(self, key: str) -> str | bytes | None: ...
+    async def get(self, key: str) -> str | bytes | None: ...
 
-    def expire(self, key: str, ttl: int) -> Any: ...
+    async def expire(self, key: str, ttl: int) -> Any: ...
 
-    def delete(self, key: str) -> Any: ...
+    async def delete(self, key: str) -> Any: ...
 
 
 def _utc_now() -> datetime:
@@ -126,25 +137,25 @@ class LoginThrottle:
         bucket = int(self._clock().timestamp()) // self._window_seconds
         return login_key(username=username, client_ip=client_ip, window=bucket)
 
-    def attempts(self, *, username: str, client_ip: str) -> int:
+    async def attempts(self, *, username: str, client_ip: str) -> int:
         """本窗口已经记了几次；没记过就是 0（坏值也当 0，与配额计数同一口径）。"""
 
-        return _as_count(self._client.get(self._key(username=username, client_ip=client_ip)))
+        return _as_count(await self._client.get(self._key(username=username, client_ip=client_ip)))
 
-    def register_attempt(self, *, username: str, client_ip: str) -> None:
+    async def register_attempt(self, *, username: str, client_ip: str) -> None:
         """进门前调用：超限抛 ``20005``；否则把这次尝试记上（**失败与成功都先记**）。"""
 
         key = self._key(username=username, client_ip=client_ip)
-        if _as_count(self._client.get(key)) >= self._limit:
+        if _as_count(await self._client.get(key)) >= self._limit:
             # 被拒的这一次不写：持续重试不能把窗口往后推（见模块文档）。
             raise AppError(ErrorCode.API_RATE_LIMIT, MSG_LOGIN_RATE_LIMITED)
-        self._client.incr(key)
-        self._client.expire(key, self._ttl_seconds)
+        await self._client.incr(key)
+        await self._client.expire(key, self._ttl_seconds)
 
-    def reset(self, *, username: str, client_ip: str) -> None:
+    async def reset(self, *, username: str, client_ip: str) -> None:
         """登录成功后清除这一对的计数：合法用户不该为输错几次付出下个窗口的代价。"""
 
-        self._client.delete(self._key(username=username, client_ip=client_ip))
+        await self._client.delete(self._key(username=username, client_ip=client_ip))
 
 
 def login_throttle(

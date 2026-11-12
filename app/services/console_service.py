@@ -16,10 +16,18 @@
 
 登录那条路对账号是否存在**不做区分**：账号不存在时也跑一遍哈希（
 ``app.core.passwords.dummy_verify``），耗时相同才不构成用户名枚举接口。
+
+**「我的视图」是异步的，数据库那半边留在同步里**（票 #133）：视图里要读租户的今日用量，
+而那条只读路径走的是异步 Redis 计数（:func:`app.services.quota_gate.read_tenant_daily_usage`），
+于是视图本身必须能 ``await``。视图里的另外两件事——读租户行、解析套餐——仍是同步的
+数据库 / 同步 Redis 缓存，它们被 :func:`asyncio.to_thread` 挪出事件循环：这里改的只是
+「谁在等」，不是「谁在读库」。等控制面整体换成异步会话（票 #129 / #130）之后，这几处
+``to_thread`` 应当一起消失。
 """
 
 from __future__ import annotations
 
+import asyncio
 import secrets
 from dataclasses import dataclass
 from datetime import timedelta
@@ -124,7 +132,7 @@ class AccountRowView:
 # ──────────────────────────────────────────────────────────────── 登录 / 登出 / 我的
 
 
-def login(
+async def login(
     db: Session, *, username: str, password: str, cache: PlanCache | None = None
 ) -> tuple[ConsoleSession, ConsoleView]:
     """账号口令 → 服务端会话行。返回会话（路由拿它的 id 发 cookie）与「我的视图」。
@@ -132,7 +140,21 @@ def login(
     四种失败里前两种对外完全同形（同码同消息），后两种只可能发生在**口令已经验过**之后：
     知道正确口令的人本来就知道这个账号存在，此时告诉他「账号已停用」不泄露任何东西，
     却能让真正的用户知道该找谁。
+
+    写库那一段（查账号、验口令、插会话行、提交）留在同步函数 :func:`_authenticate` 里，
+    由 ``to_thread`` 跑在线程池上；这里 ``await`` 的只有随后的视图（见模块文档）。
     """
+
+    session, account = await asyncio.to_thread(
+        _authenticate, db, username=username, password=password
+    )
+    return session, await view_for(db, account, cache=cache)
+
+
+def _authenticate(
+    db: Session, *, username: str, password: str
+) -> tuple[ConsoleSession, Account]:
+    """:func:`login` 的同步半边：验口令并落一行会话，**不拼视图**（视图要读异步用量）。"""
 
     account = account_repository.get_by_username(db, username)
     if account is None:
@@ -152,7 +174,9 @@ def login(
         expires_at=now() + timedelta(seconds=session_ttl_seconds()),
     )
     console_session_repository.create(db, session)
-    return session, view_for(db, account, cache=cache)
+    # 不在这里提交：会话行由请求边界那一笔事务兜住（写接口声明 Depends(get_transaction)）。
+    # 视图也不在这里拼：``login`` 在事件循环上 await 它（用量那条是异步只读路径）。
+    return session, account
 
 
 def logout(db: Session, *, session_id: str | None) -> None:
@@ -167,43 +191,69 @@ def logout(db: Session, *, session_id: str | None) -> None:
     console_session_repository.delete(db, session)
 
 
-def me_view(db: Session, *, account_id: str, cache: PlanCache | None = None) -> ConsoleView:
+async def me_view(db: Session, *, account_id: str, cache: PlanCache | None = None) -> ConsoleView:
     """``/console/me``：判定结论里只有 id，这里再读一次账号行拼「我的视图」。
 
     这次重读不是多余：判定依赖刻意只回答「谁、什么角色、哪个租户」，而响应还要
     账号的显示状态。把状态塞进判定结论会让「改状态」必须在两个地方同时生效。
     """
 
+    account = await asyncio.to_thread(_account_or_disabled, db, account_id)
+    return await view_for(db, account, cache=cache)
+
+
+def _account_or_disabled(db: Session, account_id: str) -> Account:
+    """读账号行；读不到就按「账号已停用」拒绝（与判定内核同码同消息）。"""
+
     account = account_repository.get_by_id(db, account_id)
     if account is None:
         # 判定刚读过同一行，这里仍可能为空（并发停用 + 删除）。与判定同码同消息。
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_ACCOUNT_DISABLED)
-    return view_for(db, account, cache=cache)
+    return account
 
 
-def view_for(db: Session, account: Account, *, cache: PlanCache | None = None) -> ConsoleView:
+async def view_for(
+    db: Session, account: Account, *, cache: PlanCache | None = None
+) -> ConsoleView:
     """拼「我的视图」：账号 → 它的租户 → 租户当前套餐 → 租户今日用量。
 
     套餐走 :func:`app.services.plan_service.resolve_plan`（按 id 的缓存），于是管理员刚
     改完的额度，面板刷新一次就看到——改套餐那条路提交后会删缓存。用量走配额服务的
     **只读**路径（见 :func:`app.services.quota_gate.read_tenant_daily_usage`）。
+
+    读租户行与解析套餐仍在同步上下文里（同步会话 + 同步 Redis 缓存），所以它们整段
+    交给 ``to_thread``；``await`` 的只有用量那一条异步只读路径（见模块文档）。
     """
 
-    tenant = _tenant_of(db, account)
-    if tenant is None:
+    tenant, plan = await asyncio.to_thread(_view_basis, db, account, cache)
+    if tenant is None or plan is None:
         # 平台管理员不属于任何租户：没有套餐、也没有租户级用量可显示，这不是错误。
         return ConsoleView(account=account, tenant=None, plan=None, usage=None)
-    plan = plan_service.resolve_plan(db, tenant.plan_id, cache=cache)
     return ConsoleView(
         account=account,
         tenant=tenant,
         plan=plan,
         usage=DailyUsageView(
             # 只读路径：读一次日桶，不在任何地方 +1（见 quota_gate.read_tenant_daily_usage）。
-            used=read_tenant_daily_usage(tenant_id=tenant.id),
+            used=await read_tenant_daily_usage(tenant_id=tenant.id),
             limit=plan.retrieve_daily,
         ),
     )
+
+
+def _view_basis(
+    db: Session, account: Account, cache: PlanCache | None
+) -> tuple[Tenant | None, PlanSpec | None]:
+    """视图里同步的那半边：租户行 + 套餐快照。两次读放在同一次线程跳转里。
+
+    合成一个函数而不是在 ``view_for`` 里分两次 ``to_thread``：同一个会话在两次跳转之间
+    被别人穿插使用只会更难解释，而这里读的两行本来就该来自同一个瞬间。
+    """
+
+    tenant = _tenant_of(db, account)
+    if tenant is None:
+        return None, None
+    return tenant, plan_service.resolve_plan(db, tenant.plan_id, cache=cache)
 
 
 def _tenant_of(db: Session, account: Account) -> Tenant | None:
