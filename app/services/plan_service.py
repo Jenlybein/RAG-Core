@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache, RedisPlanCache
-from app.core.redis_client import get_redis_client
+from app.core.redis_client import get_sync_redis_client
 from app.models.plan import PlanSpec, plan_spec_of
 from app.repositories import plan_repository
 
@@ -27,10 +27,16 @@ def default_plan_cache() -> PlanCache:
     """生产用的缓存实现：Redis（多 worker 才一致，进程内字典不行）。
 
     每次调用返回一个新的包装对象，但它只握着进程内唯一的那个客户端——构造是廉价的，
-    真正的连接池在 :func:`app.core.redis_client.get_redis_client` 里。
+    真正的连接池在 :func:`app.core.redis_client.get_sync_redis_client` 里。
+
+    **为什么是同步缝**（票 #133）：套餐解析的全部调用点都在同步上下文里——判定内核
+    :func:`app.core.auth.resolve_identity` 是同步依赖（跑在线程池），控制面服务也全是
+    同步函数。这些调用不阻塞事件循环，因此这里继续用同步客户端；等控制面与判定内核
+    异步化（票 #129 / #130）之后改成异步缝，理由与条件写在
+    ``app/core/redis_client`` 的模块文档里。
     """
 
-    return RedisPlanCache(get_redis_client())
+    return RedisPlanCache(get_sync_redis_client())
 
 
 def resolve_plan(db: Session, plan_id: int, *, cache: PlanCache | None = None) -> PlanSpec:

@@ -1,8 +1,11 @@
 """Gap 3（#72「登录接口要限流」）：登录专用限流的单元接缝。
 
 接缝是 :class:`app.services.login_throttle.LoginThrottle` 本身：注入一个只认
-``incr / get / expire / delete`` 的内存假实现与一个可注入的时钟，默认套件因此**不碰
-Redis**、也不需要真的等五分钟。
+``incr / get / expire / delete`` 的**异步**内存假实现与一个可注入的时钟，默认套件因此
+**不碰 Redis**、也不需要真的等五分钟。
+
+假实现是异步的（票 #133）：生产客户端换成 ``redis.asyncio``，四条命令都是协程。同步
+假实现会让「忘了 await」的写法照样读到值，于是那条 bug 在套件里看不见。
 
 这里钉住的四件事都是设计决定，不是实现细节：
 
@@ -19,7 +22,10 @@ Redis**、也不需要真的等五分钟。
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Coroutine
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -44,6 +50,12 @@ ALICE = "alice"
 BOB = "bob"
 
 
+def _run(coroutine: Coroutine[Any, Any, None]) -> None:
+    """跑一条异步用例：套件没有 pytest-asyncio（那属于票 #126），沿用 ``asyncio.run``。"""
+
+    asyncio.run(coroutine)
+
+
 class _Store:
     """登录限流真正用到的四条命令：一个 dict 加一份调用账本。"""
 
@@ -52,21 +64,21 @@ class _Store:
         self.ttls: dict[str, int] = {}
         self.calls: list[str] = []
 
-    def incr(self, key: str) -> int:
+    async def incr(self, key: str) -> int:
         self.calls.append(f"incr:{key}")
         self.values[key] = self.values.get(key, 0) + 1
         return self.values[key]
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         self.calls.append(f"get:{key}")
         value = self.values.get(key)
         return None if value is None else str(value)
 
-    def expire(self, key: str, ttl: int) -> None:
+    async def expire(self, key: str, ttl: int) -> None:
         self.calls.append(f"expire:{key}")
         self.ttls[key] = ttl
 
-    def delete(self, key: str) -> None:
+    async def delete(self, key: str) -> None:
         self.calls.append(f"delete:{key}")
         self.values.pop(key, None)
         self.ttls.pop(key, None)
@@ -78,19 +90,19 @@ class _ExplodingStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
+    async def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
         self.calls.append(f"incr:{key}")
         raise AssertionError(f"不该访问 Redis：incr({key})")
 
-    def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
+    async def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
         self.calls.append(f"get:{key}")
         raise AssertionError(f"不该访问 Redis：get({key})")
 
-    def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
+    async def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"expire:{key}")
         raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
 
-    def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
+    async def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"delete:{key}")
         raise AssertionError(f"不该访问 Redis：delete({key})")
 
@@ -109,40 +121,49 @@ def _expected_key(username: str = ALICE, client_ip: str = IP, bucket: int = BUCK
 
 
 def test_the_key_is_scoped_to_the_account_ip_pair_and_the_window() -> None:
-    store = _Store()
-    throttle = _throttle(store)
+    async def scenario() -> None:
+        store = _Store()
+        throttle = _throttle(store)
 
-    throttle.register_attempt(username=ALICE, client_ip=IP)
+        await throttle.register_attempt(username=ALICE, client_ip=IP)
 
-    key = "login:attempts:alice:203.0.113.7:5980920"
-    assert list(store.values) == [key]
-    assert store.ttls[key] == LOGIN_TTL_SECONDS
-    assert LOGIN_TTL_SECONDS > LOGIN_WINDOW_SECONDS, "桶要活过自己的窗口，覆盖在途请求"
+        key = "login:attempts:alice:203.0.113.7:5980920"
+        assert list(store.values) == [key]
+        assert store.ttls[key] == LOGIN_TTL_SECONDS
+        assert LOGIN_TTL_SECONDS > LOGIN_WINDOW_SECONDS, "桶要活过自己的窗口，覆盖在途请求"
+
+    _run(scenario())
 
 
 def test_a_new_window_starts_with_a_fresh_allowance() -> None:
-    store = _Store()
-    early = _throttle(store)
-    early.register_attempt(username=ALICE, client_ip=IP)
-    assert early.attempts(username=ALICE, client_ip=IP) == 1
+    async def scenario() -> None:
+        store = _Store()
+        early = _throttle(store)
+        await early.register_attempt(username=ALICE, client_ip=IP)
+        assert await early.attempts(username=ALICE, client_ip=IP) == 1
 
-    later = _throttle(store, moment=MOMENT + timedelta(seconds=LOGIN_WINDOW_SECONDS))
-    assert later.attempts(username=ALICE, client_ip=IP) == 0
-    assert list(store.values) == ["login:attempts:alice:203.0.113.7:5980920"]
+        later = _throttle(store, moment=MOMENT + timedelta(seconds=LOGIN_WINDOW_SECONDS))
+        assert await later.attempts(username=ALICE, client_ip=IP) == 0
+        assert list(store.values) == ["login:attempts:alice:203.0.113.7:5980920"]
+
+    _run(scenario())
 
 
 def test_two_accounts_or_two_addresses_do_not_share_a_bucket() -> None:
     """「账号 + IP」是键的两半：换任意一半都是另一份额度。"""
 
-    store = _Store()
-    throttle = _throttle(store)
+    async def scenario() -> None:
+        store = _Store()
+        throttle = _throttle(store)
 
-    for _ in range(LOGIN_MAX_ATTEMPTS):
-        throttle.register_attempt(username=ALICE, client_ip=IP)
+        for _ in range(LOGIN_MAX_ATTEMPTS):
+            await throttle.register_attempt(username=ALICE, client_ip=IP)
 
-    assert throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS
-    assert throttle.attempts(username=ALICE, client_ip="198.51.100.9") == 0
-    assert throttle.attempts(username=BOB, client_ip=IP) == 0
+        assert await throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS
+        assert await throttle.attempts(username=ALICE, client_ip="198.51.100.9") == 0
+        assert await throttle.attempts(username=BOB, client_ip=IP) == 0
+
+    _run(scenario())
 
 
 # ───────────────────────────────────────────── 阈值与错误码
@@ -151,44 +172,50 @@ def test_two_accounts_or_two_addresses_do_not_share_a_bucket() -> None:
 def test_the_attempt_after_the_limit_is_rejected_with_20005() -> None:
     """额度 N 表示「本窗口最多 N 次尝试」：第 N 次记上，第 N+1 次才拒绝。"""
 
-    store = _Store()
-    throttle = _throttle(store)
+    async def scenario() -> None:
+        store = _Store()
+        throttle = _throttle(store)
 
-    for _ in range(LOGIN_MAX_ATTEMPTS):
-        throttle.register_attempt(username=ALICE, client_ip=IP)
-    assert throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS
+        for _ in range(LOGIN_MAX_ATTEMPTS):
+            await throttle.register_attempt(username=ALICE, client_ip=IP)
+        assert await throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS
 
-    with pytest.raises(AppError) as raised:
-        throttle.register_attempt(username=ALICE, client_ip=IP)
+        with pytest.raises(AppError) as raised:
+            await throttle.register_attempt(username=ALICE, client_ip=IP)
 
-    assert raised.value.code is ErrorCode.API_RATE_LIMIT
-    assert raised.value.msg == MSG_LOGIN_RATE_LIMITED
-    assert throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS, (
-        "被拒的那次不记：否则持续重试会把受害者的窗口无限延长"
-    )
+        assert raised.value.code is ErrorCode.API_RATE_LIMIT
+        assert raised.value.msg == MSG_LOGIN_RATE_LIMITED
+        assert await throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS, (
+            "被拒的那次不记：否则持续重试会把受害者的窗口无限延长"
+        )
+
+    _run(scenario())
 
 
 def test_the_rate_limit_message_names_neither_the_account_nor_the_outcome() -> None:
     """同一句话覆盖「账号存在」与「账号不存在」，不构成用户名枚举。"""
 
-    store = _Store()
-    throttle = _throttle(store)
-    for username in (ALICE, "ghost-user"):
-        for _ in range(LOGIN_MAX_ATTEMPTS):
-            throttle.register_attempt(username=username, client_ip=IP)
+    async def scenario() -> None:
+        store = _Store()
+        throttle = _throttle(store)
+        for username in (ALICE, "ghost-user"):
+            for _ in range(LOGIN_MAX_ATTEMPTS):
+                await throttle.register_attempt(username=username, client_ip=IP)
 
-    messages = []
-    for username in (ALICE, "ghost-user"):
-        with pytest.raises(AppError) as raised:
-            throttle.register_attempt(username=username, client_ip=IP)
-        messages.append(raised.value.msg)
+        messages = []
+        for username in (ALICE, "ghost-user"):
+            with pytest.raises(AppError) as raised:
+                await throttle.register_attempt(username=username, client_ip=IP)
+            messages.append(raised.value.msg)
 
-    assert messages[0] == messages[1] == MSG_LOGIN_RATE_LIMITED
-    lowered = MSG_LOGIN_RATE_LIMITED.lower()
-    assert ALICE not in MSG_LOGIN_RATE_LIMITED
-    assert "ghost-user" not in MSG_LOGIN_RATE_LIMITED
-    assert "not found" not in lowered and "unknown" not in lowered
-    assert "invalid username" not in lowered
+        assert messages[0] == messages[1] == MSG_LOGIN_RATE_LIMITED
+        lowered = MSG_LOGIN_RATE_LIMITED.lower()
+        assert ALICE not in MSG_LOGIN_RATE_LIMITED
+        assert "ghost-user" not in MSG_LOGIN_RATE_LIMITED
+        assert "not found" not in lowered and "unknown" not in lowered
+        assert "invalid username" not in lowered
+
+    _run(scenario())
 
 
 # ───────────────────────────────────────────── 成功清除
@@ -197,17 +224,20 @@ def test_the_rate_limit_message_names_neither_the_account_nor_the_outcome() -> N
 def test_a_successful_login_clears_the_pairs_counter() -> None:
     """输错几次后登进来，不该在同一个窗口里继续被惩罚。"""
 
-    store = _Store()
-    throttle = _throttle(store)
-    for _ in range(LOGIN_MAX_ATTEMPTS - 2):
-        throttle.register_attempt(username=ALICE, client_ip=IP)
-    assert throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS - 2
+    async def scenario() -> None:
+        store = _Store()
+        throttle = _throttle(store)
+        for _ in range(LOGIN_MAX_ATTEMPTS - 2):
+            await throttle.register_attempt(username=ALICE, client_ip=IP)
+        assert await throttle.attempts(username=ALICE, client_ip=IP) == LOGIN_MAX_ATTEMPTS - 2
 
-    throttle.reset(username=ALICE, client_ip=IP)
+        await throttle.reset(username=ALICE, client_ip=IP)
 
-    assert throttle.attempts(username=ALICE, client_ip=IP) == 0
-    assert store.values == {}
-    assert f"delete:{_expected_key()}" in store.calls
+        assert await throttle.attempts(username=ALICE, client_ip=IP) == 0
+        assert store.values == {}
+        assert f"delete:{_expected_key()}" in store.calls
+
+    _run(scenario())
 
 
 # ───────────────────────────────────────────── 开关

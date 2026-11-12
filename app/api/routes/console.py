@@ -162,7 +162,7 @@ def _client_ip(request: Request) -> str:
 
 
 @router.post("/login", response_model=ApiResponse[MeData], summary="控制台登录")
-def login(
+async def login(
     request: Request,
     payload: LoginRequest,
     response: Response,
@@ -174,21 +174,25 @@ def login(
     限流在验口令**之前**：一次尝试先记上，失败与不存在的账号都会计数；超限时连账号表
     都不读，所以「是否存在」不会通过耗时或错误码泄露。开关关着时 ``login_throttle``
     返回 ``None``，整段是 no-op（默认套件因此不碰 Redis）。
+
+    路由是 ``async def``（票 #133）：登录限流的两条计数命令与「我的视图」里的用量读取
+    都是异步 Redis，它们必须在事件循环上 ``await``；写库与套餐缓存仍在同步上下文里，
+    由 ``console_service`` 自己挪进线程池。
     """
 
     client_ip = _client_ip(request)
     throttle = login_throttle()
     if throttle is not None:
         # 先记这次尝试，再验口令；被拒的那一次不写（见 login_throttle 模块文档）。
-        throttle.register_attempt(username=payload.username, client_ip=client_ip)
+        await throttle.register_attempt(username=payload.username, client_ip=client_ip)
 
-    session, view = console_service.login(
+    session, view = await console_service.login(
         db, username=payload.username, password=payload.password, cache=cache
     )
 
     if throttle is not None:
         # 成功才清除这一对：合法用户输错几次后登进来，不该在下一个窗口继续被惩罚。
-        throttle.reset(username=payload.username, client_ip=client_ip)
+        await throttle.reset(username=payload.username, client_ip=client_ip)
     _set_session_cookie(response, session.id)
     return ok(_me_data(view))
 
@@ -215,7 +219,7 @@ def logout(
 
 
 @router.get("/me", response_model=ApiResponse[MeData], summary="我的账号、租户、套餐与今日用量")
-def me(
+async def me(
     identity: ConsoleIdentity = Depends(get_console_account),
     db: Session = Depends(get_db),
     cache: PlanCache = Depends(get_plan_cache),
@@ -224,9 +228,11 @@ def me(
 
     用量读的是租户级日桶（只读、不 +1）。开关关着时 ``usage.used`` 为 ``null``、
     ``usage.source`` 为 ``not_tracked``——平台压根没在统计，报 0 会骗人。
+
+    ``async def`` 与登录路由同一条理由（票 #133）：用量那一条只读路径是异步 Redis。
     """
 
-    view = console_service.me_view(db, account_id=identity.account_id, cache=cache)
+    view = await console_service.me_view(db, account_id=identity.account_id, cache=cache)
     return ok(_me_data(view))
 
 

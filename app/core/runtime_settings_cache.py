@@ -88,14 +88,19 @@ def get_settings_cache() -> RuntimeSettingsCache:
 
     Redis 客户端本身是惰性的（见 ``app.core.redis_client``），所以这里构造缓存对象
     不会连库；真正的连接要等第一次 ``get``。
+
+    **用同步缝**（票 #133）：刷新的三个调用点都在同步上下文里——中间件把它丢进
+    ``run_in_threadpool``、Celery 任务直接同步调用、控制台依赖走同步路由。同步 Redis
+    在这里因此不在事件循环上跑；等这些路径异步化之后改回异步缝（票 #129 / #130），
+    完整理由见 ``app.core.redis_client`` 的模块文档。
     """
 
     global _cache
     if _cache is None:
         # 延迟 import：只有真正走生产实现时才需要 redis 那一条依赖链。
-        from app.core.redis_client import get_redis_client
+        from app.core.redis_client import get_sync_redis_client
 
-        _cache = RedisRuntimeSettingsCache(get_redis_client())
+        _cache = RedisRuntimeSettingsCache(get_sync_redis_client())
     return _cache
 
 
