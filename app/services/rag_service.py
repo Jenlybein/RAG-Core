@@ -74,7 +74,8 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
+from typing import Any
 
 import structlog
 
@@ -130,6 +131,7 @@ async def retrieve(
     query: str,
     options: RetrievalOptions,
     stage_timer: StageTimer | None = None,
+    rerank_factory: Callable[[], Any] | None = None,
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
@@ -150,6 +152,11 @@ async def retrieve(
     ``stage_timer`` 是**可选的**收集器（#102）：不传就自己造一个，六段照样计时，只是
     这份计量没有别人收下（去向是 ``none`` 时正是如此）。测试传一个进来，就能直接断言
     「这一次到底记到了哪几段」——「度量常开」因此是可观察的事实，而不是注释里的承诺。
+
+    ``rerank_factory`` 是重排的**注入缝**（#116）：缺省 ``None`` 时编排层用既有工厂出口
+    （``get_rerank_provider``），传一个别的工厂进来就换实现——评测靠它显式装配旧的大模型
+    重排做对照，生产路径一行不用改。它只影响**混合模式**：重排的定义就是对融合后的候选
+    重排，单模式没有这一步。
     """
 
     # 度量常开：收集器无条件创建，与 ``TRACE_SINK`` 无关。去向只决定这份计量送到哪。
@@ -232,6 +239,8 @@ async def retrieve(
             # 的那一档也不该被顺手排一遍（pipeline 里靠 provider 可用性判断会把
             # 「本次不要」静默变成「本次跑了」）。
             rerank_enabled=options.rerank,
+            # 重排实现也由工厂给出（#116）：缺省 None 时编排层走既有工厂出口。
+            rerank_factory=rerank_factory,
             # 收集器显式传进去：两路召回与融合在编排层计时，段名与本模块用的是同一组常量。
             stage_timer=timer,
         )

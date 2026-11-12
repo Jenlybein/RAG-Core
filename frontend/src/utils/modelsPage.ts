@@ -17,7 +17,7 @@ export const MODEL_ROLES: readonly ModelRole[] = ['fast', 'strong']
 
 /** 各角色的中文说明：面板上写清楚「它是干什么的」，而不是只给一个英文单词。 */
 export const MODEL_ROLE_LABELS: Record<ModelRole, string> = {
-  fast: 'fast（快速调用，同时承担重排）',
+  fast: 'fast（快速调用：查询改写）',
   strong: 'strong（需要思考的生成）',
 }
 
@@ -27,9 +27,13 @@ export const MODEL_ROLE_LABELS: Record<ModelRole, string> = {
  * 为什么要拆：`MODEL_ROLE_LABELS` 是「名字 + 解释」一体，直接当下拉标题会把标题撑成
  * 一行长句，两个角色并排时更难扫。面板上名字用等宽小字、解释单独一行，才读得出
  * 「这是两档角色」。
+ *
+ * **`fast` 不再承担重排**（第 10 步票 3）：重排走专用 Cross-Encoder 端点
+ * （`RERANK_BASE_URL` / `RERANK_MODEL`），与这里的两档模型角色无关。旧文案写「同时承担
+ * 重排」会让管理员以为换掉 fast 就能换重排模型——那是面板在说假话。
  */
 export const MODEL_ROLE_HINTS: Record<ModelRole, string> = {
-  fast: '快速调用，同时承担重排',
+  fast: '快速调用：查询改写',
   strong: '需要思考的生成',
 }
 

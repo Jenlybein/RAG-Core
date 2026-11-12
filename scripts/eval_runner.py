@@ -41,7 +41,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -94,6 +94,15 @@ REQUIRED_RETRIEVAL_FIELDS = ("degraded", "degraded_reason", "empty_reason", "rer
 REQUIRED_CHUNK_FIELDS = ("chunk_id", "kb_id", "score")
 
 DEFAULT_HTTP_ENDPOINT = "/api/v1/rag/retrieve"
+
+#: 这一轮用哪种重排（#116）。``auto`` = 生产工厂装什么就用什么（默认，也是生产口径）；
+#: ``llm`` = 显式装旧的大模型重排，用来在同一份题集上做对照。
+#:
+#: 为什么对照必须走**注入**而不是改 ``RERANK_ENABLED``：开关只表达「这次要不要重排」，
+#: 而「用哪种实现」生产工厂已经不给选了。评测要的恰好是那个「生产已经不给选」的实现。
+RERANK_PROVIDER_AUTO = "auto"
+RERANK_PROVIDER_LLM = "llm"
+RERANK_PROVIDER_CHOICES = (RERANK_PROVIDER_AUTO, RERANK_PROVIDER_LLM)
 
 
 # ─────────────────────────────────────────────────────── 小工具（纯函数，可离线测）
@@ -365,6 +374,7 @@ def environment_snapshot(
     env_file: str | None,
     llm_endpoint_source: str,
     llm_model: str | None,
+    rerank_provider: str | None = None,
 ) -> dict[str, Any]:
     """环境快照：**这次数字是在什么条件下算出来的**。
 
@@ -376,6 +386,11 @@ def environment_snapshot(
     走 ``model_configs`` 还是 ``.env``。没有它们，「生产好好的、评测全挂」只能靠猜。
     ``retrieval`` 段另记重排预算三项（超时 / 候选封顶 / 单条截断）：同一份题集在 15 秒
     与 60 秒超时下会呈现「有题降级」与「全排过」两种状态，不记下来就无法复现同一份读数。
+
+    ``rerank_provider``（#116）如实写这一轮用的是哪种重排（``qwen3`` / ``llm`` / ``none``）。
+    它是「换件前后」这条对照里**唯一**能区分两个实现的字段：``rerank_enabled`` 两边都是
+    ``true``，光看它分不出跑的是专用端点还是旧的大模型重排。不给时按**生产工厂会装什么**
+    推算（不实例化任何 Provider）——那也是「这一轮实际跑的就是生产那条链」的准确说法。
     """
 
     from importlib.metadata import version
@@ -386,6 +401,11 @@ def environment_snapshot(
         ragas_version = version("ragas")
     except Exception:  # noqa: BLE001 - 缺元数据不该让评测跑不完
         ragas_version = None
+
+    if rerank_provider is None:
+        from app.providers.rerank import configured_rerank_provider_name
+
+        rerank_provider = configured_rerank_provider_name()
 
     return {
         "run_id": run_id,
@@ -414,6 +434,9 @@ def environment_snapshot(
         # 指针 → 配置行），``env`` = 回落单供应商。两条路的 key 可能属于不同账号。
         "llm_endpoint_source": llm_endpoint_source,
         "llm_model": llm_model,
+        # 这一轮的重排实现（#116）。与 ``rerank_enabled`` 是两件事：开关说「要不要重排」，
+        # 它说「谁在重排」。换件前后两次运行开关相同、分数才可比。
+        "rerank_provider": rerank_provider,
         "embedding": {
             "provider": settings.EMBEDDING_PROVIDER,
             "model": settings.EMBEDDING_MODEL,
@@ -920,6 +943,51 @@ def _apply_eval_switches(args: argparse.Namespace, *, top_k: int) -> bool:
     return bool(settings.RERANK_ENABLED)
 
 
+def rerank_provider_choice(args: argparse.Namespace) -> str:
+    """``--rerank-provider`` 的取值（``auto`` / ``llm``）；不认识的词当场拒绝。
+
+    用 ``SystemExit`` 而不是 ``argparse`` 的 ``choices``：``--rerank-provider`` 只在
+    ``run`` 上存在，而这一层还要对「没传」的情况给出缺省，集中判定比两处各写一遍清楚。
+    """
+
+    choice = str(getattr(args, "rerank_provider", RERANK_PROVIDER_AUTO)).strip().lower()
+    if choice not in RERANK_PROVIDER_CHOICES:
+        raise SystemExit(
+            f"--rerank-provider 只能是 {RERANK_PROVIDER_CHOICES}，收到 {choice!r}"
+        )
+    return choice
+
+
+def resolve_rerank_provider(args: argparse.Namespace, *, rerank_enabled: bool) -> str:
+    """这一轮实际用哪种重排（``qwen3`` / ``llm`` / ``none``）——写进环境快照。
+
+    ``--rerank`` 关着时无论 ``--rerank-provider`` 写什么都不算数：那一步根本没跑，
+    快照写 ``llm`` 会让下一个人以为跑过一场对照。
+    """
+
+    if not rerank_enabled:
+        return "none"
+    if rerank_provider_choice(args) == RERANK_PROVIDER_LLM:
+        return RERANK_PROVIDER_LLM
+    from app.providers.rerank import configured_rerank_provider_name
+
+    return configured_rerank_provider_name()
+
+
+def build_rerank_factory(*, provider_name: str) -> Callable[[], Any] | None:
+    """把「这一轮用哪种重排」翻译成注入缝要的可调用对象。
+
+    ``llm`` → :func:`app.providers.rerank.build_llm_rerank_provider`（旧实现，对照用）；
+    其余 → ``None``，即编排层走既有工厂出口（生产那条链，也是缺省行为）。
+    """
+
+    if provider_name == RERANK_PROVIDER_LLM:
+        from app.providers.rerank import build_llm_rerank_provider
+
+        return build_llm_rerank_provider
+    return None
+
+
 async def _score_questions(
     db: Any,
     *,
@@ -928,11 +996,15 @@ async def _score_questions(
     mode: str,
     top_k: int,
     kb_ids: Sequence[str],
+    rerank_factory: Callable[[], Any] | None = None,
 ) -> tuple[list[QuestionScore], list[dict[str, Any]], list[str]]:
     """逐题真实检索 + 打分。返回（门禁用的分数、逐题明细、检索失败的题号）。
 
     只对**进主平均**的题跑：``absent`` / ``false_premise`` 不进闸门，跑它们只是白烧
     嵌入与召回。它们在报告里以「排除」出现，不被悄悄丢掉。
+
+    ``rerank_factory`` 原样交给 ``_run_question`` → ``retrieve``：评测靠它把「这一轮用
+    哪种重排」钉成一个显式选择（``--rerank-provider llm`` 就是旧实现）。
     """
 
     from scripts import eval_retrieval as ev
@@ -941,7 +1013,14 @@ async def _score_questions(
     detail: list[dict[str, Any]] = []
     failures: list[str] = []
     for index, question in enumerate(questions, start=1):
-        outcome = await ev._run_question(db, question, mode=mode, top_k=top_k, kb_ids=list(kb_ids))
+        outcome = await ev._run_question(
+            db,
+            question,
+            mode=mode,
+            top_k=top_k,
+            kb_ids=list(kb_ids),
+            rerank_factory=rerank_factory,
+        )
         reference = [str(chunk_id) for chunk_id in labels.get(question.id, [])]
         reason: str | None = None
         precision: float | None = None
@@ -1140,6 +1219,11 @@ async def _run(args: argparse.Namespace) -> int:
     # 同时早于环境快照——快照要记的就是「这一轮走的是哪条」。
     llm_access = bind_llm_role_resolver()
     print(f"model     : {llm_access['llm_endpoint_source']} / {llm_access['llm_model'] or '未知'}")
+    # 这一轮用哪种重排（#116）：也在快照之前定，快照要记的就是「实际跑了哪个实现」。
+    rerank_provider = resolve_rerank_provider(args, rerank_enabled=rerank_enabled)
+    rerank_factory = build_rerank_factory(provider_name=rerank_provider)
+    if rerank_enabled:
+        print(f"rerank    : {rerank_provider}")
     environment = environment_snapshot(
         run_id=run_id,
         generated_at=generated_at,
@@ -1147,6 +1231,7 @@ async def _run(args: argparse.Namespace) -> int:
         corpus=corpus_block,
         dataset_version=dataset_version,
         env_file=env_file,
+        rerank_provider=rerank_provider,
         **llm_access,
     )
 
@@ -1167,7 +1252,12 @@ async def _run(args: argparse.Namespace) -> int:
     # 位置放在重建索引**之前**：探测失败时连嵌入与重排的钱都还没花，也没写坏 ES 索引。
     # 不探测的后果是「127 题全降级」也能出一份看起来正常的 CP/CR——那是最坏的假绿。
     if rerank_enabled:
-        probe_ms = await probe_rerank()
+        # 探测走**这一轮真正会用的那个实现**：用 --rerank-provider llm 对照时，探测就
+        # 该问旧实现（大模型）通不通，而不是问专用端点。否则「端点通、大模型欠费」这种
+        # 组合会先被误报成端点问题，或者反过来让整轮静默降级。
+        probe_ms = await probe_rerank(
+            provider=rerank_factory() if rerank_factory is not None else None
+        )
         print(f"rerank    : 连通性探测通过（{len(PROBE_CHUNKS)} 条假文档，{probe_ms:.0f}ms）")
 
     questions, _question_k = ev._load_questions()
@@ -1220,6 +1310,7 @@ async def _run(args: argparse.Namespace) -> int:
             mode=mode,
             top_k=top_k,
             kb_ids=kb_ids,
+            rerank_factory=rerank_factory,
         )
     finally:
         db.close()
@@ -1432,6 +1523,15 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "这一轮**开着**重排跑（缺省关：历史口径逐字节不变）。"
             "开/关是门禁尺子上的一根刻度，两种口径不能互相扣分"
+        ),
+    )
+    run.add_argument(
+        "--rerank-provider",
+        choices=RERANK_PROVIDER_CHOICES,
+        default=RERANK_PROVIDER_AUTO,
+        help=(
+            "这一轮用哪种重排：auto = 生产工厂（专用端点）/ llm = 旧的大模型重排（对照用）。"
+            "只在 --rerank 打开时才有意义；镜像进环境快照的 rerank_provider"
         ),
     )
     run.add_argument(

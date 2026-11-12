@@ -1,4 +1,4 @@
-"""大模型重排 Provider：排序、分数、候选封顶、截断与失败语义（全部离线）。
+"""重排 Provider：排序、分数、候选封顶、截断与失败语义（全部离线）。
 
 接缝有两个，都是既有的：``RerankProvider.rerank``（既有抽象）与
 ``get_rerank_provider``（既有工厂出口）。断言只看「进去的候选、回来的顺序与分数、
@@ -9,11 +9,14 @@
 * 重排只改 ``score``，融合分与五列分列字段原样保留（可解释性不能因为重排丢掉）；
 * 模型没提到的候选按 0 分参与排序，未知 ``chunk_id`` 直接忽略；
 * 送进模型的候选不超过 ``RERANK_MAX_CANDIDATES``，单条内容截到 ``RERANK_CHUNK_MAX_CHARS``；
-* 返回条数不超过配置的 ``RERANK_TOP_N``；
+* 返回条数只由调用方的 ``top_n`` 决定；
 * 空返回 / 结构不合法 / 调用失败 / 超时都是**异常**——降级判定在上层（编排），
   Provider 不自己吞掉，否则上层就不知道「这次没重排」；
-* 工厂：``RERANK_ENABLED=false`` 给空实现（默认路径一次模型都不调），
-  ``true`` 才装大模型实现，并且固定用 fast 档。
+* 工厂（第 10 步票 3 起的**破坏性语义**）：``RERANK_ENABLED=false`` → 空实现；
+  ``true`` 且端点配齐 → 专用端点；``true`` 但端点没配 → **空实现**（明确不可用），
+  **不再回落**大模型重排；旧实现只能经 ``build_llm_rerank_provider`` 显式装配。
+
+专用端点自己的报文契约在 ``tests/test_qwen_rerank_provider.py``（用 ``MockTransport``）。
 """
 
 from __future__ import annotations
@@ -26,9 +29,14 @@ import pytest
 from app.core.config import Settings, settings
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.llm.base import LLMProvider
-from app.providers.rerank import get_rerank_provider
+from app.providers.rerank import (
+    build_llm_rerank_provider,
+    configured_rerank_provider_name,
+    get_rerank_provider,
+)
 from app.providers.rerank.llm import LLMRerankProvider, RerankRanking, RerankScore
 from app.providers.rerank.noop import NoopRerankProvider
+from app.providers.rerank.qwen import Qwen3RerankProvider
 
 
 # ─────────────────────────────────────────────────────────────── 替身
@@ -231,10 +239,25 @@ def test_rerank_settings_all_have_defaults() -> None:
 
     config = Settings(_env_file=None)
 
-    assert config.RERANK_ENABLED is False, "默认关闭：默认路径不碰大模型"
+    assert config.RERANK_ENABLED is False, "默认关闭：默认路径一次远程调用都没有"
+    assert config.RERANK_BASE_URL == "", "没配端点 = 这台机器没有专用重排"
+    assert config.RERANK_MODEL == "qwen3.7-text-rerank"
+    assert config.RERANK_API_KEY == ""
     assert config.RERANK_MAX_CANDIDATES == 20
     assert config.RERANK_CHUNK_MAX_CHARS == 1024
     assert config.RERANK_TIMEOUT_SECONDS == 15.0
+
+
+def _configure_qwen_endpoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    """把「端点已配」这件事钉死，不依赖本机 ``.env`` 里恰好有什么。"""
+
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example.test/compatible-api/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "rerank-key")
+    monkeypatch.setattr(settings, "RERANK_MODEL", "qwen3.7-text-rerank")
+
+
+# ──────────────────────────────────────── 工厂：三种语义（破坏性变更）
 
 
 def test_factory_returns_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -245,69 +268,134 @@ def test_factory_returns_noop_when_disabled(monkeypatch: pytest.MonkeyPatch) -> 
     assert isinstance(get_rerank_provider(), NoopRerankProvider)
 
 
-def test_disabled_factory_never_touches_the_llm_layer(monkeypatch: pytest.MonkeyPatch) -> None:
-    """关闭时连大模型工厂都不该被调用——离线机器上这是「绝不发网络」的前提。"""
+def _spy_on_qwen(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """把专用端点换成「只记下构造参数」的替身：工厂那条线因此可离线断言。
 
-    monkeypatch.setattr(settings, "RERANK_ENABLED", False)
+    工厂在**调用时**才 ``from app.providers.rerank.qwen import Qwen3RerankProvider``，
+    所以替换模块属性就能接住它——这也是「配置从 Settings 走到 Provider」唯一的入口。
+    """
+
+    captured: dict[str, Any] = {}
+
+    class _Spy:
+        def __init__(self, **kwargs: Any) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr("app.providers.rerank.qwen.Qwen3RerankProvider", _Spy)
+    return captured
+
+
+def test_factory_returns_the_dedicated_endpoint_when_enabled_and_configured(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """开着重排且端点配齐 → 专用 Cross-Encoder，配置一路走到 Provider 上。"""
+
+    _configure_qwen_endpoint(monkeypatch)
+    monkeypatch.setattr(settings, "RERANK_MAX_CANDIDATES", 30)
+    monkeypatch.setattr(settings, "RERANK_CHUNK_MAX_CHARS", 512)
+    monkeypatch.setattr(settings, "RERANK_TIMEOUT_SECONDS", 7.0)
+    captured = _spy_on_qwen(monkeypatch)
+
+    provider = get_rerank_provider()
+
+    assert type(provider).__name__ == "_Spy", "装出来的应该是专用端点（这里被换成替身）"
+    assert captured == {
+        "base_url": "https://rerank.example.test/compatible-api/v1",
+        "api_key": "rerank-key",
+        "model": "qwen3.7-text-rerank",
+        "max_candidates": 30,
+        "chunk_max_chars": 512,
+        "timeout_seconds": 7.0,
+    }
+
+
+@pytest.mark.parametrize(
+    ("base_url", "api_key", "model_api_key"),
+    [
+        ("", "rerank-key", "model-key"),  # 地址没配
+        ("https://rerank.example.test/compatible-api/v1", "", ""),  # 两把 key 都没有
+    ],
+)
+def test_factory_returns_noop_when_enabled_but_the_endpoint_is_not_configured(
+    monkeypatch: pytest.MonkeyPatch, base_url: str, api_key: str, model_api_key: str
+) -> None:
+    """端点没配 = 明确不可用（空实现），**不再回落**大模型重排。
+
+    这是本票最容易被写回去的一行：``true`` 就装配点东西看起来很「稳」，实际是把
+    「这台机器没配端点」变成「它正在用另一种方式重排」——两种实现延迟差一个数量级、
+    读数不可比，回显却都写着 ``rerank: true``。
+    """
+
+    _configure_qwen_endpoint(monkeypatch)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", base_url)
+    monkeypatch.setattr(settings, "RERANK_API_KEY", api_key)
+    monkeypatch.setattr(settings, "MODEL_API_KEY", model_api_key)
+
+    provider = get_rerank_provider()
+
+    assert isinstance(provider, NoopRerankProvider)
+    assert provider.available is False
+
+
+def test_the_rerank_api_key_falls_back_to_the_model_api_key(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """端点密钥留空回落 ``MODEL_API_KEY``：同一把百炼 key 通常两处都通。"""
+
+    _configure_qwen_endpoint(monkeypatch)
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "")
+    monkeypatch.setattr(settings, "MODEL_API_KEY", "model-key")
+    captured = _spy_on_qwen(monkeypatch)
+
+    get_rerank_provider()
+
+    assert captured["api_key"] == "model-key"
+
+
+def test_the_factory_never_falls_back_to_the_llm_rerank(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """生产工厂根本不碰大模型层：端点没配时也不会「顺手」装一个 LLM 重排。"""
+
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "")
+    monkeypatch.setattr(settings, "MODEL_API_KEY", "")
 
     def _forbidden(_tier: str = "fast") -> LLMProvider:  # pragma: no cover
-        raise AssertionError("关闭重排时不许装配大模型")
+        raise AssertionError("生产工厂不许再回落大模型重排")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)
 
     assert isinstance(get_rerank_provider(), NoopRerankProvider)
 
 
-def test_available_flag_distinguishes_off_from_reranked() -> None:
-    """``available`` 是编排层区分「这一步没开」与「排了但顺序没变」的唯一信号。
-
-    与 ``KeywordSearchProvider.available`` 同名同义：都是「这项能力在这台机器上
-    存不存在」，不是「这次跑出了什么结果」。
-    """
-
-    assert NoopRerankProvider().available is False
-    assert _provider(_FakeLLM(ranking=_ranking())).available is True
-
-
-def test_enabled_without_any_model_key_degrades_instead_of_breaking(
+def test_the_configured_provider_name_answers_without_building_anything(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """开了重排但这台机器没配任何大模型 key：拿到空实现、重排失败，服务照常启动。
+    """环境快照只问「这一轮是哪种重排」——不该为了一个名字去构造大模型。"""
 
-    父 spec 用户故事 22：没有 key 的机器（离线测试 / CI）必须能启动，能力明确
-    不可用。这里是「明确不可用」的具体长相：``LLM_FAILED`` 原样上抛，由编排层
-    降级成融合顺序——不是启动失败，也不是静默当作没配。
-    """
+    monkeypatch.setattr(settings, "RERANK_ENABLED", False)
+    assert configured_rerank_provider_name() == "none"
 
-    for name in (
-        "DEEPSEEK_API_KEY",
-        "QWEN_API_KEY",
-        "ARK_API_KEY",
-        "OPENAI_API_KEY",
-        "ANTHROPIC_API_KEY",
-        "GEMINI_API_KEY",
-    ):
-        monkeypatch.setattr(settings, name, "")
-    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    _configure_qwen_endpoint(monkeypatch)
+    assert configured_rerank_provider_name() == "qwen3"
 
-    provider = get_rerank_provider()
-    assert isinstance(provider, LLMRerankProvider)
-
-    with pytest.raises(AppError) as excinfo:
-        asyncio.run(provider.rerank(query="q", chunks=[_chunk("c1")], top_n=5))
-
-    assert excinfo.value.code == ErrorCode.LLM_FAILED
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "")
+    assert configured_rerank_provider_name() == "none"
 
 
-def test_factory_wires_the_fast_tier_and_the_configured_limits(
+# ────────────────────────────────────── 旧实现：只能显式装配（对照用）
+
+
+def test_build_llm_rerank_provider_is_explicit_and_wires_the_fast_tier(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """开启后：用 fast 档、按配置封顶候选、按配置截断、按配置限制返回条数。
+    """旧实现由 ``build_llm_rerank_provider`` 显式装配：fast 档 + 配置封顶 / 截断。
 
     这条测试同时证明「配置从 Settings 走到 Provider」是真的——不是写了一堆没人读的键。
     """
 
-    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
     monkeypatch.setattr(settings, "RERANK_MAX_CANDIDATES", 2)
     monkeypatch.setattr(settings, "RERANK_CHUNK_MAX_CHARS", 4)
     monkeypatch.setattr(settings, "RERANK_TIMEOUT_SECONDS", 7.0)
@@ -322,8 +410,10 @@ def test_factory_wires_the_fast_tier_and_the_configured_limits(
     # 惰性 import 的实现让这个替换点成立：工厂在调用时才去找这个函数。
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_get_llm_provider)
 
-    provider = get_rerank_provider()
+    provider = build_llm_rerank_provider()
     assert isinstance(provider, LLMRerankProvider)
+    assert provider.provider_name == "llm"
+    assert provider.model_name is None, "替身大模型没有模型名，不编一个出来"
     assert tiers == ["fast"], "重排与查询改写共用快档"
 
     chunks = [_chunk(f"c{i}", content="X" * 50) for i in range(5)]
@@ -333,3 +423,66 @@ def test_factory_wires_the_fast_tier_and_the_configured_limits(
     assert "c1" in prompt and "c2" not in prompt, "候选封顶来自 RERANK_MAX_CANDIDATES"
     assert "X" * 4 in prompt and "X" * 5 not in prompt, "截断来自 RERANK_CHUNK_MAX_CHARS"
     assert len(result) == 2, "候选只有两条，返回就不可能更多"
+
+
+def test_an_enabled_but_unkeyed_llm_rerank_still_raises_llm_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式装配的旧实现在没有 key 时是 ``LLM_FAILED``（不是悄悄返回空顺序）。
+
+    这是对照路径（评测 ``--rerank-provider llm``）的失败长相：它会被编排层降级成融合
+    顺序，而这正是「旧实现依赖大模型可用性」的证据。
+    """
+
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "QWEN_API_KEY",
+        "ARK_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "GEMINI_API_KEY",
+    ):
+        monkeypatch.setattr(settings, name, "")
+
+    provider = build_llm_rerank_provider()
+    assert isinstance(provider, LLMRerankProvider)
+
+    with pytest.raises(AppError) as excinfo:
+        asyncio.run(provider.rerank(query="q", chunks=[_chunk("c1")], top_n=5))
+
+    assert excinfo.value.code == ErrorCode.LLM_FAILED
+
+
+# ───────────────────────────────────────────────── 身份与可用性
+
+
+def test_available_flag_distinguishes_off_from_reranked() -> None:
+    """``available`` 是编排层区分「这一步没开」与「排了但顺序没变」的唯一信号。
+
+    与 ``KeywordSearchProvider.available`` 同名同义：都是「这项能力在这台机器上
+    存不存在」，不是「这次跑出了什么结果」。
+    """
+
+    assert NoopRerankProvider().available is False
+    assert _provider(_FakeLLM(ranking=_ranking())).available is True
+
+
+def test_every_implementation_fills_in_its_own_identity() -> None:
+    """身份属性是响应 ``rerank.provider`` / ``rerank.model`` 与评测快照的唯一来源。
+
+    空实现也必须自己填（``none``）：省略靠基类缺省值会让「新加了一个实现、忘了填身份」
+    在运行时悄悄变成 ``unknown``。
+    """
+
+    noop = NoopRerankProvider()
+    assert (noop.provider_name, noop.model_name) == ("none", None)
+
+    llm = _provider(_FakeLLM(ranking=_ranking()))
+    assert (llm.provider_name, llm.model_name) == ("llm", None)
+
+    qwen = Qwen3RerankProvider(
+        base_url="https://rerank.example.test/compatible-api/v1",
+        api_key="k",
+        model="qwen3.7-text-rerank",
+    )
+    assert (qwen.provider_name, qwen.model_name) == ("qwen3", "qwen3.7-text-rerank")

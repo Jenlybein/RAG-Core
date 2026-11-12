@@ -68,7 +68,7 @@ import json
 import sys
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -724,7 +724,13 @@ class QuestionOutcome:
 
 
 async def _run_question(
-    db: Any, question: Question, *, mode: str, top_k: int, kb_ids: Sequence[str]
+    db: Any,
+    question: Question,
+    *,
+    mode: str,
+    top_k: int,
+    kb_ids: Sequence[str],
+    rerank_factory: Callable[[], Any] | None = None,
 ) -> QuestionOutcome:
     started = time.perf_counter()
     outcome = QuestionOutcome(id=question.id, query=question.query, mode=mode)
@@ -751,6 +757,9 @@ async def _run_question(
                 rerank=settings.RERANK_ENABLED,
                 rewrite=settings.QUERY_REWRITE_ENABLED,
             ),
+            # 重排实现由调用方决定（#116）：``--rerank-provider llm`` 时这里是一个显式
+            # 装配旧实现的工厂；缺省 ``None`` 表示走生产工厂（专用端点那条链）。
+            rerank_factory=rerank_factory,
         )
     except AppError as exc:
         # 单模式失败是**预期结果**（验收第 7 条就是要求它明确失败），不是脚本故障：

@@ -49,6 +49,16 @@ export interface RerankInfo {
   candidates?: number
   returned?: number
   duration_ms?: number
+  /**
+   * 这一轮用哪种重排（`qwen3` / `llm` / 未跑时 `null`）。
+   *
+   * 为什么要它：`applied=true` 只说明「重排发生过」，说明不了「是哪种实现」——同一次
+   * 开关下既可能跑专用端点，也可能跑旧的大模型重排（评测对照）。没有这两个字段，
+   * 页面与归档都分不出「这次慢是因为哪个实现」。
+   */
+  provider?: string | null
+  /** 重排模型名（专用端点是 `qwen3.7-text-rerank`；旧实现或未跑时为 `null`）。 */
+  model?: string | null
 }
 
 /** `metadata.retrieval`：降级与空结果都挂在这一层，读一个地方就够。 */

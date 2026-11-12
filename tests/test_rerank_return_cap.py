@@ -21,7 +21,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.providers.llm.base import LLMProvider
-from app.providers.rerank.llm import RerankRanking, RerankScore
+from app.providers.rerank.llm import LLMRerankProvider, RerankRanking, RerankScore
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -129,8 +129,15 @@ def _offline_client(monkeypatch: pytest.MonkeyPatch, *, llm: LLMProvider) -> Ite
     monkeypatch.setattr(
         kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)
     )
-    # 重排工厂惰性 import，所以替换点在「大模型能力出口」上。
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
+    # 生产工厂已不再返回大模型重排（#116），替身因此接在**既有**的工厂出口上。
+    rerank_module = importlib.import_module("app.services.retrieval.rerank")
+    provider = LLMRerankProvider(
+        llm=llm,
+        max_candidates=settings.RERANK_MAX_CANDIDATES,
+        chunk_max_chars=settings.RERANK_CHUNK_MAX_CHARS,
+        timeout_seconds=settings.RERANK_TIMEOUT_SECONDS,
+    )
+    monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: provider)
 
     from app.api.deps import get_current_key
 

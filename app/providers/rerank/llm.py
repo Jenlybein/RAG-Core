@@ -2,9 +2,14 @@
 
 ADR-0011 的边界图里，``RerankProvider`` 是「我们自写」的那一类：它不直接和某一家的
 重排端点说话，而是把「让模型给候选打分」表达成**一次结构化输出调用**，把各家的差异
-留给大模型层去消化。二期换成独立重排端点时，换的是这个类，不是调用它的编排
-（GLOSSARY「Provider（六类）」：Rerank 一期就是包着 ``LLMProvider`` 的
-``LLMRerankProvider``）。
+留给大模型层去消化。
+
+**第 10 步票 3 起它不再是生产实现**：生产路径换成专用 Cross-Encoder（
+``app/providers/rerank/qwen.py``），因为同一份语料上「通用大模型逐条打分」的 P95 是
+20.6s、而专用端点是个位数毫秒级——质量在门禁 ±1pp 内没动，换件的理由是「同样的质量，
+快一个数量级、便宜一个数量级」。本类**保留**：评测要用它跑同一份题集做对照
+（``--rerank-provider llm`` → :func:`app.providers.rerank.build_llm_rerank_provider`），
+生产工厂 ``get_rerank_provider`` 不再返回它。
 
 三条与「重排追求准、但不能把系统搞挂」直接相关的约定：
 
@@ -117,6 +122,19 @@ class LLMRerankProvider(RerankProvider):
         self._max_candidates = max_candidates
         self._chunk_max_chars = chunk_max_chars
         self._timeout_seconds = timeout_seconds
+
+    @property
+    def provider_name(self) -> str:
+        """``llm``：一期的「让通用大模型逐条打分」。生产工厂已不再返回它，只供对照。"""
+
+        return "llm"
+
+    @property
+    def model_name(self) -> str | None:
+        """包里那个大模型用的模型名；抽象上没有这一栏时是 ``None``（不编一个出来）。"""
+
+        name = getattr(self._llm, "model_name", None)
+        return name if isinstance(name, str) else None
 
     async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]:
         """按模型打的分重排；顺序相同分数的按融合顺序（确定性），不随机。"""

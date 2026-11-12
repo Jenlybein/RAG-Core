@@ -42,7 +42,6 @@ from app.services.runtime_settings import (
 from tests.fake_db import RecordingSession
 
 SAFETY_SWITCHES = ("AUTH_ENABLED", "RATE_LIMIT_ENABLED", "DEV_API_KEY", "DEV_TENANT_ID")
-
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 
 #: 库里预置一行时用的时间戳。``updated_at`` 是否被改写，靠它看出来。
@@ -188,8 +187,32 @@ def test_no_secret_is_whitelisted_as_hot() -> None:
     """密钥类字段不该出现在热更档：热更意味着值会被反复读进内存并可能被面板回显。"""
 
     secrets = [key for key, spec in SETTING_SPECS.items() if spec.secret]
-    assert secrets == ["MODEL_API_KEY"]
-    assert spec_of(secrets[0]).tier == TIER_RESTART
+    assert secrets == ["MODEL_API_KEY", "RERANK_API_KEY"]
+    for key in secrets:
+        assert spec_of(key).tier == TIER_RESTART or spec_of(key).tier == TIER_LOCKED
+
+
+def test_the_rerank_endpoint_keys_are_in_the_catalog() -> None:
+    """票 #116：端点地址与模型名可改（热档），密钥类只读且不回显。
+
+    为什么地址 / 模型名必须能在面板上改：它们是「这一台机器用哪个重排端点」的全部事实，
+    调整一次不该要求重起整个 API 进程。而密钥不进热更档——它只该由部署方在 .env 里定，
+    面板上看到的永远是打码值（与 ``MODEL_API_KEY`` 同一条纪律）。
+    """
+
+    base_url = spec_of("RERANK_BASE_URL")
+    model = spec_of("RERANK_MODEL")
+    api_key = spec_of("RERANK_API_KEY")
+
+    assert base_url is not None and base_url.tier == TIER_HOT
+    assert model is not None and model.tier == TIER_HOT
+    assert base_url.why.strip() and model.why.strip()
+
+    assert api_key is not None and api_key.secret is True
+    assert api_key.tier == TIER_LOCKED, "密钥类只读：写入口一律拒绝"
+    shown = runtime_settings._visible_value(api_key, "sk-rerank-0123456789")
+    assert "sk-rerank-0123456789" != shown
+    assert "0123456789" not in shown, "不回显：面板只看得到打码值"
 
 
 # ─────────────────────────────────────────────────────────────── 非法行回退与校验

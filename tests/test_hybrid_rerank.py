@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.providers.llm.base import LLMProvider
-from app.providers.rerank.llm import RerankRanking, RerankScore
+from app.providers.rerank.llm import LLMRerankProvider, RerankRanking, RerankScore
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -155,6 +155,7 @@ def _offline_client(
     session_mod = importlib.import_module("app.db.session")
     service = importlib.import_module("app.services.rag_service")
     pipeline = importlib.import_module("app.services.retrieval.pipeline")
+    rerank_module = importlib.import_module("app.services.retrieval.rerank")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     # 两路各两条：向量 c1 > c2，关键词 c1 > c3。
@@ -179,8 +180,16 @@ def _offline_client(
     )
 
     if llm is not None:
-        # 重排工厂是惰性 import 的，所以替换点在「大模型能力出口」上，而不是重排模块里。
-        monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda tier="fast": llm)
+        # 生产工厂已不再返回大模型重排（#116），所以替身接在**既有**的工厂出口上：
+        # ``app/services/retrieval/rerank.py`` 里的 ``get_rerank_provider``。这样这一组
+        # 仍然只测编排语义（顺序 / 降级 / 回显），不测「今天工厂装的是哪种实现」。
+        provider = LLMRerankProvider(
+            llm=llm,
+            max_candidates=settings.RERANK_MAX_CANDIDATES,
+            chunk_max_chars=settings.RERANK_CHUNK_MAX_CHARS,
+            timeout_seconds=settings.RERANK_TIMEOUT_SECONDS,
+        )
+        monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: provider)
 
     from app.api.deps import get_current_key
 

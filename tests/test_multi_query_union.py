@@ -80,6 +80,11 @@ _BASELINE_SHA256: dict[str, str] = {
 #: #101 起响应多出的那个字段（每次调用都不同）。比对前先把它**整段摘掉**，见 ``_without_trace_id``。
 _TRACE_ID_RE = re.compile(r',"trace_id":"[0-9a-f]{32}"')
 
+#: #116 起 ``metadata.retrieval.rerank`` 多出的两个**实现身份**键（``provider`` / ``model``）。
+#: 它们与 ``trace_id`` 是同一类东西：有意的契约新增，不是检索行为变化。比对前整段摘掉，
+#: 基线常量因此一个都不用重采——「除这两个新键外逐字节不变」由同一组数字继续证明。
+_RERANK_IDENTITY_RE = re.compile(r',"provider":(?:null|"[^"]*"),"model":(?:null|"[^"]*")')
+
 
 # ─────────────────────────────────────────────────────────────── 替身
 
@@ -303,9 +308,15 @@ def _without_trace_id(text: str) -> str:
       「逐字节」了；
     * 摘掉之后哈希**仍等于 #78 那版基线**：这正是本次改动没有碰到别的字节的证据，
       因此基线常量一个都不用重采（重采会把「只多了这一个字段」这件事从证据里抹掉）。
+
+    #116 起 ``metadata.retrieval.rerank`` 又多出两个身份键（``provider`` / ``model``，
+    见 :data:`_RERANK_IDENTITY_RE`），处理方式与 ``trace_id`` **完全相同**：它们是有意的
+    契约新增，摘掉之后仍与旧基线逐字节相同。这两段摘除各自都要求「至少命中一次」——
+    否则这条比对会退化成「什么也没摘、什么也没比」。
     """
 
-    return _TRACE_ID_RE.sub("", text)
+    without_trace = _TRACE_ID_RE.sub("", text)
+    return _RERANK_IDENTITY_RE.sub("", without_trace)
 
 
 def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
@@ -326,6 +337,10 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             response = _response(fake["client"], mode=mode)
         assert response.status_code == 200
         assert _TRACE_ID_RE.search(response.text), "摘除必须真的命中一次，否则这条比对是空比对"
+        if mode == "hybrid":
+            # 重排关着时 ``rerank`` 仍是字典（applied=false …），身份键是 null；它们必须
+            # 真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了这两个键」。
+            assert _RERANK_IDENTITY_RE.search(response.text), "身份键摘除也必须真的命中"
         hashes[mode] = hashlib.sha256(
             _without_trace_id(response.text).encode("utf-8")
         ).hexdigest()

@@ -486,6 +486,9 @@ def test_both_channels_healthy_is_not_degraded(monkeypatch) -> None:
             "candidates": 2,
             "returned": 2,
             "duration_ms": None,
+            # #116 起的两个**纯增量**身份键：这一步没跑，所以没有实现可署名（None）。
+            "provider": None,
+            "model": None,
         },
     }
     assert len(body["data"]["retrieved_chunks"]) == 2

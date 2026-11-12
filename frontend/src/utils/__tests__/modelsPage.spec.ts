@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { referencedRolesOf, roleOptions } from '../modelsPage'
+import {
+  MODEL_ROLE_HINTS,
+  MODEL_ROLE_LABELS,
+  referencedRolesOf,
+  roleOptions,
+} from '../modelsPage'
 
 /**
  * 模型配置页的两条产品规则，抽成纯函数后用 vitest 钉死：
@@ -34,8 +39,7 @@ describe('roleOptions：下拉的第一个选项是「不指向」', () => {
   })
 })
 
-describe('referencedRolesOf：只认 fast / strong，顺序与后端一致', () => {
-  it('按 fast、strong 的顺序返回，丢掉未知角色', () => {
+describe('referencedRolesOf：只认 fast / strong，顺序与后端一致', () => {  it('按 fast、strong 的顺序返回，丢掉未知角色', () => {
     expect(referencedRolesOf({ roles: ['strong', 'rerank', 'fast'] })).toEqual(['fast', 'strong'])
   })
 
@@ -45,5 +49,19 @@ describe('referencedRolesOf：只认 fast / strong，顺序与后端一致', () 
 
   it('大小写不同不算引用：角色名是精确枚举', () => {
     expect(referencedRolesOf({ roles: ['Fast', 'STRONG'] })).toEqual([])
+  })
+})
+
+describe('角色文案：重排不再跟随 fast（#116）', () => {
+  it('fast 的两处说明都不再提「重排」', () => {
+    // 第 10 步票 3 起重排走专用端点（RERANK_BASE_URL / RERANK_MODEL），与模型角色无关。
+    // 文案若继续说「同时承担重排」，管理员会以为换掉 fast 就能换重排模型。
+    expect(MODEL_ROLE_LABELS.fast).not.toContain('重排')
+    expect(MODEL_ROLE_HINTS.fast).not.toContain('重排')
+  })
+
+  it('strong 的说明不受影响', () => {
+    expect(MODEL_ROLE_LABELS.strong).toContain('思考')
+    expect(MODEL_ROLE_HINTS.strong).toContain('思考')
   })
 })

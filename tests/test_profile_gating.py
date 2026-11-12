@@ -795,6 +795,8 @@ class _RecordingRerank:
     """「本机装好了重排」的替身：可用，并记下被调了几次。"""
 
     available = True
+    provider_name = "fake"
+    model_name = None
 
     def __init__(self) -> None:
         self.calls: list[list[str]] = []

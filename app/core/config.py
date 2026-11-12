@@ -140,11 +140,23 @@ class Settings(BaseSettings):
     # 嵌入实现开关：langchain（框架抽象，默认）/ openai_compatible（原有直连实现，回退）。
     EMBEDDING_PROVIDER: str = "langchain"
 
-    # ── 重排（第 4 步票 7）──
-    # 默认关闭：关闭时工厂返回空实现，默认路径**一次大模型都不调**——离线测试、CI、
+    # ── 重排（第 4 步票 7；第 10 步票 3 换成专用端点）──
+    # 默认关闭：关闭时工厂返回空实现，默认路径**一次模型都不调**——离线测试、CI、
     # 没配 key 的机器都靠这一条保持全绿。
     RERANK_ENABLED: bool = False
+    # 专用 Cross-Encoder 端点（OpenAI 兼容 ``POST {base}/reranks``）。留空 = 这台机器
+    # **没有**重排端点：``RERANK_ENABLED=true`` 也只会拿到空实现（明确不可用），
+    # 不再回落「让通用大模型逐条打分」——那个实现还在（评测要拿它做对照），但生产工厂
+    # 不再返回它。
+    #
+    # ⚠️ 路径段与 embedding 不同：嵌入是 ``…/compatible-mode/v1``，重排是
+    # ``…/compatible-api/v1``。两者不能互相顶替，必须单独配（见 .env.example）。
+    RERANK_BASE_URL: str = ""
+    RERANK_MODEL: str = "qwen3.7-text-rerank"
+    # 重排端点自己的 key；留空则回落 ``MODEL_API_KEY``（同一把百炼 key 通常两处都通）。
+    RERANK_API_KEY: str = ""
     # 送进模型的候选上限与单条切片截断长度：提示词长度就是延迟与成本。
+    # 候选数另有一层硬上限 50（``app/providers/rerank/qwen.py``），配置写多大都越不过去。
     RERANK_MAX_CANDIDATES: int = 20
     RERANK_CHUNK_MAX_CHARS: int = 1024
     # 超时由重排 Provider 用 ``asyncio.wait_for`` 兜住：慢调用按失败处理，走降级。

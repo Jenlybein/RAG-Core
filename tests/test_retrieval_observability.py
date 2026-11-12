@@ -136,6 +136,8 @@ class _FakeRerankProvider:
     """重排替身：可用，原样返回（这一步发生过就够了）。"""
 
     available = True
+    provider_name = "fake"
+    model_name = None
 
     async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]:
         return list(chunks)[:top_n]

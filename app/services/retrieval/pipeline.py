@@ -99,6 +99,7 @@ async def hybrid_retrieve(
     recall_depth: int | None = None,
     rerank_candidates: int | None = None,
     rerank_enabled: bool,
+    rerank_factory: Callable[[], Any] | None = None,
     stage_timer: StageTimer | None = None,
 ) -> HybridOutcome:
     """两路并行召回，融合、重排后返回；一路失败不取消另一路。
@@ -129,6 +130,10 @@ async def hybrid_retrieve(
     ``stage_timer`` 是可选的收集器（#102）：组合根传进来就记两路召回与融合的耗时。
     不传时本模块**自己造一个**——「度量常开」不该依赖调用方记得传：那会让「有人忘了传」
     悄悄变成「这次没有耗时」。造出来的那个没人收，效果等同于丢弃去向。
+
+    ``rerank_factory`` 是重排的**注入缝**（#116）：缺省 ``None`` 时 ``rerank_stage``
+    用既有工厂出口（``get_rerank_provider``），评测传一个别的工厂进来就能跑旧实现做
+    对照。它和上面三个工厂同形——「重排用哪种实现」在这条链路上只有一个开关。
     """
 
     timer = stage_timer if stage_timer is not None else StageTimer()
@@ -202,7 +207,11 @@ async def hybrid_retrieve(
     # 扩展出来的同义词只该帮关键词一路做字面匹配，塞进重排提示词只会变成噪音。
     # ``rerank_enabled`` 来自本次的已解析参数：不要重排的档位在装了重排的机器上也不跑。
     reranked = await rerank_stage(
-        query=rerank_query, chunks=fused_chunks, top_n=top_k, enabled=rerank_enabled
+        query=rerank_query,
+        chunks=fused_chunks,
+        top_n=top_k,
+        enabled=rerank_enabled,
+        provider_factory=rerank_factory,
     )
     # 「重排发生没发生」只有一个答案：``RerankOutcome.duration_ms``。它为空就说明这一步
     # 根本没走（关闭 / 没装 / 没有候选），于是**不记录这一段**，而不是记一个 0。

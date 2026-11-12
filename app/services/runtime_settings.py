@@ -336,7 +336,7 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
     "LLM_MODEL": _spec(
         TIER_HOT,
         TARGET_SETTINGS,
-        "fast 模型角色（含重排，见 ADR-0002）在下次装配时读它",
+        "fast 模型角色（查询改写）在下次装配时读它；重排已改用专用端点，不再跟随 fast",
     ),
     "LLM_STRONG_MODEL": _spec(
         TIER_HOT,
@@ -358,6 +358,26 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
         TIER_HOT,
         TARGET_SETTINGS,
         "重排开关是部署事实：关掉时工厂立即返回空实现，下一次检索就不再调模型",
+    ),
+    "RERANK_BASE_URL": _spec(
+        TIER_HOT,
+        TARGET_SETTINGS,
+        "重排端点在每次装配 Provider 时读；空串表示这台机器明确没有专用重排",
+    ),
+    "RERANK_MODEL": _spec(
+        TIER_HOT,
+        TARGET_SETTINGS,
+        "专用重排模型名在下次装配时读；换模型只影响之后的调用，不动已落库数据",
+    ),
+    # 密钥类**只读**：值只展示打码后的样子，写入口一律 20015（与 AUTH_ENABLED 同一条纪律）。
+    # 它没有进热更档的原因要连起来读：热更意味着值会被反复读进内存、且面板上有一个可写的
+    # 输入框；而对一把外部端点的凭证，改它本来就是「换一条接入」，该由部署方决定并重起，
+    # 不该是一次热改。留空即回落 MODEL_API_KEY（同一把百炼 key 通常两处都通）。
+    "RERANK_API_KEY": _spec(
+        TIER_LOCKED,
+        TARGET_SETTINGS,
+        "密钥类只读不回显：面板只展示打码值；留空回落 MODEL_API_KEY，改它由部署方改 .env",
+        secret=True,
     ),
     "RERANK_MAX_CANDIDATES": _spec(
         TIER_HOT,
@@ -453,7 +473,7 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
     role_pointer_key(MODEL_FAST): _spec(
         TIER_HOT,
         TARGET_POINTER,
-        "指向哪条模型配置；fast 同时承担重排（重排没有独立配置，ADR-0002）",
+        "指向哪条模型配置；fast 用于查询改写（重排已换成专用端点，不再跟随这个角色）",
     ),
     role_pointer_key(MODEL_STRONG): _spec(
         TIER_HOT,

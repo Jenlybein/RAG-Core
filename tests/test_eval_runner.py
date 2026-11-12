@@ -223,7 +223,7 @@ def test_the_archived_per_question_detail_keeps_the_rerank_facts_verbatim(monkey
 
     rerank = {"applied": True, "candidates": 30, "returned": 5, "duration_ms": 812.34}
 
-    async def fake_run_question(db, question, *, mode, top_k, kb_ids):
+    async def fake_run_question(db, question, *, mode, top_k, kb_ids, rerank_factory=None):
         return ev.QuestionOutcome(
             id=question.id,
             query=question.query,
@@ -1091,3 +1091,253 @@ def test_json_safe_turns_non_finite_floats_into_none() -> None:
         {"a": float("nan"), "b": float("inf"), "c": [1.0, float("-inf")], "d": "NaN"}
     )
     assert cleaned == {"a": None, "b": None, "c": [1.0, None], "d": "NaN"}
+
+# ────────────────────── 重排实现的选择与注入（票 #116）
+
+def _pin_rerank_settings(monkeypatch, *, enabled: bool, base_url: str = "", api_key: str = "") -> None:
+    """把「这一轮用的是哪种重排」钉死，不依赖本机 ``.env`` 里恰好有什么。"""
+
+    from app.core.config import settings
+
+    for name in ("RERANK_ENABLED", "RERANK_BASE_URL", "RERANK_API_KEY", "MODEL_API_KEY"):
+        monkeypatch.setattr(settings, name, getattr(settings, name))
+    monkeypatch.setattr(settings, "RERANK_ENABLED", enabled)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", base_url)
+    monkeypatch.setattr(settings, "RERANK_API_KEY", api_key)
+    monkeypatch.setattr(settings, "MODEL_API_KEY", "")
+
+
+def test_the_run_parser_defaults_to_auto_and_accepts_llm_for_comparison() -> None:
+    """``--rerank-provider`` 缺省 ``auto``（生产口径）；``llm`` 是显式的对照开关。"""
+
+    parser = eval_runner.build_parser()
+
+    assert parser.parse_args(["run"]).rerank_provider == eval_runner.RERANK_PROVIDER_AUTO
+    assert (
+        parser.parse_args(["run", "--rerank", "--rerank-provider", "llm"]).rerank_provider
+        == eval_runner.RERANK_PROVIDER_LLM
+    )
+
+
+def test_an_unknown_rerank_provider_is_refused_before_running(monkeypatch) -> None:
+    """拼错的名字当场拒绝：不能静默退化成生产实现，让对照读数变成第三样东西。"""
+
+    with pytest.raises(SystemExit):
+        eval_runner.resolve_rerank_provider(
+            SimpleNamespace(rerank_provider="bogus"), rerank_enabled=True
+        )
+
+
+def test_rerank_provider_is_none_when_the_switch_is_off(monkeypatch) -> None:
+    """重排关着时快照写 ``none``：那一步根本没跑，写 ``llm`` 会让人以为跑过对照。"""
+
+    _pin_rerank_settings(monkeypatch, enabled=False, base_url="https://x.test/v1", api_key="k")
+
+    assert (
+        eval_runner.resolve_rerank_provider(
+            SimpleNamespace(rerank_provider="llm"), rerank_enabled=False
+        )
+        == "none"
+    )
+
+
+def test_auto_reports_the_production_implementation(monkeypatch) -> None:
+    """``auto`` 如实写生产工厂会装出的那个：端点配齐是 ``qwen3``，否则 ``none``。"""
+
+    _pin_rerank_settings(
+        monkeypatch, enabled=True, base_url="https://rerank.test/compatible-api/v1", api_key="k"
+    )
+    assert (
+        eval_runner.resolve_rerank_provider(
+            SimpleNamespace(rerank_provider="auto"), rerank_enabled=True
+        )
+        == "qwen3"
+    )
+
+    _pin_rerank_settings(monkeypatch, enabled=True, base_url="", api_key="k")
+    assert (
+        eval_runner.resolve_rerank_provider(
+            SimpleNamespace(rerank_provider="auto"), rerank_enabled=True
+        )
+        == "none"
+    )
+
+
+def test_explicit_llm_reports_the_old_implementation(monkeypatch) -> None:
+    """``--rerank-provider llm`` 与环境无关：它说的是「这一轮跑旧实现」。"""
+
+    _pin_rerank_settings(monkeypatch, enabled=True, base_url="", api_key="")
+
+    assert (
+        eval_runner.resolve_rerank_provider(
+            SimpleNamespace(rerank_provider="llm"), rerank_enabled=True
+        )
+        == "llm"
+    )
+
+
+def test_the_environment_snapshot_records_which_rerank_implementation_ran(monkeypatch) -> None:
+    """快照必须能区分两种实现：``rerank_enabled`` 两边都是 true，光看它分不出来。"""
+
+    snapshot = eval_runner.environment_snapshot(
+        run_id="20261112T000000Z",
+        generated_at="2026-11-12T00:00:00+00:00",
+        experiment={"mode": "hybrid", "top_k": 5},
+        corpus={"version": "v1"},
+        dataset_version="v1",
+        env_file=None,
+        llm_endpoint_source=eval_runner.ENDPOINT_SOURCE_ENV,
+        llm_model="deepseek-flash",
+        rerank_provider="llm",
+    )
+
+    assert snapshot["rerank_provider"] == "llm"
+
+
+def test_the_snapshot_derives_the_test_only_when_not_told(monkeypatch) -> None:
+    """不给时按生产工厂推算——但不是随便编一个：端点没配就是 ``none``。"""
+
+    _pin_rerank_settings(monkeypatch, enabled=True, base_url="", api_key="")
+
+    snapshot = eval_runner.environment_snapshot(
+        run_id="20261112T000000Z",
+        generated_at="2026-11-12T00:00:00+00:00",
+        experiment={"mode": "hybrid", "top_k": 5},
+        corpus={"version": "v1"},
+        dataset_version="v1",
+        env_file=None,
+        llm_endpoint_source=eval_runner.ENDPOINT_SOURCE_ENV,
+        llm_model="deepseek-flash",
+    )
+
+    assert snapshot["rerank_provider"] == "none"
+
+
+class _FakeProvider:
+    """替身重排：只记下自己被装配过，不发网络。"""
+
+    available = True
+    provider_name = "fake"
+    model_name = None
+
+    async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]:
+        return chunks[:top_n]
+
+
+def test_build_rerank_factory_is_none_for_the_production_path() -> None:
+    """生产口径不需要注入：``None`` 让编排层走既有工厂出口。"""
+
+    assert eval_runner.build_rerank_factory(provider_name="qwen3") is None
+    assert eval_runner.build_rerank_factory(provider_name="none") is None
+
+
+def test_build_rerank_factory_llm_really_builds_the_old_implementation(
+    monkeypatch,
+) -> None:
+    """``llm`` 时注入的确实是旧实现（大模型重排），且装配走 fast 档。
+
+    替身大模型接在既有出口上，所以这条用例**不发网络**：它证明的是「注入的东西是旧的
+    那个类」，而不是「那个类今天答得好不好」。
+    """
+
+    from app.providers.llm.base import LLMProvider
+    from app.providers.rerank.llm import LLMRerankProvider
+
+    class _FakeLLM(LLMProvider):
+        model_name = "fast-stand-in"
+
+        async def chat_structured(self, schema, *, system: str, user: str) -> Any:
+            raise AssertionError("这条用例只装配，不调用")
+
+        async def chat_json(self, *, system: str, user: str) -> dict:  # pragma: no cover
+            raise AssertionError("重排只走结构化输出")
+
+    monkeypatch.setattr(
+        "app.providers.llm.get_llm_provider", lambda role="fast": _FakeLLM()
+    )
+
+    factory = eval_runner.build_rerank_factory(provider_name="llm")
+    assert factory is not None
+    provider = factory()
+
+    assert isinstance(provider, LLMRerankProvider)
+    assert (provider.provider_name, provider.model_name) == ("llm", "fast-stand-in")
+
+
+def test_score_questions_forwards_the_rerank_factory(monkeypatch) -> None:
+    """注入缝一路到底：``_score_questions`` 必须把工厂交给 ``_run_question``。"""
+
+    from scripts import eval_retrieval as ev
+
+    captured: dict[str, Any] = {}
+
+    async def fake_run_question(db, question, *, mode, top_k, kb_ids, rerank_factory=None):
+        captured["rerank_factory"] = rerank_factory
+        return ev.QuestionOutcome(
+            id=question.id,
+            query=question.query,
+            mode=mode,
+            returned=[{"chunk_id": "c1"}],
+            rerank={"applied": True, "provider": "llm", "model": None},
+        )
+
+    monkeypatch.setattr(ev, "_run_question", fake_run_question)
+
+    factory = lambda: _FakeProvider()  # noqa: E731 - 工厂就是一个可调用对象
+    questions = [SimpleNamespace(id="q1", type="colloquial", query="怎么装")]
+
+    asyncio.run(
+        eval_runner._score_questions(
+            None,
+            questions=questions,
+            labels={"q1": ["c1"]},
+            mode="hybrid",
+            top_k=1,
+            kb_ids=["kb-eval"],
+            rerank_factory=factory,
+        )
+    )
+
+    assert captured["rerank_factory"] is factory
+
+
+def test_run_question_hands_the_factory_to_the_retrieval_entry(monkeypatch) -> None:
+    """``_run_question`` 是评测侧最后一环：工厂必须出现在 ``retrieve`` 的参数里。"""
+
+    from scripts import eval_retrieval as ev
+
+    captured: dict[str, Any] = {}
+
+    async def fake_retrieve(db, **kwargs):
+        captured.update(kwargs)
+        return {
+            "query": kwargs["query"],
+            "kb_ids": list(kwargs["kb_ids"]),
+            "retrieved_chunks": [],
+            "metadata": {
+                "retrieval": {
+                    "degraded": False,
+                    "degraded_reason": None,
+                    "empty_reason": None,
+                    "rerank": {"applied": False, "provider": None, "model": None},
+                }
+            },
+        }
+
+    monkeypatch.setattr(ev, "retrieve", fake_retrieve)
+
+    from app.providers.rerank import build_llm_rerank_provider
+
+    factory = eval_runner.build_rerank_factory(provider_name="llm")
+    asyncio.run(
+        ev._run_question(
+            None,
+            SimpleNamespace(id="q1", type="colloquial", query="怎么装"),
+            mode="hybrid",
+            top_k=1,
+            kb_ids=["kb-eval"],
+            rerank_factory=factory,
+        )
+    )
+
+    assert captured["rerank_factory"] is build_llm_rerank_provider
