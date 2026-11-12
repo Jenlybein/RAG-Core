@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,7 +29,7 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of, plan_spec_of
 from app.models.tenant import Tenant
 from app.services.quota_gate import QuotaCounters, daily_key
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -43,31 +44,13 @@ TENANT_BETA = "tenant_beta"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.set_calls: list[int] = []
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.set_calls.append(plan_id)
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
 
 
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
     db: RecordingSession
-    cache: _MemoryPlanCache
+    cache: MemoryPlanCache
 
     def login(self, username: str, password: str) -> Any:
         return self.client.post(
@@ -192,11 +175,15 @@ def console() -> Any:
 
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     db = RecordingSession(rows=_world())
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     main.app.dependency_overrides[session_module.get_db] = lambda: db
+    # 只读端点走异步会话（票 #129）：替身与上面那个**共享同一份行**，于是登录写下的
+    # 会话行在只读请求里读得到（一个用例一个库，两套栈）。
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(db)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     try:
         with TestClient(main.app) as client:
@@ -516,7 +503,9 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
     from app.core.exceptions import AppError, ErrorCode
     from app.services import plan_service, static_quota
 
-    fresh = plan_service.resolve_plan(console.db, 3, cache=console.cache)
+    # 套餐解析自票 #129 起是协程（缓存换成了 redis.asyncio），这里用一次 ``asyncio.run``
+    # 在同步用例里取它的结果：断言的是「库里是新值」，与「谁在等」无关。
+    fresh = asyncio.run(plan_service.resolve_plan(console.db, 3, cache=console.cache))
     assert fresh.max_kb == 2
     with pytest.raises(AppError) as raised:
         static_quota.ensure_kb_quota(console.db, tenant_id=TENANT_ALPHA, plan=fresh)
@@ -1001,4 +990,5 @@ def test_a_negative_audit_offset_is_a_parameter_error(console: _Harness) -> None
     _seed_audits(console)
 
     assert console.client.get("/console/audit-logs?offset=-1").json()["code"] == 20002
+
 

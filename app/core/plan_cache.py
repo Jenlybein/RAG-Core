@@ -11,6 +11,16 @@
 
 **失效一律靠删，不靠写。** 写缓存要求每一处修改都记得同步，漏一处就留下一个「看起来
 更新过、实际是旧值」的条目；删则让下一次读自然拿到新值，漏不掉。
+
+**三个方法都是 ``async``（票 #129）。** 它们背后是 ``redis.asyncio`` 的客户端
+（:func:`app.core.redis_client.get_redis_client`）：同步 Redis 会在事件循环上按秒计地
+阻塞，而套餐解析在**每一次调用**的热路径上。改成异步之后，同步 Redis 客户端只剩运行时
+配置覆盖层一个用户（它跑在 Celery 与线程池里，见 ``app/core/redis_client``）。
+
+调用方因此分两类：异步上下文 ``await``（控制面读、检索链路）；同步上下文（判定内核
+:func:`app.core.auth.resolve_identity`、同步服务函数）走
+:func:`app.services.plan_service.resolve_plan_blocking` 那个显式过渡桥，理由与删除条件
+写在那个函数上。
 """
 
 from __future__ import annotations
@@ -33,27 +43,27 @@ def cache_key(plan_id: int) -> str:
 
 
 class ExpiringKeyValueClient(Protocol):
-    """redis-py 里套餐缓存真正用到的那三条命令。
+    """``redis.asyncio`` 里套餐缓存真正用到的那三条命令。
 
     刻意不写成 ``Redis``：这个模块因此不 import redis 包，测试传一个字典伪装的对象就够，
     也不会有人顺手在缓存实现里加一条只有真 Redis 才认的命令。
     """
 
-    def get(self, key: str) -> str | bytes | None: ...
+    async def get(self, key: str) -> str | bytes | None: ...
 
-    def setex(self, key: str, ttl: int, value: str) -> Any: ...
+    async def setex(self, key: str, ttl: int, value: str) -> Any: ...
 
-    def delete(self, key: str) -> Any: ...
+    async def delete(self, key: str) -> Any: ...
 
 
 class PlanCache(Protocol):
     """判定内核与套餐服务之间的缓存契约：三个方法，不接受第四个。"""
 
-    def get(self, plan_id: int) -> PlanSpec | None: ...
+    async def get(self, plan_id: int) -> PlanSpec | None: ...
 
-    def set(self, plan_id: int, plan: PlanSpec) -> None: ...
+    async def set(self, plan_id: int, plan: PlanSpec) -> None: ...
 
-    def delete(self, plan_id: int) -> None: ...
+    async def delete(self, plan_id: int) -> None: ...
 
 
 class RedisPlanCache:
@@ -68,18 +78,18 @@ class RedisPlanCache:
         self._client = client
         self._ttl = settings.PLAN_CACHE_TTL_SECONDS if ttl_seconds is None else ttl_seconds
 
-    def get(self, plan_id: int) -> PlanSpec | None:
-        raw = self._client.get(cache_key(plan_id))
+    async def get(self, plan_id: int) -> PlanSpec | None:
+        raw = await self._client.get(cache_key(plan_id))
         if raw is None:
             return None
         text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
         return _from_payload(json.loads(text))
 
-    def set(self, plan_id: int, plan: PlanSpec) -> None:
-        self._client.setex(cache_key(plan_id), self._ttl, json.dumps(_to_payload(plan)))
+    async def set(self, plan_id: int, plan: PlanSpec) -> None:
+        await self._client.setex(cache_key(plan_id), self._ttl, json.dumps(_to_payload(plan)))
 
-    def delete(self, plan_id: int) -> None:
-        self._client.delete(cache_key(plan_id))
+    async def delete(self, plan_id: int) -> None:
+        await self._client.delete(cache_key(plan_id))
 
 
 def _to_payload(plan: PlanSpec) -> dict[str, Any]:

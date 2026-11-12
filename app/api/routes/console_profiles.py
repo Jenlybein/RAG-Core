@@ -20,11 +20,16 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Path
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.api.console_deps import get_console_admin, require_console_admin_write
+from app.api.console_deps import (
+    get_console_admin_async,
+    require_console_admin_write,
+)
 from app.core.console_auth import ConsoleIdentity
 from app.core.profile_presets import ProfilePresetSpec
+from app.db.async_session import get_async_db
 from app.db.session import get_db, get_transaction
 from app.db.transaction import Transaction
 from app.models.key_policy import PROFILES
@@ -53,11 +58,13 @@ def _data(profile: str, spec: ProfilePresetSpec) -> ProfilePresetData:
     response_model=ApiResponse[ProfilePresetListData],
     summary="四个质量档位的参数",
 )
-def list_profile_presets(
-    _identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+async def list_profile_presets(
+    _identity: ConsoleIdentity = Depends(get_console_admin_async),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[ProfilePresetListData]:
-    presets = profile_preset_service.list_presets(db)
+    """四个档位的参数。只读，因此整条路径在异步栈上（票 #129）。"""
+
+    presets = await profile_preset_service.list_presets_async(db)
     # 顺序沿用 `PROFILES`（speed / balanced / quality / custom），不在这里再排一道：
     # 前端按返回顺序摆卡片，词表只该有一处。
     items = [_data(profile, presets[profile]) for profile in PROFILES if profile in presets]

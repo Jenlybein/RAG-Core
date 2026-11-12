@@ -5,6 +5,11 @@ requires-python = ">=3.12"
 dependencies = [
     # 阶段 1
     "fastapi==0.115.4",
+    # 第 11 步票 6（#129）：`app/core/sync_bridge.py` 直接用 `anyio.from_thread.run`
+    # 把同步上下文里的协程交回主事件循环（同步 FastAPI 依赖、线程池里的刷新中间件）。
+    # 它本来就是 starlette / fastapi 的传递依赖，但**直接 import 的包必须自己钉住**，
+    # 否则 starlette 换底层库时这个导入会静默失效（与 beautifulsoup4 那条同一条纪律）。
+    "anyio==4.16.0",
     # 教程原值 0.32.0 → 0.35.0：fastmcp 3.0 要求 uvicorn>=0.35
     "uvicorn[standard]==0.35.0",
     "sqlalchemy==2.0.36",

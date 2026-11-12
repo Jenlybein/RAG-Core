@@ -14,25 +14,26 @@
 其余模块一律只调 :func:`get_redis_client`，不自己 ``Redis.from_url(...)``——否则「连的是
 哪个库」这件事会散落在若干个文件里，而它们迟早会指向不同的库。
 
-## 两个客户端：异步是主，同步是过渡（票 #133）
+## 两个客户端：异步是主，同步只剩一个用户（票 #133 → #129）
 
-:func:`get_redis_client` 给的是 **``redis.asyncio`` 的客户端**：配额、限流、登录节流都
-在异步链路上（``gated_retrieve`` 是 ``async def``，登录路由也是），同步 Redis 会把整个
-事件循环按住——一次慢 Redis 于是变成所有并发请求一起慢。
+:func:`get_redis_client` 给的是 **``redis.asyncio`` 的客户端**：配额、限流、登录节流与
+套餐缓存都在异步链路上（``gated_retrieve`` 是 ``async def``，登录路由也是），同步 Redis
+会把整个事件循环按住——一次慢 Redis 于是变成所有并发请求一起慢。
 
-:func:`get_sync_redis_client` 是**过渡期的第二个客户端**，只给「调用点全在同步上下文里」
-的两处缓存用：
+:func:`get_sync_redis_client` 是**过渡期的第二个客户端**，票 #129 之后只剩**一个**用户：
 
-* 套餐缓存（:mod:`app.core.plan_cache`）：判定内核 :func:`app.core.auth.resolve_identity`
-  是**同步** FastAPI 依赖（跑在线程池里），控制面服务（``console_service`` /
-  ``console_kb_service``）也全是同步函数；
-* 运行时配置缓存（:mod:`app.core.runtime_settings_cache`）：刷新中间件把它丢进
-  ``run_in_threadpool``，Celery 任务（``app.tasks.indexing``）直接同步调用。
+* 运行时配置缓存（:mod:`app.core.runtime_settings_cache`）：刷新发生在请求中间件里
+  （``run_in_threadpool``），Celery 任务（``app.tasks.indexing``）也直接同步调用它——
+  两条都不在事件循环上，所以同步 Redis 在那里不会阻塞任何请求。
 
-这两处的同步 Redis 因此**不在事件循环上**跑，不会阻塞任何请求；把它们改成异步要先让
-判定内核与控制面整体异步化（票 #129 / #130 把控制面与判定内核改成异步会话之后），
-届时删掉这个同步客户端、只留一个构造点。**在此之前不许有新的调用点用它**：判据是
-「这个函数是不是 ``async def``」——是，就必须用 :func:`get_redis_client`。
+套餐缓存（:mod:`app.core.plan_cache`）已在 #129 改成异步：它背后的 ``resolve_plan``
+被控制面的异步读路径直接 ``await``；判定内核那类**同步**调用方走
+:func:`app.services.plan_service.resolve_plan_blocking` 的过渡桥，协程仍在主事件循环上
+执行，因此不存在「第二个循环用同一个异步客户端」的问题。
+
+**在此之前不许有新的调用点用它**：判据是「这个函数是不是 ``async def``」——是，就必须用
+:func:`get_redis_client`。运行时配置缓存这条随 #131（入库与索引搬常驻循环）一起改异步，
+那时这个同步客户端与它的注入缝一并删除。
 """
 
 from __future__ import annotations
@@ -80,7 +81,7 @@ def reset_redis_client() -> None:
 def get_sync_redis_client() -> Any:
     """取（必要时构造）进程内唯一的**同步** Redis 客户端（过渡期，见模块文档）。
 
-    只有套餐缓存与运行时配置缓存用它，理由与删除条件都写在模块文档里。
+    票 #129 之后只剩运行时配置缓存一个用户，理由与删除条件都写在模块文档里。
     """
 
     global _sync_client

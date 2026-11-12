@@ -6,9 +6,10 @@
 
 两条边界写在这里，因为它们都是「少一个参数」的事故：
 
-- **走读门 ``require_console_tenant``**：会话 cookie + 租户账号。管理员（``tenant_id IS
+- **走读门 ``require_console_tenant_async``**：会话 cookie + 租户账号。管理员（``tenant_id IS
   NULL``）一律 ``20011``——它不属于任何租户，而瀑布图恰恰是租户内的数据；不带防跨站头，
-  因为看瀑布不改任何状态。
+  因为看瀑布不改任何状态。（``/runtime-info`` 是唯一不碰数据库的一条，仍用同步那一份
+  门禁——同一个判定，见 ``app/core/console_auth``。）
 - **租户只来自会话**：路径里只有 ``log_id``，没有 ``tenant_id``，也没有「用哪把 Key」。
   归属校验在 :func:`app.services.retrieval_waterfall.waterfall_of` 里做，跨租户与不存在
   同为 ``20016``。
@@ -22,16 +23,17 @@ from __future__ import annotations
 import re
 
 from fastapi import APIRouter, Depends, Path, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import (
     get_langfuse_reader,
     require_console_tenant,
+    require_console_tenant_async,
     tenant_id_of,
 )
 from app.core.config import settings
 from app.core.console_auth import ConsoleIdentity
-from app.db.session import get_db
+from app.db.async_session import get_async_db
 from app.repositories import retrieval_feedback_repository, retrieval_trace_repository
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_traces import RetrievalWaterfallData, waterfall_data
@@ -48,20 +50,23 @@ _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
     response_model=ApiResponse[RetrievalWaterfallData],
     summary="按 log_id 读回一次检索的六段瀑布（先本地记录、后观测服务）",
 )
-def retrieval_waterfall(
+async def retrieval_waterfall(
     log_id: str = Path(..., min_length=1, description="归属索引的行 id，即 log_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(require_console_tenant_async),
     remote_reader: RemoteStageReader = Depends(get_langfuse_reader),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[RetrievalWaterfallData]:
     """六段名称与耗时；两处都没记上时返回结构化的「未启用 / 无记录」，不是 404。
 
     这里刻意**不**把「没记录」也做成 404：404 在这一层只有一个含义——这个 ``log_id``
     对当前租户不存在（跨租户同样如此）。而「存在、但观测没开着」是**正常状态**，
     前端要靠 ``enabled`` / ``reason`` 说出「没配」而不是画一张空卡片。
+
+    只读，因此整条路径在异步栈上（票 #129）：归属行读异步会话，本地 JSONL 与观测服务
+    两处同步 I/O 由服务层挪进线程池。
     """
 
-    waterfall = waterfall_of(
+    waterfall = await waterfall_of(
         db,
         log_id=log_id,
         tenant_id=tenant_id_of(identity),
@@ -75,10 +80,10 @@ def retrieval_waterfall(
     response_model=ApiResponse[dict],
     summary="按 trace_id 反查 log_id（控制面，只读）",
 )
-def retrieval_trace_by_trace_id(
+async def retrieval_trace_by_trace_id(
     trace_id: str = Query(..., min_length=1, description="检索响应 metadata.trace_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
-    db: Session = Depends(get_db),
+    identity: ConsoleIdentity = Depends(require_console_tenant_async),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """把「这根线」翻回「那一行」，供反馈与瀑布使用（#106）。
 
@@ -101,7 +106,7 @@ def retrieval_trace_by_trace_id(
     if not _TRACE_ID.fullmatch(normalized):
         return ok({"log_id": None, "trace_id": normalized})
 
-    row = retrieval_trace_repository.get_by_trace_id_for_tenant(
+    row = await retrieval_trace_repository.get_by_trace_id_for_tenant(
         db, normalized, tenant_id=tenant_id_of(identity)
     )
     # 跨租户与不存在同一个答复：不泄漏「这条 trace 在别人那儿存在」。
@@ -113,10 +118,10 @@ def retrieval_trace_by_trace_id(
     response_model=ApiResponse[dict],
     summary="最近若干次检索（控制台列表：时间 / 耗时 / 结局 / 是否已评分）",
 )
-def recent_retrieval_traces(
+async def recent_retrieval_traces(
     limit: int = Query(20, ge=1, le=100, description="返回条数上限"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
-    db: Session = Depends(get_db),
+    identity: ConsoleIdentity = Depends(require_console_tenant_async),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """本租户最近若干条归属索引，按时间倒序。
 
@@ -128,12 +133,15 @@ def recent_retrieval_traces(
     表长大之后会变成一次全表扫。
 
     列表里**没有任何原文**：归属索引本来就不存（ADR-0021 决策 1），所以这里不需要额外脱敏。
+
+    两次读（归属索引、评分）都在异步会话上（票 #129），顺序不变：先取行，再按这些
+    ``log_id`` 批量取分数——分数只认本租户。
     """
 
-    rows = retrieval_trace_repository.list_recent_for_tenant(
+    rows = await retrieval_trace_repository.list_recent_for_tenant(
         db, tenant_id=tenant_id_of(identity), limit=limit
     )
-    scores = retrieval_feedback_repository.scores_for_log_ids(
+    scores = await retrieval_feedback_repository.scores_for_log_ids(
         db, [row.id for row in rows], tenant_id=tenant_id_of(identity)
     )
     return ok(

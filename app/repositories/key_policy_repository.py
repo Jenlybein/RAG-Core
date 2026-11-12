@@ -3,6 +3,8 @@
 只 flush，不 commit——事务由 Service 收口。
 """
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.key_policy import KeyPolicy
@@ -34,3 +36,16 @@ def list_by_tenant(db: Session, tenant_id: str) -> list[KeyPolicy]:
     """
 
     return db.query(KeyPolicy).filter(KeyPolicy.tenant_id == tenant_id).order_by(KeyPolicy.id).all()
+
+
+async def list_by_tenant_async(db: AsyncSession, tenant_id: str) -> list[KeyPolicy]:
+    """:func:`list_by_tenant` 的异步孪生（控制面 Key 列表，票 #129）。
+
+    同步版仍被「改套餐影响面」的试算用着（那是写路径，归 #130），所以两种会话并存到那
+    一票为止；排序与筛选条件逐字照抄，列表的顺序不因为换栈而变。
+    """
+
+    statement = (
+        select(KeyPolicy).where(KeyPolicy.tenant_id == tenant_id).order_by(KeyPolicy.id)
+    )
+    return list((await db.execute(statement)).scalars().all())

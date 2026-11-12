@@ -179,9 +179,14 @@ docker compose -f deploy/docker-compose.yml up -d
 - 夹具保持**模块内**定义，不在 `tests/conftest.py` 里养夹具动物园。项目级 `conftest.py`
   只做三件事：在任何 `app.main` 导入前设置 `ENABLE_MCP=false` 与 `KEYWORD_SEARCH_PROVIDER=none`；
   把**进程级注入点**换成离线替身——`app.db.session_factory`（拿不到 `Depends` 的路径用，
-  含 #101 的归属索引旁路写入）与运行时配置缓存（每 30 秒一次的覆盖层刷新会先读缓存，
-  本机 Redis 里留着旧覆盖时会让跑得够久的套件随机红几条）。这两处都是既有的注入点，
-  不是 monkeypatch 私有全局。
+  含 #101 的归属索引旁路写入）、运行时配置缓存（每 30 秒一次的覆盖层刷新会先读缓存，
+  本机 Redis 里留着旧覆盖时会让跑得够久的套件随机红几条）与套餐缓存的默认实现
+  （`plan_service.set_default_plan_cache`：登录与「我的视图」在缓存缺省时会走它，
+  不换就会去连真 Redis）。这三处都是既有的注入点，不是 monkeypatch 私有全局。
+- **两套会话替身可以看同一个库**（#129 起）：控制面的读走异步会话、写与登录仍走同步会话，
+  所以一条 ASGI 用例里会同时出现 `RecordingSession` 与 `AsyncRecordingSession`。
+  `fake_db.async_mirror(session)` 让后者**共享前者的行**——否则登录刚写下的会话行在只读
+  请求里读不到，症状是「登录成功、下一个请求 20010」，看着像 cookie 丢了。
 - 日志文件断言一律显式 monkeypatch `settings.LOG_DIR` 到 `tmp_path`、重置
   `app.core.logging._configured = False`、再跑 `setup_logging()`——绝不依赖全局默认目录。
 - 新增跨层测试（⑤）把 Worker 放在独立线程里消费任务：真实投递由另一个进程的消息循环

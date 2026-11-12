@@ -162,7 +162,7 @@ async def create_kb(
     提交点是路由上的 ``Depends(get_transaction)``：这里只写，不提交。
     """
 
-    plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
+    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
     data = await knowledge_base_service.create_kb(
         db,
         name=name,
@@ -228,7 +228,7 @@ async def upload_document(
     已登记、账本里没有」的窗口。整笔的提交点是路由上的 ``Depends(get_transaction)``。
     """
 
-    plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
+    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
     result = await document_service.upload(
         db,
         tenant_id=tenant_id,
@@ -277,7 +277,7 @@ def reindex_document(
     document_state.ensure_reindexable(document, force=force)
 
     # 重建跳过「单库文档数」（文档本来就在库里），但照样占用一个 Worker 名额。
-    plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
+    plan = _plan_for_tenant_blocking(db, tenant_id=tenant_id, cache=cache)
     static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
 
     # 改前快照在 prepare 之前取：那条 UPDATE 用 ``synchronize_session=False``，不该让
@@ -353,13 +353,33 @@ async def delete_document(
     return {"document_id": document_id, "deleted": True}
 
 
-def _plan_for_tenant(db: Session, *, tenant_id: str, cache: PlanCache) -> PlanSpec:
-    """会话租户 → 它当前的套餐快照（走与数据面同一个解析与缓存）。"""
+def _tenant_plan_id(db: Session, *, tenant_id: str) -> int:
+    """会话租户 → 它当前的套餐 id；租户不在就 ``20010``（与数据面同一句提示）。"""
 
     tenant = tenant_repository.get_by_id(db, tenant_id)
     if tenant is None:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_TENANT_NOT_FOUND)
-    return plan_service.resolve_plan(db, tenant.plan_id, cache=cache)
+    return tenant.plan_id
+
+
+async def _plan_for_tenant(db: Session, *, tenant_id: str, cache: PlanCache) -> PlanSpec:
+    """会话租户 → 它当前的套餐快照（走与数据面同一个解析与缓存）。
+
+    套餐解析自票 #129 起是 ``async``（缓存换成了 ``redis.asyncio``），所以这个函数也
+    跟着可 ``await``：两个异步入口（建库、上传）直接等它，那条**同步**的重建索引路径
+    用 :func:`_plan_for_tenant_blocking`。读租户行仍是同步的（本模块的会话还没搬，归
+    #131），这里改的只是套餐那一段。
+    """
+
+    return await plan_service.resolve_plan(db, _tenant_plan_id(db, tenant_id=tenant_id), cache=cache)
+
+
+def _plan_for_tenant_blocking(db: Session, *, tenant_id: str, cache: PlanCache) -> PlanSpec:
+    """同步上下文里的同一件事（重建索引）：走 ``plan_service`` 的过渡桥。"""
+
+    return plan_service.resolve_plan_blocking(
+        db, _tenant_plan_id(db, tenant_id=tenant_id), cache=cache
+    )
 
 
 def _kb_snapshot(kb: KnowledgeBase) -> dict[str, Any]:

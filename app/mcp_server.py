@@ -26,6 +26,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
+from fastapi.concurrency import run_in_threadpool
 from fastmcp import FastMCP
 from fastmcp.server.dependencies import get_http_request
 
@@ -40,6 +41,21 @@ def _key_context(db: Any) -> KeyContext:
     """MCP 侧的薄适配器：从请求上下文取 HTTP Request，交给判定内核。"""
 
     return resolve_identity(get_http_request(), db)
+
+
+async def _key_context_async(db: Any) -> KeyContext:
+    """同上，但在**线程池**里跑判定内核（票 #129 起必须如此）。
+
+    判定内核是同步函数，并且它要解析套餐——套餐缓存自 #129 起是 ``redis.asyncio``，
+    同步上下文里的那一段由 :func:`app.core.sync_bridge.run_blocking` 交回主事件循环执行。
+    那个桥要求「调用它的线程不是事件循环线程」，而 MCP 工具本身是 ``async def``：
+    直接在工具里调内核会撞上「循环线程上不许阻塞等待」的守卫。
+
+    所以这里显式跳一次线程池（与 FastAPI 跑同步依赖用的是同一套机制）：内核的同步库读
+    因此**离开事件循环**，套餐解析又能回到主循环上 ``await`` 同一个异步 Redis 客户端。
+    """
+
+    return await run_in_threadpool(_key_context, db)
 
 
 def create_mcp_server(
@@ -59,7 +75,7 @@ def create_mcp_server(
         db = get_db()
         try:
             # 先取会话再判身份：真实 Key 的租户与套餐都在库里，判定本身要读它。
-            key = _key_context(db)
+            key = await _key_context_async(db)
             # 与 HTTP 侧**同一个值对象**：工具签名只有类型，挡不住空列表与纯空白，所以
             # 这里显式走一遍 RetrieveRequest；失败是 20002，与 REST 同一个码。
             payload = parse_retrieve_request(kb_ids=kb_ids, query=query)
@@ -88,7 +104,7 @@ def create_mcp_server(
 
         db = get_db()
         try:
-            key = _key_context(db)
+            key = await _key_context_async(db)
             rows = list_kbs(db, key.tenant_id)
             # 与 HTTP 列库同一套收窄：清单本身就是「你能看哪些库」的答案。
             visible = set(scoped_kb_ids(policy=key.policy, kb_ids=[row.id for row in rows]))
@@ -110,3 +126,4 @@ def create_mcp_http_app(*, get_db: Callable, retrieve: Callable, list_kbs: Calla
 
     mcp = create_mcp_server(get_db=get_db, retrieve=retrieve, list_kbs=list_kbs)
     return mcp.http_app(path="/", transport="streamable-http", json_response=True)
+

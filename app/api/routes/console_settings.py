@@ -22,15 +22,17 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.api.console_deps import (
-    get_console_admin,
+    get_console_admin_async,
     get_runtime_settings_cache,
     require_console_admin_write,
 )
 from app.core.console_auth import ConsoleIdentity
 from app.core.runtime_settings_cache import CACHE_TTL_SECONDS, RuntimeSettingsCache
+from app.db.async_session import get_async_db
 from app.db.session import get_db, get_transaction
 from app.db.transaction import Transaction
 from app.schemas.common import ApiResponse, ok
@@ -116,9 +118,9 @@ def _patch_data(result: SettingsPatchResult) -> SettingsPatchData:
     response_model=ApiResponse[SettingsListData],
     summary="运行时配置的三档清单（含来源与非法行标记）",
 )
-def list_settings(
-    identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+async def list_settings(
+    identity: ConsoleIdentity = Depends(get_console_admin_async),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[SettingsListData]:
     """按三档列出白名单的每一行：有效值、来源（env / db）、是否非法、为什么在这一档。
 
@@ -127,9 +129,11 @@ def list_settings(
 
     读的是库里的真相（不经过缓存）：这一页要回答「库里现在是什么」，而缓存最多比库晚
     30 秒；刚保存完就刷新却看到旧来源标记，会让人以为保存没成功。
+
+    只读，因此整条路径在异步栈上（票 #129）：PATCH 仍在同步栈上（归 #130）。
     """
 
-    rows = runtime_settings.describe_settings(db)
+    rows = await runtime_settings.describe_settings(db)
     return ok(_list_data(rows))
 
 

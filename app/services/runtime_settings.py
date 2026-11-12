@@ -55,6 +55,7 @@ from typing import Any, Callable, Final, Literal, Mapping
 
 import structlog
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, settings
@@ -731,6 +732,16 @@ def _read_db_rows(db: Session | None) -> dict[str, Any]:
         session.close()
 
 
+async def _read_db_rows_async(db: AsyncSession) -> dict[str, Any]:
+    """:func:`_read_db_rows` 的异步版：只给配置中台面板那条只读路径（票 #129）。
+
+    刷新中间件与 Celery 仍在同步版上（它们本来就不在事件循环里），所以这里不做
+    「自己开一个异步会话」的分支——异步会话由请求级依赖给，生命周期归依赖管。
+    """
+
+    return {row.key: row.value for row in await runtime_setting_repository.list_all_async(db)}
+
+
 def collect_overrides(
     db: Session | None = None, *, cache: RuntimeSettingsCache | None = None
 ) -> OverrideReport:
@@ -922,15 +933,18 @@ class SettingRowView:
     invalid_reason: str | None = None
 
 
-def describe_settings(db: Session) -> list[SettingRowView]:
+async def describe_settings(db: AsyncSession) -> list[SettingRowView]:
     """按三档列出白名单的每一行（面板读的是**库里的真相**，不经过缓存）。
 
     为什么要绕过缓存：这一页要回答的恰恰是「库里现在是什么」，而缓存最多比库晚 30 秒。
     刚保存完就刷新面板却看到旧来源标记，会让人以为保存没成功——页面是给人看的，
     宁可多读一次库。
+
+    读在异步会话上（票 #129）：这是控制面唯一「读整张 ``runtime_settings``」的查询。
+    逐键校验与合并（:func:`_classify`）是纯函数，不碰 I/O，因此一行都不用改。
     """
 
-    raw = _read_db_rows(db)
+    raw = await _read_db_rows_async(db)
     report = _classify(raw)
     rows: list[SettingRowView] = []
     for key, spec in SETTING_SPECS.items():

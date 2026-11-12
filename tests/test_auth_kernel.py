@@ -22,7 +22,7 @@ from app.models.api_key import ApiKey
 from app.models.key_policy import PROFILE_BALANCED, PROFILE_CUSTOM, KeyPolicy
 from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_STANDARD, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
@@ -114,24 +114,6 @@ def _session(
     return RecordingSession(rows=rows)
 
 
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.set_calls: list[int] = []
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.set_calls.append(plan_id)
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
 
 
 def _dev_headers() -> dict[str, str]:
@@ -374,7 +356,7 @@ def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
     from app.core.auth import KeyContext, resolve_identity
     from app.models.key_policy import KeyPolicySnapshot
 
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     context = resolve_identity(
         _Request(f"Bearer {KEY_VALUE}"),
         _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[_policy_row()]),
@@ -410,7 +392,7 @@ def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
 
     tenant = _tenant_row()
     session = _session(keys=[_key_row()], tenants=[tenant], policies=[_policy_row()])
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
 
     first = resolve_identity(
         _Request(f"Bearer {KEY_VALUE}"), session, auth_enabled=True, plan_cache=cache
@@ -438,7 +420,7 @@ def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
             _Request(f"Bearer {KEY_VALUE}"),
             session,
             auth_enabled=True,
-            plan_cache=_MemoryPlanCache(),
+            plan_cache=MemoryPlanCache(),
         )
 
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
@@ -447,51 +429,55 @@ def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
 # ───────────────────────────────────────────── 套餐解析：按 plan id 缓存
 
 
-def test_resolve_plan_reads_the_row_on_a_miss_and_caches_it() -> None:
+@pytest.mark.asyncio
+async def test_resolve_plan_reads_the_row_on_a_miss_and_caches_it() -> None:
     from app.services.plan_service import resolve_plan
 
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
 
-    plan = resolve_plan(_session(), PLAN_IDS[PLAN_STANDARD], cache=cache)
+    plan = await resolve_plan(_session(), PLAN_IDS[PLAN_STANDARD], cache=cache)
 
     assert plan == PLAN_PRESETS[PLAN_STANDARD]
     assert cache.set_calls == [PLAN_IDS[PLAN_STANDARD]]
 
 
-def test_resolve_plan_serves_from_the_cache_without_touching_the_database() -> None:
+@pytest.mark.asyncio
+async def test_resolve_plan_serves_from_the_cache_without_touching_the_database() -> None:
     from app.services.plan_service import resolve_plan
 
     class _ExplodingSession:
         def __getattr__(self, name: str) -> Any:
             raise AssertionError(f"命中缓存就不该读库：{name}")
 
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     cache.items[PLAN_IDS[PLAN_PRO]] = PLAN_PRESETS[PLAN_PRO]
 
-    plan = resolve_plan(_ExplodingSession(), PLAN_IDS[PLAN_PRO], cache=cache)
+    plan = await resolve_plan(_ExplodingSession(), PLAN_IDS[PLAN_PRO], cache=cache)
 
     assert plan == PLAN_PRESETS[PLAN_PRO]
     assert cache.set_calls == []
 
 
-def test_resolve_plan_reports_a_missing_plan_as_plan_not_found() -> None:
+@pytest.mark.asyncio
+async def test_resolve_plan_reports_a_missing_plan_as_plan_not_found() -> None:
     from app.services.plan_service import resolve_plan
 
     with pytest.raises(AppError) as excinfo:
-        resolve_plan(_session(), 99, cache=_MemoryPlanCache())
+        await resolve_plan(_session(), 99, cache=MemoryPlanCache())
 
     assert excinfo.value.code is ErrorCode.PLAN_NOT_FOUND
 
 
-def test_invalidation_deletes_the_cache_entry_instead_of_writing_through() -> None:
+@pytest.mark.asyncio
+async def test_invalidation_deletes_the_cache_entry_instead_of_writing_through() -> None:
     """改完套餐只删缓存、不写缓存：写缓存要求每处修改都记得同步，删则由下一次读兜住。"""
 
     from app.services.plan_service import invalidate_plan
 
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     cache.items[PLAN_IDS[PLAN_PRO]] = PLAN_PRESETS[PLAN_PRO]
 
-    invalidate_plan(cache, PLAN_IDS[PLAN_PRO])
+    await invalidate_plan(cache, PLAN_IDS[PLAN_PRO])
 
     assert cache.deleted == [PLAN_IDS[PLAN_PRO]]
     assert cache.set_calls == []
@@ -499,25 +485,26 @@ def test_invalidation_deletes_the_cache_entry_instead_of_writing_through() -> No
 
 
 class _FakeRedis:
-    """redis-py 的最小替身：只实现套餐缓存用到的那三条命令。"""
+    """``redis.asyncio`` 的最小替身：只实现套餐缓存用到的那三条命令。"""
 
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.expiries: dict[str, int] = {}
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         return self.values.get(key)
 
-    def setex(self, key: str, ttl: int, value: str) -> None:
+    async def setex(self, key: str, ttl: int, value: str) -> None:
         self.values[key] = value
         self.expiries[key] = ttl
 
-    def delete(self, key: str) -> None:
+    async def delete(self, key: str) -> None:
         self.values.pop(key, None)
         self.expiries.pop(key, None)
 
 
-def test_redis_plan_cache_keys_by_plan_id_and_round_trips_the_snapshot() -> None:
+@pytest.mark.asyncio
+async def test_redis_plan_cache_keys_by_plan_id_and_round_trips_the_snapshot() -> None:
     """缓存键是 **plan id**：管理员改个 code 不该让半个缓存失联。"""
 
     from app.core.plan_cache import RedisPlanCache
@@ -525,15 +512,16 @@ def test_redis_plan_cache_keys_by_plan_id_and_round_trips_the_snapshot() -> None
     client = _FakeRedis()
     cache = RedisPlanCache(client, ttl_seconds=60)
 
-    cache.set(PLAN_IDS[PLAN_STANDARD], PLAN_PRESETS[PLAN_STANDARD])
+    await cache.set(PLAN_IDS[PLAN_STANDARD], PLAN_PRESETS[PLAN_STANDARD])
 
     assert list(client.values) == [f"plan:{PLAN_IDS[PLAN_STANDARD]}"]
     assert client.expiries == {f"plan:{PLAN_IDS[PLAN_STANDARD]}": 60}
-    assert cache.get(PLAN_IDS[PLAN_STANDARD]) == PLAN_PRESETS[PLAN_STANDARD]
-    assert cache.get(PLAN_IDS[PLAN_PRO]) is None
+    assert await cache.get(PLAN_IDS[PLAN_STANDARD]) == PLAN_PRESETS[PLAN_STANDARD]
+    assert await cache.get(PLAN_IDS[PLAN_PRO]) is None
 
 
-def test_renaming_a_plan_code_keeps_the_same_cache_key() -> None:
+@pytest.mark.asyncio
+async def test_renaming_a_plan_code_keeps_the_same_cache_key() -> None:
     from dataclasses import replace
 
     from app.core.plan_cache import RedisPlanCache
@@ -542,13 +530,13 @@ def test_renaming_a_plan_code_keeps_the_same_cache_key() -> None:
     cache = RedisPlanCache(client, ttl_seconds=60)
     renamed = replace(PLAN_PRESETS[PLAN_PRO], code="pro-max")
 
-    cache.set(PLAN_IDS[PLAN_PRO], PLAN_PRESETS[PLAN_PRO])
-    cache.set(PLAN_IDS[PLAN_PRO], renamed)
+    await cache.set(PLAN_IDS[PLAN_PRO], PLAN_PRESETS[PLAN_PRO])
+    await cache.set(PLAN_IDS[PLAN_PRO], renamed)
 
     assert list(client.values) == [f"plan:{PLAN_IDS[PLAN_PRO]}"], (
         "键里没有 code，改名不产生第二个键"
     )
-    assert cache.get(PLAN_IDS[PLAN_PRO]) == renamed
+    assert await cache.get(PLAN_IDS[PLAN_PRO]) == renamed
 
 
 # ───────────────────────────────────────────── 守卫：内核不许认识框架

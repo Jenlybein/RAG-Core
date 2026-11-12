@@ -44,7 +44,7 @@ from app.models.profile_preset import ProfilePreset
 from app.models.tenant import Tenant
 from app.services.profile_preset_service import ACTION_PROFILE_UPDATE
 from app.services.retrieval_options import SEED_PROFILE_CHAINS, profile_chain_of
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -138,6 +138,7 @@ def console(request: Any) -> Any:
 
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
 
     presets = getattr(request, "param", None)
     db = RecordingSession(rows=_world(presets=presets))
@@ -149,6 +150,8 @@ def console(request: Any) -> Any:
     reset_profile_presets()
 
     main.app.dependency_overrides[session_module.get_db] = lambda: db
+    # 档位清单的 GET 走异步会话（票 #129），PATCH 仍是同步；两个替身共享同一份行。
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(db)
     try:
         with TestClient(main.app) as client:
             yield _Harness(client=client, db=db)

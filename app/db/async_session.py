@@ -3,9 +3,14 @@
 ## 这一票做了什么、没做什么
 
 三样东西：一个复用现有连接串的 ``AsyncEngine``、一个 ``expire_on_commit=False`` 的
-``async_sessionmaker``、一个请求级依赖 :func:`get_async_db`。**没有任何生产路由改用它**——
-迁移按垂直切片推进（#127 起，一条请求路径一次），这一票只把地基铺好并证明它可用
-（探针见 ``tests/test_async_probe.py``）。
+``async_sessionmaker``、一个请求级依赖 :func:`get_async_db`。迁移按垂直切片推进
+（#127 起，一条请求路径一次），这一票只把地基铺好并证明它可用（探针见
+``tests/test_async_probe.py``）。
+
+**第一个生产用户是控制面的只读查询**（票 #129）：密钥 / 套餐 / 档位 / 运行时设置 / 审计 /
+traces 的列表与详情从 :func:`get_async_db` 取会话，身份判定走它自己的异步孪生
+（``app.api.console_deps`` 里带 ``_async`` 后缀的那三个）。控制面的**写**（#130）与检索
+链路（#127）仍在同步栈上，所以现在两套池并存——连接预算见下一节。
 
 ## 为什么驱动还是 psycopg3
 
@@ -37,6 +42,10 @@ SQL 一字不改。换 asyncpg 只需要改 dialect 与 URL、业务代码零改
 
 在它落地之前，这一票不提供任何提交入口：:func:`get_async_db` 只负责 yield 与关闭，所以
 「新栈上有人偷偷提交」在结构上还不可能发生。
+
+#129 只搬了**读**，而读不开事务——所以上面这一节仍然没被实现。搬写的 #130 要按这个形状
+补一个 ``get_async_transaction``，并让 ``after_commit`` 的登记点在异步会话上等价可用
+（现在那条路径上的 ``plan_service.invalidate_plan_blocking`` 就是为此留的过渡桥）。
 """
 
 from __future__ import annotations

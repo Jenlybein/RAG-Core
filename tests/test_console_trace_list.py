@@ -29,7 +29,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, RecordingSession
 
 LOGIN_PATH = "/console/login"
 RECENT_PATH = "/console/retrieval-traces/recent"
@@ -109,6 +109,7 @@ class _Harness:
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     # **一个会话实例贯穿整个用例**：登录会把会话行写进这个假库，后续请求要能读回同一行。
@@ -116,6 +117,8 @@ def console() -> Iterator[_Harness]:
     # 排查时看着像 cookie 没带上，实际是库被换掉了。
     session = RecordingSession(rows=_world())
     main.app.dependency_overrides[session_module.get_db] = lambda: session
+    # 列表读走异步会话（票 #129），替身与同步那个共享同一份行。
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:
@@ -127,18 +130,22 @@ def console() -> Iterator[_Harness]:
 def _stub_repositories(
     monkeypatch: pytest.MonkeyPatch, *, rows: list[RetrievalTrace], scores: dict[str, int]
 ) -> dict[str, Any]:
-    """把两个仓储换成记录参数的桩：这一层要验的是「路由怎么调仓储」，不是 SQL。"""
+    """把两个仓储换成记录参数的桩：这一层要验的是「路由怎么调仓储」，不是 SQL。
+
+    两个桩都是 ``async``（票 #129）：控制台这两条读走的是异步会话，仓储函数是协程。
+    写成同步桩会让「忘了 await」变成一条 500，而不是这条用例想断言的东西。
+    """
 
     trace_repo = importlib.import_module("app.repositories.retrieval_trace_repository")
     feedback_repo = importlib.import_module("app.repositories.retrieval_feedback_repository")
     seen: dict[str, Any] = {}
 
-    def _list_recent(db: Any, *, tenant_id: str, limit: int) -> list[RetrievalTrace]:
+    async def _list_recent(db: Any, *, tenant_id: str, limit: int) -> list[RetrievalTrace]:
         seen["tenant_id"] = tenant_id
         seen["limit"] = limit
         return rows
 
-    def _scores(db: Any, log_ids: Any, *, tenant_id: str) -> dict[str, int]:
+    async def _scores(db: Any, log_ids: Any, *, tenant_id: str) -> dict[str, int]:
         seen["score_tenant_id"] = tenant_id
         seen["score_log_ids"] = list(log_ids)
         return scores

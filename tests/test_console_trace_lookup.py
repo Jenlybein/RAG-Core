@@ -25,7 +25,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, RecordingSession
 
 LOGIN_PATH = "/console/login"
 LOOKUP_PATH = "/console/retrieval-traces"
@@ -156,10 +156,13 @@ class _Harness:
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     session = _TraceRows(rows=_world())
     main.app.dependency_overrides[session_module.get_db] = lambda: session
+    # 反查走异步会话（票 #129），替身与同步那个共享同一份行。
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:

@@ -3,6 +3,8 @@
 只 flush，不 commit——事务由 Service 收口。
 """
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.api_key import ApiKey
@@ -39,6 +41,21 @@ def list_by_tenant(db: Session, tenant_id: str) -> list[ApiKey]:
         .order_by(ApiKey.created_at, ApiKey.id)
         .all()
     )
+
+
+async def list_by_tenant_async(db: AsyncSession, tenant_id: str) -> list[ApiKey]:
+    """:func:`list_by_tenant` 的异步孪生（控制面 Key 列表，票 #129）。
+
+    排序表达式逐字照抄同步版：面板的「最近签发的在后面」不因为换了会话而变。同步版仍在
+    服务层的写路径上（签发时读回同一租户的配置），#130 搬它。
+    """
+
+    statement = (
+        select(ApiKey)
+        .where(ApiKey.tenant_id == tenant_id)
+        .order_by(ApiKey.created_at, ApiKey.id)
+    )
+    return list((await db.execute(statement)).scalars().all())
 
 
 def delete(db: Session, api_key: ApiKey) -> None:

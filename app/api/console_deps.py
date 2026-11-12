@@ -31,6 +31,13 @@
 - ``get_langfuse_reader``：控制台瀑布「本地没命中时去问观测服务」那一步的构造点
   （#103）。测试注入一个假客户端，于是这条路径能在离线套件里被逐项断言；生产实现是
   ``app.observability.langfuse_reader.read_stage_spans``。
+
+**带 ``_async`` 后缀的那三个**（``get_console_account_async`` / ``get_console_admin_async``
+/ ``require_console_tenant_async``）是票 #129 给**只读**接口铺的路：它们读的是异步会话
+（``get_async_db``），而其余入口仍读同步会话。分开写成两套可调用对象而不是把旧名字改成
+``async``，是因为 ``Depends(...)`` 与 ``dependency_overrides[...]`` 认的是对象身份——只改
+一半会让既有 override 静默失效。判定规则不在这一层，两份入口共用
+``app.core.console_auth`` 里的同一套判定。
 """
 
 from __future__ import annotations
@@ -38,6 +45,7 @@ from __future__ import annotations
 from typing import Final
 
 from fastapi import Depends, Request
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.console_auth import (
@@ -45,6 +53,7 @@ from app.core.console_auth import (
     require_admin,
     require_write_header,
     resolve_console_identity,
+    resolve_console_identity_async,
 )
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
@@ -52,6 +61,7 @@ from app.core.runtime_settings_cache import (
     RuntimeSettingsCache,
     get_settings_cache,
 )
+from app.db.async_session import get_async_db
 from app.db.session import get_db
 from app.observability.langfuse_reader import read_stage_spans
 from app.services import plan_service
@@ -67,10 +77,33 @@ def get_console_account(request: Request, db: Session = Depends(get_db)) -> Cons
     return resolve_console_identity(request, db)
 
 
+async def get_console_account_async(
+    request: Request, db: AsyncSession = Depends(get_async_db)
+) -> ConsoleIdentity:
+    """同上，但读的是**异步会话**（票 #129）：控制面只读接口用这一条。
+
+    写成另一个可调用对象而不是把同步那条改成 ``async``：``Depends(...)`` 与
+    ``dependency_overrides[...]`` 认的是**对象身份**，改一半会让既有 override 在无提示的
+    情况下失效（这条教训写在 ``app/api/deps.py`` 的模块文档里）。两条只在「用哪套会话读
+    那两行」上不同，判定规则在 ``app.core.console_auth`` 里只有一份。
+    """
+
+    return await resolve_console_identity_async(request, db)
+
+
 def get_console_admin(
     identity: ConsoleIdentity = Depends(get_console_account),
 ) -> ConsoleIdentity:
     """管理员依赖：先认出是谁，再判角色（``20011``）。"""
+
+    require_admin(identity)
+    return identity
+
+
+async def get_console_admin_async(
+    identity: ConsoleIdentity = Depends(get_console_account_async),
+) -> ConsoleIdentity:
+    """管理员依赖的异步版（控制面只读接口）。角色判定与同步版同一句 ``require_admin``。"""
 
     require_admin(identity)
     return identity
@@ -111,6 +144,18 @@ def require_console_tenant(
     审计，拆成两半会让「读接口多声明一个 ``Depends(get_console_account)``」变成惯例，
     而那条惯例一旦漏掉，审计的 actor 就悄悄变成 ``None``。FastAPI 的依赖缓存保证同一个
     请求里身份只解析一次，多一层依赖不多读一次会话行。
+    """
+
+    _ensure_tenant_account(identity)
+    return identity
+
+
+async def require_console_tenant_async(
+    identity: ConsoleIdentity = Depends(get_console_account_async),
+) -> ConsoleIdentity:
+    """租户门禁的异步版（控制面只读接口，票 #129）。
+
+    判定仍是 :func:`_ensure_tenant_account` 那一句：管理员不是「无权限」，是「用错了门」。
     """
 
     _ensure_tenant_account(identity)

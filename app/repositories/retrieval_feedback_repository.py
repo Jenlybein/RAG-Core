@@ -3,11 +3,15 @@
 三个动作：按 ``log_id`` 取那一行（覆盖判断要用，私有）、写入或覆盖、批量取分数
 （控制台「最近检索」列表要显示每行打了几分）。事务由 Service 收口
 （与其它仓储一致：这里只 ``flush``，不 ``commit``）。
+
+**迁移期的两种会话**（票 #129）：批量取分数（只给控制面列表读）已经换到 ``AsyncSession``；
+写入与那一次私有读取仍在同步会话上，由 #128 搬。同一个操作只有一份实现。
 """
 
 from collections.abc import Sequence
 
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.db.base import now
@@ -15,8 +19,8 @@ from app.models.retrieval_feedback import RetrievalFeedback
 from app.utils.id_generator import new_id
 
 
-def scores_for_log_ids(
-    db: Session, log_ids: Sequence[str], *, tenant_id: str
+async def scores_for_log_ids(
+    db: AsyncSession, log_ids: Sequence[str], *, tenant_id: str
 ) -> dict[str, int]:
     """批量取这些 ``log_id`` 各自的分数，返回 ``{log_id: score}``；没打分的**不出现**。
 
@@ -25,6 +29,9 @@ def scores_for_log_ids(
 
     带租户：这些 ``log_id`` 通常来自已经按租户筛过的归属索引，但这一层不假设调用方
     做过什么——ADR-0006 决策 1 要求签名上就带 ``tenant_id``。
+
+    这是这张表**唯一的批量读**，也是控制面「最近检索」列表要的那一份；它随列表一起换到
+    异步会话（票 #129），没有同步孪生——写入那一半（``upsert``）仍在同步栈上，#128 搬它。
     """
 
     if not log_ids:
@@ -33,7 +40,7 @@ def scores_for_log_ids(
         RetrievalFeedback.log_id.in_(list(log_ids)),
         RetrievalFeedback.tenant_id == tenant_id,
     )
-    return {row.log_id: row.score for row in db.execute(statement).all()}
+    return {row.log_id: row.score for row in (await db.execute(statement)).all()}
 
 
 def _get_by_log_id(db: Session, log_id: str) -> RetrievalFeedback | None:

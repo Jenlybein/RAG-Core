@@ -53,7 +53,7 @@ from app.observability.stage_timing import (
     StageSpan,
 )
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
 
 WATERFALL_PATH = "/console/retrieval-traces/{log_id}/waterfall"
 LOGIN_PATH = "/console/login"
@@ -143,20 +143,6 @@ def _matches(row: Any, statement: Any) -> bool:
     return True
 
 
-class _MemoryPlanCache:
-    """内存假套餐缓存：套餐解析只用到 ``get / set / delete``。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.items.pop(plan_id, None)
 
 
 @dataclass
@@ -259,6 +245,7 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
 
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     jsonl_dir = tmp_path / "traces"
@@ -268,10 +255,12 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
     monkeypatch.setattr(settings, "TRACE_SINK", "none")
 
     session = _WaterfallSession(rows=_world())
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     reader = _FakeObservations()
 
     main.app.dependency_overrides[session_module.get_db] = lambda: session
+    # 瀑布的归属校验走异步会话（票 #129），替身与同步那个共享同一份行。
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_langfuse_reader] = lambda: reader
     try:

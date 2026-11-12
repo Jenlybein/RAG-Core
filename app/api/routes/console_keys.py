@@ -14,10 +14,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.api.console_deps import require_console_tenant, require_console_tenant_write
+from app.api.console_deps import (
+    require_console_tenant_async,
+    require_console_tenant_write,
+)
 from app.core.console_auth import ConsoleIdentity
+from app.db.async_session import get_async_db
 from app.db.session import get_db, get_transaction
 from app.db.transaction import Transaction
 from app.schemas.common import ApiResponse, ok
@@ -40,13 +45,17 @@ router = APIRouter(prefix="/console", tags=["console"])
     response_model=ApiResponse[KeyListData],
     summary="本租户的 Key 列表（明文 + masked + 它引用的配置）",
 )
-def list_keys(
-    identity: ConsoleIdentity = Depends(require_console_tenant),
-    db: Session = Depends(get_db),
+async def list_keys(
+    identity: ConsoleIdentity = Depends(require_console_tenant_async),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[KeyListData]:
-    """列出本租户的 Key。明文是本票的明确决定（ADR-0004），masked 是第二形态。"""
+    """列出本租户的 Key。明文是本票的明确决定（ADR-0004），masked 是第二形态。
 
-    rows = key_admin_service.list_keys(db, actor=identity)
+    只读，因此整条路径（含身份判定）在异步栈上（票 #129）；签发 / 删除 / 改配置仍在
+    同步栈上，那是 #130 的范围。
+    """
+
+    rows = await key_admin_service.list_keys(db, actor=identity)
     return ok(KeyListData(keys=[key_data_of(row.api_key, row.policy) for row in rows]))
 
 

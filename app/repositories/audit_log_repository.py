@@ -2,12 +2,15 @@
 
 只写不改：审计是账本，**没有 update 也没有 delete**——能被改的账本不算账本。
 
-读接口只有「一页 + 总数」这一对。分页必须在 SQL 里做（``LIMIT`` / ``OFFSET``），不是在
-应用层取全量再切片：审计表只会一直变长，而「先取全量」的实现还会让 ``offset`` 的语义
-在数据量大一点时悄悄失效（它的代价随历史线性上升，测试里永远看不出来）。
+读接口只有「一页 + 总数」这一对，两个都是 ``async``（票 #129）：控制面审计列表是这张表
+唯一的读者，所以这里没有同步孪生——搬一次就搬完。分页必须在 SQL 里做（``LIMIT`` /
+``OFFSET``），不是在应用层取全量再切片：审计表只会一直变长，而「先取全量」的实现还会让
+``offset`` 的语义在数据量大一点时悄悄失效（它的代价随历史线性上升，测试里永远看不出来）。
 """
 
-from sqlalchemy.orm import Query, Session
+from sqlalchemy import Select, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Session
 
 from app.models.audit_log import AuditLog
 
@@ -18,8 +21,8 @@ def create(db: Session, entry: AuditLog) -> AuditLog:
     return entry
 
 
-def list_page(
-    db: Session, *, limit: int, offset: int, action: str | None = None
+async def list_page(
+    db: AsyncSession, *, limit: int, offset: int, action: str | None = None
 ) -> list[AuditLog]:
     """按时间倒序取「第 ``offset`` 条之后」的 ``limit`` 条；``limit`` / ``offset`` 由调用方给。
 
@@ -28,27 +31,27 @@ def list_page(
     带进来；面板的筛选值直接取这些枚举，也就不存在「前缀写一半」的模糊地带。
     """
 
-    return (
-        _filtered(db, action)
-        .order_by(AuditLog.created_at.desc())
-        .offset(offset)
-        .limit(limit)
-        .all()
+    statement = (
+        _filtered(action).order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
     )
+    return list((await db.execute(statement)).scalars().all())
 
 
-def count(db: Session, *, action: str | None = None) -> int:
+async def count(db: AsyncSession, *, action: str | None = None) -> int:
     """**这一筛选条件下**的总条数；不带 ``action`` 时就是全表条数。
 
     前端据此算页数（``ceil(total / limit)``）。返回「筛选后的总数」而不是「全表总数」：
     分页控件跟着筛选结果走，拿全表总数算出来的页数会让最后一页出现空页。
     """
 
-    return _filtered(db, action).count()
+    statement = select(func.count()).select_from(AuditLog)
+    if action is not None:
+        statement = statement.where(AuditLog.action == action)
+    return int((await db.execute(statement)).scalar_one())
 
 
-def _filtered(db: Session, action: str | None) -> Query[AuditLog]:
+def _filtered(action: str | None) -> Select[tuple[AuditLog]]:
     """「哪些行」的唯一判定：``action`` 为空就是整张表，否则按动作名精确筛。"""
 
-    query = db.query(AuditLog)
-    return query if action is None else query.filter(AuditLog.action == action)
+    statement = select(AuditLog)
+    return statement if action is None else statement.where(AuditLog.action == action)
