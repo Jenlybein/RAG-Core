@@ -15,13 +15,19 @@ data}`` 外壳。判定本身不在这里：判定写进路由，MCP 一侧就�
 反馈（#105）走同一个身份依赖，但**没有关卡**：它不改检索链路，只对「已经发生过的那一次」
 打分。判定（分数区间、归属、``trace_id`` 对得上）全在
 ``app.services.retrieval_feedback`` 里，路由只转发。
+
+**反馈这一条已经换到异步会话**（第 11 步票 #128）：它声明 ``get_async_db``，于是归属校验
+那一读与本地写入那一笔都在 ``AsyncSession`` 上。检索（``/rag/retrieve``）仍是同步会话，
+随票 #127 搬——同一份文件里两条路由各用一套会话，是双栈期的显式事实，不是设计。
 """
 
 from fastapi import APIRouter, Depends
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_key
 from app.core.auth import DevKeyContext
+from app.db.async_session import get_async_db
 from app.db.session import get_db
 from app.schemas.common import ApiResponse, ok
 from app.schemas.feedback import FeedbackData, FeedbackRequest
@@ -52,7 +58,7 @@ async def retrieve(
 @router.post("/rag/feedback", response_model=ApiResponse[FeedbackData], summary="给一次检索打分")
 async def feedback(
     payload: FeedbackRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[FeedbackData]:
     """对某一次检索打 1~5 分；**本地说了算**，观测服务挂掉照样成功。
@@ -61,7 +67,7 @@ async def feedback(
     所以调用方重试不必担心留下两条互相矛盾的行。
     """
 
-    data = retrieval_feedback.submit_feedback(
+    data = await retrieval_feedback.submit_feedback(
         db=db,
         tenant_id=key.tenant_id,
         log_id=payload.log_id,

@@ -97,6 +97,16 @@ class _Rows:
     def all(self) -> list[Any]:
         return list(self._values)
 
+    def first(self) -> Any:
+        """按主键 / 唯一条件取一行（``select(...).scalars().first()`` 的形状）。
+
+        异步仓储只能走 ``execute(select(...))``（``AsyncSession`` 没有 ``db.query``），
+        而「这一行在不在」这类判断最自然的收尾就是 ``.first()``。少了它，那些地方要么
+        被写成 ``.all()[0]``，要么只能绕开替身——两者都会让用例离真实调用形状更远。
+        """
+
+        return self._values[0] if self._values else None
+
     def __iter__(self) -> Any:
         return iter(self._values)
 
@@ -351,6 +361,12 @@ class AsyncRecordingSession(RecordingSession):
     ``execute(select(...))``。替身如果替它兜底，迁移时那些「照抄同步写法」的地方就永远暴露
     不出来——那是 #127 起要显式改的代码。
 
+    ``add`` **也留在同步面，而且必须留在同步面**：真 ``AsyncSession`` 上 ``add`` 是**唯一**
+    一个仍是同步的写方法（``delete`` / ``flush`` / ``commit`` / ``rollback`` / ``close`` 全都
+    要 ``await``）。替身照着把 ``add`` 写成 ``async def``，症状是「生产代码写了 ``db.add(row)``
+    而用例全绿」——行其实没进去，因为那个协程根本没人 await。票 #128 迁移反馈写入时踩到了
+    这一条，所以这里按真实 API 的形状钉住。
+
     **还没有 ``AsyncTransactionalSession``**：票 #124 的事务语义（提交才落库、回滚撤销写入）
     目前只有同步版 ``TransactionalSession``。异步写路径开始被断言的那一票按同样的形状加一个
     即可；先把「同一组方法可 await」这条地基铺好，不预先造第二个变体。
@@ -361,9 +377,6 @@ class AsyncRecordingSession(RecordingSession):
 
     async def get(self, model: type, primary_key: Any) -> Any:
         return super().get(model, primary_key)
-
-    async def add(self, obj: Any) -> None:
-        super().add(obj)
 
     async def delete(self, obj: Any) -> None:
         super().delete(obj)

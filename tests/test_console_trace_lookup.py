@@ -8,6 +8,9 @@ cookie，之后只看统一响应体。这条是 code-review 之后改过来的�
 
 仓库既有口径在这里同样适用：数据库用 ``dependency_overrides`` 换成内存会话替身、
 观测服务用假客户端，因此不连 PG、不起栈、不发网络。
+
+**两个会话替身是双栈期的显式事实**（第 11 步票 #128）：控制面身份仍走同步 ``get_db``，
+``trace_id`` 的反查已经走异步 ``get_async_db``；两条都注入内存替身。
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncRecordingSession, RecordingSession
 
 LOGIN_PATH = "/console/login"
 LOOKUP_PATH = "/console/retrieval-traces"
@@ -37,19 +40,19 @@ BOB_ID = "00000000-0000-4000-8000-000000000003"
 LOG_ALPHA = "log-alpha-0001"
 
 
-class _TraceRows(RecordingSession):
+class _AsyncTraceRows(AsyncRecordingSession):
     """认得归属索引那条 ``select(...).where(trace_id == ?, tenant_id == ?)`` 的假会话。
 
     不 patch 仓储：让真实 SQL 构造跑一遍，只把执行结果换成内存行。替身只认**这一种**
     查询形状——假会话越像真会话，越容易让人误以为测过的是数据库。
     """
 
-    def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+    async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
         table = _final_table_name(statement)
         if table == RetrievalTrace.__tablename__:
             rows = [row for row in self._rows.get(RetrievalTrace, []) if _matches(row, statement)]
             return _SelectResult(rows)
-        return super().execute(statement, *args, **kwargs)
+        return await super().execute(statement, *args, **kwargs)
 
 
 class _SelectResult:
@@ -134,11 +137,13 @@ def _world() -> dict[type, list[Any]]:
             _account(ALICE_ID, "alice", TENANT_ALPHA),
             _account(BOB_ID, "bob", TENANT_BETA),
         ],
-        RetrievalTrace: [
-            _trace(LOG_ALPHA, TENANT_ALPHA),
-            _trace("log-beta-0001", TENANT_BETA),
-        ],
     }
+
+
+def _trace_rows() -> list[RetrievalTrace]:
+    """归属索引里的两行：Alpha 与 Beta 各一条（跨租户要的是「行在，但不属于你」）。"""
+
+    return [_trace(LOG_ALPHA, TENANT_ALPHA), _trace("log-beta-0001", TENANT_BETA)]
 
 
 @dataclass
@@ -156,10 +161,17 @@ class _Harness:
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session_module = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
-    session = _TraceRows(rows=_world())
+    world = _world()
+    # 同步的给控制面身份（登录会写会话行，之后的请求要读回同一行）；异步的给 trace_id
+    # 反查。归属索引的行**只放进异步那个**：反查要是退回同步会话，三条「查不到」的用例
+    # 会立刻变成红，而不是悄悄照样绿。
+    session = RecordingSession(rows=world)
+    trace_session = _AsyncTraceRows(rows={RetrievalTrace: _trace_rows()})
     main.app.dependency_overrides[session_module.get_db] = lambda: session
+    main.app.dependency_overrides[async_session_module.get_async_db] = lambda: trace_session
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:
