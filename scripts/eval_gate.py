@@ -150,6 +150,43 @@ def score_run(scores: Sequence[QuestionScore]) -> dict[str, Any]:
     }
 
 
+# ───────────────────────────────────────────────────── 延迟分布（P50 / P95，零新采集）
+
+
+def _percentile_rank(count: int, percent: float) -> int:
+    """最近秩法：升序第 ``ceil(p/100 × N)`` 个（1 起，越界收到 N）。"""
+
+    return min(count, max(1, math.ceil(percent / 100.0 * count)))
+
+
+def latency_stats(per_question: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """从 ``per_question[*].duration_ms`` 折出延迟分布（P50 / P95 / 均值 / 最慢）。
+
+    **不另造一次采集**：逐题耗时是检索那一步本来就记下的（``results.json`` 里一直有），
+    这里只做统计，所以换一份归档就能重算，两次跑的数字也对得上。
+
+    分位数用最近秩法而不是线性插值：报告要说的是「实际有多少道题比这个数快」，
+    插值会造出一个从来没发生过的耗时。没被计时的题（缺 ``duration_ms``）不进分母——
+    把它当 0ms 会把中位数拉低，那是另一种谎。
+    """
+
+    durations = sorted(
+        float(item["duration_ms"])
+        for item in per_question
+        if isinstance(item, Mapping) and is_scored(item.get("duration_ms"))
+    )
+    count = len(durations)
+    if not count:
+        return {"count": 0, "mean_ms": None, "p50_ms": None, "p95_ms": None, "max_ms": None}
+    return {
+        "count": count,
+        "mean_ms": sum(durations) / count,
+        "p50_ms": durations[_percentile_rank(count, 50) - 1],
+        "p95_ms": durations[_percentile_rank(count, 95) - 1],
+        "max_ms": durations[-1],
+    }
+
+
 # ─────────────────────────────────────────────── ragas ID 版双指标（零 LLM）
 
 
@@ -470,6 +507,19 @@ def _verdict(
     }
 
 
+def _rerank_axis(environment: Mapping[str, Any]) -> str:
+    """「重排开关」这根刻度：开着重量出来的是**重排后的排序**，与关着重排不是同一把尺子。
+
+    缺这个字段的老档案记成「未记录」，**不补一个「关」**：补值会让一次来历不明的运行
+    看起来像「确认是关着重排跑的」，那比诚实地说不可比更糟。
+    """
+
+    retrieval = environment.get("retrieval") or {}
+    if "rerank_enabled" not in retrieval:
+        return "未记录"
+    return "开" if retrieval.get("rerank_enabled") else "关"
+
+
 def _ruler(payload: Mapping[str, Any]) -> dict[str, Any]:
     """定义「这把尺子」的几个轴：任何一个变了，就不是同一个测量。"""
 
@@ -483,7 +533,15 @@ def _ruler(payload: Mapping[str, Any]) -> dict[str, Any]:
         "切块策略": chunking.get("split_strategy"),
         "切块窗口": [chunking.get("chunk_size"), chunking.get("chunk_overlap")],
         "嵌入模型": [embedding.get("model"), embedding.get("dimensions")],
+        # 少了这一根，「重排开」的一次跑会和「重排关」的冻结基线判成可比（#114）
+        "重排开关": _rerank_axis(environment),
     }
+
+
+def _axis_text(value: Any) -> str:
+    """轴值的渲染：字符串原样印（报告给人读），其余用 ``repr``（列表要能看出边界）。"""
+
+    return value if isinstance(value, str) else repr(value)
 
 
 def _comparability_problem(current: Mapping[str, Any], baseline: Mapping[str, Any]) -> str | None:
@@ -508,7 +566,7 @@ def _comparability_problem(current: Mapping[str, Any], baseline: Mapping[str, An
     current_ruler = _ruler(current)
     baseline_ruler = _ruler(baseline)
     differing = [
-        f"{axis}：本次 {current_ruler[axis]!r}、基线 {baseline_ruler[axis]!r}"
+        f"{axis}：本次 {_axis_text(current_ruler[axis])}、基线 {_axis_text(baseline_ruler[axis])}"
         for axis in current_ruler
         if current_ruler[axis] != baseline_ruler[axis]
     ]
@@ -713,6 +771,9 @@ def build_results_payload(
     """
 
     metrics = score_run(scores)
+    # 延迟也进 metrics：它和 CP/CR 读的是同一份 per_question，报告里的每个数
+    # 都能用一条 --select 打印出来（metrics.latency）。它只是读数，不参与判据。
+    metrics["latency"] = latency_stats(per_question)
     # 排除统计以**题库**为准：这次没跑 absent / false_premise（它们不进闸门），
     # 但那 10 道题确实在题库里——报告里必须说清「排除了哪些、各几道」，
     # 而不是因为它们没被评分就显示成「无排除」。
@@ -1015,6 +1076,58 @@ def _environment_section(payload: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _latency_section(payload: Mapping[str, Any]) -> list[str]:
+    """延迟表：P50 / P95 从逐题耗时算，不是只有「整轮多久」一个总数。
+
+    它**不进闸门**：判据只有 CP / CR 两条，延迟抖动不该把一次检索优化判成「退化」。
+    """
+
+    run_dir = str(payload.get("run_dir") or f"eval/runs/{payload.get('run_id')}")
+    per_question = payload.get("per_question") or []
+    stats = latency_stats(per_question)
+    lines = ["## 延迟（逐题耗时，P50 / P95）", ""]
+    if not stats["count"]:
+        lines += [
+            "没有留下逐题耗时（`per_question[*].duration_ms`），所以这次没有延迟分布——"
+            "不补一个 0ms 顶上。",
+            "",
+        ]
+        return lines
+
+    recorded = (payload.get("metrics") or {}).get("latency")
+    source_key = "metrics.latency" if recorded else "per_question"
+    total = payload.get("duration_seconds")
+    lines += [
+        f"来源：`{_command(run_dir, source_key)}`，即逐题明细里每一道的 `duration_ms`"
+        "（与 CP/CR 同一份归档，没有另采一次）。它**不参与门禁**：判据只有 CP / CR 两条。",
+        "",
+        f"- 题数：{stats['count']} 道（没被计时的题不进分母）；整轮总时长 {_total_text(total)}。",
+        "",
+        "| 指标 | 毫秒 | 复现命令 |",
+        "| --- | --- | --- |",
+    ]
+    for label, value in (
+        ("均值", stats["mean_ms"]),
+        ("P50", stats["p50_ms"]),
+        ("P95", stats["p95_ms"]),
+        ("最慢", stats["max_ms"]),
+    ):
+        lines.append(f"| {label} | {_num(value, 1)} | `{_cell(_command(run_dir, source_key))}` |")
+    lines += [
+        "",
+        f"口径：P50 / P95 取升序第 ⌈p/100 × N⌉ 个（N={stats['count']}，不插值）——"
+        f"P50 = 第 {_percentile_rank(stats['count'], 50)} 个、"
+        f"P95 = 第 {_percentile_rank(stats['count'], 95)} 个。"
+        "插值会造出一个从来没发生过的耗时。",
+        "",
+    ]
+    return lines
+
+
+def _total_text(value: Any) -> str:
+    return f"{float(value):.2f}s" if isinstance(value, (int, float)) else "未记录"
+
+
 def _unscored_section(payload: Mapping[str, Any]) -> list[str]:
     metrics = payload.get("metrics") or {}
     unscored = metrics.get("unscored") or []
@@ -1086,11 +1199,18 @@ def _http_smoke_section(payload: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def _rerank_on(payload: Mapping[str, Any]) -> bool:
+    retrieval = (payload.get("environment") or {}).get("retrieval") or {}
+    return bool(retrieval.get("rerank_enabled"))
+
+
 def _reproduce_section(payload: Mapping[str, Any]) -> list[str]:
     run_dir = str(payload.get("run_dir") or f"eval/runs/{payload.get('run_id')}")
     experiment = payload.get("experiment") or {}
     limit = experiment.get("limit")
     extra = f" --limit {limit}" if limit else ""
+    # 开着重排跑的那一轮，复现命令里必须带上开关：不带就复现出另一把尺子的数字
+    switch = " --rerank" if _rerank_on(payload) else ""
     return [
         "## 复现命令（照抄即可）",
         "",
@@ -1101,7 +1221,7 @@ def _reproduce_section(payload: Mapping[str, Any]) -> list[str]:
         f"{RUNNER_COMMAND} validate-dataset",
         f"{RUNNER_COMMAND} validate-config",
         "# 2. 真实跑（进程内检索；需要 PG / ES / 嵌入凭据）",
-        f"{RUNNER_COMMAND} run --env-file <主 checkout>\\.env{extra}",
+        f"{RUNNER_COMMAND} run --env-file <主 checkout>\\.env{extra}{switch}",
         "# 3. 重出这份报告（只读归档，不再跑检索）",
         f"{RUNNER_COMMAND} report --run {run_dir}",
         "# 4. 单独打印某一个数字（报告里每处数字旁边都写了这条命令）",
@@ -1162,6 +1282,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
 
     lines += _environment_section(payload)
     lines += _gate_section(payload)
+    lines += _latency_section(payload)
     lines += _unscored_section(payload)
     lines += _per_question_section(payload)
     lines += _http_smoke_section(payload)

@@ -32,6 +32,7 @@ from scripts.eval_gate import (
     context_scores,
     corpus_version,
     is_scored,
+    latency_stats,
     mean_scored,
     render_report,
     score_run,
@@ -129,6 +130,85 @@ def _compare(
     return compare_to_baseline(
         current, baseline, thresholds=GateThresholds(overall_pp, per_type_pp)
     )
+
+
+# ───────────────────────────────────────────────────── 延迟（逐题耗时 → P50 / P95）
+
+
+def test_latency_stats_uses_nearest_rank_on_the_sorted_durations() -> None:
+    """100 个 10..1000 的耗时：P50 取第 50 个 = 500，P95 取第 95 个 = 950。"""
+
+    durations = [{"duration_ms": value} for value in range(10, 1001, 10)]
+
+    stats = latency_stats(durations)
+
+    assert stats["count"] == 100
+    assert stats["mean_ms"] == pytest.approx(505.0)
+    assert stats["p50_ms"] == pytest.approx(500.0)
+    assert stats["p95_ms"] == pytest.approx(950.0)
+    assert stats["max_ms"] == pytest.approx(1000.0)
+
+
+def test_latency_stats_skips_questions_that_were_never_timed() -> None:
+    """没有 ``duration_ms`` 的记录不算「0ms」——它没被计时，不能把中位数拉低。"""
+
+    stats = latency_stats(
+        [{"duration_ms": 100.0}, {"id": "q2"}, {"duration_ms": None}, {"duration_ms": 300.0}]
+    )
+
+    assert stats["count"] == 2
+    assert stats["p50_ms"] == pytest.approx(100.0)  # ceil(0.5 × 2) = 第 1 个
+    assert stats["p95_ms"] == pytest.approx(300.0)  # ceil(0.95 × 2) = 第 2 个
+
+
+def test_latency_stats_without_any_timing_is_none_not_zero() -> None:
+    stats = latency_stats([{"id": "q1"}, {"id": "q2"}])
+
+    assert stats == {
+        "count": 0,
+        "mean_ms": None,
+        "p50_ms": None,
+        "p95_ms": None,
+        "max_ms": None,
+    }
+
+
+def test_report_renders_p50_and_p95_from_the_per_question_durations() -> None:
+    """报告的延迟表只从 ``per_question[*].duration_ms`` 来，不另采一次。"""
+
+    payload = _payload([_score("q1", cp=0.9, cr=0.9), _score("q2", cp=0.8, cr=0.8)])
+    payload["per_question"][0]["duration_ms"] = 120.0
+    payload["per_question"][1]["duration_ms"] = 480.0
+    payload["duration_seconds"] = 7.5
+
+    report = render_report(payload)
+
+    assert "## 延迟（逐题耗时，P50 / P95）" in report
+    assert "| P50 |" in report and "| P95 |" in report
+    # P50 = 第 1 个 = 120，P95 = 第 2 个 = 480；两个都从逐题耗时算出来
+    assert "120.0" in report and "480.0" in report
+    assert "7.5" in report  # 整轮总时长作为对照，而不是唯一的时间数字
+
+
+def test_the_reproduction_command_carries_the_rerank_switch_only_when_it_was_on() -> None:
+    """重排关的一轮：复现命令与历史一模一样；开的一轮：必须带 ``--rerank``。"""
+
+    payload = _payload([_score("q1")])
+
+    off_report = render_report(payload)
+    assert "run --env-file <主 checkout>\\.env\n" in off_report
+    assert "--rerank" not in off_report
+
+    payload["environment"]["retrieval"]["rerank_enabled"] = True
+    on_report = render_report(payload)
+    assert "run --env-file <主 checkout>\\.env --rerank" in on_report
+
+
+def test_report_says_so_when_no_question_was_timed() -> None:
+    payload = _payload([_score("q1")])
+    report = render_report(payload)
+    assert "## 延迟（逐题耗时，P50 / P95）" in report
+    assert "没有留下逐题耗时" in report
 
 
 # ─────────────────────────────────────────────────── 未评分记录不计入平均
@@ -450,6 +530,54 @@ def test_a_changed_ruler_is_incomparable() -> None:
     gate = _compare(current, baseline)
     assert gate["verdict"] == "incomparable"
     assert "嵌入模型" in gate["summary"]
+
+
+def test_a_rerank_switch_change_is_incomparable_and_names_the_axis() -> None:
+    """「重排开」与「重排关」不是同一个测量：差值会被读成检索质量变化（#114）。
+
+    尺子原来只有五项（模式 / 条数 / 切块策略 / 切块窗口 / 嵌入模型），重排不在里面，
+    于是开着重排的一次跑会和关着重排的冻结基线判成「可比」。
+    """
+
+    baseline = _payload([_score("q1", cp=0.9, cr=0.9)], run_id="base")  # 重排关
+    current = _payload([_score("q1", cp=0.2, cr=0.2)], run_id="now")
+    current["environment"]["retrieval"]["rerank_enabled"] = True
+
+    gate = _compare(current, baseline)
+
+    assert gate["verdict"] == "incomparable"
+    assert gate["passed"] is None
+    # 不能只说「不可比」，要指出是哪一根刻度不同、两侧各是什么值
+    assert "重排开关" in gate["summary"]
+    assert "重排开关：本次 开、基线 关" in gate["summary"]
+
+
+def test_two_runs_that_both_kept_rerank_off_are_still_comparable() -> None:
+    """历史两次运行都关重排：补上刻度之后仍然可比，不能把老档案判成不可比。"""
+
+    baseline = _payload([_score("q1", cp=0.80, cr=0.80)], run_id="base")
+    current = _payload([_score("q1", cp=0.79, cr=0.80)], run_id="now")
+
+    gate = _compare(current, baseline)
+
+    assert gate["verdict"] == "pass"
+    assert gate["summary"].startswith("绿")
+
+
+def test_the_frozen_baseline_still_reads_the_same_against_a_rerank_off_run() -> None:
+    """随仓库的冻结基线（重排关）自己跟自己比：可比、差值为零、读数一字不变。"""
+
+    frozen = json.loads((EVAL_DIR / "baseline" / "results.json").read_text("utf-8"))
+    assert frozen["environment"]["retrieval"]["rerank_enabled"] is False
+
+    gate = compare_to_baseline(frozen, frozen)
+
+    assert gate["verdict"] == "pass"
+    assert {row["delta_pp"] for row in gate["overall"]} == {0.0}
+    # 冻结基线的读数（CP 0.2220 / CR 0.8717，127 题进平均）不许被这一票改动
+    assert frozen["metrics"]["overall"]["context_precision"] == pytest.approx(0.2220, abs=1e-4)
+    assert frozen["metrics"]["overall"]["context_recall"] == pytest.approx(0.8717, abs=1e-4)
+    assert frozen["metrics"]["overall"]["total"] == 127
 
 
 def test_an_unmeasured_overall_metric_is_red() -> None:

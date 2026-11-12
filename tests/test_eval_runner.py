@@ -49,6 +49,7 @@ def _payload(
     full: bool = True,
     status: str = "ok",
     corpus_version: str = "v1",
+    durations: list[float] | None = None,
 ) -> dict[str, Any]:
     return build_results_payload(
         run_id=run_id,
@@ -88,12 +89,81 @@ def _payload(
                 "context_precision": score.context_precision,
                 "context_recall": score.context_recall,
                 "unscored_reason": score.unscored_reason,
+                # 逐题耗时是检索那一步本来就记的（#114 的 P50 / P95 只读它）
+                "duration_ms": (durations[index] if durations else None),
             }
-            for score in scores
+            for index, score in enumerate(scores)
         ],
         scope_full=full,
         excluded_types={"absent": 1},
     )
+
+
+# ───────────────────────────────────────────────── 重排开关（默认关 = 历史口径）
+
+
+def _restore_settings(monkeypatch) -> None:
+    """把本轮会被钉死的旋钮先登记好，用例结束后 monkeypatch 自动还原。"""
+
+    from app.core.config import settings
+
+    for name in (
+        "RERANK_ENABLED",
+        "QUERY_REWRITE_ENABLED",
+        "SYNONYM_EXPANSION_ENABLED",
+        "TOP_K",
+        "ELASTICSEARCH_INDEX",
+    ):
+        monkeypatch.setattr(settings, name, getattr(settings, name))
+
+
+def test_the_rerank_switch_is_off_by_default_and_on_only_when_asked(monkeypatch) -> None:
+    """``--rerank`` 缺省关：两次冻结基线都是关重排跑的，历史口径要逐字节不变。"""
+
+    _restore_settings(monkeypatch)
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)  # 机器上 .env 的偶然值
+
+    assert eval_runner._apply_eval_switches(SimpleNamespace(), top_k=5) is False
+    assert settings.RERANK_ENABLED is False  # .env 里的偶然值被钉死，不是「碰巧没开」
+    assert settings.TOP_K == 5
+
+    assert eval_runner._apply_eval_switches(SimpleNamespace(rerank=True), top_k=3) is True
+    assert settings.RERANK_ENABLED is True
+    assert settings.TOP_K == 3
+
+
+def test_the_environment_snapshot_records_the_rerank_switch_as_it_ran(monkeypatch) -> None:
+    """开着重排跑的归档，环境快照必须写明「重排：开」——否则读数无法核对。"""
+
+    _restore_settings(monkeypatch)
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+
+    snapshot = eval_runner.environment_snapshot(
+        run_id="20261112T000000Z",
+        generated_at="2026-11-12T00:00:00+00:00",
+        experiment={"mode": "hybrid", "top_k": 5},
+        corpus={"version": "v1"},
+        dataset_version="v1",
+        env_file=None,
+    )
+
+    assert snapshot["retrieval"]["rerank_enabled"] is True
+
+
+def test_the_run_parser_defaults_to_rerank_off_and_the_repo_baseline() -> None:
+    parser = eval_runner.build_parser()
+
+    args = parser.parse_args(["run"])
+    assert args.rerank is False
+    assert args.baseline_dir is None  # None → 解析成随仓库的 eval/baseline/
+
+    args = parser.parse_args(["run", "--rerank", "--baseline-dir", "eval/baseline-rerank"])
+    assert args.rerank is True
+    assert args.baseline_dir == "eval/baseline-rerank"
 
 
 # ───────────────────────────────────────────────────────── 离线可导入（硬约束）
@@ -282,6 +352,25 @@ def test_report_subcommand_rerenders_and_can_print_one_number(tmp_path, capsys) 
     assert capsys.readouterr().out.strip() == "0.6123"
 
 
+def test_the_latency_numbers_can_be_printed_by_their_own_command(tmp_path, capsys) -> None:
+    """报告里 P50 / P95 旁边的复现命令必须真能跑出那两个数。"""
+
+    run_dir = tmp_path / "20260303T000000Z"
+    payload = _payload(
+        run_id="20260303T000000Z",
+        scores=[_score("q1"), _score("q2")],
+        durations=[120.0, 480.0],
+    )
+    eval_runner.write_run_dir(run_dir, payload)
+
+    code = eval_runner.main(["report", "--run", str(run_dir), "--select", "metrics.latency"])
+
+    assert code == 0
+    latency = json.loads(capsys.readouterr().out)
+    assert latency["p50_ms"] == 120.0
+    assert latency["p95_ms"] == 480.0
+
+
 def test_report_subcommand_fails_loudly_on_an_unknown_select_key(tmp_path, capsys) -> None:
     run_dir = tmp_path / "run"
     eval_runner.write_run_dir(run_dir, _payload(run_id="run", scores=[_score("q1")]))
@@ -338,6 +427,174 @@ def test_report_subcommand_refuses_a_directory_without_results(tmp_path) -> None
         eval_runner.main(["report", "--run", str(empty)])
 
     assert "results.json" in str(excinfo.value)
+
+
+# ───────────────────────────────────────────── 基线目录：读与写走同一个参数
+
+
+def test_the_baseline_dir_defaults_to_the_repo_baseline_and_resolves_relative_paths(
+    tmp_path,
+) -> None:
+    assert eval_runner.resolve_baseline_dir(None) == eval_runner.BASELINE_DIR
+    assert eval_runner.resolve_baseline_dir("   ") == eval_runner.BASELINE_DIR
+    assert eval_runner.resolve_baseline_dir("eval/baseline-rerank") == (
+        REPO / "eval" / "baseline-rerank"
+    )
+    assert eval_runner.resolve_baseline_dir(str(tmp_path)) == tmp_path
+
+
+def test_a_chosen_baseline_dir_is_what_gets_read(tmp_path, monkeypatch) -> None:
+    """``--baseline-dir`` 指哪儿就从哪儿读，不能悄悄退回 eval/runs 里最近一次。"""
+
+    _install_runs(
+        tmp_path,
+        monkeypatch,
+        [_payload(run_id="20260101T000000Z", scores=[_score("q1", cp=0.5, cr=0.5)])],
+    )
+    other = tmp_path / "baseline-rerank"
+    eval_runner.write_run_dir(
+        other, _payload(run_id="20260303T000000Z", scores=[_score("q1", cp=0.7, cr=0.7)])
+    )
+
+    baseline, source = eval_runner.resolve_baseline(reference=None, baseline_dir=other)
+
+    assert baseline is not None
+    assert baseline["run_id"] == "20260303T000000Z"
+    assert source and "baseline-rerank" in source
+
+
+def test_report_repins_into_the_chosen_dir_and_leaves_the_repo_baseline_alone(tmp_path) -> None:
+    """另存第二份基线（重排开的那份）不能动到随仓库的冻结基线。"""
+
+    frozen_path = REPO / "eval" / "baseline" / "results.json"
+    frozen_before = frozen_path.read_bytes()
+
+    target = tmp_path / "baseline-rerank"
+    run_dir = tmp_path / "20260303T000000Z"
+    eval_runner.write_run_dir(run_dir, _payload(run_id="20260303T000000Z", scores=[_score("q1")]))
+
+    code = eval_runner.main(
+        ["report", "--run", str(run_dir), "--update-baseline", "--baseline-dir", str(target)]
+    )
+
+    assert code == 0
+    promoted = json.loads((target / "results.json").read_text(encoding="utf-8"))
+    assert promoted["run_dir"] == str(target)
+    assert (target / "report.md").is_file()
+    # 冻结基线一个字节都没动
+    assert frozen_path.read_bytes() == frozen_before
+
+
+def test_report_reads_the_baseline_from_the_chosen_dir(tmp_path) -> None:
+    """读也走同一个参数：--baseline-dir 里的基线决定这次判可不可比。"""
+
+    target = tmp_path / "baseline"
+    eval_runner.write_run_dir(
+        target,
+        _payload(run_id="base", scores=[_score("q1", cp=0.9, cr=0.9)]),  # 重排关
+    )
+    run_dir = tmp_path / "now"
+    payload = _payload(run_id="now", scores=[_score("q1", cp=0.9, cr=0.9)])
+    payload["environment"]["retrieval"]["rerank_enabled"] = True
+    eval_runner.write_run_dir(run_dir, payload)
+
+    code = eval_runner.main(["report", "--run", str(run_dir), "--baseline-dir", str(target)])
+
+    assert code == 0
+    gate = json.loads((run_dir / "results.json").read_text(encoding="utf-8"))["gate"]
+    assert gate["verdict"] == "incomparable"
+    assert "重排开关" in gate["summary"]
+
+
+# ───────────────────────────────────── 护栏：换了一根尺子的数字不许盖旧基线
+
+
+def test_repinning_a_baseline_with_another_rerank_switch_is_refused(tmp_path, capsys) -> None:
+    """``report --update-baseline`` 会重写归档：一次手滑就能毁掉冻结基线。"""
+
+    target = tmp_path / "baseline"
+    eval_runner.write_run_dir(
+        target,
+        _payload(run_id="base", scores=[_score("q1", cp=0.9, cr=0.9)]),  # 重排关
+    )
+    before = (target / "results.json").read_text(encoding="utf-8")
+
+    run_dir = tmp_path / "now"
+    payload = _payload(run_id="now", scores=[_score("q1", cp=0.9, cr=0.9)])
+    payload["environment"]["retrieval"]["rerank_enabled"] = True
+    eval_runner.write_run_dir(run_dir, payload)
+
+    code = eval_runner.main(
+        ["report", "--run", str(run_dir), "--update-baseline", "--baseline-dir", str(target)]
+    )
+
+    assert code == 2
+    assert "重排" in capsys.readouterr().err
+    assert (target / "results.json").read_text(encoding="utf-8") == before
+
+
+def test_force_overwrites_a_baseline_with_another_rerank_switch(tmp_path) -> None:
+    target = tmp_path / "baseline"
+    eval_runner.write_run_dir(
+        target,
+        _payload(run_id="base", scores=[_score("q1", cp=0.9, cr=0.9)]),  # 重排关
+    )
+    run_dir = tmp_path / "now"
+    payload = _payload(run_id="now", scores=[_score("q1", cp=0.9, cr=0.9)])
+    payload["environment"]["retrieval"]["rerank_enabled"] = True
+    eval_runner.write_run_dir(run_dir, payload)
+
+    code = eval_runner.main(
+        [
+            "report",
+            "--run",
+            str(run_dir),
+            "--update-baseline",
+            "--baseline-dir",
+            str(target),
+            "--force",
+        ]
+    )
+
+    assert code == 0
+    promoted = json.loads((target / "results.json").read_text(encoding="utf-8"))
+    assert promoted["environment"]["retrieval"]["rerank_enabled"] is True
+
+
+def test_pinning_a_baseline_of_the_same_rerank_switch_needs_no_force(tmp_path) -> None:
+    target = tmp_path / "baseline"
+    eval_runner.write_run_dir(
+        target,
+        _payload(run_id="base", scores=[_score("q1", cp=0.5, cr=0.5)]),  # 重排关
+    )
+    run_dir = tmp_path / "now"
+    eval_runner.write_run_dir(
+        run_dir,
+        _payload(run_id="now", scores=[_score("q1", cp=0.9, cr=0.9)]),  # 也是关
+    )
+
+    code = eval_runner.main(
+        ["report", "--run", str(run_dir), "--update-baseline", "--baseline-dir", str(target)]
+    )
+
+    assert code == 0
+    assert json.loads((target / "results.json").read_text(encoding="utf-8"))["run_id"] == "now"
+
+
+def test_run_refuses_to_pin_a_rerank_on_run_over_a_rerank_off_baseline_before_running(
+    tmp_path, capsys
+) -> None:
+    """护栏要在跑之前就说不：不然不但覆盖了基线，还白烧了一整轮嵌入与重排的钱。"""
+
+    target = tmp_path / "baseline"
+    eval_runner.write_run_dir(target, _payload(run_id="base", scores=[_score("q1")]))
+    before = (target / "results.json").read_text(encoding="utf-8")
+
+    code = eval_runner.main(["run", "--rerank", "--update-baseline", "--baseline-dir", str(target)])
+
+    assert code == 2
+    assert "重排" in capsys.readouterr().err
+    assert (target / "results.json").read_text(encoding="utf-8") == before
 
 
 # ───────────────────────────────────────────────────────────── 基线的挑选

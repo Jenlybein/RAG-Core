@@ -245,14 +245,15 @@ class LiveEnvironment:
         return {name: getattr(self, name) for name in self.__dataclass_fields__}
 
 
-def _isolate_settings(*, top_k: int) -> None:
+def _isolate_settings(*, top_k: int, rerank: bool = False) -> None:
     """把评测要用的旋钮**显式钉死**，不吃 .env 的偶然值。
 
     钉死的四项都不是「顺手」：
 
     * ``ELASTICSEARCH_INDEX`` → ``*_eval``：绝不写生产索引；
-    * ``RERANK_ENABLED=False``：重排会让 ``score`` 变成重排分、``rrf_score`` 只是历史值，
-      「融合分手算对账」（验收第 4 条）就没法做了；
+    * ``RERANK_ENABLED``：默认 ``False``——重排会让 ``score`` 变成重排分、``rrf_score``
+      只是历史值，「融合分手算对账」（验收第 4 条）就没法做了；但「重排开 vs 关」本身
+      是要测的一件事（#114），所以它是个**参数**而不是写死的常量，由调用方显式传；
     * ``SYNONYM_EXPANSION_ENABLED=False``：同义词只影响关键词一路，开着它做
       「vector vs hybrid」等于在对比里混进第三个变量；
     * ``QUERY_REWRITE_ENABLED=False``：主对比先给出**关掉一切可选优化**的基线，
@@ -260,7 +261,7 @@ def _isolate_settings(*, top_k: int) -> None:
     """
 
     settings.ELASTICSEARCH_INDEX = _eval_index_name()
-    settings.RERANK_ENABLED = False
+    settings.RERANK_ENABLED = bool(rerank)
     settings.SYNONYM_EXPANSION_ENABLED = False
     settings.QUERY_REWRITE_ENABLED = False
     settings.TOP_K = top_k

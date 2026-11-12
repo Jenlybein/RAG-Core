@@ -396,17 +396,20 @@ def environment_snapshot(
 # ───────────────────────────────────────────────────── 归档：写 / 读 run 目录
 
 
-def _promote_baseline(payload: Mapping[str, Any]) -> dict[str, Any]:
-    """把一次 run 变成本仓库的固定基线（``eval/baseline/``）。
+def _promote_baseline(
+    payload: Mapping[str, Any], *, baseline_dir: Path | None = None
+) -> dict[str, Any]:
+    """把一次 run 变成本仓库的固定基线（缺省 ``eval/baseline/``，也可另存一份）。
 
     只改 ``run_dir`` 一处：基线副本里的复现命令必须指向**它自己**，否则换一台机器
     clone 下来，报告里那些 ``--select`` 命令全部指向一个不存在的 ``eval/runs/<id>``。
     原始 run 目录留在 ``promoted_from`` 里，档案链没断。
     """
 
+    target = baseline_dir or BASELINE_DIR
     promoted = dict(payload)
     promoted["promoted_from"] = payload.get("run_dir")
-    promoted["run_dir"] = _display_path(BASELINE_DIR)
+    promoted["run_dir"] = _display_path(target)
     return promoted
 
 
@@ -466,6 +469,66 @@ def resolve_run_dir(reference: str) -> Path:
 # ─────────────────────────────────────────────────────────── 基线挑选
 
 
+def resolve_baseline_dir(reference: str | None = None) -> Path:
+    """``--baseline-dir`` → 目录；留空就是随仓库走的 ``eval/baseline/``。
+
+    读与写走**同一个**参数：拿 A 当基线比、把结果写进 B，会让「下一次跟谁比」悄悄换人。
+    另存第二份基线（例如重排开的那份 ``eval/baseline-rerank``）也靠它，两种口径各占一个
+    目录，谁也不会覆盖谁。
+    """
+
+    if reference is None or not str(reference).strip():
+        return BASELINE_DIR
+    path = Path(str(reference).strip())
+    return path if path.is_absolute() else REPO_ROOT / path
+
+
+def _archived_rerank_enabled(payload: Mapping[str, Any]) -> bool:
+    """归档里记录的「这一轮重排开没开」；老档案缺字段按「关」算（该字段自第一版就有）。"""
+
+    retrieval = (payload.get("environment") or {}).get("retrieval") or {}
+    return bool(retrieval.get("rerank_enabled"))
+
+
+def _switch_text(enabled: bool) -> str:
+    return "开" if enabled else "关"
+
+
+def baseline_overwrite_problem(
+    baseline_dir: Path, *, rerank_enabled: bool, force: bool = False
+) -> str | None:
+    """要不要拒绝这次覆盖：目标目录已有基线、且「重排开关」与本次不同 → 拒绝。
+
+    返回拒绝理由，``None`` 表示放行。
+
+    为什么单独一条护栏：``report --update-baseline`` 会**重写归档**。一次手滑就能把冻结
+    基线（CP 0.2220 / CR 0.8717，重排关）换成一次重排开着跑的读数——数字看起来依然
+    「合理」，没有报错，也没有 diff 会提醒你。所以宁可拦下来，让人显式二选一：
+    ``--baseline-dir`` 另存一份，或者 ``--force`` 明说要覆盖。
+    """
+
+    if force:
+        return None
+    results_path = baseline_dir / "results.json"
+    if not results_path.is_file():
+        return None  # 还没有基线：第一次钉基线不受这条约束
+    try:
+        existing = json.loads(results_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None  # 读不出来就谈不上「已知开关不同」，不拿它拦人
+    if not isinstance(existing, Mapping):
+        return None
+    previous = _archived_rerank_enabled(existing)
+    if previous == bool(rerank_enabled):
+        return None
+    return (
+        f"拒绝覆盖基线 {_display_path(baseline_dir)}：它是「{_switch_text(previous)}」重排跑的，"
+        f"这次是「{_switch_text(bool(rerank_enabled))}」。"
+        "换了尺子的读数不能盖在旧基线上——用 --baseline-dir 另存一份（例如 "
+        "eval/baseline-rerank）；确认要覆盖就显式加 --force。"
+    )
+
+
 def _baseline_candidates() -> list[Path]:
     """``eval/runs/`` 下能当基线的 run，按 run id（= UTC 时间）从新到旧。
 
@@ -495,11 +558,12 @@ def resolve_baseline(
     *,
     reference: str | None,
     current_run_id: str | None = None,
+    baseline_dir: Path | None = None,
 ) -> tuple[dict[str, Any] | None, str | None]:
     """挑一份基线，返回 ``(payload, 来源说明)``。
 
-    顺序：显式指定（命令行 / 配置里的 ``[gate].baseline``）→ ``eval/baseline/``（随仓库
-    走的那份）→ ``eval/runs/`` 下最近一次全量归档 → 没有基线。
+    顺序：显式指定（命令行 / 配置里的 ``[gate].baseline``）→ ``baseline_dir``（缺省
+    ``eval/baseline/``，随仓库走的那份）→ ``eval/runs/`` 下最近一次全量归档 → 没有基线。
 
     ``reference`` 取 ``"none"`` 表示明确「本次不比」。
     """
@@ -519,9 +583,10 @@ def resolve_baseline(
             run_dir = resolve_run_dir(reference.strip())
         return read_run(run_dir), _display_path(run_dir / "results.json")
 
-    baseline_results = BASELINE_DIR / "results.json"
+    pinned = baseline_dir or BASELINE_DIR
+    baseline_results = pinned / "results.json"
     if baseline_results.is_file():
-        return read_run(BASELINE_DIR), _display_path(baseline_results)
+        return read_run(pinned), _display_path(baseline_results)
 
     for run_dir in _baseline_candidates():
         if current_run_id and run_dir.name == current_run_id:
@@ -646,10 +711,16 @@ def cmd_validate_config(args: argparse.Namespace) -> int:
 # ─────────────────────────────────────────────────────────── 子命令：出报告
 
 
+def _baseline_note(baseline_dir: Path) -> str:
+    return "（随仓库走的那份）" if baseline_dir == BASELINE_DIR else "（另存的一份）"
+
+
 def cmd_report(args: argparse.Namespace) -> int:
     run_dir = resolve_run_dir(args.run)
     payload = read_run(run_dir)
     payload.setdefault("run_dir", _display_path(run_dir))
+    # 读与写都走 --baseline-dir 这一个参数：比的是哪个目录，写回去的就是哪个目录
+    baseline_dir = resolve_baseline_dir(getattr(args, "baseline_dir", None))
 
     if args.select:
         try:
@@ -663,8 +734,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             print(value)
         return EXIT_OK
 
-    if args.baseline:
-        baseline, source = resolve_baseline(reference=args.baseline)
+    if args.baseline or getattr(args, "baseline_dir", None):
+        baseline, source = resolve_baseline(reference=args.baseline, baseline_dir=baseline_dir)
         payload["gate"] = compare_to_baseline(
             payload,
             baseline,
@@ -672,13 +743,24 @@ def cmd_report(args: argparse.Namespace) -> int:
             baseline_source=source,
         )
 
-    write_run_dir(run_dir, payload)
     if args.update_baseline:
         if not (payload.get("scope") or {}).get("full"):
             print("--update-baseline 只接受全量运行", file=sys.stderr)
             return EXIT_FAILED
-        write_run_dir(BASELINE_DIR, _promote_baseline(payload))
-        print(f"基线      : 已写入 {_display_path(BASELINE_DIR)}（随仓库走的那份）")
+        # 护栏先于任何一次写盘：被拒的时候，磁盘上应该什么都没变
+        problem = baseline_overwrite_problem(
+            baseline_dir,
+            rerank_enabled=_archived_rerank_enabled(payload),
+            force=bool(getattr(args, "force", False)),
+        )
+        if problem is not None:
+            print(problem, file=sys.stderr)
+            return EXIT_FAILED
+
+    write_run_dir(run_dir, payload)
+    if args.update_baseline:
+        write_run_dir(baseline_dir, _promote_baseline(payload, baseline_dir=baseline_dir))
+        print(f"基线      : 已写入 {_display_path(baseline_dir)}{_baseline_note(baseline_dir)}")
 
     verdict = (payload.get("gate") or {}).get("verdict")
     print(f"报告      : {_display_path(run_dir / 'report.md')}")
@@ -700,6 +782,22 @@ def _thresholds_from_payload(payload: Mapping[str, Any]) -> GateThresholds:
 
 
 # ─────────────────────────────────────────────────────────────── 子命令：跑
+
+
+def _apply_eval_switches(args: argparse.Namespace, *, top_k: int) -> bool:
+    """把本轮旋钮钉死（**先于**环境快照），返回**实际生效**的重排开关。
+
+    ``--rerank`` 缺省关：两次冻结基线都是关着重排跑的，历史口径必须逐字节不变。
+    返回值不是 ``args.rerank``，而是钉完之后 ``settings`` 上的真值——环境快照要说的是
+    「这次到底开没开」，不是「命令行上写没写这个参数」。
+    """
+
+    from app.core.config import settings
+    from scripts import eval_retrieval as ev
+
+    rerank = bool(getattr(args, "rerank", False))
+    ev._isolate_settings(top_k=top_k, rerank=rerank)
+    return bool(settings.RERANK_ENABLED)
 
 
 async def _score_questions(
@@ -871,6 +969,7 @@ async def _run(args: argparse.Namespace) -> int:
     run_dir = RUNS_DIR / run_id
     generated_at = datetime.now(UTC).isoformat(timespec="seconds")
     env_file = getattr(args, "env_file", None)
+    baseline_dir = resolve_baseline_dir(getattr(args, "baseline_dir", None))
 
     experiment_block = {
         "name": resolved["name"],
@@ -912,7 +1011,7 @@ async def _run(args: argparse.Namespace) -> int:
     # 先把本轮旋钮钉死**再**拍环境快照：顺序反了，快照记的就是 .env 里的偶然值
     # （比如 RERANK_ENABLED=true），而实际跑的是一次重排关闭的检索——环境快照说假话，
     # 比没有环境快照更糟。
-    ev._isolate_settings(top_k=top_k)
+    _apply_eval_switches(args, top_k=top_k)
     environment = environment_snapshot(
         run_id=run_id,
         generated_at=generated_at,
@@ -1035,6 +1134,7 @@ async def _run(args: argparse.Namespace) -> int:
     baseline, source = resolve_baseline(
         reference=args.baseline or resolved["baseline"] or None,
         current_run_id=run_id,
+        baseline_dir=baseline_dir,
     )
     gate = compare_to_baseline(payload, baseline, thresholds=thresholds, baseline_source=source)
     if not scope_full:
@@ -1056,8 +1156,8 @@ async def _run(args: argparse.Namespace) -> int:
 
     write_run_dir(run_dir, payload)
     if args.update_baseline:
-        write_run_dir(BASELINE_DIR, _promote_baseline(payload))
-        print(f"baseline  : 已写入 {_display_path(BASELINE_DIR)}（随仓库走的那份）")
+        write_run_dir(baseline_dir, _promote_baseline(payload, baseline_dir=baseline_dir))
+        print(f"baseline  : 已写入 {_display_path(baseline_dir)}{_baseline_note(baseline_dir)}")
 
     print("\n=== gate ===")
     overall = payload["metrics"]["overall"]
@@ -1083,6 +1183,16 @@ def cmd_run(args: argparse.Namespace) -> int:
     if args.limit is not None and args.limit < 1:
         print("--limit 必须是 >=1 的整数", file=sys.stderr)
         return EXIT_FAILED
+    if args.update_baseline:
+        # 护栏放在跑之前：拒绝覆盖时一行都不该跑，也不该花掉整轮的嵌入与重排钱
+        problem = baseline_overwrite_problem(
+            resolve_baseline_dir(getattr(args, "baseline_dir", None)),
+            rerank_enabled=bool(args.rerank),
+            force=bool(getattr(args, "force", False)),
+        )
+        if problem is not None:
+            print(problem, file=sys.stderr)
+            return EXIT_FAILED
     # run id 只生成一次：失败档案与正常档案必须落在同一个目录，否则「那一次」会变成两条记录。
     args.run_id = args.run_id or utc_stamp()
     run_dir = RUNS_DIR / args.run_id
@@ -1181,6 +1291,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     run.add_argument("--top-k", type=int, default=None, help="覆盖配置里的 top_k")
     run.add_argument(
+        "--rerank",
+        action="store_true",
+        help=(
+            "这一轮**开着**重排跑（缺省关：历史口径逐字节不变）。"
+            "开/关是门禁尺子上的一根刻度，两种口径不能互相扣分"
+        ),
+    )
+    run.add_argument(
+        "--baseline-dir",
+        default=None,
+        help="基线目录（读与写都走它；缺省 eval/baseline/，另一份可另存如 eval/baseline-rerank）",
+    )
+    run.add_argument(
         "--baseline",
         default=None,
         help="基线：归档目录 / results.json / run id；'none' 表示本次不比",
@@ -1200,7 +1323,12 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument(
         "--update-baseline",
         action="store_true",
-        help="把这次结果写成 eval/baseline/（随仓库走的基线）",
+        help="把这次结果写成基线目录里的那份（缺省 eval/baseline/）",
+    )
+    run.add_argument(
+        "--force",
+        action="store_true",
+        help="配合 --update-baseline：允许覆盖「重排开关不同」的既有基线（会换掉冻结读数）",
     )
     run.add_argument("--run-id", default=None, help="覆盖 run id（缺省 UTC 时间戳）")
     _add_env_file(run)
@@ -1211,9 +1339,19 @@ def build_parser() -> argparse.ArgumentParser:
     report.add_argument("--select", default=None, help="按 a.b.0.c 取值并打印")
     report.add_argument("--baseline", default=None, help="按指定基线重算门禁")
     report.add_argument(
+        "--baseline-dir",
+        default=None,
+        help="基线目录（读与写都走它；缺省 eval/baseline/）",
+    )
+    report.add_argument(
         "--update-baseline",
         action="store_true",
-        help="把这次归档写成 eval/baseline/（重出报告的同时重钉基线，不重跑检索）",
+        help="把这次归档写成基线目录里的那份（重出报告的同时重钉基线，不重跑检索）",
+    )
+    report.add_argument(
+        "--force",
+        action="store_true",
+        help="配合 --update-baseline：允许覆盖「重排开关不同」的既有基线（会换掉冻结读数）",
     )
     _add_env_file(report)
     report.set_defaults(handler=cmd_report)
