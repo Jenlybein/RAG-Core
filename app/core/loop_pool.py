@@ -11,14 +11,16 @@
 **为什么任务用「工厂函数」而不是协程对象投递**：协程对象一创建就绑在**当前**循环上，
 在另一个循环里 await 它会炸。工厂在 worker 的循环里被调用，协程从一开始就属于它。
 
-三条与「别把系统搞挂」直接相关的约定：
+四条与「别把系统搞挂」直接相关的约定：
 
-1. **排队有预算**（``QUEUE_BUDGET_SECONDS``）：worker 取到任务时先看它排了多久，超预算
-   直接以 ``TimeoutError`` 失败——上层按「这一路挂了」降级，而不是无限等。预算是**排队**
-   的预算，不是干活的预算：干活的超时由各 Provider 自己兜（嵌入 60s、重排按配置）。
-2. **关停是确定性的**：先停止接收，再逐个循环关客户端，最后停循环、join 线程；重复调用
-   幂等。关不掉（循环正卡在同步调用里）只记 warning，不抛——关停路径抛错会让进程退不干净。
-3. **线程是 daemon**：即使某个任务卡死，解释器也能退出；``atexit`` 里再做一次尽力关停，
+1. **排队预算在提交侧也判**：worker 出队时判一次（排久了就不跑），提交方**同时**用
+   ``started`` 这个信号等预算——否则 worker 全卡在同步查询里时任务永不出队，调用方
+   会无限等下去，预算等于不存在。
+2. **预算是排队的预算，不是干活的预算**：干活的超时由各 Provider 自己兜（嵌入 60s、
+   重排按配置）。预算超了按「这一路失败」回给调用方，由编排层走既有降级。
+3. **关停是确定性的**：停止接收 → 逐个循环关客户端 → 停循环 → join；重复调用幂等。
+   ``close_sync``（atexit / 测试清场）走同一套顺序，只是不 await。
+4. **线程是 daemon**：即使某个任务卡死，解释器也能退出；``atexit`` 里再做一次尽力关停，
    评测脚本没有 lifespan，靠它兜底。
 """
 
@@ -34,20 +36,50 @@ from typing import Any, TypeVar
 
 import structlog
 
+from app.core.config import settings
 from app.core.http_clients import aclose_current_loop_clients
 
 logger = structlog.get_logger(__name__)
 
 T = TypeVar("T")
 
-#: worker 数量。I/O 密集、且每个 worker 同一时刻只跑一个任务（同步查询会卡住循环），
-#: 4 条足够跑满模型侧配额，又不会把突发流量放大成对上游的瞬时压力。
+#: worker 数量缺省值（``RETRIEVAL_POOL_SIZE`` 可覆盖）。I/O 密集、且每个 worker 同一
+#: 时刻只跑一个任务（同步查询会卡住循环），4 条足够跑满模型侧配额。
 POOL_SIZE = 4
-#: 排队预算：超过就按「这一路失败」处理。与关键词通道的时间预算同一量级。
+#: 排队预算缺省值（``RETRIEVAL_QUEUE_BUDGET_MS`` 可覆盖）。与关键词通道的时间预算同量级。
 QUEUE_BUDGET_SECONDS = 2.0
 #: 关停时等一轮的宽限。卡在同步调用里的 worker 等不到，只记 warning。
 SHUTDOWN_GRACE_SECONDS = 5.0
 _START_TIMEOUT_SECONDS = 5.0
+#: 排队超过这个数才打一条 info：默认日志级别下，「等太久」应当看得见，正常路径不该刷屏。
+_QUEUE_WAIT_LOG_MS = 100.0
+
+
+class _Job:
+    """一次投递：``started`` 只回答「排到了没有」，``result`` 回答「算出来什么」。"""
+
+    __slots__ = ("factory", "result", "started", "submitted_at")
+
+    def __init__(
+        self,
+        factory: Callable[[], Awaitable[Any]],
+        submitted_at: float,
+    ) -> None:
+        self.factory = factory
+        self.submitted_at = submitted_at
+        self.started: concurrent.futures.Future[bool] = concurrent.futures.Future()
+        self.result: concurrent.futures.Future[Any] = concurrent.futures.Future()
+
+
+def _settle(future: concurrent.futures.Future[Any], value: Any, exc: BaseException | None) -> None:
+    """给 future 一个结局；已经结束 / 被取消的安静跳过（取消是合法结局）。"""
+
+    if future.done() or future.cancelled():
+        return
+    if exc is not None:
+        future.set_exception(exc)
+    else:
+        future.set_result(value)
 
 
 class _Worker:
@@ -57,10 +89,9 @@ class _Worker:
         self.index = index
         self._budget_seconds = budget_seconds
         self._loop = asyncio.new_event_loop()
-        self._queue: asyncio.Queue[tuple[Callable[[], Awaitable[Any]], concurrent.futures.Future[Any], float]] | None = None
+        self._queue: asyncio.Queue[_Job] | None = None
         self._ready = threading.Event()
         self._accepting = True
-        self._active = 0
         self._thread = threading.Thread(
             target=self._run, name=f"retrieval-pool-{index}", daemon=True
         )
@@ -112,6 +143,17 @@ class _Worker:
     def join(self, timeout: float) -> None:
         self._thread.join(timeout=timeout)
 
+    def close_clients_sync(self, *, grace: float) -> None:
+        """同步地在自己的循环上关掉客户端（``close_sync`` 用，atexit 也走它）。"""
+
+        if self._loop.is_closed() or not self._loop.is_running():
+            return
+        try:
+            future = asyncio.run_coroutine_threadsafe(aclose_current_loop_clients(), self._loop)
+            future.result(timeout=grace)
+        except Exception:  # noqa: BLE001 - 关停路径不抛
+            logger.warning("retrieval_pool_close_clients_failed", worker=self.index)
+
     async def aclose_loop_clients(self, *, grace: float) -> None:
         """在这个 worker 的循环上关掉它名下的 HTTP 客户端。"""
 
@@ -128,69 +170,65 @@ class _Worker:
 
     # ── 投递与执行 ──────────────────────────────────────────────
 
-    def submit(
-        self, factory: Callable[[], Awaitable[Any]]
-    ) -> concurrent.futures.Future[Any]:
-        """把任务放进队列（跨线程安全）；返回一个可以在主循环里 await 的 future。"""
+    def submit(self, factory: Callable[[], Awaitable[Any]]) -> _Job:
+        """把任务放进队列（跨线程安全）；返回带 ``started`` / ``result`` 的投递单。"""
 
-        future: concurrent.futures.Future[Any] = concurrent.futures.Future()
+        job = _Job(factory, time.perf_counter())
         if not self._accepting:
-            future.set_exception(RuntimeError("retrieval pool is shutting down"))
-            return future
-        submitted_at = time.perf_counter()
+            _settle(job.started, True, RuntimeError("retrieval pool is shutting down"))
+            _settle(job.result, None, RuntimeError("retrieval pool is shutting down"))
+            return job
         try:
-            self._loop.call_soon_threadsafe(self._enqueue, factory, future, submitted_at)
+            self._loop.call_soon_threadsafe(self._enqueue, job)
         except RuntimeError as exc:  # 循环已关
-            future.set_exception(exc)
-        return future
+            _settle(job.started, True, exc)
+            _settle(job.result, None, exc)
+        return job
 
-    def _enqueue(
-        self,
-        factory: Callable[[], Awaitable[Any]],
-        future: concurrent.futures.Future[Any],
-        submitted_at: float,
-    ) -> None:
+    def _enqueue(self, job: _Job) -> None:
         assert self._queue is not None  # 只会在自己的循环里被调用
-        self._queue.put_nowait((factory, future, submitted_at))
+        self._queue.put_nowait(job)
 
     async def _consume(self) -> None:
         assert self._queue is not None
         while True:
-            factory, future, submitted_at = await self._queue.get()
-            if future.cancelled():
-                self._queue.task_done()
-                continue
-            waited_ms = (time.perf_counter() - submitted_at) * 1000
-            if waited_ms > self._budget_seconds * 1000:
-                # 排队超预算：不跑，按「这一路失败」回给调用方。
-                if not future.cancelled():
-                    future.set_exception(
-                        TimeoutError(
-                            f"retrieval pool queue budget exceeded ({waited_ms:.0f}ms > "
-                            f"{self._budget_seconds * 1000:.0f}ms)"
-                        )
-                    )
-                self._queue.task_done()
-                continue
-            self._active += 1
-            started = time.perf_counter()
+            job = await self._queue.get()
             try:
-                result = await factory()
-            except Exception as exc:  # noqa: BLE001 - 原样交回调用方
-                if not future.cancelled():
-                    future.set_exception(exc)
-            else:
-                if not future.cancelled():
-                    future.set_result(result)
+                if job.result.cancelled():
+                    continue
+                waited_ms = (time.perf_counter() - job.submitted_at) * 1000
+                if waited_ms > self._budget_seconds * 1000:
+                    # 排太久：不跑，按「这一路失败」回给调用方。
+                    timeout = TimeoutError(
+                        f"retrieval pool queue budget exceeded ({waited_ms:.0f}ms > "
+                        f"{self._budget_seconds * 1000:.0f}ms)"
+                    )
+                    _settle(job.started, True, timeout)
+                    _settle(job.result, None, timeout)
+                    continue
+                if waited_ms >= _QUEUE_WAIT_LOG_MS:
+                    logger.info(
+                        "retrieval_pool_queue_wait",
+                        worker=self.index,
+                        queue_wait_ms=round(waited_ms, 2),
+                    )
+                _settle(job.started, True, None)
+                started = time.perf_counter()
+                try:
+                    result = await job.factory()
+                except Exception as exc:  # noqa: BLE001 - 原样交回调用方
+                    _settle(job.result, None, exc)
+                else:
+                    _settle(job.result, result, None)
+                finally:
+                    logger.debug(
+                        "retrieval_pool_job",
+                        worker=self.index,
+                        queue_wait_ms=round(waited_ms, 2),
+                        work_ms=round((time.perf_counter() - started) * 1000, 2),
+                    )
             finally:
-                self._active -= 1
                 self._queue.task_done()
-                logger.debug(
-                    "retrieval_pool_job",
-                    worker=self.index,
-                    queue_wait_ms=round(waited_ms, 2),
-                    work_ms=round((time.perf_counter() - started) * 1000, 2),
-                )
 
 
 class LoopPool:
@@ -204,6 +242,8 @@ class LoopPool:
     ) -> None:
         if size < 1:
             raise ValueError(f"pool size must be >= 1, got {size!r}")
+        if budget_seconds <= 0:
+            raise ValueError(f"queue budget must be > 0, got {budget_seconds!r}")
         self._budget_seconds = budget_seconds
         self._workers = [_Worker(index, budget_seconds=budget_seconds) for index in range(size)]
         self._next = 0
@@ -216,18 +256,33 @@ class LoopPool:
         return len(self._workers)
 
     @property
+    def budget_seconds(self) -> float:
+        return self._budget_seconds
+
+    @property
     def closed(self) -> bool:
         return self._closed
 
     async def run(self, factory: Callable[[], Awaitable[T]]) -> T:
-        """投递一个任务并等它的结果；排队超预算会抛 ``TimeoutError``。"""
+        """投递一个任务并等它的结果；**排队**超预算会抛 ``TimeoutError``。"""
 
         if self._closed:
             raise RuntimeError("retrieval pool is closed")
         worker = self._workers[self._next]
         self._next = (self._next + 1) % len(self._workers)
-        future = worker.submit(factory)
-        return await asyncio.wrap_future(future)
+        job = worker.submit(factory)
+        try:
+            await asyncio.wait_for(
+                asyncio.wrap_future(job.started), timeout=self._budget_seconds
+            )
+        except TimeoutError:
+            # 提交侧兜底：worker 全卡在同步调用里时，任务永远不会出队，只有这里能发现。
+            if not job.result.done():
+                job.result.cancel()
+            raise TimeoutError(
+                f"retrieval pool queue budget exceeded ({self._budget_seconds * 1000:.0f}ms)"
+            ) from None
+        return await asyncio.wrap_future(job.result)
 
     async def aclose(self) -> None:
         """确定性关停：停止接收 → 逐个循环关客户端 → 停循环 → join。幂等。"""
@@ -245,13 +300,15 @@ class LoopPool:
             worker.join(SHUTDOWN_GRACE_SECONDS)
 
     def close_sync(self, *, grace: float = 1.0) -> None:
-        """同步关停（atexit 与测试清场用）：只停循环、join，不去等客户端关闭。"""
+        """同步关停（atexit 与测试清场用）：顺序与 ``aclose`` 一致，只是不 await。"""
 
         if self._closed:
             return
         self._closed = True
         for worker in self._workers:
             worker.stop_accepting()
+        for worker in self._workers:
+            worker.close_clients_sync(grace=grace)
         for worker in self._workers:
             worker.stop_loop()
         for worker in self._workers:
@@ -262,19 +319,35 @@ _pool: LoopPool | None = None
 _lock = threading.Lock()
 
 
+def _desired_size() -> int:
+    return max(1, int(settings.RETRIEVAL_POOL_SIZE))
+
+
+def _desired_budget_seconds() -> float:
+    return max(0.001, int(settings.RETRIEVAL_QUEUE_BUDGET_MS) / 1000)
+
+
 def get_retrieval_pool() -> LoopPool:
-    """进程级单例。第一次用到时才建线程——离线用例不碰检索就不会付这份代价。"""
+    """进程级单例。第一次用到时才建线程——离线用例不碰检索就不会付这份代价。
+
+    规模与预算来自配置（面板可改）。改完之后下一次取池会**重建**：旧池同步关停，
+    新池按新值建。不这么做的话，「面板上改了、实际还是旧值」会成为又一个谜题。
+    """
 
     global _pool
+    size = _desired_size()
+    budget = _desired_budget_seconds()
     with _lock:
+        if _pool is not None and (_pool.size != size or _pool.budget_seconds != budget):
+            stale, _pool = _pool, None
+            stale.close_sync()
         if _pool is None or _pool.closed:
-            # 显式传 size：默认参数在函数定义时就绑定了，改模块常量不会生效。
-            _pool = LoopPool(size=POOL_SIZE)
+            _pool = LoopPool(size=size, budget_seconds=budget)
         return _pool
 
 
 def reset_retrieval_pool() -> None:
-    """丢掉当前池并同步停掉它的线程。测试与进程退出用。"""
+    """丢掉当前池并同步停掉它的线程（含关客户端）。测试与进程退出用。"""
 
     global _pool
     with _lock:

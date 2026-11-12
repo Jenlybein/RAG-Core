@@ -163,7 +163,10 @@ def test_custom_falls_back_per_key_to_the_deployment_defaults(
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "hybrid")
     monkeypatch.setattr(settings, "TOP_K", 7)
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
     chain = profile_chain_of(_policy(profile=PROFILE_CUSTOM, custom_options=(("mode", "vector"),)))
@@ -407,7 +410,10 @@ def test_with_the_switches_off_a_quality_profile_runs_exactly_the_balanced_chain
 def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> None:
     """``tenant_policy`` 的字段表：套餐名、要求档位、模式、条数、重排、改写、库数、裁剪。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
     options = resolve_retrieval_options(
@@ -603,7 +609,10 @@ def test_the_development_identity_is_custom_so_it_tracks_the_deployment(
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
     monkeypatch.setattr(settings, "TOP_K", 9)
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
     assert DEV_KEY_POLICY.profile == PROFILE_CUSTOM
@@ -809,7 +818,10 @@ class _RecordingRerank:
 def _install_rerank(monkeypatch: pytest.MonkeyPatch) -> _RecordingRerank:
     """把「这台机器装了重排」装进去：开关打开 + 一个真的可用的 Provider。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     provider = _RecordingRerank()
     rerank_module = importlib.import_module("app.services.retrieval.rerank")
     monkeypatch.setattr(rerank_module, "get_rerank_provider", lambda: provider)

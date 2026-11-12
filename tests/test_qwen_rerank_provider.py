@@ -391,3 +391,19 @@ def test_the_provider_identifies_itself_for_observability() -> None:
     assert provider.available is True
     assert provider.provider_name == "qwen3"
     assert provider.model_name == MODEL
+
+
+def test_the_document_limit_is_clamped_inside_the_provider() -> None:
+    """配置把单条上限写大了也越不过 1024：官方超限直接 400，护栏不能交给调用方。"""
+
+    from app.providers.rerank.qwen import MAX_CHARS_PER_DOC, Qwen3RerankProvider
+
+    provider = Qwen3RerankProvider(
+        base_url=RERANK_URL,
+        api_key="rerank-key",
+        chunk_max_chars=99_999,
+        client=None,
+    )
+
+    assert MAX_CHARS_PER_DOC == 1024
+    assert provider._chunk_max_chars == MAX_CHARS_PER_DOC  # noqa: SLF001 - 护栏就是这一条

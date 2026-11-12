@@ -188,8 +188,9 @@ def test_no_secret_is_whitelisted_as_hot() -> None:
 
     secrets = [key for key, spec in SETTING_SPECS.items() if spec.secret]
     assert secrets == ["MODEL_API_KEY", "RERANK_API_KEY"]
-    for key in secrets:
-        assert spec_of(key).tier == TIER_RESTART or spec_of(key).tier == TIER_LOCKED
+    # 逐键钉死档位：写成「restart 或 locked 都行」等于这一档什么都守不住。
+    assert spec_of("MODEL_API_KEY").tier == TIER_RESTART
+    assert spec_of("RERANK_API_KEY").tier == TIER_LOCKED
 
 
 def test_the_rerank_endpoint_keys_are_in_the_catalog() -> None:

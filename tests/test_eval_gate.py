@@ -6,7 +6,7 @@
 （不是把实现再跑一遍），实现改了而语义没变时这些测试不会碎。
 
 接缝（公开入口）：
-``mean_scored`` / ``is_scored`` / ``score_run`` / ``compare_to_baseline`` /
+``mean_scored`` / ``is_measured`` / ``score_run`` / ``compare_to_baseline`` /
 ``context_scores`` / ``corpus_version`` / ``validate_dataset`` / ``validate_experiment`` /
 ``render_report`` / ``select_value``。断言只看这些入口的返回值。
 """
@@ -31,7 +31,7 @@ from scripts.eval_gate import (
     compare_to_baseline,
     context_scores,
     corpus_version,
-    is_scored,
+    is_measured,
     latency_stats,
     mean_scored,
     render_report,
@@ -379,13 +379,13 @@ def test_report_says_so_when_no_question_was_timed() -> None:
 # ─────────────────────────────────────────────────── 未评分记录不计入平均
 
 
-def test_is_scored_rejects_none_and_nan() -> None:
+def test_is_measured_rejects_none_and_nan() -> None:
     """NaN 与 None 都是「没评分」，不是 0 分——0 分会把平均拉低，那是另一种谎。"""
 
-    assert is_scored(0.0) is True
-    assert is_scored(1.0) is True
-    assert is_scored(None) is False
-    assert is_scored(float("nan")) is False
+    assert is_measured(0.0) is True
+    assert is_measured(1.0) is True
+    assert is_measured(None) is False
+    assert is_measured(float("nan")) is False
 
 
 def test_mean_scored_skips_unscored_records() -> None:

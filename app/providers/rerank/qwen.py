@@ -52,6 +52,11 @@ INSTRUCT = (
 #: 自己的护栏——配置（``RERANK_MAX_CANDIDATES``）写多大都越不过去。
 MAX_DOCUMENTS = 50
 
+#: 单条正文的硬上限（字符）。官方对超过单条 token 上限的文档直接返回 400 且**不做
+#: 截断**，所以客户端截断是必要条件；同理，配置（``RERANK_CHUNK_MAX_CHARS``）写大了
+#: 也越不过这里——护栏必须在越不过去的地方。
+MAX_CHARS_PER_DOC = 1024
+
 #: 与本类配套的默认模型名（``Settings.RERANK_MODEL`` 的缺省值也是它）。两处各写一份是
 #: 刻意的：``app.core.config`` 不许 import Provider 层（那会把 httpx 拖进启动路径）。
 DEFAULT_MODEL = "qwen3.7-text-rerank"
@@ -155,7 +160,9 @@ class Qwen3RerankProvider(RerankProvider):
         self._api_key = api_key
         self._model = model
         self._max_candidates = min(max_candidates, MAX_DOCUMENTS)
-        self._chunk_max_chars = chunk_max_chars
+        # 单条上限同样**在 Provider 内部夹死**：官方对超 token 的单条直接 400 且不截断，
+        # 所以「配置写大了」不能变成一次 400——护栏必须在越不过去的地方。
+        self._chunk_max_chars = min(chunk_max_chars, MAX_CHARS_PER_DOC)
         self._timeout_seconds = timeout_seconds
         self._client = client
 

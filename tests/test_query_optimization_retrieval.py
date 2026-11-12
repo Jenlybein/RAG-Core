@@ -276,7 +276,10 @@ def test_rerank_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> Non
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
 
     llm = _SchemaAwareLLM(rewritten="退款的处理流程")
 

@@ -215,3 +215,72 @@ def test_the_process_singleton_is_reset_between_uses() -> None:
     second = loop_pool.get_retrieval_pool()
     assert second is not first
     reset_retrieval_pool()
+
+
+def test_a_job_stuck_behind_a_blocked_worker_still_fails_on_budget() -> None:
+    """worker 卡在同步调用里时任务永不出队——提交侧必须自己用预算兜住，否则无限等。
+
+    这是规格轴抓到的那条：只在出队时判预算，等于「排队预算不存在」。
+    """
+
+    pool = LoopPool(size=1, budget_seconds=0.1)
+    blocker = threading.Event()
+
+    async def _blocking() -> None:
+        await _wait_until(blocker, seconds=30.0)
+
+    async def _quick() -> str:
+        return "ok"
+
+    async def _scenario() -> None:
+        first = asyncio.create_task(pool.run(_blocking))
+        await asyncio.sleep(0.02)  # 让唯一的 worker 忙起来
+        started_at = time.perf_counter()
+        with pytest.raises(TimeoutError):
+            await pool.run(_quick)
+        assert time.perf_counter() - started_at < 5.0, "预算必须由提交侧兜住"
+        blocker.set()
+        await first
+        await pool.aclose()
+
+    try:
+        _run(_scenario())
+    finally:
+        pool.close_sync()
+
+
+def test_sync_close_also_closes_the_loop_clients() -> None:
+    """``close_sync``（atexit / 测试清场）也必须关客户端，不能只停循环。"""
+
+    http_clients = importlib.import_module("app.core.http_clients")
+    pool = LoopPool(size=1, budget_seconds=5.0)
+    clients: list[object] = []
+
+    async def _job() -> None:
+        clients.append(http_clients.get_http_client())
+
+    try:
+        _run(pool.run(_job))
+    finally:
+        pool.close_sync()
+
+    assert clients, "任务应当真的跑过"
+    assert all(getattr(client, "is_closed", False) for client in clients)
+
+
+def test_changing_the_configured_size_rebuilds_the_pool(monkeypatch) -> None:
+    """面板改了规模，下一次取池就是新池（旧池同步关停）。"""
+
+    from app.core.config import settings
+
+    loop_pool = importlib.import_module("app.core.loop_pool")
+    monkeypatch.setattr(settings, "RETRIEVAL_POOL_SIZE", 1)
+    monkeypatch.setattr(settings, "RETRIEVAL_QUEUE_BUDGET_MS", 1000)
+    first = loop_pool.get_retrieval_pool()
+    assert first.size == 1
+
+    monkeypatch.setattr(settings, "RETRIEVAL_POOL_SIZE", 2)
+    second = loop_pool.get_retrieval_pool()
+    assert second is not first
+    assert second.size == 2
+    reset_retrieval_pool()

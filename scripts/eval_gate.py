@@ -71,8 +71,8 @@ class QuestionScore:
     unscored_reason: str | None = None
 
 
-def is_scored(value: float | None) -> bool:
-    """``0.0`` 是已评分，``None`` 与 ``NaN`` 不是。
+def is_measured(value: float | None) -> bool:
+    """这个指标有没有被真正测到：``0.0`` 算测到，``None`` 与 ``NaN`` 不算。
 
     这条区分是整个「未评分不计入平均」的地基：0 分会被算进平均，NaN 不会。
     """
@@ -92,14 +92,14 @@ def mean_scored(values: Iterable[float | None]) -> float | None:
     看起来像考砸了，回 None 才会让调用方停下来问「为什么没测到」。
     """
 
-    scored = [float(value) for value in values if is_scored(value)]
+    scored = [float(value) for value in values if is_measured(value)]
     return sum(scored) / len(scored) if scored else None
 
 
 def _clean(value: float | None) -> float | None:
     """``NaN`` → ``None``。JSON 里的 ``NaN`` 不是合法 JSON，下次对比会读不回来。"""
 
-    return float(value) if is_scored(value) else None
+    return float(value) if is_measured(value) else None
 
 
 def _block(scores: Sequence[QuestionScore]) -> dict[str, Any]:
@@ -111,8 +111,8 @@ def _block(scores: Sequence[QuestionScore]) -> dict[str, Any]:
         "context_precision": _clean(mean_scored(precisions)),
         "context_recall": _clean(mean_scored(recalls)),
         "scored": {
-            "context_precision": sum(1 for value in precisions if is_scored(value)),
-            "context_recall": sum(1 for value in recalls if is_scored(value)),
+            "context_precision": sum(1 for value in precisions if is_measured(value)),
+            "context_recall": sum(1 for value in recalls if is_measured(value)),
         },
         "total": len(scores),
     }
@@ -140,7 +140,7 @@ def score_run(scores: Sequence[QuestionScore]) -> dict[str, Any]:
             "reason": score.unscored_reason or "unscored",
         }
         for score in included
-        if not (is_scored(score.context_precision) and is_scored(score.context_recall))
+        if not (is_measured(score.context_precision) and is_measured(score.context_recall))
     ]
     return {
         "overall": _block(included),
@@ -173,7 +173,7 @@ def latency_stats(per_question: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     durations = sorted(
         float(item["duration_ms"])
         for item in per_question
-        if isinstance(item, Mapping) and is_scored(item.get("duration_ms"))
+        if isinstance(item, Mapping) and is_measured(item.get("duration_ms"))
     )
     count = len(durations)
     if not count:
@@ -219,7 +219,7 @@ def rerank_stats(per_question: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     durations = sorted(
         float(fact["duration_ms"])
         for fact in applied
-        if is_scored(fact.get("duration_ms"))
+        if is_measured(fact.get("duration_ms"))
     )
     count = len(durations)
     duration = {
@@ -691,10 +691,10 @@ def compare_to_baseline(
             "status": "pass",
             "detail": "",
         }
-        if not is_scored(now):
+        if not is_measured(now):
             row["status"] = "fail"
             row["detail"] = "本次一条都没评上分（未评分不计入平均）——没测到不等于没退化"
-        elif not is_scored(before):
+        elif not is_measured(before):
             row["status"] = "skipped"
             row["detail"] = "基线缺这个指标，无法比较"
         else:
@@ -730,10 +730,10 @@ def compare_to_baseline(
             elif not before_block:
                 row["status"] = "skipped"
                 row["detail"] = "这一题型不在基线里，无法比较"
-            elif not is_scored(now):
+            elif not is_measured(now):
                 row["status"] = "fail"
                 row["detail"] = "这一题型本次一条都没评上分——没测到不等于没退化"
-            elif not is_scored(before):
+            elif not is_measured(before):
                 row["status"] = "skipped"
                 row["detail"] = "基线缺这个指标，无法比较"
             else:
@@ -1284,13 +1284,13 @@ def _production_budget_note(
         for item in per_question
         if isinstance(item, Mapping)
         and isinstance(item.get("rerank"), Mapping)
-        and is_scored(item["rerank"].get("duration_ms"))
+        and is_measured(item["rerank"].get("duration_ms"))
     ]
     budget_ms = PRODUCTION_RERANK_TIMEOUT_SECONDS * 1000.0
     over = [item for item in per_question
             if isinstance(item, Mapping)
             and isinstance(item.get("rerank"), Mapping)
-            and is_scored(item["rerank"].get("duration_ms"))
+            and is_measured(item["rerank"].get("duration_ms"))
             and float(item["rerank"]["duration_ms"]) > budget_ms]
     if not durations:
         return ["- 按生产预算会降级几道：无法从本次数据推断（逐题重排耗时没留下）。", ""]

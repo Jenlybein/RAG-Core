@@ -255,7 +255,10 @@ def test_enabled_rerank_reorders_and_score_is_the_rerank_score(
 ) -> None:
     """开启后顺序按重排分走；``score`` 换成重排分，融合分仍可读。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     llm = _FakeLLM(ranking=_ranking(("c3", 9.0), ("c2", 5.0), ("c1", 2.0)))
 
     with _offline_client(monkeypatch, llm=llm) as fake:
@@ -281,7 +284,10 @@ def test_enabled_rerank_caps_candidates_sent_to_the_model(
 ) -> None:
     """候选封顶在整条链路上生效：只有前 N 条进模型，返回也就不可能更多。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "RERANK_MAX_CANDIDATES", 2)
     llm = _FakeLLM(ranking=_ranking(("c1", 3.0), ("c2", 2.0)))
 
@@ -302,7 +308,10 @@ def test_rerank_error_keeps_fusion_order_and_marks_degraded(
 ) -> None:
     """重排抛错：业务码仍成功，顺序回到融合顺序，原因固定 ``rerank failed``。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     llm = _FakeLLM(error=RuntimeError("模型服务 502"))
 
     with _offline_client(monkeypatch, llm=llm) as fake:
@@ -318,7 +327,10 @@ def test_rerank_error_keeps_fusion_order_and_marks_degraded(
 def test_rerank_empty_ranking_keeps_fusion_order_and_marks_degraded(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     llm = _FakeLLM(ranking=_ranking())
 
     with _offline_client(monkeypatch, llm=llm) as fake:
@@ -333,7 +345,10 @@ def test_rerank_empty_ranking_keeps_fusion_order_and_marks_degraded(
 def test_rerank_malformed_result_keeps_fusion_order_and_marks_degraded(
     monkeypatch: pytest.MonkeyPatch, payload: Any
 ) -> None:
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     llm = _FakeLLM(ranking=payload)
 
     with _offline_client(monkeypatch, llm=llm) as fake:
@@ -349,7 +364,10 @@ def test_rerank_failure_does_not_override_an_earlier_channel_failure(
 ) -> None:
     """已经因通道故障降级 → 重排再失败也不覆盖：先到的那个才是根因。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
 
     class _BrokenKeyword(_FakeKeyword):
         async def keyword_search(self, query, *, tenant_id, index_versions, top_k):

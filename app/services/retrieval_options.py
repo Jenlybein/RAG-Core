@@ -34,6 +34,7 @@ from typing import Any, Final, Literal, cast
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES, settings
 from app.core.profile_presets import profile_preset_of
+from app.providers.rerank import rerank_capability
 from app.models.key_policy import (
     PROFILE_BALANCED,
     PROFILE_CUSTOM,
@@ -171,7 +172,7 @@ def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
             mode=_manual_mode(manual),
             top_k=_manual_top_k(manual),
             # 缺键 = 「跟部署缺省走」：部署开关就是「这台机器有没有这项能力」的缺省意图。
-            rerank=_manual_flag(manual, CUSTOM_OPTION_RERANK, fallback=settings.RERANK_ENABLED),
+            rerank=_manual_flag(manual, CUSTOM_OPTION_RERANK, fallback=rerank_capability()),
             rewrite=_manual_flag(
                 manual, CUSTOM_OPTION_REWRITE, fallback=settings.QUERY_REWRITE_ENABLED
             ),
@@ -201,7 +202,7 @@ def server_default_chain() -> ProfileChain:
     return ProfileChain(
         mode=_server_default_mode(),
         top_k=settings.TOP_K,
-        rerank=settings.RERANK_ENABLED,
+        rerank=rerank_capability(),
         rewrite=settings.QUERY_REWRITE_ENABLED,
     )
 
@@ -228,7 +229,7 @@ def options_from_chain(
     ``custom`` 档的专属手动参数（父 spec「密钥配置的内容是五组」）。
     """
 
-    rerank_on = settings.RERANK_ENABLED if rerank_capable is None else rerank_capable
+    rerank_on = rerank_capability() if rerank_capable is None else rerank_capable
     rewrite_on = settings.QUERY_REWRITE_ENABLED if rewrite_capable is None else rewrite_capable
 
     return RetrievalOptions(

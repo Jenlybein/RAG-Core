@@ -38,6 +38,7 @@ __all__ = [
     "configured_rerank_provider_name",
     "get_rerank_provider",
     "qwen_rerank_configured",
+    "rerank_capability",
     "reset_rerank_provider_cache",
 ]
 
@@ -64,6 +65,17 @@ def qwen_rerank_configured() -> bool:
     return bool(settings.RERANK_BASE_URL.strip()) and bool(_rerank_api_key())
 
 
+def rerank_capability() -> bool:
+    """这台机器「真的能重排」吗：开关开着 **且** 端点配齐。
+
+    这是**能力**信号，不是**意图**信号。档位说「要重排」只表达意图；回显里的
+    ``tenant_policy.rerank`` 必须回答「这次真的会排吗」——端点没配齐时它必须是
+    ``False``，否则面板说「开了」、日志里一次模型都没调（票 116 要消灭的正是这种假话）。
+    """
+
+    return settings.RERANK_ENABLED and qwen_rerank_configured()
+
+
 #: 已装配过的 Provider，按「实现 + 端点指纹 + 超时 + 候选上限 + 截断长度」做键。
 #:
 #: 为什么必须缓存（一次实测）：改造前每次检索都现装一个 Provider（开启时还连带一个
@@ -88,7 +100,7 @@ def get_rerank_provider() -> RerankProvider:
     拿不到旧实例（那几种「面板上改了、实际没变」的故障里最难查的一类）。
     """
 
-    if not settings.RERANK_ENABLED or not qwen_rerank_configured():
+    if not rerank_capability():
         return _cached(_NOOP_KEY, NoopRerankProvider)
 
     key = (

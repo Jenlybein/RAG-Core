@@ -449,6 +449,18 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
         "每路召回深度只影响下一次检索的候选池，不涉及任何已落库数据",
         minimum=1,
     ),
+    "RETRIEVAL_POOL_SIZE": _spec(
+        TIER_HOT,
+        TARGET_SETTINGS,
+        "执行池规模是并发护栏；改完下一次取池时重建（旧池同步关停），不动任何已落库数据",
+        minimum=1,
+    ),
+    "RETRIEVAL_QUEUE_BUDGET_MS": _spec(
+        TIER_HOT,
+        TARGET_SETTINGS,
+        "排队预算是每次投递的参数；超预算按「这一路失败」降级，只影响下一次检索",
+        minimum=1,
+    ),
     "DOCUMENT_MAX_SIZE_MB": _spec(
         TIER_HOT,
         TARGET_SETTINGS,

@@ -1,6 +1,6 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**
 - 日期：2026-11-08
 - 相关：父 spec #20「第 4 步」、**父 spec #72「第 7 步」、ADR-0018「三层授权与配置自洽校验」**、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
@@ -317,3 +317,15 @@ kb_id IN ('kb-a', 'kb-b') AND index_version IN ('v1', 'v2')
 - **要跟上游系统串成一条链**（调用方自己已有 `traceparent`）：那时再评估是否接受请求头透传。眼下没有多系统链路，先加请求头只会给「trace 由谁生成」制造第二个答案。
 - **调用方普遍需要六段耗时**（不只运维要）：先证明观测栈这条路真的读不到，再出一次新修订重新设计形状与时序；注意那会再破一次「逐字节不变」。
 - **换观测后端**：「32 位十六进制」与「同一 `log_id` 恒等派生」这两条不跟着换——换后端改的是注入方式，不是契约。若某个后端要求别的 id 形状，那就让适配层去转，不改响应。
+
+## 第六次修订（第 10 步，2026-11-12）：`metadata.retrieval.rerank` 多两个身份字段
+
+**改了什么**：`metadata.retrieval.rerank` 增加 `provider`（`qwen3` / `llm` / `none`）与 `model`（如 `qwen3.7-text-rerank`）。`applied` / `candidates` / `returned` / `duration_ms` 不变；没有重排时（`applied=false`）两个新字段是 `null`，不缺席。
+
+**为什么**：换件之后，「这次到底是哪种重排、哪个模型」不再是实现细节——同一台机器上并存两种实现（生产走专用端点、评测可显式装旧的大模型重排做对照），而调用方与排障者只看响应。不给这两个字段，「为什么这次慢」只能靠人去翻日志；而日志与响应读同一份事实，是本契约从第 4 步起就有的要求。
+
+**代价**：hybrid 响应又长了几十个字节，`test_multi_query_union.py` 的逐字节黄金哈希必须把这两段摘掉再比（与 `trace_id` 同一种做法，基线常量一个都没重采）。**这是第三次因为「多一个可解释的字段」而破逐字节不变**——不是失守，是那条红线本来只该覆盖「不该变的字段」。
+
+**没有改**：六段耗时仍不进响应（第五次修订的结论不变）；`vector` / `bm25` 两个单模式没有重排段，响应逐字节不变。
+
+**翻案条件**：若调用方开始依赖这两个字段做路由（例如按 provider 计费），它们就得升级成稳定的枚举并写进 OpenAPI；那时要再出一次修订，而不是在响应里悄悄加第三个名字。

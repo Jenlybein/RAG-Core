@@ -88,7 +88,10 @@ def test_custom_policy_manual_parameters_are_taken_verbatim(
     合取之后的 false——那是下一节 ``test_profile_gating`` 的事，不是「手动参数没读到」）。
     """
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
     options = _resolve(
@@ -121,7 +124,10 @@ def test_custom_policy_missing_keys_fall_back_to_server_defaults(
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "vector")
     monkeypatch.setattr(settings, "TOP_K", 7)
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
     # 只给了 mode：top_k / 重排 / 改写都走部署缺省，形状开关仍读配置自己的列。
@@ -185,7 +191,10 @@ def test_a_named_profile_is_its_chain_not_the_server_defaults(
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
     monkeypatch.setattr(settings, "TOP_K", 9)
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
     chain = profile_chain_of(

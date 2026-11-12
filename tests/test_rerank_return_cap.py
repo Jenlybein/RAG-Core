@@ -164,7 +164,10 @@ def _retrieve(client: TestClient, *, top_k: int = TOP_K) -> dict:
 def test_rerank_failure_still_returns_exactly_top_k(monkeypatch: pytest.MonkeyPatch) -> None:
     """重排失败 → 回到融合顺序，但**条数仍是 top_k**，不是融合池的宽度。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "RERANK_MAX_CANDIDATES", CANDIDATES)
     llm = _FakeLLM(error=RuntimeError("模型服务 502"))
 
@@ -187,7 +190,10 @@ def test_rerank_failure_still_returns_exactly_top_k(monkeypatch: pytest.MonkeyPa
 def test_partial_ranking_still_returns_exactly_top_k(monkeypatch: pytest.MonkeyPatch) -> None:
     """模型只排了部分候选（漏掉的按 0 分退到后面）→ 仍然恰好 top_k 条。"""
 
+    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
     monkeypatch.setattr(settings, "RERANK_MAX_CANDIDATES", CANDIDATES)
     # 只给 3 条打分，剩下 17 条模型压根没提。
     llm = _FakeLLM(

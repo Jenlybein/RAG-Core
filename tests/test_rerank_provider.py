@@ -388,10 +388,10 @@ def test_the_configured_provider_name_answers_without_building_anything(
 # ────────────────────────────────────── 旧实现：只能显式装配（对照用）
 
 
-def test_build_llm_rerank_provider_is_explicit_and_wires_the_fast_tier(
+def test_build_llm_rerank_provider_is_explicit_and_wires_the_fast_model_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """旧实现由 ``build_llm_rerank_provider`` 显式装配：fast 档 + 配置封顶 / 截断。
+    """旧实现由 ``build_llm_rerank_provider`` 显式装配：fast 模型角色 + 配置封顶 / 截断。
 
     这条测试同时证明「配置从 Settings 走到 Provider」是真的——不是写了一堆没人读的键。
     """
@@ -486,3 +486,22 @@ def test_every_implementation_fills_in_its_own_identity() -> None:
         model="qwen3.7-text-rerank",
     )
     assert (qwen.provider_name, qwen.model_name) == ("qwen3", "qwen3.7-text-rerank")
+
+
+def test_capability_requires_the_endpoint_not_just_the_switch(monkeypatch) -> None:
+    """能力 = 开关 ∧ 端点配齐；只拨开关不算「装了重排」，回显必须如实说 False。"""
+
+    from app.core.config import settings
+    from app.providers.rerank import rerank_capability
+
+    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "")
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "k")
+    assert rerank_capability() is False
+
+    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
+    assert rerank_capability() is True
+
+    monkeypatch.setattr(settings, "RERANK_API_KEY", "")
+    monkeypatch.setattr(settings, "MODEL_API_KEY", "")
+    assert rerank_capability() is False
