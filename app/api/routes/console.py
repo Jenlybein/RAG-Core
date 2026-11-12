@@ -16,11 +16,13 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request, Response
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.api.console_deps import (
     get_console_account,
     get_console_admin,
+    get_console_admin_async,
     get_plan_cache,
     require_console_admin_write,
     require_console_write_header,
@@ -34,6 +36,7 @@ from app.core.console_auth import (
 )
 from app.core.plan_cache import PlanCache
 from app.core.profile_presets import get_profile_presets
+from app.db.async_session import get_async_db
 from app.db.session import get_db, get_transaction
 from app.db.transaction import Transaction
 from app.models.key_policy import PROFILES
@@ -243,11 +246,13 @@ async def me(
 
 
 @router.get("/plans", response_model=ApiResponse[PlanListData], summary="套餐列表（管理员）")
-def list_plans(
-    identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+async def list_plans(
+    identity: ConsoleIdentity = Depends(get_console_admin_async),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[PlanListData]:
-    rows = console_service.list_plans(db)
+    """管理员看全部套餐。只读，因此整条路径在异步栈上（票 #129）。"""
+
+    rows = await console_service.list_plans(db)
     return ok(PlanListData(plans=[plan_data(row) for row in rows]))
 
 
@@ -351,23 +356,23 @@ def patch_account(
     response_model=ApiResponse[AuditLogListData],
     summary="审计列表（管理员；limit / offset 分页 + action 精确过滤）",
 )
-def list_audit_logs(
+async def list_audit_logs(
     limit: int | None = Query(default=None, description="最多返回几条，缺省 50、上限 200"),
     offset: int = Query(default=0, ge=0, description="跳过几条（分页起点，从 0 开始）"),
     action: str | None = Query(
         default=None,
         description="按动作名**精确**过滤（如 model.reveal / key.issue）；不给就是全部",
     ),
-    identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    identity: ConsoleIdentity = Depends(get_console_admin_async),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[AuditLogListData]:
     """返回一页审计行，并带上「当前筛选条件下的总数」与本次的 ``offset``。
 
     分页与过滤都在 SQL 层完成；``total`` 是全量统计（带 ``action`` 时是那个动作的条数），
-    让前端能算页数而不必再发一次计数请求。
+    让前端能算页数而不必再发一次计数请求。只读，因此整条路径在异步栈上（票 #129）。
     """
 
-    page = console_service.list_audit_logs(
+    page = await console_service.list_audit_logs(
         db,
         limit=console_service.audit_limit(limit),
         offset=offset,

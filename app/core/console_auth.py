@@ -15,6 +15,12 @@
 **改了东西**的面板接口都要求一个显式请求头（:data:`WRITE_HEADER_NAME`）。跨站表单发不出
 自定义头，跨站脚本发之前要先过 CORS 预检——两类都过不来。登录接口本身不带 cookie，
 因此不在这一条之内（它另外要口令，见 ``console_service.login``）。
+
+**两份入口、一套判定**（票 #129）：控制面的读接口已经换到 ``AsyncSession``，写接口与
+「我的视图」仍在同步栈上，于是「认出这次是谁」有两个入口
+（:func:`resolve_console_identity` / :func:`resolve_console_identity_async`）。它们只差
+「怎么读那两行」，四条判定（缺 cookie / 会话不存在 / 会话过期 / 账号停用）收在三个私有
+函数里，只有一份实现——这是这条边界的纪律：**判定可以有两个执行方式，规则不能有两份**。
 """
 
 from __future__ import annotations
@@ -22,12 +28,14 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Mapping, Protocol
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.db.base import now
 from app.models.account import Account
+from app.models.console_session import ConsoleSession
 from app.repositories import account_repository, console_session_repository
 
 #: 会话 cookie 名。前端与测试都用这一个名字，别处不许再写一次字面量。
@@ -108,25 +116,71 @@ def resolve_console_identity(request: ConsoleRequestLike, db: Session) -> Consol
     3. 会话已过期 → 未授权；
     4. 账号不存在或已停用 → 未授权（**这里就是「停用立刻生效」**的那一行：账号状态是
        每个请求现读的，不是登录时快照下来的）。
+
+    这是**同步会话**上的那一份：登录 / 登出、控制面的写接口与「我的视图」还在同步栈上。
+    控制面的**读**接口走 :func:`resolve_console_identity_async`——两份只差「怎么读那两行」，
+    四条判定本身在 :func:`_ensure_session_usable` / :func:`_ensure_account_usable` 里，
+    只有一份实现。
     """
+
+    session_id = _session_id_of(request)
+    session = _ensure_session_usable(console_session_repository.get_by_id(db, session_id))
+    return identity_of(
+        _ensure_account_usable(account_repository.get_by_id(db, session.account_id))
+    )
+
+
+async def resolve_console_identity_async(
+    request: ConsoleRequestLike, db: AsyncSession
+) -> ConsoleIdentity:
+    """:func:`resolve_console_identity` 的异步孪生（控制面读，票 #129）。
+
+    判定顺序、错误码与消息与同步版逐字一致——两个入口读的是同一份会话行与账号行，差别
+    只有「用哪套会话读」。这条孪生随控制面写入异步化（#130）一起收掉：那时全仓只剩这一份。
+    """
+
+    session_id = _session_id_of(request)
+    session = _ensure_session_usable(
+        await console_session_repository.get_by_id_async(db, session_id)
+    )
+    return identity_of(
+        _ensure_account_usable(
+            await account_repository.get_by_id_async(db, session.account_id)
+        )
+    )
+
+
+def _session_id_of(request: ConsoleRequestLike) -> str:
+    """第 1 步：没有 cookie 就没有身份。"""
 
     session_id = request.cookies.get(SESSION_COOKIE_NAME)
     if not session_id:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_MISSING_SESSION)
+    return session_id
 
-    session = console_session_repository.get_by_id(db, session_id)
+
+def _ensure_session_usable(session: ConsoleSession | None) -> ConsoleSession:
+    """第 2、3 步：会话行存在且没过期；返回收窄后的行。
+
+    返回而不是只断言，是为了让调用方拿到**非空**的行：判定写在函数里、类型收窄也跟着走，
+    mypy 因此不需要在每个调用点再 ``assert`` 一次。
+    """
+
     if session is None:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_INVALID_SESSION)
     if session.expires_at <= now():
         # 过期的行不在这里删：一次 GET 顺手写库会让「读接口」拥有副作用，清理交给后续
         # 的会话清扫任务；判定上它已经等于不存在。
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_INVALID_SESSION)
+    return session
 
-    account = account_repository.get_by_id(db, session.account_id)
+
+def _ensure_account_usable(account: Account | None) -> Account:
+    """第 4 步：账号存在且可用——「停用立刻生效」就落在这一行上。返回收窄后的行。"""
+
     if account is None or account.status != STATUS_ACTIVE:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_ACCOUNT_DISABLED)
-
-    return identity_of(account)
+    return account
 
 
 def require_admin(identity: ConsoleIdentity) -> None:

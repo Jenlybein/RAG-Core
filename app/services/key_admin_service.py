@@ -24,6 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.console_auth import ConsoleIdentity
@@ -89,20 +90,24 @@ def _verified_tenant_id(actor: ConsoleIdentity) -> str:
     return actor.tenant_id
 
 
-def list_keys(db: Session, *, actor: ConsoleIdentity) -> list[KeyRowView]:
+async def list_keys(db: AsyncSession, *, actor: ConsoleIdentity) -> list[KeyRowView]:
     """本租户的 Key 列表，每行带上它引用的配置。
 
     配置按**同一租户**读一遍再按 id 对上：一条 Key 指向别的租户的配置属于手修库造出来的
     坏数据，此时如实回 ``policy=None``，而不是把别人的配置回显给这个租户。
+
+    读在异步会话上（票 #129）：这是控制面唯一的 Key 列表查询，两次读（Key 行、配置行）
+    一起 ``await``。签发 / 删除 / 改配置仍在同步栈上——那是 #130 的范围。
     """
 
     tenant_id = _verified_tenant_id(actor)
     policies = {
-        policy.id: policy for policy in key_policy_repository.list_by_tenant(db, tenant_id)
+        policy.id: policy
+        for policy in await key_policy_repository.list_by_tenant_async(db, tenant_id)
     }
     return [
         KeyRowView(api_key=api_key, policy=policies.get(api_key.policy_id))
-        for api_key in api_key_repository.list_by_tenant(db, tenant_id)
+        for api_key in await api_key_repository.list_by_tenant_async(db, tenant_id)
     ]
 
 

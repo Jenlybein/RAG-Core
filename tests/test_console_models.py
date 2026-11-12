@@ -47,7 +47,7 @@ from app.providers.llm import get_llm_provider, set_role_resolver
 from app.providers.llm.noop import NoopLLMProvider
 from app.services import model_config_service, runtime_settings
 from app.utils.id_generator import mask_secret
-from tests.fake_db import RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -85,22 +85,6 @@ class _MemorySettingsCache:
         self.payload = None
 
 
-class _MemoryPlanCache:
-    """套餐缓存的内存假实现：登录成功要读套餐，真 Redis 会把用例拖成「看机器脸色」。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
 
 
 def _plan_rows() -> list[Plan]:
@@ -264,7 +248,7 @@ def console() -> Any:
     runtime_settings.reset_runtime_state()
     db = RecordingSession(rows=_world())
     cache = _MemorySettingsCache()
-    plan_cache = _MemoryPlanCache()
+    plan_cache = MemoryPlanCache()
     set_settings_cache(cache)
     # 中间件与 Provider 装配都拿不到 Depends，只能自己开会话；注入同一个假会话，
     # 于是「改指针之后下一次装配按新行跑」这条在测试里也走真实路径（注入点是

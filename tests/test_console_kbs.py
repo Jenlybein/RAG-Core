@@ -41,7 +41,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from app.repositories import document_repository
 from app.utils.status import DocumentStatus
-from tests.fake_db import RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -74,24 +74,6 @@ CONTENT_SENTINEL = "CONSOLE-UPLOAD-CONTENT-SENTINEL"
 CHUNK_COUNTS = {DOC_ALPHA_DONE: 4, DOC_ALPHA_FAILED: 2, DOC_BETA_DONE: 1}
 
 
-class _MemoryPlanCache:
-    """内存假缓存：套餐解析只用到 ``get/set/delete`` 三个方法。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.set_calls: list[int] = []
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.set_calls.append(plan_id)
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
 
 
 class _ConsoleSession(RecordingSession):
@@ -154,7 +136,7 @@ class _RecordingStore:
 class _Harness:
     client: TestClient
     db: _ConsoleSession
-    cache: _MemoryPlanCache
+    cache: MemoryPlanCache
     store: _RecordingStore
     enqueued: list[dict[str, Any]]
     prepares: list[dict[str, Any]]
@@ -345,7 +327,7 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
 
     calls: list[str] = []
     session = _ConsoleSession(rows=_world(), calls=calls)
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     store = _RecordingStore(calls)
     enqueued: list[dict[str, Any]] = []
     prepares: list[dict[str, Any]] = []
@@ -1209,3 +1191,4 @@ def test_read_content_needs_no_anti_csrf_header(kbs: _Harness) -> None:
 
     assert response.json()["code"] == 0
     assert kbs.audit_entries() == [], "读原文不写账本"
+

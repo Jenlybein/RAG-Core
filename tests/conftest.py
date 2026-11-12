@@ -101,6 +101,12 @@ def _offline_process_state():
     ``runtime_settings.set_settings_cache(...)`` / ``observability.set_trace_sink(...)``）
     会覆盖本夹具；夹具在**每个**用例开始时重新注入 / 清场，所以也不会把上一个用例注入的
     东西漏给下一个。
+
+    **套餐缓存的默认实现也在这里换掉**（票 #129）：``resolve_plan`` 的 ``cache`` 缺省时走
+    ``plan_service.default_plan_cache()``，而**登录**与「我的视图」正是这么调的。不换的话，
+    一条与 Redis 无关的用例只要经过登录就会去连真 Redis——本机开着 Redis 就绿、没开就红；
+    更糟的是异步客户端绑在**第一次使用它的那个事件循环**上，下一个用例换了个循环就报
+    ``Event loop is closed``，症状与「登录坏了」一模一样。这同样不是套件自己的事实。
     """
 
     from app.core.http_clients import reset_http_clients
@@ -112,12 +118,14 @@ def _offline_process_state():
     from app.providers.keyword_search import reset_keyword_search_provider_cache
     from app.providers.llm import reset_llm_provider_cache
     from app.providers.rerank import reset_rerank_provider_cache
-    from tests.fake_db import AsyncRecordingSession, RecordingSession
+    from app.services import plan_service
+    from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
 
     factory_mod.set_session_factory(RecordingSession)
     # 异步那一路同理（票 #128 起反馈写入走它）：不注入的话，旁路短事务会真的去连 PostgreSQL。
     factory_mod.set_async_session_factory(AsyncRecordingSession)
     set_settings_cache(_MemorySettingsCache())
+    plan_service.set_default_plan_cache(MemoryPlanCache())
     reset_trace_sink()
     reset_keyword_search_provider_cache()
     reset_llm_provider_cache()
@@ -134,6 +142,7 @@ def _offline_process_state():
         factory_mod.set_session_factory(None)
         factory_mod.set_async_session_factory(None)
         reset_settings_cache()
+        plan_service.set_default_plan_cache(None)
         reset_trace_sink()
         reset_keyword_search_provider_cache()
         reset_llm_provider_cache()

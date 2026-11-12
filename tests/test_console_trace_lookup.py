@@ -28,7 +28,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import AsyncRecordingSession, RecordingSession
+from tests.fake_db import async_mirror, RecordingSession
 
 LOGIN_PATH = "/console/login"
 LOOKUP_PATH = "/console/retrieval-traces"
@@ -38,57 +38,6 @@ TENANT_BETA = "tenant_beta"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
 BOB_ID = "00000000-0000-4000-8000-000000000003"
 LOG_ALPHA = "log-alpha-0001"
-
-
-class _AsyncTraceRows(AsyncRecordingSession):
-    """认得归属索引那条 ``select(...).where(trace_id == ?, tenant_id == ?)`` 的假会话。
-
-    不 patch 仓储：让真实 SQL 构造跑一遍，只把执行结果换成内存行。替身只认**这一种**
-    查询形状——假会话越像真会话，越容易让人误以为测过的是数据库。
-    """
-
-    async def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
-        table = _final_table_name(statement)
-        if table == RetrievalTrace.__tablename__:
-            rows = [row for row in self._rows.get(RetrievalTrace, []) if _matches(row, statement)]
-            return _SelectResult(rows)
-        return await super().execute(statement, *args, **kwargs)
-
-
-class _SelectResult:
-    """``db.execute(select(...))`` 的最小替身：仓储只要 ``scalar_one_or_none()``。"""
-
-    def __init__(self, rows: list[Any]) -> None:
-        self._rows = rows
-
-    def scalar_one_or_none(self) -> Any:
-        return self._rows[0] if self._rows else None
-
-
-def _final_table_name(statement: Any) -> str | None:
-    try:
-        return statement.get_final_froms()[0].name
-    except (AttributeError, IndexError):
-        return None
-
-
-def _matches(row: Any, statement: Any) -> bool:
-    """只按等值 ``col = 字面量`` 比对——这条查询就两个条件，多一种形状说明实现变了。"""
-
-    criterion = getattr(statement, "whereclause", None)
-    pending = [criterion] if criterion is not None else []
-    while pending:
-        node = pending.pop()
-        left = getattr(node, "left", None)
-        right = getattr(node, "right", None)
-        if left is not None and hasattr(left, "key") and hasattr(right, "value"):
-            if getattr(row, left.key) != right.value:
-                return False
-            continue
-        clauses = getattr(node, "clauses", None)
-        if clauses:
-            pending.extend(clauses)
-    return True
 
 
 def _plan_rows() -> list[Plan]:
@@ -161,17 +110,18 @@ class _Harness:
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
-    async_session_module = importlib.import_module("app.db.async_session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     world = _world()
-    # 同步的给控制面身份（登录会写会话行，之后的请求要读回同一行）；异步的给 trace_id
-    # 反查。归属索引的行**只放进异步那个**：反查要是退回同步会话，三条「查不到」的用例
-    # 会立刻变成红，而不是悄悄照样绿。
+    world[RetrievalTrace] = _trace_rows()
+    # 同步的给登录（它把会话行写进这个假库），异步的给身份判定与 trace_id 反查——
+    # 两个替身**共享同一份行**：身份判定自票 #129 起也走异步会话，它必须能读回登录刚
+    # 写下的那一行，而两套栈看到同一个库正是生产里的形状（两套连接池，一个库）。
     session = RecordingSession(rows=world)
-    trace_session = _AsyncTraceRows(rows={RetrievalTrace: _trace_rows()})
+    trace_session = async_mirror(session)
     main.app.dependency_overrides[session_module.get_db] = lambda: session
-    main.app.dependency_overrides[async_session_module.get_async_db] = lambda: trace_session
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: trace_session
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:

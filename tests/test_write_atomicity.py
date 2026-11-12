@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -30,7 +31,7 @@ from app.models.plan import PLAN_PRESETS, Plan, plan_row_of, plan_spec_of
 from app.models.tenant import Tenant
 from app.repositories import knowledge_base_repository
 from app.services import console_kb_service
-from tests.fake_db import TransactionalSession
+from tests.fake_db import MemoryPlanCache, TransactionalSession
 
 TENANT_ID = "tenant_atomic"
 ACCOUNT_ID = "00000000-0000-4000-8000-000000000124"
@@ -40,20 +41,6 @@ UPLOAD_PATH = f"/console/knowledge-bases/{KB_ID}/documents"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-class _MemoryPlanCache:
-    """套餐缓存的内存假实现：``get/set/delete`` 就是全部接缝。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.items.pop(plan_id, None)
 
 
 def _plan() -> Plan:
@@ -89,8 +76,9 @@ def console(monkeypatch: pytest.MonkeyPatch) -> Any:
             AuditLog: [],
         }
     )
-    cache = _MemoryPlanCache()
-    cache.set(PLAN_ID, plan_spec_of(plan))
+    cache = MemoryPlanCache()
+    # 套餐缓存自票 #129 起是异步的：预置一个命中项也要 ``await``（同步调用只会丢掉协程）。
+    asyncio.run(cache.set(PLAN_ID, plan_spec_of(plan)))
 
     monkeypatch.setattr(
         knowledge_base_repository, "get_by_id_for_tenant", lambda *_a, **_k: kb

@@ -25,7 +25,7 @@ from app.models.audit_log import AuditLog
 from app.models.key_policy import KeyPolicy
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -50,27 +50,13 @@ KEY_BETA_VALUE = "rc_live_" + "fedcba9876543210fedcba9876543210"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, value: Any) -> None:
-        self.items[plan_id] = value
-
-    def delete(self, plan_id: int) -> None:
-        self.items.pop(plan_id, None)
 
 
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
     db: RecordingSession
-    cache: _MemoryPlanCache
+    cache: MemoryPlanCache
 
     def login(self, username: str, password: str) -> Any:
         return self.client.post(
@@ -209,11 +195,14 @@ def console() -> Any:
 
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     db = RecordingSession(rows=_world())
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     main.app.dependency_overrides[session_module.get_db] = lambda: db
+    # Key 列表走异步会话（票 #129），替身与同步那个共享同一份行。
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(db)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     try:
         with TestClient(main.app) as client:
@@ -718,6 +707,7 @@ def test_a_partial_custom_options_patch_merges_instead_of_replacing(console: _Ha
         "top_k": 7,
         "rerank": True,
     }
+
 
 
 

@@ -38,7 +38,7 @@ from app.core.plan_cache import PlanCache
 from app.models.key_policy import PROFILE_CUSTOM, KeyPolicySnapshot, policy_snapshot_of
 from app.models.plan import PLAN_PRO, PLAN_PRESETS, PlanSpec
 from app.repositories import api_key_repository, key_policy_repository, tenant_repository
-from app.services.plan_service import resolve_plan
+from app.services.plan_service import resolve_plan_blocking
 
 
 class HttpRequestLike(Protocol):
@@ -156,6 +156,12 @@ def resolve_identity(
 
     ``plan_cache`` 是套餐缓存的注入口（生产传 Redis 实现，测试传内存假实现）；
     缺省时由 :func:`app.services.plan_service.resolve_plan` 自己取默认缓存。
+
+    **套餐解析走的是同步入口**（``resolve_plan_blocking``，票 #129）：套餐缓存已经换成
+    ``redis.asyncio``，而判定内核是**同步** FastAPI 依赖（跑在线程池上）。那个入口把协程
+    交回主事件循环跑完再取结果，异步 Redis 客户端因此始终在同一个循环上——不是在这里
+    新起一个循环（那会让连接池绑错循环，见 ``app/core/sync_bridge``）。等检索链路整体
+    异步化（#127）把本函数改成 ``async``，这一句就变成 ``await resolve_plan(...)``。
     """
 
     token = _bearer_token(request)
@@ -208,7 +214,7 @@ def _identity_from_key(db: Session, token: str, *, plan_cache: PlanCache | None)
         # 没有一套可用的配置，判定上等同于停用。
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_KEY_DISABLED)
 
-    plan = resolve_plan(db, tenant.plan_id, cache=plan_cache)
+    plan = resolve_plan_blocking(db, tenant.plan_id, cache=plan_cache)
 
     return KeyContext(
         tenant_id=tenant.id,

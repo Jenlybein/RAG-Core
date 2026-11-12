@@ -43,20 +43,6 @@ POLICY_BETA_ID = "policy-beta"
 ME_PATH = "/api/v1/auth/me"
 
 
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝（与控制面测试同形）。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.items.pop(plan_id, None)
 
 
 @dataclass(frozen=True)
@@ -137,7 +123,7 @@ def _world() -> dict[type, list[Any]]:
 def me(monkeypatch: pytest.MonkeyPatch) -> Any:
     """真实应用 + 假数据库 + 假套餐缓存；``AUTH_ENABLED`` 打开，走真的判定内核。"""
 
-    from tests.fake_db import RecordingSession
+    from tests.fake_db import MemoryPlanCache, RecordingSession
 
     api_router = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
@@ -145,7 +131,7 @@ def me(monkeypatch: pytest.MonkeyPatch) -> Any:
     plan_service = importlib.import_module("app.services.plan_service")
 
     db = RecordingSession(rows=_world())
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     # 判定内核的套餐缓存缺省是 Redis；这里只换「存储」，规则一行不改。
     monkeypatch.setattr(plan_service, "default_plan_cache", lambda: cache)
     monkeypatch.setattr(settings, "AUTH_ENABLED", True)

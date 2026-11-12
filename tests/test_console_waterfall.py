@@ -57,7 +57,7 @@ from app.observability.stage_timing import (
     StageSpan,
 )
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import AsyncRecordingSession, RecordingSession
+from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
 
 WATERFALL_PATH = "/console/retrieval-traces/{log_id}/waterfall"
 LOGIN_PATH = "/console/login"
@@ -219,7 +219,7 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
 
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
-    async_session_module = importlib.import_module("app.db.async_session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     jsonl_dir = tmp_path / "traces"
@@ -228,13 +228,16 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
     # 缺省「观测没开」：观测服务的替身在这条路径上不该被调用（用例自己会断言）。
     monkeypatch.setattr(settings, "TRACE_SINK", "none")
 
-    session = RecordingSession(rows=_world())
-    trace_session = AsyncRecordingSession(rows={RetrievalTrace: _trace_rows()})
-    cache = _MemoryPlanCache()
+    world = _world()
+    world[RetrievalTrace] = _trace_rows()
+    # 同步的给登录（会话行写在这里），异步的给身份判定与归属校验；两个替身共享同一份行。
+    session = RecordingSession(rows=world)
+    trace_session = async_mirror(session)
+    cache = MemoryPlanCache()
     reader = _FakeObservations()
 
     main.app.dependency_overrides[session_module.get_db] = lambda: session
-    main.app.dependency_overrides[async_session_module.get_async_db] = lambda: trace_session
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: trace_session
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_langfuse_reader] = lambda: reader
     try:

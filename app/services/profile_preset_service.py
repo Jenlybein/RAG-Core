@@ -12,12 +12,19 @@
 
 与配置中台一致的纪律：**跨租户与不存在都按「不存在」**——但这里根本没有租户维度，
 档位是平台级配置，所以只有管理员能读写（见路由的 ``require_console_admin``）。
+
+**读有两个入口**（票 #129）：``GET /console/profile-presets`` 走异步会话
+（:func:`list_presets_async`），启动装载与写入后重载仍走同步会话
+（:func:`list_presets`，它们不在请求的异步路径上）。两者共用 :func:`_shaped`，
+「空表回落种子」与「缺档补种子」两条规则只有一份实现。
 """
 
 from __future__ import annotations
 
 from typing import Any, Final
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES
@@ -44,10 +51,9 @@ def _spec_of(row: ProfilePreset) -> ProfilePresetSpec:
     )
 
 
-def list_presets(db: Session) -> dict[str, ProfilePresetSpec]:
-    """四个档位的当前参数。表空时回落到内置种子，与检索侧的缺省同一条口径。"""
+def _shaped(rows: list[ProfilePreset]) -> dict[str, ProfilePresetSpec]:
+    """行 → 四档参数表。**表空时回落到内置种子**，与检索侧的缺省同一条口径。"""
 
-    rows = db.query(ProfilePreset).all()
     if not rows:
         return dict(DEFAULT_PRESETS)
     found = {row.profile: _spec_of(row) for row in rows}
@@ -55,6 +61,22 @@ def list_presets(db: Session) -> dict[str, ProfilePresetSpec]:
     for profile, spec in DEFAULT_PRESETS.items():
         found.setdefault(profile, spec)
     return found
+
+
+def list_presets(db: Session) -> dict[str, ProfilePresetSpec]:
+    """四个档位的当前参数（同步会话：启动装载与写入后重载走它）。"""
+
+    return _shaped(db.query(ProfilePreset).all())
+
+
+async def list_presets_async(db: AsyncSession) -> dict[str, ProfilePresetSpec]:
+    """四个档位的当前参数（异步会话：控制面 ``GET /console/profile-presets``，票 #129）。
+
+    与 :func:`list_presets` 共用 :func:`_shaped`：回落种子与补缺档这两条规则只有一份，
+    换的只是「怎么把行读出来」。
+    """
+
+    return _shaped(list((await db.execute(select(ProfilePreset))).scalars().all()))
 
 
 def load_into_registry(db: Session) -> dict[str, ProfilePresetSpec]:

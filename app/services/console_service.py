@@ -19,10 +19,14 @@
 
 **「我的视图」是异步的，数据库那半边留在同步里**（票 #133）：视图里要读租户的今日用量，
 而那条只读路径走的是异步 Redis 计数（:func:`app.services.quota_gate.read_tenant_daily_usage`），
-于是视图本身必须能 ``await``。视图里的另外两件事——读租户行、解析套餐——仍是同步的
-数据库 / 同步 Redis 缓存，它们被 :func:`asyncio.to_thread` 挪出事件循环：这里改的只是
-「谁在等」，不是「谁在读库」。等控制面整体换成异步会话（票 #129 / #130）之后，这几处
-``to_thread`` 应当一起消失。
+于是视图本身必须能 ``await``。视图里的另外两件事——读租户行、解析套餐——其中读租户行仍是
+同步的数据库读，被 :func:`asyncio.to_thread` 挪出事件循环；套餐解析自票 #129 起本身就是
+``async``（缓存换成了 ``redis.asyncio``），直接 ``await``。等控制面整体换成异步会话
+（#130）之后，那一处 ``to_thread`` 应当一起消失。
+
+**只读查询在异步会话上**（票 #129）：:func:`list_plans` / :func:`list_audit_logs` 收的是
+``AsyncSession``，它们的调用点是控制面的两条只读端点。写入（:func:`patch_plan` /
+:func:`patch_account`）与「我的视图」仍收同步 ``Session``——那是 #130 的范围。
 """
 
 from __future__ import annotations
@@ -33,6 +37,7 @@ from dataclasses import dataclass
 from datetime import timedelta
 from typing import Any, Final
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core import passwords
@@ -221,14 +226,16 @@ async def view_for(
     改完的额度，面板刷新一次就看到——改套餐那条路提交后会删缓存。用量走配额服务的
     **只读**路径（见 :func:`app.services.quota_gate.read_tenant_daily_usage`）。
 
-    读租户行与解析套餐仍在同步上下文里（同步会话 + 同步 Redis 缓存），所以它们整段
-    交给 ``to_thread``；``await`` 的只有用量那一条异步只读路径（见模块文档）。
+    读租户行仍在同步上下文里（同步会话），所以那一次读交给 ``to_thread``；套餐解析本身
+    已经是 ``async``（票 #129，缓存是异步 Redis），直接 ``await``——命中缓存时它一次库都
+    不碰，未命中时它自己把那次行读取挪出事件循环（见 ``plan_service`` 的模块文档）。
     """
 
-    tenant, plan = await asyncio.to_thread(_view_basis, db, account, cache)
-    if tenant is None or plan is None:
+    tenant = await asyncio.to_thread(_tenant_of, db, account)
+    if tenant is None:
         # 平台管理员不属于任何租户：没有套餐、也没有租户级用量可显示，这不是错误。
         return ConsoleView(account=account, tenant=None, plan=None, usage=None)
+    plan = await plan_service.resolve_plan(db, tenant.plan_id, cache=cache)
     return ConsoleView(
         account=account,
         tenant=tenant,
@@ -239,21 +246,6 @@ async def view_for(
             limit=plan.retrieve_daily,
         ),
     )
-
-
-def _view_basis(
-    db: Session, account: Account, cache: PlanCache | None
-) -> tuple[Tenant | None, PlanSpec | None]:
-    """视图里同步的那半边：租户行 + 套餐快照。两次读放在同一次线程跳转里。
-
-    合成一个函数而不是在 ``view_for`` 里分两次 ``to_thread``：同一个会话在两次跳转之间
-    被别人穿插使用只会更难解释，而这里读的两行本来就该来自同一个瞬间。
-    """
-
-    tenant = _tenant_of(db, account)
-    if tenant is None:
-        return None, None
-    return tenant, plan_service.resolve_plan(db, tenant.plan_id, cache=cache)
 
 
 def _tenant_of(db: Session, account: Account) -> Tenant | None:
@@ -270,10 +262,14 @@ def _tenant_of(db: Session, account: Account) -> Tenant | None:
 # ─────────────────────────────────────────────────────────────────────── 套餐
 
 
-def list_plans(db: Session) -> list[Plan]:
-    """管理员看全部套餐（含管理员刚改过、缓存里可能还没有的那些）。"""
+async def list_plans(db: AsyncSession) -> list[Plan]:
+    """管理员看全部套餐（含管理员刚改过、缓存里可能还没有的那些）。
 
-    return plan_repository.list_all(db)
+    读在异步会话上（票 #129）：这一页是控制台的只读查询，不开事务，也不该为了读几行
+    占用一个线程池里的线程。
+    """
+
+    return await plan_repository.list_all(db)
 
 
 def patch_plan(
@@ -386,7 +382,14 @@ def _ensure_code_free(db: Session, *, plan_id: int, patch: dict[str, Any]) -> No
 
 
 def _invalidate(cache: PlanCache | None, plan_id: int) -> None:
-    plan_service.invalidate_plan(_cache_or_default(cache), plan_id)
+    """提交之后删套餐缓存。这里仍是同步上下文（写路径归 #130），所以走过渡桥。
+
+    套餐缓存是异步 Redis（票 #129）：``after_commit`` 的回调在请求线程里跑，没有循环可
+    ``await``，于是把它交给事件循环执行完再返回（:func:`app.core.sync_bridge.run_blocking`）。
+    等 #130 把写路径整体异步化，这一句变成 ``await plan_service.invalidate_plan(...)``。
+    """
+
+    plan_service.invalidate_plan_blocking(_cache_or_default(cache), plan_id)
 
 
 def _cache_or_default(cache: PlanCache | None) -> PlanCache:
@@ -487,8 +490,8 @@ def _account_state(account: Account, tenant: Tenant | None) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────────────────── 审计
 
 
-def list_audit_logs(
-    db: Session, *, limit: int, offset: int, action: str | None = None
+async def list_audit_logs(
+    db: AsyncSession, *, limit: int, offset: int, action: str | None = None
 ) -> AuditPage:
     """审计列表的一页：SQL 层分页（``LIMIT`` / ``OFFSET``）+ 同一筛选条件下的总数。
 
@@ -496,13 +499,15 @@ def list_audit_logs(
     不在 Python 里取全量再切片（原因见 :mod:`app.repositories.audit_log_repository`）。
     ``action`` 是精确匹配的动作名，``None`` = 不过滤。总数由仓储层用**同一个筛选条件**
     数一次，于是「页数」与「这一页里有什么」不会各说一套。
+
+    两次查询都在异步会话上（票 #129）：账本只会一直变长，这条读路径是最不该占线程的一个。
     """
 
     return AuditPage(
-        rows=audit_log_repository.list_page(
+        rows=await audit_log_repository.list_page(
             db, limit=limit, offset=offset, action=action
         ),
-        total=audit_log_repository.count(db, action=action),
+        total=await audit_log_repository.count(db, action=action),
     )
 
 

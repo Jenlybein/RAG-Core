@@ -12,6 +12,8 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.runtime_setting import RuntimeSetting
@@ -21,6 +23,17 @@ def list_all(db: Session) -> list[RuntimeSetting]:
     """全部覆盖行。这张表**天生很小**（只存被显式覆盖的键），所以一次取回不设上限。"""
 
     return db.query(RuntimeSetting).order_by(RuntimeSetting.key).all()
+
+
+async def list_all_async(db: AsyncSession) -> list[RuntimeSetting]:
+    """:func:`list_all` 的异步孪生（配置中台面板读，票 #129）。
+
+    面板读的是**库里的真相**、不经过缓存（见 ``runtime_settings.describe_settings``），
+    所以它必须真的发一次查询；同步版仍被刷新中间件与 Celery 用着（那两条跑在事件循环
+    之外，见 ``app/core/runtime_settings_cache``），#131 之后收成一份。
+    """
+
+    return list((await db.execute(select(RuntimeSetting).order_by(RuntimeSetting.key))).scalars().all())
 
 
 def get_by_key(db: Session, key: str) -> RuntimeSetting | None:

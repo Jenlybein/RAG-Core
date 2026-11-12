@@ -3777,6 +3777,7 @@ version = "0.1.0"
 source = { editable = "." }
 dependencies = [
     { name = "alembic" },
+    { name = "anyio" },
     { name = "beautifulsoup4" },
     { name = "celery", extra = ["redis"] },
     { name = "datasets" },
@@ -3819,6 +3820,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "alembic", specifier = "==1.14.0" },
+    { name = "anyio", specifier = "==4.16.0" },
     { name = "beautifulsoup4", specifier = "==4.15.0" },
     { name = "celery", extras = ["redis"], specifier = "==5.5.3" },
     { name = "datasets", specifier = "==4.8.5" },

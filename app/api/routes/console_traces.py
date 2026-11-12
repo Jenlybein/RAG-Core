@@ -6,9 +6,10 @@
 
 两条边界写在这里，因为它们都是「少一个参数」的事故：
 
-- **走读门 ``require_console_tenant``**：会话 cookie + 租户账号。管理员（``tenant_id IS
+- **走读门 ``require_console_tenant_async``**：会话 cookie + 租户账号。管理员（``tenant_id IS
   NULL``）一律 ``20011``——它不属于任何租户，而瀑布图恰恰是租户内的数据；不带防跨站头，
-  因为看瀑布不改任何状态。
+  因为看瀑布不改任何状态。（``/runtime-info`` 是唯一不碰数据库的一条，仍用同步那一份
+  门禁——同一个判定，见 ``app/core/console_auth``。）
 - **租户只来自会话**：路径里只有 ``log_id``，没有 ``tenant_id``，也没有「用哪把 Key」。
   归属校验在 :func:`app.services.retrieval_waterfall.waterfall_of` 里做，跨租户与不存在
   同为 ``20016``。
@@ -16,10 +17,10 @@
 观测服务的读入口由 :func:`app.api.console_deps.get_langfuse_reader` 注入（测试的接缝），
 密钥不进这一层，也就不可能进响应。
 
-**会话有两个，是双栈期的显式事实**（第 11 步票 #128）：本模块的**读**（归属索引三处）已经
-换到异步会话 ``get_async_db``；而 ``require_console_tenant`` 里的会话解析仍是同步的
-``get_db``（控制面身份那一片由别的票搬）。所以这三条路由会同时声明两个会话依赖——这是
-迁移期的形状，不是设计；等身份那一片搬完，同步那一个就该从签名上消失。
+**会话只有一个，是这条切片收口之后的事实**（第 11 步票 #128 搬读、票 #129 搬身份）：三条读
+都用异步会话 ``get_async_db``，身份判定走 ``require_console_tenant_async``，于是**一个请求
+一条连接**。``/runtime-info`` 是唯一不碰数据库的一条，仍用同步那份门禁（同一个判定，见
+``app/core/console_auth``）——它不声明任何会话依赖，所以不存在「两条连接」的问题。
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.console_deps import (
     get_langfuse_reader,
     require_console_tenant,
+    require_console_tenant_async,
     tenant_id_of,
 )
 from app.core.config import settings
@@ -55,7 +57,7 @@ _TRACE_ID = re.compile(r"^[0-9a-f]{32}$")
 )
 async def retrieval_waterfall(
     log_id: str = Path(..., min_length=1, description="归属索引的行 id，即 log_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(require_console_tenant_async),
     remote_reader: RemoteStageReader = Depends(get_langfuse_reader),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[RetrievalWaterfallData]:
@@ -64,6 +66,9 @@ async def retrieval_waterfall(
     这里刻意**不**把「没记录」也做成 404：404 在这一层只有一个含义——这个 ``log_id``
     对当前租户不存在（跨租户同样如此）。而「存在、但观测没开着」是**正常状态**，
     前端要靠 ``enabled`` / ``reason`` 说出「没配」而不是画一张空卡片。
+
+    只读，因此整条路径在异步栈上（票 #129）：归属行读异步会话，本地 JSONL 与观测服务
+    两处同步 I/O 由服务层挪进线程池。
     """
 
     waterfall = await waterfall_of(
@@ -82,7 +87,7 @@ async def retrieval_waterfall(
 )
 async def retrieval_trace_by_trace_id(
     trace_id: str = Query(..., min_length=1, description="检索响应 metadata.trace_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(require_console_tenant_async),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """把「这根线」翻回「那一行」，供反馈与瀑布使用（#106）。
@@ -120,7 +125,7 @@ async def retrieval_trace_by_trace_id(
 )
 async def recent_retrieval_traces(
     limit: int = Query(20, ge=1, le=100, description="返回条数上限"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(require_console_tenant_async),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """本租户最近若干条归属索引，按时间倒序。
@@ -133,6 +138,9 @@ async def recent_retrieval_traces(
     表长大之后会变成一次全表扫。
 
     列表里**没有任何原文**：归属索引本来就不存（ADR-0021 决策 1），所以这里不需要额外脱敏。
+
+    两次读（归属索引、评分）都在异步会话上（票 #129），顺序不变：先取行，再按这些
+    ``log_id`` 批量取分数——分数只认本租户。
     """
 
     rows = await retrieval_trace_repository.list_recent_for_tenant(

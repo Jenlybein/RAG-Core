@@ -11,6 +11,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from datetime import datetime
 from typing import Any
 
@@ -40,7 +42,7 @@ from app.services.runtime_settings import (
     editable_specs,
     spec_of,
 )
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, RecordingSession
 
 SAFETY_SWITCHES = ("AUTH_ENABLED", "RATE_LIMIT_ENABLED", "DEV_API_KEY", "DEV_TENANT_ID")
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
@@ -86,6 +88,15 @@ def _row(key: str, value: Any, *, updated_at: datetime | None = None) -> Runtime
         updated_by=ADMIN_ID,
         updated_at=updated_at or SEEDED_AT,
     )
+
+
+def _settings_rows(db: Any) -> list[Any]:
+    """``describe_settings`` 自票 #129 起是协程（控制面只读走异步会话）。
+
+    这里用**同一个假库**的异步替身取结果：两个替身共享行，于是断言看到的就是这份库。
+    """
+
+    return asyncio.run(describe_settings(async_mirror(db)))
 
 
 def _session(*rows: RuntimeSetting, world: dict[type, list[Any]] | None = None) -> Any:
@@ -235,7 +246,7 @@ def test_an_illegal_value_falls_back_to_the_env_value_and_is_flagged(cache: Any)
     assert "RERANK_TIMEOUT_SECONDS" in report.invalid
     assert "RERANK_TIMEOUT_SECONDS" not in report.valid
     assert settings.RERANK_TIMEOUT_SECONDS == env_value, "非法行必须回退 .env 值"
-    row = next(r for r in describe_settings(db) if r.key == "RERANK_TIMEOUT_SECONDS")
+    row = next(r for r in _settings_rows(db) if r.key == "RERANK_TIMEOUT_SECONDS")
     assert row.invalid is True
     assert row.source == "env"
     assert row.value == env_value
@@ -248,7 +259,7 @@ def test_a_valid_override_replaces_the_env_value(cache: Any) -> None:
     runtime_settings.apply_runtime_overrides(db, cache=cache)
 
     assert settings.RERANK_TIMEOUT_SECONDS == 20.0
-    row = next(r for r in describe_settings(db) if r.key == "RERANK_TIMEOUT_SECONDS")
+    row = next(r for r in _settings_rows(db) if r.key == "RERANK_TIMEOUT_SECONDS")
     assert (row.source, row.invalid, row.value) == ("db", False, 20.0)
 
 
@@ -319,7 +330,7 @@ def test_a_locked_key_in_the_database_is_ignored(cache: Any, monkeypatch: pytest
 
     assert settings.AUTH_ENABLED is True, "库里的安全开关不允许生效"
     assert "AUTH_ENABLED" in report.invalid
-    row = next(r for r in describe_settings(db) if r.key == "AUTH_ENABLED")
+    row = next(r for r in _settings_rows(db) if r.key == "AUTH_ENABLED")
     assert (row.editable, row.source, row.invalid) == (False, "env", True)
 
 

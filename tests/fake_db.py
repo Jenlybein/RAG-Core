@@ -22,6 +22,8 @@ from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
+from sqlalchemy.sql import operators
+
 
 async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     """「库可见」的**异步**替身：租户原样回传，``settings`` 为空、名称与描述为空。
@@ -124,7 +126,12 @@ class _Rows:
         被写成 ``.all()[0]``，要么只能绕开替身——两者都会让用例离真实调用形状更远。
         """
 
-        return self._values[0] if self._values else None
+    def scalar_one(self) -> Any:
+        """``select(...)`` 只该命中一行时用（``SELECT count(*)`` 那条走 :class:`CountResult`）。"""
+
+        if len(self._values) != 1:
+            raise AssertionError(f"scalar_one 期望恰好一行，实际 {len(self._values)} 行")
+        return self._values[0]
 
     def scalar_one_or_none(self) -> Any:
         """按 id + 租户点查一行的收尾（``execute(select(...)).scalar_one_or_none()``）。
@@ -163,6 +170,78 @@ class CountResult:
 
 
 ZERO_COUNT = CountResult()
+
+
+def _orm_model_of(statement: Any) -> type | None:
+    """``select(...)`` 语句读的是哪张 ORM 映射（认不出来就返回 ``None``）。
+
+    认法是 SQLAlchemy 自己的列描述：``column_descriptions[i]["entity"]`` 给出被选的映射类，
+    对 ``select(Model.col1, Model.col2)`` 同样成立。``select(func.count())`` 那一类没有
+    映射类，于是落回 ``None``（那条形状由 ``SELECT COUNT(`` 分支先接住）。
+    """
+
+    for description in getattr(statement, "column_descriptions", None) or ():
+        entity = description.get("entity")
+        if isinstance(entity, type) and hasattr(entity, "__tablename__"):
+            return entity
+    return None
+
+
+def _matches_where(row: Any, criterion: Any) -> bool:
+    """``WHERE`` 只认「列 = 字面量」与「列 IN (...)]」（可 ``AND`` 组合）：别的形状一律当不匹配。
+
+    与 ``_FakeQuery._matches`` 同一条口径，只是补上了仓储层真的用到的两种写法：
+    ``audit_logs.action = ?``、``retrieval_traces.trace_id = ? AND tenant_id = ?``、
+    ``retrieval_feedback.log_id IN (...)``。
+    """
+
+    clauses = getattr(criterion, "clauses", None) or (criterion,)
+    for node in clauses:
+        left = getattr(node, "left", None)
+        right = getattr(node, "right", None)
+        key = getattr(left, "key", None)
+        expected = getattr(right, "value", _MISSING)
+        if key is None or expected is _MISSING:
+            return False
+        actual = getattr(row, key, None)
+        if getattr(node, "operator", None) is operators.in_op:
+            if actual not in expected:
+                return False
+        elif actual != expected:
+            return False
+    return True
+
+
+_MISSING = object()
+
+
+class MemoryPlanCache:
+    """套餐缓存的内存假实现（契约见 ``app.core.plan_cache``）。
+
+    三个方法都是 ``async``：生产实现自票 #129 起握的是 ``redis.asyncio`` 客户端，替身必须
+    同形，否则「忘了 ``await``」在套件里表现为「缓存永远不命中」而不是一条明确的失败。
+    ``set_calls`` / ``deleted`` 让「未命中时回填一次」「改完是删不是写」这两条行为可以被
+    直接断言，``items`` 则是用例自己预置缓存内容的入口。
+
+    九份逐字相同的本地实现（票 #129 之前每个控制面测试各写一份）收在这里：接口一改就要
+    改九处，而漏掉一处只会让那个文件的用例悄悄连真 Redis。
+    """
+
+    def __init__(self) -> None:
+        self.items: dict[int, Any] = {}
+        self.set_calls: list[int] = []
+        self.deleted: list[int] = []
+
+    async def get(self, plan_id: int) -> Any:
+        return self.items.get(plan_id)
+
+    async def set(self, plan_id: int, plan: Any) -> None:
+        self.set_calls.append(plan_id)
+        self.items[plan_id] = plan
+
+    async def delete(self, plan_id: int) -> None:
+        self.deleted.append(plan_id)
+        self.items.pop(plan_id, None)
 
 
 class _FakeQuery:
@@ -266,12 +345,32 @@ class RecordingSession(EmptySession):
         它走的是 ``execute(...).scalar_one()``。假会话如果只回空结果，「哪几个账号会超限」
         这一半就永远测不到。这里只模拟 ``SELECT count(*) ... WHERE 列 = 字面量`` 这一种
         形状，别的语句仍退回 ``_tenant_ids``（沿用本模块的「只实现被用到的那几种写法」）。
+
+        **ORM 的 ``select(Model)`` 也认**（票 #129 起控制面的读走异步会话，异步会话只有
+        ``execute(select(...))`` 这条路）：从预置行里按 ``WHERE`` 的等值条件过滤，再按
+        ``OFFSET`` / ``LIMIT`` 切片。**不模拟排序**——与 ``_FakeQuery`` 同一条口径，用例
+        自己按「查询会返回的顺序」摆预置行。
         """
 
         self._record(statement)
         if str(statement).lstrip().upper().startswith("SELECT COUNT("):
             return CountResult(self._count_rows(statement))
+        model = _orm_model_of(statement)
+        if model is not None:
+            return _Rows(self._select_rows(statement, model))
         return _Rows(self._tenant_ids)
+
+    def _select_rows(self, statement: Any, model: type) -> list[Any]:
+        """``select(Model)`` → 预置行里匹配的那几条（过滤 + 切片，不排序）。"""
+
+        rows = list(self._rows.get(model, []))
+        criterion = getattr(statement, "whereclause", None)
+        if criterion is not None:
+            rows = [row for row in rows if _matches_where(row, criterion)]
+        offset = getattr(statement, "_offset", None) or 0
+        limit = getattr(statement, "_limit", None)
+        rows = rows[offset:]
+        return rows if limit is None else rows[:limit]
 
     def _record(self, statement: Any) -> None:
         """记下一条 SQL 文本（按调用顺序）。"""
@@ -328,6 +427,21 @@ class RecordingSession(EmptySession):
         """本次真正写入的某类行；断言「只写了该写的表」比数总数更准。"""
 
         return [obj for obj in self.added if isinstance(obj, model)]
+
+    def share_rows_with(self, other: RecordingSession) -> None:
+        """与另一个替身**共用同一份行**（同一个 ``dict``，因此也是同一批列表）。
+
+        迁移期一个用例里会同时出现两套栈：``POST /console/login`` 仍然写同步会话，
+        之后那几条只读请求读异步会话（票 #129）。两个替身各存一份行的话，登录刚写下的
+        会话行在异步那侧看不见，症状是「登录成功、下一个请求 20010」——而那会被误读成
+        cookie 没带上。共享之后，两个替身看到的是**同一个库**，与生产里同一个库被两套
+        连接池读到的情况一致。
+
+        只共享行，不共享计数（``added`` / ``statements`` / ``commits``）：它们回答的是
+        「这一侧做了什么」，混在一起就断言不出「读路径没有写」。
+        """
+
+        self._rows = other._rows
 
 
 class TransactionalSession(RecordingSession):
@@ -476,3 +590,16 @@ class AsyncRecordingSession(RecordingSession):
 
     async def close(self) -> None:
         super().close()
+
+
+def async_mirror(session: RecordingSession) -> AsyncRecordingSession:
+    """给同一个假库造一个**异步替身**（共享行）：迁移期一个用例里两套栈看同一个库。
+
+    控制面只读接口走异步会话、登录与写入仍走同步会话（票 #129）。用例里两种会话都要
+    换掉，而它们必须看到**同一批行**——否则登录刚写下的会话行在异步那侧不存在，症状是
+    「登录成功、下一个请求 20010」（见 :meth:`RecordingSession.share_rows_with`）。
+    """
+
+    mirror = AsyncRecordingSession()
+    mirror.share_rows_with(session)
+    return mirror

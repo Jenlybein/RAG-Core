@@ -200,18 +200,22 @@ class _FakeRedis:
 
 
 class _RedisPlanCache:
-    """只认 plan id 的内存缓存：本票不关心缓存策略，别让它去连真 Redis。"""
+    """只认 plan id 的内存缓存：本票不关心缓存策略，别让它去连真 Redis。
+
+    三个方法都是 ``async``（票 #129）：生产实现握的是 ``redis.asyncio`` 客户端，替身必须
+    同形，否则「忘了 await」会变成一条 500 而不是「缓存没命中」。
+    """
 
     def __init__(self) -> None:
         self.items: dict[int, Any] = {}
 
-    def get(self, plan_id: int) -> Any:
+    async def get(self, plan_id: int) -> Any:
         return self.items.get(plan_id)
 
-    def set(self, plan_id: int, plan: Any) -> None:
+    async def set(self, plan_id: int, plan: Any) -> None:
         self.items[plan_id] = plan
 
-    def delete(self, plan_id: int) -> None:
+    async def delete(self, plan_id: int) -> None:
         self.items.pop(plan_id, None)
 
 

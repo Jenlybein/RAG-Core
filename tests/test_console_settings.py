@@ -38,7 +38,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.runtime_setting import RuntimeSetting
 from app.models.tenant import Tenant
 from app.services import runtime_settings
-from tests.fake_db import RecordingSession
+from tests.fake_db import async_mirror, MemoryPlanCache, RecordingSession
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -75,22 +75,6 @@ class _MemorySettingsCache:
         self.payload = None
 
 
-class _MemoryPlanCache:
-    """套餐缓存的内存假实现：登录成功要读套餐，真 Redis 会把用例拖成「看机器脸色」。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
 
 
 @dataclass(frozen=True)
@@ -211,17 +195,20 @@ def console() -> Any:
 
     main = importlib.import_module("app.main")
     session_module = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     saved = settings.model_dump()
     runtime_settings.reset_runtime_state()
     db = RecordingSession(rows=_world())
     cache = _MemorySettingsCache()
-    plan_cache = _MemoryPlanCache()
+    plan_cache = MemoryPlanCache()
     set_settings_cache(cache)
     # 中间件自己开会话（它拿不到 Depends）；注入同一个假会话，于是刷新路径也在测试里。
     runtime_settings.set_session_factory(lambda: db)
     main.app.dependency_overrides[session_module.get_db] = lambda: db
+    # 配置清单的 GET 走异步会话（票 #129），PATCH 仍是同步；两个替身共享同一份行。
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: async_mirror(db)
     main.app.dependency_overrides[console_deps.get_runtime_settings_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: plan_cache
     try:
