@@ -252,35 +252,49 @@ def _fake_task() -> Any:
 
 
 class _TaskSession:
-    """任务体用到的最小会话替身（不碰数据库）。"""
+    """任务体用到的最小**异步**会话替身（不碰数据库）。"""
 
-    def rollback(self) -> None:
+    def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
+
+    async def rollback(self) -> None:
         return None
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         return None
 
-    def close(self) -> None:
+    async def close(self) -> None:
+        return None
+
+    async def flush(self) -> None:
         return None
 
 
 def _patch_task_runtime(monkeypatch: pytest.MonkeyPatch, service: Any) -> None:
     from app.tasks import indexing as tasks
 
-    monkeypatch.setattr(tasks, "SessionLocal", _TaskSession)
+    monkeypatch.setattr(tasks, "async_session_factory", lambda: _TaskSession)
     monkeypatch.setattr(tasks, "IndexingService", lambda: service)
-    monkeypatch.setattr(tasks.runtime_settings, "ensure_runtime_overrides", lambda _db: None)
-    monkeypatch.setattr(tasks, "_mark_failed", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(tasks.runtime_settings, "ensure_runtime_overrides", lambda: None)
+
+    async def _mark_failed(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(tasks, "_mark_failed", _mark_failed)
 
 
-def test_the_worker_task_closes_the_clients_it_built(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Worker 每个任务一个 loop：任务体在这个 loop 里建、也在这个 loop 里关。
+def test_the_worker_task_keeps_the_clients_it_built_across_tasks(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Worker 一个进程一个常驻循环：任务建的客户端**不归任务关**，跨任务复用。
 
-    任务体外层只有 ``asyncio.run(...)``，所以收尾必须写在协程的 ``finally`` 里——
-    等 ``asyncio.run`` 返回时那个 loop 已经关了，届时再关只会得到
-    ``RuntimeError: Event loop is closed``（改造前的噪音正是这么来的）。
+    改造前每个任务 ``asyncio.run`` 一次，收尾必须写在协程的 ``finally`` 里（否则那个循环
+    一关，客户端就再也没人关得掉）。ADR-0023 选了常驻循环之后，那句 ``finally`` 的含义
+    反过来了：它等于**每个任务都把共享客户端关掉**，复用立刻归零。收尾上移到
+    ``WorkerLoop.shutdown``（``worker_process_shutdown`` 触发）。
     """
 
+    from app.db.worker_loop import get_worker_loop, shutdown_worker_loop
     from app.tasks import indexing as tasks
 
     created: list[_FakeClient] = []
@@ -300,17 +314,27 @@ def test_the_worker_task_closes_the_clients_it_built(monkeypatch: pytest.MonkeyP
     _patch_task_runtime(monkeypatch, _Service())
 
     tasks._run_indexing(_fake_task(), "doc-1", tenant_id="t", kb_id="kb-1")
-
     assert len(created) == 1
-    assert created[0].is_closed is True
-    assert len(http_clients._CLIENTS) == 0, "注册表里不许留下绑在已关闭 loop 上的条目"
+    assert created[0].is_closed is False, "任务结束时不许关共享客户端：下一个任务还要用它"
+    assert len(http_clients._CLIENTS) == 1, "注册表里的条目属于那个仍然活着的常驻循环"
+
+    # 第二个任务：同一个客户端，仍然没被关——这就是「连接复用」在客户端侧的样子。
+    tasks._run_indexing(_fake_task(), "doc-2", tenant_id="t", kb_id="kb-1")
+    assert len(created) == 1, "第二个任务不该再建一个客户端"
+    assert created[0].is_closed is False
+
+    shutdown_worker_loop()
+    assert created[0].is_closed is True, "确定性释放发生在 Worker 退出，而不是任务结束"
+    assert len(http_clients._CLIENTS) == 0
+    assert get_worker_loop().alive is False
 
 
-def test_the_worker_task_closes_them_even_when_indexing_fails(
+def test_the_worker_task_leaves_the_clients_open_even_when_indexing_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """失败路径同样要收：漏得最厉害的一次总是「跑挂了的那个任务」。"""
+    """失败路径同理：客户端属于循环，不属于「这一条跑挂了的任务」。"""
 
+    from app.db.worker_loop import shutdown_worker_loop
     from app.tasks import indexing as tasks
 
     created: list[_FakeClient] = []
@@ -331,4 +355,6 @@ def test_the_worker_task_closes_them_even_when_indexing_fails(
 
     tasks._run_indexing(_fake_task(), "doc-1", tenant_id="t", kb_id="kb-1")
 
+    assert created[0].is_closed is False
+    shutdown_worker_loop()
     assert created[0].is_closed is True

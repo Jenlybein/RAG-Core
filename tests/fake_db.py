@@ -129,10 +129,13 @@ class _Rows:
     def scalar_one_or_none(self) -> Any:
         """按 id + 租户点查一行的收尾（``execute(select(...)).scalar_one_or_none()``）。
 
-        第 11 步票 #127 起请求会话（异步替身）要回答「这个库对这个租户可不可见」——
-        真 ``Result`` 本来就有这个方法。空行回 ``None``、恰好一行回那一行，多于一行
-        按 SQLAlchemy 的口径**报错**：多行说明查询条件写错了，静默取第一条正是最难查的
-        那类假绿。
+        第 11 步票 #127 起请求会话（异步替身）要回答「这个库对这个租户可不可见」，票 #132
+        起上传登记也走同一条收尾——真 ``Result`` 本来就有这个方法。空行回 ``None``、
+        恰好一行回那一行，多于一行按 SQLAlchemy 的口径**报错**：多行说明查询条件写错了，
+        静默取第一条正是最难查的那类假绿。
+
+        这类查询的 ``id`` 是主键，真库上不可能多行，所以那条纪律在这里**从不会误伤**
+        正常数据——它只在假数据构造错了的时候响，而那正是应该响的时候。
         """
 
         if not self._values:
@@ -409,6 +412,19 @@ class AsyncSessionAdapter:
 
     async def get(self, *args: Any, **kwargs: Any) -> Any:
         return self._inner.get(*args, **kwargs)
+
+    # 收尾三件套也必须是 ``async def``：票 #132 起数据面上传声明了请求级的
+    # ``Depends(get_async_transaction)``，那条依赖在出块时 ``await session.commit()`` /
+    # ``rollback()``。只透传同步方法的话，``await None`` 会在**被拒的请求**上炸成
+    # ``TypeError``——而那条用例想断言的只是「回哪个业务码」。
+    async def flush(self) -> Any:
+        return self._inner.flush()
+
+    async def commit(self) -> Any:
+        return self._inner.commit()
+
+    async def rollback(self) -> Any:
+        return self._inner.rollback()
 
     async def close(self) -> Any:
         return self._inner.close()

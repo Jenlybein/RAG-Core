@@ -60,7 +60,11 @@ EXPECTED_UPLOAD_DATA = {
 
 
 class _FakeSession:
-    """最小会话替身：文档行留在内存里，不碰数据库，只记录提交次数。"""
+    """最小**异步**会话替身：文档行留在内存里，不碰数据库，只记录提交次数。
+
+    票 #132 起上传端点用的是 ``AsyncSession``（``Depends(get_async_db)``）；``add`` 与真
+    会话一样是同步的，其余是协程。
+    """
 
     def __init__(self) -> None:
         self.info: dict[str, Any] = {}
@@ -72,20 +76,20 @@ class _FakeSession:
         self.added.append(doc)
         self.documents[doc.id] = doc
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         return None
 
-    def execute(self, _statement: Any) -> Any:
+    async def execute(self, _statement: Any) -> Any:
         # 上传前的静态配额（单库文档数 / 并发处理数）各数一次行：替身回 0。
         return ZERO_COUNT
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         self.commit_count += 1
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         return None
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
 
 
@@ -98,7 +102,7 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
     """
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
     from app.api.deps import get_current_key
@@ -115,14 +119,23 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
         settings={},
     )
 
+    async def _visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return kb
+
+    def _visible_kb_sync(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return kb
+
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: kb)
+    # 两个名字都要换：上传（异步栈）读 ``get_by_id_for_tenant_async``，列文档那条还是同步栈
+    # （随票 #129 / #130 搬）。迁移期同一份用例同时喂两条会话，是这一片的形状。
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant_async", _visible_kb)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb_sync)
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
     )
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:

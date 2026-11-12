@@ -23,9 +23,9 @@
 from pathlib import Path
 
 import structlog
-from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
+from app.db.dual_session import DBSession
 from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.knowledge_base import FORMAT_MARKDOWN, KnowledgeBase, formats_of
@@ -34,7 +34,7 @@ from app.repositories import document_repository
 from app.services import static_quota
 from app.services.document_storage import source_type_of, store_document_file
 from app.services.index_dispatch import enqueue_document
-from app.services.knowledge_base_access import ensure_visible
+from app.services.knowledge_base_access import ensure_visible_async
 from app.utils.id_generator import new_document_id
 from app.utils.status import DocumentStatus
 
@@ -65,7 +65,7 @@ def admit_upload(kb: KnowledgeBase, *, filename: str | None) -> str:
 
 
 async def upload(
-    db: Session,
+    db: DBSession,
     *,
     tenant_id: str,
     kb_id: str,
@@ -84,14 +84,22 @@ async def upload(
     准入在**分配 ID 与落盘之前**判定：被拒的请求不留下存储文件、文档记录或索引任务。
     静态配额（单库文档数与并发处理数）紧跟在准入之后、**同样在落行与入队之前**：
     被拒的上传既不该占存储，也不该占一个 Worker 名额。
+
+    会话类型是 ``DBSession``（同步或异步）：数据面上传已经是 ``AsyncSession``（第 11 步
+    票 #132），而**控制面上传**（``POST /console/knowledge-bases/{kb_id}/documents`` →
+    ``console_kb_service.upload_document``）拿的还是同步 ``Session``，要到票 #130 才换；
+    两边**必须是同一份实现**。差异收在 ``app/db/dual_session.py``，本函数读起来与真异步
+    一致。
     """
 
-    kb = ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
+    kb = await ensure_visible_async(db, tenant_id=tenant_id, kb_id=kb_id)
     source_type = admit_upload(kb, filename=filename)
 
     # 两条静态配额在这里一起判：上传是唯一会同时撞上「单库文档数」与「并发处理数」的
     # 动作，绑成一个函数之后，第二个上传入口很难只接一半。
-    static_quota.ensure_upload_quota(db, tenant_id=tenant_id, kb_id=kb_id, plan=plan)
+    await static_quota.ensure_upload_quota_async(
+        db, tenant_id=tenant_id, kb_id=kb_id, plan=plan
+    )
 
     document_id = new_document_id()
 
@@ -121,7 +129,7 @@ async def upload(
             status=DocumentStatus.PROCESSING,
         )
 
-    document_repository.create(db, doc)
+    await document_repository.create_async(db, doc)
     # 投递排在提交**之后**（after_commit），不是「先 commit 再投递」：登记与它可能带着
     # 的审计行属于同一笔请求事务，提交之前投递会让 Worker 去读一行还没落库的文档。
     # 顺序上仍然保证「行先落地、任务后出发」，Worker 崩溃时这张行也还在，留待租约过期

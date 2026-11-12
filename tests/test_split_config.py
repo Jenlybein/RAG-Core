@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from datetime import datetime
 from types import SimpleNamespace
@@ -75,7 +76,7 @@ def client() -> Any:
     session = importlib.import_module("app.db.session")
     fake = _FakeSession()
 
-    main.app.dependency_overrides[session.get_db] = lambda: fake
+    main.app.dependency_overrides[session.get_db] = lambda: fake
 
 
     main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
@@ -289,11 +290,11 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     service_module = importlib.import_module("app.services.indexing_service")
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
-    monkeypatch.setattr(
-        repo,
-        "get_split_config",
-        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400),
-    )
+    async def _split_config(_db, _kb_id, *, tenant_id: str):
+        return (SPLIT_SIZE, 400)
+
+    # 票 #132 起索引流水线走异步会话，库级切块配置读的是异步孪生。
+    monkeypatch.setattr(repo, "get_split_config_async", _split_config)
 
     service = service_module.IndexingService(
         splitter=None,
@@ -302,7 +303,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     )
     doc = SimpleNamespace(kb_id="kb-1", tenant_id="tenant-demo")
 
-    splitter, strategy = service._resolve_splitter(None, doc)
+    splitter, strategy = asyncio.run(service._resolve_splitter(None, doc))
 
     assert strategy == SPLIT_SIZE
     assert isinstance(splitter, WindowTextSplitter)
@@ -322,7 +323,7 @@ def test_injected_splitter_wins_over_kb_config(monkeypatch) -> None:
     )
     doc = SimpleNamespace(kb_id="kb-1", tenant_id="tenant-demo")
 
-    splitter, strategy = service._resolve_splitter(None, doc)
+    splitter, strategy = asyncio.run(service._resolve_splitter(None, doc))
 
     assert splitter is injected
     assert strategy == SPLIT_STRUCTURE

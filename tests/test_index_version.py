@@ -111,16 +111,22 @@ def test_add_chunks_falls_back_to_the_default_index_version(chunk_session: Sessi
 
 
 class _FakeSession:
-    """索引编排只用到 ``commit``；这里只记录次数，不碰数据库。"""
+    """索引编排只用到 ``commit`` / ``rollback``；这里只记录次数，不碰数据库。
+
+    票 #132 起流水线跑在 ``AsyncSession`` 上，替身因此是异步面。
+    """
 
     def __init__(self) -> None:
         self.info: dict[str, Any] = {}
         self.commits = 0
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         self.commits += 1
 
-    def flush(self) -> None:
+    async def rollback(self) -> None:
+        return None
+
+    async def flush(self) -> None:
         return None
 
 
@@ -183,9 +189,18 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
     embeddings = _StubEmbeddings()
     store = _RecordingStore()
 
-    monkeypatch.setattr(document_repository, "get_by_id", lambda _db, _id: document)
-    monkeypatch.setattr(document_repository, "try_claim_for_indexing", lambda *_a, **_k: True)
-    monkeypatch.setattr(document_repository, "update_status", lambda *_a, **_k: None)
+    async def _get_by_id(_db: Any, _id: str) -> Any:
+        return document
+
+    async def _claim(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    async def _update_status(*_a: Any, **_k: Any) -> None:
+        return None
+
+    monkeypatch.setattr(document_repository, "get_by_id_async", _get_by_id)
+    monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "update_status_async", _update_status)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",

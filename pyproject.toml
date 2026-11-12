@@ -79,6 +79,7 @@ dev = [
     "ruff==0.17.3",
     "mypy==2.4.1",
     "pre-commit==4.7.0",
+    "aiosqlite>=0.22.1",
 ]
 
 # 根目录同时有 app 与 migrations 两个 Python 包时，setuptools 无法猜主包，

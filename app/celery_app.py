@@ -21,12 +21,24 @@ Worker 启动入口：
 ``include=["app.tasks.indexing", "app.tasks.side_evidence"]`` 是 Worker 能认出任务的前提：Worker 从本模块启动
 时只会 import 这里显式列出的模块；缺了它，``enqueue_document`` 投出去的任务会被
 当作 "Received unregistered task" 消费掉，整条索引流水线静默不跑。
+
+**Worker 子进程的事件循环在这里起、也在这里收**（第 11 步票 #132 / ADR-0023）：
+
+* ``worker_process_init`` → :func:`app.db.worker_loop.get_worker_loop`：让「起不来」暴露在
+  **启动阶段**，而不是第一个索引任务上；
+* ``worker_process_shutdown`` → :func:`app.db.worker_loop.shutdown_worker_loop`：在循环
+  **还活着的时候** ``dispose`` 异步引擎、关掉该循环名下的 HTTP 客户端，然后才停循环。
+
+没有这两个信号时连接只能等进程退出被 GC 丢掉（ADR-0023 的探针实测：服务端会话还开着、
+池槽位永久 checked out）。``app/db/worker_loop.py`` 另有 ``atexit`` 兜底，但 prefork 子进程
+可能走 ``os._exit``，所以**信号才是主路径**。
 """
 
 from celery import Celery
-from celery.signals import worker_process_init
+from celery.signals import worker_process_init, worker_process_shutdown
 
 from app.core.config import settings
+from app.db.worker_loop import get_worker_loop, shutdown_worker_loop
 from app.utils import tokenizer
 
 celery_app = Celery(
@@ -55,3 +67,25 @@ def _verify_tokenizer(**_kwargs: object) -> None:
     """
 
     tokenizer.verify_ready()
+
+
+@worker_process_init.connect
+def _start_worker_loop(**_kwargs: object) -> None:
+    """起常驻事件循环（ADR-0023 决策二）：异步连接池跟着它活，任务之间复用。
+
+    在这里**真的把线程起起来**（``start()`` 而不只是拿到单例）：线程起不来、循环不可用
+    属于部署问题，应当在 Worker 启动阶段就让子进程失败，而不是让第一条任务各自撞一次
+    超时。任务体里的 ``run()`` 也会惰性调一次 ``start()``（幂等），所以这条只是把失败提前。
+    """
+
+    get_worker_loop().start()
+
+
+@worker_process_shutdown.connect
+def _stop_worker_loop(**_kwargs: object) -> None:
+    """确定性释放：在循环还活着的时候 ``dispose`` 引擎、关该循环名下的 HTTP 客户端。
+
+    重复关停是幂等的；每一步失败只记 warning——收尾阶段抛异常会盖掉真正的退出原因。
+    """
+
+    shutdown_worker_loop()

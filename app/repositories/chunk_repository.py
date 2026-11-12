@@ -7,8 +7,13 @@
 **两个面，一条语句**（第 11 步票 #127）：检索链路上那三条读（折叠回查 meta、折叠取整节、
 空结果计数）各自有一个 ``*_async`` 孪生，与同步版**共用同一个语句构造器**。语句写两遍是
 迁移期最容易漂移的东西——两边的租户过滤、版本过滤、排序一旦分叉，症状是「异步路径偶尔
-多出几条别人的切片」这种事后极难查的故障。写侧（``delete_by_document_id``）仍只有同步面：
-索引链路跑在 Celery 里，本票不动它。
+多出几条别人的切片」这种事后极难查的故障。
+
+**文档列表的分组计数也有异步孪生**（第 11 步票 #132）：``count_by_document_ids_async``
+与同步版共用 ``_count_by_document_ids_statement``。列文档那条路由目前仍走同步版，孪生
+留给它换栈时用；会话类型是 ``DBSession``（同步或异步），删除条件见
+``app/db/dual_session.py``。写侧的 ``delete_by_document_id`` 仍只有同步面——purge 走的是
+存储抽象（``app/services/chunk_store.py``），不经过它。
 """
 
 from collections.abc import Iterable, Sequence
@@ -18,6 +23,8 @@ from sqlalchemy import Integer, Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.db import dual_session
+from app.db.dual_session import DBSession
 from app.models.chunk import Chunk
 
 
@@ -235,12 +242,31 @@ def count_by_document_ids(
 
     if not document_ids:
         return {}
-    stmt = (
+    stmt = _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
+    return {document_id: int(count) for document_id, count in db.execute(stmt).all()}
+
+
+def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str):
+    """「每份文档各有几片」的那一条分组计数（同步与异步孪生共用）。"""
+
+    return (
         select(Chunk.document_id, func.count())
         .where(Chunk.document_id.in_(document_ids), Chunk.tenant_id == tenant_id)
         .group_by(Chunk.document_id)
     )
-    return {document_id: int(count) for document_id, count in db.execute(stmt).all()}
+
+
+async def count_by_document_ids_async(
+    db: DBSession, document_ids: list[str], *, tenant_id: str
+) -> dict[str, int]:
+    """一次分组查询拿回 ``{document_id: 切片数}``（语义同 :func:`count_by_document_ids`）。"""
+
+    if not document_ids:
+        return {}
+    result = await dual_session.execute(
+        db, _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
+    )
+    return {document_id: int(count) for document_id, count in result.all()}
 
 
 def delete_by_document_id(db: Session, document_id: str) -> None:

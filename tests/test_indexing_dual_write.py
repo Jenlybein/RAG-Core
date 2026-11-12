@@ -45,6 +45,29 @@ RETRIEVAL_TEXT = f"文档：售后手册 章节：{HEADING} 正文：{ORIGINAL}"
 
 
 class _FakeSession:
+    """最小**异步**会话替身（票 #132 起流水线跑在 ``AsyncSession`` 上）。"""
+
+    def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
+        self.commits = 0
+        self.rollbacks = 0
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+    async def rollback(self) -> None:
+        self.rollbacks += 1
+
+    async def flush(self) -> None:
+        return None
+
+    async def delete(self, _row: Any) -> None:
+        return None
+
+
+class _SyncFakeSession:
+    """最小**同步**会话替身：删除路由还没换栈（随票 #130），用的是同步会话。"""
+
     def __init__(self) -> None:
         self.info: dict[str, Any] = {}
         self.commits = 0
@@ -129,9 +152,16 @@ def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]
     document = SimpleNamespace(
         id=DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, title="售后手册", content="raw", doc_version=1
     )
-    monkeypatch.setattr(document_repository, "get_by_id", lambda _db, _id: document)
-    monkeypatch.setattr(document_repository, "try_claim_for_indexing", lambda *_a, **_k: True)
-    monkeypatch.setattr(document_repository, "update_status", _record_update_status)
+
+    async def _get_by_id(_db: Any, _id: str) -> Any:
+        return document
+
+    async def _claim(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(document_repository, "get_by_id_async", _get_by_id)
+    monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "update_status_async", _record_update_status)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
@@ -142,7 +172,9 @@ def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]
 _STATUS_CALLS: list[tuple[int, str | None]] = []
 
 
-def _record_update_status(_db: Any, _target: Any, status: int, error: str | None = None) -> None:
+async def _record_update_status(
+    _db: Any, _target: Any, status: int, error: str | None = None
+) -> None:
     _STATUS_CALLS.append((status, error))
 
 
@@ -261,7 +293,7 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
     routes = importlib.import_module("app.api.routes.documents")
 
     calls: list[str] = []
-    session = _FakeSession()
+    session = _SyncFakeSession()
     vector = _RecordingStore(calls)
     provider = _RecordingKeywordProvider(calls)
     document = SimpleNamespace(

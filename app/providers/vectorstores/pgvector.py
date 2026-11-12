@@ -6,15 +6,20 @@ score = 1 - 余弦距离，在 Python 侧换算成「越大越相关」；SQL �
 **读侧是异步的**（第 11 步票 #127）：``similarity_search*`` 收的是 ``AsyncSession``，
 ``await db.execute(...)`` 之后那条同步 psycopg 查询不再存在——检索链路上因此没有任何
 「会卡住事件循环的同步调用」，第 10 步的执行池（``app/core/loop_pool.py``）也就不需要了。
-写侧（``add_chunks`` / ``delete_by_document_id``）仍收同步 ``Session``：索引链路跑在
-Celery 里，那一侧由它自己的票搬。
+
+**写侧的会话类型是 ``DBSession``**（第 11 步票 #132）：索引链路与数据面删除已经是
+``AsyncSession``，控制面删除要到票 #130 才换，两边共用这一份实现（见
+``app/db/dual_session.py``）。两个方向刻意不共用同一个类型：写方法一旦收窄成同步
+``Session``，索引链路就会在迁移里悄悄退回阻塞事件循环的那一侧；读侧改收 ``DBSession``
+则会让检索链路上多一次运行期判断。
 """
 
 from sqlalchemy import and_, delete, false, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 from sqlalchemy.sql.elements import ColumnElement
 
+from app.db import dual_session
+from app.db.dual_session import DBSession
 from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk
 from app.models.document import Document
 from app.providers.vectorstores.base import VectorStore
@@ -43,7 +48,7 @@ def build_scope_filter(index_versions: dict[str, str]) -> ColumnElement[bool]:
 
 
 class PgVectorStore(VectorStore):
-    async def add_chunks(self, db: Session, chunks: list[dict]) -> None:
+    async def add_chunks(self, db: DBSession, chunks: list[dict]) -> None:
         db.add_all(
             [
                 Chunk(
@@ -60,7 +65,7 @@ class PgVectorStore(VectorStore):
                 for c in chunks
             ]
         )
-        db.flush()
+        await dual_session.flush(db)
 
     async def similarity_search(
         self,
@@ -145,9 +150,10 @@ class PgVectorStore(VectorStore):
         ]
 
     async def delete_by_document_id(
-        self, db: Session, document_id: str, *, tenant_id: str
+        self, db: DBSession, document_id: str, *, tenant_id: str
     ) -> None:
-        db.execute(
-            delete(Chunk).where(Chunk.document_id == document_id, Chunk.tenant_id == tenant_id)
+        await dual_session.execute(
+            db,
+            delete(Chunk).where(Chunk.document_id == document_id, Chunk.tenant_id == tenant_id),
         )
-        db.flush()
+        await dual_session.flush(db)

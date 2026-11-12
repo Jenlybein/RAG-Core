@@ -235,6 +235,22 @@ class WorkerLoop:
 
         engine = self._engine
         if engine is not None:
+            # 观测（ADR-0023「连接数有上限、有观测」）：关停前把池的读数记一行。上限是配置
+            # （``pool_size + max_overflow``），这里是它到底用掉了多少；泄漏的样子就是
+            # 关停时 ``checked_out`` 还不为 0（被放弃的连接连 dispose 都救不回来）。
+            pool = getattr(engine, "pool", None)
+            if pool is not None:
+                try:
+                    logger.info(
+                        "worker_loop_pool_state",
+                        loop=self._name,
+                        pool_size=pool.size(),
+                        checked_out=pool.checkedout(),
+                    )
+                except Exception:  # noqa: BLE001 - 观测失败不许挡住关停
+                    logger.warning(
+                        "worker_loop_pool_state_failed", loop=self._name, exc_info=True
+                    )
             try:
                 await engine.dispose()
             except Exception:  # noqa: BLE001 - 关停路径不抛

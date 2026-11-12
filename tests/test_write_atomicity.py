@@ -95,6 +95,15 @@ def console(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(
         knowledge_base_repository, "get_by_id_for_tenant", lambda *_a, **_k: kb
     )
+
+    async def _visible_kb_async(*_a: Any, **_k: Any) -> Any:
+        return kb
+
+    # 控制面上传复用的是数据面那个 ``document_service.upload``，它已经是异步栈（票 #132），
+    # 所以库可见性读的是异步孪生。整笔事务仍然只有一笔（控制面路由上的同步事务依赖）。
+    monkeypatch.setattr(
+        knowledge_base_repository, "get_by_id_for_tenant_async", _visible_kb_async
+    )
     main.app.dependency_overrides[session_module.get_db] = lambda: session
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_console_account] = lambda: ConsoleIdentity(

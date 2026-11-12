@@ -428,12 +428,28 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         removed.append(path)
         document_storage.remove_document_file(path)
 
+    async def _kb_lookup_async(db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        return _kb_lookup(db, kb_id, tenant_id=tenant_id)
+
+    async def _count_documents_async(_db: Any, kb_id: str, *, tenant_id: str) -> int:
+        return _count_documents(_db, kb_id, tenant_id=tenant_id)
+
+    async def _count_processing_async(_db: Any, *, tenant_id: str, **_kwargs: Any) -> int:
+        return _count_processing(_db, tenant_id=tenant_id)
+
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
     monkeypatch.setattr(kb_repository, "get_by_id_for_tenant", _kb_lookup)
+    # 控制面上传复用的是数据面那个 ``document_service.upload``，它已经是异步栈（票 #132）：
+    # 于是同一条路径既要同步孪生（控制面自己的守卫 / 列表）也要异步孪生（共用的登记）。
+    monkeypatch.setattr(kb_repository, "get_by_id_for_tenant_async", _kb_lookup_async)
     monkeypatch.setattr(document_repository, "get_by_id_for_tenant", _document_lookup)
     monkeypatch.setattr(document_repository, "list_by_kb", _list_documents)
     monkeypatch.setattr(document_repository, "count_by_kb", _count_documents)
     monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing)
+    monkeypatch.setattr(document_repository, "count_by_kb_async", _count_documents_async)
+    monkeypatch.setattr(
+        document_repository, "count_processing_for_tenant_async", _count_processing_async
+    )
     monkeypatch.setattr(document_repository, "prepare_for_indexing", _prepare)
     monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks)
     monkeypatch.setattr(console_kb_service, "get_vector_store", lambda: store)

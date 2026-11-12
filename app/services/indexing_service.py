@@ -10,6 +10,12 @@
    在同一段事务里提交：调用方永远不会看到「旧切片没了、新切片还没写」或
    「切片写好了、状态还是处理中」的中间态。异常时由调用方（Celery 任务）回滚。
 
+**第 11 步票 #132 起，这条流水线跑在异步栈上**：会话是 ``AsyncSession``（Worker 常驻
+循环里那一个，见 ``app/db/worker_loop.py``），两次提交走 ``async_commit_now``——提交点
+仍然只来自 ``app.db.transaction``。**解析仍然同步**（``prepare_document_content`` 与解析
+库不改）：Celery prefork 每个子进程同一时刻只跑一个任务，把 CPU 活丢进线程只会多一层，
+换不来任何并发（ADR-0023「并发由进程数给，不由循环数给」）。
+
 **索引权只由 Worker 抢占。** 入队侧（重建端点 / 运维脚本）已经用
 ``prepare_for_indexing`` 把文档置成「已排队、未开工」（不盖租约），Worker 进来后
 用 ``try_claim_for_indexing(allow_success=False)`` 盖租约。``allow_success=False``
@@ -42,10 +48,11 @@ from __future__ import annotations
 from typing import Any
 
 import structlog
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.db.transaction import commit_now
+from app.db.dual_session import DBSession
+from app.db.transaction import async_commit_now
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
@@ -72,7 +79,7 @@ INDEXING_FAILED_MESSAGE = "document indexing failed, please retry or contact sup
 
 
 async def purge_document_chunks(
-    db: Session, document_id: str, *, tenant_id: str, stores: list[ChunkStore]
+    db: DBSession, document_id: str, *, tenant_id: str, stores: list[ChunkStore]
 ) -> None:
     """先删后写的第一半：遍历**存储列表**，逐个清除该文档的旧切片。
 
@@ -80,6 +87,9 @@ async def purge_document_chunks(
     （见 ``app.services.chunk_store``），所以以后加第三个存储只需在默认接线里
     往 ``stores`` 追加一个元素，调用方一行都不用改。``tenant_id`` 是强制过滤参数
     （ADR-0006），连删除也必须带租户。
+
+    会话类型是 ``DBSession``：数据面删除与 Worker 索引走 ``AsyncSession``，控制面删除
+    要到票 #130 才换（见 ``app/db/dual_session.py``）。
     """
 
     for store in stores:
@@ -108,7 +118,7 @@ class IndexingService:
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
 
-    def _resolve_splitter(self, db: Session, doc: Document) -> tuple[TextSplitter, str]:
+    async def _resolve_splitter(self, db: DBSession, doc: Document) -> tuple[TextSplitter, str]:
         """按文档所属知识库的配置构造切块器，返回 (切块器, 策略名)。
 
         策略与窗口必须来自知识库而不是全局配置：同一个库里混用两种切法会让片长
@@ -124,14 +134,14 @@ class IndexingService:
                 else SPLIT_STRUCTURE
             )
             return self._splitter, injected
-        strategy, chunk_size = knowledge_base_repository.get_split_config(
+        strategy, chunk_size = await knowledge_base_repository.get_split_config_async(
             db, doc.kb_id, tenant_id=doc.tenant_id
         )
         splitter = build_splitter(strategy, chunk_size=chunk_size)
         return splitter, strategy
 
     async def index_existing_document(
-        self, db: Session, document_id: str, *, reparse: bool = False
+        self, db: AsyncSession, document_id: str, *, reparse: bool = False
     ) -> int:
         """把一份已经登记在库的文档索引成切片，返回写入的切片数。
 
@@ -139,18 +149,23 @@ class IndexingService:
         ``allow_success=False``：force 重建的 SUCCESS→PROCESSING 状态准备已经在
         路由层用 ``prepare_for_indexing`` 完成，Worker 只负责抢租约与执行，迟到
         重复投递不能重新抢占成功文档。
+
+        会话是 ``AsyncSession``（Worker 常驻循环里那一个），两段事务的提交点是
+        ``app.db.transaction`` 的异步孪生 ``async_commit_now``；**提交次数与改造前
+        逐条相同**：抢占后一次、purge + 写入 + 状态回写一次。异常路径不在这里回滚——
+        由任务体（``app/tasks/indexing.py``）回滚并置失败，与同步栈时同一分工。
         """
 
-        doc = document_repository.get_by_id(db, document_id)
+        doc = await document_repository.get_by_id_async(db, document_id)
         if doc is None:
             raise AppError(ErrorCode.NOT_FOUND, "document not found")
 
         # Tx1：抢占后立刻提交，只持锁一瞬间。抢不到说明另一个 Worker 已经在跑
         # 这份文档（重复投递 / 重试），直接跳过，绝不重复向量化。
-        claimed = document_repository.try_claim_for_indexing(
+        claimed = await document_repository.try_claim_for_indexing_async(
             db, document_id, tenant_id=doc.tenant_id, allow_success=False
         )
-        commit_now(db)
+        await async_commit_now(db)
         if not claimed:
             logger.info(
                 "indexing skipped, another worker owns it",
@@ -164,7 +179,7 @@ class IndexingService:
 
         # 切块器按**所属知识库**的配置现建：策略与窗口是库级属性，同一个库里
         # 混用两种切法会让片长不可比。
-        splitter, split_strategy = self._resolve_splitter(db, doc)
+        splitter, split_strategy = await self._resolve_splitter(db, doc)
         pieces = splitter.split(parsed.content)
         if not pieces:
             raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "切块之后没有可用切片")
@@ -258,8 +273,8 @@ class IndexingService:
         for store in self._stores:
             await store.add_chunks(db, chunks)
 
-        document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
-        commit_now(db)
+        await document_repository.update_status_async(db, doc, DocumentStatus.SUCCESS)
+        await async_commit_now(db)
         logger.info(
             "document indexed",
             document_id=document_id,

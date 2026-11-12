@@ -39,6 +39,7 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import ErrorCode
+from app.db.dual_session import DBSession
 from app.models.plan import PlanSpec
 from app.repositories import document_repository, knowledge_base_repository
 from app.services.quota_limits import ensure_under_limit
@@ -105,4 +106,43 @@ def _ensure_under(*, used: int, limit: int, what: str, plan: PlanSpec) -> None:
         code=ErrorCode.QUOTA_EXCEEDED,
         what=what,
         suffix=f"(plan {plan.code!r})",
+    )
+
+
+# ───────────────────────────────────── 异步孪生（第 11 步票 #132：上传登记链路）
+#
+# 判据、错误码（20014）与文案逐字相同，只是数行那两次查询走异步会话。``ensure_kb_quota``
+# 没有孪生：建库在控制面，随票 #130 一起搬。
+
+
+async def ensure_upload_quota_async(
+    db: DBSession, *, tenant_id: str, kb_id: str, plan: PlanSpec
+) -> None:
+    """:func:`ensure_upload_quota` 的异步孪生：两条上限**都在这里**，不拆给调用方。"""
+
+    used_documents = await document_repository.count_by_kb_async(
+        db, kb_id, tenant_id=tenant_id
+    )
+    _ensure_under(
+        used=used_documents,
+        limit=plan.max_documents_per_kb,
+        what=f"document count of knowledge base {kb_id}",
+        plan=plan,
+    )
+    await ensure_processing_quota_async(db, tenant_id=tenant_id, plan=plan)
+
+
+async def ensure_processing_quota_async(
+    db: DBSession, *, tenant_id: str, plan: PlanSpec
+) -> None:
+    """:func:`ensure_processing_quota` 的异步孪生（上传与重建都调它）。"""
+
+    used = await document_repository.count_processing_for_tenant_async(
+        db, tenant_id=tenant_id
+    )
+    _ensure_under(
+        used=used,
+        limit=plan.max_processing_documents,
+        what=f"concurrently processing documents of tenant {tenant_id}",
+        plan=plan,
     )

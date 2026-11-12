@@ -10,13 +10,20 @@
 
 **异步面**（第 11 步票 #127）：:func:`get_by_id_for_tenant_async` 是同一个入口的异步版，
 与同步版共用一条语句（:func:`_by_id_for_tenant_statement`）。检索链路走异步面，控制面与
-上传仍走同步面——迁移按垂直切片推进，两面并存期间**语句只有一份**。
+运维脚本仍走同步面——迁移按垂直切片推进，两面并存期间**语句只有一份**。
+
+**上传登记也走异步面**（第 11 步票 #132）：上传与索引链路换栈后，取库与取切块配置各有
+一个异步孪生（:func:`get_by_id_for_tenant_async` / :func:`get_split_config_async`）。
+异步孪生的会话类型是 ``DBSession`` 而不是 ``AsyncSession``：可见性守卫要同时喂**纯异步的
+检索链路**与**仍在双栈上的上传登记**，后者的一半调用方（控制面上传）拿的还是同步
+``Session``——谁还是同步、哪张票搬完，写在 ``app/db/dual_session.py`` 的删除条件里。
 """
 
 from sqlalchemy import Select, func, select
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.db import dual_session
+from app.db.dual_session import DBSession
 from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase, settings_of
 
 
@@ -30,8 +37,8 @@ def _by_id_for_tenant_statement(kb_id: str, *, tenant_id: str) -> Select[tuple[K
     """「按 id **且**租户取一行」的唯一语句：同步面与异步面共用同一条。
 
     语句只写一次的理由与「唯一入口」相同：迁移期两个面并存，各拼一遍 SQL 就是两份
-    可能漂移的租户过滤。检索链路走 :func:`get_by_id_for_tenant_async`，控制面与上传
-    仍走同步版；两边发出的 SQL 因此逐字相同。
+    可能漂移的租户过滤。检索链路与上传登记走 :func:`get_by_id_for_tenant_async`，
+    控制面与运维脚本走同步版；两边发出的 SQL 因此逐字相同。
     """
 
     return select(KnowledgeBase).where(
@@ -52,16 +59,24 @@ def get_by_id_for_tenant(db: Session, kb_id: str, *, tenant_id: str) -> Knowledg
 
 
 async def get_by_id_for_tenant_async(
-    db: AsyncSession, kb_id: str, *, tenant_id: str
+    db: DBSession, kb_id: str, *, tenant_id: str
 ) -> KnowledgeBase | None:
-    """:func:`get_by_id_for_tenant` 的异步面（检索链路，第 11 步票 #127）。
+    """:func:`get_by_id_for_tenant` 的异步面（检索链路 #127，上传登记 #132）。
 
-    语义、租户口径与返回形状与同步版逐字一致，只是 ``execute`` 要 ``await``。
-    它是**同一条语句**的另一个面，不是另一份实现（见 :func:`_by_id_for_tenant_statement`）。
+    语义、租户口径与返回形状与同步版逐字一致，只是 ``execute`` 要 ``await``。它是
+    **同一条语句**的另一个面，不是另一份实现（见 :func:`_by_id_for_tenant_statement`）。
+
+    会话是 ``DBSession``：唯一调用方是 ``knowledge_base_access.ensure_visible_async``，
+    而它要同时服务纯异步的检索链路与仍在双栈上的上传登记（控制面上传拿的还是同步
+    ``Session``，票 #130 才换）。收窄成 ``AsyncSession`` 与 ``app/db/dual_session.py``
+    的删除是同一件事。
     """
 
-    result = await db.execute(_by_id_for_tenant_statement(kb_id, tenant_id=tenant_id))
-    return result.scalar_one_or_none()
+    result = await dual_session.execute(
+        db, _by_id_for_tenant_statement(kb_id, tenant_id=tenant_id)
+    )
+    kb: KnowledgeBase | None = result.scalar_one_or_none()
+    return kb
 
 
 def get_owner_tenant_id(db: Session, kb_id: str) -> str | None:
@@ -125,3 +140,26 @@ def count_by_tenant(db: Session, tenant_id: str) -> int:
         .where(KnowledgeBase.tenant_id == tenant_id)
     )
     return int(db.execute(stmt).scalar_one())
+
+
+# ───────────────────────────────────── 异步面（第 11 步票 #132：上传登记链路）
+#
+# 取库与取切块配置各有一个异步孪生：上传登记与索引链路换栈后走这两条。会话类型是
+# ``DBSession``，理由与 ``app/db/dual_session.py`` 的删除条件同源（控制面写仍同步）。
+
+
+async def get_split_config_async(
+    db: DBSession, kb_id: str, *, tenant_id: str
+) -> tuple[str, int]:
+    """取该库的切块配置 ``(strategy, chunk_size)``（语义同 :func:`get_split_config`）。
+
+    调用方是索引链路（Worker 常驻循环里的 ``AsyncSession``）；同步版留给控制面与
+    运维脚本。判定与回退口径与同步版逐字相同，不在这里另写一遍。
+    """
+
+    kb: KnowledgeBase | None = await dual_session.get(db, KnowledgeBase, kb_id)
+    if kb is None or kb.tenant_id != tenant_id:
+        values = settings_of(None)
+        return SPLIT_STRUCTURE, values["chunk_size"]
+    values = settings_of(kb)
+    return kb.split_strategy, values["chunk_size"]
