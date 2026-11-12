@@ -10,7 +10,8 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_key
 from app.core.auth import DevKeyContext
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction
 from app.models.knowledge_base import formats_of, settings_of
 from app.repositories import knowledge_base_repository
 from app.schemas.common import ApiResponse, ok
@@ -35,6 +36,7 @@ async def create_knowledge_base(
     payload: CreateKBRequest,
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(get_current_key),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[CreateKBData]:
     data = await knowledge_base_service.create_kb(
         db,

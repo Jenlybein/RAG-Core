@@ -114,6 +114,7 @@ class _FakeSession:
     """索引编排只用到 ``commit``；这里只记录次数，不碰数据库。"""
 
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self.commits = 0
 
     def commit(self) -> None:

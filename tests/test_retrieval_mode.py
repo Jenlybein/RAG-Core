@@ -29,6 +29,7 @@ from app.services.result_collapse import OVERFETCH_FACTOR
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.services.retrieval_options import RetrievalOptions
+from tests import fake_db
 from tests.fake_db import EmptySession
 from tests.retrieval_identity import RetrievalIdentity
 
@@ -161,7 +162,10 @@ def offline_retrieval(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+
+
+    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app) as client:

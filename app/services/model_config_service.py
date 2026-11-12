@@ -339,7 +339,6 @@ def create_config(
         before=None,
         after=_masked_snapshot(spec),
     )
-    db.commit()
     return ConfigRowView(
         spec=spec, roles=(), created_at=row.created_at, updated_at=row.updated_at
     )
@@ -375,7 +374,6 @@ def patch_config(
         before=before if changed else None,
         after=after if changed else None,
     )
-    db.commit()
     return ConfigPatchResult(
         config_id=config_id, before=before, after=after, changed=tuple(sorted(changed))
     )
@@ -402,7 +400,6 @@ def delete_config(db: Session, *, actor: Any, config_id: str) -> str:
         before=before,
         after=None,
     )
-    db.commit()
     return config_id
 
 
@@ -426,7 +423,6 @@ def reveal_secret(db: Session, *, actor: Any, config_id: str) -> str:
             "api_key": mask_secret(row.api_key or ""),
         },
     )
-    db.commit()
     return row.api_key or ""
 
 

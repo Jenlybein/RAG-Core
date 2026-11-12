@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 
 from app.api.console_deps import require_console_tenant, require_console_tenant_write
 from app.core.console_auth import ConsoleIdentity
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_keys import (
     KeyData,
@@ -58,6 +59,7 @@ def issue_key(
     payload: KeyIssueRequest,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[KeyData]:
     """签发：``{label, policy}`` → 一把新 Key + 它引用的配置 + 一条审计。
 
@@ -82,6 +84,7 @@ def delete_key(
     key_id: str,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[KeyDeleteData]:
     """删 Key。配置独立于 Key，删凭证不连带删配置；跨租户按不存在（``20016``）。"""
 
@@ -99,6 +102,7 @@ def patch_key_policy(
     payload: KeyPolicyPatchRequest,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[KeyPolicyPatchData]:
     """改配置的五组字段；档位越出套餐白名单 / 超限额 → ``20015``，跨租户 → ``20016``。"""
 

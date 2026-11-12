@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
+from app.db.transaction import commit_now
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, plan_row_of
 from app.models.tenant import (
     DEMO_TENANT_PLAN_CODE,
@@ -60,7 +61,7 @@ def seed_plans(db: Session) -> PlanSeedStats:
 
     for code in PLAN_CODES:
         plan_repository.create(db, plan_row_of(PLAN_PRESETS[code]))
-    db.commit()
+    commit_now(db)
     return PlanSeedStats(inserted=len(PLAN_CODES))
 
 
@@ -101,5 +102,5 @@ def backfill_tenants(
         )
         created += 1
 
-    db.commit()
+    commit_now(db)
     return TenantBackfillStats(considered=len(tenant_ids), created=created, kept=kept)

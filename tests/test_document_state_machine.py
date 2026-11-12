@@ -350,6 +350,7 @@ class _FakeSession:
     """最小会话替身：只记录 purge / 删文件 / 删行 / 提交的调用顺序，不碰数据库。"""
 
     def __init__(self, calls: list[str] | None = None) -> None:
+        self.info: dict[str, Any] = {}
         self.calls = calls if calls is not None else []
         self.deleted: list[Any] = []
         self.commits = 0

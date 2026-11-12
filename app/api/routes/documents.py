@@ -5,8 +5,12 @@
     其余 = JSON 模式）。只登记 + 投递索引任务，立即返回 ``status=3``。
   * ``GET /documents?kb_id=`` —— 该知识库下的文档列表，异步化后调用方唯一的进度观测口。
   * ``POST /documents/{document_id}/reindex?reparse=&force=`` —— 单文档重建：守卫 →
-    标记排队（不盖租约）→ 提交 → 投递；purge、抢占与写入仍只在 Worker 的事务里发生。
+    标记排队（不盖租约）→ 由请求事务提交 → 投递；purge、抢占与写入仍只在 Worker
+    的事务里发生。
   * ``DELETE /documents/{document_id}`` —— 守卫通过后按租户清除切片、删原文件、删记录。
+
+三条写入口都声明 ``Depends(get_transaction)``：一个请求一笔事务，成功提交、异常回滚，
+提交点只在 :mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
 
 按 ``document_id`` 取文档一律经 ``get_by_id_for_tenant``（ADR-0006）：缺失与跨租户
 统一按「不存在」（20016）处理，不泄露存在性。守卫一律走 ``document_state`` 的
@@ -25,7 +29,8 @@ from app.api.deps import get_current_key
 from app.api.upload_parsing import parse_upload_request, submitted_request_id
 from app.core.auth import DevKeyContext
 from app.core.exceptions import AppError, ErrorCode
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction, after_commit
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository, document_repository
@@ -64,6 +69,7 @@ async def upload_document(
     file: UploadFile | None = File(None),
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(get_current_key),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[UploadDocumentData]:
     """单端点按 content-type 分流：multipart 走文件模式，其余走 JSON 模式。
 
@@ -157,8 +163,9 @@ async def reindex_document(
     force: bool = Query(False),
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(get_current_key),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[ReindexDocumentData]:
-    """守卫 → 标记排队（不盖租约）→ 提交 → 投递，立即返回 ``status=3``。
+    """守卫 → 标记排队（不盖租约）→ 由 ``tx`` 提交 → 投递，立即返回 ``status=3``。
 
     顺序是契约的一部分：先按 id + 租户取文档（缺失 / 跨租户统一 20016），再走
     ``ensure_reindexable``（有效处理中 20025；成功且未 ``force`` 20027），然后
@@ -194,14 +201,16 @@ async def reindex_document(
     )
     if not prepared:
         raise AppError(ErrorCode.DOCUMENT_IS_PROCESSING)
-    db.commit()
 
-    enqueue_document(
-        document_id=document_id,
-        tenant_id=key.tenant_id,
-        kb_id=doc.kb_id,
-        request_id=submitted_request_id(request),
-        reparse=reparse,
+    after_commit(
+        db,
+        lambda: enqueue_document(
+            document_id=document_id,
+            tenant_id=key.tenant_id,
+            kb_id=doc.kb_id,
+            request_id=submitted_request_id(request),
+            reparse=reparse,
+        ),
     )
     logger.info(
         "document reindex accepted",
@@ -230,8 +239,9 @@ async def delete_document(
     document_id: str,
     db: Session = Depends(get_db),
     key: DevKeyContext = Depends(get_current_key),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[DeleteDocumentData]:
-    """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删行 → 提交。
+    """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删行 → 由 ``tx`` 提交。
 
     ``purge_document_chunks`` 遍历存储列表（向量存储 + 关键词检索，接线见
     ``app.services.chunk_store.build_chunk_stores``），因此删文档不需要知道存储
@@ -256,7 +266,6 @@ async def delete_document(
     )
     remove_document_file(doc.source_file_path)
     db.delete(doc)
-    db.commit()
 
     logger.info(
         "document deleted",

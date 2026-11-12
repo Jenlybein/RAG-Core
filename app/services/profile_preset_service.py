@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session
 from app.core.config import SUPPORTED_RETRIEVAL_MODES
 from app.core.console_auth import ConsoleIdentity
 from app.core.exceptions import AppError, ErrorCode
+from app.db.transaction import after_commit
 from app.core.profile_presets import (
     DEFAULT_PRESETS,
     ProfilePresetSpec,
@@ -146,9 +147,7 @@ def patch_preset(
         before=before,
         after=after,
     )
-    db.commit()
-
-    # 写完立刻装载：检索侧的注册表是本进程的快照，不刷新就要等重启才生效。
-    load_into_registry(db)
+    # 装载必须等库先落地：注册表是本进程的快照，提交前装载会把旧值读回去。
+    after_commit(db, lambda: load_into_registry(db))
 
     return {"before": before, "after": after, "changed": changed}

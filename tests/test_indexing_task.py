@@ -50,6 +50,7 @@ class _FakeSession:
     """最小会话替身：只记录 commit / rollback / close，不碰数据库。"""
 
     def __init__(self, calls: list[str] | None = None) -> None:
+        self.info: dict[str, Any] = {}
         self.calls = calls if calls is not None else []
         self.commits = 0
         self.rollbacks = 0

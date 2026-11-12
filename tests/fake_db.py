@@ -13,7 +13,22 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any
+
+
+def no_transaction() -> Iterator[Any]:
+    """写接口的「空事务」替身：与 ``get_db`` 的 ``lambda: object()`` 配对使用。
+
+    写接口在路由签名上声明了 ``Depends(get_transaction)``，而有些用例走的是**失败路径**
+    （越权、校验不通过、配额超限），根本不该碰库。那些用例把 ``get_db`` 换成 ``object()``
+    之后，事务入口也会拿到这个 ``object()`` 并试图挂 ``session.info``——于是失败原因变成
+    ``AttributeError``，而不是它们真正想断言的错误码。
+
+    这个替身把请求边界挡在数据库之外，让那些用例继续只断言「响应是什么」。
+    """
+
+    yield object()
 
 
 class _EmptyResult:
@@ -39,7 +54,15 @@ class _EmptyResult:
 
 
 class EmptySession:
-    """不做任何事的会话：写入被忽略，查询返回空。"""
+    """不做任何事的会话：写入被忽略，查询返回空。
+
+    ``info`` 是 SQLAlchemy 会话上给调用方留的那个字典：事务入口把「当前这一笔」挂在
+    这里（见 ``app.db.transaction``），所以替身必须有它，否则「写路径在事务里」这件事
+    在离线套件里根本跑不起来。
+    """
+
+    def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
 
     def execute(self, *_args: Any, **_kwargs: Any) -> _EmptyResult:
         return _EmptyResult()
@@ -162,6 +185,7 @@ class RecordingSession(EmptySession):
         rows: dict[type, list[Any]] | None = None,
         tenant_ids: list[str] | None = None,
     ) -> None:
+        super().__init__()
         self._rows = {model: list(items) for model, items in (rows or {}).items()}
         self._tenant_ids = list(tenant_ids or [])
         self.added: list[Any] = []
@@ -242,3 +266,56 @@ class RecordingSession(EmptySession):
         """本次真正写入的某类行；断言「只写了该写的表」比数总数更准。"""
 
         return [obj for obj in self.added if isinstance(obj, model)]
+
+
+class TransactionalSession(RecordingSession):
+    """有**事务语义**的假会话：提交才落库，回滚撤销这一笔里的全部写入。
+
+    ``RecordingSession`` 是「写完就在那儿」的：它适合断言「该写哪些行」，但答不了
+    「这一笔提交了吗」——而票 #124 要验的正是后者（审计与业务要么都有、要么都没有）。
+
+    这里在第一次写入时给三份可观测状态拍一张快照（``_rows`` / ``added`` / ``deleted``），
+    ``commit`` 丢掉快照（改动留下），``rollback`` 用快照复原（改动消失）。于是
+    「服务中途抛错 → 整笔回滚」在离线套件里可以被直接看见，而不必连真库。
+
+    快照在**第一次写入**时拍，不是构造时：事务入口开在请求里，而请求开始前
+    ``_rows`` 里的预置行是「上一笔已经提交过」的数据，不该被这一笔的回滚带走。
+    """
+
+    def __init__(
+        self,
+        *,
+        rows: dict[type, list[Any]] | None = None,
+        tenant_ids: list[str] | None = None,
+    ) -> None:
+        super().__init__(rows=rows, tenant_ids=tenant_ids)
+        self._snapshot: tuple[dict[type, list[Any]], list[Any], list[Any]] | None = None
+
+    def _begin(self) -> None:
+        if self._snapshot is None:
+            self._snapshot = (
+                {model: list(items) for model, items in self._rows.items()},
+                list(self.added),
+                list(self.deleted),
+            )
+
+    def add(self, obj: Any) -> None:
+        self._begin()
+        super().add(obj)
+
+    def delete(self, obj: Any) -> None:
+        self._begin()
+        super().delete(obj)
+
+    def commit(self) -> None:
+        self._snapshot = None
+        super().commit()
+
+    def rollback(self) -> None:
+        if self._snapshot is not None:
+            rows, added, deleted = self._snapshot
+            self._rows = {model: list(items) for model, items in rows.items()}
+            self.added = list(added)
+            self.deleted = list(deleted)
+            self._snapshot = None
+        super().rollback()

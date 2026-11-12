@@ -20,6 +20,8 @@ from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi.testclient import TestClient
 
+from tests import fake_db
+
 AUTHORITATIVE_DOC = Path(__file__).resolve().parents[1] / "docs" / "设计决策.md"
 
 
@@ -90,7 +92,9 @@ def client(offline_embedding):
 
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: object()
+
+    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
     from app.core.config import settings

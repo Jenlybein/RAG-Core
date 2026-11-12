@@ -27,7 +27,8 @@ from sqlalchemy.orm import Session
 
 from app.api.console_deps import get_console_admin, require_console_admin_write
 from app.core.console_auth import ConsoleIdentity
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_models import (
     ModelConfigCreateRequest,
@@ -94,6 +95,7 @@ def create_model_config(
     payload: ModelConfigCreateRequest,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[ModelConfigData]:
     """新增：``label`` / ``provider`` / ``model`` 非空且 ``provider`` 属于注册表，
     否则 ``20015``（一条都不写）。写入同时留一条 ``model.create`` 审计。"""
@@ -120,6 +122,7 @@ def patch_model_config(
     payload: ModelConfigPatchRequest,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[ModelConfigPatchData]:
     """部分更新；校验规则与新增同一套（供应商注册表 / 非空 / 长度）。"""
 
@@ -138,6 +141,7 @@ def delete_model_config(
     config_id: str,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[ModelConfigDeleteData]:
     """删一条配置。仍被任一角色指向 → ``20015``，先改指向（见服务层的同一条判定）。"""
 
@@ -154,6 +158,7 @@ def reveal_model_config_secret(
     config_id: str,
     identity: ConsoleIdentity = Depends(get_console_admin),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[ModelConfigSecretData]:
     """返回一次明文。**读门**（管理员即可，不查防跨站头）；后端每次都记账（``model.reveal``）。
 

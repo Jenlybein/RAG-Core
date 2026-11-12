@@ -1,6 +1,8 @@
-"""建库业务：生成 kb_id → 校验配置 → 落库 → 提交。
+"""建库业务：生成 kb_id → 校验配置 → 落库。
 
-Service 是全链路唯一 commit 的地方；Repository 与 Provider 都不提交。
+**这里不提交**：提交点是调用方的边界（数据面路由的 ``Depends(get_transaction)``，
+或控制面那条把「建库 + 审计」圈进同一笔的路由依赖）。仓储只 ``flush``，服务只写，
+全仓唯一的提交点在 :mod:`app.db.transaction`。
 
 策略与白名单在这里一次性定下来：``resolve_formats`` 既补默认值也拒绝矛盾组合。
 把校验放服务层而不是路由：将来若有第二个建库入口（CLI、导入），它同样受约束。
@@ -38,13 +40,11 @@ async def create_kb(
     plan: PlanSpec,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     allowed_formats: Sequence[str] | None = None,
-    commit: bool = True,
 ) -> dict:
-    """建库；``commit=False`` 交给调用方把「写入 + 审计」收进同一个事务。
+    """建库：判定（策略 / 配额 / 格式）→ 落一行，**不提交**。
 
-    控制面的建库要连同一条审计一起提交（不允许出现「建了库、却没账本」的窗口），
-    而数据面没有审计、照旧由这里提交。判定（策略 / 配额 / 格式）与提交时机无关，
-    因此两个入口共用同一份实现。
+    两个入口（数据面、控制面）共用这一份判定；控制面额外写一条审计，两条写入由同一个
+    请求事务一起提交，于是「建了库、却没账本」的窗口不存在。
     """
 
     try:
@@ -66,8 +66,6 @@ async def create_kb(
         settings={"chunk_size": chunk_size},
     )
     knowledge_base_repository.create(db, kb)
-    if commit:
-        db.commit()
     values = settings_of(kb)
     return {
         "kb_id": kb.id,

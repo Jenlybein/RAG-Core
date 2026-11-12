@@ -47,7 +47,7 @@ def issue_api_key(
     api_key = create_api_key_row(
         db, tenant_id=tenant_id, policy_id=policy_id, label=label
     )
-    db.commit()
+    # 提交点不在这里：脚本用 ``with transaction(db)`` 圈住，请求路径由路由的事务依赖兜住。
     return api_key
 
 

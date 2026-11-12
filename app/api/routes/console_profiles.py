@@ -25,7 +25,8 @@ from sqlalchemy.orm import Session
 from app.api.console_deps import get_console_admin, require_console_admin_write
 from app.core.console_auth import ConsoleIdentity
 from app.core.profile_presets import ProfilePresetSpec
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction
 from app.models.key_policy import PROFILES
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_profiles import (
@@ -73,6 +74,7 @@ def patch_profile_preset(
     profile: str = Path(description="档位名：speed / balanced / quality / custom"),
     identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[ProfilePresetPatchData]:
     result = profile_preset_service.patch_preset(
         db,

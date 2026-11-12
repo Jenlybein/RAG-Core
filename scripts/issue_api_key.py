@@ -24,6 +24,7 @@ from pathlib import Path
 
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal
+from app.db.transaction import transaction
 from app.services.api_key_service import issue_api_key
 
 # scripts* 不在安装包里，把自身目录放进 sys.path 才能导入 _ops_common（见该模块文档）。
@@ -69,11 +70,12 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        api_key = issue_api_key(
-            db, tenant_id=args.tenant_id, policy_id=args.policy_id, label=args.label
-        )
+        with transaction(db):
+            api_key = issue_api_key(
+                db, tenant_id=args.tenant_id, policy_id=args.policy_id, label=args.label
+            )
     except (LookupError, ValueError) as exc:
-        db.rollback()
+        # 回滚已由上面的 with transaction(db) 做过，这里不再重复。
         print(str(exc), file=sys.stderr)
         return 1
     finally:

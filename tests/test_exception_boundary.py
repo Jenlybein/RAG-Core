@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests import fake_db
+
 _VALID_PAYLOAD = {
     "kb_ids": ["kb-1"],
     "query": "hello",
@@ -75,7 +77,9 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     service = importlib.import_module("app.services.rag_service")
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _OfflineEmbeddingProvider())
     session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    main.app.dependency_overrides[session.get_db] = lambda: object()
+
+    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
     from app.core.config import settings

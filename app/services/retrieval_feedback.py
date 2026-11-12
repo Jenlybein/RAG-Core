@@ -22,6 +22,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
+from app.db.transaction import commit_now
 from app.db.session_factory import close_quietly, session_factory
 from app.observability import emit_feedback_score
 from app.repositories import retrieval_feedback_repository, retrieval_trace_repository
@@ -121,7 +122,7 @@ def _write_locally(
             score=score,
             comment=comment,
         )
-        session.commit()
+        commit_now(session)
     except Exception as exc:  # noqa: BLE001 - 任何写库失败都翻译成同一个业务码
         logger.warning(
             FEEDBACK_WRITE_FAILED_MESSAGE,

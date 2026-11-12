@@ -63,6 +63,7 @@ class _FakeSession:
     """最小会话替身：文档行留在内存里，不碰数据库，只记录提交次数。"""
 
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self.added: list[Any] = []
         self.documents: dict[str, Any] = {}
         self.commit_count = 0

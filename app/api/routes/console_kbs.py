@@ -35,7 +35,8 @@ from app.api.console_deps import (
 from app.api.upload_parsing import parse_upload_request, submitted_request_id
 from app.core.console_auth import ConsoleIdentity
 from app.core.plan_cache import PlanCache
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_kbs import (
     ConsoleUploadDocumentRequest,
@@ -105,8 +106,12 @@ async def create_knowledge_base(
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     cache: PlanCache = Depends(get_plan_cache),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[CreateKBData]:
-    """建库：租户只来自会话；套餐校验与建库规则复用 ``knowledge_base_service``。"""
+    """建库：租户只来自会话；套餐校验与建库规则复用 ``knowledge_base_service``。
+
+    建库行与它那条审计由 ``tx`` 一笔提交：审计写不进去时库也不会留下。
+    """
 
     data = await console_kb_service.create_kb(
         db,
@@ -131,6 +136,7 @@ def delete_knowledge_base(
     kb_id: str = Path(..., min_length=1),
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[DeleteKnowledgeBaseData]:
     """删空库：非空 ``20015``、缺失/跨租户 ``20008``；不做级联删除。"""
 
@@ -153,11 +159,13 @@ async def upload_document(
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     cache: PlanCache = Depends(get_plan_cache),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[UploadDocumentData]:
     """单端点按 content-type 分流；登记与投递复用 ``document_service.upload``。
 
     分流与错误体在 :mod:`app.api.upload_parsing`（与数据面共用同一段实现）；这里只把
-    解析结果整份交给服务层，``kb_id`` 来自路径而不是表单。
+    解析结果整份交给服务层，``kb_id`` 来自路径而不是表单。登记行与账本行由 ``tx``
+    一笔提交，投递登记在这笔提交之后。
     """
 
     upload = await parse_upload_request(
@@ -196,8 +204,9 @@ def reindex_document(
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     cache: PlanCache = Depends(get_plan_cache),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[ReindexDocumentData]:
-    """守卫 → 准备入队（不盖租约）→ 审计 + 提交 → 投递，立即回 ``status=3``。"""
+    """守卫 → 准备入队（不盖租约）→ 审计（同一笔事务）→ 投递，立即回 ``status=3``。"""
 
     data = console_kb_service.reindex_document(
         db,
@@ -221,8 +230,9 @@ async def delete_document(
     document_id: str = Path(..., min_length=1),
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[DeleteDocumentData]:
-    """purge 切片 → 删原文件 → 删行 → 审计 → 提交；有效处理中拒绝（20025）。"""
+    """purge 切片 → 删原文件 → 删行 → 审计 → 由 ``tx`` 提交；有效处理中拒绝（20025）。"""
 
     data = await console_kb_service.delete_document(
         db, tenant_id=tenant_id_of(identity), document_id=document_id, actor=identity

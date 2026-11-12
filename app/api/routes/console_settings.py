@@ -31,7 +31,8 @@ from app.api.console_deps import (
 )
 from app.core.console_auth import ConsoleIdentity
 from app.core.runtime_settings_cache import CACHE_TTL_SECONDS, RuntimeSettingsCache
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import ImpactGroupData
 from app.schemas.console_settings import (
@@ -142,6 +143,7 @@ def patch_settings(
     dry_run: bool = Query(default=True, description="true 只试算，false 才落库"),
     identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
     cache: RuntimeSettingsCache = Depends(get_runtime_settings_cache),
 ) -> ApiResponse[SettingsPatchData]:
     """配置的**唯一**写入口：白名单与档位 → 逐键校验 → 键间校验 → 落库 + 审计 → 删缓存。

@@ -138,7 +138,7 @@ def update_key_policy(
     """
 
     result = apply_key_policy_update(db, policy_id=policy_id, changes=changes)
-    db.commit()
+    # 同上：提交点不在这里。
     return result
 
 

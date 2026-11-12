@@ -38,6 +38,7 @@ from sqlalchemy.orm import Session
 from app.core.console_auth import ConsoleIdentity
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
+from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.knowledge_base import KnowledgeBase, formats_of, settings_of
 from app.models.plan import PlanSpec
@@ -156,11 +157,12 @@ async def create_kb(
     chunk_size: int,
     allowed_formats: Sequence[str] | None,
 ) -> dict[str, Any]:
-    """建库：套餐校验与落库复用 ``knowledge_base_service``，审计与写入同一个事务。"""
+    """建库：套餐校验与落库复用 ``knowledge_base_service``，审计与写入同一个事务。
+
+    提交点是路由上的 ``Depends(get_transaction)``：这里只写，不提交。
+    """
 
     plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
-    # commit=False：审计与建库必须一起提交，否则会有一个「库已经能用、账本里还没有」
-    # 的窗口。判定与默认值处理仍全部走 create_kb，控制面不复制一份建库规则。
     data = await knowledge_base_service.create_kb(
         db,
         name=name,
@@ -170,7 +172,6 @@ async def create_kb(
         plan=plan,
         chunk_size=chunk_size,
         allowed_formats=allowed_formats,
-        commit=False,
     )
     append_audit(
         db,
@@ -180,7 +181,6 @@ async def create_kb(
         before=None,
         after=_kb_snapshot_of_data(data),
     )
-    db.commit()
     return data
 
 
@@ -205,7 +205,6 @@ def delete_empty_kb(
         before=before,
         after=None,
     )
-    db.commit()
     return {"kb_id": kb_id, "deleted": True}
 
 
@@ -224,10 +223,9 @@ async def upload_document(
 ) -> dict[str, Any]:
     """上传文档：登记 + 投递复用 ``document_service.upload``，立即回 ``status=3``。
 
-    ``document_service.upload`` 自己提交登记（并在提交后投递），审计只能在它之后
-    单独落一条。这是本次唯一一处没有和写入同事务的审计：要把它并进去就得拆分
-    「登记 / 提交 / 投递」三步，等于在控制面复制一份上传编排，而票面要求复用的
-    正是那一段。窗口的代价是「文档已登记、账本晚一拍」，不会反过来。
+    ``document_service.upload`` 只登记、不提交（投递也由它登记在提交之后），所以这里的
+    审计与登记行**落在同一笔请求事务里**：审计写不进去时登记也不落库，不会留下「文档
+    已登记、账本里没有」的窗口。整笔的提交点是路由上的 ``Depends(get_transaction)``。
     """
 
     plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
@@ -250,7 +248,6 @@ async def upload_document(
         before=None,
         after=_document_submission_snapshot(result, title=title, filename=filename),
     )
-    db.commit()
     return result
 
 
@@ -265,11 +262,12 @@ def reindex_document(
     cache: PlanCache,
     request_id: str | None,
 ) -> dict[str, Any]:
-    """单文档重建：守卫 → 准备入队 → 审计 + 提交 → 投递，立即回 ``status=3``。
+    """单文档重建：守卫 → 准备入队 → 审计（同一笔事务）→ 投递，立即回 ``status=3``。
 
     顺序与数据面逐字一致：先按 id + 租户取（缺失/跨租户 20016），再
     ``ensure_reindexable``（20025 / 20027），再过并发处理配额，然后
     ``prepare_for_indexing``（不盖租约）。准备失败说明这一行刚被抢先，仍按 20025。
+    投递登记在 ``after_commit`` 上：先让「已排队」这个状态落库，再让 Worker 去抢。
     """
 
     document = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=tenant_id)
@@ -304,14 +302,15 @@ def reindex_document(
             "force": force,
         },
     )
-    db.commit()
-
-    enqueue_document(
-        document_id=document_id,
-        tenant_id=tenant_id,
-        kb_id=document.kb_id,
-        request_id=request_id,
-        reparse=reparse,
+    after_commit(
+        db,
+        lambda: enqueue_document(
+            document_id=document_id,
+            tenant_id=tenant_id,
+            kb_id=document.kb_id,
+            request_id=request_id,
+            reparse=reparse,
+        ),
     )
     return {
         "document_id": document_id,
@@ -324,7 +323,7 @@ def reindex_document(
 async def delete_document(
     db: Session, *, tenant_id: str, document_id: str, actor: ConsoleIdentity
 ) -> dict[str, Any]:
-    """删除文档：守卫 → purge 切片 → 删原文件 → 删行 → 审计 → 提交。
+    """删除文档：守卫 → purge 切片 → 删原文件 → 删行 → 审计 → 由请求边界提交。
 
     顺序是契约的一部分（见 ``app/api/routes/documents.py`` 的同名端点）；审计插在
     「删行」与「提交」之间，不改动四步本身。有效处理中（租约未过期）拒绝删除；租约
@@ -351,7 +350,6 @@ async def delete_document(
         before=before,
         after=None,
     )
-    db.commit()
     return {"document_id": document_id, "deleted": True}
 
 

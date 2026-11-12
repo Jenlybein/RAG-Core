@@ -28,6 +28,7 @@ import structlog
 from sqlalchemy.orm import Session
 from structlog.contextvars import bind_contextvars, clear_contextvars
 
+from app.db.transaction import commit_now, rollback_now
 from app.celery_app import celery_app
 from app.core.exceptions import AppError, ErrorCode
 from app.core.http_clients import aclose_current_loop_clients
@@ -67,14 +68,14 @@ def _mark_failed(db: Session, document_id: str, exc: BaseException | None = None
     清 ``index_claimed_at`` 是为了让失败终态也不留下新鲜租约。
     """
 
-    db.rollback()
+    rollback_now(db)
     doc = document_repository.get_by_id(db, document_id)
     if doc is None:
         return
     document_repository.update_status(db, doc, DocumentStatus.FAILED, INDEXING_FAILED_MESSAGE)
     # 失败终态同样不保留租约：下一次重建 / 重试不能看到一份「新鲜的失败租约」。
     doc.index_claimed_at = None
-    db.commit()
+    commit_now(db)
 
 
 async def _index_in_its_own_loop(db: Session, document_id: str, *, reparse: bool) -> None:
@@ -127,9 +128,9 @@ def _run_indexing(
         if _is_retryable(exc) and self.request.retries < self.max_retries:
             # 先释放租约再重试：否则下一次尝试的 CAS 会看到仍然新鲜的租约而
             # 抢不到，重试变成静默 no-op（status 也不会变成 2）。
-            db.rollback()
+            rollback_now(db)
             document_repository.release_index_claim(db, document_id, tenant_id=tenant_id)
-            db.commit()
+            commit_now(db)
             # 必须从 except 里抛出，不能被 finally 吞掉：finally 只负责关会话、
             # 清关联标识，任何 return / 吞异常都会让重试静默失效。
             raise self.retry(exc=exc)

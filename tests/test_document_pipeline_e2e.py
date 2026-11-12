@@ -66,6 +66,7 @@ class _FakeSession:
     """``SessionLocal`` 式替身：文档行留在内存里，只记录提交 / 回滚次数。"""
 
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self._rows: dict[str, Any] = {}
         self.commits = 0
         self.rollbacks = 0

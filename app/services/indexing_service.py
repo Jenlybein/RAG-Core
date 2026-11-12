@@ -45,6 +45,7 @@ import structlog
 from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
+from app.db.transaction import commit_now
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
@@ -149,7 +150,7 @@ class IndexingService:
         claimed = document_repository.try_claim_for_indexing(
             db, document_id, tenant_id=doc.tenant_id, allow_success=False
         )
-        db.commit()
+        commit_now(db)
         if not claimed:
             logger.info(
                 "indexing skipped, another worker owns it",
@@ -258,7 +259,7 @@ class IndexingService:
             await store.add_chunks(db, chunks)
 
         document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
-        db.commit()
+        commit_now(db)
         logger.info(
             "document indexed",
             document_id=document_id,

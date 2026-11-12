@@ -431,7 +431,7 @@ _IMPACT_PATCH = {"max_kb": 2, "allowed_profiles": ["speed"]}
 def test_dry_run_returns_the_impact_but_writes_nothing(console: _Harness) -> None:
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
     console.cache.items[3] = plan_spec_of(console.plan_row(3))
-    commits_before = console.db.commits
+    added_before = len(console.db.added)
     audits_before = len(console.audit_entries())
 
     response = console.client.patch(
@@ -450,7 +450,10 @@ def test_dry_run_returns_the_impact_but_writes_nothing(console: _Harness) -> Non
         "policies_losing_profile": 1,
     }
     assert console.plan_row(3).max_kb == 50
-    assert console.db.commits == commits_before
+    # 「试算不写」断言的是**没有写行**，不是「没有提交」：一笔请求总有一笔事务，
+    # 什么都没改时它提交的是空事务（见 docs/架构.md「写路径的事务边界」）。
+    assert len(console.db.added) == added_before, "试算不许 add 任何行"
+    assert console.db.deleted == [], "试算不许删任何行"
     assert len(console.audit_entries()) == audits_before
     assert console.cache.deleted == []
 

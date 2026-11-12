@@ -46,6 +46,7 @@ RETRIEVAL_TEXT = f"文档：售后手册 章节：{HEADING} 正文：{ORIGINAL}"
 
 class _FakeSession:
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self.commits = 0
         self.rollbacks = 0
 

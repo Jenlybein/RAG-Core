@@ -27,6 +27,7 @@ from app.models.knowledge_base import (
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.splitter_factory import build_splitter
 from app.utils.text_splitter import WindowTextSplitter
+from tests import fake_db
 from tests.fake_db import ZERO_COUNT
 
 CREATE_PATH = "/api/v1/knowledge-bases/create"
@@ -45,6 +46,7 @@ class _FakeSession:
     """只记录 add/flush/commit 的会话；让真实的建库服务跑完，但不碰数据库。"""
 
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self.added: list[Any] = []
         self.commits = 0
 
@@ -73,7 +75,10 @@ def client() -> Any:
     session = importlib.import_module("app.db.session")
     fake = _FakeSession()
 
-    main.app.dependency_overrides[session.get_db] = lambda: fake
+    main.app.dependency_overrides[session.get_db] = lambda: fake
+
+
+    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     try:
         with TestClient(main.app) as test_client:
             test_client.fake_session = fake  # type: ignore[attr-defined]

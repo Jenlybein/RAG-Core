@@ -100,6 +100,8 @@ class _WriteSession(EmptySession):
     """
 
     def __init__(self) -> None:
+        # ``info`` 是 SQLAlchemy 会话给调用方留的字典；事务入口把「当前这一笔」挂在上面。
+        self.info: dict[str, Any] = {}
         self.added: list[Any] = []
         self.commits = 0
         self.closed = False

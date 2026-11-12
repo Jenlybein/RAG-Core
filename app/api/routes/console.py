@@ -34,7 +34,8 @@ from app.core.console_auth import (
 )
 from app.core.plan_cache import PlanCache
 from app.core.profile_presets import get_profile_presets
-from app.db.session import get_db
+from app.db.session import get_db, get_transaction
+from app.db.transaction import Transaction
 from app.models.key_policy import PROFILES
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import (
@@ -168,6 +169,7 @@ def login(
     response: Response,
     db: Session = Depends(get_db),
     cache: PlanCache = Depends(get_plan_cache),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[MeData]:
     """账号口令 → 服务端会话行 + HttpOnly cookie；失败统一 ``20010``，超限 ``20005``。
 
@@ -199,6 +201,7 @@ def logout(
     response: Response,
     _write_header: None = Depends(require_console_write_header),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[None]:
     """服务端删行 + 客户端删 cookie：**两半都做**，少一半就留下一个还能用的会话。
 
@@ -254,8 +257,9 @@ def patch_plan(
     identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
     cache: PlanCache = Depends(get_plan_cache),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[PlanPatchData]:
-    """套餐的**唯一**写入口：校验 → 试算 → 落库 + 审计 → 删缓存。"""
+    """套餐的**唯一**写入口：校验 → 试算 → 落库 + 审计（同一笔事务）→ 提交后删缓存。"""
 
     result = console_service.patch_plan(
         db,
@@ -318,6 +322,7 @@ def patch_account(
     payload: AccountPatchRequest,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
     db: Session = Depends(get_db),
+    tx: Transaction = Depends(get_transaction),
 ) -> ApiResponse[AccountPatchData]:
     """改一个账号：三项字段全量校验后再落库，并写一条带前后快照的审计。"""
 

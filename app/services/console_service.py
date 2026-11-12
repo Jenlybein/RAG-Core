@@ -2,15 +2,17 @@
 
 写入口刻意只有两条（:func:`patch_plan` / :func:`patch_account`），每条都走同一套收口：
 
-    校验 → （可选）试算 → 落库（与审计同一个事务）→ 删套餐缓存
+    校验 → （可选）试算 → 落库（与审计同一个事务）→ 提交后删套餐缓存
 
 三处顺序都是被理由钉住的，不是随手排的：
 
 - **校验在任何写入之前**：一次请求里改了三项，其中一项非法时不能留下「改了一半」的库；
 - **审计与改动同一个事务**：不允许出现「改了但没有审计」的窗口。审计落库失败就让整次
-  改动一起回滚——没有账本的改动本来就不该生效；
-- **删缓存放在 commit 之后**：先删再提交时，另一个请求可能刚好读回旧行并把它写回缓存，
+  改动一起回滚——没有账本的改动本来就不该生效。提交点不在这里，在路由的
+  ``Depends(get_transaction)`` 上（见 :mod:`app.db.transaction`）；
+- **删缓存放在提交之后**：先删再提交时，另一个请求可能刚好读回旧行并把它写回缓存，
   于是缓存里又留下旧值。提交后删，下一次读要么读库、要么读到别人刚填进去的新值。
+  顺序由 ``after_commit`` 保证，不是靠「先 commit 再删」的写法。
 
 登录那条路对账号是否存在**不做区分**：账号不存在时也跑一遍哈希（
 ``app.core.passwords.dummy_verify``），耗时相同才不构成用户名枚举接口。
@@ -36,6 +38,7 @@ from app.core.console_auth import (
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
 from app.db.base import now
+from app.db.transaction import after_commit
 from app.models.account import Account
 from app.models.audit_log import AuditLog
 from app.models.console_session import ConsoleSession
@@ -149,7 +152,6 @@ def login(
         expires_at=now() + timedelta(seconds=session_ttl_seconds()),
     )
     console_session_repository.create(db, session)
-    db.commit()
     return session, view_for(db, account, cache=cache)
 
 
@@ -163,7 +165,6 @@ def logout(db: Session, *, session_id: str | None) -> None:
         # 已经登出过：幂等，不报错。cookie 仍然会被路由清掉。
         return
     console_session_repository.delete(db, session)
-    db.commit()
 
 
 def me_view(db: Session, *, account_id: str, cache: PlanCache | None = None) -> ConsoleView:
@@ -268,8 +269,9 @@ def patch_plan(
             before=before,
             after=None,
         )
-        db.commit()
-        _invalidate(cache, plan_id)
+        # 删缓存，不写缓存（ADR-0017）：写要每处修改都记得同步，漏一处就留下「看起来更新过、
+        # 实际是旧值」的条目；删让下一次读自然拿到新值。排在提交之后（见模块文档）。
+        after_commit(db, lambda: _invalidate(cache, plan_id))
         return PlanPatchResult(
             plan_id=plan_id, dry_run=False, deleted=True, before=before, after=None, impact=None
         )
@@ -306,10 +308,9 @@ def patch_plan(
         before=before,
         after=after,
     )
-    db.commit()
     # 删缓存，不写缓存（ADR-0017）：写要每处修改都记得同步，漏一处就留下「看起来更新过、
-    # 实际是旧值」的条目；删让下一次读自然拿到新值。
-    _invalidate(cache, plan_id)
+    # 实际是旧值」的条目；删让下一次读自然拿到新值。排在提交之后（见模块文档）。
+    after_commit(db, lambda: _invalidate(cache, plan_id))
     return PlanPatchResult(
         plan_id=plan_id,
         dry_run=False,
@@ -416,7 +417,6 @@ def patch_account(
         before=before,
         after=after,
     )
-    db.commit()
     return AccountPatchResult(account_id=account_id, before=before, after=after)
 
 

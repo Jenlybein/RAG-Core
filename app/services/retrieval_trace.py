@@ -22,6 +22,7 @@ from __future__ import annotations
 import structlog
 from sqlalchemy.orm import Session
 
+from app.db.transaction import commit_now
 from app.db.session_factory import close_quietly, session_factory
 from app.models.retrieval_trace import RetrievalTrace
 from app.repositories import retrieval_trace_repository
@@ -69,7 +70,7 @@ def record_retrieval_trace(
                 empty_reason=empty_reason,
             ),
         )
-        session.commit()
+        commit_now(session)
     except Exception as exc:  # noqa: BLE001 - 旁路：任何失败都不许冒到检索返回值上
         logger.warning(
             TRACE_WRITE_FAILED_MESSAGE,

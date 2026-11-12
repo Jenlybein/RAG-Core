@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from app.core.config import settings
+from app.db.transaction import transaction
 from app.core.exceptions import AppError, ErrorCode
 from app.core.runtime_settings_cache import (
     reset_settings_cache,
@@ -530,9 +531,11 @@ def test_an_illegal_value_is_rejected_before_anything_is_written(cache: Any) -> 
 def test_a_real_write_persists_audits_and_deletes_the_cache(cache: Any) -> None:
     db = _session(_row("TOP_K", 5))
 
-    result = runtime_settings.patch_runtime_settings(
-        db, values={"TOP_K": 9}, dry_run=False, actor=_actor(), cache=cache
-    )
+    # 非请求边界：直接调服务要自己圈事务（见 app/db/transaction.py 的约定）。
+    with transaction(db):
+        result = runtime_settings.patch_runtime_settings(
+            db, values={"TOP_K": 9}, dry_run=False, actor=_actor(), cache=cache
+        )
 
     assert result.dry_run is False
     assert result.updated == ("TOP_K",)
@@ -582,9 +585,10 @@ def test_a_write_is_visible_to_the_next_refresh_without_waiting_for_the_ttl(cach
     runtime_settings.ensure_runtime_overrides(db, cache=cache)
     assert settings.TOP_K == 5
 
-    runtime_settings.patch_runtime_settings(
-        db, values={"TOP_K": 12}, dry_run=False, actor=_actor(), cache=cache
-    )
+    with transaction(db):
+        runtime_settings.patch_runtime_settings(
+            db, values={"TOP_K": 12}, dry_run=False, actor=_actor(), cache=cache
+        )
     runtime_settings.ensure_runtime_overrides(db, cache=cache)
 
     assert settings.TOP_K == 12

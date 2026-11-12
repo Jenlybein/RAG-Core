@@ -66,6 +66,7 @@ from app.core.runtime_settings_cache import (
     get_settings_cache,
 )
 from app.db.base import now
+from app.db.transaction import after_commit
 from app.db.session_factory import session_factory, set_session_factory as _set_session_factory
 from app.models.key_policy import KeyPolicy, policy_snapshot_of
 from app.models.plan import Plan
@@ -1251,12 +1252,10 @@ def patch_runtime_settings(
         before=before,
         after=after,
     )
-    db.commit()
-
-    # 删缓存放在 commit 之后：先删再提交时，另一个请求可能刚好读回旧行并把它写回缓存。
+    # 删缓存必须等库先落地：先删再提交时，另一个请求可能刚好读回旧行并把它写回缓存。
     # 只有热生效档需要——第二档要重启才读入，删缓存不会让任何人看到新值。
     if hot:
-        invalidate_runtime_settings(cache)
+        after_commit(db, lambda: invalidate_runtime_settings(cache))
 
     return SettingsPatchResult(
         dry_run=False,

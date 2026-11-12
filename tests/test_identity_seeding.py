@@ -12,6 +12,7 @@ import re
 
 import pytest
 
+from app.db.transaction import transaction
 from app.core.exceptions import AppError, ErrorCode
 from app.models import Tenant
 from app.models.api_key import ApiKey
@@ -154,7 +155,8 @@ def test_backfill_fails_loudly_when_the_plan_was_never_seeded() -> None:
 def test_a_new_tenant_defaults_to_the_lowest_plan() -> None:
     session = _session(plans=_plan_rows())
 
-    created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme 公司")
+    with transaction(session):
+        created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme 公司")
 
     assert DEFAULT_PLAN_CODE == "free"
     assert created.tenant.plan_id == PLAN_CODES.index(DEFAULT_PLAN_CODE) + 1
@@ -167,7 +169,8 @@ def test_a_new_tenant_gets_a_key_policy_so_a_key_can_be_issued_right_away() -> N
 
     session = _session(plans=_plan_rows())
 
-    created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme 公司", kb_ids=["kb-1"])
+    with transaction(session):
+        created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme 公司", kb_ids=["kb-1"])
 
     policy = created.policy
     assert session.added_of(KeyPolicy) == [policy]
@@ -188,7 +191,8 @@ def test_a_new_tenant_gets_a_key_policy_so_a_key_can_be_issued_right_away() -> N
 def test_a_new_tenant_can_take_a_named_plan() -> None:
     session = _session(plans=_plan_rows())
 
-    created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme", plan_code="pro")
+    with transaction(session):
+        created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme", plan_code="pro")
 
     assert created.tenant.plan_id == PLAN_CODES.index("pro") + 1
     assert created.policy.profile == "speed", "档位白名单的第一档是 speed，与套餐无关"
@@ -236,7 +240,8 @@ def test_changing_the_plan_moves_the_tenant_to_the_new_plan() -> None:
     tenant = _tenant_row(ACME_TENANT, plan_id=1)
     session = _session(plans=_plan_rows(), tenants=[tenant])
 
-    change = change_tenant_plan(session, tenant_id=ACME_TENANT, plan_code="pro")
+    with transaction(session):
+        change = change_tenant_plan(session, tenant_id=ACME_TENANT, plan_code="pro")
 
     assert (change.from_code, change.to_code) == ("free", "pro")
     assert tenant.plan_id == PLAN_CODES.index("pro") + 1
@@ -283,9 +288,10 @@ def test_issuing_a_key_binds_it_to_the_policy_and_generates_a_live_value() -> No
         policies=[_policy_row()],
     )
 
-    key = issue_api_key(
-        session, tenant_id=ACME_TENANT, policy_id=POLICY_ID, label="订单机器人"
-    )
+    with transaction(session):
+        key = issue_api_key(
+            session, tenant_id=ACME_TENANT, policy_id=POLICY_ID, label="订单机器人"
+        )
 
     assert isinstance(key, ApiKey)
     assert API_KEY_PATTERN.fullmatch(key.key_value), key.key_value

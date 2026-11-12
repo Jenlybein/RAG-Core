@@ -15,6 +15,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from tests import fake_db
 from tests.fake_db import EmptySession
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -29,7 +30,10 @@ def client():
     main = importlib.import_module("app.main")
     session = importlib.import_module("app.db.session")
 
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+
+
+    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     try:
         with TestClient(main.app) as test_client:
             yield test_client

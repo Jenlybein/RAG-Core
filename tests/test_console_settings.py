@@ -386,7 +386,6 @@ def test_dry_run_is_the_default_and_nothing_is_written(console: _Harness) -> Non
     console.add_setting("TOP_K", 5)
     updated_before = console.setting_row("TOP_K").updated_at
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
-    commits_before = console.db.commits  # 登录本身会提交一条会话行
 
     response = console.client.patch(
         "/console/settings", json={"values": {"TOP_K": 9}}, headers=WRITE_HEADERS
@@ -395,7 +394,8 @@ def test_dry_run_is_the_default_and_nothing_is_written(console: _Harness) -> Non
     data = console.data(response)
     assert data["dry_run"] is True
     assert data["updated"] == []
-    assert console.db.commits == commits_before
+    # 不数提交次数：写接口在请求边界上开一笔事务，dry_run 时它提交的是**空的一笔**。
+    # 「什么都没写」的证据是下面两条——没有行被 add、updated_at 没动。
     assert console.db.added_of(RuntimeSetting) == []
     assert console.setting_row("TOP_K").updated_at == updated_before, "dry_run 不许改 updated_at"
     assert data["impact"] is not None

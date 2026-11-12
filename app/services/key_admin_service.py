@@ -10,8 +10,9 @@
 2. **跨租户按「不存在」处理**（``20016``）。Key / 配置的主键是全局唯一的裸字符串，
    「不属于你」与「不存在」对外必须是同一个答案，否则枚举一遍 id 就知道谁的 Key 在哪；
 3. **改动与审计同一个事务**（与套餐 / 账号那两条写入口同一套收口）。签发会同时写
-   ``api_keys`` 与 ``key_policies`` 两行，也在这里一起提交：不允许出现「Key 发出去了、
-   配置没建」或「改了配置、账本里没有」的窗口。
+   ``api_keys`` 与 ``key_policies`` 两行，三条写入一起提交：不允许出现「Key 发出去了、
+   配置没建」或「改了配置、账本里没有」的窗口。提交点不在这里，在路由声明的
+   ``Depends(get_transaction)`` 上（见 :mod:`app.db.transaction`）。
 
 自洽校验不在这里重写：它只有 :func:`app.services.profile_policy.ensure_policy_consistent`
 一份，本模块只负责把它抛出的 ``AppError(20015)`` 与入参错误（``ValueError``）翻成控制面的
@@ -144,7 +145,6 @@ def issue_key(
         before=None,
         after=_key_audit_snapshot(api_key, created.policy),
     )
-    db.commit()
     return IssuedKey(api_key=api_key, policy=created.policy)
 
 
@@ -172,7 +172,6 @@ def delete_key(db: Session, *, actor: ConsoleIdentity, key_id: str) -> DeletedKe
         before=before,
         after=None,
     )
-    db.commit()
     return DeletedKey(key_id=key_id)
 
 
@@ -228,7 +227,6 @@ def patch_key_policy(
         before=update.before,
         after=update.after,
     )
-    db.commit()
     return PolicyPatchResult(
         policy_id=update.policy_id,
         before=update.before,
