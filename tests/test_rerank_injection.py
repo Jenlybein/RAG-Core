@@ -195,8 +195,18 @@ def test_the_pipeline_forwards_the_rerank_factory_to_the_stage(
     async def _no_keyword(**kwargs: Any) -> list[dict]:
         return []
 
+    async def _no_vector_branch(**kwargs: Any) -> list[dict]:
+        return []
+
+    class _InlinePool:
+        """把池换成就地执行：这条用例只关心重排注入，不该真的起线程。"""
+
+        async def run(self, factory: Any) -> Any:
+            return await factory()
+
     monkeypatch.setattr(pipeline, "rerank_stage", _fake_stage)
-    monkeypatch.setattr(pipeline, "_run_vector_branch", lambda **kwargs: [])
+    monkeypatch.setattr(pipeline, "_vector_branch_in_pool", _no_vector_branch)
+    monkeypatch.setattr(pipeline, "get_retrieval_pool", lambda: _InlinePool())
     monkeypatch.setattr(pipeline, "_keyword_branch", _no_keyword)
 
     factory = lambda: _StubRerank()  # noqa: E731 - 工厂就是一个可调用对象

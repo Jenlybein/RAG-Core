@@ -88,6 +88,10 @@ def get_http_client() -> httpx.AsyncClient:
     if client is None:
         client = _build_async_client()
         _CLIENTS[loop] = client
+        # 一条 debug：**建了几个客户端**是「连接到底复用没复用」唯一可观察的事实。
+        # 验收时数它：修好之后应当是「主循环 1 个 + 池里每个 worker 1 个」，
+        # 而不是「每请求 1 个」。
+        logger.debug("http_client_created", loop=id(loop))
     return client
 
 

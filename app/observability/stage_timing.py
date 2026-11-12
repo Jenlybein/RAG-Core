@@ -64,8 +64,8 @@ class StageSpan:
 class StageTimer:
     """一次检索的六段计时；由组合根创建、显式传给每一层。
 
-    线程安全：混合模式的向量分支在本线程之外跑（``asyncio.to_thread``），它记录的那一段
-    与事件循环里记录的段会同时落到同一个收集器上。
+    线程安全：混合模式的向量分支在检索执行池的 worker 线程上跑（``app.core.loop_pool``），
+    它记录的那一段与事件循环里记录的段会同时落到同一个收集器上。
     """
 
     def __init__(self) -> None:

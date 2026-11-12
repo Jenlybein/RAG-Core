@@ -68,6 +68,7 @@ from app.api.routes.console_observability import (
 )
 from app.core.config import settings
 from app.core.http_clients import aclose_current_loop_clients
+from app.core.loop_pool import aclose_retrieval_pool
 from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
 from app.db.session import SessionLocal
@@ -122,7 +123,10 @@ async def app_lifespan(app: FastAPI):
     try:
         yield
     finally:
-        # 只关**当前 loop** 名下的客户端：API 进程的主循环是这一个，别的进程（Worker）
+        # 先关执行池：池里那几个常驻循环各自持有客户端，必须由池自己收（关客户端 →
+        # 停循环 → join 线程）。反过来先关主循环的、再关池，池里那几份就没人认领了。
+        await aclose_retrieval_pool()
+        # 再关**当前 loop** 名下的客户端：API 进程的主循环是这一个，别的进程（Worker）
         # 有自己的一套，绝不能把这里的客户端带过去。
         await aclose_current_loop_clients()
 

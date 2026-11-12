@@ -104,6 +104,7 @@ def _offline_process_state():
     """
 
     from app.core.http_clients import reset_http_clients
+    from app.core.loop_pool import reset_retrieval_pool
     from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
     from app.db import session_factory as factory_mod
     from app.observability import reset_trace_sink
@@ -121,6 +122,7 @@ def _offline_process_state():
     reset_rerank_provider_cache()
     reset_embedding_provider_cache()
     reset_http_clients()
+    reset_retrieval_pool()
     try:
         yield
     finally:
@@ -132,3 +134,4 @@ def _offline_process_state():
         reset_rerank_provider_cache()
         reset_embedding_provider_cache()
         reset_http_clients()
+        reset_retrieval_pool()

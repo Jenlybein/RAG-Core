@@ -13,9 +13,11 @@
 四条不许动的约定：
 
 1. **两路真并行**：``asyncio.gather(..., return_exceptions=True)`` 让一路挂掉不取消
-   另一路。向量分支是同步 psycopg + 同步 Session，必须 ``asyncio.to_thread`` 丢到
-   独立线程，并且**持有自己的 ``SessionLocal()``**——否则它会卡住事件循环，
-   「并行」只是字面上的（ADR-0011「它管不到的三件事」）。
+   另一路。向量分支是同步 psycopg + 同步 Session，必须丢到**检索执行池**（固定规模的
+   常驻线程 + 常驻事件循环，见 ``app.core.loop_pool``），并且**持有自己的
+   ``SessionLocal()``**——否则它会卡住事件循环，「并行」只是字面上的（ADR-0011
+   「它管不到的三件事」）。**不能**再用「每请求 ``asyncio.to_thread`` + ``asyncio.run``」：
+   那会给每个请求新建一个循环，绑定循环的 HTTP 客户端永远复用不了（票 5）。
 2. **对称降级**：嵌入失败（含多查询里任意一句）发生在向量分支内部，必须被该分支
    捕获后变成「仅关键词」，绝不冒泡成整单失败。只兜关键词那一半是本票最容易漏掉的一条。
 3. **降级原因一因一码**：通道故障只用下面两个常量，重排失败用
@@ -35,11 +37,13 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from functools import partial
 from typing import Any
 
 import structlog
 
 from app.core.exceptions import AppError, ErrorCode
+from app.core.loop_pool import get_retrieval_pool
 from app.db.session import SessionLocal
 from app.models.chunk import default_index_versions
 from app.observability.stage_timing import (
@@ -143,17 +147,22 @@ async def hybrid_retrieve(
     # 「重新挑」这件事根本无从发生。不开重排时这里就等于 top_k，行为不变。
     fuse_pool = max(top_k, rerank_candidates or 0)
 
+    # 向量分支进执行池：池里是常驻线程 + 常驻循环，客户端因此能跨请求复用；排队超预算
+    # 时池会抛 ``TimeoutError``，被 gather 收成「这一路失败」，走既有降级。
+    pool = get_retrieval_pool()
     gathered: list[Any] = list(
         await asyncio.gather(
-            asyncio.to_thread(
-                _run_vector_branch,
-                tenant_id=tenant_id,
-                kb_ids=kb_ids,
-                queries=vector_queries,
-                top_k=depth,
-                embedding_factory=embedding_factory,
-                vector_factory=vector_factory,
-                stage_timer=timer,
+            pool.run(
+                partial(
+                    _vector_branch_in_pool,
+                    tenant_id=tenant_id,
+                    kb_ids=kb_ids,
+                    queries=vector_queries,
+                    top_k=depth,
+                    embedding_factory=embedding_factory,
+                    vector_factory=vector_factory,
+                    stage_timer=timer,
+                )
             ),
             _keyword_branch(
                 tenant_id=tenant_id,
@@ -252,7 +261,7 @@ def _reraise_rejection(error: BaseException | None) -> None:
         raise error
 
 
-def _run_vector_branch(
+async def _vector_branch_in_pool(
     *,
     tenant_id: str,
     kb_ids: list[str],
@@ -262,29 +271,27 @@ def _run_vector_branch(
     vector_factory: Callable[[], Any],
     stage_timer: StageTimer,
 ) -> list[dict]:
-    """独立线程里的向量分支入口：**自己开会话、自己关会话**。
+    """执行池里跑的那一段：**自己开会话、自己关会话**。
 
-    ``SessionLocal`` 在调用时从模块命名空间取，因此测试可以整体替换它而不必
-    连一个真的 PostgreSQL。``asyncio.run`` 在这个工作线程里新建一个事件循环：
-    主线程的事件循环正忙着服务其他请求，不能被这里 await。
+    这个协程在池里某个 worker 的常驻循环上执行，所以它 await 出来的异步 HTTP 客户端
+    属于那个循环、能跨请求复用（票 5 的目的）。会话仍然每任务一个：``SessionLocal``
+    在**这里**取，因此测试替换它仍只有一处（既有接缝不变）。
 
-    收集器也一起过线程：它自己带锁（``StageTimer``），向量这一段的耗时因此记在主线程
+    收集器也一起过线程：它自己带锁（``StageTimer``），向量这一段的耗时因此记在主循环
     事件循环那个收集器上——「两路并行」在观测里仍然是同一份 trace 的两段。
     """
 
     db = SessionLocal()
     try:
-        return asyncio.run(
-            _vector_branch(
-                db,
-                tenant_id=tenant_id,
-                kb_ids=kb_ids,
-                queries=queries,
-                top_k=top_k,
-                embedding_factory=embedding_factory,
-                vector_factory=vector_factory,
-                stage_timer=stage_timer,
-            )
+        return await _vector_branch(
+            db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            queries=queries,
+            top_k=top_k,
+            embedding_factory=embedding_factory,
+            vector_factory=vector_factory,
+            stage_timer=stage_timer,
         )
     finally:
         db.close()
