@@ -12,6 +12,16 @@
 （#127）、控制面的写（#130）与入库索引（#131）仍在同步栈上，所以现在两套池并存——连接
 预算见下一节。
 
+## 迁移期的命名约定（写给后面几张票）
+
+* **搬完就搬完**：一条操作的全部调用点都在同一片里时，直接把函数改成 ``async``、**名字不动**
+  （``audit_log_repository.list_page``、``retrieval_waterfall.waterfall_of`` 就是这样）。
+* **两种会话必须并存时**才加后缀：异步那一份叫 ``xxx_async``
+  （``account_repository.get_by_id_async``、``console_deps.get_console_account_async``），
+  同步那一份保持原名。后缀是**过渡标记**，不是设计——同步那一份消失时它也该消失。
+* 同一张表**不允许**出现「同一个操作的两条实现」：要么搬（改原函数），要么留一份带后缀的
+  孪生并在模块文档里写明同步版还归谁、什么时候删。
+
 ## 为什么驱动还是 psycopg3
 
 ``postgresql+psycopg`` 这条连接串同时支持同步与异步：psycopg 3.2.3 原生带异步，SQLAlchemy
