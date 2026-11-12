@@ -1,0 +1,70 @@
+{
+  "generated_at": "2026-11-12T16:11:27Z",
+  "params": {
+    "levels": [
+      2
+    ],
+    "requests": 6,
+    "warmup": 1,
+    "db_call_ms": 0.5,
+    "embed_ms": 1.0,
+    "vector_ms": 1.0,
+    "keyword_ms": 1.0,
+    "pool_size": 4,
+    "queue_budget_ms": 2000
+  },
+  "reference": {
+    "p95_ms": 1177.9,
+    "source": "docs/架构.md「评测」· eval/runs/20261112T135017Z（重排开 · qwen3.7 端点；127 题；hybrid / top_k=5；真 PostgreSQL + Elasticsearch + 嵌入；最近秩法）"
+  },
+  "levels": [
+    {
+      "concurrency": 2,
+      "requests": 6,
+      "ok": 6,
+      "failed": 0,
+      "error_rate": 0.0,
+      "degraded": 0,
+      "degraded_rate": 0.0,
+      "throughput_rps": 72.016,
+      "wall_ms": 83.315,
+      "db_call_ms": 0.5,
+      "latency": {
+        "count": 6,
+        "p50_ms": 29.504,
+        "p95_ms": 31.8,
+        "mean_ms": 27.577,
+        "max_ms": 31.8
+      },
+      "db": {
+        "main_loop_calls": 42,
+        "main_loop_ms": 22.039,
+        "off_loop_calls": 12,
+        "off_loop_ms": 5.271,
+        "total_request_ms": 165.46,
+        "by_method": {
+          "execute": 10.892,
+          "add": 0.003,
+          "flush": 4.375,
+          "commit": 6.768,
+          "close": 0.002
+        },
+        "share": 0.1332
+      },
+      "cross_check": {
+        "serial_ms_per_request": 3.673217,
+        "loop_busy_share": 0.264529
+      }
+    }
+  ],
+  "sweep": [],
+  "environment": {
+    "python": "3.12.14",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "processor": "AMD64 Family 25 Model 80 Stepping 0, AuthenticAMD",
+    "cpu_count": 16,
+    "git_commit": "faeb1a4",
+    "offline": true,
+    "note": "进程内 ASGI + 离线替身；无真库、无真 Redis、无网络"
+  }
+}
