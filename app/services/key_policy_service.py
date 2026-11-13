@@ -106,6 +106,10 @@ CREATE_DEFAULTS: Final[dict[str, Any]] = {
     "query_rewrite_allowed": False,
     # 编排是三层里的第二层，默认关（票 #146）：新发一把 Key 不该自带一次小模型调用。
     "orchestration_allowed": False,
+    # Research 的两个独立配额（票 #150）：默认 0 = 关闭。新发一把 Key 不该自带一项
+    # 约 30 秒、3 次模型调用的能力——要用就由人来填。
+    "research_qps": 0,
+    "research_daily": 0,
     "include_parent": True,
     "expand_table_rows": True,
     "custom_options": {},
@@ -113,6 +117,12 @@ CREATE_DEFAULTS: Final[dict[str, Any]] = {
 
 #: 必须 ≥ 1 的两个限额列：0 或负数不是一个合法额度，是「一次都不许用」的另一种写法。
 NUMERIC_FIELDS: Final[tuple[str, ...]] = ("retrieve_qps", "retrieve_daily")
+
+#: 允许为 0 的两个 Research 配额列（票 #150）：0 **就是**「关闭」，与
+#: ``research_allowed=False`` 给同一个答复码。负数仍然拒绝——那不是一个额度。
+#: 与 :data:`NUMERIC_FIELDS` 分开写，是因为「0 合法」与「0 等于停服」是两条相反的规则，
+#: 混在一个元组里迟早会被一次「顺手统一」抹平。
+ZEROABLE_FIELDS: Final[tuple[str, ...]] = ("research_qps", "research_daily")
 
 
 @dataclass(frozen=True)
@@ -312,6 +322,8 @@ def _build_policy_row(
         orchestration_allowed=checked["orchestration_allowed"],
         retrieve_qps=checked["retrieve_qps"],
         retrieve_daily=checked["retrieve_daily"],
+        research_qps=checked["research_qps"],
+        research_daily=checked["research_daily"],
         profile=checked["profile"],
         include_parent=checked["include_parent"],
         expand_table_rows=checked["expand_table_rows"],
@@ -359,6 +371,13 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
             # ``bool`` 是 ``int`` 的子类：``--qps True`` 这类误用不能被当成 1 放行。
             if isinstance(limit, bool) or not isinstance(limit, int) or limit < 1:
                 raise ValueError(f"{column} 必须是 ≥ 1 的整数，收到：{limit!r}")
+
+    for column in ZEROABLE_FIELDS:
+        if column in values:
+            limit = values[column]
+            # 0 合法（= 关闭），负数不合法（不是一个额度）。``bool`` 同样不许混进来。
+            if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
+                raise ValueError(f"{column} 必须是 ≥ 0 的整数（0 = 关闭），收到：{limit!r}")
 
     if "name" in values:
         name = str(values["name"]).strip()

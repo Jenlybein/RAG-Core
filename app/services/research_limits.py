@@ -22,6 +22,12 @@
 ``timeout`` 记录，等于花钱买一次失败。真正需要防的是「一个阶段接一个阶段地磨下去」，
 那只需要在阶段边界上看一眼表。
 
+**生成阶段是唯一的例外，而且只对「最后一次调用」例外**（票 #149）：它是状态机的最后一步，
+后面没有下一个阶段能替它收尾——一次挂住的生成调用会把整个请求挂到自己超时为止。所以那里
+有一个**单次调用的硬超时**（:data:`FINALIZER_TIMEOUT_SECONDS`），并配一个含兜底位的调用
+上限（:data:`MAX_MODEL_CALLS_WITH_FALLBACK`）：强模型失败之后换快模型重试一次，总计最多
+4 次，第 5 次不可能发生。
+
 七种停止原因（:class:`StopReason`）是**响应与日志共用的同一套词**：调用方拿它做统计与
 告警，运维拿它做排障，两边读的必须是同一份枚举——各写一份字符串的下场是某一天
 「``timeout``」与「``budget_exhausted``」在某处被拼成了第三种写法，而没有任何测试会红。
@@ -53,6 +59,19 @@ MAX_FOLLOWUP_ROUNDS: Final[int] = 1
 #: 整次调用的模型调用次数上限（规划 / 判断 / 生成各一次）。
 MAX_MODEL_CALLS: Final[int] = 3
 
+#: **含兜底位**的模型调用硬顶（票 #149）：三个阶段的 3 次 + 生成阶段换快模型重试的 1 次。
+#:
+#: 为什么兜底要单独占一格而不是挤进 :data:`MAX_MODEL_CALLS`：强模型的失败**已经花掉了**
+#: 那一次调用（指标要如实反映「发出去过」），而「换了模型再答一次」是另一个决定。两者共用
+#: 一个数字，就一定会在某一条路径上变成「要么兜底永远不生效，要么上限被悄悄突破」。
+#: 4 是这条链路真正可能出现的最大次数，第 5 次在任何路径上都不成立。
+MAX_MODEL_CALLS_WITH_FALLBACK: Final[int] = MAX_MODEL_CALLS + 1
+
+#: 生成阶段**单次调用**的硬超时（秒）。它是状态机里唯一的硬超时，理由见模块文档：
+#: 生成是最后一步，后面没有下一个阶段能替它收尾。超时按「这次没答出来」处理——
+#: 换快模型兜底一次，仍不行就 ``answer = None``。
+FINALIZER_TIMEOUT_SECONDS: Final[float] = 30.0
+
 #: 整次调用的阶段预算（秒）。**阶段间检查**，不中断已发出的单次请求。
 STAGE_BUDGET_SECONDS: Final[int] = 90
 
@@ -81,10 +100,12 @@ class StopReason(str, Enum):
 
 
 __all__ = [
+    "FINALIZER_TIMEOUT_SECONDS",
     "MAX_FOLLOWUP_QUERIES",
     "MAX_FOLLOWUP_ROUNDS",
     "MAX_FIRST_ROUND_QUERIES",
     "MAX_MODEL_CALLS",
+    "MAX_MODEL_CALLS_WITH_FALLBACK",
     "MAX_POINTS",
     "PLAN_NAME",
     "STAGE_BUDGET_SECONDS",

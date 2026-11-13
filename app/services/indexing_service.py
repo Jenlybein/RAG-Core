@@ -72,7 +72,13 @@ from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import prepare_document_content
 from app.services.section_context import summarize_sections
 from app.services.section_edge_service import SectionEdgeBuilder
-from app.services.section_graph import EdgeScope, SectionRecord, SectionText
+from app.services.section_graph import (
+    CHUNK_TYPE_REFERENCE_POINTER,
+    EdgeScope,
+    SectionRecord,
+    SectionText,
+    is_reference_pointer,
+)
 from app.utils.id_generator import new_chunk_id
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.section_identity import section_id_of
@@ -310,6 +316,11 @@ class IndexingService:
                 f"embedding count mismatch: {len(retrieval_texts)} texts -> {len(vectors)} vectors"
             )
 
+        # 路标切片（#152）：除了一句引用之外没有实质内容的片，标成 reference_pointer。
+        # 它只用来建边，不参与召回（向量 SQL 与关键词查询各按类型过滤一次）——把「命中
+        # 一句『参见别处』」当成一次成功召回，是图谱最容易制造的假命中。
+        pointers = [is_reference_pointer(piece.text) for piece in pieces]
+
         chunks: list[dict[str, Any]] = [
             {
                 "id": new_chunk_id(),
@@ -329,6 +340,13 @@ class IndexingService:
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
                     **parsed.metadata,
                     **piece.metadata,
+                    # 路标切片在 meta 里改类型，原来的 chunk_type（prose / list）不再有意义：
+                    # 这一片回答不了任何问题。非路标片保持切块器给的分类。
+                    **(
+                        {"chunk_type": CHUNK_TYPE_REFERENCE_POINTER}
+                        if pointers[index]
+                        else {}
+                    ),
                     # 文档级序号。order_index 只在节内可比，而父节要跨 h3 拼回整个 h2，
                     # 没有它就排不出文档顺序（ADR-0010 的确定性要求）。
                     "chunk_index": index,

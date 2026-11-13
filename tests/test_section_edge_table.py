@@ -217,9 +217,7 @@ def test_every_edge_column_is_not_null() -> None:
 
     recorder = _migrate()
 
-    nullable = {
-        name for name, spec in recorder.tables["section_edges"].items() if spec["nullable"]
-    }
+    nullable = {name for name, spec in recorder.tables["section_edges"].items() if spec["nullable"]}
     assert nullable == set(), f"这些列不该可空：{sorted(nullable)}"
 
 
@@ -310,9 +308,7 @@ def test_downgrade_removes_the_table_and_every_index_of_it() -> None:
     recorder = _migrate("downgrade")
 
     assert "section_edges" not in recorder.tables
-    assert not [
-        name for name, spec in recorder.indexes.items() if spec["table"] == "section_edges"
-    ]
+    assert not [name for name, spec in recorder.indexes.items() if spec["table"] == "section_edges"]
 
 
 # ─────────────────────────────────────── 模型与迁移必须是同一份契约

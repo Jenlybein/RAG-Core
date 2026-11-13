@@ -240,6 +240,20 @@ def ensure_policy_consistent(*, policy: KeyPolicySnapshot, plan: PlanSpec) -> No
             f"policy daily {policy.retrieve_daily} > plan {plan.code!r} daily "
             f"{plan.retrieve_daily}",
         )
+    # Research 的两列同样不得超过套餐（票 #150）：0 在这里是合法输入（= 这套集成不用它），
+    # 所以判据是「大于」而不是「≤ 0 即拒绝」。
+    if policy.research_qps > plan.research_qps:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"policy research qps {policy.research_qps} > plan {plan.code!r} research qps "
+            f"{plan.research_qps}",
+        )
+    if policy.research_daily > plan.research_daily:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"policy research daily {policy.research_daily} > plan {plan.code!r} research "
+            f"daily {plan.research_daily}",
+        )
     if len(policy.allowed_kb_ids) > plan.max_kb:
         raise AppError(
             ErrorCode.PARAM_ERROR,

@@ -330,4 +330,3 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
     assert calls[:2] == ["purge:vector", "purge:keyword"]
     assert vector.deleted == [(DOC_ID, TENANT_ID)]
     assert provider.deleted == [(DOC_ID, TENANT_ID)]
-

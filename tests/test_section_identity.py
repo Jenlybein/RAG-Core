@@ -314,5 +314,3 @@ def test_the_indexing_pipeline_stamps_section_ids_with_the_document_id(
         assert meta["parent_section_id"] == parent_section_id_of(
             document_id=DOC_A, heading_path=path
         )
-
-

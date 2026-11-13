@@ -40,11 +40,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Final, Iterable, Mapping, Sequence
 
+from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER
 from app.models.section_edge import RELATION_PARENT, RELATION_REFERENCE, RELATION_SIBLING
 from app.utils.section_identity import parent_heading_path, parent_section_id_of
 
-#: 纯路标切片的类型名。召回侧按它过滤（向量 SQL 与关键词查询各一处），所以只此一份。
-CHUNK_TYPE_REFERENCE_POINTER: Final[str] = "reference_pointer"
+#: 纯路标切片的类型名在模型层（那是**落库的值**，不是抽取规则的一部分）：
+#: ``app.models.chunk.CHUNK_TYPE_REFERENCE_POINTER``。这里 re-export，抽取层与召回侧
+#: 于是引用同一个名字，不存在「一侧叫 reference_pointer、另一侧叫 pointer」的漂移。
 
 #: 删掉引用表达后剩余的可读字符少于此数 → 这一句只是路标。取值依据见
 #: :func:`is_reference_pointer`（「详见」2 字 / 「参见」2 字 / 空串都算；「三个工作日内到账」

@@ -686,5 +686,3 @@ def test_worker_process_signals_bind_and_release_the_resident_loop() -> None:
 
     assert loop.closed is True
     assert loop.alive is False, "关停信号之后线程必须已经退出"
-
-

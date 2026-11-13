@@ -29,6 +29,11 @@ from app.db.base import Base
 # 切片默认索引版本；列默认值、索引期写入与迁移回填共用这一个常量。
 DEFAULT_INDEX_VERSION = "v1"
 
+#: 路标切片的类型名（ADR-0027 决策 3 / 票 #152）：除了一句显式引用之外没有实质内容。
+#: **只用于建边，不参与召回**——向量 SQL 与关键词查询各按它过滤一次，所以这个字符串
+#: 只此一份：写两遍的下场是一侧过滤、另一侧照旧把「参见别处」当成命中。
+CHUNK_TYPE_REFERENCE_POINTER = "reference_pointer"
+
 
 def scope_filter(index_versions: Mapping[str, str]) -> ColumnElement[bool]:
     """把「kb_id → 索引版本」编译成**配对条件**：每对内部 AND，对与对之间 OR。

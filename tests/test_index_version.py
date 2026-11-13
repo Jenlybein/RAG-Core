@@ -255,5 +255,3 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
     ]
     assert embeddings.texts != [chunk["content"] for chunk in chunks], "两者必须是不同的文本"
     assert [chunk["index_version"] for chunk in chunks] == ["v1", "v1"]
-
-

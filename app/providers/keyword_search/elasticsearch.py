@@ -146,6 +146,17 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         await self.ensure_index(index_name)
         return index_name
 
+    async def physical_index_exists(self, version: str) -> bool:
+        """该版本的物理索引还在不在（回滚守卫，#155）。
+
+        **不查 ``_index_ready`` 缓存**：那份缓存记的是「本进程建过它」，而回滚要问的是
+        「它此刻还在不在」。缓存说在、实际被清掉了（运维清理磁盘、集群重建过），别名切
+        过去就是一张空索引——检索不报错，只是永远搜不到。
+        """
+
+        exists = await self._get_client().indices.exists(index=self.physical_index_name(version))
+        return bool(exists)
+
     async def activate_version(self, version: str) -> None:
         """把别名切到该版本（一次 ``update_aliases``：摘旧 + 挂新）。
 

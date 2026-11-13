@@ -15,9 +15,29 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk, scope_filter
+from app.models.chunk import (
+    CHUNK_TYPE_REFERENCE_POINTER,
+    DEFAULT_INDEX_VERSION,
+    Chunk,
+    scope_filter,
+)
 from app.models.document import Document
 from app.providers.vectorstores.base import VectorStore
+
+
+def not_reference_pointer() -> ColumnElement[bool]:
+    """召回侧的「排除路标切片」条件（#152，ADR-0027 决策 3）。
+
+    路标切片（除了一句「详见《X》2.4 节」之外没有实质内容）**只用于建边，不参与召回**：
+    它没有信息量，进候选池只是占名额，还会把「命中一句『参见别处』」变成一次成功的召回。
+
+    **为什么是 ``coalesce(...) != 'reference_pointer'`` 而不是直接比较**：``metadata`` 里
+    没有 ``chunk_type`` 键的老切片，``->>`` 出来是 ``NULL``，而 ``NULL != 'x'`` 在 SQL 里
+    是 ``NULL``——整行会被静默排除。没有这个键的切片恰恰**不是**路标，必须留在召回里。
+    """
+
+    chunk_type = func.coalesce(Chunk.meta["chunk_type"].astext, "")
+    return chunk_type != CHUNK_TYPE_REFERENCE_POINTER
 
 
 def build_scope_filter(index_versions: dict[str, str]) -> ColumnElement[bool]:
@@ -71,7 +91,11 @@ class PgVectorStore(VectorStore):
                 distance,
             )
             .join(Document, Document.id == Chunk.document_id)
-            .where(Chunk.tenant_id == tenant_id, Chunk.kb_id == kb_id)
+            .where(
+                Chunk.tenant_id == tenant_id,
+                Chunk.kb_id == kb_id,
+                not_reference_pointer(),
+            )
             .order_by(distance)
             .limit(top_k)
         )
@@ -117,7 +141,11 @@ class PgVectorStore(VectorStore):
                 distance,
             )
             .join(Document, Document.id == Chunk.document_id)
-            .where(Chunk.tenant_id == tenant_id, build_scope_filter(index_versions))
+            .where(
+                Chunk.tenant_id == tenant_id,
+                build_scope_filter(index_versions),
+                not_reference_pointer(),
+            )
             .order_by(distance)
             .limit(top_k)
         )

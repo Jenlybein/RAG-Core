@@ -1,5 +1,4 @@
 """create section_edges（关系表：作用域 + 两端 + 边型 + 证据，ADR-0027）
-
 第 11 步票 #152 的落法：**先有表，再有抽取器**。表结构与 ADR-0027 决策 1 逐项对应：
 
 | 列 | 它回答什么 |
@@ -26,7 +25,7 @@
 ``downgrade`` 干净删表：回滚之后剩下的就是这条迁移之前的那张库。
 
 Revision ID: b3d7e1a95c24
-Revises: e41b7c9d2a63（#141 的索引构建版本；本票与 #150 并行，合并时接在当时的链尾）
+Revises: b7d31f4c8e2a（#150 的 Research 配额两列；它接在 #141 的版本表之后）
 Create Date: 2026-11-14
 
 """
@@ -39,7 +38,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "b3d7e1a95c24"
-down_revision: Union[str, None] = "e41b7c9d2a63"
+down_revision: Union[str, None] = "b7d31f4c8e2a"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

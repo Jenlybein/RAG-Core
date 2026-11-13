@@ -2,13 +2,18 @@
 
 ```text
 building ──▶ ready ──(单事务切换)──▶ active ──▶ archived
-    │
+    │                                  ▲            │
+    │                                  └───(回滚)───┘
     └──▶ failed（线上仍查旧的 active，error_message 记原因）
 ```
 
 **本模块是状态机的唯一实现点**：谁能迁到谁写在 :data:`ALLOWED_TRANSITIONS` 里，而不是
 散在若干处 ``row.status = ...``。新增一条迁移必须先改那张表——那是一行会被人看见的代码，
 而散在各处的赋值只会让人以为「状态怎么变的」要去猜。
+
+**``archived`` 不是终态**（#155）：回滚就是 ``archived → active``，而它走的**不是**另一套
+动作——:meth:`IndexBuildService.activate` 与 :meth:`IndexBuildService.rollback` 都进
+:meth:`IndexBuildService._switch_active_version`，唯一的差别是「从哪个版本出发」。
 
 ## 构建期间线上照旧查旧版本（决策二）
 
@@ -81,6 +86,14 @@ BUILD_ALREADY_RUNNING_MESSAGE: Final[str] = (
 )
 #: 状态迁移不合法（例如没 ready 就想 active）时的固定话术。
 BUILD_INVALID_TRANSITION_MESSAGE: Final[str] = "index build status transition is not allowed"
+#: 回滚的目标版本**已经没有可查的数据**（物理索引不在 / 切片为 0）时的话术。
+ROLLBACK_DATA_MISSING_MESSAGE: Final[str] = (
+    "index version has no physical data left; refusing to roll back"
+)
+#: 两条入口（激活与回滚）撞上同一次并发切换时的话术。
+SWITCH_CONFLICT_MESSAGE: Final[str] = (
+    "another index version switch won the race for this knowledge base"
+)
 #: 四项计数不相等时拒绝 ``ready`` 的话术（半成品不许上线）。
 BUILD_COUNTS_MISMATCH_MESSAGE: Final[str] = (
     "index build counts do not match; refusing to mark it ready"
@@ -93,7 +106,9 @@ ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
     INDEX_BUILD_BUILDING: frozenset({INDEX_BUILD_READY, INDEX_BUILD_FAILED}),
     INDEX_BUILD_READY: frozenset({INDEX_BUILD_ACTIVE, INDEX_BUILD_FAILED}),
     INDEX_BUILD_ACTIVE: frozenset({INDEX_BUILD_ARCHIVED}),
-    INDEX_BUILD_ARCHIVED: frozenset(),
+    # 回滚（#155）：归档**不是**终态。「新切法出问题就退回去」是 ADR-0025 承诺的四样收益
+    # 之一；把它写成空集合，保留 v1 就只服务了评测，没服务线上。
+    INDEX_BUILD_ARCHIVED: frozenset({INDEX_BUILD_ACTIVE}),
     INDEX_BUILD_FAILED: frozenset(),
 }
 
@@ -118,6 +133,39 @@ class IndexBuildInvalidTransition(AppError):
         self.current = current
         self.target = target
         super().__init__(ErrorCode.SERVER_ERROR, BUILD_INVALID_TRANSITION_MESSAGE)
+
+
+class IndexBuildRollbackRefused(AppError):
+    """回滚的目标版本**没有可查的数据**：拒绝上线。
+
+    这是本票最容易做错的那条守卫（#155）：库列一改、别名一切，检索就按目标版本过滤，
+    而那个版本的数据已经不在了——于是每一次检索都是一次「诚实的空结果」，被包装成
+    「本次没命中」。宁可在这里显式拒绝，也不要让运维在几天后从「怎么搜不到了」开始查。
+
+    ``keyword_index`` 为 ``None`` 表示关键词能力不存在（没部署 ES）——这一维不参与判定
+    （与 #142 的四项计数同一口径：把「没有这项能力」当成 0 会把能力缺失伪装成数据不一致）。
+    """
+
+    def __init__(self, *, version: str, keyword_index: bool | None, chunks: int) -> None:
+        self.version = version
+        self.keyword_index = keyword_index
+        self.chunks = chunks
+        super().__init__(ErrorCode.SERVER_ERROR, ROLLBACK_DATA_MISSING_MESSAGE)
+
+
+class IndexBuildSwitchConflict(AppError):
+    """两条切换撞在一起，这条输了（部分唯一索引把它挡在提交处）。
+
+    **两条入口抛同一个类**：激活与回滚都是「把某个版本变成 active」，撞上并发时调用方
+    该看到的是同一句话，而不是「回滚有一句错误、激活另有一句」。
+
+    错误码沿用既有的 ``SYSTEM_BUSY``（50001），**没有新增码**——理由与
+    :class:`IndexBuildAlreadyRunning` 相同：错误码全表是契约，为一条内部编排路径加码要
+    连带改文档与门禁，那属于「新增入口」的票。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.SYSTEM_BUSY, SWITCH_CONFLICT_MESSAGE)
 
 
 @dataclass(frozen=True)
@@ -186,6 +234,20 @@ def ensure_transition(row: IndexBuildVersion, target: str) -> None:
 
     if not can_transition(row.status, target):
         raise IndexBuildInvalidTransition(row.status, target)
+
+
+def ensure_activation_origin(row: IndexBuildVersion, *, origin_status: str) -> None:
+    """这一行能不能从 ``origin_status`` 出发变成 ``active``。
+
+    两件事各司其职：真值表（:data:`ALLOWED_TRANSITIONS`）回答「这个目标状态合不合法」，
+    ``origin_status`` 回答「这条入口认不认它当起点」。分开之后，激活（``ready``）与回滚
+    （``archived``）不会互相冒充——尤其不会让 ``activate`` 顺路激活一个归档版本，
+    从而绕过回滚特有的物理数据守卫。
+    """
+
+    ensure_transition(row, INDEX_BUILD_ACTIVE)
+    if row.status != origin_status:
+        raise IndexBuildInvalidTransition(row.status, INDEX_BUILD_ACTIVE)
 
 
 def _is_failure_allowed(row: IndexBuildVersion) -> bool:
@@ -524,6 +586,28 @@ class IndexBuildService:
 
         于是顺序是：切别名 → 提交事务；提交失败就把别名切回去（尽力而为，失败只记
         warning——那时真正该看的是提交失败本身）。
+
+        这条入口只服务 ``ready → active``。``archived → active`` 是
+        :meth:`rollback`（它多一条物理数据守卫，不能让激活顺路把它绕过去）。
+        """
+
+        return await self._switch_active_version(
+            db, build_id, tenant_id=tenant_id, origin_status=INDEX_BUILD_READY
+        )
+
+    async def rollback(
+        self, db: AsyncSession, build_id: str, *, tenant_id: str
+    ) -> IndexBuildVersion:
+        """**回滚**：把 ``archived`` 的那一版切回 active（#155，spec 用户故事 33）。
+
+        动作与 :meth:`activate` 逐条相同——两条入口都进
+        :meth:`_switch_active_version`，差别只有「从哪个版本出发」。**为什么不能抄一份**：
+        抄出来的第二份会漏掉「归档当前 active」「回切别名」中的某一步，而两种遗漏在检索
+        侧都表现为「库说 A、数据在 B」，且不报错。
+
+        回滚多一条激活不需要的守卫：目标版本的**物理数据必须还在**。``ready`` 那一侧
+        刚被四项计数验过（#142），而归档版本可能在很久以前就被清理过——它是不是空的，
+        只有在这里问一句才知道。
         """
 
         row = await index_version_repository.get_for_tenant(
@@ -531,12 +615,95 @@ class IndexBuildService:
         )
         if row is None:
             raise AppError(ErrorCode.NOT_FOUND, "index build not found")
-        # 只有 ready 能上线：building 直接 active 会把半成品推上线（ADR-0025）。
-        ensure_transition(row, INDEX_BUILD_ACTIVE)
-
+        # 先裁决「这一行配不配当回滚目标」，再问「它的数据还在不在」：状态不对的行
+        # （building / failed）要用「从哪到哪」那条话术拒绝，不该被数据守卫抢答成
+        # 「数据没了」——那是两种运维处置。共用那一段会再验一次真值表（纯函数，重复无害）。
+        ensure_activation_origin(row, origin_status=INDEX_BUILD_ARCHIVED)
         kb = await knowledge_base_repository.get_by_id_for_tenant(
             db, row.kb_id, tenant_id=tenant_id
         )
+        if kb is None:
+            raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+        await self._ensure_rollback_has_data(db, kb=kb, row=row)
+        return await self._switch_active_version(
+            db,
+            build_id,
+            tenant_id=tenant_id,
+            origin_status=INDEX_BUILD_ARCHIVED,
+            kb=kb,
+            row=row,
+        )
+
+    async def _ensure_rollback_has_data(
+        self, db: AsyncSession, *, kb: KnowledgeBase, row: IndexBuildVersion
+    ) -> None:
+        """回滚守卫：目标版本的**物理数据仍在**（物理索引在、切片数 > 0）。
+
+        两个读数来自两个存储（ES 与 PostgreSQL），哪一个为「没有」都拒绝：向量那一路要
+        按版本从 ``chunks`` 里召回，关键词那一路要按别名查物理索引。缺任何一半，切过去之后
+        对应的那一路就静默返空。
+
+        「能力不存在」与「数据不存在」在这里**必须分开**：没部署 ES 的部署里物理索引永远
+        不存在（``available`` 为 ``False``），把这一维当成「数据没了」会让回滚在那种部署
+        上永远不可用——与 #142 把 ``keyword_documents`` 记成 ``None`` 是同一口径。
+        """
+
+        keyword_index = (
+            await self._keyword_search.physical_index_exists(row.version)
+            if self._keyword_search.available
+            else None
+        )
+        chunks = await chunk_repository.count_by_index_version(
+            db, str(kb.id), tenant_id=str(kb.tenant_id), index_version=row.version
+        )
+        if keyword_index is False or chunks <= 0:
+            logger.warning(
+                "index version cannot be rolled back to",
+                build_id=row.id,
+                tenant_id=row.tenant_id,
+                kb_id=row.kb_id,
+                version=row.version,
+                keyword_index_exists=keyword_index,
+                chunks=chunks,
+            )
+            raise IndexBuildRollbackRefused(
+                version=row.version, keyword_index=keyword_index, chunks=chunks
+            )
+
+    async def _switch_active_version(
+        self,
+        db: AsyncSession,
+        build_id: str,
+        *,
+        tenant_id: str,
+        origin_status: str,
+        kb: KnowledgeBase | None = None,
+        row: IndexBuildVersion | None = None,
+    ) -> IndexBuildVersion:
+        """把这一行切成 active：别名 → 一笔事务（归档旧 active + 本行 active + 库列）。
+
+        **激活与回滚的同一段实现**：唯一的差别是 ``origin_status``（``ready`` 还是
+        ``archived``）。真值表裁决合法性、入口声明起点（见
+        :func:`ensure_activation_origin`），两道门因此不能互相冒充：激活走不到回滚的物理
+        数据守卫上，回滚也不会被当成「第二次激活」。
+
+        ``row`` / ``kb`` 可以由调用方传进来（回滚为了跑守卫已经读过它们）：同一个动作不必
+        为此多查两次库，而两次读之间还留着「读到的不再是同一行」的窗口。
+        """
+
+        if row is None:
+            row = await index_version_repository.get_for_tenant(
+                db, build_id, tenant_id=tenant_id
+            )
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "index build not found")
+        ensure_activation_origin(row, origin_status=origin_status)
+
+        if kb is None:
+            kb = await knowledge_base_repository.get_by_id_for_tenant(
+                db, row.kb_id, tenant_id=tenant_id
+            )
         if kb is None:
             raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
@@ -556,8 +723,16 @@ class IndexBuildService:
                     previous.archived_at = stamp
                 row.status = INDEX_BUILD_ACTIVE
                 row.activated_at = stamp
+                # 回滚上线的版本不再有「归档于」：留着它，查「最近归档了哪几版」会说谎。
+                row.archived_at = None
                 # 库上的生效版本与状态一起改：检索范围从这一列读（决策四）。
                 kb.active_index_version = row.version
+        except IntegrityError as exc:
+            # 并发的另一次切换先提交了：两条部分唯一索引在这里挡住「同一库两个 active」。
+            # 回滚与激活看到的是**同一条**可读拒绝，而不是一次 500。
+            if switched:
+                await self._restore_alias(previous_version, row=row)
+            raise IndexBuildSwitchConflict() from exc
         except BaseException:
             if switched:
                 await self._restore_alias(previous_version, row=row)
@@ -570,13 +745,20 @@ class IndexBuildService:
             kb_id=row.kb_id,
             version=row.version,
             previous_version=previous_version,
+            origin_status=origin_status,
         )
         return row
 
     async def _restore_alias(
         self, previous_version: str | None, *, row: IndexBuildVersion
     ) -> None:
-        """提交失败后把关键词别名切回去（尽力而为；失败只记 warning）。"""
+        """提交失败后把关键词别名切回去（尽力而为；失败只记 warning）。
+
+        **切回的是「切换前读到的那一版」**，不是重新问一次「现在谁生效」：错误路径上再查
+        一次库，会把「提交为什么失败」这条真正的原因盖进下一层异常里。并发输掉的那一方
+        因此有一个已知窗口（赢家已经指向另一版时，别名会落在切换前那一版上，直到下一次
+        切换把别名再挪一次）——本票登记它，不在错误路径上追加一次读。
+        """
 
         if previous_version is None:
             # 这是这个库的第一次构建：没有旧版本可回退，别名留在了未提交的新版本上。
@@ -701,8 +883,13 @@ __all__ = [
     "IndexBuildAlreadyRunning",
     "IndexBuildCountsMismatch",
     "IndexBuildInvalidTransition",
+    "IndexBuildRollbackRefused",
     "IndexBuildService",
+    "IndexBuildSwitchConflict",
+    "ROLLBACK_DATA_MISSING_MESSAGE",
+    "SWITCH_CONFLICT_MESSAGE",
     "can_transition",
     "describe_stalled_builds",
+    "ensure_activation_origin",
     "ensure_transition",
 ]

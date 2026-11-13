@@ -72,6 +72,8 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
         allowed_kb_ids=[],
         retrieve_qps=3,
         retrieve_daily=500,
+        research_qps=0,
+        research_daily=0,
         profile="speed",
     )
 

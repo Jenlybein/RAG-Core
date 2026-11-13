@@ -88,6 +88,10 @@ DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     orchestration_allowed=False,
     retrieve_qps=PLAN_PRESETS[PLAN_PRO].retrieve_qps,
     retrieve_daily=PLAN_PRESETS[PLAN_PRO].retrieve_daily,
+    # 内置开发身份照抄最高档的 Research 配额（票 #150）：它要能演示整条链路，
+    # 而「0 = 关闭」会让 `rag_research` 在本地开发里直接撞 20013。
+    research_qps=PLAN_PRESETS[PLAN_PRO].research_qps,
+    research_daily=PLAN_PRESETS[PLAN_PRO].research_daily,
     profile=PROFILE_CUSTOM,
     include_parent=True,
     expand_table_rows=True,

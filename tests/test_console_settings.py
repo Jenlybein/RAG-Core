@@ -157,6 +157,8 @@ def _policy(policy_id: str, tenant_id: str, profile: str) -> KeyPolicy:
         allowed_kb_ids=[],
         retrieve_qps=10,
         retrieve_daily=5000,
+        research_qps=0,
+        research_daily=0,
         profile=profile,
     )
 

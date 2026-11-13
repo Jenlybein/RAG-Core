@@ -90,6 +90,8 @@ def _policy_row(policy_id: str, *, tenant_id: str, profile: str, qps: int, daily
         query_rewrite_allowed=False,
         retrieve_qps=qps,
         retrieve_daily=daily,
+        research_qps=0,
+        research_daily=0,
         profile=profile,
         include_parent=True,
         expand_table_rows=True,
@@ -224,7 +226,7 @@ def exploding_store() -> Any:
 
 
 def _check_plan_snapshot(data: Any, plan_code: str) -> None:
-    """套餐快照的对外形状：名称 + 能力开关 + 六个数值上限，一列不多一列不少。"""
+    """套餐快照的对外形状：名称 + 能力开关 + 八个数值上限，一列不多一列不少。"""
 
     plan = PLAN_PRESETS[plan_code]
     snapshot = data["plan"]
@@ -239,6 +241,8 @@ def _check_plan_snapshot(data: Any, plan_code: str) -> None:
         "orchestration_allowed",
         "retrieve_qps",
         "retrieve_daily",
+        "research_qps",
+        "research_daily",
         "max_kb",
         "max_kb_per_retrieve",
         "max_documents_per_kb",
@@ -255,6 +259,8 @@ def _check_plan_snapshot(data: Any, plan_code: str) -> None:
         "orchestration_allowed",
         "retrieve_qps",
         "retrieve_daily",
+        "research_qps",
+        "research_daily",
         "max_kb",
         "max_kb_per_retrieve",
         "max_documents_per_kb",
@@ -281,6 +287,13 @@ def test_me_returns_the_callers_identity_plan_and_todays_usage(
         # 开关刚打开、今天还没有一次成功检索：这是**已知的 0**。
         "used": 0,
         "limit": PLAN_PRESETS["pro"].retrieve_daily,
+        "source": "daily_counter",
+        "note": None,
+    }
+    # Research 那一本账**同形**但各算各的（票 #150）：上限取 research_daily。
+    assert data["research_usage"] == {
+        "used": 0,
+        "limit": PLAN_PRESETS["pro"].research_daily,
         "source": "daily_counter",
         "note": None,
     }
@@ -347,6 +360,32 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
         "note": USAGE_NOTE_NOT_TRACKED,
     }
     assert exploding_store.calls == [], "关掉时连一条 Redis 命令都不该发"
+
+
+def test_the_research_usage_reads_its_own_bucket(
+    me: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _ReadOnlyCounterStore
+) -> None:
+    """检索用量与 Research 用量各读各的桶（票 #150）：同形，但不许相加。"""
+
+    from app.services.quota_gate import RESEARCH_NAMESPACE
+
+    monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
+    window = QuotaCounters(counter_store).window()
+    counter_store.values[daily_key(level=LEVEL_TENANT, ident=TENANT_ALPHA, window=window)] = 7
+    counter_store.values[
+        daily_key(
+            level=LEVEL_TENANT,
+            ident=TENANT_ALPHA,
+            window=window,
+            namespace=RESEARCH_NAMESPACE,
+        )
+    ] = 3
+
+    data = me.data(KEY_ALPHA)
+
+    assert data["usage"]["used"] == 7
+    assert data["research_usage"]["used"] == 3, "两本账互不相加"
+    assert data["research_usage"]["limit"] == PLAN_PRESETS["pro"].research_daily
 
 
 def test_reading_today_usage_never_increments_anything(
