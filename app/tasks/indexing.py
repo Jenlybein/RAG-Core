@@ -85,7 +85,7 @@ async def _mark_failed(
     doc = await document_repository.get_by_id_async(db, document_id)
     if doc is None:
         return
-    await document_repository.update_status_async(
+    await document_repository.update_status(
         db, doc, DocumentStatus.FAILED, INDEXING_FAILED_MESSAGE
     )
     # 失败终态同样不保留租约：下一次重建 / 重试不能看到一份「新鲜的失败租约」。

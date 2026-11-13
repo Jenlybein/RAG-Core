@@ -127,7 +127,7 @@ async def upload(
             status=DocumentStatus.PROCESSING,
         )
 
-    await document_repository.create_async(db, doc)
+    await document_repository.create(db, doc)
     # 投递排在提交**之后**（after_commit），不是「先 commit 再投递」：登记与它可能带着
     # 的审计行属于同一笔请求事务，提交之前投递会让 Worker 去读一行还没落库的文档。
     # 顺序上仍然保证「行先落地、任务后出发」，Worker 崩溃时这张行也还在，留待租约过期

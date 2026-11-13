@@ -39,25 +39,6 @@ def _meta_statement(
     )
 
 
-def fetch_meta_by_chunk_ids(
-    db: Session, *, tenant_id: str, kb_ids: list[str], chunk_ids: list[str]
-) -> dict[tuple[str, str], dict]:
-    """按 ``(kb_id, chunk_id)`` 一次取回 ``meta``，供检索层定位与回填。
-
-    检索结果一路从向量/关键词通道到融合层，只带 ``document_id`` / ``chunk_id`` /
-    ``content`` 这些**对外字段**（``meta`` 不属于检索契约）。父节需要用
-    ``section_id``，所以在这里按 ID 回查一次，而不是把内部字段塞进融合结果、
-    再让它们出现在响应里。``tenant_id`` 是强制过滤参数（ADR-0006）。
-    """
-
-    if not chunk_ids or not kb_ids:
-        return {}
-    rows = db.execute(
-        _meta_statement(tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=chunk_ids)
-    ).all()
-    return {(str(row.kb_id), str(row.id)): dict(row.meta or {}) for row in rows}
-
-
 async def fetch_meta_by_chunk_ids_async(
     db: AsyncSession, *, tenant_id: str, kb_ids: list[str], chunk_ids: list[str]
 ) -> dict[tuple[str, str], dict]:
@@ -120,34 +101,6 @@ def _group_unit_rows(
     return grouped
 
 
-def fetch_unit_rows(
-    db: Session,
-    *,
-    tenant_id: str,
-    document_ids: list[str],
-    unit_paths: list[str],
-    index_version: str | None = None,
-) -> dict[tuple[str, str], list[tuple[int, str, str, str, int]]]:
-    """按 **h2 级章节路径**取该单元下的全部切片，含挂在这一节自己身上的片。
-
-    返回 ``{(document_id, unit_path): [(chunk_index, 正文, chunk_id, chunk_type, table_part)...]}``。
-
-    为什么按路径前缀而不是 ``parent_section_id``：后者是**上一级**，对 h2 级的
-    切片（节下没有 h3）它指向 h1，按它归组会把整篇文档并成一个单元。这里用
-    「路径等于它」或「以它开头」，两个层级都收进来。
-    """
-
-    if not document_ids or not unit_paths:
-        return {}
-    stmt = _unit_rows_statement(
-        tenant_id=tenant_id,
-        document_ids=document_ids,
-        unit_paths=unit_paths,
-        index_version=index_version,
-    )
-    return _group_unit_rows(list(db.execute(stmt).all()))
-
-
 async def fetch_unit_rows_async(
     db: AsyncSession,
     *,
@@ -182,29 +135,6 @@ def _count_by_kb_ids_statement(
     if index_version is not None:
         stmt = stmt.where(Chunk.index_version == index_version)
     return stmt
-
-
-def count_by_kb_ids(
-    db: Session, *, tenant_id: str, kb_ids: list[str], index_version: str | None = None
-) -> int:
-    """这些库里共有多少条可检索切片（一次 count，不按库循环）。
-
-    检索层用它区分「库内没有可检索内容」（``0``）与「有内容但本次没命中」
-    （``> 0``）。**不许用本次结果的条数去猜**：某库没有切片进入结果不是失败，
-    而结果为空时，只有数据库知道是「空库」还是「没命中」。``tenant_id`` 是强制
-    过滤参数（ADR-0006），计数绝不跨租户。
-
-    传了 ``index_version`` 就按版本过滤，**调用方必须与召回时的过滤口径一致**：
-    否则「库里只有另一个版本的切片」会被算成「有内容」，把「该换个问法」误报成
-    「没命中」，把排查引向错误的方向。
-    """
-
-    if not kb_ids:
-        return 0
-    stmt = _count_by_kb_ids_statement(
-        tenant_id=tenant_id, kb_ids=kb_ids, index_version=index_version
-    )
-    return int(db.execute(stmt).scalar_one())
 
 
 async def count_by_kb_ids_async(

@@ -40,17 +40,6 @@ from app.utils.status import DocumentStatus
 DOCUMENT_LEASE_SECONDS = 600
 
 
-def get_by_id(db: Session, document_id: str) -> Document | None:
-    """按主键取，**不带租户过滤**：只给 Worker 任务用。
-
-    Worker 收到的 ``document_id`` 来自已经过租户校验的投递（上传 / 重建端点），
-    任务内部再查一次只认 id；任何「调用方直传 id」的数据面入口都必须改用
-    :func:`get_by_id_for_tenant`，否则会跨租户读到文档（ADR-0006）。
-    """
-
-    return db.get(Document, document_id)
-
-
 def get_by_id_for_tenant(db: Session, document_id: str, *, tenant_id: str) -> Document | None:
     """按 ``id`` **且** ``tenant_id`` 取文档，缺失与跨租户一律返回 ``None``。
 
@@ -340,7 +329,7 @@ def is_lease_alive(document: Document, *, lease_seconds: int = DOCUMENT_LEASE_SE
 # 同步版只剩两个运维脚本在用，删除条件见模块文档。
 
 
-async def create_async(db: AsyncSession, doc: Document) -> Document:
+async def create(db: AsyncSession, doc: Document) -> Document:
     """登记一份文档（只 flush，不提交——提交点是 ``app.db.transaction``）。"""
 
     db.add(doc)
@@ -377,7 +366,7 @@ async def list_by_kb_async(db: AsyncSession, kb_id: str, *, tenant_id: str) -> l
     return list((await db.execute(stmt)).scalars().all())
 
 
-async def update_status_async(
+async def update_status(
     db: AsyncSession, doc: Document, status: int, error_message: str | None = None
 ) -> None:
     """回写状态与错误文案（只 flush，不提交）。"""
@@ -436,14 +425,14 @@ async def release_index_claim_async(
     await db.execute(_release_statement(document_id, tenant_id=tenant_id))
 
 
-async def count_by_kb_async(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
+async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
     """该租户在该知识库下的文档总数（静态配额「单库文档数」的唯一计数处，票 #79）。"""
 
     result = await db.execute(_count_by_kb_statement(kb_id, tenant_id=tenant_id))
     return int(result.scalar_one())
 
 
-async def count_processing_for_tenant_async(
+async def count_processing_for_tenant(
     db: AsyncSession, *, tenant_id: str, lease_seconds: int = DOCUMENT_LEASE_SECONDS
 ) -> int:
     """本租户真的在占用 Worker 的文档数（语义同 :func:`count_processing_for_tenant`）。"""

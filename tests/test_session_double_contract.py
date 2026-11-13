@@ -21,6 +21,9 @@ from sqlalchemy import text
 
 from tests.fake_db import AsyncRecordingSession, RecordingSession
 
+#: 替身认得的原始读语句**只有这一种**（既有的 ``tenant_ids`` 视图）；ORM ``select(Model)``
+#: 是另外一大类。认不得的读**两边都炸**——替身不许比真货宽容，静默回一批行会把「查询写错」
+#: 变成一条绿着的用例。
 _QUERY = text("SELECT id FROM knowledge_base WHERE tenant_id = :tid")
 _INSERT = text("INSERT INTO knowledge_base (id) VALUES (:id)")
 _DELETE = text("DELETE FROM knowledge_base WHERE id = :id")

@@ -70,6 +70,11 @@ class _MemorySettingsCache:
         self.deleted += 1
         self.payload = None
 
+    async def adelete(self) -> None:
+        """循环上的那条：与 ``delete`` 同一份状态（契约见 app.core.runtime_settings_cache）。"""
+
+        self.delete()
+
 
 class _ExplodingSession(RecordingSession):
     """任何查询都炸：用来证明「命中缓存 / TTL 内的 ensure 一次库都没读」。"""

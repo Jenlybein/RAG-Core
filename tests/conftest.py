@@ -99,6 +99,14 @@ class _MemorySettingsCache:
     def set(self, overrides: dict[str, Any]) -> None:
         self._overrides = dict(overrides)
 
+    def delete(self) -> None:
+        self._overrides = None
+
+    async def adelete(self) -> None:
+        """循环上的那条（控制面写入的 after_commit 用它）；与 ``delete`` 同一份状态。"""
+
+        self._overrides = None
+
 
 @pytest.fixture(autouse=True)
 def _offline_process_state():

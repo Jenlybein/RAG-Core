@@ -14,7 +14,7 @@
 **第 11 步票 #134 之后，这一份替身只剩三个角色**（ADR-0024）：异步面（
 ``AsyncRecordingSession``，请求路径与旁路短事务的默认替身）、被 ``AsyncSessionAdapter``
 包住的逐用例预置答案（``EmptySession`` / ``TransactionalSession`` 与各文件自己造的小类）、
-以及**运算维脚本**用的同步面。``get_db`` / ``get_transaction`` 两个 FastAPI 依赖已经删除，
+以及**运维脚本**用的同步面。``get_db`` / ``get_transaction`` 两个 FastAPI 依赖已经删除，
 所以这里不再有「同步请求替身」这一角色——``override_all_db`` 只换异步那两个入口。
 
 **为什么 ``statements`` 记的是 SQL 文本**：同一个操作在同步与异步替身上必须产生同一组
@@ -372,7 +372,22 @@ class RecordingSession(EmptySession):
         model = _orm_model_of(statement)
         if model is not None:
             return _Rows(self._select_rows(statement, model))
-        return _Rows(self._tenant_ids)
+        # 写语句（INSERT / UPDATE / DELETE）：替身不模拟行的变化（行走 ``add`` / ``delete``），
+        # 只保证「这条语句确实发出去了」（``_record`` 已经记上）。
+        sql = str(statement)
+        verb = sql.lstrip().split(maxsplit=1)[0].upper() if sql.strip() else ""
+        if verb in {"INSERT", "UPDATE", "DELETE"}:
+            return _Rows([])
+        # 原始读**只认得一种**：既有的 ``tenant_ids`` 视图（``SELECT id FROM knowledge_base``）。
+        if verb == "SELECT" and "knowledge_base" in sql.lower():
+            return _Rows(self._tenant_ids)
+        # 认不出的**读**语句不猜：静默回一批行会让「这条查询写错了」变成一条绿着的用例。
+        # 真会话对一条它解析不了的语句只会炸，替身照做。
+        raise TypeError(
+            f"假会话认不出这条读语句：{type(statement).__name__}。"
+            "要么补一条等价的 ORM select，要么这个用例该用真库"
+            "（见 tests/test_index_version.py 的 aiosqlite 写法）。"
+        )
 
     def _select_rows(self, statement: Any, model: type) -> list[Any]:
         """``select(Model)`` → 预置行里匹配的那几条（过滤 + 切片，不排序）。"""

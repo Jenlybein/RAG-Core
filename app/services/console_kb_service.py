@@ -201,7 +201,7 @@ async def delete_empty_kb(
     )
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
-    if await document_repository.count_by_kb_async(db, kb_id, tenant_id=tenant_id) > 0:
+    if await document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id) > 0:
         raise AppError(ErrorCode.PARAM_ERROR, MSG_KB_NOT_EMPTY)
 
     before = _kb_snapshot(kb)

@@ -617,8 +617,8 @@ def test_uploading_over_documents_per_kb_is_a_quota_error(
     async def _count_processing(_db, *, tenant_id: str) -> int:
         return 0
 
-    monkeypatch.setattr(doc_repo, "count_by_kb_async", _count_docs)
-    monkeypatch.setattr(doc_repo, "count_processing_for_tenant_async", _count_processing)
+    monkeypatch.setattr(doc_repo, "count_by_kb", _count_docs)
+    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
@@ -641,8 +641,8 @@ def test_uploading_over_the_concurrent_processing_allowance_is_a_quota_error(
     async def _count_processing(_db, *, tenant_id: str) -> int:
         return 1
 
-    monkeypatch.setattr(doc_repo, "count_by_kb_async", _count_docs)
-    monkeypatch.setattr(doc_repo, "count_processing_for_tenant_async", _count_processing)
+    monkeypatch.setattr(doc_repo, "count_by_kb", _count_docs)
+    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
@@ -675,7 +675,7 @@ def test_reindex_charges_the_concurrent_processing_allowance(
         return 1
 
     monkeypatch.setattr(doc_repo, "get_by_id_for_tenant_async", _failed_doc)
-    monkeypatch.setattr(doc_repo, "count_processing_for_tenant_async", _one_processing)
+    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _one_processing)
 
     response = entry.client.post("/api/v1/documents/doc-1/reindex")
     assert response.status_code == 200

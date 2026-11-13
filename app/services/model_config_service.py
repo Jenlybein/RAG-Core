@@ -29,7 +29,9 @@
 
 面板那六条接口（列表 / 新增 / 改 / 删 / 看明文）全在异步栈上，所以它们的读写是
 ``async``；而 :func:`resolve_role_config` 是 **Provider 装配**的入口——它拿不到
-``Depends``、也不在请求的异步路径上（`app/main.py` 与 Worker 在启动时注入），所以那条
+``Depends``。**注意**：它**确实**在请求路径上——``get_llm_provider`` 每次调用都要算
+配置指纹，那次同步读就在这里，所以它也是票 #137 要搬走的那一处。之所以还不是 ``Depends`
+`，是为了让 Provider 层不必认识请求上下文（ADR-0011）；那条
 路径仍用同步会话，:func:`pointer_map` 因此保留同步面，异步面是它的孪生
 :func:`pointer_map_async`。「谁是角色、谁指着谁」的解释仍然只有一份
 （:func:`_pointers_of`）。

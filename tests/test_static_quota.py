@@ -108,9 +108,9 @@ async def test_counting_a_kbs_documents_ignores_other_kbs_and_other_tenants(db: 
     )
     await db.flush()
 
-    assert await document_repository.count_by_kb_async(db, KB_ID, tenant_id=TENANT_ID) == 2
-    assert await document_repository.count_by_kb_async(db, OTHER_KB_ID, tenant_id=TENANT_ID) == 1
-    assert await document_repository.count_by_kb_async(db, KB_ID, tenant_id=OTHER_TENANT_ID) == 1
+    assert await document_repository.count_by_kb(db, KB_ID, tenant_id=TENANT_ID) == 2
+    assert await document_repository.count_by_kb(db, OTHER_KB_ID, tenant_id=TENANT_ID) == 1
+    assert await document_repository.count_by_kb(db, KB_ID, tenant_id=OTHER_TENANT_ID) == 1
 
 
 @pytest.mark.asyncio
@@ -133,7 +133,7 @@ async def test_the_processing_count_only_counts_documents_that_are_really_in_fli
     )
     await db.flush()
 
-    assert await document_repository.count_processing_for_tenant_async(db, tenant_id=TENANT_ID) == 2
+    assert await document_repository.count_processing_for_tenant(db, tenant_id=TENANT_ID) == 2
 
 
 @pytest.mark.asyncio
@@ -153,7 +153,7 @@ async def test_a_document_stuck_past_its_lease_does_not_hold_a_slot(db: AsyncSes
     )
     await db.flush()
 
-    assert await document_repository.count_processing_for_tenant_async(db, tenant_id=TENANT_ID) == 0
+    assert await document_repository.count_processing_for_tenant(db, tenant_id=TENANT_ID) == 0
 
 
 # ───────────────────────────────────────────── 判定：阈值与错误码

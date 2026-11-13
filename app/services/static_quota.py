@@ -70,7 +70,7 @@ async def ensure_upload_quota(
     正是本票说的「最容易忘的那一条」）。
     """
 
-    used_documents = await document_repository.count_by_kb_async(
+    used_documents = await document_repository.count_by_kb(
         db, kb_id, tenant_id=tenant_id
     )
     _ensure_under(
@@ -89,7 +89,7 @@ async def ensure_processing_quota(db: AsyncSession, *, tenant_id: str, plan: Pla
     却照样往队列里塞一份工作。
     """
 
-    used = await document_repository.count_processing_for_tenant_async(
+    used = await document_repository.count_processing_for_tenant(
         db, tenant_id=tenant_id
     )
     _ensure_under(

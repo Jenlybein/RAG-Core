@@ -41,13 +41,23 @@ class ExpiringKeyValueClient(Protocol):
 
 
 class RuntimeSettingsCache(Protocol):
-    """覆盖层缓存的契约：整张表一份快照，三个方法，不接受第四个。"""
+    """覆盖层缓存的契约：整张表一份快照，三个方法，不接受第四个。
+
+    **为什么 ``delete`` 有两个面**：刷新覆盖层这件事有两个调用上下文——中间件的
+    ``run_in_threadpool`` 与 Celery 任务在**同步**上下文里（用 ``delete``），控制面写入
+    的 ``after_commit`` 回调在**事件循环**上（用 ``adelete``）。同一个键、同一份快照，
+    只有「谁在等」不同。同步 Redis 出现在循环上会卡住整条请求链（票 #133 的验收），
+    所以两个面都要有；等中间件与 Celery 那一侧也搬进常驻循环（票 #137）之后，
+    ``delete`` 那一条随同步缝一起删。
+    """
 
     def get(self) -> Overrides | None: ...
 
     def set(self, overrides: Overrides) -> None: ...
 
     def delete(self) -> None: ...
+
+    async def adelete(self) -> None: ...
 
 
 class RedisRuntimeSettingsCache:
@@ -58,9 +68,12 @@ class RedisRuntimeSettingsCache:
         client: ExpiringKeyValueClient,
         *,
         ttl_seconds: int | None = None,
+        async_client: Any = None,
     ) -> None:
         self._client = client
         self._ttl = CACHE_TTL_SECONDS if ttl_seconds is None else ttl_seconds
+        # 异步面缺省惰性取同一个 Redis：两条客户端指向同一份键，谁写谁删都看得见。
+        self._async_client = async_client
 
     def get(self) -> Overrides | None:
         raw = self._client.get(CACHE_KEY)
@@ -77,6 +90,15 @@ class RedisRuntimeSettingsCache:
 
     def delete(self) -> None:
         self._client.delete(CACHE_KEY)
+
+    async def adelete(self) -> None:
+        """循环上的那一条：走 ``redis.asyncio`` 客户端，不用同步客户端。"""
+
+        if self._async_client is None:
+            from app.core.redis_client import get_redis_client
+
+            self._async_client = get_redis_client()
+        await self._async_client.delete(CACHE_KEY)
 
 
 #: 进程内可注入的缓存实例。``None`` 表示还没注入过，按生产实现现构造。
@@ -98,9 +120,11 @@ def get_settings_cache() -> RuntimeSettingsCache:
     global _cache
     if _cache is None:
         # 延迟 import：只有真正走生产实现时才需要 redis 那一条依赖链。
-        from app.core.redis_client import get_sync_redis_client
+        from app.core.redis_client import get_redis_client, get_sync_redis_client
 
-        _cache = RedisRuntimeSettingsCache(get_sync_redis_client())
+        _cache = RedisRuntimeSettingsCache(
+            get_sync_redis_client(), async_client=get_redis_client()
+        )
     return _cache
 
 

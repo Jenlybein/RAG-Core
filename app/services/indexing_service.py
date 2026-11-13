@@ -272,7 +272,7 @@ class IndexingService:
         for store in self._stores:
             await store.add_chunks(db, chunks)
 
-        await document_repository.update_status_async(db, doc, DocumentStatus.SUCCESS)
+        await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
         await async_commit_now(db)
         logger.info(
             "document indexed",

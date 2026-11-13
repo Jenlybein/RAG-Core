@@ -442,9 +442,9 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     monkeypatch.setattr(kb_repository, "get_by_id_for_tenant", _kb_lookup_async)
     monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _document_lookup_async)
     monkeypatch.setattr(document_repository, "list_by_kb_async", _list_documents_async)
-    monkeypatch.setattr(document_repository, "count_by_kb_async", _count_documents_async)
+    monkeypatch.setattr(document_repository, "count_by_kb", _count_documents_async)
     monkeypatch.setattr(
-        document_repository, "count_processing_for_tenant_async", _count_processing_async
+        document_repository, "count_processing_for_tenant", _count_processing_async
     )
     monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
     monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks_async)

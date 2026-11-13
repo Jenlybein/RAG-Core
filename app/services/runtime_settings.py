@@ -888,6 +888,10 @@ def ensure_runtime_overrides(
 def invalidate_runtime_settings(cache: RuntimeSettingsCache | None = None) -> None:
     """写完之后调它：删 Redis 缓存 + 清本进程的「刚检查过」标记。
 
+    **同步版**：只服务仍在同步上下文里的调用点（中间件的 ``run_in_threadpool``、
+    Celery 任务）。请求路径上的写走 :func:`invalidate_runtime_settings_async`——
+    同步 Redis 在事件循环上会卡住整条链（票 #133 的验收就是这条）。
+
     **删缓存，不写缓存**（ADR-0017）：写要每处修改都记得同步，漏一处就留下一个
     「看起来更新过、实际是旧值」的条目；删让下一次读自然拿到新值。
     """
@@ -896,6 +900,24 @@ def invalidate_runtime_settings(cache: RuntimeSettingsCache | None = None) -> No
     cache_obj = _cache_or_default(cache)
     try:
         cache_obj.delete()
+    except Exception as exc:  # noqa: BLE001 —— 删不掉最多多等一个 TTL
+        logger.warning("runtime settings cache delete failed", error=str(exc))
+    with _state_lock:
+        _last_checked_at = None
+
+
+async def invalidate_runtime_settings_async(cache: RuntimeSettingsCache | None = None) -> None:
+    """``invalidate_runtime_settings`` 的异步孪生：删缓存那一步**不阻塞事件循环**。
+
+    与同步版逐条同构（同样的「删而不写」、同样清 ``_last_checked_at``、同样吞掉缓存
+    故障），差别只有 ``await``。控制面写入的 ``after_commit`` 回调登记的是这一个：
+    ``AsyncTransaction.commit`` 会 ``await`` 它，于是同步 Redis 不再出现在循环上。
+    """
+
+    global _last_checked_at
+    cache_obj = _cache_or_default(cache)
+    try:
+        await cache_obj.adelete()
     except Exception as exc:  # noqa: BLE001 —— 删不掉最多多等一个 TTL
         logger.warning("runtime settings cache delete failed", error=str(exc))
     with _state_lock:
@@ -1259,7 +1281,7 @@ async def patch_runtime_settings(
     # 删缓存必须等库先落地：先删再提交时，另一个请求可能刚好读回旧行并把它写回缓存。
     # 只有热生效档需要——第二档要重启才读入，删缓存不会让任何人看到新值。
     if hot:
-        after_commit(db, lambda: invalidate_runtime_settings(cache))
+        after_commit(db, lambda: invalidate_runtime_settings_async(cache))
 
     return SettingsPatchResult(
         dry_run=False,

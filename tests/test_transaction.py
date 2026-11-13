@@ -8,7 +8,7 @@
    这类「必须等库先落地」的副作用靠它，而不是靠「先 commit 再做」的写法）；
 4. 会话上挂着的这一笔可以被取到（``current``），没在入口里时是 ``None``。
 
-第 4 条是服务层能拿到它的唯一途径：请求边界由路由的 ``Depends(get_transaction)`` 开，
+第 4 条是服务层能拿到它的唯一途径：请求边界由路由的 ``Depends(get_async_transaction)`` 开，
 服务层只问「这一笔在不在」并往上登记，自己不提交。
 
 **异步孪生**（第 11 步票 #128）守着**同一组**契约：``async with async_transaction(session):``。
