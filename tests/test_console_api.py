@@ -193,6 +193,29 @@ def console() -> Any:
 # ─────────────────────────────────────────────────────────────── 未登录 / 无权限
 
 
+def test_console_me_reports_research_usage_in_the_same_shape(console: _Harness) -> None:
+    """``/console/me`` 多一栏 ``research_usage``（票 #150），与 ``usage`` **同形**。
+
+    开关关着时两栏都是「未统计」：读数不存在，报 0 就是编造。两栏的上限各来自自己那一列
+    （``retrieve_daily`` / ``research_daily``），因为两条链路各有各的额度。
+    """
+
+    from app.schemas.console import USAGE_NOTE_NOT_TRACKED
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    data = console.client.get("/console/me").json()["data"]
+
+    assert data["research_usage"] == {
+        "used": None,
+        "limit": PLAN_PRESETS["pro"].research_daily,
+        "source": "not_tracked",
+        "note": USAGE_NOTE_NOT_TRACKED,
+    }
+    assert data["usage"]["limit"] == PLAN_PRESETS["pro"].retrieve_daily
+    assert set(data["research_usage"]) == set(data["usage"]), "同形：字段集必须一致"
+
+
 def test_console_call_without_a_session_is_unauthorized(console: _Harness) -> None:
     response = console.client.get("/console/me")
 
@@ -510,6 +533,41 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
         assert raised.value.code == ErrorCode.QUOTA_EXCEEDED
 
     asyncio.run(_after_patch())
+
+
+def test_a_plan_patch_can_close_and_reopen_research_quotas(console: _Harness) -> None:
+    """Research 的两个额度在面板上**可关可开**（票 #150）：0 = 关闭，负数仍然是 ``20018``。"""
+
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
+    console.cache.items[3] = plan_spec_of(console.plan_row(3))
+    assert (console.plan_row(3).research_qps, console.plan_row(3).research_daily) == (1, 100)
+
+    response = console.client.patch(
+        "/console/plans/3?dry_run=false",
+        json={"research_qps": 0, "research_daily": 0},
+        headers=WRITE_HEADERS,
+    )
+
+    assert response.json()["code"] == 0
+    after = response.json()["data"]["after"]
+    assert (after["research_qps"], after["research_daily"]) == (0, 0)
+    row = console.plan_row(3)
+    assert (row.research_qps, row.research_daily) == (0, 0)
+
+    entry = console.audit_entries()[-1]
+    assert entry.action == "plan.update"
+    assert entry.target == "plan:3"
+    assert entry.before_snapshot["research_daily"] == 100
+    assert entry.after_snapshot["research_daily"] == 0, "关掉这一项也要留下前后两侧"
+
+    # 负数不是一个额度：与「retrieve_qps 填 0」不同，这里只拒负数、放行 0。
+    audits_before = len(console.audit_entries())
+    rejected = console.client.patch(
+        "/console/plans/3?dry_run=false", json={"research_daily": -1}, headers=WRITE_HEADERS
+    )
+    assert rejected.json()["code"] == 20018
+    assert console.plan_row(3).research_daily == 0
+    assert len(console.audit_entries()) == audits_before
 
 
 def test_an_unknown_profile_is_a_plan_invalid_error(console: _Harness) -> None:

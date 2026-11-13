@@ -22,7 +22,7 @@ from app.core import passwords
 from app.models.account import Account
 from app.models.api_key import ApiKey
 from app.models.audit_log import AuditLog
-from app.models.key_policy import KeyPolicy
+from app.models.key_policy import KeyPolicy, policy_snapshot_of
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
@@ -507,6 +507,60 @@ def test_a_policy_patch_is_a_partial_update_with_a_before_and_after_snapshot(
     assert entry.target == f"policy:{POLICY_ALPHA}"
     assert entry.before_snapshot["retrieve_qps"] == 10
     assert entry.after_snapshot["retrieve_qps"] == 20
+
+
+def test_a_policy_patch_opens_research_and_takes_effect_without_reissuing_the_key(
+    console: _Harness,
+) -> None:
+    """Research 的两个额度在面板上可开（票 #150），改完下一次调用就按新值判。
+
+    「不必重签 Key」不是一句承诺：判定内核每个请求都重读这一行配置（见
+    ``key_policy_service`` 模块文档），所以这里断言的是**那一行映射出来的快照**——
+    正是下一次调用会拿到的输入。
+    """
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = console.client.patch(
+        f"/console/key-policies/{POLICY_ALPHA}",
+        json={"research_allowed": True, "research_qps": 1, "research_daily": 100},
+        headers=WRITE_HEADERS,
+    )
+
+    data = console.data(response)
+    assert data["after"]["research_allowed"] is True
+    assert (data["after"]["research_qps"], data["after"]["research_daily"]) == (1, 100)
+    assert {"research_allowed", "research_qps", "research_daily"} <= set(data["changed"])
+
+    row = console.policy_row(POLICY_ALPHA)
+    assert (row.research_qps, row.research_daily) == (1, 100)
+    snapshot = policy_snapshot_of(row)
+    assert (snapshot.research_qps, snapshot.research_daily) == (1, 100), (
+        "下一次调用拿到的快照就是新值：不必重签 Key"
+    )
+
+    entry = console.audit_entries()[-1]
+    assert entry.action == "key_policy.update"
+    assert entry.before_snapshot["research_qps"] == 0
+    assert entry.after_snapshot["research_qps"] == 1
+    assert entry.after_snapshot["research_daily"] == 100
+
+
+def test_a_policy_patch_rejects_a_negative_research_quota(console: _Harness) -> None:
+    """0 合法（= 关闭），负数不合法：额度不是一个可以取负的东西。"""
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    audits_before = len(console.audit_entries())
+
+    response = console.client.patch(
+        f"/console/key-policies/{POLICY_ALPHA}",
+        json={"research_daily": -1},
+        headers=WRITE_HEADERS,
+    )
+
+    assert console.code(response) == 20015
+    assert console.policy_row(POLICY_ALPHA).research_daily == 0
+    assert len(console.audit_entries()) == audits_before
 
 
 def test_a_policy_patch_can_move_to_a_profile_the_plan_allows(console: _Harness) -> None:
