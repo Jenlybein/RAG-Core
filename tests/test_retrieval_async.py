@@ -340,6 +340,8 @@ async def test_cancelling_the_request_cancels_the_work_in_flight(
 #: 检索路径的源码（含它依赖的仓储与向量库实现）。这张表是「这一条链路上有谁」的清单。
 _RETRIEVAL_PATH_FILES: tuple[str, ...] = (
     "app/services/rag_service.py",
+    "app/services/retrieval/kernel.py",
+    "app/services/retrieval/collapse.py",
     "app/services/retrieval/pipeline.py",
     "app/services/retrieval/vector_recall.py",
     "app/services/retrieval/fusion.py",

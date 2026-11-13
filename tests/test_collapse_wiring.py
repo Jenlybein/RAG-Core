@@ -11,10 +11,9 @@ import importlib
 from types import SimpleNamespace
 from typing import Any
 
-from app.core.config import settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.services import result_collapse
 from app.services.result_collapse import OVERFETCH_FACTOR
-from app.services.retrieval_options import RetrievalOptions
 from tests.fake_db import AsyncSessionAdapter
 
 TENANT = "tenant-demo"
@@ -52,7 +51,7 @@ class _Rows:
 class _Session:
     """按调用顺序回答：meta → 单元行 → 定位用的 meta。
 
-    顺序与 `_collapse_results` 的调用顺序一致；用队列而不是解析 SQL，是为了让
+    顺序与 `collapse_results` 的调用顺序一致；用队列而不是解析 SQL，是为了让
     「多查了一次」这种回归立刻表现为 IndexError 而不是静默通过。
     """
 
@@ -73,28 +72,24 @@ class _Session:
 
 
 def _run(session: _Session, chunks: list[dict], **kwargs) -> list[dict]:
-    service = importlib.import_module("app.services.rag_service")
-    # 票 #77：折叠与表格展开不再是 ``_collapse_results`` 的散装参数，而是这次调用的
-    # 已解析参数（``RetrievalOptions``）。调用点的写法不变，助手负责翻译。
-    options: dict[str, Any] = {
-        # 折叠不看检索模式；值对象要求有它，填服务端缺省即可。
-        "mode": settings.RETRIEVAL_MODE,
+    collapse = importlib.import_module("app.services.retrieval.collapse")
+    # 票 #140：折叠是**检索内核**的最后一步，参数全部显式（不再吃一个值对象）——
+    # 开关与条数由组合根从 ``RetrievalOptions`` 上读出来再交进去。
+    call: dict[str, Any] = {
+        "top_k": 5,
         "fold_to_sections": True,
         "expand_table_rows": True,
-        "top_k": 5,
-        # 折叠路径不碰重排与改写：填 False 只是让这个值对象完整（#78 起它们是必填项）。
-        "rerank": False,
-        "rewrite": False,
     }
-    options.update(kwargs)
+    call.update(kwargs)
 
     async def go() -> list[dict]:
         # 第 11 步票 #127：折叠在异步栈上（``await``），会话替身因此包一层异步面。
-        return await service._collapse_results(
+        return await collapse.collapse_results(
             AsyncSessionAdapter(session),
             tenant_id=TENANT,
             chunks=chunks,
-            options=RetrievalOptions(**options),
+            index_versions={KB: DEFAULT_INDEX_VERSION},
+            **call,
         )
 
     return asyncio.run(go())

@@ -24,6 +24,7 @@ from typing import Any
 
 import pytest
 
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.services.retrieval.rerank import REASON_RERANK_FAILED, rerank_stage
 from app.services.retrieval_options import RetrievalOptions
 
@@ -217,7 +218,7 @@ def test_the_pipeline_forwards_the_rerank_factory_to_the_stage(
         pipeline.hybrid_retrieve(
             db=None,  # 两路分支都被替身接住，这条用例不需要真会话
             tenant_id="t",
-            kb_ids=["kb-a"],
+            index_versions={"kb-a": DEFAULT_INDEX_VERSION},
             vector_queries=["q"],
             rerank_query="q",
             keyword_query="q",
@@ -234,9 +235,15 @@ def test_the_pipeline_forwards_the_rerank_factory_to_the_stage(
 
 
 def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.MonkeyPatch) -> None:
-    """组合根收下 ``rerank_factory`` 后必须真的交给编排层（不是收下就丢）。"""
+    """组合根收下 ``rerank_factory`` 后必须真的交给编排层（不是收下就丢）。
+
+    票 #140 起，「编排层」的入口是**检索内核**（``app.services.retrieval.kernel``）：
+    组合根把工厂交给内核，内核再交给重排阶段。替换点因此跟着接缝搬到了内核模块的
+    命名空间里——断言仍然是同一件事：这个工厂一路往下走，没有被丢掉。
+    """
 
     service = importlib.import_module("app.services.rag_service")
+    kernel = importlib.import_module("app.services.retrieval.kernel")
     captured: dict[str, Any] = {}
 
     async def _fake_hybrid(**kwargs: Any) -> Any:
@@ -255,7 +262,7 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
             duration_ms=0.0,
         )
 
-    monkeypatch.setattr(service, "hybrid_retrieve", _fake_hybrid)
+    monkeypatch.setattr(kernel, "hybrid_retrieve", _fake_hybrid)
     monkeypatch.setattr(service, "optimize_query", _identity_query)
 
     async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
@@ -271,7 +278,7 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
         return None
 
     monkeypatch.setattr(service, "ensure_visible", _visible)
-    monkeypatch.setattr(service, "_collapse_results", _no_collapse)
+    monkeypatch.setattr(kernel, "collapse_results", _no_collapse)
     monkeypatch.setattr(service, "_empty_reason", _empty)
     monkeypatch.setattr(service, "record_retrieval_trace", _no_trace)
     monkeypatch.setattr(service, "emit_retrieval_trace_off_loop", _no_trace)

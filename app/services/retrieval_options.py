@@ -65,6 +65,9 @@ TENANT_POLICY_KEY: Final[str] = "tenant_policy"
 
 MODE_VECTOR: Final[str] = "vector"
 MODE_HYBRID: Final[str] = "hybrid"
+#: 关键词单路。与上面两个同一套词表（``RetrievalMode`` 也有它）：三种模式的**分支**
+#: 在内核（``app/services/retrieval/kernel.py``），词表只该有一份。
+MODE_BM25: Final[str] = "bm25"
 
 
 @dataclass(frozen=True)

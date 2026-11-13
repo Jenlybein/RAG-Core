@@ -39,7 +39,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -47,7 +47,6 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.models.chunk import default_index_versions
 from app.observability.stage_timing import (
     STAGE_FUSION,
     STAGE_KEYWORD_RECALL,
@@ -95,7 +94,7 @@ async def hybrid_retrieve(
     *,
     db: AsyncSession,
     tenant_id: str,
-    kb_ids: list[str],
+    index_versions: Mapping[str, str],
     vector_queries: Sequence[str],
     rerank_query: str,
     keyword_query: str,
@@ -115,8 +114,12 @@ async def hybrid_retrieve(
     线程，所以「共用」在这里是安全的——第 10 步之所以要另开一个 ``SessionLocal``，是因为
     那时向量分支跑在别的线程上，而同步 ``Session`` 不能跨线程。
 
-    工厂以**可调用对象**传进来，而不是在这里直接 import：``rag_service`` 是组合根，
-    测试替换工厂的位置因此仍然只有一处（沿用既有 monkeypatch 接缝，不新造接缝）。
+    工厂以**可调用对象**传进来，而不是在这里直接 import：组合根（``kernel`` /
+    ``rag_service``）传给测试的替换点因此仍然只有一处（沿用既有 monkeypatch 接缝，
+    不新造接缝）。
+
+    ``index_versions`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
+    本模块不再自己造一份——范围是「一次调用」的属性，而这条链路会被多查询各调一次。
 
     **两条通道拿不同的查询**（``vector_queries`` / ``keyword_query``）：查询优化在
     召回之前就把一句话加工成「向量逐句列表 + 关键词一句 + 重排一句」。改写成功时
@@ -160,7 +163,7 @@ async def hybrid_retrieve(
             _vector_branch(
                 db,
                 tenant_id=tenant_id,
-                kb_ids=kb_ids,
+                index_versions=index_versions,
                 queries=vector_queries,
                 top_k=depth,
                 embedding_factory=embedding_factory,
@@ -169,7 +172,7 @@ async def hybrid_retrieve(
             ),
             _keyword_branch(
                 tenant_id=tenant_id,
-                kb_ids=kb_ids,
+                index_versions=index_versions,
                 query=keyword_query,
                 top_k=depth,
                 keyword_factory=keyword_factory,
@@ -190,7 +193,7 @@ async def hybrid_retrieve(
         logger.warning(
             "hybrid retrieval failed on both channels",
             tenant_id=tenant_id,
-            kb_ids=list(kb_ids),
+            kb_ids=list(index_versions),
             vector_error=type(vector_error).__name__,
             keyword_error=type(keyword_error).__name__,
         )
@@ -206,7 +209,7 @@ async def hybrid_retrieve(
         logger.warning(
             "hybrid retrieval degraded",
             tenant_id=tenant_id,
-            kb_ids=list(kb_ids),
+            kb_ids=list(index_versions),
             degraded_reason=degraded_reason,
         )
 
@@ -268,7 +271,7 @@ async def _vector_branch(
     db: AsyncSession,
     *,
     tenant_id: str,
-    kb_ids: list[str],
+    index_versions: Mapping[str, str],
     queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
@@ -292,7 +295,7 @@ async def _vector_branch(
         return await vector_recall(
             db=db,
             tenant_id=tenant_id,
-            kb_ids=kb_ids,
+            index_versions=index_versions,
             queries=queries,
             top_k=top_k,
             embedding_factory=embedding_factory,
@@ -305,7 +308,7 @@ async def _vector_branch(
 async def _keyword_branch(
     *,
     tenant_id: str,
-    kb_ids: list[str],
+    index_versions: Mapping[str, str],
     query: str,
     top_k: int,
     keyword_factory: Callable[[], Any],
@@ -313,8 +316,8 @@ async def _keyword_branch(
 ) -> list[dict]:
     """关键词通道：租户 + 库/版本配对过滤；本身是异步 HTTP，不必进线程。
 
-    可见性不在这里校验：由 ``rag_service.retrieve`` 在进入任何分支之前统一预校验
-    一次（两条分支各查一遍 = 每库 2 次查询，且「拒绝」会有两个来源）。
+    可见性不在这里校验：由内核的调用方（``rag_service.retrieve``）在进入任何分支之前
+    统一预校验一次（两条分支各查一遍 = 每库 2 次查询，且「拒绝」会有两个来源）。
 
     失败的那一路也留下这一段耗时：它确实被走过、也的确花了时间（哪怕只是拒绝服务），
     把失败从计量里抹掉会让「这一次为什么慢」少掉最该看的那一行。
@@ -332,7 +335,7 @@ async def _keyword_branch(
             rows = await provider.keyword_search(
                 query,
                 tenant_id=tenant_id,
-                index_versions=default_index_versions(kb_ids),
+                index_versions=dict(index_versions),
                 top_k=top_k,
             )
         except AppError:
