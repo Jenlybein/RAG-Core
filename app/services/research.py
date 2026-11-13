@@ -99,6 +99,10 @@ MAX_DECIDER_MATERIAL_CHARS = 12000
 #:
 #: 两件事分成两码，是因为它们的处置不同：``unavailable`` 说明这台机器上就没装强模型
 #: （换模型是对的、也不该报警），``failed`` 说明装了但这次没答出来（要进统计与告警）。
+#:
+#: 它说的是**强模型这一路**为什么没用上，不是「兜底跑成功了」：兜底有没有跑成，读
+#: ``model_calls``（第 4 格是否被用掉）与 ``answer`` 是否为空即可——两个字段都是各自
+#: 事实的唯一来源，不再多编一个码去表达它们的组合。
 STRONG_MODEL_UNAVAILABLE: Final[str] = "strong model unavailable"
 STRONG_MODEL_FAILED: Final[str] = "strong model failed"
 
