@@ -388,6 +388,57 @@ def test_written_section_ids_are_not_the_old_path_only_hash(
         assert chunk["meta"]["section_id"] == section_id_of(document_id=DOC_A, heading_path=path)
 
 
+def test_the_verification_check_agrees_with_what_the_build_actually_wrote(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """核对脚本的两端对得上：真实构建产物**通过**核对，掺一条旧 id 就**不通过**。
+
+    这条用例把两个模块钉在一起：切块器写 ``section_id``（M1）、构建流水线把它落库（M2）、
+    核对逻辑按同一份算法验它（M3）。三处任何一处漂移，这里都会红——而单看任何一处都绿。
+    """
+
+    import hashlib
+
+    from app.services.index_verification import IdentityRow, verify_identity
+
+    document = _document(DOC_A)
+    session = _session(kb=_kb(), documents=[document])
+    store = _VersionedStore(session)
+    service = _service(store)
+    _patch_pipeline(monkeypatch, documents={DOC_A: document})
+
+    _build_and_activate(service, session)
+
+    rows: dict[tuple[str, str], IdentityRow] = {}
+    for chunk in store.by_version["v1"]:
+        meta = chunk["meta"]
+        key = (str(chunk["document_id"]), str(meta["heading_path"]))
+        rows[key] = IdentityRow(
+            document_id=key[0],
+            heading_path=key[1],
+            section_id=str(meta["section_id"]),
+            parent_section_id=(
+                str(meta["parent_section_id"]) if meta["parent_section_id"] else None
+            ),
+        )
+
+    report = verify_identity(rows.values())
+    assert report.ok, report.render_problems()
+    assert report.sections == len(rows)
+    assert report.parent_without_body >= 1, "「售后手册」只有标题，父节无正文这一档必须出现"
+
+    poisoned = dict(rows)
+    first_key = next(iter(poisoned))
+    poisoned[first_key] = IdentityRow(
+        document_id=first_key[0],
+        heading_path=first_key[1],
+        section_id=hashlib.sha256(first_key[1].encode("utf-8")).hexdigest(),
+        parent_section_id=poisoned[first_key].parent_section_id,
+    )
+
+    assert not verify_identity(poisoned.values()).ok
+
+
 # ─────────────────────────────── 发起入口：全量重建必须能被执行，且走的是同一条流水线
 
 SCRIPTS_DIR = Path(__file__).resolve().parent.parent / "scripts"
