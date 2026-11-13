@@ -8,6 +8,12 @@
 | :func:`build_insert_statement` | 新抽出来的边怎么幂等写入（``ON CONFLICT DO NOTHING``） |
 | :func:`build_prune_statement` | 本版本里哪些边已经指向不存在的节（悬空边） |
 | :func:`count_by_scope` | 这一版本里有多少条边（核对 / 排障读数） |
+| :func:`build_outbound_statement` | 检索侧的**一跳出边**：这批种子节在本版本里指向了谁（#144 的候选注入） |
+
+**检索侧那一条为什么也住在这里**（票 #144）：注入要问「种子节的邻居是谁」，而这条
+查询的**范围条件**必须与写入侧同一份形状——三列作用域、映射解析出来的配对。放到
+``app/services/`` 里另写一遍，等于让「哪条边算本版本的边」有了两个答案；而这种分叉
+的表现是「注入了另一个库的一条」，不报错。
 
 **为什么先删后写、还要再清悬空边**（ADR-0025 + ADR-0027）：
 
@@ -26,10 +32,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Final, cast
 
-from sqlalchemy import ColumnElement, Table, and_, delete, func, not_, or_, select, tuple_
+from sqlalchemy import ColumnElement, Table, and_, delete, false, func, not_, or_, select, tuple_
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql import Delete, Insert, Select
@@ -60,6 +66,76 @@ def build_scope_clause(scope: EdgeScope) -> ColumnElement[bool]:
         SectionEdge.kb_id == scope.kb_id,
         SectionEdge.index_version == scope.index_version,
     )
+
+
+def build_scopes_clause(
+    *, tenant_id: str, index_versions: Mapping[str, str]
+) -> ColumnElement[bool]:
+    """**本次请求的范围**：``kb_id → 索引版本`` 的映射编译成「对与对之间 OR」。
+
+    与 ``app.models.chunk.scope_filter`` 是同一条纪律的第二次落地：配对关系只能从映射
+    里读出来。写成 ``kb_id IN (...)`` 配 ``index_version IN (...)`` 会匹配出「A 库配
+    B 库版本」这种不存在的组合——那是越权，而且不报错。
+
+    空映射回**恒假**：拿不到范围却不过滤，等于把整个租户的边都读进来。
+    """
+
+    pairs = [
+        and_(
+            SectionEdge.tenant_id == tenant_id,
+            SectionEdge.kb_id == kb_id,
+            SectionEdge.index_version == index_version,
+        )
+        for kb_id, index_version in index_versions.items()
+    ]
+    if not pairs:
+        return false()
+    return or_(*pairs)
+
+
+def build_outbound_statement(
+    *,
+    tenant_id: str,
+    index_versions: Mapping[str, str],
+    seeds: Sequence[tuple[str, str, str]],
+) -> Select[tuple[SectionEdge]]:
+    """一跳出边：这批 ``(kb_id, 文档 id, 节 id)`` 在本版本里指向了谁。
+
+    **只查一跳**（父 spec「Out of Scope」：不做多跳图遍历）。种子为空时不发文——
+    空 ``IN`` 在 PG 里是语法合法但恒假的写法，这里提前返回省掉一次往返。
+
+    返回的是**边**而不是节点：目标节该不该被注入由服务层按「引用 > 兄弟节 > 父节」的
+    优先级裁决（:mod:`app.services.graph_injection`），查询只负责「有哪些边」。
+    """
+
+    statement = select(SectionEdge).where(
+        build_scopes_clause(tenant_id=tenant_id, index_versions=index_versions)
+    )
+    pairs = sorted({(str(document_id), str(section_id)) for _, document_id, section_id in seeds})
+    if not pairs:
+        return statement.where(false())
+    return statement.where(
+        tuple_(SectionEdge.source_document_id, SectionEdge.source_section_id).in_(pairs)
+    )
+
+
+async def fetch_outbound(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    index_versions: Mapping[str, str],
+    seeds: Sequence[tuple[str, str, str]],
+) -> list[SectionEdge]:
+    """跳数=1 的邻居边（**不做跨库禁止**：跨库边允许存在，范围由上面的条件过滤）。"""
+
+    rows = (
+        await db.execute(
+            build_outbound_statement(
+                tenant_id=tenant_id, index_versions=index_versions, seeds=seeds
+            )
+        )
+    ).scalars()
+    return list(rows.all())
 
 
 def build_delete_for_document_statement(scope: EdgeScope, document_id: str) -> Delete:
@@ -177,10 +253,13 @@ __all__ = [
     "build_delete_for_document_statement",
     "build_insert_statement",
     "build_list_for_document_statement",
+    "build_outbound_statement",
     "build_prune_statement",
     "build_scope_clause",
+    "build_scopes_clause",
     "count_by_scope",
     "delete_for_document",
+    "fetch_outbound",
     "insert_many",
     "list_for_document",
     "prune_dangling",
