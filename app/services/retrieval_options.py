@@ -301,6 +301,10 @@ def tenant_policy_echo(options: RetrievalOptions, *, kb_count: int) -> dict[str,
         "top_k": options.top_k,
         "rerank": options.rerank,
         "rewrite": options.rewrite,
+        # 切片编排（第 11 步票 #147）：与上面五项同一个来源。它在这里出现的前提是
+        # 「这个值真的改变了结果」——#147 起它是链路的一步，不再是判定路径上的一个布尔，
+        # 所以 #146 那次推迟（回显留到有消费者时）正好到期（ADR-0010「第七次修订」）。
+        "orchestration": options.orchestration,
         "kb_count": kb_count,
         "clipped": list(policy.clipped),
     }

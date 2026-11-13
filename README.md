@@ -213,7 +213,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
   -d '{"kb_ids":["<kb_id>"],"query":"设备证书过期怎么处理"}'
 ```
 
-成功时 `code: 0`，`metadata.tenant_policy` 回显本次实际生效的 `plan` / `requested_profile` / `mode` / `top_k` / `rerank` / `rewrite` / `kb_count` / `clipped`。MCP 侧用同一把 Key：先 `initialize`（响应头里的 `mcp-session-id` 要带回），再 `notifications/initialized`，然后 `tools/call` 调 `rag_retrieve`，参数仍是 `{"kb_ids":[...],"query":"..."}`；两条入口的鉴权、白名单与档位门禁是同一份实现，拿到的 data 载荷逐字段相同（见 `tests/test_tenant_wiring.py`）。
+成功时 `code: 0`，`metadata.tenant_policy` 回显本次实际生效的 `plan` / `requested_profile` / `mode` / `top_k` / `rerank` / `rewrite` / `orchestration` / `kb_count` / `clipped`；开了切片编排的档位还会在 `data` 顶层多一块 `orchestration`（要点 / 材料 / 三态完整度），关闭时这一块连键都不出现。MCP 侧用同一把 Key：先 `initialize`（响应头里的 `mcp-session-id` 要带回），再 `notifications/initialized`，然后 `tools/call` 调 `rag_retrieve`，参数仍是 `{"kb_ids":[...],"query":"..."}`；两条入口的鉴权、白名单与档位门禁是同一份实现，拿到的 data 载荷逐字段相同（见 `tests/test_tenant_wiring.py`）。
 
 ### 5. 越权回「不存在」
 
