@@ -49,15 +49,16 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models import BaseChatModel
 
 from app.core.config import settings
 from app.core.http_clients import model_traffic_client_options
 from app.core.llm_vendors import LLM_VENDORS
+
+if TYPE_CHECKING:  # pragma: no cover —— 只给类型检查用，运行时不导入
+    from langchain_core.language_models import BaseChatModel
 from app.core.model_roles import MODEL_ROLES
 from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
@@ -267,9 +268,7 @@ async def get_llm_provider(role: str = "fast") -> LLMProvider:
     # 2. `.env` 的单供应商（改造前的行为，逐字保留）。
     vendor = _VENDORS.get(settings.LLM_PROVIDER.strip().lower())
     if vendor is None:
-        raise ValueError(
-            f"未知的大模型供应商 {settings.LLM_PROVIDER!r}，只支持 {tuple(_VENDORS)}"
-        )
+        raise ValueError(f"未知的大模型供应商 {settings.LLM_PROVIDER!r}，只支持 {tuple(_VENDORS)}")
 
     api_key = getattr(settings, vendor.key_setting, "")
     if not api_key:
@@ -313,6 +312,24 @@ def _assembly_key(
         # 强档的思考强度进装配参数（fast 写死关思考，不受配置影响，所以不进键）。
         settings.LLM_REASONING_EFFORT if role == "strong" else None,
     )
+
+
+def _init_chat_model(model_name: str, **kwargs: Any) -> BaseChatModel:
+    """装配聊天模型的**唯一入口**，也是测试的注入缝。
+
+    ``from langchain.chat_models import init_chat_model`` 放在函数里是刻意的：
+    `langchain.chat_models` 冷导入约 2.3 s（经 `langchain_core` 还会拖进 `langsmith`），
+    而它只在「真的装配一个模型」时用得上——装配已经按配置指纹缓存，不是每个进程都要付。
+
+    **为什么保留这层薄函数而不是直接写在 `_build_chat_model` 里**：用例靠 patch
+    ``app.providers.llm._init_chat_model`` 来观察「这次装配用了哪条配置」。惰性 import 写在
+    调用点而没有这层缝时，patch 会落在一个永远不会被调用的名字上——用例照旧绿，但它已经
+    什么都没测（这类假绿在本项目里出现过不止一次）。
+    """
+
+    from langchain.chat_models import init_chat_model
+
+    return init_chat_model(model_name, **kwargs)
 
 
 def _assemble(
@@ -364,7 +381,7 @@ def _assemble(
         kwargs = dict(options)
         if accepts_injected_client:
             kwargs.update(model_traffic_client_options())
-        return init_chat_model(model_name, model_provider=vendor.chat_provider, **kwargs)
+        return _init_chat_model(model_name, model_provider=vendor.chat_provider, **kwargs)
 
     return LangChainLLMProvider(chat_model_factory=_build_chat_model, model_name=model_name)
 

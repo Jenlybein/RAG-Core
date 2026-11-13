@@ -196,7 +196,7 @@ async def test_the_cache_holds_the_provider_but_never_the_model(
         built.append(model_name)
         return FakeListChatModel(responses=["unused"])
 
-    monkeypatch.setattr("app.providers.llm.init_chat_model", _fake_init)
+    monkeypatch.setattr("app.providers.llm._init_chat_model", _fake_init)
 
     provider = await get_llm_provider("fast")
     assert built == [], "装配 Provider 时不该构造模型"

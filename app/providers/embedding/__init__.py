@@ -16,9 +16,7 @@
 
 from __future__ import annotations
 
-from typing import Any
-
-from langchain_openai import OpenAIEmbeddings
+from typing import TYPE_CHECKING, Any
 
 from app.core.config import settings
 from app.core.http_clients import model_traffic_client_options
@@ -26,6 +24,9 @@ from app.providers.embedding.base import EmbeddingProvider
 from app.providers.embedding.langchain_embeddings import LangChainEmbedding
 from app.providers.embedding.openai_compatible import OpenAICompatibleEmbedding
 from app.providers.langchain_runtime import apply_framework_telemetry_switches
+
+if TYPE_CHECKING:  # pragma: no cover —— 只给类型检查用，运行时不导入
+    from langchain_openai import OpenAIEmbeddings
 
 _MODE_LANGCHAIN = "langchain"
 _MODE_OPENAI_COMPATIBLE = "openai_compatible"
@@ -127,6 +128,11 @@ def _build_openai_embeddings() -> OpenAIEmbeddings:
     也会顺手建一个同步 ``httpx.Client``，所以两个都要给，否则每次装配白付一次约 43 ms 的
     构造代价（见 ``app/core/http_clients.py``）。
     """
+
+    # 惰性 import：`langchain_openai` 冷导入约 2.9 s（它会把整个 openai 客户端栈拖进来），
+    # 而这个函数只在**真的要用嵌入**时才被调用。放在模块顶部等于让每个 import app.main 的
+    # 进程（含 pytest 收集、运维脚本）先付一次这笔钱。
+    from langchain_openai import OpenAIEmbeddings
 
     options: dict[str, object] = {
         "model": settings.EMBEDDING_MODEL,

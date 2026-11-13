@@ -51,7 +51,6 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
-from fastmcp.utilities.lifespan import combine_lifespans
 
 from app.api.error_handlers import install_handlers
 from app.api.router import api_router
@@ -140,6 +139,10 @@ async def app_lifespan(app: FastAPI):
 
 
 if settings.ENABLE_MCP:
+    # 惰性 import：`fastmcp` 冷导入约 2.9 s，而离线套件与「不挂 MCP 的部署」
+    # 根本用不到它。放模块顶部等于让每个进程先付一次这笔钱。
+    from fastmcp.utilities.lifespan import combine_lifespans
+
     from app.mcp_server import create_mcp_http_app  # noqa: E402
 
     mcp_app = create_mcp_http_app(

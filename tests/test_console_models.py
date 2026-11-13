@@ -1010,5 +1010,5 @@ def _capture_chat_model(
         calls.append((model_name, kwargs))
         return FakeListChatModel(responses=["unused"])
 
-    monkeypatch.setattr("app.providers.llm.init_chat_model", _fake_init)
+    monkeypatch.setattr("app.providers.llm._init_chat_model", _fake_init)
     return calls
