@@ -11,35 +11,25 @@ score = 1 - 余弦距离，在 Python 侧换算成「越大越相关」；SQL �
 数据面删除与控制面删除都已经是异步栈，迁移期那个联合类型已经收窄成这一种。
 """
 
-from sqlalchemy import and_, delete, false, or_, select
+from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
 
-from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk
+from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk, scope_filter
 from app.models.document import Document
 from app.providers.vectorstores.base import VectorStore
 
 
 def build_scope_filter(index_versions: dict[str, str]) -> ColumnElement[bool]:
-    """把「kb_id → 索引版本」编译成**配对条件**：每对内部 AND，对与对之间 OR。
+    """把「kb_id → 索引版本」编译成**配对条件**（实现见 :func:`app.models.chunk.scope_filter`）。
 
-    为什么不写成两个独立的 ``IN``：``kb_id IN ('kb-a','kb-b')`` 配
-    ``index_version IN ('v1','v2')`` 会匹配出「kb-a 的 v2」这种根本不存在的组合。
-    单版本时两种写法完全等价，多版本并存时就分叉——那是越权或脏数据，而且不会
-    报错。配对关系只能从映射里读出来，不能从两个平行数组拼（与关键词侧的
-    ``build_bm25_query`` 同一条规矩）。
-
-    空映射返回**恒假**而不是恒真：拿不到范围却不过滤，等于把整个租户的库都召回，
-    比空结果严重得多。
+    为什么必须配对、为什么不能写成两个独立的 ``IN``：见 :func:`app.models.chunk.scope_filter`
+    的说明。这里只是它的转发，保留本模块的公开名字——范围条件的**唯一实现**在模型层，
+    因为「空结果」计数（``chunk_repository.count_by_kb_ids``）也要编译同一条条件，
+    而仓储层不该 import 一个 Provider。
     """
 
-    pairs = [
-        and_(Chunk.kb_id == kb_id, Chunk.index_version == index_version)
-        for kb_id, index_version in index_versions.items()
-    ]
-    if not pairs:
-        return false()
-    return or_(*pairs)
+    return scope_filter(index_versions)
 
 
 class PgVectorStore(VectorStore):

@@ -28,6 +28,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.llm import LLMRerankProvider
 from app.services.query.rewrite import QueryRewrite
@@ -188,10 +189,13 @@ def _offline_client(
     async def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         rows = tables.get(kb_id)
         return SimpleNamespace(
+            id=kb_id,
             tenant_id=tenant_id,
             settings=rows or {},
             name=f"知识库-{kb_id}",
             description="制度与流程",
+            # 真行上有的两列（票 #141）：检索范围从库行里读生效版本。
+            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)

@@ -6,35 +6,53 @@ embedding 是硬约束 Vector(1536)：维度改了就要改列 + 迁移 + 全量
 content 是**切片原文**（原样返回给调用方）；送进 embedding 的检索文本不落库，
 只在索引期由 ``app.utils.retrieval_text`` 算出来。
 
-index_version 是数据范围的一部分：本步只写默认值 ``v1``，不引入版本生命周期
-（重建仍是先删后写）。复合索引 ``(tenant_id, kb_id, index_version)`` 供后续的
-范围检索使用。
+``index_version`` 是数据范围的一部分（ADR-0010 §5 / ADR-0025）：它与 ``kb_id`` 组成
+**配对映射**（``kb_id → version``），检索永远 pin 在各库的**生效版本**上，构建期间照旧
+查旧的 active。版本由服务端从库行解析（:func:`app.models.index_version.resolve_index_versions`），
+**不是请求参数**。复合索引 ``(tenant_id, kb_id, index_version)`` 供范围检索使用。
+
+**范围条件只有一份**（:func:`scope_filter`）：向量召回与「空结果」计数都编译同一条
+配对条件。写两遍的下场是其中一遍迟早退化成两个独立 ``IN``——那会匹配出「A 库配 B 库
+版本」这种根本不存在的组合，而且不报错。
 """
 
+from collections.abc import Mapping
+
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index, String, Text
+from sqlalchemy import Index, String, Text, and_, false, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.base import Base
 
-# 切片默认索引版本；列默认值与索引期写入共用这一个常量。
+# 切片默认索引版本；列默认值、索引期写入与迁移回填共用这一个常量。
 DEFAULT_INDEX_VERSION = "v1"
 
 
-def default_index_versions(kb_ids: list[str]) -> dict[str, str]:
-    """把一批知识库映射成「本次检索的范围」：``kb_id → 默认索引版本``。
+def scope_filter(index_versions: Mapping[str, str]) -> ColumnElement[bool]:
+    """把「kb_id → 索引版本」编译成**配对条件**：每对内部 AND，对与对之间 OR。
 
-    这是检索两路（向量 / 关键词）唯一的范围构造点。它必须只有一份：
+    为什么不写成两个独立的 ``IN``：``kb_id IN ('kb-a','kb-b')`` 配
+    ``index_version IN ('v1','v2')`` 会匹配出「kb-a 的 v2」这种根本不存在的组合。
+    单版本时两种写法完全等价，多版本并存时就分叉——那是越权或脏数据，而且不会
+    报错。配对关系只能从映射里读出来，不能从两个平行数组拼（与关键词侧的
+    ``build_bm25_query`` 同一条规矩）。
 
-    * 配对关系只能从**映射**里读出来，两个平行数组错位就会静默越权；
-    * 本步只写默认版本 ``v1``，将来接上版本生命周期时，改的是这里而不是四个调用点。
+    空映射返回**恒假**而不是恒真：拿不到范围却不过滤，等于把整个租户的库都召回，
+    比空结果严重得多。
 
-    放在模型层（与 ``DEFAULT_INDEX_VERSION`` 同源）而不是服务层：任何有知识库 ID
-    的层都能 import 它，且不引入任何循环依赖（本模块只依赖 ``app.db.base``）。
+    调用它之前，映射必须已经由 ``resolve_index_versions`` 解析过——那个函数会拒绝
+    「有库没有生效版本」的情况，于是这里不会收到一个值为 ``None`` 的配对。
     """
 
-    return {kb_id: DEFAULT_INDEX_VERSION for kb_id in kb_ids}
+    pairs = [
+        and_(Chunk.kb_id == kb_id, Chunk.index_version == index_version)
+        for kb_id, index_version in index_versions.items()
+    ]
+    if not pairs:
+        return false()
+    return or_(*pairs)
 
 
 class Chunk(Base):

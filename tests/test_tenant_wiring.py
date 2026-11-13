@@ -31,6 +31,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.api_key import ApiKey
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED, KeyPolicy
 from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_STANDARD, Plan, plan_row_of
@@ -115,6 +116,8 @@ def _kb_row(kb_id: str, *, tenant_id: str = TENANT_ID) -> SimpleNamespace:
         split_strategy="size",
         allowed_formats=["markdown", "text"],
         settings={"chunk_size": 400},
+        # 检索范围从库行里读生效版本（票 #141）：缺这一列等于「还没回填的库」。
+        active_index_version=DEFAULT_INDEX_VERSION,
     )
 
 
