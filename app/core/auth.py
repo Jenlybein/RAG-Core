@@ -60,6 +60,9 @@ DEV_KEY_LABEL: Final[str] = "内置开发身份"
 #:
 #: - 四个能力开关全开：开发身份不因配置层的开关改变现行为——重排 / 改写是否真的跑，
 #:   仍由服务端配置（``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED``）决定；
+#: - **编排是例外，而且刻意例外**（第 11 步票 #146）：它会多一次小模型调用，票面要求
+#:   默认关闭，而开发身份没有「档位」可回落到部署开关（``custom`` + 空手动参数 = 不要），
+#:   所以这里也写 ``False``。本地要试编排，改这一列即可，不必去动别的层；
 #: - 档位取 ``custom`` 且 ``custom_options`` 为空：**每一项都跟着 ``.env`` 走**。
 #:   这里曾经钉在 ``speed`` 上（当时它还没有预设、等于服务端缺省），#78 给了它真预设
 #:   之后 ``speed`` 就明确意味着「只走向量一路，5 条，不重排、不改写」——本地默认模式
@@ -82,6 +85,7 @@ DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     hybrid_allowed=True,
     rerank_allowed=True,
     query_rewrite_allowed=True,
+    orchestration_allowed=False,
     retrieve_qps=PLAN_PRESETS[PLAN_PRO].retrieve_qps,
     retrieve_daily=PLAN_PRESETS[PLAN_PRO].retrieve_daily,
     profile=PROFILE_CUSTOM,

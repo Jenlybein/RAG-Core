@@ -214,6 +214,7 @@ def test_listing_returns_the_four_profiles_in_a_fixed_order(console: _Harness) -
         "top_k": 5,
         "rerank": True,
         "rewrite": True,
+        "orchestration": False,
     }
 
 
@@ -243,6 +244,7 @@ def test_patching_one_field_only_touches_that_field(console: _Harness) -> None:
         "top_k": 9,
         "rerank": True,
         "rewrite": True,
+        "orchestration": False,
     }
     # 只动一个字段：另外三项必须原样（`None` 的语义是「这次不动它」）。
     row = console.rows()["quality"]
@@ -318,6 +320,7 @@ def test_a_patch_is_visible_to_the_next_retrieval(console: _Harness) -> None:
         hybrid_allowed=True,
         rerank_allowed=True,
         query_rewrite_allowed=True,
+        orchestration_allowed=False,
         retrieve_qps=10,
         retrieve_daily=5000,
         profile="quality",
@@ -365,7 +368,11 @@ def test_custom_is_not_read_by_the_retrieval_chain(console: _Harness) -> None:
     from app.core.profile_presets import set_profile_presets
 
     set_profile_presets(
-        {"custom": ProfilePresetSpec(mode="vector", top_k=17, rerank=False, rewrite=False)}
+        {
+            "custom": ProfilePresetSpec(
+                mode="vector", top_k=17, rerank=False, rewrite=False, orchestration=False
+            )
+        }
     )
     snapshot = KeyPolicySnapshot(
         allowed_kb_ids=(),
@@ -373,6 +380,7 @@ def test_custom_is_not_read_by_the_retrieval_chain(console: _Harness) -> None:
         hybrid_allowed=False,
         rerank_allowed=False,
         query_rewrite_allowed=False,
+        orchestration_allowed=False,
         retrieve_qps=10,
         retrieve_daily=5000,
         profile="custom",

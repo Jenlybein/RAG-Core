@@ -173,10 +173,19 @@ def test_custom_policy_unusable_values_fall_back_per_key(
 @pytest.mark.parametrize(
     ("profile", "expected"),
     [
-        # 三档的全部内容写在票面（#78）上，这里逐字抄一遍。
-        (PROFILE_SPEED, ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_BALANCED, ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_QUALITY, ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True)),
+        # 三档的全部内容写在票面（#78）上，这里逐字抄一遍；编排（#146）三档都不开。
+        (
+            PROFILE_SPEED,
+            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False, orchestration=False),
+        ),
+        (
+            PROFILE_BALANCED,
+            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False, orchestration=False),
+        ),
+        (
+            PROFILE_QUALITY,
+            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True, orchestration=False),
+        ),
     ],
 )
 def test_a_named_profile_is_its_chain_not_the_server_defaults(
@@ -184,7 +193,7 @@ def test_a_named_profile_is_its_chain_not_the_server_defaults(
 ) -> None:
     """命名档位 = 它自己那条链路（票 #78 换掉了「暂时等于服务端缺省」）。
 
-    把部署缺省设成**与每一档都不同**的值，再把配置里塞满手动参数：结果仍然是预设那四项
+    把部署缺省设成**与每一档都不同**的值，再把配置里塞满手动参数：结果仍然是预设那五项
     ——命名档位是完整替换，配置里的 ``custom_options`` 一个都不生效。
     """
 

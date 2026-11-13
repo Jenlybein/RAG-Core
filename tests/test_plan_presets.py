@@ -25,7 +25,7 @@ from app.models.plan import (
     preset_mismatches,
 )
 
-# 票面真值表：11 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
+# 票面真值表：12 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
 # 否则「常量等于它自己」的同义反复什么都守不住。name 是展示名，票面没定字面值，
 # 另有用例只要求非空且互不相同。
 SPEC_TABLE: dict[str, dict[str, Any]] = {
@@ -35,6 +35,7 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "rerank_allowed": False,
         "query_rewrite_allowed": False,
         "research_allowed": False,
+        "orchestration_allowed": False,
         "retrieve_qps": 3,
         "retrieve_daily": 500,
         "max_kb": 1,
@@ -48,6 +49,7 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "rerank_allowed": False,
         "query_rewrite_allowed": False,
         "research_allowed": False,
+        "orchestration_allowed": False,
         "retrieve_qps": 10,
         "retrieve_daily": 5000,
         "max_kb": 5,
@@ -61,6 +63,8 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "rerank_allowed": True,
         "query_rewrite_allowed": True,
         "research_allowed": True,
+        # 切片编排只在最高档给：它要多一次小模型调用（票 #146 的三层里的第一层）。
+        "orchestration_allowed": True,
         "retrieve_qps": 50,
         "retrieve_daily": 100000,
         "max_kb": 50,
@@ -91,10 +95,10 @@ def test_the_three_plans_are_exactly_the_decided_codes() -> None:
 
 @pytest.mark.parametrize("code", PLAN_CODES)
 def test_each_plan_carries_the_decided_values(code: str) -> None:
-    """逐列比对票面：11 个业务列一个不漏。"""
+    """逐列比对票面：12 个业务列一个不漏。"""
 
     spec = PLAN_PRESETS[code]
-    assert len(PLAN_BUSINESS_COLUMNS) == 11
+    assert len(PLAN_BUSINESS_COLUMNS) == 12
     for column in PLAN_BUSINESS_COLUMNS:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 
@@ -150,7 +154,7 @@ def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None
 def test_dropping_any_single_business_column_fails_reconciliation(column: str) -> None:
     """把某一列改成「播种时漏掉」的样子（值不是常量里的那个），对账必须点名那一列。
 
-    这条用例是「漏一列即失败」的可执行定义：它逐列把 11 个业务列各试一遍，
+    这条用例是「漏一列即失败」的可执行定义：它逐列把 12 个业务列各试一遍，
     只要对账逻辑少覆盖任何一列，对应的那条用例就会拿到空列表而失败。
     """
 

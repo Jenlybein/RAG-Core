@@ -49,4 +49,8 @@ class ProfilePreset(Base):
     #: 生效值仍是它与部署开关的合取（见 `app.services.profile_policy`）。
     rerank: Mapped[bool] = mapped_column(Boolean)
     rewrite: Mapped[bool] = mapped_column(Boolean)
+    #: 切片编排（第 11 步 B）的第三层：这一档平时的默认。**四行初始都是 False**——
+    #: 它会多一次小模型调用，默认关、运营想开再开。同样是意图，不是生效值：
+    #: 生效 = 它 ∧ 本套集成的启用开关（套餐那一层由门禁判，越权就拒绝，不静默降级）。
+    orchestration: Mapped[bool] = mapped_column(Boolean)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)

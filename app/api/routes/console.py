@@ -93,6 +93,7 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
                 top_k=spec.top_k,
                 rerank=spec.rerank,
                 rewrite=spec.rewrite,
+                orchestration=spec.orchestration,
             )
             for profile in PROFILES
             if (spec := presets.get(profile)) is not None

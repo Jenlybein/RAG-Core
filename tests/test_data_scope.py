@@ -34,6 +34,7 @@ def _policy(allowed: tuple[str, ...] = ("kb-a", "kb-b")) -> KeyPolicySnapshot:
         hybrid_allowed=True,
         rerank_allowed=False,
         query_rewrite_allowed=False,
+        orchestration_allowed=False,
         retrieve_qps=5,
         retrieve_daily=50,
         profile=PROFILE_SPEED,

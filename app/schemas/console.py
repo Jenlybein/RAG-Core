@@ -52,7 +52,7 @@ class PlanSnapshotData(BaseModel):
     """``/console/me`` 里的套餐快照：**没有 plan_id**，租户那一栏里已经有了。
 
     快照来自缓存/解析结果（:class:`app.models.plan.PlanSpec`），它刻意不带主键——判定内核
-    只关心「这一档的 11 个值」。
+    只关心「这一档的 12 个值」。
     """
 
     code: str
@@ -62,6 +62,7 @@ class PlanSnapshotData(BaseModel):
     rerank_allowed: bool
     query_rewrite_allowed: bool
     research_allowed: bool
+    orchestration_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
     max_kb: int
@@ -143,6 +144,7 @@ class PlanPatchRequest(BaseModel):
     rerank_allowed: bool | None = None
     query_rewrite_allowed: bool | None = None
     research_allowed: bool | None = None
+    orchestration_allowed: bool | None = None
     retrieve_qps: int | None = None
     retrieve_daily: int | None = None
     max_kb: int | None = None
@@ -248,7 +250,7 @@ def tenant_data(tenant: Tenant) -> TenantData:
 
 
 def _business_values(source: object) -> dict[str, Any]:
-    """11 个业务列的值（``allowed_profiles`` 转成 JSON 友好的 list）。
+    """12 个业务列的值（``allowed_profiles`` 转成 JSON 友好的 list）。
 
     列清单来自 ``PLAN_SPEC_COLUMNS``，所以加一列时两个映射函数一起跟上，不会出现
     「API 少回一列而服务端算得出」这种半截状态。
