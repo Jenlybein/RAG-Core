@@ -448,7 +448,7 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     monkeypatch.setattr(document_service, "enqueue_document", _enqueue)
 
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
-    # 读与写都在异步栈上（票 #130）：四条会话入口一起换、喂同一个假库。
+    # 读与写都在异步栈上（票 #130）：两个异步会话入口一起换、喂同一个假库。
     override_all_db(main.app, session)
     try:
         with TestClient(main.app) as client:

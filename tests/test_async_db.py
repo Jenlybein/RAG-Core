@@ -28,9 +28,9 @@ from tests.fake_db import AsyncRecordingSession
 def test_the_async_engine_reuses_the_configured_connection_string() -> None:
     """``.env`` 的键与格式不变：同一个 URL，只是换成了异步引擎。
 
-    同步引擎（``app.db.session``）仍然在，但它已经不在请求路径上（只剩 Provider 装配期的
-    角色指针、配置热刷新与运维脚本，见 ADR-0024）；两者读的是同一个 ``DATABASE_URL``，
-    这条对等断言守的是「换引擎没换连接串」。
+    同步引擎（``app.db.session``）仍然在，但它**不在请求路径上**：第 11 步收口之后只剩
+    三处同步读者（中间件线程池的配置热刷新、运维脚本、启动期档位装载）与 Alembic 迁移，
+    见 ADR-0024 决策四；两者读的是同一个 ``DATABASE_URL``，这条对等断言守的是「换引擎没换连接串」。
     """
 
     from app.db.session import engine as sync_engine

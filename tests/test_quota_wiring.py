@@ -344,7 +344,7 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     app.include_router(main.api_router)
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
-    # 四个会话入口一次换全（读 / 写 × 同步 / 异步）：写事务用生产实现，于是「一个请求
+    # 两个异步会话入口一次换全（读 / 写）：写事务用生产实现，于是「一个请求
     # 一笔事务」这条纪律在离线套件里照旧被真实代码跑一遍。
     view = fake_db.override_all_db(app, session)
     app.dependency_overrides[get_current_key] = lambda: holder["context"]

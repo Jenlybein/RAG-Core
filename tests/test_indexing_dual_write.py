@@ -273,7 +273,7 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
     routes = importlib.import_module("app.api.routes.documents")
 
     calls: list[str] = []
-    # 删除路由自票 #130 起在异步栈上：用共享替身 + ``override_all_db``（四个入口一次换全），
+    # 删除路由自票 #130 起在异步栈上：用共享替身 + ``override_all_db``（两个异步入口一次换全），
     # 别再养一个只服务这个用例的本地假会话。
     session = RecordingSession()
     vector = _RecordingStore(calls)

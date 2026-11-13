@@ -39,8 +39,8 @@ async def me(key: DevKeyContext = Depends(get_current_key)) -> ApiResponse[AuthM
     报「未统计」，不是 0）。
 
     路由是 ``async def``（票 #133）：用量那一条只读路径走异步 Redis，必须在事件循环上
-    ``await``。这个路由体不碰数据库（身份由同步依赖在线程池里解出来），所以把它改成
-    异步不会把任何同步调用搬到循环上。
+    ``await``。路由体不碰数据库；身份由 ``get_current_key``（异步依赖）在同一个
+    ``AsyncSession`` 上解出，整条链路都在事件循环上 ``await``，没有同步读库。
     """
 
     return ok(

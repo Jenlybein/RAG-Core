@@ -20,7 +20,7 @@
 套餐缓存都在异步链路上（``gated_retrieve`` 是 ``async def``，登录路由也是），同步 Redis
 会把整个事件循环按住——一次慢 Redis 于是变成所有并发请求一起慢。
 
-:func:`get_sync_redis_client` 是**过渡期的第二个客户端**，票 #129 之后只剩**一个**用户：
+:func:`get_sync_redis_client` 是**同步上下文专用的第二个客户端**，票 #129 之后只剩一个用户：
 
 * 运行时配置缓存（:mod:`app.core.runtime_settings_cache`）：刷新发生在请求中间件里
   （``run_in_threadpool``），Celery 任务（``app.tasks.indexing``）也直接同步调用它——
@@ -30,9 +30,12 @@
 控制面、检索链路）自 #130 起都是 ``await``，迁移期那个把协程交回主循环的过渡桥也随最后
 一个同步调用点删掉了。
 
-**在此之前不许有新的调用点用它**：判据是「这个函数是不是 ``async def``」——是，就必须用
-:func:`get_redis_client`。运行时配置缓存这条随 #134（同步栈退役）一起改异步，那时这个同步
-客户端与它的注入缝一并删除。
+**两个客户端长期并存，各管各的上下文**：`async def` 里的缓存操作一律用
+:func:`get_redis_client`（``redis.asyncio``）；`run_in_threadpool` 里的覆盖层刷新、Worker
+独立任务、启动期装载这类**不在事件循环上**的同步路径用
+:func:`get_sync_redis_client`。`RuntimeSettingsCache` 因此有同步的 `get`/`set`/`delete`
+与异步的 `adelete` 两个面，指向同一份键（见 `app.core.runtime_settings_cache`）。
+判据只有一句：「这个函数是不是 `async def`」——是，就必须用异步客户端。
 """
 
 from __future__ import annotations

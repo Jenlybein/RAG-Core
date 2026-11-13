@@ -1,11 +1,12 @@
-"""票 #129：控制面的**只读**查询换到新栈（``AsyncSession`` + 异步套餐缓存）。
+"""票 #129（控制面只读查询换异步栈）的结构守卫；票 #130 之后读写都已在异步栈上。
 
 这份文件守两件在线下就能钉住的事：
 
 1. **形状**（结构守卫，写法照 ``tests/test_transaction.py``）：八条只读端点从
-   :func:`app.db.async_session.get_async_db` 取会话，而控制面的**写入**仍在同步栈上
-   （``get_db``）——本票只搬读，写入归 #130。默认套件离线，没有真库可用，「这条路径
-   走的是哪套会话」只能从依赖树上读出来；不钉住它，一张票改完可能只改了一半而全绿。
+   :func:`app.db.async_session.get_async_db` 取会话；同步的 ``get_db`` / ``get_transaction``
+   两个依赖**连名字都不存在**。默认套件离线，没有真库可用，「这条路径走的是哪套会话」
+   只能从依赖树上读出来；不钉住它，一张票改完可能只改了一半而全绿。
+   写入路径的守卫在 ``tests/test_console_async_writes.py``（票 #130 已把写入也搬走）。
 2. **套餐缓存**：``resolve_plan`` 可 ``await``，生产实现握的是**异步** Redis 客户端；
    同步客户端（``get_sync_redis_client``）收缩到只剩运行时配置缓存一个用户。
 
@@ -41,7 +42,7 @@ READ_PATHS: tuple[str, ...] = (
     "/console/retrieval-traces/{log_id}/waterfall",
 )
 
-#: 控制面的写入：**必须留在同步栈上**（#130 搬它们）。少一条都说明这张票越界了。
+#: 写入路径由 ``test_console_async_writes.py`` 守着：它们也必须只在异步栈上（票 #130）。
 WRITE_PATHS: tuple[tuple[str, str], ...] = (
     ("POST", "/console/keys"),
     ("DELETE", "/console/keys/{key_id}"),

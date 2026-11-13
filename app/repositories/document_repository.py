@@ -19,8 +19,10 @@
 两个计数的 statement builder），同步与异步两个入口执行的是同一条 SQL——CAS 的判定条件与
 租约语义因此不可能在两套入口之间漂移。
 
-同步的那几个**暂时保留**：两个运维脚本（``reindex_knowledge_base`` / ``requeue_stuck_documents``）
-还在用同步会话，它们随 #134 一起搬。搬完就删，不留第二份。
+同步的那几个**仍有读者，但不与上面的异步路径共用**：运维脚本
+（``reindex_knowledge_base`` / ``requeue_stuck_documents``）与启动期装载是独立进程 /
+线程池里的同步读；``get_by_id_for_tenant`` / ``list_by_kb`` 两个同步孪生现在只剩测试在用
+（生产零调用点），留着是为了让状态机的 SQL 级用例能直接读行，不作为第二套生产写法。
 """
 
 from datetime import datetime, timedelta

@@ -263,7 +263,7 @@ def console() -> Any:
     # 角色解析器是**组合根注入**的（#82）：生产里 app.main 启动时注入一次；这里显式再注入
     # 一遍，让装配点用例不依赖「哪个测试文件先 import 了 app.main」这种顺序。
     set_role_resolver(model_config_service.role_endpoint)
-    # 控制面的读与写都在异步栈上（票 #130）：四条会话入口一起换、喂同一个假库。
+    # 控制面的读与写都在异步栈上（票 #130）：两个异步会话入口一起换、喂同一个假库。
     override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_runtime_settings_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: plan_cache

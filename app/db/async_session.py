@@ -85,7 +85,7 @@ from sqlalchemy.ext.asyncio import (
 from app.core.config import settings
 from app.db.transaction import AsyncTransaction, async_transaction
 
-#: 每进程的**稳态**连接数（与同步池的默认值一致，双栈期不改变既有容量）。
+#: 每进程的**稳态**连接数（与同步池的默认值一致，两套池各自独立计量）。
 POOL_SIZE: int = 5
 
 #: 峰值时允许临时多开的连接数。每进程上限 = ``POOL_SIZE + MAX_OVERFLOW`` = 15。
@@ -95,7 +95,7 @@ MAX_OVERFLOW: int = 10
 #: 空闲掐断比数据库自己的 ``idle_session_timeout`` 更早，主动回收比撞上它便宜。
 POOL_RECYCLE_SECONDS: int = 1800
 
-#: 每进程的连接上限：双栈期的算式（``docs/架构.md``）用的就是这个数。
+#: 每进程的连接上限：``docs/架构.md``「链路与连接 → 数据库连接预算」的算式用这个数。
 MAX_CONNECTIONS_PER_PROCESS: int = POOL_SIZE + MAX_OVERFLOW
 
 #: 引擎在 import 期创建，但**不连库**（SQLAlchemy 惰性连接）。与 ``app.db.session`` 的

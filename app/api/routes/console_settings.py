@@ -128,7 +128,8 @@ async def list_settings(
     读的是库里的真相（不经过缓存）：这一页要回答「库里现在是什么」，而缓存最多比库晚
     30 秒；刚保存完就刷新却看到旧来源标记，会让人以为保存没成功。
 
-    只读，因此整条路径在异步栈上（票 #129）：PATCH 仍在同步栈上（归 #130）。
+    只读，因此读路径声明 ``get_async_db``（票 #129）；写路径同样在异步栈上，PATCH 声明
+    ``get_async_transaction``（票 #130）——读写都在异步栈，没有第二套会话写法。
     """
 
     rows = await runtime_settings.describe_settings(db)

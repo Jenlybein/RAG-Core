@@ -175,7 +175,7 @@ def console() -> Any:
 
     db = RecordingSession(rows=_world())
     cache = MemoryPlanCache()
-    # 读与写都在异步栈上（票 #130）：四条会话入口一起换，喂**同一个**假库，于是登录写下
+    # 读与写都在异步栈上（票 #130）：两个异步会话入口一起换，喂**同一个**假库，于是登录写下
     # 的会话行在下一个请求里读得到（只换同步那条会让身份判定真的去连库）。
     view = override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache

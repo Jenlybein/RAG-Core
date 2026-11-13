@@ -41,14 +41,17 @@ class ExpiringKeyValueClient(Protocol):
 
 
 class RuntimeSettingsCache(Protocol):
-    """覆盖层缓存的契约：整张表一份快照，三个方法，不接受第四个。
+    """覆盖层缓存的契约：整张表一份快照，**四个**方法。
 
-    **为什么 ``delete`` 有两个面**：刷新覆盖层这件事有两个调用上下文——中间件的
-    ``run_in_threadpool`` 与 Celery 任务在**同步**上下文里（用 ``delete``），控制面写入
-    的 ``after_commit`` 回调在**事件循环**上（用 ``adelete``）。同一个键、同一份快照，
-    只有「谁在等」不同。同步 Redis 出现在循环上会卡住整条请求链（票 #133 的验收），
-    所以两个面都要有；等中间件与 Celery 那一侧也搬进常驻循环（票 #137）之后，
-    ``delete`` 那一条随同步缝一起删。
+    ``get`` / ``set`` / ``delete`` 是同步面（同步 Redis），``adelete`` 是异步面
+    （``redis.asyncio``）——第四个方法是票 #133 评审修复补的：控制面写入的
+    ``after_commit`` 回调在**事件循环**上，那里只能用异步删；中间件的
+    ``run_in_threadpool`` 与 Worker 独立任务这类**不在循环上**的刷新路径走同步面
+    （``get`` / ``set``，失效时 ``delete``）。
+
+    两个面**指向同一份键**（``CACHE_KEY``、同一个 Redis）：谁删都让下一次读拿到新值。
+    同步 Redis 出现在循环上会卡住整条请求链（票 #133 的验收），所以两个面都要保留；
+    这不是过渡缝，删掉任一面都会让其中一条路径要么阻塞、要么删不掉缓存。
     """
 
     def get(self) -> Overrides | None: ...
@@ -111,10 +114,13 @@ def get_settings_cache() -> RuntimeSettingsCache:
     Redis 客户端本身是惰性的（见 ``app.core.redis_client``），所以这里构造缓存对象
     不会连库；真正的连接要等第一次 ``get``。
 
-    **用同步缝**（票 #133；#129 之后它是同步客户端的**唯一**用户）：刷新的三个调用点都在
-    同步上下文里——中间件把它丢进 ``run_in_threadpool``、Celery 任务直接同步调用、控制台
-    依赖走同步路由。同步 Redis 在这里因此不在事件循环上跑；等这些路径搬进常驻事件循环
-    （#131）之后改回异步缝，完整理由见 ``app.core.redis_client`` 的模块文档。
+    **两面并存，按「在不在事件循环上」分流**（票 #133 → 评审修复）：中间件
+    ``run_in_threadpool`` 里的覆盖层刷新、Worker 独立任务这类**不在事件循环上**的同步路径
+    用同步客户端（``get`` / ``set`` / ``delete`` 都是同步 Redis）；控制面写入的
+    ``after_commit`` 回调在**事件循环**上，只能走 ``adelete``（``redis.asyncio``）。控制台
+    的读 / 写 / 登录依赖全在异步栈上，没有「同步路由」，也不再等哪张票「改回异步缝」——
+    两个面都要长期保留。两个客户端指向同一份 Redis、同一份 ``CACHE_KEY``，不论哪一面删，
+    下一次读都拿到新值。完整理由见 ``app.core.redis_client`` 的模块文档。
     """
 
     global _cache

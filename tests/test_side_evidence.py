@@ -557,3 +557,57 @@ def test_progress_is_visible_while_the_run_is_still_going(tmp_path: Path) -> Non
 
     final = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
     assert final["progress"] == {"done": 3, "total": 3}
+
+
+def test_the_task_uses_the_resident_loop_and_never_closes_shared_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """票 #137：旁证任务与索引任务**共用** Worker 子进程的常驻循环。
+
+    旧写法是 ``asyncio.run(_run_in_its_own_loop(...))`` + ``finally: await aclose_http_client()``：
+    每任务一个循环，客户端与连接池跟着那次循环一起死；循环常驻后，任务体自己关客户端等于
+    把**下一个任务**要用的共享连接提前掐掉（ADR-0023 / 0024）。
+
+    这里只验**接线形状**，不真的跑 ``run_once``、也不自己起事件循环：那条完整链路归
+    ``tests/test_integration_worker_loop.py`` 与 ``side_evidence_run`` 的用例。收窄职责是为了
+    不和 conftest 的 ``reset_worker_loop`` / Windows 事件循环策略互相污染（全量跑时曾因此红过）。
+    """
+
+    import json
+
+    from app.tasks import side_evidence as task_mod
+
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"cases": [{"status": "ok"}]}), encoding="utf-8")
+
+    seen: dict[str, object] = {}
+
+    class _FakeLoop:
+        def run(self, factory, *, timeout=None):
+            # 只记「投进来的是工厂、不是协程对象」；不执行，避免任何事件循环状态。
+            import asyncio
+
+            seen["is_factory"] = callable(factory) and not asyncio.iscoroutine(factory)
+            return {"status": "ok", "summary": {"scored": 1}}
+
+    monkeypatch.setattr(task_mod, "get_worker_loop", lambda: _FakeLoop())
+
+    from app.services import side_evidence as svc
+
+    monkeypatch.setattr(svc, "write_status", lambda **_kw: None)
+    monkeypatch.setattr(svc, "write_run", lambda **_kw: None)
+
+    result = task_mod.run_side_evidence_task.run(
+        run_id="unit-run",
+        out_dir=str(tmp_path / "out"),
+        answers_path=str(answers),
+    )
+
+    assert result == {"status": "ok", "run_id": "unit-run"}
+    assert seen["is_factory"] is True, "投给常驻循环的必须是工厂，不是协程对象"
+
+    source = Path(task_mod.__file__).read_text(encoding="utf-8")
+    # 从第一个 ``def `` 往后扫，跳过提到旧写法 ``asyncio.run`` 的模块 docstring。
+    code = source[source.index("\ndef ") :]
+    assert "aclose_http_client" not in code, "任务体不许关共享客户端（归 worker_process_shutdown）"
+    assert "asyncio.run" not in code, "任务体不许自己起事件循环"

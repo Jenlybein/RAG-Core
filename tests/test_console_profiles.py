@@ -152,7 +152,7 @@ def console(request: Any) -> Any:
     set_profile_preset_loader(None)
     reset_profile_presets()
 
-    # 档位清单的 GET 与 PATCH 都在异步栈上（票 #129 / #130）：四条会话入口一起换。
+    # 档位清单的 GET 与 PATCH 都在异步栈上（票 #129 / #130）：两个异步会话入口一起换。
     override_all_db(main.app, db)
     try:
         with TestClient(main.app) as client:

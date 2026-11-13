@@ -6,7 +6,7 @@
 在异步栈上（:func:`get_by_value` / :func:`get_by_id` / :func:`list_by_tenant` /
 :func:`delete`），而 ``api_key_service.create_api_key_row`` 仍有一个同步调用方——运维脚本
 ``scripts/issue_api_key.py``。于是「建一行」有同步 :func:`create` 与异步
-:func:`create_async` 两份，等脚本随 #134 搬完，同步那一份消失。
+:func:`create` 与 :func:`create_async` 两份长期并存：同步那份服务运维脚本，异步那份服务请求路径。
 """
 
 from sqlalchemy import select

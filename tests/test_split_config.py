@@ -60,7 +60,7 @@ class _FakeSession(RecordingSession):
 
 @pytest.fixture()
 def client() -> Any:
-    """四个会话入口一次换全：鉴权与参数校验走真实代码路径，写事务也是真的那一笔。
+    """两个异步会话入口一次换全：鉴权与参数校验走真实代码路径，写事务也是真的那一笔。
 
     写路径的事务入口**不再**换成 no-op：票 #130 之后建库的提交点就在
     ``get_async_transaction`` 里，换成 no-op 等于把「一笔请求一笔事务」这条纪律从用例里

@@ -33,10 +33,12 @@ from app.models.plan import PlanSpec
 from app.repositories import document_repository
 from app.services import static_quota
 from app.services.document_storage import source_type_of, store_document_file
-from app.services.index_dispatch import enqueue_document
+from app.services.index_dispatch import enqueue_document, enqueue_document_after_commit
+
 from app.services.knowledge_base_access import ensure_visible
 from app.utils.id_generator import new_document_id
 from app.utils.status import DocumentStatus
+
 
 logger = structlog.get_logger(__name__)
 
@@ -134,7 +136,8 @@ async def upload(
     # 后的重试 / 重建。
     after_commit(
         db,
-        lambda: enqueue_document(
+        lambda: enqueue_document_after_commit(
+            publish=enqueue_document,
             document_id=document_id,
             tenant_id=tenant_id,
             kb_id=kb_id,

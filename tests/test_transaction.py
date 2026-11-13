@@ -289,3 +289,45 @@ def test_only_the_transaction_module_commits() -> None:
                 offenders.append(f"{path}:{number}: {line.strip()}")
 
     assert offenders == [], "提交点必须集中在 app/db/transaction.py：\n" + "\n".join(offenders)
+
+
+def test_a_coroutine_action_in_a_sync_transaction_fails_loudly() -> None:
+    """同步事务里登记协程动作**不许静默丢掉**。
+
+    ``Transaction.commit`` 无法 ``await``：以前它会直接丢掉那个协程对象——副作用不发生、
+    不报错，只在日志里留一条「协程从未被 awaited」。端到端异步之后，异步路径的动作大量
+    变成协程（删缓存、投递），混进同步事务的代价就从「少做一件事」变成「请求成功但什么
+    都没发生」。宁可当场炸。
+    """
+
+    db = _Session()
+
+    async def async_action() -> None:
+        db.events.append("async action")
+
+    # ``with`` 出块时就会提交，所以这个 TypeError 在出块那一刻抛出——这正是我们要的：
+    # 别让请求「成功返回」之后才发现副作用根本没发生。
+    with pytest.raises(TypeError, match="同步事务里登记了异步"):
+        with tx.transaction(db) as opened:
+            opened.after_commit(async_action)
+
+    assert db.events == ["commit"], "提交已经落地，但协程动作必须被明确拒绝"
+
+
+@pytest.mark.asyncio
+async def test_an_async_transaction_awaits_its_coroutine_actions() -> None:
+    """反过来：异步事务**必须** ``await`` 协程动作，不能只是调用一下就丢。"""
+
+    from tests.fake_db import AsyncRecordingSession
+
+    db = AsyncRecordingSession()
+    called = []
+
+    async def async_action() -> None:
+        called.append("ran")
+
+    async with tx.async_transaction(db) as opened:
+        opened.after_commit(async_action)
+
+    assert called == ["ran"], "协程动作没有被 await"
+    assert db.commits == 1

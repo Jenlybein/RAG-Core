@@ -3,7 +3,9 @@
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 11 步收尾，2026-11-13 实测：**1732 条用例，1715 passed / 17 skipped**）。
+当前 tip（第 11 步收尾，2026-11-13 实测：**1736 条用例，1719 passed / 17 skipped**）。
+其中「1736 条用例」是 `uv run pytest --collect-only` 的收集数，「1719 passed / 17 skipped」
+是 `uv run pytest -q` 的实测输出，两者相加正好是收集数。
 
 ## 分层
 
@@ -56,17 +58,15 @@
 
 四条回归红线（响应逐字节不变、`trace_id` 恒非空、归属索引无原文、观测挂掉反馈仍成功）分别钉在上述文件里，汇总见 `docs/step9-acceptance.md`。
 
-**第 11 步（端到端异步）新增的接缝**只有一条，也是**进程级**的：
+**第 11 步（端到端异步）新增的接缝**共三条，其中两条是**进程级**状态（conftest 每例前后清场）；票 #132 把**写路径**也搬进同一栈之后，请求路径上只剩 `get_async_db` / `get_async_transaction` 两个异步入口，同步的 `get_db` / `get_transaction` 已从代码里删除：
 
-- `app.db.session_factory.set_async_session_factory`：异步会话工厂的注入点，与同步那条 `set_session_factory` 是孪生（刻意分开，见该模块文档）。`tests/conftest.py` 的 autouse 夹具把它固定成 `AsyncRecordingSession` 并在结束时复位——不注入的话，反馈那条**旁路短事务**会真的去连 PostgreSQL，套件就会取决于「这台机器今天开没开库」。
-
-对应的替身与契约：`tests/fake_db.AsyncRecordingSession`（同一份语义的异步面；`add` 是**同步**方法，因为真 `AsyncSession` 上只有它没变成 `await`）与 `tests/test_session_double_contract.py`。已经用上异步会话的请求路径是 `/console/retrieval-traces*` 三条与 `/api/v1/rag/feedback`；`test_console_waterfall.py` / `test_console_trace_lookup.py` 的夹具把归属索引的行**只放进异步替身**，所以「这条读退回同步会话」会让用例当场红，而不是悄悄照样绿。
-
-票 #132（入库与索引异步）把**写路径**也搬了过来，新增的接缝有三条：
-
-- `Depends(get_async_db)` + `Depends(get_async_transaction)`（`app/db/async_session.py`）：上传端点的两条依赖。用例用 `dependency_overrides` 换成异步替身；**两条都要挡**——只挡 `get_async_db` 不够，因为事务依赖会自己解析出同一个会话，而漏挡的那一个会真的去连本机 PostgreSQL。
-- `app/db/dual_session.py`（临时接缝）：控制面与数据面共用同一批服务函数（`document_service.upload` / `purge_document_chunks`），一边是同步会话、一边是异步会话。它按「结果可不可 await」判断，所以**异步替身也走 await 分支**；反过来按 `isinstance` 分叉时，异步替身会被判成同步、把 `flush` 的协程丢掉，用例仍然绿而写入没发生。契约见 `tests/test_dual_session.py`。
+- `app.db.session_factory.set_async_session_factory`（**进程级**）：异步会话工厂的注入点，与同步那条 `set_session_factory` 是孪生（刻意分开，见该模块文档）。`tests/conftest.py` 的 autouse 夹具把它固定成 `AsyncRecordingSession` 并在结束时复位——不注入的话，反馈那条**旁路短事务**会真的去连 PostgreSQL，套件就会取决于「这台机器今天开没开库」。
+- `Depends(get_async_db)` + `Depends(get_async_transaction)`（`app/db/async_session.py`）：读 / 写两条请求级入口，控制面读、写、登录与数据面全走它们。用例用 `tests/fake_db.override_all_db(app, session)` 一次把两个异步入口收口：覆写 `get_async_db`，并清掉 `get_async_transaction` 上可能残留的 no-op 覆写、让它走**生产实现**（它靠 FastAPI 的依赖缓存取同一个会话）。于是只读、写入与登录看到的是同一个假库，没有第二套同步入口要挡。
 - `app.db.worker_loop.get_worker_loop()`（**进程级**，conftest 每例前后 `reset_worker_loop()`）：任务体把工厂投进常驻循环。`test_indexing_task.py` / `test_document_pipeline_e2e.py` / `test_http_clients.py` 用的是**真的** `WorkerLoop`，只换会话工厂与仓储——于是「投工厂、在常驻循环里跑、客户端跨任务复用、关停才关」这条接线本身也在被断言。
+
+对应的替身与契约：`tests/fake_db.AsyncRecordingSession`（同一份语义的异步面；`add` 是**同步**方法，因为真 `AsyncSession` 上只有它没变成 `await`）与 `tests/test_session_double_contract.py`。请求路径（含 `/console/retrieval-traces*` 与 `/api/v1/rag/feedback`）已全部走异步会话；`test_console_waterfall.py` / `test_console_trace_lookup.py` 的夹具把行放进**同一个假库**，登录写下的会话行在只读请求里必须读得到——「这条读退回同步会话」会让用例当场红，而不是悄悄照样绿。
+
+收口时删掉的过渡脚手架（`app/db/dual_session.py`、`app/core/sync_bridge.py`、`tests/test_dual_session.py`）与替身函数（`fake_db.async_mirror` / `share_rows_with` / `no_transaction`）都已不在代码里，`app/core/loop_pool.py` 也随 #127 的执行池一起删除；上面只列**现役**接缝。
 
 写路径的 SQL 级证据不在离线套件里（内存 SQLite 只覆盖同步孪生）：`tests/test_integration_cas.py` 有两条 `AsyncSession` 上的 CAS / 重试生命周期用例，`tests/test_integration_worker_loop.py` 有一条并发 24 任务、池上限 15 的连接数用例，都走 `RAG_INTEGRATION_DATABASE_URL` 门禁。
 
@@ -74,12 +74,12 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1715 passed, 17 skipped`（共收集 1726 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1723 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1712 passed, 14 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1723 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 1712 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 1712 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1719 passed, 17 skipped`（共收集 1736 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1733 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1722 passed, 14 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1733 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 1722 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 1722 deselected` |
 
 17 条 skip 分**四道门禁**，都不是失败：
 
@@ -89,11 +89,13 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1715 passed, 17 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1719 passed, 17 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1726 条，`-m ocr` 收集 3 条、
-> `-m integration` 收集 14 条。任何一条测试增减后按这三行重算，不要照抄上一版。
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1736 条，`-m ocr` 选中 3 条、
+> `-m integration` 选中 14 条。收集 = passed + skipped（1719 + 17 = 1736；装了 OCR 资产时
+> 1722 + 14 = 1736），deselect = 收集 − 选中（`-m ocr`：1736 − 3 = 1733；
+> `-m integration`：1736 − 14 = 1722）。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
 `tests/test_business_errors.py` 与 `tests/test_exception_boundary.py` 的 `client` fixture
@@ -191,16 +193,23 @@ docker compose -f deploy/docker-compose.yml up -d
   假数据库行（`RecordingSession` 传给纯函数 / 依赖覆盖）：两者都是显式构造参数或
   `dependency_overrides`，不是 monkeypatch 私有全局，也不会在用例之间留下污染。
 - 夹具保持**模块内**定义，不在 `tests/conftest.py` 里养夹具动物园。项目级 `conftest.py`
-  只做三件事：在任何 `app.main` 导入前设置 `ENABLE_MCP=false` 与 `KEYWORD_SEARCH_PROVIDER=none`；
+  只做**四件事**：在任何 `app.main` 导入前设置 `ENABLE_MCP=false` 与 `KEYWORD_SEARCH_PROVIDER=none`；
   把**进程级注入点**换成离线替身——`app.db.session_factory`（拿不到 `Depends` 的路径用，
   含 #101 的归属索引旁路写入）、运行时配置缓存（每 30 秒一次的覆盖层刷新会先读缓存，
   本机 Redis 里留着旧覆盖时会让跑得够久的套件随机红几条）与套餐缓存的默认实现
   （`plan_service.set_default_plan_cache`：登录与「我的视图」在缓存缺省时会走它，
-  不换就会去连真 Redis）。这三处都是既有的注入点，不是 monkeypatch 私有全局。
-- **两套会话替身可以看同一个库**（#129 起）：控制面的读走异步会话、写与登录仍走同步会话，
-  所以一条 ASGI 用例里会同时出现 `RecordingSession` 与 `AsyncRecordingSession`。
-  `fake_db.async_mirror(session)` 让后者**共享前者的行**——否则登录刚写下的会话行在只读
-  请求里读不到，症状是「登录成功、下一个请求 20010」，看着像 cookie 丢了。
+  不换就会去连真 Redis）；以及**底层任务发布器**（`index_dispatch.set_task_publisher` /
+  `side_evidence_dispatch.set_side_evidence_publisher`，票 #137 评审后加的）。
+  这些都是既有的注入点，不是 monkeypatch 私有全局。
+
+  **发布器这一条为什么要 autouse**：漏桩的用例在开发机上会静默连上本机 Redis、一路绿，
+  到了没有 Redis 的 CI 才变成 500 + `Connection refused`。桩打在**最底层** `apply_async`
+  处，于是 `enqueue_document` 里 kwargs 组装与 `task_id` 形状仍由真实代码执行——
+  「投递接线」不会被离线夹具盖掉（守卫见 `tests/test_write_atomicity.py` 的两条用例）。
+- **读写登录只用同一个 `AsyncSession`**（第 11 步收口之后）：控制面的读、写、登录全在异步栈
+  上，`tests/fake_db.override_all_db(app, session)` 一次把 `get_async_db` /
+  `get_async_transaction` 两个异步入口收口到同一个假库——登录刚写下的会话行，下一个只读
+  请求自然读得到。同步栈与「让两套替身共享行」的镜像函数都已删除，不再有第二套写法要补。
 - 日志文件断言一律显式 monkeypatch `settings.LOG_DIR` 到 `tmp_path`、重置
   `app.core.logging._configured = False`、再跑 `setup_logging()`——绝不依赖全局默认目录。
 - 新增跨层测试（⑤）把 Worker 放在独立线程里消费任务：真实投递由另一个进程的消息循环

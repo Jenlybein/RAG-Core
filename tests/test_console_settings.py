@@ -205,7 +205,7 @@ def console() -> Any:
     set_settings_cache(cache)
     # 中间件自己开会话（它拿不到 Depends）；注入同一个假会话，于是刷新路径也在测试里。
     runtime_settings.set_session_factory(lambda: db)
-    # 配置清单的 GET 与 PATCH 都在异步栈上（票 #129 / #130）：四条会话入口一起换。
+    # 配置清单的 GET 与 PATCH 都在异步栈上（票 #129 / #130）：两个异步会话入口一起换。
     override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_runtime_settings_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: plan_cache

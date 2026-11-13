@@ -123,7 +123,7 @@ def _world() -> dict[type, list[Any]]:
 def me(monkeypatch: pytest.MonkeyPatch) -> Any:
     """真实应用 + 假数据库 + 假套餐缓存；``AUTH_ENABLED`` 打开，走真的判定内核。
 
-    会话用 ``override_all_db`` **一次换全四个入口**：判定内核（``resolve_identity``）读的是
+    会话用 ``override_all_db`` **一次换全两个异步入口**：判定内核（``resolve_identity``）读的是
     ``get_async_db``，只覆写 ``get_db`` 的话它会去连真库，症状是「登录一律 20010」——
     看着像 Key 不对，其实是夹具少换了一个入口。
     """

@@ -53,7 +53,7 @@ from app.services.chunk_store import build_chunk_stores
 from app.services.data_scope import ensure_kb_scope
 from app.services.document_storage import remove_document_file
 from app.services.knowledge_base_access import ensure_visible
-from app.services.index_dispatch import enqueue_document
+from app.services.index_dispatch import enqueue_document, enqueue_document_after_commit
 from app.services.indexing_service import purge_document_chunks
 from app.utils.status import DocumentStatus
 
@@ -211,7 +211,8 @@ async def reindex_document(
 
     after_commit(
         db,
-        lambda: enqueue_document(
+        lambda: enqueue_document_after_commit(
+            publish=enqueue_document,
             document_id=document_id,
             tenant_id=key.tenant_id,
             kb_id=doc.kb_id,

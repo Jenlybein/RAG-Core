@@ -273,18 +273,51 @@ def test_a_failing_audit_write_rolls_back_the_issued_key_and_policy_too(
 
 
 def test_the_suite_never_reaches_a_real_broker() -> None:
-    """**离线是构造上的属性**：投递缝被 conftest 的 autouse 夹具换成了记账版。
+    """**离线是构造上的属性**：两条投递缝的底层发布器被 conftest 换成了记账版。
 
     这条用例是赔出来的：漏桩的用例在开发机上会静默连上本机 Redis、一路绿，到了没有
     Redis 的 CI 才变成 500 + `Connection refused`（票 #137 的 CI 就这么红的）。
-    这里直接断言「两处投递缝现在都不是真的那个」——它抓的是**将来有人把夹具删掉**。
+    断言的是「底层发布器不是生产实现」——它抓的是**将来有人把夹具删掉**。
+
+    桩打在 ``apply_async`` 那一层，所以 ``enqueue_document`` 里 kwargs 组装与
+    ``task_id`` 形状**仍然被真实代码执行**（票 #137 评审：别让离线夹具把接线也盖掉）。
     """
 
-    from app.services import console_kb_service, document_service, index_dispatch
+    from app.services import index_dispatch, side_evidence_dispatch
+    from tests.conftest import _RecordingPublisher
 
-    for module in (document_service, console_kb_service, index_dispatch):
-        target = module.enqueue_document
-        assert target.__name__ == "_record_dispatch", (
-            f"{module.__name__}.enqueue_document 又变回真的了："
-            "默认套件会在开发机上静默连 Broker，只在 CI 上红"
-        )
+    assert isinstance(index_dispatch._publisher, _RecordingPublisher), (
+        "索引投递缝的发布器又变回生产实现了：默认套件会在开发机上静默连 Broker，只在 CI 上红"
+    )
+    assert isinstance(side_evidence_dispatch._side_evidence_publisher, _RecordingPublisher), (
+        "旁证投递缝同上"
+    )
+
+
+def test_dispatch_wiring_is_real_even_when_offline() -> None:
+    """离线替身**不许**把「投递接线」一起盖掉：kwargs 与 task_id 得由真实代码组装。
+
+    构造一条最小的调用，然后读记账器：``task_id`` 必须是 ``doc:<id>`` 形状，``kwargs``
+    五个键一个不少。这条用例证明我们桩在 ``apply_async``，而不是桩在 ``enqueue_document``。
+    """
+
+    from app.services import index_dispatch
+
+    index_dispatch.enqueue_document(
+        document_id="doc-wiring",
+        tenant_id="t-1",
+        kb_id="kb-1",
+        request_id="req-1",
+        reparse=True,
+    )
+
+    calls = index_dispatch._publisher.calls
+    assert len(calls) == 1
+    assert calls[0]["task_id"] == "doc:doc-wiring"
+    assert calls[0]["kwargs"] == {
+        "document_id": "doc-wiring",
+        "tenant_id": "t-1",
+        "kb_id": "kb-1",
+        "request_id": "req-1",
+        "reparse": True,
+    }

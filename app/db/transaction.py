@@ -15,6 +15,12 @@
 这不是洁癖，是「换栈」这件事的成本边界。同步的 :func:`transaction` 保留下来服务**不在请求
 路径上**的两类调用者：运维脚本与旁路短事务（ADR-0024 决策四）。
 
+**``after_commit`` 的动作现在分两种**：协程动作由 :class:`AsyncTransaction` ``await``
+（删缓存、投递任务）；同步动作直接调用——但**不许在事件循环上做阻塞 I/O**，所以四处
+Celery 投递统一走 ``index_dispatch.enqueue_document_after_commit``（``to_thread``）。
+反过来，同步 :func:`Transaction` 收到协程动作会当场抛 ``TypeError``：它没法 ``await``，
+静默丢掉那个协程的后果是「请求成功、副作用没发生」，宁可炸。
+
 **为什么服务层不再各自提交**：一次请求里改了三项，第三项失败时，前两项必须跟着消失。
 提交散在服务层时，每个服务只能保证「自己那一小段」，跨服务的原子性没人负责；收口到
 请求边界之后，整笔请求自然是一笔事务。
@@ -122,7 +128,17 @@ class Transaction:
         self._session.commit()
         actions, self._after = self._after, []
         for action in actions:
-            action()
+            result = action()
+            # 同步事务里**不可能** await：登记了一个协程动作（例如把异步投递写进了
+            # ``with transaction(...)`` 的脚本里）时，那个协程会被直接丢掉——副作用静默
+            # 不发生，而且不报错。宁可当场炸，也别让它悄悄消失。
+            if inspect.isawaitable(result):
+                if inspect.iscoroutine(result):
+                    result.close()
+                raise TypeError(
+                    "同步事务里登记了异步的 after_commit 动作：协程在这里无法 await，副作用会静默丢失。"
+                    "请在异步事务入口（async_transaction）里登记，或把动作改成同步版本。"
+                )
 
     def rollback(self) -> None:
         """丢弃这一笔的全部改动与全部提交后动作。"""

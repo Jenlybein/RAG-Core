@@ -11,8 +11,9 @@
 接缝是 ASGI 边界（真请求 + 真登录），与 `test_console_trace_lookup.py` 同一套理由：
 直接调函数会绕过路由声明，而「路径参数写成 query」这类错法只有发真请求才暴露。
 
-**两个会话替身是双栈期的显式事实**（第 11 步票 #128）：控制面身份仍走同步 `get_db`，
-「最近检索」这条读已经走异步 `get_async_db`；两条都注入内存替身。
+**会话替身只需一份**：第 11 步收口之后，控制面身份与「最近检索」这条读都在异步栈上，
+``override_all_db`` 把两个异步会话入口换到同一个内存假库（票 #128 时这里曾是两套替身，
+那套双栈期写法已删除）。
 """
 
 from __future__ import annotations
@@ -117,7 +118,7 @@ def console() -> Iterator[_Harness]:
     # 每次请求新建一个 ``RecordingSession`` 会让登录「成功」而下一个请求 20010，
     # 排查时看着像 cookie 没带上，实际是库被换掉了。
     session = RecordingSession(rows=_world())
-    # 「最近检索」那条读（含身份判定）走异步会话（票 #129 / #130）：四条会话入口一起换，
+    # 「最近检索」那条读（含身份判定）走异步会话（票 #129 / #130）：两个异步会话入口一起换，
     # 喂同一个假库，于是登录写下的会话行在只读请求里读得到。
     override_all_db(main.app, session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None

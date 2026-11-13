@@ -32,6 +32,7 @@
 
 from __future__ import annotations
 
+
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -66,9 +67,11 @@ from app.services.chunk_store import build_chunk_stores
 from app.services.console_service import append_audit
 from app.services.document_ingestion import prepare_document_content
 from app.services.document_storage import remove_document_file
-from app.services.index_dispatch import enqueue_document
+from app.services.index_dispatch import enqueue_document, enqueue_document_after_commit
+
 from app.services.indexing_service import purge_document_chunks
 from app.utils.status import DocumentStatus
+
 
 #: 审计动作名：列表与筛选取的是这些字符串，因此只在服务层写一次。
 #: 前缀把对象类型放在名字里（``kb.`` / ``doc.``），一个动作名就能看出动的是哪类行。
@@ -315,7 +318,8 @@ async def reindex_document(
     )
     after_commit(
         db,
-        lambda: enqueue_document(
+        lambda: enqueue_document_after_commit(
+            publish=enqueue_document,
             document_id=document_id,
             tenant_id=tenant_id,
             kb_id=document.kb_id,
