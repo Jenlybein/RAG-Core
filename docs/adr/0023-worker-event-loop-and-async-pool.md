@@ -67,8 +67,8 @@ Worker 每个子进程**一个常驻事件循环**（`app/db/worker_loop.py` 的
 **代价**：
 
 - Worker 进程多一条常驻线程与一个常驻循环；`worker_process_shutdown` 没接上时靠 `atexit` 兜底（prefork 子进程可能走 `os._exit`，所以**信号才是主路径**）。
-- **循环一旦常驻，任务体里就不能再关当前循环的 HTTP 客户端**。`app/tasks/indexing.py` 的 `_index_in_its_own_loop` 现在在 `finally` 里 `await aclose_current_loop_clients()`——那是为「每任务一个循环」写的；接线之后它等于每任务把共享客户端关掉，复用立刻归零。收尾必须上移到 Worker 退出（`WorkerLoop.shutdown` 已经做了）。
-- 「每任务一个干净循环」这个心智模型作废：任何把协程 / 客户端 / 连接挂在模块级并指望「任务结束就没了」的写法都会变成跨任务共享。ADR-0022 的「按 loop 注册」继续兜住这一类。
+- **循环一旦常驻，任务体里就不能再关当前循环的 HTTP 客户端**。`app/tasks/indexing.py` 的 `_index_in_its_own_loop` 现在在 `finally` 里 `await aclose_http_client()`——那是为「每任务一个循环」写的；接线之后它等于每任务把共享客户端关掉，复用立刻归零。收尾必须上移到 Worker 退出（`WorkerLoop.shutdown` 已经做了）。
+- 「每任务一个干净循环」这个心智模型作废：任何把协程 / 客户端 / 连接挂在模块级并指望「任务结束就没了」的写法都会变成跨任务共享。当时靠 ADR-0022 的「按 loop 注册」兜住这一类；票 #134 之后循环只有一个，客户端收敛成进程级一个（ADR-0024 决策二），兜底方式变成「槽里记着它属于哪个循环，变了就重建」。
 - 一个任务卡在同步调用里会挡住同一进程的后续任务（prefork 本来就是这样），但循环被卡住时 `shutdown` 的 dispose 可能超时，只记 warning。
 
 ## 决策二：Worker 退出时的确定性释放
@@ -77,7 +77,7 @@ Worker 每个子进程**一个常驻事件循环**（`app/db/worker_loop.py` 的
 
 1. 停止接收（之后的 `run` 立刻 `RuntimeError`，不排队、不挂死）；
 2. **在这个循环上** `await engine.dispose()`（连接在这里才关得掉）；
-3. 在这个循环上 `aclose_current_loop_clients()`（它名下的 HTTP 客户端）；
+3. 在这个循环上 `aclose_http_client()`（进程那**一个** HTTP 客户端——票 #134 起按循环的注册表收敛成一个槽，见 ADR-0024）；
 4. 停循环 → join 线程 → 线程的 `finally` 里 `loop.close()`。
 
 **接线要求（#132 做，本票刻意不做）**：
@@ -128,7 +128,7 @@ RAG_INTEGRATION_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:54
 
 - `app/db/worker_loop.py`：应能看到 `run()` 用 `run_coroutine_threadsafe` 投**工厂函数**、`shutdown()` 的四步顺序、win32 的 `SelectorEventLoop` 分支；
 - `tests/test_integration_worker_loop.py`：应能看到三条用例分别对应 A / B / 现状，加一条并发连接上限（票 #132 加的），且断言的是 `connect` 事件数、后端 pid、`pg_stat_activity` 与 `pool.checkedout()`，不是「跑通了」；
-- `app/tasks/indexing.py`：**#132 起已接线**——任务体把工厂投进 `get_worker_loop().run(...)`，那句 `finally: await aclose_current_loop_clients()` 已经删掉（见下节）。
+- `app/tasks/indexing.py`：**#132 起已接线**——任务体把工厂投进 `get_worker_loop().run(...)`，那句 `finally: await aclose_http_client()` 已经删掉（见下节）。
 
 ## 接线落地（#132）
 
@@ -139,7 +139,7 @@ RAG_INTEGRATION_DATABASE_URL=postgresql+psycopg://postgres:postgres@localhost:54
 | `app/celery_app.py` | `worker_process_init` → `get_worker_loop().start()`；`worker_process_shutdown` → `shutdown_worker_loop()` | 让「起不来」暴露在启动阶段（线程要**真的**起来）；让 `dispose` 发生在**循环还活着**的时候。`atexit` 只是兜底（prefork 子进程可能走 `os._exit`）。 |
 | `app/tasks/indexing.py` | `get_worker_loop().run(lambda: _index_in_the_worker_loop(...))`——投**工厂**，协程与连接从这一刻起属于常驻循环 | 投协程对象等于在任务线程里把协程绑到另一个循环上；工厂让「第一次 `connect` 发生在 `run` 里面」（决策三）。 |
 | `app/tasks/indexing.py` | 任务会话 `async_session_factory()()` 在**循环里**开、在 `finally` 里 `await close()` | 复用的是**连接池**（归循环），不是会话（归任务）。关会话不能省：被放弃的 checked-out 连接连 `dispose` 都救不回来（会停在 `idle in transaction`）。 |
-| `app/tasks/indexing.py` | **删掉** `_index_in_its_own_loop` 的 `finally: await aclose_current_loop_clients()` | 那句是为「每任务一个循环」写的；接线之后它等于每个任务把共享客户端关掉，复用立刻归零。收尾上移到 `WorkerLoop.shutdown`。 |
+| `app/tasks/indexing.py` | **删掉** `_index_in_its_own_loop` 的 `finally: await aclose_http_client()` | 那句是为「每任务一个循环」写的；接线之后它等于每个任务把共享客户端关掉，复用立刻归零。收尾上移到 `WorkerLoop.shutdown`。 |
 
 **证据**（都在默认套件里，除最后两条走 `RAG_INTEGRATION_DATABASE_URL` 门禁）：
 
