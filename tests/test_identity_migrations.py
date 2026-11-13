@@ -136,19 +136,29 @@ def test_each_new_migration_is_named_after_its_twelve_hex_revision() -> None:
         assert path.name == f"{revision}_{slug}.py"
 
 
-def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None:
+def test_the_whole_chain_has_exactly_one_head_and_every_migration_hangs_off_it() -> None:
+    """唯一 head，且从它往回能走到**每一条**迁移（没有孤岛）。
+
+    这里刻意不再写死「head 是哪一条」：链尾会随每张新票前移（#80 → #93 → #94 → #97 →
+    #101 → #105 → #141 …），写死它就等于让每张新票都来改一条与它无关的用例，而真正要守
+    的性质只有两条——**只有一个 head**、**所有迁移都挂在它下面**。
+    """
+
     paths = sorted(VERSIONS_DIR.glob("*.py"))
     revisions = {_revision_of(path): path for path in paths}
     down_revisions = {_down_revision_of(path) for path in paths} - {None}
 
     heads = set(revisions) - down_revisions
     assert len(heads) == 1, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
-    # #80 在 #74 的五条之后追加了 sessions / audit_logs；#93 追加 runtime_settings、
-    # #94 再追加 model_configs，链尾因此继续前移。这里只守「唯一的 head 是链上最新那条」。
-    # 链尾随新表继续前移：档位预设（profile_presets）接在 model_configs 之后，#101 的
-    # 归属索引改名（rename_to_retrieval_traces）再接在档位预设之后；
-    # #105 的反馈表（create_retrieval_feedback）又接在改名之后。
-    assert heads == {_revision_of(_migration_path("create_retrieval_feedback"))}
+
+    walked: set[str] = set()
+    cursor: str | None = next(iter(heads))
+    while cursor is not None:
+        assert cursor in revisions, f"{cursor}: down_revision 指向一条不存在的迁移"
+        walked.add(cursor)
+        cursor = _down_revision_of(revisions[cursor])
+
+    assert walked == set(revisions), "有迁移没挂在唯一 head 下面"
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
