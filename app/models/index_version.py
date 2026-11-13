@@ -21,6 +21,7 @@ building ──▶ ready ──(单事务切换)──▶ active ──▶ archi
 
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Final, Mapping, Sequence
 
@@ -50,6 +51,11 @@ INDEX_BUILD_STATUSES: Final[tuple[str, ...]] = (
 
 #: 守卫拒绝检索时的那句固定话术（与「检索失败」区分开：这是服务端状态不一致）。
 UNRESOLVED_INDEX_VERSION_MESSAGE: Final[str] = "index version not resolved"
+
+#: 版本名的形状：``v1``、``v12``。**只认这一种**——版本名会变成物理索引名的后缀
+#: （``rag_chunks__v2``）与 ``chunks.index_version`` 的值，随手写个 ``new`` 或
+#: ``v2-old`` 之后没人能按名字排出版本顺序，也没法拼出物理索引名。
+_VERSION_NAME_PATTERN: Final[re.Pattern[str]] = re.compile(r"^v(\d+)$")
 
 
 class IndexBuildVersion(Base):
@@ -123,6 +129,32 @@ def effective_index_version(kb: KnowledgeBase) -> str | None:
     return value or None
 
 
+def version_number(version: str) -> int | None:
+    """``v12`` → ``12``；不是 ``v<数字>`` 的写法回 ``None``。
+
+    回 ``None`` 而不是抛错，也不是猜一个序：排不出来只意味着「这个名字不参与排序」，
+    调用方（:func:`next_version_name`）跳过它即可。抛错会让一行手写坏数据把整条构建
+    流程卡死，猜序号则可能拼出一个**已被占用**的名字。
+    """
+
+    matched = _VERSION_NAME_PATTERN.match(version.strip())
+    if matched is None:
+        return None
+    return int(matched.group(1))
+
+
+def next_version_name(versions: Sequence[str]) -> str:
+    """下一个版本名 = **已用最大编号 + 1**；一个都没有时 ``v1``。
+
+    为什么不是 ``len(versions) + 1``：删过版本、或跳过编号之后，两者会撞名，而撞名
+    的表现是一条唯一约束错误——构建还没开始就失败，且没人看得出是名字算错了。
+    ``max + 1`` 天然单调，即使历史上删过 ``v2`` 也不会把新版本叫成 ``v2``。
+    """
+
+    numbers = [number for number in map(version_number, versions) if number is not None]
+    return f"v{max(numbers) + 1 if numbers else 1}"
+
+
 def resolve_index_versions(kbs: Sequence[KnowledgeBase]) -> Mapping[str, str]:
     """把**本次已经取到的知识库行**解析成检索范围：``kb_id → 生效版本``。
 
@@ -174,5 +206,7 @@ __all__ = [
     "IndexVersionUnresolved",
     "UNRESOLVED_INDEX_VERSION_MESSAGE",
     "effective_index_version",
+    "next_version_name",
     "resolve_index_versions",
+    "version_number",
 ]
