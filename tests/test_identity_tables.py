@@ -102,7 +102,7 @@ def test_tenants_timestamps_come_from_the_shared_now_helper() -> None:
 
 
 def test_plans_has_every_business_column() -> None:
-    """面板上会出现输入框的 11 列一列都不能只活在代码里。"""
+    """面板上会出现输入框的 12 列一列都不能只活在代码里。"""
 
     table = Plan.__table__
     business = tuple(
@@ -111,7 +111,7 @@ def test_plans_has_every_business_column() -> None:
         if column.name not in {"id", "code", "name", "updated_at"}
     )
     assert set(business) == set(PLAN_BUSINESS_COLUMNS)
-    assert len(business) == 11
+    assert len(business) == 12
     for column in PLAN_BUSINESS_COLUMNS:
         assert not table.c[column].nullable, f"{column} 不允许为空"
 
@@ -182,6 +182,7 @@ def test_key_policy_switches_start_closed_but_result_shape_starts_open() -> None
         "hybrid_allowed",
         "rerank_allowed",
         "query_rewrite_allowed",
+        "orchestration_allowed",
     ):
         assert _default_arg(KeyPolicy, column) is False, column
     for column in ("include_parent", "expand_table_rows"):

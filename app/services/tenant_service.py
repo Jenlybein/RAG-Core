@@ -126,6 +126,7 @@ def _default_policy(*, tenant_id: str, plan: Plan, kb_ids: Sequence[str]) -> Key
         hybrid_allowed=False,
         rerank_allowed=False,
         query_rewrite_allowed=False,
+        orchestration_allowed=False,
         retrieve_qps=spec.retrieve_qps,
         retrieve_daily=spec.retrieve_daily,
         profile=spec.allowed_profiles[0],

@@ -1,4 +1,4 @@
-"""本次检索的**已解析参数**：模式、返回条数、是否重排、是否改写、结果形状，以及回显。
+"""本次检索的**已解析参数**：模式、返回条数、是否重排、是否改写、是否编排、结果形状，以及回显。
 
 这是一次调用「用多好」的全部答案，而且**只由密钥配置决定**——请求体里只有
 ``kb_ids`` + ``query``（ADR-0010「第三次修订」、ADR-0018）。做成一个不可变的值对象
@@ -59,6 +59,7 @@ CUSTOM_OPTION_MODE: Final[str] = "mode"
 CUSTOM_OPTION_TOP_K: Final[str] = "top_k"
 CUSTOM_OPTION_RERANK: Final[str] = "rerank"
 CUSTOM_OPTION_REWRITE: Final[str] = "rewrite"
+CUSTOM_OPTION_ORCHESTRATION: Final[str] = "orchestration"
 
 #: 响应里回显「本次实际生效了什么」的那一栏（GLOSSARY ``tenant_policy``）。
 TENANT_POLICY_KEY: Final[str] = "tenant_policy"
@@ -69,21 +70,27 @@ MODE_HYBRID: Final[str] = "hybrid"
 
 @dataclass(frozen=True)
 class ProfileChain:
-    """一个档位承诺的**一整条链路**：模式、返回条数、是否重排、是否查询改写。
+    """一个档位承诺的**一整条链路**：模式、返回条数、是否重排、是否查询改写、是否编排。
 
-    四项一起出现、一起被替换，这是「命名档位是完整替换」最直接的形式：没有「预设打底、
+    五项一起出现、一起被替换，这是「命名档位是完整替换」最直接的形式：没有「预设打底、
     配置覆盖」的第二条路径，因为一个 :class:`ProfileChain` 里没有「哪些项来自配置」这种
     信息可用——它本来就不该有。
 
     重排与改写在这里表达的是**意图**（这个档位想要什么），不是「这台机器上会不会跑」：
     部署装没装由 ``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED`` 表达，生效值是两者的
     合取，见 ``app.services.profile_policy``。
+
+    ``orchestration``（第 11 步票 #146）同样是意图，但它的第二因子不是「这台机器装没装」：
+    切片编排是进程内的一步，没有可单独配的端点，所以生效值 = 它 ∧ 这套集成的启用开关
+    （``key_policies.orchestration_allowed``）。套餐那一层不进合取——越权是**拒绝**
+    （``20013``），不是静默变 ``False``（见 ``profile_policy`` 五道门第 3 道）。
     """
 
     mode: str
     top_k: int
     rerank: bool
     rewrite: bool
+    orchestration: bool
 
 
 #: 三个命名档位**改造前**的那份硬编码链路。现在档位由 ``profile_presets`` 表提供
@@ -96,10 +103,18 @@ class ProfileChain:
 #:   和我问的不是一个说法」这类问题。
 #:
 #: 条数统一是 5：档位之间差的是**链路**（路数、重排、改写），不是返回多少个字。
+#: 三档都**不编排**：切片编排要多一次小模型调用，第 11 步票 #146 把它定为默认关闭，
+#: 运营在面板上想开哪一档再开。
 SEED_PROFILE_CHAINS: Final[dict[str, ProfileChain]] = {
-    PROFILE_SPEED: ProfileChain(mode=MODE_VECTOR, top_k=5, rerank=False, rewrite=False),
-    PROFILE_BALANCED: ProfileChain(mode=MODE_HYBRID, top_k=5, rerank=False, rewrite=False),
-    PROFILE_QUALITY: ProfileChain(mode=MODE_HYBRID, top_k=5, rerank=True, rewrite=True),
+    PROFILE_SPEED: ProfileChain(
+        mode=MODE_VECTOR, top_k=5, rerank=False, rewrite=False, orchestration=False
+    ),
+    PROFILE_BALANCED: ProfileChain(
+        mode=MODE_HYBRID, top_k=5, rerank=False, rewrite=False, orchestration=False
+    ),
+    PROFILE_QUALITY: ProfileChain(
+        mode=MODE_HYBRID, top_k=5, rerank=True, rewrite=True, orchestration=False
+    ),
 }
 
 
@@ -140,6 +155,11 @@ class RetrievalOptions:
     装了」的合取。链路因此只读这一个字段，不必再各自去问一次 ``settings``——
     两处判断迟早会分叉，而且分叉时谁也不知道哪一处才是「这次真的跑了吗」的答案。
 
+    ``orchestration``（第 11 步票 #146）同样是生效值，只是它的第二因子换成了这套集成的
+    启用开关：切片编排没有可单独配的端点，「本机装没装」这一维暂时不存在（#147 落地时
+    它仍是一个进程内的步骤）。套餐那一层不在这里合取——越权在读它之前就被门禁拒绝了
+    （``20013``），静默变 ``False`` 才是必须避免的那种降级。
+
     ``tenant_policy`` 是回显里值对象表达不了的那部分（见 :class:`TenantPolicy`）。
     缺省 ``None`` 的意思是「这份参数不是经由套餐门禁解析出来的」——评测脚本与内部调用
     会自己造 options，它们没有套餐可回显；与其编一个看起来合理的套餐名，不如承认这一点。
@@ -151,6 +171,7 @@ class RetrievalOptions:
     expand_table_rows: bool
     rerank: bool
     rewrite: bool
+    orchestration: bool
     tenant_policy: TenantPolicy | None = None
 
 
@@ -176,6 +197,10 @@ def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
             rewrite=_manual_flag(
                 manual, CUSTOM_OPTION_REWRITE, fallback=settings.QUERY_REWRITE_ENABLED
             ),
+            # 编排没有部署开关可回落：缺键就是「这套集成不要」（默认关闭，票 #146）。
+            orchestration=_manual_flag(
+                manual, CUSTOM_OPTION_ORCHESTRATION, fallback=False
+            ),
         )
 
     preset = profile_preset_of(policy.profile)
@@ -183,20 +208,25 @@ def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
         return server_default_chain()
     # 注册表里的参数是**档位意图**；这里只是把它搬成一个不可变的 ProfileChain。
     # 为什么不直接用注册表里的对象：ProfileChain 是这个模块的值对象，它的不可变性与
-    # 四项齐备由构造处保证；注册表那份是可被管理端替换的普通 dataclass，两者不该混用。
+    # 五项齐备由构造处保证；注册表那份是可被管理端替换的普通 dataclass，两者不该混用。
     return ProfileChain(
         mode=preset.mode,
         top_k=preset.top_k,
         rerank=preset.rerank,
         rewrite=preset.rewrite,
+        orchestration=preset.orchestration,
     )
 
 
 def server_default_chain() -> ProfileChain:
-    """部署缺省的那条链路：四个值全部来自服务端配置。
+    """部署缺省的那条链路：四个值来自服务端配置，编排固定 ``False``。
 
     它只做三件事：``custom`` 档的逐键回落、未知档位的兜底、以及给「缺省行为」一个
     可引用的名字。**没有哪一档的预设读它**——档位是产品契约，不跟着部署配置漂。
+
+    ``orchestration`` 是这里唯一不读 ``settings`` 的一项，而且理由具体：切片编排没有
+    「这台机器装没装」这一维（它是进程内的一个步骤，不是可配的端点），所以没有可回落的
+    部署开关。缺省关着与票面「默认关闭」同一条口径。
     """
 
     return ProfileChain(
@@ -204,6 +234,7 @@ def server_default_chain() -> ProfileChain:
         top_k=settings.TOP_K,
         rerank=rerank_capability(),
         rewrite=settings.QUERY_REWRITE_ENABLED,
+        orchestration=False,
     )
 
 
@@ -227,6 +258,10 @@ def options_from_chain(
 
     两个结果形状开关**每一档都读**配置自己那两列：它们是「结果形状组」，不是
     ``custom`` 档的专属手动参数（父 spec「密钥配置的内容是五组」）。
+
+    ``orchestration`` 的第二因子是**配置层**（``policy.orchestration_allowed``）而不是
+    部署能力：切片编排没有可单独配的端点，而「这套集成本身要不要它」恰好就是配置要回答
+    的问题（ADR-0018 第二层）。套餐那一层不参与合取——它在门禁里已经判过，越权是拒绝。
     """
 
     rerank_on = rerank_capability() if rerank_capable is None else rerank_capable
@@ -239,6 +274,7 @@ def options_from_chain(
         expand_table_rows=policy.expand_table_rows,
         rerank=chain.rerank and rerank_on,
         rewrite=chain.rewrite and rewrite_on,
+        orchestration=chain.orchestration and policy.orchestration_allowed,
         tenant_policy=tenant_policy,
     )
 
@@ -246,7 +282,7 @@ def options_from_chain(
 def tenant_policy_echo(options: RetrievalOptions, *, kb_count: int) -> dict[str, object] | None:
     """响应 ``metadata.tenant_policy``：这次调用**实际生效**了什么。
 
-    模式 / 条数 / 重排 / 改写一律从 ``options`` 上读（理由见 :class:`TenantPolicy`）；
+    模式 / 条数 / 重排 / 改写 / 编排一律从 ``options`` 上读（理由见 :class:`TenantPolicy`）；
     真正「这次用到了几个库」只有调用点知道，所以 ``kb_count`` 是入参而不是从别处算。
 
     返回 ``None`` 表示这份参数不经套餐门禁解析（见 ``RetrievalOptions.tenant_policy``）。

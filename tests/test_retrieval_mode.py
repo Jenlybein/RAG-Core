@@ -443,6 +443,7 @@ def test_unknown_mode_wins_over_invisible_kb() -> None:
                     expand_table_rows=True,
                     rerank=False,
                     rewrite=False,
+                    orchestration=False,
                 ),
             )
         )

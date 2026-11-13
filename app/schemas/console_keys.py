@@ -36,6 +36,7 @@ class KeyPolicyData(BaseModel):
     hybrid_allowed: bool
     rerank_allowed: bool
     query_rewrite_allowed: bool
+    orchestration_allowed: bool
     # ── 第三组：限额 ──
     retrieve_qps: int
     retrieve_daily: int
@@ -83,6 +84,7 @@ class KeyPolicyInput(BaseModel):
     hybrid_allowed: bool = False
     rerank_allowed: bool = False
     query_rewrite_allowed: bool = False
+    orchestration_allowed: bool = False
     retrieve_qps: int
     retrieve_daily: int
     profile: str
@@ -129,6 +131,7 @@ class KeyPolicyPatchRequest(BaseModel):
     hybrid_allowed: bool | None = None
     rerank_allowed: bool | None = None
     query_rewrite_allowed: bool | None = None
+    orchestration_allowed: bool | None = None
     retrieve_qps: int | None = None
     retrieve_daily: int | None = None
     profile: str | None = None
@@ -170,6 +173,7 @@ def policy_data_of(policy: KeyPolicy) -> KeyPolicyData:
         hybrid_allowed=policy.hybrid_allowed,
         rerank_allowed=policy.rerank_allowed,
         query_rewrite_allowed=policy.query_rewrite_allowed,
+        orchestration_allowed=policy.orchestration_allowed,
         retrieve_qps=policy.retrieve_qps,
         retrieve_daily=policy.retrieve_daily,
         profile=policy.profile,

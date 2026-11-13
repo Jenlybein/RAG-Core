@@ -149,7 +149,8 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # 「链尾是哪个文件」必须是人看过一眼才确认的事，不该由代码自动推导出来。
     # #101 的归属索引改名（``rename_to_retrieval_traces``）再接在档位预设之后；
     # #105 的反馈表（``create_retrieval_feedback``）又接在改名之后。
-    assert heads == {_revision_of(_migration_path("create_retrieval_feedback"))}
+    # 链尾随新表继续前移：#146 的编排开关三列接在反馈表之后。
+    assert heads == {_revision_of(_migration_path("add_orchestration_switch"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

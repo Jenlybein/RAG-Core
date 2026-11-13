@@ -53,6 +53,9 @@ class KeyPolicy(Base):
     hybrid_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     rerank_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     query_rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 切片编排（第 11 步 B）的第二层：**这套集成**要不要它。默认关；它比套餐那一列更细
+    # 一层（同一租户的两套集成可以一台要、一台不要），但越不过套餐（自洽校验第二段）。
+    orchestration_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     # 限额：Key 级计数卡住单个外部应用，租户级聚合由套餐上限卡住（两级计数）。
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
@@ -99,6 +102,7 @@ class KeyPolicySnapshot:
     hybrid_allowed: bool
     rerank_allowed: bool
     query_rewrite_allowed: bool
+    orchestration_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
     profile: str
@@ -118,6 +122,7 @@ def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
         hybrid_allowed=row.hybrid_allowed,
         rerank_allowed=row.rerank_allowed,
         query_rewrite_allowed=row.query_rewrite_allowed,
+        orchestration_allowed=row.orchestration_allowed,
         retrieve_qps=row.retrieve_qps,
         retrieve_daily=row.retrieve_daily,
         profile=row.profile,
