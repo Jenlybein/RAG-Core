@@ -385,3 +385,150 @@ def test_the_block_shape_is_points_evidence_and_completeness() -> None:
     assert outcome.block["completeness"] == "complete"
     assert outcome.block["points"] == [{"point_id": "A1", "text": "退款时限", "has_primary": True}]
     assert [item["evidence_id"] for item in outcome.block["evidence"]] == ["E1", "E2"]
+
+
+# ─────────────────────────────────────────── 降级：失败 / 超时 / 输出非法
+
+
+class _SlowLLM(LLMProvider):
+    """慢模型：用来撞整步预算（``asyncio.wait_for`` 的那一侧）。"""
+
+    async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
+        await asyncio.sleep(0.3)
+        return {"points": ["太慢的要点"]}
+
+    async def chat_json(self, *, system: str, user: str) -> dict:
+        raise AssertionError("切编排只走结构化输出")
+
+
+def _degrade(
+    *,
+    llm: LLMProvider | None = None,
+    factory: Any = None,
+    timeout_ms: int | None = None,
+    rows: Any = None,
+) -> orch.OrchestrationOutcome:
+    """跑一次注定失败的编排。"""
+
+    async def _get() -> Any:
+        if factory is not None:
+            return factory()
+        return llm
+
+    return asyncio.run(
+        orch.orchestrate_evidence(
+            query="退款多久到账",
+            rows=rows if rows is not None else [_row(1)],
+            tenant_id=TENANT,
+            index_versions=SCOPE,
+            llm_factory=_get,
+            timeout_ms=timeout_ms,
+        )
+    )
+
+
+def test_a_failing_model_produces_no_block_and_one_dedicated_reason() -> None:
+    """模型直接失败：没有块、只有一条专码——检索结果照常（降级不等于失败）。"""
+
+    outcome = _degrade(llm=_ScriptedLLM(RuntimeError("模型服务 502")))
+
+    assert outcome.block is None
+    assert outcome.degraded_reason == orch.DEGRADED_REASON == "orchestration failed"
+
+
+def test_a_failing_provider_assembly_is_degraded_too() -> None:
+    """连 Provider 都装不上（没配 key / 角色指针指向一条坏行）也走同一条出口。
+
+    这条与「模型答错了」共用一个码：对调用方而言两者是同一件事——**这次没有编排**。
+    区分原因属于日志，不属于响应（一因一码）。
+    """
+
+    def _boom() -> Any:
+        raise RuntimeError("no llm configured")
+
+    outcome = _degrade(factory=_boom)
+
+    assert outcome.block is None
+    assert outcome.degraded_reason == orch.DEGRADED_REASON
+
+
+def test_a_slow_model_is_cut_off_by_the_step_budget() -> None:
+    """超时：整步预算一到就放弃，不把一次检索拖到客户端先放弃。
+
+    ``timeout_ms`` 是**整步**预算（两次调用共用），不是每次调用的超时：编排是可选的一步，
+    它最坏能占多久必须是一个数字。
+    """
+
+    outcome = _degrade(llm=_SlowLLM(), timeout_ms=20)
+
+    assert outcome.block is None
+    assert outcome.degraded_reason == orch.DEGRADED_REASON
+
+
+@pytest.mark.parametrize(
+    ("points", "roles"),
+    [
+        ({"points": "不是列表"}, None),  # 结构不对
+        ({"points": ["   "]}, None),  # 全是空白
+        ({"points": []}, None),  # 一个要点都没有
+        ({"points": [f"要点{i}" for i in range(1, 7)]}, None),  # 超出要点上限
+        ({"points": ["退款时限"]}, {"points": "不是列表"}),
+        ({"points": ["退款时限"]}, {"points": [{"primary": [1]}]}),  # 缺要点序号
+        ({"points": ["退款时限"]}, {"points": [{"point": 1, "primary": ["1"]}]}),  # 序号是字符串
+        ({"points": ["退款时限"]}, {"points": [{"point": 1, "primary": 3}]}),  # 序号不是列表
+    ],
+)
+def test_illegal_output_degrades_instead_of_half_working(
+    points: object, roles: object | None
+) -> None:
+    """输出不合法：不产出块、记一条专码，绝不半份输出当成结果。"""
+
+    responses: list[object] = [points]
+    if roles is not None:
+        responses.append(roles)
+    outcome = _degrade(llm=_ScriptedLLM(*responses))
+
+    assert outcome.block is None
+    assert outcome.degraded_reason == orch.DEGRADED_REASON
+
+
+def test_no_candidate_is_not_a_failure() -> None:
+    """没有候选（检索本身就空）：不记录降级——没有可编排的东西不是故障。"""
+
+    outcome = _degrade(rows=[], llm=_ScriptedLLM())
+
+    assert outcome.block is None
+    assert outcome.degraded_reason is None
+
+
+def test_a_pool_without_any_in_scope_candidate_is_not_a_failure() -> None:
+    """候选全在范围外（#152 的注入项可能这样）：同样不是失败，只是没什么可编排。"""
+
+    outcome = _degrade(rows=[_row(1, kb_id="kb-other")], llm=_ScriptedLLM())
+
+    assert outcome.block is None
+    assert outcome.degraded_reason is None
+
+
+def test_a_model_that_claims_complete_is_still_judged_by_primary_slices() -> None:
+    """模型多返回一个 ``completeness: complete``：不采信，仍按核心片数判 ``partial``。
+
+    结构化输出里**没有**这一栏，这是第一条防线；这条用例守的是第二条：即便某个模型
+    自作主张把自评塞进返回体，它也只能落进"没人读的键"——三态的唯一输入是材料。
+    """
+
+    outcome, _ = _run(
+        [_row(1), _row(2)],
+        points=("退款时限", "发票怎么补"),
+        roles={
+            "completeness": "complete",  # 模型自评：不采信
+            "points": [
+                {"point": 1, "primary": [1]},
+                {"point": 2, "supporting": [2]},  # 只有辅助片，没有核心片
+            ],
+        },
+    )
+
+    assert outcome.block is not None
+    assert outcome.block["completeness"] == "partial"
+    assert [point["has_primary"] for point in outcome.block["points"]] == [True, False]

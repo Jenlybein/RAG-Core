@@ -439,6 +439,9 @@ def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> 
         "top_k": 5,
         "rerank": True,
         "rewrite": True,
+        # 编排（#147）：与重排 / 改写同一列、同一个来源。它出现在回显里的前提是
+        # 「这个值真的改变了结果」——#147 之前它没有消费者，所以当时被推迟。
+        "orchestration": False,
         "kb_count": 2,
         "clipped": [],
     }
@@ -767,6 +770,7 @@ def test_the_response_carries_the_tenant_policy_it_actually_ran(entry: _Entry) -
         "top_k": 5,
         "rerank": False,
         "rewrite": False,
+        "orchestration": False,
         "kb_count": 1,
         "clipped": [],
     }
