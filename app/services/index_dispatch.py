@@ -9,13 +9,19 @@
 ## 两道投递缝
 
 - :func:`enqueue_document` —— 索引任务（``index_document_task``）；
+- :func:`enqueue_index_build` —— 整库构建任务（``build_index_version_task``，#143）；
 - :func:`app.services.side_evidence_dispatch.enqueue_side_evidence` —— 旁证跑批任务。
 
-两条缝各持一个 :class:`PublisherSlot`。**槽是注入点**：离线套件把生产任务对象换成记账
+三条缝各持一个 :class:`PublisherSlot`。**槽是注入点**：离线套件把生产任务对象换成记账
 版，于是「``kwargs`` 组装 + ``task_id`` 形状」仍由真实代码执行，而 broker 一次都不碰。
 桩打在 ``apply_async`` 那一层、不是打在 ``enqueue_document`` 上：后者会把接线本身也盖掉，
 症状是默认套件里「投递」从来没被断言过，只在没有 Redis 的 CI 上以 ``Connection refused``
 暴露（票 #137 的评审发现的第二种掩盖）。
+
+**构建任务与索引任务是两条缝，不是一条**：它们的参数形状不同（``build_id`` vs
+``document_id`` + ``kb_id``），任务号牌也不同（``build:...`` / ``doc:...``）。共用一个槽
+之后，「这次投递到底该唤醒哪个任务」就失去断言力，而错投的症状是「构建行一直是
+``building``、没有任何任务在跑」——运维视角看起来像任务队列丢了消息。
 
 ## 为什么还有一个 ``enqueue_document_after_commit``
 
@@ -123,6 +129,58 @@ def enqueue_document(
             "reparse": reparse,
         },
         task_id=f"doc:{document_id}",
+    )
+
+
+def _build_task() -> TaskPublisher:
+    from app.tasks.index_build import build_index_version_task
+
+    return build_index_version_task
+
+
+#: 整库构建任务的发布器槽（与索引任务分开，见模块文档「两道投递缝」）。
+_build_slot = PublisherSlot(_build_task, name="index_build")
+
+
+def set_build_task_publisher(publisher: TaskPublisher | None) -> None:
+    """注入构建任务的发布器（离线套件设为记账版；``None`` 复原生产实现）。"""
+
+    _build_slot.set(publisher)
+
+
+def get_build_task_publisher() -> TaskPublisher:
+    """取构建任务当前生效的发布器（注入的优先，否则生产实现）。"""
+
+    return _build_slot.current()
+
+
+def build_publisher_is_injected() -> bool:
+    """构建投递缝是否处于注入状态（给离线自检用）。"""
+
+    return _build_slot.is_injected()
+
+
+def enqueue_index_build(
+    *, build_id: str, tenant_id: str, request_id: str | None
+) -> None:
+    """把「整库构建到某个版本」投递到 Broker。
+
+    ``build_id`` 才是任务的输入：目标版本、租户、知识库都记在那一行 ``building`` 上，
+    Worker 读行而不是读参数——参数里再带一份版本号，就有两个真相，而它们迟早不一致
+    （症状是「构建完成，但没人看得见的那个版本」）。
+
+    与 :func:`enqueue_document` 一样是**同步**的 ``apply_async``：调用方是运维脚本
+    （独立进程、同步到底）与将来的控制面入口；请求路径上要投递构建时，参照
+    ``enqueue_document_after_commit`` 加一层 ``to_thread`` 包装。
+    """
+
+    get_build_task_publisher().apply_async(
+        kwargs={
+            "build_id": build_id,
+            "tenant_id": tenant_id,
+            "request_id": request_id,
+        },
+        task_id=f"build:{build_id}",
     )
 
 

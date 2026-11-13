@@ -121,29 +121,39 @@ class _RecordingPublisher:
 
 @pytest.fixture(autouse=True)
 def _offline_dispatch():
-    """默认套件**不许连 Broker**：把两条投递缝的底层发布器换成记账版。
+    """默认套件**不许连 Broker**：把三条投递缝的底层发布器换成记账版。
 
     为什么是 autouse 而不是「用例自己记得桩」：漏桩的用例在**开发机上**会静默连上本机
     Redis、一路绿；到了没有 Redis 的 CI 才变成 `Connection refused` 与 500。票 #137 的
     CI 就是这么红的——本机 6379 在听，用例看起来完全正常。**「默认套件离线」必须是构造上
     的属性，不能是「大家记得」的约定。**
 
+    第三条缝是整库构建任务（#143）：它的投递同样必须默认离线——否则「起一次构建」的用例
+    会真的往本机 Redis 投一条消息，而那个 Worker 会把测试库当成生产库重建。它单独一个槽、
+    单独一个记账器，但**不**进 yield 的元组：既有的两条缝已经有一批用例按
+    `(index_calls, side_evidence_calls) = _offline_dispatch` 解包，加一项会让它们全红。
+    要断言构建投递的用例自己 `set_build_task_publisher` 注入观察器（见
+    `tests/test_index_rebuild_identity.py`）。
+
     与 tests/README「外部能力只换工厂函数」对齐：这里换的是**发布器这一个注入点**，不是
-    monkeypatch 三个模块的私有全局。`enqueue_document` / `enqueue_side_evidence` 仍是真
-    的实现，用例照旧可以 monkeypatch 它们来断言业务层传了什么（「投进真 Worker 循环」的
-    e2e 替身因此不受影响）。
+    monkeypatch 三个模块的私有全局。`enqueue_document` / `enqueue_index_build` /
+    `enqueue_side_evidence` 仍是**真**的实现，用例照旧可以 monkeypatch 它们来断言业务层
+    传了什么（「投进真 Worker 循环」的 e2e 替身因此不受影响）。
     """
 
     from app.services import index_dispatch, side_evidence_dispatch
 
     index_recorder = _RecordingPublisher()
     side_evidence_recorder = _RecordingPublisher()
+    build_recorder = _RecordingPublisher()
     index_dispatch.set_task_publisher(index_recorder)
+    index_dispatch.set_build_task_publisher(build_recorder)
     side_evidence_dispatch.set_side_evidence_publisher(side_evidence_recorder)
     try:
         yield index_recorder.calls, side_evidence_recorder.calls
     finally:
         index_dispatch.set_task_publisher(None)
+        index_dispatch.set_build_task_publisher(None)
         side_evidence_dispatch.set_side_evidence_publisher(None)
 
 

@@ -302,8 +302,32 @@ def test_count_documents_treats_a_missing_index_as_zero() -> None:
     )
 
 
-def test_the_noop_provider_keeps_the_three_new_methods_quiet() -> None:
-    """没有关键词引擎时：计数 0、没有别名可切、删除安静——构建编排据此跳过这一维。"""
+# ───────────────────────────────────── 存在性：回滚守卫要知道索引还在不在
+
+
+def test_physical_index_exists_asks_the_cluster_every_time() -> None:
+    """回滚守卫问的是「它此刻还在不在」，不是「本进程建过它」（#155）。
+
+    所以这里先把 v2 的索引建出来（``_index_ready`` 缓存因此记住了它），再把集群的状态
+    改成「没了」——守卫必须回答 **False**：缓存若被当真，别名就会切到一张不存在的索引上，
+    而那次故障的表现是「关键词永远搜不到」。
+    """
+
+    client = _FakeClient()
+    client.indices.exists_result = False
+    provider = _provider(client)
+
+    asyncio.run(provider.activate_version("v2"))  # 建索引 + 切别名 → 缓存里有了 v2
+    calls_before = len(client.indices.exists_calls)
+    client.indices.exists_result = False
+
+    assert asyncio.run(provider.physical_index_exists("v2")) is False
+    assert len(client.indices.exists_calls) == calls_before + 1, "每次都要问集群，不读缓存"
+    assert client.indices.exists_calls[-1] == {"index": "rag_chunks__v2"}
+
+
+def test_the_noop_provider_keeps_every_dormant_method_quiet() -> None:
+    """没有关键词引擎时：计数 0、索引不存在、没有别名可切、删除安静——构建编排据此跳过这一维。"""
 
     provider = NoopKeywordSearchProvider()
 
@@ -311,6 +335,7 @@ def test_the_noop_provider_keeps_the_three_new_methods_quiet() -> None:
         asyncio.run(provider.count_documents(tenant_id=TENANT_ID, kb_id=KB_ID, index_version="v2"))
         == 0
     )
+    assert asyncio.run(provider.physical_index_exists("v2")) is False
     assert asyncio.run(provider.activate_version("v2")) is None
     assert (
         asyncio.run(

@@ -178,6 +178,39 @@ async def count_by_index_version(
     return int((await db.execute(stmt)).scalar_one())
 
 
+async def list_section_identity_rows(
+    db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
+) -> list[tuple[str, str, str, str | None]]:
+    """这个版本里**每个节**的 ``(文档 id, 标题路径, section_id, parent_section_id)``。
+
+    核对脚本用它验「节的身份证」自洽（#143）：同一节的多片共享同一份 meta，所以先
+    ``distinct`` 再判——一片一行会让「这条节被判了 20 次」变成报错条数虚高。
+
+    读的是 ``metadata``（JSONB）里的三个键，不是新增的列：节的身份从第 3 步起就随切片
+    落在那份 meta 里，核对不该为了它改表（改表要连带改迁移与回填，而这里只需要「读得到」）。
+    """
+
+    stmt = (
+        select(
+            Chunk.document_id,
+            Chunk.meta["heading_path"].astext,
+            Chunk.meta["section_id"].astext,
+            Chunk.meta["parent_section_id"].astext,
+        )
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.kb_id == kb_id,
+            Chunk.index_version == index_version,
+        )
+        .distinct()
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        (str(document_id), str(path or ""), str(section_id or ""), parent or None)
+        for document_id, path, section_id, parent in rows
+    ]
+
+
 async def count_by_document_ids(    db: AsyncSession, document_ids: list[str], *, tenant_id: str
 ) -> dict[str, int]:
     """一次分组查询拿回 ``{document_id: 切片数}``；没有切片的文档不在字典里。

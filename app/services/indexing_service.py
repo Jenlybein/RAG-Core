@@ -136,6 +136,10 @@ class IndexingService:
 
         策略与窗口必须来自知识库而不是全局配置：同一个库里混用两种切法会让片长
         分布不一致，检索时「片长」会变成与内容无关的排序因素。
+
+        **文档 id 一定要带下去**（#143）：节的身份证是 ``stable_hash(文档 id : 标题路径)``，
+        少了它，两份文档的「退款 > 流程」会算出同一个 ``section_id``，跨文档一对就串。
+        切块器自己看不见文档行，所以这个参数只能由这里给。
         """
 
         if self._splitter is not None:
@@ -150,7 +154,9 @@ class IndexingService:
         strategy, chunk_size = await knowledge_base_repository.get_split_config(
             db, doc.kb_id, tenant_id=doc.tenant_id
         )
-        splitter = build_splitter(strategy, chunk_size=chunk_size)
+        splitter = build_splitter(
+            strategy, chunk_size=chunk_size, document_id=str(doc.id)
+        )
         return splitter, strategy
 
     async def index_existing_document(
