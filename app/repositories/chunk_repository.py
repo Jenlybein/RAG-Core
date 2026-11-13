@@ -235,6 +235,76 @@ def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str)
     )
 
 
+def build_version_sections_statement(
+    *,
+    tenant_id: str,
+    kb_id: str,
+    index_version: str,
+    document_ids: Sequence[str] | None = None,
+) -> Select:
+    """某个版本里的切片，按「建关系边要的那几个字段」一次读全（#152）。
+
+    只选 ``id`` / ``document_id`` / ``content`` / ``metadata`` 四列，**不选 embedding**：
+    一次整版扫描若把 1536 维向量拖回来，读的就是几 GB 而不是几十 MB，而建边一个维度都
+    用不上。``metadata`` 里的键（title / section_id / heading_path / chunk_index）在
+    Python 侧解——节的身份从 #143 起就在那份 meta 里，关系边不该为了读它改切片表。
+
+    ``document_ids`` 非空时只读这几篇（单篇重建的那条路）。
+    """
+
+    statement = select(Chunk.id, Chunk.document_id, Chunk.content, Chunk.meta).where(
+        Chunk.tenant_id == tenant_id,
+        Chunk.kb_id == kb_id,
+        Chunk.index_version == index_version,
+    )
+    if document_ids is not None:
+        statement = statement.where(Chunk.document_id.in_(list(document_ids)))
+    return statement.order_by(
+        Chunk.document_id,
+        Chunk.meta["chunk_index"].astext.cast(Integer),
+        Chunk.id,
+    )
+
+
+async def list_version_sections(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    kb_id: str,
+    index_version: str,
+    document_ids: Sequence[str] | None = None,
+) -> list[tuple[str, str, str, str, int, str]]:
+    """:func:`build_version_sections_statement` 的结果：``(文档 id, 标题, 节 id, 标题路径, 片序号, 正文)``。
+
+    一行一片（同一节多行）：「第 N 节」按片的全局顺序解析，去重交给目录
+    （``SectionCatalog`` 按 ``(文档 id, 节 id)`` 收）。与 ``list_section_identity_rows``
+    的差别是：那个 ``distinct`` 只关心节身份，这个要原文与顺序。
+    """
+
+    rows = (await db.execute(
+        build_version_sections_statement(
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            index_version=index_version,
+            document_ids=document_ids,
+        )
+    )).all()
+    sections: list[tuple[str, str, str, str, int, str]] = []
+    for row in rows:
+        meta = dict(getattr(row, "meta", None) or {})
+        sections.append(
+            (
+                str(row.document_id),
+                str(meta.get("title") or ""),
+                str(meta.get("section_id") or ""),
+                str(meta.get("heading_path") or ""),
+                int(meta.get("chunk_index") or 0),
+                str(row.content or ""),
+            )
+        )
+    return sections
+
+
 def delete_by_document_id(db: Session, document_id: str) -> None:
     db.execute(delete(Chunk).where(Chunk.document_id == document_id))
     db.flush()

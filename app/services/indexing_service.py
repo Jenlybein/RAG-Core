@@ -46,6 +46,11 @@
 ``index_version``，它来自调用方（整库构建写新版本）或库上的生效版本（上传 / 单篇
 重建写回线上那一版），**不是**写死的常量。删除同样按版本收窄：重建只清目标版本的
 旧行，线上那一版在构建期间原样可查（ADR-0025 决策二）。
+
+**建关系边是这条流水线的第五步（#152）**：切片写进哪个版本，边就写进哪个版本，而且
+在**同一段事务**里（purge + 写切片 + 建边 + 回写状态同成同败）。所以不存在「构建成功
+但这个版本没有边」的中间态。建边器是一个构造注入的协作者，与切块器 / embedding /
+存储列表同形——整条编排照旧可以离线跑完（替身见 ``tests/test_section_edge_service.py``）。
 """
 
 from __future__ import annotations
@@ -66,12 +71,15 @@ from app.repositories import document_repository, knowledge_base_repository
 from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import prepare_document_content
 from app.services.section_context import summarize_sections
+from app.services.section_edge_service import SectionEdgeBuilder
+from app.services.section_graph import EdgeScope, SectionRecord, SectionText
 from app.utils.id_generator import new_chunk_id
 from app.utils.retrieval_text import build_retrieval_text
+from app.utils.section_identity import section_id_of
 from app.utils.status import DocumentStatus
 from app.utils.splitter_factory import build_splitter
 from app.utils.text_splitter import WindowTextSplitter
-from app.utils.text_splitter import TextSplitter
+from app.utils.text_splitter import SplitPiece, TextSplitter
 
 logger = structlog.get_logger(__name__)
 
@@ -109,15 +117,52 @@ async def purge_document_chunks(
         )
 
 
+def _edge_sections(
+    doc: Document, pieces: list[SplitPiece], *, version: str
+) -> tuple[SectionText, ...]:
+    """刚切出来的那些片 → 「节 + 正文」列表（建边的输入，不必回库再读一遍）。
+
+    ``section_id`` 取切片 meta 里的那一份（切块器算的），缺值时走
+    :func:`app.utils.section_identity.section_id_of` 兜底——**本模块不自己拼哈希**：
+    两份算法漂移的症状是「边指向一个存在但不对的节」，不报错、极难查。
+
+    ``order`` 用**文档级**的片序号（``chunk_index``）：兄弟边与「第 N 节」都按它排，
+    而切块器的 ``order_index`` 只在节内可比，跨节排不出文档顺序。
+    """
+
+    sections: list[SectionText] = []
+    for index, piece in enumerate(pieces):
+        heading_path = str(piece.metadata.get("heading_path") or "")
+        section_id = str(piece.metadata.get("section_id") or "") or section_id_of(
+            document_id=str(doc.id), heading_path=heading_path
+        )
+        sections.append(
+            SectionText(
+                record=SectionRecord(
+                    tenant_id=doc.tenant_id,
+                    kb_id=doc.kb_id,
+                    index_version=version,
+                    document_id=str(doc.id),
+                    document_title=doc.title,
+                    section_id=section_id,
+                    heading_path=heading_path,
+                    order=index,
+                ),
+                text=piece.text,
+            )
+        )
+    return tuple(sections)
+
+
 class IndexingService:
     """Worker 侧的索引编排：一份已登记的文档 → 可检索的切片。"""
-
     def __init__(
         self,
         *,
         splitter: TextSplitter | None = None,
         embeddings: EmbeddingProvider | None = None,
         stores: list[ChunkStore] | None = None,
+        edge_builder: SectionEdgeBuilder | None = None,
     ) -> None:
         # 注入的切块器优先：测试用它把切块与接线解耦。生产路径不注入，
         # 每份文档在索引时按**所属知识库**的配置现建切块器。
@@ -130,6 +175,8 @@ class IndexingService:
             if stores is not None
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
+        # 建边器同理：默认接真实实现，测试注入记录型替身（索引期是唯一建边时点）。
+        self._edge_builder = edge_builder if edge_builder is not None else SectionEdgeBuilder()
 
     async def _resolve_splitter(self, db: AsyncSession, doc: Document) -> tuple[TextSplitter, str]:
         """按文档所属知识库的配置构造切块器，返回 (切块器, 策略名)。
@@ -306,7 +353,7 @@ class IndexingService:
             for index, (piece, vector) in enumerate(zip(pieces, vectors))
         ]
 
-        # Tx2：先删后写 + 状态回写，一次提交；任一步失败都由调用方回滚。
+        # Tx2：先删后写 + 建关系边 + 状态回写，一次提交；任一步失败都由调用方回滚。
         await purge_document_chunks(
             db,
             document_id,
@@ -316,6 +363,18 @@ class IndexingService:
         )
         for store in self._stores:
             await store.add_chunks(db, chunks)
+
+        # 建边（#152）：切片已经写进这一版，所以读目录时这一篇自己的节也在里面——
+        # 「目标节本版本里存不存在」才判得准（悬空边一律不建）。
+        await self._edge_builder.rebuild_document(
+            db,
+            scope=EdgeScope(
+                tenant_id=doc.tenant_id, kb_id=doc.kb_id, index_version=version
+            ),
+            document_id=str(doc.id),
+            document_title=doc.title,
+            sections=_edge_sections(doc, pieces, version=version),
+        )
 
         await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
         await async_commit_now(db)

@@ -66,6 +66,8 @@ from app.repositories import (
     knowledge_base_repository,
 )
 from app.services.indexing_service import IndexingService
+from app.services.section_edge_service import rebuild_version_edges
+from app.services.section_graph import EdgeScope
 from app.utils.id_generator import new_id
 from app.utils.status import DocumentStatus
 
@@ -378,6 +380,16 @@ class IndexBuildService:
                     allow_success=True,
                 )
                 indexed += 1
+            # 跨文档引用有一个天然的先后问题：A 引用 B 的 2.4 节时，B 可能还没被这一轮
+            # 构建写入——那一刻目录里没有 B，按「悬空边一律不建」的规则这条边不会建。
+            # 所以逐篇重建之后再**整版重算一遍**（幂等，同一份抽取跑第二遍）：现在目录
+            # 才是完整的目录。不做这一步的后果是「引用边只在某些文档顺序下才出现」。
+            await rebuild_version_edges(
+                db,
+                scope=EdgeScope(
+                    tenant_id=tenant_id, kb_id=row.kb_id, index_version=row.version
+                ),
+            )
             # 计数快照里的文档数：**成功重建的篇数**（不是库里总行数——失败 / 处理中的
             # 文档不参与构建，把它们算进去会让快照看起来「少了几篇」却查不出原因）。
             row.document_count = indexed

@@ -193,6 +193,22 @@ async def _run_worker_pipeline(service: IndexingService, database_path: Path) ->
         await engine.dispose()
 
 
+class _NoEdgeBuilder:
+    """建边替身：这条 e2e 的库只有 ``documents`` 一张表，边由
+    ``tests/test_section_edge_service.py`` 覆盖。
+
+    它断言的是**切片写入与状态回写**这条链（路由 → 队列 → Worker），建边会读写
+    ``section_edges`` 与 ``chunks.metadata``，那两张表在 SQLite 里也建不出来
+    （pgvector / JSONB）。所以这里显式关掉建边，而不是让用例去假装一张 PG 表。
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def rebuild_document(self, *_args: Any, **kwargs: Any) -> Any:
+        self.calls.append(str(kwargs.get("document_id")))
+
+
 def test_reindex_route_then_worker_produces_chunks_and_success(
     reindex_env: SimpleNamespace,
 ) -> None:
@@ -231,6 +247,8 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
         splitter=_StubSplitter(),
         embeddings=_StubEmbeddings(),
         stores=[reindex_env.store],
+        # 见 _NoEdgeBuilder：这个 SQLite 库里没有 chunks / section_edges。
+        edge_builder=_NoEdgeBuilder(),
     )
     count = asyncio.run(_run_worker_pipeline(service, reindex_env.database_path))
 

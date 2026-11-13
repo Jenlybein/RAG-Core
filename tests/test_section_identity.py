@@ -36,6 +36,7 @@ from app.utils.section_identity import (
     section_id_of,
 )
 from app.utils.status import DocumentStatus
+from tests.fake_db import ZERO_COUNT
 
 _HEX64 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -198,7 +199,9 @@ class _PipelineSession:
         return self._document if ident == self._document.id else None
 
     async def execute(self, _statement: Any) -> Any:
-        raise AssertionError("这条用例不该发查询：抢占与库配置都已换成替身")
+        """抢占与库配置都已换成替身；这里只剩建边读节目录（#152），替身表示空版本。"""
+
+        return ZERO_COUNT
 
     async def flush(self) -> None:
         return None
@@ -311,3 +314,5 @@ def test_the_indexing_pipeline_stamps_section_ids_with_the_document_id(
         assert meta["parent_section_id"] == parent_section_id_of(
             document_id=DOC_A, heading_path=path
         )
+
+

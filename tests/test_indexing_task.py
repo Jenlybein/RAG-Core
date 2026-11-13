@@ -40,6 +40,7 @@ from app.tasks import indexing as tasks
 from app.tasks.indexing import _is_retryable, _run_indexing
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
+from tests.fake_db import ZERO_COUNT
 
 DOC_ID = "doc-1"
 TENANT_ID = "tenant_demo"
@@ -81,7 +82,9 @@ class _FakeSession:
         raise AssertionError("取行由仓储替身接管，会话替身不该被直接问到")
 
     async def execute(self, _statement: Any) -> Any:
-        raise AssertionError("查询由仓储替身接管，会话替身不该被直接问到")
+        """读查询由仓储替身接管；这一条是建边读节目录（#152），替身表示空版本。"""
+
+        return ZERO_COUNT
 
 
 class _RecordingStore:
@@ -683,3 +686,5 @@ def test_worker_process_signals_bind_and_release_the_resident_loop() -> None:
 
     assert loop.closed is True
     assert loop.alive is False, "关停信号之后线程必须已经退出"
+
+

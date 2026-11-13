@@ -34,6 +34,7 @@ from app.repositories import document_repository, knowledge_base_repository
 from app.services import indexing_service
 from app.services.indexing_service import IndexingService
 from app.utils.text_splitter import SplitPiece
+from tests.fake_db import ZERO_COUNT
 
 TENANT_ID = "tenant_demo"
 KB_ID = "kb-1"
@@ -139,6 +140,11 @@ class _FakeSession:
 
     async def flush(self) -> None:
         return None
+
+    async def execute(self, _statement: Any) -> Any:
+        """建关系边会读一次「本版本的节目录」（#152）；这个替身表示空版本。"""
+
+        return ZERO_COUNT
 
 
 class _StubEmbeddings:
@@ -249,3 +255,5 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
     ]
     assert embeddings.texts != [chunk["content"] for chunk in chunks], "两者必须是不同的文本"
     assert [chunk["index_version"] for chunk in chunks] == ["v1", "v1"]
+
+

@@ -67,6 +67,11 @@ class _FakeSession:
     async def delete(self, _row: Any) -> None:
         return None
 
+    async def execute(self, _statement: Any) -> Any:
+        """建关系边会读一次「本版本的节目录」（#152）；这个替身表示空版本。"""
+
+        return fake_db.ZERO_COUNT
+
 
 class _RecordingStore:
     """向量存储替身：记录 purge / add 的顺序。"""
@@ -325,3 +330,4 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
     assert calls[:2] == ["purge:vector", "purge:keyword"]
     assert vector.deleted == [(DOC_ID, TENANT_ID)]
     assert provider.deleted == [(DOC_ID, TENANT_ID)]
+
