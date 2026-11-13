@@ -49,8 +49,8 @@ async def list_keys(
 ) -> ApiResponse[KeyListData]:
     """列出本租户的 Key。明文是本票的明确决定（ADR-0004），masked 是第二形态。
 
-    只读，因此整条路径（含身份判定）在异步栈上（票 #129）；签发 / 删除 / 改配置仍在
-    同步栈上，那是 #130 的范围。
+    这条路径（含身份判定）在异步栈上（票 #129）。签发 / 删除 / 改配置也一样——它们在
+    ADR-0024 之后同属异步栈，写路径另外声明 ``get_async_transaction``（票 #130）。
     """
 
     rows = await key_admin_service.list_keys(db, actor=identity)
