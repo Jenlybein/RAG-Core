@@ -126,7 +126,7 @@ score = 本次最终排序分（见下表）
 
 ```bash
 uv run pytest -q
-# 期望：1720 passed, 17 skipped, 2 warnings
+# 期望：1721 passed, 17 skipped, 2 warnings
 # 17 skipped = 3 条 OCR 资产门禁 + 10 条真 PostgreSQL（CAS 6 + Worker 常驻循环 4）
 #             + 3 条真 Elasticsearch（其中 1 条是查询分析器守卫）+ 1 条嵌入等价性
 ```
@@ -257,7 +257,7 @@ curl --noproxy '*' -sS -b cookie.txt -X PATCH "http://127.0.0.1:8000/console/pla
 uv run ruff check .                                    # 静态检查
 uv run ruff format --check tests                      # 格式检查（历史文件暂不纳入）
 uv run mypy app                                       # 宽松类型检查
-uv run pytest -q                                      # 离线测试：1720 passed, 17 skipped；不连 PG、不发真实模型请求
+uv run pytest -q                                      # 离线测试：1721 passed, 17 skipped；不连 PG、不发真实模型请求
 uv run uvicorn app.main:app --reload --port 8000      # 本地起服务，再按教程跑四条 curl（含列库）
 ```
 

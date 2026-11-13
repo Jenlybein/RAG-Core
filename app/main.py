@@ -71,7 +71,7 @@ from app.core.http_clients import aclose_http_client
 from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
 from app.db.async_session import AsyncSessionLocal
-from app.db.session import SessionLocal
+from app.db.session_factory import session_factory
 from app.providers.llm import set_role_resolver
 from app.repositories import knowledge_base_repository
 from app.services import model_config_service, profile_preset_service, rag_service
@@ -93,10 +93,17 @@ set_role_resolver(model_config_service.role_endpoint)
 
 
 def _load_profile_presets_from_db() -> None:
-    """档位参数装载器。组合根是唯一知道 ``SessionLocal`` 的地方，所以连接在这里给，
-    注册表那边只留一个可注入的钩子（见 ``app.core.profile_presets``）。"""
+    """档位参数装载器。组合根是唯一知道「去哪开会话」的地方，注册表那边只留一个可注入钩子
+    （见 ``app.core.profile_presets``）。
 
-    with SessionLocal() as db:
+    **会话走注入缝**（``app.db.session_factory``）而不是直接 ``SessionLocal``：默认套件把
+    那个注入点换成了内存替身，于是启动期这一次读**不碰真库**。此前这里直接拿
+    ``SessionLocal``，两条路径不通——离线套件的每一个用例都要在 app 启动时去连一次
+    PostgreSQL，等连接超时才失败（本机实测每次 4.09 秒，全量因此从几分钟涨到半小时）。
+    「默认套件离线」这句话在启动期这一处曾因此不成立。
+    """
+
+    with session_factory()() as db:
         profile_preset_service.load_into_registry(db)
 
 

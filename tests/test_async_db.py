@@ -92,3 +92,26 @@ async def test_the_dependency_closes_the_session_when_the_request_fails(monkeypa
         await opened.athrow(RuntimeError("boom"))
 
     assert session.closed is True
+
+
+def test_the_startup_preset_loader_goes_through_the_injectable_session_factory() -> None:
+    """启动期的档位装载**不许**直连 ``SessionLocal``。
+
+    这条是赔出来的：``app/main.py::_load_profile_presets_from_db`` 曾经直接
+    ``from app.db.session import SessionLocal``，绕过了 ``app.db.session_factory`` 这个
+    注入点。于是默认套件的**每一个** app 启动都去连一次真 PostgreSQL，等连接超时才失败
+    ——本机实测每次 4.09 秒；一个 35 用例的文件因此从 8 秒涨到 101 秒，全量从 3 分钟涨到
+    半小时。而且它从不报红：失败被吞成一条 warning，看起来只是「有点慢」。
+
+    断言两件事：那个装载器用的是注入缝；模块里没有裸 ``SessionLocal()`` 调用。
+    """
+
+    import inspect
+
+    from app import main as main_mod
+
+    source = inspect.getsource(main_mod._load_profile_presets_from_db)
+    assert "session_factory()()" in source, (
+        "启动期装载没有走 app.db.session_factory 注入点：离线套件会每个用例等一次库连接超时"
+    )
+    assert "SessionLocal()" not in source, "启动期装载又直连真库了"
