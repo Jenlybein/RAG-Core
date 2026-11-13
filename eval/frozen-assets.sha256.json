@@ -1,0 +1,43 @@
+{
+  "_readme": [
+    "eval/corpus/ 与 eval/baseline/ 的内容指纹：票 A3（#145）一个字都没动它们，",
+    "这份清单把这件事变成会红的东西，而不是一句承诺（#138 验收第 1 条）。",
+    "",
+    "哈希对象是把 CRLF 折成 LF 之后的字节：Windows 的 core.autocrlf 会让同一份",
+    "内容在不同 checkout 上字节不同，直接哈希工作区会把换行策略误报成内容变更。",
+    "",
+    "**确需变更时**：先想清楚为什么（换语料 = 基线当场失效，要重跑 baseline 并归档），",
+    "再跑 `uv run python scripts/eval_refs.py freeze --write` 并把 diff 一起提交——",
+    "变更因此留在历史里，而不是悄悄发生。",
+    "",
+    "对账：`uv run python scripts/eval_refs.py check-frozen`；",
+    "用例：tests/test_eval_refs.py（多出文件也算失败：往基线语料里加文档等于基线失效）。"
+  ],
+  "files": {
+    "eval/corpus/api_reference.md": "bf96808996be831713dfad48b60a3e87cb931dc1dadb639248be1fc2e54bc18d",
+    "eval/corpus/billing_policy.md": "3c57639df49ee7a2d0fb00f7a26f107984e95c65a7d41eb996cf54d88d47e230",
+    "eval/corpus/config_reference.md": "19484b61cff890174ba4ccb49db14843ca24a69faddcf1f584d067d1e738cdaa",
+    "eval/corpus/deploy_guide.md": "860374d2a8601b8376318c68191bb2355c9188f02fba63cacf762221c747730f",
+    "eval/corpus/dev_code_examples.md": "d6de980ba782ea494dd3845120f259141fac5abd8a313134ac266dc9afc0af2c",
+    "eval/corpus/faq_short.md": "6effc1df65a787e30010cff8c5c40c7c038d89a66025d55179d44d593d9b4dcd",
+    "eval/corpus/incident_report.md": "11631801e3a9c09acebb0aa7afc26f19fbafcb51c3e1d24893a78de66281e5da",
+    "eval/corpus/integration_api.md": "14182ac7fda5a25404151f4a29049a3b0c4f84b6c2e072b5b6d21d637479d9d1",
+    "eval/corpus/manifest.json": "7ddb6612fdad5488313fc04d9914ecf07cf878dba7f62dcf84bbcac1d475bdb9",
+    "eval/corpus/meeting_minutes.md": "94ce9e4a8384f7d3256f983a8c1cd85b5d8ca154fd24d764e7d16606c904d57d",
+    "eval/corpus/onboarding.md": "5d57cfcbd293545e2aa2339debc672067024c2ed0b3c898cc9359799fd8db1b3",
+    "eval/corpus/ops_change.md": "9ba9fe65095e2c7624a0cc9fceda3f5eca586815bf6d0d8bbc14b4fe5de969dc",
+    "eval/corpus/ops_runbook.md": "66f08048aa0b70e6a63c5ad62994d2c4392847a39b983108f25bf5b5099189e3",
+    "eval/corpus/price_list.md": "7edf04797febc3c56f79efa234472bd8e3b7abd040f8442a6820c8e27b3aff12",
+    "eval/corpus/product_spec.md": "5a688050ed891165c1add5e166ba3e11038ac90233607e7d829a8940b2d6398a",
+    "eval/corpus/release_notes.md": "4ed437927adc96ffa3e021a375cbb581e803332a836ae1b190ae001e3750c379",
+    "eval/corpus/security_compliance.md": "dd510ff72b05b9bc2ee8d39cb55a9f5fbeb38ecce8415d0a1cb1fe4ccdc1816e",
+    "eval/corpus/sla_terms.md": "91f48711eb9fef43cd4c635a3a2897abd704900ef8f9652978196f4afa2d9f76",
+    "eval/corpus/support_errors.md": "fc5e53075f90e04d47bc96c9aa30ce57c1c5df71cf98970336afc6c3f8a946ad",
+    "eval/corpus/support_models.md": "988af9531cfde7fd52a4564d34a8c6302d777d67a7bff49386516cf970124d54",
+    "eval/corpus/support_refund.md": "d8678e23b747312986c0032991b880918eb3918cdbee048b1664d5565d65334e",
+    "eval/corpus/troubleshoot_deep.md": "13a4fc88bd7cdee902c68937e5ee474e4ddaae9accd931c09550ac3f252afd37",
+    "eval/baseline/environment.json": "542efe98c0972ef741aa8bffaf10f1464fdfc789d7d4cc719ea09e4181ea213d",
+    "eval/baseline/report.md": "f664359b0a17ffee798d2a9bdae3fb8a7601915cf7a97afc3d54355229fb9089",
+    "eval/baseline/results.json": "5347b366f21991216a5731f5efacf5590b771a890355645db4d5b9eeb2b87134"
+  }
+}
