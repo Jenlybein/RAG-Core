@@ -3,7 +3,7 @@
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 10 步收尾，2026-11-12 实测：1561 条用例，**1550 passed / 11 skipped**）。
+当前 tip（第 11 步收尾，2026-11-13 实测：**1726 条用例，1709 passed / 17 skipped**）。
 
 ## 分层
 
@@ -46,7 +46,7 @@
 - `rag_service.retrieve(..., rerank_factory=...)` → `hybrid_retrieve` → `rerank_stage(provider_factory=...)`：重排实现由组合根交进来，评测才能在不碰生产工厂的前提下装旧的大模型重排做对照。
 - `Qwen3RerankProvider(client=...)`：HTTP 客户端可注入（测试用 `httpx.MockTransport`，不发网络）。
 - `LangChainEmbedding(embeddings_factory=...)` / `LangChainLLMProvider(chat_model_factory=...)`：模型每次现装，工厂可换。
-- `app.core.http_clients.reset_http_clients()` 与 `app.db.worker_loop.reset_worker_loop()`：**进程级**，前后各清一次——注册表里挂着一个已关闭 loop 的客户端、或一个属于上一个用例的常驻循环，都会让下一个用例莫名其妙地红。（`app.core.loop_pool.reset_retrieval_pool()` 在 #127 随执行池一起删除。）
+- `app.core.http_clients.reset_http_clients()` 与 `app.db.worker_loop.reset_worker_loop()`：**进程级**，前后各清一次——那一槽里挂着一个属于已关闭循环的客户端（`reset` 只丢引用，不尝试关闭）、或一个属于上一个用例的常驻循环，都会让下一个用例莫名其妙地红。（`app.core.loop_pool.reset_retrieval_pool()` 在 #127 随执行池一起删除；按 loop 的注册表在 #134 收敛成一个槽，见 ADR-0024。）
 - `reset_llm_provider_cache` / `reset_rerank_provider_cache` / `reset_embedding_provider_cache`：三个 Provider 工厂按配置指纹缓存，同样每例清场。
 - `tests/conftest.py` 另外**强制** `RERANK_BASE_URL=""`：开发机 `.env` 里写着真实端点与真 key，不钉死的话任何「打开重排」的用例都会真发一次**计费**请求。
 
@@ -74,12 +74,12 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1618 passed, 17 skipped`（共收集 1635 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1632 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1621 passed, 14 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1632 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 1621 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 1621 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1709 passed, 17 skipped`（共收集 1726 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1723 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1712 passed, 14 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1723 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 1712 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 1712 deselected` |
 
 17 条 skip 分**四道门禁**，都不是失败：
 
@@ -89,10 +89,10 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1618 passed, 17 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1709 passed, 17 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1635 条，`-m ocr` 收集 3 条、
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1726 条，`-m ocr` 收集 3 条、
 > `-m integration` 收集 14 条。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。

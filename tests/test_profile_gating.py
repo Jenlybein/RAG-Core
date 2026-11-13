@@ -44,7 +44,6 @@ from app.services.retrieval_options import (
     profile_chain_of,
 )
 from app.services.profile_policy import ensure_policy_consistent, resolve_retrieval_options
-from tests import fake_db
 from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 
 TENANT_ID = "tenant_demo"
@@ -690,7 +689,6 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     """离线 ASGI 客户端；身份由测试直接指定（不经过 api_keys 表，那是 #76 的事）。"""
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
     async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
@@ -706,13 +704,11 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     holder: dict[str, KeyContext] = {
         "context": KeyContext(tenant_id=TENANT_ID, policy=DEV_KEY_POLICY, plan=DEV_KEY_PLAN)
     }
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
     # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
     main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
         AsyncSessionAdapter(EmptySession())
     )
 
-    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     main.app.dependency_overrides[get_current_key] = lambda: holder["context"]
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:

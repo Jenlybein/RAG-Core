@@ -43,7 +43,6 @@ from app.services.retrieval_options import (
     profile_chain_of,
 )
 from app.services.profile_policy import resolve_retrieval_options
-from tests import fake_db
 from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
@@ -310,7 +309,6 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     """离线 ASGI 客户端 + 三个工厂替身；身份由 :data:`IDENTITY` 提供。"""
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
     async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
@@ -327,13 +325,11 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
     # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
     main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
         AsyncSessionAdapter(EmptySession())
     )
 
-    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     IDENTITY.use()  # 每个用例从「服务端缺省」开始，不继承上一个用例的配置
     try:

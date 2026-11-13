@@ -4,21 +4,26 @@
 `object()`，什么都不实现，所以一旦有真实查询走进去就会 `AttributeError`。
 
 这里的假会话刻意**只实现被用到的那几个方法**：离线测试关心的是「查询有没有按正确参数
-发出去」和「响应契约是否稳定」，不关心数据本身。三个变体：
+发出去」和「响应契约是否稳定」，不关心数据本身。两个变体：
 
 - ``EmptySession``：一律返回空结果（读路径的默认替身）；
 - ``RecordingSession``：记下 ``add`` 进来的行，并能按模型返回预置行——运维脚本与播种
   这类「可观测结果就是落了哪些行」的场景用它（见 ``test_identity_seeding.py``）；
 - ``AsyncRecordingSession``：同一个替身的**异步面**（票 #126）。语义只写一遍，见下。
 
-**为什么 ``statements`` 记的是 SQL 文本**：迁移期同一组操作要能在同步与异步两套替身上
-逐字比对（``tests/test_session_double_contract.py``）。只记「execute 被调了几次」看不出
+**第 11 步票 #134 之后，这一份替身只剩三个角色**（ADR-0024）：异步面（
+``AsyncRecordingSession``，请求路径与旁路短事务的默认替身）、被 ``AsyncSessionAdapter``
+包住的逐用例预置答案（``EmptySession`` / ``TransactionalSession`` 与各文件自己造的小类）、
+以及**运算维脚本**用的同步面。``get_db`` / ``get_transaction`` 两个 FastAPI 依赖已经删除，
+所以这里不再有「同步请求替身」这一角色——``override_all_db`` 只换异步那两个入口。
+
+**为什么 ``statements`` 记的是 SQL 文本**：同一个操作在同步与异步替身上必须产生同一组
+SQL（``tests/test_session_double_contract.py``）。只记「execute 被调了几次」看不出
 「同一次调用发的是不是同一条语句」。
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from types import SimpleNamespace
 from typing import Any
 
@@ -41,20 +46,6 @@ async def async_invisible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     """「库不可见」的**异步**替身：仓储按口径回 ``None``，守卫据此抛 20008。"""
 
     return None
-
-
-def no_transaction() -> Iterator[Any]:
-    """写接口的「空事务」替身：与 ``get_db`` 的 ``lambda: object()`` 配对使用。
-
-    写接口在路由签名上声明了 ``Depends(get_transaction)``，而有些用例走的是**失败路径**
-    （越权、校验不通过、配额超限），根本不该碰库。那些用例把 ``get_db`` 换成 ``object()``
-    之后，事务入口也会拿到这个 ``object()`` 并试图挂 ``session.info``——于是失败原因变成
-    ``AttributeError``，而不是它们真正想断言的错误码。
-
-    这个替身把请求边界挡在数据库之外，让那些用例继续只断言「响应是什么」。
-    """
-
-    yield object()
 
 
 class _EmptyResult:
@@ -451,21 +442,6 @@ class RecordingSession(EmptySession):
 
         return [obj for obj in self.added if isinstance(obj, model)]
 
-    def share_rows_with(self, other: RecordingSession) -> None:
-        """与另一个替身**共用同一份行**（同一个 ``dict``，因此也是同一批列表）。
-
-        迁移期一个用例里会同时出现两套栈：``POST /console/login`` 仍然写同步会话，
-        之后那几条只读请求读异步会话（票 #129）。两个替身各存一份行的话，登录刚写下的
-        会话行在异步那侧看不见，症状是「登录成功、下一个请求 20010」——而那会被误读成
-        cookie 没带上。共享之后，两个替身看到的是**同一个库**，与生产里同一个库被两套
-        连接池读到的情况一致。
-
-        只共享行，不共享计数（``added`` / ``statements`` / ``commits``）：它们回答的是
-        「这一侧做了什么」，混在一起就断言不出「读路径没有写」。
-        """
-
-        self._rows = other._rows
-
 
 class TransactionalSession(RecordingSession):
     """有**事务语义**的假会话：提交才落库，回滚撤销这一笔里的全部写入。
@@ -626,52 +602,33 @@ class AsyncRecordingSession(RecordingSession):
         super().close()
 
 
-def async_mirror(session: RecordingSession) -> AsyncRecordingSession:
-    """给同一个假库造一个**异步替身**（共享行）：迁移期一个用例里两套栈看同一个库。
-
-    控制面只读接口走异步会话、登录与写入仍走同步会话（票 #129）。用例里两种会话都要
-    换掉，而它们必须看到**同一批行**——否则登录刚写下的会话行在异步那侧不存在，症状是
-    「登录成功、下一个请求 20010」（见 :meth:`RecordingSession.share_rows_with`）。
-
-    票 #130 之后请求路径上不再有同步会话，控制面用例的夹具改用 :func:`override_all_db`；
-    这个函数留给「一个用例里真的要两套栈」的场合（直接调同步仓储的用例）。
-    """
-
-    mirror = AsyncRecordingSession()
-    mirror.share_rows_with(session)
-    return mirror
-
-
 def override_all_db(app: Any, session: Any) -> AsyncSessionAdapter:
     """把请求里的**全部**会话入口指向同一个假库（票 #130 之后控制面夹具的统一写法）。
 
     **为什么必须一次换全**：``Depends`` 与 ``dependency_overrides[...]`` 认的是可调用对象
     本身。控制面的身份判定（``get_console_account``）与写入的事务边界
-    （``get_async_transaction``）都从 ``get_async_db`` 取会话，只覆写 ``session.get_db``
-    的那份夹具因此会**真的去连 PostgreSQL**：默认套件离线，症状是登录一律 ``20010``
-    （读不到账号）或 ``InterfaceError``（没有库可连），而不是「夹具少了一行」。
+    （``get_async_transaction``）都从 ``get_async_db`` 取会话，只覆写其中一条的夹具因此会
+    **真的去连 PostgreSQL**：默认套件离线，症状是登录一律 ``20010``（读不到账号）或
+    ``InterfaceError``（没有库可连），而不是「夹具少了一行」。
 
-    **四个入口都是同一个库**：``get_db`` / ``get_async_db`` 给读，``get_transaction`` /
-    ``get_async_transaction`` 给写。后两条**不另外造替身**——生产的事务入口只要会话上有
-    ``info`` / ``commit`` / ``rollback`` 就能跑，于是「一笔请求 = 一笔事务、异常整笔回滚」
-    这些纪律在离线套件里照旧被真实代码执行一遍，而不是被一个假的 no-op 事务糊过去。
+    **票 #134 起只剩异步那两个入口**：``get_db`` / ``get_transaction`` 连同同步引擎一起
+    删了，请求路径上没有第二种写法可换。``get_async_db`` 给读、``get_async_transaction``
+    给写，后一条**不另外造替身**——生产的事务入口只要会话上有 ``info`` / ``commit`` /
+    ``rollback`` 就能跑，于是「一笔请求 = 一笔事务、异常整笔回滚」这些纪律在离线套件里
+    照旧被真实代码执行一遍，而不是被一个假的 no-op 事务糊过去。
 
     **异步那一面是同一个对象的薄适配**（:class:`AsyncSessionAdapter`），不是第二个替身：
     行、``added``、``statements``、``commits`` 全都记在**同一个**对象上，于是用例既有的
-    断言（「只写了一张表」「提交了一次」）一行都不用改，而且读写看到的是同一个库。
+    断言（「只写了一张表」「提交了一次」）一行都不用改。
 
     返回那个异步视图，调用方一般不关心（夹具里保留它只是为了让「同一个库」这件事可读）。
     """
 
     from app.db.async_session import get_async_db, get_async_transaction
-    from app.db.session import get_db, get_transaction
 
     view = AsyncSessionAdapter(session)
-    app.dependency_overrides[get_db] = lambda: session
     app.dependency_overrides[get_async_db] = lambda: view
-    # 事务入口用**生产实现**（它们只依赖上面两个会话入口），这里显式置回默认值：
-    # 上一个用例若把它们换成了 no-op（失败路径那些用例会这么做），``clear()`` 之外的
-    # 残留会让这条写路径悄悄「没有事务边界」。
-    app.dependency_overrides.pop(get_transaction, None)
+    # 事务入口用**生产实现**（它只依赖上面那个会话入口），这里显式置回默认值：
+    # 上一个用例若把它换成了 no-op，``clear()`` 之外的残留会让这条写路径悄悄「没有事务边界」。
     app.dependency_overrides.pop(get_async_transaction, None)
     return view

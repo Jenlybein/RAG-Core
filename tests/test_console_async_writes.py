@@ -93,14 +93,16 @@ def _console_route_keys() -> list[tuple[str, str]]:
 def test_every_console_route_takes_its_session_from_the_async_stack(
     method: str, path: str
 ) -> None:
-    """控制面不再有第二条会话来源：依赖树里只能出现 ``get_async_db``。"""
+    """控制面不再有第二条会话来源：依赖树里只能出现 ``get_async_db``。
+
+    票 #134 把「同步那一个没被用到」换成了「同步那一个不存在」：``get_db`` 已经随同步
+    引擎一起删除（见 ``tests/test_console_async_reads.py`` 的同名守卫与 ADR-0024）。
+    """
 
     from app.db.async_session import get_async_db
-    from app.db.session import get_db
 
     calls = _dependant_calls(_routes()[(method, path)].dependant)
 
-    assert get_db not in calls, f"{method} {path} 仍在同步栈上取会话"
     # 不带数据库的控制面入口（登出之外的少数几条）只要求「没有同步会话」，
     # 其余必须显式从异步栈取——两条合起来才是「控制面全在异步栈上」。
     if get_async_db not in calls:
@@ -112,12 +114,10 @@ def test_console_writes_declare_the_async_transaction(method: str, path: str) ->
     """写入口的提交点只有异步事务依赖；同步事务依赖一条都不许留。"""
 
     from app.db.async_session import get_async_transaction
-    from app.db.session import get_transaction
 
     calls = _dependant_calls(_routes()[(method, path)].dependant)
 
     assert get_async_transaction in calls, f"{method} {path} 没有声明异步事务依赖"
-    assert get_transaction not in calls, f"{method} {path} 仍在用同步事务依赖"
 
 
 def test_the_write_route_list_covers_every_mutating_console_endpoint() -> None:

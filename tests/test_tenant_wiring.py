@@ -343,7 +343,6 @@ def _entries_with(
 
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
-    db_session = importlib.import_module("app.db.session")
     async_session = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
@@ -411,7 +410,6 @@ def _entries_with(
     app.include_router(main.api_router)
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
-    app.dependency_overrides[db_session.get_db] = _get_db
     app.dependency_overrides[async_session.get_async_db] = lambda: AsyncSessionAdapter(
         _get_db()
     )

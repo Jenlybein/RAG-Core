@@ -48,7 +48,7 @@ psycopg 的异步模式**不支持** Windows 缺省的 ``ProactorEventLoop``，�
 
 1. 停止接收（之后的 ``run`` 立刻 ``RuntimeError``，不排队、不挂死）；
 2. 在这个循环上 ``await engine.dispose()``（连接在这里才关得掉）；
-3. 在这个循环上关掉它名下的 HTTP 客户端（``aclose_current_loop_clients``）；
+3. 在这个循环上关掉它名下的 HTTP 客户端（``aclose_http_client``）；
 4. 停循环 → join 线程 → 线程的 ``finally`` 里关循环。
 
 重复调用幂等；每一步失败只记 warning——收尾阶段抛异常会盖掉真正的退出原因。
@@ -67,7 +67,7 @@ from typing import TypeVar
 import structlog
 from sqlalchemy.ext.asyncio import AsyncEngine
 
-from app.core.http_clients import aclose_current_loop_clients
+from app.core.http_clients import aclose_http_client
 
 logger = structlog.get_logger(__name__)
 
@@ -256,7 +256,7 @@ class WorkerLoop:
             except Exception:  # noqa: BLE001 - 关停路径不抛
                 logger.warning("worker_loop_engine_dispose_failed", loop=self._name, exc_info=True)
         try:
-            await aclose_current_loop_clients()
+            await aclose_http_client()
         except Exception:  # noqa: BLE001 - 同上
             logger.warning("worker_loop_close_clients_failed", loop=self._name, exc_info=True)
 

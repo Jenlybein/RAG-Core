@@ -1,4 +1,4 @@
-"""按事件循环的 HTTP 客户端注册表：模型类流量共用连接池，收尾是确定性的。
+"""进程级 HTTP 客户端：模型类流量共用连接池，收尾是确定性的。
 
 ## 为什么需要它
 
@@ -7,20 +7,30 @@
 ``Unclosed client session`` / ``RuntimeError: Event loop is closed``。复用的收益全部
 来自「同一个连接池被连续请求命中」，所以客户端必须活得比一次请求长。
 
-## 为什么按 loop 而不是按进程
+## 为什么现在只剩「一个槽」（ADR-0024）
 
-``httpx.AsyncClient`` 的连接池绑在**创建它的**事件循环上。ES Provider 已经为这条
-付过一次真实代价：Celery 每个任务 ``asyncio.run`` 一次（每个任务一个 loop，跑完即
-关闭），进程级单例的客户端在第二个任务里发请求会立刻
+第 10 步的形状是**按事件循环注册表 + 检索执行池**：池里 4 个 worker 各持一个循环，
+Celery 又每个任务 ``asyncio.run`` 一次——同一个进程里同时活着好几个循环，客户端因此
+必须按 loop 分家，收尾也得分「当前的那个 / 别的活着的 / 已经死掉的」三种去关。
 
-    RuntimeError: Event loop is closed
+第 11 步把这两件事都撤了：执行池删除（票 #127），Worker 换成一个**常驻循环**
+（ADR-0023）。剩下的形状是「**一个进程一个循环**」（API 与 Worker 各自一个进程），
+按 loop 的那张表就成了一张永远只有一行的表。于是这里压成一个槽：客户端本身，加上
+「它属于哪个循环」。
 
-所以注册表的键是「当前正在运行的 loop」。不同 loop 各拿各的客户端、各自隔离；loop
-被回收后条目由弱引用自动消失，不会把死循环留在表里。
+**那条硬约束还在**：``httpx.AsyncClient`` 的连接池绑在创建它的循环上，跨循环复用的
+下场是 ``RuntimeError: Event loop is closed``（ES Provider 付过一次真实代价）。所以
+取客户端时先比对「槽里那个属于当前循环吗」，不是就重建、把旧的丢掉。生产里这个比对
+恒为真（一个进程一循环），它只服务两种场合：测试（一个用例一个循环）与「脚本 / 异常
+退出留下的旧客户端」。
+
+**随注册表一起删掉的三段复杂度**：弱引用键（loop 回收即消失）、「逐 loop 关闭」、
+「往另一个活着的循环投协程再等结果」。它们全是「同一进程里多个长活循环」的解法，
+而那个前提已经不存在（进程内只有一个循环；跨进程本来就不共享内存）。
 
 ## 超时为什么不在客户端上写死
 
-一个 loop 一个客户端，而用途各有各的预算（大模型 60s、嵌入 60s、重排 15s）。超时
+一个进程一个客户端，而用途各有各的预算（大模型 60s、嵌入 60s、重排 15s）。超时
 因此由**调用方按用途传**（``client.post(..., timeout=...)``；OpenAI SDK 自己每请求
 带一个超时）。客户端上的默认值只兜「调用方忘了传」的情况，故意给得宽。
 
@@ -32,22 +42,19 @@ LangChain / OpenAI SDK 的包装对象（``ChatOpenAI`` / ``OpenAIEmbeddings``�
 现装的——不共享一个同步客户端，光这一项就够把「复用」的收益吃掉。同步客户端不绑
 事件循环，所以进程级一个就够。
 
-## 三种收尾
+## 两种收尾
 
-* :func:`aclose_current_loop_clients` —— 当前 loop 名下的那一个（API 的 lifespan、
-  Celery 任务体的 ``finally`` 用它）；
-* :func:`aclose_all_clients` —— 尽力逐个 loop 关（进程收尾、测试用），关不掉的只记
-  warning 不抛：收尾不该被一条噪音打断；
-* :func:`reset_http_clients` —— 测试接缝，只清表，不联网、不关闭。
+* :func:`aclose_http_client` —— 关掉异步那一个与进程级同步那一个（API 的 lifespan、
+  ``WorkerLoop.shutdown`` 用它）；幂等，没有就是安静的 no-op；
+* :func:`reset_http_clients` —— 测试接缝，只丢引用，不联网、不关闭。
 
-**不要把 API 进程的客户端带进 Worker**：Worker 是另一个进程，注册表在本进程内是空的，
-任务体在自己的 loop 里建、也在自己的 loop 里关。
+**不要把 API 进程的客户端带进 Worker**：Worker 是另一个进程，这个槽在本进程内是空的，
+任务体在自己的（常驻）循环里建、在 Worker 退出时关。
 """
 
 from __future__ import annotations
 
 import asyncio
-import weakref
 from typing import Any
 
 import httpx
@@ -55,7 +62,7 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
-#: 模型类流量共用的连接池参数（这一票的规格，写在一处）。100 条上限远大于一次请求里
+#: 模型类流量共用的连接池参数（第 10 步的规格，写在一处）。100 条上限远大于一次请求里
 #: 可能并发的端点数；20 条 keepalive 足够覆盖「改写 → 重排 → 下一次检索」的间隔。
 MODEL_TRAFFIC_LIMITS = httpx.Limits(
     max_connections=100,
@@ -67,32 +74,43 @@ MODEL_TRAFFIC_LIMITS = httpx.Limits(
 #: 不落到 httpx 那个 5 秒默认值上。
 DEFAULT_TIMEOUT_SECONDS = 60.0
 
-#: 一个 loop 一个异步客户端。弱引用键：loop 被回收后条目自动消失。
-_CLIENTS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, httpx.AsyncClient] = (
-    weakref.WeakKeyDictionary()
-)
+#: 本进程的异步客户端，以及它属于哪个循环（跨循环复用会当场炸，见模块文档）。
+_CLIENT: httpx.AsyncClient | None = None
+_CLIENT_LOOP: asyncio.AbstractEventLoop | None = None
 
 #: 进程级同步客户端（不绑事件循环，见模块文档「同步客户端为什么也在」）。
 _SYNC_CLIENT: httpx.Client | None = None
 
 
 def get_http_client() -> httpx.AsyncClient:
-    """取**当前正在运行的** loop 上的异步客户端；同一 loop 多次取得到同一实例。
+    """取本进程的异步客户端；同一循环里多次取得到同一实例。
 
-    没有运行中的 loop 时抛 ``RuntimeError``（``asyncio.get_running_loop`` 的原话）：
+    没有运行中的循环时抛 ``RuntimeError``（``asyncio.get_running_loop`` 的原话）：
     那说明调用点不在任何请求 / 任务里，此时发出去的连接池没人负责收尾。
     """
 
+    global _CLIENT, _CLIENT_LOOP
+
     loop = asyncio.get_running_loop()
-    client = _CLIENTS.get(loop)
-    if client is None:
-        client = _build_async_client()
-        _CLIENTS[loop] = client
-        # 一条 debug：**建了几个客户端**是「连接到底复用没复用」唯一可观察的事实。
-        # 验收时数它：修好之后应当是「主循环 1 个 + 池里每个 worker 1 个」，
-        # 而不是「每请求 1 个」。
-        logger.debug("http_client_created", loop=id(loop))
-    return client
+    client = _CLIENT
+    if client is not None and _CLIENT_LOOP is loop and not client.is_closed:
+        return client
+
+    if client is not None:
+        # 生产里不会走到：一个进程一个循环。走到这里说明是测试换了一个循环，或者某个
+        # 脚本 / 异常退出把上一个循环的客户端留在了槽里。旧的那个已经没人能 await 它
+        # 的 aclose（循环关了），只能丢掉——这里留一条 warning 让「谁没关」可查。
+        logger.warning(
+            "rebuilding http client for a new event loop; the previous one was not closed here",
+            previous_loop_closed=bool(_CLIENT_LOOP is not None and _CLIENT_LOOP.is_closed()),
+        )
+
+    _CLIENT = _build_async_client()
+    _CLIENT_LOOP = loop
+    # 一条 debug：**建了几个客户端**是「连接到底复用没复用」唯一可观察的事实。
+    # 验收时数它：修好之后应当是一个进程一个，而不是每请求一个。
+    logger.debug("http_client_created", loop=id(loop))
+    return _CLIENT
 
 
 def get_sync_http_client() -> httpx.Client:
@@ -116,7 +134,7 @@ def model_traffic_client_options() -> dict[str, Any]:
     （``langchain_anthropic`` / ``langchain_google_genai`` 的模型字段里没有这两个名字），
     传进去会直接构造失败。调用点按供应商判断后再合并这组参数。
 
-    没有运行中的 loop 时（同步装配、排障、单测）只给同步那一个：异步侧交给框架自己，
+    没有运行中的循环时（同步装配、排障、单测）只给同步那一个：异步侧交给框架自己，
     那种对象本来也不承载请求。
     """
 
@@ -129,7 +147,7 @@ def model_traffic_client_options() -> dict[str, Any]:
 
 
 def _build_async_client() -> httpx.AsyncClient:
-    """造一个绑定当前 loop 的客户端（注册表的唯一构造点）。"""
+    """造一个绑定当前循环的客户端（唯一的构造点）。"""
 
     return httpx.AsyncClient(
         limits=MODEL_TRAFFIC_LIMITS,
@@ -137,91 +155,30 @@ def _build_async_client() -> httpx.AsyncClient:
     )
 
 
-async def aclose_current_loop_clients() -> None:
-    """关掉**当前 loop** 名下的客户端并把它从注册表摘掉；没有就是安静的 no-op。
+async def aclose_http_client() -> None:
+    """关掉本进程那一个异步客户端与进程级同步客户端；幂等，没有就是安静的 no-op。
 
-    幂等：lifespan 退出与进程收尾各调一次也不会双重关闭（第二次表里已经没有了）。
+    API 的 lifespan 与 ``WorkerLoop.shutdown`` 各调一次：前者在请求都停了之后，
+    后者在常驻循环**还活着**的时候（连接池必须在这个循环上关闭）。
     """
 
-    loop = asyncio.get_running_loop()
-    client = _CLIENTS.pop(loop, None)
+    global _CLIENT, _CLIENT_LOOP
+
+    client = _CLIENT
+    _CLIENT = None
+    _CLIENT_LOOP = None
     if client is not None:
-        await _aclose_quietly(client, loop=loop)
-
-
-async def aclose_all_clients() -> None:
-    """尽力关掉注册表里**每一个** loop 的客户端（进程收尾 / 测试）。
-
-    关不掉的（loop 已经关闭）只记 warning：进程收尾的唯一职责是「把还能关的关掉」，
-    因为一个已经死掉的 loop 抛出来而中断，等于放弃剩下那些还活着的客户端。
-    """
-
-    current = asyncio.get_running_loop()
-    for loop, client in list(_CLIENTS.items()):
-        _CLIENTS.pop(loop, None)
-        if loop is current:
-            await _aclose_quietly(client, loop=loop)
-        elif loop.is_closed():
-            logger.warning(
-                "cannot close http client of a closed event loop",
-                loop_closed=True,
-            )
-        elif loop.is_running():
-            # 另一个线程里跑着的 loop：把关闭动作投过去再等结果。
-            await _aclose_from_another_loop(loop, client)
-        else:
-            await _aclose_through_idle_loop(loop, client)
-
+        await _aclose_quietly(client)
     _close_sync_client()
 
 
-async def _aclose_quietly(client: Any, *, loop: asyncio.AbstractEventLoop | None = None) -> None:
+async def _aclose_quietly(client: Any) -> None:
     """关一个客户端；失败只记 warning——收尾阶段抛异常会盖掉真正的退出原因。"""
 
     try:
         await client.aclose()
     except Exception as exc:  # noqa: BLE001 - 收尾不许抛
-        logger.warning(
-            "failed to close http client",
-            error=type(exc).__name__,
-            loop_closed=bool(loop is not None and loop.is_closed()),
-        )
-
-
-async def _aclose_from_another_loop(loop: asyncio.AbstractEventLoop, client: Any) -> None:
-    """把 ``aclose()`` 投到另一个正在运行的 loop 上执行，等它完成（有界等待）。"""
-
-    try:
-        future = asyncio.run_coroutine_threadsafe(_aclose_quietly(client, loop=loop), loop)
-        await asyncio.wait_for(asyncio.wrap_future(future), timeout=5.0)
-    except Exception as exc:  # noqa: BLE001 - 收尾不许抛
-        logger.warning(
-            "failed to close http client on a foreign running loop",
-            error=type(exc).__name__,
-        )
-
-
-async def _aclose_through_idle_loop(loop: asyncio.AbstractEventLoop, client: Any) -> None:
-    """在一个**空闲** loop 上跑一次 ``aclose()``。
-
-    必须丢到线程里跑：当前线程已经有一个 loop 在跑，而同线程的 ``run_until_complete``
-    会以「Cannot run the event loop while another loop is running」失败。协程也在那个
-    线程里现造，这样即使 ``run_until_complete`` 立刻失败也不会留下「从未 await 的协程」。
-    """
-
-    def _close() -> None:
-        async def _run() -> None:
-            await _aclose_quietly(client, loop=loop)
-
-        loop.run_until_complete(_run())
-
-    try:
-        await asyncio.to_thread(_close)
-    except Exception as exc:  # noqa: BLE001 - 收尾不许抛
-        logger.warning(
-            "failed to close http client through its idle event loop",
-            error=type(exc).__name__,
-        )
+        logger.warning("failed to close http client", error=type(exc).__name__)
 
 
 def _close_sync_client() -> None:
@@ -241,22 +198,24 @@ def _close_sync_client() -> None:
 
 
 def reset_http_clients() -> None:
-    """清空注册表（**只给测试用**），不联网、不尝试关闭异步客户端。
+    """丢掉那一槽（**只给测试用**），不联网、不尝试关闭异步客户端。
 
-    异步客户端没法在同步函数里 await；测试的每个用例都有自己的 loop，条目会随 loop
-    一起被回收。同步客户端是进程级的、关闭也不需要 await，这里顺手关掉，避免它在
-    用例之间把连接留着。
+    异步客户端没法在同步函数里 await；测试的每个用例都有自己的循环，槽里的旧客户端会
+    随那个循环一起被丢掉（``get_http_client`` 在循环变化时会重建）。同步客户端是进程级的、
+    关闭也不需要 await，这里顺手关掉，避免它在用例之间把连接留着。
     """
 
-    _CLIENTS.clear()
+    global _CLIENT, _CLIENT_LOOP
+
+    _CLIENT = None
+    _CLIENT_LOOP = None
     _close_sync_client()
 
 
 __all__ = [
     "DEFAULT_TIMEOUT_SECONDS",
     "MODEL_TRAFFIC_LIMITS",
-    "aclose_all_clients",
-    "aclose_current_loop_clients",
+    "aclose_http_client",
     "get_http_client",
     "get_sync_http_client",
     "model_traffic_client_options",

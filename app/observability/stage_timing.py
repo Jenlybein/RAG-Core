@@ -16,7 +16,6 @@
 
 from __future__ import annotations
 
-import threading
 import time
 from collections.abc import Iterable, Iterator
 from contextlib import contextmanager
@@ -64,15 +63,19 @@ class StageSpan:
 class StageTimer:
     """一次检索的六段计时；由组合根创建、显式传给每一层。
 
-    **第 11 步票 #127 起六段都记在同一个事件循环上**：向量分支不再进检索执行池
-    （``app.core/loop_pool.py`` 已删除），所以「两路并行」不再意味着「两个线程写同一个
-    收集器」。那把锁留着只是防御——``record`` 也可能被评测脚本或未来的旁路从别的执行
-    上下文调到，而多一把锁的代价是零。**不要**据此以为这里还允许跨线程写。
+    **没有锁**（第 11 步票 #134 删掉的那把）：第 10 步的向量分支跑在检索执行池的常驻
+    线程里，于是两路召回的 ``record`` 来自两个线程，收集器必须自己加锁。第 11 步之后
+    六段全部记在**同一个事件循环**上（执行池已在票 #127 删除，见 ADR-0022 修订与
+    ADR-0024），``record`` 之间不存在抢占——同一循环上的协程在两次 ``await`` 之间不会
+    被打断，而 ``record`` 里没有 ``await``。
+
+    这条纪律是结构性的：**不要**把 ``record`` 挪到线程或进程池里调。真需要跨线程写时，
+    该先回来读 ADR-0024 的翻案条件，而不是加回一把锁——加了锁也只是让它「不丢行」，
+    「顺序」与「同一份 span 归属」仍然要另外证。
     """
 
     def __init__(self) -> None:
         self._spans: list[StageSpan] = []
-        self._lock = threading.Lock()
 
     @contextmanager
     def measure(self, name: str) -> Iterator[None]:
@@ -91,15 +94,12 @@ class StageTimer:
     def record(self, name: str, duration_ms: float) -> None:
         """直接记一段耗时（已经量好的那些段用它，例如重排的自带 ``duration_ms``）。"""
 
-        with self._lock:
-            self._spans.append(StageSpan(name=name, duration_ms=round(duration_ms, 3)))
+        self._spans.append(StageSpan(name=name, duration_ms=round(duration_ms, 3)))
 
     def spans(self) -> tuple[StageSpan, ...]:
         """按链路顺序交出已记录的段：**没发生的段不会出现在这里**，也不补 0。"""
 
-        with self._lock:
-            collected = list(self._spans)
-        return order_spans(collected)
+        return order_spans(list(self._spans))
 
 
 def order_spans(spans: Iterable[StageSpan]) -> tuple[StageSpan, ...]:

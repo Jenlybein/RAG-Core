@@ -67,7 +67,7 @@ from app.api.routes.console_observability import (
     router as console_observability_router,
 )
 from app.core.config import settings
-from app.core.http_clients import aclose_current_loop_clients
+from app.core.http_clients import aclose_http_client
 from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
 from app.db.async_session import AsyncSessionLocal
@@ -129,7 +129,7 @@ async def app_lifespan(app: FastAPI):
     finally:
         # 关**当前 loop** 名下的客户端：API 进程的主循环是这一个，别的进程（Worker）
         # 有自己的一套，绝不能把这里的客户端带过去。
-        await aclose_current_loop_clients()
+        await aclose_http_client()
 
 
 if settings.ENABLE_MCP:

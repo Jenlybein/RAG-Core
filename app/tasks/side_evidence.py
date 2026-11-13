@@ -21,7 +21,7 @@ from typing import Any
 import structlog
 
 from app.celery_app import celery_app
-from app.core.http_clients import aclose_current_loop_clients
+from app.core.http_clients import aclose_http_client
 from app.services.eval_manifest import REPO_ROOT
 
 logger = structlog.get_logger(__name__)
@@ -53,7 +53,7 @@ async def _run_in_its_own_loop(
             cases=cases, out_dir=out_dir, run_id=run_id, limit=limit, tenant_id=tenant_id
         )
     finally:
-        await aclose_current_loop_clients()
+        await aclose_http_client()
 
 
 @celery_app.task(bind=True, max_retries=0)

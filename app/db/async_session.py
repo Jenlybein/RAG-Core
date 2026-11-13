@@ -54,9 +54,11 @@ SQL 一字不改。换 asyncpg 只需要改 dialect 与 URL、业务代码零改
 * 服务层继续不提交——**不允许**在服务层出现提交调用，异步化不等于把提交散出去；
   结构守卫扫的是全仓的提交与回滚调用，异步写法（前面多个 ``await``）一样会被它抓到。
 
-**请求级依赖 :func:`get_async_transaction`**（票 #132 加的）：形状与同步版
-``get_transaction`` 逐条同构——写接口在签名上声明它，一个请求恰好一笔，成功出块提交、
-异常回滚。控制面的每一条写入口（票 #130）都用它，数据面上传也一样。
+**请求级依赖 :func:`get_async_transaction`**（票 #132 加的）：形状与 ``app.db.transaction``
+里那个同步孪生逐条同构——写接口在签名上声明它，一个请求恰好一笔，成功出块提交、异常回滚。
+控制面的每一条写入口（票 #130）都用它，数据面上传也一样。**它是请求路径上唯一的事务入口**：
+同步的 ``get_transaction`` 已经删除（票 #134），同步的 ``transaction()`` 只服务运维脚本与旁路
+短事务（见 ADR-0024 决策四）。
 
 :func:`get_async_db` 本身只负责 yield 与关闭，所以「新栈上有人偷偷提交」在结构上不可能
 发生——提交只能经过上面那两个入口。
@@ -112,7 +114,7 @@ AsyncSessionLocal: async_sessionmaker[AsyncSession] = async_sessionmaker(
 async def get_async_db() -> AsyncGenerator[AsyncSession, None]:
     """FastAPI 依赖：yield 一个 ``AsyncSession``，请求结束后关闭（含异常路径）。
 
-    与同步版 :func:`app.db.session.get_db` 同形：不提交、不回滚，只负责生命周期——
+    与 :func:`app.db.async_session.get_async_transaction` 分工明确：不提交、不回滚，只负责生命周期——
     提交点是 ``app.db.transaction``（异步版见模块文档）。
     """
 
@@ -128,7 +130,7 @@ async def get_async_transaction(
 ) -> AsyncGenerator[AsyncTransaction, None]:
     """FastAPI 依赖：把这次请求圈进**一笔**异步事务（异步写接口专用）。
 
-    与同步版 :func:`app.db.session.get_transaction` 逐条同构：出块提交（并执行
+    与 ``app.db.transaction`` 的同步孪生逐条同构：出块提交（并执行
     ``after_commit`` 登记的动作），端点抛异常时整笔回滚后再把异常原样抛回去——错误码与
     响应形状仍由异常处理器决定，与事务无关。FastAPI 会缓存同一请求内的依赖结果，所以
     同一请求里多处声明它仍然只有一笔。

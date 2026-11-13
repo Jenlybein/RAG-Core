@@ -79,23 +79,27 @@ class RagasJudge:
 ARK_DEFAULT_BASE_URL = "https://ark.cn-beijing.volces.com/api/v3"
 
 
-def build_judge() -> RagasJudge:
-    """按运行时同一套配置装配裁判：库里的模型配置优先，``.env`` 兜底。"""
+async def build_judge() -> RagasJudge:
+    """按运行时同一套配置装配裁判：库里的模型配置优先，``.env`` 兜底。
+
+    **异步**（第 11 步票 #134）：调用点 ``run_once`` 本来就在事件循环里，读模型配置因此
+    走异步会话——同步会话在这里会让整轮跑批多一次「在读库时卡住唯一循环」的窗口。
+    """
 
     from openai import AsyncOpenAI
     from ragas.llms import llm_factory
     from ragas.metrics.collections import ContextPrecisionWithReference, ContextRecall
 
     from app.core.config import settings
-    from app.db.session import SessionLocal
+    from app.db.async_session import AsyncSessionLocal
     from app.repositories import model_config_repository
 
     base_url = api_key = model = None
     try:
-        with SessionLocal() as db:
+        async with AsyncSessionLocal() as db:
             # 走仓储而不是自己拼 SQL：``model_config_repository`` 自称「唯一能碰
             # ``model_configs`` 的一层」，绕过去就没人再守那条约定了。
-            rows = model_config_repository.list_all(db)
+            rows = await model_config_repository.list_all_async(db)
         if rows:
             first = rows[0]
             base_url, model, api_key = first.base_url, first.model, first.api_key
@@ -184,7 +188,7 @@ async def run_once(
 
     return await run_side_evidence(
         cases=cases,
-        judge=build_judge(),
+        judge=await build_judge(),
         retrieve=build_retriever(),
         out_dir=out_dir,
         run_id=run_id,

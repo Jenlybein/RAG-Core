@@ -3,15 +3,17 @@
 全仓只有这一个模块允许调 ``session.commit()`` / ``session.rollback()``
 （见 ``tests/test_transaction.py`` 的结构守卫）。别处的写法只有两种：
 
-* **请求边界**：写接口在路由签名上声明 ``Depends(get_transaction)``
-  （``app.db.session.get_transaction``）。一个请求恰好开一笔，成功出块提交、异常回滚，
+* **请求边界**：写接口在路由签名上声明 ``Depends(get_async_transaction)``
+  （``app.db.async_session.get_async_transaction``）。一个请求恰好开一笔，成功出块提交、异常回滚，
   审计行与业务写入因此**要么都有、要么都没有**——不需要谁记得「先写业务再写审计」。
 * **非请求边界**（Celery 任务、运维脚本、旁路短事务）：自己 ``with transaction(session):``
   圈住那一段。一个动作一笔事务，同样不许裸 ``commit``。
 
-**为什么提交点必须集中**：下一票要把同步会话换成异步会话。``session.commit()`` 在异步
-栈上是 ``await session.commit()``——散在三十处的提交点会变成三十处 ``async`` 传染，
-而集中在一个模块时，改的是这一个文件。这不是洁癖，是「换栈」这件事的成本边界。
+**为什么提交点必须集中**：第 11 步把请求路径从同步会话换成了异步会话——``session.commit()``
+在这条路径上变成了 ``await session.commit()``。如果提交点散在三十处，换栈就是三十处
+``async`` 传染；集中在这一个模块时，改的只是这个文件的孪生类（:class:`AsyncTransaction`）。
+这不是洁癖，是「换栈」这件事的成本边界。同步的 :func:`transaction` 保留下来服务**不在请求
+路径上**的两类调用者：运维脚本与旁路短事务（ADR-0024 决策四）。
 
 **为什么服务层不再各自提交**：一次请求里改了三项，第三项失败时，前两项必须跟着消失。
 提交散在服务层时，每个服务只能保证「自己那一小段」，跨服务的原子性没人负责；收口到
@@ -57,7 +59,7 @@ AfterCommit = Callable[[], Any]
 class NoTransactionError(RuntimeError):
     """在没有任何事务入口的会话上登记「提交后动作」。
 
-    这是**编程错误**，不是运行期故障：写路径忘了在路由上声明 ``Depends(get_transaction)``，
+    这是**编程错误**，不是运行期故障：写路径忘了在路由上声明 ``Depends(get_async_transaction)``，
     或者服务被一个不认识的调用方直接调用了。静默降级成「立即执行」会让「先提交再投递」
     这条纪律悄悄失效，而症状要等到某次 Worker 读不到行才出现。
     """
@@ -261,13 +263,13 @@ def after_commit(session: Session | AsyncSession, action: AfterCommit) -> None:
     """把 ``action`` 登记到**当前这一笔**的提交之后。
 
     没有当前事务时抛 :class:`NoTransactionError`：那条写路径缺了事务边界，先补边界
-    （路由加 ``Depends(get_transaction)``，或脚本里 ``with transaction(db):``）。
+    （路由加 ``Depends(get_async_transaction)``，或脚本里 ``with transaction(db):``）。
     """
 
     opened = current(session)
     if opened is None:
         raise NoTransactionError(
-            "after_commit 只能在事务入口里登记：路由声明 Depends(get_transaction)，"
+            "after_commit 只能在事务入口里登记：路由声明 Depends(get_async_transaction)，"
             "或脚本/任务用 with transaction(db) 圈住这段写路径"
         )
     opened.after_commit(action)

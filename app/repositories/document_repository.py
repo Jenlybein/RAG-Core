@@ -40,12 +40,6 @@ from app.utils.status import DocumentStatus
 DOCUMENT_LEASE_SECONDS = 600
 
 
-def create(db: Session, doc: Document) -> Document:
-    db.add(doc)
-    db.flush()
-    return doc
-
-
 def get_by_id(db: Session, document_id: str) -> Document | None:
     """按主键取，**不带租户过滤**：只给 Worker 任务用。
 
@@ -143,20 +137,6 @@ def list_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> list[Document]:
     return list(db.execute(stmt).scalars().all())
 
 
-def count_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> int:
-    """该租户在该知识库下的文档总数（静态配额「单库文档数」的唯一计数处，票 #79）。
-
-    只数不取行：调用方（``app.services.static_quota``）要的只是一个数字，而一个库
-    装到上限时那个数字是 5000 ——把整批行读出来再 ``len()`` 是白白的 IO。
-
-    数的是**全部状态**（成功 / 失败 / 处理中都算）：配额算的是「这个库存了多少份资料」，
-    失败的行也占着存储与用户的认知，把它排除掉就等于「失败可以无限重传」。
-    """
-
-    stmt = _count_by_kb_statement(kb_id, tenant_id=tenant_id)
-    return int(db.execute(stmt).scalar_one())
-
-
 def _count_by_kb_statement(kb_id: str, *, tenant_id: str):
     """「这个库有多少份文档」的那一条计数（同步与异步孪生共用）。"""
 
@@ -165,25 +145,6 @@ def _count_by_kb_statement(kb_id: str, *, tenant_id: str):
         .select_from(Document)
         .where(Document.kb_id == kb_id, Document.tenant_id == tenant_id)
     )
-
-
-def count_processing_for_tenant(
-    db: Session, *, tenant_id: str, lease_seconds: int = DOCUMENT_LEASE_SECONDS
-) -> int:
-    """本租户**真的在占用 Worker** 的文档数（静态配额「并发处理数」，票 #79）。
-
-    口径与 :func:`list_stuck` 的补集一致：``status=PROCESSING`` 且
-    ``index_claimed_at IS NULL``（已入队、Worker 还没开工）或 ``index_claimed_at`` 仍在
-    租约内（正在跑）。超出租约的那批按 Worker 卡死处理，**不占名额**——它们不占任何
-    Worker，数进去等于一次崩溃永久吃掉一个名额，而租户只会看到「上传被拒」却查不到
-    任何在处理中的文档。
-
-    只在写路径上调用：拒绝一份上传之前数一次，不是热路径。
-    """
-
-    lease_before = now() - timedelta(seconds=lease_seconds)
-    stmt = _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
-    return int(db.execute(stmt).scalar_one())
 
 
 def _count_processing_statement(*, tenant_id: str, lease_before: datetime):
@@ -201,12 +162,6 @@ def _count_processing_statement(*, tenant_id: str, lease_before: datetime):
             ),
         )
     )
-
-
-def update_status(db: Session, doc: Document, status: int, error_message: str | None = None) -> None:
-    doc.status = status
-    doc.error_message = error_message
-    db.flush()
 
 
 def _claimable_conditions(
@@ -482,7 +437,7 @@ async def release_index_claim_async(
 
 
 async def count_by_kb_async(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
-    """该租户在该知识库下的文档总数（语义同 :func:`count_by_kb`）。"""
+    """该租户在该知识库下的文档总数（静态配额「单库文档数」的唯一计数处，票 #79）。"""
 
     result = await db.execute(_count_by_kb_statement(kb_id, tenant_id=tenant_id))
     return int(result.scalar_one())

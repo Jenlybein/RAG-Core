@@ -91,9 +91,6 @@ def client(offline_embedding):
     """离线 ASGI 客户端：替换数据库依赖与 embedding 工厂，其余走真实应用与处理器。"""
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
-    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     # 数据面上传从票 #132 起走异步会话：两条依赖都要挡，否则这条用例会去连本机
     # PostgreSQL——而它要断言的只是「不存在的知识库返回哪个码」。
     async_session = importlib.import_module("app.db.async_session")

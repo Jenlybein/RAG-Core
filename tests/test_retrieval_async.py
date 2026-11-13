@@ -416,7 +416,7 @@ def test_the_fixed_size_retrieval_pool_is_gone() -> None:
 def test_the_per_loop_client_registry_stays_for_celery() -> None:
     """按事件循环注册的 HTTP 客户端**保留**：Celery 每个任务自带循环，仍要靠它复用连接。"""
 
-    from app.core.http_clients import aclose_current_loop_clients, get_http_client
+    from app.core.http_clients import aclose_http_client, get_http_client
 
     assert callable(get_http_client)
-    assert callable(aclose_current_loop_clients)
+    assert callable(aclose_http_client)

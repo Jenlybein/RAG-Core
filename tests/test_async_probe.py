@@ -1,13 +1,16 @@
-"""票 #126：最小 ASGI 探针——异步依赖真的在跑，且新旧两栈返回同一份响应。
+"""异步请求级依赖的最小 ASGI 探针：它真的在跑，收尾真的执行。
 
-探针**只挂在测试里**：一个临时 ``FastAPI`` 应用上两条并排的路由，一条走 ``get_db``
-（同步），一条走 ``get_async_db``（异步），对**同一个查询**返回同一个响应体。不新增生产
-端点，也不改任何现有路由——改路由是 #127 之后的事。
+票 #126 写下这份探针时是**两栈并排**：同一条路由分别挂 ``get_db``（同步）与
+``get_async_db``（异步），断言两个响应、两组 SQL、两边的关闭都一样。那个形状在第 11 步
+票 #134 之后不可复现——同步依赖 ``get_db`` 连同同步引擎一起删了（ADR-0024）。删掉的是
+**对照的那一半**，留下的是这一半：
 
-为什么值得有这么一条探针：异步依赖写错时的症状是**沉默的**。生成器写成普通函数、
-``yield`` 前面忘了 ``async``、``finally`` 里漏了 ``await``——都不会报语法错，只会让某段
-收尾悄悄不执行。所以这里断言的是三件事一起成立：响应一致（查询真的跑过）、两边记下的
-SQL 一致（跑的是同一个查询）、会话被关（收尾真的执行）。
+* 请求级而不是进程级：两个请求 = 两个会话，各自关闭；
+* 失败路径也关：路由抛错时会话照样在 ``finally`` 里 close。
+
+为什么值得有这条探针：异步依赖写错时的症状是**沉默的**。生成器写成普通函数、``yield``
+前面忘了 ``async``、``finally`` 里漏了 ``await``——都不会报语法错，只会让某段收尾悄悄
+不执行。所以这里断言的是「收尾真的执行」，而不是「跑通了」。
 """
 
 from __future__ import annotations
@@ -16,24 +19,15 @@ from fastapi import Depends, FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.db.async_session import get_async_db
-from app.db.session import get_db
-from tests.fake_db import AsyncRecordingSession, RecordingSession
+from tests.fake_db import AsyncRecordingSession
 
 _QUERY = text("SELECT id FROM knowledge_base WHERE tenant_id = :tid")
 
 
 def _build_probe() -> FastAPI:
-    """两条并排的探针路由：同一条 SQL、同一种响应形状，只有会话的栈不同。"""
-
     app = FastAPI()
-
-    @app.get("/probe/sync")
-    def sync_probe(db: Session = Depends(get_db)) -> dict[str, list[str]]:
-        rows = db.execute(_QUERY, {"tid": "t-1"}).scalars().all()
-        return {"ids": list(rows)}
 
     @app.get("/probe/async")
     async def async_probe(db: AsyncSession = Depends(get_async_db)) -> dict[str, list[str]]:
@@ -43,25 +37,19 @@ def _build_probe() -> FastAPI:
     return app
 
 
-def test_the_async_probe_returns_what_the_sync_one_returns(monkeypatch) -> None:
-    sync_session = RecordingSession(tenant_ids=["kb-1", "kb-2"])
+def test_the_probe_answers_with_what_the_session_returned(monkeypatch) -> None:
+    """会话替身返回什么，响应就是什么——证明那次查询真的发到了会话上。"""
+
     async_session = AsyncRecordingSession(tenant_ids=["kb-1", "kb-2"])
-    monkeypatch.setattr("app.db.session.SessionLocal", lambda: sync_session)
     monkeypatch.setattr("app.db.async_session.AsyncSessionLocal", lambda: async_session)
 
     with TestClient(_build_probe()) as client:
-        sync_response = client.get("/probe/sync")
-        async_response = client.get("/probe/async")
+        response = client.get("/probe/async")
 
-    assert sync_response.status_code == 200
-    assert async_response.status_code == 200
-    assert async_response.json() == sync_response.json() == {"ids": ["kb-1", "kb-2"]}
-
-    # 同一个查询：两边记下的 SQL 逐字相同，不只是「响应碰巧一样」。
-    assert async_session.statements == sync_session.statements
-
-    # 请求级依赖的收尾：两个栈都在请求结束后关会话。
-    assert sync_session.closed is True
+    assert response.status_code == 200
+    assert response.json() == {"ids": ["kb-1", "kb-2"]}
+    # 发出去的是调用点写的那条 SQL，而不是别的东西碰巧凑出了同一个响应。
+    assert async_session.statements == [str(_QUERY)]
     assert async_session.closed is True
 
 

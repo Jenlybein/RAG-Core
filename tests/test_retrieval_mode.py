@@ -29,7 +29,6 @@ from app.services.result_collapse import OVERFETCH_FACTOR
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.services.retrieval_options import RetrievalOptions
-from tests import fake_db
 from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
@@ -143,7 +142,6 @@ def offline_retrieval(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any
     """离线 ASGI 客户端 + 三个工厂替身；返回可断言的替身本体。"""
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
     async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
@@ -160,13 +158,11 @@ def offline_retrieval(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
     # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
     main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
         AsyncSessionAdapter(EmptySession())
     )
 
-    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app) as client:

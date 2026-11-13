@@ -7,7 +7,7 @@
 ``worker_process_shutdown`` 里做，**不在任务里做**。
 
 **任务体里不许再关 HTTP 客户端。** 改造前 ``_index_in_its_own_loop`` 在 ``finally`` 里
-``await aclose_current_loop_clients()``——那是为「每任务一个循环」写的。循环一旦常驻，
+``await aclose_http_client()``——那是为「每任务一个循环」写的。循环一旦常驻，
 那句话等于**每个任务都把共享客户端关掉**，复用立刻归零，而症状是「每任务重新握手」
 这种没人会当故障的现象（ADR-0023「决策一 · 代价」）。同理，``finally`` 里关**会话**
 不能省：被放弃的 checked-out 连接连 ``dispose`` 都救不回来（会停在

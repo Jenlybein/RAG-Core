@@ -305,7 +305,7 @@ def test_the_llm_provider_uses_the_current_loops_clients(llm_env: pytest.MonkeyP
             assert model.http_async_client is http_clients.get_http_client()
             assert model.http_client is http_clients.get_sync_http_client()
         finally:
-            await http_clients.aclose_current_loop_clients()
+            await http_clients.aclose_http_client()
 
     asyncio.run(_run())
 
@@ -324,7 +324,7 @@ def test_the_embedding_provider_uses_the_current_loops_clients(
             assert embeddings.http_async_client is http_clients.get_http_client()
             assert embeddings.http_client is http_clients.get_sync_http_client()
         finally:
-            await http_clients.aclose_current_loop_clients()
+            await http_clients.aclose_http_client()
 
     asyncio.run(_run())
 
@@ -362,7 +362,7 @@ def test_the_rerank_provider_posts_through_the_registry_client(
             assert [row["chunk_id"] for row in rows] == ["c1"]
             assert client.is_closed is False, "注册表的客户端归 loop 收尾，Provider 不许关它"
         finally:
-            await http_clients.aclose_current_loop_clients()
+            await http_clients.aclose_http_client()
 
     asyncio.run(_run())
 

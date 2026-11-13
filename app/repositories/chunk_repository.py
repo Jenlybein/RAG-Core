@@ -169,11 +169,6 @@ async def fetch_unit_rows_async(
     return _group_unit_rows(list((await db.execute(stmt)).all()))
 
 
-def count_by_kb(db: Session, kb_id: str) -> int:
-    stmt = select(func.count()).select_from(Chunk).where(Chunk.kb_id == kb_id)
-    return int(db.execute(stmt).scalar_one())
-
-
 def _count_by_kb_ids_statement(
     *, tenant_id: str, kb_ids: list[str], index_version: str | None
 ) -> Select[tuple[int]]:

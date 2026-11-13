@@ -79,22 +79,33 @@ def _session_dependencies(path: str) -> set[Any]:
     """这条路径的依赖树里出现的「取会话」入口。"""
 
     from app.db.async_session import get_async_db
-    from app.db.session import get_db
 
     route = _routes()[("GET", path)]
     calls = _dependant_calls(route.dependant)
-    return {entry for entry in calls if entry in (get_async_db, get_db)}
+    return {entry for entry in calls if entry is get_async_db}
+
+
+def test_the_sync_session_dependencies_are_gone() -> None:
+    """**票 #134 起这条守卫从「没被用到」升级为「不存在」**（ADR-0024）。
+
+    ``get_db`` / ``get_transaction`` 连同同步引擎一起删了。留着「它们没被依赖树用到」
+    这种断言，等于允许有人把其中一个再加回模块里而没人发现——那时它仍然「没被用到」，
+    守卫照样绿。所以这里直接断言那两名字不在模块上。
+    """
+
+    import app.db.session as sync_session
+
+    assert not hasattr(sync_session, "get_db")
+    assert not hasattr(sync_session, "get_transaction")
 
 
 @pytest.mark.parametrize("path", READ_PATHS)
 def test_every_console_read_takes_its_session_from_the_async_stack(path: str) -> None:
     from app.db.async_session import get_async_db
-    from app.db.session import get_db
 
     dependencies = _session_dependencies(path)
 
     assert get_async_db in dependencies, f"{path} 还没换到异步会话"
-    assert get_db not in dependencies, f"{path} 仍然从同步栈取会话（一张请求两条连接）"
 
 
 @pytest.mark.parametrize(("method", "path"), WRITE_PATHS)
@@ -106,13 +117,11 @@ def test_console_writes_are_on_the_async_stack_too(method: str, path: str) -> No
     """
 
     from app.db.async_session import get_async_db
-    from app.db.session import get_db
 
     route = _routes()[(method, path)]
     calls = _dependant_calls(route.dependant)
 
     assert get_async_db in calls, f"{method} {path} 还在从同步栈取会话"
-    assert get_db not in calls, f"{method} {path} 退回同步会话了（一次请求两条连接）"
 
 
 # ───────────────────────────────────────────────────────────── 套餐缓存改异步

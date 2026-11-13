@@ -76,11 +76,8 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     main = importlib.import_module("app.main")
     service = importlib.import_module("app.services.rag_service")
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _OfflineEmbeddingProvider())
-    session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
 
 
-    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
     from app.core.config import settings

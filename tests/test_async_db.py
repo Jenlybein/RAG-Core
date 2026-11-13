@@ -1,13 +1,13 @@
-"""票 #126：异步引擎、异步会话工厂与请求级依赖（``app.db.async_session``）。
+"""异步引擎、异步会话工厂与请求级依赖（``app.db.async_session``）。
 
-这一票是 expand：新旧并存，异步栈**还没有任何生产调用点**。所以这里断言的不是「哪条路由
-用上了它」，而是三件可以独立验证的事实：
+票 #126 写这份文件时是 expand（新旧并存），#134 之后异步栈已经是**唯一**的请求路径写法，
+所以这里断言的三件事仍然成立、且不再有对照物：
 
 1. **引擎复用现有连接串**：``.env`` 的键与格式不变，驱动仍是 psycopg3（不引入 asyncpg），
    于是类型映射与 SQL 一字不改；
 2. **连接池上限是显式的**：``pool_size=5`` / ``max_overflow=10`` / ``pool_pre_ping=True`` /
-   ``pool_recycle=1800``——双栈期的总连接数算式就建立在这四个数上（见 ``docs/架构.md``
-   「双栈期的数据库连接预算」）；
+   ``pool_recycle=1800``——每进程的总连接数算式就建立在这四个数上（见 ``docs/架构.md``
+   「数据库连接预算」）；
 3. **请求级依赖的收尾是确定的**：``get_async_db`` yield 一个会话，请求结束（含异常）一定
    关闭它，并且一个请求一个会话。
 
@@ -26,7 +26,12 @@ from tests.fake_db import AsyncRecordingSession
 
 
 def test_the_async_engine_reuses_the_configured_connection_string() -> None:
-    """``.env`` 的键与格式不变：同一个 URL，只是换成了异步引擎。"""
+    """``.env`` 的键与格式不变：同一个 URL，只是换成了异步引擎。
+
+    同步引擎（``app.db.session``）仍然在，但它已经不在请求路径上（只剩 Provider 装配期的
+    角色指针、配置热刷新与运维脚本，见 ADR-0024）；两者读的是同一个 ``DATABASE_URL``，
+    这条对等断言守的是「换引擎没换连接串」。
+    """
 
     from app.db.session import engine as sync_engine
 
