@@ -77,7 +77,9 @@ class _RecordingStore:
         self.deleted: list[tuple[str, str]] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append((document_id, tenant_id))
 
@@ -105,7 +107,9 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
             raise RuntimeError("elasticsearch unavailable")
         self.written.append(chunks)
 
-    async def delete_by_document_id(self, document_id: str, *, tenant_id: str, index_version: str | None = None) -> None:
+    async def delete_by_document_id(
+        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append("purge:keyword")
         self.deleted.append((document_id, tenant_id))
 

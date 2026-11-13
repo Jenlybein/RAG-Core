@@ -227,17 +227,16 @@ def test_delete_scoped_to_one_version_only_touches_that_physical_index() -> None
     client = _FakeClient()
 
     asyncio.run(
-        _provider(client).delete_by_document_id(
-            "doc-1", tenant_id=TENANT_ID, index_version="v2"
-        )
+        _provider(client).delete_by_document_id("doc-1", tenant_id=TENANT_ID, index_version="v2")
     )
 
     sent = client.delete_calls[0]
     assert sent["index"] == "rag_chunks__v2"
     assert sent["ignore_unavailable"] is False, "具体索引不存在会走 NotFoundError 分支"
-    assert sent["query"] == build_purge_query(
-        document_id="doc-1", tenant_id=TENANT_ID, index_version="v2"
-    )["query"]
+    assert (
+        sent["query"]
+        == build_purge_query(document_id="doc-1", tenant_id=TENANT_ID, index_version="v2")["query"]
+    )
 
 
 def test_add_chunks_writes_the_retrieval_text_under_chunk_id() -> None:

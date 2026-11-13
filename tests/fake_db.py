@@ -449,7 +449,9 @@ class RecordingSession(EmptySession):
         criterion = getattr(statement, "whereclause", None)
         if criterion is None:
             return len(rows)
-        return sum(1 for row in rows if getattr(row, criterion.left.key) == criterion.right.value)
+        # 计数语句的 ``WHERE`` 与 ``select(Model)`` 同形状（可 ``AND`` 组合的等值 / 范围
+        # 条件），于是复用同一份匹配逻辑：写两份的下场是计数与读行对同一条件给出不同答案。
+        return sum(1 for row in rows if _matches_where(row, criterion))
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)

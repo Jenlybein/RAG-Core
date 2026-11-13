@@ -20,12 +20,13 @@ from typing import Any
 
 import pytest
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk
 from app.models.document import Document
 from app.models.index_version import (
     INDEX_BUILD_ACTIVE,
     INDEX_BUILD_BUILDING,
     INDEX_BUILD_FAILED,
+    INDEX_BUILD_READY,
     IndexBuildVersion,
     resolve_index_versions,
 )
@@ -128,15 +129,49 @@ def _document(document_id: str, *, status: int = DocumentStatus.SUCCESS) -> Simp
 
 
 def _session(
-    *, kb: Any | None = None, documents: list[Any] | None = None, versions: list[Any] | None = None
+    *,
+    kb: Any | None = None,
+    documents: list[Any] | None = None,
+    versions: list[Any] | None = None,
+    chunks: list[Any] | None = None,
 ) -> AsyncRecordingSession:
     return AsyncRecordingSession(
         rows={
             KnowledgeBase: [kb] if kb is not None else [],
             Document: list(documents or []),
             IndexBuildVersion: list(versions or []),
+            Chunk: list(chunks or []),
         }
     )
+
+
+def _chunk(chunk_id: str, *, version: str = TARGET_VERSION) -> Any:
+    """一行切片（真 ORM 对象，不 flush）：给 ``ready`` 前的「切片数」读数用。"""
+
+    return Chunk(
+        id=chunk_id,
+        tenant_id=TENANT_ID,
+        kb_id=KB_ID,
+        document_id="doc-1",
+        content="正文",
+        embedding=[0.0] * 1536,
+        meta={},
+        index_version=version,
+    )
+
+
+class _RecordingVectorStore:
+    """向量存储替身：回答某一版本的向量条数（与切片数对齐，构建才能 ready）。"""
+
+    def __init__(self, *, vectors: int) -> None:
+        self.vectors = vectors
+        self.count_calls: list[str] = []
+
+    async def count_by_scope(
+        self, _db: Any, *, tenant_id: str, kb_id: str, index_version: str
+    ) -> int:
+        self.count_calls.append(index_version)
+        return self.vectors
 
 
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, document: Any) -> list[str]:
@@ -166,16 +201,20 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, document: Any) -> list[s
 
 def _pipeline(store: _RecordingStore) -> IndexingService:
     return IndexingService(
-        splitter=_StubSplitter([SplitPiece(text="退款到账时间", metadata={"heading_path": "退款"})]),
+        splitter=_StubSplitter(
+            [SplitPiece(text="退款到账时间", metadata={"heading_path": "退款"})]
+        ),
         embeddings=_StubEmbeddings(),
         stores=[store],
     )
 
 
-def _build_service(indexing: Any) -> IndexBuildService:
+def _build_service(indexing: Any, *, vectors: int = 0) -> IndexBuildService:
+    """构建服务：关键词能力缺席（这一维不参与计数），向量数由替身给定。"""
+
     return IndexBuildService(
         indexing=indexing,
-        vector_store=SimpleNamespace(),
+        vector_store=_RecordingVectorStore(vectors=vectors),
         keyword_search=SimpleNamespace(available=False),
     )
 
@@ -261,16 +300,18 @@ def test_the_build_rebuilds_every_success_document_into_the_target_version() -> 
             _document("doc-processing", status=DocumentStatus.PROCESSING),
         ],
         versions=[building],
+        # 两篇成功文档各产出 1 片：切片数与向量数必须对得上，构建才能 ready。
+        chunks=[_chunk("c1"), _chunk("c2")],
     )
 
-    asyncio.run(_build_service(indexing).build(session, "build-v2", tenant_id=TENANT_ID))
+    asyncio.run(_build_service(indexing, vectors=2).build(session, "build-v2", tenant_id=TENANT_ID))
 
     assert [call[0] for call in indexing.calls] == ["doc-ok-1", "doc-ok-2"]
     assert {call[1] for call in indexing.calls} == {TARGET_VERSION}, "不许写回线上那一版"
     assert all(call[2] is True for call in indexing.calls), (
         "重建的输入本来就是成功文档，必须允许抢占它们"
     )
-    assert building.status == INDEX_BUILD_BUILDING, "构建跑完只是「重建完成」，还没 ready"
+    assert building.status == INDEX_BUILD_READY, "构建跑完到 ready：上线是另一步（激活）"
 
 
 def test_a_build_that_fails_halfway_records_failed_and_leaves_the_live_version_alone() -> None:
@@ -327,9 +368,11 @@ def test_retrieval_still_resolves_the_old_version_after_a_build_ran() -> None:
         version=TARGET_VERSION,
         status=INDEX_BUILD_BUILDING,
     )
-    session = _session(kb=kb, documents=[_document("doc-1")], versions=[building])
+    session = _session(
+        kb=kb, documents=[_document("doc-1")], versions=[building], chunks=[_chunk("c1")]
+    )
 
-    asyncio.run(_build_service(indexing).build(session, "build-v2", tenant_id=TENANT_ID))
+    asyncio.run(_build_service(indexing, vectors=1).build(session, "build-v2", tenant_id=TENANT_ID))
 
     assert kb.active_index_version == LIVE_VERSION
     assert dict(resolve_index_versions([kb])) == {KB_ID: LIVE_VERSION}

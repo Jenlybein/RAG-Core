@@ -34,7 +34,7 @@ building ──▶ ready ──(单事务切换)──▶ active ──▶ archi
 
 from __future__ import annotations
 
-
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Final, Sequence
 
@@ -44,7 +44,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.db.base import now
-from app.db.transaction import async_commit_now, async_rollback_now
+from app.db.transaction import async_commit_now, async_rollback_now, async_transaction
 from app.models.index_version import (
     INDEX_BUILD_ACTIVE,
     INDEX_BUILD_ARCHIVED,
@@ -60,6 +60,7 @@ from app.providers.vectorstores.base import VectorStore
 from app.providers.vectorstores import get_vector_store
 from app.models.knowledge_base import KnowledgeBase
 from app.repositories import (
+    chunk_repository,
     document_repository,
     index_version_repository,
     knowledge_base_repository,
@@ -78,6 +79,10 @@ BUILD_ALREADY_RUNNING_MESSAGE: Final[str] = (
 )
 #: 状态迁移不合法（例如没 ready 就想 active）时的固定话术。
 BUILD_INVALID_TRANSITION_MESSAGE: Final[str] = "index build status transition is not allowed"
+#: 四项计数不相等时拒绝 ``ready`` 的话术（半成品不许上线）。
+BUILD_COUNTS_MISMATCH_MESSAGE: Final[str] = (
+    "index build counts do not match; refusing to mark it ready"
+)
 #: 一行 ``building`` 停留超过这个时长就当「有行、没任务」（运维可据此重跑或标失败）。
 BUILD_STALL_SECONDS: Final[int] = 60 * 60
 
@@ -111,6 +116,61 @@ class IndexBuildInvalidTransition(AppError):
         self.current = current
         self.target = target
         super().__init__(ErrorCode.SERVER_ERROR, BUILD_INVALID_TRANSITION_MESSAGE)
+
+
+@dataclass(frozen=True)
+class BuildCounts:
+    """四项计数的**读数快照**（ADR-0025 决策一：相等才允许 ``ready``）。
+
+    | 维度 | 从哪来 |
+    | --- | --- |
+    | ``knowledge_bases`` | 本次构建的作用域，恰好一个库（库行读得到才是 1） |
+    | ``chunks`` | ``chunks`` 表里 ``(租户, 库, 目标版本)`` 的行数 |
+    | ``vectors`` | 向量存储里同一范围内的可检索条数 |
+    | ``keyword_documents`` | 关键词引擎里目标版本的物理索引中的文档数 |
+
+    **「相等」只能是这个意思**：知识库数是**范围计数**（一个库 = 1），另外三项是数据
+    计量（每库 N 片）。字面意义的「四个数字彼此相等」在 N>1 时永远不成立，所以判据是
+    「范围计数 == 1，且三项数据计数彼此相等」——ADR 想挡的是「切片的数量与向量 / 关键词
+    的数量对不上」，那种版本上线后的表现是「有些文档搜不到」，且不报错。
+
+    ``keyword_documents`` 为 ``None`` 表示**关键词能力不存在**（没部署 ES，Provider 是空
+    实现）：这一维不参与判定。否则没有 ES 的部署永远到不了 ``ready``——把「没有这项能力」
+    当成「这一维是 0」，会把能力缺失伪装成数据不一致。
+    """
+
+    knowledge_bases: int
+    chunks: int
+    vectors: int
+    keyword_documents: int | None
+
+    @property
+    def matched(self) -> bool:
+        """四项计数是否对得上（口径见类文档）。"""
+
+        if self.knowledge_bases != 1:
+            return False
+        if self.chunks != self.vectors:
+            return False
+        return self.keyword_documents is None or self.keyword_documents == self.chunks
+
+    def as_dict(self) -> dict[str, int | None]:
+        """落日志用的扁平形状（`关键词文档数` 可能是 ``None``）。"""
+
+        return {
+            "knowledge_bases": self.knowledge_bases,
+            "chunks": self.chunks,
+            "vectors": self.vectors,
+            "keyword_documents": self.keyword_documents,
+        }
+
+
+class IndexBuildCountsMismatch(AppError):
+    """四项计数不相等：**拒绝**标记 ready（半成品上线后表现为「有些文档搜不到」）。"""
+
+    def __init__(self, counts: BuildCounts) -> None:
+        self.counts = counts
+        super().__init__(ErrorCode.SERVER_ERROR, BUILD_COUNTS_MISMATCH_MESSAGE)
 
 
 def can_transition(current: str, target: str) -> bool:
@@ -265,7 +325,11 @@ class IndexBuildService:
     async def build(
         self, db: AsyncSession, build_id: str, *, tenant_id: str
     ) -> IndexBuildVersion:
-        """把目标版本逐文档重建出来（任务体调它一次）。
+        """跑完一次构建：逐文档重建 → 四项计数核对 → ``ready``（激活是另一步）。
+
+        激活**不**在这里做：它要改线上（库上的生效版本列），必须是一个能被单独调起、
+        单独重试、单独审计的动作。把两者塞进一个函数，运维就没有「先 ready、观察一会儿
+        再切」的余地，而 ADR-0025 把 ``ready`` 明确写成了**运维可见的一步**。
 
         **一次构建 = 若干次「一篇文档一笔事务」**：整库包成一笔会把行锁持有到最后一篇
         （上传、删除、检索都要等它）；包成一笔也不换来什么，因为检索**不靠**构建的
@@ -291,6 +355,12 @@ class IndexBuildService:
             )
             return row
 
+        kb = await knowledge_base_repository.get_by_id_for_tenant(
+            db, row.kb_id, tenant_id=tenant_id
+        )
+        if kb is None:
+            raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
         try:
             documents = await document_repository.list_by_kb_async(
                 db, row.kb_id, tenant_id=tenant_id
@@ -308,9 +378,24 @@ class IndexBuildService:
                     allow_success=True,
                 )
                 indexed += 1
+            # 计数快照里的文档数：**成功重建的篇数**（不是库里总行数——失败 / 处理中的
+            # 文档不参与构建，把它们算进去会让快照看起来「少了几篇」却查不出原因）。
+            row.document_count = indexed
+            counts = await self.collect_counts(db, kb=kb, version=row.version)
+            await self.mark_ready(db, build_id, tenant_id=tenant_id, counts=counts)
         except Exception as exc:  # noqa: BLE001 - 收成 failed，原因只留固定文案
             await async_rollback_now(db)
-            await self.mark_failed(db, build_id, tenant_id=tenant_id)
+            await self.mark_failed(
+                db,
+                build_id,
+                tenant_id=tenant_id,
+                # 一因一码：计数对不上与「跑崩了」是两件事，运维处置完全不同。
+                reason=(
+                    BUILD_COUNTS_MISMATCH_MESSAGE
+                    if isinstance(exc, IndexBuildCountsMismatch)
+                    else BUILD_FAILED_MESSAGE
+                ),
+            )
             logger.exception(
                 "index build aborted",
                 build_id=build_id,
@@ -318,10 +403,10 @@ class IndexBuildService:
                 kb_id=row.kb_id,
                 version=row.version,
             )
-            raise exc
+            raise
 
         logger.info(
-            "index build documents rebuilt",
+            "index build ready",
             build_id=build_id,
             tenant_id=tenant_id,
             kb_id=row.kb_id,
@@ -329,6 +414,177 @@ class IndexBuildService:
             document_count=indexed,
         )
         return row
+
+    # ── 四项计数 ─────────────────────────────────────────────────
+
+    async def collect_counts(
+        self, db: AsyncSession, *, kb: KnowledgeBase, version: str
+    ) -> BuildCounts:
+        """把四项计数的读数取回来（各自从它真正的存储里读，见 :class:`BuildCounts`）。
+
+        为什么分四次读而不是写一条大 SQL：它们**不在同一个存储里**。切片在
+        PostgreSQL，向量在向量存储（本实现同表，换实现就不同），关键词文档在 ES。
+        想「一条语句查完」就只能假装它们同源，而那道闸门要挡的正是它们不同源时的偏差。
+        """
+
+        tenant_id = str(kb.tenant_id)
+        kb_id = str(kb.id)
+        return BuildCounts(
+            knowledge_bases=1,
+            chunks=await chunk_repository.count_by_index_version(
+                db, kb_id, tenant_id=tenant_id, index_version=version
+            ),
+            vectors=await self._vector_store.count_by_scope(
+                db, tenant_id=tenant_id, kb_id=kb_id, index_version=version
+            ),
+            keyword_documents=(
+                await self._keyword_search.count_documents(
+                    tenant_id=tenant_id, kb_id=kb_id, index_version=version
+                )
+                if self._keyword_search.available
+                else None
+            ),
+        )
+
+    # ── ready / 激活 ──────────────────────────────────────────────
+
+    async def mark_ready(
+        self,
+        db: AsyncSession,
+        build_id: str,
+        *,
+        tenant_id: str,
+        counts: BuildCounts,
+    ) -> IndexBuildVersion:
+        """四项计数相等才允许 ``ready``；不相等就**拒绝**（抛异常，不改状态）。
+
+        为什么是「拒绝」而不是「顺手标成 failed」：这个函数只回答「能不能标记为可用」，
+        把失败留痕留给调用方（:meth:`build` 会带着具体原因去落 ``failed``）。混在一起
+        之后，用例就没法单独断言「计数不相等时 ready 被拒」这条验收。
+        """
+
+        row = await index_version_repository.get_for_tenant(
+            db, build_id, tenant_id=tenant_id
+        )
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "index build not found")
+        ensure_transition(row, INDEX_BUILD_READY)
+        if not counts.matched:
+            logger.warning(
+                "index build counts do not match",
+                build_id=build_id,
+                tenant_id=tenant_id,
+                kb_id=row.kb_id,
+                version=row.version,
+                **counts.as_dict(),
+            )
+            raise IndexBuildCountsMismatch(counts)
+
+        row.chunk_count = counts.chunks
+        row.status = INDEX_BUILD_READY
+        await async_commit_now(db)
+        logger.info(
+            "index build marked ready",
+            build_id=build_id,
+            tenant_id=tenant_id,
+            kb_id=row.kb_id,
+            version=row.version,
+            **counts.as_dict(),
+        )
+        return row
+
+    async def activate(
+        self, db: AsyncSession, build_id: str, *, tenant_id: str
+    ) -> IndexBuildVersion:
+        """**单事务**激活：旧版本 ``archived`` + 新版本 ``active`` + 库列更新。
+
+        三者同成同败（ADR-0025 决策三）。分开做的中间态是「库指向新版本、新版本还没
+        active」，检索会拿到一个不存在的生效版本 → 一条都匹配不上 → 一次「诚实的空结果」
+        被包装成「本次没命中」，于是故障看起来像查询问题。
+
+        关键词别名的切换**排在提交之前**，并且不参与数据库事务（ES 不在 PG 的事务里）：
+
+        * 先切别名的窗口里，别名指向新物理索引而库列仍是旧版本——关键词那一路按
+          ``(库, 旧版本)`` 过滤新索引里的行，**一条都不匹配**，于是这一路诚实返回空，
+          而不是混排两个版本（那正是决策二要防的）；
+        * 反过来（先提交、后切别名）留下的窗口更糟：库说新版本、关键词仍查旧索引，
+          两路数据**对不上**，而且如果切换失败就一直错下去。
+
+        于是顺序是：切别名 → 提交事务；提交失败就把别名切回去（尽力而为，失败只记
+        warning——那时真正该看的是提交失败本身）。
+        """
+
+        row = await index_version_repository.get_for_tenant(
+            db, build_id, tenant_id=tenant_id
+        )
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "index build not found")
+        # 只有 ready 能上线：building 直接 active 会把半成品推上线（ADR-0025）。
+        ensure_transition(row, INDEX_BUILD_ACTIVE)
+
+        kb = await knowledge_base_repository.get_by_id_for_tenant(
+            db, row.kb_id, tenant_id=tenant_id
+        )
+        if kb is None:
+            raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+        previous = await index_version_repository.find_active(
+            db, row.kb_id, tenant_id=tenant_id
+        )
+        previous_version = previous.version if previous is not None else None
+
+        switched = False
+        try:
+            await self._keyword_search.activate_version(row.version)
+            switched = True
+            async with async_transaction(db):
+                stamp = now()
+                if previous is not None:
+                    previous.status = INDEX_BUILD_ARCHIVED
+                    previous.archived_at = stamp
+                row.status = INDEX_BUILD_ACTIVE
+                row.activated_at = stamp
+                # 库上的生效版本与状态一起改：检索范围从这一列读（决策四）。
+                kb.active_index_version = row.version
+        except BaseException:
+            if switched:
+                await self._restore_alias(previous_version, row=row)
+            raise
+
+        logger.info(
+            "index build activated",
+            build_id=build_id,
+            tenant_id=tenant_id,
+            kb_id=row.kb_id,
+            version=row.version,
+            previous_version=previous_version,
+        )
+        return row
+
+    async def _restore_alias(
+        self, previous_version: str | None, *, row: IndexBuildVersion
+    ) -> None:
+        """提交失败后把关键词别名切回去（尽力而为；失败只记 warning）。"""
+
+        if previous_version is None:
+            # 这是这个库的第一次构建：没有旧版本可回退，别名留在了未提交的新版本上。
+            # 检索仍安全（库列还是空的 → 守卫直接拦），但下一轮激活会把别名再切一次。
+            logger.warning(
+                "keyword alias left on an uncommitted version",
+                build_id=row.id,
+                tenant_id=row.tenant_id,
+                version=row.version,
+            )
+            return
+        try:
+            await self._keyword_search.activate_version(previous_version)
+        except Exception:  # noqa: BLE001 - 收尾路径不抛：真正的原因是那次提交失败
+            logger.warning(
+                "keyword alias restore failed",
+                build_id=row.id,
+                tenant_id=row.tenant_id,
+                previous_version=previous_version,
+            )
 
     # ── 失败 ────────────────────────────────────────────────────
 
@@ -425,10 +681,13 @@ def describe_stalled_builds(rows: Sequence[IndexBuildVersion]) -> str:
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "BUILD_ALREADY_RUNNING_MESSAGE",
+    "BUILD_COUNTS_MISMATCH_MESSAGE",
     "BUILD_FAILED_MESSAGE",
     "BUILD_INVALID_TRANSITION_MESSAGE",
     "BUILD_STALL_SECONDS",
+    "BuildCounts",
     "IndexBuildAlreadyRunning",
+    "IndexBuildCountsMismatch",
     "IndexBuildInvalidTransition",
     "IndexBuildService",
     "can_transition",

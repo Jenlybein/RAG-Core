@@ -81,7 +81,9 @@ def test_alias_actions_swap_in_one_call() -> None:
 def test_activating_the_same_version_again_is_a_no_op() -> None:
     """重复激活不该再发一次可能失败的写（幂等是切换脚本敢重跑的前提）。"""
 
-    assert build_alias_actions(alias=ALIAS, target="rag_chunks__v2", current=["rag_chunks__v2"]) == []
+    assert (
+        build_alias_actions(alias=ALIAS, target="rag_chunks__v2", current=["rag_chunks__v2"]) == []
+    )
 
 
 def test_the_first_activation_only_adds_the_alias() -> None:
@@ -270,9 +272,7 @@ def test_count_documents_counts_the_physical_index_of_that_version() -> None:
     client.count_response = {"count": 42}
 
     count = asyncio.run(
-        _provider(client).count_documents(
-            tenant_id=TENANT_ID, kb_id=KB_ID, index_version="v2"
-        )
+        _provider(client).count_documents(tenant_id=TENANT_ID, kb_id=KB_ID, index_version="v2")
     )
 
     assert count == 42
@@ -296,9 +296,7 @@ def test_count_documents_treats_a_missing_index_as_zero() -> None:
 
     assert (
         asyncio.run(
-            _provider(client).count_documents(
-                tenant_id=TENANT_ID, kb_id=KB_ID, index_version="v2"
-            )
+            _provider(client).count_documents(tenant_id=TENANT_ID, kb_id=KB_ID, index_version="v2")
         )
         == 0
     )
@@ -310,9 +308,7 @@ def test_the_noop_provider_keeps_the_three_new_methods_quiet() -> None:
     provider = NoopKeywordSearchProvider()
 
     assert (
-        asyncio.run(
-            provider.count_documents(tenant_id=TENANT_ID, kb_id=KB_ID, index_version="v2")
-        )
+        asyncio.run(provider.count_documents(tenant_id=TENANT_ID, kb_id=KB_ID, index_version="v2"))
         == 0
     )
     assert asyncio.run(provider.activate_version("v2")) is None

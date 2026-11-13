@@ -385,7 +385,9 @@ class _RecordingStore:
         self.deleted: list[str] = []
         self.tenant_ids: list[str] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append(document_id)
         self.tenant_ids.append(tenant_id)

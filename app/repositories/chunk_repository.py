@@ -157,8 +157,28 @@ async def count_by_kb_ids(
     return int((await db.execute(stmt)).scalar_one())
 
 
-async def count_by_document_ids(
-    db: AsyncSession, document_ids: list[str], *, tenant_id: str
+async def count_by_index_version(
+    db: AsyncSession, kb_id: str, *, tenant_id: str, index_version: str
+) -> int:
+    """该库在**某一个版本**里有多少切片（``ready`` 前的四项计数之一，ADR-0025）。
+
+    与 ``count_by_kb_ids`` 的区别只有一个：这里问的是「某一次构建产出了多少片」，而那
+    一条问的是「按生效版本能不能召回」。两者都带租户，也都不许省。
+    """
+
+    stmt = (
+        select(func.count())
+        .select_from(Chunk)
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.kb_id == kb_id,
+            Chunk.index_version == index_version,
+        )
+    )
+    return int((await db.execute(stmt)).scalar_one())
+
+
+async def count_by_document_ids(    db: AsyncSession, document_ids: list[str], *, tenant_id: str
 ) -> dict[str, int]:
     """一次分组查询拿回 ``{document_id: 切片数}``；没有切片的文档不在字典里。
 

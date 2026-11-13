@@ -162,7 +162,9 @@ class _RecordingStore:
         self.calls: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, _document_id: str, *, tenant_id: str, index_version: str | None = None) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, _document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append("purge")
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
