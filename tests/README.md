@@ -3,7 +3,7 @@
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 11 步收尾，2026-11-13 实测：**1726 条用例，1709 passed / 17 skipped**）。
+当前 tip（第 11 步收尾，2026-11-13 实测：**1732 条用例，1715 passed / 17 skipped**）。
 
 ## 分层
 
@@ -74,7 +74,7 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1709 passed, 17 skipped`（共收集 1726 条） |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1715 passed, 17 skipped`（共收集 1726 条） |
 | 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1723 deselected` |
 | 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1712 passed, 14 skipped`（3 条由 skip 变 pass） |
 | 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1723 deselected` |
@@ -89,7 +89,7 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1709 passed, 17 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1715 passed, 17 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
 > 数字怎么来的：`uv run pytest -q --collect-only` 收集 1726 条，`-m ocr` 收集 3 条、
