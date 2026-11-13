@@ -59,6 +59,11 @@ class KeyPolicy(Base):
     # 限额：Key 级计数卡住单个外部应用，租户级聚合由套餐上限卡住（两级计数）。
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
+    # Research 的两个独立配额（票 #150），与检索那两列**同构**（两级同记），但键前缀与
+    # 计数桶都是另一本账：重资源调用不吃掉普通检索的额度。默认 0 = 关闭——新发一把 Key
+    # 不该自带一项约 30 秒、3 次模型调用的能力。
+    research_qps: Mapped[int] = mapped_column(Integer, default=0)
+    research_daily: Mapped[int] = mapped_column(Integer, default=0)
     # 建 Key 时选定的档位；调用方改不了。改档位就是改这张配置，改完立刻生效。
     profile: Mapped[str] = mapped_column(String(32))
     # 结果形状偏好：折叠成整节 / 表格行折回整表。默认都开（与既有响应默认一致），
@@ -105,6 +110,9 @@ class KeyPolicySnapshot:
     orchestration_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
+    #: Research 的两个独立配额（票 #150）。0 = 关闭；与 ``research_allowed`` 给同一个答复码。
+    research_qps: int
+    research_daily: int
     profile: str
     include_parent: bool
     expand_table_rows: bool
@@ -125,6 +133,8 @@ def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
         orchestration_allowed=row.orchestration_allowed,
         retrieve_qps=row.retrieve_qps,
         retrieve_daily=row.retrieve_daily,
+        research_qps=row.research_qps,
+        research_daily=row.research_daily,
         profile=row.profile,
         include_parent=row.include_parent,
         expand_table_rows=row.expand_table_rows,

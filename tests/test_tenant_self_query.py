@@ -90,6 +90,8 @@ def _policy_row(policy_id: str, *, tenant_id: str, profile: str, qps: int, daily
         query_rewrite_allowed=False,
         retrieve_qps=qps,
         retrieve_daily=daily,
+        research_qps=0,
+        research_daily=0,
         profile=profile,
         include_parent=True,
         expand_table_rows=True,

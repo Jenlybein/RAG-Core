@@ -289,29 +289,34 @@ def test_the_migration_is_named_after_its_twelve_hex_revision() -> None:
 
 
 def test_it_chains_onto_the_single_current_head() -> None:
-    """接在**其余迁移的唯一 head** 上，且自己不另起一头。
+    """挂在**同一条链**上，且自己不另起一头。
 
     不写死 ``down_revision == a91f3c7e2058``：#146 也在加迁移，真实接点是「当时的链尾」；
     这里要守的性质是「接得上、只有一条链」，不是「永远接在某一条特定 revision 后」。
+
+    本票之后又有 #150 的 Research 配额两列（``add_research_quotas``）接上来，于是它不再是
+    链尾。原来的写法（「把本票排除后，其余迁移要只剩一个 head」）隐含了「我就是链尾」这个
+    前提，链一长就会误报。改成直接读它真正的接点：**恰有一条迁移以本票为 ``down_revision``**，
+    而且全链只有一个 head。
     """
 
     mine = _migration_path(SLUG)
     paths = sorted(VERSIONS_DIR.glob("*.py"))
     revisions = {_revision_of(path): path for path in paths}
-    others = {revision for revision in revisions if revisions[revision] != mine}
-    down_revisions = {
-        _down_revision_of(revisions[revision])
-        for revision in others
-        if _down_revision_of(revisions[revision]) is not None
-    }
-    heads = others - down_revisions
+    my_revision = _revision_of(mine)
 
-    assert len(heads) == 1, f"其余迁移必须只有一条链，实际 head={sorted(heads)}"
-    assert _down_revision_of(mine) == next(iter(heads)), "本票必须接在当前唯一 head 上"
+    # 接点：本票自己接在上一条之后（不悬空）。
+    assert _down_revision_of(mine) is not None, "本票必须接在某一条迁移之后"
+    # 后继：恰有一条迁移接在本票之后，于是「一条链」而不是「两岔」。
+    successors = sorted(
+        revision for revision, path in revisions.items() if _down_revision_of(path) == my_revision
+    )
+    assert len(successors) == 1, f"本票应当恰有一个后继，实际 {successors}"
 
-    # 全链也要只有一个 head：本票的 revision 不被任何人当作 down_revision。
+    # 全链只有一个 head：本票与它后面的迁移都挂在同一条链上，不另起一头。
     all_down = {_down_revision_of(path) for path in paths} - {None}
-    assert set(revisions) - all_down == {_revision_of(mine)}, "本票应当就是唯一 head"
+    heads = set(revisions) - all_down
+    assert len(heads) == 1, f"全链只能有一个 head，实际 {sorted(heads)}"
 
 
 # ──────────────────────────────────────────────────────────── upgrade：先加列、再回填

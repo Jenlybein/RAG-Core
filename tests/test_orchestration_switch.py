@@ -546,8 +546,8 @@ def test_the_orchestration_migration_sits_on_top_of_the_single_head() -> None:
     path = _migration_path("add_orchestration_switch")
     assert _down_revision_of(path) == PREVIOUS_HEAD, "本条迁移必须接在本步此前的唯一 head 上"
     assert len(heads) == 1, f"整条链应当只有一个 head，实际 {heads}"
-    assert heads == [_revision_of(_migration_path("add_index_build_versions"))], (
-        f"链尾应当是 #141 的索引构建版本表，实际 {heads}"
+    assert heads == [_revision_of(_migration_path("add_research_quotas"))], (
+        f"链尾应当是 #150 的 Research 配额两列，实际 {heads}"
     )
 
 

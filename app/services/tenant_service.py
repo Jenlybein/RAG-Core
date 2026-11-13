@@ -129,6 +129,10 @@ def _default_policy(*, tenant_id: str, plan: Plan, kb_ids: Sequence[str]) -> Key
         orchestration_allowed=False,
         retrieve_qps=spec.retrieve_qps,
         retrieve_daily=spec.retrieve_daily,
+        # Research 的两个独立额度默认 0 = 关闭（票 #150）：最小权限默认里没有它，
+        # 与上面四行能力开关同一个理由——新配置不该自带一项重资源能力。
+        research_qps=0,
+        research_daily=0,
         profile=spec.allowed_profiles[0],
         include_parent=True,
         expand_table_rows=True,

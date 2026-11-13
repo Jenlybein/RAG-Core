@@ -149,6 +149,8 @@ def _world() -> dict[type, list[Any]]:
                 allowed_kb_ids=[],
                 retrieve_qps=10,
                 retrieve_daily=5000,
+                research_qps=0,
+                research_daily=0,
                 profile="quality",
             ),
             KeyPolicy(
@@ -158,6 +160,8 @@ def _world() -> dict[type, list[Any]]:
                 allowed_kb_ids=[],
                 retrieve_qps=10,
                 retrieve_daily=5000,
+                research_qps=0,
+                research_daily=0,
                 profile="speed",
             ),
         ],
