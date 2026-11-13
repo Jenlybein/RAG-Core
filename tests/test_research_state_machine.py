@@ -131,7 +131,7 @@ class _ScriptedLLM(LLMProvider):
         self.calls.append(schema.__name__)
         self.prompts.append(user)
         if not self._responses:
-            raise AssertionError("Research 本票只该问两次模型（规划 + 判断），预置输出用完了")
+            raise AssertionError(f"预置输出用完了：还有一次 {schema.__name__} 没有应答")
         item = self._responses.pop(0)
         if isinstance(item, BaseException):
             raise item
@@ -151,6 +151,16 @@ def _factory(llm: LLMProvider):
         return llm
 
     return _get
+
+
+def _answer_blocks() -> dict:
+    """生成阶段的预置输出：一条引用第一条材料的核心片（本文件关心的是步数，不是块）。"""
+
+    return {
+        "blocks": [
+            {"text": "已按材料给出结论。", "kind": "supported", "primary": [1], "supporting": []}
+        ]
+    }
 
 
 def _plan(queries: list[dict[str, Any]] | None = None, points: list[str] | None = None) -> dict:
@@ -182,16 +192,25 @@ def _run(
     search: _Search | None = None,
     clock: _Clock | None = None,
     spend: Mapping[str, float] | None = None,
+    strong: LLMProvider | None = None,
 ) -> tuple[research.ResearchOutcome, _ScriptedLLM, _Search]:
+    """跑一次五步：``responses`` 是**规划 + 判断**的预置输出，生成另有一份脚本替身。
+
+    生成（第 ⑤ 步，票 #149）走的是 ``strong`` 角色，所以它必须有自己的一份工厂：本文件的
+    用例都在数「规划 / 判断被问了几次」，把生成混进同一个替身会让那些计数失去意义。
+    """
+
     probe = search if search is not None else _Search()
     running_clock = clock or _Clock()
     llm = _ScriptedLLM(*responses, clock=running_clock, spend=spend)
+    generator = strong if strong is not None else _ScriptedLLM(_answer_blocks())
     outcome = asyncio.run(
         research.run_research(
             query=QUERY,
             tenant_id=TENANT,
             search=probe,
             llm_factory=_factory(llm),
+            strong_llm_factory=_factory(generator),
             clock=running_clock,
         )
     )
@@ -266,7 +285,8 @@ def test_a_covered_question_stops_after_the_first_round() -> None:
     assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
     assert outcome.stop_reason is StopReason.EVIDENCE_COMPLETE
     assert outcome.followup_rounds == 0
-    assert outcome.model_calls == 2
+    # 规划 + 判断 + 生成各一次（票 #149 起第 ⑤ 步会真的花掉第三次调用）。
+    assert outcome.model_calls == 3
     assert outcome.searches == 2
     assert llm.calls == ["ResearchPlan", "FollowupPlan"]
 
@@ -297,8 +317,8 @@ def test_a_multi_point_question_gets_two_rounds_of_materials() -> None:
     assert outcome.followup_rounds == MAX_FOLLOWUP_ROUNDS == 1
     # 证据增加了，但轮次已经用尽：诚实的停止原因是「轮数用尽」而不是「齐了」。
     assert outcome.stop_reason is StopReason.MAX_ROUNDS
-    # 轮数上限也体现在这里：补证跑完不再判断一次（模型只被问两次）。
-    assert outcome.model_calls == 2
+    # 轮数上限也体现在这里：补证跑完不再判断一次（规划 + 判断 + 生成，判断只有一次）。
+    assert outcome.model_calls == 3
 
 
 def test_a_followup_that_adds_nothing_stops_with_no_new_evidence() -> None:
@@ -538,8 +558,9 @@ def test_a_failed_planner_falls_back_to_one_plain_search() -> None:
     assert probe.calls == [QUERY], "降级只跑一次，且跑的是原问题"
     assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a"]
     assert outcome.stop_reason is StopReason.DEGRADED
-    # 已经发出的那次调用仍然计成本（它可能已经计过费）。
-    assert outcome.model_calls == 1
+    # 已经发出的那次调用仍然计成本（它可能已经计过费）；降级之后材料照给，
+    # 于是第 ⑤ 步仍会用这份材料生成引用块——那是**降级之后唯一还能做对的事**。
+    assert outcome.model_calls == 2
     assert llm.calls == ["ResearchPlan"]
 
 
