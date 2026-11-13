@@ -122,8 +122,6 @@ def _session(
     return AsyncRecordingSession(rows=rows)
 
 
-
-
 def _dev_headers() -> dict[str, str]:
     return {"authorization": f"Bearer {settings.DEV_API_KEY}"}
 
@@ -240,9 +238,9 @@ def test_unauthorized_messages_each_name_a_next_step() -> None:
     # 四种原因不能共用一句话：共用就意味着界面再也分不出该做哪件事。
     assert len(set(messages.values())) == 4
     for name, message in messages.items():
-        assert any(
-            hint in message for hint in ("Authorization", "Key 管理页", "管理员")
-        ), f"{name} 的消息没有指向任何具体动作：{message}"
+        assert any(hint in message for hint in ("Authorization", "Key 管理页", "管理员")), (
+            f"{name} 的消息没有指向任何具体动作：{message}"
+        )
 
 
 @pytest.mark.asyncio
@@ -577,5 +575,3 @@ def test_kernel_module_imports_no_web_or_mcp_framework() -> None:
             imported.add(node.module.split(".")[0])
 
     assert not imported & {"fastapi", "fastmcp", "starlette", "flask", "django"}
-
-

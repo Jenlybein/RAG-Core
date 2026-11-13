@@ -628,9 +628,7 @@ def test_reindex_lost_prepare_race_returns_processing_conflict(
     """守卫通过但准备失败（并发请求先改同一行）：20025，不提交、不投递。"""
 
     _install_lookup(monkeypatch, _document(status=DocumentStatus.FAILED))
-    monkeypatch.setattr(
-        document_repository, "prepare_for_indexing_async", _always_false
-    )
+    monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _always_false)
 
     response = offline_api.client.post(f"/api/v1/documents/{DOC_ID}/reindex")
 

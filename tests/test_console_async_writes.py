@@ -84,15 +84,11 @@ def _routes() -> dict[tuple[str, str], Any]:
 def _console_route_keys() -> list[tuple[str, str]]:
     """全部 ``/console`` 路由（含 ``/console/admin``），按路径排序后返回，便于参数化。"""
 
-    return sorted(
-        key for key in _routes() if key[1].startswith("/console")
-    )
+    return sorted(key for key in _routes() if key[1].startswith("/console"))
 
 
 @pytest.mark.parametrize(("method", "path"), _console_route_keys())
-def test_every_console_route_takes_its_session_from_the_async_stack(
-    method: str, path: str
-) -> None:
+def test_every_console_route_takes_its_session_from_the_async_stack(method: str, path: str) -> None:
     """控制面不再有第二条会话来源：依赖树里只能出现 ``get_async_db``。
 
     票 #134 把「同步那一个没被用到」换成了「同步那一个不存在」：``get_db`` 已经随同步
@@ -127,11 +123,7 @@ def test_the_write_route_list_covers_every_mutating_console_endpoint() -> None:
     """
 
     listed = set(CONSOLE_WRITE_ROUTES) | set(NON_DB_WRITE_ROUTES)
-    missing = sorted(
-        key
-        for key in _console_route_keys()
-        if key[0] != "GET" and key not in listed
-    )
+    missing = sorted(key for key in _console_route_keys() if key[0] != "GET" and key not in listed)
     assert missing == [], f"这些写入口没有登记在 CONSOLE_WRITE_ROUTES 里：{missing}"
 
 

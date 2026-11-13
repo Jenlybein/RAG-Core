@@ -97,7 +97,9 @@ def _plan(**overrides: int) -> PlanSpec:
 
 
 @pytest.mark.asyncio
-async def test_counting_a_kbs_documents_ignores_other_kbs_and_other_tenants(db: AsyncSession) -> None:
+async def test_counting_a_kbs_documents_ignores_other_kbs_and_other_tenants(
+    db: AsyncSession,
+) -> None:
     db.add_all(
         [
             _document("doc-1"),

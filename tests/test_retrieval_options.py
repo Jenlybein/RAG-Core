@@ -326,8 +326,8 @@ def fake(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any]]:
     from app.api.deps import get_current_key
 
     # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
-    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
-        AsyncSessionAdapter(EmptySession())
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        EmptySession()
     )
 
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
@@ -454,9 +454,7 @@ def test_the_composition_root_receives_the_resolved_options(
     service = importlib.import_module("app.services.rag_service")
     seen: dict[str, Any] = {}
 
-    async def spy(
-        _db: Any, *, tenant_id: str, kb_ids: list[str], query: str, options: Any
-    ) -> dict:
+    async def spy(_db: Any, *, tenant_id: str, kb_ids: list[str], query: str, options: Any) -> dict:
         seen["options"] = options
         return {
             "query": query,
@@ -511,7 +509,11 @@ def test_http_and_mcp_accept_literally_the_same_arguments() -> None:
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
     mcp_properties = set(getattr(tools["rag_retrieve"], "parameters", {})["properties"])
 
-    assert mcp_properties == set(RetrieveRequest.model_json_schema()["properties"]) == {
-        "kb_ids",
-        "query",
-    }
+    assert (
+        mcp_properties
+        == set(RetrieveRequest.model_json_schema()["properties"])
+        == {
+            "kb_ids",
+            "query",
+        }
+    )

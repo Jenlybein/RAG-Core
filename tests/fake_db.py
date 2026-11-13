@@ -421,11 +421,7 @@ class RecordingSession(EmptySession):
         criterion = getattr(statement, "whereclause", None)
         if criterion is None:
             return len(rows)
-        return sum(
-            1
-            for row in rows
-            if getattr(row, criterion.left.key) == criterion.right.value
-        )
+        return sum(1 for row in rows if getattr(row, criterion.left.key) == criterion.right.value)
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)

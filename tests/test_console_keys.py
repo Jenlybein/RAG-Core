@@ -50,8 +50,6 @@ KEY_BETA_VALUE = "rc_live_" + "fedcba9876543210fedcba9876543210"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
@@ -59,9 +57,7 @@ class _Harness:
     cache: MemoryPlanCache
 
     def login(self, username: str, password: str) -> Any:
-        return self.client.post(
-            "/console/login", json={"username": username, "password": password}
-        )
+        return self.client.post("/console/login", json={"username": username, "password": password})
 
     def data(self, response: Any) -> Any:
         body = response.json()
@@ -355,9 +351,7 @@ def test_issuing_a_key_without_a_session_is_unauthorized(console: _Harness) -> N
 def test_issuing_a_key_without_the_anti_csrf_header_is_rejected(console: _Harness) -> None:
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
 
-    response = console.client.post(
-        "/console/keys", json={"label": "x", "policy": _ISSUE_POLICY}
-    )
+    response = console.client.post("/console/keys", json={"label": "x", "policy": _ISSUE_POLICY})
 
     assert console.code(response) == 20011
     assert console.db.added_of(ApiKey) == []
@@ -705,8 +699,3 @@ def test_a_partial_custom_options_patch_merges_instead_of_replacing(console: _Ha
         "top_k": 7,
         "rerank": True,
     }
-
-
-
-
-

@@ -533,6 +533,7 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
             created_at=datetime(2026, 1, 3, 3, 3, 3),
         ),
     ]
+
     async def fake_list(db: Any, kb_id: str, *, tenant_id: str) -> list[Any]:
         return rows
 
@@ -540,9 +541,7 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
 
     counter_calls: list[list[str]] = []
 
-    async def fake_counts(
-        db: Any, document_ids: list[str], *, tenant_id: str
-    ) -> dict[str, int]:
+    async def fake_counts(db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
         assert tenant_id == TENANT_ID, "切片计数必须强制带租户（ADR-0006）"
         counter_calls.append(list(document_ids))
         return {"doc-a": 5, "doc-b": 2}

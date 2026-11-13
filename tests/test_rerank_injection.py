@@ -257,6 +257,7 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(service, "hybrid_retrieve", _fake_hybrid)
     monkeypatch.setattr(service, "optimize_query", _identity_query)
+
     async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
         return SimpleNamespace(settings=None, name="kb", description=None)
 

@@ -43,9 +43,13 @@ def _plan_rows() -> list[Plan]:
     return rows
 
 
-def _session(*, plans: list[Plan] | None = None, tenants: list[Tenant] | None = None,
-             tenant_ids: list[str] | None = None,
-             policies: list[KeyPolicy] | None = None) -> RecordingSession:
+def _session(
+    *,
+    plans: list[Plan] | None = None,
+    tenants: list[Tenant] | None = None,
+    tenant_ids: list[str] | None = None,
+    policies: list[KeyPolicy] | None = None,
+) -> RecordingSession:
     rows: dict[type, list[object]] = {}
     if plans is not None:
         rows[Plan] = list(plans)
@@ -289,9 +293,7 @@ def test_issuing_a_key_binds_it_to_the_policy_and_generates_a_live_value() -> No
     )
 
     with transaction(session):
-        key = issue_api_key(
-            session, tenant_id=ACME_TENANT, policy_id=POLICY_ID, label="订单机器人"
-        )
+        key = issue_api_key(session, tenant_id=ACME_TENANT, policy_id=POLICY_ID, label="订单机器人")
 
     assert isinstance(key, ApiKey)
     assert API_KEY_PATTERN.fullmatch(key.key_value), key.key_value

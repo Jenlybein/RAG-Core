@@ -84,9 +84,7 @@ def _key_row(*, tenant_id: str = TENANT_ID) -> ApiKey:
 
 
 def _tenant_row(*, tenant_id: str = TENANT_ID, plan_code: str = PLAN_PRO) -> Tenant:
-    return Tenant(
-        id=tenant_id, name="Acme 公司", plan_id=PLAN_IDS[plan_code], status="active"
-    )
+    return Tenant(id=tenant_id, name="Acme 公司", plan_id=PLAN_IDS[plan_code], status="active")
 
 
 def _policy_row(*, allowed_kb_ids: list[str], profile: str = PROFILE_SPEED) -> KeyPolicy:
@@ -410,9 +408,7 @@ def _entries_with(
     app.include_router(main.api_router)
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
-    app.dependency_overrides[async_session.get_async_db] = lambda: AsyncSessionAdapter(
-        _get_db()
-    )
+    app.dependency_overrides[async_session.get_async_db] = lambda: AsyncSessionAdapter(_get_db())
 
     with TestClient(app) as client:
         entry = EntryClient(client)
@@ -569,7 +565,9 @@ def test_mcp_rejects_a_disabled_key(entries: EntryClient) -> None:
 
 
 def test_mcp_serves_a_whitelisted_knowledge_base(entries: EntryClient) -> None:
-    payload = _mcp_payload(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "q"}))
+    payload = _mcp_payload(
+        entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "q"})
+    )
 
     assert [chunk["kb_id"] for chunk in payload["retrieved_chunks"]] == [KB_IN_SCOPE]
 
@@ -600,7 +598,9 @@ def test_both_entries_answer_the_same_question_the_same_way(entries: EntryClient
     """
 
     http_body = entries.retrieve([KB_IN_SCOPE])
-    mcp_payload = _mcp_payload(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"}))
+    mcp_payload = _mcp_payload(
+        entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"})
+    )
 
     assert http_body["code"] == ErrorCode.SUCCESS
 
@@ -621,7 +621,9 @@ def test_both_entries_reject_the_same_scope_violation_with_the_same_code(
     entries: EntryClient,
 ) -> None:
     http_code = entries.retrieve([KB_OUT_OF_SCOPE])["code"]
-    mcp_code = _mcp_code(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_OUT_OF_SCOPE], "query": "q"}))
+    mcp_code = _mcp_code(
+        entries.mcp_call("rag_retrieve", {"kb_ids": [KB_OUT_OF_SCOPE], "query": "q"})
+    )
 
     assert http_code == mcp_code == ErrorCode.KNOWLEDGE_BASE_NOT_FOUND
 

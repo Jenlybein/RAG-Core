@@ -124,9 +124,7 @@ def _offline_client(monkeypatch: pytest.MonkeyPatch, *, llm: LLMProvider) -> Ite
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _FakeEmbedding())
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore(rows))
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: _FakeKeyword())
-    monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant", async_visible_kb
-    )
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
     # 生产工厂已不再返回大模型重排（#116），替身因此接在**既有**的工厂出口上。
     rerank_module = importlib.import_module("app.services.retrieval.rerank")
     provider = LLMRerankProvider(

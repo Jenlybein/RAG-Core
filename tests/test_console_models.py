@@ -91,8 +91,6 @@ class _MemorySettingsCache:
         self.delete()
 
 
-
-
 def _plan_rows() -> list[Plan]:
     rows: list[Plan] = []
     for index, code in enumerate(PLAN_CODES, start=1):
@@ -186,9 +184,7 @@ class _Harness:
     cache: _MemorySettingsCache
 
     def login(self, username: str, password: str) -> Any:
-        return self.client.post(
-            "/console/login", json={"username": username, "password": password}
-        )
+        return self.client.post("/console/login", json={"username": username, "password": password})
 
     def data(self, response: Any) -> Any:
         body = response.json()
@@ -314,8 +310,7 @@ def test_a_model_configs_call_without_a_session_is_unauthorized(console: _Harnes
         == 20010
     )
     assert (
-        console.client.get("/console/model-configs/config-deepseek/secret").json()["code"]
-        == 20010
+        console.client.get("/console/model-configs/config-deepseek/secret").json()["code"] == 20010
     )
 
 
@@ -350,8 +345,7 @@ def test_a_tenant_account_cannot_read_or_write_model_configs(console: _Harness) 
         == 20011
     )
     assert (
-        console.client.get("/console/model-configs/config-deepseek/secret").json()["code"]
-        == 20011
+        console.client.get("/console/model-configs/config-deepseek/secret").json()["code"] == 20011
     )
     assert console.db.added_of(ModelConfig) == []
     assert console.audit_entries() == []
@@ -376,9 +370,7 @@ def test_a_write_without_the_anti_csrf_header_is_rejected(console: _Harness) -> 
         ).json()["code"]
         == 20011
     )
-    assert (
-        console.client.delete("/console/model-configs/config-deepseek").json()["code"] == 20011
-    )
+    assert console.client.delete("/console/model-configs/config-deepseek").json()["code"] == 20011
     assert console.db.added_of(ModelConfig) == []
     assert console.db.commits == commits_before
 
@@ -505,9 +497,7 @@ def test_empty_label_or_model_is_a_param_error(console: _Harness) -> None:
     for field, value in (("label", ""), ("model", "   "), ("label", "x" * 129)):
         body = {"label": "合法名字", "provider": "deepseek", "model": "deepseek-flash"}
         body[field] = value
-        response = console.client.post(
-            "/console/model-configs", json=body, headers=WRITE_HEADERS
-        )
+        response = console.client.post("/console/model-configs", json=body, headers=WRITE_HEADERS)
         assert response.json()["code"] == 20015, (field, value)
     assert console.db.added_of(ModelConfig) == []
 
@@ -644,8 +634,6 @@ def test_revealing_a_missing_config_is_not_found(console: _Harness) -> None:
         == 20016
     )
     assert console.db.added_of(AuditLog) == [], "找不到的行不该留下「看了明文」的账本"
-
-
 
 
 def test_the_model_configs_table_is_registered_with_the_documented_columns() -> None:
@@ -1019,4 +1007,3 @@ def _capture_chat_model(
 
     monkeypatch.setattr("app.providers.llm.init_chat_model", _fake_init)
     return calls
-

@@ -81,7 +81,9 @@ def _admin() -> ConsoleIdentity:
 def _user() -> ConsoleIdentity:
     """租户账号：上传走租户门。"""
 
-    return ConsoleIdentity(account_id=ACCOUNT_ID, username="atomic", role="user", tenant_id=TENANT_ID)
+    return ConsoleIdentity(
+        account_id=ACCOUNT_ID, username="atomic", role="user", tenant_id=TENANT_ID
+    )
 
 
 @pytest.fixture()
@@ -110,9 +112,7 @@ def console(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     # 控制面上传复用的是数据面那个 ``document_service.upload``，它已经是异步栈（票 #132），
     # 所以库可见性读的是异步孪生。整笔事务仍然只有一笔（控制面路由上的异步事务依赖）。
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_by_id_for_tenant", _visible_kb_async
-    )
+    monkeypatch.setattr(knowledge_base_repository, "get_by_id_for_tenant", _visible_kb_async)
     # 身份：上传与签发 Key 走**租户**门（票 #130 起 Key 也挂在 ``require_console_tenant_write``
     # 上：管理员没有租户，进这两条路径一律 20011）；改套餐走管理员门。两条门互不重叠，
     # 按路径分派即可。

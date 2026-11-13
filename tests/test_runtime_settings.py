@@ -316,7 +316,9 @@ def test_one_bad_row_does_not_discard_the_other_rows(cache: Any) -> None:
 
     assert set(report.invalid) == {"RERANK_TIMEOUT_SECONDS"}
     assert settings.TOP_K == 9
-    assert settings.RERANK_TIMEOUT_SECONDS == runtime_settings.ENV_BASELINE["RERANK_TIMEOUT_SECONDS"]
+    assert (
+        settings.RERANK_TIMEOUT_SECONDS == runtime_settings.ENV_BASELINE["RERANK_TIMEOUT_SECONDS"]
+    )
 
 
 def test_a_boolean_typed_string_is_rejected_instead_of_coerced(cache: Any) -> None:
@@ -330,7 +332,9 @@ def test_a_boolean_typed_string_is_rejected_instead_of_coerced(cache: Any) -> No
     assert settings.RERANK_ENABLED == runtime_settings.ENV_BASELINE["RERANK_ENABLED"]
 
 
-def test_a_locked_key_in_the_database_is_ignored(cache: Any, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_locked_key_in_the_database_is_ignored(
+    cache: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """绕过接口直接把 ``AUTH_ENABLED=false`` 写进库：进程**不许**照做。
 
     这是「能关掉鉴权的面板本身就是漏洞」那条纪律的另一半：面板不给写，库里的脏行
@@ -608,7 +612,9 @@ async def test_a_restart_tier_write_does_not_delete_the_cache(cache: Any) -> Non
 
 
 @pytest.mark.asyncio
-async def test_a_write_is_visible_to_the_next_refresh_without_waiting_for_the_ttl(cache: Any) -> None:
+async def test_a_write_is_visible_to_the_next_refresh_without_waiting_for_the_ttl(
+    cache: Any,
+) -> None:
     """写一次之后**立刻**读：新值马上生效，不必等 30 秒。
 
     这正是「写后删缓存」的验收形态：删的是缓存与本进程的「刚检查过」标记，于是下一次

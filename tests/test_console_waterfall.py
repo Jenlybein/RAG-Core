@@ -157,7 +157,12 @@ def _plan_rows() -> list[Plan]:
 
 
 def _account(
-    account_id: str, username: str, password: str, *, role: str = "user", tenant_id: str | None = None
+    account_id: str,
+    username: str,
+    password: str,
+    *,
+    role: str = "user",
+    tenant_id: str | None = None,
 ) -> Account:
     return Account(
         id=account_id,
@@ -372,7 +377,12 @@ def test_the_observation_service_is_read_on_the_server_and_ordered(
                 ("collapse", 2.0),
                 ("someone-elses-span", 999.0),
                 ("vector_recall", 41.25, None, None),
-                ("rerank", None, datetime(2026, 11, 10, 9, 0, 1), datetime(2026, 11, 10, 9, 0, 1, 88000)),
+                (
+                    "rerank",
+                    None,
+                    datetime(2026, 11, 10, 9, 0, 1),
+                    datetime(2026, 11, 10, 9, 0, 1, 88000),
+                ),
                 ("query_optimization", 3.5, None, None),
                 ("keyword_recall", 12.0, None, None),
                 ("fusion", 1.5, None, None),
@@ -442,9 +452,7 @@ def test_the_response_never_carries_observability_credentials(
 
 
 @pytest.mark.parametrize("log_id", [LOG_BETA, LOG_MISSING], ids=["cross-tenant", "missing"])
-def test_another_tenant_or_a_missing_log_id_is_not_found(
-    console: _Harness, log_id: str
-) -> None:
+def test_another_tenant_or_a_missing_log_id_is_not_found(console: _Harness, log_id: str) -> None:
     """跨租户与不存在同码同文案：可区分的拒绝会泄露存在性。"""
 
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
@@ -476,9 +484,7 @@ def test_an_admin_without_a_tenant_is_forbidden(console: _Harness) -> None:
 # ──────────────────────────────────────────────────────────── ⑤ 读数逻辑的单元
 
 
-def _fake_langfuse_client(
-    observations: list[tuple[Any, ...]]
-) -> Any:
+def _fake_langfuse_client(observations: list[tuple[Any, ...]]) -> Any:
     """构造一个假的 ``LangfuseAPI``：只实现 ``observations.get_many``。"""
 
     def _observation(entry: tuple[Any, ...]) -> Any:
@@ -563,6 +569,3 @@ def test_reader_wraps_sdk_failure_without_leaking_the_message() -> None:
     assert raised.value.reason == REASON_UNREACHABLE
     assert SECRET_SENTINEL not in str(raised.value)
     assert SECRET_SENTINEL not in (raised.value.detail or "")
-
-
-
