@@ -229,6 +229,9 @@ class Settings(BaseSettings):
     # elasticsearch，本机起了容器就能用。
     KEYWORD_SEARCH_PROVIDER: str = "none"
     ELASTICSEARCH_URL: str = "http://localhost:9200"
+    # **别名**，不是物理索引（#142，ADR-0025 决策二）：写入落到 ``<这个名字>__<版本>``
+    # （每版一张物理索引），检索永远查这个别名，激活时把别名从旧物理索引挪到新的。
+    # 于是「构建期间线上照旧查旧版本」不需要任何开关，由名字解析本身保证。
     ELASTICSEARCH_INDEX: str = "rag_chunks"
     # 关键词这一路的**时间预算**（秒）：超过就当作「这一路挂了」，走既有降级。
     #

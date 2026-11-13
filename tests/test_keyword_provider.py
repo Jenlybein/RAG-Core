@@ -204,16 +204,40 @@ def test_keyword_search_sends_the_pure_query_and_maps_the_hits() -> None:
 
 
 def test_delete_by_document_id_sends_the_purge_query() -> None:
-    """按文档删除：查询体来自纯函数，并且要求刷新后才返回。"""
+    """删**文档**：查询体来自纯函数、要求刷新，并且覆盖该别名的**全部版本**索引。
+
+    删文档要在每个版本里都清掉（``<别名>__*``）：只删生效那一个，会把幽灵文档留在归档
+    版本里——某一刻那个版本被重新启用，这些已删文档就原样回来了。
+    """
 
     client = _FakeClient()
 
     asyncio.run(_provider(client).delete_by_document_id("doc-1", tenant_id=TENANT_ID))
 
     sent = client.delete_calls[0]
-    assert sent["index"] == "rag_chunks"
+    assert sent["index"] == "rag_chunks__*", "没给版本 → 全部版本物理索引"
     assert sent["query"] == build_purge_query(document_id="doc-1", tenant_id=TENANT_ID)["query"]
     assert sent["refresh"] is True
+    assert sent["ignore_unavailable"] is True, "通配符匹配零张索引是「本来就没有」，不是故障"
+
+
+def test_delete_scoped_to_one_version_only_touches_that_physical_index() -> None:
+    """重建新版本时的删除只清目标版本：线上那一版必须原样留着。"""
+
+    client = _FakeClient()
+
+    asyncio.run(
+        _provider(client).delete_by_document_id(
+            "doc-1", tenant_id=TENANT_ID, index_version="v2"
+        )
+    )
+
+    sent = client.delete_calls[0]
+    assert sent["index"] == "rag_chunks__v2"
+    assert sent["ignore_unavailable"] is False, "具体索引不存在会走 NotFoundError 分支"
+    assert sent["query"] == build_purge_query(
+        document_id="doc-1", tenant_id=TENANT_ID, index_version="v2"
+    )["query"]
 
 
 def test_add_chunks_writes_the_retrieval_text_under_chunk_id() -> None:
@@ -234,7 +258,9 @@ def test_add_chunks_writes_the_retrieval_text_under_chunk_id() -> None:
     asyncio.run(_provider(client).add_chunks([chunk]))
 
     operations = client.bulk_calls[0]["operations"]
-    assert operations[0] == {"index": {"_index": "rag_chunks", "_id": "chunk-1"}}
+    assert operations[0] == {"index": {"_index": "rag_chunks__v1", "_id": "chunk-1"}}, (
+        "写入落到目标版本的物理索引，不是别名"
+    )
     assert operations[1]["retrieval_text"] == "文档：售后手册 正文：切片原文"
     assert operations[1]["content"] == "切片原文"
     assert client.bulk_calls[0]["refresh"] is True
@@ -258,8 +284,10 @@ def test_add_chunks_creates_the_index_when_missing() -> None:
 
     asyncio.run(_provider(client).add_chunks([chunk]))
 
-    assert client.indices.exists_calls == [{"index": "rag_chunks"}]
-    assert client.indices.create_calls[0]["index"] == "rag_chunks"
+    assert client.indices.exists_calls == [{"index": "rag_chunks__v1"}]
+    assert client.indices.create_calls[0]["index"] == "rag_chunks__v1", (
+        "建的是物理索引：别名由激活时挂上，构建期间没人指向它"
+    )
     assert client.indices.create_calls[0]["mappings"]["properties"]["tenant_id"] == {
         "type": "keyword"
     }
