@@ -29,7 +29,7 @@
   POST   /console/documents/{document_id}/reindex
   DELETE /console/documents/{document_id}
 
-HTTP 数据面（8 个业务接口，/api/v1/*）：
+HTTP 数据面（/api/v1/*）：
   GET    /api/v1/auth/me
   POST   /api/v1/knowledge-bases/create
   GET    /api/v1/knowledge-bases
@@ -38,6 +38,7 @@ HTTP 数据面（8 个业务接口，/api/v1/*）：
   POST   /api/v1/documents/{document_id}/reindex
   DELETE /api/v1/documents/{document_id}
   POST   /api/v1/rag/retrieve
+  POST   /api/v1/rag/research          （第 11 步 C 票：受控 Research，默认无授权=20013）
 
 另有一个不进业务契约的探活口 ``GET /health``（不出现在 OpenAPI 文档里）。
 
