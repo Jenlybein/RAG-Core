@@ -454,7 +454,9 @@ def test_the_langfuse_sink_carries_the_query_in_every_span(tmp_path: Path) -> No
     for name, duration_ms in SIX_SPANS:
         sink.record_span(TRACE_ID, name, duration_ms)
 
-    assert [obs["metadata"]["query"] for obs in client.observations] == [SENTINEL_QUERY] * len(SIX_SPANS)
+    assert [obs["metadata"]["query"] for obs in client.observations] == [SENTINEL_QUERY] * len(
+        SIX_SPANS
+    )
 
 
 def test_the_jsonl_sink_drops_the_query(tmp_path: Path) -> None:
