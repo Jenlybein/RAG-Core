@@ -209,7 +209,7 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
     async def _update_status(*_a: Any, **_k: Any) -> None:
         return None
 
-    monkeypatch.setattr(document_repository, "get_by_id_async", _get_by_id)
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
     monkeypatch.setattr(document_repository, "update_status", _update_status)
     monkeypatch.setattr(

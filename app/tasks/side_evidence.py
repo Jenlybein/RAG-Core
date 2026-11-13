@@ -27,7 +27,7 @@ from typing import Any
 import structlog
 
 from app.celery_app import celery_app
-from app.db.worker_loop import get_worker_loop
+from app.db.worker_loop import run_in_worker_loop
 from app.services.eval_manifest import REPO_ROOT
 
 logger = structlog.get_logger(__name__)
@@ -88,7 +88,7 @@ def run_side_evidence_task(
             )
             return {"status": "failed", "run_id": run_id}
         # 投**工厂**而不是协程对象：协程在常驻循环里才被创建，从那一刻起属于那个循环。
-        result = get_worker_loop().run(
+        result = run_in_worker_loop(
             lambda: _run_side_evidence(
                 cases=cases,
                 out_dir=target,

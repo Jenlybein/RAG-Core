@@ -43,7 +43,7 @@ from app.celery_app import celery_app
 from app.core.exceptions import AppError, ErrorCode
 from app.db.session_factory import async_session_factory
 from app.db.transaction import async_commit_now, async_rollback_now
-from app.db.worker_loop import get_worker_loop
+from app.db.worker_loop import run_in_worker_loop
 from app.providers.llm import set_role_resolver
 from app.repositories import document_repository
 from app.services.indexing_service import INDEXING_FAILED_MESSAGE, IndexingService
@@ -82,7 +82,7 @@ async def _mark_failed(
     """
 
     await async_rollback_now(db)
-    doc = await document_repository.get_by_id_async(db, document_id)
+    doc = await document_repository.get_by_id(db, document_id)
     if doc is None:
         return
     await document_repository.update_status(
@@ -211,7 +211,7 @@ def _run_indexing(
         retries = self.request.retries
         max_retries = self.max_retries
         # 投**工厂**而不是协程对象：协程在常驻循环里才被创建，从那一刻起属于那个循环。
-        get_worker_loop().run(
+        run_in_worker_loop(
             lambda: _index_in_the_worker_loop(
                 document_id,
                 tenant_id=tenant_id,

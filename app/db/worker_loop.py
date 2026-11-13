@@ -307,11 +307,26 @@ def reset_worker_loop() -> None:
 # 解释器退出，但**连接会不会被关**取决于这里有没有跑过一次 dispose。
 atexit.register(shutdown_worker_loop)
 
+def run_in_worker_loop(factory: Callable[[], Awaitable[T]]) -> T:
+    """把**工厂**投进本进程的常驻循环并等结果。
+
+    Celery 任务体共用这一句：协程在循环里才被创建，从那一刻起它的连接属于那个循环
+    （ADR-0023）。``factory`` 不能是协程对象——那样协程会先在任务线程里创建，再去别的
+    循环里跑，症状是 ``attached to a different loop``。
+
+    与 :meth:`WorkerLoop.run` 的差别只有一个：这里不暴露 ``timeout``，因为真实任务的
+    预算归 Celery 与各 Provider（``soft_time_limit``），任务体不该再定一个数字。
+    """
+
+    return get_worker_loop().run(factory)
+
+
 __all__ = [
     "SHUTDOWN_GRACE_SECONDS",
     "START_TIMEOUT_SECONDS",
     "WorkerLoop",
     "get_worker_loop",
+    "run_in_worker_loop",
     "new_worker_loop",
     "reset_worker_loop",
     "shutdown_worker_loop",

@@ -118,7 +118,7 @@
 - **异步引擎的连接池绑在创建它的循环上**，而 Worker 的循环是「每任务一个、跑完即关」，于是「连接归谁管」第一次成了需要决定的问题；
 - 选常驻循环之后，任务体把**工厂**投进去（`get_worker_loop().run(lambda: ...)`），第一次 `connect` 发生在那个循环里；
 - **两个任务都接上了**：索引任务在票 #132 接线，旁证跑批（`app/tasks/side_evidence.py`）曾长期留着 `asyncio.run(_run_in_its_own_loop(...))` + `finally: await aclose_http_client()` 的旧形状，票 #137 的评审才发现并改掉。常驻循环之后，任务体**绝不能自己关共享客户端**——那会掐掉下一个任务要用的池子；关闭只发生在 `worker_process_shutdown`（见 ADR-0023）。
-- **提交之后的投递也不占循环**：`apply_async` 是同步 broker 写，`after_commit` 回调在事件循环上。四处登记点（上传 / 重建 / 控制台重建 / 控制台删除）统一走 `index_dispatch.enqueue_document_after_commit`，由 `asyncio.to_thread` 把 publish 交给线程；同步的 `enqueue_document` 保留给运维脚本。Celery 若提供可 await 的发布通道，这一层就该删（翻案条件）。
+- **提交之后的投递也不占循环**：`apply_async` 是同步 broker 写，`after_commit` 回调在事件循环上。三处登记点（上传 `document_service`、控制台重建 `console_kb_service`、数据面重建 `routes/documents`）统一走 `index_dispatch.enqueue_document_after_commit`，由 `asyncio.to_thread` 把 publish 交给线程；同步的 `enqueue_document` 保留给运维脚本。Celery 若提供可 await 的发布通道，这一层就该删（翻案条件）。
 - 收尾上移到 `worker_process_shutdown`：在循环**还活着的时候** `dispose` 引擎、关 HTTP 客户端，然后才停循环。
 
 **翻案条件**：见 ADR-0023「翻案条件」三条（任务内高并发多文档 / 换 asyncpg / Celery 换 async 框架）。本文不重复。

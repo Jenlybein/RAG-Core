@@ -14,7 +14,7 @@
 
 入库与索引链路（上传登记、Worker 抢占 / 回写 / 释放租约）与控制面（树、重建、删除、读原文）
 都走 ``AsyncSession``，所以本模块的 ``*_async`` 孪生覆盖这两条路径上的全部读与写（后缀与
-检索链路的 ``get_by_id_for_tenant`` / ``fetch_meta_by_chunk_ids_async`` 一致）。
+检索链路的 ``get_by_id_for_tenant`` / ``fetch_meta_by_chunk_ids`` 一致）。
 **语句本身只写一遍**（``_claim_statement`` / ``_release_statement`` / ``_prepare_statement`` /
 两个计数的 statement builder），同步与异步两个入口执行的是同一条 SQL——CAS 的判定条件与
 租约语义因此不可能在两套入口之间漂移。
@@ -48,7 +48,7 @@ def get_by_id_for_tenant(db: Session, document_id: str, *, tenant_id: str) -> Do
     ADR-0006（不做文档级 ACL，隔离只到租户 + Key 的数据范围）要求所有按 id 取
     文档的数据面路径都强制带租户过滤，调用方拿到 ``None`` 后统一按
     ``NOT_FOUND``（20016）处理，不泄露存在性。租户是无默认值的强制参数，不是
-    可选过滤器；无租户的 :func:`get_by_id` 只留给 Worker 任务路径。
+    可选过滤器；无租户的那一条（:func:`get_by_id`，异步）只留给 Worker 任务路径。
     """
 
     stmt = select(Document).where(
@@ -339,8 +339,8 @@ async def create(db: AsyncSession, doc: Document) -> Document:
     return doc
 
 
-async def get_by_id_async(db: AsyncSession, document_id: str) -> Document | None:
-    """按主键取，**不带租户过滤**：只给 Worker 任务用（语义同 :func:`get_by_id`）。"""
+async def get_by_id(db: AsyncSession, document_id: str) -> Document | None:
+    """按主键取，**不带租户过滤**：只给 Worker 任务用（同步的那一份已随 #134 删除）。"""
 
     document: Document | None = await db.get(Document, document_id)
     return document

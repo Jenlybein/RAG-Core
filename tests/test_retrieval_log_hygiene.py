@@ -268,3 +268,28 @@ def test_retrieval_server_error_logs_stay_clean(
     assert INTERNAL_DETAIL in json.dumps(errors[0]), "内部细节只进日志，供排障回查"
 
     _assert_no_sensitive_values(log_dir)
+
+
+def test_observability_is_never_called_synchronously_from_a_request_path() -> None:
+    """观测是旁路，但旁路不等于免费：落盘 / SDK 网络写不能占事件循环。
+
+    票 #137 的评审抓到过这一条：`rag_service.retrieve` 与 `retrieval_feedback.submit_feedback`
+    都是 ``async def``，里面却直接调同步的 `emit_retrieval_trace` / `emit_feedback_score`。
+    默认去向是 JSONL（mkdir + open + write + prune），换成 langfuse 时是同步 SDK 的网络写
+    ——都压在循环上，而压测账本只插桩数据库，这条从来没被计量过。
+
+    这里断言**请求路径上的调用点用的是 `_off_loop` 入口**（它内部 `asyncio.to_thread`）。
+    抓的是「将来有人把 `await` 和 `_off_loop` 一起改回去」。
+    """
+
+    from pathlib import Path as _Path
+
+    for name in ("app/services/rag_service.py", "app/services/retrieval_feedback.py"):
+        source = _Path(name).read_text(encoding="utf-8")
+        assert "_off_loop" in source, f"{name} 不再走观测的异步入口"
+        # 直接调同步实现（不带 await / 不带上 _off_loop）就是回到了循环上。
+        for banned in ("    emit_retrieval_trace(", "    emit_feedback_score("):
+            assert banned not in source, (
+                f"{name} 里出现了同步观测调用：{banned.strip()} —— "
+                "默认去向是文件 / SDK 写，它会占住事件循环"
+            )

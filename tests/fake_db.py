@@ -622,11 +622,12 @@ def override_all_db(app: Any, session: Any) -> AsyncSessionAdapter:
     **真的去连 PostgreSQL**：默认套件离线，症状是登录一律 ``20010``（读不到账号）或
     ``InterfaceError``（没有库可连），而不是「夹具少了一行」。
 
-    **票 #134 起只剩异步那两个入口**：``get_db`` / ``get_transaction`` 连同同步引擎一起
-    删了，请求路径上没有第二种写法可换。``get_async_db`` 给读、``get_async_transaction``
-    给写，后一条**不另外造替身**——生产的事务入口只要会话上有 ``info`` / ``commit`` /
-    ``rollback`` 就能跑，于是「一笔请求 = 一笔事务、异常整笔回滚」这些纪律在离线套件里
-    照旧被真实代码执行一遍，而不是被一个假的 no-op 事务糊过去。
+    **票 #134 起请求路径上只剩异步那两个入口**：``get_db`` / ``get_transaction`` 两个
+    FastAPI 依赖已删除（同步引擎与 ``SessionLocal`` 仍在，只服务三处不在事件循环上的读者
+    与 Alembic，见 ADR-0024 决策四），请求路径上没有第二种写法可换。``get_async_db`` 给读、
+    ``get_async_transaction`` 给写，后一条**不另外造替身**——生产的事务入口只要会话上有
+    ``info`` / ``commit`` / ``rollback`` 就能跑，于是「一笔请求 = 一笔事务、异常整笔回滚」
+    这些纪律在离线套件里照旧被真实代码执行一遍，而不是被一个假的 no-op 事务糊过去。
 
     **异步那一面是同一个对象的薄适配**（:class:`AsyncSessionAdapter`），不是第二个替身：
     行、``added``、``statements``、``commits`` 全都记在**同一个**对象上，于是用例既有的

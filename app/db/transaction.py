@@ -16,7 +16,7 @@
 路径上**的两类调用者：运维脚本与旁路短事务（ADR-0024 决策四）。
 
 **``after_commit`` 的动作现在分两种**：协程动作由 :class:`AsyncTransaction` ``await``
-（删缓存、投递任务）；同步动作直接调用——但**不许在事件循环上做阻塞 I/O**，所以四处
+（删缓存、投递任务）；同步动作直接调用——但**不许在事件循环上做阻塞 I/O**，所以三处
 Celery 投递统一走 ``index_dispatch.enqueue_document_after_commit``（``to_thread``）。
 反过来，同步 :func:`Transaction` 收到协程动作会当场抛 ``TypeError``：它没法 ``await``，
 静默丢掉那个协程的后果是「请求成功、副作用没发生」，宁可炸。

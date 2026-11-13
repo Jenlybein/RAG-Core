@@ -186,7 +186,7 @@ def _patch_service_environment(
         calls.append("parse")
         return ParsedDocument(content=target.content or "raw text", source_type="markdown")
 
-    monkeypatch.setattr(document_repository, "get_by_id_async", _get_by_id)
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _try_claim)
     monkeypatch.setattr(document_repository, "update_status", _update_status)
     monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
@@ -324,7 +324,7 @@ def test_service_rejects_missing_document(monkeypatch: pytest.MonkeyPatch) -> No
     async def _missing(_db: Any, _id: str) -> None:
         return None
 
-    monkeypatch.setattr(indexing_service.document_repository, "get_by_id_async", _missing)
+    monkeypatch.setattr(indexing_service.document_repository, "get_by_id", _missing)
 
     with pytest.raises(AppError) as excinfo:
         asyncio.run(env.service.index_existing_document(env.session, DOC_ID))
@@ -525,7 +525,7 @@ def test_task_marks_failed_for_non_retryable_error(monkeypatch: pytest.MonkeyPat
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    monkeypatch.setattr(document_repository, "get_by_id_async", _get_by_id)
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     task = _FakeTask(retries=0, max_retries=2)
 
     with capture_logs() as logs:
@@ -559,7 +559,7 @@ def test_task_marks_failed_when_retries_are_exhausted(monkeypatch: pytest.Monkey
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    monkeypatch.setattr(document_repository, "get_by_id_async", _get_by_id)
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     task = _FakeTask(retries=2, max_retries=2)
 
     with capture_logs() as logs:

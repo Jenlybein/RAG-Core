@@ -277,24 +277,22 @@ def test_the_suite_never_reaches_a_real_broker() -> None:
 
     这条用例是赔出来的：漏桩的用例在开发机上会静默连上本机 Redis、一路绿，到了没有
     Redis 的 CI 才变成 500 + `Connection refused`（票 #137 的 CI 就这么红的）。
-    断言的是「底层发布器不是生产实现」——它抓的是**将来有人把夹具删掉**。
+    断言走**公开入口**（`index_publisher_is_injected`），不摸私有字段；它抓的是
+    「将来有人把夹具删掉」。
 
     桩打在 ``apply_async`` 那一层，所以 ``enqueue_document`` 里 kwargs 组装与
-    ``task_id`` 形状**仍然被真实代码执行**（票 #137 评审：别让离线夹具把接线也盖掉）。
+    ``task_id`` 形状**仍然被真实代码执行**（下一条用例证明这一点）。
     """
 
     from app.services import index_dispatch, side_evidence_dispatch
-    from tests.conftest import _RecordingPublisher
 
-    assert isinstance(index_dispatch._publisher, _RecordingPublisher), (
+    assert index_dispatch.index_publisher_is_injected(), (
         "索引投递缝的发布器又变回生产实现了：默认套件会在开发机上静默连 Broker，只在 CI 上红"
     )
-    assert isinstance(side_evidence_dispatch._side_evidence_publisher, _RecordingPublisher), (
-        "旁证投递缝同上"
-    )
+    assert side_evidence_dispatch.side_evidence_publisher_is_injected(), "旁证投递缝同上"
 
 
-def test_dispatch_wiring_is_real_even_when_offline() -> None:
+def test_dispatch_wiring_is_real_even_when_offline(_offline_dispatch: tuple) -> None:
     """离线替身**不许**把「投递接线」一起盖掉：kwargs 与 task_id 得由真实代码组装。
 
     构造一条最小的调用，然后读记账器：``task_id`` 必须是 ``doc:<id>`` 形状，``kwargs``
@@ -311,7 +309,8 @@ def test_dispatch_wiring_is_real_even_when_offline() -> None:
         reparse=True,
     )
 
-    calls = index_dispatch._publisher.calls
+    index_calls, _side_calls = _offline_dispatch
+    calls = index_calls
     assert len(calls) == 1
     assert calls[0]["task_id"] == "doc:doc-wiring"
     assert calls[0]["kwargs"] == {

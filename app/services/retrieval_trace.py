@@ -27,7 +27,7 @@ from __future__ import annotations
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session_factory import async_session_factory, close_quietly_async
+from app.db.session_factory import async_session_factory, close_quietly
 from app.db.transaction import async_transaction
 from app.models.retrieval_trace import RetrievalTrace
 from app.repositories import retrieval_trace_repository
@@ -85,7 +85,7 @@ async def record_retrieval_trace(
             error=type(exc).__name__,
         )
     finally:
-        await close_quietly_async(session, on_failure=_report_close_failure)
+        await close_quietly(session, on_failure=_report_close_failure)
 
 
 def _report_close_failure(error_type: str) -> None:

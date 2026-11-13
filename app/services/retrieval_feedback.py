@@ -26,9 +26,9 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.db.session_factory import async_session_factory, close_quietly_async
+from app.db.session_factory import async_session_factory, close_quietly
 from app.db.transaction import async_transaction
-from app.observability import emit_feedback_score
+from app.observability import emit_feedback_score_off_loop
 from app.repositories import retrieval_feedback_repository, retrieval_trace_repository
 
 logger = structlog.get_logger(__name__)
@@ -58,7 +58,8 @@ async def submit_feedback(
     await _write_locally(log_id=log_id, tenant_id=tenant_id, score=score, comment=comment)
     # 本地已经是权威了，这一步才是旁路（顺序不能反：先推后写，就变成「观测挂了这次反馈
     # 就不算数」）。推失败只留 warning，响应照常返回（#105 决策 2）。
-    emit_feedback_score(trace_id=trace_id, score=score, comment=comment)
+    # 走 `_off_loop` 入口：同步 SDK / JSONL 的写不能占事件循环（票 #137 的评审抓到的）。
+    await emit_feedback_score_off_loop(trace_id=trace_id, score=score, comment=comment)
     return {"log_id": log_id, "score": score, "comment": comment}
 
 
@@ -138,7 +139,7 @@ async def _write_locally(
         )
         raise AppError(ErrorCode.FEEDBACK_FAILED) from exc
     finally:
-        await close_quietly_async(session, on_failure=_report_close_failure)
+        await close_quietly(session, on_failure=_report_close_failure)
 
 
 def _report_close_failure(error_type: str) -> None:

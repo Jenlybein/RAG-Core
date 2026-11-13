@@ -89,7 +89,8 @@ def _session_dependencies(path: str) -> set[Any]:
 def test_the_sync_session_dependencies_are_gone() -> None:
     """**票 #134 起这条守卫从「没被用到」升级为「不存在」**（ADR-0024）。
 
-    ``get_db`` / ``get_transaction`` 连同同步引擎一起删了。留着「它们没被依赖树用到」
+    ``get_db`` / ``get_transaction`` 这两个依赖已删（同步引擎与 ``SessionLocal`` 仍在，只服务
+    三处不在事件循环上的读者与 Alembic）。留着「它们没被依赖树用到」
     这种断言，等于允许有人把其中一个再加回模块里而没人发现——那时它仍然「没被用到」，
     守卫照样绿。所以这里直接断言那两名字不在模块上。
     """

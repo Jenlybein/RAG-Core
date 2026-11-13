@@ -136,11 +136,12 @@ def _offline_dispatch():
 
     from app.services import index_dispatch, side_evidence_dispatch
 
-    recorder = _RecordingPublisher()
-    index_dispatch.set_task_publisher(recorder)
-    side_evidence_dispatch.set_side_evidence_publisher(recorder)
+    index_recorder = _RecordingPublisher()
+    side_evidence_recorder = _RecordingPublisher()
+    index_dispatch.set_task_publisher(index_recorder)
+    side_evidence_dispatch.set_side_evidence_publisher(side_evidence_recorder)
     try:
-        yield recorder.calls
+        yield index_recorder.calls, side_evidence_recorder.calls
     finally:
         index_dispatch.set_task_publisher(None)
         side_evidence_dispatch.set_side_evidence_publisher(None)

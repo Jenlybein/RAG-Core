@@ -274,7 +274,7 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
     monkeypatch.setattr(service, "_collapse_results", _no_collapse)
     monkeypatch.setattr(service, "_empty_reason", _empty)
     monkeypatch.setattr(service, "record_retrieval_trace", _no_trace)
-    monkeypatch.setattr(service, "emit_retrieval_trace", lambda **kwargs: None)
+    monkeypatch.setattr(service, "emit_retrieval_trace_off_loop", _no_trace)
 
     factory = _matching_factory(_StubRerank())
     asyncio.run(

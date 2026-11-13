@@ -90,7 +90,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION, default_index_versions
-from app.observability import emit_retrieval_trace
+from app.observability import emit_retrieval_trace_off_loop
 from app.observability.stage_timing import (
     STAGE_COLLAPSE,
     STAGE_KEYWORD_RECALL,
@@ -327,7 +327,7 @@ async def retrieve(
     # ``query`` 单独一个参数（#110 复盘后补）：它是**原文通道**，收不收由去向决定——
     # 观测栈收（低分样本导出要靠它），本地文件丢。放进 attributes 会让「结构化事实」
     # 与原文混成一份，也让 jsonl 那一路无法把它们分开。
-    emit_retrieval_trace(
+    await emit_retrieval_trace_off_loop(
         trace_id=trace_id,
         spans=timer.spans(),
         query=query,
@@ -452,7 +452,7 @@ async def _collapse_results(
     if not kb_ids or not document_ids:
         return chunks
 
-    metas = await chunk_repository.fetch_meta_by_chunk_ids_async(
+    metas = await chunk_repository.fetch_meta_by_chunk_ids(
         db,
         tenant_id=tenant_id,
         kb_ids=kb_ids,
@@ -488,7 +488,7 @@ async def _collapse_results(
         }
     )
     raw_rows = (
-        await chunk_repository.fetch_unit_rows_async(
+        await chunk_repository.fetch_unit_rows(
             db,
             tenant_id=tenant_id,
             document_ids=document_ids,
@@ -567,7 +567,7 @@ async def _with_locating_fields(
         kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
         if not ids or not kb_ids:
             return chunks
-        metas = await chunk_repository.fetch_meta_by_chunk_ids_async(
+        metas = await chunk_repository.fetch_meta_by_chunk_ids(
             db, tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=ids
         )
     for chunk in chunks:
@@ -616,7 +616,7 @@ async def _empty_reason(
 
     if chunks:
         return None
-    indexed = await chunk_repository.count_by_kb_ids_async(
+    indexed = await chunk_repository.count_by_kb_ids(
         db,
         tenant_id=tenant_id,
         kb_ids=kb_ids,

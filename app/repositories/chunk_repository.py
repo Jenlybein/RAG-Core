@@ -39,7 +39,7 @@ def _meta_statement(
     )
 
 
-async def fetch_meta_by_chunk_ids_async(
+async def fetch_meta_by_chunk_ids(
     db: AsyncSession, *, tenant_id: str, kb_ids: list[str], chunk_ids: list[str]
 ) -> dict[tuple[str, str], dict]:
     """:func:`fetch_meta_by_chunk_ids` 的异步面（检索链路，第 11 步票 #127）。"""
@@ -101,7 +101,7 @@ def _group_unit_rows(
     return grouped
 
 
-async def fetch_unit_rows_async(
+async def fetch_unit_rows(
     db: AsyncSession,
     *,
     tenant_id: str,
@@ -137,7 +137,7 @@ def _count_by_kb_ids_statement(
     return stmt
 
 
-async def count_by_kb_ids_async(
+async def count_by_kb_ids(
     db: AsyncSession, *, tenant_id: str, kb_ids: list[str], index_version: str | None = None
 ) -> int:
     """:func:`count_by_kb_ids` 的异步面（检索链路，第 11 步票 #127）。

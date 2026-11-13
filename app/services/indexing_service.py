@@ -155,7 +155,7 @@ class IndexingService:
         由任务体（``app/tasks/indexing.py``）回滚并置失败，与同步栈时同一分工。
         """
 
-        doc = await document_repository.get_by_id_async(db, document_id)
+        doc = await document_repository.get_by_id(db, document_id)
         if doc is None:
             raise AppError(ErrorCode.NOT_FOUND, "document not found")
 

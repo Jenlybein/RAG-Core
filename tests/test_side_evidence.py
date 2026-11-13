@@ -590,7 +590,7 @@ def test_the_task_uses_the_resident_loop_and_never_closes_shared_clients(
             seen["is_factory"] = callable(factory) and not asyncio.iscoroutine(factory)
             return {"status": "ok", "summary": {"scored": 1}}
 
-    monkeypatch.setattr(task_mod, "get_worker_loop", lambda: _FakeLoop())
+    monkeypatch.setattr(task_mod, "run_in_worker_loop", lambda factory: _FakeLoop().run(factory))
 
     from app.services import side_evidence as svc
 

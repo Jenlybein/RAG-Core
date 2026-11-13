@@ -140,7 +140,7 @@ def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]
     async def _claim(*_a: Any, **_k: Any) -> bool:
         return True
 
-    monkeypatch.setattr(document_repository, "get_by_id_async", _get_by_id)
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
     monkeypatch.setattr(document_repository, "update_status", _record_update_status)
     monkeypatch.setattr(
