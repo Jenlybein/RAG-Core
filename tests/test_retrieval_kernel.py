@@ -678,6 +678,7 @@ def _options() -> RetrievalOptions:
         expand_table_rows=False,
         rerank=False,
         rewrite=False,
+        orchestration=False,
     )
 
 
