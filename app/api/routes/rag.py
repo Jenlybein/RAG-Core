@@ -1,20 +1,28 @@
-"""检索与反馈接口：``POST /api/v1/rag/retrieve``、``POST /api/v1/rag/feedback``。
+"""检索、受控 Research 与反馈接口。
 
-检索只返回结构化切片 + 分数 + 元数据；不返回 context_text，不生成答案。
+``POST /api/v1/rag/retrieve``：只返回结构化切片 + 分数 + 元数据；不返回 context_text，
+不生成答案。``POST /api/v1/rag/research``（第 11 步票 #148）：固定五步的受控 Research，
+唯一的生成出口（ADR-0026，最终回答位在 #149 落地）。``POST /api/v1/rag/feedback``：
+给一次检索打分。
+
 头部带 API Key，tenant_id 由服务端从 Key 解出，不进请求体；哪些库能查由这把 Key 的
 密钥配置圈定（六道关卡的第二道，见 ``app.services.data_scope``）。
 
 请求体只有 ``kb_ids`` + ``query``（ADR-0010「第三次修订」）。检索方式、返回条数、
 重排、改写与两个结果形状开关**从密钥配置解析**，而且要过五道门禁
 （``app.services.profile_policy``）——请求里既没有这些字段，也没有任何一处代码去读它们。
+Research 那条请求体**同样只有这两个字段**（ADR-0026 §1）：轮次、条数、要点数一概不接受，
+硬上限写死在 ``app.services.research_limits`` 里。
 
 本路由只做两件判定之外的事：把身份与请求递进 ``app.services.retrieval_gate``（白名单 →
-档位门禁 → 配额 → 召回 → 记账的唯一实现），再把已经校验成形的数据装进 ``{code, msg,
-data}`` 外壳。判定本身不在这里：判定写进路由，MCP 一侧就得再写一遍。
+档位门禁 → 配额 → 召回 → 记账的唯一实现）或 ``app.services.research_gate``（白名单 →
+能力位 → 子检索内核 → 固定五步），再把已经校验成形的数据装进 ``{code, msg, data}`` 外壳。
+判定本身不在这里：判定写进路由，MCP 一侧就得再写一遍。
 
-**一条会话、整条链路 ``await``**（第 11 步收口）：两条路由都声明 ``get_async_db``，
+**一条会话、整条链路 ``await``**（第 11 步收口）：三条路由都声明 ``get_async_db``，
 身份由 ``get_current_key``（异步依赖）在同一个 ``AsyncSession`` 上解出；检索链路、
-反馈的归属校验与本地写入一路 ``await`` 到驱动，请求路径上没有任何一次同步读库。
+Research 的可见性校验与范围解析、反馈的归属校验与本地写入一路 ``await`` 到驱动，请求
+路径上没有任何一次同步读库。
 
 反馈（#105）走同一个身份依赖，但**没有关卡**：它不改检索链路，只对「已经发生过的那一次」
 打分。判定（分数区间、归属、``trace_id`` 对得上）全在
@@ -31,7 +39,9 @@ from app.db.async_session import get_async_db
 from app.schemas.common import ApiResponse, ok
 from app.schemas.feedback import FeedbackData, FeedbackRequest
 from app.schemas.rag import RetrieveData, RetrieveRequest
+from app.schemas.research import ResearchData, ResearchRequest
 from app.services import retrieval_feedback
+from app.services.research_gate import gated_research
 from app.services.retrieval_gate import gated_retrieve
 
 router = APIRouter()
@@ -52,6 +62,35 @@ async def retrieve(
         query=payload.query,
     )
     return ok(result)
+
+
+@router.post(
+    "/rag/research",
+    response_model=ApiResponse[ResearchData],
+    summary="一次受控 Research（多轮检索，约 30 秒）",
+)
+async def research(
+    payload: ResearchRequest,
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+) -> ApiResponse[ResearchData]:
+    """固定五步：规划 → 并行检索 → 判断 → 补证 → （最终回答位，C3 落地）。
+
+    请求体与 ``/rag/retrieve`` 逐字段相同（只有 ``kb_ids`` + ``query``）：档位、条数、轮次
+    都不接受，硬上限写死在代码里。没有 Research 授权时这里是明确的 ``20013``，**不降级**成
+    一次普通检索——静默降级会让调用方以为自己在用 Research。
+
+    判定与装配全在 ``app.services.research_gate``（MCP 的第三个工具调的将是同一个函数），
+    本路由只把身份、请求与会话递进去，再把结果装进 ``{code, msg, data}`` 外壳。
+    """
+
+    data = await gated_research(
+        db,
+        key=key,
+        kb_ids=payload.kb_ids,
+        query=payload.query,
+    )
+    return ok(data)
 
 
 @router.post("/rag/feedback", response_model=ApiResponse[FeedbackData], summary="给一次检索打分")
