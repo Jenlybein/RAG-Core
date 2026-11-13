@@ -346,9 +346,7 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             # 重排关着时 ``rerank`` 仍是字典（applied=false …），身份键是 null；它们必须
             # 真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了这两个键」。
             assert _RERANK_IDENTITY_RE.search(response.text), "身份键摘除也必须真的命中"
-        hashes[mode] = hashlib.sha256(
-            _without_trace_id(response.text).encode("utf-8")
-        ).hexdigest()
+        hashes[mode] = hashlib.sha256(_without_trace_id(response.text).encode("utf-8")).hexdigest()
     return hashes
 
 

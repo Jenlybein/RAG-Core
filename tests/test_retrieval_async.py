@@ -215,9 +215,7 @@ def test_the_visibility_guard_is_the_async_one(monkeypatch: pytest.MonkeyPatch) 
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
-        AsyncRecordingSession()
-    )
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncRecordingSession()
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:

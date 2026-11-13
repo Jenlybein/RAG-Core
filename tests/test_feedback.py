@@ -400,9 +400,7 @@ def test_a_failed_local_write_is_a_business_failure_not_a_server_error(
     def explode() -> None:
         raise RuntimeError("psycopg: connection refused")
 
-    with _offline_api(
-        monkeypatch, traces=[_trace_row()], session_factory=explode
-    ) as harness:
+    with _offline_api(monkeypatch, traces=[_trace_row()], session_factory=explode) as harness:
         body = harness.submit()
 
     assert body["code"] == ErrorCode.FEEDBACK_FAILED
@@ -423,9 +421,7 @@ def test_a_write_that_fails_half_way_rolls_back_and_reports_the_same_code(
 
     write_session = _BrokenWriteSession()
 
-    with _offline_api(
-        monkeypatch, traces=[_trace_row()], write_session=write_session
-    ) as harness:
+    with _offline_api(monkeypatch, traces=[_trace_row()], write_session=write_session) as harness:
         body = harness.submit()
 
     assert body["code"] == ErrorCode.FEEDBACK_FAILED

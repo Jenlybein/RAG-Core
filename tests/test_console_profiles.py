@@ -87,7 +87,12 @@ def _plan_rows() -> list[Plan]:
 
 
 def _account(
-    account_id: str, username: str, password: str, *, role: str = "user", tenant_id: str | None = None
+    account_id: str,
+    username: str,
+    password: str,
+    *,
+    role: str = "user",
+    tenant_id: str | None = None,
 ) -> Account:
     return Account(
         id=account_id,

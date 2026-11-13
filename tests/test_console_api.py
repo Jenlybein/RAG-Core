@@ -44,8 +44,6 @@ TENANT_BETA = "tenant_beta"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
@@ -54,9 +52,7 @@ class _Harness:
     db_view: Any = None
 
     def login(self, username: str, password: str) -> Any:
-        return self.client.post(
-            "/console/login", json={"username": username, "password": password}
-        )
+        return self.client.post("/console/login", json={"username": username, "password": password})
 
     def data(self, response: Any) -> Any:
         body = response.json()
@@ -228,9 +224,7 @@ def test_a_non_admin_gets_forbidden_on_every_admin_endpoint(console: _Harness) -
         response = console.client.request(method, path)
         assert response.json()["code"] == 20011, path
 
-    response = console.client.patch(
-        "/console/plans/3", json={"max_kb": 2}, headers=WRITE_HEADERS
-    )
+    response = console.client.patch("/console/plans/3", json={"max_kb": 2}, headers=WRITE_HEADERS)
     assert response.json()["code"] == 20011
 
     response = console.client.patch(
@@ -508,9 +502,7 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
         fresh = await plan_service.resolve_plan(console.db_view, 3, cache=console.cache)
         assert fresh.max_kb == 2
         with pytest.raises(AppError) as raised:
-            await static_quota.ensure_kb_quota(
-                console.db_view, tenant_id=TENANT_ALPHA, plan=fresh
-            )
+            await static_quota.ensure_kb_quota(console.db_view, tenant_id=TENANT_ALPHA, plan=fresh)
         assert raised.value.code == ErrorCode.QUOTA_EXCEEDED
 
     asyncio.run(_after_patch())
@@ -745,8 +737,7 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
         "limit": 100000,
         "source": "not_tracked",
         "note": (
-            "today's usage is not tracked: rate limiting is disabled "
-            "(RATE_LIMIT_ENABLED=false)"
+            "today's usage is not tracked: rate limiting is disabled (RATE_LIMIT_ENABLED=false)"
         ),
     }
     assert exploding.calls == [], "关掉时连一条 Redis 命令都不该发"
@@ -994,5 +985,3 @@ def test_a_negative_audit_offset_is_a_parameter_error(console: _Harness) -> None
     _seed_audits(console)
 
     assert console.client.get("/console/audit-logs?offset=-1").json()["code"] == 20002
-
-

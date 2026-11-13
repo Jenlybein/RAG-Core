@@ -268,8 +268,10 @@ def _run_cli(tmp_path: Path, *extra: str) -> tuple[int, dict[str, Any], str]:
         ]
     )
     assert code == 0
-    return code, json.loads(json_out.read_text(encoding="utf-8")), json_out.read_text(
-        encoding="utf-8"
+    return (
+        code,
+        json.loads(json_out.read_text(encoding="utf-8")),
+        json_out.read_text(encoding="utf-8"),
     )
 
 

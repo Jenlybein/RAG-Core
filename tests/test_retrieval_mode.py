@@ -159,8 +159,8 @@ def offline_retrieval(monkeypatch: pytest.MonkeyPatch) -> Iterator[dict[str, Any
     from app.api.deps import get_current_key
 
     # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
-    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
-        AsyncSessionAdapter(EmptySession())
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        EmptySession()
     )
 
     main.app.dependency_overrides[get_current_key] = IDENTITY.context

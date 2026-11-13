@@ -173,9 +173,7 @@ def _offline_client(
             else _FakeKeyword([_keyword_row("c1", score=12.4), _keyword_row("c3", score=9.1)])
         ),
     )
-    monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant", async_visible_kb
-    )
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
 
     if llm is not None:
         # 生产工厂已不再返回大模型重排（#116），所以替身接在**既有**的工厂出口上：

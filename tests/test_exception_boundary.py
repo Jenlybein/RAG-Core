@@ -77,7 +77,6 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     service = importlib.import_module("app.services.rag_service")
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _OfflineEmbeddingProvider())
 
-
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
     from app.core.config import settings

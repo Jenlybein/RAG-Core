@@ -187,6 +187,7 @@ def test_concurrent_tasks_stay_under_the_pool_ceiling_and_return_every_connectio
 
 # ───────────────────────────────────────────── B：任务级 NullPool（没选的方案）
 
+
 def test_the_task_level_nullpool_opens_a_new_connection_per_task() -> None:
     """每任务一条新连接（两次 connect、两个后端 pid），但每次都关得干净。"""
 

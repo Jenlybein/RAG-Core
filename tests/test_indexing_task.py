@@ -437,7 +437,7 @@ def _patch_task_runtime(
     本身是真的——任务体那句 ``get_worker_loop().run(...)`` 因此仍然被真的执行一遍。
     """
 
-    monkeypatch.setattr(tasks, "async_session_factory", lambda: (lambda: session))
+    monkeypatch.setattr(tasks, "async_session_factory", lambda: lambda: session)
     monkeypatch.setattr(tasks, "IndexingService", lambda: service)
     releases: list[dict[str, Any]] = []
 
@@ -445,9 +445,7 @@ def _patch_task_runtime(
         session.calls.append("release-claim")
         releases.append({"document_id": document_id, "tenant_id": tenant_id})
 
-    monkeypatch.setattr(
-        tasks.document_repository, "release_index_claim_async", _release
-    )
+    monkeypatch.setattr(tasks.document_repository, "release_index_claim_async", _release)
     return releases
 
 

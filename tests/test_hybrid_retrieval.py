@@ -596,9 +596,7 @@ def test_single_vector_mode_still_fails_loudly_when_embedding_breaks(monkeypatch
     # 配置表达（票 #77 起请求体里没有它了）。
     IDENTITY.use(mode="vector")
     with _offline_client(monkeypatch, embedding=embedding, keyword=keyword) as fake:
-        response = fake["client"].post(
-            RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024"}
-        )
+        response = fake["client"].post(RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024"})
 
     assert response.status_code == 500
     assert response.json()["code"] == 50000

@@ -191,8 +191,8 @@ def _offline_client(
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
-        AsyncSessionAdapter(_FakeRequestDb(indexed_chunks=indexed_chunks))
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        _FakeRequestDb(indexed_chunks=indexed_chunks)
     )
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:

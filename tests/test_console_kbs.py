@@ -74,8 +74,6 @@ CONTENT_SENTINEL = "CONSOLE-UPLOAD-CONTENT-SENTINEL"
 CHUNK_COUNTS = {DOC_ALPHA_DONE: 4, DOC_ALPHA_FAILED: 2, DOC_BETA_DONE: 1}
 
 
-
-
 class _ConsoleSession(RecordingSession):
     """``RecordingSession`` + 两件真实会话会做的事。
 
@@ -396,9 +394,7 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         doc.error_message = None
         return True
 
-    def _count_chunks(
-        _db: Any, document_ids: list[str], *, tenant_id: str
-    ) -> dict[str, int]:
+    def _count_chunks(_db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
         assert tenant_id == Tenants.alpha_or_beta(document_ids), "切片计数必须强制带租户"
         count_calls.append(list(document_ids))
         return {document_id: CHUNK_COUNTS.get(document_id, 0) for document_id in document_ids}
@@ -443,9 +439,7 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _document_lookup_async)
     monkeypatch.setattr(document_repository, "list_by_kb_async", _list_documents_async)
     monkeypatch.setattr(document_repository, "count_by_kb", _count_documents_async)
-    monkeypatch.setattr(
-        document_repository, "count_processing_for_tenant", _count_processing_async
-    )
+    monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing_async)
     monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
     monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks_async)
     monkeypatch.setattr(console_kb_service, "get_vector_store", lambda: store)
@@ -1209,4 +1203,3 @@ def test_read_content_needs_no_anti_csrf_header(kbs: _Harness) -> None:
 
     assert response.json()["code"] == 0
     assert kbs.audit_entries() == [], "读原文不写账本"
-

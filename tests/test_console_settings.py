@@ -80,8 +80,6 @@ class _MemorySettingsCache:
         self.delete()
 
 
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
@@ -89,9 +87,7 @@ class _Harness:
     cache: _MemorySettingsCache
 
     def login(self, username: str, password: str) -> Any:
-        return self.client.post(
-            "/console/login", json={"username": username, "password": password}
-        )
+        return self.client.post("/console/login", json={"username": username, "password": password})
 
     def data(self, response: Any) -> Any:
         body = response.json()

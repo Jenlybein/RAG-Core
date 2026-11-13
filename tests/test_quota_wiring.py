@@ -290,6 +290,7 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     monkeypatch.setattr(service, "get_embedding_provider", _FakeEmbedding)
     monkeypatch.setattr(service, "get_vector_store", _FakeVectorStore)
+
     def _visible_row(kb_id: str, tenant_id: str) -> Any:
         return SimpleNamespace(
             id=kb_id,
@@ -374,9 +375,7 @@ def _seconds_from(window: QuotaWindow, span: int = 3) -> list[QuotaWindow]:
     return [QuotaWindow(qps=str(base + offset), daily=window.daily) for offset in range(span)]
 
 
-def _prefill_qps(
-    store: _FakeCounterStore, *, level: str, ident: str, limit: int
-) -> QuotaWindow:
+def _prefill_qps(store: _FakeCounterStore, *, level: str, ident: str, limit: int) -> QuotaWindow:
     """把该层级当前秒及随后两秒都预置成「已经计到上限」。"""
 
     window = _window()
@@ -385,9 +384,7 @@ def _prefill_qps(
     return window
 
 
-def _prefill_daily(
-    store: _FakeCounterStore, *, level: str, ident: str, limit: int
-) -> QuotaWindow:
+def _prefill_daily(store: _FakeCounterStore, *, level: str, ident: str, limit: int) -> QuotaWindow:
     window = _window()
     store.values[daily_key(level=level, ident=ident, window=window)] = limit
     return window
@@ -400,6 +397,7 @@ def _sum_of(store: _FakeCounterStore, prefix: str) -> int:
 
 
 # ───────────────────────────────────────────── 检索：两个错误码
+
 
 def test_a_qps_burst_is_rate_limited_with_20005(entry: _Entry) -> None:
     entry.use(policy=_policy(qps=1), plan=_plan(qps=50))
@@ -542,6 +540,7 @@ def test_the_switch_off_makes_the_gate_touch_no_redis_at_all(
 
 # ───────────────────────────────────────────── MCP：同一扇门禁，同一套码
 
+
 def test_mcp_rejects_a_qps_burst_with_the_same_code(entry: _Entry) -> None:
     entry.use(policy=_policy(qps=1), plan=_plan(qps=50))
     _prefill_qps(entry.store, level="key", ident=KEY_A, limit=1)
@@ -564,6 +563,7 @@ def test_mcp_counts_a_successful_retrieval_at_both_levels(entry: _Entry) -> None
 
 
 # ───────────────────────────────────────────── 写路径：静态资源配额
+
 
 def test_building_the_n_plus_first_knowledge_base_is_a_quota_error(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
@@ -683,6 +683,3 @@ def test_reindex_charges_the_concurrent_processing_allowance(
     body = response.json()
     assert body["code"] == ErrorCode.QUOTA_EXCEEDED
     assert entry.enqueued == [], "被拒的重建不该入队"
-
-
-

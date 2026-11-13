@@ -118,9 +118,7 @@ async def test_the_async_lookup_emits_exactly_one_tenant_scoped_statement() -> N
     from tests.fake_db import AsyncRecordingSession
 
     async_session = AsyncRecordingSession()
-    assert (
-        await kb_repo.get_by_id_for_tenant(async_session, "kb-1", tenant_id="tenant-a") is None
-    )
+    assert await kb_repo.get_by_id_for_tenant(async_session, "kb-1", tenant_id="tenant-a") is None
 
     assert len(async_session.statements) == 1
     sql = async_session.statements[0]
@@ -132,9 +130,7 @@ async def test_the_async_lookup_emits_exactly_one_tenant_scoped_statement() -> N
 async def test_a_visible_row_is_returned_as_is() -> None:
     row = object()
 
-    assert (
-        await kb_repo.get_by_id_for_tenant(_CompilingSession(row), "kb-1", tenant_id="t") is row
-    )
+    assert await kb_repo.get_by_id_for_tenant(_CompilingSession(row), "kb-1", tenant_id="t") is row
 
 
 # ───────────────────────────────────────────── 唯一的可见性守卫走的就是它
@@ -184,7 +180,9 @@ def test_the_ops_only_lookup_answers_ownership_and_nothing_else() -> None:
         def get(self, _model: Any, _primary_key: Any) -> Any:
             return self._row
 
-    assert kb_repo.get_owner_tenant_id(_OwnerSession(SimpleNamespace(tenant_id="t-a")), "kb") == "t-a"
+    assert (
+        kb_repo.get_owner_tenant_id(_OwnerSession(SimpleNamespace(tenant_id="t-a")), "kb") == "t-a"
+    )
     assert kb_repo.get_owner_tenant_id(_OwnerSession(None), "kb") is None
 
     doc = kb_repo.get_owner_tenant_id.__doc__ or ""

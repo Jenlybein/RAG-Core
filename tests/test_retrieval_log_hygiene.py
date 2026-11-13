@@ -163,9 +163,7 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     config_mod = importlib.import_module("app.core.config")
 
     monkeypatch.setattr(config_mod.settings, "MODEL_API_KEY", API_KEY)
-    monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant", async_visible_kb
-    )
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
     monkeypatch.setattr(
         service,
         "get_embedding_provider",

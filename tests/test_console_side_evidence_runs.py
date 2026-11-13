@@ -23,8 +23,15 @@ import pytest
 from app.api.routes import console_eval
 
 
-def _run(root: Path, run_id: str, *, tenant_id: str | None = "tenant_demo", status: str = "ok",
-         summary: dict[str, Any] | None = None, report: str | None = None) -> Path:
+def _run(
+    root: Path,
+    run_id: str,
+    *,
+    tenant_id: str | None = "tenant_demo",
+    status: str = "ok",
+    summary: dict[str, Any] | None = None,
+    report: str | None = None,
+) -> Path:
     run_dir = root / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
     payload: dict[str, Any] = {"run_id": run_id, "status": status}
@@ -131,8 +138,12 @@ def test_the_status_route_passes_the_judge_model_through(asgi, runs_root: Path) 
     run_dir = _run(runs_root, "20260102T000000Z", status="ok")
     (run_dir / "status.json").write_text(
         json.dumps(
-            {"run_id": "20260102T000000Z", "status": "ok", "judge_model": "fake-judge-v1",
-             "tenant_id": "tenant_demo"}
+            {
+                "run_id": "20260102T000000Z",
+                "status": "ok",
+                "judge_model": "fake-judge-v1",
+                "tenant_id": "tenant_demo",
+            }
         ),
         encoding="utf-8",
     )
@@ -226,7 +237,9 @@ def test_report_of_another_tenant_is_null_not_an_error(runs_root: Path) -> None:
 def test_an_illegal_run_id_shape_reads_nothing(runs_root: Path) -> None:
     """形状不对就不拼路径：`..` 之类的名字不该有机会被拼进来。"""
 
-    body = console_eval.read_side_evidence_report(run_id="../etc", identity=_Identity("tenant_demo"))
+    body = console_eval.read_side_evidence_report(
+        run_id="../etc", identity=_Identity("tenant_demo")
+    )
 
     assert body.data["report"] is None
 
@@ -239,6 +252,9 @@ def test_a_missing_report_is_null_not_an_empty_string(runs_root: Path) -> None:
     )
 
     assert body.data["report"] is None
-    assert console_eval.list_side_evidence_runs(
-        limit=10, identity=_Identity("tenant_demo")
-    ).data["items"][0]["has_report"] is False
+    assert (
+        console_eval.list_side_evidence_runs(limit=10, identity=_Identity("tenant_demo")).data[
+            "items"
+        ][0]["has_report"]
+        is False
+    )

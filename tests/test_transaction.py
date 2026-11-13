@@ -289,5 +289,3 @@ def test_only_the_transaction_module_commits() -> None:
                 offenders.append(f"{path}:{number}: {line.strip()}")
 
     assert offenders == [], "提交点必须集中在 app/db/transaction.py：\n" + "\n".join(offenders)
-
-

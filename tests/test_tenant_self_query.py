@@ -43,8 +43,6 @@ POLICY_BETA_ID = "policy-beta"
 ME_PATH = "/api/v1/auth/me"
 
 
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
@@ -113,7 +111,9 @@ def _world() -> dict[type, list[Any]]:
             _key_row(KEY_BETA_ID, KEY_BETA, tenant_id=TENANT_BETA, policy_id=POLICY_BETA_ID),
         ],
         KeyPolicy: [
-            _policy_row(POLICY_ALPHA_ID, tenant_id=TENANT_ALPHA, profile="speed", qps=50, daily=100000),
+            _policy_row(
+                POLICY_ALPHA_ID, tenant_id=TENANT_ALPHA, profile="speed", qps=50, daily=100000
+            ),
             _policy_row(POLICY_BETA_ID, tenant_id=TENANT_BETA, profile="speed", qps=10, daily=5000),
         ],
     }
