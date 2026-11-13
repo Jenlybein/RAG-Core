@@ -100,7 +100,13 @@ def _index(monkeypatch: Any, texts: list[str]) -> list[dict[str, Any]]:
         for text in texts
     ]
     document = SimpleNamespace(
-        id=DOC, tenant_id=TENANT, kb_id=KB, title="售后手册", content="raw", doc_version=1
+        id=DOC,
+        tenant_id=TENANT,
+        kb_id=KB,
+        title="售后手册",
+        content="raw",
+        doc_version=1,
+        source_filename="售后手册.md",
     )
 
     async def _get_by_id(_db: Any, _id: str) -> Any:

@@ -47,6 +47,7 @@ def _record(
     tenant_id: str = TENANT,
     kb_id: str = KB,
     index_version: str = VERSION,
+    source_filename: str = "",
 ) -> SectionRecord:
     """一节的身份行；``section_id`` 由**生产那份算法**算（ADR-0025 决策五）。"""
 
@@ -59,6 +60,7 @@ def _record(
         section_id=section_id_of(document_id=document_id, heading_path=heading),
         heading_path=heading,
         order=order,
+        source_filename=source_filename,
     )
 
 
@@ -151,7 +153,7 @@ def test_a_markdown_anchor_resolves_within_the_same_document() -> None:
 
 
 def test_a_markdown_link_to_another_document_resolves_by_title() -> None:
-    """跨文档 Markdown 链接：按链接文件名（去扩展名）匹配文档标题。
+    """没有 ``source_filename`` 的文档（老数据 / 纯文本上传）：按链接主干匹配标题兜底。
 
     目标文档只有一个顶层节时那条边指向它；多个顶层节时「整篇」有歧义，不建边
     （节点是节，不是文档——ADR-0027 决策 1）。
@@ -166,6 +168,142 @@ def test_a_markdown_link_to_another_document_resolves_by_title() -> None:
     assert [edge.target_section_id for edge in _of_type(edges, RELATION_REFERENCE)] == [
         only_root.section_id
     ]
+
+
+def test_a_markdown_link_resolves_by_source_filename_before_the_title() -> None:
+    """链接写的是**文件名**（``./points_policy.md``），标题是《积分规则》：按文件名对。
+
+    这正是 ``eval/corpus-refs`` 里那三条链接的形状。按标题去对文件名的话，这条边一条都
+    建不出来——而它不报错，只是图上少一条（#152 复核时实测）。
+    """
+
+    points_3 = _record(
+        document_id="doc-points",
+        title="积分规则",
+        heading="积分规则 > 3. 积分退还与失效",
+        order=0,
+        source_filename="points_policy.md",
+    )
+    edges = _edges(
+        sections=(
+            _source(
+                text="会员积分如何获取、如何失效，见[《积分规则》](./points_policy.md)第 3 节，"
+                "本政策不重复积分口径。"
+            ),
+        ),
+        catalog=_catalog(points_3),
+    )
+
+    reference = _of_type(edges, RELATION_REFERENCE)
+    assert [edge.target_section_id for edge in reference] == [points_3.section_id]
+    assert reference[0].metadata["expression"] == "[《积分规则》](./points_policy.md)第 3 节"
+
+
+def test_a_link_matches_the_filename_regardless_of_case_and_extension() -> None:
+    """``Points_Policy.MD`` 与 ``./points_policy.md`` 是同一个目标：比较前归一。"""
+
+    target = _record(
+        document_id="doc-points",
+        title="积分规则",
+        heading="2. 积分抵扣与使用上限",
+        order=0,
+        source_filename="/uploads/Points_Policy.MD",
+    )
+    edges = _edges(
+        sections=(_source(text="上限按[《积分规则》](./points_policy.md)第 2 节计算。"),),
+        catalog=_catalog(target),
+    )
+
+    assert [edge.target_section_id for edge in _of_type(edges, RELATION_REFERENCE)] == [
+        target.section_id
+    ]
+
+
+def test_two_documents_with_the_same_source_filename_make_the_link_ambiguous() -> None:
+    """两篇文档的 ``source_filename`` 相同：链接指向哪一篇无从判断，不建边。"""
+
+    first = _record(
+        document_id="doc-b",
+        title="积分规则（旧）",
+        heading="3. 积分退还与失效",
+        order=0,
+        source_filename="points_policy.md",
+    )
+    second = _record(
+        document_id="doc-c",
+        title="积分规则（新）",
+        heading="3. 积分退还与失效",
+        order=0,
+        source_filename="points_policy.md",
+    )
+    edges = _edges(
+        sections=(_source(text="见[《积分规则》](./points_policy.md)第 3 节。"),),
+        catalog=_catalog(first, second),
+    )
+
+    assert _of_type(edges, RELATION_REFERENCE) == []
+
+
+def test_a_link_with_an_unknown_file_and_title_creates_no_edge() -> None:
+    """文件名与标题都对不上：不猜最像的那篇，不建边。"""
+
+    unrelated = _record(
+        document_id="doc-b",
+        title="售后手册",
+        heading="3. 时效",
+        order=0,
+        source_filename="warranty.md",
+    )
+    edges = _edges(
+        sections=(_source(text="见[《积分规则》](./points_policy.md)第 3 节。"),),
+        catalog=_catalog(unrelated),
+    )
+
+    assert _of_type(edges, RELATION_REFERENCE) == []
+
+
+def test_a_link_carries_the_section_number_written_after_it() -> None:
+    """链接后面的「第 N 节」属于这条链接：不吃进来就只能指到整篇，而节点是节。"""
+
+    target = _record(
+        document_id="doc-b",
+        title="积分规则",
+        heading="2. 积分抵扣与使用上限",
+        order=0,
+        source_filename="points_policy.md",
+    )
+    section_1 = _record(document_id="doc-b", title="积分规则", heading="1. 积分获取与计算", order=1)
+
+    edges = _edges(
+        sections=(_source(text="抵扣口径见[《积分规则》](./points_policy.md)第 2 节。"),),
+        catalog=_catalog(target, section_1),
+    )
+
+    assert [edge.target_section_id for edge in _of_type(edges, RELATION_REFERENCE)] == [
+        target.section_id
+    ]
+
+
+def test_a_titled_expression_inside_a_link_is_not_counted_twice() -> None:
+    """``[详见《X》第 2 节](x.md)``：链接覆盖了书名号表达，只留一条候选（否则两条边）。"""
+
+    target = _record(
+        document_id="doc-b",
+        title="促销规则",
+        heading="2. 满减与折扣的计算口径",
+        order=0,
+        source_filename="promo_rules.md",
+    )
+    titles = _record(document_id="doc-c", title="X", heading="2. 满减", order=0)
+
+    edges = _edges(
+        sections=(_source(text="见[详见《X》第 2 节](promo_rules.md)。"),),
+        catalog=_catalog(target, titles),
+    )
+
+    reference = _of_type(edges, RELATION_REFERENCE)
+    assert len(reference) == 1
+    assert reference[0].target_document_id == "doc-b"
 
 
 def test_a_markdown_link_into_a_document_with_several_top_level_sections_is_ambiguous() -> None:
