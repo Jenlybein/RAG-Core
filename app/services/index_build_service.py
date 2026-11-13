@@ -730,12 +730,14 @@ class IndexBuildService:
         except IntegrityError as exc:
             # 并发的另一次切换先提交了：两条部分唯一索引在这里挡住「同一库两个 active」。
             # 回滚与激活看到的是**同一条**可读拒绝，而不是一次 500。
+            await self._discard_failed_switch(db, row=row)
             if switched:
-                await self._restore_alias(previous_version, row=row)
+                await self._restore_alias(db, row=row, fallback=previous_version)
             raise IndexBuildSwitchConflict() from exc
         except BaseException:
+            await self._discard_failed_switch(db, row=row)
             if switched:
-                await self._restore_alias(previous_version, row=row)
+                await self._restore_alias(db, row=row, fallback=previous_version)
             raise
 
         logger.info(
@@ -749,20 +751,69 @@ class IndexBuildService:
         )
         return row
 
-    async def _restore_alias(
-        self, previous_version: str | None, *, row: IndexBuildVersion
+    async def _discard_failed_switch(
+        self, db: AsyncSession, *, row: IndexBuildVersion
     ) -> None:
-        """提交失败后把关键词别名切回去（尽力而为；失败只记 warning）。
+        """把失败的那一笔切换**彻底扔掉**，再让调用方去读「此刻谁生效」。
 
-        **切回的是「切换前读到的那一版」**，不是重新问一次「现在谁生效」：错误路径上再查
-        一次库，会把「提交为什么失败」这条真正的原因盖进下一层异常里。并发输掉的那一方
-        因此有一个已知窗口（赢家已经指向另一版时，别名会落在切换前那一版上，直到下一次
-        切换把别名再挪一次）——本票登记它，不在错误路径上追加一次读。
+        **顺序不能换**（#156）：不先回滚就读库列，读到的是这一笔自己写进去、却从未提交的
+        值（``kb.active_index_version = row.version`` 在提交之前就写了）——别名于是被「切回」
+        到那个从未生效的版本上，与要修的 bug 一模一样，只是换了个来源。这在真库上同样成立：
+        事务还开着时读到的就是同一事务里的脏值，所以这不是替身特有的讲究。
+
+        回滚本身失败只记 warning：这条路径已经在一个失败动作里，真正要看的是那次失败。
         """
 
-        if previous_version is None:
-            # 这是这个库的第一次构建：没有旧版本可回退，别名留在了未提交的新版本上。
-            # 检索仍安全（库列还是空的 → 守卫直接拦），但下一轮激活会把别名再切一次。
+        try:
+            await async_rollback_now(db)
+        except Exception:  # noqa: BLE001 - 收尾路径不抛：真正的原因是那次切换失败
+            logger.warning(
+                "failed index switch could not be rolled back",
+                build_id=row.id,
+                tenant_id=row.tenant_id,
+                kb_id=row.kb_id,
+            )
+
+    async def _restore_alias(
+        self,
+        db: AsyncSession,
+        *,
+        row: IndexBuildVersion,
+        fallback: str | None,
+    ) -> None:
+        """提交失败后把关键词别名切回**此刻真正生效的那一版**（尽力而为；失败只记 warning）。
+
+        **为什么不是「切换前读到的那一版」**（#156）：并发里有两条切换在同一个库上跑，
+        输掉的那一方读到的 ``previous`` 只是它自己开始时的现场。赢家提交之后，库里生效的
+        已经是另一版——照旧值回切，别名就落在一个**谁也不认识**的版本上：向量那一路按库列
+        查新版、关键词那一路查旧版的物理索引，一条都不匹配。表现为「关键词一路忽然全空」，
+        而库行、切片、别名写操作全都成功，排障会从「检索是不是坏了」查起。
+
+        所以这里**重读库列**（``active_index_version`` 是检索范围唯一的来源，与
+        :func:`app.models.index_version.resolve_index_versions` 同一个口径）：读到什么就
+        切回什么。
+
+        两条退路都写在这里，而不是让异常往上冒：
+
+        * **读不到**（库没了、会话已不可用——例如本笔并入了外层事务而外层已中止）时退到
+          ``fallback``（切换前读到的那一版），并记一条 warning。错误路径上再抛第二个异常，
+          会把「提交为什么失败」这条真正的原因盖掉；
+        * ``fallback`` 也是 ``None``（这个库的第一次构建）时保持原样：别名留在了未提交的
+          新版本上，检索仍安全（库列还是空的，守卫直接拦），下一轮切换会把别名再挪一次。
+        """
+
+        live = await self._live_version_now(db, row=row)
+        if live is not None and live != fallback:
+            logger.warning(
+                "keyword alias restore follows the version that is live now",
+                build_id=row.id,
+                tenant_id=row.tenant_id,
+                kb_id=row.kb_id,
+                live_version=live,
+                previous_version=fallback,
+            )
+        target = live if live is not None else fallback
+        if target is None:
             logger.warning(
                 "keyword alias left on an uncommitted version",
                 build_id=row.id,
@@ -771,14 +822,43 @@ class IndexBuildService:
             )
             return
         try:
-            await self._keyword_search.activate_version(previous_version)
+            await self._keyword_search.activate_version(target)
         except Exception:  # noqa: BLE001 - 收尾路径不抛：真正的原因是那次提交失败
             logger.warning(
                 "keyword alias restore failed",
                 build_id=row.id,
                 tenant_id=row.tenant_id,
-                previous_version=previous_version,
+                previous_version=target,
             )
+
+    async def _live_version_now(
+        self, db: AsyncSession, *, row: IndexBuildVersion
+    ) -> str | None:
+        """重读「这个库此刻生效哪一版」；读不到就返回 ``None``（由调用方决定退路）。
+
+        **读的是库列、不是版本行**：检索范围只认 ``active_index_version``（决策四），
+        版本行的 ``active`` 状态是同一笔事务里写的另一半——两者不在一处时，跟着检索实际
+        用的那一列走才对得上。
+
+        失败一律收成 ``None``：这条路径跑在**已经失败**的一次切换上，再抛一个异常只会把
+        根因藏起来（与 :meth:`_restore_alias` 同一条纪律）。
+        """
+
+        try:
+            kb = await knowledge_base_repository.get_by_id_for_tenant(
+                db, row.kb_id, tenant_id=row.tenant_id
+            )
+        except Exception:  # noqa: BLE001 - 错误路径上的读失败不追加异常
+            logger.warning(
+                "keyword alias restore could not re-read the live version",
+                build_id=row.id,
+                tenant_id=row.tenant_id,
+                kb_id=row.kb_id,
+            )
+            return None
+        if kb is None:
+            return None
+        return effective_index_version(kb)
 
     # ── 失败 ────────────────────────────────────────────────────
 

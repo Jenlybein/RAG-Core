@@ -643,6 +643,43 @@ class AsyncRecordingSession(RecordingSession):
         super().close()
 
 
+class AsyncTransactionalSession(AsyncRecordingSession):
+    """有**事务语义**的异步替身：提交才落库，回滚把这一笔的改动撤掉。
+
+    与同步的 :class:`TransactionalSession` 同一口径（提交即留下、回滚即复原），再多一件
+    事：**行上的列值也一起恢复**。
+
+    为什么列值必须恢复（#156）：``IndexBuildService`` 在提交之前就把新版本写进了库行
+    （``kb.active_index_version = row.version``），真库靠 ``ROLLBACK`` 撤销它。替身不恢复
+    列值时，「提交失败之后重读库列」读到的是**这一笔自己写进去、却从未提交**的值——与真库
+    正好相反，于是「输掉的那一方回切别名」那条用例会验错方向：它以为读到了旧版本，实际
+    读到了那笔被撤销的写入。
+
+    快照在**构造时**拍：本类只服务「先摆好状态、再跑一次会失败的写入」这类用例，构造点
+    就是那一笔的开始。用例要在回滚之后模拟「别人已经提交」，自己不变量再覆盖一次即可
+    （见 ``test_index_build_rollback.py`` 的 ``_RacedCommitSession``）。
+    """
+
+    def __init__(
+        self,
+        *,
+        rows: dict[type, list[Any]] | None = None,
+        tenant_ids: list[str] | None = None,
+    ) -> None:
+        super().__init__(rows=rows, tenant_ids=tenant_ids)
+        self._rows_before = {model: list(items) for model, items in self._rows.items()}
+        self._values_before = [
+            (row, dict(vars(row))) for items in self._rows.values() for row in items
+        ]
+
+    async def rollback(self) -> None:
+        self._rows = {model: list(items) for model, items in self._rows_before.items()}
+        for row, values in self._values_before:
+            vars(row).clear()
+            vars(row).update(values)
+        await super().rollback()
+
+
 def override_all_db(app: Any, session: Any) -> AsyncSessionAdapter:
     """把请求里的**全部**会话入口指向同一个假库（票 #130 之后控制面夹具的统一写法）。
 

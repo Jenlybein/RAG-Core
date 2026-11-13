@@ -38,7 +38,7 @@ from app.services.index_build_service import (
     IndexBuildService,
     describe_stalled_builds,
 )
-from tests.fake_db import AsyncRecordingSession
+from tests.fake_db import AsyncRecordingSession, AsyncTransactionalSession
 
 TENANT_ID = "tenant_activate"
 KB_ID = "kb-1"
@@ -114,8 +114,13 @@ class _StubIndexing:
         return 1
 
 
-class _FailingCommitSession(AsyncRecordingSession):
-    """提交必炸的会话：用来验证「同成同败」的收尾路径（别名切回去、异常照抛）。"""
+class _FailingCommitSession(AsyncTransactionalSession):
+    """提交必炸的会话：用来验证「同成同败」的收尾路径（别名切回去、异常照抛）。
+
+    用 :class:`AsyncTransactionalSession` 而不是普通记录型替身：真库回滚会撤销这一笔写进
+    库行的新版本，替身也得撤销——否则「失败之后重读库列」读到的是**没提交**的那个值，
+    回切别名那条路径就验反了（#156）。
+    """
 
     def __init__(self, **kwargs: Any) -> None:
         super().__init__(**kwargs)

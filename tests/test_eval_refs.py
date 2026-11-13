@@ -285,6 +285,18 @@ def test_frozen_hash_ignores_line_ending_style(tmp_path: Path) -> None:
     assert eval_refs.normalized_sha256(path) == lf
 
 
+def test_ci_runs_the_frozen_check() -> None:
+    """守护必须**在 CI 里跑**，否则它只是一条本地命令（#156）。
+
+    只断言「工作流里出现了这条命令」，不断言它排在第几步：顺序是运维细节，会不会跑才是
+    契约。删掉那一步时，这条用例会红——而语料被改动的那种事故，本来就该由 CI 拦下而不是
+    由「有人记得跑一下本地脚本」拦下。
+    """
+
+    ci = (REPO_ROOT / ".github" / "workflows" / "ci.yml").read_text(encoding="utf-8")
+    assert "scripts/eval_refs.py check-frozen" in ci
+
+
 # ─────────────────────────────────────────────── 四、跑批脚本的诚实边界
 
 

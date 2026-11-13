@@ -20,6 +20,7 @@ ADR-0025 把「可回滚」写成这套方案的收益之一，而回滚要成�
 | 物理索引不在 / 切片为 0 → 拒绝，库列与别名都不动 | ``test_rollback_is_refused_when_the_keyword_physical_index_is_gone``、``test_rollback_is_refused_when_the_version_has_no_chunks`` |
 | 回滚与激活共用同一段实现 | ``test_activation_and_rollback_take_the_same_state_paths`` |
 | 并发时只有一方成功 | ``test_a_commit_conflict_names_the_same_error_on_both_doors`` |
+| 输掉的一方回切别名时**重读**「此刻谁生效」 | ``test_a_losing_switch_restores_the_alias_to_the_version_that_is_live_now``（#156） |
 """
 
 from __future__ import annotations
@@ -54,7 +55,7 @@ from app.services.index_build_service import (
     IndexBuildService,
     IndexBuildSwitchConflict,
 )
-from tests.fake_db import AsyncRecordingSession
+from tests.fake_db import AsyncRecordingSession, AsyncTransactionalSession
 
 TENANT_ID = "tenant_rollback"
 KB_ID = "kb-1"
@@ -62,6 +63,8 @@ KB_ID = "kb-1"
 OLD = "v1"
 #: 当前生效的那一版：回滚成功之后它转 ``archived``。
 LIVE = "v2"
+#: 并发里**赢家**切到的那一版：输家手里的 ``previous``（``v2``）在它提交之后已经过期。
+WINNER = "v3"
 
 
 # ──────────────────────────────────────────────────────────────── 替身
@@ -88,14 +91,14 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
         self.activate_calls.append(version)
 
 
-class _FailingCommitSession(AsyncRecordingSession):
+class _FailingCommitSession(AsyncTransactionalSession):
     """提交必炸的会话：验「别名先切、提交失败就切回去」这条收尾路径。"""
 
     async def commit(self) -> None:
         raise RuntimeError("commit failed")
 
 
-class _ConflictingCommitSession(AsyncRecordingSession):
+class _ConflictingCommitSession(AsyncTransactionalSession):
     """提交时撞上**部分唯一索引**的会话：并发切换里「后手」的那一笔就长这样。"""
 
     async def commit(self) -> None:
@@ -104,6 +107,32 @@ class _ConflictingCommitSession(AsyncRecordingSession):
             {},
             Exception("duplicate key value violates uq_index_build_versions_active"),
         )
+
+
+class _RacedCommitSession(AsyncTransactionalSession):
+    """提交时**赢家已经落地**：库列指向另一版，输家读到的 ``previous`` 已经过期。
+
+    构造方式：``commit`` 先改库列再抛并发冲突（与真实并发里「赢家先提交、输家在部分唯一
+    索引上撞」同一个顺序）；``rollback`` 只撤销**这一笔**的写入，赢家那一笔是别人提交的，
+    撤不掉——所以回滚之后库列是赢家的版本名。
+    """
+
+    def __init__(self, *, kb: Any, winner: str, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._kb = kb
+        self._winner = winner
+
+    async def commit(self) -> None:
+        self._kb.active_index_version = self._winner
+        raise IntegrityError(
+            "UPDATE index_build_versions SET status='active' ...",
+            {},
+            Exception("duplicate key value violates uq_index_build_versions_active"),
+        )
+
+    async def rollback(self) -> None:
+        await super().rollback()
+        self._kb.active_index_version = self._winner
 
 
 # ──────────────────────────────────────────────────────────────── 夹具
@@ -421,6 +450,47 @@ def test_a_commit_conflict_names_the_same_error_on_both_doors(door: str) -> None
     assert error.value.msg == SWITCH_CONFLICT_MESSAGE
     assert session.commits == 0, "输掉的那一方一笔都没落下（库列因此没被改）"
     assert keyword.activate_calls == [OLD, LIVE], "输掉的那一方把别名切回去"
+
+
+@pytest.mark.parametrize("door", ["activate", "rollback"])
+def test_a_losing_switch_restores_the_alias_to_the_version_that_is_live_now(door: str) -> None:
+    """并发输掉时，别名要切回**此刻真正生效**的那一版，不是它开始时读到的那一版。
+
+    现场：A 与 B 同时切同一个库；A 先提交（库列 → ``v3``），B 在提交处撞上部分唯一索引。
+    如果 B 把别名切回自己开始时的 ``previous``（``v2``），别名就落在**谁也不认识**的那一版
+    上：向量那一路按库列查 ``v3``、关键词那一路查 ``v2`` 的物理索引——关键词一路静默全空，
+    而库行与切片一条都没错，排障会从「检索是不是坏了」查起。
+
+    所以收尾路径必须**重读库列**（``active_index_version`` 是检索范围唯一的来源），
+    读到什么就切回什么；读不到才退到 ``previous`` 并记一条 warning。
+    """
+
+    live = _row(LIVE, INDEX_BUILD_ACTIVE, build_id="build-v2")
+    target = _row(
+        OLD,
+        INDEX_BUILD_ARCHIVED if door == "rollback" else INDEX_BUILD_READY,
+        build_id="build-v1",
+    )
+    kb = _kb(LIVE)
+    session = _RacedCommitSession(
+        kb=kb,
+        winner=WINNER,
+        rows={
+            KnowledgeBase: [kb],
+            IndexBuildVersion: [live, target],
+            Chunk: _chunks(2),
+        },
+    )
+    service, keyword = _service()
+
+    with pytest.raises(IndexBuildSwitchConflict):
+        asyncio.run(getattr(service, door)(session, "build-v1", tenant_id=TENANT_ID))
+
+    assert keyword.activate_calls == [OLD, WINNER], (
+        "回切的是此刻生效的那一版（v3），不是切换前读到的 previous（v2）"
+    )
+    assert kb.active_index_version == WINNER, "库列由赢家写的，输家一个字节都不改"
+    assert session.commits == 0, "输掉的那一方一笔都没落下"
 
 
 # ────────────────────────────────────────── 验收二：检索命中旧版本的数据
