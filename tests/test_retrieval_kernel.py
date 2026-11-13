@@ -678,6 +678,7 @@ def _options() -> RetrievalOptions:
         expand_table_rows=False,
         rerank=False,
         rewrite=False,
+        # #146 的第三层开关也是必填（默认关闭）：两票合并时这条构造点漏了它。
         orchestration=False,
     )
 
@@ -698,7 +699,14 @@ def _install_retrieve_stubs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
 
     async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
-        return SimpleNamespace(tenant_id=tenant_id, settings={}, name="", description="")
+        return SimpleNamespace(
+            id=kb_id,
+            tenant_id=tenant_id,
+            settings={},
+            name="",
+            description="",
+            active_index_version=DEFAULT_INDEX_VERSION,
+        )
 
     monkeypatch.setattr(service, "ensure_visible", _visible)
     return {"embedding": embedding, "vector": vector, "keyword": keyword}

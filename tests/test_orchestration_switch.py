@@ -502,7 +502,12 @@ def _revision_of(path: Path) -> str:
 
 
 def test_the_orchestration_migration_sits_on_top_of_the_single_head() -> None:
-    """整条链仍然只有一个 head，且就是本票这条（``alembic heads`` 的文本版）。"""
+    """整条链仍然只有一个 head；本票这条接在它之前的 head 上（``alembic heads`` 的文本版）。
+
+    #141 的索引构建版本表与本票并行开发，合并时接在**本票之后**——于是链尾前移到
+    ``add_index_build_versions``。按仓库惯例，加最后一条迁移的那个人改这一行，
+    「链尾是哪个文件」要人看一眼确认。
+    """
 
     revisions = {_revision_of(path): path for path in VERSIONS_DIR.glob("*.py")}
     pointed_at = {
@@ -514,7 +519,10 @@ def test_the_orchestration_migration_sits_on_top_of_the_single_head() -> None:
 
     path = _migration_path("add_orchestration_switch")
     assert _down_revision_of(path) == PREVIOUS_HEAD, "本条迁移必须接在本步此前的唯一 head 上"
-    assert heads == [_revision_of(path)], f"整条链应当只有一个 head，实际 {heads}"
+    assert len(heads) == 1, f"整条链应当只有一个 head，实际 {heads}"
+    assert heads == [_revision_of(_migration_path("add_index_build_versions"))], (
+        f"链尾应当是 #141 的索引构建版本表，实际 {heads}"
+    )
 
 
 def test_the_orchestration_migration_adds_three_columns_with_a_false_backfill() -> None:

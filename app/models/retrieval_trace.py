@@ -5,13 +5,14 @@
 备份、只读副本、``pg_dump`` 都会把它带走，所以它上面的每一个字都是长期承诺。原文只允许
 进内网观测栈（按 ``trace_id`` 查回来）。
 
-留下的十列全部可枚举：
+留下的十一列全部可枚举：
 
 ====================  ==========================================================
 ``id``                行 id，**对外即 ``log_id``**；由中台用 UUID v4 生成
 ``tenant_id``         谁调用的
 ``trace_id``          ``log_id`` 的确定性派生（32 位十六进制），NOT NULL
 ``kb_ids``            这次查了哪些库（一次检索可以多库）
+``index_versions``    这次查的是**哪一次构建**：``{kb_id: version}`` 映射
 ``chunk_ids``         交付单元的代表片 + 溯源片 id，**只存 id**
 ``top_k``             这次要了几条
 ``latency_ms``        这次多慢
@@ -19,6 +20,13 @@
 ``empty_reason``      空结果原因，没有就是 NULL
 ``created_at``        什么时候
 ====================  ==========================================================
+
+``index_versions`` 是**契约变更**（ADR-0025 决策六，本表因此从十列变十一列）：版本一旦
+会变，同一个 ``kb_ids + query`` 两次调用的差异就无从归因——切法变了？文档变了？还是召回
+抖了？它存的是**映射**而不是两个并列数组（``kb_ids`` 一个、``versions`` 一个）：那正是
+ADR-0010 §5 明令禁止的「两个独立集合」，``['kb-a','kb-b']`` 配 ``['v1','v2']`` 拼得出
+「A 库配 B 库版本」这种不存在的组合，而且不报错。版本名是结构（``v1``），不是原文，
+所以 ADR-0021「只存结构」的红线不受影响。
 
 三条不能改的性质：
 
@@ -53,6 +61,9 @@ class RetrievalTrace(Base):
     trace_id: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     #: 一次检索可以查多个库，所以是列表而不是单值（旧表的 ``kb_id`` 单列已在 #101 删除）。
     kb_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    #: 「这次查的是哪次构建」——``{kb_id: version}``，与检索范围**同一个形状**。
+    #: 可空：迁移之前写下的行没有版本可记（那时版本恒为 v1，没人需要在日志里记它）。
+    index_versions: Mapped[dict | None] = mapped_column(JSONB, default=dict, nullable=True)
     #: 只存 id：正文在切片表里有一份，分数明细属于评测与 trace。重复存只会多一份会过期的副本。
     chunk_ids: Mapped[list] = mapped_column(JSONB, default=list)
     top_k: Mapped[int] = mapped_column(Integer)

@@ -266,7 +266,14 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
     monkeypatch.setattr(service, "optimize_query", _identity_query)
 
     async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
-        return SimpleNamespace(settings=None, name="kb", description=None)
+        return SimpleNamespace(
+            id=kb_id,
+            tenant_id=tenant_id,
+            settings=None,
+            name="kb",
+            description=None,
+            active_index_version=DEFAULT_INDEX_VERSION,
+        )
 
     async def _no_collapse(*args: Any, **kwargs: Any) -> list[dict]:
         return []

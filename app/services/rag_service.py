@@ -103,7 +103,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 
 import structlog
 
@@ -111,7 +111,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
-from app.models.chunk import DEFAULT_INDEX_VERSION, default_index_versions
+from app.models.index_version import resolve_index_versions
 from app.observability import emit_retrieval_trace_off_loop
 from app.observability.stage_timing import STAGE_QUERY_OPTIMIZATION, StageTimer
 from app.providers.embedding import get_embedding_provider
@@ -241,7 +241,13 @@ async def retrieve(
 
     # 范围由**这一次调用**解析一次：``kb_id → 索引版本`` 的映射（不是两个平行数组，
     # 配对关系只能从映射里读出来）。内核与将来的 Research 都吃这一份，不各自去造。
-    index_versions = default_index_versions(kb_ids)
+    #
+    # 版本**从上面那几行库行里读**（ADR-0025 决策四）：不再是一个常量。这是「这次查的是
+    # 哪一次构建」的唯一来源，也是本步相对上一版唯一的取值变化——范围条件的形状一个字
+    # 没改。某个库还没有生效版本（回填漏做 / 还没激活过任何构建）时它会抛
+    # ``IndexVersionUnresolved``：**在召回之前**拦下，而不是拼出一条恒不匹配的条件、
+    # 交回一份「看起来像没命中」的空结果。
+    index_versions = resolve_index_versions(visible_kbs)
 
     outcome = await retrieve_kernel(
         db,
@@ -282,7 +288,11 @@ async def retrieve(
     degraded_reason = optimized.rewrite_reason or outcome.degraded_reason
     degraded = degraded_reason is not None
 
-    empty_reason = await _empty_reason(db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=collapsed)
+    # 空结果判定用**同一个范围**（``kb_id → 生效版本`` 的映射）：换一个版本口径去数，
+    # 就会把「这个库有内容、只是本次没命中」说成「这个库是空的」。
+    empty_reason = await _empty_reason(
+        db, tenant_id=tenant_id, index_versions=index_versions, chunks=collapsed
+    )
     retrieval_meta: dict[str, object] = {
         "mode": resolved_mode,
         "degraded": degraded,
@@ -344,6 +354,10 @@ async def retrieve(
         trace_id=trace_id,
         tenant_id=tenant_id,
         kb_ids=list(kb_ids),
+        # 「这次查的是哪次构建」（ADR-0025 决策六）：与本次范围**同一份映射**，
+        # 不是另算一遍。版本一旦会变，同一个 ``kb_ids + query`` 两次调用的差异
+        # 就只剩这一列能归因——切法变了？文档变了？还是召回抖了？
+        index_versions=dict(index_versions),
         chunk_ids=delivered_chunk_ids(collapsed),
         top_k=resolved_top_k,
         latency_ms=int((time.perf_counter() - started_at) * 1000),
@@ -422,7 +436,11 @@ def _rewrite_hint(kbs: list) -> str | None:
 
 
 async def _empty_reason(
-    db: AsyncSession, *, tenant_id: str, kb_ids: list[str], chunks: list[dict]
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    index_versions: Mapping[str, str],
+    chunks: list[dict],
 ) -> str | None:
     """空结果的原因：查一次 count，绝不按结果条数猜。
 
@@ -430,16 +448,15 @@ async def _empty_reason(
     * ``no_chunks_matched``：库里有内容，但本次没有命中（该换个问法）。
 
     有结果时返回 ``None``——``empty_reason`` 只在真为空时出现，不是一个常驻字段。
+
+    计数与召回**同一条范围条件**（``kb_id → 生效版本`` 的配对映射）：库里可能有别的
+    索引版本的切片，但它们对这次检索不可见。用一个版本常量去数会让「本该叫用户换问法」
+    的库被误判成「空库」，而那正是这个字段唯一要说清的事。
     """
 
     if chunks:
         return None
     indexed = await chunk_repository.count_by_kb_ids(
-        db,
-        tenant_id=tenant_id,
-        kb_ids=kb_ids,
-        # 必须和召回时的过滤口径一致：库里可能有别的索引版本的切片，但它们对这次
-        # 检索不可见。不过滤版本会让「本该叫用户换问法」的库被误判成「空库」。
-        index_version=DEFAULT_INDEX_VERSION,
+        db, tenant_id=tenant_id, index_versions=index_versions
     )
     return EMPTY_NO_INDEXED_CHUNKS if indexed == 0 else EMPTY_NO_CHUNKS_MATCHED

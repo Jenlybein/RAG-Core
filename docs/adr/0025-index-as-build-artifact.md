@@ -2,7 +2,7 @@
 
 - 状态：已采纳（第 11 步 · D 票；本文只落决策，实现随 #140 落地）
 - 日期：2026-11-13
-- 相关：父 spec #138「第 11 步 · 图谱与受控 Research」、票 #139（本文）、**ADR-0021「观测是旁路：归属索引只存结构」**（本文决策六声明修订它「十列」的表述）、**ADR-0010 §5「索引范围是配对映射」**（本文接上它等着的版本生命周期）、ADR-0005「文档版本与索引版本正交」、ADR-0009「异步索引」、ADR-0018「三层授权」、ADR-0027「图谱只建节级边」、`GLOSSARY.md`「构建版本」「构建产物」「索引版本」「数据范围组」「归属索引」、`app/models/chunk.py::default_index_versions`、`app/models/retrieval_trace.py`、`app/services/rag_service.py`
+- 相关：父 spec #138「第 11 步 · 图谱与受控 Research」、票 #139（本文）、**ADR-0021「观测是旁路：归属索引只存结构」**（本文决策六声明修订它「十列」的表述）、**ADR-0010 §5「索引范围是配对映射」**（本文接上它等着的版本生命周期）、ADR-0005「文档版本与索引版本正交」、ADR-0009「异步索引」、ADR-0018「三层授权」、ADR-0027「图谱只建节级边」、`GLOSSARY.md`「构建版本」「构建产物」「索引版本」「数据范围组」「归属索引」、`app/models/index_version.py::resolve_index_versions`（决策四的「唯一构造点」，随 #141 从 `app/models/chunk.py::default_index_versions` 落成「读各库行」）、`app/models/retrieval_trace.py`、`app/services/rag_service.py`
 
 ## 背景
 

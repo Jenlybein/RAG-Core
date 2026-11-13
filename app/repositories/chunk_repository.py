@@ -15,14 +15,14 @@
 （``app/services/chunk_store.py``），不经过它。
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import Integer, Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import Chunk
+from app.models.chunk import Chunk, scope_filter
 
 
 def _meta_statement(
@@ -123,33 +123,37 @@ async def fetch_unit_rows(
 
 
 def _count_by_kb_ids_statement(
-    *, tenant_id: str, kb_ids: list[str], index_version: str | None
+    *, tenant_id: str, index_versions: Mapping[str, str]
 ) -> Select[tuple[int]]:
-    """空结果判定的计数语句：租户 + 库 + （可选）索引版本。"""
+    """空结果判定的计数语句：租户 + 范围。
 
-    stmt = (
+    范围用的是**召回时那一条配对条件**（``app.models.chunk.scope_filter``），不是
+    「所有库 × 所有版本」：口径一旦与召回不同，「库里有内容、本次没命中」就会被
+    误判成「空库」，而这正是 ``empty_reason`` 唯一要说清的事。
+    """
+
+    return (
         select(func.count())
         .select_from(Chunk)
-        .where(Chunk.tenant_id == tenant_id, Chunk.kb_id.in_(kb_ids))
+        .where(Chunk.tenant_id == tenant_id, scope_filter(index_versions))
     )
-    if index_version is not None:
-        stmt = stmt.where(Chunk.index_version == index_version)
-    return stmt
 
 
 async def count_by_kb_ids(
-    db: AsyncSession, *, tenant_id: str, kb_ids: list[str], index_version: str | None = None
+    db: AsyncSession, *, tenant_id: str, index_versions: Mapping[str, str]
 ) -> int:
     """:func:`count_by_kb_ids` 的异步面（检索链路，第 11 步票 #127）。
 
-    口径与同步版逐字相同：同一条语句、同一个版本过滤、同一个强制租户参数。
+    口径与召回逐字相同：同一条配对条件、同一个强制租户参数。
+
+    ``index_versions`` 是 ``kb_id → 生效版本`` 的映射（ADR-0025），**不是**一个版本
+    常量：多库各自 pin 在不同构建上时，用一个常量的计数会把「别的版本有内容」算成
+    「这个库没有内容」。
     """
 
-    if not kb_ids:
+    if not index_versions:
         return 0
-    stmt = _count_by_kb_ids_statement(
-        tenant_id=tenant_id, kb_ids=kb_ids, index_version=index_version
-    )
+    stmt = _count_by_kb_ids_statement(tenant_id=tenant_id, index_versions=index_versions)
     return int((await db.execute(stmt)).scalar_one())
 
 

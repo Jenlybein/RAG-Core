@@ -29,6 +29,8 @@ from typing import Any
 
 from sqlalchemy.sql import operators
 
+from app.models.chunk import DEFAULT_INDEX_VERSION
+
 
 async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     """「库可见」的**异步**替身：租户原样回传，``settings`` 为空、名称与描述为空。
@@ -37,9 +39,21 @@ async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     （第 11 步票 #127），于是各用例里那句
     ``lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)``
     换成它即可——返回的东西与原来那份等价，只是可 ``await``。
+
+    ``id`` 与 ``active_index_version`` 是**真行上也有的两列**（票 #141）：检索范围从
+    「所有库配 v1」改成「读各库的生效版本」之后，替身缺这两列就不再等价于真行——
+    它会变成「一个还没回填的库」，而那正是检索守卫要拦下的状态。默认给 ``v1``：
+    与迁移的回填值、与索引流水线写下的版本同值。
     """
 
-    return SimpleNamespace(tenant_id=tenant_id, settings={}, name="", description="")
+    return SimpleNamespace(
+        id=_kb_id,
+        tenant_id=tenant_id,
+        settings={},
+        name="",
+        description="",
+        active_index_version=DEFAULT_INDEX_VERSION,
+    )
 
 
 async def async_invisible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
