@@ -49,6 +49,19 @@ class KeywordSearchProvider(ABC):
         """
 
     @abstractmethod
+    async def physical_index_exists(self, version: str) -> bool:
+        """该版本的**物理索引**还在不在（回滚守卫，#155）。
+
+        为什么必须单独问一句「在不在」而不靠 ``count_documents``：那个方法把「索引不存在」
+        和「索引在、里面 0 条」都答成 0。对 ``ready`` 的计数校验来说两者等价（都是「没数据」），
+        对回滚却不等价——运维要知道的是「我能不能切过去」，而「切过去之后别名指着一张
+        不存在的索引」是另一种故障（每次关键词召回都 ``NotFoundError``，被当成诚实空结果）。
+
+        能力不存在（``available`` 为 ``False``）时回 ``False``：调用方必须先看 ``available``，
+        否则「没部署 ES」会被读成「数据没了」。
+        """
+
+    @abstractmethod
     async def activate_version(self, version: str) -> None:
         """把别名切到该版本的物理索引（**激活的一部分**，ADR-0025 决策二 / 三）。
 
