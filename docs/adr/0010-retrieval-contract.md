@@ -1,6 +1,6 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**；**§5 的索引版本已在第 11 步接上版本生命周期（取值改为各库生效版本，映射形状不变），见 [ADR-0025](0025-index-as-build-artifact.md)**
 - 日期：2026-11-08
 - 相关：父 spec #20「第 4 步」、**父 spec #72「第 7 步」、ADR-0018「三层授权与配置自洽校验」**、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
@@ -114,7 +114,7 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 
 ## 5. 索引范围：`index_versions` 是配对映射
 
-检索范围由 `kb_id → index_version` 的**映射**表示，唯一构造点是 `app/models/chunk.py::default_index_versions`。本步只写默认版本 `v1`，请求体里没有 `index_version` 字段；将来接上版本生命周期时，改的是这个构造点。
+检索范围由 `kb_id → index_version` 的**映射**表示，唯一构造点是 `app/models/chunk.py::default_index_versions`。本步的构造点返回常量 `v1`，请求体里没有 `index_version` 字段。**这两件事的后续**：版本生命周期在第 11 步接上（[ADR-0025](0025-index-as-build-artifact.md)）——取值来源从常量改成「每个库自己的生效版本」，而**映射形状与「绝不能写成两个独立 `IN`」这条一字不改**；`index_version` 仍永远不是请求参数。
 
 ### SQL / 查询条件必须是配对
 

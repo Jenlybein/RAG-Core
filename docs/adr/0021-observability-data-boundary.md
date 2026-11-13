@@ -1,6 +1,6 @@
 # 0021. 观测是旁路：原文只进内网观测栈，归属索引只存结构
 
-- 状态：已采纳
+- 状态：已采纳；**决策 2 的「十列」已由 [ADR-0025](0025-index-as-build-artifact.md) 决策六声明修订**（归属索引新增一列 `index_versions`，回答「这次检索查的是哪次构建」，十列 → 十一列；其余三条决定不动，仍只存结构、仍一次检索一行、仍独立短事务）
 - 日期：2026-11-11
 - 相关：父 spec #98「第 9 步」、**ADR-0010「第五次修订」**（响应 `metadata.trace_id`）、ADR-0020「调试台不做流式」（把「哪一步慢」判给观测）、`GLOSSARY.md`「观测旁路」「trace」「span 阶段」「门禁指标」「旁证指标」「归属索引」、`.env.example`（`LANGFUSE_*` 一组）、`app/services/rag_service.py`（`_metadata_of`）
 
