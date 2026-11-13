@@ -367,6 +367,29 @@ def test_sub_queries_do_not_rewrite_write_attribution_or_account(
     assert data["rounds"]["searches"] == 2
 
 
+def test_the_research_path_never_reaches_the_outer_five_by_source() -> None:
+    """结构层：那五件事的名字一次都不出现在 Research 的两个模块里。
+
+    与上一条行为用例互补——行为用例证明「今天没被调用」，这条证明「想调也调不到」：
+    改写、可见性校验、配额记账、归属索引、观测提交都是「每次调用只做一次」的事
+    （ADR-0028 §2），它们若出现在这里，只可能是有人把完整检索服务又接回来了。
+    """
+
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for name in ("research.py", "research_gate.py"):
+        source = (root / "app" / "services" / name).read_text(encoding="utf-8")
+        for forbidden in (
+            "rag_service",
+            "optimize_query",
+            "record_retrieval_trace",
+            "emit_retrieval_trace",
+            "retrieval_quota",
+        ):
+            assert forbidden not in source, f"{name} 不该出现 {forbidden}"
+
+
 def test_the_gate_reuses_one_section_once_across_sub_queries(entry: _Entry) -> None:
     """两条子查询命中同一节 → 材料只交付一次（材料是并集，不是每轮回包）。"""
 

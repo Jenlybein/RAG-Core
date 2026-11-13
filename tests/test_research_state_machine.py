@@ -23,6 +23,7 @@ from typing import Any
 
 import pytest
 
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.llm.base import LLMProvider
 from app.services import research
 from app.services.research_limits import (
@@ -110,13 +111,21 @@ class _Clock:
 class _ScriptedLLM(LLMProvider):
     """按顺序交出预置输出；记下每次问的是哪个 schema。
 
-    预置项是异常时当场抛出（验降级出口）；否则原样返回给服务收敛。
+    预置项是异常时当场抛出（验降级出口）；否则原样返回给服务收敛。``spend`` 让某一次调用
+    「占掉一段预算」——阶段预算是阶段间检查，所以**模型调用本身**也要能被推到越线。
     """
 
-    def __init__(self, *responses: object) -> None:
+    def __init__(
+        self,
+        *responses: object,
+        clock: _Clock | None = None,
+        spend: Mapping[str, float] | None = None,
+    ) -> None:
         self._responses = list(responses)
         self.calls: list[str] = []
         self.prompts: list[str] = []
+        self._clock = clock
+        self._spend = dict(spend or {})
 
     async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
         self.calls.append(schema.__name__)
@@ -126,6 +135,9 @@ class _ScriptedLLM(LLMProvider):
         item = self._responses.pop(0)
         if isinstance(item, BaseException):
             raise item
+        spend = self._spend.get(schema.__name__)
+        if self._clock is not None and spend:
+            self._clock.advance(spend)
         return item
 
     async def chat_json(self, *, system: str, user: str) -> dict:
@@ -169,16 +181,18 @@ def _run(
     *responses: object,
     search: _Search | None = None,
     clock: _Clock | None = None,
+    spend: Mapping[str, float] | None = None,
 ) -> tuple[research.ResearchOutcome, _ScriptedLLM, _Search]:
-    llm = _ScriptedLLM(*responses)
     probe = search if search is not None else _Search()
+    running_clock = clock or _Clock()
+    llm = _ScriptedLLM(*responses, clock=running_clock, spend=spend)
     outcome = asyncio.run(
         research.run_research(
             query=QUERY,
             tenant_id=TENANT,
             search=probe,
             llm_factory=_factory(llm),
-            clock=clock or _Clock(),
+            clock=running_clock,
         )
     )
     return outcome, llm, probe
@@ -542,3 +556,52 @@ def test_a_failed_decider_stops_the_followup_but_keeps_the_materials() -> None:
     assert outcome.followup_rounds == 0
     assert outcome.stop_reason is StopReason.DEGRADED
     assert llm.calls == ["ResearchPlan", "FollowupPlan"]
+
+
+def test_the_stage_budget_is_checked_before_the_followup_round() -> None:
+    """判断这一步自己越线 → 补证那条查询**一次都不发**（阶段间检查的另一个边界）。"""
+
+    clock = _Clock()
+    search = _Search({"退款多久到账": [_row("a")], "退款需要哪些材料": [_row("b")]})
+
+    outcome, llm, probe = _run(
+        _plan(),
+        _followup(),
+        search=search,
+        clock=clock,
+        spend={"FollowupPlan": 95.0},
+    )
+
+    assert probe.calls == ["退款多久到账", "退款需要哪些材料"], "补证阶段根本没开始"
+    assert outcome.followup_rounds == 0
+    assert outcome.stop_reason is StopReason.TIMEOUT
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
+    assert llm.calls == ["ResearchPlan", "FollowupPlan"]
+
+
+# ─────────────────────────────────────────── 检索本身的故障不披成 code 0
+
+
+def test_a_failing_sub_search_is_not_swallowed() -> None:
+    """子检索失败**不**降级成「材料为空 + code 0」：如实上抛（ADR-0028 的边界）。
+
+    Research 的降级出口只覆盖三个模型阶段。检索本身不可用（关键词引擎没配、库不可见、
+    嵌入服务挂了）意味着这套集成的检索坏了——把它包成一份「看起来成功、材料是空的」
+    响应，会让调用方以为「查过了没有」。
+    """
+
+    async def boom(_sub_query: str) -> list[dict[str, Any]]:
+        raise AppError(ErrorCode.RETRIEVAL_FAILED)
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            research.run_research(
+                query=QUERY,
+                tenant_id=TENANT,
+                search=boom,
+                llm_factory=_factory(_ScriptedLLM(_plan(), _covered())),
+                clock=_Clock(),
+            )
+        )
+
+    assert caught.value.code is ErrorCode.RETRIEVAL_FAILED
