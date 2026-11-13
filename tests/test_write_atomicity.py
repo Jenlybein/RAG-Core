@@ -113,8 +113,10 @@ def console(monkeypatch: pytest.MonkeyPatch) -> Any:
     monkeypatch.setattr(
         knowledge_base_repository, "get_by_id_for_tenant", _visible_kb_async
     )
-    # 身份：上传要租户账号，套餐 / Key 要管理员。两条写路径互不重叠，按路径分派即可。
-    identities = {UPLOAD_PATH: _user()}
+    # 身份：上传与签发 Key 走**租户**门（票 #130 起 Key 也挂在 ``require_console_tenant_write``
+    # 上：管理员没有租户，进这两条路径一律 20011）；改套餐走管理员门。两条门互不重叠，
+    # 按路径分派即可。
+    identities = {UPLOAD_PATH: _user(), "/console/keys": _user()}
 
     async def _identity_for(request: Request) -> ConsoleIdentity:
         return identities.get(request.url.path, _admin())

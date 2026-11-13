@@ -121,13 +121,18 @@ def _world() -> dict[type, list[Any]]:
 
 @pytest.fixture
 def me(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """真实应用 + 假数据库 + 假套餐缓存；``AUTH_ENABLED`` 打开，走真的判定内核。"""
+    """真实应用 + 假数据库 + 假套餐缓存；``AUTH_ENABLED`` 打开，走真的判定内核。
 
+    会话用 ``override_all_db`` **一次换全四个入口**：判定内核（``resolve_identity``）读的是
+    ``get_async_db``，只覆写 ``get_db`` 的话它会去连真库，症状是「登录一律 20010」——
+    看着像 Key 不对，其实是夹具少换了一个入口。
+    """
+
+    from tests import fake_db
     from tests.fake_db import MemoryPlanCache, RecordingSession
 
     api_router = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
-    db_session = importlib.import_module("app.db.session")
     plan_service = importlib.import_module("app.services.plan_service")
 
     db = RecordingSession(rows=_world())
@@ -140,7 +145,7 @@ def me(monkeypatch: pytest.MonkeyPatch) -> Any:
     app = FastAPI()
     app.include_router(api_router.api_router)
     error_handlers.install_handlers(app)
-    app.dependency_overrides[db_session.get_db] = lambda: db
+    fake_db.override_all_db(app, db)
     try:
         with TestClient(app) as client:
             yield _Harness(client=client, db=db)

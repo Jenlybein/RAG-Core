@@ -25,19 +25,16 @@ AUTH_HEADERS = {"Authorization": f"Bearer {settings.DEV_API_KEY}"}
 
 @pytest.fixture
 def client():
-    """只替换数据库依赖；鉴权走真实的占位 Key 校验。"""
+    """只替换数据库依赖；鉴权走真实的占位 Key 校验。
+
+    会话入口一次换全（``override_all_db``）：票 #130 之后身份判定与写事务都从
+    ``get_async_db`` 取会话，只覆写 ``get_db`` 的话它们会去连真库。
+    """
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
-    async_session_mod = importlib.import_module("app.db.async_session")
 
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
-    # 检索链路走异步依赖（第 11 步票 #127）。
-    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: (
-        AsyncSessionAdapter(EmptySession())
-    )
+    fake_db.override_all_db(main.app, EmptySession())
 
-    main.app.dependency_overrides[session.get_transaction] = fake_db.no_transaction
     try:
         with TestClient(main.app) as test_client:
             yield test_client
@@ -86,7 +83,9 @@ def test_list_knowledge_bases_returns_only_default_tenant(client, monkeypatch) -
 
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
-    def fake_list(db, tenant_id):
+    async def fake_list(db, tenant_id):
+        """列库是协程：路由读的是 ``await list_by_tenant(...)``。"""
+
         assert tenant_id == settings.DEV_TENANT_ID
         # 模拟的是 knowledge_bases 表的行：切块配置是库级字段，行里必须有。
         return [
@@ -209,11 +208,10 @@ def test_mcp_tools_have_the_declared_signatures() -> None:
         assert options is not None
         return {"query": query, "kb_ids": kb_ids, "retrieved_chunks": [], "metadata": {}}
 
-    def fake_list(db, tenant_id):
+    async def fake_list(db, tenant_id):
         return []
 
     mcp = create_mcp_server(
-        get_db=FakeSession,
         get_async_db=lambda: AsyncSessionAdapter(FakeSession()),
         retrieve=fake_retrieve,
         list_kbs=fake_list,

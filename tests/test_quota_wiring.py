@@ -33,7 +33,8 @@ from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import QuotaCounters, QuotaWindow, daily_key, qps_key
 from app.utils.status import DocumentStatus
-from tests.fake_db import AsyncRecordingSession, AsyncSessionAdapter, EmptySession
+from tests import fake_db
+from tests.fake_db import AsyncSessionAdapter, RecordingSession
 
 TENANT_ID = "tenant_acme"
 KEY_A = "key-a"
@@ -95,36 +96,19 @@ class _ExplodingStore:
         raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
 
 
-class _WriteSession(EmptySession):
-    """写路径用的最小会话：留下行、补时间戳、记录提交。
+class _WriteSession(RecordingSession):
+    """共享替身 + 一件真库会做的事：``flush`` 之后补上 ``created_at``。
 
-    读侧沿用 ``EmptySession`` 的空结果（检索替身本来就回空元数据查询）；写侧必须留下
-    行，否则「被拒的请求没有落行」这条断言就无从谈起。
+    读侧沿用共享替身的空结果（检索替身本来就回空元数据查询）；写侧必须留下行，否则
+    「被拒的请求没有落行」这条断言就无从谈起。``add`` / ``execute`` / ``commit`` /
+    ``rollback`` / ``info`` 全部沿用共享替身——本地假会话每多写一个方法，就多一处
+    「跟真货不一致」的机会。
     """
-
-    def __init__(self) -> None:
-        # ``info`` 是 SQLAlchemy 会话给调用方留的字典；事务入口把「当前这一笔」挂在上面。
-        self.info: dict[str, Any] = {}
-        self.added: list[Any] = []
-        self.commits = 0
-        self.closed = False
-
-    def add(self, obj: Any) -> None:
-        self.added.append(obj)
 
     def flush(self) -> None:
         for obj in self.added:
             if getattr(obj, "created_at", None) is None:
                 obj.created_at = datetime(2024, 1, 2, 3, 4, 5)
-
-    def commit(self) -> None:
-        self.commits += 1
-
-    def rollback(self) -> None:
-        return None
-
-    def close(self) -> None:
-        self.closed = True
 
 
 class _FakeEmbedding:
@@ -298,8 +282,6 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
-    db_session = importlib.import_module("app.db.session")
-    async_db = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
@@ -322,13 +304,8 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     async def _visible_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return _visible_row(kb_id, tenant_id)
 
-    # 两个面都要有替身：检索链路（票 #127）与上传登记（票 #132）走异步面，控制面与运维
-    # 脚本仍走同步面。两条替身返回同一个形状，免得「换了哪条栈就换了可见性」。
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda _db, kb_id, *, tenant_id: _visible_row(kb_id, tenant_id),
-    )
+    # 可见性替身只有一个（票 #130 之后取库只有异步那一个入口）：检索链路、上传登记与
+    # 重建都走 ``await get_by_id_for_tenant(...)``，所以替身必须是协程。
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
     enqueued: list[dict[str, Any]] = []
     monkeypatch.setattr(
@@ -336,15 +313,18 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     )
 
     # 上传链路是异步栈（票 #132）：会话来自异步依赖，被拒的上传不该在它上面留下行。
-    async_session = AsyncRecordingSession()
+    # 与写路径**同一个**假库（``override_all_db`` 的异步面是同一个对象的薄适配），
+    # 于是「被拒的请求没落行」在两条栈上是同一句话，而不是两个各记一份的替身。
+    session = _WriteSession()
 
     holder: dict[str, KeyContext] = {}
     holder["context"] = KeyContext(
         tenant_id=TENANT_ID, key_id=KEY_A, policy=_policy(), plan=_plan()
     )
-    session = _WriteSession()
 
-    def _identity(*_args: Any, **_kwargs: Any) -> KeyContext:
+    async def _identity(*_args: Any, **_kwargs: Any) -> KeyContext:
+        """MCP 侧的身份替身是**协程**：判定内核自票 #130 起是 ``async``。"""
+
         return holder["context"]
 
     monkeypatch.setattr(mcp_server, "resolve_identity", _identity)
@@ -363,20 +343,14 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     app.include_router(main.api_router)
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
-    app.dependency_overrides[db_session.get_db] = lambda: session
-    # 数据面上传（票 #132）走请求级异步会话：检索与上传共用这一条异步依赖，
-    # 事务依赖也得跟着换成异步孪生，否则请求边界会拿同步事务去收异步会话。
-    app.dependency_overrides[async_db.get_async_db] = lambda: async_session
-
-    async def _async_transaction_dep():
-        yield async_session
-
-    app.dependency_overrides[async_db.get_async_transaction] = _async_transaction_dep
+    # 四个会话入口一次换全（读 / 写 × 同步 / 异步）：写事务用生产实现，于是「一个请求
+    # 一笔事务」这条纪律在离线套件里照旧被真实代码跑一遍。
+    view = fake_db.override_all_db(app, session)
     app.dependency_overrides[get_current_key] = lambda: holder["context"]
 
     try:
         with TestClient(app) as client:
-            result = _Entry(client, session, holder, store, enqueued, async_session)
+            result = _Entry(client, session, holder, store, enqueued, view)
             result.initialize_mcp()
             yield result
     finally:
@@ -598,7 +572,11 @@ def test_building_the_n_plus_first_knowledge_base_is_a_quota_error(
 
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_kb=1))
-    monkeypatch.setattr(kb_repo, "count_by_tenant", lambda _db, _tenant: 1)
+
+    async def _one_kb(_db: Any, _tenant_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(kb_repo, "count_by_tenant", _one_kb)
 
     body = entry.create_kb()
 
@@ -613,7 +591,11 @@ def test_the_last_knowledge_base_under_the_limit_is_allowed(
 
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_kb=1))
-    monkeypatch.setattr(kb_repo, "count_by_tenant", lambda _db, _tenant: 0)
+
+    async def _no_kb(_db: Any, _tenant_id: str) -> int:
+        return 0
+
+    monkeypatch.setattr(kb_repo, "count_by_tenant", _no_kb)
 
     body = entry.create_kb()
 
@@ -675,10 +657,9 @@ def test_reindex_charges_the_concurrent_processing_allowance(
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_processing_documents=1))
-    monkeypatch.setattr(
-        doc_repo,
-        "get_by_id_for_tenant",
-        lambda _db, document_id, *, tenant_id: SimpleNamespace(
+
+    async def _failed_doc(_db: Any, document_id: str, *, tenant_id: str) -> Any:
+        return SimpleNamespace(
             id=document_id,
             tenant_id=tenant_id,
             kb_id=KB_A,
@@ -688,11 +669,13 @@ def test_reindex_charges_the_concurrent_processing_allowance(
             error_message="上次失败",
             source_type="markdown",
             source_file_path=None,
-        ),
-    )
-    monkeypatch.setattr(
-        doc_repo, "count_processing_for_tenant", lambda _db, *, tenant_id: 1
-    )
+        )
+
+    async def _one_processing(_db: Any, *, tenant_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(doc_repo, "get_by_id_for_tenant_async", _failed_doc)
+    monkeypatch.setattr(doc_repo, "count_processing_for_tenant_async", _one_processing)
 
     response = entry.client.post("/api/v1/documents/doc-1/reindex")
     assert response.status_code == 200
