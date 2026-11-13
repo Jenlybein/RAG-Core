@@ -21,6 +21,8 @@ import asyncio
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import pytest
+
 from app.providers.llm.base import LLMProvider
 from app.services import research
 from app.services.research_limits import (
@@ -74,19 +76,21 @@ class _Search:
         *,
         default: Sequence[dict[str, Any]] = (),
         clock: _Clock | None = None,
-        spend_seconds: float = 0.0,
+        spend_for: Mapping[str, float] | None = None,
     ) -> None:
         self.rows_for = dict(rows_for or {})
         self.default = list(default)
         self.calls: list[str] = []
         self._clock = clock
-        self._spend = spend_seconds
+        self._spend_for = dict(spend_for or {})
 
     async def __call__(self, sub_query: str) -> list[dict[str, Any]]:
         self.calls.append(sub_query)
-        if self._clock is not None and self._spend:
-            # 单次请求「占用了 40 秒」：阶段预算必须在它**回来之后**才判，不能打断它。
-            self._clock.advance(self._spend)
+        spend = self._spend_for.get(sub_query)
+        if self._clock is not None and spend:
+            # 这一次子检索「占用了一段预算」：阶段预算必须在它**回来之后**才判，
+            # 不能打断它（父 spec：阶段间检查，不是硬超时）。
+            self._clock.advance(spend)
         return [dict(row) for row in self.rows_for.get(sub_query, self.default)]
 
 
@@ -279,6 +283,8 @@ def test_a_multi_point_question_gets_two_rounds_of_materials() -> None:
     assert outcome.followup_rounds == MAX_FOLLOWUP_ROUNDS == 1
     # 证据增加了，但轮次已经用尽：诚实的停止原因是「轮数用尽」而不是「齐了」。
     assert outcome.stop_reason is StopReason.MAX_ROUNDS
+    # 轮数上限也体现在这里：补证跑完不再判断一次（模型只被问两次）。
+    assert outcome.model_calls == 2
 
 
 def test_a_followup_that_adds_nothing_stops_with_no_new_evidence() -> None:
@@ -311,3 +317,228 @@ def test_a_duplicate_followup_query_is_never_sent_twice() -> None:
     assert probe.calls == ["退款多久到账", "退款需要哪些材料"], "重复查询不许再烧一次内核"
     assert outcome.stop_reason is StopReason.DUPLICATE_QUERY
     assert outcome.followup_rounds == 0
+
+
+# ───────────────────────────────────────────────────── 六条硬上限：各撞一次
+
+
+def test_the_point_cap_truncates_the_plan_to_five_points() -> None:
+    """模型给了 6 个要点 → 计划里只留 5 个（截断后的计划就是实际执行的那一份）。"""
+
+    points = ["P1", "P2", "P3", "P4", "P5", "P6"]
+    plan = _plan(
+        points=points,
+        queries=[
+            {"point": 1, "query": "查询一"},
+            {"point": 2, "query": "查询二"},
+        ],
+    )
+
+    outcome, _, probe = _run(plan, _covered(), search=_Search(default=[_row("a")]))
+
+    assert [point.text for point in outcome.points] == points[:MAX_POINTS]
+    assert len(outcome.points) == MAX_POINTS == 5
+    assert probe.calls == ["查询一", "查询二"]
+
+
+def test_the_first_round_cap_keeps_at_most_three_searches() -> None:
+    """模型给了 4 条首轮查询 → 只跑前 3 条；计划里也只有这 3 条（没有「跑过但没记」）。"""
+
+    plan = _plan(
+        queries=[
+            {"point": 1, "query": "查询一"},
+            {"point": 1, "query": "查询二"},
+            {"point": 2, "query": "查询三"},
+            {"point": 2, "query": "查询四"},
+        ]
+    )
+
+    outcome, _, probe = _run(plan, _covered(), search=_Search(default=[_row("a")]))
+
+    assert probe.calls == ["查询一", "查询二", "查询三"]
+    assert len(probe.calls) == MAX_FIRST_ROUND_QUERIES == outcome.searches == 3
+    assert [item.query for item in outcome.queries] == ["查询一", "查询二", "查询三"]
+
+
+def test_the_followup_cap_keeps_at_most_two_searches() -> None:
+    """判断器给了 3 条补证查询 → 只跑前 2 条。"""
+
+    decision = {
+        "queries": [
+            {"point": 1, "query": "补一"},
+            {"point": 2, "query": "补二"},
+            {"point": 1, "query": "补三"},
+        ]
+    }
+
+    outcome, _, probe = _run(_plan(), decision, search=_Search(default=[_row("a")]))
+
+    assert probe.calls == ["退款多久到账", "退款需要哪些材料", "补一", "补二"]
+    assert len([item for item in outcome.queries if item.round == 2]) == MAX_FOLLOWUP_QUERIES == 2
+
+
+def test_the_model_call_cap_blocks_a_new_stage_instead_of_a_search(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """模型调用次数用尽 → 不再进入判断阶段；**已经到手的材料照给**（``budget_exhausted``）。
+
+    这条上限在 #148 里有意义地撞得到：本票只用两次调用（规划 + 判断），第三次留给 #149 的
+    生成。把上限压到 1 就是「规划用掉了唯一一次预算」的真实形状。
+    """
+
+    monkeypatch.setattr(research, "MAX_MODEL_CALLS", 1)
+    search = _Search(default=[_row("a")])
+
+    outcome, llm, probe = _run(_plan(), _covered(), search=search)
+
+    assert outcome.stop_reason is StopReason.BUDGET_EXHAUSTED
+    assert outcome.model_calls == 1
+    assert llm.calls == ["ResearchPlan"], "预算用尽后不许再问判断"
+    assert probe.calls == ["退款多久到账", "退款需要哪些材料"], "首轮检索照跑"
+    # 两条子查询命中同一节：材料只交付一次（材料是并集，不是每次子检索的原始回包）。
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a"]
+
+
+# ─────────────────────────────────────────────── 阶段预算：只挡新阶段，不中断单次请求
+
+
+def test_the_stage_budget_never_interrupts_a_request_already_sent() -> None:
+    """一次子检索把时钟推过 90 秒 → **它的材料照收**，被挡住的是下一个阶段。
+
+    这正是「阶段预算 = 阶段间检查，不是硬超时」的可断言形态：中断它等于把一次已经付过钱、
+    可能只差 200 毫秒就回来的请求丢掉，再记一条 ``timeout``——花钱买一次失败。
+    """
+
+    clock = _Clock()
+    rows = [_row("a"), _row("b")]
+    search = _Search(
+        {"退款多久到账": [rows[0]], "退款需要哪些材料": [rows[1]]},
+        clock=clock,
+        # 首轮两条查询**并行**发出：各 50 秒，合计把预算推过 90 秒。
+        spend_for={"退款多久到账": 50.0, "退款需要哪些材料": 50.0},
+    )
+
+    outcome, llm, probe = _run(_plan(), _covered(), search=search, clock=clock)
+
+    assert probe.calls == ["退款多久到账", "退款需要哪些材料"], "已发出的两条都跑完了"
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
+    assert outcome.stop_reason is StopReason.TIMEOUT
+    assert outcome.model_calls == 1
+    assert llm.calls == ["ResearchPlan"], "预算用尽后不许再进判断阶段"
+
+
+def test_the_stage_budget_also_guards_the_final_answer_slot() -> None:
+    """补证跑完才越线 → 补证的材料照样在，被挡住的是最终回答位（#149 的那一步）。"""
+
+    clock = _Clock()
+    search = _Search(
+        {
+            "退款多久到账": [_row("a")],
+            "退款需要哪些材料": [_row("b")],
+            "超期退款要哪些材料": [_row("c")],
+        },
+        clock=clock,
+        spend_for={"超期退款要哪些材料": 100.0},
+    )
+
+    outcome, llm, _ = _run(_plan(), _followup(), search=search, clock=clock)
+
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b", "chunk-c"]
+    assert outcome.followup_rounds == 1
+    # 补证已经跑完（材料在），所以原因不该是「轮数用尽」：是最终回答位进不去。
+    assert outcome.stop_reason is StopReason.TIMEOUT
+    assert outcome.answer is None
+    assert outcome.citations == ()
+    assert llm.calls == ["ResearchPlan", "FollowupPlan"], "判断已经在越线之前跑过了"
+
+
+# ─────────────────────────────────────────── 越界防护：模型只能点已存在的要点序号
+
+
+def test_a_query_pointing_at_a_missing_point_is_rejected() -> None:
+    """规划里有一条查询绑到不存在的要点 → 整份计划作废，退回原问题检索（降级出口一）。"""
+
+    plan = _plan(points=["退款时限"], queries=[{"point": 2, "query": "退款多久到账"}])
+    search = _Search(default=[_row("a")])
+
+    outcome, _, probe = _run(plan, _covered(), search=search)
+
+    assert probe.calls == [QUERY], "退回的是原问题，不是那条点错序号的查询"
+    assert outcome.stop_reason is StopReason.DEGRADED
+    assert outcome.points == ()
+    assert outcome.queries == ()
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a"]
+
+
+def test_a_followup_pointing_at_a_missing_point_stops_the_round() -> None:
+    """判断器点了一个不存在的要点 → 停止补证、标记降级、首轮材料照给。"""
+
+    rows = [_row("a"), _row("b")]
+    search = _Search({"退款多久到账": [rows[0]], "退款需要哪些材料": [rows[1]]})
+
+    outcome, _, probe = _run(_plan(), _followup(point=9), search=search)
+
+    assert probe.calls == ["退款多久到账", "退款需要哪些材料"]
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
+    assert outcome.followup_rounds == 0
+    assert outcome.stop_reason is StopReason.DEGRADED
+
+
+def test_a_plan_without_any_query_falls_back_to_the_original_question() -> None:
+    """只有要点、没有查询的计划不构成一次检索计划 → 规划失败 → 退回原问题。"""
+
+    search = _Search(default=[_row("a")])
+
+    outcome, _, probe = _run(_plan(queries=[]), _covered(), search=search)
+
+    assert probe.calls == [QUERY]
+    assert outcome.stop_reason is StopReason.DEGRADED
+
+
+def test_the_decider_prompt_carries_materials_without_internal_ids() -> None:
+    """判断提示词里只有序号、标题、章节路径与摘录——没有切片 id / 文档 id。"""
+
+    rows = [_row("a", content="超期退款需人工审核。")]
+    search = _Search({"退款多久到账": rows, "退款需要哪些材料": []})
+
+    outcome, llm, _ = _run(_plan(), _covered(), search=search)
+
+    prompt = llm.prompts[1]
+    assert "超期退款需人工审核。" in prompt
+    assert "A1" in prompt and "A2" in prompt
+    for internal in ("chunk-a", "doc-a", "section-a"):
+        assert internal not in prompt
+    assert outcome.stop_reason is StopReason.EVIDENCE_COMPLETE
+
+
+# ────────────────────────────────────────────────── 降级出口：规划 / 判断失败
+
+
+def test_a_failed_planner_falls_back_to_one_plain_search() -> None:
+    """规划阶段抛异常 → 原问题跑一次，材料照给，停止原因 degraded。"""
+
+    search = _Search(default=[_row("a")])
+
+    outcome, llm, probe = _run(RuntimeError("模型服务 502"), _covered(), search=search)
+
+    assert probe.calls == [QUERY], "降级只跑一次，且跑的是原问题"
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a"]
+    assert outcome.stop_reason is StopReason.DEGRADED
+    # 已经发出的那次调用仍然计成本（它可能已经计过费）。
+    assert outcome.model_calls == 1
+    assert llm.calls == ["ResearchPlan"]
+
+
+def test_a_failed_decider_stops_the_followup_but_keeps_the_materials() -> None:
+    """判断阶段抛异常 → 不补证、标降级；首轮材料完整交回。"""
+
+    rows = [_row("a"), _row("b")]
+    search = _Search({"退款多久到账": [rows[0]], "退款需要哪些材料": [rows[1]]})
+
+    outcome, llm, probe = _run(_plan(), RuntimeError("模型超时"), search=search)
+
+    assert probe.calls == ["退款多久到账", "退款需要哪些材料"]
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
+    assert outcome.followup_rounds == 0
+    assert outcome.stop_reason is StopReason.DEGRADED
+    assert llm.calls == ["ResearchPlan", "FollowupPlan"]
