@@ -858,13 +858,15 @@ def _corpus_digest(manifest: dict[str, Any], *, corpus_dir: Path | None = None) 
 def capability_status(config: RunConfig) -> dict[str, str]:
     """「开 / 关」两侧今天各自是什么状态。
 
-    这是本票最容易被糊弄过去的一处：图谱注入位在 ``8b37f33`` 还只是签名（默认 ``None``），
-    Research 接口整条不存在。两侧一律 ``capability-not-implemented``——**不是**
-    ``disabled``，也不是「开了但没变化」。
+    这是本票最容易被糊弄过去的一处：图谱注入已在 #144 落地（注入位、上限、范围过滤、
+    降级专码都在 ``app/services/graph_injection.py``），但**本脚本还没把 ``--graph on``
+    接到组合根的 ``graph_factory`` 上**，所以两侧读数仍必然相同；Research 接口整条不存在。
+    两侧一律 ``capability-not-implemented``——**不是** ``disabled``，也不是「开了但没变化」。
+    ``--graph on`` 接线是 #153（C6 对照）那一步的事。
     """
 
     return {
-        # 图谱注入位：内核的 graph_injection 参数存在但恒为 None，#152 才接线。
+        # 图谱注入：能力已在 #144 落地，缺的是本脚本这一侧的接线（见上面的说明）。
         "graph": CAPABILITY_NOT_IMPLEMENTED,
         # Research：/rag/research 与 MCP 第三工具都还没有入口。
         "research": CAPABILITY_NOT_IMPLEMENTED,
@@ -1173,8 +1175,9 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     add("| 开关 | 本次取值 | 状态 | 说明 |")
     add("| --- | --- | --- | --- |")
     add(
-        f"| graph | {config.graph} | `{statuses['graph']}` | 内核的图谱注入位在 `8b37f33` "
-        "只有签名（默认 `None`），注入随 #152 接线；此刻 on 与 off 的读数**必然相同**，"
+        f"| graph | {config.graph} | `{statuses['graph']}` | 注入能力已在 #144 落地 "
+        "（`app/services/graph_injection.py`），但本脚本还没把 `--graph on` 接到组合根的 "
+        "`graph_factory`（#153 接线）；此刻 on 与 off 的读数**必然相同**，"
         "不能据此说「图谱无效」 |"
     )
     add(
