@@ -17,6 +17,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 from app.schemas.rag import RetrieveRequest, RetrievedChunk
+from app.services.research_limits import StopReason
 
 
 class ResearchRequest(RetrieveRequest):
@@ -63,14 +64,16 @@ class ResearchMetadata(BaseModel):
     """这次调用的元数据：计划名、耗时、模型调用次数、**一个**停止原因。
 
     ``stop_reason`` 就是 ``app.services.research_limits.StopReason`` 的那七个词之一：
-    响应、日志、统计读同一套词（父 spec #138 C 段）。把成本写在这里是 ADR-0026 §5 的要求
-    ——「每次 Research 花多久、几次模型调用」必须可读，否则它会被当成普通检索来用。
+    响应、日志、统计读同一套词（父 spec #138 C 段）。类型直接取那个枚举而不是 ``str``，
+    于是 OpenAPI 里也是一份穷举清单——**加第八个原因要先改那一处枚举**，改不动就说明
+    它不该在这里出现。把成本写在这里是 ADR-0026 §5 的要求——「每次 Research 花多久、
+    几次模型调用」必须可读，否则它会被当成普通检索来用。
     """
 
     plan_name: str
     duration_ms: int
     model_calls: int
-    stop_reason: str
+    stop_reason: StopReason
 
 
 class ResearchCitation(BaseModel):
