@@ -261,7 +261,7 @@ def _offline_client(
 
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
     if llm is not None:
-        monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
+        _install_llm(monkeypatch, llm)
 
     from app.api.deps import get_current_key
 
@@ -359,7 +359,12 @@ def _switches(monkeypatch: pytest.MonkeyPatch, *, rewrite: bool, synonyms: bool 
 
 
 def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> None:
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
+    """把大模型出口换成**协程**替身（票 #137：真货要 ``await``，替身不许比它宽容）。"""
+
+    async def _fake_llm(role: str = "fast") -> LLMProvider:
+        return llm
+
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_llm)
 
 
 # ───────────────────────────────── 接缝一：optimize_query 产出两句话

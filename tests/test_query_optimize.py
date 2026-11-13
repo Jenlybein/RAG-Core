@@ -46,7 +46,21 @@ class _FakeLLM(LLMProvider):
 
 
 def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> None:
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
+    """把大模型出口换成**协程**替身（票 #137：真货要 ``await``，替身不许比它宽容）。"""
+
+    async def _build(role: str = "fast") -> LLMProvider:
+        return llm
+
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _build)
+
+
+def _install_forbidden_llm(monkeypatch: pytest.MonkeyPatch, message: str) -> None:
+    """装配一旦被调用就当场失败的替身（同样必须是协程）。"""
+
+    async def _build(role: str = "fast") -> LLMProvider:  # pragma: no cover
+        raise AssertionError(message)
+
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _build)
 
 
 # 「退款」这一组：中文精确子串；expand 里故意放两个词，验证空格分隔的追加形状。
@@ -73,10 +87,7 @@ def test_both_switches_off_keeps_all_three_queries_equal_and_calls_no_model(
     """回归红线：两个开关关掉时这一步是**恒等变换**。"""
 
     _switches(monkeypatch, rewrite=False, synonyms=False)
-    monkeypatch.setattr(
-        "app.providers.llm.get_llm_provider",
-        lambda role="fast": (_ for _ in ()).throw(AssertionError("关掉时不许装配大模型")),
-    )
+    _install_forbidden_llm(monkeypatch, "关掉时不许装配大模型")
 
     result = asyncio.run(optimize_query(query="退款怎么走", synonym_groups=_groups(_SYNONYMS)))
 
@@ -107,10 +118,7 @@ def test_rewrite_only_makes_search_query_follow_effective_query(
 
 def test_synonyms_only_expand_the_raw_query(monkeypatch: pytest.MonkeyPatch) -> None:
     _switches(monkeypatch, rewrite=False, synonyms=True)
-    monkeypatch.setattr(
-        "app.providers.llm.get_llm_provider",
-        lambda role="fast": (_ for _ in ()).throw(AssertionError("同义词不需要大模型")),
-    )
+    _install_forbidden_llm(monkeypatch, "同义词不需要大模型")
 
     result = asyncio.run(optimize_query(query="退钱怎么弄", synonym_groups=_groups(_SYNONYMS)))
 

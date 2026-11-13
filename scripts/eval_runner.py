@@ -41,7 +41,7 @@ import re
 import subprocess
 import sys
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -325,7 +325,7 @@ ENDPOINT_SOURCE_MODEL_CONFIGS = "model_configs"
 ENDPOINT_SOURCE_ENV = "env"
 
 
-def bind_llm_role_resolver(resolver: Any = None) -> dict[str, Any]:
+async def bind_llm_role_resolver(resolver: Any = None) -> dict[str, Any]:
     """把评测接进**生产那条**模型接入链，并回报「用的是哪一条」。
 
     ``set_role_resolver`` 已经接在 ``app/main.py``（API 组合根）、
@@ -339,6 +339,9 @@ def bind_llm_role_resolver(resolver: Any = None) -> dict[str, Any]:
     ``resolver`` 是给离线用例的接缝：不传就走 ``model_config_service.role_endpoint``，
     传了就用它（不连库）。解析器返回 ``None``（没有指针 / 库读不到）时**如实**记
     ``env``——回落 ``.env`` 是既定行为，不是错误，但不能悄悄记成 ``model_configs``。
+
+    **协程**（票 #137）：解析器要读一次角色指针（``AsyncSession``），所以「这一轮走哪条」
+    也必须 ``await``。调用点在 ``_run`` 里，本来就跑在事件循环上。
     """
 
     from app.core.config import settings
@@ -350,7 +353,7 @@ def bind_llm_role_resolver(resolver: Any = None) -> dict[str, Any]:
         resolver = model_config_service.role_endpoint
 
     set_role_resolver(resolver)
-    endpoint = resolver("fast")
+    endpoint = await resolver("fast")
     if endpoint is None:
         return {
             "llm_endpoint_source": ENDPOINT_SOURCE_ENV,
@@ -974,7 +977,7 @@ def resolve_rerank_provider(args: argparse.Namespace, *, rerank_enabled: bool) -
     return configured_rerank_provider_name()
 
 
-def build_rerank_factory(*, provider_name: str) -> Callable[[], Any] | None:
+def build_rerank_factory(*, provider_name: str) -> Callable[[], Awaitable[Any]] | None:
     """把「这一轮用哪种重排」翻译成注入缝要的可调用对象。
 
     ``llm`` → :func:`app.providers.rerank.build_llm_rerank_provider`（旧实现，对照用）；
@@ -996,7 +999,7 @@ async def _score_questions(
     mode: str,
     top_k: int,
     kb_ids: Sequence[str],
-    rerank_factory: Callable[[], Any] | None = None,
+    rerank_factory: Callable[[], Awaitable[Any]] | None = None,
 ) -> tuple[list[QuestionScore], list[dict[str, Any]], list[str]]:
     """逐题真实检索 + 打分。返回（门禁用的分数、逐题明细、检索失败的题号）。
 
@@ -1217,7 +1220,7 @@ async def _run(args: argparse.Namespace) -> int:
     rerank_enabled = _apply_eval_switches(args, top_k=top_k)
     # 模型接入接在**生产同一条链**上（#115）：评测以前只吃 .env，量的是另一条路。
     # 同时早于环境快照——快照要记的就是「这一轮走的是哪条」。
-    llm_access = bind_llm_role_resolver()
+    llm_access = await bind_llm_role_resolver()
     print(f"model     : {llm_access['llm_endpoint_source']} / {llm_access['llm_model'] or '未知'}")
     # 这一轮用哪种重排（#116）：也在快照之前定，快照要记的就是「实际跑了哪个实现」。
     rerank_provider = resolve_rerank_provider(args, rerank_enabled=rerank_enabled)
@@ -1236,7 +1239,7 @@ async def _run(args: argparse.Namespace) -> int:
     )
 
     # ── 2. 真实链路：进程内检索（PG + ES + 嵌入全部是真的） ──
-    live = ev._preflight()
+    live = await ev._preflight()
     environment["embedding"] = {
         "provider": live.embedding_provider,
         "model": live.embedding_model,
@@ -1256,7 +1259,7 @@ async def _run(args: argparse.Namespace) -> int:
         # 该问旧实现（大模型）通不通，而不是问专用端点。否则「端点通、大模型欠费」这种
         # 组合会先被误报成端点问题，或者反过来让整轮静默降级。
         probe_ms = await probe_rerank(
-            provider=rerank_factory() if rerank_factory is not None else None
+            provider=(await rerank_factory()) if rerank_factory is not None else None
         )
         print(f"rerank    : 连通性探测通过（{len(PROBE_CHUNKS)} 条假文档，{probe_ms:.0f}ms）")
 

@@ -198,7 +198,10 @@ def _offline_client(
 
     if llm is not None:
         # 改写与重排都是惰性 import 的，所以替换点仍在「大模型能力出口」上。
-        monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
+        async def _llm_factory(role: str = "fast") -> LLMProvider:
+            return llm
+
+        monkeypatch.setattr("app.providers.llm.get_llm_provider", _llm_factory)
         # #116 起生产工厂装的是专用端点，不再返回大模型重排；要测「重排看到哪一句」就得
         # 显式装配旧实现，并且接在**既有**的工厂出口上（同一个替身大模型）。
         rerank_module = importlib.import_module("app.services.retrieval.rerank")
@@ -450,7 +453,7 @@ def test_both_switches_off_keeps_the_raw_query_on_both_channels(
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
 
-    def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
+    async def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
         raise AssertionError("两个开关都关时不许装配大模型")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)

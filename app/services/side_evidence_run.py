@@ -99,7 +99,7 @@ async def build_judge() -> RagasJudge:
         async with AsyncSessionLocal() as db:
             # 走仓储而不是自己拼 SQL：``model_config_repository`` 自称「唯一能碰
             # ``model_configs`` 的一层」，绕过去就没人再守那条约定了。
-            rows = await model_config_repository.list_all_async(db)
+            rows = await model_config_repository.list_all(db)
         if rows:
             first = rows[0]
             base_url, model, api_key = first.base_url, first.model, first.api_key

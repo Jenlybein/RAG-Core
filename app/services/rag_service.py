@@ -80,7 +80,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Any
 
 import structlog
@@ -137,7 +137,7 @@ async def retrieve(
     query: str,
     options: RetrievalOptions,
     stage_timer: StageTimer | None = None,
-    rerank_factory: Callable[[], Any] | None = None,
+    rerank_factory: Callable[[], Awaitable[Any]] | None = None,
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
@@ -161,8 +161,9 @@ async def retrieve(
 
     ``rerank_factory`` 是重排的**注入缝**（#116）：缺省 ``None`` 时编排层用既有工厂出口
     （``get_rerank_provider``），传一个别的工厂进来就换实现——评测靠它显式装配旧的大模型
-    重排做对照，生产路径一行不用改。它只影响**混合模式**：重排的定义就是对融合后的候选
-    重排，单模式没有这一步。
+    重排做对照，生产路径一行不用改。它是**协程工厂**（票 #137）：旧实现要 ``await`` 一次
+    Provider 装配，缺省那一条也被包成协程，两层形状一致。它只影响**混合模式**：重排的
+    定义就是对融合后的候选重排，单模式没有这一步。
     """
 
     # 度量常开：收集器无条件创建，与 ``TRACE_SINK`` 无关。去向只决定这份计量送到哪。

@@ -364,7 +364,7 @@ def test_the_factory_never_falls_back_to_the_llm_rerank(
     monkeypatch.setattr(settings, "RERANK_API_KEY", "")
     monkeypatch.setattr(settings, "MODEL_API_KEY", "")
 
-    def _forbidden(_tier: str = "fast") -> LLMProvider:  # pragma: no cover
+    async def _forbidden(_tier: str = "fast") -> LLMProvider:  # pragma: no cover
         raise AssertionError("生产工厂不许再回落大模型重排")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)
@@ -390,7 +390,8 @@ def test_the_configured_provider_name_answers_without_building_anything(
 # ────────────────────────────────────── 旧实现：只能显式装配（对照用）
 
 
-def test_build_llm_rerank_provider_is_explicit_and_wires_the_fast_model_role(
+@pytest.mark.asyncio
+async def test_build_llm_rerank_provider_is_explicit_and_wires_the_fast_model_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """旧实现由 ``build_llm_rerank_provider`` 显式装配：fast 模型角色 + 配置封顶 / 截断。
@@ -405,21 +406,21 @@ def test_build_llm_rerank_provider_is_explicit_and_wires_the_fast_model_role(
     llm = _FakeLLM(ranking=_ranking(("c0", 1.0)))
     tiers: list[str] = []
 
-    def _fake_get_llm_provider(tier: str = "fast") -> LLMProvider:
+    async def _fake_get_llm_provider(tier: str = "fast") -> LLMProvider:
         tiers.append(tier)
         return llm
 
     # 惰性 import 的实现让这个替换点成立：工厂在调用时才去找这个函数。
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_get_llm_provider)
 
-    provider = build_llm_rerank_provider()
+    provider = await build_llm_rerank_provider()
     assert isinstance(provider, LLMRerankProvider)
     assert provider.provider_name == "llm"
     assert provider.model_name is None, "替身大模型没有模型名，不编一个出来"
     assert tiers == ["fast"], "重排与查询改写共用快档"
 
     chunks = [_chunk(f"c{i}", content="X" * 50) for i in range(5)]
-    result = asyncio.run(provider.rerank(query="q", chunks=chunks, top_n=5))
+    result = await provider.rerank(query="q", chunks=chunks, top_n=5)
 
     prompt = llm.calls[0]["user"]
     assert "c1" in prompt and "c2" not in prompt, "候选封顶来自 RERANK_MAX_CANDIDATES"
@@ -427,7 +428,8 @@ def test_build_llm_rerank_provider_is_explicit_and_wires_the_fast_model_role(
     assert len(result) == 2, "候选只有两条，返回就不可能更多"
 
 
-def test_an_enabled_but_unkeyed_llm_rerank_still_raises_llm_failed(
+@pytest.mark.asyncio
+async def test_an_enabled_but_unkeyed_llm_rerank_still_raises_llm_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """显式装配的旧实现在没有 key 时是 ``LLM_FAILED``（不是悄悄返回空顺序）。
@@ -446,11 +448,11 @@ def test_an_enabled_but_unkeyed_llm_rerank_still_raises_llm_failed(
     ):
         monkeypatch.setattr(settings, name, "")
 
-    provider = build_llm_rerank_provider()
+    provider = await build_llm_rerank_provider()
     assert isinstance(provider, LLMRerankProvider)
 
     with pytest.raises(AppError) as excinfo:
-        asyncio.run(provider.rerank(query="q", chunks=[_chunk("c1")], top_n=5))
+        await provider.rerank(query="q", chunks=[_chunk("c1")], top_n=5)
 
     assert excinfo.value.code == ErrorCode.LLM_FAILED
 

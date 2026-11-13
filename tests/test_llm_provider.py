@@ -18,6 +18,7 @@ ChatOpenAI / ChatAnthropic / ChatGoogleGenerativeAI 验供应商装配——真�
 from __future__ import annotations
 
 import asyncio
+import inspect
 import os
 import re
 from collections.abc import Iterator
@@ -112,17 +113,21 @@ def _provider_with(fake_model: FakeListChatModel) -> LangChainLLMProvider:
     return LangChainLLMProvider(chat_model=fake_model, model_name="fake-model")
 
 
-def test_factory_returns_noop_when_no_key_configured(isolated_settings: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_factory_returns_noop_when_no_key_configured(
+    isolated_settings: pytest.MonkeyPatch,
+) -> None:
     """没配任何 key 的机器（离线测试 / CI）必须能拿到空实现而不是启动失败。"""
 
-    assert isinstance(get_llm_provider(), NoopLLMProvider)
-    assert isinstance(get_llm_provider("strong"), NoopLLMProvider)
+    assert isinstance(await get_llm_provider(), NoopLLMProvider)
+    assert isinstance(await get_llm_provider("strong"), NoopLLMProvider)
 
 
 # ───────────────────────────────────── 角色解析器：注入点与回落（#82 的层向修复）
 
 
-def test_without_an_injected_resolver_the_factory_uses_the_env_vendor(
+@pytest.mark.asyncio
+async def test_without_an_injected_resolver_the_factory_uses_the_env_vendor(
     isolated_settings: pytest.MonkeyPatch,
 ) -> None:
     """没注入解析器 = 没有角色指针：装配走 ``.env``，与改造前逐字一致。"""
@@ -130,10 +135,11 @@ def test_without_an_injected_resolver_the_factory_uses_the_env_vendor(
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
     isolated_settings.setattr(settings, "LLM_MODEL", "deepseek-flash")
 
-    assert get_llm_provider().model_name == "deepseek-flash"
+    assert (await get_llm_provider()).model_name == "deepseek-flash"
 
 
-def test_a_resolver_returning_none_falls_back_to_env(
+@pytest.mark.asyncio
+async def test_a_resolver_returning_none_falls_back_to_env(
     isolated_settings: pytest.MonkeyPatch,
 ) -> None:
     """解析器返回 ``None``（没有指针 / 候选取行已消失）时回落 ``.env``，不是「能力缺失」。
@@ -142,38 +148,77 @@ def test_a_resolver_returning_none_falls_back_to_env(
     「没有配置」当错误，更不在请求路径上抛。
     """
 
-    set_role_resolver(lambda role: None)
+    async def _resolver(role: str) -> RoleEndpoint | None:
+        return None
+
+    set_role_resolver(_resolver)
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
     isolated_settings.setattr(settings, "LLM_MODEL", "env-fast-model")
 
-    provider = get_llm_provider("fast")
+    provider = await get_llm_provider("fast")
 
     assert isinstance(provider, LangChainLLMProvider)
     assert provider.model_name == "env-fast-model"
 
 
-def test_an_injected_endpoint_is_assembled_without_the_services_layer(
+@pytest.mark.asyncio
+async def test_an_injected_endpoint_is_assembled_without_the_services_layer(
     isolated_settings: pytest.MonkeyPatch,
 ) -> None:
     """注入的非空端点直接用：provider 层的形状就够了，不需要 ``app.services``。"""
 
-    set_role_resolver(
-        lambda role: RoleEndpoint(
+    async def _resolver(role: str) -> RoleEndpoint | None:
+        return RoleEndpoint(
             provider="ark",
             base_url="https://ark.example.com/v3",
             model="doubao-pro",
             api_key="sk-ark-abcd",
             config_id="config-ark",
         )
-    )
+
+    set_role_resolver(_resolver)
     # `.env` 里给的是另一家的 key：装配必须只看注入的那一条，不许把它和 env 混在一起。
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
 
-    provider = get_llm_provider("fast")
+    provider = await get_llm_provider("fast")
 
     assert provider.model_name == "doubao-pro"
     assert type(provider.chat_model).__name__ == "ChatOpenAI"
     assert str(provider.chat_model.openai_api_base) == "https://ark.example.com/v3"
+
+
+@pytest.mark.asyncio
+async def test_the_factory_and_its_resolver_are_coroutines(
+    isolated_settings: pytest.MonkeyPatch,
+) -> None:
+    """装配入口是协程，注入的解析器也必须是协程（票 #137）。
+
+    这条同时钉住两件事：``get_llm_provider`` 不再是一个能随手在循环上调用的同步工厂；
+    而「换掉解析器」这件事必须连**形状**一起换——替身若还是同步 lambda，``await`` 会拿到
+    一个普通对象并当场 ``TypeError``。替身不许比真货宽容。
+    """
+
+    assert inspect.iscoroutinefunction(get_llm_provider)
+
+    requested: list[str] = []
+
+    async def _resolver(role: str) -> RoleEndpoint | None:
+        requested.append(role)
+        return RoleEndpoint(
+            provider="ark",
+            base_url="https://ark.example.com/v3",
+            model="doubao-pro",
+            api_key="sk-ark-abcd",
+            config_id="config-ark",
+        )
+
+    set_role_resolver(_resolver)
+    isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
+
+    provider = await get_llm_provider("fast")
+
+    assert provider.model_name == "doubao-pro"
+    assert requested == ["fast"], "解析器真的被 await 了一次，而不是拿了个形状不对的返回值"
 
 
 def test_the_provider_layer_does_not_import_the_services_layer() -> None:
@@ -253,7 +298,8 @@ def test_default_llm_provider_is_a_supported_vendor() -> None:
     assert Settings(_env_file=None).LLM_PROVIDER in LLM_VENDORS
 
 
-def test_factory_maps_fast_and_strong_tiers_to_their_models(
+@pytest.mark.asyncio
+async def test_factory_maps_fast_and_strong_tiers_to_their_models(
     isolated_settings: pytest.MonkeyPatch,
 ) -> None:
     """fast 与 strong 是两个模型名，选错档位在真实调用里只表现为「贵了 / 慢了」。"""
@@ -262,8 +308,8 @@ def test_factory_maps_fast_and_strong_tiers_to_their_models(
     isolated_settings.setattr(settings, "LLM_MODEL", "deepseek-flash")
     isolated_settings.setattr(settings, "LLM_STRONG_MODEL", "deepseek-v4-pro")
 
-    assert get_llm_provider().model_name == "deepseek-flash"
-    assert get_llm_provider("strong").model_name == "deepseek-v4-pro"
+    assert (await get_llm_provider()).model_name == "deepseek-flash"
+    assert (await get_llm_provider("strong")).model_name == "deepseek-v4-pro"
 
 
 @pytest.mark.parametrize(
@@ -277,7 +323,8 @@ def test_factory_maps_fast_and_strong_tiers_to_their_models(
         ("gemini", "GEMINI_API_KEY", "ChatGoogleGenerativeAI"),
     ],
 )
-def test_each_vendor_is_reachable_with_environment_variables_only(
+@pytest.mark.asyncio
+async def test_each_vendor_is_reachable_with_environment_variables_only(
     isolated_settings: pytest.MonkeyPatch,
     vendor: str,
     key_setting: str,
@@ -288,13 +335,14 @@ def test_each_vendor_is_reachable_with_environment_variables_only(
     isolated_settings.setattr(settings, "LLM_PROVIDER", vendor)
     isolated_settings.setattr(settings, key_setting, "sk-test")
 
-    provider = get_llm_provider()
+    provider = await get_llm_provider()
 
     assert isinstance(provider, LangChainLLMProvider)
     assert type(provider.chat_model).__name__ == expected_model_class
 
 
-def test_fast_tier_never_enables_reasoning(isolated_settings: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_fast_tier_never_enables_reasoning(isolated_settings: pytest.MonkeyPatch) -> None:
     """fast 档写死关思考模式：改写与重排要的是低延迟与稳定输出。
 
     这一条不能用「配置文件里别写 high」来保证——那是运维纪律，不是代码约束。
@@ -303,17 +351,18 @@ def test_fast_tier_never_enables_reasoning(isolated_settings: pytest.MonkeyPatch
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
     isolated_settings.setattr(settings, "LLM_REASONING_EFFORT", "high")
 
-    assert get_llm_provider("fast").chat_model.reasoning_effort is None
-    assert get_llm_provider("strong").chat_model.reasoning_effort == "high"
+    assert (await get_llm_provider("fast")).chat_model.reasoning_effort is None
+    assert (await get_llm_provider("strong")).chat_model.reasoning_effort == "high"
 
 
-def test_unknown_tier_is_rejected(isolated_settings: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_unknown_tier_is_rejected(isolated_settings: pytest.MonkeyPatch) -> None:
     """档位只有两档；写错要立刻炸，不能悄悄按 fast 跑。"""
 
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
 
     with pytest.raises(ValueError):
-        get_llm_provider("medium")
+        await get_llm_provider("medium")
 
 
 def test_chat_structured_returns_schema_instance() -> None:
@@ -393,7 +442,8 @@ def test_noop_provider_raises_llm_failed_for_both_methods() -> None:
     assert second.value.code == ErrorCode.LLM_FAILED
 
 
-def test_building_provider_switches_framework_telemetry_off(
+@pytest.mark.asyncio
+async def test_building_provider_switches_framework_telemetry_off(
     isolated_settings: pytest.MonkeyPatch, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """框架的追踪客户端读的是环境变量，不是我们的 Settings。
@@ -405,6 +455,6 @@ def test_building_provider_switches_framework_telemetry_off(
     isolated_settings.setattr(settings, "LANGCHAIN_TRACING_V2", False)
     monkeypatch.delenv("LANGCHAIN_TRACING_V2", raising=False)
 
-    get_llm_provider()
+    await get_llm_provider()
 
     assert os.environ["LANGCHAIN_TRACING_V2"] == "false"

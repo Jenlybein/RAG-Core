@@ -25,15 +25,17 @@
 所以「指向的行不见了」按「没有指向」处理，记一条 warning 并回落 ``.env``——这与
 ``runtime_settings`` 对非法行的处理同一条纪律（丢弃那一行、保留上一份好值、照常服务）。
 
-## 两种会话：面板异步、装配同步（第 11 步票 #130）
+## 两种会话：面板异步、装配也是异步（第 11 步票 #130 / #137）
 
 面板那六条接口（列表 / 新增 / 改 / 删 / 看明文）全在异步栈上，所以它们的读写是
-``async``；而 :func:`resolve_role_config` 是 **Provider 装配**的入口——它拿不到
-``Depends``。**注意**：它**确实**在请求路径上——``get_llm_provider`` 每次调用都要算
-配置指纹，那次同步读就在这里，所以它也是票 #137 要搬走的那一处。之所以还不是 ``Depends`
-`，是为了让 Provider 层不必认识请求上下文（ADR-0011）；那条
-路径仍用同步会话，:func:`pointer_map` 因此保留同步面，异步面是它的孪生
-:func:`pointer_map_async`。「谁是角色、谁指着谁」的解释仍然只有一份
+``async``；:func:`resolve_role_config` 是 **Provider 装配**的入口——它拿不到
+``Depends``，但**确实**在请求路径上（``get_llm_provider`` 每次调用都要算配置指纹）。
+票 #137 把那一处搬完之后，它跟面板一样走 ``AsyncSession``：读角色指针（一次查询）、
+按 id 取行，两次都 ``await``，会话用完关掉。
+
+这样一来，本模块里**没有**同步会话入口：:func:`pointer_map` 与
+``model_config_repository.list_all`` / ``get_by_id`` 的同步孪生随这次搬迁一起删掉了
+（同步那半边已经没有调用点）。「谁是角色、谁指着谁」的解释仍然只有一份
 （:func:`_pointers_of`）。
 """
 
@@ -45,7 +47,6 @@ from typing import TYPE_CHECKING, Any, Final
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import Session
 
 from app.core.exceptions import AppError, ErrorCode
 from app.core.llm_vendors import LLM_VENDORS
@@ -55,7 +56,7 @@ from app.core.model_roles import (
     role_pointer_target,
 )
 from app.db.base import now
-from app.db.session_factory import session_factory
+from app.db.session_factory import async_session_factory
 from app.models.model_config import ModelConfig, ModelConfigSpec, spec_of
 from app.repositories import model_config_repository, runtime_setting_repository
 from app.services.console_service import append_audit
@@ -91,15 +92,15 @@ MSG_UNKNOWN_TARGET: Final[str] = "该模型配置不存在：{value}（{key} 只
 MSG_UNKNOWN_VENDOR: Final[str] = "未知的模型供应商：{value}（只支持 {vendors}）"
 
 
-def _session_of(db: Session | None) -> Session:
+def _session_of(db: AsyncSession | None) -> AsyncSession:
     """拿一个会话：调用方给了就用它，否则照进程级注入点开一个（用完要关）。"""
 
-    return db if db is not None else session_factory()()
+    return db if db is not None else async_session_factory()()
 
 
-def _close_if_temporary(session: Session, db: Session | None) -> None:
+async def _close_if_temporary(session: AsyncSession, db: AsyncSession | None) -> None:
     if db is None:
-        session.close()
+        await session.close()
 
 
 # ───────────────────────────────────────────────────────────── 打码与快照
@@ -125,28 +126,19 @@ def _masked_snapshot(spec: ModelConfigSpec) -> dict[str, Any]:
 # ───────────────────────────────────────────────────────── 角色指针与被引用判定
 
 
-def pointer_map(db: Session) -> dict[str, str]:
-    """角色 → 它现在指向的配置 id（同步面：Provider 装配与旁证跑批）。
+async def pointer_map(db: AsyncSession) -> dict[str, str]:
+    """角色 → 它现在指向的配置 id（控制面列表、删除校验与 Provider 装配共用）。
 
     这是读指针的**唯一**位置：``runtime_settings`` 把指针存在自己的表里，但两张表之间的
     关系（「谁指着谁」）只能在这里被解释一次，否则删除校验、装配解析、面板展示会各写
-    一遍「空串算不算指向」。
-    """
-
-    return _pointers_of(runtime_setting_repository.list_all(db))
-
-
-async def pointer_map_async(db: AsyncSession) -> dict[str, str]:
-    """:func:`pointer_map` 的异步孪生（控制面列表与删除校验，票 #130）。
-
-    解释规则只有一份（:func:`_pointers_of`），两个面只差「行怎么读出来」。
+    一遍「空串算不算指向」。票 #137 之后这里只有异步面（装配期的那次读库也走它）。
     """
 
     return _pointers_of(await runtime_setting_repository.list_all_async(db))
 
 
 def _pointers_of(rows: list[Any]) -> dict[str, str]:
-    """「哪些键是角色指针、指向谁」的**唯一**解释：同步与异步两个面共用。"""
+    """「哪些键是角色指针、指向谁」的**唯一**解释（面板、装配、删除校验共用这一份）。"""
 
     pointers: dict[str, str] = {}
     for row in rows:
@@ -167,7 +159,7 @@ async def roles_referencing(db: AsyncSession, config_id: str) -> tuple[str, ...]
     管理员先把指向改掉。写入角色指针时也用它：目标必须是一条**有人可以用**的行。
     """
 
-    pointers = await pointer_map_async(db)
+    pointers = await pointer_map(db)
     return tuple(role for role in MODEL_ROLES if pointers.get(role) == config_id)
 
 
@@ -186,7 +178,7 @@ async def ensure_pointer_target(db: AsyncSession, key: str, value: Any) -> None:
     target = role_pointer_target(value)
     if target is None:
         return
-    if await model_config_repository.get_by_id_async(db, target) is not None:
+    if await model_config_repository.get_by_id(db, target) is not None:
         return
     raise AppError(ErrorCode.PARAM_ERROR, MSG_UNKNOWN_TARGET.format(value=target, key=key))
 
@@ -214,12 +206,12 @@ class ConfigPatchResult:
 async def list_configs(db: AsyncSession) -> list[ConfigRowView]:
     """全部配置行 + 各自被哪个角色引用。
 
-    指针**只读一次**（``pointer_map_async``）而不是每行各读一次：面板要的是「这张表现在
+    指针**只读一次**（``pointer_map``）而不是每行各读一次：面板要的是「这张表现在
     长什么样」，N 行各读一次两张指针键纯属多余，而且行与行之间可能读到同一次改动的前后
     两个状态。
     """
 
-    pointers = await pointer_map_async(db)
+    pointers = await pointer_map(db)
     # 一个配置可以被**两个**角色同时指向（fast 与 strong 用同一家、同一个模型是常见
     # 配置）。所以这里按键收集而不是 `{config_id: role}` 覆盖写——后者会让面板只显示
     # 最后读到的那个角色，而「这条同时被 fast 和 strong 引用」恰好是删除时最该看到的。
@@ -229,7 +221,7 @@ async def list_configs(db: AsyncSession) -> list[ConfigRowView]:
         if target is not None:
             referenced_by.setdefault(target, []).append(role)
     views: list[ConfigRowView] = []
-    for row in await model_config_repository.list_all_async(db):
+    for row in await model_config_repository.list_all(db):
         views.append(
             ConfigRowView(
                 spec=spec_of(row),
@@ -311,7 +303,7 @@ async def _config_of(db: AsyncSession, config_id: str) -> ModelConfig:
     的理由（与账户/套餐之外的平台级资源同一个口径）。
     """
 
-    row = await model_config_repository.get_by_id_async(db, config_id)
+    row = await model_config_repository.get_by_id(db, config_id)
     if row is None:
         raise AppError(ErrorCode.NOT_FOUND, f"model config not found: {config_id}")
     return row
@@ -456,25 +448,31 @@ async def reveal_secret(db: AsyncSession, *, actor: Any, config_id: str) -> str:
 # ───────────────────────────────────────────────────────── 运行时解析（装配点入口）
 
 
-def resolve_role_config(role: str, db: Session | None = None) -> ModelConfigSpec | None:
+async def resolve_role_config(
+    role: str, db: AsyncSession | None = None
+) -> ModelConfigSpec | None:
     """角色 → 它现在该用的那一条配置；``None`` 表示「没有指向，回落 ``.env``」。
 
-    三步都在这里：读指针（一次主键查询）、按 id 找行、行不见了就记 warning 并返回
+    三步都在这里：读指针（一次查询）、按 id 找行、行不见了就记 warning 并返回
     ``None``。**指针为空不是错误**，它是本票最重要的一种状态（离线 / CI / 全新部署都
     落到这里）。
 
-    ``db`` 为空时自己开一个会话（装配点拿不到 ``Depends``）；读取必然是**当场读库**，
-    不走缓存：指向的语义是「下一次检索用新配置」，而缓存最多会把这句话推迟 30 秒。
-    一次主键查询换一条准确的承诺，是值得的。
+    ``db`` 为空时自己开一个**异步**会话（装配点拿不到 ``Depends``）；读取必然是**当场
+    读库**，不走缓存：指向的语义是「下一次检索用新配置」，而缓存最多会把这句话推迟
+    30 秒。一次查询换一条准确的承诺，是值得的。
+
+    读库失败**吞掉并回落**（与改造前的 ``except Exception`` 一条不差）：检索是一条正在
+    服务的路径，一次查询失败不该把它整段打断。``CancelledError`` / ``SystemExit`` 这类
+    ``BaseException`` 不在 ``Exception`` 里，照旧上抛。
     """
 
     session = _session_of(db)
     try:
         try:
-            pointer = pointer_map(session).get(role)
+            pointer = (await pointer_map(session)).get(role)
             if pointer is None:
                 return None
-            row = model_config_repository.get_by_id(session, pointer)
+            row = await model_config_repository.get_by_id(session, pointer)
         except Exception as exc:  # noqa: BLE001 —— 读不到就回落 .env，绝不在请求路径上炸
             # 库不可用（离线测试、CI、运维正在搬迁）时，唯一正确的行为是「当作没有指向」：
             # 检索是一条正在服务的路径，一次主键查询失败不该把它整段打断。告警里带上角色
@@ -494,10 +492,10 @@ def resolve_role_config(role: str, db: Session | None = None) -> ModelConfigSpec
             return None
         return spec_of(row)
     finally:
-        _close_if_temporary(session, db)
+        await _close_if_temporary(session, db)
 
 
-def role_endpoint(role: str) -> RoleEndpoint | None:
+async def role_endpoint(role: str) -> RoleEndpoint | None:
     """``resolve_role_config`` 的适配器：服务层形状 → Provider 层的 ``RoleEndpoint``。
 
     这是**唯一**的翻译点，也是 ``app/main.py`` 与 Celery Worker 注入给
@@ -505,13 +503,16 @@ def role_endpoint(role: str) -> RoleEndpoint | None:
     Provider 不认识 ``ModelConfigSpec``（``app/providers/**`` 不许 import ``app.services``，
     #82 修复的层向倒置），而服务层认识 Provider 的类型是正当的方向。
 
+    **协程**（票 #137）：Provider 工厂 ``await`` 它，而它 ``await`` 一次 ``AsyncSession``
+    读库——事件循环上因此不再有同步会话读。
+
     适配是纯字段搬运（provider / base_url / model / api_key + 日志用的 id），没有任何判定：
     指针为空、行已消失、库读不到都由 :func:`resolve_role_config` 统一折成 ``None``。
     """
 
     from app.providers.llm import RoleEndpoint
 
-    spec = resolve_role_config(role)
+    spec = await resolve_role_config(role)
     if spec is None:
         return None
     return RoleEndpoint(

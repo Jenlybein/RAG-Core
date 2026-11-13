@@ -42,12 +42,16 @@ _SYSTEM_PROMPT = (
 _MIN_CONTEXT_CHARS = 8
 
 
-def _llm_provider() -> Any:
-    """惰性 import：关闭节说明时不为一项没开的能力付 import 代价。"""
+async def _llm_provider() -> Any:
+    """惰性 import：关闭节说明时不为一项没开的能力付 import 代价。
+
+    **协程**（票 #137）：Provider 装配要 ``await`` 一次角色指针读库（``AsyncSession``）；
+    索引任务本身就在常驻事件循环上，所以这一步没有任何桥接。
+    """
 
     from app.providers.llm import get_llm_provider
 
-    return get_llm_provider("fast")
+    return await get_llm_provider("fast")
 
 
 def _build_user_prompt(*, title: str, heading_path: str, section_text: str) -> str:
@@ -84,7 +88,7 @@ async def summarize_sections(
         try:
             if provider is None:
                 # 装配放在循环里第一次：供应商名字拼错时工厂会抛，不该让索引整体失败。
-                provider = _llm_provider()
+                provider = await _llm_provider()
             raw = await asyncio.wait_for(
                 provider.chat_structured(
                     SectionContext,

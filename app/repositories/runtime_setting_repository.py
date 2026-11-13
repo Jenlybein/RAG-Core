@@ -25,7 +25,7 @@ from app.models.runtime_setting import RuntimeSetting
 
 
 def list_all(db: Session) -> list[RuntimeSetting]:
-    """全部覆盖行（同步面：刷新中间件、Celery 任务与 Provider 装配的指针读取）。
+    """全部覆盖行（同步面：刷新中间件与 Celery 任务——它们跑在事件循环之外）。
 
     这张表**天生很小**（只存被显式覆盖的键），所以一次取回不设上限。
     """
@@ -34,7 +34,7 @@ def list_all(db: Session) -> list[RuntimeSetting]:
 
 
 async def list_all_async(db: AsyncSession) -> list[RuntimeSetting]:
-    """:func:`list_all` 的异步孪生（配置中台面板读，票 #129）。
+    """:func:`list_all` 的异步孪生（配置中台面板读与角色指针解析，票 #129 / #137）。
 
     面板读的是**库里的真相**、不经过缓存（见 ``runtime_settings.describe_settings``），
     所以它必须真的发一次查询；同步版仍被刷新中间件与 Celery 用着（那两条跑在事件循环

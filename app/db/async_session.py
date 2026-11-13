@@ -8,15 +8,14 @@
 
 到票 #130，**HTTP 的每一条入口**（控制面与数据面，读与写）都已经在异步栈上：
 检索链路（#127）、观测与反馈（#128）、控制面（#129 读 / #130 写）、入库索引（#131 / #132）、
-身份判定（数据面 ``get_current_key`` 与控制面 ``get_console_account``）。同步会话如今只剩
-四处读者（**票 #134 之后仍未搬，且 ADR-0024 决策四把它们记成「保留 + 翻案条件」**）：
+身份判定（数据面 ``get_current_key`` 与控制面 ``get_console_account``）。**票 #137 之后**，
+Provider 装配的角色指针也搬到了这一栈（``get_llm_provider`` 是协程、
+``model_config_service.resolve_role_config`` 走 ``AsyncSession``），所以同步会话只剩
+三处读者（ADR-0024 决策四）：
 
-1. **Provider 装配的角色指针解析**（``model_config_service.resolve_role_config``）——
-   **这一处在事件循环上**：``get_llm_provider(role)`` 是同步工厂，每次装配都会读一次
-   角色指针。它是票 #137 的范围（把整条 Provider 装配链改成协程），不是「装配期一次」。
-2. ``runtime_settings.ensure_runtime_overrides``——中间件用 ``run_in_threadpool`` 调它。
-3. 运维脚本（独立进程，同步到底）。
-4. ``app/main.py`` 的启动期档位装载（lifespan 里、开始接请求之前）。
+1. ``runtime_settings.ensure_runtime_overrides``——中间件用 ``run_in_threadpool`` 调它。
+2. 运维脚本（独立进程，同步到底）。
+3. ``app/main.py`` 的启动期档位装载（lifespan 里、开始接请求之前）。
 
 ## 迁移期的命名约定（写给后面几张票）
 

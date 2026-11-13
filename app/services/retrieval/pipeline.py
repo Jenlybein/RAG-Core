@@ -39,7 +39,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -106,7 +106,7 @@ async def hybrid_retrieve(
     recall_depth: int | None = None,
     rerank_candidates: int | None = None,
     rerank_enabled: bool,
-    rerank_factory: Callable[[], Any] | None = None,
+    rerank_factory: Callable[[], Awaitable[Any]] | None = None,
     stage_timer: StageTimer | None = None,
 ) -> HybridOutcome:
     """两路并行召回，融合、重排后返回；一路失败不取消另一路。

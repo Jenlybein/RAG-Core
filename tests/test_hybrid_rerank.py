@@ -228,7 +228,7 @@ def test_disabled_rerank_keeps_fusion_order_and_never_builds_an_llm(
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
 
-    def _forbidden(_tier: str = "fast") -> LLMProvider:  # pragma: no cover
+    async def _forbidden(_tier: str = "fast") -> LLMProvider:  # pragma: no cover
         raise AssertionError("关闭重排时不许装配大模型")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)

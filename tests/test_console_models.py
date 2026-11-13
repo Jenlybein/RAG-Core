@@ -36,6 +36,7 @@ from app.core import passwords
 from app.core.config import settings
 from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
 from app.db.base import Base
+from app.db.session_factory import set_async_session_factory
 from app.models.account import Account
 from app.models.audit_log import AuditLog
 from app.models.key_policy import KeyPolicy
@@ -47,7 +48,7 @@ from app.providers.llm import get_llm_provider, set_role_resolver
 from app.providers.llm.noop import NoopLLMProvider
 from app.services import model_config_service, runtime_settings
 from app.utils.id_generator import mask_secret
-from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
+from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -258,6 +259,10 @@ def console() -> Any:
     # 于是「改指针之后下一次装配按新行跑」这条在测试里也走真实路径（注入点是
     # 进程级共享的，见 app/db/session_factory.py）。
     runtime_settings.set_session_factory(lambda: db)
+    # 角色解析也拿不到 ``Depends``，但它**走异步会话**（票 #137）：每次装配自己开一个
+    # 会话读指针与配置行。这里每次开一个「看得见当前那份假库」的异步会话（行是同一批
+    # 对象，所以上面改指针、删行都即时可见），关闭只关它自己，不动共享的 ``db``。
+    set_async_session_factory(lambda: AsyncRecordingSession(rows=db._rows))
     # 角色解析器是**组合根注入**的（#82）：生产里 app.main 启动时注入一次；这里显式再注入
     # 一遍，让装配点用例不依赖「哪个测试文件先 import 了 app.main」这种顺序。
     set_role_resolver(model_config_service.role_endpoint)
@@ -273,6 +278,7 @@ def console() -> Any:
         set_role_resolver(None)
         runtime_settings.reset_runtime_state()
         runtime_settings.set_session_factory(None)
+        set_async_session_factory(None)
         reset_settings_cache()
         for key, value in saved.items():
             setattr(settings, key, value)
@@ -757,7 +763,8 @@ def test_writing_a_pointer_to_a_missing_config_is_rejected(console: _Harness) ->
     assert console.audit_entries() == []
 
 
-def test_writing_an_existing_config_id_moves_the_pointer_and_the_next_call_uses_it(
+@pytest.mark.asyncio
+async def test_writing_an_existing_config_id_moves_the_pointer_and_the_next_call_uses_it(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """验收原话：改 ``fast`` 的指向后，**下一次**装配就用新那条的 provider/base_url/model/api_key。
@@ -776,7 +783,7 @@ def test_writing_an_existing_config_id_moves_the_pointer_and_the_next_call_uses_
     assert console.pointer_row("model.role.fast").value == "config-ark"
 
     captured = _capture_chat_model(monkeypatch)
-    provider = get_llm_provider("fast")
+    provider = await get_llm_provider("fast")
     # 装配发生在**第一次要用模型**的时候（#117：Provider 缓存、模型每次现装），
     # 所以这里显式取一次模型——捕获到的就是这次检索真会用的那组参数。
     assert provider.chat_model is not None
@@ -813,7 +820,8 @@ def test_writing_null_or_an_empty_pointer_means_fall_back_to_env(console: _Harne
         assert console.pointer_row("model.role.fast").value == ""
 
 
-def test_a_cleared_pointer_makes_the_next_provider_use_the_env_single_vendor(
+@pytest.mark.asyncio
+async def test_a_cleared_pointer_makes_the_next_provider_use_the_env_single_vendor(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
@@ -822,7 +830,7 @@ def test_a_cleared_pointer_makes_the_next_provider_use_the_env_single_vendor(
     assert console.patch_setting({"model.role.fast": ""}).json()["code"] == 0
 
     captured = _capture_chat_model(monkeypatch)
-    provider = get_llm_provider("fast")
+    provider = await get_llm_provider("fast")
     # 模型在第一次要用时才现装（#117），先把它取出来再断言「拼了什么参数」。
     assert provider.chat_model is not None
 
@@ -834,7 +842,8 @@ def test_a_cleared_pointer_makes_the_next_provider_use_the_env_single_vendor(
 # ───────────────────────────────────── 装配顺序与回归红线（离线 / CI 行为逐字不变）
 
 
-def test_no_model_config_and_no_pointer_reproduces_the_env_path(
+@pytest.mark.asyncio
+async def test_no_model_config_and_no_pointer_reproduces_the_env_path(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """**回归红线**：一行配置、一条指针都没有时，装配产物与 ``.env`` 路径逐字一致。
@@ -854,8 +863,8 @@ def test_no_model_config_and_no_pointer_reproduces_the_env_path(
     captured = _capture_chat_model(monkeypatch)
 
     # 模型在第一次要用时才现装（#117）：两档各取一次，捕获顺序才是 fast → strong。
-    assert get_llm_provider("fast").chat_model is not None
-    assert get_llm_provider("strong").chat_model is not None
+    assert (await get_llm_provider("fast")).chat_model is not None
+    assert (await get_llm_provider("strong")).chat_model is not None
 
     assert captured[0] == (
         "deepseek-flash",
@@ -879,7 +888,8 @@ def test_no_model_config_and_no_pointer_reproduces_the_env_path(
     )
 
 
-def test_no_key_anywhere_still_returns_the_noop_provider(
+@pytest.mark.asyncio
+async def test_no_key_anywhere_still_returns_the_noop_provider(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """空表 + 空指针 + 没配 key：还是空实现（离线与 CI 的默认路径）。"""
@@ -888,11 +898,12 @@ def test_no_key_anywhere_still_returns_the_noop_provider(
     console.db._rows[RuntimeSetting] = []
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "")
 
-    assert isinstance(get_llm_provider("fast"), NoopLLMProvider)
-    assert isinstance(get_llm_provider("strong"), NoopLLMProvider)
+    assert isinstance(await get_llm_provider("fast"), NoopLLMProvider)
+    assert isinstance(await get_llm_provider("strong"), NoopLLMProvider)
 
 
-def test_a_pointer_to_a_row_deleted_behind_the_api_falls_back_to_env_without_raising(
+@pytest.mark.asyncio
+async def test_a_pointer_to_a_row_deleted_behind_the_api_falls_back_to_env_without_raising(
     console: _Harness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """指针指向的行在运行中被绕过接口删掉：回落 ``.env`` + 告警，**不在请求路径上炸**。
@@ -907,12 +918,65 @@ def test_a_pointer_to_a_row_deleted_behind_the_api_falls_back_to_env_without_rai
     monkeypatch.setattr(settings, "LLM_MODEL", "env-fast-model")
 
     captured = _capture_chat_model(monkeypatch)
-    provider = get_llm_provider("fast")
+    provider = await get_llm_provider("fast")
     # 模型在第一次要用时才现装（#117），先把它取出来再断言「拼了什么参数」。
     assert provider.chat_model is not None
 
     assert provider.model_name == "env-fast-model"
     assert captured[0][1]["api_key"] == "sk-env-deepseek"
+
+
+# ───────────────────────────── 装配期读库的形状（票 #137：搬出事件循环）
+
+@pytest.mark.asyncio
+async def test_role_resolution_reads_the_pointer_through_the_async_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """角色指针与配置行都走 ``AsyncSession``（票 #137）。
+
+    这是「事件循环上不再出现同步会话读」的最小可观察事实：注入的异步工厂被真的打开一次
+    （装配解析各读一次、共用同一个会话），而 ``model_config_service`` 里**没有**同步会话
+    工厂这个名字可用——同步入口不是「这次没走」，是「这条路径上没有」。
+    """
+
+    opened: list[Any] = []
+
+    def _open() -> Any:
+        session = AsyncRecordingSession(rows=_world())
+        opened.append(session)
+        return session
+
+    monkeypatch.setattr(model_config_service, "async_session_factory", lambda: _open)
+
+    endpoint = await model_config_service.role_endpoint("fast")
+
+    assert endpoint is not None
+    assert endpoint.config_id == "config-deepseek"
+    assert endpoint.model == "deepseek-flash"
+    assert len(opened) == 1, "指针与配置行走同一个会话，不各开一个"
+    assert not hasattr(
+        model_config_service, "session_factory"
+    ), "装配期不再有同步会话入口（ADR-0024 决策四第一行已搬走）"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_role_read_still_falls_back_to_env(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """读库失败照旧吞掉并回落 ``.env``：只记 warning，不在请求路径上炸。
+
+    「离线 / CI / 运维正在搬迁」与「库里有半条脏数据」是同一条纪律：检索是一条正在服务的
+    路径，一次主键查询失败不该把它整段打断。
+    """
+
+    class _BrokenSession(AsyncRecordingSession):
+        async def execute(self, *_args: Any, **_kwargs: Any) -> Any:
+            raise RuntimeError("database is down")
+
+    monkeypatch.setattr(model_config_service, "async_session_factory", lambda: _BrokenSession)
+
+    assert await model_config_service.role_endpoint("fast") is None
+    assert await model_config_service.resolve_role_config("fast") is None
 
 
 def test_the_rerank_follows_fast_and_has_no_separate_config(console: _Harness) -> None:

@@ -69,12 +69,21 @@ def _sections(count: int) -> list[tuple[str, str, str]]:
     ]
 
 
+def _install_provider(monkeypatch: pytest.MonkeyPatch, provider: Any) -> None:
+    """把大模型出口换成**协程**替身（票 #137：真货要 ``await``，替身不许比它宽容）。"""
+
+    async def _build(*_args: Any, **_kwargs: Any) -> Any:
+        return provider
+
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _build)
+
+
 def test_one_call_per_section(monkeypatch: pytest.MonkeyPatch) -> None:
     """按节调用：五个节五次调用，而不是按片几十次。"""
 
     provider = _Provider()
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda *_a, **_k: provider)
+    _install_provider(monkeypatch, provider)
 
     summaries = _run(summarize_sections(_sections(5), title="部署实施指南"))
 
@@ -89,7 +98,7 @@ def test_disabled_makes_no_model_call(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = _Provider()
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", False)
 
-    def _forbidden(*_args: Any, **_kwargs: Any) -> Any:
+    async def _forbidden(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("关闭节说明时不该装配模型")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)
@@ -102,10 +111,7 @@ def test_failure_degrades_without_raising(monkeypatch: pytest.MonkeyPatch) -> No
     """模型失败时返回空字典，索引照常继续——这是可选增强，不是索引前提。"""
 
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
-    monkeypatch.setattr(
-        "app.providers.llm.get_llm_provider",
-        lambda *_a, **_k: _Provider(error=RuntimeError("模型服务 502")),
-    )
+    _install_provider(monkeypatch, _Provider(error=RuntimeError("模型服务 502")))
 
     assert _run(summarize_sections(_sections(3), title="部署实施指南")) == {}
 
@@ -115,7 +121,7 @@ def test_one_failing_section_does_not_stop_the_rest(monkeypatch: pytest.MonkeyPa
 
     provider = _Provider(error=RuntimeError("这一节超时"))
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda *_a, **_k: provider)
+    _install_provider(monkeypatch, provider)
 
     summaries = _run(summarize_sections(_sections(10), title="部署实施指南"))
 
@@ -128,7 +134,7 @@ def test_provider_assembly_failure_stops_after_one_attempt(
 ) -> None:
     """拿不到 provider 时后续节必然也失败，只试一次就收手。"""
 
-    def _forbidden(*_args: Any, **_kwargs: Any) -> Any:
+    async def _forbidden(*_args: Any, **_kwargs: Any) -> Any:
         raise ValueError("未知的模型供应商")
 
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
@@ -142,7 +148,7 @@ def test_too_short_context_is_discarded(monkeypatch: pytest.MonkeyPatch) -> None
 
     provider = _Provider(reply="本节讲部署")
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda *_a, **_k: provider)
+    _install_provider(monkeypatch, provider)
 
     assert _run(summarize_sections(_sections(1), title="部署实施指南")) == {}
 
@@ -152,7 +158,7 @@ def test_empty_sections_makes_no_call(monkeypatch: pytest.MonkeyPatch) -> None:
 
     provider = _Provider()
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", True)
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda *_a, **_k: provider)
+    _install_provider(monkeypatch, provider)
 
     assert _run(summarize_sections([], title="部署实施指南")) == {}
     assert provider.calls == 0

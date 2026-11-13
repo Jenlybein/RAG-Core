@@ -68,7 +68,7 @@ import json
 import sys
 import time
 from collections import Counter
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -268,7 +268,7 @@ def _isolate_settings(*, top_k: int, rerank: bool = False) -> None:
     settings.TOP_K = top_k
 
 
-def _probe_llm() -> tuple[bool, str]:
+async def _probe_llm() -> tuple[bool, str]:
     """改写这一组能不能跑，只看一件事：快档大模型是否真的装配出来了。
 
     三种结果都必须区分清楚，因为它们对「改写开/关」的可执行性含义不同：
@@ -283,7 +283,7 @@ def _probe_llm() -> tuple[bool, str]:
     """
 
     try:
-        provider = get_llm_provider("fast")
+        provider = await get_llm_provider("fast")
     except Exception as exc:  # noqa: BLE001 - 任何装配失败都只影响「改写」这一组
         return False, f"LLM_PROVIDER 配置不可用（{type(exc).__name__}: {exc}）"
     if isinstance(provider, NoopLLMProvider):
@@ -291,7 +291,7 @@ def _probe_llm() -> tuple[bool, str]:
     return True, "ok"
 
 
-def _preflight() -> LiveEnvironment:
+async def _preflight() -> LiveEnvironment:
     """预检：缺什么就当场说清楚，绝不在半配置的环境上跑出一组假数字。"""
 
     problems: list[str] = []
@@ -315,7 +315,7 @@ def _preflight() -> LiveEnvironment:
     if missing_tables:
         raise SystemExit(f"数据库缺表 {missing_tables}；先跑 `uv run alembic upgrade head`。")
 
-    llm_configured, llm_probe = _probe_llm()
+    llm_configured, llm_probe = await _probe_llm()
 
     return LiveEnvironment(
         env_file=_ENV_FILE,
@@ -731,7 +731,7 @@ async def _run_question(
     mode: str,
     top_k: int,
     kb_ids: Sequence[str],
-    rerank_factory: Callable[[], Any] | None = None,
+    rerank_factory: Callable[[], Awaitable[Any]] | None = None,
 ) -> QuestionOutcome:
     started = time.perf_counter()
     outcome = QuestionOutcome(id=question.id, query=question.query, mode=mode)
@@ -1835,7 +1835,7 @@ async def _run(args: argparse.Namespace) -> int:
     if args.cleanup:
         return _cleanup(db_factory=SessionLocal, index_name=index_name)
 
-    environment = _preflight()
+    environment = await _preflight()
     questions, question_k = _load_questions()
     top_k = args.top_k or question_k
 
