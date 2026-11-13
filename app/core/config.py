@@ -186,6 +186,14 @@ class Settings(BaseSettings):
     # 送给模型的节正文最多这么长：节很长时全部塞进去既慢又贵，说明只需要开头。
     SECTION_CONTEXT_MAX_INPUT_CHARS: int = 1200
 
+    # ── 切片编排（第 11 步票 #147）──
+    # 整步预算（两次结构化调用共用）。它是**可选附加能力**的硬上限：超了就把编排这一块
+    # 丢掉、记一条降级原因，检索结果照旧返回——附加能力失败不等于本次调用失败。
+    # 开关不在这里：它落在「套餐 / 密钥配置 / 档位」三层（ADR-0018），没有部署级开关。
+    # 候选上限、保留位与提示词字符预算同样是链路常数，写在
+    # ``app/services/orchestration.py``，不进配置（同一个档位名不许在不同部署下变成本不同）。
+    ORCHESTRATION_TIMEOUT_MS: int = 4000
+
     # 框架自带的追踪客户端读的是环境变量而不是这份配置。这里声明默认值，
     # 由 Provider 工厂在构造模型前同步到进程环境里（见 providers/llm/langchain_llm.py）。
     LANGCHAIN_TRACING_V2: bool = False

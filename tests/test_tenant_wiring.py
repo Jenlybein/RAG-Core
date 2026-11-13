@@ -654,6 +654,8 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
         "top_k": 5,
         "rerank": False,
         "rewrite": False,
+        # 编排（#147）：两条入口回显的是同一份 ``options``，所以这个键也必须逐字相同。
+        "orchestration": False,
         "kb_count": 1,
         "clipped": [],
     }

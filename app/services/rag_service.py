@@ -118,7 +118,7 @@ from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
-from app.services import result_collapse
+from app.services import orchestration, result_collapse
 from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
@@ -286,6 +286,27 @@ async def retrieve(
     # 一因一码，先到的才是根因：改写发生在召回之前，所以它已经在场时通道故障与
     # 重排失败都不该覆盖它。
     degraded_reason = optimized.rewrite_reason or outcome.degraded_reason
+
+    # ── 切片编排（第 11 步票 #147）：**折叠之后**做，此时交付单元已定 ──
+    # 位置就是这个函数里唯一说得通的那一个：编排的输入是「交付单元」，而交付单元在折叠
+    # 之后才存在（之前是命中片，一条结果可能对应同一节的多片）。放在折叠之前等于让模型
+    # 在同一节的碎片之间挑，挑出来的「核心片」与调用方看到的材料对不上。
+    #
+    # 开关读 ``options.orchestration``（生效值 = 档位想要 ∧ 配置启用，套餐越权在门禁里
+    # 已经拒绝）。关闭时这一段**整段不执行**：不调模型、不读配置、响应里也不出现那个键
+    # ——「附加能力的代价只付给开了它的档位」是可观察的事实，不是一句承诺。
+    orchestration_block = None
+    if options.orchestration and collapsed:
+        orchestrated = await orchestration.orchestrate_evidence(
+            query=query,
+            rows=collapsed,
+            tenant_id=tenant_id,
+            # 与召回、折叠、归属索引**同一份**范围映射：编排材料不许来自别的库或别的版本。
+            index_versions=index_versions,
+        )
+        orchestration_block = orchestrated.block
+        # 编排在最后一步，所以它**永不覆盖**前面任何一条原因（先到的才是根因）。
+        degraded_reason = degraded_reason or orchestrated.degraded_reason
     degraded = degraded_reason is not None
 
     # 空结果判定用**同一个范围**（``kb_id → 生效版本`` 的映射）：换一个版本口径去数，
@@ -367,12 +388,17 @@ async def retrieve(
         empty_reason=empty_reason,
     )
 
-    return {
+    payload: dict[str, object] = {
         "query": query,
         "kb_ids": list(kb_ids),
         "retrieved_chunks": collapsed,
         "metadata": metadata,
     }
+    if orchestration_block is not None:
+        # 只在开启时出现；关闭时这个键**连存在都不存在**（响应逐字节不变，见
+        # ``RetrieveData`` 的序列化规则与 ADR-0010「第七次修订」）。
+        payload["orchestration"] = orchestration_block
+    return payload
 
 
 def _metadata_of(

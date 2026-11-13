@@ -236,7 +236,7 @@ _Avoid_: 检索引擎, 完整检索服务, retrieve 服务
 _Avoid_: 精排, 二次排序, 粗排
 
 **降级原因（degraded_reason）**：
-降级时回给调用方的固定英文串，只有四个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排），后到的不覆盖。
+降级时回给调用方的固定英文串，只有五个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `orchestration failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排 → 编排），后到的不覆盖。
 _Avoid_: 错误信息, 异常原因, 失败详情, 中文译名
 
 **诚实空（honest empty）**：
@@ -343,7 +343,7 @@ _Avoid_: 配置级别, 配置等级, 热更新级别
 _Avoid_: 图谱边, 知识图谱, 语义边, chunk_relations
 
 **切片编排**：
-把候选切片整理成「带角色的结构化结果」的步骤：每个切片标注它在本次结果中的角色（主 / 补 / 背景），并压掉重复与纯指路内容。它只组织切片，**不改排名，也不生成答案**。Research 的每一轮收口、MCP 工具的返回值都基于它。
+把候选切片整理成「带角色的结构化结果」的步骤，分两步问小模型：先把问题归纳成要点（A1…An），再为每个要点挑出**核心片**与**辅助片**。它只组织切片，**不改排名，也不生成答案**；模型的输出里只有要点与候选序号，**正文一律由后端按序号回查重建**——所以提示词注入最多让它点错序号，塞不进任意内容。三态完整度（`complete` / `partial` / `missing`）由「每个要点有没有核心片」数出来，不由模型自评；材料编号 E1…En 按要点顺序稳定分配，调用方可以直接引用。默认关闭，开关按 ADR-0018 分三层（套餐 / 密钥配置 / 档位）。Research 的每一轮收口、MCP 工具的返回值都基于它。
 _Avoid_: 证据编排, Evidence Pack, evidence_pack（对外文案里）
 
 **受控 Research**：

@@ -118,11 +118,11 @@ def _want_orchestration(profile: str = PROFILE_QUALITY) -> None:
 
 
 def test_orchestration_is_effective_only_when_all_three_layers_agree() -> None:
-    """套餐允许 + Key 启用 + 档位想要 → 生效。
+    """套餐允许 + Key 启用 + 档位想要 → 生效，且回显与生效值同源。
 
-    **回显留到 #147**：``tenant_policy`` 只放「本次真实生效、且改变了结果」的项，
-    而编排在 #147 之前没有任何消费者——现在把它塞进回显，只会让既有响应的逐字节
-    基线失效（ADR-0010 的红线）。判定路径在这里断言，回显在 #147 随生效值一起落地。
+    ``tenant_policy`` 只放「本次真实生效、且改变了结果」的项：编排在 #147 之前没有消费者，
+    所以回显当时被推迟（#146 的收口判断）；#147 把它接进链路之后，它和重排 / 改写一样
+    出现在回显里，并且**从同一个 ``options`` 上读**（ADR-0010「第七次修订」）。
     """
 
     _want_orchestration(PROFILE_QUALITY)
@@ -134,6 +134,7 @@ def test_orchestration_is_effective_only_when_all_three_layers_agree() -> None:
     )
 
     assert options.orchestration is True
+    assert tenant_policy_echo(options, kb_count=1)["orchestration"] is True
 
 
 def test_the_tier_preset_keeps_orchestration_off_by_default() -> None:
@@ -210,12 +211,13 @@ def test_a_custom_tier_over_the_plan_is_clipped_and_echoed() -> None:
     assert echo["clipped"] == ["orchestration"]
 
 
-def test_the_switch_stays_out_of_the_response_echo_until_it_changes_results() -> None:
-    """本票不加回显，这是一条**有意的**契约边界，不是一个漏。
+def test_the_echo_reads_orchestration_from_the_effective_value() -> None:
+    """回显从 ``options`` 上读：三层判完之后的值是什么，回显就是什么，不许各存一份。
 
-    ``tenant_policy`` 回答的是「这次调用实际生效了什么」。编排在 #147 之前没有消费者，
-    把它放进回显等于宣告一个不存在的生效值；而且会让既有响应的逐字节基线失效。
-    #147 落地编排时，回显随「生效值真的改变结果」一起进来（ADR-0010 的第七次修订）。
+    #146 时这条回显被刻意推迟（``tenant_policy`` 只放「真的改变了结果」的项，而编排当时
+    没有消费者）。#147 接上消费者之后它随生效值一起进来，位置与语义都与 ``rerank`` /
+    ``rewrite`` 一致——同源，所以「回显说开了编排」与「链路真的编排了」不可能分叉
+    （ADR-0010「第七次修订」）。
     """
 
     _want_orchestration(PROFILE_QUALITY)
@@ -227,7 +229,15 @@ def test_the_switch_stays_out_of_the_response_echo_until_it_changes_results() ->
 
     echo = tenant_policy_echo(options, kb_count=1)
     assert options.orchestration is True
-    assert "orchestration" not in echo, "回显随 #147 落地，不是在开关票里提前宣告"
+    assert echo["orchestration"] is options.orchestration, "回显与生效值同源，不是另存一份"
+
+    # 三层里任意一层否决：回显跟着变 False，而不是留在「想要」那一侧。
+    off = resolve_retrieval_options(
+        policy=_policy(profile=PROFILE_QUALITY, orchestration_allowed=False),
+        plan=_plan(PLAN_PRO),
+        kb_count=1,
+    )
+    assert tenant_policy_echo(off, kb_count=1)["orchestration"] is False
 
 
 def test_the_custom_tier_reads_the_manual_switch_from_its_options() -> None:
@@ -386,34 +396,50 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
         main.app.dependency_overrides.clear()
 
 
-def test_the_switch_does_not_change_results_before_the_orchestrator_exists(
-    entry: _Entry,
+def test_the_echo_follows_the_effective_value_and_the_material_stays_put(
+    entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """#147 之前开关对检索**没有行为影响**，也不出现在回显里。
+    """开关在两个方向上都可观察：回显跟着生效值走，检索材料一个字不变。
 
-    这条钉住两件事：三层都同意才「生效」；而「生效」在 #147 之前只是判定路径上的一个
-    布尔，还不是一条会改变结果的链路——所以 ``tenant_policy`` 里也没有它。回显随
-    生效值一起在 #147 落地（ADR-0010 的第七次修订）。
+    #146 时这条钉的是「回显里还没有它」；#147 把消费者接上之后，回显与编排块一起出现
+    ——正是当时写下的那句「回显随生效值真的改变结果一起进来」。开关只**增加**编排这一块，
+    改不了交付单元本身：编排是组织材料，不是重新检索。
     """
 
-    _want_orchestration(PROFILE_QUALITY)
+    _want_orchestration(PROFILE_SPEED)
+
+    class _Model:
+        """两次结构化调用的替身；本用例只关心「开关带来了什么、没带走什么」。"""
+
+        async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
+            if schema.__name__ == "PointList":
+                return {"points": ["错误码含义"]}
+            return {"points": [{"point": 1, "primary": [1]}]}
+
+    async def _fake_llm(role: str = "fast") -> Any:
+        return _Model()
+
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_llm)
 
     entry.use(
-        policy=_policy(profile=PROFILE_QUALITY, orchestration_allowed=False),
+        policy=_policy(profile=PROFILE_SPEED, orchestration_allowed=False),
         plan=_plan(PLAN_PRO),
     )
     off = entry.post()["data"]
 
     entry.use(
-        policy=_policy(profile=PROFILE_QUALITY, orchestration_allowed=True),
+        policy=_policy(profile=PROFILE_SPEED, orchestration_allowed=True),
         plan=_plan(PLAN_PRO),
     )
     on = entry.post()["data"]
 
-    for data in (off, on):
-        assert "orchestration" not in data["metadata"]["tenant_policy"], "回显随 #147 落地"
+    assert off["metadata"]["tenant_policy"]["orchestration"] is False
+    assert on["metadata"]["tenant_policy"]["orchestration"] is True
+    assert "orchestration" not in off, "关闭时连键都不出现"
+    assert on["orchestration"]["completeness"] == "complete"
     assert on["retrieved_chunks"] == off["retrieved_chunks"], "开关不许改变检索材料"
     assert on["metadata"]["mode"] == off["metadata"]["mode"]
+    assert on["metadata"]["retrieval"]["degraded"] is False
 
 
 def test_a_plan_downgrade_turns_orchestration_off_on_the_next_call(entry: _Entry) -> None:
