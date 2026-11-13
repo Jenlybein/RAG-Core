@@ -21,5 +21,7 @@ class NoopKeywordSearchProvider(KeywordSearchProvider):
     ) -> list[dict]:
         return []
 
-    async def delete_by_document_id(self, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         return None

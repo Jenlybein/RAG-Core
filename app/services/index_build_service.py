@@ -59,9 +59,14 @@ from app.providers.keyword_search import KeywordSearchProvider, get_keyword_sear
 from app.providers.vectorstores.base import VectorStore
 from app.providers.vectorstores import get_vector_store
 from app.models.knowledge_base import KnowledgeBase
-from app.repositories import index_version_repository, knowledge_base_repository
+from app.repositories import (
+    document_repository,
+    index_version_repository,
+    knowledge_base_repository,
+)
 from app.services.indexing_service import IndexingService
 from app.utils.id_generator import new_id
+from app.utils.status import DocumentStatus
 
 logger = structlog.get_logger(__name__)
 
@@ -254,6 +259,76 @@ class IndexBuildService:
             ),
         )
         return live
+
+    # ── 跑一次构建 ────────────────────────────────────────────────
+
+    async def build(
+        self, db: AsyncSession, build_id: str, *, tenant_id: str
+    ) -> IndexBuildVersion:
+        """把目标版本逐文档重建出来（任务体调它一次）。
+
+        **一次构建 = 若干次「一篇文档一笔事务」**：整库包成一笔会把行锁持有到最后一篇
+        （上传、删除、检索都要等它）；包成一笔也不换来什么，因为检索**不靠**构建的
+        事务边界来保持一致——它 pin 在旧版本上（ADR-0025 决策二）。所以每一篇文档自己
+        提交，失败的那一篇让整次构建落 ``failed``：部分版本永远不许上线。
+
+        哪些文档参与：``SUCCESS`` 的那些。失败 / 处理中的文档没有可切的正文，把它们的
+        失败再重放一遍只是把构建拖成失败；它们该由单篇重试解决，不属于构建。
+        """
+
+        row = await index_version_repository.get_for_tenant(
+            db, build_id, tenant_id=tenant_id
+        )
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "index build not found")
+        if row.status != INDEX_BUILD_BUILDING:
+            # 重复投递 / 迟到的任务：不是 building 就别再动它（尤其别动 active）。
+            logger.warning(
+                "index build is not building, skipping",
+                build_id=build_id,
+                tenant_id=tenant_id,
+                status=row.status,
+            )
+            return row
+
+        try:
+            documents = await document_repository.list_by_kb_async(
+                db, row.kb_id, tenant_id=tenant_id
+            )
+            indexed = 0
+            for document in documents:
+                if document.status != DocumentStatus.SUCCESS:
+                    continue
+                await self._indexing.index_existing_document(
+                    db,
+                    document.id,
+                    # 目标版本是本票的唯一输入：写错版本等于「构建成功但没人看得见」。
+                    index_version=row.version,
+                    # 重建的输入本来就是成功文档，必须允许抢占它们。
+                    allow_success=True,
+                )
+                indexed += 1
+        except Exception as exc:  # noqa: BLE001 - 收成 failed，原因只留固定文案
+            await async_rollback_now(db)
+            await self.mark_failed(db, build_id, tenant_id=tenant_id)
+            logger.exception(
+                "index build aborted",
+                build_id=build_id,
+                tenant_id=tenant_id,
+                kb_id=row.kb_id,
+                version=row.version,
+            )
+            raise exc
+
+        logger.info(
+            "index build documents rebuilt",
+            build_id=build_id,
+            tenant_id=tenant_id,
+            kb_id=row.kb_id,
+            version=row.version,
+            document_count=indexed,
+        )
+        return row
 
     # ── 失败 ────────────────────────────────────────────────────
 

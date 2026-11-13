@@ -41,6 +41,11 @@
 ``build_chunk_stores`` 组装；加第三个存储只需要往列表里再加一个元素。索引阶段
 不做降级：任一处写失败就是索引失败（由 Celery 任务回滚并置为失败），否则会留下
 「向量库有、关键词库没有」的数据不一致。
+
+**写入目标版本是必填参数的一部分（#142）**: 切片行与关键词文档都带
+``index_version``，它来自调用方（整库构建写新版本）或库上的生效版本（上传 / 单篇
+重建写回线上那一版），**不是**写死的常量。删除同样按版本收窄：重建只清目标版本的
+旧行，线上那一版在构建期间原样可查（ADR-0025 决策二）。
 """
 
 from __future__ import annotations
@@ -52,7 +57,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import async_commit_now
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
@@ -78,7 +82,12 @@ INDEXING_FAILED_MESSAGE = "document indexing failed, please retry or contact sup
 
 
 async def purge_document_chunks(
-    db: AsyncSession, document_id: str, *, tenant_id: str, stores: list[ChunkStore]
+    db: AsyncSession,
+    document_id: str,
+    *,
+    tenant_id: str,
+    stores: list[ChunkStore],
+    index_version: str | None = None,
 ) -> None:
     """先删后写的第一半：遍历**存储列表**，逐个清除该文档的旧切片。
 
@@ -87,12 +96,17 @@ async def purge_document_chunks(
     往 ``stores`` 追加一个元素，调用方一行都不用改。``tenant_id`` 是强制过滤参数
     （ADR-0006），连删除也必须带租户。
 
+    ``index_version`` 是**删除范围**（#142）：重建写到目标版本时只清目标版本的旧行，
+    线上那一版一个字节都不动；``None`` 表示「这份文档的所有版本」——删文档才这样。
+
     会话类型是 ``AsyncSession``：Worker 索引、数据面删除与控制面删除都在异步栈上
     （第 11 步票 #132 / #130）。
     """
 
     for store in stores:
-        await store.delete_by_document_id(db, document_id, tenant_id=tenant_id)
+        await store.delete_by_document_id(
+            db, document_id, tenant_id=tenant_id, index_version=index_version
+        )
 
 
 class IndexingService:
@@ -140,14 +154,26 @@ class IndexingService:
         return splitter, strategy
 
     async def index_existing_document(
-        self, db: AsyncSession, document_id: str, *, reparse: bool = False
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        reparse: bool = False,
+        index_version: str | None = None,
+        allow_success: bool = False,
     ) -> int:
         """把一份已经登记在库的文档索引成切片，返回写入的切片数。
 
-        ``reparse=True`` 强制重解析原始文件（忽略库内正文）；这里固定
-        ``allow_success=False``：force 重建的 SUCCESS→PROCESSING 状态准备已经在
-        路由层用 ``prepare_for_indexing`` 完成，Worker 只负责抢租约与执行，迟到
-        重复投递不能重新抢占成功文档。
+        ``reparse=True`` 强制重解析原始文件（忽略库内正文）；``allow_success=True`` 让
+        **已经是 SUCCESS 的文档**也能被抢占——那是「整库重建到新版本」（#142）要的：
+        重建的输入本来就是成功文档。上传 / 重建路由仍走默认值（路由先用
+        ``prepare_for_indexing`` 做过 SUCCESS→PROCESSING 的准备），迟到重复投递不能
+        重新抢占成功文档。
+
+        ``index_version`` 是**写入目标**（#142）：构建写它自己的新版本；不传时取该库
+        当前的生效版本（上传、单篇重建都写回线上那一版）。**绝不写死常量 `v1`**——
+        激活 v2 之后再上传的文档若写进 v1，检索按 (库, 生效版本) 配对时就一条都匹配
+        不上，而症状是「这个库没内容」（ADR-0025 决策七）。
 
         会话是 ``AsyncSession``（Worker 常驻循环里那一个），两段事务的提交点是
         ``app.db.transaction`` 的异步孪生 ``async_commit_now``；**提交次数与改造前
@@ -159,10 +185,16 @@ class IndexingService:
         if doc is None:
             raise AppError(ErrorCode.NOT_FOUND, "document not found")
 
+        # 目标版本在**抢占之前**定下来：抢占了却不写（版本解析失败）会留下一份新鲜租约，
+        # 下一次尝试反而抢不到。
+        version = index_version or await knowledge_base_repository.get_effective_index_version(
+            db, doc.kb_id, tenant_id=doc.tenant_id
+        )
+
         # Tx1：抢占后立刻提交，只持锁一瞬间。抢不到说明另一个 Worker 已经在跑
         # 这份文档（重复投递 / 重试），直接跳过，绝不重复向量化。
         claimed = await document_repository.try_claim_for_indexing_async(
-            db, document_id, tenant_id=doc.tenant_id, allow_success=False
+            db, document_id, tenant_id=doc.tenant_id, allow_success=allow_success
         )
         await async_commit_now(db)
         if not claimed:
@@ -237,7 +269,8 @@ class IndexingService:
                 "content": piece.text,
                 "retrieval_text": retrieval_texts[index],
                 "embedding": vector,
-                "index_version": DEFAULT_INDEX_VERSION,
+                # 写入目标版本：构建写新版本，上传 / 单篇重建写库上的生效版本（#142）。
+                "index_version": version,
                 "meta": {
                     # 解析器产出的 metadata 必须跟着切片走，否则「元数据.engine 含 ocr」
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
@@ -268,7 +301,13 @@ class IndexingService:
         ]
 
         # Tx2：先删后写 + 状态回写，一次提交；任一步失败都由调用方回滚。
-        await purge_document_chunks(db, document_id, tenant_id=doc.tenant_id, stores=self._stores)
+        await purge_document_chunks(
+            db,
+            document_id,
+            tenant_id=doc.tenant_id,
+            stores=self._stores,
+            index_version=version,
+        )
         for store in self._stores:
             await store.add_chunks(db, chunks)
 
@@ -280,5 +319,6 @@ class IndexingService:
             tenant_id=doc.tenant_id,
             kb_id=doc.kb_id,
             chunk_count=len(chunks),
+            index_version=version,
         )
         return len(chunks)

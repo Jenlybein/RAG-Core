@@ -295,23 +295,27 @@ def build_bm25_query(
     }
 
 
-def build_purge_query(*, document_id: str, tenant_id: str) -> dict:
+def build_purge_query(
+    *, document_id: str, tenant_id: str, index_version: str | None = None
+) -> dict:
     """返回 ``delete_by_query`` 的请求体：只删这个租户的这一份文档。
 
     ``tenant_id`` 与 ``document_id`` 都是 ``term`` 且都在 ``filter`` 里：
     少一个就会删到别的租户同 id 的行（ADR-0006 的强制过滤同样适用于删除）。
+
+    ``index_version`` 非空时再加一条版本过滤（#142）：重建新版本只清目标版本，
+    线上那一版原样留着。物理索引本来就按版本隔离，这条过滤是第二道防线——它会在
+    「写进了错误物理索引」时把误删挡住，而那种错一旦发生，删掉的就是线上数据。
     """
 
-    return {
-        "query": {
-            "bool": {
-                "filter": [
-                    {"term": {"tenant_id": tenant_id}},
-                    {"term": {"document_id": document_id}},
-                ]
-            }
-        }
-    }
+    filters: list[dict] = [
+        {"term": {"tenant_id": tenant_id}},
+        {"term": {"document_id": document_id}},
+    ]
+    if index_version is not None:
+        filters.append({"term": {"index_version": index_version}})
+
+    return {"query": {"bool": {"filter": filters}}}
 
 
 def build_keyword_documents(chunks: list[dict]) -> list[dict]:

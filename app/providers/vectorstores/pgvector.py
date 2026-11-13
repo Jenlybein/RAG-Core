@@ -135,9 +135,24 @@ class PgVectorStore(VectorStore):
         ]
 
     async def delete_by_document_id(
-        self, db: AsyncSession, document_id: str, *, tenant_id: str
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
     ) -> None:
-        await db.execute(
-            delete(Chunk).where(Chunk.document_id == document_id, Chunk.tenant_id == tenant_id)
+        """删该文档的切片行；``index_version`` 非空时只删那一版（#142）。
+
+        **带版本删是为了不弄空线上那一版**：重建 v2 时若把这份文档的 v1 行也删了，
+        构建期间的检索会在一段时间里查不到它——而「构建期间线上照旧查旧版本」恰恰要求
+        旧行原样不动。
+        """
+
+        statement = delete(Chunk).where(
+            Chunk.document_id == document_id, Chunk.tenant_id == tenant_id
         )
+        if index_version is not None:
+            statement = statement.where(Chunk.index_version == index_version)
+        await db.execute(statement)
         await db.flush()

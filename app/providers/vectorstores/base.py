@@ -63,6 +63,15 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def delete_by_document_id(
-        self, db: AsyncSession, document_id: str, *, tenant_id: str
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
     ) -> None:
-        """删某文档的全部切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。"""
+        """删某文档的切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。
+
+        ``index_version`` 是**删除范围**（#142）：给了版本只删那一版（重建新版本时绝不
+        碰线上那一版），``None`` 删全部版本（删文档）。
+        """

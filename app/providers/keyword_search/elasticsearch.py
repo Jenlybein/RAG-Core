@@ -181,11 +181,17 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             for hit in response["hits"]["hits"]
         ]
 
-    async def delete_by_document_id(self, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         try:
             await self._get_client().delete_by_query(
                 index=self._index_name,
-                **build_purge_query(document_id=document_id, tenant_id=tenant_id),
+                **build_purge_query(
+                    document_id=document_id,
+                    tenant_id=tenant_id,
+                    index_version=index_version,
+                ),
                 refresh=True,
             )
         except NotFoundError:
