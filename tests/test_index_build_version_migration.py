@@ -295,23 +295,25 @@ def test_it_chains_onto_the_single_current_head() -> None:
     这里要守的性质是「接得上、只有一条链」，不是「永远接在某一条特定 revision 后」。
     """
 
-    mine = _migration_path(SLUG)
+    mine = _revision_of(_migration_path(SLUG))
     paths = sorted(VERSIONS_DIR.glob("*.py"))
     revisions = {_revision_of(path): path for path in paths}
-    others = {revision for revision in revisions if revisions[revision] != mine}
-    down_revisions = {
-        _down_revision_of(revisions[revision])
-        for revision in others
-        if _down_revision_of(revisions[revision]) is not None
-    }
-    heads = others - down_revisions
+    down_revisions = {_down_revision_of(path) for path in paths} - {None}
+    heads = set(revisions) - down_revisions
 
-    assert len(heads) == 1, f"其余迁移必须只有一条链，实际 head={sorted(heads)}"
-    assert _down_revision_of(mine) == next(iter(heads)), "本票必须接在当前唯一 head 上"
+    assert len(heads) == 1, f"全链必须只有一条链，实际 head={sorted(heads)}"
 
-    # 全链也要只有一个 head：本票的 revision 不被任何人当作 down_revision。
-    all_down = {_down_revision_of(path) for path in paths} - {None}
-    assert set(revisions) - all_down == {_revision_of(mine)}, "本票应当就是唯一 head"
+    # 本票在**这条链上**：从唯一 head 沿 down_revision 一路走能走到它。
+    # 「本票就是链尾」不是它的固有性质——后续票接一条迁移在它后面是正常演化
+    # （#152 的关系边表就接在它之后），链尾前移不该让这条用例变红。
+    by_revision = {_revision_of(path): _down_revision_of(path) for path in paths}
+    chain: set[str] = set()
+    cursor: str | None = next(iter(heads))
+    while cursor is not None:
+        chain.add(cursor)
+        cursor = by_revision[cursor]
+
+    assert mine in chain, "本票必须仍在这条唯一的链上"
 
 
 # ──────────────────────────────────────────────────────────── upgrade：先加列、再回填

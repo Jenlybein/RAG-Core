@@ -7,7 +7,8 @@ alembic 的 env.py 要 import 这个模块，确保每张表都注册到 Base.me
 （租户 / 套餐 / 账号 / 密钥配置 / API Key / 会话 / 审计）同样在这里登记，一张都不能漏。
 第 8 步（#93）补上运行时配置覆盖表 ``runtime_settings``；#94 再补多模型配置表
 ``model_configs``；第 9 步（#105）再补反馈表 ``retrieval_feedback``；第 11 步（#141）
-再补索引构建版本表 ``index_build_versions``（ADR-0025：索引即构建产物）。
+再补索引构建版本表 ``index_build_versions``（ADR-0025：索引即构建产物）；同一步的
+#152 再补关系边表 ``section_edges``（ADR-0027：只建节级边，只做候选不做裁决）。
 """
 
 from app.models.account import Account
@@ -24,6 +25,7 @@ from app.models.plan import Plan
 from app.models.retrieval_feedback import RetrievalFeedback
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.runtime_setting import RuntimeSetting
+from app.models.section_edge import SectionEdge
 from app.models.tenant import Tenant
 
 __all__ = [
@@ -41,5 +43,6 @@ __all__ = [
     "RetrievalFeedback",
     "RetrievalTrace",
     "RuntimeSetting",
+    "SectionEdge",
     "Tenant",
 ]
