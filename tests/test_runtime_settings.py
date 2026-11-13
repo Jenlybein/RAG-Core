@@ -19,7 +19,7 @@ from typing import Any
 import pytest
 
 from app.core.config import settings
-from app.db.transaction import transaction
+from app.db.transaction import async_transaction
 from app.core.exceptions import AppError, ErrorCode
 from app.core.runtime_settings_cache import (
     reset_settings_cache,
@@ -42,7 +42,7 @@ from app.services.runtime_settings import (
     editable_specs,
     spec_of,
 )
-from tests.fake_db import async_mirror, RecordingSession
+from tests.fake_db import AsyncRecordingSession, RecordingSession
 
 SAFETY_SWITCHES = ("AUTH_ENABLED", "RATE_LIMIT_ENABLED", "DEV_API_KEY", "DEV_TENANT_ID")
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
@@ -93,14 +93,23 @@ def _row(key: str, value: Any, *, updated_at: datetime | None = None) -> Runtime
 def _settings_rows(db: Any) -> list[Any]:
     """``describe_settings`` 自票 #129 起是协程（控制面只读走异步会话）。
 
-    这里用**同一个假库**的异步替身取结果：两个替身共享行，于是断言看到的就是这份库。
+    传进来的本来就是**异步替身**（见 :func:`_session`），直接 ``await`` 即可；这里用
+    ``asyncio.run`` 只是为了让读面板的那些同步用例继续同步——它们是纯读，没有循环可复用。
     """
 
-    return asyncio.run(describe_settings(async_mirror(db)))
+    return asyncio.run(describe_settings(db))
 
 
 def _session(*rows: RuntimeSetting, world: dict[type, list[Any]] | None = None) -> Any:
-    return RecordingSession(rows={**(world or {}), RuntimeSetting: list(rows)})
+    """异步替身：票 #130 起配置写路径（``patch_runtime_settings`` / ``preview_impact``）
+    读的是 ``AsyncSession``。
+
+    行与记录仍由 ``RecordingSession`` 提供的那一份语义负责（``AsyncRecordingSession``
+    只是把同一组方法变成可 ``await``），所以 ``db.added_of(...)`` / ``db.commits`` 这些
+    断言一行都不用改。
+    """
+
+    return AsyncRecordingSession(rows={**(world or {}), RuntimeSetting: list(rows)})
 
 
 def _actor() -> Any:
@@ -463,11 +472,12 @@ def test_ensure_within_the_ttl_only_compares_time(cache: Any) -> None:
 # ────────────────────────────────────────────────────────────── 写入：dry_run 与白名单
 
 
-def test_dry_run_writes_nothing_but_still_returns_the_impact(cache: Any, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_dry_run_writes_nothing_but_still_returns_the_impact(cache: Any, monkeypatch) -> None:
     monkeypatch.setattr(settings, "TOP_K", 5)
     db = _session()
 
-    result = runtime_settings.patch_runtime_settings(
+    result = await runtime_settings.patch_runtime_settings(
         db, values={"TOP_K": 9}, dry_run=True, actor=_actor(), cache=cache
     )
 
@@ -479,13 +489,14 @@ def test_dry_run_writes_nothing_but_still_returns_the_impact(cache: Any, monkeyp
     assert cache.deleted == 0
 
 
-def test_dry_run_leaves_updated_at_untouched(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_dry_run_leaves_updated_at_untouched(cache: Any) -> None:
     """试算之后再去读那一行：``updated_at`` 必须还是原来那个时间。"""
 
     db = _session(_row("TOP_K", 5))
     before = runtime_setting_row(db, "TOP_K").updated_at
 
-    runtime_settings.patch_runtime_settings(
+    await runtime_settings.patch_runtime_settings(
         db, values={"TOP_K": 9}, dry_run=True, actor=_actor(), cache=cache
     )
 
@@ -493,11 +504,12 @@ def test_dry_run_leaves_updated_at_untouched(cache: Any) -> None:
     assert db.commits == 0
 
 
-def test_a_key_outside_the_whitelist_is_rejected_whole_batch(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_a_key_outside_the_whitelist_is_rejected_whole_batch(cache: Any) -> None:
     db = _session(_row("TOP_K", 5))
 
     with pytest.raises(AppError) as raised:
-        runtime_settings.patch_runtime_settings(
+        await runtime_settings.patch_runtime_settings(
             db,
             values={"TOP_K": 9, "NOT_A_SETTING": 1},
             dry_run=False,
@@ -510,9 +522,10 @@ def test_a_key_outside_the_whitelist_is_rejected_whole_batch(cache: Any) -> None
     assert runtime_setting_row(db, "TOP_K").value == 5, "整批不写：连合法的那个键也没写"
 
 
-def test_a_locked_key_is_rejected(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_a_locked_key_is_rejected(cache: Any) -> None:
     with pytest.raises(AppError) as raised:
-        runtime_settings.patch_runtime_settings(
+        await runtime_settings.patch_runtime_settings(
             db=_session(),
             values={"AUTH_ENABLED": False},
             dry_run=False,
@@ -525,9 +538,10 @@ def test_a_locked_key_is_rejected(cache: Any) -> None:
     assert "原因" not in raised.value.msg  # 提示是「理由」，不是码名
 
 
-def test_an_illegal_value_is_rejected_before_anything_is_written(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_an_illegal_value_is_rejected_before_anything_is_written(cache: Any) -> None:
     with pytest.raises(AppError) as raised:
-        runtime_settings.patch_runtime_settings(
+        await runtime_settings.patch_runtime_settings(
             db=_session(),
             values={"RERANK_TIMEOUT_SECONDS": -1},
             dry_run=False,
@@ -539,12 +553,14 @@ def test_an_illegal_value_is_rejected_before_anything_is_written(cache: Any) -> 
     assert "≥" in raised.value.msg
 
 
-def test_a_real_write_persists_audits_and_deletes_the_cache(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_a_real_write_persists_audits_and_deletes_the_cache(cache: Any) -> None:
     db = _session(_row("TOP_K", 5))
 
-    # 非请求边界：直接调服务要自己圈事务（见 app/db/transaction.py 的约定）。
-    with transaction(db):
-        result = runtime_settings.patch_runtime_settings(
+    # 非请求边界：直接调服务要自己圈事务（见 app/db/transaction.py 的约定）。会话是异步的，
+    # 于是边界也是异步孪生——提交点仍然只有 `app.db.transaction` 那一处。
+    async with async_transaction(db):
+        result = await runtime_settings.patch_runtime_settings(
             db, values={"TOP_K": 9}, dry_run=False, actor=_actor(), cache=cache
         )
 
@@ -570,12 +586,13 @@ def test_a_real_write_persists_audits_and_deletes_the_cache(cache: Any) -> None:
     assert cache.deleted == 1, "写后删缓存（Redis + 本进程）"
 
 
-def test_a_restart_tier_write_does_not_delete_the_cache(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_a_restart_tier_write_does_not_delete_the_cache(cache: Any) -> None:
     """第二档不参与热更：删缓存不会让任何人看到新值，所以不必删（写了也没人读）。"""
 
     db = _session()
 
-    result = runtime_settings.patch_runtime_settings(
+    result = await runtime_settings.patch_runtime_settings(
         db, values={"CHUNK_SIZE": 256}, dry_run=False, actor=_actor(), cache=cache
     )
 
@@ -585,7 +602,8 @@ def test_a_restart_tier_write_does_not_delete_the_cache(cache: Any) -> None:
     assert cache.deleted == 0
 
 
-def test_a_write_is_visible_to_the_next_refresh_without_waiting_for_the_ttl(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_a_write_is_visible_to_the_next_refresh_without_waiting_for_the_ttl(cache: Any) -> None:
     """写一次之后**立刻**读：新值马上生效，不必等 30 秒。
 
     这正是「写后删缓存」的验收形态：删的是缓存与本进程的「刚检查过」标记，于是下一次
@@ -596,8 +614,8 @@ def test_a_write_is_visible_to_the_next_refresh_without_waiting_for_the_ttl(cach
     runtime_settings.ensure_runtime_overrides(db, cache=cache)
     assert settings.TOP_K == 5
 
-    with transaction(db):
-        runtime_settings.patch_runtime_settings(
+    async with async_transaction(db):
+        await runtime_settings.patch_runtime_settings(
             db, values={"TOP_K": 12}, dry_run=False, actor=_actor(), cache=cache
         )
     runtime_settings.ensure_runtime_overrides(db, cache=cache)
@@ -605,12 +623,13 @@ def test_a_write_is_visible_to_the_next_refresh_without_waiting_for_the_ttl(cach
     assert settings.TOP_K == 12
 
 
-def test_a_secret_value_is_masked_in_the_panel_and_in_the_audit(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_a_secret_value_is_masked_in_the_panel_and_in_the_audit(cache: Any) -> None:
     """审计列表是管理员都能读的一页；把明文 Key 再抄一份进去只是扩大泄露面。"""
 
     db = _session(_row("MODEL_API_KEY", "sk-plaintext-abcd"))
 
-    result = runtime_settings.patch_runtime_settings(
+    result = await runtime_settings.patch_runtime_settings(
         db,
         values={"MODEL_API_KEY": "sk-rotated-wxyz"},
         dry_run=False,
@@ -671,11 +690,12 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
     return {Plan: plans, Tenant: tenants, KeyPolicy: policies}
 
 
-def test_turning_off_rerank_reports_every_quality_tenant(cache: Any, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_turning_off_rerank_reports_every_quality_tenant(cache: Any, monkeypatch) -> None:
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
     db = _session(world=_impact_world(mutual_tenants=6))
 
-    impact = runtime_settings.preview_impact(db, {"RERANK_ENABLED": False})
+    impact = await runtime_settings.preview_impact(db, {"RERANK_ENABLED": False})
 
     assert impact.quality_degraded.count == 6, "count 必须是全量"
     assert len(impact.quality_degraded.sample) == 5, "sample 只放前 5 个名字"
@@ -683,40 +703,44 @@ def test_turning_off_rerank_reports_every_quality_tenant(cache: Any, monkeypatch
     assert impact.keyword_channel_lost.count == 0
 
 
-def test_turning_off_rewrite_also_degrades_quality(cache: Any, monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_turning_off_rewrite_also_degrades_quality(cache: Any, monkeypatch) -> None:
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
     db = _session(world=_impact_world())
 
-    impact = runtime_settings.preview_impact(db, {"QUERY_REWRITE_ENABLED": False})
+    impact = await runtime_settings.preview_impact(db, {"QUERY_REWRITE_ENABLED": False})
 
     assert impact.quality_degraded.count == 6
 
 
-def test_turning_off_the_keyword_channel_reports_every_hybrid_tenant(
+@pytest.mark.asyncio
+async def test_turning_off_the_keyword_channel_reports_every_hybrid_tenant(
     cache: Any, monkeypatch
 ) -> None:
     monkeypatch.setattr(settings, "KEYWORD_SEARCH_PROVIDER", "elasticsearch")
     db = _session(world=_impact_world())
 
-    impact = runtime_settings.preview_impact(db, {"KEYWORD_SEARCH_PROVIDER": "none"})
+    impact = await runtime_settings.preview_impact(db, {"KEYWORD_SEARCH_PROVIDER": "none"})
 
     assert impact.keyword_channel_lost.count == 6
     assert len(impact.keyword_channel_lost.sample) == 5
     assert impact.quality_degraded.count == 0
 
 
-def test_nothing_is_reported_when_the_capability_is_already_off(cache: Any) -> None:
+@pytest.mark.asyncio
+async def test_nothing_is_reported_when_the_capability_is_already_off(cache: Any) -> None:
     """已经是关的，再关一次不改变任何租户：预览必须报 0，而不是把「配置存在」当影响。"""
 
     db = _session(world=_impact_world())
 
-    impact = runtime_settings.preview_impact(db, {"RERANK_ENABLED": False})
+    impact = await runtime_settings.preview_impact(db, {"RERANK_ENABLED": False})
 
     assert impact.quality_degraded.count == 0
     assert impact.keyword_channel_lost.count == 0
 
 
-def test_a_policy_whose_plan_never_granted_the_capability_is_not_reported(
+@pytest.mark.asyncio
+async def test_a_policy_whose_plan_never_granted_the_capability_is_not_reported(
     cache: Any, monkeypatch
 ) -> None:
     """免费档租户的配置本来就没在跑重排：关掉部署开关不会改变它的结果。"""
@@ -736,6 +760,6 @@ def test_a_policy_whose_plan_never_granted_the_capability_is_not_reported(
     )
     db = _session(world=world)
 
-    impact = runtime_settings.preview_impact(db, {"RERANK_ENABLED": False})
+    impact = await runtime_settings.preview_impact(db, {"RERANK_ENABLED": False})
 
     assert impact.quality_degraded.count == 1, "免费档那条配置不该被算进影响面"

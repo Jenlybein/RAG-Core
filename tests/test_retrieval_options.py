@@ -507,7 +507,7 @@ def test_http_and_mcp_accept_literally_the_same_arguments() -> None:
         return {}
 
     mcp = create_mcp_server(
-        get_db=_FakeSession,
+        # 票 #130 起只有一个会话工厂（``get_db`` 已删）：判定内核与检索链路共用它。
         get_async_db=lambda: AsyncSessionAdapter(_FakeSession()),
         retrieve=_retrieve,
         list_kbs=lambda *_a, **_k: [],

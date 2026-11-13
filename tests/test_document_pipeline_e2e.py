@@ -21,6 +21,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from collections.abc import Iterator
 from pathlib import Path
@@ -64,9 +65,12 @@ REQUIRED_META = {"heading_path", "chunk_type", "section_id", "title", "source_ty
 class _FakeSession:
     """异步内存会话替身：文档行留在内存里，只记录提交 / 回滚次数。
 
-    ``get`` 故意写成**同步**：真 ``AsyncSession.get`` 是异步的，但这一份是替身，而桥
-    （``app/db/dual_session``）按「结果可不可 await」判断——两种写法都能被它正确接住。
-    断言侧因此可以直接 ``session.get(...)``，不必把用例写成协程。
+    所有方法都是**协程**（票 #130 之后请求会话与 Worker 会话都只有异步那一套）：
+    ``get`` 尤其不能写成同步的——``IndexingService`` 会 ``await db.get(...)``，同步替身
+    在那里会炸成 ``object Document can't be used in 'await' expression``，看着像「文档
+    读不出来」，其实是替身少了一个 ``async``。
+
+    用例侧要直接读行时用 :func:`_stored_document`，它把这次 ``await`` 收在一处。
     """
 
     def __init__(self) -> None:
@@ -76,9 +80,10 @@ class _FakeSession:
         self.rollbacks = 0
 
     def add(self, instance: Any) -> None:
+        # ``AsyncSession.add`` 与真会话一样**是同步的**：它只把对象挂进 unit of work。
         self._rows[instance.id] = instance
 
-    def get(self, _model: Any, ident: Any) -> Any | None:
+    async def get(self, _model: Any, ident: Any) -> Any | None:
         return self._rows.get(ident)
 
     async def flush(self) -> None:
@@ -96,6 +101,12 @@ class _FakeSession:
 
     async def close(self) -> None:
         return None
+
+
+def _stored_document(session: _FakeSession, document_id: str) -> Any:
+    """把「读一行」的那次 ``await`` 收在一处（用例本身是同步的）。"""
+
+    return asyncio.run(session.get(Document, document_id))
 
 
 class _StubEmbeddings:
@@ -187,7 +198,7 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     async def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:
         # 唯一换掉的仓储原语：真实实现是一条 SQL UPDATE（需要 PostgreSQL 行锁），
         # 内存会话跑不了；抢占成功后的两段事务仍由真实 IndexingService 驱动。
-        doc = db.get(Document, document_id)
+        doc = await db.get(Document, document_id)
         assert doc is not None
         doc.index_claimed_at = now()
         claimed.append(document_id)
@@ -247,7 +258,7 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     stored_path = pipeline_env.uploads_dir / TENANT_ID / f"{document_id}.md"
     assert stored_path.read_bytes() == body, "上传把原始文件落盘，Worker 之后从文件解析"
 
-    doc = pipeline_env.session.get(Document, document_id)
+    doc = _stored_document(pipeline_env.session, document_id)
     assert doc is not None
     assert doc.status == DocumentStatus.SUCCESS, "Worker 跑完后状态必须落到 SUCCESS"
     assert doc.error_message is None

@@ -18,13 +18,14 @@ SQLite 能接受的等价 DDL 建表；ORM 的写入 / 读回仍走真实的 ``P
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.orm import Session, sessionmaker
+import pytest_asyncio
+from sqlalchemy import select, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.chunk import Chunk
 from app.providers.parsers.base import ParsedDocument
@@ -55,17 +56,23 @@ CREATE TABLE chunks (
 """
 
 
-@pytest.fixture
-def chunk_session() -> Iterator[Session]:
-    engine = create_engine("sqlite://")
-    with engine.begin() as connection:
-        connection.execute(text(CHUNKS_DDL))
-    session = sessionmaker(bind=engine)()
-    try:
-        yield session
-    finally:
-        session.close()
-        engine.dispose()
+@pytest_asyncio.fixture
+async def chunk_session() -> AsyncIterator[AsyncSession]:
+    """真 SQL 的 ``chunks`` 表（SQLite），会话是**异步**的（票 #132 起写切片走 AsyncSession）。
+
+    ``pytest_asyncio.fixture`` 而不是 ``pytest.fixture``：strict 模式下异步夹具必须显式
+    声明，否则用例拿到的是那个异步生成器本身。
+    """
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.execute(text(CHUNKS_DDL))
+    async with AsyncSession(engine) as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
+    await engine.dispose()
 
 
 def _chunk(index_version: str | None = "v1") -> dict[str, object]:
@@ -83,27 +90,31 @@ def _chunk(index_version: str | None = "v1") -> dict[str, object]:
     return chunk
 
 
-def test_add_chunks_persists_the_original_content_with_index_version_v1(
-    chunk_session: Session,
+@pytest.mark.asyncio
+async def test_add_chunks_persists_the_original_content_with_index_version_v1(
+    chunk_session: AsyncSession,
 ) -> None:
     """写进去的是切片原文；索引版本同时落库为 v1，两者互不替换。"""
 
-    asyncio.run(PgVectorStore().add_chunks(chunk_session, [_chunk()]))
-    chunk_session.commit()
+    await PgVectorStore().add_chunks(chunk_session, [_chunk()])
+    await chunk_session.commit()
 
-    row = chunk_session.execute(select(Chunk)).scalar_one()
+    row = (await chunk_session.execute(select(Chunk))).scalar_one()
     assert row.content == ORIGINAL_CONTENT, "chunks.content 必须是切片原文"
     assert row.index_version == "v1"
     assert row.meta["heading_path"] == "错误码 > E1024", "切块 provenance 仍随行落库"
 
 
-def test_add_chunks_falls_back_to_the_default_index_version(chunk_session: Session) -> None:
+@pytest.mark.asyncio
+async def test_add_chunks_falls_back_to_the_default_index_version(
+    chunk_session: AsyncSession,
+) -> None:
     """调用方没给索引版本时由列默认值兜底，不写 NULL。"""
 
-    asyncio.run(PgVectorStore().add_chunks(chunk_session, [_chunk(index_version=None)]))
-    chunk_session.commit()
+    await PgVectorStore().add_chunks(chunk_session, [_chunk(index_version=None)])
+    await chunk_session.commit()
 
-    row = chunk_session.execute(select(Chunk)).scalar_one()
+    row = (await chunk_session.execute(select(Chunk))).scalar_one()
     assert row.index_version == "v1"
 
 

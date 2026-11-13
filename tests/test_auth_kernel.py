@@ -22,7 +22,7 @@ from app.models.api_key import ApiKey
 from app.models.key_policy import PROFILE_BALANCED, PROFILE_CUSTOM, KeyPolicy
 from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_STANDARD, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import MemoryPlanCache, RecordingSession
+from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
@@ -103,7 +103,15 @@ def _session(
     tenants: list[Tenant] | None = None,
     policies: list[KeyPolicy] | None = None,
     plans: list[Plan] | None = None,
-) -> RecordingSession:
+) -> AsyncRecordingSession:
+    """判定内核的会话替身：**异步面**。
+
+    票 #130 起 ``resolve_identity`` 与 ``resolve_plan`` 都是协程，读的也是
+    ``AsyncSession``（``await db.get(...)`` / ``await db.execute(...)``）。这里返回
+    :class:`AsyncRecordingSession`——它就是 ``RecordingSession`` 的薄异步面，行与记录
+    都还是同一份语义，只是那几个方法得被 ``await``。
+    """
+
     rows: dict[type, list[Any]] = {Plan: _plan_rows() if plans is None else list(plans)}
     if keys is not None:
         rows[ApiKey] = list(keys)
@@ -111,7 +119,7 @@ def _session(
         rows[Tenant] = list(tenants)
     if policies is not None:
         rows[KeyPolicy] = list(policies)
-    return RecordingSession(rows=rows)
+    return AsyncRecordingSession(rows=rows)
 
 
 
@@ -169,7 +177,8 @@ def test_development_snapshot_is_a_full_pro_policy_at_custom_following_the_deplo
 # ───────────────────────────────────────────── 开发开关：关着也不许裸奔
 
 
-def test_dev_mode_still_requires_the_placeholder_token() -> None:
+@pytest.mark.asyncio
+async def test_dev_mode_still_requires_the_placeholder_token() -> None:
     """开关关闭时也不要 Key？不行：占位 token 仍然要带。
 
     退回「谁都不用带」意味着一个被意外暴露的开发实例对整个网络敞开；而要求这把固定
@@ -180,16 +189,17 @@ def test_dev_mode_still_requires_the_placeholder_token() -> None:
 
     missing = _Request()
     with pytest.raises(AppError) as missing_exc:
-        resolve_identity(missing, None, auth_enabled=False)
+        await resolve_identity(missing, None, auth_enabled=False)
     assert missing_exc.value.code is ErrorCode.UNAUTHORIZED
 
     wrong = _Request("Bearer not-the-dev-key")
     with pytest.raises(AppError) as wrong_exc:
-        resolve_identity(wrong, None, auth_enabled=False)
+        await resolve_identity(wrong, None, auth_enabled=False)
     assert wrong_exc.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
+@pytest.mark.asyncio
+async def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
     """关掉开关时收到一把真实 Key：消息必须**点名「开发身份模式」**，不能只说「Key 无效」。
 
     踩过的坑（真实反馈）：控制台能签发 Key、能选中、能显示，但 ``AUTH_ENABLED=false`` 时
@@ -201,7 +211,7 @@ def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
     from app.core.auth import MSG_DEV_MODE_REJECTS_REAL_KEY, resolve_identity
 
     with pytest.raises(AppError) as exc:
-        resolve_identity(_Request("Bearer rc_live_0000_9188"), None, auth_enabled=False)
+        await resolve_identity(_Request("Bearer rc_live_0000_9188"), None, auth_enabled=False)
 
     assert exc.value.code is ErrorCode.UNAUTHORIZED
     assert exc.value.msg == MSG_DEV_MODE_REJECTS_REAL_KEY
@@ -235,7 +245,8 @@ def test_unauthorized_messages_each_name_a_next_step() -> None:
         ), f"{name} 的消息没有指向任何具体动作：{message}"
 
 
-def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() -> None:
+@pytest.mark.asyncio
+async def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() -> None:
     """开关关闭：占位 token 直接换成内置开发身份，连一次查询都不发。"""
 
     from app.core.auth import KeyContext, resolve_identity
@@ -244,7 +255,7 @@ def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() 
         def __getattr__(self, name: str) -> Any:
             raise AssertionError(f"开发身份不该碰数据库：{name}")
 
-    context = resolve_identity(_Request(_dev_headers()["authorization"]), _ExplodingSession())
+    context = await resolve_identity(_Request(_dev_headers()["authorization"]), _ExplodingSession())
 
     assert isinstance(context, KeyContext)
     assert context.tenant_id == settings.DEV_TENANT_ID
@@ -254,7 +265,7 @@ def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() 
 # ───────────────────────────────────────────── 开关打开：四种未授权，同一个码
 
 
-def _failures(*, session: RecordingSession) -> dict[str, AppError]:
+async def _failures(*, session: RecordingSession) -> dict[str, AppError]:
     """跑出四种未授权情形，按情形命名返回异常，供「同一个码、不同消息」比对。"""
 
     from app.core.auth import resolve_identity
@@ -283,25 +294,27 @@ def _failures(*, session: RecordingSession) -> dict[str, AppError]:
     caught: dict[str, AppError] = {}
     for name, request in cases.items():
         with pytest.raises(AppError) as excinfo:
-            resolve_identity(request, sessions[name], auth_enabled=True)
+            await resolve_identity(request, sessions[name], auth_enabled=True)
         caught[name] = excinfo.value
     return caught
 
 
-def test_switch_on_rejects_a_missing_token() -> None:
+@pytest.mark.asyncio
+async def test_switch_on_rejects_a_missing_token() -> None:
     from app.core.auth import resolve_identity
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(_Request(None), _session(), auth_enabled=True)
+        await resolve_identity(_Request(None), _session(), auth_enabled=True)
 
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_switch_on_rejects_an_unknown_token() -> None:
+@pytest.mark.asyncio
+async def test_switch_on_rejects_an_unknown_token() -> None:
     from app.core.auth import resolve_identity
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(
+        await resolve_identity(
             _Request(f"Bearer {KEY_VALUE}"),
             _session(keys=[], tenants=[_tenant_row()], policies=[_policy_row()]),
             auth_enabled=True,
@@ -310,27 +323,30 @@ def test_switch_on_rejects_an_unknown_token() -> None:
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_all_four_unauthorized_cases_share_the_code_and_stay_distinguishable() -> None:
+@pytest.mark.asyncio
+async def test_all_four_unauthorized_cases_share_the_code_and_stay_distinguishable() -> None:
     """四种情形**同一个**错误码，消息可区分——交付判据就是这么写的。"""
 
-    caught = _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
+    caught = await _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
 
     assert {exc.code for exc in caught.values()} == {ErrorCode.UNAUTHORIZED}
     messages = {name: exc.msg for name, exc in caught.items()}
     assert len(set(messages.values())) == 4, f"四种情形必须能分辨，实际是 {messages}"
 
 
-def test_the_unauthorized_error_is_a_business_failure_not_a_401() -> None:
+@pytest.mark.asyncio
+async def test_the_unauthorized_error_is_a_business_failure_not_a_401() -> None:
     """内核抛的是业务异常，不是 HTTP 异常：能不能变 401 由入口适配器决定（ADR-0007）。"""
 
-    caught = _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
+    caught = await _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
 
     for exc in caught.values():
         assert isinstance(exc, AppError)
         assert not hasattr(exc, "status_code")
 
 
-def test_switch_on_makes_the_development_identity_unreachable() -> None:
+@pytest.mark.asyncio
+async def test_switch_on_makes_the_development_identity_unreachable() -> None:
     """开关打开后，占位 token 不再是身份来源：它不在 api_keys 表里，一律未授权。
 
     这条与「关闭时仍要求占位 token」是同一枚硬币的两面：开发身份只存在于开关关闭的
@@ -342,7 +358,9 @@ def test_switch_on_makes_the_development_identity_unreachable() -> None:
     session = _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[_policy_row()])
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(_Request(_dev_headers()["authorization"]), session, auth_enabled=True)
+        await resolve_identity(
+            _Request(_dev_headers()["authorization"]), session, auth_enabled=True
+        )
 
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
@@ -350,14 +368,15 @@ def test_switch_on_makes_the_development_identity_unreachable() -> None:
 # ───────────────────────────────────────────── 开关打开：真 Key 解出完整上下文
 
 
-def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
+@pytest.mark.asyncio
+async def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
     """一把能用的 Key 解出租户、Key 备注名、配置快照、套餐快照四样东西。"""
 
     from app.core.auth import KeyContext, resolve_identity
     from app.models.key_policy import KeyPolicySnapshot
 
     cache = MemoryPlanCache()
-    context = resolve_identity(
+    context = await resolve_identity(
         _Request(f"Bearer {KEY_VALUE}"),
         _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[_policy_row()]),
         auth_enabled=True,
@@ -385,7 +404,8 @@ def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
     assert cache.set_calls == [PLAN_IDS[PLAN_PRO]], "套餐缓存的键必须是 plan id"
 
 
-def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
+@pytest.mark.asyncio
+async def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
     """停用租户立刻生效：判定每次都重新读状态，身份不做长缓存。"""
 
     from app.core.auth import resolve_identity
@@ -394,7 +414,7 @@ def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
     session = _session(keys=[_key_row()], tenants=[tenant], policies=[_policy_row()])
     cache = MemoryPlanCache()
 
-    first = resolve_identity(
+    first = await resolve_identity(
         _Request(f"Bearer {KEY_VALUE}"), session, auth_enabled=True, plan_cache=cache
     )
     assert first.tenant_id == TENANT_ID
@@ -402,13 +422,14 @@ def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
     tenant.status = "disabled"
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(
+        await resolve_identity(
             _Request(f"Bearer {KEY_VALUE}"), session, auth_enabled=True, plan_cache=cache
         )
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
+@pytest.mark.asyncio
+async def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
     """删掉密钥配置 → 引用它的 Key 级联失效（ADR-0018），判定上等同于停用。"""
 
     from app.core.auth import resolve_identity
@@ -416,7 +437,7 @@ def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
     session = _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[])
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(
+        await resolve_identity(
             _Request(f"Bearer {KEY_VALUE}"),
             session,
             auth_enabled=True,

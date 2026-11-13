@@ -362,28 +362,24 @@ def _entries_with(
     caller_tenant = settings.DEV_TENANT_ID if allowed_kb_ids is None else TENANT_ID
 
     # 白名单外的库对「跨租户」这一条要能返回 None：它属于别家租户。
-    def _visible(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+    async def _visible_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        """取库的替身是**协程**（票 #130：可见性守卫只剩异步的那一个入口）。"""
+
         if kb_id == KB_IN_SCOPE and tenant_id == caller_tenant:
             return _kb_row(kb_id)
         return None
 
-    async def _visible_async(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
-        # 检索链路走异步守卫（第 11 步票 #127）：同一个判定，两个面。
-        return _visible(_db, kb_id, tenant_id=tenant_id)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible)
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_async)
-    monkeypatch.setattr(
-        doc_repo,
-        "get_by_id_for_tenant",
-        lambda _db, document_id, *, tenant_id: (
-            _doc_row(document_id, kb_id=KB_IN_SCOPE)
-            if document_id == DOC_IN_SCOPE and tenant_id == caller_tenant
-            else _doc_row(document_id, kb_id=KB_OUT_OF_SCOPE)
-            if tenant_id == caller_tenant
-            else None
-        ),
-    )
+    async def _visible_doc(_db: Any, document_id: str, *, tenant_id: str) -> Any:
+        """按 id 取文档的替身是**协程**（票 #130：重建 / 删除路由读异步仓储）。"""
+
+        if tenant_id != caller_tenant:
+            return None
+        kb_id = KB_IN_SCOPE if document_id == DOC_IN_SCOPE else KB_OUT_OF_SCOPE
+        return _doc_row(document_id, kb_id=kb_id)
+
+    monkeypatch.setattr(doc_repo, "get_by_id_for_tenant_async", _visible_doc)
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _FakeEmbedding())
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
 
