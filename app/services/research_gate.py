@@ -1,4 +1,4 @@
-"""Research 的门禁与组合根：白名单 → 能力位 → 子检索内核 → 状态机 → 响应形状（票 #148）。
+"""Research 的门禁与组合根：白名单 → 能力位 → 档位 → 限流 → 日配额 → 状态机 → 记账（票 #148 / #150）。
 
 HTTP 入口（本票）与 MCP 工具 ``rag_research``（#151）写的是**同一段序列**。与检索那条
 ``app/services/retrieval_gate.py`` 同形：判定与装配只在这里，路由只把身份、参数和会话递
@@ -8,20 +8,36 @@ HTTP 入口（本票）与 MCP 工具 ``rag_research``（#151）写的是**同�
 
 ```text
 1 白名单      kb_ids ⊆ allowed_kb_ids            → 20008
-2 能力位      research_allowed（套餐 ∧ 密钥配置）  → 20013，**不静默降级**
-3 参数解析    复用这套集成的检索参数（模式 / 条数 / 重排 / 折叠）
-4 范围解析    kb_id → 生效版本（一次调用一次）
-5 状态机      注入的内核 + 模型工厂 → 固定五步
-6 响应成形    ResearchData（材料是节，轮次只给计数）
+2 能力位      research_allowed（套餐 ∧ 密钥配置）
+               ∧ 四个配额格都 > 0                → 20013，**不静默降级**
+3 档位        复用这套集成的检索参数（模式 / 条数 / 重排 / 折叠）
+4 秒级限流    Key 级 → 租户级                     → 20005（该退避重试）
+5 日配额      Key 级 → 租户级                     → 20014（该提额或换套餐）
+6 范围解析    kb_id → 生效版本（一次调用一次）
+7 状态机      注入的内核 + 模型工厂 → 固定五步
+8 记账        响应成形之后才 +1，两级各一次
 ```
 
-## 本票只复用两道关卡
+## 三个错误码，不许混用
 
-第 1 步是白名单（``app.services.data_scope``），第 2 步是能力位（``plans`` /
-``key_policies`` 上的 ``research_allowed``）。**配额与独立限流归 #150**：那里会给套餐与
-密钥配置各加 ``research_qps`` / ``research_daily`` 两列，并在这里补上「进门只查、成功后
-记一次」。本模块因此**没有**任何记账调用——这也正是「子检索不重复记账」在结构上的保证：
-一份账要记的调用点只有一个，而它现在还不存在。
+``20013``（没这项能力 / 配额为 0）、``20005``（这一秒打得太快）、``20014``（今天的额度
+用完了）回答的是三个不同的问题，对应三种不同的处置：换套餐、退避重试、提额。合并任意两个
+都会让调用方写不出重试策略。
+
+「配额为 0」与「能力开关为假」**共用** ``20013``：0 是配置细节，答成 ``20014`` 就等于告诉
+调用方「这个租户买了 Research，只是额度填了 0」。
+
+## 配额是独立的一本账
+
+两列 ``research_qps`` / ``research_daily`` 与检索那两列同构（两级同记），但键前缀是
+``quota:research``（``app.services.quota_gate`` 的 ``RESEARCH_NAMESPACE``）：一次 Research
+约 30 秒、3 次模型调用，它不该吃掉同一租户的检索额度。
+
+## 进门只查、成功后记一次，且只记一次
+
+记账的唯一调用点在**第 8 步**，也就是整次调用的最外层：子检索（第 7 步那条内核会跑 1~5 次）
+碰不到它。这正是「一次 Research 只记一次、不按子查询重复扣」在结构上的保证——**一份账要
+记的调用点只有一个**，而不是「每个调用点都记得别多记」。
 
 ## 为什么没有授权是拒绝而不是降级
 
@@ -33,8 +49,8 @@ Research，实际只拿到一份材料——**它花了 Research 的预算做了
 
 ``build_kernel_search`` 里没有查询改写（``vector_queries`` 就是子查询本身）、没有可见性
 校验（第 1 步与 ``ensure_visible`` 已经在入口做过一次）、没有配额记账、没有归属索引、
-没有观测提交。五件事都是「每次调用只做一次」，而内核会被调 N 次（ADR-0028 §2）。一次
-Research 的身份仍然是一行归属索引、一份 trace——那两件在外层，属于 #149 / #150 的收口。
+没有观测提交。五件事都是「每次调用只做一次」，而内核会被调 N 次（ADR-0028 §2）；配额记账
+因此在外层第 8 步（票 #150），归属索引与观测提交仍是 #149 / #151 的收口。
 """
 
 from __future__ import annotations
@@ -58,6 +74,7 @@ from app.services import result_collapse
 from app.services.data_scope import ensure_kb_scope
 from app.services.knowledge_base_access import ensure_visible
 from app.services.profile_policy import resolve_retrieval_options
+from app.services.quota_gate import research_quota
 from app.services.research import Clock, LLMFactory, SearchCallable, run_research
 from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
@@ -69,15 +86,36 @@ def ensure_research_allowed(*, policy: KeyPolicySnapshot, plan: PlanSpec) -> Non
 
     两层都要，是因为它们回答的是两个不同的问题（ADR-0018）：套餐说「这个租户买没买」，
     密钥配置说「这套集成要不要」。任何一层没开就拒绝——不是「悄悄退回普通检索」。
+
+    **配额为 0 与能力为假走同一个判据、同一个码**（票 #150 的 AC）：``research_qps`` /
+    ``research_daily`` 上的 0 表示「这项能力实际上不存在」。若它答成 ``20014``（额度用尽），
+    调用方就能从错误码反推出「这个租户其实买了 Research，只是额度填了 0」——那正是票面
+    不许泄露的配置细节。0 是**配置事实**，与 ``RATE_LIMIT_ENABLED`` 无关，所以这一步不看
+    限流开关。
     """
 
-    if policy.research_allowed and plan.research_allowed:
+    if policy.research_allowed and plan.research_allowed and _has_research_quota(policy, plan):
         return
     raise AppError(
         ErrorCode.FEATURE_NOT_ALLOWED,
         f"research is not allowed (plan {plan.code!r}, key policy "
         f"research_allowed={policy.research_allowed})",
     )
+
+
+def _has_research_quota(policy: KeyPolicySnapshot, plan: PlanSpec) -> bool:
+    """四个配额格子全是正数吗？任何一个为 0 都等于「没有这项能力」。
+
+    四个而不是两个：配置的额度不得高于套餐（自洽校验守着），但历史行、手改的库都可能
+    不一致；只要有一格是 0，这次调用就不可能跑起来，于是它该在能力位那一步被拒。
+    """
+
+    return min(
+        policy.research_qps,
+        policy.research_daily,
+        plan.research_qps,
+        plan.research_daily,
+    ) > 0
 
 
 def build_kernel_search(
@@ -171,14 +209,26 @@ async def gated_research(
         kb_count=len(kb_ids),
     )
 
-    # 第 4 步：范围解析（``kb_id → 生效版本`` 的映射，一次调用一次）。没有生效版本的库
+    # 第 4 步：秒级限流 → 日配额（``20005`` / ``20014``）。**进门只查**，记账在最后一步
+    # ——ADR-0018「被拒绝的请求不扣额度」。这两列是**独立**的一本账（键前缀
+    # ``quota:research``）：一次 Research 比普通检索贵一个量级，它不该吃掉检索的额度。
+    # 开关关着时这本账是 no-op，默认套件因此不需要 Redis。
+    quota = research_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    )
+    await quota.ensure_available()
+
+    # 第 5 步：范围解析（``kb_id → 生效版本`` 的映射，一次调用一次）。没有生效版本的库
     # 在这里就被拦下，而不是让 N 条子查询各拼一条恒不匹配的条件。
     visible_kbs = [
         await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id) for kb_id in kb_ids
     ]
     index_versions = resolve_index_versions(visible_kbs)
 
-    # 第 5 步：状态机。检索内核按「一次子查询一次」注入，模型工厂同理。
+    # 第 6 步：状态机。检索内核按「一次子查询一次」注入，模型工厂同理。
     outcome = await run_research(
         query=query,
         tenant_id=key.tenant_id,
@@ -190,7 +240,7 @@ async def gated_research(
         clock=clock,
     )
 
-    # 第 6 步：响应成形。材料按交付单元的契约校验（形状与 ``/rag/retrieve`` 同一个值对象），
+    # 第 7 步：响应成形。材料按交付单元的契约校验（形状与 ``/rag/retrieve`` 同一个值对象），
     # 校验不过就不是一次成功调用——与检索侧「响应不成立就不算成功」同一条。
     return ResearchData.model_validate(
         payload_of(query=query, kb_ids=kb_ids, outcome=outcome, plan_name=PLAN_NAME)
