@@ -24,7 +24,7 @@ import importlib.util
 import re
 import sys
 from pathlib import Path
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 from typing import Any
 
 import pytest
@@ -100,7 +100,7 @@ class _FakeResult:
 class _RecordingOp:
     """有状态的假 ``op``：维护「库里现在有哪些表 / 列 / 索引」，并记录每条 DML。"""
 
-    def __init__(self, *, unbackfilled_kbs: int = 0) -> None:
+    def __init__(self, *, unbackfilled_kbs: int = 0, as_sql: bool = False) -> None:
         self.tables: dict[str, dict[str, dict[str, Any]]] = {
             "knowledge_bases": {
                 name: {"nullable": nullable, "type": "prior", "default": None}
@@ -116,6 +116,8 @@ class _RecordingOp:
         self.executed: list[str] = []
         #: 核对语句会读到几个「还没回填的库」；默认 0（回填做完了）。
         self.unbackfilled_kbs = unbackfilled_kbs
+        #: True 即 ``alembic upgrade --sql`` 那种离线渲染：没有库可查。
+        self.as_sql = as_sql
 
     # ── 迁移用到的几个 op ──
 
@@ -126,6 +128,11 @@ class _RecordingOp:
         """核对语句走 ``op.get_bind().execute(...)``（``op.execute`` 不返回行）。"""
 
         return self
+
+    def get_context(self) -> Any:
+        """迁移据此分辨「连库执行」与「离线渲染」两种模式。"""
+
+        return SimpleNamespace(as_sql=self.as_sql)
 
     def execute(self, statement: Any, *_args: Any, **_kwargs: Any) -> _FakeResult:
         self.executed.append(str(statement))
@@ -255,11 +262,13 @@ def _down_revision_of(path: Path) -> str | None:
     return found.group(1)
 
 
-def _migrate(direction: str = "upgrade", *, unbackfilled_kbs: int = 0) -> _RecordingOp:
+def _migrate(
+    direction: str = "upgrade", *, unbackfilled_kbs: int = 0, as_sql: bool = False
+) -> _RecordingOp:
     """跑一遍本票的迁移；``downgrade`` 总是**先升后降**（真实用法就是如此）。"""
 
     module = _load_migration(_migration_path(SLUG))
-    recorder = _RecordingOp(unbackfilled_kbs=unbackfilled_kbs)
+    recorder = _RecordingOp(unbackfilled_kbs=unbackfilled_kbs, as_sql=as_sql)
     module.op = recorder
     module.upgrade()
     if direction == "downgrade":
@@ -440,6 +449,32 @@ def test_upgrade_refuses_to_finish_when_a_kb_was_not_backfilled() -> None:
         module.upgrade()
 
     assert "knowledge_bases" in str(error.value) or "回填" in str(error.value)
+
+
+def test_offline_sql_rendering_carries_an_aborting_check_of_its_own() -> None:
+    """``alembic upgrade --sql`` 没有库可查：同一段判断要以 DO 块形式留在脚本里。
+
+    否则离线渲染要么崩在 ``op.get_bind()`` 上，要么渲染出一份「核对静默消失」的脚本
+    ——后者更糟：照着它执行的人会以为回填被核对过。
+    """
+
+    recorder = _migrate(as_sql=True, unbackfilled_kbs=2)
+
+    blocks = [sql for sql in recorder.executed if "DO $$" in sql]
+    assert len(blocks) == 1, "离线渲染时核对必须落成一条 DO 块"
+    sql = blocks[0].lower()
+    assert "raise exception" in sql, "渲染出的脚本被真正执行时要能自己中止"
+    assert "active_index_version is null" in sql, "判断条件必须与在线那一刻是同一条"
+    assert "index_build_versions" in sql, "也要查「版本行是否存在」"
+    assert recorder.executed[-1] is blocks[0], "核对在最后，回填在它之前"
+
+
+def test_online_mode_does_not_emit_the_aborting_block() -> None:
+    """连库执行时用 Python 判断（能就地报出「还有几个库」），不靠抛 SQL 异常。"""
+
+    recorder = _migrate()
+
+    assert not [sql for sql in recorder.executed if "DO $$" in sql]
 
 
 def test_upgrade_leaves_the_effective_version_nullable_after_backfill() -> None:

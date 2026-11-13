@@ -75,17 +75,35 @@ _BACKFILL_KB_COLUMN = (
     + "' WHERE active_index_version IS NULL"
 )
 
-#: 核对：既查「还没回填的库」，也查「回填了一个版本表里不存在的版本名」。
-_VERIFY = """
-SELECT count(*)
-FROM knowledge_bases kb
-WHERE kb.active_index_version IS NULL
-   OR NOT EXISTS (
+#: 核对的条件：既查「还没回填的库」，也查「回填了一个版本表里不存在的版本名」。
+#: **两份核对语句共用这一份条件**——条件写两遍就会在某一次改动里只改一处。
+_UNRESOLVED_CONDITION = """
+    kb.active_index_version IS NULL
+    OR NOT EXISTS (
         SELECT 1 FROM index_build_versions v
         WHERE v.tenant_id = kb.tenant_id
           AND v.kb_id = kb.id
           AND v.version = kb.active_index_version
-   )
+    )
+"""
+
+#: 在线（连库）执行时的核对：读到数字，由下面那句 Python 判断中止迁移。
+_VERIFY = f"SELECT count(*) FROM knowledge_bases kb WHERE {_UNRESOLVED_CONDITION}"
+
+#: 离线渲染（``alembic upgrade --sql``）时的核对：没有库可查，于是把同一段判断
+#: 写成 DO 块——那份 SQL 被真正执行时**自己会中止**，而不是渲染出一个人畜无害的脚本。
+#: 只保留在线那条 Python 判断的话，``--sql`` 会直接崩在 ``op.get_bind()`` 上；
+#: 只保留 DO 块的话，在线执行要绕一圈 psycopg 的异常。两种模式各用对的那一种。
+_VERIFY_RAISING = f"""
+DO $$
+DECLARE remaining bigint;
+BEGIN
+    SELECT count(*) INTO remaining FROM knowledge_bases kb WHERE {_UNRESOLVED_CONDITION};
+    IF remaining > 0 THEN
+        RAISE EXCEPTION 'index build version backfill incomplete: % knowledge_bases row(s) '
+            'have no effective index version', remaining;
+    END IF;
+END $$;
 """
 
 
@@ -155,6 +173,13 @@ def upgrade() -> None:
     op.execute(_BACKFILL_KB_COLUMN)
 
     # ③ 核对：不通过就中止整条迁移（同事务，于是 ① ② 一起回滚）。
+    #
+    # 两种执行模式各用对的那一种（理由见上面两个常量的注释）：连库执行时读到数字，
+    # 由这里中止；离线渲染时把同一段判断写成 DO 块，交给那份 SQL 自己中止。
+    if op.get_context().as_sql:
+        op.execute(_VERIFY_RAISING)
+        return
+
     remaining = op.get_bind().execute(sa.text(_VERIFY)).scalar_one()
     if remaining:
         raise RuntimeError(

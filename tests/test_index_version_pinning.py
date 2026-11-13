@@ -343,3 +343,81 @@ def test_the_default_version_is_still_what_a_backfilled_kb_gets() -> None:
     """回填写的是 ``v1``，与索引流水线一直写的那个常量同源（不是又抄一个字面量）。"""
 
     assert DEFAULT_INDEX_VERSION == "v1"
+
+
+@pytest.mark.asyncio
+async def test_a_new_kb_declares_the_current_build_as_its_effective_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """建库即声明生效版本：否则新库的切片写在 v1、库却说「没有生效版本」。
+
+    两者对不上时检索一条都匹配不到，而症状是「这个库没内容」——不报错，只是搜不到
+    （ADR-0025 决策七）。所以「建库这一行写没写它」值得一条用例，而不是靠人记得。
+    """
+
+    service = importlib.import_module("app.services.knowledge_base_service")
+    repo = importlib.import_module("app.repositories.knowledge_base_repository")
+    quota = importlib.import_module("app.services.static_quota")
+    from app.models.plan import PLAN_FREE, PLAN_PRESETS
+
+    added: list[Any] = []
+
+    async def _no_quota(_db: Any, *, tenant_id: str, plan: Any) -> None:
+        return None
+
+    async def _keep(_db: Any, kb: Any) -> Any:
+        added.append(kb)
+        return kb
+
+    monkeypatch.setattr(quota, "ensure_kb_quota", _no_quota)
+    monkeypatch.setattr(repo, "create", _keep)
+
+    await service.create_kb(
+        _FakeRequestDb(),
+        name="退款政策",
+        description=None,
+        tenant_id=TENANT_ID,
+        split_strategy="size",
+        plan=PLAN_PRESETS[PLAN_FREE],
+    )
+
+    assert len(added) == 1
+    assert added[0].active_index_version == DEFAULT_INDEX_VERSION
+
+
+@pytest.mark.asyncio
+async def test_the_empty_reason_counts_under_the_pinned_build_not_under_v1(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """空结果判定与召回用**同一个版本**：否则「库里有内容」会被说成「这个库是空的」。"""
+
+    service = importlib.import_module("app.services.rag_service")
+
+    statements: list[str] = []
+
+    class _CountingDb:
+        async def execute(self, statement: Any, *_args: Any, **_kwargs: Any) -> Any:
+            statements.append(
+                str(
+                    statement.compile(
+                        dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
+                    )
+                )
+            )
+            return _EmptyResult()
+
+        def close(self) -> None:
+            return None
+
+    reason = await service._empty_reason(
+        _CountingDb(),
+        tenant_id=TENANT_ID,
+        index_versions={KB_A: "v2"},
+        chunks=[],
+    )
+
+    assert reason == "no_indexed_chunks"
+    assert len(statements) == 1
+    assert "chunks.index_version = 'v2'" in statements[0], "计数必须按生效版本数"
+    assert "chunks.index_version = 'v1'" not in statements[0], "不许退回默认版本常量"
+    assert "chunks.kb_id = 'kb-a'" in statements[0], "配对关系仍从映射里读出来"
