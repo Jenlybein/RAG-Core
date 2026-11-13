@@ -37,6 +37,7 @@ import structlog
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
+from app.services.graph_injection import INJECTED_SOURCE as graph_injection_source
 
 logger = structlog.get_logger(__name__)
 
@@ -63,8 +64,10 @@ COMPLETENESS_MISSING = "missing"
 ROLE_PRIMARY = "primary"
 ROLE_SUPPORTING = "supporting"
 
-#: 图谱注入项在候选里带的出处标记（#152）。没有这个标记的候选一律算基础召回。
-INJECTED_SOURCE = "graph_injection"
+#: 图谱注入项在候选里带的出处标记（#144 生产、#147 消费）。它只在这里被**读**：
+#: 字面量住在 ``app.services.graph_injection``（写的那一侧），两边各写一份必然漂移——
+#: 漂移的表现是「注入项被当成基础召回」，6 个保留位悄悄失效而不报错。
+INJECTED_SOURCE = graph_injection_source
 
 
 class PointList(BaseModel):

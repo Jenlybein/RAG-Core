@@ -59,6 +59,8 @@ class _Session:
         self.metas = metas
         self.rows = rows
         self.calls = 0
+        # 按调用顺序记下 SQL 文本：需要断言「这一次查的是什么」时（如不折叠分支）用它。
+        self.statements: list[str] = []
 
     def execute(self, _statement: Any) -> Any:
         self.calls += 1
@@ -227,23 +229,34 @@ def test_top_k_truncates_after_collapsing() -> None:
 
 
 def test_collapse_off_returns_the_raw_pieces() -> None:
-    """关掉折叠时返回小片本身，不按节归组——留给「只要精确到那一行」的调用方。"""
+    """关掉折叠时返回小片本身，不按节归组——留给「只要精确到那一行」的调用方。
+
+    **#144 起这条分支会发两次查询**：meta（补定位字段）与父节自己的正文（父节恢复，
+    ADR-0027 决策 7）。两次都**不是**单元行查询——那条用的是章节路径的**前缀匹配**
+    （``LIKE``），只有折叠才需要；把父节恢复写成前缀匹配会把命中片自己再拼一遍。
+    """
 
     session = _Session(metas={"c-1": _meta(HEAD_A), "c-2": _meta(HEAD_A)}, rows=[])
-    # 关掉折叠时只查一次 meta（补定位字段），第二次 execute 不该发生。
-    session.rows = []
 
-    class _Once(_Session):
+    class _TwoReads(_Session):
         def execute(self, statement: Any) -> Any:
             self.calls += 1
-            assert self.calls == 1, "不折叠时不该查单元行"
-            return _Rows(
-                [SimpleNamespace(id=cid, meta=meta, kb_id=KB) for cid, meta in self.metas.items()]
-            )
+            self.statements.append(str(statement))
+            sql = str(self.statements[-1])
+            assert "LIKE" not in sql, "不折叠时不该查单元行（前缀匹配）"
+            if self.calls == 1:
+                return _Rows(
+                    [
+                        SimpleNamespace(id=cid, meta=meta, kb_id=KB)
+                        for cid, meta in self.metas.items()
+                    ]
+                )
+            assert self.calls == 2, "不折叠时最多两次读：meta 与父节正文"
+            return _Rows([])  # 父节这一跑没有正文：本用例只关心小片原样返回
 
     chunks = [_chunk("c-1", "第一片。", 0.9), _chunk("c-2", "第二片。", 0.8)]
 
-    results = _run(_Once(metas=session.metas, rows=[]), chunks, fold_to_sections=False)
+    results = _run(_TwoReads(metas=session.metas, rows=[]), chunks, fold_to_sections=False)
 
     assert [row["chunk_id"] for row in results] == ["c-1", "c-2"]
     assert [row["content"] for row in results] == ["第一片。", "第二片。"]

@@ -24,6 +24,7 @@ from sqlalchemy.dialects import postgresql
 from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.repositories import chunk_repository, section_edge_repository
+from app.schemas.rag import RetrievedChunk
 from app.services import orchestration
 from app.services.retrieval_options import RetrievalOptions
 from app.services.graph_injection import (
@@ -895,3 +896,220 @@ async def test_an_earlier_channel_failure_is_not_overwritten(
     retrieval = payload["metadata"]["retrieval"]
     assert retrieval["degraded_reason"] == "keyword search failed"
     assert retrieval["degraded_reason"] != REASON_GRAPH_FAILED
+
+
+# ─────────────────────────── 八、折叠关闭时的父节恢复（ADR-0027 决策 7）
+
+
+def _sliced_hit(chunk_id: str, *, heading: str, content: str, score: float = 0.9) -> dict:
+    """一条命中的小片（召回行的形状：只有身份与正文，章节路径在 meta 里）。"""
+
+    return {
+        "document_id": "doc-1",
+        "chunk_id": chunk_id,
+        "title": "退款政策",
+        "content": content,
+        "kb_id": KB_A,
+        "score": score,
+    }
+
+
+def _install_collapse_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    metas: Mapping[str, str],
+    parents: Mapping[str, list[str]],
+) -> None:
+    """把折叠那两条回查换成预置行：meta（章节路径）与父节正文。
+
+    查询形状由编译断言守（``test_the_parent_rows_query...``），这里只验行为。
+    """
+
+    async def _metas(_db: Any, *, tenant_id: str, kb_ids: list[str], chunk_ids: list[str]) -> dict:
+        return {
+            (KB_A, chunk_id): {"heading_path": heading, "section_id": f"sec-{chunk_id}"}
+            for chunk_id, heading in metas.items()
+        }
+
+    async def _parents(
+        _db: Any,
+        *,
+        tenant_id: str,
+        document_ids: list[str],
+        heading_paths: list[str],
+        index_version: str | None = None,
+    ) -> dict:
+        return {("doc-1", path): list(parents[path]) for path in heading_paths if path in parents}
+
+    monkeypatch.setattr(chunk_repository, "fetch_meta_by_chunk_ids", _metas)
+    monkeypatch.setattr(chunk_repository, "fetch_parent_rows", _parents, raising=False)
+
+
+async def _run_kernel_with_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    fold_to_sections: bool,
+    metas: Mapping[str, str],
+    parents: Mapping[str, list[str]],
+    rows: Sequence[dict],
+) -> Any:
+    _install_collapse_rows(monkeypatch, metas=metas, parents=parents)
+
+    class _FixedVectorStore:
+        async def similarity_search_scope(
+            self, db: Any, query_vector: Any, *, tenant_id: str, index_versions: Any, top_k: int
+        ) -> list[dict]:
+            return [dict(row) for row in rows][:top_k]
+
+    import app.services.retrieval.kernel as kernel
+
+    return await kernel.retrieve_kernel(
+        AsyncRecordingSession(),
+        tenant_id=TENANT,
+        index_versions={KB_A: VERSION},
+        query="超期多久到账",
+        mode="vector",
+        vector_queries=("超期多久到账",),
+        rerank_query="超期多久到账",
+        keyword_query="超期多久到账",
+        top_k=4,
+        recall_top_k=4,
+        rerank_enabled=False,
+        fold_to_sections=fold_to_sections,
+        expand_table_rows=False,
+        embedding_factory=_RecordingEmbedding,
+        vector_factory=_FixedVectorStore,
+        keyword_factory=_RecordingKeyword,
+    )
+
+
+@pytest.mark.asyncio
+async def test_parent_content_is_attached_when_folding_is_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """折叠关掉时交付单元小于「节」：补父节内容，小片才读得懂。"""
+
+    outcome = await _run_kernel_with_rows(
+        monkeypatch,
+        fold_to_sections=False,
+        metas={"c-child": "退款 > 流程 > 补充"},
+        parents={"退款 > 流程": ["流程的第一步。", "流程的第二步。"]},
+        rows=[_sliced_hit("c-child", heading="退款 > 流程 > 补充", content="补充说明。")],
+    )
+
+    assert outcome.chunks[0]["content"] == "补充说明。", "content 永远是切片原文（ADR-0012 决策 3）"
+    assert outcome.chunks[0]["parent_content"] == "流程的第一步。\n\n流程的第二步。"
+
+
+@pytest.mark.asyncio
+async def test_parent_content_is_not_added_when_folding_is_on(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """折叠开着时不补父节：折叠已经把整节给了，再补就是材料量翻倍。"""
+
+    outcome = await _run_kernel_with_rows(
+        monkeypatch,
+        fold_to_sections=True,
+        metas={"c-child": "退款 > 流程 > 补充"},
+        parents={"退款 > 流程": ["流程的第一步。"]},
+        rows=[_sliced_hit("c-child", heading="退款 > 流程 > 补充", content="补充说明。")],
+    )
+
+    assert all(row.get("parent_content") is None for row in outcome.chunks)
+
+
+@pytest.mark.asyncio
+async def test_parent_recovery_changes_no_score_and_no_order(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """补父节不改分数、不改排名：只附加内容（同一批命中，开与不开两跑顺序与分数一致）。"""
+
+    rows = [
+        _sliced_hit("c-1", heading="退款 > 流程 > 补充", content="补充一。", score=0.9),
+        _sliced_hit("c-2", heading="退款 > 到账 > 时限", content="到账。", score=0.5),
+    ]
+    metas = {"c-1": "退款 > 流程 > 补充", "c-2": "退款 > 到账 > 时限"}
+
+    with_parent = await _run_kernel_with_rows(
+        monkeypatch,
+        fold_to_sections=False,
+        metas=metas,
+        parents={"退款 > 流程": ["流程正文。"], "退款 > 到账": ["到账正文。"]},
+        rows=rows,
+    )
+    without_parent = await _run_kernel_with_rows(
+        monkeypatch,
+        fold_to_sections=False,
+        metas=metas,
+        parents={},
+        rows=rows,
+    )
+
+    assert [(row["chunk_id"], row["score"]) for row in with_parent.chunks] == [
+        (row["chunk_id"], row["score"]) for row in without_parent.chunks
+    ]
+    assert [row["chunk_id"] for row in with_parent.chunks] == ["c-1", "c-2"], "名次不动"
+    assert with_parent.chunks[0]["parent_content"] == "流程正文。"
+    assert without_parent.chunks[0].get("parent_content") is None
+
+
+def test_the_parent_rows_query_pins_document_scope_and_version() -> None:
+    """父节回查：按文档 + **精确路径**取（不是前缀，否则会把子节再拼一遍），并带版本过滤。"""
+
+    sql = _compiled(
+        chunk_repository.build_parent_rows_statement(
+            tenant_id=TENANT,
+            document_ids=["doc-1"],
+            heading_paths=["退款 > 流程"],
+            index_version=VERSION,
+        )
+    )
+
+    assert "chunks.tenant_id = 'tenant_graph'" in sql
+    assert "chunks.document_id IN ('doc-1')" in sql
+    assert "(chunks.metadata ->> 'heading_path') IN ('退款 > 流程')" in sql, (
+        "精确等值（这里是单元素 IN）：前缀匹配会把命中片自己再拼进父节正文"
+    )
+    assert "LIKE" not in sql
+    assert f"chunks.index_version = '{VERSION}'" in sql
+    assert "ORDER BY" in sql and "chunk_index" in sql, "父节正文要按文档顺序拼回去"
+
+
+# ─────────────────────────────────────── 九、响应契约：两个新字段只在有内容时出现
+
+
+def _response_row(**extra: Any) -> dict:
+    """一条检索结果的**必填**字段集合（契约里没有默认值的那七项）。"""
+
+    row: dict[str, Any] = {
+        "document_id": "doc-1",
+        "chunk_id": "c-1",
+        "title": "退款政策",
+        "content": "正文。",
+        "score": 0.9,
+        "kb_id": KB_A,
+    }
+    row.update(extra)
+    return row
+
+
+def test_the_response_schema_carries_the_injection_marker_and_the_parent_content() -> None:
+    """两个新字段能穿过响应模型：来源标记与父节正文字段在契约里各有一格。"""
+
+    injected = RetrievedChunk(
+        **(_response_row() | {"retrieval_source": INJECTED_SOURCE, "parent_content": "父节正文。"})
+    )
+
+    dumped = injected.model_dump(mode="json")
+
+    assert dumped["retrieval_source"] == INJECTED_SOURCE
+    assert dumped["parent_content"] == "父节正文。"
+
+
+def test_the_response_schema_drops_both_fields_when_absent() -> None:
+    """不在场时**连键都不存在**（不是 null）：关闭图谱的响应因此逐字节不变。"""
+
+    dumped = RetrievedChunk(**_response_row()).model_dump(mode="json")
+
+    assert "retrieval_source" not in dumped
+    assert "parent_content" not in dumped

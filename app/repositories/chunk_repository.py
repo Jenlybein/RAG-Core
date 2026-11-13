@@ -126,6 +126,71 @@ async def fetch_unit_rows(
     return _group_unit_rows(list((await db.execute(stmt)).all()))
 
 
+def build_parent_rows_statement(
+    *,
+    tenant_id: str,
+    document_ids: Sequence[str],
+    heading_paths: Sequence[str],
+    index_version: str | None = None,
+) -> Select[tuple[str, str, int, str]]:
+    """**父节自己的**正文：按 ``(文档, 精确标题路径)`` 取，供「折叠关闭时补父节」用（#144）。
+
+    为什么要一条新查询、而不是复用 :func:`_unit_rows_statement`：那条是**前缀**语义
+    （``path = p OR path LIKE 'p > %'``），拿它取父节会把命中片自己与它的兄弟节一起
+    拼回来——材料量翻倍，而 ADR-0027 决策 7 说的正是「不要再翻一倍」。所以这里只认
+    **等值**：父节自己那几片，不多不少。
+
+    排序按 ``chunk_index``：父节正文拼回去必须与文档里的顺序一致（ADR-0010 的确定性）。
+    """
+
+    heading = Chunk.meta["heading_path"].astext
+    chunk_index = Chunk.meta["chunk_index"].astext.cast(Integer)
+    stmt = (
+        select(Chunk.document_id, heading, chunk_index, Chunk.content)
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.document_id.in_(sorted({str(item) for item in document_ids})),
+            heading.in_(sorted({str(item) for item in heading_paths})),
+        )
+        .order_by(Chunk.document_id, chunk_index, Chunk.id)
+    )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
+    return stmt
+
+
+async def fetch_parent_rows(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    document_ids: Sequence[str],
+    heading_paths: Sequence[str],
+    index_version: str | None = None,
+) -> dict[tuple[str, str], list[str]]:
+    """``{(文档 id, 父节路径): [父节自己那几片的正文…]}``，按文档顺序。
+
+    只在这一版本身份里取（``index_version`` 由调用方按「这份文档所属库」给出）：
+    跨版本拼父节会让重建中途的检索拿到两套切法拼起来的上下文。
+    """
+
+    if not document_ids or not heading_paths:
+        return {}
+    rows = (
+        await db.execute(
+            build_parent_rows_statement(
+                tenant_id=tenant_id,
+                document_ids=list(document_ids),
+                heading_paths=list(heading_paths),
+                index_version=index_version,
+            )
+        )
+    ).all()
+    parents: dict[tuple[str, str], list[str]] = {}
+    for document_id, path, _index, content in rows:
+        parents.setdefault((str(document_id), str(path)), []).append(str(content or ""))
+    return parents
+
+
 def build_representative_statement(
     *,
     tenant_id: str,
