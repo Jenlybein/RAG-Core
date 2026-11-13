@@ -16,6 +16,7 @@
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import importlib
 import json
@@ -379,3 +380,310 @@ def test_an_internal_failure_is_not_dressed_up_as_a_business_code(
     assert result["isError"] is True
     assert BUSINESS_CODE.search(result["content"][0]["text"]) is None
     assert mcp_entry.session.closed is True, "崩溃路径也必须关掉会话"
+
+
+# ─────────────────────────────── 与 HTTP 侧共用同一份实现（结构 + 行为两条证据）
+
+
+def test_both_entries_call_the_very_same_gate_object() -> None:
+    """结构证据：两个入口 import 的是**同一个函数对象**，不是同名同形的两份。
+
+    这条断言比「两边都有个叫 ``gated_research`` 的东西」更严：``is`` 认的是对象身份，
+    任何一侧改成 import 自己模块里的另一份实现，它立刻红。
+    """
+
+    from app.api.routes import rag as rag_route
+
+    mcp_server = importlib.import_module("app.mcp_server")
+
+    assert mcp_server.gated_research is rag_route.gated_research
+    assert mcp_server.gated_research.__module__ == "app.services.research_gate"
+
+
+def test_the_tool_function_holds_no_business_decision() -> None:
+    """结构证据（AST）：工具函数体里**一次都不出现**判定函数，判定全在下层。
+
+    只用 AST 看 ``Name`` / ``Attribute``，不看注释与文档串——描述里必须写「额外模型成本」
+    与「独立配额」，那是给模型看的文字，不是判定。反过来，工具若在本地判一次白名单或
+    套餐，那几个名字一定会出现在它的语法树里。
+    """
+
+    from pathlib import Path
+
+    tree = ast.parse(
+        (Path(__file__).resolve().parent.parent / "app" / "mcp_server.py").read_text(
+            encoding="utf-8"
+        )
+    )
+    tool = next(
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef) and node.name == "rag_research"
+    )
+    used: set[str] = set()
+    for node in ast.walk(tool):
+        if isinstance(node, ast.Name):
+            used.add(node.id)
+        elif isinstance(node, ast.Attribute):
+            used.add(node.attr)
+        elif isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+            used.add(node.func.id)
+
+    # 它必须做的三件事：取身份、走同一个值对象、调同一个门禁。
+    assert {"_key_context", "parse_research_request", "gated_research"} <= used
+    # 判定与装配一个都不许在工具里（白名单 / 套餐 / 配额 / 档位 / 内核 / 状态机）。
+    forbidden = {
+        "ensure_kb_scope",
+        "ensure_research_allowed",
+        "research_quota",
+        "resolve_retrieval_options",
+        "ensure_visible",
+        "resolve_index_versions",
+        "build_kernel_search",
+        "run_research",
+    }
+    assert not used & forbidden, f"工具里出现了业务判定：{used & forbidden}"
+
+
+# ─────────────────────────────── 行为证据：同一份输入，两条入口交出同一份形状
+
+RESEARCH_PATH = "/api/v1/rag/research"
+KB = "kb-a"
+KB_OUT_OF_SCOPE = "kb-not-mine"
+QUERY = "退款多久到账，需要哪些材料"
+
+
+def _outcome() -> Any:
+    """状态机的替身产物：只固定「材料 / 计划 / 轮次 / 停止原因」，不固定装填形状。
+
+    装填（``payload_of`` → ``ResearchData``）跑的是**生产代码**，所以两条入口交出的形状
+    是同一个校验器给的——这正是本段要证明的东西。
+    """
+
+    from app.services.research import PlanPoint, PlanQuery, ResearchOutcome
+    from app.services.research_limits import StopReason
+
+    return ResearchOutcome(
+        points=(PlanPoint(point_id="A1", text="退款时限"),),
+        queries=(PlanQuery(point_id="A1", query="退款多久到账", round=1),),
+        materials=(
+            {
+                "document_id": "doc-a",
+                "chunk_id": "chunk-a",
+                "title": "退款政策",
+                "content": "3 个工作日内到账。",
+                "score": 0.9,
+                "kb_id": KB,
+                "section_id": "section-a",
+                "heading_path": "退款 > 时限",
+            },
+        ),
+        searches=1,
+        followup_rounds=0,
+        model_calls=2,
+        duration_ms=1234,
+        stop_reason=StopReason.EVIDENCE_COMPLETE,
+        answer="3 个工作日内到账。[E1]",
+        citations=(
+            {
+                "text": "3 个工作日内到账。",
+                "evidence_ids": ["E1"],
+                "status": "supported",
+            },
+        ),
+        evidence_state="complete",
+    )
+
+
+class _BothEntries:
+    """HTTP 的 ``POST /api/v1/rag/research`` + MCP 的 ``rag_research``，挂在同一个应用上。
+
+    真门禁（``gated_research``）在两边的执行是**同一段代码**：本夹具只换掉它的两个外部
+    依赖（状态机与归属索引落点），其余 9 步（白名单、能力位、参数、限流、日配额、范围
+    解析、身份、响应成形、记账）都由生产实现真跑一遍。
+    """
+
+    def __init__(self, client: TestClient, mcp_headers: dict[str, str], holder: dict[str, Any]):
+        self.client = client
+        self.mcp_headers = mcp_headers
+        #: 两条入口共用的一份身份（HTTP 走依赖覆盖，MCP 走判定内核替身）。
+        self.holder = holder
+
+    def http(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        response = self.client.post(RESEARCH_PATH, json=arguments)
+        assert response.status_code == 200, "业务失败也是 HTTP 200（ADR-0007）"
+        return response.json()
+
+    def mcp(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        response = self.client.post(
+            MCP_PATH,
+            json={
+                "jsonrpc": "2.0",
+                "id": 11,
+                "method": "tools/call",
+                "params": {"name": "rag_research", "arguments": arguments},
+            },
+            headers={**JSONRPC_HEADERS, **self.mcp_headers},
+        )
+        assert response.status_code == 200
+        return dict(response.json()["result"])
+
+    def mcp_payload(self, arguments: dict[str, Any]) -> dict[str, Any]:
+        result = self.mcp(arguments)
+        assert result.get("isError") is not True, result
+        return dict(json.loads(result["content"][0]["text"]))
+
+
+@pytest.fixture
+def both_entries(monkeypatch: pytest.MonkeyPatch) -> Iterator[_BothEntries]:
+    import dataclasses
+
+    from app.api.deps import get_current_key
+    from app.core.auth import DEV_KEY_POLICY
+    from app.models.plan import PLAN_PRESETS, PLAN_PRO
+    from tests import fake_db
+    from tests.fake_db import AsyncRecordingSession, async_visible_kb
+
+    router_mod = importlib.import_module("app.api.router")
+    error_handlers = importlib.import_module("app.api.error_handlers")
+    mcp_server = importlib.import_module("app.mcp_server")
+    gate = importlib.import_module("app.services.research_gate")
+    kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
+    async_session_mod = importlib.import_module("app.db.async_session")
+    factory_mod = importlib.import_module("app.db.session_factory")
+
+    holder: dict[str, Any] = {
+        "context": KeyContext(
+            tenant_id="tenant_mcp_research",
+            key_id="key-both-entries",
+            policy=dataclasses.replace(DEV_KEY_POLICY, research_allowed=True),
+            plan=PLAN_PRESETS[PLAN_PRO],
+        )
+    }
+
+    async def _run_research(*_args: Any, **_kwargs: Any) -> Any:
+        return _outcome()
+
+    async def _identity(_request: Any, _db: Any) -> KeyContext:
+        return holder["context"]
+
+    monkeypatch.setattr(gate, "run_research", _run_research)
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
+    # 归属索引是一次独立短事务（自己开会话）：指到本用例的替身上才不会真去连库。
+    trace_session = AsyncRecordingSession()
+    factory_mod.set_async_session_factory(lambda: trace_session)
+    #: 两条入口各自的归属索引行（一次 Research 一行，两边各写一行 = 两次调用都真的过了门禁）。
+    holder["trace_session"] = trace_session
+
+    monkeypatch.setattr(mcp_server, "resolve_identity", _identity)
+    request_session = AsyncSessionAdapter(_FakeSession())
+    mcp_app = mcp_server.create_mcp_http_app(
+        get_async_db=lambda: request_session,
+        retrieve=lambda *_a, **_k: None,
+        list_kbs=lambda *_a, **_k: [],
+    )
+    app = FastAPI(lifespan=combine_lifespans(mcp_app.lifespan))
+    app.include_router(router_mod.api_router)
+    error_handlers.install_handlers(app)
+    app.mount("/mcp", mcp_app)
+    fake_db.override_all_db(app, _FakeSession())
+    app.dependency_overrides[get_current_key] = lambda: holder["context"]
+    app.dependency_overrides[async_session_mod.get_async_db] = lambda: request_session
+
+    try:
+        with TestClient(app, raise_server_exceptions=False) as client:
+            yield _BothEntries(client, _initialize(client), holder)
+    finally:
+        app.dependency_overrides.clear()
+        factory_mod.set_async_session_factory(None)
+
+
+def test_the_same_input_yields_the_same_shape_on_both_entries(
+    both_entries: _BothEntries,
+) -> None:
+    """同一份输入，MCP 与 HTTP 交出**同一份载荷**（只有每次调用的 ``trace_id`` 不同）。
+
+    与 ``test_both_entries_answer_the_same_question_the_same_way``（检索那一条）同形：
+    两次独立调用本来就不该共用一根线，所以把 ``trace_id`` 摘掉再比整份载荷。
+    """
+
+    arguments = {"kb_ids": [KB], "query": QUERY}
+
+    http_data = both_entries.http(arguments)["data"]
+    mcp_data = both_entries.mcp_payload(arguments)
+
+    assert set(mcp_data) == set(http_data), "顶层字段逐个相同"
+    http_trace_id = http_data["metadata"].pop("trace_id")
+    mcp_trace_id = mcp_data["metadata"].pop("trace_id")
+    assert http_trace_id != mcp_trace_id, "两次独立调用不该共用一根线"
+    assert len(http_trace_id) == len(mcp_trace_id) == 32
+    assert mcp_data == http_data, "整份载荷相等：计划、材料、轮次、引用块、元数据"
+
+    # 两次调用都真的过了那唯一一段门禁：归属索引各写一行（子检索一条都不写）。
+    rows = [row for row in both_entries.holder["trace_session"].added if hasattr(row, "chunk_ids")]
+    assert len(rows) == 2, "两条入口各跑了一次同一段组合根"
+    assert {row.trace_id for row in rows} == {http_trace_id, mcp_trace_id}
+
+
+def test_both_entries_reject_an_out_of_scope_kb_with_the_same_code(
+    both_entries: _BothEntries,
+) -> None:
+    """白名单这一条判定只有一个：两条入口给出同一个 ``20008``。"""
+
+    both_entries.holder["context"] = _context(
+        research_allowed=True, allowed_kb_ids=("kb-ok",), unrestricted=False
+    )
+
+    http_code = both_entries.http({"kb_ids": [KB_OUT_OF_SCOPE], "query": QUERY})["code"]
+    mcp_result = both_entries.mcp({"kb_ids": [KB_OUT_OF_SCOPE], "query": QUERY})
+
+    assert http_code == ErrorCode.KNOWLEDGE_BASE_NOT_FOUND.value
+    assert _mcp_code(mcp_result) == http_code
+
+
+def test_both_entries_reject_a_missing_research_capability_with_the_same_code(
+    both_entries: _BothEntries,
+) -> None:
+    """能力位这一条判定也只有一个：两条入口给出同一个 ``20013``（不静默降级）。"""
+
+    both_entries.holder["context"] = _context(research_allowed=False)
+
+    http_code = both_entries.http({"kb_ids": [KB], "query": QUERY})["code"]
+    mcp_result = both_entries.mcp({"kb_ids": [KB], "query": QUERY})
+
+    assert http_code == ErrorCode.FEATURE_NOT_ALLOWED.value
+    assert _mcp_code(mcp_result) == http_code
+
+
+def _context(
+    *,
+    research_allowed: bool,
+    allowed_kb_ids: tuple[str, ...] = (),
+    unrestricted: bool = True,
+) -> KeyContext:
+    import dataclasses
+
+    from app.core.auth import DEV_KEY_POLICY
+    from app.models.plan import PLAN_PRESETS, PLAN_PRO
+
+    return KeyContext(
+        tenant_id="tenant_mcp_research",
+        key_id="key-both-entries",
+        policy=dataclasses.replace(
+            DEV_KEY_POLICY,
+            research_allowed=research_allowed,
+            allowed_kb_ids=allowed_kb_ids,
+            unrestricted_scope=unrestricted,
+        ),
+        plan=PLAN_PRESETS[PLAN_PRO],
+    )
+
+
+def _mcp_code(result: dict[str, Any]) -> int:
+    """工具执行失败文本里的业务码；成功是 ``0``。"""
+
+    if not result.get("isError"):
+        return int(ErrorCode.SUCCESS)
+    match = BUSINESS_CODE.search(result["content"][0]["text"])
+    assert match is not None, f"MCP 失败结果里没有错误码：{result!r}"
+    return int(match.group(1))
