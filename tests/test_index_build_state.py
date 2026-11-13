@@ -34,6 +34,7 @@ from app.models.index_version import (
 )
 from app.models.knowledge_base import KnowledgeBase
 from app.services.index_build_service import (
+    ALLOWED_TRANSITIONS,
     BUILD_FAILED_MESSAGE,
     IndexBuildAlreadyRunning,
     IndexBuildInvalidTransition,
@@ -155,14 +156,23 @@ def test_the_state_machine_allows_exactly_the_documented_transitions() -> None:
     assert can_transition(INDEX_BUILD_READY, INDEX_BUILD_ACTIVE)
     assert can_transition(INDEX_BUILD_READY, INDEX_BUILD_FAILED)
     assert can_transition(INDEX_BUILD_ACTIVE, INDEX_BUILD_ARCHIVED)
+    assert can_transition(INDEX_BUILD_ARCHIVED, INDEX_BUILD_ACTIVE), (
+        "归档不是终态：回滚（#155）就是这一条——归档只服务评测、不能退回线上，"
+        "等于把 ADR-0025 承诺的「可回滚」作废"
+    )
 
     assert not can_transition(INDEX_BUILD_BUILDING, INDEX_BUILD_ACTIVE), (
         "building 直接 active 会把半成品推上线"
     )
-    assert not can_transition(INDEX_BUILD_ARCHIVED, INDEX_BUILD_ACTIVE), (
-        "归档是终态：要回到旧版本得另建一版，不许悄悄复活"
-    )
     assert not can_transition(INDEX_BUILD_FAILED, INDEX_BUILD_READY)
+    assert not can_transition(INDEX_BUILD_FAILED, INDEX_BUILD_ACTIVE)
+
+
+def test_archived_opens_only_the_rollback_door() -> None:
+    """``archived`` 只多开一条 ``active``；``failed`` 仍是终态（数据不全的版本别想上线）。"""
+
+    assert ALLOWED_TRANSITIONS[INDEX_BUILD_ARCHIVED] == frozenset({INDEX_BUILD_ACTIVE})
+    assert ALLOWED_TRANSITIONS[INDEX_BUILD_FAILED] == frozenset()
 
 
 def test_an_illegal_transition_names_both_ends() -> None:

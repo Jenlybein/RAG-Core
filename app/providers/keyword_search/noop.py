@@ -28,6 +28,11 @@ class NoopKeywordSearchProvider(KeywordSearchProvider):
 
         return 0
 
+    async def physical_index_exists(self, version: str) -> bool:
+        """没有物理索引这回事 → ``False``（调用方按 ``available`` 跳过这一维）。"""
+
+        return False
+
     async def activate_version(self, version: str) -> None:
         """没有别名可切：空实现不持有任何索引。"""
 
