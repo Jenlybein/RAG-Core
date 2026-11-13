@@ -22,6 +22,7 @@ import re
 import sys
 from dataclasses import dataclass
 from datetime import datetime
+from inspect import iscoroutinefunction
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -946,6 +947,9 @@ async def test_role_resolution_reads_the_pointer_through_the_async_session(
     assert not hasattr(model_config_service, "session_factory"), (
         "装配期不再有同步会话入口（ADR-0024 决策四第一行已搬走）"
     )
+    # 形状本身也钉住：两个入口都是协程，事件循环上不可能有「同步调用悄悄少一次」
+    assert iscoroutinefunction(model_config_service.resolve_role_config)
+    assert iscoroutinefunction(model_config_service.role_endpoint)
 
 
 @pytest.mark.asyncio
