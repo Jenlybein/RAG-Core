@@ -155,6 +155,11 @@ def create_mcp_server(
                 query=payload.query,
             )
             return data.model_dump()
+        except AppError as exc:
+            # 业务失败不是协议错误：按 JSON-RPC 结果表达，文本里带 code。四个码（20008 /
+            # 20013 / 20005 / 20014）原样转发——它们是四个不同的问题，对应四种不同的
+            # 处置，工具在这里合并或改码就等于替调用方决定了重试策略。
+            raise ValueError(f"{exc.code.value}|{exc.msg}") from exc
         finally:
             await db.close()
 
