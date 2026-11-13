@@ -153,6 +153,7 @@ def _edge_sections(
                     section_id=section_id,
                     heading_path=heading_path,
                     order=index,
+                    source_filename=doc.source_filename or "",
                 ),
                 text=piece.text,
             )
@@ -364,6 +365,11 @@ class IndexingService:
                     # 本步不参与过滤，见 ADR-0005 与第 10 步。
                     "doc_version": doc.doc_version,
                     "title": doc.title,
+                    # 原始文件名随切片落一份（#152 的修订）：Markdown 链接写的是文件名
+                    # （``./points_policy.md``），而标题是《积分规则》——建边时按文件名才对得上。
+                    # 落进 meta 而不是建边时回查 documents 表：meta 是**这一版**的快照，
+                    # 事后改名不会让旧版本的边跟着变。
+                    "source_filename": doc.source_filename or "",
                     "index": index,
                     "source_type": parsed.source_type,
                 },

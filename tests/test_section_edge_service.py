@@ -439,7 +439,13 @@ def test_indexing_builds_edges_in_the_target_version_after_the_chunks(
     pieces = [_piece("提交申请。", "2 退款 > 2.1 申请")]
     builder = _RecordingEdgeBuilder(calls)
     document = SimpleNamespace(
-        id="doc-a", tenant_id=TENANT, kb_id=KB, title="售后手册", content="raw", doc_version=1
+        id="doc-a",
+        tenant_id=TENANT,
+        kb_id=KB,
+        title="售后手册",
+        content="raw",
+        doc_version=1,
+        source_filename="售后手册.md",
     )
 
     async def _get_by_id(_db: Any, _id: str) -> Any:
