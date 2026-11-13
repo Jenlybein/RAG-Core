@@ -123,6 +123,7 @@ def _document(document_id: str, *, status: int = DocumentStatus.SUCCESS) -> Simp
         kb_id=KB_ID,
         title="售后手册",
         doc_version=1,
+        source_filename="售后手册.md",
         status=status,
         content="正文",
     )

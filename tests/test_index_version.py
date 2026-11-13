@@ -197,6 +197,7 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
         kb_id=KB_ID,
         title="错误码查询",
         doc_version=1,
+        source_filename="售后手册.md",
     )
     pieces = [
         SplitPiece(

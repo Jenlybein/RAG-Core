@@ -14,8 +14,9 @@
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
+from app.core.exceptions import AppError, ErrorCode
 from app.schemas.rag import RetrieveRequest, RetrievedChunk
 from app.services.research_limits import StopReason
 
@@ -26,6 +27,25 @@ class ResearchRequest(RetrieveRequest):
     多给的字段（档位、条数、轮次）拿到的是参数校验失败（``20002``），**不是被静默忽略**：
     静默忽略会让调用方以为「我指定了 2 轮」，实际跑的是固定五步。
     """
+
+
+def parse_research_request(*, kb_ids: Any, query: Any) -> ResearchRequest:
+    """两条入口共用的解析入口：校验规则只来自 :class:`ResearchRequest`（票 #151）。
+
+    与 ``app.schemas.rag.parse_retrieve_request`` 逐字同形，理由也同一条：HTTP 侧由
+    FastAPI 把同一个模型接在请求体上，MCP 的工具签名只有类型、没有 ``Field`` 约束，所以
+    工具必须显式走一遍同一个值对象，再把 ``ValidationError`` 翻成同一个业务码（``20002``）。
+
+    这里**不复制**字段规则，也不另写一份「Research 版的空值判断」：``ResearchRequest``
+    继承 ``RetrieveRequest``，所以空列表、空串、纯空白、多给的字段（``rounds`` / ``top_k``）
+    全部由同一处挡住。MCP 与 HTTP 因此不可能对同一份请求给出两种答案。
+    """
+
+    try:
+        return ResearchRequest(kb_ids=kb_ids, query=query)
+    except ValidationError as exc:
+        # 与 HTTP 的 20002 同一个码、同一个缺省消息（``request validation error``）。
+        raise AppError(ErrorCode.REQUEST_VALIDATION_ERROR) from exc
 
 
 class ResearchPoint(BaseModel):
@@ -188,5 +208,6 @@ __all__ = [
     "ResearchQuery",
     "ResearchRequest",
     "ResearchRounds",
+    "parse_research_request",
     "payload_of",
 ]

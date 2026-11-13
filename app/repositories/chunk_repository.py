@@ -432,12 +432,15 @@ async def list_version_sections(
     kb_id: str,
     index_version: str,
     document_ids: Sequence[str] | None = None,
-) -> list[tuple[str, str, str, str, int, str]]:
-    """:func:`build_version_sections_statement` 的结果：``(文档 id, 标题, 节 id, 标题路径, 片序号, 正文)``。
+) -> list[tuple[str, str, str, str, int, str, str]]:
+    """:func:`build_version_sections_statement` 的结果，一行一片：
 
-    一行一片（同一节多行）：「第 N 节」按片的全局顺序解析，去重交给目录
-    （``SectionCatalog`` 按 ``(文档 id, 节 id)`` 收）。与 ``list_section_identity_rows``
-    的差别是：那个 ``distinct`` 只关心节身份，这个要原文与顺序。
+    ``(文档 id, 标题, 节 id, 标题路径, 片序号, 正文, 原始文件名)``。
+
+    同一节多行（按片的全局顺序）；去重交给目录（``SectionCatalog`` 按
+    ``(文档 id, 节 id)`` 收）。与 ``list_section_identity_rows`` 的差别是：那个
+    ``distinct`` 只关心节身份，这个要原文、顺序与文件名（#152 的链路按文件名对 Markdown
+    链接，标题是兜底）。
     """
 
     rows = (
@@ -450,7 +453,7 @@ async def list_version_sections(
             )
         )
     ).all()
-    sections: list[tuple[str, str, str, str, int, str]] = []
+    sections: list[tuple[str, str, str, str, int, str, str]] = []
     for row in rows:
         meta = dict(getattr(row, "meta", None) or {})
         sections.append(
@@ -461,6 +464,7 @@ async def list_version_sections(
                 str(meta.get("heading_path") or ""),
                 int(meta.get("chunk_index") or 0),
                 str(row.content or ""),
+                str(meta.get("source_filename") or ""),
             )
         )
     return sections

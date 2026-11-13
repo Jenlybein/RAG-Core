@@ -49,17 +49,20 @@ logger = structlog.get_logger(__name__)
 
 
 def catalog_from_rows(
-    rows: Iterable[tuple[str, str, str, str, int, str]], *, scope: EdgeScope
+    rows: Iterable[tuple[str, str, str, str, int, str, str]], *, scope: EdgeScope
 ) -> SectionCatalog:
-    """``(文档 id, 标题, 节 id, 标题路径, 片序号, 正文)`` → 节目录。
+    """``(文档 id, 标题, 节 id, 标题路径, 片序号, 正文, 原始文件名)`` → 节目录。
 
     节 id 用的是**库里那一份**（切片 meta 里的 ``section_id``）：边必须指向真实存在的
     节，而不是「按同一算法重算出来的那个」。重算只在这一列缺值时兜底（历史切片 / 自定义
     切块器），并且走 :func:`section_id_of`——本模块不许自己拼哈希。
+
+    ``source_filename`` 也一起带上：Markdown 链接按文件名对目标，标题只是兜底
+    （见 :meth:`SectionCatalog.documents_for_link_target`）。
     """
 
     sections: list[SectionRecord] = []
-    for document_id, title, section_id, heading_path, order, _content in rows:
+    for document_id, title, section_id, heading_path, order, _content, source_filename in rows:
         sections.append(
             SectionRecord(
                 tenant_id=scope.tenant_id,
@@ -71,18 +74,27 @@ def catalog_from_rows(
                 or section_id_of(document_id=document_id, heading_path=heading_path),
                 heading_path=heading_path,
                 order=order,
+                source_filename=source_filename,
             )
         )
     return SectionCatalog.of(sections, scope=scope)
 
 
 def section_texts_from_rows(
-    rows: Iterable[tuple[str, str, str, str, int, str]], *, scope: EdgeScope
+    rows: Iterable[tuple[str, str, str, str, int, str, str]], *, scope: EdgeScope
 ) -> tuple[SectionText, ...]:
     """同一批行 → 每片一份 ``SectionText``（引用从正文里抽，所以正文必须跟着来）。"""
 
     entries: list[SectionText] = []
-    for document_id, title, section_id, heading_path, order, content in rows:
+    for (
+        document_id,
+        title,
+        section_id,
+        heading_path,
+        order,
+        content,
+        source_filename,
+    ) in rows:
         entries.append(
             SectionText(
                 record=SectionRecord(
@@ -95,6 +107,7 @@ def section_texts_from_rows(
                     or section_id_of(document_id=document_id, heading_path=heading_path),
                     heading_path=heading_path,
                     order=order,
+                    source_filename=source_filename,
                 ),
                 text=content,
             )

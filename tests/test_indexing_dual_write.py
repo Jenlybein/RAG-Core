@@ -141,7 +141,13 @@ class _StubSplitter:
 
 def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]) -> None:
     document = SimpleNamespace(
-        id=DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, title="售后手册", content="raw", doc_version=1
+        id=DOC_ID,
+        tenant_id=TENANT_ID,
+        kb_id=KB_ID,
+        title="售后手册",
+        content="raw",
+        doc_version=1,
+        source_filename="售后手册.md",
     )
 
     async def _get_by_id(_db: Any, _id: str) -> Any:
