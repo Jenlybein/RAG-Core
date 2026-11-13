@@ -54,6 +54,7 @@ docker compose 起过容器），套件就会真的去连 ES：结果取决于�
 """
 
 import asyncio
+import importlib
 import os
 import sys
 from typing import Any
@@ -106,6 +107,43 @@ class _MemorySettingsCache:
         """循环上的那条（控制面写入的 after_commit 用它）；与 ``delete`` 同一份状态。"""
 
         self._overrides = None
+
+
+#: 投递缝被替成「只记账、不连 Broker」的版本；用例自己 monkeypatch 时覆盖它（见下）。
+_dispatched: list[dict[str, object]] = []
+
+
+def _record_dispatch(**kwargs: object) -> None:
+    _dispatched.append(dict(kwargs))
+
+
+@pytest.fixture(autouse=True)
+def _offline_dispatch(monkeypatch):
+    """默认套件**不许连 Broker**：把两处投递缝换成记账版。
+
+    为什么是 autouse 而不是「用例自己记得桩」：漏桩的用例在**开发机上**会静默连上本机
+    Redis、一路绿；到了没有 Redis 的 CI 才变成 `Connection refused` 与 500。票 #137 的
+    CI 就是这么红的——本机 6379 在听，用例看起来完全正常。**「默认套件离线」必须是构造上
+    的属性，不能是「大家记得」的约定。**
+
+    用例要断言「投递发生了什么」时自己 monkeypatch 这两个模块里的同名名字（照旧有效，
+    因为 ``from ... import`` 复制的是模块级绑定）。
+    """
+
+    _dispatched.clear()
+    for module_name in (
+        "app.services.document_service",
+        "app.services.console_kb_service",
+        "app.services.index_dispatch",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+        except ImportError:  # pragma: no cover —— 模块不在时这条缝本来也用不上
+            continue
+        if hasattr(module, "enqueue_document"):
+            monkeypatch.setattr(module, "enqueue_document", _record_dispatch, raising=True)
+    yield _dispatched
+    _dispatched.clear()
 
 
 @pytest.fixture(autouse=True)

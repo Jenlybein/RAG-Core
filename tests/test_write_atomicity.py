@@ -270,3 +270,21 @@ def test_a_failing_audit_write_rolls_back_the_issued_key_and_policy_too(
     assert session._rows.get(ApiKey, []) == []
     assert session._rows.get(AuditLog, []) == []
     assert session.rollbacks == 1
+
+
+def test_the_suite_never_reaches_a_real_broker() -> None:
+    """**离线是构造上的属性**：投递缝被 conftest 的 autouse 夹具换成了记账版。
+
+    这条用例是赔出来的：漏桩的用例在开发机上会静默连上本机 Redis、一路绿，到了没有
+    Redis 的 CI 才变成 500 + `Connection refused`（票 #137 的 CI 就这么红的）。
+    这里直接断言「两处投递缝现在都不是真的那个」——它抓的是**将来有人把夹具删掉**。
+    """
+
+    from app.services import console_kb_service, document_service, index_dispatch
+
+    for module in (document_service, console_kb_service, index_dispatch):
+        target = module.enqueue_document
+        assert target.__name__ == "_record_dispatch", (
+            f"{module.__name__}.enqueue_document 又变回真的了："
+            "默认套件会在开发机上静默连 Broker，只在 CI 上红"
+        )
