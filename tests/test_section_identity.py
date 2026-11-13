@@ -64,7 +64,9 @@ DOC_B = "doc-bbbbbbbb-0000-4000-8000-000000000002"
 def _split(document_id: str, text: str = MARKDOWN) -> list[dict[str, object]]:
     """切一遍，返回 ``[metadata]``（顺序即切片顺序）。"""
 
-    splitter = MarkdownStructuredSplitter(chunk_size=800, chunk_overlap=100, document_id=document_id)
+    splitter = MarkdownStructuredSplitter(
+        chunk_size=800, chunk_overlap=100, document_id=document_id
+    )
     return [piece.metadata for piece in splitter.split(text)]
 
 
@@ -98,12 +100,8 @@ def test_the_same_document_split_twice_gets_identical_section_ids() -> None:
     first = _split(DOC_A)
     second = _split(DOC_A)
 
-    assert [meta["heading_path"] for meta in first] == [
-        meta["heading_path"] for meta in second
-    ]
-    assert [meta["section_id"] for meta in first] == [
-        meta["section_id"] for meta in second
-    ]
+    assert [meta["heading_path"] for meta in first] == [meta["heading_path"] for meta in second]
+    assert [meta["section_id"] for meta in first] == [meta["section_id"] for meta in second]
     assert [meta["parent_section_id"] for meta in first] == [
         meta["parent_section_id"] for meta in second
     ]
@@ -131,9 +129,7 @@ def test_child_parent_id_equals_the_parent_sections_own_id() -> None:
     parent = pieces["售后手册 > 退款"]
     child = pieces["售后手册 > 退款 > 流程"]
 
-    assert parent["parent_section_id"] == section_id_of(
-        document_id=DOC_A, heading_path="售后手册"
-    )
+    assert parent["parent_section_id"] == section_id_of(document_id=DOC_A, heading_path="售后手册")
     assert child["parent_section_id"] == parent["section_id"]
 
 
@@ -289,12 +285,8 @@ def _index_one_document(
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", False)
 
     store = _RecordingStore()
-    service = indexing_service.IndexingService(
-        embeddings=_StubEmbeddings(), stores=[store]
-    )
-    asyncio.run(
-        service.index_existing_document(_PipelineSession(document), document.id)
-    )
+    service = indexing_service.IndexingService(embeddings=_StubEmbeddings(), stores=[store])
+    asyncio.run(service.index_existing_document(_PipelineSession(document), document.id))
 
     assert document_ids == [document.id], "生产路径必须把文档 id 交给切块器"
     return store.written
