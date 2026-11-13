@@ -916,6 +916,7 @@ async def test_a_pointer_to_a_row_deleted_behind_the_api_falls_back_to_env_witho
 
 # ───────────────────────────── 装配期读库的形状（票 #137：搬出事件循环）
 
+
 @pytest.mark.asyncio
 async def test_role_resolution_reads_the_pointer_through_the_async_session(
     monkeypatch: pytest.MonkeyPatch,
@@ -942,9 +943,9 @@ async def test_role_resolution_reads_the_pointer_through_the_async_session(
     assert endpoint.config_id == "config-deepseek"
     assert endpoint.model == "deepseek-flash"
     assert len(opened) == 1, "指针与配置行走同一个会话，不各开一个"
-    assert not hasattr(
-        model_config_service, "session_factory"
-    ), "装配期不再有同步会话入口（ADR-0024 决策四第一行已搬走）"
+    assert not hasattr(model_config_service, "session_factory"), (
+        "装配期不再有同步会话入口（ADR-0024 决策四第一行已搬走）"
+    )
 
 
 @pytest.mark.asyncio

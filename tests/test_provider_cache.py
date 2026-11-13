@@ -119,7 +119,9 @@ async def test_changing_any_endpoint_field_yields_a_new_llm_provider(
 
 
 @pytest.mark.asyncio
-async def test_changing_the_role_endpoint_yields_a_new_llm_provider(llm_env: pytest.MonkeyPatch) -> None:
+async def test_changing_the_role_endpoint_yields_a_new_llm_provider(
+    llm_env: pytest.MonkeyPatch,
+) -> None:
     """角色解析器指向的那一条变了（面板上改了指向），下一次装配就用新的那条。"""
 
     async def _none(_role: str) -> RoleEndpoint | None:
@@ -145,7 +147,9 @@ async def test_changing_the_role_endpoint_yields_a_new_llm_provider(llm_env: pyt
 
 
 @pytest.mark.asyncio
-async def test_the_strong_reasoning_effort_is_part_of_the_cache_key(llm_env: pytest.MonkeyPatch) -> None:
+async def test_the_strong_reasoning_effort_is_part_of_the_cache_key(
+    llm_env: pytest.MonkeyPatch,
+) -> None:
     """思考强度变了，强档装配出来的就是另一个模型：旧实例不许被复用。"""
 
     llm_env.setattr(settings, "LLM_REASONING_EFFORT", "off")
