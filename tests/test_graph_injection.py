@@ -13,15 +13,19 @@
 
 from __future__ import annotations
 
+import importlib
 from collections.abc import Mapping, Sequence
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.repositories import chunk_repository, section_edge_repository
 from app.services import orchestration
+from app.services.retrieval_options import RetrievalOptions
 from app.services.graph_injection import (
     INJECTED_SOURCE,
     MAX_INJECTED,
@@ -294,8 +298,6 @@ async def test_the_injected_pool_is_capped_at_thirty() -> None:
 
 def test_the_caps_are_constants_not_settings() -> None:
     """三条上限是常量：可调旋钮在样本量不足时必然被调成过拟合值（与折叠 over-fetch 同一条理由）。"""
-
-    import importlib
 
     module = importlib.import_module("app.services.graph_injection")
 
@@ -641,8 +643,6 @@ async def _run_kernel(
 ) -> Any:
     """直接调内核一次：三种模式共用同一份入参，只有 ``mode`` 不同。"""
 
-    import importlib
-
     kernel = importlib.import_module("app.services.retrieval.kernel")
     return await kernel.retrieve_kernel(
         AsyncRecordingSession(),
@@ -726,12 +726,172 @@ async def test_a_kernel_without_the_slot_is_byte_identical() -> None:
     """不传注入位 = 这一步不存在：结果与传一个「什么都没注入」的位逐字段相同。"""
 
     untouched = await _run_kernel(mode="hybrid", graph_injection=None)
-    empty = await _run_kernel(
-        mode="hybrid", graph_injection=_graph_slot([], rows=[], reason=None)
-    )
+    empty = await _run_kernel(mode="hybrid", graph_injection=_graph_slot([], rows=[], reason=None))
 
     assert untouched.chunks == empty.chunks
     assert untouched.degraded_reason == empty.degraded_reason
     assert untouched.rerank == empty.rerank
     assert untouched.graph is None and empty.graph is not None
 
+
+# ──────────────────────────────── 七、组合根：开关、观测栏与「先到的才是根因」
+
+
+class _UnavailableKeyword:
+    """关键词引擎没配：混合模式下这一路失败 → 通道故障原因先到。"""
+
+    available = False
+
+    async def keyword_search(self, *args: Any, **kwargs: Any) -> list[dict]:  # pragma: no cover
+        raise AssertionError("不可用的引擎不该被调用")
+
+
+def _options(*, mode: str = "hybrid") -> RetrievalOptions:
+    return RetrievalOptions(
+        mode=mode,
+        top_k=4,
+        fold_to_sections=False,
+        expand_table_rows=False,
+        rerank=False,
+        rewrite=False,
+        orchestration=False,
+    )
+
+
+def _install_entry_stubs(
+    monkeypatch: pytest.MonkeyPatch, *, keyword_available: bool = True
+) -> None:
+    """把组合根的 Provider 与两个观测旁路换成离线替身（与既有用例同一套接缝）。"""
+
+    service = importlib.import_module("app.services.rag_service")
+
+    keyword = _RecordingKeyword() if keyword_available else _UnavailableKeyword()
+    monkeypatch.setattr(service, "get_embedding_provider", _RecordingEmbedding)
+    monkeypatch.setattr(service, "get_vector_store", _RecordingVectorStore)
+    monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
+    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
+    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
+    monkeypatch.setattr(settings, "RERANK_ENABLED", False)
+
+    async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
+        return SimpleNamespace(
+            id=kb_id,
+            tenant_id=tenant_id,
+            settings={},
+            name="",
+            description="",
+            active_index_version=DEFAULT_INDEX_VERSION,
+        )
+
+    async def _no_record(**kwargs: Any) -> None:
+        return None
+
+    async def _no_emit(**kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(service, "ensure_visible", _visible)
+    monkeypatch.setattr(service, "record_retrieval_trace", _no_record)
+    monkeypatch.setattr(service, "emit_retrieval_trace_off_loop", _no_emit)
+
+
+def _graph_factory(
+    *, neighbours: Sequence[InjectedSection] | None = None, failure: BaseException | None = None
+) -> tuple[Any, _FakeGraph]:
+    """协程工厂（与 ``get_rerank_provider`` 那条注入缝同形）。"""
+
+    graph = _FakeGraph(
+        seeds=[_seed("sec-2.3")],
+        neighbours=list(neighbours if neighbours is not None else [_neighbour("sec-2.4")]),
+        failure=failure,
+    )
+
+    async def _factory() -> Any:
+        return graph
+
+    return _factory, graph
+
+
+async def _retrieve(
+    *,
+    graph_factory: Any = None,
+    mode: str = "hybrid",
+) -> dict:
+    service = importlib.import_module("app.services.rag_service")
+    return await service.retrieve(
+        AsyncRecordingSession(),
+        tenant_id=TENANT,
+        kb_ids=[KB_A],
+        query="超期多久到账",
+        options=_options(mode=mode),
+        graph_factory=graph_factory,
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_entry_reports_the_injected_counts_in_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """观测走既有那一栏：``metadata.retrieval.graph`` 给条数与来源，不新造一套口径。"""
+
+    _install_entry_stubs(monkeypatch)
+    factory, _ = _graph_factory()
+
+    payload = await _retrieve(graph_factory=factory)
+
+    assert payload["metadata"]["retrieval"]["graph"] == {
+        "injected": 1,
+        "seeds": 1,
+        "by_relation": {"sibling": 1},
+    }
+    injected = payload["retrieved_chunks"][-1]
+    assert injected["score"] == 0.0
+    assert injected["retrieval_source"] == INJECTED_SOURCE
+    assert payload["retrieved_chunks"][0].get("retrieval_source") is None
+
+
+@pytest.mark.asyncio
+async def test_without_a_graph_factory_nothing_new_appears(monkeypatch: pytest.MonkeyPatch) -> None:
+    """不开图谱：metadata 里没有 graph 那一栏，结果里也没有来源标记（关闭时逐字节不变）。"""
+
+    _install_entry_stubs(monkeypatch)
+
+    payload = await _retrieve(graph_factory=None)
+
+    assert "graph" not in payload["metadata"]["retrieval"]
+    assert all("retrieval_source" not in row for row in payload["retrieved_chunks"])
+    assert payload["metadata"]["retrieval"]["degraded"] is False
+
+
+@pytest.mark.asyncio
+async def test_a_graph_failure_degrades_the_call_but_keeps_the_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关系查询失败：检索照常返回、只多一条专码降级原因。"""
+
+    _install_entry_stubs(monkeypatch)
+    factory, _ = _graph_factory(failure=RuntimeError("relation table is gone"))
+
+    payload = await _retrieve(graph_factory=factory)
+
+    retrieval = payload["metadata"]["retrieval"]
+    assert payload["retrieved_chunks"], "主链路结果照旧返回"
+    assert retrieval["degraded"] is True
+    assert retrieval["degraded_reason"] == REASON_GRAPH_FAILED
+    assert "relation" not in retrieval["degraded_reason"], "不拼异常文本（一因一码）"
+    assert retrieval["graph"]["injected"] == 0
+
+
+@pytest.mark.asyncio
+async def test_an_earlier_channel_failure_is_not_overwritten(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """先到的才是根因：关键词一路先挂、图谱后挂，原因仍是关键词那一条。"""
+
+    _install_entry_stubs(monkeypatch, keyword_available=False)
+    factory, _ = _graph_factory(failure=RuntimeError("boom"))
+
+    payload = await _retrieve(graph_factory=factory)
+
+    retrieval = payload["metadata"]["retrieval"]
+    assert retrieval["degraded_reason"] == "keyword search failed"
+    assert retrieval["degraded_reason"] != REASON_GRAPH_FAILED
