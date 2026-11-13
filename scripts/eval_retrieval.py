@@ -757,6 +757,9 @@ async def _run_question(
                 expand_table_rows=True,
                 rerank=settings.RERANK_ENABLED,
                 rewrite=settings.QUERY_REWRITE_ENABLED,
+                # 编排（票 #146）默认关，评测也不开：它要多一次小模型调用，会把「同一条
+                # 链路的延迟与命中」这两件事搅在一起，而评测要的是可比的检索内核。
+                orchestration=False,
             ),
             # 重排实现由调用方决定（#116）：``--rerank-provider llm`` 时这里是一个显式
             # 装配旧实现的工厂；缺省 ``None`` 表示走生产工厂（专用端点那条链）。

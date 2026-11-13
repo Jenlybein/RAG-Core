@@ -52,6 +52,7 @@ from app.repositories import key_policy_repository, plan_repository, tenant_repo
 from app.services.profile_policy import ensure_policy_consistent
 from app.services.retrieval_options import (
     CUSTOM_OPTION_MODE,
+    CUSTOM_OPTION_ORCHESTRATION,
     CUSTOM_OPTION_RERANK,
     CUSTOM_OPTION_REWRITE,
     CUSTOM_OPTION_TOP_K,
@@ -73,16 +74,17 @@ ROW_FIELDS: Final[tuple[str, ...]] = ("name",)
 #: 本函数接受的**全部**字段：未知字段直接报错，避免拼错一个列名却悄悄没改。
 EDITABLE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ROW_FIELDS + ("custom_options",)
 
-#: ``custom_options`` 的四个合法键（与 :mod:`app.services.retrieval_options` 的
+#: ``custom_options`` 的五个合法键（与 :mod:`app.services.retrieval_options` 的
 #: ``CUSTOM_OPTION_*`` 常量同源）。未知键直接拒绝：拼错一个键等于「写了但没生效」。
 CUSTOM_OPTION_KEYS: Final[tuple[str, ...]] = (
     CUSTOM_OPTION_MODE,
     CUSTOM_OPTION_TOP_K,
     CUSTOM_OPTION_RERANK,
     CUSTOM_OPTION_REWRITE,
+    CUSTOM_OPTION_ORCHESTRATION,
 )
 
-#: 签发时新建配置接受的字段：改配置能改的十个 + ``custom_options``（只在新建时确定）。
+#: 签发时新建配置接受的字段：改配置能改的十一个 + ``custom_options``（只在新建时确定）。
 CREATE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ("custom_options",)
 
 #: 新建配置时**必须**由调用方给出的三个值：档位、QPS、日配额。忘了填不该被一个看起来
@@ -102,6 +104,8 @@ CREATE_DEFAULTS: Final[dict[str, Any]] = {
     "hybrid_allowed": False,
     "rerank_allowed": False,
     "query_rewrite_allowed": False,
+    # 编排是三层里的第二层，默认关（票 #146）：新发一把 Key 不该自带一次小模型调用。
+    "orchestration_allowed": False,
     "include_parent": True,
     "expand_table_rows": True,
     "custom_options": {},
@@ -305,6 +309,7 @@ def _build_policy_row(
         hybrid_allowed=checked["hybrid_allowed"],
         rerank_allowed=checked["rerank_allowed"],
         query_rewrite_allowed=checked["query_rewrite_allowed"],
+        orchestration_allowed=checked["orchestration_allowed"],
         retrieve_qps=checked["retrieve_qps"],
         retrieve_daily=checked["retrieve_daily"],
         profile=checked["profile"],
@@ -370,10 +375,10 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
 def _validated_custom_options(raw: Any) -> dict[str, Any]:
     """逐键校验 ``custom_options``，返回**只含合法键**的字典。
 
-    四个键各自校验：``mode`` 必须落在 :data:`SUPPORTED_RETRIEVAL_MODES`，``top_k`` 是
+    五个键各自校验：``mode`` 必须落在 :data:`SUPPORTED_RETRIEVAL_MODES`，``top_k`` 是
     ≥ ``MIN_TOP_K`` 的整数（``bool`` 是 ``int`` 的子类，``True`` 不能当成 1 放行），
-    ``rerank`` / ``rewrite`` 是布尔。未知键直接拒绝——拼错一个键等于「写了但没生效」，
-    而面板上看到的是「已保存」。
+    ``rerank`` / ``rewrite`` / ``orchestration`` 是布尔。未知键直接拒绝——拼错一个键等于
+    「写了但没生效」，而面板上看到的是「已保存」。
 
     **不因为当前 ``profile`` 不是 ``custom`` 就拒绝**：这批手动参数是「延后生效的数据」，
     面板可以先写好参数、下一次请求再切档位；若这里按当前档位拒绝，前端就被迫把「切档位」
@@ -408,7 +413,7 @@ def _validated_custom_options(raw: Any) -> dict[str, Any]:
                 f"custom_options.top_k 必须是 ≥ {MIN_TOP_K} 的整数，收到：{top_k!r}"
             )
         values[CUSTOM_OPTION_TOP_K] = top_k
-    for flag in (CUSTOM_OPTION_RERANK, CUSTOM_OPTION_REWRITE):
+    for flag in (CUSTOM_OPTION_RERANK, CUSTOM_OPTION_REWRITE, CUSTOM_OPTION_ORCHESTRATION):
         if flag in raw:
             flag_value = raw[flag]
             if not isinstance(flag_value, bool):
@@ -418,7 +423,7 @@ def _validated_custom_options(raw: Any) -> dict[str, Any]:
 
 
 def _validated_create(values: Mapping[str, Any]) -> dict[str, Any]:
-    """校验并规整「新建配置」的入参，返回可直接落到行上的完整 11 个值。
+    """校验并规整「新建配置」的入参，返回可直接落到行上的完整 12 个值。
 
     与 :func:`_validated` 共用同一套逐字段校验（档位名、限额 ≥ 1、白名单非空串、
     ``custom_options`` 的逐键校验），只是新建时字段可以省略、由 :data:`CREATE_DEFAULTS`

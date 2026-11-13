@@ -26,7 +26,7 @@ Elasticsearch 里的事），它们属于 ``ready`` 的前置校验，由 #142 �
 能落的只有 ``document_count`` / ``chunk_count`` 两项快照。
 
 Revision ID: e41b7c9d2a63
-Revises: a91f3c7e2058
+Revises: c4e9b7d1a2f8（#146 的编排开关；本票与其并行，合并时接在它后面）
 """
 
 from typing import Sequence, Union
@@ -37,7 +37,7 @@ from sqlalchemy.dialects import postgresql
 
 # revision identifiers, used by Alembic.
 revision: str = "e41b7c9d2a63"
-down_revision: Union[str, None] = "a91f3c7e2058"
+down_revision: Union[str, None] = "c4e9b7d1a2f8"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

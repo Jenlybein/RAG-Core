@@ -678,6 +678,9 @@ def _options() -> RetrievalOptions:
         expand_table_rows=False,
         rerank=False,
         rewrite=False,
+        # #146 的第三层开关也是必填（默认关闭）：本票（#141）合并进来时这条构造点漏了它，
+        # 集成分支上这条用例因此一直是红的。
+        orchestration=False,
     )
 
 

@@ -25,6 +25,9 @@ class ProfilePresetData(BaseModel):
     top_k: int = Field(description="返回条数")
     rerank: bool = Field(description="该档位是否想要重排（生效值还要与部署开关取合取）")
     rewrite: bool = Field(description="该档位是否想要查询改写（同上）")
+    orchestration: bool = Field(
+        description="该档位是否想要切片编排（生效值还要与本套集成的启用开关取合取）"
+    )
 
 
 class ProfilePresetListData(BaseModel):
@@ -34,7 +37,7 @@ class ProfilePresetListData(BaseModel):
 
 
 class ProfilePresetPatchRequest(BaseModel):
-    """部分更新。四个字段都可缺省；``None`` 表示「这一项不改」。"""
+    """部分更新。五个字段都可缺省；``None`` 表示「这一项不改」。"""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -42,6 +45,7 @@ class ProfilePresetPatchRequest(BaseModel):
     top_k: int | None = None
     rerank: bool | None = None
     rewrite: bool | None = None
+    orchestration: bool | None = None
 
 
 class ProfilePresetPatchData(BaseModel):

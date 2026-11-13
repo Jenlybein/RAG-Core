@@ -64,6 +64,7 @@ def _policy(
     rerank_allowed: bool = True,
     query_rewrite_allowed: bool = True,
     research_allowed: bool = False,
+    orchestration_allowed: bool = False,
     # 限额默认取「三档都容得下」的最小值：本文件测的是档位与能力，不是数值门禁；
     # 数值那几条用例自己覆盖这三个字段。
     retrieve_qps: int = 1,
@@ -82,6 +83,7 @@ def _policy(
         rerank_allowed=rerank_allowed,
         query_rewrite_allowed=query_rewrite_allowed,
         research_allowed=research_allowed,
+        orchestration_allowed=orchestration_allowed,
         retrieve_qps=retrieve_qps,
         retrieve_daily=retrieve_daily,
         allowed_kb_ids=allowed_kb_ids,
@@ -98,15 +100,24 @@ def _plan(code: str, **overrides: Any) -> PlanSpec:
     ("profile", "expected"),
     [
         # 三档的全部内容写在票面上，这里逐字抄一遍：任何一个预设被改动，这条就变红。
-        (PROFILE_SPEED, ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_BALANCED, ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_QUALITY, ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True)),
+        (
+            PROFILE_SPEED,
+            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False, orchestration=False),
+        ),
+        (
+            PROFILE_BALANCED,
+            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False, orchestration=False),
+        ),
+        (
+            PROFILE_QUALITY,
+            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True, orchestration=False),
+        ),
     ],
 )
 def test_each_named_profile_expands_to_exactly_its_chain(
     profile: str, expected: ProfileChain
 ) -> None:
-    """命名档位 = 一整条链路：模式、条数、是否重排、是否改写，四项一个不少。
+    """命名档位 = 一整条链路：模式、条数、是否重排、是否改写、是否编排，五项一个不少。
 
     同时在配置里塞一批手动参数与两个关掉的结果形状——命名档位下它们**一个都不生效**
     （完整替换，不是「预设打底、配置覆盖」）。
@@ -152,7 +163,9 @@ def test_custom_reads_its_manual_parameters() -> None:
         )
     )
 
-    assert chain == ProfileChain(mode="bm25", top_k=3, rerank=True, rewrite=True)
+    assert chain == ProfileChain(
+        mode="bm25", top_k=3, rerank=True, rewrite=True, orchestration=False
+    )
 
 
 def test_custom_falls_back_per_key_to_the_deployment_defaults(
@@ -170,7 +183,9 @@ def test_custom_falls_back_per_key_to_the_deployment_defaults(
 
     chain = profile_chain_of(_policy(profile=PROFILE_CUSTOM, custom_options=(("mode", "vector"),)))
 
-    assert chain == ProfileChain(mode="vector", top_k=7, rerank=True, rewrite=True)
+    assert chain == ProfileChain(
+        mode="vector", top_k=7, rerank=True, rewrite=True, orchestration=False
+    )
 
 
 # ───────────────────────────────────────────── 五道门：顺序、拒绝与裁剪
@@ -405,7 +420,7 @@ def test_with_the_switches_off_a_quality_profile_runs_exactly_the_balanced_chain
 
 
 def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``tenant_policy`` 的字段表：套餐名、要求档位、模式、条数、重排、改写、库数、裁剪。"""
+    """``tenant_policy`` 的字段表：套餐名、要求档位、模式、条数、重排、改写、编排、库数、裁剪。"""
 
     # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
@@ -461,6 +476,7 @@ def test_an_unresolved_options_object_has_no_echo() -> None:
         expand_table_rows=True,
         rerank=False,
         rewrite=False,
+        orchestration=False,
     )
 
     assert options.tenant_policy is None

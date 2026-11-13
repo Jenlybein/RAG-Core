@@ -387,6 +387,7 @@ def _options(*, mode: str, rerank: bool = False, top_k: int = 2) -> RetrievalOpt
         expand_table_rows=False,
         rerank=rerank,
         rewrite=False,
+        orchestration=False,
         tenant_policy=None,
     )
 

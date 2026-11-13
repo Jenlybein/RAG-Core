@@ -5,7 +5,7 @@
 只能改代码发版，改错了也没有预览与审计——「界面上改得动、后端读不到」比「界面上没有
 这个字段」更糟。
 
-**11 个业务列的清单只写一处**（:data:`PLAN_BUSINESS_COLUMNS`），它从 :class:`PlanSpec`
+**12 个业务列的清单只写一处**（:data:`PLAN_BUSINESS_COLUMNS`），它从 :class:`PlanSpec`
 的字段推导出来：加一列 = 加一个 dataclass 字段（外加映射/缓存/控制面都从这里取，不必
 各改一遍）。逐列对账由 :func:`preset_mismatches` 负责：播种之后把行映射回上下文，与种子
 逐字段比对，**少一列就是可见的失败**。
@@ -59,12 +59,17 @@ class Plan(Base):
     # 存成白名单而不是「最低档位」：将来出现新的档位组合时，白名单能表达「只给这两档」，
     # 序关系表达不了。
     allowed_profiles: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    # 四个能力开关与六个上限：拆成独立列而不是一个大 JSONB，是因为面板要逐字段渲染、
+    # 五个能力开关与六个上限：拆成独立列而不是一个大 JSONB，是因为面板要逐字段渲染、
     # 校验、写审计；塞进 JSONB 之后，「这次改了哪一项」就又变成要解析的内容了。
     hybrid_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     rerank_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     query_rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     research_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 切片编排（第 11 步 B）：套餐层的「允许」。它是三层里的第一层，另外两层在
+    # ``key_policies.orchestration_allowed``（这套集成要不要）与
+    # ``profile_presets.orchestration``（这一档平时的默认）。三列同名不同义，刻意分成三张表：
+    # 它们回答的是三个互不重叠的问题（ADR-0018）。
+    orchestration_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
     max_kb: Mapped[int] = mapped_column(Integer)
@@ -91,6 +96,7 @@ class PlanSpec:
     rerank_allowed: bool
     query_rewrite_allowed: bool
     research_allowed: bool
+    orchestration_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
     max_kb: int
@@ -104,7 +110,7 @@ PLAN_SPEC_COLUMNS: Final[tuple[str, ...]] = tuple(
     field.name for field in dataclasses.fields(PlanSpec)
 )
 
-#: 面板上会出现输入框的 11 列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
+#: 面板上会出现输入框的 12 列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
 #: 顺序只影响对账报告的可读性，不参与任何判定。
 PLAN_BUSINESS_COLUMNS: Final[tuple[str, ...]] = tuple(
     column for column in PLAN_SPEC_COLUMNS if column not in PLAN_IDENTITY_COLUMNS
@@ -134,6 +140,7 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         rerank_allowed=False,
         query_rewrite_allowed=False,
         research_allowed=False,
+        orchestration_allowed=False,
         retrieve_qps=3,
         retrieve_daily=500,
         max_kb=1,
@@ -149,6 +156,7 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         rerank_allowed=False,
         query_rewrite_allowed=False,
         research_allowed=False,
+        orchestration_allowed=False,
         retrieve_qps=10,
         retrieve_daily=5000,
         max_kb=5,
@@ -164,6 +172,7 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         rerank_allowed=True,
         query_rewrite_allowed=True,
         research_allowed=True,
+        orchestration_allowed=True,
         retrieve_qps=50,
         retrieve_daily=100000,
         max_kb=50,
