@@ -242,9 +242,13 @@ async def gated_research(
 
     # 第 7 步：响应成形。材料按交付单元的契约校验（形状与 ``/rag/retrieve`` 同一个值对象），
     # 校验不过就不是一次成功调用——与检索侧「响应不成立就不算成功」同一条。
-    return ResearchData.model_validate(
+    data = ResearchData.model_validate(
         payload_of(query=query, kb_ids=kb_ids, outcome=outcome, plan_name=PLAN_NAME)
     )
+    # 第 8 步：成功之后才 +1，两级各一次（票 #150「一次 Research 只记一次」）。这是整次调用
+    # **唯一**的记账点：上面第 7 步那条内核被调了 1~5 次，但它碰不到这本账。
+    await quota.record_success()
+    return data
 
 
 __all__ = ["build_kernel_search", "ensure_research_allowed", "gated_research"]

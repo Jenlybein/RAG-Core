@@ -382,6 +382,72 @@ async def test_the_switch_off_makes_the_research_gate_touch_no_redis(
     assert data.query == QUERY
 
 
+# ─────────────────────────────────────────────────────────────── 记账：成功才记、只记一次
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_call_records_nothing_and_burns_no_model_call(
+    research: _Harness,
+) -> None:
+    """被拒绝的请求不扣额度：否则一个跑飞的集成能在重试里把当天额度烧光。"""
+
+    _prefill_qps(research.store, ident=KEY_ID, limit=1)
+    before = dict(research.store.values)
+
+    with pytest.raises(AppError):
+        await research.run(policy=_policy(qps=1), plan=_plan(PLAN_PRO))
+
+    assert research.store.values == before, "拒绝不记账"
+    assert research.llm.calls == [], "拒绝也不该烧一次模型调用"
+
+
+@pytest.mark.asyncio
+async def test_one_research_is_counted_once_at_both_levels(research: _Harness) -> None:
+    """一次 Research 两条子查询，账上只有 **1**：不按子查询重复扣。"""
+
+    data = await research.run(policy=_policy(qps=10, daily=100), plan=_plan(PLAN_PRO))
+
+    assert data.rounds.searches == 2, "两条子查询都真的跑了"
+    store = research.store
+    assert _sum_of(store, f"{RESEARCH_QPS_PREFIX}key:{KEY_ID}:") == 1
+    assert _sum_of(store, f"{RESEARCH_QPS_PREFIX}tenant:{TENANT_ID}:") == 1
+    assert _sum_of(store, f"{RESEARCH_DAILY_PREFIX}key:{KEY_ID}:") == 1
+    assert _sum_of(store, f"{RESEARCH_DAILY_PREFIX}tenant:{TENANT_ID}:") == 1
+
+
+@pytest.mark.asyncio
+async def test_research_counters_do_not_touch_the_retrieval_buckets(
+    research: _Harness,
+) -> None:
+    """独立的另一本账：一次 Research 不许在任何检索桶里留下一个数。"""
+
+    await research.run(policy=_policy(qps=10, daily=100), plan=_plan(PLAN_PRO))
+
+    store = research.store
+    assert _sum_of(store, f"quota:qps:key:{KEY_ID}:") == 0
+    assert _sum_of(store, f"quota:qps:tenant:{TENANT_ID}:") == 0
+    assert _sum_of(store, f"quota:daily:key:{KEY_ID}:") == 0
+    assert _sum_of(store, f"quota:daily:tenant:{TENANT_ID}:") == 0
+
+
+@pytest.mark.asyncio
+async def test_the_ledger_compares_the_current_quota_not_a_snapshot(
+    research: _Harness,
+) -> None:
+    """改小日配额之后下一次调用立刻按新值判（不需要重启，也不需要重签 Key）。"""
+
+    # 第一次跑：QPS 给足，于是「第二次撞的是日配额」这件事不被秒级限流糊住。
+    await research.run(policy=_policy(qps=100, daily=100), plan=_plan(PLAN_PRO, research_qps=100))
+
+    with pytest.raises(AppError) as excinfo:
+        await research.run(
+            policy=_policy(qps=100, daily=1),
+            plan=_plan(PLAN_PRO, research_qps=100, research_daily=1),
+        )
+
+    assert excinfo.value.code is ErrorCode.QUOTA_EXCEEDED
+
+
 # ─────────────────────────────────────────────────────────────── 配额账本与用量口径
 
 
