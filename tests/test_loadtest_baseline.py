@@ -344,3 +344,73 @@ def test_cli_prints_a_markdown_report_that_can_be_committed(tmp_path: Path) -> N
     assert "1177.9" in report
     assert "uv run python scripts/loadtest_baseline.py" in report
     assert math.isfinite(float(report.count("\n")))
+
+
+def test_the_default_output_path_is_refused_when_it_already_exists(tmp_path: Path) -> None:
+    """覆盖护栏：缺省路径上的已提交读数不许被一次忘带参数的复跑悄悄换掉。
+
+    这条护栏是赔出来的（#134 实测覆盖过一次 S0 基线）。只挡缺省路径——显式传路径的人
+    知道自己往哪写。
+    """
+
+    from scripts import loadtest_baseline
+
+    default_json = loadtest_baseline.DEFAULT_JSON_OUT
+    default_report = loadtest_baseline.DEFAULT_REPORT_OUT
+    assert default_json.exists(), "S0 基线应当随仓库提交（这条护栏才有的可挡）"
+
+    with pytest.raises(SystemExit) as raised:
+        loadtest_baseline.main(
+            [
+                "--levels",
+                "2,4",
+                "--requests",
+                "2",
+                "--warmup",
+                "0",
+                "--json-out",
+                str(default_json),
+                "--report-out",
+                str(default_report),
+                "--quiet",
+            ]
+        )
+
+    assert "已经存在" in str(raised.value)
+    assert default_json.read_text(encoding="utf-8").startswith("{")
+
+
+def test_force_lets_it_through(tmp_path: Path) -> None:
+    """``--force`` 是那条护栏的出口：仍然想覆盖缺省读数时显式说明。"""
+
+    from scripts import loadtest_baseline
+
+    json_out = tmp_path / "existing.json"
+    json_out.write_text("{}", encoding="utf-8")
+
+    code = loadtest_baseline.main(
+        [
+            "--levels",
+            "2",
+            "--requests",
+            "2",
+            "--warmup",
+            "0",
+            "--db-call-ms",
+            "0.5",
+            "--embed-ms",
+            "1",
+            "--vector-ms",
+            "1",
+            "--keyword-ms",
+            "1",
+            "--json-out",
+            str(json_out),
+            "--report-out",
+            str(tmp_path / "report.md"),
+            "--force",
+            "--quiet",
+        ]
+    )
+
+    assert code == 0

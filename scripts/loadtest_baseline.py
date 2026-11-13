@@ -776,6 +776,11 @@ def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
         action="store_true",
         help="不把报告打到 stdout（落盘仍然发生）",
     )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="允许覆盖缺省路径上**已经存在**的读数文件（缺省拒绝，见 _refuse_to_overwrite_baseline）",
+    )
     return parser.parse_args(argv)
 
 
@@ -798,6 +803,29 @@ def load_questions(path: Path) -> list[str]:
     return questions
 
 
+def _refuse_to_overwrite_baseline(*, json_out: Path, report_out: Path, force: bool) -> None:
+    """缺省路径上的读数**已经存在**时拒绝覆盖，除非显式 ``--force``。
+
+    这条护栏是赔出来的（第 11 步 #134 实测赔过一次）：两个缺省输出指向的正是**已提交**
+    的基线文件，于是「忘了带 ``--json-out`` / ``--report-out``」的一次复跑就会把别人的
+    读数悄悄换成这一次的数字。``git status`` 会显示它，但那时你已经以为读数没变。
+
+    只挡**缺省路径**：显式传了路径的人显然知道自己在往哪写。
+    """
+
+    for path, default, flag in (
+        (json_out, DEFAULT_JSON_OUT, "--json-out"),
+        (report_out, DEFAULT_REPORT_OUT, "--report-out"),
+    ):
+        if force or path.resolve() != default.resolve() or not path.exists():
+            continue
+        raise SystemExit(
+            f"{path} 已经存在，且它是缺省读数路径。\n"
+            f"要么显式给 {flag} 指到别处（推荐，例如 docs/step11-loadtest-after-<票>.md），\n"
+            f"要么确认要覆盖它并加 --force。"
+        )
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     levels = _levels_of(args.levels)
@@ -806,6 +834,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     sweep_values = [
         float(item) for item in args.sweep_db.replace(" ", "").split(",") if item
     ]
+
+    # 覆盖护栏放在开跑之前：跑到一半才拒绝，等于白跑一轮还让人以为成功了。
+    _refuse_to_overwrite_baseline(
+        json_out=Path(args.json_out),
+        report_out=Path(args.report_out),
+        force=bool(getattr(args, "force", False)),
+    )
 
     pin_offline_env()
 
