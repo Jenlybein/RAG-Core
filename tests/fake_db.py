@@ -216,11 +216,12 @@ def _orm_model_of(statement: Any) -> type | None:
 
 
 def _matches_where(row: Any, criterion: Any) -> bool:
-    """``WHERE`` 只认「列 = 字面量」与「列 IN (...)]」（可 ``AND`` 组合）：别的形状一律当不匹配。
+    """``WHERE`` 只认「列 = 字面量」「列 IN (...)」「列 < / > 字面量」（可 ``AND`` 组合）。
 
-    与 ``_FakeQuery._matches`` 同一条口径，只是补上了仓储层真的用到的两种写法：
+    与 ``_FakeQuery._matches`` 同一条口径，只是补上了仓储层真的用到的几种写法：
     ``audit_logs.action = ?``、``retrieval_traces.trace_id = ? AND tenant_id = ?``、
-    ``retrieval_feedback.log_id IN (...)``。
+    ``retrieval_feedback.log_id IN (...)``、以及「比某个时刻更早」这类**时间比较**
+    （``index_build_versions.created_at < cutoff``，见 #142 的「有行、没任务」检测）。
     """
 
     clauses = getattr(criterion, "clauses", None) or (criterion,)
@@ -232,8 +233,21 @@ def _matches_where(row: Any, criterion: Any) -> bool:
         if key is None or expected is _MISSING:
             return False
         actual = getattr(row, key, None)
-        if getattr(node, "operator", None) is operators.in_op:
+        operator = getattr(node, "operator", None)
+        if operator is operators.in_op:
             if actual not in expected:
+                return False
+        elif operator in (operators.lt, operators.gt, operators.le, operators.ge):
+            # 时间比较：``None`` 一律不匹配（真实 SQL 里 NULL 参与比较也不成立）。
+            if actual is None:
+                return False
+            matched = {
+                operators.lt: actual < expected,
+                operators.gt: actual > expected,
+                operators.le: actual <= expected,
+                operators.ge: actual >= expected,
+            }[operator]
+            if not matched:
                 return False
         elif actual != expected:
             return False
@@ -435,7 +449,9 @@ class RecordingSession(EmptySession):
         criterion = getattr(statement, "whereclause", None)
         if criterion is None:
             return len(rows)
-        return sum(1 for row in rows if getattr(row, criterion.left.key) == criterion.right.value)
+        # 计数语句的 ``WHERE`` 与 ``select(Model)`` 同形状（可 ``AND`` 组合的等值 / 范围
+        # 条件），于是复用同一份匹配逻辑：写两份的下场是计数与读行对同一条件给出不同答案。
+        return sum(1 for row in rows if _matches_where(row, criterion))
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)

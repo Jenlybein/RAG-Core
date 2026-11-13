@@ -27,10 +27,10 @@ import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.models.chunk import Chunk
+from app.models.chunk import Chunk, DEFAULT_INDEX_VERSION
 from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores.pgvector import PgVectorStore
-from app.repositories import document_repository
+from app.repositories import document_repository, knowledge_base_repository
 from app.services import indexing_service
 from app.services.indexing_service import IndexingService
 from app.utils.text_splitter import SplitPiece
@@ -162,7 +162,9 @@ class _RecordingStore:
         self.calls: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, _document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, _document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append("purge")
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
@@ -216,6 +218,15 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
         indexing_service,
         "prepare_document_content",
         lambda _doc, *, reparse=False: ParsedDocument(content="raw", source_type="markdown"),
+    )
+
+    # 写入目标版本来自库上的生效版本（#142）；本文件的会话替身只做「不落库」那件事，
+    # 于是把这一处协作者也换成固定值。版本解析本身见 ``tests/test_index_build_writes.py``。
+    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
+        return DEFAULT_INDEX_VERSION
+
+    monkeypatch.setattr(
+        knowledge_base_repository, "get_effective_index_version", _effective_version
     )
 
     service = IndexingService(splitter=_StubSplitter(pieces), embeddings=embeddings, stores=[store])

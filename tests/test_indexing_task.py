@@ -31,8 +31,9 @@ from structlog.testing import capture_logs
 from app.celery_app import celery_app
 from app.core.exceptions import AppError, ErrorCode
 from app.db.base import now
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.parsers.base import ParsedDocument
-from app.repositories import document_repository
+from app.repositories import document_repository, knowledge_base_repository
 from app.services import indexing_service
 from app.services.indexing_service import INDEXING_FAILED_MESSAGE, IndexingService
 from app.tasks import indexing as tasks
@@ -93,7 +94,9 @@ class _RecordingStore:
         self.tenant_ids: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append(document_id)
         self.tenant_ids.append(tenant_id)
@@ -190,6 +193,16 @@ def _patch_service_environment(
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _try_claim)
     monkeypatch.setattr(document_repository, "update_status", _update_status)
     monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
+
+    # 写入目标版本取自库上的生效版本（#142）：会话替身刻意不回答 ``get``（「取行由仓储
+    # 替身接管」），所以这一个协作者也换成替身。它自己的行为由
+    # ``tests/test_index_build_writes.py`` 用会回答的会话覆盖。
+    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
+        return DEFAULT_INDEX_VERSION
+
+    monkeypatch.setattr(
+        knowledge_base_repository, "get_effective_index_version", _effective_version
+    )
 
     service = IndexingService(splitter=_StubSplitter(pieces), embeddings=embeddings, stores=stores)
     return SimpleNamespace(

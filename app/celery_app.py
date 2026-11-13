@@ -47,7 +47,7 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
     # 没有 include，Worker 进程永远不会 import 任务模块：enqueue_document 投出去的
     # 任务会被当成 "Received unregistered task" 直接消费掉，索引流水线静默不跑。
-    include=["app.tasks.indexing", "app.tasks.side_evidence"],
+    include=["app.tasks.indexing", "app.tasks.side_evidence", "app.tasks.index_build"],
 )
 celery_app.conf.update(
     task_acks_late=True,

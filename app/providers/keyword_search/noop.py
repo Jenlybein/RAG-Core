@@ -21,5 +21,19 @@ class NoopKeywordSearchProvider(KeywordSearchProvider):
     ) -> list[dict]:
         return []
 
-    async def delete_by_document_id(self, document_id: str, *, tenant_id: str) -> None:
+    async def count_documents(
+        self, *, tenant_id: str, kb_id: str, index_version: str
+    ) -> int:
+        """能力不存在 → 0。构建编排据此**不把这一维**算进四项计数（见构建服务）。"""
+
+        return 0
+
+    async def activate_version(self, version: str) -> None:
+        """没有别名可切：空实现不持有任何索引。"""
+
+        return None
+
+    async def delete_by_document_id(
+        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         return None

@@ -24,9 +24,10 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_key
 from app.core.auth import DevKeyContext
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.providers.parsers.base import ParsedDocument
-from app.repositories import document_repository
+from app.repositories import document_repository, knowledge_base_repository
 from app.services import indexing_service
 from app.services.chunk_store import KeywordSearchChunkStore, build_chunk_stores
 from app.services.indexing_service import IndexingService
@@ -76,7 +77,9 @@ class _RecordingStore:
         self.deleted: list[tuple[str, str]] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append((document_id, tenant_id))
 
@@ -104,7 +107,9 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
             raise RuntimeError("elasticsearch unavailable")
         self.written.append(chunks)
 
-    async def delete_by_document_id(self, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append("purge:keyword")
         self.deleted.append((document_id, tenant_id))
 
@@ -147,6 +152,15 @@ def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]
         indexing_service,
         "prepare_document_content",
         lambda _doc, *, reparse=False: ParsedDocument(content="raw", source_type="markdown"),
+    )
+
+    # 写入目标版本来自库上的生效版本（#142）：本文件的会话替身不落库，于是把这一处
+    # 协作者换成固定值（与迁移回填同值）。版本解析本身见 ``tests/test_index_build_writes.py``。
+    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
+        return DEFAULT_INDEX_VERSION
+
+    monkeypatch.setattr(
+        knowledge_base_repository, "get_effective_index_version", _effective_version
     )
 
 
