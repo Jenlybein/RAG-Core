@@ -18,11 +18,11 @@
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import Integer, Select, delete, func, or_, select
+from sqlalchemy import Integer, Select, delete, func, or_, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import Chunk, scope_filter
+from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, Chunk, scope_filter
 
 
 def _meta_statement(
@@ -47,9 +47,7 @@ async def fetch_meta_by_chunk_ids(
     if not chunk_ids or not kb_ids:
         return {}
     rows = (
-        await db.execute(
-            _meta_statement(tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=chunk_ids)
-        )
+        await db.execute(_meta_statement(tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=chunk_ids))
     ).all()
     return {(str(row.kb_id), str(row.id)): dict(row.meta or {}) for row in rows}
 
@@ -96,7 +94,13 @@ def _group_unit_rows(
     grouped: dict[tuple[str, str], list[tuple[int, str, str, str, int]]] = {}
     for document_id, path, index, content, chunk_id, chunk_type, table_part in rows:
         grouped.setdefault((str(document_id), str(path)), []).append(
-            (int(index or 0), str(content), str(chunk_id), str(chunk_type or ""), int(table_part or 0))
+            (
+                int(index or 0),
+                str(content),
+                str(chunk_id),
+                str(chunk_type or ""),
+                int(table_part or 0),
+            )
         )
     return grouped
 
@@ -120,6 +124,160 @@ async def fetch_unit_rows(
         index_version=index_version,
     )
     return _group_unit_rows(list((await db.execute(stmt)).all()))
+
+
+def build_parent_rows_statement(
+    *,
+    tenant_id: str,
+    document_ids: Sequence[str],
+    heading_paths: Sequence[str],
+    index_version: str | None = None,
+) -> Select[tuple[str, str, int, str]]:
+    """**父节自己的**正文：按 ``(文档, 精确标题路径)`` 取，供「折叠关闭时补父节」用（#144）。
+
+    为什么要一条新查询、而不是复用 :func:`_unit_rows_statement`：那条是**前缀**语义
+    （``path = p OR path LIKE 'p > %'``），拿它取父节会把命中片自己与它的兄弟节一起
+    拼回来——材料量翻倍，而 ADR-0027 决策 7 说的正是「不要再翻一倍」。所以这里只认
+    **等值**：父节自己那几片，不多不少。
+
+    排序按 ``chunk_index``：父节正文拼回去必须与文档里的顺序一致（ADR-0010 的确定性）。
+    """
+
+    heading = Chunk.meta["heading_path"].astext
+    chunk_index = Chunk.meta["chunk_index"].astext.cast(Integer)
+    stmt = (
+        select(Chunk.document_id, heading, chunk_index, Chunk.content)
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.document_id.in_(sorted({str(item) for item in document_ids})),
+            heading.in_(sorted({str(item) for item in heading_paths})),
+        )
+        .order_by(Chunk.document_id, chunk_index, Chunk.id)
+    )
+    if index_version is not None:
+        stmt = stmt.where(Chunk.index_version == index_version)
+    return stmt
+
+
+async def fetch_parent_rows(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    document_ids: Sequence[str],
+    heading_paths: Sequence[str],
+    index_version: str | None = None,
+) -> dict[tuple[str, str], list[str]]:
+    """``{(文档 id, 父节路径): [父节自己那几片的正文…]}``，按文档顺序。
+
+    只在这一版本身份里取（``index_version`` 由调用方按「这份文档所属库」给出）：
+    跨版本拼父节会让重建中途的检索拿到两套切法拼起来的上下文。
+    """
+
+    if not document_ids or not heading_paths:
+        return {}
+    rows = (
+        await db.execute(
+            build_parent_rows_statement(
+                tenant_id=tenant_id,
+                document_ids=list(document_ids),
+                heading_paths=list(heading_paths),
+                index_version=index_version,
+            )
+        )
+    ).all()
+    parents: dict[tuple[str, str], list[str]] = {}
+    for document_id, path, _index, content in rows:
+        parents.setdefault((str(document_id), str(path)), []).append(str(content or ""))
+    return parents
+
+
+def build_representative_statement(
+    *,
+    tenant_id: str,
+    index_versions: Mapping[str, str],
+    targets: Sequence[tuple[str, str, str]],
+) -> Select[tuple[str, str, str, str, str, str, str]]:
+    """目标节的**代表片**：注入进候选池的是「这一节的一小片」，不是整节全文（ADR-0027 决策 4）。
+
+    三件事在 ``WHERE`` 里一次说完：
+
+    1. **范围**：租户 + ``kb_id → 版本`` 的配对条件（与召回、折叠、计数同一条
+       ``scope_filter``）。目标节落在请求范围外时查不到它，越权由这一步堵死，而不是
+       指望建边时禁掉跨库边（那会把最常见的真实关系一起砍掉）；
+    2. **身份**：``(库, 文档, 节)`` 三元组，**不是单独的节 id**——节 id 虽然在算法上
+       已含文档 id，但拿它当唯一条件等于让「一道 SQL 判越权」依赖另一处算法的正确性；
+    3. **路标切片不参战**（ADR-0027 决策 3）：``reference_pointer`` 除了一句「参见别处」
+       没有信息量，注入它等于把一句路标当成一条材料。
+
+    排序只用于**确定性**：同一节取 ``chunk_index`` 最小的那一片（先文后表），两次相同
+    输入的挑选结果因此一致（ADR-0010 的确定性要求）。
+    """
+
+    section = Chunk.meta["section_id"].astext
+    chunk_index = Chunk.meta["chunk_index"].astext.cast(Integer)
+    triples = sorted(
+        {
+            (str(kb_id), str(document_id), str(section_id))
+            for kb_id, document_id, section_id in targets
+        }
+    )
+    return (
+        select(
+            Chunk.kb_id,
+            Chunk.document_id,
+            section,
+            Chunk.id,
+            Chunk.content,
+            Chunk.meta["title"].astext,
+            Chunk.meta["heading_path"].astext,
+        )
+        .where(
+            Chunk.tenant_id == tenant_id,
+            scope_filter(index_versions),
+            tuple_(Chunk.kb_id, Chunk.document_id, section).in_(triples),
+            or_(
+                Chunk.meta["chunk_type"].astext.is_(None),
+                Chunk.meta["chunk_type"].astext != CHUNK_TYPE_REFERENCE_POINTER,
+            ),
+        )
+        .order_by(Chunk.kb_id, Chunk.document_id, section, chunk_index, Chunk.id)
+    )
+
+
+async def fetch_section_representatives(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    index_versions: Mapping[str, str],
+    targets: Sequence[tuple[str, str, str]],
+) -> dict[tuple[str, str, str], tuple[str, str, str, str]]:
+    """``{(库, 文档, 节): (代表片 id, 正文, 标题, 章节路径)}``，每节取排序后的第一片。
+
+    目标节在本版本里没有可注入的切片（纯标题节、或只有路标片）时**不在字典里**——
+    由调用方跳过它，而不是回一条空正文的材料。
+    """
+
+    if not targets or not index_versions:
+        return {}
+    rows = (
+        await db.execute(
+            build_representative_statement(
+                tenant_id=tenant_id, index_versions=index_versions, targets=targets
+            )
+        )
+    ).all()
+    representatives: dict[tuple[str, str, str], tuple[str, str, str, str]] = {}
+    for kb_id, document_id, section_id, chunk_id, content, title, heading_path in rows:
+        key = (str(kb_id), str(document_id), str(section_id))
+        if key in representatives:
+            continue
+        representatives[key] = (
+            str(chunk_id),
+            str(content or ""),
+            str(title or ""),
+            str(heading_path or ""),
+        )
+    return representatives
 
 
 def _count_by_kb_ids_statement(
@@ -211,7 +369,8 @@ async def list_section_identity_rows(
     ]
 
 
-async def count_by_document_ids(    db: AsyncSession, document_ids: list[str], *, tenant_id: str
+async def count_by_document_ids(
+    db: AsyncSession, document_ids: list[str], *, tenant_id: str
 ) -> dict[str, int]:
     """一次分组查询拿回 ``{document_id: 切片数}``；没有切片的文档不在字典里。
 
@@ -284,14 +443,16 @@ async def list_version_sections(
     链接，标题是兜底）。
     """
 
-    rows = (await db.execute(
-        build_version_sections_statement(
-            tenant_id=tenant_id,
-            kb_id=kb_id,
-            index_version=index_version,
-            document_ids=document_ids,
+    rows = (
+        await db.execute(
+            build_version_sections_statement(
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                index_version=index_version,
+                document_ids=document_ids,
+            )
         )
-    )).all()
+    ).all()
     sections: list[tuple[str, str, str, str, int, str, str]] = []
     for row in rows:
         meta = dict(getattr(row, "meta", None) or {})

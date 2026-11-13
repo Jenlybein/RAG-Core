@@ -119,6 +119,7 @@ from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
 from app.services import orchestration, result_collapse
+from app.services.graph_injection import GraphFactory, build_graph_injection
 from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
@@ -154,6 +155,7 @@ async def retrieve(
     options: RetrievalOptions,
     stage_timer: StageTimer | None = None,
     rerank_factory: Callable[[], Awaitable[object]] | None = None,
+    graph_factory: GraphFactory | None = None,
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
@@ -182,6 +184,12 @@ async def retrieve(
     Provider 装配，缺省那一条也被包成协程，两层形状一致。它只影响**混合模式**：重排的
     定义就是对融合后的候选重排，单模式没有这一步。本函数只负责原样往下传，一步都不改
     ——「收下就丢」会让这条接缝变成一句没人验证的承诺。
+
+    ``graph_factory`` 是图谱的**注入缝**（#144 / ADR-0027）：缺省 ``None`` = 这一步
+    不存在（部署没装图谱）。给它一个协程工厂就打开注入，一个开关覆盖三种检索方式，
+    因为注入位在「候选池成形之后」这个位置。评测据此做「图谱开 / 关」对照；用例据此
+    替身掉整个图谱读模型，不必连库。**不给它就没有任何新字段**：关闭时响应逐字节不变
+    是红线上的一句话，不是注释里的承诺。
     """
 
     # 度量常开：收集器无条件创建，与 ``TRACE_SINK`` 无关。去向只决定这份计量送到哪。
@@ -249,6 +257,15 @@ async def retrieve(
     # 交回一份「看起来像没命中」的空结果。
     index_versions = resolve_index_versions(visible_kbs)
 
+    # 注入位在**这一次调用**里装配一次：租户与库都在手上，且它只在这一条链路上出现。
+    # 没给工厂就整段不存在——内核收到的是 ``None``，「有这一步但什么都不做」与「没有
+    # 这一步」在响应里必须能区分（元数据里那一栏只在有工厂时出现）。
+    graph_injection = (
+        build_graph_injection(db=db, tenant_id=tenant_id, graph_factory=graph_factory)
+        if graph_factory is not None
+        else None
+    )
+
     outcome = await retrieve_kernel(
         db,
         tenant_id=tenant_id,
@@ -280,6 +297,8 @@ async def retrieve(
         embedding_factory=get_embedding_provider,
         vector_factory=get_vector_store,
         keyword_factory=get_keyword_search_provider,
+        # 注入位：缺省 None = 这一步不存在（关闭图谱时响应逐字节不变）。
+        graph_injection=graph_injection,
     )
 
     collapsed = outcome.chunks
@@ -323,6 +342,11 @@ async def retrieve(
         # 「重排」的定义是对**融合后**的候选重排，没有融合就没有这一步。
         "rerank": outcome.rerank,
     }
+    if outcome.graph is not None:
+        # 注入事实（#144）：条数、种子数、按边型的来源分布。与 ``rerank`` 同一栏位置、
+        # 同一口径——「这一次跑了没有、跑了多少」只有一个来源（``InjectionOutcome``）。
+        # **只在开了图谱时出现**：关闭时这一栏连同它的字节一起不存在（黄金哈希守着）。
+        retrieval_meta["graph"] = outcome.graph.as_metadata()
     if optimized.rewrite_applied:
         # 查询优化的**实际用句**（#31）：不记录它，评测里就分不清「名次变了是因为
         # 检索不行，还是因为改写把问题改坏了」——q16 的退化当年正是因此无法归因。

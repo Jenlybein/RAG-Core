@@ -41,7 +41,7 @@ from __future__ import annotations
 import asyncio
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -57,6 +57,9 @@ from app.observability.stage_timing import (
 from app.services.retrieval.fusion import fuse_by_rrf
 from app.services.retrieval.rerank import rerank_stage
 from app.services.retrieval.vector_recall import vector_recall
+
+if TYPE_CHECKING:  # 只为类型：注入位在运行期由组合根注入，pipeline 不装配它
+    from app.services.graph_injection import GraphInjection, InjectionOutcome
 
 logger = structlog.get_logger(__name__)
 
@@ -77,17 +80,18 @@ _REJECTION_CODES = frozenset(
 
 @dataclass(frozen=True)
 class HybridOutcome:
-    """一次混合检索的结果：切片 + 是否降级 + 降级原因 + 重排事实。
+    """一次混合检索的结果：切片 + 是否降级 + 降级原因 + 重排事实 + 注入事实。
 
     ``rerank`` 是 ``metadata.retrieval.rerank`` 的那一份（是否发生、候选数、返回数、
     耗时）。它和日志读的是同一个 ``RerankOutcome``，所以不会出现「日志说排了、
-    响应里没痕迹」。
+    响应里没痕迹」。``graph`` 同理由：注入条数与来源只有一份事实。
     """
 
     chunks: list[dict]
     degraded: bool
     degraded_reason: str | None
     rerank: dict[str, object] | None = None
+    graph: "InjectionOutcome | None" = None
 
 
 async def hybrid_retrieve(
@@ -107,6 +111,7 @@ async def hybrid_retrieve(
     rerank_enabled: bool,
     rerank_factory: Callable[[], Awaitable[Any]] | None = None,
     stage_timer: StageTimer | None = None,
+    graph_injection: "GraphInjection | None" = None,
 ) -> HybridOutcome:
     """两路并行召回，融合、重排后返回；一路失败不取消另一路。
 
@@ -148,6 +153,11 @@ async def hybrid_retrieve(
     ``rerank_factory`` 是重排的**注入缝**（#116）：缺省 ``None`` 时 ``rerank_stage``
     用既有工厂出口（``get_rerank_provider``），评测传一个别的工厂进来就能跑旧实现做
     对照。它和上面三个工厂同形——「重排用哪种实现」在这条链路上只有一个开关。
+
+    ``graph_injection`` 是**候选注入位**（#144 / ADR-0027）：融合之后、重排之前。位置
+    正是本模块内部那两步之间，所以它只能在这里被调一次——放到内核里再调一遍，混合模式
+    就会注入两次（重排看到两份同样的候选）。缺省 ``None`` = 这一步不存在，链路与
+    注入之前逐字节一致。
     """
 
     timer = stage_timer if stage_timer is not None else StageTimer()
@@ -218,6 +228,17 @@ async def hybrid_retrieve(
     # 合成后的向量池直接作为「向量一路」进既有的 ``fuse_by_rrf``，不新增内层融合。
     with timer.measure(STAGE_FUSION):
         fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
+
+    # 候选注入（#144）：融合之后、重排之前。三种检索方式都经过这里——混合模式走的是
+    # 同一份「候选池成形之后」的位置。注入项 score = 0，名次完全由下面这一步裁决；
+    # 失败只降级（原因由注入位自己给出专码），并且**不覆盖**已经到手的通道故障原因：
+    # 先到的才是根因。
+    graph: "InjectionOutcome | None" = None
+    if graph_injection is not None:
+        graph = await graph_injection(fused_chunks, index_versions)
+        fused_chunks = graph.chunks
+        degraded_reason = degraded_reason or graph.degraded_reason
+
     # 重排是**语义那一侧**的一步：它看到的是 ``effective_query``（改写成功时是改写句），
     # 扩展出来的同义词只该帮关键词一路做字面匹配，塞进重排提示词只会变成噪音。
     # ``rerank_enabled`` 来自本次的已解析参数：不要重排的档位在装了重排的机器上也不跑。
@@ -241,6 +262,7 @@ async def hybrid_retrieve(
         degraded=degraded_reason is not None,
         degraded_reason=degraded_reason,
         rerank=reranked.as_metadata(),
+        graph=graph,
     )
 
 

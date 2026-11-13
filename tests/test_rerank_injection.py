@@ -248,7 +248,11 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
 
     async def _fake_hybrid(**kwargs: Any) -> Any:
         captured.update(kwargs)
-        return SimpleNamespace(chunks=[], degraded=False, degraded_reason=None, rerank=None)
+        # ``graph`` 是 #144 给 ``HybridOutcome`` 加的那一栏（注入事实）：替身要同形，
+        # 否则内核读它的时候会把「替身缺一栏」报成 AttributeError。
+        return SimpleNamespace(
+            chunks=[], degraded=False, degraded_reason=None, rerank=None, graph=None
+        )
 
     async def _identity_query(**kwargs: Any) -> Any:
         return SimpleNamespace(
