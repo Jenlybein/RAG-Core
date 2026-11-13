@@ -34,6 +34,7 @@ from app.services.graph_injection import (
     inject_candidates,
     select_candidates,
 )
+from tests.fake_db import AsyncRecordingSession
 
 TENANT = "tenant_graph"
 KB_A = "kb-a"
@@ -544,3 +545,193 @@ def test_selector_applies_the_caps_without_any_database() -> None:
         "target-2-0",
         "target-2-1",
     ]
+
+
+# ─────────────────────────────────── 六、内核接缝：三种检索方式都吃到图谱
+
+
+class _RecordingEmbedding:
+    async def embed_query(self, query: str) -> list[float]:
+        return [0.1, 0.2, 0.3]
+
+
+class _RecordingVectorStore:
+    async def similarity_search_scope(
+        self, db: Any, query_vector: Any, *, tenant_id: str, index_versions: Any, top_k: int
+    ) -> list[dict]:
+        kb_id = next(iter(index_versions))
+        return [dict(_hit("c-2.3"), kb_id=kb_id)]
+
+
+class _RecordingKeyword:
+    available = True
+
+    async def keyword_search(
+        self, query: str, *, tenant_id: str, index_versions: Any, top_k: int
+    ) -> list[dict]:
+        return [dict(_hit("c-2.3", score=9.0))]
+
+
+class _RecordingRerank:
+    """重排替身：记下「它看到了哪些候选」——注入到底在重排之前还是之后，由此可验。"""
+
+    available = True
+    provider_name = "stub"
+    model_name = None
+
+    def __init__(self) -> None:
+        self.seen: list[list[dict]] = []
+
+    async def rerank(self, *, query: str, chunks: list[dict], top_n: int) -> list[dict]:
+        self.seen.append([dict(chunk) for chunk in chunks])
+        return list(chunks)[:top_n]
+
+
+def _injected_row(section_id: str = "sec-2.4", *, chunk_id: str | None = None) -> dict:
+    """一条注入项的**形状**（与 ``graph_injection`` 产出的一模一样：0 分 + 来源标记）。"""
+
+    return {
+        "document_id": "doc-1",
+        "chunk_id": chunk_id or f"chunk-{section_id}",
+        "title": "退款政策",
+        "content": f"正文-{section_id}",
+        "kb_id": KB_A,
+        "score": 0.0,
+        "section_id": section_id,
+        "heading_path": f"退款 > {section_id}",
+        "retrieval_source": INJECTED_SOURCE,
+        "vector_score": None,
+        "bm25_score": None,
+        "vector_rank": None,
+        "bm25_rank": None,
+        "rrf_score": None,
+    }
+
+
+def _graph_slot(
+    calls: list[tuple[list[dict], dict[str, str]]],
+    *,
+    rows: Sequence[dict] | None = None,
+    reason: str | None = None,
+) -> Any:
+    """注入位的替身：记下「拿到什么池子、什么范围」，按预置结果交回。"""
+
+    injected = list(rows if rows is not None else [_injected_row()])
+
+    async def _inject(chunks: list[dict], index_versions: Mapping[str, str]) -> InjectionOutcome:
+        calls.append(([dict(chunk) for chunk in chunks], dict(index_versions)))
+        return InjectionOutcome(
+            chunks=[*chunks, *injected],
+            injected=len(injected),
+            seeds=1,
+            by_relation={"sibling": len(injected)},
+            degraded_reason=reason,
+        )
+
+    return _inject
+
+
+async def _run_kernel(
+    *,
+    mode: str,
+    graph_injection: Any,
+    rerank: _RecordingRerank | None = None,
+    fold_to_sections: bool = False,
+    rerank_enabled: bool = False,
+) -> Any:
+    """直接调内核一次：三种模式共用同一份入参，只有 ``mode`` 不同。"""
+
+    import importlib
+
+    kernel = importlib.import_module("app.services.retrieval.kernel")
+    return await kernel.retrieve_kernel(
+        AsyncRecordingSession(),
+        tenant_id=TENANT,
+        index_versions={KB_A: VERSION},
+        query="超期多久到账",
+        mode=mode,
+        vector_queries=("超期多久到账",),
+        rerank_query="超期多久到账",
+        keyword_query="超期多久到账",
+        top_k=4,
+        recall_top_k=4,
+        rerank_enabled=rerank_enabled,
+        rerank_candidates=8 if rerank_enabled else None,
+        rerank_factory=(lambda: _async(rerank)) if rerank is not None else None,
+        fold_to_sections=fold_to_sections,
+        expand_table_rows=False,
+        embedding_factory=_RecordingEmbedding,
+        vector_factory=_RecordingVectorStore,
+        keyword_factory=_RecordingKeyword,
+        graph_injection=graph_injection,
+    )
+
+
+async def _async(value: Any) -> Any:
+    """协程工厂的替身外壳（注入缝与生产工厂同形，#137）。"""
+
+    return value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["vector", "bm25", "hybrid"])
+async def test_injection_lands_in_the_pool_in_all_three_modes(mode: str) -> None:
+    """向量 / 关键词 / 混合三种检索方式都要吃到图谱（单路评测也能验证它）。"""
+
+    calls: list[tuple[list[dict], dict[str, str]]] = []
+
+    outcome = await _run_kernel(mode=mode, graph_injection=_graph_slot(calls))
+
+    assert len(calls) == 1, "注入位在「候选池成形之后」，三种模式各经过它一次"
+    assert [row["chunk_id"] for row in outcome.chunks] == ["c-2.3", "chunk-sec-2.4"]
+    injected = outcome.chunks[-1]
+    assert injected["score"] == 0.0
+    assert injected["retrieval_source"] == INJECTED_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_hybrid_hands_the_injected_rows_to_the_reranker() -> None:
+    """注入发生在**重排之前**：重排看到的是含注入项的池子，名次因此由它裁决。"""
+
+    calls: list[tuple[list[dict], dict[str, str]]] = []
+    rerank = _RecordingRerank()
+
+    await _run_kernel(
+        mode="hybrid",
+        graph_injection=_graph_slot(calls),
+        rerank=rerank,
+        rerank_enabled=True,
+    )
+
+    assert len(rerank.seen) == 1
+    assert "chunk-sec-2.4" in [row["chunk_id"] for row in rerank.seen[0]], (
+        "注入项必须进到重排的输入里，否则「是否入选交给重排」只是句话"
+    )
+    assert [row["chunk_id"] for row in calls[0][0]] == ["c-2.3"], "注入位拿到的是融合结果"
+
+
+@pytest.mark.asyncio
+async def test_the_injection_slot_receives_the_requested_scope() -> None:
+    """注入位拿到的范围是**本次请求**那一份映射（不是重建一次，也不是空）。"""
+
+    calls: list[tuple[list[dict], dict[str, str]]] = []
+
+    await _run_kernel(mode="vector", graph_injection=_graph_slot(calls))
+
+    assert calls[0][1] == {KB_A: VERSION}
+
+
+@pytest.mark.asyncio
+async def test_a_kernel_without_the_slot_is_byte_identical() -> None:
+    """不传注入位 = 这一步不存在：结果与传一个「什么都没注入」的位逐字段相同。"""
+
+    untouched = await _run_kernel(mode="hybrid", graph_injection=None)
+    empty = await _run_kernel(
+        mode="hybrid", graph_injection=_graph_slot([], rows=[], reason=None)
+    )
+
+    assert untouched.chunks == empty.chunks
+    assert untouched.degraded_reason == empty.degraded_reason
+    assert untouched.rerank == empty.rerank
+    assert untouched.graph is None and empty.graph is not None
+
