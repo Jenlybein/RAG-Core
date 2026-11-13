@@ -9,7 +9,7 @@
 | 接入面 | 入口 | 面向 |
 | --- | --- | --- |
 | HTTP API | `POST /api/v1/rag/retrieve` | 业务系统后端 |
-| MCP 入口 | `POST /mcp/`（JSON-RPC，两个工具：`rag_retrieve` / `rag_list_knowledge_bases`；检索入参 `kb_ids` + `query`，`rag_research` 留给第 9 步） | AI Agent（Claude Desktop 等） |
+| MCP 入口 | `POST /mcp/`（JSON-RPC，三个工具：`rag_retrieve` / `rag_list_knowledge_bases` / `rag_research`；两个数据面工具的入参都是 `kb_ids` + `query`） | AI Agent（Claude Desktop 等） |
 | 控制台 | Vue 3 调试台：用户面板 / 管理员面板（需 `admin` 角色） | 人 |
 
 HTTP 入口与 MCP 入口共用 `ErrorCode` / `AppError`，但响应契约不同：HTTP 入口返回 `{code, msg, data}` 加 HTTP 状态码，MCP 入口走 JSON-RPC `isError: true` + 文本带 code。见 [ADR-0008](docs/adr/0008-dual-entry-error-contract.md)。
@@ -51,7 +51,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 ## 第 1 步：双入口骨架（已落地）
 
 - 4 个 HTTP 接口：`POST /api/v1/knowledge-bases/create`、`POST /api/v1/documents/upload`、`POST /api/v1/rag/retrieve`、`GET /api/v1/knowledge-bases`（列这把 Key 可见的库）。
-- MCP 入口挂在 `/mcp/`，两个工具 `rag_retrieve` / `rag_list_knowledge_bases`；`json_response=True`，工具调用回普通 JSON，不走流式。
+- MCP 入口挂在 `/mcp/`，三个工具 `rag_retrieve` / `rag_list_knowledge_bases` / `rag_research`（第三个与 `POST /api/v1/rag/research` 共用同一份实现，约 30 秒、有额外模型成本）；`json_response=True`，工具调用回普通 JSON，不走流式。
 - 两个入口头部都带 `Authorization: Bearer <Key>`；`tenant_id` 由服务端从这把 Key 解出，不进请求体。检索传 `kb_ids`（列表）+ `query`。**第 7 步已把占位 Key 换成 `api_keys` 表真校验与密钥配置白名单**：`AUTH_ENABLED=true`（默认）时只认真 Key；改成 `false` 才回落到内置开发身份（`dev-key` / `tenant_demo`）。
 - `ENABLE_MCP=true` 时挂子应用（生产默认）；离线测试用 `ENABLE_MCP=false` 关掉会话管理器。
 
