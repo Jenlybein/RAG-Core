@@ -22,16 +22,15 @@ import json
 import logging
 from collections.abc import Iterator
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from tests.fake_db import EmptySession
 import structlog
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
 # 三个哨兵：请求带着它们走完整条检索链路，并且确实从响应体回给调用方。
@@ -158,22 +157,22 @@ def offline_retrieval(log_dir: Path, monkeypatch: pytest.MonkeyPatch) -> Iterato
     """离线 ASGI 边界；500 会被 ServerErrorMiddleware 重新抛出，关掉客户端再抛出。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     config_mod = importlib.import_module("app.core.config")
 
     monkeypatch.setattr(config_mod.settings, "MODEL_API_KEY", API_KEY)
-    monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)
-    )
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
     monkeypatch.setattr(
         service,
         "get_embedding_provider",
         lambda: _FakeEmbeddingProvider(api_key=config_mod.settings.MODEL_API_KEY),
     )
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
-    main.app.dependency_overrides[session_mod.get_db] = lambda: EmptySession()
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        EmptySession()
+    )
     from app.api.deps import get_current_key
 
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
@@ -269,3 +268,28 @@ def test_retrieval_server_error_logs_stay_clean(
     assert INTERNAL_DETAIL in json.dumps(errors[0]), "内部细节只进日志，供排障回查"
 
     _assert_no_sensitive_values(log_dir)
+
+
+def test_observability_is_never_called_synchronously_from_a_request_path() -> None:
+    """观测是旁路，但旁路不等于免费：落盘 / SDK 网络写不能占事件循环。
+
+    票 #137 的评审抓到过这一条：`rag_service.retrieve` 与 `retrieval_feedback.submit_feedback`
+    都是 ``async def``，里面却直接调同步的 `emit_retrieval_trace` / `emit_feedback_score`。
+    默认去向是 JSONL（mkdir + open + write + prune），换成 langfuse 时是同步 SDK 的网络写
+    ——都压在循环上，而压测账本只插桩数据库，这条从来没被计量过。
+
+    这里断言**请求路径上的调用点用的是 `_off_loop` 入口**（它内部 `asyncio.to_thread`）。
+    抓的是「将来有人把 `await` 和 `_off_loop` 一起改回去」。
+    """
+
+    from pathlib import Path as _Path
+
+    for name in ("app/services/rag_service.py", "app/services/retrieval_feedback.py"):
+        source = _Path(name).read_text(encoding="utf-8")
+        assert "_off_loop" in source, f"{name} 不再走观测的异步入口"
+        # 直接调同步实现（不带 await / 不带上 _off_loop）就是回到了循环上。
+        for banned in ("    emit_retrieval_trace(", "    emit_feedback_score("):
+            assert banned not in source, (
+                f"{name} 里出现了同步观测调用：{banned.strip()} —— "
+                "默认去向是文件 / SDK 写，它会占住事件循环"
+            )

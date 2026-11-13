@@ -59,6 +59,15 @@ ADR-0018：被拒绝与失败的请求不扣额度。于是门禁**不能**在�
 
 静态资源配额（库数 / 单库文档数 / 并发处理数）不走这里：它们是「库里现在有多少行」，
 在写路径上直接数库，见 :mod:`app.services.static_quota`。
+
+## 计数命令是异步的（票 #133）
+
+门禁在检索热路径上，而那条路径已经是 ``async def``：同步 Redis 调用会把整个事件循环
+按住，于是一次慢的 Redis 就变成所有并发请求一起慢。所以计数命令全部 ``await``，
+客户端来自 :func:`app.core.redis_client.get_redis_client`（``redis.asyncio``）。
+
+**换成异步不改任何判定**：窗口口径（UTC）、两级同时记、只有成功才记账、两个错误码、
+``RATE_LIMIT_ENABLED`` 这个显式开关（而不是「连不上就自动降级」）全部原样保留。
 """
 
 from __future__ import annotations
@@ -119,18 +128,18 @@ class QuotaWindow:
 
 
 class CounterClient(Protocol):
-    """计数器真正用到的三条 Redis 命令。
+    """计数器真正用到的三条 Redis 命令（异步形状，见模块文档「计数命令是异步的」）。
 
-    刻意不写成 ``Redis``：本模块因此不 import redis 包，测试传一个 dict 伪装的对象就够
-    （见 ``tests/test_quota_gate.py``），也不会有人顺手在这里加一条只有真 Redis 才认的
-    命令。
+    刻意不写成 ``Redis``：本模块因此不 import redis 包，测试传一个 dict 伪装的**异步**
+    对象就够（见 ``tests/test_quota_gate.py``），也不会有人顺手在这里加一条只有真 Redis
+    才认的命令。
     """
 
-    def incr(self, key: str) -> Any: ...
+    async def incr(self, key: str) -> Any: ...
 
-    def get(self, key: str) -> str | bytes | None: ...
+    async def get(self, key: str) -> str | bytes | None: ...
 
-    def expire(self, key: str, ttl: int) -> Any: ...
+    async def expire(self, key: str, ttl: int) -> Any: ...
 
 
 def qps_key(*, level: str, ident: str, window: QuotaWindow) -> str:
@@ -171,29 +180,29 @@ class QuotaCounters:
             daily=moment.strftime("%Y%m%d"),
         )
 
-    def qps(self, *, level: str, ident: str, window: QuotaWindow) -> int:
+    async def qps(self, *, level: str, ident: str, window: QuotaWindow) -> int:
         """读这一秒已经记了几次；没记过就是 0（``GET`` 的 ``None`` 不当成异常）。"""
 
-        return _as_count(self._client.get(qps_key(level=level, ident=ident, window=window)))
+        return _as_count(await self._client.get(qps_key(level=level, ident=ident, window=window)))
 
-    def daily(self, *, level: str, ident: str, window: QuotaWindow) -> int:
-        return _as_count(self._client.get(daily_key(level=level, ident=ident, window=window)))
+    async def daily(self, *, level: str, ident: str, window: QuotaWindow) -> int:
+        return _as_count(await self._client.get(daily_key(level=level, ident=ident, window=window)))
 
-    def add_qps(self, *, level: str, ident: str, window: QuotaWindow) -> None:
-        self._add(qps_key(level=level, ident=ident, window=window), QPS_TTL_SECONDS)
+    async def add_qps(self, *, level: str, ident: str, window: QuotaWindow) -> None:
+        await self._add(qps_key(level=level, ident=ident, window=window), QPS_TTL_SECONDS)
 
-    def add_daily(self, *, level: str, ident: str, window: QuotaWindow) -> None:
-        self._add(daily_key(level=level, ident=ident, window=window), DAILY_TTL_SECONDS)
+    async def add_daily(self, *, level: str, ident: str, window: QuotaWindow) -> None:
+        await self._add(daily_key(level=level, ident=ident, window=window), DAILY_TTL_SECONDS)
 
-    def _add(self, key: str, ttl: int) -> None:
+    async def _add(self, key: str, ttl: int) -> None:
         """``INCR`` 之后**立刻**续期：每次写都重置 TTL，桶的寿命从最后一次写算起。
 
         不写成「键不存在时设过期」的两步检查：那需要一条只有真 Redis 才原子的
         ``SET NX`` 语义，而这里对一个「本来就是短期窗口」的键，重复续期完全无害。
         """
 
-        self._client.incr(key)
-        self._client.expire(key, ttl)
+        await self._client.incr(key)
+        await self._client.expire(key, ttl)
 
 
 def _as_count(raw: str | bytes | None) -> int:
@@ -218,9 +227,9 @@ class RetrievalQuota:
     """一次检索的额度账本：进门查一次（:meth:`ensure_available`）、成功后记一次。
 
     两半必须成对出现——只查不记，额度永远用不完；只记不查，额度没有上限。调用方
-    （HTTP 路由与 MCP 工具各一处）的写法固定是：进门先 ``ensure_available()``，
-    业务返回之后再 ``record_success()``。业务失败或抛错时**不调**后者，被拒与失败的
-    请求因此都不会扣额度。
+    （HTTP 路由与 MCP 工具共用的 ``retrieval_gate.gated_retrieve``）的写法固定是：进门先
+    ``await ensure_available()``，业务返回之后再 ``await record_success()``。业务失败或
+    抛错时**不调**后者，被拒与失败的请求因此都不会扣额度。
     """
 
     tenant_id: str
@@ -231,7 +240,7 @@ class RetrievalQuota:
     counters: QuotaCounters | None = None
     enabled: bool = True
 
-    def ensure_available(self) -> None:
+    async def ensure_available(self) -> None:
         """限流 → 日配额，任一层超限就抛错；**不记账**（记账要等成功）。"""
 
         if not self.enabled:
@@ -241,14 +250,14 @@ class RetrievalQuota:
         # （「我这个应用打得太快」），而租户级超限往往要另一个应用的负责人一起看。
         # 判据只有一份（``quota_limits.ensure_under_limit``），静态配额用的也是它。
         ensure_under_limit(
-            used=self._read_qps(LEVEL_KEY, self.key_id),
+            used=await self._read_qps(LEVEL_KEY, self.key_id),
             limit=self.policy.retrieve_qps,
             code=ErrorCode.API_RATE_LIMIT,
             what=f"qps of key {self.key_id}",
             suffix="per window",
         )
         ensure_under_limit(
-            used=self._read_qps(LEVEL_TENANT, self.tenant_id),
+            used=await self._read_qps(LEVEL_TENANT, self.tenant_id),
             limit=self.plan.retrieve_qps,
             code=ErrorCode.API_RATE_LIMIT,
             what=f"qps of tenant {self.tenant_id}",
@@ -258,21 +267,21 @@ class RetrievalQuota:
         # 第二道：日配额。注意**比的是当前额度**，不是某个记下来的快照：管理员把日
         # 配额改小，下一次调用就按新值判（AC「改小日配额后立刻生效，不需要重启」）。
         ensure_under_limit(
-            used=self._read_daily(LEVEL_KEY, self.key_id),
+            used=await self._read_daily(LEVEL_KEY, self.key_id),
             limit=self.policy.retrieve_daily,
             code=ErrorCode.QUOTA_EXCEEDED,
             what=f"daily quota of key {self.key_id}",
             suffix="per window",
         )
         ensure_under_limit(
-            used=self._read_daily(LEVEL_TENANT, self.tenant_id),
+            used=await self._read_daily(LEVEL_TENANT, self.tenant_id),
             limit=self.plan.retrieve_daily,
             code=ErrorCode.QUOTA_EXCEEDED,
             what=f"daily quota of tenant {self.tenant_id}",
             suffix="per window",
         )
 
-    def record_success(self) -> None:
+    async def record_success(self) -> None:
         """业务成功之后才调它：两级各记一次，**一次请求只记一次**。
 
         「一次跨多库检索只计一次」不是这里的判断——本对象根本不知道这次查了几个库。
@@ -283,19 +292,19 @@ class RetrievalQuota:
             return
 
         for level, ident in ((LEVEL_KEY, self.key_id), (LEVEL_TENANT, self.tenant_id)):
-            self.counters.add_qps(level=level, ident=ident, window=self.window)
-            self.counters.add_daily(level=level, ident=ident, window=self.window)
+            await self.counters.add_qps(level=level, ident=ident, window=self.window)
+            await self.counters.add_daily(level=level, ident=ident, window=self.window)
 
-    def _read_qps(self, level: str, ident: str) -> int:
+    async def _read_qps(self, level: str, ident: str) -> int:
         assert self.counters is not None  # 只有 enabled 时才会走到这里
-        return self.counters.qps(level=level, ident=ident, window=self.window)
+        return await self.counters.qps(level=level, ident=ident, window=self.window)
 
-    def _read_daily(self, level: str, ident: str) -> int:
+    async def _read_daily(self, level: str, ident: str) -> int:
         assert self.counters is not None
-        return self.counters.daily(level=level, ident=ident, window=self.window)
+        return await self.counters.daily(level=level, ident=ident, window=self.window)
 
 
-def read_tenant_daily_usage(
+async def read_tenant_daily_usage(
     *,
     tenant_id: str,
     counters: QuotaCounters | None = None,
@@ -321,7 +330,7 @@ def read_tenant_daily_usage(
         return None
     active = counters if counters is not None else QuotaCounters(redis_client.get_redis_client())
     window = active.window()
-    return active.daily(level=LEVEL_TENANT, ident=tenant_id, window=window)
+    return await active.daily(level=LEVEL_TENANT, ident=tenant_id, window=window)
 
 
 def retrieval_quota(

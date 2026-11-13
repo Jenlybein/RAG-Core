@@ -6,8 +6,12 @@
 （``prepare_for_indexing``，不盖租约），**Worker 是唯一抢占者**。
 
 接缝：ASGI 边界发一次真实 reindex 请求；投递缝换成记录器；随后在同一个内存
-SQLite 会话上跑真实的 ``IndexingService.index_existing_document``，只把切块器 /
+SQLite 库上跑真实的 ``IndexingService.index_existing_document``，只把切块器 /
 embedding / 向量存储换成离线替身。不连 PostgreSQL、不发网络请求。
+
+**两条会话来自两套栈**（票 #132）：reindex 路由仍是同步会话（随票 #130 搬），Worker
+流水线已经是 ``AsyncSession``——同一个库文件上各开一个引擎，前后串行，所以「路由只准备
+入队、Worker 才抢租约」这件事仍然是在真 SQL 上验的。
 """
 
 from __future__ import annotations
@@ -22,7 +26,8 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
 from app.models.document import Document
@@ -82,53 +87,97 @@ class _RecordingStore:
 def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     """真实 reindex 路由（临时文件 SQLite documents 表）+ 离线 Worker 装配。
 
-    TestClient 在独立线程里跑请求，所以用**文件** SQLite 并允许跨线程共享连接；
-    内存库会让请求线程看到另一个空库（no such table: documents）。
+    请求一路是**异步会话**（票 #130：reindex 路由只剩这一套栈），Worker 流水线也是
+    ``AsyncSession``——同一个库文件上各开一个引擎，前后串行。种子数据用同步会话写进去
+    （建表 + 一行），随后**释放**它：之后每一次读都另开连接，读到的才是请求 / Worker
+    真正提交过的状态，而不是种子那一笔的旧快照。
     """
 
+    from app.db.async_session import get_async_db
+
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
     routes = importlib.import_module("app.api.routes.documents")
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
 
-    engine = create_engine(
-        f"sqlite:///{tmp_path / 'reindex.db'}", connect_args={"check_same_thread": False}
-    )
-    Document.__table__.create(engine)
-    session = sessionmaker(bind=engine)()
+    database_path = tmp_path / "reindex.db"
 
-    session.add(
-        Document(
-            id=DOC_ID,
-            tenant_id=TENANT_ID,
-            kb_id=KB_ID,
-            title="Reindex me",
-            content="body text for reindexing",
-            source_type="text",
-            status=DocumentStatus.SUCCESS,
+    seed_engine = create_engine(f"sqlite:///{database_path}")
+    Document.__table__.create(seed_engine)
+    with sessionmaker(bind=seed_engine)() as seed_session:
+        seed_session.add(
+            Document(
+                id=DOC_ID,
+                tenant_id=TENANT_ID,
+                kb_id=KB_ID,
+                title="Reindex me",
+                content="body text for reindexing",
+                source_type="text",
+                status=DocumentStatus.SUCCESS,
+            )
         )
-    )
-    session.commit()
+        seed_session.commit()
+    seed_engine.dispose()
+
+    # 请求级的会话工厂绑在同一个库文件上：每个请求一个新会话，用完即关。
+    request_engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    request_sessions = async_sessionmaker(bind=request_engine, expire_on_commit=False)
+
+    async def _request_session() -> Any:
+        async with request_sessions() as session:
+            yield session
 
     enqueued: list[dict[str, Any]] = []
     store = _RecordingStore()
     monkeypatch.setattr(routes, "enqueue_document", lambda **kwargs: enqueued.append(kwargs))
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    main.app.dependency_overrides[get_async_db] = _request_session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
             yield SimpleNamespace(
                 client=client,
-                session=session,
                 enqueued=enqueued,
                 store=store,
+                database_path=database_path,
             )
     finally:
         main.app.dependency_overrides.clear()
-        session.close()
+        asyncio.run(request_engine.dispose())
+
+
+def _read_document(database_path: Path) -> SimpleNamespace | None:
+    """另开一条连接读这一行：请求与 Worker 都已提交，读到的才是它们写的状态。
+
+    返回的是**快照**而不是 ORM 对象：会话一关，那个对象就是游离的，而这条用例只关心
+    三个字段。
+    """
+
+    engine = create_engine(f"sqlite:///{database_path}")
+    try:
+        with Session(engine) as session:
+            doc = session.get(Document, DOC_ID)
+            if doc is None:
+                return None
+            return SimpleNamespace(
+                status=doc.status,
+                error_message=doc.error_message,
+                index_claimed_at=doc.index_claimed_at,
+            )
+    finally:
         engine.dispose()
+
+
+async def _run_worker_pipeline(service: IndexingService, database_path: Path) -> int:
+    """在**异步**引擎上跑真实流水线（Worker 那一侧的会话类型），跑完即 dispose。"""
+
+    engine = create_async_engine(f"sqlite+aiosqlite:///{database_path}")
+    session_factory = async_sessionmaker(bind=engine, expire_on_commit=False, autoflush=False)
+    try:
+        async with session_factory() as async_session:
+            return await service.index_existing_document(async_session, DOC_ID)
+    finally:
+        await engine.dispose()
 
 
 def test_reindex_route_then_worker_produces_chunks_and_success(
@@ -160,7 +209,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
         }
     ]
 
-    doc = reindex_env.session.get(Document, DOC_ID)
+    doc = _read_document(reindex_env.database_path)
     assert doc is not None
     assert doc.status == DocumentStatus.PROCESSING
     assert doc.index_claimed_at is None, "路由只准备入队，绝不盖租约"
@@ -170,7 +219,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
         embeddings=_StubEmbeddings(),
         stores=[reindex_env.store],
     )
-    count = asyncio.run(service.index_existing_document(reindex_env.session, DOC_ID))
+    count = asyncio.run(_run_worker_pipeline(service, reindex_env.database_path))
 
     assert count == len(PIECES), "Worker 必须真的抢到索引权并写入切片"
     assert reindex_env.store.calls == ["purge", "add"], "先删旧切片，再写新切片"
@@ -178,8 +227,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
     assert reindex_env.store.tenant_ids == [TENANT_ID]
     assert len(reindex_env.store.written[0]) == len(PIECES)
 
-    reindex_env.session.expire_all()
-    doc = reindex_env.session.get(Document, DOC_ID)
+    doc = _read_document(reindex_env.database_path)
     assert doc is not None
     assert doc.status == DocumentStatus.SUCCESS
     assert doc.error_message is None

@@ -10,12 +10,16 @@
 2. **跨租户按「不存在」处理**（``20016``）。Key / 配置的主键是全局唯一的裸字符串，
    「不属于你」与「不存在」对外必须是同一个答案，否则枚举一遍 id 就知道谁的 Key 在哪；
 3. **改动与审计同一个事务**（与套餐 / 账号那两条写入口同一套收口）。签发会同时写
-   ``api_keys`` 与 ``key_policies`` 两行，也在这里一起提交：不允许出现「Key 发出去了、
-   配置没建」或「改了配置、账本里没有」的窗口。
+   ``api_keys`` 与 ``key_policies`` 两行，三条写入一起提交：不允许出现「Key 发出去了、
+   配置没建」或「改了配置、账本里没有」的窗口。提交点不在这里，在路由声明的
+   ``Depends(get_async_transaction)`` 上（见 :mod:`app.db.transaction`）。
 
 自洽校验不在这里重写：它只有 :func:`app.services.profile_policy.ensure_policy_consistent`
 一份，本模块只负责把它抛出的 ``AppError(20015)`` 与入参错误（``ValueError``）翻成控制面的
 同一个码。
+
+**整层都在异步栈上**（第 11 步票 #129 → #130）：会话是 ``AsyncSession``，签发时那三行
+写入共用同一个会话、同一笔事务。
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.console_auth import ConsoleIdentity
 from app.core.exceptions import AppError, ErrorCode
@@ -88,25 +92,28 @@ def _verified_tenant_id(actor: ConsoleIdentity) -> str:
     return actor.tenant_id
 
 
-def list_keys(db: Session, *, actor: ConsoleIdentity) -> list[KeyRowView]:
+async def list_keys(db: AsyncSession, *, actor: ConsoleIdentity) -> list[KeyRowView]:
     """本租户的 Key 列表，每行带上它引用的配置。
 
     配置按**同一租户**读一遍再按 id 对上：一条 Key 指向别的租户的配置属于手修库造出来的
     坏数据，此时如实回 ``policy=None``，而不是把别人的配置回显给这个租户。
+
+    两次读（Key 行、配置行）一起 ``await``：这是控制面唯一的 Key 列表查询。
     """
 
     tenant_id = _verified_tenant_id(actor)
     policies = {
-        policy.id: policy for policy in key_policy_repository.list_by_tenant(db, tenant_id)
+        policy.id: policy
+        for policy in await key_policy_repository.list_by_tenant(db, tenant_id)
     }
     return [
         KeyRowView(api_key=api_key, policy=policies.get(api_key.policy_id))
-        for api_key in api_key_repository.list_by_tenant(db, tenant_id)
+        for api_key in await api_key_repository.list_by_tenant(db, tenant_id)
     ]
 
 
-def issue_key(
-    db: Session,
+async def issue_key(
+    db: AsyncSession,
     *,
     actor: ConsoleIdentity,
     label: str | None,
@@ -122,7 +129,7 @@ def issue_key(
 
     tenant_id = _verified_tenant_id(actor)
     try:
-        created = key_policy_service.create_key_policy(
+        created = await key_policy_service.create_key_policy(
             db,
             tenant_id=tenant_id,
             name=_policy_name_of(label),
@@ -133,10 +140,10 @@ def issue_key(
     except LookupError as exc:
         raise AppError(ErrorCode.NOT_FOUND, str(exc)) from exc
 
-    api_key = api_key_service.create_api_key_row(
+    api_key = await api_key_service.create_api_key_row_async(
         db, tenant_id=tenant_id, policy_id=created.policy.id, label=label
     )
-    console_service.append_audit(
+    await console_service.append_audit(
         db,
         actor=actor,
         action=ACTION_KEY_ISSUE,
@@ -144,11 +151,10 @@ def issue_key(
         before=None,
         after=_key_audit_snapshot(api_key, created.policy),
     )
-    db.commit()
     return IssuedKey(api_key=api_key, policy=created.policy)
 
 
-def delete_key(db: Session, *, actor: ConsoleIdentity, key_id: str) -> DeletedKey:
+async def delete_key(db: AsyncSession, *, actor: ConsoleIdentity, key_id: str) -> DeletedKey:
     """删一把 Key：**配置行不动**（结构上配置独立于 Key，可能还被别的 Key 复用）。
 
     读一行、判租户、删一行、写一条审计、提交——判断顺序刻意是「先读后判」：Key 的主键是
@@ -157,14 +163,14 @@ def delete_key(db: Session, *, actor: ConsoleIdentity, key_id: str) -> DeletedKe
     """
 
     tenant_id = _verified_tenant_id(actor)
-    api_key = api_key_repository.get_by_id(db, key_id)
+    api_key = await api_key_repository.get_by_id(db, key_id)
     if api_key is None or api_key.tenant_id != tenant_id:
         raise AppError(ErrorCode.NOT_FOUND, f"key not found: {key_id}")
 
-    policy = _policy_of_key(db, api_key, tenant_id)
+    policy = await _policy_of_key(db, api_key, tenant_id)
     before = _key_audit_snapshot(api_key, policy)
-    api_key_repository.delete(db, api_key)
-    console_service.append_audit(
+    await api_key_repository.delete(db, api_key)
+    await console_service.append_audit(
         db,
         actor=actor,
         action=ACTION_KEY_DELETE,
@@ -172,24 +178,25 @@ def delete_key(db: Session, *, actor: ConsoleIdentity, key_id: str) -> DeletedKe
         before=before,
         after=None,
     )
-    db.commit()
     return DeletedKey(key_id=key_id)
 
 
-def _policy_of_key(db: Session, api_key: ApiKey, tenant_id: str) -> KeyPolicy | None:
+async def _policy_of_key(
+    db: AsyncSession, api_key: ApiKey, tenant_id: str
+) -> KeyPolicy | None:
     """Key 引用的配置；指向别的租户（手修库造出来的坏数据）时按「没有」处理。
 
     只用于审计快照：把别人的配置回显进这个租户的账本，等于把配置内容泄露出去。
     """
 
-    policy = key_policy_repository.get_by_id(db, api_key.policy_id)
+    policy = await key_policy_repository.get_by_id_async(db, api_key.policy_id)
     if policy is None or policy.tenant_id != tenant_id:
         return None
     return policy
 
 
-def patch_key_policy(
-    db: Session,
+async def patch_key_policy(
+    db: AsyncSession,
     *,
     actor: ConsoleIdentity,
     policy_id: str,
@@ -197,21 +204,21 @@ def patch_key_policy(
 ) -> PolicyPatchResult:
     """改一套配置（部分更新）：校验 → 落库 + 审计（同一个事务）。
 
-    自洽校验只有一份实现，在 :func:`app.services.key_policy_service.apply_key_policy_update`
+    自洽校验只有一份实现，在 :func:`app.services.key_policy_service.apply_key_policy_update_async`
     里；本函数只负责「这个配置是不是你的」「把入参错误翻成 ``20015``」「补一条账本」。
     跨租户与不存在共用同一个 ``20016``：主键是全局唯一的裸字符串，两种情形对外必须同形，
     否则枚举 id 就能知道谁有哪些配置。
     """
 
     tenant_id = _verified_tenant_id(actor)
-    policy = key_policy_repository.get_by_id(db, policy_id)
+    policy = await key_policy_repository.get_by_id_async(db, policy_id)
     if policy is None or policy.tenant_id != tenant_id:
         raise AppError(ErrorCode.NOT_FOUND, f"key policy not found: {policy_id}")
     if not changes:
         raise AppError(ErrorCode.PARAM_ERROR, "no fields to change")
 
     try:
-        update = key_policy_service.apply_key_policy_update(
+        update = await key_policy_service.apply_key_policy_update_async(
             db, policy_id=policy_id, changes=changes
         )
     except ValueError as exc:
@@ -220,7 +227,7 @@ def patch_key_policy(
         # 上面刚读到了这一行；走到这里说明租户 / 套餐行缺失，属于坏数据，按不存在处理。
         raise AppError(ErrorCode.NOT_FOUND, str(exc)) from exc
 
-    console_service.append_audit(
+    await console_service.append_audit(
         db,
         actor=actor,
         action=ACTION_KEY_POLICY_UPDATE,
@@ -228,7 +235,6 @@ def patch_key_policy(
         before=update.before,
         after=update.after,
     )
-    db.commit()
     return PolicyPatchResult(
         policy_id=update.policy_id,
         before=update.before,

@@ -22,7 +22,7 @@ from app.models.api_key import ApiKey
 from app.models.key_policy import PROFILE_BALANCED, PROFILE_CUSTOM, KeyPolicy
 from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_STANDARD, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
@@ -103,7 +103,15 @@ def _session(
     tenants: list[Tenant] | None = None,
     policies: list[KeyPolicy] | None = None,
     plans: list[Plan] | None = None,
-) -> RecordingSession:
+) -> AsyncRecordingSession:
+    """判定内核的会话替身：**异步面**。
+
+    票 #130 起 ``resolve_identity`` 与 ``resolve_plan`` 都是协程，读的也是
+    ``AsyncSession``（``await db.get(...)`` / ``await db.execute(...)``）。这里返回
+    :class:`AsyncRecordingSession`——它就是 ``RecordingSession`` 的薄异步面，行与记录
+    都还是同一份语义，只是那几个方法得被 ``await``。
+    """
+
     rows: dict[type, list[Any]] = {Plan: _plan_rows() if plans is None else list(plans)}
     if keys is not None:
         rows[ApiKey] = list(keys)
@@ -111,27 +119,7 @@ def _session(
         rows[Tenant] = list(tenants)
     if policies is not None:
         rows[KeyPolicy] = list(policies)
-    return RecordingSession(rows=rows)
-
-
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.set_calls: list[int] = []
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.set_calls.append(plan_id)
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
+    return AsyncRecordingSession(rows=rows)
 
 
 def _dev_headers() -> dict[str, str]:
@@ -187,7 +175,8 @@ def test_development_snapshot_is_a_full_pro_policy_at_custom_following_the_deplo
 # ───────────────────────────────────────────── 开发开关：关着也不许裸奔
 
 
-def test_dev_mode_still_requires_the_placeholder_token() -> None:
+@pytest.mark.asyncio
+async def test_dev_mode_still_requires_the_placeholder_token() -> None:
     """开关关闭时也不要 Key？不行：占位 token 仍然要带。
 
     退回「谁都不用带」意味着一个被意外暴露的开发实例对整个网络敞开；而要求这把固定
@@ -198,16 +187,17 @@ def test_dev_mode_still_requires_the_placeholder_token() -> None:
 
     missing = _Request()
     with pytest.raises(AppError) as missing_exc:
-        resolve_identity(missing, None, auth_enabled=False)
+        await resolve_identity(missing, None, auth_enabled=False)
     assert missing_exc.value.code is ErrorCode.UNAUTHORIZED
 
     wrong = _Request("Bearer not-the-dev-key")
     with pytest.raises(AppError) as wrong_exc:
-        resolve_identity(wrong, None, auth_enabled=False)
+        await resolve_identity(wrong, None, auth_enabled=False)
     assert wrong_exc.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
+@pytest.mark.asyncio
+async def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
     """关掉开关时收到一把真实 Key：消息必须**点名「开发身份模式」**，不能只说「Key 无效」。
 
     踩过的坑（真实反馈）：控制台能签发 Key、能选中、能显示，但 ``AUTH_ENABLED=false`` 时
@@ -219,7 +209,7 @@ def test_dev_mode_says_why_a_real_key_is_rejected() -> None:
     from app.core.auth import MSG_DEV_MODE_REJECTS_REAL_KEY, resolve_identity
 
     with pytest.raises(AppError) as exc:
-        resolve_identity(_Request("Bearer rc_live_0000_9188"), None, auth_enabled=False)
+        await resolve_identity(_Request("Bearer rc_live_0000_9188"), None, auth_enabled=False)
 
     assert exc.value.code is ErrorCode.UNAUTHORIZED
     assert exc.value.msg == MSG_DEV_MODE_REJECTS_REAL_KEY
@@ -248,12 +238,13 @@ def test_unauthorized_messages_each_name_a_next_step() -> None:
     # 四种原因不能共用一句话：共用就意味着界面再也分不出该做哪件事。
     assert len(set(messages.values())) == 4
     for name, message in messages.items():
-        assert any(
-            hint in message for hint in ("Authorization", "Key 管理页", "管理员")
-        ), f"{name} 的消息没有指向任何具体动作：{message}"
+        assert any(hint in message for hint in ("Authorization", "Key 管理页", "管理员")), (
+            f"{name} 的消息没有指向任何具体动作：{message}"
+        )
 
 
-def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() -> None:
+@pytest.mark.asyncio
+async def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() -> None:
     """开关关闭：占位 token 直接换成内置开发身份，连一次查询都不发。"""
 
     from app.core.auth import KeyContext, resolve_identity
@@ -262,7 +253,7 @@ def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() 
         def __getattr__(self, name: str) -> Any:
             raise AssertionError(f"开发身份不该碰数据库：{name}")
 
-    context = resolve_identity(_Request(_dev_headers()["authorization"]), _ExplodingSession())
+    context = await resolve_identity(_Request(_dev_headers()["authorization"]), _ExplodingSession())
 
     assert isinstance(context, KeyContext)
     assert context.tenant_id == settings.DEV_TENANT_ID
@@ -272,7 +263,7 @@ def test_dev_mode_returns_the_built_in_identity_without_touching_the_database() 
 # ───────────────────────────────────────────── 开关打开：四种未授权，同一个码
 
 
-def _failures(*, session: RecordingSession) -> dict[str, AppError]:
+async def _failures(*, session: RecordingSession) -> dict[str, AppError]:
     """跑出四种未授权情形，按情形命名返回异常，供「同一个码、不同消息」比对。"""
 
     from app.core.auth import resolve_identity
@@ -301,25 +292,27 @@ def _failures(*, session: RecordingSession) -> dict[str, AppError]:
     caught: dict[str, AppError] = {}
     for name, request in cases.items():
         with pytest.raises(AppError) as excinfo:
-            resolve_identity(request, sessions[name], auth_enabled=True)
+            await resolve_identity(request, sessions[name], auth_enabled=True)
         caught[name] = excinfo.value
     return caught
 
 
-def test_switch_on_rejects_a_missing_token() -> None:
+@pytest.mark.asyncio
+async def test_switch_on_rejects_a_missing_token() -> None:
     from app.core.auth import resolve_identity
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(_Request(None), _session(), auth_enabled=True)
+        await resolve_identity(_Request(None), _session(), auth_enabled=True)
 
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_switch_on_rejects_an_unknown_token() -> None:
+@pytest.mark.asyncio
+async def test_switch_on_rejects_an_unknown_token() -> None:
     from app.core.auth import resolve_identity
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(
+        await resolve_identity(
             _Request(f"Bearer {KEY_VALUE}"),
             _session(keys=[], tenants=[_tenant_row()], policies=[_policy_row()]),
             auth_enabled=True,
@@ -328,27 +321,30 @@ def test_switch_on_rejects_an_unknown_token() -> None:
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_all_four_unauthorized_cases_share_the_code_and_stay_distinguishable() -> None:
+@pytest.mark.asyncio
+async def test_all_four_unauthorized_cases_share_the_code_and_stay_distinguishable() -> None:
     """四种情形**同一个**错误码，消息可区分——交付判据就是这么写的。"""
 
-    caught = _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
+    caught = await _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
 
     assert {exc.code for exc in caught.values()} == {ErrorCode.UNAUTHORIZED}
     messages = {name: exc.msg for name, exc in caught.items()}
     assert len(set(messages.values())) == 4, f"四种情形必须能分辨，实际是 {messages}"
 
 
-def test_the_unauthorized_error_is_a_business_failure_not_a_401() -> None:
+@pytest.mark.asyncio
+async def test_the_unauthorized_error_is_a_business_failure_not_a_401() -> None:
     """内核抛的是业务异常，不是 HTTP 异常：能不能变 401 由入口适配器决定（ADR-0007）。"""
 
-    caught = _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
+    caught = await _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
 
     for exc in caught.values():
         assert isinstance(exc, AppError)
         assert not hasattr(exc, "status_code")
 
 
-def test_switch_on_makes_the_development_identity_unreachable() -> None:
+@pytest.mark.asyncio
+async def test_switch_on_makes_the_development_identity_unreachable() -> None:
     """开关打开后，占位 token 不再是身份来源：它不在 api_keys 表里，一律未授权。
 
     这条与「关闭时仍要求占位 token」是同一枚硬币的两面：开发身份只存在于开关关闭的
@@ -360,7 +356,9 @@ def test_switch_on_makes_the_development_identity_unreachable() -> None:
     session = _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[_policy_row()])
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(_Request(_dev_headers()["authorization"]), session, auth_enabled=True)
+        await resolve_identity(
+            _Request(_dev_headers()["authorization"]), session, auth_enabled=True
+        )
 
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
@@ -368,14 +366,15 @@ def test_switch_on_makes_the_development_identity_unreachable() -> None:
 # ───────────────────────────────────────────── 开关打开：真 Key 解出完整上下文
 
 
-def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
+@pytest.mark.asyncio
+async def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
     """一把能用的 Key 解出租户、Key 备注名、配置快照、套餐快照四样东西。"""
 
     from app.core.auth import KeyContext, resolve_identity
     from app.models.key_policy import KeyPolicySnapshot
 
-    cache = _MemoryPlanCache()
-    context = resolve_identity(
+    cache = MemoryPlanCache()
+    context = await resolve_identity(
         _Request(f"Bearer {KEY_VALUE}"),
         _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[_policy_row()]),
         auth_enabled=True,
@@ -403,16 +402,17 @@ def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
     assert cache.set_calls == [PLAN_IDS[PLAN_PRO]], "套餐缓存的键必须是 plan id"
 
 
-def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
+@pytest.mark.asyncio
+async def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
     """停用租户立刻生效：判定每次都重新读状态，身份不做长缓存。"""
 
     from app.core.auth import resolve_identity
 
     tenant = _tenant_row()
     session = _session(keys=[_key_row()], tenants=[tenant], policies=[_policy_row()])
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
 
-    first = resolve_identity(
+    first = await resolve_identity(
         _Request(f"Bearer {KEY_VALUE}"), session, auth_enabled=True, plan_cache=cache
     )
     assert first.tenant_id == TENANT_ID
@@ -420,13 +420,14 @@ def test_disabling_a_tenant_takes_effect_on_the_next_call() -> None:
     tenant.status = "disabled"
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(
+        await resolve_identity(
             _Request(f"Bearer {KEY_VALUE}"), session, auth_enabled=True, plan_cache=cache
         )
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
 
-def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
+@pytest.mark.asyncio
+async def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
     """删掉密钥配置 → 引用它的 Key 级联失效（ADR-0018），判定上等同于停用。"""
 
     from app.core.auth import resolve_identity
@@ -434,11 +435,11 @@ def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
     session = _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[])
 
     with pytest.raises(AppError) as excinfo:
-        resolve_identity(
+        await resolve_identity(
             _Request(f"Bearer {KEY_VALUE}"),
             session,
             auth_enabled=True,
-            plan_cache=_MemoryPlanCache(),
+            plan_cache=MemoryPlanCache(),
         )
 
     assert excinfo.value.code is ErrorCode.UNAUTHORIZED
@@ -447,51 +448,55 @@ def test_a_key_pointing_at_a_deleted_policy_is_unauthorized() -> None:
 # ───────────────────────────────────────────── 套餐解析：按 plan id 缓存
 
 
-def test_resolve_plan_reads_the_row_on_a_miss_and_caches_it() -> None:
+@pytest.mark.asyncio
+async def test_resolve_plan_reads_the_row_on_a_miss_and_caches_it() -> None:
     from app.services.plan_service import resolve_plan
 
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
 
-    plan = resolve_plan(_session(), PLAN_IDS[PLAN_STANDARD], cache=cache)
+    plan = await resolve_plan(_session(), PLAN_IDS[PLAN_STANDARD], cache=cache)
 
     assert plan == PLAN_PRESETS[PLAN_STANDARD]
     assert cache.set_calls == [PLAN_IDS[PLAN_STANDARD]]
 
 
-def test_resolve_plan_serves_from_the_cache_without_touching_the_database() -> None:
+@pytest.mark.asyncio
+async def test_resolve_plan_serves_from_the_cache_without_touching_the_database() -> None:
     from app.services.plan_service import resolve_plan
 
     class _ExplodingSession:
         def __getattr__(self, name: str) -> Any:
             raise AssertionError(f"命中缓存就不该读库：{name}")
 
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     cache.items[PLAN_IDS[PLAN_PRO]] = PLAN_PRESETS[PLAN_PRO]
 
-    plan = resolve_plan(_ExplodingSession(), PLAN_IDS[PLAN_PRO], cache=cache)
+    plan = await resolve_plan(_ExplodingSession(), PLAN_IDS[PLAN_PRO], cache=cache)
 
     assert plan == PLAN_PRESETS[PLAN_PRO]
     assert cache.set_calls == []
 
 
-def test_resolve_plan_reports_a_missing_plan_as_plan_not_found() -> None:
+@pytest.mark.asyncio
+async def test_resolve_plan_reports_a_missing_plan_as_plan_not_found() -> None:
     from app.services.plan_service import resolve_plan
 
     with pytest.raises(AppError) as excinfo:
-        resolve_plan(_session(), 99, cache=_MemoryPlanCache())
+        await resolve_plan(_session(), 99, cache=MemoryPlanCache())
 
     assert excinfo.value.code is ErrorCode.PLAN_NOT_FOUND
 
 
-def test_invalidation_deletes_the_cache_entry_instead_of_writing_through() -> None:
+@pytest.mark.asyncio
+async def test_invalidation_deletes_the_cache_entry_instead_of_writing_through() -> None:
     """改完套餐只删缓存、不写缓存：写缓存要求每处修改都记得同步，删则由下一次读兜住。"""
 
     from app.services.plan_service import invalidate_plan
 
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     cache.items[PLAN_IDS[PLAN_PRO]] = PLAN_PRESETS[PLAN_PRO]
 
-    invalidate_plan(cache, PLAN_IDS[PLAN_PRO])
+    await invalidate_plan(cache, PLAN_IDS[PLAN_PRO])
 
     assert cache.deleted == [PLAN_IDS[PLAN_PRO]]
     assert cache.set_calls == []
@@ -499,25 +504,26 @@ def test_invalidation_deletes_the_cache_entry_instead_of_writing_through() -> No
 
 
 class _FakeRedis:
-    """redis-py 的最小替身：只实现套餐缓存用到的那三条命令。"""
+    """``redis.asyncio`` 的最小替身：只实现套餐缓存用到的那三条命令。"""
 
     def __init__(self) -> None:
         self.values: dict[str, str] = {}
         self.expiries: dict[str, int] = {}
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         return self.values.get(key)
 
-    def setex(self, key: str, ttl: int, value: str) -> None:
+    async def setex(self, key: str, ttl: int, value: str) -> None:
         self.values[key] = value
         self.expiries[key] = ttl
 
-    def delete(self, key: str) -> None:
+    async def delete(self, key: str) -> None:
         self.values.pop(key, None)
         self.expiries.pop(key, None)
 
 
-def test_redis_plan_cache_keys_by_plan_id_and_round_trips_the_snapshot() -> None:
+@pytest.mark.asyncio
+async def test_redis_plan_cache_keys_by_plan_id_and_round_trips_the_snapshot() -> None:
     """缓存键是 **plan id**：管理员改个 code 不该让半个缓存失联。"""
 
     from app.core.plan_cache import RedisPlanCache
@@ -525,15 +531,16 @@ def test_redis_plan_cache_keys_by_plan_id_and_round_trips_the_snapshot() -> None
     client = _FakeRedis()
     cache = RedisPlanCache(client, ttl_seconds=60)
 
-    cache.set(PLAN_IDS[PLAN_STANDARD], PLAN_PRESETS[PLAN_STANDARD])
+    await cache.set(PLAN_IDS[PLAN_STANDARD], PLAN_PRESETS[PLAN_STANDARD])
 
     assert list(client.values) == [f"plan:{PLAN_IDS[PLAN_STANDARD]}"]
     assert client.expiries == {f"plan:{PLAN_IDS[PLAN_STANDARD]}": 60}
-    assert cache.get(PLAN_IDS[PLAN_STANDARD]) == PLAN_PRESETS[PLAN_STANDARD]
-    assert cache.get(PLAN_IDS[PLAN_PRO]) is None
+    assert await cache.get(PLAN_IDS[PLAN_STANDARD]) == PLAN_PRESETS[PLAN_STANDARD]
+    assert await cache.get(PLAN_IDS[PLAN_PRO]) is None
 
 
-def test_renaming_a_plan_code_keeps_the_same_cache_key() -> None:
+@pytest.mark.asyncio
+async def test_renaming_a_plan_code_keeps_the_same_cache_key() -> None:
     from dataclasses import replace
 
     from app.core.plan_cache import RedisPlanCache
@@ -542,13 +549,13 @@ def test_renaming_a_plan_code_keeps_the_same_cache_key() -> None:
     cache = RedisPlanCache(client, ttl_seconds=60)
     renamed = replace(PLAN_PRESETS[PLAN_PRO], code="pro-max")
 
-    cache.set(PLAN_IDS[PLAN_PRO], PLAN_PRESETS[PLAN_PRO])
-    cache.set(PLAN_IDS[PLAN_PRO], renamed)
+    await cache.set(PLAN_IDS[PLAN_PRO], PLAN_PRESETS[PLAN_PRO])
+    await cache.set(PLAN_IDS[PLAN_PRO], renamed)
 
     assert list(client.values) == [f"plan:{PLAN_IDS[PLAN_PRO]}"], (
         "键里没有 code，改名不产生第二个键"
     )
-    assert cache.get(PLAN_IDS[PLAN_PRO]) == renamed
+    assert await cache.get(PLAN_IDS[PLAN_PRO]) == renamed
 
 
 # ───────────────────────────────────────────── 守卫：内核不许认识框架
@@ -568,5 +575,3 @@ def test_kernel_module_imports_no_web_or_mcp_framework() -> None:
             imported.add(node.module.split(".")[0])
 
     assert not imported & {"fastapi", "fastmcp", "starlette", "flask", "django"}
-
-

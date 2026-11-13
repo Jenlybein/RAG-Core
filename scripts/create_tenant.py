@@ -25,6 +25,7 @@ from pathlib import Path
 from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal
+from app.db.transaction import transaction
 from app.models.plan import PLAN_CODES
 from app.models.tenant import DEFAULT_PLAN_CODE
 from app.services.tenant_service import create_tenant
@@ -81,13 +82,14 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        created = create_tenant(
-            db,
-            tenant_id=args.tenant_id,
-            name=args.name,
-            plan_code=args.plan,
-            kb_ids=args.kb_ids,
-        )
+        with transaction(db):
+            created = create_tenant(
+                db,
+                tenant_id=args.tenant_id,
+                name=args.name,
+                plan_code=args.plan,
+                kb_ids=args.kb_ids,
+            )
         # **在会话还活着时**把要打印的字段抄成普通值。
         # 这里曾经直接 print(created.tenant.id)：``create_tenant`` 内部 commit 过，行在
         # commit 时被 expire，紧接着 ``db.close()`` 又把它 detach，于是最后这几行必然抛
@@ -107,7 +109,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         # ``AppError`` 是「配置不自洽」（20015）：档位要的能力配置没开、配置开的比套餐
         # 允许的多，或数值超过套餐上限。它与入参错误一样是**人改一下就好**的失败，
         # 不是脚本故障，所以同样打一行消息、返回非零，不吐 traceback。
-        db.rollback()
+        # 回滚已由上面的 with transaction(db) 做过，这里不再重复。
         print(str(exc), file=sys.stderr)
         return 1
     finally:

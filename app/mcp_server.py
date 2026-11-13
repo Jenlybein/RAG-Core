@@ -15,6 +15,10 @@ JSON-RPC 信封本身不带任何授权信息。这次调用「用多好」由�
 调的也是它，白名单 / 档位门禁 / 配额 / 召回 / 记账的顺序都封在里面）。这里只做「取请求
 + 取会话 + 递参数」三件事，不判规则，也不各长一套。
 
+**一个会话**（第 11 步票 #130）：身份判定与检索链路都在异步栈上，所以工具只开一个
+``AsyncSession``，与 HTTP 侧完全同形——那边 ``get_current_key`` 与路由参数拿到的是
+**同一个** ``get_async_db``（FastAPI 的依赖缓存），这里就显式用同一个会话对象。
+
 业务失败（如 20008 / 20010）不是协议错误：按工具执行失败表达，文本里带错误码。第 9 步
 再挂第三个工具 ``rag_research``。
 
@@ -36,19 +40,28 @@ from app.services.data_scope import scoped_kb_ids
 from app.services.retrieval_gate import gated_retrieve
 
 
-def _key_context(db: Any) -> KeyContext:
-    """MCP 侧的薄适配器：从请求上下文取 HTTP Request，交给判定内核。"""
+async def _key_context(db: Any) -> KeyContext:
+    """MCP 侧的薄适配器：从请求上下文取 HTTP Request，交给判定内核。
 
-    return resolve_identity(get_http_request(), db)
+    判定内核自票 #130 起是 ``async``（套餐缓存与库读都在事件循环上），所以这里只差
+    「从哪拿请求」——不再需要线程池，也不再需要跨回主循环的过渡桥。
+    """
+
+    return await resolve_identity(get_http_request(), db)
 
 
 def create_mcp_server(
     *,
-    get_db: Callable,
+    get_async_db: Callable,
     retrieve: Callable,
     list_kbs: Callable,
 ) -> FastMCP:
-    """把两个工具挂到一个 FastMCP 实例上；业务规则全在回调里。"""
+    """把两个工具挂到一个 FastMCP 实例上；业务规则全在回调里。
+
+    ``get_async_db`` 是唯一一个会话工厂：判定内核与检索链路都在异步栈上（第 11 步
+    票 #127 / #130），所以这里不再有「两个会话各管一段」的分工——那正是迁移期的形状。
+    ``list_kbs`` 也是异步的（控制面与数据面列库现在都读 ``AsyncSession``）。
+    """
 
     mcp = FastMCP("rag-core")
 
@@ -56,10 +69,10 @@ def create_mcp_server(
     async def rag_retrieve(kb_ids: list[str], query: str) -> dict:
         """在指定知识库里检索切片（不生成答案）。"""
 
-        db = get_db()
+        db = get_async_db()
         try:
             # 先取会话再判身份：真实 Key 的租户与套餐都在库里，判定本身要读它。
-            key = _key_context(db)
+            key = await _key_context(db)
             # 与 HTTP 侧**同一个值对象**：工具签名只有类型，挡不住空列表与纯空白，所以
             # 这里显式走一遍 RetrieveRequest；失败是 20002，与 REST 同一个码。
             payload = parse_retrieve_request(kb_ids=kb_ids, query=query)
@@ -80,16 +93,16 @@ def create_mcp_server(
             # 业务失败不是协议错误：按 JSON-RPC 结果表达，文本里带 code。
             raise ValueError(f"{exc.code.value}|{exc.msg}") from exc
         finally:
-            db.close()
+            await db.close()
 
     @mcp.tool(name="rag_list_knowledge_bases")
     async def rag_list_knowledge_bases() -> dict:
         """列这把 Key 可见的知识库（与 HTTP 的 GET /api/v1/knowledge-bases 对称）。"""
 
-        db = get_db()
+        db = get_async_db()
         try:
-            key = _key_context(db)
-            rows = list_kbs(db, key.tenant_id)
+            key = await _key_context(db)
+            rows = await list_kbs(db, key.tenant_id)
             # 与 HTTP 列库同一套收窄：清单本身就是「你能看哪些库」的答案。
             visible = set(scoped_kb_ids(policy=key.policy, kb_ids=[row.id for row in rows]))
             return {
@@ -100,13 +113,17 @@ def create_mcp_server(
                 ]
             }
         finally:
-            db.close()
+            await db.close()
 
     return mcp
 
 
-def create_mcp_http_app(*, get_db: Callable, retrieve: Callable, list_kbs: Callable):
-    """挂成子应用；path=\"/\" 让外层 mount 成为唯一的前缀来源。"""
+def create_mcp_http_app(
+    *, get_async_db: Callable, retrieve: Callable, list_kbs: Callable
+):
+    """挂成子应用；path="/" 让外层 mount 成为唯一的前缀来源。"""
 
-    mcp = create_mcp_server(get_db=get_db, retrieve=retrieve, list_kbs=list_kbs)
+    mcp = create_mcp_server(
+        get_async_db=get_async_db, retrieve=retrieve, list_kbs=list_kbs
+    )
     return mcp.http_app(path="/", transport="streamable-http", json_response=True)

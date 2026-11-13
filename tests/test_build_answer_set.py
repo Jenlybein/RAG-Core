@@ -94,7 +94,9 @@ def test_code_absent_from_source_is_flagged() -> None:
 def test_fullwidth_and_halfwidth_match() -> None:
     """全角数字 / 全角百分号要和半角正文对得上（归一化后比较）。"""
 
-    result = bas.check_answer("余量低于 １０％ 时上报，门槛 １５ 次。", ["余量低于 10% 时上报，门槛 15 次。"])
+    result = bas.check_answer(
+        "余量低于 １０％ 时上报，门槛 １５ 次。", ["余量低于 10% 时上报，门槛 15 次。"]
+    )
 
     assert result["passed"] is True
 
@@ -121,7 +123,9 @@ def test_model_suffix_must_match_exactly() -> None:
 def test_whitespace_inside_number_is_ignored() -> None:
     """正文里的「30 分钟」与答案里的「30分钟」是同一个事实。"""
 
-    result = bas.check_answer("静默窗口打开 30分钟。", ["把告警静默窗口打开 30 分钟，避免重复打扰。"])
+    result = bas.check_answer(
+        "静默窗口打开 30分钟。", ["把告警静默窗口打开 30 分钟，避免重复打扰。"]
+    )
 
     assert result["passed"] is True
 
@@ -528,7 +532,9 @@ def test_report_states_counts_pass_rate_and_failure_reasons() -> None:
             "status": "ok",
             "answer": "E1024 表示证书链过期。",
             "source_chunk_ids": ["c1"],
-            "sources": [{"chunk_id": "c1", "document": "d", "heading_path": "h", "content": "E1024 …"}],
+            "sources": [
+                {"chunk_id": "c1", "document": "d", "heading_path": "h", "content": "E1024 …"}
+            ],
             "checks": {"passed": True, "missing": [], "atoms": []},
         },
         {
@@ -549,7 +555,9 @@ def test_report_states_counts_pass_rate_and_failure_reasons() -> None:
             "status": "ok",
             "answer": "XR-2100 是机架款，价格 9600。",
             "source_chunk_ids": ["c3"],
-            "sources": [{"chunk_id": "c3", "document": "d", "heading_path": "h", "content": "9600"}],
+            "sources": [
+                {"chunk_id": "c3", "document": "d", "heading_path": "h", "content": "9600"}
+            ],
             "checks": {
                 "passed": False,
                 "missing": [{"kind": "number", "text": "9600", "surface": "9600"}],
@@ -587,7 +595,14 @@ def test_report_can_carry_the_trial_run() -> None:
         generated_at="2026-11-11T00:00:00+00:00",
     )
     trial = {
-        "stats": {"requested": 3, "ok": 2, "refused": 0, "failed": 1, "check_passed": 2, "check_pass_rate": 1.0},
+        "stats": {
+            "requested": 3,
+            "ok": 2,
+            "refused": 0,
+            "failed": 1,
+            "check_passed": 2,
+            "check_pass_rate": 1.0,
+        },
         "cases": [{"id": "q01", "status": "ok", "answer": "E1024 表示证书链过期。"}],
         "generated_at": "2026-11-11T00:00:00+00:00",
     }
@@ -635,12 +650,16 @@ def test_cli_writes_payload_and_report(tmp_path: Path, monkeypatch: pytest.Monke
         content="E1024 表示设备本地保存的证书链已经超过有效期。",
     )
     monkeypatch.setattr(bas, "load_questions", lambda: questions)
-    monkeypatch.setattr(bas, "load_corpus_chunks", lambda **_: ([chunk], {"support_errors.md": "E1024 …"}))
+    monkeypatch.setattr(
+        bas, "load_corpus_chunks", lambda **_: ([chunk], {"support_errors.md": "E1024 …"})
+    )
 
     async def fake_chat(system: str, user: str) -> dict[str, Any]:
         return {"answer": "E1024 表示证书链已经超过有效期。"}
 
-    monkeypatch.setattr(bas, "build_judge", lambda: (fake_chat, {"provider": "p", "model": "m", "base_url": "b"}))
+    monkeypatch.setattr(
+        bas, "build_judge", lambda: (fake_chat, {"provider": "p", "model": "m", "base_url": "b"})
+    )
 
     out = tmp_path / "answers.json"
     report = tmp_path / "answers.report.md"

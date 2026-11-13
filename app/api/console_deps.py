@@ -31,6 +31,11 @@
 - ``get_langfuse_reader``：控制台瀑布「本地没命中时去问观测服务」那一步的构造点
   （#103）。测试注入一个假客户端，于是这条路径能在离线套件里被逐项断言；生产实现是
   ``app.observability.langfuse_reader.read_stage_spans``。
+
+**只有一个面，而且它在异步栈上**（第 11 步票 #129 → #130）：控制面的读与写都已经换成
+``AsyncSession``，所以这里不再有 ``_async`` 后缀的孪生——判定内核 ``resolve_console_identity``
+只剩一份协程实现，五个门禁也各自只有一份。后缀是过渡标记，不是设计（约定见
+``app/db/async_session.py`` 的模块文档）。
 """
 
 from __future__ import annotations
@@ -38,7 +43,7 @@ from __future__ import annotations
 from typing import Final
 
 from fastapi import Depends, Request
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.console_auth import (
     ConsoleIdentity,
@@ -52,7 +57,7 @@ from app.core.runtime_settings_cache import (
     RuntimeSettingsCache,
     get_settings_cache,
 )
-from app.db.session import get_db
+from app.db.async_session import get_async_db
 from app.observability.langfuse_reader import read_stage_spans
 from app.services import plan_service
 from app.services.retrieval_waterfall import RemoteStageReader
@@ -61,13 +66,15 @@ from app.services.retrieval_waterfall import RemoteStageReader
 MSG_TENANT_ACCOUNT_REQUIRED: Final[str] = "a tenant account is required for this console endpoint"
 
 
-def get_console_account(request: Request, db: Session = Depends(get_db)) -> ConsoleIdentity:
-    """面板接口的鉴权依赖：只读会话 cookie，原样返回判定结论。"""
+async def get_console_account(
+    request: Request, db: AsyncSession = Depends(get_async_db)
+) -> ConsoleIdentity:
+    """面板接口的鉴权依赖：读会话 cookie，原样返回判定结论。"""
 
-    return resolve_console_identity(request, db)
+    return await resolve_console_identity(request, db)
 
 
-def get_console_admin(
+async def get_console_admin(
     identity: ConsoleIdentity = Depends(get_console_account),
 ) -> ConsoleIdentity:
     """管理员依赖：先认出是谁，再判角色（``20011``）。"""
@@ -76,7 +83,7 @@ def get_console_admin(
     return identity
 
 
-def require_console_write(
+async def require_console_write(
     request: Request,
     identity: ConsoleIdentity = Depends(get_console_account),
 ) -> ConsoleIdentity:
@@ -86,7 +93,7 @@ def require_console_write(
     return identity
 
 
-def require_console_admin_write(
+async def require_console_admin_write(
     request: Request,
     identity: ConsoleIdentity = Depends(get_console_admin),
 ) -> ConsoleIdentity:
@@ -102,7 +109,7 @@ def require_console_write_header(request: Request) -> None:
     require_write_header(request)
 
 
-def require_console_tenant(
+async def require_console_tenant(
     identity: ConsoleIdentity = Depends(get_console_account),
 ) -> ConsoleIdentity:
     """用户面板的读接口：先认出是谁，再要求它属于某个租户（管理员一律 ``20011``）。
@@ -117,7 +124,7 @@ def require_console_tenant(
     return identity
 
 
-def require_console_tenant_write(
+async def require_console_tenant_write(
     identity: ConsoleIdentity = Depends(require_console_write),
 ) -> ConsoleIdentity:
     """用户面板的写接口：防跨站头通过后，再要求它是租户账号。

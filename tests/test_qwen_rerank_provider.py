@@ -359,7 +359,7 @@ def test_without_an_injected_client_the_registry_client_is_shared(
 
         client = http_clients.get_http_client()
         assert client.is_closed is False, "注册表的客户端归 loop 收尾，Provider 不许关它"
-        await http_clients.aclose_current_loop_clients()
+        await http_clients.aclose_http_client()
         assert client.is_closed is True, "收尾由注册表那侧做"
 
     asyncio.run(_run())

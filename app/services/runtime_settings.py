@@ -55,6 +55,7 @@ from typing import Any, Callable, Final, Literal, Mapping
 
 import structlog
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, settings
@@ -66,6 +67,7 @@ from app.core.runtime_settings_cache import (
     get_settings_cache,
 )
 from app.db.base import now
+from app.db.transaction import after_commit
 from app.db.session_factory import session_factory, set_session_factory as _set_session_factory
 from app.models.key_policy import KeyPolicy, policy_snapshot_of
 from app.models.plan import Plan
@@ -449,18 +451,8 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
         "每路召回深度只影响下一次检索的候选池，不涉及任何已落库数据",
         minimum=1,
     ),
-    "RETRIEVAL_POOL_SIZE": _spec(
-        TIER_HOT,
-        TARGET_SETTINGS,
-        "执行池规模是并发护栏；改完下一次取池时重建（旧池同步关停），不动任何已落库数据",
-        minimum=1,
-    ),
-    "RETRIEVAL_QUEUE_BUDGET_MS": _spec(
-        TIER_HOT,
-        TARGET_SETTINGS,
-        "排队预算是每次投递的参数；超预算按「这一路失败」降级，只影响下一次检索",
-        minimum=1,
-    ),
+    # 第 11 步票 #127：``RETRIEVAL_POOL_SIZE`` / ``RETRIEVAL_QUEUE_BUDGET_MS`` 随执行池一起
+    # 删除（见 ADR-0022「第五次修订」）。面板上不再有「改了也不生效」的两个键。
     "DOCUMENT_MAX_SIZE_MB": _spec(
         TIER_HOT,
         TARGET_SETTINGS,
@@ -730,6 +722,16 @@ def _read_db_rows(db: Session | None) -> dict[str, Any]:
         session.close()
 
 
+async def _read_db_rows_async(db: AsyncSession) -> dict[str, Any]:
+    """:func:`_read_db_rows` 的异步版：只给配置中台面板那条只读路径（票 #129）。
+
+    刷新中间件与 Celery 仍在同步版上（它们本来就不在事件循环里），所以这里不做
+    「自己开一个异步会话」的分支——异步会话由请求级依赖给，生命周期归依赖管。
+    """
+
+    return {row.key: row.value for row in await runtime_setting_repository.list_all_async(db)}
+
+
 def collect_overrides(
     db: Session | None = None, *, cache: RuntimeSettingsCache | None = None
 ) -> OverrideReport:
@@ -886,6 +888,10 @@ def ensure_runtime_overrides(
 def invalidate_runtime_settings(cache: RuntimeSettingsCache | None = None) -> None:
     """写完之后调它：删 Redis 缓存 + 清本进程的「刚检查过」标记。
 
+    **同步版**：只服务仍在同步上下文里的调用点（中间件的 ``run_in_threadpool``、
+    Celery 任务）。请求路径上的写走 :func:`invalidate_runtime_settings_async`——
+    同步 Redis 在事件循环上会卡住整条链（票 #133 的验收就是这条）。
+
     **删缓存，不写缓存**（ADR-0017）：写要每处修改都记得同步，漏一处就留下一个
     「看起来更新过、实际是旧值」的条目；删让下一次读自然拿到新值。
     """
@@ -894,6 +900,24 @@ def invalidate_runtime_settings(cache: RuntimeSettingsCache | None = None) -> No
     cache_obj = _cache_or_default(cache)
     try:
         cache_obj.delete()
+    except Exception as exc:  # noqa: BLE001 —— 删不掉最多多等一个 TTL
+        logger.warning("runtime settings cache delete failed", error=str(exc))
+    with _state_lock:
+        _last_checked_at = None
+
+
+async def invalidate_runtime_settings_async(cache: RuntimeSettingsCache | None = None) -> None:
+    """``invalidate_runtime_settings`` 的异步孪生：删缓存那一步**不阻塞事件循环**。
+
+    与同步版逐条同构（同样的「删而不写」、同样清 ``_last_checked_at``、同样吞掉缓存
+    故障），差别只有 ``await``。控制面写入的 ``after_commit`` 回调登记的是这一个：
+    ``AsyncTransaction.commit`` 会 ``await`` 它，于是同步 Redis 不再出现在循环上。
+    """
+
+    global _last_checked_at
+    cache_obj = _cache_or_default(cache)
+    try:
+        await cache_obj.adelete()
     except Exception as exc:  # noqa: BLE001 —— 删不掉最多多等一个 TTL
         logger.warning("runtime settings cache delete failed", error=str(exc))
     with _state_lock:
@@ -921,15 +945,18 @@ class SettingRowView:
     invalid_reason: str | None = None
 
 
-def describe_settings(db: Session) -> list[SettingRowView]:
+async def describe_settings(db: AsyncSession) -> list[SettingRowView]:
     """按三档列出白名单的每一行（面板读的是**库里的真相**，不经过缓存）。
 
     为什么要绕过缓存：这一页要回答的恰恰是「库里现在是什么」，而缓存最多比库晚 30 秒。
     刚保存完就刷新面板却看到旧来源标记，会让人以为保存没成功——页面是给人看的，
     宁可多读一次库。
+
+    读在异步会话上（票 #129）：这是控制面唯一「读整张 ``runtime_settings``」的查询。
+    逐键校验与合并（:func:`_classify`）是纯函数，不碰 I/O，因此一行都不用改。
     """
 
-    raw = _read_db_rows(db)
+    raw = await _read_db_rows_async(db)
     report = _classify(raw)
     rows: list[SettingRowView] = []
     for key, spec in SETTING_SPECS.items():
@@ -1006,16 +1033,16 @@ def _turning_off_keyword(values: Mapping[str, Any]) -> bool:
     return current != "none"
 
 
-def _plan_of(db: Session, policy: KeyPolicy) -> Plan | None:
+async def _plan_of(db: AsyncSession, policy: KeyPolicy) -> Plan | None:
     """一条密钥配置所属租户的套餐；租户或套餐缺失时返回 ``None``（预演跳过它）。"""
 
-    tenant = tenant_repository.get_by_id(db, policy.tenant_id)
+    tenant = await tenant_repository.get_by_id_async(db, policy.tenant_id)
     if tenant is None:
         return None
-    return plan_repository.get_by_id(db, tenant.plan_id)
+    return await plan_repository.get_by_id_async(db, tenant.plan_id)
 
 
-def preview_impact(db: Session, values: Mapping[str, Any]) -> SettingsImpact:
+async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> SettingsImpact:
     """只读试算：这一批改动会让哪些**租户**的质量档位退化、哪些会丢掉关键词通道。
 
     判定口径（与 #82 的「能力开关影响预览」一节同一句）：
@@ -1043,12 +1070,12 @@ def preview_impact(db: Session, values: Mapping[str, Any]) -> SettingsImpact:
 
     degraded: list[str] = []
     lost: list[str] = []
-    for policy in key_policy_repository.list_all(db):
-        plan = _plan_of(db, policy)
+    for policy in await key_policy_repository.list_all(db):
+        plan = await _plan_of(db, policy)
         if plan is None:
             continue
         chain = profile_chain_of(policy_snapshot_of(policy))
-        name = _tenant_name(db, policy.tenant_id)
+        name = await _tenant_name(db, policy.tenant_id)
 
         quality_loss = (
             (turning_off_rerank and chain.rerank and plan.rerank_allowed)
@@ -1069,10 +1096,10 @@ def preview_impact(db: Session, values: Mapping[str, Any]) -> SettingsImpact:
     )
 
 
-def _tenant_name(db: Session, tenant_id: str) -> str:
+async def _tenant_name(db: AsyncSession, tenant_id: str) -> str:
     """租户的显示名；读不到行时用 id。影响面是给人看的，id 至少还能拿去查。"""
 
-    tenant = tenant_repository.get_by_id(db, tenant_id)
+    tenant = await tenant_repository.get_by_id_async(db, tenant_id)
     if tenant is None:
         return tenant_id
     return tenant.name or tenant.id
@@ -1133,7 +1160,7 @@ def _assert_values_valid(values: Mapping[str, Any]) -> dict[str, Any]:
     return normalized
 
 
-def _assert_pointer_targets(db: Session, values: Mapping[str, Any]) -> None:
+async def _assert_pointer_targets(db: AsyncSession, values: Mapping[str, Any]) -> None:
     """角色指向的目标必须是一条**现存**的 ``model_configs`` 行（票 #94）。
 
     放在服务层而不是路由里：指针还有别的写入口（未来的 CLI / 迁移脚本），而「指向一个
@@ -1147,17 +1174,17 @@ def _assert_pointer_targets(db: Session, values: Mapping[str, Any]) -> None:
 
     for key, value in values.items():
         if SETTING_SPECS[key].target == TARGET_POINTER:
-            model_config_service.ensure_pointer_target(db, key, value)
+            await model_config_service.ensure_pointer_target(db, key, value)
 
 
-def _assert_merge_valid(db: Session, values: Mapping[str, Any]) -> None:
+async def _assert_merge_valid(db: AsyncSession, values: Mapping[str, Any]) -> None:
     """键间冲突检查：把「库里的合法覆盖 + 这次的新值」整体过一遍 validator。
 
     这一步与逐键校验是两件事：逐键只看自己，整体能发现「A 改成 1、B 改成 2 之后互相
     矛盾」这种只有一起看才成立的错误。
     """
 
-    report = _classify(_read_db_rows(db))
+    report = _classify(await _read_db_rows_async(db))
     merged = dict(ENV_BASELINE)
     merged.update(
         {
@@ -1175,19 +1202,19 @@ def _assert_merge_valid(db: Session, values: Mapping[str, Any]) -> None:
         ) from exc
 
 
-def _override_snapshot(db: Session, key: str) -> Any:
+async def _override_snapshot(db: AsyncSession, key: str) -> Any:
     """改前这一键**在覆盖层里的样子**：有行就是那一行的值，没有行就是 ``None``。
 
     审计要回答「这次是新增一条覆盖，还是改掉一条已有覆盖」，所以这里报的是覆盖层的值
     而不是生效值——生效值在 before 里看不出来「之前根本没配过」。
     """
 
-    row = runtime_setting_repository.get_by_key(db, key)
+    row = await runtime_setting_repository.get_by_key(db, key)
     return None if row is None else row.value
 
 
-def patch_runtime_settings(
-    db: Session,
+async def patch_runtime_settings(
+    db: AsyncSession,
     *,
     values: Mapping[str, Any],
     dry_run: bool,
@@ -1210,12 +1237,12 @@ def patch_runtime_settings(
     normalized = _assert_values_valid(values)
     # 指针的存在性校验排在逐键校验之后、键间校验之前：值本身先要合法（字符串 / 空值），
     # 才谈得上「它指向的那一行在不在」。两项都失败时先报前一项，错误信息才是第一现场。
-    _assert_pointer_targets(db, normalized)
-    _assert_merge_valid(db, normalized)
+    await _assert_pointer_targets(db, normalized)
+    await _assert_merge_valid(db, normalized)
 
     specs = {key: SETTING_SPECS[key] for key in normalized}
     before = {
-        key: _visible_value(specs[key], _override_snapshot(db, key)) for key in normalized
+        key: _visible_value(specs[key], await _override_snapshot(db, key)) for key in normalized
     }
     after = {key: _visible_value(specs[key], value) for key, value in normalized.items()}
     hot = tuple(key for key, spec in specs.items() if spec.tier == TIER_HOT)
@@ -1229,19 +1256,19 @@ def patch_runtime_settings(
             restart=restart,
             before=before,
             after=after,
-            impact=preview_impact(db, normalized),
+            impact=await preview_impact(db, normalized),
             note=NOTE_DRY_RUN,
         )
 
     stamp = at if at is not None else now()
     actor_id = str(getattr(actor, "account_id", actor))
     for key, value in normalized.items():
-        runtime_setting_repository.upsert(
+        await runtime_setting_repository.upsert(
             db, key=key, value=value, updated_by=actor_id, updated_at=stamp
         )
     # 审计与改动同一个事务：不允许出现「改了但没有审计」的窗口。审计落库失败就让整次
     # 改动一起回滚——没有账本的改动本来就不该生效（与改套餐同一条纪律）。
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_SETTINGS_PATCH,
@@ -1251,12 +1278,10 @@ def patch_runtime_settings(
         before=before,
         after=after,
     )
-    db.commit()
-
-    # 删缓存放在 commit 之后：先删再提交时，另一个请求可能刚好读回旧行并把它写回缓存。
+    # 删缓存必须等库先落地：先删再提交时，另一个请求可能刚好读回旧行并把它写回缓存。
     # 只有热生效档需要——第二档要重启才读入，删缓存不会让任何人看到新值。
     if hot:
-        invalidate_runtime_settings(cache)
+        after_commit(db, lambda: invalidate_runtime_settings_async(cache))
 
     return SettingsPatchResult(
         dry_run=False,

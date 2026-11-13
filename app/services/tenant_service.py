@@ -76,7 +76,7 @@ def create_tenant(
         db, Tenant(id=tenant_id, name=name, plan_id=plan.id)
     )
     policy = key_policy_repository.create(db, row)
-    db.commit()
+    # 提交由调用方圈：脚本 with transaction(db)。
     return CreatedTenant(tenant=tenant, policy=policy)
 
 
@@ -94,7 +94,7 @@ def change_tenant_plan(db: Session, *, tenant_id: str, plan_code: str) -> PlanCh
 
     before = plan_repository.get_by_id(db, tenant.plan_id)
     tenant.plan_id = plan.id
-    db.commit()
+    # 同上：提交点不在这里。
     return PlanChange(
         tenant_id=tenant_id,
         from_code=before.code if before is not None else "",

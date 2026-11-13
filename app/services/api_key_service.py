@@ -8,10 +8,15 @@
 3. 配置必须属于同一个租户——跨租户引用等于把 A 的额度与数据范围发给 B。
 
 本期 Key 明文入库（ADR-0004）：脚本与控制台都能看到原文，这是给调试台留的能力。
+
+**行的拼装只有一份，落库有两层薄壳**（第 11 步票 #130）：:func:`_new_key_row` 是纯函数
+（生成原文、拼行），同步 :func:`create_api_key_row` 给运维脚本
+（``scripts/issue_api_key.py``），异步 :func:`create_api_key_row_async` 给控制面签发。
 """
 
 from __future__ import annotations
 
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.api_key import ApiKey
@@ -31,7 +36,11 @@ def issue_api_key(
     policy_id: str,
     label: str | None = None,
 ) -> ApiKey:
-    """给租户签一把绑定到指定密钥配置的 Key，返回刚写入的行（含原文）。"""
+    """给租户签一把绑定到指定密钥配置的 Key，返回刚写入的行（含原文）。
+
+    这是**脚本的同步路径**（``scripts/issue_api_key.py``）；控制面走
+    :func:`app.services.key_admin_service.issue_key`（异步会话 + 同事务审计）。
+    """
 
     if tenant_repository.get_by_id(db, tenant_id) is None:
         raise LookupError(f"租户不存在：{tenant_id}")
@@ -47,19 +56,14 @@ def issue_api_key(
     api_key = create_api_key_row(
         db, tenant_id=tenant_id, policy_id=policy_id, label=label
     )
-    db.commit()
+    # 提交点不在这里：脚本用 ``with transaction(db)`` 圈住，请求路径由路由的事务依赖兜住。
     return api_key
 
 
-def create_api_key_row(
-    db: Session, *, tenant_id: str, policy_id: str, label: str | None
-) -> ApiKey:
-    """只建 Key 行、只 flush：控制面签发要和配置与审计放进同一个事务。
+def _new_key_row(*, tenant_id: str, policy_id: str, label: str | None) -> ApiKey:
+    """拼一行新 Key（**纯函数**：不碰会话，原文由 :func:`new_api_key_value` 生成）。"""
 
-    Key 原文的生成收在 :func:`app.utils.id_generator.new_api_key_value`；这里只负责拼行。
-    """
-
-    api_key = ApiKey(
+    return ApiKey(
         id=new_id(),
         tenant_id=tenant_id,
         policy_id=policy_id,
@@ -67,5 +71,23 @@ def create_api_key_row(
         label=label,
         status=API_KEY_STATUS_ACTIVE,
     )
+
+
+def create_api_key_row(
+    db: Session, *, tenant_id: str, policy_id: str, label: str | None
+) -> ApiKey:
+    """只建 Key 行、只 flush（同步外壳：运维脚本用）。"""
+
+    api_key = _new_key_row(tenant_id=tenant_id, policy_id=policy_id, label=label)
     api_key_repository.create(db, api_key)
+    return api_key
+
+
+async def create_api_key_row_async(
+    db: AsyncSession, *, tenant_id: str, policy_id: str, label: str | None
+) -> ApiKey:
+    """只建 Key 行、只 flush（控制面签发要和配置与审计放进同一个事务）。"""
+
+    api_key = _new_key_row(tenant_id=tenant_id, policy_id=policy_id, label=label)
+    await api_key_repository.create_async(db, api_key)
     return api_key

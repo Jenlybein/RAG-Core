@@ -8,6 +8,10 @@ cookie，之后只看统一响应体。这条是 code-review 之后改过来的�
 
 仓库既有口径在这里同样适用：数据库用 ``dependency_overrides`` 换成内存会话替身、
 观测服务用假客户端，因此不连 PG、不起栈、不发网络。
+
+**会话替身只需一份**：第 11 步收口之后，控制面身份与 ``trace_id`` 反查都在异步栈上，
+``override_all_db`` 把两个异步会话入口换到同一个内存假库（票 #128 时这里曾是两套替身，
+那套双栈期写法已删除）。
 """
 
 from __future__ import annotations
@@ -25,7 +29,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.retrieval_trace import RetrievalTrace
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import RecordingSession, override_all_db
 
 LOGIN_PATH = "/console/login"
 LOOKUP_PATH = "/console/retrieval-traces"
@@ -35,57 +39,6 @@ TENANT_BETA = "tenant_beta"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
 BOB_ID = "00000000-0000-4000-8000-000000000003"
 LOG_ALPHA = "log-alpha-0001"
-
-
-class _TraceRows(RecordingSession):
-    """认得归属索引那条 ``select(...).where(trace_id == ?, tenant_id == ?)`` 的假会话。
-
-    不 patch 仓储：让真实 SQL 构造跑一遍，只把执行结果换成内存行。替身只认**这一种**
-    查询形状——假会话越像真会话，越容易让人误以为测过的是数据库。
-    """
-
-    def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
-        table = _final_table_name(statement)
-        if table == RetrievalTrace.__tablename__:
-            rows = [row for row in self._rows.get(RetrievalTrace, []) if _matches(row, statement)]
-            return _SelectResult(rows)
-        return super().execute(statement, *args, **kwargs)
-
-
-class _SelectResult:
-    """``db.execute(select(...))`` 的最小替身：仓储只要 ``scalar_one_or_none()``。"""
-
-    def __init__(self, rows: list[Any]) -> None:
-        self._rows = rows
-
-    def scalar_one_or_none(self) -> Any:
-        return self._rows[0] if self._rows else None
-
-
-def _final_table_name(statement: Any) -> str | None:
-    try:
-        return statement.get_final_froms()[0].name
-    except (AttributeError, IndexError):
-        return None
-
-
-def _matches(row: Any, statement: Any) -> bool:
-    """只按等值 ``col = 字面量`` 比对——这条查询就两个条件，多一种形状说明实现变了。"""
-
-    criterion = getattr(statement, "whereclause", None)
-    pending = [criterion] if criterion is not None else []
-    while pending:
-        node = pending.pop()
-        left = getattr(node, "left", None)
-        right = getattr(node, "right", None)
-        if left is not None and hasattr(left, "key") and hasattr(right, "value"):
-            if getattr(row, left.key) != right.value:
-                return False
-            continue
-        clauses = getattr(node, "clauses", None)
-        if clauses:
-            pending.extend(clauses)
-    return True
 
 
 def _plan_rows() -> list[Plan]:
@@ -134,11 +87,13 @@ def _world() -> dict[type, list[Any]]:
             _account(ALICE_ID, "alice", TENANT_ALPHA),
             _account(BOB_ID, "bob", TENANT_BETA),
         ],
-        RetrievalTrace: [
-            _trace(LOG_ALPHA, TENANT_ALPHA),
-            _trace("log-beta-0001", TENANT_BETA),
-        ],
     }
+
+
+def _trace_rows() -> list[RetrievalTrace]:
+    """归属索引里的两行：Alpha 与 Beta 各一条（跨租户要的是「行在，但不属于你」）。"""
+
+    return [_trace(LOG_ALPHA, TENANT_ALPHA), _trace("log-beta-0001", TENANT_BETA)]
 
 
 @dataclass
@@ -155,11 +110,15 @@ class _Harness:
 @pytest.fixture
 def console() -> Iterator[_Harness]:
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
 
-    session = _TraceRows(rows=_world())
-    main.app.dependency_overrides[session_module.get_db] = lambda: session
+    world = _world()
+    world[RetrievalTrace] = _trace_rows()
+    # 登录（写会话行）、身份判定与 trace_id 反查都在**同一个假库**上：身份判定自票 #129
+    # 起走异步会话，它必须能读回登录刚写下的那一行，而读写看到同一个库正是生产里的形状
+    # （两套连接池，一个库）。
+    session = RecordingSession(rows=world)
+    override_all_db(main.app, session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: None
     try:
         with TestClient(main.app) as client:

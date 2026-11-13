@@ -1,9 +1,13 @@
 """票 #103：控制台按 ``log_id`` 读回六段瀑布的验收。
 
 接缝是一条：真实应用 + ``TestClient`` + 真实 ``POST /console/login`` 拿到的会话 cookie。
-之后只看统一响应体。归属索引那一段用内存会话替身（``_SelectResult`` 认得仓储真正发出的
-那条 ``select``），JSONL 用**真实写入**（``emit_retrieval_trace`` → ``JsonlTraceSink``），
-观测服务用**假客户端**。因此这里既不需要 PostgreSQL，也不需要起观测栈，更不发一次网络。
+之后只看统一响应体。归属索引那一段用内存会话替身，JSONL 用**真实写入**
+（``emit_retrieval_trace`` → ``JsonlTraceSink``），观测服务用**假客户端**。因此这里既不需要
+PostgreSQL，也不需要起观测栈，更不发一次网络。
+
+**会话替身只需一份**（第 11 步收口之后）：控制面身份（登录、会话 cookie）与归属索引的读
+都在异步栈上，``override_all_db`` 把两个异步会话入口换到同一个内存假库，所以「这条路径
+到底连没连库」在离线套件里是确定的。票 #128 时这里曾是两套替身，那套双栈期写法已删除。
 
 钉住四件事，每一件都是票面的验收项：
 
@@ -53,7 +57,7 @@ from app.observability.stage_timing import (
     StageSpan,
 )
 from app.services.trace_identity import trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 WATERFALL_PATH = "/console/retrieval-traces/{log_id}/waterfall"
 LOGIN_PATH = "/console/login"
@@ -90,59 +94,6 @@ PUBLIC_SENTINEL = "T103-PUBLIC-SENTINEL-7a91"
 # ────────────────────────────────────────────────────────────────── 离线替身
 
 
-class _SelectResult:
-    """``db.execute(select(...))`` 的最小替身：仓储只要一个 ``scalar_one_or_none()``。"""
-
-    def __init__(self, rows: list[Any]) -> None:
-        self._rows = rows
-
-    def scalar_one_or_none(self) -> Any:
-        return self._rows[0] if self._rows else None
-
-
-class _WaterfallSession(RecordingSession):
-    """``RecordingSession`` + 「认得归属索引那条 select」。
-
-    不 patch 仓储函数：让真实 SQL 构造跑一遍，只把执行结果换成内存行。替身故意只认这一种查询
-    形状（``WHERE id = ? AND tenant_id = ?``），别的语句仍落到父类的空结果——假会话越像真
-    会话，越容易让人误以为测过的是数据库。
-    """
-
-    def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
-        if _final_table_name(statement) == RetrievalTrace.__tablename__:
-            rows = [
-                row
-                for row in self._rows.get(RetrievalTrace, [])
-                if _matches(row, statement)
-            ]
-            return _SelectResult(rows)
-        return super().execute(statement, *args, **kwargs)
-
-
-def _final_table_name(statement: Any) -> str | None:
-    try:
-        return statement.get_final_froms()[0].name
-    except (AttributeError, IndexError):
-        return None
-
-
-def _matches(row: Any, statement: Any) -> bool:
-    """按 ``where`` 里的每一对「列 = 字面量」过滤；认不出形状就当不匹配。"""
-
-    whereclause = getattr(statement, "whereclause", None)
-    if whereclause is None:
-        return True
-    clauses = getattr(whereclause, "clauses", None) or (whereclause,)
-    for clause in clauses:
-        original = getattr(clause, "left", None)
-        literal = getattr(clause, "right", None)
-        if original is None or not hasattr(literal, "value"):
-            return False
-        if getattr(row, original.key) != literal.value:
-            return False
-    return True
-
-
 class _MemoryPlanCache:
     """内存假套餐缓存：套餐解析只用到 ``get / set / delete``。"""
 
@@ -177,7 +128,7 @@ class _FakeObservations:
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
-    db: _WaterfallSession
+    db: RecordingSession
     reader: _FakeObservations
     jsonl_dir: Path
 
@@ -206,7 +157,12 @@ def _plan_rows() -> list[Plan]:
 
 
 def _account(
-    account_id: str, username: str, password: str, *, role: str = "user", tenant_id: str | None = None
+    account_id: str,
+    username: str,
+    password: str,
+    *,
+    role: str = "user",
+    tenant_id: str | None = None,
 ) -> Account:
     return Account(
         id=account_id,
@@ -245,20 +201,28 @@ def _world() -> dict[type, list[Any]]:
             _account(ALICE_ID, "alice", USER_PASSWORD, tenant_id=TENANT_ALPHA),
             _account(BOB_ID, "bob", USER_PASSWORD, tenant_id=TENANT_BETA),
         ],
-        # 归属索引里有 Alpha 与 Beta 各一行：跨租户用例要的是「行真的在，但不属于你」。
-        RetrievalTrace: [
-            _trace(LOG_ALPHA, TENANT_ALPHA, latency_ms=315),
-            _trace(LOG_BETA, TENANT_BETA, latency_ms=900),
-        ],
     }
+
+
+def _trace_rows() -> list[RetrievalTrace]:
+    """归属索引里的两行：Alpha 与 Beta 各一条——跨租户用例要的是「行真的在，但不属于你」。"""
+
+    return [
+        _trace(LOG_ALPHA, TENANT_ALPHA, latency_ms=315),
+        _trace(LOG_BETA, TENANT_BETA, latency_ms=900),
+    ]
 
 
 @pytest.fixture
 def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
-    """真实应用 + 真实登录 + 内存会话 + 内存 JSONL 目录 + 假观测服务。"""
+    """真实应用 + 真实登录 + 内存会话 + 内存 JSONL 目录 + 假观测服务。
+
+    两个会话替身：同步的给控制面身份（登录写会话行、之后读回），异步的给归属索引的读。
+    归属索引的行**只放进异步那个**：这条读要是退回同步会话，跨租户与不存在那几个用例会
+    立刻变成 20016，而不是悄悄照样绿。
+    """
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     jsonl_dir = tmp_path / "traces"
@@ -267,11 +231,14 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
     # 缺省「观测没开」：观测服务的替身在这条路径上不该被调用（用例自己会断言）。
     monkeypatch.setattr(settings, "TRACE_SINK", "none")
 
-    session = _WaterfallSession(rows=_world())
-    cache = _MemoryPlanCache()
+    world = _world()
+    world[RetrievalTrace] = _trace_rows()
+    # 登录（写会话行）、身份判定与归属校验都在**同一个假库**上（票 #130 起读写全在异步栈）。
+    session = RecordingSession(rows=world)
+    cache = MemoryPlanCache()
     reader = _FakeObservations()
 
-    main.app.dependency_overrides[session_module.get_db] = lambda: session
+    override_all_db(main.app, session)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_langfuse_reader] = lambda: reader
     try:
@@ -410,7 +377,12 @@ def test_the_observation_service_is_read_on_the_server_and_ordered(
                 ("collapse", 2.0),
                 ("someone-elses-span", 999.0),
                 ("vector_recall", 41.25, None, None),
-                ("rerank", None, datetime(2026, 11, 10, 9, 0, 1), datetime(2026, 11, 10, 9, 0, 1, 88000)),
+                (
+                    "rerank",
+                    None,
+                    datetime(2026, 11, 10, 9, 0, 1),
+                    datetime(2026, 11, 10, 9, 0, 1, 88000),
+                ),
                 ("query_optimization", 3.5, None, None),
                 ("keyword_recall", 12.0, None, None),
                 ("fusion", 1.5, None, None),
@@ -480,9 +452,7 @@ def test_the_response_never_carries_observability_credentials(
 
 
 @pytest.mark.parametrize("log_id", [LOG_BETA, LOG_MISSING], ids=["cross-tenant", "missing"])
-def test_another_tenant_or_a_missing_log_id_is_not_found(
-    console: _Harness, log_id: str
-) -> None:
+def test_another_tenant_or_a_missing_log_id_is_not_found(console: _Harness, log_id: str) -> None:
     """跨租户与不存在同码同文案：可区分的拒绝会泄露存在性。"""
 
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
@@ -514,9 +484,7 @@ def test_an_admin_without_a_tenant_is_forbidden(console: _Harness) -> None:
 # ──────────────────────────────────────────────────────────── ⑤ 读数逻辑的单元
 
 
-def _fake_langfuse_client(
-    observations: list[tuple[Any, ...]]
-) -> Any:
+def _fake_langfuse_client(observations: list[tuple[Any, ...]]) -> Any:
     """构造一个假的 ``LangfuseAPI``：只实现 ``observations.get_many``。"""
 
     def _observation(entry: tuple[Any, ...]) -> Any:
@@ -601,6 +569,3 @@ def test_reader_wraps_sdk_failure_without_leaking_the_message() -> None:
     assert raised.value.reason == REASON_UNREACHABLE
     assert SECRET_SENTINEL not in str(raised.value)
     assert SECRET_SENTINEL not in (raised.value.detail or "")
-
-
-

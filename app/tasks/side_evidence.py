@@ -9,11 +9,17 @@
 而不是靠「文件还没出现」去猜。跑的过程中每完成一题就原子更新一次 ``progress``，
 界面因此能画进度条；跑完（无论成败）都会再写一次终态，所以状态文件永远是最后落地的
 那个事实——请求成功不等于跑批成功。
+
+**事件循环**（第 11 步票 #137 收口）：与索引任务共用 Worker 子进程的**常驻循环**
+（ADR-0023）——把工厂函数投进 ``get_worker_loop().run(...)``，协程在循环里才被创建。
+旧写法是每任务 ``asyncio.run(_run_in_its_own_loop(...))`` + ``finally`` 里关 HTTP 客户端，
+那是「每任务一个循环」时代的形状：循环一关，客户端与连接池跟着失效，下一个任务拿到的是
+一个已经死掉的池子；而常驻循环的客户端由 ``worker_process_shutdown`` 统一关，
+**任务体绝不能自己关**。
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -21,7 +27,7 @@ from typing import Any
 import structlog
 
 from app.celery_app import celery_app
-from app.core.http_clients import aclose_current_loop_clients
+from app.db.worker_loop import run_in_worker_loop
 from app.services.eval_manifest import REPO_ROOT
 
 logger = structlog.get_logger(__name__)
@@ -31,7 +37,7 @@ logger = structlog.get_logger(__name__)
 ANSWERS_PATH = REPO_ROOT / "eval" / "answers_v1.json"
 
 
-async def _run_in_its_own_loop(
+async def _run_side_evidence(
     *,
     cases: list[dict[str, Any]],
     out_dir: Path,
@@ -39,21 +45,13 @@ async def _run_in_its_own_loop(
     limit: int | None,
     tenant_id: str | None,
 ) -> dict[str, Any]:
-    """跑一轮旁证，并在**这一次任务的** loop 还活着的时候收掉它建的 HTTP 客户端。
-
-    旁证跑的是完整检索链路（嵌入、重排都要发请求），所以它同样会在这个任务的 loop 上
-    建客户端。不关的话，跑批结束 = 一个再也关不掉的池子，进程收尾只会刷
-    ``RuntimeError: Event loop is closed``。收尾写在 ``finally``：跑批失败同样要关。
-    """
+    """在常驻循环里跑一轮旁证。**不关客户端**——它归循环、不归这一次任务。"""
 
     from app.services.side_evidence_run import run_once
 
-    try:
-        return await run_once(
-            cases=cases, out_dir=out_dir, run_id=run_id, limit=limit, tenant_id=tenant_id
-        )
-    finally:
-        await aclose_current_loop_clients()
+    return await run_once(
+        cases=cases, out_dir=out_dir, run_id=run_id, limit=limit, tenant_id=tenant_id
+    )
 
 
 @celery_app.task(bind=True, max_retries=0)
@@ -89,9 +87,9 @@ def run_side_evidence_task(
                 tenant_id=tenant_id,
             )
             return {"status": "failed", "run_id": run_id}
-        # 整轮一个事件循环：`run_once` 是异步的，这里只在最外层起一次 loop。
-        result = asyncio.run(
-            _run_in_its_own_loop(
+        # 投**工厂**而不是协程对象：协程在常驻循环里才被创建，从那一刻起属于那个循环。
+        result = run_in_worker_loop(
+            lambda: _run_side_evidence(
                 cases=cases,
                 out_dir=target,
                 run_id=run_id,

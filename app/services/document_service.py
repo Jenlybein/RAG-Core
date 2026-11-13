@@ -1,10 +1,11 @@
 """文档业务：异步上传登记 + 准入判定 + 状态机。
 
 上传只做登记：校验知识库 → **判定格式准入** → 建 ``Document(status=PROCESSING)``
-→ 文件模式落盘 / JSON 模式直接落正文 → ``commit`` → 投递索引任务 → 立即返回。
+→ 文件模式落盘 / JSON 模式直接落正文 → 登记「提交后投递索引任务」 → 立即返回。
 **请求线程不解析、不向量化**，进程内的耗时与文档大小无关；进度由
 ``GET /documents?kb_id=`` 轮询，后端的解析 / 切块 / 向量化与失败留痕、脱敏文案
-统一由 T4 的 Worker 任务负责。
+统一由 T4 的 Worker 任务负责。提交由**请求边界**做（路由声明 ``Depends(get_async_transaction)``），
+这里只登记「提交之后投递」——本模块不提交，也不允许别的服务在这里顺手提交。
 
 准入判定只有一处实现（:func:`admit_upload`），JSON 传文本与 multipart 传文件两个
 入口共用它：两份规则一定会漂移，而漂移的后果是「同一个库对两个入口收的东西不一样」。
@@ -22,19 +23,22 @@
 from pathlib import Path
 
 import structlog
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
+from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.knowledge_base import FORMAT_MARKDOWN, KnowledgeBase, formats_of
 from app.models.plan import PlanSpec
 from app.repositories import document_repository
 from app.services import static_quota
 from app.services.document_storage import source_type_of, store_document_file
-from app.services.index_dispatch import enqueue_document
+from app.services.index_dispatch import enqueue_document, enqueue_document_after_commit
+
 from app.services.knowledge_base_access import ensure_visible
 from app.utils.id_generator import new_document_id
 from app.utils.status import DocumentStatus
+
 
 logger = structlog.get_logger(__name__)
 
@@ -63,7 +67,7 @@ def admit_upload(kb: KnowledgeBase, *, filename: str | None) -> str:
 
 
 async def upload(
-    db: Session,
+    db: AsyncSession,
     *,
     tenant_id: str,
     kb_id: str,
@@ -82,14 +86,20 @@ async def upload(
     准入在**分配 ID 与落盘之前**判定：被拒的请求不留下存储文件、文档记录或索引任务。
     静态配额（单库文档数与并发处理数）紧跟在准入之后、**同样在落行与入队之前**：
     被拒的上传既不该占存储，也不该占一个 Worker 名额。
+
+    会话类型是 ``AsyncSession``：数据面上传（第 11 步票 #132）与控制面上传（票 #130）
+    都已经是异步栈，两边**必须是同一份实现**——控制面另写一套是这条链路历史上最贵的错
+    （见 ``app/services/console_kb_service.py`` 模块文档）。
     """
 
-    kb = ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
+    kb = await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
     source_type = admit_upload(kb, filename=filename)
 
     # 两条静态配额在这里一起判：上传是唯一会同时撞上「单库文档数」与「并发处理数」的
     # 动作，绑成一个函数之后，第二个上传入口很难只接一半。
-    static_quota.ensure_upload_quota(db, tenant_id=tenant_id, kb_id=kb_id, plan=plan)
+    await static_quota.ensure_upload_quota(
+        db, tenant_id=tenant_id, kb_id=kb_id, plan=plan
+    )
 
     document_id = new_document_id()
 
@@ -119,17 +129,21 @@ async def upload(
             status=DocumentStatus.PROCESSING,
         )
 
-    document_repository.create(db, doc)
-    # 先落 PROCESSING 并提交：状态查询在请求返回后立刻能看见这份文档；Worker
-    # 崩溃时这张行也还在，留待租约过期后的重试 / 重建。
-    db.commit()
-
-    enqueue_document(
-        document_id=document_id,
-        tenant_id=tenant_id,
-        kb_id=kb_id,
-        request_id=request_id,
-        reparse=False,
+    await document_repository.create(db, doc)
+    # 投递排在提交**之后**（after_commit），不是「先 commit 再投递」：登记与它可能带着
+    # 的审计行属于同一笔请求事务，提交之前投递会让 Worker 去读一行还没落库的文档。
+    # 顺序上仍然保证「行先落地、任务后出发」，Worker 崩溃时这张行也还在，留待租约过期
+    # 后的重试 / 重建。
+    after_commit(
+        db,
+        lambda: enqueue_document_after_commit(
+            publish=enqueue_document,
+            document_id=document_id,
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            request_id=request_id,
+            reparse=False,
+        ),
     )
 
     logger.info(

@@ -20,7 +20,6 @@ from __future__ import annotations
 import dataclasses
 import importlib
 from collections.abc import Iterator
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -45,7 +44,7 @@ from app.services.retrieval_options import (
     profile_chain_of,
 )
 from app.services.profile_policy import ensure_policy_consistent, resolve_retrieval_options
-from tests.fake_db import EmptySession
+from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 
 TENANT_ID = "tenant_demo"
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -199,9 +198,7 @@ def test_a_named_profile_that_needs_a_dropped_capability_is_rejected_not_degrade
     plan = _plan(PLAN_PRO, rerank_allowed=False)
 
     with pytest.raises(AppError) as excinfo:
-        resolve_retrieval_options(
-            policy=_policy(profile=PROFILE_QUALITY), plan=plan, kb_count=1
-        )
+        resolve_retrieval_options(policy=_policy(profile=PROFILE_QUALITY), plan=plan, kb_count=1)
 
     assert excinfo.value.code is ErrorCode.FEATURE_NOT_ALLOWED
     assert "rerank" in excinfo.value.msg
@@ -458,8 +455,12 @@ def test_an_unresolved_options_object_has_no_echo() -> None:
     """
 
     options = RetrievalOptions(
-        mode="vector", top_k=5, fold_to_sections=True, expand_table_rows=True,
-        rerank=False, rewrite=False,
+        mode="vector",
+        top_k=5,
+        fold_to_sections=True,
+        expand_table_rows=True,
+        rerank=False,
+        rewrite=False,
     )
 
     assert options.tenant_policy is None
@@ -491,9 +492,7 @@ def test_a_quality_profile_on_a_free_plan_is_rejected_at_creation() -> None:
     """
 
     with pytest.raises(AppError) as excinfo:
-        ensure_policy_consistent(
-            policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_FREE)
-        )
+        ensure_policy_consistent(policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_FREE))
 
     assert excinfo.value.code is ErrorCode.PARAM_ERROR
     assert PROFILE_QUALITY in excinfo.value.msg
@@ -618,9 +617,7 @@ def test_the_development_identity_is_custom_so_it_tracks_the_deployment(
     assert DEV_KEY_POLICY.profile == PROFILE_CUSTOM
     assert DEV_KEY_POLICY.custom_options == ()
 
-    options = resolve_retrieval_options(
-        policy=DEV_KEY_POLICY, plan=DEV_KEY_PLAN, kb_count=1
-    )
+    options = resolve_retrieval_options(policy=DEV_KEY_POLICY, plan=DEV_KEY_PLAN, kb_count=1)
 
     assert (options.mode, options.top_k) == ("bm25", 9)
     assert (options.rerank, options.rewrite) == (True, False)
@@ -690,25 +687,26 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     """离线 ASGI 客户端；身份由测试直接指定（不经过 api_keys 表，那是 #76 的事）。"""
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     monkeypatch.setattr(service, "get_embedding_provider", _FakeEmbedding)
     monkeypatch.setattr(service, "get_vector_store", _FakeVectorStore)
     monkeypatch.setattr(service, "get_keyword_search_provider", _FakeKeyword)
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
-    )
+    # 可见性走异步仓储（第 11 步票 #127）：替身因此也得是 ``async def``。
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
 
     from app.api.deps import get_current_key
 
     holder: dict[str, KeyContext] = {
         "context": KeyContext(tenant_id=TENANT_ID, policy=DEV_KEY_POLICY, plan=DEV_KEY_PLAN)
     }
-    main.app.dependency_overrides[session.get_db] = lambda: EmptySession()
+    # 检索链路走异步依赖（第 11 步票 #127）：同步那条留给身份判定与其他路由。
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        EmptySession()
+    )
+
     main.app.dependency_overrides[get_current_key] = lambda: holder["context"]
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:

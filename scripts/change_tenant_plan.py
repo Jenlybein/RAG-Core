@@ -24,6 +24,7 @@ from pathlib import Path
 
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal
+from app.db.transaction import transaction
 from app.models.plan import PLAN_CODES
 from app.services.tenant_service import change_tenant_plan
 
@@ -66,9 +67,10 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        change = change_tenant_plan(db, tenant_id=args.tenant_id, plan_code=args.plan)
+        with transaction(db):
+            change = change_tenant_plan(db, tenant_id=args.tenant_id, plan_code=args.plan)
     except (LookupError, ValueError) as exc:
-        db.rollback()
+        # 回滚已由上面的 with transaction(db) 做过，这里不再重复。
         print(str(exc), file=sys.stderr)
         return 1
     finally:

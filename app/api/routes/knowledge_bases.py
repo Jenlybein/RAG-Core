@@ -6,11 +6,12 @@ API 层只做入参出参，业务在 KnowledgeBaseService / Repository。
 """
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_key
 from app.core.auth import DevKeyContext
-from app.db.session import get_db
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.models.knowledge_base import formats_of, settings_of
 from app.repositories import knowledge_base_repository
 from app.schemas.common import ApiResponse, ok
@@ -33,8 +34,9 @@ router = APIRouter()
 )
 async def create_knowledge_base(
     payload: CreateKBRequest,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     key: DevKeyContext = Depends(get_current_key),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[CreateKBData]:
     data = await knowledge_base_service.create_kb(
         db,
@@ -55,10 +57,10 @@ async def create_knowledge_base(
     summary="列这把 Key 可见的知识库",
 )
 async def list_knowledge_bases(
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     key: DevKeyContext = Depends(get_current_key),
 ) -> ApiResponse[KnowledgeBaseListData]:
-    rows = knowledge_base_repository.list_by_tenant(db, key.tenant_id)
+    rows = await knowledge_base_repository.list_by_tenant(db, key.tenant_id)
     # 第二道关卡的另一半：这一层是「租户里有哪些库」，还要再按这把 Key 的数据范围收窄。
     # 列库与检索判的是同一份范围，只是反应不同——检索撞到范围外必须拒绝（那是「这次
     # 要查什么」的一部分），清单则把不可见的库直接去掉，不为一条不可见的库让整个清单失败。

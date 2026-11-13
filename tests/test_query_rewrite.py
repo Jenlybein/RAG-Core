@@ -68,7 +68,7 @@ def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> list[str]
 
     roles: list[str] = []
 
-    def _factory(role: str = "fast") -> LLMProvider:
+    async def _factory(role: str = "fast") -> LLMProvider:
         roles.append(role)
         return llm
 
@@ -84,7 +84,7 @@ def test_disabled_rewrite_never_builds_a_model(monkeypatch: pytest.MonkeyPatch) 
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
-    def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
+    async def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
         raise AssertionError("关闭改写时不许装配大模型")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)
@@ -223,7 +223,7 @@ def test_rewrite_assembly_failure_falls_back_instead_of_raising(
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
-    def _boom(_role: str = "fast") -> LLMProvider:
+    async def _boom(_role: str = "fast") -> LLMProvider:
         raise ValueError("未知的大模型供应商 'typo'")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _boom)

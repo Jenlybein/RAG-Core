@@ -23,9 +23,15 @@
 
 跨租户与不存在都按各自对象已有的「不存在」码：库 ``20008``、文档 ``20016``，绝不返回
 「无权限」——可区分的拒绝会泄露资源存在性（ADR-0006 的同一口径）。
+
+**整层都在异步栈上**（第 11 步票 #130）：会话是 ``AsyncSession``，账本行与业务行共用
+同一个会话、由路由上的 ``Depends(get_async_transaction)`` 一笔提交。数据面那三条同名
+端点（列 / 重建 / 删除）调的是这里的同一批函数，于是它们也一起换到了异步栈上——
+「两边共用一份实现」这条纪律没有变，变的只是这份实现跑在哪种会话上。
 """
 
 from __future__ import annotations
+
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -33,11 +39,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.console_auth import ConsoleIdentity
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
+from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.knowledge_base import KnowledgeBase, formats_of, settings_of
 from app.models.plan import PlanSpec
@@ -60,9 +67,11 @@ from app.services.chunk_store import build_chunk_stores
 from app.services.console_service import append_audit
 from app.services.document_ingestion import prepare_document_content
 from app.services.document_storage import remove_document_file
-from app.services.index_dispatch import enqueue_document
+from app.services.index_dispatch import enqueue_document, enqueue_document_after_commit
+
 from app.services.indexing_service import purge_document_chunks
 from app.utils.status import DocumentStatus
+
 
 #: 审计动作名：列表与筛选取的是这些字符串，因此只在服务层写一次。
 #: 前缀把对象类型放在名字里（``kb.`` / ``doc.``），一个动作名就能看出动的是哪类行。
@@ -106,7 +115,7 @@ class TreeKnowledgeBase:
     documents: list[TreeDocument]
 
 
-def list_tree(db: Session, *, tenant_id: str) -> list[TreeKnowledgeBase]:
+async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBase]:
     """本租户全部知识库 + 每库文档 + 切片数。**不做白名单收窄**。
 
     控制面要看整个租户：数据范围白名单约束的是「这把 Key 能查什么」，不该让面板
@@ -115,9 +124,11 @@ def list_tree(db: Session, *, tenant_id: str) -> list[TreeKnowledgeBase]:
     """
 
     nodes: list[TreeKnowledgeBase] = []
-    for kb in knowledge_base_repository.list_by_tenant(db, tenant_id):
-        documents = document_repository.list_by_kb(db, kb.id, tenant_id=tenant_id)
-        counts = chunk_repository.count_by_document_ids(
+    for kb in await knowledge_base_repository.list_by_tenant(db, tenant_id):
+        documents = await document_repository.list_by_kb_async(
+            db, kb.id, tenant_id=tenant_id
+        )
+        counts = await chunk_repository.count_by_document_ids(
             db, [document.id for document in documents], tenant_id=tenant_id
         )
         nodes.append(
@@ -145,7 +156,7 @@ def list_tree(db: Session, *, tenant_id: str) -> list[TreeKnowledgeBase]:
 
 
 async def create_kb(
-    db: Session,
+    db: AsyncSession,
     *,
     tenant_id: str,
     actor: ConsoleIdentity,
@@ -156,11 +167,12 @@ async def create_kb(
     chunk_size: int,
     allowed_formats: Sequence[str] | None,
 ) -> dict[str, Any]:
-    """建库：套餐校验与落库复用 ``knowledge_base_service``，审计与写入同一个事务。"""
+    """建库：套餐校验与落库复用 ``knowledge_base_service``，审计与写入同一个事务。
 
-    plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
-    # commit=False：审计与建库必须一起提交，否则会有一个「库已经能用、账本里还没有」
-    # 的窗口。判定与默认值处理仍全部走 create_kb，控制面不复制一份建库规则。
+    提交点是路由上的 ``Depends(get_async_transaction)``：这里只写，不提交。
+    """
+
+    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
     data = await knowledge_base_service.create_kb(
         db,
         name=name,
@@ -170,9 +182,8 @@ async def create_kb(
         plan=plan,
         chunk_size=chunk_size,
         allowed_formats=allowed_formats,
-        commit=False,
     )
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_KB_CREATE,
@@ -180,24 +191,25 @@ async def create_kb(
         before=None,
         after=_kb_snapshot_of_data(data),
     )
-    db.commit()
     return data
 
 
-def delete_empty_kb(
-    db: Session, *, tenant_id: str, kb_id: str, actor: ConsoleIdentity
+async def delete_empty_kb(
+    db: AsyncSession, *, tenant_id: str, kb_id: str, actor: ConsoleIdentity
 ) -> dict[str, Any]:
     """删库：仅空库。库内仍有文档 → ``20015``（提示先删文档）；缺失/跨租户 → ``20008``。"""
 
-    kb = knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
+    kb = await knowledge_base_repository.get_by_id_for_tenant(
+        db, kb_id, tenant_id=tenant_id
+    )
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
-    if document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id) > 0:
+    if await document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id) > 0:
         raise AppError(ErrorCode.PARAM_ERROR, MSG_KB_NOT_EMPTY)
 
     before = _kb_snapshot(kb)
-    db.delete(kb)
-    append_audit(
+    await db.delete(kb)
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_KB_DELETE,
@@ -205,12 +217,11 @@ def delete_empty_kb(
         before=before,
         after=None,
     )
-    db.commit()
     return {"kb_id": kb_id, "deleted": True}
 
 
 async def upload_document(
-    db: Session,
+    db: AsyncSession,
     *,
     tenant_id: str,
     kb_id: str,
@@ -224,13 +235,12 @@ async def upload_document(
 ) -> dict[str, Any]:
     """上传文档：登记 + 投递复用 ``document_service.upload``，立即回 ``status=3``。
 
-    ``document_service.upload`` 自己提交登记（并在提交后投递），审计只能在它之后
-    单独落一条。这是本次唯一一处没有和写入同事务的审计：要把它并进去就得拆分
-    「登记 / 提交 / 投递」三步，等于在控制面复制一份上传编排，而票面要求复用的
-    正是那一段。窗口的代价是「文档已登记、账本晚一拍」，不会反过来。
+    ``document_service.upload`` 只登记、不提交（投递也由它登记在提交之后），所以这里的
+    审计与登记行**落在同一笔请求事务里**：审计写不进去时登记也不落库，不会留下「文档
+    已登记、账本里没有」的窗口。整笔的提交点是路由上的 ``Depends(get_async_transaction)``。
     """
 
-    plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
+    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
     result = await document_service.upload(
         db,
         tenant_id=tenant_id,
@@ -242,7 +252,7 @@ async def upload_document(
         data=data,
         request_id=request_id,
     )
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_DOC_UPLOAD,
@@ -250,12 +260,11 @@ async def upload_document(
         before=None,
         after=_document_submission_snapshot(result, title=title, filename=filename),
     )
-    db.commit()
     return result
 
 
-def reindex_document(
-    db: Session,
+async def reindex_document(
+    db: AsyncSession,
     *,
     tenant_id: str,
     document_id: str,
@@ -265,33 +274,36 @@ def reindex_document(
     cache: PlanCache,
     request_id: str | None,
 ) -> dict[str, Any]:
-    """单文档重建：守卫 → 准备入队 → 审计 + 提交 → 投递，立即回 ``status=3``。
+    """单文档重建：守卫 → 准备入队 → 审计（同一笔事务）→ 投递，立即回 ``status=3``。
 
     顺序与数据面逐字一致：先按 id + 租户取（缺失/跨租户 20016），再
     ``ensure_reindexable``（20025 / 20027），再过并发处理配额，然后
     ``prepare_for_indexing``（不盖租约）。准备失败说明这一行刚被抢先，仍按 20025。
+    投递登记在 ``after_commit`` 上：先让「已排队」这个状态落库，再让 Worker 去抢。
     """
 
-    document = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=tenant_id)
+    document = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=tenant_id
+    )
     if document is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
     document_state.ensure_reindexable(document, force=force)
 
     # 重建跳过「单库文档数」（文档本来就在库里），但照样占用一个 Worker 名额。
-    plan = _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
-    static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
+    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
+    await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
 
     # 改前快照在 prepare 之前取：那条 UPDATE 用 ``synchronize_session=False``，不该让
     # 审计的「改前」依赖会话是否恰好刷新了对象。
     before = _document_state_snapshot(document)
-    prepared = document_repository.prepare_for_indexing(
+    prepared = await document_repository.prepare_for_indexing_async(
         db, document_id, tenant_id=tenant_id, allow_success=force
     )
     if not prepared:
         raise AppError(ErrorCode.DOCUMENT_IS_PROCESSING)
 
-    append_audit(
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_DOC_REINDEX,
@@ -304,14 +316,16 @@ def reindex_document(
             "force": force,
         },
     )
-    db.commit()
-
-    enqueue_document(
-        document_id=document_id,
-        tenant_id=tenant_id,
-        kb_id=document.kb_id,
-        request_id=request_id,
-        reparse=reparse,
+    after_commit(
+        db,
+        lambda: enqueue_document_after_commit(
+            publish=enqueue_document,
+            document_id=document_id,
+            tenant_id=tenant_id,
+            kb_id=document.kb_id,
+            request_id=request_id,
+            reparse=reparse,
+        ),
     )
     return {
         "document_id": document_id,
@@ -322,16 +336,18 @@ def reindex_document(
 
 
 async def delete_document(
-    db: Session, *, tenant_id: str, document_id: str, actor: ConsoleIdentity
+    db: AsyncSession, *, tenant_id: str, document_id: str, actor: ConsoleIdentity
 ) -> dict[str, Any]:
-    """删除文档：守卫 → purge 切片 → 删原文件 → 删行 → 审计 → 提交。
+    """删除文档：守卫 → purge 切片 → 删原文件 → 删行 → 审计 → 由请求边界提交。
 
     顺序是契约的一部分（见 ``app/api/routes/documents.py`` 的同名端点）；审计插在
     「删行」与「提交」之间，不改动四步本身。有效处理中（租约未过期）拒绝删除；租约
     过期视为 Worker 卡死，允许删除。
     """
 
-    document = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=tenant_id)
+    document = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=tenant_id
+    )
     if document is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
@@ -342,8 +358,8 @@ async def delete_document(
     remove_document_file(document.source_file_path)
 
     before = _document_state_snapshot(document)
-    db.delete(document)
-    append_audit(
+    await db.delete(document)
+    await append_audit(
         db,
         actor=actor,
         action=ACTION_DOC_DELETE,
@@ -351,17 +367,26 @@ async def delete_document(
         before=before,
         after=None,
     )
-    db.commit()
     return {"document_id": document_id, "deleted": True}
 
 
-def _plan_for_tenant(db: Session, *, tenant_id: str, cache: PlanCache) -> PlanSpec:
-    """会话租户 → 它当前的套餐快照（走与数据面同一个解析与缓存）。"""
+async def _tenant_plan_id(db: AsyncSession, *, tenant_id: str) -> int:
+    """会话租户 → 它当前的套餐 id；租户不在就 ``20010``（与数据面同一句提示）。"""
 
-    tenant = tenant_repository.get_by_id(db, tenant_id)
+    tenant = await tenant_repository.get_by_id_async(db, tenant_id)
     if tenant is None:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_TENANT_NOT_FOUND)
-    return plan_service.resolve_plan(db, tenant.plan_id, cache=cache)
+    return tenant.plan_id
+
+
+async def _plan_for_tenant(
+    db: AsyncSession, *, tenant_id: str, cache: PlanCache
+) -> PlanSpec:
+    """会话租户 → 它当前的套餐快照（走与数据面同一个解析与缓存）。"""
+
+    return await plan_service.resolve_plan(
+        db, await _tenant_plan_id(db, tenant_id=tenant_id), cache=cache
+    )
 
 
 def _kb_snapshot(kb: KnowledgeBase) -> dict[str, Any]:
@@ -426,8 +451,8 @@ def _document_submission_snapshot(
 DOCUMENT_CONTENT_MAX_CHARS: Final[int] = 200_000
 
 
-def read_document_content(
-    db: Session,
+async def read_document_content(
+    db: AsyncSession,
     *,
     tenant_id: str,
     document_id: str,
@@ -451,7 +476,9 @@ def read_document_content(
 
     cap = DOCUMENT_CONTENT_MAX_CHARS if max_chars is None else max_chars
 
-    document = document_repository.get_by_id_for_tenant(db, document_id, tenant_id=tenant_id)
+    document = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=tenant_id
+    )
     if document is None:
         # 跨租户与不存在同码（20016）：可区分的拒绝会泄露资源存在性。
         raise AppError(ErrorCode.NOT_FOUND)

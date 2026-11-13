@@ -37,7 +37,8 @@ from app.models.document import Document
 from app.repositories import document_repository
 from app.services import document_storage
 from app.utils.status import DocumentStatus
-from tests.fake_db import ZERO_COUNT
+from tests import fake_db
+from tests.fake_db import RecordingSession
 
 DOC_ID = "doc-1"
 TENANT_ID = settings.DEV_TENANT_ID
@@ -346,39 +347,33 @@ def test_release_is_tenant_scoped(document_db: Session) -> None:
 # ───────────────────────────────────────────────────────── 端点接缝的替身与夹具
 
 
-class _FakeSession:
-    """最小会话替身：只记录 purge / 删文件 / 删行 / 提交的调用顺序，不碰数据库。"""
+class _FakeSession(RecordingSession):
+    """共享替身**加一条调用顺序**：删除端点的契约正是「谁先谁后」。
+
+    ``RecordingSession`` 已经回答了「删掉了哪些行」「提交了几次」，但它按类别分开记，
+    答不了顺序（purge 切片 → 删原文件 → 删行 → 提交）。这里只覆写要记顺序的那三个方法，
+    其余（``execute`` / ``get`` / ``flush`` / ``rollback`` / ``close`` / ``info``）一律
+    沿用共享替身——本地假会话每多写一个方法，就多一处「跟真货不一致」的机会。
+
+    异步面由 ``tests.fake_db.override_all_db`` 包出来的 ``AsyncSessionAdapter`` 提供：
+    ``add`` 仍然是同步的（真 ``AsyncSession`` 上唯一同步的写方法），其余可 ``await``。
+    """
 
     def __init__(self, calls: list[str] | None = None) -> None:
+        super().__init__()
         self.calls = calls if calls is not None else []
-        self.deleted: list[Any] = []
-        self.commits = 0
-        self.rollbacks = 0
-        self.closed = False
 
-    def add(self, _doc: Any) -> None:
+    def add(self, obj: Any) -> None:
         self.calls.append("add")
-
-    def flush(self) -> None:
-        return None
-
-    def execute(self, _statement: Any) -> Any:
-        # 重建前的并发处理配额会数一次行：替身表示「没有别的文档在处理」。
-        return ZERO_COUNT
+        super().add(obj)
 
     def delete(self, doc: Any) -> None:
-        self.deleted.append(doc)
         self.calls.append("delete-row")
+        super().delete(doc)
 
     def commit(self) -> None:
-        self.commits += 1
         self.calls.append("commit")
-
-    def rollback(self) -> None:
-        self.rollbacks += 1
-
-    def close(self) -> None:
-        self.closed = True
+        super().commit()
 
 
 class _RecordingStore:
@@ -429,14 +424,25 @@ def _document(
 
 
 def _install_lookup(monkeypatch: pytest.MonkeyPatch, doc: Any | None) -> None:
-    """把按 id + 租户取文档换成内存查找；跨租户与不存在都返回 None。"""
+    """把按 id + 租户取文档换成内存查找；跨租户与不存在都返回 None。
 
-    def _lookup(_db: Any, document_id: str, *, tenant_id: str) -> Any | None:
+    替身是**协程**：票 #130 起路由读的是 ``get_by_id_for_tenant_async``
+    （``await db.execute(select(...))``）。留下同步签名的话，路由拿到的是一个协程对象，
+    下游 ``doc.kb_id`` 就开始报「协程没有这个属性」——与「文档不存在」完全不像。
+    """
+
+    async def _lookup(_db: Any, document_id: str, *, tenant_id: str) -> Any | None:
         if doc is None or document_id != doc.id or tenant_id != doc.tenant_id:
             return None
         return doc
 
-    monkeypatch.setattr(document_repository, "get_by_id_for_tenant", _lookup)
+    monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _lookup)
+
+
+async def _always_false(*_args: Any, **_kwargs: Any) -> bool:
+    """``prepare_for_indexing_async`` 的失败替身：并发请求先改掉了这一行。"""
+
+    return False
 
 
 @pytest.fixture
@@ -444,7 +450,6 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     """把端点接缝全部换成离线替身：假会话、假存储、投递记录、文件删除记录。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
     routes = importlib.import_module("app.api.routes.documents")
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
@@ -459,16 +464,20 @@ def offline_api(monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
         calls.append("remove-file")
         document_storage.remove_document_file(path)
 
-    def _prepare(_db: Any, document_id: str, **kwargs: Any) -> bool:
+    def _prepare(_db: Any, document_id: str, **kwargs: Any) -> Any:
         prepares.append({"document_id": document_id, **kwargs})
         return True
+
+    async def _prepare_async(_db: Any, document_id: str, **kwargs: Any) -> bool:
+        return _prepare(_db, document_id, **kwargs)
 
     monkeypatch.setattr(routes, "get_vector_store", lambda: store)
     monkeypatch.setattr(routes, "enqueue_document", lambda **kwargs: enqueued.append(kwargs))
     monkeypatch.setattr(routes, "remove_document_file", _remove_file)
-    monkeypatch.setattr(document_repository, "prepare_for_indexing", _prepare)
+    # 路由走异步孪生（票 #130）：替身必须是协程，见 ``_install_lookup`` 的说明。
+    monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    fake_db.override_all_db(main.app, session)
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
@@ -619,9 +628,7 @@ def test_reindex_lost_prepare_race_returns_processing_conflict(
     """守卫通过但准备失败（并发请求先改同一行）：20025，不提交、不投递。"""
 
     _install_lookup(monkeypatch, _document(status=DocumentStatus.FAILED))
-    monkeypatch.setattr(
-        document_repository, "prepare_for_indexing", lambda *_args, **_kwargs: False
-    )
+    monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _always_false)
 
     response = offline_api.client.post(f"/api/v1/documents/{DOC_ID}/reindex")
 

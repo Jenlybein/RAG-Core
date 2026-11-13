@@ -2,23 +2,39 @@
 
 判据：向量写入与相似度检索归它，普通 CRUD 归 ChunkRepository。
 业务层只依赖这个 ABC，换 Milvus / Qdrant 只改实现与工厂函数。
+
+**四个方法的会话类型都是 ``AsyncSession``**（第 11 步票 #127 / #130 / #132）：
+
+- **读侧**（两个 ``similarity_search*``）：向量查询就是一次 ``await db.execute(...)``，
+  检索路径上没有任何会卡住事件循环的同步调用；
+- **写侧**（``add_chunks`` / ``delete_by_document_id``）：索引链路、数据面删除与控制面
+  删除都在异步栈上，迁移期那个「同步与异步都喂」的联合类型已经收窄成这一种。
+
+类型只剩一种不是简化设计，而是迁移走完那一刀的**结果**：写侧一旦退回同步 ``Session``，
+索引链路就会悄悄重新阻塞事件循环。
 """
 
 from abc import ABC, abstractmethod
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 
 class VectorStore(ABC):
     """向量存储能力。"""
 
     @abstractmethod
-    async def add_chunks(self, db: Session, chunks: list[dict]) -> None:
+    async def add_chunks(self, db: AsyncSession, chunks: list[dict]) -> None:
         """批量写入切片向量。"""
 
     @abstractmethod
     async def similarity_search(
-        self, db: Session, query_vector: list[float], *, tenant_id: str, kb_id: str, top_k: int
+        self,
+        db: AsyncSession,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        kb_id: str,
+        top_k: int,
     ) -> list[dict]:
         """返回相似度结果，score = 1 - 余弦距离（越大越相关）；
         必须带 tenant_id 与 kb_id 过滤，否则会跨库召回。"""
@@ -26,7 +42,7 @@ class VectorStore(ABC):
     @abstractmethod
     async def similarity_search_scope(
         self,
-        db: Session,
+        db: AsyncSession,
         query_vector: list[float],
         *,
         tenant_id: str,
@@ -46,5 +62,7 @@ class VectorStore(ABC):
         """
 
     @abstractmethod
-    async def delete_by_document_id(self, db: Session, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, db: AsyncSession, document_id: str, *, tenant_id: str
+    ) -> None:
         """删某文档的全部切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。"""

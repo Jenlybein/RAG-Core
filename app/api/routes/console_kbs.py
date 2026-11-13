@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, Path, Query, Request, UploadFile
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import (
     get_plan_cache,
@@ -35,7 +35,8 @@ from app.api.console_deps import (
 from app.api.upload_parsing import parse_upload_request, submitted_request_id
 from app.core.console_auth import ConsoleIdentity
 from app.core.plan_cache import PlanCache
-from app.db.session import get_db
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_kbs import (
     ConsoleUploadDocumentRequest,
@@ -85,13 +86,13 @@ def _node_data(node: console_kb_service.TreeKnowledgeBase) -> KnowledgeBaseNode:
     response_model=ApiResponse[KnowledgeBaseTreeData],
     summary="一次拿全本租户的知识库与文档状态",
 )
-def knowledge_base_tree(
+async def knowledge_base_tree(
     identity: ConsoleIdentity = Depends(require_console_tenant),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[KnowledgeBaseTreeData]:
     """控制面列表页唯一的读接口：不做白名单收窄，空库的 ``documents`` 是 ``[]``。"""
 
-    nodes = console_kb_service.list_tree(db, tenant_id=tenant_id_of(identity))
+    nodes = await console_kb_service.list_tree(db, tenant_id=tenant_id_of(identity))
     return ok(KnowledgeBaseTreeData(knowledge_bases=[_node_data(node) for node in nodes]))
 
 
@@ -104,9 +105,13 @@ async def create_knowledge_base(
     payload: CreateKBRequest,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     cache: PlanCache = Depends(get_plan_cache),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[CreateKBData]:
-    """建库：租户只来自会话；套餐校验与建库规则复用 ``knowledge_base_service``。"""
+    """建库：租户只来自会话；套餐校验与建库规则复用 ``knowledge_base_service``。
+
+    建库行与它那条审计由 ``tx`` 一笔提交：审计写不进去时库也不会留下。
+    """
 
     data = await console_kb_service.create_kb(
         db,
@@ -127,14 +132,15 @@ async def create_knowledge_base(
     response_model=ApiResponse[DeleteKnowledgeBaseData],
     summary="删知识库（仅空库；库内仍有文档先删文档）",
 )
-def delete_knowledge_base(
+async def delete_knowledge_base(
     kb_id: str = Path(..., min_length=1),
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[DeleteKnowledgeBaseData]:
     """删空库：非空 ``20015``、缺失/跨租户 ``20008``；不做级联删除。"""
 
-    data = console_kb_service.delete_empty_kb(
+    data = await console_kb_service.delete_empty_kb(
         db, tenant_id=tenant_id_of(identity), kb_id=kb_id, actor=identity
     )
     return ok(DeleteKnowledgeBaseData.model_validate(data))
@@ -152,12 +158,14 @@ async def upload_document(
     file: UploadFile | None = File(None),
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     cache: PlanCache = Depends(get_plan_cache),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[UploadDocumentData]:
     """单端点按 content-type 分流；登记与投递复用 ``document_service.upload``。
 
     分流与错误体在 :mod:`app.api.upload_parsing`（与数据面共用同一段实现）；这里只把
-    解析结果整份交给服务层，``kb_id`` 来自路径而不是表单。
+    解析结果整份交给服务层，``kb_id`` 来自路径而不是表单。登记行与账本行由 ``tx``
+    一笔提交，投递登记在这笔提交之后。
     """
 
     upload = await parse_upload_request(
@@ -188,18 +196,19 @@ async def upload_document(
     response_model=ApiResponse[ReindexDocumentData],
     summary="重建单文档索引（可重解析原始文件、可强制重建成功文档）",
 )
-def reindex_document(
+async def reindex_document(
     request: Request,
     document_id: str = Path(..., min_length=1),
     reparse: bool = Query(False),
     force: bool = Query(False),
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     cache: PlanCache = Depends(get_plan_cache),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ReindexDocumentData]:
-    """守卫 → 准备入队（不盖租约）→ 审计 + 提交 → 投递，立即回 ``status=3``。"""
+    """守卫 → 准备入队（不盖租约）→ 审计（同一笔事务）→ 投递，立即回 ``status=3``。"""
 
-    data = console_kb_service.reindex_document(
+    data = await console_kb_service.reindex_document(
         db,
         tenant_id=tenant_id_of(identity),
         document_id=document_id,
@@ -220,9 +229,10 @@ def reindex_document(
 async def delete_document(
     document_id: str = Path(..., min_length=1),
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[DeleteDocumentData]:
-    """purge 切片 → 删原文件 → 删行 → 审计 → 提交；有效处理中拒绝（20025）。"""
+    """purge 切片 → 删原文件 → 删行 → 审计 → 由 ``tx`` 提交；有效处理中拒绝（20025）。"""
 
     data = await console_kb_service.delete_document(
         db, tenant_id=tenant_id_of(identity), document_id=document_id, actor=identity
@@ -235,17 +245,17 @@ async def delete_document(
     response_model=ApiResponse[DocumentContentData],
     summary="读一份文档的原文（只读；文件模式的正文现场解析，与切块同源）",
 )
-def read_document_content(
+async def read_document_content(
     document_id: str = Path(..., min_length=1),
     identity: ConsoleIdentity = Depends(require_console_tenant),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[DocumentContentData]:
     """走**读门**（`require_console_tenant`）而不是写门：看原文不改任何状态，也不该要求
     `x-requested-with`——那个头是给写操作防跨站用的，加在读接口上只会让「查看」多一步
     无意义的配合。跨租户与不存在同为 20016。
     """
 
-    data = console_kb_service.read_document_content(
+    data = await console_kb_service.read_document_content(
         db, tenant_id=tenant_id_of(identity), document_id=document_id
     )
     return ok(DocumentContentData.model_validate(data))

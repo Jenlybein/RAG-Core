@@ -31,6 +31,7 @@ from app.core.config import settings
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.llm import LLMRerankProvider
 from app.services.query.rewrite import QueryRewrite
+from tests.fake_db import AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -168,9 +169,8 @@ def _offline_client(
     """离线客户端：``kb_settings`` 是「kb_id → 那一行的 settings（含同义词表）」。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     embedding = _RecordingEmbedding()
@@ -182,11 +182,10 @@ def _offline_client(
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore([_vector_row("c1")]))
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeDb())
 
     tables = kb_settings or {}
 
-    def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+    async def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         rows = tables.get(kb_id)
         return SimpleNamespace(
             tenant_id=tenant_id,
@@ -199,7 +198,10 @@ def _offline_client(
 
     if llm is not None:
         # 改写与重排都是惰性 import 的，所以替换点仍在「大模型能力出口」上。
-        monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": llm)
+        async def _llm_factory(role: str = "fast") -> LLMProvider:
+            return llm
+
+        monkeypatch.setattr("app.providers.llm.get_llm_provider", _llm_factory)
         # #116 起生产工厂装的是专用端点，不再返回大模型重排；要测「重排看到哪一句」就得
         # 显式装配旧实现，并且接在**既有**的工厂出口上（同一个替身大模型）。
         rerank_module = importlib.import_module("app.services.retrieval.rerank")
@@ -213,7 +215,9 @@ def _offline_client(
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        _FakeDb()
+    )
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
@@ -449,7 +453,7 @@ def test_both_switches_off_keeps_the_raw_query_on_both_channels(
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
 
-    def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
+    async def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
         raise AssertionError("两个开关都关时不许装配大模型")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)

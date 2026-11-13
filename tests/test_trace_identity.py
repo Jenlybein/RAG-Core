@@ -26,7 +26,6 @@ import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -35,7 +34,7 @@ from fastapi.testclient import TestClient
 from app.db.base import Base
 from app.models.retrieval_trace import RetrievalTrace
 from app.services.trace_identity import delivered_chunk_ids, trace_id_for
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncRecordingSession, AsyncSessionAdapter, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -164,7 +163,7 @@ def _offline_client(
     monkeypatch: pytest.MonkeyPatch,
     *,
     rows: list[dict] | None = None,
-    trace_session: RecordingSession | None = None,
+    trace_session: AsyncRecordingSession | None = None,
     session_factory: Any = None,
     indexed_chunks: int = 1,
 ) -> Iterator[dict[str, Any]]:
@@ -176,27 +175,24 @@ def _offline_client(
     """
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     factory_mod = importlib.import_module("app.db.session_factory")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
-    trace_session = trace_session if trace_session is not None else RecordingSession()
+    trace_session = trace_session if trace_session is not None else AsyncRecordingSession()
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _FakeEmbedding())
     monkeypatch.setattr(
         service, "get_vector_store", lambda: _FakeVectorStore(_rows() if rows is None else rows)
     )
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
-    )
-    factory_mod.set_session_factory(session_factory or (lambda: trace_session))
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
+    # 归属索引写入在异步栈上（第 11 步票 #127）：注入点因此是**异步**会话工厂。
+    factory_mod.set_async_session_factory(session_factory or (lambda: trace_session))
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeRequestDb(
-        indexed_chunks=indexed_chunks
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        _FakeRequestDb(indexed_chunks=indexed_chunks)
     )
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
@@ -204,7 +200,7 @@ def _offline_client(
             yield {"client": client, "trace_session": trace_session}
     finally:
         main.app.dependency_overrides.clear()
-        factory_mod.set_session_factory(None)
+        factory_mod.set_async_session_factory(None)
 
 
 def _retrieve(client: TestClient, *, mode: str = "vector") -> dict:
@@ -216,7 +212,7 @@ def _retrieve(client: TestClient, *, mode: str = "vector") -> dict:
     return response.json()
 
 
-def _trace_rows(session: RecordingSession) -> list[RetrievalTrace]:
+def _trace_rows(session: AsyncRecordingSession) -> list[RetrievalTrace]:
     return session.added_of(RetrievalTrace)
 
 
@@ -327,7 +323,7 @@ def test_one_row_lands_and_mirrors_what_the_caller_saw(
 
     with _offline_client(monkeypatch) as fake:
         body = _retrieve(fake["client"])
-    session: RecordingSession = fake["trace_session"]
+    session = fake["trace_session"]
     rows = _trace_rows(session)
 
     assert len(rows) == 1, "一次检索只留一行"
@@ -374,10 +370,6 @@ def test_the_degraded_reason_of_this_call_is_recorded(
     混合模式里关键词引擎是空实现（``KEYWORD_SEARCH_PROVIDER=none``）→ 这一路记为降级，
     但整次检索仍然成功。写入方不许自己去猜原因，只许抄响应里那个值。
     """
-
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
-    # 向量分支在自己的线程里取会话，与请求会话不是同一个（既有接缝）。
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeRequestDb())
 
     with _offline_client(monkeypatch) as fake:
         body = _retrieve(fake["client"], mode="hybrid")

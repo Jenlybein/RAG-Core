@@ -24,7 +24,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 
 import structlog
@@ -70,13 +70,25 @@ class RerankOutcome:
         }
 
 
+async def _default_rerank_provider() -> RerankProvider:
+    """缺省工厂的协程外壳（票 #137）。
+
+    生产工厂自己不读库（只读配置），但它必须与注入缝**同形**：评测注入的旧实现要
+    ``await`` 一次 Provider 装配，缺省这一条若是同步函数，注入缝就成了「有时可 await、
+    有时不可」的两种形状。函数体引用模块级名字而不是在定义处求值，所以
+    ``monkeypatch.setattr(模块, "get_rerank_provider", ...)`` 这条既有接缝照旧成立。
+    """
+
+    return get_rerank_provider()
+
+
 async def rerank_stage(
     *,
     query: str,
     chunks: list[dict],
     top_n: int,
     enabled: bool,
-    provider_factory: Callable[[], RerankProvider] | None = None,
+    provider_factory: Callable[[], Awaitable[RerankProvider]] | None = None,
 ) -> RerankOutcome:
     """对融合后的候选重排一次；失败时保留融合顺序并给出原因。
 
@@ -98,10 +110,15 @@ async def rerank_stage(
     截断放在这里而不是只放在 Provider 里，是因为失败 / 未开启这两条路径根本不经过
     Provider。
 
-    ``provider_factory`` 是**注入缝**（票 #116）：缺省仍是 ``get_rerank_provider``
+    ``provider_factory`` 是**注入缝**（票 #116）：缺省仍走 ``get_rerank_provider``
     （既有 monkeypatch 接缝，一行不用改），评测可以显式装配旧的大模型重排做对照。
     工厂以可调用对象传进来而不是在这里直接 import，与 ``hybrid_retrieve`` 里几个
     工厂同形——替换点因此仍然只有一处。
+
+    **工厂现在是协程**（票 #137）：旧实现 ``build_llm_rerank_provider`` 要 ``await`` 一次
+    Provider 装配（那次装配读角色指针），所以缺省工厂也被包成一个协程，两层形状一致；
+    否则「评测注入的工厂」会比「生产工厂」多一个 ``await``，而那种不对称只会在评测里
+    炸。调用点只有一个：下面那一句 ``await factory()``。
     """
 
     if not chunks:
@@ -115,9 +132,10 @@ async def rerank_stage(
         return RerankOutcome(kept, None, False, len(chunks), len(kept), None)
 
     # 缺省走模块级名字（不是默认参数）：既有用例 monkeypatch 的就是这个名字，默认参数
-    # 会在 import 期把旧函数对象焊死在签名里，那条接缝就失效了。
-    factory = get_rerank_provider if provider_factory is None else provider_factory
-    provider = factory()
+    # 会在 import 期把旧函数对象焊死在签名里，那条接缝就失效了。缺省这一条**不读库**，
+    # 只是把它包成协程，与注入缝同形。
+    factory = _default_rerank_provider if provider_factory is None else provider_factory
+    provider = await factory()
     if not provider.available:
         # 关闭重排 = 「没有这一步」，不是「排了一遍恰好没变」：不调用、不记耗时，
         # 融合顺序原样返回（截到 top_n）。日志与元数据里的「重排是否发生」才不会被误读。

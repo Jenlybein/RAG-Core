@@ -26,7 +26,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.observability.stage_timing import STAGE_ORDER
@@ -48,12 +48,12 @@ def window_start(hours: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=safe)
 
 
-def overview(db: Session, *, hours: int) -> dict[str, Any]:
+async def overview(db: AsyncSession, *, hours: int) -> dict[str, Any]:
     """本地事实层的总览。观测栈是否可用**不影响**这个函数的返回。"""
 
     since = window_start(hours)
-    totals = observability_repository.totals(db, since=since)
-    ratings = observability_repository.rating_histogram(db, since=since)
+    totals = await observability_repository.totals(db, since=since)
+    ratings = await observability_repository.rating_histogram(db, since=since)
     rated = sum(ratings.values())
     weighted = sum(score * count for score, count in ratings.items())
     return {
@@ -66,10 +66,10 @@ def overview(db: Session, *, hours: int) -> dict[str, Any]:
             # 分母是「打过分的条数」；没有评分时是 None，不是 0。
             "average": round(weighted / rated, 2) if rated else None,
         },
-        "by_tenant": observability_repository.by_tenant(db, since=since),
+        "by_tenant": await observability_repository.by_tenant(db, since=since),
         "hourly": [
             {"bucket": item["bucket"].isoformat(), "total": item["total"]}
-            for item in observability_repository.hourly(db, since=since)
+            for item in await observability_repository.hourly(db, since=since)
         ],
     }
 

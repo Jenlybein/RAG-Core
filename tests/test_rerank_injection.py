@@ -67,6 +67,15 @@ class _StubRerank:
         return list(reversed(chunks))[:top_n]
 
 
+def _matching_factory(provider: Any) -> Any:
+    """与注入缝**同形**的协程工厂（票 #137：真货要 ``await``，替身不许比它宽容）。"""
+
+    async def _build() -> Any:
+        return provider
+
+    return _build
+
+
 # ───────────────────────────────────────────── 重排阶段：工厂决定实现
 
 
@@ -81,7 +90,7 @@ def test_rerank_stage_uses_the_injected_factory_and_echoes_its_identity() -> Non
             chunks=[_chunk("c1"), _chunk("c2")],
             top_n=2,
             enabled=True,
-            provider_factory=lambda: provider,
+            provider_factory=_matching_factory(provider),
         )
     )
 
@@ -102,7 +111,7 @@ def test_a_failed_rerank_still_names_the_provider_it_tried() -> None:
             chunks=[_chunk("c1"), _chunk("c2")],
             top_n=1,
             enabled=True,
-            provider_factory=lambda: _StubRerank(error=RuntimeError("502")),
+            provider_factory=_matching_factory(_StubRerank(error=RuntimeError("502"))),
         )
     )
 
@@ -121,7 +130,7 @@ def test_the_two_identity_keys_are_additive_on_every_path() -> None:
             chunks=[_chunk("c1")],
             top_n=1,
             enabled=False,
-            provider_factory=lambda: _StubRerank(),
+            provider_factory=_matching_factory(_StubRerank()),
         )
     )
     empty = asyncio.run(
@@ -130,7 +139,7 @@ def test_the_two_identity_keys_are_additive_on_every_path() -> None:
             chunks=[],
             top_n=1,
             enabled=True,
-            provider_factory=lambda: _StubRerank(),
+            provider_factory=_matching_factory(_StubRerank()),
         )
     )
     unavailable = asyncio.run(
@@ -139,7 +148,7 @@ def test_the_two_identity_keys_are_additive_on_every_path() -> None:
             chunks=[_chunk("c1")],
             top_n=1,
             enabled=True,
-            provider_factory=lambda: _StubRerank(available=False),
+            provider_factory=_matching_factory(_StubRerank(available=False)),
         )
     )
 
@@ -195,24 +204,18 @@ def test_the_pipeline_forwards_the_rerank_factory_to_the_stage(
     async def _no_keyword(**kwargs: Any) -> list[dict]:
         return []
 
-    async def _no_vector_branch(**kwargs: Any) -> list[dict]:
+    async def _no_vector_branch(_db: Any, **kwargs: Any) -> list[dict]:
         return []
 
-    class _InlinePool:
-        """把池换成就地执行：这条用例只关心重排注入，不该真的起线程。"""
-
-        async def run(self, factory: Any) -> Any:
-            return await factory()
-
     monkeypatch.setattr(pipeline, "rerank_stage", _fake_stage)
-    monkeypatch.setattr(pipeline, "_vector_branch_in_pool", _no_vector_branch)
-    monkeypatch.setattr(pipeline, "get_retrieval_pool", lambda: _InlinePool())
+    monkeypatch.setattr(pipeline, "_vector_branch", _no_vector_branch)
     monkeypatch.setattr(pipeline, "_keyword_branch", _no_keyword)
 
-    factory = lambda: _StubRerank()  # noqa: E731 - 工厂就是一个可调用对象
+    factory = _matching_factory(_StubRerank())
 
     asyncio.run(
         pipeline.hybrid_retrieve(
+            db=None,  # 两路分支都被替身接住，这条用例不需要真会话
             tenant_id="t",
             kb_ids=["kb-a"],
             vector_queries=["q"],
@@ -254,17 +257,26 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
 
     monkeypatch.setattr(service, "hybrid_retrieve", _fake_hybrid)
     monkeypatch.setattr(service, "optimize_query", _identity_query)
-    monkeypatch.setattr(
-        service,
-        "ensure_visible",
-        lambda db, *, tenant_id, kb_id: SimpleNamespace(settings=None, name="kb", description=None),
-    )
-    monkeypatch.setattr(service, "_collapse_results", lambda *args, **kwargs: [])
-    monkeypatch.setattr(service, "_empty_reason", lambda *args, **kwargs: "no_chunks_matched")
-    monkeypatch.setattr(service, "record_retrieval_trace", lambda **kwargs: None)
-    monkeypatch.setattr(service, "emit_retrieval_trace", lambda **kwargs: None)
 
-    factory = lambda: _StubRerank()  # noqa: E731 - 同上
+    async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
+        return SimpleNamespace(settings=None, name="kb", description=None)
+
+    async def _no_collapse(*args: Any, **kwargs: Any) -> list[dict]:
+        return []
+
+    async def _empty(*args: Any, **kwargs: Any) -> str:
+        return "no_chunks_matched"
+
+    async def _no_trace(**kwargs: Any) -> None:
+        return None
+
+    monkeypatch.setattr(service, "ensure_visible", _visible)
+    monkeypatch.setattr(service, "_collapse_results", _no_collapse)
+    monkeypatch.setattr(service, "_empty_reason", _empty)
+    monkeypatch.setattr(service, "record_retrieval_trace", _no_trace)
+    monkeypatch.setattr(service, "emit_retrieval_trace_off_loop", _no_trace)
+
+    factory = _matching_factory(_StubRerank())
     asyncio.run(
         service.retrieve(
             None,  # 这条路径不需要真会话：可见性与折叠都被替身接住了

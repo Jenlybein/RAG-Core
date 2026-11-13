@@ -13,11 +13,11 @@
 四条不许动的约定：
 
 1. **两路真并行**：``asyncio.gather(..., return_exceptions=True)`` 让一路挂掉不取消
-   另一路。向量分支是同步 psycopg + 同步 Session，必须丢到**检索执行池**（固定规模的
-   常驻线程 + 常驻事件循环，见 ``app.core.loop_pool``），并且**持有自己的
-   ``SessionLocal()``**——否则它会卡住事件循环，「并行」只是字面上的（ADR-0011
-   「它管不到的三件事」）。**不能**再用「每请求 ``asyncio.to_thread`` + ``asyncio.run``」：
-   那会给每个请求新建一个循环，绑定循环的 HTTP 客户端永远复用不了（票 5）。
+   另一路。向量分支是**普通 ``await``**，跑在主循环上、用**请求的异步会话**——
+   第 11 步票 #127 把 pgvector 查询换成了 ``await db.execute(...)``，于是这条分支不再
+   卡住事件循环，「并行」不再需要另开线程。第 10 步那个固定规模的检索执行池
+   （``app/core/loop_pool.py``，N 条常驻线程 + 常驻循环 + 排队预算）因此一并删除：
+   它存在的唯一理由就是「同步查询会卡住循环」。
 2. **对称降级**：嵌入失败（含多查询里任意一句）发生在向量分支内部，必须被该分支
    捕获后变成「仅关键词」，绝不冒泡成整单失败。只兜关键词那一半是本票最容易漏掉的一条。
 3. **降级原因一因一码**：通道故障只用下面两个常量，重排失败用
@@ -30,21 +30,23 @@
    按库循环召回再合并是假均衡——不相关的库也各占名额，把真正该进来的切片挤掉。
    可见性校验不在这里：它在 ``rag_service.retrieve`` 进入任何分支之前统一做一遍
    （票 25），两条分支内不再重复。
+
+**取消要能传导**（#127）：两路都只是主循环上的协程，所以「客户端断开」会直接把
+``CancelledError`` 送进正在 await 的那一段（嵌入 / 召回），活当场停下。执行池时代做不到
+这件事——取消只能取消「等结果」，池里的线程会把手上的活干完。
 """
 
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
-from functools import partial
 from typing import Any
 
 import structlog
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.loop_pool import get_retrieval_pool
-from app.db.session import SessionLocal
 from app.models.chunk import default_index_versions
 from app.observability.stage_timing import (
     STAGE_FUSION,
@@ -91,6 +93,7 @@ class HybridOutcome:
 
 async def hybrid_retrieve(
     *,
+    db: AsyncSession,
     tenant_id: str,
     kb_ids: list[str],
     vector_queries: Sequence[str],
@@ -103,10 +106,14 @@ async def hybrid_retrieve(
     recall_depth: int | None = None,
     rerank_candidates: int | None = None,
     rerank_enabled: bool,
-    rerank_factory: Callable[[], Any] | None = None,
+    rerank_factory: Callable[[], Awaitable[Any]] | None = None,
     stage_timer: StageTimer | None = None,
 ) -> HybridOutcome:
     """两路并行召回，融合、重排后返回；一路失败不取消另一路。
+
+    ``db`` 是**请求的异步会话**，两条分支共用它（只有向量一路真的读库）。异步会话不绑
+    线程，所以「共用」在这里是安全的——第 10 步之所以要另开一个 ``SessionLocal``，是因为
+    那时向量分支跑在别的线程上，而同步 ``Session`` 不能跨线程。
 
     工厂以**可调用对象**传进来，而不是在这里直接 import：``rag_service`` 是组合根，
     测试替换工厂的位置因此仍然只有一处（沿用既有 monkeypatch 接缝，不新造接缝）。
@@ -147,22 +154,18 @@ async def hybrid_retrieve(
     # 「重新挑」这件事根本无从发生。不开重排时这里就等于 top_k，行为不变。
     fuse_pool = max(top_k, rerank_candidates or 0)
 
-    # 向量分支进执行池：池里是常驻线程 + 常驻循环，客户端因此能跨请求复用；排队超预算
-    # 时池会抛 ``TimeoutError``，被 gather 收成「这一路失败」，走既有降级。
-    pool = get_retrieval_pool()
+    # 两路都只是主循环上的协程：向量一路用**请求的异步会话**，不再另开线程、另开会话。
     gathered: list[Any] = list(
         await asyncio.gather(
-            pool.run(
-                partial(
-                    _vector_branch_in_pool,
-                    tenant_id=tenant_id,
-                    kb_ids=kb_ids,
-                    queries=vector_queries,
-                    top_k=depth,
-                    embedding_factory=embedding_factory,
-                    vector_factory=vector_factory,
-                    stage_timer=timer,
-                )
+            _vector_branch(
+                db,
+                tenant_id=tenant_id,
+                kb_ids=kb_ids,
+                queries=vector_queries,
+                top_k=depth,
+                embedding_factory=embedding_factory,
+                vector_factory=vector_factory,
+                stage_timer=timer,
             ),
             _keyword_branch(
                 tenant_id=tenant_id,
@@ -261,44 +264,8 @@ def _reraise_rejection(error: BaseException | None) -> None:
         raise error
 
 
-async def _vector_branch_in_pool(
-    *,
-    tenant_id: str,
-    kb_ids: list[str],
-    queries: Sequence[str],
-    top_k: int,
-    embedding_factory: Callable[[], Any],
-    vector_factory: Callable[[], Any],
-    stage_timer: StageTimer,
-) -> list[dict]:
-    """执行池里跑的那一段：**自己开会话、自己关会话**。
-
-    这个协程在池里某个 worker 的常驻循环上执行，所以它 await 出来的异步 HTTP 客户端
-    属于那个循环、能跨请求复用（票 5 的目的）。会话仍然每任务一个：``SessionLocal``
-    在**这里**取，因此测试替换它仍只有一处（既有接缝不变）。
-
-    收集器也一起过线程：它自己带锁（``StageTimer``），向量这一段的耗时因此记在主循环
-    事件循环那个收集器上——「两路并行」在观测里仍然是同一份 trace 的两段。
-    """
-
-    db = SessionLocal()
-    try:
-        return await _vector_branch(
-            db,
-            tenant_id=tenant_id,
-            kb_ids=kb_ids,
-            queries=queries,
-            top_k=top_k,
-            embedding_factory=embedding_factory,
-            vector_factory=vector_factory,
-            stage_timer=stage_timer,
-        )
-    finally:
-        db.close()
-
-
 async def _vector_branch(
-    db: Any,
+    db: AsyncSession,
     *,
     tenant_id: str,
     kb_ids: list[str],
@@ -313,6 +280,9 @@ async def _vector_branch(
     这里没有「按库循环」：分库各召回一批再合并看着公平，实际让不相关的库也各占
     名额，把真正该进来的切片挤掉（父 spec「多库：一次全局召回 + 一次融合」）。
     嵌入不随知识库数量增加，只随 ``queries`` 的句子数增加（关闭改写时仍是 1 次）。
+
+    会话是**请求那一个**（``db``）：异步会话不绑线程，所以不需要像同步时代那样在
+    池里另开一个 ``SessionLocal()``。这也意味着取消能直接传导到这条分支上。
 
     嵌入失败发生在这里，也就是**向量分支内部**：它会被 gather 收成这一路的错误，
     于是混合模式降级成「仅关键词」，而不是整单失败。

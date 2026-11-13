@@ -106,16 +106,19 @@ def _coerce(raw: Any) -> QueryRewrite:
     raise ValueError(f"查询改写返回了不认识的形状：{type(raw).__name__}")
 
 
-def _llm_provider() -> LLMProvider:
+async def _llm_provider() -> LLMProvider:
     """取 fast 模型角色的大模型。
 
     **惰性 import**：关闭改写时（缺省路径）不加载大模型层，离线启动不为一项没开的
     能力付出 import 代价；同时让测试的替换点仍然只有 ``app.providers.llm`` 一处。
+
+    **协程**（票 #137）：Provider 装配要读一次角色指针（走 ``AsyncSession``），所以
+    装配这一步必须 ``await``——否则那次同步读库会落在请求的事件循环上。
     """
 
     from app.providers.llm import get_llm_provider
 
-    return get_llm_provider("fast")
+    return await get_llm_provider("fast")
 
 
 async def rewrite_query(
@@ -138,7 +141,7 @@ async def rewrite_query(
     try:
         # 装配也放在 try 里：供应商名字拼错时工厂会抛 ``ValueError``，而「改写用不了」
         # 不该让每一次检索都整单失败——它是一项可选优化，不是检索的前提。
-        provider = _llm_provider()
+        provider = await _llm_provider()
         raw = await asyncio.wait_for(
             provider.chat_structured(
                 QueryRewrite,

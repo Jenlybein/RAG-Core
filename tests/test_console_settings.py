@@ -38,7 +38,7 @@ from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.runtime_setting import RuntimeSetting
 from app.models.tenant import Tenant
 from app.services import runtime_settings
-from tests.fake_db import RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -74,23 +74,10 @@ class _MemorySettingsCache:
         self.deleted += 1
         self.payload = None
 
+    async def adelete(self) -> None:
+        """循环上的那条：与 ``delete`` 同一份状态（契约见 app.core.runtime_settings_cache）。"""
 
-class _MemoryPlanCache:
-    """套餐缓存的内存假实现：登录成功要读套餐，真 Redis 会把用例拖成「看机器脸色」。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
+        self.delete()
 
 
 @dataclass(frozen=True)
@@ -100,9 +87,7 @@ class _Harness:
     cache: _MemorySettingsCache
 
     def login(self, username: str, password: str) -> Any:
-        return self.client.post(
-            "/console/login", json={"username": username, "password": password}
-        )
+        return self.client.post("/console/login", json={"username": username, "password": password})
 
     def data(self, response: Any) -> Any:
         body = response.json()
@@ -210,18 +195,18 @@ def console() -> Any:
     import importlib
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     saved = settings.model_dump()
     runtime_settings.reset_runtime_state()
     db = RecordingSession(rows=_world())
     cache = _MemorySettingsCache()
-    plan_cache = _MemoryPlanCache()
+    plan_cache = MemoryPlanCache()
     set_settings_cache(cache)
     # 中间件自己开会话（它拿不到 Depends）；注入同一个假会话，于是刷新路径也在测试里。
     runtime_settings.set_session_factory(lambda: db)
-    main.app.dependency_overrides[session_module.get_db] = lambda: db
+    # 配置清单的 GET 与 PATCH 都在异步栈上（票 #129 / #130）：两个异步会话入口一起换。
+    override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_runtime_settings_cache] = lambda: cache
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: plan_cache
     try:
@@ -386,7 +371,6 @@ def test_dry_run_is_the_default_and_nothing_is_written(console: _Harness) -> Non
     console.add_setting("TOP_K", 5)
     updated_before = console.setting_row("TOP_K").updated_at
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
-    commits_before = console.db.commits  # 登录本身会提交一条会话行
 
     response = console.client.patch(
         "/console/settings", json={"values": {"TOP_K": 9}}, headers=WRITE_HEADERS
@@ -395,7 +379,8 @@ def test_dry_run_is_the_default_and_nothing_is_written(console: _Harness) -> Non
     data = console.data(response)
     assert data["dry_run"] is True
     assert data["updated"] == []
-    assert console.db.commits == commits_before
+    # 不数提交次数：写接口在请求边界上开一笔事务，dry_run 时它提交的是**空的一笔**。
+    # 「什么都没写」的证据是下面两条——没有行被 add、updated_at 没动。
     assert console.db.added_of(RuntimeSetting) == []
     assert console.setting_row("TOP_K").updated_at == updated_before, "dry_run 不许改 updated_at"
     assert data["impact"] is not None

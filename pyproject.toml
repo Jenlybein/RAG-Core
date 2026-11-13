@@ -5,6 +5,10 @@ requires-python = ">=3.12"
 dependencies = [
     # 阶段 1
     "fastapi==0.115.4",
+    # 第 11 步票 6（#129）曾直接钉住 `anyio==4.16.0`：`app/core/sync_bridge.py` 用它把同步
+    # 上下文里的协程交回主事件循环。票 #130 删掉了那个过渡桥（判定内核与写事务都已在事件
+    # 循环上），直接 import 的包也就不该继续留在依赖表里——它仍是 starlette / fastapi 的
+    # 传递依赖，运行期能力一点不变。守卫见 `tests/test_console_async_writes.py`。
     # 教程原值 0.32.0 → 0.35.0：fastmcp 3.0 要求 uvicorn>=0.35
     "uvicorn[standard]==0.35.0",
     "sqlalchemy==2.0.36",
@@ -66,6 +70,10 @@ dependencies = [
     "fastmcp==3.0.0",
     # 全程
     "pytest==8.3.3",
+    # 第 11 步票 3（#126）：异步用例的入口。**strict 模式**（见 [tool.pytest.ini_options]）：
+    # 只有显式标了 @pytest.mark.asyncio 的 async def 用例才会被跑，现有用 asyncio.run 的
+    # 用例一条都不改写——批量改写是噪音，不是迁移。
+    "pytest-asyncio==1.3.0",
     "structlog==26.1.0",
     "tiktoken==0.14.0",
 ]
@@ -75,6 +83,7 @@ dev = [
     "ruff==0.17.3",
     "mypy==2.4.1",
     "pre-commit==4.7.0",
+    "aiosqlite>=0.22.1",
 ]
 
 # 根目录同时有 app 与 migrations 两个 Python 包时，setuptools 无法猜主包，
@@ -99,6 +108,12 @@ ignore_missing_imports = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# 第 11 步票 3（#126）：异步用例只在显式标记时运行（strict）。没标记的 async def 用例
+# 会被静默跳过——这正是「忘了加标记」最容易被忽略的形态，所以模式写死在这里而不是靠默认值。
+asyncio_mode = "strict"
+# 异步夹具的循环作用域也写死：一个用例一个循环（与现有 ``asyncio.run`` 用例「一次一个
+# 干净循环」的语义一致），不让它随 pytest-asyncio 的版本默认值漂移。
+asyncio_default_fixture_loop_scope = "function"
 markers = [
     "ocr: requires PDFium + ONNX Runtime + PP-OCRv6 model assets (see deploy/ocr/fetch_runtime.sh)",
     "integration: requires a real PostgreSQL; set RAG_INTEGRATION_DATABASE_URL (see .github/workflows/ci.yml)",

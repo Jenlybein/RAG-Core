@@ -21,10 +21,14 @@
 实现被业务层绑住，也会在 import 时把一整套服务层拖进任何只想要一个 Provider 的地方。
 
 所以「角色 → 一条接入」是一条可注入的回调：:data:`RoleResolver`（``Callable[[str],
-RoleEndpoint | None]``），由 :func:`set_role_resolver` 写入。``get_llm_provider`` **只用**
-注入的解析器；没注入、或解析器返回 ``None`` → 回落第 2 步的 ``.env``（离线 / CI / 全新部署
-都落到这里，行为与改造前逐字一致）。解析器**不许抛**：读库失败应返回 ``None``（回落
-``.env`` 是这条路径的既定行为，不是调用方的错误）。
+Awaitable[RoleEndpoint | None]]``），由 :func:`set_role_resolver` 写入。``get_llm_provider``
+**只用**注入的解析器；没注入、或解析器返回 ``None`` → 回落第 2 步的 ``.env``（离线 / CI /
+全新部署都落到这里，行为与改造前逐字一致）。解析器**不许抛**：读库失败应返回 ``None``
+（回落 ``.env`` 是这条路径的既定行为，不是调用方的错误）。
+
+**解析器与工厂都是协程**（票 #137）：角色指针只能在事件循环上走 ``AsyncSession`` 读，
+而 ``get_llm_provider`` 是每次装配都要算一次指纹的入口——同步工厂会把那次读库压在循环上。
+解析器的形状因此也是 ``async``：同步替身在 ``await`` 处当场坏掉，而不是被悄悄接受。
 
 注入点只有两个组合根：``app/main.py``（API 进程启动处）与 ``app/tasks/indexing.py``
 （Celery Worker 入口）。其它入口（离线脚本 / 评测）没注入就是「没有角色指针」，
@@ -43,17 +47,18 @@ RoleEndpoint | None]``），由 :func:`set_role_resolver` 写入。``get_llm_pro
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
-from langchain.chat_models import init_chat_model
-from langchain_core.language_models import BaseChatModel
 
 from app.core.config import settings
 from app.core.http_clients import model_traffic_client_options
 from app.core.llm_vendors import LLM_VENDORS
+
+if TYPE_CHECKING:  # pragma: no cover —— 只给类型检查用，运行时不导入
+    from langchain_core.language_models import BaseChatModel
 from app.core.model_roles import MODEL_ROLES
 from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
@@ -80,7 +85,10 @@ class RoleEndpoint:
 
 
 #: 「角色 → 它现在该用的那一条」的解析器签名。返回 ``None`` = 没有指向，调用方回落 ``.env``。
-RoleResolver = Callable[[str], RoleEndpoint | None]
+#:
+#: 协程而不是普通函数（票 #137）：那次读库只能在事件循环上走 ``AsyncSession``，而这条
+#: 回调是唯一读库的位置。同步替身在 ``await`` 处当场坏掉——替身不许比真货宽容。
+RoleResolver = Callable[[str], Awaitable[RoleEndpoint | None]]
 
 #: 进程级注入点；``None`` 表示未注入（只用 ``.env``）。唯一写入口是 :func:`set_role_resolver`。
 _role_resolver: RoleResolver | None = None
@@ -97,10 +105,13 @@ def set_role_resolver(resolver: RoleResolver | None) -> None:
     _role_resolver = resolver
 
 
-def _resolved_endpoint(role: str) -> RoleEndpoint | None:
-    """当前注入的解析器给出的那一条；没注入就是 ``None``（等价于「库里没有指针」）。"""
+async def _resolved_endpoint(role: str) -> RoleEndpoint | None:
+    """当前注入的解析器给出的那一条；没注入就是 ``None``（等价于「库里没有指针」）。
 
-    return None if _role_resolver is None else _role_resolver(role)
+    **必须 await**：解析器要读库（``AsyncSession``），这是本模块里唯一一次读库。
+    """
+
+    return None if _role_resolver is None else await _role_resolver(role)
 
 
 @dataclass(frozen=True)
@@ -180,8 +191,12 @@ def _cached(key: tuple[Any, ...], build: Callable[[], LLMProvider]) -> LLMProvid
     return provider
 
 
-def get_llm_provider(role: str = "fast") -> LLMProvider:
+async def get_llm_provider(role: str = "fast") -> LLMProvider:
     """按「角色指针 → 模型配置行 → 回落 .env」装配（顺序见模块文档）。
+
+    **协程**（票 #137）：角色指针只能当场读库，而这次读库走 ``AsyncSession``——同步工厂
+    会把每一次装配都变成事件循环上的一次同步库读。调用点因此一律 ``await``（请求路径、
+    Celery 任务），脚本在自己的进程里用 ``asyncio.run`` 桥接（那里不是请求路径）。
 
     缺任何一环（供应商未知、key 没配）都退回空实现或立刻报错，不做「半装配」——
     半装配的症状是发出去了但一直 401，比启动就缺能力难查得多。
@@ -197,7 +212,7 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
 
     # 遥测开关必须在**任何**客户端被构造之前落地，包括下面这条「没配 key、走空实现」
     # 的早退路径：审计要看的是「这个进程里的框架永远不外发」，而不是「有 key 时才
-    # 不外发」。放在早退之前，是这个函数唯一不会漏掉的位置。
+    # 不外发」。放在早退与读库之前，是这个函数唯一不会漏掉的位置。
     apply_framework_telemetry_switches()
 
     def _cached_assembly(
@@ -220,7 +235,7 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
 
     # 1. 注入的解析器 → 那一条配置行（见模块文档：读库不在这层，靠组合根注入）。
     #    指针为空 / 行已消失 / 解析器没注入时返回 None，落到下面的 `.env`。
-    endpoint = _resolved_endpoint(role)
+    endpoint = await _resolved_endpoint(role)
     if endpoint is not None:
         vendor = _VENDORS.get(endpoint.provider.strip().lower())
         if vendor is None:
@@ -253,9 +268,7 @@ def get_llm_provider(role: str = "fast") -> LLMProvider:
     # 2. `.env` 的单供应商（改造前的行为，逐字保留）。
     vendor = _VENDORS.get(settings.LLM_PROVIDER.strip().lower())
     if vendor is None:
-        raise ValueError(
-            f"未知的大模型供应商 {settings.LLM_PROVIDER!r}，只支持 {tuple(_VENDORS)}"
-        )
+        raise ValueError(f"未知的大模型供应商 {settings.LLM_PROVIDER!r}，只支持 {tuple(_VENDORS)}")
 
     api_key = getattr(settings, vendor.key_setting, "")
     if not api_key:
@@ -299,6 +312,24 @@ def _assembly_key(
         # 强档的思考强度进装配参数（fast 写死关思考，不受配置影响，所以不进键）。
         settings.LLM_REASONING_EFFORT if role == "strong" else None,
     )
+
+
+def _init_chat_model(model_name: str, **kwargs: Any) -> BaseChatModel:
+    """装配聊天模型的**唯一入口**，也是测试的注入缝。
+
+    ``from langchain.chat_models import init_chat_model`` 放在函数里是刻意的：
+    `langchain.chat_models` 冷导入约 2.3 s（经 `langchain_core` 还会拖进 `langsmith`），
+    而它只在「真的装配一个模型」时用得上——装配已经按配置指纹缓存，不是每个进程都要付。
+
+    **为什么保留这层薄函数而不是直接写在 `_build_chat_model` 里**：用例靠 patch
+    ``app.providers.llm._init_chat_model`` 来观察「这次装配用了哪条配置」。惰性 import 写在
+    调用点而没有这层缝时，patch 会落在一个永远不会被调用的名字上——用例照旧绿，但它已经
+    什么都没测（这类假绿在本项目里出现过不止一次）。
+    """
+
+    from langchain.chat_models import init_chat_model
+
+    return init_chat_model(model_name, **kwargs)
 
 
 def _assemble(
@@ -350,7 +381,7 @@ def _assemble(
         kwargs = dict(options)
         if accepts_injected_client:
             kwargs.update(model_traffic_client_options())
-        return init_chat_model(model_name, model_provider=vendor.chat_provider, **kwargs)
+        return _init_chat_model(model_name, model_provider=vendor.chat_provider, **kwargs)
 
     return LangChainLLMProvider(chat_model_factory=_build_chat_model, model_name=model_name)
 

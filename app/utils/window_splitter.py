@@ -21,11 +21,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
-from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
 from app.utils.tokenizer import token_count
+
+if TYPE_CHECKING:  # pragma: no cover —— 只给类型检查用，运行时不导入
+    from langchain_text_splitters import Language, RecursiveCharacterTextSplitter
 
 # 长度尺子：生产是 Qwen token；对照实验里可能是字符（`len`）。
 LengthFunction = Callable[[str], int]
@@ -74,6 +76,10 @@ def language_of(marker: str) -> Language | None:
     marker = (marker or "").strip().lower()
     if not marker:
         return None
+    # 惰性 import：`langchain_text_splitters` 冷导入约 1.4 s（含一整套语法分隔符表）。
+    # 只有**真的遇到代码块**时才需要它。
+    from langchain_text_splitters import Language
+
     try:
         return Language(marker)
     except ValueError:
@@ -112,6 +118,10 @@ def _build(
     """
 
     language = language_of(marker)
+    # 惰性 import：`langchain_text_splitters` 冷导入约 1.4 s（含一整套语法分隔符表），
+    # 只有**真的切分文本**时才需要它。
+    from langchain_text_splitters import RecursiveCharacterTextSplitter
+
     if language is not None:
         try:
             return RecursiveCharacterTextSplitter.from_language(
@@ -157,9 +167,7 @@ def make_slicer(length_function: LengthFunction = token_count) -> Slicer:
             marker=marker,
             length_function=length_function,
         )
-        return [
-            _trim(piece) for piece in splitter.split_text(stripped) if piece.strip()
-        ]
+        return [_trim(piece) for piece in splitter.split_text(stripped) if piece.strip()]
 
     return slicer
 

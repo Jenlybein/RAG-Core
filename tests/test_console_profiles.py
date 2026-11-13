@@ -44,7 +44,7 @@ from app.models.profile_preset import ProfilePreset
 from app.models.tenant import Tenant
 from app.services.profile_preset_service import ACTION_PROFILE_UPDATE
 from app.services.retrieval_options import SEED_PROFILE_CHAINS, profile_chain_of
-from tests.fake_db import RecordingSession
+from tests.fake_db import RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -87,7 +87,12 @@ def _plan_rows() -> list[Plan]:
 
 
 def _account(
-    account_id: str, username: str, password: str, *, role: str = "user", tenant_id: str | None = None
+    account_id: str,
+    username: str,
+    password: str,
+    *,
+    role: str = "user",
+    tenant_id: str | None = None,
 ) -> Account:
     return Account(
         id=account_id,
@@ -137,7 +142,6 @@ def console(request: Any) -> Any:
     """真实应用 + 假数据库 + 空装载器。每个用例一套全新的世界与注册表。"""
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
 
     presets = getattr(request, "param", None)
     db = RecordingSession(rows=_world(presets=presets))
@@ -148,7 +152,8 @@ def console(request: Any) -> Any:
     set_profile_preset_loader(None)
     reset_profile_presets()
 
-    main.app.dependency_overrides[session_module.get_db] = lambda: db
+    # 档位清单的 GET 与 PATCH 都在异步栈上（票 #129 / #130）：两个异步会话入口一起换。
+    override_all_db(main.app, db)
     try:
         with TestClient(main.app) as client:
             yield _Harness(client=client, db=db)

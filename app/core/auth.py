@@ -30,7 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Final, Mapping, Protocol
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
@@ -142,9 +142,9 @@ MSG_DEV_MODE_REJECTS_REAL_KEY = (
 )
 
 
-def resolve_identity(
+async def resolve_identity(
     request: HttpRequestLike,
-    db: Session,
+    db: AsyncSession,
     *,
     auth_enabled: bool | None = None,
     plan_cache: PlanCache | None = None,
@@ -156,6 +156,11 @@ def resolve_identity(
 
     ``plan_cache`` 是套餐缓存的注入口（生产传 Redis 实现，测试传内存假实现）；
     缺省时由 :func:`app.services.plan_service.resolve_plan` 自己取默认缓存。
+
+    **``async`` 是票 #130 的收尾**：套餐缓存是 ``redis.asyncio``，读库是
+    ``AsyncSession``，两者都只能在事件循环上 ``await``。迁移期那个「把协程交回主循环」
+    的过渡桥因此随本函数一起删掉了——判定内核现在是 HTTP 与 MCP 两条入口共用的**同一个**
+    协程，两个薄适配器直接 ``await`` 它。
     """
 
     token = _bearer_token(request)
@@ -171,7 +176,7 @@ def resolve_identity(
             raise AppError(ErrorCode.UNAUTHORIZED, MSG_DEV_MODE_REJECTS_REAL_KEY)
         return _dev_identity()
 
-    return _identity_from_key(db, token, plan_cache=plan_cache)
+    return await _identity_from_key(db, token, plan_cache=plan_cache)
 
 
 def _dev_identity() -> KeyContext:
@@ -187,28 +192,30 @@ def _dev_identity() -> KeyContext:
     )
 
 
-def _identity_from_key(db: Session, token: str, *, plan_cache: PlanCache | None) -> KeyContext:
+async def _identity_from_key(
+    db: AsyncSession, token: str, *, plan_cache: PlanCache | None
+) -> KeyContext:
     """开关打开后的真实路径：Key → 租户 → 密钥配置 → 套餐。"""
 
-    key = api_key_repository.get_by_value(db, token)
+    key = await api_key_repository.get_by_value(db, token)
     if key is None:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_UNKNOWN_KEY)
     if key.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_KEY_DISABLED)
 
-    tenant = tenant_repository.get_by_id(db, key.tenant_id)
+    tenant = await tenant_repository.get_by_id_async(db, key.tenant_id)
     if tenant is None or tenant.status != "active":
         # 缺行与停用同一个消息：对调用方来说都是「这个租户现在不能用」，而多一种消息
         # 只会让人以为租户被删了、去查一张根本不该手动删的表。
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_TENANT_DISABLED)
 
-    policy = key_policy_repository.get_by_id(db, key.policy_id)
+    policy = await key_policy_repository.get_by_id_async(db, key.policy_id)
     if policy is None:
         # 删掉配置时引用它的 Key 级联失效（ADR-0018）：Key 本身还是 active，但它已经
         # 没有一套可用的配置，判定上等同于停用。
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_KEY_DISABLED)
 
-    plan = resolve_plan(db, tenant.plan_id, cache=plan_cache)
+    plan = await resolve_plan(db, tenant.plan_id, cache=plan_cache)
 
     return KeyContext(
         tenant_id=tenant.id,

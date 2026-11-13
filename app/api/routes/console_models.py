@@ -23,11 +23,12 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import get_console_admin, require_console_admin_write
 from app.core.console_auth import ConsoleIdentity
-from app.db.session import get_db
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_models import (
     ModelConfigCreateRequest,
@@ -75,13 +76,13 @@ def _patch_data(result: ConfigPatchResult) -> ModelConfigPatchData:
     response_model=ApiResponse[ModelConfigListData],
     summary="全部模型接入（Key 永远 masked，附各角色指向）",
 )
-def list_model_configs(
+async def list_model_configs(
     identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[ModelConfigListData]:
     """列表。``api_key`` 在响应里永远是 ``sk-…abcd``；明文只从 ``/{id}/secret`` 出一次。"""
 
-    rows = model_config_service.list_configs(db)
+    rows = await model_config_service.list_configs(db)
     return ok(ModelConfigListData(items=[_row_data(row) for row in rows]))
 
 
@@ -90,15 +91,16 @@ def list_model_configs(
     response_model=ApiResponse[ModelConfigData],
     summary="新增一条模型接入（供应商来自预设注册表，端点与模型名可自定义）",
 )
-def create_model_config(
+async def create_model_config(
     payload: ModelConfigCreateRequest,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ModelConfigData]:
     """新增：``label`` / ``provider`` / ``model`` 非空且 ``provider`` 属于注册表，
     否则 ``20015``（一条都不写）。写入同时留一条 ``model.create`` 审计。"""
 
-    created = model_config_service.create_config(
+    created = await model_config_service.create_config(
         db,
         actor=identity,
         label=payload.label,
@@ -115,15 +117,16 @@ def create_model_config(
     response_model=ApiResponse[ModelConfigPatchData],
     summary="改一条模型接入（部分更新，改完下一次调用即生效）",
 )
-def patch_model_config(
+async def patch_model_config(
     config_id: str,
     payload: ModelConfigPatchRequest,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ModelConfigPatchData]:
     """部分更新；校验规则与新增同一套（供应商注册表 / 非空 / 长度）。"""
 
-    result = model_config_service.patch_config(
+    result = await model_config_service.patch_config(
         db, actor=identity, config_id=config_id, changes=payload.provided()
     )
     return ok(_patch_data(result))
@@ -134,14 +137,15 @@ def patch_model_config(
     response_model=ApiResponse[ModelConfigDeleteData],
     summary="删一条模型接入（被 fast/strong 指向时拒绝）",
 )
-def delete_model_config(
+async def delete_model_config(
     config_id: str,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ModelConfigDeleteData]:
     """删一条配置。仍被任一角色指向 → ``20015``，先改指向（见服务层的同一条判定）。"""
 
-    deleted = model_config_service.delete_config(db, actor=identity, config_id=config_id)
+    deleted = await model_config_service.delete_config(db, actor=identity, config_id=config_id)
     return ok(ModelConfigDeleteData(id=deleted, deleted=True))
 
 
@@ -150,15 +154,16 @@ def delete_model_config(
     response_model=ApiResponse[ModelConfigSecretData],
     summary="显示一次明文 Key（每次调用写一条审计）",
 )
-def reveal_model_config_secret(
+async def reveal_model_config_secret(
     config_id: str,
     identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ModelConfigSecretData]:
     """返回一次明文。**读门**（管理员即可，不查防跨站头）；后端每次都记账（``model.reveal``）。
 
     二次确认由前端负责：服务端能保证的是「每一次看都留痕」，不是「每次看都要点两下」。
     """
 
-    plaintext = model_config_service.reveal_secret(db, actor=identity, config_id=config_id)
+    plaintext = await model_config_service.reveal_secret(db, actor=identity, config_id=config_id)
     return ok(ModelConfigSecretData(id=config_id, api_key=plaintext))

@@ -1,19 +1,24 @@
-"""建库业务：生成 kb_id → 校验配置 → 落库 → 提交。
+"""建库业务：生成 kb_id → 校验配置 → 落库。
 
-Service 是全链路唯一 commit 的地方；Repository 与 Provider 都不提交。
+**这里不提交**：提交点是调用方的边界（数据面路由的 ``Depends(get_async_transaction)``，
+或控制面那条把「建库 + 审计」圈进同一笔的路由依赖）。仓储只 ``flush``，服务只写，
+全仓唯一的提交点在 :mod:`app.db.transaction`。
 
 策略与白名单在这里一次性定下来：``resolve_formats`` 既补默认值也拒绝矛盾组合。
 把校验放服务层而不是路由：将来若有第二个建库入口（CLI、导入），它同样受约束。
 
 静态配额（库数）也在这里，理由同上：它是「这个租户买得起几个库」，必须落在写路径上，
 而不是只挂在控制台接口上——否则脚本与将来的第二个入口就成了绕过套餐的后门。
+
+**会话是 ``AsyncSession``**（第 11 步票 #130）：两个入口（数据面、控制面）都换到了异步
+栈上，这一份实现只有一种会话可用。
 """
 
 from __future__ import annotations
 
 from collections.abc import Sequence
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.knowledge_base import (
@@ -29,7 +34,7 @@ from app.utils.id_generator import new_kb_id
 
 
 async def create_kb(
-    db: Session,
+    db: AsyncSession,
     *,
     name: str,
     description: str | None,
@@ -38,13 +43,11 @@ async def create_kb(
     plan: PlanSpec,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     allowed_formats: Sequence[str] | None = None,
-    commit: bool = True,
 ) -> dict:
-    """建库；``commit=False`` 交给调用方把「写入 + 审计」收进同一个事务。
+    """建库：判定（策略 / 配额 / 格式）→ 落一行，**不提交**。
 
-    控制面的建库要连同一条审计一起提交（不允许出现「建了库、却没账本」的窗口），
-    而数据面没有审计、照旧由这里提交。判定（策略 / 配额 / 格式）与提交时机无关，
-    因此两个入口共用同一份实现。
+    两个入口（数据面、控制面）共用这一份判定；控制面额外写一条审计，两条写入由同一个
+    请求事务一起提交，于是「建了库、却没账本」的窗口不存在。
     """
 
     try:
@@ -54,7 +57,7 @@ async def create_kb(
         raise AppError(ErrorCode.PARAM_ERROR, str(exc)) from exc
 
     # 套餐校验在构造行之前：被拒的请求不生成 id、不落行（建第 N+1 个库是 20014）。
-    static_quota.ensure_kb_quota(db, tenant_id=tenant_id, plan=plan)
+    await static_quota.ensure_kb_quota(db, tenant_id=tenant_id, plan=plan)
 
     kb = KnowledgeBase(
         id=new_kb_id(),
@@ -65,9 +68,7 @@ async def create_kb(
         allowed_formats=formats,
         settings={"chunk_size": chunk_size},
     )
-    knowledge_base_repository.create(db, kb)
-    if commit:
-        db.commit()
+    await knowledge_base_repository.create(db, kb)
     values = settings_of(kb)
     return {
         "kb_id": kb.id,

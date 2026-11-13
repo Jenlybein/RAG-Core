@@ -19,6 +19,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from collections.abc import Mapping, Sequence
 from typing import Final
 
@@ -159,3 +161,43 @@ def reset_trace_sink() -> None:
     _INJECTED = None
     _SINK = None
     _SINK_KEY = None
+
+
+async def emit_retrieval_trace_off_loop(
+    *,
+    trace_id: str,
+    spans: Sequence[StageSpan],
+    attributes: Mapping[str, object],
+    query: str | None = None,
+) -> None:
+    """``emit_retrieval_trace`` 的异步入口：把**阻塞的落盘 / 网络写**挪出事件循环。
+
+    旁路不等于免费：默认去向是 JSONL，一次 ``flush`` 里就有 mkdir + open + write + 目录
+    prune；换成 langfuse 时是同步 SDK 的网络写。它们原本都在 ``async def retrieve`` 的
+    循环上，于是「每一次 I/O 都 await」这条在观测这一层曾经是假的（票 #137 的评审抓到的）。
+
+    ``asyncio.to_thread`` 只挪线程，不改语义：仍然在**算完之后**尽力而为，任何失败仍只留
+    一条 warning（异常处理留在同步实现里，这里不重复）。
+    """
+
+    await asyncio.to_thread(
+        emit_retrieval_trace,
+        trace_id=trace_id,
+        spans=spans,
+        attributes=attributes,
+        query=query,
+    )
+
+
+async def emit_feedback_score_off_loop(
+    *, trace_id: str, score: int, comment: str | None = None
+) -> None:
+    """``emit_feedback_score`` 的异步入口：同步 SDK 的网络写不占事件循环。
+
+    与 trace 那一支同一条理由；反馈接口也在请求路径上，观测栈慢不该把它的 P95 一起拖下去。
+    """
+
+    await asyncio.to_thread(
+        emit_feedback_score, trace_id=trace_id, score=score, comment=comment
+    )
+

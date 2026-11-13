@@ -53,8 +53,8 @@ def test_normalize_query_collapses_whitespace_only() -> None:
 def test_select_low_scores_filters_by_score_time_and_kb() -> None:
     samples = [
         _sample("a", "t-a", score=2, days_ago=1),
-        _sample("b", "t-b", score=4, days_ago=1),          # 分太高
-        _sample("c", "t-c", score=1, days_ago=45),          # 太旧
+        _sample("b", "t-b", score=4, days_ago=1),  # 分太高
+        _sample("c", "t-c", score=1, days_ago=45),  # 太旧
         _sample("d", "t-d", score=3, days_ago=2),
     ]
 
@@ -103,9 +103,7 @@ def test_candidate_shape_is_a_question_with_empty_relevant() -> None:
 
 
 def test_validate_candidates_rejects_a_nonempty_relevant() -> None:
-    row = as_case(
-        Candidate(id="fb-a", query="q", trace_id="t", log_id="a", kb_ids=(), score=1)
-    )
+    row = as_case(Candidate(id="fb-a", query="q", trace_id="t", log_id="a", kb_ids=(), score=1))
     row["relevant"] = [{"document": "x", "heading_path": "y"}]
 
     assert any("relevant 必须是空列表" in problem for problem in validate_candidates([row]))
@@ -115,7 +113,11 @@ def test_merge_deduplicates_by_normalized_query_not_by_id() -> None:
     """同一句问句被两次差评，只该进题库一次（id 不同也要跳过）。"""
 
     existing: list[dict[str, Any]] = [
-        as_case(Candidate(id="fb-a", query="退款多久到账", trace_id="t-a", log_id="a", kb_ids=(), score=1))
+        as_case(
+            Candidate(
+                id="fb-a", query="退款多久到账", trace_id="t-a", log_id="a", kb_ids=(), score=1
+            )
+        )
     ]
     new = [
         Candidate(id="fb-b", query="退款 多久到账", trace_id="t-b", log_id="b", kb_ids=(), score=2),
@@ -129,7 +131,9 @@ def test_merge_deduplicates_by_normalized_query_not_by_id() -> None:
     assert validate_candidates(rows) == []
 
 
-def test_cli_writes_a_file_that_shape_check_accepts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_cli_writes_a_file_that_shape_check_accepts(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """CLI 用假的取数与原文源跑一遍，产物落盘后能过形状自检。"""
 
     import scripts.export_eval_cases as cli

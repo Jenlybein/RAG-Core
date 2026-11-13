@@ -14,11 +14,15 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.console_deps import require_console_tenant, require_console_tenant_write
+from app.api.console_deps import (
+    require_console_tenant,
+    require_console_tenant_write,
+)
 from app.core.console_auth import ConsoleIdentity
-from app.db.session import get_db
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_keys import (
     KeyData,
@@ -39,13 +43,17 @@ router = APIRouter(prefix="/console", tags=["console"])
     response_model=ApiResponse[KeyListData],
     summary="本租户的 Key 列表（明文 + masked + 它引用的配置）",
 )
-def list_keys(
+async def list_keys(
     identity: ConsoleIdentity = Depends(require_console_tenant),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[KeyListData]:
-    """列出本租户的 Key。明文是本票的明确决定（ADR-0004），masked 是第二形态。"""
+    """列出本租户的 Key。明文是本票的明确决定（ADR-0004），masked 是第二形态。
 
-    rows = key_admin_service.list_keys(db, actor=identity)
+    这条路径（含身份判定）在异步栈上（票 #129）。签发 / 删除 / 改配置也一样——它们在
+    ADR-0024 之后同属异步栈，写路径另外声明 ``get_async_transaction``（票 #130）。
+    """
+
+    rows = await key_admin_service.list_keys(db, actor=identity)
     return ok(KeyListData(keys=[key_data_of(row.api_key, row.policy) for row in rows]))
 
 
@@ -54,17 +62,18 @@ def list_keys(
     response_model=ApiResponse[KeyData],
     summary="签发 Key（连带建一条密钥配置）",
 )
-def issue_key(
+async def issue_key(
     payload: KeyIssueRequest,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[KeyData]:
     """签发：``{label, policy}`` → 一把新 Key + 它引用的配置 + 一条审计。
 
     配置不自洽（档位要的能力没开、超套餐上限）→ ``20015``，两行都不落库。
     """
 
-    issued = key_admin_service.issue_key(
+    issued = await key_admin_service.issue_key(
         db,
         actor=identity,
         label=payload.label,
@@ -78,14 +87,15 @@ def issue_key(
     response_model=ApiResponse[KeyDeleteData],
     summary="删 Key（不删它的配置）",
 )
-def delete_key(
+async def delete_key(
     key_id: str,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[KeyDeleteData]:
     """删 Key。配置独立于 Key，删凭证不连带删配置；跨租户按不存在（``20016``）。"""
 
-    deleted = key_admin_service.delete_key(db, actor=identity, key_id=key_id)
+    deleted = await key_admin_service.delete_key(db, actor=identity, key_id=key_id)
     return ok(KeyDeleteData(key_id=deleted.key_id, deleted=True))
 
 
@@ -94,15 +104,16 @@ def delete_key(
     response_model=ApiResponse[KeyPolicyPatchData],
     summary="改一套密钥配置（部分更新，改完下一次调用即生效）",
 )
-def patch_key_policy(
+async def patch_key_policy(
     policy_id: str,
     payload: KeyPolicyPatchRequest,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[KeyPolicyPatchData]:
     """改配置的五组字段；档位越出套餐白名单 / 超限额 → ``20015``，跨租户 → ``20016``。"""
 
-    result = key_admin_service.patch_key_policy(
+    result = await key_admin_service.patch_key_policy(
         db,
         actor=identity,
         policy_id=policy_id,

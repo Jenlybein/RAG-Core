@@ -8,6 +8,11 @@
     request_id 关联与两条固定日志名。
   * ``app.tasks.indexing._is_retryable`` —— 可重试判定的真值表。
 
+第 11 步票 #132 起，这条流水线跑在**异步栈**上（Worker 常驻循环 + ``AsyncSession``）：
+会话替身因此是异步面，仓储替身是 ``*_async`` 孪生。任务体用的是**真的** ``WorkerLoop``
+（一条常驻线程 + 一个循环），只有会话工厂与仓储被换掉——于是「投工厂函数进去、在常驻循环
+里跑完、异常原样抛回任务线程」这条接线本身也在被断言。
+
 ``self`` 用轻量替身（``request.retries`` / ``max_retries`` / ``retry()`` 抛异常），
 不启动 Celery 的 broker 与 Worker 主循环。
 """
@@ -15,6 +20,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 from types import SimpleNamespace
 from typing import Any
 
@@ -47,27 +53,34 @@ FAILED_MESSAGE = "document indexing failed"
 
 
 class _FakeSession:
-    """最小会话替身：只记录 commit / rollback / close，不碰数据库。"""
+    """最小**异步**会话替身：只记录 commit / rollback / close，不碰数据库。"""
 
     def __init__(self, calls: list[str] | None = None) -> None:
+        self.info: dict[str, Any] = {}
         self.calls = calls if calls is not None else []
         self.commits = 0
         self.rollbacks = 0
         self.closed = False
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         self.commits += 1
         self.calls.append("commit")
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         self.rollbacks += 1
         self.calls.append("rollback")
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         return None
 
-    def close(self) -> None:
+    async def close(self) -> None:
         self.closed = True
+
+    async def get(self, _model: Any, _ident: Any) -> Any:
+        raise AssertionError("取行由仓储替身接管，会话替身不该被直接问到")
+
+    async def execute(self, _statement: Any) -> Any:
+        raise AssertionError("查询由仓储替身接管，会话替身不该被直接问到")
 
 
 class _RecordingStore:
@@ -153,16 +166,16 @@ def _patch_service_environment(
     embeddings = _RecordingEmbeddings(calls, vectors)
     claim_calls: list[dict[str, Any]] = []
 
-    def _get_by_id(_db: Any, _document_id: str) -> Any:
+    async def _get_by_id(_db: Any, _document_id: str) -> Any:
         calls.append("get_by_id")
         return doc
 
-    def _try_claim(_db: Any, _document_id: str, **kwargs: Any) -> bool:
+    async def _try_claim(_db: Any, _document_id: str, **kwargs: Any) -> bool:
         calls.append("claim")
         claim_calls.append(kwargs)
         return claimed
 
-    def _update_status(
+    async def _update_status(
         _db: Any, target: Any, status: int, error_message: str | None = None
     ) -> None:
         calls.append(f"update_status:{status}")
@@ -174,7 +187,7 @@ def _patch_service_environment(
         return ParsedDocument(content=target.content or "raw text", source_type="markdown")
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
-    monkeypatch.setattr(document_repository, "try_claim_for_indexing", _try_claim)
+    monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _try_claim)
     monkeypatch.setattr(document_repository, "update_status", _update_status)
     monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
 
@@ -307,7 +320,11 @@ def test_service_rejects_missing_document(monkeypatch: pytest.MonkeyPatch) -> No
     env = _patch_service_environment(
         monkeypatch, calls, pieces=[SplitPiece(text="p")], vectors=[[0.1]], document=None
     )
-    monkeypatch.setattr(indexing_service.document_repository, "get_by_id", lambda _db, _id: None)
+
+    async def _missing(_db: Any, _id: str) -> None:
+        return None
+
+    monkeypatch.setattr(indexing_service.document_repository, "get_by_id", _missing)
 
     with pytest.raises(AppError) as excinfo:
         asyncio.run(env.service.index_existing_document(env.session, DOC_ID))
@@ -369,6 +386,38 @@ class _FakeTask:
         raise _RetrySignal
 
 
+class _ThreadBoundTask:
+    """``request`` 只在自己的线程里可读的 ``self``（模拟 Celery 的线程局部请求）。
+
+    真实 Celery 里 ``self.request`` 来自 ``task.request_stack``（线程局部）。任务体一旦在
+    **别的线程**（常驻循环）里读它或调 ``retry()``，看到的是一个空请求：``retries`` 恒为
+    0、没有 task id——症状是重试被静默跳过，或者投出一条没有 id 的消息。这个替身把那条
+    纪律变成一条会在离线套件里当场炸的断言。
+    """
+
+    def __init__(self, *, retries: int = 0, max_retries: int = 2) -> None:
+        self._owner_thread = threading.current_thread()
+        self._request = SimpleNamespace(retries=retries)
+        self.max_retries = max_retries
+        self.retry_calls: list[BaseException] = []
+        self.retry_threads: list[threading.Thread] = []
+
+    @property
+    def request(self) -> Any:
+        assert threading.current_thread() is self._owner_thread, (
+            "Celery 的 request 是线程局部的：判定必须回到任务线程再做"
+        )
+        return self._request
+
+    def retry(self, *, exc: BaseException) -> None:
+        assert threading.current_thread() is self._owner_thread, (
+            "self.retry() 只能在任务线程里调（它会读 request.id / request.headers）"
+        )
+        self.retry_threads.append(threading.current_thread())
+        self.retry_calls.append(exc)
+        raise _RetrySignal
+
+
 class _FailingService:
     def __init__(self, exc: BaseException) -> None:
         self.exc = exc
@@ -382,17 +431,21 @@ class _FailingService:
 def _patch_task_runtime(
     monkeypatch: pytest.MonkeyPatch, *, service: Any, session: _FakeSession
 ) -> list[dict[str, Any]]:
-    """任务体替身装配；返回 ``release_index_claim`` 的调用记录。"""
+    """任务体替身装配；返回 ``release_index_claim`` 的调用记录。
 
-    monkeypatch.setattr(tasks, "SessionLocal", lambda: session)
+    换掉的是**会话工厂**（``tasks.async_session_factory``）与仓储的异步孪生；常驻循环
+    本身是真的——任务体那句 ``get_worker_loop().run(...)`` 因此仍然被真的执行一遍。
+    """
+
+    monkeypatch.setattr(tasks, "async_session_factory", lambda: lambda: session)
     monkeypatch.setattr(tasks, "IndexingService", lambda: service)
     releases: list[dict[str, Any]] = []
 
-    def _release(_db: Any, document_id: str, *, tenant_id: str) -> None:
+    async def _release(_db: Any, document_id: str, *, tenant_id: str) -> None:
         session.calls.append("release-claim")
         releases.append({"document_id": document_id, "tenant_id": tenant_id})
 
-    monkeypatch.setattr(tasks.document_repository, "release_index_claim", _release)
+    monkeypatch.setattr(tasks.document_repository, "release_index_claim_async", _release)
     return releases
 
 
@@ -405,7 +458,11 @@ def test_task_retries_whitelisted_error_while_retries_remain(
     failure = AppError(ErrorCode.EMBEDDING_FAILED, "embedding upstream timeout")
     releases = _patch_task_runtime(monkeypatch, service=_FailingService(failure), session=session)
     marked: list[tuple[Any, ...]] = []
-    monkeypatch.setattr(tasks, "_mark_failed", lambda *args, **_kwargs: marked.append(args))
+
+    async def _mark_failed(*args: Any, **_kwargs: Any) -> None:
+        marked.append(args)
+
+    monkeypatch.setattr(tasks, "_mark_failed", _mark_failed)
     task = _FakeTask(retries=0, max_retries=2)
 
     with capture_logs() as logs:
@@ -432,6 +489,30 @@ def test_task_retries_whitelisted_error_while_retries_remain(
     assert "request_id" not in get_contextvars(), "retry 路径同样要清掉关联标识"
 
 
+def test_retry_is_decided_and_raised_on_the_task_thread(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重试的判定与 ``self.retry()`` 都发生在**任务线程**，不是常驻循环那条线程。
+
+    Celery 的 ``self.request`` 是线程局部的：在循环里读它得到的是空请求（``retries`` 恒
+    为 0、没有 task id），``retry()`` 会静默失效。所以循环里只做「回滚 → 释放租约 →
+    提交」并抛一个信号，判定与 ``retry()`` 回到任务线程再做。
+    """
+
+    session = _FakeSession()
+    failure = AppError(ErrorCode.EMBEDDING_FAILED, "embedding upstream timeout")
+    releases = _patch_task_runtime(monkeypatch, service=_FailingService(failure), session=session)
+    task = _ThreadBoundTask(retries=0, max_retries=2)
+
+    with pytest.raises(_RetrySignal):
+        _run_indexing(task, DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID)
+
+    assert releases == [{"document_id": DOC_ID, "tenant_id": TENANT_ID}]
+    assert task.retry_calls == [failure]
+    assert task.retry_threads == [threading.current_thread()]
+    assert session.closed
+
+
 def test_task_marks_failed_for_non_retryable_error(monkeypatch: pytest.MonkeyPatch) -> None:
     """不可重试错误：不重试，写 status=2 + 脱敏固定文案，异常原文只进日志。"""
 
@@ -440,7 +521,11 @@ def test_task_marks_failed_for_non_retryable_error(monkeypatch: pytest.MonkeyPat
     document.index_claimed_at = now()
     failure = AppError(ErrorCode.DOCUMENT_PARSE_FAILED, PARSE_FAILURE_TEXT)
     _patch_task_runtime(monkeypatch, service=_FailingService(failure), session=session)
-    monkeypatch.setattr(document_repository, "get_by_id", lambda _db, _id: document)
+
+    async def _get_by_id(_db: Any, _id: str) -> Any:
+        return document
+
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     task = _FakeTask(retries=0, max_retries=2)
 
     with capture_logs() as logs:
@@ -470,7 +555,11 @@ def test_task_marks_failed_when_retries_are_exhausted(monkeypatch: pytest.Monkey
     document = _document()
     failure = AppError(ErrorCode.EMBEDDING_FAILED, PARSE_FAILURE_TEXT)
     _patch_task_runtime(monkeypatch, service=_FailingService(failure), session=session)
-    monkeypatch.setattr(document_repository, "get_by_id", lambda _db, _id: document)
+
+    async def _get_by_id(_db: Any, _id: str) -> Any:
+        return document
+
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     task = _FakeTask(retries=2, max_retries=2)
 
     with capture_logs() as logs:
@@ -560,3 +649,24 @@ def test_importing_task_module_registers_task_on_app() -> None:
 
     key = "app.tasks.indexing.index_document_task"
     assert key in celery_app.tasks, f"registered tasks: {sorted(celery_app.tasks)}"
+
+
+def test_worker_process_signals_bind_and_release_the_resident_loop() -> None:
+    """两个 Celery 信号各一行接线（ADR-0023 决策二）：起循环、确定性释放。
+
+    启动信号必须**真的把线程起起来**——只拿单例的话「起不来」要等第一条任务才暴露，
+    而那正是 ADR 要避免的形状。关停信号必须在循环还活着的时候收掉它名下的资源。
+    """
+
+    from app import celery_app as celery_module
+    from app.db.worker_loop import get_worker_loop
+
+    celery_module._start_worker_loop(sender=None)
+    loop = get_worker_loop()
+    try:
+        assert loop.alive is True, "启动信号必须把常驻循环的线程起起来"
+    finally:
+        celery_module._stop_worker_loop(sender=None)
+
+    assert loop.closed is True
+    assert loop.alive is False, "关停信号之后线程必须已经退出"

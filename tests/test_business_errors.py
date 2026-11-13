@@ -20,6 +20,8 @@ from fastapi import FastAPI
 from fastapi.encoders import jsonable_encoder
 from fastapi.testclient import TestClient
 
+from tests import fake_db
+
 AUTHORITATIVE_DOC = Path(__file__).resolve().parents[1] / "docs" / "设计决策.md"
 
 
@@ -89,8 +91,15 @@ def client(offline_embedding):
     """离线 ASGI 客户端：替换数据库依赖与 embedding 工厂，其余走真实应用与处理器。"""
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+    # 数据面上传从票 #132 起走异步会话：两条依赖都要挡，否则这条用例会去连本机
+    # PostgreSQL——而它要断言的只是「不存在的知识库返回哪个码」。
+    async_session = importlib.import_module("app.db.async_session")
+    main.app.dependency_overrides[async_session.get_async_db] = lambda: object()
+
+    async def _no_async_transaction():
+        yield object()
+
+    main.app.dependency_overrides[async_session.get_async_transaction] = _no_async_transaction
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
     from app.core.config import settings
@@ -174,7 +183,7 @@ def test_fail_and_ok_keep_the_envelope_contract() -> None:
 
 def test_nonexistent_knowledge_base_returns_business_code(client, monkeypatch) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", fake_db.async_invisible_kb)
 
     response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
@@ -190,10 +199,10 @@ def test_cross_tenant_and_nonexistent_share_the_same_code(client, monkeypatch) -
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     # 跨租户与「不存在」在仓储层是同一个结果：按（id + 租户）取，别家的库取不到。
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", fake_db.async_invisible_kb)
     cross_tenant = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", fake_db.async_invisible_kb)
     nonexistent = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
     assert cross_tenant.status_code == nonexistent.status_code == 200
@@ -216,7 +225,7 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
 
     monkeypatch.setattr(settings, "MODEL_BASE_URL", "")
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", fake_db.async_invisible_kb)
 
     response = client.post("/api/v1/rag/retrieve", json=_retrieve_payload())
 
@@ -232,7 +241,12 @@ def test_unknown_kb_id_returns_20008_even_when_model_base_url_is_empty(
 
 def test_document_upload_nonexistent_knowledge_base_uses_the_same_exit(client, monkeypatch) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+
+    async def _missing(_db, kb_id, *, tenant_id):
+        return None
+
+    # 上传链路是异步栈（票 #132），所以换的是异步面；同步那个留给控制面与运维脚本。
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", _missing)
 
     response = client.post(
         "/api/v1/documents/upload",

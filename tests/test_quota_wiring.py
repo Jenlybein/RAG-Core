@@ -33,7 +33,8 @@ from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import QuotaCounters, QuotaWindow, daily_key, qps_key
 from app.utils.status import DocumentStatus
-from tests.fake_db import EmptySession
+from tests import fake_db
+from tests.fake_db import AsyncSessionAdapter, RecordingSession
 
 TENANT_ID = "tenant_acme"
 KEY_A = "key-a"
@@ -55,21 +56,24 @@ JSONRPC_HEADERS = {
 
 
 class _FakeCounterStore:
-    """计数器真正用到的那三条命令：一个 dict 加一份 TTL 账本。"""
+    """计数器真正用到的那三条命令：一个 dict 加一份 TTL 账本。
+
+    命令是**异步**的（票 #133）：生产客户端是 ``redis.asyncio``，注入缝认的就是这个形状。
+    """
 
     def __init__(self) -> None:
         self.values: dict[str, int] = {}
         self.ttls: dict[str, int] = {}
 
-    def incr(self, key: str) -> int:
+    async def incr(self, key: str) -> int:
         self.values[key] = self.values.get(key, 0) + 1
         return self.values[key]
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         value = self.values.get(key)
         return None if value is None else str(value)
 
-    def expire(self, key: str, ttl: int) -> None:
+    async def expire(self, key: str, ttl: int) -> None:
         self.ttls[key] = ttl
 
 
@@ -79,47 +83,32 @@ class _ExplodingStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def incr(self, key: str) -> int:
+    async def incr(self, key: str) -> int:
         self.calls.append(f"incr:{key}")
         raise AssertionError(f"不该访问 Redis：incr({key})")
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         self.calls.append(f"get:{key}")
         raise AssertionError(f"不该访问 Redis：get({key})")
 
-    def expire(self, key: str, ttl: int) -> None:
+    async def expire(self, key: str, ttl: int) -> None:
         self.calls.append(f"expire:{key}")
         raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
 
 
-class _WriteSession(EmptySession):
-    """写路径用的最小会话：留下行、补时间戳、记录提交。
+class _WriteSession(RecordingSession):
+    """共享替身 + 一件真库会做的事：``flush`` 之后补上 ``created_at``。
 
-    读侧沿用 ``EmptySession`` 的空结果（检索替身本来就回空元数据查询）；写侧必须留下
-    行，否则「被拒的请求没有落行」这条断言就无从谈起。
+    读侧沿用共享替身的空结果（检索替身本来就回空元数据查询）；写侧必须留下行，否则
+    「被拒的请求没有落行」这条断言就无从谈起。``add`` / ``execute`` / ``commit`` /
+    ``rollback`` / ``info`` 全部沿用共享替身——本地假会话每多写一个方法，就多一处
+    「跟真货不一致」的机会。
     """
-
-    def __init__(self) -> None:
-        self.added: list[Any] = []
-        self.commits = 0
-        self.closed = False
-
-    def add(self, obj: Any) -> None:
-        self.added.append(obj)
 
     def flush(self) -> None:
         for obj in self.added:
             if getattr(obj, "created_at", None) is None:
                 obj.created_at = datetime(2024, 1, 2, 3, 4, 5)
-
-    def commit(self) -> None:
-        self.commits += 1
-
-    def rollback(self) -> None:
-        return None
-
-    def close(self) -> None:
-        self.closed = True
 
 
 class _FakeEmbedding:
@@ -182,11 +171,14 @@ class _Entry:
         holder: dict[str, KeyContext],
         store: _FakeCounterStore,
         enqueued: list[dict[str, Any]],
+        async_session: Any = None,
     ):
         self.client = client
         self.session = session
         self.store = store
         self.enqueued = enqueued
+        #: 上传那条路径的**异步**会话（票 #132）：被拒的上传同样不该在它上面留下行。
+        self.async_session = async_session
         self._holder = holder
         self._mcp_headers: dict[str, str] = {}
 
@@ -290,7 +282,6 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
-    db_session = importlib.import_module("app.db.session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
@@ -299,10 +290,9 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     monkeypatch.setattr(service, "get_embedding_provider", _FakeEmbedding)
     monkeypatch.setattr(service, "get_vector_store", _FakeVectorStore)
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda _db, kb_id, *, tenant_id: SimpleNamespace(
+
+    def _visible_row(kb_id: str, tenant_id: str) -> Any:
+        return SimpleNamespace(
             id=kb_id,
             tenant_id=tenant_id,
             name=f"库 {kb_id}",
@@ -310,20 +300,32 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
             split_strategy="size",
             allowed_formats=["markdown"],
             settings={"chunk_size": 400},
-        ),
-    )
+        )
+
+    async def _visible_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        return _visible_row(kb_id, tenant_id)
+
+    # 可见性替身只有一个（票 #130 之后取库只有异步那一个入口）：检索链路、上传登记与
+    # 重建都走 ``await get_by_id_for_tenant(...)``，所以替身必须是协程。
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
     enqueued: list[dict[str, Any]] = []
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
     )
 
+    # 上传链路是异步栈（票 #132）：会话来自异步依赖，被拒的上传不该在它上面留下行。
+    # 与写路径**同一个**假库（``override_all_db`` 的异步面是同一个对象的薄适配），
+    # 于是「被拒的请求没落行」在两条栈上是同一句话，而不是两个各记一份的替身。
+    session = _WriteSession()
+
     holder: dict[str, KeyContext] = {}
     holder["context"] = KeyContext(
         tenant_id=TENANT_ID, key_id=KEY_A, policy=_policy(), plan=_plan()
     )
-    session = _WriteSession()
 
-    def _identity(*_args: Any, **_kwargs: Any) -> KeyContext:
+    async def _identity(*_args: Any, **_kwargs: Any) -> KeyContext:
+        """MCP 侧的身份替身是**协程**：判定内核自票 #130 起是 ``async``。"""
+
         return holder["context"]
 
     monkeypatch.setattr(mcp_server, "resolve_identity", _identity)
@@ -333,7 +335,8 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
 
     # 两扇门挂到同一个应用：MCP 是子应用，判定内核与配额门禁都是同一份实现。
     mcp_app = mcp_server.create_mcp_http_app(
-        get_db=lambda: session,
+        # 检索链路用异步会话（第 11 步票 #127）：与 HTTP 侧同一个替身，包一层异步面。
+        get_async_db=lambda: AsyncSessionAdapter(session),
         retrieve=service.retrieve,
         list_kbs=kb_repo.list_by_tenant,
     )
@@ -341,12 +344,14 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     app.include_router(main.api_router)
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
-    app.dependency_overrides[db_session.get_db] = lambda: session
+    # 两个异步会话入口一次换全（读 / 写）：写事务用生产实现，于是「一个请求
+    # 一笔事务」这条纪律在离线套件里照旧被真实代码跑一遍。
+    view = fake_db.override_all_db(app, session)
     app.dependency_overrides[get_current_key] = lambda: holder["context"]
 
     try:
         with TestClient(app) as client:
-            result = _Entry(client, session, holder, store, enqueued)
+            result = _Entry(client, session, holder, store, enqueued, view)
             result.initialize_mcp()
             yield result
     finally:
@@ -370,9 +375,7 @@ def _seconds_from(window: QuotaWindow, span: int = 3) -> list[QuotaWindow]:
     return [QuotaWindow(qps=str(base + offset), daily=window.daily) for offset in range(span)]
 
 
-def _prefill_qps(
-    store: _FakeCounterStore, *, level: str, ident: str, limit: int
-) -> QuotaWindow:
+def _prefill_qps(store: _FakeCounterStore, *, level: str, ident: str, limit: int) -> QuotaWindow:
     """把该层级当前秒及随后两秒都预置成「已经计到上限」。"""
 
     window = _window()
@@ -381,9 +384,7 @@ def _prefill_qps(
     return window
 
 
-def _prefill_daily(
-    store: _FakeCounterStore, *, level: str, ident: str, limit: int
-) -> QuotaWindow:
+def _prefill_daily(store: _FakeCounterStore, *, level: str, ident: str, limit: int) -> QuotaWindow:
     window = _window()
     store.values[daily_key(level=level, ident=ident, window=window)] = limit
     return window
@@ -396,6 +397,7 @@ def _sum_of(store: _FakeCounterStore, prefix: str) -> int:
 
 
 # ───────────────────────────────────────────── 检索：两个错误码
+
 
 def test_a_qps_burst_is_rate_limited_with_20005(entry: _Entry) -> None:
     entry.use(policy=_policy(qps=1), plan=_plan(qps=50))
@@ -538,6 +540,7 @@ def test_the_switch_off_makes_the_gate_touch_no_redis_at_all(
 
 # ───────────────────────────────────────────── MCP：同一扇门禁，同一套码
 
+
 def test_mcp_rejects_a_qps_burst_with_the_same_code(entry: _Entry) -> None:
     entry.use(policy=_policy(qps=1), plan=_plan(qps=50))
     _prefill_qps(entry.store, level="key", ident=KEY_A, limit=1)
@@ -561,6 +564,7 @@ def test_mcp_counts_a_successful_retrieval_at_both_levels(entry: _Entry) -> None
 
 # ───────────────────────────────────────────── 写路径：静态资源配额
 
+
 def test_building_the_n_plus_first_knowledge_base_is_a_quota_error(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -568,7 +572,11 @@ def test_building_the_n_plus_first_knowledge_base_is_a_quota_error(
 
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_kb=1))
-    monkeypatch.setattr(kb_repo, "count_by_tenant", lambda _db, _tenant: 1)
+
+    async def _one_kb(_db: Any, _tenant_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(kb_repo, "count_by_tenant", _one_kb)
 
     body = entry.create_kb()
 
@@ -583,7 +591,11 @@ def test_the_last_knowledge_base_under_the_limit_is_allowed(
 
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_kb=1))
-    monkeypatch.setattr(kb_repo, "count_by_tenant", lambda _db, _tenant: 0)
+
+    async def _no_kb(_db: Any, _tenant_id: str) -> int:
+        return 0
+
+    monkeypatch.setattr(kb_repo, "count_by_tenant", _no_kb)
 
     body = entry.create_kb()
 
@@ -598,15 +610,20 @@ def test_uploading_over_documents_per_kb_is_a_quota_error(
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_documents_per_kb=30))
-    monkeypatch.setattr(doc_repo, "count_by_kb", lambda _db, _kb_id, *, tenant_id: 30)
-    monkeypatch.setattr(
-        doc_repo, "count_processing_for_tenant", lambda _db, *, tenant_id: 0
-    )
+
+    async def _count_docs(_db, _kb_id, *, tenant_id: str) -> int:
+        return 30
+
+    async def _count_processing(_db, *, tenant_id: str) -> int:
+        return 0
+
+    monkeypatch.setattr(doc_repo, "count_by_kb", _count_docs)
+    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
     assert body["code"] == ErrorCode.QUOTA_EXCEEDED
-    assert entry.session.added == []
+    assert entry.async_session.added == [], "被拒的上传不该在异步会话上留下行"
     assert entry.enqueued == [], "被拒的上传不该往队列里塞任务"
 
 
@@ -617,10 +634,15 @@ def test_uploading_over_the_concurrent_processing_allowance_is_a_quota_error(
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_processing_documents=1))
-    monkeypatch.setattr(doc_repo, "count_by_kb", lambda _db, _kb_id, *, tenant_id: 0)
-    monkeypatch.setattr(
-        doc_repo, "count_processing_for_tenant", lambda _db, *, tenant_id: 1
-    )
+
+    async def _count_docs(_db, _kb_id, *, tenant_id: str) -> int:
+        return 0
+
+    async def _count_processing(_db, *, tenant_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(doc_repo, "count_by_kb", _count_docs)
+    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
@@ -635,10 +657,9 @@ def test_reindex_charges_the_concurrent_processing_allowance(
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_processing_documents=1))
-    monkeypatch.setattr(
-        doc_repo,
-        "get_by_id_for_tenant",
-        lambda _db, document_id, *, tenant_id: SimpleNamespace(
+
+    async def _failed_doc(_db: Any, document_id: str, *, tenant_id: str) -> Any:
+        return SimpleNamespace(
             id=document_id,
             tenant_id=tenant_id,
             kb_id=KB_A,
@@ -648,11 +669,13 @@ def test_reindex_charges_the_concurrent_processing_allowance(
             error_message="上次失败",
             source_type="markdown",
             source_file_path=None,
-        ),
-    )
-    monkeypatch.setattr(
-        doc_repo, "count_processing_for_tenant", lambda _db, *, tenant_id: 1
-    )
+        )
+
+    async def _one_processing(_db: Any, *, tenant_id: str) -> int:
+        return 1
+
+    monkeypatch.setattr(doc_repo, "get_by_id_for_tenant_async", _failed_doc)
+    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _one_processing)
 
     response = entry.client.post("/api/v1/documents/doc-1/reindex")
     assert response.status_code == 200
@@ -660,6 +683,3 @@ def test_reindex_charges_the_concurrent_processing_allowance(
     body = response.json()
     assert body["code"] == ErrorCode.QUOTA_EXCEEDED
     assert entry.enqueued == [], "被拒的重建不该入队"
-
-
-

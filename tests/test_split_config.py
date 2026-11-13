@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 from datetime import datetime
 from types import SimpleNamespace
@@ -27,7 +28,8 @@ from app.models.knowledge_base import (
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
 from app.utils.splitter_factory import build_splitter
 from app.utils.text_splitter import WindowTextSplitter
-from tests.fake_db import ZERO_COUNT
+from tests import fake_db
+from tests.fake_db import RecordingSession
 
 CREATE_PATH = "/api/v1/knowledge-bases/create"
 LIST_PATH = "/api/v1/knowledge-bases"
@@ -41,39 +43,35 @@ MARKDOWN_DOC = (
 )
 
 
-class _FakeSession:
-    """只记录 add/flush/commit 的会话；让真实的建库服务跑完，但不碰数据库。"""
+class _FakeSession(RecordingSession):
+    """共享替身 + 一件真库会做的事：``flush`` 之后列默认值（``created_at``）就有了。
 
-    def __init__(self) -> None:
-        self.added: list[Any] = []
-        self.commits = 0
-
-    def add(self, obj: Any) -> None:
-        self.added.append(obj)
+    真实 ``flush`` 会把 Column default 写进对象；共享替身的 ``flush`` 是 no-op，于是响应
+    序列化拿到的 ``created_at`` 是 ``None``。这里只补这一个副作用，``add`` / ``execute`` /
+    ``commit`` / ``rollback`` / ``info`` 全部沿用共享替身——迁移期踩的坑几乎都是「本地假
+    会话比真货少一个方法」，而那样每补一个方法就多一处不一致的机会。
+    """
 
     def flush(self) -> None:
-        # 真实 flush 会填上 Column default 的时间戳；这里照做，否则响应序列化失败。
         for obj in self.added:
             if getattr(obj, "created_at", None) is None:
                 obj.created_at = datetime(2024, 1, 2, 3, 4, 5)
 
-    def execute(self, _statement: Any) -> Any:
-        # 建库前的静态配额（库数）会数一次行：替身回 0，行为与空库一致。
-        return ZERO_COUNT
-
-    def commit(self) -> None:
-        self.commits += 1
-
 
 @pytest.fixture()
 def client() -> Any:
-    """用假会话替代 get_db：鉴权与参数校验走真实代码路径。"""
+    """两个异步会话入口一次换全：鉴权与参数校验走真实代码路径，写事务也是真的那一笔。
+
+    写路径的事务入口**不再**换成 no-op：票 #130 之后建库的提交点就在
+    ``get_async_transaction`` 里，换成 no-op 等于把「一笔请求一笔事务」这条纪律从用例里
+    拿掉，而那正是要验的东西之一。
+    """
 
     main = importlib.import_module("app.main")
-    session = importlib.import_module("app.db.session")
     fake = _FakeSession()
 
-    main.app.dependency_overrides[session.get_db] = lambda: fake
+    fake_db.override_all_db(main.app, fake)
+
     try:
         with TestClient(main.app) as test_client:
             test_client.fake_session = fake  # type: ignore[attr-defined]
@@ -180,7 +178,9 @@ def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
 
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
-    def fake_list(db, tenant_id):
+    async def fake_list(db, tenant_id):
+        """列库的替身是协程：路由读的是 ``await list_by_tenant(...)``。"""
+
         return [
             SimpleNamespace(
                 id="kb-1",
@@ -284,11 +284,11 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     service_module = importlib.import_module("app.services.indexing_service")
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
-    monkeypatch.setattr(
-        repo,
-        "get_split_config",
-        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 400),
-    )
+    async def _split_config(_db, _kb_id, *, tenant_id: str):
+        return (SPLIT_SIZE, 400)
+
+    # 票 #132 起索引流水线走异步会话，库级切块配置读的是异步孪生。
+    monkeypatch.setattr(repo, "get_split_config", _split_config)
 
     service = service_module.IndexingService(
         splitter=None,
@@ -297,7 +297,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     )
     doc = SimpleNamespace(kb_id="kb-1", tenant_id="tenant-demo")
 
-    splitter, strategy = service._resolve_splitter(None, doc)
+    splitter, strategy = asyncio.run(service._resolve_splitter(None, doc))
 
     assert strategy == SPLIT_SIZE
     assert isinstance(splitter, WindowTextSplitter)
@@ -317,7 +317,7 @@ def test_injected_splitter_wins_over_kb_config(monkeypatch) -> None:
     )
     doc = SimpleNamespace(kb_id="kb-1", tenant_id="tenant-demo")
 
-    splitter, strategy = service._resolve_splitter(None, doc)
+    splitter, strategy = asyncio.run(service._resolve_splitter(None, doc))
 
     assert splitter is injected
     assert strategy == SPLIT_STRUCTURE

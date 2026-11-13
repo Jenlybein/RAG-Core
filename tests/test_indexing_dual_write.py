@@ -32,6 +32,8 @@ from app.services.chunk_store import KeywordSearchChunkStore, build_chunk_stores
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
+from tests import fake_db
+from tests.fake_db import RecordingSession
 
 TENANT_ID = "tenant_demo"
 KB_ID = "kb-1"
@@ -45,20 +47,23 @@ RETRIEVAL_TEXT = f"文档：售后手册 章节：{HEADING} 正文：{ORIGINAL}"
 
 
 class _FakeSession:
+    """最小**异步**会话替身（票 #132 起流水线跑在 ``AsyncSession`` 上）。"""
+
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self.commits = 0
         self.rollbacks = 0
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         self.commits += 1
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         self.rollbacks += 1
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         return None
 
-    def delete(self, _row: Any) -> None:
+    async def delete(self, _row: Any) -> None:
         return None
 
 
@@ -128,8 +133,15 @@ def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]
     document = SimpleNamespace(
         id=DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, title="售后手册", content="raw", doc_version=1
     )
-    monkeypatch.setattr(document_repository, "get_by_id", lambda _db, _id: document)
-    monkeypatch.setattr(document_repository, "try_claim_for_indexing", lambda *_a, **_k: True)
+
+    async def _get_by_id(_db: Any, _id: str) -> Any:
+        return document
+
+    async def _claim(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
+    monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
     monkeypatch.setattr(document_repository, "update_status", _record_update_status)
     monkeypatch.setattr(
         indexing_service,
@@ -141,7 +153,9 @@ def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]
 _STATUS_CALLS: list[tuple[int, str | None]] = []
 
 
-def _record_update_status(_db: Any, _target: Any, status: int, error: str | None = None) -> None:
+async def _record_update_status(
+    _db: Any, _target: Any, status: int, error: str | None = None
+) -> None:
     _STATUS_CALLS.append((status, error))
 
 
@@ -256,11 +270,12 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
     """DELETE /documents/{id} 遍历同一份存储列表，关键词一侧同样被清空。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
     routes = importlib.import_module("app.api.routes.documents")
 
     calls: list[str] = []
-    session = _FakeSession()
+    # 删除路由自票 #130 起在异步栈上：用共享替身 + ``override_all_db``（两个异步入口一次换全），
+    # 别再养一个只服务这个用例的本地假会话。
+    session = RecordingSession()
     vector = _RecordingStore(calls)
     provider = _RecordingKeywordProvider(calls)
     document = SimpleNamespace(
@@ -275,14 +290,15 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
         index_claimed_at=None,
     )
 
-    monkeypatch.setattr(
-        document_repository, "get_by_id_for_tenant", lambda _db, _id, *, tenant_id: document
-    )
+    async def _lookup(_db: Any, _id: str, *, tenant_id: str) -> Any:
+        return document
+
+    monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _lookup)
     monkeypatch.setattr(routes, "get_vector_store", lambda: vector)
     monkeypatch.setattr(routes, "get_keyword_search_provider", lambda: provider)
     monkeypatch.setattr(routes, "remove_document_file", lambda _path: calls.append("remove-file"))
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    fake_db.override_all_db(main.app, session)
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:

@@ -43,22 +43,6 @@ POLICY_BETA_ID = "policy-beta"
 ME_PATH = "/api/v1/auth/me"
 
 
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝（与控制面测试同形）。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.items.pop(plan_id, None)
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
@@ -127,7 +111,9 @@ def _world() -> dict[type, list[Any]]:
             _key_row(KEY_BETA_ID, KEY_BETA, tenant_id=TENANT_BETA, policy_id=POLICY_BETA_ID),
         ],
         KeyPolicy: [
-            _policy_row(POLICY_ALPHA_ID, tenant_id=TENANT_ALPHA, profile="speed", qps=50, daily=100000),
+            _policy_row(
+                POLICY_ALPHA_ID, tenant_id=TENANT_ALPHA, profile="speed", qps=50, daily=100000
+            ),
             _policy_row(POLICY_BETA_ID, tenant_id=TENANT_BETA, profile="speed", qps=10, daily=5000),
         ],
     }
@@ -135,17 +121,22 @@ def _world() -> dict[type, list[Any]]:
 
 @pytest.fixture
 def me(monkeypatch: pytest.MonkeyPatch) -> Any:
-    """真实应用 + 假数据库 + 假套餐缓存；``AUTH_ENABLED`` 打开，走真的判定内核。"""
+    """真实应用 + 假数据库 + 假套餐缓存；``AUTH_ENABLED`` 打开，走真的判定内核。
 
-    from tests.fake_db import RecordingSession
+    会话用 ``override_all_db`` **一次换全两个异步入口**：判定内核（``resolve_identity``）读的是
+    ``get_async_db``，只覆写 ``get_db`` 的话它会去连真库，症状是「登录一律 20010」——
+    看着像 Key 不对，其实是夹具少换了一个入口。
+    """
+
+    from tests import fake_db
+    from tests.fake_db import MemoryPlanCache, RecordingSession
 
     api_router = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
-    db_session = importlib.import_module("app.db.session")
     plan_service = importlib.import_module("app.services.plan_service")
 
     db = RecordingSession(rows=_world())
-    cache = _MemoryPlanCache()
+    cache = MemoryPlanCache()
     # 判定内核的套餐缓存缺省是 Redis；这里只换「存储」，规则一行不改。
     monkeypatch.setattr(plan_service, "default_plan_cache", lambda: cache)
     monkeypatch.setattr(settings, "AUTH_ENABLED", True)
@@ -154,7 +145,7 @@ def me(monkeypatch: pytest.MonkeyPatch) -> Any:
     app = FastAPI()
     app.include_router(api_router.api_router)
     error_handlers.install_handlers(app)
-    app.dependency_overrides[db_session.get_db] = lambda: db
+    fake_db.override_all_db(app, db)
     try:
         with TestClient(app) as client:
             yield _Harness(client=client, db=db)
@@ -163,24 +154,27 @@ def me(monkeypatch: pytest.MonkeyPatch) -> Any:
 
 
 class _ReadOnlyCounterStore:
-    """与配额服务同形的内存计数器；读路径只该出现 ``get:``，写入直接判失败。"""
+    """与配额服务同形的内存计数器；读路径只该出现 ``get:``，写入直接判失败。
+
+    命令是**异步**的（票 #133）：注入缝换成了 ``redis.asyncio`` 的客户端。
+    """
 
     def __init__(self) -> None:
         self.values: dict[str, int] = {}
         self.calls: list[str] = []
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         self.calls.append(f"get:{key}")
         value = self.values.get(key)
         return None if value is None else str(value)
 
-    def incr(self, key: str) -> int:  # pragma: no cover - 读路径访问即失败
+    async def incr(self, key: str) -> int:  # pragma: no cover - 读路径访问即失败
         raise AssertionError(f"读用量不许写计数：incr({key})")
 
-    def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 读路径访问即失败
+    async def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 读路径访问即失败
         raise AssertionError(f"读用量不许写计数：expire({key}, {ttl})")
 
-    def delete(self, key: str) -> None:  # pragma: no cover - 读路径访问即失败
+    async def delete(self, key: str) -> None:  # pragma: no cover - 读路径访问即失败
         raise AssertionError(f"读用量不许写计数：delete({key})")
 
 
@@ -190,19 +184,19 @@ class _ExplodingCounterStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
+    async def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
         self.calls.append(f"get:{key}")
         raise AssertionError(f"不该访问 Redis：get({key})")
 
-    def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
+    async def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
         self.calls.append(f"incr:{key}")
         raise AssertionError(f"不该访问 Redis：incr({key})")
 
-    def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
+    async def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"expire:{key}")
         raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
 
-    def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
+    async def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"delete:{key}")
         raise AssertionError(f"不该访问 Redis：delete({key})")
 

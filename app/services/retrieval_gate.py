@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import KeyContext
 from app.schemas.rag import RetrieveData
@@ -45,7 +45,7 @@ RetrieveCallable = Callable[..., Awaitable[dict[str, Any]]]
 
 
 async def gated_retrieve(
-    db: Session,
+    db: AsyncSession,
     *,
     key: KeyContext,
     kb_ids: list[str],
@@ -53,6 +53,9 @@ async def gated_retrieve(
     retrieve: RetrieveCallable | None = None,
 ) -> RetrieveData:
     """按六道关卡的顺序跑完整次检索，返回**已经校验成形**的响应数据。
+
+    ``db`` 是**请求级异步会话**（第 11 步票 #127）：第 1~3 步不碰库，第 4 步把它原样交给
+    组合根。身份判定仍然走同步会话——那是 ``get_current_key`` 自己的依赖，不在本函数里。
 
     ``key`` 是判定内核的结论（租户、套餐、密钥配置都在上面）。``kb_ids`` / ``query`` 是
     请求的全部内容——质量参数由 ``profile_policy`` 从密钥配置解析，调用方看不到。
@@ -75,14 +78,15 @@ async def gated_retrieve(
     )
 
     # 第 3 步：秒级限流 → 日配额。**进门只查**，成功后记账由第 5 步负责。开关关着时这本账
-    # 是 no-op，默认套件因此不需要 Redis。
+    # 是 no-op，默认套件因此不需要 Redis。计数命令是异步的（票 #133）：它们在这条异步
+    # 链路上，同步 Redis 会把整个事件循环按住。
     quota = retrieval_quota(
         policy=key.policy,
         plan=key.plan,
         tenant_id=key.tenant_id,
         key_id=key.key_id,
     )
-    quota.ensure_available()
+    await quota.ensure_available()
 
     # 第 4 步：召回。组合根拿到的是已经解析完的参数，它不再读请求体、也不再读请求里的质量
     # 字段（那些字段根本不存在）。
@@ -97,5 +101,5 @@ async def gated_retrieve(
     # 第 5 步：响应成形之后才 +1。校验失败的响应不是一次成功调用，所以顺序不能倒过来；
     # 失败 / 异常 / 校验不通过的路径都不会走到这里（ADR-0018「成功后才计数」）。
     result = RetrieveData.model_validate(payload)
-    quota.record_success()
+    await quota.record_success()
     return result

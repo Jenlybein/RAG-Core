@@ -5,6 +5,11 @@
 「写入」只有 :func:`upsert` 一条路：配置面板是**按键覆盖**的语义（同一个键被改两次，
 库里必须仍是一行），留一个 ``insert`` 与一个 ``update`` 两个入口，就等于指望每个调用点
 自己记得先查一次再决定走哪条——而漏查的那一次会撞主键冲突，把一次普通保存变成 500。
+
+**两种会话并存是迁移期的形状**（第 11 步票 #129 / #130）：控制面面板的读（``GET
+/console/settings``）与写（``PATCH``）在异步栈上（:func:`list_all_async` /
+:func:`get_by_key` / :func:`upsert`），而**刷新中间件与 Celery 任务**仍在同步会话上
+（:func:`list_all`）——它们跑在事件循环之外（见 ``app/core/runtime_settings_cache``）。
 """
 
 from __future__ import annotations
@@ -12,23 +17,42 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.runtime_setting import RuntimeSetting
 
 
 def list_all(db: Session) -> list[RuntimeSetting]:
-    """全部覆盖行。这张表**天生很小**（只存被显式覆盖的键），所以一次取回不设上限。"""
+    """全部覆盖行（同步面：刷新中间件与 Celery 任务——它们跑在事件循环之外）。
+
+    这张表**天生很小**（只存被显式覆盖的键），所以一次取回不设上限。
+    """
 
     return db.query(RuntimeSetting).order_by(RuntimeSetting.key).all()
 
 
-def get_by_key(db: Session, key: str) -> RuntimeSetting | None:
-    return db.query(RuntimeSetting).filter(RuntimeSetting.key == key).first()
+async def list_all_async(db: AsyncSession) -> list[RuntimeSetting]:
+    """:func:`list_all` 的异步孪生（配置中台面板读与角色指针解析，票 #129 / #137）。
+
+    面板读的是**库里的真相**、不经过缓存（见 ``runtime_settings.describe_settings``），
+    所以它必须真的发一次查询；同步版仍被刷新中间件与 Celery 用着（那两条跑在事件循环
+    之外，见 ``app/core/runtime_settings_cache``）。
+    """
+
+    return list((await db.execute(select(RuntimeSetting).order_by(RuntimeSetting.key))).scalars().all())
 
 
-def upsert(
-    db: Session,
+async def get_by_key(db: AsyncSession, key: str) -> RuntimeSetting | None:
+    """按配置键取一行（控制面写入时的「改前」快照，票 #130）。"""
+
+    statement = select(RuntimeSetting).where(RuntimeSetting.key == key)
+    return (await db.execute(statement)).scalars().first()
+
+
+async def upsert(
+    db: AsyncSession,
     *,
     key: str,
     value: Any,
@@ -41,7 +65,7 @@ def upsert(
     让它在落库路径之外（测试里的假会话、批量保存）也能被读到。
     """
 
-    row = get_by_key(db, key)
+    row = await get_by_key(db, key)
     if row is None:
         row = RuntimeSetting(
             key=key, value=value, updated_by=updated_by, updated_at=updated_at
@@ -51,5 +75,5 @@ def upsert(
         row.value = value
         row.updated_by = updated_by
         row.updated_at = updated_at
-    db.flush()
+    await db.flush()
     return row

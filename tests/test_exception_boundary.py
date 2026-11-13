@@ -20,6 +20,8 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from tests import fake_db
+
 _VALID_PAYLOAD = {
     "kb_ids": ["kb-1"],
     "query": "hello",
@@ -74,8 +76,7 @@ def client(monkeypatch: pytest.MonkeyPatch) -> Iterator[TestClient]:
     main = importlib.import_module("app.main")
     service = importlib.import_module("app.services.rag_service")
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _OfflineEmbeddingProvider())
-    session = importlib.import_module("app.db.session")
-    main.app.dependency_overrides[session.get_db] = lambda: object()
+
     from app.api.deps import get_current_key
     from app.core.auth import DevKeyContext
     from app.core.config import settings
@@ -260,7 +261,7 @@ def test_business_and_validation_failures_still_return_http_200(
     client: TestClient, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+    monkeypatch.setattr(repo, "get_by_id_for_tenant", fake_db.async_invisible_kb)
 
     business = client.post("/api/v1/rag/retrieve", json=_VALID_PAYLOAD)
     assert business.status_code == 200

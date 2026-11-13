@@ -140,12 +140,16 @@ def _build_qwen_rerank() -> RerankProvider:
     )
 
 
-def build_llm_rerank_provider() -> RerankProvider:
+async def build_llm_rerank_provider() -> RerankProvider:
     """**显式**装配一期的大模型重排（生产工厂不再返回它）。
 
     唯一用途是对照：评测用 ``--rerank-provider llm`` 让同一份题集跑旧实现，从而把
     「换件前后」的差异归因到**实现**而不是题集或语料。测试也用它（替身大模型注入在
     ``app.providers.llm.get_llm_provider`` 上，惰性 import 因此照样生效）。
+
+    **协程**（票 #137）：它要 ``await`` 一次 ``get_llm_provider``——Provider 装配会读一次
+    角色指针。这条路径在评测时跑在事件循环上（``rerank_stage`` 里 ``await`` 这个工厂），
+    所以它是协程而不是「同步函数里套一个 ``asyncio.run``」。
     """
 
     from app.providers.llm import get_llm_provider
@@ -154,7 +158,7 @@ def build_llm_rerank_provider() -> RerankProvider:
     return LLMRerankProvider(
         # 重排是延迟敏感的一步：固定用 fast **模型角色**（与查询改写同角色，
         # 父 spec「两档模型」里的快档）。角色 ≠ 套餐 ≠ 第 7 步的质量档位。
-        llm=get_llm_provider("fast"),
+        llm=await get_llm_provider("fast"),
         max_candidates=settings.RERANK_MAX_CANDIDATES,
         chunk_max_chars=settings.RERANK_CHUNK_MAX_CHARS,
         timeout_seconds=settings.RERANK_TIMEOUT_SECONDS,

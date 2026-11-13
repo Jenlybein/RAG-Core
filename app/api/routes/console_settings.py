@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import (
     get_console_admin,
@@ -31,7 +31,8 @@ from app.api.console_deps import (
 )
 from app.core.console_auth import ConsoleIdentity
 from app.core.runtime_settings_cache import CACHE_TTL_SECONDS, RuntimeSettingsCache
-from app.db.session import get_db
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import ImpactGroupData
 from app.schemas.console_settings import (
@@ -115,9 +116,9 @@ def _patch_data(result: SettingsPatchResult) -> SettingsPatchData:
     response_model=ApiResponse[SettingsListData],
     summary="运行时配置的三档清单（含来源与非法行标记）",
 )
-def list_settings(
+async def list_settings(
     identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[SettingsListData]:
     """按三档列出白名单的每一行：有效值、来源（env / db）、是否非法、为什么在这一档。
 
@@ -126,9 +127,12 @@ def list_settings(
 
     读的是库里的真相（不经过缓存）：这一页要回答「库里现在是什么」，而缓存最多比库晚
     30 秒；刚保存完就刷新却看到旧来源标记，会让人以为保存没成功。
+
+    只读，因此读路径声明 ``get_async_db``（票 #129）；写路径同样在异步栈上，PATCH 声明
+    ``get_async_transaction``（票 #130）——读写都在异步栈，没有第二套会话写法。
     """
 
-    rows = runtime_settings.describe_settings(db)
+    rows = await runtime_settings.describe_settings(db)
     return ok(_list_data(rows))
 
 
@@ -137,11 +141,12 @@ def list_settings(
     response_model=ApiResponse[SettingsPatchData],
     summary="改运行时配置（先试算、后落库；dry_run 默认 true）",
 )
-def patch_settings(
+async def patch_settings(
     payload: SettingsPatchRequest,
     dry_run: bool = Query(default=True, description="true 只试算，false 才落库"),
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
     cache: RuntimeSettingsCache = Depends(get_runtime_settings_cache),
 ) -> ApiResponse[SettingsPatchData]:
     """配置的**唯一**写入口：白名单与档位 → 逐键校验 → 键间校验 → 落库 + 审计 → 删缓存。
@@ -155,7 +160,7 @@ def patch_settings(
     不落库、不删缓存，返回 ``impact``。
     """
 
-    result = runtime_settings.patch_runtime_settings(
+    result = await runtime_settings.patch_runtime_settings(
         db,
         values=payload.values,
         dry_run=dry_run,

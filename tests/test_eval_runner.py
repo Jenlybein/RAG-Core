@@ -332,7 +332,8 @@ def _snapshot_with(**access: Any) -> dict[str, Any]:
     )
 
 
-def test_no_role_pointer_keeps_the_eval_on_env_and_records_env(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_no_role_pointer_keeps_the_eval_on_env_and_records_env(monkeypatch) -> None:
     """解析器说「没有指向」时：行为不变（回落 ``.env``），快照**如实**写 ``env``。
 
     钉住的是「不许把回落说成 model_configs」：两者用的 key 可能属于**不同账号**，
@@ -345,18 +346,22 @@ def test_no_role_pointer_keeps_the_eval_on_env_and_records_env(monkeypatch) -> N
     _restore_role_resolver(monkeypatch)
     monkeypatch.setattr(settings, "LLM_MODEL", "env-model-x")
 
-    access = eval_runner.bind_llm_role_resolver(lambda role: None)
+    async def _no_pointer(_role: str) -> Any:
+        return None
+
+    access = await eval_runner.bind_llm_role_resolver(_no_pointer)
 
     assert access == {"llm_endpoint_source": "env", "llm_model": "env-model-x"}
     # 行为不变：解析器确实被注入了，只是它给出的答案是「没有指向」→ Provider 走 .env
-    assert llm_module._resolved_endpoint("fast") is None
+    assert await llm_module._resolved_endpoint("fast") is None
 
     snapshot = _snapshot_with(**access)
     assert snapshot["llm_endpoint_source"] == "env"
     assert snapshot["llm_model"] == "env-model-x"
 
 
-def test_the_injected_resolver_points_the_eval_at_the_model_configs_row(monkeypatch) -> None:
+@pytest.mark.asyncio
+async def test_the_injected_resolver_points_the_eval_at_the_model_configs_row(monkeypatch) -> None:
     """注入之后：快照写 ``model_configs`` + 那一行的模型名，且 Provider 层真的会用它。
 
     只写标签不注入，是最坏的一种「修好了」：归档说走库里的配置，钱还在花 ``.env`` 的
@@ -375,10 +380,13 @@ def test_the_injected_resolver_points_the_eval_at_the_model_configs_row(monkeypa
         config_id="cfg-test",
     )
 
-    access = eval_runner.bind_llm_role_resolver(lambda role: endpoint if role == "fast" else None)
+    async def _resolver(role: str) -> RoleEndpoint | None:
+        return endpoint if role == "fast" else None
+
+    access = await eval_runner.bind_llm_role_resolver(_resolver)
 
     assert access == {"llm_endpoint_source": "model_configs", "llm_model": "fast-model-y"}
-    assert llm_module._resolved_endpoint("fast") is endpoint  # 真的接上了，不是只记了个标签
+    assert await llm_module._resolved_endpoint("fast") is endpoint  # 真的接上了，不是只记了个标签
 
     snapshot = _snapshot_with(**access)
     assert snapshot["llm_endpoint_source"] == "model_configs"
@@ -1235,13 +1243,16 @@ def test_build_rerank_factory_is_none_for_the_production_path() -> None:
     assert eval_runner.build_rerank_factory(provider_name="none") is None
 
 
-def test_build_rerank_factory_llm_really_builds_the_old_implementation(
+@pytest.mark.asyncio
+async def test_build_rerank_factory_llm_really_builds_the_old_implementation(
     monkeypatch,
 ) -> None:
     """``llm`` 时注入的确实是旧实现（大模型重排），且装配走 fast 档。
 
     替身大模型接在既有出口上，所以这条用例**不发网络**：它证明的是「注入的东西是旧的
     那个类」，而不是「那个类今天答得好不好」。
+
+    **工厂是协程**（票 #137）：旧实现要 ``await`` 一次 Provider 装配，所以这里 ``await``。
     """
 
     from app.providers.llm.base import LLMProvider
@@ -1256,11 +1267,14 @@ def test_build_rerank_factory_llm_really_builds_the_old_implementation(
         async def chat_json(self, *, system: str, user: str) -> dict:  # pragma: no cover
             raise AssertionError("重排只走结构化输出")
 
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", lambda role="fast": _FakeLLM())
+    async def _fake_get_llm_provider(role: str = "fast") -> LLMProvider:
+        return _FakeLLM()
+
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_get_llm_provider)
 
     factory = eval_runner.build_rerank_factory(provider_name="llm")
     assert factory is not None
-    provider = factory()
+    provider = await factory()
 
     assert isinstance(provider, LLMRerankProvider)
     assert (provider.provider_name, provider.model_name) == ("llm", "fast-stand-in")

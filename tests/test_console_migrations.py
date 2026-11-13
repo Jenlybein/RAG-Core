@@ -72,9 +72,7 @@ class _RecordingOp:
     def drop_table(self, table_name: str, **_kwargs: Any) -> None:
         self.dropped.append(f"table:{table_name}")
 
-    def create_index(
-        self, index_name: str, table_name: str, _columns: Any, **kwargs: Any
-    ) -> None:
+    def create_index(self, index_name: str, table_name: str, _columns: Any, **kwargs: Any) -> None:
         self.created.append(f"index:{table_name}.{index_name}")
 
     def drop_index(self, index_name: str, table_name: str | None = None, **_kwargs: Any) -> None:
@@ -165,7 +163,9 @@ def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> Non
 # ─────────────────────────────────────────────────── 一表一迁移、可升可降且对称
 
 
-@pytest.mark.parametrize(("slug", "table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS])
+@pytest.mark.parametrize(
+    ("slug", "table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS]
+)
 def test_one_migration_creates_exactly_one_table(slug: str, table: str) -> None:
     recorder, module = _record(_migration_path(slug))
 
@@ -175,7 +175,9 @@ def test_one_migration_creates_exactly_one_table(slug: str, table: str) -> None:
     assert created_tables == [f"table:{table}"]
 
 
-@pytest.mark.parametrize(("slug", "table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS])
+@pytest.mark.parametrize(
+    ("slug", "table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS]
+)
 def test_every_created_object_is_dropped_again(slug: str, table: str) -> None:
     recorder, module = _record(_migration_path(slug))
 
@@ -187,7 +189,9 @@ def test_every_created_object_is_dropped_again(slug: str, table: str) -> None:
     assert f"table:{table}" in created
 
 
-@pytest.mark.parametrize(("slug", "table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS])
+@pytest.mark.parametrize(
+    ("slug", "table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS]
+)
 def test_new_tables_carry_no_foreign_keys(slug: str, table: str) -> None:
     recorder, module = _record(_migration_path(slug))
 
@@ -199,7 +203,9 @@ def test_new_tables_carry_no_foreign_keys(slug: str, table: str) -> None:
     assert not any(isinstance(arg, sa.ForeignKeyConstraint) for arg in recorder.tables[table])
 
 
-@pytest.mark.parametrize(("slug", "_table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS])
+@pytest.mark.parametrize(
+    ("slug", "_table"), NEW_MIGRATIONS, ids=[slug for slug, _ in NEW_MIGRATIONS]
+)
 def test_new_migrations_never_touch_any_existing_table(slug: str, _table: str) -> None:
     recorder, module = _record(_migration_path(slug))
 

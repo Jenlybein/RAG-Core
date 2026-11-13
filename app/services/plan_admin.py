@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Final, Mapping, Sequence
 
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.key_policy import PROFILES
@@ -119,13 +119,13 @@ def apply_patch(row: Plan, patch: Mapping[str, Any]) -> None:
         setattr(row, field, list(value) if field == "allowed_profiles" else value)
 
 
-def ensure_deletable(db: Session, *, plan_id: int) -> None:
+async def ensure_deletable(db: AsyncSession, *, plan_id: int) -> None:
     """被任何租户引用的套餐不许删（``20019``）：删了就是把客户挂空。
 
     与「可改」是配套的：改是调额度，删是让客户失去定义，所以对同一份数据改开、删关。
     """
 
-    tenants = tenant_repository.list_by_plan_id(db, plan_id)
+    tenants = await tenant_repository.list_by_plan_id(db, plan_id)
     if tenants:
         raise AppError(
             ErrorCode.PLAN_IN_USE,
@@ -133,8 +133,8 @@ def ensure_deletable(db: Session, *, plan_id: int) -> None:
         )
 
 
-def preview_impact(
-    db: Session,
+async def preview_impact(
+    db: AsyncSession,
     *,
     plan_id: int,
     max_kb: int,
@@ -155,15 +155,15 @@ def preview_impact(
     over_names: list[str] = []
     losing_names: list[str] = []
     policies_losing = 0
-    tenants = tenant_repository.list_by_plan_id(db, plan_id)
+    tenants = await tenant_repository.list_by_plan_id(db, plan_id)
 
     for tenant in tenants:
         name = tenant.name or tenant.id
-        if knowledge_base_repository.count_by_tenant(db, tenant.id) > max_kb:
+        if await knowledge_base_repository.count_by_tenant(db, tenant.id) > max_kb:
             over_names.append(name)
         losing = [
             policy
-            for policy in key_policy_repository.list_by_tenant(db, tenant.id)
+            for policy in await key_policy_repository.list_by_tenant(db, tenant.id)
             if policy.profile not in allowed
         ]
         if losing:

@@ -53,10 +53,17 @@ docker compose 起过容器），套件就会真的去连 ES：结果取决于�
 ``reset_keyword_search_provider_cache()`` 是同一条纪律，只是覆盖面从关键词扩到了模型类。
 """
 
+import asyncio
 import os
+import sys
 from typing import Any
 
 import pytest
+
+#: Windows 的缺省 Proactor 循环跑不了 psycopg 的异步连接（第一条查询就 InterfaceError）。
+#: 只在**测试进程**里换策略：生产在 Linux 上跑，与本机无关。
+if sys.platform == "win32":
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 os.environ.setdefault("ENABLE_MCP", "false")
 # 强制覆盖：见上。这一行让「无 ES」成为套件自己的事实，而不是机器的巧合。
@@ -92,6 +99,53 @@ class _MemorySettingsCache:
     def set(self, overrides: dict[str, Any]) -> None:
         self._overrides = dict(overrides)
 
+    def delete(self) -> None:
+        self._overrides = None
+
+    async def adelete(self) -> None:
+        """循环上的那条（控制面写入的 after_commit 用它）；与 ``delete`` 同一份状态。"""
+
+        self._overrides = None
+
+
+#: 离线 publisher：只记账 ``apply_async`` 的实参，不连 Broker。
+#: 桩打在**最底层**，于是 ``enqueue_document`` 里 kwargs 组装与 ``task_id`` 形状仍被真实
+#: 代码执行——「投递接线」不是一句空话（票 #137 评审的第 3 条）。
+class _RecordingPublisher:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def apply_async(self, *, kwargs: dict[str, Any], task_id: str) -> None:
+        self.calls.append({"kwargs": dict(kwargs), "task_id": task_id})
+
+
+@pytest.fixture(autouse=True)
+def _offline_dispatch():
+    """默认套件**不许连 Broker**：把两条投递缝的底层发布器换成记账版。
+
+    为什么是 autouse 而不是「用例自己记得桩」：漏桩的用例在**开发机上**会静默连上本机
+    Redis、一路绿；到了没有 Redis 的 CI 才变成 `Connection refused` 与 500。票 #137 的
+    CI 就是这么红的——本机 6379 在听，用例看起来完全正常。**「默认套件离线」必须是构造上
+    的属性，不能是「大家记得」的约定。**
+
+    与 tests/README「外部能力只换工厂函数」对齐：这里换的是**发布器这一个注入点**，不是
+    monkeypatch 三个模块的私有全局。`enqueue_document` / `enqueue_side_evidence` 仍是真
+    的实现，用例照旧可以 monkeypatch 它们来断言业务层传了什么（「投进真 Worker 循环」的
+    e2e 替身因此不受影响）。
+    """
+
+    from app.services import index_dispatch, side_evidence_dispatch
+
+    index_recorder = _RecordingPublisher()
+    side_evidence_recorder = _RecordingPublisher()
+    index_dispatch.set_task_publisher(index_recorder)
+    side_evidence_dispatch.set_side_evidence_publisher(side_evidence_recorder)
+    try:
+        yield index_recorder.calls, side_evidence_recorder.calls
+    finally:
+        index_dispatch.set_task_publisher(None)
+        side_evidence_dispatch.set_side_evidence_publisher(None)
+
 
 @pytest.fixture(autouse=True)
 def _offline_process_state():
@@ -101,10 +155,16 @@ def _offline_process_state():
     ``runtime_settings.set_settings_cache(...)`` / ``observability.set_trace_sink(...)``）
     会覆盖本夹具；夹具在**每个**用例开始时重新注入 / 清场，所以也不会把上一个用例注入的
     东西漏给下一个。
+
+    **套餐缓存的默认实现也在这里换掉**（票 #129）：``resolve_plan`` 的 ``cache`` 缺省时走
+    ``plan_service.default_plan_cache()``，而**登录**与「我的视图」正是这么调的。不换的话，
+    一条与 Redis 无关的用例只要经过登录就会去连真 Redis——本机开着 Redis 就绿、没开就红；
+    更糟的是异步客户端绑在**第一次使用它的那个事件循环**上，下一个用例换了个循环就报
+    ``Event loop is closed``，症状与「登录坏了」一模一样。这同样不是套件自己的事实。
     """
 
     from app.core.http_clients import reset_http_clients
-    from app.core.loop_pool import reset_retrieval_pool
+    from app.db.worker_loop import reset_worker_loop
     from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
     from app.db import session_factory as factory_mod
     from app.observability import reset_trace_sink
@@ -112,26 +172,35 @@ def _offline_process_state():
     from app.providers.keyword_search import reset_keyword_search_provider_cache
     from app.providers.llm import reset_llm_provider_cache
     from app.providers.rerank import reset_rerank_provider_cache
-    from tests.fake_db import RecordingSession
+    from app.services import plan_service
+    from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
 
     factory_mod.set_session_factory(RecordingSession)
+    # 异步那一路同理（票 #128 起反馈写入走它）：不注入的话，旁路短事务会真的去连 PostgreSQL。
+    factory_mod.set_async_session_factory(AsyncRecordingSession)
     set_settings_cache(_MemorySettingsCache())
+    plan_service.set_default_plan_cache(MemoryPlanCache())
     reset_trace_sink()
     reset_keyword_search_provider_cache()
     reset_llm_provider_cache()
     reset_rerank_provider_cache()
     reset_embedding_provider_cache()
     reset_http_clients()
-    reset_retrieval_pool()
+    # Worker 常驻循环（#131 / ADR-0023）同样是**进程级**状态：它在自己的线程里持有一个
+    # 事件循环与一个引擎的连接池。用例忘了清场，下一个用例就会看到一个属于**上一个**
+    # 用例的循环——症状与「上一个用例留下的连接池」那条一字不差。没用过时是安静的 no-op。
+    reset_worker_loop()
     try:
         yield
     finally:
         factory_mod.set_session_factory(None)
+        factory_mod.set_async_session_factory(None)
         reset_settings_cache()
+        plan_service.set_default_plan_cache(None)
         reset_trace_sink()
         reset_keyword_search_provider_cache()
         reset_llm_provider_cache()
         reset_rerank_provider_cache()
         reset_embedding_provider_cache()
         reset_http_clients()
-        reset_retrieval_pool()
+        reset_worker_loop()

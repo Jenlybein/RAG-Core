@@ -100,3 +100,8 @@ bash deploy/ocr/fetch_runtime.sh                              # 校验尺寸与 
 - `deploy/Dockerfile`：应能看到构建期下载 + SHA-256 校验，以及 `OCR_OFFLINE=true` 仍能命中模型缓存。
 
 **自检**：一个没读过本项目的人，能否只看这份 ADR 说清「为什么 Worker 不能跑在 Windows 上」「为什么 OCR 失败不能靠异常类型分类」？说不清就补大白话，不要补术语。
+
+## 修订记录
+
+- **2026-11-13（#131 / [ADR-0023](0023-worker-event-loop-and-async-pool.md)）**：决定一里「数据库是同步 `Session`」这条前提**已不成立**。第 11 步把索引链路换成异步 `AsyncSession`，而异步引擎的连接池绑在**创建连接的那个事件循环**上；于是「每任务新建 / 销毁事件循环只是丑，不是不安全」这句在**数据库**这条路径上不再为真——关停时没有活着的循环可以 `dispose()`，连接只能被 GC 丢掉（实测 `ResourceWarning`），被放弃的连接甚至停在 `idle in transaction`。Worker 因此改成**一个进程一个常驻循环**（`app/db/worker_loop.py`），任务用工厂函数投进去；HTTP 客户端「每任务各自关」那半句也随之上移到 Worker 退出。
+  本文其它决定（Celery + `asyncio.run` 的框架选择、`task_acks_late` + CAS 的配对语义、OCR 运行时与 Linux 容器）**不变**；`asyncio.run` 那一层在接线（#132）之后由常驻循环取代，换框架的翻案条件仍然有效。

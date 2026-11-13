@@ -25,7 +25,7 @@ from app.models.audit_log import AuditLog
 from app.models.key_policy import KeyPolicy
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -50,32 +50,14 @@ KEY_BETA_VALUE = "rc_live_" + "fedcba9876543210fedcba9876543210"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, value: Any) -> None:
-        self.items[plan_id] = value
-
-    def delete(self, plan_id: int) -> None:
-        self.items.pop(plan_id, None)
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
     db: RecordingSession
-    cache: _MemoryPlanCache
+    cache: MemoryPlanCache
 
     def login(self, username: str, password: str) -> Any:
-        return self.client.post(
-            "/console/login", json={"username": username, "password": password}
-        )
+        return self.client.post("/console/login", json={"username": username, "password": password})
 
     def data(self, response: Any) -> Any:
         body = response.json()
@@ -208,12 +190,13 @@ def console() -> Any:
     import importlib
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     db = RecordingSession(rows=_world())
-    cache = _MemoryPlanCache()
-    main.app.dependency_overrides[session_module.get_db] = lambda: db
+    cache = MemoryPlanCache()
+    # 读与写都在异步栈上（票 #130）：两个异步会话入口一起换、喂同一个假库，于是登录写下的
+    # 会话行在下一条请求里读得到。
+    override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     try:
         with TestClient(main.app) as client:
@@ -368,9 +351,7 @@ def test_issuing_a_key_without_a_session_is_unauthorized(console: _Harness) -> N
 def test_issuing_a_key_without_the_anti_csrf_header_is_rejected(console: _Harness) -> None:
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
 
-    response = console.client.post(
-        "/console/keys", json={"label": "x", "policy": _ISSUE_POLICY}
-    )
+    response = console.client.post("/console/keys", json={"label": "x", "policy": _ISSUE_POLICY})
 
     assert console.code(response) == 20011
     assert console.db.added_of(ApiKey) == []
@@ -718,7 +699,3 @@ def test_a_partial_custom_options_patch_merges_instead_of_replacing(console: _Ha
         "top_k": 7,
         "rerank": True,
     }
-
-
-
-

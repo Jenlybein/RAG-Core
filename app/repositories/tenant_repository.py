@@ -1,9 +1,16 @@
 """租户数据访问：唯一能碰 tenants 表的一层。
 
 只 flush，不 commit——事务由 Service 收口。
+
+**两种会话并存是迁移期的形状**（第 11 步票 #130）：控制面的读（账号清单、套餐影响面、
+「我的视图」）与判定内核在异步栈上（:func:`get_by_id_async` / :func:`list_by_plan_id`），
+而运维脚本与 ``tenant_service``（开租户）仍在同步会话上（:func:`get_by_id` /
+:func:`create` / :func:`existing_tenant_ids`）。同一个操作不会同时有两份实现：搬完一条，
+它的同步面就消失。
 """
 
 from sqlalchemy import select, union
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.models.chunk import Chunk
@@ -25,17 +32,26 @@ def create(db: Session, tenant: Tenant) -> Tenant:
 
 
 def get_by_id(db: Session, tenant_id: str) -> Tenant | None:
+    """同步面：开租户、签发 Key 与运维脚本用（它们手里是同步会话）。"""
+
     return db.get(Tenant, tenant_id)
 
 
-def list_by_plan_id(db: Session, plan_id: int) -> list[Tenant]:
+async def get_by_id_async(db: AsyncSession, tenant_id: str) -> Tenant | None:
+    """:func:`get_by_id` 的异步孪生（控制面与判定内核，票 #130）。"""
+
+    return await db.get(Tenant, tenant_id)
+
+
+async def list_by_plan_id(db: AsyncSession, plan_id: int) -> list[Tenant]:
     """这个套餐上挂着哪些租户：控制面「删除被引用的套餐」与「改套餐影响面」的入口。
 
     返回整行而不是只回 id：影响面预览要拿租户名给人看（「哪两个账号会当场超限」），
     而再按 id 逐个回查一遍正好是 N+1。
     """
 
-    return db.query(Tenant).filter(Tenant.plan_id == plan_id).order_by(Tenant.id).all()
+    statement = select(Tenant).where(Tenant.plan_id == plan_id).order_by(Tenant.id)
+    return list((await db.execute(statement)).scalars().all())
 
 
 def existing_tenant_ids(db: Session) -> list[str]:

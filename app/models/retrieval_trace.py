@@ -27,7 +27,7 @@
   「写成功才拿到 id」等于把契约挂在旁路的健康度上（ADR-0010 第五次修订）。
 * ``trace_id`` 唯一：一次检索一行，与响应里那根线一一对应，于是「按 trace_id 回查」不需要
   第二张对照表。
-* 写入必须走**独立短事务**（``app/services/retrieval_trace.py``）：请求会话 ``get_db`` 从不
+* 写入必须走**独立短事务**（``app/services/retrieval_trace.py``）：请求会话 ``get_async_db`` 从不
   ``commit``，在它上面顺手 INSERT 会被 ``db.close()`` 丢掉。
 
 表名的来历写在导入说明里：这张表在 #101 改了名，旧名只允许留在两条迁移里（一条创建、

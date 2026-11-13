@@ -16,7 +16,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, Query, Request, Response
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import (
     get_console_account,
@@ -34,7 +34,8 @@ from app.core.console_auth import (
 )
 from app.core.plan_cache import PlanCache
 from app.core.profile_presets import get_profile_presets
-from app.db.session import get_db
+from app.db.async_session import get_async_db, get_async_transaction
+from app.db.transaction import AsyncTransaction
 from app.models.key_policy import PROFILES
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import (
@@ -162,43 +163,48 @@ def _client_ip(request: Request) -> str:
 
 
 @router.post("/login", response_model=ApiResponse[MeData], summary="控制台登录")
-def login(
+async def login(
     request: Request,
     payload: LoginRequest,
     response: Response,
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     cache: PlanCache = Depends(get_plan_cache),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[MeData]:
     """账号口令 → 服务端会话行 + HttpOnly cookie；失败统一 ``20010``，超限 ``20005``。
 
     限流在验口令**之前**：一次尝试先记上，失败与不存在的账号都会计数；超限时连账号表
     都不读，所以「是否存在」不会通过耗时或错误码泄露。开关关着时 ``login_throttle``
     返回 ``None``，整段是 no-op（默认套件因此不碰 Redis）。
+
+    整条路径（限流的异步计数、验口令与落会话行、套餐解析、用量读取）都在事件循环上：
+    会话是 ``AsyncSession``，提交点是 ``Depends(get_async_transaction)``（票 #130）。
     """
 
     client_ip = _client_ip(request)
     throttle = login_throttle()
     if throttle is not None:
         # 先记这次尝试，再验口令；被拒的那一次不写（见 login_throttle 模块文档）。
-        throttle.register_attempt(username=payload.username, client_ip=client_ip)
+        await throttle.register_attempt(username=payload.username, client_ip=client_ip)
 
-    session, view = console_service.login(
+    session, view = await console_service.login(
         db, username=payload.username, password=payload.password, cache=cache
     )
 
     if throttle is not None:
         # 成功才清除这一对：合法用户输错几次后登进来，不该在下一个窗口继续被惩罚。
-        throttle.reset(username=payload.username, client_ip=client_ip)
+        await throttle.reset(username=payload.username, client_ip=client_ip)
     _set_session_cookie(response, session.id)
     return ok(_me_data(view))
 
 
 @router.post("/logout", response_model=ApiResponse[None], summary="控制台登出")
-def logout(
+async def logout(
     request: Request,
     response: Response,
     _write_header: None = Depends(require_console_write_header),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[None]:
     """服务端删行 + 客户端删 cookie：**两半都做**，少一半就留下一个还能用的会话。
 
@@ -206,7 +212,7 @@ def logout(
     上会一直留下一个已经失效、却还在被发送的凭证。
     """
 
-    console_service.logout(db, session_id=request.cookies.get(SESSION_COOKIE_NAME))
+    await console_service.logout(db, session_id=request.cookies.get(SESSION_COOKIE_NAME))
     _delete_session_cookie(response)
     return ok(None)
 
@@ -215,18 +221,21 @@ def logout(
 
 
 @router.get("/me", response_model=ApiResponse[MeData], summary="我的账号、租户、套餐与今日用量")
-def me(
+async def me(
     identity: ConsoleIdentity = Depends(get_console_account),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     cache: PlanCache = Depends(get_plan_cache),
 ) -> ApiResponse[MeData]:
     """调用方的账号、所属租户、套餐快照与今日用量。
 
     用量读的是租户级日桶（只读、不 +1）。开关关着时 ``usage.used`` 为 ``null``、
     ``usage.source`` 为 ``not_tracked``——平台压根没在统计，报 0 会骗人。
+
+    整条路径在异步栈上（票 #130）：账号 / 租户 / 套餐的库读与用量那条异步 Redis 都在
+    事件循环上 ``await``，没有任何一处被挪进线程池。
     """
 
-    view = console_service.me_view(db, account_id=identity.account_id, cache=cache)
+    view = await console_service.me_view(db, account_id=identity.account_id, cache=cache)
     return ok(_me_data(view))
 
 
@@ -234,11 +243,13 @@ def me(
 
 
 @router.get("/plans", response_model=ApiResponse[PlanListData], summary="套餐列表（管理员）")
-def list_plans(
+async def list_plans(
     identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[PlanListData]:
-    rows = console_service.list_plans(db)
+    """管理员看全部套餐。只读，因此整条路径在异步栈上（票 #129）。"""
+
+    rows = await console_service.list_plans(db)
     return ok(PlanListData(plans=[plan_data(row) for row in rows]))
 
 
@@ -247,17 +258,18 @@ def list_plans(
     response_model=ApiResponse[PlanPatchData],
     summary="改 / 删套餐（先试算、后落库）",
 )
-def patch_plan(
+async def patch_plan(
     plan_id: int,
     payload: PlanPatchRequest,
     dry_run: bool = Query(default=True, description="true 只试算，false 才落库"),
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
     cache: PlanCache = Depends(get_plan_cache),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[PlanPatchData]:
-    """套餐的**唯一**写入口：校验 → 试算 → 落库 + 审计 → 删缓存。"""
+    """套餐的**唯一**写入口：校验 → 试算 → 落库 + 审计（同一笔事务）→ 提交后删缓存。"""
 
-    result = console_service.patch_plan(
+    result = await console_service.patch_plan(
         db,
         plan_id=plan_id,
         operation=payload.operation,
@@ -282,13 +294,13 @@ def patch_plan(
 
 
 @router.get("/accounts", response_model=ApiResponse[AccountListData], summary="账号列表（管理员）")
-def list_accounts(
+async def list_accounts(
     identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[AccountListData]:
     """管理员跨租户看所有账号；每行带上它所属租户与那个租户当前的套餐。"""
 
-    rows = console_service.list_accounts(db)
+    rows = await console_service.list_accounts(db)
     return ok(
         AccountListData(
             accounts=[
@@ -313,15 +325,16 @@ def list_accounts(
     response_model=ApiResponse[AccountPatchData],
     summary="换套餐 / 停用账号 / 停用租户（管理员）",
 )
-def patch_account(
+async def patch_account(
     account_id: str,
     payload: AccountPatchRequest,
     identity: ConsoleIdentity = Depends(require_console_admin_write),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[AccountPatchData]:
     """改一个账号：三项字段全量校验后再落库，并写一条带前后快照的审计。"""
 
-    result = console_service.patch_account(
+    result = await console_service.patch_account(
         db,
         account_id=account_id,
         plan_id=payload.plan_id,
@@ -340,7 +353,7 @@ def patch_account(
     response_model=ApiResponse[AuditLogListData],
     summary="审计列表（管理员；limit / offset 分页 + action 精确过滤）",
 )
-def list_audit_logs(
+async def list_audit_logs(
     limit: int | None = Query(default=None, description="最多返回几条，缺省 50、上限 200"),
     offset: int = Query(default=0, ge=0, description="跳过几条（分页起点，从 0 开始）"),
     action: str | None = Query(
@@ -348,15 +361,15 @@ def list_audit_logs(
         description="按动作名**精确**过滤（如 model.reveal / key.issue）；不给就是全部",
     ),
     identity: ConsoleIdentity = Depends(get_console_admin),
-    db: Session = Depends(get_db),
+    db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[AuditLogListData]:
     """返回一页审计行，并带上「当前筛选条件下的总数」与本次的 ``offset``。
 
     分页与过滤都在 SQL 层完成；``total`` 是全量统计（带 ``action`` 时是那个动作的条数），
-    让前端能算页数而不必再发一次计数请求。
+    让前端能算页数而不必再发一次计数请求。只读，因此整条路径在异步栈上（票 #129）。
     """
 
-    page = console_service.list_audit_logs(
+    page = await console_service.list_audit_logs(
         db,
         limit=console_service.audit_limit(limit),
         offset=offset,

@@ -60,9 +60,14 @@ EXPECTED_UPLOAD_DATA = {
 
 
 class _FakeSession:
-    """最小会话替身：文档行留在内存里，不碰数据库，只记录提交次数。"""
+    """最小**异步**会话替身：文档行留在内存里，不碰数据库，只记录提交次数。
+
+    票 #132 起上传端点用的是 ``AsyncSession``（``Depends(get_async_db)``）；``add`` 与真
+    会话一样是同步的，其余是协程。
+    """
 
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self.added: list[Any] = []
         self.documents: dict[str, Any] = {}
         self.commit_count = 0
@@ -71,20 +76,20 @@ class _FakeSession:
         self.added.append(doc)
         self.documents[doc.id] = doc
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         return None
 
-    def execute(self, _statement: Any) -> Any:
+    async def execute(self, _statement: Any) -> Any:
         # 上传前的静态配额（单库文档数 / 并发处理数）各数一次行：替身回 0。
         return ZERO_COUNT
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         self.commit_count += 1
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         return None
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
 
 
@@ -97,7 +102,7 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
     """
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
     from app.api.deps import get_current_key
@@ -114,14 +119,22 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
         settings={},
     )
 
+    async def _visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return kb
+
+    def _visible_kb_sync(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return kb
+
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: kb)
+    # 票 #130 起 ``get_by_id_for_tenant`` 只剩异步一种（同步版已随控制面异步化删除），
+    # 所以替身也只留异步那一个：再挂一个同步替身会在 ``await`` 上炸 TypeError。
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
     monkeypatch.setattr(document_service, "new_document_id", lambda: "doc-1")
     monkeypatch.setattr(
         document_service, "enqueue_document", lambda **kwargs: enqueued.append(kwargs)
     )
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
@@ -520,15 +533,15 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
             created_at=datetime(2026, 1, 3, 3, 3, 3),
         ),
     ]
-    monkeypatch.setattr(
-        document_repository,
-        "list_by_kb",
-        lambda db, kb_id, *, tenant_id: rows,
-    )
+
+    async def fake_list(db: Any, kb_id: str, *, tenant_id: str) -> list[Any]:
+        return rows
+
+    monkeypatch.setattr(document_repository, "list_by_kb_async", fake_list)
 
     counter_calls: list[list[str]] = []
 
-    def fake_counts(db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
+    async def fake_counts(db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
         assert tenant_id == TENANT_ID, "切片计数必须强制带租户（ADR-0006）"
         counter_calls.append(list(document_ids))
         return {"doc-a": 5, "doc-b": 2}
@@ -566,16 +579,19 @@ def test_list_documents_hides_knowledge_base_of_another_tenant(
     """跨租户的 kb_id 一律按「不存在」处理，连列表查询都不发。"""
 
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
-    monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None
-    )
+
+    async def _absent(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return None
+
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _absent)
 
     list_calls: list[tuple[Any, Any]] = []
-    monkeypatch.setattr(
-        document_repository,
-        "list_by_kb",
-        lambda *args, **kwargs: list_calls.append((args, kwargs)),
-    )
+
+    async def _list(*args: Any, **kwargs: Any) -> Any:
+        list_calls.append((args, kwargs))
+        return []
+
+    monkeypatch.setattr(document_repository, "list_by_kb_async", _list)
 
     response = offline.client.get("/api/v1/documents", params={"kb_id": KB_ID})
 

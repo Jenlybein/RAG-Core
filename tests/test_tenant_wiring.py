@@ -35,7 +35,7 @@ from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED, KeyPolicy
 from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_STANDARD, Plan, plan_row_of
 from app.models.tenant import Tenant
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncSessionAdapter, RecordingSession
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
@@ -84,9 +84,7 @@ def _key_row(*, tenant_id: str = TENANT_ID) -> ApiKey:
 
 
 def _tenant_row(*, tenant_id: str = TENANT_ID, plan_code: str = PLAN_PRO) -> Tenant:
-    return Tenant(
-        id=tenant_id, name="Acme 公司", plan_id=PLAN_IDS[plan_code], status="active"
-    )
+    return Tenant(id=tenant_id, name="Acme 公司", plan_id=PLAN_IDS[plan_code], status="active")
 
 
 def _policy_row(*, allowed_kb_ids: list[str], profile: str = PROFILE_SPEED) -> KeyPolicy:
@@ -200,18 +198,22 @@ class _FakeRedis:
 
 
 class _RedisPlanCache:
-    """只认 plan id 的内存缓存：本票不关心缓存策略，别让它去连真 Redis。"""
+    """只认 plan id 的内存缓存：本票不关心缓存策略，别让它去连真 Redis。
+
+    三个方法都是 ``async``（票 #129）：生产实现握的是 ``redis.asyncio`` 客户端，替身必须
+    同形，否则「忘了 await」会变成一条 500 而不是「缓存没命中」。
+    """
 
     def __init__(self) -> None:
         self.items: dict[int, Any] = {}
 
-    def get(self, plan_id: int) -> Any:
+    async def get(self, plan_id: int) -> Any:
         return self.items.get(plan_id)
 
-    def set(self, plan_id: int, plan: Any) -> None:
+    async def set(self, plan_id: int, plan: Any) -> None:
         self.items[plan_id] = plan
 
-    def delete(self, plan_id: int) -> None:
+    async def delete(self, plan_id: int) -> None:
         self.items.pop(plan_id, None)
 
 
@@ -339,7 +341,7 @@ def _entries_with(
 
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
-    db_session = importlib.import_module("app.db.session")
+    async_session = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     doc_repo = importlib.import_module("app.repositories.document_repository")
@@ -357,23 +359,24 @@ def _entries_with(
     caller_tenant = settings.DEV_TENANT_ID if allowed_kb_ids is None else TENANT_ID
 
     # 白名单外的库对「跨租户」这一条要能返回 None：它属于别家租户。
-    def _visible(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+    async def _visible_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        """取库的替身是**协程**（票 #130：可见性守卫只剩异步的那一个入口）。"""
+
         if kb_id == KB_IN_SCOPE and tenant_id == caller_tenant:
             return _kb_row(kb_id)
         return None
 
-    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible)
-    monkeypatch.setattr(
-        doc_repo,
-        "get_by_id_for_tenant",
-        lambda _db, document_id, *, tenant_id: (
-            _doc_row(document_id, kb_id=KB_IN_SCOPE)
-            if document_id == DOC_IN_SCOPE and tenant_id == caller_tenant
-            else _doc_row(document_id, kb_id=KB_OUT_OF_SCOPE)
-            if tenant_id == caller_tenant
-            else None
-        ),
-    )
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
+
+    async def _visible_doc(_db: Any, document_id: str, *, tenant_id: str) -> Any:
+        """按 id 取文档的替身是**协程**（票 #130：重建 / 删除路由读异步仓储）。"""
+
+        if tenant_id != caller_tenant:
+            return None
+        kb_id = KB_IN_SCOPE if document_id == DOC_IN_SCOPE else KB_OUT_OF_SCOPE
+        return _doc_row(document_id, kb_id=kb_id)
+
+    monkeypatch.setattr(doc_repo, "get_by_id_for_tenant_async", _visible_doc)
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _FakeEmbedding())
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore())
 
@@ -396,7 +399,8 @@ def _entries_with(
         bearer = KEY_VALUE
 
     mcp_app = mcp_server.create_mcp_http_app(
-        get_db=_get_db,
+        # 检索链路用异步会话（第 11 步票 #127）：同一个替身，包一层异步面。
+        get_async_db=lambda: AsyncSessionAdapter(_get_db()),
         retrieve=service.retrieve,
         list_kbs=kb_repo.list_by_tenant,
     )
@@ -404,7 +408,7 @@ def _entries_with(
     app.include_router(main.api_router)
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
-    app.dependency_overrides[db_session.get_db] = _get_db
+    app.dependency_overrides[async_session.get_async_db] = lambda: AsyncSessionAdapter(_get_db())
 
     with TestClient(app) as client:
         entry = EntryClient(client)
@@ -561,7 +565,9 @@ def test_mcp_rejects_a_disabled_key(entries: EntryClient) -> None:
 
 
 def test_mcp_serves_a_whitelisted_knowledge_base(entries: EntryClient) -> None:
-    payload = _mcp_payload(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "q"}))
+    payload = _mcp_payload(
+        entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "q"})
+    )
 
     assert [chunk["kb_id"] for chunk in payload["retrieved_chunks"]] == [KB_IN_SCOPE]
 
@@ -592,7 +598,9 @@ def test_both_entries_answer_the_same_question_the_same_way(entries: EntryClient
     """
 
     http_body = entries.retrieve([KB_IN_SCOPE])
-    mcp_payload = _mcp_payload(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"}))
+    mcp_payload = _mcp_payload(
+        entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"})
+    )
 
     assert http_body["code"] == ErrorCode.SUCCESS
 
@@ -613,7 +621,9 @@ def test_both_entries_reject_the_same_scope_violation_with_the_same_code(
     entries: EntryClient,
 ) -> None:
     http_code = entries.retrieve([KB_OUT_OF_SCOPE])["code"]
-    mcp_code = _mcp_code(entries.mcp_call("rag_retrieve", {"kb_ids": [KB_OUT_OF_SCOPE], "query": "q"}))
+    mcp_code = _mcp_code(
+        entries.mcp_call("rag_retrieve", {"kb_ids": [KB_OUT_OF_SCOPE], "query": "q"})
+    )
 
     assert http_code == mcp_code == ErrorCode.KNOWLEDGE_BASE_NOT_FOUND
 
@@ -702,7 +712,9 @@ def test_mcp_tool_signatures_expose_no_privileged_fields() -> None:
         return {}
 
     mcp = create_mcp_server(
-        get_db=_FakeSession, retrieve=_retrieve, list_kbs=lambda *_a, **_k: []
+        get_async_db=lambda: AsyncSessionAdapter(_FakeSession()),
+        retrieve=_retrieve,
+        list_kbs=lambda *_a, **_k: [],
     )
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 

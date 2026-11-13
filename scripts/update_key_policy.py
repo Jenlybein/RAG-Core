@@ -39,6 +39,7 @@ from typing import Any
 from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal
+from app.db.transaction import transaction
 from app.models.key_policy import PROFILES
 from app.services.key_policy_service import update_key_policy
 
@@ -152,12 +153,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     db = SessionLocal()
     try:
-        update = update_key_policy(db, policy_id=args.policy_id, changes=changes)
+        with transaction(db):
+            update = update_key_policy(db, policy_id=args.policy_id, changes=changes)
     except (LookupError, ValueError, AppError) as exc:
         # ``AppError`` 是「配置不自洽」（20015）：档位要的能力没开、配置开的比套餐允许的
         # 多、限额超过套餐上限。它与入参错误一样是**人改一下就好**的失败，不是脚本故障，
-        # 所以同样打一行消息、返回非零，不吐 traceback。
-        db.rollback()
+        # 所以同样打一行消息、返回非零，不吐 traceback。回滚已经由上面的
+        # ``with transaction(db)`` 做过，这里不再重复回滚。
         print(str(exc), file=sys.stderr)
         return 1
     finally:

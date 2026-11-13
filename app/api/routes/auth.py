@@ -31,12 +31,16 @@ router = APIRouter()
     response_model=ApiResponse[AuthMeData],
     summary="查自己的租户、套餐与今日用量（外部程序）",
 )
-def me(key: DevKeyContext = Depends(get_current_key)) -> ApiResponse[AuthMeData]:
+async def me(key: DevKeyContext = Depends(get_current_key)) -> ApiResponse[AuthMeData]:
     """按这把 Key 的判定结论答三栏；不读任何跨租户的行，也不写任何计数。
 
     ``tenant`` / ``plan`` 原样来自上下文；``usage`` 的 ``limit`` 取套餐的日配额，
     ``used`` 走只读的租户日桶——与控制面 ``/me`` 是同一份口径（开关关着时如实
     报「未统计」，不是 0）。
+
+    路由是 ``async def``（票 #133）：用量那一条只读路径走异步 Redis，必须在事件循环上
+    ``await``。路由体不碰数据库；身份由 ``get_current_key``（异步依赖）在同一个
+    ``AsyncSession`` 上解出，整条链路都在事件循环上 ``await``，没有同步读库。
     """
 
     return ok(
@@ -44,7 +48,7 @@ def me(key: DevKeyContext = Depends(get_current_key)) -> ApiResponse[AuthMeData]
             tenant=AuthTenantData(tenant_id=key.tenant_id, name=key.tenant_name),
             plan=plan_snapshot_data(key.plan),
             usage=usage_data(
-                used=read_tenant_daily_usage(tenant_id=key.tenant_id),
+                used=await read_tenant_daily_usage(tenant_id=key.tenant_id),
                 limit=key.plan.retrieve_daily,
             ),
         )

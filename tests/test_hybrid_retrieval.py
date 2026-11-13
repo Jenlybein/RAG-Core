@@ -23,11 +23,8 @@
 
 from __future__ import annotations
 
-import asyncio
 import importlib
 import json
-import threading
-import time
 from collections.abc import Iterator
 from contextlib import contextmanager
 from types import SimpleNamespace
@@ -39,6 +36,7 @@ from fastapi.testclient import TestClient
 from app.core.config import SUPPORTED_RETRIEVAL_MODES, Settings, settings
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.services.retrieval_options import RetrievalMode
+from tests.fake_db import AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -79,6 +77,9 @@ class _FakeDb:
     空结果原因必须查一次数据库才许下结论（父 spec：不许猜），所以这里只实现
     那一次 ``count`` 需要的 ``execute(...).scalar_one()``。向量、关键词两路都是
     替身，不会真的碰它。
+
+    第 11 步票 #127 起它是**异步请求会话**的替身：由 ``AsyncSessionAdapter`` 包成
+    异步面（``execute`` 可 await），预置答案与计数器一行没改。
     """
 
     def __init__(self, *, indexed_chunks: int = 0) -> None:
@@ -171,6 +172,18 @@ class _FakeKeyword:
         raise AssertionError("检索链路不应删索引")
 
 
+async def _visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+    """「库可见」的异步替身（检索链路的可见性校验走异步仓储）。"""
+
+    return SimpleNamespace(tenant_id=tenant_id)
+
+
+async def _invisible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+    """「库不可见」：仓储按口径回 ``None``，守卫据此抛 20008。"""
+
+    return None
+
+
 def _vector_row(chunk_id: str, *, kb_id: str = KB_A, score: float) -> dict:
     return {
         "document_id": f"doc-{chunk_id}",
@@ -201,41 +214,37 @@ def _offline_client(
     keyword: Any = None,
     indexed_chunks: int = 0,
     request_db: _FakeDb | None = None,
-    work_db: _FakeDb | None = None,
 ) -> Iterator[dict[str, Any]]:
     """离线 ASGI 客户端 + 替身；返回替身本体供断言。
 
-    ``request_db`` 是 FastAPI 依赖注入的那个会话（查空结果原因用），
-    ``work_db`` 是向量分支在**自己的线程**里拿到的会话——两者刻意分开，
-    这样「向量分支持有自己的 SessionLocal」才是可观察的事实。
+    ``request_db`` 是 FastAPI 依赖注入的那个**异步**会话：第 11 步票 #127 起两条分支
+    共用它（异步会话不绑线程，向量分支因此不需要第二个会话）。
     """
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     embedding = embedding or _FakeEmbedding()
     vector = vector or _FakeVectorStore()
     keyword = keyword if keyword is not None else _FakeKeyword()
     request_db = request_db or _FakeDb(indexed_chunks=indexed_chunks)
-    work_db = work_db or _FakeDb()
 
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: vector)
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
-    # 向量分支必须持有自己的会话；测试里把它接到替身上，绝不真的连 PostgreSQL。
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: work_db)
+    # 可见性走异步仓储（第 11 步票 #127）：替身因此也得是 ``async def``。
     monkeypatch.setattr(
         kb_repo,
         "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id),
+        _visible_kb,
     )
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: request_db
+    request_session = AsyncSessionAdapter(request_db)
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: request_session
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
@@ -244,8 +253,7 @@ def _offline_client(
                 "embedding": embedding,
                 "vector": vector,
                 "keyword": keyword,
-                "db": request_db,
-                "work_db": work_db,
+                "db": request_session,
             }
     finally:
         main.app.dependency_overrides.clear()
@@ -433,7 +441,7 @@ def test_visibility_is_checked_once_per_kb_before_any_recall(monkeypatch) -> Non
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     seen: list[str] = []
 
-    def _visible(db, kb_id, *, tenant_id):
+    async def _visible(db, kb_id, *, tenant_id):
         seen.append(kb_id)
         return SimpleNamespace(tenant_id=tenant_id)
 
@@ -451,9 +459,7 @@ def test_invisible_kb_is_rejected_before_anything_is_recalled(monkeypatch) -> No
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     vector = _FakeVectorStore({KB_A: [_vector_row("a1", score=0.9)]})
     with _offline_client(monkeypatch, vector=vector) as fake:
-        monkeypatch.setattr(
-            kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None
-        )
+        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _invisible_kb)
         body = _post(fake["client"], mode="hybrid", kb_ids=[KB_A, KB_B])
 
     assert body["code"] == 20008
@@ -590,9 +596,7 @@ def test_single_vector_mode_still_fails_loudly_when_embedding_breaks(monkeypatch
     # 配置表达（票 #77 起请求体里没有它了）。
     IDENTITY.use(mode="vector")
     with _offline_client(monkeypatch, embedding=embedding, keyword=keyword) as fake:
-        response = fake["client"].post(
-            RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024"}
-        )
+        response = fake["client"].post(RETRIEVE_PATH, json={"kb_ids": [KB_A], "query": "E1024"})
 
     assert response.status_code == 500
     assert response.json()["code"] == 50000
@@ -606,7 +610,7 @@ def test_visibility_rejection_is_not_degraded(monkeypatch) -> None:
 
     with _offline_client(monkeypatch) as fake:
         # 在客户端就绪之后再换仓储，确保覆盖掉 fixture 里「库可见」的默认替身。
-        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: None)
+        monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _invisible_kb)
         body = _post(fake["client"], mode="hybrid")
 
     assert body["code"] == 20008
@@ -662,53 +666,22 @@ def test_non_empty_result_has_no_empty_reason(monkeypatch) -> None:
     assert _retrieval_metadata(body)["empty_reason"] is None
 
 
-# ───────────────────────────────────────────── 真并行与独立会话
+# ───────────────────────────────────────────── 一个请求一条会话
 
 
-def test_vector_branch_runs_in_a_worker_thread_with_its_own_session(monkeypatch) -> None:
-    """向量分支必须跑在独立线程、持有自己的 ``SessionLocal``，否则事件循环被卡住。
+def test_the_vector_branch_shares_the_request_session(monkeypatch) -> None:
+    """向量分支用的是**请求那个**异步会话：没有第二个会话，也没有线程。
 
-    证据是「关键词协程在向量分支阻塞期间仍在推进」：向量替身用 ``time.sleep``
-    同步阻塞 250ms（模拟 psycopg），关键词替身每 10ms 记一次 tick。若向量分支
-    跑在事件循环上，关键词协程根本得不到执行，tick 会是 0。
+    第 10 步它在自己的线程里另开 ``SessionLocal()``——同步 ``Session`` 不能跨线程。
+    第 11 步票 #127 把那条查询换成 ``await db.execute(...)`` 之后，两个理由都不成立了：
+    会话不需要跨线程，查询也不再卡住事件循环。于是「一个请求一条连接」成为可观察的事实：
+    向量库收到的 ``db`` 就是请求依赖给的那一个。
     """
 
-    ticks: list[int] = []
-    vector_started = threading.Event()
-    vector_finished = threading.Event()
-
-    class _BlockingVectorStore(_FakeVectorStore):
-        async def similarity_search_scope(
-            self, db, query_vector, *, tenant_id, index_versions, top_k
-        ):
-            self.db_seen = db
-            self.calls.append(
-                {"tenant_id": tenant_id, "index_versions": dict(index_versions), "top_k": top_k}
-            )
-            vector_started.set()
-            time.sleep(0.25)  # 同步阻塞：这正是「并行」必须给它的代价
-            vector_finished.set()
-            return [{**_vector_row("c1", score=0.9), "kb_id": KB_A}]
-
-    class _TickingKeyword(_FakeKeyword):
-        async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
-            # 加一个轮数上限：万一向量分支没起来，测试要失败而不是挂死。
-            for _ in range(200):
-                if vector_finished.is_set():
-                    break
-                ticks.append(1)
-                await asyncio.sleep(0.01)
-            return [_keyword_row("c2", score=12.5)]
-
-    vector = _BlockingVectorStore()
-    keyword = _TickingKeyword()
+    vector = _FakeVectorStore({KB_A: [_vector_row("c1", score=0.9)]})
+    keyword = _FakeKeyword([_keyword_row("c2", score=12.5)])
     with _offline_client(monkeypatch, vector=vector, keyword=keyword) as fake:
         body = _post(fake["client"], mode="hybrid")
 
     assert body["code"] == 0
-    assert vector_started.is_set(), "向量分支真的跑了"
-    assert len(ticks) >= 5, "事件循环在向量分支阻塞期间必须仍在转（否则不是真并行）"
-    assert vector.db_seen is fake["work_db"], "向量分支用的是自己的会话，不是请求那个"
-    assert vector.db_seen is not fake["db"]
-    assert fake["work_db"].closed is True, "线程里的会话用完必须关掉"
-    assert fake["db"].closed is False, "请求会话由 FastAPI 依赖负责关闭，检索层不越权"
+    assert vector.db_seen is fake["db"], "向量分支用的是请求会话，不是另开的第二个"

@@ -26,7 +26,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 
 from app.core.auth import KeyContext
 from app.core.exceptions import ErrorCode
-from tests.fake_db import RecordingSession
+from tests.fake_db import AsyncSessionAdapter, RecordingSession
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 MCP_PATH = "/mcp/"
@@ -120,23 +120,31 @@ def entries(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entries]:
 
     main = importlib.import_module("app.api.router")
     error_handlers = importlib.import_module("app.api.error_handlers")
-    db_session = importlib.import_module("app.db.session")
     mcp_server = importlib.import_module("app.mcp_server")
     from app.api.deps import get_current_key
+    from tests import fake_db
 
     identity = KeyContext(tenant_id="tenant_parity", key_id="key-parity")
 
     async def must_not_run(*_args: Any, **_kwargs: Any) -> dict[str, Any]:
         raise AssertionError("非法请求不该进入检索链路")
 
-    def fake_list(*_args: Any, **_kwargs: Any) -> list[Any]:
+    async def fake_list(*_args: Any, **_kwargs: Any) -> list[Any]:
         return []
 
-    monkeypatch.setattr(mcp_server, "resolve_identity", lambda *_a, **_k: identity)
+    async def _identity(*_args: Any, **_kwargs: Any) -> KeyContext:
+        """MCP 侧的身份替身是**协程**（票 #130：判定内核是 ``async``）。"""
+
+        return identity
+
+    monkeypatch.setattr(mcp_server, "resolve_identity", _identity)
 
     session = RecordingSession()
+    # MCP 子应用自己开会话（不在 FastAPI 依赖里），所以它拿到的是同一个假库的异步视图。
+    view = AsyncSessionAdapter(session)
     mcp_app = mcp_server.create_mcp_http_app(
-        get_db=lambda: session,
+        # 检索链路用异步会话（第 11 步票 #127）。
+        get_async_db=lambda: view,
         retrieve=must_not_run,
         list_kbs=fake_list,
     )
@@ -144,7 +152,7 @@ def entries(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entries]:
     app.include_router(main.api_router)
     error_handlers.install_handlers(app)
     app.mount("/mcp", mcp_app)
-    app.dependency_overrides[db_session.get_db] = lambda: session
+    fake_db.override_all_db(app, session)
     app.dependency_overrides[get_current_key] = lambda: identity
 
     try:

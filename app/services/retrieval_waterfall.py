@@ -22,17 +22,23 @@
 
 **读回不是旁路**：它失败会让这次请求失败一半（拿不到段），所以不吞异常；**唯一**被降级的是
 观测服务读不到——那时返回本地结果（可能为空）并附一句 ``note``，绝不 500（票面明文）。
+
+**异步**（第 11 步票 #128）：归属索引那一读走 ``AsyncSession``（``waterfall_of`` 因此是
+``async def``）。本地 JSONL 与观测服务的读**是同步实现**，但由 ``asyncio.to_thread``
+挪出事件循环——它们不是数据库，且各自
+把「读不到」降级成空结果；把这两处也搬成异步属于观测栈那一侧的改造，不在这张票里。
 """
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Final
 
 import structlog
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
@@ -80,8 +86,8 @@ class RetrievalWaterfall:
     stages: tuple[StageSpan, ...]
 
 
-def waterfall_of(
-    db: Session,
+async def waterfall_of(
+    db: AsyncSession,
     *,
     log_id: str,
     tenant_id: str,
@@ -92,9 +98,13 @@ def waterfall_of(
     ``remote_reader`` 是**必填参数**而不是模块级默认值：读观测服务的那一步必须由组合根
     （路由的 ``Depends``）显式交进来，测试才有地方换掉它；写成默认值会让「这次到底去没去
     问观测栈」在运行时不可见。
+
+    归属那一行读在**异步会话**上（票 #128 起），本地 JSONL 与观测服务两处仍是同步 I/O：
+    它们各自被 :func:`asyncio.to_thread` 挪出事件循环（票 #129）。文件读与网络读都属于
+    「会等很久、但不等数据库」的那一类，留在循环上就是拿一个慢盘换掉整台进程的并发。
     """
 
-    row = retrieval_trace_repository.get_by_id_for_tenant(db, log_id, tenant_id=tenant_id)
+    row = await retrieval_trace_repository.get_by_id_for_tenant(db, log_id, tenant_id=tenant_id)
     if row is None:
         # 跨租户与不存在同码：可区分的拒绝会泄露「这个 log_id 在别人那儿存在」。
         raise AppError(ErrorCode.NOT_FOUND)
@@ -102,7 +112,7 @@ def waterfall_of(
     enabled = settings.TRACE_SINK != "none"
     trace_id = row.trace_id
 
-    local = _local_stages(trace_id)
+    local = await asyncio.to_thread(_local_stages, trace_id)
     if local:
         return _waterfall(
             row, enabled=enabled, source=SOURCE_JSONL, reason=None, note=None, stages=local
@@ -110,7 +120,7 @@ def waterfall_of(
 
     note: str | None = None
     if enabled:
-        remote, note = _remote_stages(trace_id, reader=remote_reader)
+        remote, note = await asyncio.to_thread(_remote_stages, trace_id, reader=remote_reader)
         if remote:
             return _waterfall(
                 row,

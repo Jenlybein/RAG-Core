@@ -3,27 +3,26 @@
 这是唯一一条真正串起**两层**的测试（其余各层都是单点验证）：
 
 * ASGI 边界发一次 multipart ``.md`` 上传（``POST /api/v1/documents/upload``）；
-* 把 ``document_service.enqueue_document`` 换成「在同一份内存会话上跑真实 Worker
-  流水线」的替身——真实 ``IndexingService.index_existing_document`` + 真实
+* 把 ``document_service.enqueue_document`` 换成「把任务投进**真的** Worker 常驻循环、
+  跑真实流水线」的替身——真实 ``IndexingService.index_existing_document`` + 真实
   ``MarkdownStructuredSplitter`` + 真实 Markdown 解析，只把 embedding 与向量存储
   换成离线替身；
 * 断言链条末端：切片 ``meta`` 带着 ``heading_path`` / ``chunk_type`` /
   ``section_id`` / ``title`` / ``source_type``，表格完整留在一片里，文档状态落到
   SUCCESS，且 purge 发生在 add 之前。
 
-为什么 Worker 跑在**独立线程**里：真实投递会被另一个进程的消息循环消费；在请求
-协程里直接 ``asyncio.run`` 会撞上「event loop already running」，用线程模拟 Worker
-的事件循环既贴近真实拓扑，又不需要 Broker。
+为什么投递替身用的是**真的** ``get_worker_loop()``：票 #132 之后生产路径就是「任务体把
+工厂函数投进常驻循环」，这里照抄那个形状（而不是另起线程 ``asyncio.run``）——于是
+「上传登记 → 投递 → Worker 抢租约 → 写入 → 状态回写」这条链路的**接线**本身也在被断言。
 
-离线：``SessionLocal`` 式内存会话替身（无 PostgreSQL）、知识库仓储和 CAS 抢占换
-替身、embedding 返回固定 1536 维向量、向量存储记录调用，不发网络请求、不下载资产。
+离线：异步内存会话替身（无 PostgreSQL）、知识库仓储和 CAS 抢占换替身、embedding 返回
+固定 1536 维向量、向量存储记录调用，不发网络请求、不下载资产。
 """
 
 from __future__ import annotations
 
 import asyncio
 import importlib
-import threading
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
@@ -34,6 +33,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import settings
 from app.db.base import now
+from app.db.worker_loop import get_worker_loop
 from app.models.document import Document
 from app.models.knowledge_base import FORMAT_MARKDOWN, SPLIT_STRUCTURE
 from app.repositories import document_repository
@@ -63,34 +63,50 @@ REQUIRED_META = {"heading_path", "chunk_type", "section_id", "title", "source_ty
 
 
 class _FakeSession:
-    """``SessionLocal`` 式替身：文档行留在内存里，只记录提交 / 回滚次数。"""
+    """异步内存会话替身：文档行留在内存里，只记录提交 / 回滚次数。
+
+    所有方法都是**协程**（票 #130 之后请求会话与 Worker 会话都只有异步那一套）：
+    ``get`` 尤其不能写成同步的——``IndexingService`` 会 ``await db.get(...)``，同步替身
+    在那里会炸成 ``object Document can't be used in 'await' expression``，看着像「文档
+    读不出来」，其实是替身少了一个 ``async``。
+
+    用例侧要直接读行时用 :func:`_stored_document`，它把这次 ``await`` 收在一处。
+    """
 
     def __init__(self) -> None:
+        self.info: dict[str, Any] = {}
         self._rows: dict[str, Any] = {}
         self.commits = 0
         self.rollbacks = 0
 
     def add(self, instance: Any) -> None:
+        # ``AsyncSession.add`` 与真会话一样**是同步的**：它只把对象挂进 unit of work。
         self._rows[instance.id] = instance
 
-    def get(self, _model: Any, ident: Any) -> Any | None:
+    async def get(self, _model: Any, ident: Any) -> Any | None:
         return self._rows.get(ident)
 
-    def flush(self) -> None:
+    async def flush(self) -> None:
         return None
 
-    def execute(self, _statement: Any) -> Any:
+    async def execute(self, _statement: Any) -> Any:
         # 上传前的静态配额会数行；这个替身表示空库。
         return ZERO_COUNT
 
-    def commit(self) -> None:
+    async def commit(self) -> None:
         self.commits += 1
 
-    def rollback(self) -> None:
+    async def rollback(self) -> None:
         self.rollbacks += 1
 
-    def close(self) -> None:
+    async def close(self) -> None:
         return None
+
+
+def _stored_document(session: _FakeSession, document_id: str) -> Any:
+    """把「读一行」的那次 ``await`` 收在一处（用例本身是同步的）。"""
+
+    return asyncio.run(session.get(Document, document_id))
 
 
 class _StubEmbeddings:
@@ -152,7 +168,7 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     """离线上传接缝 + 「会跑真实 Worker 流水线」的投递替身。"""
 
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     document_service = importlib.import_module("app.services.document_service")
     from app.api.deps import get_current_key
@@ -165,52 +181,42 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     claimed: list[str] = []
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
+
     # 目标库是 structure（白名单只有 markdown）：上传准入会读这份配置，
     # 所以替身必须带齐策略与白名单，不能只给 tenant_id。
-    monkeypatch.setattr(
-        kb_repo,
-        "get_by_id_for_tenant",
-        lambda db, kb_id, *, tenant_id: SimpleNamespace(
+    async def _visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return SimpleNamespace(
             id=KB_ID,
             tenant_id=tenant_id,
             split_strategy=SPLIT_STRUCTURE,
             allowed_formats=[FORMAT_MARKDOWN],
             settings={},
-        ),
-    )
+        )
 
-    def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
+
+    async def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:
         # 唯一换掉的仓储原语：真实实现是一条 SQL UPDATE（需要 PostgreSQL 行锁），
         # 内存会话跑不了；抢占成功后的两段事务仍由真实 IndexingService 驱动。
-        doc = db.get(Document, document_id)
+        doc = await db.get(Document, document_id)
         assert doc is not None
         doc.index_claimed_at = now()
         claimed.append(document_id)
         return True
 
-    monkeypatch.setattr(document_repository, "try_claim_for_indexing", _claim)
+    monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
 
     def _consume_index_task(**kwargs: Any) -> None:
-        """投递替身：在独立线程里消费任务，等价于另一个进程的 Celery Worker。"""
+        """投递替身：把任务投进**真的** Worker 常驻循环（与生产同形，不另起线程）。"""
 
         service = IndexingService(splitter=SPLITTER, embeddings=embeddings, stores=[store])
-        failures: list[BaseException] = []
-
-        def _run_worker() -> None:
-            try:
-                asyncio.run(service.index_existing_document(session, kwargs["document_id"]))
-            except BaseException as exc:  # noqa: BLE001 - 让 Worker 的失败在测试里原样复现
-                failures.append(exc)
-
-        worker = threading.Thread(target=_run_worker, name="t7-offline-worker")
-        worker.start()
-        worker.join()
-        if failures:
-            raise failures[0]
+        get_worker_loop().run(
+            lambda: service.index_existing_document(session, kwargs["document_id"])
+        )
 
     monkeypatch.setattr(document_service, "enqueue_document", _consume_index_task)
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: session
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
         with TestClient(main.app) as client:
@@ -252,7 +258,7 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     stored_path = pipeline_env.uploads_dir / TENANT_ID / f"{document_id}.md"
     assert stored_path.read_bytes() == body, "上传把原始文件落盘，Worker 之后从文件解析"
 
-    doc = pipeline_env.session.get(Document, document_id)
+    doc = _stored_document(pipeline_env.session, document_id)
     assert doc is not None
     assert doc.status == DocumentStatus.SUCCESS, "Worker 跑完后状态必须落到 SUCCESS"
     assert doc.error_message is None
@@ -369,31 +375,20 @@ def test_same_markdown_loses_heading_path_in_a_size_kb(
     document_service = importlib.import_module("app.services.document_service")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
-    monkeypatch.setattr(
-        kb_repo,
-        "get_split_config",
-        lambda db, kb_id, *, tenant_id: (SPLIT_SIZE, 800),
-    )
+    async def _split_config(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
+        return (SPLIT_SIZE, 800)
+
+    monkeypatch.setattr(kb_repo, "get_split_config", _split_config)
 
     session = pipeline_env.session
     store = pipeline_env.store
     embeddings = pipeline_env.embeddings
-    failures: list[BaseException] = []
 
     def _consume(**kwargs: Any) -> None:
         service = IndexingService(splitter=None, embeddings=embeddings, stores=[store])
-
-        def _run() -> None:
-            try:
-                asyncio.run(service.index_existing_document(session, kwargs["document_id"]))
-            except BaseException as exc:  # noqa: BLE001 - 让 Worker 的失败原样复现
-                failures.append(exc)
-
-        worker = threading.Thread(target=_run, name="t7-size-worker")
-        worker.start()
-        worker.join()
-        if failures:
-            raise failures[0]
+        get_worker_loop().run(
+            lambda: service.index_existing_document(session, kwargs["document_id"])
+        )
 
     monkeypatch.setattr(document_service, "enqueue_document", _consume)
 

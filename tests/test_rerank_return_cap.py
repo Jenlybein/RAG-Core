@@ -13,7 +13,6 @@ from __future__ import annotations
 import importlib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -22,6 +21,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.providers.llm.base import LLMProvider
 from app.providers.rerank.llm import LLMRerankProvider, RerankRanking, RerankScore
+from tests.fake_db import AsyncSessionAdapter, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
@@ -116,19 +116,15 @@ class _FakeLLM(LLMProvider):
 @contextmanager
 def _offline_client(monkeypatch: pytest.MonkeyPatch, *, llm: LLMProvider) -> Iterator[TestClient]:
     main = importlib.import_module("app.main")
-    session_mod = importlib.import_module("app.db.session")
+    async_session_mod = importlib.import_module("app.db.async_session")
     service = importlib.import_module("app.services.rag_service")
-    pipeline = importlib.import_module("app.services.retrieval.pipeline")
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     rows = [_row(index, score=1.0 - index / 100) for index in range(CANDIDATES)]
     monkeypatch.setattr(service, "get_embedding_provider", lambda: _FakeEmbedding())
     monkeypatch.setattr(service, "get_vector_store", lambda: _FakeVectorStore(rows))
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: _FakeKeyword())
-    monkeypatch.setattr(pipeline, "SessionLocal", lambda: _FakeDb())
-    monkeypatch.setattr(
-        kb_repo, "get_by_id_for_tenant", lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)
-    )
+    monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", async_visible_kb)
     # 生产工厂已不再返回大模型重排（#116），替身因此接在**既有**的工厂出口上。
     rerank_module = importlib.import_module("app.services.retrieval.rerank")
     provider = LLMRerankProvider(
@@ -141,7 +137,9 @@ def _offline_client(monkeypatch: pytest.MonkeyPatch, *, llm: LLMProvider) -> Ite
 
     from app.api.deps import get_current_key
 
-    main.app.dependency_overrides[session_mod.get_db] = lambda: _FakeDb()
+    main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: AsyncSessionAdapter(
+        _FakeDb()
+    )
     main.app.dependency_overrides[get_current_key] = IDENTITY.context
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:

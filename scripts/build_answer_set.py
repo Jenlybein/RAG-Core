@@ -1175,12 +1175,23 @@ def build_judge() -> tuple[ChatCall, dict[str, Any]]:
     为什么不直接读 ``.env`` 的 key：那份 key 是旧的、账户欠费。应用真正在用的是数据库
     ``model_configs`` 里那一行（角色指针 → 行）。照抄这套顺序，产物的来源才和线上一致；
     拿不到指针就报错退出，而不是偷偷用 ``.env`` 跑出一份来源不明的金标。
+
+    **同步外壳 + ``asyncio.run`` 桥接**（票 #137）：角色解析与 Provider 装配都是协程
+    （那次读库走 ``AsyncSession``）。**这里不是请求路径**——脚本是独立进程，``main()``
+    在调用它时还没有事件循环，而桥接是一次性的、跑完就退的同步动作；所以用
+    ``asyncio.run`` 在自己的进程里起一个干净循环，而不是把协程投给谁的常驻循环。
     """
+
+    return asyncio.run(_assemble_judge())
+
+
+async def _assemble_judge() -> tuple[ChatCall, dict[str, Any]]:
+    """``build_judge`` 的异步本体（单独拆出来，让「同步外壳」只有一行桥接）。"""
 
     from app.providers.llm import NoopLLMProvider, get_llm_provider, set_role_resolver
     from app.services import model_config_service
 
-    spec = model_config_service.resolve_role_config("fast")
+    spec = await model_config_service.resolve_role_config("fast")
     if spec is None:
         raise SystemExit(
             "没有可用的模型配置：库里的角色指针为空，或读不到库。"
@@ -1188,7 +1199,7 @@ def build_judge() -> tuple[ChatCall, dict[str, Any]]:
         )
 
     set_role_resolver(model_config_service.role_endpoint)
-    provider = get_llm_provider("fast")
+    provider = await get_llm_provider("fast")
     if isinstance(provider, NoopLLMProvider):
         raise SystemExit(
             f"模型配置行 {spec.id}（{spec.model}）没有可用的 key，装配成了空实现；"

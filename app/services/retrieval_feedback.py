@@ -11,19 +11,24 @@
    租户，三者对外**同一个码、同一句话**（``20021``，不泄漏「存在但不属于你」）；本地写库
    失败 ``20020``——它现在只指本地，不再指观测服务不可用。
 
-写入走**独立短事务**（与归属索引同一个理由）：请求会话 ``get_db`` 是只读语义、从不
-``commit``，在它上面顺手 ``INSERT`` 会被 ``db.close()`` 丢掉。所以校验读用请求会话，
-写入自己开一个会话、自己 commit、自己关。
+写入走**独立短事务**（与归属索引同一个理由）：请求会话 ``get_async_db`` 是只读语义、从不
+``commit``，在它上面顺手 ``INSERT`` 会被 ``close()`` 丢掉。所以校验读用请求会话，写入自己
+开一个会话、自己提交、自己关。
+
+**异步**（第 11 步票 #128）：读写都在 ``AsyncSession`` 上，提交点仍是
+``app.db.transaction`` 的异步孪生 ``async_transaction``——这里不出现裸 ``commit``，
+结构守卫（``tests/test_transaction.py``）扫的就是这一条。
 """
 
 from __future__ import annotations
 
 import structlog
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.db.session_factory import close_quietly, session_factory
-from app.observability import emit_feedback_score
+from app.db.session_factory import async_session_factory, close_quietly
+from app.db.transaction import async_transaction
+from app.observability import emit_feedback_score_off_loop
 from app.repositories import retrieval_feedback_repository, retrieval_trace_repository
 
 logger = structlog.get_logger(__name__)
@@ -37,9 +42,9 @@ MAX_SCORE = 5
 FEEDBACK_WRITE_FAILED_MESSAGE = "feedback not recorded"
 
 
-def submit_feedback(
+async def submit_feedback(
     *,
-    db: Session,
+    db: AsyncSession,
     tenant_id: str,
     log_id: str,
     trace_id: str,
@@ -49,11 +54,12 @@ def submit_feedback(
     """提交一次打分；返回要回显给调用方的最终结果。"""
 
     _ensure_score_in_range(score)
-    _ensure_owns_trace(db, tenant_id=tenant_id, log_id=log_id, trace_id=trace_id)
-    _write_locally(log_id=log_id, tenant_id=tenant_id, score=score, comment=comment)
+    await _ensure_owns_trace(db, tenant_id=tenant_id, log_id=log_id, trace_id=trace_id)
+    await _write_locally(log_id=log_id, tenant_id=tenant_id, score=score, comment=comment)
     # 本地已经是权威了，这一步才是旁路（顺序不能反：先推后写，就变成「观测挂了这次反馈
     # 就不算数」）。推失败只留 warning，响应照常返回（#105 决策 2）。
-    emit_feedback_score(trace_id=trace_id, score=score, comment=comment)
+    # 走 `_off_loop` 入口：同步 SDK / JSONL 的写不能占事件循环（票 #137 的评审抓到的）。
+    await emit_feedback_score_off_loop(trace_id=trace_id, score=score, comment=comment)
     return {"log_id": log_id, "score": score, "comment": comment}
 
 
@@ -71,8 +77,8 @@ def _ensure_score_in_range(score: int) -> None:
         )
 
 
-def _ensure_owns_trace(
-    db: Session,
+async def _ensure_owns_trace(
+    db: AsyncSession,
     *,
     tenant_id: str,
     log_id: str,
@@ -92,12 +98,12 @@ def _ensure_owns_trace(
 
     # 租户作为**强制参数**传进去：跨租户在仓储层就已经是 None，这里不再有「查到了但
     # 不是你的」这种中间态可判，也就没有把它答成别的码的机会。
-    trace = retrieval_trace_repository.get_by_id_for_tenant(db, log_id, tenant_id=tenant_id)
+    trace = await retrieval_trace_repository.get_by_id_for_tenant(db, log_id, tenant_id=tenant_id)
     if trace is None or trace.trace_id != trace_id:
         raise AppError(ErrorCode.FEEDBACK_LOG_MISMATCH)
 
 
-def _write_locally(
+async def _write_locally(
     *,
     log_id: str,
     tenant_id: str,
@@ -111,17 +117,19 @@ def _write_locally(
     不往日志里搬。
     """
 
-    session: Session | None = None
+    session: AsyncSession | None = None
     try:
-        session = session_factory()()
-        retrieval_feedback_repository.upsert(
-            session,
-            log_id=log_id,
-            tenant_id=tenant_id,
-            score=score,
-            comment=comment,
-        )
-        session.commit()
+        session = async_session_factory()()
+        # 一笔短事务：出块提交、异常回滚。这里不出现 ``commit``，提交点只在
+        # ``app.db.transaction``（见模块文档最后一段）。
+        async with async_transaction(session):
+            await retrieval_feedback_repository.upsert(
+                session,
+                log_id=log_id,
+                tenant_id=tenant_id,
+                score=score,
+                comment=comment,
+            )
     except Exception as exc:  # noqa: BLE001 - 任何写库失败都翻译成同一个业务码
         logger.warning(
             FEEDBACK_WRITE_FAILED_MESSAGE,
@@ -131,7 +139,7 @@ def _write_locally(
         )
         raise AppError(ErrorCode.FEEDBACK_FAILED) from exc
     finally:
-        close_quietly(session, on_failure=_report_close_failure)
+        await close_quietly(session, on_failure=_report_close_failure)
 
 
 def _report_close_failure(error_type: str) -> None:

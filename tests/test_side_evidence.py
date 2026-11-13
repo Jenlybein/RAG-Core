@@ -33,7 +33,13 @@ CASES = [
 class _Judge:
     """可编程的假裁判：按题号决定回什么，``raise_for`` 里的题会抛错。"""
 
-    def __init__(self, *, cp: dict[str, float | None], cr: dict[str, float | None], raise_for: tuple[str, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        cp: dict[str, float | None],
+        cr: dict[str, float | None],
+        raise_for: tuple[str, ...] = (),
+    ) -> None:
         self._cp = cp
         self._cr = cr
         self._raise_for = raise_for
@@ -51,10 +57,14 @@ class _Judge:
                 return table.get(qid)
         raise AssertionError(f"未预置的问题：{question}")
 
-    async def context_precision(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
+    async def context_precision(
+        self, *, question: str, contexts: Sequence[str], reference: str
+    ) -> float | None:
         return self._pick(self._cp, question, "precision")
 
-    async def context_recall(self, *, question: str, contexts: Sequence[str], reference: str) -> float | None:
+    async def context_recall(
+        self, *, question: str, contexts: Sequence[str], reference: str
+    ) -> float | None:
         return self._pick(self._cr, question, "recall")
 
 
@@ -112,7 +122,11 @@ def test_report_says_it_is_side_evidence_and_names_the_ruler() -> None:
 
 
 def test_per_case_failure_is_recorded_and_does_not_abort_the_run(tmp_path: Path) -> None:
-    judge = _Judge(cp={"q1": 1.0, "q2": 0.0, "q3": 1.0}, cr={"q1": 1.0, "q2": 0.0, "q3": 1.0}, raise_for=("q2",))
+    judge = _Judge(
+        cp={"q1": 1.0, "q2": 0.0, "q3": 1.0},
+        cr={"q1": 1.0, "q2": 0.0, "q3": 1.0},
+        raise_for=("q2",),
+    )
 
     result = asyncio.run(
         run_side_evidence(
@@ -160,7 +174,11 @@ def test_a_partially_scored_run_is_neither_ok_nor_failed(tmp_path: Path) -> None
 def test_nothing_scored_marks_the_run_failed_with_a_reason(tmp_path: Path) -> None:
     """一道都没评上不是「分数低」，是「裁判这条路没通」。"""
 
-    judge = _Judge(cp={"q1": 1.0, "q2": 1.0, "q3": 1.0}, cr={"q1": 1.0, "q2": 1.0, "q3": 1.0}, raise_for=("q1", "q2", "q3"))
+    judge = _Judge(
+        cp={"q1": 1.0, "q2": 1.0, "q3": 1.0},
+        cr={"q1": 1.0, "q2": 1.0, "q3": 1.0},
+        raise_for=("q1", "q2", "q3"),
+    )
 
     result = asyncio.run(
         run_side_evidence(
@@ -191,7 +209,9 @@ def test_run_writes_three_files_and_never_stores_source_text_outside_them(tmp_pa
         )
     )
 
-    assert {"report.md", "results.json", "status.json"} <= {path.name for path in tmp_path.iterdir()}
+    assert {"report.md", "results.json", "status.json"} <= {
+        path.name for path in tmp_path.iterdir()
+    }
     payload = json.loads((tmp_path / "results.json").read_text(encoding="utf-8"))
     assert payload["judge_model"] == "fake-judge-v1"
     assert payload["summary"]["scored"] == 3
@@ -216,8 +236,8 @@ def test_limit_runs_only_the_first_n_cases(tmp_path: Path) -> None:
     assert result["summary"]["count"] == 2
 
 
-
 # ──────────────────────────────────────────────── 控制台两端点（直接调函数，绕开认证脚手架）
+
 
 def _identity() -> Any:
     """控制面身份的最小形状：端点只读它的 tenant_id。"""
@@ -227,12 +247,16 @@ def _identity() -> Any:
     return SimpleNamespace(tenant_id="tenant_demo")
 
 
-def test_trigger_returns_a_run_id_and_queues_exactly_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_trigger_returns_a_run_id_and_queues_exactly_once(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.api.routes import console_eval
 
     calls: list[dict[str, Any]] = []
     monkeypatch.setattr(console_eval, "RUNS_ROOT", tmp_path)
-    monkeypatch.setattr(console_eval, "enqueue_side_evidence", lambda **kwargs: calls.append(kwargs))
+    monkeypatch.setattr(
+        console_eval, "enqueue_side_evidence", lambda **kwargs: calls.append(kwargs)
+    )
 
     body = console_eval.trigger_side_evidence(identity=_identity())
 
@@ -242,7 +266,9 @@ def test_trigger_returns_a_run_id_and_queues_exactly_once(tmp_path: Path, monkey
     assert re.match(r"^\d{8}T\d{6}Z$", body.data["run_id"])
 
 
-def test_status_of_unknown_run_is_queued_not_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_of_unknown_run_is_queued_not_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """任务还在队列里时既不是「没有这次跑」也不是「跑完了」。"""
 
     from app.api.routes import console_eval
@@ -255,14 +281,17 @@ def test_status_of_unknown_run_is_queued_not_absent(tmp_path: Path, monkeypatch:
     assert body.data["summary"] is None
 
 
-def test_status_reads_the_facts_the_worker_wrote(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_status_reads_the_facts_the_worker_wrote(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     from app.api.routes import console_eval
 
     monkeypatch.setattr(console_eval, "RUNS_ROOT", tmp_path)
     run_dir = tmp_path / "20260101T000000Z"
     run_dir.mkdir()
     (run_dir / "status.json").write_text(
-        json.dumps({"status": "ok", "error": None, "judge_model": "fake-judge-v1"}), encoding="utf-8"
+        json.dumps({"status": "ok", "error": None, "judge_model": "fake-judge-v1"}),
+        encoding="utf-8",
     )
     (run_dir / "results.json").write_text(
         json.dumps({"summary": {"context_precision": 0.7, "scored": 50}}), encoding="utf-8"
@@ -277,7 +306,9 @@ def test_status_reads_the_facts_the_worker_wrote(tmp_path: Path, monkeypatch: py
     assert body.data["report_path"].endswith("report.md")
 
 
-def test_a_traversal_shaped_run_id_is_treated_as_absent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_traversal_shaped_run_id_is_treated_as_absent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """run_id 会拼进路径：只放行本服务自己生成的形状。"""
 
     from app.api.routes import console_eval
@@ -288,7 +319,10 @@ def test_a_traversal_shaped_run_id_is_treated_as_absent(tmp_path: Path, monkeypa
 
     assert body.data["status"] == "queued"
 
-def test_another_tenants_run_is_not_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+
+def test_another_tenants_run_is_not_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """`run_id` 只是时间戳形状，谁都能编一个；归属对不上就当「不存在」。
 
     这条是本轮 code-review 查出来的：状态查询原先只校验「你是控制面的人」，不校验
@@ -319,7 +353,9 @@ def test_another_tenants_run_is_not_readable(tmp_path: Path, monkeypatch: pytest
     assert body.data["summary"] is None
 
 
-def test_a_run_without_a_tenant_record_is_still_readable(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_run_without_a_tenant_record_is_still_readable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """早期跑批（或命令行跑的）没有 `tenant_id`：不因此把历史产物判成别人的。"""
 
     from app.api.routes import console_eval
@@ -385,6 +421,7 @@ def test_unrecognised_failures_point_at_the_per_case_errors_file() -> None:
 
 
 # ───────────────────────────────────────── 并发与进度（性能事故之后补的）
+
 
 class _ConcurrencyProbe:
     """数「同一时刻有几题在飞」：并行与串行的区别用峰值表达，不靠计时猜。"""
@@ -486,9 +523,7 @@ def test_progress_is_visible_while_the_run_is_still_going(tmp_path: Path) -> Non
 
         async def _snapshot(self) -> None:
             if not seen:
-                seen.append(
-                    json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
-                )
+                seen.append(json.loads((tmp_path / "status.json").read_text(encoding="utf-8")))
 
         async def context_precision(self, **_: Any) -> float:
             await self._snapshot()
@@ -522,3 +557,57 @@ def test_progress_is_visible_while_the_run_is_still_going(tmp_path: Path) -> Non
 
     final = json.loads((tmp_path / "status.json").read_text(encoding="utf-8"))
     assert final["progress"] == {"done": 3, "total": 3}
+
+
+def test_the_task_uses_the_resident_loop_and_never_closes_shared_clients(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """票 #137：旁证任务与索引任务**共用** Worker 子进程的常驻循环。
+
+    旧写法是 ``asyncio.run(_run_in_its_own_loop(...))`` + ``finally: await aclose_http_client()``：
+    每任务一个循环，客户端与连接池跟着那次循环一起死；循环常驻后，任务体自己关客户端等于
+    把**下一个任务**要用的共享连接提前掐掉（ADR-0023 / 0024）。
+
+    这里只验**接线形状**，不真的跑 ``run_once``、也不自己起事件循环：那条完整链路归
+    ``tests/test_integration_worker_loop.py`` 与 ``side_evidence_run`` 的用例。收窄职责是为了
+    不和 conftest 的 ``reset_worker_loop`` / Windows 事件循环策略互相污染（全量跑时曾因此红过）。
+    """
+
+    import json
+
+    from app.tasks import side_evidence as task_mod
+
+    answers = tmp_path / "answers.json"
+    answers.write_text(json.dumps({"cases": [{"status": "ok"}]}), encoding="utf-8")
+
+    seen: dict[str, object] = {}
+
+    class _FakeLoop:
+        def run(self, factory, *, timeout=None):
+            # 只记「投进来的是工厂、不是协程对象」；不执行，避免任何事件循环状态。
+            import asyncio
+
+            seen["is_factory"] = callable(factory) and not asyncio.iscoroutine(factory)
+            return {"status": "ok", "summary": {"scored": 1}}
+
+    monkeypatch.setattr(task_mod, "run_in_worker_loop", lambda factory: _FakeLoop().run(factory))
+
+    from app.services import side_evidence as svc
+
+    monkeypatch.setattr(svc, "write_status", lambda **_kw: None)
+    monkeypatch.setattr(svc, "write_run", lambda **_kw: None)
+
+    result = task_mod.run_side_evidence_task.run(
+        run_id="unit-run",
+        out_dir=str(tmp_path / "out"),
+        answers_path=str(answers),
+    )
+
+    assert result == {"status": "ok", "run_id": "unit-run"}
+    assert seen["is_factory"] is True, "投给常驻循环的必须是工厂，不是协程对象"
+
+    source = Path(task_mod.__file__).read_text(encoding="utf-8")
+    # 从第一个 ``def `` 往后扫，跳过提到旧写法 ``asyncio.run`` 的模块 docstring。
+    code = source[source.index("\ndef ") :]
+    assert "aclose_http_client" not in code, "任务体不许关共享客户端（归 worker_process_shutdown）"
+    assert "asyncio.run" not in code, "任务体不许自己起事件循环"

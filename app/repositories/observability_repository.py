@@ -16,13 +16,13 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.retrieval_feedback import RetrievalFeedback
 from app.models.retrieval_trace import RetrievalTrace
 
 
-def totals(db: Session, *, since: datetime) -> dict[str, Any]:
+async def totals(db: AsyncSession, *, since: datetime) -> dict[str, Any]:
     """窗口内的总量、耗时分位与降级/空结果计数。
 
     ``percentile_cont`` 直接下推给 Postgres：把行拉回 Python 再排序，在「一屏监控」这个
@@ -37,7 +37,7 @@ def totals(db: Session, *, since: datetime) -> dict[str, Any]:
         func.count().filter(RetrievalTrace.degraded_reason.is_not(None)).label("degraded"),
         func.count().filter(RetrievalTrace.empty_reason.is_not(None)).label("empty"),
     ).where(RetrievalTrace.created_at >= since)
-    row = db.execute(statement).one()
+    row = (await db.execute(statement)).one()
     mapping = row._mapping
     return {
         "total": int(mapping["total"] or 0),
@@ -51,7 +51,7 @@ def totals(db: Session, *, since: datetime) -> dict[str, Any]:
     }
 
 
-def by_tenant(db: Session, *, since: datetime, limit: int = 10) -> list[dict[str, Any]]:
+async def by_tenant(db: AsyncSession, *, since: datetime, limit: int = 10) -> list[dict[str, Any]]:
     """按调用量排的租户榜，附带各自的降级率与平均耗时。"""
 
     statement = (
@@ -66,7 +66,7 @@ def by_tenant(db: Session, *, since: datetime, limit: int = 10) -> list[dict[str
         .order_by(func.count().desc())
         .limit(limit)
     )
-    rows = db.execute(statement).all()
+    rows = (await db.execute(statement)).all()
     out: list[dict[str, Any]] = []
     for row in rows:
         mapping = row._mapping
@@ -85,7 +85,7 @@ def by_tenant(db: Session, *, since: datetime, limit: int = 10) -> list[dict[str
     return out
 
 
-def hourly(db: Session, *, since: datetime) -> list[dict[str, Any]]:
+async def hourly(db: AsyncSession, *, since: datetime) -> list[dict[str, Any]]:
     """按小时分桶的调用量，用来画趋势线。
 
     桶里没有数据的小时**不补 0**：补 0 会把「服务没起来那段时间」画成一条掉到底的折线，
@@ -101,11 +101,11 @@ def hourly(db: Session, *, since: datetime) -> list[dict[str, Any]]:
     )
     return [
         {"bucket": row._mapping["bucket"], "total": int(row._mapping["total"] or 0)}
-        for row in db.execute(statement).all()
+        for row in (await db.execute(statement)).all()
     ]
 
 
-def rating_histogram(db: Session, *, since: datetime) -> dict[int, int]:
+async def rating_histogram(db: AsyncSession, *, since: datetime) -> dict[int, int]:
     """1~5 分各有多少条。**未评分的不出现**（与旁证「未评分不进分母」同一口径）。"""
 
     statement = (
@@ -113,7 +113,7 @@ def rating_histogram(db: Session, *, since: datetime) -> dict[int, int]:
         .where(RetrievalFeedback.created_at >= since)
         .group_by(RetrievalFeedback.score)
     )
-    return {int(row._mapping["score"]): int(row._mapping["total"] or 0) for row in db.execute(statement).all()}
+    return {int(row._mapping["score"]): int(row._mapping["total"] or 0) for row in (await db.execute(statement)).all()}
 
 
 def _as_float(value: Any) -> float | None:

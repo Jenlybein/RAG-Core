@@ -176,9 +176,12 @@ def test_create_tenant_script_prints_the_tenant_and_its_default_policy(
     session = RecordingSession(rows={Plan: _plan_rows()})
     _patch_infrastructure(monkeypatch, create_script, session)
 
-    assert create_script.main(
-        ["--id", ACME_TENANT, "--name", "Acme 公司", "--plan", "standard", "--kb-id", "kb-1"]
-    ) == 0
+    assert (
+        create_script.main(
+            ["--id", ACME_TENANT, "--name", "Acme 公司", "--plan", "standard", "--kb-id", "kb-1"]
+        )
+        == 0
+    )
 
     tenant = session.added_of(Tenant)[0]
     policy = session.added_of(KeyPolicy)[0]
@@ -257,14 +260,15 @@ def test_create_tenant_script_explains_that_the_plans_are_not_seeded_yet(
 def test_issue_api_key_script_prints_the_generated_plaintext_key(
     issue_script: ModuleType, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    session = RecordingSession(
-        rows={Tenant: [_tenant_row()], KeyPolicy: [_policy_row()]}
-    )
+    session = RecordingSession(rows={Tenant: [_tenant_row()], KeyPolicy: [_policy_row()]})
     _patch_infrastructure(monkeypatch, issue_script, session)
 
-    assert issue_script.main(
-        ["--tenant-id", ACME_TENANT, "--policy-id", POLICY_ID, "--label", "订单机器人"]
-    ) == 0
+    assert (
+        issue_script.main(
+            ["--tenant-id", ACME_TENANT, "--policy-id", POLICY_ID, "--label", "订单机器人"]
+        )
+        == 0
+    )
 
     issued = session.added_of(ApiKey)[0]
     assert issued.policy_id == POLICY_ID
@@ -396,26 +400,29 @@ def test_update_policy_script_writes_the_new_values(
     session = _update_session()
     _patch_infrastructure(monkeypatch, update_policy_script, session)
 
-    assert update_policy_script.main(
-        [
-            "--policy-id",
-            POLICY_ID,
-            "--name",
-            "订单机器人",
-            "--profile",
-            "balanced",
-            "--hybrid",
-            "--no-include-parent",
-            "--qps",
-            "8",
-            "--daily",
-            "4000",
-            "--kb-id",
-            "kb-1",
-            "--kb-id",
-            "kb-2",
-        ]
-    ) == 0
+    assert (
+        update_policy_script.main(
+            [
+                "--policy-id",
+                POLICY_ID,
+                "--name",
+                "订单机器人",
+                "--profile",
+                "balanced",
+                "--hybrid",
+                "--no-include-parent",
+                "--qps",
+                "8",
+                "--daily",
+                "4000",
+                "--kb-id",
+                "kb-1",
+                "--kb-id",
+                "kb-2",
+            ]
+        )
+        == 0
+    )
 
     policy = session._rows[KeyPolicy][0]
     assert policy.name == "订单机器人"

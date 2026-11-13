@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
+import asyncio
 import pytest
 from fastapi.testclient import TestClient
 
@@ -28,7 +29,7 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of, plan_spec_of
 from app.models.tenant import Tenant
 from app.services.quota_gate import QuotaCounters, daily_key
-from tests.fake_db import RecordingSession
+from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -43,36 +44,15 @@ TENANT_BETA = "tenant_beta"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-class _MemoryPlanCache:
-    """内存假缓存：``get/set/delete`` 三个方法就是全部接缝。"""
-
-    def __init__(self) -> None:
-        self.items: dict[int, Any] = {}
-        self.set_calls: list[int] = []
-        self.deleted: list[int] = []
-
-    def get(self, plan_id: int) -> Any:
-        return self.items.get(plan_id)
-
-    def set(self, plan_id: int, plan: Any) -> None:
-        self.set_calls.append(plan_id)
-        self.items[plan_id] = plan
-
-    def delete(self, plan_id: int) -> None:
-        self.deleted.append(plan_id)
-        self.items.pop(plan_id, None)
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
     db: RecordingSession
-    cache: _MemoryPlanCache
+    cache: MemoryPlanCache
+    db_view: Any = None
 
     def login(self, username: str, password: str) -> Any:
-        return self.client.post(
-            "/console/login", json={"username": username, "password": password}
-        )
+        return self.client.post("/console/login", json={"username": username, "password": password})
 
     def data(self, response: Any) -> Any:
         body = response.json()
@@ -191,16 +171,17 @@ def console() -> Any:
     import importlib
 
     main = importlib.import_module("app.main")
-    session_module = importlib.import_module("app.db.session")
     console_deps = importlib.import_module("app.api.console_deps")
 
     db = RecordingSession(rows=_world())
-    cache = _MemoryPlanCache()
-    main.app.dependency_overrides[session_module.get_db] = lambda: db
+    cache = MemoryPlanCache()
+    # 读与写都在异步栈上（票 #130）：两个异步会话入口一起换，喂**同一个**假库，于是登录写下
+    # 的会话行在下一个请求里读得到（只换同步那条会让身份判定真的去连库）。
+    view = override_all_db(main.app, db)
     main.app.dependency_overrides[console_deps.get_plan_cache] = lambda: cache
     try:
         with TestClient(main.app) as client:
-            yield _Harness(client=client, db=db, cache=cache)
+            yield _Harness(client=client, db=db, cache=cache, db_view=view)
     finally:
         main.app.dependency_overrides.clear()
 
@@ -243,9 +224,7 @@ def test_a_non_admin_gets_forbidden_on_every_admin_endpoint(console: _Harness) -
         response = console.client.request(method, path)
         assert response.json()["code"] == 20011, path
 
-    response = console.client.patch(
-        "/console/plans/3", json={"max_kb": 2}, headers=WRITE_HEADERS
-    )
+    response = console.client.patch("/console/plans/3", json={"max_kb": 2}, headers=WRITE_HEADERS)
     assert response.json()["code"] == 20011
 
     response = console.client.patch(
@@ -431,7 +410,7 @@ _IMPACT_PATCH = {"max_kb": 2, "allowed_profiles": ["speed"]}
 def test_dry_run_returns_the_impact_but_writes_nothing(console: _Harness) -> None:
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
     console.cache.items[3] = plan_spec_of(console.plan_row(3))
-    commits_before = console.db.commits
+    added_before = len(console.db.added)
     audits_before = len(console.audit_entries())
 
     response = console.client.patch(
@@ -450,7 +429,10 @@ def test_dry_run_returns_the_impact_but_writes_nothing(console: _Harness) -> Non
         "policies_losing_profile": 1,
     }
     assert console.plan_row(3).max_kb == 50
-    assert console.db.commits == commits_before
+    # 「试算不写」断言的是**没有写行**，不是「没有提交」：一笔请求总有一笔事务，
+    # 什么都没改时它提交的是空事务（见 docs/架构.md「写路径的事务边界」）。
+    assert len(console.db.added) == added_before, "试算不许 add 任何行"
+    assert console.db.deleted == [], "试算不许删任何行"
     assert len(console.audit_entries()) == audits_before
     assert console.cache.deleted == []
 
@@ -513,11 +495,17 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
     from app.core.exceptions import AppError, ErrorCode
     from app.services import plan_service, static_quota
 
-    fresh = plan_service.resolve_plan(console.db, 3, cache=console.cache)
-    assert fresh.max_kb == 2
-    with pytest.raises(AppError) as raised:
-        static_quota.ensure_kb_quota(console.db, tenant_id=TENANT_ALPHA, plan=fresh)
-    assert raised.value.code == ErrorCode.QUOTA_EXCEEDED
+    # 套餐解析自票 #129 起是协程（缓存换成了 redis.asyncio），这里用一次 ``asyncio.run``
+    # 在同步用例里取它的结果：断言的是「库里是新值」，与「谁在等」无关。会话取自
+    # ``override_all_db`` 造的那个异步视图——套餐行与库数读的正是它。
+    async def _after_patch() -> None:
+        fresh = await plan_service.resolve_plan(console.db_view, 3, cache=console.cache)
+        assert fresh.max_kb == 2
+        with pytest.raises(AppError) as raised:
+            await static_quota.ensure_kb_quota(console.db_view, tenant_id=TENANT_ALPHA, plan=fresh)
+        assert raised.value.code == ErrorCode.QUOTA_EXCEEDED
+
+    asyncio.run(_after_patch())
 
 
 def test_an_unknown_profile_is_a_plan_invalid_error(console: _Harness) -> None:
@@ -619,6 +607,7 @@ class _CounterStore:
     """与配额服务同形的内存计数器：``incr/get/expire/delete`` 四条命令 + 调用账本。
 
     读取路径只能留下 ``get:``；``calls`` 让「面板没有在任何地方偷偷 +1」可以被直接断言。
+    命令是**异步**的（票 #133）：注入缝换成了 ``redis.asyncio`` 的客户端。
     """
 
     def __init__(self) -> None:
@@ -626,21 +615,21 @@ class _CounterStore:
         self.ttls: dict[str, int] = {}
         self.calls: list[str] = []
 
-    def incr(self, key: str) -> int:
+    async def incr(self, key: str) -> int:
         self.calls.append(f"incr:{key}")
         self.values[key] = self.values.get(key, 0) + 1
         return self.values[key]
 
-    def get(self, key: str) -> str | None:
+    async def get(self, key: str) -> str | None:
         self.calls.append(f"get:{key}")
         value = self.values.get(key)
         return None if value is None else str(value)
 
-    def expire(self, key: str, ttl: int) -> None:
+    async def expire(self, key: str, ttl: int) -> None:
         self.calls.append(f"expire:{key}")
         self.ttls[key] = ttl
 
-    def delete(self, key: str) -> None:
+    async def delete(self, key: str) -> None:
         self.calls.append(f"delete:{key}")
         self.values.pop(key, None)
         self.ttls.pop(key, None)
@@ -652,19 +641,19 @@ class _ExplodingCounterStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
 
-    def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
+    async def incr(self, key: str) -> int:  # pragma: no cover - 访问即失败
         self.calls.append(f"incr:{key}")
         raise AssertionError(f"不该访问 Redis：incr({key})")
 
-    def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
+    async def get(self, key: str) -> str | None:  # pragma: no cover - 访问即失败
         self.calls.append(f"get:{key}")
         raise AssertionError(f"不该访问 Redis：get({key})")
 
-    def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
+    async def expire(self, key: str, ttl: int) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"expire:{key}")
         raise AssertionError(f"不该访问 Redis：expire({key}, {ttl})")
 
-    def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
+    async def delete(self, key: str) -> None:  # pragma: no cover - 访问即失败
         self.calls.append(f"delete:{key}")
         raise AssertionError(f"不该访问 Redis：delete({key})")
 
@@ -748,8 +737,7 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
         "limit": 100000,
         "source": "not_tracked",
         "note": (
-            "today's usage is not tracked: rate limiting is disabled "
-            "(RATE_LIMIT_ENABLED=false)"
+            "today's usage is not tracked: rate limiting is disabled (RATE_LIMIT_ENABLED=false)"
         ),
     }
     assert exploding.calls == [], "关掉时连一条 Redis 命令都不该发"
@@ -997,4 +985,3 @@ def test_a_negative_audit_offset_is_a_parameter_error(console: _Harness) -> None
     _seed_audits(console)
 
     assert console.client.get("/console/audit-logs?offset=-1").json()["code"] == 20002
-
