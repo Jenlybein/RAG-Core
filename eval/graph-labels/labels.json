@@ -36,7 +36,11 @@
   },
   "corpora": {
     "engineering": {
-      "source_documents": ["eng-adr-0027", "eng-adr-0028", "eng-adr-0013"],
+      "source_documents": [
+        "eng-adr-0027",
+        "eng-adr-0028",
+        "eng-adr-0013"
+      ],
       "target_globs": [
         "docs/adr/*.md",
         "docs/*.md",
@@ -50,31 +54,70 @@
       ]
     },
     "policy": {
-      "source_documents": ["pol-p01", "pol-p02", "pol-p03", "pol-p04", "pol-p05"],
-      "target_globs": ["eval/graph-labels/corpus/policy/*.md"]
+      "source_documents": [
+        "pol-p01",
+        "pol-p02",
+        "pol-p03",
+        "pol-p04",
+        "pol-p05"
+      ],
+      "target_globs": [
+        "eval/graph-labels/corpus/policy/*.md"
+      ]
     },
     "minutes": {
-      "source_documents": ["min-m01", "min-m02"],
-      "target_globs": ["eval/graph-labels/corpus/minutes/*.md"]
+      "source_documents": [
+        "min-m01",
+        "min-m02"
+      ],
+      "target_globs": [
+        "eval/graph-labels/corpus/minutes/*.md"
+      ]
     }
   },
   "exclude": {
-    "engineering": ["docs/adr/0015-token-window-and-vocab.md"],
+    "engineering": [
+      "docs/adr/0015-token-window-and-vocab.md"
+    ],
     "_reason": "0015 的正文里含 `<|endoftext|>` 这个 tiktoken 特殊 token 的字面量，生产的切块器会抛 ValueError（见 app/utils/tokenizer.py）——这一篇在本测量里进不了目录。这是**另一件事**（上传含该字面量的文档会炸索引），已在 report.md 的「顺带发现」里单列，不混进本票的分母"
   },
   "documents": {
-    "eng-adr-0027": { "path": "docs/adr/0027-graph-section-edges.md" },
-    "eng-adr-0028": { "path": "docs/adr/0028-retrieval-kernel-boundary.md" },
-    "eng-adr-0013": { "path": "docs/adr/0013-collapse-to-sections.md" },
-    "eng-adr-0025": { "path": "docs/adr/0025-index-as-build-artifact.md" },
-    "eng-adr-0010": { "path": "docs/adr/0010-retrieval-contract.md" },
-    "pol-p01": { "path": "eval/graph-labels/corpus/policy/p01-membership-agreement.md" },
-    "pol-p02": { "path": "eval/graph-labels/corpus/policy/p02-benefits-and-points.md" },
-    "pol-p03": { "path": "eval/graph-labels/corpus/policy/p03-coupon-rules.md" },
-    "pol-p04": { "path": "eval/graph-labels/corpus/policy/p04-sla-terms.md" },
-    "pol-p05": { "path": "eval/graph-labels/corpus/policy/p05-annex-b-english.md" },
-    "min-m01": { "path": "eval/graph-labels/corpus/minutes/m01-weekly-sync.md" },
-    "min-m02": { "path": "eval/graph-labels/corpus/minutes/m02-release-review.md" }
+    "eng-adr-0027": {
+      "path": "docs/adr/0027-graph-section-edges.md"
+    },
+    "eng-adr-0028": {
+      "path": "docs/adr/0028-retrieval-kernel-boundary.md"
+    },
+    "eng-adr-0013": {
+      "path": "docs/adr/0013-collapse-to-sections.md"
+    },
+    "eng-adr-0025": {
+      "path": "docs/adr/0025-index-as-build-artifact.md"
+    },
+    "eng-adr-0010": {
+      "path": "docs/adr/0010-retrieval-contract.md"
+    },
+    "pol-p01": {
+      "path": "eval/graph-labels/corpus/policy/p01-membership-agreement.md"
+    },
+    "pol-p02": {
+      "path": "eval/graph-labels/corpus/policy/p02-benefits-and-points.md"
+    },
+    "pol-p03": {
+      "path": "eval/graph-labels/corpus/policy/p03-coupon-rules.md"
+    },
+    "pol-p04": {
+      "path": "eval/graph-labels/corpus/policy/p04-sla-terms.md"
+    },
+    "pol-p05": {
+      "path": "eval/graph-labels/corpus/policy/p05-annex-b-english.md"
+    },
+    "min-m01": {
+      "path": "eval/graph-labels/corpus/minutes/m01-weekly-sync.md"
+    },
+    "min-m02": {
+      "path": "eval/graph-labels/corpus/minutes/m02-release-review.md"
+    }
   },
   "labels": [
     {
@@ -97,7 +140,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "adr_decision",
-      "target": { "document": "eng-adr-0025", "section": "决策五：节的身份证不含版本" },
+      "target": {
+        "document": "eng-adr-0025",
+        "section": "决策五：节的身份证不含版本"
+      },
       "note": "真实工程文档指节的写法：文档编号 + 决策序号"
     },
     {
@@ -109,7 +155,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "adr_decision",
-      "target": { "document": "eng-adr-0025", "section": "决策一：一次构建 = 一个不可变版本" }
+      "target": {
+        "document": "eng-adr-0025",
+        "section": "决策一：一次构建 = 一个不可变版本"
+      }
     },
     {
       "id": "eng-0027-04",
@@ -120,7 +169,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "same_doc_decision",
-      "target": { "document": "eng-adr-0027", "section": "3. 只认文档显式表达，不按相似度猜边" },
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "3. 只认文档显式表达，不按相似度猜边"
+      },
       "note": "同文档 + 「决策 N」定位符。抽取器只认「本文第 N 节」"
     },
     {
@@ -165,7 +217,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "adr_decision",
-      "target": { "document": "eng-adr-0013", "section": "6. over-fetch 补足条数" }
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "6. over-fetch 补足条数"
+      }
     },
     {
       "id": "eng-0027-09",
@@ -187,7 +242,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "same_doc_decision",
-      "target": { "document": "eng-adr-0027", "section": "3. 只认文档显式表达，不按相似度猜边" }
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "3. 只认文档显式表达，不按相似度猜边"
+      }
     },
     {
       "id": "eng-0027-11",
@@ -224,7 +282,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "same_doc_decision",
-      "target": { "document": "eng-adr-0027", "section": "4. 只做候选，不做裁决" }
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "4. 只做候选，不做裁决"
+      }
     },
     {
       "id": "eng-0027-14",
@@ -250,7 +311,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "same_doc_decision",
-      "target": { "document": "eng-adr-0027", "section": "5. 跨库边允许存在，注入时按请求范围过滤" }
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "5. 跨库边允许存在，注入时按请求范围过滤"
+      }
     },
     {
       "id": "eng-0027-16",
@@ -316,7 +380,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "relative_heading",
-      "target": { "document": "eng-adr-0028", "section": "背景" }
+      "target": {
+        "document": "eng-adr-0028",
+        "section": "背景"
+      }
     },
     {
       "id": "eng-0028-04",
@@ -338,7 +405,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "adr_quoted_heading",
-      "target": { "document": "eng-adr-0013", "section": "备选方案" },
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "备选方案"
+      },
       "note": "「ADR 编号 + 引号里的节标题」：真实文档的另一种指节写法"
     },
     {
@@ -412,7 +482,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "same_doc_decision",
-      "target": { "document": "eng-adr-0013", "section": "2. 身份是 `section_id`，`chunk_id` 降级为代表片" }
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "2. 身份是 `section_id`，`chunk_id` 降级为代表片"
+      }
     },
     {
       "id": "eng-0013-06",
@@ -481,7 +554,10 @@
       "label": "explicit",
       "form": "markdown_link",
       "form_detail": "link_decision",
-      "target": { "document": "eng-adr-0025", "section": "决策五：节的身份证不含版本" },
+      "target": {
+        "document": "eng-adr-0025",
+        "section": "决策五：节的身份证不含版本"
+      },
       "note": "链接 + 链接外面的「决策五」"
     },
     {
@@ -537,7 +613,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "title_clause",
-      "target": { "document": "pol-p02", "section": "第 2 条 积分抵扣与上限" }
+      "target": {
+        "document": "pol-p02",
+        "section": "第 2 条 积分抵扣与上限"
+      }
     },
     {
       "id": "pol-p01-04",
@@ -559,7 +638,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "title_clause",
-      "target": { "document": "pol-p02", "section": "第 2 条 积分抵扣与上限" }
+      "target": {
+        "document": "pol-p02",
+        "section": "第 2 条 积分抵扣与上限"
+      }
     },
     {
       "id": "pol-p01-06",
@@ -581,7 +663,10 @@
       "label": "explicit",
       "form": "chinese_ordinal",
       "form_detail": "chapter_section",
-      "target": { "document": "pol-p01", "section": "第二节 退款流程" },
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      },
       "note": "章-节双层（票面点名的便宜缺口之一），且章只是标题层、不是节"
     },
     {
@@ -593,7 +678,10 @@
       "label": "explicit",
       "form": "anchor",
       "form_detail": "anchor_section_title",
-      "target": { "document": "pol-p01", "section": "第二节 退款流程" },
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      },
       "note": "同文档锚点，锚点文本就是标题原文（这是抽取器唯一支持的同文档定位）"
     },
     {
@@ -616,7 +704,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "title_clause",
-      "target": { "document": "pol-p02", "section": "第 4 条 等级判定与保级" }
+      "target": {
+        "document": "pol-p02",
+        "section": "第 4 条 等级判定与保级"
+      }
     },
     {
       "id": "pol-p02-01",
@@ -649,7 +740,10 @@
       "label": "explicit",
       "form": "chinese_ordinal",
       "form_detail": "chapter_section",
-      "target": { "document": "pol-p01", "section": "第二节 退款流程" }
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      }
     },
     {
       "id": "pol-p02-04",
@@ -682,7 +776,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "policy_clause",
-      "target": { "document": "pol-p03", "section": "第 4 条 优惠券与积分的叠加" },
+      "target": {
+        "document": "pol-p03",
+        "section": "第 4 条 优惠券与积分的叠加"
+      },
       "note": "同文档限定语写成「本政策」——抽取器的限定语只有「本文件 / 本文 / 本篇」"
     },
     {
@@ -694,7 +791,10 @@
       "label": "explicit",
       "form": "chinese_ordinal",
       "form_detail": "chapter_section",
-      "target": { "document": "pol-p01", "section": "第二节 退款流程" }
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      }
     },
     {
       "id": "pol-p03-03",
@@ -705,7 +805,10 @@
       "label": "explicit",
       "form": "same_doc",
       "form_detail": "same_doc_clause",
-      "target": { "document": "pol-p03", "section": "第 2 条 满减与折扣的计算口径" },
+      "target": {
+        "document": "pol-p03",
+        "section": "第 2 条 满减与折扣的计算口径"
+      },
       "note": "限定语对（本文）、后缀不对（条 vs 节）"
     },
     {
@@ -717,7 +820,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "title_clause",
-      "target": { "document": "pol-p02", "section": "第 2 条 积分抵扣与上限" }
+      "target": {
+        "document": "pol-p02",
+        "section": "第 2 条 积分抵扣与上限"
+      }
     },
     {
       "id": "pol-p03-05",
@@ -728,7 +834,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "title_clause",
-      "target": { "document": "pol-p02", "section": "第 3 条 积分在退款时的处理" }
+      "target": {
+        "document": "pol-p02",
+        "section": "第 3 条 积分在退款时的处理"
+      }
     },
     {
       "id": "pol-p03-06",
@@ -816,7 +925,10 @@
       "label": "explicit",
       "form": "same_doc",
       "form_detail": "fullwidth_section",
-      "target": { "document": "pol-p04", "section": "第 4 节 赔偿的申请与免责" },
+      "target": {
+        "document": "pol-p04",
+        "section": "第 4 节 赔偿的申请与免责"
+      },
       "note": "限定语对、后缀对，**全角数字**不对（票面点名的便宜缺口）"
     },
     {
@@ -828,7 +940,10 @@
       "label": "explicit",
       "form": "same_doc",
       "form_detail": "same_doc_section",
-      "target": { "document": "pol-p04", "section": "第 1 节 适用范围与术语" },
+      "target": {
+        "document": "pol-p04",
+        "section": "第 1 节 适用范围与术语"
+      },
       "note": "写法完全在抽取器的规则内，但标题写成「第 N 节 X」而不是「N. X」——节号解析不到"
     },
     {
@@ -851,7 +966,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "english_section",
-      "target": { "document": "pol-p05", "section": "Section 2 Availability" }
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 2 Availability"
+      }
     },
     {
       "id": "pol-p05-02",
@@ -862,7 +980,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "english_section",
-      "target": { "document": "pol-p05", "section": "Section 3 Compensation" }
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 3 Compensation"
+      }
     },
     {
       "id": "pol-p05-03",
@@ -873,7 +994,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "english_section",
-      "target": { "document": "pol-p05", "section": "Section 4 Claims and Exclusions" }
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 4 Claims and Exclusions"
+      }
     },
     {
       "id": "pol-p05-04",
@@ -884,7 +1008,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "english_section",
-      "target": { "document": "pol-p05", "section": "Section 2 Availability" }
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 2 Availability"
+      }
     },
     {
       "id": "pol-p05-05",
@@ -895,7 +1022,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "english_section",
-      "target": { "document": "pol-p04", "section": "第 1 节 适用范围与术语" }
+      "target": {
+        "document": "pol-p04",
+        "section": "第 1 节 适用范围与术语"
+      }
     },
     {
       "id": "min-m01-01",
@@ -983,7 +1113,10 @@
       "label": "explicit",
       "form": "title_section",
       "form_detail": "title_section",
-      "target": { "document": "min-m01", "section": "3. 灰度节奏" },
+      "target": {
+        "document": "min-m01",
+        "section": "3. 灰度节奏"
+      },
       "note": "纪要里偶尔出现的正式写法——这是本档唯一一条抽取器能建的边"
     },
     {
@@ -1061,7 +1194,10 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "policy_clause",
-      "target": { "document": "min-m02", "section": "1. 本次发布范围" },
+      "target": {
+        "document": "min-m02",
+        "section": "1. 本次发布范围"
+      },
       "note": "限定语写成「本纪要」——不在抽取器的限定语表里"
     },
     {
@@ -1074,6 +1210,21 @@
       "form": "title_section",
       "form_detail": "deprecated_context",
       "note": "「已全部关闭 / 不再追踪」语境：提到是为了说明它不用再跟。这一条会被抽出器建出一条边——否定语境专项的那条误报"
+    },
+    {
+      "id": "eng-0013-13",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后果",
+      "evidence": "（决策 6）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "6. over-fetch 补足条数"
+      },
+      "note": "作者指向本文第 6 条决策。**本条是测量中发现的标注遗漏**（重测把它算成了 FP），补的依据是原文「（决策 6）」+ 本文标题清单「6. over-fetch 补足条数」，不是依据抽取器输出。"
     }
   ]
 }
