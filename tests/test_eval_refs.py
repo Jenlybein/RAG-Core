@@ -348,23 +348,23 @@ def test_dry_run_produces_all_four_metric_blocks_without_spending() -> None:
 def test_capability_status_is_probed_not_hardcoded(monkeypatch: pytest.MonkeyPatch) -> None:
     """两侧状态来自**代码探测**：能力在代码里就是 available，不在才是未实现（#156）。
 
-    这条用例同时守住两件事：①#144 / #148 合并之后常量被换成了探测，两个能力都就位时
-    不再输出 ``capability-not-implemented``；②探测没被删掉退回硬编码——把两个探针都换成
-    False 时必须回落到未实现，否则「什么都报 available」也能过。
+    这条用例同时守住两件事：①探测没被删掉退回硬编码——把两个探针都换成 False 时必须
+    回落到未实现，否则「什么都报 available」也能过；②探测**跟着代码走**：图谱注入已随
+    #138 的范围变更撤销，于是不 monkeypatch 的时候它就该是未实现，而 Research 仍在。
     """
 
     live = eval_refs.capability_status()
     assert live == {
-        "graph": eval_refs.CAPABILITY_AVAILABLE,
+        "graph": eval_refs.CAPABILITY_NOT_IMPLEMENTED,
         "research": eval_refs.CAPABILITY_AVAILABLE,
-    }, "两个能力都已在代码里：#144 的注入服务 + #148/#151 的 Research 服务与路由"
+    }, "图谱注入已撤销（#138），Research 仍在代码里"
 
-    monkeypatch.setattr(eval_refs, "_graph_injection_wired", lambda: False)
+    monkeypatch.setattr(eval_refs, "_graph_injection_wired", lambda: True)
     monkeypatch.setattr(eval_refs, "_research_wired", lambda: False)
     assert eval_refs.capability_status() == {
-        "graph": eval_refs.CAPABILITY_NOT_IMPLEMENTED,
+        "graph": eval_refs.CAPABILITY_AVAILABLE,
         "research": eval_refs.CAPABILITY_NOT_IMPLEMENTED,
-    }
+    }, "探针说什么就报什么：两格都能翻转，说明没有一个是被写死的"
 
 
 def test_the_switches_do_not_decide_the_capability_status() -> None:
@@ -394,10 +394,12 @@ def test_available_but_unexercised_is_written_as_such() -> None:
     assert payload["exercised"] == {"graph": False, "research": False}
 
     report = eval_refs.render_report(payload, _config(graph="on", research="on"))
-    assert eval_refs.CAPABILITY_NOT_IMPLEMENTED not in report, (
-        "两个能力都就位后，报告里不该再出现这个常量"
+    assert eval_refs.CAPABILITY_NOT_IMPLEMENTED in report, (
+        "图谱那一侧已撤销：报告必须把「未实现」写在数字旁边，而不是一律印「已就位」"
     )
     assert "没有采集" in report
+    # 报告里那一栏还要说清「去哪个 tag 复现」，否则读者只看到「没有」，看不到去哪找。
+    assert "step11-with-graph-and-orchestration" in report
     assert "对照有效性" in report
     assert "与原项目的数字不可比" in report
     for heading in ("停止原因分布", "引用回溯率", "延迟", "模型调用次数"):
@@ -677,38 +679,42 @@ def _research_data(*, stop_reason: str = "evidence_complete", model_calls: int =
     }
 
 
-def test_the_graph_switch_decides_the_factory() -> None:
-    """``--graph on`` 递的是**生产读模型**，``off`` 递的是显式 ``None``（关闭这一步）。
+def test_the_graph_lane_refuses_with_a_pointer_to_the_tag(capsys) -> None:
+    """``--graph on`` 已找不到可驱动的东西：印「已否决 + 代码在哪个 tag」，退出码 **0**。
 
-    两件事都不能少：``off`` 传一个空壳工厂等于「有这一步但什么都不做」，而"关闭图谱"要的是
-    这一步**不存在**（``metadata.retrieval.graph`` 那一栏也不出现）。
+    退出码 0 是要求的一部分（#138 硬要求 2）：这一侧被有意撤掉了，不是脚本坏了；批量调用
+    点到它时该得到一句解释与一个 tag，而不是一条红。
     """
 
-    from app.services.graph_injection import DbSectionGraph
+    exit_code = eval_refs.main(["run", "--graph", "on"])
+    captured = capsys.readouterr()
 
-    assert eval_refs.graph_factory_for("on") is DbSectionGraph
-    assert eval_refs.graph_factory_for("off") is None
+    assert exit_code == 0
+    assert "已否决方案" in captured.out
+    assert "step11-with-graph-and-orchestration" in captured.out
+    assert "recall 0.974" in captured.out, "否决理由要写对：不是正则不可靠"
 
 
 @pytest.mark.parametrize(
-    ("graph", "rerank", "expected"),
+    ("graph", "expected"),
     [
-        ("on", True, True),
-        # 图谱注入跟着重排走（ADR-0027 开关归属）：重排关着时注入项必被 top_k 截掉，
-        # 那次关系查询纯属浪费，组合根压根不装配——所以「没采集」才是真话。
-        ("on", False, False),
-        ("off", True, False),
+        ("on", True),
+        ("off", False),
     ],
 )
 def test_graph_on_is_only_exercised_when_the_retrieval_path_really_runs_it(
-    graph: str, rerank: bool, expected: bool
+    graph: str, expected: bool
 ) -> None:
-    """``exercised`` 是「这次跑有没有真的驱动那一侧」，不是「开关写的是什么」。"""
+    """``exercised`` 是「这次跑有没有真的驱动那一侧」，不是「开关写的是什么」。
+
+    能力探测那一格直接给 ``available``，是为了单独验这个函数的口径——真实探测今天回落成
+    未实现（图谱已撤销），所以生产读数里这一格恒为 False。
+    """
 
     sides = eval_refs.exercised_sides(
-        config=_config(source=eval_refs.SOURCE_LIVE, graph=graph, rerank="on" if rerank else "off"),
+        config=_config(source=eval_refs.SOURCE_LIVE, graph=graph, rerank="on"),
         capabilities={"graph": eval_refs.CAPABILITY_AVAILABLE},
-        rerank_enabled=rerank,
+        rerank_enabled=True,
     )
     assert sides["graph"] is expected
 
@@ -725,31 +731,6 @@ def test_a_dry_run_never_claims_it_exercised_a_side() -> None:
         rerank_enabled=True,
     )
     assert sides == {"graph": False, "research": False}
-
-
-def test_graph_on_forwards_the_production_factory_and_off_forwards_none() -> None:
-    """接线只有一处：每题那次 ``retrieve`` 收到的 ``graph_factory`` 由开关决定。"""
-
-    from app.services.graph_injection import DbSectionGraph
-
-    question = {"id": "r01", "query": "q", "mechanism": "cross_section"}
-    for graph, expected in (("on", DbSectionGraph), ("off", None)):
-        seams = _FakeSeams()
-        outcome = asyncio.run(
-            eval_refs.evaluate_live_question(
-                question,
-                seams=seams,
-                db=None,
-                key=eval_refs.eval_key_context(tenant_id="tenant_c6"),
-                kb_ids=("kb-refs",),
-                top_k=5,
-                graph=graph,
-                research="off",
-                document_names={},
-            )
-        )
-        assert outcome.hits, "这一次真的走了检索路径"
-        assert seams.retrieve_calls[0]["graph_factory"] is expected
 
 
 def test_a_real_research_data_response_is_understood() -> None:
@@ -1067,22 +1048,28 @@ def test_a_dangling_evidence_id_is_counted_not_swallowed() -> None:
 
 
 def test_the_run_payload_records_that_a_side_was_really_exercised() -> None:
-    """``exercised`` 进 results.json 与报告，都不许再把「跑过了」写成「没采集」。"""
+    """``exercised`` 进 results.json 与报告，都不许再把「跑过了」写成「没采集」。
+
+    只对 **Research** 许这条断言：图谱那一侧已撤销（能力探测回落成未实现），它永远采集
+    不到——那一格如实写「未采集 / 未实现」，正是报告该说的话。
+    """
 
     payload = eval_refs.run_batch(_config())
     sides = eval_refs.exercised_sides(
-        config=_config(source=eval_refs.SOURCE_LIVE, graph="on", research="on"),
-        capabilities=payload["capabilities"],
+        config=_config(source=eval_refs.SOURCE_LIVE, graph="off", research="on"),
+        capabilities={"research": eval_refs.CAPABILITY_AVAILABLE},
         rerank_enabled=True,
     )
-    assert sides == {"graph": True, "research": True}
+    assert sides["research"] is True
 
     report = eval_refs.render_report(
         {**payload, "exercised": sides},
-        _config(source=eval_refs.SOURCE_LIVE, graph="on", research="on"),
+        _config(source=eval_refs.SOURCE_LIVE, graph="off", research="on"),
     )
-    assert "已采集" in report
-    assert "没有采集" not in report
+    assert "| research | on | `available` | 已采集 |" in report
+    assert "| graph | off | `capability-not-implemented` | **未采集** |" in report, (
+        "图谱那一侧要如实写「未采集 + 未实现」"
+    )
 
 
 # ─────────────────────────────────────────────── 六、引用回溯的机械复算

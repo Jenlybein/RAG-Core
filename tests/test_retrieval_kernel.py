@@ -282,7 +282,6 @@ def test_the_kernel_takes_the_scope_queries_switches_and_timer_explicitly() -> N
         "keyword_factory",
     }
     assert required <= set(parameters), f"内核签名缺参数：{sorted(required - set(parameters))}"
-    assert parameters["graph_injection"].default is None, "注入位必须默认 None（本票无行为）"
     assert all(
         parameter.kind is inspect.Parameter.KEYWORD_ONLY
         for name, parameter in parameters.items()
@@ -647,24 +646,6 @@ async def test_cancelling_the_call_cancels_the_recall_in_flight(mode: str) -> No
 
     assert embedding.cancelled is True, "取消必须传到正在 await 的那一段"
     assert vector.scopes == [], "取消之后不该再发出召回"
-
-
-# ───────────────────────────────────────────── 六、注入位：本票只有签名
-
-
-def test_the_injection_slot_is_a_no_op_default() -> None:
-    """注入位默认 ``None`` = 这一步不存在：显式传它一次，结果与不传逐字段相同。"""
-
-    async def go() -> tuple[Any, Any]:
-        defaulted, _ = await _run_kernel()
-        explicit, _ = await _run_kernel(graph_injection=None)
-        return defaulted, explicit
-
-    defaulted, explicit = asyncio.run(go())
-
-    assert defaulted.chunks == explicit.chunks
-    assert defaulted.degraded_reason == explicit.degraded_reason
-    assert defaulted.rerank == explicit.rerank
 
 
 # ─────────────────────────────────────────────────── 外层调用的最小夹具

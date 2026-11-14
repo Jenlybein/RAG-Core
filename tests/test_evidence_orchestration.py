@@ -32,7 +32,6 @@ def _row(
     *,
     kb_id: str = KB,
     content: str | None = None,
-    injected: bool = False,
     **extra: Any,
 ) -> dict:
     """一条候选（折叠之后的交付单元形状：一节一条，带代表片 id 与章节路径）。"""
@@ -47,9 +46,6 @@ def _row(
         "section_id": f"section-{index}",
         "heading_path": f"退款 > 第 {index} 节",
     }
-    if injected:
-        # #152 的注入项带着自己的出处；#147 先按这个标记把保留位算对。
-        row["retrieval_source"] = "graph_injection"
     row.update(extra)
     return row
 
@@ -108,7 +104,7 @@ def _run(
     return outcome, llm
 
 
-# ─────────────────────────────────────────── 候选池：20 条上限 / 6 个保留位 / 12000 字符
+# ───────────────────────────────────────────────── 候选池：20 条上限 / 12000 字符
 
 
 def test_the_pool_never_exceeds_twenty_candidates() -> None:
@@ -123,26 +119,6 @@ def test_the_pool_never_exceeds_twenty_candidates() -> None:
     assert len(pool) == orch.MAX_CANDIDATES == 20
     assert [candidate.order for candidate in pool] == list(range(1, 21))
     assert [candidate.chunk_id for candidate in pool][:3] == ["chunk-1", "chunk-2", "chunk-3"]
-
-
-def test_injected_candidates_cannot_eat_the_six_reserved_slots() -> None:
-    """注入项最多占 14 个位置：基础召回的 6 个位置先留下，再谈别的。
-
-    #147 里图谱注入还没落地（#152），所以这条规则今天不会改变任何一次真实结果；
-    把它钉在服务里，是为了接线那天不会出现「编排把基础召回挤空」这种回归。
-    """
-
-    rows = [_row(index, injected=True) for index in range(1, 21)] + [
-        _row(index) for index in range(21, 31)
-    ]
-
-    pool = orch.build_candidates(rows, tenant_id=TENANT, index_versions=SCOPE)
-
-    injected = [candidate for candidate in pool if candidate.injected]
-    plain = [candidate for candidate in pool if not candidate.injected]
-    assert len(pool) <= orch.MAX_CANDIDATES
-    assert len(injected) <= orch.MAX_CANDIDATES - orch.MIN_BASE_CANDIDATES
-    assert len(plain) >= orch.MIN_BASE_CANDIDATES
 
 
 def test_the_prompt_budget_stops_at_twelve_thousand_chars() -> None:

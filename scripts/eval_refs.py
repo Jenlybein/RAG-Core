@@ -11,13 +11,16 @@
   Research 看服务与路由在不在（``research_gate.gated_research`` + ``/rag/research``）。
   **不读 ``--graph`` / ``--research`` 开关**：开关是「这次想不想跑」，探测是「这台机器上有没有」，
   把两者混成一个状态，就会出现「开关关了所以报未实现」这种自相矛盾的读数。
-  两个能力都就位之后，这里输出 ``available``，不再输出 ``capability-not-implemented``。
-* 光有 ``available`` 还不够诚实：**接线**是 #153（C6）这一步做的——``--graph on`` 真的把
-  组合根的 ``graph_factory`` 递下去，``--research on`` 真的走 ``gated_research``。于是报告里
-  那一栏 ``exercised`` 现在读的是「这次跑有没有真的驱动那一侧」：
-  ``live`` + 开关开 + 能力就位（图谱还要求**重排也开着**，因为图谱注入跟着重排走）才算 ``True``。
-  空跑自检、fixture 回放、或者重排关着时，它一律 ``False``，报告照旧明写「没采集」——
-  让 on / off 两组相同的数字冒充对照，是这份报告最不该犯的错。
+* **图谱那一侧已被撤销**（#138 的范围变更）：注入服务与组合根的那条缝一并删掉了，于是探针
+  如实回落成 ``capability-not-implemented``。这一栏继续留着——它是**否决方案的证据**，
+  不是待清理的死代码；要复现那一组读数，回到 tag ``step11-with-graph-and-orchestration``。
+  撤销理由不是抽取规则不准（补了 R1/R2 之后上限 recall 0.974），而是价值不成立，见常量
+  ``REJECTED_SCHEME_NOTE``。
+* 光有 ``available`` 还不够诚实：**接线**是 #153（C6）这一步做的——``--research on`` 真的走
+  ``gated_research``。于是报告里那一栏 ``exercised`` 读的是「这次跑有没有真的驱动那一侧」：
+  ``live`` + 开关开 + 能力就位才算 ``True``。空跑自检、fixture 回放、或者能力不在时，它一律
+  ``False``，报告照旧明写「没采集」——让 on / off 两组相同的数字冒充对照，是这份报告最不该
+  犯的错。
 
 **三条诚实约束**（它们比指标本身更重要）：
 
@@ -120,11 +123,36 @@ CAPABILITY_NOT_IMPLEMENTED = "capability-not-implemented"
 #: 那些开关无关：开关说「这次想不想跑」，探测说「这台机器上有没有」。
 CAPABILITY_AVAILABLE = "available"
 
+#: 被否决方案（轻量图谱注入）在代码里的最后一个位置。它被撤销之后，脚本还留着——
+#: 它是**否决的依据**，不是待清理的死代码；要复现那一组对照，回到这个 tag。
+REJECTED_SCHEME_TAG = "step11-with-graph-and-orchestration"
+
+#: 缺依赖时的说明：**先给出这是测量已否决方案**，再指出代码在哪，最后写清否决理由。
+#: 理由是「价值不成立」而不是「抽取不准」——上限 recall 0.974，规则本身是够用的。
+REJECTED_SCHEME_NOTE = (
+    f"该脚本测量的是已否决方案（轻量图谱注入 / 关系边），代码在 tag `{REJECTED_SCHEME_TAG}`。\n"
+    "撤销理由不是抽取规则不准（补了 R1/R2 之后上限 recall 0.974），而是价值不成立：\n"
+    "边只存在于作者写了「见 X 节」的地方，饱和语料上注入 0 条，而规则维护成本随写法线性增长。\n"
+    f"要复现那一组读数：git switch --detach {REJECTED_SCHEME_TAG}，再跑 --graph on。"
+)
+
+
+def rejected_scheme_exit() -> int:
+    """打印「这是已否决方案 + 代码在哪个 tag」，然后**以 0 退出**。
+
+    退出码 0 是刻意的：这不是脚本坏了，而是它测量的东西被有意撤掉了。CI 或批量调用点到
+    这一侧时，该得到一句解释，而不是一条红。
+    """
+
+    print(REJECTED_SCHEME_NOTE)
+    return 0
+
+
 #: 重排开关的三个取值。``auto`` = 跟服务端配置走（缺省，行为与接线之前逐字节相同）。
 #:
-#: 它不是「调参」而是**可复现性**：图谱注入跟着重排走（ADR-0027 开关归属），重排关着时
-#: ``--graph on`` 这一侧压根不会被装配。把重排写成参数，报告里那组 on / off 才说得清
-#: 「同一台机器、同一个重排状态、只差图谱」。
+#: 它不是「调参」而是**可复现性**：重排是这条链路上唯一会重排候选的一步，报告里那组
+#: on / off 因此说得清「同一台机器、只差这一步」。图谱注入当初跟着它走（ADR-0027 开关
+#: 归属），那一侧已撤销，这里不再有第二个能力依附于它。
 RERANK_AUTO = "auto"
 RERANK_ON = "on"
 RERANK_OFF = "off"
@@ -526,20 +554,6 @@ def live_seams() -> LiveSeams:
     return LiveSeams(retrieve=retrieve, research=gated_research)
 
 
-def graph_factory_for(switch: str) -> Any:
-    """``--graph on`` → 生产读模型 ``DbSectionGraph``；``off`` → 显式 ``None``（关闭这一步）。
-
-    ``None`` 不是「空壳工厂」而是「没有这一步」：组合根因此连关系查询都不发，
-    响应里也不会出现 ``metadata.retrieval.graph`` 那一栏（黄金哈希守的就是这个）。
-    """
-
-    if switch != "on":
-        return None
-    from app.services.graph_injection import DbSectionGraph
-
-    return DbSectionGraph
-
-
 class _BearerRequest:
     """``resolve_identity`` 要的最小请求形状：只读 ``headers``。
 
@@ -725,6 +739,11 @@ async def evaluate_live_question(
     两个开关只在这一个函数里分叉，且两侧的读数都从**响应**里读（不是按配置推断）。
     异常收成 ``error:<类型>``：单题失败是读数，不是脚本崩溃。
 
+    ``graph`` 今天只剩**记录**意义：图谱注入（ADR-0027）已被 #138 的范围变更撤销，
+    组合根不再收任何图谱工厂，所以这一侧无论开关写什么都不会装配出东西来。参数留着是为了
+    让旧报告与旧命令行的字段名对得上（``results.json`` 里那一栏还在），不是为了还能驱动它
+    ——要复现那一组对照得回到 tag ``step11-with-graph-and-orchestration``。
+
     ``orchestration``（#159 第一组）只影响检索那一路：它把折叠之后的交付单元再做一次
     「要点 → 核心 / 辅助」编排。**关着是缺省**——那一次多两次模型调用，而版本 / 图谱 /
     Research 三组对照都不是在测它。打开时两侧只差这一个布尔，其余参数逐项相同。
@@ -758,8 +777,7 @@ async def evaluate_live_question(
                     top_k=top_k,
                     fold_to_sections=True,
                     expand_table_rows=True,
-                    # 重排是「同一台机器上的今天」的一部分，由 --rerank 钉死；
-                    # 图谱注入跟着它走（ADR-0027 开关归属）。
+                    # 重排是「同一台机器上的今天」的一部分，由 --rerank 钉死。
                     rerank=rerank_enabled,
                     rewrite=False,
                     # 切片编排缺省**关着**：它一次就多两次模型调用，而版本 / 图谱 /
@@ -768,8 +786,6 @@ async def evaluate_live_question(
                     # 那里由 ``--orchestration on`` 显式打开、且两侧其余参数逐项相同。
                     orchestration=orchestration,
                 ),
-                # 接线就是这一行：on → 生产读模型，off → None（这一步不存在）。
-                graph_factory=graph_factory_for(graph),
             )
             _apply_retrieval(outcome, response, document_names)
     except Exception as exc:  # noqa: BLE001 - 单题失败是读数，不是脚本崩溃
@@ -1328,11 +1344,12 @@ def _graph_injection_wired() -> bool:
     两个条件缺一不可——只有服务模块而没有缝（或反过来），都表示「这条路今天走不通」；
     只查配置开关是最容易糊弄过去的做法（开关开着 ≠ 代码里有这一步）。
 
+    撤销之后这条探针**自然回落到 False**（服务模块不在了），这是它该有的行为：探针只回答
+    「有没有」，不解释为什么没有——而报告会把 `capability-not-implemented` 印在数字旁边。
     导入失败一律当「没装」：缺依赖 / 半合并的树上，探针不该让整份报告崩掉。
     """
 
     try:
-        from app.services.graph_injection import build_graph_injection  # noqa: F401
         from app.services.rag_service import retrieve
     except Exception:  # noqa: BLE001 - 探针只回答「有没有」，不解释为什么没有
         return False
@@ -1389,9 +1406,10 @@ def exercised_sides(
     * 开关是 ``on``：这是「这次想不想跑」，关着就是不要；
     * 能力探测为 ``available``：代码里没有这一步时，开关只是个装饰。
 
-    图谱还多一条 ``rerank_enabled``：注入项 ``score = 0`` 且追加在池尾，重排关着时必然被
-    ``top_k`` 截掉，所以组合根**根本不装配**这一步（ADR-0027 开关归属）。那时报「已采集」
-    就是在替一次没发生的事作证。
+    图谱那一侧已被撤销，所以 ``graph`` 这一格永远 ``False``（能力探测不通过），但它仍然
+    按上面三条**算**而不是写死：这条函数守的是「exercised 由事实推出」，只要哪天有人把
+    某一侧接回来，无需改这里。``rerank_enabled`` 因此也不再参与图谱那一格——那是 ADR-0027
+    「开关归属」的产物，随能力一起撤销了。
     """
 
     live = config.source == SOURCE_LIVE
@@ -1400,7 +1418,6 @@ def exercised_sides(
             live
             and config.graph == "on"
             and capabilities.get("graph") == CAPABILITY_AVAILABLE
-            and rerank_enabled
         ),
         "research": (
             live
@@ -1630,10 +1647,12 @@ def _graph_note(status: str) -> str:
 
     if status == CAPABILITY_AVAILABLE:
         return (
-            "注入服务已装配（`app/services/graph_injection.py` + 组合根的 `graph_factory`）；"
-            "注入项 score=0、按本次请求的库与版本过滤，名次交给重排"
+            "注入服务已装配；注入项 score=0、按本次请求的库与版本过滤，名次交给重排"
         )
-    return "注入服务或组合根那条缝不在（`graph_factory` 收不到），这一次不会有任何图谱候选进池"
+    return (
+        "注入服务与组合根那条缝都已随 #138 的范围变更撤销（理由：价值不成立，不是抽取不准）；"
+        f"要复现那一组读数回到 tag `{REJECTED_SCHEME_TAG}`"
+    )
 
 
 def _research_note(status: str) -> str:
@@ -2041,6 +2060,11 @@ def _command_run(args: argparse.Namespace) -> int:
         rerank=args.rerank,
         api_key=api_key,
     )
+    if config.graph == "on":
+        # 图谱注入那一侧已被撤销（#138 范围变更）：开关还在（旧报告与旧命令行要靠它对齐），
+        # 但它再也驱动不出任何东西。**以 0 退出**并给出 tag 指针，而不是装作 off 跑一遍
+        # ——那会产出一份看起来像「对照」的报告，而实际上两侧一模一样。
+        return rejected_scheme_exit()
     if config.source == SOURCE_LIVE and not config.allow_model_calls:
         # 真实链路每题要烧一次查询嵌入。没有显式参数就不发请求——默认值站在「不花钱」这边。
         print(

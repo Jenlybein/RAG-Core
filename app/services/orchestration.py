@@ -21,8 +21,8 @@
 （``orchestration failed``），检索结果照常返回。与改写、重排同一个处置方式：附加能力
 失败不等于本次调用失败。
 
-**候选池的三条配额**（票面数字，不是配置项）：≤20 条；给基础召回留 ≥6 个位置（注入项
-最多占 14 个）；正文合计 ≤12000 字符。它们是**成本**约束——池子有多大，提示词就有多长。
+**候选池的两条配额**（票面数字，不是配置项）：≤20 条；正文合计 ≤12000 字符。它们是
+**成本**约束——池子有多大，提示词就有多长。
 """
 
 from __future__ import annotations
@@ -37,14 +37,12 @@ import structlog
 from pydantic import BaseModel, Field
 
 from app.core.config import settings
-from app.services.graph_injection import INJECTED_SOURCE as graph_injection_source
 
 logger = structlog.get_logger(__name__)
 
-#: 池子的三条配额（票面常量，**不走环境变量**）：它们决定「一次编排最多烧多少提示词」，
+#: 池子的两条配额（票面常量，**不走环境变量**）：它们决定「一次编排最多烧多少提示词」，
 #: 做成可调项会让同一个档位名在不同部署下变成不同成本。
 MAX_CANDIDATES = 20
-MIN_BASE_CANDIDATES = 6
 MAX_PROMPT_CHARS = 12000
 
 #: 要点个数的硬上限。模型多给了就按「输出不合法」处理，而不是悄悄截断：截断之后的要点
@@ -63,11 +61,6 @@ COMPLETENESS_MISSING = "missing"
 
 ROLE_PRIMARY = "primary"
 ROLE_SUPPORTING = "supporting"
-
-#: 图谱注入项在候选里带的出处标记（#144 生产、#147 消费）。它只在这里被**读**：
-#: 字面量住在 ``app.services.graph_injection``（写的那一侧），两边各写一份必然漂移——
-#: 漂移的表现是「注入项被当成基础召回」，6 个保留位悄悄失效而不报错。
-INJECTED_SOURCE = graph_injection_source
 
 
 class PointList(BaseModel):
@@ -104,7 +97,6 @@ class Candidate:
     heading_path: str | None
     content: str
     excerpt: str
-    injected: bool = False
 
 
 @dataclass(frozen=True)
@@ -137,12 +129,13 @@ def build_candidates(
     tenant_id: str,
     index_versions: Mapping[str, str],
 ) -> list[Candidate]:
-    """按三条配额建池，并**逐条**校验租户 / 知识库 / 索引版本。
+    """按配额建池，并**逐条**校验租户 / 知识库 / 索引版本。
 
-    校验的意义在 #152 落地之后才完全显现：注入项可以来自别的库（跨库边允许存在），
-    但对**这次编排**而言越权的材料一条都不许进池。交付单元自身来自内核、天然在范围内，
-    所以这里「字段缺失」按本次请求的事实处理（缺 ``tenant_id`` = 本次租户、缺
-    ``index_version`` = 该库这次的生效版本），**不是**放行：一旦候选自带出处，就以出处为准。
+    租户 / 库 / 版本三项都按「本次请求的事实」核一遍：越权的材料一条都不许进池。交付
+    单元自身来自内核、天然在范围内，所以「字段缺失」按本次请求的事实处理（缺
+    ``tenant_id`` = 本次租户、缺 ``index_version`` = 该库这次的生效版本），**不是**放行：
+    一旦候选自带出处，就以出处为准。这条校验不依赖材料从哪一路来——它守的是「进提示词的
+    材料必须在本范围内」。
 
     池子按入池顺序重排 ``order``（1-based）：序号只表达「在这一次编排里是第几条」，
     模型因此没有可回显的稳定身份（切片 id 不进提示词）。
@@ -150,20 +143,12 @@ def build_candidates(
 
     budget = MAX_PROMPT_CHARS
     pool: list[Candidate] = []
-    injected_count = 0
-    injected_limit = MAX_CANDIDATES - MIN_BASE_CANDIDATES
 
     for row in rows:
         if len(pool) >= MAX_CANDIDATES:
             break
         if not _in_scope(row, tenant_id=tenant_id, index_versions=index_versions):
             continue
-        injected = _is_injected(row)
-        if injected:
-            # 保留位先给基础召回：注入项只能填剩下的位置，且不能把已有位置挤掉。
-            if injected_count >= injected_limit:
-                continue
-            injected_count += 1
         content = str(row.get("content") or "")
         if budget <= 0:
             break
@@ -179,7 +164,6 @@ def build_candidates(
                 heading_path=_optional_str(row.get("heading_path")),
                 content=content,
                 excerpt=excerpt,
-                injected=injected,
             )
         )
     return pool
@@ -189,7 +173,7 @@ def _in_scope(row: Mapping[str, Any], *, tenant_id: str, index_versions: Mapping
     """租户 / 知识库 / 索引版本三项都必须对得上，且身份字段不许是空的。
 
     「字段缺失」与「字段不对」是两件事：交付单元没有那几个字段（它本来就不带），
-    此时按本次请求的事实处理；而一旦带了值，就以值为准——自带出处的候选是注入项。
+    此时按本次请求的事实处理；而一旦带了值，就以值为准。
     """
 
     kb_id = row.get("kb_id")
@@ -203,10 +187,6 @@ def _in_scope(row: Mapping[str, Any], *, tenant_id: str, index_versions: Mapping
     row_version = row.get("index_version")
     by_version = index_versions[kb_id]
     return row_version is None or row_version == by_version
-
-
-def _is_injected(row: Mapping[str, Any]) -> bool:
-    return row.get("retrieval_source") == INJECTED_SOURCE
 
 
 def _optional_str(value: Any) -> str | None:
@@ -532,7 +512,6 @@ __all__ = [
     "MAX_CANDIDATES",
     "MAX_POINTS",
     "MAX_PROMPT_CHARS",
-    "MIN_BASE_CANDIDATES",
     "Candidate",
     "OrchestrationOutcome",
     "PointList",

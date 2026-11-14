@@ -1,7 +1,7 @@
 """检索内核：一次检索的六步（ADR-0028）。
 
 ```text
-召回（两路并行）→ 融合 →（图谱注入位）→ 重排 → TopK → 折叠
+召回（两路并行）→ 融合 → 重排 → TopK → 折叠
 ```
 
 **它是「每条子查询各做一次」的那一段**，所以受控 Research 会逐条复用同一份实现：
@@ -39,7 +39,6 @@ from app.observability.stage_timing import (
     STAGE_VECTOR_RECALL,
     StageTimer,
 )
-from app.services.graph_injection import GraphInjection, InjectionOutcome
 from app.services.retrieval.collapse import collapse_results
 from app.services.retrieval.pipeline import hybrid_retrieve
 from app.services.retrieval.vector_recall import vector_recall
@@ -47,11 +46,6 @@ from app.services.retrieval_options import MODE_BM25, MODE_HYBRID
 from app.utils.retrieval_fields import with_score_columns
 
 logger = structlog.get_logger(__name__)
-
-#: 图谱注入位（ADR-0027 / #144）：融合之后、重排之前拿到候选池与本次范围。
-#: 类型与常量住在 :mod:`app.services.graph_injection`（上限、优先级、``score = 0``
-#: 都在那里），这里只留这个别名——内核只认「一个能吃候选池、回候选池的可调用对象」，
-#: 不认识边、节、代表片。默认 ``None`` 即「这一步不存在」，链路与注入之前逐字节一致。
 
 
 @dataclass(frozen=True)
@@ -61,18 +55,14 @@ class KernelOutcome:
     **不含**空结果原因、``metadata``、``trace_id``、耗时去向与归属索引行——那几件由外层
     各算一次（ADR-0028 §2），而 ``trace_id`` 更是要在任何一次写库尝试之前就有值。
 
-    ``degraded_reason`` 只覆盖内核自己这六步（通道故障 / 重排失败 / 图谱注入失败）。改写失败
+    ``degraded_reason`` 只覆盖内核自己这六步（通道故障 / 重排失败）。改写失败
     发生在外层而且更早，两条原因谁先到谁是根因——那条合成也在外层做（一因一码，先到的
     才算根因）。
-
-    ``graph`` 是注入那一步的事实（注入条数、种子数、来源分布；``None`` = 这一步不存在）。
-    它在这里而不是在 ``metadata`` 里被拼成响应字段：内核只交事实，措辞归外层。
     """
 
     chunks: list[dict]
     degraded_reason: str | None = None
     rerank: dict[str, object] | None = None
-    graph: InjectionOutcome | None = None
 
 
 async def retrieve_kernel(
@@ -97,7 +87,6 @@ async def retrieve_kernel(
     rerank_candidates: int | None = None,
     rerank_factory: Callable[[], Awaitable[Any]] | None = None,
     stage_timer: StageTimer | None = None,
-    graph_injection: GraphInjection | None = None,
 ) -> KernelOutcome:
     """跑一遍「召回 → 融合 → 重排 → TopK → 折叠」，只返回这一步能看到的事实。
 
@@ -116,13 +105,8 @@ async def retrieve_kernel(
     动」才有机会发生。所有深度都由调用方给，内核不读配置。
 
     ``query`` 是本次的**原句**。上面那三条查询串已经各自加工好了，六步本身都不消费它；
-    收它是为了让内核认得「这次检索在回答什么」——注入位（#152）与将来的降级日志都要这一句
-    原文，而内核不接请求体，只能由调用方递进来。
-
-    ``graph_injection`` 是**注入位**（ADR-0027）：候选池成形之后、截断 TopK 之前。
-    三种模式各经过它一次——混合模式在 ``hybrid_retrieve`` 内部那一步（融合与重排之间），
-    单模式在召回之后、折叠之前；两种位置是同一个语义位置，所以注入项的待遇完全一样
-    （``score = 0``、来源标记、是否入选交给名次）。默认 ``None`` = 这一步不存在。
+    收它是为了让内核认得「这次检索在回答什么」——将来的降级日志要这一句原文，而内核不接
+    请求体，只能由调用方递进来。
 
     ``stage_timer`` 是可选的收集器：不传就自己造一个。「度量常开」不该依赖调用方记得传
     ——那会让「有人忘了传」悄悄变成「这次没有耗时」（与 ``hybrid_retrieve`` 同一处理）。
@@ -132,7 +116,6 @@ async def retrieve_kernel(
 
     degraded_reason: str | None = None
     rerank_info: dict[str, object] | None = None
-    graph: InjectionOutcome | None = None
 
     # 未知模式到不了这里：组合根在可见性校验与改写之前就把它拒了（拒绝先于召回，
     # 被拒的请求不该白烧一次改写）。这里因此只有三条分支，不重复一遍词表校验——
@@ -157,13 +140,10 @@ async def retrieve_kernel(
             rerank_enabled=rerank_enabled,
             rerank_factory=rerank_factory,
             stage_timer=timer,
-            # 注入位递进 pipeline：融合与重排都在它里面，那个「之间」的位置只有它知道。
-            graph_injection=graph_injection,
         )
         chunks = outcome.chunks
         degraded_reason = outcome.degraded_reason
         rerank_info = outcome.rerank
-        graph = outcome.graph
     elif mode == MODE_BM25:
         # 单模式不降级：关键词引擎没配或调用失败一律 50002，绝不偷偷退回向量——
         # 调用方选 bm25 往往就是在评测单路效果。
@@ -188,14 +168,6 @@ async def retrieve_kernel(
             stage_timer=timer,
         )
 
-    # 单模式（vector / bm25）：候选池在这里已经成形，截断 TopK 在折叠那一步之前——
-    # 注入正好落在两者之间，与混合模式里那个位置是同一个语义位置。混合模式不在这里
-    # 再调一次：它已经在 pipeline 内部注过了（调两次会让重排看到两份同样的候选）。
-    if mode != MODE_HYBRID and graph_injection is not None:
-        graph = await graph_injection(chunks, index_versions)
-        chunks = graph.chunks
-        degraded_reason = degraded_reason or graph.degraded_reason
-
     with timer.measure(STAGE_COLLAPSE):
         collapsed = await collapse_results(
             db,
@@ -208,7 +180,7 @@ async def retrieve_kernel(
         )
 
     return KernelOutcome(
-        chunks=collapsed, degraded_reason=degraded_reason, rerank=rerank_info, graph=graph
+        chunks=collapsed, degraded_reason=degraded_reason, rerank=rerank_info
     )
 
 
@@ -312,4 +284,4 @@ async def _retrieve_by_keyword(
     ]
 
 
-__all__ = ["GraphInjection", "KernelOutcome", "retrieve_kernel"]
+__all__ = ["KernelOutcome", "retrieve_kernel"]
