@@ -119,7 +119,11 @@ from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
 from app.services import orchestration, result_collapse
-from app.services.graph_injection import GraphFactory, build_graph_injection
+from app.services.graph_injection import (
+    DbSectionGraph,
+    GraphFactory,
+    build_graph_injection,
+)
 from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import optimize_query
 from app.services.query.synonyms import collect_synonym_groups
@@ -155,7 +159,7 @@ async def retrieve(
     options: RetrievalOptions,
     stage_timer: StageTimer | None = None,
     rerank_factory: Callable[[], Awaitable[object]] | None = None,
-    graph_factory: GraphFactory | None = None,
+    graph_factory: GraphFactory | None = DbSectionGraph,
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
@@ -185,11 +189,15 @@ async def retrieve(
     定义就是对融合后的候选重排，单模式没有这一步。本函数只负责原样往下传，一步都不改
     ——「收下就丢」会让这条接缝变成一句没人验证的承诺。
 
-    ``graph_factory`` 是图谱的**注入缝**（#144 / ADR-0027）：缺省 ``None`` = 这一步
-    不存在（部署没装图谱）。给它一个协程工厂就打开注入，一个开关覆盖三种检索方式，
-    因为注入位在「候选池成形之后」这个位置。评测据此做「图谱开 / 关」对照；用例据此
-    替身掉整个图谱读模型，不必连库。**不给它就没有任何新字段**：关闭时响应逐字节不变
-    是红线上的一句话，不是注释里的承诺。
+    ``graph_factory`` 是图谱的**注入缝**（#144 / ADR-0027）：缺省就是生产实现
+    （:class:`DbSectionGraph`），所以生产入口（``retrieval_gate.gated_retrieve``）不必
+    记得传它——「默认不接线」会让整整一票变成死代码。显式传 ``None`` = 关闭这一步
+    （用例与不想付这次关系查询的部署）；传别的工厂就替身掉整个图谱读模型。
+
+    **注不注入跟着重排走**：注入项的 ``score = 0`` 且追加在池尾，只有重排会重新给它打分；
+    重排关着的档位（speed / balanced）里它必然被 ``top_k`` 截掉，那次关系查询纯属浪费。
+    所以条件是 ``options.rerank ∧ graph_factory 存在``——图谱自己不设第二套开关
+    （ADR-0027「开关归属」）。
     """
 
     # 度量常开：收集器无条件创建，与 ``TRACE_SINK`` 无关。去向只决定这份计量送到哪。
@@ -258,11 +266,12 @@ async def retrieve(
     index_versions = resolve_index_versions(visible_kbs)
 
     # 注入位在**这一次调用**里装配一次：租户与库都在手上，且它只在这一条链路上出现。
-    # 没给工厂就整段不存在——内核收到的是 ``None``，「有这一步但什么都不做」与「没有
-    # 这一步」在响应里必须能区分（元数据里那一栏只在有工厂时出现）。
+    # 两个条件缺一不可（ADR-0027「开关归属」）：重排关着时注入项必被 top_k 截掉，那次
+    # 关系查询纯属浪费；工厂为 None 是显式关闭。都不满足时内核收到 None，「有这一步但
+    # 什么都没做」与「没有这一步」在响应里因此可区分（元数据那一栏只在装配时出现）。
     graph_injection = (
         build_graph_injection(db=db, tenant_id=tenant_id, graph_factory=graph_factory)
-        if graph_factory is not None
+        if graph_factory is not None and options.rerank
         else None
     )
 

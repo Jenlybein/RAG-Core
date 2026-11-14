@@ -154,8 +154,10 @@ class SectionGraph(Protocol):
 #: 注入位的形状（内核的扩展点）：吃「当前的候选池 + 本次范围」，回「新的候选池 + 事实」。
 GraphInjection = Callable[[list[dict], Mapping[str, str]], Awaitable[InjectionOutcome]]
 
-#: 图谱实现的工厂：与 ``rerank_factory`` 同形（协程工厂），评测替身整个图谱实现。
-GraphFactory = Callable[[], Awaitable[SectionGraph]]
+#: 图谱实现的工厂：**吃请求会话**，回读模型。与 ``rerank_factory`` 一样是注入缝，但形状
+#: 多一个会话参数——图谱要读库（边与代表片），而重排 Provider 不读库。把会话藏在闭包里
+#: 也行，那样「这个工厂会用到哪个会话」就只剩约定；显式递进来才与组合根同一份范围。
+GraphFactory = Callable[[AsyncSession], SectionGraph]
 
 
 # ─────────────────────────────────────────────────── 数据库那一侧（生产的读模型）
@@ -419,17 +421,18 @@ def build_graph_injection(
     *,
     db: AsyncSession,
     tenant_id: str,
-    graph_factory: GraphFactory | None = None,
+    graph_factory: GraphFactory,
 ) -> GraphInjection:
     """把「库 + 租户 + 工厂」绑成一个内核能直接调用的注入位（组合根装配用）。
 
-    ``graph_factory`` 缺省时用 :class:`DbSectionGraph`：生产路径只有这一份读模型。
-    评测 / 用例传一个别的工厂进来就替身掉整个图谱实现——一个开关覆盖三种检索方式，
-    因为注入位在「候选池成形之后」这个位置，三种方式都会经过它。
+    ``graph_factory`` 的生产实现就是 :class:`DbSectionGraph`（组合根的缺省值）。评测 /
+    用例传一个别的工厂进来就替身掉整个图谱读模型——一个开关覆盖三种检索方式，因为注入位
+    在「候选池成形之后」这个位置，三种方式都会经过它。
     """
 
+    graph = graph_factory(db)
+
     async def _inject(chunks: list[dict], index_versions: Mapping[str, str]) -> InjectionOutcome:
-        graph = await graph_factory() if graph_factory is not None else DbSectionGraph(db)
         return await inject_candidates(
             graph=graph,
             tenant_id=tenant_id,

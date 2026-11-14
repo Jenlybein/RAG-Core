@@ -15,17 +15,21 @@ from __future__ import annotations
 
 import importlib
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 from sqlalchemy.dialects import postgresql
 
+from app.core.auth import DEV_KEY_POLICY, KeyContext
 from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED
+from app.models.plan import PLAN_PRESETS, PLAN_PRO
 from app.repositories import chunk_repository, section_edge_repository
 from app.schemas.rag import RetrievedChunk
-from app.services import orchestration
+from app.services import orchestration, retrieval_options
 from app.services.retrieval_options import RetrievalOptions
 from app.services.graph_injection import (
     INJECTED_SOURCE,
@@ -33,6 +37,7 @@ from app.services.graph_injection import (
     MAX_SEEDS,
     NEIGHBOURS_PER_SEED,
     REASON_GRAPH_FAILED,
+    DbSectionGraph,
     InjectedSection,
     InjectionOutcome,
     SeedSection,
@@ -747,13 +752,13 @@ class _UnavailableKeyword:
         raise AssertionError("不可用的引擎不该被调用")
 
 
-def _options(*, mode: str = "hybrid") -> RetrievalOptions:
+def _options(*, mode: str = "hybrid", rerank: bool = False) -> RetrievalOptions:
     return RetrievalOptions(
         mode=mode,
         top_k=4,
         fold_to_sections=False,
         expand_table_rows=False,
-        rerank=False,
+        rerank=rerank,
         rewrite=False,
         orchestration=False,
     )
@@ -798,7 +803,7 @@ def _install_entry_stubs(
 def _graph_factory(
     *, neighbours: Sequence[InjectedSection] | None = None, failure: BaseException | None = None
 ) -> tuple[Any, _FakeGraph]:
-    """协程工厂（与 ``get_rerank_provider`` 那条注入缝同形）。"""
+    """图谱工厂替身：吃请求会话、回预置的读模型（与 ``DbSectionGraph`` 同形）。"""
 
     graph = _FakeGraph(
         seeds=[_seed("sec-2.3")],
@@ -806,7 +811,7 @@ def _graph_factory(
         failure=failure,
     )
 
-    async def _factory() -> Any:
+    def _factory(_db: Any) -> Any:
         return graph
 
     return _factory, graph
@@ -816,14 +821,17 @@ async def _retrieve(
     *,
     graph_factory: Any = None,
     mode: str = "hybrid",
+    rerank: bool = True,
 ) -> dict:
+    """走组合根一次；``rerank`` 缺省开——注入跟着重排走（ADR-0027「开关归属」）。"""
+
     service = importlib.import_module("app.services.rag_service")
     return await service.retrieve(
         AsyncRecordingSession(),
         tenant_id=TENANT,
         kb_ids=[KB_A],
         query="超期多久到账",
-        options=_options(mode=mode),
+        options=_options(mode=mode, rerank=rerank),
         graph_factory=graph_factory,
     )
 
@@ -852,7 +860,7 @@ async def test_the_entry_reports_the_injected_counts_in_metadata(
 
 @pytest.mark.asyncio
 async def test_without_a_graph_factory_nothing_new_appears(monkeypatch: pytest.MonkeyPatch) -> None:
-    """不开图谱：metadata 里没有 graph 那一栏，结果里也没有来源标记（关闭时逐字节不变）。"""
+    """显式关掉（``graph_factory=None``）：没有 graph 栏、没有来源标记（逐字节不变）。"""
 
     _install_entry_stubs(monkeypatch)
 
@@ -861,6 +869,127 @@ async def test_without_a_graph_factory_nothing_new_appears(monkeypatch: pytest.M
     assert "graph" not in payload["metadata"]["retrieval"]
     assert all("retrieval_source" not in row for row in payload["retrieved_chunks"])
     assert payload["metadata"]["retrieval"]["degraded"] is False
+
+
+@pytest.mark.asyncio
+async def test_rerank_off_sends_no_relation_query_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """注入跟着重排走：重排关着时**一次关系查询都不发**，响应与改动前逐字节相同。
+
+    理由（ADR-0027「开关归属」）：注入项 ``score = 0`` 且追加在池尾，只有重排会重新给它
+    打分；重排关着的档位里它必被 ``top_k`` 截掉，那次关系查询纯属浪费。
+    """
+
+    _install_entry_stubs(monkeypatch)
+    factory, graph = _graph_factory()
+
+    with_factory = await _retrieve(graph_factory=factory, rerank=False)
+    without = await _retrieve(graph_factory=None, rerank=False)
+
+    assert graph.seed_calls == [], "重排关着时不该播种，更不该查边"
+    assert graph.neighbour_calls == []
+    assert "graph" not in with_factory["metadata"]["retrieval"]
+    # ``trace_id`` 是「这一次调用的身份」，每次不同——比字节之前先摘掉（与黄金哈希同一条规矩）。
+    assert _without_trace_id(with_factory) == _without_trace_id(without), (
+        "两个开关组合下响应必须逐字节相同"
+    )
+
+
+def _without_trace_id(payload: dict) -> dict:
+    """摘掉每次调用都不同的那一栏（其余一字不改）。"""
+
+    copied = dict(payload)
+    copied["metadata"] = {
+        key: value for key, value in payload["metadata"].items() if key != "trace_id"
+    }
+    return copied
+
+
+# ───────────────────────── 七之二、生产入口：门禁路径 + 档位决定跑不跑
+
+
+def _patch_production_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    neighbours: Sequence[InjectedSection] | None = None,
+) -> list[Any]:
+    """把**生产读模型**（``DbSectionGraph``）的两步数据访问换成预置行。
+
+    注意替的是**方法**、不是工厂：这样「组合根的缺省值就是生产实现」这件事仍然被真的
+    走一遍——用例只把库换成离线数据。
+    """
+
+    calls: list[Any] = []
+
+    async def _seed_sections(self: Any, *, tenant_id: str, index_versions: Any, chunks: Any) -> Any:
+        calls.append(("seeds", [dict(chunk) for chunk in chunks]))
+        return [_seed("sec-2.3")]
+
+    async def _neighbours(self: Any, *, tenant_id: str, index_versions: Any, seeds: Any) -> Any:
+        calls.append(("neighbours", list(seeds)))
+        return list(neighbours if neighbours is not None else [_neighbour("sec-2.4")])
+
+    monkeypatch.setattr(DbSectionGraph, "seed_sections", _seed_sections)
+    monkeypatch.setattr(DbSectionGraph, "neighbours", _neighbours)
+    return calls
+
+
+def _gate_key(*, profile: str) -> KeyContext:
+    """一把**专业版**上的 Key：`quality` 与 `speed` 都在它的档位白名单里。"""
+
+    return KeyContext(
+        tenant_id=TENANT,
+        key_id="key-1",
+        policy=replace(DEV_KEY_POLICY, profile=profile),
+        plan=PLAN_PRESETS[PLAN_PRO],
+    )
+
+
+async def _gated(*, profile: str) -> Any:
+    gate = importlib.import_module("app.services.retrieval_gate")
+    return await gate.gated_retrieve(
+        AsyncRecordingSession(),
+        key=_gate_key(profile=profile),
+        kb_ids=[KB_A],
+        query="超期多久到账",
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_gate_path_injects_for_the_quality_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """生产入口（门禁）走 ``quality`` 档时真的吃到图谱：缺省值就是生产实现。"""
+
+    _install_entry_stubs(monkeypatch)
+    # 「这台机器装了重排」：绕开端点配置，这正是 ``options_from_chain`` 留的那个能力入参
+    # 在纯函数层的等价物（门禁不带它，于是替掉模块里那一个名字）。
+    monkeypatch.setattr(retrieval_options, "rerank_capability", lambda: True)
+    calls = _patch_production_graph(monkeypatch)
+
+    data = await _gated(profile=PROFILE_QUALITY)
+
+    assert data.metadata["retrieval"]["graph"]["injected"] == 1
+    assert [name for name, _ in calls] == ["seeds", "neighbours"], "关系查询真的发了一次"
+    assert data.retrieved_chunks[-1].retrieval_source == INJECTED_SOURCE
+
+
+@pytest.mark.asyncio
+async def test_the_gate_path_leaves_the_speed_profile_alone(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``speed`` 档不重排 → 不注入、不发关系查询、metadata 里没有 graph 栏。"""
+
+    _install_entry_stubs(monkeypatch)
+    monkeypatch.setattr(retrieval_options, "rerank_capability", lambda: True)
+    calls = _patch_production_graph(monkeypatch)
+
+    data = await _gated(profile=PROFILE_SPEED)
+
+    assert calls == [], "重排关着的档位不该花一次关系查询"
+    assert "graph" not in data.metadata["retrieval"]
+    assert all(chunk.retrieval_source is None for chunk in data.retrieved_chunks)
 
 
 @pytest.mark.asyncio
