@@ -443,9 +443,32 @@ def test_upgrade_snapshots_the_two_counts_it_can_see_from_this_database() -> Non
     assert "'active'" in sql, "回填出来的 v1 就是当前生效版本"
 
 
+def test_the_backfill_statement_has_no_bind_parameters_under_text_parsing() -> None:
+    """回填那条 SQL 里**不许**出现 ``:名字`` 这样的片段，连引号里也不行。
+
+    SQLAlchemy 的 ``text()`` 把 ``:v1`` 解析成绑定参数，于是这条迁移在真 PostgreSQL 上
+    报 ``A value is required for bind parameter 'v1'``——而 SQLite 替身与 ``--sql`` 离线
+    渲染**都看不见它**（#153 在真库上首跑时抓到）。版本名必须单独成一段字面量：
+    ``|| ':' || 'v1'``，不是 ``|| ':v1'``。
+    """
+
+    recorder = _migrate()
+    inserts = [
+        sql
+        for sql in recorder.executed
+        if sql.strip().lower().startswith("insert into index_build_versions")
+    ]
+
+    assert len(inserts) == 1
+    # ``_bindparams`` 是私有属性，但它正是「这段 SQL 会不会要参数」的权威答案：
+    # 换成 ``compile()`` 不会因为缺参数而报错，测不出这个坑。
+    assert sa.text(inserts[0])._bindparams == {}, (
+        "回填 SQL 被解析出了绑定参数：真库执行时会报 A value is required for bind parameter"
+    )
+
+
 def test_upgrade_refuses_to_finish_when_a_kb_was_not_backfilled() -> None:
     """守卫会真的拦人：核对读到未回填的库就中止迁移，而不是留下半成品。"""
-
     module = _load_migration(_migration_path(SLUG))
     recorder = _RecordingOp(unbackfilled_kbs=2)
     module.op = recorder

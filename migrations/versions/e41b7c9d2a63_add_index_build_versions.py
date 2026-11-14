@@ -47,8 +47,13 @@ _BACKFILL_VERSION = "v1"
 #: 回填行的主键：由 (租户, 库, 版本) 确定性派生，重复执行不会造出第二个 v1 行
 #: （32 位十六进制，落在 ``String(36)`` 里）。用确定性 id 而不是 uuid 生成器，
 #: 是因为「这一行就是那个库的 v1」本来就该是同一个身份。
+#:
+#: **版本名必须单独成一段字面量**（``|| ':' || 'v1'``，而不是 ``|| ':v1'``）：
+#: SQLAlchemy 的 ``text()`` 把 ``:v1`` 解析成绑定参数，连引号里也不放过——于是这条
+#: 迁移在真 PostgreSQL 上才报 ``A value is required for bind parameter 'v1'``，
+#: 而 SQLite 替身与 ``--sql`` 离线渲染都看不出来（#153 真库首跑时抓到）。
 _BACKFILL_ID = (
-    "md5(kb.tenant_id || ':' || kb.id || ':" + _BACKFILL_VERSION + "')"
+    "md5(kb.tenant_id || ':' || kb.id || ':' || '" + _BACKFILL_VERSION + "')"
 )
 
 _BACKFILL_INSERT = f"""
