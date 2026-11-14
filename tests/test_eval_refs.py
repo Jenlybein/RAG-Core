@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections import Counter
 from pathlib import Path
@@ -311,6 +312,7 @@ def _config(**overrides) -> eval_refs.RunConfig:
         "top_k": 5,
         "fixtures": None,
         "tenant_id": None,
+        "rerank": "auto",
     }
     base.update(overrides)
     return eval_refs.RunConfig(**base)
@@ -577,7 +579,311 @@ def test_untraceable_hits_are_listed_with_a_reason(tmp_path: Path) -> None:
     assert reasons == ["snippet-not-in-section", "unknown-document"]
 
 
-# ─────────────────────────────────────────────── 五、引用回溯的机械复算
+# ─────────────────────────────────────── 五、两侧接线：开关必须真的驱动那一侧
+#
+# C7 留下的诚实标注是「能力已就位、但本脚本没采集」。C6（#153）把它接上之后，`exercised`
+# 这一栏必须变成真话：**开关打开 + 真的走了那条路**才算采集过。下面这组用例只测接线本身
+# ——两个注入缝（``LiveSeams``）替身掉真实检索与真实 Research，不连库、不发网络。
+
+
+class _FakeSeams:
+    """两个注入缝的记录型替身：把「被调用了什么参数」记下来，回一份最小的响应。"""
+
+    def __init__(
+        self, *, response: dict | None = None, research_payload: dict | None = None
+    ) -> None:
+        self.retrieve_calls: list[dict] = []
+        self.research_calls: list[dict] = []
+        self._response = response
+        self._research_payload = research_payload
+
+    async def retrieve(self, db, **kwargs):  # noqa: ANN001, ANN003 - 与生产签名同形
+        self.retrieve_calls.append({"db": db, **kwargs})
+        return self._response if self._response is not None else _retrieval_response()
+
+    async def research(self, db, **kwargs):  # noqa: ANN001, ANN003 - 与 gated_research 同形
+        self.research_calls.append({"db": db, **kwargs})
+        return self._research_payload if self._research_payload is not None else _research_data()
+
+
+def _retrieval_response(*, injected: int = 0, seeds: int = 0, rerank: bool = True) -> dict:
+    """一份最小的检索响应（字段与 ``rag_service.retrieve`` 一致的那几处）。"""
+
+    return {
+        "query": "q",
+        "kb_ids": ["kb-refs"],
+        "retrieved_chunks": [
+            {
+                "chunk_id": "c-1",
+                "document_id": "doc-1",
+                "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+                "content": "审核通过后按渠道到账。",
+                "score": 0.5,
+            }
+        ],
+        "metadata": {
+            "mode": "hybrid",
+            "top_k": 5,
+            "retrieval": {
+                "degraded": False,
+                "degraded_reason": None,
+                "empty_reason": None,
+                "rerank": {"candidates": 20, "returned": 5} if rerank else None,
+                "graph": {"injected": injected, "seeds": seeds, "by_relation": {}},
+            },
+        },
+    }
+
+
+def _research_data(*, stop_reason: str = "evidence_complete", model_calls: int = 3) -> dict:
+    """一份最小的 Research 响应（``ResearchData`` 的那几处读数）。"""
+
+    return {
+        "query": "q",
+        "kb_ids": ["kb-refs"],
+        "answer": "引用块正文",
+        "citations": [
+            {"text": "结论一", "evidence_ids": ["E1"], "status": "supported"},
+            {"text": "材料不足", "evidence_ids": [], "status": "insufficient"},
+        ],
+        "materials": [
+            {
+                "chunk_id": "c-1",
+                "document_id": "doc-1",
+                "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+                "content": "审核通过后按渠道到账。",
+                "score": 0.5,
+            }
+        ],
+        "plan": {"points": [], "queries": []},
+        "rounds": {"searches": 2, "followup": 0},
+        "metadata": {
+            "plan_name": "research_fixed",
+            "duration_ms": 1234,
+            "model_calls": model_calls,
+            "stop_reason": stop_reason,
+            "trace_id": "t-1",
+            "evidence_state": "partial",
+            "sub_search_degraded_reasons": [],
+            "strong_model_fallback": None,
+        },
+    }
+
+
+def test_the_graph_switch_decides_the_factory() -> None:
+    """``--graph on`` 递的是**生产读模型**，``off`` 递的是显式 ``None``（关闭这一步）。
+
+    两件事都不能少：``off`` 传一个空壳工厂等于「有这一步但什么都不做」，而"关闭图谱"要的是
+    这一步**不存在**（``metadata.retrieval.graph`` 那一栏也不出现）。
+    """
+
+    from app.services.graph_injection import DbSectionGraph
+
+    assert eval_refs.graph_factory_for("on") is DbSectionGraph
+    assert eval_refs.graph_factory_for("off") is None
+
+
+@pytest.mark.parametrize(
+    ("graph", "rerank", "expected"),
+    [
+        ("on", True, True),
+        # 图谱注入跟着重排走（ADR-0027 开关归属）：重排关着时注入项必被 top_k 截掉，
+        # 那次关系查询纯属浪费，组合根压根不装配——所以「没采集」才是真话。
+        ("on", False, False),
+        ("off", True, False),
+    ],
+)
+def test_graph_on_is_only_exercised_when_the_retrieval_path_really_runs_it(
+    graph: str, rerank: bool, expected: bool
+) -> None:
+    """``exercised`` 是「这次跑有没有真的驱动那一侧」，不是「开关写的是什么」。"""
+
+    sides = eval_refs.exercised_sides(
+        config=_config(source=eval_refs.SOURCE_LIVE, graph=graph, rerank="on" if rerank else "off"),
+        capabilities={"graph": eval_refs.CAPABILITY_AVAILABLE},
+        rerank_enabled=rerank,
+    )
+    assert sides["graph"] is expected
+
+
+def test_a_dry_run_never_claims_it_exercised_a_side() -> None:
+    """空跑自检不连库：开关打开也不能报「已采集」（那会让 on / off 的相同读数冒充对照）。"""
+
+    sides = eval_refs.exercised_sides(
+        config=_config(graph="on", research="on"),
+        capabilities={
+            "graph": eval_refs.CAPABILITY_AVAILABLE,
+            "research": eval_refs.CAPABILITY_AVAILABLE,
+        },
+        rerank_enabled=True,
+    )
+    assert sides == {"graph": False, "research": False}
+
+
+def test_graph_on_forwards_the_production_factory_and_off_forwards_none() -> None:
+    """接线只有一处：每题那次 ``retrieve`` 收到的 ``graph_factory`` 由开关决定。"""
+
+    from app.services.graph_injection import DbSectionGraph
+
+    question = {"id": "r01", "query": "q", "mechanism": "cross_section"}
+    for graph, expected in (("on", DbSectionGraph), ("off", None)):
+        seams = _FakeSeams()
+        outcome = asyncio.run(
+            eval_refs.evaluate_live_question(
+                question,
+                seams=seams,
+                db=None,
+                key=eval_refs.eval_key_context(tenant_id="tenant_c6"),
+                kb_ids=("kb-refs",),
+                top_k=5,
+                graph=graph,
+                research="off",
+                document_names={},
+            )
+        )
+        assert outcome.hits, "这一次真的走了检索路径"
+        assert seams.retrieve_calls[0]["graph_factory"] is expected
+
+
+def test_the_retrieval_side_counts_the_model_calls_it_actually_made() -> None:
+    """每次检索至少一次查询嵌入；响应里有重排事实就再加一次——不按配置猜。"""
+
+    question = {"id": "r01", "query": "q", "mechanism": "cross_section"}
+    reranked = asyncio.run(
+        eval_refs.evaluate_live_question(
+            question,
+            seams=_FakeSeams(response=_retrieval_response(rerank=True)),
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="off",
+            document_names={"doc-1": "refund_policy"},
+        )
+    )
+    plain = asyncio.run(
+        eval_refs.evaluate_live_question(
+            question,
+            seams=_FakeSeams(response=_retrieval_response(rerank=False)),
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="off",
+            document_names={"doc-1": "refund_policy"},
+        )
+    )
+
+    assert (reranked.model_calls, plain.model_calls) == (2, 1)
+    assert reranked.hits[0].document == "refund_policy"
+
+
+def test_research_on_calls_the_gate_and_reads_the_four_metrics() -> None:
+    """``--research on`` 真的走 ``gated_research``：停止原因、模型调用、完整度、引用块都读回来。"""
+
+    question = {"id": "r03", "query": "退款后券还能用吗", "mechanism": "cross_document"}
+    seams = _FakeSeams(research_payload=_research_data())
+
+    outcome = asyncio.run(
+        eval_refs.evaluate_live_question(
+            question,
+            seams=seams,
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="tenant_c6"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="on",
+            document_names={"doc-1": "refund_policy"},
+            rerank_enabled=False,
+        )
+    )
+
+    assert seams.research_calls, "research=on 必须真的调用门禁函数"
+    call = seams.research_calls[0]
+    assert call["query"] == question["query"]
+    assert list(call["kb_ids"]) == ["kb-refs"]
+    assert seams.retrieve_calls == [], "research=on 时不该另走一次普通检索"
+
+    assert outcome.stop_reason == "evidence_complete"
+    assert outcome.evidence_state == "partial"
+    # 3 次 LLM + 2 条子检索 × (1 嵌入 [+1 重排，这里重排关]) = 5
+    assert outcome.model_calls == 5
+    assert len(outcome.hits) == 1, "材料按交付单元进 hits，引用回溯率因而也覆盖 Research 侧"
+    assert outcome.citation_blocks == 2
+    assert outcome.citations_with_evidence == 1
+    assert outcome.dangling_evidence_ids == []
+
+
+def test_research_off_keeps_running_the_plain_retrieval_path() -> None:
+    """关掉 Research 走的是同一次检索内核调用：两侧唯一的差别就是那个开关。"""
+
+    seams = _FakeSeams()
+    outcome = asyncio.run(
+        eval_refs.evaluate_live_question(
+            {"id": "r01", "query": "q", "mechanism": "cross_section"},
+            seams=seams,
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="off",
+            document_names={},
+        )
+    )
+
+    assert seams.retrieve_calls and not seams.research_calls
+    assert outcome.stop_reason is None
+    assert outcome.evidence_state is None
+
+
+def test_a_dangling_evidence_id_is_counted_not_swallowed() -> None:
+    """引用块点了材料里不存在的下标：机械数出来（那是「引用可回溯」的反面）。"""
+
+    payload = _research_data()
+    payload["citations"] = [
+        {"text": "结论", "evidence_ids": ["E9"], "status": "supported"},
+    ]
+    outcome = asyncio.run(
+        eval_refs.evaluate_live_question(
+            {"id": "r01", "query": "q", "mechanism": "cross_section"},
+            seams=_FakeSeams(research_payload=payload),
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="on",
+            document_names={},
+        )
+    )
+
+    assert outcome.dangling_evidence_ids == ["E9"]
+
+
+def test_the_run_payload_records_that_a_side_was_really_exercised() -> None:
+    """``exercised`` 进 results.json 与报告，都不许再把「跑过了」写成「没采集」。"""
+
+    payload = eval_refs.run_batch(_config())
+    sides = eval_refs.exercised_sides(
+        config=_config(source=eval_refs.SOURCE_LIVE, graph="on", research="on"),
+        capabilities=payload["capabilities"],
+        rerank_enabled=True,
+    )
+    assert sides == {"graph": True, "research": True}
+
+    report = eval_refs.render_report(
+        {**payload, "exercised": sides},
+        _config(source=eval_refs.SOURCE_LIVE, graph="on", research="on"),
+    )
+    assert "已采集" in report
+    assert "没有采集" not in report
+
+
+# ─────────────────────────────────────────────── 六、引用回溯的机械复算
 
 
 def test_verify_citation_resolves_every_inventory_edge() -> None:

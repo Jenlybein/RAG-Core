@@ -12,11 +12,12 @@
   **不读 ``--graph`` / ``--research`` 开关**：开关是「这次想不想跑」，探测是「这台机器上有没有」，
   把两者混成一个状态，就会出现「开关关了所以报未实现」这种自相矛盾的读数。
   两个能力都就位之后，这里输出 ``available``，不再输出 ``capability-not-implemented``。
-* 光有 ``available`` 还不够诚实：**本脚本的采集路径今天只跑检索内核**（``rag_service.retrieve``），
-  既不把 ``--graph on`` 接到组合根的 ``graph_factory``，也不调用 ``/rag/research``
-  （那是 #153 的对照工作）。所以报告里另有一栏 ``exercised``：``available`` + 未采集时，
-  明确写「能力已就位，但这份报告没有采集它」，而不是让读者以为 on / off 两组数字是同一组
-  「测过了」。
+* 光有 ``available`` 还不够诚实：**接线**是 #153（C6）这一步做的——``--graph on`` 真的把
+  组合根的 ``graph_factory`` 递下去，``--research on`` 真的走 ``gated_research``。于是报告里
+  那一栏 ``exercised`` 现在读的是「这次跑有没有真的驱动那一侧」：
+  ``live`` + 开关开 + 能力就位（图谱还要求**重排也开着**，因为图谱注入跟着重排走）才算 ``True``。
+  空跑自检、fixture 回放、或者重排关着时，它一律 ``False``，报告照旧明写「没采集」——
+  让 on / off 两组相同的数字冒充对照，是这份报告最不该犯的错。
 
 **三条诚实约束**（它们比指标本身更重要）：
 
@@ -70,15 +71,16 @@ import hashlib
 import inspect
 import json
 import math
+import os
 import re
 import sys
 import time
 from collections import Counter
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Final
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -118,14 +120,15 @@ CAPABILITY_NOT_IMPLEMENTED = "capability-not-implemented"
 #: 那些开关无关：开关说「这次想不想跑」，探测说「这台机器上有没有」。
 CAPABILITY_AVAILABLE = "available"
 
-#: 本脚本的采集路径今天**有没有真的驱动**那一侧。
+#: 重排开关的三个取值。``auto`` = 跟服务端配置走（缺省，行为与接线之前逐字节相同）。
 #:
-#: 它与 :func:`capability_status` 是两件事，必须分开（#156）：能力在不在由代码探测决定，
-#: 而「这份报告有没有采集到那一侧」只取决于本脚本把参数接到了哪里。今天是两处都没接：
-#: ``--graph on`` 没有递成 ``graph_factory``，``/rag/research`` 也一次都没调用——两件都是
-#: #153（C6 对照）的工作。所以即便两侧探测结果都是 ``available``，报告也必须写清
-#: 「没有采集」，而不是让读者把 on / off 两组相同的数字读成「测过了、没差别」。
-EXERCISED_SIDES: Final[dict[str, bool]] = {"graph": False, "research": False}
+#: 它不是「调参」而是**可复现性**：图谱注入跟着重排走（ADR-0027 开关归属），重排关着时
+#: ``--graph on`` 这一侧压根不会被装配。把重排写成参数，报告里那组 on / off 才说得清
+#: 「同一台机器、同一个重排状态、只差图谱」。
+RERANK_AUTO = "auto"
+RERANK_ON = "on"
+RERANK_OFF = "off"
+RERANK_OPTIONS = (RERANK_AUTO, RERANK_ON, RERANK_OFF)
 
 #: 三类数据来源。``dry-run`` 是缺省——**默认不花钱**这条纪律落在默认值上，
 #: 而不是落在某个人记得加参数上。
@@ -133,6 +136,9 @@ SOURCE_DRY_RUN = "dry-run"
 SOURCE_FIXTURE = "fixture"
 SOURCE_LIVE = "live"
 SOURCE_ORDER = (SOURCE_DRY_RUN, SOURCE_FIXTURE, SOURCE_LIVE)
+
+#: 数据面 Key 的环境变量名（与 ``scripts/eval_runner.py`` 同一套：命令行参数优先）。
+ENV_API_KEY = "EVAL_API_KEY"
 
 #: 摘录长度：报告里只印片段（原文走 ``verify-citation`` 复算），不进表格。
 SNIPPET_CHARS = 60
@@ -297,9 +303,7 @@ def resolve_citation(
     number = section_of_heading_path(section) or section.strip()
     target = sections.get(number)
     if target is None:
-        return CitationResult(
-            ok=False, reason="unknown-section", document=stem, section=number
-        )
+        return CitationResult(ok=False, reason="unknown-section", document=stem, section=number)
 
     haystack = _normalize(target.text)
     needle = _normalize(snippet)
@@ -367,6 +371,13 @@ class Outcome:
     latency_ms: float = 0.0
     model_calls: int = 0
     error: str | None = None
+    #: 图谱注入了几条候选、从几个种子扩出去（``metadata.retrieval.graph``）。
+    #: ``None`` = 这一栏在响应里不存在（关掉图谱 / Research 侧拿不到）。
+    graph_injected: int | None = None
+    graph_seeds: int | None = None
+    #: Research 侧的三态完整度与引用块（``evidence_state`` / ``citations``）。
+    evidence_state: str | None = None
+    citations: list[dict[str, Any]] = field(default_factory=list)
 
     def termination(self) -> str:
         """今天这条链路的终止形态（七种停止原因之外的等价物）。
@@ -382,6 +393,36 @@ class Outcome:
         if self.degraded_reason:
             return f"degraded:{self.degraded_reason}"
         return "returned"
+
+    # ── 引用块（Research 侧可机械核验的那几样） ──
+
+    @property
+    def citation_blocks(self) -> int:
+        """引用块数：Finalizer 交回的每一块都算一块（含「材料不足」那些）。"""
+
+        return len(self.citations)
+
+    @property
+    def citations_with_evidence(self) -> int:
+        """带证据下标的块数。没有证据的块必须是 ``insufficient``，否则就是伪造引用。"""
+
+        return sum(1 for block in self.citations if block.get("evidence_ids"))
+
+    @property
+    def dangling_evidence_ids(self) -> list[str]:
+        """指向**材料集合之外**的 evidence 下标：那是「引用可回溯」的反面。
+
+        合法下标就是材料顺序（E1…En，n = 交付单元数）：编号由后端按材料顺序分配，
+        所以同一条判据在这里也成立，不必再回库查一次。
+        """
+
+        valid = {f"E{index}" for index in range(1, len(self.hits) + 1)}
+        dangling: list[str] = []
+        for block in self.citations:
+            for evidence_id in block.get("evidence_ids") or []:
+                if evidence_id not in valid and evidence_id not in dangling:
+                    dangling.append(str(evidence_id))
+        return dangling
 
 
 # ───────────────────────────────────────────────────────────────── 三种数据来源
@@ -406,9 +447,7 @@ def run_dry(*, questions: Sequence[dict[str, Any]], top_k: int) -> list[Outcome]
     ]
 
 
-def run_fixture(
-    *, questions: Sequence[dict[str, Any]], path: Path
-) -> list[Outcome]:
+def run_fixture(*, questions: Sequence[dict[str, Any]], path: Path) -> list[Outcome]:
     """回放一份固定结果文件（C6 存下来的抓取结果）。
 
     文件形状故意与 ``results.json`` 的 ``per_question`` 一致，多一层都不加：这样
@@ -460,87 +499,336 @@ def _hit_from_chunk(chunk: dict[str, Any], document_names: dict[str, str]) -> Hi
     )
 
 
+@dataclass(frozen=True)
+class LiveSeams:
+    """真实链路的两个注入缝：一次检索、一次 Research（与生产签名同形）。
+
+    做成数据类而不是两个模块级函数，是为了让「这一题到底走了哪条路」在用例里可替换：
+    两个替身把参数记下来，于是「``--graph on`` 有没有真的递工厂」「``--research on``
+    有没有真的调门禁」都能在**不连库、不发网络**的前提下断言。
+    """
+
+    retrieve: Callable[..., Awaitable[dict[str, Any]]]
+    research: Callable[..., Awaitable[Any]]
+
+
+def live_seams() -> LiveSeams:
+    """生产实现（惰性导入：dry-run 不 import 应用）。"""
+
+    from app.services.rag_service import retrieve
+    from app.services.research_gate import gated_research
+
+    return LiveSeams(retrieve=retrieve, research=gated_research)
+
+
+def graph_factory_for(switch: str) -> Any:
+    """``--graph on`` → 生产读模型 ``DbSectionGraph``；``off`` → 显式 ``None``（关闭这一步）。
+
+    ``None`` 不是「空壳工厂」而是「没有这一步」：组合根因此连关系查询都不发，
+    响应里也不会出现 ``metadata.retrieval.graph`` 那一栏（黄金哈希守的就是这个）。
+    """
+
+    if switch != "on":
+        return None
+    from app.services.graph_injection import DbSectionGraph
+
+    return DbSectionGraph
+
+
+class _BearerRequest:
+    """``resolve_identity`` 要的最小请求形状：只读 ``headers``。
+
+    走它而不是自己拼一个 ``KeyContext``，是为了让**三层授权**（白名单 / 配置 / 套餐）
+    与线上完全同一条路径——评测自己造一个上下文，就等于把要被验证的门禁绕过去了。
+    """
+
+    def __init__(self, api_key: str) -> None:
+        self.headers = {"authorization": f"Bearer {api_key}"}
+
+
+def eval_key_context(*, tenant_id: str | None = None) -> Any:
+    """没有 Key 时的**开发身份**：只够跑检索那一路（Research 门禁要读配置与套餐）。
+
+    这是既有行为（``settings.DEV_TENANT_ID`` + 内置最高档快照），保留它是因为「只比检索」
+    这件事不该逼着评测机器去配一把 Key；而 Research 侧走不通时它会明确报错，不是静默降级。
+    """
+
+    from app.core.auth import KeyContext
+    from app.core.config import settings
+
+    return KeyContext(tenant_id=tenant_id or settings.DEV_TENANT_ID)
+
+
+async def _resolve_key(
+    db: Any, *, api_key: str | None, tenant_id: str | None, research: str
+) -> Any:
+    """这一轮用哪个身份：给了 Key 就走生产鉴权链，否则用开发身份（仅够检索）。"""
+
+    if api_key:
+        from app.core.auth import resolve_identity
+        from app.core.exceptions import AppError
+
+        try:
+            return await resolve_identity(_BearerRequest(api_key), db)
+        except AppError as exc:  # 业务错误：把话说明白，别吐 traceback
+            raise SystemExit(f"鉴权失败（{exc.code}）：{exc.msg}") from exc
+    if research == "on":
+        raise SystemExit(
+            "--research on 需要 --api-key（或环境变量 EVAL_API_KEY）：Research 的门禁要读"
+            "密钥配置与套餐，凭空造一个上下文等于跳过三层授权。"
+        )
+    return eval_key_context(tenant_id=tenant_id)
+
+
+def _apply_rerank_switch(switch: str) -> bool:
+    """把 ``--rerank`` 钉到 ``settings`` 上，返回**实际生效**的值（与既有评测脚本同形）。"""
+
+    from app.core.config import settings
+
+    if switch == RERANK_ON:
+        settings.RERANK_ENABLED = True
+    elif switch == RERANK_OFF:
+        settings.RERANK_ENABLED = False
+    return bool(settings.RERANK_ENABLED)
+
+
+def _effective_rerank(config: RunConfig) -> bool:
+    """这一轮**实际**开没开重排（报告与预计调用都要用它，不能只看参数）。"""
+
+    if config.source != SOURCE_LIVE:
+        # 空跑 / 回放不连库也不碰 settings：参数写的就是这次「打算」用的值。
+        return config.rerank == RERANK_ON
+    from app.core.config import settings
+
+    return bool(settings.RERANK_ENABLED)
+
+
+async def _document_names(db: Any, kb_ids: Sequence[str]) -> dict[str, str]:
+    """``document_id → 文件名主干``：引用复算按文件名对语料（标题只是兜底）。"""
+
+    from sqlalchemy import select
+
+    from app.models import Document
+
+    rows = await db.execute(
+        select(Document.id, Document.title, Document.source_filename).where(
+            Document.kb_id.in_(list(kb_ids))
+        )
+    )
+    names: dict[str, str] = {}
+    for document_id, title, filename in rows.all():
+        names[str(document_id)] = Path(filename).stem if filename else title
+    return names
+
+
+def _apply_retrieval(
+    outcome: Outcome, response: Mapping[str, Any], document_names: Mapping[str, str]
+) -> None:
+    """把一次 ``retrieve`` 的响应翻译成读数（四个字段 + 图谱注入 + 模型调用）。"""
+
+    meta = ((response.get("metadata") or {}).get("retrieval")) or {}
+    outcome.empty_reason = meta.get("empty_reason")
+    outcome.degraded_reason = meta.get("degraded_reason") if meta.get("degraded") else None
+    graph = meta.get("graph")
+    if isinstance(graph, Mapping):
+        outcome.graph_injected = int(graph.get("injected") or 0)
+        outcome.graph_seeds = int(graph.get("seeds") or 0)
+    outcome.hits = [
+        _hit_from_chunk(chunk, dict(document_names))
+        for chunk in response.get("retrieved_chunks") or []
+    ]
+    # 一次检索花掉几次模型调用：查询嵌入一次；**响应里有重排事实**就再加一次。
+    # 按响应而不是按配置数——配置说开了、链路其实没跑，是这条链路上真实存在的形态。
+    outcome.model_calls = 1 + (1 if meta.get("rerank") else 0)
+
+
+def _apply_research(
+    outcome: Outcome,
+    data: Mapping[str, Any],
+    document_names: Mapping[str, str],
+    *,
+    rerank_enabled: bool,
+) -> None:
+    """把一次 ``gated_research`` 的响应翻译成读数（七种原因 + 完整度 + 引用块 + 调用数）。
+
+    材料**按交付单元进 ``hits``**：于是引用回溯率与覆盖读数对 Research 侧同样成立，
+    而不是只有检索侧才算得出「这段材料是不是库里的原文」。
+    """
+
+    meta = data.get("metadata") or {}
+    outcome.stop_reason = meta.get("stop_reason")
+    outcome.evidence_state = meta.get("evidence_state")
+    outcome.degraded_reason = (meta.get("sub_search_degraded_reasons") or [None])[0] or meta.get(
+        "strong_model_fallback"
+    )
+    outcome.hits = [
+        _hit_from_chunk(row, dict(document_names)) for row in data.get("materials") or []
+    ]
+    outcome.citations = [dict(block) for block in data.get("citations") or []]
+    # 模型调用 = 状态机自己记的 LLM 次数 + 每条子检索的查询嵌入（重排开着再加一次/条）。
+    # 子检索条数是**响应里的事实**（``rounds.searches``），不是按上限估的。
+    searches = int((data.get("rounds") or {}).get("searches") or 0)
+    per_search = 1 + (1 if rerank_enabled else 0)
+    outcome.model_calls = int(meta.get("model_calls") or 0) + searches * per_search
+
+
+async def evaluate_live_question(
+    question: Mapping[str, Any],
+    *,
+    seams: LiveSeams,
+    db: Any,
+    key: Any,
+    kb_ids: Sequence[str],
+    top_k: int,
+    graph: str,
+    research: str,
+    document_names: Mapping[str, str],
+    rerank_enabled: bool = False,
+) -> Outcome:
+    """跑**一道题**：``research=on`` 走门禁化的 Research，否则走一次检索内核。
+
+    两个开关只在这一个函数里分叉，且两侧的读数都从**响应**里读（不是按配置推断）。
+    异常收成 ``error:<类型>``：单题失败是读数，不是脚本崩溃。
+    """
+
+    started = time.perf_counter()
+    outcome = Outcome(
+        id=str(question["id"]),
+        query=str(question["query"]),
+        mechanism=str(question["mechanism"]),
+    )
+    try:
+        if research == "on":
+            data = await seams.research(
+                db,
+                key=key,
+                kb_ids=list(kb_ids),
+                query=outcome.query,
+            )
+            _apply_research(outcome, data, document_names, rerank_enabled=rerank_enabled)
+        else:
+            from app.services.retrieval_options import RetrievalOptions
+
+            response = await seams.retrieve(
+                db,
+                tenant_id=key.tenant_id,
+                kb_ids=list(kb_ids),
+                query=outcome.query,
+                options=RetrievalOptions(
+                    mode="hybrid",
+                    top_k=top_k,
+                    fold_to_sections=True,
+                    expand_table_rows=True,
+                    # 重排是「同一台机器上的今天」的一部分，由 --rerank 钉死；
+                    # 图谱注入跟着它走（ADR-0027 开关归属）。
+                    rerank=rerank_enabled,
+                    rewrite=False,
+                    # 切片编排**关着**：它一次就多一次模型调用，而这三组对照（版本 / 图谱 /
+                    # Research）没有一组在测它；开着还会给响应多加一个键，把「只差一个
+                    # 开关」这件事搅浑。这一栏是 `RetrievalOptions` 的必填项（#146），
+                    # 不写会当场 TypeError——这正是本票接线时抓到的第一处（旧采集路径
+                    # 自 #146 起就是坏的：8 题会全落成 error:TypeError）。
+                    orchestration=False,
+                ),
+                # 接线就是这一行：on → 生产读模型，off → None（这一步不存在）。
+                graph_factory=graph_factory_for(graph),
+            )
+            _apply_retrieval(outcome, response, document_names)
+    except Exception as exc:  # noqa: BLE001 - 单题失败是读数，不是脚本崩溃
+        outcome.error = type(exc).__name__
+    outcome.latency_ms = round((time.perf_counter() - started) * 1000, 2)
+    return outcome
+
+
 async def run_live(
     *,
     questions: Sequence[dict[str, Any]],
     kb_ids: Sequence[str],
     top_k: int,
     tenant_id: str | None = None,
+    graph: str = "off",
+    research: str = "off",
+    rerank: str = RERANK_AUTO,
+    api_key: str | None = None,
+    seams: LiveSeams | None = None,
 ) -> list[Outcome]:
-    """跑今天真实的检索链路（进程内 ``rag_service.retrieve``，不经 HTTP）。
+    """跑真实链路（进程内 ``rag_service.retrieve`` / ``research_gate.gated_research``）。
 
-    它调的是**组合根**而不是内核：可见性校验、配额之外的那些「每次调用一次」的事
-    与线上完全一致。这条路径不改 ``app/`` 任何一行——评测脚本装配应用，是既有做法
-    （``scripts/eval_retrieval.py`` 同形）。
+    它调的是**组合根与门禁**而不是内核：可见性校验、三层授权、配额之外的那些「每次调用
+    一次」的事与线上完全一致。这条路径不改 ``app/`` 任何一行——评测脚本装配应用，是既有
+    做法（``scripts/eval_retrieval.py`` 同形）。
 
     本题集**不开启**查询改写（``rewrite=False``）：改写会把「跨文档」这一层的措辞差异
     抹平，测出来的就不是题集想测的东西了。折叠与表格行折回保持默认开启。
     """
 
-    from app.core.config import settings  # 延迟导入：dry-run 不碰 settings
     from app.db.async_session import AsyncSessionLocal
-    from app.models import Document
-    from app.services.rag_service import retrieve
-    from app.services.retrieval_options import RetrievalOptions
-    from sqlalchemy import select
 
+    rerank_enabled = _apply_rerank_switch(rerank)
+    resolved = seams or live_seams()
     outcomes: list[Outcome] = []
     async with AsyncSessionLocal() as db:
-        document_names: dict[str, str] = {}
-        rows = await db.execute(
-            select(Document.id, Document.title, Document.source_filename).where(
-                Document.kb_id.in_(list(kb_ids))
-            )
-        )
-        for document_id, title, filename in rows.all():
-            stem = Path(filename).stem if filename else title
-            document_names[str(document_id)] = stem
-
+        key = await _resolve_key(db, api_key=api_key, tenant_id=tenant_id, research=research)
+        document_names = await _document_names(db, kb_ids)
         for question in questions:
-            started = time.perf_counter()
-            outcome = Outcome(
-                id=question["id"], query=question["query"], mechanism=question["mechanism"]
-            )
-            try:
-                response = await retrieve(
-                    db,
-                    tenant_id=tenant_id or settings.DEV_TENANT_ID,
-                    kb_ids=list(kb_ids),
-                    query=question["query"],
-                    options=RetrievalOptions(
-                        mode="hybrid",
-                        top_k=top_k,
-                        fold_to_sections=True,
-                        expand_table_rows=True,
-                        # 重排跟着服务端开关走：本脚本比的是「同一台机器上的今天」，
-                        # 不替调用方决定要不要装重排。
-                        rerank=settings.RERANK_ENABLED,
-                        rewrite=False,
-                    ),
+            outcomes.append(
+                await evaluate_live_question(
+                    question,
+                    seams=resolved,
+                    db=db,
+                    key=key,
+                    kb_ids=kb_ids,
+                    top_k=top_k,
+                    graph=graph,
+                    research=research,
+                    document_names=document_names,
+                    rerank_enabled=rerank_enabled,
                 )
-            except Exception as exc:  # noqa: BLE001 - 单题失败是读数，不是脚本崩溃
-                outcome.error = type(exc).__name__
-                outcome.latency_ms = round((time.perf_counter() - started) * 1000, 2)
-                outcomes.append(outcome)
-                continue
-
-            meta = response["metadata"]["retrieval"]
-            outcome.empty_reason = meta.get("empty_reason")
-            outcome.degraded_reason = meta.get("degraded_reason") if meta.get("degraded") else None
-            outcome.hits = [
-                _hit_from_chunk(chunk, document_names)
-                for chunk in response.get("retrieved_chunks", [])
-            ]
-            outcome.latency_ms = round((time.perf_counter() - started) * 1000, 2)
-            outcomes.append(outcome)
+            )
     return outcomes
+
+
+async def active_index_versions(
+    kb_ids: Sequence[str], *, tenant_id: str | None = None
+) -> dict[str, str]:
+    """这一轮查的是哪个索引版本（``kb_id → 生效版本``）：报告里「哪一次构建」的答案。
+
+    读的是知识库行上的那一列——与检索侧 ``resolve_index_versions`` 同一个来源。
+    读不到（库不存在 / 无权）就返回空映射：它是旁证，不该让整份报告崩掉。
+    """
+
+    from sqlalchemy import select
+
+    from app.core.config import settings
+    from app.db.async_session import AsyncSessionLocal
+    from app.models.index_version import effective_index_version
+    from app.models.knowledge_base import KnowledgeBase
+
+    scope_tenant = tenant_id or settings.DEV_TENANT_ID
+    try:
+        async with AsyncSessionLocal() as db:
+            rows = (
+                await db.execute(
+                    select(KnowledgeBase).where(
+                        KnowledgeBase.tenant_id == scope_tenant,
+                        KnowledgeBase.id.in_(list(kb_ids)),
+                    )
+                )
+            ).scalars()
+            return {str(kb.id): effective_index_version(kb) or "" for kb in rows.all()}
+    except Exception:  # noqa: BLE001 - 旁证读不到不该让报告失败
+        return {}
 
 
 # ─────────────────────────────────────────────────────────────────── 四类指标
 
 
 def stop_reason_distribution(
-    outcomes: Sequence[Outcome], *, research_enabled: bool, research_status: str
+    outcomes: Sequence[Outcome],
+    *,
+    research_enabled: bool,
+    research_status: str,
+    exercised: bool,
 ) -> dict[str, Any]:
     """停止原因分布：Research 的七种原因，一侧没采集 / 没落地时写明是哪一种。
 
@@ -548,13 +836,12 @@ def stop_reason_distribution(
 
     * ``research_enabled=False``：这次不要跑（``status=disabled``）；
     * ``status=capability-not-implemented``：代码里没有这条路；
-    * ``status=available`` 但 ``exercised=False``：**能力在，本脚本没采集**——采集路径只跑
-      检索内核，``/rag/research`` 一次都没调。
+    * ``status=available`` 但 ``exercised=False``：**能力在，这次没驱动它**——空跑自检 /
+      fixture 回放不连库，或者采集路径还没走到那一侧。
 
     三种都回空计数，但结论完全不同；合成一句「没有数据」会让第三种被读成「跑过了，结果是零」。
     """
 
-    exercised = EXERCISED_SIDES["research"]
     if not research_enabled:
         return {
             "status": research_status,
@@ -563,9 +850,7 @@ def stop_reason_distribution(
             "total": 0,
         }
     counts = Counter(
-        outcome.stop_reason
-        for outcome in outcomes
-        if outcome.stop_reason in STOP_REASONS
+        outcome.stop_reason for outcome in outcomes if outcome.stop_reason in STOP_REASONS
     )
     unknown = [
         outcome.stop_reason
@@ -665,9 +950,7 @@ def coverage_by_question(
     coverage: dict[str, dict[str, Any]] = {}
     for outcome in outcomes:
         expected = expected_by_id.get(outcome.id, [])
-        retrieved = {
-            (hit.document, hit.section) for hit in outcome.hits if hit.section is not None
-        }
+        retrieved = {(hit.document, hit.section) for hit in outcome.hits if hit.section is not None}
         found = [
             f"{item['document']}:{item['section']}"
             for item in expected
@@ -742,50 +1025,91 @@ def research_model_call_budget() -> tuple[int, int]:
     return MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK
 
 
+def research_search_budget() -> int:
+    """一次 Research 最多跑几条子检索（首轮 + 补证轮），从代码常量读。
+
+    ``MAX_FIRST_ROUND_QUERIES + MAX_FOLLOWUP_ROUNDS × MAX_FOLLOWUP_QUERIES``。每条子检索是
+    一次查询嵌入（重排开着再加一次），所以它是**预计调用次数**那本账里 Research 侧的第二个
+    加数——只印 LLM 那三次会让预算看起来少一半（#153 的 400 次总预算就是这么来的）。
+    """
+
+    from app.services.research_limits import (
+        MAX_FIRST_ROUND_QUERIES,
+        MAX_FOLLOWUP_QUERIES,
+        MAX_FOLLOWUP_ROUNDS,
+    )
+
+    return MAX_FIRST_ROUND_QUERIES + MAX_FOLLOWUP_ROUNDS * MAX_FOLLOWUP_QUERIES
+
+
 def predict_calls(
     *,
     source: str,
     question_count: int,
     research_enabled: bool,
     research_status: str,
+    rerank_enabled: bool = False,
 ) -> dict[str, Any]:
-    """开跑前先算一遍：这次要花多少次调用。
+    """开跑前先算一遍：这次要花多少次调用（嵌入 + 重排 + Research 全算）。
 
-    ``live`` 每题一次查询嵌入（改写关，所以向量一路只有原句）；``dry-run`` / ``fixture``
-    一次都不调。**Research 侧一律 0**，但原因分三种，报告里必须分开写（#156）：
+    ``live`` 每题一次查询嵌入（改写关，所以向量一路只有原句），重排开着再加一次；``dry-run``
+    / ``fixture`` 一次都不调。Research 侧分三种，报告里必须分开写（#156）：
 
     * ``research=off``：这次不要跑；
     * 能力没装（``capability-not-implemented``）：跑了也没东西可跑；
-    * 能力已装但本脚本没采集（``available`` 且 :data:`EXERCISED_SIDES` 为假）：本脚本的
-      采集路径只跑检索内核，``/rag/research`` 一次都没调——所以 0 次是「没采集」，不是
-      「免费」。这一条最容易读错，所以它连硬顶一起印出来。
+    * 能力已装但**这次不采集**（dry-run / fixture 不连库）：0 次是「没采集」，不是「免费」。
+      这一条最容易读错，所以它连硬顶一起印出来。
+
+    真的会跑 Research 时用**上限**估：每题 ≤ ``MAX_MODEL_CALLS_WITH_FALLBACK`` 次 LLM +
+    ≤ ``research_search_budget()`` 条子检索 ×（嵌入 [+ 重排]）。上限而不是典型值，是因为
+    「跑之前打印预计」的用途是**别超预算**；跑完再打实际值。
     """
 
     embedding = question_count if source == SOURCE_LIVE else 0
-    research = 0
+    rerank = question_count if (embedding and rerank_enabled) else 0
+    research_llm = 0
+    research_searches = 0
     calls, calls_with_fallback = research_model_call_budget()
+    searches_cap = research_search_budget()
+    will_run = (
+        research_enabled and research_status == CAPABILITY_AVAILABLE and source == SOURCE_LIVE
+    )
     if not research_enabled:
         research_note = "未启用（research=off）"
     elif research_status == CAPABILITY_NOT_IMPLEMENTED:
         # 能力没装：实际不会发出任何请求，也不按「将来会有 3 次」预扣。
+        research_note = f"未落地（{CAPABILITY_NOT_IMPLEMENTED}），实际不会发出任何请求"
+    elif will_run:
+        research_llm = question_count * calls_with_fallback
+        research_searches = question_count * searches_cap
         research_note = (
-            f"未落地（{CAPABILITY_NOT_IMPLEMENTED}），实际不会发出任何请求"
+            f"会真的走 /rag/research：每题 ≤{calls_with_fallback} 次模型调用 + "
+            f"≤{searches_cap} 条子检索（每条 1 次嵌入"
+            f"{' + 1 次重排' if rerank_enabled else ''}），按上限估"
         )
     else:
         research_note = (
-            f"能力已就位但本脚本不采集这一侧（采集路径只跑检索内核），实际 0 次；"
+            f"能力已就位，但本次不采集（--source {source} 不连库），实际 0 次；"
             f"一次 Research 的硬顶是 {calls} 次模型调用（含生成阶段的强模型兜底位最多 "
             f"{calls_with_fallback} 次）"
         )
+    research_total = research_llm + research_searches * (1 + (1 if rerank_enabled else 0))
     return {
         "embedding": embedding,
-        "research_llm": research,
-        "total": embedding + research,
+        "rerank": rerank,
+        "research_llm": research_llm,
+        "research_searches": research_searches,
+        "total": embedding + rerank + research_total,
         "notes": {
             "embedding": (
                 f"{question_count} 题 × 1 次查询向量（--source live，改写关）"
                 if embedding
                 else "不连库、不发网络（--source dry-run/fixture）"
+            ),
+            "rerank": (
+                f"{question_count} 题 × 1 次重排（重排开着）"
+                if rerank
+                else "重排关着（或本次不连库）：这一层不发请求"
             ),
             "research_llm": research_note,
         },
@@ -793,6 +1117,7 @@ def predict_calls(
         "research_llm_budget": {
             "hard_cap": calls,
             "with_strong_model_fallback": calls_with_fallback,
+            "sub_searches": searches_cap,
         },
     }
 
@@ -840,9 +1165,7 @@ class FrozenCheck:
         return not (self.missing or self.changed or self.extra)
 
 
-def check_frozen(
-    *, root: Path | None = None, manifest_path: Path | None = None
-) -> FrozenCheck:
+def check_frozen(*, root: Path | None = None, manifest_path: Path | None = None) -> FrozenCheck:
     """拿清单与工作区对账。
 
     三类问题分开报而不是合成一个布尔：``missing`` 是「语料被删了」、``changed`` 是
@@ -853,7 +1176,9 @@ def check_frozen(
     base_root = root or REPO_ROOT
     path = manifest_path or (base_root / "eval/frozen-assets.sha256.json")
     if not path.is_file():
-        raise SystemExit(f"缺哈希清单 {path}；先跑 `uv run python scripts/eval_refs.py freeze --write`")
+        raise SystemExit(
+            f"缺哈希清单 {path}；先跑 `uv run python scripts/eval_refs.py freeze --write`"
+        )
     reference: dict[str, str] = {
         key: value
         for key, value in json.loads(path.read_text(encoding="utf-8"))["files"].items()
@@ -908,6 +1233,10 @@ class RunConfig:
     top_k: int
     fixtures: Path | None = None
     tenant_id: str | None = None
+    #: ``auto`` / ``on`` / ``off``：图谱注入跟着重排走，所以它也是「这组对照成立不成立」的条件。
+    rerank: str = RERANK_AUTO
+    #: 数据面身份（Research 的门禁要读密钥配置与套餐）。Key 原文不进产物。
+    api_key: str | None = None
 
 
 def _corpus_digest(manifest: dict[str, Any], *, corpus_dir: Path | None = None) -> str:
@@ -972,8 +1301,41 @@ def capability_status() -> dict[str, str]:
 
     return {
         "graph": CAPABILITY_AVAILABLE if _graph_injection_wired() else CAPABILITY_NOT_IMPLEMENTED,
+        "research": (CAPABILITY_AVAILABLE if _research_wired() else CAPABILITY_NOT_IMPLEMENTED),
+    }
+
+
+def exercised_sides(
+    *,
+    config: RunConfig,
+    capabilities: Mapping[str, str],
+    rerank_enabled: bool,
+) -> dict[str, bool]:
+    """这次跑**有没有真的驱动**那一侧（不是「开关写的是什么」）。
+
+    三个条件缺一不可，而且每一条都对应一个真实的失败形态：
+
+    * ``source == live``：空跑自检 / fixture 回放不连库，开关打开也一次都没调；
+    * 开关是 ``on``：这是「这次想不想跑」，关着就是不要；
+    * 能力探测为 ``available``：代码里没有这一步时，开关只是个装饰。
+
+    图谱还多一条 ``rerank_enabled``：注入项 ``score = 0`` 且追加在池尾，重排关着时必然被
+    ``top_k`` 截掉，所以组合根**根本不装配**这一步（ADR-0027 开关归属）。那时报「已采集」
+    就是在替一次没发生的事作证。
+    """
+
+    live = config.source == SOURCE_LIVE
+    return {
+        "graph": (
+            live
+            and config.graph == "on"
+            and capabilities.get("graph") == CAPABILITY_AVAILABLE
+            and rerank_enabled
+        ),
         "research": (
-            CAPABILITY_AVAILABLE if _research_wired() else CAPABILITY_NOT_IMPLEMENTED
+            live
+            and config.research == "on"
+            and capabilities.get("research") == CAPABILITY_AVAILABLE
         ),
     }
 
@@ -985,6 +1347,7 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
     questions_payload = load_questions()
     questions: Sequence[dict[str, Any]] = questions_payload["questions"]
 
+    index_versions: dict[str, str] = {}
     if config.source == SOURCE_DRY_RUN:
         outcomes = run_dry(questions=questions, top_k=config.top_k)
     elif config.source == SOURCE_FIXTURE:
@@ -998,14 +1361,22 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
                 kb_ids=config.kb_ids,
                 top_k=config.top_k,
                 tenant_id=config.tenant_id,
+                graph=config.graph,
+                research=config.research,
+                rerank=config.rerank,
+                api_key=config.api_key,
             )
+        )
+        # 「这一次查的是哪一次构建」：报告的每个数字都要能对到某个版本上（ADR-0025）。
+        index_versions = asyncio.run(
+            active_index_versions(config.kb_ids, tenant_id=config.tenant_id)
         )
 
     statuses = capability_status()
+    rerank_enabled = _effective_rerank(config)
     research_enabled = config.research == "on"
-    research_status = (
-        statuses["research"] if research_enabled else "disabled"
-    )
+    research_status = statuses["research"] if research_enabled else "disabled"
+    exercised = exercised_sides(config=config, capabilities=statuses, rerank_enabled=rerank_enabled)
     trace = citation_traceability(outcomes, manifest=manifest)
     coverage = coverage_by_question(outcomes, questions)
 
@@ -1013,11 +1384,18 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
         "run_id": datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ"),
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": config.source,
-        "switches": {"graph": config.graph, "research": config.research},
+        "switches": {
+            "graph": config.graph,
+            "research": config.research,
+            # 重排是图谱的前置（注入跟着重排走）：不记它，on/off 那两组读数就少了前提。
+            "rerank": config.rerank,
+        },
+        "rerank_effective": rerank_enabled,
         "capabilities": dict(statuses),
         # 与 capabilities 并列、不合并：前者是「代码里有没有」，这里是「这次跑有没有走那条路」
         # （#156）。两份事实都要进 results.json，否则事后分不清「没采集」与「没能力」。
-        "exercised": dict(EXERCISED_SIDES),
+        "exercised": exercised,
+        "index_versions": dict(sorted(index_versions.items())),
         "premise": {
             "comparable_with_original_project": False,
             "why": (
@@ -1044,10 +1422,14 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
             question_count=len(questions),
             research_enabled=research_enabled,
             research_status=statuses["research"],
+            rerank_enabled=rerank_enabled,
         ),
         "metrics": {
             "stop_reason_distribution": stop_reason_distribution(
-                outcomes, research_enabled=research_enabled, research_status=research_status
+                outcomes,
+                research_enabled=research_enabled,
+                research_status=research_status,
+                exercised=exercised["research"],
             ),
             "retrieval_termination": retrieval_termination(outcomes),
             "citation_traceability": {
@@ -1056,6 +1438,10 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
                 "rate": trace.rate,
                 "untraceable": trace.untraceable,
             },
+            # Research 侧的两样机械读数：完整度分布与引用块自检。没有一块引用时
+            # ``evidence_blocks`` 是 0 而不是 None——「没有块」本身就是一条读数。
+            "research": research_metrics(outcomes),
+            "graph_injection": graph_metrics(outcomes),
             "latency_ms": latency_stats(outcomes),
             "model_calls": model_call_stats(outcomes),
         },
@@ -1072,6 +1458,12 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
                 "error": outcome.error,
                 "latency_ms": outcome.latency_ms,
                 "model_calls": outcome.model_calls,
+                "evidence_state": outcome.evidence_state,
+                "citation_blocks": outcome.citation_blocks,
+                "citations_with_evidence": outcome.citations_with_evidence,
+                "dangling_evidence_ids": outcome.dangling_evidence_ids,
+                "graph_injected": outcome.graph_injected,
+                "graph_seeds": outcome.graph_seeds,
                 "hits": [
                     {
                         "chunk_id": hit.chunk_id,
@@ -1087,6 +1479,51 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
             }
             for outcome in outcomes
         ],
+    }
+
+
+def research_metrics(outcomes: Sequence[Outcome]) -> dict[str, Any]:
+    """Research 侧两样机械可核验读数：``evidence_state`` 分布 + 引用块自检。
+
+    引用块自检回答「每块引用点了材料里的哪几条」：块数、带证据的块数、指向材料之外的下标。
+    它**不做答案质量**（#138 Out of Scope），只回答「引用能不能还原到材料」。
+    """
+
+    states = Counter(
+        outcome.evidence_state for outcome in outcomes if outcome.evidence_state is not None
+    )
+    blocks = sum(outcome.citation_blocks for outcome in outcomes)
+    with_evidence = sum(outcome.citations_with_evidence for outcome in outcomes)
+    dangling = [
+        {"question": outcome.id, "evidence_ids": outcome.dangling_evidence_ids}
+        for outcome in outcomes
+        if outcome.dangling_evidence_ids
+    ]
+    return {
+        "evidence_state": dict(sorted(states.items())),
+        "questions_with_evidence_state": sum(states.values()),
+        "evidence_blocks": blocks,
+        "blocks_with_evidence": with_evidence,
+        "dangling_evidence": dangling,
+    }
+
+
+def graph_metrics(outcomes: Sequence[Outcome]) -> dict[str, Any]:
+    """图谱注入的读数：注入了几条、从几个种子扩出去（只统计**有这一栏**的题）。
+
+    ``questions_with_injection`` 与 ``injected`` 分开：前者是「这一栏出现了几次」，
+    后者是「一共补了几条候选」。关掉图谱时两者都是 0，而 ``graphs_reported`` 为 0
+    说明这一栏压根没出现——那才是「没有这一步」，与「有这一步但没补到」不是一件事。
+    """
+
+    reported = [outcome for outcome in outcomes if outcome.graph_injected is not None]
+    return {
+        "graphs_reported": len(reported),
+        "injected": sum(outcome.graph_injected or 0 for outcome in reported),
+        "seeds": sum(outcome.graph_seeds or 0 for outcome in reported),
+        "questions_with_injection": sum(
+            1 for outcome in reported if (outcome.graph_injected or 0) > 0
+        ),
     }
 
 
@@ -1117,10 +1554,7 @@ def _graph_note(status: str) -> str:
             "注入服务已装配（`app/services/graph_injection.py` + 组合根的 `graph_factory`）；"
             "注入项 score=0、按本次请求的库与版本过滤，名次交给重排"
         )
-    return (
-        "注入服务或组合根那条缝不在（`graph_factory` 收不到），"
-        "这一次不会有任何图谱候选进池"
-    )
+    return "注入服务或组合根那条缝不在（`graph_factory` 收不到），这一次不会有任何图谱候选进池"
 
 
 def _research_note(status: str) -> str:
@@ -1132,10 +1566,7 @@ def _research_note(status: str) -> str:
             "`/rag/research` 与 MCP `rag_research` 已就位（同一份 `gated_research`）；"
             f"一次调用硬顶 {calls} 次模型调用（含生成兜底 {with_fallback} 次）"
         )
-    return (
-        "`/rag/research` 或 `research_gate` 不在——七种停止原因、引用块四条硬校验"
-        "一条都不存在"
-    )
+    return "`/rag/research` 或 `research_gate` 不在——七种停止原因、引用块四条硬校验一条都不存在"
 
 
 def render_report(payload: dict[str, Any], config: RunConfig) -> str:
@@ -1155,7 +1586,18 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     add("")
     add(f"- 生成时间：{payload['generated_at']}")
     add(f"- 数据来源：{_source_label(payload['source'])}")
-    add(f"- 开关：graph={config.graph} / research={config.research}")
+    add(
+        f"- 开关：graph={config.graph} / research={config.research} / "
+        f"rerank={config.rerank}（实际 {'开' if payload.get('rerank_effective') else '关'}）"
+    )
+    if payload.get("index_versions"):
+        add(
+            "- 索引版本（这一次查的是哪一次构建）："
+            + "、".join(
+                f"`{kb_id}` → `{version or '未解析'}`"
+                for kb_id, version in payload["index_versions"].items()
+            )
+        )
     add(
         f"- 语料：`eval/corpus-refs/`（{len(payload['corpus']['documents'])} 篇，"
         f"{payload['corpus']['reference_edges']} 条引用边，指纹 `{payload['corpus']['digest']}`）"
@@ -1167,7 +1609,8 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     add(
         "- 模型调用：本次实际 "
         f"**{calls['total']} 次**（开跑前预计 {predicted['total']} 次："
-        f"嵌入 {predicted['embedding']} + Research {predicted['research_llm']}）"
+        f"嵌入 {predicted['embedding']} + 重排 {predicted['rerank']} + "
+        f"Research {predicted['research_llm']} 次 LLM 与 ≤{predicted['research_searches']} 条子检索）"
     )
     add("")
     add(
@@ -1208,7 +1651,9 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
 
     add("## 一、停止原因分布")
     add("")
-    add("Research 的七种固定停止原因（#138 §C）：" + "、".join(f"`{name}`" for name in STOP_REASONS))
+    add(
+        "Research 的七种固定停止原因（#138 §C）：" + "、".join(f"`{name}`" for name in STOP_REASONS)
+    )
     add("")
     if distribution["status"] == CAPABILITY_NOT_IMPLEMENTED:
         add(
@@ -1223,11 +1668,10 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
         )
     elif not distribution["exercised"]:
         add(
-            f"**能力已就位，但这份报告没有采集这一侧**（`{distribution['status']}`，"
-            f"`exercised=false`）：`/rag/research` 与 MCP `rag_research` 都在，但本脚本的"
-            "采集路径只跑检索内核（`rag_service.retrieve`），一次都没有调用 Research，"
-            "所以七种原因**本报告不产出**——这不是「跑完了、一条都没有」。"
-            "开 / 关对照由 #153（C6）那一步接线后出。"
+            f"**能力已就位，但这次没有采集这一侧**（`{distribution['status']}`，"
+            f"`exercised=false`）：`/rag/research` 与 MCP `rag_research` 都在，但这一轮没有"
+            f"真的驱动它——`--source {payload['source']}` 不连库（空跑自检 / fixture 回放）时"
+            "一次都不会调，所以七种原因**本报告不产出**。这不是「跑完了、一条都没有」。"
         )
     else:
         add("| 停止原因 | 次数 | 占比 |")
@@ -1238,6 +1682,64 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
         if not distribution["counts"]:
             add("| （无） | 0 | n/a |")
     add("")
+
+    # Research 侧的两样机械读数：只在真的采集过这一侧时才有意义——否则全是 0，而 0 会被
+    # 读成「跑过了、一块引用都没有」（与「没采集」正好相反）。
+    research = metrics.get("research") or {}
+    if payload["exercised"].get("research"):
+        add("### 引用块完整度（`evidence_state`）")
+        add("")
+        add(
+            "完整度由**核心片数量**算出来、不由模型自评（#138 §B）：`complete` = 每个要点都有"
+            "核心片、`partial` = 部分有、`missing` = 都没有。引用块自检只回答「这一块点的证据"
+            "下标在不在材料里」，**不做答案质量**（#138 Out of Scope）。"
+        )
+        add("")
+        add("| 完整度 | 题数 |")
+        add("| --- | --- |")
+        for name, count in research.get("evidence_state", {}).items():
+            add(f"| `{name}` | {count} |")
+        if not research.get("evidence_state"):
+            add("| （无） | 0 |")
+        add("")
+        add("| 引用块自检 | 值 |")
+        add("| --- | --- |")
+        add(f"| 引用块数 | {research.get('evidence_blocks', 0)} |")
+        add(f"| 带证据下标的块 | {research.get('blocks_with_evidence', 0)} |")
+        add(f"| 指向材料之外的下标（题数） | {len(research.get('dangling_evidence') or [])} |")
+        add("")
+        if research.get("dangling_evidence"):
+            add(
+                "> 有引用块点了材料集合之外的 evidence 下标：那是「引用可回溯」的反面，"
+                "按 #138 §C 的四条硬校验本不该发生——记下来，别当没看见。"
+            )
+            add("")
+
+    # 图谱注入的读数同理：只在真的采集过 graph 那一侧时展开。
+    graph = metrics.get("graph_injection") or {}
+    if payload["exercised"].get("graph"):
+        add("### 图谱注入（`metadata.retrieval.graph`）")
+        add("")
+        add(
+            "注入项 `score = 0`、追加在候选池尾部，名次交给重排（ADR-0027 决策 4）："
+            "「补进来了几条」与「最后有没有入选 top_k」是两件事，这里只报前者。"
+        )
+        add("")
+        add("| 指标 | 值 |")
+        add("| --- | --- |")
+        add(f"| 有这一栏的题 | {graph.get('graphs_reported', 0)} |")
+        add(f"| 注入候选合计 | {graph.get('injected', 0)} |")
+        add(f"| 种子节合计 | {graph.get('seeds', 0)} |")
+        add(f"| 有注入的题 | {graph.get('questions_with_injection', 0)} |")
+        add("")
+        if not graph.get("injected"):
+            add(
+                "> 这一侧跑了却一条候选都没补：先查这个库在本版本里有没有边"
+                "（`section_edges`），再查种子节的 `section_id` 是不是空的"
+                "（无标题文档没有节级关系可扩）。"
+            )
+            add("")
+
     add("### 今天链路的终止形态（等价物，**不是**停止原因）")
     add("")
     add(
@@ -1309,10 +1811,20 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     add("| --- | --- |")
     add(f"| 实际调用 | {calls['total']} |")
     add(f"| 有调用的题数 | {calls['questions_with_calls']} |")
-    add(f"| 开跑前预计 | {predicted['total']}（嵌入 {predicted['embedding']}、Research {predicted['research_llm']}） |")
+    add(
+        f"| 开跑前预计 | {predicted['total']}（嵌入 {predicted['embedding']}、"
+        f"重排 {predicted['rerank']}、Research {predicted['research_llm']} 次 LLM"
+        f" + ≤{predicted['research_searches']} 条子检索） |"
+    )
     add("")
     add(f"- 嵌入：{predicted['notes']['embedding']}")
+    add(f"- 重排：{predicted['notes']['rerank']}")
     add(f"- Research：{predicted['notes']['research_llm']}")
+    add(
+        "- 口径：每次检索 = 1 次查询嵌入 + （响应里有重排事实时）1 次重排；"
+        "一次 Research = `metadata.model_calls` 次 LLM + `rounds.searches` 条子检索 × "
+        "（嵌入 [+ 重排]）。**按响应里的事实数，不按配置估**。"
+    )
     add("")
 
     add("## 能力开关状态")
@@ -1341,17 +1853,20 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
         if getattr(config, name) == "on" and not payload["exercised"][name]
     ]
     if unexercised:
+        reasons = []
+        if payload["source"] != SOURCE_LIVE:
+            reasons.append(f"`--source {payload['source']}` 不连库")
+        if payload.get("rerank_effective") is False:
+            reasons.append("重排关着（图谱注入跟着重排走，组合根不装配）")
         add(
             "> **对照有效性**：本次有开关被打开（"
             + "、".join(f"`{name}`" for name in unexercised)
-            + "），但本脚本的采集路径**没有驱动**那一侧"
-            "（接线是 #153 的事），所以 on / off 两组读数会是同一组数。"
-            "这是「没采集」而不是「接了没用」——真实对照等 C6 出。"
+            + "），但这次没有真的驱动那一侧"
+            + ("：" + "；".join(reasons) if reasons else "")
+            + "。所以 on / off 两组读数会是同一组数——这是「没采集」，不是「接了没用」。"
         )
         add("")
-    not_ready = [
-        name for name in ("graph", "research") if statuses[name] != CAPABILITY_AVAILABLE
-    ]
+    not_ready = [name for name in ("graph", "research") if statuses[name] != CAPABILITY_AVAILABLE]
     if not_ready:
         add(
             "> **未就位的两侧**："
@@ -1389,7 +1904,9 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     add("uv run python scripts/eval_refs.py")
     add("")
     add("# 引用回溯率机械复算：给一条引用，还原到语料原文（退出码 0 = 能还原）")
-    add('uv run python scripts/eval_refs.py verify-citation --document points_policy --section 2.2 --snippet "银卡及以上时，200 元的固定上限提高到 500 元"')
+    add(
+        'uv run python scripts/eval_refs.py verify-citation --document points_policy --section 2.2 --snippet "银卡及以上时，200 元的固定上限提高到 500 元"'
+    )
     add("")
     add("# 冻结资产自检：eval/corpus 与 eval/baseline 是否被改过（多出文件也算失败）")
     add("uv run python scripts/eval_refs.py check-frozen")
@@ -1414,17 +1931,25 @@ def write_run(payload: dict[str, Any], config: RunConfig, *, out_dir: Path) -> P
 
 
 def _print_predicted(predicted: dict[str, Any]) -> None:
-    """开跑前把预计调用次数印出来——花不花钱要在按下回车之前就知道。"""
+    """开跑前把预计调用次数印出来——花不花钱要在按下回车之前就知道。
+
+    三行分开（嵌入 / 重排 / Research）：合起来一个数字之后，「重排关着所以图谱没跑」
+    这类前提就没地方写了，而它恰好决定这组对照成不成立。
+    """
 
     print("预计模型调用次数：")
     print(f"  嵌入      : {predicted['embedding']} 次 — {predicted['notes']['embedding']}")
+    print(f"  重排      : {predicted['rerank']} 次 — {predicted['notes']['rerank']}")
     print(
-        f"  Research  : {predicted['research_llm']} 次 — {predicted['notes']['research_llm']}"
+        f"  Research  : {predicted['research_llm']} 次 LLM"
+        f"（+ 子检索 ≤{predicted['research_searches']} 条）"
+        f" — {predicted['notes']['research_llm']}"
     )
     print(f"  合计      : {predicted['total']} 次")
 
 
 def _command_run(args: argparse.Namespace) -> int:
+    api_key = args.api_key or os.environ.get(ENV_API_KEY) or None
     config = RunConfig(
         source=args.source,
         graph=args.graph,
@@ -1434,12 +1959,23 @@ def _command_run(args: argparse.Namespace) -> int:
         top_k=args.top_k,
         fixtures=Path(args.fixtures) if args.fixtures else None,
         tenant_id=args.tenant_id,
+        rerank=args.rerank,
+        api_key=api_key,
     )
     if config.source == SOURCE_LIVE and not config.allow_model_calls:
         # 真实链路每题要烧一次查询嵌入。没有显式参数就不发请求——默认值站在「不花钱」这边。
         print(
             "拒绝执行：--source live 会真的调用嵌入 Provider（每题 1 次）。\n"
             "确需花这笔钱时显式加 --allow-model-calls；想先看结构就跑默认的空跑自检。",
+            file=sys.stderr,
+        )
+        return 2
+    if config.source == SOURCE_LIVE and config.research == "on" and not config.api_key:
+        # 门禁要读密钥配置与套餐：没有身份就没有「这个租户买了什么」，整组对照不成立。
+        # 只对 live 拦：空跑自检不连库，也就没有身份可言（它连门禁都不会碰）。
+        print(
+            f"--research on 需要 --api-key（或环境变量 {ENV_API_KEY}）：Research 的三层授权"
+            "（白名单 / 密钥配置 / 套餐）都挂在数据面身份上。",
             file=sys.stderr,
         )
         return 2
@@ -1451,6 +1987,7 @@ def _command_run(args: argparse.Namespace) -> int:
             question_count=len(questions),
             research_enabled=config.research == "on",
             research_status=capability_status()["research"],
+            rerank_enabled=_effective_rerank(config),
         )
     )
 
@@ -1462,14 +1999,20 @@ def _command_run(args: argparse.Namespace) -> int:
         f"完成：{payload['questions']['count']} 题，模型调用 {calls} 次，"
         f"引用回溯 {trace['traceable']}/{trace['hits']}（{_fmt_rate(trace['rate'])}）"
     )
+    research = payload["metrics"]["research"]
+    if payload["exercised"]["research"]:
+        print(
+            f"Research：引用块 {research['evidence_blocks']} 个"
+            f"（带证据 {research['blocks_with_evidence']}），"
+            f"完整度 {research['evidence_state'] or '（无）'}，"
+            f"悬空证据下标 {len(research['dangling_evidence'])} 题"
+        )
     print(f"产物：{target / 'report.md'}（结构同目录 results.json）")
     return 0
 
 
 def _command_verify_citation(args: argparse.Namespace) -> int:
-    result = resolve_citation(
-        document=args.document, section=args.section, snippet=args.snippet
-    )
+    result = resolve_citation(document=args.document, section=args.section, snippet=args.snippet)
     payload = result.as_dict()
     print(json.dumps(payload, ensure_ascii=False, indent=2))
     if result.ok:
@@ -1527,8 +2070,23 @@ def _build_parser() -> argparse.ArgumentParser:
         help="dry-run（默认，空跑自检）/ fixture（回放固定结果）/ live（真实链路，要库与凭据）",
     )
     run.add_argument("--graph", choices=("off", "on"), default="off", help="图谱注入侧（#152）")
+    run.add_argument("--research", choices=("off", "on"), default="off", help="Research 侧（#148）")
     run.add_argument(
-        "--research", choices=("off", "on"), default="off", help="Research 侧（#148）"
+        "--rerank",
+        choices=RERANK_OPTIONS,
+        default=RERANK_AUTO,
+        help=(
+            "重排开关（默认 auto = 跟服务端配置走）。图谱注入跟着重排走（ADR-0027），"
+            "所以这一栏是 on/off 那组对照成立的前提，也会写进报告"
+        ),
+    )
+    run.add_argument(
+        "--api-key",
+        default=None,
+        help=(
+            "数据面 API Key（也可用环境变量 "
+            f"{ENV_API_KEY}）。--research on 必须有它：门禁要读密钥配置与套餐"
+        ),
     )
     run.add_argument(
         "--allow-model-calls",
