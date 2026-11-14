@@ -422,6 +422,105 @@ def test_a_failed_commit_switches_the_alias_back_when_rolling_back() -> None:
     assert session.commits == 0, "提交失败的这一笔什么都没落下"
 
 
+class _ExpiringRow:
+    """一行版本记录的替身：``revoke()`` 之后读任何属性都抛（模拟过期 ORM 行）。
+
+    真库上「读一个过期属性」会触发一次**同步** lazy load，而异步会话上那是
+    ``MissingGreenlet``——一次「提交失败被第二个异常顶掉」的收尾事故就这么发生的
+    （#153 在真库上滚 v1 时踩到）。替身用同一个形状把这件事变回可离线验证的断言。
+    """
+
+    def __init__(self, row: Any) -> None:
+        object.__setattr__(self, "_row", row)
+        object.__setattr__(self, "_revoked", False)
+
+    def revoke(self) -> None:
+        object.__setattr__(self, "_revoked", True)
+
+    def __getattr__(self, name: str) -> Any:
+        if object.__getattribute__(self, "_revoked"):
+            raise RuntimeError(f"row expired: {name}")
+        return getattr(object.__getattribute__(self, "_row"), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        if object.__getattribute__(self, "_revoked"):
+            raise RuntimeError(f"row expired: {name}")
+        setattr(object.__getattribute__(self, "_row"), name, value)
+
+
+class _ExpiringRowsSession(_FailingCommitSession):
+    """提交失败后把交给它的行标记过期：收尾路径**不许再碰 ORM 行**。"""
+
+    def __init__(self, *, expiring: list[Any], **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._expiring = expiring
+
+    async def rollback(self) -> None:
+        await super().rollback()
+        for row in self._expiring:
+            row.revoke()
+
+
+def test_the_switch_flushes_the_archive_before_it_activates_the_new_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """两条状态写入的**顺序**是硬要求：部分唯一索引立即校验，反了就是 UniqueViolation。
+
+    真库上滚 v1 时踩到过：ORM 把「激活 v1」排在「归档 v2」前面，那一笔直接
+    ``duplicate key value violates uq_index_build_versions_active``（#153）。而在内存替身
+    里顺序永远看不出问题——所以这里钉住「显式 flush，且 flush 时旧版本已归档、新版本
+    还没 active」这一条。
+    """
+
+    live, old, kb = _state()
+    session = _session(versions=[live, old], kb=kb, chunk_rows=_chunks(2))
+    service, keyword = _service()
+
+    snapshots: list[tuple[str, str]] = []
+    real_flush = session.flush
+
+    async def _flush() -> None:
+        snapshots.append((old.status, live.status))
+        await real_flush()
+
+    monkeypatch.setattr(session, "flush", _flush)
+
+    asyncio.run(service.rollback(session, "build-v1", tenant_id=TENANT_ID))
+
+    assert snapshots, "切换必须显式 flush 一次：两条 UPDATE 的先后不许交给 ORM 猜"
+    assert snapshots[0] == (INDEX_BUILD_ARCHIVED, INDEX_BUILD_ARCHIVED), (
+        f"flush 时旧版本应已归档、目标版本还不许是 active：{snapshots}"
+    )
+    assert keyword.activate_calls == [OLD]
+
+
+def test_the_failed_commit_cleanup_never_touches_an_expired_row() -> None:
+    """提交失败之后，收尾只许读**普通值**：读过期的 ORM 行会把根因顶成第二个异常。
+
+    失败那一笔事务一滚，行就过期了。此时再读 ``row.kb_id``（真库上一次同步 lazy load =
+    ``MissingGreenlet``）会让「别名切回去」这一步没跑完——于是别名留在错的版本上，库列却说
+    另一版，两边静默分叉。判据：异常还是**原来那一个**，而且别名被切回了切换前的那一版。
+    """
+
+    live_row = _row(LIVE, INDEX_BUILD_ACTIVE, build_id="build-v2")
+    old_row = _row(OLD, INDEX_BUILD_ARCHIVED, build_id="build-v1")
+    live = _ExpiringRow(live_row)
+    old = _ExpiringRow(old_row)
+    kb = _kb(LIVE)
+    session = _ExpiringRowsSession(
+        expiring=[live, old],
+        rows={KnowledgeBase: [kb], IndexBuildVersion: [live, old], Chunk: _chunks(2)},
+    )
+    service, keyword = _service()
+
+    with pytest.raises(RuntimeError, match="commit failed"):
+        asyncio.run(service.rollback(session, "build-v1", tenant_id=TENANT_ID))
+
+    assert keyword.activate_calls == [OLD, LIVE], (
+        "切到 old 失败之后要能切回 LIVE——收尾路径不该被一个过期行打断"
+    )
+
+
 @pytest.mark.parametrize("door", ["activate", "rollback"])
 def test_a_commit_conflict_names_the_same_error_on_both_doors(door: str) -> None:
     """并发切换相撞：两条入口都把 ``IntegrityError`` 翻成**同一个**可读拒绝。

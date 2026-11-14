@@ -712,15 +712,29 @@ class IndexBuildService:
         )
         previous_version = previous.version if previous is not None else None
 
+        # 收尾只能读普通值（#153 在真库上抓到）：那一笔事务一滚，ORM 行就过期了，再读属性
+        # 会触发一次同步 lazy load —— 异步会话上那是 ``MissingGreenlet``，于是「提交失败」
+        # 被第二个异常顶掉，别名还留在错的版本上（库说 v2、关键词查 v1；不报错，只是关键词
+        # 一路静默变空）。所以三样身份先抄出来。
+        target_version = str(row.version)
+        build_id_value = str(row.id)
+        kb_id_value = str(row.kb_id)
+        tenant_id_value = str(row.tenant_id)
+
         switched = False
         try:
-            await self._keyword_search.activate_version(row.version)
+            await self._keyword_search.activate_version(target_version)
             switched = True
             async with async_transaction(db):
                 stamp = now()
                 if previous is not None:
                     previous.status = INDEX_BUILD_ARCHIVED
                     previous.archived_at = stamp
+                    # 部分唯一索引 ``uq_index_build_versions_active`` 是**立即**校验的：
+                    # 两条 UPDATE 必须「先归档旧的、再激活新的」。ORM 的 flush 顺序不由
+                    # 调用顺序决定——真库上见过它把激活排在前面，直接 UniqueViolation
+                    # （#153 的回滚首跑）。所以这里显式落一次，顺序不再靠运气。
+                    await db.flush()
                 row.status = INDEX_BUILD_ACTIVE
                 row.activated_at = stamp
                 # 回滚上线的版本不再有「归档于」：留着它，查「最近归档了哪几版」会说谎。
@@ -730,14 +744,28 @@ class IndexBuildService:
         except IntegrityError as exc:
             # 并发的另一次切换先提交了：两条部分唯一索引在这里挡住「同一库两个 active」。
             # 回滚与激活看到的是**同一条**可读拒绝，而不是一次 500。
-            await self._discard_failed_switch(db, row=row)
+            await self._discard_failed_switch(db, build_id=build_id_value)
             if switched:
-                await self._restore_alias(db, row=row, fallback=previous_version)
+                await self._restore_alias(
+                    db,
+                    build_id=build_id_value,
+                    kb_id=kb_id_value,
+                    tenant_id=tenant_id_value,
+                    version=target_version,
+                    fallback=previous_version,
+                )
             raise IndexBuildSwitchConflict() from exc
         except BaseException:
-            await self._discard_failed_switch(db, row=row)
+            await self._discard_failed_switch(db, build_id=build_id_value)
             if switched:
-                await self._restore_alias(db, row=row, fallback=previous_version)
+                await self._restore_alias(
+                    db,
+                    build_id=build_id_value,
+                    kb_id=kb_id_value,
+                    tenant_id=tenant_id_value,
+                    version=target_version,
+                    fallback=previous_version,
+                )
             raise
 
         logger.info(
@@ -751,9 +779,7 @@ class IndexBuildService:
         )
         return row
 
-    async def _discard_failed_switch(
-        self, db: AsyncSession, *, row: IndexBuildVersion
-    ) -> None:
+    async def _discard_failed_switch(self, db: AsyncSession, *, build_id: str) -> None:
         """把失败的那一笔切换**彻底扔掉**，再让调用方去读「此刻谁生效」。
 
         **顺序不能换**（#156）：不先回滚就读库列，读到的是这一笔自己写进去、却从未提交的
@@ -769,16 +795,17 @@ class IndexBuildService:
         except Exception:  # noqa: BLE001 - 收尾路径不抛：真正的原因是那次切换失败
             logger.warning(
                 "failed index switch could not be rolled back",
-                build_id=row.id,
-                tenant_id=row.tenant_id,
-                kb_id=row.kb_id,
+                build_id=build_id,
             )
 
     async def _restore_alias(
         self,
         db: AsyncSession,
         *,
-        row: IndexBuildVersion,
+        build_id: str,
+        kb_id: str,
+        tenant_id: str,
+        version: str,
         fallback: str | None,
     ) -> None:
         """提交失败后把关键词别名切回**此刻真正生效的那一版**（尽力而为；失败只记 warning）。
@@ -802,13 +829,13 @@ class IndexBuildService:
           新版本上，检索仍安全（库列还是空的，守卫直接拦），下一轮切换会把别名再挪一次。
         """
 
-        live = await self._live_version_now(db, row=row)
+        live = await self._live_version_now(db, tenant_id=tenant_id, kb_id=kb_id)
         if live is not None and live != fallback:
             logger.warning(
                 "keyword alias restore follows the version that is live now",
-                build_id=row.id,
-                tenant_id=row.tenant_id,
-                kb_id=row.kb_id,
+                build_id=build_id,
+                tenant_id=tenant_id,
+                kb_id=kb_id,
                 live_version=live,
                 previous_version=fallback,
             )
@@ -816,9 +843,8 @@ class IndexBuildService:
         if target is None:
             logger.warning(
                 "keyword alias left on an uncommitted version",
-                build_id=row.id,
-                tenant_id=row.tenant_id,
-                version=row.version,
+                build_id=build_id,
+                version=version,
             )
             return
         try:
@@ -826,13 +852,12 @@ class IndexBuildService:
         except Exception:  # noqa: BLE001 - 收尾路径不抛：真正的原因是那次提交失败
             logger.warning(
                 "keyword alias restore failed",
-                build_id=row.id,
-                tenant_id=row.tenant_id,
+                build_id=build_id,
                 previous_version=target,
             )
 
     async def _live_version_now(
-        self, db: AsyncSession, *, row: IndexBuildVersion
+        self, db: AsyncSession, *, tenant_id: str, kb_id: str
     ) -> str | None:
         """重读「这个库此刻生效哪一版」；读不到就返回 ``None``（由调用方决定退路）。
 
@@ -846,14 +871,13 @@ class IndexBuildService:
 
         try:
             kb = await knowledge_base_repository.get_by_id_for_tenant(
-                db, row.kb_id, tenant_id=row.tenant_id
+                db, kb_id, tenant_id=tenant_id
             )
         except Exception:  # noqa: BLE001 - 错误路径上的读失败不追加异常
             logger.warning(
                 "keyword alias restore could not re-read the live version",
-                build_id=row.id,
-                tenant_id=row.tenant_id,
-                kb_id=row.kb_id,
+                tenant_id=tenant_id,
+                kb_id=kb_id,
             )
             return None
         if kb is None:
@@ -973,3 +997,4 @@ __all__ = [
     "ensure_activation_origin",
     "ensure_transition",
 ]
+
