@@ -130,7 +130,7 @@ uv run python scripts/eval_t159_orchestration.py --refill-results <上面的 res
 ## 五、`complete` 抽检：7 题逐题结论
 
 抽检材料全部取自产物的 `on_diagnostic_block`（要点清单 + 每条核心片的**正文**），不是再跑
-一次实验。判定分两问：**(a) 列出的每个要点，核心片是否真的支持它？** **(b) 题目要求的
+一次实验；原始证据（9 题）留在 [`orchestration-audit-dump.txt`](orchestration-audit-dump.txt)。判定分两问：**(a) 列出的每个要点，核心片是否真的支持它？** **(b) 题目要求的
 答案要点，是否都被列出并覆盖？** 下面两条分开写——`complete` 只回答 (a)。
 
 | 题号 | (a) 列出的要点都有真实核心片？ | (b) 题目要求的要点齐？ | 结论 |

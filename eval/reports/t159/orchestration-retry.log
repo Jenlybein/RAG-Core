@@ -1,0 +1,4 @@
+2026-11-14T14:07:03.372417Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:1.922s] [elastic_transport.transport]
+2026-11-14T14:07:03.605416Z [info     ] HTTP Request: POST https://ws-4k904g6c9r4c96ch.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/embeddings "HTTP/1.1 200 OK" [httpx]
+2026-11-14T14:07:03.947279Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:07:04.134275Z [warning  ] langchain-openai injected a custom httpx transport to apply `http_socket_options`, which disables httpx's proxy auto-detection (system proxy configuration detected). Set `LANGCHAIN_OPENAI_TCP_KEEPALIVE=0` or pass `http_socket_options=()` to restore default proxy behavior, or supply `openai_proxy` / your own `http_client` / `http_async_client` to take full control. [langchain_openai.chat_models._client_utils]
