@@ -152,9 +152,9 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # （``add_orchestration_switch``）接在反馈表之后；#141 的索引构建版本表
     # （``add_index_build_versions``）再接在编排开关之后；#150 的 Research 配额两列
     # （``add_research_quotas``）接在版本表之后；#152 的关系边表
-    # （``create_section_edges``）再接在配额两列之后；#138 的范围变更把那张表删掉
-    # （``drop_section_edges``），链尾因此前移到「删表」这一条。
-    assert heads == {_revision_of(_migration_path("drop_section_edges"))}
+    # （``create_section_edges``）再接在配额两列之后；#138 撤销编排块的删列迁移
+    # （``drop_orchestration_switch``）再接在关系边表之后。
+    assert heads == {_revision_of(_migration_path("drop_orchestration_switch"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

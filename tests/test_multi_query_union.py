@@ -87,11 +87,10 @@ _TRACE_ID_RE = re.compile(r',"trace_id":"[0-9a-f]{32}"')
 #: 基线常量因此一个都不用重采——「除这两个新键外逐字节不变」由同一组数字继续证明。
 _RERANK_IDENTITY_RE = re.compile(r',"provider":(?:null|"[^"]*"),"model":(?:null|"[^"]*")')
 
-#: #147 起 ``metadata.tenant_policy`` 多出 ``orchestration``（ADR-0010「第七次修订」）。
-#: 处理方式与前两个键**完全相同**：它是「这次生效了什么」的第六项，值恒为布尔、位置固定
-#: （在 ``rewrite`` 之后），摘掉之后响应仍与 #78 那版基线逐字节相同。基线常量因此不重采
-#: ——重采会把「只多了这一个键」这件事从证据里抹掉。
-_ORCHESTRATION_ECHO_RE = re.compile(r',"orchestration":(?:true|false)')
+#: #147 起 ``metadata.tenant_policy`` 曾多出 ``orchestration``，比对时摘过一段（第七次修订）；
+#: ADR-0029 收窄（#138）把它撤掉之后，**这一段摘除不需要了**——键不存在，响应文本直接
+#: 回到基线，哈希常量仍然一个都没重采。也就是说这个键从来只是「被摘掉才对齐」，撤掉之后
+#: 连摘都不用摘：这正是「它没碰过别的字节」的最终形态。
 
 
 # ─────────────────────────────────────────────────────────────── 替身
@@ -329,15 +328,14 @@ def _without_trace_id(text: str) -> str:
     契约新增，摘掉之后仍与旧基线逐字节相同。这两段摘除各自都要求「至少命中一次」——
     否则这条比对会退化成「什么也没摘、什么也没比」。
 
-    #147 起 ``metadata.tenant_policy`` 多出 ``orchestration``（ADR-0010「第七次修订」），
-    处理方式依旧相同（:data:`_ORCHESTRATION_ECHO_RE`）：它是「这次生效了什么」的第六项，
-    摘掉之后仍与旧基线逐字节相同。**关闭编排时响应另一处也没变**：编排块本身在关闭时
-    连键都不出现（``RetrieveData`` 的序列化规则），所以这条哈希里没有第二段要摘。
+    #147 起 ``metadata.tenant_policy`` 曾多出 ``orchestration``，当时按同一手法摘过一段；
+    #138（ADR-0029）把它撤掉之后那一段摘除**不再需要**：键不存在，响应文本直接与 #78 那版
+    基线逐字节相同，三个哈希常量一次都没重采。这条哈希因此同时证明了「撤销只删了那个键、
+    没有碰别的字节」。
     """
 
     without_trace = _TRACE_ID_RE.sub("", text)
-    without_rerank_identity = _RERANK_IDENTITY_RE.sub("", without_trace)
-    return _ORCHESTRATION_ECHO_RE.sub("", without_rerank_identity)
+    return _RERANK_IDENTITY_RE.sub("", without_trace)
 
 
 def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
@@ -358,9 +356,10 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             response = _response(fake["client"], mode=mode)
         assert response.status_code == 200
         assert _TRACE_ID_RE.search(response.text), "摘除必须真的命中一次，否则这条比对是空比对"
-        # ``tenant_policy`` 三种 mode 都有（它挂在每一次经门禁解析的调用上）；#147 的
-        # 那个键必须真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了它」。
-        assert _ORCHESTRATION_ECHO_RE.search(response.text), "回显摘除也必须真的命中"
+        # 回显里那个键（#147 加的、#138 撤掉的）**不许再出现**：它一旦回来，下面三个
+        # 哈希就会与基线不等，而这条断言把失败原因直接指到「谁把性质上不属于默认路径的
+        # 东西塞回了 tenant_policy」。
+        assert '"orchestration"' not in response.text, "tenant_policy 回显不许再出现这个键"
         if mode == "hybrid":
             # 重排关着时 ``rerank`` 仍是字典（applied=false …），身份键是 null；它们必须
             # 真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了这两个键」。

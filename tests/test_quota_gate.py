@@ -97,7 +97,6 @@ def _policy(*, qps: int = 3, daily: int = 100) -> KeyPolicySnapshot:
         hybrid_allowed=False,
         rerank_allowed=False,
         query_rewrite_allowed=False,
-        orchestration_allowed=False,
         retrieve_qps=qps,
         retrieve_daily=daily,
         research_qps=0,

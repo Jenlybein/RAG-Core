@@ -52,7 +52,6 @@ def _data(profile: str, spec: ProfilePresetSpec) -> ProfilePresetData:
         top_k=spec.top_k,
         rerank=spec.rerank,
         rewrite=spec.rewrite,
-        orchestration=spec.orchestration,
     )
 
 
@@ -93,7 +92,6 @@ async def patch_profile_preset(
         top_k=payload.top_k,
         rerank=payload.rerank,
         rewrite=payload.rewrite,
-        orchestration=payload.orchestration,
         actor=identity,
     )
     return ok(

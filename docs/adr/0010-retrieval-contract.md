@@ -1,6 +1,6 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**；**§5 的索引版本已在第 11 步接上版本生命周期（取值改为各库生效版本，映射形状不变），见 [ADR-0025](0025-index-as-build-artifact.md)**；**响应 `data` 已在第 11 步 #147 增加可选的 `orchestration` 块、回显增加 `orchestration`、降级原因多一条，见文末「第七次修订」**
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**；**§5 的索引版本已在第 11 步接上版本生命周期（取值改为各库生效版本，映射形状不变），见 [ADR-0025](0025-index-as-build-artifact.md)**；**响应 `data` 曾在第 11 步 #147 增加可选的 `orchestration` 块、回显增加 `orchestration`、降级原因多一条（见文末「第七次修订」），该块已在第 11 步收窄中**整条撤销**（[ADR-0029](0029-scope-down-to-controlled-research.md)），见文末「第十一次修订」**
 - 日期：2026-11-08
 - 相关：父 spec #20「第 4 步」、**父 spec #72「第 7 步」、ADR-0018「三层授权与配置自洽校验」**、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
@@ -69,7 +69,7 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 
 ## 3. 降级原因是一组固定英文串
 
-`degraded_reason` 只允许四个值，**不拼异常文本**（第 11 步 #147 起是五个：多一条 `orchestration failed`，见文末「第七次修订」）：
+`degraded_reason` 只允许五个值，**不拼异常文本**（第八次修订加了一条 `graph injection failed`；第七次修订加的那条 `orchestration failed` 已由第十一次修订撤回——一个不再存在的步骤不会失败）：
 
 | 原因 | 产生位置 | 含义 |
 | --- | --- | --- |
@@ -77,6 +77,7 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 | `vector search failed` | `app/services/retrieval/pipeline.py` | 向量通道失败（含嵌入失败），已用关键词结果继续 |
 | `keyword search failed` | `app/services/retrieval/pipeline.py` | 关键词通道失败，已用向量结果继续 |
 | `rerank failed` | `app/services/retrieval/rerank.py` | 重排失败（含超时、空返回），已保留融合顺序 |
+| `graph injection failed` | `app/services/retrieval/pipeline.py` | 图谱注入失败，候选池原样交回（注入项跳过） |
 
 规则：
 
@@ -487,24 +488,76 @@ ADR-0010 第三次修订的结论不变。
 
 ### 5. 翻案条件
 
-出现「毫秒级也要结构化材料」的真实需求时，**先讨论能不能把两步调用合并成一次**（并接受角色分配的归纳误差），而不是继续把预算往上堆。若某部署的模型 p50 长期低于 5 秒，可把默认值调小，但要在本文登记实测依据。
+## 第十一次修订（第 11 步收窄，#138，2026-11-15）：撤回轻量图谱与独立编排块
 
-## 第十一次修订（第 11 步，#138 范围变更，2026-11-15）：降级原因**少一条** `graph injection failed`
+第 8、9、10 三次修订给这份契约加过三样东西：第六个降级原因 `graph injection failed`、`metadata.retrieval.graph` 那一栏与 `retrieval_source` 字段、以及 `data` 顶层的 `orchestration` 块（连同回显里的开关与第五条原因 `orchestration failed`）。**这三样全部撤回。**
 
-第八次修订给 §3 加了第六个固定串，第九次修订给 `metadata.retrieval` 加了 `graph` 那一栏。**这两处都随轻量图谱一起撤销**（ADR-0027 已被 [ADR-0029](0029-scope-down-to-controlled-research.md) 取代），所以：
+撤销的判决与完整论证在 [ADR-0029](0029-scope-down-to-controlled-research.md)（决策一：图谱；决策二：编排）。本节只记**契约上发生了什么**。
 
-- 降级原因回到**五个**：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `orchestration failed`。`GLOSSARY.md` 的数量词与 `tests/test_degraded_reason_vocabulary.py` 的 `DOCUMENTED` 一起改成五个（`orchestration failed` 留给撤编排那一票处理）。
-- `metadata.retrieval.graph` 这一栏不再出现；每条结果上的 `retrieval_source` 字段一并删除（它只由注入项产出）。
-- **优先级顺序回到「改写 → 通道 → 重排 → 编排」**：图谱插在「通道 → 重排」之间那一格随它一起消失。
+### 1. 契约的最终形状
 
-### 为什么不是「改回第六次修订之前的样子」那么简单
+| 位置 | 曾经加过什么 | 现在 |
+| --- | --- | --- |
+| `data.orchestration` | 要点 / 材料 / 三态完整度那一块，开启时出现 | **键不存在**（`data` 顶层只剩 `query` / `kb_ids` / `retrieved_chunks` / `metadata`） |
+| `metadata.tenant_policy.orchestration` | 生效值回显的第六项 | **键不存在**（回显剩八项：`plan` / `requested_profile` / `mode` / `top_k` / `rerank` / `rewrite` / `kb_count` / `clipped`） |
+| `metadata.retrieval.graph` | 注入读数那一栏 | **键不存在** |
+| 每条结果的 `retrieval_source` | 标出"这条来自注入" | **字段删除**（唯一生产者是注入项） |
+| `metadata.retrieval.degraded_reason` | 第五、第六条固定串 | **词表只剩四个**：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` |
+| 三层开关 | 套餐 / 密钥配置 / 档位各一列 | **三列一起从表里删掉**（`plans` / `key_policies` / `profile_presets`） |
 
-少了两个可观察字段，逐字节红线反而更容易守：删字段之后**关掉能力的响应与「从来没有过这个能力」的响应是同一个东西**，不需要再靠「摘键比对」。第八、九两次修订里的「摘掉 null 再比」那套做法因此一并退休。
+请求体不受影响：仍是 `kb_ids` + `query`（第三次修订的结论一个字没改）。
 
-### 被否决的做法
+降级原因的**优先级**回到「改写 → 通道 → 重排」：图谱插在「通道 → 重排」之间那一格、编排挂在链尾那一格，随各自一起消失。
+
+### 2. 为什么撤销图谱：不是"正则不可靠"
+
+票面最初的担心是抽取不准。**实测不支持这个理由**：补上两条确定性定位规则之后，可确定性定位 **37 / 38** 条显式引用（上限 recall **0.974**，工程档 0.944），上线后 precision **1.0000** / recall **0.8421**。**正则这条路走得通，走不通的是价值**：
+
+- 只覆盖**作者显式写下**的指路，而文档之间大部分有用的关联是隐式的——**能力上限恰好落在最没价值的场景**；
+- 对照实验里注入 **0 条**（语料饱和，没有"补"的空间），价值未被证明；
+- 每来一种新写法就要加一条规则，**漏掉的边静默消失**；
+- 跨文档漏召回由 Research 的定向补证覆盖，可替代。
+
+### 3. 为什么撤销编排：四个实测数字
+
+| 读数 | 值 | 意味着 |
+| --- | --- | --- |
+| 材料条数与总字数变化 | **0** | 它给的是「结构」，不是「更少材料」 |
+| 每题延迟（p50） | 0.22 秒 → **22.5 秒** | 两个数量级，而 `/rag/retrieve` 承诺几百毫秒 |
+| 每次调用的模型调用数 | 0 → **2 次** | 两次串行结构化调用（要点 → 角色） |
+| 没有任何要点引用的材料占比 | **15% / 23%**（两个题集） | 它给材料标了价，而这个价今天没人能判断对不对 |
+
+外加一条事故性证据：整步预算默认写 4 秒（两次调用共用），单次调用实测 4.5–25 秒，于是**生产默认配置下 20/20 题全部降级、一块都产不出**，每题白付 4.2 秒；所有用例都绿，因为用例自己传了 `timeout_ms`，没有一条走默认值（第十次修订记的就是这件事）。
+
+**决定性的理由不是这些数字，是「对外没有消费者」**：调用方要的是材料或答案，「要点 + 角色」这个中间结构没有下游——既不能直接回答，也不能直接引用。而它占的是**别人的模型调用时间**。
+
+### 4. 定位变化：有价值的部分并入 Research
+
+- **「模型只点序号、正文回库重建」** 这条结构性防注入搬进 Research 的证据组装（`app/services/citation_blocks.py`：模型只能给下标，正文由后端按序号回查）；
+- **「完整度 / 覆盖率」** 搬进 Research 输出（`evidence_state` 与将来的 `gaps`）：不再是"自评是否齐全"，而是"答案为什么可能不完整"；
+- 三态词表（`complete` / `partial` / `missing`）**留在代码里**，定义处从被删的服务挪到 `citation_blocks.py`——撤销的是块，不是这套词。
+
+### 5. 「其余契约逐字节不变」这次是直接成立的
+
+第七次修订曾为编排破了逐字节不变：黄金哈希要把 `,"orchestration":…` 摘掉之后才与旧基线相等。**这次不需要摘**：键不存在，响应文本直接等于基线，三个哈希常量一个都没重采。
+
+也就是说，同一组数字同时证明了两件事：第七次修订当年「只多了这一个键」，以及这次「只删了这一个键」。用例里那条「摘除必须命中」的断言改成「这个键不许再出现」——它一旦回来，哈希立刻不等。
+
+### 6. 被否决的做法
 
 | 做法 | 为什么不行 |
 | --- | --- |
-| 保留 `graph injection failed` 这个串（代码里不再产出） | 词表是响应契约，写着一个永不出现的原因，调用方会为它写一条死分支——而这正是词表守卫要防的「文档与代码不一致」 |
-| 保留 `retrieval_source` 字段，恒为 `null` | 字段的**唯一**生产者是注入项；留一个恒空的字段等于在契约里留一句谎话，而序列化摘 null 的做法只能遮住形状、遮不住语义 |
+| 保留 `graph injection failed` / `orchestration failed` 这两个串（代码里不再产出） | 词表是响应契约，写着一个永不出现的原因，调用方会为它写一条死分支——这正是词表守卫要防的「文档与代码不一致」 |
+| 保留 `retrieval_source` 字段，恒为 `null` | 字段的**唯一**生产者是注入项；留一个恒空的字段等于在契约里留一句谎话 |
 | 保留 `section_edges` 表只删代码 | 表是构建产物，没人读它却要跟着每个版本重建；删表迁移的 `downgrade` 只还原结构、不还原数据，这一点写在那条迁移的 docstring 里 |
+| 保留编排成「默认关」的可选项 | 默认关的可选项仍要付「三层开关 + 一块契约 + 两条降级路径」的维护成本，而它的消费者数量是零 |
+| 把编排块塞回 Research 当现状不变 | Research 本来就在做「要点 + 材料」，但它的基准在**问题侧**而不是材料侧（ADR-0029 决策三）；把以材料为基准的块塞回去，等于把 `complete` 恒为真的盲区一起搬进去 |
+| 保留代码、只关掉开关 | 会变成下一个「默认不接线、生产永不发生」的死代码——这一轮已经踩过一次 |
+| 让 LLM 提图谱候选（替代正则） | 重建两次会得到不同边集，可复现性没了；而实测里那一层缺口是**语法**不是语义，换来的增量是 0 条 |
+
+### 7. 翻案条件
+
+两族条件写在 [ADR-0029](0029-scope-down-to-controlled-research.md) 的「翻案条件」一节：
+
+- **图谱**：语料足够大且召回深度压到"相似度真的会漏"、有一批**只靠显式引用才能找到**且有答案影响的材料、隐式关联另有办法、且有人愿意承担持续加规则的成本——四条同时成立才重新考虑；
+- **编排**：出现「我要结构化材料但不要答案」的真实需求，**且**能把两次调用压到一次、延迟压到 5 秒内。否则它应该留在 Research 内部。

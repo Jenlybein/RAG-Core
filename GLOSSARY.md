@@ -228,7 +228,7 @@ _Avoid_: 检索引擎, 完整检索服务, retrieve 服务
 _Avoid_: 精排, 二次排序, 粗排
 
 **降级原因（degraded_reason）**：
-降级时回给调用方的固定英文串，只有五个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `orchestration failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排 → 编排），后到的不覆盖。
+降级时回给调用方的固定英文串，只有四个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排），后到的不覆盖。
 _Avoid_: 错误信息, 异常原因, 失败详情, 中文译名
 
 **诚实空（honest empty）**：
@@ -331,8 +331,8 @@ _Avoid_: 配置级别, 配置等级, 热更新级别
 
 ## 延伸能力
 
-**切片编排**：
-把候选切片整理成「带角色的结构化结果」的步骤，分两步问小模型：先把问题归纳成要点（A1…An），再为每个要点挑出**核心片**与**辅助片**。它只组织切片，**不改排名，也不生成答案**；模型的输出里只有要点与候选序号，**正文一律由后端按序号回查重建**——所以提示词注入最多让它点错序号，塞不进任意内容。三态完整度（`complete` / `partial` / `missing`）由「每个要点有没有核心片」数出来，不由模型自评；材料编号 E1…En 按要点顺序稳定分配，调用方可以直接引用。默认关闭，开关按 ADR-0018 分三层（套餐 / 密钥配置 / 档位）。Research 的每一轮收口、MCP 工具的返回值都基于它。
+**切片编排（已撤销）**：
+第 11 步曾经的一个可选步骤：把候选切片整理成「要点 → 核心片 / 辅助片」的结构化结果。**它已被撤销**（[ADR-0029](docs/adr/0029-scope-down-to-controlled-research.md) 决策二）：材料一条没少、每题多付 22.5 秒与两次模型调用，而「要点 + 角色」这个中间结构**对外没有消费者**。撤销后它只作为**历史概念**存在——`eval/reports/t159/` 里那批测量是「它不值得留」的证据，读那些报告时需要这个词；代码里已经没有它。它真正有价值的两样东西搬进了 Research：「模型只点序号、正文回库重建」（见「引用块」）与「完整度 / 覆盖率」（见 `evidence_state`）。
 _Avoid_: 证据编排, Evidence Pack, evidence_pack（对外文案里）
 
 **受控 Research**：
@@ -349,8 +349,8 @@ Research 结束的原因，固定**七个**英文枚举，**不许翻译**，界
 _Avoid_: 结束原因（中文译名）, finish_reason, 终止条件, stop reason（空格写法）
 
 **evidence_state**：
-Research 响应 `metadata.evidence_state` 里的三态完整度：`complete`（每个要点都有核心片）/ `partial`（部分要点有）/ `missing`（一条核心片都没有）。它**由核心片数量数出来，不由模型自评**；词表与切片编排的 `completeness` 是**同一份**（同样三个词、同一个判据），所以两处不会对同一份材料给出两种说法。它与「停止原因」分工明确：`stop_reason` 答「为什么停」，`evidence_state` 答「材料够不够」（`app/schemas/research.py` 的 `ResearchMetadata`）。
-_Avoid_: completeness（那是编排侧的字段名）, 覆盖度（coverage 是评测侧的另一个概念）, 置信度, 自评得分
+Research 响应 `metadata.evidence_state` 里的三态完整度：`complete`（每个要点都有核心片）/ `partial`（部分要点有）/ `missing`（一条核心片都没有）。它**由核心片数量数出来，不由模型自评**；词表定义在 `app/services/citation_blocks.py` 的 `COMPLETENESS_*`（撤销切片编排时把这条判据搬进了 Research），只有这一处定义，不许在别处再写一份字面量。它与「停止原因」分工明确：`stop_reason` 答「为什么停」，`evidence_state` 答「材料够不够」（`app/schemas/research.py` 的 `ResearchMetadata`）。
+_Avoid_: completeness（旧编排块的字段名，已随撤销消失）, 覆盖度（coverage 是评测侧的另一个概念）, 置信度, 自评得分
 
 **sub_search_degraded_reasons**：
 Research 响应 `metadata.sub_search_degraded_reasons` 里的列表：**子检索**各自降级了哪几条原因，取的就是既有「降级原因」里那几个固定串（例如 `keyword search failed`、`vector search failed`），去重后原样上交。它必须由检索那一层递上来——「查的时候降级了」在材料正文里看不出来；而子检索又不能各写一行归属索引（一次 Research 只写一行）。它**不是停止原因**：一次 Research 可以带着一条子检索降级一路答完，`stop_reason` 仍然是 `evidence_complete`。

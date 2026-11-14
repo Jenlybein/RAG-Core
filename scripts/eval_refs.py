@@ -406,10 +406,9 @@ class Outcome:
     #: Research 侧的三态完整度与引用块（``evidence_state`` / ``citations``）。
     evidence_state: str | None = None
     citations: list[dict[str, Any]] = field(default_factory=list)
-    #: 切片编排块（``response["orchestration"]``）：**开关开着且这一步真的跑成了**才有。
-    #: 关着时响应里没有这个键，这里就是 ``None``——「没有块」与「块是空的」因此可区分。
-    #: 原样留档（含每条证据的正文），因为 #159 的抽检要回答「核心片到底覆盖了哪些要点」，
-    #: 那是拿正文判断的事，不能只看计数。
+    #: 切片编排块（``response["orchestration"]``）：**已撤销**（ADR-0029 / #138）。
+    #: 字段留着只为回放 #159 的归档产物——那时的 ``results.json`` 里真有这一栏，报告脚本
+    #: 要能把它读出来。今天跑真实链路时它恒为 ``None``（响应里不再有这个键）。
     orchestration: dict[str, Any] | None = None
 
     def termination(self) -> str:
@@ -668,8 +667,8 @@ def _apply_retrieval(
     # 把整个字典的真假当判据会给每一次检索都多加一次（#153 的守分抽样上就这么错了一次）。
     job = meta.get("rerank") or {}
     outcome.model_calls = 1 + (1 if job.get("applied") else 0)
-    # 编排块**从响应回读**，不按开关推断：关着时这个键根本不存在（``rag_service`` 只在
-    # 块非空时才加它），所以 ``None`` 是「这一次没有这一块」，不是「读失败」。
+    # 编排块**从响应回读**，不按开关推断。该能力已撤销，响应里不再有这个键，所以今天读到
+    # 的恒为 ``None``；这一行留着是为了回放归档产物（见 ``Outcome.orchestration``）。
     block = response.get("orchestration")
     outcome.orchestration = dict(block) if isinstance(block, Mapping) else None
 
@@ -732,7 +731,6 @@ async def evaluate_live_question(
     research: str,
     document_names: Mapping[str, str],
     rerank_enabled: bool = False,
-    orchestration: bool = False,
 ) -> Outcome:
     """跑**一道题**：``research=on`` 走门禁化的 Research，否则走一次检索内核。
 
@@ -744,9 +742,8 @@ async def evaluate_live_question(
     让旧报告与旧命令行的字段名对得上（``results.json`` 里那一栏还在），不是为了还能驱动它
     ——要复现那一组对照得回到 tag ``step11-with-graph-and-orchestration``。
 
-    ``orchestration``（#159 第一组）只影响检索那一路：它把折叠之后的交付单元再做一次
-    「要点 → 核心 / 辅助」编排。**关着是缺省**——那一次多两次模型调用，而版本 / 图谱 /
-    Research 三组对照都不是在测它。打开时两侧只差这一个布尔，其余参数逐项相同。
+    ``orchestration``（#159 第一组）同样只剩**记录**意义：ADR-0029 撤销该能力之后，
+    ``--orchestration`` 开关与服务一起消失，读数留在 ``eval/reports/t159/``。
     """
 
     started = time.perf_counter()
@@ -780,11 +777,6 @@ async def evaluate_live_question(
                     # 重排是「同一台机器上的今天」的一部分，由 --rerank 钉死。
                     rerank=rerank_enabled,
                     rewrite=False,
-                    # 切片编排缺省**关着**：它一次就多两次模型调用，而版本 / 图谱 /
-                    # Research 三组对照没有一组在测它；开着还会给响应多加一个键，把
-                    # 「只差一个开关」这件事搅浑。要测它的是另一组（#159 第一组），
-                    # 那里由 ``--orchestration on`` 显式打开、且两侧其余参数逐项相同。
-                    orchestration=orchestration,
                 ),
             )
             _apply_retrieval(outcome, response, document_names)
@@ -835,7 +827,6 @@ async def run_live(
     rerank: str = RERANK_AUTO,
     api_key: str | None = None,
     seams: LiveSeams | None = None,
-    orchestration: bool = False,
 ) -> list[Outcome]:
     """跑真实链路（进程内 ``rag_service.retrieve`` / ``research_gate.gated_research``）。
 
@@ -868,7 +859,6 @@ async def run_live(
                     research=research,
                     document_names=document_names,
                     rerank_enabled=rerank_enabled,
-                    orchestration=orchestration,
                 )
             )
     return outcomes

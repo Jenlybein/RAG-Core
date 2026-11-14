@@ -137,10 +137,9 @@ REFERENCE_KB_DESCRIPTION = (
     "C6 验收用：3 篇同一业务域（退款 / 促销 / 积分）的中文文档，彼此带显式引用表达"
 )
 
-#: 专业版那三列的目标值（#153 §①：迁移回填的是 0，这是刻意的，别改种子）。
+#: 专业版那两列的目标值（#153 §①：迁移回填的是 0，这是刻意的，别改种子）。
 PRO_PLAN_CODE = "pro"
 PRO_PLAN_TARGETS: dict[str, Any] = {
-    "orchestration_allowed": True,
     "research_qps": 1,
     "research_daily": 100,
 }
@@ -153,7 +152,6 @@ POLICY_TARGETS: dict[str, Any] = {
     "rerank_allowed": True,
     "query_rewrite_allowed": True,
     "research_allowed": True,
-    "orchestration_allowed": True,
     "retrieve_qps": 50,
     "retrieve_daily": 100000,
     "research_qps": 1,
@@ -379,7 +377,6 @@ def ensure_pro_plan(db: Any) -> dict[str, Any]:
     return {
         "code": spec.code,
         "research_allowed": spec.research_allowed,
-        "orchestration_allowed": spec.orchestration_allowed,
         "research_qps": spec.research_qps,
         "research_daily": spec.research_daily,
         "max_kb": spec.max_kb,
@@ -411,7 +408,6 @@ def ensure_quality_preset(db: Any) -> dict[str, Any]:
         "top_k": row.top_k,
         "rerank": row.rerank,
         "rewrite": row.rewrite,
-        "orchestration": row.orchestration,
     }
 
 

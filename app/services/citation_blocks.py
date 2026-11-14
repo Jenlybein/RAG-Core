@@ -28,9 +28,9 @@ ADR-0026 是这一块的**权威边界**：受控 Research 只生成「引用块
 **拒绝码是一因一码的固定串**：它进日志与内部结果，**不进响应**——响应里那一格只有
 ``answer = null``。调用方要的是「这次不生成」，不是「后端替你判了哪一条」。
 
-**三态完整度由核心片数算出来**，与切片编排同一口径（``app.services.orchestration`` 的
-``complete`` / ``partial`` / ``missing``）：所有块都有核心片 = ``complete``，部分 = ``partial``，
-一条都没有 = ``missing``。模型的自评根本没进这里，所以「模型说齐了」在结构上无法影响它。
+**三态完整度由核心片数算出来**（ADR-0029 决策二把这条判据搬进了 Research）：所有块都有
+核心片 = ``complete``，部分 = ``partial``，一条都没有 = ``missing``。模型的自评根本没进这里，
+所以「模型说齐了」在结构上无法影响它。
 
 **这里是纯函数**：不碰库、不读配置、不调模型。模型调用与降级顺序在
 ``app.services.research``（状态机的第 ⑤ 步），本模块只回答「这份输出能不能对外」。
@@ -45,13 +45,13 @@ from typing import Any, Final, Literal
 
 from pydantic import BaseModel, Field
 
-#: 三态完整度与切片编排**共用同一份常量**：两个模块各写一份会漂移，而「材料够不够」
-#: 在两条链路上必须读同一套词。
-from app.services.orchestration import (
-    COMPLETENESS_COMPLETE,
-    COMPLETENESS_MISSING,
-    COMPLETENESS_PARTIAL,
-)
+#: 三态完整度的词表。**定义处就是这里**：ADR-0029 决策二撤销了独立的编排块，把其中
+#: 唯一站得住的那条判据（「完整度由核心片数出来，不采信模型自评」）搬进了 Research。
+#: `app/schemas/research.py` 的 `evidence_state` 与 :func:`evidence_state_of` 取自这三个
+#: 常量，别处不许再写一份字面量——两份词表迟早给出两个答案。
+COMPLETENESS_COMPLETE: Final[str] = "complete"
+COMPLETENESS_PARTIAL: Final[str] = "partial"
+COMPLETENESS_MISSING: Final[str] = "missing"
 
 STATUS_SUPPORTED: Final[str] = "supported"
 STATUS_INSUFFICIENT: Final[str] = "insufficient"
@@ -180,7 +180,7 @@ def render_answer(citations: Sequence[Citation]) -> str:
 
 
 def evidence_state_of(*, citations: Sequence[Citation], materials: Sequence[Mapping[str, Any]]) -> str:
-    """三态完整度：**由核心片数算出来**，与切片编排同一口径（不看模型自评）。
+    """三态完整度：**由核心片数算出来**（不看模型自评，ADR-0029 决策二）。
 
     ``complete`` = 每一块都有核心片；``partial`` = 部分块有；``missing`` = 一条都没有
     （材料池空、全是 ``insufficient``、或压根没有通过校验的块，都属于最后这一档）。

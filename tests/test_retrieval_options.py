@@ -176,15 +176,15 @@ def test_custom_policy_unusable_values_fall_back_per_key(
         # 三档的全部内容写在票面（#78）上，这里逐字抄一遍；编排（#146）三档都不开。
         (
             PROFILE_SPEED,
-            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False, orchestration=False),
+            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False),
         ),
         (
             PROFILE_BALANCED,
-            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False, orchestration=False),
+            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False),
         ),
         (
             PROFILE_QUALITY,
-            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True, orchestration=False),
+            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True),
         ),
     ],
 )

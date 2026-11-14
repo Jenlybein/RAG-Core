@@ -52,7 +52,7 @@ class PlanSnapshotData(BaseModel):
     """``/console/me`` 里的套餐快照：**没有 plan_id**，租户那一栏里已经有了。
 
     快照来自缓存/解析结果（:class:`app.models.plan.PlanSpec`），它刻意不带主键——判定内核
-    只关心「这一档的 14 个值」。
+    只关心「这一档的 13 个值」。
     """
 
     code: str
@@ -62,7 +62,6 @@ class PlanSnapshotData(BaseModel):
     rerank_allowed: bool
     query_rewrite_allowed: bool
     research_allowed: bool
-    orchestration_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
     #: Research 的两个独立配额（票 #150）。0 = 关闭，与 ``research_allowed=False`` 同一个
@@ -153,7 +152,6 @@ class PlanPatchRequest(BaseModel):
     rerank_allowed: bool | None = None
     query_rewrite_allowed: bool | None = None
     research_allowed: bool | None = None
-    orchestration_allowed: bool | None = None
     retrieve_qps: int | None = None
     retrieve_daily: int | None = None
     #: Research 的两列：**允许填 0**（= 关闭），这与上面两列的「必须 ≥ 1」刻意不同。
