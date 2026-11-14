@@ -1,13 +1,18 @@
 """#158 · 图谱引用边的离线测量：拿标注集量 precision / recall，按文档形态分档。
 
-**为什么要有这一层**：``eval/corpus-refs`` 的 9/9 是自测出来的——语料与抽取器出自同一份设计
+**它是「否决方案的证据」，不是可运行的现役脚本**：#138 的范围变更撤销了轻量图谱
+（ADR-0027），抽取器与关系边表都已删除。这个文件留着，是因为它记录的**方法与读数**是那次
+否决的依据之一；要重新跑起来，回到 tag ``step11-with-graph-and-orchestration``。
+直接跑现在的它会打印那段说明并以 **0** 退出（不是崩）——见 :func:`_load_rejected_scheme`。
+
+**为什么当初要有这一层**：``eval/corpus-refs`` 的 9/9 是自测出来的——语料与抽取器出自同一份设计
 文档，它只证明「我们自己写的那三种写法被认出来了」。要回答「真实文档里的写法被认出来多少」，
 必须有一份**不属于本轮自造语料**的标注集（``eval/graph-labels/``），以及一个只算数、不解释的
 测量脚本。
 
 这个模块**不碰数据库、不发网络、不调模型**：语料是磁盘上的 Markdown，抽取器是生产那份
-:func:`app.services.section_graph.extract_section_edges`，切块器是生产那份
-:class:`app.utils.markdown_splitter.MarkdownStructuredSplitter`。
+:func:`app.services.section_graph.extract_section_edges`（已随图谱撤销，见 tag），切块器是
+生产那份 :class:`app.utils.markdown_splitter.MarkdownStructuredSplitter`。
 
 ## 测量单位与口径
 
@@ -40,19 +45,70 @@ import sys
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
-from app.models.section_edge import RELATION_REFERENCE
-from app.services.section_graph import (
-    EdgeDraft,
-    EdgeScope,
-    SectionCatalog,
-    SectionRecord,
-    SectionText,
-    extract_reference_candidates,
-    extract_section_edges,
-)
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
+
+#: 这个脚本测量的是**已否决方案**（轻量图谱的引用边抽取，ADR-0027）。它被 #138 的范围
+#: 变更撤销了，实现只活在 tag 里：撤销的理由不是「规则不准」（补了 R1/R2 之后上限
+#: recall 0.974），而是价值不成立——边只覆盖作者写了「见 X 节」的显式指路，饱和语料上
+#: 注入 0 条，而规则维护成本随文档写法线性增长。
+REJECTED_SCHEME_TAG = "step11-with-graph-and-orchestration"
+
+#: 缺依赖时的唯一说明。**先说是已否决方案**，再指 tag，最后写对理由。
+REJECTED_SCHEME_NOTE = (
+    f"该脚本测量的是已否决方案（轻量图谱的关系边抽取），代码在 tag `{REJECTED_SCHEME_TAG}`。\n"
+    "撤销理由不是抽取规则不准（补了 R1/R2 之后可确定性定位 37/38、上限 recall 0.974），\n"
+    "而是价值不成立：边只存在于「见 X 节」这类显式指路里，而文档之间大部分有用的关联是隐式的。\n"
+    f"要复现这份测量：git switch --detach {REJECTED_SCHEME_TAG}，再跑 uv run python "
+    "scripts/eval_graph_labels.py。"
+)
+
+#: 已否决方案的符号**占位**：模块级 import 会在图谱代码消失之后直接 ImportError，
+#: 于是「跑一下看它怎么说」变成一条红，而不是一句解释（#138 硬要求 2）。
+#: ``main()`` 开头经 :func:`_load_rejected_scheme` 填真值；填不进来就印上面那段并退出 0。
+EdgeDraft: Any = None
+EdgeScope: Any = None
+SectionCatalog: Any = None
+SectionRecord: Any = None
+SectionText: Any = None
+extract_reference_candidates: Any = None
+extract_section_edges: Any = None
+RELATION_REFERENCE = "reference"
+
+
+def _load_rejected_scheme() -> None:
+    """把已否决方案的实现取进来；取不到就**打印 tag 指针并以 0 退出**。
+
+    退出码 0 是刻意的：这不是脚本坏了，而是它测量的东西被有意撤掉了。
+    """
+
+    global EdgeDraft, EdgeScope, SectionCatalog, SectionRecord, SectionText
+    global extract_reference_candidates, extract_section_edges, RELATION_REFERENCE
+
+    try:
+        from app.models.section_edge import RELATION_REFERENCE as relation_reference
+        from app.services.section_graph import (
+            EdgeDraft as edge_draft,
+            EdgeScope as edge_scope,
+            SectionCatalog as section_catalog,
+            SectionRecord as section_record,
+            SectionText as section_text,
+            extract_reference_candidates as reference_candidates,
+            extract_section_edges as section_edges,
+        )
+    except Exception:  # noqa: BLE001 - 探针只回答「还在不在」，不解释为什么不在
+        print(REJECTED_SCHEME_NOTE)
+        raise SystemExit(0) from None
+
+    EdgeDraft = edge_draft
+    EdgeScope = edge_scope
+    SectionCatalog = section_catalog
+    SectionRecord = section_record
+    SectionText = section_text
+    extract_reference_candidates = reference_candidates
+    extract_section_edges = section_edges
+    RELATION_REFERENCE = relation_reference
 
 #: 票面阈值：**两个条件同时成立**才允许「不引入 LLM」。
 RECALL_FLOOR = 0.7
@@ -897,6 +953,8 @@ def run(root: Path | None = None) -> tuple[LabelSet, dict[str, TierCorpus], dict
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    # 延迟取实现：缺它就是「测量对象已被撤销」，印 tag 指针并退出 0（不是崩）。
+    _load_rejected_scheme()
     args = list(argv if argv is not None else sys.argv[1:])
     base = Path(__file__).resolve().parents[1]
     labels, corpora, scores = run(base)

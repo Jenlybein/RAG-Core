@@ -4,9 +4,14 @@
 ① 套餐      专业版：orchestration_allowed / research_qps / research_daily（迁移回填的是 0）
 ② 租户+配置 一个专用租户、一套 quality 档的密钥配置、一把 Key
 ③ 知识库    一个独立库（不与 kb-eval* 相交），structure 切法
-④ 入库      3 篇引用语料走**生产入库路径**：上传登记 → Worker 的索引体 → 切片 + 边
+④ 入库      3 篇引用语料走**生产入库路径**：上传登记 → Worker 的索引体 → 切片
 ⑤ 构建      #142 的构建流水线：原样重建到 v2、四项计数校验、单事务激活
 ```
+
+**④⑤ 里的「建边」已经不在了**（#138 的范围变更撤销了轻量图谱，ADR-0027 变成已被取代）：
+切片照旧走生产路径写入，但不再建关系边，环境快照里的 `reference_edges` 因此恒为空——
+它旁边有一行 `reference_edges_note` 说明这件事，别把「不测了」读成「一条都没建出来」。
+要复现当年那组 on/off 读数，回到 tag `step11-with-graph-and-orchestration`。
 
 ## 为什么这些步骤不能省
 
@@ -15,12 +20,11 @@
   而报告会把它读成「Research 不可用」——那是配置问题，不是能力问题。
 * **必须有个独立知识库**：``eval/corpus`` 是 137 道基线题的尺子，往那些库里加文档等于
   基线当场失效（#138 验收第 1 条）。这批文档只服务 8 道定向题。
-* **必须走生产入库路径**（上传 → 索引 → 建边），不能直接写 chunks 表：直接写表能凑出
-  「有切片」的样子，却拿不到 ``section_id`` / ``reference_pointer`` / 边，于是图谱那一侧
-  的对照根本跑不起来。
-* **必须真的构建一次**：``section_edges`` 是 #152 才有的表，存量切片建不出边；而且逐篇
-  摄入时**跨文档引用会因顺序丢失**（A 引用 B 时 B 可能还没入库，按「悬空边一律不建」的
-  规则那条边不建）。整库构建收尾会拿完整目录重算一遍——9 条引用边只有那一步才齐。
+* **必须走生产入库路径**（上传 → 索引），不能直接写 chunks 表：直接写表能凑出「有切片」
+  的样子，却拿不到切块器算的 ``section_id`` 与 ``retrieval_text``，于是检索那一路的读数
+  与线上不是同一个东西。
+* **必须真的构建一次**：那是 #142「索引即构建产物」的那条路径（版本行、四项计数、单事务
+  激活），也是 C6 要对照的第二个版本（见下一节）。
 
 ## 两个「版本」是怎么来的
 
@@ -28,14 +32,14 @@
 第一次跑 ``IndexBuildService.start_build`` 会把 ``v1`` **收养**成一行 active 版本，再把这次
 构建命名为 ``v2``。这正好给出 C6 要的两个可对照版本：
 
-| 版本 | 怎么来的 | 切片 | 边 |
-| --- | --- | --- | --- |
-| ``v1`` | 逐篇摄入（生产上传路径的产物） | 当前切法 | 只有先入库的文档能解析到的那些 |
-| ``v2`` | #142 构建流水线**原样重建** | 同一套切法 | 整版重算，9 条引用边齐 |
+| 版本 | 怎么来的 | 切片 |
+| --- | --- | --- |
+| ``v1`` | 逐篇摄入（生产上传路径的产物） | 当前切法 |
+| ``v2`` | #142 构建流水线**原样重建** | 同一套切法 |
 
-两个版本逐节身份相同、切片数相同，差别只在「谁建的」「边齐不齐」——那正是 D 票（索引即
-构建产物）与 A 票（图谱）要证明的东西。切法这一维本轮按票面取的「原样重建」，没有改切分
-参数（理由与后果写在 ``eval/reports/c6-v1-vs-v2.md``）。
+两个版本逐节身份相同、切片数相同，差别只在「谁建的」——那正是 D 票（索引即构建产物）要
+证明的东西。切法这一维本轮按票面取的「原样重建」，没有改切分参数（理由与后果写在
+``eval/reports/c6-v1-vs-v2.md``）。
 
 ## 幂等：重跑不叠加
 
@@ -63,7 +67,7 @@
 # 一次装完（默认 tenant_c6 / pro / quality 档）
 uv run python scripts/prep_eval_c6.py
 
-# 只补环境、不构建（想手工观察 v1 的边数时用）
+# 只补环境、不构建（想手工观察 v1 那一版时用）
 uv run python scripts/prep_eval_c6.py --skip-build
 
 # 并行装第二套
@@ -73,7 +77,7 @@ uv run python scripts/prep_eval_c6.py --tenant-id tenant_c6b
 产物：
 
 * ``eval/reports/c6/environment.json``——**可提交**的环境快照（id、套餐、档位、计数、
-  版本行、边数），报告里每个数字都能拿它复核；**不含 Key 原文**；
+  版本行），报告里每个数字都能拿它复核；**不含 Key 原文**；
 * ``eval/refs-runs/c6-state.json``——**gitignore** 的本机状态（含 Key 原文），给后续
   ``eval_refs.py`` 命令直接取用。
 
@@ -116,6 +120,14 @@ CORPUS_MANIFEST = CORPUS_DIR / "manifest.json"
 ENVIRONMENT_FILE = REPO_ROOT / "eval" / "reports" / "c6" / "environment.json"
 #: 本机状态：含 Key 原文，落在 .gitignore 里的目录（与 eval_refs.py 的产物同一处）。
 LOCAL_STATE_FILE = REPO_ROOT / "eval" / "refs-runs" / "c6-state.json"
+
+#: 这个脚本有一部分读数测的是**已否决方案**（轻量图谱的引用边）。它被 #138 的范围变更
+#: 撤销了，实现只在 tag 里。撤销理由不是「规则不准」（上限 recall 0.974），而是价值不成立。
+REJECTED_SCHEME_TAG = "step11-with-graph-and-orchestration"
+REJECTED_SCHEME_NOTE = (
+    f"图谱的引用边读数属于已否决方案，代码在 tag `{REJECTED_SCHEME_TAG}`；"
+    "本次环境准备照常跑完，只是不再测量边数（撤销理由：价值不成立，不是抽取不准）。"
+)
 
 #: 定向题集里那个知识库的展示名（``eval/corpus-refs/manifest.json`` 的 ``kbs[0].name``）。
 #: 生产建库**不接受调用方指定的 id**（``create_kb`` 用 ``new_kb_id()``），所以真实 id 由
@@ -321,6 +333,9 @@ def environment_snapshot(
                 version: reference_edge_count(counts)
                 for version, counts in sorted(correlation.edges_by_version.items())
             },
+            # 图谱撤销之后这一栏**恒为空**：留着键、并写明为什么空，别让读者把「不测了」
+            # 读成「一条都没建出来」（#138 的范围变更）。
+            "reference_edges_note": REJECTED_SCHEME_NOTE,
         },
     }
 
@@ -658,14 +673,28 @@ async def ensure_build(db: Any, *, kb_id: str, tenant_id: str) -> dict[str, Any]
 async def collect_correlation(
     db: Any, *, tenant_id: str, kb_id: str, policy_id: str, key_id: str
 ) -> Correlation:
-    """把「本次环境到底装出了什么」取回来：版本行、逐版本切片数/节数/边数。"""
+    """把「本次环境到底装出了什么」取回来：版本行、逐版本切片数/节数/边数。
+
+    **边数这一栏随图谱一起撤销了**（#138 的范围变更）：``section_edges`` 表已由迁移删除，
+    关系边模型也不在了。这里因此**延迟**取那个模型，取不到就只跳过边数——环境准备本身
+    （套餐 / 租户 / 库 / 入库 / 构建）照旧跑完，因为它是 Research 那一侧的实验前提，与
+    图谱无关。跳过时打印一句指向 tag 的说明，不静默吞掉：读快照的人必须知道「0 条边」
+    是「不测了」而不是「一条都没建出来」。
+    """
 
     from sqlalchemy import func, select
 
     from app.models.chunk import Chunk
     from app.models.document import Document
-    from app.models.section_edge import SectionEdge
     from app.repositories import index_version_repository
+
+    section_edge: Any = None
+    try:
+        from app.models.section_edge import SectionEdge  # noqa: F401
+
+        section_edge = SectionEdge
+    except Exception:  # noqa: BLE001 - 撤销之后这就是常态，不必解释为什么
+        print(REJECTED_SCHEME_NOTE)
 
     version_rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
     versions = [
@@ -709,18 +738,19 @@ async def collect_correlation(
         ).scalar_one()
         sections_by_version[row.version] = int(section_count or 0)
 
-        edge_rows = (
-            await db.execute(
-                select(SectionEdge.relation_type, func.count())
-                .where(
-                    SectionEdge.tenant_id == tenant_id,
-                    SectionEdge.kb_id == kb_id,
-                    SectionEdge.index_version == row.version,
+        if section_edge is not None:
+            edge_rows = (
+                await db.execute(
+                    select(section_edge.relation_type, func.count())
+                    .where(
+                        section_edge.tenant_id == tenant_id,
+                        section_edge.kb_id == kb_id,
+                        section_edge.index_version == row.version,
+                    )
+                    .group_by(section_edge.relation_type)
                 )
-                .group_by(SectionEdge.relation_type)
-            )
-        ).all()
-        edges_by_version[row.version] = {str(kind): int(count) for kind, count in edge_rows}
+            ).all()
+            edges_by_version[row.version] = {str(kind): int(count) for kind, count in edge_rows}
 
     document_rows = (
         (
@@ -954,7 +984,8 @@ async def _prepare(
         ),
         note=(
             "NOTE: v1 是逐篇摄入的产物，v2 是 #142 流水线原样重建的结果——两边逐节身份相同、"
-            "边数不同（跨文档引用只有整版重算那一步才齐）。切版本用 "
+            "切片数相同，差别只在「谁建的」。引用边那一栏随图谱撤销（#138）恒为空，"
+            f"要复现当年的读数回到 tag `{REJECTED_SCHEME_TAG}`。切版本用 "
             "`uv run python scripts/rebuild_kb_version.py --kb-id <kb> --rollback v1`。"
         ),
     )

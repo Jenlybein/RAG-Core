@@ -18,11 +18,11 @@
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import Integer, Select, delete, func, or_, select, tuple_
+from sqlalchemy import Integer, Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, Chunk, scope_filter
+from app.models.chunk import Chunk, scope_filter
 
 
 def _meta_statement(
@@ -191,95 +191,6 @@ async def fetch_parent_rows(
     return parents
 
 
-def build_representative_statement(
-    *,
-    tenant_id: str,
-    index_versions: Mapping[str, str],
-    targets: Sequence[tuple[str, str, str]],
-) -> Select[tuple[str, str, str, str, str, str, str]]:
-    """目标节的**代表片**：注入进候选池的是「这一节的一小片」，不是整节全文（ADR-0027 决策 4）。
-
-    三件事在 ``WHERE`` 里一次说完：
-
-    1. **范围**：租户 + ``kb_id → 版本`` 的配对条件（与召回、折叠、计数同一条
-       ``scope_filter``）。目标节落在请求范围外时查不到它，越权由这一步堵死，而不是
-       指望建边时禁掉跨库边（那会把最常见的真实关系一起砍掉）；
-    2. **身份**：``(库, 文档, 节)`` 三元组，**不是单独的节 id**——节 id 虽然在算法上
-       已含文档 id，但拿它当唯一条件等于让「一道 SQL 判越权」依赖另一处算法的正确性；
-    3. **路标切片不参战**（ADR-0027 决策 3）：``reference_pointer`` 除了一句「参见别处」
-       没有信息量，注入它等于把一句路标当成一条材料。
-
-    排序只用于**确定性**：同一节取 ``chunk_index`` 最小的那一片（先文后表），两次相同
-    输入的挑选结果因此一致（ADR-0010 的确定性要求）。
-    """
-
-    section = Chunk.meta["section_id"].astext
-    chunk_index = Chunk.meta["chunk_index"].astext.cast(Integer)
-    triples = sorted(
-        {
-            (str(kb_id), str(document_id), str(section_id))
-            for kb_id, document_id, section_id in targets
-        }
-    )
-    return (
-        select(
-            Chunk.kb_id,
-            Chunk.document_id,
-            section,
-            Chunk.id,
-            Chunk.content,
-            Chunk.meta["title"].astext,
-            Chunk.meta["heading_path"].astext,
-        )
-        .where(
-            Chunk.tenant_id == tenant_id,
-            scope_filter(index_versions),
-            tuple_(Chunk.kb_id, Chunk.document_id, section).in_(triples),
-            or_(
-                Chunk.meta["chunk_type"].astext.is_(None),
-                Chunk.meta["chunk_type"].astext != CHUNK_TYPE_REFERENCE_POINTER,
-            ),
-        )
-        .order_by(Chunk.kb_id, Chunk.document_id, section, chunk_index, Chunk.id)
-    )
-
-
-async def fetch_section_representatives(
-    db: AsyncSession,
-    *,
-    tenant_id: str,
-    index_versions: Mapping[str, str],
-    targets: Sequence[tuple[str, str, str]],
-) -> dict[tuple[str, str, str], tuple[str, str, str, str]]:
-    """``{(库, 文档, 节): (代表片 id, 正文, 标题, 章节路径)}``，每节取排序后的第一片。
-
-    目标节在本版本里没有可注入的切片（纯标题节、或只有路标片）时**不在字典里**——
-    由调用方跳过它，而不是回一条空正文的材料。
-    """
-
-    if not targets or not index_versions:
-        return {}
-    rows = (
-        await db.execute(
-            build_representative_statement(
-                tenant_id=tenant_id, index_versions=index_versions, targets=targets
-            )
-        )
-    ).all()
-    representatives: dict[tuple[str, str, str], tuple[str, str, str, str]] = {}
-    for kb_id, document_id, section_id, chunk_id, content, title, heading_path in rows:
-        key = (str(kb_id), str(document_id), str(section_id))
-        if key in representatives:
-            continue
-        representatives[key] = (
-            str(chunk_id),
-            str(content or ""),
-            str(title or ""),
-            str(heading_path or ""),
-        )
-    return representatives
-
-
 def _count_by_kb_ids_statement(
     *, tenant_id: str, index_versions: Mapping[str, str]
 ) -> Select[tuple[int]]:
@@ -392,82 +303,6 @@ def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str)
         .where(Chunk.document_id.in_(document_ids), Chunk.tenant_id == tenant_id)
         .group_by(Chunk.document_id)
     )
-
-
-def build_version_sections_statement(
-    *,
-    tenant_id: str,
-    kb_id: str,
-    index_version: str,
-    document_ids: Sequence[str] | None = None,
-) -> Select:
-    """某个版本里的切片，按「建关系边要的那几个字段」一次读全（#152）。
-
-    只选 ``id`` / ``document_id`` / ``content`` / ``metadata`` 四列，**不选 embedding**：
-    一次整版扫描若把 1536 维向量拖回来，读的就是几 GB 而不是几十 MB，而建边一个维度都
-    用不上。``metadata`` 里的键（title / section_id / heading_path / chunk_index）在
-    Python 侧解——节的身份从 #143 起就在那份 meta 里，关系边不该为了读它改切片表。
-
-    ``document_ids`` 非空时只读这几篇（单篇重建的那条路）。
-    """
-
-    statement = select(Chunk.id, Chunk.document_id, Chunk.content, Chunk.meta).where(
-        Chunk.tenant_id == tenant_id,
-        Chunk.kb_id == kb_id,
-        Chunk.index_version == index_version,
-    )
-    if document_ids is not None:
-        statement = statement.where(Chunk.document_id.in_(list(document_ids)))
-    return statement.order_by(
-        Chunk.document_id,
-        Chunk.meta["chunk_index"].astext.cast(Integer),
-        Chunk.id,
-    )
-
-
-async def list_version_sections(
-    db: AsyncSession,
-    *,
-    tenant_id: str,
-    kb_id: str,
-    index_version: str,
-    document_ids: Sequence[str] | None = None,
-) -> list[tuple[str, str, str, str, int, str, str]]:
-    """:func:`build_version_sections_statement` 的结果，一行一片：
-
-    ``(文档 id, 标题, 节 id, 标题路径, 片序号, 正文, 原始文件名)``。
-
-    同一节多行（按片的全局顺序）；去重交给目录（``SectionCatalog`` 按
-    ``(文档 id, 节 id)`` 收）。与 ``list_section_identity_rows`` 的差别是：那个
-    ``distinct`` 只关心节身份，这个要原文、顺序与文件名（#152 的链路按文件名对 Markdown
-    链接，标题是兜底）。
-    """
-
-    rows = (
-        await db.execute(
-            build_version_sections_statement(
-                tenant_id=tenant_id,
-                kb_id=kb_id,
-                index_version=index_version,
-                document_ids=document_ids,
-            )
-        )
-    ).all()
-    sections: list[tuple[str, str, str, str, int, str, str]] = []
-    for row in rows:
-        meta = dict(getattr(row, "meta", None) or {})
-        sections.append(
-            (
-                str(row.document_id),
-                str(meta.get("title") or ""),
-                str(meta.get("section_id") or ""),
-                str(meta.get("heading_path") or ""),
-                int(meta.get("chunk_index") or 0),
-                str(row.content or ""),
-                str(meta.get("source_filename") or ""),
-            )
-        )
-    return sections
 
 
 def delete_by_document_id(db: Session, document_id: str) -> None:
