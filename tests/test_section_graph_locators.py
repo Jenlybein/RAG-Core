@@ -20,6 +20,7 @@ from app.services.section_graph import (
     SectionRecord,
     SectionText,
     extract_section_edges,
+    is_reference_pointer,
 )
 from app.utils.section_identity import section_id_of
 
@@ -378,6 +379,97 @@ def test_an_english_section_of_another_document_creates_no_edge() -> None:
     )
 
     assert _reference_targets(edges, f"{doc_title} > Section 4 Claims and Exclusions") == set()
+
+
+# ───────────────────────────────────────────── 路标判定：R1 / R2 形态也要算引用表达
+
+
+def test_a_decision_pointer_sentence_is_marked_reference_pointer() -> None:
+    """「见决策 3。」删掉引用表达后只剩「见」1 个字：这是纯路标（R2 的形态）。"""
+
+    assert is_reference_pointer("见决策 3。") is True
+
+
+def test_a_bare_heading_name_is_a_reference_expression_when_titles_are_known() -> None:
+    """「见翻案条件。」：裸标题名要先知道本文有哪些标题，才认得出这是引用表达。"""
+
+    assert is_reference_pointer("见翻案条件。", known_titles=("翻案条件",)) is True
+    assert is_reference_pointer("见翻案条件。") is False
+
+
+def test_a_pointer_sentence_without_a_known_title_keeps_its_substance() -> None:
+    """反向守卫：两字标题（`背景`）不在裸名规则内，「见背景四条」仍有实质内容。"""
+
+    assert (
+        is_reference_pointer("见背景四条：每条子查询再改写一次。", known_titles=("背景",)) is False
+    )
+
+
+# ───────────────────────────────────────────── 否定语境：提到但不依赖
+
+
+def test_a_negated_reference_creates_no_edge() -> None:
+    """「…第 4 节的待办已全部关闭，本次不再追踪」：否定语境里提到 ≠ 依赖（min-m02-09）。"""
+
+    doc_title = "产品周会纪要（2026-11-03）"
+    target = _record(
+        document_id="doc-m01", title=doc_title, heading=f"{doc_title} > 4. 待办", order=4
+    )
+    text = "《产品周会纪要（2026-11-03）》第 4 节的待办已全部关闭，本次不再追踪。"
+    edges = _edges(
+        sections=(_source(heading="4. 遗留与待办", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "4. 遗留与待办") == set()
+
+
+def test_the_same_reference_without_a_negation_still_creates_an_edge() -> None:
+    """同一个定位符不带否定语境时照建：否定词清单挡的是语境，不是形态。"""
+
+    doc_title = "产品周会纪要（2026-11-03）"
+    target = _record(
+        document_id="doc-m01", title=doc_title, heading=f"{doc_title} > 4. 待办", order=4
+    )
+    text = "《产品周会纪要（2026-11-03）》第 4 节的事项需要在下次周会复核。"
+    edges = _edges(
+        sections=(_source(heading="4. 遗留与待办", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "4. 遗留与待办") == {target.section_id}
+
+
+def test_a_superseded_reference_creates_no_edge() -> None:
+    """「ADR-0012『装饰字段（已取代）』」：提到是为了说明它不适用（eng-0013-12）。"""
+
+    doc_title = "0012. 装饰字段"
+    target = _record(
+        document_id="doc-0012", title=doc_title, heading=f"{doc_title} > 装饰字段", order=1
+    )
+    text = "ADR-0012「装饰字段（已取代）」不再参与检索。"
+    edges = _edges(
+        sections=(_source(heading="0013. 一条检索结果代表一节", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "0013. 一条检索结果代表一节") == set()
+
+
+def test_a_deprecated_document_reference_creates_no_edge() -> None:
+    """「原《优惠券使用细则》第 2 条已废止，不再适用」：文档还在库里也不建边（pol-p03-08）。"""
+
+    doc_title = "优惠券使用细则"
+    target = _record(
+        document_id="doc-old", title=doc_title, heading=f"{doc_title} > 第 2 条 使用条件", order=2
+    )
+    text = "原《优惠券使用细则》第 2 条已废止，不再适用。"
+    edges = _edges(
+        sections=(_source(heading="第 5 条 活动期间的特殊约定", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "第 5 条 活动期间的特殊约定") == set()
 
 
 def test_a_decision_number_in_a_plain_statement_creates_no_edge() -> None:

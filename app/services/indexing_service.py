@@ -320,7 +320,14 @@ class IndexingService:
         # 路标切片（#152）：除了一句引用之外没有实质内容的片，标成 reference_pointer。
         # 它只用来建边，不参与召回（向量 SQL 与关键词查询各按类型过滤一次）——把「命中
         # 一句『参见别处』」当成一次成功召回，是图谱最容易制造的假命中。
-        pointers = [is_reference_pointer(piece.text) for piece in pieces]
+        # `known_titles` 让 R1 的裸标题名（`见翻案条件`）也进「引用表达」的判定（#158 决策 8）：
+        # 不知道本文有哪些标题时，光凭正则认不出裸名，纯路标片会漏成普通切片。
+        known_titles = tuple(
+            str(piece.metadata.get("heading_path") or "").split(" > ")[-1] for piece in pieces
+        )
+        pointers = [
+            is_reference_pointer(piece.text, known_titles=known_titles) for piece in pieces
+        ]
 
         chunks: list[dict[str, Any]] = [
             {

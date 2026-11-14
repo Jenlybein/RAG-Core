@@ -140,7 +140,18 @@ _SAME_DOCUMENT_MARKERS = re.compile(
 )
 
 
-#: 章节号在标题里的位置：标题（或路径最后一段）以这个号开头，号后面不能再接数字或点。
+#: 否定语境词表：提到一个节/文档，是为了说明它**不适用**（已作废 / 已关闭 / 不再追踪 / 已取代）。
+#: 命中这些词的那一句里，引用表达只是「提到」，不是「依赖」——按 ADR-0027 决策 3 不建边。
+_NEGATION_PATTERNS = re.compile(
+    "已[^，。；！？\\n]{0,4}(?:作废|废止|废弃|关闭|取代)|不再(?:追踪|适用)|仅供参考"
+)
+
+
+def _is_negated(sentence: str) -> bool:
+    """这句话是不是否定语境（`the-todo-closed` 那种提到但不依赖）。"""
+
+    return bool(_NEGATION_PATTERNS.search(sentence))
+
 def _number_prefix_re(number: str) -> re.Pattern[str]:
     """标题以这个章节号开头的判据：号后面不能再接数字，也不能接**后面还跟着数字的点**。
 
@@ -1134,6 +1145,10 @@ def extract_section_edges(
         if record.document_id != document_id or record.scope != scope:
             continue
         for candidate in extract_reference_candidates(entry.text, known_titles=known_titles):
+            # 否定语境在**产生候选之后、解析之前**挡掉：词表只看那一句，不看全节——
+            # 「已作废」出现在别的句子里不连坐（ADR-0027 决策 8 的噪声专项）。
+            if _is_negated(candidate.sentence):
+                continue
             target = _resolve_candidate(
                 candidate, scope=scope, document_id=document_id, catalog=catalog
             )
