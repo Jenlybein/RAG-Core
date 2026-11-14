@@ -357,7 +357,20 @@ _Avoid_: 证据块, 答案片段, 引用片段, Evidence Pack
 
 **停止原因（stop_reason）**：
 Research 结束的原因，固定**七个**英文枚举，**不许翻译**，界面、日志、响应必须用同一套词：`evidence_complete` / `no_new_evidence` / `max_rounds` / `duplicate_query` / `timeout` / `budget_exhausted` / `degraded`。它是穷举的枚举而不是自由文本：按原因做统计与告警，加第八个要先改这条。
+它与「有没有答出来」是**两件事**：`degraded` 说的是「规划或判断这一步降级了」，不蕴含 `answer` 为 `null`——材料够时生成阶段照常产出通过四条硬校验的引用块（`app/services/research.py` 的 `execute` 不论停止原因都进第 ⑤ 步，除非阶段预算已用尽）。
 _Avoid_: 结束原因（中文译名）, finish_reason, 终止条件, stop reason（空格写法）
+
+**evidence_state**：
+Research 响应 `metadata.evidence_state` 里的三态完整度：`complete`（每个要点都有核心片）/ `partial`（部分要点有）/ `missing`（一条核心片都没有）。它**由核心片数量数出来，不由模型自评**；词表与切片编排的 `completeness` 是**同一份**（同样三个词、同一个判据），所以两处不会对同一份材料给出两种说法。它与「停止原因」分工明确：`stop_reason` 答「为什么停」，`evidence_state` 答「材料够不够」（`app/schemas/research.py` 的 `ResearchMetadata`）。
+_Avoid_: completeness（那是编排侧的字段名）, 覆盖度（coverage 是评测侧的另一个概念）, 置信度, 自评得分
+
+**sub_search_degraded_reasons**：
+Research 响应 `metadata.sub_search_degraded_reasons` 里的列表：**子检索**各自降级了哪几条原因，取的就是既有「降级原因」里那几个固定串（例如 `keyword search failed`、`graph injection failed`），去重后原样上交。它必须由检索那一层递上来——「查的时候降级了」在材料正文里看不出来；而子检索又不能各写一行归属索引（一次 Research 只写一行）。它**不是停止原因**：一次 Research 可以带着一条子检索降级一路答完，`stop_reason` 仍然是 `evidence_complete`。
+_Avoid_: 失败原因（那是异常，这是降级）, degraded_reason（那是检索响应里的单个字段名）, 子检索报错
+
+**strong_model_fallback**：
+Research 响应 `metadata.strong_model_fallback`：生成阶段是不是**快模型兜的底**，以及为什么。两个固定串，一因一码：`strong model unavailable`（这台机器没装强模型，换快模型是对的，不该报警）与 `strong model failed`（装了但这次没答出来，要进统计与告警）；没兜底时是 `null`。它说的是**强模型这一路为什么没用上**，不是「兜底成功了没有」——后者读 `model_calls`（含兜底位的第 4 格有没有被用掉）与 `answer` 是否为空（`app/services/research.py` 的 `STRONG_MODEL_*`）。
+_Avoid_: 模型降级（会与「降级原因」混）, fallback 成功（这一个字段不表达成败）, 备用模型, 二次作答
 
 ## 接入面
 

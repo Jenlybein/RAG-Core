@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import importlib.util
 import sys
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
 from typing import Any
@@ -569,3 +570,182 @@ def test_the_rebuild_script_reports_a_missing_knowledge_base(
 
     with pytest.raises(LookupError):
         asyncio.run(module.resolve_tenant_id(session, kb_id="kb-missing", tenant_id=None))
+
+
+# ────────────────────────────────── 回滚入口：运维不必再写一段 Python（#156）
+
+#: 回滚目标版本名（坑里那一版）。
+ROLLBACK_TARGET = "v1"
+#: 此刻线上生效的那一版。
+LIVE = "v2"
+
+
+class _RecordingKeywordProvider(NoopKeywordSearchProvider):
+    """回滚入口用：回答「这一版的物理索引还在不在」，并记录别名切到了哪一版。"""
+
+    def __init__(self, *, indexes: set[str] | None = None, available: bool = True) -> None:
+        self.indexes = set(indexes or ())
+        self._available = available
+        self.activate_calls: list[str] = []
+
+    @property
+    def available(self) -> bool:
+        return self._available
+
+    async def physical_index_exists(self, version: str) -> bool:
+        return version in self.indexes
+
+    async def activate_version(self, version: str) -> None:
+        self.activate_calls.append(version)
+
+
+def _live_kb(*, version: str = LIVE) -> KnowledgeBase:
+    kb = _kb()
+    kb.active_index_version = version
+    return kb
+
+
+def _version_row(version: str, status: str) -> IndexBuildVersion:
+    return IndexBuildVersion(
+        id=f"build-{version}",
+        tenant_id=TENANT_ID,
+        kb_id=KB_ID,
+        version=version,
+        status=status,
+        created_at=datetime(2026, 11, 1, 9, 0, 0),
+    )
+
+
+def _version_chunks(version: str, count: int) -> list[Chunk]:
+    """该版本的切片行：回滚守卫要数它们（0 片 = 数据已经没了）。"""
+
+    return [
+        Chunk(
+            id=f"{version}-c{index}",
+            tenant_id=TENANT_ID,
+            kb_id=KB_ID,
+            document_id=DOC_A,
+            content="正文",
+            embedding=[0.0] * 4,
+            meta={},
+            index_version=version,
+        )
+        for index in range(count)
+    ]
+
+
+def _patch_session(monkeypatch: pytest.MonkeyPatch, module: ModuleType, session: Any) -> None:
+    """把脚本自己的会话入口换成替身：``--rollback`` 的整条路径因此不连库。"""
+
+    async def _open() -> Any:
+        return session
+
+    monkeypatch.setattr(module, "_open_session", _open)
+
+
+def _rollback_session(*, kb: KnowledgeBase, chunks: list[Chunk]) -> AsyncRecordingSession:
+    return AsyncRecordingSession(
+        rows={
+            KnowledgeBase: [kb],
+            IndexBuildVersion: [
+                _version_row(LIVE, INDEX_BUILD_ACTIVE),
+                _version_row(ROLLBACK_TARGET, INDEX_BUILD_ARCHIVED),
+            ],
+            Chunk: list(chunks),
+        }
+    )
+
+
+def test_the_rollback_flag_takes_a_version_name_and_switches_the_kb_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--rollback v1``：按**版本名**（不是 build_id）切回，退出码 0。
+
+    运维手里有的是「上一次构建叫 v1」，不是那一行 UUID；要求他先查 build_id 再回切，
+    等于把一次应急动作变成两段手工 SQL。
+    """
+
+    module = _load_script("rebuild_kb_version")
+    keyword = _RecordingKeywordProvider(indexes={ROLLBACK_TARGET})
+    service = IndexBuildService(
+        indexing=SimpleNamespace(),
+        vector_store=SimpleNamespace(),
+        keyword_search=keyword,
+    )
+    monkeypatch.setattr(module, "IndexBuildService", lambda: service)
+    kb = _live_kb()
+    _patch_session(
+        monkeypatch,
+        module,
+        _rollback_session(kb=kb, chunks=_version_chunks(ROLLBACK_TARGET, 2)),
+    )
+
+    assert module.main(["--kb-id", KB_ID, "--rollback", ROLLBACK_TARGET]) == 0
+
+    assert kb.active_index_version == ROLLBACK_TARGET, "库列切回 v1（检索 pin 跟着走）"
+    assert keyword.activate_calls == [ROLLBACK_TARGET], "关键词别名切到 v1 的物理索引"
+
+
+def test_a_refused_rollback_exits_non_zero_and_moves_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """目标版本的切片一片都没有 → 退出码 1，库列与别名都不动。
+
+    「失败了但退 0」比失败本身更糟：运维会以为已经切回去了，而线上查的还是那一版。
+    """
+
+    module = _load_script("rebuild_kb_version")
+    keyword = _RecordingKeywordProvider(indexes={ROLLBACK_TARGET, LIVE})
+    service = IndexBuildService(
+        indexing=SimpleNamespace(),
+        vector_store=SimpleNamespace(),
+        keyword_search=keyword,
+    )
+    monkeypatch.setattr(module, "IndexBuildService", lambda: service)
+    kb = _live_kb()
+    _patch_session(monkeypatch, module, _rollback_session(kb=kb, chunks=[]))
+
+    assert module.main(["--kb-id", KB_ID, "--rollback", ROLLBACK_TARGET]) == 1
+
+    assert kb.active_index_version == LIVE, "被拒的回滚不动库列"
+    assert keyword.activate_calls == [], "被拒的回滚不动别名"
+
+
+def test_rolling_back_to_an_unknown_version_exits_non_zero(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """版本名对不上任何一行 → 退出码 1（而不是静默什么都没做）。"""
+
+    module = _load_script("rebuild_kb_version")
+    keyword = _RecordingKeywordProvider(indexes={"v9"})
+    service = IndexBuildService(
+        indexing=SimpleNamespace(),
+        vector_store=SimpleNamespace(),
+        keyword_search=keyword,
+    )
+    monkeypatch.setattr(module, "IndexBuildService", lambda: service)
+    kb = _live_kb()
+    _patch_session(
+        monkeypatch,
+        module,
+        _rollback_session(kb=kb, chunks=_version_chunks(ROLLBACK_TARGET, 1)),
+    )
+
+    assert module.main(["--kb-id", KB_ID, "--rollback", "v9"]) == 1
+
+    assert kb.active_index_version == LIVE
+    assert keyword.activate_calls == []
+
+
+@pytest.mark.parametrize("extra", [["--in-process"], ["--activate"], ["--version", "v3"]])
+def test_the_rollback_flag_cannot_be_combined_with_a_build(
+    monkeypatch: pytest.MonkeyPatch, extra: list[str]
+) -> None:
+    """回滚与构建是两个动作：混在一起时**拒绝解析**（退出码 2），不猜用户想干什么。"""
+
+    module = _load_script("rebuild_kb_version")
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.main(["--kb-id", KB_ID, "--rollback", ROLLBACK_TARGET, *extra])
+
+    assert excinfo.value.code == 2

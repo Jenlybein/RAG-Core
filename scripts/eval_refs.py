@@ -2,13 +2,21 @@
 
 **它是什么**：一条命令，把 ``eval/refs-questions.json`` 的 8 道题跑一遍**今天**的检索链路，
 产出四类指标：停止原因分布、引用回溯率、延迟、模型调用次数。它**不是**效果验收——
-对照结论由 C6 在 A2 / C3 落地之后出（#138 §Further Notes），本脚本只搭台子。
+对照结论由 C6（#153）在 A2 / C3 落地之后出（#138 §Further Notes），本脚本只搭台子。
 
-**为什么要有「骨架」这个说法**：票里的「开 / 关对照」两侧在 A2（图谱注入）与 C3（Research
-引用块）落地之前并不存在。此刻把 ``--graph on`` 跑一遍，只会得到与 ``off`` 一模一样的结果。
-所以两侧都做成了参数位，边没接上时报告里印
-``capability-not-implemented``——**绝不伪造一组相同的数字**装作对比做过了（票里的范围
-澄清评论就是为这条写的）。等 A2 / C3 落地，同一个脚本、同一组参数就是真对照。
+**「能力在不在」是探测出来的，「这次跑没跑」是另一件事**（#156）：
+
+* 两侧的状态一律**探测代码本身**——图谱看注入服务与组合根那条缝装没装
+  （``app/services/graph_injection.py`` + ``rag_service.retrieve`` 的 ``graph_factory``），
+  Research 看服务与路由在不在（``research_gate.gated_research`` + ``/rag/research``）。
+  **不读 ``--graph`` / ``--research`` 开关**：开关是「这次想不想跑」，探测是「这台机器上有没有」，
+  把两者混成一个状态，就会出现「开关关了所以报未实现」这种自相矛盾的读数。
+  两个能力都就位之后，这里输出 ``available``，不再输出 ``capability-not-implemented``。
+* 光有 ``available`` 还不够诚实：**本脚本的采集路径今天只跑检索内核**（``rag_service.retrieve``），
+  既不把 ``--graph on`` 接到组合根的 ``graph_factory``，也不调用 ``/rag/research``
+  （那是 #153 的对照工作）。所以报告里另有一栏 ``exercised``：``available`` + 未采集时，
+  明确写「能力已就位，但这份报告没有采集它」，而不是让读者以为 on / off 两组数字是同一组
+  「测过了」。
 
 **三条诚实约束**（它们比指标本身更重要）：
 
@@ -59,6 +67,7 @@ import argparse
 import asyncio
 import dataclasses
 import hashlib
+import inspect
 import json
 import math
 import re
@@ -69,7 +78,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -103,6 +112,20 @@ STOP_REASONS = (
 #: 「能力还没接上」的唯一写法。报告与 results.json 共用这一个字面量：换个说法
 #: （比如 ``not-supported``）就等于让下游的 grep 失效。
 CAPABILITY_NOT_IMPLEMENTED = "capability-not-implemented"
+
+#: 「能力已经在代码里」的唯一写法（#156 起两侧都可能出现它）。
+#: 它与 ``capability-not-implemented`` 是**探测结果**，与 ``--graph`` / ``--research``
+#: 那些开关无关：开关说「这次想不想跑」，探测说「这台机器上有没有」。
+CAPABILITY_AVAILABLE = "available"
+
+#: 本脚本的采集路径今天**有没有真的驱动**那一侧。
+#:
+#: 它与 :func:`capability_status` 是两件事，必须分开（#156）：能力在不在由代码探测决定，
+#: 而「这份报告有没有采集到那一侧」只取决于本脚本把参数接到了哪里。今天是两处都没接：
+#: ``--graph on`` 没有递成 ``graph_factory``，``/rag/research`` 也一次都没调用——两件都是
+#: #153（C6 对照）的工作。所以即便两侧探测结果都是 ``available``，报告也必须写清
+#: 「没有采集」，而不是让读者把 on / off 两组相同的数字读成「测过了、没差别」。
+EXERCISED_SIDES: Final[dict[str, bool]] = {"graph": False, "research": False}
 
 #: 三类数据来源。``dry-run`` 是缺省——**默认不花钱**这条纪律落在默认值上，
 #: 而不是落在某个人记得加参数上。
@@ -519,15 +542,26 @@ async def run_live(
 def stop_reason_distribution(
     outcomes: Sequence[Outcome], *, research_enabled: bool, research_status: str
 ) -> dict[str, Any]:
-    """停止原因分布：Research 的七种原因，一侧没落地时写明没落地。
+    """停止原因分布：Research 的七种原因，一侧没采集 / 没落地时写明是哪一种。
 
-    ``research_enabled=False`` 时**不编**七种原因里的任何一种：今天这条链路根本没有
-    状态机，里面没有任何一种原因出现的可能。此时分布为空，由 ``status`` 字段说明
-    原因（``disabled`` / ``capability-not-implemented``）。
+    三种「空表」必须分开（#156）：
+
+    * ``research_enabled=False``：这次不要跑（``status=disabled``）；
+    * ``status=capability-not-implemented``：代码里没有这条路；
+    * ``status=available`` 但 ``exercised=False``：**能力在，本脚本没采集**——采集路径只跑
+      检索内核，``/rag/research`` 一次都没调。
+
+    三种都回空计数，但结论完全不同；合成一句「没有数据」会让第三种被读成「跑过了，结果是零」。
     """
 
+    exercised = EXERCISED_SIDES["research"]
     if not research_enabled:
-        return {"status": research_status, "counts": {}, "total": 0}
+        return {
+            "status": research_status,
+            "exercised": exercised,
+            "counts": {},
+            "total": 0,
+        }
     counts = Counter(
         outcome.stop_reason
         for outcome in outcomes
@@ -540,6 +574,7 @@ def stop_reason_distribution(
     ]
     return {
         "status": research_status,
+        "exercised": exercised,
         "counts": dict(sorted(counts.items())),
         "total": sum(counts.values()),
         # 七种之外的值单独留档：出现了就说明状态机多了一种出口，必须回代码里看。
@@ -691,6 +726,22 @@ def model_call_stats(outcomes: Sequence[Outcome]) -> dict[str, Any]:
     }
 
 
+def research_model_call_budget() -> tuple[int, int]:
+    """一次 Research 的模型调用硬顶与**含兜底位**的硬顶：``(3, 4)``。
+
+    **从代码常量读，不在这里抄一份**（#156）：#148 写的是「3 次」，#149 之后生成阶段多一个
+    强模型失败的兜底位变成「最多 4 次」。报告、用例、脚本各处如果各写一个数字，迟早出现
+    「脚本文案说 3、代码允许 4」这种两套口径——而它恰好是成本话题，读的人会当真。
+
+    惰性导入：这个模块只依赖标准库，但 ``scripts/`` 的既有纪律是「dry-run 不 import 应用」，
+    保持它能让空跑自检仍然只碰标准库。
+    """
+
+    from app.services.research_limits import MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK
+
+    return MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK
+
+
 def predict_calls(
     *,
     source: str,
@@ -701,15 +752,31 @@ def predict_calls(
     """开跑前先算一遍：这次要花多少次调用。
 
     ``live`` 每题一次查询嵌入（改写关，所以向量一路只有原句）；``dry-run`` / ``fixture``
-    一次都不调。Research 侧今天一律 0——不是「省了」，而是**这条路还没接**。
+    一次都不调。**Research 侧一律 0**，但原因分三种，报告里必须分开写（#156）：
+
+    * ``research=off``：这次不要跑；
+    * 能力没装（``capability-not-implemented``）：跑了也没东西可跑；
+    * 能力已装但本脚本没采集（``available`` 且 :data:`EXERCISED_SIDES` 为假）：本脚本的
+      采集路径只跑检索内核，``/rag/research`` 一次都没调——所以 0 次是「没采集」，不是
+      「免费」。这一条最容易读错，所以它连硬顶一起印出来。
     """
 
     embedding = question_count if source == SOURCE_LIVE else 0
     research = 0
-    if research_enabled and research_status == CAPABILITY_NOT_IMPLEMENTED:
-        # 七种停止原因、3 次模型调用都属于还没落地的状态机；这里写 0 并在报告里
-        # 标 capability-not-implemented，而不是按「未来会有 3 次」预扣。
-        research = 0
+    calls, calls_with_fallback = research_model_call_budget()
+    if not research_enabled:
+        research_note = "未启用（research=off）"
+    elif research_status == CAPABILITY_NOT_IMPLEMENTED:
+        # 能力没装：实际不会发出任何请求，也不按「将来会有 3 次」预扣。
+        research_note = (
+            f"未落地（{CAPABILITY_NOT_IMPLEMENTED}），实际不会发出任何请求"
+        )
+    else:
+        research_note = (
+            f"能力已就位但本脚本不采集这一侧（采集路径只跑检索内核），实际 0 次；"
+            f"一次 Research 的硬顶是 {calls} 次模型调用（含生成阶段的强模型兜底位最多 "
+            f"{calls_with_fallback} 次）"
+        )
     return {
         "embedding": embedding,
         "research_llm": research,
@@ -720,11 +787,12 @@ def predict_calls(
                 if embedding
                 else "不连库、不发网络（--source dry-run/fixture）"
             ),
-            "research_llm": (
-                "未落地，capability-not-implemented，实际不会发出任何请求"
-                if research_enabled
-                else "未启用（research=off）"
-            ),
+            "research_llm": research_note,
+        },
+        # 硬顶单独一栏：它是「一次 Research 最多烧几次」，与「这次跑打不打算调」无关。
+        "research_llm_budget": {
+            "hard_cap": calls,
+            "with_strong_model_fallback": calls_with_fallback,
         },
     }
 
@@ -855,21 +923,58 @@ def _corpus_digest(manifest: dict[str, Any], *, corpus_dir: Path | None = None) 
     return digest.hexdigest()[:12]
 
 
-def capability_status(config: RunConfig) -> dict[str, str]:
-    """「开 / 关」两侧今天各自是什么状态。
+def _graph_injection_wired() -> bool:
+    """图谱注入**装没装**：注入服务在，且组合根收得下那个工厂。
 
-    这是本票最容易被糊弄过去的一处：图谱注入已在 #144 落地（注入位、上限、范围过滤、
-    降级专码都在 ``app/services/graph_injection.py``），但**本脚本还没把 ``--graph on``
-    接到组合根的 ``graph_factory`` 上**，所以两侧读数仍必然相同；Research 接口整条不存在。
-    两侧一律 ``capability-not-implemented``——**不是** ``disabled``，也不是「开了但没变化」。
-    ``--graph on`` 接线是 #153（C6 对照）那一步的事。
+    两个条件缺一不可——只有服务模块而没有缝（或反过来），都表示「这条路今天走不通」；
+    只查配置开关是最容易糊弄过去的做法（开关开着 ≠ 代码里有这一步）。
+
+    导入失败一律当「没装」：缺依赖 / 半合并的树上，探针不该让整份报告崩掉。
+    """
+
+    try:
+        from app.services.graph_injection import build_graph_injection  # noqa: F401
+        from app.services.rag_service import retrieve
+    except Exception:  # noqa: BLE001 - 探针只回答「有没有」，不解释为什么没有
+        return False
+    return "graph_factory" in inspect.signature(retrieve).parameters
+
+
+def _research_wired() -> bool:
+    """Research **装没装**：门禁服务在，HTTP 路由也注册着。
+
+    两个都要：只有服务而没有路由，调用方拿不到入口；只有路由而没有服务，那是一条会被
+    ``ImportError`` 挡在半路的死路径。MCP 的第三个工具与 HTTP 共用同一个 ``gated_research``
+    （ADR-0026 §1），所以服务在就代表两侧在。
+    """
+
+    try:
+        from app.api.routes.rag import router
+        from app.services.research_gate import gated_research
+    except Exception:  # noqa: BLE001 - 探针只回答「有没有」
+        return False
+    if not callable(gated_research):
+        return False
+    return "/rag/research" in {getattr(route, "path", "") for route in router.routes}
+
+
+def capability_status() -> dict[str, str]:
+    """图谱与 Research 两侧**各自是什么状态**——探测代码，不读开关（#156）。
+
+    两种取值：``available``（代码里真有这一步）与 ``capability-not-implemented``
+    （没有）。**没有** ``disabled``：那是「开关关了」，属于 ``--graph`` / ``--research``
+    的取值，不在这里出现——两个维度混成一个状态，就会出现「开关关了所以报未实现」这种
+    自相矛盾的读数。
+
+    这个函数**故意不收** :class:`RunConfig`：收了就会有人顺手读一个开关，
+    而「能力在不在」与「这次想不想跑」是两条互不相干的事实。
     """
 
     return {
-        # 图谱注入：能力已在 #144 落地，缺的是本脚本这一侧的接线（见上面的说明）。
-        "graph": CAPABILITY_NOT_IMPLEMENTED,
-        # Research：/rag/research 与 MCP 第三工具都还没有入口。
-        "research": CAPABILITY_NOT_IMPLEMENTED,
+        "graph": CAPABILITY_AVAILABLE if _graph_injection_wired() else CAPABILITY_NOT_IMPLEMENTED,
+        "research": (
+            CAPABILITY_AVAILABLE if _research_wired() else CAPABILITY_NOT_IMPLEMENTED
+        ),
     }
 
 
@@ -896,7 +1001,7 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
             )
         )
 
-    statuses = capability_status(config)
+    statuses = capability_status()
     research_enabled = config.research == "on"
     research_status = (
         statuses["research"] if research_enabled else "disabled"
@@ -909,7 +1014,10 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "source": config.source,
         "switches": {"graph": config.graph, "research": config.research},
-        "capabilities": statuses,
+        "capabilities": dict(statuses),
+        # 与 capabilities 并列、不合并：前者是「代码里有没有」，这里是「这次跑有没有走那条路」
+        # （#156）。两份事实都要进 results.json，否则事后分不清「没采集」与「没能力」。
+        "exercised": dict(EXERCISED_SIDES),
         "premise": {
             "comparable_with_original_project": False,
             "why": (
@@ -1001,6 +1109,35 @@ def _source_label(source: str) -> str:
     }[source]
 
 
+def _graph_note(status: str) -> str:
+    """图谱那一栏的说明：**状态说什么就写什么**，不写死的「还没落地」。"""
+
+    if status == CAPABILITY_AVAILABLE:
+        return (
+            "注入服务已装配（`app/services/graph_injection.py` + 组合根的 `graph_factory`）；"
+            "注入项 score=0、按本次请求的库与版本过滤，名次交给重排"
+        )
+    return (
+        "注入服务或组合根那条缝不在（`graph_factory` 收不到），"
+        "这一次不会有任何图谱候选进池"
+    )
+
+
+def _research_note(status: str) -> str:
+    """Research 那一栏的说明；硬顶从代码常量取，避免「报告说 3、代码允许 4」。"""
+
+    calls, with_fallback = research_model_call_budget()
+    if status == CAPABILITY_AVAILABLE:
+        return (
+            "`/rag/research` 与 MCP `rag_research` 已就位（同一份 `gated_research`）；"
+            f"一次调用硬顶 {calls} 次模型调用（含生成兜底 {with_fallback} 次）"
+        )
+    return (
+        "`/rag/research` 或 `research_gate` 不在——七种停止原因、引用块四条硬校验"
+        "一条都不存在"
+    )
+
+
 def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     """人读的报告。四类指标各一节，**未落地的能力写在指标旁边**而不是脚注里。"""
 
@@ -1075,14 +1212,22 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     add("")
     if distribution["status"] == CAPABILITY_NOT_IMPLEMENTED:
         add(
-            f"**{CAPABILITY_NOT_IMPLEMENTED}**：`--research {config.research}` 要求的那一侧还没有"
-            "入口（`/rag/research` 与 MCP 第三工具都不存在），所以七种原因一种都没有出现——"
-            "这不是「都试过了，结果是这些」。"
+            f"**{CAPABILITY_NOT_IMPLEMENTED}**：代码里没有这条路（`app.services.research_gate` "
+            "或 `/rag/research` 路由缺失），所以七种原因一种都没有出现——这不是「都试过了，"
+            "结果是这些」。"
         )
     elif distribution["status"] == "disabled":
         add(
             "**未启用**（research=off）：本次不跑 Research，七种原因不适用。"
-            "要读这一侧，等 C3 落地后加 `--research on`。"
+            "要读这一侧，加 `--research on`。"
+        )
+    elif not distribution["exercised"]:
+        add(
+            f"**能力已就位，但这份报告没有采集这一侧**（`{distribution['status']}`，"
+            f"`exercised=false`）：`/rag/research` 与 MCP `rag_research` 都在，但本脚本的"
+            "采集路径只跑检索内核（`rag_service.retrieve`），一次都没有调用 Research，"
+            "所以七种原因**本报告不产出**——这不是「跑完了、一条都没有」。"
+            "开 / 关对照由 #153（C6）那一步接线后出。"
         )
     else:
         add("| 停止原因 | 次数 | 占比 |")
@@ -1096,8 +1241,8 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
     add("### 今天链路的终止形态（等价物，**不是**停止原因）")
     add("")
     add(
-        "Research 落地之前，「为什么停」只能从这三件事读出来。它与上表并列，"
-        "不冒充七种原因里的任何一种。"
+        "上一节是 Research 状态机的出口；本脚本跑的是检索内核（一次返回），"
+        "它的终止形态只有这几种。两者并列展示，谁都不冒充谁。"
     )
     add("")
     add("| 终止形态 | 题数 |")
@@ -1172,24 +1317,47 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
 
     add("## 能力开关状态")
     add("")
-    add("| 开关 | 本次取值 | 状态 | 说明 |")
-    add("| --- | --- | --- | --- |")
     add(
-        f"| graph | {config.graph} | `{statuses['graph']}` | 注入能力已在 #144 落地 "
-        "（`app/services/graph_injection.py`），但本脚本还没把 `--graph on` 接到组合根的 "
-        "`graph_factory`（#153 接线）；此刻 on 与 off 的读数**必然相同**，"
-        "不能据此说「图谱无效」 |"
-    )
-    add(
-        f"| research | {config.research} | `{statuses['research']}` | `/rag/research` 与 MCP "
-        "`rag_research` 都还没有入口，七种停止原因、硬上限、引用块校验一条都不存在 |"
+        "两栏分开读：**状态**是探测代码得出的（这台机器上有没有这一步），**这次跑**是开关"
+        "与脚本接线共同决定的（这次有没有真的走那条路）。两者不是同一件事（#156）。"
     )
     add("")
-    if config.graph == "on" or config.research == "on":
+    add("| 开关 | 本次取值 | 状态（探测） | 这次跑 | 说明 |")
+    add("| --- | --- | --- | --- | --- |")
+    add(
+        f"| graph | {config.graph} | `{statuses['graph']}` "
+        f"| {'已采集' if payload['exercised']['graph'] else '**未采集**'} "
+        f"| {_graph_note(statuses['graph'])} |"
+    )
+    add(
+        f"| research | {config.research} | `{statuses['research']}` "
+        f"| {'已采集' if payload['exercised']['research'] else '**未采集**'} "
+        f"| {_research_note(statuses['research'])} |"
+    )
+    add("")
+    unexercised = [
+        name
+        for name in ("graph", "research")
+        if getattr(config, name) == "on" and not payload["exercised"][name]
+    ]
+    if unexercised:
         add(
-            "> **对照有效性**：本次有一侧被打开，但那一侧是 "
-            f"`{CAPABILITY_NOT_IMPLEMENTED}`，所以 on / off 两组读数会是同一组数。"
-            "这是「还没接」而不是「接了没用」——真实对照等 A2 / C3 落地后由 C6 出。"
+            "> **对照有效性**：本次有开关被打开（"
+            + "、".join(f"`{name}`" for name in unexercised)
+            + "），但本脚本的采集路径**没有驱动**那一侧"
+            "（接线是 #153 的事），所以 on / off 两组读数会是同一组数。"
+            "这是「没采集」而不是「接了没用」——真实对照等 C6 出。"
+        )
+        add("")
+    not_ready = [
+        name for name in ("graph", "research") if statuses[name] != CAPABILITY_AVAILABLE
+    ]
+    if not_ready:
+        add(
+            "> **未就位的两侧**："
+            + "、".join(f"`{name}`" for name in not_ready)
+            + f" 探测结果为 `{CAPABILITY_NOT_IMPLEMENTED}`（代码里没有这一步），"
+            "即便打开开关也不会有读数。"
         )
         add("")
 
@@ -1282,7 +1450,7 @@ def _command_run(args: argparse.Namespace) -> int:
             source=config.source,
             question_count=len(questions),
             research_enabled=config.research == "on",
-            research_status=capability_status(config)["research"],
+            research_status=capability_status()["research"],
         )
     )
 
