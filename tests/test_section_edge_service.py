@@ -314,6 +314,72 @@ def test_the_version_pass_resolves_a_reference_whose_target_was_written_later(
     )
 
 
+def test_the_version_pass_keeps_the_inbound_edges_of_the_document_it_touches_last(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """整版重算**不能删掉自己刚写好的边**（#153 端到端验收在真库上抓到）。
+
+    这个 bug 的形状：整版重算曾逐篇调 ``rebuild_document_edges``，而它一开头就
+    「删掉这一篇作为起点**与终点**的边」。于是处理到后一篇时，前一篇指向它的引用边刚写好
+    就被删掉，而且再也没人补回来——真库上表现为「9 条引用边只剩 5 条」，缺的正是四条
+    跨文档引用（它们的目标文档恰好最后处理）。台账上是「构建成功、四项计数相等」。
+
+    这里用一个内存边表把「删/写」的真实效果跑出来：删一篇的边会带走**两头**都连着它的边。
+    判据只看一件事——``doc-a`` 指向 ``doc-b`` 的那条引用边，在整版重算之后还在不在。
+    """
+
+    session = _session(
+        _chunk_row(
+            document_id="doc-a",
+            title="售后手册",
+            heading="2.1 退款",
+            chunk_index=0,
+            content="详见《促销规则》2.4 节。",
+        ),
+        _chunk_row(
+            document_id="doc-b",
+            title="促销规则",
+            heading="2.4 到账时限",
+            chunk_index=0,
+            content="三个工作日内到账。",
+        ),
+    )
+
+    edges: set[tuple[str, str, str, str, str]] = set()
+
+    async def _delete_for_document(_db: Any, *, scope: EdgeScope, document_id: str) -> None:
+        for edge in list(edges):
+            if edge[0] == document_id or edge[2] == document_id:
+                edges.discard(edge)
+
+    async def _delete_for_version(_db: Any, *, scope: EdgeScope) -> None:
+        edges.clear()
+
+    async def _insert_many(_db: Any, drafts: Any) -> None:
+        for draft in drafts:
+            edges.add(
+                (
+                    draft.source_document_id,
+                    draft.source_section_id,
+                    draft.target_document_id,
+                    draft.target_section_id,
+                    draft.relation_type,
+                )
+            )
+
+    monkeypatch.setattr(section_edge_repository, "delete_for_document", _delete_for_document)
+    monkeypatch.setattr(section_edge_repository, "delete_for_version", _delete_for_version)
+    monkeypatch.setattr(section_edge_repository, "insert_many", _insert_many)
+
+    asyncio.run(rebuild_version_edges(session, scope=SCOPE))
+
+    references = [edge for edge in edges if edge[4] == "reference"]
+    assert len(references) == 1, f"整版重算之后引用边不该消失：{sorted(edges)}"
+    assert (references[0][0], references[0][2]) == ("doc-a", "doc-b"), (
+        "doc-b 最后处理：它作为终点的边不能被自己那次删除带走"
+    )
+
+
 def test_the_version_pass_only_reads_its_own_version() -> None:
     """别的版本的切片不在目录里，于是跨版本的边一条都建不出来。"""
 

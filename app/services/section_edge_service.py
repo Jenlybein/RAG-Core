@@ -185,7 +185,23 @@ async def rebuild_version_edges(db: AsyncSession, *, scope: EdgeScope) -> int:
     """把**整个版本**的边重算一遍（幂等），返回写入的边数。
 
     整库构建收尾用：此时目录才是完整的目录，跨文档引用才能解析到这一轮刚写进来的目标。
-    逐文档调用同一份 :func:`rebuild_document_edges`，不另写一套。
+
+    **三步的顺序与「重建一篇」不同，而且必须不同**（#153 在真库上抓到）：
+
+    ```text
+    ① 清空这一版          一条 DELETE，作用域三列
+    ② 一次性写入全部边     同一份 extract_section_edges，ON CONFLICT DO NOTHING 保持幂等
+    ③ 清悬空              用本版本**真实的**节全集剪一遍
+    ```
+
+    为什么不能逐篇调 :func:`rebuild_document_edges`：它一开头就删掉「这一篇作为起点**与
+    终点**的边」。逐篇跑下去时，处理到后一篇的那一刻，前一篇刚写好的、指向它的引用边会
+    被这次删除带走，而且再也没人补——真库上的症状是「9 条引用边只剩 5 条」，缺的正是
+    四条跨文档引用（目标文档恰好最后处理），而构建照样报 ready、四项计数照样相等。
+    整版重算手里有全部文档的边，所以它不需要逐篇删：**先整体清空，再整体写入**。
+
+    抽取本身仍是**同一份** :func:`extract_section_edges`（不另写一套），差别只在
+    「先删谁、什么时候写」。
     """
 
     rows = await chunk_repository.list_version_sections(
@@ -201,31 +217,32 @@ async def rebuild_version_edges(db: AsyncSession, *, scope: EdgeScope) -> int:
     for entry in entries:
         grouped.setdefault(entry.record.document_id, []).append(entry)
 
-    total = 0
+    drafts: dict[tuple[str, ...], EdgeDraft] = {}
     for document_id, document_entries in grouped.items():
         title = document_entries[0].record.document_title
-        result = await rebuild_document_edges(
-            db,
+        for draft in extract_section_edges(
             scope=scope,
             document_id=document_id,
             document_title=title,
             sections=document_entries,
             catalog=catalog,
-        )
-        total += result.count
+        ):
+            drafts.setdefault(draft.unique_key, draft)
 
-    if not grouped:
-        # 一个节都没有的版本：边一条都不该留（否则全是悬空边）。
-        await section_edge_repository.prune_dangling(db, scope=scope, valid_pairs=())
+    await section_edge_repository.delete_for_version(db, scope=scope)
+    await section_edge_repository.insert_many(db, list(drafts.values()))
+    await section_edge_repository.prune_dangling(
+        db, scope=scope, valid_pairs=_valid_pairs(catalog)
+    )
     logger.info(
         "section edges rebuilt for the whole version",
         tenant_id=scope.tenant_id,
         kb_id=scope.kb_id,
         index_version=scope.index_version,
         document_count=len(grouped),
-        edge_count=total,
+        edge_count=len(drafts),
     )
-    return total
+    return len(drafts)
 
 
 def _valid_pairs(catalog: SectionCatalog) -> set[tuple[str, str]]:

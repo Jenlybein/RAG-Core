@@ -138,6 +138,18 @@ async def fetch_outbound(
     return list(rows.all())
 
 
+def build_delete_for_version_statement(scope: EdgeScope) -> Delete:
+    """删掉**整版**的边（一条语句，作用域三列）。
+
+    与 :func:`build_delete_for_document_statement` 的分工：那一份服务「重建一篇」——
+    它连带删掉**别的篇指向它的**边，因为它自己的节可能换了身份；而整版重算手里有全部
+    文档的边，逐篇删会把刚写好的入边再删一次（#153 在真库上抓到的那个 bug），所以那里
+    改成「先把这一版清空，再一次性写入全部边」。
+    """
+
+    return delete(SectionEdge).where(build_scope_clause(scope))
+
+
 def build_delete_for_document_statement(scope: EdgeScope, document_id: str) -> Delete:
     """删该文档在本版本里的**全部**边：它作为起点与它作为终点都算。
 
@@ -201,6 +213,12 @@ async def delete_for_document(db: AsyncSession, *, scope: EdgeScope, document_id
     """:func:`build_delete_for_document_statement` 的执行面（不提交，事务归调用方）。"""
 
     await db.execute(build_delete_for_document_statement(scope, document_id))
+
+
+async def delete_for_version(db: AsyncSession, *, scope: EdgeScope) -> None:
+    """:func:`build_delete_for_version_statement` 的执行面（整版重算的第一步）。"""
+
+    await db.execute(build_delete_for_version_statement(scope))
 
 
 async def insert_many(db: AsyncSession, drafts: Sequence[EdgeDraft]) -> None:
