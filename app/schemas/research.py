@@ -157,7 +157,7 @@ def payload_of(
     plan_name: str,
     trace_id: str,
 ) -> dict[str, Any]:
-    """把状态机的产物装成响应形状（唯一一处装填，HTTP 与将来的 MCP 共用）。
+    """把状态机的产物装成响应形状（唯一一处装填，HTTP 与 MCP 两个入口共用）。
 
     ``outcome`` 是 :class:`app.services.research.ResearchOutcome`：这里只做「换外壳」，
     不重算任何判定——材料、计划、计数、停止原因、完整度全部原样搬过来。判定散在两处，

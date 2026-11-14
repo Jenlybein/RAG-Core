@@ -236,7 +236,7 @@ _Avoid_: 检索引擎, 完整检索服务, retrieve 服务
 _Avoid_: 精排, 二次排序, 粗排
 
 **降级原因（degraded_reason）**：
-降级时回给调用方的固定英文串，只有五个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `orchestration failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排 → 编排），后到的不覆盖。
+降级时回给调用方的固定英文串，只有六个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `graph injection failed` / `orchestration failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 图谱 → 重排 → 编排），后到的不覆盖。
 _Avoid_: 错误信息, 异常原因, 失败详情, 中文译名
 
 **诚实空（honest empty）**：
