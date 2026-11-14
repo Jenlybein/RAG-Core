@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-14T22:24:22+00:00",
+  "generated_at": "2026-11-14T22:35:46+00:00",
   "issue": "#167 缺口闸真实行为评测",
   "llm_chain": {
     "llm_endpoint_source": "model_configs",
@@ -29,13 +29,27 @@
     }
   },
   "model_calls": {
-    "budget": 110,
-    "nominal": 80,
-    "worst": 100,
-    "actual": 40,
+    "budget": 170,
+    "nominal": 110,
+    "worst": 140,
+    "actual": 70,
     "per_case": {
       "nominal": 4,
-      "worst": 5
+      "worst": 5,
+      "control_nominal": 3,
+      "control_worst": 4
+    },
+    "conditions": {
+      "main": {
+        "cases": 20,
+        "nominal": 80,
+        "worst": 100
+      },
+      "control": {
+        "cases": 10,
+        "nominal": 30,
+        "worst": 40
+      }
     },
     "skipped": []
   },
@@ -718,7 +732,83 @@
         "退款申请的入口与操作路径",
         "数字人民币退款能否退至数字钱包"
       ],
-      "answer": "审核通过后退款一般3到5个工作日到账，具体取决于支付渠道。（E1、E4、E5）\n退款申请有三个入口：管理后台订单详情页、客服工单和线下退款申请单。（E6）\n材料不足：未找到数字人民币退款能否退至数字钱包的说明。（材料不足）"
+      "answer": "审核通过后退款一般3到5个工作日到账，具体取决于支付渠道。（E1、E4、E5）\n退款申请有三个入口：管理后台订单详情页、客服工单和线下退款申请单。（E6）\n材料不足：未找到数字人民币退款能否退至数字钱包的说明。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A01",
+      "group": "A",
+      "query": "退款要几天，从哪个入口申请；另外退款能不能用数字人民币退到数字钱包",
+      "keyword": "数字人民币",
+      "gaps": [],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E3"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E6"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "unknown",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "退款审核2个工作日内完成，审核通过后3到5个工作日到账，从执行日算。",
+          "evidence_ids": [
+            "E1",
+            "E3",
+            "E5"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "退款申请有管理后台订单详情页、客服工单和线下退款申请单三个入口，线下仅对公与跨境。",
+          "evidence_ids": [
+            "E6"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料未找到数字人民币退至数字钱包的说明，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 17,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 45657,
+      "points": [
+        "退款到账天数取决于原支付方式",
+        "退款申请入口在订单详情或售后页",
+        "数字人民币退款可退回原数字钱包"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "退款审核2个工作日内完成，审核通过后3到5个工作日到账，从执行日算。（E1、E3、E5）\n退款申请有管理后台订单详情页、客服工单和线下退款申请单三个入口，线下仅对公与跨境。（E6）\n材料未找到数字人民币退至数字钱包的说明，材料不足。（材料不足）"
     },
     {
       "case": "A02",
@@ -767,7 +857,75 @@
         "部分行业对审计日志留存期限有更长要求",
         "区块链存证可用于日志防篡改并需合规评估"
       ],
-      "answer": null
+      "answer": null,
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A02",
+      "group": "A",
+      "query": "审计日志要留存多久；另外日志能不能用区块链做存证",
+      "keyword": "区块链",
+      "gaps": [
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E2",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "unknown",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "审计日志留存 12 个月，留存期满按流程销毁，销毁记录保留 3 年。",
+          "evidence_ids": [
+            "E2",
+            "E4"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到日志能否用区块链存证，也未涉及电子数据取证规范。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 11,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 30328,
+      "points": [
+        "审计日志通常需留存不少于六个月",
+        "区块链存证可用于防止日志被篡改",
+        "日志上链存证应符合电子数据取证规范"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "审计日志留存 12 个月，留存期满按流程销毁，销毁记录保留 3 年。（E2、E4）\n材料不足：未找到日志能否用区块链存证，也未涉及电子数据取证规范。（材料不足）"
     },
     {
       "case": "A03",
@@ -838,7 +996,74 @@
         "告警可以推送到企业微信群。",
         "企业微信群推送需要配置和权限支持。"
       ],
-      "answer": "P2 告警要求 30 分钟内响应，响应时限从告警触发时刻起算。（E1、E2、E5）\n材料不足：未找到告警可推送到企业微信群的任何说明。（材料不足）\n材料不足：未找到企业微信群推送所需配置与权限的说明。（材料不足）"
+      "answer": "P2 告警要求 30 分钟内响应，响应时限从告警触发时刻起算。（E1、E2、E5）\n材料不足：未找到告警可推送到企业微信群的任何说明。（材料不足）\n材料不足：未找到企业微信群推送所需配置与权限的说明。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A03",
+      "group": "A",
+      "query": "P2 告警的响应时限是多少；另外告警能不能推送到企业微信群里",
+      "keyword": "企业微信",
+      "gaps": [],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E5"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "unknown",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "unknown",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "P2 为部分功能不可用，响应时限为 30 分钟。",
+          "evidence_ids": [
+            "E1",
+            "E2",
+            "E5"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "告警能否推送到企业微信群，材料中未找到相关说明，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 13,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 15358,
+      "points": [
+        "P2 告警响应时限的具体时长",
+        "告警是否支持推送到企业微信群",
+        "企业微信群推送的配置方式与限制"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "P2 为部分功能不可用，响应时限为 30 分钟。（E1、E2、E5）\n告警能否推送到企业微信群，材料中未找到相关说明，材料不足。（材料不足）"
     },
     {
       "case": "A04",
@@ -934,7 +1159,83 @@
         "申请英文发票需要提交的方式或材料",
         "发票开具的时间限制与内容要求"
       ],
-      "answer": "账单在次月 3 日生成，即每月出账时间为次月 3 日。（E1、E2）\n出账遇节假日顺延到下一个工作日，账单生成后会发送通知。（E1、E2）\n材料中未找到发票能否开具英文版的说明，材料不足。（材料不足）\n未找到申请英文发票需提交的方式或材料，材料不足。（材料不足）"
+      "answer": "账单在次月 3 日生成，即每月出账时间为次月 3 日。（E1、E2）\n出账遇节假日顺延到下一个工作日，账单生成后会发送通知。（E1、E2）\n材料中未找到发票能否开具英文版的说明，材料不足。（材料不足）\n未找到申请英文发票需提交的方式或材料，材料不足。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A04",
+      "group": "A",
+      "query": "每月账单是哪天出账的；另外发票能不能开英文版",
+      "keyword": "英文发票",
+      "gaps": [
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "unknown",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "账单在次月 3 日生成，遇节假日顺延到下一个工作日。",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "关于发票能否开具英文版本，材料不足，未找到相关说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 11,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 15546,
+      "points": [
+        "每月账单的固定出账日期及规则",
+        "出账后账单的推送与查看方式",
+        "发票能否开具英文版本",
+        "英文发票申请所需的信息或条件"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "账单在次月 3 日生成，遇节假日顺延到下一个工作日。（E1、E2）\n关于发票能否开具英文版本，材料不足，未找到相关说明。（材料不足）"
     },
     {
       "case": "A05",
@@ -1003,7 +1304,100 @@
         "购买机器是否支持分期付款需确认。",
         "分期付款的申请条件与办理流程需列出。"
       ],
-      "answer": "XR-2100 机架款指导价 9600 元，不含光模块；指导价不含运费、安装费与税费。（E1、E4）\n材料不足：未找到购买机器支持分期付款的直接说明。（材料不足）\n材料不足：未列出分期付款的申请条件与办理流程。（材料不足）"
+      "answer": "XR-2100 机架款指导价 9600 元，不含光模块；指导价不含运费、安装费与税费。（E1、E4）\n材料不足：未找到购买机器支持分期付款的直接说明。（材料不足）\n材料不足：未列出分期付款的申请条件与办理流程。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A05",
+      "group": "A",
+      "query": "机架款 XR-2100 的指导价是多少；另外买机器能不能分期付款",
+      "keyword": "分期",
+      "gaps": [
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E3"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "unknown",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "XR-2100 机架款指导价为 9600 元，不含光模块。",
+          "evidence_ids": [
+            "E1",
+            "E3"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料仅提到对公客户可申请账期，未说明买机器能否分期付款。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "分期付款的期数与首付比例条件，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "分期付款的申请渠道与合作金融机构，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 3,
+      "declared_insufficient": true,
+      "gap_declaration_count": 5,
+      "materials": 13,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 26750,
+      "points": [
+        "XR-2100 机架款的官方指导价金额",
+        "该指导价对应的配置版本与适用范围",
+        "购买机器是否支持分期付款",
+        "分期付款的期数与首付比例条件",
+        "分期付款的申请渠道与合作金融机构"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "XR-2100 机架款指导价为 9600 元，不含光模块。（E1、E3）\n材料仅提到对公客户可申请账期，未说明买机器能否分期付款。（材料不足）\n分期付款的期数与首付比例条件，材料不足。（材料不足）\n分期付款的申请渠道与合作金融机构，材料不足。（材料不足）"
     },
     {
       "case": "A06",
@@ -1067,7 +1461,73 @@
         "设备是否具备碳中和认证及适用标准",
         "企业版可用性统计口径与例外条款"
       ],
-      "answer": "企业版月度可用性承诺为99.9%，月度赔偿比例为20%。（E1）\n材料不足：未找到设备碳中和认证及适用标准的任何说明。（材料不足）"
+      "answer": "企业版月度可用性承诺为99.9%，月度赔偿比例为20%。（E1）\n材料不足：未找到设备碳中和认证及适用标准的任何说明。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A06",
+      "group": "A",
+      "query": "企业版的月度可用性承诺是多少；另外设备有没有碳中和认证",
+      "keyword": "碳中和",
+      "gaps": [],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "unknown",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "unknown",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "企业版月度可用性承诺为99.9%，未达标的月度赔偿比例为20%。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料未提及设备是否具备碳中和认证，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 9,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [
+        "vector search failed"
+      ],
+      "duration_ms": 16717,
+      "points": [
+        "企业版月度可用性承诺的具体数值",
+        "设备是否持有碳中和认证",
+        "碳中和认证的适用范围与有效期"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "企业版月度可用性承诺为99.9%，未达标的月度赔偿比例为20%。（E1）\n材料未提及设备是否具备碳中和认证，材料不足。（材料不足）"
     },
     {
       "case": "A07",
@@ -1147,7 +1607,92 @@
         "上门前确认电源网络和墙体管线条件",
         "设备是否具备语音控制及唤醒方式"
       ],
-      "answer": "上门安装前需先完成现场勘查，勘查后出具书面结论与设备配件核对清单。（E2）\n勘查阶段要扫描无线信道，避开同频邻频干扰，并确认是否有人私接接入点。（E7）\n上架前先确认机柜接地良好，接地电阻不符合规范时不要通电。（E1）\n设备是否具备语音控制及唤醒方式，材料不足，未找到相关说明。（材料不足）"
+      "answer": "上门安装前需先完成现场勘查，勘查后出具书面结论与设备配件核对清单。（E2）\n勘查阶段要扫描无线信道，避开同频邻频干扰，并确认是否有人私接接入点。（E7）\n上架前先确认机柜接地良好，接地电阻不符合规范时不要通电。（E1）\n设备是否具备语音控制及唤醒方式，材料不足，未找到相关说明。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A07",
+      "group": "A",
+      "query": "上门装设备之前要先去看什么；另外设备能不能用语音控制",
+      "keyword": "语音控制",
+      "gaps": [],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E5",
+            "E6",
+            "E7",
+            "E8"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A4",
+          "status": "unknown",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "unknown",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "上门装设备前要先现场勘查，勘查后出书面结论与设备配件核对清单。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到设备是否支持语音控制的相关说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 18,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 45687,
+      "points": [
+        "上门安装前需先确认现场安装环境与条件",
+        "安装前需核对设备型号与配件是否齐全",
+        "安装前需确认电源与网络等接入条件",
+        "设备是否支持语音控制功能",
+        "语音控制的支持范围与使用方式"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "上门装设备前要先现场勘查，勘查后出书面结论与设备配件核对清单。（E1）\n材料不足：未找到设备是否支持语音控制的相关说明。（材料不足）"
     },
     {
       "case": "A08",
@@ -1200,7 +1745,72 @@
         "时间戳偏差超出允许值时的报错与签名失效处理",
         "管理后台能否用苹果手机扫码登录"
       ],
-      "answer": null
+      "answer": null,
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A08",
+      "group": "A",
+      "query": "请求签名的时间戳允许多少秒偏差；另外能不能用苹果手机扫码登录管理后台",
+      "keyword": "苹果",
+      "gaps": [
+        "A1",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "no_new_evidence",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料不足：未找到请求签名时间戳允许偏差的具体秒数。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到管理后台支持苹果手机扫码登录的任何说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 2,
+      "declared_insufficient": true,
+      "gap_declaration_count": 4,
+      "materials": 9,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 19984,
+      "points": [
+        "请求签名时间戳的允许偏差为多少秒",
+        "签名校验会拒绝超出时间窗口的请求",
+        "管理后台可通过苹果手机扫码登录"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "材料不足：未找到请求签名时间戳允许偏差的具体秒数。（材料不足）\n材料不足：未找到管理后台支持苹果手机扫码登录的任何说明。（材料不足）"
     },
     {
       "case": "A09",
@@ -1265,7 +1875,92 @@
         "旧机折价评估与抵扣规则",
         "以租代购服务及申请条件"
       ],
-      "answer": "可以：以旧换新适用于存量老机型升级，旧机按型号与成色估价并直接抵扣新机价款，不产生现金退款。（E1）\n材料不足：未找到以租代购服务及其申请条件的相关内容。（材料不足）"
+      "answer": "可以：以旧换新适用于存量老机型升级，旧机按型号与成色估价并直接抵扣新机价款，不产生现金退款。（E1）\n材料不足：未找到以租代购服务及其申请条件的相关内容。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A09",
+      "group": "A",
+      "query": "旧机器能抵钱换新的吗；另外能不能以租代购",
+      "keyword": "以租代购",
+      "gaps": [
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "unknown",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "unknown",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "旧机可按型号与成色估价，估价金额直接抵扣新机售价，不产生现金退款。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "以租代购材料不足：未找到以租代购的说明，仅见设备租赁与押金条款。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "以旧换新与以租代购的办理条件与流程需审核，材料不足，未找到相关说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 2,
+      "declared_insufficient": true,
+      "gap_declaration_count": 4,
+      "materials": 14,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 41312,
+      "points": [
+        "旧机器参与以旧换新可折抵新机价款",
+        "旧机折抵金额按机型成色和检测结果评估",
+        "以租代购支持低首付按月付租使用设备",
+        "以租代购需明确租期租金及到期归属规则",
+        "以旧换新和以租代购的办理条件与流程需审核"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "旧机可按型号与成色估价，估价金额直接抵扣新机售价，不产生现金退款。（E1）\n以租代购材料不足：未找到以租代购的说明，仅见设备租赁与押金条款。（材料不足）\n以旧换新与以租代购的办理条件与流程需审核，材料不足，未找到相关说明。（材料不足）"
     },
     {
       "case": "A10",
@@ -1339,11 +2034,85 @@
         "窗口结束前必须完成的验证与收尾动作",
         "值班排班是否允许使用钉钉工具"
       ],
-      "answer": "常规变更窗口为工作日22点至次日2点，数据库变更窗口为周六凌晨。（E3）\n窗口结束前30分钟必须开始验证，验证未通过按回滚处理。（E3）\n材料不足，未找到值班排班是否允许使用钉钉的说明。（材料不足）"
+      "answer": "常规变更窗口为工作日22点至次日2点，数据库变更窗口为周六凌晨。（E3）\n窗口结束前30分钟必须开始验证，验证未通过按回滚处理。（E3）\n材料不足，未找到值班排班是否允许使用钉钉的说明。（材料不足）",
+      "condition": "fivefold",
+      "fivefold": true
+    },
+    {
+      "case": "A10",
+      "group": "A",
+      "query": "变更窗口是什么时候，窗口结束前要做什么；另外值班排班能不能用钉钉",
+      "keyword": "钉钉",
+      "gaps": [],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "unknown",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "常规变更窗口为工作日22点到次日2点，数据库变更窗口为周六凌晨。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "窗口结束前30分钟必须开始验证，验证未通过按回滚处理。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料未提及钉钉，无法判断值班排班能否用钉钉，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 16,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 38780,
+      "points": [
+        "变更窗口的具体起止时间",
+        "窗口结束前必须完成的检查与确认",
+        "值班排班是否允许使用钉钉"
+      ],
+      "condition": "control",
+      "fivefold": false,
+      "answer": "常规变更窗口为工作日22点到次日2点，数据库变更窗口为周六凌晨。（E1）\n窗口结束前30分钟必须开始验证，验证未通过按回滚处理。（E1）\n材料未提及钉钉，无法判断值班排班能否用钉钉，材料不足。（材料不足）"
     }
   ],
   "groups_run": [
-    "A"
+    "None",
+    "control"
   ],
   "metrics": {
     "cases": 10,
@@ -1369,16 +2138,16 @@
     },
     "声明对齐度": {
       "cases_with_gaps": 10,
+      "answered": 8,
+      "unanswered": 2,
       "pairs": {
         "1→1": 5,
-        "2→0": 1,
-        "2→2": 3,
-        "3→0": 1
+        "2→2": 3
       },
       "exact": 8,
-      "exact_rate": 0.8,
-      "under": 2,
-      "under_rate": 0.2,
+      "exact_rate": 1.0,
+      "under": 0,
+      "under_rate": 0.0,
       "over": 0,
       "over_rate": 0.0,
       "declared_without_gaps": 0
@@ -1451,22 +2220,24 @@
       "声明对齐度": {
         "A": {
           "cases_with_gaps": 10,
+          "answered": 8,
+          "unanswered": 2,
           "pairs": {
             "1→1": 5,
-            "2→0": 1,
-            "2→2": 3,
-            "3→0": 1
+            "2→2": 3
           },
           "exact": 8,
-          "exact_rate": 0.8,
-          "under": 2,
-          "under_rate": 0.2,
+          "exact_rate": 1.0,
+          "under": 0,
+          "under_rate": 0.0,
           "over": 0,
           "over_rate": 0.0,
           "declared_without_gaps": 0
         },
         "B": {
           "cases_with_gaps": 0,
+          "answered": 0,
+          "unanswered": 0,
           "pairs": {},
           "exact": 0,
           "exact_rate": null,
@@ -1478,5 +2249,396 @@
         }
       }
     }
+  },
+  "fivefold": {
+    "paired_cases": 10,
+    "missing": [],
+    "without_fivefold": {
+      "cases": 10,
+      "cases_with_unknown": 9,
+      "rate": 0.9,
+      "unknown_points": 13,
+      "point_total": 37,
+      "count_distribution": {
+        "0": 1,
+        "1": 5,
+        "2": 4
+      },
+      "per_case": [
+        {
+          "case": "A01",
+          "unknown": 1,
+          "points": 3
+        },
+        {
+          "case": "A02",
+          "unknown": 1,
+          "points": 3
+        },
+        {
+          "case": "A03",
+          "unknown": 2,
+          "points": 3
+        },
+        {
+          "case": "A04",
+          "unknown": 1,
+          "points": 4
+        },
+        {
+          "case": "A05",
+          "unknown": 1,
+          "points": 5
+        },
+        {
+          "case": "A06",
+          "unknown": 2,
+          "points": 3
+        },
+        {
+          "case": "A07",
+          "unknown": 2,
+          "points": 5
+        },
+        {
+          "case": "A08",
+          "unknown": 0,
+          "points": 3
+        },
+        {
+          "case": "A09",
+          "unknown": 2,
+          "points": 5
+        },
+        {
+          "case": "A10",
+          "unknown": 1,
+          "points": 3
+        }
+      ]
+    },
+    "without_fivefold_metrics": {
+      "缺口出现率": {
+        "value": 0.5,
+        "numerator": 5,
+        "denominator": 10
+      },
+      "拦截率": {
+        "value": 0.0,
+        "numerator": 0,
+        "denominator": 5
+      },
+      "⑤ 触发率": {
+        "value": 0.0,
+        "numerator": 0,
+        "denominator": 10
+      },
+      "unknown 残留率": {
+        "value": 0.9,
+        "numerator": 9,
+        "denominator": 10
+      },
+      "声明对齐度": {
+        "cases_with_gaps": 5,
+        "answered": 5,
+        "unanswered": 0,
+        "pairs": {
+          "1→1": 2,
+          "1→2": 1,
+          "2→2": 1,
+          "2→3": 1
+        },
+        "exact": 3,
+        "exact_rate": 0.6,
+        "under": 0,
+        "under_rate": 0.0,
+        "over": 2,
+        "over_rate": 0.4,
+        "declared_without_gaps": 5
+      }
+    },
+    "transitions": {
+      "unknown_to_supported": 0,
+      "unknown_to_none": 13,
+      "unknown_to_unknown": 0,
+      "not_planned_in_fivefold_run": 0,
+      "other_unknown_points": 0,
+      "total": 13,
+      "to_supported_rate": 0.0,
+      "to_none_rate": 1.0,
+      "plan_differs_cases": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10"
+      ]
+    },
+    "net": {
+      "gaps_up": 7,
+      "gaps_down": 0,
+      "gaps_same": 3,
+      "gaps_with": 16,
+      "gaps_without": 7,
+      "answered_with": 8,
+      "answered_without": 10,
+      "insufficient_with": 11,
+      "insufficient_without": 14
+    },
+    "per_case": [
+      {
+        "case": "A01",
+        "gaps_with": 1,
+        "gaps_without": 0,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 1,
+        "insufficient_without": 1,
+        "model_calls_with": 4,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "数字人民币退款可退回原数字钱包",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A02",
+        "gaps_with": 3,
+        "gaps_without": 1,
+        "answered_with": false,
+        "answered_without": true,
+        "insufficient_with": 0,
+        "insufficient_without": 1,
+        "model_calls_with": 5,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "区块链存证可用于防止日志被篡改",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A03",
+        "gaps_with": 2,
+        "gaps_without": 0,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 2,
+        "insufficient_without": 1,
+        "model_calls_with": 4,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "告警是否支持推送到企业微信群",
+            "after": "none"
+          },
+          {
+            "point": "企业微信群推送的配置方式与限制",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A04",
+        "gaps_with": 2,
+        "gaps_without": 1,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 2,
+        "insufficient_without": 1,
+        "model_calls_with": 3,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "英文发票申请所需的信息或条件",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A05",
+        "gaps_with": 2,
+        "gaps_without": 2,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 2,
+        "insufficient_without": 3,
+        "model_calls_with": 4,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "购买机器是否支持分期付款",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A06",
+        "gaps_with": 1,
+        "gaps_without": 0,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 1,
+        "insufficient_without": 1,
+        "model_calls_with": 4,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "设备是否持有碳中和认证",
+            "after": "none"
+          },
+          {
+            "point": "碳中和认证的适用范围与有效期",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A07",
+        "gaps_with": 1,
+        "gaps_without": 0,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 1,
+        "insufficient_without": 1,
+        "model_calls_with": 5,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "设备是否支持语音控制功能",
+            "after": "none"
+          },
+          {
+            "point": "语音控制的支持范围与使用方式",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A08",
+        "gaps_with": 2,
+        "gaps_without": 2,
+        "answered_with": false,
+        "answered_without": true,
+        "insufficient_with": 0,
+        "insufficient_without": 2,
+        "model_calls_with": 3,
+        "model_calls_without": 3,
+        "transitions": []
+      },
+      {
+        "case": "A09",
+        "gaps_with": 1,
+        "gaps_without": 1,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 1,
+        "insufficient_without": 2,
+        "model_calls_with": 4,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "以租代购支持低首付按月付租使用设备",
+            "after": "none"
+          },
+          {
+            "point": "以租代购需明确租期租金及到期归属规则",
+            "after": "none"
+          }
+        ]
+      },
+      {
+        "case": "A10",
+        "gaps_with": 1,
+        "gaps_without": 0,
+        "answered_with": true,
+        "answered_without": true,
+        "insufficient_with": 1,
+        "insufficient_without": 1,
+        "model_calls_with": 4,
+        "model_calls_without": 3,
+        "transitions": [
+          {
+            "point": "值班排班是否允许使用钉钉",
+            "after": "none"
+          }
+        ]
+      }
+    ],
+    "details": [
+      {
+        "case": "A01",
+        "point": "数字人民币退款可退回原数字钱包",
+        "after": "none"
+      },
+      {
+        "case": "A02",
+        "point": "区块链存证可用于防止日志被篡改",
+        "after": "none"
+      },
+      {
+        "case": "A03",
+        "point": "告警是否支持推送到企业微信群",
+        "after": "none"
+      },
+      {
+        "case": "A03",
+        "point": "企业微信群推送的配置方式与限制",
+        "after": "none"
+      },
+      {
+        "case": "A04",
+        "point": "英文发票申请所需的信息或条件",
+        "after": "none"
+      },
+      {
+        "case": "A05",
+        "point": "购买机器是否支持分期付款",
+        "after": "none"
+      },
+      {
+        "case": "A06",
+        "point": "设备是否持有碳中和认证",
+        "after": "none"
+      },
+      {
+        "case": "A06",
+        "point": "碳中和认证的适用范围与有效期",
+        "after": "none"
+      },
+      {
+        "case": "A07",
+        "point": "设备是否支持语音控制功能",
+        "after": "none"
+      },
+      {
+        "case": "A07",
+        "point": "语音控制的支持范围与使用方式",
+        "after": "none"
+      },
+      {
+        "case": "A09",
+        "point": "以租代购支持低首付按月付租使用设备",
+        "after": "none"
+      },
+      {
+        "case": "A09",
+        "point": "以租代购需明确租期租金及到期归属规则",
+        "after": "none"
+      },
+      {
+        "case": "A10",
+        "point": "值班排班是否允许使用钉钉",
+        "after": "none"
+      }
+    ]
   }
 }

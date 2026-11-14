@@ -50,19 +50,29 @@ no-answer 子集，思路相同）。
 有没有「材料不足」这句话。所以「一道题有 3 个缺口、只写了 1 句材料不足」会被**放行**——
 拦截率看不见这种情形，对齐度看得见。真正要量的是后者。
 
-**预算：≤110 次模型调用**（20 题 × 最坏 5 次 + 余量）。开跑前打印名义与最坏两个预估
-（:func:`predict_model_calls`），跑完打印实际次数，三个数都进产物与报告。
+**预算：≤170 次模型调用**（主条件 20 题 × 最坏 5 次 + A 组「关 ⑤」对照 10 题 × 最坏 4 次
+= 140，余量 30）。开跑前打印名义与最坏两个预估（:func:`predict_model_calls`），跑完打印实际
+次数，三个数都进产物与报告。
+
+**追加条件（lead 在测量中途加的）：A 组「有 ⑤ / 无 ⑤」对照。** 理由很硬：⑤ 上线后 `unknown`
+会被复查消费掉，于是成功跑批里「`unknown` 残留率」必然是 0——**残留率 0 什么也证明不了**。
+要量「若没有 ⑤ 会带 `unknown` 的题占多少」，只能把 ⑤ 关掉再跑一次。关法只在**本脚本内**：
+用 ``setattr`` 把 ``research._Run._rejudge`` 换成一个直接返回的 async no-op，跑完在 ``finally``
+里换回来——``app/`` 一个字节不改（手法写进报告）。四个新读数见 :func:`fivefold_comparison`：
+条件 2 的 `unknown` 真实频率、`unknown → supported` / `unknown → none` 的改判分布、⑤ 的净效果、
+以及这两种**方向相反**的价值各占多少（不许合成一个「改善率」）。
 
 用法::
 
     # 只打印预估、题集自检与关键词命中证据（0 次模型调用；**要连库**读两种正文）
     uv run python scripts/eval_t167_gap_gate.py plan
 
-    # 跑全量（两组 20 题，约 80 次模型调用）
+    # 跑全量（20 题 + A 组无 ⑤ 对照 10 题，约 110 次模型调用）
     uv run python scripts/eval_t167_gap_gate.py run
 
-    # 只跑其中一组（产物可增量补：先跑 A，再跑 B，前面的记录原样保留）
+    # 只跑其中一组（产物可增量补：先跑 A，再跑 A-off，再跑 B，前面的记录原样保留）
     uv run python scripts/eval_t167_gap_gate.py run --groups A
+    uv run python scripts/eval_t167_gap_gate.py run --groups A-off
 
     # 按当前口径重算指标并重出报告（0 次模型调用，只读落盘记录）
     uv run python scripts/eval_t167_gap_gate.py recompute
@@ -93,13 +103,21 @@ EVAL_DIR = REPO_ROOT / "eval"
 BASE_QUESTIONS = EVAL_DIR / "questions.json"
 REPORT_DIR = EVAL_DIR / "reports" / "t167"
 
-#: 模型调用的硬顶（票面：**≤110 次**）。预估与执行都对着它判，超了就减题、不超跑。
-MODEL_CALL_CAP: Final[int] = 110
+#: 模型调用的硬顶（票面原写 ≤110，追加 A 组「关 ⑤」对照后**放宽到 ≤170**）。
+#: 预估与执行都对着它判，超了就减题、不超跑。
+MODEL_CALL_CAP: Final[int] = 170
 
 #: 一道题的题量与分组的两个名字（报告与用例都读它们，不写字面量）。
 CASE_COUNT: Final[int] = 20
 GROUP_A: Final[str] = "A"
 GROUP_B: Final[str] = "B"
+#: A 组「关掉 ⑤ 再跑一次」的对照条件名（命令行与产物里都用它）。
+GROUP_A_NO_FIVEFOLD: Final[str] = "A-off"
+RUN_LABELS: Final[tuple[str, ...]] = (GROUP_A, GROUP_B, GROUP_A_NO_FIVEFOLD)
+
+#: 「⑤ 开着」与「⑤ 关掉」两个条件在逐题记录里的标记。
+CONDITION_FIVEFOLD: Final[str] = "fivefold"
+CONDITION_CONTROL: Final[str] = "control"
 
 #: 一次 Research 的**名义**与**最坏**模型调用次数，从生产常量抄（不手编）：
 #: 规划 + 判定 + 复查 + 生成 = ``MAX_MODEL_CALLS``（4）；含生成阶段的强模型兜底位 =
@@ -109,6 +127,11 @@ GROUP_B: Final[str] = "B"
 #: 捞到材料、于是必然跑复查。预检那次真实调用就是 4 次（见报告第五节）。
 NOMINAL_CALLS_PER_CASE: Final[int] = 4
 WORST_CALLS_PER_CASE: Final[int] = 5
+
+#: 关掉 ⑤ 之后少一次复查：名义 3（规划 + 判定 + 生成），最坏 4（+强模型兜底位）。
+#: **不改生产常量**——这是「把那一格拿掉之后还剩几次」，不是另一套契约。
+NOMINAL_CALLS_PER_CONTROL_CASE: Final[int] = 3
+WORST_CALLS_PER_CONTROL_CASE: Final[int] = 4
 
 #: 评测租户与它要检索的那几个库。**语料范围 = 关键词证据的范围**：同一个常量两处用，
 #: 于是「证据说的是哪批正文」与「检索真的查了哪批正文」在结构上不可能对不上。
@@ -556,14 +579,21 @@ def declaration_alignment(records: Sequence[Mapping[str, Any]]) -> dict[str, Any
     为什么要分布：均值会把「3 个缺口写 1 句」（欠声明，闸放行）与「1 个缺口写 3 句」（过声明）
     平均成一个漂亮的 1:1。要回答的是「多少题被放行了但答得不全」，只有分布答得出来。
 
-    三档的分母都是**有缺口的题数**：没有缺口的题不参与对齐度（它没有可对齐的东西），
-    「没缺口却写了材料不足」单独记在 ``declared_without_gaps``——那是另一侧的过度声明。
+    **分母是「有缺口且真的交出了答案」的题**，不是「有缺口」的题。这条分开写是因为它决定
+    结论：答案被整份作废（``answer = None``）时声明块数**结构上就是 0**，那不是闸门放行了
+    一份不完整的答案，恰恰相反——它被另一道校验挡下了（四条硬校验或生成失败）。把它算进
+    欠声明，会把「答案没生成出来」记成「闸门漏掉了一次」，那是两种完全不同的事。
+
+    所以三个数各自单列：``unanswered``（有缺口但没答案，未测量）、
+    ``declared_without_gaps``（没缺口却写了材料不足，另一侧的过度声明），
+    以及三档分布本身。
     """
 
     with_gaps = [record for record in records if record.get("gaps")]
+    answered = [record for record in with_gaps if isinstance(record.get("answer"), str)]
     pairs: dict[str, int] = {}
     exact = under = over = 0
-    for record in with_gaps:
+    for record in answered:
         gaps = len(record.get("gaps") or [])
         blocks = int(record.get("insufficient") or 0)
         pairs[f"{gaps}→{blocks}"] = pairs.get(f"{gaps}→{blocks}", 0) + 1
@@ -573,12 +603,14 @@ def declaration_alignment(records: Sequence[Mapping[str, Any]]) -> dict[str, Any
             under += 1
         else:
             over += 1
-    total = len(with_gaps)
+    total = len(answered)
     declared_without_gaps = sum(
         1 for record in records if not record.get("gaps") and int(record.get("insufficient") or 0)
     )
     return {
-        "cases_with_gaps": total,
+        "cases_with_gaps": len(with_gaps),
+        "answered": total,
+        "unanswered": len(with_gaps) - total,
         "pairs": dict(sorted(pairs.items())),
         "exact": exact,
         "exact_rate": _rate(exact, total),
@@ -664,9 +696,246 @@ def _core_metrics(records: Sequence[Mapping[str, Any]]) -> dict[str, Metric]:
     }
 
 
-def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
-    """五个指标一次算齐（每个率都给分子分母，避免 0/0 装成 1）。"""
+def _primary(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """主条件（⑤ 开着）的记录。对照条件（关 ⑤）不参与那五个指标——它们自己有一套。"""
 
+    return [
+        record
+        for record in records
+        if str(record.get("condition") or CONDITION_FIVEFOLD) == CONDITION_FIVEFOLD
+    ]
+
+
+def _control(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """对照条件（关 ⑤）的记录。"""
+
+    return [
+        record for record in records if str(record.get("condition")) == CONDITION_CONTROL
+    ]
+
+
+def _normalized(text: Any) -> str:
+    return " ".join(str(text or "").split())
+
+
+def point_status_map(record: Mapping[str, Any]) -> dict[str, str]:
+    """一道题的「要点文本 → 覆盖状态」（原样文本，仅供报告与调试时读）。"""
+
+    statuses = {
+        str(point.get("point_id")): str(point.get("status"))
+        for point in record.get("coverage") or []
+    }
+    out: dict[str, str] = {}
+    for index, text in enumerate(record.get("points") or [], start=1):
+        out[_normalized(text)] = statuses.get(f"A{index}", SUPPORT_UNKNOWN)
+    return out
+
+
+def keyword_points(record: Mapping[str, Any], keyword: str) -> list[tuple[str, str]]:
+    """这一题里**讲到那个不可答方面**的要点（按关键词判），以及它们的覆盖状态。
+
+    为什么按关键词对齐、不按 ``A1`` / ``A2`` 也不按要点原文：两次跑是两次规划调用，实测
+    **10/10 题的要点清单都不一样**（条数与措辞全变），原文精确匹配一条都对不上。而关键词
+    是这一票唯一**我们注入并机械验证过**的标识——「这条要点讲的是那个语料里没有的方面」，
+    它比序号与自由措辞都稳。
+    """
+
+    statuses = {
+        str(point.get("point_id")): str(point.get("status"))
+        for point in record.get("coverage") or []
+    }
+    out: list[tuple[str, str]] = []
+    for index, text in enumerate(record.get("points") or [], start=1):
+        if keyword and keyword in str(text):
+            out.append((_normalized(text), statuses.get(f"A{index}", SUPPORT_UNKNOWN)))
+    return out
+
+
+def _collapse(statuses: Sequence[str]) -> str:
+    """多要点同指一个方面时（A03 就有两条讲企业微信），取**最乐观**的那一条当这个方面的结论。
+
+    取最乐观是为了不把「救回」算多：只有真的有一条落到 supported，才算是救回来了；
+    反过来若取最悲观，一条 none 就会把同组的 supported 抹掉，救回会被系统性低估。
+    """
+
+    for candidate in (SUPPORT_SUPPORTED, SUPPORT_NONE, SUPPORT_UNKNOWN):
+        if candidate in statuses:
+            return candidate
+    return SUPPORT_UNKNOWN
+
+
+def unknown_frequency(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """条件 2（关 ⑤）里 ``unknown`` 的**真实频率**——它此时不会被人复查消费掉，直接可数。
+
+    这才是「若没有 ⑤，多少题会带 ``unknown``」的直接测量。``残留率`` 那个口径在 ⑤ 上线后
+    恒为 0：复查会把它改成 supported / none，成功跑批里一条都剩不下。这不是「零残留说明
+    没问题」，而是**那个指标已经量不到东西了**。
+    """
+
+    cases = list(records)
+    counts: dict[str, int] = {}
+    unknown_points = 0
+    per_case: list[dict[str, Any]] = []
+    for record in cases:
+        point_ids = [
+            str(point.get("point_id"))
+            for point in record.get("coverage") or []
+            if str(point.get("status")) == SUPPORT_UNKNOWN
+        ]
+        unknown_points += len(point_ids)
+        key = str(len(point_ids))
+        counts[key] = counts.get(key, 0) + 1
+        per_case.append({"case": record.get("case"), "unknown": len(point_ids),
+                         "points": len(record.get("points") or [])})
+    with_unknown = sum(count for key, count in counts.items() if key != "0")
+    return {
+        "cases": len(cases),
+        "cases_with_unknown": with_unknown,
+        "rate": _rate(with_unknown, len(cases)),
+        "unknown_points": unknown_points,
+        "point_total": sum(len(record.get("points") or []) for record in cases),
+        "count_distribution": dict(sorted(counts.items(), key=lambda item: int(item[0]))),
+        "per_case": per_case,
+    }
+
+
+def fivefold_comparison(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """A 组「有 ⑤ / 无 ⑤」的逐题对照——四个读数一次算齐。
+
+    四件事，谁都替不了谁：
+
+    1. **条件 2 的 `unknown` 真实频率**（:func:`unknown_frequency`）；
+    2. **改判分布**：关 ⑤ 时是 `unknown` 的那些要点，开 ⑤ 之后落成了什么。按**关键词**
+       对齐（理由见 :func:`keyword_points`：两次跑的要点原文 10/10 题都不一样）；
+    3. **净效果**：`gaps` 变多还是变少、答案非空率、`insufficient` 块数；
+    4. **两种方向相反的价值**：``unknown → none`` 是**把隐藏的缺口暴露出来**（更严格），
+       ``unknown → supported`` 是**把答案救回来**（覆盖率更高）。这两个数方向相反，
+       合成一个「改善率」会把一件坏事和一件好事加在一起——所以它们分开报。
+    """
+
+    cases_by_id = {case.case_id: case for case in EVAL_CASES}
+    primary = {
+        str(record.get("case")): record
+        for record in _primary(records)
+        if str(record.get("group")) == GROUP_A
+    }
+    control = {
+        str(record.get("case")): record
+        for record in _control(records)
+        if str(record.get("group")) == GROUP_A
+    }
+    paired = [case_id for case_id in control if case_id in primary]
+
+    to_supported = to_none = stayed_unknown = not_planned = other_unknown = 0
+    plan_differs: list[str] = []
+    transitions: list[dict[str, Any]] = []
+    gaps_up = gaps_down = gaps_same = 0
+    answered_with = answered_without = 0
+    insufficient_with = insufficient_without = 0
+    per_case: list[dict[str, Any]] = []
+    for case_id in paired:
+        case = cases_by_id.get(case_id)
+        keyword = case.keyword if case is not None else ""
+        with_record = primary[case_id]
+        without_record = control[case_id]
+        control_points = keyword_points(without_record, keyword)
+        primary_points = keyword_points(with_record, keyword)
+        if [text for text, _ in control_points] != [text for text, _ in primary_points]:
+            plan_differs.append(case_id)
+
+        case_transitions: list[dict[str, str]] = []
+        for text, status in point_status_map(without_record).items():
+            if status != SUPPORT_UNKNOWN:
+                continue
+            if keyword not in text:
+                other_unknown += 1
+                case_transitions.append({"point": text, "after": "other_unknown"})
+                continue
+            if not primary_points:
+                not_planned += 1
+                case_transitions.append({"point": text, "after": "not_planned"})
+                continue
+            after = _collapse([value for _text, value in primary_points])
+            if after == SUPPORT_SUPPORTED:
+                to_supported += 1
+            elif after == SUPPORT_NONE:
+                to_none += 1
+            else:
+                stayed_unknown += 1
+            case_transitions.append({"point": text, "after": after})
+
+        gaps_with = len(with_record.get("gaps") or [])
+        gaps_without = len(without_record.get("gaps") or [])
+        if gaps_with > gaps_without:
+            gaps_up += 1
+        elif gaps_with < gaps_without:
+            gaps_down += 1
+        else:
+            gaps_same += 1
+        answered_with += 1 if with_record.get("answer") is not None else 0
+        answered_without += 1 if without_record.get("answer") is not None else 0
+        insufficient_with += int(with_record.get("insufficient") or 0)
+        insufficient_without += int(without_record.get("insufficient") or 0)
+
+        per_case.append(
+            {
+                "case": case_id,
+                "gaps_with": gaps_with,
+                "gaps_without": gaps_without,
+                "answered_with": with_record.get("answer") is not None,
+                "answered_without": without_record.get("answer") is not None,
+                "insufficient_with": int(with_record.get("insufficient") or 0),
+                "insufficient_without": int(without_record.get("insufficient") or 0),
+                "model_calls_with": int(with_record.get("model_calls") or 0),
+                "model_calls_without": int(without_record.get("model_calls") or 0),
+                "transitions": case_transitions,
+            }
+        )
+        transitions.extend({"case": case_id, **item} for item in case_transitions)
+
+    control_metrics = dict(_core_metrics(list(control.values())))
+    control_metrics["声明对齐度"] = declaration_alignment(list(control.values()))
+    total_transitions = to_supported + to_none + stayed_unknown
+    return {
+        "paired_cases": len(paired),
+        "missing": sorted(set(control) ^ set(primary)),
+        "without_fivefold": unknown_frequency(list(control.values())),
+        "without_fivefold_metrics": control_metrics,
+        "transitions": {
+            "unknown_to_supported": to_supported,
+            "unknown_to_none": to_none,
+            "unknown_to_unknown": stayed_unknown,
+            "not_planned_in_fivefold_run": not_planned,
+            "other_unknown_points": other_unknown,
+            "total": total_transitions,
+            "to_supported_rate": _rate(to_supported, total_transitions),
+            "to_none_rate": _rate(to_none, total_transitions),
+            "plan_differs_cases": sorted(plan_differs),
+        },
+        "net": {
+            "gaps_up": gaps_up,
+            "gaps_down": gaps_down,
+            "gaps_same": gaps_same,
+            "gaps_with": sum(len(record.get("gaps") or []) for record in primary.values()),
+            "gaps_without": sum(len(record.get("gaps") or []) for record in control.values()),
+            "answered_with": answered_with,
+            "answered_without": answered_without,
+            "insufficient_with": insufficient_with,
+            "insufficient_without": insufficient_without,
+        },
+        "per_case": per_case,
+        "details": transitions,
+    }
+
+
+def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+    """五个指标一次算齐（每个率都给分子分母，避免 0/0 装成 1）。
+
+    **只算主条件**（⑤ 开着）：对照条件（关 ⑤）的读数在 :func:`fivefold_comparison` 里，
+    它要回答的是另一个问题。混进来会让「缺口出现率」变成两批题的混合数。
+    """
+
+    records = _primary(records)
     metrics: dict[str, Any] = {"cases": len(records)}
     metrics.update(_core_metrics(records))
     metrics["声明对齐度"] = declaration_alignment(records)
@@ -694,6 +963,9 @@ def recompute_metrics(payload: dict[str, Any]) -> dict[str, Any]:
 
     records = list(payload.get("records") or [])
     for record in records:
+        # 早期产物（加对照条件之前）没有这两个字段：缺省就是「⑤ 开着」的主条件。
+        record.setdefault("condition", CONDITION_FIVEFOLD)
+        record.setdefault("fivefold", record["condition"] == CONDITION_FIVEFOLD)
         answer = record.get("answer")
         record["insufficient"] = insufficient_blocks(record)
         record["declared_insufficient"] = bool(
@@ -704,6 +976,7 @@ def recompute_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         )
     payload["records"] = records
     payload["metrics"] = summarize(records)
+    payload["fivefold"] = fivefold_comparison(records)
     model_calls = dict(payload.get("model_calls") or {})
     model_calls["actual"] = sum(int(record.get("model_calls") or 0) for record in records)
     payload["model_calls"] = model_calls
@@ -714,20 +987,37 @@ def recompute_metrics(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def predict_model_calls() -> dict[str, Any]:
-    """开跑前的预估：**名义**（每题 4 次）与**最坏**（每题 5 次，含强模型兜底位）。
+    """开跑前的预估：**名义**与**最坏**两个数，两个条件分开算再相加。
 
-    两个数都打印、都进产物：一个数说不清「这次大概要花多少」与「最多能花多少」。
-    最坏也不许超硬顶——超了就该减题，而不是先跑再说（票面：不许超跑）。
+    * 主条件：20 题 × 名义 4（规划 + 判定 + 复查 + 生成）/ 最坏 5（+强模型兜底位）；
+    * 对照条件（A 组关 ⑤）：10 题 × 名义 3（少一次复查）/ 最坏 4。
+
+    最坏也不许超硬顶——超了就该减题（票面：不许超跑）。
     """
 
+    main_nominal = CASE_COUNT * NOMINAL_CALLS_PER_CASE
+    main_worst = CASE_COUNT * WORST_CALLS_PER_CASE
+    control_cases = sum(1 for case in EVAL_CASES if case.group == GROUP_A)
+    control_nominal = control_cases * NOMINAL_CALLS_PER_CONTROL_CASE
+    control_worst = control_cases * WORST_CALLS_PER_CONTROL_CASE
     return {
         "budget": MODEL_CALL_CAP,
-        "nominal": CASE_COUNT * NOMINAL_CALLS_PER_CASE,
-        "worst": CASE_COUNT * WORST_CALLS_PER_CASE,
+        "nominal": main_nominal + control_nominal,
+        "worst": main_worst + control_worst,
         "actual": 0,
         "per_case": {
             "nominal": NOMINAL_CALLS_PER_CASE,
             "worst": WORST_CALLS_PER_CASE,
+            "control_nominal": NOMINAL_CALLS_PER_CONTROL_CASE,
+            "control_worst": WORST_CALLS_PER_CONTROL_CASE,
+        },
+        "conditions": {
+            "main": {"cases": CASE_COUNT, "nominal": main_nominal, "worst": main_worst},
+            CONDITION_CONTROL: {
+                "cases": control_cases,
+                "nominal": control_nominal,
+                "worst": control_worst,
+            },
         },
     }
 
@@ -804,9 +1094,15 @@ def render_plan(plan: Mapping[str, Any]) -> str:
         "",
         "## 模型调用预估（硬顶 {} 次）".format(calls["budget"]),
         "",
-        f"- 名义：**{calls['nominal']}** 次（每题 {calls['per_case']['nominal']} 次："
-        "规划 + 判定 + 复查 + 生成）",
-        f"- 最坏：**{calls['worst']}** 次（每题 {calls['per_case']['worst']} 次，含强模型兜底位）",
+        f"- 名义：**{calls['nominal']}** 次 / 最坏：**{calls['worst']}** 次",
+    ]
+    for name, block in (calls.get("conditions") or {}).items():
+        lines.append(
+            f"  - `{name}`：{block['cases']} 题 × 名义 {block['nominal'] // max(1, block['cases'])}"
+            f" / 最坏 {block['worst'] // max(1, block['cases'])} → 名义 {block['nominal']}、"
+            f"最坏 {block['worst']} 次"
+        )
+    lines += [
         "",
         "## 题集清单",
         "",
@@ -850,6 +1146,8 @@ RECORD_KEYS: Final[tuple[str, ...]] = (
     "sub_search_degraded",
     "duration_ms",
     "points",
+    "condition",
+    "fivefold",
     "answer",
 )
 
@@ -996,13 +1294,17 @@ def case_record(case: EvalCase, outcome: Any) -> dict[str, Any]:
         "sub_search_degraded": list(outcome.sub_search_degraded),
         "duration_ms": int(outcome.duration_ms),
         "points": [point.text for point in outcome.points],
+        "condition": CONDITION_FIVEFOLD,
+        "fivefold": True,
         "answer": answer,
     }
     assert set(record) == set(RECORD_KEYS), set(record) ^ set(RECORD_KEYS)
     return record
 
 
-async def run_case(case: EvalCase, *, index_versions: Mapping[str, str]) -> dict[str, Any]:
+async def run_case(
+    case: EvalCase, *, index_versions: Mapping[str, str], fivefold: bool = True
+) -> dict[str, Any]:
     """跑**生产完整链路**一次：真实检索内核 + 真实模型角色 + 完整五步状态机。
 
     每个题一个会话：一次 Research 会跑 1~5 次子检索，长跑批共用一个会话会让连接在
@@ -1030,25 +1332,61 @@ async def run_case(case: EvalCase, *, index_versions: Mapping[str, str]) -> dict
             strong_llm_factory=_strong_provider,
             sub_search_degraded=degraded,
         )
-    return case_record(case, outcome)
+    record = case_record(case, outcome)
+    record["condition"] = CONDITION_FIVEFOLD if fivefold else CONDITION_CONTROL
+    record["fivefold"] = fivefold
+    return record
+
+
+async def _run_without_rejudge(case: EvalCase, *, index_versions: Mapping[str, str]) -> dict[str, Any]:
+    """跑一次**关掉 ⑤** 的 Research——对照条件，只在评测进程内生效。
+
+    关法：把 ``research._Run._rejudge`` 换成一个直接返回的 async no-op，跑完在 ``finally``
+    里换回来。**为什么不改成配置开关**：那是在 ``app/`` 里为一个评测加一条生产分支，而这条
+    分支平时永不发生——正是 ADR-0029 点名的「默认关、生产永不发生」的死代码。评测要造的条件，
+    评测自己造；``finally`` 保证即使这道题炸了，类属性也能还原（一份被污染的方法会让后面每一
+    题都静默跑错条件，而读数看起来完全正常）。
+    """
+
+    from app.services import research as research_service
+
+    original = research_service._Run._rejudge
+
+    async def _noop(self: Any) -> None:
+        return None
+
+    research_service._Run._rejudge = _noop  # type: ignore[method-assign]
+    try:
+        return await run_case(case, index_versions=index_versions, fivefold=False)
+    finally:
+        research_service._Run._rejudge = original  # type: ignore[method-assign]
 
 
 async def run_cases(
-    cases: Sequence[EvalCase], *, budget: Budget, index_versions: Mapping[str, str]
+    cases: Sequence[EvalCase],
+    *,
+    budget: Budget,
+    index_versions: Mapping[str, str],
+    fivefold: bool = True,
 ) -> list[dict[str, Any]]:
     """逐题跑，**先预留再发**：预留不到就不跑下一题（预算是一条上限，不是一句愿望）。"""
 
+    per_case = WORST_CALLS_PER_CASE if fivefold else WORST_CALLS_PER_CONTROL_CASE
     records: list[dict[str, Any]] = []
     for case in cases:
-        if not budget.can(WORST_CALLS_PER_CASE):
-            budget.skip(case.case_id, WORST_CALLS_PER_CASE)
+        if not budget.can(per_case):
+            budget.skip(case.case_id, per_case)
             continue
-        record = await run_case(case, index_versions=index_versions)
+        if fivefold:
+            record = await run_case(case, index_versions=index_versions)
+        else:
+            record = await _run_without_rejudge(case, index_versions=index_versions)
         budget.charge(int(record["model_calls"]))
         records.append(record)
         print(
-            f"  {case.case_id}（{case.group}）: stop={record['stop_reason']} "
+            f"  {case.case_id}（{record['condition']}）: stop={record['stop_reason']} "
             f"gaps={len(record['gaps'])} 声明块={record['insufficient']} "
+            f"unknown={sum(1 for p in record['coverage'] if p['status'] == SUPPORT_UNKNOWN)} "
             f"calls={record['model_calls']} rejected={record['answer_rejected_reason']}",
             flush=True,
         )
@@ -1295,6 +1633,170 @@ def trigger_verdict(payload: Mapping[str, Any]) -> list[str]:
     return lines
 
 
+def fivefold_verdict(payload: Mapping[str, Any]) -> list[str]:
+    """新问题：⑤ 的价值落在「救回」还是「暴露」？
+
+    两个方向意义相反，所以这里**不合成一个改善率**：
+
+    * ``unknown → none``：把一条其实没有支撑的要点**暴露成缺口**——更严格，答案会更保守；
+    * ``unknown → supported``：把一条其实有支撑的要点**救回来**——覆盖率更高，答案更完整。
+
+    多数是前者，说明 ⑤ 的真正作用是「让隐藏缺口现形」，而不是「提高可答率」。这两句话
+    常被混成一句「⑤ 让结果更好」，而它们对产品的含义完全不同：一个让答案变少但更准，
+    另一个让答案变多。
+    """
+
+    comparison = payload.get("fivefold") or {}
+    paired = int(comparison.get("paired_cases") or 0)
+    if not paired:
+        return ["- 对照组还没跑，这一节空着。"]
+
+    transitions = comparison.get("transitions") or {}
+    to_none = int(transitions.get("unknown_to_none") or 0)
+    to_supported = int(transitions.get("unknown_to_supported") or 0)
+    stayed = int(transitions.get("unknown_to_unknown") or 0)
+    total = to_none + to_supported + stayed
+    lines = [
+        f"- 逐要点比了 **{paired}** 题；关 ⑤ 时落 `unknown` 的要点 **{total}** 条，"
+        f"其中开 ⑤ 之后：**`unknown → none` {to_none}** 条（`{_fmt_rate(transitions.get('to_none_rate'))}`）、"
+        f"**`unknown → supported` {to_supported}** 条"
+        f"（`{_fmt_rate(transitions.get('to_supported_rate'))}`）、"
+        f"仍是 `unknown` {stayed} 条（复查失败）。",
+    ]
+    if transitions.get("not_planned_in_fivefold_run"):
+        lines.append(
+            f"- 另有 **{transitions['not_planned_in_fivefold_run']}** 条 `unknown` 在开 ⑤ 的那次"
+            "规划里找不到对应方面的要点（两次拆解不同），没有计入改判分布。"
+        )
+    if not total:
+        lines.append("- 关 ⑤ 时没有一条要点落 `unknown`，⑤ 在这批题上没有可改判的对象。")
+    elif to_none > to_supported:
+        lines += [
+            f"- **判断：⑤ 的价值主要落在「暴露」而不是「救回」**（{to_none} 对 {to_supported}）。"
+            "它把一批其实没有支撑的要点从 `unknown` 落成 `none`，于是缺口清单变长、答案被要求"
+            "声明得更多。**这不是「提高覆盖率」，是「让隐藏缺口现形」**——两件事对产品的含义"
+            "不同：前者让答案变多，后者让答案变少但更准。",
+            "- 顺带的推论：关掉 ⑤ 时那些要点**既不算缺口也不算支撑**，缺口闸看不见它们"
+            "（文本级，只认 `gaps`），生成步却拿着那条材料照答。这正是 ⑤ 存在的理由。",
+        ]
+    elif to_supported > to_none:
+        lines += [
+            f"- **判断：⑤ 的价值主要落在「救回」**（{to_supported} 对 {to_none}）。"
+            "大部分 `unknown` 在复查后落成 `supported`——也就是说，补证捞回来的材料"
+            "**真的能读出那条事实**，没有 ⑤ 的话这些要点会被记成「材料到了但没人判」，"
+            "答案本可以更完整却被保守处理。",
+            "- 这一类读数要小心读：落成 `supported` 多，也可能是判定偏乐观（把「相关」当"
+            "「支撑」）。#165 测过判定准确率（假缺口率 2.7%、误报 support 率 9.1%），"
+            "可以连起来看，但两份读数用的是两套材料，不能直接相乘。",
+        ]
+    else:
+        lines.append(
+            f"- **判断：两个方向一样多**（{to_none} 对 {to_supported}）。⑤ 的作用是"
+            "「两样都有一点」，不能简化成任何一种单一价值。"
+        )
+    return lines
+
+
+def fivefold_section(payload: Mapping[str, Any]) -> list[str]:
+    """第五节：A 组「有 ⑤ / 无 ⑤」的四组读数（条件 2 的频率、改判分布、净效果、两种价值）。"""
+
+    comparison = payload.get("fivefold") or {}
+    without = comparison.get("without_fivefold") or {}
+    control_metrics = comparison.get("without_fivefold_metrics") or {}
+    net = comparison.get("net") or {}
+    transitions = comparison.get("transitions") or {}
+    lines = [
+        "## 三、⑤ 的对照：A 组关掉 ⑤ 再跑一次",
+        "",
+        "为什么要有这一组：⑤ 上线后 `unknown` 会被复查消费掉，成功跑批里「`unknown` 残留率」"
+        "**必然是 0**——那个指标已经量不到东西了。要量「若没有 ⑤ 会带 `unknown` 的题占多少」，"
+        "只能把 ⑤ 关掉再跑一次。",
+        "",
+        "- 关法（**只在评测进程内，`app/` 一个字节不改**）："
+        "`setattr(research._Run, \"_rejudge\", async no-op)`，跑完在 `finally` 里换回来。"
+        "不把 ⑤ 做成配置开关，是因为那会在生产代码里留一条「默认关、生产永不发生」的分支"
+        "——ADR-0029 点名的死代码。",
+        f"- 配对：**{comparison.get('paired_cases')}** 题（A 组每题跑两次，"
+        f"两次都是真实检索 + 真实模型）。缺失：{comparison.get('missing') or '无'}",
+        "",
+        "### 3.1 条件 2 的 `unknown` 真实频率（直接测量，不是反推）",
+        "",
+        f"- `unknown` 非空的题：**{without.get('cases_with_unknown')}/{without.get('cases')}**"
+        f"（`{_fmt_rate(without.get('rate'))}`）；要点级 `unknown`："
+        f"{without.get('unknown_points')}/{without.get('point_total')}"
+        f"（`{_fmt_rate(_rate(int(without.get('unknown_points') or 0), int(without.get('point_total') or 0)) or 0)}`）",
+        "",
+        "| 每题 `unknown` 个数 | 题数 |",
+        "| --- | --- |",
+    ]
+    for count, cases in (without.get("count_distribution") or {}).items():
+        lines.append(f"| {count} | {cases} |")
+    if not without.get("count_distribution"):
+        lines.append("| （对照组还没跑） | 0 |")
+    lines += [
+        "",
+        f"- 与归档反推的 **{_fmt_rate(ARCHIVED_TRIGGER_RATE)}**"
+        f"（{ARCHIVED_TRIGGER_NUMERATOR}/{ARCHIVED_TRIGGER_DENOMINATOR}）对照：直接测量值是 "
+        f"`{_fmt_rate(without.get('rate'))}`。",
+        f"- 条件 2（无 ⑤）的五项读数：缺口出现率 "
+        f"`{_fmt_rate((control_metrics.get('缺口出现率') or {}).get('value'))}`、"
+        f"拦截率 `{_fmt_rate((control_metrics.get('拦截率') or {}).get('value'))}`"
+        f"（{(control_metrics.get('拦截率') or {}).get('numerator')}/"
+        f"{(control_metrics.get('拦截率') or {}).get('denominator')}）、"
+        f"`unknown` 残留率 `{_fmt_rate((control_metrics.get('unknown 残留率') or {}).get('value'))}`。",
+        "",
+        "### 3.2 改判分布（逐要点比，按**关键词**对齐）",
+        "",
+        "| 关 ⑤ 时的状态 → 开 ⑤ 之后 | 条数 | 占比 |",
+        "| --- | --- | --- |",
+        f"| `unknown` → `none`（暴露成缺口） | {transitions.get('unknown_to_none')} | "
+        f"`{_fmt_rate(transitions.get('to_none_rate'))}` |",
+        f"| `unknown` → `supported`（救回） | {transitions.get('unknown_to_supported')} | "
+        f"`{_fmt_rate(transitions.get('to_supported_rate'))}` |",
+        f"| `unknown` → `unknown`（复查失败） | {transitions.get('unknown_to_unknown')} | — |",
+        f"| 开 ⑤ 那次规划里没有这个方面的要点 | "
+        f"{transitions.get('not_planned_in_fivefold_run')} | — |",
+        f"| 与不可答方面无关的 `unknown`（不入库） | "
+        f"{transitions.get('other_unknown_points')} | — |",
+        "",
+        "**为什么按关键词对齐，不按 `A1` / `A2`，也不按要点原文**：两次跑是两次规划调用，"
+        f"实测 **{len(transitions.get('plan_differs_cases') or [])}/{comparison.get('paired_cases')}"
+        " 题的要点清单都不一样**（条数与措辞全变），原文精确匹配一条都对不上。关键词是这一票"
+        "唯一**我们注入并机械验证过**的标识——「这条要点讲的是那个语料里没有的方面」。"
+        "多要点同指一个方面时（有的题会拆成两条）取**最乐观**的那一条，这样「救回」不会被"
+        "同组的一条 `none` 抹掉。",
+        "",
+        "### 3.3 净效果（逐题）",
+        "",
+        "| 题 | gaps（有 ⑤ / 无 ⑤） | 答案（有 / 无） | 声明块（有 / 无） | 调用（有 / 无） |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for row in comparison.get("per_case") or []:
+        lines.append(
+            f"| {row['case']} | {row['gaps_with']} / {row['gaps_without']} | "
+            f"{'非空' if row['answered_with'] else 'null'} / "
+            f"{'非空' if row['answered_without'] else 'null'} | "
+            f"{row['insufficient_with']} / {row['insufficient_without']} | "
+            f"{row['model_calls_with']} / {row['model_calls_without']} |"
+        )
+    if not comparison.get("per_case"):
+        lines.append("| （对照组还没跑） | — | — | — | — |")
+    lines += [
+        "",
+        f"- 缺口总数：有 ⑤ **{net.get('gaps_with')}** 条 / 无 ⑤ **{net.get('gaps_without')}** 条；"
+        f"逐题看：变多 {net.get('gaps_up')} 题、变少 {net.get('gaps_down')} 题、"
+        f"持平 {net.get('gaps_same')} 题。",
+        f"- 答案非空：有 ⑤ **{net.get('answered_with')}** 题 / 无 ⑤ "
+        f"**{net.get('answered_without')}** 题；声明块合计：有 ⑤ "
+        f"{net.get('insufficient_with')} / 无 ⑤ {net.get('insufficient_without')}。",
+        "",
+        "### 3.4 两种价值：暴露 vs 救回（**分开报，不合成改善率**）",
+        "",
+    ]
+    lines += fivefold_verdict(payload)
+    return lines
+
+
 def render_report(payload: Mapping[str, Any]) -> str:
     """人读报告。所有数字都从 ``payload`` 取，重跑即重算。"""
 
@@ -1314,7 +1816,11 @@ def render_report(payload: Mapping[str, Any]) -> str:
         f"索引 `{environment.get('elasticsearch_index')}`、租户 `{environment.get('tenant_id')}`、"
         f"{len(environment.get('kb_ids') or [])} 个库",
         "",
-        "## 一、五个指标",
+        "## 一、五个指标（主条件：⑤ 开着）",
+        "",
+        "> `unknown` 残留率这一格在 ⑤ 上线后**恒为 0**：复查会把 `unknown` 改成 supported / none，"
+        "成功跑批里一条都剩不下。它证明不了「没有问题」，只说明这个口径**已经量不到东西**——"
+        "真正的频率在第三节（关掉 ⑤ 直接测）。",
         "",
         "| 指标 | 值 | 分子/分母 |",
         "| --- | --- | --- |",
@@ -1355,10 +1861,12 @@ def render_report(payload: Mapping[str, Any]) -> str:
     lines += intercept_verdict({**payload, "metrics": metrics})
     lines += ["", "### 2.3 ⑤ 触发率的直接测量值", ""]
     lines += trigger_verdict({**payload, "metrics": metrics})
+    lines += [""]
+    lines += fivefold_section({**payload, "metrics": metrics})
 
     lines += [
         "",
-        "## 三、题集与机械证据",
+        "## 四、题集与机械证据",
         "",
         "「不可答」不是凭感觉标的：每题一个关键词，它必须在**文档正文**与**已入库切片正文**"
         "里都是 0 命中。查询原样如下（`kb_ids` 用 expanding 绑定，参数见 `results.json`）：",
@@ -1387,7 +1895,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "一半有材料，就顺手把另一半也答了，而那正是闸门要防的。只测全不可答，量到的是一道闸"
         "打在稻草人身上的表现。这不是造假数据：知识库覆盖不全用户的问题是生产里最常见的场景。",
         "",
-        "## 四、逐题明细",
+        "## 五、逐题明细",
         "",
         "| 题 | 组 | 停止原因 | 材料 | 要点 | 缺口 | 声明块 | 调用 | 答案 | 拒绝码 | 耗时 |",
         "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
@@ -1430,7 +1938,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
 
     lines += [
         "",
-        "## 五、这份对照不能回答什么",
+        "## 六、这份对照不能回答什么",
         "",
         "- **样本量 20**：五个率的分母都在 4–20 之间，一题翻转就是 5–25 个百分点。"
         "这里够判断「有没有系统性偏差」，不够做版本间比较，也不够给出精确的发生率。",
@@ -1452,12 +1960,19 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "那 6 题的证据更强；我方构造的 4 题只有关键词证据。",
         "- **不测答案对不对**：本票只量闸门行为（缺口报没报、声明对不齐、拦没拦），不评答案质量。"
         "「声明了材料不足」不代表那一块真的不足，也不代表其余部分答对了。",
-        "- **一次跑批**：没有重复跑，所以没有跑间方差；模型的抽样波动会让这次的分布挪位。",
+        "- **一次跑批**：没有重复跑，所以没有跑间方差；模型的抽样波动会让这次的分布挪位。"
+        "第三节那份对照尤其要吃这一条：条件 1 与条件 2 是**两次独立跑**，规划与判定都是新的"
+        "样本，所以「gaps 变多/变少」里既有 ⑤ 的效果，也有抽样噪声。",
+        "- **⑤ 的对照按要点文本对齐**：两次跑的规划经常不一样（条数与措辞都变）。对不上的要点"
+        "单列成 `unmatched`，不计入改判分布——于是改判的那几个数**分母偏小**，"
+        "尤其不能把它们当成「⑤ 的总体改判率」。",
+        "- **关 ⑤ 是一个不存在的生产配置**：真实部署里 ⑤ 总是开着。条件 2 是**反事实**测量，"
+        "用来回答「若没有它会怎样」，不代表任何可运行的版本。",
     ]
 
     lines += [
         "",
-        "## 六、怎么复现",
+        "## 七、怎么复现",
         "",
         "```powershell",
         "# 只打印预估、题集自检与关键词 0 命中证据（0 次模型调用，要连库读两种正文）",
@@ -1474,7 +1989,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "→ 生成）+ 生产检索内核 `build_kernel_search` + 两个真实模型角色。没有构造材料池，"
         "也没有另写一套提示词——这是本票与 #165 的关键区别。",
         "",
-        "## 七、记账口径",
+        "## 八、记账口径",
         "",
         "- 实际调用次数从**逐题记录**加总（`recompute` 也会重算这一格），不另记一本账。",
         "- 开跑前那次**预检**调用（1 题冒烟，4 次）不计入这 20 题的逐题记录，也不计入表中的"
@@ -1552,18 +2067,50 @@ async def run_all(
         }
     )
 
-    chose = [name for name in groups if name in (GROUP_A, GROUP_B)]
+    # 每个运行标签 → (要跑哪些组, ⑤ 开还是关)。「A-off」跑的还是 A 组那 10 题，
+    # 只是把复查关掉——所以它替换的是「A 组 + 对照条件」那一段记录，不动主条件的记录。
+    plan_of_runs: dict[str, tuple[tuple[str, ...], bool]] = {
+        GROUP_A: ((GROUP_A,), True),
+        GROUP_B: ((GROUP_B,), True),
+        GROUP_A_NO_FIVEFOLD: ((GROUP_A,), False),
+    }
+    chose = [label for label in groups if label in plan_of_runs]
     records = list(previous.get("records") or [])
     if chose:
-        # 增量：这次跑的组替换掉旧记录，没跑的组原样保留（分组跑不必重花前面的调用）。
-        records = [record for record in records if record.get("group") not in chose]
-        cases = [case for case in load_cases() if case.group in chose]
-        print(f"跑 {','.join(chose)} 组：{[case.case_id for case in cases]}", flush=True)
-        records.extend(await run_cases(cases, budget=budget, index_versions=index_versions))
+        targets = [plan_of_runs[label] for label in chose]
+        records = [
+            record
+            for record in records
+            if not any(
+                record.get("group") in target_groups
+                and bool(record.get("fivefold", True)) is fivefold
+                for target_groups, fivefold in targets
+            )
+        ]
+        for label in chose:
+            target_groups, fivefold = plan_of_runs[label]
+            cases = [case for case in load_cases() if case.group in target_groups]
+            condition = CONDITION_FIVEFOLD if fivefold else CONDITION_CONTROL
+            print(
+                f"跑 {label} 组（{condition}）：{[case.case_id for case in cases]}", flush=True
+            )
+            records.extend(
+                await run_cases(
+                    cases,
+                    budget=budget,
+                    index_versions=index_versions,
+                    fivefold=fivefold,
+                )
+            )
     order = {case.case_id: index for index, case in enumerate(load_cases())}
-    records.sort(key=lambda record: order.get(str(record.get("case")), 999))
+    records.sort(
+        key=lambda record: (
+            order.get(str(record.get("case")), 999),
+            0 if record.get("fivefold", True) else 1,
+        )
+    )
     payload["records"] = records
-    payload["groups_run"] = sorted({str(record.get("group")) for record in records})
+    payload["groups_run"] = sorted({str(record.get("condition")) for record in records})
 
     payload = recompute_metrics(payload)
     model_calls = dict(payload["model_calls"])
@@ -1608,7 +2155,7 @@ def _build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--out-dir", default=str(REPORT_DIR), help="产物目录（plan 不写）")
 
     run = subparsers.add_parser("run", help="跑两组并写 eval/reports/t167/")
-    run.add_argument("--groups", nargs="+", default=[GROUP_A, GROUP_B], choices=[GROUP_A, GROUP_B])
+    run.add_argument("--groups", nargs="+", default=list(RUN_LABELS), choices=list(RUN_LABELS))
     run.add_argument("--out-dir", default=str(REPORT_DIR), help="产物目录")
 
     recompute = subparsers.add_parser(

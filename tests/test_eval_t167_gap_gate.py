@@ -217,18 +217,22 @@ def test_insufficient_blocks_is_zero_when_the_answer_was_rejected() -> None:
 
 
 def test_declaration_alignment_gives_a_distribution_not_an_average() -> None:
-    """手算一组：缺口 3 配声明 1（欠）、3 配 3（齐）、2 配 4（过）、以及一题没缺口。"""
+    """手算一组：缺口 3 配声明 1（欠）、3 配 3（齐）、2 配 4（过）、一题没缺口、
+    以及一题有缺口但答案被整份作废（= 未测量，不当成欠声明）。"""
 
     records = [
-        {"gaps": ["A1", "A2", "A3"], "insufficient": 1},
-        {"gaps": ["A1", "A2", "A3"], "insufficient": 3},
-        {"gaps": ["A1", "A2"], "insufficient": 4},
-        {"gaps": [], "insufficient": 1},
+        {"gaps": ["A1", "A2", "A3"], "insufficient": 1, "answer": "…（材料不足）"},
+        {"gaps": ["A1", "A2", "A3"], "insufficient": 3, "answer": "…（材料不足）"},
+        {"gaps": ["A1", "A2"], "insufficient": 4, "answer": "…（材料不足）"},
+        {"gaps": [], "insufficient": 1, "answer": "…（材料不足）"},
+        {"gaps": ["A1"], "insufficient": 0, "answer": None},
     ]
 
     reading = ev.declaration_alignment(records)
 
-    assert reading["cases_with_gaps"] == 3
+    assert reading["cases_with_gaps"] == 4
+    assert reading["answered"] == 3
+    assert reading["unanswered"] == 1
     assert reading["pairs"] == {"3→1": 1, "3→3": 1, "2→4": 1}
     assert reading["exact"] == 1
     assert reading["under"] == 1
@@ -237,6 +241,19 @@ def test_declaration_alignment_gives_a_distribution_not_an_average() -> None:
     assert reading["exact_rate"] == round(1 / 3, 4)
     # 没缺口却声明了不足：另一侧的过度声明，单独记，不混进上面的对齐度
     assert reading["declared_without_gaps"] == 1
+
+
+def test_alignment_does_not_count_a_null_answer_as_an_under_declaration() -> None:
+    """``answer = None`` 时声明块**结构上就是 0**：那是被别的校验挡下了，不是闸门放行。"""
+
+    records = [{"gaps": ["A1", "A2"], "insufficient": 0, "answer": None}]
+
+    reading = ev.declaration_alignment(records)
+
+    assert reading["answered"] == 0
+    assert reading["unanswered"] == 1
+    assert reading["under"] == 0
+    assert reading["pairs"] == {}
 
 
 def test_summarize_gives_every_metric_with_its_denominator() -> None:
@@ -317,8 +334,11 @@ def test_summarize_gives_every_metric_with_its_denominator() -> None:
     assert metrics["⑤ 触发率"]["numerator"] == 2
     assert metrics["unknown 残留率"]["value"] == round(1 / 5, 4)
     assert metrics["unknown 残留率"]["numerator"] == 1
-    assert metrics["声明对齐度"]["under"] == 2
+    # 有缺口的 4 题里只有 3 题真的交出了答案（A01 的答案被闸拦下）：分母是 3，不是 4
     assert metrics["声明对齐度"]["cases_with_gaps"] == 4
+    assert metrics["声明对齐度"]["answered"] == 3
+    assert metrics["声明对齐度"]["unanswered"] == 1
+    assert metrics["声明对齐度"]["under"] == 1
 
 
 def test_summarize_splits_outcomes_of_gap_cases_by_stop_and_answer() -> None:
@@ -399,26 +419,288 @@ def test_recompute_rebuilds_metrics_from_the_artifact_without_calling_models() -
     assert refreshed["model_calls"]["nominal"] == 80
 
 
-# ─────────────────────────────────────────────────────────────── 4. 预算与空跑
+# ─────────────────────────────────────────────────────────────── 4. ⑤ 的对照（关 ⑤ 再跑）
+
+
+def _fivefold_record(
+    case: str,
+    *,
+    points: list[str],
+    statuses: list[str],
+    gaps: list[str],
+    fivefold: bool,
+    answer: str | None = "…（材料不足）",
+    insufficient: int = 0,
+    model_calls: int = 4,
+) -> dict[str, Any]:
+    return {
+        "case": case,
+        "group": "A",
+        "fivefold": fivefold,
+        "condition": "fivefold" if fivefold else "control",
+        "points": points,
+        "coverage": [
+            {"point_id": f"A{index}", "status": status, "evidence_ids": []}
+            for index, status in enumerate(statuses, start=1)
+        ],
+        "gaps": gaps,
+        "answer": answer,
+        "insufficient": insufficient,
+        "model_calls": model_calls,
+        "stop_reason": "max_rounds",
+        "citations": [],
+    }
+
+
+def test_unknown_frequency_counts_cases_and_points_on_the_control_condition() -> None:
+    """条件 2（关 ⑤）里 `unknown` 直接可数——这是「若没有 ⑤ 会带 unknown 的题占多少」。"""
+
+    records = [
+        _fivefold_record(
+            "A01",
+            points=["p1", "p2"],
+            statuses=["unknown", "unknown"],
+            gaps=[],
+            fivefold=False,
+            model_calls=3,
+        ),
+        _fivefold_record(
+            "A02", points=["q1"], statuses=["unknown"], gaps=[], fivefold=False, model_calls=3
+        ),
+        _fivefold_record(
+            "A03", points=["r1"], statuses=["none"], gaps=["A1"], fivefold=False, model_calls=3
+        ),
+    ]
+
+    reading = ev.unknown_frequency(records)
+
+    assert reading["cases"] == 3
+    assert reading["cases_with_unknown"] == 2
+    assert reading["rate"] == round(2 / 3, 4)
+    assert reading["unknown_points"] == 3
+    assert reading["point_total"] == 4
+    assert reading["count_distribution"] == {"0": 1, "1": 1, "2": 1}
+
+
+def test_fivefold_comparison_splits_expose_from_rescue() -> None:
+    """手算三题：A01 暴露、A02 救回、A03 两条同指一个方面时取最乐观的那条（也算救回）。"""
+
+    records = [
+        # A01「数字人民币」：关 ⑤ 时 unknown → 开 ⑤ 后 none（暴露成缺口）
+        _fivefold_record(
+            "A01",
+            points=["数字人民币退款能否退回数字钱包"],
+            statuses=["none"],
+            gaps=["A1"],
+            fivefold=True,
+            insufficient=1,
+        ),
+        _fivefold_record(
+            "A01",
+            points=["数字人民币退款可退回原数字钱包"],
+            statuses=["unknown"],
+            gaps=[],
+            fivefold=False,
+            model_calls=3,
+        ),
+        # A02「区块链」：关 ⑤ 时 unknown → 开 ⑤ 后 supported（救回）
+        _fivefold_record(
+            "A02",
+            points=["区块链存证可用于日志防篡改"],
+            statuses=["supported"],
+            gaps=[],
+            fivefold=True,
+        ),
+        _fivefold_record(
+            "A02",
+            points=["区块链存证能否用于日志防篡改"],
+            statuses=["unknown"],
+            gaps=[],
+            fivefold=False,
+            model_calls=3,
+        ),
+        # A03「企业微信」：两条同指一个方面，一条 none 一条 supported → 取最乐观 = 救回
+        _fivefold_record(
+            "A03",
+            points=["企业微信告警推送的配置方式", "企业微信推送是否需要权限"],
+            statuses=["none", "supported"],
+            gaps=["A1"],
+            fivefold=True,
+            insufficient=1,
+        ),
+        _fivefold_record(
+            "A03",
+            points=["企业微信推送告警是否支持"],
+            statuses=["unknown"],
+            gaps=[],
+            fivefold=False,
+            model_calls=3,
+        ),
+    ]
+
+    comparison = ev.fivefold_comparison(records)
+
+    assert comparison["paired_cases"] == 3
+    assert comparison["transitions"]["unknown_to_none"] == 1
+    assert comparison["transitions"]["unknown_to_supported"] == 2
+    assert comparison["transitions"]["total"] == 3
+    assert comparison["transitions"]["to_none_rate"] == round(1 / 3, 4)
+    # 净效果：缺口从 0 变 2（A01 暴露出来的那条 + A03 原有的那条）
+    assert comparison["net"]["gaps_with"] == 2
+    assert comparison["net"]["gaps_without"] == 0
+    assert comparison["net"]["gaps_up"] == 2
+    assert comparison["without_fivefold"]["cases_with_unknown"] == 3
+
+
+def test_fivefold_comparison_aligns_by_keyword_not_by_point_text() -> None:
+    """两次规划的措辞必然不同（实测 10/10 题），所以对齐只能靠**关键词**。
+
+    对不上的两种情况分开记：开 ⑤ 那次的规划里没有这个方面（``not_planned``），
+    以及 `unknown` 与不可答方面无关（``other_unknown``）——两者都不进改判分布。
+    """
+
+    records = [
+        _fivefold_record(
+            "A01",
+            points=["退款还能用数字人民币吗"],
+            statuses=["none"],
+            gaps=["A1"],
+            fivefold=True,
+        ),
+        _fivefold_record(
+            "A01",
+            points=["数字人民币退款可退回数字钱包"],
+            statuses=["unknown"],
+            gaps=[],
+            fivefold=False,
+            model_calls=3,
+        ),
+        # A02：开 ⑤ 那次的规划里完全没有「区块链」这条要点
+        _fivefold_record(
+            "A02",
+            points=["审计日志留存期限"],
+            statuses=["supported"],
+            gaps=[],
+            fivefold=True,
+        ),
+        _fivefold_record(
+            "A02",
+            points=["区块链存证能否防止篡改"],
+            statuses=["unknown"],
+            gaps=[],
+            fivefold=False,
+            model_calls=3,
+        ),
+        # A03：关 ⑤ 时的 unknown 与不可答方面（企业微信）无关
+        _fivefold_record(
+            "A03",
+            points=["P2 告警响应时限"],
+            statuses=["none"],
+            gaps=["A1"],
+            fivefold=True,
+        ),
+        _fivefold_record(
+            "A03",
+            points=["告警分级的具体划分标准"],
+            statuses=["unknown"],
+            gaps=[],
+            fivefold=False,
+            model_calls=3,
+        ),
+    ]
+
+    comparison = ev.fivefold_comparison(records)
+
+    assert comparison["transitions"]["unknown_to_none"] == 1
+    assert comparison["transitions"]["not_planned_in_fivefold_run"] == 1
+    assert comparison["transitions"]["other_unknown_points"] == 1
+    assert comparison["transitions"]["total"] == 1
+    assert comparison["transitions"]["plan_differs_cases"] == ["A01", "A02"]
+
+
+def test_fivefold_comparison_refuses_to_fabricate_a_rate_without_pairs() -> None:
+    comparison = ev.fivefold_comparison([])
+
+    assert comparison["paired_cases"] == 0
+    assert comparison["transitions"]["to_none_rate"] is None
+
+
+def test_summarize_ignores_the_control_condition() -> None:
+    """五个指标只算主条件；对照条件的读数不许混进「缺口出现率」的分母。"""
+
+    records = [
+        _fivefold_record("A01", points=["p1"], statuses=["none"], gaps=["A1"], fivefold=True),
+        _fivefold_record(
+            "A01",
+            points=["p1"],
+            statuses=["unknown"],
+            gaps=[],
+            fivefold=False,
+            answer=None,
+            model_calls=3,
+        ),
+    ]
+
+    metrics = ev.summarize(records)
+
+    assert metrics["cases"] == 1
+    assert metrics["缺口出现率"]["denominator"] == 1
+
+
+def test_control_run_disables_rejudge_only_while_it_runs(monkeypatch: pytest.MonkeyPatch) -> None:
+    """关 ⑤ 是**评测进程内**的类属性替换，跑完必须还原（不然下一题会静默跑错条件）。"""
+
+    import asyncio
+
+    from app.services import research as research_service
+
+    seen: dict[str, Any] = {}
+    original = research_service._Run._rejudge
+
+    async def fake_run_case(case: ev.EvalCase, *, index_versions: Any, fivefold: bool = True):
+        seen["rejudge"] = research_service._Run._rejudge
+        seen["fivefold"] = fivefold
+        return {"case": case.case_id}
+
+    monkeypatch.setattr(ev, "run_case", fake_run_case)
+
+    record = asyncio.run(ev._run_without_rejudge(ev.load_cases()[0], index_versions={}))
+
+    assert record["case"] == "A01"
+    assert seen["fivefold"] is False
+    assert seen["rejudge"] is not original, "跑的时候必须是关掉的那一份"
+    assert asyncio.run(seen["rejudge"](None)) is None, "替换物必须是直接返回的 no-op"
+    assert research_service._Run._rejudge is original, "跑完必须还原"
+
+
+# ─────────────────────────────────────────────────────────────── 5. 预算与空跑
 
 
 def test_model_call_estimate_stays_under_the_cap() -> None:
     predicted = ev.predict_model_calls()
 
-    assert predicted["budget"] == ev.MODEL_CALL_CAP == 110
-    assert predicted["nominal"] == ev.CASE_COUNT * ev.NOMINAL_CALLS_PER_CASE
-    assert predicted["worst"] == ev.CASE_COUNT * ev.WORST_CALLS_PER_CASE
+    assert predicted["budget"] == ev.MODEL_CALL_CAP == 170
+    assert predicted["nominal"] == (
+        ev.CASE_COUNT * ev.NOMINAL_CALLS_PER_CASE + 10 * ev.NOMINAL_CALLS_PER_CONTROL_CASE
+    )
+    assert predicted["worst"] == (
+        ev.CASE_COUNT * ev.WORST_CALLS_PER_CASE + 10 * ev.WORST_CALLS_PER_CONTROL_CASE
+    )
     assert predicted["nominal"] <= predicted["budget"]
     assert predicted["worst"] <= predicted["budget"], "最坏也不许超跑——超了就减题"
+    assert predicted["conditions"]["main"]["cases"] == 20
+    assert predicted["conditions"]["control"]["cases"] == 10
 
 
 def test_worst_case_per_case_matches_the_production_constant() -> None:
-    """最坏 5 次/题是生产常量（含强模型兜底位），不是这里手编的数。"""
+    """最坏 5 次/题是生产常量（含强模型兜底位），不是这里手编的数。关 ⑤ 少一格。"""
 
     from app.services import research_limits
 
     assert ev.WORST_CALLS_PER_CASE == research_limits.MAX_MODEL_CALLS_WITH_FALLBACK
     assert ev.NOMINAL_CALLS_PER_CASE == research_limits.MAX_MODEL_CALLS
+    assert ev.WORST_CALLS_PER_CONTROL_CASE == research_limits.MAX_MODEL_CALLS_WITH_FALLBACK - 1
+    assert ev.NOMINAL_CALLS_PER_CONTROL_CASE == research_limits.MAX_MODEL_CALLS - 1
 
 
 def test_plan_reports_the_budget_and_the_case_list_without_any_model_call(
@@ -435,17 +717,18 @@ def test_plan_reports_the_budget_and_the_case_list_without_any_model_call(
     assert "A01" in text and "B01" in text
 
 
-# ─────────────────────────────────────────────────────────────── 5. 报告结构
+# ─────────────────────────────────────────────────────────────── 6. 报告结构
 
 
 def test_report_renders_every_required_section_even_without_data() -> None:
     payload = {
         "generated_at": "2026-11-15T00:00:00+00:00",
         "llm_chain": {"llm_model": "m", "llm_endpoint_source": "model_configs"},
-        "model_calls": {"nominal": 80, "worst": 100, "actual": 0, "budget": 110},
+        "model_calls": {"nominal": 110, "worst": 140, "actual": 0, "budget": 170},
         "records": [],
         "evidences": [],
         "metrics": ev.summarize([]),
+        "fivefold": ev.fivefold_comparison([]),
     }
 
     text = ev.render_report(payload)
@@ -453,11 +736,31 @@ def test_report_renders_every_required_section_even_without_data() -> None:
     for heading in (
         "## 一、五个指标",
         "## 二、三个问题",
-        "## 三、题集与机械证据",
-        "## 四、逐题明细",
-        "## 五、这份对照不能回答什么",
-        "## 六、怎么复现",
+        "## 三、⑤ 的对照",
+        "## 四、题集与机械证据",
+        "## 五、逐题明细",
+        "## 六、这份对照不能回答什么",
+        "## 七、怎么复现",
     ):
         assert heading in text
     assert "文本级" in text
     assert "37.5%" in text
+    assert "暴露" in text and "救回" in text
+
+
+def test_report_states_that_the_residual_unknown_rate_measures_nothing() -> None:
+    """这个口径在 ⑤ 上线后必然为 0——报告必须自己说出来，否则读者会把它当成好消息。"""
+
+    payload = {
+        "generated_at": "2026-11-15T00:00:00+00:00",
+        "model_calls": {"nominal": 110, "worst": 140, "actual": 0, "budget": 170},
+        "records": [],
+        "evidences": [],
+        "metrics": ev.summarize([]),
+        "fivefold": ev.fivefold_comparison([]),
+    }
+
+    text = ev.render_report(payload)
+
+    assert "恒为 0" in text
+    assert "量不到东西" in text
