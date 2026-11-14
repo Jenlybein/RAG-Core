@@ -488,3 +488,23 @@ ADR-0010 第三次修订的结论不变。
 ### 5. 翻案条件
 
 出现「毫秒级也要结构化材料」的真实需求时，**先讨论能不能把两步调用合并成一次**（并接受角色分配的归纳误差），而不是继续把预算往上堆。若某部署的模型 p50 长期低于 5 秒，可把默认值调小，但要在本文登记实测依据。
+
+## 第十一次修订（第 11 步，#138 范围变更，2026-11-15）：降级原因**少一条** `graph injection failed`
+
+第八次修订给 §3 加了第六个固定串，第九次修订给 `metadata.retrieval` 加了 `graph` 那一栏。**这两处都随轻量图谱一起撤销**（ADR-0027 已被 [ADR-0029](0029-scope-down-to-controlled-research.md) 取代），所以：
+
+- 降级原因回到**五个**：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `orchestration failed`。`GLOSSARY.md` 的数量词与 `tests/test_degraded_reason_vocabulary.py` 的 `DOCUMENTED` 一起改成五个（`orchestration failed` 留给撤编排那一票处理）。
+- `metadata.retrieval.graph` 这一栏不再出现；每条结果上的 `retrieval_source` 字段一并删除（它只由注入项产出）。
+- **优先级顺序回到「改写 → 通道 → 重排 → 编排」**：图谱插在「通道 → 重排」之间那一格随它一起消失。
+
+### 为什么不是「改回第六次修订之前的样子」那么简单
+
+少了两个可观察字段，逐字节红线反而更容易守：删字段之后**关掉能力的响应与「从来没有过这个能力」的响应是同一个东西**，不需要再靠「摘键比对」。第八、九两次修订里的「摘掉 null 再比」那套做法因此一并退休。
+
+### 被否决的做法
+
+| 做法 | 为什么不行 |
+| --- | --- |
+| 保留 `graph injection failed` 这个串（代码里不再产出） | 词表是响应契约，写着一个永不出现的原因，调用方会为它写一条死分支——而这正是词表守卫要防的「文档与代码不一致」 |
+| 保留 `retrieval_source` 字段，恒为 `null` | 字段的**唯一**生产者是注入项；留一个恒空的字段等于在契约里留一句谎话，而序列化摘 null 的做法只能遮住形状、遮不住语义 |
+| 保留 `section_edges` 表只删代码 | 表是构建产物，没人读它却要跟着每个版本重建；删表迁移的 `downgrade` 只还原结构、不还原数据，这一点写在那条迁移的 docstring 里 |

@@ -162,16 +162,12 @@ _Avoid_: 格式校验, 上传限制
 第 3 步增补起它仍原样存库，但**返回给调用方的是折叠后的交付单元内容**（`content` 是整节或整表）：切片原文退到「库里的那一份」，调用方看到的大块由 `source_chunk_ids` 指回是哪几片拼出来的。
 _Avoid_: 正文（模糊）, 切块文本, 原文（指切片时）
 
-**引用指针（reference_pointer）**：
-只用来建引用关系的切片，内容形如「参见《X》」。**不参与召回**：它照样作为切片落库、照样进向量与关键词索引（否则 `ready` 的四项计数对不上），召回侧按 `chunk_type` 过滤掉——向量 SQL 与关键词查询各一处。它是「路标」，不是 Research 的「引用块」——前者是库里的原料，后者是产出的结论。
-_Avoid_: 指针切片, 引用切片, 引用块（那是 Research 的产物，不是切片）
-
 **构建版本（index build version）**：
 一次索引构建产出的那一行**不可变版本**，状态机 `building → ready → active → archived / failed`。同一库同一时刻最多一个 `active`、一个 `building`；`ready` 的前置条件是**四项计数相等**（知识库、切片、向量、关键词文档），不相等不许上线；激活是**单事务**（旧版本归档 + 新版本生效 + 库的生效版本列更新，同成同败）；失败只落 `failed`，线上照旧查旧的 active（[ADR-0025](docs/adr/0025-index-as-build-artifact.md)）。
 _Avoid_: 索引批次, 构建号, build（口语）, 版本号（模糊）
 
 **构建产物（build artifact）**：
-一次构建写下的那一整套东西——切片、向量、关键词索引、关系边、节的身份——**全部带版本**，检索只读 `active` 那一套。它与「构建版本」是同一件事的两面：版本是那行状态，产物是那批数据。重建不再原地覆盖，而是产出新的一整套。
+一次构建写下的那一整套东西——切片、向量、关键词索引、节的身份——**全部带版本**，检索只读 `active` 那一套。它与「构建版本」是同一件事的两面：版本是那行状态，产物是那批数据。重建不再原地覆盖，而是产出新的一整套。
 _Avoid_: 索引快照（口语）, 增量索引, 数据集
 
 **索引版本（index_version）**：
@@ -223,12 +219,8 @@ _Avoid_: 混合分, 相似度（指融合分时）, 加权分
 折叠之后 `score` 不再恒等于 `rrf_score`：前者是**单元内命中片的最高分**，后者是代表片那条结果的融合分。要融合排序依据读 `rrf_score`，别把 `score` 当相似度做阈值（见 [ADR-0010](docs/adr/0010-retrieval-contract.md)「后续修订」）。
 _Avoid_: 附加字段, 明细分, metadata 分（口语）
 
-**候选注入**：
-在排序**之前**把相关切片加进候选池参与竞争。与上下文恢复顺序不能反，两者也不是同一件事。
-_Avoid_: 上下文注入, 预注入
-
 **检索内核**：
-检索链路里**可被多次调用**的那一段：召回 → 融合 →（图谱注入位）→ 重排 → TopK → 折叠。查询改写、可见性校验、配额记账、归属索引写入、观测提交**都在内核之外**——它们是「每次调用只做一次」的事，而内核是「每条子查询各做一次」的事（[ADR-0028](docs/adr/0028-retrieval-kernel-boundary.md)）。`/rag/retrieve` 与受控 Research 共用同一份内核实现。
+检索链路里**可被多次调用**的那一段：召回 → 融合 → 重排 → TopK → 折叠。查询改写、可见性校验、配额记账、归属索引写入、观测提交**都在内核之外**——它们是「每次调用只做一次」的事，而内核是「每条子查询各做一次」的事（[ADR-0028](docs/adr/0028-retrieval-kernel-boundary.md)）。`/rag/retrieve` 与受控 Research 共用同一份内核实现。
 _Avoid_: 检索引擎, 完整检索服务, retrieve 服务
 
 **重排（Rerank）**：
@@ -236,7 +228,7 @@ _Avoid_: 检索引擎, 完整检索服务, retrieve 服务
 _Avoid_: 精排, 二次排序, 粗排
 
 **降级原因（degraded_reason）**：
-降级时回给调用方的固定英文串，只有六个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `graph injection failed` / `orchestration failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 图谱 → 重排 → 编排），后到的不覆盖。
+降级时回给调用方的固定英文串，只有五个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed` / `orchestration failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排 → 编排），后到的不覆盖。
 _Avoid_: 错误信息, 异常原因, 失败详情, 中文译名
 
 **诚实空（honest empty）**：
@@ -339,18 +331,12 @@ _Avoid_: 配置级别, 配置等级, 热更新级别
 
 ## 延伸能力
 
-**关系边（relation edge）**：
-文档**显式写明**的、节与节之间的有向关系，只有三种：**引用（`reference`）**——「参见《X》第 N 节」「本文件第三节」这类由文档作者亲自指的线；**兄弟节（`sibling`）**——同一父节下相邻的两节（2.3 与 2.4）；**父节（`parent`）**——一节与它所属的上一级节。两端都是**节**（文档 id + 节 id + 版本），只认文档里真实存在的表达，目标有歧义就不建，**不按语义相似度猜边**。它只负责把邻居拉进候选池（注入项 `score = 0`），相关性由重排裁决；跨库边允许存在，注入时按本次请求的库与版本过滤（[ADR-0027](docs/adr/0027-graph-section-edges.md)）。
-_Avoid_: 图谱边, 知识图谱, 语义边, chunk_relations
-
-
-
 **切片编排**：
 把候选切片整理成「带角色的结构化结果」的步骤，分两步问小模型：先把问题归纳成要点（A1…An），再为每个要点挑出**核心片**与**辅助片**。它只组织切片，**不改排名，也不生成答案**；模型的输出里只有要点与候选序号，**正文一律由后端按序号回查重建**——所以提示词注入最多让它点错序号，塞不进任意内容。三态完整度（`complete` / `partial` / `missing`）由「每个要点有没有核心片」数出来，不由模型自评；材料编号 E1…En 按要点顺序稳定分配，调用方可以直接引用。默认关闭，开关按 ADR-0018 分三层（套餐 / 密钥配置 / 档位）。Research 的每一轮收口、MCP 工具的返回值都基于它。
 _Avoid_: 证据编排, Evidence Pack, evidence_pack（对外文案里）
 
 **受控 Research**：
-叠加在检索内核之上的延伸能力：把一次查询拆成多跳、逐步补证，有三个角色（Planner / Decider / Finalizer）。它是能力叠加，不是与索引链路、检索链路并列的第三条主链路。它跑的是**检索内核**（召回 → 融合 → 图谱注入 → 重排 → TopK → 折叠；改写、可见性校验、配额、归属索引、观测都在内核之外，一次调用只做一次，见 [ADR-0028](docs/adr/0028-retrieval-kernel-boundary.md)），生成边界见「引用块」。
+叠加在检索内核之上的延伸能力：把一次查询拆成多跳、逐步补证，有三个角色（Planner / Decider / Finalizer）。它是能力叠加，不是与索引链路、检索链路并列的第三条主链路。它跑的是**检索内核**（召回 → 融合 → 重排 → TopK → 折叠；改写、可见性校验、配额、归属索引、观测都在内核之外，一次调用只做一次，见 [ADR-0028](docs/adr/0028-retrieval-kernel-boundary.md)），生成边界见「引用块」。
 _Avoid_: Agentic RAG, 多跳检索, 深度研究
 
 **引用块（citation block）**：
@@ -367,7 +353,7 @@ Research 响应 `metadata.evidence_state` 里的三态完整度：`complete`（�
 _Avoid_: completeness（那是编排侧的字段名）, 覆盖度（coverage 是评测侧的另一个概念）, 置信度, 自评得分
 
 **sub_search_degraded_reasons**：
-Research 响应 `metadata.sub_search_degraded_reasons` 里的列表：**子检索**各自降级了哪几条原因，取的就是既有「降级原因」里那几个固定串（例如 `keyword search failed`、`graph injection failed`），去重后原样上交。它必须由检索那一层递上来——「查的时候降级了」在材料正文里看不出来；而子检索又不能各写一行归属索引（一次 Research 只写一行）。它**不是停止原因**：一次 Research 可以带着一条子检索降级一路答完，`stop_reason` 仍然是 `evidence_complete`。
+Research 响应 `metadata.sub_search_degraded_reasons` 里的列表：**子检索**各自降级了哪几条原因，取的就是既有「降级原因」里那几个固定串（例如 `keyword search failed`、`vector search failed`），去重后原样上交。它必须由检索那一层递上来——「查的时候降级了」在材料正文里看不出来；而子检索又不能各写一行归属索引（一次 Research 只写一行）。它**不是停止原因**：一次 Research 可以带着一条子检索降级一路答完，`stop_reason` 仍然是 `evidence_complete`。
 _Avoid_: 失败原因（那是异常，这是降级）, degraded_reason（那是检索响应里的单个字段名）, 子检索报错
 
 **strong_model_fallback**：
