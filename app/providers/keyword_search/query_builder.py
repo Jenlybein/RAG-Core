@@ -24,10 +24,14 @@
 
 from __future__ import annotations
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, DEFAULT_INDEX_VERSION
 
 # 可检索文本的字段名。切片原文另存 ``content``（只存不索引），用来原样回给调用方。
 RETRIEVAL_TEXT_FIELD = "retrieval_text"
+
+#: 切片类型字段（#152）。**存进关键词文档是为了过滤它**：纯路标切片只用来建边，
+#: 不参与召回——它进候选池只会占名额，还会把「命中一句『参见别处』」变成一次成功召回。
+CHUNK_TYPE_FIELD = "chunk_type"
 
 # 写入 / 查询分词器：写入细粒度、查询智能模式。
 INDEX_ANALYZER = "ik_max_word"
@@ -220,6 +224,8 @@ def build_es_mapping() -> dict:
                 "index_version": {"type": "keyword"},
                 "document_id": {"type": "keyword"},
                 "chunk_id": {"type": "keyword"},
+                # 切片类型：只做精确匹配（过滤路标切片），不参加打分也不分词。
+                CHUNK_TYPE_FIELD: {"type": "keyword"},
                 # 可检索文本：写入细粒度（``analyzer``）、查询侧带停用词
                 # （``search_analyzer``），两个都要显式声明。
                 "title": {
@@ -290,28 +296,35 @@ def build_bm25_query(
                     # 于是「库 + 版本」这对条件变成了纯加分项——过滤形同虚设。
                     {"bool": {"should": pairing, "minimum_should_match": 1}},
                 ],
+                # 路标切片不进候选（#152）：它没有信息量，命中它等于没命中。
+                # ``must_not`` 里没有这个字段的老文档不受影响（term 不匹配即通过）。
+                "must_not": [{"term": {CHUNK_TYPE_FIELD: CHUNK_TYPE_REFERENCE_POINTER}}],
             }
         },
     }
 
 
-def build_purge_query(*, document_id: str, tenant_id: str) -> dict:
+def build_purge_query(
+    *, document_id: str, tenant_id: str, index_version: str | None = None
+) -> dict:
     """返回 ``delete_by_query`` 的请求体：只删这个租户的这一份文档。
 
     ``tenant_id`` 与 ``document_id`` 都是 ``term`` 且都在 ``filter`` 里：
     少一个就会删到别的租户同 id 的行（ADR-0006 的强制过滤同样适用于删除）。
+
+    ``index_version`` 非空时再加一条版本过滤（#142）：重建新版本只清目标版本，
+    线上那一版原样留着。物理索引本来就按版本隔离，这条过滤是第二道防线——它会在
+    「写进了错误物理索引」时把误删挡住，而那种错一旦发生，删掉的就是线上数据。
     """
 
-    return {
-        "query": {
-            "bool": {
-                "filter": [
-                    {"term": {"tenant_id": tenant_id}},
-                    {"term": {"document_id": document_id}},
-                ]
-            }
-        }
-    }
+    filters: list[dict] = [
+        {"term": {"tenant_id": tenant_id}},
+        {"term": {"document_id": document_id}},
+    ]
+    if index_version is not None:
+        filters.append({"term": {"index_version": index_version}})
+
+    return {"query": {"bool": {"filter": filters}}}
 
 
 def build_keyword_documents(chunks: list[dict]) -> list[dict]:
@@ -333,6 +346,8 @@ def build_keyword_documents(chunks: list[dict]) -> list[dict]:
             "title": (chunk.get("meta") or {}).get("title", ""),
             RETRIEVAL_TEXT_FIELD: chunk["retrieval_text"],
             "content": chunk["content"],
+            # 只为了过滤（路标切片不参与召回）；没有类型的老切片留空串。
+            CHUNK_TYPE_FIELD: (chunk.get("meta") or {}).get("chunk_type", ""),
         }
         for chunk in chunks
     ]

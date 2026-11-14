@@ -38,6 +38,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.services.retrieval_options import RetrievalOptions
 from tests.fake_db import AsyncRecordingSession, RecordingSession
 from tests.retrieval_identity import RetrievalIdentity
@@ -105,7 +106,14 @@ def _row(chunk_id: str, *, score: float = 0.9) -> dict:
 
 
 async def _kb_for_tenant(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
-    return SimpleNamespace(tenant_id=tenant_id, settings={}, name="", description="")
+    return SimpleNamespace(
+        id=_kb_id,
+        tenant_id=tenant_id,
+        settings={},
+        name="",
+        description="",
+        active_index_version=DEFAULT_INDEX_VERSION,
+    )
 
 
 @contextmanager
@@ -282,7 +290,14 @@ async def _cancelled_retrieval(
     trace_session = AsyncRecordingSession()
 
     async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
-        return SimpleNamespace(tenant_id=tenant_id, settings={}, name="", description="")
+        return SimpleNamespace(
+            id=kb_id,
+            tenant_id=tenant_id,
+            settings={},
+            name="",
+            description="",
+            active_index_version=DEFAULT_INDEX_VERSION,
+        )
 
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)
     monkeypatch.setattr(service, "get_vector_store", lambda: vector)
@@ -297,6 +312,7 @@ async def _cancelled_retrieval(
         expand_table_rows=False,
         rerank=False,
         rewrite=False,
+        orchestration=False,
     )
     task = asyncio.create_task(
         service.retrieve(
@@ -340,6 +356,8 @@ async def test_cancelling_the_request_cancels_the_work_in_flight(
 #: 检索路径的源码（含它依赖的仓储与向量库实现）。这张表是「这一条链路上有谁」的清单。
 _RETRIEVAL_PATH_FILES: tuple[str, ...] = (
     "app/services/rag_service.py",
+    "app/services/retrieval/kernel.py",
+    "app/services/retrieval/collapse.py",
     "app/services/retrieval/pipeline.py",
     "app/services/retrieval/vector_recall.py",
     "app/services/retrieval/fusion.py",

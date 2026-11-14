@@ -26,7 +26,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.key_policy import PROFILES
-from app.models.plan import PLAN_BUSINESS_COLUMNS, PLAN_NUMERIC_COLUMNS, Plan
+from app.models.plan import (
+    PLAN_BUSINESS_COLUMNS,
+    PLAN_NUMERIC_COLUMNS,
+    PLAN_ZEROABLE_COLUMNS,
+    Plan,
+)
 from app.repositories import (
     key_policy_repository,
     knowledge_base_repository,
@@ -79,6 +84,10 @@ def validate_patch(patch: Mapping[str, Any]) -> None:
 
     ``allowed_profiles`` 为空列表同样拒绝：一份谁都不能用的档位白名单，等于把这个套餐下
     所有 Key 当场停用——与「QPS 填 0」是同一类事故（ADR-0017 护栏表最后一行）。
+
+    **Research 的两个额度是例外**（票 #150）：0 在那里是「关闭」，是一个正当的产品决定，
+    所以只拒负数。把它们与 ``retrieve_qps`` 混进同一条判据，等于让运营没法在面板上把
+    Research 关掉——而「关掉一项重资源能力」恰恰是最该好按的那个按钮。
     """
 
     if not patch:
@@ -101,6 +110,14 @@ def validate_patch(patch: Mapping[str, Any]) -> None:
         if value is not None and value < 1:
             # 「0 或负数」不是一种更严格的限制，而是一次事故：QPS=0 等于当场停服。
             raise AppError(ErrorCode.PLAN_INVALID, f"{field} must be at least 1")
+
+    for field in PLAN_ZEROABLE_COLUMNS:
+        value = patch.get(field)
+        # ``bool`` 是 ``int`` 的子类：``true`` 不该被当成 1 放行。
+        if value is not None and (
+            isinstance(value, bool) or not isinstance(value, int) or value < 0
+        ):
+            raise AppError(ErrorCode.PLAN_INVALID, f"{field} must be at least 0")
 
 
 def merged_snapshot(before: Mapping[str, Any], patch: Mapping[str, Any]) -> dict[str, Any]:

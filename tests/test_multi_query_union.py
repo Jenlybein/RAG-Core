@@ -36,6 +36,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.llm.base import LLMProvider
 from app.services.query.optimizer import QueryProcessResult, optimize_query
 from app.services.query.rewrite import QueryRewrite
@@ -85,6 +86,12 @@ _TRACE_ID_RE = re.compile(r',"trace_id":"[0-9a-f]{32}"')
 #: 它们与 ``trace_id`` 是同一类东西：有意的契约新增，不是检索行为变化。比对前整段摘掉，
 #: 基线常量因此一个都不用重采——「除这两个新键外逐字节不变」由同一组数字继续证明。
 _RERANK_IDENTITY_RE = re.compile(r',"provider":(?:null|"[^"]*"),"model":(?:null|"[^"]*")')
+
+#: #147 起 ``metadata.tenant_policy`` 多出 ``orchestration``（ADR-0010「第七次修订」）。
+#: 处理方式与前两个键**完全相同**：它是「这次生效了什么」的第六项，值恒为布尔、位置固定
+#: （在 ``rewrite`` 之后），摘掉之后响应仍与 #78 那版基线逐字节相同。基线常量因此不重采
+#: ——重采会把「只多了这一个键」这件事从证据里抹掉。
+_ORCHESTRATION_ECHO_RE = re.compile(r',"orchestration":(?:true|false)')
 
 
 # ─────────────────────────────────────────────────────────────── 替身
@@ -253,10 +260,13 @@ def _offline_client(
 
     async def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return SimpleNamespace(
+            id=kb_id,
             tenant_id=tenant_id,
             settings=tables.get(kb_id) or {},
             name="",
             description="",
+            # 真行上有的两列（票 #141）：检索范围从库行里读生效版本。
+            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
@@ -318,10 +328,16 @@ def _without_trace_id(text: str) -> str:
     见 :data:`_RERANK_IDENTITY_RE`），处理方式与 ``trace_id`` **完全相同**：它们是有意的
     契约新增，摘掉之后仍与旧基线逐字节相同。这两段摘除各自都要求「至少命中一次」——
     否则这条比对会退化成「什么也没摘、什么也没比」。
+
+    #147 起 ``metadata.tenant_policy`` 多出 ``orchestration``（ADR-0010「第七次修订」），
+    处理方式依旧相同（:data:`_ORCHESTRATION_ECHO_RE`）：它是「这次生效了什么」的第六项，
+    摘掉之后仍与旧基线逐字节相同。**关闭编排时响应另一处也没变**：编排块本身在关闭时
+    连键都不出现（``RetrieveData`` 的序列化规则），所以这条哈希里没有第二段要摘。
     """
 
     without_trace = _TRACE_ID_RE.sub("", text)
-    return _RERANK_IDENTITY_RE.sub("", without_trace)
+    without_rerank_identity = _RERANK_IDENTITY_RE.sub("", without_trace)
+    return _ORCHESTRATION_ECHO_RE.sub("", without_rerank_identity)
 
 
 def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
@@ -342,6 +358,9 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             response = _response(fake["client"], mode=mode)
         assert response.status_code == 200
         assert _TRACE_ID_RE.search(response.text), "摘除必须真的命中一次，否则这条比对是空比对"
+        # ``tenant_policy`` 三种 mode 都有（它挂在每一次经门禁解析的调用上）；#147 的
+        # 那个键必须真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了它」。
+        assert _ORCHESTRATION_ECHO_RE.search(response.text), "回显摘除也必须真的命中"
         if mode == "hybrid":
             # 重排关着时 ``rerank`` 仍是字典（applied=false …），身份键是 null；它们必须
             # 真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了这两个键」。

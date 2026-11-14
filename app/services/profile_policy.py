@@ -30,7 +30,7 @@
 
 这条非对称不是疏忽，是父 spec 与 ADR-0018 第 5 条的原话：一个改的是**名字的含义**，
 另一个只是把没买够的额度夹到买得起的那一档。裁剪有**两个来源**：套餐上限（``mode`` /
-``rerank`` / ``rewrite``）与平台红线（``top_k`` 夹到 :data:`MAX_TOP_K`）——后者不来自
+``rerank`` / ``rewrite`` / ``orchestration``）与平台红线（``top_k`` 夹到 :data:`MAX_TOP_K`）——后者不来自
 套餐，套餐里根本没有「返回条数」这一列，但平台红线必须始终成立。
 
 ## 档位意图 vs 部署能力
@@ -49,10 +49,17 @@ Provider——那会变成「回显说重排了、日志里一次模型都没调
 
 ## 能力词汇表只有一个
 
-能力名（``hybrid`` / ``rerank`` / ``rewrite`` / ``research``）与「它落在哪个布尔列上」
+能力名（``hybrid`` / ``rerank`` / ``rewrite`` / ``research`` / ``orchestration``）与「它落在哪个布尔列上」
 的对应关系写在 :data:`CAPABILITY_SWITCHES` 一处，判定、报错与自洽校验都从那里取。单独
 写成常量是因为它们要在**三种**载体之间传递（档位预设、配置开关、套餐能力），任何一处
 拼错都会变成「看起来判过了」。
+
+**切片编排（第 11 步票 #146）走的就是这套机制**：``profile_presets.orchestration``
+表达「这一档想要」，``plans.orchestration_allowed`` 表达「这个租户买没买」，
+``key_policies.orchestration_allowed`` 表达「这套集成要不要」。前两者在这里判（命名
+档位越权 → ``20013``；``custom`` 越权 → 裁剪并回显），第三者既进自洽校验（第一段包含）
+也进生效值的合取（见 ``retrieval_options.options_from_chain``）——编排没有「本机装没装」
+这一维，所以它的第二因子换成了配置层的启用开关。
 """
 
 from __future__ import annotations
@@ -70,6 +77,7 @@ from app.models.key_policy import (
 from app.models.plan import PlanSpec
 from app.services.retrieval_options import (
     CUSTOM_OPTION_MODE,
+    CUSTOM_OPTION_ORCHESTRATION,
     CUSTOM_OPTION_RERANK,
     CUSTOM_OPTION_REWRITE,
     MAX_TOP_K,
@@ -86,22 +94,25 @@ CAPABILITY_HYBRID: str = "hybrid"
 CAPABILITY_RERANK: str = "rerank"
 CAPABILITY_REWRITE: str = "rewrite"
 CAPABILITY_RESEARCH: str = "research"
+CAPABILITY_ORCHESTRATE: str = "orchestration"
 
-#: 能力名 → 布尔列名。``KeyPolicySnapshot`` 与 :class:`PlanSpec` 上这四列同名同义，
+#: 能力名 → 布尔列名。``KeyPolicySnapshot`` 与 :class:`PlanSpec` 上这五列同名同义，
 #: 所以一份映射就够：判定不再区分「问配置」还是「问套餐」，只问「这个载体给不给」。
 CAPABILITY_SWITCHES: Final[dict[str, str]] = {
     CAPABILITY_HYBRID: "hybrid_allowed",
     CAPABILITY_RERANK: "rerank_allowed",
     CAPABILITY_REWRITE: "query_rewrite_allowed",
     CAPABILITY_RESEARCH: "research_allowed",
+    CAPABILITY_ORCHESTRATE: "orchestration_allowed",
 }
 
-#: 裁剪只动这四个字段；``clipped`` 里的名字就是响应 ``tenant_policy`` 里的字段名，
+#: 裁剪只动这五个字段；``clipped`` 里的名字就是响应 ``tenant_policy`` 里的字段名，
 #: 顺序固定（回显因此可断言、两条入口因此可逐字节比对）。
 FIELD_MODE: str = "mode"
 FIELD_TOP_K: str = "top_k"
 FIELD_RERANK: str = "rerank"
 FIELD_REWRITE: str = "rewrite"
+FIELD_ORCHESTRATION: str = "orchestration"
 
 
 def resolve_retrieval_options(
@@ -229,6 +240,20 @@ def ensure_policy_consistent(*, policy: KeyPolicySnapshot, plan: PlanSpec) -> No
             f"policy daily {policy.retrieve_daily} > plan {plan.code!r} daily "
             f"{plan.retrieve_daily}",
         )
+    # Research 的两列同样不得超过套餐（票 #150）：0 在这里是合法输入（= 这套集成不用它），
+    # 所以判据是「大于」而不是「≤ 0 即拒绝」。
+    if policy.research_qps > plan.research_qps:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"policy research qps {policy.research_qps} > plan {plan.code!r} research qps "
+            f"{plan.research_qps}",
+        )
+    if policy.research_daily > plan.research_daily:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"policy research daily {policy.research_daily} > plan {plan.code!r} research "
+            f"daily {plan.research_daily}",
+        )
     if len(policy.allowed_kb_ids) > plan.max_kb:
         raise AppError(
             ErrorCode.PARAM_ERROR,
@@ -281,13 +306,33 @@ def _clip_to_plan(chain: ProfileChain, plan: PlanSpec) -> tuple[ProfileChain, tu
         rewrite = False
         clipped.append(FIELD_REWRITE)
 
-    return replace(chain, mode=mode, top_k=top_k, rerank=rerank, rewrite=rewrite), tuple(clipped)
+    orchestration = chain.orchestration
+    if orchestration and not plan.orchestration_allowed:
+        orchestration = False
+        clipped.append(FIELD_ORCHESTRATION)
+
+    return (
+        replace(
+            chain,
+            mode=mode,
+            top_k=top_k,
+            rerank=rerank,
+            rewrite=rewrite,
+            orchestration=orchestration,
+        ),
+        tuple(clipped),
+    )
 
 
 def _capabilities_of_chain(chain: ProfileChain) -> frozenset[str]:
     """一条链路**需要**哪些能力。``vector`` / ``bm25`` 不需要任何能力开关。"""
 
-    return _capabilities_of(mode=chain.mode, rerank=chain.rerank, rewrite=chain.rewrite)
+    return _capabilities_of(
+        mode=chain.mode,
+        rerank=chain.rerank,
+        rewrite=chain.rewrite,
+        orchestration=chain.orchestration,
+    )
 
 
 def _needed_capabilities(policy: KeyPolicySnapshot) -> frozenset[str]:
@@ -310,7 +355,11 @@ def _needed_capabilities(policy: KeyPolicySnapshot) -> frozenset[str]:
             server_default_chain()
             if preset is None
             else ProfileChain(
-                mode=preset.mode, top_k=preset.top_k, rerank=preset.rerank, rewrite=preset.rewrite
+                mode=preset.mode,
+                top_k=preset.top_k,
+                rerank=preset.rerank,
+                rewrite=preset.rewrite,
+                orchestration=preset.orchestration,
             )
         )
 
@@ -319,11 +368,14 @@ def _needed_capabilities(policy: KeyPolicySnapshot) -> frozenset[str]:
         mode=manual.get(CUSTOM_OPTION_MODE),
         rerank=manual.get(CUSTOM_OPTION_RERANK) is True,
         rewrite=manual.get(CUSTOM_OPTION_REWRITE) is True,
+        orchestration=manual.get(CUSTOM_OPTION_ORCHESTRATION) is True,
     )
 
 
-def _capabilities_of(*, mode: Any, rerank: bool, rewrite: bool) -> frozenset[str]:
-    """「模式 + 两个自愿开关」→ 需要的能力集合。链路与手写参数共用这一份判据。"""
+def _capabilities_of(
+    *, mode: Any, rerank: bool, rewrite: bool, orchestration: bool
+) -> frozenset[str]:
+    """「模式 + 三个自愿开关」→ 需要的能力集合。链路与手写参数共用这一份判据。"""
 
     needed: set[str] = set()
     if mode == MODE_HYBRID:
@@ -332,6 +384,8 @@ def _capabilities_of(*, mode: Any, rerank: bool, rewrite: bool) -> frozenset[str
         needed.add(CAPABILITY_RERANK)
     if rewrite:
         needed.add(CAPABILITY_REWRITE)
+    if orchestration:
+        needed.add(CAPABILITY_ORCHESTRATE)
     return frozenset(needed)
 
 

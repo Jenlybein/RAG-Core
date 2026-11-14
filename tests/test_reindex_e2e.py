@@ -30,7 +30,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
+from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
@@ -70,7 +72,9 @@ class _RecordingStore:
         self.tenant_ids: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)
         self.tenant_ids.append(tenant_id)
@@ -131,6 +135,15 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
     store = _RecordingStore()
     monkeypatch.setattr(routes, "enqueue_document", lambda **kwargs: enqueued.append(kwargs))
 
+    # 写入目标版本来自库上的生效版本（#142）。这条用例的临时库里只有 ``documents``，
+    # 于是把「问库要版本」这一步换成固定的 v1——与迁移回填、索引流水线的老行为同值。
+    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
+        return DEFAULT_INDEX_VERSION
+
+    monkeypatch.setattr(
+        knowledge_base_repository, "get_effective_index_version", _effective_version
+    )
+
     main.app.dependency_overrides[get_async_db] = _request_session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
     try:
@@ -180,6 +193,22 @@ async def _run_worker_pipeline(service: IndexingService, database_path: Path) ->
         await engine.dispose()
 
 
+class _NoEdgeBuilder:
+    """建边替身：这条 e2e 的库只有 ``documents`` 一张表，边由
+    ``tests/test_section_edge_service.py`` 覆盖。
+
+    它断言的是**切片写入与状态回写**这条链（路由 → 队列 → Worker），建边会读写
+    ``section_edges`` 与 ``chunks.metadata``，那两张表在 SQLite 里也建不出来
+    （pgvector / JSONB）。所以这里显式关掉建边，而不是让用例去假装一张 PG 表。
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def rebuild_document(self, *_args: Any, **kwargs: Any) -> Any:
+        self.calls.append(str(kwargs.get("document_id")))
+
+
 def test_reindex_route_then_worker_produces_chunks_and_success(
     reindex_env: SimpleNamespace,
 ) -> None:
@@ -218,6 +247,8 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
         splitter=_StubSplitter(),
         embeddings=_StubEmbeddings(),
         stores=[reindex_env.store],
+        # 见 _NoEdgeBuilder：这个 SQLite 库里没有 chunks / section_edges。
+        edge_builder=_NoEdgeBuilder(),
     )
     count = asyncio.run(_run_worker_pipeline(service, reindex_env.database_path))
 

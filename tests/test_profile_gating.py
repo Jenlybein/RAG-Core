@@ -64,10 +64,15 @@ def _policy(
     rerank_allowed: bool = True,
     query_rewrite_allowed: bool = True,
     research_allowed: bool = False,
+    orchestration_allowed: bool = False,
     # 限额默认取「三档都容得下」的最小值：本文件测的是档位与能力，不是数值门禁；
-    # 数值那几条用例自己覆盖这三个字段。
+    # 数值那几条用例自己覆盖这三个字段。Research 的两个配额同理取 0（= 关闭）——
+    # free 与 standard 的种子就是 0，写成开发身份那档的 1/100 会让本文件的每次构造
+    # 都在「标准版不允许 Research」上失败，而那与本文件要测的东西无关。
     retrieve_qps: int = 1,
     retrieve_daily: int = 100,
+    research_qps: int = 0,
+    research_daily: int = 0,
     allowed_kb_ids: tuple[str, ...] = ("kb-1",),
 ) -> KeyPolicySnapshot:
     """一份只关心档位与开关的快照；其余字段取内置开发身份那份。"""
@@ -82,8 +87,11 @@ def _policy(
         rerank_allowed=rerank_allowed,
         query_rewrite_allowed=query_rewrite_allowed,
         research_allowed=research_allowed,
+        orchestration_allowed=orchestration_allowed,
         retrieve_qps=retrieve_qps,
         retrieve_daily=retrieve_daily,
+        research_qps=research_qps,
+        research_daily=research_daily,
         allowed_kb_ids=allowed_kb_ids,
     )
 
@@ -98,15 +106,24 @@ def _plan(code: str, **overrides: Any) -> PlanSpec:
     ("profile", "expected"),
     [
         # 三档的全部内容写在票面上，这里逐字抄一遍：任何一个预设被改动，这条就变红。
-        (PROFILE_SPEED, ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_BALANCED, ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False)),
-        (PROFILE_QUALITY, ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True)),
+        (
+            PROFILE_SPEED,
+            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False, orchestration=False),
+        ),
+        (
+            PROFILE_BALANCED,
+            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False, orchestration=False),
+        ),
+        (
+            PROFILE_QUALITY,
+            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True, orchestration=False),
+        ),
     ],
 )
 def test_each_named_profile_expands_to_exactly_its_chain(
     profile: str, expected: ProfileChain
 ) -> None:
-    """命名档位 = 一整条链路：模式、条数、是否重排、是否改写，四项一个不少。
+    """命名档位 = 一整条链路：模式、条数、是否重排、是否改写、是否编排，五项一个不少。
 
     同时在配置里塞一批手动参数与两个关掉的结果形状——命名档位下它们**一个都不生效**
     （完整替换，不是「预设打底、配置覆盖」）。
@@ -152,7 +169,9 @@ def test_custom_reads_its_manual_parameters() -> None:
         )
     )
 
-    assert chain == ProfileChain(mode="bm25", top_k=3, rerank=True, rewrite=True)
+    assert chain == ProfileChain(
+        mode="bm25", top_k=3, rerank=True, rewrite=True, orchestration=False
+    )
 
 
 def test_custom_falls_back_per_key_to_the_deployment_defaults(
@@ -170,7 +189,9 @@ def test_custom_falls_back_per_key_to_the_deployment_defaults(
 
     chain = profile_chain_of(_policy(profile=PROFILE_CUSTOM, custom_options=(("mode", "vector"),)))
 
-    assert chain == ProfileChain(mode="vector", top_k=7, rerank=True, rewrite=True)
+    assert chain == ProfileChain(
+        mode="vector", top_k=7, rerank=True, rewrite=True, orchestration=False
+    )
 
 
 # ───────────────────────────────────────────── 五道门：顺序、拒绝与裁剪
@@ -405,7 +426,7 @@ def test_with_the_switches_off_a_quality_profile_runs_exactly_the_balanced_chain
 
 
 def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``tenant_policy`` 的字段表：套餐名、要求档位、模式、条数、重排、改写、库数、裁剪。"""
+    """``tenant_policy`` 的字段表：套餐名、要求档位、模式、条数、重排、改写、编排、库数、裁剪。"""
 
     # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
@@ -424,6 +445,9 @@ def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> 
         "top_k": 5,
         "rerank": True,
         "rewrite": True,
+        # 编排（#147）：与重排 / 改写同一列、同一个来源。它出现在回显里的前提是
+        # 「这个值真的改变了结果」——#147 之前它没有消费者，所以当时被推迟。
+        "orchestration": False,
         "kb_count": 2,
         "clipped": [],
     }
@@ -461,6 +485,7 @@ def test_an_unresolved_options_object_has_no_echo() -> None:
         expand_table_rows=True,
         rerank=False,
         rewrite=False,
+        orchestration=False,
     )
 
     assert options.tenant_policy is None
@@ -560,6 +585,37 @@ def test_a_consistent_named_profile_policy_is_accepted() -> None:
             rerank_allowed=True,
             query_rewrite_allowed=True,
         ),
+        plan=_plan(PLAN_PRO),
+    )
+
+
+# ─────────────────────────────────── Research 的两个独立配额（票 #150）
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"research_qps": PLAN_PRESETS[PLAN_PRO].research_qps + 1},
+        {"research_daily": PLAN_PRESETS[PLAN_PRO].research_daily + 1},
+    ],
+)
+def test_a_research_quota_beyond_the_plan_is_rejected(overrides: dict[str, Any]) -> None:
+    """配置的 Research 配额不得超过套餐：这套集成只能在买到的额度里分配。"""
+
+    policy = dataclasses.replace(_policy(profile=PROFILE_SPEED), **overrides)
+
+    with pytest.raises(AppError) as excinfo:
+        ensure_policy_consistent(policy=policy, plan=_plan(PLAN_PRO))
+
+    assert excinfo.value.code is ErrorCode.PARAM_ERROR
+    assert "research" in excinfo.value.msg
+
+
+def test_a_zero_research_quota_is_a_legal_configuration() -> None:
+    """0 是「这套集成不用 Research」，不是数值错误——与 ``retrieve_qps`` 的 0 语义相反。"""
+
+    ensure_policy_consistent(
+        policy=_policy(profile=PROFILE_SPEED, research_qps=0, research_daily=0),
         plan=_plan(PLAN_PRO),
     )
 
@@ -751,6 +807,7 @@ def test_the_response_carries_the_tenant_policy_it_actually_ran(entry: _Entry) -
         "top_k": 5,
         "rerank": False,
         "rewrite": False,
+        "orchestration": False,
         "kb_count": 1,
         "clipped": [],
     }

@@ -161,6 +161,9 @@ def build_retriever():
                     expand_table_rows=True,
                     rerank=settings.RERANK_ENABLED,
                     rewrite=settings.QUERY_REWRITE_ENABLED,
+                    # 旁证调用是一次明确的内部检索，不是「编排」：编排会再调一次小模型，
+                    # 而这里要的只是材料（票 #146 起它是可关的能力，缺省关）。
+                    orchestration=False,
                 ),
             )
         return [str(chunk.get("content") or "") for chunk in response["retrieved_chunks"]]

@@ -37,24 +37,36 @@ logger = structlog.get_logger(__name__)
 
 @dataclass(frozen=True)
 class ProfilePresetSpec:
-    """一个档位的参数。字段与 ``profile_presets`` 的四个业务列一一对应。"""
+    """一个档位的参数。字段与 ``profile_presets`` 的业务列一一对应。"""
 
     mode: str
     top_k: int
     rerank: bool
     rewrite: bool
+    orchestration: bool
 
 
 #: 内置种子。必须与 ``migrations/versions/a7d2e8f4c615_create_profile_presets.py``
 #: 的播种行、以及改造前 ``retrieval_options.PROFILE_CHAINS`` 的值保持一致——三处一致
 #: 才能保证「不灌库」与「灌了库」两种世界跑出同样的结果。有测试钉住这一点。
+#:
+#: ``orchestration`` 四行都是 ``False``：切片编排要多一次小模型调用，**默认关**，
+#: 运营在面板上想开哪一档再开（票 #146）。
 DEFAULT_PRESETS: Final[dict[str, ProfilePresetSpec]] = {
-    PROFILE_SPEED: ProfilePresetSpec(mode="vector", top_k=5, rerank=False, rewrite=False),
-    PROFILE_BALANCED: ProfilePresetSpec(mode="hybrid", top_k=5, rerank=False, rewrite=False),
-    PROFILE_QUALITY: ProfilePresetSpec(mode="hybrid", top_k=5, rerank=True, rewrite=True),
+    PROFILE_SPEED: ProfilePresetSpec(
+        mode="vector", top_k=5, rerank=False, rewrite=False, orchestration=False
+    ),
+    PROFILE_BALANCED: ProfilePresetSpec(
+        mode="hybrid", top_k=5, rerank=False, rewrite=False, orchestration=False
+    ),
+    PROFILE_QUALITY: ProfilePresetSpec(
+        mode="hybrid", top_k=5, rerank=True, rewrite=True, orchestration=False
+    ),
     # custom 这一行只用来给编辑器一个初值；检索时 custom 仍逐键回落部署配置
     # （见 `app/models/profile_preset.py` 的模块文档）。
-    PROFILE_CUSTOM: ProfilePresetSpec(mode="vector", top_k=5, rerank=False, rewrite=False),
+    PROFILE_CUSTOM: ProfilePresetSpec(
+        mode="vector", top_k=5, rerank=False, rewrite=False, orchestration=False
+    ),
 }
 
 _presets: dict[str, ProfilePresetSpec] = dict(DEFAULT_PRESETS)

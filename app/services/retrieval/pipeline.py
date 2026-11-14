@@ -39,15 +39,14 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.models.chunk import default_index_versions
 from app.observability.stage_timing import (
     STAGE_FUSION,
     STAGE_KEYWORD_RECALL,
@@ -58,6 +57,9 @@ from app.observability.stage_timing import (
 from app.services.retrieval.fusion import fuse_by_rrf
 from app.services.retrieval.rerank import rerank_stage
 from app.services.retrieval.vector_recall import vector_recall
+
+if TYPE_CHECKING:  # 只为类型：注入位在运行期由组合根注入，pipeline 不装配它
+    from app.services.graph_injection import GraphInjection, InjectionOutcome
 
 logger = structlog.get_logger(__name__)
 
@@ -78,24 +80,25 @@ _REJECTION_CODES = frozenset(
 
 @dataclass(frozen=True)
 class HybridOutcome:
-    """一次混合检索的结果：切片 + 是否降级 + 降级原因 + 重排事实。
+    """一次混合检索的结果：切片 + 是否降级 + 降级原因 + 重排事实 + 注入事实。
 
     ``rerank`` 是 ``metadata.retrieval.rerank`` 的那一份（是否发生、候选数、返回数、
     耗时）。它和日志读的是同一个 ``RerankOutcome``，所以不会出现「日志说排了、
-    响应里没痕迹」。
+    响应里没痕迹」。``graph`` 同理由：注入条数与来源只有一份事实。
     """
 
     chunks: list[dict]
     degraded: bool
     degraded_reason: str | None
     rerank: dict[str, object] | None = None
+    graph: "InjectionOutcome | None" = None
 
 
 async def hybrid_retrieve(
     *,
     db: AsyncSession,
     tenant_id: str,
-    kb_ids: list[str],
+    index_versions: Mapping[str, str],
     vector_queries: Sequence[str],
     rerank_query: str,
     keyword_query: str,
@@ -108,6 +111,7 @@ async def hybrid_retrieve(
     rerank_enabled: bool,
     rerank_factory: Callable[[], Awaitable[Any]] | None = None,
     stage_timer: StageTimer | None = None,
+    graph_injection: "GraphInjection | None" = None,
 ) -> HybridOutcome:
     """两路并行召回，融合、重排后返回；一路失败不取消另一路。
 
@@ -115,8 +119,12 @@ async def hybrid_retrieve(
     线程，所以「共用」在这里是安全的——第 10 步之所以要另开一个 ``SessionLocal``，是因为
     那时向量分支跑在别的线程上，而同步 ``Session`` 不能跨线程。
 
-    工厂以**可调用对象**传进来，而不是在这里直接 import：``rag_service`` 是组合根，
-    测试替换工厂的位置因此仍然只有一处（沿用既有 monkeypatch 接缝，不新造接缝）。
+    工厂以**可调用对象**传进来，而不是在这里直接 import：组合根（``kernel`` /
+    ``rag_service``）传给测试的替换点因此仍然只有一处（沿用既有 monkeypatch 接缝，
+    不新造接缝）。
+
+    ``index_versions`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
+    本模块不再自己造一份——范围是「一次调用」的属性，而这条链路会被多查询各调一次。
 
     **两条通道拿不同的查询**（``vector_queries`` / ``keyword_query``）：查询优化在
     召回之前就把一句话加工成「向量逐句列表 + 关键词一句 + 重排一句」。改写成功时
@@ -145,6 +153,11 @@ async def hybrid_retrieve(
     ``rerank_factory`` 是重排的**注入缝**（#116）：缺省 ``None`` 时 ``rerank_stage``
     用既有工厂出口（``get_rerank_provider``），评测传一个别的工厂进来就能跑旧实现做
     对照。它和上面三个工厂同形——「重排用哪种实现」在这条链路上只有一个开关。
+
+    ``graph_injection`` 是**候选注入位**（#144 / ADR-0027）：融合之后、重排之前。位置
+    正是本模块内部那两步之间，所以它只能在这里被调一次——放到内核里再调一遍，混合模式
+    就会注入两次（重排看到两份同样的候选）。缺省 ``None`` = 这一步不存在，链路与
+    注入之前逐字节一致。
     """
 
     timer = stage_timer if stage_timer is not None else StageTimer()
@@ -160,7 +173,7 @@ async def hybrid_retrieve(
             _vector_branch(
                 db,
                 tenant_id=tenant_id,
-                kb_ids=kb_ids,
+                index_versions=index_versions,
                 queries=vector_queries,
                 top_k=depth,
                 embedding_factory=embedding_factory,
@@ -169,7 +182,7 @@ async def hybrid_retrieve(
             ),
             _keyword_branch(
                 tenant_id=tenant_id,
-                kb_ids=kb_ids,
+                index_versions=index_versions,
                 query=keyword_query,
                 top_k=depth,
                 keyword_factory=keyword_factory,
@@ -190,7 +203,7 @@ async def hybrid_retrieve(
         logger.warning(
             "hybrid retrieval failed on both channels",
             tenant_id=tenant_id,
-            kb_ids=list(kb_ids),
+            kb_ids=list(index_versions),
             vector_error=type(vector_error).__name__,
             keyword_error=type(keyword_error).__name__,
         )
@@ -206,7 +219,7 @@ async def hybrid_retrieve(
         logger.warning(
             "hybrid retrieval degraded",
             tenant_id=tenant_id,
-            kb_ids=list(kb_ids),
+            kb_ids=list(index_versions),
             degraded_reason=degraded_reason,
         )
 
@@ -215,6 +228,17 @@ async def hybrid_retrieve(
     # 合成后的向量池直接作为「向量一路」进既有的 ``fuse_by_rrf``，不新增内层融合。
     with timer.measure(STAGE_FUSION):
         fused_chunks = fuse_by_rrf(vector_rows, keyword_rows, top_n=fuse_pool)
+
+    # 候选注入（#144）：融合之后、重排之前。三种检索方式都经过这里——混合模式走的是
+    # 同一份「候选池成形之后」的位置。注入项 score = 0，名次完全由下面这一步裁决；
+    # 失败只降级（原因由注入位自己给出专码），并且**不覆盖**已经到手的通道故障原因：
+    # 先到的才是根因。
+    graph: "InjectionOutcome | None" = None
+    if graph_injection is not None:
+        graph = await graph_injection(fused_chunks, index_versions)
+        fused_chunks = graph.chunks
+        degraded_reason = degraded_reason or graph.degraded_reason
+
     # 重排是**语义那一侧**的一步：它看到的是 ``effective_query``（改写成功时是改写句），
     # 扩展出来的同义词只该帮关键词一路做字面匹配，塞进重排提示词只会变成噪音。
     # ``rerank_enabled`` 来自本次的已解析参数：不要重排的档位在装了重排的机器上也不跑。
@@ -238,6 +262,7 @@ async def hybrid_retrieve(
         degraded=degraded_reason is not None,
         degraded_reason=degraded_reason,
         rerank=reranked.as_metadata(),
+        graph=graph,
     )
 
 
@@ -268,7 +293,7 @@ async def _vector_branch(
     db: AsyncSession,
     *,
     tenant_id: str,
-    kb_ids: list[str],
+    index_versions: Mapping[str, str],
     queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
@@ -292,7 +317,7 @@ async def _vector_branch(
         return await vector_recall(
             db=db,
             tenant_id=tenant_id,
-            kb_ids=kb_ids,
+            index_versions=index_versions,
             queries=queries,
             top_k=top_k,
             embedding_factory=embedding_factory,
@@ -305,7 +330,7 @@ async def _vector_branch(
 async def _keyword_branch(
     *,
     tenant_id: str,
-    kb_ids: list[str],
+    index_versions: Mapping[str, str],
     query: str,
     top_k: int,
     keyword_factory: Callable[[], Any],
@@ -313,8 +338,8 @@ async def _keyword_branch(
 ) -> list[dict]:
     """关键词通道：租户 + 库/版本配对过滤；本身是异步 HTTP，不必进线程。
 
-    可见性不在这里校验：由 ``rag_service.retrieve`` 在进入任何分支之前统一预校验
-    一次（两条分支各查一遍 = 每库 2 次查询，且「拒绝」会有两个来源）。
+    可见性不在这里校验：由内核的调用方（``rag_service.retrieve``）在进入任何分支之前
+    统一预校验一次（两条分支各查一遍 = 每库 2 次查询，且「拒绝」会有两个来源）。
 
     失败的那一路也留下这一段耗时：它确实被走过、也的确花了时间（哪怕只是拒绝服务），
     把失败从计量里抹掉会让「这一次为什么慢」少掉最该看的那一行。
@@ -332,7 +357,7 @@ async def _keyword_branch(
             rows = await provider.keyword_search(
                 query,
                 tenant_id=tenant_id,
-                index_versions=default_index_versions(kb_ids),
+                index_versions=dict(index_versions),
                 top_k=top_k,
             )
         except AppError:

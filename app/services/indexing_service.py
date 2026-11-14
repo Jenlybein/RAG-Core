@@ -41,6 +41,16 @@
 ``build_chunk_stores`` 组装；加第三个存储只需要往列表里再加一个元素。索引阶段
 不做降级：任一处写失败就是索引失败（由 Celery 任务回滚并置为失败），否则会留下
 「向量库有、关键词库没有」的数据不一致。
+
+**写入目标版本是必填参数的一部分（#142）**: 切片行与关键词文档都带
+``index_version``，它来自调用方（整库构建写新版本）或库上的生效版本（上传 / 单篇
+重建写回线上那一版），**不是**写死的常量。删除同样按版本收窄：重建只清目标版本的
+旧行，线上那一版在构建期间原样可查（ADR-0025 决策二）。
+
+**建关系边是这条流水线的第五步（#152）**：切片写进哪个版本，边就写进哪个版本，而且
+在**同一段事务**里（purge + 写切片 + 建边 + 回写状态同成同败）。所以不存在「构建成功
+但这个版本没有边」的中间态。建边器是一个构造注入的协作者，与切块器 / embedding /
+存储列表同形——整条编排照旧可以离线跑完（替身见 ``tests/test_section_edge_service.py``）。
 """
 
 from __future__ import annotations
@@ -52,7 +62,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import async_commit_now
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
@@ -62,12 +71,21 @@ from app.repositories import document_repository, knowledge_base_repository
 from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import prepare_document_content
 from app.services.section_context import summarize_sections
+from app.services.section_edge_service import SectionEdgeBuilder
+from app.services.section_graph import (
+    CHUNK_TYPE_REFERENCE_POINTER,
+    EdgeScope,
+    SectionRecord,
+    SectionText,
+    is_reference_pointer,
+)
 from app.utils.id_generator import new_chunk_id
 from app.utils.retrieval_text import build_retrieval_text
+from app.utils.section_identity import section_id_of
 from app.utils.status import DocumentStatus
 from app.utils.splitter_factory import build_splitter
 from app.utils.text_splitter import WindowTextSplitter
-from app.utils.text_splitter import TextSplitter
+from app.utils.text_splitter import SplitPiece, TextSplitter
 
 logger = structlog.get_logger(__name__)
 
@@ -78,7 +96,12 @@ INDEXING_FAILED_MESSAGE = "document indexing failed, please retry or contact sup
 
 
 async def purge_document_chunks(
-    db: AsyncSession, document_id: str, *, tenant_id: str, stores: list[ChunkStore]
+    db: AsyncSession,
+    document_id: str,
+    *,
+    tenant_id: str,
+    stores: list[ChunkStore],
+    index_version: str | None = None,
 ) -> None:
     """先删后写的第一半：遍历**存储列表**，逐个清除该文档的旧切片。
 
@@ -87,23 +110,66 @@ async def purge_document_chunks(
     往 ``stores`` 追加一个元素，调用方一行都不用改。``tenant_id`` 是强制过滤参数
     （ADR-0006），连删除也必须带租户。
 
+    ``index_version`` 是**删除范围**（#142）：重建写到目标版本时只清目标版本的旧行，
+    线上那一版一个字节都不动；``None`` 表示「这份文档的所有版本」——删文档才这样。
+
     会话类型是 ``AsyncSession``：Worker 索引、数据面删除与控制面删除都在异步栈上
     （第 11 步票 #132 / #130）。
     """
 
     for store in stores:
-        await store.delete_by_document_id(db, document_id, tenant_id=tenant_id)
+        await store.delete_by_document_id(
+            db, document_id, tenant_id=tenant_id, index_version=index_version
+        )
+
+
+def _edge_sections(
+    doc: Document, pieces: list[SplitPiece], *, version: str
+) -> tuple[SectionText, ...]:
+    """刚切出来的那些片 → 「节 + 正文」列表（建边的输入，不必回库再读一遍）。
+
+    ``section_id`` 取切片 meta 里的那一份（切块器算的），缺值时走
+    :func:`app.utils.section_identity.section_id_of` 兜底——**本模块不自己拼哈希**：
+    两份算法漂移的症状是「边指向一个存在但不对的节」，不报错、极难查。
+
+    ``order`` 用**文档级**的片序号（``chunk_index``）：兄弟边与「第 N 节」都按它排，
+    而切块器的 ``order_index`` 只在节内可比，跨节排不出文档顺序。
+    """
+
+    sections: list[SectionText] = []
+    for index, piece in enumerate(pieces):
+        heading_path = str(piece.metadata.get("heading_path") or "")
+        section_id = str(piece.metadata.get("section_id") or "") or section_id_of(
+            document_id=str(doc.id), heading_path=heading_path
+        )
+        sections.append(
+            SectionText(
+                record=SectionRecord(
+                    tenant_id=doc.tenant_id,
+                    kb_id=doc.kb_id,
+                    index_version=version,
+                    document_id=str(doc.id),
+                    document_title=doc.title,
+                    section_id=section_id,
+                    heading_path=heading_path,
+                    order=index,
+                    source_filename=doc.source_filename or "",
+                ),
+                text=piece.text,
+            )
+        )
+    return tuple(sections)
 
 
 class IndexingService:
     """Worker 侧的索引编排：一份已登记的文档 → 可检索的切片。"""
-
     def __init__(
         self,
         *,
         splitter: TextSplitter | None = None,
         embeddings: EmbeddingProvider | None = None,
         stores: list[ChunkStore] | None = None,
+        edge_builder: SectionEdgeBuilder | None = None,
     ) -> None:
         # 注入的切块器优先：测试用它把切块与接线解耦。生产路径不注入，
         # 每份文档在索引时按**所属知识库**的配置现建切块器。
@@ -116,12 +182,18 @@ class IndexingService:
             if stores is not None
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
+        # 建边器同理：默认接真实实现，测试注入记录型替身（索引期是唯一建边时点）。
+        self._edge_builder = edge_builder if edge_builder is not None else SectionEdgeBuilder()
 
     async def _resolve_splitter(self, db: AsyncSession, doc: Document) -> tuple[TextSplitter, str]:
         """按文档所属知识库的配置构造切块器，返回 (切块器, 策略名)。
 
         策略与窗口必须来自知识库而不是全局配置：同一个库里混用两种切法会让片长
         分布不一致，检索时「片长」会变成与内容无关的排序因素。
+
+        **文档 id 一定要带下去**（#143）：节的身份证是 ``stable_hash(文档 id : 标题路径)``，
+        少了它，两份文档的「退款 > 流程」会算出同一个 ``section_id``，跨文档一对就串。
+        切块器自己看不见文档行，所以这个参数只能由这里给。
         """
 
         if self._splitter is not None:
@@ -136,18 +208,32 @@ class IndexingService:
         strategy, chunk_size = await knowledge_base_repository.get_split_config(
             db, doc.kb_id, tenant_id=doc.tenant_id
         )
-        splitter = build_splitter(strategy, chunk_size=chunk_size)
+        splitter = build_splitter(
+            strategy, chunk_size=chunk_size, document_id=str(doc.id)
+        )
         return splitter, strategy
 
     async def index_existing_document(
-        self, db: AsyncSession, document_id: str, *, reparse: bool = False
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        reparse: bool = False,
+        index_version: str | None = None,
+        allow_success: bool = False,
     ) -> int:
         """把一份已经登记在库的文档索引成切片，返回写入的切片数。
 
-        ``reparse=True`` 强制重解析原始文件（忽略库内正文）；这里固定
-        ``allow_success=False``：force 重建的 SUCCESS→PROCESSING 状态准备已经在
-        路由层用 ``prepare_for_indexing`` 完成，Worker 只负责抢租约与执行，迟到
-        重复投递不能重新抢占成功文档。
+        ``reparse=True`` 强制重解析原始文件（忽略库内正文）；``allow_success=True`` 让
+        **已经是 SUCCESS 的文档**也能被抢占——那是「整库重建到新版本」（#142）要的：
+        重建的输入本来就是成功文档。上传 / 重建路由仍走默认值（路由先用
+        ``prepare_for_indexing`` 做过 SUCCESS→PROCESSING 的准备），迟到重复投递不能
+        重新抢占成功文档。
+
+        ``index_version`` 是**写入目标**（#142）：构建写它自己的新版本；不传时取该库
+        当前的生效版本（上传、单篇重建都写回线上那一版）。**绝不写死常量 `v1`**——
+        激活 v2 之后再上传的文档若写进 v1，检索按 (库, 生效版本) 配对时就一条都匹配
+        不上，而症状是「这个库没内容」（ADR-0025 决策七）。
 
         会话是 ``AsyncSession``（Worker 常驻循环里那一个），两段事务的提交点是
         ``app.db.transaction`` 的异步孪生 ``async_commit_now``；**提交次数与改造前
@@ -159,10 +245,16 @@ class IndexingService:
         if doc is None:
             raise AppError(ErrorCode.NOT_FOUND, "document not found")
 
+        # 目标版本在**抢占之前**定下来：抢占了却不写（版本解析失败）会留下一份新鲜租约，
+        # 下一次尝试反而抢不到。
+        version = index_version or await knowledge_base_repository.get_effective_index_version(
+            db, doc.kb_id, tenant_id=doc.tenant_id
+        )
+
         # Tx1：抢占后立刻提交，只持锁一瞬间。抢不到说明另一个 Worker 已经在跑
         # 这份文档（重复投递 / 重试），直接跳过，绝不重复向量化。
         claimed = await document_repository.try_claim_for_indexing_async(
-            db, document_id, tenant_id=doc.tenant_id, allow_success=False
+            db, document_id, tenant_id=doc.tenant_id, allow_success=allow_success
         )
         await async_commit_now(db)
         if not claimed:
@@ -225,6 +317,11 @@ class IndexingService:
                 f"embedding count mismatch: {len(retrieval_texts)} texts -> {len(vectors)} vectors"
             )
 
+        # 路标切片（#152）：除了一句引用之外没有实质内容的片，标成 reference_pointer。
+        # 它只用来建边，不参与召回（向量 SQL 与关键词查询各按类型过滤一次）——把「命中
+        # 一句『参见别处』」当成一次成功召回，是图谱最容易制造的假命中。
+        pointers = [is_reference_pointer(piece.text) for piece in pieces]
+
         chunks: list[dict[str, Any]] = [
             {
                 "id": new_chunk_id(),
@@ -237,12 +334,20 @@ class IndexingService:
                 "content": piece.text,
                 "retrieval_text": retrieval_texts[index],
                 "embedding": vector,
-                "index_version": DEFAULT_INDEX_VERSION,
+                # 写入目标版本：构建写新版本，上传 / 单篇重建写库上的生效版本（#142）。
+                "index_version": version,
                 "meta": {
                     # 解析器产出的 metadata 必须跟着切片走，否则「元数据.engine 含 ocr」
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
                     **parsed.metadata,
                     **piece.metadata,
+                    # 路标切片在 meta 里改类型，原来的 chunk_type（prose / list）不再有意义：
+                    # 这一片回答不了任何问题。非路标片保持切块器给的分类。
+                    **(
+                        {"chunk_type": CHUNK_TYPE_REFERENCE_POINTER}
+                        if pointers[index]
+                        else {}
+                    ),
                     # 文档级序号。order_index 只在节内可比，而父节要跨 h3 拼回整个 h2，
                     # 没有它就排不出文档顺序（ADR-0010 的确定性要求）。
                     "chunk_index": index,
@@ -260,6 +365,11 @@ class IndexingService:
                     # 本步不参与过滤，见 ADR-0005 与第 10 步。
                     "doc_version": doc.doc_version,
                     "title": doc.title,
+                    # 原始文件名随切片落一份（#152 的修订）：Markdown 链接写的是文件名
+                    # （``./points_policy.md``），而标题是《积分规则》——建边时按文件名才对得上。
+                    # 落进 meta 而不是建边时回查 documents 表：meta 是**这一版**的快照，
+                    # 事后改名不会让旧版本的边跟着变。
+                    "source_filename": doc.source_filename or "",
                     "index": index,
                     "source_type": parsed.source_type,
                 },
@@ -267,10 +377,28 @@ class IndexingService:
             for index, (piece, vector) in enumerate(zip(pieces, vectors))
         ]
 
-        # Tx2：先删后写 + 状态回写，一次提交；任一步失败都由调用方回滚。
-        await purge_document_chunks(db, document_id, tenant_id=doc.tenant_id, stores=self._stores)
+        # Tx2：先删后写 + 建关系边 + 状态回写，一次提交；任一步失败都由调用方回滚。
+        await purge_document_chunks(
+            db,
+            document_id,
+            tenant_id=doc.tenant_id,
+            stores=self._stores,
+            index_version=version,
+        )
         for store in self._stores:
             await store.add_chunks(db, chunks)
+
+        # 建边（#152）：切片已经写进这一版，所以读目录时这一篇自己的节也在里面——
+        # 「目标节本版本里存不存在」才判得准（悬空边一律不建）。
+        await self._edge_builder.rebuild_document(
+            db,
+            scope=EdgeScope(
+                tenant_id=doc.tenant_id, kb_id=doc.kb_id, index_version=version
+            ),
+            document_id=str(doc.id),
+            document_title=doc.title,
+            sections=_edge_sections(doc, pieces, version=version),
+        )
 
         await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
         await async_commit_now(db)
@@ -280,5 +408,6 @@ class IndexingService:
             tenant_id=doc.tenant_id,
             kb_id=doc.kb_id,
             chunk_count=len(chunks),
+            index_version=version,
         )
         return len(chunks)

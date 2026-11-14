@@ -102,7 +102,7 @@ def test_tenants_timestamps_come_from_the_shared_now_helper() -> None:
 
 
 def test_plans_has_every_business_column() -> None:
-    """面板上会出现输入框的 11 列一列都不能只活在代码里。"""
+    """面板上会出现输入框的 14 列一列都不能只活在代码里。"""
 
     table = Plan.__table__
     business = tuple(
@@ -111,7 +111,7 @@ def test_plans_has_every_business_column() -> None:
         if column.name not in {"id", "code", "name", "updated_at"}
     )
     assert set(business) == set(PLAN_BUSINESS_COLUMNS)
-    assert len(business) == 11
+    assert len(business) == 14
     for column in PLAN_BUSINESS_COLUMNS:
         assert not table.c[column].nullable, f"{column} 不允许为空"
 
@@ -182,6 +182,7 @@ def test_key_policy_switches_start_closed_but_result_shape_starts_open() -> None
         "hybrid_allowed",
         "rerank_allowed",
         "query_rewrite_allowed",
+        "orchestration_allowed",
     ):
         assert _default_arg(KeyPolicy, column) is False, column
     for column in ("include_parent", "expand_table_rows"):
@@ -191,8 +192,19 @@ def test_key_policy_switches_start_closed_but_result_shape_starts_open() -> None
 
 def test_key_policies_limits_are_integers() -> None:
     table = KeyPolicy.__table__
-    for column in ("retrieve_qps", "retrieve_daily"):
+    for column in ("retrieve_qps", "retrieve_daily", "research_qps", "research_daily"):
         assert table.c[column].type.python_type is int
+
+
+def test_the_two_research_quotas_default_to_zero() -> None:
+    """票 #150：新 Key 的 Research 配额默认 0 = 关闭，与「签发时能力全关」同一个精神。
+
+    默认值写在列上（而不是只写在服务层）是因为「行是手工插的」也时有可能发生：
+    列默认 0 让这种行自己就是关闭状态，而不会得到一个「看起来像没配」的 NULL。
+    """
+
+    assert _default_arg(KeyPolicy, "research_qps") == 0
+    assert _default_arg(KeyPolicy, "research_daily") == 0
 
 
 # ─────────────────────────────────────────────────────────────────────── api_keys

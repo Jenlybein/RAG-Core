@@ -191,6 +191,10 @@ def _build_corpus() -> Corpus:
             name="压测知识库",
             description="S0 基线用的离线替身库",
             settings={},
+            # 检索从库行读「生效索引版本」（ADR-0025）：替身库少了这一列就等于
+            # 「一个还没回填的库」，那个库的每一次请求都会被守卫拒绝——压测会把它
+            # 计成错误率，而错误率正是这张票要量的东西。
+            active_index_version="v1",
         ),
         count=len(unit_rows),
         vector_rows=vector_rows,

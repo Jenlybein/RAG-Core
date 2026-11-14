@@ -17,6 +17,8 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
+from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.index_version import effective_index_version
 from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase, settings_of
 
 
@@ -87,6 +89,26 @@ async def get_split_config(db: AsyncSession, kb_id: str, *, tenant_id: str) -> t
         return SPLIT_STRUCTURE, values["chunk_size"]
     values = settings_of(kb)
     return kb.split_strategy, values["chunk_size"]
+
+
+async def get_effective_index_version(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> str:
+    """该库当前生效的索引版本 = 索引写入的**缺省目标**（#142）。
+
+    与 :func:`get_split_config` 同一口径：库不存在或跨租户时回落到
+    ``DEFAULT_INDEX_VERSION``，而不是抛错。索引任务是异步的，库在这期间被删掉时应当
+    让后续流程报出「库不存在」这个真正的原因，而不是在取版本这一步先炸。
+
+    **回落到默认值不等于「没有版本也能写」**：检索侧对「库上没有生效版本」是硬拦
+    （``resolve_index_versions``），那一条守的是「回填漏做」；这里守的是「写入时按哪个
+    版本落库」，新库在 D1 建库时已经声明了 ``v1``，所以正常路径上读到的永远是那一列。
+    """
+
+    kb: KnowledgeBase | None = await db.get(KnowledgeBase, kb_id)
+    if kb is None or kb.tenant_id != tenant_id:
+        return DEFAULT_INDEX_VERSION
+    return effective_index_version(kb) or DEFAULT_INDEX_VERSION
 
 
 async def list_by_tenant(db: AsyncSession, tenant_id: str) -> list[KnowledgeBase]:

@@ -1,6 +1,6 @@
 # 0001. 中台不生成答案，接口是 `retrieve` 不是 `chat`
 
-- 状态：已采纳
+- 状态：已采纳；**适用范围已由 [ADR-0026](0026-research-citation-blocks.md) 显式收窄**：`/rag/retrieve` 与 MCP 工具 `rag_retrieve` 永不生成答案这一条不变；`/rag/research`（MCP `rag_research`）是唯一允许生成文本的出口，且只生成「引用块」
 - 日期：2026-11-03
 - 相关：`GLOSSARY.md`「边界」「检索结果」、「docs/架构.md」②平台管控
 

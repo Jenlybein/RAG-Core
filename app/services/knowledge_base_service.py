@@ -21,6 +21,7 @@ from collections.abc import Sequence
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
     KnowledgeBase,
@@ -67,6 +68,12 @@ async def create_kb(
         split_strategy=split_strategy,
         allowed_formats=formats,
         settings={"chunk_size": chunk_size},
+        # 建库即声明生效索引版本（ADR-0025）：本步的索引流水线仍把切片写成
+        # ``DEFAULT_INDEX_VERSION``，没有别的版本可查，所以新库的生效版本与产物同值。
+        # 不写它的话，这个库的切片版本与库的「生效版本」对不上，检索一条都匹配不到——
+        # 那正是 ADR-0025 决策七说的「不报错、只是搜不到」。真正的版本轮换（建 v2、
+        # 校验四项计数、单事务切换）是 #142 的激活流程，它会接管这一列。
+        active_index_version=DEFAULT_INDEX_VERSION,
     )
     await knowledge_base_repository.create(db, kb)
     values = settings_of(kb)

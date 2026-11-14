@@ -85,6 +85,15 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
             if view.usage is not None
             else None
         ),
+        # Research 用量与检索用量**同形**（票 #150）：同一个 ``usage_data`` 映射，
+        # 只是这一栏读另一本账（``quota:research:*``）。
+        research_usage=(
+            usage_data(
+                used=view.research_usage.used, limit=view.research_usage.limit
+            )
+            if view.research_usage is not None
+            else None
+        ),
         # 顺序沿用 `PROFILES`，与 `/console/profile-presets` 同一条词表。
         profile_presets=[
             ProfilePresetData(
@@ -93,6 +102,7 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
                 top_k=spec.top_k,
                 rerank=spec.rerank,
                 rewrite=spec.rewrite,
+                orchestration=spec.orchestration,
             )
             for profile in PROFILES
             if (spec := presets.get(profile)) is not None

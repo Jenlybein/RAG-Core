@@ -1,6 +1,6 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**；**§5 的索引版本已在第 11 步接上版本生命周期（取值改为各库生效版本，映射形状不变），见 [ADR-0025](0025-index-as-build-artifact.md)**；**响应 `data` 已在第 11 步 #147 增加可选的 `orchestration` 块、回显增加 `orchestration`、降级原因多一条，见文末「第七次修订」**
 - 日期：2026-11-08
 - 相关：父 spec #20「第 4 步」、**父 spec #72「第 7 步」、ADR-0018「三层授权与配置自洽校验」**、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
@@ -69,7 +69,7 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 
 ## 3. 降级原因是一组固定英文串
 
-`degraded_reason` 只允许四个值，**不拼异常文本**：
+`degraded_reason` 只允许四个值，**不拼异常文本**（第 11 步 #147 起是五个：多一条 `orchestration failed`，见文末「第七次修订」）：
 
 | 原因 | 产生位置 | 含义 |
 | --- | --- | --- |
@@ -114,7 +114,7 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 
 ## 5. 索引范围：`index_versions` 是配对映射
 
-检索范围由 `kb_id → index_version` 的**映射**表示，唯一构造点是 `app/models/chunk.py::default_index_versions`。本步只写默认版本 `v1`，请求体里没有 `index_version` 字段；将来接上版本生命周期时，改的是这个构造点。
+检索范围由 `kb_id → index_version` 的**映射**表示，唯一构造点是 `app/models/chunk.py::default_index_versions`。本步的构造点返回常量 `v1`，请求体里没有 `index_version` 字段。**这两件事的后续**：版本生命周期在第 11 步接上（[ADR-0025](0025-index-as-build-artifact.md)）——取值来源从常量改成「每个库自己的生效版本」，而**映射形状与「绝不能写成两个独立 `IN`」这条一字不改**；`index_version` 仍永远不是请求参数。
 
 ### SQL / 查询条件必须是配对
 
@@ -329,3 +329,65 @@ kb_id IN ('kb-a', 'kb-b') AND index_version IN ('v1', 'v2')
 **没有改**：六段耗时仍不进响应（第五次修订的结论不变）；`vector` / `bm25` 两个单模式没有重排段，响应逐字节不变。
 
 **翻案条件**：若调用方开始依赖这两个字段做路由（例如按 provider 计费），它们就得升级成稳定的枚举并写进 OpenAPI；那时要再出一次修订，而不是在响应里悄悄加第三个名字。
+
+## 第七次修订（第 11 步，#147，2026-11-13）：`data` 顶层多一块可选的 `orchestration`，回显多一个 `orchestration`，降级原因多一条
+
+**改了什么**（三处，都在响应侧；请求体仍是 `kb_ids` + `query`）：
+
+| 位置 | 形态 | 什么时候出现 |
+| --- | --- | --- |
+| `data.orchestration` | 对象：`completeness`（`complete` / `partial` / `missing`）+ `points[]` + `evidence[]` | **只有开启编排、且有候选**时才出现；关闭时这个键**连存在都不存在**（不是 `null`） |
+| `metadata.tenant_policy.orchestration` | 布尔 | 与 `rerank` / `rewrite` 同一列、同一来源（`RetrievalOptions`），在 `rewrite` 之后 |
+| `metadata.retrieval.degraded_reason` | 第五个固定串 `orchestration failed` | 模型装不上 / 超时 / 输出不合法时；检索结果照常返回 |
+
+`points[]` 每项是 `point_id`（`A1…An`）+ `text`（模型给的要点）+ `has_primary`；`evidence[]` 每项是
+`evidence_id`（`E1…En`）+ `point_id` + `role`（`primary` / `supporting`）+ `chunk_id` / `kb_id` /
+`document_id` / `title` / `heading_path` / `content`。**没有 `answer`**：ADR-0001 说 `/rag/retrieve`
+永不生成答案，这里一个字的模型正文都不留。
+
+三条硬规则决定了这个形状：
+
+- **模型只点序号。** 两次结构化调用（先要点、再每个要点下的核心 / 辅助），模型的输出里只有要点文本与
+  候选序号，拿不到切片 id、也不会被要求写正文。正文因此**只能**由后端按序号回查候选重建——提示词注入
+  最多让它点错序号，点错的结果是一条真实切片站错位置，而不是一段凭空生成的内容。
+- **越界序号整条拒掉。** 序号不在 `1..len(候选)` 就不产生材料，不猜、不截、不用模型给过的文本补位。
+- **完整度由核心片数出来。** 模型的结构化输出里**没有**「齐了 / 没齐」这一栏，三态完全由「每个要点有没有
+  核心片」数出来；「模型说齐了但没有核心片 → 仍判 `partial`」在结构上无法被推翻。
+
+**为什么**：检索结果已经升级成「一份材料」，但调用方仍然得自己判断「这个问题有几个要点、哪个是核心、
+缺哪一块」。这一块是**组织**而不是检索（不重新召回、不改排名），所以它属于响应契约的一层新增，而不是
+一条新的检索路径。开关仍按 ADR-0018 三层（套餐允许 / 配置启用 / 档位想要），**请求里一个参数都没有**——
+ADR-0010 第三次修订的结论不变。
+
+**为什么回显在 #147 才出现**（#146 的收口判断在此到期）：`tenant_policy` 只放「本次真实生效**且改变了
+结果**」的项。编排在 #146 时没有消费者，把它放进回显等于宣告一个不存在的生效值；#147 接上链路之后它
+和 `rerank` / `rewrite` 一样是生效值，于是从同一个 `options` 上读出来（同源，不可能「回显说开了、实际
+没跑」）。
+
+**被否决的三种做法**：
+
+| 做法 | 为何不选 |
+| --- | --- |
+| 关闭时也放 `orchestration: null` | `null` 也是字节。「关闭时响应逐字节不变」是红线，而这一块的意义正是「不开它的人完全不受影响」。Pydantic 默认会把它序列化成 `null`，所以 `RetrieveData` 显式在序列化时摘掉这个键。 |
+| 把块塞进 `metadata.retrieval` | `retrieval` 回答「这次检索遇到了什么」（模式、降级、空结果原因）；编排块是「这次编排出了什么」，与 `retrieved_chunks` 同级。混在一起之后，读 `retrieval` 的人会以为自己拿到了一份元数据。 |
+| 让模型直接返回要点 + 正文 | 那是把「正文来自库」这条可追溯性交给模型自己保证。序号 + 回查是**结构性**保证，不是提示词里的请求——后者在注入面前一文不值。 |
+
+**代价**：
+
+- 开了编排的档位多两次小模型调用（约 4 秒硬上限，超时即降级），延迟可预期但确实更长；代价只付在开了它
+  的那几把 Key 上——关闭时**一次模型都不调**（有用例钉住）。
+- `tenant_policy` 多一个键，所以 `test_multi_query_union.py` 的逐字节黄金哈希必须把它摘掉再比（与
+  `trace_id`、`rerank` 身份键同一种做法，基线常量一个都没重采）。**这是第四次因为「多一个可解释的字段」
+  而破逐字节不变**；摘掉之后仍与旧基线逐字节相同，这正是「只多了这一个键」的证据。
+- 编排本身**不进六段耗时**（那是观测的事，第五次修订的结论不变），所以「编排花了多久」只在日志的
+  `evidence orchestration failed` 那条 warning 里能看到一次。
+
+**没有改**：请求体只有 `kb_ids` + `query`；`retrieved_chunks` 一条都不动（编排是组织材料，不是重新检索）；
+`empty_reason` 语义不变；`metadata` 内部一个字节都没动（`trace_id` 仍是 `metadata` 的最后一个键），编排块整段
+排在 `data` 的最末——位置与第五次修订给 `trace_id` 的那条理由同构：把新东西放最后，「摘掉它之后与原响应
+逐字节相同」在字节层面直接成立。
+
+**翻案条件**：若调用方要求「按次选择是否编排」，那要先推翻第三次修订（请求里不许有质量参数）——要么
+证明它不在「质量参数」这一类，要么承认档位承诺破了。若调用方普遍需要「编排耗时」，先证明观测栈这条路
+读不到（第五次修订的翻案条件同款），再考虑加第六段之外的计时字段。
+

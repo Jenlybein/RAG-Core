@@ -147,8 +147,13 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # #94 再追加 model_configs，链尾因此继续前移。这里只守「唯一的 head 是链上最新那条」。
     # 链尾随新表继续前移：档位预设（profile_presets）接在 model_configs 之后，#101 的
     # 归属索引改名（rename_to_retrieval_traces）再接在档位预设之后；
-    # #105 的反馈表（create_retrieval_feedback）又接在改名之后。
-    assert heads == {_revision_of(_migration_path("create_retrieval_feedback"))}
+    # #105 的反馈表（create_retrieval_feedback）又接在改名之后；#146 的编排开关
+    # （add_orchestration_switch）接在反馈表之后；#141 的索引构建版本表
+    # （add_index_build_versions）再接在编排开关之后；#150 的 Research 配额两列
+    # （add_research_quotas）接在版本表之后；#152 的关系边表（create_section_edges）
+    # 再接在配额两列之后。每加一条迁移改这一行是**刻意的**：
+    # 「链尾是哪个文件」要人看一眼确认，不由代码自动推导。
+    assert heads == {_revision_of(_migration_path("create_section_edges"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

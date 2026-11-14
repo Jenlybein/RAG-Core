@@ -52,7 +52,7 @@ class PlanSnapshotData(BaseModel):
     """``/console/me`` 里的套餐快照：**没有 plan_id**，租户那一栏里已经有了。
 
     快照来自缓存/解析结果（:class:`app.models.plan.PlanSpec`），它刻意不带主键——判定内核
-    只关心「这一档的 11 个值」。
+    只关心「这一档的 14 个值」。
     """
 
     code: str
@@ -62,8 +62,14 @@ class PlanSnapshotData(BaseModel):
     rerank_allowed: bool
     query_rewrite_allowed: bool
     research_allowed: bool
+    orchestration_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
+    #: Research 的两个独立配额（票 #150）。0 = 关闭，与 ``research_allowed=False`` 同一个
+    #: 答复码——面板照实显示 0，不换成 ``null``：那会让「这一档没有这项能力」看起来像
+    #: 「这一列还没配」。
+    research_qps: int
+    research_daily: int
     max_kb: int
     max_kb_per_retrieve: int
     max_documents_per_kb: int
@@ -112,6 +118,10 @@ class MeData(BaseModel):
     #: 今日租户级检索用量。管理员没有租户，因此为 ``None``；租户账号一定有一份
     #: ``UsageData``，其中 ``used=None`` 表示「开关关着、平台没在统计」。
     usage: UsageData | None = None
+    #: 今日租户级 **Research** 用量（票 #150）：与 ``usage`` **同形**（``used`` + ``limit``
+    #: + ``source=daily_counter``），只是读另一本账（``quota:research:*``）。分开报是因为
+    #: 两条链路各有各的额度——把它们加在一起，面板上就没有「哪一项快用完了」这个答案了。
+    research_usage: UsageData | None = None
     #: 四个档位的当前参数（含 ``custom``）。**放在这里而不是让前台去读管理端接口**：
     #: `/console/profile-presets` 是管理员专属（平台级配置），租户读它要 20011；而
     #: 「这个档位能干什么」恰恰是租户签发 Key 时必须看到的信息。缺省空列表是为了
@@ -143,8 +153,13 @@ class PlanPatchRequest(BaseModel):
     rerank_allowed: bool | None = None
     query_rewrite_allowed: bool | None = None
     research_allowed: bool | None = None
+    orchestration_allowed: bool | None = None
     retrieve_qps: int | None = None
     retrieve_daily: int | None = None
+    #: Research 的两列：**允许填 0**（= 关闭），这与上面两列的「必须 ≥ 1」刻意不同。
+    #: 负数仍然被 ``20018`` 拒掉（判据在 :func:`app.services.plan_admin.validate_patch`）。
+    research_qps: int | None = None
+    research_daily: int | None = None
     max_kb: int | None = None
     max_kb_per_retrieve: int | None = None
     max_documents_per_kb: int | None = None
@@ -248,7 +263,7 @@ def tenant_data(tenant: Tenant) -> TenantData:
 
 
 def _business_values(source: object) -> dict[str, Any]:
-    """11 个业务列的值（``allowed_profiles`` 转成 JSON 友好的 list）。
+    """12 个业务列的值（``allowed_profiles`` 转成 JSON 友好的 list）。
 
     列清单来自 ``PLAN_SPEC_COLUMNS``，所以加一列时两个映射函数一起跟上，不会出现
     「API 少回一列而服务端算得出」这种半截状态。

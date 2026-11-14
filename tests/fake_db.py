@@ -29,6 +29,8 @@ from typing import Any
 
 from sqlalchemy.sql import operators
 
+from app.models.chunk import DEFAULT_INDEX_VERSION
+
 
 async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     """「库可见」的**异步**替身：租户原样回传，``settings`` 为空、名称与描述为空。
@@ -37,9 +39,21 @@ async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     （第 11 步票 #127），于是各用例里那句
     ``lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)``
     换成它即可——返回的东西与原来那份等价，只是可 ``await``。
+
+    ``id`` 与 ``active_index_version`` 是**真行上也有的两列**（票 #141）：检索范围从
+    「所有库配 v1」改成「读各库的生效版本」之后，替身缺这两列就不再等价于真行——
+    它会变成「一个还没回填的库」，而那正是检索守卫要拦下的状态。默认给 ``v1``：
+    与迁移的回填值、与索引流水线写下的版本同值。
     """
 
-    return SimpleNamespace(tenant_id=tenant_id, settings={}, name="", description="")
+    return SimpleNamespace(
+        id=_kb_id,
+        tenant_id=tenant_id,
+        settings={},
+        name="",
+        description="",
+        active_index_version=DEFAULT_INDEX_VERSION,
+    )
 
 
 async def async_invisible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
@@ -202,11 +216,12 @@ def _orm_model_of(statement: Any) -> type | None:
 
 
 def _matches_where(row: Any, criterion: Any) -> bool:
-    """``WHERE`` 只认「列 = 字面量」与「列 IN (...)]」（可 ``AND`` 组合）：别的形状一律当不匹配。
+    """``WHERE`` 只认「列 = 字面量」「列 IN (...)」「列 < / > 字面量」（可 ``AND`` 组合）。
 
-    与 ``_FakeQuery._matches`` 同一条口径，只是补上了仓储层真的用到的两种写法：
+    与 ``_FakeQuery._matches`` 同一条口径，只是补上了仓储层真的用到的几种写法：
     ``audit_logs.action = ?``、``retrieval_traces.trace_id = ? AND tenant_id = ?``、
-    ``retrieval_feedback.log_id IN (...)``。
+    ``retrieval_feedback.log_id IN (...)``、以及「比某个时刻更早」这类**时间比较**
+    （``index_build_versions.created_at < cutoff``，见 #142 的「有行、没任务」检测）。
     """
 
     clauses = getattr(criterion, "clauses", None) or (criterion,)
@@ -218,8 +233,21 @@ def _matches_where(row: Any, criterion: Any) -> bool:
         if key is None or expected is _MISSING:
             return False
         actual = getattr(row, key, None)
-        if getattr(node, "operator", None) is operators.in_op:
+        operator = getattr(node, "operator", None)
+        if operator is operators.in_op:
             if actual not in expected:
+                return False
+        elif operator in (operators.lt, operators.gt, operators.le, operators.ge):
+            # 时间比较：``None`` 一律不匹配（真实 SQL 里 NULL 参与比较也不成立）。
+            if actual is None:
+                return False
+            matched = {
+                operators.lt: actual < expected,
+                operators.gt: actual > expected,
+                operators.le: actual <= expected,
+                operators.ge: actual >= expected,
+            }[operator]
+            if not matched:
                 return False
         elif actual != expected:
             return False
@@ -421,7 +449,9 @@ class RecordingSession(EmptySession):
         criterion = getattr(statement, "whereclause", None)
         if criterion is None:
             return len(rows)
-        return sum(1 for row in rows if getattr(row, criterion.left.key) == criterion.right.value)
+        # 计数语句的 ``WHERE`` 与 ``select(Model)`` 同形状（可 ``AND`` 组合的等值 / 范围
+        # 条件），于是复用同一份匹配逻辑：写两份的下场是计数与读行对同一条件给出不同答案。
+        return sum(1 for row in rows if _matches_where(row, criterion))
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)
@@ -611,6 +641,43 @@ class AsyncRecordingSession(RecordingSession):
 
     async def close(self) -> None:
         super().close()
+
+
+class AsyncTransactionalSession(AsyncRecordingSession):
+    """有**事务语义**的异步替身：提交才落库，回滚把这一笔的改动撤掉。
+
+    与同步的 :class:`TransactionalSession` 同一口径（提交即留下、回滚即复原），再多一件
+    事：**行上的列值也一起恢复**。
+
+    为什么列值必须恢复（#156）：``IndexBuildService`` 在提交之前就把新版本写进了库行
+    （``kb.active_index_version = row.version``），真库靠 ``ROLLBACK`` 撤销它。替身不恢复
+    列值时，「提交失败之后重读库列」读到的是**这一笔自己写进去、却从未提交**的值——与真库
+    正好相反，于是「输掉的那一方回切别名」那条用例会验错方向：它以为读到了旧版本，实际
+    读到了那笔被撤销的写入。
+
+    快照在**构造时**拍：本类只服务「先摆好状态、再跑一次会失败的写入」这类用例，构造点
+    就是那一笔的开始。用例要在回滚之后模拟「别人已经提交」，自己不变量再覆盖一次即可
+    （见 ``test_index_build_rollback.py`` 的 ``_RacedCommitSession``）。
+    """
+
+    def __init__(
+        self,
+        *,
+        rows: dict[type, list[Any]] | None = None,
+        tenant_ids: list[str] | None = None,
+    ) -> None:
+        super().__init__(rows=rows, tenant_ids=tenant_ids)
+        self._rows_before = {model: list(items) for model, items in self._rows.items()}
+        self._values_before = [
+            (row, dict(vars(row))) for items in self._rows.values() for row in items
+        ]
+
+    async def rollback(self) -> None:
+        self._rows = {model: list(items) for model, items in self._rows_before.items()}
+        for row, values in self._values_before:
+            vars(row).clear()
+            vars(row).update(values)
+        await super().rollback()
 
 
 def override_all_db(app: Any, session: Any) -> AsyncSessionAdapter:

@@ -31,6 +31,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.api_key import ApiKey
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED, KeyPolicy
 from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_STANDARD, Plan, plan_row_of
@@ -99,6 +100,8 @@ def _policy_row(*, allowed_kb_ids: list[str], profile: str = PROFILE_SPEED) -> K
         query_rewrite_allowed=False,
         retrieve_qps=10,
         retrieve_daily=100,
+        research_qps=0,
+        research_daily=0,
         profile=profile,
         include_parent=True,
         expand_table_rows=True,
@@ -115,6 +118,8 @@ def _kb_row(kb_id: str, *, tenant_id: str = TENANT_ID) -> SimpleNamespace:
         split_strategy="size",
         allowed_formats=["markdown", "text"],
         settings={"chunk_size": 400},
+        # 检索范围从库行里读生效版本（票 #141）：缺这一列等于「还没回填的库」。
+        active_index_version=DEFAULT_INDEX_VERSION,
     )
 
 
@@ -651,6 +656,8 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
         "top_k": 5,
         "rerank": False,
         "rewrite": False,
+        # 编排（#147）：两条入口回显的是同一份 ``options``，所以这个键也必须逐字相同。
+        "orchestration": False,
         "kb_count": 1,
         "clipped": [],
     }
@@ -718,9 +725,12 @@ def test_mcp_tool_signatures_expose_no_privileged_fields() -> None:
     )
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
-    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases"}
+    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases", "rag_research"}
     properties = set(getattr(tools["rag_retrieve"], "parameters", {})["properties"])
     assert properties == {"kb_ids", "query"}
+    # 第三个工具（票 #151）走的是同一份权限表达：签名里只有 kb_ids + query。
+    research = set(getattr(tools["rag_research"], "parameters", {})["properties"])
+    assert research == {"kb_ids", "query"}
 
     privileged = {
         "tenant",

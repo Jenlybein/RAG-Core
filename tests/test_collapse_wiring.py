@@ -11,10 +11,9 @@ import importlib
 from types import SimpleNamespace
 from typing import Any
 
-from app.core.config import settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.services import result_collapse
 from app.services.result_collapse import OVERFETCH_FACTOR
-from app.services.retrieval_options import RetrievalOptions
 from tests.fake_db import AsyncSessionAdapter
 
 TENANT = "tenant-demo"
@@ -52,7 +51,7 @@ class _Rows:
 class _Session:
     """按调用顺序回答：meta → 单元行 → 定位用的 meta。
 
-    顺序与 `_collapse_results` 的调用顺序一致；用队列而不是解析 SQL，是为了让
+    顺序与 `collapse_results` 的调用顺序一致；用队列而不是解析 SQL，是为了让
     「多查了一次」这种回归立刻表现为 IndexError 而不是静默通过。
     """
 
@@ -60,6 +59,8 @@ class _Session:
         self.metas = metas
         self.rows = rows
         self.calls = 0
+        # 按调用顺序记下 SQL 文本：需要断言「这一次查的是什么」时（如不折叠分支）用它。
+        self.statements: list[str] = []
 
     def execute(self, _statement: Any) -> Any:
         self.calls += 1
@@ -73,28 +74,24 @@ class _Session:
 
 
 def _run(session: _Session, chunks: list[dict], **kwargs) -> list[dict]:
-    service = importlib.import_module("app.services.rag_service")
-    # 票 #77：折叠与表格展开不再是 ``_collapse_results`` 的散装参数，而是这次调用的
-    # 已解析参数（``RetrievalOptions``）。调用点的写法不变，助手负责翻译。
-    options: dict[str, Any] = {
-        # 折叠不看检索模式；值对象要求有它，填服务端缺省即可。
-        "mode": settings.RETRIEVAL_MODE,
+    collapse = importlib.import_module("app.services.retrieval.collapse")
+    # 票 #140：折叠是**检索内核**的最后一步，参数全部显式（不再吃一个值对象）——
+    # 开关与条数由组合根从 ``RetrievalOptions`` 上读出来再交进去。
+    call: dict[str, Any] = {
+        "top_k": 5,
         "fold_to_sections": True,
         "expand_table_rows": True,
-        "top_k": 5,
-        # 折叠路径不碰重排与改写：填 False 只是让这个值对象完整（#78 起它们是必填项）。
-        "rerank": False,
-        "rewrite": False,
     }
-    options.update(kwargs)
+    call.update(kwargs)
 
     async def go() -> list[dict]:
         # 第 11 步票 #127：折叠在异步栈上（``await``），会话替身因此包一层异步面。
-        return await service._collapse_results(
+        return await collapse.collapse_results(
             AsyncSessionAdapter(session),
             tenant_id=TENANT,
             chunks=chunks,
-            options=RetrievalOptions(**options),
+            index_versions={KB: DEFAULT_INDEX_VERSION},
+            **call,
         )
 
     return asyncio.run(go())
@@ -232,23 +229,34 @@ def test_top_k_truncates_after_collapsing() -> None:
 
 
 def test_collapse_off_returns_the_raw_pieces() -> None:
-    """关掉折叠时返回小片本身，不按节归组——留给「只要精确到那一行」的调用方。"""
+    """关掉折叠时返回小片本身，不按节归组——留给「只要精确到那一行」的调用方。
+
+    **#144 起这条分支会发两次查询**：meta（补定位字段）与父节自己的正文（父节恢复，
+    ADR-0027 决策 7）。两次都**不是**单元行查询——那条用的是章节路径的**前缀匹配**
+    （``LIKE``），只有折叠才需要；把父节恢复写成前缀匹配会把命中片自己再拼一遍。
+    """
 
     session = _Session(metas={"c-1": _meta(HEAD_A), "c-2": _meta(HEAD_A)}, rows=[])
-    # 关掉折叠时只查一次 meta（补定位字段），第二次 execute 不该发生。
-    session.rows = []
 
-    class _Once(_Session):
+    class _TwoReads(_Session):
         def execute(self, statement: Any) -> Any:
             self.calls += 1
-            assert self.calls == 1, "不折叠时不该查单元行"
-            return _Rows(
-                [SimpleNamespace(id=cid, meta=meta, kb_id=KB) for cid, meta in self.metas.items()]
-            )
+            self.statements.append(str(statement))
+            sql = str(self.statements[-1])
+            assert "LIKE" not in sql, "不折叠时不该查单元行（前缀匹配）"
+            if self.calls == 1:
+                return _Rows(
+                    [
+                        SimpleNamespace(id=cid, meta=meta, kb_id=KB)
+                        for cid, meta in self.metas.items()
+                    ]
+                )
+            assert self.calls == 2, "不折叠时最多两次读：meta 与父节正文"
+            return _Rows([])  # 父节这一跑没有正文：本用例只关心小片原样返回
 
     chunks = [_chunk("c-1", "第一片。", 0.9), _chunk("c-2", "第二片。", 0.8)]
 
-    results = _run(_Once(metas=session.metas, rows=[]), chunks, fold_to_sections=False)
+    results = _run(_TwoReads(metas=session.metas, rows=[]), chunks, fold_to_sections=False)
 
     assert [row["chunk_id"] for row in results] == ["c-1", "c-2"]
     assert [row["content"] for row in results] == ["第一片。", "第二片。"]

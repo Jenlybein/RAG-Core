@@ -34,6 +34,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES, Settings, settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.services.retrieval_options import RetrievalMode
 from tests.fake_db import AsyncSessionAdapter
@@ -173,9 +174,15 @@ class _FakeKeyword:
 
 
 async def _visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
-    """「库可见」的异步替身（检索链路的可见性校验走异步仓储）。"""
+    """「库可见」的异步替身（检索链路的可见性校验走异步仓储）。
 
-    return SimpleNamespace(tenant_id=tenant_id)
+    ``id`` / ``active_index_version`` 与真行一一对应（票 #141）：检索范围从库行里读
+    生效版本，缺这两列的替身等价于「一个还没回填的库」。
+    """
+
+    return SimpleNamespace(
+        id=_kb_id, tenant_id=tenant_id, active_index_version=DEFAULT_INDEX_VERSION
+    )
 
 
 async def _invisible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
@@ -443,7 +450,9 @@ def test_visibility_is_checked_once_per_kb_before_any_recall(monkeypatch) -> Non
 
     async def _visible(db, kb_id, *, tenant_id):
         seen.append(kb_id)
-        return SimpleNamespace(tenant_id=tenant_id)
+        return SimpleNamespace(
+            id=kb_id, tenant_id=tenant_id, active_index_version=DEFAULT_INDEX_VERSION
+        )
 
     with _offline_client(monkeypatch) as fake:
         monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible)

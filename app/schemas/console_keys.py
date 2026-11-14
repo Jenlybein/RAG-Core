@@ -36,9 +36,14 @@ class KeyPolicyData(BaseModel):
     hybrid_allowed: bool
     rerank_allowed: bool
     query_rewrite_allowed: bool
+    orchestration_allowed: bool
     # ── 第三组：限额 ──
     retrieve_qps: int
     retrieve_daily: int
+    #: Research 的两个独立额度（票 #150）：两级同记，但键与桶都是另一本账。
+    #: 0 = 关闭（与 ``research_allowed=False`` 答同一个码），所以它照实显示 0。
+    research_qps: int
+    research_daily: int
     # ── 第四组：档位 ──
     profile: str
     # ── 第五组：结果形状 ──
@@ -83,8 +88,14 @@ class KeyPolicyInput(BaseModel):
     hybrid_allowed: bool = False
     rerank_allowed: bool = False
     query_rewrite_allowed: bool = False
+    orchestration_allowed: bool = False
     retrieve_qps: int
     retrieve_daily: int
+    #: Research 的两个额度（票 #150）**有默认值 0**，与列默认值同义：新 Key 不自带一项
+    #: 约 30 秒、3 次模型调用的能力。这也是它们与 ``retrieve_qps`` / ``retrieve_daily``
+    #: （必须由人填）的不同之处——「忘了填」在这里等于「不要」，而不是「额度未知」。
+    research_qps: int = 0
+    research_daily: int = 0
     profile: str
     include_parent: bool = True
     expand_table_rows: bool = True
@@ -129,8 +140,12 @@ class KeyPolicyPatchRequest(BaseModel):
     hybrid_allowed: bool | None = None
     rerank_allowed: bool | None = None
     query_rewrite_allowed: bool | None = None
+    orchestration_allowed: bool | None = None
     retrieve_qps: int | None = None
     retrieve_daily: int | None = None
+    #: Research 的两列：**0 是合法值**（= 这套集成不用它），负数由服务层拒掉。
+    research_qps: int | None = None
+    research_daily: int | None = None
     profile: str | None = None
     include_parent: bool | None = None
     expand_table_rows: bool | None = None
@@ -170,8 +185,11 @@ def policy_data_of(policy: KeyPolicy) -> KeyPolicyData:
         hybrid_allowed=policy.hybrid_allowed,
         rerank_allowed=policy.rerank_allowed,
         query_rewrite_allowed=policy.query_rewrite_allowed,
+        orchestration_allowed=policy.orchestration_allowed,
         retrieve_qps=policy.retrieve_qps,
         retrieve_daily=policy.retrieve_daily,
+        research_qps=policy.research_qps,
+        research_daily=policy.research_daily,
         profile=policy.profile,
         include_parent=policy.include_parent,
         expand_table_rows=policy.expand_table_rows,

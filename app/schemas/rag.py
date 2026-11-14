@@ -18,9 +18,9 @@
 多好」，做成可调项会让同一个档位名在不同租户那里变成不同链路。
 """
 
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_serializer
 
 from app.core.exceptions import AppError, ErrorCode
 
@@ -106,6 +106,70 @@ class RetrievedChunk(BaseModel):
     doc_version: int | None = None
     # 这一片是用哪种策略切的：跨库检索时用来解释片长差异。
     split_strategy: str | None = None
+    # 图谱注入（#144 / ADR-0027 决策 4）：**只有**「按关系补进来」的候选带这个标记
+    # （``graph_injection``）；直接命中项连这个键都没有。序列化时摘掉 null，所以关掉
+    # 图谱的响应逐字节不变。
+    retrieval_source: str | None = None
+    # 折叠关闭时的父节正文（#144 / ADR-0027 决策 7）：交付单元小于「节」时补上，
+    # **不改分数、不改排名，只附加内容**。``content`` 仍是切片原文（ADR-0012 决策 3），
+    # 父节正文单独一栏是为了不破坏「引用能指回那一片」。
+    parent_content: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_graph_fields(self, handler: Any) -> dict[str, Any]:
+        """没开图谱 / 没补父节时，这两个键**连存在都不存在**。
+
+        ``null`` 也是一个字节：「关闭时响应逐字节不变」是红线上的一句话，所以这里显式
+        摘掉——与 ``RetrieveData`` 摘 ``orchestration``、``metadata`` 摘 ``trace_id``
+        同一条纪律。
+        """
+
+        dumped = handler(self)
+        for name in ("retrieval_source", "parent_content"):
+            if dumped.get(name) is None:
+                dumped.pop(name, None)
+        return dumped
+
+
+class OrchestrationPoint(BaseModel):
+    """一个要点：编号（A1…An）+ 文本（模型给的要点，不含正文）+ 它有没有核心片。
+
+    ``has_primary`` 由材料数出来，不是模型自评：完整度这条判断的分子分母都在后端。
+    """
+
+    point_id: str
+    text: str
+    has_primary: bool
+
+
+class OrchestrationEvidence(BaseModel):
+    """一条材料（E1…En）：正文逐字来自库里的切片，身份字段只用于回溯。
+
+    模型只能点序号，所以这里每个字段都是后端按序号回查重建的——``chunk_id`` /
+    ``kb_id`` / ``document_id`` 只是让调用方能对回 ``retrieved_chunks``。
+    """
+
+    evidence_id: str
+    point_id: str
+    role: Literal["primary", "supporting"]
+    chunk_id: str
+    kb_id: str
+    document_id: str
+    title: str
+    heading_path: str | None = None
+    content: str
+
+
+class OrchestrationBlock(BaseModel):
+    """切片编排的结果：三态完整度 + 要点清单 + 材料清单。
+
+    **没有 ``answer``**：ADR-0001 说 ``/rag/retrieve`` 永不生成答案，这里一个字的模型文本
+    都不留（要点是清单项，不是答案）。
+    """
+
+    completeness: Literal["complete", "partial", "missing"]
+    points: list[OrchestrationPoint]
+    evidence: list[OrchestrationEvidence]
 
 
 class RetrieveData(BaseModel):
@@ -113,3 +177,22 @@ class RetrieveData(BaseModel):
     kb_ids: list[str]
     retrieved_chunks: list[RetrievedChunk]
     metadata: dict
+    # 切片编排（第 11 步票 #147）：**只在开启时出现**，关闭时这个键一个字节都不多。
+    # 位置在 ``data`` 顶层而不是 ``metadata.retrieval`` 里：它是「这一次编排出了什么」
+    # （要点、材料、完整度），不是「这一次检索遇到了什么」。语义见 ADR-0010「第七次修订」。
+    orchestration: OrchestrationBlock | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_orchestration(self, handler: Any) -> dict[str, Any]:
+        """关闭时把这个键**整段去掉**，而不是留一个 ``null``。
+
+        「关闭时响应逐字节不变」是红线上的一句话，而 ``null`` 也是一个字节。Pydantic 的
+        默认行为是「可选字段照样序列化成 null」，所以这里显式摘掉——与 ``trace_id`` /
+        重排身份键那两次修订同一条纪律：新增字段不许改变没开它的那些调用的响应。
+        """
+
+        dumped = handler(self)
+        if self.orchestration is None:
+            dumped.pop("orchestration", None)
+        return dumped
+
