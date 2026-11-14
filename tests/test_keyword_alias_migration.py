@@ -114,7 +114,16 @@ class _FakeClient:
     async def count(self, *, index: str) -> dict[str, int]:
         return {"count": self.counts.get(index, 0)}
 
-    async def reindex(self, body: dict[str, Any]) -> dict[str, Any]:
+    async def reindex(self, **body: Any) -> dict[str, Any]:
+        """**只收关键字参数**——与真实 ``AsyncElasticsearch.reindex`` 同形状。
+
+        替身原来收位置参数 ``body``，于是脚本里 ``client.reindex(reindex_body(...))`` 在
+        离线套件里一路绿；真客户端却直接抛 ``TypeError: Positional arguments can't be
+        used with Elasticsearch API methods``（票 #157 在真集群上撞到：建目标索引成功了、
+        ③ 这一步炸掉，于是集群停在「两个索引都在、都没别名」的半迁移态）。
+        形状对齐之后，这一类错在套件里就会当场失败。
+        """
+
         self.reindex_bodies.append(body)
         dest = body["dest"]["index"]
         self.counts[dest] = (
@@ -139,6 +148,22 @@ def test_reindex_body_backfills_the_index_version(module: ModuleType) -> None:
     assert "index_version" in script["source"]
     assert "null" in script["source"], "只在缺失时回填：别的版本的数据不许被改写"
     assert script["params"] == {"version": VERSION}
+
+
+def test_reindex_body_refreshes_the_destination(module: ModuleType) -> None:
+    """搬完必须 ``refresh=True``：否则紧接着的条数核对会读到 0，迁移白白停在半路。
+
+    这不是理论问题（票 #157 在真集群上撞到两次）：``_reindex`` 默认不刷新，紧随其后的
+    ``_count(dest)`` 读到 0，守卫按「条数对不上」正确地停下——但集群此时已经是
+    「源 469 / 目标 469、没有别名」的半迁移态，得靠人再判断一次。
+
+    更要紧的是**切完别名之后**：不刷新的话，别名刚切过去的那一小段时间里关键词这一路
+    仍然搜不到新文档，而那条路「搜不到」不报错，只表现为结果变少（ADR-0025 决策四）。
+    """
+
+    body = module.reindex_body(source=ALIAS, dest=DEST, version=VERSION)
+
+    assert body["refresh"] is True
 
 
 def test_add_alias_actions_point_the_alias_at_the_physical_index(

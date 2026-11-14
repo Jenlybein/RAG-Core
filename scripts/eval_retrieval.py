@@ -149,9 +149,10 @@ from app.core.config import settings  # noqa: E402
 from app.utils.report_format import as_metric  # noqa: E402
 from app.core.exceptions import AppError  # noqa: E402
 from app.db.base import Base, now  # noqa: E402
-from app.db.async_session import AsyncSessionLocal  # noqa: E402
-from app.db.session import SessionLocal, engine  # noqa: E402
+from app.db.async_session import AsyncSessionLocal, async_engine  # noqa: E402
+from app.db.transaction import async_transaction  # noqa: E402
 from app.models import Chunk, Document, KnowledgeBase  # noqa: E402
+from app.models.chunk import DEFAULT_INDEX_VERSION  # noqa: E402
 from app.models.knowledge_base import (  # noqa: E402
     SPLIT_STRATEGIES,
     SPLIT_STRUCTURE,
@@ -308,9 +309,17 @@ async def _preflight() -> LiveEnvironment:
         raise SystemExit("评测环境未就绪:\n  - " + "\n  - ".join(problems))
 
     missing_tables: list[str] = []
-    with engine.connect() as connection:
+    # 建库就绪检查也走异步引擎（票 #157）：脚本的自始至终只有一个循环、一个引擎体系，
+    # 不在这里插一次同步 ``engine.connect()``。``run_sync`` 是 SQLAlchemy 给「只有同步
+    # 写法」的反射用的那个口子，``has_table`` 正好属于这一类。
+    async with async_engine.connect() as connection:
         for table in Base.metadata.sorted_tables:
-            if not engine.dialect.has_table(connection, table.name):
+            found = await connection.run_sync(
+                lambda sync_connection, name=table.name: async_engine.dialect.has_table(
+                    sync_connection, name
+                )
+            )
+            if not found:
                 missing_tables.append(table.name)
     if missing_tables:
         raise SystemExit(f"数据库缺表 {missing_tables}；先跑 `uv run alembic upgrade head`。")
@@ -412,6 +421,69 @@ class Question:
     trap: tuple[tuple[str, str], ...] = ()
 
 
+#: 暖机用的题号 / 题面。**故意不在题库里**（``eval/questions.json`` 只有 ``qNN``）：
+#: 暖机那一次查询要计入模型调用预算，但绝不能计入任何指标的分母。
+WARMUP_QUESTION_ID = "warmup"
+WARMUP_QUERY = "证书过期怎么处理"
+
+
+async def _warm_up(async_db: Any, *, kb_ids: Sequence[str], top_k: int) -> dict[str, Any]:
+    """在计分之前，用**同一条生产链路**跑一次查询，把冷启动付掉（票 #157）。
+
+    ## 为什么必须有这一步
+
+    进程内第一次检索会顺手装配可观测性的 Langfuse 客户端，那一步 import ``openai``
+    （几百个 pydantic 模型）以及建 TLS 上下文，实测把**事件循环**堵住 ~2.4s。关键词
+    一路的预算是 ``KEYWORD_SEARCH_TIMEOUT_S = 2.0``，它的应答只要 20ms——但循环被堵着就
+    没人处理，``asyncio.wait_for`` 照样超时。于是：
+
+    ```text
+    第一题   hybrid → 向量那一路先跑 → 造 span → 建客户端堵 2.4s → 关键词超时 → 降级
+    第二题   客户端已在 → 246ms → 两路都跑完
+    ```
+
+    后果是**只有第一题**带 ``keyword search failed`` 降级，而 137 题的基线里 0 题降级
+    （``eval/baseline/results.json``）。不暖机的话，首题的分差会被记成「检索退化」，
+    实际是评测自己没热身——那是本票要消灭的那类错误归因。
+
+    ## 为什么是「跑一次真实查询」而不是别的预热手段
+
+    要热的是**整条链路**（嵌入客户端、可观测性 sink、向量与关键词两条腿）。只 import
+    模块热不到连接与 span；只有走一次 ``retrieve`` 才能证明「第一次检索的那份开销」已经
+    付完。它因此是一次真实的查询嵌入，**计入模型调用预算**（每轮 1 次）。
+
+    返回的读数进产物：暖机自己降级了也要如实写出来——那是「冷启动有多贵」的证据。
+    """
+
+    outcome = await _run_question(
+        async_db,
+        Question(
+            id=WARMUP_QUESTION_ID,
+            type="warmup",
+            query=WARMUP_QUERY,
+            note="暖机：不计分、不进任何指标的分母",
+            labels=(),
+        ),
+        mode=MODE_HYBRID,
+        top_k=top_k,
+        kb_ids=list(kb_ids),
+    )
+    return {
+        "question_id": WARMUP_QUESTION_ID,
+        "query": WARMUP_QUERY,
+        "mode": MODE_HYBRID,
+        "duration_ms": outcome.duration_ms,
+        "degraded": outcome.degraded,
+        "degraded_reason": outcome.degraded_reason,
+        "empty_reason": outcome.empty_reason,
+        "error": outcome.error,
+        "returned_count": len(outcome.returned),
+        # 一次查询嵌入；重排关着，所以没有别的模型调用。
+        "model_calls": 1,
+    }
+
+
+
 def _load_questions() -> tuple[list[Question], int]:
     payload = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))
     problems: list[str] = []
@@ -443,15 +515,59 @@ def _load_questions() -> tuple[list[Question], int]:
 
 
 def _reset_elasticsearch(index_name: str) -> str:
-    """删掉评测索引（下次写入时由 Provider 幂等重建）。"""
+    """删掉评测关键词索引（下次写入时由 Provider 幂等重建）。
+
+    ## 为什么不是一条 ``DELETE /<名字>``（票 #157 §②）
+
+    ``ELASTICSEARCH_INDEX`` 从 #142（ADR-0025 决策二）起是**别名**，写入落到
+    ``<别名>__<版本>`` 的物理索引。于是这个名字在集群里可能有两种形态：
+
+    * **旧部署**：它本身是个物理索引（本次实测就是这种：469 篇文档、没有别名、
+      也没有 ``__v1`` 兄弟）；
+    * **版本化之后**：它是别名，指向 ````<别名>__<版本>``。
+
+    对别名发 ``DELETE`` 会被 ES 拒绝（别名不能当索引删），而**只**删别名指向的那一张
+    又会漏掉旧版本——下一轮构建写出另一个版本时，两张物理索引同时存在，别名却只指向
+    其中一张，症状是「有的片永远搜不到，不报错」。
+
+    所以这里先问 ``_cat/indices`` **具体有哪些物理索引**（``_cat`` 会把别名解析成它指向
+    的索引），再把它们一次删干净。名字里的 ``__`` 是版本分隔符（与
+    ``versioned_index.VERSION_SEPARATOR`` 同源），不用手写字符串。
+    """
+
+    from app.providers.keyword_search.versioned_index import VERSION_SEPARATOR
 
     _assert_eval_index(index_name)
-    response = httpx.delete(f"{_es_base()}/{index_name}", timeout=30.0)
-    if response.status_code == 200:
-        return "deleted"
-    if response.status_code == 404:
+    targets = _es_concrete_indices(index_name, separator=VERSION_SEPARATOR)
+    if not targets:
         return "absent"
-    raise SystemExit(f"failed to delete index {index_name}: {response.status_code} {response.text}")
+    response = httpx.delete(f"{_es_base()}/{','.join(targets)}", timeout=30.0)
+    if response.status_code == 200:
+        return f"deleted({','.join(targets)})"
+    raise SystemExit(f"failed to delete {targets}: {response.status_code} {response.text}")
+
+
+def _es_concrete_indices(index_name: str, *, separator: str) -> list[str]:
+    """这个名字下**具体存在**的物理索引（别名会被解析成它指向的索引）。
+
+    ``_cat/indices`` 而不是 ``GET /<名字>``：后者对别名只回别名本身，拿它去 ``DELETE``
+    会被拒；``_cat`` 回的是真正要删的那些名字。模式里带 ``<名字><分隔符>*`` 才能把
+    同名旧版本一起覆盖到（这正是「版本化之后残留的旧索引」那一类脏数据）。
+    """
+
+    response = httpx.get(
+        f"{_es_base()}/_cat/indices/{index_name},{index_name}{separator}*",
+        params={"h": "index", "format": "json"},
+        timeout=30.0,
+    )
+    if response.status_code == 404:
+        return []
+    if response.status_code != 200:
+        raise SystemExit(
+            f"failed to list indices for {index_name}: {response.status_code} {response.text}"
+        )
+    return sorted({str(item["index"]) for item in response.json() if item.get("index")})
+
 
 
 def _assert_query_analyzer(index_name: str) -> None:
@@ -460,9 +576,18 @@ def _assert_query_analyzer(index_name: str) -> None:
     查询侧停用词与分析器改过之后，改动之前建的索引里没有 ``ik_smart_query``。
     复用它等于「用旧口径跑新代码」：指标看着正常，新逻辑一点没生效——这是最难
     发现的一类假绿，所以宁可拒绝执行。
+
+    ## 为什么不能直接 ``response.json()[index_name]``（票 #157 实测）
+
+    ``ELASTICSEARCH_INDEX`` 现在是**别名**（ADR-0025 决策二）：``GET /<别名>/_settings``
+    的响应键是它解析出的**物理索引名**（``rag_chunks_eval__v1``），不是别名本身。
+    按别名取键会读到空 dict，于是「分析器没装」这个判定在**正确的**新索引上也会响——
+    一条守卫把好索引拒之门外，比没有守卫更糟。所以按「名字本身，或 ``<名字>__`` 的
+    任一物理版本」取那一段 settings。
     """
 
     from app.providers.keyword_search.query_builder import QUERY_ANALYZER
+    from app.providers.keyword_search.versioned_index import VERSION_SEPARATOR
 
     response = httpx.get(f"{_es_base()}/{index_name}/_settings", timeout=30.0)
     if response.status_code == 404:
@@ -472,10 +597,21 @@ def _assert_query_analyzer(index_name: str) -> None:
             f"failed to read settings of {index_name}: {response.status_code} {response.text}"
         )
 
+    entries = response.json()
+    prefix = f"{index_name}{VERSION_SEPARATOR}"
+    resolved = next(
+        (
+            value
+            for key, value in entries.items()
+            if key == index_name or key.startswith(prefix)
+        ),
+        None,
+    )
+    if resolved is None:
+        raise SystemExit(f"--reuse 的索引 {index_name} 读不到 settings（集群返回的键：{sorted(entries)}）。")
+
     analyzers = (
-        response.json()
-        .get(index_name, {})
-        .get("settings", {})
+        resolved.get("settings", {})
         .get("index", {})
         .get("analysis", {})
         .get("analyzer", {})
@@ -487,44 +623,95 @@ def _assert_query_analyzer(index_name: str) -> None:
         )
 
 
-def _reset_postgres(db: Any) -> dict[str, int]:
-    """删掉评测租户下 manifest 列出的全部知识库的行；其他数据一行不动。"""
+def _assert_keyword_index_is_versioned(index_name: str) -> int:
+    """``--reuse`` 的版本化守卫：索引里有文档却一条都没 ``index_version`` → 当场停下。
+
+    ## 为什么非停不可（票 #157 §②）
+
+    查询侧按 ``(kb, 版本)`` 过滤（ADR-0025），而旧部署的评测索引是**物理索引**、
+    文档没有这一列。别名的存在让「查得到」看起来正常，实际每一条 ``term`` 过滤都不命中：
+    关键词这一路返回**空**，且不报错——ADR-0025 决策四说的「不报错但配对错了」。
+    症状是本票实测到的 ``q05``：hybrid 的 5 条全是向量那一路给的，字面题归零。
+
+    不守卫的代价很具体：整轮 127 道题的嵌入钱**先花掉**，最后才在关键词探针那里发现
+    「这一路其实没跑」——那是本票想消灭的归因成本。守卫是一次 ES 查询（0 次模型调用），
+    在花任何钱之前就能分辨「迁移漏做」与「全新环境还没建」。
+
+    返回**带版本的文档数**（放行时它等于总条数；总条数为 0 时返回 0，代表「还没有东西」）。
+    """
+
+    total = _es_count(index_name)
+    if total == 0:
+        # 全新环境：第一次构建会自己建 ``<别名>__<版本>`` 并写带版本的文档。
+        return 0
+    response = httpx.post(
+        f"{_es_base()}/{index_name}/_count",
+        json={"query": {"exists": {"field": "index_version"}}},
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    versioned = int(response.json()["count"])
+    if versioned == 0:
+        raise SystemExit(
+            f"--reuse 的索引 {index_name} 有 {total} 条文档，但一条都没有 index_version："
+            "关键词一路会静默空跑（不报错、只表现为字面题归零）。先跑 "
+            "`uv run python scripts/migrate_keyword_alias.py --alias <该索引> --execute` "
+            "把旧索引迁成别名并回填版本，或去掉 --reuse 重建。"
+        )
+    return versioned
+
+
+async def _reset_postgres(db: Any) -> dict[str, int]:
+    """删掉评测租户下 manifest 列出的全部知识库的行；其他数据一行不动。
+
+    **协程**（票 #157）：检索链路从 #130 / #132 起是异步的，评测脚本要拿同一个会话既清库
+    又检索，那这个会话就必须是 ``AsyncSession``。提交点是 ``async_transaction``（与请求
+    路径同一个收口点），不在服务层裸提交。
+
+    顺序不能换：先切片、再文档、最后知识库——反过来撞外键，而真库上这一步只是「报了个
+    看起来像配置问题的错」。
+    """
 
     from sqlalchemy import delete
 
-    counts = {
-        "chunks": int(
-            db.execute(
-                delete(Chunk).where(
-                    Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids())
+    async with async_transaction(db):
+        chunk_count = int(
+            (
+                await db.execute(
+                    delete(Chunk).where(
+                        Chunk.tenant_id == settings.DEV_TENANT_ID,
+                        Chunk.kb_id.in_(_eval_kb_ids()),
+                    )
                 )
             ).rowcount
             or 0
-        ),
-        "documents": int(
-            db.execute(
-                delete(Document).where(
-                    Document.tenant_id == settings.DEV_TENANT_ID,
-                    Document.kb_id.in_(_eval_kb_ids()),
+        )
+        document_count = int(
+            (
+                await db.execute(
+                    delete(Document).where(
+                        Document.tenant_id == settings.DEV_TENANT_ID,
+                        Document.kb_id.in_(_eval_kb_ids()),
+                    )
                 )
             ).rowcount
             or 0
-        ),
-        "knowledge_bases": int(
-            db.execute(
-                delete(KnowledgeBase).where(
-                    KnowledgeBase.tenant_id == settings.DEV_TENANT_ID,
-                    KnowledgeBase.id.in_(_eval_kb_ids()),
+        )
+        kb_count = int(
+            (
+                await db.execute(
+                    delete(KnowledgeBase).where(
+                        KnowledgeBase.tenant_id == settings.DEV_TENANT_ID,
+                        KnowledgeBase.id.in_(_eval_kb_ids()),
+                    )
                 )
             ).rowcount
             or 0
-        ),
-    }
-    db.commit()
-    return counts
+        )
+    return {"chunks": chunk_count, "documents": document_count, "knowledge_bases": kb_count}
 
 
-def _ensure_knowledge_base(
+async def _ensure_knowledge_base(
     db: Any, *, kb_id: str, name: str, description: str, split_strategy: str
 ) -> None:
     """按给定策略建评测库；已存在且策略不同的库直接拒绝，不在旧库上凑合。
@@ -538,7 +725,7 @@ def _ensure_knowledge_base(
     得重建，与其让标注解析在后面报一串「找不到」，不如在这里一句话说清。
     """
 
-    existing = db.get(KnowledgeBase, kb_id)
+    existing = await db.get(KnowledgeBase, kb_id)
     if existing is not None:
         if existing.split_strategy != split_strategy:
             raise SystemExit(
@@ -547,62 +734,109 @@ def _ensure_knowledge_base(
                 "——改配置补不回旧的切法。"
             )
         return
-    db.add(
-        KnowledgeBase(
-            id=kb_id,
-            tenant_id=settings.DEV_TENANT_ID,
-            name=name,
-            description=description,
-            split_strategy=split_strategy,
-            allowed_formats=resolve_formats(split_strategy, None),
-            # 同义词表留空：本票的对比里同义词扩展是关的（第三变量），
-            # 留空也顺便证明「默认配置下同义词题只能靠语义兜」。
-            settings={},
+    async with async_transaction(db):
+        db.add(
+            KnowledgeBase(
+                id=kb_id,
+                tenant_id=settings.DEV_TENANT_ID,
+                name=name,
+                description=description,
+                split_strategy=split_strategy,
+                allowed_formats=resolve_formats(split_strategy, None),
+                # 同义词表留空：本票的对比里同义词扩展是关的（第三变量），
+                # 留空也顺便证明「默认配置下同义词题只能靠语义兜」。
+                settings={},
+                # 生效索引版本必须显式写（票 #157）：检索范围只认库行上的这一列
+                # （ADR-0025 决策四），而建库那一刻还没有任何东西会替它回填。漏了它，
+                # 这条路只有「--reuse」能跑——全量重建会先删库再建库，于是新库的每个
+                # 请求都被 ``IndexVersionUnresolved``（5xxxx）拦下，看起来像检索坏了。
+                # 写 ``v1`` 与真实索引流水线一致：切片列的默认值与迁移回填值都是它。
+                active_index_version=DEFAULT_INDEX_VERSION,
+            )
         )
-    )
-    db.commit()
 
 
-def _ensure_document(db: Any, doc: CorpusDoc) -> None:
+async def _ensure_document(db: Any, doc: CorpusDoc) -> None:
     """把文档重置成「已排队、未开工」——与运维脚本用的那个状态准备一致。
 
     ``status=PROCESSING`` + ``index_claimed_at=NULL`` 正好是 Worker 可抢占的条件，
     所以重跑不会撞上「另一位 Worker 持有租约」而静默跳过。
     """
 
-    row = db.get(Document, doc.document_id)
-    if row is None:
-        db.add(
-            Document(
-                id=doc.document_id,
-                tenant_id=settings.DEV_TENANT_ID,
-                kb_id=doc.kb_id,
-                title=doc.title,
-                content=doc.text,
-                source_type="markdown",
-                status=DocumentStatus.PROCESSING,
-                index_claimed_at=None,
+    row = await db.get(Document, doc.document_id)
+    async with async_transaction(db):
+        if row is None:
+            db.add(
+                Document(
+                    id=doc.document_id,
+                    tenant_id=settings.DEV_TENANT_ID,
+                    kb_id=doc.kb_id,
+                    title=doc.title,
+                    content=doc.text,
+                    source_type="markdown",
+                    status=DocumentStatus.PROCESSING,
+                    index_claimed_at=None,
+                )
             )
-        )
-    else:
-        row.kb_id = doc.kb_id
-        row.title = doc.title
-        row.content = doc.text
-        row.status = DocumentStatus.PROCESSING
-        row.index_claimed_at = None
-        row.error_message = None
-        row.updated_at = now()
-    db.commit()
+        else:
+            row.kb_id = doc.kb_id
+            row.title = doc.title
+            row.content = doc.text
+            row.status = DocumentStatus.PROCESSING
+            row.index_claimed_at = None
+            row.error_message = None
+            row.updated_at = now()
 
 
 async def _index_documents(db: Any, docs: Sequence[CorpusDoc]) -> dict[str, int]:
-    """走**真实**索引流水线：切块 → 拼检索文本 → 真实嵌入 → 双写（PG + ES）。"""
+    """走**真实**索引流水线：切块 → 拼检索文本 → 真实嵌入 → 双写（PG + ES）。
+
+    索引完顺手把**关键词别名切到刚写出来的那一版**（票 #157 §②）。这一步不能留给调用方：
+
+    ``add_chunks`` 按 ``index_version`` 把文档写进各自的**物理**索引
+    （``<别名>__<版本>``），但按 ADR-0025 决策二它**不动别名**——切别名是「激活」的动作
+    （构建流水线里由 ``index_build_service.activate_version`` 做）。评测这条路是自己拼的
+    索引流水线，没有构建服务，所以这里必须自己补上；漏了它，检索查的还是那个名字，
+    而名字要么不存在、要么指向上一轮残留的数据，症状是「关键词一路搜不到，不报错」。
+    """
 
     service = IndexingService()
     result: dict[str, int] = {}
     for doc in docs:
         result[doc.stem] = await service.index_existing_document(db, doc.document_id)
+    await _activate_keyword_versions(db)
     return result
+
+
+async def _activate_keyword_versions(db: Any) -> dict[str, Any]:
+    """把评测关键词别名指向库里**实际存在的那些版本**（每个版本各切一次，最后一个生效）。
+
+    版本号从 ``chunks`` 列读、不从内存猜：索引写入是这条流水线**刚刚**做的事，库里那一列
+    才是事实（``<别名>__<版本>`` 的物理索引名也由它派生，两处同源才不会错位）。
+    """
+
+    from sqlalchemy import select
+
+    from app.providers.keyword_search import get_keyword_search_provider
+
+    stmt = (
+        select(Chunk.index_version)
+        .where(Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids()))
+        .distinct()
+    )
+    versions = sorted({str(value) for value in (await db.execute(stmt)).scalars().all()})
+    if not versions:
+        return {"alias": settings.ELASTICSEARCH_INDEX, "activated": []}
+
+    provider = get_keyword_search_provider()
+    activated: list[dict[str, Any]] = []
+    for version in versions:
+        # 目标物理索引不存在时先建再切：指向不存在索引的别名会让关键词召回一直
+        # ``NotFoundError``，而那被当成「诚实的空结果」，比一次显式失败难查得多。
+        physical = await provider.ensure_version_index(version)
+        await provider.activate_version(version)
+        activated.append({"version": version, "physical": physical})
+    return {"alias": settings.ELASTICSEARCH_INDEX, "activated": activated}
 
 
 # ─────────────────────────────────────────────────── 标签解析与切片索引（真实切片）
@@ -618,14 +852,20 @@ class IndexedChunk:
     content_head: str
 
 
-def _load_indexed_chunks(db: Any) -> list[IndexedChunk]:
+async def _load_indexed_chunks(db: Any) -> list[IndexedChunk]:
+    """读评测库里的已索引切片，供标签解析用（**协程**，票 #157 的第六处之一）。
+
+    与检索共用同一个 ``AsyncSession``：标签解析读的是「刚刚索引出来的那批行」，
+    换一个会话读就等于让解析与检索看的可能不是同一个快照。
+    """
+
     from sqlalchemy import select
 
     stmt = select(Chunk).where(
         Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids())
     )
     chunks: list[IndexedChunk] = []
-    for row in db.execute(stmt).scalars().all():
+    for row in (await db.execute(stmt)).scalars().all():
         meta = row.meta or {}
         chunks.append(
             IndexedChunk(
@@ -1145,6 +1385,115 @@ def _find_question(group: dict[str, Any], question_id: str) -> dict[str, Any] | 
     return next((item for item in group.get("per_question", []) if item["id"] == question_id), None)
 
 
+#: 拿来验「关键词这一路确实命中过」的那道题（票 #157 §②）。
+#:
+#: 选 ``q05`` 的理由有三份证据，不是口味：
+#:
+#! * 题面 ``W0001 要不要紧`` 里那个编号**只出现在正文**（该节标题是「存储与介质类告警
+#:   （一）」），而正文里紧挨着 ``W0002``～``W0010`` 九节、措辞 90% 相同——向量分不开，
+#:   字面分得开；
+#: * 它是 ``exact_code``：这一类题本来就是「考编号是检索键」；
+#: * 它是**实测**归零的那一题（C6 守分抽样里 ``q05`` 的分数被记成 0，归因正是「关键词
+#:   这一路超时降级」——``eval/reports/c6/c6-acceptance.md``）。选它，这条断言就和那次
+#:   事故盯着同一个探针。
+KEYWORD_LITERAL_QUESTION_ID = "q05"
+
+
+def keyword_hit_report(
+    *,
+    group: dict[str, Any],
+    labels: dict[str, list[str]],
+    question_id: str = KEYWORD_LITERAL_QUESTION_ID,
+) -> dict[str, Any]:
+    """「关键词这一路确实命中过」的读数（纯函数，验收第 10 条用它判定）。
+
+    读的是 ``mode=bm25`` 那一组的同一道字面题。为什么是那一组：
+
+    * ``bm25`` **只走关键词**——不向量化、不查向量库（``rag_service`` 的 bm25 分支），
+      所以它的返回完全来自评测关键词索引；
+    * 索引没建好 / 版本过滤读不到 / 别名指错 / 这一路超时降级，**都只会**表现成
+      「空返回」或「只返回不相关的片」，而 ``hybrid`` 的分数会被向量一路撑住，看不出来。
+
+    判定按「命中相关片」而不是「有返回」：有返回不等于命中过（别拿总数冒充命中）。
+    """
+
+    item = _find_question(group, question_id)
+    if item is None:
+        return {
+            "question_id": question_id,
+            "passed": False,
+            "reason": f"bm25 那一组里没有 {question_id}（题集换过？）",
+            "returned_count": 0,
+            "hit_count": 0,
+            "hit_rank": None,
+            "empty_reason": None,
+        }
+
+    relevant = set(labels.get(question_id, ()))
+    returned = [str(chunk["chunk_id"]) for chunk in item.get("returned") or []]
+    hit_rank = next(
+        (rank for rank, chunk_id in enumerate(returned, start=1) if chunk_id in relevant),
+        None,
+    )
+    return {
+        "question_id": question_id,
+        "passed": hit_rank is not None,
+        "reason": (
+            f"第 {hit_rank} 名命中相关片" if hit_rank is not None else "一条相关片都没命中"
+        ),
+        "returned_count": len(returned),
+        "hit_count": sum(1 for chunk_id in returned if chunk_id in relevant),
+        "hit_rank": hit_rank,
+        "empty_reason": item.get("empty_reason"),
+        "query": item.get("query"),
+    }
+
+
+async def keyword_probe(
+    async_db: Any,
+    *,
+    question: Question,
+    labels: dict[str, list[str]],
+    kb_ids: Sequence[str],
+    top_k: int,
+) -> dict[str, Any]:
+    """单独跑一次 ``mode=bm25`` 并把 ``keyword_hit_report`` 的读数带回来（票 #157）。
+
+    为什么值得多跑一次查询：137 题整体门禁（``eval_runner run``）只用 ``hybrid`` 一组，
+    ``hybrid`` 的分数会被向量那一路撑住——关键词索引空跑时，它与纯向量几乎没区别
+    （这正是本票要消灭的那种「看起来正常」）。所以门禁产物里要有一条**只可能来自关键词
+    那一路**的读数，把「索引版本化之后这一段真的在工作」直接钉在当次归档里。
+
+    这一次**不花模型调用**：``mode=bm25`` 不向量化、不查向量库（见 ``rag_service`` 的
+    bm25 分支），它只发一次 ES 查询。预算因此不受影响。
+    """
+
+    outcome = await _run_question(
+        async_db, question, mode=MODE_BM25, top_k=top_k, kb_ids=kb_ids
+    )
+    group = {
+        "per_question": [
+            {
+                "id": question.id,
+                "query": question.query,
+                "empty_reason": outcome.empty_reason,
+                "returned": [{"chunk_id": str(chunk["chunk_id"])} for chunk in outcome.returned],
+            }
+        ]
+    }
+    report = keyword_hit_report(group=group, labels=labels, question_id=question.id)
+    report.update(
+        {
+            "degraded": outcome.degraded,
+            "degraded_reason": outcome.degraded_reason,
+            "error": outcome.error,
+            # bm25 不向量化：这一次探针的模型调用是 0，预算里不该出现它。
+            "model_calls": 0,
+        }
+    )
+    return report
+
+
 def _rank_of(chunk_id: str, item: dict[str, Any] | None) -> int | None:
     """该切片在这一次返回里排第几名；没进列表就是 ``None``。"""
 
@@ -1303,6 +1652,31 @@ async def _run_acceptance(
             "expected": "一次调用返回的结果里带不同的 kb_id（两个库都真的被召回）",
             "actual": f"返回 {len(multi.returned)} 条，kb_id={kb_ids_hit}",
             "passed": len(kb_ids_hit) >= 2,
+        }
+    )
+
+    # A10（票 #157 §②）：关键词索引版本化之后，这一路必须**真的命中过**。
+    # 只看 hybrid 的总分是看不出来的——向量那一路会把分数撑住，关键词空跑时混检
+    # 与纯向量几乎没区别。所以拿一道只能靠字面命中的题，在 bm25 那一组里验。
+    keyword = keyword_hit_report(group=groups.get(MODE_BM25, {}), labels=labels)
+    checks.append(
+        {
+            "id": "A10",
+            "title": "关键词这一路确实命中过（索引版本化生效）",
+            "command": (
+                f"{script_cmd}  （A10 探针：{keyword['question_id']} 在 mode=bm25 组里的名次）"
+            ),
+            "expected": (
+                f"只能靠字面命中的题 {keyword['question_id']}（{keyword.get('query')}）"
+                "在 bm25 组里至少命中一条相关片"
+            ),
+            "actual": (
+                f"{keyword['reason']}；返回 {keyword['returned_count']} 条，"
+                f"命中 {keyword['hit_count']} 条，empty_reason={keyword['empty_reason']}"
+            ),
+            "passed": bool(keyword["passed"]),
+            "question_id": keyword["question_id"],
+            "hit_rank": keyword["hit_rank"],
         }
     )
 
@@ -1836,7 +2210,7 @@ async def _run(args: argparse.Namespace) -> int:
     _assert_eval_index(index_name)
 
     if args.cleanup:
-        return _cleanup(db_factory=SessionLocal, index_name=index_name)
+        return await _cleanup(index_name=index_name)
 
     environment = await _preflight()
     questions, question_k = _load_questions()
@@ -1845,13 +2219,14 @@ async def _run(args: argparse.Namespace) -> int:
     layouts, empty_kb_id = _load_manifest()
     docs = _load_corpus(layouts)
 
-    db = SessionLocal()
-    # 检索链路在异步栈上（第 11 步票 #127）：索引与既有读仍走同步 ``db``，
-    # 召回走这一条。两个会话各管一段，评测口径不变。
-    async_db = AsyncSessionLocal()
+    # 一个会话走到底（票 #157）：检索链路在异步栈上（#127 起），清库 / 建库 / 建文档 /
+    # 索引 / 标签解析 / 打分六处必须与它共用同一个 ``AsyncSession``。以前这里是
+    # 「同步 db 管写、异步 db 管查」两个会话，写那一半一碰协程就炸
+    # ``ChunkedIteratorResult can't be used in 'await' expression``。
+    db = AsyncSessionLocal()
     try:
         if args.degraded_probe:
-            probe = await _run_degraded_probe(async_db, top_k=top_k)
+            probe = await _run_degraded_probe(db, top_k=top_k)
             print("\n=== degraded probe (A6 / A7) ===")
             for key in ("A6", "A7"):
                 item = probe[key]
@@ -1866,26 +2241,29 @@ async def _run(args: argparse.Namespace) -> int:
 
         index_stats: dict[str, int] = {}
         if args.reuse:
-            existing = _load_indexed_chunks(db)
+            existing = await _load_indexed_chunks(db)
             if not existing:
                 raise SystemExit("--reuse 需要已有切片，但评测库里是空的；去掉 --reuse 重跑。")
             # 只复用**同代 mapping** 的索引：跨分析器版本复用会静默测出旧口径的分数。
             _assert_query_analyzer(index_name)
-            print(f"reuse    : {len(existing)} chunks (no re-indexing)")
+            # 旧索引没有 index_version 时关键词一路会静默空跑（#157 §②）：先花 0 次模型
+            # 调用把这件事问清楚，别等整轮跑完才在探针那里发现。
+            versioned = _assert_keyword_index_is_versioned(index_name)
+            print(f"reuse    : {len(existing)} chunks (no re-indexing; ES 带版本 {versioned})")
         else:
             began = time.perf_counter()
             es_state = _reset_elasticsearch(index_name)
-            pg_counts = _reset_postgres(db)
+            pg_counts = await _reset_postgres(db)
             print(f"reset    : es index {es_state}; pg {pg_counts}")
             for layout in layouts:
-                _ensure_knowledge_base(
+                await _ensure_knowledge_base(
                     db,
                     kb_id=layout.kb_id,
                     name=layout.name,
                     description=layout.description,
                     split_strategy=args.split_strategy,
                 )
-            _ensure_knowledge_base(
+            await _ensure_knowledge_base(
                 db,
                 kb_id=empty_kb_id,
                 name="评测语料库·空库",
@@ -1893,11 +2271,11 @@ async def _run(args: argparse.Namespace) -> int:
                 split_strategy=args.split_strategy,
             )
             for doc in docs:
-                _ensure_document(db, doc)
+                await _ensure_document(db, doc)
             index_stats = await _index_documents(db, docs)
             print(f"indexed  : {index_stats} in {time.perf_counter() - began:.1f}s")
 
-        chunks = _load_indexed_chunks(db)
+        chunks = await _load_indexed_chunks(db)
         chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
         labels, traps = _resolve_labels(questions, chunks)
         corpus_stats = {
@@ -1918,11 +2296,19 @@ async def _run(args: argparse.Namespace) -> int:
 
         kb_ids = [layout.kb_id for layout in layouts]
 
+        # 暖机（#157）：把进程内第一次检索的装配开销付在计分之外，否则只有第一题会被
+        # 记上 keyword 降级（见 _warm_up 的说明）。它是一次真实查询嵌入，计入预算。
+        warmup = await _warm_up(db, kb_ids=kb_ids, top_k=top_k)
+        print(
+            f"warmup   : {warmup['duration_ms']:.0f}ms degraded={warmup['degraded']} "
+            f"返回 {warmup['returned_count']} 条（不计分）"
+        )
+
         print("\n=== retrieval groups ===")
         groups: dict[str, dict[str, Any]] = {}
         for mode in MODE_ORDER:
             groups[mode] = await _run_group(
-                async_db,
+                db,
                 questions,
                 labels,
                 traps,
@@ -1948,7 +2334,7 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"rewrite  : SKIPPED ({environment.llm_probe})")
         else:
             rewrite_off = await _run_group(
-                async_db,
+                db,
                 questions,
                 labels,
                 traps,
@@ -1959,7 +2345,7 @@ async def _run(args: argparse.Namespace) -> int:
             )
             settings.QUERY_REWRITE_ENABLED = True
             rewrite_on = await _run_group(
-                async_db,
+                db,
                 questions,
                 labels,
                 traps,
@@ -1981,7 +2367,7 @@ async def _run(args: argparse.Namespace) -> int:
 
         print("\n=== acceptance ===")
         acceptance = await _run_acceptance(
-            async_db,
+            db,
             groups=groups,
             labels=labels,
             top_k=top_k,
@@ -2023,6 +2409,10 @@ async def _run(args: argparse.Namespace) -> int:
             "rrf_check": rrf,
             "acceptance": list(acceptance),
             "rewrite_comparison": rewrite,
+            # 暖机读数与关键词命中（票 #157）：前者是「冷启动有多贵」的证据，后者是
+            # 「关键词这一路真的在工作」的证据。两份都进产物，报告里才引得到。
+            "warmup": warmup,
+            "keyword_hit": keyword_hit_report(group=groups[MODE_BM25], labels=labels),
         }
         (run_dir / "results.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -2046,16 +2436,17 @@ async def _run(args: argparse.Namespace) -> int:
         failed = [check["id"] for check in acceptance if not check["passed"]]
         return 1 if failed else 0
     finally:
-        await async_db.close()
-        db.close()
+        await db.close()
 
 
-def _cleanup(*, db_factory: Any, index_name: str) -> int:
-    db = db_factory()
+async def _cleanup(*, index_name: str) -> int:
+    """``--cleanup``：删评测租户的行与评测索引。**协程**——清库那一半是异步的。"""
+
+    db = AsyncSessionLocal()
     try:
-        counts = _reset_postgres(db)
+        counts = await _reset_postgres(db)
     finally:
-        db.close()
+        await db.close()
     index_state = _reset_elasticsearch(index_name)
     print(f"cleanup  : es index {index_name} {index_state}; pg {counts}")
     return 0
@@ -2110,6 +2501,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # 事件循环策略必须钉（票 #157）：psycopg 的异步连接在 Windows 缺省的
+    # ``ProactorEventLoop`` 上直接拒绝工作（``Psycopg cannot use the
+    # 'ProactorEventLoop' to run in async mode``）。离线套件不会跑到这一行，所以漏了
+    # 它的症状是「测试全绿、第一次连库就炸」。其余运维脚本早就是这套写法。
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         return asyncio.run(_run(args))
     except KeyboardInterrupt:
