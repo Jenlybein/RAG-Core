@@ -9,7 +9,8 @@
    （#138 验收第 1 条：往基线语料里加文档等于基线当场失效）。哈希清单把「没动」变成会红
    的断言；多出一个文件也算失败，因为这正是最危险的那一类变更。
 3. **跑批脚本的诚实边界**：默认零模型调用、``--source live`` 不显式加参数就拒绝执行、
-   未落地的能力印 ``capability-not-implemented`` 而不是伪造一组相同的数字。
+   能力状态**探测代码**而不是硬编码（#156：两侧都就位时是 ``available``，探测说没有时才是
+   ``capability-not-implemented``），以及「能力就位但本脚本没采集」必须写成没采集。
 
 全程纯函数 + 临时目录：不连库、不发网络、不碰 ``eval/refs-runs/``。
 """
@@ -342,27 +343,75 @@ def test_dry_run_produces_all_four_metric_blocks_without_spending() -> None:
     assert payload["premise"]["comparable_with_original_project"] is False
 
 
-def test_both_switches_report_capability_not_implemented() -> None:
-    """「开 / 关」两侧今天都不存在：报告必须写明，而不是给出两组相同的数字。"""
+def test_capability_status_is_probed_not_hardcoded(monkeypatch: pytest.MonkeyPatch) -> None:
+    """两侧状态来自**代码探测**：能力在代码里就是 available，不在才是未实现（#156）。
+
+    这条用例同时守住两件事：①#144 / #148 合并之后常量被换成了探测，两个能力都就位时
+    不再输出 ``capability-not-implemented``；②探测没被删掉退回硬编码——把两个探针都换成
+    False 时必须回落到未实现，否则「什么都报 available」也能过。
+    """
+
+    live = eval_refs.capability_status()
+    assert live == {
+        "graph": eval_refs.CAPABILITY_AVAILABLE,
+        "research": eval_refs.CAPABILITY_AVAILABLE,
+    }, "两个能力都已在代码里：#144 的注入服务 + #148/#151 的 Research 服务与路由"
+
+    monkeypatch.setattr(eval_refs, "_graph_injection_wired", lambda: False)
+    monkeypatch.setattr(eval_refs, "_research_wired", lambda: False)
+    assert eval_refs.capability_status() == {
+        "graph": eval_refs.CAPABILITY_NOT_IMPLEMENTED,
+        "research": eval_refs.CAPABILITY_NOT_IMPLEMENTED,
+    }
+
+
+def test_the_switches_do_not_decide_the_capability_status() -> None:
+    """「能力在不在」与「这次想不想跑」是两件事：开关**不进**状态（#156）。
+
+    状态函数不收 ``RunConfig`` 是这条纪律的最硬表达（结构上就读不到开关）；这里再从外部
+    验一次：把两侧开关都打开，状态与都关掉时逐字相同。
+    """
+
+    off = eval_refs.run_batch(_config(graph="off", research="off"))["capabilities"]
+    on = eval_refs.run_batch(_config(graph="on", research="on"))["capabilities"]
+    assert off == on
+
+
+def test_available_but_unexercised_is_written_as_such() -> None:
+    """能力就位 + 本脚本没采集：报告要写「没有采集」，不许让 on / off 的相同读数冒充对照。
+
+    读数相同是**事实**（采集路径只跑检索内核），但原因必须写在数字旁边：三种「空表」
+    （开关关 / 没能力 / 没采集）结论完全不同。
+    """
 
     payload = eval_refs.run_batch(_config(graph="on", research="on"))
-    statuses = payload["capabilities"]
-    assert statuses["graph"] == eval_refs.CAPABILITY_NOT_IMPLEMENTED
-    assert statuses["research"] == eval_refs.CAPABILITY_NOT_IMPLEMENTED
-    # research=on 时停止原因分布不伪造：状态写 capability-not-implemented、计数为空。
     distribution = payload["metrics"]["stop_reason_distribution"]
-    assert distribution["status"] == eval_refs.CAPABILITY_NOT_IMPLEMENTED
+    assert distribution["status"] == eval_refs.CAPABILITY_AVAILABLE
+    assert distribution["exercised"] is False
     assert distribution["counts"] == {}
+    assert payload["exercised"] == {"graph": False, "research": False}
+
+    report = eval_refs.render_report(payload, _config(graph="on", research="on"))
+    assert eval_refs.CAPABILITY_NOT_IMPLEMENTED not in report, (
+        "两个能力都就位后，报告里不该再出现这个常量"
+    )
+    assert "没有采集" in report
+    assert "对照有效性" in report
+    assert "与原项目的数字不可比" in report
+    for heading in ("停止原因分布", "引用回溯率", "延迟", "模型调用次数"):
+        assert heading in report
 
 
-def test_report_prints_capability_not_implemented_and_not_comparable() -> None:
+def test_the_report_says_not_implemented_when_a_probe_says_so(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """反向也要成立：探测说没有时，报告必须明说未实现（不能一律印「已就位」）。"""
+
+    monkeypatch.setattr(eval_refs, "_graph_injection_wired", lambda: False)
+    monkeypatch.setattr(eval_refs, "_research_wired", lambda: False)
     config = _config(graph="on", research="on")
     report = eval_refs.render_report(eval_refs.run_batch(config), config)
     assert eval_refs.CAPABILITY_NOT_IMPLEMENTED in report
-    assert "与原项目的数字不可比" in report
-    assert "对照有效性" in report
-    for heading in ("停止原因分布", "引用回溯率", "延迟", "模型调用次数"):
-        assert heading in report
 
 
 def test_live_source_refuses_without_explicit_allowance(capsys) -> None:
@@ -409,14 +458,48 @@ def test_prediction_scales_with_the_question_count() -> None:
     )
     assert dry["total"] == 0
     assert live["embedding"] == 8 and live["total"] == 8
-    # Research 未落地：即便打开也不预扣 3 次生成调用。
-    research_on = eval_refs.predict_calls(
+    # 能力没装时即便打开也不预扣生成调用。
+    not_implemented = eval_refs.predict_calls(
         source=eval_refs.SOURCE_DRY_RUN,
         question_count=8,
         research_enabled=True,
         research_status=eval_refs.CAPABILITY_NOT_IMPLEMENTED,
     )
-    assert research_on["research_llm"] == 0
+    assert not_implemented["research_llm"] == 0
+    # 能力就位但本脚本没采集：同样是 0 次，但说明必须写清「没采集」并带上硬顶，
+    # 否则读的人会以为「Research 免费」。
+    available = eval_refs.predict_calls(
+        source=eval_refs.SOURCE_DRY_RUN,
+        question_count=8,
+        research_enabled=True,
+        research_status=eval_refs.CAPABILITY_AVAILABLE,
+    )
+    assert available["research_llm"] == 0
+    assert "不采集" in available["notes"]["research_llm"]
+    assert "硬顶" in available["notes"]["research_llm"]
+
+
+def test_the_research_model_call_budget_is_read_from_the_code_constants() -> None:
+    """一次 Research 的模型调用硬顶只有一处来源：``app/services/research_limits.py``。
+
+    #148 的说明写「3 次」、#149 加了生成阶段的强模型兜底位变成「最多 4 次」。脚本、报告、
+    用例里各写一个数字，迟早出现「文案说 3、代码允许 4」——那是成本口径，读的人会当真。
+    """
+
+    from app.services.research_limits import (
+        MAX_MODEL_CALLS,
+        MAX_MODEL_CALLS_WITH_FALLBACK,
+    )
+
+    budget = eval_refs.research_model_call_budget()
+    assert budget == (MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK)
+
+    calls, with_fallback = budget
+    report = eval_refs.render_report(
+        eval_refs.run_batch(_config(graph="on", research="on")),
+        _config(graph="on", research="on"),
+    )
+    assert f"{calls} 次模型调用（含生成兜底 {with_fallback} 次）" in report
 
 
 def test_fixture_replay_computes_a_real_traceability_rate(tmp_path: Path) -> None:
