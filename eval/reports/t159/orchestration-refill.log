@@ -1,0 +1,36 @@
+2026-11-14T14:08:32.107162Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:1.937s] [elastic_transport.transport]
+2026-11-14T14:08:32.386817Z [info     ] HTTP Request: POST https://ws-4k904g6c9r4c96ch.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/embeddings "HTTP/1.1 200 OK" [httpx]
+2026-11-14T14:08:32.774631Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:08:32.905337Z [warning  ] langchain-openai injected a custom httpx transport to apply `http_socket_options`, which disables httpx's proxy auto-detection (system proxy configuration detected). Set `LANGCHAIN_OPENAI_TCP_KEEPALIVE=0` or pass `http_socket_options=()` to restore default proxy behavior, or supply `openai_proxy` / your own `http_client` / `http_async_client` to take full control. [langchain_openai.chat_models._client_utils]
+��ϱ����� refs��8 �⣨����Ԥ�� 60000 ms��
+2026-11-14T14:08:46.328619Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:03.653878Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:09:33.517209Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:10:06.728564Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:10:27.288888Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:10:58.109089Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:11:20.565350Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:11:55.247087Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:12:13.649942Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:12:13.878373Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+��ϱ����� gate��12 �⣨����Ԥ�� 60000 ms��
+2026-11-14T14:12:37.215365Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:13:02.002676Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:13:16.020328Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:13:49.939360Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:14:01.296251Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:14:23.575298Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:14:48.391030Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:15:03.484072Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:15:49.680686Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:16:23.493811Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:16:48.602686Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:16:55.537299Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+����Ѳ��أ���eval\reports\t159\run-orchestration-20261114T135928Z\results.json
+  refs: ���� 8 �⣨60000 ms������ȱ�� ��
+  gate: ���� 12 �⣨60000 ms������ȱ�� ��
+���˵�������128~148 ��
+2026-11-14T14:17:22.250361Z [error    ] Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x00000299F4BF03E0> [asyncio]
+2026-11-14T14:17:22.251361Z [error    ] Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x00000299F8A1AC60> [asyncio]

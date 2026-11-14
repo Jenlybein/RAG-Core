@@ -378,6 +378,11 @@ class Outcome:
     #: Research 侧的三态完整度与引用块（``evidence_state`` / ``citations``）。
     evidence_state: str | None = None
     citations: list[dict[str, Any]] = field(default_factory=list)
+    #: 切片编排块（``response["orchestration"]``）：**开关开着且这一步真的跑成了**才有。
+    #: 关着时响应里没有这个键，这里就是 ``None``——「没有块」与「块是空的」因此可区分。
+    #: 原样留档（含每条证据的正文），因为 #159 的抽检要回答「核心片到底覆盖了哪些要点」，
+    #: 那是拿正文判断的事，不能只看计数。
+    orchestration: dict[str, Any] | None = None
 
     def termination(self) -> str:
         """今天这条链路的终止形态（七种停止原因之外的等价物）。
@@ -649,6 +654,10 @@ def _apply_retrieval(
     # 把整个字典的真假当判据会给每一次检索都多加一次（#153 的守分抽样上就这么错了一次）。
     job = meta.get("rerank") or {}
     outcome.model_calls = 1 + (1 if job.get("applied") else 0)
+    # 编排块**从响应回读**，不按开关推断：关着时这个键根本不存在（``rag_service`` 只在
+    # 块非空时才加它），所以 ``None`` 是「这一次没有这一块」，不是「读失败」。
+    block = response.get("orchestration")
+    outcome.orchestration = dict(block) if isinstance(block, Mapping) else None
 
 
 def _as_mapping(data: Any) -> Mapping[str, Any]:
@@ -709,11 +718,16 @@ async def evaluate_live_question(
     research: str,
     document_names: Mapping[str, str],
     rerank_enabled: bool = False,
+    orchestration: bool = False,
 ) -> Outcome:
     """跑**一道题**：``research=on`` 走门禁化的 Research，否则走一次检索内核。
 
     两个开关只在这一个函数里分叉，且两侧的读数都从**响应**里读（不是按配置推断）。
     异常收成 ``error:<类型>``：单题失败是读数，不是脚本崩溃。
+
+    ``orchestration``（#159 第一组）只影响检索那一路：它把折叠之后的交付单元再做一次
+    「要点 → 核心 / 辅助」编排。**关着是缺省**——那一次多两次模型调用，而版本 / 图谱 /
+    Research 三组对照都不是在测它。打开时两侧只差这一个布尔，其余参数逐项相同。
     """
 
     started = time.perf_counter()
@@ -748,12 +762,11 @@ async def evaluate_live_question(
                     # 图谱注入跟着它走（ADR-0027 开关归属）。
                     rerank=rerank_enabled,
                     rewrite=False,
-                    # 切片编排**关着**：它一次就多一次模型调用，而这三组对照（版本 / 图谱 /
-                    # Research）没有一组在测它；开着还会给响应多加一个键，把「只差一个
-                    # 开关」这件事搅浑。这一栏是 `RetrievalOptions` 的必填项（#146），
-                    # 不写会当场 TypeError——这正是本票接线时抓到的第一处（旧采集路径
-                    # 自 #146 起就是坏的：8 题会全落成 error:TypeError）。
-                    orchestration=False,
+                    # 切片编排缺省**关着**：它一次就多两次模型调用，而版本 / 图谱 /
+                    # Research 三组对照没有一组在测它；开着还会给响应多加一个键，把
+                    # 「只差一个开关」这件事搅浑。要测它的是另一组（#159 第一组），
+                    # 那里由 ``--orchestration on`` 显式打开、且两侧其余参数逐项相同。
+                    orchestration=orchestration,
                 ),
                 # 接线就是这一行：on → 生产读模型，off → None（这一步不存在）。
                 graph_factory=graph_factory_for(graph),
@@ -806,6 +819,7 @@ async def run_live(
     rerank: str = RERANK_AUTO,
     api_key: str | None = None,
     seams: LiveSeams | None = None,
+    orchestration: bool = False,
 ) -> list[Outcome]:
     """跑真实链路（进程内 ``rag_service.retrieve`` / ``research_gate.gated_research``）。
 
@@ -838,6 +852,7 @@ async def run_live(
                     research=research,
                     document_names=document_names,
                     rerank_enabled=rerank_enabled,
+                    orchestration=orchestration,
                 )
             )
     return outcomes

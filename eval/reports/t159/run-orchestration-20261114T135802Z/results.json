@@ -1,0 +1,1769 @@
+{
+  "run_id": "20261114T135802Z",
+  "generated_at": "2026-11-14T13:58:02+00:00",
+  "switches": {
+    "mode": "hybrid",
+    "top_k": 5,
+    "fold_to_sections": true,
+    "expand_table_rows": true,
+    "rewrite": false,
+    "rerank": "off",
+    "orchestration": {
+      "off": false,
+      "on_deploy": true,
+      "on_diagnostic": true
+    },
+    "orchestration_timeout_ms": {
+      "deployed": 4000,
+      "diagnostic": 30000
+    }
+  },
+  "keyword_alias": {
+    "refs": "rag_chunks_c6",
+    "gate": "rag_chunks_eval"
+  },
+  "llm_chain": {
+    "llm_endpoint_source": "model_configs",
+    "llm_model": "deepseek-v4-1-flash-economy-261017",
+    "llm_config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "premise": {
+    "comparable_with_original_project": false,
+    "why": "本仓库的语料与题集都是自己的，原项目那组效果数字（+4.9% / +7.5% / −82.5% / +3.4pp）既不成立也不可比（#138 Out of Scope）。本轮数字只与本轮产物可比。"
+  },
+  "in_batches": {
+    "refs": {
+      "kb_ids": [
+        "ddae7e35-1858-4861-b9eb-631cfc778feb"
+      ],
+      "tenant_id": "tenant_c6",
+      "keyword_alias": "rag_chunks_c6",
+      "questions": 8,
+      "warmup": {
+        "deploy": {
+          "batch": "refs:deploy",
+          "retrieval": {
+            "latency_ms": 3090.97,
+            "degraded_reason": "keyword search failed",
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 4205.93,
+            "degraded_reason": "orchestration failed",
+            "has_block": false,
+            "model_calls": 1
+          }
+        },
+        "diagnostic": {
+          "batch": "refs:diagnostic",
+          "retrieval": {
+            "latency_ms": 225.32,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 22826.87,
+            "degraded_reason": null,
+            "has_block": true,
+            "model_calls": 2
+          }
+        }
+      },
+      "rows": [
+        {
+          "id": "r01",
+          "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 980,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 223.55,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 980,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4276.01,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 980,
+            "points": 5,
+            "evidence": 9,
+            "primary": 5,
+            "supporting": 4,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 717,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 13736.92,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "refund_policy:2",
+              "refund_policy:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "refund_policy:2",
+              "refund_policy:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "refund_policy:2",
+              "refund_policy:3"
+            ],
+            "missing": []
+          }
+        },
+        {
+          "id": "r02",
+          "query": "退款办完之后退回来的那部分积分，有效期是从退款日重新算 12 个月，还是按原来的时间算？",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 917,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 225.88,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 917,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4241.03,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 917,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_diagnostic_latency_ms": 30282.22,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": "orchestration failed",
+          "coverage_off": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "points_policy:3"
+            ],
+            "missing": [
+              "points_policy:1"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "points_policy:3"
+            ],
+            "missing": [
+              "points_policy:1"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "points_policy:3"
+            ],
+            "missing": [
+              "points_policy:1"
+            ]
+          }
+        },
+        {
+          "id": "r03",
+          "query": "退款办完之后，之前抵掉的那部分优惠还能不能再用，有效期会不会跟着延长？",
+          "mechanism": "cross_document",
+          "off": {
+            "materials": 5,
+            "material_chars": 867,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 205.6,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 867,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4257.35,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 867,
+            "points": 5,
+            "evidence": 11,
+            "primary": 6,
+            "supporting": 5,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 867,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 11102.66,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "promo_rules:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "promo_rules:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "promo_rules:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          }
+        },
+        {
+          "id": "r04",
+          "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+          "mechanism": "cross_document",
+          "off": {
+            "materials": 5,
+            "material_chars": 790,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 384.54,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 790,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4201.99,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 790,
+            "points": 4,
+            "evidence": 6,
+            "primary": 4,
+            "supporting": 2,
+            "covered_materials": 2,
+            "unassigned_materials": 3,
+            "evidence_chars": 257,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 21051.72,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "points_policy:2.2",
+              "promo_rules:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "points_policy:2.2",
+              "promo_rules:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "points_policy:2.2",
+              "promo_rules:1"
+            ],
+            "missing": []
+          }
+        },
+        {
+          "id": "r05",
+          "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+          "mechanism": "parallel_points",
+          "off": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 272.76,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4227.84,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": 1,
+            "evidence": 3,
+            "primary": 1,
+            "supporting": 2,
+            "covered_materials": 3,
+            "unassigned_materials": 2,
+            "evidence_chars": 653,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 6591.88,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3",
+              "refund_policy:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3",
+              "refund_policy:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3",
+              "refund_policy:1"
+            ],
+            "missing": []
+          }
+        },
+        {
+          "id": "r06",
+          "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+          "mechanism": "parallel_points",
+          "off": {
+            "materials": 5,
+            "material_chars": 754,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 229.47,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 754,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4255.41,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 754,
+            "points": 5,
+            "evidence": 7,
+            "primary": 5,
+            "supporting": 2,
+            "covered_materials": 3,
+            "unassigned_materials": 2,
+            "evidence_chars": 440,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 12627.86,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:1",
+              "promo_rules:2",
+              "promo_rules:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:1",
+              "promo_rules:2",
+              "promo_rules:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:1",
+              "promo_rules:2",
+              "promo_rules:3"
+            ],
+            "missing": []
+          }
+        },
+        {
+          "id": "r07",
+          "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+          "mechanism": "dependent_hop",
+          "off": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 219.35,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4224.19,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": 5,
+            "evidence": 8,
+            "primary": 8,
+            "supporting": 0,
+            "covered_materials": 3,
+            "unassigned_materials": 2,
+            "evidence_chars": 543,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 24806.42,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          }
+        },
+        {
+          "id": "r08",
+          "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+          "mechanism": "dependent_hop",
+          "off": {
+            "materials": 5,
+            "material_chars": 988,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 241.01,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 988,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4250.76,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 988,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_diagnostic_latency_ms": 30192.96,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": "orchestration failed",
+          "coverage_off": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "points_policy:4",
+              "refund_policy:4"
+            ],
+            "missing": [
+              "points_policy:2.2"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "points_policy:4",
+              "refund_policy:4"
+            ],
+            "missing": [
+              "points_policy:2.2"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "points_policy:4",
+              "refund_policy:4"
+            ],
+            "missing": [
+              "points_policy:2.2"
+            ]
+          }
+        }
+      ],
+      "aggregate": {
+        "questions": 8,
+        "arms": {
+          "off": {
+            "materials_total": 40,
+            "materials_chars_total": 7304,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 0,
+              "rate": 0.0,
+              "ids": []
+            },
+            "retrieval_model_calls": 8,
+            "orchestration_llm_calls_lower_bound": 0,
+            "latency": {
+              "p50": 225.88,
+              "p95": 384.54
+            }
+          },
+          "on_deploy": {
+            "materials_total": 40,
+            "materials_chars_total": 7304,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 8,
+              "rate": 1.0,
+              "ids": [
+                "r01",
+                "r02",
+                "r03",
+                "r04",
+                "r05",
+                "r06",
+                "r07",
+                "r08"
+              ]
+            },
+            "retrieval_model_calls": 8,
+            "orchestration_llm_calls_lower_bound": 8,
+            "latency": {
+              "p50": 4241.03,
+              "p95": 4276.01
+            }
+          },
+          "on_diagnostic": {
+            "materials_total": 40,
+            "materials_chars_total": 7304,
+            "assigned_materials_total": 20,
+            "unassigned_materials_total": 10,
+            "evidence_chars_total": 3477,
+            "points": {
+              "total": 25,
+              "questions_with_points": 6,
+              "avg": 4.166666666666667
+            },
+            "completeness": {
+              "complete": 6,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 2,
+              "rate": 0.25,
+              "ids": [
+                "r02",
+                "r08"
+              ]
+            },
+            "retrieval_model_calls": 8,
+            "orchestration_llm_calls_lower_bound": 14,
+            "latency": {
+              "p50": 13736.92,
+              "p95": 30282.22
+            }
+          }
+        },
+        "degraded_by_arm": {
+          "off": 0,
+          "on_deploy": 8,
+          "on_diagnostic": 2
+        },
+        "completeness_by_arm": {
+          "on_deploy": {
+            "complete": 0,
+            "partial": 0,
+            "missing": 0
+          },
+          "on_diagnostic": {
+            "complete": 6,
+            "partial": 0,
+            "missing": 0
+          }
+        }
+      }
+    },
+    "gate": {
+      "kb_ids": [
+        "kb-eval",
+        "kb-eval-ops",
+        "kb-eval-biz",
+        "kb-eval-long",
+        "kb-eval-ref"
+      ],
+      "tenant_id": "tenant_demo",
+      "keyword_alias": "rag_chunks_eval",
+      "questions": 12,
+      "warmup": {
+        "deploy": {
+          "batch": "gate:deploy",
+          "retrieval": {
+            "latency_ms": 390.62,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 4253.03,
+            "degraded_reason": "orchestration failed",
+            "has_block": false,
+            "model_calls": 1
+          }
+        },
+        "diagnostic": {
+          "batch": "gate:diagnostic",
+          "retrieval": {
+            "latency_ms": 260.41,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 12272.24,
+            "degraded_reason": null,
+            "has_block": true,
+            "model_calls": 2
+          }
+        }
+      },
+      "rows": [
+        {
+          "id": "q16",
+          "query": "证书过期了要做哪些步骤，会中断业务吗",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 870,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 262.45,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 870,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4253.5,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 870,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_diagnostic_latency_ms": 30204.1,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": "orchestration failed",
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0
+        },
+        {
+          "id": "q17",
+          "query": "XR-2000 Pro 的电源适配器能和 XR-2000 通用吗",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 1978,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 219.22,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1978,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4241.72,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1978,
+            "points": 5,
+            "evidence": 21,
+            "primary": 10,
+            "supporting": 11,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 1978,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 17536.31,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5
+        },
+        {
+          "id": "q18",
+          "query": "P1 故障的响应时限是多少，超时找谁",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 239.71,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4215.63,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": 5,
+            "evidence": 17,
+            "primary": 12,
+            "supporting": 5,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 1004,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 24289.96,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5
+        },
+        {
+          "id": "q19",
+          "query": "退款要几天，从哪个入口申请",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 769,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 493.86,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 769,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4233.18,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 769,
+            "points": 5,
+            "evidence": 8,
+            "primary": 5,
+            "supporting": 3,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 609,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 22365.23,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0
+        },
+        {
+          "id": "q58",
+          "query": "平台密钥多久轮换一次，轮换时要注意什么",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 789,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 219.38,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 789,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4273.42,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 789,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_diagnostic_latency_ms": 30243.99,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": "orchestration failed",
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0
+        },
+        {
+          "id": "q59",
+          "query": "退款一直没到账该怎么查",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 820,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 219.0,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 820,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4248.46,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 820,
+            "points": 5,
+            "evidence": 8,
+            "primary": 5,
+            "supporting": 3,
+            "covered_materials": 2,
+            "unassigned_materials": 3,
+            "evidence_chars": 314,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 10022.14,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0
+        },
+        {
+          "id": "q60",
+          "query": "变更窗口是什么时候，窗口结束前要做什么",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 638,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 220.0,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 638,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4233.31,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 638,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_diagnostic_latency_ms": 30198.67,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": "orchestration failed",
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5
+        },
+        {
+          "id": "q61",
+          "query": "设备成片离线怎么排查，什么时候要升级",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 742,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 219.66,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 742,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4305.36,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 742,
+            "points": 5,
+            "evidence": 10,
+            "primary": 5,
+            "supporting": 5,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 614,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 22162.0,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5
+        },
+        {
+          "id": "q77",
+          "query": "觉得账单金额算错了，怎么申诉、多久内要提",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 666,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 220.93,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 666,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4232.81,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 666,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_diagnostic_latency_ms": 30206.27,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": "orchestration failed",
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0
+        },
+        {
+          "id": "q88",
+          "query": "会话配额隔离什么时候完成、谁负责",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 1343,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 222.71,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1343,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4531.08,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1343,
+            "points": 5,
+            "evidence": 15,
+            "primary": 7,
+            "supporting": 8,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 1214,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 25109.93,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 7,
+          "context_precision_off": 0.6,
+          "context_recall_off": 0.42857142857142855,
+          "context_precision_on_deploy": 0.6,
+          "context_recall_on_deploy": 0.42857142857142855,
+          "context_precision_on_diagnostic": 0.6,
+          "context_recall_on_diagnostic": 0.42857142857142855
+        },
+        {
+          "id": "q96",
+          "query": "转正考核要过哪几项",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 750,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 217.81,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 750,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4214.95,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 750,
+            "points": 5,
+            "evidence": 9,
+            "primary": 5,
+            "supporting": 4,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 688,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 17462.44,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0
+        },
+        {
+          "id": "q104",
+          "query": "退款和退费分别退到哪里去",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 766,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 229.81,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 766,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4252.51,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 766,
+            "points": 5,
+            "evidence": 17,
+            "primary": 8,
+            "supporting": 9,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 766,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 13069.4,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5
+        }
+      ],
+      "aggregate": {
+        "questions": 12,
+        "arms": {
+          "off": {
+            "materials_total": 60,
+            "materials_chars_total": 11135,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 0,
+              "rate": 0.0,
+              "ids": []
+            },
+            "retrieval_model_calls": 12,
+            "orchestration_llm_calls_lower_bound": 0,
+            "latency": {
+              "p50": 220.0,
+              "p95": 493.86
+            }
+          },
+          "on_deploy": {
+            "materials_total": 60,
+            "materials_chars_total": 11135,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 12,
+              "rate": 1.0,
+              "ids": [
+                "q16",
+                "q17",
+                "q18",
+                "q19",
+                "q58",
+                "q59",
+                "q60",
+                "q61",
+                "q77",
+                "q88",
+                "q96",
+                "q104"
+              ]
+            },
+            "retrieval_model_calls": 12,
+            "orchestration_llm_calls_lower_bound": 12,
+            "latency": {
+              "p50": 4241.72,
+              "p95": 4531.08
+            }
+          },
+          "on_diagnostic": {
+            "materials_total": 60,
+            "materials_chars_total": 11135,
+            "assigned_materials_total": 33,
+            "unassigned_materials_total": 7,
+            "evidence_chars_total": 7187,
+            "points": {
+              "total": 40,
+              "questions_with_points": 8,
+              "avg": 5.0
+            },
+            "completeness": {
+              "complete": 8,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 4,
+              "rate": 0.3333333333333333,
+              "ids": [
+                "q16",
+                "q58",
+                "q60",
+                "q77"
+              ]
+            },
+            "retrieval_model_calls": 12,
+            "orchestration_llm_calls_lower_bound": 20,
+            "latency": {
+              "p50": 22365.23,
+              "p95": 30243.99
+            }
+          }
+        },
+        "degraded_by_arm": {
+          "off": 0,
+          "on_deploy": 12,
+          "on_diagnostic": 4
+        },
+        "completeness_by_arm": {
+          "on_deploy": {
+            "complete": 0,
+            "partial": 0,
+            "missing": 0
+          },
+          "on_diagnostic": {
+            "complete": 8,
+            "partial": 0,
+            "missing": 0
+          }
+        }
+      }
+    }
+  },
+  "predicted": {
+    "question_count": 20,
+    "off_calls": 20,
+    "on_deploy_calls_upper": 60,
+    "on_diagnostic_calls_upper": 60,
+    "orchestration_upper": 80,
+    "total_upper": 148,
+    "assumptions": {
+      "rerank": "off",
+      "per_question_retrieval_calls": 1,
+      "orchestration_calls_per_question_upper": 2,
+      "warmup_per_batch": 4,
+      "batches": 2
+    },
+    "note": "预估是**上界**：部署臂那两次结构化调用会被 4 s 预算取消，取消前可能已发出，所以按 2 计。"
+  },
+  "accounted_calls": {
+    "warmup": 10,
+    "retrieval": 60,
+    "orchestration_lower_bound": 54,
+    "total_lower_bound": 124,
+    "total_upper_bound": 150
+  }
+}

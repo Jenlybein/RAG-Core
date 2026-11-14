@@ -1,0 +1,4125 @@
+{
+  "run_id": "20261114T135928Z",
+  "generated_at": "2026-11-14T13:59:28+00:00",
+  "switches": {
+    "mode": "hybrid",
+    "top_k": 5,
+    "fold_to_sections": true,
+    "expand_table_rows": true,
+    "rewrite": false,
+    "rerank": "off",
+    "orchestration": {
+      "off": false,
+      "on_deploy": true,
+      "on_diagnostic": true
+    },
+    "orchestration_timeout_ms": {
+      "deployed": 4000,
+      "diagnostic": 30000
+    }
+  },
+  "keyword_alias": {
+    "refs": "rag_chunks_c6",
+    "gate": "rag_chunks_eval"
+  },
+  "llm_chain": {
+    "llm_endpoint_source": "model_configs",
+    "llm_model": "deepseek-v4-1-flash-economy-261017",
+    "llm_config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "premise": {
+    "comparable_with_original_project": false,
+    "why": "本仓库的语料与题集都是自己的，原项目那组效果数字（+4.9% / +7.5% / −82.5% / +3.4pp）既不成立也不可比（#138 Out of Scope）。本轮数字只与本轮产物可比。"
+  },
+  "in_batches": {
+    "refs": {
+      "kb_ids": [
+        "ddae7e35-1858-4861-b9eb-631cfc778feb"
+      ],
+      "tenant_id": "tenant_c6",
+      "keyword_alias": "rag_chunks_c6",
+      "questions": 8,
+      "warmup": {
+        "deploy": {
+          "batch": "refs:deploy",
+          "retrieval": {
+            "latency_ms": 2835.9,
+            "degraded_reason": "keyword search failed",
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 4195.67,
+            "degraded_reason": "orchestration failed",
+            "has_block": false,
+            "model_calls": 1
+          }
+        },
+        "diagnostic": {
+          "batch": "refs:diagnostic",
+          "retrieval": {
+            "latency_ms": 223.92,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 30187.78,
+            "degraded_reason": "orchestration failed",
+            "has_block": false,
+            "model_calls": 1
+          }
+        }
+      },
+      "rows": [
+        {
+          "id": "r01",
+          "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 980,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 212.27,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 980,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4296.36,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 980,
+            "points": 5,
+            "evidence": 8,
+            "primary": 5,
+            "supporting": 3,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 717,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 17320.73,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "refund_policy:2",
+              "refund_policy:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "refund_policy:2",
+              "refund_policy:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "refund_policy:2",
+              "refund_policy:3"
+            ],
+            "missing": []
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "提交后审核一般2个工作日内完成",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "材料不全审核会挂起，挂起时间不计入审核时限",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "审核通过后进入退款执行，到账从执行日算",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "银行卡约3工作日，第三方1到2工作日，对公最长5工作日",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "积分抵扣部分不入退款通道，按积分规则原路返还",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "2f4431e0-81bd-488b-a2f2-2c079735a50e",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 2. 退款时限与审核",
+                "content": "## 2. 退款时限与审核\n\n无理由退款须在签收次日起 7 天内提交，质量问题退款放宽到 30 天，需要附检测结论或现场照片。提交之后审核在 2 个工作日内完成，审核内容包括订单状态、支付渠道、是否已开票、以及是否存在未结清欠款。材料不全时审核会挂起并通知补充，挂起时间不计入审核时限。\n\n用了优惠券的订单，券在退款时是否退回、退回之后何时失效，详见《促销活动与优惠券使用规则》第 3 节。"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A2",
+                "chunk_id": "2f4431e0-81bd-488b-a2f2-2c079735a50e",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 2. 退款时限与审核",
+                "content": "## 2. 退款时限与审核\n\n无理由退款须在签收次日起 7 天内提交，质量问题退款放宽到 30 天，需要附检测结论或现场照片。提交之后审核在 2 个工作日内完成，审核内容包括订单状态、支付渠道、是否已开票、以及是否存在未结清欠款。材料不全时审核会挂起并通知补充，挂起时间不计入审核时限。\n\n用了优惠券的订单，券在退款时是否退回、退回之后何时失效，详见《促销活动与优惠券使用规则》第 3 节。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A3",
+                "chunk_id": "24b02f00-baeb-4411-a649-d940fef806c4",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+                "content": "## 3. 退款到账与凭证\n\n审核通过后进入退款执行，到账时间从执行日开始计算而不是从申请日开始。银行卡一般 3 个工作日，第三方支付 1 到 2 个工作日，对公转账最长 5 个工作日；积分抵扣部分不入退款通道，按积分规则原路返还。凭证包括订单号、支付流水号、签收凭证与问题照片。缺少支付流水号时，审核无法确认原路退回的目标账户。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A4",
+                "chunk_id": "24b02f00-baeb-4411-a649-d940fef806c4",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+                "content": "## 3. 退款到账与凭证\n\n审核通过后进入退款执行，到账时间从执行日开始计算而不是从申请日开始。银行卡一般 3 个工作日，第三方支付 1 到 2 个工作日，对公转账最长 5 个工作日；积分抵扣部分不入退款通道，按积分规则原路返还。凭证包括订单号、支付流水号、签收凭证与问题照片。缺少支付流水号时，审核无法确认原路退回的目标账户。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A5",
+                "chunk_id": "24b02f00-baeb-4411-a649-d940fef806c4",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+                "content": "## 3. 退款到账与凭证\n\n审核通过后进入退款执行，到账时间从执行日开始计算而不是从申请日开始。银行卡一般 3 个工作日，第三方支付 1 到 2 个工作日，对公转账最长 5 个工作日；积分抵扣部分不入退款通道，按积分规则原路返还。凭证包括订单号、支付流水号、签收凭证与问题照片。缺少支付流水号时，审核无法确认原路退回的目标账户。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E4",
+                "point_id": "A3",
+                "chunk_id": "2f4431e0-81bd-488b-a2f2-2c079735a50e",
+                "heading_path": "会员订单退款政策 > 2. 退款时限与审核"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A5",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A5",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              }
+            ]
+          }
+        },
+        {
+          "id": "r02",
+          "query": "退款办完之后退回来的那部分积分，有效期是从退款日重新算 12 个月，还是按原来的时间算？",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 917,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 283.28,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 917,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4201.86,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 917,
+            "points": 5,
+            "evidence": 11,
+            "primary": 6,
+            "supporting": 5,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 741,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 29865.28,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "points_policy:3"
+            ],
+            "missing": [
+              "points_policy:1"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "points_policy:3"
+            ],
+            "missing": [
+              "points_policy:1"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "points_policy:3"
+            ],
+            "missing": [
+              "points_policy:1"
+            ]
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "退款返还积分恢复原有效期，不重新计算12个月",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "返还的是已使用积分，不是失效积分",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "已过期被清零的积分不返还",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "积分返还发生在退款执行成功之后",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "退款失败时不返还积分",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A4",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A5",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A2",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A4",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A5",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              }
+            ]
+          }
+        },
+        {
+          "id": "r03",
+          "query": "退款办完之后，之前抵掉的那部分优惠还能不能再用，有效期会不会跟着延长？",
+          "mechanism": "cross_document",
+          "off": {
+            "materials": 5,
+            "material_chars": 867,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 223.56,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 867,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4318.35,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 867,
+            "points": 5,
+            "evidence": 11,
+            "primary": 7,
+            "supporting": 4,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 867,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 33210.26,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "promo_rules:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "promo_rules:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 1,
+            "found_keys": [
+              "promo_rules:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "整单退款时优惠券按原规则返还，沿用原有效期不延长",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "部分退款不返还优惠券，仅按比例扣除优惠分摊",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "已过期的券退款时不返还也不折现",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "返还的积分恢复原有效期，不重新计算12个月",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "券和积分返还均在退款成功后发生，失败不返还",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A2",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A3",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A4",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A4",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A5",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A5",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "8df3b2bd-b10d-427d-97ea-d9ca874509b4",
+                "heading_path": "促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "8df3b2bd-b10d-427d-97ea-d9ca874509b4",
+                "heading_path": "促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A5",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "heading_path": "积分规则 > 3. 积分退还与失效"
+              }
+            ]
+          }
+        },
+        {
+          "id": "r04",
+          "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+          "mechanism": "cross_document",
+          "off": {
+            "materials": 5,
+            "material_chars": 790,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 285.57,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 790,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4351.26,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 790,
+            "points": 5,
+            "evidence": 7,
+            "primary": 6,
+            "supporting": 1,
+            "covered_materials": 2,
+            "unassigned_materials": 3,
+            "evidence_chars": 257,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 20562.38,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "points_policy:2.2",
+              "promo_rules:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "points_policy:2.2",
+              "promo_rules:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 2,
+            "found": 2,
+            "found_keys": [
+              "points_policy:2.2",
+              "promo_rules:1"
+            ],
+            "missing": []
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "银卡及以上固定抵扣封顶提高到500元",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "单笔抵扣上限取商品金额50%与固定封顶较小者",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "商品金额比例限制仍为50%",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "银卡实际封顶为商品金额50%与500元取小",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "积分抵扣后实付金额不得低于0.01元",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+                "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A2",
+                "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+                "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A3",
+                "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+                "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A4",
+                "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+                "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A5",
+                "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+                "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A5",
+                "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+                "content": "## 1. 活动类型与叠加原则\n\n当前在售的促销分四类：满减、折扣、优惠券与积分抵扣。叠加原则只有一条：同一订单最多命中一个满减和一个折扣，优惠券与积分抵扣可以叠加，但抵扣之后实付金额不得低于 0.01 元。积分抵扣有独立的上限，上限口径见《积分规则》第 2.2 节，本规则不重复。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E3",
+                "point_id": "A2",
+                "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+                "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              }
+            ]
+          }
+        },
+        {
+          "id": "r05",
+          "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+          "mechanism": "parallel_points",
+          "off": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 217.52,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4206.33,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": 5,
+            "evidence": 10,
+            "primary": 5,
+            "supporting": 5,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 1004,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 30815.23,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3",
+              "refund_policy:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3",
+              "refund_policy:1"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3",
+              "refund_policy:1"
+            ],
+            "missing": []
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "整单退款返还优惠券，券沿用原有效期不延长。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "已过期优惠券退款时不返还，也不折现。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "整单退款返还全部抵扣积分，恢复原有效期。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "已发放消费积分同步扣回，已用则折欠款抵扣。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "整单退款将分摊后的运费随商品一并退回。",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A2",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A3",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A4",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A5",
+                "chunk_id": "23081a84-27e6-45c8-9678-32305b4c4052",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 1. 适用范围与退款类型",
+                "content": "## 1. 适用范围与退款类型\n\n本政策适用于会员在官方商城、线下门店与小程序三个渠道下的实物订单与服务订单。退款分三种类型：整单退款、部分退款与积分抵扣部分退还。整单退款把订单内全部商品与分摊后的运费一起退回，订单随即关闭；部分退款只退存在问题的商品，剩余商品继续履约；积分抵扣部分退还只处理用积分抵扣过的那一段金额，不改变商品的履约状态。判定走哪一种，先看订单是否已全部履约，再看是否存在积分抵扣。\n\n会员积分如何获取、如何失效，见[《积分规则》](./points_policy.md)第 3 节，本政策不重复积分口径。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A3",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A4",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A5",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              }
+            ]
+          }
+        },
+        {
+          "id": "r06",
+          "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+          "mechanism": "parallel_points",
+          "off": {
+            "materials": 5,
+            "material_chars": 754,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 228.61,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 754,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4318.12,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 754,
+            "points": 5,
+            "evidence": 13,
+            "primary": 6,
+            "supporting": 7,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 556,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 22461.76,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:1",
+              "promo_rules:2",
+              "promo_rules:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:1",
+              "promo_rules:2",
+              "promo_rules:3"
+            ],
+            "missing": []
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 3,
+            "found_keys": [
+              "promo_rules:1",
+              "promo_rules:2",
+              "promo_rules:3"
+            ],
+            "missing": []
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "同一订单最多一个满减和一个折扣，券与积分可叠加。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "满减与折扣同时命中时先算折扣再判满减门槛。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "优惠券金额在满减之后扣减。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "券与积分叠加时先扣券再扣积分。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "积分抵扣有独立上限，按积分规则计算。",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+                "content": "## 1. 活动类型与叠加原则\n\n当前在售的促销分四类：满减、折扣、优惠券与积分抵扣。叠加原则只有一条：同一订单最多命中一个满减和一个折扣，优惠券与积分抵扣可以叠加，但抵扣之后实付金额不得低于 0.01 元。积分抵扣有独立的上限，上限口径见《积分规则》第 2.2 节，本规则不重复。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "2809d099-c339-4fbd-ad68-81d7617fb74d",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+                "content": "## 2. 满减与折扣的计算口径\n\n满减按订单商品金额（不含运费）判定门槛，折扣按商品金额逐件折算后取合计。两者同时命中时先算折扣、再判满减门槛；优惠券金额在满减之后扣减。退款时退款基数怎么算，参见本文第 3 节。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "2809d099-c339-4fbd-ad68-81d7617fb74d",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+                "content": "## 2. 满减与折扣的计算口径\n\n满减按订单商品金额（不含运费）判定门槛，折扣按商品金额逐件折算后取合计。两者同时命中时先算折扣、再判满减门槛；优惠券金额在满减之后扣减。退款时退款基数怎么算，参见本文第 3 节。"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A4",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A5",
+                "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+                "content": "## 1. 活动类型与叠加原则\n\n当前在售的促销分四类：满减、折扣、优惠券与积分抵扣。叠加原则只有一条：同一订单最多命中一个满减和一个折扣，优惠券与积分抵扣可以叠加，但抵扣之后实付金额不得低于 0.01 元。积分抵扣有独立的上限，上限口径见《积分规则》第 2.2 节，本规则不重复。"
+              },
+              {
+                "evidence_id": "E12",
+                "point_id": "A5",
+                "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+                "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "2809d099-c339-4fbd-ad68-81d7617fb74d",
+                "heading_path": "促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+                "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+                "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A4",
+                "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+                "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A4",
+                "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+                "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限"
+              },
+              {
+                "evidence_id": "E13",
+                "point_id": "A5",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              }
+            ]
+          }
+        },
+        {
+          "id": "r07",
+          "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+          "mechanism": "dependent_hop",
+          "off": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 207.83,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4225.56,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": 5,
+            "evidence": 10,
+            "primary": 8,
+            "supporting": 2,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 1004,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 34675.66,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "promo_rules:3",
+              "points_policy:3"
+            ],
+            "missing": [
+              "refund_policy:2"
+            ]
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "券与积分叠加抵扣时，先扣券再扣积分",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "整单退款时券按原规则返还，有效期不延长",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "已过期的券退款不返还，也不折现",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "整单退款返还全部抵扣积分，恢复原有效期",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "券与积分退款成功后返还，失败不返还，并扣回消费积分",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A2",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A3",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A4",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A4",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A5",
+                "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+                "document": "促销活动与优惠券使用规则",
+                "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A5",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A5",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E6",
+                "point_id": "A4",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A4",
+                "chunk_id": "23081a84-27e6-45c8-9678-32305b4c4052",
+                "heading_path": "会员订单退款政策 > 1. 适用范围与退款类型"
+              }
+            ]
+          }
+        },
+        {
+          "id": "r08",
+          "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+          "mechanism": "dependent_hop",
+          "off": {
+            "materials": 5,
+            "material_chars": 988,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 236.36,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 988,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4209.13,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 988,
+            "points": 4,
+            "evidence": 10,
+            "primary": 5,
+            "supporting": 5,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 988,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 18403.68,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "coverage_off": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "points_policy:4",
+              "refund_policy:4"
+            ],
+            "missing": [
+              "points_policy:2.2"
+            ]
+          },
+          "coverage_on_deploy": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "points_policy:4",
+              "refund_policy:4"
+            ],
+            "missing": [
+              "points_policy:2.2"
+            ]
+          },
+          "coverage_on_diagnostic": {
+            "expected": 3,
+            "found": 2,
+            "found_keys": [
+              "points_policy:4",
+              "refund_policy:4"
+            ],
+            "missing": [
+              "points_policy:2.2"
+            ]
+          },
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "保级净额按订单实付金额减退款金额再减积分抵扣金额计算",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "部分退款金额按商品实付金额折算，运费与优惠券优惠按占比分摊",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "积分抵扣金额随商品按比例退回，返还积分恢复原有效期",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "等级判定按退款后的净额重算，降级在下一评估日生效",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "21f41e63-1407-495d-b21d-d808ac3508f0",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 4. 积分等级与保级",
+                "content": "## 4. 积分等级与保级\n\n等级按自然年内的净消费金额判定，净消费金额 = 订单实付金额 − 退款金额 − 积分抵扣金额。银卡 2000 元、金卡 8000 元、白金 20000 元。保级在每年 1 月 1 日按上一年净额重算，未达标降一级。净额里的退款部分如何分摊，以[《会员订单退款政策》](./refund_policy.md)第 4 节为准。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A2",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊",
+                "content": "## 4. 部分退款与优惠分摊\n\n部分退款按商品实付金额折算，运费与优惠券优惠按订单金额占比分摊，不单独退还。分摊顺序是：先按商品实付金额占比拆优惠券金额，再把运费按件数平摊到剩余商品。部分退款之后订单状态仍为已完成，剩余商品的保修期不变。同一订单可以多次部分退款，但累计金额不得超过实付金额。\n\n积分抵扣金额随商品一起按比例退回，退回的积分算「已使用积分」还是「失效积分」，参见本文第 5 节。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+                "document": "积分规则",
+                "heading_path": "积分规则 > 3. 积分退还与失效",
+                "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A4",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "document": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+                "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+                "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "23081a84-27e6-45c8-9678-32305b4c4052",
+                "heading_path": "会员订单退款政策 > 1. 适用范围与退款类型"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "21f41e63-1407-495d-b21d-d808ac3508f0",
+                "heading_path": "积分规则 > 4. 积分等级与保级"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+                "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A4",
+                "chunk_id": "21f41e63-1407-495d-b21d-d808ac3508f0",
+                "heading_path": "积分规则 > 4. 积分等级与保级"
+              }
+            ]
+          }
+        }
+      ],
+      "aggregate": {
+        "questions": 8,
+        "arms": {
+          "off": {
+            "materials_total": 40,
+            "materials_chars_total": 7304,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 0,
+              "rate": 0.0,
+              "ids": []
+            },
+            "retrieval_model_calls": 8,
+            "orchestration_llm_calls_lower_bound": 0,
+            "latency": {
+              "p50": 223.56,
+              "p95": 285.57
+            }
+          },
+          "on_deploy": {
+            "materials_total": 40,
+            "materials_chars_total": 7304,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 8,
+              "rate": 1.0,
+              "ids": [
+                "r01",
+                "r02",
+                "r03",
+                "r04",
+                "r05",
+                "r06",
+                "r07",
+                "r08"
+              ]
+            },
+            "retrieval_model_calls": 8,
+            "orchestration_llm_calls_lower_bound": 8,
+            "latency": {
+              "p50": 4225.56,
+              "p95": 4351.26
+            }
+          },
+          "on_diagnostic": {
+            "materials_total": 40,
+            "materials_chars_total": 7304,
+            "assigned_materials_total": 34,
+            "unassigned_materials_total": 6,
+            "evidence_chars_total": 6134,
+            "points": {
+              "total": 39,
+              "questions_with_points": 8,
+              "avg": 4.875
+            },
+            "completeness": {
+              "complete": 8,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 0,
+              "rate": 0.0,
+              "ids": []
+            },
+            "retrieval_model_calls": 8,
+            "orchestration_llm_calls_lower_bound": 16,
+            "latency": {
+              "p50": 22461.76,
+              "p95": 34675.66
+            }
+          }
+        },
+        "degraded_by_arm": {
+          "off": 0,
+          "on_deploy": 8,
+          "on_diagnostic": 0
+        },
+        "completeness_by_arm": {
+          "on_deploy": {
+            "complete": 0,
+            "partial": 0,
+            "missing": 0
+          },
+          "on_diagnostic": {
+            "complete": 8,
+            "partial": 0,
+            "missing": 0
+          }
+        }
+      },
+      "diagnostic_refill": {
+        "timeout_ms": 60000,
+        "ids": [
+          "r01",
+          "r02",
+          "r03",
+          "r04",
+          "r05",
+          "r06",
+          "r07",
+          "r08"
+        ],
+        "warmup": {
+          "batch": "refs:diagnostic-refill",
+          "retrieval": {
+            "latency_ms": 2820.35,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 13565.52,
+            "degraded_reason": null,
+            "has_block": true,
+            "model_calls": 2
+          }
+        },
+        "still_degraded": []
+      }
+    },
+    "gate": {
+      "kb_ids": [
+        "kb-eval",
+        "kb-eval-ops",
+        "kb-eval-biz",
+        "kb-eval-long",
+        "kb-eval-ref"
+      ],
+      "tenant_id": "tenant_demo",
+      "keyword_alias": "rag_chunks_eval",
+      "questions": 12,
+      "warmup": {
+        "deploy": {
+          "batch": "gate:deploy",
+          "retrieval": {
+            "latency_ms": 230.09,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 4305.44,
+            "degraded_reason": "orchestration failed",
+            "has_block": false,
+            "model_calls": 1
+          }
+        },
+        "diagnostic": {
+          "batch": "gate:diagnostic",
+          "retrieval": {
+            "latency_ms": 319.62,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 30236.38,
+            "degraded_reason": "orchestration failed",
+            "has_block": false,
+            "model_calls": 1
+          }
+        }
+      },
+      "rows": [
+        {
+          "id": "q16",
+          "query": "证书过期了要做哪些步骤，会中断业务吗",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 870,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 225.19,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 870,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4256.71,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 870,
+            "points": 5,
+            "evidence": 11,
+            "primary": 6,
+            "supporting": 5,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 742,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 24790.78,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "确认影响范围，零星设备在线续期，成片设备走轮换。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "轮换依次导出清单、生成新证书、分批下发、验证握手。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "下发先覆盖5%设备观察30分钟，再扩到50%后全量。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "轮换期间不重启平台入口，避免把变更变成业务中断。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "处理后打开告警静默30分钟，静默结束再复查状态。",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "637d8867-61e3-4f08-ae0f-4e538e5ea929",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 证书过期告警处置",
+                "content": "## 证书过期告警处置\n\n收到证书过期告警先确认影响的设备范围：只有零星设备说明是个体证书问题，直接触发在线续期；成片设备同时告警则通常是根证书链到期，需要走证书轮换流程并同步全量设备。处理完成后要把告警静默窗口打开 30 分钟，避免尾巴告警刷屏。静默不等于关闭，静默期结束后要复查一次状态。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "9d4c53e1-3135-411c-a0d3-84f26dd709e4",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 证书轮换操作步骤",
+                "content": "## 证书轮换操作步骤\n\n轮换分四步：导出当前证书清单、在平台侧生成新证书、按批次下发到设备、验证握手成功。下发采用灰度方式，先 5% 设备观察 30 分钟，无异常再扩到 50%，最后全量。验证阶段抽查管理页面与业务上报两条链路，只看其中一条会漏掉单向认证问题。轮换期间不重启平台入口，避免把可控变更变成业务中断。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "9d4c53e1-3135-411c-a0d3-84f26dd709e4",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 证书轮换操作步骤",
+                "content": "## 证书轮换操作步骤\n\n轮换分四步：导出当前证书清单、在平台侧生成新证书、按批次下发到设备、验证握手成功。下发采用灰度方式，先 5% 设备观察 30 分钟，无异常再扩到 50%，最后全量。验证阶段抽查管理页面与业务上报两条链路，只看其中一条会漏掉单向认证问题。轮换期间不重启平台入口，避免把可控变更变成业务中断。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A4",
+                "chunk_id": "9d4c53e1-3135-411c-a0d3-84f26dd709e4",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 证书轮换操作步骤",
+                "content": "## 证书轮换操作步骤\n\n轮换分四步：导出当前证书清单、在平台侧生成新证书、按批次下发到设备、验证握手成功。下发采用灰度方式，先 5% 设备观察 30 分钟，无异常再扩到 50%，最后全量。验证阶段抽查管理页面与业务上报两条链路，只看其中一条会漏掉单向认证问题。轮换期间不重启平台入口，避免把可控变更变成业务中断。"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A5",
+                "chunk_id": "637d8867-61e3-4f08-ae0f-4e538e5ea929",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 证书过期告警处置",
+                "content": "## 证书过期告警处置\n\n收到证书过期告警先确认影响的设备范围：只有零星设备说明是个体证书问题，直接触发在线续期；成片设备同时告警则通常是根证书链到期，需要走证书轮换流程并同步全量设备。处理完成后要把告警静默窗口打开 30 分钟，避免尾巴告警刷屏。静默不等于关闭，静默期结束后要复查一次状态。"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A5",
+                "chunk_id": "90eb2fc6-ed44-4f36-b784-7ad2cd80dcf7",
+                "document": "售后故障与错误码速查",
+                "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）",
+                "content": "## 连接与证书类错误（一）\n\nE1024 表示设备本地保存的证书链已经超过有效期。典型现象是设备联网上报时被服务端拒绝，设备日志里出现 certificate has expired 字样，业务侧看到的是连接被直接关闭。处理方式是触发一次在线续期；如果设备长期离线无法自动完成，则按证书轮换流程人工导入新证书。这条错误属于可自愈的瞬时错误，但重试之前必须先把续期做完，否则同样的拒绝会持续复现。排查时先确认设备时钟是否正常，再看服务端的状态记录；处置完成后在资产台账里标注本次操作，并把告警静默窗口打开 30 分钟，避免尾巴告警重复打扰值班。结论：这是到期问题，先续期再重试。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "90eb2fc6-ed44-4f36-b784-7ad2cd80dcf7",
+                "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "9d4c53e1-3135-411c-a0d3-84f26dd709e4",
+                "heading_path": "值班处置手册 > 证书轮换操作步骤"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "4b24bf32-f471-4116-897f-afe614ba565e",
+                "heading_path": "安全合规与审计说明 > 证书生命周期"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A2",
+                "chunk_id": "90eb2fc6-ed44-4f36-b784-7ad2cd80dcf7",
+                "heading_path": "售后故障与错误码速查 > 连接与证书类错误（一）"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "637d8867-61e3-4f08-ae0f-4e538e5ea929",
+                "heading_path": "值班处置手册 > 证书过期告警处置"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.4,
+          "cr_on_diagnostic": 1.0
+        },
+        {
+          "id": "q17",
+          "query": "XR-2000 Pro 的电源适配器能和 XR-2000 通用吗",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 1978,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 255.74,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1978,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4237.7,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1978,
+            "points": 5,
+            "evidence": 17,
+            "primary": 7,
+            "supporting": 10,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 1978,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 14023.73,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "XR-2000 使用 12 瓦电源适配器",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "XR-2000 Pro 使用 24 瓦电源适配器",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "两者电源适配器不能互换",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "原因是两者功率要求不同",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "XR-2000 Pro 功耗约 24 瓦，须用 24 瓦适配器",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "589fbe42-e5f5-4bd7-ad62-dedb9e638e15",
+                "document": "价格与折扣对照表",
+                "heading_path": "价格与折扣对照表 > 配件价格",
+                "content": "| 配件 | 适用型号 | 单价（元） |\n| --- | --- | --- |\n| 12 瓦电源适配器 | XR-2000 | 68 |\n| 24 瓦电源适配器 | XR-2000 Pro | 108 |\n| 壁挂件 | XR-2000 / XR-2000 Pro | 45 |\n| 千兆光模块 | XR-2100 | 320 |\n| 万兆光模块 | XR-2100 | 1180 |\n| 天线（标准增益） | 标准款 / 增强款 | 39 |\n| 天线（高增益） | 增强款 / 机架款 | 96 |\n| 机柜导轨 | XR-2100 | 210 |"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "e92e7388-62e2-4419-a1c0-6b046e4547c4",
+                "document": "价格与折扣对照表",
+                "heading_path": "价格与折扣对照表 > 配件价格",
+                "content": "| 配件 | 适用型号 | 单价（元） |\n| --- | --- | --- |\n| 12 瓦电源适配器 | XR-2000 | 68 |\n| 24 瓦电源适配器 | XR-2000 Pro | 108 |\n| 壁挂件 | XR-2000 / XR-2000 Pro | 45 |\n| 千兆光模块 | XR-2100 | 320 |\n| 万兆光模块 | XR-2100 | 1180 |\n| 天线（标准增益） | 标准款 / 增强款 | 39 |\n| 天线（高增益） | 增强款 / 机架款 | 96 |\n| 机柜导轨 | XR-2100 | 210 |\n\n配件=12 瓦电源适配器，适用型号=XR-2000，单价（元）=68\n\n配件=24 瓦电源适配器，适用型号=XR-2000 Pro，单价（元）=108\n\n配件=壁挂件，适用型号=XR-2000 / XR-2000 Pro，单价（元）=45\n\n配件=千兆光模块，适用型号=XR-2100，单价（元）=320\n\n配件=万兆光模块，适用型号=XR-2100，单价（元）=1180\n\n配件=天线（标准增益），适用型号=标准款 / 增强款，单价（元）=39\n\n配件=天线（高增益），适用型号=增强款 / 机架款，单价（元）=96\n\n配件=机柜导轨，适用型号=XR-2100，单价（元）=210"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "589fbe42-e5f5-4bd7-ad62-dedb9e638e15",
+                "document": "价格与折扣对照表",
+                "heading_path": "价格与折扣对照表 > 配件价格",
+                "content": "| 配件 | 适用型号 | 单价（元） |\n| --- | --- | --- |\n| 12 瓦电源适配器 | XR-2000 | 68 |\n| 24 瓦电源适配器 | XR-2000 Pro | 108 |\n| 壁挂件 | XR-2000 / XR-2000 Pro | 45 |\n| 千兆光模块 | XR-2100 | 320 |\n| 万兆光模块 | XR-2100 | 1180 |\n| 天线（标准增益） | 标准款 / 增强款 | 39 |\n| 天线（高增益） | 增强款 / 机架款 | 96 |\n| 机柜导轨 | XR-2100 | 210 |"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "e92e7388-62e2-4419-a1c0-6b046e4547c4",
+                "document": "价格与折扣对照表",
+                "heading_path": "价格与折扣对照表 > 配件价格",
+                "content": "| 配件 | 适用型号 | 单价（元） |\n| --- | --- | --- |\n| 12 瓦电源适配器 | XR-2000 | 68 |\n| 24 瓦电源适配器 | XR-2000 Pro | 108 |\n| 壁挂件 | XR-2000 / XR-2000 Pro | 45 |\n| 千兆光模块 | XR-2100 | 320 |\n| 万兆光模块 | XR-2100 | 1180 |\n| 天线（标准增益） | 标准款 / 增强款 | 39 |\n| 天线（高增益） | 增强款 / 机架款 | 96 |\n| 机柜导轨 | XR-2100 | 210 |\n\n配件=12 瓦电源适配器，适用型号=XR-2000，单价（元）=68\n\n配件=24 瓦电源适配器，适用型号=XR-2000 Pro，单价（元）=108\n\n配件=壁挂件，适用型号=XR-2000 / XR-2000 Pro，单价（元）=45\n\n配件=千兆光模块，适用型号=XR-2100，单价（元）=320\n\n配件=万兆光模块，适用型号=XR-2100，单价（元）=1180\n\n配件=天线（标准增益），适用型号=标准款 / 增强款，单价（元）=39\n\n配件=天线（高增益），适用型号=增强款 / 机架款，单价（元）=96\n\n配件=机柜导轨，适用型号=XR-2100，单价（元）=210"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
+                "document": "终端型号与配件指南",
+                "heading_path": "终端型号与配件指南 > 整机规格（增强款）",
+                "content": "## 整机规格（增强款）\n\n增强款与标准款外观一致但内部不同，面向中型门店与多业务并发的分支节点。增强款型号为 XR-2000 Pro 出厂配置 6 个千兆网口，8 核处理器、4 GB 内存、32 GB eMMC，无线支持 Wi-Fi 6 与双机热备，出厂固件 4.x 版本，最大接入终端数为 256。XR-2000 Pro 与标准款配件基本通用，唯一不能互换的是电源适配器，因为功率要求不同。增强款整机功耗约 24 瓦，必须使用随机的 24 瓦适配器。"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A4",
+                "chunk_id": "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
+                "document": "终端型号与配件指南",
+                "heading_path": "终端型号与配件指南 > 整机规格（增强款）",
+                "content": "## 整机规格（增强款）\n\n增强款与标准款外观一致但内部不同，面向中型门店与多业务并发的分支节点。增强款型号为 XR-2000 Pro 出厂配置 6 个千兆网口，8 核处理器、4 GB 内存、32 GB eMMC，无线支持 Wi-Fi 6 与双机热备，出厂固件 4.x 版本，最大接入终端数为 256。XR-2000 Pro 与标准款配件基本通用，唯一不能互换的是电源适配器，因为功率要求不同。增强款整机功耗约 24 瓦，必须使用随机的 24 瓦适配器。"
+              },
+              {
+                "evidence_id": "E14",
+                "point_id": "A5",
+                "chunk_id": "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
+                "document": "终端型号与配件指南",
+                "heading_path": "终端型号与配件指南 > 整机规格（增强款）",
+                "content": "## 整机规格（增强款）\n\n增强款与标准款外观一致但内部不同，面向中型门店与多业务并发的分支节点。增强款型号为 XR-2000 Pro 出厂配置 6 个千兆网口，8 核处理器、4 GB 内存、32 GB eMMC，无线支持 Wi-Fi 6 与双机热备，出厂固件 4.x 版本，最大接入终端数为 256。XR-2000 Pro 与标准款配件基本通用，唯一不能互换的是电源适配器，因为功率要求不同。增强款整机功耗约 24 瓦，必须使用随机的 24 瓦适配器。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
+                "heading_path": "终端型号与配件指南 > 整机规格（增强款）"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A2",
+                "chunk_id": "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
+                "heading_path": "价格与折扣对照表 > 整机指导价"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A2",
+                "chunk_id": "1959967c-8ea0-4f37-ae12-790f988aa09f",
+                "heading_path": "价格与折扣对照表 > 整机指导价"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A3",
+                "chunk_id": "589fbe42-e5f5-4bd7-ad62-dedb9e638e15",
+                "heading_path": "价格与折扣对照表 > 配件价格"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A3",
+                "chunk_id": "e92e7388-62e2-4419-a1c0-6b046e4547c4",
+                "heading_path": "价格与折扣对照表 > 配件价格"
+              },
+              {
+                "evidence_id": "E12",
+                "point_id": "A4",
+                "chunk_id": "589fbe42-e5f5-4bd7-ad62-dedb9e638e15",
+                "heading_path": "价格与折扣对照表 > 配件价格"
+              },
+              {
+                "evidence_id": "E13",
+                "point_id": "A4",
+                "chunk_id": "e92e7388-62e2-4419-a1c0-6b046e4547c4",
+                "heading_path": "价格与折扣对照表 > 配件价格"
+              },
+              {
+                "evidence_id": "E15",
+                "point_id": "A5",
+                "chunk_id": "e92e7388-62e2-4419-a1c0-6b046e4547c4",
+                "heading_path": "价格与折扣对照表 > 配件价格"
+              },
+              {
+                "evidence_id": "E16",
+                "point_id": "A5",
+                "chunk_id": "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
+                "heading_path": "价格与折扣对照表 > 整机指导价"
+              },
+              {
+                "evidence_id": "E17",
+                "point_id": "A5",
+                "chunk_id": "1959967c-8ea0-4f37-ae12-790f988aa09f",
+                "heading_path": "价格与折扣对照表 > 整机指导价"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.2,
+          "cr_on_diagnostic": 0.5
+        },
+        {
+          "id": "q18",
+          "query": "P1 故障的响应时限是多少，超时找谁",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 211.53,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4241.89,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1004,
+            "points": 3,
+            "evidence": 8,
+            "primary": 7,
+            "supporting": 1,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 896,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 33916.5,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "P1 为业务中断，响应时限为 15 分钟",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "响应时限从告警触发时刻开始计算",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "未定位 15 分钟应升级主管",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "9407907d-489f-4770-8b3b-763d31ccd835",
+                "document": "服务等级协议条款",
+                "heading_path": "服务等级协议条款 > 响应与恢复时限",
+                "content": "| 故障等级 | 响应时限 | 恢复目标 | 升级时限 |\n| --- | --- | --- | --- |\n| P1（业务中断） | 15 分钟 | 1 小时 | 未定位 15 分钟升主管 |\n| P2（部分不可用） | 30 分钟 | 4 小时 | 未缓解 2 小时升主管 |\n| P3（体验问题） | 4 小时 | 3 个工作日 | 不自动升级 |\n| P4（观察项） | 1 个工作日 | 按排期 | 不自动升级 |"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "afa4c154-c22d-4e20-a5d4-0834b48d85c6",
+                "document": "服务等级协议条款",
+                "heading_path": "服务等级协议条款 > 响应与恢复时限",
+                "content": "| 故障等级 | 响应时限 | 恢复目标 | 升级时限 |\n| --- | --- | --- | --- |\n| P1（业务中断） | 15 分钟 | 1 小时 | 未定位 15 分钟升主管 |\n| P2（部分不可用） | 30 分钟 | 4 小时 | 未缓解 2 小时升主管 |\n| P3（体验问题） | 4 小时 | 3 个工作日 | 不自动升级 |\n| P4（观察项） | 1 个工作日 | 按排期 | 不自动升级 |\n\n故障等级=P1（业务中断），响应时限=15 分钟，恢复目标=1 小时，升级时限=未定位 15 分钟升主管\n\n故障等级=P2（部分不可用），响应时限=30 分钟，恢复目标=4 小时，升级时限=未缓解 2 小时升主管\n\n故障等级=P3（体验问题），响应时限=4 小时，恢复目标=3 个工作日，升级时限=不自动升级\n\n故障等级=P4（观察项），响应时限=1 个工作日，恢复目标=按排期，升级时限=不自动升级"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "9510cd4b-4288-4aa4-8d99-524ada9991f6",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 告警分级与响应时限",
+                "content": "## 告警分级与响应时限\n\nP1 为业务中断，要求 15 分钟内响应、1 小时内给出初步结论；P2 为部分功能不可用，要求 30 分钟内响应；P3 为体验问题，按工单排期处理；P4 为观察项，不要求即时响应。分级由监控规则自动给出，值班可以上调一级但不得下调。响应时限从告警触发时刻开始计算，不是从值班看到告警开始计算。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "6837a313-a036-43ac-b968-6f4d638338e4",
+                "document": "服务等级协议条款",
+                "heading_path": "服务等级协议条款 > 时限计算与例外",
+                "content": "## 时限计算与例外\n\n响应时限从告警触发时刻开始计算，不从受理时刻开始。恢复目标不等于承诺时限，超出恢复目标但仍在承诺期内的不构成违约。P1 故障要求客户侧提供可联系的值班人，联系不上导致的时间不计入我方响应时长。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "9510cd4b-4288-4aa4-8d99-524ada9991f6",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 告警分级与响应时限",
+                "content": "## 告警分级与响应时限\n\nP1 为业务中断，要求 15 分钟内响应、1 小时内给出初步结论；P2 为部分功能不可用，要求 30 分钟内响应；P3 为体验问题，按工单排期处理；P4 为观察项，不要求即时响应。分级由监控规则自动给出，值班可以上调一级但不得下调。响应时限从告警触发时刻开始计算，不是从值班看到告警开始计算。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "9407907d-489f-4770-8b3b-763d31ccd835",
+                "document": "服务等级协议条款",
+                "heading_path": "服务等级协议条款 > 响应与恢复时限",
+                "content": "| 故障等级 | 响应时限 | 恢复目标 | 升级时限 |\n| --- | --- | --- | --- |\n| P1（业务中断） | 15 分钟 | 1 小时 | 未定位 15 分钟升主管 |\n| P2（部分不可用） | 30 分钟 | 4 小时 | 未缓解 2 小时升主管 |\n| P3（体验问题） | 4 小时 | 3 个工作日 | 不自动升级 |\n| P4（观察项） | 1 个工作日 | 按排期 | 不自动升级 |"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "afa4c154-c22d-4e20-a5d4-0834b48d85c6",
+                "document": "服务等级协议条款",
+                "heading_path": "服务等级协议条款 > 响应与恢复时限",
+                "content": "| 故障等级 | 响应时限 | 恢复目标 | 升级时限 |\n| --- | --- | --- | --- |\n| P1（业务中断） | 15 分钟 | 1 小时 | 未定位 15 分钟升主管 |\n| P2（部分不可用） | 30 分钟 | 4 小时 | 未缓解 2 小时升主管 |\n| P3（体验问题） | 4 小时 | 3 个工作日 | 不自动升级 |\n| P4（观察项） | 1 个工作日 | 按排期 | 不自动升级 |\n\n故障等级=P1（业务中断），响应时限=15 分钟，恢复目标=1 小时，升级时限=未定位 15 分钟升主管\n\n故障等级=P2（部分不可用），响应时限=30 分钟，恢复目标=4 小时，升级时限=未缓解 2 小时升主管\n\n故障等级=P3（体验问题），响应时限=4 小时，恢复目标=3 个工作日，升级时限=不自动升级\n\n故障等级=P4（观察项），响应时限=1 个工作日，恢复目标=按排期，升级时限=不自动升级"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "9510cd4b-4288-4aa4-8d99-524ada9991f6",
+                "heading_path": "值班处置手册 > 告警分级与响应时限"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.2,
+          "cr_on_diagnostic": 0.5
+        },
+        {
+          "id": "q19",
+          "query": "退款要几天，从哪个入口申请",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 769,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 255.47,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 769,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4245.06,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 769,
+            "points": 5,
+            "evidence": 11,
+            "primary": 5,
+            "supporting": 6,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 609,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 11359.52,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "退款可从管理后台订单详情页提交申请",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "也可通过客服工单或线下退款申请单申请",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "提交后审核一般在2个工作日内完成",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "审核通过后3到5个工作日到账，视支付渠道",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "对公转账财务5个工作日内打款，跨行或延长",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "6ca829b7-53e4-453a-9026-22a3e80a2ddd",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款申请入口",
+                "content": "## 退款申请入口\n\n退款申请有三个入口：管理后台的订单详情页、客服工单、以及线下签署的退款申请单。管理后台入口最快，提交后可以自助查看进度；工单入口适合材料较多或需要人工判定的场景；线下申请单只用于对公客户与跨境订单。三个入口最终进入同一个审核队列，重复提交不会加快处理，反而会产生重复工单。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A2",
+                "chunk_id": "6ca829b7-53e4-453a-9026-22a3e80a2ddd",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款申请入口",
+                "content": "## 退款申请入口\n\n退款申请有三个入口：管理后台的订单详情页、客服工单、以及线下签署的退款申请单。管理后台入口最快，提交后可以自助查看进度；工单入口适合材料较多或需要人工判定的场景；线下申请单只用于对公客户与跨境订单。三个入口最终进入同一个审核队列，重复提交不会加快处理，反而会产生重复工单。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A3",
+                "chunk_id": "7d557406-88e7-4d5e-b5b4-fd1b264a5a85",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款审核时限",
+                "content": "## 退款审核时限\n\n提交申请后，审核在 2 个工作日内完成。审核内容包括订单状态、支付渠道、是否已开票、以及是否存在未结清的欠款。材料不全时审核会挂起并通知补充，挂起时间不计入审核时限。审核通过后进入退款执行环节，审核拒绝会给出具体原因，常见原因是超出时限或商品已激活。审核结果以系统通知为准，口头承诺不作为凭据。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A4",
+                "chunk_id": "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账时间",
+                "content": "## 退款到账时间\n\n审核通过后，退款会在 3 到 5 个工作日内到账，具体取决于支付渠道。原路退回是最常见的方式：银行卡一般 3 个工作日，第三方支付一般 1 到 2 个工作日，对公转账可能到 5 个工作日。到账时间从退款执行日开始计算，不是从申请日开始计算。超过 5 个工作日仍未到账时，先查支付渠道的退款流水，再联系客服发起查询。"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A5",
+                "chunk_id": "2dd5bce2-e2f8-48bc-a090-2746ac84b422",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 对公转账退款",
+                "content": "## 对公转账退款\n\n对公转账退款需要提供加盖公章的退款申请单、原汇款凭证与收款账户信息。审核通过后由财务在 5 个工作日内打款，跨行可能延长 1 到 2 个工作日。对公退款不支持原路退回以外的账户，除非客户同时提交账户变更说明。对公退款会生成红字发票，与原发票一起入账。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "7d557406-88e7-4d5e-b5b4-fd1b264a5a85",
+                "heading_path": "退款与售后受理规则 > 退款审核时限"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "2dd5bce2-e2f8-48bc-a090-2746ac84b422",
+                "heading_path": "退款与售后受理规则 > 对公转账退款"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "6ca829b7-53e4-453a-9026-22a3e80a2ddd",
+                "heading_path": "退款与售后受理规则 > 退款申请入口"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A4",
+                "chunk_id": "7d557406-88e7-4d5e-b5b4-fd1b264a5a85",
+                "heading_path": "退款与售后受理规则 > 退款审核时限"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A4",
+                "chunk_id": "2dd5bce2-e2f8-48bc-a090-2746ac84b422",
+                "heading_path": "退款与售后受理规则 > 对公转账退款"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A5",
+                "chunk_id": "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
+                "heading_path": "退款与售后受理规则 > 退款到账时间"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.4,
+          "cr_on_diagnostic": 1.0
+        },
+        {
+          "id": "q58",
+          "query": "平台密钥多久轮换一次，轮换时要注意什么",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 789,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 233.89,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 789,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4233.5,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 789,
+            "points": 5,
+            "evidence": 16,
+            "primary": 8,
+            "supporting": 8,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 789,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 22270.96,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "平台密钥每 12 个月轮换一次",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "另有材料称密钥轮换周期为每 6 个月",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "轮换采用双密钥并存，旧密钥保留宽限期",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "宽限期内须完成全部调用方切换，否则签名校验失败",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "轮换计划需提前 30 天同步集成方",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "a2d83edd-2268-4459-934d-9c1135be9a18",
+                "document": "安全合规与审计说明",
+                "heading_path": "安全合规与审计说明 > 密钥轮换",
+                "content": "## 密钥轮换\n\n平台密钥每 12 个月轮换一次，租户密钥每 6 个月轮换一次，设备密钥在设备更换主板时强制轮换。轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期。宽限期结束前必须完成全部调用方切换，否则会出现签名校验失败。轮换计划需要提前 30 天同步给集成方。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "caae60b5-8844-4a94-a805-300168eb2e3b",
+                "document": "接口对接与鉴权说明",
+                "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法 > 密钥轮换 > 轮换周期",
+                "content": "### 密钥轮换\n\n#### 轮换周期\n\n密钥轮换每 6 个月一次，轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期，宽限期结束前必须完成全部调用方切换。平台会在轮换前 30 天通过公告与邮件同步给所有集成方。宽限期结束后旧密钥立即失效，未完成切换的调用方会收到签名不匹配的错误——这个错误与「密钥写错」的表现完全一样，排查时要先确认密钥版本，再看签名逻辑。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "a2d83edd-2268-4459-934d-9c1135be9a18",
+                "document": "安全合规与审计说明",
+                "heading_path": "安全合规与审计说明 > 密钥轮换",
+                "content": "## 密钥轮换\n\n平台密钥每 12 个月轮换一次，租户密钥每 6 个月轮换一次，设备密钥在设备更换主板时强制轮换。轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期。宽限期结束前必须完成全部调用方切换，否则会出现签名校验失败。轮换计划需要提前 30 天同步给集成方。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "caae60b5-8844-4a94-a805-300168eb2e3b",
+                "document": "接口对接与鉴权说明",
+                "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法 > 密钥轮换 > 轮换周期",
+                "content": "### 密钥轮换\n\n#### 轮换周期\n\n密钥轮换每 6 个月一次，轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期，宽限期结束前必须完成全部调用方切换。平台会在轮换前 30 天通过公告与邮件同步给所有集成方。宽限期结束后旧密钥立即失效，未完成切换的调用方会收到签名不匹配的错误——这个错误与「密钥写错」的表现完全一样，排查时要先确认密钥版本，再看签名逻辑。"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A4",
+                "chunk_id": "a2d83edd-2268-4459-934d-9c1135be9a18",
+                "document": "安全合规与审计说明",
+                "heading_path": "安全合规与审计说明 > 密钥轮换",
+                "content": "## 密钥轮换\n\n平台密钥每 12 个月轮换一次，租户密钥每 6 个月轮换一次，设备密钥在设备更换主板时强制轮换。轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期。宽限期结束前必须完成全部调用方切换，否则会出现签名校验失败。轮换计划需要提前 30 天同步给集成方。"
+              },
+              {
+                "evidence_id": "E12",
+                "point_id": "A4",
+                "chunk_id": "caae60b5-8844-4a94-a805-300168eb2e3b",
+                "document": "接口对接与鉴权说明",
+                "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法 > 密钥轮换 > 轮换周期",
+                "content": "### 密钥轮换\n\n#### 轮换周期\n\n密钥轮换每 6 个月一次，轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期，宽限期结束前必须完成全部调用方切换。平台会在轮换前 30 天通过公告与邮件同步给所有集成方。宽限期结束后旧密钥立即失效，未完成切换的调用方会收到签名不匹配的错误——这个错误与「密钥写错」的表现完全一样，排查时要先确认密钥版本，再看签名逻辑。"
+              },
+              {
+                "evidence_id": "E14",
+                "point_id": "A5",
+                "chunk_id": "a2d83edd-2268-4459-934d-9c1135be9a18",
+                "document": "安全合规与审计说明",
+                "heading_path": "安全合规与审计说明 > 密钥轮换",
+                "content": "## 密钥轮换\n\n平台密钥每 12 个月轮换一次，租户密钥每 6 个月轮换一次，设备密钥在设备更换主板时强制轮换。轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期。宽限期结束前必须完成全部调用方切换，否则会出现签名校验失败。轮换计划需要提前 30 天同步给集成方。"
+              },
+              {
+                "evidence_id": "E15",
+                "point_id": "A5",
+                "chunk_id": "caae60b5-8844-4a94-a805-300168eb2e3b",
+                "document": "接口对接与鉴权说明",
+                "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法 > 密钥轮换 > 轮换周期",
+                "content": "### 密钥轮换\n\n#### 轮换周期\n\n密钥轮换每 6 个月一次，轮换采用双密钥并存策略：新密钥生效后旧密钥保留一个宽限期，宽限期结束前必须完成全部调用方切换。平台会在轮换前 30 天通过公告与邮件同步给所有集成方。宽限期结束后旧密钥立即失效，未完成切换的调用方会收到签名不匹配的错误——这个错误与「密钥写错」的表现完全一样，排查时要先确认密钥版本，再看签名逻辑。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "caae60b5-8844-4a94-a805-300168eb2e3b",
+                "heading_path": "接口对接与鉴权说明 > 鉴权方式与签名算法 > 密钥轮换 > 轮换周期"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "db782103-78e5-410c-b407-5f96e568b32a",
+                "heading_path": "安全合规与审计说明 > 密钥管理"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "a2d83edd-2268-4459-934d-9c1135be9a18",
+                "heading_path": "安全合规与审计说明 > 密钥轮换"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "db782103-78e5-410c-b407-5f96e568b32a",
+                "heading_path": "安全合规与审计说明 > 密钥管理"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A3",
+                "chunk_id": "35624903-10a1-40dd-b67a-f8a77d537492",
+                "heading_path": "售后故障与错误码速查 > 回调与签名类错误（四）"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A3",
+                "chunk_id": "9d4c53e1-3135-411c-a0d3-84f26dd709e4",
+                "heading_path": "值班处置手册 > 证书轮换操作步骤"
+              },
+              {
+                "evidence_id": "E13",
+                "point_id": "A4",
+                "chunk_id": "35624903-10a1-40dd-b67a-f8a77d537492",
+                "heading_path": "售后故障与错误码速查 > 回调与签名类错误（四）"
+              },
+              {
+                "evidence_id": "E16",
+                "point_id": "A5",
+                "chunk_id": "db782103-78e5-410c-b407-5f96e568b32a",
+                "heading_path": "安全合规与审计说明 > 密钥管理"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.4,
+          "cr_on_diagnostic": 1.0
+        },
+        {
+          "id": "q59",
+          "query": "退款一直没到账该怎么查",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 820,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 211.75,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 820,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4234.15,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 820,
+            "points": 5,
+            "evidence": 18,
+            "primary": 7,
+            "supporting": 11,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 820,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 24816.36,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "超过承诺时间未到账时按四步排查",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "先确认退款状态是否为已执行",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "核对支付渠道的退款流水",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "确认收款账户是否注销或变更",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "联系渠道客服查询或发起查询单",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "2edfabec-bb1a-46f6-90a1-9ce07163d3e3",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账异常排查",
+                "content": "## 退款到账异常排查\n\n超过承诺时间未到账时，按四步排查：确认退款状态是否为已执行、核对支付渠道的退款流水、确认收款账户是否已注销或变更、联系渠道客服查询。退款状态为已执行但渠道无流水时，属于渠道异常，需要我方发起查询单。收款账户注销时资金会退回我方账户，需要客户提供新的账户信息重新打款。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "2edfabec-bb1a-46f6-90a1-9ce07163d3e3",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账异常排查",
+                "content": "## 退款到账异常排查\n\n超过承诺时间未到账时，按四步排查：确认退款状态是否为已执行、核对支付渠道的退款流水、确认收款账户是否已注销或变更、联系渠道客服查询。退款状态为已执行但渠道无流水时，属于渠道异常，需要我方发起查询单。收款账户注销时资金会退回我方账户，需要客户提供新的账户信息重新打款。"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "2edfabec-bb1a-46f6-90a1-9ce07163d3e3",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账异常排查",
+                "content": "## 退款到账异常排查\n\n超过承诺时间未到账时，按四步排查：确认退款状态是否为已执行、核对支付渠道的退款流水、确认收款账户是否已注销或变更、联系渠道客服查询。退款状态为已执行但渠道无流水时，属于渠道异常，需要我方发起查询单。收款账户注销时资金会退回我方账户，需要客户提供新的账户信息重新打款。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A3",
+                "chunk_id": "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账时间",
+                "content": "## 退款到账时间\n\n审核通过后，退款会在 3 到 5 个工作日内到账，具体取决于支付渠道。原路退回是最常见的方式：银行卡一般 3 个工作日，第三方支付一般 1 到 2 个工作日，对公转账可能到 5 个工作日。到账时间从退款执行日开始计算，不是从申请日开始计算。超过 5 个工作日仍未到账时，先查支付渠道的退款流水，再联系客服发起查询。"
+              },
+              {
+                "evidence_id": "E12",
+                "point_id": "A4",
+                "chunk_id": "2edfabec-bb1a-46f6-90a1-9ce07163d3e3",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账异常排查",
+                "content": "## 退款到账异常排查\n\n超过承诺时间未到账时，按四步排查：确认退款状态是否为已执行、核对支付渠道的退款流水、确认收款账户是否已注销或变更、联系渠道客服查询。退款状态为已执行但渠道无流水时，属于渠道异常，需要我方发起查询单。收款账户注销时资金会退回我方账户，需要客户提供新的账户信息重新打款。"
+              },
+              {
+                "evidence_id": "E15",
+                "point_id": "A5",
+                "chunk_id": "2edfabec-bb1a-46f6-90a1-9ce07163d3e3",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账异常排查",
+                "content": "## 退款到账异常排查\n\n超过承诺时间未到账时，按四步排查：确认退款状态是否为已执行、核对支付渠道的退款流水、确认收款账户是否已注销或变更、联系渠道客服查询。退款状态为已执行但渠道无流水时，属于渠道异常，需要我方发起查询单。收款账户注销时资金会退回我方账户，需要客户提供新的账户信息重新打款。"
+              },
+              {
+                "evidence_id": "E16",
+                "point_id": "A5",
+                "chunk_id": "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
+                "document": "退款与售后受理规则",
+                "heading_path": "退款与售后受理规则 > 退款到账时间",
+                "content": "## 退款到账时间\n\n审核通过后，退款会在 3 到 5 个工作日内到账，具体取决于支付渠道。原路退回是最常见的方式：银行卡一般 3 个工作日，第三方支付一般 1 到 2 个工作日，对公转账可能到 5 个工作日。到账时间从退款执行日开始计算，不是从申请日开始计算。超过 5 个工作日仍未到账时，先查支付渠道的退款流水，再联系客服发起查询。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
+                "heading_path": "退款与售后受理规则 > 退款到账时间"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "7d557406-88e7-4d5e-b5b4-fd1b264a5a85",
+                "heading_path": "退款与售后受理规则 > 退款审核时限"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A1",
+                "chunk_id": "cf87af21-2269-47e0-9f15-102c6bebe7ff",
+                "heading_path": "计费与账务政策 > 计费常见问题"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A2",
+                "chunk_id": "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
+                "heading_path": "退款与售后受理规则 > 退款到账时间"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A2",
+                "chunk_id": "7d557406-88e7-4d5e-b5b4-fd1b264a5a85",
+                "heading_path": "退款与售后受理规则 > 退款审核时限"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A3",
+                "chunk_id": "cf87af21-2269-47e0-9f15-102c6bebe7ff",
+                "heading_path": "计费与账务政策 > 计费常见问题"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A3",
+                "chunk_id": "45a2b3ca-756d-471b-a1eb-8796b09830f0",
+                "heading_path": "退款与售后受理规则 > 退钱常见问法答疑"
+              },
+              {
+                "evidence_id": "E13",
+                "point_id": "A4",
+                "chunk_id": "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
+                "heading_path": "退款与售后受理规则 > 退款到账时间"
+              },
+              {
+                "evidence_id": "E14",
+                "point_id": "A4",
+                "chunk_id": "cf87af21-2269-47e0-9f15-102c6bebe7ff",
+                "heading_path": "计费与账务政策 > 计费常见问题"
+              },
+              {
+                "evidence_id": "E17",
+                "point_id": "A5",
+                "chunk_id": "cf87af21-2269-47e0-9f15-102c6bebe7ff",
+                "heading_path": "计费与账务政策 > 计费常见问题"
+              },
+              {
+                "evidence_id": "E18",
+                "point_id": "A5",
+                "chunk_id": "45a2b3ca-756d-471b-a1eb-8796b09830f0",
+                "heading_path": "退款与售后受理规则 > 退钱常见问法答疑"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.4,
+          "cr_on_diagnostic": 1.0
+        },
+        {
+          "id": "q60",
+          "query": "变更窗口是什么时候，窗口结束前要做什么",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 638,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 227.2,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 638,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4240.96,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 638,
+            "points": 4,
+            "evidence": 5,
+            "primary": 4,
+            "supporting": 1,
+            "covered_materials": 2,
+            "unassigned_materials": 3,
+            "evidence_chars": 233,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 15098.72,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "常规变更窗口为工作日22点到次日2点",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "数据库变更窗口为周六凌晨",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "窗口结束前30分钟必须开始验证",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "验证未通过按回滚处理",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "111389e0-46bc-4083-a3e7-37e9aa478155",
+                "document": "发布与变更管理规范",
+                "heading_path": "发布与变更管理规范 > 变更窗口",
+                "content": "## 变更窗口\n\n常规变更窗口为工作日 22 点到次日 2 点，数据库变更窗口为周六凌晨。窗口内只允许一项一级变更，避免多个变量混在一起。窗口结束前 30 分钟必须开始验证，验证未通过按回滚处理。窗口外执行变更需要额外审批并说明理由。"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A2",
+                "chunk_id": "111389e0-46bc-4083-a3e7-37e9aa478155",
+                "document": "发布与变更管理规范",
+                "heading_path": "发布与变更管理规范 > 变更窗口",
+                "content": "## 变更窗口\n\n常规变更窗口为工作日 22 点到次日 2 点，数据库变更窗口为周六凌晨。窗口内只允许一项一级变更，避免多个变量混在一起。窗口结束前 30 分钟必须开始验证，验证未通过按回滚处理。窗口外执行变更需要额外审批并说明理由。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A3",
+                "chunk_id": "111389e0-46bc-4083-a3e7-37e9aa478155",
+                "document": "发布与变更管理规范",
+                "heading_path": "发布与变更管理规范 > 变更窗口",
+                "content": "## 变更窗口\n\n常规变更窗口为工作日 22 点到次日 2 点，数据库变更窗口为周六凌晨。窗口内只允许一项一级变更，避免多个变量混在一起。窗口结束前 30 分钟必须开始验证，验证未通过按回滚处理。窗口外执行变更需要额外审批并说明理由。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A4",
+                "chunk_id": "111389e0-46bc-4083-a3e7-37e9aa478155",
+                "document": "发布与变更管理规范",
+                "heading_path": "发布与变更管理规范 > 变更窗口",
+                "content": "## 变更窗口\n\n常规变更窗口为工作日 22 点到次日 2 点，数据库变更窗口为周六凌晨。窗口内只允许一项一级变更，避免多个变量混在一起。窗口结束前 30 分钟必须开始验证，验证未通过按回滚处理。窗口外执行变更需要额外审批并说明理由。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E5",
+                "point_id": "A4",
+                "chunk_id": "cc0d7984-975a-49b1-a14a-da70db319e99",
+                "heading_path": "值班处置手册 > 变更窗口内的值班"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.2,
+          "cr_on_diagnostic": 0.5
+        },
+        {
+          "id": "q61",
+          "query": "设备成片离线怎么排查，什么时候要升级",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 742,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 216.86,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 742,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4239.9,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 742,
+            "points": 5,
+            "evidence": 9,
+            "primary": 5,
+            "supporting": 4,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 614,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 46197.6,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "先判断是单台还是成片离线",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "成片按平台入口、DNS、上行链路、供电顺序排查",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "同一秒集中离线查平台入口或DNS",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "供电异常会成片同时离线并集中恢复，查停电与UPS",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "容量规划按最坏情况，至少评估三个峰值",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "817369db-5686-4c32-81d0-438e8dfd762d",
+                "document": "售后故障与错误码速查",
+                "heading_path": "售后故障与错误码速查 > 设备状态类提示（一）",
+                "content": "## 设备状态类提示（一）\n\n设备状态类提示（一）是 W0100，设备离线。平台在连续多个心跳周期没有收到设备上报时把状态置为离线并记录 W0100，此时不产生错误码，只改变状态展示。排查时先确认是单台还是成片：单台多半是现场断电或网络问题，成片则要怀疑上行链路、DNS 或平台入口。离线状态下的远程指令会进入等待队列，恢复后按顺序补发，因此「离线期间的指令在恢复后突然执行」是正常现象。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A2",
+                "chunk_id": "3437a1a5-3b63-4255-b2e3-243d273cd5d2",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 设备离线批量排查",
+                "content": "## 设备离线批量排查\n\n批量离线先看时间分布：同一秒集中离线多半是平台入口或 DNS 问题，逐台陆续离线多半是上行链路或供电问题。再看地理位置：同一区域集中离线指向区域网络，跨区域同时离线指向平台。排查顺序是平台入口、DNS、上行链路、现场供电。不要一上来就逐台联系现场，那会浪费最宝贵的十五分钟。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A3",
+                "chunk_id": "3437a1a5-3b63-4255-b2e3-243d273cd5d2",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 设备离线批量排查",
+                "content": "## 设备离线批量排查\n\n批量离线先看时间分布：同一秒集中离线多半是平台入口或 DNS 问题，逐台陆续离线多半是上行链路或供电问题。再看地理位置：同一区域集中离线指向区域网络，跨区域同时离线指向平台。排查顺序是平台入口、DNS、上行链路、现场供电。不要一上来就逐台联系现场，那会浪费最宝贵的十五分钟。"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A4",
+                "chunk_id": "4a6639da-2b0d-45c0-9010-6623ca545b59",
+                "document": "值班处置手册",
+                "heading_path": "值班处置手册 > 电源与供电异常",
+                "content": "## 电源与供电异常\n\n供电异常表现为成片设备同时离线、恢复后集中上线。先确认机房或门店是否停电，再确认 UPS 是否正常切换。UPS 切换失败会让设备直接掉电，日志里没有任何记录。恢复后要检查设备时间是否偏移，批量时间偏移会引发签名类错误。供电问题处理完成后要更新现场的供电台账。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A5",
+                "chunk_id": "39aaad2c-cc05-459e-84c0-443326cfc652",
+                "document": "深度排障案例集",
+                "heading_path": "深度排障案例集 > 案例二：会话表打满引发的连锁掉线 > 排查与定位",
+                "content": "### 教训\n\n这个案例的教训是：**容量规划要按最坏情况设计，而不是平均值**。实际并发往往在早晚高峰翻倍，凌晨的集中任务又会在低基线时段制造另一个峰值。评估容量时至少要看三个数：日常峰值、业务高峰峰值、集中任务峰值。只看第一个数，剩下的两个就会变成事故。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "3437a1a5-3b63-4255-b2e3-243d273cd5d2",
+                "heading_path": "值班处置手册 > 设备离线批量排查"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "817369db-5686-4c32-81d0-438e8dfd762d",
+                "heading_path": "售后故障与错误码速查 > 设备状态类提示（一）"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "4a6639da-2b0d-45c0-9010-6623ca545b59",
+                "heading_path": "值班处置手册 > 电源与供电异常"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "817369db-5686-4c32-81d0-438e8dfd762d",
+                "heading_path": "售后故障与错误码速查 > 设备状态类提示（一）"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.2,
+          "cr_on_diagnostic": 0.5
+        },
+        {
+          "id": "q77",
+          "query": "觉得账单金额算错了，怎么申诉、多久内要提",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 666,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 221.79,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 666,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4230.66,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 666,
+            "points": 5,
+            "evidence": 13,
+            "primary": 5,
+            "supporting": 8,
+            "covered_materials": 3,
+            "unassigned_materials": 2,
+            "evidence_chars": 380,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 33813.16,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "账单金额异议按计费争议在账单生成后30天内提出",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "超过30天时限的计费争议不再受理",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "争议由财务与客户经理共同复核，周期10个工作日",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "复核期间争议金额暂不扣款，不影响其他账单项",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "账单金额不支持修改，只能通过调整项在下期账单体现",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "795daa85-f78d-4636-ae0e-54096c99cf1b",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 计费争议",
+                "content": "## 计费争议\n\n计费争议需要在账单生成后 30 天内提出，超过时限不再受理。争议由财务与客户经理共同复核，复核周期为 10 个工作日。复核期间争议金额暂不扣款，不影响其他账单项。复核结论为最终结论，仍有异议时按合同约定的争议解决方式处理。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "795daa85-f78d-4636-ae0e-54096c99cf1b",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 计费争议",
+                "content": "## 计费争议\n\n计费争议需要在账单生成后 30 天内提出，超过时限不再受理。争议由财务与客户经理共同复核，复核周期为 10 个工作日。复核期间争议金额暂不扣款，不影响其他账单项。复核结论为最终结论，仍有异议时按合同约定的争议解决方式处理。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A3",
+                "chunk_id": "795daa85-f78d-4636-ae0e-54096c99cf1b",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 计费争议",
+                "content": "## 计费争议\n\n计费争议需要在账单生成后 30 天内提出，超过时限不再受理。争议由财务与客户经理共同复核，复核周期为 10 个工作日。复核期间争议金额暂不扣款，不影响其他账单项。复核结论为最终结论，仍有异议时按合同约定的争议解决方式处理。"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A4",
+                "chunk_id": "795daa85-f78d-4636-ae0e-54096c99cf1b",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 计费争议",
+                "content": "## 计费争议\n\n计费争议需要在账单生成后 30 天内提出，超过时限不再受理。争议由财务与客户经理共同复核，复核周期为 10 个工作日。复核期间争议金额暂不扣款，不影响其他账单项。复核结论为最终结论，仍有异议时按合同约定的争议解决方式处理。"
+              },
+              {
+                "evidence_id": "E12",
+                "point_id": "A5",
+                "chunk_id": "af469303-9a99-4eba-b97e-7aba350e4cf4",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 账单出账时间",
+                "content": "## 账单出账时间\n\n账单在次月 3 日生成，遇节假日顺延到下一个工作日。账单生成后会发送通知，客户可以在控制台下载明细。账单生成后 5 个工作日内完成扣款，扣款失败会重试三次。账单生成后不支持修改金额，只能通过调整项在下期账单中体现。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "af469303-9a99-4eba-b97e-7aba350e4cf4",
+                "heading_path": "计费与账务政策 > 账单出账时间"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "a748863e-c303-472e-9194-027fc0d180da",
+                "heading_path": "退款与售后受理规则 > 争议处理"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "af469303-9a99-4eba-b97e-7aba350e4cf4",
+                "heading_path": "计费与账务政策 > 账单出账时间"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A2",
+                "chunk_id": "a748863e-c303-472e-9194-027fc0d180da",
+                "heading_path": "退款与售后受理规则 > 争议处理"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "a748863e-c303-472e-9194-027fc0d180da",
+                "heading_path": "退款与售后受理规则 > 争议处理"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A4",
+                "chunk_id": "af469303-9a99-4eba-b97e-7aba350e4cf4",
+                "heading_path": "计费与账务政策 > 账单出账时间"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A4",
+                "chunk_id": "a748863e-c303-472e-9194-027fc0d180da",
+                "heading_path": "退款与售后受理规则 > 争议处理"
+              },
+              {
+                "evidence_id": "E13",
+                "point_id": "A5",
+                "chunk_id": "795daa85-f78d-4636-ae0e-54096c99cf1b",
+                "heading_path": "计费与账务政策 > 计费争议"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.4,
+          "cr_on_diagnostic": 1.0
+        },
+        {
+          "id": "q88",
+          "query": "会话配额隔离什么时候完成、谁负责",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 1343,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 220.92,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 1343,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4236.21,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 1343,
+            "points": 5,
+            "evidence": 14,
+            "primary": 7,
+            "supporting": 7,
+            "covered_materials": 4,
+            "unassigned_materials": 1,
+            "evidence_chars": 1214,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 25109.66,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 7,
+          "context_precision_off": 0.6,
+          "context_recall_off": 0.42857142857142855,
+          "context_precision_on_deploy": 0.6,
+          "context_recall_on_deploy": 0.42857142857142855,
+          "context_precision_on_diagnostic": 0.6,
+          "context_recall_on_diagnostic": 0.42857142857142855,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "会话配额隔离由平台组负责。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "给心跳单独划出会话配额，截止3月31日且已完成。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "平台组汇报3月的隔离改造已完成。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "还需两周内完成验证，验证脚本纳入季度演练。",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "验证未通过则隔离改造按未完成处理。",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "31137559-e19c-4caf-b1a8-c350831a1250",
+                "document": "故障复盘报告",
+                "heading_path": "故障复盘报告 > 改进项与负责人",
+                "content": "| 改进项 | 负责人 | 截止时间 | 状态 |\n| --- | --- | --- | --- |\n| 给心跳单独划出会话配额 | 平台组 | 3 月 31 日 | 已完成 |\n| 集中任务调度接入会话容量指标 | 平台组 | 4 月 15 日 | 已完成 |\n| 会话表使用率超过 85% 增加预警 | 监控组 | 3 月 25 日 | 已完成 |\n| 补充容量规划中的并发评估项 | 架构组 | 4 月 30 日 | 进行中 |\n| 同类事件纳入季度演练脚本 | 值班组 | 5 月 15 日 | 未开始 |\n\n改进项=给心跳单独划出会话配额，负责人=平台组，截止时间=3 月 31 日，状态=已完成\n\n改进项=集中任务调度接入会话容量指标，负责人=平台组，截止时间=4 月 15 日，状态=已完成\n\n改进项=会话表使用率超过 85% 增加预警，负责人=监控组，截止时间=3 月 25 日，状态=已完成\n\n改进项=补充容量规划中的并发评估项，负责人=架构组，截止时间=4 月 30 日，状态=进行中\n\n改进项=同类事件纳入季度演练脚本，负责人=值班组，截止时间=5 月 15 日，状态=未开始"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "c8a29ada-d55c-49d9-8e44-6619722b53ea",
+                "document": "故障复盘报告",
+                "heading_path": "故障复盘报告 > 改进项与负责人",
+                "content": "| 改进项 | 负责人 | 截止时间 | 状态 |\n| --- | --- | --- | --- |\n| 给心跳单独划出会话配额 | 平台组 | 3 月 31 日 | 已完成 |\n| 集中任务调度接入会话容量指标 | 平台组 | 4 月 15 日 | 已完成 |\n| 会话表使用率超过 85% 增加预警 | 监控组 | 3 月 25 日 | 已完成 |\n| 补充容量规划中的并发评估项 | 架构组 | 4 月 30 日 | 进行中 |\n| 同类事件纳入季度演练脚本 | 值班组 | 5 月 15 日 | 未开始 |"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A2",
+                "chunk_id": "31137559-e19c-4caf-b1a8-c350831a1250",
+                "document": "故障复盘报告",
+                "heading_path": "故障复盘报告 > 改进项与负责人",
+                "content": "| 改进项 | 负责人 | 截止时间 | 状态 |\n| --- | --- | --- | --- |\n| 给心跳单独划出会话配额 | 平台组 | 3 月 31 日 | 已完成 |\n| 集中任务调度接入会话容量指标 | 平台组 | 4 月 15 日 | 已完成 |\n| 会话表使用率超过 85% 增加预警 | 监控组 | 3 月 25 日 | 已完成 |\n| 补充容量规划中的并发评估项 | 架构组 | 4 月 30 日 | 进行中 |\n| 同类事件纳入季度演练脚本 | 值班组 | 5 月 15 日 | 未开始 |\n\n改进项=给心跳单独划出会话配额，负责人=平台组，截止时间=3 月 31 日，状态=已完成\n\n改进项=集中任务调度接入会话容量指标，负责人=平台组，截止时间=4 月 15 日，状态=已完成\n\n改进项=会话表使用率超过 85% 增加预警，负责人=监控组，截止时间=3 月 25 日，状态=已完成\n\n改进项=补充容量规划中的并发评估项，负责人=架构组，截止时间=4 月 30 日，状态=进行中\n\n改进项=同类事件纳入季度演练脚本，负责人=值班组，截止时间=5 月 15 日，状态=未开始"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "c8a29ada-d55c-49d9-8e44-6619722b53ea",
+                "document": "故障复盘报告",
+                "heading_path": "故障复盘报告 > 改进项与负责人",
+                "content": "| 改进项 | 负责人 | 截止时间 | 状态 |\n| --- | --- | --- | --- |\n| 给心跳单独划出会话配额 | 平台组 | 3 月 31 日 | 已完成 |\n| 集中任务调度接入会话容量指标 | 平台组 | 4 月 15 日 | 已完成 |\n| 会话表使用率超过 85% 增加预警 | 监控组 | 3 月 25 日 | 已完成 |\n| 补充容量规划中的并发评估项 | 架构组 | 4 月 30 日 | 进行中 |\n| 同类事件纳入季度演练脚本 | 值班组 | 5 月 15 日 | 未开始 |"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A3",
+                "chunk_id": "9a15247a-9b58-4fca-80b1-fa02ad671b4c",
+                "document": "架构评审会议纪要",
+                "heading_path": "架构评审会议纪要 > 议题三：会话配额隔离的验证",
+                "content": "## 议题三：会话配额隔离的验证\n\n平台组汇报 3 月的隔离改造已完成，心跳与业务流量分开计量。运维组提出验证方式：在测试环境复现 3 月 14 日的集中任务场景，看是否还会触发批量掉线。\n\n争议点是「复现成本」。业务组担心测试环境复现会影响真实门店，平台组坚持必须在测试环境做。最终定：用专用测试机加模拟负载，不接真实业务，验证通过后再上生产。\n\n结论：两周内完成验证，验证脚本纳入季度演练。若验证未通过，隔离改造按未完成处理，不能只以「代码已上线」作为完成判据。"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A4",
+                "chunk_id": "9a15247a-9b58-4fca-80b1-fa02ad671b4c",
+                "document": "架构评审会议纪要",
+                "heading_path": "架构评审会议纪要 > 议题三：会话配额隔离的验证",
+                "content": "## 议题三：会话配额隔离的验证\n\n平台组汇报 3 月的隔离改造已完成，心跳与业务流量分开计量。运维组提出验证方式：在测试环境复现 3 月 14 日的集中任务场景，看是否还会触发批量掉线。\n\n争议点是「复现成本」。业务组担心测试环境复现会影响真实门店，平台组坚持必须在测试环境做。最终定：用专用测试机加模拟负载，不接真实业务，验证通过后再上生产。\n\n结论：两周内完成验证，验证脚本纳入季度演练。若验证未通过，隔离改造按未完成处理，不能只以「代码已上线」作为完成判据。"
+              },
+              {
+                "evidence_id": "E14",
+                "point_id": "A5",
+                "chunk_id": "9a15247a-9b58-4fca-80b1-fa02ad671b4c",
+                "document": "架构评审会议纪要",
+                "heading_path": "架构评审会议纪要 > 议题三：会话配额隔离的验证",
+                "content": "## 议题三：会话配额隔离的验证\n\n平台组汇报 3 月的隔离改造已完成，心跳与业务流量分开计量。运维组提出验证方式：在测试环境复现 3 月 14 日的集中任务场景，看是否还会触发批量掉线。\n\n争议点是「复现成本」。业务组担心测试环境复现会影响真实门店，平台组坚持必须在测试环境做。最终定：用专用测试机加模拟负载，不接真实业务，验证通过后再上生产。\n\n结论：两周内完成验证，验证脚本纳入季度演练。若验证未通过，隔离改造按未完成处理，不能只以「代码已上线」作为完成判据。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "9a15247a-9b58-4fca-80b1-fa02ad671b4c",
+                "heading_path": "架构评审会议纪要 > 议题三：会话配额隔离的验证"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A2",
+                "chunk_id": "9a15247a-9b58-4fca-80b1-fa02ad671b4c",
+                "heading_path": "架构评审会议纪要 > 议题三：会话配额隔离的验证"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A2",
+                "chunk_id": "90cf21f4-b8b4-43f4-8d10-9ceab0b06248",
+                "heading_path": "故障复盘报告 > 根因分析"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A3",
+                "chunk_id": "31137559-e19c-4caf-b1a8-c350831a1250",
+                "heading_path": "故障复盘报告 > 改进项与负责人"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A3",
+                "chunk_id": "c8a29ada-d55c-49d9-8e44-6619722b53ea",
+                "heading_path": "故障复盘报告 > 改进项与负责人"
+              },
+              {
+                "evidence_id": "E12",
+                "point_id": "A4",
+                "chunk_id": "31137559-e19c-4caf-b1a8-c350831a1250",
+                "heading_path": "故障复盘报告 > 改进项与负责人"
+              },
+              {
+                "evidence_id": "E13",
+                "point_id": "A4",
+                "chunk_id": "c8a29ada-d55c-49d9-8e44-6619722b53ea",
+                "heading_path": "故障复盘报告 > 改进项与负责人"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.6,
+          "cr_on_diagnostic": 0.42857142857142855
+        },
+        {
+          "id": "q96",
+          "query": "转正考核要过哪几项",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 750,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 213.64,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 750,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4240.1,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 750,
+            "points": 5,
+            "evidence": 5,
+            "primary": 5,
+            "supporting": 0,
+            "covered_materials": 1,
+            "unassigned_materials": 4,
+            "evidence_chars": 129,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 6938.65,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.4,
+          "context_recall_off": 1.0,
+          "context_precision_on_deploy": 0.4,
+          "context_recall_on_deploy": 1.0,
+          "context_precision_on_diagnostic": 0.4,
+          "context_recall_on_diagnostic": 1.0,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "转正考核要过三项：独立完成标准变更",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "独立处置一次P3及以下告警",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "通过平台知识测评",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "三项全过才能转正，缺一项延长一个月",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "考核重查错能力而非记忆",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "f40800d9-1bc2-419a-8d3c-139f4b36095b",
+                "document": "新员工入职与权限指引",
+                "heading_path": "新员工入职与权限指引 > 转正与考核",
+                "content": "## 转正与考核\n\n转正考核看三项：独立完成一次标准变更、独立处置一次 P3 及以下告警、通过平台知识测评。三项都通过才能转正，缺一项延长一个月。\n\n考核不考记忆题，考的是「遇到不熟悉的报错知道去哪查」。查文档、问导师、看历史工单都是正确做法，硬猜才是问题。"
+              },
+              {
+                "evidence_id": "E2",
+                "point_id": "A2",
+                "chunk_id": "f40800d9-1bc2-419a-8d3c-139f4b36095b",
+                "document": "新员工入职与权限指引",
+                "heading_path": "新员工入职与权限指引 > 转正与考核",
+                "content": "## 转正与考核\n\n转正考核看三项：独立完成一次标准变更、独立处置一次 P3 及以下告警、通过平台知识测评。三项都通过才能转正，缺一项延长一个月。\n\n考核不考记忆题，考的是「遇到不熟悉的报错知道去哪查」。查文档、问导师、看历史工单都是正确做法，硬猜才是问题。"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A3",
+                "chunk_id": "f40800d9-1bc2-419a-8d3c-139f4b36095b",
+                "document": "新员工入职与权限指引",
+                "heading_path": "新员工入职与权限指引 > 转正与考核",
+                "content": "## 转正与考核\n\n转正考核看三项：独立完成一次标准变更、独立处置一次 P3 及以下告警、通过平台知识测评。三项都通过才能转正，缺一项延长一个月。\n\n考核不考记忆题，考的是「遇到不熟悉的报错知道去哪查」。查文档、问导师、看历史工单都是正确做法，硬猜才是问题。"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A4",
+                "chunk_id": "f40800d9-1bc2-419a-8d3c-139f4b36095b",
+                "document": "新员工入职与权限指引",
+                "heading_path": "新员工入职与权限指引 > 转正与考核",
+                "content": "## 转正与考核\n\n转正考核看三项：独立完成一次标准变更、独立处置一次 P3 及以下告警、通过平台知识测评。三项都通过才能转正，缺一项延长一个月。\n\n考核不考记忆题，考的是「遇到不熟悉的报错知道去哪查」。查文档、问导师、看历史工单都是正确做法，硬猜才是问题。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A5",
+                "chunk_id": "f40800d9-1bc2-419a-8d3c-139f4b36095b",
+                "document": "新员工入职与权限指引",
+                "heading_path": "新员工入职与权限指引 > 转正与考核",
+                "content": "## 转正与考核\n\n转正考核看三项：独立完成一次标准变更、独立处置一次 P3 及以下告警、通过平台知识测评。三项都通过才能转正，缺一项延长一个月。\n\n考核不考记忆题，考的是「遇到不熟悉的报错知道去哪查」。查文档、问导师、看历史工单都是正确做法，硬猜才是问题。"
+              }
+            ],
+            "supporting": []
+          },
+          "cp_on_diagnostic": 0.4,
+          "cr_on_diagnostic": 1.0
+        },
+        {
+          "id": "q104",
+          "query": "退款和退费分别退到哪里去",
+          "mechanism": "cross_section",
+          "off": {
+            "materials": 5,
+            "material_chars": 766,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": 0
+          },
+          "off_latency_ms": 222.55,
+          "off_model_calls": 1,
+          "off_degraded_reason": null,
+          "on_deploy": {
+            "materials": 5,
+            "material_chars": 766,
+            "points": null,
+            "evidence": null,
+            "primary": null,
+            "supporting": null,
+            "covered_materials": null,
+            "unassigned_materials": null,
+            "evidence_chars": null,
+            "completeness": null,
+            "orchestration_llm_calls": null
+          },
+          "on_deploy_latency_ms": 4244.18,
+          "on_deploy_model_calls": 1,
+          "on_deploy_degraded_reason": "orchestration failed",
+          "on_diagnostic": {
+            "materials": 5,
+            "material_chars": 766,
+            "points": 5,
+            "evidence": 19,
+            "primary": 8,
+            "supporting": 11,
+            "covered_materials": 5,
+            "unassigned_materials": 0,
+            "evidence_chars": 766,
+            "completeness": "complete",
+            "orchestration_llm_calls": 2
+          },
+          "on_diagnostic_latency_ms": 22784.95,
+          "on_diagnostic_model_calls": 1,
+          "on_diagnostic_degraded_reason": null,
+          "reference_count": 2,
+          "context_precision_off": 0.2,
+          "context_recall_off": 0.5,
+          "context_precision_on_deploy": 0.2,
+          "context_recall_on_deploy": 0.5,
+          "context_precision_on_diagnostic": 0.2,
+          "context_recall_on_diagnostic": 0.5,
+          "on_diagnostic_budget_ms": 60000,
+          "on_diagnostic_block": {
+            "completeness": "complete",
+            "points": [
+              {
+                "point_id": "A1",
+                "text": "退款退的是商品或订单款项，退回原支付渠道",
+                "has_primary": true
+              },
+              {
+                "point_id": "A2",
+                "text": "退费退的是服务费用，退到平台账户余额",
+                "has_primary": true
+              },
+              {
+                "point_id": "A3",
+                "text": "退费余额用于抵扣后续消费",
+                "has_primary": true
+              },
+              {
+                "point_id": "A4",
+                "text": "想拿回现金要走退款流程",
+                "has_primary": true
+              },
+              {
+                "point_id": "A5",
+                "text": "同一笔订单不能同时申请退费与退款",
+                "has_primary": true
+              }
+            ],
+            "primary": [
+              {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "chunk_id": "1dbe0496-ce33-40ad-b701-97656ccd26e0",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 退费与退款的区别",
+                "content": "## 退费与退款的区别\n\n退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道。两者不能互相替代：想拿回现金要走退款，想抵扣后续消费走退费。同一笔订单不能同时申请退费与退款，系统会在提交时做互斥校验。这条区分是账务争议的高发点。"
+              },
+              {
+                "evidence_id": "E5",
+                "point_id": "A2",
+                "chunk_id": "b29a1b06-88aa-4720-8518-db8d6f6d7dfe",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 退费规则",
+                "content": "## 退费规则\n\n服务类费用在服务未开通或开通失败时可以全额退费；已开通的服务按剩余天数折算退费，已使用的部分不退。退费金额以实付金额为基数，不含赠送金额与抵扣券金额。退费申请须在计费周期结束前提出，跨周期退费需要财务复核。退费与原路退回的退款不是同一个流程，退费只退到我方账户余额。"
+              },
+              {
+                "evidence_id": "E6",
+                "point_id": "A2",
+                "chunk_id": "1dbe0496-ce33-40ad-b701-97656ccd26e0",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 退费与退款的区别",
+                "content": "## 退费与退款的区别\n\n退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道。两者不能互相替代：想拿回现金要走退款，想抵扣后续消费走退费。同一笔订单不能同时申请退费与退款，系统会在提交时做互斥校验。这条区分是账务争议的高发点。"
+              },
+              {
+                "evidence_id": "E7",
+                "point_id": "A2",
+                "chunk_id": "547c2ee1-c840-45af-ab27-139a898564e6",
+                "document": "高频问答速查",
+                "heading_path": "高频问答速查 > 发票与账务",
+                "content": "## 发票与账务\n\n问：什么时候能开票？答：付款完成后 5 个工作日内。\n问：能开专票吗？答：可以，需要提供一般纳税人资格证明与税号。\n问：发票抬头能改吗？答：未开具的可以改一次；已开具的只能红冲重开。\n问：退费退到哪？答：退到平台账户余额，想拿现金要走退款。\n问：能开发票到分公司吗？答：可以，抬头写分公司全称，税号用分公司自己的。"
+              },
+              {
+                "evidence_id": "E10",
+                "point_id": "A3",
+                "chunk_id": "1dbe0496-ce33-40ad-b701-97656ccd26e0",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 退费与退款的区别",
+                "content": "## 退费与退款的区别\n\n退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道。两者不能互相替代：想拿回现金要走退款，想抵扣后续消费走退费。同一笔订单不能同时申请退费与退款，系统会在提交时做互斥校验。这条区分是账务争议的高发点。"
+              },
+              {
+                "evidence_id": "E13",
+                "point_id": "A4",
+                "chunk_id": "1dbe0496-ce33-40ad-b701-97656ccd26e0",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 退费与退款的区别",
+                "content": "## 退费与退款的区别\n\n退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道。两者不能互相替代：想拿回现金要走退款，想抵扣后续消费走退费。同一笔订单不能同时申请退费与退款，系统会在提交时做互斥校验。这条区分是账务争议的高发点。"
+              },
+              {
+                "evidence_id": "E14",
+                "point_id": "A4",
+                "chunk_id": "547c2ee1-c840-45af-ab27-139a898564e6",
+                "document": "高频问答速查",
+                "heading_path": "高频问答速查 > 发票与账务",
+                "content": "## 发票与账务\n\n问：什么时候能开票？答：付款完成后 5 个工作日内。\n问：能开专票吗？答：可以，需要提供一般纳税人资格证明与税号。\n问：发票抬头能改吗？答：未开具的可以改一次；已开具的只能红冲重开。\n问：退费退到哪？答：退到平台账户余额，想拿现金要走退款。\n问：能开发票到分公司吗？答：可以，抬头写分公司全称，税号用分公司自己的。"
+              },
+              {
+                "evidence_id": "E17",
+                "point_id": "A5",
+                "chunk_id": "1dbe0496-ce33-40ad-b701-97656ccd26e0",
+                "document": "计费与账务政策",
+                "heading_path": "计费与账务政策 > 退费与退款的区别",
+                "content": "## 退费与退款的区别\n\n退费退的是服务费用，落点是账户余额，用于抵扣后续消费；退款退的是商品或订单款项，落点是原支付渠道。两者不能互相替代：想拿回现金要走退款，想抵扣后续消费走退费。同一笔订单不能同时申请退费与退款，系统会在提交时做互斥校验。这条区分是账务争议的高发点。"
+              }
+            ],
+            "supporting": [
+              {
+                "evidence_id": "E2",
+                "point_id": "A1",
+                "chunk_id": "b29a1b06-88aa-4720-8518-db8d6f6d7dfe",
+                "heading_path": "计费与账务政策 > 退费规则"
+              },
+              {
+                "evidence_id": "E3",
+                "point_id": "A1",
+                "chunk_id": "27ef0077-f1fd-4b10-91c5-a9da5d03a77c",
+                "heading_path": "计费与账务政策 > 押金管理"
+              },
+              {
+                "evidence_id": "E4",
+                "point_id": "A1",
+                "chunk_id": "45a2b3ca-756d-471b-a1eb-8796b09830f0",
+                "heading_path": "退款与售后受理规则 > 退钱常见问法答疑"
+              },
+              {
+                "evidence_id": "E8",
+                "point_id": "A2",
+                "chunk_id": "27ef0077-f1fd-4b10-91c5-a9da5d03a77c",
+                "heading_path": "计费与账务政策 > 押金管理"
+              },
+              {
+                "evidence_id": "E9",
+                "point_id": "A2",
+                "chunk_id": "45a2b3ca-756d-471b-a1eb-8796b09830f0",
+                "heading_path": "退款与售后受理规则 > 退钱常见问法答疑"
+              },
+              {
+                "evidence_id": "E11",
+                "point_id": "A3",
+                "chunk_id": "b29a1b06-88aa-4720-8518-db8d6f6d7dfe",
+                "heading_path": "计费与账务政策 > 退费规则"
+              },
+              {
+                "evidence_id": "E12",
+                "point_id": "A3",
+                "chunk_id": "547c2ee1-c840-45af-ab27-139a898564e6",
+                "heading_path": "高频问答速查 > 发票与账务"
+              },
+              {
+                "evidence_id": "E15",
+                "point_id": "A4",
+                "chunk_id": "b29a1b06-88aa-4720-8518-db8d6f6d7dfe",
+                "heading_path": "计费与账务政策 > 退费规则"
+              },
+              {
+                "evidence_id": "E16",
+                "point_id": "A4",
+                "chunk_id": "45a2b3ca-756d-471b-a1eb-8796b09830f0",
+                "heading_path": "退款与售后受理规则 > 退钱常见问法答疑"
+              },
+              {
+                "evidence_id": "E18",
+                "point_id": "A5",
+                "chunk_id": "b29a1b06-88aa-4720-8518-db8d6f6d7dfe",
+                "heading_path": "计费与账务政策 > 退费规则"
+              },
+              {
+                "evidence_id": "E19",
+                "point_id": "A5",
+                "chunk_id": "45a2b3ca-756d-471b-a1eb-8796b09830f0",
+                "heading_path": "退款与售后受理规则 > 退钱常见问法答疑"
+              }
+            ]
+          },
+          "cp_on_diagnostic": 0.2,
+          "cr_on_diagnostic": 0.5
+        }
+      ],
+      "aggregate": {
+        "questions": 12,
+        "arms": {
+          "off": {
+            "materials_total": 60,
+            "materials_chars_total": 11135,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 0,
+              "rate": 0.0,
+              "ids": []
+            },
+            "retrieval_model_calls": 12,
+            "orchestration_llm_calls_lower_bound": 0,
+            "latency": {
+              "p50": 221.79,
+              "p95": 255.74
+            }
+          },
+          "on_deploy": {
+            "materials_total": 60,
+            "materials_chars_total": 11135,
+            "assigned_materials_total": 0,
+            "unassigned_materials_total": 0,
+            "evidence_chars_total": 0,
+            "points": {
+              "total": 0,
+              "questions_with_points": 0,
+              "avg": null
+            },
+            "completeness": {
+              "complete": 0,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 12,
+              "rate": 1.0,
+              "ids": [
+                "q16",
+                "q17",
+                "q18",
+                "q19",
+                "q58",
+                "q59",
+                "q60",
+                "q61",
+                "q77",
+                "q88",
+                "q96",
+                "q104"
+              ]
+            },
+            "retrieval_model_calls": 12,
+            "orchestration_llm_calls_lower_bound": 12,
+            "latency": {
+              "p50": 4239.9,
+              "p95": 4256.71
+            }
+          },
+          "on_diagnostic": {
+            "materials_total": 60,
+            "materials_chars_total": 11135,
+            "assigned_materials_total": 46,
+            "unassigned_materials_total": 14,
+            "evidence_chars_total": 9170,
+            "points": {
+              "total": 57,
+              "questions_with_points": 12,
+              "avg": 4.75
+            },
+            "completeness": {
+              "complete": 12,
+              "partial": 0,
+              "missing": 0
+            },
+            "degraded": {
+              "count": 0,
+              "rate": 0.0,
+              "ids": []
+            },
+            "retrieval_model_calls": 12,
+            "orchestration_llm_calls_lower_bound": 24,
+            "latency": {
+              "p50": 22784.95,
+              "p95": 46197.6
+            }
+          }
+        },
+        "degraded_by_arm": {
+          "off": 0,
+          "on_deploy": 12,
+          "on_diagnostic": 0
+        },
+        "completeness_by_arm": {
+          "on_deploy": {
+            "complete": 0,
+            "partial": 0,
+            "missing": 0
+          },
+          "on_diagnostic": {
+            "complete": 12,
+            "partial": 0,
+            "missing": 0
+          }
+        }
+      },
+      "diagnostic_refill": {
+        "timeout_ms": 60000,
+        "ids": [
+          "q16",
+          "q17",
+          "q18",
+          "q19",
+          "q58",
+          "q59",
+          "q60",
+          "q61",
+          "q77",
+          "q88",
+          "q96",
+          "q104"
+        ],
+        "warmup": {
+          "batch": "gate:diagnostic-refill",
+          "retrieval": {
+            "latency_ms": 229.53,
+            "degraded_reason": null,
+            "model_calls": 1
+          },
+          "orchestration": {
+            "latency_ms": 23325.44,
+            "degraded_reason": null,
+            "has_block": true,
+            "model_calls": 2
+          }
+        },
+        "still_degraded": []
+      }
+    }
+  },
+  "predicted": {
+    "question_count": 20,
+    "off_calls": 20,
+    "on_deploy_calls_upper": 60,
+    "on_diagnostic_calls_upper": 60,
+    "orchestration_upper": 80,
+    "total_upper": 148,
+    "assumptions": {
+      "rerank": "off",
+      "per_question_retrieval_calls": 1,
+      "orchestration_calls_per_question_upper": 2,
+      "warmup_per_batch": 4,
+      "batches": 2
+    },
+    "note": "预估是**上界**：部署臂那两次结构化调用会被 4 s 预算取消，取消前可能已发出，所以按 2 计。"
+  },
+  "accounted_calls": {
+    "warmup": 14,
+    "retrieval": 60,
+    "orchestration_lower_bound": 60,
+    "total_lower_bound": 134,
+    "total_upper_bound": 154
+  },
+  "refilled_at": "2026-11-14T14:17:19+00:00"
+}

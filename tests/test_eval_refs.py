@@ -825,6 +825,163 @@ def test_the_retrieval_side_counts_the_model_calls_it_actually_made() -> None:
     assert reranked.hits[0].document == "refund_policy"
 
 
+# ─────────────────────────────────────────── 切片编排这一侧（#159 第一组）
+
+# 编排块由 ``rag_service.retrieve`` 交回（``response["orchestration"]``）：**开关开着且
+# 这一步真的跑成了**才出现；关闭时这个键连存在都不存在。下面两点都必须由**响应**证明，
+# 不能按命令行推断——那正是 #156「从响应回读」那条纪律。
+
+
+def _orchestration_block(*, completeness: str = "complete") -> dict:
+    """一份最小的编排块（字段与 ``orchestration.assemble_block`` 一致的那几处）。"""
+
+    return {
+        "completeness": completeness,
+        "points": [
+            {"point_id": "A1", "text": "到账按渠道不同", "has_primary": True},
+            {"point_id": "A2", "text": "审核 2 个工作日", "has_primary": completeness != "missing"},
+        ],
+        "evidence": [
+            {
+                "evidence_id": "E1",
+                "point_id": "A1",
+                "role": "primary",
+                "chunk_id": "c-1",
+                "kb_id": "kb-refs",
+                "document_id": "doc-1",
+                "title": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+                "content": "审核通过后按渠道到账。",
+            },
+            {
+                "evidence_id": "E2",
+                "point_id": "A2",
+                "role": "primary",
+                "chunk_id": "c-2",
+                "kb_id": "kb-refs",
+                "document_id": "doc-1",
+                "title": "会员订单退款政策",
+                "heading_path": "会员订单退款政策 > 2. 退款时限与审核",
+                "content": "审核 2 个工作日内完成。",
+            },
+        ],
+    }
+
+
+def test_the_orchestration_switch_reaches_the_retrieval_options() -> None:
+    """两侧只差一个布尔：``orchestration`` 必须真的写进 ``RetrievalOptions``。"""
+
+    question = {"id": "r01", "query": "q", "mechanism": "cross_section"}
+    for switch in (False, True):
+        seams = _FakeSeams()
+        asyncio.run(
+            eval_refs.evaluate_live_question(
+                question,
+                seams=seams,
+                db=None,
+                key=eval_refs.eval_key_context(tenant_id="t"),
+                kb_ids=("kb-refs",),
+                top_k=5,
+                graph="off",
+                research="off",
+                document_names={},
+                orchestration=switch,
+            )
+        )
+        assert seams.retrieve_calls[0]["options"].orchestration is switch
+
+
+def test_the_orchestration_block_is_read_back_from_the_response() -> None:
+    """打开编排时，块要从响应里原样读回来（要点、核心片、完整度都不许自己再算一遍）。"""
+
+    block = _orchestration_block()
+    response = _retrieval_response(rerank=False)
+    response["orchestration"] = json.loads(json.dumps(block))
+
+    outcome = asyncio.run(
+        eval_refs.evaluate_live_question(
+            {"id": "r01", "query": "q", "mechanism": "cross_section"},
+            seams=_FakeSeams(response=response),
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="off",
+            document_names={"doc-1": "refund_policy"},
+            orchestration=True,
+        )
+    )
+
+    assert outcome.error is None
+    assert outcome.orchestration == block
+    assert outcome.orchestration["completeness"] == "complete"
+    assert len(outcome.orchestration["points"]) == 2
+    assert len(outcome.orchestration["evidence"]) == 2
+
+
+def test_orchestration_off_leaves_no_block_and_no_extra_call() -> None:
+    """关着一侧：响应里没有那个键 → 读数里也没有块，只有一次嵌入、没有模型调用。"""
+
+    outcome = asyncio.run(
+        eval_refs.evaluate_live_question(
+            {"id": "r01", "query": "q", "mechanism": "cross_section"},
+            seams=_FakeSeams(response=_retrieval_response(rerank=False)),
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="off",
+            document_names={"doc-1": "refund_policy"},
+        )
+    )
+
+    assert outcome.orchestration is None
+    # 编排 ➜ 两次模型调用（要点 + 角色）；关着时一次都不该付。这里的 ``model_calls``
+    # 只数检索侧的嵌入 / 重排，编排那两次由脚本单独按响应里的块计（见 #159 第一组脚本）。
+    assert outcome.model_calls == 1
+
+
+def test_orchestration_failure_is_a_degraded_reason_not_a_success() -> None:
+    """``orchestration failed`` 走的是与改写 / 重排同一条降级通道：检索照常返回，块没有。
+
+    降级率就是按这一栏数的，所以它必须能原样读到——把「编排失败」写成成功（空块）
+    会让降级率恒为 0。
+    """
+
+    response = _retrieval_response(rerank=False)
+    response["metadata"]["retrieval"]["degraded"] = True
+    response["metadata"]["retrieval"]["degraded_reason"] = eval_refs_orchestration_reason()
+
+    outcome = asyncio.run(
+        eval_refs.evaluate_live_question(
+            {"id": "r01", "query": "q", "mechanism": "cross_section"},
+            seams=_FakeSeams(response=response),
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="off",
+            document_names={"doc-1": "refund_policy"},
+            orchestration=True,
+        )
+    )
+
+    assert outcome.orchestration is None
+    assert outcome.degraded_reason == "orchestration failed"
+    assert outcome.hits, "编排失败不整单失败：检索结果照常返回"
+
+
+def eval_refs_orchestration_reason() -> str:
+    """降级串的**唯一来源**：生产服务里那个常量（不在用例里重抄一遍）。"""
+
+    from app.services.orchestration import DEGRADED_REASON
+
+    return DEGRADED_REASON
+
+
 def test_research_on_calls_the_gate_and_reads_the_four_metrics() -> None:
     """``--research on`` 真的走 ``gated_research``：停止原因、模型调用、完整度、引用块都读回来。"""
 

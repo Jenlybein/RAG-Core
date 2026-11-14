@@ -1,0 +1,118 @@
+2026-11-14T13:49:05.924732Z [warning  ] elasticsearch keyword search exceeded its budget [app.providers.keyword_search.elasticsearch] index=rag_chunks_c6 timeout_s=2.0
+2026-11-14T13:49:06.175082Z [info     ] HTTP Request: POST https://ws-4k904g6c9r4c96ch.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/embeddings "HTTP/1.1 200 OK" [httpx]
+2026-11-14T13:49:06.185553Z [warning  ] hybrid retrieval degraded      [app.services.retrieval.pipeline] degraded_reason='keyword search failed' kb_ids=['ddae7e35-1858-4861-b9eb-631cfc778feb'] tenant_id=tenant_c6
+2026-11-14T13:49:06.524463Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:49:06.639955Z [warning  ] langchain-openai injected a custom httpx transport to apply `http_socket_options`, which disables httpx's proxy auto-detection (system proxy configuration detected). Set `LANGCHAIN_OPENAI_TCP_KEEPALIVE=0` or pass `http_socket_options=()` to restore default proxy behavior, or supply `openai_proxy` / your own `http_client` / `http_async_client` to take full control. [langchain_openai.chat_models._client_utils]
+2026-11-14T13:49:10.641359Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4012.09 error=TimeoutError
+2026-11-14T13:49:10.718152Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:10.932460Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:49:11.213963Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:11.437299Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:11.723934Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:11.942092Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:12.170498Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:12.381291Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:49:12.616562Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:49:16.846759Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4001.88 error=TimeoutError
+2026-11-14T13:49:16.914349Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:49:21.043853Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=3995.23 error=TimeoutError
+2026-11-14T13:49:21.115217Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:49:25.367050Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4010.71 error=TimeoutError
+2026-11-14T13:49:25.433766Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:29.716194Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4012.42 error=TimeoutError
+2026-11-14T13:49:29.786437Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:49:33.922379Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=3997.99 error=TimeoutError
+2026-11-14T13:49:33.992315Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:49:38.238752Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4002.4 error=TimeoutError
+2026-11-14T13:49:38.310349Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:42.464021Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4000.85 error=TimeoutError
+2026-11-14T13:49:42.535686Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:49:46.671883Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=3996.65 error=TimeoutError
+2026-11-14T13:49:46.747449Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:49:46.975817Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:50:17.130330Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30009.48 error=TimeoutError
+2026-11-14T13:50:17.171328Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:50:39.218019Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:50:58.804589Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:51:12.102972Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:51:22.916735Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:51:46.837169Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:52:17.046488Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30011.04 error=TimeoutError
+2026-11-14T13:52:17.088279Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:52:47.339210Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30024.67 error=TimeoutError
+2026-11-14T13:52:47.379180Z [info     ] POST http://localhost:9200/rag_chunks_c6/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:53:16.746153Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:16.974940Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:21.207364Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4019.4 error=TimeoutError
+2026-11-14T13:53:21.282884Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:21.508412Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:21.764047Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:21.977743Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:22.231798Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:22.467607Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:22.683359Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:22.907777Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:23.121410Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:23.342769Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:23.564594Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:23.779953Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:24.003876Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:28.185330Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4015.25 error=TimeoutError
+2026-11-14T13:53:28.259216Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:32.426718Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=3994.7 error=TimeoutError
+2026-11-14T13:53:32.497387Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:53:36.666447Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4001.21 error=TimeoutError
+2026-11-14T13:53:36.743247Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:40.909978Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4005.57 error=TimeoutError
+2026-11-14T13:53:40.985482Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:45.140093Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4003.66 error=TimeoutError
+2026-11-14T13:53:45.218248Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:53:49.379955Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4007.0 error=TimeoutError
+2026-11-14T13:53:49.456588Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:53:53.618353Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4009.23 error=TimeoutError
+2026-11-14T13:53:53.693069Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:53:57.861472Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4017.09 error=TimeoutError
+2026-11-14T13:53:57.932440Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:54:02.087073Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4015.93 error=TimeoutError
+2026-11-14T13:54:02.162947Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:54:06.326607Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=3996.56 error=TimeoutError
+2026-11-14T13:54:06.398525Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:54:10.568750Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4010.03 error=TimeoutError
+2026-11-14T13:54:10.641079Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:54:14.807061Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=4002.7 error=TimeoutError
+2026-11-14T13:54:14.886407Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:54:15.208285Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:54:45.407392Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30009.9 error=TimeoutError
+2026-11-14T13:54:45.458075Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:55:15.720895Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30013.46 error=TimeoutError
+2026-11-14T13:55:15.764333Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:55:31.196448Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:56:01.380801Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30012.48 error=TimeoutError
+2026-11-14T13:56:01.441269Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:56:29.594058Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:56:51.869121Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T13:57:11.681758Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:57:41.852470Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30004.56 error=TimeoutError
+2026-11-14T13:57:41.907376Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T13:58:01.558321Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:58:31.735913Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30005.63 error=TimeoutError
+2026-11-14T13:58:31.774374Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:58:46.339231Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:58:56.054634Z [info     ] POST http://localhost:9200/rag_chunks_eval/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T13:59:26.215931Z [warning  ] evidence orchestration failed  [app.services.orchestration] candidates=5 duration_ms=30004.84 error=TimeoutError
+Ԥ��ģ�͵��� �� 148 �Σ��Ͻ磺ů�� ��2 �⼯ + ���ۼ��� 20��3 + ���� ��80������ off��
+�⼯��refs 8 �� + gate 12 ����cross_section��
+���C:\StudyProjects\RAG-Core\.agents\worktrees\t159-controls\eval\reports\t159\run-orchestration-20261114T135928Z\results.json
+  refs: 8 ��
+    off: ���� 40 ��/7304 �֣�����Ҫ�� 0�������� {'complete': 0, 'partial': 0, 'missing': 0}������ 0��p50 223.56ms
+    on_deploy: ���� 40 ��/7304 �֣�����Ҫ�� 0�������� {'complete': 0, 'partial': 0, 'missing': 0}������ 8��p50 4225.56ms
+    on_diagnostic: ���� 40 ��/7304 �֣�����Ҫ�� 23�������� {'complete': 6, 'partial': 0, 'missing': 0}������ 2��p50 22047.94ms
+  gate: 12 ��
+    off: ���� 60 ��/11135 �֣�����Ҫ�� 0�������� {'complete': 0, 'partial': 0, 'missing': 0}������ 0��p50 221.79ms
+    on_deploy: ���� 60 ��/11135 �֣�����Ҫ�� 0�������� {'complete': 0, 'partial': 0, 'missing': 0}������ 12��p50 4239.9ms
+    on_diagnostic: ���� 60 ��/11135 �֣�����Ҫ�� 24�������� {'complete': 7, 'partial': 0, 'missing': 0}������ 5��p50 22277.21ms
+���˵�������121~148 �Σ�Ԥ���Ͻ� 148��
+2026-11-14T13:59:30.884559Z [error    ] Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x0000014AA3B3A120> [asyncio]
+2026-11-14T13:59:30.885564Z [error    ] Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x0000014AA7EB7530> [asyncio]
