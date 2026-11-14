@@ -29,6 +29,7 @@ from typing import Any
 
 from app.providers.llm.base import LLMProvider
 from app.services import research
+from app.services.citation_blocks import REJECTED_GAP_NOT_DECLARED
 from app.services.research_limits import (
     MAX_FIRST_ROUND_QUERIES,
     StopReason,
@@ -456,3 +457,101 @@ def test_the_coverage_block_reaches_the_response() -> None:
     ]
     assert data.coverage.points[0].evidence_ids == ["E1"]
     assert data.coverage.gaps == ["A2"]
+
+
+# ───────────────────────────────────────── ④ 缺口闸：有 gap 就必须声明「材料不足」
+
+
+def _gap_run(*blocks: dict[str, Any]) -> tuple[research.ResearchOutcome, _Scripted, _Search]:
+    """跑一次**带真缺口**的 Research：A2 在材料里没有支撑，补证也没捞回来。"""
+
+    search = _Search({"查询1": [_row("a")], "查询2": []})
+    strong = _Scripted(_blocks(*blocks))
+    outcome, _, probe = _run(
+        _plan(), _judge(_supported(1, 1), _none(2)), search=search, strong=strong
+    )
+    return outcome, strong, probe
+
+
+def test_the_answer_must_declare_a_gap_and_never_fill_it_from_its_own_knowledge() -> None:
+    """有 gap 而答案全是 ``supported``（自己把缺口补上了）→ 整份答案作废。
+
+    这是 ADR-0029 的缺口闸：上下文不足时模型仍有相当概率「答对」，反面就是相当概率
+    「看起来答对了其实在编」。没有这道闸，覆盖判定等于白做——它会产出一份只有「有支撑」
+    没有「材料不足」的答案，而调用方无从分辨。
+    """
+
+    outcome, _, _ = _gap_run(_block("3 个工作日内到账。", primary=(1,)))
+
+    assert outcome.answer is None
+    assert outcome.citations == ()
+    assert outcome.answer_rejected_reason == REJECTED_GAP_NOT_DECLARED
+    # 缺口本身照样报出来，材料、计划、判定一样都不少（这不是一次失败）。
+    assert outcome.gaps == ("A2",)
+    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a"]
+    assert [item.status for item in outcome.coverage] == ["supported", "none"]
+
+
+def test_an_answer_that_declares_the_gap_is_accepted() -> None:
+    """同一份缺口，答案里给了 ``insufficient`` 块（渲染串里就有「材料不足」）→ 照常出答案。"""
+
+    outcome, _, _ = _gap_run(
+        _block("3 个工作日内到账。", primary=(1,)),
+        _block("未找到所需材料的说明。", kind="insufficient"),
+    )
+
+    assert outcome.answer is not None
+    assert "材料不足" in outcome.answer
+    assert outcome.answer_rejected_reason is None
+
+
+def test_a_run_without_gaps_does_not_declare_insufficiency() -> None:
+    """没有 gap 时答案里不许平白出现「材料不足」——那句话是缺口的声明，不是口头禅。"""
+
+    outcome, _, _ = _run(
+        _plan(),
+        _judge(_supported(1, 1), _supported(2, 1)),
+        search=_Search({"查询1": [_row("a")], "查询2": [_row("b")]}),
+    )
+
+    assert outcome.gaps == ()
+    assert outcome.answer is not None
+    assert "材料不足" not in outcome.answer
+
+
+def test_the_finalizer_is_told_which_points_are_uncovered() -> None:
+    """缺口闸不是「模型自己想起来要声明」：生成提示词里点名了哪些要点没有支撑。
+
+    提示词与校验是一对：提示词说「这几块材料不足，必须明说」，校验在它没照做时把答案作废。
+    只有校验没有提示词，等于让人猜一条不写在纸上的规则。
+    """
+
+    outcome, strong, _ = _gap_run(
+        _block("3 个工作日内到账。", primary=(1,)),
+        _block("未找到所需材料的说明。", kind="insufficient"),
+    )
+
+    prompt = strong.prompts[0]
+    assert "所需材料" in prompt, "缺口要点的正文必须点名"
+    assert "材料不足" in prompt
+    assert outcome.answer is not None
+
+
+def test_a_run_without_any_material_declares_the_gap_by_not_answering() -> None:
+    """一条材料都没有 → 不生成答案（问了也只能编），缺口照样逐要点交回。
+
+    「没有答案」本身就是最彻底的声明：比在 ``answer`` 里追加一句凭空的话诚实——那句话会
+    成为渲染串里唯一一处不由引用块支撑的内容。
+    """
+
+    strong = _Scripted(_blocks(_block("3 个工作日内到账。", primary=(1,))))
+
+    outcome, _, probe = _run(_plan(), _judge(_none(1), _none(2)), search=_Search(), strong=strong)
+
+    # 两个缺口要点各自拿要点正文补了一次（判定没有给查询），都没捞到材料。
+    assert probe.calls == ["查询1", "查询2", "退款时限", "所需材料"]
+    assert strong.calls == [], "没有材料就不该问生成"
+    assert outcome.answer is None
+    assert outcome.citations == ()
+    assert outcome.gaps == ("A1", "A2")
+    assert [item.status for item in outcome.coverage] == ["none", "none"]

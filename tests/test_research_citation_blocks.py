@@ -25,15 +25,18 @@ from __future__ import annotations
 import pytest
 
 from app.services.citation_blocks import (
+    GAP_DECLARATION,
     REJECTED_ASSERTION_WITHOUT_CORE,
     REJECTED_CITATION_ON_INSUFFICIENT,
     REJECTED_CONFLICT_ADJUDICATED,
     REJECTED_EMPTY_BLOCK,
+    REJECTED_GAP_NOT_DECLARED,
     REJECTED_UNRESOLVED_REFERENCE,
     STATUS_INSUFFICIENT,
     STATUS_SUPPORTED,
     AnswerRejected,
     FinalAnswer,
+    build_finalizer_prompt,
     evidence_state_of,
     finalize_answer,
     render_answer,
@@ -198,6 +201,65 @@ def test_an_insufficient_block_keeps_the_answer_but_marks_the_gap() -> None:
 
     assert [c.status for c in out.citations] == [STATUS_SUPPORTED, STATUS_INSUFFICIENT]
     assert "未找到到账时限的说明。（材料不足）" in out.answer
+
+
+# ──────────────────────── 缺口闸（ADR-0029）：有缺口就必须声明「材料不足」
+
+
+def test_a_declared_gap_is_accepted() -> None:
+    """上游说有缺口、答案里也给了 ``insufficient`` 块 → 通过（声明由渲染串给出）。"""
+
+    out = finalize_answer(
+        _output(
+            _block("超期退款需人工审核。", primary=(1,)),
+            _block("未找到所需材料的说明。", kind=STATUS_INSUFFICIENT),
+        ),
+        materials=[_material("a")],
+        uncovered=["所需材料"],
+    )
+
+    assert GAP_DECLARATION in out.answer
+
+
+def test_an_undeclared_gap_leaves_the_answer_rejected() -> None:
+    """上游说有缺口、答案却全是 ``supported``（把缺口用自身知识补上了）→ 整份作废。
+
+    这是纯函数层面的那道闸：它不认识要点、也不认识模型，只问一句「你说了材料不足没有」。
+    """
+
+    with pytest.raises(AnswerRejected) as caught:
+        finalize_answer(
+            _output(_block("超期退款需人工审核。", primary=(1,))),
+            materials=[_material("a")],
+            uncovered=["所需材料"],
+        )
+
+    assert caught.value.reason == REJECTED_GAP_NOT_DECLARED
+
+
+def test_no_gap_means_no_declaration_is_required() -> None:
+    """没有缺口时这道闸根本不参与：一份全 ``supported`` 的答案照常通过。"""
+
+    out = finalize_answer(
+        _output(_block("超期退款需人工审核。", primary=(1,))), materials=[_material("a")]
+    )
+
+    assert GAP_DECLARATION not in out.answer
+    assert out.evidence_state == COMPLETE
+
+
+def test_the_finalizer_prompt_names_the_uncovered_points() -> None:
+    """提示词把缺口要点点名：指令与校验成对，否则模型只能靠猜。"""
+
+    prompt = build_finalizer_prompt(
+        query="退款多久到账",
+        materials=[_material("a")],
+        uncovered=["所需材料", "超期规则"],
+    )
+
+    assert "- 所需材料" in prompt
+    assert "- 超期规则" in prompt
+    assert GAP_DECLARATION in prompt
 
 
 # ──────────────────────── 校验三：不许出现未解析的候选编号或内部切片标识

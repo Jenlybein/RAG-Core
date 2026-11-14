@@ -350,7 +350,11 @@ _Avoid_: 结束原因（中文译名）, finish_reason, 终止条件, stop reaso
 
 **evidence_state**：
 Research 响应 `metadata.evidence_state` 里的三态完整度：`complete`（每个要点都有核心片）/ `partial`（部分要点有）/ `missing`（一条核心片都没有）。它**由核心片数量数出来，不由模型自评**；词表定义在 `app/services/citation_blocks.py` 的 `COMPLETENESS_*`（撤销切片编排时把这条判据搬进了 Research），只有这一处定义，不许在别处再写一份字面量。它与「停止原因」分工明确：`stop_reason` 答「为什么停」，`evidence_state` 答「材料够不够」（`app/schemas/research.py` 的 `ResearchMetadata`）。
-_Avoid_: completeness（旧编排块的字段名，已随撤销消失）, 覆盖度（coverage 是评测侧的另一个概念）, 置信度, 自评得分
+_Avoid_: completeness（旧编排块的字段名，已随撤销消失）, 覆盖度（那是 `coverage` 的事，与这里的三态完整度不是同一个词）, 置信度, 自评得分
+
+**覆盖判定（coverage）**：
+Research 响应 `coverage` 里的**逐要点**结论（票 #164，落地 [ADR-0029](docs/adr/0029-scope-down-to-controlled-research.md) 决策三）：每个要点是 `supported`（材料里能**直接读出**它的事实，附支撑它的证据编号）、`none`（材料里没有能直接读出它的事实——**缺口**）还是 `unknown`（判定没跑成，或补证捞到了材料但状态机不回头复判，所以「它支不支持」没有人回答过）。`coverage.gaps` 就是 `none` 的那些要点编号。它的基准是**问题侧**的要点（分解那次调用的输入里只有问题），所以「材料里没有的东西」在这里有位置；`evidence_state` 的基准是材料侧的核心片。两者答的不是同一个问题：一个说「材料里到底有没有」，一个说「这次答得够不够」。**「支撑」的定义写死**：材料里能直接读出该事实，不是「相关」。
+_Avoid_: 完整度自评, 覆盖率（评测侧的口径）, confidence
 
 **sub_search_degraded_reasons**：
 Research 响应 `metadata.sub_search_degraded_reasons` 里的列表：**子检索**各自降级了哪几条原因，取的就是既有「降级原因」里那几个固定串（例如 `keyword search failed`、`vector search failed`），去重后原样上交。它必须由检索那一层递上来——「查的时候降级了」在材料正文里看不出来；而子检索又不能各写一行归属索引（一次 Research 只写一行）。它**不是停止原因**：一次 Research 可以带着一条子检索降级一路答完，`stop_reason` 仍然是 `evidence_complete`。

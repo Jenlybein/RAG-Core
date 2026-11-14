@@ -28,6 +28,13 @@ ADR-0026 是这一块的**权威边界**：受控 Research 只生成「引用块
 **拒绝码是一因一码的固定串**：它进日志与内部结果，**不进响应**——响应里那一格只有
 ``answer = null``。调用方要的是「这次不生成」，不是「后端替你判了哪一条」。
 
+**缺口闸是另一道闸，不是第五条硬校验**（ADR-0029 的四种闸门之一，票 #164）：上游的覆盖
+判定给出「哪几个要点在材料里没有直接支撑」之后，答案里必须出现一句「材料不足」，否则整份
+作废（:data:`REJECTED_GAP_NOT_DECLARED`）。它挡的是「模型用自己的知识把缺口补上」——上下文
+不足时模型仍有相当概率答对，反面就是相当概率答得像样其实在编。它与四条硬校验共用同一套
+落点（``answer = null`` + 材料照给），但不许把它算成第五条：四条是**引用**的校验，这一条是
+**有没有照缺口说话**的校验，放宽其中任何一条都要重新写 ADR。
+
 **三态完整度由核心片数算出来**（ADR-0029 决策二把这条判据搬进了 Research）：所有块都有
 核心片 = ``complete``，部分 = ``partial``，一条都没有 = ``missing``。模型的自评根本没进这里，
 所以「模型说齐了」在结构上无法影响它。
@@ -63,6 +70,15 @@ REJECTED_UNRESOLVED_REFERENCE: Final[str] = "unresolved evidence reference"
 REJECTED_CONFLICT_ADJUDICATED: Final[str] = "conflict adjudicated instead of kept apart"
 REJECTED_EMPTY_BLOCK: Final[str] = "no usable answer block"
 REJECTED_MALFORMED: Final[str] = "malformed answer output"
+#: 缺口闸（ADR-0029 的四种闸门之一，**不是**四条引用硬校验里的第五条）：判定说某个要点在
+#: 材料里没有直接支撑，而答案里连一句「材料不足」都没有——那就是拿模型自己的知识把缺口补上
+#: 了。整份作废、材料与缺口清单照给。
+REJECTED_GAP_NOT_DECLARED: Final[str] = "gap not declared in the answer"
+
+#: 缺口声明的那句话。它由 :func:`render_answer` 追加到每个 ``insufficient`` 块后面，所以
+#: 「写出一块 ``insufficient``」与「声明材料不足」在结构上是同一件事——模型没有第二种方式
+#: 既承认不足又拿到 ``supported`` 的待遇。
+GAP_DECLARATION: Final[str] = "材料不足"
 
 #: 最终材料进提示词的字符预算。它**不是**六条硬上限之一：材料可以截断（成本），交回给
 #: 调用方的材料不许截断（``materials`` 里逐字完整）。
@@ -167,7 +183,7 @@ def render_answer(citations: Sequence[Citation]) -> str:
     """把引用块按顺序拼成对外那一串字。**``answer`` 没有第二种来源。**
 
     有结论的块带上它解析到的证据编号（``（E1、E3）``），材料不足的块明说「材料不足」——
-    调用方读一段纯文本时也能看出哪一部分没有依据。
+    调用方读一段纯文本时也能看出哪一部分没有依据，缺口闸的声明也就有了唯一一处来源。
     """
 
     lines: list[str] = []
@@ -175,7 +191,7 @@ def render_answer(citations: Sequence[Citation]) -> str:
         if citation.status == STATUS_SUPPORTED and citation.evidence_ids:
             lines.append(f"{citation.text}（{'、'.join(citation.evidence_ids)}）")
         else:
-            lines.append(f"{citation.text}（材料不足）")
+            lines.append(f"{citation.text}（{GAP_DECLARATION}）")
     return "\n".join(lines)
 
 
@@ -200,12 +216,16 @@ def evidence_state_of(*, citations: Sequence[Citation], materials: Sequence[Mapp
 
 
 def build_finalizer_prompt(
-    *, query: str, materials: Sequence[Mapping[str, Any]]
+    *, query: str, materials: Sequence[Mapping[str, Any]], uncovered: Sequence[str] = ()
 ) -> str:
-    """Finalizer 的用户消息：问题 + 最终材料池（序号即引用下标）。
+    """Finalizer 的用户消息：问题 + 最终材料池（序号即引用下标）+ 缺口要点（若有）。
 
     材料**带序号、不带任何 id**：模型唯一的指针是「第几条」。正文按预算截断，但截断只
     影响这一次提示词，交回给调用方的材料逐字完整（「成本可以截断，材料不许截断」）。
+
+    ``uncovered`` 是**判定为缺口**的那些要点的正文（上游的覆盖判定给的）。把它们点名写进
+    提示词，是为了让「有 gap 就必须声明不足」这条闸门有对应的指令——只有校验没有指令，
+    等于让人猜一条不写在纸上的规矩。
     """
 
     lines: list[str] = []
@@ -221,10 +241,18 @@ def build_finalizer_prompt(
         lines.append(
             f"{index}. 《{title}》{f' · {heading}' if heading else ''}\n{excerpt}"
         )
-    return (
+    prompt = (
         f"问题：{query[:MAX_FINALIZER_QUERY_CHARS]}\n\n"
         f"最终材料（共 {len(materials)} 条，序号即引用下标）：\n" + "\n\n".join(lines)
     )
+    if uncovered:
+        gaps = "\n".join(f"- {text}" for text in uncovered)
+        prompt += (
+            f"\n\n以下要点在材料里**没有**直接支撑（缺口）：\n{gaps}\n"
+            f"针对每一个这样的要点，各写一块 kind=insufficient，文本里写明「{GAP_DECLARATION}」。"
+            "不许用你自己的知识把它们补成 supported。"
+        )
+    return prompt
 
 
 FINALIZER_SYSTEM: Final[str] = (
@@ -237,6 +265,8 @@ FINALIZER_SYSTEM: Final[str] = (
     "supporting 只能补充背景，不能单独支撑结论。"
     "要求：只输出块的文本、状态与材料序号；不要生成引用文本，不要输出切片 id、文档 id、"
     "章节 id，也不要自己写「E1」这类编号（编号由后端按序号生成）。"
+    "如果提示词里列出了「没有直接支撑的要点（缺口）」，每一个都必须有一块 insufficient，"
+    "文本里写明「材料不足」——**不许**用你自己的知识把这些缺口补成 supported。"
     "两份文档对同一事实说法不一致时：拆成两块，各自只引用自己那份来源；如果你无法拆分，"
     "就把该块的 conflict 标为 true（后端会因此不生成答案、把材料交回调用方）。"
     "**绝不**自己裁决哪一份更权威——不要写「以…为准」「更权威」「建议采信」这类判断。"
@@ -246,11 +276,17 @@ FINALIZER_SYSTEM: Final[str] = (
 # ─────────────────────────────────────────────────────────── 校验与装配
 
 
-def finalize_answer(raw: Any, *, materials: Sequence[Mapping[str, Any]]) -> FinalAnswer:
+def finalize_answer(
+    raw: Any, *, materials: Sequence[Mapping[str, Any]], uncovered: Sequence[str] = ()
+) -> FinalAnswer:
     """把模型的块输出校验成 :class:`FinalAnswer`；任一硬校验不过就抛 :class:`AnswerRejected`。
 
     这是本模块唯一的入口：结构校验、下标解析、渲染串与三态完整度**一起**产出，调用方
     拿不到「形状对但没校验」的半成品。
+
+    ``uncovered`` 非空 = 上游判定这次**有缺口**，于是再过一道缺口闸（ADR-0029）：渲染串里
+    必须出现「材料不足」的声明，否则整份作废。它不在四条引用硬校验之列，但同样是硬闸——
+    「有缺口」与「答案里承认了缺口」必须能对上。
     """
 
     blocks = _coerce_blocks(raw)
@@ -259,6 +295,7 @@ def finalize_answer(raw: Any, *, materials: Sequence[Mapping[str, Any]]) -> Fina
     citations = tuple(_validate(block, materials=materials) for block in blocks)
     answer = render_answer(citations)
     _scan_answer(answer, citations=citations, materials=materials)
+    _require_gap_declaration(answer, uncovered=uncovered)
     return FinalAnswer(
         answer=answer,
         citations=citations,
@@ -381,16 +418,31 @@ def _scan_answer(
         raise AnswerRejected(REJECTED_UNRESOLVED_REFERENCE)
 
 
+def _require_gap_declaration(answer: str, *, uncovered: Sequence[str]) -> None:
+    """缺口闸：上游说有缺口时，答案里必须有一句「材料不足」。
+
+    为什么是硬失败而不是「后端替它补一句」：``answer`` 只能是引用块的渲染串（ADR-0026 §2），
+    往里面追加一段没有块支撑的话，等于在答案里塞第二种产物；而缺口是真的，改写不了。
+    整份作废的落点与四条硬校验一致——材料、计划、判定与缺口清单照给，调用方自己看得见
+    少了哪一块。
+    """
+
+    if uncovered and GAP_DECLARATION not in answer:
+        raise AnswerRejected(REJECTED_GAP_NOT_DECLARED)
+
+
 __all__ = [
     "COMPLETENESS_COMPLETE",
     "COMPLETENESS_MISSING",
     "COMPLETENESS_PARTIAL",
     "FINALIZER_SYSTEM",
+    "GAP_DECLARATION",
     "MAX_FINALIZER_MATERIAL_CHARS",
     "REJECTED_ASSERTION_WITHOUT_CORE",
     "REJECTED_CITATION_ON_INSUFFICIENT",
     "REJECTED_CONFLICT_ADJUDICATED",
     "REJECTED_EMPTY_BLOCK",
+    "REJECTED_GAP_NOT_DECLARED",
     "REJECTED_MALFORMED",
     "REJECTED_UNRESOLVED_REFERENCE",
     "STATUS_INSUFFICIENT",

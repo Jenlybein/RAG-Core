@@ -929,23 +929,33 @@ class _Run:
         四件事按顺序做，顺序不能换：
 
         1. **没有材料就不问模型**（问了也只能编）：``answer = None``、``evidence_state``
-           是 ``missing``——「根本没有材料」与「材料不足」在结构上要能分开；
+           是 ``missing``——「根本没有材料」与「材料不足」在结构上要能分开。这时**不生成
+           答案也就是最彻底的声明**：缺口由 ``coverage.gaps`` 逐要点交回，比在渲染串里追加
+           一句没有块支撑的话诚实；
         2. **问强模型**（未配置 / 失败 / 超时换快模型兜底一次，标记进元数据）；
         3. **过四条硬校验**（:func:`finalize_answer`）：任何一块不过，整份答案作废，
            材料与计划照给——这是 ADR-0026 §3 的默认落点，不是一次失败；
-        4. **渲染串与块一起收下**：``answer`` 永远是块的渲染串，没有第二种来源。
+        4. **过缺口闸**（票 #164）：判定说某个要点在材料里没有直接支撑时，答案里必须有
+           一句「材料不足」——没有就是用自己的知识把缺口补上了，整份作废；
+        5. **渲染串与块一起收下**：``answer`` 永远是块的渲染串，没有第二种来源。
+
+        缺口要点（``self._gap_verdicts()``）在生成前就点名进提示词：指令与校验必须成对，
+        只有校验没有指令等于让人猜一条不写在纸上的规矩。
         """
 
         if not self.materials:
             self.evidence_state = COMPLETENESS_MISSING
             return
 
-        prompt = build_finalizer_prompt(query=self.query, materials=self.materials)
+        uncovered = self._uncovered_texts()
+        prompt = build_finalizer_prompt(
+            query=self.query, materials=self.materials, uncovered=uncovered
+        )
         try:
-            result = await self._answer_blocks(prompt)
+            result = await self._answer_blocks(prompt, uncovered=uncovered)
         except AnswerRejected as exc:
-            # 四条硬校验之一：**模型答了，但结论不能发**。不换模型重问（那是用成本换概率），
-            # 整单不生成——材料与计划仍然完整交回。
+            # 四条硬校验或缺口闸之一：**模型答了，但结论不能发**。不换模型重问（那是用成本
+            # 换概率），整单不生成——材料、计划与缺口清单仍然完整交回。
             self.answer_rejected_reason = exc.reason
             logger.warning(
                 "research answer rejected",
@@ -980,7 +990,17 @@ class _Run:
             for citation in result.citations
         )
 
-    async def _answer_blocks(self, prompt: str) -> FinalAnswer:
+    def _uncovered_texts(self) -> list[str]:
+        """缺口的要点正文（按要点顺序）：提示词点名与缺口闸共用这一份。
+
+        只取 ``none`` 的要点——``unknown`` 不进去：材料到了但没再审过的要点不该被当成缺口
+        点名，否则模型会为一块其实有材料的要点写「材料不足」。
+        """
+
+        texts = {point.point_id: point.text for point in self.points}
+        return [texts[item.point_id] for item in self._gap_verdicts()]
+
+    async def _answer_blocks(self, prompt: str, *, uncovered: Sequence[str]) -> FinalAnswer:
         """问一次生成；强模型那条路上失败就换快模型兜底**一次**。
 
         三种「强模型不可用」的处置在这里合流，但**成本不同**，所以不能合并成一件事：
@@ -995,10 +1015,10 @@ class _Run:
         provider = await self._strong_provider_of_role()
         if provider is None:
             self.strong_model_fallback = STRONG_MODEL_UNAVAILABLE
-            return await self._ask_once(await self.llm_factory(), prompt)
+            return await self._ask_once(await self.llm_factory(), prompt, uncovered=uncovered)
 
         try:
-            return await self._ask_once(provider, prompt)
+            return await self._ask_once(provider, prompt, uncovered=uncovered)
         except AnswerRejected:
             # 硬校验不过：这是「答了但不能发」，不是「没答出来」——不重试。
             raise
@@ -1006,7 +1026,7 @@ class _Run:
             self.strong_model_fallback = STRONG_MODEL_FAILED
             if self.model_calls >= MAX_MODEL_CALLS_WITH_FALLBACK:
                 raise
-            return await self._ask_once(await self.llm_factory(), prompt)
+            return await self._ask_once(await self.llm_factory(), prompt, uncovered=uncovered)
 
     async def _strong_provider_of_role(self) -> Any | None:
         """装配强模型；装不出来或这台机器上没装（``available`` 为假）都返回 ``None``。"""
@@ -1027,7 +1047,9 @@ class _Run:
         self._strong_provider = provider
         return provider
 
-    async def _ask_once(self, provider: Any, prompt: str) -> FinalAnswer:
+    async def _ask_once(
+        self, provider: Any, prompt: str, *, uncovered: Sequence[str]
+    ) -> FinalAnswer:
         """一次生成尝试：**先计数再发**（已经发出的调用就算失败也计成本），带单次硬超时。
 
         超时只在这里发生（见 ``research_limits`` 的模块文档）：生成是最后一步，后面没有
@@ -1040,7 +1062,7 @@ class _Run:
             timeout=FINALIZER_TIMEOUT_SECONDS,
         )
         try:
-            return finalize_answer(raw, materials=self.materials)
+            return finalize_answer(raw, materials=self.materials, uncovered=uncovered)
         except AnswerRejected as exc:
             if exc.reason in _STRUCTURAL_REJECTIONS:
                 # 结构不对 = 这一次没答出来（模型可能返回了别的东西）：值一次换模型重问。
