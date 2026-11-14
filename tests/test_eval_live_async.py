@@ -738,6 +738,46 @@ def test_both_reuse_paths_call_the_keyword_version_guard() -> None:
     assert "_assert_query_analyzer(live.elasticsearch_index)" in runner
 
 
+# ──────────────────────────────── mapping 守卫：别名要先解析成物理索引再读 settings
+
+
+def _analyzer_settings(*, analyzer: str) -> dict[str, object]:
+    """``GET /<名字>/_settings`` 的响应形状（键是**物理索引名**）。"""
+
+    return {"settings": {"index": {"analysis": {"analyzer": {analyzer: {}}}}}}
+
+
+def test_mapping_guard_resolves_the_alias_to_the_physical_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """别名返回的 settings 键是物理索引名（``别名__v1``），不能按别名取键。
+
+    票 #157 真库实测：接上守卫后第一跑就被「旧 mapping」拒了——因为按别名取键读到
+    空 dict。好索引被守卫拒之门外，比没有守卫更糟。
+    """
+
+    from app.providers.keyword_search.query_builder import QUERY_ANALYZER
+
+    payload = {"rag_chunks_eval__v1": _analyzer_settings(analyzer=QUERY_ANALYZER)}
+    monkeypatch.setattr(
+        eval_retrieval.httpx, "get", lambda url, **kwargs: _EsResponse(200, payload)
+    )
+
+    eval_retrieval._assert_query_analyzer("rag_chunks_eval")  # 不抛就是通过
+
+
+def test_mapping_guard_still_refuses_a_legacy_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
+    """旧 mapping（缺查询分析器）仍要拒：复用等于用旧口径跑新代码。"""
+
+    payload = {"rag_chunks_eval__v1": _analyzer_settings(analyzer="ik_max_word")}
+    monkeypatch.setattr(
+        eval_retrieval.httpx, "get", lambda url, **kwargs: _EsResponse(200, payload)
+    )
+
+    with pytest.raises(SystemExit, match="旧 mapping"):
+        eval_retrieval._assert_query_analyzer("rag_chunks_eval")
+
+
 # ────────────────────────────────────────────────── 结构守卫：别写回同步
 
 

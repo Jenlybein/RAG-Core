@@ -576,9 +576,18 @@ def _assert_query_analyzer(index_name: str) -> None:
     查询侧停用词与分析器改过之后，改动之前建的索引里没有 ``ik_smart_query``。
     复用它等于「用旧口径跑新代码」：指标看着正常，新逻辑一点没生效——这是最难
     发现的一类假绿，所以宁可拒绝执行。
+
+    ## 为什么不能直接 ``response.json()[index_name]``（票 #157 实测）
+
+    ``ELASTICSEARCH_INDEX`` 现在是**别名**（ADR-0025 决策二）：``GET /<别名>/_settings``
+    的响应键是它解析出的**物理索引名**（``rag_chunks_eval__v1``），不是别名本身。
+    按别名取键会读到空 dict，于是「分析器没装」这个判定在**正确的**新索引上也会响——
+    一条守卫把好索引拒之门外，比没有守卫更糟。所以按「名字本身，或 ``<名字>__`` 的
+    任一物理版本」取那一段 settings。
     """
 
     from app.providers.keyword_search.query_builder import QUERY_ANALYZER
+    from app.providers.keyword_search.versioned_index import VERSION_SEPARATOR
 
     response = httpx.get(f"{_es_base()}/{index_name}/_settings", timeout=30.0)
     if response.status_code == 404:
@@ -588,10 +597,21 @@ def _assert_query_analyzer(index_name: str) -> None:
             f"failed to read settings of {index_name}: {response.status_code} {response.text}"
         )
 
+    entries = response.json()
+    prefix = f"{index_name}{VERSION_SEPARATOR}"
+    resolved = next(
+        (
+            value
+            for key, value in entries.items()
+            if key == index_name or key.startswith(prefix)
+        ),
+        None,
+    )
+    if resolved is None:
+        raise SystemExit(f"--reuse 的索引 {index_name} 读不到 settings（集群返回的键：{sorted(entries)}）。")
+
     analyzers = (
-        response.json()
-        .get(index_name, {})
-        .get("settings", {})
+        resolved.get("settings", {})
         .get("index", {})
         .get("analysis", {})
         .get("analyzer", {})
