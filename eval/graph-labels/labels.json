@@ -79,7 +79,7 @@
     "engineering": [
       "docs/adr/0015-token-window-and-vocab.md"
     ],
-    "_reason": "0015 的正文里含 `<|endoftext|>` 这个 tiktoken 特殊 token 的字面量，生产的切块器会抛 ValueError（见 app/utils/tokenizer.py）——这一篇在本测量里进不了目录。这是**另一件事**（上传含该字面量的文档会炸索引），已在 report.md 的「顺带发现」里单列，不混进本票的分母"
+    "_reason": "0015 的正文里含 `<|endoftext|>` 这个 tiktoken 特殊 token 的字面量，生产的切块器会抛 ValueError（见 app/utils/tokenizer.py）——这一篇在本测量里进不了目录。这是**另一件事**（上传含该字面量的文档会炸索引），已在 report.md 的「顺带发现」里单列，不混进本票的分母。**该缺陷已于 #160 修复（2026-11-15）：正文里的特殊 token 字面量现在按数据编码，见 ADR-0015 末节。**"
   },
   "documents": {
     "eng-adr-0027": {

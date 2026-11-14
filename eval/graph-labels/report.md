@@ -127,7 +127,7 @@
 
 ## 八、顺带发现（与本票的结论无关，但不该被埋掉）
 
-- `docs/adr/0015-token-window-and-vocab.md` 的正文里含 `<|endoftext|>` 这个 tiktoken 特殊 token 的**字面量**，生产切块器（`app/utils/tokenizer.py`）对它直接抛 `ValueError: disallowed special token`。也就是说：上传一篇正文里出现这个字面量的文档，索引会失败。这一篇因此被排除在本测量的目录之外（`labels.json` 的 `exclude`），另记一笔。
+- `docs/adr/0015-token-window-and-vocab.md` 的正文里含 `<|endoftext|>` 这个 tiktoken 特殊 token 的**字面量**，生产切块器（`app/utils/tokenizer.py`）对它直接抛 `ValueError: disallowed special token`。也就是说：上传一篇正文里出现这个字面量的文档，索引会失败。这一篇因此被排除在本测量的目录之外（`labels.json` 的 `exclude`），另记一笔。**（2026-11-15 已修，#160：正文里的特殊 token 字面量现在按数据编码，见 ADR-0015 末节。本文其余内容保持测量当时的样子。）**
 - 测量集里曾有两类「解析侧」的漏法：①`本文件第 1 节` 这种写法完全在规则内的引用，在标题写成「第 N 节 X」的政策文档上解析失败——`section_by_number` 只认「标题以数字开头」；②整篇链接（`[ADR-0025](0025-….md) 决策五`）落到目标文档的 **h1 那一节**（ADR 的 h1 节只有「状态 / 日期 / 相关」三行元信息，边建出来了、方向也对、粒度却错）。**这两类都由 #158 决策 8 修掉**：①改由「标题开头编号」归一匹配（含「第 N 条」「Section N」惯例）；②链接后面的「决策五」被吃进链接候选，落到决策条目那一节。
 - **测量口径的两处适配**（文档更新在标注之后引入的，不是改判据）：ADR-0027 重写「决策 8」后，`（ADR-0025 决策五）` 这条 evidence 在本文出现了两处、`翻案条件` 这个目标标题也有两节同名；测量脚本因此用标注文件自带的 `source_section` 收窄证据所在节、用 `target.path` 区分同名节。两处都只在「唯一性被文档更新打破」时才用，判据（哪条算 TP / FP）不变。
 
