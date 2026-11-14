@@ -135,6 +135,10 @@ def reindex_body(*, source: str, dest: str, version: str) -> dict:
     return {
         "source": {"index": source},
         "dest": {"index": dest},
+        # 搬完立刻刷新目标索引：后面的条数核对读的是它，切别名之后的检索读的也是它。
+        # ``_reindex`` 默认不刷新，实测会让紧随其后的 ``_count`` 读到 0——守卫于是按
+        # 「条数对不上」正确停下，但集群已经停在半迁移态（票 #157 踩到两次）。
+        "refresh": True,
         "script": {
             "source": (
                 "if (ctx._source.index_version == null) {"
@@ -228,7 +232,11 @@ async def migrate_keyword_alias(
     else:
         messages.append(f"② {dest} 已存在，复用")
 
-    response = await client.reindex(reindex_body(source=alias, dest=dest, version=version))
+    # ``**`` 展开而不是传一个位置 ``body``：``AsyncElasticsearch`` 的每个 API 方法都**只收
+    # 关键字参数**，位置传法在真集群上直接抛 ``TypeError: Positional arguments can't be
+    # used with Elasticsearch API methods``（票 #157 实测：建完目标索引就炸在 ③，
+    # 集群停在「两个索引都在、都没别名」的半迁移态）。
+    response = await client.reindex(**reindex_body(source=alias, dest=dest, version=version))
     failures = response.get("failures") or []
     if failures:
         raise MigrationRefused(

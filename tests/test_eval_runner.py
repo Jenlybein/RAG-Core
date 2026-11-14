@@ -385,12 +385,40 @@ async def test_the_injected_resolver_points_the_eval_at_the_model_configs_row(mo
 
     access = await eval_runner.bind_llm_role_resolver(_resolver)
 
-    assert access == {"llm_endpoint_source": "model_configs", "llm_model": "fast-model-y"}
+    assert access == {
+        "llm_endpoint_source": "model_configs",
+        "llm_model": "fast-model-y",
+        # 配置行 id 必须一起带回来（#157 §③）：只记模型名的话，同一模型名的两行配置
+        # 在归档里分不开，「这一轮用的是库里哪一行」就答不了。
+        "llm_config_id": "cfg-test",
+    }
     assert await llm_module._resolved_endpoint("fast") is endpoint  # 真的接上了，不是只记了个标签
 
     snapshot = _snapshot_with(**access)
     assert snapshot["llm_endpoint_source"] == "model_configs"
     assert snapshot["llm_model"] == "fast-model-y"
+
+
+def test_the_run_artifact_carries_the_llm_chain_from_the_model_configs_row() -> None:
+    """``llm_chain`` 必须进产物顶层（#157 §③），且键名与 ``eval_refs`` 那份同形。
+
+    环境快照里已经有「走 model_configs 还是 env」的**叙述**；这一栏是同一件事的机读版，
+    两份评测归档（检索门禁 / Research）因此能按同一个字段对齐着读。
+    """
+
+    payload: dict[str, Any] = {"run_id": "r1"}
+    access = {
+        "llm_endpoint_source": "model_configs",
+        "llm_model": "fast-model-y",
+        "llm_config_id": "cfg-test",
+    }
+
+    eval_runner.attach_llm_chain(payload, llm_access=access)
+
+    assert payload["llm_chain"] == access
+    # 快照而不是别名：归档记录的是「当时」，调用方之后改 dict 不该改到产物。
+    access["llm_model"] = "changed-after-the-fact"
+    assert payload["llm_chain"]["llm_model"] == "fast-model-y"
 
 
 class _StubRerank:

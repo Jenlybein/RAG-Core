@@ -104,6 +104,30 @@ RERANK_PROVIDER_AUTO = "auto"
 RERANK_PROVIDER_LLM = "llm"
 RERANK_PROVIDER_CHOICES = (RERANK_PROVIDER_AUTO, RERANK_PROVIDER_LLM)
 
+#: 一轮门禁的**总模型调用预算**（票 #157）。超了停下报告，不悄悄把账单翻倍。
+#: 构成见 :func:`model_call_budget`：暖机 1 次 + 每题 1 次查询嵌入（重排关着时没有别的
+#: 模型调用）。450 相对 138 有富余，是留给「临时加跑一道旁证题」的余地，不是给重建语料
+#: 用的——重建会把 469 次文档嵌入一次性算进来，那样一轮就顶破预算。
+MODEL_CALL_BUDGET = 450
+
+
+def model_call_budget(*, questions: int, warmup: int = 1) -> dict[str, Any]:
+    """这一轮预计要花多少次模型调用，以及是否在预算内（纯函数，开跑前先算账）。
+
+    口径与产物里的 ``model_calls`` 一致：只数**真的发出去的模型请求**。
+    重排关着（与基线同口径）时不额外产生调用；开着重排时它走专用端点，不计在这里，
+    由调用点另行打印一句提醒——预算算错不可怕，算错了还不说才可怕。
+    """
+
+    total = warmup + questions
+    return {
+        "warmup": warmup,
+        "questions": questions,
+        "total": total,
+        "budget": MODEL_CALL_BUDGET,
+        "within_budget": total <= MODEL_CALL_BUDGET,
+    }
+
 
 # ─────────────────────────────────────────────────────── 小工具（纯函数，可离线测）
 
@@ -364,7 +388,26 @@ async def bind_llm_role_resolver(resolver: Any = None) -> dict[str, Any]:
     return {
         "llm_endpoint_source": ENDPOINT_SOURCE_MODEL_CONFIGS,
         "llm_model": str(endpoint.model),
+        # 配置行 id 与 ``eval_refs`` 的 ``llm_chain`` 同形：两份评测产物要能对齐着读，
+        # 「这一轮用的是库里哪一行」是它们共同的第一个问题。
+        "llm_config_id": str(endpoint.config_id),
     }
+
+
+def attach_llm_chain(payload: dict[str, Any], *, llm_access: Mapping[str, Any]) -> dict[str, Any]:
+    """把「这一轮走的模型链」写进产物顶层，键名与 ``eval_refs`` 的 ``llm_chain`` 相同。
+
+    为什么要落进**产物**而不只打印一行（票 #157 §③）：环境快照已经记了「走的是
+    ``model_configs`` 还是 ``.env``」，但那一栏是给人读的叙述；这条是机读的同一件事，
+    而且与 ``eval_refs`` 的 Research 产物**同名同形**——两份归档因此能按同一个字段对齐
+    着读，回答「这一轮评测与那一轮 Research 用的到底是不是同一条模型链」。
+
+    ``dict(...)`` 是浅拷贝：产物拿到的是快照，调用方之后改 ``llm_access`` 不会把已经写进
+    归档的值改掉（归档必须记录「当时」）。
+    """
+
+    payload["llm_chain"] = dict(llm_access)
+    return payload
 
 
 def environment_snapshot(
@@ -377,6 +420,7 @@ def environment_snapshot(
     env_file: str | None,
     llm_endpoint_source: str,
     llm_model: str | None,
+    llm_config_id: str | None = None,
     rerank_provider: str | None = None,
 ) -> dict[str, Any]:
     """环境快照：**这次数字是在什么条件下算出来的**。
@@ -387,6 +431,8 @@ def environment_snapshot(
 
     另有两项（#115）：``llm_endpoint_source`` / ``llm_model``——这一轮的 LLM 接入究竟
     走 ``model_configs`` 还是 ``.env``。没有它们，「生产好好的、评测全挂」只能靠猜。
+    再加上 ``llm_config_id``（#157 §③）：走 ``model_configs`` 时记下**库里哪一行**
+    （同一模型名的两行可能挂在不同账号，只记模型名分不开）。
     ``retrieval`` 段另记重排预算三项（超时 / 候选封顶 / 单条截断）：同一份题集在 15 秒
     与 60 秒超时下会呈现「有题降级」与「全排过」两种状态，不记下来就无法复现同一份读数。
 
@@ -437,6 +483,9 @@ def environment_snapshot(
         # 指针 → 配置行），``env`` = 回落单供应商。两条路的 key 可能属于不同账号。
         "llm_endpoint_source": llm_endpoint_source,
         "llm_model": llm_model,
+        # 走 model_configs 时「用的是库里哪一行」（#157 §③）：同一模型名的两行配置光看
+        # 模型名分不开，而它们可能挂在不同账号上。回落 .env 时没有配置行，如实记 None。
+        "llm_config_id": llm_config_id,
         # 这一轮的重排实现（#116）。与 ``rerank_enabled`` 是两件事：开关说「要不要重排」，
         # 它说「谁在重排」。换件前后两次运行开关相同、分数才可比。
         "rerank_provider": rerank_provider,
@@ -1306,6 +1355,49 @@ async def _run(args: argparse.Namespace) -> int:
             f"（题库 {len(questions)} 道；absent / false_premise 不进闸门）"
         )
 
+        # ── 开跑前先算账（票 #157）：超预算就停下报告，不硬跑把账单翻倍 ──
+        budget = model_call_budget(questions=len(selected))
+        print(
+            f"budget    : 预计模型调用 {budget['total']} 次"
+            f"（暖机 {budget['warmup']} + 查询嵌入 {budget['questions']}；"
+            f"上限 {budget['budget']}，重排{'开' if rerank_enabled else '关'}）"
+            + ("（重排开着会另有重排调用，不计在此数）" if rerank_enabled else "")
+        )
+        if not budget["within_budget"]:
+            raise SystemExit(
+                f"预算不足：预计 {budget['total']} 次模型调用 > 上限 {budget['budget']}。"
+                "停下报告，先确认是不是要把语料整体重建（重建会另加约 469 次文档嵌入）。"
+            )
+
+        # 暖机（#157）：把进程内第一次检索的装配开销付在计分之外。不暖的话，只有第一题
+        # 会被记上 keyword 降级（实测：首题 3.5s 且关键词一路超时，第二题 246ms 正常），
+        # 而那不是检索退化。见 eval_retrieval._warm_up 的说明。
+        warmup = await ev._warm_up(db, kb_ids=kb_ids, top_k=top_k)
+        print(
+            f"warmup    : {warmup['duration_ms']:.0f}ms degraded={warmup['degraded']} "
+            f"返回 {warmup['returned_count']} 条（不计分）"
+        )
+
+        # 关键词这一路到底有没有在工作（#157 §②）：单独跑一次 mode=bm25（0 次模型调用），
+        # 只问一道「只能靠字面命中」的题。hybrid 的总分看不出来——向量那一路会把分数撑住。
+        literal = next(
+            (question for question in questions if question.id == ev.KEYWORD_LITERAL_QUESTION_ID),
+            None,
+        )
+        if literal is None:
+            raise SystemExit(
+                f"题库里没有关键词探针题 {ev.KEYWORD_LITERAL_QUESTION_ID!r}"
+                "（题集换过？改 ev.KEYWORD_LITERAL_QUESTION_ID 之前先确认新题也是「只能靠字面命中」）"
+            )
+        keyword_hit = await ev.keyword_probe(
+            db, question=literal, labels=labels, kb_ids=kb_ids, top_k=top_k
+        )
+        print(
+            f"keyword   : {literal.id} bm25 命中 {keyword_hit['hit_count']} 条"
+            f"（第 {keyword_hit['hit_rank'] or '—'} 名），返回 {keyword_hit['returned_count']} 条，"
+            f"degraded={keyword_hit['degraded']}"
+        )
+
         scores, detail, failures = await _score_questions(
             db,
             questions=selected,
@@ -1360,6 +1452,16 @@ async def _run(args: argparse.Namespace) -> int:
         duration_seconds=round(time.perf_counter() - started, 2),
     )
     payload["retrieval_failures"] = failures
+    # 暖机读数（票 #157）：它是一次真实查询、计入预算，但不进任何指标的分母。
+    # 记进产物是为了让「首题有没有被冷启动拖累」事后可查——降级了就写降级。
+    payload["warmup"] = warmup
+    payload["model_call_budget"] = budget
+    # 关键词这一路的探针读数（#157 §②）：这一次 0 次模型调用，但它是「混检不是纯向量
+    # 冒充的」唯一证据，所以与逐题明细一起落进归档。
+    payload["keyword_hit"] = keyword_hit
+    # 这一轮用哪条模型链（票 #157 §③）：与 ``eval_refs`` 的 ``llm_chain`` 同名同形，
+    # 两份评测产物因此能对齐着读。值来自 ``bind_llm_role_resolver``（生产同一份角色指针）。
+    attach_llm_chain(payload, llm_access=llm_access)
 
     baseline, source = resolve_baseline(
         reference=args.baseline or resolved["baseline"] or None,
@@ -1383,6 +1485,20 @@ async def _run(args: argparse.Namespace) -> int:
             )
         )
     payload["gate"] = gate
+
+    # 关键词这一路的断言（#157 §②）：全量门禁若关键词一条相关片都没命中，这一轮的分数
+    # 就是「纯向量冒充混检」——那样的读数不能当门禁，判红并把原因写清楚，而不是让一条
+    # 空空的关键词索引躲在 hybrid 总分后面悄悄通过。
+    if scope_full and not keyword_hit["passed"]:
+        gate["verdict"] = "keyword_leg_dead"
+        gate["passed"] = False
+        gate["reason"] = "keyword_leg_dead"
+        gate["summary"] = (
+            f"关键词这一路一次相关片都没命中（探针 {keyword_hit['question_id']}："
+            f"返回 {keyword_hit['returned_count']} 条、命中 {keyword_hit['hit_count']} 条、"
+            f"empty_reason={keyword_hit['empty_reason']}、degraded={keyword_hit['degraded']}）："
+            "本轮读数来自「纯向量冒名的混检」，不能当门禁。先查索引版本 / 别名 / ES 超时。"
+        )
 
     write_run_dir(run_dir, payload)
     if args.update_baseline:

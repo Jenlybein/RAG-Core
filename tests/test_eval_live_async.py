@@ -114,6 +114,10 @@ async def test_ensure_knowledge_base_inserts_once(monkeypatch: pytest.MonkeyPatc
     created = db.added[0]
     assert created.id == "kb-eval"
     assert created.split_strategy == "structure"
+    assert created.active_index_version == "v1", (
+        "建库必须写生效索引版本（ADR-0025 决策四）：不写的话新库每个请求都被守卫拦下，"
+        "全量重建路径（非 --reuse）根本跑不起来"
+    )
     # 白名单按策略推导（不在脚本里另写一份）：structure → 只收 markdown。
     assert created.allowed_formats == ["markdown"]
     assert db.commits == 1
@@ -204,6 +208,450 @@ async def test_ensure_document_inserts_a_claimable_row() -> None:
     from app.utils.status import DocumentStatus
 
     assert row.status == DocumentStatus.PROCESSING
+
+
+# ────────────────────────────────────────────────── 暖机：冷启动不许记到首题头上
+
+
+@pytest.mark.asyncio
+async def test_warm_up_pays_the_cold_start_outside_the_scored_questions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """暖机走**生产同一条** hybrid 检索，且用的题号不在题库里。
+
+    为什么必须暖机（#157 在真库上量出来的）：进程内第一次检索会顺手建可观测性的
+    Langfuse 客户端，那一步 import ``openai``（几百个 pydantic 模型）把事件循环堵住
+    ~2.4s；同一题里关键词一路的预算只有 2.0s，于是**只有第一题**降级成
+    ``keyword search failed``。基线 127 题里 0 题降级，所以这不是检索退化，是冷启动
+    记到了首题头上。暖机把这一次付在计分之外。
+    """
+
+    seen: list[tuple[str, str, tuple[str, ...]]] = []
+
+    async def fake_run_question(db: object, question: object, **kwargs: object) -> object:
+        seen.append(
+            (
+                question.id,  # type: ignore[attr-defined]
+                kwargs["mode"],  # type: ignore[arg-type]
+                tuple(kwargs["kb_ids"]),  # type: ignore[arg-type]
+            )
+        )
+        return eval_retrieval.QuestionOutcome(
+            id=question.id,  # type: ignore[attr-defined]
+            query=question.query,  # type: ignore[attr-defined]
+            mode=kwargs["mode"],  # type: ignore[arg-type]
+            duration_ms=2412.0,
+        )
+
+    monkeypatch.setattr(eval_retrieval, "_run_question", fake_run_question)
+
+    report = await eval_retrieval._warm_up(object(), kb_ids=["kb-eval"], top_k=5)
+
+    assert seen == [
+        (
+            eval_retrieval.WARMUP_QUESTION_ID,
+            eval_retrieval.MODE_HYBRID,
+            ("kb-eval",),
+        )
+    ], "暖机必须走 hybrid（两路都热起来），且用专门的题号"
+    assert report["model_calls"] == 1, "暖机是一次真实查询嵌入，要计入模型调用预算"
+    assert report["duration_ms"] == 2412.0
+    assert report["question_id"] == eval_retrieval.WARMUP_QUESTION_ID
+
+    questions, _k = eval_retrieval._load_questions()
+    assert all(question.id != eval_retrieval.WARMUP_QUESTION_ID for question in questions), (
+        "暖机题号绝不能出现在题库里：它是被判分的题的邻居，混进去就多算一题"
+    )
+
+
+@pytest.mark.asyncio
+async def test_warm_up_reports_a_degraded_cold_start_honestly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """暖机自己降级了也要如实写进读数——那是「冷启动有多贵」的证据，不是要藏掉的丑事。"""
+
+    async def fake_run_question(db: object, question: object, **kwargs: object) -> object:
+        outcome = eval_retrieval.QuestionOutcome(
+            id=question.id,  # type: ignore[attr-defined]
+            query=question.query,  # type: ignore[attr-defined]
+            mode="hybrid",
+        )
+        outcome.degraded = True
+        outcome.degraded_reason = "keyword search failed"
+        return outcome
+
+    monkeypatch.setattr(eval_retrieval, "_run_question", fake_run_question)
+
+    report = await eval_retrieval._warm_up(object(), kb_ids=["kb-eval"], top_k=5)
+
+    assert report["degraded"] is True
+    assert report["degraded_reason"] == "keyword search failed"
+
+
+# ────────────────────────────────────────────────── 预算：开跑前先算账
+
+
+def test_the_model_call_budget_is_printed_before_the_run() -> None:
+    """137 题一轮的预算：暖机 1 次 + 每题 1 次查询嵌入 = 138 次，上限 450。
+
+    这条用例钉住的是**算式**而不是某个数字：总调用 = 暖机 + 题数。预算的意义在于
+    「开跑前能算出来」，所以它必须是一个纯函数、能离线断言。
+    """
+
+    within = eval_runner.model_call_budget(questions=137)
+
+    assert within["warmup"] == 1
+    assert within["questions"] == 137
+    assert within["total"] == 138
+    assert within["budget"] == eval_runner.MODEL_CALL_BUDGET == 450
+    assert within["within_budget"] is True
+
+
+def test_an_over_budget_plan_is_refused() -> None:
+    """超预算的方案必须判 False（调用点据此 SystemExit 停下报告，不硬跑）。"""
+
+    over = eval_runner.model_call_budget(questions=450)
+
+    assert over["total"] == 451
+    assert over["within_budget"] is False
+
+
+# ────────────────────────────────────────────────── 关键词那一路：必须真的命中过
+
+
+def test_the_literal_question_only_matches_by_literal_text() -> None:
+    """选来验关键词的那道题，得真的是「只能靠字面命中」。
+
+    题面里带编号 ``W0001``，而它的标注章节标题里**没有**这个编号——编号只出现在正文，
+    且同文档里紧挨着 ``W0002``～``W0010`` 九节、措辞 90% 相同。所以：向量这一路分不开，
+    字面这一路分得开。换题而没换成这种题，下面的命中断言就退化成「随便一道题有返回」。
+
+    选 ``q05`` 还有一条实测依据：C6 守分抽样里它正是被「关键词超时降级」记成 0 分的那题
+    （``eval/reports/c6/c6-acceptance.md``），于是这条断言与那次事故盯着同一个探针。
+    """
+
+    questions, _k = eval_retrieval._load_questions()
+    literal = next(
+        question
+        for question in questions
+        if question.id == eval_retrieval.KEYWORD_LITERAL_QUESTION_ID
+    )
+
+    assert literal.type == "exact_code"
+    assert "W0001" in literal.query
+    assert all("W0001" not in heading for _stem, heading in literal.labels)
+
+
+def test_a_bm25_hit_on_the_literal_question_counts_as_the_keyword_leg_working() -> None:
+    """`bm25` 那一组只走关键词（不向量化、不查向量库），它命中相关片就是这一路在工作。"""
+
+    group = {
+        "per_question": [
+            {
+                "id": eval_retrieval.KEYWORD_LITERAL_QUESTION_ID,
+                "status": "ok",
+                "empty_reason": None,
+                "returned_total": 2,
+                "returned": [
+                    {"chunk_id": "chunk-relevant", "is_relevant": True},
+                    {"chunk_id": "chunk-twin", "is_relevant": False},
+                ],
+            }
+        ]
+    }
+
+    report = eval_retrieval.keyword_hit_report(
+        group=group, labels={eval_retrieval.KEYWORD_LITERAL_QUESTION_ID: ["chunk-relevant"]}
+    )
+
+    assert report["passed"] is True
+    assert report["hit_count"] == 1
+    assert report["hit_rank"] == 1
+    assert report["returned_count"] == 2
+
+
+def test_an_empty_bm25_leg_fails_the_assertion() -> None:
+    """索引空跑的样子：一组零返回。这正是「关键词一路等于没跑」要被抓出来的形态。"""
+
+    group = {
+        "per_question": [
+            {
+                "id": eval_retrieval.KEYWORD_LITERAL_QUESTION_ID,
+                "status": "empty",
+                "empty_reason": "no_chunks_matched",
+                "returned_total": 0,
+                "returned": [],
+            }
+        ]
+    }
+
+    report = eval_retrieval.keyword_hit_report(
+        group=group, labels={eval_retrieval.KEYWORD_LITERAL_QUESTION_ID: ["chunk-relevant"]}
+    )
+
+    assert report["passed"] is False
+    assert report["returned_count"] == 0
+    assert report["empty_reason"] == "no_chunks_matched"
+
+
+def test_returning_only_irrelevant_chunks_fails_the_assertion() -> None:
+    """有返回、但一条都不相关——也不算「命中过」。别拿总数冒充命中。"""
+
+    group = {
+        "per_question": [
+            {
+                "id": eval_retrieval.KEYWORD_LITERAL_QUESTION_ID,
+                "status": "ok",
+                "empty_reason": None,
+                "returned_total": 1,
+                "returned": [{"chunk_id": "chunk-twin", "is_relevant": False}],
+            }
+        ]
+    }
+
+    report = eval_retrieval.keyword_hit_report(
+        group=group, labels={eval_retrieval.KEYWORD_LITERAL_QUESTION_ID: ["chunk-relevant"]}
+    )
+
+    assert report["passed"] is False
+    assert report["returned_count"] == 1
+    assert report["hit_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_keyword_probe_runs_bm25_only_and_reports_the_hit(monkeypatch) -> None:
+    """门禁产物里的关键词断言：只跑 ``mode=bm25``，0 次模型调用，读数来自同一份解析结果。"""
+
+    seen: dict[str, object] = {}
+
+    async def fake_run_question(db: object, question: object, **kwargs: object) -> object:
+        seen["question_id"] = question.id  # type: ignore[attr-defined]
+        seen["mode"] = kwargs["mode"]
+        outcome = eval_retrieval.QuestionOutcome(
+            id=question.id,  # type: ignore[attr-defined]
+            query=question.query,  # type: ignore[attr-defined]
+            mode=str(kwargs["mode"]),
+        )
+        outcome.returned = [{"chunk_id": "chunk-literal"}]
+        return outcome
+
+    monkeypatch.setattr(eval_retrieval, "_run_question", fake_run_question)
+    questions, _k = eval_retrieval._load_questions()
+    literal = next(
+        question
+        for question in questions
+        if question.id == eval_retrieval.KEYWORD_LITERAL_QUESTION_ID
+    )
+
+    report = await eval_retrieval.keyword_probe(
+        object(),
+        question=literal,
+        labels={literal.id: ["chunk-literal"]},
+        kb_ids=["kb-eval"],
+        top_k=5,
+    )
+
+    assert seen == {"question_id": literal.id, "mode": eval_retrieval.MODE_BM25}, (
+        "必须只走关键词单路：hybrid 的分数会被向量那一路撑住，看不出关键词空跑"
+    )
+    assert report["passed"] is True
+    assert report["hit_rank"] == 1
+    assert report["model_calls"] == 0, "bm25 不向量化，这一次探针不该计入模型调用预算"
+
+
+@pytest.mark.asyncio
+async def test_a_dead_keyword_leg_fails_the_probe_and_surfaces_the_degraded_reason(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """关键词一路降级 / 空返回时，探针必须判 False 并把原因带出来（门禁据此判红）。"""
+
+    async def fake_run_question(db: object, question: object, **kwargs: object) -> object:
+        outcome = eval_retrieval.QuestionOutcome(
+            id=question.id,  # type: ignore[attr-defined]
+            query=question.query,  # type: ignore[attr-defined]
+            mode="bm25",
+        )
+        outcome.degraded = True
+        outcome.degraded_reason = "keyword search failed"
+        outcome.empty_reason = "no_chunks_matched"
+        return outcome
+
+    monkeypatch.setattr(eval_retrieval, "_run_question", fake_run_question)
+
+    report = await eval_retrieval.keyword_probe(
+        object(),
+        question=eval_retrieval.Question(
+            id="q05", type="exact_code", query="W0001", note="", labels=()
+        ),
+        labels={"q05": ["chunk-literal"]},
+        kb_ids=["kb-eval"],
+        top_k=5,
+    )
+
+    assert report["passed"] is False
+    assert report["hit_count"] == 0
+    assert report["empty_reason"] == "no_chunks_matched"
+    assert report["degraded"] is True
+    assert report["degraded_reason"] == "keyword search failed"
+
+
+# ──────────────────────────────── 版本化写入：索引完要把别名切到刚写出的版本
+
+
+class _ScalarRows:
+    """``execute(...).scalars().all()`` 的最小替身（只回一组版本名）。"""
+
+    def __init__(self, values: list[str]) -> None:
+        self._values = list(values)
+
+    def scalars(self) -> _ScalarRows:
+        return self
+
+    def all(self) -> list[str]:
+        return list(self._values)
+
+
+class _VersionDb:
+    """只回答 ``select(Chunk.index_version)`` 的假会话。"""
+
+    def __init__(self, versions: list[str]) -> None:
+        self._versions = versions
+        self.statements: list[str] = []
+
+    async def execute(self, statement: object) -> _ScalarRows:
+        self.statements.append(str(statement))
+        return _ScalarRows(self._versions)
+
+
+class _VersionProvider:
+    """关键词 Provider 的替身：只记「建了哪些版本、切了哪些版本」。"""
+
+    def __init__(self) -> None:
+        self.ensured: list[str] = []
+        self.activated: list[str] = []
+
+    async def ensure_version_index(self, version: str) -> str:
+        self.ensured.append(version)
+        return f"physical__{version}"
+
+    async def activate_version(self, version: str) -> None:
+        self.activated.append(version)
+
+
+def _patch_keyword_provider(monkeypatch: pytest.MonkeyPatch, provider: object) -> None:
+    monkeypatch.setattr(
+        "app.providers.keyword_search.get_keyword_search_provider", lambda: provider
+    )
+
+
+@pytest.mark.asyncio
+async def test_activate_keyword_versions_switches_the_alias_per_version(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """索引完必须把别名切过去（#157 §②）：``add_chunks`` 只写物理索引，不动别名。
+
+    漏了这一步的症状是「关键词一路搜不到」——不报错。版本号从 ``chunks`` 列读，
+    多个版本时按序各切一次、最后一个生效（库里是事实，内存猜会与物理索引名错位）。
+    """
+
+    provider = _VersionProvider()
+    _patch_keyword_provider(monkeypatch, provider)
+
+    versions = await eval_retrieval._activate_keyword_versions(_VersionDb(["v2", "v1", "v1"]))
+
+    assert provider.ensured == ["v1", "v2"], "去重后按版本名排序；先建索引再切别名"
+    assert provider.activated == ["v1", "v2"], "多个版本各切一次，最后切的是最大版本"
+    assert versions["activated"] == [
+        {"version": "v1", "physical": "physical__v1"},
+        {"version": "v2", "physical": "physical__v2"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_activate_keyword_versions_is_a_noop_when_no_chunks_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """库里一个切片都没有时：不建空索引、不切别名（全新环境不该被这一步弄出脏索引）。"""
+
+    provider = _VersionProvider()
+    _patch_keyword_provider(monkeypatch, provider)
+
+    result = await eval_retrieval._activate_keyword_versions(_VersionDb([]))
+
+    assert provider.ensured == []
+    assert provider.activated == []
+    assert result["activated"] == []
+
+
+# ────────────────────────────────────────────────── 清索引：版本化形状也要清得干净
+
+
+class _EsResponse:
+    """``httpx`` 响应的最小替身（只要 ``status_code`` / ``json`` / ``text``）。"""
+
+    def __init__(self, status_code: int, payload: object) -> None:
+        self.status_code = status_code
+        self._payload = payload
+        self.text = str(payload)
+
+    def json(self) -> object:
+        return self._payload
+
+
+def test_reset_deletes_every_physical_version_behind_the_alias(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """清索引必须删**具体物理索引**，而不是那个别名（别名发 DELETE 会被 ES 拒）。
+
+    版本化之后 ``rag_chunks_eval`` 是别名，真正要删的是 ``rag_chunks_eval__v1`` 之类；
+    只删别名指向的那一张会漏掉旧版本，下一轮构建再写一版，两张就同时在集群里。
+    """
+
+    seen: dict[str, object] = {}
+
+    def fake_get(url: str, **kwargs: object) -> _EsResponse:
+        seen["get_url"] = url
+        seen["params"] = kwargs.get("params")
+        return _EsResponse(
+            200, [{"index": "rag_chunks_eval__v1"}, {"index": "rag_chunks_eval__v2"}]
+        )
+
+    def fake_delete(url: str, **kwargs: object) -> _EsResponse:
+        seen["delete_url"] = url
+        return _EsResponse(200, {"acknowledged": True})
+
+    monkeypatch.setattr(eval_retrieval.httpx, "get", fake_get)
+    monkeypatch.setattr(eval_retrieval.httpx, "delete", fake_delete)
+
+    state = eval_retrieval._reset_elasticsearch("rag_chunks_eval")
+
+    assert str(seen["get_url"]).endswith("/_cat/indices/rag_chunks_eval,rag_chunks_eval__*"), (
+        "要靠 _cat 把别名解析成具体物理索引，且版本前缀一起覆盖"
+    )
+    assert str(seen["delete_url"]).endswith("/rag_chunks_eval__v1,rag_chunks_eval__v2")
+    assert state.startswith("deleted(")
+
+
+def test_reset_reports_absent_when_nothing_is_there(monkeypatch: pytest.MonkeyPatch) -> None:
+    """什么都不存在 → ``absent``（全新环境上不该报错，也不该发一条 DELETE）。"""
+
+    deleted: list[str] = []
+    monkeypatch.setattr(eval_retrieval.httpx, "get", lambda url, **kwargs: _EsResponse(200, []))
+    monkeypatch.setattr(
+        eval_retrieval.httpx,
+        "delete",
+        lambda url, **kwargs: deleted.append(url) or _EsResponse(200, {}),
+    )
+
+    assert eval_retrieval._reset_elasticsearch("rag_chunks_eval") == "absent"
+    assert deleted == []
+
+
+def test_reset_refuses_a_name_that_is_not_the_eval_index() -> None:
+    """防手滑：名字里没有 eval 就一个请求都不发（这条守卫比任何注释都管用）。"""
+
+    with pytest.raises(SystemExit, match="eval"):
+        eval_retrieval._reset_elasticsearch("rag_chunks")
 
 
 # ────────────────────────────────────────────────── 结构守卫：别写回同步

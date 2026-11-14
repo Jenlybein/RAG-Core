@@ -152,6 +152,7 @@ from app.db.base import Base, now  # noqa: E402
 from app.db.async_session import AsyncSessionLocal, async_engine  # noqa: E402
 from app.db.transaction import async_transaction  # noqa: E402
 from app.models import Chunk, Document, KnowledgeBase  # noqa: E402
+from app.models.chunk import DEFAULT_INDEX_VERSION  # noqa: E402
 from app.models.knowledge_base import (  # noqa: E402
     SPLIT_STRATEGIES,
     SPLIT_STRUCTURE,
@@ -420,6 +421,69 @@ class Question:
     trap: tuple[tuple[str, str], ...] = ()
 
 
+#: 暖机用的题号 / 题面。**故意不在题库里**（``eval/questions.json`` 只有 ``qNN``）：
+#: 暖机那一次查询要计入模型调用预算，但绝不能计入任何指标的分母。
+WARMUP_QUESTION_ID = "warmup"
+WARMUP_QUERY = "证书过期怎么处理"
+
+
+async def _warm_up(async_db: Any, *, kb_ids: Sequence[str], top_k: int) -> dict[str, Any]:
+    """在计分之前，用**同一条生产链路**跑一次查询，把冷启动付掉（票 #157）。
+
+    ## 为什么必须有这一步
+
+    进程内第一次检索会顺手装配可观测性的 Langfuse 客户端，那一步 import ``openai``
+    （几百个 pydantic 模型）以及建 TLS 上下文，实测把**事件循环**堵住 ~2.4s。关键词
+    一路的预算是 ``KEYWORD_SEARCH_TIMEOUT_S = 2.0``，它的应答只要 20ms——但循环被堵着就
+    没人处理，``asyncio.wait_for`` 照样超时。于是：
+
+    ```text
+    第一题   hybrid → 向量那一路先跑 → 造 span → 建客户端堵 2.4s → 关键词超时 → 降级
+    第二题   客户端已在 → 246ms → 两路都跑完
+    ```
+
+    后果是**只有第一题**带 ``keyword search failed`` 降级，而 137 题的基线里 0 题降级
+    （``eval/baseline/results.json``）。不暖机的话，首题的分差会被记成「检索退化」，
+    实际是评测自己没热身——那是本票要消灭的那类错误归因。
+
+    ## 为什么是「跑一次真实查询」而不是别的预热手段
+
+    要热的是**整条链路**（嵌入客户端、可观测性 sink、向量与关键词两条腿）。只 import
+    模块热不到连接与 span；只有走一次 ``retrieve`` 才能证明「第一次检索的那份开销」已经
+    付完。它因此是一次真实的查询嵌入，**计入模型调用预算**（每轮 1 次）。
+
+    返回的读数进产物：暖机自己降级了也要如实写出来——那是「冷启动有多贵」的证据。
+    """
+
+    outcome = await _run_question(
+        async_db,
+        Question(
+            id=WARMUP_QUESTION_ID,
+            type="warmup",
+            query=WARMUP_QUERY,
+            note="暖机：不计分、不进任何指标的分母",
+            labels=(),
+        ),
+        mode=MODE_HYBRID,
+        top_k=top_k,
+        kb_ids=list(kb_ids),
+    )
+    return {
+        "question_id": WARMUP_QUESTION_ID,
+        "query": WARMUP_QUERY,
+        "mode": MODE_HYBRID,
+        "duration_ms": outcome.duration_ms,
+        "degraded": outcome.degraded,
+        "degraded_reason": outcome.degraded_reason,
+        "empty_reason": outcome.empty_reason,
+        "error": outcome.error,
+        "returned_count": len(outcome.returned),
+        # 一次查询嵌入；重排关着，所以没有别的模型调用。
+        "model_calls": 1,
+    }
+
+
+
 def _load_questions() -> tuple[list[Question], int]:
     payload = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))
     problems: list[str] = []
@@ -451,15 +515,59 @@ def _load_questions() -> tuple[list[Question], int]:
 
 
 def _reset_elasticsearch(index_name: str) -> str:
-    """删掉评测索引（下次写入时由 Provider 幂等重建）。"""
+    """删掉评测关键词索引（下次写入时由 Provider 幂等重建）。
+
+    ## 为什么不是一条 ``DELETE /<名字>``（票 #157 §②）
+
+    ``ELASTICSEARCH_INDEX`` 从 #142（ADR-0025 决策二）起是**别名**，写入落到
+    ``<别名>__<版本>`` 的物理索引。于是这个名字在集群里可能有两种形态：
+
+    * **旧部署**：它本身是个物理索引（本次实测就是这种：469 篇文档、没有别名、
+      也没有 ``__v1`` 兄弟）；
+    * **版本化之后**：它是别名，指向 ````<别名>__<版本>``。
+
+    对别名发 ``DELETE`` 会被 ES 拒绝（别名不能当索引删），而**只**删别名指向的那一张
+    又会漏掉旧版本——下一轮构建写出另一个版本时，两张物理索引同时存在，别名却只指向
+    其中一张，症状是「有的片永远搜不到，不报错」。
+
+    所以这里先问 ``_cat/indices`` **具体有哪些物理索引**（``_cat`` 会把别名解析成它指向
+    的索引），再把它们一次删干净。名字里的 ``__`` 是版本分隔符（与
+    ``versioned_index.VERSION_SEPARATOR`` 同源），不用手写字符串。
+    """
+
+    from app.providers.keyword_search.versioned_index import VERSION_SEPARATOR
 
     _assert_eval_index(index_name)
-    response = httpx.delete(f"{_es_base()}/{index_name}", timeout=30.0)
-    if response.status_code == 200:
-        return "deleted"
-    if response.status_code == 404:
+    targets = _es_concrete_indices(index_name, separator=VERSION_SEPARATOR)
+    if not targets:
         return "absent"
-    raise SystemExit(f"failed to delete index {index_name}: {response.status_code} {response.text}")
+    response = httpx.delete(f"{_es_base()}/{','.join(targets)}", timeout=30.0)
+    if response.status_code == 200:
+        return f"deleted({','.join(targets)})"
+    raise SystemExit(f"failed to delete {targets}: {response.status_code} {response.text}")
+
+
+def _es_concrete_indices(index_name: str, *, separator: str) -> list[str]:
+    """这个名字下**具体存在**的物理索引（别名会被解析成它指向的索引）。
+
+    ``_cat/indices`` 而不是 ``GET /<名字>``：后者对别名只回别名本身，拿它去 ``DELETE``
+    会被拒；``_cat`` 回的是真正要删的那些名字。模式里带 ``<名字><分隔符>*`` 才能把
+    同名旧版本一起覆盖到（这正是「版本化之后残留的旧索引」那一类脏数据）。
+    """
+
+    response = httpx.get(
+        f"{_es_base()}/_cat/indices/{index_name},{index_name}{separator}*",
+        params={"h": "index", "format": "json"},
+        timeout=30.0,
+    )
+    if response.status_code == 404:
+        return []
+    if response.status_code != 200:
+        raise SystemExit(
+            f"failed to list indices for {index_name}: {response.status_code} {response.text}"
+        )
+    return sorted({str(item["index"]) for item in response.json() if item.get("index")})
+
 
 
 def _assert_query_analyzer(index_name: str) -> None:
@@ -580,6 +688,12 @@ async def _ensure_knowledge_base(
                 # 同义词表留空：本票的对比里同义词扩展是关的（第三变量），
                 # 留空也顺便证明「默认配置下同义词题只能靠语义兜」。
                 settings={},
+                # 生效索引版本必须显式写（票 #157）：检索范围只认库行上的这一列
+                # （ADR-0025 决策四），而建库那一刻还没有任何东西会替它回填。漏了它，
+                # 这条路只有「--reuse」能跑——全量重建会先删库再建库，于是新库的每个
+                # 请求都被 ``IndexVersionUnresolved``（5xxxx）拦下，看起来像检索坏了。
+                # 写 ``v1`` 与真实索引流水线一致：切片列的默认值与迁移回填值都是它。
+                active_index_version=DEFAULT_INDEX_VERSION,
             )
         )
 
@@ -617,13 +731,54 @@ async def _ensure_document(db: Any, doc: CorpusDoc) -> None:
 
 
 async def _index_documents(db: Any, docs: Sequence[CorpusDoc]) -> dict[str, int]:
-    """走**真实**索引流水线：切块 → 拼检索文本 → 真实嵌入 → 双写（PG + ES）。"""
+    """走**真实**索引流水线：切块 → 拼检索文本 → 真实嵌入 → 双写（PG + ES）。
+
+    索引完顺手把**关键词别名切到刚写出来的那一版**（票 #157 §②）。这一步不能留给调用方：
+
+    ``add_chunks`` 按 ``index_version`` 把文档写进各自的**物理**索引
+    （``<别名>__<版本>``），但按 ADR-0025 决策二它**不动别名**——切别名是「激活」的动作
+    （构建流水线里由 ``index_build_service.activate_version`` 做）。评测这条路是自己拼的
+    索引流水线，没有构建服务，所以这里必须自己补上；漏了它，检索查的还是那个名字，
+    而名字要么不存在、要么指向上一轮残留的数据，症状是「关键词一路搜不到，不报错」。
+    """
 
     service = IndexingService()
     result: dict[str, int] = {}
     for doc in docs:
         result[doc.stem] = await service.index_existing_document(db, doc.document_id)
+    await _activate_keyword_versions(db)
     return result
+
+
+async def _activate_keyword_versions(db: Any) -> dict[str, Any]:
+    """把评测关键词别名指向库里**实际存在的那些版本**（每个版本各切一次，最后一个生效）。
+
+    版本号从 ``chunks`` 列读、不从内存猜：索引写入是这条流水线**刚刚**做的事，库里那一列
+    才是事实（``<别名>__<版本>`` 的物理索引名也由它派生，两处同源才不会错位）。
+    """
+
+    from sqlalchemy import select
+
+    from app.providers.keyword_search import get_keyword_search_provider
+
+    stmt = (
+        select(Chunk.index_version)
+        .where(Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids()))
+        .distinct()
+    )
+    versions = sorted({str(value) for value in (await db.execute(stmt)).scalars().all()})
+    if not versions:
+        return {"alias": settings.ELASTICSEARCH_INDEX, "activated": []}
+
+    provider = get_keyword_search_provider()
+    activated: list[dict[str, Any]] = []
+    for version in versions:
+        # 目标物理索引不存在时先建再切：指向不存在索引的别名会让关键词召回一直
+        # ``NotFoundError``，而那被当成「诚实的空结果」，比一次显式失败难查得多。
+        physical = await provider.ensure_version_index(version)
+        await provider.activate_version(version)
+        activated.append({"version": version, "physical": physical})
+    return {"alias": settings.ELASTICSEARCH_INDEX, "activated": activated}
 
 
 # ─────────────────────────────────────────────────── 标签解析与切片索引（真实切片）
@@ -1172,6 +1327,115 @@ def _find_question(group: dict[str, Any], question_id: str) -> dict[str, Any] | 
     return next((item for item in group.get("per_question", []) if item["id"] == question_id), None)
 
 
+#: 拿来验「关键词这一路确实命中过」的那道题（票 #157 §②）。
+#:
+#: 选 ``q05`` 的理由有三份证据，不是口味：
+#:
+#! * 题面 ``W0001 要不要紧`` 里那个编号**只出现在正文**（该节标题是「存储与介质类告警
+#:   （一）」），而正文里紧挨着 ``W0002``～``W0010`` 九节、措辞 90% 相同——向量分不开，
+#:   字面分得开；
+#: * 它是 ``exact_code``：这一类题本来就是「考编号是检索键」；
+#: * 它是**实测**归零的那一题（C6 守分抽样里 ``q05`` 的分数被记成 0，归因正是「关键词
+#:   这一路超时降级」——``eval/reports/c6/c6-acceptance.md``）。选它，这条断言就和那次
+#:   事故盯着同一个探针。
+KEYWORD_LITERAL_QUESTION_ID = "q05"
+
+
+def keyword_hit_report(
+    *,
+    group: dict[str, Any],
+    labels: dict[str, list[str]],
+    question_id: str = KEYWORD_LITERAL_QUESTION_ID,
+) -> dict[str, Any]:
+    """「关键词这一路确实命中过」的读数（纯函数，验收第 10 条用它判定）。
+
+    读的是 ``mode=bm25`` 那一组的同一道字面题。为什么是那一组：
+
+    * ``bm25`` **只走关键词**——不向量化、不查向量库（``rag_service`` 的 bm25 分支），
+      所以它的返回完全来自评测关键词索引；
+    * 索引没建好 / 版本过滤读不到 / 别名指错 / 这一路超时降级，**都只会**表现成
+      「空返回」或「只返回不相关的片」，而 ``hybrid`` 的分数会被向量一路撑住，看不出来。
+
+    判定按「命中相关片」而不是「有返回」：有返回不等于命中过（别拿总数冒充命中）。
+    """
+
+    item = _find_question(group, question_id)
+    if item is None:
+        return {
+            "question_id": question_id,
+            "passed": False,
+            "reason": f"bm25 那一组里没有 {question_id}（题集换过？）",
+            "returned_count": 0,
+            "hit_count": 0,
+            "hit_rank": None,
+            "empty_reason": None,
+        }
+
+    relevant = set(labels.get(question_id, ()))
+    returned = [str(chunk["chunk_id"]) for chunk in item.get("returned") or []]
+    hit_rank = next(
+        (rank for rank, chunk_id in enumerate(returned, start=1) if chunk_id in relevant),
+        None,
+    )
+    return {
+        "question_id": question_id,
+        "passed": hit_rank is not None,
+        "reason": (
+            f"第 {hit_rank} 名命中相关片" if hit_rank is not None else "一条相关片都没命中"
+        ),
+        "returned_count": len(returned),
+        "hit_count": sum(1 for chunk_id in returned if chunk_id in relevant),
+        "hit_rank": hit_rank,
+        "empty_reason": item.get("empty_reason"),
+        "query": item.get("query"),
+    }
+
+
+async def keyword_probe(
+    async_db: Any,
+    *,
+    question: Question,
+    labels: dict[str, list[str]],
+    kb_ids: Sequence[str],
+    top_k: int,
+) -> dict[str, Any]:
+    """单独跑一次 ``mode=bm25`` 并把 ``keyword_hit_report`` 的读数带回来（票 #157）。
+
+    为什么值得多跑一次查询：137 题整体门禁（``eval_runner run``）只用 ``hybrid`` 一组，
+    ``hybrid`` 的分数会被向量那一路撑住——关键词索引空跑时，它与纯向量几乎没区别
+    （这正是本票要消灭的那种「看起来正常」）。所以门禁产物里要有一条**只可能来自关键词
+    那一路**的读数，把「索引版本化之后这一段真的在工作」直接钉在当次归档里。
+
+    这一次**不花模型调用**：``mode=bm25`` 不向量化、不查向量库（见 ``rag_service`` 的
+    bm25 分支），它只发一次 ES 查询。预算因此不受影响。
+    """
+
+    outcome = await _run_question(
+        async_db, question, mode=MODE_BM25, top_k=top_k, kb_ids=kb_ids
+    )
+    group = {
+        "per_question": [
+            {
+                "id": question.id,
+                "query": question.query,
+                "empty_reason": outcome.empty_reason,
+                "returned": [{"chunk_id": str(chunk["chunk_id"])} for chunk in outcome.returned],
+            }
+        ]
+    }
+    report = keyword_hit_report(group=group, labels=labels, question_id=question.id)
+    report.update(
+        {
+            "degraded": outcome.degraded,
+            "degraded_reason": outcome.degraded_reason,
+            "error": outcome.error,
+            # bm25 不向量化：这一次探针的模型调用是 0，预算里不该出现它。
+            "model_calls": 0,
+        }
+    )
+    return report
+
+
 def _rank_of(chunk_id: str, item: dict[str, Any] | None) -> int | None:
     """该切片在这一次返回里排第几名；没进列表就是 ``None``。"""
 
@@ -1330,6 +1594,31 @@ async def _run_acceptance(
             "expected": "一次调用返回的结果里带不同的 kb_id（两个库都真的被召回）",
             "actual": f"返回 {len(multi.returned)} 条，kb_id={kb_ids_hit}",
             "passed": len(kb_ids_hit) >= 2,
+        }
+    )
+
+    # A10（票 #157 §②）：关键词索引版本化之后，这一路必须**真的命中过**。
+    # 只看 hybrid 的总分是看不出来的——向量那一路会把分数撑住，关键词空跑时混检
+    # 与纯向量几乎没区别。所以拿一道只能靠字面命中的题，在 bm25 那一组里验。
+    keyword = keyword_hit_report(group=groups.get(MODE_BM25, {}), labels=labels)
+    checks.append(
+        {
+            "id": "A10",
+            "title": "关键词这一路确实命中过（索引版本化生效）",
+            "command": (
+                f"{script_cmd}  （A10 探针：{keyword['question_id']} 在 mode=bm25 组里的名次）"
+            ),
+            "expected": (
+                f"只能靠字面命中的题 {keyword['question_id']}（{keyword.get('query')}）"
+                "在 bm25 组里至少命中一条相关片"
+            ),
+            "actual": (
+                f"{keyword['reason']}；返回 {keyword['returned_count']} 条，"
+                f"命中 {keyword['hit_count']} 条，empty_reason={keyword['empty_reason']}"
+            ),
+            "passed": bool(keyword["passed"]),
+            "question_id": keyword["question_id"],
+            "hit_rank": keyword["hit_rank"],
         }
     )
 
@@ -1946,6 +2235,14 @@ async def _run(args: argparse.Namespace) -> int:
 
         kb_ids = [layout.kb_id for layout in layouts]
 
+        # 暖机（#157）：把进程内第一次检索的装配开销付在计分之外，否则只有第一题会被
+        # 记上 keyword 降级（见 _warm_up 的说明）。它是一次真实查询嵌入，计入预算。
+        warmup = await _warm_up(db, kb_ids=kb_ids, top_k=top_k)
+        print(
+            f"warmup   : {warmup['duration_ms']:.0f}ms degraded={warmup['degraded']} "
+            f"返回 {warmup['returned_count']} 条（不计分）"
+        )
+
         print("\n=== retrieval groups ===")
         groups: dict[str, dict[str, Any]] = {}
         for mode in MODE_ORDER:
@@ -2051,6 +2348,10 @@ async def _run(args: argparse.Namespace) -> int:
             "rrf_check": rrf,
             "acceptance": list(acceptance),
             "rewrite_comparison": rewrite,
+            # 暖机读数与关键词命中（票 #157）：前者是「冷启动有多贵」的证据，后者是
+            # 「关键词这一路真的在工作」的证据。两份都进产物，报告里才引得到。
+            "warmup": warmup,
+            "keyword_hit": keyword_hit_report(group=groups[MODE_BM25], labels=labels),
         }
         (run_dir / "results.json").write_text(
             json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
