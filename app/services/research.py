@@ -734,7 +734,7 @@ class _Run:
 
         # ④ 定向补证：只对没有支撑的要点补检索。
         targeted = self._targeted_followup(proposed)
-        fresh = self._fresh(targeted)
+        fresh = self._fresh(targeted)[:MAX_FOLLOWUP_QUERIES]
         if not fresh:
             return StopReason.DUPLICATE_QUERY
 
@@ -745,6 +745,7 @@ class _Run:
 
         # 补证（≤1 轮）。跑完就结束：捞到了材料 = max_rounds，白跑一趟 = no_new_evidence。
         added = await self._parallel(fresh, followup=True)
+        self._settle_after_followup(fresh, added)
         return StopReason.MAX_ROUNDS if sum(added) else StopReason.NO_NEW_EVIDENCE
 
     # ── ① 规划 ──
@@ -856,14 +857,20 @@ class _Run:
         return [item for item in self.coverage if item.status == SUPPORT_NONE]
 
     def _targeted_followup(self, proposed: Sequence[PlanQuery]) -> list[PlanQuery]:
-        """只留下**绑在缺口要点上**的补证查询（定向补证）。
+        """补证查询：只留**绑在缺口要点上**的，缺口没给查询的拿要点文本顶上（定向补证）。
 
-        结论是唯一事实来源：模型把一条查询绑到已判为 ``supported`` 的要点上时，那条查询丢掉
-        （并记一条 warning）——重跑一个已经有材料的要点，白花一次检索与一次嵌入，而且会让
-        「补证只补没有支撑的那一块」这句话在行为上不成立。
+        两条规则各有理由：
+
+        * **只留缺口要点上的**。结论是唯一事实来源：模型把一条查询绑到已判为 ``supported``
+          的要点上时，那条查询丢掉（记一条 warning）——重跑一个已经有材料的要点，白花一次
+          检索与一次嵌入，而且会让「补证只补没有支撑的那一块」这句话在行为上不成立；
+        * **缺口要点必须有一条自己的查询**。模型想不出更好的说法时（它给的查询可能是空），
+          就拿要点本身当查询：要点就是一句为这个问题写的话，直接拿去检索是合理的。这条让
+          「每个缺口都定向补一次」不依赖模型的自觉，也不额外花模型调用。
         """
 
-        gap_ids = {item.point_id for item in self._gap_verdicts()}
+        gaps = self._gap_verdicts()
+        gap_ids = {item.point_id for item in gaps}
         kept = [item for item in proposed if item.point_id in gap_ids]
         if len(kept) != len(proposed):
             logger.warning(
@@ -871,7 +878,42 @@ class _Run:
                 tenant=tenant_fingerprint(self.tenant_id),
                 dropped=len(proposed) - len(kept),
             )
+
+        seen = {_normalize(item.query) for item in kept}
+        queried = {item.point_id for item in kept}
+        texts = {point.point_id: point.text for point in self.points}
+        for item in gaps:
+            if item.point_id in queried:
+                continue
+            key = _normalize(texts[item.point_id])
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append(PlanQuery(point_id=item.point_id, query=texts[item.point_id], round=2))
         return kept
+
+    def _settle_after_followup(
+        self, queries: Sequence[PlanQuery], added: Sequence[int]
+    ) -> None:
+        """补证之后把缺口收成两种状态：仍然没有材料的（``none``）与材料到了的（``unknown``）。
+
+        「材料到了」不等于「这个要点被支撑了」：状态机固定五步、**不回头复判**，所以补回来
+        一条材料之后没有人再回答过「它支撑这个要点吗」。记成 ``supported`` 是乐观（ADR-0029
+        反对的正是这种乐观），记成 ``none`` 则会让缺口闸把一份其实有材料的答案判死——只有
+        ``unknown`` 说的是实话。
+        """
+
+        recovered = {
+            item.point_id
+            for item, count in zip(queries, added, strict=True)
+            if count > 0
+        }
+        self.coverage = [
+            PointVerdict(item.point_id, SUPPORT_UNKNOWN, item.evidence_ids)
+            if item.status == SUPPORT_NONE and item.point_id in recovered
+            else item
+            for item in self.coverage
+        ]
 
     def _fresh(self, queries: Sequence[PlanQuery]) -> list[PlanQuery]:
         """去掉已经跑过的查询（首轮 + 已发生的补证），一条都不重跑。"""

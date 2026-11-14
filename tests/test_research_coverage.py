@@ -352,3 +352,107 @@ def test_the_judgement_prompt_defines_support_as_readable_not_related() -> None:
 
     assert "直接读出" in research._JUDGE_SYSTEM
     assert "直接读出" in (research.__doc__ or "")
+
+
+# ───────────────────────────────────────── ③ 定向补证 + coverage 进响应
+
+
+def test_the_followup_only_retargets_the_uncovered_points() -> None:
+    """补证**只补没有支撑的那一块**：绑在已支撑要点上的查询一条都不执行。
+
+    判定是唯一事实来源——模型把一条查询绑到 A1（已经判为 supported）上时，那条查询丢掉：
+    重跑一个已经有材料的要点只会白花一次检索，而且会让「定向补证」这四个字在行为上不成立。
+    """
+
+    search = _Search({"查询1": [_row("a")], "查询2": [], "再查一次时限": [_row("z")]})
+
+    outcome, _, probe = _run(
+        _plan(),
+        _judge(
+            _supported(1, 1),
+            _none(2),
+            queries=[
+                {"point": 1, "query": "再查一次时限"},
+                {"point": 2, "query": "超期退款需要哪些材料"},
+            ],
+        ),
+        search=search,
+    )
+
+    assert "再查一次时限" not in probe.calls, "已覆盖的要点不许再查一遍"
+    assert probe.calls == ["查询1", "查询2", "超期退款需要哪些材料"]
+    # 补证查询在计划里带 round=2，且只那一条。
+    assert [(item.query, item.round) for item in outcome.queries] == [
+        ("查询1", 1),
+        ("查询2", 1),
+        ("超期退款需要哪些材料", 2),
+    ]
+
+
+def test_a_gap_without_a_proposed_query_is_searched_with_the_point_text() -> None:
+    """判定说「没有支撑」却没给出更好的说法 → 就拿要点本身当查询补一次。
+
+    这是「定向补证」可以不花模型调用就总是成立的原因：要点就是一句为这个问题写的话。
+    补一次没捞到新材料，缺口才真的落定（``no_new_evidence``，不是「判断失败」）。
+    """
+
+    outcome, _, probe = _run(
+        _plan(), _judge(_supported(1, 1), _none(2)), search=_Search({"查询1": [_row("a")]})
+    )
+
+    assert probe.calls == ["查询1", "查询2", "所需材料"], "缺口要点用要点文本补了一次"
+    assert outcome.followup_rounds == 1
+    assert outcome.stop_reason is StopReason.NO_NEW_EVIDENCE
+    assert outcome.gaps == ("A2",)
+
+
+def test_a_point_that_the_followup_recovered_is_unknown_not_supported() -> None:
+    """补证给缺口要点带回了新材料 → 它是 ``unknown``：材料到了，但支撑**没有再审一次**。
+
+    这是本票最容易做错的一格。状态机固定五步、不回头复判，所以「补回来一条材料」不等于
+    「这个要点被支撑了」——把它记成 supported 是乐观（正是 ADR-0029 反对的那种），记成
+    none 则会让缺口闸把一份其实有材料的答案判死。
+    """
+
+    search = _Search({"查询1": [_row("a")], "超期退款需要哪些材料": [_row("c")]})
+
+    outcome, _, _ = _run(
+        _plan(),
+        _judge(_none(2), _supported(1, 1), queries=[{"point": 2, "query": "超期退款需要哪些材料"}]),
+        search=search,
+    )
+
+    assert [(item.point_id, item.status) for item in outcome.coverage] == [
+        ("A1", "supported"),
+        ("A2", "unknown"),
+    ]
+    assert outcome.gaps == (), "材料已经到了，这不再是「知道没有」"
+    assert outcome.stop_reason is StopReason.MAX_ROUNDS
+
+
+def test_the_coverage_block_reaches_the_response() -> None:
+    """``coverage`` 是 Research 的一等输出（不做独立接口）：逐要点状态 + ``gaps``。
+
+    装填走**生产代码**（``payload_of`` → ``ResearchData``），所以这条同时钉住「响应里的字
+    段名与词表」这件事：``gaps`` 就是状态为 ``none`` 的那些要点编号，别处不再算第二遍。
+    """
+
+    from app.schemas.research import ResearchData, payload_of
+    from app.services.research_limits import PLAN_NAME
+
+    search = _Search({"查询1": [_row("a")], "查询2": []})
+
+    outcome, _, _ = _run(_plan(), _judge(_supported(1, 1), _none(2)), search=search)
+
+    data = ResearchData.model_validate(
+        payload_of(
+            query=QUERY, kb_ids=["kb-a"], outcome=outcome, plan_name=PLAN_NAME, trace_id="t" * 32
+        )
+    )
+
+    assert [(item.point_id, item.status) for item in data.coverage.points] == [
+        ("A1", "supported"),
+        ("A2", "none"),
+    ]
+    assert data.coverage.points[0].evidence_ids == ["E1"]
+    assert data.coverage.gaps == ["A2"]

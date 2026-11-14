@@ -460,7 +460,7 @@ def _outcome() -> Any:
     是同一个校验器给的——这正是本段要证明的东西。
     """
 
-    from app.services.research import PlanPoint, PlanQuery, ResearchOutcome
+    from app.services.research import PlanPoint, PlanQuery, PointVerdict, ResearchOutcome
     from app.services.research_limits import StopReason
 
     return ResearchOutcome(
@@ -492,6 +492,7 @@ def _outcome() -> Any:
             },
         ),
         evidence_state="complete",
+        coverage=(PointVerdict(point_id="A1", status="supported", evidence_ids=("E1",)),),
     )
 
 

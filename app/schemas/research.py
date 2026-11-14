@@ -80,6 +80,38 @@ class ResearchRounds(BaseModel):
     followup: int
 
 
+class ResearchCoveragePoint(BaseModel):
+    """一个要点的覆盖判定（票 #164 / ADR-0029 决策三）。
+
+    ``status`` 只有三个词，**定义在** ``app.services.research`` 的 ``SUPPORT_*``：这里的
+    ``Literal`` 是为了让 OpenAPI 里也是一份穷举清单（不是让第四个词冒出来）。
+
+    * ``supported``：材料里能**直接读出**该要点的事实（``evidence_ids`` 指向支撑它的材料）；
+    * ``none``：材料里没有能直接读出它的事实——**缺口**，会同时出现在 ``coverage.gaps`` 里；
+    * ``unknown``：**不知道**（判定没跑成，或补证捞到了新材料但状态机不回头复判）。
+
+    三个词的分工是本票的核心：``evidence_state`` 从材料侧数核心片，答的是「这次答得够不够」；
+    这里的 ``status`` 从**问题侧**的要点出发，答的是「材料里到底有没有」。两者都要有，因为
+    「材料不够」与「答得不够」是两件事。
+    """
+
+    point_id: str
+    status: Literal["supported", "none", "unknown"]
+    evidence_ids: list[str] = Field(default_factory=list)
+
+
+class ResearchCoverage(BaseModel):
+    """逐要点覆盖判定 + 缺口清单（Research 的一等输出，不做独立接口）。
+
+    ``gaps`` 就是 ``points`` 里 ``status == "none"`` 的那些 ``point_id``（**只在这里推导
+    一次**，装填处读 ``ResearchOutcome.gaps``）：调用方拿它就能知道「这份答案为什么短了
+    一块」。它不重复要点的正文——正文在 ``plan.points`` 里，按 ``point_id`` 就能对上。
+    """
+
+    points: list[ResearchCoveragePoint] = Field(default_factory=list)
+    gaps: list[str] = Field(default_factory=list)
+
+
 class ResearchMetadata(BaseModel):
     """这次调用的元数据：身份、计划名、耗时、模型调用次数、**一个**停止原因与三条不丢信息的字段。
 
@@ -147,6 +179,7 @@ class ResearchData(BaseModel):
     materials: list[RetrievedChunk] = Field(default_factory=list)
     plan: ResearchPlan
     rounds: ResearchRounds
+    coverage: ResearchCoverage = Field(default_factory=ResearchCoverage)
     metadata: ResearchMetadata
 
 
@@ -187,6 +220,19 @@ def payload_of(
             "searches": outcome.searches,
             "followup": outcome.followup_rounds,
         },
+        "coverage": {
+            "points": [
+                {
+                    "point_id": item.point_id,
+                    "status": item.status,
+                    "evidence_ids": list(item.evidence_ids),
+                }
+                for item in outcome.coverage
+            ],
+            # 缺口只从 ``outcome.gaps`` 搬过来（那里面已经是 status == none 的那些），
+            # 这里**不重算**：两处各算一遍就会有一天给出两份缺口清单。
+            "gaps": list(outcome.gaps),
+        },
         "metadata": {
             "plan_name": plan_name,
             "duration_ms": outcome.duration_ms,
@@ -202,6 +248,8 @@ def payload_of(
 
 __all__ = [
     "ResearchCitation",
+    "ResearchCoverage",
+    "ResearchCoveragePoint",
     "ResearchData",
     "ResearchMetadata",
     "ResearchPlan",

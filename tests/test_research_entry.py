@@ -295,6 +295,7 @@ def test_the_response_has_the_plan_rounds_materials_and_metadata(entry: _Entry) 
         "materials",
         "plan",
         "rounds",
+        "coverage",
         "metadata",
     }
     assert data["query"] == QUERY
@@ -309,6 +310,15 @@ def test_the_response_has_the_plan_rounds_materials_and_metadata(entry: _Entry) 
 
     # 轮次只给计数（内容在 plan.queries 里，不重复一遍）。
     assert data["rounds"] == {"searches": 2, "followup": 0}
+
+    # 覆盖判定（票 #164）：逐要点状态 + 缺口清单；两个要点都被支撑，所以没有缺口。
+    assert data["coverage"] == {
+        "points": [
+            {"point_id": "A1", "status": "supported", "evidence_ids": ["E1"]},
+            {"point_id": "A2", "status": "supported", "evidence_ids": ["E2"]},
+        ],
+        "gaps": [],
+    }
 
     # 元数据：身份 + 计划名 + 耗时 + 模型调用次数 + 停止原因 + 三条不丢信息的字段。
     assert set(data["metadata"]) == {
