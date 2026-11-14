@@ -1,0 +1,53 @@
+2026-11-14T14:08:59.630266Z [info     ] HEAD http://localhost:9200/rag_chunks_t159__v1 [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:08:59.633266Z [info     ] GET http://localhost:9200/_alias/rag_chunks_t159 [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:09:02.380819Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:1.953s] [elastic_transport.transport]
+2026-11-14T14:09:02.642733Z [info     ] HTTP Request: POST https://ws-4k904g6c9r4c96ch.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/embeddings "HTTP/1.1 200 OK" [httpx]
+2026-11-14T14:09:02.982678Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:03.202930Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:03.461389Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.016s] [elastic_transport.transport]
+2026-11-14T14:09:03.679997Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:09:03.899197Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:09:04.127878Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:04.358895Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:04.590961Z [info     ] index build started            [app.services.index_build_service] build_id=d5158033-3d86-46a3-97ca-7a490905805f kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6 version=v2
+2026-11-14T14:09:04.843160Z [info     ] POST http://localhost:9200/rag_chunks_t159__v2/_delete_by_query?ignore_unavailable=false&refresh=true [status:404 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:04.897472Z [info     ] HEAD http://localhost:9200/rag_chunks_t159__v2 [status:404 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:05.036261Z [info     ] PUT http://localhost:9200/rag_chunks_t159__v2 [status:200 duration:0.125s] [elastic_transport.transport]
+2026-11-14T14:09:05.057904Z [info     ] PUT http://localhost:9200/_bulk?refresh=true [status:200 duration:0.031s] [elastic_transport.transport]
+2026-11-14T14:09:05.114092Z [info     ] section edges rebuilt          [app.services.section_edge_service] document_id=0434a0dc-f53b-4431-a257-d38611f3ae5a edge_count=9 index_version=v2 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6
+2026-11-14T14:09:05.116831Z [info     ] document indexed               [app.services.indexing_service] chunk_count=5 document_id=0434a0dc-f53b-4431-a257-d38611f3ae5a index_version=v2 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6
+2026-11-14T14:09:05.251748Z [info     ] POST http://localhost:9200/rag_chunks_t159__v2/_delete_by_query?ignore_unavailable=false&refresh=true [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:05.362499Z [info     ] PUT http://localhost:9200/_bulk?refresh=true [status:200 duration:0.062s] [elastic_transport.transport]
+2026-11-14T14:09:05.413625Z [info     ] section edges rebuilt          [app.services.section_edge_service] document_id=1da35c3a-c328-4323-807d-67759e05324e edge_count=8 index_version=v2 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6
+2026-11-14T14:09:05.416236Z [info     ] document indexed               [app.services.indexing_service] chunk_count=4 document_id=1da35c3a-c328-4323-807d-67759e05324e index_version=v2 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6
+2026-11-14T14:09:05.562482Z [info     ] POST http://localhost:9200/rag_chunks_t159__v2/_delete_by_query?ignore_unavailable=false&refresh=true [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:05.670788Z [info     ] PUT http://localhost:9200/_bulk?refresh=true [status:200 duration:0.063s] [elastic_transport.transport]
+2026-11-14T14:09:05.681982Z [info     ] section edges rebuilt          [app.services.section_edge_service] document_id=76ad4ddf-1d75-4c79-9f12-088a8e2b85e3 edge_count=8 index_version=v2 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6
+2026-11-14T14:09:05.684102Z [info     ] document indexed               [app.services.indexing_service] chunk_count=4 document_id=76ad4ddf-1d75-4c79-9f12-088a8e2b85e3 index_version=v2 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6
+2026-11-14T14:09:05.742426Z [info     ] section edges rebuilt for the whole version [app.services.section_edge_service] document_count=3 edge_count=28 index_version=v2 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6
+2026-11-14T14:09:05.749868Z [info     ] POST http://localhost:9200/rag_chunks_t159__v2/_count [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:05.756540Z [info     ] index build marked ready       [app.services.index_build_service] build_id=d5158033-3d86-46a3-97ca-7a490905805f chunks=13 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 keyword_documents=13 knowledge_bases=1 tenant_id=tenant_c6 vectors=13 version=v2
+2026-11-14T14:09:05.757119Z [info     ] index build ready              [app.services.index_build_service] build_id=d5158033-3d86-46a3-97ca-7a490905805f document_count=3 kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 tenant_id=tenant_c6 version=v2
+2026-11-14T14:09:05.763913Z [info     ] GET http://localhost:9200/_alias/rag_chunks_t159 [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:05.791050Z [info     ] POST http://localhost:9200/_aliases [status:200 duration:0.031s] [elastic_transport.transport]
+2026-11-14T14:09:05.791050Z [info     ] keyword index alias switched   [app.providers.keyword_search.elasticsearch] alias=rag_chunks_t159 previous=['rag_chunks_t159__v1'] target=rag_chunks_t159__v2
+2026-11-14T14:09:05.798380Z [info     ] index build activated          [app.services.index_build_service] build_id=d5158033-3d86-46a3-97ca-7a490905805f kb_id=e32eb960-a8ee-46af-bf1f-8f82d3a19ca0 origin_status=ready previous_version=v1 tenant_id=tenant_c6 version=v2
+2026-11-14T14:09:05.813002Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:06.123218Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:06.354411Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.015s] [elastic_transport.transport]
+2026-11-14T14:09:06.563788Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:06.802991Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:07.014855Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:07.311810Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.000s] [elastic_transport.transport]
+2026-11-14T14:09:07.526551Z [info     ] POST http://localhost:9200/rag_chunks_t159/_search [status:200 duration:0.015s] [elastic_transport.transport]
+Ԥ��ģ�͵��� 44 �Σ��ĵ�Ƕ�� v1 15 + v2 13����ѯǶ�� 8��2���� LLM��
+�ƻ������� �зֵ���ա��������ϣ�tenant_c6���� v1 ������� �� �� v1 �� #142 ���� v2��h3 ���븸������ �� v2
+���C:\StudyProjects\RAG-Core\.agents\worktrees\t159-controls\eval\reports\t159\run-split-20261114T140908Z\results.json
+  section_id��ͬ 13 / ��ʧ 2 / ���� 0 / ���� 0
+  ��Ƭ��v1 15 / v2 13���ڣ�v1 15 / v2 13
+  ���˵�������44
+2026-11-14T14:09:11.687382Z [error    ] Unclosed client session
+client_session: <aiohttp.client.ClientSession object at 0x0000023FA7951DF0> [asyncio]
+2026-11-14T14:09:11.688460Z [error    ] Unclosed connector
+connections: ['deque([(<aiohttp.client_proto.ResponseHandler object at 0x0000023FADEFCBD0>, 116728.89)])']
+connector: <aiohttp.connector.TCPConnector object at 0x0000023FADF08980> [asyncio]

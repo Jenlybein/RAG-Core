@@ -1,0 +1,1398 @@
+{
+  "run_id": "20261114T140908Z",
+  "generated_at": "2026-11-14T14:09:08+00:00",
+  "version_construction": {
+    "v1": {
+      "path": "生产入库（upload → IndexingService）",
+      "section_level": 3
+    },
+    "v2": {
+      "path": "IndexBuildService（#142）",
+      "section_level": 2
+    },
+    "build": {
+      "build_id": "d5158033-3d86-46a3-97ca-7a490905805f",
+      "version": "v2",
+      "document_count": 3,
+      "chunk_count": 13
+    }
+  },
+  "corpus": {
+    "dir": "eval/corpus-refs",
+    "documents": 3,
+    "questions": 8
+  },
+  "switches": {
+    "mode": "hybrid",
+    "top_k": 5,
+    "fold_to_sections": true,
+    "expand_table_rows": true,
+    "rewrite": false,
+    "rerank": "off",
+    "orchestration": "off"
+  },
+  "keyword_alias": [
+    {
+      "alias": "rag_chunks_t159",
+      "version": "v1"
+    },
+    {
+      "alias": "rag_chunks_t159",
+      "version": "v2"
+    }
+  ],
+  "kb": {
+    "kb_id": "e32eb960-a8ee-46af-bf1f-8f82d3a19ca0",
+    "created": false,
+    "split_strategy": "structure",
+    "active_index_version": "v1",
+    "chunk_size": 512,
+    "ingest": {
+      "readings": [
+        {
+          "registered": [],
+          "published": 0
+        },
+        {
+          "document_id": "0434a0dc-f53b-4431-a257-d38611f3ae5a",
+          "status": "already-success",
+          "chunks": 0
+        },
+        {
+          "document_id": "1da35c3a-c328-4323-807d-67759e05324e",
+          "status": "already-success",
+          "chunks": 0
+        },
+        {
+          "document_id": "76ad4ddf-1d75-4c79-9f12-088a8e2b85e3",
+          "status": "already-success",
+          "chunks": 0
+        }
+      ]
+    }
+  },
+  "inventory": {
+    "v1": {
+      "chunks": 15,
+      "documents": 3,
+      "sections": 15,
+      "unlabeled_chunks": 0,
+      "chars": 2325,
+      "by_document": {
+        "refund_policy": {
+          "chunks": 5,
+          "sections": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5"
+          ]
+        },
+        "promo_rules": {
+          "chunks": 4,
+          "sections": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
+        },
+        "points_policy": {
+          "chunks": 6,
+          "sections": [
+            "1",
+            "2",
+            "2.1",
+            "2.2",
+            "3",
+            "4"
+          ]
+        }
+      },
+      "section_ids": {
+        "points_policy:1": "8b750f961d4dd6ea1b1d3ae04e82bdb67bffdf2cac8e36262a00dc53969db926",
+        "points_policy:2": "583ef4b906a72f132d206fef3a488b9f9ec64e10e9d910a1a12be55b98f3e94a",
+        "points_policy:2.1": "e5acf0a8dcb758b83bc2c31d60cb491720938400f99e22762287b28dc7b3af56",
+        "points_policy:2.2": "8d7948954788dc53c0245a06b372ef655172b91f5b4ba09fc083161a2795a1cd",
+        "points_policy:3": "ae23399c34cceaad20265805348c38e54b422beba4478d74c798af43e692e9a4",
+        "points_policy:4": "2dce7c77ba27103c93e9f3279d5d88cf203965f776676c723ee3ef48e1e0a54d",
+        "promo_rules:1": "1cd4b2c0fc9c865db9590175ff128ef0adc236a126284695eec173d1bdcfcdc8",
+        "promo_rules:2": "cca0a752e762eca08d7c6da74922fdbe580c0279401a139749afd8a5dfb14a30",
+        "promo_rules:3": "5bec205d3242303a5bd53ae5715aff7d8817e2fc79701fa69bb72d0c0be01b00",
+        "promo_rules:4": "3d0dce0221894486898d732ceb3dd24daebb70f9cc3021907c317ee2bd80576f",
+        "refund_policy:1": "e5f700826fc3eee5d946e870b299af650785b35d8c48d908e5d30327663f856e",
+        "refund_policy:2": "e973767ee3dfd2f269d63b4ce309bd1170c48bd53da4272315b3932aa9ed9495",
+        "refund_policy:3": "4df679238a83da79b12f50a3ec72a562f06a059eec09c853c99cbe807be39185",
+        "refund_policy:4": "03ce1758147a50b697c114dda8d5a0e6ee8a0194d7ee40c87c029caad11a1f0e",
+        "refund_policy:5": "7da60086549779954d14590ba8e6b224b59ccc7399ca9521835dcbff45158b79"
+      }
+    },
+    "v2": {
+      "chunks": 13,
+      "documents": 3,
+      "sections": 13,
+      "unlabeled_chunks": 0,
+      "chars": 2329,
+      "by_document": {
+        "refund_policy": {
+          "chunks": 5,
+          "sections": [
+            "1",
+            "2",
+            "3",
+            "4",
+            "5"
+          ]
+        },
+        "promo_rules": {
+          "chunks": 4,
+          "sections": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
+        },
+        "points_policy": {
+          "chunks": 4,
+          "sections": [
+            "1",
+            "2",
+            "3",
+            "4"
+          ]
+        }
+      },
+      "section_ids": {
+        "points_policy:1": "8b750f961d4dd6ea1b1d3ae04e82bdb67bffdf2cac8e36262a00dc53969db926",
+        "points_policy:2": "583ef4b906a72f132d206fef3a488b9f9ec64e10e9d910a1a12be55b98f3e94a",
+        "points_policy:3": "ae23399c34cceaad20265805348c38e54b422beba4478d74c798af43e692e9a4",
+        "points_policy:4": "2dce7c77ba27103c93e9f3279d5d88cf203965f776676c723ee3ef48e1e0a54d",
+        "promo_rules:1": "1cd4b2c0fc9c865db9590175ff128ef0adc236a126284695eec173d1bdcfcdc8",
+        "promo_rules:2": "cca0a752e762eca08d7c6da74922fdbe580c0279401a139749afd8a5dfb14a30",
+        "promo_rules:3": "5bec205d3242303a5bd53ae5715aff7d8817e2fc79701fa69bb72d0c0be01b00",
+        "promo_rules:4": "3d0dce0221894486898d732ceb3dd24daebb70f9cc3021907c317ee2bd80576f",
+        "refund_policy:1": "e5f700826fc3eee5d946e870b299af650785b35d8c48d908e5d30327663f856e",
+        "refund_policy:2": "e973767ee3dfd2f269d63b4ce309bd1170c48bd53da4272315b3932aa9ed9495",
+        "refund_policy:3": "4df679238a83da79b12f50a3ec72a562f06a059eec09c853c99cbe807be39185",
+        "refund_policy:4": "03ce1758147a50b697c114dda8d5a0e6ee8a0194d7ee40c87c029caad11a1f0e",
+        "refund_policy:5": "7da60086549779954d14590ba8e6b224b59ccc7399ca9521835dcbff45158b79"
+      }
+    }
+  },
+  "section_identity": {
+    "only_v1": [
+      "points_policy:2.1",
+      "points_policy:2.2"
+    ],
+    "only_v2": [],
+    "same": 13,
+    "changed": []
+  },
+  "rows": [
+    {
+      "id": "r01",
+      "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+      "mechanism": "cross_section",
+      "answer_points": [
+        "提交申请有时限：无理由 7 天、质量问题 30 天",
+        "审核 2 个工作日内完成，挂起时间不计入",
+        "审核通过后进入退款执行，到账时间从执行日开始计算",
+        "到账按渠道不同：银行卡 3 个工作日、第三方支付 1-2 个工作日、对公转账最长 5 个工作日"
+      ],
+      "v1_hits": [
+        "refund_policy:3",
+        "refund_policy:2",
+        "refund_policy:1",
+        "refund_policy:5",
+        "refund_policy:4"
+      ],
+      "v2_hits": [
+        "refund_policy:3",
+        "refund_policy:2",
+        "refund_policy:1",
+        "refund_policy:5",
+        "refund_policy:4"
+      ],
+      "hit_diff": {
+        "removed": [],
+        "added": [],
+        "same": [
+          "refund_policy:1",
+          "refund_policy:2",
+          "refund_policy:3",
+          "refund_policy:4",
+          "refund_policy:5"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [],
+        "lost": []
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "refund_policy:2",
+            "refund_policy:3"
+          ],
+          "found_count": 2,
+          "expected_count": 2,
+          "missing": []
+        },
+        "v2": {
+          "found": [
+            "refund_policy:2",
+            "refund_policy:3"
+          ],
+          "found_count": 2,
+          "expected_count": 2,
+          "missing": []
+        }
+      },
+      "expected": [
+        "refund_policy:2",
+        "refund_policy:3"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "738a1572-f696-474d-9a79-b18589dff05e",
+            "d9269a51-9a19-4a49-97e1-150d700531ec"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2": {
+          "reference": [
+            "4e03f2ae-55d6-4745-99b1-f838a9e15b1d",
+            "9bc31916-8e13-4893-b7e2-a00c92519d92"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "738a1572-f696-474d-9a79-b18589dff05e",
+            "d9269a51-9a19-4a49-97e1-150d700531ec"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "4e03f2ae-55d6-4745-99b1-f838a9e15b1d",
+            "9bc31916-8e13-4893-b7e2-a00c92519d92"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "strict_comparable": true
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        },
+        "strict_v2": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        }
+      },
+      "v1_heading_paths": [
+        "会员订单退款政策 > 3. 退款到账与凭证",
+        "会员订单退款政策 > 2. 退款时限与审核",
+        "会员订单退款政策 > 1. 适用范围与退款类型",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊"
+      ],
+      "v2_heading_paths": [
+        "会员订单退款政策 > 3. 退款到账与凭证",
+        "会员订单退款政策 > 2. 退款时限与审核",
+        "会员订单退款政策 > 1. 适用范围与退款类型",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊"
+      ]
+    },
+    {
+      "id": "r02",
+      "query": "退款办完之后退回来的那部分积分，有效期是从退款日重新算 12 个月，还是按原来的时间算？",
+      "mechanism": "cross_section",
+      "answer_points": [
+        "返还的积分按「已使用积分」处理，恢复原有效期",
+        "不重新计算 12 个月",
+        "已经过期被清零的积分不返还"
+      ],
+      "v1_hits": [
+        "points_policy:3",
+        "refund_policy:5",
+        "refund_policy:4",
+        "points_policy:4",
+        "promo_rules:3"
+      ],
+      "v2_hits": [
+        "points_policy:3",
+        "refund_policy:5",
+        "refund_policy:4",
+        "points_policy:4",
+        "promo_rules:3"
+      ],
+      "hit_diff": {
+        "removed": [],
+        "added": [],
+        "same": [
+          "points_policy:3",
+          "points_policy:4",
+          "promo_rules:3",
+          "refund_policy:4",
+          "refund_policy:5"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [],
+        "lost": []
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "points_policy:3"
+          ],
+          "found_count": 1,
+          "expected_count": 2,
+          "missing": [
+            "points_policy:1"
+          ]
+        },
+        "v2": {
+          "found": [
+            "points_policy:3"
+          ],
+          "found_count": 1,
+          "expected_count": 2,
+          "missing": [
+            "points_policy:1"
+          ]
+        }
+      },
+      "expected": [
+        "points_policy:3",
+        "points_policy:1"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "7467e717-f3b1-47fd-b3bb-d0838039fa1b",
+            "addcf12d-4f5b-4896-bf58-6a1f84824e62"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2": {
+          "reference": [
+            "2617dcba-c557-4462-a271-ea80d556a4c2",
+            "e069812f-bf27-41c9-afec-a6fb5ea105a6"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "7467e717-f3b1-47fd-b3bb-d0838039fa1b",
+            "addcf12d-4f5b-4896-bf58-6a1f84824e62"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "2617dcba-c557-4462-a271-ea80d556a4c2",
+            "e069812f-bf27-41c9-afec-a6fb5ea105a6"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "strict_comparable": true
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        },
+        "strict_v2": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        }
+      },
+      "v1_heading_paths": [
+        "积分规则 > 3. 积分退还与失效",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 4. 积分等级与保级",
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+      ],
+      "v2_heading_paths": [
+        "积分规则 > 3. 积分退还与失效",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 4. 积分等级与保级",
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+      ]
+    },
+    {
+      "id": "r03",
+      "query": "退款办完之后，之前抵掉的那部分优惠还能不能再用，有效期会不会跟着延长？",
+      "mechanism": "cross_document",
+      "answer_points": [
+        "整单退款时优惠券按原规则返还",
+        "返还的券沿用原有效期，不延长",
+        "部分退款不返还券，只按比例扣除券的优惠分摊",
+        "已过期的券在退款时不返还，也不折现"
+      ],
+      "v1_hits": [
+        "promo_rules:3",
+        "refund_policy:4",
+        "points_policy:3",
+        "promo_rules:4",
+        "refund_policy:5"
+      ],
+      "v2_hits": [
+        "promo_rules:3",
+        "refund_policy:4",
+        "points_policy:3",
+        "promo_rules:4",
+        "refund_policy:5"
+      ],
+      "hit_diff": {
+        "removed": [],
+        "added": [],
+        "same": [
+          "points_policy:3",
+          "promo_rules:3",
+          "promo_rules:4",
+          "refund_policy:4",
+          "refund_policy:5"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [],
+        "lost": []
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "promo_rules:3"
+          ],
+          "found_count": 1,
+          "expected_count": 2,
+          "missing": [
+            "refund_policy:2"
+          ]
+        },
+        "v2": {
+          "found": [
+            "promo_rules:3"
+          ],
+          "found_count": 1,
+          "expected_count": 2,
+          "missing": [
+            "refund_policy:2"
+          ]
+        }
+      },
+      "expected": [
+        "promo_rules:3",
+        "refund_policy:2"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90",
+            "738a1572-f696-474d-9a79-b18589dff05e"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2": {
+          "reference": [
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50",
+            "4e03f2ae-55d6-4745-99b1-f838a9e15b1d"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90",
+            "738a1572-f696-474d-9a79-b18589dff05e"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50",
+            "4e03f2ae-55d6-4745-99b1-f838a9e15b1d"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "strict_comparable": true
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        },
+        "strict_v2": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.2,
+          "context_recall": 0.5
+        }
+      },
+      "v1_heading_paths": [
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 3. 积分退还与失效",
+        "促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理"
+      ],
+      "v2_heading_paths": [
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 3. 积分退还与失效",
+        "促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理"
+      ]
+    },
+    {
+      "id": "r04",
+      "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+      "mechanism": "cross_document",
+      "answer_points": [
+        "单笔抵扣上限取「商品金额的 50%」与「200 元」中较小者",
+        "银卡及以上时固定上限从 200 元提到 500 元",
+        "等级折扣与积分抵扣可以叠加，但实付不得低于 0.01 元"
+      ],
+      "v1_hits": [
+        "points_policy:2.2",
+        "points_policy:4",
+        "promo_rules:1",
+        "refund_policy:5",
+        "promo_rules:2"
+      ],
+      "v2_hits": [
+        "points_policy:2",
+        "points_policy:4",
+        "promo_rules:1",
+        "refund_policy:5",
+        "refund_policy:4"
+      ],
+      "hit_diff": {
+        "removed": [
+          "points_policy:2.2",
+          "promo_rules:2"
+        ],
+        "added": [
+          "points_policy:2",
+          "refund_policy:4"
+        ],
+        "same": [
+          "points_policy:4",
+          "promo_rules:1",
+          "refund_policy:5"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [
+          "points_policy:2.2"
+        ],
+        "lost": [
+          "promo_rules:2"
+        ]
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "points_policy:2.2",
+            "promo_rules:1"
+          ],
+          "found_count": 2,
+          "expected_count": 2,
+          "missing": []
+        },
+        "v2": {
+          "found": [
+            "promo_rules:1"
+          ],
+          "found_count": 1,
+          "expected_count": 2,
+          "missing": [
+            "points_policy:2.2"
+          ]
+        }
+      },
+      "expected": [
+        "points_policy:2.2",
+        "promo_rules:1"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "9e7eef59-428c-477f-ba8a-24db3713f1d5",
+            "3696bdc6-49e4-4279-b59f-26b132d3033a"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2": {
+          "reference": [
+            "fd070437-9659-40e7-8d7d-1eea93eb2c01"
+          ],
+          "unresolved": [
+            "points_policy:2.2"
+          ],
+          "fallback": [],
+          "reference_count": 1
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "9e7eef59-428c-477f-ba8a-24db3713f1d5",
+            "3696bdc6-49e4-4279-b59f-26b132d3033a"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "194cba50-285f-46bc-bde3-44595ed07df3",
+            "fd070437-9659-40e7-8d7d-1eea93eb2c01"
+          ],
+          "unresolved": [],
+          "fallback": [
+            "points_policy:2.2"
+          ],
+          "reference_count": 2
+        },
+        "strict_comparable": false
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        },
+        "strict_v2": {
+          "context_precision": 0.2,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        }
+      },
+      "v1_heading_paths": [
+        "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+        "积分规则 > 4. 积分等级与保级",
+        "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径"
+      ],
+      "v2_heading_paths": [
+        "积分规则 > 2. 积分抵扣与使用上限",
+        "积分规则 > 4. 积分等级与保级",
+        "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊"
+      ]
+    },
+    {
+      "id": "r05",
+      "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+      "mechanism": "parallel_points",
+      "answer_points": [
+        "券：按原规则返还，沿用原有效期，不延长",
+        "积分：返还全部抵扣积分；已发放的消费积分同步扣回，用掉了按 1 元 = 100 积分折成欠款",
+        "运费：整单退款把分摊后的运费一起退回",
+        "整单退款后订单关闭"
+      ],
+      "v1_hits": [
+        "promo_rules:3",
+        "refund_policy:4",
+        "points_policy:3",
+        "refund_policy:1",
+        "refund_policy:5"
+      ],
+      "v2_hits": [
+        "promo_rules:3",
+        "refund_policy:4",
+        "points_policy:3",
+        "refund_policy:1",
+        "refund_policy:5"
+      ],
+      "hit_diff": {
+        "removed": [],
+        "added": [],
+        "same": [
+          "points_policy:3",
+          "promo_rules:3",
+          "refund_policy:1",
+          "refund_policy:4",
+          "refund_policy:5"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [],
+        "lost": []
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "points_policy:3",
+            "promo_rules:3",
+            "refund_policy:1"
+          ],
+          "found_count": 3,
+          "expected_count": 3,
+          "missing": []
+        },
+        "v2": {
+          "found": [
+            "points_policy:3",
+            "promo_rules:3",
+            "refund_policy:1"
+          ],
+          "found_count": 3,
+          "expected_count": 3,
+          "missing": []
+        }
+      },
+      "expected": [
+        "promo_rules:3",
+        "points_policy:3",
+        "refund_policy:1"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90",
+            "7467e717-f3b1-47fd-b3bb-d0838039fa1b",
+            "6067dd22-0408-4ecc-84e7-e416867053fd"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2": {
+          "reference": [
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50",
+            "2617dcba-c557-4462-a271-ea80d556a4c2",
+            "499b7ae8-e4bf-4dae-a6f8-f6ed985bf167"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90",
+            "7467e717-f3b1-47fd-b3bb-d0838039fa1b",
+            "6067dd22-0408-4ecc-84e7-e416867053fd"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50",
+            "2617dcba-c557-4462-a271-ea80d556a4c2",
+            "499b7ae8-e4bf-4dae-a6f8-f6ed985bf167"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "strict_comparable": true
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        },
+        "strict_v2": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        }
+      },
+      "v1_heading_paths": [
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 3. 积分退还与失效",
+        "会员订单退款政策 > 1. 适用范围与退款类型",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理"
+      ],
+      "v2_heading_paths": [
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 3. 积分退还与失效",
+        "会员订单退款政策 > 1. 适用范围与退款类型",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理"
+      ]
+    },
+    {
+      "id": "r06",
+      "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+      "mechanism": "parallel_points",
+      "answer_points": [
+        "四类：满减、折扣、优惠券、积分抵扣",
+        "同一订单最多命中一个满减和一个折扣",
+        "先算折扣，再判满减门槛，优惠券在满减之后扣减",
+        "券与积分可以叠加，先扣券再扣积分，实付不低于 0.01 元"
+      ],
+      "v1_hits": [
+        "promo_rules:1",
+        "promo_rules:2",
+        "promo_rules:3",
+        "points_policy:2.2",
+        "refund_policy:4"
+      ],
+      "v2_hits": [
+        "promo_rules:2",
+        "promo_rules:1",
+        "promo_rules:3",
+        "points_policy:2",
+        "refund_policy:4"
+      ],
+      "hit_diff": {
+        "removed": [
+          "points_policy:2.2"
+        ],
+        "added": [
+          "points_policy:2"
+        ],
+        "same": [
+          "promo_rules:1",
+          "promo_rules:2",
+          "promo_rules:3",
+          "refund_policy:4"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [
+          "points_policy:2.2"
+        ],
+        "lost": []
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "promo_rules:1",
+            "promo_rules:2",
+            "promo_rules:3"
+          ],
+          "found_count": 3,
+          "expected_count": 3,
+          "missing": []
+        },
+        "v2": {
+          "found": [
+            "promo_rules:1",
+            "promo_rules:2",
+            "promo_rules:3"
+          ],
+          "found_count": 3,
+          "expected_count": 3,
+          "missing": []
+        }
+      },
+      "expected": [
+        "promo_rules:1",
+        "promo_rules:2",
+        "promo_rules:3"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "3696bdc6-49e4-4279-b59f-26b132d3033a",
+            "e58efdae-e219-4f02-92d4-60e0cc5d6b16",
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2": {
+          "reference": [
+            "fd070437-9659-40e7-8d7d-1eea93eb2c01",
+            "23d306d8-ea36-42b4-887b-207a07134341",
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "3696bdc6-49e4-4279-b59f-26b132d3033a",
+            "e58efdae-e219-4f02-92d4-60e0cc5d6b16",
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "fd070437-9659-40e7-8d7d-1eea93eb2c01",
+            "23d306d8-ea36-42b4-887b-207a07134341",
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "strict_comparable": true
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        },
+        "strict_v2": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.6,
+          "context_recall": 1.0
+        }
+      },
+      "v1_heading_paths": [
+        "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+        "促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊"
+      ],
+      "v2_heading_paths": [
+        "促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+        "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "积分规则 > 2. 积分抵扣与使用上限",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊"
+      ]
+    },
+    {
+      "id": "r07",
+      "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+      "mechanism": "dependent_hop",
+      "answer_points": [
+        "扣减顺序：先扣券再扣积分",
+        "券：整单退款按原规则返还，沿用原有效期；返还在退款执行成功之后，失败不返还",
+        "积分：返还全部抵扣积分，同样在退款执行成功之后，恢复原有效期"
+      ],
+      "v1_hits": [
+        "promo_rules:3",
+        "refund_policy:4",
+        "points_policy:3",
+        "refund_policy:5",
+        "refund_policy:1"
+      ],
+      "v2_hits": [
+        "promo_rules:3",
+        "refund_policy:4",
+        "points_policy:3",
+        "refund_policy:5",
+        "refund_policy:1"
+      ],
+      "hit_diff": {
+        "removed": [],
+        "added": [],
+        "same": [
+          "points_policy:3",
+          "promo_rules:3",
+          "refund_policy:1",
+          "refund_policy:4",
+          "refund_policy:5"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [],
+        "lost": []
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "points_policy:3",
+            "promo_rules:3"
+          ],
+          "found_count": 2,
+          "expected_count": 3,
+          "missing": [
+            "refund_policy:2"
+          ]
+        },
+        "v2": {
+          "found": [
+            "points_policy:3",
+            "promo_rules:3"
+          ],
+          "found_count": 2,
+          "expected_count": 3,
+          "missing": [
+            "refund_policy:2"
+          ]
+        }
+      },
+      "expected": [
+        "refund_policy:2",
+        "promo_rules:3",
+        "points_policy:3"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "738a1572-f696-474d-9a79-b18589dff05e",
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90",
+            "7467e717-f3b1-47fd-b3bb-d0838039fa1b"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2": {
+          "reference": [
+            "4e03f2ae-55d6-4745-99b1-f838a9e15b1d",
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50",
+            "2617dcba-c557-4462-a271-ea80d556a4c2"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "738a1572-f696-474d-9a79-b18589dff05e",
+            "4b77fb1d-7198-4077-8a37-178dd4c45d90",
+            "7467e717-f3b1-47fd-b3bb-d0838039fa1b"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "4e03f2ae-55d6-4745-99b1-f838a9e15b1d",
+            "0979cb2d-8ce9-4e42-aaf4-f8825d737e50",
+            "2617dcba-c557-4462-a271-ea80d556a4c2"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "strict_comparable": true
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.4,
+          "context_recall": 0.6666666666666666
+        },
+        "strict_v2": {
+          "context_precision": 0.4,
+          "context_recall": 0.6666666666666666
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.4,
+          "context_recall": 0.6666666666666666
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.4,
+          "context_recall": 0.6666666666666666
+        }
+      },
+      "v1_heading_paths": [
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 3. 积分退还与失效",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 1. 适用范围与退款类型"
+      ],
+      "v2_heading_paths": [
+        "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "积分规则 > 3. 积分退还与失效",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 1. 适用范围与退款类型"
+      ]
+    },
+    {
+      "id": "r08",
+      "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+      "mechanism": "dependent_hop",
+      "answer_points": [
+        "净消费金额 = 订单实付金额 − 退款金额 − 积分抵扣金额",
+        "退款金额按部分退款的分摊结果取，即先按商品实付占比拆优惠券、运费按件数平摊",
+        "银卡及以上的抵扣固定上限是 500 元，与本单商品金额 50% 取较小值",
+        "保级在每年 1 月 1 日按上一年净额重算，未达标降一级"
+      ],
+      "v1_hits": [
+        "points_policy:4",
+        "refund_policy:5",
+        "refund_policy:4",
+        "refund_policy:1",
+        "points_policy:3"
+      ],
+      "v2_hits": [
+        "points_policy:4",
+        "refund_policy:5",
+        "refund_policy:4",
+        "refund_policy:1",
+        "points_policy:3"
+      ],
+      "hit_diff": {
+        "removed": [],
+        "added": [],
+        "same": [
+          "points_policy:3",
+          "points_policy:4",
+          "refund_policy:1",
+          "refund_policy:4",
+          "refund_policy:5"
+        ]
+      },
+      "absorbed": {
+        "absorbed": [],
+        "lost": []
+      },
+      "coverage": {
+        "v1": {
+          "found": [
+            "points_policy:4",
+            "refund_policy:4"
+          ],
+          "found_count": 2,
+          "expected_count": 3,
+          "missing": [
+            "points_policy:2.2"
+          ]
+        },
+        "v2": {
+          "found": [
+            "points_policy:4",
+            "refund_policy:4"
+          ],
+          "found_count": 2,
+          "expected_count": 3,
+          "missing": [
+            "points_policy:2.2"
+          ]
+        }
+      },
+      "expected": [
+        "points_policy:4",
+        "refund_policy:4",
+        "points_policy:2.2"
+      ],
+      "labels": {
+        "v1": {
+          "reference": [
+            "4efdbf04-b7df-4c4f-a8cc-b76e23e7ee24",
+            "0a28b0ce-3ae0-463c-9c46-9e2b141581b7",
+            "9e7eef59-428c-477f-ba8a-24db3713f1d5"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2": {
+          "reference": [
+            "4096e7df-0a84-4a61-a4fe-d4c83f18a0a4",
+            "cf2612a5-2b24-49aa-8174-7dfea6107e07"
+          ],
+          "unresolved": [
+            "points_policy:2.2"
+          ],
+          "fallback": [],
+          "reference_count": 2
+        },
+        "v1_parent_fallback": {
+          "reference": [
+            "4efdbf04-b7df-4c4f-a8cc-b76e23e7ee24",
+            "0a28b0ce-3ae0-463c-9c46-9e2b141581b7",
+            "9e7eef59-428c-477f-ba8a-24db3713f1d5"
+          ],
+          "unresolved": [],
+          "fallback": [],
+          "reference_count": 3
+        },
+        "v2_parent_fallback": {
+          "reference": [
+            "4096e7df-0a84-4a61-a4fe-d4c83f18a0a4",
+            "cf2612a5-2b24-49aa-8174-7dfea6107e07",
+            "194cba50-285f-46bc-bde3-44595ed07df3"
+          ],
+          "unresolved": [],
+          "fallback": [
+            "points_policy:2.2"
+          ],
+          "reference_count": 3
+        },
+        "strict_comparable": false
+      },
+      "cp_cr": {
+        "strict_v1": {
+          "context_precision": 0.4,
+          "context_recall": 0.6666666666666666
+        },
+        "strict_v2": {
+          "context_precision": 0.4,
+          "context_recall": 1.0
+        },
+        "parent_fallback_v1": {
+          "context_precision": 0.4,
+          "context_recall": 0.6666666666666666
+        },
+        "parent_fallback_v2": {
+          "context_precision": 0.4,
+          "context_recall": 0.6666666666666666
+        }
+      },
+      "v1_heading_paths": [
+        "积分规则 > 4. 积分等级与保级",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "会员订单退款政策 > 1. 适用范围与退款类型",
+        "积分规则 > 3. 积分退还与失效"
+      ],
+      "v2_heading_paths": [
+        "积分规则 > 4. 积分等级与保级",
+        "会员订单退款政策 > 5. 积分与等级变更后的处理",
+        "会员订单退款政策 > 4. 部分退款与优惠分摊",
+        "会员订单退款政策 > 1. 适用范围与退款类型",
+        "积分规则 > 3. 积分退还与失效"
+      ]
+    }
+  ],
+  "aggregate": {
+    "questions": 8,
+    "questions_with_hit_change": 2,
+    "hit_change_ids": [
+      "r04",
+      "r06"
+    ],
+    "absorbed_units": 2,
+    "lost_units": 1,
+    "coverage": {
+      "v1_found": 16,
+      "v2_found": 15,
+      "expected_total": 20,
+      "v1_missing": [
+        "points_policy:1",
+        "points_policy:2.2",
+        "refund_policy:2",
+        "refund_policy:2"
+      ],
+      "v2_missing": [
+        "points_policy:1",
+        "points_policy:2.2",
+        "points_policy:2.2",
+        "refund_policy:2",
+        "refund_policy:2"
+      ]
+    },
+    "strict_label_unresolved": {
+      "v1": 0,
+      "v2": 2
+    },
+    "strict_comparable_questions": 6,
+    "cp_cr": {
+      "strict_v1": {
+        "context_precision": 0.39999999999999997,
+        "context_recall": 0.7777777777777778
+      },
+      "strict_v2": {
+        "context_precision": 0.39999999999999997,
+        "context_recall": 0.7777777777777778
+      },
+      "parent_fallback_v1": {
+        "context_precision": 0.4,
+        "context_recall": 0.7916666666666666
+      },
+      "parent_fallback_v2": {
+        "context_precision": 0.4,
+        "context_recall": 0.7916666666666666
+      }
+    },
+    "section_identity": {
+      "only_v1": [
+        "points_policy:2.1",
+        "points_policy:2.2"
+      ],
+      "only_v2": [],
+      "same": 13,
+      "changed": []
+    }
+  },
+  "accounted_calls": {
+    "document_embeddings_v1": 15,
+    "document_embeddings_v2": 13,
+    "query_embeddings": 16,
+    "total": 44
+  },
+  "premise": {
+    "comparable_with_original_project": false,
+    "why": "本仓库的语料与题集都是自己的，原项目那组效果数字（+4.9% / +7.5% / −82.5% / +3.4pp）既不成立也不可比（#138 Out of Scope）。本轮数字只与本轮产物可比。"
+  }
+}

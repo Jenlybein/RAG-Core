@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from scripts import eval_refs, eval_t159_orchestration
+from scripts import eval_refs, eval_t159_orchestration, eval_t159_split_versions
 
 
 def _outcome(
@@ -391,3 +391,298 @@ def test_merge_rerun_replaces_only_the_diagnostic_arm() -> None:
         "partial": 0,
         "missing": 0,
     }
+
+
+# ══════════════════════════════════════════ 第二组：切分点变化的 v1 / v2
+
+
+def _section(heading_path: str) -> str | None:
+    """从 heading_path 尾段取节号（与 ``eval_refs.section_of_heading_path`` 同一口径）。"""
+
+    return eval_refs.section_of_heading_path(heading_path)
+
+
+def _chunk_row(
+    *,
+    chunk_id: str,
+    document: str = "points_policy",
+    heading_path: str,
+    section_id: str,
+    content: str = "正文",
+    chunk_type: str = "prose",
+    index_version: str = "v1",
+) -> eval_t159_split_versions.ChunkRow:
+    return eval_t159_split_versions.ChunkRow(
+        chunk_id=chunk_id,
+        document=document,
+        heading_path=heading_path,
+        section=_section(heading_path),
+        section_id=section_id,
+        chunk_type=chunk_type,
+        content=content,
+        index_version=index_version,
+    )
+
+
+def test_the_one_split_point_change_is_the_h3_boundary() -> None:
+    """v1 = 生产切法（h3 成节）；v2 = 只改一处：h3 不再成节，正文并入父级 h2。
+
+    这一处是被语料与题集**逼出来**的：points_policy 的 2.1 / 2.2 是 h3，而题集有两道题
+    明确指向「第 2.2 节」（r04 / r08）。换表格行级片或 small-to-big 粒度在这份纯散文语料
+    上都不会改任何交付单元——那不是「一处切分点」，那是换个说法。
+    """
+
+    text = (eval_t159_split_versions.REFS_CORPUS_DIR / "points_policy.md").read_text(
+        encoding="utf-8"
+    )
+    pieces_v1 = eval_t159_split_versions.build_splitter_for_version(
+        "structure", chunk_size=800, document_id="doc", section_level=3
+    ).split(text)
+    pieces_v2 = eval_t159_split_versions.build_splitter_for_version(
+        "structure", chunk_size=800, document_id="doc", section_level=2
+    ).split(text)
+    paths_v1 = {piece.metadata["heading_path"] for piece in pieces_v1}
+    paths_v2 = {piece.metadata["heading_path"] for piece in pieces_v2}
+    assert "积分规则 > 2. 积分抵扣与使用上限 > 2.1 抵扣比例" in paths_v1
+    assert "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限" in paths_v1
+    assert "积分规则 > 2. 积分抵扣与使用上限 > 2.1 抵扣比例" not in paths_v2
+    assert "积分规则 > 2. 积分抵扣与使用上限" in paths_v2
+    merged = [
+        piece
+        for piece in pieces_v2
+        if piece.metadata["heading_path"] == "积分规则 > 2. 积分抵扣与使用上限"
+    ]
+    assert any("抵扣比例固定为 100 积分抵 1 元" in piece.text for piece in merged)
+    assert any("银卡及以上时，200 元的固定上限提高到 500 元" in piece.text for piece in merged)
+
+
+def test_documents_without_h3_are_cut_identically_under_both_versions() -> None:
+    """只改 h3 边界 ⇒ 没有 h3 的文档两版逐片相同（证明这一处改动没有连带别的东西）。"""
+
+    text = (eval_t159_split_versions.REFS_CORPUS_DIR / "refund_policy.md").read_text(
+        encoding="utf-8"
+    )
+    pieces_v1 = [
+        piece.text
+        for piece in eval_t159_split_versions.build_splitter_for_version(
+            "structure", chunk_size=800, document_id="doc", section_level=3
+        ).split(text)
+    ]
+    pieces_v2 = [
+        piece.text
+        for piece in eval_t159_split_versions.build_splitter_for_version(
+            "structure", chunk_size=800, document_id="doc", section_level=2
+        ).split(text)
+    ]
+    assert pieces_v1 == pieces_v2
+
+
+def test_inventory_counts_sections_and_section_ids() -> None:
+    """每个版本先落一份清单：切片 / 节 / 节的身份证（``section_id``）都在。"""
+
+    rows = [
+        _chunk_row(chunk_id="c1", heading_path="积分规则 > 1. 积分获取与计算", section_id="s1"),
+        _chunk_row(chunk_id="c2", heading_path="积分规则 > 2. 积分抵扣与使用上限", section_id="s2"),
+        _chunk_row(chunk_id="c3", heading_path="积分规则 > 3. 积分退还与失效", section_id="s3"),
+    ]
+    inv = eval_t159_split_versions.inventory(rows)
+    assert inv["chunks"] == 3
+    assert inv["sections"] == 3
+    assert inv["section_ids"] == {
+        "points_policy:1": "s1",
+        "points_policy:2": "s2",
+        "points_policy:3": "s3",
+    }
+
+
+def test_section_identity_diff_reports_sections_that_vanish_into_a_parent() -> None:
+    """节身份**应当有差异**：v2 把 2.1 / 2.2 并进 2，那两个节的 id 在 v2 里不存在。"""
+
+    v1 = eval_t159_split_versions.inventory(
+        [
+            _chunk_row(
+                chunk_id="c1",
+                heading_path="积分规则 > 2. 积分抵扣与使用上限",
+                section_id="s2",
+            ),
+            _chunk_row(
+                chunk_id="c2",
+                heading_path="积分规则 > 2. 积分抵扣与使用上限 > 2.1 抵扣比例",
+                section_id="s21",
+            ),
+            _chunk_row(
+                chunk_id="c3",
+                heading_path="积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+                section_id="s22",
+            ),
+        ]
+    )
+    v2 = eval_t159_split_versions.inventory(
+        [
+            _chunk_row(
+                chunk_id="c9", heading_path="积分规则 > 2. 积分抵扣与使用上限", section_id="s2"
+            )
+        ]
+    )
+    diff = eval_t159_split_versions.section_identity_diff(v1, v2)
+    assert diff["same"] == 1
+    assert diff["only_v1"] == ["points_policy:2.1", "points_policy:2.2"]
+    assert diff["only_v2"] == []
+    # 同一个节的身份证跨版本必须相等（那是 #143 的承诺，改切法不该动摇它）。
+    assert diff["changed"] == []
+
+
+def test_section_identity_diff_flags_an_unstable_id_as_a_defect() -> None:
+    """同一个 (文档, 节号) 两版算出不同 ``section_id`` ⇒ 身份算法坏了，不是切法变了。"""
+
+    v1 = eval_t159_split_versions.inventory(
+        [_chunk_row(chunk_id="c1", heading_path="积分规则 > 1. 积分获取与计算", section_id="s1")]
+    )
+    v2 = eval_t159_split_versions.inventory(
+        [
+            _chunk_row(
+                chunk_id="c2", heading_path="积分规则 > 1. 积分获取与计算", section_id="s1-bad"
+            )
+        ]
+    )
+    diff = eval_t159_split_versions.section_identity_diff(v1, v2)
+    assert diff["changed"] == ["points_policy:1"]
+
+
+def _hit_outcome(
+    question_id: str, units: list[tuple[str, str]], *, contents: list[str] | None = None
+) -> eval_refs.Outcome:
+    """一道题的命中：``units`` 是 (文档, 节号)；``contents`` 缺省按单元编一段可读正文。"""
+
+    hits = []
+    for index, (document, section) in enumerate(units):
+        body = (
+            contents[index]
+            if contents is not None and index < len(contents)
+            else f"{document} 第 {section} 节的正文"
+        )
+        hits.append(
+            eval_refs.Hit(
+                chunk_id=f"c-{document}-{section}",
+                document=document,
+                heading_path=f"{document} > {section}. 节",
+                content=body,
+            )
+        )
+    return eval_refs.Outcome(id=question_id, query="q", mechanism="cross_document", hits=hits)
+
+
+def test_hit_diff_lists_added_and_removed_delivery_units() -> None:
+    """命中集合按「文档:节」比：v2 少一个 2.2 单元、多一个 2 单元。"""
+
+    off = _hit_outcome("r04", [("points_policy", "2.2"), ("points_policy", "4")])
+    on = _hit_outcome("r04", [("points_policy", "2"), ("points_policy", "4")])
+    diff = eval_t159_split_versions.hit_diff(off, on)
+    assert diff["removed"] == ["points_policy:2.2"]
+    assert diff["added"] == ["points_policy:2"]
+
+
+def test_a_disappeared_unit_is_traced_to_the_parent_that_absorbed_it() -> None:
+    """「单元没了」分两种：内容还在（被父节吞了）vs 内容真的没取回。两者处置完全不同。"""
+
+    v1 = _hit_outcome(
+        "r04",
+        [("points_policy", "2.2")],
+        contents=["### 2.2 抵扣上限\n\n银卡及以上时，200 元的固定上限提高到 500 元。"],
+    )
+    v2 = _hit_outcome(
+        "r04",
+        [("points_policy", "2")],
+        contents=[
+            "## 2. 积分抵扣与使用上限\n\n### 2.1 抵扣比例\n\n抵扣比例固定为 100 积分抵 1 元。"
+            " ### 2.2 抵扣上限\n\n银卡及以上时，200 元的固定上限提高到 500 元。"
+        ],
+    )
+    absorbed = eval_t159_split_versions.absorbed_units(v1, v2)
+    assert absorbed["absorbed"] == ["points_policy:2.2"]
+    assert absorbed["lost"] == []
+
+
+def test_content_that_is_really_missing_is_not_called_absorbed() -> None:
+    """父节里没有这段正文 ⇒ 这是真的丢了一条材料，不许拿「合并」当借口。"""
+
+    v1 = _hit_outcome("r04", [("points_policy", "2.2")], contents=["这段正文不在 v2 的任何命中里"])
+    v2 = _hit_outcome("r04", [("points_policy", "2")], contents=["完全别的内容"])
+    absorbed = eval_t159_split_versions.absorbed_units(v1, v2)
+    assert absorbed["absorbed"] == []
+    assert absorbed["lost"] == ["points_policy:2.2"]
+
+
+def test_coverage_of_reports_which_expected_sections_were_found() -> None:
+    """期望节覆盖按 ``文档:节`` 对账：命中里有就是有，没取回就列进 missing。"""
+
+    coverage = eval_t159_split_versions.coverage_of(
+        ["promo_rules:1", "points_policy:2.2"],
+        ["points_policy:2.2", "promo_rules:1", "refund_policy:2"],
+    )
+    assert coverage["found"] == ["points_policy:2.2", "promo_rules:1"]
+    assert coverage["missing"] == ["refund_policy:2"]
+    assert coverage["found_count"] == 2 and coverage["expected_count"] == 3
+
+
+def test_coverage_of_counts_a_merged_unit_as_missing_under_this_version_s_labels() -> None:
+    """v2 交付的是 2（2.2 被并进去）：按 v2 的节号对账，期望的 2.2 就算「没取回」。
+
+    这正是这组对照要看的那件事：读数会掉，但**材料还在**（``absorbed_units`` 管那个），
+    两件事必须分开报。
+    """
+
+    coverage = eval_t159_split_versions.coverage_of(
+        ["points_policy:2", "promo_rules:1"], ["points_policy:2.2", "promo_rules:1"]
+    )
+    assert coverage["found"] == ["promo_rules:1"]
+    assert coverage["missing"] == ["points_policy:2.2"]
+
+
+def test_reference_labels_resolve_a_section_that_still_exists_and_report_the_rest() -> None:
+    """标签按 ``(document, section)`` 解析（#157 的纪律）：节还在就照样解析得到。"""
+
+    rows = [
+        _chunk_row(chunk_id="c2", heading_path="积分规则 > 2. 积分抵扣与使用上限", section_id="s2"),
+        _chunk_row(
+            chunk_id="c9",
+            document="promo_rules",
+            heading_path="促销 > 1. 活动类型与叠加原则",
+            section_id="p1",
+        ),
+    ]
+    question = {
+        "id": "r04",
+        "expected": [
+            {"document": "points_policy", "section": "2.2", "role": "core"},
+            {"document": "promo_rules", "section": "1", "role": "pointer"},
+        ],
+    }
+    labels = eval_t159_split_versions.reference_labels(question, rows)
+    assert labels["reference"] == ["c9"]
+    assert labels["unresolved"] == ["points_policy:2.2"]
+
+
+def test_reference_labels_can_fall_back_to_the_parent_section_for_a_merged_unit() -> None:
+    """诊断口径：2.2 并进 2 之后，父节那一片就是承载那段正文的材料（**单独标注**）。"""
+
+    rows = [
+        _chunk_row(chunk_id="c2", heading_path="积分规则 > 2. 积分抵扣与使用上限", section_id="s2"),
+    ]
+    question = {
+        "id": "r04",
+        "expected": [{"document": "points_policy", "section": "2.2", "role": "core"}],
+    }
+    strict = eval_t159_split_versions.reference_labels(question, rows)
+    relaxed = eval_t159_split_versions.reference_labels(question, rows, allow_parent_fallback=True)
+    assert strict["reference"] == []
+    assert strict["unresolved"] == ["points_policy:2.2"]
+    assert relaxed["reference"] == ["c2"]
+    assert relaxed["unresolved"] == []
+    assert relaxed["fallback"] == ["points_policy:2.2"]
+
+
+def test_split_versions_dry_run_prints_plan_without_touching_any_database() -> None:
+    """``--dry-run`` 打印要建什么、要跑什么、预算多少：不连库、不烧一次嵌入。"""
+
+    assert eval_t159_split_versions.main(["--dry-run"]) == 0
