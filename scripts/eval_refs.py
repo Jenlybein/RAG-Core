@@ -593,11 +593,18 @@ def _apply_rerank_switch(switch: str) -> bool:
 
 
 def _effective_rerank(config: RunConfig) -> bool:
-    """这一轮**实际**开没开重排（报告与预计调用都要用它，不能只看参数）。"""
+    """这一轮**实际**开没开重排（报告与预计调用都要用它，不能只看参数）。
 
+    显式 ``--rerank on/off`` 优先：那是对这台机器这一次的**决定**，不该被 ``.env`` 里的
+    偶然值盖掉；``auto`` 才回落到服务端配置。空跑 / 回放不连库，``auto`` 就是关。
+    """
+
+    if config.rerank == RERANK_ON:
+        return True
+    if config.rerank == RERANK_OFF:
+        return False
     if config.source != SOURCE_LIVE:
-        # 空跑 / 回放不连库也不碰 settings：参数写的就是这次「打算」用的值。
-        return config.rerank == RERANK_ON
+        return False
     from app.core.config import settings
 
     return bool(settings.RERANK_ENABLED)
@@ -637,9 +644,26 @@ def _apply_retrieval(
         _hit_from_chunk(chunk, dict(document_names))
         for chunk in response.get("retrieved_chunks") or []
     ]
-    # 一次检索花掉几次模型调用：查询嵌入一次；**响应里有重排事实**就再加一次。
-    # 按响应而不是按配置数——配置说开了、链路其实没跑，是这条链路上真实存在的形态。
-    outcome.model_calls = 1 + (1 if meta.get("rerank") else 0)
+    # 一次检索花掉几次模型调用：查询嵌入一次；**重排真的发生了**就再加一次。
+    # 判据是 ``metadata.retrieval.rerank.applied``（这一栏恒存在，取的是「apply 过没有」）：
+    # 把整个字典的真假当判据会给每一次检索都多加一次（#153 的守分抽样上就这么错了一次）。
+    job = meta.get("rerank") or {}
+    outcome.model_calls = 1 + (1 if job.get("applied") else 0)
+
+
+def _as_mapping(data: Any) -> Mapping[str, Any]:
+    """响应 → 只读映射。``gated_research`` 交回的是 pydantic 模型，fixture 回放的是 dict。
+
+    两种形状都得收：真实链路只会给模型，而报告与用例只认映射。``mode="json"`` 让枚举
+    （``StopReason``）落成字符串——报告里印 ``evidence_complete``，不是 ``StopReason.X``。
+    """
+
+    if isinstance(data, Mapping):
+        return data
+    dump = getattr(data, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json")
+    raise TypeError(f"无法读取响应：{type(data).__name__}")
 
 
 def _apply_research(
@@ -655,6 +679,7 @@ def _apply_research(
     而不是只有检索侧才算得出「这段材料是不是库里的原文」。
     """
 
+    data = _as_mapping(data)
     meta = data.get("metadata") or {}
     outcome.stop_reason = meta.get("stop_reason")
     outcome.evidence_state = meta.get("evidence_state")
@@ -738,6 +763,36 @@ async def evaluate_live_question(
         outcome.error = type(exc).__name__
     outcome.latency_ms = round((time.perf_counter() - started) * 1000, 2)
     return outcome
+
+
+async def _bind_model_chain() -> dict[str, Any]:
+    """把模型接入接到**生产那条链**（``model_configs`` 的角色指针），返回用的是哪一条。
+
+    与 ``scripts/eval_runner.bind_llm_role_resolver`` 是同一件事、同一组入口
+    （``app.providers.llm.set_role_resolver`` + ``model_config_service.role_endpoint``）。
+    这里不 import 那个函数，是因为它顺手把整个评测运行器拖进来；但口径必须一致，所以
+    注释里点名它——两个入口接的不是同一条链，读数就不是同一个东西。
+
+    为什么非要接：``.env`` 里的单供应商 key 与库里配置的那一条不是同一个账号。走错那条时
+    Research 的规划/判断/生成三处各失败一次、``stop_reason`` 全落 ``degraded``——那是
+    「评测没接生产链路」，不是「Research 不行」（#115 在评测侧踩过同一脚）。
+    """
+
+    from app.core.config import settings
+    from app.providers.llm import set_role_resolver
+
+    from app.services import model_config_service
+
+    set_role_resolver(model_config_service.role_endpoint)
+    endpoint = await model_config_service.role_endpoint("fast")
+    if endpoint is None:
+        # 回落 ``.env`` 是既定行为，不是错误；但要如实记下来，别让读数以为是库里那条。
+        return {"llm_endpoint_source": "env", "llm_model": str(settings.LLM_MODEL)}
+    return {
+        "llm_endpoint_source": "model_configs",
+        "llm_model": str(endpoint.model),
+        "llm_config_id": str(endpoint.config_id),
+    }
 
 
 async def run_live(
@@ -1348,6 +1403,7 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
     questions: Sequence[dict[str, Any]] = questions_payload["questions"]
 
     index_versions: dict[str, str] = {}
+    model_chain: dict[str, Any] = {}
     if config.source == SOURCE_DRY_RUN:
         outcomes = run_dry(questions=questions, top_k=config.top_k)
     elif config.source == SOURCE_FIXTURE:
@@ -1355,6 +1411,10 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
             raise SystemExit("--source fixture 需要 --fixtures <文件>")
         outcomes = run_fixture(questions=questions, path=config.fixtures)
     else:
+        # 模型接入先接到生产那条链**再**开跑：Research 的三步全走它，检索侧的嵌入 /
+        # 重排不吃它（它们各有自己的端点）。不接的后果是整组读数落成 degraded，
+        # 而那不是能力的结论（见 _bind_model_chain 的说明）。
+        model_chain = asyncio.run(_bind_model_chain())
         outcomes = asyncio.run(
             run_live(
                 questions=questions,
@@ -1396,6 +1456,10 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
         # （#156）。两份事实都要进 results.json，否则事后分不清「没采集」与「没能力」。
         "exercised": exercised,
         "index_versions": dict(sorted(index_versions.items())),
+        # 这一轮 Research 用的是哪条模型接入（``model_configs`` 的角色指针 / 回落 .env）。
+        # 它不是能力读数，而是「这组数字在什么前提下调出来的」——不记它，degraded 的那一组
+        # 事后无法归因到「评测没接生产链」还是「Research 本身不行」。
+        "llm_chain": dict(model_chain),
         "premise": {
             "comparable_with_original_project": False,
             "why": (
@@ -2132,6 +2196,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     elif not raw:
         raw = ["run"]
     args = parser.parse_args(raw)
+    if sys.platform == "win32" and args.command == "run":
+        # psycopg 的异步连接在 Windows 的缺省 Proactor 循环上跑不起来（第一条查询就
+        # InterfaceError）。空跑 / 回放不碰数据库，但这条线一旦切到 ``--source live``
+        # 就是第一条查询：与 scripts/rebuild_kb_version.py、conftest 同一行理由。
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     return int(args.func(args))
 
 

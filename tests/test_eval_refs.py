@@ -628,7 +628,13 @@ def _retrieval_response(*, injected: int = 0, seeds: int = 0, rerank: bool = Tru
                 "degraded": False,
                 "degraded_reason": None,
                 "empty_reason": None,
-                "rerank": {"candidates": 20, "returned": 5} if rerank else None,
+                # 这一栏**恒存在**（真实响应里关着重排也有它，只是 applied=false）：
+                # 替身照同一个形状给，才能守住「拿 applied 判，不拿字典真值判」。
+                "rerank": {
+                    "applied": rerank,
+                    "candidates": 20 if rerank else 0,
+                    "returned": 5 if rerank else 0,
+                },
                 "graph": {"injected": injected, "seeds": seeds, "by_relation": {}},
             },
         },
@@ -650,6 +656,7 @@ def _research_data(*, stop_reason: str = "evidence_complete", model_calls: int =
             {
                 "chunk_id": "c-1",
                 "document_id": "doc-1",
+                "title": "会员订单退款政策",
                 "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
                 "content": "审核通过后按渠道到账。",
                 "score": 0.5,
@@ -745,8 +752,46 @@ def test_graph_on_forwards_the_production_factory_and_off_forwards_none() -> Non
         assert seams.retrieve_calls[0]["graph_factory"] is expected
 
 
+def test_a_real_research_data_response_is_understood() -> None:
+    """真实链路交回的是 **pydantic 模型**，不是 dict：四种读数照样要读得出来。
+
+    这是接线时真踩的一处：假替身回 dict，用例全绿；一接 ``gated_research``（回
+    ``ResearchData``）就整组落成 ``error:AttributeError``——而报告里那一栏只会说「8 题
+    0 引用块」，看起来像「Research 不产出引用」。所以这里用**真 schema** 验一遍：
+    ``StopReason`` 是枚举，``mode="json"`` 之后必须落成 ``evidence_complete`` 这样的字符串。
+    """
+
+    from app.schemas.research import ResearchData
+
+    data = ResearchData.model_validate(_research_data())
+    outcome = asyncio.run(
+        eval_refs.evaluate_live_question(
+            {"id": "r03", "query": "q", "mechanism": "cross_document"},
+            seams=_FakeSeams(research_payload=data),
+            db=None,
+            key=eval_refs.eval_key_context(tenant_id="t"),
+            kb_ids=("kb-refs",),
+            top_k=5,
+            graph="off",
+            research="on",
+            document_names={"doc-1": "refund_policy"},
+            rerank_enabled=False,
+        )
+    )
+
+    assert outcome.error is None
+    assert outcome.stop_reason == "evidence_complete"
+    assert outcome.evidence_state == "partial"
+    assert len(outcome.hits) == 1
+    assert outcome.citation_blocks == 2 and outcome.citations_with_evidence == 1
+
+
 def test_the_retrieval_side_counts_the_model_calls_it_actually_made() -> None:
-    """每次检索至少一次查询嵌入；响应里有重排事实就再加一次——不按配置猜。"""
+    """每次检索至少一次查询嵌入；**重排真的发生了**才再加一次——判据是 ``applied``。
+
+    ``metadata.retrieval.rerank`` 这一栏**恒存在**（关着时也在，只是 ``applied=false``）。
+    拿整个字典的真假当判据，会给每一次检索都多加一次——#153 的守分抽样第一次就是这么错的。
+    """
 
     question = {"id": "r01", "query": "q", "mechanism": "cross_section"}
     reranked = asyncio.run(
@@ -762,7 +807,7 @@ def test_the_retrieval_side_counts_the_model_calls_it_actually_made() -> None:
             document_names={"doc-1": "refund_policy"},
         )
     )
-    plain = asyncio.run(
+    skipped = asyncio.run(
         eval_refs.evaluate_live_question(
             question,
             seams=_FakeSeams(response=_retrieval_response(rerank=False)),
@@ -776,7 +821,7 @@ def test_the_retrieval_side_counts_the_model_calls_it_actually_made() -> None:
         )
     )
 
-    assert (reranked.model_calls, plain.model_calls) == (2, 1)
+    assert (reranked.model_calls, skipped.model_calls) == (2, 1)
     assert reranked.hits[0].document == "refund_policy"
 
 
