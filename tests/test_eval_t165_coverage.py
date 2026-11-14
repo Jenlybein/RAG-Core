@@ -398,3 +398,34 @@ def test_archived_reading_says_unavailable_instead_of_guessing(tmp_path: Path) -
     reading = ev.archived_followup_reading(tmp_path / "missing.json")
 
     assert reading["available"] is False
+
+
+# ─────────────────────────────────────────────────────────────── 9. 报告结构
+
+
+def test_report_renders_every_required_section() -> None:
+    """报告的骨架必须齐全：五个数、两个结论、「不能回答什么」。
+
+    空产物也要渲染得出来（这一节是票面的硬要求，不能只在「有数据时」才出现）。
+    """
+
+    payload = {
+        "generated_at": "2026-11-15T00:00:00+00:00",
+        "llm_chain": {"llm_endpoint_source": "model_configs", "llm_model": "m"},
+        "model_calls": {"nominal": 52, "actual": 52, "budget": 60},
+        "conditions": {},
+        "archived": {"available": False},
+    }
+
+    text = ev.render_report(payload)
+
+    for heading in (
+        "## 一、五个数",
+        "## 二、结论",
+        "## 六、这份对照不能回答什么",
+        "## 七、怎么复现",
+    ):
+        assert heading in text
+    assert "要不要加「补证后再判一次」" in text
+    assert "缺口闸现在实际拦到的是什么" in text
+    assert "样本量小" in text
