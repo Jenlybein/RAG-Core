@@ -76,12 +76,49 @@ _SAME_DOCUMENT_REFERENCE_RE = re.compile(
 #: Markdown 链接 / 图片：``[文本](目标)``。目标可以是同文档锚点（``#2-4``）或另一个文件。
 _MARKDOWN_LINK_RE = re.compile(r"!?\[(?P<text>[^\]\n]*)\]\((?P<target>[^)\s]+)\)")
 
-#: 链接后面紧跟的节号（``](x.md)第 3 节``）。链接本身只指到文件，节号写在链接外面——
-#: 不把它吃进来，语料里那三条链接就一条边都建不出来。
-_SECTION_AFTER_LINK_RE = re.compile(rf"^\s*(?:第\s*)?(?P<number>{_NUMERAL})\s*节")
+#: 链接后面紧跟的定位符（``](x.md)第 3 节`` / ``](x.md)「第三次修订」``）。链接本身只指到
+#: 文件，节写在链接外面——不把它吃进来，语料里那三条链接就一条边都建不出来。
+_LINK_LOCATOR_RE = re.compile(
+    r"^\s*(?:"
+    rf"(?:第\s*)?(?P<number>{_NUMERAL})\s*[条节款项]"
+    rf"|[「『](?P<quoted>[^」』\n]{{2,60}})[」』]"
+    r")"
+)
+
+#: 文档编号引用（``ADR-0013`` / ``ADR 0013``）：技术文档里指另一篇文档的常见写法。
+_ADR_CODE_RE = re.compile(r"ADR[-\s]?([0-9]{1,4})", re.IGNORECASE)
+
+#: 引号短语后面跟的「节 / 条」后缀也算同文档上下文（``「后果」一节``）。
+_QUOTED_SUFFIX_MARKER_RE = re.compile(r"^\s*(?:这|最后)?[条节]|^\s*[里中]")
 
 #: 锚点与标题比较前的归一化：只留字母、数字与汉字，全部小写。
 _ANCHOR_NOISE_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+
+# ───────────────────────────────────── 定位符（R1 / R2，ADR-0027 决策 8）
+
+#: 全角数字 → 半角（真实政策文本里「第４节」很常见）。
+_FULLWIDTH_DIGITS = str.maketrans("０１２３４５６７８９", "0123456789")
+
+#: 标题名归一化：去标点、全角→半角、小写（比较两边都走它）。
+_HEADING_NAME_NOISE_RE = re.compile(r"[^0-9a-z\u4e00-\u9fff]+")
+
+#: 归一化里的一步：中文数字 → 阿拉伯（`「后续修订（第 7 步）」` 与标题里的 `第 7 步` 对齐）。
+_CN_NUMERAL_RUN_RE = re.compile(r"[零一二三四五六七八九十百]+")
+
+#: 引用动词：裸标题名只有紧跟它时才试（`见翻案条件`）。`与决策二` 这种陈述句不行。
+_CITATION_VERBS = ("详见", "参见", "参照", "另见", "依据", "根据", "见", "按", "据", "依")
+
+#: 引号括住的短语：这是「作者明确指了一个名字」的最强信号（`「后果」`）。
+_QUOTED_HEADING_RE = re.compile(r"[「『]([^」』\n]{2,60})[」』]")
+
+#: 同文档限定语：`本文第 2 条` / `本政策第 4 条` / `本纪要第 1 条`。**没有限定语的裸条号不认**
+#: （`分摊口径见第 3 条` 既可能指本文也可能指别处，属于歧义）。
+_DOCUMENT_QUALIFIERS = "本文件|本文|本篇|本政策|本纪要|本附件|本细则|本规则|本协议"
+
+#: 同文档限定语里「明说这是本文」的那几个（引号标题名的同文档上下文也用它们）。
+_SAME_DOCUMENT_MARKERS = re.compile(
+    r"文末|本文|本文件|本篇|本政策|本纪要|本附件|本细则|本规则|本协议"
+)
 
 
 #: 章节号在标题里的位置：标题（或路径最后一段）以这个号开头，号后面不能再接数字或点。
@@ -199,6 +236,19 @@ class SectionCatalog:
             lambda record: record.document_title.strip() == wanted
         )
 
+    def documents_with_code(self, code: str) -> tuple[str, ...]:
+        """文档编号（``ADR-0025`` → ``0025``）→ 文档 id。多于一个或零个都由调用方弃权。
+
+        ADR / RFC 一类的技术文档里，引用写的是**文档编号**（``（ADR-0025 决策五）``），
+        而文档标题是 ``0025. 索引即构建产物…``——两者只共享开头那个编号。不按编号对，
+        这类引用一条边都建不出来（ADR-0027 决策 8）。
+        """
+
+        wanted = to_arabic_number(code)
+        if wanted is None:
+            return ()
+        return self._documents_where(lambda record: _document_code_of(record) == wanted)
+
     def documents_for_link_target(self, target: str) -> tuple[str, ...]:
         """Markdown 链接目标 → 文档 id：**先比文件名，再回落标题**。
 
@@ -235,7 +285,8 @@ class SectionCatalog:
     def section_by_number(self, *, document_id: str, number: str) -> SectionRecord | None:
         """章节号 → 节。**对上零个或两个以上都回 ``None``**（解析不出 / 有歧义）。
 
-        阿拉伯号（``2.4``）：标题以这个号开头即命中，要求恰好一个。
+        阿拉伯号（``2`` / ``2.4``）：标题以这个号开头即命中，要求恰好一个；标题写成
+        「第 2 条 X」「Section 2 X」的惯例也算——**``2`` 不匹配 ``2.1``**（那是另一节）。
         中文序数（``三``）：先看有没有标题自带编号 ``3``；没有则按文档顺序取第 3 节。
         两条规则打架时以**作者写下的编号**为准——「第 3 节」在带编号的文档里指的就是
         「3 那节」，按位置数反而容易错开一行。
@@ -243,20 +294,86 @@ class SectionCatalog:
 
         sections = self.of_document(document_id)
         number = number.strip()
-        if re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", number):
-            return _unique_match(sections, number)
+        if re.fullmatch(r"[0-9０-９]+(?:\.[0-9０-９]+)*", number.translate(_FULLWIDTH_DIGITS)):
+            return _unique_by_number(sections, to_arabic_number(number) or number)
         ordinal = chinese_number_to_int(number)
         if ordinal is None:
             return None
-        numbered = _unique_match(sections, str(ordinal))
+        numbered = _unique_by_number(sections, str(ordinal))
         if numbered is not None:
             return numbered
         if _has_numbered_heading(sections, str(ordinal)):
-            # 有编号但那条编号重复（_unique_match 回 None）：歧义，不猜。
+            # 有编号但那条编号重复（_unique_by_number 回 None）：歧义，不猜。
+            return None
+        if _has_clause_heading(sections, str(ordinal)):
+            # 有「第 N 条 / 第 N 节」标题但重复：歧义，不猜。
             return None
         if 1 <= ordinal <= len(sections):
             return sections[ordinal - 1]
         return None
+
+    def section_by_heading_number(self, *, document_id: str, number: str) -> SectionRecord | None:
+        """编号定位符（``决策 5`` / ``第 4 条`` / ``Section 2``）→ 标题编号恰为 N 的那一节。
+
+        与 :meth:`section_by_number` 的区别：这里**只认标题自己写的编号**，不按位置数。
+        「决策 N」在 ADR-0025 里对应「决策五：…」、在 ADR-0027 里对应「3. …」——两种惯例
+        都靠 :func:`_heading_number_of` 归一。**唯一一条**才算命中（ADR-0027 决策 8）。
+        """
+
+        wanted = to_arabic_number(number)
+        if wanted is None:
+            return None
+        matches = [
+            record
+            for record in self.of_document(document_id)
+            if _heading_number_of(record.heading_title) == wanted
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    def section_by_chapter_and_section(
+        self, *, document_id: str, chapter: str, section: str
+    ) -> SectionRecord | None:
+        """``第 M 章第 N 节`` → 「章」在标题路径里、自身标题编号恰为 N 的那一节。
+
+        章只是**路径上的一层**（章标题自己常常没有正文、不在目录里），所以章编号只能在
+        ``heading_path`` 里找；节编号在自身标题里找。两个编号都对上且唯一才算命中。
+        """
+
+        chapter_number = to_arabic_number(chapter)
+        section_number = to_arabic_number(section)
+        if chapter_number is None or section_number is None:
+            return None
+        matches: list[SectionRecord] = []
+        for record in self.of_document(document_id):
+            segments = record.heading_path.split(" > ") if record.heading_path else []
+            if not any(_chapter_number_of(segment) == chapter_number for segment in segments):
+                continue
+            if _heading_number_of(record.heading_title) == section_number:
+                matches.append(record)
+        if len(matches) != 1:
+            return None
+        return matches[0]
+
+    def section_by_heading_name(self, *, document_id: str, name: str) -> SectionRecord | None:
+        """标题名引用（``「后果」`` / ``见翻案条件``）→ 唯一一条**等于或前缀于**它的节标题。
+
+        归一（去标点 / 全角→半角 / 中文数字→阿拉伯）后比较；命中 0 条或 >1 条弃权——
+        「后果」在本文可能有两节，那时表达本身就不足以定位（ADR-0027 决策 8 的守卫一）。
+        """
+
+        wanted = _normalize_heading_name(name)
+        if not wanted:
+            return None
+        matches = [
+            record
+            for record in self.of_document(document_id)
+            if _normalize_heading_name(record.heading_title).startswith(wanted)
+        ]
+        if len(matches) != 1:
+            return None
+        return matches[0]
 
     def section_by_anchor(self, *, document_id: str, anchor: str) -> SectionRecord | None:
         """Markdown 锚点 → 节。按标题文本归一化后比较，命中多个即歧义。"""
@@ -292,8 +409,112 @@ def _has_numbered_heading(sections: Sequence[SectionRecord], number: str) -> boo
     return any(pattern.match(record.heading_title.strip()) for record in sections)
 
 
+#: 标题自带的编号，五种惯例：「``3.``」/「``决策五``」/「``第 2 条``」/「``第 2 章``」/「``Section 2``」。
+_TITLE_ARABIC_PREFIX_RE = re.compile(r"^([0-9]+(?:\.[0-9]+)*)(?![0-9])")
+_TITLE_CLAUSE_PREFIX_RE = re.compile(r"^第\s*([0-9０-９]+|[一二三四五六七八九十百]+)\s*[条节款项]")
+_TITLE_DECISION_PREFIX_RE = re.compile(r"^决策\s*([0-9０-９]+|[一二三四五六七八九十百]+)")
+_TITLE_ENGLISH_PREFIX_RE = re.compile(r"^section\s+([0-9０-９]+)\b", re.IGNORECASE)
+_CHAPTER_PREFIX_RE = re.compile(r"^第\s*([0-9０-９]+|[一二三四五六七八九十百]+)\s*章")
+
+
+def _heading_number_of(title: str) -> str | None:
+    """标题开头的编号（归一成阿拉伯串）；认不出回 ``None``。
+
+    **``2.4 抵扣上限`` 的编号是 ``2.4``，不是 ``2``**——这也是「`2` 不许匹配 `2.1`」那条
+    判据的另一半：多段编号整体保留，单段比较时自然对不上。
+    """
+
+    plain = title.strip()
+    for pattern in (
+        _TITLE_ARABIC_PREFIX_RE,
+        _TITLE_CLAUSE_PREFIX_RE,
+        _TITLE_DECISION_PREFIX_RE,
+        _TITLE_ENGLISH_PREFIX_RE,
+    ):
+        match = pattern.match(plain)
+        if match:
+            return to_arabic_number(match.group(1))
+    return None
+
+
+def _chapter_number_of(segment: str) -> str | None:
+    """标题路径里某一段的章编号（``第三章 退款与终止`` → ``3``）。"""
+
+    match = _CHAPTER_PREFIX_RE.match(segment.strip())
+    if match:
+        return to_arabic_number(match.group(1))
+    return None
+
+
+def _unique_by_number(sections: Sequence[SectionRecord], number: str) -> SectionRecord | None:
+    """标题编号恰为 ``number`` 的节；恰好一个才算命中（`2` 不匹配 `2.1`，见上）。"""
+
+    matches = [
+        record
+        for record in sections
+        if _number_prefix_re(number).match(record.heading_title.strip())
+        or _heading_number_of(record.heading_title) == number
+    ]
+    if len(matches) != 1:
+        return None
+    return matches[0]
+
+
+def _has_clause_heading(sections: Sequence[SectionRecord], number: str) -> bool:
+    return any(_heading_number_of(record.heading_title) == number for record in sections)
+
+
 def _normalize_anchor(text: str) -> str:
     return _ANCHOR_NOISE_RE.sub("", text.lower())
+
+
+def to_arabic_number(token: str) -> str | None:
+    """``３`` / ``三`` / ``0013`` / ``2.4`` → 阿拉伯数字串；认不出回 ``None``（不猜）。
+
+    「编号比较」两边都走它：全角与中文数字不是不同的编号，只是不同的写法。多段编号
+    （``2.4``）原样保留——**``2`` 与 ``2.4`` 是两个不同的节号**，比较时不许折叠。
+    """
+
+    plain = token.translate(_FULLWIDTH_DIGITS)
+    if re.fullmatch(r"[0-9]+(?:\.[0-9]+)*", plain):
+        return ".".join(str(int(part)) for part in plain.split("."))
+    value = chinese_number_to_int(plain)
+    return str(value) if value is not None else None
+
+
+def _arabicize_chinese_numbers(text: str) -> str:
+    """把文本里的中文数字段统一成阿拉伯（归一化的一步，两边都走同一个函数）。"""
+
+    def replace(match: re.Match[str]) -> str:
+        value = chinese_number_to_int(match.group(0))
+        return str(value) if value is not None else match.group(0)
+
+    return _CN_NUMERAL_RUN_RE.sub(replace, text)
+
+
+def _normalize_heading_name(text: str) -> str:
+    """标题名比较前的归一化：去标点 / 全角→半角 / 中文数字→阿拉伯 / 小写。"""
+
+    text = text.translate(_FULLWIDTH_DIGITS)
+    text = _arabicize_chinese_numbers(text)
+    return _HEADING_NAME_NOISE_RE.sub("", text.lower())
+
+
+#: 文档编号（`0013. …` / `0013-collapse-to-sections.md` / `ADR-0013`）→ 统一的数字串。
+_DOCUMENT_CODE_RE = re.compile(r"^(?:ADR[-\s_]*)?([0-9]{1,4})(?:[.\-—、\s]|$)", re.IGNORECASE)
+
+
+def _document_code_of(record: "SectionRecord") -> str | None:
+    """这份文档的编号（标题开头的 ``0013.`` 或文件名主干 ``0013-…``），没有就 ``None``。"""
+
+    for text in (record.document_title.strip(), _link_stem(record.source_filename)):
+        if not text:
+            continue
+        match = _DOCUMENT_CODE_RE.match(text)
+        if match:
+            return match.group(1).lstrip("0") or "0"
+    return None
+
 
 
 def chinese_number_to_int(text: str) -> int | None:
@@ -330,7 +551,12 @@ class ReferenceCandidate:
     排障时先看这两项（「这条边凭什么建出来的」）。
 
     ``kind`` 决定「目标怎么找」：``title`` 按标题（书名号里写的就是标题）、``link`` 按
-    链接目标（**文件名优先**，标题兜底）、``same_document`` 只在本篇里找。
+    链接目标（**文件名优先**，标题兜底）、``same_document`` 只在本篇里找、
+    ``heading_name`` 按标题名（R1：引号短语 / 裸标题名）、``decision`` 按编号（R2）。
+
+    R1 / R2 的定位符各有自己的字段：``heading_name`` 是标题名原文，``decision_number``
+    是「决策 N」里的 N，``chapter_number`` + ``section_number`` 才是「第 M 章第 N 节」；
+    ``document_code`` 是 ``ADR-0013`` 这类文档编号（目标文档由它定，不是标题名定）。
     """
 
     kind: str
@@ -342,6 +568,10 @@ class ReferenceCandidate:
     section_number: str | None = None
     anchor: str | None = None
     link_target: str | None = None
+    heading_name: str | None = None
+    decision_number: str | None = None
+    chapter_number: str | None = None
+    document_code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -384,17 +614,21 @@ class EdgeDraft:
 # ───────────────────────────────────────────────────── 显式表达 → 候选
 
 
-def extract_reference_candidates(text: str) -> tuple[ReferenceCandidate, ...]:
+def extract_reference_candidates(
+    text: str, *, known_titles: Sequence[str] = ()
+) -> tuple[ReferenceCandidate, ...]:
     """从一段正文里认出所有**显式引用表达**（按出现顺序）。
 
-    四类，都是「文档作者亲自指的线」：
+    五类，都是「文档作者亲自指的线」：
 
     * ``《标题》第 N 节`` / ``《标题》2.4 节`` —— 跨文档（按**标题**找目标）；
     * ``本文件第 N 节`` / ``本文第三节`` —— 同文档（必须是「本文件」这类限定语）；
     * ``[文本](#锚点)`` —— 同文档锚点；
-    * ``[文本](文件名.md)`` / ``[文本](文件名.md#锚点)`` / ``[文本](文件名.md)第 N 节``
-      —— 跨文档链接（**先按文件名找目标，再回落标题**，见
-      :meth:`SectionCatalog.documents_for_link_target`）。
+    * ``[文本](文件名.md)`` / ``[文本](文件名.md#锚点)`` / ``[文本](文件名.md)第 N 节`` /
+      ``[文本](文件名.md)「节标题」`` —— 跨文档链接（**先按文件名找目标，再回落标题**）；
+    * **R1 标题名**（ADR-0027 决策 8）：``「后果」`` / ``见翻案条件``。引号短语要有「本文 /
+      文末 / 文档编号 / 链接」给出上下文；裸标题名要**紧跟引用动词**，且只有 ``known_titles``
+      里有（≥4 字）的才算——两字标题（``背景``）在正文里到处都是，撞上的概率是必然。
 
     裸的「第 3 节」**不在这里**：它既可能指本文也可能指别处，属于歧义。
 
@@ -428,6 +662,42 @@ def extract_reference_candidates(text: str) -> tuple[ReferenceCandidate, ...]:
                 section_number=match.group("number"),
             )
         )
+    links = _link_candidates(text)
+    candidates.extend(_quoted_heading_candidates(text))
+    candidates.extend(_bare_heading_candidates(text, known_titles))
+    # 被链接覆盖的书名号 / 同文档 / 引号标题名丢掉（见函数文档最后一段）。
+    kept = [
+        candidate
+        for candidate in candidates
+        if not any(link.start <= candidate.start and candidate.end <= link.end for link in links)
+    ]
+    # 同一处被两条规则重复认出（例如引号短语同时被裸名规则命中）时只留一条。
+    deduped: list[ReferenceCandidate] = []
+    seen: set[tuple[int, int, str]] = set()
+    for candidate in sorted(kept, key=lambda item: (item.start, -item.end)):
+        key = (candidate.start, candidate.end, candidate.kind)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(candidate)
+    deduped.extend(links)
+    deduped.sort(key=lambda candidate: candidate.start)
+    return tuple(deduped)
+
+
+#: 书名号标题（引号标题名的「《标题》」上下文）。
+_BOOK_TITLE_RE = re.compile(r"《([^》\n]{1,80})》")
+
+#: 紧贴引号标题名之前的链接（``[ADR-0010](x.md)「第三次修订」``）。
+_TRAILING_LINK_RE = re.compile(r"\]\(([^)\s]+)\)\s*$")
+
+#: 裸标题名之前的引用动词（`见翻案条件`）。
+_CITATION_VERB_BEFORE_RE = re.compile(rf"(?:{'|'.join(_CITATION_VERBS)})\s*$")
+
+
+def _link_candidates(text: str) -> list[ReferenceCandidate]:
+    """全部 Markdown 链接候选；链接后面紧跟的定位符属于这条链接。"""
+
     links: list[ReferenceCandidate] = []
     for match in _MARKDOWN_LINK_RE.finditer(text):
         target = match.group("target").strip()
@@ -449,11 +719,18 @@ def extract_reference_candidates(text: str) -> tuple[ReferenceCandidate, ...]:
         stem = _link_stem(path)
         if not stem:
             continue
-        # 链接后面紧跟的「第 N 节」属于这条链接（语料里的写法就是
-        # ``见[《积分规则》](./points_policy.md)第 3 节``）：不把节号吃进来，链接只能指到
-        # 整篇，而节点是节——那条边会以「整篇有多节」为由被丢掉。
-        trailing = _SECTION_AFTER_LINK_RE.match(text[match.end():])
+        # 链接后面紧跟的定位符属于这条链接（语料里的写法就是
+        # ``见[《积分规则》](./points_policy.md)第 3 节``）：不吃进来，链接只能指到整篇，
+        # 而节点是节——那条边会以「整篇有多节」为由被丢掉。
+        trailing = _LINK_LOCATOR_RE.match(text[match.end():])
         end = match.end() + trailing.end() if trailing is not None else match.end()
+        heading_name: str | None = None
+        section_number: str | None = None
+        if trailing is not None:
+            if trailing.group("quoted") is not None:
+                heading_name = trailing.group("quoted")
+            elif trailing.group("number") is not None:
+                section_number = trailing.group("number")
         links.append(
             ReferenceCandidate(
                 kind="link",
@@ -461,20 +738,113 @@ def extract_reference_candidates(text: str) -> tuple[ReferenceCandidate, ...]:
                 sentence=_sentence_around(text, match.start(), end),
                 start=match.start(),
                 end=end,
-                section_number=trailing.group("number") if trailing is not None else None,
                 anchor=anchor or None,
                 link_target=stem,
+                heading_name=heading_name,
+                section_number=section_number,
             )
         )
-    # 被链接覆盖的书名号 / 同文档表达丢掉（见函数文档最后一段）。
-    kept = [
-        candidate
-        for candidate in candidates
-        if not any(link.start <= candidate.start and candidate.end <= link.end for link in links)
+    return links
+
+
+def _heading_name_context(text: str, start: int, end: int) -> tuple[str, str | None] | None:
+    """引号标题名的上下文：它指向**哪一篇**（文档编号 / 《标题》 / 链接 / 本文）。
+
+    没有上下文时返回 ``None``：光有引号只说明「在引用原文」，不说明「指向哪一节」——
+    这类短语不建边（精度守卫）。
+    """
+
+    window = text[max(0, start - 60):start]
+    document: tuple[int, str, str | None] | None = None
+    for match in _ADR_CODE_RE.finditer(window):
+        if document is None or match.end() > document[0]:
+            document = (match.end(), "code", match.group(1))
+    for match in _BOOK_TITLE_RE.finditer(window):
+        if document is None or match.end() > document[0]:
+            document = (match.end(), "title", match.group(1).strip())
+    trailing = _TRAILING_LINK_RE.search(window)
+    if trailing is not None:
+        path, _, _ = trailing.group(1).partition("#")
+        stem = _link_stem(path)
+        if stem and (document is None or len(window) > document[0]):
+            document = (len(window), "link", stem)
+    if document is not None:
+        return document[1], document[2]
+    if _SAME_DOCUMENT_MARKERS.search(window):
+        return "same_document", None
+    if _QUOTED_SUFFIX_MARKER_RE.match(text[end:end + 6]):
+        return "same_document", None
+    return None
+
+
+def _quoted_heading_candidates(text: str) -> list[ReferenceCandidate]:
+    """R1：引号括住的标题名（``「后果」`` / ``「后续修订（第 7 步）」``）。"""
+
+    candidates: list[ReferenceCandidate] = []
+    for match in _QUOTED_HEADING_RE.finditer(text):
+        name = match.group(1).strip()
+        # 引号里是一整句「格式示例」（含另一个书名号）时不是标题名。
+        if not name or "《" in name:
+            continue
+        context = _heading_name_context(text, match.start(), match.end())
+        if context is None:
+            continue
+        kind, value = context
+        document_code: str | None = None
+        document_title: str | None = None
+        link_target: str | None = None
+        if kind == "code":
+            document_code = value
+        elif kind == "title":
+            document_title = value
+        elif kind == "link":
+            link_target = value
+        candidates.append(
+            ReferenceCandidate(
+                kind="heading_name",
+                expression=match.group(0),
+                sentence=_sentence_around(text, match.start(), match.end()),
+                start=match.start(),
+                end=match.end(),
+                heading_name=name,
+                document_code=document_code,
+                document_title=document_title,
+                link_target=link_target,
+            )
+        )
+    return candidates
+
+
+def _bare_heading_candidates(
+    text: str, known_titles: Sequence[str]
+) -> list[ReferenceCandidate]:
+    """R1：紧跟引用动词的裸标题名（``见翻案条件``）。短名（<4 字）不试。"""
+
+    found: dict[tuple[int, int], str] = {}
+    for title in known_titles:
+        raw = title.strip()
+        if len(_normalize_heading_name(raw)) < 4:
+            continue
+        for match in re.finditer(re.escape(raw), text):
+            key = (match.start(), match.end())
+            if key in found:
+                continue
+            before = text[max(0, match.start() - 8):match.start()]
+            if not _CITATION_VERB_BEFORE_RE.search(before):
+                continue
+            found[key] = raw
+    return [
+        ReferenceCandidate(
+            kind="heading_name",
+            expression=text[start:end],
+            sentence=_sentence_around(text, start, end),
+            start=start,
+            end=end,
+            heading_name=title,
+        )
+        for (start, end), title in sorted(found.items())
     ]
-    kept.extend(links)
-    kept.sort(key=lambda candidate: candidate.start)
-    return tuple(kept)
+
 
 
 def _link_stem(path: str) -> str:
@@ -509,10 +879,20 @@ def _sentence_around(text: str, start: int, end: int) -> str:
     return text[left:right].strip()
 
 
-def reference_spans(text: str) -> tuple[tuple[int, int], ...]:
-    """正文里全部引用表达覆盖的区间（合并重叠），供路标判定删用。"""
+def reference_spans(
+    text: str, *, known_titles: Sequence[str] = ()
+) -> tuple[tuple[int, int], ...]:
+    """正文里全部引用表达覆盖的区间（合并重叠），供路标判定删用。
 
-    spans = [(candidate.start, candidate.end) for candidate in extract_reference_candidates(text)]
+    ``known_titles`` 与 :func:`extract_reference_candidates` 同一份口径：R1 的**裸标题名**
+    先要知道本文有哪些节标题才试（两字标题不试）。给了它，``见决策 3`` 与 ``见翻案条件``
+    这类新形态才会被算进「引用表达」——否则「纯路标片」会漏成普通切片。
+    """
+
+    spans = [
+        (candidate.start, candidate.end)
+        for candidate in extract_reference_candidates(text, known_titles=known_titles)
+    ]
     merged: list[tuple[int, int]] = []
     for start, end in sorted(spans):
         if merged and start <= merged[-1][1]:
@@ -522,7 +902,7 @@ def reference_spans(text: str) -> tuple[tuple[int, int], ...]:
     return tuple(merged)
 
 
-def is_reference_pointer(text: str) -> bool:
+def is_reference_pointer(text: str, *, known_titles: Sequence[str] = ()) -> bool:
     """这一片是不是**纯路标**（除了引用之外没有实质内容）。
 
     判据是「删掉全部显式引用表达之后还剩多少可读字符」：少于
@@ -533,7 +913,7 @@ def is_reference_pointer(text: str) -> bool:
 
     if not text or not text.strip():
         return False
-    spans = reference_spans(text)
+    spans = reference_spans(text, known_titles=known_titles)
     if not spans:
         return False
     residual: list[str] = []
@@ -578,11 +958,12 @@ def extract_section_edges(
         drafts.setdefault(draft.unique_key, draft)
 
     # ① 引用：只从正文里认，目标必须在目录里解析成**唯一**一节。
+    known_titles = _own_heading_titles(own_sections)
     for entry in sections:
         record = entry.record
         if record.document_id != document_id or record.scope != scope:
             continue
-        for candidate in extract_reference_candidates(entry.text):
+        for candidate in extract_reference_candidates(entry.text, known_titles=known_titles):
             target = _resolve_candidate(
                 candidate, scope=scope, document_id=document_id, catalog=catalog
             )
@@ -686,6 +1067,17 @@ def _unique_sections(
     return tuple(sorted(kept.values(), key=lambda record: (record.order, record.section_id)))
 
 
+def _own_heading_titles(sections: Sequence[SectionRecord]) -> tuple[str, ...]:
+    """本文档全部节标题（R1 裸标题名要在里面找；去重、保序）。"""
+
+    seen: list[str] = []
+    for record in sections:
+        title = record.heading_title
+        if title and title not in seen:
+            seen.append(title)
+    return tuple(seen)
+
+
 def _sibling_groups(
     sections: Sequence[SectionRecord],
 ) -> list[list[SectionRecord]]:
@@ -723,28 +1115,30 @@ def _resolve_candidate(
         if len(matched) != 1:
             return None
         target_document = matched[0]
-    else:
-        titled = catalog.documents_titled(candidate.document_title or "")
+    elif candidate.document_code is not None:
+        # 文档编号（ADR-0013 → 「0013. …」那篇）：技术文档里指另一篇的常见写法。
+        matched_by_code = catalog.documents_with_code(candidate.document_code)
+        if len(matched_by_code) != 1:
+            return None
+        target_document = matched_by_code[0]
+    elif candidate.document_title is not None:
+        titled = catalog.documents_titled(candidate.document_title)
         if len(titled) != 1:
             return None
         target_document = titled[0]
+    else:
+        # 引号标题名 / 裸标题名没有文档定位符时只在本篇里找。
+        target_document = document_id
 
     target: SectionRecord | None = None
     if candidate.anchor is not None:
         target = catalog.section_by_anchor(document_id=target_document, anchor=candidate.anchor)
-    if candidate.section_number is not None:
-        by_number = catalog.section_by_number(
-            document_id=target_document, number=candidate.section_number
-        )
-        if (
-            target is not None
-            and by_number is not None
-            and target.section_id != by_number.section_id
-        ):
-            # 锚点与章节号指向两节：这份表达自相矛盾，不猜。
-            return None
-        target = target or by_number
-    if target is None and candidate.kind in {"title", "link"} and candidate.section_number is None:
+    located = _locator_target(candidate, document_id=target_document, catalog=catalog)
+    if target is not None and located is not None and target.section_id != located.section_id:
+        # 锚点与定位符指向两节：这份表达自相矛盾，不猜。
+        return None
+    target = target or located
+    if target is None and candidate.kind in {"title", "link"} and not _has_locator(candidate):
         # 链接只指到「哪一篇」、没指到「哪一节」：节点是节，所以取该篇**唯一的顶层节**。
         # 有多个顶层节时「整篇」对应哪一节无从判断——那是歧义，不建（ADR-0027 决策 1/3）。
         top_level = [
@@ -763,6 +1157,49 @@ def _resolve_candidate(
     if target.document_id == document_id and target.section_id == "":
         return None
     return target
+
+
+def _has_locator(candidate: ReferenceCandidate) -> bool:
+    """这条候选带没带「指到哪一节」的定位符（R1 标题名 / R2 编号都算）。"""
+
+    return any(
+        value is not None
+        for value in (
+            candidate.section_number,
+            candidate.heading_name,
+            candidate.decision_number,
+            candidate.chapter_number,
+        )
+    )
+
+
+def _locator_target(
+    candidate: ReferenceCandidate, *, document_id: str, catalog: SectionCatalog
+) -> SectionRecord | None:
+    """按候选的定位符找目标节；**对上零个或两个以上都回 ``None``**（歧义不建边）。"""
+
+    if candidate.heading_name is not None:
+        return catalog.section_by_heading_name(
+            document_id=document_id, name=candidate.heading_name
+        )
+    if candidate.decision_number is not None:
+        return catalog.section_by_heading_number(
+            document_id=document_id, number=candidate.decision_number
+        )
+    if candidate.chapter_number is not None:
+        if candidate.section_number is None:
+            return None
+        return catalog.section_by_chapter_and_section(
+            document_id=document_id,
+            chapter=candidate.chapter_number,
+            section=candidate.section_number,
+        )
+    if candidate.section_number is not None:
+        return catalog.section_by_number(
+            document_id=document_id, number=candidate.section_number
+        )
+    return None
+
 
 
 __all__ = [
