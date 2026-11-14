@@ -558,7 +558,7 @@ def test_a_plan_without_any_query_falls_back_to_the_original_question() -> None:
     assert outcome.stop_reason is StopReason.DEGRADED
 
 
-def test_the_decider_prompt_carries_materials_without_internal_ids() -> None:
+def test_the_judgement_prompt_carries_materials_without_internal_ids() -> None:
     """判断提示词里只有序号、标题、章节路径与摘录——没有切片 id / 文档 id。"""
 
     rows = [_row("a", content="超期退款需人工审核。")]
