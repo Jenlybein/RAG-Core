@@ -130,8 +130,16 @@ def _plan() -> dict:
     }
 
 
-def _covered() -> dict:
-    return {"queries": []}
+def _covered(points: int = 2, *, material: int = 1) -> dict:
+    """覆盖判定的预置输出：每个要点都被同一条材料直接支撑（没有缺口）。"""
+
+    return {
+        "points": [
+            {"point": index, "status": "supported", "materials": [material]}
+            for index in range(1, points + 1)
+        ],
+        "queries": [],
+    }
 
 
 def _blocks(*items: dict) -> dict:
@@ -166,11 +174,16 @@ def _run(
     strong: LLMProvider | None = None,
     search: _Search | None = None,
     sub_search_degraded: Sequence[str] = (),
+    judgement: dict | None = None,
 ) -> tuple[research.ResearchOutcome, _Scripted, LLMProvider, _Search]:
-    """跑一次完整五步：``fast`` 是规划 / 判断（缺省脚本），``strong`` 是生成。"""
+    """跑一次完整五步：``fast`` 是规划 / 覆盖判定（缺省脚本），``strong`` 是生成。"""
 
     probe = search if search is not None else _two_rows()
-    planner = fast if fast is not None else _Scripted(_plan(), _covered())
+    planner = (
+        fast
+        if fast is not None
+        else _Scripted(_plan(), judgement if judgement is not None else _covered())
+    )
     generator = (
         strong
         if strong is not None
@@ -209,7 +222,7 @@ def test_a_round_produces_citation_blocks_from_the_material_pool() -> None:
     ]
     # 三个角色各一次：规划 / 判断 / 生成（ADR-0026 §5 的 3 次调用）。
     assert outcome.model_calls == MAX_MODEL_CALLS == 3
-    assert planner.calls == ["ResearchPlan", "FollowupPlan"]
+    assert planner.calls == ["ResearchPlan", "CoverageJudgement"]
     assert isinstance(strong, _Scripted) and strong.calls == ["AnswerOut"]
     assert outcome.evidence_state == "complete"
     assert outcome.strong_model_fallback is None
@@ -217,10 +230,22 @@ def test_a_round_produces_citation_blocks_from_the_material_pool() -> None:
 
 
 def test_a_missing_point_becomes_an_insufficient_block_not_invented_text() -> None:
-    """材料只盖住一个要点 → 另一块必须是 ``insufficient``（承认不足），完整度是 ``partial``。"""
+    """材料只盖住一个要点 → 另一块必须是 ``insufficient``（承认不足），完整度是 ``partial``。
+
+    票 #164 起这条用例的判定也换成了真的：覆盖判定把 A2 判成 ``none``（材料里没有它），
+    于是这是**真缺口**——生成阶段必须针对它给一块 ``insufficient``（缺口闸，见
+    ``tests/test_research_coverage.py``）。
+    """
 
     outcome, _, _, _ = _run(
         search=_Search({"退款多久到账": [_row("a")], "退款需要哪些材料": []}),
+        judgement={
+            "points": [
+                {"point": 1, "status": "supported", "materials": [1]},
+                {"point": 2, "status": "none", "materials": []},
+            ],
+            "queries": [{"point": 2, "query": "超期退款需要哪些材料"}],
+        },
         blocks=_blocks(
             _block("超期退款需人工审核。", primary=(1,)),
             _block("未找到所需材料的说明。", kind="insufficient"),
@@ -233,6 +258,7 @@ def test_a_missing_point_becomes_an_insufficient_block_not_invented_text() -> No
     ]
     assert outcome.answer is not None and "材料不足" in outcome.answer
     assert outcome.evidence_state == "partial"
+    assert outcome.gaps == ("A2",)
 
 
 def test_the_finalizer_prompt_carries_materials_without_internal_ids() -> None:
@@ -255,7 +281,7 @@ def test_no_material_means_no_model_call_and_no_answer() -> None:
     assert outcome.evidence_state == "missing"
     assert isinstance(strong, _Scripted) and strong.calls == [], "没有材料就不该问生成"
     assert outcome.model_calls == 2
-    assert planner.calls == ["ResearchPlan", "FollowupPlan"]
+    assert planner.calls == ["ResearchPlan", "CoverageJudgement"]
 
 
 # ─────────────────────────────────────────── 四条校验的出口：answer 落成 null

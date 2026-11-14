@@ -1,17 +1,34 @@
-"""受控 Research：固定五步状态机（第 11 步票 #148 / #149）。
+"""受控 Research：固定五步状态机（第 11 步票 #148 / #149；收窄见票 #164）。
 
 ```text
-① 规划        问题 → ≤5 个要点 + 每个要点各一条首轮查询（≤3 条被执行）
+① 规划        问题（**只有问题**）→ ≤5 个要点 + 每个要点各一条首轮查询（≤3 条被执行）
       │ 失败 → 退回原问题跑一次普通检索，code 0，停止原因 degraded
-② 并行检索    每条查询各跑一次「检索内核」（asyncio.gather）
+② 并行检索    每条查询各跑一次「检索内核」（asyncio.gather）→ 材料池 pool0
       │
-③ 判断        哪些要点还没有材料 → ≤2 条定向补证查询
-      │ 失败 → 停止补证，材料照给，停止原因 degraded
-④ 补证        ≤1 轮，并行执行、合并新材料
+③ 覆盖判定    逐要点问「材料里有没有**直接读出**它的事实」→ supported(材料序号) / none
+      │ 失败 → 停止补证，材料照给，停止原因 degraded，coverage 全部 unknown
+④ 定向补证    只对 none 的要点补检索（≤2 条，≤1 轮），并行执行、合并新材料
       │
 ⑤ 最终回答    最终材料池 → 引用块（只能点下标）→ 四条硬校验 → 任一不过 answer = null
+      │ 有 gap 时答案必须声明「材料不足」，否则同样作废（缺口闸）
       │ 强模型未配 / 失败 / 超时 → 快模型兜底一次，并在 metadata 标记（不报错）
 ```
+
+**基准在问题侧，不在材料侧**（ADR-0029 决策三，本票的核心）。要点由「只看得见问题的」那次
+调用产出，所以**材料里没有的东西不会因为归纳不出来而消失**——它会落在某个要点上成为
+``none``，再成为 ``coverage.gaps`` 里的一条。反过来做（要点从材料里归纳）会让「材料里没有
+的东西」在输出空间里**根本没有位置**：材料里没有 → 归纳不出来 → 不会进要点 → 不会缺核心片
+→ 「齐了」恒为真。``tests/test_research_coverage.py`` 用三条守卫钉住这条边界。
+
+**定义闸：「支撑」= 材料里能直接读出该事实，不是「相关」。** 这条定义同时写在提示词
+（:data:`_JUDGE_SYSTEM`）与本模块文档里：不写死，模型会把「主题相关」当成「支撑」，
+覆盖率立刻变乐观，而乐观的覆盖率比没有覆盖率更危险——它会替一份缺口答案盖章。
+
+**``none`` 是一等输出，``unknown`` 是它的诚实邻居**：判定没跑 / 判不了时，``coverage`` 里
+每条都是 ``unknown``（不知道），而不是 ``none``（知道没有）；补证捞到了新材料但**没有再审
+一次**的要点同样是 ``unknown``——状态机固定五步、不回头复判，于是「材料到了但支撑未经判定」
+只能如实记成不知道。``unknown`` 与 ``none`` 混成一个词，会让缺口闸在「其实有材料」的题上
+把答案判死；反过来把 ``none`` 记成 ``unknown``，缺口就永远不会被声明。
 
 **这是状态机，不是自由循环**：五步按固定顺序各走一次，补证跑完就结束。于是「最慢多久、
 最多几次模型调用、最多几次检索」全部可以从 :mod:`app.services.research_limits` 的常量
@@ -23,11 +40,11 @@
 （``get_llm_provider("fast")``）。于是五步的每条降级出口、六条硬上限与七种停止原因都能
 脱开真实检索与真实模型被断言（``tests/test_research_state_machine.py``）。
 
-**⑤ 的门槛在另一个模块**（票 #149）：块的结构、四条硬校验、渲染串与三态完整度全在
-:mod:`app.services.citation_blocks`，本模块只负责「什么时候问、问哪一份材料、拿到不合法的
-东西怎么退」。生成用**强模型角色**：它要准，不要快；未配置 / 失败 / 超时换快模型兜底一次，
-标记进 ``metadata.strong_model_fallback``——那是成本与质量之间一次**看得见**的交换，
-不是一次静默降级。
+**⑤ 的门槛在另一个模块**（票 #149）：块的结构、四条硬校验、渲染串、三态完整度与缺口闸全在
+:mod:`app.services.citation_blocks`，本模块只负责「什么时候问、问哪一份材料、哪几个要点是
+缺口、拿到不合法的东西怎么退」。生成用**强模型角色**：它要准，不要快；未配置 / 失败 / 超时
+换快模型兜底一次，标记进 ``metadata.strong_model_fallback``——那是成本与质量之间一次
+**看得见**的交换，不是一次静默降级。
 
 **子查询不进改写、不写归属索引、不记账、不发观测**：这四件事一件都不在本模块里，也不在
 它调的内核里（ADR-0028 §2 的五件事全在外层，由 HTTP 入口做一次）。判据只有一句——「每条
@@ -35,10 +52,10 @@
 trace，子检索在它里面以阶段出现；归属索引那一行因此写在外层（``research_gate``），本模块
 只把「子检索自己降级了哪几条原因」原样收上来（``sub_search_degraded``），供外层与响应共用。
 
-**材料只有一个来源：内核交回的交付单元**。模型只写「要点」「查询」与「块的一句话」三种
-文本，它返回的任何正文一律丢弃（材料正文逐字来自库，ADR-0026 §4）。
+**材料只有一个来源：内核交回的交付单元**。模型只写「要点」「查询」「逐要点的判定」与
+「块的一句话」四种文本，它返回的任何正文一律丢弃（材料正文逐字来自库，ADR-0026 §4）。
 
-**任何阶段都不许让整单报错**：规划失败、判断失败、生成失败都收敛成「材料照给 + 一条停止
+**任何阶段都不许让整单报错**：规划失败、判定失败、生成失败都收敛成「材料照给 + 一条停止
 原因（+ 一条可读的元数据）」。但是**子检索失败不在此列**——它意味着这套集成的检索本身
 不可用（关键词引擎没配、库不可见、嵌入服务挂了），如实上抛比包成一份「看起来成功、材料
 是空的」响应诚实得多。
@@ -50,7 +67,7 @@ import asyncio
 import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 import structlog
 from pydantic import BaseModel, Field
@@ -64,6 +81,7 @@ from app.services.citation_blocks import (
     AnswerRejected,
     FinalAnswer,
     build_finalizer_prompt,
+    evidence_id,
     finalize_answer,
 )
 from app.services.research_limits import (
@@ -93,6 +111,19 @@ Clock = Callable[[], float]
 #: 判断阶段的提示词预算（字符）：材料再长也不能把一次判断变成一次读整库。
 #: 它**不是**六条硬上限之一（那六条是成本契约），只是提示词长度的上限。
 MAX_DECIDER_MATERIAL_CHARS = 12000
+
+#: 逐要点覆盖判定的三个词（**一处定义**，响应里的 ``coverage.points[].status`` 取它们）：
+#:
+#: * :data:`SUPPORT_SUPPORTED`：材料里能**直接读出**该要点的事实（判定给材料序号）；
+#: * :data:`SUPPORT_NONE`：材料里没有能直接读出它的事实——**缺口**，会进 ``coverage.gaps``；
+#: * :data:`SUPPORT_UNKNOWN`：**不知道**（判定没跑、判定失败，或补证捞到新材料但没有再审
+#:   一次）。它与 ``none`` 是两件事：``none`` 是「知道没有」，``unknown`` 是「不敢说没有」。
+#:
+#: 三个词里 ``none`` 是这一轮改造的全部意义（ADR-0029 决策三）：「材料里没有」必须是一个
+#: **可表达**的输出，否则它只能靠「没被归纳进要点」来隐形，而隐形等于不存在。
+SUPPORT_SUPPORTED: Final[str] = "supported"
+SUPPORT_NONE: Final[str] = "none"
+SUPPORT_UNKNOWN: Final[str] = "unknown"
 
 #: 强模型兜底的两个原因码（**一因一码的固定串**，不拼异常文本）。它们进响应的
 #: ``metadata.strong_model_fallback``：调用方据此知道「这一次不是强模型答的」。
@@ -138,14 +169,33 @@ class ResearchPlan(BaseModel):
     queries: list[PlannedQuery] = Field(default_factory=list)
 
 
-class FollowupPlan(BaseModel):
-    """判断阶段的结构化输出：只有补证查询。空列表 = 「所有要点都有材料」。
+class PointSupportOut(BaseModel):
+    """一个要点的覆盖判定，**模型能表达的全部**：要点序号 + 状态 + 支撑它的材料序号。
 
-    判据只有一个字段（``queries``）是刻意的：如果同时要它给「哪些要点缺材料」，那两份
-    输出就可能互相矛盾（缺 A1 却没有 A1 的查询 / 有 A1 的查询却不在缺失清单里），而矛盾
-    之后没有任何一处能裁决。**缺失要点由查询自己表达**。
+    状态只有两个（``supported`` / ``none``）：要模型「有就说有、没有就说没有」，不许它拿
+    一个「部分支持」逃出去——那一档既不能当支撑用（会变乐观），也不该算缺口（会变悲观）。
+    ``unknown`` 不是模型能写的东西，它是**状态机**在判定没跑成时给每条要点盖的章。
     """
 
+    point: int
+    status: Literal["supported", "none"]
+    materials: list[int] = Field(default_factory=list)
+
+
+class CoverageJudgement(BaseModel):
+    """③ 覆盖判定的结构化输出：逐要点结论 + 只针对 ``none`` 的补证查询。
+
+    两个字段的分工是固定的，**结论是唯一事实来源**：``points`` 说「这个要点有没有支撑」，
+    ``queries`` 只说「为了那个没有支撑的要点，我想换一种说法再查一次」。于是旧设计里那句
+    「两份输出可能互相矛盾」有了裁决处——补证查询绑到已判为 supported 的要点上时，那条查询
+    直接丢掉（:func:`_targeted_followup`），结论不受影响。
+
+    这也解释了为什么 ``none`` 必须是一个显式状态而不是「没有给查询」：没有查询只说明模型
+    想不出更好的说法，不说明材料里没有；反之材料里没有的时候，它完全可能还提出一条查询。
+    两件事各自有各自的字段，谁也不替谁说话。
+    """
+
+    points: list[PointSupportOut] = Field(default_factory=list)
     queries: list[PlannedQuery] = Field(default_factory=list)
 
 
@@ -174,6 +224,24 @@ class PlanQuery:
 
 
 @dataclass(frozen=True)
+class PointVerdict:
+    """一个要点的覆盖判定（**已收敛、已校验**）：要点编号 + 状态 + 它引到的证据编号。
+
+    ``status`` 取 :data:`SUPPORT_SUPPORTED` / :data:`SUPPORT_NONE` / :data:`SUPPORT_UNKNOWN`。
+    前两个来自模型（模型只写这两个），第三个由状态机盖：判定没跑成、或补证捞到了新材料却
+    没有再审一次。
+
+    ``evidence_ids``（``E1`` 起）与引用块用的是同一套编号、同一个材料池，于是「这个要点靠
+    哪几条材料站着」在响应里直接可读——那是 ``coverage`` 作为「答案为什么不完整」的解释，
+    而不是一份新的自评。
+    """
+
+    point_id: str
+    status: str
+    evidence_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ResearchOutcome:
     """一次 Research 交回的东西：计划、材料、轮次计数、元数据、**一个**停止原因与最终回答。
 
@@ -181,16 +249,20 @@ class ResearchOutcome:
     ``citations`` 是被四条硬校验放行的那几块。任何一块不过校验 → 两者都回到 ``None`` / 空，
     材料与计划照给（ADR-0026 §3）。
 
-    三个「不丢信息」的字段各有分工，谁也不许吞掉谁：
+    四个「不丢信息」的字段各有分工，谁也不许吞掉谁：
 
+    * ``coverage``：**逐要点**的覆盖判定（票 #164），``gaps`` 是它里面状态为 ``none`` 的那些
+      要点编号。它回答的是「材料里有没有支撑 P_i」，与 :attr:`evidence_state`（从核心片数
+      算出来的三态完整度）**不是同一件事**：前者以**问题侧**的要点为基准，后者以材料侧的核心
+      片为基准。两个都要有，因为它们能分开说「材料不够」与「答得不够」；
     * ``evidence_state``：三态完整度（``complete`` / ``partial`` / ``missing``），由核心片
       数算出来——「材料够不够」不能被 ``stop_reason``（那说的是**为什么停**）吞掉；
     * ``strong_model_fallback``：这次生成是不是快模型兜的底，以及为什么（两个固定串之一）；
     * ``sub_search_degraded``：子检索自身降级的去重列表（一因一码，原样上交给外层写行）。
 
-    ``answer_rejected_reason`` 是**内部**字段（不进响应）：它是四条硬校验的拒绝码，用于
-    日志与用例断言「哪一种输入被哪一条挡住了」。响应里只有 ``answer = null``——调用方要的
-    是「这次不生成」，不是「后端替你判了哪一条」。
+    ``answer_rejected_reason`` 是**内部**字段（不进响应）：它是四条硬校验与缺口闸的拒绝码，
+    用于日志与用例断言「哪一种输入被哪一条挡住了」。响应里只有 ``answer = null``——调用方要
+    的是「这次不生成」，不是「后端替你判了哪一条」。
     """
 
     points: tuple[PlanPoint, ...]
@@ -207,6 +279,16 @@ class ResearchOutcome:
     strong_model_fallback: str | None = None
     sub_search_degraded: tuple[str, ...] = ()
     answer_rejected_reason: str | None = None
+    coverage: tuple[PointVerdict, ...] = ()
+
+    @property
+    def gaps(self) -> tuple[str, ...]:
+        """缺口 = 判定为 ``none`` 的那些要点编号。**唯一一处推导**（响应也读它）。
+
+        ``unknown`` 不进 gaps：不知道的时候既不该声明「材料不足」，也不该假装有支撑。
+        """
+
+        return tuple(item.point_id for item in self.coverage if item.status == SUPPORT_NONE)
 
 
 # ─────────────────────────────────────────────────────────── 提示词
@@ -221,11 +303,17 @@ _PLANNER_SYSTEM = (
     "切片 id 或文档 id；查询写成文档里可能出现的陈述句，不要写成向助手提的问句。"
 )
 
-_DECIDER_SYSTEM = (
-    "你在判断一次检索的材料够不够。给定问题、要点清单（A1 起）与已经检索到的材料（带序号），"
-    "找出**还没有材料直接回答**的要点，并为这些要点各给一条定向补证查询，"
-    f"最多 {MAX_FOLLOWUP_QUERIES} 条。要求：所有要点都有材料直接回答时，返回空的查询列表；"
-    "只输出要点序号与查询文本；不要输出材料正文，不要输出切片 id，不要生成答案。"
+_JUDGE_SYSTEM = (
+    "你在判定一次检索的材料能不能支撑回答。**「支撑」的定义：材料里能直接读出该事实**，"
+    "不是「主题相关」——相关但读不出结论的材料不算支撑。"
+    "给定问题、要点清单（A1 起）与已经检索到的材料（带序号），"
+    "对**每一个要点**各给一条判定：status=supported 并列出能直接读出该事实的材料序号；"
+    f"或 status={SUPPORT_NONE}（材料里没有能直接读出它的事实）——没有支撑时必须写 {SUPPORT_NONE}，"
+    "不要为了凑出一个完整答案把它算成 supported，也不要因为「看起来相关」就当成支撑。"
+    f"对 status 为 {SUPPORT_NONE} 的要点，各给一条换过说法、可以直接拿去检索的定向补证查询，"
+    f"最多 {MAX_FOLLOWUP_QUERIES} 条。要求：每个要点都要有一条判定，一个都不许漏；"
+    "只输出要点序号、状态、材料序号与查询文本；不要输出材料正文，不要输出切片 id，"
+    "不要生成答案。"
 )
 
 
@@ -240,13 +328,15 @@ def build_planner_prompt(*, query: str) -> str:
     return f"问题：{query}"
 
 
-def build_decider_prompt(
+def build_judge_prompt(
     *, query: str, points: Sequence[PlanPoint], materials: Sequence[Mapping[str, Any]]
 ) -> str:
-    """判断阶段的用户消息：问题 + 要点清单 + 已到手的材料（带序号、带预算）。
+    """覆盖判定的用户消息：问题 + 要点清单 + 已到手的材料（带序号、带预算）。
 
-    材料带序号而不带 id：模型能表达的只有「哪个要点还缺」，不许它指向某一条具体材料
-    （那会变成一次隐式的角色分配——那是切片编排的活，不是这里）。
+    材料带序号而不带 id：模型能表达的只有「第几条撑住了第几个要点」，不许它指向某一条具体
+    材料的身份（那会变成一次隐式的角色分配——那是切片编排的活，不是这里）。正文仍然按
+    :data:`MAX_DECIDER_MATERIAL_CHARS` 截断：截断只影响这一次提示词，不影响交回给调用方的
+    材料（「成本可以截断，材料不许截断」）。
     """
 
     point_lines = "\n".join(f"{point.point_id}. {point.text}" for point in points)
@@ -435,10 +525,89 @@ def _coerce_plan(raw: Any) -> tuple[list[PlanPoint], list[PlanQuery]]:
     return points, queries
 
 
-def _coerce_followup(raw: Any, *, points: Sequence[PlanPoint]) -> list[PlanQuery]:
-    """判断输出 → 补证查询（可能为空 = 所有要点都有材料）。"""
+def _coerce_judged_queries(raw: Any) -> list[tuple[int, str]]:
+    """判定里的补证查询：**字段缺省等于「没有补证查询」**（不是「模型没答」）。
 
-    return _bound_queries(_coerce_query_items(raw), points=points, round_no=2)
+    与规划阶段相反：规划没给查询 = 计划不成立（一份没法执行的计划），而判定没给查询只是
+    「我想不出更好的说法」——结论仍然有效，缺口照样成立。两者共用一个 ``_coerce_query_items``
+    会把这个区别抹掉，所以这条分叉写在这里而不是写在那个函数里。
+    """
+
+    if _field(raw, "queries") is None:
+        return []
+    return _coerce_query_items(raw)
+
+
+def _material_orders(value: Any) -> list[int]:
+    """判定里的材料序号列表：只认真正的整数（``bool`` 是 ``int`` 的子类，得单独挡掉）。"""
+
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise _IllegalOutput("materials is not a list")
+    orders: list[int] = []
+    for item in value:
+        order = _as_int(item)
+        if order is None:
+            raise _IllegalOutput("a material order is not an integer")
+        orders.append(order)
+    return orders
+
+
+def _coerce_coverage(
+    raw: Any, *, points: Sequence[PlanPoint], material_count: int
+) -> list[PointVerdict]:
+    """覆盖判定输出 → 逐要点结论（按要点顺序）。不合法就抛 :class:`_IllegalOutput`。
+
+    五条判定写在一处，因为它们必须同时成立（任何一条松掉，``coverage`` 就不再可信）：
+
+    1. **每个要点都要有一条结论**。漏答不能猜成 ``supported``（乐观），也不能猜成 ``none``
+       （凭空造缺口）——两种猜测都在替模型回答它没回答的问题；
+    2. **一个要点只能有一条结论**：两条结论时不知道该信哪一条；
+    3. **序号必须在范围内**：要点序号对着计划清单，材料序号对着**判定当时**的材料池（材料池
+       只追加，所以这些序号在补证之后仍然指向同一条材料，可以直接当证据编号用）；
+    4. **状态必须自证**：``supported`` 必须给材料序号（「有支撑」要有指向），``none`` 必须一条
+       都不给（「没有支撑」不许挂着材料）；
+    5. 结论按要点顺序返回——响应里的 ``coverage.points`` 因此与 ``plan.points`` 同序，
+       调用方不必自己排序。
+    """
+
+    items = _field(raw, "points")
+    if items is None:
+        raise _IllegalOutput("no coverage verdicts")
+    if not isinstance(items, list):
+        raise _IllegalOutput("coverage verdicts is not a list")
+
+    seen: dict[int, PointVerdict] = {}
+    for item in items:
+        if isinstance(item, BaseModel):
+            item = item.model_dump()
+        if not isinstance(item, dict):
+            raise _IllegalOutput("a verdict is not an object")
+        order = _as_int(item.get("point"))
+        if order is None or not 1 <= order <= len(points):
+            raise _IllegalOutput("a verdict points at a point that does not exist")
+        if order in seen:
+            raise _IllegalOutput("a point has two verdicts")
+        status = item.get("status")
+        if status not in (SUPPORT_SUPPORTED, SUPPORT_NONE):
+            raise _IllegalOutput("a verdict has an unknown status")
+        orders = _material_orders(item.get("materials"))
+        if any(not 1 <= index <= material_count for index in orders):
+            raise _IllegalOutput("a verdict points beyond the material pool")
+        if status == SUPPORT_SUPPORTED and not orders:
+            raise _IllegalOutput("a supported verdict without materials")
+        if status == SUPPORT_NONE and orders:
+            raise _IllegalOutput("a none verdict carrying materials")
+        seen[order] = PointVerdict(
+            point_id=points[order - 1].point_id,
+            status=status,
+            evidence_ids=tuple(evidence_id(index) for index in sorted(set(orders))),
+        )
+
+    if len(seen) != len(points):
+        raise _IllegalOutput("a point without a verdict")
+    return [seen[index] for index in range(1, len(points) + 1)]
 
 
 # ─────────────────────────────────────────────────────────── 材料
@@ -507,6 +676,7 @@ class _Run:
         self.points: list[PlanPoint] = []
         self.queries: list[PlanQuery] = []
         self.materials: list[dict[str, Any]] = []
+        self.coverage: list[PointVerdict] = []
         self.searches = 0
         self.followup_rounds = 0
         self.model_calls = 0
@@ -519,6 +689,7 @@ class _Run:
         # 子检索的降级原因是**它自己**交上来的（内核一条固定串，外层收成列表）：这里只
         # 持有那个序列的引用，收尾时才去重——检索发生在 `_stages` 里，构造时它还空着。
         self._sub_search_degraded: Sequence[str] = sub_search_degraded
+        self._judged = False
         self._delivered: set[str] = set()
         self._provider: Any = None
         self._strong_provider: Any = None
@@ -546,20 +717,24 @@ class _Run:
         # ② 并行检索：每条首轮查询各跑一次内核。
         await self._parallel(self.queries)
 
-        # 阶段间检查（判断前）：预算或模型调用用尽 → 不进新阶段，材料照给。
+        # 阶段间检查（覆盖判定前）：预算或模型调用用尽 → 不进新阶段，材料照给。
         gate = self._budget_stop()
         if gate is not None:
             return gate
 
-        # ③ 判断。
-        decision = await self._decide()
-        if decision is None:
+        # ③ 覆盖判定（逐要点）。失败 → 降级，coverage 全部 unknown（不知道，不是没有）。
+        judged = await self._judge()
+        if judged is None:
             return StopReason.DEGRADED
-        if not decision:
+        verdicts, proposed = judged
+        self.coverage = list(verdicts)
+        self._judged = True
+        if not self._gap_verdicts():
             return StopReason.EVIDENCE_COMPLETE
 
-        # 判断给了查询，但全都跑过：一条都不重跑。
-        fresh = self._fresh(decision)
+        # ④ 定向补证：只对没有支撑的要点补检索。
+        targeted = self._targeted_followup(proposed)
+        fresh = self._fresh(targeted)
         if not fresh:
             return StopReason.DUPLICATE_QUERY
 
@@ -568,9 +743,9 @@ class _Run:
         if gate is not None:
             return gate
 
-        # ④ 补证（≤1 轮）。跑完就结束：轮次用尽 = max_rounds，白跑一趟 = no_new_evidence。
+        # 补证（≤1 轮）。跑完就结束：捞到了材料 = max_rounds，白跑一趟 = no_new_evidence。
         added = await self._parallel(fresh, followup=True)
-        return StopReason.MAX_ROUNDS if added else StopReason.NO_NEW_EVIDENCE
+        return StopReason.MAX_ROUNDS if sum(added) else StopReason.NO_NEW_EVIDENCE
 
     # ── ① 规划 ──
 
@@ -606,17 +781,18 @@ class _Run:
 
     # ── ② / ④ 并行检索 ──
 
-    async def _parallel(self, queries: Sequence[PlanQuery], *, followup: bool = False) -> int:
-        """并行跑一批查询，返回**新增**材料条数。
+    async def _parallel(self, queries: Sequence[PlanQuery], *, followup: bool = False) -> list[int]:
+        """并行跑一批查询，返回**每条查询各自新增**的材料条数（与入参同序）。
 
         ``asyncio.gather`` 的顺序与入参一致，合并也按这个顺序：同样的输入两次跑出同样的
         材料顺序（``E`` 编号将来要稳定，ADR-0026 §2）。
+
+        为什么要按条分开记「新增几条」：补证之后要判「这一条补证有没有给那个缺口要点带回
+        材料」，而「这一轮共新增 3 条」说不出是哪一条查询带回来的。
         """
 
         batches = await asyncio.gather(*(self._search_one(item.query) for item in queries))
-        added = 0
-        for batch in batches:
-            added += self._merge(batch)
+        added = [self._merge(batch) for batch in batches]
         if followup:
             self.followup_rounds += 1
             self.queries.extend(queries)
@@ -642,28 +818,60 @@ class _Run:
             added += 1
         return added
 
-    # ── ③ 判断 ──
+    # ── ③ 覆盖判定 ──
 
-    async def _decide(self) -> list[PlanQuery] | None:
-        """判断哪些要点还缺材料。``None`` = 判断失败（停止补证、标记降级、材料照给）。"""
+    async def _judge(self) -> tuple[list[PointVerdict], list[PlanQuery]] | None:
+        """逐要点判定「材料里有没有直接读出它的事实」。
+
+        ``None`` = 判定失败（停止补证、标记降级、材料照给、``coverage`` 全部 ``unknown``）。
+        失败出口照旧只有这一条：整份判定作废比采信半份预测好——半份判定里「没答的要点」
+        既可能是漏了也可能是没有，而猜错任何一边都会污染 ``coverage``。
+        """
 
         try:
             raw = await self._call(
-                FollowupPlan,
-                _DECIDER_SYSTEM,
-                build_decider_prompt(
+                CoverageJudgement,
+                _JUDGE_SYSTEM,
+                build_judge_prompt(
                     query=self.query, points=self.points, materials=self.materials
                 ),
             )
-            return _coerce_followup(raw, points=self.points)
-        except Exception as exc:  # noqa: BLE001 - 判断失败即停止补证，绝不整单失败
+            verdicts = _coerce_coverage(
+                raw, points=self.points, material_count=len(self.materials)
+            )
+            queries = _bound_queries(_coerce_judged_queries(raw), points=self.points, round_no=2)
+        except Exception as exc:  # noqa: BLE001 - 判定失败即停止补证，绝不整单失败
             logger.warning(
-                "research decision failed",
+                "research coverage judgement failed",
                 tenant=tenant_fingerprint(self.tenant_id),
-                stage="decide",
+                stage="judge",
                 error=type(exc).__name__,
             )
             return None
+        return verdicts, queries
+
+    def _gap_verdicts(self) -> list[PointVerdict]:
+        """判定为 ``none`` 的那些要点——**缺口**的唯一来源（``unknown`` 不在其中）。"""
+
+        return [item for item in self.coverage if item.status == SUPPORT_NONE]
+
+    def _targeted_followup(self, proposed: Sequence[PlanQuery]) -> list[PlanQuery]:
+        """只留下**绑在缺口要点上**的补证查询（定向补证）。
+
+        结论是唯一事实来源：模型把一条查询绑到已判为 ``supported`` 的要点上时，那条查询丢掉
+        （并记一条 warning）——重跑一个已经有材料的要点，白花一次检索与一次嵌入，而且会让
+        「补证只补没有支撑的那一块」这句话在行为上不成立。
+        """
+
+        gap_ids = {item.point_id for item in self._gap_verdicts()}
+        kept = [item for item in proposed if item.point_id in gap_ids]
+        if len(kept) != len(proposed):
+            logger.warning(
+                "research followup retargeted",
+                tenant=tenant_fingerprint(self.tenant_id),
+                dropped=len(proposed) - len(kept),
+            )
+        return kept
 
     def _fresh(self, queries: Sequence[PlanQuery]) -> list[PlanQuery]:
         """去掉已经跑过的查询（首轮 + 已发生的补证），一条都不重跑。"""
@@ -825,7 +1033,23 @@ class _Run:
         self.model_calls += 1
         return await self._provider.chat_structured(schema, system=system, user=user)
 
+    def _coverage_for_outcome(self) -> tuple[PointVerdict, ...]:
+        """交回给调用方的逐要点判定：判过就是判定本身，**没判过就全是 unknown**。
+
+        「没判过」有几种来历（规划失败、阶段预算在判定之前用尽、判定失败），它们对一个
+        调用方来说是同一件事：这次没有人看过「哪个要点有支撑」。这时候给 ``none`` 会凭空造
+        缺口，给 ``supported`` 会假装有支撑，所以只有 ``unknown`` 是诚实的。
+        """
+
+        if self._judged:
+            return tuple(self.coverage)
+        return tuple(
+            PointVerdict(point_id=point.point_id, status=SUPPORT_UNKNOWN)
+            for point in self.points
+        )
+
     def _outcome(self, reason: StopReason) -> ResearchOutcome:
+        coverage = self._coverage_for_outcome()
         outcome = ResearchOutcome(
             points=tuple(self.points),
             queries=tuple(self.queries),
@@ -841,10 +1065,12 @@ class _Run:
             strong_model_fallback=self.strong_model_fallback,
             sub_search_degraded=_dedupe(self._sub_search_degraded),
             answer_rejected_reason=self.answer_rejected_reason,
+            coverage=coverage,
         )
         # 响应与日志**同一套词**（父 spec：七种停止原因「响应 / 日志 / 界面同一套词」）。
         # 日志只放派生量与计数，绝不放原问题、查询原文或模型写的文本；拒绝原因是一个
-        # 固定串（一因一码），所以它可以进日志。
+        # 固定串（一因一码），所以它可以进日志。缺口只记条数：要点文本是模型写的，
+        # 它不该进日志（那是一条可能夹带正文的通道）。
         logger.info(
             "research finished",
             tenant=tenant_fingerprint(self.tenant_id),
@@ -856,6 +1082,7 @@ class _Run:
             materials=len(self.materials),
             duration_ms=outcome.duration_ms,
             evidence_state=outcome.evidence_state,
+            coverage_gaps=len(outcome.gaps),
             answered=outcome.answer is not None,
             answer_rejected=self.answer_rejected_reason,
             strong_model_fallback=self.strong_model_fallback,
@@ -888,9 +1115,9 @@ async def run_research(
     sub_search_degraded: Sequence[str] = (),
     clock: Clock | None = None,
 ) -> ResearchOutcome:
-    """跑一次「规划 → 并行检索 → 判断 → 补证 → 生成引用块」。
+    """跑一次「规划 → 并行检索 → 覆盖判定 → 定向补证 → 生成引用块」。
 
-    ``search`` 是**注入的检索内核**（一次子查询一次调用）；``llm_factory`` 是规划 / 判断
+    ``search`` 是**注入的检索内核**（一次子查询一次调用）；``llm_factory`` 是规划 / 覆盖判定
     的模型工厂，``strong_llm_factory`` 是生成的模型工厂（缺省走 ``strong`` 角色）；
     ``clock`` 是可推进的单调时钟（缺省 ``time.monotonic``，用例用它把阶段预算推到 90 秒
     之外而不用真的等）。这些都是父 spec #138 定下的接缝，本函数不自己去造任何一个。
@@ -913,16 +1140,21 @@ async def run_research(
 
 
 __all__ = [
-    "FollowupPlan",
+    "CoverageJudgement",
     "MAX_DECIDER_MATERIAL_CHARS",
     "PlanPoint",
     "PlanQuery",
     "PlannedQuery",
+    "PointSupportOut",
+    "PointVerdict",
     "ResearchOutcome",
     "ResearchPlan",
     "STRONG_MODEL_FAILED",
     "STRONG_MODEL_UNAVAILABLE",
-    "build_decider_prompt",
+    "SUPPORT_NONE",
+    "SUPPORT_SUPPORTED",
+    "SUPPORT_UNKNOWN",
+    "build_judge_prompt",
     "build_planner_prompt",
     "material_key",
     "run_research",

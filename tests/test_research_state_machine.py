@@ -177,14 +177,36 @@ def _plan(queries: list[dict[str, Any]] | None = None, points: list[str] | None 
     }
 
 
-def _covered() -> dict:
-    """判断器的预置输出：所有要点都有材料（于是没有补证查询）。"""
+def _covered(points: int = 2, *, material: int = 1) -> dict:
+    """覆盖判定的预置输出：所有要点都被同一条材料支撑（于是没有补证查询）。
 
-    return {"queries": []}
+    票 #164 起判定是**逐要点**的，所以这份替身必须把每一个要点都答一遍——少答一个要点
+    整份判定作废（那是 ``test_a_verdict_that_skips_a_point_is_not_accepted`` 守的事）。
+    """
+
+    return {
+        "points": [
+            {"point": index, "status": "supported", "materials": [material]}
+            for index in range(1, points + 1)
+        ],
+        "queries": [],
+    }
 
 
-def _followup(query: str = "超期退款要哪些材料", point: int = 2) -> dict:
-    return {"queries": [{"point": point, "query": query}]}
+def _followup(query: str = "超期退款要哪些材料", point: int = 2, *, points: int = 2) -> dict:
+    """带一个缺口的判定：``point`` 这个要点判成 ``none``，其余有支撑，并给一条补证查询。"""
+
+    return {
+        "points": [
+            {
+                "point": index,
+                "status": "none" if index == point else "supported",
+                "materials": [] if index == point else [1],
+            }
+            for index in range(1, points + 1)
+        ],
+        "queries": [{"point": point, "query": query}],
+    }
 
 
 def _run(
@@ -288,7 +310,7 @@ def test_a_covered_question_stops_after_the_first_round() -> None:
     # 规划 + 判断 + 生成各一次（票 #149 起第 ⑤ 步会真的花掉第三次调用）。
     assert outcome.model_calls == 3
     assert outcome.searches == 2
-    assert llm.calls == ["ResearchPlan", "FollowupPlan"]
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement"]
 
 
 def test_a_multi_point_question_gets_two_rounds_of_materials() -> None:
@@ -398,17 +420,21 @@ def test_the_first_round_cap_keeps_at_most_three_searches() -> None:
 
 
 def test_the_followup_cap_keeps_at_most_two_searches() -> None:
-    """判断器给了 3 条补证查询 → 只跑前 2 条。"""
+    """判定给了 3 条补证查询 → 只跑前 2 条（成本上限对补证轮同样成立）。"""
 
-    decision = {
+    judgement = {
+        "points": [
+            {"point": 1, "status": "none", "materials": []},
+            {"point": 2, "status": "none", "materials": []},
+        ],
         "queries": [
             {"point": 1, "query": "补一"},
             {"point": 2, "query": "补二"},
             {"point": 1, "query": "补三"},
-        ]
+        ],
     }
 
-    outcome, _, probe = _run(_plan(), decision, search=_Search(default=[_row("a")]))
+    outcome, _, probe = _run(_plan(), judgement, search=_Search(default=[_row("a")]))
 
     assert probe.calls == ["退款多久到账", "退款需要哪些材料", "补一", "补二"]
     assert len([item for item in outcome.queries if item.round == 2]) == MAX_FOLLOWUP_QUERIES == 2
@@ -486,7 +512,7 @@ def test_the_stage_budget_also_guards_the_final_answer_slot() -> None:
     assert outcome.stop_reason is StopReason.TIMEOUT
     assert outcome.answer is None
     assert outcome.citations == ()
-    assert llm.calls == ["ResearchPlan", "FollowupPlan"], "判断已经在越线之前跑过了"
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement"], "判断已经在越线之前跑过了"
 
 
 # ─────────────────────────────────────────── 越界防护：模型只能点已存在的要点序号
@@ -579,7 +605,7 @@ def test_a_failed_decider_stops_the_followup_but_keeps_the_materials() -> None:
     assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
     assert outcome.followup_rounds == 0
     assert outcome.stop_reason is StopReason.DEGRADED
-    assert llm.calls == ["ResearchPlan", "FollowupPlan"]
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement"]
 
 
 def test_the_stage_budget_is_checked_before_the_followup_round() -> None:
@@ -593,14 +619,14 @@ def test_the_stage_budget_is_checked_before_the_followup_round() -> None:
         _followup(),
         search=search,
         clock=clock,
-        spend={"FollowupPlan": 95.0},
+        spend={"CoverageJudgement": 95.0},
     )
 
     assert probe.calls == ["退款多久到账", "退款需要哪些材料"], "补证阶段根本没开始"
     assert outcome.followup_rounds == 0
     assert outcome.stop_reason is StopReason.TIMEOUT
     assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
-    assert llm.calls == ["ResearchPlan", "FollowupPlan"]
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement"]
 
 
 # ─────────────────────────────────────────── 检索本身的故障不披成 code 0

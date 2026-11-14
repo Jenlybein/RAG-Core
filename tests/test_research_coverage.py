@@ -251,3 +251,104 @@ def test_every_point_gets_its_own_query_even_when_the_round_cap_runs_fewer() -> 
     assert [point.text for point in outcome.points] == points
     assert outcome.searches == MAX_FIRST_ROUND_QUERIES, "首轮成本上限照旧管住检索次数"
     assert outcome.stop_reason is not StopReason.DEGRADED
+
+
+# ───────────────────────────────────────── ② 逐要点覆盖判定：``none`` 是可表达的输出
+
+
+def test_the_judgement_answers_each_point_with_support_or_none() -> None:
+    """判定是**逐个要点**给的：A1 有支撑（带材料序号），A2 没有。
+
+    这是整票的核心：判定的基准是**问题侧**的要点，不是「材料里有几条核心片」。所以
+    「A2 没有支撑」必须是模型能写出来的一个结论，而不是从材料数里推出来的副产品。
+    """
+
+    search = _Search({"查询1": [_row("a")], "查询2": [_row("b")]})
+
+    outcome, _, _ = _run(_plan(), _judge(_supported(1, 1), _none(2)), search=search)
+
+    assert [(item.point_id, item.status) for item in outcome.coverage] == [
+        ("A1", "supported"),
+        ("A2", "none"),
+    ]
+    # 有支撑的要点带着它引到的证据编号（与答案里的 E 编号同一套）。
+    assert outcome.coverage[0].evidence_ids == ("E1",)
+    assert outcome.gaps == ("A2",)
+
+
+def test_a_verdict_that_skips_a_point_is_not_accepted() -> None:
+    """少答一个要点 = 这份判定不能用（退回「不知道」，而不是被当成「有材料」）。
+
+    漏答不能默认成 supported（那是乐观），也不能默认成 none（那是凭空造缺口）——
+    两种猜测都在替模型回答它没回答的问题，所以整份判定作废，``coverage`` 保持 unknown。
+    """
+
+    search = _Search(default=[_row("a")])
+
+    outcome, _, _ = _run(_plan(), _judge(_supported(1, 1)), search=search)
+
+    assert [item.status for item in outcome.coverage] == ["unknown", "unknown"]
+    assert outcome.gaps == ()
+    assert outcome.stop_reason is StopReason.DEGRADED
+
+
+def test_a_supported_verdict_must_point_at_materials() -> None:
+    """``supported`` 却不给材料序号 = 自相矛盾（「有支撑」必须有指向）。"""
+
+    outcome, _, _ = _run(
+        _plan(),
+        _judge(_supported(1), _supported(2, 1)),
+        search=_Search(default=[_row("a")]),
+    )
+
+    assert outcome.stop_reason is StopReason.DEGRADED
+    assert [item.status for item in outcome.coverage] == ["unknown", "unknown"]
+
+
+def test_a_none_verdict_must_not_point_at_materials() -> None:
+    """``none`` 却挂着材料序号 = 自相矛盾（要么给序号，要么说没有）。"""
+
+    contradiction = {"point": 2, "status": "none", "materials": [1]}
+
+    outcome, _, _ = _run(
+        _plan(),
+        _judge(_supported(1, 1), contradiction),
+        search=_Search(default=[_row("a")]),
+    )
+
+    assert outcome.stop_reason is StopReason.DEGRADED
+    assert outcome.gaps == ()
+
+
+def test_a_verdict_may_not_point_beyond_the_material_pool() -> None:
+    """要点指向不存在的材料 = 越界（模型只能点它真的看见的那几条）。"""
+
+    outcome, _, _ = _run(
+        _plan(), _judge(_supported(1, 9), _none(2)), search=_Search(default=[_row("a")])
+    )
+
+    assert outcome.stop_reason is StopReason.DEGRADED
+    assert outcome.gaps == ()
+
+
+def test_a_verdict_on_a_point_that_does_not_exist_is_rejected() -> None:
+    """判定里出现计划中没有的要点序号 = 越界。"""
+
+    outcome, _, _ = _run(
+        _plan(),
+        _judge(_supported(1, 1), _supported(2, 1), _none(9)),
+        search=_Search(default=[_row("a")]),
+    )
+
+    assert outcome.stop_reason is StopReason.DEGRADED
+
+
+def test_the_judgement_prompt_defines_support_as_readable_not_related() -> None:
+    """定义闸：「支撑」= 材料里能**直接读出**该事实，不是「相关」。
+
+    定义必须同时出现在提示词与模块文档里（ADR-0029 四种闸门之一）：只写在注释里，模型读不到
+    「相关」不算；只写在提示词里，下一个人改提示词时不知道这是一条闸门。
+    """
+
+    assert "直接读出" in research._JUDGE_SYSTEM
+    assert "直接读出" in (research.__doc__ or "")

@@ -142,7 +142,30 @@ def _plan_output() -> dict:
 
 
 def _covered() -> dict:
-    return {"queries": []}
+    """覆盖判定的预置输出：两个要点各被一条材料直接支撑（没有缺口）。
+
+    票 #164 起判定是**逐要点**的：两个要点都得答一遍，少答一个整份判定作废。
+    """
+
+    return {
+        "points": [
+            {"point": 1, "status": "supported", "materials": [1]},
+            {"point": 2, "status": "supported", "materials": [2]},
+        ],
+        "queries": [],
+    }
+
+
+def _one_gap() -> dict:
+    """带一个缺口的判定：A2 在材料里没有直接支撑，并给一条定向补证查询。"""
+
+    return {
+        "points": [
+            {"point": 1, "status": "supported", "materials": [1]},
+            {"point": 2, "status": "none", "materials": []},
+        ],
+        "queries": [{"point": 2, "query": "超期退款需要哪些材料"}],
+    }
 
 
 def _answer_output(*blocks: dict) -> dict:
@@ -440,7 +463,7 @@ def test_sub_queries_do_not_rewrite_or_account(
     # 逐字、逐条、各一次：没有改写（也没有第二次嵌入），没有重复记账。
     assert entry.embedding.queries == ["退款多久到账", "退款需要哪些材料"]
     # 三个角色各一次——改写若在场，这里会多一次。
-    assert entry.llm.calls == ["ResearchPlan", "FollowupPlan", "AnswerOut"]
+    assert entry.llm.calls == ["ResearchPlan", "CoverageJudgement", "AnswerOut"]
     assert data["rounds"]["searches"] == 2
     # 归属索引仍然只写一行（子检索一条都不写）。
     assert len(entry.traces()) == 1
@@ -571,7 +594,7 @@ def test_an_illegal_citation_leaves_the_answer_empty_but_keeps_the_materials(
 
 
 def test_a_missing_material_point_shows_up_as_an_insufficient_block(entry: _Entry) -> None:
-    """第二个要点没有材料 → 那一块是 ``insufficient``（承认不足），完整度是 ``partial``。"""
+    """第二个要点没有材料 → 判定是 ``none``、那一块是 ``insufficient``，完整度是 ``partial``。"""
 
     entry.vector.rows_for = {
         "退款多久到账": [_row("a", "超期退款需人工审核。")],
@@ -579,7 +602,7 @@ def test_a_missing_material_point_shows_up_as_an_insufficient_block(entry: _Entr
     }
     entry.llm = _ScriptedLLM(
         _plan_output(),
-        _covered(),
+        _one_gap(),
         _answer_output(
             {"text": "超期退款需人工审核。", "kind": "supported", "primary": [1], "supporting": []},
             {
