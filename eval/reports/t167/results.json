@@ -1,0 +1,1482 @@
+{
+  "generated_at": "2026-11-14T22:24:22+00:00",
+  "issue": "#167 缺口闸真实行为评测",
+  "llm_chain": {
+    "llm_endpoint_source": "model_configs",
+    "llm_model": "deepseek-v4-1-flash-economy-261017",
+    "llm_config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "environment": {
+    "elasticsearch_index": "rag_chunks_eval",
+    "rerank": false,
+    "query_rewrite": false,
+    "retrieval_mode": "hybrid",
+    "top_k": 5,
+    "tenant_id": "tenant_demo",
+    "kb_ids": [
+      "kb-eval",
+      "kb-eval-biz",
+      "kb-eval-long",
+      "kb-eval-ops",
+      "kb-eval-ref"
+    ],
+    "index_versions": {
+      "kb-eval": "v1",
+      "kb-eval-ops": "v1",
+      "kb-eval-biz": "v1",
+      "kb-eval-long": "v1",
+      "kb-eval-ref": "v1"
+    }
+  },
+  "model_calls": {
+    "budget": 110,
+    "nominal": 80,
+    "worst": 100,
+    "actual": 40,
+    "per_case": {
+      "nominal": 4,
+      "worst": 5
+    },
+    "skipped": []
+  },
+  "cases": [
+    {
+      "case_id": "A01",
+      "group": "A",
+      "query": "退款要几天，从哪个入口申请；另外退款能不能用数字人民币退到数字钱包",
+      "keyword": "数字人民币",
+      "topic": "退款能不能走数字人民币（语料只讲银行卡 / 第三方支付 / 对公转账）",
+      "base_id": "q19",
+      "appended": "；另外退款能不能用数字人民币退到数字钱包",
+      "note": ""
+    },
+    {
+      "case_id": "A02",
+      "group": "A",
+      "query": "审计日志要留存多久；另外日志能不能用区块链做存证",
+      "keyword": "区块链",
+      "topic": "日志的区块链存证（语料只讲留存期限与审计流程）",
+      "base_id": "q43",
+      "appended": "；另外日志能不能用区块链做存证",
+      "note": ""
+    },
+    {
+      "case_id": "A03",
+      "group": "A",
+      "query": "P2 告警的响应时限是多少；另外告警能不能推送到企业微信群里",
+      "keyword": "企业微信",
+      "topic": "告警推到企业微信（语料只讲告警分级与通报路径）",
+      "base_id": "q45",
+      "appended": "；另外告警能不能推送到企业微信群里",
+      "note": ""
+    },
+    {
+      "case_id": "A04",
+      "group": "A",
+      "query": "每月账单是哪天出账的；另外发票能不能开英文版",
+      "keyword": "英文发票",
+      "topic": "英文发票（语料讲普票 / 专票、抬头变更与红冲，没有英文版）",
+      "base_id": "q70",
+      "appended": "；另外发票能不能开英文版",
+      "note": ""
+    },
+    {
+      "case_id": "A05",
+      "group": "A",
+      "query": "机架款 XR-2100 的指导价是多少；另外买机器能不能分期付款",
+      "keyword": "分期",
+      "topic": "分期付款（语料只有整机价、阶梯折扣与渠道政策）",
+      "base_id": "q78",
+      "appended": "；另外买机器能不能分期付款",
+      "note": ""
+    },
+    {
+      "case_id": "A06",
+      "group": "A",
+      "query": "企业版的月度可用性承诺是多少；另外设备有没有碳中和认证",
+      "keyword": "碳中和",
+      "topic": "碳中和认证（语料有认证与合规标识，但没有这一项）",
+      "base_id": "q82",
+      "appended": "；另外设备有没有碳中和认证",
+      "note": ""
+    },
+    {
+      "case_id": "A07",
+      "group": "A",
+      "query": "上门装设备之前要先去看什么；另外设备能不能用语音控制",
+      "keyword": "语音控制",
+      "topic": "语音控制（语料只讲管理与运维界面）",
+      "base_id": "q108",
+      "appended": "；另外设备能不能用语音控制",
+      "note": ""
+    },
+    {
+      "case_id": "A08",
+      "group": "A",
+      "query": "请求签名的时间戳允许多少秒偏差；另外能不能用苹果手机扫码登录管理后台",
+      "keyword": "苹果",
+      "topic": "苹果手机扫码登录（语料只讲管理界面与账号权限）",
+      "base_id": "q116",
+      "appended": "；另外能不能用苹果手机扫码登录管理后台",
+      "note": ""
+    },
+    {
+      "case_id": "A09",
+      "group": "A",
+      "query": "旧机器能抵钱换新的吗；另外能不能以租代购",
+      "keyword": "以租代购",
+      "topic": "以租代购（语料有以旧换新与返修备件，没有租购）",
+      "base_id": "q53",
+      "appended": "；另外能不能以租代购",
+      "note": ""
+    },
+    {
+      "case_id": "A10",
+      "group": "A",
+      "query": "变更窗口是什么时候，窗口结束前要做什么；另外值班排班能不能用钉钉",
+      "keyword": "钉钉",
+      "topic": "钉钉排班（语料有值班排班与交接表，没有第三方协同工具）",
+      "base_id": "q60",
+      "appended": "；另外值班排班能不能用钉钉",
+      "note": ""
+    },
+    {
+      "case_id": "B01",
+      "group": "B",
+      "query": "E8888 是什么错误",
+      "keyword": "E8888",
+      "topic": "不存在的错误码（语料只有 E1xxx / E2xxx / E3xxx / W0001 各族）",
+      "base_id": "q20",
+      "appended": "",
+      "note": "取自题库 absent 标注（问题侧标注，写在检索之前）"
+    },
+    {
+      "case_id": "B02",
+      "group": "B",
+      "query": "量子加密通道怎么配置",
+      "keyword": "量子",
+      "topic": "量子加密通道（全库不出现「量子」，也没有这层设备）",
+      "base_id": "q21",
+      "appended": "",
+      "note": "取自题库 absent 标注；与 B01 一起构成「语义型 vs 编号型」两个方向"
+    },
+    {
+      "case_id": "B03",
+      "group": "B",
+      "query": "设备支持卫星回传吗",
+      "keyword": "卫星",
+      "topic": "卫星回传（语料有蜂窝与备份链路，没有卫星）",
+      "base_id": "q22",
+      "appended": "",
+      "note": "取自题库 absent 标注"
+    },
+    {
+      "case_id": "B04",
+      "group": "B",
+      "query": "支持刷脸支付吗",
+      "keyword": "刷脸",
+      "topic": "刷脸支付（语料没有支付方式相关章节）",
+      "base_id": "q62",
+      "appended": "",
+      "note": "取自题库 absent 标注"
+    },
+    {
+      "case_id": "B05",
+      "group": "B",
+      "query": "有没有手机 App 可以管理设备",
+      "keyword": "安卓",
+      "topic": "安卓手机客户端（语料只有管理后台与工单入口）",
+      "base_id": "q63",
+      "appended": "",
+      "note": "取自题库 absent 标注。注意「App」这两个字母在库里出现 2 次，但都是请求头 `X-App-Id`（签名参数）——不是客户端。所以机械证据取具体形态「安卓」= 0 命中。"
+    },
+    {
+      "case_id": "B06",
+      "group": "B",
+      "query": "能开香港公司的发票吗",
+      "keyword": "香港",
+      "topic": "香港公司开票（发票章节只讲普票 / 专票，跨境章节讲形式发票）",
+      "base_id": "q64",
+      "appended": "",
+      "note": "取自题库 absent 标注；「发票」本身在库里有 3 篇命中，所以证据取「香港」"
+    },
+    {
+      "case_id": "B07",
+      "group": "B",
+      "query": "员工工伤认定和理赔要走哪些流程",
+      "keyword": "工伤",
+      "topic": "工伤认定与理赔（语料有入职、权限、转正考核，没有工伤）",
+      "base_id": null,
+      "appended": "",
+      "note": "我方构造：主题贴着语料里的 HR 类文档，但内容确实没有"
+    },
+    {
+      "case_id": "B08",
+      "group": "B",
+      "query": "公司员工宿舍的水电费怎么分摊",
+      "keyword": "宿舍",
+      "topic": "员工宿舍水电分摊（语料没有任何福利 / 后勤主题）",
+      "base_id": null,
+      "appended": "",
+      "note": "我方构造"
+    },
+    {
+      "case_id": "B09",
+      "group": "B",
+      "query": "申请高新技术企业认定要准备哪些材料",
+      "keyword": "高新技术企业",
+      "topic": "高新技术企业认定（语料有安全合规与等保，没有资质申报）",
+      "base_id": null,
+      "appended": "",
+      "note": "我方构造"
+    },
+    {
+      "case_id": "B10",
+      "group": "B",
+      "query": "给核心员工做股权激励，行权价格怎么定",
+      "keyword": "股权激励",
+      "topic": "股权激励行权价（语料没有任何股权 / 薪酬主题）",
+      "base_id": null,
+      "appended": "",
+      "note": "我方构造"
+    }
+  ],
+  "evidences": [
+    {
+      "case_id": "A01",
+      "keyword": "数字人民币",
+      "pattern": "%数字人民币%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%数字人民币%"
+      }
+    },
+    {
+      "case_id": "A02",
+      "keyword": "区块链",
+      "pattern": "%区块链%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%区块链%"
+      }
+    },
+    {
+      "case_id": "A03",
+      "keyword": "企业微信",
+      "pattern": "%企业微信%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%企业微信%"
+      }
+    },
+    {
+      "case_id": "A04",
+      "keyword": "英文发票",
+      "pattern": "%英文发票%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%英文发票%"
+      }
+    },
+    {
+      "case_id": "A05",
+      "keyword": "分期",
+      "pattern": "%分期%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%分期%"
+      }
+    },
+    {
+      "case_id": "A06",
+      "keyword": "碳中和",
+      "pattern": "%碳中和%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%碳中和%"
+      }
+    },
+    {
+      "case_id": "A07",
+      "keyword": "语音控制",
+      "pattern": "%语音控制%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%语音控制%"
+      }
+    },
+    {
+      "case_id": "A08",
+      "keyword": "苹果",
+      "pattern": "%苹果%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%苹果%"
+      }
+    },
+    {
+      "case_id": "A09",
+      "keyword": "以租代购",
+      "pattern": "%以租代购%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%以租代购%"
+      }
+    },
+    {
+      "case_id": "A10",
+      "keyword": "钉钉",
+      "pattern": "%钉钉%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%钉钉%"
+      }
+    },
+    {
+      "case_id": "B01",
+      "keyword": "E8888",
+      "pattern": "%E8888%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%E8888%"
+      }
+    },
+    {
+      "case_id": "B02",
+      "keyword": "量子",
+      "pattern": "%量子%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%量子%"
+      }
+    },
+    {
+      "case_id": "B03",
+      "keyword": "卫星",
+      "pattern": "%卫星%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%卫星%"
+      }
+    },
+    {
+      "case_id": "B04",
+      "keyword": "刷脸",
+      "pattern": "%刷脸%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%刷脸%"
+      }
+    },
+    {
+      "case_id": "B05",
+      "keyword": "安卓",
+      "pattern": "%安卓%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%安卓%"
+      }
+    },
+    {
+      "case_id": "B06",
+      "keyword": "香港",
+      "pattern": "%香港%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%香港%"
+      }
+    },
+    {
+      "case_id": "B07",
+      "keyword": "工伤",
+      "pattern": "%工伤%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%工伤%"
+      }
+    },
+    {
+      "case_id": "B08",
+      "keyword": "宿舍",
+      "pattern": "%宿舍%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%宿舍%"
+      }
+    },
+    {
+      "case_id": "B09",
+      "keyword": "高新技术企业",
+      "pattern": "%高新技术企业%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%高新技术企业%"
+      }
+    },
+    {
+      "case_id": "B10",
+      "keyword": "股权激励",
+      "pattern": "%股权激励%",
+      "doc_hits": 0,
+      "chunk_hits": 0,
+      "sql": "select\n  (select count(*) from documents d\n    where d.tenant_id = :tenant_id and d.kb_id in :kb_ids\n      and d.content ilike :pattern) as doc_hits,\n  (select count(*) from chunks c join documents d2 on d2.id = c.document_id\n    where d2.tenant_id = :tenant_id and d2.kb_id in :kb_ids\n      and c.content ilike :pattern) as chunk_hits",
+      "params": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "pattern": "%股权激励%"
+      }
+    }
+  ],
+  "checks": {
+    "cases": 20,
+    "a_cases": 10,
+    "b_cases": 10,
+    "base_ids_ok": true,
+    "prefix_ok": true,
+    "keywords_unique": true,
+    "bank_absent_cases": 6,
+    "constructed_b_cases": 4
+  },
+  "archived": {
+    "available": true,
+    "path": "eval/reports/c6/runs/04-v2-research-on/results.json",
+    "questions": 8,
+    "stop_reasons": {
+      "max_rounds": 3,
+      "no_new_evidence": 3,
+      "evidence_complete": 2
+    },
+    "recovered": 3,
+    "rate": 0.375
+  },
+  "records": [
+    {
+      "case": "A01",
+      "group": "A",
+      "query": "退款要几天，从哪个入口申请；另外退款能不能用数字人民币退到数字钱包",
+      "keyword": "数字人民币",
+      "gaps": [
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E6"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "审核通过后退款一般3到5个工作日到账，具体取决于支付渠道。",
+          "evidence_ids": [
+            "E1",
+            "E4",
+            "E5"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "退款申请有三个入口：管理后台订单详情页、客服工单和线下退款申请单。",
+          "evidence_ids": [
+            "E6"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到数字人民币退款能否退至数字钱包的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 13,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 35641,
+      "points": [
+        "退款到账一般需要的天数",
+        "退款申请的入口与操作路径",
+        "数字人民币退款能否退至数字钱包"
+      ],
+      "answer": "审核通过后退款一般3到5个工作日到账，具体取决于支付渠道。（E1、E4、E5）\n退款申请有三个入口：管理后台订单详情页、客服工单和线下退款申请单。（E6）\n材料不足：未找到数字人民币退款能否退至数字钱包的说明。（材料不足）"
+    },
+    {
+      "case": "A02",
+      "group": "A",
+      "query": "审计日志要留存多久；另外日志能不能用区块链做存证",
+      "keyword": "区块链",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 5,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": false,
+      "answer_rejected_reason": "malformed answer output",
+      "citations": [],
+      "insufficient": 0,
+      "declared_insufficient": false,
+      "gap_declaration_count": 0,
+      "materials": 8,
+      "evidence_state": "missing",
+      "strong_model_fallback": "strong model failed",
+      "sub_search_degraded": [],
+      "duration_ms": 91733,
+      "points": [
+        "审计日志法定最低留存期限通常为六个月",
+        "部分行业对审计日志留存期限有更长要求",
+        "区块链存证可用于日志防篡改并需合规评估"
+      ],
+      "answer": null
+    },
+    {
+      "case": "A03",
+      "group": "A",
+      "query": "P2 告警的响应时限是多少；另外告警能不能推送到企业微信群里",
+      "keyword": "企业微信",
+      "gaps": [
+        "A2",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E5"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "P2 告警要求 30 分钟内响应，响应时限从告警触发时刻起算。",
+          "evidence_ids": [
+            "E1",
+            "E2",
+            "E5"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到告警可推送到企业微信群的任何说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到企业微信群推送所需配置与权限的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 2,
+      "declared_insufficient": true,
+      "gap_declaration_count": 4,
+      "materials": 11,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 36937,
+      "points": [
+        "P2告警需按级别遵守响应时限规定。",
+        "告警可以推送到企业微信群。",
+        "企业微信群推送需要配置和权限支持。"
+      ],
+      "answer": "P2 告警要求 30 分钟内响应，响应时限从告警触发时刻起算。（E1、E2、E5）\n材料不足：未找到告警可推送到企业微信群的任何说明。（材料不足）\n材料不足：未找到企业微信群推送所需配置与权限的说明。（材料不足）"
+    },
+    {
+      "case": "A04",
+      "group": "A",
+      "query": "每月账单是哪天出账的；另外发票能不能开英文版",
+      "keyword": "英文发票",
+      "gaps": [
+        "A3",
+        "A4"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "supported",
+          "evidence_ids": [
+            "E7",
+            "E8",
+            "E9"
+          ]
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "no_new_evidence",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "账单在次月 3 日生成，即每月出账时间为次月 3 日。",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "出账遇节假日顺延到下一个工作日，账单生成后会发送通知。",
+          "evidence_ids": [
+            "E1",
+            "E2"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料中未找到发票能否开具英文版的说明，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "未找到申请英文发票需提交的方式或材料，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 2,
+      "declared_insufficient": true,
+      "gap_declaration_count": 4,
+      "materials": 11,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 15218,
+      "points": [
+        "账单每月出账的具体日期规则",
+        "账单日出账后在何处查看账单",
+        "发票是否支持开具英文版本",
+        "申请英文发票需要提交的方式或材料",
+        "发票开具的时间限制与内容要求"
+      ],
+      "answer": "账单在次月 3 日生成，即每月出账时间为次月 3 日。（E1、E2）\n出账遇节假日顺延到下一个工作日，账单生成后会发送通知。（E1、E2）\n材料中未找到发票能否开具英文版的说明，材料不足。（材料不足）\n未找到申请英文发票需提交的方式或材料，材料不足。（材料不足）"
+    },
+    {
+      "case": "A05",
+      "group": "A",
+      "query": "机架款 XR-2100 的指导价是多少；另外买机器能不能分期付款",
+      "keyword": "分期",
+      "gaps": [
+        "A2",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "XR-2100 机架款指导价 9600 元，不含光模块；指导价不含运费、安装费与税费。",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到购买机器支持分期付款的直接说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未列出分期付款的申请条件与办理流程。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 2,
+      "declared_insufficient": true,
+      "gap_declaration_count": 4,
+      "materials": 16,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 32312,
+      "points": [
+        "XR-2100 机架款的官方指导价需确认。",
+        "购买机器是否支持分期付款需确认。",
+        "分期付款的申请条件与办理流程需列出。"
+      ],
+      "answer": "XR-2100 机架款指导价 9600 元，不含光模块；指导价不含运费、安装费与税费。（E1、E4）\n材料不足：未找到购买机器支持分期付款的直接说明。（材料不足）\n材料不足：未列出分期付款的申请条件与办理流程。（材料不足）"
+    },
+    {
+      "case": "A06",
+      "group": "A",
+      "query": "企业版的月度可用性承诺是多少；另外设备有没有碳中和认证",
+      "keyword": "碳中和",
+      "gaps": [
+        "A2"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "supported",
+          "evidence_ids": [
+            "E7"
+          ]
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "企业版月度可用性承诺为99.9%，月度赔偿比例为20%。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到设备碳中和认证及适用标准的任何说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 12,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 40719,
+      "points": [
+        "企业版月度可用性承诺的具体数值",
+        "设备是否具备碳中和认证及适用标准",
+        "企业版可用性统计口径与例外条款"
+      ],
+      "answer": "企业版月度可用性承诺为99.9%，月度赔偿比例为20%。（E1）\n材料不足：未找到设备碳中和认证及适用标准的任何说明。（材料不足）"
+    },
+    {
+      "case": "A07",
+      "group": "A",
+      "query": "上门装设备之前要先去看什么；另外设备能不能用语音控制",
+      "keyword": "语音控制",
+      "gaps": [
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E5"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E3",
+            "E7"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 5,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "上门安装前需先完成现场勘查，勘查后出具书面结论与设备配件核对清单。",
+          "evidence_ids": [
+            "E2"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "勘查阶段要扫描无线信道，避开同频邻频干扰，并确认是否有人私接接入点。",
+          "evidence_ids": [
+            "E7"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "上架前先确认机柜接地良好，接地电阻不符合规范时不要通电。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "设备是否具备语音控制及唤醒方式，材料不足，未找到相关说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 18,
+      "evidence_state": "partial",
+      "strong_model_fallback": "strong model failed",
+      "sub_search_degraded": [],
+      "duration_ms": 89735,
+      "points": [
+        "上门前先勘察安装位置与空间尺寸",
+        "上门前确认电源网络和墙体管线条件",
+        "设备是否具备语音控制及唤醒方式"
+      ],
+      "answer": "上门安装前需先完成现场勘查，勘查后出具书面结论与设备配件核对清单。（E2）\n勘查阶段要扫描无线信道，避开同频邻频干扰，并确认是否有人私接接入点。（E7）\n上架前先确认机柜接地良好，接地电阻不符合规范时不要通电。（E1）\n设备是否具备语音控制及唤醒方式，材料不足，未找到相关说明。（材料不足）"
+    },
+    {
+      "case": "A08",
+      "group": "A",
+      "query": "请求签名的时间戳允许多少秒偏差；另外能不能用苹果手机扫码登录管理后台",
+      "keyword": "苹果",
+      "gaps": [
+        "A1",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E3",
+            "E5"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "no_new_evidence",
+      "answered": false,
+      "answer_rejected_reason": "unresolved evidence reference",
+      "citations": [],
+      "insufficient": 0,
+      "declared_insufficient": false,
+      "gap_declaration_count": 0,
+      "materials": 5,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [
+        "vector search failed"
+      ],
+      "duration_ms": 63187,
+      "points": [
+        "请求签名时间戳与服务端时间允许的偏差秒数上限",
+        "时间戳偏差超出允许值时的报错与签名失效处理",
+        "管理后台能否用苹果手机扫码登录"
+      ],
+      "answer": null
+    },
+    {
+      "case": "A09",
+      "group": "A",
+      "query": "旧机器能抵钱换新的吗；另外能不能以租代购",
+      "keyword": "以租代购",
+      "gaps": [
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "可以：以旧换新适用于存量老机型升级，旧机按型号与成色估价并直接抵扣新机价款，不产生现金退款。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到以租代购服务及其申请条件的相关内容。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 12,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 39796,
+      "points": [
+        "旧机器折价换新是否支持",
+        "旧机折价评估与抵扣规则",
+        "以租代购服务及申请条件"
+      ],
+      "answer": "可以：以旧换新适用于存量老机型升级，旧机按型号与成色估价并直接抵扣新机价款，不产生现金退款。（E1）\n材料不足：未找到以租代购服务及其申请条件的相关内容。（材料不足）"
+    },
+    {
+      "case": "A10",
+      "group": "A",
+      "query": "变更窗口是什么时候，窗口结束前要做什么；另外值班排班能不能用钉钉",
+      "keyword": "钉钉",
+      "gaps": [
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E3"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E3",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "常规变更窗口为工作日22点至次日2点，数据库变更窗口为周六凌晨。",
+          "evidence_ids": [
+            "E3"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "窗口结束前30分钟必须开始验证，验证未通过按回滚处理。",
+          "evidence_ids": [
+            "E3"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足，未找到值班排班是否允许使用钉钉的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 1,
+      "declared_insufficient": true,
+      "gap_declaration_count": 2,
+      "materials": 14,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [
+        "vector search failed"
+      ],
+      "duration_ms": 33437,
+      "points": [
+        "变更窗口的具体起止时间安排",
+        "窗口结束前必须完成的验证与收尾动作",
+        "值班排班是否允许使用钉钉工具"
+      ],
+      "answer": "常规变更窗口为工作日22点至次日2点，数据库变更窗口为周六凌晨。（E3）\n窗口结束前30分钟必须开始验证，验证未通过按回滚处理。（E3）\n材料不足，未找到值班排班是否允许使用钉钉的说明。（材料不足）"
+    }
+  ],
+  "groups_run": [
+    "A"
+  ],
+  "metrics": {
+    "cases": 10,
+    "缺口出现率": {
+      "value": 1.0,
+      "numerator": 10,
+      "denominator": 10
+    },
+    "拦截率": {
+      "value": 0.0,
+      "numerator": 0,
+      "denominator": 10
+    },
+    "⑤ 触发率": {
+      "value": 0.8,
+      "numerator": 8,
+      "denominator": 10
+    },
+    "unknown 残留率": {
+      "value": 0.0,
+      "numerator": 0,
+      "denominator": 10
+    },
+    "声明对齐度": {
+      "cases_with_gaps": 10,
+      "pairs": {
+        "1→1": 5,
+        "2→0": 1,
+        "2→2": 3,
+        "3→0": 1
+      },
+      "exact": 8,
+      "exact_rate": 0.8,
+      "under": 2,
+      "under_rate": 0.2,
+      "over": 0,
+      "over_rate": 0.0,
+      "declared_without_gaps": 0
+    },
+    "gap_case_outcomes": {
+      "declared": 8,
+      "blocked": 0,
+      "rejected_other": 2,
+      "leaked": 0,
+      "by_group": {
+        "A": {
+          "declared": 8,
+          "blocked": 0,
+          "rejected_other": 2,
+          "cases": 10
+        }
+      },
+      "blocked_by_group": {
+        "A": 0
+      },
+      "declared_by_group": {
+        "A": 8
+      }
+    },
+    "by_group": {
+      "A": {
+        "缺口出现率": {
+          "value": 1.0,
+          "numerator": 10,
+          "denominator": 10
+        },
+        "拦截率": {
+          "value": 0.0,
+          "numerator": 0,
+          "denominator": 10
+        },
+        "⑤ 触发率": {
+          "value": 0.8,
+          "numerator": 8,
+          "denominator": 10
+        },
+        "unknown 残留率": {
+          "value": 0.0,
+          "numerator": 0,
+          "denominator": 10
+        }
+      },
+      "B": {
+        "缺口出现率": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0
+        },
+        "拦截率": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0
+        },
+        "⑤ 触发率": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0
+        },
+        "unknown 残留率": {
+          "value": null,
+          "numerator": 0,
+          "denominator": 0
+        }
+      },
+      "声明对齐度": {
+        "A": {
+          "cases_with_gaps": 10,
+          "pairs": {
+            "1→1": 5,
+            "2→0": 1,
+            "2→2": 3,
+            "3→0": 1
+          },
+          "exact": 8,
+          "exact_rate": 0.8,
+          "under": 2,
+          "under_rate": 0.2,
+          "over": 0,
+          "over_rate": 0.0,
+          "declared_without_gaps": 0
+        },
+        "B": {
+          "cases_with_gaps": 0,
+          "pairs": {},
+          "exact": 0,
+          "exact_rate": null,
+          "under": 0,
+          "under_rate": null,
+          "over": 0,
+          "over_rate": null,
+          "declared_without_gaps": 0
+        }
+      }
+    }
+  }
+}
