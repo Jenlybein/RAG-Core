@@ -1268,14 +1268,14 @@ async def _run(args: argparse.Namespace) -> int:
     docs = ev._load_corpus(layouts)
     kb_ids = [layout.kb_id for layout in layouts]
 
-    db = ev.SessionLocal()
+    db = ev.AsyncSessionLocal()
     try:
         if not args.reuse:
             es_state = ev._reset_elasticsearch(live.elasticsearch_index)
-            pg_counts = ev._reset_postgres(db)
+            pg_counts = await ev._reset_postgres(db)
             print(f"reset     : es {es_state}; pg {pg_counts}")
             for layout in layouts:
-                ev._ensure_knowledge_base(
+                await ev._ensure_knowledge_base(
                     db,
                     kb_id=layout.kb_id,
                     name=layout.name,
@@ -1283,13 +1283,13 @@ async def _run(args: argparse.Namespace) -> int:
                     split_strategy=resolved["split_strategy"],
                 )
             for doc in docs:
-                ev._ensure_document(db, doc)
+                await ev._ensure_document(db, doc)
             indexed = await ev._index_documents(db, docs)
             print(
                 f"indexed   : {sum(indexed.values())} chunks in {time.perf_counter() - started:.1f}s"
             )
 
-        chunks = ev._load_indexed_chunks(db)
+        chunks = await ev._load_indexed_chunks(db)
         labels, _traps = ev._resolve_labels(questions, chunks)
         corpus_block["chunks"] = len(chunks)
         corpus_block["documents"] = len({chunk.document_id for chunk in chunks})
@@ -1316,7 +1316,7 @@ async def _run(args: argparse.Namespace) -> int:
             rerank_factory=rerank_factory,
         )
     finally:
-        db.close()
+        await db.close()
 
     http_smoke = None
     if args.via_http:
@@ -1426,6 +1426,10 @@ def cmd_run(args: argparse.Namespace) -> int:
     # run id 只生成一次：失败档案与正常档案必须落在同一个目录，否则「那一次」会变成两条记录。
     args.run_id = args.run_id or utc_stamp()
     run_dir = RUNS_DIR / args.run_id
+    # 事件循环策略（票 #157）：psycopg 的异步连接在 Windows 缺省的 Proactor 循环上直接
+    # 拒绝工作，而这只在真库上炸——离线套件永远跑到不到。运维脚本们早已钉了同一套。
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         return asyncio.run(_run(args))
     except SystemExit as exc:

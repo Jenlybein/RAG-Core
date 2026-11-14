@@ -149,8 +149,8 @@ from app.core.config import settings  # noqa: E402
 from app.utils.report_format import as_metric  # noqa: E402
 from app.core.exceptions import AppError  # noqa: E402
 from app.db.base import Base, now  # noqa: E402
-from app.db.async_session import AsyncSessionLocal  # noqa: E402
-from app.db.session import SessionLocal, engine  # noqa: E402
+from app.db.async_session import AsyncSessionLocal, async_engine  # noqa: E402
+from app.db.transaction import async_transaction  # noqa: E402
 from app.models import Chunk, Document, KnowledgeBase  # noqa: E402
 from app.models.knowledge_base import (  # noqa: E402
     SPLIT_STRATEGIES,
@@ -308,9 +308,17 @@ async def _preflight() -> LiveEnvironment:
         raise SystemExit("评测环境未就绪:\n  - " + "\n  - ".join(problems))
 
     missing_tables: list[str] = []
-    with engine.connect() as connection:
+    # 建库就绪检查也走异步引擎（票 #157）：脚本的自始至终只有一个循环、一个引擎体系，
+    # 不在这里插一次同步 ``engine.connect()``。``run_sync`` 是 SQLAlchemy 给「只有同步
+    # 写法」的反射用的那个口子，``has_table`` 正好属于这一类。
+    async with async_engine.connect() as connection:
         for table in Base.metadata.sorted_tables:
-            if not engine.dialect.has_table(connection, table.name):
+            found = await connection.run_sync(
+                lambda sync_connection, name=table.name: async_engine.dialect.has_table(
+                    sync_connection, name
+                )
+            )
+            if not found:
                 missing_tables.append(table.name)
     if missing_tables:
         raise SystemExit(f"数据库缺表 {missing_tables}；先跑 `uv run alembic upgrade head`。")
@@ -487,44 +495,57 @@ def _assert_query_analyzer(index_name: str) -> None:
         )
 
 
-def _reset_postgres(db: Any) -> dict[str, int]:
-    """删掉评测租户下 manifest 列出的全部知识库的行；其他数据一行不动。"""
+async def _reset_postgres(db: Any) -> dict[str, int]:
+    """删掉评测租户下 manifest 列出的全部知识库的行；其他数据一行不动。
+
+    **协程**（票 #157）：检索链路从 #130 / #132 起是异步的，评测脚本要拿同一个会话既清库
+    又检索，那这个会话就必须是 ``AsyncSession``。提交点是 ``async_transaction``（与请求
+    路径同一个收口点），不在服务层裸提交。
+
+    顺序不能换：先切片、再文档、最后知识库——反过来撞外键，而真库上这一步只是「报了个
+    看起来像配置问题的错」。
+    """
 
     from sqlalchemy import delete
 
-    counts = {
-        "chunks": int(
-            db.execute(
-                delete(Chunk).where(
-                    Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids())
+    async with async_transaction(db):
+        chunk_count = int(
+            (
+                await db.execute(
+                    delete(Chunk).where(
+                        Chunk.tenant_id == settings.DEV_TENANT_ID,
+                        Chunk.kb_id.in_(_eval_kb_ids()),
+                    )
                 )
             ).rowcount
             or 0
-        ),
-        "documents": int(
-            db.execute(
-                delete(Document).where(
-                    Document.tenant_id == settings.DEV_TENANT_ID,
-                    Document.kb_id.in_(_eval_kb_ids()),
+        )
+        document_count = int(
+            (
+                await db.execute(
+                    delete(Document).where(
+                        Document.tenant_id == settings.DEV_TENANT_ID,
+                        Document.kb_id.in_(_eval_kb_ids()),
+                    )
                 )
             ).rowcount
             or 0
-        ),
-        "knowledge_bases": int(
-            db.execute(
-                delete(KnowledgeBase).where(
-                    KnowledgeBase.tenant_id == settings.DEV_TENANT_ID,
-                    KnowledgeBase.id.in_(_eval_kb_ids()),
+        )
+        kb_count = int(
+            (
+                await db.execute(
+                    delete(KnowledgeBase).where(
+                        KnowledgeBase.tenant_id == settings.DEV_TENANT_ID,
+                        KnowledgeBase.id.in_(_eval_kb_ids()),
+                    )
                 )
             ).rowcount
             or 0
-        ),
-    }
-    db.commit()
-    return counts
+        )
+    return {"chunks": chunk_count, "documents": document_count, "knowledge_bases": kb_count}
 
 
-def _ensure_knowledge_base(
+async def _ensure_knowledge_base(
     db: Any, *, kb_id: str, name: str, description: str, split_strategy: str
 ) -> None:
     """按给定策略建评测库；已存在且策略不同的库直接拒绝，不在旧库上凑合。
@@ -538,7 +559,7 @@ def _ensure_knowledge_base(
     得重建，与其让标注解析在后面报一串「找不到」，不如在这里一句话说清。
     """
 
-    existing = db.get(KnowledgeBase, kb_id)
+    existing = await db.get(KnowledgeBase, kb_id)
     if existing is not None:
         if existing.split_strategy != split_strategy:
             raise SystemExit(
@@ -547,52 +568,52 @@ def _ensure_knowledge_base(
                 "——改配置补不回旧的切法。"
             )
         return
-    db.add(
-        KnowledgeBase(
-            id=kb_id,
-            tenant_id=settings.DEV_TENANT_ID,
-            name=name,
-            description=description,
-            split_strategy=split_strategy,
-            allowed_formats=resolve_formats(split_strategy, None),
-            # 同义词表留空：本票的对比里同义词扩展是关的（第三变量），
-            # 留空也顺便证明「默认配置下同义词题只能靠语义兜」。
-            settings={},
+    async with async_transaction(db):
+        db.add(
+            KnowledgeBase(
+                id=kb_id,
+                tenant_id=settings.DEV_TENANT_ID,
+                name=name,
+                description=description,
+                split_strategy=split_strategy,
+                allowed_formats=resolve_formats(split_strategy, None),
+                # 同义词表留空：本票的对比里同义词扩展是关的（第三变量），
+                # 留空也顺便证明「默认配置下同义词题只能靠语义兜」。
+                settings={},
+            )
         )
-    )
-    db.commit()
 
 
-def _ensure_document(db: Any, doc: CorpusDoc) -> None:
+async def _ensure_document(db: Any, doc: CorpusDoc) -> None:
     """把文档重置成「已排队、未开工」——与运维脚本用的那个状态准备一致。
 
     ``status=PROCESSING`` + ``index_claimed_at=NULL`` 正好是 Worker 可抢占的条件，
     所以重跑不会撞上「另一位 Worker 持有租约」而静默跳过。
     """
 
-    row = db.get(Document, doc.document_id)
-    if row is None:
-        db.add(
-            Document(
-                id=doc.document_id,
-                tenant_id=settings.DEV_TENANT_ID,
-                kb_id=doc.kb_id,
-                title=doc.title,
-                content=doc.text,
-                source_type="markdown",
-                status=DocumentStatus.PROCESSING,
-                index_claimed_at=None,
+    row = await db.get(Document, doc.document_id)
+    async with async_transaction(db):
+        if row is None:
+            db.add(
+                Document(
+                    id=doc.document_id,
+                    tenant_id=settings.DEV_TENANT_ID,
+                    kb_id=doc.kb_id,
+                    title=doc.title,
+                    content=doc.text,
+                    source_type="markdown",
+                    status=DocumentStatus.PROCESSING,
+                    index_claimed_at=None,
+                )
             )
-        )
-    else:
-        row.kb_id = doc.kb_id
-        row.title = doc.title
-        row.content = doc.text
-        row.status = DocumentStatus.PROCESSING
-        row.index_claimed_at = None
-        row.error_message = None
-        row.updated_at = now()
-    db.commit()
+        else:
+            row.kb_id = doc.kb_id
+            row.title = doc.title
+            row.content = doc.text
+            row.status = DocumentStatus.PROCESSING
+            row.index_claimed_at = None
+            row.error_message = None
+            row.updated_at = now()
 
 
 async def _index_documents(db: Any, docs: Sequence[CorpusDoc]) -> dict[str, int]:
@@ -618,14 +639,20 @@ class IndexedChunk:
     content_head: str
 
 
-def _load_indexed_chunks(db: Any) -> list[IndexedChunk]:
+async def _load_indexed_chunks(db: Any) -> list[IndexedChunk]:
+    """读评测库里的已索引切片，供标签解析用（**协程**，票 #157 的第六处之一）。
+
+    与检索共用同一个 ``AsyncSession``：标签解析读的是「刚刚索引出来的那批行」，
+    换一个会话读就等于让解析与检索看的可能不是同一个快照。
+    """
+
     from sqlalchemy import select
 
     stmt = select(Chunk).where(
         Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids())
     )
     chunks: list[IndexedChunk] = []
-    for row in db.execute(stmt).scalars().all():
+    for row in (await db.execute(stmt)).scalars().all():
         meta = row.meta or {}
         chunks.append(
             IndexedChunk(
@@ -1836,7 +1863,7 @@ async def _run(args: argparse.Namespace) -> int:
     _assert_eval_index(index_name)
 
     if args.cleanup:
-        return _cleanup(db_factory=SessionLocal, index_name=index_name)
+        return await _cleanup(index_name=index_name)
 
     environment = await _preflight()
     questions, question_k = _load_questions()
@@ -1845,13 +1872,14 @@ async def _run(args: argparse.Namespace) -> int:
     layouts, empty_kb_id = _load_manifest()
     docs = _load_corpus(layouts)
 
-    db = SessionLocal()
-    # 检索链路在异步栈上（第 11 步票 #127）：索引与既有读仍走同步 ``db``，
-    # 召回走这一条。两个会话各管一段，评测口径不变。
-    async_db = AsyncSessionLocal()
+    # 一个会话走到底（票 #157）：检索链路在异步栈上（#127 起），清库 / 建库 / 建文档 /
+    # 索引 / 标签解析 / 打分六处必须与它共用同一个 ``AsyncSession``。以前这里是
+    # 「同步 db 管写、异步 db 管查」两个会话，写那一半一碰协程就炸
+    # ``ChunkedIteratorResult can't be used in 'await' expression``。
+    db = AsyncSessionLocal()
     try:
         if args.degraded_probe:
-            probe = await _run_degraded_probe(async_db, top_k=top_k)
+            probe = await _run_degraded_probe(db, top_k=top_k)
             print("\n=== degraded probe (A6 / A7) ===")
             for key in ("A6", "A7"):
                 item = probe[key]
@@ -1866,7 +1894,7 @@ async def _run(args: argparse.Namespace) -> int:
 
         index_stats: dict[str, int] = {}
         if args.reuse:
-            existing = _load_indexed_chunks(db)
+            existing = await _load_indexed_chunks(db)
             if not existing:
                 raise SystemExit("--reuse 需要已有切片，但评测库里是空的；去掉 --reuse 重跑。")
             # 只复用**同代 mapping** 的索引：跨分析器版本复用会静默测出旧口径的分数。
@@ -1875,17 +1903,17 @@ async def _run(args: argparse.Namespace) -> int:
         else:
             began = time.perf_counter()
             es_state = _reset_elasticsearch(index_name)
-            pg_counts = _reset_postgres(db)
+            pg_counts = await _reset_postgres(db)
             print(f"reset    : es index {es_state}; pg {pg_counts}")
             for layout in layouts:
-                _ensure_knowledge_base(
+                await _ensure_knowledge_base(
                     db,
                     kb_id=layout.kb_id,
                     name=layout.name,
                     description=layout.description,
                     split_strategy=args.split_strategy,
                 )
-            _ensure_knowledge_base(
+            await _ensure_knowledge_base(
                 db,
                 kb_id=empty_kb_id,
                 name="评测语料库·空库",
@@ -1893,11 +1921,11 @@ async def _run(args: argparse.Namespace) -> int:
                 split_strategy=args.split_strategy,
             )
             for doc in docs:
-                _ensure_document(db, doc)
+                await _ensure_document(db, doc)
             index_stats = await _index_documents(db, docs)
             print(f"indexed  : {index_stats} in {time.perf_counter() - began:.1f}s")
 
-        chunks = _load_indexed_chunks(db)
+        chunks = await _load_indexed_chunks(db)
         chunk_by_id = {chunk.chunk_id: chunk for chunk in chunks}
         labels, traps = _resolve_labels(questions, chunks)
         corpus_stats = {
@@ -1922,7 +1950,7 @@ async def _run(args: argparse.Namespace) -> int:
         groups: dict[str, dict[str, Any]] = {}
         for mode in MODE_ORDER:
             groups[mode] = await _run_group(
-                async_db,
+                db,
                 questions,
                 labels,
                 traps,
@@ -1948,7 +1976,7 @@ async def _run(args: argparse.Namespace) -> int:
             print(f"rewrite  : SKIPPED ({environment.llm_probe})")
         else:
             rewrite_off = await _run_group(
-                async_db,
+                db,
                 questions,
                 labels,
                 traps,
@@ -1959,7 +1987,7 @@ async def _run(args: argparse.Namespace) -> int:
             )
             settings.QUERY_REWRITE_ENABLED = True
             rewrite_on = await _run_group(
-                async_db,
+                db,
                 questions,
                 labels,
                 traps,
@@ -1981,7 +2009,7 @@ async def _run(args: argparse.Namespace) -> int:
 
         print("\n=== acceptance ===")
         acceptance = await _run_acceptance(
-            async_db,
+            db,
             groups=groups,
             labels=labels,
             top_k=top_k,
@@ -2046,16 +2074,17 @@ async def _run(args: argparse.Namespace) -> int:
         failed = [check["id"] for check in acceptance if not check["passed"]]
         return 1 if failed else 0
     finally:
-        await async_db.close()
-        db.close()
+        await db.close()
 
 
-def _cleanup(*, db_factory: Any, index_name: str) -> int:
-    db = db_factory()
+async def _cleanup(*, index_name: str) -> int:
+    """``--cleanup``：删评测租户的行与评测索引。**协程**——清库那一半是异步的。"""
+
+    db = AsyncSessionLocal()
     try:
-        counts = _reset_postgres(db)
+        counts = await _reset_postgres(db)
     finally:
-        db.close()
+        await db.close()
     index_state = _reset_elasticsearch(index_name)
     print(f"cleanup  : es index {index_name} {index_state}; pg {counts}")
     return 0
@@ -2110,6 +2139,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _build_parser().parse_args(argv)
+    # 事件循环策略必须钉（票 #157）：psycopg 的异步连接在 Windows 缺省的
+    # ``ProactorEventLoop`` 上直接拒绝工作（``Psycopg cannot use the
+    # 'ProactorEventLoop' to run in async mode``）。离线套件不会跑到这一行，所以漏了
+    # 它的症状是「测试全绿、第一次连库就炸」。其余运维脚本早就是这套写法。
+    if sys.platform == "win32":
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:
         return asyncio.run(_run(args))
     except KeyboardInterrupt:

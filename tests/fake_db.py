@@ -117,6 +117,17 @@ class _Rows:
     def __init__(self, values: list[Any]) -> None:
         self._values = list(values)
 
+    @property
+    def rowcount(self) -> int:
+        """DML 的收尾（``DELETE ...`` 之后读 ``result.rowcount``）：真 ``CursorResult`` 有它。
+
+        替身按「这一组预置值就是受影响的行」回答：清库那类批量删除读到的是被删了几行，
+        而替身不去模拟行的变化，所以这个数只对**预置了行**的用例有意义（空预置 → 0）。
+        ``scripts/eval_retrieval.py::_reset_postgres`` 要它，票 #157 的清库改造踩到。
+        """
+
+        return len(self._values)
+
     def scalars(self) -> _Rows:
         return self
 
