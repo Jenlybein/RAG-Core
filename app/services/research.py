@@ -1,7 +1,7 @@
 """受控 Research：固定五步状态机（第 11 步票 #148 / #149）。
 
 ```text
-① 规划        问题 → ≤5 个要点 + ≤3 条首轮查询（每条查询绑定一个要点）
+① 规划        问题 → ≤5 个要点 + 每个要点各一条首轮查询（≤3 条被执行）
       │ 失败 → 退回原问题跑一次普通检索，code 0，停止原因 degraded
 ② 并行检索    每条查询各跑一次「检索内核」（asyncio.gather）
       │
@@ -214,10 +214,11 @@ class ResearchOutcome:
 
 _PLANNER_SYSTEM = (
     "你在为一次知识库检索做计划。给定用户的问题：第一，列出回答它需要的要点，"
-    f"每个要点一句不超过 30 字的中文，最多 {MAX_POINTS} 个；第二，为这些要点分别给一条"
-    f"可以直接拿去检索的查询，最多 {MAX_FIRST_ROUND_QUERIES} 条，每条查询绑定一个要点序号"
-    "（从 1 起）。要求：只做检索计划，不要生成答案正文，不要复述材料，不要输出切片 id "
-    "或文档 id；查询写成文档里可能出现的陈述句，不要写成向助手提的问句。"
+    f"每个要点一句不超过 30 字的中文，最多 {MAX_POINTS} 个；第二，为**每一个**要点各给一条"
+    f"可以直接拿去检索的查询（一个要点一条，一条都不能少），每条查询绑定它对应的要点序号"
+    f"（从 1 起）；首轮最多执行 {MAX_FIRST_ROUND_QUERIES} 条查询，所以**宁可少列要点，也不要"
+    "列出一个没有查询的要点**。要求：只做检索计划，不要生成答案正文，不要复述材料，不要输出"
+    "切片 id 或文档 id；查询写成文档里可能出现的陈述句，不要写成向助手提的问句。"
 )
 
 _DECIDER_SYSTEM = (
@@ -395,6 +396,28 @@ def _bound_queries(
     return bound
 
 
+def _require_every_point_queried(
+    pairs: Sequence[tuple[int, str]], *, points: Sequence[PlanPoint]
+) -> None:
+    """**每个要点都必须有一条绑定它的检索查询**，少一条这份计划就不成立。
+
+    为什么这是硬性失败，而不是「补一条空查询」或「把这个要点去掉」：
+
+    * 补一条空查询：那一次检索等于没查，而覆盖判定会把「没查过」判成「材料里没有」——
+      凭空造出一个假缺口；
+    * 去掉这个要点：缺口根本不会出现——那正是 ADR-0029 决策三点名的盲区（输出空间里没有
+      「没有」）；要点是从**问题**里分解出来的，不许被材料侧的可行性倒删。
+
+    所以一个没配上查询的要点只有一种诚实处置：承认这份计划没成立，退回原问题跑一次普通
+    检索（规划失败的那条降级出口）。上限截断（:data:`MAX_FIRST_ROUND_QUERIES`）在**这条
+    检查之后**发生：截断影响的是「执行几条」，不是「计划里有没有」。
+    """
+
+    queried = {point for point, _text in pairs}
+    if any(index not in queried for index in range(1, len(points) + 1)):
+        raise _IllegalOutput("a point without a retrieval query")
+
+
 def _coerce_plan(raw: Any) -> tuple[list[PlanPoint], list[PlanQuery]]:
     """规划输出 → (要点清单, 首轮查询)。任一处不合法都抛 :class:`_IllegalOutput`。"""
 
@@ -402,7 +425,9 @@ def _coerce_plan(raw: Any) -> tuple[list[PlanPoint], list[PlanQuery]]:
     points = [
         PlanPoint(point_id=f"A{index}", text=text) for index, text in enumerate(texts, start=1)
     ]
-    queries = _bound_queries(_coerce_query_items(raw), points=points, round_no=1)
+    pairs = _coerce_query_items(raw)
+    _require_every_point_queried(pairs, points=points)
+    queries = _bound_queries(pairs, points=points, round_no=1)
     if not queries:
         # 要点有了、查询一条都没有：这不构成一次检索计划（没法检索）。按规划失败处理，
         # 退回原问题跑一次普通检索——比交回一份「有要点、没材料」的材料诚实。

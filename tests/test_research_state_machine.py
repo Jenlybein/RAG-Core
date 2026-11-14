@@ -357,22 +357,25 @@ def test_a_duplicate_followup_query_is_never_sent_twice() -> None:
 
 
 def test_the_point_cap_truncates_the_plan_to_five_points() -> None:
-    """模型给了 6 个要点 → 计划里只留 5 个（截断后的计划就是实际执行的那一份）。"""
+    """模型给了 6 个要点 → 计划里只留 5 个（截断后的计划就是实际执行的那一份）。
+
+    **票 #164 起这条用例的形状变了**（不是放宽，是变严）：每个要点都配了一条查询，于是
+    「截断到 5 个要点」与「首轮只执行 3 条查询」在同一次断言里同时成立——被截掉的那个要点
+    连它的查询一起消失，而留下的 5 个要点都各自有一条查询（覆盖率式的旧写法只断言前 5 个
+    要点还在，说不出「它们有没有被检索过」）。
+    """
 
     points = ["P1", "P2", "P3", "P4", "P5", "P6"]
     plan = _plan(
         points=points,
-        queries=[
-            {"point": 1, "query": "查询一"},
-            {"point": 2, "query": "查询二"},
-        ],
+        queries=[{"point": index, "query": f"查询{index}"} for index in range(1, 6)],
     )
 
     outcome, _, probe = _run(plan, _covered(), search=_Search(default=[_row("a")]))
 
     assert [point.text for point in outcome.points] == points[:MAX_POINTS]
     assert len(outcome.points) == MAX_POINTS == 5
-    assert probe.calls == ["查询一", "查询二"]
+    assert probe.calls == [f"查询{index}" for index in range(1, MAX_FIRST_ROUND_QUERIES + 1)]
 
 
 def test_the_first_round_cap_keeps_at_most_three_searches() -> None:
