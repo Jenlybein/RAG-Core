@@ -1,7 +1,7 @@
-# 评测门禁报告 · 20261114T131405Z
+# 评测门禁报告 · 20261114T132359Z
 
-- 生成时间：2026-11-14T13:14:06+00:00
-- 归档目录：`eval/runs/20261114T131405Z`（`report.md` + `results.json` + `environment.json`）
+- 生成时间：2026-11-14T13:24:01+00:00
+- 归档目录：`eval/runs/20261114T132359Z`（`report.md` + `results.json` + `environment.json`）
 - 状态：**绿（通过）**
 
 > 门禁指标零 LLM 依赖：两个数只用 chunk id 与标注算，不需要裁判模型。
@@ -10,16 +10,16 @@
 
 | 项 | 值 | 复现命令 |
 | --- | --- | --- |
-| 检索方式 | 进程内 `retrieve()`（真实 PostgreSQL + Elasticsearch + 嵌入；不经 HTTP） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.retrieval.mode` |
-| 检索模式 / 返回条数 | hybrid / top_k=5 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.retrieval` |
-| 嵌入模型 | qwen3.7-text-embedding（1536 维，langchain） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.embedding.model` |
-| 关键词一路 | elasticsearch / 索引 rag_chunks_eval | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.keyword.index` |
-| 语料版本 | `1946e4e5954f`：21 篇 / 469 片 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select corpus.version` |
-| 切块口径 | structure / 800（overlap 100，表格行上限 10）（这一行与语料版本一起决定「两次跑是不是同一把尺子」） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.chunking` |
-| 题库 | 137 道（进主平均 127 道；排除 absent 6、false_premise 4） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.excluded` |
-| 重排预算 | 超时 15s / 候选封顶 20 片 / 单条截断 1024 字符 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.retrieval.rerank_timeout_seconds` |
-| 开关状态 | 重排 关、改写 关、同义词扩展 关 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.retrieval` |
-| 门禁指标 | ragas ID 版 `context_precision` / `context_recall`（只吃 chunk id，零 LLM、零外部服务） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select environment.gate_metrics` |
+| 检索方式 | 进程内 `retrieve()`（真实 PostgreSQL + Elasticsearch + 嵌入；不经 HTTP） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.retrieval.mode` |
+| 检索模式 / 返回条数 | hybrid / top_k=5 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.retrieval` |
+| 嵌入模型 | qwen3.7-text-embedding（1536 维，langchain） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.embedding.model` |
+| 关键词一路 | elasticsearch / 索引 rag_chunks_eval | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.keyword.index` |
+| 语料版本 | `1946e4e5954f`：21 篇 / 469 片 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select corpus.version` |
+| 切块口径 | structure / 800（overlap 100，表格行上限 10）（这一行与语料版本一起决定「两次跑是不是同一把尺子」） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.chunking` |
+| 题库 | 137 道（进主平均 127 道；排除 absent 6、false_premise 4） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.excluded` |
+| 重排预算 | 超时 15s / 候选封顶 20 片 / 单条截断 1024 字符 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.retrieval.rerank_timeout_seconds` |
+| 开关状态 | 重排 关、改写 关、同义词扩展 关 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.retrieval` |
+| 门禁指标 | ragas ID 版 `context_precision` / `context_recall`（只吃 chunk id，零 LLM、零外部服务） | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select environment.gate_metrics` |
 
 完整环境快照（运行时 / git 提交 / 全部开关）见同目录的 `environment.json`。
 
@@ -35,36 +35,36 @@
 
 | 指标 | 本次 | 基线 | Δ(pp) | 判据 | 结论 | 复现命令 |
 | --- | --- | --- | --- | --- | --- | --- |
-| context_precision | 0.2220 | 0.2220 | +0.00 | ≥ -1.00pp | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.overall.context_precision` |
-| context_recall | 0.8717 | 0.8717 | +0.00 | ≥ -1.00pp | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.overall.context_recall` |
+| context_precision | 0.2220 | 0.2220 | +0.00 | ≥ -1.00pp | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.overall.context_precision` |
+| context_recall | 0.8717 | 0.8717 | +0.00 | ≥ -1.00pp | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.overall.context_recall` |
 
 ### 分题型（单类退化 > 3pp 判红；题数为本次进平均的题数）
 
 | 题型 | 题数 | CP | ΔCP(pp) | CR | ΔCR(pp) | 结论 | 复现命令 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| colloquial | 11 | 0.1636 | +0.00 | 0.8182 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.colloquial` |
-| counterfactual | 13 | 0.1846 | +0.00 | 0.9231 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.counterfactual` |
-| cross_section | 17 | 0.3059 | +0.00 | 0.6395 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.cross_section` |
-| exact_code | 5 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.exact_code` |
-| model_number | 15 | 0.2267 | +0.00 | 0.9048 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.model_number` |
-| negative_scope | 14 | 0.2143 | +0.00 | 0.9524 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.negative_scope` |
-| noise_robust | 17 | 0.2000 | +0.00 | 0.9020 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.noise_robust` |
-| rare_token | 6 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.rare_token` |
-| synonym | 12 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.synonym` |
-| table_lookup | 17 | 0.2588 | +0.00 | 0.7996 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.by_type.table_lookup` |
+| colloquial | 11 | 0.1636 | +0.00 | 0.8182 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.colloquial` |
+| counterfactual | 13 | 0.1846 | +0.00 | 0.9231 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.counterfactual` |
+| cross_section | 17 | 0.3059 | +0.00 | 0.6395 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.cross_section` |
+| exact_code | 5 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.exact_code` |
+| model_number | 15 | 0.2267 | +0.00 | 0.9048 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.model_number` |
+| negative_scope | 14 | 0.2143 | +0.00 | 0.9524 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.negative_scope` |
+| noise_robust | 17 | 0.2000 | +0.00 | 0.9020 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.noise_robust` |
+| rare_token | 6 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.rare_token` |
+| synonym | 12 | 0.2000 | +0.00 | 1.0000 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.synonym` |
+| table_lookup | 17 | 0.2588 | +0.00 | 0.7996 | +0.00 | 通过 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.by_type.table_lookup` |
 
 ## 延迟（逐题耗时，P50 / P95）
 
-来源：`uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.latency`，即逐题明细里每一道的 `duration_ms`（与 CP/CR 同一份归档，没有另采一次）。它**不参与门禁**：判据只有 CP / CR 两条。
+来源：`uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.latency`，即逐题明细里每一道的 `duration_ms`（与 CP/CR 同一份归档，没有另采一次）。它**不参与门禁**：判据只有 CP / CR 两条。
 
-- 题数：127 道（没被计时的题不进分母）；整轮总时长 39.48s。
+- 题数：127 道（没被计时的题不进分母）；整轮总时长 39.59s。
 
 | 指标 | 毫秒 | 复现命令 |
 | --- | --- | --- |
-| 均值 | 247.6 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.latency` |
-| P50 | 237.1 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.latency` |
-| P95 | 314.9 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.latency` |
-| 最慢 | 436.7 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.latency` |
+| 均值 | 249.8 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.latency` |
+| P50 | 238.6 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.latency` |
+| P95 | 313.7 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.latency` |
+| 最慢 | 410.6 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.latency` |
 
 口径：P50 / P95 取升序第 ⌈p/100 × N⌉ 个（N=127，不插值）——P50 = 第 64 个、P95 = 第 121 个。插值会造出一个从来没发生过的耗时。
 
@@ -75,11 +75,11 @@
 
 | 指标 | 值 | 复现命令 |
 | --- | --- | --- |
-| 应用率（%） | 0.0 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.rerank` |
-| 重排耗时均值（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.rerank` |
-| 重排耗时 P50（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.rerank` |
-| 重排耗时 P95（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.rerank` |
-| 重排耗时最慢（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.rerank` |
+| 应用率（%） | 0.0 | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.rerank` |
+| 重排耗时均值（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.rerank` |
+| 重排耗时 P50（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.rerank` |
+| 重排耗时 P95（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.rerank` |
+| 重排耗时最慢（ms） | n/a | `uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.rerank` |
 
 口径：耗时只统计 `applied=true` 那些题（降级路径里的时长是「失败那次尝试」，混进来就不是「重排要多久」）；分母是**留下了重排事实的题**，检索本身失败的题没有重排可言，不计入。逐题的 `candidates` / `returned` 见 `per_question[*].rerank`——`returned` 是重排吐出的条数（折叠前，开着折叠时是 `top_k × 3`），不是最终返回条数。
 
@@ -89,7 +89,7 @@
 
 ## 逐题明细
 
-来源：`uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select per_question`；每一行是它的第 N 项，`--select per_question.<N>`（0 起）可单独打印。
+来源：`uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select per_question`；每一行是它的第 N 项，`--select per_question.<N>`（0 起）可单独打印。
 
 | # | 题号 | 题型 | 返回 | 标注 | CP | CR | 未评分原因 |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -232,9 +232,9 @@ uv run python scripts/eval_runner.py validate-config
 # 2. 真实跑（进程内检索；需要 PG / ES / 嵌入凭据）
 uv run python scripts/eval_runner.py run --env-file <主 checkout>\.env
 # 3. 重出这份报告（只读归档，不再跑检索）
-uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z
+uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z
 # 4. 单独打印某一个数字（报告里每处数字旁边都写了这条命令）
-uv run python scripts/eval_runner.py report --run eval/runs/20261114T131405Z --select metrics.overall.context_precision
+uv run python scripts/eval_runner.py report --run eval/runs/20261114T132359Z --select metrics.overall.context_precision
 ```
 
 上面每个数字都来自同一份 `results.json`：报告是它的渲染，不是另算一遍。

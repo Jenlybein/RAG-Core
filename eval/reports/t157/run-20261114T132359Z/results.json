@@ -1,11 +1,11 @@
 {
   "schema": "eval-run/1",
-  "run_id": "20261114T131405Z",
-  "run_dir": "eval/runs/20261114T131405Z",
-  "generated_at": "2026-11-14T13:14:06+00:00",
+  "run_id": "20261114T132359Z",
+  "run_dir": "eval/runs/20261114T132359Z",
+  "generated_at": "2026-11-14T13:24:01+00:00",
   "status": "ok",
   "failure": null,
-  "duration_seconds": 39.48,
+  "duration_seconds": 39.59,
   "experiment": {
     "name": "gate-baseline",
     "mode": "hybrid",
@@ -34,8 +34,8 @@
     "labels": 146
   },
   "environment": {
-    "run_id": "20261114T131405Z",
-    "generated_at": "2026-11-14T13:14:06+00:00",
+    "run_id": "20261114T132359Z",
+    "generated_at": "2026-11-14T13:24:01+00:00",
     "schema": "eval-run/1",
     "retrieval": {
       "mode": "hybrid",
@@ -106,7 +106,7 @@
     "runtime": {
       "python": "3.12.14",
       "platform": "Windows-11-10.0.26300-SP0",
-      "git_commit": "57240f5",
+      "git_commit": "5148dfd",
       "git_branch": "t157/eval-infra",
       "git_dirty": false,
       "database": "postgresql+psycopg://postgres:***@localhost:5432/rag_db",
@@ -365,10 +365,10 @@
     "unscored": [],
     "latency": {
       "count": 127,
-      "mean_ms": 247.55338582677163,
-      "p50_ms": 237.12,
-      "p95_ms": 314.85,
-      "max_ms": 436.67
+      "mean_ms": 249.81614173228348,
+      "p50_ms": 238.6,
+      "p95_ms": 313.72,
+      "max_ms": 410.61
     },
     "rerank": {
       "questions": 127,
@@ -405,7 +405,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 238.42,
+      "duration_ms": 225.22,
       "returned_ids": [
         "90eb2fc6-ed44-4f36-b784-7ad2cd80dcf7",
         "c99ddf5d-04f6-432e-908a-c6c2348724b3",
@@ -437,7 +437,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 254.23,
+      "duration_ms": 245.23,
       "returned_ids": [
         "59309fad-0172-4ddb-aa80-febb9c78851d",
         "3e322935-b9d0-4ead-8502-8c5b2697d8f3",
@@ -469,7 +469,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 228.9,
+      "duration_ms": 251.21,
       "returned_ids": [
         "24240cc8-de37-4d7d-b241-9a0ba0292ade",
         "3e322935-b9d0-4ead-8502-8c5b2697d8f3",
@@ -501,7 +501,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 236.38,
+      "duration_ms": 288.09,
       "returned_ids": [
         "eb0a3f15-d119-4395-bd22-be5bccfc4fb5",
         "90eb2fc6-ed44-4f36-b784-7ad2cd80dcf7",
@@ -533,7 +533,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 281.96,
+      "duration_ms": 241.53,
       "returned_ids": [
         "a3b05494-c4d3-4d15-8dba-99bb8f775ef3",
         "b78c7af5-b903-4c75-a1e3-e5912b21bab0",
@@ -565,7 +565,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 266.33,
+      "duration_ms": 225.51,
       "returned_ids": [
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
         "78deba01-7444-4c9d-b32e-d46ce55beb00",
@@ -597,7 +597,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 248.92,
+      "duration_ms": 231.57,
       "returned_ids": [
         "c10745ed-cb55-40c4-aaf5-076935473326",
         "beff5bf1-92a5-4f85-aa25-537fef2c5932",
@@ -629,7 +629,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 227.01,
+      "duration_ms": 300.95,
       "returned_ids": [
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
         "78deba01-7444-4c9d-b32e-d46ce55beb00",
@@ -661,7 +661,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 248.27,
+      "duration_ms": 241.24,
       "returned_ids": [
         "5254bad0-ed18-4f80-be16-9221e39b8131",
         "3f81d86f-af40-42d5-884f-a956d4982b10",
@@ -693,7 +693,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 234.94,
+      "duration_ms": 225.91,
       "returned_ids": [
         "f40800d9-1bc2-419a-8d3c-139f4b36095b",
         "66a79933-efa8-4b1c-a3f9-9be274613397",
@@ -725,7 +725,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 249.97,
+      "duration_ms": 238.82,
       "returned_ids": [
         "1641da1c-64ea-4e5b-80ca-78b367b5fae1",
         "39aaad2c-cc05-459e-84c0-443326cfc652",
@@ -757,7 +757,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 254.83,
+      "duration_ms": 247.5,
       "returned_ids": [
         "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
         "45a2b3ca-756d-471b-a1eb-8796b09830f0",
@@ -789,7 +789,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 246.27,
+      "duration_ms": 224.97,
       "returned_ids": [
         "98f2e6ad-98c4-46e5-9576-7f1b987a9e1b",
         "1126364c-33dc-4948-a4c3-b7e45fbaaa49",
@@ -821,7 +821,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 219.92,
+      "duration_ms": 230.14,
       "returned_ids": [
         "fbfe5da5-40ca-4d23-a3b3-99e3da75e41f",
         "7ef1ab8c-d87a-4289-9c7e-af7910ef882b",
@@ -853,7 +853,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 436.67,
+      "duration_ms": 260.71,
       "returned_ids": [
         "170e3744-9523-4b49-817b-72359c7ae115",
         "b575f477-1caf-445a-9db4-6b83fdaafcda",
@@ -885,7 +885,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 238.57,
+      "duration_ms": 298.02,
       "returned_ids": [
         "9d4c53e1-3135-411c-a0d3-84f26dd709e4",
         "3e376b98-395a-4c89-a54a-39f8516f1fa3",
@@ -918,13 +918,13 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 233.73,
+      "duration_ms": 244.92,
       "returned_ids": [
         "589fbe42-e5f5-4bd7-ad62-dedb9e638e15",
-        "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
         "e92e7388-62e2-4419-a1c0-6b046e4547c4",
-        "1959967c-8ea0-4f37-ae12-790f988aa09f",
-        "958479fd-9f6e-4448-8fbe-0adc919a5b6b"
+        "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
+        "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
+        "1959967c-8ea0-4f37-ae12-790f988aa09f"
       ],
       "reference_ids": [
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
@@ -951,7 +951,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 237.17,
+      "duration_ms": 241.42,
       "returned_ids": [
         "9407907d-489f-4770-8b3b-763d31ccd835",
         "afa4c154-c22d-4e20-a5d4-0834b48d85c6",
@@ -984,7 +984,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 223.05,
+      "duration_ms": 248.71,
       "returned_ids": [
         "6ca829b7-53e4-453a-9026-22a3e80a2ddd",
         "83adbb0d-84c8-420d-b731-5b0aab0cd6fb",
@@ -1017,7 +1017,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 221.83,
+      "duration_ms": 247.91,
       "returned_ids": [
         "93560743-4918-41c8-9918-82df1a7ca372",
         "9e3ee56d-4fdc-439b-b14f-027ad26f61dd",
@@ -1049,7 +1049,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.3,
+      "duration_ms": 224.11,
       "returned_ids": [
         "829f37ce-4431-4541-8943-ca5f0ee1865d",
         "e0731645-5879-4cac-a634-b0baeb9a1174",
@@ -1081,7 +1081,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 251.66,
+      "duration_ms": 258.12,
       "returned_ids": [
         "d78a821b-b31e-48bf-9846-c04764b936c4",
         "cff71b69-de04-41de-a4c6-cbd467ccf115",
@@ -1113,7 +1113,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 253.88,
+      "duration_ms": 233.02,
       "returned_ids": [
         "7d2a1365-704d-4afa-a26b-31acfec39bcf",
         "135815c6-4461-401f-aad0-a54b476a6828",
@@ -1145,7 +1145,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 271.48,
+      "duration_ms": 226.18,
       "returned_ids": [
         "3e322935-b9d0-4ead-8502-8c5b2697d8f3",
         "c99ddf5d-04f6-432e-908a-c6c2348724b3",
@@ -1177,7 +1177,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.82,
+      "duration_ms": 228.69,
       "returned_ids": [
         "62019683-4615-457f-890a-2b98a3fd5fb0",
         "59309fad-0172-4ddb-aa80-febb9c78851d",
@@ -1209,7 +1209,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 231.18,
+      "duration_ms": 226.84,
       "returned_ids": [
         "b575f477-1caf-445a-9db4-6b83fdaafcda",
         "3e376b98-395a-4c89-a54a-39f8516f1fa3",
@@ -1241,7 +1241,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 316.27,
+      "duration_ms": 221.63,
       "returned_ids": [
         "bc34a115-ae9f-4ac1-804a-f75b5ab73339",
         "6a0b9c3e-b9bd-416d-86bc-3bef0243d1ad",
@@ -1273,7 +1273,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 264.68,
+      "duration_ms": 304.7,
       "returned_ids": [
         "f551a0e2-910f-4241-8cc7-9788af87e45d",
         "3e322935-b9d0-4ead-8502-8c5b2697d8f3",
@@ -1305,7 +1305,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 222.51,
+      "duration_ms": 214.24,
       "returned_ids": [
         "d64ed505-9413-4954-9986-711591490446",
         "330416b7-0b6b-489b-9797-b1e93c0f95a6",
@@ -1337,7 +1337,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 314.85,
+      "duration_ms": 219.65,
       "returned_ids": [
         "229cbed2-a920-43ab-b72f-dd35c098b1be",
         "a264f3a9-17d1-4f5b-8a4e-8a982e00d9f2",
@@ -1369,7 +1369,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 246.16,
+      "duration_ms": 219.35,
       "returned_ids": [
         "8a25ed59-8941-4000-921b-d9f1db50dcbd",
         "1a9f91e5-3344-42ca-aaad-b7e26e9fbaf5",
@@ -1401,7 +1401,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 273.14,
+      "duration_ms": 236.27,
       "returned_ids": [
         "bfa5de58-661a-4985-959a-acdc4b27ffb7",
         "accb8fbd-3818-4e2b-a151-1416927edf43",
@@ -1433,7 +1433,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.07,
+      "duration_ms": 263.92,
       "returned_ids": [
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
         "edce548d-b1de-4f54-bb64-031f01290f8e",
@@ -1465,7 +1465,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 224.13,
+      "duration_ms": 269.85,
       "returned_ids": [
         "c10745ed-cb55-40c4-aaf5-076935473326",
         "b3a0c370-7c47-489e-828e-e25486cd2836",
@@ -1497,7 +1497,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 303.17,
+      "duration_ms": 295.68,
       "returned_ids": [
         "4a2b367e-91b7-4e7c-8423-b1719b8522be",
         "fde798c6-24a0-4659-955c-679ce36b9144",
@@ -1529,7 +1529,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 280.14,
+      "duration_ms": 230.89,
       "returned_ids": [
         "c2321889-ca52-41e2-8563-044241781689",
         "fa4d785e-f3b1-4457-ab7f-f9fe0fce984d",
@@ -1561,7 +1561,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 240.29,
+      "duration_ms": 262.88,
       "returned_ids": [
         "b1ca4649-1055-4d7a-b77f-3110f5cd7084",
         "330416b7-0b6b-489b-9797-b1e93c0f95a6",
@@ -1593,7 +1593,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 284.4,
+      "duration_ms": 222.09,
       "returned_ids": [
         "b1ca4649-1055-4d7a-b77f-3110f5cd7084",
         "6f84ffde-1f48-4811-9076-c6378726be9f",
@@ -1625,7 +1625,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 286.86,
+      "duration_ms": 280.38,
       "returned_ids": [
         "0ff74db2-93fa-4a5b-80c8-555c2b2efbad",
         "17f3da79-3d20-4e13-9f8e-548c8f917408",
@@ -1657,7 +1657,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 242.74,
+      "duration_ms": 234.23,
       "returned_ids": [
         "51cea15d-4e59-4408-95a9-e870b794dd0d",
         "a5724012-d235-472d-a792-0886b556717f",
@@ -1689,7 +1689,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 224.29,
+      "duration_ms": 223.68,
       "returned_ids": [
         "553b3a44-8395-4fbb-98e6-a0d14b23632b",
         "0bd1bd10-d8be-457b-be85-76906f609afe",
@@ -1721,7 +1721,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 321.98,
+      "duration_ms": 235.34,
       "returned_ids": [
         "9510cd4b-4288-4aa4-8d99-524ada9991f6",
         "9e76e8b8-1751-4b52-ad08-5ad4f46fbedf",
@@ -1753,7 +1753,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 246.98,
+      "duration_ms": 225.0,
       "returned_ids": [
         "b293ab5e-9528-43b0-a72e-6ef65d97b997",
         "15f29f56-7803-4ca3-85bd-25f2f7aaaf0f",
@@ -1785,7 +1785,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 314.5,
+      "duration_ms": 320.11,
       "returned_ids": [
         "163e600c-543e-4133-88bd-0cdc937a4fb0",
         "9727233f-0c98-4167-86d9-5fac7695a51a",
@@ -1817,7 +1817,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 237.49,
+      "duration_ms": 218.2,
       "returned_ids": [
         "4a2b367e-91b7-4e7c-8423-b1719b8522be",
         "ba23d73a-3e80-4515-a84e-6889e7fe4f4e",
@@ -1849,7 +1849,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 317.04,
+      "duration_ms": 229.81,
       "returned_ids": [
         "4ed94a6f-1967-4066-a1ee-79dba71ddcfb",
         "111389e0-46bc-4083-a3e7-37e9aa478155",
@@ -1881,7 +1881,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 243.38,
+      "duration_ms": 214.23,
       "returned_ids": [
         "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
         "45a2b3ca-756d-471b-a1eb-8796b09830f0",
@@ -1913,7 +1913,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 217.58,
+      "duration_ms": 244.48,
       "returned_ids": [
         "c6ac78ff-5784-4b2d-99bc-435023320c30",
         "98f2e6ad-98c4-46e5-9576-7f1b987a9e1b",
@@ -1945,7 +1945,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 218.89,
+      "duration_ms": 266.17,
       "returned_ids": [
         "19a7e1a6-a094-4641-b9c2-99f3819d658a",
         "27ef0077-f1fd-4b10-91c5-a9da5d03a77c",
@@ -1977,7 +1977,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 234.41,
+      "duration_ms": 221.55,
       "returned_ids": [
         "a9b448c1-221e-4a85-8f45-32b44e6b23d8",
         "170e3744-9523-4b49-817b-72359c7ae115",
@@ -2009,7 +2009,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 226.62,
+      "duration_ms": 257.04,
       "returned_ids": [
         "ed306f96-a9d5-4bd0-a810-9b315c70a6a9",
         "d1289d0a-80fc-4830-88af-0bcd3a3cadaa",
@@ -2041,7 +2041,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 222.38,
+      "duration_ms": 227.91,
       "returned_ids": [
         "9727233f-0c98-4167-86d9-5fac7695a51a",
         "b6bc535a-b957-44de-91ab-09eba756d5cd",
@@ -2073,7 +2073,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.12,
+      "duration_ms": 227.72,
       "returned_ids": [
         "df057aae-8a1b-4c9b-a7c6-7ec3c2c2f24a",
         "5e24c154-581f-45d3-b323-681ce58ffae4",
@@ -2105,7 +2105,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 264.57,
+      "duration_ms": 313.72,
       "returned_ids": [
         "02035924-8dc6-4654-a60b-f686cd47d3a8",
         "075fdce8-c244-48d2-b454-e4b9d5d067d0",
@@ -2137,7 +2137,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 239.06,
+      "duration_ms": 231.8,
       "returned_ids": [
         "a2d83edd-2268-4459-934d-9c1135be9a18",
         "caae60b5-8844-4a94-a805-300168eb2e3b",
@@ -2170,7 +2170,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 228.21,
+      "duration_ms": 410.61,
       "returned_ids": [
         "2edfabec-bb1a-46f6-90a1-9ce07163d3e3",
         "6f42d72a-d838-45b5-9729-4b3ca4ac1266",
@@ -2203,7 +2203,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 232.21,
+      "duration_ms": 232.84,
       "returned_ids": [
         "111389e0-46bc-4083-a3e7-37e9aa478155",
         "00e4c86e-9dbf-4ff0-9727-db66d77447f4",
@@ -2236,7 +2236,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 251.0,
+      "duration_ms": 238.6,
       "returned_ids": [
         "817369db-5686-4c32-81d0-438e8dfd762d",
         "3437a1a5-3b63-4255-b2e3-243d273cd5d2",
@@ -2269,7 +2269,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 230.44,
+      "duration_ms": 280.3,
       "returned_ids": [
         "cff71b69-de04-41de-a4c6-cbd467ccf115",
         "d78a821b-b31e-48bf-9846-c04764b936c4",
@@ -2301,7 +2301,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 241.11,
+      "duration_ms": 240.97,
       "returned_ids": [
         "829f37ce-4431-4541-8943-ca5f0ee1865d",
         "e0731645-5879-4cac-a634-b0baeb9a1174",
@@ -2333,7 +2333,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 246.17,
+      "duration_ms": 293.69,
       "returned_ids": [
         "c10745ed-cb55-40c4-aaf5-076935473326",
         "78deba01-7444-4c9d-b32e-d46ce55beb00",
@@ -2365,7 +2365,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 217.86,
+      "duration_ms": 231.3,
       "returned_ids": [
         "78deba01-7444-4c9d-b32e-d46ce55beb00",
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
@@ -2397,7 +2397,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 272.39,
+      "duration_ms": 242.68,
       "returned_ids": [
         "ced15933-2719-4167-8d9d-59d2e664c394",
         "1d03e023-1ed6-49c6-98e0-758794f723f7",
@@ -2429,7 +2429,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 224.7,
+      "duration_ms": 223.46,
       "returned_ids": [
         "0518a447-5820-428f-bf30-326d9cdf6f0b",
         "af469303-9a99-4eba-b97e-7aba350e4cf4",
@@ -2461,7 +2461,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 290.41,
+      "duration_ms": 221.54,
       "returned_ids": [
         "1ba9db4b-b0b3-4a89-90ce-8d901a5e0f1e",
         "547c2ee1-c840-45af-ab27-139a898564e6",
@@ -2493,7 +2493,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.26,
+      "duration_ms": 226.68,
       "returned_ids": [
         "26c8f0cb-f3aa-407d-86a9-056848be2188",
         "60cbd4ca-cdf1-499f-a782-9f13ace174c5",
@@ -2525,7 +2525,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 228.69,
+      "duration_ms": 235.55,
       "returned_ids": [
         "1126364c-33dc-4948-a4c3-b7e45fbaaa49",
         "1dbe0496-ce33-40ad-b701-97656ccd26e0",
@@ -2557,7 +2557,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 233.33,
+      "duration_ms": 243.07,
       "returned_ids": [
         "8cef874d-9acc-4211-805e-563be328edf2",
         "2b18eec9-ffdd-4a61-93f0-c2fd8b089d04",
@@ -2589,7 +2589,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 277.41,
+      "duration_ms": 271.36,
       "returned_ids": [
         "1dbe0496-ce33-40ad-b701-97656ccd26e0",
         "b29a1b06-88aa-4720-8518-db8d6f6d7dfe",
@@ -2621,7 +2621,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 242.51,
+      "duration_ms": 223.14,
       "returned_ids": [
         "01933c15-2e4d-463a-93b3-2f569e291231",
         "1dd1a7db-d025-49de-8df4-0d8e219e0121",
@@ -2653,7 +2653,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 232.0,
+      "duration_ms": 220.35,
       "returned_ids": [
         "795daa85-f78d-4636-ae0e-54096c99cf1b",
         "b98d545e-159c-4aaa-ae0e-d7ffa2e3f1f4",
@@ -2686,7 +2686,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 219.32,
+      "duration_ms": 239.11,
       "returned_ids": [
         "db047830-e5df-4437-83b6-e424ca219022",
         "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
@@ -2724,7 +2724,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 231.88,
+      "duration_ms": 271.13,
       "returned_ids": [
         "beff5bf1-92a5-4f85-aa25-537fef2c5932",
         "b3a0c370-7c47-489e-828e-e25486cd2836",
@@ -2764,7 +2764,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 287.67,
+      "duration_ms": 218.04,
       "returned_ids": [
         "545bb723-bbb6-4523-8139-5399b43fc001",
         "2cf9f494-bac3-4cfd-a04e-e31a4e1b5094",
@@ -2801,7 +2801,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 271.26,
+      "duration_ms": 235.24,
       "returned_ids": [
         "8f293144-f0c6-417d-8aa5-5ad8898fcabf",
         "545bb723-bbb6-4523-8139-5399b43fc001",
@@ -2838,7 +2838,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 219.93,
+      "duration_ms": 231.29,
       "returned_ids": [
         "4b576736-36e1-4ee1-ac4d-4fe67f85b49f",
         "57bdb20b-e1a0-4c9d-9b22-6fb28918b701",
@@ -2874,7 +2874,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 215.15,
+      "duration_ms": 222.05,
       "returned_ids": [
         "07c94922-7e3a-4831-ac25-84b9c21ad2b9",
         "318fb412-1ced-4f37-a7fd-3b02b7691fa0",
@@ -2906,7 +2906,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 275.54,
+      "duration_ms": 263.59,
       "returned_ids": [
         "a65eb231-0d5f-42ab-9bc2-4daee3f48084",
         "07c94922-7e3a-4831-ac25-84b9c21ad2b9",
@@ -2938,7 +2938,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 227.01,
+      "duration_ms": 328.94,
       "returned_ids": [
         "1a8a0060-d4f5-4f65-8b7c-7e4c8a7f2fe3",
         "dfa7d9e6-08cc-4662-a0eb-9600e75228d3",
@@ -2970,7 +2970,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 215.03,
+      "duration_ms": 227.82,
       "returned_ids": [
         "45a2b3ca-756d-471b-a1eb-8796b09830f0",
         "26e81f6d-45e9-4cb8-9588-828f83e00f1a",
@@ -3002,7 +3002,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 342.37,
+      "duration_ms": 271.07,
       "returned_ids": [
         "e56b374b-d916-43c7-be19-9d6ffb3f2a8a",
         "b6f2eaa7-bd01-47af-8f7e-4da766fecc54",
@@ -3034,7 +3034,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 267.1,
+      "duration_ms": 243.56,
       "returned_ids": [
         "9a15247a-9b58-4fca-80b1-fa02ad671b4c",
         "31137559-e19c-4caf-b1a8-c350831a1250",
@@ -3072,7 +3072,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 219.26,
+      "duration_ms": 238.05,
       "returned_ids": [
         "90cf21f4-b8b4-43f4-8d10-9ceab0b06248",
         "37c3390d-ffb6-4db3-ace6-5f7eadbe08c2",
@@ -3104,7 +3104,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 282.78,
+      "duration_ms": 283.28,
       "returned_ids": [
         "28a0e013-d5d7-432f-a7c1-c6d014d7f61c",
         "e4499dea-5bd7-427e-858b-aa4cae2e32d6",
@@ -3136,7 +3136,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 218.17,
+      "duration_ms": 237.09,
       "returned_ids": [
         "28a0e013-d5d7-432f-a7c1-c6d014d7f61c",
         "e4499dea-5bd7-427e-858b-aa4cae2e32d6",
@@ -3168,7 +3168,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 268.78,
+      "duration_ms": 249.76,
       "returned_ids": [
         "6f84ffde-1f48-4811-9076-c6378726be9f",
         "b1ca4649-1055-4d7a-b77f-3110f5cd7084",
@@ -3200,13 +3200,13 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 236.91,
+      "duration_ms": 341.62,
       "returned_ids": [
         "343c827d-938a-4a83-8a67-6ed0b4a2bebc",
         "81178c01-1450-4070-b6a3-ea083ea7e5c6",
         "c5e3a349-7249-4d96-a3ca-a3b7c4c00daf",
         "3e293759-5020-43af-8158-9b719374f6e1",
-        "2b7216e2-c903-4a2a-b613-83769e26a258"
+        "75d066dc-292f-4306-aaf6-341f6eebf502"
       ],
       "reference_ids": [
         "81178c01-1450-4070-b6a3-ea083ea7e5c6"
@@ -3232,7 +3232,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 240.7,
+      "duration_ms": 245.2,
       "returned_ids": [
         "0a7b9d47-d3b3-4802-86df-fb20bd3c8ad1",
         "593af6f3-91eb-475c-acaa-f301b418bbc0",
@@ -3270,10 +3270,10 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 236.91,
+      "duration_ms": 230.6,
       "returned_ids": [
-        "c51c49d7-d7c7-4b62-a7f2-8588f1c9300c",
         "4ea73604-5f75-4799-a993-565eb1fcdbc1",
+        "c51c49d7-d7c7-4b62-a7f2-8588f1c9300c",
         "593af6f3-91eb-475c-acaa-f301b418bbc0",
         "585dd51a-f8c9-4265-a0ba-f682fadd2099",
         "888b4fdd-1981-48d4-973e-389006ae165d"
@@ -3302,7 +3302,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 256.47,
+      "duration_ms": 233.22,
       "returned_ids": [
         "f40800d9-1bc2-419a-8d3c-139f4b36095b",
         "48eda960-9bce-4208-b01a-c19279ce1114",
@@ -3335,7 +3335,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 233.26,
+      "duration_ms": 257.81,
       "returned_ids": [
         "d777cf1a-1e60-4a36-8a11-4bc40091eb6a",
         "8a492b49-52cb-4e21-90d7-72a621d1edfe",
@@ -3367,7 +3367,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 221.94,
+      "duration_ms": 281.06,
       "returned_ids": [
         "a5724012-d235-472d-a792-0886b556717f",
         "51cea15d-4e59-4408-95a9-e870b794dd0d",
@@ -3399,7 +3399,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 219.01,
+      "duration_ms": 236.57,
       "returned_ids": [
         "dfc9df0a-9ed3-48fc-8b6f-0c1bb8790b60",
         "beb37b89-1f04-429b-b73f-2364e138467a",
@@ -3435,7 +3435,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 218.21,
+      "duration_ms": 250.34,
       "returned_ids": [
         "b29a1b06-88aa-4720-8518-db8d6f6d7dfe",
         "1dbe0496-ce33-40ad-b701-97656ccd26e0",
@@ -3468,7 +3468,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 237.12,
+      "duration_ms": 235.23,
       "returned_ids": [
         "6b8f45c9-e670-4d4b-9f5a-e91e6cb17f1a",
         "bc34a115-ae9f-4ac1-804a-f75b5ab73339",
@@ -3501,7 +3501,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 236.17,
+      "duration_ms": 274.8,
       "returned_ids": [
         "b3a0c370-7c47-489e-828e-e25486cd2836",
         "beff5bf1-92a5-4f85-aa25-537fef2c5932",
@@ -3542,7 +3542,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 225.96,
+      "duration_ms": 214.57,
       "returned_ids": [
         "9a15247a-9b58-4fca-80b1-fa02ad671b4c",
         "075fdce8-c244-48d2-b454-e4b9d5d067d0",
@@ -3580,7 +3580,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 272.36,
+      "duration_ms": 248.75,
       "returned_ids": [
         "942f0e7f-bec0-43c2-b8fa-e9e201c953f3",
         "a55ca7cb-895f-4a8a-926f-a806c1d6c37d",
@@ -3612,7 +3612,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 226.24,
+      "duration_ms": 236.51,
       "returned_ids": [
         "b6bc535a-b957-44de-91ab-09eba756d5cd",
         "d09ccdd0-dea2-4bec-8bbd-3301cf09af28",
@@ -3644,7 +3644,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 227.3,
+      "duration_ms": 387.05,
       "returned_ids": [
         "034edc8c-9cfc-4906-8790-d8d8646b3f52",
         "bd825000-a82c-415d-ae9c-88bc6f43918f",
@@ -3676,7 +3676,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 310.0,
+      "duration_ms": 282.43,
       "returned_ids": [
         "e0731645-5879-4cac-a634-b0baeb9a1174",
         "9d4c53e1-3135-411c-a0d3-84f26dd709e4",
@@ -3708,7 +3708,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 226.86,
+      "duration_ms": 219.29,
       "returned_ids": [
         "1641da1c-64ea-4e5b-80ca-78b367b5fae1",
         "830acfae-8ac5-443f-ba2c-e6c1432f643c",
@@ -3740,7 +3740,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 210.03,
+      "duration_ms": 238.85,
       "returned_ids": [
         "075fdce8-c244-48d2-b454-e4b9d5d067d0",
         "b1ca4649-1055-4d7a-b77f-3110f5cd7084",
@@ -3772,7 +3772,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 229.87,
+      "duration_ms": 226.14,
       "returned_ids": [
         "329ae96c-c720-4ae0-98cc-9910f2c01e95",
         "39aaad2c-cc05-459e-84c0-443326cfc652",
@@ -3804,7 +3804,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 239.75,
+      "duration_ms": 231.57,
       "returned_ids": [
         "5194b429-b404-4cec-b47d-48916c9a5092",
         "4a6639da-2b0d-45c0-9010-6623ca545b59",
@@ -3836,7 +3836,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 237.65,
+      "duration_ms": 225.8,
       "returned_ids": [
         "18774df9-1147-4f2f-a8a3-b5e64df666c1",
         "4b735fc0-075d-48a6-a100-1f96f938bae3",
@@ -3868,7 +3868,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 239.95,
+      "duration_ms": 356.95,
       "returned_ids": [
         "b3df8cea-66cb-4a45-85d2-1d9e1f2ce3d8",
         "515bbb99-1fc0-4827-af97-dfcc6d170184",
@@ -3900,7 +3900,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 214.86,
+      "duration_ms": 234.99,
       "returned_ids": [
         "b9c0cb81-73b2-436b-93cc-71fcfb33de00",
         "091b2d56-9d46-469a-922a-b9f95ce2d912",
@@ -3932,7 +3932,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 224.33,
+      "duration_ms": 235.44,
       "returned_ids": [
         "a2d83edd-2268-4459-934d-9c1135be9a18",
         "caae60b5-8844-4a94-a805-300168eb2e3b",
@@ -3964,7 +3964,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.75,
+      "duration_ms": 224.79,
       "returned_ids": [
         "78deba01-7444-4c9d-b32e-d46ce55beb00",
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
@@ -3996,7 +3996,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 251.85,
+      "duration_ms": 236.82,
       "returned_ids": [
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
         "78deba01-7444-4c9d-b32e-d46ce55beb00",
@@ -4028,7 +4028,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 223.9,
+      "duration_ms": 223.77,
       "returned_ids": [
         "c10745ed-cb55-40c4-aaf5-076935473326",
         "db047830-e5df-4437-83b6-e424ca219022",
@@ -4060,7 +4060,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 257.42,
+      "duration_ms": 264.18,
       "returned_ids": [
         "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
@@ -4092,7 +4092,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 217.04,
+      "duration_ms": 224.09,
       "returned_ids": [
         "c10745ed-cb55-40c4-aaf5-076935473326",
         "db047830-e5df-4437-83b6-e424ca219022",
@@ -4124,7 +4124,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 214.57,
+      "duration_ms": 261.66,
       "returned_ids": [
         "1211f0a3-d1d5-460e-bfdf-a1616a89b796",
         "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
@@ -4156,7 +4156,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 242.75,
+      "duration_ms": 229.04,
       "returned_ids": [
         "a1dbf0a4-c48b-4a18-87ad-8a6609eb7185",
         "78deba01-7444-4c9d-b32e-d46ce55beb00",
@@ -4188,7 +4188,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 228.46,
+      "duration_ms": 291.23,
       "returned_ids": [
         "c1689fb6-d71a-41e1-94f9-f72631363fc9",
         "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
@@ -4226,7 +4226,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 271.89,
+      "duration_ms": 232.91,
       "returned_ids": [
         "31b85411-c72f-4a37-b0ee-147368627c9e",
         "958479fd-9f6e-4448-8fbe-0adc919a5b6b",
@@ -4264,7 +4264,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 291.38,
+      "duration_ms": 246.21,
       "returned_ids": [
         "077230d5-be03-4966-adcc-9facf973a34d",
         "9f81cae5-7b18-4f48-871b-f9fd802d8909",
@@ -4296,7 +4296,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 237.41,
+      "duration_ms": 238.75,
       "returned_ids": [
         "68e9611c-2edf-4614-8072-c5df70be28d9",
         "311ef4f4-1250-4d80-a3b4-d0dd767227a8",
@@ -4328,7 +4328,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 231.27,
+      "duration_ms": 263.71,
       "returned_ids": [
         "311ef4f4-1250-4d80-a3b4-d0dd767227a8",
         "a1dbf0a4-c48b-4a18-87ad-8a6609eb7185",
@@ -4360,7 +4360,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.87,
+      "duration_ms": 270.32,
       "returned_ids": [
         "8d7a0ff4-0bdb-497b-b85c-7ad72c5b716d",
         "eb7fe436-1b9c-4745-9bd3-1b128cf18c32",
@@ -4392,7 +4392,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 220.57,
+      "duration_ms": 290.24,
       "returned_ids": [
         "b3df8cea-66cb-4a45-85d2-1d9e1f2ce3d8",
         "06b31a23-beba-4028-be7e-8857fce5bcaf",
@@ -4424,7 +4424,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 228.69,
+      "duration_ms": 277.79,
       "returned_ids": [
         "9044d86a-aa7b-4bb3-9510-f0a464b3de4e",
         "075fdce8-c244-48d2-b454-e4b9d5d067d0",
@@ -4456,7 +4456,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 253.38,
+      "duration_ms": 249.59,
       "returned_ids": [
         "a5724012-d235-472d-a792-0886b556717f",
         "51cea15d-4e59-4408-95a9-e870b794dd0d",
@@ -4488,12 +4488,12 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 224.79,
+      "duration_ms": 228.53,
       "returned_ids": [
         "a149a479-6728-4fdb-a1ab-2eacaca986a8",
         "06b31a23-beba-4028-be7e-8857fce5bcaf",
-        "af502e2d-829c-498b-882d-6f7ace0c7866",
         "ea0c294a-cfbf-4196-bad5-83d0681de5cc",
+        "af502e2d-829c-498b-882d-6f7ace0c7866",
         "8b8c899c-739c-44b4-91f8-72fba160ce36"
       ],
       "reference_ids": [
@@ -4520,7 +4520,7 @@
         "provider": null,
         "model": null
       },
-      "duration_ms": 405.09,
+      "duration_ms": 263.01,
       "returned_ids": [
         "5108ea8c-6695-4000-8e6d-bdb3d1e823ae",
         "4b735fc0-075d-48a6-a100-1f96f938bae3",
@@ -4818,7 +4818,7 @@
     "question_id": "warmup",
     "query": "证书过期怎么处理",
     "mode": "hybrid",
-    "duration_ms": 3563.71,
+    "duration_ms": 3387.27,
     "degraded": true,
     "degraded_reason": "keyword search failed",
     "empty_reason": null,
