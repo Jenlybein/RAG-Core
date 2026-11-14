@@ -196,3 +196,198 @@ def test_a_link_plus_a_quoted_heading_lands_on_that_section_not_the_root() -> No
     )
 
     assert _reference_targets(edges, "后续修订（第 7 步）") == {revision.section_id}
+
+
+# ───────────────────────────────────────────── R2：编号定位
+
+
+def test_a_same_document_decision_number_resolves_to_the_numbered_section() -> None:
+    """「见决策 3」：ADR 的决策号对应标题「3. …」（eng-0027-04）。"""
+
+    target = _record(
+        heading="3. 只认文档显式表达，不按相似度猜边",
+        order=2,
+    )
+    text = "那不是结构关系，见决策 3。"
+    edges = _edges(
+        sections=(
+            _source(heading="2. 只有三种边型", text=text),
+            SectionText(record=target, text="只认显式表达。"),
+        ),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "2. 只有三种边型") == {target.section_id}
+
+
+def test_an_adr_code_plus_a_decision_number_scopes_the_number_to_that_document() -> None:
+    """「（ADR-0025 决策五）」：ADR-0025 的决策号对应标题「决策五：…」（eng-0027-02）。"""
+
+    doc_title = "0025. 索引即构建产物：一次构建 = 一个不可变版本"
+    target = _record(
+        document_id="doc-0025",
+        title=doc_title,
+        heading=f"{doc_title} > 决策五：节的身份证不含版本",
+        order=3,
+    )
+    text = "节的键带文档 id（ADR-0025 决策五），不带就会串。"
+    edges = _edges(
+        sections=(_source(heading="1. 节点是「节」，不是切片", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "1. 节点是「节」，不是切片") == {target.section_id}
+
+
+def test_a_titled_reference_with_a_clause_number_resolves() -> None:
+    """「《会员权益与积分细则》第 2 条」：标题写成「第 N 条 X」的惯例也算（pol-p01-03）。"""
+
+    doc_title = "会员权益与积分细则"
+    target = _record(
+        document_id="doc-points",
+        title=doc_title,
+        heading=f"{doc_title} > 第 2 条 积分抵扣与上限",
+        order=2,
+    )
+    text = "退款时按《会员权益与积分细则》第 2 条的解释执行。"
+    edges = _edges(
+        sections=(_source(heading="第二节 定义与解释", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "第二节 定义与解释") == {target.section_id}
+
+
+def test_a_same_document_qualifier_accepts_policy_words_and_fullwidth_digits() -> None:
+    """「本文件第４节」：限定语 + 全角数字 + 「第 N 节 X」的标题（pol-p04-05）。"""
+
+    doc_title = "服务等级与赔偿标准（SLA）"
+    target = _record(heading=f"{doc_title} > 第 4 节 赔偿的申请与免责", order=4)
+    text = "本文件第４节末尾附有材料清单。"
+    edges = _edges(
+        sections=(_source(heading="第 3 节 赔偿标准", text=text, title=doc_title),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "第 3 节 赔偿标准") == {target.section_id}
+
+
+def test_a_chapter_and_section_pair_uses_the_chapter_to_pick_one_section() -> None:
+    """「详见第三章第二节」：本文有三个「第二节」，章编号把它收窄到唯一一条（pol-p01-07）。"""
+
+    doc_title = "会员服务协议（2026 年修订）"
+    first_chapter = _record(heading=f"{doc_title} > 第一章 总则 > 第二节 定义与解释", order=1)
+    third_chapter = _record(heading=f"{doc_title} > 第三章 退款与终止 > 第二节 退款流程", order=2)
+    text = "退款流程详见第三章第二节。"
+    edges = _edges(
+        sections=(
+            _source(heading=f"{doc_title} > 第三章 退款与终止 > 第一节 退款条件", text=text),
+        ),
+        catalog=_catalog(first_chapter, third_chapter),
+    )
+
+    assert _reference_targets(edges, f"{doc_title} > 第三章 退款与终止 > 第一节 退款条件") == {
+        third_chapter.section_id
+    }
+
+
+def test_an_english_section_number_resolves_within_the_document() -> None:
+    """「set out in Section 2」：英文附件里编号定位符就是 Section N（pol-p05-01）。"""
+
+    doc_title = "Annex B — English Summary"
+    target = _record(heading=f"{doc_title} > Section 2 Availability", order=2)
+    text = "The claim limits are set out in Section 2."
+    edges = _edges(
+        sections=(_source(heading=f"{doc_title} > Section 1 Scope", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, f"{doc_title} > Section 1 Scope") == {target.section_id}
+
+
+def test_a_link_plus_a_decision_number_lands_on_the_decision_section() -> None:
+    """「[ADR-0025](…) 决策五」：链接给文档、决策号给节（eng-0013-10）。"""
+
+    doc_title = "0025. 索引即构建产物：一次构建 = 一个不可变版本"
+    root = _record(document_id="doc-0025", title=doc_title, heading=doc_title, order=0)
+    decision = _record(
+        document_id="doc-0025",
+        title=doc_title,
+        heading=f"{doc_title} > 决策五：节的身份证不含版本",
+        order=4,
+        source_filename="0025-index-as-build-artifact.md",
+    )
+    text = "响应里的 section_id 有两种含义（#143，见 [ADR-0025](0025-index-as-build-artifact.md) 决策五）。"
+    edges = _edges(
+        sections=(_source(heading="后续修订（第 11 步）", text=text),),
+        catalog=_catalog(root, decision),
+    )
+
+    assert _reference_targets(edges, "后续修订（第 11 步）") == {decision.section_id}
+
+
+def test_number_two_does_not_match_a_two_dot_one_section() -> None:
+    """`2` 不许匹配 `2.1`：那是另一节（ADR-0027 决策 8 明的用 ``_number_prefix_re`` 判据）。"""
+
+    two_dot_one = _record(heading="2.1 抵扣上限", order=1)
+    text = "本文件第 2 节的完整口径见附件。"
+    edges = _edges(
+        sections=(_source(heading="1. 总则", text=text),),
+        catalog=_catalog(two_dot_one),
+    )
+
+    assert _reference_targets(edges, "1. 总则") == set()
+
+
+def test_a_decision_number_range_creates_no_edge() -> None:
+    """「决策 1–6」是范围引用，落不到唯一一节（eng-0013-09）。"""
+
+    first = _record(heading="1. 折叠", order=1)
+    sixth = _record(heading="6. over-fetch 补足条数", order=6)
+    text = "决策 1–6 与主干一律不变。"
+    edges = _edges(
+        sections=(_source(heading="后续修订", text=text),),
+        catalog=_catalog(first, sixth),
+    )
+
+    assert _reference_targets(edges, "后续修订") == set()
+
+
+def test_a_bare_clause_number_without_a_qualifier_creates_no_edge() -> None:
+    """「分摊口径见第 3 条」：本文还是别处？无限定语就是歧义（pol-p02-01）。"""
+
+    target = _record(heading="第 3 条 积分在退款时的处理", order=3)
+    text = "分摊口径见第 3 条。"
+    edges = _edges(
+        sections=(_source(heading="第 2 条 积分抵扣与上限", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "第 2 条 积分抵扣与上限") == set()
+
+
+def test_an_english_section_of_another_document_creates_no_edge() -> None:
+    """「Section 1 of the SLA terms」：这个 Section N 指另一份文档，本篇里那节并不是目标（pol-p05-05）。"""
+
+    doc_title = "Annex B — English Summary"
+    own_section_one = _record(heading=f"{doc_title} > Section 1 Scope", order=1)
+    text = "The exclusions listed in Section 1 of the SLA terms apply."
+    edges = _edges(
+        sections=(_source(heading=f"{doc_title} > Section 4 Claims and Exclusions", text=text),),
+        catalog=_catalog(own_section_one),
+    )
+
+    assert _reference_targets(edges, f"{doc_title} > Section 4 Claims and Exclusions") == set()
+
+
+def test_a_decision_number_in_a_plain_statement_creates_no_edge() -> None:
+    """「与决策二（…）直接冲突」不是引用表达：决策号没有被写成「见 / 按 / （）」框架（eng-0027-17）。"""
+
+    second = _record(heading="2. 只有三种边型", order=2)
+    text = "这是与决策二（`score = 0`，相关性交给重排）直接冲突的一步。"
+    edges = _edges(
+        sections=(_source(heading="翻案条件（开关归属）", text=text),),
+        catalog=_catalog(second),
+    )
+
+    assert _reference_targets(edges, "翻案条件（开关归属）") == set()

@@ -59,34 +59,57 @@ from app.utils.section_identity import parent_heading_path, parent_section_id_of
 #: 8 字不算）。
 POINTER_RESIDUAL_CHARS: Final[int] = 6
 
-#: 章节号的两种写法：阿拉伯（``2`` / ``2.4``）与中文序数（``三`` / ``十二``）。
-_NUMERAL = r"[0-9]+(?:\.[0-9]+)*|[一二三四五六七八九十百]+"
+#: 章节号的两种写法：阿拉伯（``2`` / ``2.4`` / 全角``２``）与中文序数（``三`` / ``十二``）。
+_NUMERAL = r"[0-9０-９]+(?:\.[0-9０-９]+)*|[一二三四五六七八九十百]+"
 
-#: ``《标题》第 N 节``：跨文档引用的唯一识别形式（标题必须在书名号里）。
-_TITLED_REFERENCE_RE = re.compile(
-    rf"《(?P<title>[^》\n]{{1,80}})》\s*(?:第\s*)?(?P<number>{_NUMERAL})\s*节"
-)
+#: 同文档限定语：`本文第 2 条` / `本政策第 4 条` / `本纪要第 1 条`。**没有限定语的裸条号不认**
+#: （`分摊口径见第 3 条` 既可能指本文也可能指别处，属于歧义）。
+_DOCUMENT_QUALIFIERS = "本文件|本文|本篇|本政策|本纪要|本附件|本细则|本规则|本协议"
 
-#: ``本文件第 N 节``：同文档引用。**「本文件」三个字是必须的**——光写「第 3 节」时
+#: 编号定位符的两种形状：``第 M 章第 N 节``（章只是路径层）与单个 ``第 N 节/条/款/项``。
+_CHAPTER_SECTION = rf"第\s*(?P<chapter>{_NUMERAL})\s*章\s*第\s*(?P<nested>{_NUMERAL})\s*[条节款项]"
+_SINGLE_CLAUSE = rf"(?:第\s*)?(?P<number>{_NUMERAL})\s*[条节款项]"
+
+#: ``《标题》第 N 节`` / ``《标题》第 N 条``：跨文档引用的唯一识别形式（标题必须在书名号里）。
+_TITLED_REFERENCE_RE = re.compile(rf"《(?P<title>[^》\n]{{1,80}})》\s*(?:{_CHAPTER_SECTION}|{_SINGLE_CLAUSE})")
+
+#: ``本文件第 N 节`` / ``本文第 N 条``：同文档引用。**限定语是必须的**——光写「第 3 节」时
 #: 无法判断指本文还是别处，那属于歧义（见 :func:`extract_reference_candidates`）。
 _SAME_DOCUMENT_REFERENCE_RE = re.compile(
-    rf"(?:本文件|本文|本篇)(?:的)?\s*第\s*(?P<number>{_NUMERAL})\s*节"
+    rf"(?:{_DOCUMENT_QUALIFIERS})(?:的)?\s*(?:{_CHAPTER_SECTION}|{_SINGLE_CLAUSE})"
 )
+
 
 #: Markdown 链接 / 图片：``[文本](目标)``。目标可以是同文档锚点（``#2-4``）或另一个文件。
 _MARKDOWN_LINK_RE = re.compile(r"!?\[(?P<text>[^\]\n]*)\]\((?P<target>[^)\s]+)\)")
 
-#: 链接后面紧跟的定位符（``](x.md)第 3 节`` / ``](x.md)「第三次修订」``）。链接本身只指到
-#: 文件，节写在链接外面——不把它吃进来，语料里那三条链接就一条边都建不出来。
+#: 链接后面紧跟的定位符（``](x.md)第 3 节`` / ``](x.md) 决策五`` / ``](x.md)「第三次修订」``）。
+#: 链接本身只指到文件，节写在链接外面——不把它吃进来，语料里那三条链接就一条边都建不出来。
 _LINK_LOCATOR_RE = re.compile(
     r"^\s*(?:"
-    rf"(?:第\s*)?(?P<number>{_NUMERAL})\s*[条节款项]"
-    rf"|[「『](?P<quoted>[^」』\n]{{2,60}})[」』]"
+    rf"{_CHAPTER_SECTION}"
+    rf"|{_SINGLE_CLAUSE}"
+    rf"|决策\s*(?P<decision>{_NUMERAL})"
+    r"|[「『](?P<quoted>[^」』\n]{2,60})[」』]"
     r")"
 )
 
 #: 文档编号引用（``ADR-0013`` / ``ADR 0013``）：技术文档里指另一篇文档的常见写法。
 _ADR_CODE_RE = re.compile(r"ADR[-\s]?([0-9]{1,4})", re.IGNORECASE)
+
+#: 「决策 N」：ADR 里指决策条目的写法。**范围引用不算**（``决策 1–6`` 落不到唯一一节）。
+_DECISION_REFERENCE_RE = re.compile(
+    rf"决策\s*(?P<number>{_NUMERAL})(?!\s*[-‐–—~～至到]\s*[0-9０-９一二三四五六七八九十百])"
+)
+
+#: 英文附件的编号定位符：``Section 2``（大小写不敏感）。
+_ENGLISH_SECTION_REFERENCE_RE = re.compile(
+    r"(?<![A-Za-z0-9])Section\s+(?P<number>[0-9０-９]+)(?![0-9])(?!\.\d)", re.IGNORECASE
+)
+
+#: 裸 ``第 M 章第 N 节``（``详见第三章第二节``）：章 + 节两层编号本身就够具体，
+#: 不要求「本文 / 本文件」限定语（ADR-0027 决策 8 把这一形态列进 R2）。
+_BARE_CHAPTER_SECTION_RE = re.compile(_CHAPTER_SECTION)
 
 #: 引号短语后面跟的「节 / 条」后缀也算同文档上下文（``「后果」一节``）。
 _QUOTED_SUFFIX_MARKER_RE = re.compile(r"^\s*(?:这|最后)?[条节]|^\s*[里中]")
@@ -110,10 +133,6 @@ _CITATION_VERBS = ("详见", "参见", "参照", "另见", "依据", "根据", "
 
 #: 引号括住的短语：这是「作者明确指了一个名字」的最强信号（`「后果」`）。
 _QUOTED_HEADING_RE = re.compile(r"[「『]([^」』\n]{2,60})[」』]")
-
-#: 同文档限定语：`本文第 2 条` / `本政策第 4 条` / `本纪要第 1 条`。**没有限定语的裸条号不认**
-#: （`分摊口径见第 3 条` 既可能指本文也可能指别处，属于歧义）。
-_DOCUMENT_QUALIFIERS = "本文件|本文|本篇|本政策|本纪要|本附件|本细则|本规则|本协议"
 
 #: 同文档限定语里「明说这是本文」的那几个（引号标题名的同文档上下文也用它们）。
 _SAME_DOCUMENT_MARKERS = re.compile(
@@ -640,6 +659,7 @@ def extract_reference_candidates(
         return ()
     candidates: list[ReferenceCandidate] = []
     for match in _TITLED_REFERENCE_RE.finditer(text):
+        groups = match.groupdict()
         candidates.append(
             ReferenceCandidate(
                 kind="title",
@@ -648,10 +668,12 @@ def extract_reference_candidates(
                 start=match.start(),
                 end=match.end(),
                 document_title=match.group("title").strip(),
-                section_number=match.group("number"),
+                chapter_number=groups.get("chapter"),
+                section_number=groups.get("nested") or groups.get("number"),
             )
         )
     for match in _SAME_DOCUMENT_REFERENCE_RE.finditer(text):
+        groups = match.groupdict()
         candidates.append(
             ReferenceCandidate(
                 kind="same_document",
@@ -659,9 +681,13 @@ def extract_reference_candidates(
                 sentence=_sentence_around(text, match.start(), match.end()),
                 start=match.start(),
                 end=match.end(),
-                section_number=match.group("number"),
+                chapter_number=groups.get("chapter"),
+                section_number=groups.get("nested") or groups.get("number"),
             )
         )
+    candidates.extend(_decision_candidates(text))
+    candidates.extend(_english_section_candidates(text))
+    candidates.extend(_bare_chapter_section_candidates(text))
     links = _link_candidates(text)
     candidates.extend(_quoted_heading_candidates(text))
     candidates.extend(_bare_heading_candidates(text, known_titles))
@@ -726,11 +752,19 @@ def _link_candidates(text: str) -> list[ReferenceCandidate]:
         end = match.end() + trailing.end() if trailing is not None else match.end()
         heading_name: str | None = None
         section_number: str | None = None
+        decision_number: str | None = None
+        chapter_number: str | None = None
         if trailing is not None:
-            if trailing.group("quoted") is not None:
-                heading_name = trailing.group("quoted")
-            elif trailing.group("number") is not None:
-                section_number = trailing.group("number")
+            groups = trailing.groupdict()
+            if groups.get("quoted") is not None:
+                heading_name = groups["quoted"]
+            elif groups.get("decision") is not None:
+                decision_number = groups["decision"]
+            elif groups.get("chapter") is not None:
+                chapter_number = groups["chapter"]
+                section_number = groups.get("nested")
+            elif groups.get("number") is not None:
+                section_number = groups["number"]
         links.append(
             ReferenceCandidate(
                 kind="link",
@@ -742,6 +776,8 @@ def _link_candidates(text: str) -> list[ReferenceCandidate]:
                 link_target=stem,
                 heading_name=heading_name,
                 section_number=section_number,
+                decision_number=decision_number,
+                chapter_number=chapter_number,
             )
         )
     return links
@@ -844,6 +880,140 @@ def _bare_heading_candidates(
         )
         for (start, end), title in sorted(found.items())
     ]
+
+
+#: 句子边界（决策号的文档上下文只看同一句里的文档定位符）。
+_SENTENCE_BOUNDARIES = "。！？；!?;\n"
+
+
+def _cross_document_marker(text: str, start: int) -> tuple[str, str] | None:
+    """同一句里、决策号之前的文档定位符（``（ADR-0025 决策五）`` 里的 ``ADR-0025``）。"""
+
+    window = text[max(0, start - 80):start]
+    left = max((window.rfind(mark) for mark in _SENTENCE_BOUNDARIES), default=-1) + 1
+    window = window[left:]
+    marker: tuple[int, str, str] | None = None
+    for match in _ADR_CODE_RE.finditer(window):
+        if marker is None or match.end() > marker[0]:
+            marker = (match.end(), "code", match.group(1))
+    for match in _BOOK_TITLE_RE.finditer(window):
+        if marker is None or match.end() > marker[0]:
+            marker = (match.end(), "title", match.group(1).strip())
+    trailing = _TRAILING_LINK_RE.search(window)
+    if trailing is not None:
+        path, _, _ = trailing.group(1).partition("#")
+        stem = _link_stem(path)
+        if stem and (marker is None or len(window) > marker[0]):
+            marker = (len(window), "link", stem)
+    if marker is None:
+        return None
+    return marker[1], marker[2]
+
+
+def _decision_is_framed_as_citation(text: str, match: re.Match[str]) -> bool:
+    """决策号有没有被写成引用框架（``见决策 3`` / ``（决策 5）`` / ``决策 2 说``）。
+
+    没有框架的陈述句（``与决策二（…）直接冲突``）不认：那句话的主语是「决策二」这个
+    概念，不是「去看第 2 节」（ADR-0027 决策 8 的精度守卫）。
+    """
+
+    before = text[max(0, match.start() - 6):match.start()]
+    if _CITATION_VERB_BEFORE_RE.search(before):
+        return True
+    if before.rstrip().endswith(("（", "(")):
+        return True
+    after = text[match.end():match.end() + 4]
+    return bool(re.match(r"\s*(?:说|里|中)", after))
+
+
+def _decision_candidates(text: str) -> list[ReferenceCandidate]:
+    """R2：``决策 N``。有文档定位符时按那篇文档找；否则只在本篇里找且要引用框架。"""
+
+    candidates: list[ReferenceCandidate] = []
+    for match in _DECISION_REFERENCE_RE.finditer(text):
+        marker = _cross_document_marker(text, match.start())
+        if marker is None and not _decision_is_framed_as_citation(text, match):
+            continue
+        document_code: str | None = None
+        document_title: str | None = None
+        link_target: str | None = None
+        if marker is not None:
+            kind, value = marker
+            if kind == "code":
+                document_code = value
+            elif kind == "title":
+                document_title = value
+            else:
+                link_target = value
+        candidates.append(
+            ReferenceCandidate(
+                kind="decision",
+                expression=match.group(0),
+                sentence=_sentence_around(text, match.start(), match.end()),
+                start=match.start(),
+                end=match.end(),
+                decision_number=match.group("number"),
+                document_code=document_code,
+                document_title=document_title,
+                link_target=link_target,
+            )
+        )
+    return candidates
+
+
+def _english_section_candidates(text: str) -> list[ReferenceCandidate]:
+    """R2：英文附件的 ``Section N``。``Section N of the X`` 指别的文档，本篇解析不了就弃权。"""
+
+    candidates: list[ReferenceCandidate] = []
+    for match in _ENGLISH_SECTION_REFERENCE_RE.finditer(text):
+        following = text[match.end():]
+        if re.match(r"\s*of\s+(?:the|this|that)\b", following, re.IGNORECASE):
+            # 「Section 1 of the SLA terms」：定位符指向另一份文档，本目录解析不了。
+            continue
+        candidates.append(
+            ReferenceCandidate(
+                kind="same_document",
+                expression=match.group(0),
+                sentence=_sentence_around(text, match.start(), match.end()),
+                start=match.start(),
+                end=match.end(),
+                section_number=match.group("number"),
+            )
+        )
+    return candidates
+
+
+#: 「刚说完限定语 / 书名号标题 / 链接」的判据（裸章-节只在没有它们时才补候选）。
+_DOCUMENT_QUALIFIER_BEFORE_RE = re.compile(rf"(?:{_DOCUMENT_QUALIFIERS})(?:的)?\s*$")
+
+
+def _bare_chapter_section_candidates(text: str) -> list[ReferenceCandidate]:
+    """R2：裸 ``第 M 章第 N 节``（``详见第三章第二节``）。被限定语 / 书名号 / 链接覆盖时不重复认。"""
+
+    candidates: list[ReferenceCandidate] = []
+    for match in _BARE_CHAPTER_SECTION_RE.finditer(text):
+        before = text[max(0, match.start() - 12):match.start()]
+        if _DOCUMENT_QUALIFIER_BEFORE_RE.search(before):
+            continue
+        stripped = before.rstrip()
+        if stripped.endswith("》"):
+            continue
+        if stripped.endswith(")") and _TRAILING_LINK_RE.search(before):
+            continue
+        candidates.append(
+            ReferenceCandidate(
+                kind="same_document",
+                expression=match.group(0),
+                sentence=_sentence_around(text, match.start(), match.end()),
+                start=match.start(),
+                end=match.end(),
+                chapter_number=match.group("chapter"),
+                section_number=match.group("nested"),
+            )
+        )
+    return candidates
+
+
 
 
 
