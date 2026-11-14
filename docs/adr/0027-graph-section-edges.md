@@ -2,8 +2,9 @@
 
 > ## Superseded（已否决）
 >
-> **本文的全部决策已撤销，取代码与文档时以 [ADR-0029](0029-scope-down-to-controlled-research.md)
-> 为准。** 第 11 步的收窄（#138 范围变更）决定**不建轻量图谱**：注入服务、抽取器、关系边
+> **本文的图谱相关决策已撤销（决策 1–6、8），取代码与文档时以
+> [ADR-0029](0029-scope-down-to-controlled-research.md) 为准；决策 7 的一部分仍然活着：
+> 折叠关闭时的父节恢复与结果上的 `parent_content` 仍在 `/rag/retrieve` 契约里，与本图无关。** 第 11 步的收窄（#138 范围变更）决定**不建轻量图谱**：注入服务、抽取器、关系边
 > 模型与 `section_edges` 表都已删除（表由迁移 `e8d4a1c73b52` 删掉），响应契约里的
 > `metadata.retrieval.graph` 与 `retrieval_source` 也一并去掉。
 >

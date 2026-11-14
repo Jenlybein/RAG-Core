@@ -22,7 +22,7 @@
 
 **定义闸：「支撑」= 材料里能直接读出该事实，不是「相关」。** 这条定义同时写在提示词
 （:data:`_JUDGE_SYSTEM`）与本模块文档里：不写死，模型会把「主题相关」当成「支撑」，
-覆盖率立刻变乐观，而乐观的覆盖率比没有覆盖率更危险——它会替一份缺口答案盖章。
+覆盖判定的结论立刻变乐观，而乐观的结论比没有结论更危险——它会替一份缺口答案盖章。
 
 **``none`` 是一等输出，``unknown`` 是它的诚实邻居**：判定没跑 / 判不了时，``coverage`` 里
 每条都是 ``unknown``（不知道），而不是 ``none``（知道没有）；补证捞到了新材料但**没有再审
@@ -36,8 +36,8 @@
 #138 把「延迟与成本可预估」写成了验收项。
 
 **它吃「注入的检索内核 + 模型工厂」两个输入**（ADR-0028 §4）：检索内核是
-``Callable[[str], Awaitable[...]]``——一次子查询一次调用；模型工厂与切片编排同形
-（``get_llm_provider("fast")``）。于是五步的每条降级出口、六条硬上限与七种停止原因都能
+``Callable[[str], Awaitable[...]]``——一次子查询一次调用；模型工厂与已撤销的编排块同形
+（``get_llm_provider("fast")``，见 ADR-0029）。于是五步的每条降级出口、六条硬上限与七种停止原因都能
 脱开真实检索与真实模型被断言（``tests/test_research_state_machine.py``）。
 
 **⑤ 的门槛在另一个模块**（票 #149）：块的结构、四条硬校验、渲染串、三态完整度与缺口闸全在
@@ -102,7 +102,7 @@ logger = structlog.get_logger(__name__)
 #: 它自己不写归属索引、不记账、不发观测——那是外层每次调用各一次的活（ADR-0028）。
 SearchCallable = Callable[[str], Awaitable[Sequence[Mapping[str, Any]]]]
 
-#: 模型工厂（协程）：与切片编排的 ``llm_factory`` 同形。
+#: 模型工厂（协程）：与已撤销的编排块那套 ``llm_factory`` 同形（ADR-0029）。
 LLMFactory = Callable[[], Awaitable[Any]]
 
 #: 单调时钟的注入缝：阶段预算要能被用例推到 90 秒之外，而不必真的等 90 秒。
@@ -241,6 +241,17 @@ class PointVerdict:
     evidence_ids: tuple[str, ...] = ()
 
 
+def _gap_point_ids(coverage: Sequence["PointVerdict"]) -> tuple[str, ...]:
+    """缺口 = 判定为 ``none`` 的那些要点编号。**唯一一处推导**（响应与状态机都读它）。
+
+    ``unknown`` 不进缺口：不知道的时候既不该声明「材料不足」，也不该假装有支撑。
+    抽成模块级函数是为了让这句话真的成立——它曾经在 ``ResearchOutcome.gaps`` 与
+    ``_Run._gap_verdicts`` 里各写了一遍，而两处都声称自己是唯一来源。
+    """
+
+    return tuple(item.point_id for item in coverage if item.status == SUPPORT_NONE)
+
+
 @dataclass(frozen=True)
 class ResearchOutcome:
     """一次 Research 交回的东西：计划、材料、轮次计数、元数据、**一个**停止原因与最终回答。
@@ -283,12 +294,9 @@ class ResearchOutcome:
 
     @property
     def gaps(self) -> tuple[str, ...]:
-        """缺口 = 判定为 ``none`` 的那些要点编号。**唯一一处推导**（响应也读它）。
+        """缺口 = 判定为 ``none`` 的那些要点编号（推导见 :func:`_gap_point_ids`）。"""
 
-        ``unknown`` 不进 gaps：不知道的时候既不该声明「材料不足」，也不该假装有支撑。
-        """
-
-        return tuple(item.point_id for item in self.coverage if item.status == SUPPORT_NONE)
+        return _gap_point_ids(self.coverage)
 
 
 # ─────────────────────────────────────────────────────────── 提示词
@@ -298,8 +306,9 @@ _PLANNER_SYSTEM = (
     "你在为一次知识库检索做计划。给定用户的问题：第一，列出回答它需要的要点，"
     f"每个要点一句不超过 30 字的中文，最多 {MAX_POINTS} 个；第二，为**每一个**要点各给一条"
     f"可以直接拿去检索的查询（一个要点一条，一条都不能少），每条查询绑定它对应的要点序号"
-    f"（从 1 起）；首轮最多执行 {MAX_FIRST_ROUND_QUERIES} 条查询，所以**宁可少列要点，也不要"
-    "列出一个没有查询的要点**。要求：只做检索计划，不要生成答案正文，不要复述材料，不要输出"
+    f"（从 1 起）；首轮最多执行 {MAX_FIRST_ROUND_QUERIES} 条查询，但**不要为了省查询而少列要点**"
+    "——要点列少了，那一块就永远不会被检索到，缺口也不会出现（这是这次设计最忌讳的失败）。"
+    "要求：只做检索计划，不要生成答案正文，不要复述材料，不要输出"
     "切片 id 或文档 id；查询写成文档里可能出现的陈述句，不要写成向助手提的问句。"
 )
 
@@ -334,7 +343,7 @@ def build_judge_prompt(
     """覆盖判定的用户消息：问题 + 要点清单 + 已到手的材料（带序号、带预算）。
 
     材料带序号而不带 id：模型能表达的只有「第几条撑住了第几个要点」，不许它指向某一条具体
-    材料的身份（那会变成一次隐式的角色分配——那是切片编排的活，不是这里）。正文仍然按
+    材料的身份（那会变成一次隐式的角色分配——那是已撤销的编排块干的事，不是这里）。正文仍然按
     :data:`MAX_DECIDER_MATERIAL_CHARS` 截断：截断只影响这一次提示词，不影响交回给调用方的
     材料（「成本可以截断，材料不许截断」）。
     """
@@ -486,26 +495,38 @@ def _bound_queries(
     return bound
 
 
-def _require_every_point_queried(
+def _ensure_every_point_queried(
     pairs: Sequence[tuple[int, str]], *, points: Sequence[PlanPoint]
-) -> None:
-    """**每个要点都必须有一条绑定它的检索查询**，少一条这份计划就不成立。
+) -> list[tuple[int, str]]:
+    """**每个要点都要有一条绑定它的检索查询**；缺的用要点正文补上。
 
-    为什么这是硬性失败，而不是「补一条空查询」或「把这个要点去掉」：
+    这件事必须**由后端保证**，不能靠提示词自觉，而且三种取法里只有一种是对的：
 
-    * 补一条空查询：那一次检索等于没查，而覆盖判定会把「没查过」判成「材料里没有」——
-      凭空造出一个假缺口；
-    * 去掉这个要点：缺口根本不会出现——那正是 ADR-0029 决策三点名的盲区（输出空间里没有
-      「没有」）；要点是从**问题**里分解出来的，不许被材料侧的可行性倒删。
+    * **补一条空查询**（错）：那一次检索等于没查，覆盖判定会把「没查过」判成「材料里没有」——
+      凭空造一个假缺口；
+    * **去掉这个要点**（错，且最危险）：缺口根本不会出现——正是 ADR-0029 决策三点名的盲区
+      （输出空间里没有「没有」）。要点是从**问题**里分解出来的，不许被可行性倒删；
+    * **整份计划作废、退回原问题跑一次普通检索**（也对，但代价大）：一次本该出结果的
+      Research 被降级成单轮检索，为了一条查询赔掉整个多轮能力。
 
-    所以一个没配上查询的要点只有一种诚实处置：承认这份计划没成立，退回原问题跑一次普通
-    检索（规划失败的那条降级出口）。上限截断（:data:`MAX_FIRST_ROUND_QUERIES`）在**这条
-    检查之后**发生：截断影响的是「执行几条」，不是「计划里有没有」。
+    取的是第四条路：**用要点正文当查询**。要点就是一句为这个问题写的话，拿它去检索是**真查询**
+    （不是空查询），所以不会造假缺口；代价是零（不花模型调用），也不丢要点。这与补证阶段
+    :meth:`_Run._targeted_followup` 对缺口要点的取法**是同一条规则**，两处一致。
+
+    上限截断（:data:`MAX_FIRST_ROUND_QUERIES`）在**这条之后**发生：截断影响「执行几条」，
+    不影响「计划里有没有」。
     """
 
     queried = {point for point, _text in pairs}
-    if any(index not in queried for index in range(1, len(points) + 1)):
-        raise _IllegalOutput("a point without a retrieval query")
+    if not pairs:
+        # **一条查询都没有**与「漏了几条」是两件事：前者是模型没按格式给输出（整份计划不成立，
+        # 走规划失败那条降级出口），后者只需补齐。所以这里不补，把空清单交回调用方去拒。
+        return []
+    filled = list(pairs)
+    for index in range(1, len(points) + 1):
+        if index not in queried:
+            filled.append((index, points[index - 1].text))
+    return filled
 
 
 def _coerce_plan(raw: Any) -> tuple[list[PlanPoint], list[PlanQuery]]:
@@ -515,8 +536,7 @@ def _coerce_plan(raw: Any) -> tuple[list[PlanPoint], list[PlanQuery]]:
     points = [
         PlanPoint(point_id=f"A{index}", text=text) for index, text in enumerate(texts, start=1)
     ]
-    pairs = _coerce_query_items(raw)
-    _require_every_point_queried(pairs, points=points)
+    pairs = _ensure_every_point_queried(_coerce_query_items(raw), points=points)
     queries = _bound_queries(pairs, points=points, round_no=1)
     if not queries:
         # 要点有了、查询一条都没有：这不构成一次检索计划（没法检索）。按规划失败处理，
@@ -851,10 +871,10 @@ class _Run:
             return None
         return verdicts, queries
 
-    def _gap_verdicts(self) -> list[PointVerdict]:
-        """判定为 ``none`` 的那些要点——**缺口**的唯一来源（``unknown`` 不在其中）。"""
+    def _gap_verdicts(self) -> tuple[str, ...]:
+        """缺口的要点编号（推导见 :func:`_gap_point_ids`，这里只是转调）。"""
 
-        return [item for item in self.coverage if item.status == SUPPORT_NONE]
+        return _gap_point_ids(self.coverage)
 
     def _targeted_followup(self, proposed: Sequence[PlanQuery]) -> list[PlanQuery]:
         """补证查询：只留**绑在缺口要点上**的，缺口没给查询的拿要点文本顶上（定向补证）。
@@ -870,7 +890,7 @@ class _Run:
         """
 
         gaps = self._gap_verdicts()
-        gap_ids = {item.point_id for item in gaps}
+        gap_ids = set(gaps)
         kept = [item for item in proposed if item.point_id in gap_ids]
         if len(kept) != len(proposed):
             logger.warning(
@@ -882,14 +902,14 @@ class _Run:
         seen = {_normalize(item.query) for item in kept}
         queried = {item.point_id for item in kept}
         texts = {point.point_id: point.text for point in self.points}
-        for item in gaps:
-            if item.point_id in queried:
+        for point_id in gaps:
+            if point_id in queried:
                 continue
-            key = _normalize(texts[item.point_id])
+            key = _normalize(texts[point_id])
             if key in seen:
                 continue
             seen.add(key)
-            kept.append(PlanQuery(point_id=item.point_id, query=texts[item.point_id], round=2))
+            kept.append(PlanQuery(point_id=point_id, query=texts[point_id], round=2))
         return kept
 
     def _settle_after_followup(
@@ -998,7 +1018,7 @@ class _Run:
         """
 
         texts = {point.point_id: point.text for point in self.points}
-        return [texts[item.point_id] for item in self._gap_verdicts()]
+        return [texts[point_id] for point_id in self._gap_verdicts()]
 
     async def _answer_blocks(self, prompt: str, *, uncovered: Sequence[str]) -> FinalAnswer:
         """问一次生成；强模型那条路上失败就换快模型兜底**一次**。

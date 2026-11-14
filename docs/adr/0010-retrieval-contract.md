@@ -69,7 +69,7 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 
 ## 3. 降级原因是一组固定英文串
 
-`degraded_reason` 只允许五个值，**不拼异常文本**（第八次修订加了一条 `graph injection failed`；第七次修订加的那条 `orchestration failed` 已由第十一次修订撤回——一个不再存在的步骤不会失败）：
+`degraded_reason` 只允许四个值，**不拼异常文本**（第八次修订加的 `graph injection failed` 与第七次修订加的 `orchestration failed` 都已由第十一次修订撤回——一个不再存在的能力不会失败）：
 
 | 原因 | 产生位置 | 含义 |
 | --- | --- | --- |
@@ -77,7 +77,6 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 | `vector search failed` | `app/services/retrieval/pipeline.py` | 向量通道失败（含嵌入失败），已用关键词结果继续 |
 | `keyword search failed` | `app/services/retrieval/pipeline.py` | 关键词通道失败，已用向量结果继续 |
 | `rerank failed` | `app/services/retrieval/rerank.py` | 重排失败（含超时、空返回），已保留融合顺序 |
-| `graph injection failed` | `app/services/retrieval/pipeline.py` | 图谱注入失败，候选池原样交回（注入项跳过） |
 
 规则：
 

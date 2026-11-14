@@ -221,11 +221,17 @@ def test_the_planner_builder_has_no_way_to_carry_material() -> None:
 # ───────────────────────────────────────── ① 规划：每个要点配一条检索查询
 
 
-def test_a_point_without_a_retrieval_query_invalidates_the_plan() -> None:
-    """有要点却没有查询 = 计划不成立（规划失败 → 退回原问题跑一次）。
+def test_a_point_without_a_retrieval_query_is_searched_with_its_own_text() -> None:
+    """有要点却没配查询 → **后端用要点正文补一条真查询**，计划照常成立。
 
-    为什么不让它过去：一个从来没有被检索过的要点，「材料不足」与「材料里真没有」无法区分。
-    留着它，覆盖判定会把它判成 gap（假缺口）；丢掉它，gap 根本不会出现（假完备）。
+    这条改过语义（原来是「计划不成立、退回原问题」），理由是三种取法里的取舍：
+
+    * 补**空**查询会造**假缺口**（没查过被判成材料里没有）；
+    * 删掉这个要点会造**假完备**（缺口根本不出现，正是 ADR-0029 决策三的盲区）；
+    * 整份计划作废会把一次多轮 Research 降级成单轮检索，为一条查询赔掉整个能力。
+
+    要点正文是一句为这个问题写的话，拿它去检索是**真查询**——与补证阶段对缺口要点的取法
+    同一条规则。所以这里断言：两条查询都跑了，第二条用的就是要点正文。
     """
 
     plan = _plan(points=["退款时限", "所需材料"], queries=[{"point": 1, "query": "查询1"}])
@@ -233,10 +239,9 @@ def test_a_point_without_a_retrieval_query_invalidates_the_plan() -> None:
 
     outcome, _, probe = _run(plan, _judge(_supported(1, 1), _supported(2, 1)), search=search)
 
-    assert probe.calls == [QUERY], "退回的是原问题，不是那份不成立的计划"
-    assert outcome.stop_reason is StopReason.DEGRADED
-    assert outcome.points == ()
-    assert outcome.queries == ()
+    assert probe.calls == ["查询1", "所需材料"], "缺的那条要用要点正文补，且不能是空串"
+    assert outcome.stop_reason is not StopReason.DEGRADED
+    assert [point.point_id for point in outcome.points] == ["A1", "A2"], "要点一个都不许丢"
 
 
 def test_every_point_gets_its_own_query_even_when_the_round_cap_runs_fewer() -> None:
