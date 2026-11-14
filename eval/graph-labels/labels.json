@@ -198,7 +198,11 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "relative_heading",
-      "target": { "document": "eng-adr-0027", "section": "翻案条件" }
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "翻案条件",
+        "path": "0027. 图谱只建节级边、只做候选不做裁决 > 翻案条件"
+      }
     },
     {
       "id": "eng-0027-12",
@@ -231,7 +235,11 @@
       "label": "explicit",
       "form": "other",
       "form_detail": "relative_heading",
-      "target": { "document": "eng-adr-0027", "section": "翻案条件" }
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "翻案条件",
+        "path": "0027. 图谱只建节级边、只做候选不做裁决 > 翻案条件"
+      }
     },
     {
       "id": "eng-0027-15",

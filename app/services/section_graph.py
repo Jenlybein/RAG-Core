@@ -147,6 +147,23 @@ _NEGATION_PATTERNS = re.compile(
 )
 
 
+#: 对照行（「写法 → 目标」）的箭头：定位符出现在这样的行里就是格式示例。
+_MAPPING_ARROW_RE = re.compile(r"→|->|⟶")
+
+
+def _is_mapping_row(text: str, start: int, end: int) -> bool:
+    """这个定位符所在的那一行有没有 ``→``？有的话它是**对照表**，不是行文的引用。
+
+    ADR / RFC 里常有一张「真实写法 → 目标节标题」的对照表（ADR-0027 决策 8 就有一张）。
+    切块器会把这种代码块拆成逐行的小片，围栏已经不在文字里，``→`` 是那时唯一还留着的形状。
+    """
+
+    line_start = text.rfind("\n", 0, start) + 1
+    line_end = text.find("\n", end)
+    line = text[line_start:] if line_end == -1 else text[line_start:line_end]
+    return bool(_MAPPING_ARROW_RE.search(line))
+
+
 def _is_negated(sentence: str) -> bool:
     """这句话是不是否定语境（`the-todo-closed` 那种提到但不依赖）。"""
 
@@ -362,6 +379,28 @@ class SectionCatalog:
             return None
         return matches[0]
 
+    def section_by_decision_number(self, *, document_id: str, number: str) -> SectionRecord | None:
+        """``决策 N`` → 节。**先按「决策 N：…」这个惯例找**，找不到再按通用标题编号找。
+
+        ADR-0025 里「决策一：…」与「1. 重建没有…」两个惯例同时在用；作者写的是「决策一」，
+        就该落到决策条目上，不该因为「编号 1 出现两次」而弃权。ADR-0027 的决策标题写成
+        「3. …」，那里没有「决策 N」形态的标题，于是落回通用编号匹配（两种惯例都认）。
+        """
+
+        wanted = to_arabic_number(number)
+        if wanted is None:
+            return None
+        decisions = [
+            record
+            for record in self.of_document(document_id)
+            if _decision_form_number(record.heading_title) == wanted
+        ]
+        if len(decisions) == 1:
+            return decisions[0]
+        if len(decisions) > 1:
+            return None
+        return self.section_by_heading_number(document_id=document_id, number=number)
+
     def section_by_chapter_and_section(
         self, *, document_id: str, chapter: str, section: str
     ) -> SectionRecord | None:
@@ -424,16 +463,6 @@ class SectionCatalog:
         return matches[0]
 
 
-def _unique_match(sections: Sequence[SectionRecord], number: str) -> SectionRecord | None:
-    """标题以该章节号开头的节；恰好一个才算命中。"""
-
-    pattern = _number_prefix_re(number)
-    matches = [record for record in sections if pattern.match(record.heading_title.strip())]
-    if len(matches) != 1:
-        return None
-    return matches[0]
-
-
 def _has_numbered_heading(sections: Sequence[SectionRecord], number: str) -> bool:
     pattern = _number_prefix_re(number)
     return any(pattern.match(record.heading_title.strip()) for record in sections)
@@ -464,6 +493,15 @@ def _heading_number_of(title: str) -> str | None:
         match = pattern.match(plain)
         if match:
             return to_arabic_number(match.group(1))
+    return None
+
+
+def _decision_form_number(title: str) -> str | None:
+    """标题写成「决策 N：…」时的 N（ADR-0025 的决策条目惯例）。"""
+
+    match = _TITLE_DECISION_PREFIX_RE.match(title.strip())
+    if match:
+        return to_arabic_number(match.group(1))
     return None
 
 
@@ -702,6 +740,21 @@ def extract_reference_candidates(
     links = _link_candidates(text)
     candidates.extend(_quoted_heading_candidates(text))
     candidates.extend(_bare_heading_candidates(text, known_titles))
+    # 围栏代码块里的内容是**示例 / 代码**，不是作者对本文的引用：「「参见《X》第 2.4 节」
+    # 「本文件第三节」」这种格式示例写在代码块里时一律不算引用（ADR-0027 决策 8 的精度守卫）。
+    code_blocks = _code_block_spans(text)
+    candidates = [
+        candidate
+        for candidate in candidates
+        if not _inside_spans(candidate.start, candidate.end, code_blocks)
+        and not _is_mapping_row(text, candidate.start, candidate.end)
+    ]
+    links = [
+        link
+        for link in links
+        if not _inside_spans(link.start, link.end, code_blocks)
+        and not _is_mapping_row(text, link.start, link.end)
+    ]
     # 被链接覆盖的书名号 / 同文档 / 引号标题名丢掉（见函数文档最后一段）。
     kept = [
         candidate
@@ -893,32 +946,53 @@ def _bare_heading_candidates(
     ]
 
 
-#: 句子边界（决策号的文档上下文只看同一句里的文档定位符）。
-_SENTENCE_BOUNDARIES = "。！？；!?;\n"
+def _code_block_spans(text: str) -> list[tuple[int, int]]:
+    """Markdown 围栏代码块（``` / ~~~）覆盖的区间。
+
+    代码块里的引用写法是**示例**（「「参见《X》第 2.4 节」」），不是作者对本文的引用：
+    ADR-0027 的决策 8 就把四种真实写法放进了一个 ``text`` 代码块当例子。把这些当引用，
+    会建出一批「方向对、来源却是一句格式示例」的边（精度塌）。
+    """
+
+    spans: list[tuple[int, int]] = []
+    fence: str | None = None
+    block_start = 0
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        stripped = line.lstrip()
+        marker = stripped[:3]
+        if fence is None and marker in {"```", "~~~"}:
+            fence = marker
+            block_start = offset
+        elif fence is not None and stripped.startswith(fence):
+            spans.append((block_start, offset + len(line)))
+            fence = None
+        offset += len(line)
+    if fence is not None:
+        spans.append((block_start, len(text)))
+    return spans
+
+
+def _inside_spans(start: int, end: int, spans: Sequence[tuple[int, int]]) -> bool:
+    return any(span_start < end and start < span_end for span_start, span_end in spans)
 
 
 def _cross_document_marker(text: str, start: int) -> tuple[str, str] | None:
-    """同一句里、决策号之前的文档定位符（``（ADR-0025 决策五）`` 里的 ``ADR-0025``）。"""
+    """紧贴决策号之前的文档定位符（``（ADR-0025 决策五）`` 里的 ``ADR-0025``）。
 
-    window = text[max(0, start - 80):start]
-    left = max((window.rfind(mark) for mark in _SENTENCE_BOUNDARIES), default=-1) + 1
-    window = window[left:]
-    marker: tuple[int, str, str] | None = None
-    for match in _ADR_CODE_RE.finditer(window):
-        if marker is None or match.end() > marker[0]:
-            marker = (match.end(), "code", match.group(1))
-    for match in _BOOK_TITLE_RE.finditer(window):
-        if marker is None or match.end() > marker[0]:
-            marker = (match.end(), "title", match.group(1).strip())
-    trailing = _TRAILING_LINK_RE.search(window)
-    if trailing is not None:
-        path, _, _ = trailing.group(1).partition("#")
-        stem = _link_stem(path)
-        if stem and (marker is None or len(window) > marker[0]):
-            marker = (len(window), "link", stem)
-    if marker is None:
-        return None
-    return marker[1], marker[2]
+    只认**相邻**（中间只隔空白）：同一句里更早出现的书名号可能属于另一条引用表达，
+    ``按决策 3`` 若被前文的 ``《另一个库的规则》`` 抢去，会去解析一篇错文档。
+    """
+
+    window = text[max(0, start - 14):start]
+    code = re.search(r"ADR[-\s]?([0-9]{1,4})\s*$", window, re.IGNORECASE)
+    if code is not None:
+        return "code", code.group(1)
+    titled = re.search(r"《([^》\n]{1,80})》\s*$", window)
+    if titled is not None:
+        return "title", titled.group(1).strip()
+    return None
+
 
 
 def _decision_is_framed_as_citation(text: str, match: re.Match[str]) -> bool:
@@ -1368,7 +1442,7 @@ def _locator_target(
             document_id=document_id, name=candidate.heading_name
         )
     if candidate.decision_number is not None:
-        return catalog.section_by_heading_number(
+        return catalog.section_by_decision_number(
             document_id=document_id, number=candidate.decision_number
         )
     if candidate.chapter_number is not None:

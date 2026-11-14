@@ -483,3 +483,83 @@ def test_a_decision_number_in_a_plain_statement_creates_no_edge() -> None:
     )
 
     assert _reference_targets(edges, "翻案条件（开关归属）") == set()
+
+
+def test_a_decision_number_prefers_the_decision_naming_convention() -> None:
+    """「见决策一」：ADR-0025 里「决策一：…」与「1. …」同时在用，作者写的是决策条目（eng-0027-03）。"""
+
+    background_item = _record(heading="1. 重建没有一致快照", order=1)
+    decision = _record(heading="决策一：一次构建 = 一个不可变版本", order=9)
+    text = "它们必须进同一个不可变版本（见决策一），否则旧边指向新版本的节。"
+    edges = _edges(
+        sections=(
+            _source(heading="决策二：构建期间线上照旧查旧版本", text=text),
+            SectionText(record=background_item, text="重建过程没有一致快照。"),
+            SectionText(record=decision, text="一次构建产出一个不可变版本。"),
+        ),
+        catalog=_catalog(background_item, decision),
+    )
+
+    assert _reference_targets(edges, "决策二：构建期间线上照旧查旧版本") == {decision.section_id}
+
+
+def test_references_inside_a_fenced_code_example_block_create_no_edge() -> None:
+    """代码块里的引用写法是**格式示例**，不是作者对本文的引用（ADR-0027 决策 8 的例子表）。"""
+
+    doc_title = "0025. 索引即构建产物"
+    target = _record(
+        document_id="doc-0025",
+        title=doc_title,
+        heading=f"{doc_title} > 决策五：节的身份证不含版本",
+        order=5,
+    )
+    text = (
+        "先认清这四种真实写法：\n\n"
+        "```text\n"
+        "（ADR-0025 决策五）              → 目标节标题「决策五：节的身份证不含版本」\n"
+        "见决策 3                        → 目标节标题「3. 只认文档显式表达」\n"
+        "```\n\n"
+        "上面几句只是形状示例，不是本节依赖。"
+    )
+    edges = _edges(
+        sections=(_source(heading="先测", text=text),),
+        catalog=_catalog(target),
+    )
+
+    assert _reference_targets(edges, "先测") == set()
+
+
+def test_a_mapping_row_under_a_fence_stripped_chunk_creates_no_edge() -> None:
+    """切块器把代码块拆成逐行的小片后，围栏本身已经不在了：靠「写法 → 目标」的形状挡。
+
+    真实语料里这两行（`（ADR-0025 决策五）`、`见决策 3`）就是被切块器拆成了单行片，
+    每片文字只剩「左栏 → 目标节标题『…』」——它是**对照表**，不是行文。
+    """
+
+    doc_title = "0025. 索引即构建产物"
+    target = _record(
+        document_id="doc-0025",
+        title=doc_title,
+        heading=f"{doc_title} > 决策五：节的身份证不含版本",
+        order=5,
+    )
+    decision_3 = _record(heading="3. 只认文档显式表达，不按相似度猜边", order=3)
+    first = _edges(
+        sections=(
+            _source(
+                heading="低于阈值", text="（ADR-0025 决策五）              → 目标节标题「决策五」"
+            ),
+        ),
+        catalog=_catalog(target),
+    )
+    second = _edges(
+        sections=(
+            _source(
+                heading="低于阈值", text="见决策 3                        → 目标节标题「3. 只认」"
+            ),
+        ),
+        catalog=_catalog(decision_3),
+    )
+
+    assert _reference_targets(first, "低于阈值") == set()
+    assert _reference_targets(second, "低于阈值") == set()

@@ -267,6 +267,10 @@ def section_of_evidence(corpus: TierCorpus, item: LabelItem) -> SectionText:
 
     一个节可能有几片（长节切片之间有重叠，同一句会同时出现在两片里），所以唯一性按
     ``heading_path`` 数，不按片数数——测量单位是节。
+
+    **文档更新后同一句可能在两节里出现**（例：ADR-0027 的「决策 8」把一条旧例子又复述了
+    一遍，标注集写在更新之前）。标注文件本来就写了 ``source_section``/``source_section_path``，
+    所以这时按标注收窄；收窄后仍不是恰好一节就照旧当场报错——**不猜**。
     """
 
     hits = [
@@ -274,6 +278,22 @@ def section_of_evidence(corpus: TierCorpus, item: LabelItem) -> SectionText:
     ]
     headings = {entry.record.heading_path for entry in hits}
     if len(headings) != 1:
+        narrowed = hits
+        if item.source_section_path is not None:
+            narrowed = [
+                entry
+                for entry in hits
+                if entry.record.heading_path == item.source_section_path
+            ]
+        elif item.source_section:
+            narrowed = [
+                entry
+                for entry in hits
+                if entry.record.heading_title == item.source_section
+            ]
+        narrowed_headings = {entry.record.heading_path for entry in narrowed}
+        if len(narrowed_headings) == 1:
+            return narrowed[0]
         where = ", ".join(repr(heading) for heading in sorted(headings)) or "（一处都没有）"
         raise ValueError(
             f"{item.id}: 证据 `{item.evidence}` 落在 {len(headings)} 个节里：{where}"
