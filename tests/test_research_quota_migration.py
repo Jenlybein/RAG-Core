@@ -104,10 +104,11 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     path = _migration_path("add_research_quotas")
     assert _down_revision_of(path) == PREVIOUS_HEAD, "本条迁移必须接在本步此前的唯一 head 上"
     assert len(heads) == 1, f"整条链应当只有一个 head，实际 {heads}"
-    # 链尾在合并时前移了：#152 的关系边表（``create_section_edges``）接在本条之后。
+    # 链尾在合并时前移了：#152 的关系边表（``create_section_edges``）接在本条之后，
+    # #138 撤销编排块的删列迁移（``drop_orchestration_switch``）再往后。
     # 按仓库惯例，加最后一条迁移的人改这一行。
-    assert heads == [_revision_of(_migration_path("create_section_edges"))], (
-        f"链尾应当是 #152 的关系边表，实际 {heads}"
+    assert heads == [_revision_of(_migration_path("drop_orchestration_switch"))], (
+        f"链尾应当是 #138 的删列迁移，实际 {heads}"
     )
 
 

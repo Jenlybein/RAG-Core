@@ -178,29 +178,34 @@ def test_the_migration_is_named_after_its_twelve_hex_revision() -> None:
 
 
 def test_it_chains_onto_the_single_current_head_without_branching() -> None:
-    """接在**其余迁移的唯一 head** 上，且自己不另起一头。
+    """接在**当时的链尾**上，且自己不另起一头。
 
     不写死 ``down_revision == e41b7c9d2a63``：#150 也在加迁移，真实接点是「当时的链尾」。
-    要守的性质是「接得上、只有一条链、我这一条就是链尾」——分支头的症状是
-    ``alembic upgrade head`` 只跑一条链，另一条悄悄没跑。
+    要守的性质是「接得上、只有一条链」——分支头的症状是 ``alembic upgrade head`` 只跑
+    一条链，另一条悄悄没跑。
+
+    **「我这一条就是链尾」这半句在 #138 之后不再成立**：#138 撤销编排块的删列迁移
+    （``drop_orchestration_switch``）接在本条之后。被后来者接上是正常的演进，所以这里
+    守的是更耐久的性质：整条链只有一个 head，且本票**仍在主链上**（顺着 head 一路
+    ``down_revision`` 走能走到它），不是悬空的孤儿、也不是另一个分支头。
     """
 
     mine = _migration_path(SLUG)
     paths = sorted(VERSIONS_DIR.glob("*.py"))
     revisions = {_revision_of(path): path for path in paths}
-    others = {revision for revision in revisions if revisions[revision] != mine}
-    down_revisions = {
-        _down_revision_of(revisions[revision])
-        for revision in others
-        if _down_revision_of(revisions[revision]) is not None
-    }
-    heads = others - down_revisions
+    down_revisions = {_down_revision_of(path) for path in paths} - {None}
+    heads = set(revisions) - down_revisions
 
-    assert len(heads) == 1, f"其余迁移必须只有一条链，实际 head={sorted(heads)}"
-    assert _down_revision_of(mine) == next(iter(heads)), "本票必须接在当前唯一 head 上"
+    assert len(heads) == 1, f"整条链必须只有一条，实际 head={sorted(heads)}"
+    assert _down_revision_of(mine) in revisions, "本票必须接在链上的一条迁移之后"
 
-    all_down = {_down_revision_of(path) for path in paths} - {None}
-    assert set(revisions) - all_down == {_revision_of(mine)}, "本票应当就是唯一 head"
+    walked: list[str] = []
+    cursor: str | None = next(iter(heads))
+    while cursor is not None:
+        walked.append(cursor)
+        cursor = _down_revision_of(revisions[cursor])
+
+    assert _revision_of(mine) in walked, "本票必须在唯一的主链上（不是悬空的分支）"
 
 
 # ───────────────────────────────────────────────────────────── upgrade
