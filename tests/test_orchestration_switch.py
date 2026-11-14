@@ -546,8 +546,8 @@ def test_the_orchestration_migration_sits_on_top_of_the_single_head() -> None:
     path = _migration_path("add_orchestration_switch")
     assert _down_revision_of(path) == PREVIOUS_HEAD, "本条迁移必须接在本步此前的唯一 head 上"
     assert len(heads) == 1, f"整条链应当只有一个 head，实际 {heads}"
-    assert heads == [_revision_of(_migration_path("create_section_edges"))], (
-        f"链尾应当是 #152 的关系边表（#141 的版本表与 #150 的配额列之后），实际 {heads}"
+    assert heads == [_revision_of(_migration_path("drop_section_edges"))], (
+        f"链尾应当是 #138 那条「删关系边表」的迁移（#152 建、这次撤），实际 {heads}"
     )
 
 

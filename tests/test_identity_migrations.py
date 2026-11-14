@@ -151,9 +151,10 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # （add_orchestration_switch）接在反馈表之后；#141 的索引构建版本表
     # （add_index_build_versions）再接在编排开关之后；#150 的 Research 配额两列
     # （add_research_quotas）接在版本表之后；#152 的关系边表（create_section_edges）
-    # 再接在配额两列之后。每加一条迁移改这一行是**刻意的**：
+    # 再接在配额两列之后；#138 的范围变更删掉那张表（drop_section_edges），链尾前移。
+    # 每加一条迁移改这一行是**刻意的**：
     # 「链尾是哪个文件」要人看一眼确认，不由代码自动推导。
-    assert heads == {_revision_of(_migration_path("create_section_edges"))}
+    assert heads == {_revision_of(_migration_path("drop_section_edges"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
