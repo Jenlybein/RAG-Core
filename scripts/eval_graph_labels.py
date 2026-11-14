@@ -128,7 +128,9 @@ INCIDENTAL_FINDINGS = (
     "`docs/adr/0015-token-window-and-vocab.md` 的正文里含 `<|endoftext|>` 这个 tiktoken 特殊 "
     "token 的**字面量**，生产切块器（`app/utils/tokenizer.py`）对它直接抛 `ValueError: "
     "disallowed special token`。也就是说：上传一篇正文里出现这个字面量的文档，索引会失败。"
-    "这一篇因此被排除在本测量的目录之外（`labels.json` 的 `exclude`），另记一笔。",
+    "这一篇因此被排除在本测量的目录之外（`labels.json` 的 `exclude`），另记一笔。"
+    "**（2026-11-15 已修，#160：正文里的特殊 token 字面量现在按数据编码，见 ADR-0015 末节。"
+    "这段说明保留，因为它记录了那次测量的边界。）**",
     "测量集里曾有两类「解析侧」的漏法：①`本文件第 1 节` 这种写法完全在规则内的引用，在标题写成"
     "「第 N 节 X」的政策文档上解析失败——`section_by_number` 只认「标题以数字开头」；②整篇链接"
     "（`[ADR-0025](0025-….md) 决策五`）落到目标文档的 **h1 那一节**（ADR 的 h1 节只有「状态 / 日期 /"
