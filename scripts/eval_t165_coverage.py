@@ -614,6 +614,7 @@ def score_verdicts(
         "judged_supported": 0,
         "judged_none": 0,
         "judged_unknown": 0,
+        "supported_on_expected": 0,
         "false_gap": 0,
         "false_supported": 0,
         "none_detected": 0,
@@ -630,6 +631,10 @@ def score_verdicts(
         else:
             counts["judged_unknown"] += 1
 
+        if item.expected == SUPPORTED and status == SUPPORTED:
+            # 「期望支撑且判了支撑」——抗干扰率的分子只能是它：直接用 judged_supported 会把
+            # 「本该 none 却判成 supported」也算进来，比率能超过 1（B 条件里真的超过过）。
+            counts["supported_on_expected"] += 1
         if item.expected == SUPPORTED and status == NONE:
             counts["false_gap"] += 1
         if item.expected == NONE and status == SUPPORTED:
@@ -638,6 +643,54 @@ def score_verdicts(
             counts["none_detected"] += 1
     return counts
 
+
+def recount(record: Mapping[str, Any]) -> dict[str, Any]:
+    """从**落盘的逐要点行**重算计数（不重新调用模型）。
+
+    产物因此可以离线复算：改一条统计口径时不该重花那五十几次调用。重算只读 ``points`` 里的
+    ``expected`` / ``status`` / ``on_expected_unit``，所以它与落盘那一刻算出来的数必须一致
+    ——``tests/test_eval_t165_coverage.py`` 按手算的例子钉住这件事。
+    """
+
+    rows = list(record.get("points") or [])
+    expected = [
+        PointExpectation(
+            index=int(row["index"]),
+            text=str(row.get("point") or ""),
+            expected=str(row["expected"]),
+            unit=str(row.get("unit") or ""),
+        )
+        for row in rows
+    ]
+    statuses: tuple[str, ...] | None
+    if record.get("invalid_reason") or any(row.get("status") is None for row in rows):
+        statuses = None
+    else:
+        statuses = tuple(str(row["status"]) for row in rows)
+    counts = score_verdicts(expected, statuses, invalid_reason=record.get("invalid_reason"))
+    counts["cases"] = 1
+    counts["cases_invalidated"] = counts["invalid"]
+    counts["supported_on_expected"] = sum(
+        1 for row in rows if row.get("expected") == SUPPORTED and row.get("status") == SUPPORTED
+    )
+    counts["evidence_on_expected_unit"] = sum(
+        1 for row in rows if row.get("status") == SUPPORTED and row.get("on_expected_unit")
+    )
+    counts["evidence_checked"] = sum(1 for row in rows if row.get("status") == SUPPORTED)
+    return dict(record) | counts
+
+
+def recompute_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    """把每个条件的逐题记录按当前口径重算一遍，并重出指标（不调用模型）。"""
+
+    for section in (payload.get("conditions") or {}).values():
+        cases = [recount(record) for record in section.get("cases") or []]
+        section["cases"] = cases
+        section["metrics"] = aggregate(cases)
+    payload["model_calls"] = dict(payload.get("model_calls") or {}) | {
+        "actual": actual_model_calls(payload)
+    }
+    return payload
 
 def _sum_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     keys = (
@@ -650,6 +703,7 @@ def _sum_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "judged_supported",
         "judged_none",
         "judged_unknown",
+        "supported_on_expected",
         "false_gap",
         "false_supported",
         "none_detected",
@@ -679,7 +733,7 @@ def aggregate(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         "检出率": _rate(totals["none_detected"], totals["expected_none"]),
         "检出_分子": totals["none_detected"],
         "检出_分母": totals["expected_none"],
-        "抗干扰率": _rate(totals["judged_supported"], totals["expected_supported"]),
+        "抗干扰率": _rate(totals["supported_on_expected"], totals["expected_supported"]),
         "unknown率": _rate(totals["judged_unknown"], supported_all),
         "unknown_分子": totals["judged_unknown"],
         "unknown_分母": supported_all,
@@ -1205,6 +1259,30 @@ def unknown_reading(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 # ─────────────────────────────────────────────────────────── 报告
 
 
+#: 两个**偏离项**的逐条复核（post-hoc）。复核读了原文，但**不改标注**：标注仍按问题侧原样，
+#: 这里只解释「为什么这一条看起来像判错、其实不是」。两例都用语料原文核对过，引文可 grep。
+POST_HOC_FINDINGS: Final[tuple[dict[str, str], ...]] = (
+    {
+        "case": "A / C 的 r07 第 3 条（积分返还时机）",
+        "reading": "记 1 例假缺口（期望 supported，判 none）",
+        "check": (
+            "要点里那句「同样在退款执行成功之后」在原文里只出现在 refund_policy 第 4 节"
+            "（「积分返还发生在退款执行成功之后，退款失败时不返还」）；而 r07 的 expected 只列了"
+            "refund_policy:2 / promo_rules:3 / points_policy:3，池子里根本没有第 4 节，"
+            "points_policy:3 只写了「恢复原有效期」。"
+        ),
+        "verdict": "判定是对的，缺的是池子：r07 的 expected 漏了一节。这一例不算假缺口。",
+    },
+    {
+        "case": "B 的 r04 第 3 条（叠加与 0.01 元下限）",
+        "reading": "记 1 例漏检（期望 none，判 supported）",
+        "check": (
+            "「等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元」这句在 points_policy 第 2 节"
+            "与 promo_rules 第 1 节各写了一遍——删掉 promo_rules:1 并没有把这个事实移出池子。"
+        ),
+        "verdict": "判定是对的，这是构造式标注的已知风险（跨节重复）。这一例不算漏检。",
+    },
+)
 def _fmt_rate(value: Any) -> str:
     if value is None:
         return "—"
@@ -1290,7 +1368,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
         ("检出率（B 缺一块）", metrics_b, "检出率", "检出_分子", "检出_分母"),
         ("误报 support 率（B）", metrics_b, "误报support率", "expected_none", "expected_none"),
         ("假缺口率（B，未被删的要点）", metrics_b, "假缺口率", "假缺口_分子", "假缺口_分母"),
-        ("抗干扰率（C 加干扰）", metrics_c, "抗干扰率", "judged_supported", "expected_supported"),
+        ("抗干扰率（C 加干扰）", metrics_c, "抗干扰率", "supported_on_expected", "expected_supported"),
         ("unknown 率（A）", metrics_a, "unknown率", "unknown_分子", "unknown_分母"),
         ("unknown 率（B）", metrics_b, "unknown率", "unknown_分子", "unknown_分母"),
         ("unknown 率（C）", metrics_c, "unknown率", "unknown_分子", "unknown_分母"),
@@ -1351,7 +1429,22 @@ def render_report(payload: Mapping[str, Any]) -> str:
             ]
         lines.append("")
 
-    lines += ["", "## 四、``unknown`` 那一组（补证后恢复）", ""]
+    lines += ["", "## 四、人工复核（post-hoc）：两个偏离项", ""]
+    lines += [
+        "复核读了原文，**不改标注**——标注仍按问题侧原样冻结，这里只解释偏离项，"
+        "并给出可以自己 grep 的原文线索。",
+        "",
+    ]
+    for item in POST_HOC_FINDINGS:
+        lines += [
+            f"**{item['case']}**：{item['reading']}",
+            "",
+            f"- 核对：{item['check']}",
+            f"- 结论：{item['verdict']}",
+            "",
+        ]
+
+    lines += ["", "## 五、``unknown`` 那一组（补证后恢复）", ""]
     unknown = payload.get("unknown") or {}
     if not unknown.get("cases"):
         lines.append("- 这一组没有采集。")
@@ -1377,7 +1470,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
 
     lines += [
         "",
-        "## 五、这份对照不能回答什么",
+        "## 六、这份对照不能回答什么",
         "",
         "- **样本量小**：refs 8 题（B 条件 6 题）+ 137 题库 4 题，一共 12 题。"
         "任何一个率的分母都在 10–40 之间，一个要点翻转就能改掉好几个百分点；"
@@ -1394,7 +1487,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "它们的要点文本来自题集的 `note`（标注者写的「哪一节给什么」），不是逐条参考要点。",
         "- **不测延迟与成本结构**：这一轮只数模型调用次数，没有比较档位、缓存或并发。",
         "",
-        "## 六、怎么复现",
+        "## 七、怎么复现",
         "",
         "```powershell",
         "# 只打印预估与素材自检（0 次模型调用）",
@@ -1613,7 +1706,29 @@ def _build_parser() -> argparse.ArgumentParser:
     run = subparsers.add_parser("run", help="跑全量并写 eval/reports/t165/")
     run.add_argument("--groups", nargs="+", default=list(ALL_GROUPS), choices=list(ALL_GROUPS))
     run.add_argument("--out-dir", default=str(REPORT_DIR), help="产物目录")
+
+    recompute = subparsers.add_parser(
+        "recompute", help="按当前口径重算已有产物的指标并重出报告（0 次模型调用）"
+    )
+    recompute.add_argument("--out-dir", default=str(REPORT_DIR), help="产物目录")
     return parser
+
+
+def _recompute(out_dir: Path) -> int:
+    """不重跑、只重算：改统计口径不该重花那五十几次调用。"""
+
+    results_path = out_dir / "results.json"
+    if not results_path.exists():
+        print(f"没有产物可重算：{results_path}")
+        return 1
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    payload = recompute_metrics(payload)
+    results_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    (out_dir / "report.md").write_text(render_report(payload), encoding="utf-8")
+    print(f"已重算：实际模型调用 {payload['model_calls']['actual']} 次（未新增调用）")
+    return 0
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1626,6 +1741,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         # 与 scripts/eval_refs.py / conftest 同一行理由。少了这一行，判定会静默回落到 .env
         # 的单供应商 key，然后每一题都以 AppError 作废——读数看起来像「判定不行」。
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    if args.command == "recompute":
+        return _recompute(out_dir)
     if args.command == "plan":
         asyncio.run(run_all(groups=(), out_dir=out_dir, mode="plan"))
         return 0

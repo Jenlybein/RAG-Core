@@ -113,7 +113,10 @@ def test_condition_c_adds_distractors_without_removing_expected_units(
 ) -> None:
     _, refs_all = ev.load_units(ev.REFS_CORPUS_DIR)
 
-    for index, cases in ((refs_units, ev.load_refs_cases(refs_units)), (base_units, ev.load_base_cases())):
+    for index, cases in (
+        (refs_units, ev.load_refs_cases(refs_units)),
+        (base_units, ev.load_base_cases()),
+    ):
         all_units = refs_all if index is refs_units else ev.load_units(ev.BASE_CORPUS_DIR)[1]
         for case in cases:
             pool_a = ev.build_pool(index, case, condition="A")
@@ -204,6 +207,7 @@ def test_plan_mode_is_free(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -
     assert payload["checks"]["pools_ok"] is True
     assert payload["sample"]  # 样本清单必须能打印出来
 
+
 # ─────────────────────────────────────────────────────────────── 6. 缺口闸与 unknown 口径
 
 
@@ -251,7 +255,10 @@ def test_unknown_reading_counts_only_followed_up_cases() -> None:
         {
             "case": "r01",
             "stop_reason": "max_rounds",
-            "coverage": [{"point_id": "A1", "status": "unknown"}, {"point_id": "A2", "status": "supported"}],
+            "coverage": [
+                {"point_id": "A1", "status": "unknown"},
+                {"point_id": "A2", "status": "supported"},
+            ],
             "gaps": [],
             "answered": True,
             "declared_insufficient": False,
@@ -287,3 +294,71 @@ def test_actual_calls_are_recounted_from_the_artifacts() -> None:
     }
 
     assert ev.actual_model_calls(payload) == 10
+
+
+# ─────────────────────────────────────────────────────────────── 7. 离线复算
+
+
+def _record(rows: list[dict], *, invalid_reason: str | None = None) -> dict:
+    return {"case": "x", "condition": "B", "invalid_reason": invalid_reason, "points": rows}
+
+
+def test_recount_keeps_anti_noise_rate_within_one() -> None:
+    """B 条件里「本该 none 却判 supported」不许把抗干扰率抬过 1（真的发生过一次）。"""
+
+    record = _record(
+        [
+            {"index": 0, "expected": "supported", "status": "supported", "on_expected_unit": True},
+            {"index": 1, "expected": "none", "status": "supported", "on_expected_unit": True},
+        ]
+    )
+
+    counted = ev.recount(record)
+    metrics = ev.aggregate([counted])
+
+    assert counted["supported_on_expected"] == 1
+    assert metrics["抗干扰率"] == 1.0
+    assert metrics["误报support率"] == 1.0
+
+
+def test_recount_treats_a_missing_status_as_an_invalidated_case() -> None:
+    record = _record(
+        [{"index": 0, "expected": "supported", "status": None, "on_expected_unit": False}],
+        invalid_reason="a point without a verdict",
+    )
+
+    counted = ev.recount(record)
+
+    assert counted["invalid"] == 1
+    assert counted["judged_unknown"] == 0
+
+
+def test_recompute_metrics_refreshes_rates_without_touching_call_counts() -> None:
+    payload = {
+        "model_calls": {"nominal": 1, "budget": 60, "actual": 99},
+        "conditions": {
+            "A": {
+                "cases": [
+                    _record(
+                        [
+                            {
+                                "index": 0,
+                                "expected": "supported",
+                                "status": "none",
+                                "on_expected_unit": False,
+                            }
+                        ]
+                    )
+                ],
+                "metrics": {"假缺口率": 0.0},
+            }
+        },
+        "gap_gate": {"cases": [{"model_calls": 3}]},
+        "unknown": {"cases": [{"model_calls": 2}]},
+    }
+
+    refreshed = ev.recompute_metrics(payload)
+
+    assert refreshed["conditions"]["A"]["metrics"]["假缺口率"] == 1.0
+    assert refreshed["model_calls"]["nominal"] == 1
+    assert refreshed["model_calls"]["actual"] == 5
