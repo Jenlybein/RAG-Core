@@ -275,7 +275,7 @@ def test_unknown_reading_counts_only_followed_up_cases() -> None:
 
     reading = ev.unknown_reading(records)
 
-    assert reading["cases"] == 2
+    assert reading["case_count"] == 2
     assert reading["followup_exercised"] == 1
     assert reading["cases_with_unknown"] == 1
     assert reading["rate_with_unknown"] == 1.0
@@ -290,7 +290,7 @@ def test_actual_calls_are_recounted_from_the_artifacts() -> None:
             "B": {"cases": [{"model_calls": 1}]},
         },
         "gap_gate": {"cases": [{"model_calls": 3}]},
-        "unknown": {"cases": [{"model_calls": 4}]},
+        "unknown": {"records": [{"model_calls": 4}]},
     }
 
     assert ev.actual_model_calls(payload) == 10
@@ -362,3 +362,39 @@ def test_recompute_metrics_refreshes_rates_without_touching_call_counts() -> Non
     assert refreshed["conditions"]["A"]["metrics"]["假缺口率"] == 1.0
     assert refreshed["model_calls"]["nominal"] == 1
     assert refreshed["model_calls"]["actual"] == 5
+
+
+# ─────────────────────────────────────────────────────────────── 8. 归档旁证
+
+
+def test_archived_reading_counts_only_max_rounds_as_recovered(tmp_path: Path) -> None:
+    fixture = tmp_path / "results.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "run_id": "run-x",
+                "generated_at": "2026-11-14T00:00:00+00:00",
+                "per_question": [
+                    {"id": "r01", "stop_reason": "max_rounds"},
+                    {"id": "r02", "stop_reason": "no_new_evidence"},
+                    {"id": "r03", "stop_reason": "evidence_complete"},
+                    {"id": "r04", "stop_reason": "max_rounds"},
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    reading = ev.archived_followup_reading(fixture)
+
+    assert reading["available"] is True
+    assert reading["questions"] == 4
+    assert reading["recovered"] == 2
+    assert reading["rate_recovered"] == 0.5
+    assert reading["stop_reasons"]["no_new_evidence"] == 1
+
+
+def test_archived_reading_says_unavailable_instead_of_guessing(tmp_path: Path) -> None:
+    reading = ev.archived_followup_reading(tmp_path / "missing.json")
+
+    assert reading["available"] is False

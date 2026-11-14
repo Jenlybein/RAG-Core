@@ -690,6 +690,14 @@ def recompute_metrics(payload: dict[str, Any]) -> dict[str, Any]:
     payload["model_calls"] = dict(payload.get("model_calls") or {}) | {
         "actual": actual_model_calls(payload)
     }
+    unknown = payload.get("unknown")
+    if isinstance(unknown, dict) and "case_count" not in unknown:
+        # 早期产物把逐题记录放在 ``cases`` 上（与计数同名），这里统一成
+        # ``case_count`` + ``records``——否则报告会把一个列表当成题数打出来。
+        rows = list(unknown.pop("cases", []) or [])
+        unknown["case_count"] = len(rows)
+        unknown["records"] = rows
+    payload["archived"] = archived_followup_reading()
     return payload
 
 def _sum_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
@@ -727,6 +735,10 @@ def aggregate(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     return {
         "cases": totals["cases"],
         "point_verdicts": totals["verdicts"],
+        "expected_supported": totals["expected_supported"],
+        "expected_none": totals["expected_none"],
+        "judged_supported": totals["judged_supported"],
+        "supported_on_expected": totals["supported_on_expected"],
         "假缺口率": _rate(totals["false_gap"], totals["expected_supported"]),
         "假缺口_分子": totals["false_gap"],
         "假缺口_分母": totals["expected_supported"],
@@ -1234,7 +1246,7 @@ def unknown_reading(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     ]
     points = [item for record in records for item in record.get("coverage") or []]
     return {
-        "cases": len(records),
+        "case_count": len(records),
         "followup_exercised": len(exercised),
         "cases_with_unknown": len(with_unknown),
         "rate_with_unknown": _rate(len(with_unknown), len(exercised)),
@@ -1283,6 +1295,54 @@ POST_HOC_FINDINGS: Final[tuple[dict[str, str], ...]] = (
         "verdict": "判定是对的，这是构造式标注的已知风险（跨节重复）。这一例不算漏检。",
     },
 )
+#: 归档的真实产物：C6（#153）在 v2 索引上跑的 8 题完整 Research。**零成本旁证**：
+#: 它没有逐要点 ``coverage``（那时还没有这个字段），但 ``stop_reason`` 已经能回答一件事——
+#: ``max_rounds`` 的含义是「补证跑过了**且捞到了新材料**」，而在今天的语义里，补回来的
+#: 要点必然落成 ``unknown``（:meth:`_Run._settle_after_followup` 的规则）。
+#: 于是它是「补证发生过而且真的捞到东西」的**真实频率**，正好补上构造组只能证明机制、
+#: 证明不了频率的那一格。
+ARCHIVED_RUN: Final[Path] = EVAL_DIR / "reports" / "c6" / "runs" / "04-v2-research-on" / "results.json"
+
+
+def _display_path(path: Path) -> str:
+    """产物里的路径写法：仓库内的写相对路径（可复算），仓库外的写绝对路径（不假装它在仓库里）。"""
+
+    try:
+        return path.resolve().relative_to(REPO_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+def archived_followup_reading(path: Path | None = None) -> dict[str, Any]:
+    """从归档产物里数「补证捞到新材料」的真实频率（不调用模型，不读库）。
+
+    只有 ``max_rounds`` 能证明「捞到了新材料」：``no_new_evidence`` 是补了但没捞到，
+    ``evidence_complete`` 是根本没补。所以分子只取 ``max_rounds``，分母取全部题。
+    """
+
+    target = path or ARCHIVED_RUN
+    if not target.exists():
+        return {"available": False, "path": str(target)}
+    payload = json.loads(target.read_text(encoding="utf-8"))
+    rows = list(payload.get("per_question") or [])
+    reasons: dict[str, int] = {}
+    for row in rows:
+        key = str(row.get("stop_reason"))
+        reasons[key] = reasons.get(key, 0) + 1
+    recovered = reasons.get("max_rounds", 0)
+    return {
+        "available": True,
+        "path": _display_path(target),
+        "run_id": payload.get("run_id"),
+        "generated_at": payload.get("generated_at"),
+        "questions": len(rows),
+        "stop_reasons": reasons,
+        "recovered": recovered,
+        "rate_recovered": _rate(recovered, len(rows)),
+        "cases": [
+            {"case": row.get("id"), "stop_reason": row.get("stop_reason")} for row in rows
+        ],
+    }
+
 def _fmt_rate(value: Any) -> str:
     if value is None:
         return "—"
@@ -1296,47 +1356,87 @@ def _metric_line(label: str, value: Any, numerator: Any, denominator: Any) -> st
 def recommendation(payload: Mapping[str, Any]) -> list[str]:
     """把「要不要加 ⑤ 复查」写成一条**有判据**的结论，而不是一句感觉。
 
-    判据是 ADR-0029 实施备注第 2 条给的那个数：补证发生过、且至少一个要点落在 ``unknown``
-    的题占比。它高的意思是「材料到了，但没人再回答过它支不支持」——那正是 ⑤ 存在的理由。
+    判据来自 ADR-0029 实施备注第 2 条：**「补证发生过、且至少一个要点落在 ``unknown``」
+    的题占比**。它需要两个数，本票分别用两组数据给出：
+
+    * **条件概率**（构造组）：补证真的捞到材料时，多少题落 ``unknown`` ——
+      ``recovery`` 组给的是机制证据（构造保证补证一定捞到）；
+    * **频率**（归档旁证）：真实跑批里「补证发生且捞到新材料」有多常见 ——
+      取自 ``eval/reports/c6/runs/04-v2-research-on`` 的 ``stop_reason``，零成本。
+
+    两者相乘就是那个占比。判据线写在 :data:`UNKNOWN_TOLERANCE`。
     """
 
     unknown = payload.get("unknown") or {}
     rate = unknown.get("rate_with_unknown")
     exercised = unknown.get("followup_exercised") or 0
     with_unknown = unknown.get("cases_with_unknown") or 0
+    archived = payload.get("archived") or {}
+    real_rate = archived.get("rate_recovered") if archived.get("available") else None
     metrics_a = ((payload.get("conditions") or {}).get("A") or {}).get("metrics") or {}
     false_gap = metrics_a.get("假缺口率")
 
     lines: list[str] = []
     if not exercised:
         lines.append(
-            "- **补证一轮都没发生**，ADR 那条判据量不出来：这一轮不能回答「要不要加 ⑤」，"
-            "只能说这次的材料池没有触发补证。"
-        )
-        return lines
-    lines.append(
-        f"- 补证发生过 **{exercised}** 题，其中 **{with_unknown}** 题至少一个要点落在 "
-        f"`unknown`（{_fmt_rate(rate)}；判据线 {_fmt_rate(UNKNOWN_TOLERANCE)}）。"
-    )
-    if rate is not None and rate >= UNKNOWN_TOLERANCE:
-        lines.append(
-            "- **结论：该加 ⑤（补证后再判一次）**。理由是 `unknown` 不是罕见的边缘态："
-            "补证一旦捞到材料就有这么多题落在「材料到了、但没人再审过」上，而 `unknown` "
-            "既进不了 `gaps`（缺口闸不会声明不足），也不代表有支撑——它只是没被回答。"
-            "这类要点在答案里两种结果都是坏的：算进缺口会让缺口闸误杀，算成支撑是乐观。"
-            f"代价是 +1 次模型调用，于是 ADR-0026 §5 的硬顶要跟着改（{3} → {4}）。"
+            "- **构造组里补证一轮都没发生**，这一半的判据量不出来：只能说这次的材料池没有"
+            "触发补证，不能据此判断要不要加 ⑤。"
         )
     else:
         lines.append(
-            "- **结论：先不加 ⑤**。补证恢复之后落 `unknown` 的题少于判据线，"
+            f"- 构造组（机制）：补证发生过 **{exercised}** 题，其中 **{with_unknown}** 题至少"
+            f"一个要点落在 `unknown`（{_fmt_rate(rate)}）。**这个 100% 是结构性的**："
+            "`_Run._settle_after_followup` 就是把「补证捞到了材料的 `none`」改记成 `unknown`，"
+            "所以构造组证明的是**机制成立**（这条规则确实在跑、`unknown` 确实会进 `coverage` 而"
+            "不进 `gaps`），它量不出频率——频率看下一条。"
+        )
+    if archived.get("available"):
+        lines.append(
+            f"- 归档旁证（频率）：C6 的真实 8 题跑批里，"
+            f"**{archived.get('recovered')}/{archived.get('questions')}** 题停在 `max_rounds`"
+            f"（{_fmt_rate(real_rate)}）——这个停止原因的含义就是「补证捞到了新材料」。"
+            "按今天的规则，这些题必然带至少一个 `unknown` 要点（补回来的要点不再判定）。"
+        )
+    else:
+        lines.append("- 归档旁证缺失：`eval/reports/c6/.../results.json` 读不到，频率那一格空着。")
+
+    combined = None
+    if rate is not None and real_rate is not None:
+        combined = round(float(rate) * float(real_rate), 4)
+        lines.append(
+            f"- **两者相乘 ≈ {_fmt_rate(combined)}** 的题会带至少一个 `unknown` 要点"
+            f"（判据线 {_fmt_rate(UNKNOWN_TOLERANCE)}）。"
+        )
+
+    threshold_hit = (combined if combined is not None else real_rate)
+    if threshold_hit is not None and float(threshold_hit) >= UNKNOWN_TOLERANCE:
+        lines.append(
+            "- **结论：该加 ⑤（补证后再判一次）**。`unknown` 不是罕见的边缘态："
+            "它在真实跑批里的出现频率已经越过了判据线，而它两边都不落地——进不了 `gaps`"
+            "（缺口闸不会为它声明不足），也不代表有支撑（没人读过那条材料）。"
+            "缺口闸走的是**文本级**判定（ADR-0029 实施备注第 4 条），盲区正好落在它上面。"
+            "代价是 +1 次模型调用，于是 ADR-0026 §5 的硬顶要跟着改（3 次 → 4 次，兜底 5 次）。"
+        )
+        lines.append(
+            "- 反过来说，加 ⑤ 换来的不只是「更好看的字段」：它把「材料到了但没人判定」"
+            "变成确定结论，缺口闸才真正管得住这类要点。"
+        )
+    else:
+        lines.append(
+            "- **结论：先不加 ⑤**。落在 `unknown` 的题少于判据线，"
             "多一次调用换来的只是「一个更漂亮的字段」，而不是更准的答案。"
         )
+    lines.append(
+        "- 稳健性提示：这一条的分子分母都很小（构造组 2 题、归档旁证 8 题），"
+        "它足够支持「加 ⑤」这个方向，但不足以给出「真实发生率有多高」的精确估计。"
+    )
     if false_gap is not None and float(false_gap) > FALSE_GAP_TOLERANCE:
         lines.append(
-            f"- ⚠️ 但 A 条件（满池）的**假缺口率 {_fmt_rate(false_gap)}** "
-            f"高于容忍线 {_fmt_rate(FALSE_GAP_TOLERANCE)}：缺口闸在这批题上会误杀"
-            "「其实有材料」的答案。这一项**不是加 ⑤ 能修的**（⑤ 只把 `unknown` 变成确定结论，"
-            "降不了满池上的误判），它指向判定提示词的「支撑」口径或材料形态。"
+            f"- ⚠️ A 条件（满池）的**假缺口率 {_fmt_rate(false_gap)}** 高于容忍线"
+            f" {_fmt_rate(FALSE_GAP_TOLERANCE)}：满池上仍有要点被判成缺口，缺口闸会误杀"
+            "「其实有材料」的答案。这一项**不是加 ⑤ 能修的**（⑤ 只在补证之后多判一次），"
+            "它指向判定提示词的「支撑」口径或材料形态——本票的人工复核已定位了其中一例"
+            "是标注缺节（见第四节）。"
         )
     return lines
 
@@ -1363,30 +1463,68 @@ def render_report(payload: Mapping[str, Any]) -> str:
     metrics_a = (conditions.get("A") or {}).get("metrics")
     metrics_b = (conditions.get("B") or {}).get("metrics")
     metrics_c = (conditions.get("C") or {}).get("metrics")
-    rows: list[tuple[str, Mapping[str, Any] | None, str, str, str]] = [
-        ("假缺口率（A 满池）", metrics_a, "假缺口率", "假缺口_分子", "假缺口_分母"),
-        ("检出率（B 缺一块）", metrics_b, "检出率", "检出_分子", "检出_分母"),
-        ("误报 support 率（B）", metrics_b, "误报support率", "expected_none", "expected_none"),
-        ("假缺口率（B，未被删的要点）", metrics_b, "假缺口率", "假缺口_分子", "假缺口_分母"),
-        ("抗干扰率（C 加干扰）", metrics_c, "抗干扰率", "supported_on_expected", "expected_supported"),
-        ("unknown 率（A）", metrics_a, "unknown率", "unknown_分子", "unknown_分母"),
-        ("unknown 率（B）", metrics_b, "unknown率", "unknown_分子", "unknown_分母"),
-        ("unknown 率（C）", metrics_c, "unknown率", "unknown_分子", "unknown_分母"),
-        ("判定作废率（全组）", metrics_a, "判定作废率", "判定作废_分子", "判定作废_分母"),
-        ("证据指向准确率（C）", metrics_c, "证据指向准确率", "证据指向_分子", "证据指向_分母"),
+    collected = [item for item in (metrics_a, metrics_b, metrics_c) if item]
+    overall_cases = sum(int(item["cases"]) for item in collected)
+    overall_invalid = sum(int(item["判定作废_分子"]) for item in collected)
+    rows: list[tuple[str, Any, Any, Any]] = [
+        (
+            "假缺口率（A 满池）",
+            metrics_a and metrics_a["假缺口率"],
+            metrics_a and metrics_a["假缺口_分子"],
+            metrics_a and metrics_a["假缺口_分母"],
+        ),
+        (
+            "检出率（B 缺一块）",
+            metrics_b and metrics_b["检出率"],
+            metrics_b and metrics_b["检出_分子"],
+            metrics_b and metrics_b["检出_分母"],
+        ),
+        (
+            "误报 support 率（B）",
+            metrics_b and metrics_b["误报support率"],
+            metrics_b and (metrics_b["expected_none"] - metrics_b["检出_分子"]),
+            metrics_b and metrics_b["expected_none"],
+        ),
+        (
+            "假缺口率（B，未被删的要点）",
+            metrics_b and metrics_b["假缺口率"],
+            metrics_b and metrics_b["假缺口_分子"],
+            metrics_b and metrics_b["假缺口_分母"],
+        ),
+        (
+            "抗干扰率（C 加干扰）",
+            metrics_c and metrics_c["抗干扰率"],
+            metrics_c and metrics_c["supported_on_expected"],
+            metrics_c and metrics_c["expected_supported"],
+        ),
+        (
+            "unknown 率（A）",
+            metrics_a and metrics_a["unknown率"],
+            metrics_a and metrics_a["unknown_分子"],
+            metrics_a and metrics_a["unknown_分母"],
+        ),
+        (
+            "unknown 率（B）",
+            metrics_b and metrics_b["unknown率"],
+            metrics_b and metrics_b["unknown_分子"],
+            metrics_b and metrics_b["unknown_分母"],
+        ),
+        (
+            "unknown 率（C）",
+            metrics_c and metrics_c["unknown率"],
+            metrics_c and metrics_c["unknown_分子"],
+            metrics_c and metrics_c["unknown_分母"],
+        ),
+        ("判定作废率（A+B+C）", _rate(overall_invalid, overall_cases), overall_invalid, overall_cases),
+        (
+            "证据指向准确率（C）",
+            metrics_c and metrics_c["证据指向准确率"],
+            metrics_c and metrics_c["证据指向_分子"],
+            metrics_c and metrics_c["证据指向_分母"],
+        ),
     ]
-    for label, metrics, rate_key, numerator_key, denominator_key in rows:
-        if not metrics:
-            lines.append(f"| {label} | 未采集 | — | — |")
-            continue
-        numerator = metrics.get(numerator_key)
-        if label.startswith("误报 support"):
-            numerator = (metrics.get("expected_none") or 0) - (metrics.get("none_detected") or 0)
-        lines.append(
-            "| "
-            + _metric_line(label, metrics.get(rate_key), numerator, metrics.get(denominator_key))
-            + " |"
-        )
+    for label, value, numerator, denominator in rows:
+        lines.append("| " + _metric_line(label, value, numerator, denominator) + " |")
 
     lines += ["", "## 二、结论", ""]
     lines += ["### 2.1 要不要加「补证后再判一次」（⑤）", ""]
@@ -1396,6 +1534,24 @@ def render_report(payload: Mapping[str, Any]) -> str:
     gate_rows = (payload.get("gap_gate") or {}).get("cases") or []
     if not gate_rows:
         lines.append("- 这一组没有采集。")
+    else:
+        tally: dict[str, int] = {}
+        for record in gate_rows:
+            status = str((record.get("verdict") or {}).get("status"))
+            tally[status] = tally.get(status, 0) + 1
+        blocked = tally.get("blocked", 0)
+        declared = tally.get("declared", 0)
+        lines += [
+            f"- {len(gate_rows)} 题里：**{declared} 题答案是「声明了材料不足」**、"
+            f"{blocked} 题被整份拦下（`answer = null`）、"
+            f"{tally.get('leaked', 0)} 题漏过、{tally.get('not_exercised', 0)} 题闸门没被驱动。",
+            "- 读法：它今天拦的是「**假装没有缺口**」。提示词要求每个缺口要点各写一块 "
+            "`insufficient`，而**闸只检查答案里有没有「材料不足」这句话**（ADR-0029 实施备注"
+            "第 4 条：文本级，不逐条对齐缺口）。于是它的真实表现是：**一句话就能过**——"
+            "上面 3 题全部是这一档；整份作废（`answer = null`）那条路一次都没走到。"
+            "它**不拦**「答得不全」：缺口只影响那几块，其余照答。",
+            "",
+        ]
     for record in gate_rows:
         verdict = record.get("verdict") or {}
         lines.append(
@@ -1404,6 +1560,17 @@ def render_report(payload: Mapping[str, Any]) -> str:
             f"声明不足 {record.get('declared_insufficient')} → `{verdict.get('status')}`"
             f"（{verdict.get('reason')}）"
         )
+        points = list(record.get("points") or [])
+        gap_texts = []
+        for item in record.get("coverage") or []:
+            if item.get("status") != NONE:
+                continue
+            label = str(item.get("point_id") or "")
+            index = int(label[1:]) - 1 if label[1:].isdigit() else -1
+            if 0 <= index < len(points):
+                gap_texts.append(f"「{points[index]}」")
+        if gap_texts:
+            lines.append(f"  - 判成缺口的要点：{'；'.join(gap_texts)}")
 
     lines += ["", "## 三、逐题明细（三个条件）", ""]
     for condition in ("A", "B", "C"):
@@ -1446,11 +1613,11 @@ def render_report(payload: Mapping[str, Any]) -> str:
 
     lines += ["", "## 五、``unknown`` 那一组（补证后恢复）", ""]
     unknown = payload.get("unknown") or {}
-    if not unknown.get("cases"):
+    if not unknown.get("case_count"):
         lines.append("- 这一组没有采集。")
     else:
         lines += [
-            f"- 补证发生：**{unknown['followup_exercised']}/{unknown['cases']}** 题；"
+            f"- 补证发生：**{unknown['followup_exercised']}/{unknown['case_count']}** 题；"
             f"其中落 `unknown` 的：**{unknown['cases_with_unknown']}** 题"
             f"（{_fmt_rate(unknown['rate_with_unknown'])}）",
             f"- 要点级 `unknown`：{unknown['unknown_points']}/{unknown['point_total']}"
@@ -1467,6 +1634,29 @@ def render_report(payload: Mapping[str, Any]) -> str:
                 f"| {record['case']} | `{record['stop_reason']}` | {record['gaps']} | "
                 f"{statuses} | {record['answered']} | {record['declared_insufficient']} |"
             )
+
+    archived = payload.get("archived") or {}
+    lines += ["", "### 归档旁证：真实跑批里「补证捞到新材料」的频率", ""]
+    if not archived.get("available"):
+        lines.append("- 读不到 `eval/reports/c6/runs/04-v2-research-on/results.json`，这一格空着。")
+    else:
+        reasons = archived.get("stop_reasons") or {}
+        lines += [
+            f"- 来源：`{archived.get('path')}`（run `{archived.get('run_id')}`，"
+            f"{archived.get('questions')} 题，零成本旁证）",
+            "- 停止原因分布："
+            + "、".join(f"`{name}` × {count}" for name, count in sorted(reasons.items())),
+            f"- **补证捞到新材料（`max_rounds`）：{archived.get('recovered')} 题"
+            f"（{_fmt_rate(archived.get('rate_recovered'))}）**。按今天的规则，这些题必然带至少"
+            "一个 `unknown` 要点：补回来的要点不再判一次。",
+        ]
+        lines += [
+            "",
+            "| 题 | 停止原因 |",
+            "| --- | --- |",
+        ]
+        for row in archived["cases"]:
+            lines.append(f"| {row['case']} | `{row['stop_reason']}` |")
 
     lines += [
         "",
@@ -1486,6 +1676,11 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "- **137 题库那 4 题只有两节**：两节各承担一半答案，比 refs 的三节题更粗；"
         "它们的要点文本来自题集的 `note`（标注者写的「哪一节给什么」），不是逐条参考要点。",
         "- **不测延迟与成本结构**：这一轮只数模型调用次数，没有比较档位、缓存或并发。",
+        "- **缺口闸与补证两组的材料池也是构造的**：真实的「检索下有多少题会缺一块」「补证一次"
+        "能捞回多少」不由这里给出。`unknown` 的频率靠归档旁证的 `max_rounds` 推断（那是**推断**，"
+        "不是这次直接测的）；构造组只能证明机制（捞到材料 ⇒ 落 `unknown`），量化不了频率。",
+        "- **只测了一个模型**：判定与生成走 `fast` / `strong` 两个角色指针，这次落在"
+        "同一个供应商的一条链上；换模型、换思考强度，读数会变，这里没有做模型间对照。",
         "",
         "## 七、怎么复现",
         "",
@@ -1499,6 +1694,14 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "",
         "判定调用走的是生产路径（`_Run._judge` + `_JUDGE_SYSTEM` + `_coerce_coverage`），"
         "完整 Research 那两组走 `_Run.execute()` 的五个阶段，只把检索内核换成构造池。",
+        "",
+        "## 八、记账口径的一处说明",
+        "",
+        "第一轮尝试时评测机缺了 `WindowsSelectorEventLoopPolicy`，读模型角色指针失败后回落到 "
+        "`.env` 的单供应商 key，12 次判定在 **provider 装配阶段**当场失败（同一秒内全部返回，"
+        "没有发出任何请求）。修好之后重跑，本报告里的 52 次是**真正发出**的调用；那 12 次尝试"
+        "没有计入，也没有消耗额度。这条写在这里是因为「`degraded` 看起来像判定不行、其实是评测"
+        "没接对链路」这个坑，C6 已经踩过一次（见 `eval/reports/c6/c6-research-on-off.md` 第三节）。",
     ]
     return "\n".join(lines) + "\n"
 
@@ -1597,7 +1800,8 @@ async def _run_recovery(
         budget.charge(int(record["model_calls"]))
         records.append(record)
         print(f"  {label}: stop={record['stop_reason']} gaps={record['gaps']}", flush=True)
-    return unknown_reading(records) | {"cases": records}
+    reading = unknown_reading(records)
+    return reading | {"records": records}
 
 
 def actual_model_calls(payload: Mapping[str, Any]) -> int:
@@ -1611,9 +1815,10 @@ def actual_model_calls(payload: Mapping[str, Any]) -> int:
     for section in (payload.get("conditions") or {}).values():
         total += sum(int(case.get("model_calls") or 0) for case in section.get("cases") or [])
     for key in ("gap_gate", "unknown"):
-        total += sum(
-            int(case.get("model_calls") or 0) for case in (payload.get(key) or {}).get("cases") or []
-        )
+        section = payload.get(key) or {}
+        # ``unknown`` 组的逐题记录叫 ``records``（``cases`` 早年同名过，见 recompute_metrics）。
+        rows = section.get("cases") or section.get("records") or []
+        total += sum(int(case.get("model_calls") or 0) for case in rows)
     return total
 
 

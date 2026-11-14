@@ -1,0 +1,3037 @@
+{
+  "generated_at": "2026-11-14T20:56:45+00:00",
+  "issue": "#165 覆盖判定准确率评测",
+  "llm_chain": {
+    "llm_endpoint_source": "model_configs",
+    "llm_model": "deepseek-v4-1-flash-economy-261017",
+    "llm_config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "model_calls": {
+    "budget": 60,
+    "nominal": 52,
+    "worst": 58,
+    "groups": {
+      "A": 12,
+      "B": 10,
+      "C": 12,
+      "gap_gate": 9,
+      "recovery": 9
+    },
+    "actual": 52,
+    "skipped": []
+  },
+  "conditions": {
+    "A": {
+      "metrics": {
+        "cases": 12,
+        "point_verdicts": 37,
+        "expected_supported": 37,
+        "expected_none": 0,
+        "judged_supported": 36,
+        "supported_on_expected": 36,
+        "假缺口率": 0.027,
+        "假缺口_分子": 1,
+        "假缺口_分母": 37,
+        "检出率": null,
+        "检出_分子": 0,
+        "检出_分母": 0,
+        "抗干扰率": 0.973,
+        "unknown率": 0.0,
+        "unknown_分子": 0,
+        "unknown_分母": 37,
+        "误报support率": null,
+        "判定作废率": 0.0,
+        "判定作废_分子": 0,
+        "判定作废_分母": 12,
+        "证据指向准确率": 0.9722,
+        "证据指向_分子": 35,
+        "证据指向_分母": 36
+      },
+      "cases": [
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r01",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 360
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "提交申请有时限：无理由 7 天、质量问题 30 天",
+              "unit": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 2. 退款时限与审核"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "审核 2 个工作日内完成，挂起时间不计入",
+              "unit": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 2. 退款时限与审核"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "审核通过后进入退款执行，到账时间从执行日开始计算",
+              "unit": "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "到账按渠道不同：银行卡 3 个工作日、第三方支付 1-2 个工作日、对公转账最长 5 个工作日",
+              "unit": "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 0,
+          "judged_supported": 3,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 3,
+          "evidence_checked": 3,
+          "case": "r02",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "退款办完之后退回来的那部分积分，有效期是从退款日重新算 12 个月，还是按原来的时间算？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "points_policy::积分规则 > 3. 积分退还与失效",
+              "points_policy::积分规则 > 1. 积分获取与计算"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 331
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "返还的积分按「已使用积分」处理，恢复原有效期",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "不重新计算 12 个月",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "已经过期被清零的积分不返还",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "全部要点压在同一核心节，删掉即全缺 → 不进 B（见模块文档）",
+          "supported_on_expected": 3
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r03",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "退款办完之后，之前抵掉的那部分优惠还能不能再用，有效期会不会跟着延长？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "refund_policy::会员订单退款政策 > 2. 退款时限与审核"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 387
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "整单退款时优惠券按原规则返还",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "返还的券沿用原有效期，不延长",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "部分退款不返还券，只按比例扣除券的优惠分摊",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "已过期的券在退款时不返还，也不折现",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "全部要点压在同一核心节，删掉即全缺 → 不进 B（见模块文档）",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 0,
+          "judged_supported": 3,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 3,
+          "case": "r04",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 417
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "单笔抵扣上限取「商品金额的 50%」与「200 元」中较小者",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "银卡及以上时固定上限从 200 元提到 500 元",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "等级折扣与积分抵扣可以叠加，但实付不得低于 0.01 元",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 3
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r05",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "points_policy::积分规则 > 3. 积分退还与失效",
+              "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+            ],
+            "dropped": null,
+            "materials": 3,
+            "chars": 647
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "券：按原规则返还，沿用原有效期，不延长",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "积分：返还全部抵扣积分；已发放的消费积分同步扣回，用掉了按 1 元 = 100 积分折成欠款",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "运费：整单退款把分摊后的运费一起退回",
+              "unit": "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "整单退款后订单关闭",
+              "unit": "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r06",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+            ],
+            "dropped": null,
+            "materials": 3,
+            "chars": 440
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "四类：满减、折扣、优惠券、积分抵扣",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "同一订单最多命中一个满减和一个折扣",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "先算折扣，再判满减门槛，优惠券在满减之后扣减",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "券与积分可以叠加，先扣券再扣积分，实付不低于 0.01 元",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 1,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "r07",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "points_policy::积分规则 > 3. 积分退还与失效"
+            ],
+            "dropped": null,
+            "materials": 3,
+            "chars": 579
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "扣减顺序：先扣券再扣积分",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "券：整单退款按原规则返还，沿用原有效期；返还在退款执行成功之后，失败不返还",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "积分：返还全部抵扣积分，同样在退款执行成功之后，恢复原有效期",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r08",
+          "corpus": "refs",
+          "condition": "A",
+          "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "points_policy::积分规则 > 4. 积分等级与保级",
+              "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+            ],
+            "dropped": null,
+            "materials": 3,
+            "chars": 650
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "净消费金额 = 订单实付金额 − 退款金额 − 积分抵扣金额",
+              "unit": "points_policy::积分规则 > 4. 积分等级与保级",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 4. 积分等级与保级"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "退款金额按部分退款的分摊结果取，即先按商品实付占比拆优惠券、运费按件数平摊",
+              "unit": "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "银卡及以上的抵扣固定上限是 500 元，与本单商品金额 50% 取较小值",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "保级在每年 1 月 1 日按上一年净额重算，未达标降一级",
+              "unit": "points_policy::积分规则 > 4. 积分等级与保级",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 4. 积分等级与保级"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q16",
+          "corpus": "base",
+          "condition": "A",
+          "query": "证书过期了要做哪些步骤，会中断业务吗",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）",
+              "ops_runbook::值班处置手册 > 证书轮换操作步骤"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 446
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "证书过期这类告警的现象与处置入口",
+              "unit": "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "证书轮换的四步流程，以及过程中不重启平台入口",
+              "unit": "ops_runbook::值班处置手册 > 证书轮换操作步骤",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_runbook::值班处置手册 > 证书轮换操作步骤"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "跨章节：现象与入口在错误码节，四步流程与「不重启平台入口」在运维手册。两节都要进 top-5。",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q18",
+          "corpus": "base",
+          "condition": "A",
+          "query": "P1 故障的响应时限是多少，超时找谁",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "ops_runbook::值班处置手册 > 告警分级与响应时限",
+              "ops_runbook::值班处置手册 > 升级与通报路径"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 326
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "P1 故障的响应时限",
+              "unit": "ops_runbook::值班处置手册 > 告警分级与响应时限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_runbook::值班处置手册 > 告警分级与响应时限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "P1 超时之后的升级对象与通报动作",
+              "unit": "ops_runbook::值班处置手册 > 升级与通报路径",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_runbook::值班处置手册 > 升级与通报路径"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "跨章节：时限在一节、升级对象与动作在另一节。只召回其中一节算部分命中。",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q60",
+          "corpus": "base",
+          "condition": "A",
+          "query": "变更窗口是什么时候，窗口结束前要做什么",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "ops_change::发布与变更管理规范 > 变更窗口",
+              "ops_change::发布与变更管理规范 > 变更后验证"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 227
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "变更窗口在什么时间",
+              "unit": "ops_change::发布与变更管理规范 > 变更窗口",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_change::发布与变更管理规范 > 变更窗口"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "窗口结束前的变更后验证三层",
+              "unit": "ops_change::发布与变更管理规范 > 变更后验证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_change::发布与变更管理规范 > 变更窗口",
+                "ops_change::发布与变更管理规范 > 变更后验证"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "窗口时间与验证三层分别在两节。",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q77",
+          "corpus": "base",
+          "condition": "A",
+          "query": "觉得账单金额算错了，怎么申诉、多久内要提",
+          "pool": {
+            "condition": "A",
+            "units": [
+              "billing_policy::计费与账务政策 > 计费争议",
+              "billing_policy::计费与账务政策 > 账单出账时间"
+            ],
+            "dropped": null,
+            "materials": 2,
+            "chars": 238
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "账单金额算错时的申诉方式与提交时限",
+              "unit": "billing_policy::计费与账务政策 > 计费争议",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "billing_policy::计费与账务政策 > 计费争议"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "账单的出账时间（账期与出账日）",
+              "unit": "billing_policy::计费与账务政策 > 账单出账时间",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "billing_policy::计费与账务政策 > 账单出账时间"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "争议时限与出账时间分属两节，缺一节就答不全。",
+          "supported_on_expected": 2
+        }
+      ]
+    },
+    "B": {
+      "metrics": {
+        "cases": 10,
+        "point_verdicts": 30,
+        "expected_supported": 19,
+        "expected_none": 11,
+        "judged_supported": 20,
+        "supported_on_expected": 19,
+        "假缺口率": 0.0,
+        "假缺口_分子": 0,
+        "假缺口_分母": 19,
+        "检出率": 0.9091,
+        "检出_分子": 10,
+        "检出_分母": 11,
+        "抗干扰率": 1.0,
+        "unknown率": 0.0,
+        "unknown_分子": 0,
+        "unknown_分母": 30,
+        "误报support率": 0.0909,
+        "判定作废率": 0.0,
+        "判定作废_分子": 0,
+        "判定作废_分母": 10,
+        "证据指向准确率": 0.95,
+        "证据指向_分子": 19,
+        "证据指向_分母": 20
+      },
+      "cases": [
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 2,
+          "judged_supported": 2,
+          "judged_none": 2,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 2,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "r01",
+          "corpus": "refs",
+          "condition": "B",
+          "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+            ],
+            "dropped": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+            "materials": 1,
+            "chars": 165
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "提交申请有时限：无理由 7 天、质量问题 30 天",
+              "unit": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            },
+            {
+              "index": 1,
+              "point": "审核 2 个工作日内完成，挂起时间不计入",
+              "unit": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            },
+            {
+              "index": 2,
+              "point": "审核通过后进入退款执行，到账时间从执行日开始计算",
+              "unit": "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "到账按渠道不同：银行卡 3 个工作日、第三方支付 1-2 个工作日、对公转账最长 5 个工作日",
+              "unit": "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 1,
+          "judged_supported": 3,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 1,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 3,
+          "case": "r04",
+          "corpus": "refs",
+          "condition": "B",
+          "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+            ],
+            "dropped": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+            "materials": 1,
+            "chars": 276
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "单笔抵扣上限取「商品金额的 50%」与「200 元」中较小者",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "银卡及以上时固定上限从 200 元提到 500 元",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "等级折扣与积分抵扣可以叠加，但实付不得低于 0.01 元",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "none",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 1,
+          "judged_supported": 3,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 3,
+          "evidence_checked": 3,
+          "case": "r05",
+          "corpus": "refs",
+          "condition": "B",
+          "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+            ],
+            "dropped": "points_policy::积分规则 > 3. 积分退还与失效",
+            "materials": 2,
+            "chars": 455
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "券：按原规则返还，沿用原有效期，不延长",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "积分：返还全部抵扣积分；已发放的消费积分同步扣回，用掉了按 1 元 = 100 积分折成欠款",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            },
+            {
+              "index": 2,
+              "point": "运费：整单退款把分摊后的运费一起退回",
+              "unit": "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "整单退款后订单关闭",
+              "unit": "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 3
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 1,
+          "judged_supported": 3,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 3,
+          "evidence_checked": 3,
+          "case": "r06",
+          "corpus": "refs",
+          "condition": "B",
+          "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+            ],
+            "dropped": "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+            "materials": 2,
+            "chars": 333
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "四类：满减、折扣、优惠券、积分抵扣",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "同一订单最多命中一个满减和一个折扣",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "先算折扣，再判满减门槛，优惠券在满减之后扣减",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            },
+            {
+              "index": 3,
+              "point": "券与积分可以叠加，先扣券再扣积分，实付不低于 0.01 元",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 3
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 1,
+          "judged_supported": 2,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "r07",
+          "corpus": "refs",
+          "condition": "B",
+          "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+            ],
+            "dropped": "points_policy::积分规则 > 3. 积分退还与失效",
+            "materials": 2,
+            "chars": 387
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "扣减顺序：先扣券再扣积分",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "券：整单退款按原规则返还，沿用原有效期；返还在退款执行成功之后，失败不返还",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "积分：返还全部抵扣积分，同样在退款执行成功之后，恢复原有效期",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 1,
+          "judged_supported": 3,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 3,
+          "evidence_checked": 3,
+          "case": "r08",
+          "corpus": "refs",
+          "condition": "B",
+          "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "points_policy::积分规则 > 4. 积分等级与保级",
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+            ],
+            "dropped": "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+            "materials": 2,
+            "chars": 452
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "净消费金额 = 订单实付金额 − 退款金额 − 积分抵扣金额",
+              "unit": "points_policy::积分规则 > 4. 积分等级与保级",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 4. 积分等级与保级"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "退款金额按部分退款的分摊结果取，即先按商品实付占比拆优惠券、运费按件数平摊",
+              "unit": "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            },
+            {
+              "index": 2,
+              "point": "银卡及以上的抵扣固定上限是 500 元，与本单商品金额 50% 取较小值",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "保级在每年 1 月 1 日按上一年净额重算，未达标降一级",
+              "unit": "points_policy::积分规则 > 4. 积分等级与保级",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 4. 积分等级与保级"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 3
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 1,
+          "expected_none": 1,
+          "judged_supported": 1,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 1,
+          "evidence_checked": 1,
+          "case": "q16",
+          "corpus": "base",
+          "condition": "B",
+          "query": "证书过期了要做哪些步骤，会中断业务吗",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）"
+            ],
+            "dropped": "ops_runbook::值班处置手册 > 证书轮换操作步骤",
+            "materials": 1,
+            "chars": 289
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "证书过期这类告警的现象与处置入口",
+              "unit": "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "证书轮换的四步流程，以及过程中不重启平台入口",
+              "unit": "ops_runbook::值班处置手册 > 证书轮换操作步骤",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "跨章节：现象与入口在错误码节，四步流程与「不重启平台入口」在运维手册。两节都要进 top-5。",
+          "supported_on_expected": 1
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 1,
+          "expected_none": 1,
+          "judged_supported": 1,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 1,
+          "evidence_checked": 1,
+          "case": "q18",
+          "corpus": "base",
+          "condition": "B",
+          "query": "P1 故障的响应时限是多少，超时找谁",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "ops_runbook::值班处置手册 > 告警分级与响应时限"
+            ],
+            "dropped": "ops_runbook::值班处置手册 > 升级与通报路径",
+            "materials": 1,
+            "chars": 160
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "P1 故障的响应时限",
+              "unit": "ops_runbook::值班处置手册 > 告警分级与响应时限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_runbook::值班处置手册 > 告警分级与响应时限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "P1 超时之后的升级对象与通报动作",
+              "unit": "ops_runbook::值班处置手册 > 升级与通报路径",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "跨章节：时限在一节、升级对象与动作在另一节。只召回其中一节算部分命中。",
+          "supported_on_expected": 1
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 1,
+          "expected_none": 1,
+          "judged_supported": 1,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 1,
+          "evidence_checked": 1,
+          "case": "q60",
+          "corpus": "base",
+          "condition": "B",
+          "query": "变更窗口是什么时候，窗口结束前要做什么",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "ops_change::发布与变更管理规范 > 变更窗口"
+            ],
+            "dropped": "ops_change::发布与变更管理规范 > 变更后验证",
+            "materials": 1,
+            "chars": 117
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "变更窗口在什么时间",
+              "unit": "ops_change::发布与变更管理规范 > 变更窗口",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_change::发布与变更管理规范 > 变更窗口"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "窗口结束前的变更后验证三层",
+              "unit": "ops_change::发布与变更管理规范 > 变更后验证",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "窗口时间与验证三层分别在两节。",
+          "supported_on_expected": 1
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 1,
+          "expected_none": 1,
+          "judged_supported": 1,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 1,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 1,
+          "evidence_checked": 1,
+          "case": "q77",
+          "corpus": "base",
+          "condition": "B",
+          "query": "觉得账单金额算错了，怎么申诉、多久内要提",
+          "pool": {
+            "condition": "B",
+            "units": [
+              "billing_policy::计费与账务政策 > 账单出账时间"
+            ],
+            "dropped": "billing_policy::计费与账务政策 > 计费争议",
+            "materials": 1,
+            "chars": 118
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "账单金额算错时的申诉方式与提交时限",
+              "unit": "billing_policy::计费与账务政策 > 计费争议",
+              "expected": "none",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            },
+            {
+              "index": 1,
+              "point": "账单的出账时间（账期与出账日）",
+              "unit": "billing_policy::计费与账务政策 > 账单出账时间",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "billing_policy::计费与账务政策 > 账单出账时间"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "争议时限与出账时间分属两节，缺一节就答不全。",
+          "supported_on_expected": 1
+        }
+      ]
+    },
+    "C": {
+      "metrics": {
+        "cases": 12,
+        "point_verdicts": 37,
+        "expected_supported": 37,
+        "expected_none": 0,
+        "judged_supported": 36,
+        "supported_on_expected": 36,
+        "假缺口率": 0.027,
+        "假缺口_分子": 1,
+        "假缺口_分母": 37,
+        "检出率": null,
+        "检出_分子": 0,
+        "检出_分母": 0,
+        "抗干扰率": 0.973,
+        "unknown率": 0.0,
+        "unknown_分子": 0,
+        "unknown_分母": 37,
+        "误报support率": null,
+        "判定作废率": 0.0,
+        "判定作废_分子": 0,
+        "判定作废_分母": 12,
+        "证据指向准确率": 0.9722,
+        "证据指向_分子": 35,
+        "证据指向_分母": 36
+      },
+      "cases": [
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r01",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+              "refund_policy::会员订单退款政策 > 5. 积分与等级变更后的处理"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 980
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "提交申请有时限：无理由 7 天、质量问题 30 天",
+              "unit": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 2. 退款时限与审核"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "审核 2 个工作日内完成，挂起时间不计入",
+              "unit": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 2. 退款时限与审核"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "审核通过后进入退款执行，到账时间从执行日开始计算",
+              "unit": "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "到账按渠道不同：银行卡 3 个工作日、第三方支付 1-2 个工作日、对公转账最长 5 个工作日",
+              "unit": "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 0,
+          "judged_supported": 3,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 3,
+          "evidence_checked": 3,
+          "case": "r02",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "退款办完之后退回来的那部分积分，有效期是从退款日重新算 12 个月，还是按原来的时间算？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "points_policy::积分规则 > 3. 积分退还与失效",
+              "points_policy::积分规则 > 1. 积分获取与计算",
+              "points_policy::积分规则 > 4. 积分等级与保级",
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 924
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "返还的积分按「已使用积分」处理，恢复原有效期",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "不重新计算 12 个月",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "已经过期被清零的积分不返还",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "全部要点压在同一核心节，删掉即全缺 → 不进 B（见模块文档）",
+          "supported_on_expected": 3
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r03",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "退款办完之后，之前抵掉的那部分优惠还能不能再用，有效期会不会跟着延长？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "promo_rules::促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+              "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 761
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "整单退款时优惠券按原规则返还",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "返还的券沿用原有效期，不延长",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "promo_rules::促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "部分退款不返还券，只按比例扣除券的优惠分摊",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "已过期的券在退款时不返还，也不折现",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "promo_rules::促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "全部要点压在同一核心节，删掉即全缺 → 不进 B（见模块文档）",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 0,
+          "judged_supported": 3,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 3,
+          "case": "r04",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "points_policy::积分规则 > 3. 积分退还与失效",
+              "points_policy::积分规则 > 1. 积分获取与计算",
+              "points_policy::积分规则 > 4. 积分等级与保级"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 924
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "单笔抵扣上限取「商品金额的 50%」与「200 元」中较小者",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "银卡及以上时固定上限从 200 元提到 500 元",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "等级折扣与积分抵扣可以叠加，但实付不得低于 0.01 元",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 3
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r05",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "points_policy::积分规则 > 3. 积分退还与失效",
+              "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "promo_rules::促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+              "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+            ],
+            "dropped": null,
+            "materials": 6,
+            "chars": 1021
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "券：按原规则返还，沿用原有效期，不延长",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "积分：返还全部抵扣积分；已发放的消费积分同步扣回，用掉了按 1 元 = 100 积分折成欠款",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 3. 积分退还与失效"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "运费：整单退款把分摊后的运费一起退回",
+              "unit": "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "整单退款后订单关闭",
+              "unit": "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r06",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "promo_rules::促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+              "points_policy::积分规则 > 1. 积分获取与计算",
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+            ],
+            "dropped": null,
+            "materials": 6,
+            "chars": 981
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "四类：满减、折扣、优惠券、积分抵扣",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "同一订单最多命中一个满减和一个折扣",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "先算折扣，再判满减门槛，优惠券在满减之后扣减",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "券与积分可以叠加，先扣券再扣积分，实付不低于 0.01 元",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 3,
+          "invalid": 0,
+          "expected_supported": 3,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 1,
+          "judged_unknown": 0,
+          "false_gap": 1,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "r07",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+              "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "points_policy::积分规则 > 3. 积分退还与失效",
+              "refund_policy::会员订单退款政策 > 3. 退款到账与凭证",
+              "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型",
+              "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊"
+            ],
+            "dropped": null,
+            "materials": 6,
+            "chars": 1205
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "扣减顺序：先扣券再扣积分",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "券：整单退款按原规则返还，沿用原有效期；返还在退款执行成功之后，失败不返还",
+              "unit": "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "积分：返还全部抵扣积分，同样在退款执行成功之后，恢复原有效期",
+              "unit": "points_policy::积分规则 > 3. 积分退还与失效",
+              "expected": "supported",
+              "status": "none",
+              "evidence_units": [],
+              "on_expected_unit": false
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 4,
+          "invalid": 0,
+          "expected_supported": 4,
+          "expected_none": 0,
+          "judged_supported": 4,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 4,
+          "evidence_checked": 4,
+          "case": "r08",
+          "corpus": "refs",
+          "condition": "C",
+          "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "points_policy::积分规则 > 4. 积分等级与保级",
+              "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+              "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "points_policy::积分规则 > 3. 积分退还与失效",
+              "points_policy::积分规则 > 1. 积分获取与计算",
+              "refund_policy::会员订单退款政策 > 5. 积分与等级变更后的处理"
+            ],
+            "dropped": null,
+            "materials": 6,
+            "chars": 1140
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "净消费金额 = 订单实付金额 − 退款金额 − 积分抵扣金额",
+              "unit": "points_policy::积分规则 > 4. 积分等级与保级",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 4. 积分等级与保级"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "退款金额按部分退款的分摊结果取，即先按商品实付占比拆优惠券、运费按件数平摊",
+              "unit": "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 4. 积分等级与保级",
+                "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 2,
+              "point": "银卡及以上的抵扣固定上限是 500 元，与本单商品金额 50% 取较小值",
+              "unit": "points_policy::积分规则 > 2. 积分抵扣与使用上限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 3,
+              "point": "保级在每年 1 月 1 日按上一年净额重算，未达标降一级",
+              "unit": "points_policy::积分规则 > 4. 积分等级与保级",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "points_policy::积分规则 > 4. 积分等级与保级"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "",
+          "supported_on_expected": 4
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q16",
+          "corpus": "base",
+          "condition": "C",
+          "query": "证书过期了要做哪些步骤，会中断业务吗",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）",
+              "ops_runbook::值班处置手册 > 证书轮换操作步骤",
+              "support_errors::售后故障与错误码速查 > 连接与证书类错误（二）",
+              "support_errors::售后故障与错误码速查 > 连接与证书类错误（三）",
+              "support_errors::售后故障与错误码速查 > 连接与证书类错误（四）"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 1352
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "证书过期这类告警的现象与处置入口",
+              "unit": "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "support_errors::售后故障与错误码速查 > 连接与证书类错误（一）"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "证书轮换的四步流程，以及过程中不重启平台入口",
+              "unit": "ops_runbook::值班处置手册 > 证书轮换操作步骤",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_runbook::值班处置手册 > 证书轮换操作步骤"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "跨章节：现象与入口在错误码节，四步流程与「不重启平台入口」在运维手册。两节都要进 top-5。",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q18",
+          "corpus": "base",
+          "condition": "C",
+          "query": "P1 故障的响应时限是多少，超时找谁",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "ops_runbook::值班处置手册 > 告警分级与响应时限",
+              "ops_runbook::值班处置手册 > 升级与通报路径",
+              "ops_runbook::值班处置手册 > 值班职责与排班",
+              "ops_runbook::值班处置手册 > 值班交接",
+              "ops_runbook::值班处置手册 > 证书过期告警处置"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 741
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "P1 故障的响应时限",
+              "unit": "ops_runbook::值班处置手册 > 告警分级与响应时限",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_runbook::值班处置手册 > 告警分级与响应时限"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "P1 超时之后的升级对象与通报动作",
+              "unit": "ops_runbook::值班处置手册 > 升级与通报路径",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_runbook::值班处置手册 > 升级与通报路径"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "跨章节：时限在一节、升级对象与动作在另一节。只召回其中一节算部分命中。",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q60",
+          "corpus": "base",
+          "condition": "C",
+          "query": "变更窗口是什么时候，窗口结束前要做什么",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "ops_change::发布与变更管理规范 > 变更窗口",
+              "ops_change::发布与变更管理规范 > 变更后验证",
+              "ops_change::发布与变更管理规范 > 灰度发布",
+              "ops_change::发布与变更管理规范 > 紧急变更",
+              "ops_change::发布与变更管理规范 > 蓝绿发布"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 601
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "变更窗口在什么时间",
+              "unit": "ops_change::发布与变更管理规范 > 变更窗口",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_change::发布与变更管理规范 > 变更窗口"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "窗口结束前的变更后验证三层",
+              "unit": "ops_change::发布与变更管理规范 > 变更后验证",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "ops_change::发布与变更管理规范 > 变更窗口",
+                "ops_change::发布与变更管理规范 > 变更后验证"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "窗口时间与验证三层分别在两节。",
+          "supported_on_expected": 2
+        },
+        {
+          "verdicts": 2,
+          "invalid": 0,
+          "expected_supported": 2,
+          "expected_none": 0,
+          "judged_supported": 2,
+          "judged_none": 0,
+          "judged_unknown": 0,
+          "false_gap": 0,
+          "false_supported": 0,
+          "none_detected": 0,
+          "invalid_reason": null,
+          "cases": 1,
+          "cases_invalidated": 0,
+          "evidence_on_expected_unit": 2,
+          "evidence_checked": 2,
+          "case": "q77",
+          "corpus": "base",
+          "condition": "C",
+          "query": "觉得账单金额算错了，怎么申诉、多久内要提",
+          "pool": {
+            "condition": "C",
+            "units": [
+              "billing_policy::计费与账务政策 > 计费争议",
+              "billing_policy::计费与账务政策 > 账单出账时间",
+              "billing_policy::计费与账务政策 > 用量核对",
+              "billing_policy::计费与账务政策 > 价格调整",
+              "billing_policy::计费与账务政策 > 押金管理"
+            ],
+            "dropped": null,
+            "materials": 5,
+            "chars": 575
+          },
+          "points": [
+            {
+              "index": 0,
+              "point": "账单金额算错时的申诉方式与提交时限",
+              "unit": "billing_policy::计费与账务政策 > 计费争议",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "billing_policy::计费与账务政策 > 计费争议"
+              ],
+              "on_expected_unit": true
+            },
+            {
+              "index": 1,
+              "point": "账单的出账时间（账期与出账日）",
+              "unit": "billing_policy::计费与账务政策 > 账单出账时间",
+              "expected": "supported",
+              "status": "supported",
+              "evidence_units": [
+                "billing_policy::计费与账务政策 > 账单出账时间"
+              ],
+              "on_expected_unit": true
+            }
+          ],
+          "model_calls": 1,
+          "note": "争议时限与出账时间分属两节，缺一节就答不全。",
+          "supported_on_expected": 2
+        }
+      ]
+    }
+  },
+  "gap_gate": {
+    "cases": [
+      {
+        "case": "r05",
+        "mode": "gap_gate",
+        "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+        "pool": {
+          "condition": "B",
+          "units": [
+            "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+            "refund_policy::会员订单退款政策 > 1. 适用范围与退款类型"
+          ],
+          "dropped": "points_policy::积分规则 > 3. 积分退还与失效",
+          "materials": 2,
+          "chars": 455
+        },
+        "recovered_unit": null,
+        "points": [
+          "整单退款后券能否再用需按规则判断",
+          "整单退款后积分退不退需按规则判断",
+          "整单退款后运费退不退需按规则判断"
+        ],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A2",
+            "status": "none",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A3",
+            "status": "supported",
+            "evidence_ids": [
+              "E2"
+            ]
+          }
+        ],
+        "gaps": [
+          "A2"
+        ],
+        "stop_reason": "no_new_evidence",
+        "evidence_state": "partial",
+        "answered": true,
+        "answer": "整单退款时券按原规则返还并沿用原有效期；已过期券不返还。（E1）\n整单退款会把订单内全部商品与分摊后的运费一起退回。（E2）\n整单退款后积分是否退回，材料不足，未找到直接说明。（材料不足）",
+        "declared_insufficient": true,
+        "answer_rejected_reason": null,
+        "citations": 3,
+        "strong_model_fallback": null,
+        "model_calls": 3,
+        "duration_ms": 33671,
+        "verdict": {
+          "status": "declared",
+          "ok": true,
+          "reason": "答案含「材料不足」"
+        }
+      },
+      {
+        "case": "r06",
+        "mode": "gap_gate",
+        "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+        "pool": {
+          "condition": "B",
+          "units": [
+            "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+            "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+          ],
+          "dropped": "promo_rules::促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+          "materials": 2,
+          "chars": 333
+        },
+        "recovered_unit": null,
+        "points": [
+          "优惠叠加通常需明确满减、折扣、优惠券、积分的计算顺序",
+          "满减与折扣同享时先算满减再算折扣以确定折后价",
+          "优惠券门槛通常按满减折扣后的应付金额校验",
+          "积分抵扣一般在优惠券后按剩余金额和积分规则计算",
+          "平台与商家规则可能限制同享并规定最终实付下限"
+        ],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "none",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A2",
+            "status": "none",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A3",
+            "status": "none",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A4",
+            "status": "supported",
+            "evidence_ids": [
+              "E1",
+              "E2"
+            ]
+          },
+          {
+            "point_id": "A5",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          }
+        ],
+        "gaps": [
+          "A1",
+          "A2",
+          "A3"
+        ],
+        "stop_reason": "no_new_evidence",
+        "evidence_state": "partial",
+        "answered": true,
+        "answer": "同一订单最多命中一个满减和一个折扣，优惠券与积分抵扣可叠加。（E1）\n各类抵扣后实付金额不得低于 0.01 元。（E1）\n积分抵扣有独立上限，口径见《积分规则》第 2.2 节。（E1）\n优惠券与积分抵扣叠加时，先扣优惠券再扣积分。（E2）\n材料不足：未找到满减、折扣、优惠券与积分的整体计算顺序。（材料不足）\n材料不足：未找到满减与折扣同享时先满减后折扣的说明。（材料不足）\n材料不足：未找到优惠券门槛按折后应付金额校验的说明。（材料不足）",
+        "declared_insufficient": true,
+        "answer_rejected_reason": null,
+        "citations": 7,
+        "strong_model_fallback": null,
+        "model_calls": 3,
+        "duration_ms": 59796,
+        "verdict": {
+          "status": "declared",
+          "ok": true,
+          "reason": "答案含「材料不足」"
+        }
+      },
+      {
+        "case": "r08",
+        "mode": "gap_gate",
+        "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+        "pool": {
+          "condition": "B",
+          "units": [
+            "points_policy::积分规则 > 4. 积分等级与保级",
+            "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+          ],
+          "dropped": "refund_policy::会员订单退款政策 > 4. 部分退款与优惠分摊",
+          "materials": 2,
+          "chars": 452
+        },
+        "recovered_unit": null,
+        "points": [
+          "保级净额通常按实付金额计算，积分抵扣不计入",
+          "部分退款按退款金额冲减实付金额，计入保级净额",
+          "退款后原抵扣积分是否退回并调整净额按规则处理"
+        ],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "none",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A2",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A3",
+            "status": "none",
+            "evidence_ids": []
+          }
+        ],
+        "gaps": [
+          "A1",
+          "A3"
+        ],
+        "stop_reason": "no_new_evidence",
+        "evidence_state": "partial",
+        "answered": true,
+        "answer": "净消费金额=订单实付金额−退款金额−积分抵扣金额，抵扣与退款均为扣减项。（E1）\n积分抵扣金额按订单实际抵扣额度全额从净额中扣减，材料未给出抵扣额的具体计算公式。（E1、E2）\n退款金额如何分摊进净额，材料指向《会员订单退款政策》第4节，本材料未包含。（材料不足）\n关于「保级净额按实付计算、积分抵扣不计入」，材料不足，未找到相反或相同表述。（材料不足）\n关于退款后原抵扣积分是否退回并调整净额，材料不足，未找到相关规则。（材料不足）",
+        "declared_insufficient": true,
+        "answer_rejected_reason": null,
+        "citations": 5,
+        "strong_model_fallback": null,
+        "model_calls": 3,
+        "duration_ms": 26296,
+        "verdict": {
+          "status": "declared",
+          "ok": true,
+          "reason": "答案含「材料不足」"
+        }
+      }
+    ]
+  },
+  "unknown": {
+    "followup_exercised": 2,
+    "cases_with_unknown": 2,
+    "rate_with_unknown": 1.0,
+    "unknown_points": 2,
+    "point_total": 11,
+    "point_unknown_rate": 0.1818,
+    "cases_detail": [
+      {
+        "case": "r01",
+        "stop_reason": "max_rounds",
+        "gaps": [
+          "A4"
+        ],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "unknown",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A2",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A3",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A4",
+            "status": "none",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A5",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          }
+        ],
+        "answered": true,
+        "declared_insufficient": true
+      },
+      {
+        "case": "r04",
+        "stop_reason": "evidence_complete",
+        "gaps": [],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A2",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A3",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          }
+        ],
+        "answered": true,
+        "declared_insufficient": false
+      },
+      {
+        "case": "r07",
+        "stop_reason": "max_rounds",
+        "gaps": [],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "supported",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "point_id": "A2",
+            "status": "supported",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "point_id": "A3",
+            "status": "unknown",
+            "evidence_ids": []
+          }
+        ],
+        "answered": true,
+        "declared_insufficient": false
+      }
+    ],
+    "case_count": 3,
+    "records": [
+      {
+        "case": "r01",
+        "mode": "recovered",
+        "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+        "pool": {
+          "condition": "B",
+          "units": [
+            "refund_policy::会员订单退款政策 > 3. 退款到账与凭证"
+          ],
+          "dropped": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+          "materials": 1,
+          "chars": 165
+        },
+        "recovered_unit": "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+        "points": [
+          "提交退款申请后平台受理并生成退款单",
+          "商家或平台审核退款申请并决定是否通过",
+          "审核通过后由原支付渠道发起退款指令",
+          "支付机构与银行处理退款并完成资金清算",
+          "到账时长受支付方式与银行处理时效影响"
+        ],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "unknown",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A2",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A3",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A4",
+            "status": "none",
+            "evidence_ids": []
+          },
+          {
+            "point_id": "A5",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          }
+        ],
+        "gaps": [
+          "A4"
+        ],
+        "stop_reason": "max_rounds",
+        "evidence_state": "partial",
+        "answered": true,
+        "answer": "提交申请后需先经审核，审核在2个工作日内完成。（E2）\n审核通过后进入退款执行，到账时间从执行日开始计算。（E1）\n银行卡到账一般3个工作日。（E1）\n第三方支付到账需1到2个工作日。（E1）\n对公转账到账最长5个工作日。（E1）\n支付机构与银行处理退款并完成资金清算：材料不足，未找到相关说明。（材料不足）",
+        "declared_insufficient": true,
+        "answer_rejected_reason": null,
+        "citations": 6,
+        "strong_model_fallback": null,
+        "model_calls": 3,
+        "duration_ms": 25625
+      },
+      {
+        "case": "r04",
+        "mode": "recovered",
+        "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+        "pool": {
+          "condition": "B",
+          "units": [
+            "points_policy::积分规则 > 2. 积分抵扣与使用上限"
+          ],
+          "dropped": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+          "materials": 1,
+          "chars": 276
+        },
+        "recovered_unit": "promo_rules::促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+        "points": [
+          "银卡会员下单抵扣固定封顶的提升额度",
+          "抵扣金额占商品金额比例上限规则",
+          "固定封顶与比例限制同时适用时的取舍规则"
+        ],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A2",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          },
+          {
+            "point_id": "A3",
+            "status": "supported",
+            "evidence_ids": [
+              "E1"
+            ]
+          }
+        ],
+        "gaps": [],
+        "stop_reason": "evidence_complete",
+        "evidence_state": "complete",
+        "answered": true,
+        "answer": "银卡及以上会员，单笔订单固定抵扣上限由 200 元提高到 500 元。（E1）\n两道限额取较小值，即商品金额的 50% 与固定上限中较低的那个生效。（E1）",
+        "declared_insufficient": false,
+        "answer_rejected_reason": null,
+        "citations": 2,
+        "strong_model_fallback": null,
+        "model_calls": 3,
+        "duration_ms": 32062
+      },
+      {
+        "case": "r07",
+        "mode": "recovered",
+        "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+        "pool": {
+          "condition": "B",
+          "units": [
+            "refund_policy::会员订单退款政策 > 2. 退款时限与审核",
+            "promo_rules::促销活动与优惠券使用规则 > 3. 优惠券与退款的关系"
+          ],
+          "dropped": "points_policy::积分规则 > 3. 积分退还与失效",
+          "materials": 2,
+          "chars": 387
+        },
+        "recovered_unit": "points_policy::积分规则 > 3. 积分退还与失效",
+        "points": [
+          "整单退款时先扣优惠券优惠还是先扣积分优惠",
+          "整单退款后优惠券返还的条件与到账时间",
+          "整单退款后积分返还的条件与到账时间"
+        ],
+        "coverage": [
+          {
+            "point_id": "A1",
+            "status": "supported",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "point_id": "A2",
+            "status": "supported",
+            "evidence_ids": [
+              "E2"
+            ]
+          },
+          {
+            "point_id": "A3",
+            "status": "unknown",
+            "evidence_ids": []
+          }
+        ],
+        "gaps": [],
+        "stop_reason": "max_rounds",
+        "evidence_state": "complete",
+        "answered": true,
+        "answer": "整单退款时，优惠券与积分叠加使用，先扣券再扣积分。（E2）\n优惠券在退款执行成功后返还；已过期的券不返还，退款失败也不返还。（E2）\n积分在退款时返还，返还的积分恢复原有效期，整单退款返还全部抵扣积分。（E3）",
+        "declared_insufficient": false,
+        "answer_rejected_reason": null,
+        "citations": 3,
+        "strong_model_fallback": null,
+        "model_calls": 3,
+        "duration_ms": 34280
+      }
+    ]
+  },
+  "archived": {
+    "available": true,
+    "path": "eval/reports/c6/runs/04-v2-research-on/results.json",
+    "run_id": "20261114T113051Z",
+    "generated_at": "2026-11-14T11:30:51+00:00",
+    "questions": 8,
+    "stop_reasons": {
+      "max_rounds": 3,
+      "no_new_evidence": 3,
+      "evidence_complete": 2
+    },
+    "recovered": 3,
+    "rate_recovered": 0.375,
+    "cases": [
+      {
+        "case": "r01",
+        "stop_reason": "max_rounds"
+      },
+      {
+        "case": "r02",
+        "stop_reason": "no_new_evidence"
+      },
+      {
+        "case": "r03",
+        "stop_reason": "evidence_complete"
+      },
+      {
+        "case": "r04",
+        "stop_reason": "no_new_evidence"
+      },
+      {
+        "case": "r05",
+        "stop_reason": "evidence_complete"
+      },
+      {
+        "case": "r06",
+        "stop_reason": "max_rounds"
+      },
+      {
+        "case": "r07",
+        "stop_reason": "no_new_evidence"
+      },
+      {
+        "case": "r08",
+        "stop_reason": "max_rounds"
+      }
+    ]
+  }
+}
