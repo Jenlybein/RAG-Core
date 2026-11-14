@@ -333,13 +333,20 @@ def test_engineering_tier_measures_real_adr_documents(measured: tuple) -> None:
 
 
 def test_recognition_is_specific_to_the_expression(measured: tuple) -> None:
-    """候选识别不会把「同一节里另一处表达」算成认出了这一处。"""
+    """候选识别按「这一处表达」算，不按节算：**认出的是定位符，不是这一节**。
+
+    #158 决策 8 给 R1 / R2 补了候选形态之后，这条要从「这种写法不在规则里」翻过来：
+    ADR-0025 的决策序号写法现在认得出；同一个「决策 N」词放在陈述句里（没有引用框架）
+    仍然不认；而表格里的格式示例照旧会被认成引用（候选识别不看语境）。
+    """
 
     labels, corpora, _ = measured
     item = next(row for row in labels.items if row.id == "eng-0027-02")
+    statement = next(row for row in labels.items if row.id == "eng-0027-17")
     other = next(row for row in labels.items if row.id == "eng-0027-05")
 
-    assert recognition(corpora["engineering"], item) is False  # ADR-0025 决策五：不在规则里
+    assert recognition(corpora["engineering"], item) is True  # ADR-0025 决策五：R2 认出来了
+    assert recognition(corpora["engineering"], statement) is False  # 陈述句里的决策号：没有引用框架
     assert recognition(corpora["engineering"], other) is True  # 表格里的格式示例：会被认成引用
 
 
