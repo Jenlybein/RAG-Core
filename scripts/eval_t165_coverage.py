@@ -89,8 +89,14 @@ REPORT_DIR = EVAL_DIR / "reports" / "t165"
 #: 模型调用的硬顶（票面：**≤60 次**）。预估与执行都对着它判，超了就不跑下一组。
 MODEL_CALL_CAP: Final[int] = 60
 
-#: 一次 Research 的最坏模型调用次数（规划 + 判定 + 生成 + 兜底一格），从生产常量推。
-FULL_RESEARCH_CALLS: Final[int] = 4
+#: 一次 Research 的最坏模型调用次数，**从生产常量推**（不手抄）：
+#: 规划 + 判定 + 复查 + 生成 = ``MAX_MODEL_CALLS``（4），含生成阶段的强模型兜底再 +1
+#: = ``MAX_MODEL_CALLS_WITH_FALLBACK``（5）。
+#:
+#: **这个数只用于「最坏情况」的估算**：`#165` 票面的 ≤60 是按旧成本契约（硬顶 3）估的，
+#: 加了 ⑤ 复查之后理论最坏 = 34 + 6×5 = **64 > 60**，而实际用了 **52**。两个数分开说，
+#: 别用「实际值」去糊「理论上界」。
+FULL_RESEARCH_CALLS: Final[int] = 5
 
 #: 归属索引用的租户：评测自带一个，不与任何真实租户相交（只进日志指纹）。
 TENANT_ID: Final[str] = "tenant_t165"

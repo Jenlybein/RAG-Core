@@ -69,7 +69,7 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "research_allowed": True,
         "retrieve_qps": 50,
         "retrieve_daily": 100000,
-        # 票面：专业版 1 QPS / 100 次每天（一次 Research 约 30 秒、3 次模型调用，
+        # 票面：专业版 1 QPS / 100 次每天（一次 Research 约 30 秒、3–4 次模型调用，
         # 独立配额就是为了不让它吃掉普通检索的额度）。
         "research_qps": 1,
         "research_daily": 100,

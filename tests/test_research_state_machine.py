@@ -26,6 +26,7 @@ import pytest
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.llm.base import LLMProvider
 from app.services import research
+from app.services.citation_blocks import REJECTED_GAP_NOT_DECLARED
 from app.services.research_limits import (
     MAX_FOLLOWUP_QUERIES,
     MAX_FOLLOWUP_ROUNDS,
@@ -776,3 +777,89 @@ def test_a_failed_rejudge_keeps_the_point_unknown_instead_of_guessing() -> None:
     assert outcome.gaps == ()
     assert outcome.stop_reason is StopReason.MAX_ROUNDS
     assert llm.calls == ["ResearchPlan", "CoverageJudgement", "CoverageJudgement"]
+
+
+def _gap_answer() -> dict:
+    """生成阶段的预置输出：一条 ``supported`` + 一条 ``insufficient``（渲染串里有「材料不足」）。"""
+
+    return {
+        "blocks": [
+            {"text": "已按材料给出结论。", "kind": "supported", "primary": [1], "supporting": []},
+            {"text": "未找到所需材料的说明。", "kind": "insufficient"},
+        ]
+    }
+
+
+def _three_point_judge() -> dict:
+    """第一轮判定：A1 有支撑，A2 与 A3 都缺，各自给一条补证查询。"""
+
+    return {
+        "points": [
+            {"point": 1, "status": "supported", "materials": [1]},
+            {"point": 2, "status": "none", "materials": []},
+            {"point": 3, "status": "none", "materials": []},
+        ],
+        "queries": [
+            {"point": 2, "query": "补证二"},
+            {"point": 3, "query": "补证三"},
+        ],
+    }
+
+
+def _partial_recovery_run(*, declare_gap: bool):
+    """三个要点：A2 补证**没**捞到材料（真缺口），A3 补证捞到了（→``unknown``）。"""
+
+    plan = _plan(
+        points=["要点一", "要点二", "要点三"],
+        queries=[
+            {"point": 1, "query": "查询一"},
+            {"point": 2, "query": "查询二"},
+            {"point": 3, "query": "查询三"},
+        ],
+    )
+    search = _Search(
+        {
+            "查询一": [_row("a")],
+            # A2 的补证**什么都没捞到** —— 于是它是「查过，没有」的真缺口。
+            "查询二": [],
+            "补证二": [],
+            # A3 的补证捞到新材料 → 它变成 unknown，复查才有活干。
+            "查询三": [],
+            "补证三": [_row("c")],
+        }
+    )
+    # 复查：A3 有支撑；而它顺手把 A2 也说成有支撑——这是要挡住的「缺口静默消失」。
+    second = {
+        "points": [
+            {"point": 1, "status": "supported", "materials": [1]},
+            {"point": 2, "status": "supported", "materials": [2]},
+            {"point": 3, "status": "supported", "materials": [2]},
+        ],
+        "queries": [],
+    }
+    generator = _ScriptedLLM(_gap_answer() if declare_gap else _answer_blocks())
+    return _run(plan, _three_point_judge(), second, search=search, strong=generator)
+
+
+def test_a_point_whose_followup_found_nothing_stays_a_gap_after_the_rejudge() -> None:
+    """``none`` **不因复查翻案**：它的定向补证已经跑过，没捞到材料 = 「查过，没有」。
+
+    这是复查里最容易写错的一处：如果合并规则只护住 ``supported``，那么一个新样本就能把真缺口
+    改成 ``supported``，**缺口静默消失**——而缺口闸正是靠 ``gaps`` 工作的。
+    """
+
+    outcome, _, _ = _partial_recovery_run(declare_gap=True)
+
+    statuses = {item.point_id: item.status for item in outcome.coverage}
+    assert statuses == {"A1": "supported", "A2": "none", "A3": "supported"}
+    assert outcome.gaps == ("A2",)
+
+
+def test_the_gap_that_survives_the_rejudge_still_drives_the_gate() -> None:
+    """复查之后仍存在的缺口，照样要过缺口闸——这是加 ⑤ 之后**唯一**没被覆盖的那条路径。"""
+
+    outcome, _, _ = _partial_recovery_run(declare_gap=False)
+
+    assert outcome.gaps == ("A2",)
+    assert outcome.answer is None
+    assert outcome.answer_rejected_reason == REJECTED_GAP_NOT_DECLARED

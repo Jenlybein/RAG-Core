@@ -90,7 +90,7 @@ class KeyPolicyInput(BaseModel):
     retrieve_qps: int
     retrieve_daily: int
     #: Research 的两个额度（票 #150）**有默认值 0**，与列默认值同义：新 Key 不自带一项
-    #: 约 30 秒、3 次模型调用的能力。这也是它们与 ``retrieve_qps`` / ``retrieve_daily``
+    #: 约 30 秒、3–4 次模型调用的能力。这也是它们与 ``retrieve_qps`` / ``retrieve_daily``
     #: （必须由人填）的不同之处——「忘了填」在这里等于「不要」，而不是「额度未知」。
     research_qps: int = 0
     research_daily: int = 0

@@ -144,7 +144,7 @@ DashScope 的 Qwen 分词器逐 token 对齐），而 `tiktoken` 的 `encode()` 
 `disallowed_special="all"`：正文里出现这些字面量时拒绝编码。这个默认值对**提示词**是对的
 （挡住"用文本伪造 token 边界"），对**文档正文**是错的——正文是数据，不是控制流。
 
-### 决定：三处编码调用都显式 `disallowed_special=()`
+### 决定：两处编码调用都显式 `disallowed_special=()`
 
 那三个字面量各算 1 个 token（与 Qwen 真实分词器一致），正文永远被当数据编码。
 

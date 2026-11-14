@@ -51,7 +51,10 @@ def test_the_splitter_can_cut_such_a_document() -> None:
     pieces = slicer(long_text, 64, 8, "")
 
     assert pieces, "切块器必须产出片"
-    assert "".join(pieces).replace(" ", "") != "", "片内容不许被丢空"
+    # 不只是"没抛"：字面量必须**真的留在某个片里**，否则等于静默吞掉正文。
+    assert any("<|endoftext|>" in piece for piece in pieces), (
+        "正文里的字面量在切块时丢了——那比抛异常更难发现"
+    )
 
 
 def test_every_encode_call_declares_that_document_text_is_data() -> None:
@@ -81,3 +84,32 @@ def test_each_registered_literal_is_usable_as_data(literal: str) -> None:
 
     assert token_count(text) > 0
     assert decode_ids(encode_ids(text)) == text
+
+
+def test_the_production_markdown_splitter_indexes_a_document_with_a_special_literal() -> None:
+    """**生产索引链路**：结构化切块器（`MarkdownStructuredSplitter`）能吃下这篇文档。
+
+    #160 的验收标准要求「构造一篇正文含字面量的文档，走生产索引链路」——只测 `make_slicer()`
+    不够：真正炸掉索引的是这个类（标题栈 → 分块 → 每块用 token 尺子算窗口）。
+    """
+
+    from app.utils.markdown_splitter import MarkdownStructuredSplitter
+
+    document = (
+        "# 提示词约定\n"
+        "\n"
+        "## 定界符\n"
+        "\n"
+        f"正文里的定界符写作 {LITERALS}\n"
+        "\n"
+        "## 多轮对话\n"
+        "\n"
+        "多轮消息用 <|im_start|> 与 <|im_end|> 包起来，收尾用 <|endoftext|>。\n"
+    )
+
+    chunks = MarkdownStructuredSplitter(chunk_size=64, chunk_overlap=8).split(document)
+
+    assert chunks, "生产切块器必须产出切片"
+    joined = "".join(piece.text for piece in chunks)
+    assert "<|endoftext|>" in joined, "字面量在结构化切块时丢了——那比抛异常更难发现"
+    assert all(piece.metadata.get("heading_path") for piece in chunks), "标题栈仍要成立"

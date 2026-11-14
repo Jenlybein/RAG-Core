@@ -86,7 +86,7 @@ def test_the_description_states_the_cost_and_points_at_rag_retrieve() -> None:
     """描述与参数描述都要写明：约 30 秒、有额外模型成本、普通问题先用 ``rag_retrieve``。
 
     模型的工具选择完全读这两段文字（票 #138 用户故事 29）：描述里不写成本，它就会把
-    一次 30 秒、3 次模型调用的调用当成普通检索来用。
+    一次 30 秒、3–4 次模型调用的调用当成普通检索来用。
     """
 
     tool = _tools()["rag_research"]
