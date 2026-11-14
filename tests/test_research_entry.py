@@ -30,7 +30,7 @@ from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.models.retrieval_trace import RetrievalTrace
 from app.providers.llm.base import LLMProvider
-from app.services.orchestration import (
+from app.services.citation_blocks import (
     COMPLETENESS_COMPLETE,
     COMPLETENESS_MISSING,
     COMPLETENESS_PARTIAL,
@@ -317,8 +317,12 @@ def test_the_response_has_the_plan_rounds_materials_and_metadata(entry: _Entry) 
     ]
 
 
-def test_the_evidence_state_vocabulary_is_the_orchestration_one() -> None:
-    """元数据里的三态与切片编排的 ``COMPLETENESS_*`` 是同一套词（不是第三份同义词表）。"""
+def test_the_evidence_state_vocabulary_is_the_citation_block_one() -> None:
+    """元数据里的三态与引用块的 ``COMPLETENESS_*`` 是同一套词（不是第三份同义词表）。
+
+    定义处是 ``app/services/citation_blocks.py``：ADR-0029 决策二撤销了独立的编排块，
+    把「完整度由核心片数出来」这条判据搬进了 Research。
+    """
 
     from app.schemas.research import ResearchMetadata
 

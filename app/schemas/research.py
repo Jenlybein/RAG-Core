@@ -107,8 +107,9 @@ class ResearchMetadata(BaseModel):
     model_calls: int
     stop_reason: StopReason
     trace_id: str
-    #: 三态完整度。词表与 ``app.services.orchestration`` 的 ``COMPLETENESS_*`` 是同一份，
-    #: 做成 ``Literal`` 是为了让 OpenAPI 里也是一份穷举清单（不是让第三个词冒出来）。
+    #: 三态完整度。词表定义在 ``app.services.citation_blocks`` 的 ``COMPLETENESS_*``
+    #: （ADR-0029 决策二把原编排块里那条判据搬进了 Research），做成 ``Literal`` 是为了让
+    #: OpenAPI 里也是一份穷举清单（不是让第三个词冒出来）。
     evidence_state: Literal["complete", "partial", "missing"] = "missing"
     sub_search_degraded_reasons: list[str] = Field(default_factory=list)
     strong_model_fallback: str | None = None

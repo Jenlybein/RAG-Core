@@ -29,7 +29,7 @@ from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED
 from app.models.plan import PLAN_PRESETS, PLAN_PRO
 from app.repositories import chunk_repository, section_edge_repository
 from app.schemas.rag import RetrievedChunk
-from app.services import orchestration, retrieval_options
+from app.services import retrieval_options
 from app.services.retrieval_options import RetrievalOptions
 from app.services.graph_injection import (
     INJECTED_SOURCE,
@@ -207,30 +207,6 @@ async def test_the_injected_row_is_shaped_like_a_recall_row() -> None:
     injected = outcome.chunks[-1]
     for column in ("vector_score", "bm25_score", "vector_rank", "bm25_rank", "rrf_score"):
         assert injected[column] is None, f"{column} 必须是 None：注入项没有在任何一路召回里得分"
-
-
-@pytest.mark.asyncio
-async def test_injected_rows_never_eat_the_six_reserved_slots() -> None:
-    """注入项再多，也不能把基础召回的 6 个保留位吃掉（#147 的池子按来源标记算位）。"""
-
-    seeds = [_seed(f"sec-{index}") for index in range(10)]
-    neighbours = [
-        _neighbour(f"target-{index}", seed_section_id=f"sec-{index}") for index in range(10)
-    ]
-    base = [_hit(f"c-{index}", section_id=f"sec-{index}") for index in range(6)]
-    graph = _FakeGraph(seeds=seeds, neighbours=neighbours)
-
-    outcome = await _inject(graph=graph, chunks=base)
-    pool = orchestration.build_candidates(
-        outcome.chunks, tenant_id=TENANT, index_versions={KB_A: VERSION}
-    )
-
-    kept_base = [candidate for candidate in pool if not candidate.injected]
-    assert len(kept_base) >= orchestration.MIN_BASE_CANDIDATES, (
-        "六条基础召回必须都在池子里：保留位先给它们"
-    )
-    injected = [candidate for candidate in pool if candidate.injected]
-    assert len(injected) <= orchestration.MAX_CANDIDATES - orchestration.MIN_BASE_CANDIDATES
 
 
 # ─────────────────────────────────────────── 二、优先级与三条上限

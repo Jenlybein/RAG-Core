@@ -396,52 +396,6 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
         main.app.dependency_overrides.clear()
 
 
-def test_the_echo_follows_the_effective_value_and_the_material_stays_put(
-    entry: _Entry, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """开关在两个方向上都可观察：回显跟着生效值走，检索材料一个字不变。
-
-    #146 时这条钉的是「回显里还没有它」；#147 把消费者接上之后，回显与编排块一起出现
-    ——正是当时写下的那句「回显随生效值真的改变结果一起进来」。开关只**增加**编排这一块，
-    改不了交付单元本身：编排是组织材料，不是重新检索。
-    """
-
-    _want_orchestration(PROFILE_SPEED)
-
-    class _Model:
-        """两次结构化调用的替身；本用例只关心「开关带来了什么、没带走什么」。"""
-
-        async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
-            if schema.__name__ == "PointList":
-                return {"points": ["错误码含义"]}
-            return {"points": [{"point": 1, "primary": [1]}]}
-
-    async def _fake_llm(role: str = "fast") -> Any:
-        return _Model()
-
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_llm)
-
-    entry.use(
-        policy=_policy(profile=PROFILE_SPEED, orchestration_allowed=False),
-        plan=_plan(PLAN_PRO),
-    )
-    off = entry.post()["data"]
-
-    entry.use(
-        policy=_policy(profile=PROFILE_SPEED, orchestration_allowed=True),
-        plan=_plan(PLAN_PRO),
-    )
-    on = entry.post()["data"]
-
-    assert off["metadata"]["tenant_policy"]["orchestration"] is False
-    assert on["metadata"]["tenant_policy"]["orchestration"] is True
-    assert "orchestration" not in off, "关闭时连键都不出现"
-    assert on["orchestration"]["completeness"] == "complete"
-    assert on["retrieved_chunks"] == off["retrieved_chunks"], "开关不许改变检索材料"
-    assert on["metadata"]["mode"] == off["metadata"]["mode"]
-    assert on["metadata"]["retrieval"]["degraded"] is False
-
-
 def test_a_plan_downgrade_turns_orchestration_off_on_the_next_call(entry: _Entry) -> None:
     """管理员事后把套餐的编排收回去 → 下一次调用就按新套餐判（不静默降级成不编排）。"""
 
