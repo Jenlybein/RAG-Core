@@ -1467,6 +1467,26 @@ def _relative(path: Path) -> str:
         return str(path)
 
 
+def _rejected_cases(records: Sequence[Mapping[str, Any]]) -> list[str]:
+    """有缺口但答案被整份作废的题（+ 拒绝码）：它们**没有**被对齐度量到，要单独点名。"""
+
+    out: list[str] = []
+    for record in records:
+        if record.get("gaps") and not isinstance(record.get("answer"), str):
+            out.append(f"{record.get('case')}（`{record.get('answer_rejected_reason')}`）")
+    return out
+
+
+def _degraded_cases(records: Sequence[Mapping[str, Any]]) -> list[str]:
+    """子检索降级过的题：一旦关键词或向量一路挂了，读数是「单路检索下的闸门行为」。"""
+
+    return [
+        str(record.get("case"))
+        for record in records
+        if record.get("sub_search_degraded")
+    ]
+
+
 def text_level_verdict(payload: Mapping[str, Any]) -> list[str]:
     """问题一：文本级缺口闸够不够用？判据是**欠声明占比**，不是拦截率。
 
@@ -1477,50 +1497,61 @@ def text_level_verdict(payload: Mapping[str, Any]) -> list[str]:
     metrics = payload.get("metrics") or {}
     alignment = metrics.get("声明对齐度") or {}
     total = alignment.get("cases_with_gaps") or 0
+    answered = alignment.get("answered") or 0
+    unanswered = alignment.get("unanswered") or 0
     under = alignment.get("under") or 0
     exact = alignment.get("exact") or 0
     over = alignment.get("over") or 0
     lines = [
-        f"- 有缺口的题：**{total}** 题；对齐度分布见上表（对齐 {exact} / 欠声明 {under} / "
-        f"过声明 {over}）。",
+        f"- 有缺口的题 **{total}** 题，其中**真的交出了答案**的 **{answered}** 题是对齐度的分母；"
+        f"另外 {unanswered} 题答案被整份作废（被四条硬校验 / 生成失败挡下），未测量"
+        f"——它们是：{'、'.join(_rejected_cases(payload.get('records') or [])) or '无'}。",
+        f"- 对齐度分布：对齐 **{exact}** / 欠声明 **{under}** / 过声明 **{over}**"
+        f"（分布表见上；分母 {answered}）。",
     ]
-    if not total:
+    if not answered:
         lines.append(
-            "- **这批题一道缺口都没出现**，对齐度无从谈起：只能说这次没有题把闸门驱动起来，"
+            "- **这批题一题答案都没生成出来**，对齐度无从谈起：只能说这次闸门没有被真正驱动过，"
             "不能据此判断文本级够不够用。"
         )
         return lines
     under_rate = alignment.get("under_rate")
     if under_rate is not None and float(under_rate) > 0.5:
         lines += [
-            f"- **判断：文本级不够用**。欠声明占 {_fmt_rate(under_rate)}（{under}/{total}）："
+            f"- **判断：文本级不够用**。欠声明占 {_fmt_rate(under_rate)}（{under}/{answered}）："
             "多数题的声明块数少于缺口数，而闸只检查「材料不足」这句话在不在，于是这些题**全部**"
             "被放行——答案看起来承认了不足，实际只承认了其中一块。",
             "- 处置建议：重新裁决 ADR-0029 实施备注第 4 条，考虑**逐缺口对齐**（要求每个 "
             "`none` 要点各一块 `insufficient`）。代价是必须把要点编号暴露给生成步，那会扩大"
             "模型的可表达面——当初否掉它的正是这条理由，所以要改就得先承认那个权衡换了个方向。",
         ]
-    elif under_rate is not None and under > 0:
+    elif under > 0:
         lines += [
             f"- **判断：文本级基本够用，但有边界**。欠声明占 {_fmt_rate(under_rate)}"
-            f"（{under}/{total}）：不是零，但也没到「多数题被放行」的地步。",
+            f"（{under}/{answered}）：不是零，但也没到「多数题被放行」的地步。",
             "- 读法：闸能挡住「完全不认账」的那一类，挡不住「只认一部分」的那一类。后者要不要"
             "修取决于调用方怎么用 `coverage.gaps`——它逐要点给出了缺口清单，是文本级闸门的"
             "**旁路**。维持文本级的前提是「调用方真的会读 gaps」，这件事这份评测**没有测**。",
         ]
     else:
         lines += [
-            f"- **判断：文本级够用**。欠声明 {under}/{total}（0 例）：每道题的声明块数都不少于"
-            "缺口数，闸没有漏掉任何「假装没有缺口」的答案。",
-            "- 于是 ADR-0029 实施备注第 4 条可以从「推测够用」改成「实测够用」——**在这 20 道题"
-            "上**。翻案条件不变：只要出现「3 个缺口只写 1 句」这类样本，就该重新裁决。",
+            f"- **判断：文本级够用**。欠声明 {under}/{answered}（0 例）：每一道真的交了答案的"
+            "缺口题，声明块数都**正好等于**缺口数（对齐 "
+            f"{exact}/{answered}，过声明 {over}/{answered}）——闸没有漏掉任何「假装没有缺口」"
+            "的答案，也没有出现「有缺口却只写一句」的情形。",
+            "- 于是 ADR-0029 实施备注第 4 条可以从「推测够用」改成「实测够用」——**在这 17 道"
+            "真的生成了答案的题上、这一个模型链上**。翻案条件不变：只要出现「3 个缺口只写 1 句」"
+            "这类样本，就该重新裁决。",
+            "- 但要读清楚**为什么对齐**：提示词对每个缺口要点都点名要求「各写一块 "
+            "`insufficient`」，模型照做了；闸本身仍然只数那句话在不在。也就是说，**对齐度是靠"
+            "提示词得到的，闸只是兜底**——这一条正是「维持文本级」的代价：把可靠性押在模型听话上，"
+            "而不是押在结构上。",
         ]
     over_cases = alignment.get("over") or 0
     if over_cases:
         lines.append(
             f"- 附带一条相反的信号：{over_cases} 题**过声明**（块数多于缺口数）。它不危险"
-            "（没有答案因此被放行），但说明模型是按缺口要点逐条写的、不是只写一句——"
-            "这正好是逐缺口对齐想达到的效果，只是现在靠提示词自觉。"
+            "（没有答案因此被放行），但说明模型是按缺口要点逐条写的、不是只写一句。"
         )
     declared_without_gaps = alignment.get("declared_without_gaps") or 0
     if declared_without_gaps:
@@ -1564,16 +1595,21 @@ def intercept_verdict(payload: Mapping[str, Any]) -> list[str]:
         b_cases = int(b_bucket.get("cases") or 0)
         lines += [
             "- 拦截率为 0 的两种解释，**用两组的对照分开**：",
-            f"  - 「提示词约束住了模型」：A 组（半可答，最容易圆场）{a_cases} 题有缺口，"
-            f"声明了 {a_declared} 题；B 组（全不可答）{b_cases} 题有缺口，声明了 {b_declared} 题。"
-            "如果连**半可答**那一组都没有一次不认账，那是提示词在起作用，不是题太简单；"
-            "如果只有 B 组老实、A 组圆场，那说明闸的价值恰恰落在半可答那一侧。",
-            f"  - 「分母太小」：分母是 **{total}** 题。它不算小到看不出问题（缺口率本身很高），"
-            "但也**不足以给出一个稳定的百分比**——一题翻转就是好几个百分点。",
+            f"  - **「提示词约束住了模型」——数据支持这一条**：A 组（半可答，最容易圆场）"
+            f"{a_cases} 题有缺口，声明了 {a_declared} 题，**0 题不认账**；B 组（全不可答）"
+            f"{b_cases} 题有缺口，声明了 {b_declared} 题，同样 0 题不认账。两组的落点几乎一样，"
+            "也就是说连最该圆场的那一组也没圆场——这是提示词在起作用，不是题太简单。"
+            "顺带说：本票原本假设「半可答最容易被顺手答完」，**这批题里没有出现**。",
+            f"  - **「分母太小」——这一条只部分成立**：分母是 **{total}** 题，一题翻转就是 5 个"
+            "百分点，给不出稳定的百分比；但它的方向是确定的——3 次失败全是**答案被别的原因整份"
+            "作废**（"
+            + "、".join(_rejected_cases(payload.get("records") or []) or ["无"])
+            + "），**没有一次是「闸门该拦而没拦」**。",
             "- 还有一条结构性的读法：有缺口时答案要么非空且必含「材料不足」（闸放行），"
             "要么整份为 `null`（闸或硬校验拦下）。**没有第三种可能**，所以这道闸的失败方式"
             "只能是「整份作废」，而不是「放行一句假话」。0 拦截率因此说的是「模型都认了账」，"
-            "不是「闸没在工作」。",
+            "不是「闸没在工作」。反过来说，**这道闸在这批题上一次也没被真正挑战过**："
+            "它没有失败，也没有立功——真正挡住「假装没缺口」的是提示词。",
         ]
     elif blocked:
         lines.append(
@@ -1705,6 +1741,9 @@ def fivefold_section(payload: Mapping[str, Any]) -> list[str]:
     control_metrics = comparison.get("without_fivefold_metrics") or {}
     net = comparison.get("net") or {}
     transitions = comparison.get("transitions") or {}
+    unknown_point_rate = _rate(
+        int(without.get("unknown_points") or 0), int(without.get("point_total") or 0)
+    )
     lines = [
         "## 三、⑤ 的对照：A 组关掉 ⑤ 再跑一次",
         "",
@@ -1724,7 +1763,7 @@ def fivefold_section(payload: Mapping[str, Any]) -> list[str]:
         f"- `unknown` 非空的题：**{without.get('cases_with_unknown')}/{without.get('cases')}**"
         f"（`{_fmt_rate(without.get('rate'))}`）；要点级 `unknown`："
         f"{without.get('unknown_points')}/{without.get('point_total')}"
-        f"（`{_fmt_rate(_rate(int(without.get('unknown_points') or 0), int(without.get('point_total') or 0)) or 0)}`）",
+        f"（`{_fmt_rate(unknown_point_rate)}`）",
         "",
         "| 每题 `unknown` 个数 | 题数 |",
         "| --- | --- |",
@@ -1738,6 +1777,24 @@ def fivefold_section(payload: Mapping[str, Any]) -> list[str]:
         f"- 与归档反推的 **{_fmt_rate(ARCHIVED_TRIGGER_RATE)}**"
         f"（{ARCHIVED_TRIGGER_NUMERATOR}/{ARCHIVED_TRIGGER_DENOMINATOR}）对照：直接测量值是 "
         f"`{_fmt_rate(without.get('rate'))}`。",
+    ]
+    measured = without.get("rate")
+    if measured is not None:
+        delta = round(float(measured) - ARCHIVED_TRIGGER_RATE, 4)
+        if abs(delta) <= 0.15:
+            lines.append(
+                f"  - **一致的**（差 {delta:+.1%}）：归档那个反推没有偏——`max_rounds` 确实能代表"
+                "「补证捞到了材料、因此会带 `unknown`」。"
+            )
+        else:
+            lines.append(
+                f"  - **差 {delta:+.1%}**：本票的题集**每题都注入了一个语料里没有的方面**，判定"
+                "几乎必然报缺口，而补证（定向检索）几乎必然捞回**别的节**——检索永远返回 top-k，"
+                "空手而归才罕见。于是「补证捞到材料」在这里接近必然，`unknown` 也就接近必然；"
+                "归档那 8 题是**自然问题**，不是每题都带缺口。两个数因此**量的不是同一个东西**："
+                f"37.5% 是自然问题上的触发率，`{_fmt_rate(measured)}` 是缺口题上的触发率。"
+            )
+    lines += [
         f"- 条件 2（无 ⑤）的五项读数：缺口出现率 "
         f"`{_fmt_rate((control_metrics.get('缺口出现率') or {}).get('value'))}`、"
         f"拦截率 `{_fmt_rate((control_metrics.get('拦截率') or {}).get('value'))}`"
@@ -1897,13 +1954,15 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "",
         "## 五、逐题明细",
         "",
-        "| 题 | 组 | 停止原因 | 材料 | 要点 | 缺口 | 声明块 | 调用 | 答案 | 拒绝码 | 耗时 |",
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| 题 | ⑤ | 组 | 停止原因 | 材料 | 要点 | 缺口 | 声明块 | 调用 | 答案 | 拒绝码 | 耗时 |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for record in payload.get("records") or []:
         answer_cell = "非空" if record.get("answer") is not None else "null"
+        fivefold_cell = "开" if record.get("fivefold", True) else "**关**"
         lines.append(
-            f"| {record['case']} | {record['group']} | `{record['stop_reason']}` | "
+            f"| {record['case']} | {fivefold_cell} | {record['group']} | "
+            f"`{record['stop_reason']}` | "
             f"{record.get('materials')} | {len(record.get('points') or [])} | "
             f"{len(record.get('gaps') or [])} | {record.get('insufficient')} | "
             f"{record.get('model_calls')} | {answer_cell} | "
@@ -1911,17 +1970,18 @@ def render_report(payload: Mapping[str, Any]) -> str:
             f"{round(int(record.get('duration_ms') or 0) / 1000, 1)}s |"
         )
     if not payload.get("records"):
-        lines.append("| （还没有跑） | — | — | — | — | — | — | — | — | — | — |")
+        lines.append("| （还没有跑） | — | — | — | — | — | — | — | — | — | — | — |")
 
     lines += [
         "",
-        "### 走 ⑤ 的题（`model_calls >= 4`）的覆盖判定",
+        "### 走 ⑤ 的题（`model_calls >= 4`，只看 ⑤ 开着的那一批）",
         "",
     ]
     triggered = [
         record
         for record in payload.get("records") or []
-        if int(record.get("model_calls") or 0) >= TRIGGER_MIN_MODEL_CALLS
+        if record.get("fivefold", True)
+        and int(record.get("model_calls") or 0) >= TRIGGER_MIN_MODEL_CALLS
     ]
     if not triggered:
         lines.append("- 这一批没有题走到 ⑤。")
@@ -1952,8 +2012,10 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "- **只测一个模型链**：规划 / 判定 / 复查 / 生成走的是 `fast` 与 `strong` 两个角色指针，"
         "这次落在同一个供应商的同一条模型上（见报告头部的链路）。换模型、换思考强度，读数会变；"
         "这里没有做模型间对照。",
-        "- **`plan` 的检索会被降级改写**：一旦关键词一路失败，`sub_search_degraded` 会记一条，"
-        "本次读数就变成「向量单路下的闸门行为」。逐题记录里带了这个字段，请连同它一起读。",
+        "- **`plan` 的检索会被降级改写**：一旦关键词或向量一路失败，`sub_search_degraded` 会记"
+        "一条，本次读数就变成「单路检索下的闸门行为」。这次降级过的题："
+        + ("、".join(_degraded_cases(payload.get("records") or [])) or "无")
+        + "。逐题记录里带了这个字段，请连同它一起读。",
         "- **「不可答」的机械证据只覆盖关键词这一种形态**：关键词 0 命中证明「这个词不在库里」，"
         "不证明「这块知识不在库里」——库里可能用别的说法写了。反向偏差是存在的（把可答的当成了"
         "不可答），它会让缺口出现率偏高。B 组里 6 题取自题库 `absent` 标注（问题侧、写在检索之前），"
@@ -1963,11 +2025,19 @@ def render_report(payload: Mapping[str, Any]) -> str:
         "- **一次跑批**：没有重复跑，所以没有跑间方差；模型的抽样波动会让这次的分布挪位。"
         "第三节那份对照尤其要吃这一条：条件 1 与条件 2 是**两次独立跑**，规划与判定都是新的"
         "样本，所以「gaps 变多/变少」里既有 ⑤ 的效果，也有抽样噪声。",
-        "- **⑤ 的对照按要点文本对齐**：两次跑的规划经常不一样（条数与措辞都变）。对不上的要点"
-        "单列成 `unmatched`，不计入改判分布——于是改判的那几个数**分母偏小**，"
-        "尤其不能把它们当成「⑤ 的总体改判率」。",
+        "- **⑤ 的对照按关键词对齐**：两次跑的规划从来不一样（这次 **10/10 题**的要点清单都变了），"
+        "所以「哪条要点说的是同一件事」只能靠**我们注入并机械验证过的关键词**判断，而不是序号"
+        "或措辞。与不可答方面无关的 `unknown`、以及开 ⑤ 那次没规划出来的方面，都单列、"
+        "不计入改判分布——于是改判的那几个数**分母偏小**，不能当成「⑤ 的总体改判率」。",
         "- **关 ⑤ 是一个不存在的生产配置**：真实部署里 ⑤ 总是开着。条件 2 是**反事实**测量，"
         "用来回答「若没有它会怎样」，不代表任何可运行的版本。",
+        "- **`unknown → supported` 被题集结构性地压低了**：我们每题的缺口方面**在语料里根本"
+        "不存在**（0 命中的机械证据就是它），所以补证捞回来的材料几乎不可能真的撑住那个方面，"
+        "复查自然落成 `none`。真实场景里缺口常常是「这部分材料没召回」而不是「库里没有」，"
+        "那种情况下「救回」的比例会高得多——**这次 0 条救回不能被读成「⑤ 从不救回」**。",
+        "- **3 题答案被别的原因整份作废**（`malformed answer output`：生成阶段强模型超时；"
+        "`unresolved evidence reference`：块里引到了不该出现的编号）。它们没有进入对齐度的"
+        "分母，也没有进入拦截率——这 3 题的「有缺口却不认账」到底会不会发生，这次没测到。",
     ]
 
     lines += [

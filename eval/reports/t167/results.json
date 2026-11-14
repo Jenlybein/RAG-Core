@@ -1,5 +1,5 @@
 {
-  "generated_at": "2026-11-14T22:35:46+00:00",
+  "generated_at": "2026-11-14T22:42:36+00:00",
   "issue": "#167 缺口闸真实行为评测",
   "llm_chain": {
     "llm_endpoint_source": "model_configs",
@@ -32,7 +32,7 @@
     "budget": 170,
     "nominal": 110,
     "worst": 140,
-    "actual": 70,
+    "actual": 108,
     "per_case": {
       "nominal": 4,
       "worst": 5,
@@ -2108,43 +2108,879 @@
       "condition": "control",
       "fivefold": false,
       "answer": "常规变更窗口为工作日22点到次日2点，数据库变更窗口为周六凌晨。（E1）\n窗口结束前30分钟必须开始验证，验证未通过按回滚处理。（E1）\n材料未提及钉钉，无法判断值班排班能否用钉钉，材料不足。（材料不足）"
+    },
+    {
+      "case": "B01",
+      "group": "B",
+      "query": "E8888 是什么错误",
+      "keyword": "E8888",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": false,
+      "answer_rejected_reason": "unresolved evidence reference",
+      "citations": [],
+      "insufficient": 0,
+      "declared_insufficient": false,
+      "gap_declaration_count": 0,
+      "materials": 14,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 25578,
+      "points": [
+        "E8888 错误码对应的错误名称与含义",
+        "E8888 所属的系统、设备或软件模块",
+        "触发 E8888 错误的常见原因",
+        "出现 E8888 错误时的现象与影响",
+        "E8888 错误的排查步骤与解决办法"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": null
+    },
+    {
+      "case": "B02",
+      "group": "B",
+      "query": "量子加密通道怎么配置",
+      "keyword": "量子",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料不足：未找到量子加密通道或QKD分发密钥的配置说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未提及QKD设备型号与接口协议的匹配确认要求。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未说明量子密钥的中继、存储及上层应用对接方式。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未提及通道两端的对等身份认证与密钥同步参数配置。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未提及链路损耗测试与密钥生成率验收的步骤或标准。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 5,
+      "declared_insufficient": true,
+      "gap_declaration_count": 10,
+      "materials": 12,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 46717,
+      "points": [
+        "量子加密通道基于QKD分发密钥，需要专用设备和光纤链路",
+        "配置前需确认双方QKD设备型号与接口协议是否匹配",
+        "密钥管理服务负责密钥中继、存储与上层应用对接",
+        "通道两端需配置对等身份认证与密钥同步参数",
+        "上线前需做链路损耗测试与密钥生成率验收"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料不足：未找到量子加密通道或QKD分发密钥的配置说明。（材料不足）\n材料不足：未提及QKD设备型号与接口协议的匹配确认要求。（材料不足）\n材料不足：未说明量子密钥的中继、存储及上层应用对接方式。（材料不足）\n材料不足：未提及通道两端的对等身份认证与密钥同步参数配置。（材料不足）\n材料不足：未提及链路损耗测试与密钥生成率验收的步骤或标准。（材料不足）"
+    },
+    {
+      "case": "B03",
+      "group": "B",
+      "query": "设备支持卫星回传吗",
+      "keyword": "卫星",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料只写到蜂窝模组可作备份链路，未提及卫星回传。",
+          "evidence_ids": [
+            "E1"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到设备是否具备卫星回传能力的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到卫星回传制式或频段的任何描述。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到卫星回传速率与带宽指标。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到启用卫星回传的条件与配置要求。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到各型号对卫星回传支持差异的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 5,
+      "declared_insufficient": true,
+      "gap_declaration_count": 10,
+      "materials": 14,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 20828,
+      "points": [
+        "设备是否具备卫星回传能力",
+        "设备支持哪些卫星回传制式或频段",
+        "卫星回传的速率与带宽指标是多少",
+        "启用卫星回传需要哪些条件与配置",
+        "不同型号或配置对卫星回传的支持差异"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料只写到蜂窝模组可作备份链路，未提及卫星回传。（E1）\n材料不足：未找到设备是否具备卫星回传能力的说明。（材料不足）\n材料不足：未找到卫星回传制式或频段的任何描述。（材料不足）\n材料不足：未找到卫星回传速率与带宽指标。（材料不足）\n材料不足：未找到启用卫星回传的条件与配置要求。（材料不足）\n材料不足：未找到各型号对卫星回传支持差异的说明。（材料不足）"
+    },
+    {
+      "case": "B04",
+      "group": "B",
+      "query": "支持刷脸支付吗",
+      "keyword": "刷脸",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料不足：未找到该服务支持的支付方式说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：材料未明确提及是否提供刷脸或人脸识别支付。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到刷脸支付的开通条件与使用限制。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到刷脸支付的安全与隐私保护说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到不能刷脸时的替代支付方式说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 5,
+      "declared_insufficient": true,
+      "gap_declaration_count": 10,
+      "materials": 13,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 37859,
+      "points": [
+        "该服务支持的支付方式有哪些",
+        "是否明确提供刷脸/人脸识别支付",
+        "刷脸支付的开通条件与使用限制",
+        "刷脸支付的安全与隐私保护说明",
+        "不能刷脸时的替代支付方式"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料不足：未找到该服务支持的支付方式说明。（材料不足）\n材料不足：材料未明确提及是否提供刷脸或人脸识别支付。（材料不足）\n材料不足：未找到刷脸支付的开通条件与使用限制。（材料不足）\n材料不足：未找到刷脸支付的安全与隐私保护说明。（材料不足）\n材料不足：未找到不能刷脸时的替代支付方式说明。（材料不足）"
+    },
+    {
+      "case": "B05",
+      "group": "B",
+      "query": "有没有手机 App 可以管理设备",
+      "keyword": "安卓",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "no_new_evidence",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "设备管理入口为 Web 管理页面、命令行与集中管理平台三种，另含终端管理客户端。",
+          "evidence_ids": [
+            "E5",
+            "E9"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到关于设备管理 App 常见功能范围的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到 iOS 或 Android 均有可用应用的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：材料未列举任何可检索的设备管理 App 名称。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 3,
+      "declared_insufficient": true,
+      "gap_declaration_count": 6,
+      "materials": 9,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 34672,
+      "points": [
+        "明确设备管理 App 的常见功能范围",
+        "确认 iOS 与 Android 均有可用应用",
+        "列举可检索的设备管理 App 名称"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "设备管理入口为 Web 管理页面、命令行与集中管理平台三种，另含终端管理客户端。（E5、E9）\n材料不足：未找到关于设备管理 App 常见功能范围的说明。（材料不足）\n材料不足：未找到 iOS 或 Android 均有可用应用的说明。（材料不足）\n材料不足：材料未列举任何可检索的设备管理 App 名称。（材料不足）"
+    },
+    {
+      "case": "B06",
+      "group": "B",
+      "query": "能开香港公司的发票吗",
+      "keyword": "香港",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 3,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "no_new_evidence",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料提到跨境发票为形式发票，不作为税前扣除凭证，未说明能否开给香港公司。",
+          "evidence_ids": [
+            "E8"
+          ],
+          "status": "supported"
+        },
+        {
+          "text": "材料不足：未找到内地企业可向香港公司开具增值税发票的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到香港公司无内地税号时可填写英文名称和地址的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到跨境服务适用增值税零税率或免税的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到开票需真实合同、付款凭证和业务单据的要求。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到发票抬头应与香港公司注册名称一致的说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 5,
+      "declared_insufficient": true,
+      "gap_declaration_count": 10,
+      "materials": 10,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 37327,
+      "points": [
+        "内地企业可向香港公司开具增值税发票",
+        "香港公司无内地税号可填写英文名称和地址",
+        "跨境服务可能适用增值税零税率或免税",
+        "开票需有真实合同、付款凭证和业务单据",
+        "发票抬头应与香港公司注册名称一致"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料提到跨境发票为形式发票，不作为税前扣除凭证，未说明能否开给香港公司。（E8）\n材料不足：未找到内地企业可向香港公司开具增值税发票的说明。（材料不足）\n材料不足：未找到香港公司无内地税号时可填写英文名称和地址的说明。（材料不足）\n材料不足：未找到跨境服务适用增值税零税率或免税的说明。（材料不足）\n材料不足：未找到开票需真实合同、付款凭证和业务单据的要求。（材料不足）\n材料不足：未找到发票抬头应与香港公司注册名称一致的说明。（材料不足）"
+    },
+    {
+      "case": "B07",
+      "group": "B",
+      "query": "员工工伤认定和理赔要走哪些流程",
+      "keyword": "工伤",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料不足：现有材料未涉及事故后就医留证及单位30日内申请工伤认定的内容。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：现有材料未说明社保部门受理调查并作出工伤认定结论的流程。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：现有材料未涉及劳动能力鉴定及申领工伤待遇的步骤。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 3,
+      "declared_insufficient": true,
+      "gap_declaration_count": 6,
+      "materials": 10,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 24594,
+      "points": [
+        "事故后就医留证，单位30日内申请工伤认定",
+        "社保部门受理调查并作出工伤认定结论",
+        "认定后做劳动能力鉴定并申领工伤待遇"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料不足：现有材料未涉及事故后就医留证及单位30日内申请工伤认定的内容。（材料不足）\n材料不足：现有材料未说明社保部门受理调查并作出工伤认定结论的流程。（材料不足）\n材料不足：现有材料未涉及劳动能力鉴定及申领工伤待遇的步骤。（材料不足）"
+    },
+    {
+      "case": "B08",
+      "group": "B",
+      "query": "公司员工宿舍的水电费怎么分摊",
+      "keyword": "宿舍",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料未提及员工宿舍水电费的分摊依据与分摊标准，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料未提及宿舍水电计量方式与抄表结算流程，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料未提及入住离职及公共区域水电费用如何处理，材料不足。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 3,
+      "declared_insufficient": true,
+      "gap_declaration_count": 6,
+      "materials": 15,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 25108,
+      "points": [
+        "明确宿舍水电费分摊依据与标准",
+        "确认水电计量与抄表结算流程",
+        "说明入住离职及公共区域费用处理"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料未提及员工宿舍水电费的分摊依据与分摊标准，材料不足。（材料不足）\n材料未提及宿舍水电计量方式与抄表结算流程，材料不足。（材料不足）\n材料未提及入住离职及公共区域水电费用如何处理，材料不足。（材料不足）"
+    },
+    {
+      "case": "B09",
+      "group": "B",
+      "query": "申请高新技术企业认定要准备哪些材料",
+      "keyword": "高新技术企业",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料不足：现有材料未涉及高新技术企业认定的申报条件与基本流程。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到关于企业营业执照等主体资质证明材料的要求。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到知识产权证书与科技成果转化材料的相关说明。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到研发费用专项审计与财务审计报告的要求。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：未找到研发组织管理制度与科技人员证明材料的规定。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 5,
+      "declared_insufficient": true,
+      "gap_declaration_count": 10,
+      "materials": 13,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 23781,
+      "points": [
+        "高新技术企业认定的申报条件与基本流程",
+        "企业营业执照等主体资质证明材料",
+        "知识产权证书与科技成果转化材料",
+        "研发费用专项审计与财务审计报告",
+        "研发组织管理制度与科技人员证明材料"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料不足：现有材料未涉及高新技术企业认定的申报条件与基本流程。（材料不足）\n材料不足：未找到关于企业营业执照等主体资质证明材料的要求。（材料不足）\n材料不足：未找到知识产权证书与科技成果转化材料的相关说明。（材料不足）\n材料不足：未找到研发费用专项审计与财务审计报告的要求。（材料不足）\n材料不足：未找到研发组织管理制度与科技人员证明材料的规定。（材料不足）"
+    },
+    {
+      "case": "B10",
+      "group": "B",
+      "query": "给核心员工做股权激励，行权价格怎么定",
+      "keyword": "股权激励",
+      "gaps": [
+        "A1",
+        "A2",
+        "A3",
+        "A4",
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A2",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A3",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A4",
+          "status": "none",
+          "evidence_ids": []
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "model_calls": 4,
+      "followup_rounds": 1,
+      "searches": 5,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "citations": [
+        {
+          "text": "材料不足：现有材料未提及股权激励行权价格与授予日公允市价的关系。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：现有材料未提及上市公司行权价与授予日股票收盘价的规定。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：现有材料未提及非上市公司参照最近一轮融资估值定价的做法。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：现有材料未提及行权价过低引发税负与员工公平性争议的问题。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        },
+        {
+          "text": "材料不足：现有材料未提及行权定价需经董事会或股东会审议并披露。",
+          "evidence_ids": [],
+          "status": "insufficient"
+        }
+      ],
+      "insufficient": 5,
+      "declared_insufficient": true,
+      "gap_declaration_count": 10,
+      "materials": 7,
+      "evidence_state": "missing",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 34390,
+      "points": [
+        "行权价格通常以授予日标的公允市价为基准确定",
+        "上市公司行权价不得低于授予日股票收盘价",
+        "非上市公司多参照最近一轮融资估值定价",
+        "行权价过低易引发税负与员工公平性争议",
+        "定价须经董事会或股东会审议并披露"
+      ],
+      "condition": "fivefold",
+      "fivefold": true,
+      "answer": "材料不足：现有材料未提及股权激励行权价格与授予日公允市价的关系。（材料不足）\n材料不足：现有材料未提及上市公司行权价与授予日股票收盘价的规定。（材料不足）\n材料不足：现有材料未提及非上市公司参照最近一轮融资估值定价的做法。（材料不足）\n材料不足：现有材料未提及行权价过低引发税负与员工公平性争议的问题。（材料不足）\n材料不足：现有材料未提及行权定价需经董事会或股东会审议并披露。（材料不足）"
     }
   ],
   "groups_run": [
-    "None",
-    "control"
+    "control",
+    "fivefold"
   ],
   "metrics": {
-    "cases": 10,
+    "cases": 20,
     "缺口出现率": {
       "value": 1.0,
-      "numerator": 10,
-      "denominator": 10
+      "numerator": 20,
+      "denominator": 20
     },
     "拦截率": {
       "value": 0.0,
       "numerator": 0,
-      "denominator": 10
+      "denominator": 20
     },
     "⑤ 触发率": {
       "value": 0.8,
-      "numerator": 8,
-      "denominator": 10
+      "numerator": 16,
+      "denominator": 20
     },
     "unknown 残留率": {
       "value": 0.0,
       "numerator": 0,
-      "denominator": 10
+      "denominator": 20
     },
     "声明对齐度": {
-      "cases_with_gaps": 10,
-      "answered": 8,
-      "unanswered": 2,
+      "cases_with_gaps": 20,
+      "answered": 17,
+      "unanswered": 3,
       "pairs": {
         "1→1": 5,
-        "2→2": 3
+        "2→2": 3,
+        "3→3": 3,
+        "5→5": 6
       },
-      "exact": 8,
+      "exact": 17,
       "exact_rate": 1.0,
       "under": 0,
       "under_rate": 0.0,
@@ -2153,9 +2989,9 @@
       "declared_without_gaps": 0
     },
     "gap_case_outcomes": {
-      "declared": 8,
+      "declared": 17,
       "blocked": 0,
-      "rejected_other": 2,
+      "rejected_other": 3,
       "leaked": 0,
       "by_group": {
         "A": {
@@ -2163,13 +2999,21 @@
           "blocked": 0,
           "rejected_other": 2,
           "cases": 10
+        },
+        "B": {
+          "declared": 9,
+          "blocked": 0,
+          "rejected_other": 1,
+          "cases": 10
         }
       },
       "blocked_by_group": {
-        "A": 0
+        "A": 0,
+        "B": 0
       },
       "declared_by_group": {
-        "A": 8
+        "A": 8,
+        "B": 9
       }
     },
     "by_group": {
@@ -2197,24 +3041,24 @@
       },
       "B": {
         "缺口出现率": {
-          "value": null,
-          "numerator": 0,
-          "denominator": 0
+          "value": 1.0,
+          "numerator": 10,
+          "denominator": 10
         },
         "拦截率": {
-          "value": null,
+          "value": 0.0,
           "numerator": 0,
-          "denominator": 0
+          "denominator": 10
         },
         "⑤ 触发率": {
-          "value": null,
-          "numerator": 0,
-          "denominator": 0
+          "value": 0.8,
+          "numerator": 8,
+          "denominator": 10
         },
         "unknown 残留率": {
-          "value": null,
+          "value": 0.0,
           "numerator": 0,
-          "denominator": 0
+          "denominator": 10
         }
       },
       "声明对齐度": {
@@ -2235,16 +3079,19 @@
           "declared_without_gaps": 0
         },
         "B": {
-          "cases_with_gaps": 0,
-          "answered": 0,
-          "unanswered": 0,
-          "pairs": {},
-          "exact": 0,
-          "exact_rate": null,
+          "cases_with_gaps": 10,
+          "answered": 9,
+          "unanswered": 1,
+          "pairs": {
+            "3→3": 3,
+            "5→5": 6
+          },
+          "exact": 9,
+          "exact_rate": 1.0,
           "under": 0,
-          "under_rate": null,
+          "under_rate": 0.0,
           "over": 0,
-          "over_rate": null,
+          "over_rate": 0.0,
           "declared_without_gaps": 0
         }
       }
