@@ -34,7 +34,7 @@ HTTP 入口（本票）与 MCP 工具 ``rag_research``（#151）写的是**同�
 
 两列 ``research_qps`` / ``research_daily`` 与检索那两列同构（两级同记），但键前缀是
 ``quota:research``（``app.services.quota_gate`` 的 ``RESEARCH_NAMESPACE``）：一次 Research
-约 30 秒、3 次模型调用，它不该吃掉同一租户的检索额度。
+约 30 秒、3–4 次模型调用，它不该吃掉同一租户的检索额度。
 
 ## 进门只查、成功后记一次，且只记一次
 
@@ -154,7 +154,7 @@ def build_kernel_search(
 
     三条查询串全等于子查询本身，这是**故意的**：规划器已经把问题分解好了，再改写一轮会
     把已分解的子查询揉回原问题（ADR-0028 背景第 1 条），而且每条子查询再多一次模型调用
-    就直接撞破「3 次模型调用」的上限。
+    就直接撞破「4 次模型调用」的上限。
 
     条数与折叠口径与 ``/rag/retrieve`` 逐项相同（读同一份 :class:`RetrievalOptions`）：
     同一个集成用它自己的档位参数跑子检索，Research 不发明第二套「检索多好」。两个服务端

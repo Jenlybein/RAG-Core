@@ -103,7 +103,7 @@ CREATE_DEFAULTS: Final[dict[str, Any]] = {
     "rerank_allowed": False,
     "query_rewrite_allowed": False,
     # Research 的两个独立配额（票 #150）：默认 0 = 关闭。新发一把 Key 不该自带一项
-    # 约 30 秒、3 次模型调用的能力——要用就由人来填。
+    # 约 30 秒、3–4 次模型调用的能力——要用就由人来填。
     "research_qps": 0,
     "research_daily": 0,
     "include_parent": True,

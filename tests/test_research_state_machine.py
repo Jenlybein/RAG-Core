@@ -249,7 +249,8 @@ def test_the_six_caps_are_code_constants() -> None:
     assert MAX_FIRST_ROUND_QUERIES == 3
     assert MAX_FOLLOWUP_QUERIES == 2
     assert MAX_FOLLOWUP_ROUNDS == 1
-    assert MAX_MODEL_CALLS == 3
+    # 3 → 4（#165）：补证捞到材料之后要复查一次，见 ADR-0029 实施备注第 2 条。
+    assert MAX_MODEL_CALLS == 4
     assert STAGE_BUDGET_SECONDS == 90
     assert PLAN_NAME == "research_fixed"
 
@@ -339,8 +340,10 @@ def test_a_multi_point_question_gets_two_rounds_of_materials() -> None:
     assert outcome.followup_rounds == MAX_FOLLOWUP_ROUNDS == 1
     # 证据增加了，但轮次已经用尽：诚实的停止原因是「轮数用尽」而不是「齐了」。
     assert outcome.stop_reason is StopReason.MAX_ROUNDS
-    # 轮数上限也体现在这里：补证跑完不再判断一次（规划 + 判断 + 生成，判断只有一次）。
-    assert outcome.model_calls == 3
+    # 补证真的捞到了材料（上面 ``chunk-c``），所以**多了一次 ⑤ 复查**：
+    # 规划 + 判断 + 复查 + 生成 = 4。这是 #165 的决定（ADR-0029 实施备注第 2 条），
+    # 不是顺手把数字调大。
+    assert outcome.model_calls == 4
 
 
 def test_a_followup_that_adds_nothing_stops_with_no_new_evidence() -> None:
@@ -655,3 +658,121 @@ def test_a_failing_sub_search_is_not_swallowed() -> None:
         )
 
     assert caught.value.code is ErrorCode.RETRIEVAL_FAILED
+
+
+# ─────────────────────────────────────────── ⑤ 复查（#165 的结论，ADR-0029 实施备注第 2 条）
+
+
+def _rejudged(*, point: int = 2, material: int = 3) -> dict:
+    """复查的预置输出：原来缺的那个要点，现在由**补证捞回来的那条材料**撑住。"""
+
+    return {
+        "points": [
+            {
+                "point": index,
+                "status": "supported",
+                "materials": [material] if index == point else [1],
+            }
+            for index in range(1, 3)
+        ],
+        "queries": [],
+    }
+
+
+def _supplemented_search() -> _Search:
+    """首轮两条各自命中，补证那条命中**新材料** chunk-c。"""
+
+    return _Search(
+        {
+            "退款多久到账": [_row("a")],
+            "退款需要哪些材料": [_row("b")],
+            "超期退款要哪些材料": [_row("c")],
+        }
+    )
+
+
+def test_a_recovered_point_is_judged_again_instead_of_staying_unknown() -> None:
+    """补证捞到材料 → **再判一次**，``unknown`` 落成结论。
+
+    ``unknown`` 两边都不落地（不进 ``gaps``、也不代表有支撑），而缺口闸是文本级的，看不见
+    它——不复查就等于「这条材料既不算数也没人管」。
+    """
+
+    outcome, llm, _ = _run(_plan(), _followup(), _rejudged(), search=_supplemented_search())
+
+    statuses = {item.point_id: item.status for item in outcome.coverage}
+    assert statuses == {"A1": "supported", "A2": "supported"}
+    assert outcome.gaps == ()
+    # 规划 + 判断 + **复查** + 生成。
+    assert outcome.model_calls == 4
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement", "CoverageJudgement"]
+
+
+def test_the_rejudged_point_keeps_pointing_at_the_newly_added_material() -> None:
+    """复查给出的证据编号要指向**补回来的那条**，不是在原有材料里随便挑一条。"""
+
+    outcome, _, _ = _run(_plan(), _followup(), _rejudged(), search=_supplemented_search())
+
+    recovered = next(item for item in outcome.coverage if item.point_id == "A2")
+    assert recovered.evidence_ids == ("E3",)
+
+
+def test_a_point_that_was_supported_never_gets_downgraded_by_the_second_round() -> None:
+    """合并是**单调**的：第一轮判成 ``supported`` 的，第二轮说 ``none`` 也不采纳。
+
+    理由是材料只增不减——上一轮能从池子里读出它，这一轮池子更大，没有理由读不出。让第二轮
+    有权推翻第一轮，等于给「同一份材料两次判定不一致」开口子，而 ``coverage`` 里没有字段能
+    表达这种不一致。
+    """
+
+    second_says_none = {
+        "points": [
+            {"point": 1, "status": "none", "materials": []},
+            {"point": 2, "status": "supported", "materials": [3]},
+        ],
+        "queries": [],
+    }
+
+    outcome, _, _ = _run(_plan(), _followup(), second_says_none, search=_supplemented_search())
+
+    statuses = {item.point_id: item.status for item in outcome.coverage}
+    assert statuses == {"A1": "supported", "A2": "supported"}
+
+
+def test_a_followup_that_changed_nothing_does_not_spend_a_judgement() -> None:
+    """补证一条新材料都没捞到 → **不复查**（那些要点是真缺口，没有可复查的对象）。"""
+
+    outcome, llm, _ = _run(
+        _plan(),
+        _followup(),
+        search=_Search(
+            {
+                "退款多久到账": [_row("a")],
+                "退款需要哪些材料": [_row("b")],
+                "超期退款要哪些材料": [],
+            }
+        ),
+    )
+
+    assert outcome.stop_reason is StopReason.NO_NEW_EVIDENCE
+    assert outcome.gaps == ("A2",)
+    assert outcome.model_calls == 3
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement"]
+
+
+def test_a_failed_rejudge_keeps_the_point_unknown_instead_of_guessing() -> None:
+    """复查失败 → **保持** ``unknown``。不知道比猜一边好，而且不能因此少一次调用计数。"""
+
+    outcome, llm, _ = _run(
+        _plan(),
+        _followup(),
+        RuntimeError("复查也挂了"),
+        search=_supplemented_search(),
+    )
+
+    statuses = {item.point_id: item.status for item in outcome.coverage}
+    assert statuses["A2"] == "unknown"
+    # ``unknown`` 不进 gaps：不知道的时候既不该声明材料不足，也不该假装有支撑。
+    assert outcome.gaps == ()
+    assert outcome.stop_reason is StopReason.MAX_ROUNDS
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement", "CoverageJudgement"]

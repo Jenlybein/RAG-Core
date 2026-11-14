@@ -38,7 +38,7 @@
 | 检索 | ``retrieve_qps`` / ``retrieve_daily`` | ``quota`` |
 | 受控 Research | ``research_qps`` / ``research_daily`` | ``quota:research`` |
 
-分成两本账是因为成本相差一个量级：一次 Research 约 30 秒、3 次模型调用，与普通检索共用
+分成两本账是因为成本相差一个量级：一次 Research 约 30 秒、3–4 次模型调用，与普通检索共用
 一份额度会让「偶尔问一次大问题」把当天的检索额度吃掉。两本账共用同一份实现
 （:class:`QuotaLedger` + :class:`QuotaLimits`），差别只有「读哪两列」与「写哪个前缀」——
 所以「两级同记、只有成功才记、两个错误码」这三条纪律不会在某一天只落到一条链路上。

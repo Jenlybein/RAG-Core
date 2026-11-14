@@ -220,8 +220,9 @@ def test_a_round_produces_citation_blocks_from_the_material_pool() -> None:
             "status": "supported",
         }
     ]
-    # 三个角色各一次：规划 / 判断 / 生成（ADR-0026 §5 的 3 次调用）。
-    assert outcome.model_calls == MAX_MODEL_CALLS == 3
+    # 三个角色各一次：规划 / 判断 / 生成。**没有补证，所以没有 ⑤ 复查**——
+    # ``MAX_MODEL_CALLS`` 是上限（4），典型路径仍是 3 次。
+    assert outcome.model_calls == 3 < MAX_MODEL_CALLS
     assert planner.calls == ["ResearchPlan", "CoverageJudgement"]
     assert isinstance(strong, _Scripted) and strong.calls == ["AnswerOut"]
     assert outcome.evidence_state == "complete"
@@ -357,7 +358,7 @@ def test_a_missing_strong_model_falls_back_to_the_fast_one() -> None:
     assert outcome.answer == "3 个工作日内到账。（E2）"
     assert outcome.strong_model_fallback == research.STRONG_MODEL_UNAVAILABLE
     # 未配置的那一次没有发生，所以总调用次数仍是 3（规划 + 判断 + 生成）。
-    assert outcome.model_calls == MAX_MODEL_CALLS == 3
+    assert outcome.model_calls == 3 < MAX_MODEL_CALLS
 
 
 def test_a_failing_strong_model_falls_back_to_the_fast_one() -> None:
@@ -400,7 +401,7 @@ def test_the_model_calls_never_exceed_the_ceiling_even_with_the_fallback() -> No
         strong=_Scripted(RuntimeError("强模型挂了")),
     )
 
-    assert outcome.model_calls == MAX_MODEL_CALLS_WITH_FALLBACK == 4
+    assert outcome.model_calls == 4 < MAX_MODEL_CALLS_WITH_FALLBACK == 5
     assert outcome.answer is None
     assert outcome.strong_model_fallback == research.STRONG_MODEL_FAILED
     assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]

@@ -763,10 +763,20 @@ class _Run:
         if gate is not None:
             return gate
 
-        # 补证（≤1 轮）。跑完就结束：捞到了材料 = max_rounds，白跑一趟 = no_new_evidence。
+        # 补证（≤1 轮）。捞到了材料 = max_rounds，白跑一趟 = no_new_evidence。
         added = await self._parallel(fresh, followup=True)
         self._settle_after_followup(fresh, added)
-        return StopReason.MAX_ROUNDS if sum(added) else StopReason.NO_NEW_EVIDENCE
+        if not sum(added):
+            # 一条新材料都没有：被补的要点仍是 ``none``（真缺口），没有可复查的对象。
+            return StopReason.NO_NEW_EVIDENCE
+
+        # ⑤ 复查：材料到了，但**还没有人回答过**「它支撑这些要点吗」。不复查就等于把
+        # ``unknown`` 交给一个看不见它的缺口闸（ADR-0029 实施备注第 4 条：文本级）。
+        gate = self._budget_stop()
+        if gate is not None:
+            return gate
+        await self._rejudge()
+        return StopReason.MAX_ROUNDS
 
     # ── ① 规划 ──
 
@@ -917,10 +927,12 @@ class _Run:
     ) -> None:
         """补证之后把缺口收成两种状态：仍然没有材料的（``none``）与材料到了的（``unknown``）。
 
-        「材料到了」不等于「这个要点被支撑了」：状态机固定五步、**不回头复判**，所以补回来
-        一条材料之后没有人再回答过「它支撑这个要点吗」。记成 ``supported`` 是乐观（ADR-0029
-        反对的正是这种乐观），记成 ``none`` 则会让缺口闸把一份其实有材料的答案判死——只有
-        ``unknown`` 说的是实话。
+        「材料到了」不等于「这个要点被支撑了」：所以这里**不**记 ``supported``（那是乐观，
+        ADR-0029 反对的正是这种乐观），也**不**记 ``none``（那会让缺口闸把一份其实有材料的
+        答案判死）。只有 ``unknown`` 说的是实话。
+
+        紧接着的 :meth:`_rejudge`（⑤ 复查）会把这些 ``unknown`` 送回判定——**补证没捞到任何
+        材料的那些要点仍是 ``none``，它们是真缺口，不复查。**
         """
 
         recovered = {
@@ -932,6 +944,39 @@ class _Run:
             PointVerdict(item.point_id, SUPPORT_UNKNOWN, item.evidence_ids)
             if item.status == SUPPORT_NONE and item.point_id in recovered
             else item
+            for item in self.coverage
+        ]
+
+    async def _rejudge(self) -> None:
+        """⑤ 复查：补证捞到材料之后，把「没有人再判过」的要点送回判定（#165 的结论）。
+
+        **为什么必须有这一步**：``unknown`` 两边都不落地——不进 ``gaps``（缺口闸不会为它
+        声明不足），也不代表有支撑（没人读过那条材料）。而缺口闸是**文本级**的
+        （ADR-0029 实施备注第 4 条），它看不见 ``unknown``。于是「材料到了但没判」等于
+        「这条材料既不算数也没人管」，生成步还拿着它照答。
+
+        实测依据：真实跑批里 3/8 题停在 ``max_rounds``——这个停止原因的定义就是「补证捞到了
+        新材料」，所以它们必然带至少一个 ``unknown`` 要点（37.5%）。
+
+        **合并规则是单调的**：已经 ``supported`` 的要点保住原判，不会被第二轮的 ``none``
+        翻掉。理由是材料只增不减——上一轮能从池子里读出它，这一轮池子更大，没有理由读不出。
+        反过来让第二轮有权推翻第一轮，等于给「同一份材料两次判定不一致」开了口子，而
+        ``coverage`` 里没有字段能表达这种不一致。
+
+        复查失败（模型挂了 / 判据作废）**保持 ``unknown``**：不知道比猜一边好。这一步不改变
+        停止原因——它回答的是「材料够不够支撑」，不是「为什么停」。
+        """
+
+        if not any(item.status == SUPPORT_UNKNOWN for item in self.coverage):
+            return
+        judged = await self._judge()
+        if judged is None:
+            return
+        second = {item.point_id: item for item in judged[0]}
+        self.coverage = [
+            item
+            if item.status == SUPPORT_SUPPORTED
+            else second.get(item.point_id, item)
             for item in self.coverage
         ]
 
@@ -1095,7 +1140,7 @@ class _Run:
         """进入新阶段前的唯一闸门：先看时间，再看模型调用次数。
 
         顺序固定（时间优先）：两个都越界时，报「慢」比报「调用次数多」更贴近调用方的
-        感受，而且 ``timeout`` 还能解释「为什么这次明明没到 3 次调用也停了」。
+        感受，而且 ``timeout`` 还能解释「为什么这次明明没到 4 次调用也停了」。
         """
 
         if self._elapsed() >= STAGE_BUDGET_SECONDS:

@@ -68,7 +68,7 @@ class Plan(Base):
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
     # Research 的两个**独立**配额（票 #150）：重资源调用不跟普通检索挤在同一本账上，
-    # 否则一次 30 秒、3 次模型调用的 Research 会让同一租户的检索提前撞额度。
+    # 否则一次 30 秒、3–4 次模型调用的 Research 会让同一租户的检索提前撞额度。
     # 0 表示**关闭**（与 ``research_allowed=False`` 同一个答复码），所以这两列允许为 0——
     # 这是它们与 ``retrieve_qps`` / ``retrieve_daily``（必须 ≥ 1）的刻意差别。
     research_qps: Mapped[int] = mapped_column(Integer, default=0)
@@ -186,7 +186,7 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         retrieve_qps=50,
         retrieve_daily=100000,
         # 票面：专业版 1 QPS / 100 次每天。独立两列的理由是成本——一次 Research 约 30 秒、
-        # 3 次模型调用，它不该与普通检索共享同一份额度（那会让检索提前撞上限）。
+        # 3–4 次模型调用，它不该与普通检索共享同一份额度（那会让检索提前撞上限）。
         research_qps=1,
         research_daily=100,
         max_kb=50,

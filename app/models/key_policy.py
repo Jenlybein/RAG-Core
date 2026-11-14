@@ -58,7 +58,7 @@ class KeyPolicy(Base):
     retrieve_daily: Mapped[int] = mapped_column(Integer)
     # Research 的两个独立配额（票 #150），与检索那两列**同构**（两级同记），但键前缀与
     # 计数桶都是另一本账：重资源调用不吃掉普通检索的额度。默认 0 = 关闭——新发一把 Key
-    # 不该自带一项约 30 秒、3 次模型调用的能力。
+    # 不该自带一项约 30 秒、3–4 次模型调用的能力。
     research_qps: Mapped[int] = mapped_column(Integer, default=0)
     research_daily: Mapped[int] = mapped_column(Integer, default=0)
     # 建 Key 时选定的档位；调用方改不了。改档位就是改这张配置，改完立刻生效。
