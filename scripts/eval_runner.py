@@ -1317,6 +1317,13 @@ async def _run(args: argparse.Namespace) -> int:
     docs = ev._load_corpus(layouts)
     kb_ids = [layout.kb_id for layout in layouts]
 
+    if args.reuse:
+        # --reuse 的两个守卫（#157 §②）：索引是同一代 mapping、且文档带 index_version。
+        # 各一次 ES 查询（0 次模型调用），却能在花掉 127 次查询嵌入之前拦下「旧索引会让
+        # 关键词一路静默空跑」这件事——本票之前就是跑完整轮才在 q05 上发现它归零。
+        ev._assert_query_analyzer(live.elasticsearch_index)
+        ev._assert_keyword_index_is_versioned(live.elasticsearch_index)
+
     db = ev.AsyncSessionLocal()
     try:
         if not args.reuse:

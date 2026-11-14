@@ -603,6 +603,44 @@ def _assert_query_analyzer(index_name: str) -> None:
         )
 
 
+def _assert_keyword_index_is_versioned(index_name: str) -> int:
+    """``--reuse`` 的版本化守卫：索引里有文档却一条都没 ``index_version`` → 当场停下。
+
+    ## 为什么非停不可（票 #157 §②）
+
+    查询侧按 ``(kb, 版本)`` 过滤（ADR-0025），而旧部署的评测索引是**物理索引**、
+    文档没有这一列。别名的存在让「查得到」看起来正常，实际每一条 ``term`` 过滤都不命中：
+    关键词这一路返回**空**，且不报错——ADR-0025 决策四说的「不报错但配对错了」。
+    症状是本票实测到的 ``q05``：hybrid 的 5 条全是向量那一路给的，字面题归零。
+
+    不守卫的代价很具体：整轮 127 道题的嵌入钱**先花掉**，最后才在关键词探针那里发现
+    「这一路其实没跑」——那是本票想消灭的归因成本。守卫是一次 ES 查询（0 次模型调用），
+    在花任何钱之前就能分辨「迁移漏做」与「全新环境还没建」。
+
+    返回**带版本的文档数**（放行时它等于总条数；总条数为 0 时返回 0，代表「还没有东西」）。
+    """
+
+    total = _es_count(index_name)
+    if total == 0:
+        # 全新环境：第一次构建会自己建 ``<别名>__<版本>`` 并写带版本的文档。
+        return 0
+    response = httpx.post(
+        f"{_es_base()}/{index_name}/_count",
+        json={"query": {"exists": {"field": "index_version"}}},
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    versioned = int(response.json()["count"])
+    if versioned == 0:
+        raise SystemExit(
+            f"--reuse 的索引 {index_name} 有 {total} 条文档，但一条都没有 index_version："
+            "关键词一路会静默空跑（不报错、只表现为字面题归零）。先跑 "
+            "`uv run python scripts/migrate_keyword_alias.py --alias <该索引> --execute` "
+            "把旧索引迁成别名并回填版本，或去掉 --reuse 重建。"
+        )
+    return versioned
+
+
 async def _reset_postgres(db: Any) -> dict[str, int]:
     """删掉评测租户下 manifest 列出的全部知识库的行；其他数据一行不动。
 
@@ -2188,7 +2226,10 @@ async def _run(args: argparse.Namespace) -> int:
                 raise SystemExit("--reuse 需要已有切片，但评测库里是空的；去掉 --reuse 重跑。")
             # 只复用**同代 mapping** 的索引：跨分析器版本复用会静默测出旧口径的分数。
             _assert_query_analyzer(index_name)
-            print(f"reuse    : {len(existing)} chunks (no re-indexing)")
+            # 旧索引没有 index_version 时关键词一路会静默空跑（#157 §②）：先花 0 次模型
+            # 调用把这件事问清楚，别等整轮跑完才在探针那里发现。
+            versioned = _assert_keyword_index_is_versioned(index_name)
+            print(f"reuse    : {len(existing)} chunks (no re-indexing; ES 带版本 {versioned})")
         else:
             began = time.perf_counter()
             es_state = _reset_elasticsearch(index_name)

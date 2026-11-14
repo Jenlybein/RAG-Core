@@ -597,6 +597,12 @@ class _EsResponse:
     def json(self) -> object:
         return self._payload
 
+    def raise_for_status(self) -> None:
+        """与 ``httpx.Response`` 同口径：>=400 才抛（用例只构 200，延迟到需要时再模拟）。"""
+
+        if self.status_code >= 400:
+            raise RuntimeError(f"HTTP {self.status_code}: {self.text}")
+
 
 def test_reset_deletes_every_physical_version_behind_the_alias(
     monkeypatch: pytest.MonkeyPatch,
@@ -652,6 +658,84 @@ def test_reset_refuses_a_name_that_is_not_the_eval_index() -> None:
 
     with pytest.raises(SystemExit, match="eval"):
         eval_retrieval._reset_elasticsearch("rag_chunks")
+
+
+# ──────────────────────────────── --reuse 守卫：旧索引会静默空跑，必须当场停下
+
+
+def _patch_es_counts(
+    monkeypatch: pytest.MonkeyPatch, *, total: int, versioned: int
+) -> list[dict[str, object]]:
+    """把 ``GET .../_count`` 与 ``POST .../_count``（exists 过滤）换成固定读数。"""
+
+    posts: list[dict[str, object]] = []
+
+    def fake_get(url: str, **kwargs: object) -> _EsResponse:
+        return _EsResponse(200, {"count": total})
+
+    def fake_post(url: str, **kwargs: object) -> _EsResponse:
+        posts.append(dict(kwargs.get("json") or {}))
+        return _EsResponse(200, {"count": versioned})
+
+    monkeypatch.setattr(eval_retrieval.httpx, "get", fake_get)
+    monkeypatch.setattr(eval_retrieval.httpx, "post", fake_post)
+    return posts
+
+
+def test_reuse_guard_refuses_an_unversioned_keyword_index(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """索引里有 469 条、却一条都没 ``index_version`` → 当场停下，别等花了 128 次调用才发现。
+
+    这正是本票之前的现场：查询按 ``(库, 版本)`` 过滤，而旧索引的文档没有这一列，于是
+    关键词这一路**静默空跑**（ADR-0025 决策四）——不报错，只是 `q05` 这种字面题归零。
+    ``--reuse`` 的守卫要在这里响，指向迁移脚本，而不是让整轮跑完再归因。
+    """
+
+    posts = _patch_es_counts(monkeypatch, total=469, versioned=0)
+
+    with pytest.raises(SystemExit, match="index_version"):
+        eval_retrieval._assert_keyword_index_is_versioned("rag_chunks_eval")
+
+    assert posts and posts[0]["query"]["exists"]["field"] == "index_version"  # type: ignore[index]
+
+
+def test_reuse_guard_accepts_a_versioned_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """全部文档都带版本 → 放行（这就是本票迁移之后的状态：469/469）。"""
+
+    _patch_es_counts(monkeypatch, total=469, versioned=469)
+
+    assert eval_retrieval._assert_keyword_index_is_versioned("rag_chunks_eval") == 469
+
+
+def test_reuse_guard_allows_an_empty_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """索引还不存在 / 一条都没有：那是「全新环境还没建」，不是迁移漏做，放行且不发第二条请求。"""
+
+    posts = _patch_es_counts(monkeypatch, total=0, versioned=0)
+
+    assert eval_retrieval._assert_keyword_index_is_versioned("rag_chunks_eval") == 0
+    assert posts == []
+
+
+def test_both_reuse_paths_call_the_keyword_version_guard() -> None:
+    """守卫必须接在**两个** ``--reuse`` 入口上：只写函数不接线，等于没做。
+
+    接线位置也要在「花查询嵌入之前」——接线挪到跑完再查，就退化成事后归因，
+    本票要消的正是那笔钱。所以这里扫源码：两个脚本的 reuse 分支都要出现调用。
+    """
+
+    retrieval = _source(REPO_ROOT / "scripts" / "eval_retrieval.py")
+    runner = _source(REPO_ROOT / "scripts" / "eval_runner.py")
+
+    assert retrieval.count("_assert_keyword_index_is_versioned") >= 2, (
+        "eval_retrieval 里要有定义 + reuse 分支的调用"
+    )
+    assert "_assert_keyword_index_is_versioned(live.elasticsearch_index)" in runner, (
+        "eval_runner 的 --reuse 路径也要接同一个守卫"
+    )
+    # 两个入口的 reuse 分支都还保留 mapping 守卫（索引代际不同也不能复用）。
+    assert "_assert_query_analyzer(index_name)" in retrieval
+    assert "_assert_query_analyzer(live.elasticsearch_index)" in runner
 
 
 # ────────────────────────────────────────────────── 结构守卫：别写回同步
