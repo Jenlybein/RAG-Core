@@ -64,7 +64,6 @@ def _policy(
     rerank_allowed: bool = True,
     query_rewrite_allowed: bool = True,
     research_allowed: bool = False,
-    orchestration_allowed: bool = False,
     # 限额默认取「三档都容得下」的最小值：本文件测的是档位与能力，不是数值门禁；
     # 数值那几条用例自己覆盖这三个字段。Research 的两个配额同理取 0（= 关闭）——
     # free 与 standard 的种子就是 0，写成开发身份那档的 1/100 会让本文件的每次构造
@@ -87,7 +86,6 @@ def _policy(
         rerank_allowed=rerank_allowed,
         query_rewrite_allowed=query_rewrite_allowed,
         research_allowed=research_allowed,
-        orchestration_allowed=orchestration_allowed,
         retrieve_qps=retrieve_qps,
         retrieve_daily=retrieve_daily,
         research_qps=research_qps,
@@ -108,15 +106,15 @@ def _plan(code: str, **overrides: Any) -> PlanSpec:
         # 三档的全部内容写在票面上，这里逐字抄一遍：任何一个预设被改动，这条就变红。
         (
             PROFILE_SPEED,
-            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False, orchestration=False),
+            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False),
         ),
         (
             PROFILE_BALANCED,
-            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False, orchestration=False),
+            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False),
         ),
         (
             PROFILE_QUALITY,
-            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True, orchestration=False),
+            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True),
         ),
     ],
 )
@@ -169,9 +167,7 @@ def test_custom_reads_its_manual_parameters() -> None:
         )
     )
 
-    assert chain == ProfileChain(
-        mode="bm25", top_k=3, rerank=True, rewrite=True, orchestration=False
-    )
+    assert chain == ProfileChain(mode="bm25", top_k=3, rerank=True, rewrite=True)
 
 
 def test_custom_falls_back_per_key_to_the_deployment_defaults(
@@ -189,9 +185,7 @@ def test_custom_falls_back_per_key_to_the_deployment_defaults(
 
     chain = profile_chain_of(_policy(profile=PROFILE_CUSTOM, custom_options=(("mode", "vector"),)))
 
-    assert chain == ProfileChain(
-        mode="vector", top_k=7, rerank=True, rewrite=True, orchestration=False
-    )
+    assert chain == ProfileChain(mode="vector", top_k=7, rerank=True, rewrite=True)
 
 
 # ───────────────────────────────────────────── 五道门：顺序、拒绝与裁剪
@@ -447,7 +441,6 @@ def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> 
         "rewrite": True,
         # 编排（#147）：与重排 / 改写同一列、同一个来源。它出现在回显里的前提是
         # 「这个值真的改变了结果」——#147 之前它没有消费者，所以当时被推迟。
-        "orchestration": False,
         "kb_count": 2,
         "clipped": [],
     }
@@ -485,7 +478,6 @@ def test_an_unresolved_options_object_has_no_echo() -> None:
         expand_table_rows=True,
         rerank=False,
         rewrite=False,
-        orchestration=False,
     )
 
     assert options.tenant_policy is None
@@ -807,7 +799,6 @@ def test_the_response_carries_the_tenant_policy_it_actually_ran(entry: _Entry) -
         "top_k": 5,
         "rerank": False,
         "rewrite": False,
-        "orchestration": False,
         "kb_count": 1,
         "clipped": [],
     }

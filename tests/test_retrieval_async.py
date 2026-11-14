@@ -312,7 +312,6 @@ async def _cancelled_retrieval(
         expand_table_rows=False,
         rerank=False,
         rewrite=False,
-        orchestration=False,
     )
     task = asyncio.create_task(
         service.retrieve(

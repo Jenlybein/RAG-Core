@@ -56,18 +56,12 @@ def test_plan_patch_is_empty_when_the_plan_already_matches() -> None:
 
 
 def test_plan_patch_lists_only_the_columns_that_differ() -> None:
-    """迁移回填的是 0：第一次跑必须把 Research 那两列与编排位列出来。"""
+    """迁移回填的是 0：第一次跑必须把 Research 那两列列出来。"""
 
-    patch = prep.plan_changes(
-        _plan_row(orchestration_allowed=False, research_qps=0, research_daily=0)
-    )
+    patch = prep.plan_changes(_plan_row(research_qps=0, research_daily=0))
 
     assert patch.changed is True
-    assert patch.changes == {
-        "orchestration_allowed": True,
-        "research_qps": 1,
-        "research_daily": 100,
-    }
+    assert patch.changes == {"research_qps": 1, "research_daily": 100}
 
 
 def test_policy_patch_requires_exactly_one_knowledge_base() -> None:
@@ -171,8 +165,8 @@ def test_the_snapshot_names_the_ingest_and_build_versions() -> None:
     assert versions["build_version"] == prep.BUILD_VERSION == "v2"
 
 
-@pytest.mark.parametrize("switch", ("orchestration_allowed", "research_qps", "research_daily"))
-def test_the_pro_plan_targets_are_the_three_columns_the_spec_names(switch: str) -> None:
-    """#153 §① 点名的就是这三列；它们不许悄悄变（变了两份报告的 on/off 都跑不起来）。"""
+@pytest.mark.parametrize("switch", ("research_qps", "research_daily"))
+def test_the_pro_plan_targets_are_the_two_columns_the_spec_names(switch: str) -> None:
+    """#153 §① 点名的 Research 两列；它们不许悄悄变（变了两份报告的 on/off 都跑不起来）。"""
 
     assert switch in prep.PRO_PLAN_TARGETS

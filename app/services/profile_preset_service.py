@@ -55,7 +55,6 @@ def _spec_of(row: ProfilePreset) -> ProfilePresetSpec:
         top_k=row.top_k,
         rerank=bool(row.rerank),
         rewrite=bool(row.rewrite),
-        orchestration=bool(row.orchestration),
     )
 
 
@@ -131,7 +130,6 @@ async def patch_preset(
     top_k: int | None = None,
     rerank: bool | None = None,
     rewrite: bool | None = None,
-    orchestration: bool | None = None,
     actor: ConsoleIdentity | None,
 ) -> dict[str, Any]:
     """改一档的参数：**部分更新**（没发的字段不动）。
@@ -158,7 +156,6 @@ async def patch_preset(
             top_k=seed.top_k,
             rerank=seed.rerank,
             rewrite=seed.rewrite,
-            orchestration=seed.orchestration,
         )
         db.add(row)
 
@@ -168,7 +165,6 @@ async def patch_preset(
         "top_k": row.top_k,
         "rerank": bool(row.rerank),
         "rewrite": bool(row.rewrite),
-        "orchestration": bool(row.orchestration),
     }
 
     # 逐字段只写发来的：`None` 表示「这次不动它」，与 KeyPolicyPatchRequest 同一条约定。
@@ -180,8 +176,6 @@ async def patch_preset(
         row.rerank = rerank
     if rewrite is not None:
         row.rewrite = rewrite
-    if orchestration is not None:
-        row.orchestration = orchestration
 
     after = {
         "profile": profile,
@@ -189,7 +183,6 @@ async def patch_preset(
         "top_k": row.top_k,
         "rerank": bool(row.rerank),
         "rewrite": bool(row.rewrite),
-        "orchestration": bool(row.orchestration),
     }
     changed = sorted(key for key in before if before[key] != after[key])
 

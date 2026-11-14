@@ -679,7 +679,6 @@ def _options() -> RetrievalOptions:
         rerank=False,
         rewrite=False,
         # #146 的第三层开关也是必填（默认关闭）：两票合并时这条构造点漏了它。
-        orchestration=False,
     )
 
 

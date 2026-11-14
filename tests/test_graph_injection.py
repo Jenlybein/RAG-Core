@@ -736,7 +736,6 @@ def _options(*, mode: str = "hybrid", rerank: bool = False) -> RetrievalOptions:
         expand_table_rows=False,
         rerank=rerank,
         rewrite=False,
-        orchestration=False,
     )
 
 
