@@ -47,6 +47,9 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
+from typing import NamedTuple
+
+from app.models.document_version import DOCUMENT_VERSION_CURRENT
 
 #: 检查 1 的名字：每个切片的稿号都能找到版本行。
 CHECK_CHUNK_VERSION_ROWS = "chunk-version-row"
@@ -67,8 +70,20 @@ KEYWORD_REASON_ABSENT = "keyword search capability is not available"
 #: 不可判定的原因之二：能力在，这一次读不到（集群故障 / 超时）。这是运维问题。
 KEYWORD_REASON_FAILED = "keyword search read failed"
 
-#: 版本行的状态取值（与 ``app.models.document_version`` 同一份词表）。
-_STATUS_CURRENT = "current"
+class VersionRow(NamedTuple):
+    """一篇文档的**一行版本行读数**：对账只读这三样，不搬整行 ORM 对象进来。
+
+    用具名结构而不是 ``(稿号, 状态, 正文)`` 三元组：三条判据都要读它，靠位置取值时
+    ``row[1]`` 在读者眼里既可能是稿号也可能是状态——写反了类型仍然对，而这是一条
+    「哪两条真值本该相等」的判据，错一位就是把两件事比在一起。
+
+    状态取值直接沿用模型层的词表（:data:`app.models.document_version.DOCUMENT_VERSION_CURRENT`），
+    不在这里另抄一份字面量：抄一份就有第二个「什么算当前稿」的答案。
+    """
+
+    version: int
+    status: str
+    content: str
 
 
 @dataclass(frozen=True)
@@ -77,7 +92,7 @@ class DocumentFacts:
 
     字段全是「已经取回来的事实」，判据不做任何 I/O，也不去补缺失值：
 
-    ``version_rows``      ``(稿号, 状态, 正文)`` 三元组，一篇的全部版本行
+    ``version_rows``      :class:`VersionRow`（稿号 / 状态 / 正文），一篇的全部版本行
     ``chunk_versions``    ``(稿号, 这一稿有几片)``，按稿号分组后的切片读数
     ``keyword_current_versions``
                           关键词索引里标着「当前稿」的**稿号集合**；``None`` = 这一维
@@ -87,7 +102,7 @@ class DocumentFacts:
     document_id: str
     pointer: int
     content: str
-    version_rows: tuple[tuple[int, str, str], ...]
+    version_rows: tuple[VersionRow, ...]
     chunk_versions: tuple[tuple[int, int], ...]
     keyword_current_versions: tuple[int, ...] | None
 
@@ -98,10 +113,12 @@ class DocumentFacts:
         return sum(count for _version, count in self.chunk_versions)
 
     @property
-    def current_rows(self) -> tuple[tuple[int, str, str], ...]:
+    def current_rows(self) -> tuple[VersionRow, ...]:
         """状态是 ``current`` 的那些版本行。"""
 
-        return tuple(row for row in self.version_rows if row[1] == _STATUS_CURRENT)
+        return tuple(
+            row for row in self.version_rows if row.status == DOCUMENT_VERSION_CURRENT
+        )
 
     def chunks_of(self, version: int) -> int:
         """第 ``version`` 稿有几片（没读过就是 0）。"""
@@ -173,7 +190,7 @@ def chunk_version_row_disagreements(facts: DocumentFacts) -> tuple[Discrepancy, 
     空文档），而切片指向一稿谁也读不到则意味着这一片永远查不回来是哪一稿的。
     """
 
-    known = {version for version, _status, _content in facts.version_rows}
+    known = {row.version for row in facts.version_rows}
     missing = sorted(version for version, _count in facts.chunk_versions if version not in known)
     if not missing:
         return ()
@@ -198,7 +215,7 @@ def current_draft_disagreements(facts: DocumentFacts) -> tuple[Discrepancy, ...]
       篇文档给出两个答案，而检索永远不会报错，它只是查另一稿。
     """
 
-    current = sorted(version for version, _status, _content in facts.current_rows)
+    current = sorted(row.version for row in facts.current_rows)
     if len(current) != 1:
         return (
             Discrepancy(
@@ -231,7 +248,8 @@ def content_snapshot_disagreements(facts: DocumentFacts) -> tuple[Discrepancy, .
     current = facts.current_rows
     if len(current) != 1:
         return ()
-    version, _status, body = current[0]
+    current_row = current[0]
+    body = current_row.content
     if facts.content == body:
         return ()
     offset = _first_difference(facts.content, body)
@@ -239,7 +257,7 @@ def content_snapshot_disagreements(facts: DocumentFacts) -> tuple[Discrepancy, .
         Discrepancy(
             document_id=facts.document_id,
             detail=(
-                f"文档正文与第 {version} 稿正文不一致"
+                f"文档正文与第 {current_row.version} 稿正文不一致"
                 f"（documents.content {len(facts.content)} 字符 / 版本行 {len(body)} 字符，"
                 f"第 {offset} 个字符起不同）"
             ),
@@ -392,6 +410,7 @@ __all__ = [
     "Discrepancy",
     "DocumentFacts",
     "ReconcileReport",
+    "VersionRow",
     "chunk_version_row_disagreements",
     "content_snapshot_disagreements",
     "current_draft_disagreements",

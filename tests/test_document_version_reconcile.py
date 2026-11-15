@@ -55,6 +55,7 @@ from app.services.document_version_reconcile import (
     KEYWORD_STATE_CHECKED,
     KEYWORD_STATE_UNDECIDABLE,
     DocumentFacts,
+    VersionRow,
 )
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
@@ -76,13 +77,17 @@ def _facts(
 
     `chunk_versions` 是 ``(稿号, 这一稿有几片)`` 的列表（仓储就是按这对值分组的），
     `keyword_current_versions` 是关键词索引里标着「当前稿」的稿号集合（``None`` = 不可判定）。
+
+    `version_rows` 用三个一组的字面量写最省事（``(稿号, 状态, 正文)``），但**读数本身是
+    :class:`VersionRow`**——判据靠字段名取值，不靠位置：``row[1]`` 在那种写法里既可能是
+    稿号也可能是状态，写反了类型仍然对。
     """
 
     return DocumentFacts(
         document_id=document_id,
         pointer=pointer,
         content=content,
-        version_rows=tuple(version_rows),
+        version_rows=tuple(VersionRow(*row) for row in version_rows),
         chunk_versions=tuple(chunk_versions),
         keyword_current_versions=(
             None if keyword_current_versions is None else tuple(keyword_current_versions)

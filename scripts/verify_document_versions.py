@@ -63,6 +63,7 @@ from app.services.document_version_reconcile import (
     KEYWORD_STATE_CHECKED,
     DocumentFacts,
     ReconcileReport,
+    VersionRow,
     keyword_state_of,
     reconcile,
 )
@@ -145,10 +146,12 @@ def _facts_of(
     就是空元组——「查过、这一篇一篇都没标当前稿」，那是信息项而不是不可判定。
     """
 
-    versions_by_document: dict[str, list[tuple[int, str, str]]] = {}
+    versions_by_document: dict[str, list[VersionRow]] = {}
     for row in version_rows:
         versions_by_document.setdefault(row.document_id, []).append(
-            (int(row.version), str(row.status), str(row.content or ""))
+            VersionRow(
+                version=int(row.version), status=str(row.status), content=str(row.content or "")
+            )
         )
 
     counts_by_document: dict[str, list[tuple[int, int]]] = {}
