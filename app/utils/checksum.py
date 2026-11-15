@@ -51,9 +51,7 @@ def checksum_of(text: str) -> str:
     稳定且众所周知的摘要，对账与判重都用得上。
     """
 
-    digest = hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
-    assert len(digest) == CHECKSUM_HEX_LENGTH, "sha256 的十六进制摘要恒为 64 位"
-    return digest
+    return hashlib.sha256(normalize_text(text).encode("utf-8")).hexdigest()
 
 
 __all__ = ["CHECKSUM_HEX_LENGTH", "checksum_of", "normalize_text"]
