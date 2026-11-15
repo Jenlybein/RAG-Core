@@ -34,9 +34,7 @@ TENANT_ID = "tenant-a"
 
 
 def _payload() -> dict:
-    return build_current_draft_update(
-        document_id=DOC_ID, tenant_id=TENANT_ID, doc_version=3
-    )
+    return build_current_draft_update(document_id=DOC_ID, tenant_id=TENANT_ID, doc_version=3)
 
 
 # ── 请求体 ──
@@ -108,19 +106,13 @@ def test_the_provider_updates_through_the_alias_and_refreshes() -> None:
 
     client = _FakeClient()
 
-    asyncio.run(
-        _es_provider(client).mark_current_draft(
-            DOC_ID, tenant_id=TENANT_ID, doc_version=3
-        )
-    )
+    asyncio.run(_es_provider(client).mark_current_draft(DOC_ID, tenant_id=TENANT_ID, doc_version=3))
 
     assert len(client.calls) == 1
     call = client.calls[0]
     assert call["index"] == "rag_chunks", "别名，不是物理索引名"
     assert call["refresh"] is True, "上传完立刻提问必须能查到"
-    assert call["conflicts"] == "proceed", (
-        "并发重建会撞版本冲突：整批失败等于把这次翻转丢给运气"
-    )
+    assert call["conflicts"] == "proceed", "并发重建会撞版本冲突：整批失败等于把这次翻转丢给运气"
     assert call["script"]["params"] == {"doc_version": 3}
 
 
@@ -131,11 +123,7 @@ def test_a_missing_index_is_a_honest_no_op() -> None:
 
     client = _FakeClient(error=NotFoundError("missing", None, None))
 
-    asyncio.run(
-        _es_provider(client).mark_current_draft(
-            DOC_ID, tenant_id=TENANT_ID, doc_version=3
-        )
-    )
+    asyncio.run(_es_provider(client).mark_current_draft(DOC_ID, tenant_id=TENANT_ID, doc_version=3))
 
 
 def test_a_noop_provider_has_nothing_to_flip() -> None:
@@ -145,10 +133,7 @@ def test_a_noop_provider_has_nothing_to_flip() -> None:
 
     assert provider.available is False
     assert (
-        asyncio.run(
-            provider.mark_current_draft(DOC_ID, tenant_id=TENANT_ID, doc_version=3)
-        )
-        is None
+        asyncio.run(provider.mark_current_draft(DOC_ID, tenant_id=TENANT_ID, doc_version=3)) is None
     )
 
 
@@ -193,9 +178,7 @@ def test_an_unavailable_provider_is_not_called_at_all(monkeypatch) -> None:
         async def mark_current_draft(self, *_args, **_kwargs) -> None:
             calls.append("called")
 
-    monkeypatch.setattr(
-        keyword_draft, "get_keyword_search_provider", lambda: _Unavailable()
-    )
+    monkeypatch.setattr(keyword_draft, "get_keyword_search_provider", lambda: _Unavailable())
 
     asyncio.run(
         keyword_draft.flip_current_draft_after_commit(

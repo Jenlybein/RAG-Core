@@ -228,9 +228,7 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
         doc.index_claimed_at = None
         return True
 
-    monkeypatch.setattr(
-        document_repository, "prepare_for_indexing_async", _prepare_for_indexing
-    )
+    monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_for_indexing)
 
     async def _get_by_id_for_tenant(db: Any, document_id: str, *, tenant_id: str) -> Any:
         # 重建入口按 id + 租户取行（真实实现是一条 SELECT）；内存会话只认得自己的行表。
@@ -239,9 +237,7 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
             return None
         return doc
 
-    monkeypatch.setattr(
-        document_repository, "get_by_id_for_tenant_async", _get_by_id_for_tenant
-    )
+    monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _get_by_id_for_tenant)
 
     def _consume_index_task(**kwargs: Any) -> None:
         """投递替身：把任务投进**真的** Worker 常驻循环（与生产同形，不另起线程）。

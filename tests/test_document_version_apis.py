@@ -110,9 +110,7 @@ class _DbObservingPublisher:
 
 
 @pytest.fixture
-def api(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> Iterator[SimpleNamespace]:
+def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNamespace]:
     """离线接缝：一个 SQLite 文件、真表、按需播种，以及可改身份的当前 Key。"""
 
     db_path = tmp_path / "docver.db"
@@ -508,9 +506,7 @@ def test_an_unknown_field_is_rejected_instead_of_ignored(api: SimpleNamespace) -
 
     _one_version_ready(api)
 
-    response = api.client.post(
-        VERSIONS_URL, json={"content": NEW_CONTENT, "version": 99}
-    )
+    response = api.client.post(VERSIONS_URL, json={"content": NEW_CONTENT, "version": 99})
 
     assert response.json()["code"] == int(Codes.REQUEST_VALIDATION_ERROR)
 
@@ -538,6 +534,7 @@ def test_a_file_submission_is_parsed_and_keeps_its_own_source_copy(
 
 
 # ── 列版本 ──
+
 
 def test_listing_versions_is_newest_first_and_hides_the_content_by_default(
     api: SimpleNamespace,
@@ -617,6 +614,7 @@ def test_listing_versions_of_a_document_without_rows_is_an_empty_list(
     assert body["code"] == 0
     assert body["data"] == {"document_id": DOC_ID, "current_version": 1, "items": []}
 
+
 def test_two_consecutive_submissions_get_consecutive_draft_numbers(
     api: SimpleNamespace,
 ) -> None:
@@ -644,6 +642,7 @@ def test_two_consecutive_submissions_get_consecutive_draft_numbers(
         (3, "current", "第二次修改。"),
     ]
     assert api.document().current_version == 3
+
 
 # ── 删文档时版本行的源文件也要走 ──
 

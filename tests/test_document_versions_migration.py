@@ -68,12 +68,8 @@ EXPECTED_VERSION_COLUMNS = (
 )
 
 #: 手写字面量的 sha256（.NET SHA256 / UTF-8），与 ``tests/test_checksum.py`` 同一份来源。
-SHA256_OF_REFUND_SENTENCE = (
-    "24a0752703eb616c007ab44fcc4241c42e0ecdc0409a84767f9279da79807cd2"
-)
-SHA256_OF_EMPTY_TEXT = (
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-)
+SHA256_OF_REFUND_SENTENCE = "24a0752703eb616c007ab44fcc4241c42e0ecdc0409a84767f9279da79807cd2"
+SHA256_OF_EMPTY_TEXT = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 REFUND_SENTENCE = "退款流程见附件。"
 
@@ -221,9 +217,7 @@ def _before_change(seed: tuple[str, ...] = _GOOD_SEED) -> sa.engine.Connection:
     return connection
 
 
-def _migrate(
-    direction: str, seed: tuple[str, ...] = _GOOD_SEED
-) -> sa.engine.Connection:
+def _migrate(direction: str, seed: tuple[str, ...] = _GOOD_SEED) -> sa.engine.Connection:
     """把本票的迁移跑一遍；``downgrade`` 总是**先升后降**（真实用法就是如此）。"""
 
     connection = _before_change(seed)
@@ -255,9 +249,7 @@ def _version_rows(connection: sa.engine.Connection) -> list[Any]:
 
 
 def _chunk_doc_versions(connection: sa.engine.Connection) -> dict[str, int]:
-    rows = connection.exec_driver_sql(
-        "select id, doc_version from chunks order by id"
-    ).fetchall()
+    rows = connection.exec_driver_sql("select id, doc_version from chunks order by id").fetchall()
     return {row[0]: row[1] for row in rows}
 
 
@@ -307,10 +299,7 @@ def test_it_chains_onto_the_previous_head_and_stays_in_the_single_chain() -> Non
 def test_upgrade_creates_the_versions_table_with_the_enumerated_columns() -> None:
     connection = _migrate("upgrade")
 
-    columns = [
-        column["name"]
-        for column in sa.inspect(connection).get_columns("document_versions")
-    ]
+    columns = [column["name"] for column in sa.inspect(connection).get_columns("document_versions")]
     assert columns == list(EXPECTED_VERSION_COLUMNS)
 
 
@@ -345,9 +334,9 @@ def test_upgrade_gives_every_chunk_a_real_doc_version_column() -> None:
     connection = _migrate("upgrade")
 
     assert _chunk_columns(connection) == list(AFTER_CHUNK_COLUMNS)
-    column = {
-        spec["name"]: spec for spec in sa.inspect(connection).get_columns("chunks")
-    }["doc_version"]
+    column = {spec["name"]: spec for spec in sa.inspect(connection).get_columns("chunks")}[
+        "doc_version"
+    ]
     assert column["nullable"] is False
     assert str(column["default"]) == "'1'"
 
@@ -615,9 +604,7 @@ def test_the_migration_changes_no_rows_visible_to_the_existing_queries() -> None
     after = [connection.exec_driver_sql(query).fetchall() for query in _GATE_QUERIES]
 
     assert after == before, "迁移不许改变任何一行的可见性（条数或分组）"
-    assert all(result for result in before), (
-        "门禁语句自己得先返回点什么，否则这条用例什么都没验"
-    )
+    assert all(result for result in before), "门禁语句自己得先返回点什么，否则这条用例什么都没验"
 
 
 # ────────────────────────────────────────────────────────────────────── 测试替身

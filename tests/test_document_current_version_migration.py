@@ -289,9 +289,7 @@ def test_downgrade_keeps_the_stored_value() -> None:
 def test_downgrade_keeps_the_not_null_and_the_default() -> None:
     connection = _migrate("downgrade")
 
-    column = {c["name"]: c for c in sa.inspect(connection).get_columns("documents")}[
-        "doc_version"
-    ]
+    column = {c["name"]: c for c in sa.inspect(connection).get_columns("documents")}["doc_version"]
     assert column["nullable"] is False
     assert str(column["default"]) == "'1'"
 
@@ -323,6 +321,4 @@ def test_the_migration_never_touches_the_schema_beyond_that_one_column(
 
 def _before_change_columns() -> dict[str, Any]:
     connection = _before_change()
-    return {
-        column["name"]: column for column in sa.inspect(connection).get_columns("documents")
-    }
+    return {column["name"]: column for column in sa.inspect(connection).get_columns("documents")}

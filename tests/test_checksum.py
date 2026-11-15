@@ -20,17 +20,11 @@ import pytest
 from app.utils.checksum import CHECKSUM_HEX_LENGTH, checksum_of, normalize_text
 
 #: 手写字面量的 sha256（.NET SHA256 / UTF-8），故意不经过本模块算出来。
-SHA256_OF_REFUND_SENTENCE = (
-    "24a0752703eb616c007ab44fcc4241c42e0ecdc0409a84767f9279da79807cd2"
-)
+SHA256_OF_REFUND_SENTENCE = "24a0752703eb616c007ab44fcc4241c42e0ecdc0409a84767f9279da79807cd2"
 #: ``"é"`` 的 NFC 单码位形态（U+00E9）的 sha256，同上。
-SHA256_OF_LATIN_SMALL_E_ACUTE = (
-    "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c"
-)
+SHA256_OF_LATIN_SMALL_E_ACUTE = "4a99557e4033c3539de2eb65472017cad5f9557f7a0625a09f1c3f6e2ba69c4c"
 #: 空正文的 sha256——空正文是合法正文（没有切片的失败文档），必须有一个稳定的值。
-SHA256_OF_EMPTY_TEXT = (
-    "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
-)
+SHA256_OF_EMPTY_TEXT = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 REFUND_SENTENCE = "退款流程见附件。"
 
@@ -60,7 +54,10 @@ def test_unicode_is_folded_to_nfc() -> None:
 def test_inner_whitespace_and_case_are_left_alone() -> None:
     """只磨首尾与换行：中间的空格、缩进、大小写都算内容。"""
 
-    assert normalize_text("  第一段\n\n    缩进的两行  \n第二段  ") == "第一段\n\n    缩进的两行  \n第二段"
+    assert (
+        normalize_text("  第一段\n\n    缩进的两行  \n第二段  ")
+        == "第一段\n\n    缩进的两行  \n第二段"
+    )
 
 
 def test_empty_and_blank_text_normalize_to_empty_string() -> None:

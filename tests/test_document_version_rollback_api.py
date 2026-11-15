@@ -62,9 +62,7 @@ class _DbObservingPublisher:
         try:
             with engine.connect() as connection:
                 pointer = connection.execute(
-                    select(Document.current_version).where(
-                        Document.id == kwargs["document_id"]
-                    )
+                    select(Document.current_version).where(Document.id == kwargs["document_id"])
                 ).scalar_one()
         finally:
             engine.dispose()
@@ -222,9 +220,7 @@ def test_rollback_answers_with_the_envelope_and_leaves_an_enqueued_rebuild(
 
     assert [call["kwargs"]["doc_version"] for call in api.publisher.calls] == [1]
     assert api.publisher.calls[0]["task_id"] == f"doc:{DOC_ID}"
-    assert api.publisher.seen == [{"pointer": 1}], (
-        "投递发生在提交之后：它读到的已经是新指针"
-    )
+    assert api.publisher.seen == [{"pointer": 1}], "投递发生在提交之后：它读到的已经是新指针"
 
 
 # ── 四种拒绝 ──

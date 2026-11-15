@@ -205,9 +205,7 @@ async def test_archiving_keeps_the_new_draft_current_and_touches_only_current_ro
         _version(version_id="vb2", document_id="doc-b", version=2),
     )
 
-    await document_version_repository.archive_current_except(
-        version_db, "doc-a", keep=3
-    )
+    await document_version_repository.archive_current_except(version_db, "doc-a", keep=3)
 
     rows = (
         await version_db.execute(
@@ -247,16 +245,12 @@ async def test_locking_reads_the_row_and_misses_other_tenants(version_db: AsyncS
 
     await _seed(version_db, _document(document_id="doc-1"))
 
-    locked = await document_repository.lock_for_version(
-        version_db, "doc-1", tenant_id="tenant-a"
-    )
+    locked = await document_repository.lock_for_version(version_db, "doc-1", tenant_id="tenant-a")
     assert locked is not None
     assert locked.id == "doc-1"
 
     assert (
-        await document_repository.lock_for_version(
-            version_db, "doc-1", tenant_id="tenant-b"
-        )
+        await document_repository.lock_for_version(version_db, "doc-1", tenant_id="tenant-b")
         is None
     )
 

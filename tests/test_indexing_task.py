@@ -751,9 +751,7 @@ def test_task_passes_the_draft_number_from_the_payload_to_the_pipeline(
 
     _patch_task_runtime(monkeypatch, service=_RecordingService(), session=session)
 
-    _run_indexing(
-        _FakeTask(), DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, doc_version=3
-    )
+    _run_indexing(_FakeTask(), DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, doc_version=3)
 
     assert observed == [3], "载荷带的稿号必须原样进流水线"
 
@@ -984,6 +982,7 @@ def test_service_never_fabricates_a_version_row_for_an_older_draft(
 
     assert _added_versions(env) == []
 
+
 # ------------------------------------ 重解析写回同一稿（#182：正文真值只有一个地方）
 #
 # 不变量：**重解析之后，这一稿的版本行正文就是本次解析结果，文档行正文也是它**。
@@ -1049,6 +1048,7 @@ def test_reparse_writes_the_parsed_text_back_to_the_same_draft_row(
     assert env.document.content == REPARSED_TEXT, "文档行跟着当前稿同步"
     assert env.session.commits == 2, "写回不额外提交：它是 Tx2 的一部分"
 
+
 def test_reparse_reads_the_source_file_of_the_target_draft(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
@@ -1107,6 +1107,7 @@ def test_reparse_reads_the_source_file_of_the_target_draft(
     assert version_row.content == "# 第一稿\n\n第一稿的正文", "读的是这一稿自己的源文件"
     assert "第二稿" not in version_row.content, "读到了另一稿的字节"
     assert env.document.content == "第一稿的旧正文", "旧稿的产物不覆盖文档行"
+
 
 def test_reparse_fails_on_a_draft_without_a_source_file_and_writes_nothing(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path

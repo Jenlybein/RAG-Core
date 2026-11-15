@@ -295,10 +295,7 @@ def test_the_window_floor_is_the_current_draft_minus_the_retain_count(
     任何按 ``created_at`` 收窄的改法都会在这里露出来。
     """
 
-    assert (
-        document_version_service.retention_floor(current_version, retain)
-        == expected_floor
-    )
+    assert document_version_service.retention_floor(current_version, retain) == expected_floor
 
 
 def test_the_default_window_retains_three_drafts() -> None:
@@ -412,9 +409,7 @@ async def test_five_drafts_shrink_to_the_last_three(retention_db: AsyncSession) 
         (4, "archived"),
         (5, "current"),
     ]
-    assert [call["doc_version"] for call in vector.calls] == [2, 1], (
-        "向量存储里这一稿的切片要清掉"
-    )
+    assert [call["doc_version"] for call in vector.calls] == [2, 1], "向量存储里这一稿的切片要清掉"
     assert [call["doc_version"] for call in keyword.calls] == [2, 1], (
         "关键词存储是第二个存储，同样要清"
     )
@@ -467,9 +462,7 @@ async def test_chunks_are_deleted_before_the_version_rows(retention_db: AsyncSes
             retention_db, document=document, retain=3, stores=[store]
         )
 
-    assert [len(rows) for rows in store.rows_at_call] == [5, 5], (
-        "清切片时版本行必须还没删"
-    )
+    assert [len(rows) for rows in store.rows_at_call] == [5, 5], "清切片时版本行必须还没删"
 
 
 @pytest.mark.asyncio
@@ -839,9 +832,7 @@ def test_the_exit_code_follows_the_shared_rule(
 ) -> None:
     """有失败且一篇都没清成才退 1；部分失败仍算跑过（``_ops_common.exit_code_for``）。"""
 
-    assert (
-        purge_script.exit_code_for(purge_script.PurgeStats(**stats)) == expected
-    )
+    assert purge_script.exit_code_for(purge_script.PurgeStats(**stats)) == expected
 
 
 def _patch_session(
@@ -895,9 +886,7 @@ def test_main_apply_passes_the_scope_and_retain_down(
 
     monkeypatch.setattr(purge_script, "purge_expired", _run)
 
-    exit_code = purge_script.main(
-        ["--apply", "--kb-id", KB_ID, "--limit", "5", "--retain", "2"]
-    )
+    exit_code = purge_script.main(["--apply", "--kb-id", KB_ID, "--limit", "5", "--retain", "2"])
 
     out = capsys.readouterr().out
     assert captured == {"kb_id": KB_ID, "limit": 5, "retain": 2, "apply": True}
@@ -925,6 +914,4 @@ def test_the_cleanup_stays_a_run_once_script(purge_script: ModuleType) -> None:
     from app.celery_app import celery_app
 
     assert callable(purge_script.main)
-    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), (
-        "保留策略不进调度基础设施"
-    )
+    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), "保留策略不进调度基础设施"

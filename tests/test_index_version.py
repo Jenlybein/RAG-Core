@@ -174,14 +174,18 @@ async def test_delete_by_document_id_scopes_to_one_draft(chunk_session: AsyncSes
     """
 
     store = PgVectorStore()
-    await store.add_chunks(chunk_session, [_draft_chunk("chunk-v1", 1), _draft_chunk("chunk-v2", 2)])
+    await store.add_chunks(
+        chunk_session, [_draft_chunk("chunk-v1", 1), _draft_chunk("chunk-v2", 2)]
+    )
     await chunk_session.flush()
 
     await store.delete_by_document_id(
         chunk_session, DOCUMENT_ID, tenant_id=TENANT_ID, doc_version=2
     )
 
-    rows = (await chunk_session.execute(select(Chunk.id, Chunk.doc_version).order_by(Chunk.id))).all()
+    rows = (
+        await chunk_session.execute(select(Chunk.id, Chunk.doc_version).order_by(Chunk.id))
+    ).all()
     assert [(row.id, row.doc_version) for row in rows] == [("chunk-v1", 1)]
 
 
@@ -192,7 +196,9 @@ async def test_delete_by_document_id_without_a_draft_removes_every_draft(
     """``doc_version=None`` = 这篇文档的所有稿：删文档那条老路径仍能清干净。"""
 
     store = PgVectorStore()
-    await store.add_chunks(chunk_session, [_draft_chunk("chunk-v1", 1), _draft_chunk("chunk-v2", 2)])
+    await store.add_chunks(
+        chunk_session, [_draft_chunk("chunk-v1", 1), _draft_chunk("chunk-v2", 2)]
+    )
     await chunk_session.flush()
 
     await store.delete_by_document_id(chunk_session, DOCUMENT_ID, tenant_id=TENANT_ID)
@@ -440,15 +446,15 @@ def test_rebuild_takes_the_body_from_the_version_row_not_the_document_row(
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("有版本行时不该再读文档行快照")
-        ),
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("有版本行时不该再读文档行快照")),
     )
     splitter = _TextRecordingSplitter(
         [SplitPiece(text="新稿正文：E1024 表示证书已过期。", metadata={"heading_path": "错误码"})]
     )
     store = _RecordingStore()
-    session = AsyncRecordingSession(rows={DocumentVersion: [_version_row(2, "新稿正文：E1024 表示证书已过期。")]})
+    session = AsyncRecordingSession(
+        rows={DocumentVersion: [_version_row(2, "新稿正文：E1024 表示证书已过期。")]}
+    )
 
     service = IndexingService(splitter=splitter, embeddings=_StubEmbeddings(), stores=[store])
     asyncio.run(service.index_existing_document(session, DOCUMENT_ID, doc_version=2))
@@ -481,9 +487,7 @@ def test_rebuild_falls_back_to_the_document_row_when_the_draft_has_no_version_ro
     )
     store = _RecordingStore()
 
-    service = IndexingService(
-        splitter=splitter, embeddings=_StubEmbeddings(), stores=[store]
-    )
+    service = IndexingService(splitter=splitter, embeddings=_StubEmbeddings(), stores=[store])
     asyncio.run(service.index_existing_document(AsyncRecordingSession(), DOCUMENT_ID))
 
     assert splitter.inputs == ["旧稿正文：E1024 表示证书过期。"]
@@ -503,9 +507,7 @@ def test_rebuild_rejects_an_explicit_draft_that_has_no_version_row(
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("指定了过期稿次时不该静默读文档行")
-        ),
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("指定了过期稿次时不该静默读文档行")),
     )
     store = _RecordingStore()
 
@@ -515,9 +517,7 @@ def test_rebuild_rejects_an_explicit_draft_that_has_no_version_row(
 
     with pytest.raises(AppError) as caught:
         asyncio.run(
-            service.index_existing_document(
-                AsyncRecordingSession(), DOCUMENT_ID, doc_version=1
-            )
+            service.index_existing_document(AsyncRecordingSession(), DOCUMENT_ID, doc_version=1)
         )
 
     assert caught.value.code is ErrorCode.NOT_FOUND
@@ -538,9 +538,7 @@ def test_the_draft_from_the_payload_wins_over_the_pointer(
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
-        lambda *_a, **_k: (_ for _ in ()).throw(
-            AssertionError("带稿号的重建不该读文档行快照")
-        ),
+        lambda *_a, **_k: (_ for _ in ()).throw(AssertionError("带稿号的重建不该读文档行快照")),
     )
     splitter = _TextRecordingSplitter(
         [SplitPiece(text="第 2 稿正文：证书有效期 90 天。", metadata={"heading_path": "错误码"})]
@@ -584,7 +582,11 @@ async def test_reindexing_the_second_draft_keeps_the_first_drafts_slices(
 
             _patch_rebuild_collaborators(monkeypatch, _document(current_version=1))
             splitter = _TextRecordingSplitter(
-                [SplitPiece(text="第 2 稿正文：证书有效期 90 天。", metadata={"heading_path": "错误码"})]
+                [
+                    SplitPiece(
+                        text="第 2 稿正文：证书有效期 90 天。", metadata={"heading_path": "错误码"}
+                    )
+                ]
             )
             service = IndexingService(
                 splitter=splitter, embeddings=_StubEmbeddings(), stores=[store]

@@ -65,7 +65,10 @@ def _facts(
     document_id: str = "doc-1",
     pointer: int = 2,
     content: str = "当前稿正文。",
-    version_rows: Sequence[tuple[int, str, str]] = ((1, "archived", "旧稿正文。"), (2, "current", "当前稿正文。")),
+    version_rows: Sequence[tuple[int, str, str]] = (
+        (1, "archived", "旧稿正文。"),
+        (2, "current", "当前稿正文。"),
+    ),
     chunk_versions: Sequence[tuple[int, int]] = ((2, 3),),
     keyword_current_versions: Sequence[int] | None = (2,),
 ) -> DocumentFacts:
@@ -88,9 +91,7 @@ def _facts(
 
 
 def _report(*facts: DocumentFacts, keyword_state: str = KEYWORD_STATE_CHECKED, reason=None):
-    return reconcile_module.reconcile(
-        facts, keyword_state=keyword_state, keyword_reason=reason
-    )
+    return reconcile_module.reconcile(facts, keyword_state=keyword_state, keyword_reason=reason)
 
 
 # ────────────────────────────── ① 检查 1：每个切片的稿号都能找到版本行
@@ -287,9 +288,7 @@ def test_a_pointer_draft_without_chunks_is_reported_as_information_only() -> Non
 def test_every_disagreement_renders_as_one_operable_line() -> None:
     """逐条列出：一行 = 一篇文档 + 一句话，可以贴进工单。"""
 
-    report = _report(
-        _facts(document_id="doc-9", pointer=2, version_rows=((1, "current", "旧"),))
-    )
+    report = _report(_facts(document_id="doc-9", pointer=2, version_rows=((1, "current", "旧"),)))
 
     rendered = [discrepancy.render() for discrepancy in report.current_drafts]
     assert rendered and rendered[0].startswith("doc-9")
@@ -376,6 +375,7 @@ def _seeded_versions() -> tuple[DocumentVersion, ...]:
         _version("doc-3", 1, content="别的库。"),
     )
 
+
 #: 切片：`doc-1` 的两稿各有切片（旧稿的按保留策略还在），`doc-2` 一片，`doc-3` 三片。
 SEEDED_CHUNKS = (
     ("chunk-1", "doc-1", KB, 1),
@@ -445,9 +445,7 @@ async def test_version_rows_are_read_for_a_batch_of_documents(
 ) -> None:
     """一次取一批（不是一篇一次）：`doc-1` 的两稿都在，别的文档的行不混进来。"""
 
-    rows = await document_version_repository.list_for_documents(
-        reconcile_db, ["doc-1", "doc-2"]
-    )
+    rows = await document_version_repository.list_for_documents(reconcile_db, ["doc-1", "doc-2"])
 
     by_document: dict[str, list[tuple[int, str]]] = {}
     for row in rows:
@@ -487,7 +485,6 @@ async def test_the_reads_never_touch_a_column_the_model_does_not_declare(
 
 
 # ───────────────────────────── ③ 关键词那一维：provider 的只读能力（跨系统）
-
 
 
 def test_the_keyword_read_asks_only_this_tenants_current_draft_chunks() -> None:
@@ -577,9 +574,7 @@ def test_an_empty_batch_does_not_send_a_query() -> None:
     client = _FakeSearchClient(_buckets())
 
     assert (
-        asyncio.run(
-            _es_provider(client).current_draft_versions(tenant_id=TENANT, document_ids=[])
-        )
+        asyncio.run(_es_provider(client).current_draft_versions(tenant_id=TENANT, document_ids=[]))
         == {}
     )
     assert client.calls == []
@@ -594,9 +589,7 @@ def test_a_missing_alias_is_an_honest_empty_answer() -> None:
 
     assert (
         asyncio.run(
-            _es_provider(client).current_draft_versions(
-                tenant_id=TENANT, document_ids=["doc-1"]
-            )
+            _es_provider(client).current_draft_versions(tenant_id=TENANT, document_ids=["doc-1"])
         )
         == {}
     )
@@ -609,9 +602,7 @@ def test_a_failing_read_is_raised_so_the_caller_can_call_it_undecidable() -> Non
 
     with pytest.raises(RuntimeError, match="cluster is down"):
         asyncio.run(
-            _es_provider(client).current_draft_versions(
-                tenant_id=TENANT, document_ids=["doc-1"]
-            )
+            _es_provider(client).current_draft_versions(tenant_id=TENANT, document_ids=["doc-1"])
         )
 
 
@@ -622,8 +613,7 @@ def test_the_noop_provider_declares_the_capability_absent() -> None:
 
     assert provider.available is False
     assert (
-        asyncio.run(provider.current_draft_versions(tenant_id=TENANT, document_ids=["doc-1"]))
-        == {}
+        asyncio.run(provider.current_draft_versions(tenant_id=TENANT, document_ids=["doc-1"])) == {}
     )
 
 
@@ -799,9 +789,7 @@ async def test_the_reconcile_is_read_only_and_idempotent(reconcile_db: AsyncSess
     second = await _reconcile(reconcile_db, provider=provider)
 
     assert first == second
-    rows = (
-        await reconcile_db.execute(text("SELECT id, content FROM documents ORDER BY id"))
-    ).all()
+    rows = (await reconcile_db.execute(text("SELECT id, content FROM documents ORDER BY id"))).all()
     assert [tuple(row) for row in rows] == [
         ("doc-1", "第 2 稿正文。"),
         ("doc-2", "第 1 稿正文。"),
@@ -1010,9 +998,4 @@ def test_the_reconcile_stays_a_run_once_script(verify_script: ModuleType) -> Non
     from app.celery_app import celery_app
 
     assert callable(verify_script.main)
-    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), (
-        "对账不进调度基础设施"
-    )
-
-
-
+    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), "对账不进调度基础设施"

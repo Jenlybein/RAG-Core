@@ -125,26 +125,22 @@ def test_one_document_never_has_two_rows_of_the_same_version() -> None:
     assert tuple(sorted(unique)) == (("document_id", "version"),), (
         f"唯一约束必须恰好是 (document_id, version)，实际 {sorted(unique)}"
     )
-    assert unique[("document_id", "version")] == (
-        "uq_document_versions_document_id_version"
-    ), "约束要取名：迁移与回滚都按名字引用它"
+    assert unique[("document_id", "version")] == ("uq_document_versions_document_id_version"), (
+        "约束要取名：迁移与回滚都按名字引用它"
+    )
 
 
 def test_the_document_id_column_is_indexed() -> None:
     """按文档列版本是唯一的热路径（列表 / 回滚 / 保留策略都按它取行）。"""
 
-    indexes = {
-        _index_signature(index) for index in DocumentVersion.__table__.indexes
-    }
+    indexes = {_index_signature(index) for index in DocumentVersion.__table__.indexes}
     assert ("ix_document_versions_document_id", ("document_id",), False) in indexes
 
 
 # ──────────────────────────────────────────────── 零外键 / 零关系（仓库铁律）
 
 
-@pytest.mark.parametrize(
-    "model", [DocumentVersion, Chunk], ids=["document_versions", "chunks"]
-)
+@pytest.mark.parametrize("model", [DocumentVersion, Chunk], ids=["document_versions", "chunks"])
 def test_no_foreign_keys_anywhere(model: type[Base]) -> None:
     """引用关系靠应用层校验：加了外键就有两套引用风格，而既有业务表一张都没有。"""
 
@@ -176,9 +172,7 @@ def test_chunks_index_document_and_version_together() -> None:
     """``(document_id, doc_version)`` 复合索引：按文档 + 稿取片是最常用的两种形状。"""
 
     indexes = {_index_signature(index) for index in Chunk.__table__.indexes}
-    assert ("ix_chunks_document_id_doc_version", ("document_id", "doc_version"), False) in (
-        indexes
-    )
+    assert ("ix_chunks_document_id_doc_version", ("document_id", "doc_version"), False) in (indexes)
 
 
 def test_the_pointer_and_the_chunk_column_are_two_different_columns() -> None:

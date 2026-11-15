@@ -427,9 +427,7 @@ def test_the_answer_says_whether_the_searched_draft_is_the_current_one(
     assert pointer == 2
 
     def _ask(version: int) -> dict[str, Any]:
-        body = api.client.post(
-            SEARCH_URL.format(version=version), json={"query": "退款"}
-        ).json()
+        body = api.client.post(SEARCH_URL.format(version=version), json={"query": "退款"}).json()
         assert body["code"] == 0, body
         return body["data"]
 

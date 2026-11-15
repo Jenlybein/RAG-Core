@@ -230,8 +230,20 @@ class _FakeVectorStore:
 
 
 HITS = [
-    {"document_id": "doc-1", "chunk_id": "chunk-a", "title": "售后手册", "content": "甲", "score": 0.9},
-    {"document_id": "doc-2", "chunk_id": "chunk-b", "title": "部署指南", "content": "乙", "score": 0.8},
+    {
+        "document_id": "doc-1",
+        "chunk_id": "chunk-a",
+        "title": "售后手册",
+        "content": "甲",
+        "score": 0.9,
+    },
+    {
+        "document_id": "doc-2",
+        "chunk_id": "chunk-b",
+        "title": "部署指南",
+        "content": "乙",
+        "score": 0.8,
+    },
 ]
 META_ROWS = [_MetaRow(KB_ID, "chunk-a", 3), _MetaRow(KB_ID, "chunk-b", 1)]
 
@@ -261,9 +273,7 @@ def _offline_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[AsyncRecordingS
     try:
         with TestClient(main.app, raise_server_exceptions=False) as client:
             IDENTITY.use(mode="vector", top_k=2, include_parent=False)
-            response = client.post(
-                RETRIEVE_PATH, json={"kb_ids": [KB_ID], "query": "退款多久到账"}
-            )
+            response = client.post(RETRIEVE_PATH, json={"kb_ids": [KB_ID], "query": "退款多久到账"})
             assert response.status_code == 200
             body = response.json()
             assert body["code"] == 0, body
@@ -289,4 +299,3 @@ def test_a_retrieval_records_the_draft_of_every_document_it_delivered(
     assert rows[0].doc_versions == {"doc-1": 3, "doc-2": 1}
     assert rows[0].chunk_ids == ["chunk-a", "chunk-b"]
     assert session.commits == 1, "映射跟着同一笔独立短事务落库"
-

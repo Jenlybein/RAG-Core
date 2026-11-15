@@ -95,9 +95,7 @@ async def test_it_deletes_every_version_of_that_document_only(version_db: Sessio
     _version(version_db, version_id="vb2", document_id="doc-b", version=2)
     version_db.commit()
 
-    await document_version_repository.delete_for_document(
-        _AsyncSessionView(version_db), "doc-a"
-    )
+    await document_version_repository.delete_for_document(_AsyncSessionView(version_db), "doc-a")
 
     assert _remaining(version_db) == [("doc-b", 1), ("doc-b", 2)]
 
@@ -123,9 +121,7 @@ async def test_it_does_not_commit(version_db: Session) -> None:
     _version(version_db, version_id="va1", document_id="doc-a", version=1)
     version_db.commit()
 
-    await document_version_repository.delete_for_document(
-        _AsyncSessionView(version_db), "doc-a"
-    )
+    await document_version_repository.delete_for_document(_AsyncSessionView(version_db), "doc-a")
     assert _remaining(version_db) == [], "DELETE 已经发出去了"
 
     version_db.rollback()

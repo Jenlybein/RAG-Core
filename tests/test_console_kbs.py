@@ -1054,9 +1054,7 @@ def test_delete_document_purges_file_and_row_in_the_original_order(
     version_at = kbs.calls.index("delete-version-rows", remove_at)
     delete_at = kbs.calls.index("delete-row", version_at)
     commit_at = kbs.calls.index("commit", delete_at)
-    assert purge_at < remove_at < version_at < delete_at < commit_at, (
-        "顺序是契约的一部分，不能重排"
-    )
+    assert purge_at < remove_at < version_at < delete_at < commit_at, "顺序是契约的一部分，不能重排"
     assert all(doc.id != DOC_ALPHA_DONE for doc in kbs.db._rows.get(Document, []))
 
     entry = kbs.audit_entries()[-1]

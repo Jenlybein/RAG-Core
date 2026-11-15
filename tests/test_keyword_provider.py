@@ -256,9 +256,12 @@ def test_delete_scoped_to_one_draft_filters_by_the_draft_number() -> None:
 
     sent = client.delete_calls[0]
     assert sent["index"] == "rag_chunks__v2"
-    assert sent["query"] == build_purge_query(
-        document_id="doc-1", tenant_id=TENANT_ID, index_version="v2", doc_version=2
-    )["query"]
+    assert (
+        sent["query"]
+        == build_purge_query(
+            document_id="doc-1", tenant_id=TENANT_ID, index_version="v2", doc_version=2
+        )["query"]
+    )
 
 
 def test_add_chunks_writes_the_retrieval_text_under_chunk_id() -> None:

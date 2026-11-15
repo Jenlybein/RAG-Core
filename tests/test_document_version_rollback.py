@@ -85,9 +85,7 @@ async def env(tmp_path: Any) -> AsyncIterator[SimpleNamespace]:
                     version=number,
                     content=CONTENTS[number],
                     checksum=_checksum(CONTENTS[number]),
-                    source_file_path=None
-                    if number == 2
-                    else f"tenant-a/doc-1.v{number}.md",
+                    source_file_path=None if number == 2 else f"tenant-a/doc-1.v{number}.md",
                     status="current" if number == 3 else "archived",
                     created_at=datetime(2026, 11, 15, number, 0, 0),
                 )
@@ -225,9 +223,7 @@ async def test_rollback_flips_the_keyword_current_draft_mark_after_commit(
 
     await _rollback(env, 1)
 
-    assert flipped == [
-        {"document_id": DOC_ID, "tenant_id": TENANT_ID, "doc_version": 1}
-    ]
+    assert flipped == [{"document_id": DOC_ID, "tenant_id": TENANT_ID, "doc_version": 1}]
 
 
 # ── 守卫：已是当前稿 / 处理中 / 稿不存在 / 跨租户 ──
