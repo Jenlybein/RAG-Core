@@ -9,6 +9,8 @@
 * :func:`archive_current_except` —— 把别的当前稿行转归档（切指针的另一半，#175）；
 * :func:`mark_current` —— 把某一稿转回当前稿（回滚的另一半，#176）；
 * :func:`list_by_document` —— 列版本（按稿号倒序，#175 的读接口）；
+* :func:`list_archived_at_or_below` —— 保留窗口**要清掉的那批**归档稿（#178）；
+* :func:`delete_versions` —— 按稿号删行（保留策略的另一半，#178）；
 * :func:`source_file_paths` —— 这篇文档各稿的源文件路径（删文档时一起清掉）；
 * :func:`delete_for_document` —— 删文档时把这一篇的版本行带走（#172）。
 
@@ -30,6 +32,8 @@
 """
 
 from __future__ import annotations
+
+from collections.abc import Sequence
 
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -167,6 +171,56 @@ async def source_file_paths(db: AsyncSession, document_id: str) -> list[str]:
     return [row.source_file_path for row in rows if row.source_file_path]
 
 
+async def list_archived_at_or_below(
+    db: AsyncSession, document_id: str, *, version: int
+) -> list[DocumentVersion]:
+    """这篇文档里**稿号 ≤ ``version`` 的归档稿**，按稿号倒序。
+
+    这是保留窗口的输入（#178）：窗口下界由调用方算（``当前稿号 - 保留稿数``），仓储只
+    回答「这个界以下有哪些归档稿」。``status == archived`` 是「当前稿永不删」的落点——
+    写成查询条件而不是调用方的一句 if，库里残留的低稿号当前行（历史事故、人工修数）就
+    不会被交出去，也就不会被删掉。
+
+    排序仍放 SQL 里（与 :func:`list_by_document` 同一理由）：调用方按「最老的先走」的顺序
+    打印 / 逐稿清切片，应用层再排一次只会多一次整表读。
+    """
+
+    statement = (
+        select(DocumentVersion)
+        .where(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.status == DOCUMENT_VERSION_ARCHIVED,
+            DocumentVersion.version <= version,
+        )
+        .order_by(DocumentVersion.version.desc())
+    )
+    return list((await db.execute(statement)).scalars().all())
+
+
+async def delete_versions(
+    db: AsyncSession, document_id: str, versions: Sequence[int]
+) -> None:
+    """按稿号删这篇文档的版本行（保留策略的另一半，#178）；空列表是 no-op。
+
+    一条 ``DELETE ... IN (...)`` 打掉整批，不逐行 ``db.delete``：删的是同一篇文档的同一段
+    窗口，逐行删会在网络往返上放大成「有几稿就几次」，而这批行来自一次整体判断。
+
+    **调用方必须先把这些稿的切片清掉**（先删切片、再删版本行）：反过来的顺序在事务回滚时
+    留下的是「切片还在、版本行没了」——那批切片永远不会被任何查询命中，也无法再被定位到
+    是哪一稿的，属于比半份更坏的一种孤儿。仓储只负责删行，顺序由服务层守
+    （``app.services.document_version_service.purge_expired_versions``）。
+    """
+
+    if not versions:
+        return
+    await db.execute(
+        delete(DocumentVersion).where(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.version.in_(tuple(versions)),
+        )
+    )
+
+
 async def delete_for_document(db: AsyncSession, document_id: str) -> None:
     """删掉这篇文档的**全部**版本行（当前稿与归档稿一起走）。
 
@@ -185,7 +239,9 @@ __all__ = [
     "archive_current_except",
     "create",
     "delete_for_document",
+    "delete_versions",
     "get_by_version",
+    "list_archived_at_or_below",
     "list_by_document",
     "mark_current",
     "max_version",
