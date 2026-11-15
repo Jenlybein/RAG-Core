@@ -59,7 +59,7 @@
 | --- | --- | --- |
 | `doc_versions` 表 | **`document_versions`** | 票 #172 建表；`app/models/document_version.py`。表名的选择与仓库其它表一致（全称、复数），`doc_versions` 从未落库 |
 | `doc_versions` 表的字段：`doc_version` / `checksum` / 状态 / 创建时间 | **`version`**（稿号本体）、`content`、`source_file_path`、`checksum`（定长 64 的 sha256 hex）、**`status`**、`created_at`、`document_id` | 同上；`(document_id, version)` 唯一 |
-| 「状态」语义未写死 | **`current` / `archived`** 两个取值，带 `CHECK` 约束。回到旧稿是**新写一行 `current`**，不是把旧行改回 `current`（时间轴单调，中间那几次变更不被抹掉） | `app/models/document_version.py` 的 `DOCUMENT_VERSION_CURRENT` / `DOCUMENT_VERSION_ARCHIVED` |
+| 「状态」语义未写死 | **`current` / `archived`** 两个取值，带 `CHECK` 约束。回到旧稿是**把既有那一行的状态改回 `current`**（`document_version_repository.mark_current`），**不新增一行**：稿号不变、只改这一行的状态（指针在文档行上一起切回去），历史行一条不删，**时间轴因此仍然单调**，中间那几次变更不被抹掉 | `app/models/document_version.py` 的 `DOCUMENT_VERSION_CURRENT` / `DOCUMENT_VERSION_ARCHIVED` |
 | 「文档行上的 `doc_version`」 | **`documents.current_version`**（原列改名，保数据）。它是**指针**，不是「这一片属于第几稿」——后者是 `chunks.doc_version` | 票 #171；本修订最贵的一条，理由见 ADR-0031 决策二 |
 | 「`chunks` 与 ES mapping 都带 `doc_version`」 | `chunks.doc_version` 是**真实列**（非空、默认 1，带 `(document_id, doc_version)` 复合索引）；**JSONB 元数据里那份副本已删除**（稿号只能有一个来源）。ES mapping 侧是 `doc_version`（keyword）+ `is_current`（boolean）两个字段，**召回只过滤 `is_current`** | 票 #173 / #174；`app/models/chunk.py`、`app/providers/keyword_search/query_builder.py` |
 | 「`purge` 的删除键必须扩一位（`document_id + doc_version`）」——本文「代价」一节把它写成一条**风险** | 现在它是**已落地的契约**：清除键是「**文档 + 稿次**」，**向量与关键词两个存储都要删**（默认接线两个都清）；**不传稿次 = 清整篇文档的所有稿**（删文档那条路径用的就是这一支） | 票 #173 / #178；`purge_document_chunks(..., doc_version=...)`、`tests/test_document_version_retention.py`（默认接线两存储都清、删除键带稿次）、`tests/test_document_version_delete.py`（删文档 = 清整篇） |

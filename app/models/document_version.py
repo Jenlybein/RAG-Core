@@ -23,8 +23,11 @@
 
 ## 状态的两个取值
 
-``current`` / ``archived``（GLOSSARY「文档版本」）。回归到旧稿是**新写一行 current**，
-不是「把旧行改回 current」：时间轴单调，中间那几次变更不被抹掉（D 系列的用户故事第 10 条）。
+``current`` / ``archived``（GLOSSARY「文档版本」）。**回到旧稿是把既有那一行的状态改回
+``current``**（:func:`app.repositories.document_version_repository.mark_current`），
+**不新增一行**：稿号是「这一稿存在过」的身份，回滚是「重新选中它」，不是「重新写一遍」。
+**时间轴因此仍然单调**——稿号不变、只改一行的状态（指针在文档行上一起切回去），历史行
+一条都不删，中间那几次变更也不会被抹掉（#176 的 rollback / D 系列用户故事第 10 条）。
 """
 
 from datetime import datetime

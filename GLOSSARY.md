@@ -183,7 +183,7 @@ _Avoid_: 文档稿, version, 版本号, 当前稿指针（那是文档行上的�
 _Avoid_: 文档版本（那是指针指向的东西，不是指针本身）, 稿号（那是版本行与切片的属性）, 版本号（模糊）
 
 **版本行（document version）**：
-`document_versions` 表的一行 = 一篇文档的**一稿**：正文（`content`）、源文件路径（`source_file_path`）、规范化后的 `sha256`（`checksum`）、状态（`current` / `archived`）、创建时间（`created_at`），`(document_id, version)` 唯一。**正文的真值在这里**，`documents.content` 只是当前稿的快照（见「文档正文」）。回到旧稿是**新写一行 `current`**，不是把旧行改回 `current`——时间轴因此单调，中间那几次变更不被抹掉。仓库零外键，所以文档删掉时这些行由应用层显式删（顺序：清切片 → 删原文件 → 删版本行 → 删文档行，ADR-0031 决策六）。
+`document_versions` 表的一行 = 一篇文档的**一稿**：正文（`content`）、源文件路径（`source_file_path`）、规范化后的 `sha256`（`checksum`）、状态（`current` / `archived`）、创建时间（`created_at`），`(document_id, version)` 唯一。**正文的真值在这里**，`documents.content` 只是当前稿的快照（见「文档正文」）。回到旧稿是**把既有那一行的状态改回 `current`**（`document_version_repository.mark_current`），**不新增一行**——稿号不变、只改这一行的状态，指针在文档行上一起切回去；历史行一条都不删，时间轴因此仍然单调，中间那几次变更不被抹掉。仓库零外键，所以文档删掉时这些行由应用层显式删（顺序：清切片 → 删原文件 → 删版本行 → 删文档行，ADR-0031 决策六）。
 _Avoid_: 文档版本（那指切片上的稿号归属）, 快照行, 历史表
 
 **保留窗口（retention window）**：
