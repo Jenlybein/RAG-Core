@@ -28,6 +28,7 @@ import asyncio
 import importlib.util
 import sys
 from collections.abc import AsyncIterator, Sequence
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 from typing import Any
@@ -39,6 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.repositories import chunk_repository, document_repository, document_version_repository
 from app.services import document_version_reconcile as reconcile_module
 from app.services.document_version_reconcile import (
     KEYWORD_REASON_ABSENT,
@@ -284,3 +286,187 @@ def test_every_disagreement_renders_as_one_operable_line() -> None:
 
     rendered = [discrepancy.render() for discrepancy in report.current_drafts]
     assert rendered and rendered[0].startswith("doc-9")
+
+
+# ───────────────────────────────────────────── ② 读路径：三条查询（真 SQL）
+
+TENANT = "tenant_demo"
+KB = "kb-1"
+OTHER_KB = "kb-2"
+
+#: 切片表在 SQLite 上要手写 DDL：``Vector(1536)`` 与 ``JSONB`` 在这里换成 TEXT / JSON
+#: （与 ``test_retrieval_current_draft.py``、``test_index_version.py`` 同一套做法）。
+CHUNKS_DDL = """
+CREATE TABLE chunks (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(36) NOT NULL,
+    document_id VARCHAR(36) NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    metadata JSON NOT NULL,
+    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+    doc_version INTEGER NOT NULL DEFAULT '1'
+)
+"""
+
+
+def _document(
+    document_id: str,
+    *,
+    kb_id: str = KB,
+    current_version: int = 1,
+    content: str = "正文。",
+    tenant_id: str = TENANT,
+) -> Document:
+    return Document(
+        id=document_id,
+        tenant_id=tenant_id,
+        kb_id=kb_id,
+        title=document_id,
+        content=content,
+        source_type="markdown",
+        status=3,
+        current_version=current_version,
+        created_at=datetime(2026, 11, 1),
+        updated_at=datetime(2026, 11, 1),
+    )
+
+
+def _version(
+    document_id: str, version: int, *, status: str = "current", content: str = "正文。"
+) -> DocumentVersion:
+    return DocumentVersion(
+        id=f"{document_id}-v{version}",
+        document_id=document_id,
+        version=version,
+        content=content,
+        checksum="0" * 64,
+        status=status,
+        created_at=datetime(2026, 11, 1),
+    )
+
+
+#: 三篇文档：`doc-1` 两稿（指针 2）、`doc-2` 一稿、`doc-3` 在另一个库里。
+SEEDED_DOCUMENTS = (
+    _document("doc-1", current_version=2, content="第 2 稿正文。"),
+    _document("doc-2", content="第 1 稿正文。"),
+    _document("doc-3", kb_id=OTHER_KB, content="别的库。"),
+)
+
+SEEDED_VERSIONS = (
+    _version("doc-1", 1, status="archived", content="第 1 稿正文。"),
+    _version("doc-1", 2, content="第 2 稿正文。"),
+    _version("doc-2", 1, content="第 1 稿正文。"),
+    _version("doc-3", 1, content="别的库。"),
+)
+
+#: 切片：`doc-1` 的两稿各有切片（旧稿的按保留策略还在），`doc-2` 一片，`doc-3` 三片。
+SEEDED_CHUNKS = (
+    ("chunk-1", "doc-1", KB, 1),
+    ("chunk-2", "doc-1", KB, 2),
+    ("chunk-3", "doc-1", KB, 2),
+    ("chunk-4", "doc-2", KB, 1),
+    ("chunk-5", "doc-3", OTHER_KB, 1),
+    ("chunk-6", "doc-3", OTHER_KB, 1),
+    ("chunk-7", "doc-3", OTHER_KB, 1),
+)
+
+
+@pytest_asyncio.fixture
+async def reconcile_db() -> AsyncIterator[AsyncSession]:
+    """``documents`` / ``document_versions`` / ``chunks`` 三张真表 + 一批种子行。"""
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        await connection.run_sync(Document.__table__.create)
+        await connection.run_sync(DocumentVersion.__table__.create)
+        await connection.execute(text(CHUNKS_DDL))
+        for row in SEEDED_CHUNKS:
+            await connection.execute(
+                text(
+                    "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding,"
+                    " metadata, index_version, doc_version) VALUES"
+                    " (:id, :tenant_id, :kb_id, :document_id, '片正文。', '[]', '{}', 'v1',"
+                    " :doc_version)"
+                ),
+                {
+                    "id": row[0],
+                    "tenant_id": TENANT,
+                    "kb_id": row[2],
+                    "document_id": row[1],
+                    "doc_version": row[3],
+                },
+            )
+    async with AsyncSession(engine, expire_on_commit=False) as session:
+        for row in (*SEEDED_DOCUMENTS, *SEEDED_VERSIONS):
+            session.add(row)
+        await session.flush()
+        try:
+            yield session
+        finally:
+            await session.rollback()
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_the_scan_returns_every_document_and_can_be_narrowed(
+    reconcile_db: AsyncSession,
+) -> None:
+    """默认全量；``--kb-id`` 收窄库、``--limit`` 收敛条数（运维先看一小批再定位）。"""
+
+    every = await document_repository.list_for_version_reconcile(reconcile_db)
+    one_kb = await document_repository.list_for_version_reconcile(reconcile_db, kb_id=OTHER_KB)
+    capped = await document_repository.list_for_version_reconcile(reconcile_db, limit=2)
+
+    assert {doc.id for doc in every} == {"doc-1", "doc-2", "doc-3"}
+    assert [doc.id for doc in one_kb] == ["doc-3"]
+    assert len(capped) == 2
+
+
+@pytest.mark.asyncio
+async def test_version_rows_are_read_for_a_batch_of_documents(
+    reconcile_db: AsyncSession,
+) -> None:
+    """一次取一批（不是一篇一次）：`doc-1` 的两稿都在，别的文档的行不混进来。"""
+
+    rows = await document_version_repository.list_for_documents(
+        reconcile_db, ["doc-1", "doc-2"]
+    )
+
+    by_document: dict[str, list[tuple[int, str]]] = {}
+    for row in rows:
+        by_document.setdefault(row.document_id, []).append((row.version, row.status))
+    assert by_document == {
+        "doc-1": [(1, "archived"), (2, "current")],
+        "doc-2": [(1, "current")],
+    }
+
+
+@pytest.mark.asyncio
+async def test_draft_counts_group_the_chunks_of_each_document_by_draft(
+    reconcile_db: AsyncSession,
+) -> None:
+    """``(文档, 稿号) → 几片``：检查 1 要的「出现过哪些稿号」，信息项要的「指针那一稿有没有片」。"""
+
+    counts = await chunk_repository.draft_counts(reconcile_db, document_ids=["doc-1", "doc-2"])
+
+    assert counts == [("doc-1", 1, 1), ("doc-1", 2, 2), ("doc-2", 1, 1)]
+    assert await chunk_repository.draft_counts(reconcile_db, document_ids=[]) == []
+
+
+@pytest.mark.asyncio
+async def test_the_reads_never_touch_a_column_the_model_does_not_declare(
+    reconcile_db: AsyncSession,
+) -> None:
+    """三条读语句都只用真实列（``chunks.doc_version`` 是 #172 的列，不是 JSONB 里的键）。"""
+
+    from sqlalchemy.dialects import postgresql
+
+    statement = chunk_repository._draft_counts_statement(document_ids=["doc-1"])
+    sql = " ".join(str(statement.compile(dialect=postgresql.dialect())).split())
+
+    assert "chunks.doc_version" in sql
+    assert "chunks.document_id" in sql
+    assert "group by" in sql.lower()
+

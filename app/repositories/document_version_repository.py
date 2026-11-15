@@ -130,6 +130,26 @@ async def rewrite_content(
     return version
 
 
+async def list_for_documents(
+    db: AsyncSession, document_ids: Sequence[str]
+) -> list[DocumentVersion]:
+    """一批文档的**全部**版本行（#179 的对账读路径）；空列表是 no-op。
+
+    为什么按批读而不是一篇一篇读：对账要扫过整库，逐篇读就是「文档数」次往返，
+    而运维恰恰常在库最大的时候跑它。行是按稿号升序的——打印「当前稿 = [...]」时
+    顺序稳定，两次跑出来的读数可以直接 diff。
+    """
+
+    if not document_ids:
+        return []
+    statement = (
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id.in_(tuple(document_ids)))
+        .order_by(DocumentVersion.document_id, DocumentVersion.version)
+    )
+    return list((await db.execute(statement)).scalars().all())
+
+
 async def archive_current_except(db: AsyncSession, document_id: str, *, keep: int) -> None:
     """把这篇文档里**除第 ``keep`` 稿之外**的当前稿行转归档。
 
@@ -279,6 +299,7 @@ __all__ = [
     "get_by_version",
     "list_archived_at_or_below",
     "list_by_document",
+    "list_for_documents",
     "mark_current",
     "max_version",
     "rewrite_content",
