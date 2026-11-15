@@ -126,6 +126,26 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             self._clients[loop] = client
         return client
 
+    async def aclose(self) -> None:
+        """关掉本 Provider 攒下的所有客户端（每个事件循环一个）。
+
+        只在**进程要退出**时调用（应用 lifespan 的退出段 / 脚本 `finally`）。不关的话
+        ``AsyncElasticsearch`` 的连接池会留到解释器收尾时由 GC 兜底，日志里就是那串
+        ``Unclosed client session`` / ``Unclosed connector``。
+
+        注入的 ``_client``（测试替身）**不在这里关**：它的生命周期归调用方，见
+        :meth:`_get_client`。关单个客户端失败只记一条 warning——退出路径上抛异常会把
+        真正的退出原因盖掉，而连接泄露最坏是多活几毫秒。
+        """
+
+        clients = list(self._clients.values())
+        self._clients.clear()
+        for client in clients:
+            try:
+                await client.close()
+            except Exception:  # pragma: no cover - 退出路径不因关闭失败而中断
+                logger.warning("keyword client close failed")
+
     async def ensure_index(self, index_name: str) -> None:
         """幂等建**物理索引**：已存在就跳过；并发建索引时把「已存在」当作成功。
 

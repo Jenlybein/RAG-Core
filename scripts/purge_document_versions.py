@@ -204,6 +204,18 @@ async def _open_session() -> Any:
     return AsyncSessionLocal()
 
 
+async def _close_keyword_provider() -> None:
+    """退出前关掉已构造的关键词客户端（惰性 import，只关已存在的）。
+
+    清理会经过关键词存储删切片，也就可能建出 ES 客户端；不关的话进程收尾会刷一串
+    ``Unclosed client session``，把「这次清了几篇」这类真正要看的输出淹掉。
+    """
+
+    from app.providers.keyword_search import aclose_keyword_search_provider
+
+    await aclose_keyword_search_provider()
+
+
 def _print_pending(pending: Sequence[tuple[str, tuple[int, ...]]]) -> None:
     """把 dry-run 的清单逐条打出来：``<document_id>  <稿号, 稿号>``。"""
 
@@ -226,6 +238,7 @@ async def _run(args: argparse.Namespace) -> int:
         )
     finally:
         await db.close()
+        await _close_keyword_provider()
 
     mode = "live" if args.apply else "dry-run"
     scope = "all knowledge bases" if args.kb_id is None else f"kb_id={args.kb_id}"

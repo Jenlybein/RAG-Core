@@ -79,6 +79,7 @@ from app.utils import tokenizer
 from app.db.async_session import AsyncSessionLocal
 from app.db.session_factory import session_factory
 from app.providers.llm import set_role_resolver
+from app.providers.keyword_search import aclose_keyword_search_provider
 from app.repositories import knowledge_base_repository
 from app.services import model_config_service, profile_preset_service, rag_service
 
@@ -143,6 +144,9 @@ async def app_lifespan(app: FastAPI):
         # 关**当前 loop** 名下的客户端：API 进程的主循环是这一个，别的进程（Worker）
         # 有自己的一套，绝不能把这里的客户端带过去。
         await aclose_http_client()
+        # 关键词客户端同理（`AsyncElasticsearch` 的连接池挂在 aiohttp 会话上）：
+        # 不关就只能在解释器收尾时由 GC 兜底，容器日志里多一串 Unclosed client session。
+        await aclose_keyword_search_provider()
 
 
 if settings.ENABLE_MCP:

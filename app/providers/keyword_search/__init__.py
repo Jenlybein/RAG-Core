@@ -12,6 +12,7 @@ from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 __all__ = [
     "KeywordSearchProvider",
     "NoopKeywordSearchProvider",
+    "aclose_keyword_search_provider",
     "get_keyword_search_provider",
 ]
 
@@ -33,6 +34,21 @@ def reset_keyword_search_provider_cache() -> None:
     """清掉缓存。**只给测试用**：进程级缓存不该在用例之间串味。"""
 
     _PROVIDER_CACHE.clear()
+
+
+async def aclose_keyword_search_provider() -> None:
+    """关掉所有已构造的 Provider 并清空缓存：**进程退出前调用一次**。
+
+    只关**已经构造过**的实例，绝不为了关闭而现造一个（那会新建一个连接池再来关它）。
+    应用在 lifespan 的退出段调它；运维脚本在 ``finally`` 里调它——不调的话
+    ``AsyncElasticsearch`` 的连接池会留到解释器收尾，日志里刷出
+    ``Unclosed client session`` / ``Unclosed connector``，把真正的退出原因埋掉。
+    """
+
+    providers = list(_PROVIDER_CACHE.values())
+    _PROVIDER_CACHE.clear()
+    for provider in providers:
+        await provider.aclose()
 
 
 def get_keyword_search_provider() -> KeywordSearchProvider:
