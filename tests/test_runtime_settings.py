@@ -364,15 +364,15 @@ def test_an_unknown_key_in_the_database_is_ignored(cache: Any) -> None:
 
 
 def test_pointer_keys_are_whitelisted_but_not_merged_into_settings(cache: Any) -> None:
-    """``model.role.fast`` 只被业务代码读，``Settings`` 上没有对应字段。"""
+    """``model.role.default`` 只被业务代码读，``Settings`` 上没有对应字段。"""
 
-    db = _session(_row("model.role.fast", "config-1"))
+    db = _session(_row("model.role.default", "config-1"))
 
     report = runtime_settings.apply_runtime_overrides(db, cache=cache)
 
-    assert report.valid["model.role.fast"] == "config-1"
-    assert "model.role.fast" not in report.merge_values(include_restart=True)
-    assert not hasattr(settings, "model.role.fast")
+    assert report.valid["model.role.default"] == "config-1"
+    assert "model.role.default" not in report.merge_values(include_restart=True)
+    assert not hasattr(settings, "model.role.default")
 
 
 # ──────────────────────────────────────────────────────────────────────── 回归红线

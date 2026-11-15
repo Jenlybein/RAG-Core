@@ -1,4 +1,4 @@
-"""受控 Research 的六条硬上限与七种停止原因（第 11 步票 #148）。
+"""受控 Research 的六条硬上限与六种停止原因（第 11 步票 #148；第 13 步收敛）。
 
 这两样东西**写死在代码里**（父 spec #138 C 段：「硬上限（常量，不走环境变量）」），理由
 与已撤销的编排块那套池子配额一字不差：它们是**成本契约**，不是部署偏好。做成可调项之后，同一个
@@ -31,11 +31,10 @@
 
 **生成阶段是唯一的例外，而且只对「最后一次调用」例外**（票 #149）：它是状态机的最后一步，
 后面没有下一个阶段能替它收尾——一次挂住的生成调用会把整个请求挂到自己超时为止。所以那里
-有一个**单次调用的硬超时**（:data:`FINALIZER_TIMEOUT_SECONDS`），并配一个含兜底位的调用
-上限（:data:`MAX_MODEL_CALLS_WITH_FALLBACK`）：强模型失败之后换快模型重试一次，总计最多
-5 次，第 6 次不可能发生。
+有一个**单次调用的硬超时**（:data:`FINALIZER_TIMEOUT_SECONDS`）。第 13 步起超时与其它模型
+阶段失败一样，整单 50003（客户重试），不再有「换模型兜底」的第五次调用。
 
-七种停止原因（:class:`StopReason`）是**响应与日志共用的同一套词**：调用方拿它做统计与
+六种停止原因（:class:`StopReason`）是**响应与日志共用的同一套词**：调用方拿它做统计与
 告警，运维拿它做排障，两边读的必须是同一份枚举——各写一份字符串的下场是某一天
 「``timeout``」与「``budget_exhausted``」在某处被拼成了第三种写法，而没有任何测试会红。
 """
@@ -75,17 +74,9 @@ MAX_FOLLOWUP_ROUNDS: Final[int] = 1
 #: 最大次数（没有兜底时）。
 MAX_MODEL_CALLS: Final[int] = 4
 
-#: **含兜底位**的模型调用硬顶（票 #149）：四个阶段的 4 次 + 生成阶段换快模型重试的 1 次。
-#:
-#: 为什么兜底要单独占一格而不是挤进 :data:`MAX_MODEL_CALLS`：强模型的失败**已经花掉了**
-#: 那一次调用（指标要如实反映「发出去过」），而「换了模型再答一次」是另一个决定。两者共用
-#: 一个数字，就一定会在某一条路径上变成「要么兜底永远不生效，要么上限被悄悄突破」。
-#: 5 是这条链路真正可能出现的最大次数，第 6 次在任何路径上都不成立。
-MAX_MODEL_CALLS_WITH_FALLBACK: Final[int] = MAX_MODEL_CALLS + 1
-
 #: 生成阶段**单次调用**的硬超时（秒）。它是状态机里唯一的硬超时，理由见模块文档：
-#: 生成是最后一步，后面没有下一个阶段能替它收尾。超时按「这次没答出来」处理——
-#: 换快模型兜底一次，仍不行就 ``answer = None``。
+#: 生成是最后一步，后面没有下一个阶段能替它收尾。超时按「模型调用失败」处理——
+#: 第 13 步起整单 50003，客户重试。
 FINALIZER_TIMEOUT_SECONDS: Final[float] = 30.0
 
 #: 整次调用的阶段预算（秒）。**阶段间检查**，不中断已发出的单次请求。
@@ -93,7 +84,7 @@ STAGE_BUDGET_SECONDS: Final[int] = 90
 
 
 class StopReason(str, Enum):
-    """七种固定停止原因：``str`` 混入是为了让它能直接进响应 JSON，不必再翻译一次。
+    """六种固定停止原因：``str`` 混入是为了让它能直接进响应 JSON，不必再翻译一次。
 
     每个成员的语义是「**为什么停在这里**」，不是「结果好不好」：
 
@@ -103,8 +94,10 @@ class StopReason(str, Enum):
       ``unknown`` 落了结论**；不再补，也不再判第二次）；
     * :attr:`DUPLICATE_QUERY`：判断阶段给的查询全都已经跑过，一条都不该重跑；
     * :attr:`TIMEOUT`：阶段预算用尽，没进入下一个阶段（已到手的材料照给）；
-    * :attr:`BUDGET_EXHAUSTED`：模型调用次数用尽，同上；
-    * :attr:`DEGRADED`：规划或判断失败，按降级出口收尾（材料照给）。
+    * :attr:`BUDGET_EXHAUSTED`：模型调用次数用尽，同上。
+
+    第 13 步退役 ``degraded``：规划 / 判定 / 生成任一模型阶段失败都整单 50003，
+    不再有「降级出口 + 材料照给」这条路径，所以没有第七种停止原因。
     """
 
     EVIDENCE_COMPLETE = "evidence_complete"
@@ -113,7 +106,6 @@ class StopReason(str, Enum):
     DUPLICATE_QUERY = "duplicate_query"
     TIMEOUT = "timeout"
     BUDGET_EXHAUSTED = "budget_exhausted"
-    DEGRADED = "degraded"
 
 
 __all__ = [
@@ -122,7 +114,6 @@ __all__ = [
     "MAX_FOLLOWUP_ROUNDS",
     "MAX_FIRST_ROUND_QUERIES",
     "MAX_MODEL_CALLS",
-    "MAX_MODEL_CALLS_WITH_FALLBACK",
     "MAX_POINTS",
     "PLAN_NAME",
     "STAGE_BUDGET_SECONDS",

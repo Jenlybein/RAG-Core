@@ -486,24 +486,20 @@ def test_prediction_scales_with_the_question_count() -> None:
 def test_the_research_model_call_budget_is_read_from_the_code_constants() -> None:
     """一次 Research 的模型调用硬顶只有一处来源：``app/services/research_limits.py``。
 
-    #148 的说明写「3 次」、#149 加了生成阶段的强模型兜底位变成「最多 4 次」。脚本、报告、
-    用例里各写一个数字，迟早出现「文案说 3、代码允许 4」——那是成本口径，读的人会当真。
+    第 13 步删掉强模型兜底位，硬顶就是 ``MAX_MODEL_CALLS``（4）。脚本、报告、用例里
+    各写一个数字，迟早出现「文案说 3、代码允许 4」——那是成本口径，读的人会当真。
     """
 
-    from app.services.research_limits import (
-        MAX_MODEL_CALLS,
-        MAX_MODEL_CALLS_WITH_FALLBACK,
-    )
+    from app.services.research_limits import MAX_MODEL_CALLS
 
-    budget = eval_refs.research_model_call_budget()
-    assert budget == (MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK)
+    calls = eval_refs.research_model_call_budget()
+    assert calls == MAX_MODEL_CALLS
 
-    calls, with_fallback = budget
     report = eval_refs.render_report(
         eval_refs.run_batch(_config(graph="on", research="on")),
         _config(graph="on", research="on"),
     )
-    assert f"{calls} 次模型调用（含生成兜底 {with_fallback} 次）" in report
+    assert f"{calls} 次模型调用" in report
 
 
 def test_fixture_replay_computes_a_real_traceability_rate(tmp_path: Path) -> None:

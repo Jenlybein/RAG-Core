@@ -93,7 +93,11 @@ class _Search:
 
 
 class _ScriptedLLM(LLMProvider):
-    """规划 + 判断两次结构化调用；按调用顺序交出预置输出。"""
+    """单一 default 角色：按调用顺序交出预置输出；生成阶段给一份合法的空块。
+
+    第 13 步之前规划 / 判定与生成是两份工厂；本票的夹具只关心「配额记了几次」，
+    所以生成阶段固定交回一个合法但没有结论的块，不参与断言。
+    """
 
     def __init__(self, *responses: object) -> None:
         self._responses = list(responses)
@@ -101,8 +105,10 @@ class _ScriptedLLM(LLMProvider):
 
     async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
         self.calls.append(schema.__name__)
+        if schema.__name__ == "AnswerOut":
+            return {"blocks": [{"text": "材料不足。", "kind": "insufficient", "primary": [], "supporting": [], "conflict": False}]}
         if not self._responses:
-            raise AssertionError("Research 本票只该问两次模型")
+            raise AssertionError("预置输出用完了")
         item = self._responses.pop(0)
         if isinstance(item, BaseException):
             raise item
@@ -137,7 +143,15 @@ def _plan_output() -> dict:
 
 
 def _covered() -> dict:
-    return {"queries": []}
+    """两个要点都被材料直接支撑（合法判定），不产生缺口、不触发补证与复查。"""
+
+    return {
+        "points": [
+            {"point": 1, "status": "supported", "materials": [1]},
+            {"point": 2, "status": "supported", "materials": [2]},
+        ],
+        "queries": [],
+    }
 
 
 # ─────────────────────────────────────────────────────────────── 身份与限额

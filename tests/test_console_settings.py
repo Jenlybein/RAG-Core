@@ -321,7 +321,7 @@ def test_the_listing_returns_three_tiers_with_editable_and_why_columns(console: 
     assert rows["CHUNK_SIZE"]["tier"] == "restart"
     assert rows["RERANK_TIMEOUT_SECONDS"]["source"] == "env"
     assert rows["RERANK_TIMEOUT_SECONDS"]["invalid"] is False
-    assert rows["model.role.fast"]["tier"] == "hot"
+    assert rows["model.role.default"]["tier"] == "hot"
 
 
 def test_an_illegal_row_marks_the_line_red_and_falls_back_to_the_env_value(

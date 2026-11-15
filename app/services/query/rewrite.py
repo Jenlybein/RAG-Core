@@ -118,7 +118,7 @@ async def _llm_provider() -> LLMProvider:
 
     from app.providers.llm import get_llm_provider
 
-    return await get_llm_provider("fast")
+    return await get_llm_provider()
 
 
 async def rewrite_query(

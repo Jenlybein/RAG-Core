@@ -26,6 +26,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.auth import DEV_KEY_POLICY, KeyContext
+from app.core.exceptions import ErrorCode
 from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.models.retrieval_trace import RetrievalTrace
@@ -141,16 +142,17 @@ def _plan_output() -> dict:
     }
 
 
-def _covered() -> dict:
+def _covered(*, material: int = 2) -> dict:
     """覆盖判定的预置输出：两个要点各被一条材料直接支撑（没有缺口）。
 
     票 #164 起判定是**逐要点**的：两个要点都得答一遍，少答一个整份判定作废。
+    ``material`` 让「只有一条材料」的用例也能给出合法判定（两个要点指向同一条）。
     """
 
     return {
         "points": [
             {"point": 1, "status": "supported", "materials": [1]},
-            {"point": 2, "status": "supported", "materials": [2]},
+            {"point": 2, "status": "supported", "materials": [material]},
         ],
         "queries": [],
     }
@@ -320,7 +322,8 @@ def test_the_response_has_the_plan_rounds_materials_and_metadata(entry: _Entry) 
         "gaps": [],
     }
 
-    # 元数据：身份 + 计划名 + 耗时 + 模型调用次数 + 停止原因 + 三条不丢信息的字段。
+    # 元数据：身份 + 计划名 + 耗时 + 模型调用次数 + 停止原因 + 两条不丢信息的字段。
+    # 第 13 步删掉 ``strong_model_fallback``（平台不再分强弱模型）。
     assert set(data["metadata"]) == {
         "plan_name",
         "duration_ms",
@@ -329,7 +332,6 @@ def test_the_response_has_the_plan_rounds_materials_and_metadata(entry: _Entry) 
         "trace_id",
         "evidence_state",
         "sub_search_degraded_reasons",
-        "strong_model_fallback",
     }
     assert data["metadata"]["plan_name"] == "research_fixed"
     # 规划 / 判断 / 生成各一次（票 #149 起第 ⑤ 步会真的花掉第三次调用）。
@@ -338,7 +340,6 @@ def test_the_response_has_the_plan_rounds_materials_and_metadata(entry: _Entry) 
     assert isinstance(data["metadata"]["duration_ms"], int)
     assert data["metadata"]["evidence_state"] == COMPLETENESS_COMPLETE
     assert data["metadata"]["sub_search_degraded_reasons"] == []
-    assert data["metadata"]["strong_model_fallback"] is None
     # 身份是 32 位十六进制，与归属索引那一行同一个值（下一次调用就换一根线）。
     assert len(data["metadata"]["trace_id"]) == 32
     int(data["metadata"]["trace_id"], 16)
@@ -512,6 +513,8 @@ def test_the_gate_reuses_one_section_once_across_sub_queries(entry: _Entry) -> N
         "退款多久到账": [same],
         "退款需要哪些材料": [dict(same)],
     }
+    # 两条子查询命中同一节 → 材料池里只有一条；判定也必须只指向这一条。
+    entry.llm = _ScriptedLLM(_plan_output(), _covered(material=1), _answer_output())
 
     data = entry.post()["data"]
 
@@ -563,6 +566,8 @@ def test_a_degraded_sub_search_is_reported_once_in_metadata_and_on_the_row(
         )
 
     monkeypatch.setattr(gate, "retrieve_kernel", _degraded_kernel)
+    # 这个替身只交回一条材料，判定也只许指向这一条。
+    entry.llm = _ScriptedLLM(_plan_output(), _covered(material=1), _answer_output())
 
     data = entry.post()["data"]
 
@@ -632,42 +637,24 @@ def test_a_missing_material_point_shows_up_as_an_insufficient_block(entry: _Entr
     assert data["metadata"]["evidence_state"] == COMPLETENESS_PARTIAL
 
 
-# ───────────────────────────────────────────── 降级出口：code 0
+# ─────────────────── 第 13 步：模型调用失败即整单 50003（不再有降级出口）
 
 
-def test_a_failed_planner_returns_code_zero_with_one_plain_search(entry: _Entry) -> None:
-    """规划失败 → 原问题跑一次普通检索，``code 0``，停止原因 ``degraded``。
+def test_a_failed_planner_is_a_model_call_failure(entry: _Entry) -> None:
+    """规划阶段模型失败 → 整单 50003，客户重试；不再退回原问题伪装成功。"""
 
-    降级之后第 ⑤ 步仍然工作：这份材料是真的，所以它仍然可以被引用块用起来
-    （``insufficient`` 与「有没有材料」是两件事）。
-    """
+    entry.llm = _ScriptedLLM(RuntimeError("模型服务 502"), _answer_output())
 
-    entry.llm = _ScriptedLLM(
-        RuntimeError("模型服务 502"),
-        _answer_output(
-            {"text": "3 个工作日内到账。", "kind": "supported", "primary": [1], "supporting": []}
-        ),
-    )
+    body = entry.post()
 
-    data = entry.post()["data"]
-
-    assert entry.embedding.queries == [QUERY], "回退的是原问题，且只有一次"
-    assert data["metadata"]["stop_reason"] == "degraded"
-    # 规划那一次失败也算成本；生成对这份材料问了一次。
-    assert data["metadata"]["model_calls"] == 2
-    assert data["plan"] == {"points": [], "queries": []}
-    assert [item["chunk_id"] for item in data["materials"]] == ["chunk-fallback"]
-    # 降级拿到的材料是真的，所以它仍然可以被引用块用起来（下标相对这份材料池）。
-    assert data["answer"] == "3 个工作日内到账。（E1）"
+    assert body["code"] == ErrorCode.MODEL_CALL_FAILED, "模型失败不再包成 code 0"
 
 
-def test_a_failed_decider_keeps_the_materials_and_marks_degraded(entry: _Entry) -> None:
-    """判断失败 → 停止补证、标记降级；首轮材料完整交回。"""
+def test_a_failed_decider_is_a_model_call_failure(entry: _Entry) -> None:
+    """判定阶段模型失败 → 整单 50003；首轮材料不再以「降级」的名义交回。"""
 
     entry.llm = _ScriptedLLM(_plan_output(), RuntimeError("模型超时"), _answer_output())
 
-    data = entry.post()["data"]
+    body = entry.post()
 
-    assert data["metadata"]["stop_reason"] == "degraded"
-    assert data["rounds"] == {"searches": 2, "followup": 0}
-    assert [item["chunk_id"] for item in data["materials"]] == ["chunk-a", "chunk-b"]
+    assert body["code"] == ErrorCode.MODEL_CALL_FAILED

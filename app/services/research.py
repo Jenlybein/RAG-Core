@@ -2,15 +2,15 @@
 
 ```text
 ① 规划        问题（**只有问题**）→ ≤5 个要点 + 每个要点各一条首轮查询（≤3 条被执行）
-      │ 失败 → 退回原问题跑一次普通检索，code 0，停止原因 degraded
+      │ 模型调用失败 → 整单 50003（客户重试；第 13 步起没有降级出口）
 ② 并行检索    每条查询各跑一次「检索内核」（asyncio.gather）→ 材料池 pool0
       │
 ③ 覆盖判定    逐要点问「材料里有没有**直接读出**它的事实」→ supported(材料序号) / none
-      │ 失败 → 停止补证，材料照给，停止原因 degraded，coverage 全部 unknown
+      │ 模型调用失败 → 整单 50003
 ④ 定向补证    只对 none 的要点补检索（≤2 条，≤1 轮），并行执行、合并新材料
       │ 捞到了材料 → 那一批要点先记 unknown（材料到了，但还没人判过）
 ⑤ 复查        仅当补证**真的捞到材料**：把那批 unknown 送回同一次判定提示词 → supported / none
-      │ 只有 unknown 会被改判（supported 与 none 保住原判）；失败则保持 unknown
+      │ 只有 unknown 会被改判（supported 与 none 保住原判）；失败 → 整单 50003
 ⑥ 最终回答    最终材料池 → 引用块（只能点下标）→ 四条硬校验 → 任一不过 answer = null
       │ 有 gap 时答案必须声明「材料不足」，否则同样作废（缺口闸）
       │ 强模型未配 / 失败 / 超时 → 快模型兜底一次，并在 metadata 标记（不报错）
@@ -47,14 +47,14 @@
 
 **它吃「注入的检索内核 + 模型工厂」两个输入**（ADR-0028 §4）：检索内核是
 ``Callable[[str], Awaitable[...]]``——一次子查询一次调用；模型工厂与已撤销的编排块同形
-（``get_llm_provider("fast")``，见 ADR-0029）。于是五步的每条降级出口、六条硬上限与七种停止原因都能
+（第 13 步起只有一个 ``default`` 角色，见 ADR-0032）。于是六条硬上限与**六种**停止原因都能
 脱开真实检索与真实模型被断言（``tests/test_research_state_machine.py``）。
 
 **⑤ 的门槛在另一个模块**（票 #149）：块的结构、四条硬校验、渲染串、三态完整度与缺口闸全在
 :mod:`app.services.citation_blocks`，本模块只负责「什么时候问、问哪一份材料、哪几个要点是
-缺口、拿到不合法的东西怎么退」。生成用**强模型角色**：它要准，不要快；未配置 / 失败 / 超时
-换快模型兜底一次，标记进 ``metadata.strong_model_fallback``——那是成本与质量之间一次
-**看得见**的交换，不是一次静默降级。
+缺口、拿到不合法的东西怎么退」。第 13 步起**模型调用失败即整单 50003**（客户重试），
+不再有「换快模型兜底」与「规划失败退回原问题」这两条静默降级路径；``stop_reason`` 因此
+从七条收敛成六条。
 
 **子查询不进改写、不写归属索引、不记账、不发观测**：这四件事一件都不在本模块里，也不在
 它调的内核里（ADR-0028 §2 的五件事全在外层，由 HTTP 入口做一次）。判据只有一句——「每条
@@ -65,10 +65,11 @@ trace，子检索在它里面以阶段出现；归属索引那一行因此写在
 **材料只有一个来源：内核交回的交付单元**。模型只写「要点」「查询」「逐要点的判定」与
 「块的一句话」四种文本，它返回的任何正文一律丢弃（材料正文逐字来自库，ADR-0026 §4）。
 
-**任何阶段都不许让整单报错**：规划失败、判定失败、生成失败都收敛成「材料照给 + 一条停止
-原因（+ 一条可读的元数据）」。但是**子检索失败不在此列**——它意味着这套集成的检索本身
-不可用（关键词引擎没配、库不可见、嵌入服务挂了），如实上抛比包成一份「看起来成功、材料
-是空的」响应诚实得多。
+**第 13 步起：任何模型阶段失败都整单 50003**（规划 / 判定 / 复查 / 生成一视同仁），
+客户重试即可。硬校验不过（``AnswerRejected``）不是模型失败，仍按既有规矩返回
+``answer = null`` + 完整材料。**子检索失败另行上抛**：它意味着这套集成的检索本身
+不可用（关键词引擎没配、库不可见、嵌入服务挂了），如实上抛比包成一份「看起来成功、
+材料是空的」响应诚实得多。
 """
 
 from __future__ import annotations
@@ -82,6 +83,7 @@ from typing import Any, Final, Literal
 import structlog
 from pydantic import BaseModel, Field
 
+from app.core.exceptions import AppError, ErrorCode
 from app.services.citation_blocks import (
     COMPLETENESS_MISSING,
     FINALIZER_SYSTEM,
@@ -99,7 +101,6 @@ from app.services.research_limits import (
     MAX_FOLLOWUP_QUERIES,
     MAX_FIRST_ROUND_QUERIES,
     MAX_MODEL_CALLS,
-    MAX_MODEL_CALLS_WITH_FALLBACK,
     MAX_POINTS,
     STAGE_BUDGET_SECONDS,
     StopReason,
@@ -134,18 +135,6 @@ MAX_DECIDER_MATERIAL_CHARS = 12000
 SUPPORT_SUPPORTED: Final[str] = "supported"
 SUPPORT_NONE: Final[str] = "none"
 SUPPORT_UNKNOWN: Final[str] = "unknown"
-
-#: 强模型兜底的两个原因码（**一因一码的固定串**，不拼异常文本）。它们进响应的
-#: ``metadata.strong_model_fallback``：调用方据此知道「这一次不是强模型答的」。
-#:
-#: 两件事分成两码，是因为它们的处置不同：``unavailable`` 说明这台机器上就没装强模型
-#: （换模型是对的、也不该报警），``failed`` 说明装了但这次没答出来（要进统计与告警）。
-#:
-#: 它说的是**强模型这一路**为什么没用上，不是「兜底跑成功了」：兜底有没有跑成，读
-#: ``model_calls``（第 4 格是否被用掉）与 ``answer`` 是否为空即可——两个字段都是各自
-#: 事实的唯一来源，不再多编一个码去表达它们的组合。
-STRONG_MODEL_UNAVAILABLE: Final[str] = "strong model unavailable"
-STRONG_MODEL_FAILED: Final[str] = "strong model failed"
 
 #: 这些拒绝码来自「结构本身不对」：它不是一次「模型答了但不能发」，而是一次「没答出来」，
 #: 因此值得换一个模型再问一次。四条硬校验的码不在此列——那些是「答了，但结论不能发」，
@@ -278,7 +267,6 @@ class ResearchOutcome:
       片为基准。两个都要有，因为它们能分开说「材料不够」与「答得不够」；
     * ``evidence_state``：三态完整度（``complete`` / ``partial`` / ``missing``），由核心片
       数算出来——「材料够不够」不能被 ``stop_reason``（那说的是**为什么停**）吞掉；
-    * ``strong_model_fallback``：这次生成是不是快模型兜的底，以及为什么（两个固定串之一）；
     * ``sub_search_degraded``：子检索自身降级的去重列表（一因一码，原样上交给外层写行）。
 
     ``answer_rejected_reason`` 是**内部**字段（不进响应）：它是四条硬校验与缺口闸的拒绝码，
@@ -297,7 +285,6 @@ class ResearchOutcome:
     answer: str | None = None
     citations: tuple[dict[str, Any], ...] = ()
     evidence_state: str = COMPLETENESS_MISSING
-    strong_model_fallback: str | None = None
     sub_search_degraded: tuple[str, ...] = ()
     answer_rejected_reason: str | None = None
     coverage: tuple[PointVerdict, ...] = ()
@@ -657,24 +644,15 @@ def material_key(row: Mapping[str, Any]) -> str:
 
 
 async def _default_llm_factory() -> Any:
-    """惰性 import：Research 关着时不为一项没开的能力付 import 代价。"""
+    """惰性 import：Research 关着时不为一项没开的能力付 import 代价。
 
-    from app.providers.llm import get_llm_provider
-
-    return await get_llm_provider("fast")
-
-
-async def _default_strong_llm_factory() -> Any:
-    """生成阶段用的**强模型角色**（``strong``）：要准，不要快（票 #149）。
-
-    与 ``fast`` 同一个工厂、只换角色：装配、缓存、超时、思考强度都由 Provider 那一层管，
-    这里不发明第二套。没配 key 时空实现的 ``available`` 为假——那正是「强模型未配置」的
-    唯一信号，于是「没装」与「装了但这次失败」在状态机里是两条不同的路。
+    第 13 步起只有 ``default`` 一个角色：规划 / 判定 / 复查 / 生成四阶段共用它，
+    不再有「快模型 / 强模型」两条装配路径。
     """
 
     from app.providers.llm import get_llm_provider
 
-    return await get_llm_provider("strong")
+    return await get_llm_provider()
 
 
 class _Run:
@@ -692,7 +670,6 @@ class _Run:
         tenant_id: str,
         search: SearchCallable,
         llm_factory: LLMFactory | None,
-        strong_llm_factory: LLMFactory | None,
         sub_search_degraded: Sequence[str],
         clock: Clock,
     ) -> None:
@@ -700,7 +677,6 @@ class _Run:
         self.tenant_id = tenant_id
         self.search = search
         self.llm_factory = llm_factory or _default_llm_factory
-        self.strong_llm_factory = strong_llm_factory or _default_strong_llm_factory
         self.clock = clock
 
         self.points: list[PlanPoint] = []
@@ -713,7 +689,6 @@ class _Run:
         self.answer: str | None = None
         self.citations: tuple[dict[str, Any], ...] = ()
         self.evidence_state: str = COMPLETENESS_MISSING
-        self.strong_model_fallback: str | None = None
         self.answer_rejected_reason: str | None = None
 
         # 子检索的降级原因是**它自己**交上来的（内核一条固定串，外层收成列表）：这里只
@@ -722,7 +697,6 @@ class _Run:
         self._judged = False
         self._delivered: set[str] = set()
         self._provider: Any = None
-        self._strong_provider: Any = None
         self._started = clock()
 
     # ── 五步的固定序列 ──
@@ -740,9 +714,8 @@ class _Run:
         return self._outcome(reason)
 
     async def _stages(self) -> StopReason:
-        # ① 规划。失败已经落到「退回原问题跑一次」并记 degraded。
-        if not await self._plan():
-            return StopReason.DEGRADED
+        # ① 规划。模型调用失败即整单 50003（第 13 步），不再退回原问题伪装有结果。
+        await self._plan()
 
         # ② 并行检索：每条首轮查询各跑一次内核。
         await self._parallel(self.queries)
@@ -752,11 +725,8 @@ class _Run:
         if gate is not None:
             return gate
 
-        # ③ 覆盖判定（逐要点）。失败 → 降级，coverage 全部 unknown（不知道，不是没有）。
-        judged = await self._judge()
-        if judged is None:
-            return StopReason.DEGRADED
-        verdicts, proposed = judged
+        # ③ 覆盖判定（逐要点）。模型调用失败即整单 50003。
+        verdicts, proposed = await self._judge()
         self.coverage = list(verdicts)
         self._judged = True
         if not self._gap_verdicts():
@@ -790,35 +760,24 @@ class _Run:
 
     # ── ① 规划 ──
 
-    async def _plan(self) -> bool:
+    async def _plan(self) -> None:
+        """拆要点与子查询；模型调用失败 → 整单 50003（客户重试）。"""
+
         try:
             raw = await self._call(
                 ResearchPlan, _PLANNER_SYSTEM, build_planner_prompt(query=self.query)
             )
             points, queries = _coerce_plan(raw)
-        except Exception as exc:  # noqa: BLE001 - 规划失败即降级，绝不整单失败
+        except Exception as exc:  # noqa: BLE001 - 统一翻成可重试的业务失败
             logger.warning(
-                "research planning failed",
+                "research planning model call failed",
                 tenant=tenant_fingerprint(self.tenant_id),
                 stage="plan",
-                # 只记类型：模型返回的文案可能夹带正文。
                 error=type(exc).__name__,
             )
-            await self._fallback()
-            return False
+            raise AppError(ErrorCode.MODEL_CALL_FAILED) from exc
         self.points = points
         self.queries.extend(queries)
-        return True
-
-    async def _fallback(self) -> None:
-        """降级出口（一）：**退回原问题执行一次普通检索**，不报错。
-
-        注意这一步仍然是「一次子检索」而不是一次完整检索：改写、记账、归属索引、观测都
-        在外层（ADR-0028），降级不该顺手把它们带进来——否则同一次调用会在降级前后各记一
-        笔账，而调用方从 ``code 0`` 看不出来。
-        """
-
-        self._merge(await self._search_one(self.query))
 
     # ── ② / ④ 并行检索 ──
 
@@ -861,12 +820,11 @@ class _Run:
 
     # ── ③ 覆盖判定 ──
 
-    async def _judge(self) -> tuple[list[PointVerdict], list[PlanQuery]] | None:
+    async def _judge(self) -> tuple[list[PointVerdict], list[PlanQuery]]:
         """逐要点判定「材料里有没有直接读出它的事实」。
 
-        ``None`` = 判定失败（停止补证、标记降级、材料照给、``coverage`` 全部 ``unknown``）。
-        失败出口照旧只有这一条：整份判定作废比采信半份预测好——半份判定里「没答的要点」
-        既可能是漏了也可能是没有，而猜错任何一边都会污染 ``coverage``。
+        模型调用失败 → 整单 50003（第 13 步）：整份判定作废比采信半份预测好，
+        而「半份结果 + 一条降级标记」会让调用方误以为这次真的判过。
         """
 
         try:
@@ -881,14 +839,14 @@ class _Run:
                 raw, points=self.points, material_count=len(self.materials)
             )
             queries = _bound_queries(_coerce_judged_queries(raw), points=self.points, round_no=2)
-        except Exception as exc:  # noqa: BLE001 - 判定失败即停止补证，绝不整单失败
+        except Exception as exc:  # noqa: BLE001 - 统一翻成可重试的业务失败
             logger.warning(
-                "research coverage judgement failed",
+                "research coverage judgement model call failed",
                 tenant=tenant_fingerprint(self.tenant_id),
                 stage="judge",
                 error=type(exc).__name__,
             )
-            return None
+            raise AppError(ErrorCode.MODEL_CALL_FAILED) from exc
         return verdicts, queries
 
     def _gap_verdicts(self) -> tuple[str, ...]:
@@ -976,15 +934,13 @@ class _Run:
           含义是「查过，没有」；让一个新样本把它们改成 ``supported``，缺口就会**静默消失**，
           而缺口闸正是靠 ``gaps`` 工作的。
 
-        复查失败（模型挂了 / 判据作废）**保持 ``unknown``**：不知道比猜一边好。这一步不改变
-        停止原因——它回答的是「材料够不够支撑」，不是「为什么停」。
+        这一步不改变停止原因——它回答的是「材料够不够支撑」，不是「为什么停」。
+        模型调用失败按第 13 步的规矩整单 50003，不再保持 ``unknown``。
         """
 
         if not any(item.status == SUPPORT_UNKNOWN for item in self.coverage):
             return
         judged = await self._judge()
-        if judged is None:
-            return
         second = {item.point_id: item for item in judged[0]}
         self.coverage = [
             second.get(item.point_id, item) if item.status == SUPPORT_UNKNOWN else item
@@ -1030,8 +986,8 @@ class _Run:
         try:
             result = await self._answer_blocks(prompt, uncovered=uncovered)
         except AnswerRejected as exc:
-            # 四条硬校验或缺口闸之一：**模型答了，但结论不能发**。不换模型重问（那是用成本
-            # 换概率），整单不生成——材料、计划与缺口清单仍然完整交回。
+            # 四条硬校验或缺口闸之一：**模型答了，但结论不能发**。整单不生成——
+            # 材料、计划与缺口清单仍然完整交回（这一步不是模型调用失败）。
             self.answer_rejected_reason = exc.reason
             logger.warning(
                 "research answer rejected",
@@ -1040,15 +996,14 @@ class _Run:
                 reason=exc.reason,
             )
             return
-        except Exception as exc:  # noqa: BLE001 - 生成失败不整单失败，材料照给
-            self.answer_rejected_reason = REJECTED_MALFORMED
+        except Exception as exc:  # noqa: BLE001 - 模型调用失败：整单 50003，客户重试
             logger.warning(
-                "research answer unavailable",
+                "research model call failed",
                 tenant=tenant_fingerprint(self.tenant_id),
                 stage="finalize",
                 error=type(exc).__name__,
             )
-            return
+            raise AppError(ErrorCode.MODEL_CALL_FAILED) from exc
 
         self._accept(result)
 
@@ -1077,51 +1032,14 @@ class _Run:
         return [texts[point_id] for point_id in self._gap_verdicts()]
 
     async def _answer_blocks(self, prompt: str, *, uncovered: Sequence[str]) -> FinalAnswer:
-        """问一次生成；强模型那条路上失败就换快模型兜底**一次**。
+        """问一次生成：单一 ``default`` 角色，失败由 ``_finalize`` 翻成整单 50003。
 
-        三种「强模型不可用」的处置在这里合流，但**成本不同**，所以不能合并成一件事：
-
-        * **未配置**（``available`` 为假）：一次都不问，直接快模型——白问一次既不计费也
-          不该计进成本，但它仍然是一次「没有用强模型」的事实，必须标记；
-        * **调用失败 / 超时**：那一次已经发出（可能已经计费），照实计数；再换快模型兜底
-          一次。兜底占的是 :data:`MAX_MODEL_CALLS_WITH_FALLBACK` 的第 4 格，没有那一格就
-          不兜底——把「上限」当上限，而不是当愿望。
+        第 13 步删掉了「强模型 + 快模型兜底」两条路径：平台不再分强弱模型，模型调用
+        失败也不再静默降级（客户重试即可）。硬校验不过（``AnswerRejected``）不是模型
+        失败——它是「答了但不能发」，仍按既有规矩返回 ``answer = null`` + 材料。
         """
 
-        provider = await self._strong_provider_of_role()
-        if provider is None:
-            self.strong_model_fallback = STRONG_MODEL_UNAVAILABLE
-            return await self._ask_once(await self.llm_factory(), prompt, uncovered=uncovered)
-
-        try:
-            return await self._ask_once(provider, prompt, uncovered=uncovered)
-        except AnswerRejected:
-            # 硬校验不过：这是「答了但不能发」，不是「没答出来」——不重试。
-            raise
-        except Exception:
-            self.strong_model_fallback = STRONG_MODEL_FAILED
-            if self.model_calls >= MAX_MODEL_CALLS_WITH_FALLBACK:
-                raise
-            return await self._ask_once(await self.llm_factory(), prompt, uncovered=uncovered)
-
-    async def _strong_provider_of_role(self) -> Any | None:
-        """装配强模型；装不出来或这台机器上没装（``available`` 为假）都返回 ``None``。"""
-
-        if self._strong_provider is not None:
-            return self._strong_provider
-        try:
-            provider = await self.strong_llm_factory()
-        except Exception as exc:  # noqa: BLE001 - 装配失败 = 未配置，换快模型
-            logger.warning(
-                "strong model assembly failed",
-                tenant=tenant_fingerprint(self.tenant_id),
-                error=type(exc).__name__,
-            )
-            return None
-        if not getattr(provider, "available", True):
-            return None
-        self._strong_provider = provider
-        return provider
+        return await self._ask_once(await self.llm_factory(), prompt, uncovered=uncovered)
 
     async def _ask_once(
         self, provider: Any, prompt: str, *, uncovered: Sequence[str]
@@ -1202,12 +1120,11 @@ class _Run:
             answer=self.answer,
             citations=self.citations,
             evidence_state=self.evidence_state,
-            strong_model_fallback=self.strong_model_fallback,
             sub_search_degraded=_dedupe(self._sub_search_degraded),
             answer_rejected_reason=self.answer_rejected_reason,
             coverage=coverage,
         )
-        # 响应与日志**同一套词**（父 spec：七种停止原因「响应 / 日志 / 界面同一套词」）。
+        # 响应与日志**同一套词**（六种停止原因「响应 / 日志 / 界面同一套词」）。
         # 日志只放派生量与计数，绝不放原问题、查询原文或模型写的文本；拒绝原因是一个
         # 固定串（一因一码），所以它可以进日志。缺口只记条数：要点文本是模型写的，
         # 它不该进日志（那是一条可能夹带正文的通道）。
@@ -1225,7 +1142,6 @@ class _Run:
             coverage_gaps=len(outcome.gaps),
             answered=outcome.answer is not None,
             answer_rejected=self.answer_rejected_reason,
-            strong_model_fallback=self.strong_model_fallback,
             sub_search_degraded=list(outcome.sub_search_degraded),
         )
         return outcome
@@ -1251,14 +1167,13 @@ async def run_research(
     tenant_id: str,
     search: SearchCallable,
     llm_factory: LLMFactory | None = None,
-    strong_llm_factory: LLMFactory | None = None,
     sub_search_degraded: Sequence[str] = (),
     clock: Clock | None = None,
 ) -> ResearchOutcome:
     """跑一次「规划 → 并行检索 → 覆盖判定 → 定向补证 → 生成引用块」。
 
-    ``search`` 是**注入的检索内核**（一次子查询一次调用）；``llm_factory`` 是规划 / 覆盖判定
-    的模型工厂，``strong_llm_factory`` 是生成的模型工厂（缺省走 ``strong`` 角色）；
+    ``search`` 是**注入的检索内核**（一次子查询一次调用）；``llm_factory`` 是规划 / 覆盖
+    判定 / 复查 / 生成四阶段共用的模型工厂（第 13 步起只有一个 ``default`` 角色）；
     ``clock`` 是可推进的单调时钟（缺省 ``time.monotonic``，用例用它把阶段预算推到 90 秒
     之外而不用真的等）。这些都是父 spec #138 定下的接缝，本函数不自己去造任何一个。
 
@@ -1272,7 +1187,6 @@ async def run_research(
         tenant_id=tenant_id,
         search=search,
         llm_factory=llm_factory,
-        strong_llm_factory=strong_llm_factory,
         sub_search_degraded=sub_search_degraded,
         clock=clock or time.monotonic,
     )
@@ -1289,8 +1203,6 @@ __all__ = [
     "PointVerdict",
     "ResearchOutcome",
     "ResearchPlan",
-    "STRONG_MODEL_FAILED",
-    "STRONG_MODEL_UNAVAILABLE",
     "SUPPORT_NONE",
     "SUPPORT_SUPPORTED",
     "SUPPORT_UNKNOWN",

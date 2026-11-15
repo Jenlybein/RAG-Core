@@ -91,7 +91,7 @@ MODEL_CALL_CAP: Final[int] = 60
 
 #: 一次 Research 的最坏模型调用次数，**从生产常量推**（不手抄）：
 #: 规划 + 判定 + 复查 + 生成 = ``MAX_MODEL_CALLS``（4），含生成阶段的强模型兜底再 +1
-#: = ``MAX_MODEL_CALLS_WITH_FALLBACK``（5）。
+#: = ``MAX_MODEL_CALLS``（4）。
 #:
 #: **这个数只用于「最坏情况」的估算**：`#165` 票面的 ≤60 是按旧成本契约（硬顶 3）估的，
 #: 加了 ⑤ 复查之后理论最坏 = 34 + 6×5 = **64 > 60**，而实际用了 **52**。两个数分开说，
@@ -1213,7 +1213,6 @@ async def run_full_research(
         "declared_insufficient": bool(answer is not None and GAP_DECLARATION in answer),
         "answer_rejected_reason": outcome.answer_rejected_reason,
         "citations": len(outcome.citations),
-        "strong_model_fallback": outcome.strong_model_fallback,
         "model_calls": outcome.model_calls,
         "duration_ms": outcome.duration_ms,
     }

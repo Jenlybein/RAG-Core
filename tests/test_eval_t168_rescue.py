@@ -395,11 +395,11 @@ def test_predict_model_calls_fits_the_cap_and_sums_the_breakdown() -> None:
     assert predicted["nominal"] == spec + tight
     assert predicted["spec_worst"] == 3 * WORST_CALLS_PER_CASE + 10 * 2 * WORST_CALLS_PER_CASE
     assert predicted["worst"] == predicted["spec_worst"] + 10 * WORST_CALLS_PER_CASE
-    # 票面设计本身在硬顶之内；**追加条件让名义与最坏都纸面超界**（实际花掉的是 108，
-    # 预算闸按最坏预留、按实际扣账，所以没有超跑）。这两个布尔值分开写，就是为了让
-    # 「纸面超了」与「实际超了」不被混成一句话。
+    # 票面设计本身在硬顶之内；删掉强模型兜底位之后每题少一次，追加条件让**最坏**
+    # 纸面超界、名义仍在界内（预算闸按最坏预留、按实际扣账，所以没有超跑）。
     assert predicted["spec_fits"] is True
-    assert predicted["nominal_fits"] is False
+    assert predicted["nominal_fits"] is True
+    assert predicted["worst_fits"] is False
     assert predicted["breakdown"]["A"]["cases"] == 3
     assert predicted["breakdown"]["B"]["conditions"] == 2
     assert predicted["breakdown"]["B-tight"]["cases"] == 10
@@ -717,12 +717,11 @@ def test_constants_mirror_the_production_contract() -> None:
     from app.services.research_limits import (
         MAX_FOLLOWUP_QUERIES,
         MAX_MODEL_CALLS,
-        MAX_MODEL_CALLS_WITH_FALLBACK,
     )
 
     assert FOLLOWUP_QUERY_CAP == MAX_FOLLOWUP_QUERIES
-    assert NOMINAL_CALLS_PER_CASE == MAX_MODEL_CALLS
-    assert WORST_CALLS_PER_CASE == MAX_MODEL_CALLS_WITH_FALLBACK
+    assert NOMINAL_CALLS_PER_CASE == MAX_MODEL_CALLS - 1
+    assert WORST_CALLS_PER_CASE == MAX_MODEL_CALLS
     assert SUPPORT_SUPPORTED == research_service.SUPPORT_SUPPORTED
     assert SUPPORT_NONE == research_service.SUPPORT_NONE
     assert SUPPORT_UNKNOWN == research_service.SUPPORT_UNKNOWN

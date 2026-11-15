@@ -67,7 +67,6 @@ def llm_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
     monkeypatch.setattr(settings, "LLM_PROVIDER", "deepseek")
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
     monkeypatch.setattr(settings, "LLM_MODEL", "deepseek-flash")
-    monkeypatch.setattr(settings, "LLM_STRONG_MODEL", "deepseek-v4-pro")
     monkeypatch.setattr(settings, "LLM_BASE_URL", "")
     monkeypatch.setattr(settings, "LLM_TIMEOUT_SECONDS", 30.0)
     return monkeypatch
@@ -94,7 +93,7 @@ def rerank_env(monkeypatch: pytest.MonkeyPatch) -> pytest.MonkeyPatch:
 async def test_the_same_llm_config_is_assembled_once(llm_env: pytest.MonkeyPatch) -> None:
     """同配置两次必须是同一个对象：这就是「连续两次检索只装配一次」的实现。"""
 
-    assert await get_llm_provider("fast") is await get_llm_provider("fast")
+    assert await get_llm_provider() is await get_llm_provider()
 
 
 @pytest.mark.parametrize(
@@ -112,10 +111,10 @@ async def test_changing_any_endpoint_field_yields_a_new_llm_provider(
 ) -> None:
     """配置一改就得到新实例：缓存键必须覆盖 provider / base_url / model / key / 超时。"""
 
-    before = await get_llm_provider("fast")
+    before = await get_llm_provider()
     llm_env.setattr(settings, field, value)
 
-    assert await get_llm_provider("fast") is not before
+    assert await get_llm_provider() is not before
 
 
 @pytest.mark.asyncio
@@ -128,7 +127,7 @@ async def test_changing_the_role_endpoint_yields_a_new_llm_provider(
         return None
 
     set_role_resolver(_none)
-    before = await get_llm_provider("fast")
+    before = await get_llm_provider()
 
     async def _ark(_role: str) -> RoleEndpoint | None:
         return RoleEndpoint(
@@ -141,40 +140,40 @@ async def test_changing_the_role_endpoint_yields_a_new_llm_provider(
 
     set_role_resolver(_ark)
 
-    after = await get_llm_provider("fast")
+    after = await get_llm_provider()
     assert after is not before
     assert after.model_name == "doubao-pro"
 
 
 @pytest.mark.asyncio
-async def test_the_strong_reasoning_effort_is_part_of_the_cache_key(
+async def test_the_reasoning_effort_is_part_of_the_cache_key(
     llm_env: pytest.MonkeyPatch,
 ) -> None:
-    """思考强度变了，强档装配出来的就是另一个模型：旧实例不许被复用。"""
+    """思考强度变了，装配出来的就是另一个模型：旧实例不许被复用。"""
 
     llm_env.setattr(settings, "LLM_REASONING_EFFORT", "off")
-    before = await get_llm_provider("strong")
+    before = await get_llm_provider()
 
     llm_env.setattr(settings, "LLM_REASONING_EFFORT", "high")
 
-    assert await get_llm_provider("strong") is not before
+    assert await get_llm_provider() is not before
 
 
 @pytest.mark.asyncio
-async def test_roles_are_cached_separately(llm_env: pytest.MonkeyPatch) -> None:
-    """fast 与 strong 是两档模型：共用一条缓存会串味。"""
+async def test_the_single_role_is_cached(llm_env: pytest.MonkeyPatch) -> None:
+    """第 13 步只有一个 default 角色：同一份配置两次装配拿到同一个实例。"""
 
-    assert await get_llm_provider("fast") is not await get_llm_provider("strong")
+    assert await get_llm_provider() is await get_llm_provider()
 
 
 @pytest.mark.asyncio
 async def test_reset_clears_the_llm_provider_cache(llm_env: pytest.MonkeyPatch) -> None:
     """复位入口是测试接缝（与 ``reset_keyword_search_provider_cache`` 同一条纪律）。"""
 
-    before = await get_llm_provider("fast")
+    before = await get_llm_provider()
     reset_llm_provider_cache()
 
-    assert await get_llm_provider("fast") is not before
+    assert await get_llm_provider() is not before
 
 
 @pytest.mark.asyncio
@@ -198,7 +197,7 @@ async def test_the_cache_holds_the_provider_but_never_the_model(
 
     monkeypatch.setattr("app.providers.llm._init_chat_model", _fake_init)
 
-    provider = await get_llm_provider("fast")
+    provider = await get_llm_provider()
     assert built == [], "装配 Provider 时不该构造模型"
 
     assert provider.chat_model is not None
@@ -314,7 +313,7 @@ def test_the_llm_provider_uses_the_current_loops_clients(llm_env: pytest.MonkeyP
     """装配出来的模型必须挂在注册表给的客户端上：异步按 loop、同步进程级。"""
 
     async def _run() -> None:
-        provider = await get_llm_provider("fast")
+        provider = await get_llm_provider()
         model = provider.chat_model  # type: ignore[attr-defined]
         try:
             assert model.http_async_client is http_clients.get_http_client()

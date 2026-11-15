@@ -158,7 +158,7 @@ async def build_llm_rerank_provider() -> RerankProvider:
     return LLMRerankProvider(
         # 重排是延迟敏感的一步：固定用 fast **模型角色**（与查询改写同角色，
         # 父 spec「两档模型」里的快档）。角色 ≠ 套餐 ≠ 第 7 步的质量档位。
-        llm=await get_llm_provider("fast"),
+        llm=await get_llm_provider(),
         max_candidates=settings.RERANK_MAX_CANDIDATES,
         chunk_max_chars=settings.RERANK_CHUNK_MAX_CHARS,
         timeout_seconds=settings.RERANK_TIMEOUT_SECONDS,

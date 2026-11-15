@@ -51,7 +51,7 @@ async def _llm_provider() -> Any:
 
     from app.providers.llm import get_llm_provider
 
-    return await get_llm_provider("fast")
+    return await get_llm_provider()
 
 
 def _build_user_prompt(*, title: str, heading_path: str, section_text: str) -> str:

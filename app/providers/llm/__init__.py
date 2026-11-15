@@ -59,7 +59,7 @@ from app.core.llm_vendors import LLM_VENDORS
 
 if TYPE_CHECKING:  # pragma: no cover —— 只给类型检查用，运行时不导入
     from langchain_core.language_models import BaseChatModel
-from app.core.model_roles import MODEL_ROLES
+from app.core.model_roles import MODEL_DEFAULT, MODEL_ROLES
 from app.providers.langchain_runtime import apply_framework_telemetry_switches
 from app.providers.llm.base import LLMProvider
 from app.providers.llm.langchain_llm import LangChainLLMProvider
@@ -149,15 +149,9 @@ if tuple(_VENDORS) != LLM_VENDORS:  # pragma: no cover - 名单不一致时才�
         f"必须逐个相等，当前分别是 {LLM_VENDORS} 与 {tuple(_VENDORS)}。"
     )
 
-# 两种**模型角色**：fast 用于查询改写与重排（要快、要稳），strong 留给 Research（要准）。
-#
-# 为什么叫「角色」而不是「档位」（GLOSSARY 合规）：本仓库里已经有另外两个同形词，指的
-# 都不是这件事——「套餐」是计费档（术语表里那个计费档的禁用词，本仓库不这么写），「档位」
-# 是第 7 步的质量档位（speed / balanced / quality / custom）。这里说的是「同一家供应商下
-# 哪个模型干什么活」，与计费、与质量档位都无关，所以三者必须用不同的词。
-#
-# 名字本身来自 ``app.core.model_roles``：角色指针的键名（``model.role.<role>``）、
-# 白名单、删除被引用判定都按同一份词汇表读，这里 import 而不是再写一遍元组。
+# 第 13 步起只有**一个**模型角色 ``default``：改写、分解、Research 四阶段都走它。
+# 名字来自 ``app.core.model_roles``：角色指针键名、白名单、删除被引用判定都按同一份
+# 词汇表读，这里 import 而不是再写一遍元组。
 _MODEL_ROLES = MODEL_ROLES
 
 # 「关掉思考」在配置里的写法；其余取值原样透传成框架的 reasoning_effort。
@@ -191,7 +185,7 @@ def _cached(key: tuple[Any, ...], build: Callable[[], LLMProvider]) -> LLMProvid
     return provider
 
 
-async def get_llm_provider(role: str = "fast") -> LLMProvider:
+async def get_llm_provider(role: str = MODEL_DEFAULT) -> LLMProvider:
     """按「角色指针 → 模型配置行 → 回落 .env」装配（顺序见模块文档）。
 
     **协程**（票 #137）：角色指针只能当场读库，而这次读库走 ``AsyncSession``——同步工厂
@@ -276,7 +270,8 @@ async def get_llm_provider(role: str = "fast") -> LLMProvider:
         # 也不是静默降级成「检索照常、改写悄悄不生效」。
         return _cached(_NOOP_KEY + (role,), NoopLLMProvider)
 
-    model_name = settings.LLM_MODEL if role == "fast" else settings.LLM_STRONG_MODEL
+    # 单一角色：模型名只有一个来源（LLM_MODEL），不再按 fast/strong 分叉。
+    model_name = settings.LLM_MODEL
     return _cached_assembly(
         vendor=vendor,
         api_key=api_key,
@@ -309,8 +304,8 @@ def _assembly_key(
         model_name,
         api_key,
         settings.LLM_TIMEOUT_SECONDS,
-        # 强档的思考强度进装配参数（fast 写死关思考，不受配置影响，所以不进键）。
-        settings.LLM_REASONING_EFFORT if role == "strong" else None,
+        # 单一角色：思考强度由部署配置决定，进装配参数与缓存键。
+        settings.LLM_REASONING_EFFORT,
     )
 
 
@@ -359,18 +354,13 @@ def _assemble(
     if resolved_base_url:
         options["base_url"] = resolved_base_url
 
-    # fast 角色写死关思考：改写与重排要的是低延迟与稳定输出，这是代码约束而不是
-    # 运维纪律（配置里写 high 也影响不到 fast）。strong 角色才由配置决定。
-    if role == "strong":
-        effort = settings.LLM_REASONING_EFFORT.strip().lower()
-        if effort not in _REASONING_OFF:
-            options["reasoning_effort"] = effort
-    else:
-        # 温度固定 0：改写与重排都是**确定性**步骤，而各家的默认温度是 1.0 量级。
-        # 留默认值会让「同样的请求两次返回相同顺序」这条承诺直接失效，而 RRF 把
-        # k=60 写死、融合加 tie-breaker 全是为了同一件事。strong 角色不设温度：
-        # Research 需要一点发散，且那个角色的参数不该由检索链路替它决定。
-        options["temperature"] = 0
+    # 单一角色的装配参数：思考强度由部署配置决定，温度固定 0。
+    # 温度固定 0 是**确定性**那条承诺的落地：改写、分解、Research 各阶段的同一份输入
+    # 要能复现；各家默认温度是 1.0 量级，留默认值会让「同样的请求两次结果一致」失效。
+    effort = settings.LLM_REASONING_EFFORT.strip().lower()
+    if effort not in _REASONING_OFF:
+        options["reasoning_effort"] = effort
+    options["temperature"] = 0
 
     # OpenAI 兼容的那几家接受调用方提供的连接（LangChain 的 ``http_client`` /
     # ``http_async_client``）。anthropic / google_genai 的字段里没有这两个名字，传进去

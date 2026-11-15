@@ -219,15 +219,14 @@ async def gated_research(
     query: str,
     search: SearchCallable | None = None,
     llm_factory: LLMFactory | None = None,
-    strong_llm_factory: LLMFactory | None = None,
     clock: Clock | None = None,
 ) -> ResearchData:
     """按门禁顺序跑完整次 Research，返回**已经校验成形**的响应数据。
 
-    ``search`` / ``llm_factory`` / ``strong_llm_factory`` / ``clock`` 是四个注入缝（父 spec
-    #138：「新服务 Research 吃注入的检索内核 + 模型工厂」）。生产路径一个都不传——缺省走
-    真实内核、两个真实模型角色与 ``time.monotonic``；用例换掉它们就能在不发网络的前提
-    下验完门禁、降级与上限。
+    ``search`` / ``llm_factory`` / ``clock`` 是三个注入缝（父 spec #138）。生产路径一个
+    都不传——缺省走真实内核、唯一的 ``default`` 模型角色与 ``time.monotonic``；用例换掉
+    它们就能在不发网络的前提下验完门禁与上限。第 13 步起模型调用失败整单 50003，
+    不再有强模型工厂与兜底注入缝。
 
     参数非法、越权、无授权、超限都在这里抛出 ``AppError``（ADR-0007：业务失败，HTTP 200 +
     非零 ``code``）。**子检索自身的故障原样上抛**：它意味着这套集成的检索不可用，而
@@ -291,7 +290,6 @@ async def gated_research(
             on_degraded=sub_search_degraded.append,
         ),
         llm_factory=llm_factory,
-        strong_llm_factory=strong_llm_factory,
         sub_search_degraded=sub_search_degraded,
         clock=clock,
     )
@@ -336,13 +334,13 @@ async def gated_research(
 def _degraded_reason_of(outcome: Any) -> str | None:
     """归属索引那一列只记**一条**原因（一因一码，先到的才是根因）。
 
-    顺序：子检索自己的降级 > 生成阶段换了快模型。前者发生在材料到手之前，后者是收尾时
-    的事——两条中哪一条先发生，哪一条才是解释「这一次为什么不如预期」的那一条。
+    第 13 步之后唯一的产出方是子检索自己的降级：模型调用失败整单 50003，不会走到
+    写归属索引这一步；强模型兜底字段已经删除。
     """
 
     if outcome.sub_search_degraded:
         return outcome.sub_search_degraded[0]
-    return outcome.strong_model_fallback
+    return None
 
 
 __all__ = ["build_kernel_search", "ensure_research_allowed", "gated_research"]

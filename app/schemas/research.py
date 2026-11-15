@@ -127,17 +127,14 @@ class ResearchMetadata(BaseModel):
     它不该在这里出现。把成本写在这里是 ADR-0026 §5 的要求——「每次 Research 花多久、
     几次模型调用」必须可读，否则它会被当成普通检索来用。
 
-    三条**不丢信息**的字段（票 #149），各自回答一个别的字段回答不了的问题：
+    三条**不丢信息**的字段，各自回答一个别的字段回答不了的问题：
 
     * ``trace_id``：这次调用的身份（32 位十六进制，与归属索引那一行**同一个值**）。一次
       Research 只有一行归属索引，所以这根线能直接翻回那一行——子检索不各写一行；
     * ``evidence_state``：``complete`` / ``partial`` / ``missing``，由核心片数算出来。
       ``stop_reason`` 说的是「为什么停」，**说不出一件事**：材料够不够。两者都要有；
     * ``sub_search_degraded_reasons``：子检索自身的降级原因（一因一码的固定串，去重）。
-      没有它，一次「关键词一路挂了、只是碰巧向量一路也命中了」的 Research 看起来完全正常；
-    * ``strong_model_fallback``：生成阶段是不是快模型兜的底，以及为什么（``strong model
-      unavailable`` / ``strong model failed``）。正常路径是 ``null``——「没有降级」不能被
-      一个占位串说成有。
+      没有它，一次「关键词一路挂了、只是碰巧向量一路也命中了」的 Research 看起来完全正常。
     """
 
     plan_name: str
@@ -150,7 +147,6 @@ class ResearchMetadata(BaseModel):
     #: OpenAPI 里也是一份穷举清单（不是让第三个词冒出来）。
     evidence_state: Literal["complete", "partial", "missing"] = "missing"
     sub_search_degraded_reasons: list[str] = Field(default_factory=list)
-    strong_model_fallback: str | None = None
 
 
 class ResearchCitation(BaseModel):
@@ -250,7 +246,6 @@ def payload_of(
             "trace_id": trace_id,
             "evidence_state": outcome.evidence_state,
             "sub_search_degraded_reasons": list(outcome.sub_search_degraded),
-            "strong_model_fallback": outcome.strong_model_fallback,
         },
     }
 

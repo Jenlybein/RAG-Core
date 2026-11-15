@@ -5,7 +5,7 @@
 - **列表里的 ``api_key`` 永远是 masked**（``sk-…abcd``）。明文只有 ``GET /{id}/secret``
   一条出口（响应模型 :class:`ModelConfigSecretData`），所以「列表」与「显示原文」在类型
   上是两个不同的东西，而不是同一个字段靠参数开关——后者一次「顺手加个字段」就泄露了；
-- **``roles`` 在列表响应里**：面板（#96）要显示「fast / strong 指向哪一条」。让页面再
+- **``roles`` 在列表响应里**：面板（#96）要显示「default 角色指向哪一条」。让页面再
   去读一次 ``GET /console/settings`` 拼这个关系，等于让前端复述一遍「指针值 = 配置 id」
   这条知识；服务端已经算过一遍（:func:`app.services.model_config_service.list_configs`）。
 

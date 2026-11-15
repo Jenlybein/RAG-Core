@@ -152,9 +152,9 @@ TIGHT_TOP_K: Final[int] = 1
 
 #: 一次 Research 的**名义**与**最坏**模型调用次数，从生产常量抄（不手编）：
 #: 规划 + 判定 + 复查 + 生成 = ``MAX_MODEL_CALLS``（4）；含生成阶段的强模型兜底位 =
-#: ``MAX_MODEL_CALLS_WITH_FALLBACK``（5）。``tests/test_eval_t168_rescue.py`` 钉住两者相等。
-NOMINAL_CALLS_PER_CASE: Final[int] = 4
-WORST_CALLS_PER_CASE: Final[int] = 5
+#: ``MAX_MODEL_CALLS``（4）。``tests/test_eval_t168_rescue.py`` 钉住两者相等。
+NOMINAL_CALLS_PER_CASE: Final[int] = 3
+WORST_CALLS_PER_CASE: Final[int] = 4
 
 #: A 组与 B 组各自的检索深度。**B 组压到 2 是本票唯一的人造条件**（见模块文档）。
 A_TOP_K: Final[int] = 5
@@ -1534,7 +1534,6 @@ RECORD_KEYS: Final[tuple[str, ...]] = (
     "answer_rejected_reason",
     "insufficient",
     "evidence_state",
-    "strong_model_fallback",
     "sub_search_degraded",
     "duration_ms",
     "archive",
@@ -1625,7 +1624,6 @@ def case_record(
         "answer_rejected_reason": outcome.answer_rejected_reason,
         "insufficient": _insufficient_blocks(citations),
         "evidence_state": outcome.evidence_state,
-        "strong_model_fallback": outcome.strong_model_fallback,
         "sub_search_degraded": list(outcome.sub_search_degraded),
         "duration_ms": int(outcome.duration_ms),
         "archive": dict(archive_evidence or {}),
