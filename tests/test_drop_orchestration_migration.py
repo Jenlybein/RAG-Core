@@ -91,7 +91,11 @@ def _revision_of(path: Path) -> str:
 def _down_revision_of(path: Path) -> str | None:
     match = _DOWN_REVISION_RE.search(path.read_text(encoding="utf-8"))
     assert match is not None, f"{path.name}: 找不到 down_revision"
-    return match.group("down_revision").strip().strip("'\"")
+    value = match.group("down_revision").strip()
+    # initial 那条写的是 ``down_revision = None``：链的起点，不是「指向一条叫 None 的迁移」。
+    if value.strip("'\"") == "None":
+        return None
+    return value.strip("'\"")
 
 
 def test_the_migration_is_named_after_its_twelve_hex_revision() -> None:
@@ -102,11 +106,13 @@ def test_the_migration_is_named_after_its_twelve_hex_revision() -> None:
     assert path.name == f"{revision}_{SLUG}.py"
 
 
-def test_it_sits_on_the_head_it_was_written_against_and_is_the_single_head() -> None:
+def test_it_sits_on_the_head_it_was_written_against_and_stays_on_the_chain() -> None:
     """接在当时的唯一 head 上，且整条链仍然只有一个 head。
 
-    「链尾是哪个文件」必须是人看过一眼确认的事，不由代码自动推导出来——所以这里写死
-    ``PREVIOUS_HEAD``，每加一条迁移就要人改一次。
+    「接点是哪个文件」必须是人看过一眼确认的事，不由代码自动推导出来——所以这里写死
+    ``PREVIOUS_HEAD``，每加一条迁移就要人改一次。但「本票是链尾」那半句会随后续迁移
+    失效（#171 的文档稿次列改名就接在它后面），所以链尾只验「唯一」，本条的接法改成
+    「从链尾往回走能走到它」。
     """
 
     path = _migration_path(SLUG)
@@ -119,7 +125,17 @@ def test_it_sits_on_the_head_it_was_written_against_and_is_the_single_head() -> 
     heads = sorted(set(revisions) - pointed_at)
 
     assert len(heads) == 1, f"整条链应当只有一个 head，实际 {heads}"
-    assert heads == [_revision_of(path)], f"链尾应当是本条迁移，实际 {heads}"
+
+    walked: list[str] = []
+    cursor: str | None = heads[0]
+    while cursor is not None:
+        walked.append(cursor)
+        parent = _down_revision_of(revisions[cursor])
+        if parent is not None:
+            assert parent in revisions, f"{parent}: down_revision 指向一条不存在的迁移"
+        cursor = parent
+
+    assert _revision_of(path) in walked, "本条迁移不在链上（说明它被孤立了）"
 
 
 def test_upgrade_drops_exactly_the_three_columns() -> None:
