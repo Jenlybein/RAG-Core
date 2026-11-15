@@ -249,6 +249,7 @@ class _RecordingStore:
     def __init__(self) -> None:
         self.calls: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
+        self.purged: dict[str, Any] | None = None
 
     async def delete_by_document_id(
         self,
@@ -260,6 +261,11 @@ class _RecordingStore:
         doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge")
+        self.purged = {
+            "tenant_id": tenant_id,
+            "index_version": index_version,
+            "doc_version": doc_version,
+        }
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
         self.calls.append("add")
@@ -507,3 +513,37 @@ def test_rebuild_rejects_an_explicit_draft_that_has_no_version_row(
 
     assert caught.value.code is ErrorCode.NOT_FOUND
     assert store.written == [], "一行切片都不许写"
+
+
+def test_the_draft_from_the_payload_wins_over_the_pointer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """指针已切回第 1 稿，而载荷说的是第 2 稿：这次索引仍算第 2 稿（#173）。
+
+    这就是「迟到的任务」那一格：任务在指针前移之前投递、在回滚之后才被消费。正文、
+    切片稿号、清除范围三者都必须跟着**载荷**走——只要有一处去读指针，就会写出一批
+    「标着第 1 稿、装着第 2 稿正文」的切片，或者把第 1 稿的切片一起删掉。
+    """
+
+    _patch_rebuild_collaborators(monkeypatch, _document(current_version=1))
+    monkeypatch.setattr(
+        indexing_service,
+        "prepare_document_content",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("带稿号的重建不该读文档行快照")
+        ),
+    )
+    splitter = _TextRecordingSplitter(
+        [SplitPiece(text="第 2 稿正文：证书有效期 90 天。", metadata={"heading_path": "错误码"})]
+    )
+    store = _RecordingStore()
+    session = AsyncRecordingSession(
+        rows={DocumentVersion: [_version_row(2, "第 2 稿正文：证书有效期 90 天。")]}
+    )
+
+    service = IndexingService(splitter=splitter, embeddings=_StubEmbeddings(), stores=[store])
+    asyncio.run(service.index_existing_document(session, DOCUMENT_ID, doc_version=2))
+
+    assert splitter.inputs == ["第 2 稿正文：证书有效期 90 天。"]
+    assert store.written[0][0]["doc_version"] == 2, "切片稿号跟载荷走"
+    assert store.purged is not None and store.purged["doc_version"] == 2, "清除范围也跟载荷走"

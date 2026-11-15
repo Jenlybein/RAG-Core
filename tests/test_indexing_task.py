@@ -563,7 +563,7 @@ class _FailingService:
         self.exc = exc
 
     async def index_existing_document(
-        self, _db: Any, _document_id: str, *, reparse: bool = False
+        self, _db: Any, _document_id: str, *, reparse: bool = False, doc_version=None
     ) -> int:
         raise self.exc
 
@@ -713,6 +713,67 @@ def test_task_marks_failed_when_retries_are_exhausted(monkeypatch: pytest.Monkey
     assert len([entry for entry in logs if entry.get("event") == FAILED_MESSAGE]) == 1
 
 
+def test_task_passes_the_draft_number_from_the_payload_to_the_pipeline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """载荷里的稿号原样交给流水线（#173）：任务体**不读指针**。
+
+    指针是活数据：回滚刚把它切回第 1 稿时，一个还在路上、本来算的是第 2 稿的任务若
+    自己去读指针，就会把第 2 稿的内容写成第 1 稿的切片。所以稿号在投递那一刻固定，
+    任务体只做搬运。
+    """
+
+    session = _FakeSession()
+    observed: list[int | None] = []
+
+    class _RecordingService:
+        async def index_existing_document(
+            self,
+            _db: Any,
+            _document_id: str,
+            *,
+            reparse: bool = False,
+            doc_version: int | None = None,
+        ) -> int:
+            observed.append(doc_version)
+            return 1
+
+    _patch_task_runtime(monkeypatch, service=_RecordingService(), session=session)
+
+    _run_indexing(
+        _FakeTask(), DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID, doc_version=3
+    )
+
+    assert observed == [3], "载荷带的稿号必须原样进流水线"
+
+
+def test_task_passes_no_draft_when_the_payload_carries_none(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """载荷没带稿号时传 ``None``：流水线据此回落文档行的当前指针（老投递点）。"""
+
+    session = _FakeSession()
+    observed: list[int | None] = []
+
+    class _RecordingService:
+        async def index_existing_document(
+            self,
+            _db: Any,
+            _document_id: str,
+            *,
+            reparse: bool = False,
+            doc_version: int | None = None,
+        ) -> int:
+            observed.append(doc_version)
+            return 1
+
+    _patch_task_runtime(monkeypatch, service=_RecordingService(), session=session)
+
+    _run_indexing(_FakeTask(), DOC_ID, tenant_id=TENANT_ID, kb_id=KB_ID)
+
+    assert observed == [None]
+
+
 def test_task_binds_request_id_for_the_duration_of_the_run(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -723,7 +784,7 @@ def test_task_binds_request_id_for_the_duration_of_the_run(
 
     class _RecordingService:
         async def index_existing_document(
-            self, _db: Any, _document_id: str, *, reparse: bool = False
+            self, _db: Any, _document_id: str, *, reparse: bool = False, doc_version=None
         ) -> int:
             observed.append(get_contextvars())
             return 2

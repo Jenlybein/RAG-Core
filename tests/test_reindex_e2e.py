@@ -229,6 +229,8 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
             "kb_id": KB_ID,
             "request_id": REQUEST_ID,
             "reparse": False,
+            # 稿号在**投递那一刻**从指针取下来、随任务走（#173）：Worker 不再去读指针。
+            "doc_version": 1,
         }
     ]
 

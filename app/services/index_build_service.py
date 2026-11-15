@@ -436,6 +436,9 @@ class IndexBuildService:
                     document.id,
                     # 目标版本是本票的唯一输入：写错版本等于「构建成功但没人看得见」。
                     index_version=row.version,
+                    # 稿号在**这一轮构建的此刻**定下来（#173）：整库构建要跑很久，中途有人
+                    # 回滚某篇文档不该让同一批切片一半是旧稿一半是新稿。
+                    doc_version=document.current_version,
                     # 重建的输入本来就是成功文档，必须允许抢占它们。
                     allow_success=True,
                 )

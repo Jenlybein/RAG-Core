@@ -117,8 +117,18 @@ def enqueue_document(
     kb_id: str,
     request_id: str | None,
     reparse: bool = False,
+    doc_version: int | None = None,
 ) -> None:
-    """把索引任务投递到 Broker，带上请求关联标识以便 Worker 续用同一个号牌。"""
+    """把索引任务投递到 Broker，带上请求关联标识以便 Worker 续用同一个号牌。
+
+    ``doc_version`` 是**这次索引算的是哪一稿**（#173），跟着载荷一起走：投递方知道
+    就用它（路由 / 脚本在投递那一刻读指针），不知道才留 ``None``——那时 Worker 回落
+    文档行的当前稿指针。**绝不能反过来「让 Worker 自己读」**：指针是活数据，回滚刚
+    切完它时，一个迟到的任务会把别的稿写进来。
+
+    键始终出现在载荷里（哪怕值是 ``None``）：任务记录里因此一眼看得出「这次投递有没有
+    指定稿号」，而不是靠键的缺席去表达。
+    """
 
     get_task_publisher().apply_async(
         kwargs={
@@ -127,6 +137,7 @@ def enqueue_document(
             "kb_id": kb_id,
             "request_id": request_id,
             "reparse": reparse,
+            "doc_version": doc_version,
         },
         task_id=f"doc:{document_id}",
     )
@@ -192,6 +203,7 @@ async def enqueue_document_after_commit(
     kb_id: str,
     request_id: str | None,
     reparse: bool = False,
+    doc_version: int | None = None,
 ) -> None:
     """``after_commit`` 用的异步版本：参数与 :func:`enqueue_document` 逐字一致。
 
@@ -209,4 +221,5 @@ async def enqueue_document_after_commit(
         kb_id=kb_id,
         request_id=request_id,
         reparse=reparse,
+        doc_version=doc_version,
     )
