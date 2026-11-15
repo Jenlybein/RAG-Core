@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -175,11 +176,15 @@ def _patch_service_environment(
     document: Any | None = None,
     stores: list[_RecordingStore] | None = None,
     parsed_content: str | None = None,
+    patch_parse: bool = True,
 ) -> SimpleNamespace:
     """把仓储、解析入口与三个可注入依赖换成离线替身，返回被测装配。
 
     ``parsed_content`` 非空时，解析替身返回这段**字面**正文（不跟随文档行）——正文
     回写要用它当独立真值：断言里那份文本来自规格，不是从被测代码算出来的。
+
+    ``patch_parse=False`` 保留**真的**解析入口（#182）：重解析要证明的是「读的是哪一份
+    字节」，把那一步也换成替身就只剩「有人调过它」，什么字节被读到反而验不了。
     """
 
     doc = document if document is not None else _document()
@@ -214,7 +219,8 @@ def _patch_service_environment(
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _try_claim)
     monkeypatch.setattr(document_repository, "update_status", _update_status)
-    monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
+    if patch_parse:
+        monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
 
     # 写入目标版本取自库上的生效版本（#142）：会话替身刻意不回答 ``get``（「取行由仓储
     # 替身接管」），所以这一个协作者也换成替身。它自己的行为由
@@ -977,3 +983,185 @@ def test_service_never_fabricates_a_version_row_for_an_older_draft(
     )
 
     assert _added_versions(env) == []
+
+# ------------------------------------ 重解析写回同一稿（#182：正文真值只有一个地方）
+#
+# 不变量：**重解析之后，这一稿的版本行正文就是本次解析结果，文档行正文也是它**。
+# 在那之前 ``reparse=True`` 只改写文档行，版本行留着上一份解析产物——「正文真值在版本表」
+# 当场分叉，而 T10 的对账第一条硬检查正好是「文档正文 == 当前稿正文」。
+
+
+def test_reparse_writes_the_parsed_text_back_to_the_same_draft_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重解析的产物落在**同一稿的版本行**上：正文与校验和换掉，稿号不变、不新增行。
+
+    文档行跟着同步（那一稿就是当前稿），于是「文档正文 == 当前稿正文」当场成立。
+    校验和必须跟着换：对账读的是它，只换正文会让两列互相矛盾。
+    """
+
+    from app.models.document_version import DocumentVersion
+    from app.repositories import document_version_repository
+    from app.utils.checksum import checksum_of
+
+    version_row = DocumentVersion(
+        id="v1",
+        document_id=DOC_ID,
+        version=1,
+        content="旧解析结果（2025 版）",
+        checksum=checksum_of("旧解析结果（2025 版）"),
+        status="current",
+        source_file_path="tenant_demo/doc-1.v1.md",
+    )
+
+    async def _existing_version(_db: Any, _document_id: str, _version: int) -> Any:
+        return version_row
+
+    monkeypatch.setattr(document_version_repository, "get_by_version", _existing_version)
+    # 这条用例验的是**写回哪一行**，解析本身换成替身：「解析器读到了什么字节」由
+    # ``test_reparse_reads_the_source_file_of_the_target_draft`` 用真文件钉。
+    monkeypatch.setattr(
+        indexing_service,
+        "parse_source_file",
+        lambda _path, *, filename=None: ParsedDocument(
+            content=REPARSED_TEXT, source_type="markdown"
+        ),
+    )
+
+    document = _document()
+    document.content = "旧解析结果（2025 版）"
+    calls: list[str] = []
+    env = _patch_service_environment(
+        monkeypatch,
+        calls,
+        pieces=[SplitPiece(text="p", metadata={})],
+        vectors=[[0.1]],
+        document=document,
+        parsed_content=REPARSED_TEXT,
+    )
+
+    asyncio.run(env.service.index_existing_document(env.session, DOC_ID, reparse=True))
+
+    assert version_row.content == REPARSED_TEXT, "版本行正文必须是本次解析结果"
+    assert version_row.checksum == checksum_of(REPARSED_TEXT), "校验和跟着正文一起换"
+    assert (version_row.version, version_row.status) == (1, "current"), "稿号与状态不变"
+    assert _added_versions(env) == [], "重解析不新增版本行"
+    assert env.document.content == REPARSED_TEXT, "文档行跟着当前稿同步"
+    assert env.session.commits == 2, "写回不额外提交：它是 Tx2 的一部分"
+
+def test_reparse_reads_the_source_file_of_the_target_draft(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """重解析读的是**这一稿自己的**源文件，不是文档行上那份（它可能已经是别的稿的字节）。
+
+    每一稿的源文件路径都带稿号（``<doc>.v<N><ext>``），而文档行上的那份只指向"最新一次
+    上传"。读文档行时，重解析第 1 稿会解析到第 2 稿的字节——症状是「重建之后内容莫名其妙
+    变了」，既不报错也不留痕。
+
+    这也是一篇迟到任务：指针已经前移到第 2 稿，所以第 1 稿的产物只落在它自己那行版本记录
+    上，不覆盖文档行。
+    """
+
+    from app.models.document_version import DocumentVersion
+    from app.repositories import document_version_repository
+    from app.utils.checksum import checksum_of
+
+    draft_file = tmp_path / "doc.v1.md"
+    draft_file.write_text("# 第一稿\n\n第一稿的正文", encoding="utf-8", newline="\n")
+    later_draft_file = tmp_path / "doc.v2.md"
+    later_draft_file.write_text("# 第二稿\n\n第二稿的正文", encoding="utf-8", newline="\n")
+
+    version_row = DocumentVersion(
+        id="v1",
+        document_id=DOC_ID,
+        version=1,
+        content="第一稿的旧解析结果",
+        checksum=checksum_of("第一稿的旧解析结果"),
+        status="archived",
+        source_file_path=str(draft_file),
+    )
+
+    async def _existing_version(_db: Any, _document_id: str, _version: int) -> Any:
+        return version_row
+
+    monkeypatch.setattr(document_version_repository, "get_by_version", _existing_version)
+
+    document = _document()
+    document.current_version = 2
+    document.content = "第一稿的旧正文"
+    document.source_file_path = str(later_draft_file)
+    document.source_filename = "doc.md"
+    env = _patch_service_environment(
+        monkeypatch,
+        [],
+        pieces=[SplitPiece(text="p", metadata={})],
+        vectors=[[0.1]],
+        document=document,
+        patch_parse=False,
+    )
+
+    asyncio.run(
+        env.service.index_existing_document(env.session, DOC_ID, doc_version=1, reparse=True)
+    )
+
+    assert version_row.content == "# 第一稿\n\n第一稿的正文", "读的是这一稿自己的源文件"
+    assert "第二稿" not in version_row.content, "读到了另一稿的字节"
+    assert env.document.content == "第一稿的旧正文", "旧稿的产物不覆盖文档行"
+
+def test_reparse_fails_on_a_draft_without_a_source_file_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """目标稿没有可读源文件 → 沿用既有错误码 20023，且一条写都没发生（不留半份）。
+
+    JSON 提交的稿次没有源文件。这时拿文档行那份顶替是**更坏**的选择：那份字节属于
+    最新一次上传，不是这一稿的——解析出来会是一份「标着第 N 稿、装着别的稿正文」的
+    正文，而它恰好是 T10 对账要抓的分歧。宁可报错：正文、校验和、切片、状态全保持原样。
+    """
+
+    from app.models.document_version import DocumentVersion
+    from app.repositories import document_version_repository
+    from app.utils.checksum import checksum_of
+
+    decoy_file = tmp_path / "doc.v2.md"
+    decoy_file.write_text("# 第二稿\n\n第二稿的正文", encoding="utf-8", newline="\n")
+
+    version_row = DocumentVersion(
+        id="v1",
+        document_id=DOC_ID,
+        version=1,
+        content="第一稿的正文",
+        checksum=checksum_of("第一稿的正文"),
+        status="current",
+        source_file_path=None,
+    )
+
+    async def _existing_version(_db: Any, _document_id: str, _version: int) -> Any:
+        return version_row
+
+    monkeypatch.setattr(document_version_repository, "get_by_version", _existing_version)
+
+    document = _document()
+    document.content = "第一稿的正文"
+    document.source_file_path = str(decoy_file)
+    document.source_filename = "doc.v2.md"
+    env = _patch_service_environment(
+        monkeypatch,
+        [],
+        pieces=[SplitPiece(text="p", metadata={})],
+        vectors=[[0.1]],
+        document=document,
+        patch_parse=False,
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        asyncio.run(env.service.index_existing_document(env.session, DOC_ID, reparse=True))
+
+    assert exc_info.value.code is ErrorCode.DOCUMENT_PARSE_FAILED
+    assert (version_row.content, version_row.checksum) == (
+        "第一稿的正文",
+        checksum_of("第一稿的正文"),
+    ), "版本行原样不动"
+    assert env.document.content == "第一稿的正文", "文档行原样不动"
+    assert env.session.commits == 1, "只有抢占那一笔提交；Tx2 一次都没提交"
+    assert (env.stores[0].deleted, env.stores[0].written) == ([], []), "没有半份写入"
+    assert _added_versions(env) == [], "不补行、不新增版本行"

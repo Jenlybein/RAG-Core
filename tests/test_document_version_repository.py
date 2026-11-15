@@ -1,9 +1,12 @@
-"""#175 · 版本行的**写入侧**仓储：真 SQL、真唯一约束，但不连 PostgreSQL。
+"""#175 / #182 · 版本行的**写入侧**仓储：真 SQL、真唯一约束，但不连 PostgreSQL。
 
 建版本这条路径要动 ``document_versions`` 四件事：算下一个稿号、落新行、把旧稿转归档、
 按稿号列版本。它们全部收在仓储里，所以这里用 ``sqlite+aiosqlite`` 的真实会话验——
 唯一约束、``UPDATE ... WHERE``、``ORDER BY`` 都是数据库才有答案的东西，替身会话对这些
 只会点头（先例：``tests/test_index_version.py`` / ``tests/test_document_version_delete.py``）。
+
+#182 的重解析写回也在这里验：它动的是**同一行**（正文 + 校验和），稿号 / 状态 / 行数
+一个都不许变——那是「正文真值在版本表」这条不变量成立的条件。
 
 **这里不验「并发的两个提交拿到不同稿号」**：SQLite 没有行锁，那条保证由 PostgreSQL 的
 ``SELECT ... FOR UPDATE`` 给（见 :func:`test_the_lock_statement_is_a_locking_read` 与
@@ -137,6 +140,48 @@ async def test_create_flushes_but_does_not_commit(version_db: AsyncSession) -> N
     await version_db.rollback()
 
     assert await document_version_repository.get_by_version(version_db, "doc-1", 1) is None
+
+
+# ── 重解析写回同一稿（#182）──
+
+
+@pytest.mark.asyncio
+async def test_rewrite_content_updates_text_and_checksum_on_the_same_row(
+    version_db: AsyncSession,
+) -> None:
+    """重解析写回**同一行**：正文与校验和换掉，稿号 / 状态 / 创建时间 / 行数一个不动。
+
+    「不新增版本行」是这条票的要害：多出来的那一行会在时间轴上凭空多出一稿，而 T10 的
+    对账第一条硬检查（文档正文 == 当前稿正文）从此永远红。状态也不许动——重解析不是
+    切稿，归档稿重新解析完仍是归档稿。
+    """
+
+    from app.utils.checksum import checksum_of
+
+    created_at = datetime(2026, 11, 15, 0, 0, 0)
+    original = DocumentVersion(
+        id="v1",
+        document_id="doc-1",
+        version=1,
+        content="旧解析结果（2025 版）",
+        checksum=checksum_of("旧解析结果（2025 版）"),
+        status="archived",
+        created_at=created_at,
+    )
+    await _seed(version_db, original)
+
+    await document_version_repository.rewrite_content(
+        version_db, original, content="新解析结果（PDF 解析器）"
+    )
+
+    rows = await document_version_repository.list_by_document(version_db, "doc-1")
+    assert len(rows) == 1, "重解析不新增版本行"
+    row = rows[0]
+    assert (row.id, row.version, row.status) == ("v1", 1, "archived"), "行身份、稿号、状态不变"
+    assert row.created_at == created_at
+    assert row.content == "新解析结果（PDF 解析器）"
+    assert row.checksum == checksum_of("新解析结果（PDF 解析器）"), "校验和跟着正文一起换"
+    assert row.checksum != checksum_of("旧解析结果（2025 版）")
 
 
 # ── 归档旧稿 ──

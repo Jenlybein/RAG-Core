@@ -12,6 +12,10 @@ C. 两者都没有 → ``DOCUMENT_PARSE_FAILED``。
 ``content_from_version`` 是重建侧的入口（#173）：正文的真值在版本表（ADR-0005 D6），
 ``documents.content`` 只是热路径的快照。
 
+``parse_source_file`` 是**重解析**侧的入口（#182）：重解析要读的是「这一稿自己的源文件」，
+而文档行上的路径只指向最新一次上传。两者都走同一个解析注册表——「字节 → 文本」全项目
+只有一份实现，否则两个入口会在某次改动里解析出不同的正文，而那个差异不会在任何地方报错。
+
 同步实现：解析是纯 CPU 活（读字节、解码 / 转 HTML / 抽文本），异步只在外层——
 T4 的 Celery 任务包住整条流水线。
 """
@@ -35,17 +39,36 @@ def prepare_document_content(document: Document, *, reparse: bool = False) -> Pa
         )
 
     if document.source_file_path:
-        data = _read_source_file(document.source_file_path)
         # 解析器按扩展名选。正常上传一定有 source_filename；但历史行、人手修过的行可能没有，
         # 那时退回落盘路径自己的扩展名——否则错误码是「no parser supports: 」(空名字)，
         # 读的人完全看不出该补什么。这个兜底只在这种缺名字的情况下生效。
-        filename = document.source_filename or Path(document.source_file_path).name
-        return parse_uploaded_bytes(data, filename=filename)
+        return parse_source_file(
+            document.source_file_path, filename=document.source_filename
+        )
 
     raise AppError(
         ErrorCode.DOCUMENT_PARSE_FAILED,
         "document content and file are both empty",
     )
+
+
+def parse_source_file(path: str | None, *, filename: str | None = None) -> ParsedDocument:
+    """从**一份落盘的源文件**解析出正文（重解析的入口，#182）。
+
+    与 ``prepare_document_content`` 的分支 B 是同一条路：读字节 → 按文件名选解析器。
+    抽成函数是因为重解析要传的是**版本行自己的**路径（``<doc>.v<N><ext>``），而不是
+    文档行上那份（它只指向最新一次上传）；两者读的是不同文件，走的却必须是同一个解析器。
+
+    路径为空（JSON 提交的稿次没有源文件）或文件已不在盘上时，一律
+    ``DOCUMENT_PARSE_FAILED``：重解析没有源文件就没有正文，拿库里的旧正文凑合等于
+    「重解析」这件事没发生，而调用方会以为换了解析器。解析出空正文与上传那条链路同一
+    口径（``DOCUMENT_CONTENT_EMPTY``）。
+    """
+
+    if not path:
+        raise AppError(ErrorCode.DOCUMENT_PARSE_FAILED, "document version has no source file")
+    data = _read_source_file(path)
+    return parse_uploaded_bytes(data, filename=filename or Path(path).name)
 
 
 def parse_uploaded_bytes(data: bytes, *, filename: str) -> ParsedDocument:
