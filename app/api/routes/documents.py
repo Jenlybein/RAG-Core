@@ -297,6 +297,11 @@ async def delete_document(
         stores=build_chunk_stores(get_vector_store(), get_keyword_search_provider()),
     )
     remove_document_file(doc.source_file_path)
+    # 版本行的源文件按**稿号**落盘（``<doc_id>.v<N><ext>``，#175），所以它们不会出现在
+    # ``doc.source_file_path`` 里：不清就是一批永远无人认领的文件（文档行与版本行都没了，
+    # 没有任何地方还记着这些路径）。
+    for version_file in await document_version_repository.source_file_paths(db, document_id):
+        remove_document_file(version_file)
     await document_version_repository.delete_for_document(db, document_id)
     await db.delete(doc)
 

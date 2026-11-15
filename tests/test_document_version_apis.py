@@ -610,3 +610,77 @@ def test_listing_versions_of_a_document_without_rows_is_an_empty_list(
 
     assert body["code"] == 0
     assert body["data"] == {"document_id": DOC_ID, "current_version": 1, "items": []}
+
+def test_two_consecutive_submissions_get_consecutive_draft_numbers(
+    api: SimpleNamespace,
+) -> None:
+    """连着提交两次 → 第 2、第 3 稿，各自一条当前稿行。
+
+    稿号由 ``max(version) + 1`` 在**文档行锁内**算出来（见
+    ``document_repository.lock_statement``）：后一个提交读到的 ``max`` 一定是前一个写下的
+    那一行，于是两个提交永远不会算出同一个号。这条用例钉的是「串行化之后的样子」；
+    「撞上了怎么办」由冲突那条用例覆盖。
+    """
+
+    _one_version_ready(api)
+
+    first = _submit(api, content="第一次修改。").json()
+    second = _submit(api, content="第二次修改。").json()
+
+    assert first["code"] == 0
+    assert second["code"] == 0, "刚提交过一稿的文档是「已排队未开工」，不是「处理中」"
+    assert (first["data"]["version"], second["data"]["version"]) == (2, 3)
+    assert second["data"]["previous_version"] == 2
+
+    assert api.rows() == [
+        (1, "archived", OLD_CONTENT),
+        (2, "archived", "第一次修改。"),
+        (3, "current", "第二次修改。"),
+    ]
+    assert api.document().current_version == 3
+
+# ── 删文档时版本行的源文件也要走 ──
+
+
+def test_deleting_the_document_also_removes_the_version_source_files(
+    api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """版本行的源文件是按稿号落盘的（#175），删文档时必须一起清掉。
+
+    不清的后果不是报错，而是一批永远无人认领的文件：文档行与版本行都没了，没有任何地方
+    还记着这些路径——`rm -rf` 之外的清理方式都找不到它们。
+    """
+
+    documents_route = importlib.import_module("app.api.routes.documents")
+    monkeypatch.setattr(documents_route, "build_chunk_stores", lambda *_a, **_k: [])
+
+    storage = Path(settings.DOCUMENT_STORAGE_PATH)
+    v1_file = storage / TENANT_ID / f"{DOC_ID}.v1.md"
+    v2_file = storage / TENANT_ID / f"{DOC_ID}.v2.md"
+    for path, body in ((v1_file, b"v1"), (v2_file, b"v2")):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(body)
+
+    api.seed(
+        _doc_row(current_version=2, content=NEW_CONTENT, status=DocumentStatus.SUCCESS),
+        _version_row(
+            version_id="v1",
+            version=1,
+            content=OLD_CONTENT,
+            status="archived",
+            source_file_path=f"{TENANT_ID}/{DOC_ID}.v1.md",
+        ),
+        _version_row(
+            version_id="v2",
+            version=2,
+            content=NEW_CONTENT,
+            source_file_path=f"{TENANT_ID}/{DOC_ID}.v2.md",
+        ),
+    )
+
+    response = api.client.delete(f"/api/v1/documents/{DOC_ID}")
+
+    assert response.json()["code"] == 0
+    assert not v1_file.exists(), "第 1 稿的源文件还在"
+    assert not v2_file.exists(), "当前稿的源文件还在"
+    assert api.rows() == [], "版本行随文档一起走"
