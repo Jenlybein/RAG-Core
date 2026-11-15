@@ -1,12 +1,15 @@
-"""版本行的数据访问：唯一能碰 ``document_versions`` 的一层（#172 / #173）。
+"""版本行的数据访问：唯一能碰 ``document_versions`` 的一层（#172 / #173 / #175）。
 
-本文件只放仓储该管的读与删：
+本文件放仓储该管的读、写与删：
 
 * :func:`get_by_version` —— 取某一稿的版本行（重建的正文真值从这里读，#173 / D6）；
+* :func:`max_version` —— 这篇文档现在最高是第几稿（建版本的 ``+1`` 从它起算，#175）；
+* :func:`create` —— 落一条新版本行（只 flush，让 ``(document_id, version)`` 唯一约束
+  在这里撞出来）；
+* :func:`archive_current_except` —— 把别的当前稿行转归档（切指针的另一半，#175）；
+* :func:`list_by_document` —— 列版本（按稿号倒序，#175 的读接口）；
+* :func:`source_file_paths` —— 这篇文档各稿的源文件路径（删文档时一起清掉）；
 * :func:`delete_for_document` —— 删文档时把这一篇的版本行带走（#172）。
-
-写入侧（建版本、归档旧稿、切指针）属于后续的票（#175 / #176），这里不提前长出来：
-没有调用点的函数没人验证，而「先建好再说」的那一半最容易与真实写入路径分叉。
 
 只 flush / execute，不 commit——事务由请求边界收口（与其余仓储同一口径）。
 
@@ -16,14 +19,25 @@
 兜底：入口都是先按 ``(id, tenant_id)`` 取到文档行、守卫通过，再调本层；
 ``document_id`` 是服务端生成的 UUID，跨租户撞不上。给这里加一个没有列可比的租户参数
 只会造出「看起来在过滤、其实没有」的假守卫。
+
+## 稿号为什么由写侧算（``max + 1``）
+
+列上没有默认值（见 ``app/models/document_version.py``），于是「忘了传稿号」当场是
+``IntegrityError`` 而不是一次静默的 ``1``。串行化由**文档行的 ``FOR UPDATE`` 锁**给
+（``app.repositories.document_repository.lock_for_version``）：两个提交排队算同一个
+``max``，后一个看到的一定是前一个写下的行。
 """
 
 from __future__ import annotations
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.document_version import DocumentVersion
+from app.models.document_version import (
+    DOCUMENT_VERSION_ARCHIVED,
+    DOCUMENT_VERSION_CURRENT,
+    DocumentVersion,
+)
 
 
 async def get_by_version(
@@ -48,6 +62,87 @@ async def get_by_version(
     return (await db.execute(statement)).scalars().first()
 
 
+async def max_version(db: AsyncSession, document_id: str) -> int:
+    """这篇文档现在的最高稿号；一条都没有时是 **0**（于是下一个稿号是 1）。
+
+    ``coalesce`` 写在 SQL 里而不是在 Python 里 ``or 0``：``max()`` 对空集返回 NULL，
+    而 ``None + 1`` 会炸在一个和稿号无关的行上。返回 0 让「还没建过版本」成为一条
+    正常输入（#172 之前上传的文档全是这样）。
+    """
+
+    statement = select(func.coalesce(func.max(DocumentVersion.version), 0)).where(
+        DocumentVersion.document_id == document_id
+    )
+    return int((await db.execute(statement)).scalar_one())
+
+
+async def create(db: AsyncSession, version: DocumentVersion) -> DocumentVersion:
+    """落一条新版本行并 ``flush``（不提交）。
+
+    ``flush`` 是刻意的：``(document_id, version)`` 的唯一约束必须在**写路径里**撞出来，
+    调用方才能把它映射成「冲突，请重试」（20029）。若拖到请求边界的提交才炸，那时已经
+    没法把错误归因到「稿号撞了」，只能整笔 500。
+    """
+
+    db.add(version)
+    await db.flush()
+    return version
+
+
+async def archive_current_except(db: AsyncSession, document_id: str, *, keep: int) -> None:
+    """把这篇文档里**除第 ``keep`` 稿之外**的当前稿行转归档。
+
+    「除 keep 之外」而不是「比 keep 小的」：库里万一残留一条更高稿号的当前行（历史事故、
+    人工修数），「每篇文档恰好一条当前稿版本行」也不能被它破掉。
+
+    一条 ``UPDATE ... WHERE`` 打掉整批，不在 Python 里逐行改：行数是「这篇文档有几条
+    当前稿」的函数，逐行改会把一次切稿变成 N 次往返，而切稿在写请求里。
+    """
+
+    await db.execute(
+        update(DocumentVersion)
+        .where(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.version != keep,
+            DocumentVersion.status == DOCUMENT_VERSION_CURRENT,
+        )
+        .values(status=DOCUMENT_VERSION_ARCHIVED)
+        .execution_options(synchronize_session=False)
+    )
+
+
+async def list_by_document(db: AsyncSession, document_id: str) -> list[DocumentVersion]:
+    """这篇文档的全部版本行，**按稿号倒序**（现在这一稿在最前）。
+
+    排序放在 SQL 里：调用方（列表接口）按同一个顺序渲染，而应用层排序会在
+    「有 200 稿的文档」上把整表读进内存。带正文与否由调用方决定，这里一律读全行——
+    正文列是 ``Text``，多读一次比多一个「只读元数据」的孪生查询便宜，也少一处会漂移的
+    列白名单。
+    """
+
+    statement = (
+        select(DocumentVersion)
+        .where(DocumentVersion.document_id == document_id)
+        .order_by(DocumentVersion.version.desc())
+    )
+    return list((await db.execute(statement)).scalars().all())
+
+
+async def source_file_paths(db: AsyncSession, document_id: str) -> list[str]:
+    """这篇文档各稿的源文件路径（去掉 NULL）。
+
+    删文档时用：版本行的源文件是本票新增的落盘产物（``<doc_id>.v<N><ext>``），不跟着
+    删就是一批永远无人认领的文件。
+
+    读的是**整行**而不是只选 ``source_file_path`` 一列：``select(Model.列)`` 在离线替身
+    （``tests/fake_db.RecordingSession``）上认不出是哪张表，删文档那条既有路径会在套件里
+    炸掉——而这条查询的唯一目的就是删文件，不值得为它换一套替身。
+    """
+
+    rows = await list_by_document(db, document_id)
+    return [row.source_file_path for row in rows if row.source_file_path]
+
+
 async def delete_for_document(db: AsyncSession, document_id: str) -> None:
     """删掉这篇文档的**全部**版本行（当前稿与归档稿一起走）。
 
@@ -62,4 +157,13 @@ async def delete_for_document(db: AsyncSession, document_id: str) -> None:
     await db.execute(delete(DocumentVersion).where(DocumentVersion.document_id == document_id))
 
 
-__all__ = ["delete_for_document", "get_by_version"]
+__all__ = [
+    "archive_current_except",
+    "create",
+    "delete_for_document",
+    "get_by_version",
+    "list_by_document",
+    "max_version",
+    "source_file_paths",
+]
+
