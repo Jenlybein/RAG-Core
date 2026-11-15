@@ -94,6 +94,15 @@ def _chunk(index_version: str | None = "v1") -> dict[str, object]:
     return chunk
 
 
+def _draft_chunk(chunk_id: str, doc_version: int) -> dict[str, object]:
+    """同一篇文档的一片的第 ``doc_version`` 稿版本（id 不同，其余同形）。"""
+
+    chunk = _chunk()
+    chunk["id"] = chunk_id
+    chunk["doc_version"] = doc_version
+    return chunk
+
+
 @pytest.mark.asyncio
 async def test_add_chunks_persists_the_original_content_with_index_version_v1(
     chunk_session: AsyncSession,
@@ -154,6 +163,42 @@ async def test_add_chunks_falls_back_to_the_first_draft(chunk_session: AsyncSess
     assert row.doc_version == 1
 
 
+@pytest.mark.asyncio
+async def test_delete_by_document_id_scopes_to_one_draft(chunk_session: AsyncSession) -> None:
+    """按「文档 + 稿次」删（#173）：只删这一稿的切片行，别的稿原样留着。
+
+    这是「每稿各留切片」的删除侧：重建第 2 稿只清第 2 稿，第 1 稿一行都不动——
+    否则回滚到第 1 稿时那些切片永远回不来了。
+    """
+
+    store = PgVectorStore()
+    await store.add_chunks(chunk_session, [_draft_chunk("chunk-v1", 1), _draft_chunk("chunk-v2", 2)])
+    await chunk_session.flush()
+
+    await store.delete_by_document_id(
+        chunk_session, DOCUMENT_ID, tenant_id=TENANT_ID, doc_version=2
+    )
+
+    rows = (await chunk_session.execute(select(Chunk.id, Chunk.doc_version).order_by(Chunk.id))).all()
+    assert [(row.id, row.doc_version) for row in rows] == [("chunk-v1", 1)]
+
+
+@pytest.mark.asyncio
+async def test_delete_by_document_id_without_a_draft_removes_every_draft(
+    chunk_session: AsyncSession,
+) -> None:
+    """``doc_version=None`` = 这篇文档的所有稿：删文档那条老路径仍能清干净。"""
+
+    store = PgVectorStore()
+    await store.add_chunks(chunk_session, [_draft_chunk("chunk-v1", 1), _draft_chunk("chunk-v2", 2)])
+    await chunk_session.flush()
+
+    await store.delete_by_document_id(chunk_session, DOCUMENT_ID, tenant_id=TENANT_ID)
+
+    rows = (await chunk_session.execute(select(Chunk.id))).all()
+    assert rows == []
+
+
 # --------------------------------------------------------------- 索引编排的写入契约
 
 
@@ -204,7 +249,13 @@ class _RecordingStore:
         self.written: list[list[dict[str, Any]]] = []
 
     async def delete_by_document_id(
-        self, _db: Any, _document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        _document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge")
 

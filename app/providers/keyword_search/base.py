@@ -73,7 +73,12 @@ class KeywordSearchProvider(ABC):
 
     @abstractmethod
     async def delete_by_document_id(
-        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         """删某文档的关键词文档；必须带 tenant_id 过滤，否则会删到别的租户。
 
@@ -82,4 +87,9 @@ class KeywordSearchProvider(ABC):
         ``app/providers/keyword_search/versioned_index.py``），所以「全部版本」意味着
         遍历该库的全部版本物理索引——只删生效那一个会留下幽灵文档：某个归档版本被重新
         启用时，那些已删文档会原样回来。
+
+        ``doc_version`` 是**第二个删除范围**（#173，与索引版本正交）：给了稿号只删那一稿，
+        ``None`` 删这篇文档的所有稿（删文档那条老路径）。同一张物理索引里装着这篇文档的
+        每一稿，所以稿号在这里不是「第二道防线」而是**唯一**的那道：少了它，重建一次就
+        把旧稿从关键词那一路抹掉，而向量那一路还留着。
         """

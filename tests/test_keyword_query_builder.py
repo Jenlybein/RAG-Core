@@ -329,6 +329,30 @@ def test_purge_query_deletes_by_document_and_tenant_only() -> None:
     }
 
 
+def test_purge_query_can_be_scoped_to_one_draft() -> None:
+    """按「文档 + 稿次」清理（#173）：只删这一稿的关键词文档。
+
+    旧稿的关键词文档必须原样留着（ADR-0005 D4 选 B：每稿各留切片），否则重建 v2
+    会把 v1 从关键词索引里抹掉，而向量侧还留着——两路对同一稿给出不同答案。
+    """
+
+    query = build_purge_query(document_id="doc-1", tenant_id=TENANT_ID, doc_version=2)
+
+    assert {"term": {"doc_version": 2}} in query["query"]["bool"]["filter"]
+    assert {"term": {"document_id": "doc-1"}} in query["query"]["bool"]["filter"]
+
+
+def test_purge_query_without_a_draft_still_clears_every_draft() -> None:
+    """``doc_version=None`` 是「这篇文档的所有稿」——删文档那条老路径仍要清干净。"""
+
+    query = build_purge_query(document_id="doc-1", tenant_id=TENANT_ID, doc_version=None)
+
+    assert [list(clause["term"]) for clause in query["query"]["bool"]["filter"]] == [
+        ["tenant_id"],
+        ["document_id"],
+    ]
+
+
 # ──────────────────────────────────────────────────── 切片 → 关键词文档
 
 

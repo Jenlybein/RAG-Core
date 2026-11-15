@@ -233,7 +233,13 @@ class _RecordingStore:
         self.written: list[dict[str, Any]] = []
 
     async def delete_by_document_id(
-        self, _db: Any, _document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        _document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         return None
 

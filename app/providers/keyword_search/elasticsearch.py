@@ -293,7 +293,12 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         ]
 
     async def delete_by_document_id(
-        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         # 给了版本只清那一张物理索引（重建新版本时绝不碰线上那一版）；没给版本时用
         # ``<别名>__*`` 覆盖**全部**版本——删文档要在每个版本里都清掉，否则某个归档版本
@@ -311,6 +316,8 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
                     document_id=document_id,
                     tenant_id=tenant_id,
                     index_version=index_version,
+                    # 稿号是第二个删除范围（#173）：重建第 2 稿只清第 2 稿，旧稿原样留着。
+                    doc_version=doc_version,
                 ),
                 refresh=True,
                 # 通配符匹配到零张索引时 ES 会报「no such index」；那是「本来就没有可删的」。

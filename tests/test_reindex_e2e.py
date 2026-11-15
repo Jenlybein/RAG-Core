@@ -73,7 +73,13 @@ class _RecordingStore:
         self.written: list[list[dict[str, Any]]] = []
 
     async def delete_by_document_id(
-        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)

@@ -93,6 +93,7 @@ async def purge_document_chunks(
     tenant_id: str,
     stores: list[ChunkStore],
     index_version: str | None = None,
+    doc_version: int | None = None,
 ) -> None:
     """先删后写的第一半：遍历**存储列表**，逐个清除该文档的旧切片。
 
@@ -104,13 +105,21 @@ async def purge_document_chunks(
     ``index_version`` 是**删除范围**（#142）：重建写到目标版本时只清目标版本的旧行，
     线上那一版一个字节都不动；``None`` 表示「这份文档的所有版本」——删文档才这样。
 
+    ``doc_version`` 是**第二个删除范围**（#173）：重建第 2 稿时只清第 2 稿的切片，
+    第 1 稿原样留着（ADR-0005 D4 选 B「每稿各留切片」）；``None`` 表示「这篇文档的
+    所有稿」——删文档那条老路径仍用它，行为与引入稿号前逐字相同。
+
     会话类型是 ``AsyncSession``：Worker 索引、数据面删除与控制面删除都在异步栈上
     （第 11 步票 #132 / #130）。
     """
 
     for store in stores:
         await store.delete_by_document_id(
-            db, document_id, tenant_id=tenant_id, index_version=index_version
+            db,
+            document_id,
+            tenant_id=tenant_id,
+            index_version=index_version,
+            doc_version=doc_version,
         )
 
 

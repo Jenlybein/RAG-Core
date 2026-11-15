@@ -30,7 +30,7 @@ from app.providers.parsers.base import ParsedDocument
 from app.repositories import document_repository, knowledge_base_repository
 from app.services import indexing_service
 from app.services.chunk_store import KeywordSearchChunkStore, build_chunk_stores
-from app.services.indexing_service import IndexingService
+from app.services.indexing_service import IndexingService, purge_document_chunks
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
 from tests import fake_db
@@ -80,13 +80,25 @@ class _RecordingStore:
         self.calls = calls
         self.name = name
         self.deleted: list[tuple[str, str]] = []
+        self.purged: dict[str, Any] | None = None
         self.written: list[list[dict[str, Any]]] = []
 
     async def delete_by_document_id(
-        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append((document_id, tenant_id))
+        self.purged = {
+            "tenant_id": tenant_id,
+            "index_version": index_version,
+            "doc_version": doc_version,
+        }
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
         self.calls.append(f"add:{self.name}")
@@ -100,6 +112,7 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
         self.calls = calls
         self.written: list[list[dict[str, Any]]] = []
         self.deleted: list[tuple[str, str]] = []
+        self.purged: dict[str, Any] | None = None
         self.fail_on_add = fail_on_add
 
     @property
@@ -113,10 +126,20 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
         self.written.append(chunks)
 
     async def delete_by_document_id(
-        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge:keyword")
         self.deleted.append((document_id, tenant_id))
+        self.purged = {
+            "tenant_id": tenant_id,
+            "index_version": index_version,
+            "doc_version": doc_version,
+        }
 
 
 class _StubEmbeddings:
@@ -208,6 +231,54 @@ def test_keyword_store_satisfies_the_same_write_contract() -> None:
     assert provider.written == [chunks]
     assert provider.deleted == [(DOC_ID, TENANT_ID)]
     assert calls == ["add:keyword", "purge:keyword"]
+
+
+def test_purge_scopes_both_stores_by_document_and_draft() -> None:
+    """清除键扩到「文档 + 稿次」时两个存储都按新键删（#173）。
+
+    只删一边会留下永远查不到的幽灵切片：删了向量侧的稿 2、关键词侧还留着，那批文档
+    既不会被召回（向量那一路没有它），也永远不会被清掉——除非重建重新踩到同一稿。
+    所以编排层把同一个 ``doc_version`` 原样发给列表里的每一处存储。
+    """
+
+    calls: list[str] = []
+    vector = _RecordingStore(calls)
+    provider = _RecordingKeywordProvider(calls)
+    stores = build_chunk_stores(vector, provider)
+
+    asyncio.run(
+        purge_document_chunks(
+            _FakeSession(), DOC_ID, tenant_id=TENANT_ID, stores=stores, doc_version=2
+        )
+    )
+
+    assert calls == ["purge:vector", "purge:keyword"]
+    assert [store.purged for store in (vector, provider)] == [
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": 2},
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": 2},
+    ], "两处存储收到的必须是同一个稿号"
+
+
+def test_purge_without_a_draft_keeps_deleting_the_whole_document() -> None:
+    """不传稿次时行为不变：删整篇的所有稿，两个存储都按老键删。"""
+
+    calls: list[str] = []
+    vector = _RecordingStore(calls)
+    provider = _RecordingKeywordProvider(calls)
+
+    asyncio.run(
+        purge_document_chunks(
+            _FakeSession(),
+            DOC_ID,
+            tenant_id=TENANT_ID,
+            stores=build_chunk_stores(vector, provider),
+        )
+    )
+
+    assert [store.purged for store in (vector, provider)] == [
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": None},
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": None},
+    ]
 
 
 def test_build_chunk_stores_pairs_vector_store_with_keyword_provider() -> None:

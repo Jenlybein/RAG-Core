@@ -309,7 +309,11 @@ def build_bm25_query(
 
 
 def build_purge_query(
-    *, document_id: str, tenant_id: str, index_version: str | None = None
+    *,
+    document_id: str,
+    tenant_id: str,
+    index_version: str | None = None,
+    doc_version: int | None = None,
 ) -> dict:
     """返回 ``delete_by_query`` 的请求体：只删这个租户的这一份文档。
 
@@ -319,6 +323,11 @@ def build_purge_query(
     ``index_version`` 非空时再加一条版本过滤（#142）：重建新版本只清目标版本，
     线上那一版原样留着。物理索引本来就按版本隔离，这条过滤是第二道防线——它会在
     「写进了错误物理索引」时把误删挡住，而那种错一旦发生，删掉的就是线上数据。
+
+    ``doc_version`` 非空时再加一条稿号过滤（#173）：重建第 2 稿只清第 2 稿的关键词文档，
+    旧稿原样留着。这条过滤是**必须的**（不像版本过滤只是第二道防线）：同一张物理索引里
+    本来就同时装着这篇文档的每一稿，少了它，重建一次就把旧稿从关键词那一路抹掉了，
+    而向量那一路还在——两路对同一稿给出不同答案。``None`` = 这篇文档的所有稿。
     """
 
     filters: list[dict] = [
@@ -327,6 +336,8 @@ def build_purge_query(
     ]
     if index_version is not None:
         filters.append({"term": {"index_version": index_version}})
+    if doc_version is not None:
+        filters.append({"term": {"doc_version": doc_version}})
 
     return {"query": {"bool": {"filter": filters}}}
 

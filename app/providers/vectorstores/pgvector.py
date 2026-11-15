@@ -196,12 +196,19 @@ class PgVectorStore(VectorStore):
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
-        """删该文档的切片行；``index_version`` 非空时只删那一版（#142）。
+        """删该文档的切片行；两个范围参数都可缺省，缺省即「不按这一维收窄」。
+
+        ``index_version`` 非空时只删那一版（#142）。
 
         **带版本删是为了不弄空线上那一版**：重建 v2 时若把这份文档的 v1 行也删了，
         构建期间的检索会在一段时间里查不到它——而「构建期间线上照旧查旧版本」恰恰要求
         旧行原样不动。
+
+        ``doc_version`` 非空时只删那一稿（#173）：重建第 2 稿时第 1 稿的切片一个字节都
+        不动（ADR-0005 D4 选 B「每稿各留切片」）。两者正交：**同一稿可能被多轮索引版本
+        各写一遍**，所以两个条件要同时带。
         """
 
         statement = delete(Chunk).where(
@@ -209,5 +216,7 @@ class PgVectorStore(VectorStore):
         )
         if index_version is not None:
             statement = statement.where(Chunk.index_version == index_version)
+        if doc_version is not None:
+            statement = statement.where(Chunk.doc_version == doc_version)
         await db.execute(statement)
         await db.flush()
