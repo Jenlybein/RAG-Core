@@ -583,6 +583,39 @@ async def test_a_smaller_retain_count_widens_the_window(retention_db: AsyncSessi
 
 
 @pytest.mark.asyncio
+async def test_the_default_wiring_purges_both_stores(
+    retention_db: AsyncSession, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``stores`` 缺省时按默认接线现建：向量存储与关键词检索是**同一个列表里的两个元素**。
+
+    只清一个存储等于把「向量库里没了、关键词库里还在」这种不一致留在库里（索引阶段不做
+    降级，清理阶段也不能只做一半）。这里把装配换成两个记账替身，验的是「两个都遍历到了」。
+    """
+
+    from app.providers import keyword_search, vectorstores
+    from app.services import chunk_store
+
+    await _seed_five_drafts(retention_db)
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    vector, keyword = _RecordingStore(), _RecordingStore()
+    monkeypatch.setattr(vectorstores, "get_vector_store", lambda: vector)
+    monkeypatch.setattr(keyword_search, "get_keyword_search_provider", lambda: object())
+    monkeypatch.setattr(
+        chunk_store, "build_chunk_stores", lambda _vector, _keyword: [vector, keyword]
+    )
+
+    async with async_transaction(retention_db):
+        await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3
+        )
+
+    assert [call["doc_version"] for call in vector.calls] == [2, 1]
+    assert [call["doc_version"] for call in keyword.calls] == [2, 1]
+
+
+@pytest.mark.asyncio
 async def test_the_window_counts_drafts_not_time(retention_db: AsyncSession) -> None:
     """窗口按稿数算：十年前建的稿子只要在窗口内就留着，一分钟前建的过期稿照样清。
 
