@@ -1,0 +1,200 @@
+"""文档列表的 ``chunk_count`` 只数**当前稿**（数据面 ``GET /documents`` 与控制面的知识库树）。
+
+同一个谓词（``chunks.doc_version = documents.current_version``）在检索链路上有五个落点
+（``tests/test_retrieval_current_draft.py``），而文档列表的**对外数字**是第六处：它数的是
+「这份文档现在有几片可召回」。ADR-0005 选 B（每稿各留一套切片）之后，库里同一篇文档可以
+有两三稿的切片同时存在——这一处漏掉谓词时，``chunk_count`` 会变成各留存稿之和（留 3 稿就
+约 3 倍），而**没有任何地方会报错**：调用方只是看到一个比实际召回量大的数字，前端拿它做
+「这份文档有没有内容」的判断，于是「三稿共 7 片」与「当前稿 2 片」看起来一样可信。
+
+接缝：与 ``test_retrieval_current_draft.py`` 的后半段同一套做法——内存 SQLite 里建真表、
+真的写下两稿切片，然后跑**仓储里那条生产语句**（不是复制品）。不上真库、不跑 ASGI：
+这里要钉的是「数的是哪些行」，接口层只是把这个字典填进响应（``test_upload_async`` 已钉）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+from collections.abc import AsyncIterator
+from typing import Any
+
+import pytest
+import pytest_asyncio
+from sqlalchemy import text
+from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+from app.repositories import chunk_repository
+
+TENANT = "tenant_demo"
+OTHER_TENANT = "tenant_other"
+KB = "kb-a"
+
+DOCUMENTS_DDL = """
+CREATE TABLE documents (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(36) NOT NULL,
+    current_version INTEGER NOT NULL DEFAULT '1'
+)
+"""
+
+CHUNKS_DDL = """
+CREATE TABLE chunks (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(36) NOT NULL,
+    document_id VARCHAR(36) NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    metadata JSON NOT NULL,
+    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+    doc_version INTEGER NOT NULL DEFAULT '1'
+)
+"""
+
+#: 三篇文档、留两稿的现场：
+#:
+#: * ``doc-1``：指针在第 2 稿，第 1 稿 3 片（保留窗口内还在）、第 2 稿 2 片 → 只该数 **2**；
+#: * ``doc-2``：只长到第 1 稿、1 片 → **1**；
+#: * ``doc-3``：指针已切到第 2 稿、但第 2 稿的切片还没建好（D5 的在途窗口）→ 数 **0**，
+#:   且按仓储契约「没有切片的文档不在字典里」，它整条不该出现。
+SEEDED_ROWS = (
+    f"INSERT INTO documents (id, tenant_id, kb_id, current_version) "
+    f"VALUES ('doc-1', '{TENANT}', '{KB}', 2)",
+    f"INSERT INTO documents (id, tenant_id, kb_id, current_version) "
+    f"VALUES ('doc-2', '{TENANT}', '{KB}', 1)",
+    f"INSERT INTO documents (id, tenant_id, kb_id, current_version) "
+    f"VALUES ('doc-3', '{TENANT}', '{KB}', 2)",
+    # doc-1 第 1 稿：三片（旧稿，读不到但要占着存储）
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c1-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿一', '[]', "
+    f"'{{}}', 'v1', 1)",
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c2-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿二', '[]', "
+    f"'{{}}', 'v1', 1)",
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c3-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿三', '[]', "
+    f"'{{}}', 'v1', 1)",
+    # doc-1 第 2 稿：两片（当前稿）
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c1-v2', '{TENANT}', '{KB}', 'doc-1', '当前稿一', '[]', "
+    f"'{{}}', 'v1', 2)",
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c2-v2', '{TENANT}', '{KB}', 'doc-1', '当前稿二', '[]', "
+    f"'{{}}', 'v1', 2)",
+    # doc-2 第 1 稿：一片
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c1-v1-d2', '{TENANT}', '{KB}', 'doc-2', '只有一稿', "
+    f"'[]', '{{}}', 'v1', 1)",
+    # doc-3：上一稿的切片还在，当前稿那一片还没建出来
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c1-v1-d3', '{TENANT}', '{KB}', 'doc-3', '上一稿', '[]', "
+    f"'{{}}', 'v1', 1)",
+)
+
+
+@pytest_asyncio.fixture
+async def drafts() -> AsyncIterator[AsyncSession]:
+    """一个干净的**内存库**：文档行带当前稿指针，切片分属两稿（一稿一份语句，生产形状）。"""
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        for statement in (DOCUMENTS_DDL, CHUNKS_DDL, *SEEDED_ROWS):
+            await connection.execute(text(statement))
+    async with AsyncSession(engine) as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
+    await engine.dispose()
+
+
+def _sql(statement: Any) -> str:
+    """编译成压平空白的 SQL（只对结构敏感，不对排版敏感）。"""
+
+    return " ".join(str(statement.compile(dialect=postgresql.dialect())).split())
+
+
+async def _counts(drafts: AsyncSession) -> dict[str, int]:
+    return await chunk_repository.count_by_document_ids(
+        drafts, ["doc-1", "doc-2", "doc-3"], tenant_id=TENANT
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_count_covers_only_the_current_draft(drafts: AsyncSession) -> None:
+    """同一文档两稿各若干片：``chunk_count`` 只算**当前稿**，不是各稿之和。
+
+    旧口径（没有当前稿条件）在这里会给出 ``doc-1: 5``——三片旧稿一起被数进去。这个数字是
+    对外可见的（``GET /documents`` 与控制面知识库树都用它），前端据此判断「这份文档有没有
+    内容」，所以「多了几片」不会被任何人当成故障。
+    """
+
+    counts = await _counts(drafts)
+
+    assert counts == {"doc-1": 2, "doc-2": 1}, (
+        "doc-1 的两片当前稿 + doc-2 的一片；旧稿的三片一片都不许数进来"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_document_whose_current_draft_has_no_chunks_counts_zero(
+    drafts: AsyncSession,
+) -> None:
+    """指针那一稿还没切片（在途窗口）：数 0，且整条不出现在字典里（仓储契约）。
+
+    「不在字典里」与「0」在调用方那边等价（``counts.get(id, 0)``），但**不能**退化成
+    「数上一稿的三片」——那正是切稿瞬间最容易出现的读数，而它说的是「这份文档现在有内容」。
+    """
+
+    assert "doc-3" not in await _counts(drafts), "没有当前稿切片的文档不在字典里，调用方回落 0"
+
+
+@pytest.mark.asyncio
+async def test_the_grouped_count_still_forces_the_tenant(drafts: AsyncSession) -> None:
+    """租户过滤与当前稿条件同时生效：换个租户问同一批文档 id，一片都不给。
+
+    ADR-0006：计数是强制带租户的查询。这里守的是「加了 JOIN 之后那条租户条件没被顺手
+    丢掉」——JOIN 与 WHERE 都在同一条语句里，漏一处都不报错，只会数到别人的切片。
+    """
+
+    assert (
+        await chunk_repository.count_by_document_ids(
+            drafts, ["doc-1", "doc-2", "doc-3"], tenant_id=OTHER_TENANT
+        )
+        == {}
+    )
+
+
+def test_the_statement_joins_the_document_row_and_compiles_the_draft_predicate() -> None:
+    """结构的证据：当前稿指针在文档行上，不 JOIN 就没有「谁是当前稿」这个事实。
+
+    行为断言（上面三条）已经能挡住写反的条件，这一条守的是**写法**——它让「把
+    ``current_draft_filter()`` 换成别的条件」或「删掉 JOIN」在用例里立刻显形，而不是等到
+    某次真库上多召回一稿。
+    """
+
+    sql = _sql(chunk_repository._count_by_document_ids_statement(["doc-1"], tenant_id=TENANT))
+    assert "JOIN documents ON documents.id = chunks.document_id" in sql
+    assert "chunks.doc_version = documents.current_version" in sql
+    assert "chunks.tenant_id = " in sql
+
+
+def test_an_empty_document_list_does_not_send_a_statement() -> None:
+    """空列表不发语句：这条老契约不能因为换语句实现而丢（``IN ()`` 是一次白跑）。"""
+
+    class _NoStatementSession:
+        async def execute(self, statement: Any) -> Any:  # pragma: no cover - 不许被调用
+            raise AssertionError("空列表不该发语句")
+
+    assert (
+        asyncio.run(
+            chunk_repository.count_by_document_ids(
+                _NoStatementSession(),
+                [],
+                tenant_id=TENANT,  # type: ignore[arg-type]
+            )
+        )
+        == {}
+    )

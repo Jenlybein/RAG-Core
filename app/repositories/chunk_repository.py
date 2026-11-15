@@ -1,6 +1,6 @@
 """切片的普通 CRUD（向量写入与相似度检索归 PgVectorStore）。
 
-``count_by_document_ids`` 供文档列表接口一次拿到全部文档的切片数，不做 N+1；
+``count_by_document_ids`` 供文档列表接口一次拿到全部文档**当前稿**的切片数，不做 N+1；
 ``count_by_kb_ids`` 供检索层判定「空结果到底是哪种空」（票 4）；
 ``delete_by_document_id`` 由索引重建 / 删除文档复用。
 
@@ -9,11 +9,12 @@
 迁移期最容易漂移的东西——两边的租户过滤、版本过滤、排序一旦分叉，症状是「异步路径偶尔
 多出几条别人的切片」这种事后极难查的故障。
 
-**三条读都带「只看当前稿」**（#174）：``chunks.doc_version = documents.current_version``
-由 :func:`app.models.chunk.current_draft_filter` 一处编译，三条语句各 JOIN 一次文档表。
-数字上多了一次 JOIN，换来的是「两稿切片并存的窗口里，旧稿永远不会被折进整节、也不会被
-算进『库里有内容』」——这正是父 spec 点名的五个口径中的三个（另外两个在 Provider 里）。
-回查那条还是唯一把稿号带出来的地方：``doc_version`` 来自真实列。
+**四条读都带「只看当前稿」**（#174，以及文档列表那一处计数）：``chunks.doc_version =
+documents.current_version`` 由 :func:`app.models.chunk.current_draft_filter` 一处编译，
+四条语句各 JOIN 一次文档表。数字上多了一次 JOIN，换来的是「两稿切片并存的窗口里，旧稿
+永远不会被折进整节、不会被算进『库里有内容』，也不会被数进文档列表的 ``chunk_count``」
+——这正是父 spec 点名的五个口径中的三个（另外两个在 Provider 里），外加一个对外可见的
+数字。回查那条还是唯一把稿号带出来的地方：``doc_version`` 来自真实列。
 
 **文档列表的分组计数已经在异步面上**（第 11 步票 #130）：列文档（数据面）与控制面的树
 都换了 ``AsyncSession``，所以 ``count_by_document_ids`` 只剩这一份实现。写侧的
@@ -381,10 +382,16 @@ async def list_section_identity_rows(
 async def count_by_document_ids(
     db: AsyncSession, document_ids: list[str], *, tenant_id: str
 ) -> dict[str, int]:
-    """一次分组查询拿回 ``{document_id: 切片数}``；没有切片的文档不在字典里。
+    """一次分组查询拿回 ``{document_id: 当前稿的切片数}``；当前稿没有切片的文档不在字典里。
 
     文档列表接口（数据面与控制面树）必须用它，不能对每个文档各查一次（N+1）。
     ``tenant_id`` 是强制过滤参数（ADR-0006）：即使文档 id 已被上游按租户筛过，计数也不跨租户。
+
+    **数的是当前稿**（:func:`app.models.chunk.current_draft_filter`），不是各留存稿之和：
+    每稿各留一套切片（ADR-0031 决策一）之后，同一篇文档库里可以有两三稿的切片同时存在，
+    数全部的读数会随改稿次数一起涨（留 3 稿就约 3 倍）。而这个数字是**对外可见**的——前端
+    拿它判断「这份文档现在有没有内容」——所以口径错的那一侧不会报错，只会被当成真的。
+    指针那一稿还没切片时（D5 的在途窗口）这份文档不出现，调用方回落 0。
     """
 
     if not document_ids:
@@ -394,11 +401,20 @@ async def count_by_document_ids(
 
 
 def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str):
-    """「每份文档各有几片」的那一条分组计数。"""
+    """「每份文档**当前稿**各有几片」的那一条分组计数。
+
+    JOIN 文档表是为了让当前稿指针由库来算（与检索链路上那五处同一个谓词，见
+    ``tests/test_document_chunk_count.py``）：应用层先读指针再传进来会把「读指针」与
+    「按指针过滤」拆成两个时刻，中间正好是别人翻指针的窗口。
+    """
 
     return (
-        select(Chunk.document_id, func.count())
-        .where(Chunk.document_id.in_(document_ids), Chunk.tenant_id == tenant_id)
+        _join_documents(select(Chunk.document_id, func.count()))
+        .where(
+            Chunk.document_id.in_(document_ids),
+            Chunk.tenant_id == tenant_id,
+            current_draft_filter(),
+        )
         .group_by(Chunk.document_id)
     )
 
