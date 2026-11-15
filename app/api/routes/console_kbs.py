@@ -1,4 +1,5 @@
-"""控制面「管库管文档」接口（``/console``）：树、建库、删空库、上传、重建、删除。
+"""控制面「管库管文档」接口（``/console``）：树、建库、删空库、上传、重建、删除、
+版本列表与回滚。
 
 与 :mod:`app.api.routes.console`（登录 / 套餐 / 账号 / 审计）**分成两个路由模块**，
 各自 ``include_router``：并行票共用同一个文件会让每一票的 diff 互相重叠；本模块只带
@@ -6,8 +7,8 @@
 
 鉴权分两档，写死在依赖里而不是每条各写一遍：
 
-- 读（树）用 ``require_console_tenant``：会话 cookie + 租户账号；
-- 写（其余五条）用 ``require_console_tenant_write``：它内含防跨站头与租户判定，
+- 读（树、原文、版本列表）用 ``require_console_tenant``：会话 cookie + 租户账号；
+- 写（其余六条）用 ``require_console_tenant_write``：它内含防跨站头与租户判定，
   所以**未登录仍是 20010**（该去登录），登录了但缺头 / 管理员仍是 **20011**
   （不该被前端当成掉线清 cookie）。
 
@@ -19,6 +20,11 @@
 装响应壳。上传是单端点按 content-type 分流（multipart = 文件模式，其余 = JSON 模式），
 与数据面完全同构；分流与错误体收在 :mod:`app.api.upload_parsing`（#82 修复前两个路由
 各写一遍），这里只声明 Form/File 并把解析结果整份交给服务层。
+
+**版本列表与回滚（#177）换的是门，不是契约**：出参与数据面那两条版本接口同一个形状
+（``DocumentVersionListData`` / ``RollbackDocumentVersionData``），业务进的是同一个
+``document_version_service``。控制面在这里的价值是「不写 curl 也能看与点」，而不是
+第二份实现。
 """
 
 from __future__ import annotations
@@ -50,6 +56,7 @@ from app.schemas.document import (
     DocumentListItem,
     DocumentVersionListData,
     ReindexDocumentData,
+    RollbackDocumentVersionData,
     UploadDocumentData,
 )
 from app.schemas.knowledge_base import CreateKBData, CreateKBRequest
@@ -219,6 +226,46 @@ async def list_document_versions(
         include_content=include_content,
     )
     return ok(DocumentVersionListData.model_validate(data))
+
+
+@router.post(
+    "/documents/{document_id}/versions/{version}/rollback",
+    response_model=ApiResponse[RollbackDocumentVersionData],
+    summary="回滚到某一稿（切指针并重建；影响所有调用方）",
+)
+async def rollback_document_version(
+    request: Request,
+    document_id: str = Path(..., min_length=1),
+    version: int = Path(...),
+    identity: ConsoleIdentity = Depends(require_console_tenant_write),
+    cache: PlanCache = Depends(get_plan_cache),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
+) -> ApiResponse[RollbackDocumentVersionData]:
+    """把当前稿指针拨回第 ``version`` 稿，并让这篇文档立刻回到「等重建」的状态。
+
+    **这条操作影响所有调用方**：面板上的一次点击会改掉整个租户检索到的内容，所以前端
+    必须先确认（票面验收项）。后端不再要求额外的「确认」参数——它只回答「按当前库状态
+    这次回滚合不合法」；把「要不要做」留在人的那一步，接口就还是那条幂等语义明确的写。
+
+    语义与数据面那条逐字一致：处理中 20025 / 稿不存在 20030 / 已是当前稿 20032，都是
+    HTTP 200 + ``code``（ADR-0007）。这些判定全部在被委托的
+    ``document_version_service.rollback_to_version`` 里，本层只取参数、调服务、装信封。
+
+    写入口声明 ``Depends(get_async_transaction)``：一个请求一笔事务（指针 + 账本），
+    提交点只在 ``app.db.transaction`` 一处；投递重建与翻关键词标记登记在 ``after_commit``。
+    """
+
+    data = await console_kb_service.rollback_document(
+        db,
+        tenant_id=tenant_id_of(identity),
+        document_id=document_id,
+        version=version,
+        actor=identity,
+        cache=cache,
+        request_id=submitted_request_id(request),
+    )
+    return ok(RollbackDocumentVersionData.model_validate(data))
 
 
 @router.post(

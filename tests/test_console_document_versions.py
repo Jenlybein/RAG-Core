@@ -396,3 +396,161 @@ def test_an_admin_without_a_tenant_cannot_list_versions(versions: _Harness) -> N
     assert body["code"] == ErrorCode.FORBIDDEN
 
 
+# ─────────────────────────────────────────────────────────────── 回滚
+
+
+def test_rollback_switches_the_pointer_and_enqueues_exactly_one_rebuild(
+    versions: _Harness,
+) -> None:
+    """一次回滚 = 指针后退 + 版本行翻转 + 文档回到处理中 + **一次**带目标稿号的重建投递。"""
+
+    assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = versions.client.post(
+        ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=1), headers=WRITE_HEADERS
+    )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["code"] == 0, body
+    assert body["data"] == {
+        "document_id": DOC_ALPHA,
+        "version": 1,
+        "previous_version": CURRENT_DRAFT,
+        "status": DocumentStatus.PROCESSING,
+    }
+
+    document = versions.document(DOC_ALPHA)
+    assert document.current_version == 1
+    assert document.content == DRAFTS[1], "文档行是当前稿的热路径快照，正文一起换"
+    assert document.status == DocumentStatus.PROCESSING
+
+    # 版本行状态翻转是**可观测的**：再列一次版本就能看到（替身会话按真实语义改了内存行）。
+    data = versions.data(versions.client.get(VERSIONS_PATH.format(document_id=DOC_ALPHA)))
+    assert data["current_version"] == 1
+    assert [(item["version"], item["status"]) for item in data["items"]] == [
+        (3, "archived"),
+        (2, "archived"),
+        (1, "current"),
+    ]
+
+    assert len(versions.enqueued) == 1, "控制面只委托一次，不许自己再投递一遍"
+    assert versions.enqueued[0]["document_id"] == DOC_ALPHA
+    assert versions.enqueued[0]["tenant_id"] == TENANT_ALPHA
+    assert versions.enqueued[0]["doc_version"] == 1, "载荷带目标稿号，Worker 不回读指针"
+
+
+def test_rollback_leaves_one_audit_entry_with_both_versions(versions: _Harness) -> None:
+    """控制面的写接口各写一条账本；回滚记的是「从哪一稿退到哪一稿」。"""
+
+    assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    assert (
+        versions.client.post(
+            ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=2), headers=WRITE_HEADERS
+        ).json()["code"]
+        == 0
+    )
+
+    entries = [row for row in versions.audit_entries() if row.action == "doc.rollback"]
+    assert len(entries) == 1
+    entry = entries[0]
+    assert entry.actor_id == ALICE_ID
+    assert entry.target == f"doc:{DOC_ALPHA}"
+    assert entry.before_snapshot["current_version"] == CURRENT_DRAFT
+    assert entry.after_snapshot["current_version"] == 2
+
+
+def test_rolling_back_to_the_current_draft_answers_20032(versions: _Harness) -> None:
+    """这一稿已经是当前稿：20032，什么都不写（指针、账本、投递都不动）。"""
+
+    assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    body = versions.client.post(
+        ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=CURRENT_DRAFT),
+        headers=WRITE_HEADERS,
+    ).json()
+
+    assert body["code"] == ErrorCode.DOCUMENT_VERSION_ALREADY_ACTIVE == 20032
+    assert body["data"] == {"version": CURRENT_DRAFT}
+    assert versions.document(DOC_ALPHA).current_version == CURRENT_DRAFT
+    assert versions.enqueued == []
+    assert [row for row in versions.audit_entries() if row.action == "doc.rollback"] == []
+
+
+def test_rolling_back_a_processing_document_answers_20025(versions: _Harness) -> None:
+    """有效处理中的文档不做回滚：此刻切稿会让「哪一稿的切片」变成掷骰子。"""
+
+    assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
+    document = versions.document(DOC_ALPHA)
+    document.status = DocumentStatus.PROCESSING
+    document.index_claimed_at = now()
+
+    body = versions.client.post(
+        ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=1), headers=WRITE_HEADERS
+    ).json()
+
+    assert body["code"] == ErrorCode.DOCUMENT_IS_PROCESSING == 20025
+    assert versions.document(DOC_ALPHA).current_version == CURRENT_DRAFT
+    assert versions.enqueued == []
+
+
+def test_rolling_back_to_a_purged_draft_answers_20030(versions: _Harness) -> None:
+    """被保留策略清掉的稿次是「这一稿不存在」（20030），**不做墓碑**。"""
+
+    assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
+    versions.db._rows[DocumentVersion] = [
+        row
+        for row in versions.db._rows[DocumentVersion]
+        if not (row.document_id == DOC_ALPHA and row.version == 1)
+    ]
+
+    body = versions.client.post(
+        ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=1), headers=WRITE_HEADERS
+    ).json()
+
+    assert body["code"] == ErrorCode.DOCUMENT_VERSION_NOT_FOUND == 20030
+    assert body["data"] == {"version": 1}
+    assert versions.document(DOC_ALPHA).current_version == CURRENT_DRAFT
+    assert versions.enqueued == []
+
+
+def test_rolling_back_another_tenants_document_is_not_found(versions: _Harness) -> None:
+    """跨租户一律「不存在」：不返回「无权限」，也不泄露这篇文档有几稿。"""
+
+    assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    body = versions.client.post(
+        ROLLBACK_PATH.format(document_id=DOC_BETA, version=1), headers=WRITE_HEADERS
+    ).json()
+
+    assert body["code"] == ErrorCode.NOT_FOUND
+    assert versions.document(DOC_BETA).current_version == 1
+    assert versions.enqueued == []
+
+
+def test_rollback_without_the_anti_csrf_header_is_forbidden(versions: _Harness) -> None:
+    """写入口要防跨站头：缺了就是 20011，而不是「回滚成功但没人知道是谁点的」。"""
+
+    assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    body = versions.client.post(
+        ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=1)
+    ).json()
+
+    assert body["code"] == ErrorCode.FORBIDDEN
+    assert versions.document(DOC_ALPHA).current_version == CURRENT_DRAFT
+    assert versions.enqueued == []
+
+
+def test_rollback_without_a_session_is_unauthorized(versions: _Harness) -> None:
+    """没有会话 cookie 是 20010（该去登录），与缺头 / 管理员两档分得清。"""
+
+    body = versions.client.post(
+        ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=1), headers=WRITE_HEADERS
+    ).json()
+
+    assert body["code"] == ErrorCode.UNAUTHORIZED
+
+
+
