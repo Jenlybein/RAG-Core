@@ -137,6 +137,32 @@ def list_missing_content(
     return list(db.execute(stmt).scalars().all())
 
 
+async def list_with_expired_versions(
+    db: AsyncSession, *, retain: int, kb_id: str | None = None, limit: int | None = None
+) -> list[Document]:
+    """扫出「保留窗口可能非空」的文档：当前稿号 > 保留稿数（第 12 步票 #178）。
+
+    窗口下界是 ``当前稿号 - retain``，所以只有当它 >= 1 时才可能有稿子落在窗口外——
+    一篇只长到第 3 稿、窗口又留 3 稿的文档不必被扫出来，``>=`` 会让绝大多数文档白跑。
+
+    判定用的是**指针**（``documents.current_version``）而不是版本行的 ``max``：窗口按稿数
+    从指针算起是业务定义（D10），两份真值不一致时行为要可预期，而不是随 ``max`` 漂移。
+
+    只有 ``scripts/purge_document_versions.py`` 调用，数据面禁止使用——与
+    :func:`list_missing_content` 同一个处境（一次性的运维问题，不是业务查询）。它这里是
+    **异步**的，与那一条不同：清理必须走 ``purge_document_chunks``，那条只接受
+    ``AsyncSession``（异步栈第 11 步起），脚本于是整条链都在异步会话上。
+    """
+
+    stmt = select(Document).where(Document.current_version > retain)
+    if kb_id is not None:
+        stmt = stmt.where(Document.kb_id == kb_id)
+    stmt = stmt.order_by(Document.created_at, Document.id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
+
+
 def list_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> list[Document]:
     """该租户在该知识库下的全部文档，按创建时间升序（列表即轮询进度的时间线）。
 
