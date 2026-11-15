@@ -3,8 +3,8 @@
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 12 步 12 张票全部合并 + 两轴评审修复后，2026-11-16 实测：**2631 条用例，2614 passed / 17 skipped**）。
-其中「2631 条用例」是 `uv run pytest --collect-only -q` 的收集数，「2614 passed / 17 skipped」
+当前 tip（第 12 步 12 张票全部合并 + 两轴评审修复后，2026-11-16 实测：**2634 条用例，2617 passed / 17 skipped**）。
+其中「2634 条用例」是 `uv run pytest --collect-only -q` 的收集数，「2617 passed / 17 skipped」
 是 `uv run pytest -q` 的实测输出，两者相加正好是收集数。
 
 ## 分层
@@ -87,12 +87,12 @@
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `2614 passed, 17 skipped`（共收集 2631 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 2628 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `2617 passed, 14 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 2628 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 2617 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 2617 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `2617 passed, 17 skipped`（共收集 2634 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 2631 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `2620 passed, 14 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 2631 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 2620 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 2620 deselected` |
 
 17 条 skip 分**四道门禁**，都不是失败：
 
@@ -102,13 +102,13 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `2614 passed, 17 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `2617 passed, 17 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 2631 条，`-m ocr` 选中 3 条、
-> `-m integration` 选中 14 条。收集 = passed + skipped（2614 + 17 = 2631；装了 OCR 资产时
-> 2617 + 14 = 2631），deselect = 收集 − 选中（`-m ocr`：2631 − 3 = 2628；
-> `-m integration`：2631 − 14 = 2617）。任何一条测试增减后按这三行重算，不要照抄上一版。
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 2634 条，`-m ocr` 选中 3 条、
+> `-m integration` 选中 14 条。收集 = passed + skipped（2617 + 17 = 2634；装了 OCR 资产时
+> 2620 + 14 = 2634），deselect = 收集 − 选中（`-m ocr`：2634 − 3 = 2631；
+> `-m integration`：2634 − 14 = 2620）。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
 `tests/test_business_errors.py` 与 `tests/test_exception_boundary.py` 的 `client` fixture
