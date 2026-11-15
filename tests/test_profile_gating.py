@@ -432,15 +432,12 @@ def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> 
         policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_PRO), kb_count=2
     )
 
+    # 第 13 步：回显改报参数本身，不再有 requested_profile / rewrite。
     assert tenant_policy_echo(options, kb_count=2) == {
         "plan": PLAN_PRO,
-        "requested_profile": PROFILE_QUALITY,
         "mode": "hybrid",
         "top_k": 5,
         "rerank": True,
-        "rewrite": True,
-        # 编排（#147）：与重排 / 改写同一列、同一个来源。它出现在回显里的前提是
-        # 「这个值真的改变了结果」——#147 之前它没有消费者，所以当时被推迟。
         "kb_count": 2,
         "clipped": [],
     }
@@ -462,7 +459,7 @@ def test_the_echo_carries_the_clipped_fields() -> None:
     assert echo is not None
     assert echo["clipped"] == ["top_k", "rerank"]
     assert echo["plan"] == PLAN_STANDARD
-    assert echo["requested_profile"] == PROFILE_CUSTOM
+    assert "requested_profile" not in echo
 
 
 def test_an_unresolved_options_object_has_no_echo() -> None:
@@ -794,11 +791,9 @@ def test_the_response_carries_the_tenant_policy_it_actually_ran(entry: _Entry) -
 
     assert data["metadata"]["tenant_policy"] == {
         "plan": PLAN_PRO,
-        "requested_profile": PROFILE_BALANCED,
         "mode": "hybrid",
         "top_k": 5,
         "rerank": False,
-        "rewrite": False,
         "kb_count": 1,
         "clipped": [],
     }

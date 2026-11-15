@@ -649,14 +649,12 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
         entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"})
     )
 
+    # 第 13 步：回显改报参数本身，两条入口拿到的仍是同一份 options。
     expected = {
         "plan": PLAN_PRO,
-        "requested_profile": PROFILE_SPEED,
         "mode": "vector",
         "top_k": 5,
         "rerank": False,
-        "rewrite": False,
-        # 编排（#147）：两条入口回显的是同一份 ``options``，所以这个键也必须逐字相同。
         "kb_count": 1,
         "clipped": [],
     }

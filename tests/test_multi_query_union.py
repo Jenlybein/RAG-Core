@@ -70,18 +70,21 @@ REWRITTEN = "退款的处理流程"
 # （ADR-0010「第四次修订」，旧名违反术语表）。同样只动名字、不动检索内容：新基线
 # 仍然只比 #78 那版多这一个字段名的差别，其余字节未变。
 #
+# **第 13 步重采一次**（有意的契约变更）：``metadata.tenant_policy`` 改报参数本身，
+# 删掉 ``requested_profile`` 与 ``rewrite`` 两个键（后端不再有档位、改写由端点决定）。
+# 检索内容那一半仍由本文件其余用例守着（恒等原句、同一句、同一顺序）；重采只反映
+# 回显形状的变化，没有放宽任何一条内容断言。
+#
 # **#101 没有重采**，而且刻意不重采：响应多出的 ``metadata.trace_id`` 每次调用都不同，
-# 没法进黄金哈希，所以 ``_response_hashes`` 在比对前把它归一化成一个占位符。基线常量因此
-# 仍是上面那三行——「除该字段外逐字节不变」这句话于是由**同一组数字**继续证明，而不是靠
-# 「重采一遍、新哈希自然对得上」自我确认。
+# 没法进黄金哈希，所以 ``_response_hashes`` 在比对前把它归一化成一个占位符。
 _BASELINE_SOURCE = (
-    "#78 落地后重采（相对 f1ddb46：仅多出 metadata.tenant_policy）；"
-    "第 7 步收尾再采（相对 #78：tenant_policy 的 requested_* 字段改名）"
+    "第 13 步重采（相对第 7 步：tenant_policy 删 requested_profile / rewrite 两键，"
+    "改报参数本身）"
 )
 _BASELINE_SHA256: dict[str, str] = {
-    "hybrid": "49df8f08e29401114259e067974de612040a0d7ae28a9e4bfc6b92759028e62f",
-    "vector": "5dc254efa9f0a7a0a5d2b5f6201da005cc8effe3eb1e05f962c9c587c44c9162",
-    "bm25": "e34615911395585598607a3f7354f8b924ee4ad139db9274c74d2633ee880f70",
+    "hybrid": "29beef4d43f0339d79228946ea9bd5e1b1511bf71f877cd64c113238686f3e80",
+    "vector": "de7a20872bf43616ffae0e8bc95165e20517b8747f60ac02b31490312fd6e408",
+    "bm25": "61274ae810f2725b596946aefd480f891f70615ada81d39ca245cd287875218c",
 }
 
 #: #101 起响应多出的那个字段（每次调用都不同）。比对前先把它**整段摘掉**，见 ``_without_trace_id``。

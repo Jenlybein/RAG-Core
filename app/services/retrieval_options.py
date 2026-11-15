@@ -249,8 +249,10 @@ def options_from_chain(
 def tenant_policy_echo(options: RetrievalOptions, *, kb_count: int) -> dict[str, object] | None:
     """响应 ``metadata.tenant_policy``：这次调用**实际生效**了什么。
 
-    模式 / 条数 / 重排 / 改写一律从 ``options`` 上读（理由见 :class:`TenantPolicy`）；
-    真正「这次用到了几个库」只有调用点知道，所以 ``kb_count`` 是入参而不是从别处算。
+    第 13 步起后端不再有档位概念、改写也由端点而非配置决定，所以回显里不再出现
+    ``requested_profile`` 与 ``rewrite``——它只报**参数本身**（模式 / 条数 / 重排）、
+    套餐名、库数与「被裁了什么」。这些值一律从 ``options`` 上读（理由见
+    :class:`TenantPolicy`）；``kb_count`` 只有调用点知道，所以是入参。
 
     返回 ``None`` 表示这份参数不经套餐门禁解析（见 ``RetrievalOptions.tenant_policy``）。
     """
@@ -260,11 +262,9 @@ def tenant_policy_echo(options: RetrievalOptions, *, kb_count: int) -> dict[str,
         return None
     return {
         "plan": policy.plan,
-        "requested_profile": policy.requested_profile,
         "mode": options.mode,
         "top_k": options.top_k,
         "rerank": options.rerank,
-        "rewrite": options.rewrite,
         "kb_count": kb_count,
         "clipped": list(policy.clipped),
     }

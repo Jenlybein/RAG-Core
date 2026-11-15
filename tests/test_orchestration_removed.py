@@ -159,13 +159,12 @@ def test_the_contract_has_no_orchestration_key() -> None:
     )
     echo = tenant_policy_echo(options, kb_count=1)
     assert echo is not None
+    # 第 13 步：回显改报参数本身，不再有 requested_profile / rewrite。
     assert echo == {
         "plan": "pro",
-        "requested_profile": PROFILE_QUALITY,
         "mode": "vector",
         "top_k": 5,
         "rerank": False,
-        "rewrite": False,
         "kb_count": 1,
         "clipped": [],
     }
