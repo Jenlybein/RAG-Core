@@ -25,9 +25,12 @@
 from __future__ import annotations
 
 import asyncio
+import importlib.util
+import sys
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -351,19 +354,27 @@ def _version(
     )
 
 
-#: 三篇文档：`doc-1` 两稿（指针 2）、`doc-2` 一稿、`doc-3` 在另一个库里。
-SEEDED_DOCUMENTS = (
-    _document("doc-1", current_version=2, content="第 2 稿正文。"),
-    _document("doc-2", content="第 1 稿正文。"),
-    _document("doc-3", kb_id=OTHER_KB, content="别的库。"),
-)
+def _seeded_documents() -> tuple[Document, ...]:
+    """三篇文档：`doc-1` 两稿（指针 2）、`doc-2` 一稿、`doc-3` 在另一个库里。
 
-SEEDED_VERSIONS = (
-    _version("doc-1", 1, status="archived", content="第 1 稿正文。"),
-    _version("doc-1", 2, content="第 2 稿正文。"),
-    _version("doc-2", 1, content="第 1 稿正文。"),
-    _version("doc-3", 1, content="别的库。"),
-)
+    **每次调用现造**（不在模块级摆一份）：ORM 对象是有状态的，用例改了它（检查 3 那条就
+    改文档行的正文），模块级的那一份会把改动带到下一个用例里。
+    """
+
+    return (
+        _document("doc-1", current_version=2, content="第 2 稿正文。"),
+        _document("doc-2", content="第 1 稿正文。"),
+        _document("doc-3", kb_id=OTHER_KB, content="别的库。"),
+    )
+
+
+def _seeded_versions() -> tuple[DocumentVersion, ...]:
+    return (
+        _version("doc-1", 1, status="archived", content="第 1 稿正文。"),
+        _version("doc-1", 2, content="第 2 稿正文。"),
+        _version("doc-2", 1, content="第 1 稿正文。"),
+        _version("doc-3", 1, content="别的库。"),
+    )
 
 #: 切片：`doc-1` 的两稿各有切片（旧稿的按保留策略还在），`doc-2` 一片，`doc-3` 三片。
 SEEDED_CHUNKS = (
@@ -403,7 +414,7 @@ async def reconcile_db() -> AsyncIterator[AsyncSession]:
                 },
             )
     async with AsyncSession(engine, expire_on_commit=False) as session:
-        for row in (*SEEDED_DOCUMENTS, *SEEDED_VERSIONS):
+        for row in (*_seeded_documents(), *_seeded_versions()):
             session.add(row)
         await session.flush()
         try:
@@ -614,5 +625,394 @@ def test_the_noop_provider_declares_the_capability_absent() -> None:
         asyncio.run(provider.current_draft_versions(tenant_id=TENANT, document_ids=["doc-1"]))
         == {}
     )
+
+
+# ───────────────────────────────────────── ④ 运维脚本：取数、打印、退出码
+
+
+def _load_script() -> ModuleType:
+    """从文件加载脚本（``scripts*`` 不在安装包里）：加载本身也要成功——导入即安全。"""
+
+    path = _SCRIPTS_DIR / "verify_document_versions.py"
+    spec = importlib.util.spec_from_file_location("t179_verify_document_versions", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
+
+
+@pytest.fixture
+def verify_script() -> ModuleType:
+    return _load_script()
+
+
+class _StubKeywordProvider:
+    """关键词实现替身：``available`` 可编排，答案或异常二选一（对账只读，没有写入面）。"""
+
+    def __init__(
+        self,
+        versions: dict[str, Sequence[int]] | None = None,
+        *,
+        available: bool = True,
+        error: BaseException | None = None,
+    ) -> None:
+        self.available = available
+        self._versions = versions or {}
+        self._error = error
+        self.calls: list[dict[str, Any]] = []
+
+    async def current_draft_versions(
+        self, *, tenant_id: str, document_ids: Sequence[str]
+    ) -> dict[str, list[int]]:
+        self.calls.append({"tenant_id": tenant_id, "document_ids": list(document_ids)})
+        if self._error is not None:
+            raise self._error
+        return {key: list(value) for key, value in self._versions.items()}
+
+
+@pytest.mark.asyncio
+async def test_a_consistent_database_reports_no_disagreement(
+    reconcile_db: AsyncSession,
+) -> None:
+    """种子数据是自洽的：四条零分歧；关键词那一维因为空实现而**不可判定**（不是失败）。"""
+
+    report = await _reconcile(reconcile_db, provider=NoopKeywordSearchProvider())
+
+    assert (report.documents, report.chunks) == (3, 7)
+    assert report.disagreements == 0
+    assert report.keyword_state == KEYWORD_STATE_UNDECIDABLE
+    assert report.keyword_reason == KEYWORD_REASON_ABSENT
+
+
+@pytest.mark.asyncio
+async def test_each_of_the_four_checks_fires_on_its_own_kind_of_drift(
+    reconcile_db: AsyncSession,
+) -> None:
+    """四种漂移各造一处，四条检查**各报各的**（互不吞并，也不互相掩盖）。"""
+
+    # 检查 1：一片切片声称属于第 9 稿，而版本表里没有那一稿。
+    await reconcile_db.execute(
+        text(
+            "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata,"
+            " index_version, doc_version) VALUES ('chunk-orphan', :tenant, :kb, 'doc-2', '孤儿片。',"
+            " '[]', '{}', 'v1', 9)"
+        ),
+        {"tenant": TENANT, "kb": KB},
+    )
+    # 检查 2：`doc-2` 多出一条当前稿版本行（单活破了）。
+    await reconcile_db.execute(
+        text(
+            "INSERT INTO document_versions (id, document_id, version, content, source_file_path,"
+            " checksum, status, created_at) VALUES ('doc-2-v2', 'doc-2', 2, '第 2 稿正文。', NULL,"
+            " :checksum, 'current', '2026-11-01 00:00:00')"
+        ),
+        {"checksum": "0" * 64},
+    )
+    # 检查 3：`doc-3` 的正文快照与当前稿真值不一致（改的是**文档行**，真值不动）。
+    drifted = await reconcile_db.get(Document, "doc-3")
+    assert drifted is not None
+    drifted.content = "被改过的快照。"
+    # 检查 4：关键词索引说 `doc-1` 的当前稿是第 1 稿（指针是 2）。
+    provider = _StubKeywordProvider({"doc-1": [1]})
+
+    report = await _reconcile(reconcile_db, provider=provider)
+
+    assert [discrepancy.document_id for discrepancy in report.chunk_version_rows] == ["doc-2"]
+    assert [discrepancy.document_id for discrepancy in report.current_drafts] == ["doc-2"]
+    assert [discrepancy.document_id for discrepancy in report.content_snapshots] == ["doc-3"]
+    assert [discrepancy.document_id for discrepancy in report.keyword_current_drafts] == ["doc-1"]
+    assert report.disagreements == 4
+
+
+@pytest.mark.asyncio
+async def test_the_scan_can_be_narrowed_by_kb_and_capped(reconcile_db: AsyncSession) -> None:
+    """``--kb-id`` 与 ``--limit`` 收窄范围：运维先看一个库 / 一小批，再决定下一步。"""
+
+    one_kb = await _reconcile(reconcile_db, kb_id=OTHER_KB, provider=NoopKeywordSearchProvider())
+    capped = await _reconcile(reconcile_db, limit=2, provider=NoopKeywordSearchProvider())
+
+    assert one_kb.documents == 1
+    assert capped.documents == 2
+
+
+@pytest.mark.asyncio
+async def test_a_failing_keyword_read_is_undecidable_not_a_failure(
+    reconcile_db: AsyncSession,
+) -> None:
+    """能力在、这一次读不到：**不可判定**，原因与「能力不存在」不同。"""
+
+    provider = _StubKeywordProvider(error=RuntimeError("cluster is down"))
+
+    report = await _reconcile(reconcile_db, provider=provider)
+
+    assert report.keyword_state == KEYWORD_STATE_UNDECIDABLE
+    assert report.keyword_reason == KEYWORD_REASON_FAILED
+    assert report.disagreements == 0
+
+
+@pytest.mark.asyncio
+async def test_the_keyword_dimension_is_asked_per_tenant(reconcile_db: AsyncSession) -> None:
+    """关键词那一维逐租户问（ADR-0006）：一次跨租户查询会把别人的稿号数进来。"""
+
+    provider = _StubKeywordProvider({"doc-1": [2]})
+
+    await _reconcile(reconcile_db, provider=provider)
+
+    assert [call["tenant_id"] for call in provider.calls] == [TENANT], "种子数据只有一个租户"
+    assert len(provider.calls[0]["document_ids"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_a_document_the_keyword_index_does_not_know_is_an_information_item(
+    reconcile_db: AsyncSession,
+) -> None:
+    """查得到这批文档、但其中两篇没有任何「当前稿」切片 → **信息项**，不是不可判定。
+
+    混成一个的话，「老物理索引里缺 ``is_current``」会被打印成「关键词能力不可用」，
+    于是那句「去补 mapping」的诊断永远不出现（而它正是 #174 留给对账脚本的活）。
+    """
+
+    provider = _StubKeywordProvider({"doc-1": [2]})
+
+    report = await _reconcile(reconcile_db, provider=provider)
+
+    assert report.keyword_state == KEYWORD_STATE_CHECKED
+    assert report.keyword_current_drafts == (), "没有分歧"
+    assert {item.document_id for item in report.keyword_drafts_without_current} == {
+        "doc-2",
+        "doc-3",
+    }
+    assert report.has_disagreements is False
+
+
+@pytest.mark.asyncio
+async def test_the_reconcile_is_read_only_and_idempotent(reconcile_db: AsyncSession) -> None:
+    """跑两遍结果一模一样，且**一行都没被改**：对账是观察，不是修复。"""
+
+    provider = NoopKeywordSearchProvider()
+    first = await _reconcile(reconcile_db, provider=provider)
+    second = await _reconcile(reconcile_db, provider=provider)
+
+    assert first == second
+    rows = (
+        await reconcile_db.execute(text("SELECT id, content FROM documents ORDER BY id"))
+    ).all()
+    assert [tuple(row) for row in rows] == [
+        ("doc-1", "第 2 稿正文。"),
+        ("doc-2", "第 1 稿正文。"),
+        ("doc-3", "别的库。"),
+    ]
+
+
+def test_the_script_contains_no_write_path_at_all() -> None:
+    """**只读**是一条结构性质：一条写语句、一次提交、一个事务入口都不许出现在这份脚本里。
+
+    比对行为断言更可靠——今天的脚本恰好没写，不代表下一次改动不会顺手加一句
+    「顺手修一下」。这条用例让「顺手修」必须先去改测试。
+    """
+
+    source = (_SCRIPTS_DIR / "verify_document_versions.py").read_text(encoding="utf-8")
+
+    for banned in (".commit(", ".rollback(", "async_transaction(", "INSERT ", "UPDATE ", "DELETE "):
+        assert banned not in source, f"对账脚本不该出现 {banned}"
+
+
+def test_the_script_has_no_apply_flag(verify_script: ModuleType) -> None:
+    """对账没有 ``--apply``（与清理脚本刻意不同）：一条会对账出分歧的命令，永远不该顺手改点什么。"""
+
+    with pytest.raises(SystemExit) as excinfo:
+        verify_script.main(["--apply"])
+
+    assert excinfo.value.code == 2
+
+
+async def _reconcile(db: AsyncSession, **kwargs: Any) -> Any:
+    """跑一遍脚本的对账核心（脚本模块由 `_load_script` 装载，导入即安全）。"""
+
+    script = _load_script()
+    return await script.reconcile_document_versions(db, **kwargs)
+
+
+# ────────────────────────────────────────────── 脚本：打印与退出码（取数打桩）
+
+
+class _ClosingSession:
+    """``_open_session`` 的返回值替身：只关心它被关掉了。"""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def close(self) -> None:
+        self.closed = True
+
+
+def _patch_main(
+    monkeypatch: pytest.MonkeyPatch, module: ModuleType, report: Any
+) -> tuple[_ClosingSession, dict[str, Any]]:
+    """把取数换成打桩：这些用例只验**打印与退出码**（取数由上面的真 SQL 用例守）。"""
+
+    session = _ClosingSession()
+    captured: dict[str, Any] = {}
+
+    async def _open() -> _ClosingSession:
+        return session
+
+    async def _core(_db: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return report
+
+    monkeypatch.setattr(module, "_open_session", _open)
+    monkeypatch.setattr(module, "reconcile_document_versions", _core)
+    monkeypatch.setattr(module, "setup_logging", lambda: None)
+    return session, captured
+
+
+def test_main_prints_every_check_with_its_count_and_exits_zero(
+    verify_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """零分歧：四条逐条打印计数（含 0），退出 0。"""
+
+    report = reconcile_module.reconcile([_facts()], keyword_state=KEYWORD_STATE_CHECKED)
+    session, _captured = _patch_main(monkeypatch, verify_script, report)
+
+    exit_code = verify_script.main([])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "read-only" in out and "all knowledge bases" in out
+    assert "documents: 1" in out and "chunks: 3" in out
+    for index, label in enumerate(verify_script.CHECK_LABELS.values(), start=1):
+        assert f"check {index}/4 {label}" in out
+    assert "0 disagreement(s)" in out
+    assert "RESULT: OK" in out
+    assert session.closed
+
+
+def test_main_lists_every_disagreement_and_exits_non_zero(
+    verify_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**验收：有分歧退出非 0 并逐条列出。**"""
+
+    report = reconcile_module.reconcile(
+        [
+            _facts(document_id="doc-bad", pointer=2, version_rows=((1, "current", "旧"),)),
+            _facts(document_id="doc-ok"),
+        ],
+        keyword_state=KEYWORD_STATE_CHECKED,
+    )
+    _patch_main(monkeypatch, verify_script, report)
+
+    exit_code = verify_script.main(["--kb-id", KB])
+
+    out = capsys.readouterr().out
+    assert exit_code == 1
+    assert "1 disagreement(s)" in out
+    assert "doc-bad" in out, "分歧要逐条列出（不是只给一个数字）"
+    assert "doc-ok" not in out, "没分歧的文档不该出现在明细里"
+    assert "kb_id=kb-1" in out
+    assert "RESULT: FAILED" in out
+
+
+def test_main_prints_the_undecidable_keyword_dimension_and_still_exits_zero(
+    verify_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """**验收：关键词能力不可用时记「不可判定」并明确打印，不判失败。**
+
+    这一条是整套对账里唯一「不能判」的地方；它必须与「数据缺失」分得开，否则运维要么
+    去修一个不存在的错，要么把真的分歧当成「没部署 ES」忽略掉。
+    """
+
+    report = reconcile_module.reconcile(
+        [_facts(keyword_current_versions=None)],
+        keyword_state=KEYWORD_STATE_UNDECIDABLE,
+        keyword_reason=KEYWORD_REASON_ABSENT,
+    )
+    _patch_main(monkeypatch, verify_script, report)
+
+    exit_code = verify_script.main([])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0, "不可判定不是失败"
+    assert "undecidable" in out
+    assert KEYWORD_REASON_ABSENT in out, "原因要打印出来（能力不存在 ≠ 数据缺失）"
+    assert "RESULT: OK" in out
+    assert "不可判定" in out
+
+
+def test_main_reports_the_counters_of_the_two_information_items(
+    verify_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """两个信息项**不判失败**，但计数要打印（0 与非 0 正好回答「重建跑完了没有」）。"""
+
+    report = reconcile_module.reconcile(
+        [
+            _facts(
+                pointer=3,
+                content="第 3 稿正文。",
+                version_rows=((3, "current", "第 3 稿正文。"),),
+                chunk_versions=((3, 0),),
+                keyword_current_versions=(),
+            )
+        ],
+        keyword_state=KEYWORD_STATE_CHECKED,
+    )
+    _patch_main(monkeypatch, verify_script, report)
+
+    exit_code = verify_script.main([])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "pointer drafts without chunks: 1" in out
+    assert "keyword drafts without a current-draft slice: 1" in out
+    assert "not a failure" in out
+
+
+def test_main_passes_the_narrowing_flags_down(
+    verify_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--kb-id`` / ``--limit`` 原样透传给取数那一层。"""
+
+    report = reconcile_module.reconcile([], keyword_state=KEYWORD_STATE_CHECKED)
+    _session, captured = _patch_main(monkeypatch, verify_script, report)
+
+    assert verify_script.main(["--kb-id", KB, "--limit", "5"]) == 0
+    assert captured == {"kb_id": KB, "limit": 5}
+
+
+def test_a_negative_limit_is_rejected_with_exit_code_two(
+    verify_script: ModuleType,
+) -> None:
+    """``--limit -1`` 是非法入参：静默当成 0 会扫零篇却报 OK——最坏的一种假绿。"""
+
+    with pytest.raises(SystemExit) as excinfo:
+        verify_script.main(["--limit", "-1"])
+
+    assert excinfo.value.code == 2
+
+
+def test_the_reconcile_stays_a_run_once_script(verify_script: ModuleType) -> None:
+    """不新增调度进程：入口是 ``main(argv)``，Celery 没有 beat 计划（与清理脚本同一条）。"""
+
+    from app.celery_app import celery_app
+
+    assert callable(verify_script.main)
+    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), (
+        "对账不进调度基础设施"
+    )
+
 
 
