@@ -163,14 +163,20 @@ def _patch_service_environment(
     claimed: bool = True,
     document: Any | None = None,
     stores: list[_RecordingStore] | None = None,
+    parsed_content: str | None = None,
 ) -> SimpleNamespace:
-    """把仓储、解析入口与三个可注入依赖换成离线替身，返回被测装配。"""
+    """把仓储、解析入口与三个可注入依赖换成离线替身，返回被测装配。
+
+    ``parsed_content`` 非空时，解析替身返回这段**字面**正文（不跟随文档行）——正文
+    回写要用它当独立真值：断言里那份文本来自规格，不是从被测代码算出来的。
+    """
 
     doc = document if document is not None else _document()
     if stores is None:
         stores = [_RecordingStore(calls)]
     embeddings = _RecordingEmbeddings(calls, vectors)
     claim_calls: list[dict[str, Any]] = []
+    parse_calls: list[tuple[str, bool]] = []
 
     async def _get_by_id(_db: Any, _document_id: str) -> Any:
         calls.append("get_by_id")
@@ -190,7 +196,9 @@ def _patch_service_environment(
 
     def _prepare(target: Any, *, reparse: bool = False) -> ParsedDocument:
         calls.append("parse")
-        return ParsedDocument(content=target.content or "raw text", source_type="markdown")
+        parse_calls.append((target.content, reparse))
+        content = parsed_content if parsed_content is not None else (target.content or "raw text")
+        return ParsedDocument(content=content, source_type="markdown")
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _try_claim)
@@ -215,6 +223,7 @@ def _patch_service_environment(
         stores=stores,
         embeddings=embeddings,
         claim_calls=claim_calls,
+        parse_calls=parse_calls,
     )
 
 
@@ -275,6 +284,115 @@ def test_service_indexes_document_through_claim_purge_write_success(
     assert indexed[0]["tenant_id"] == TENANT_ID
     assert indexed[0]["kb_id"] == KB_ID
     assert indexed[0]["chunk_count"] == 2
+
+
+PARSED_TEXT = "# 退款政策\n\n签收后 7 天内可申请无理由退款。\n"
+REPARSED_TEXT = "# 退款政策（2026 修订）\n\n签收后 15 天内可申请无理由退款。\n"
+
+
+def _commit_snapshots(env: SimpleNamespace) -> list[str]:
+    """每次 ``commit`` 前拍一张「文档行里的正文」，返回该列表（按时间顺序）。
+
+    这是「正文回写落在写入那笔事务里」的可观察形状：Tx1（抢占）提交时正文还是空的，
+    Tx2（purge + 写入 + 状态）提交时才带着回写后的正文。正文若单独提交或提交之后才写，
+    这张快照就会露出第三种形状。
+    """
+
+    snapshots: list[str] = []
+    original_commit = env.session.commit
+
+    async def _commit() -> None:
+        snapshots.append(env.document.content)
+        await original_commit()
+
+    env.session.commit = _commit
+    return snapshots
+
+
+def test_service_writes_the_parsed_content_back_to_the_document_in_the_write_transaction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文件上传的文档：解析成功后正文写回文档行，且与 purge / 写入 / 状态同在一笔事务。"""
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text="first piece", metadata={"heading_path": "Intro"})]
+    env = _patch_service_environment(
+        monkeypatch,
+        calls,
+        pieces=pieces,
+        vectors=[[0.1]],
+        parsed_content=PARSED_TEXT,
+    )
+    snapshots = _commit_snapshots(env)
+
+    count = asyncio.run(env.service.index_existing_document(env.session, DOC_ID))
+
+    assert count == 1
+    assert env.document.content == PARSED_TEXT, "文档行里存的就是解析器输出的全文"
+    assert snapshots == ["", PARSED_TEXT], (
+        "Tx1 抢占时正文仍是空的；Tx2 与切片、状态一起提交回写后的正文"
+    )
+
+
+class _FailingStore(_RecordingStore):
+    """写入阶段就炸的存储替身：purge 成功、add 失败（Tx2 的一半）。"""
+
+    async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
+        self.calls.append(f"add:{self.name}")
+        raise RuntimeError("vector store write failed")
+
+
+def test_service_does_not_commit_content_when_the_write_transaction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """写入失败：正文与切片一起没有提交（只提交了抢占那一次），状态仍是处理中。
+
+    「不留半份」在 Worker 这一层的可观察形状是**提交次数**：Tx2 的任何一步失败都
+    不该留下一次已经落库的正文/状态，整笔撤销由任务体负责。
+    """
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text="first piece", metadata={"heading_path": "Intro"})]
+    env = _patch_service_environment(
+        monkeypatch,
+        calls,
+        pieces=pieces,
+        vectors=[[0.1]],
+        parsed_content=PARSED_TEXT,
+        stores=[_FailingStore(calls)],
+    )
+    snapshots = _commit_snapshots(env)
+
+    with pytest.raises(RuntimeError, match="vector store write failed"):
+        asyncio.run(env.service.index_existing_document(env.session, DOC_ID))
+
+    assert env.session.commits == 1, "只有抢占那一笔提交；失败的那一笔一次都没提交"
+    assert snapshots == [""], "回写后的正文从未被提交过"
+    assert env.document.status == DocumentStatus.PROCESSING, "状态回写也没发生"
+
+
+def test_service_overwrites_the_stored_content_when_reparse_is_requested(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """带「重解析」的重建：重新解析的全文覆盖库内正文（选择位真的传给了解析入口）。"""
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text="first piece", metadata={"heading_path": "Intro"})]
+    document = _document()
+    document.content = "旧正文（2025 版）"
+    env = _patch_service_environment(
+        monkeypatch,
+        calls,
+        pieces=pieces,
+        vectors=[[0.1]],
+        document=document,
+        parsed_content=REPARSED_TEXT,
+    )
+
+    asyncio.run(env.service.index_existing_document(env.session, DOC_ID, reparse=True))
+
+    assert env.parse_calls == [("旧正文（2025 版）", True)], "reparse 必须原样传到解析入口"
+    assert env.document.content == REPARSED_TEXT, "重解析的产物覆盖库内正文"
 
 
 def test_service_purges_every_store_before_writing_any(monkeypatch: pytest.MonkeyPatch) -> None:

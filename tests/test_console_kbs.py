@@ -1150,6 +1150,30 @@ def test_read_content_parses_the_source_file_for_file_mode(kbs: _Harness, tmp_pa
     assert data["truncated"] is False
 
 
+def test_read_content_of_a_file_uploaded_document_serves_the_written_back_body(
+    kbs: _Harness, tmp_path: Path
+) -> None:
+    """文件上传的文档：Worker 回写正文之后，调试台读的是**库里**的真实正文（#170）。
+
+    这里刻意让落盘文件不可用（源文件被清理 / 迁移时丢了）：接口仍然回得来，就说明
+    正文真的落库了。此前这一类文档只能靠现场解析源文件——文件不在就只剩一条报错，
+    而「文档正文」在库里始终是空串。
+    """
+
+    document = kbs.document(DOC_ALPHA_DONE)
+    document.source_file_path = str(tmp_path / "cleaned-up.md")  # 这个文件不存在
+    document.source_filename = "cleaned-up.md"
+    document.content = ALPHA_BODY
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    data = kbs.data(kbs.client.get(READ_CONTENT_PATH.format(document_id=DOC_ALPHA_DONE)))
+
+    assert data["content"] == ALPHA_BODY
+    assert data["length"] == len(ALPHA_BODY)
+    assert data["truncated"] is False
+    assert data["status"] == DocumentStatus.SUCCESS
+
+
 def test_read_content_truncates_but_reports_the_real_length(kbs: _Harness) -> None:
     """截断必须说出来：只给截断后的文本而不说原文多长，会让人以为文档就这么长。"""
 

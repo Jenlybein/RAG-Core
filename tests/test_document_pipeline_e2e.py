@@ -208,15 +208,50 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
 
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
 
+    async def _prepare_for_indexing(db: Any, document_id: str, **_kwargs: Any) -> bool:
+        # 同上：真实实现是 SQL UPDATE（SUCCESS→已排队、清租约）。重建入口要它把行
+        # 置成「已排队、未开工」，Worker 的 CAS 才抢得到。
+        doc = await db.get(Document, document_id)
+        assert doc is not None
+        doc.status = DocumentStatus.PROCESSING
+        doc.index_claimed_at = None
+        return True
+
+    monkeypatch.setattr(
+        document_repository, "prepare_for_indexing_async", _prepare_for_indexing
+    )
+
+    async def _get_by_id_for_tenant(db: Any, document_id: str, *, tenant_id: str) -> Any:
+        # 重建入口按 id + 租户取行（真实实现是一条 SELECT）；内存会话只认得自己的行表。
+        doc = await db.get(Document, document_id)
+        if doc is None or doc.tenant_id != tenant_id:
+            return None
+        return doc
+
+    monkeypatch.setattr(
+        document_repository, "get_by_id_for_tenant_async", _get_by_id_for_tenant
+    )
+
     def _consume_index_task(**kwargs: Any) -> None:
-        """投递替身：把任务投进**真的** Worker 常驻循环（与生产同形，不另起线程）。"""
+        """投递替身：把任务投进**真的** Worker 常驻循环（与生产同形，不另起线程）。
+
+        ``reparse`` 原样透传：重建入口的选择位要一路走到解析那一层，替身把它吞掉
+        就等于把「重建读库内正文 / 重解析磁盘」这条差别测掉了。
+        """
 
         service = IndexingService(splitter=SPLITTER, embeddings=embeddings, stores=[store])
         get_worker_loop().run(
-            lambda: service.index_existing_document(session, kwargs["document_id"])
+            lambda: service.index_existing_document(
+                session, kwargs["document_id"], reparse=kwargs.get("reparse", False)
+            )
         )
 
     monkeypatch.setattr(document_service, "enqueue_document", _consume_index_task)
+    # 重建入口在自己的模块里绑定了同一个发布函数（``app.api.routes.documents``）：
+    # 只换服务层那一份，重建投递会打到真的 Broker。
+    monkeypatch.setattr(
+        importlib.import_module("app.api.routes.documents"), "enqueue_document", _consume_index_task
+    )
 
     main.app.dependency_overrides[async_session_mod.get_async_db] = lambda: session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
@@ -361,6 +396,86 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     assert len(pipeline_env.embeddings.vectors) == len(chunks)
     assert all(len(vector) == EMBEDDING_DIM for vector in pipeline_env.embeddings.vectors)
     assert chunks[0]["embedding"] == pipeline_env.embeddings.vectors[0]
+
+
+def test_uploaded_content_is_written_back_and_a_forced_rebuild_reads_the_database(
+    pipeline_env: SimpleNamespace,
+) -> None:
+    """#170 · 正文第一次真正落库：解析后的全文写回文档行，重建从此读库不再读盘。
+
+    真值来自规格而不是被测代码：markdown 解析器是**恒等**变换（字节 → UTF-8 文本），
+    所以「解析器输出」就是上传的那份字节解码后的字符串，可以逐字比对。
+
+    第二条断言更关键：把落盘文件删掉之后跑一次**不带重解析**的重建。若正文没落库，
+    这次重建只能去读磁盘，会以「source file is missing」失败；它成功且正文逐字不变，
+    就说明「不带重解析 = 读库内正文」这条行为真的成立了。
+    """
+
+    body = FIXTURE_PATH.read_bytes()
+    expected = body.decode("utf-8")
+
+    response = pipeline_env.client.post(
+        "/api/v1/documents/upload",
+        data={"kb_id": KB_ID},
+        files={"file": (SOURCE_FILENAME, body, "text/markdown")},
+        headers={"X-Request-ID": "t12-170-upload"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["code"] == 0
+    document_id = payload["data"]["document_id"]
+
+    stored_path = pipeline_env.uploads_dir / TENANT_ID / f"{document_id}.md"
+    assert stored_path.read_bytes() == body
+
+    doc = _stored_document(pipeline_env.session, document_id)
+    assert doc is not None
+    assert doc.status == DocumentStatus.SUCCESS
+    assert doc.content == expected, "文件上传的文档正文必须是解析器输出的全文"
+    assert doc.content != "", "此前这里永远是空串——本票要补的就是这个洞"
+
+    first_chunks = pipeline_env.store.written[-1]
+
+    # 源文件不再可用：正文只能来自库。带 force（SUCCESS 文档可重建）+ 不带 reparse。
+    stored_path.unlink()
+    rebuild = pipeline_env.client.post(
+        f"/api/v1/documents/{document_id}/reindex?force=true",
+        headers={"X-Request-ID": "t12-170-rebuild"},
+    )
+
+    assert rebuild.status_code == 200
+    assert rebuild.json()["code"] == 0, rebuild.json()
+    assert rebuild.json()["data"]["reparse"] is False
+
+    doc = _stored_document(pipeline_env.session, document_id)
+    assert doc is not None
+    assert doc.status == DocumentStatus.SUCCESS, "读库内正文的重建必须成功，而不是去读磁盘"
+    assert doc.error_message is None
+    assert doc.content == expected, "不带重解析的重建不改写正文"
+
+    rebuilt_chunks = pipeline_env.store.written[-1]
+    assert len(rebuilt_chunks) == len(first_chunks)
+    assert [chunk["content"] for chunk in rebuilt_chunks] == [
+        chunk["content"] for chunk in first_chunks
+    ], "正文一致，切出来的切片原文也就一致"
+
+    # 反过来那一半：显式要求重解析时**必须**回磁盘，并把新正文写回文档行。
+    revised = "# 退款政策（2026 修订）\n\n签收后 15 天内可申请无理由退款。\n"
+    stored_path.write_text(revised, encoding="utf-8", newline="\n")
+    reparsed = pipeline_env.client.post(
+        f"/api/v1/documents/{document_id}/reindex?force=true&reparse=true",
+        headers={"X-Request-ID": "t12-170-reparse"},
+    )
+
+    assert reparsed.status_code == 200
+    assert reparsed.json()["code"] == 0, reparsed.json()
+    assert reparsed.json()["data"]["reparse"] is True
+
+    doc = _stored_document(pipeline_env.session, document_id)
+    assert doc is not None
+    assert doc.status == DocumentStatus.SUCCESS
+    assert doc.content == revised, "重解析之后文档行里是**新**正文，旧值被覆盖"
 
 
 def test_same_markdown_loses_heading_path_in_a_size_kb(
