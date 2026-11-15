@@ -121,3 +121,20 @@ class DocumentVersionListData(BaseModel):
     document_id: str
     current_version: int
     items: list[DocumentVersionItem]
+
+
+class RollbackDocumentVersionData(BaseModel):
+    """回滚受理的回执：指针已拨回 ``version``，文档已置处理中并投递了重建。
+
+    ``previous_version`` 是回滚生效前的那一稿——调用方不必再列一次版本就知道「从哪一稿
+    退回哪一稿」。与建版本的回执不同，这里**没有 ``checksum``**：回滚不产生新正文，
+    目标稿的校验和早就在版本行上了（列版本能拿到）。
+
+    ``status`` 恒为 ``PROCESSING``：回滚之后切片要重建，终态仍需轮询
+    ``GET /documents?kb_id=``——「回滚受理」不等于「已经能检索到新内容」。
+    """
+
+    document_id: str
+    version: int
+    previous_version: int
+    status: int

@@ -12,6 +12,8 @@
     （#175；写路径的顺序见 ``app.services.document_version_service``）。
   * ``GET /documents/{document_id}/versions?include_content=`` —— 这篇文档改过几稿，
     按稿号倒序，正文默认不带（#175）。
+  * ``POST /documents/{document_id}/versions/{version}/rollback`` —— 把当前稿指针拨回
+    某一稿，并投递一次重建让这篇文档立刻重新可检索（#176）。
 
 写入口都声明事务依赖：一个请求一笔事务，成功提交、异常回滚，提交点只在
 :mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
@@ -61,6 +63,7 @@ from app.schemas.document import (
     DocumentVersionItem,
     DocumentVersionListData,
     ReindexDocumentData,
+    RollbackDocumentVersionData,
     UploadDocumentData,
     UploadDocumentRequest,
 )
@@ -413,3 +416,52 @@ async def list_document_versions(
             ],
         )
     )
+
+
+@router.post(
+    "/documents/{document_id}/versions/{version}/rollback",
+    response_model=ApiResponse[RollbackDocumentVersionData],
+    summary="回滚到某一稿（切指针并重建）",
+)
+async def rollback_document_version(
+    document_id: str,
+    version: int,
+    request: Request,
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+    tx: AsyncTransaction = Depends(get_async_transaction),
+) -> ApiResponse[RollbackDocumentVersionData]:
+    """把当前稿指针拨回第 ``version`` 稿，并让这篇文档立刻回到「等重建」的状态。
+
+    「立刻能被检索到」是这条入口的全部意义：切指针**不等于**回滚完成——库里的切片还
+    是上一稿的，而检索按 ``chunks.doc_version = documents.current_version`` 过滤。
+    所以这一条必须在提交之后投递一次重建（载荷带目标稿号）+ 翻转关键词索引的「当前稿」
+    标记，否则回滚之后文档会**暂时查不到任何东西**。五件事的顺序与理由见
+    ``app.services.document_version_service.rollback_to_version``。
+
+    路由这一层只做三件事：按 ``(id, tenant_id)`` 取文档（缺失 / 跨租户统一 20016，
+    不泄露存在性）、第二道关卡（数据范围白名单，按文档所属的库判）、把结果套进统一信封。
+    状态守卫与「这一稿存在吗」在服务里——它们要读锁内的真值。
+
+    写入口照旧声明 ``Depends(get_async_transaction)``：一个请求一笔事务，提交点只在
+    ``app.db.transaction`` 一处；副作用（投递 + 翻标记）登记在 ``after_commit``。
+    """
+
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    # 第二道关卡：白名单（与建版本 / 列版本 / 重建 / 删除同一条，按文档所属的库判）。
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+
+    data = await document_version_service.rollback_to_version(
+        db,
+        tenant_id=key.tenant_id,
+        document_id=document_id,
+        version=version,
+        plan=key.plan,
+        request_id=submitted_request_id(request),
+    )
+    return ok(RollbackDocumentVersionData.model_validate(data))
