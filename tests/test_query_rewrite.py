@@ -1,16 +1,17 @@
-"""查询改写：关闭不调用、成功替换、失败即降级（模块接缝，不起应用）。
+"""查询改写（第 13 步）：`/rag/rewrite` 的那一次模型调用（模块接缝，不起应用）。
 
 接缝仍是既有的那一个：改写阶段通过 ``app.providers.llm.get_llm_provider`` 拿大模型
-（与重排完全同一处替换点，惰性 import 所以 monkeypatch 生效），测试用它换替身。
-断言的只有 ``RewriteOutcome`` 与替身收到的调用，**不发网络、不连数据库、不读 .env**。
+（惰性 import 所以 monkeypatch 生效），测试用它换替身。断言的只有 ``RewriteOutcome``
+与替身收到的调用，**不发网络、不连数据库、不读 .env**。
 
-本文件守的契约（父 spec「降级矩阵」：查询改写失败（含超时、空返回）→ 降级：用原句继续）：
+本文件守的契约：
 
-* 关闭时**根本不装配大模型**（换成「一被调用就抛错」的桩也能通过）；
-* 成功时 ``effective_query`` 换成模型给的那句，且用的是 **fast 模型角色**；
-* 超时 / 抛错 / 空返回 / 空串 → 回退原句，原因固定 ``query rewrite failed``
-  ——一因一码，绝不把异常文本拼进去；
-* 提示词**只做改写、不做问答**，并带上知识库名称 / 描述（可选 ``rewrite_hint``）。
+* 改写**总是**装配一次大模型（端点决定要不要加工，不再有开关）；用的是单一
+  ``default`` 模型角色；
+* 成功时 ``query`` 换成模型给的那句，且 ``duration_ms`` 有值；
+* 超时 / 抛错 / 空返回 / 空串 / 结构不合法 → 抛 ``AppError(50003)``，**绝不**静默
+  回退成原句（客户重试即可）；
+* 提示词**只做改写、不做问答**，并带上知识库名称 / 描述（可选 ``hint``）。
 """
 
 from __future__ import annotations
@@ -20,13 +21,9 @@ from typing import Any
 
 import pytest
 
-from app.core.config import settings
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.llm.base import LLMProvider
-from app.services.query.rewrite import (
-    REASON_REWRITE_FAILED,
-    QueryRewrite,
-    rewrite_query,
-)
+from app.services.query.rewrite import QueryRewrite, rewrite_query
 
 
 # ─────────────────────────────────────────────────────────────── 替身
@@ -60,15 +57,11 @@ class _FakeLLM(LLMProvider):
 
 
 def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> list[str]:
-    """替换大模型出口，并把「被要了哪个模型角色」记下来。
-
-    角色（fast / strong）是**代码约束**而不是运维纪律：改写与重排必须是快档。
-    这里把实参记下来，就是为了让「写成 strong」这件事当场失败。
-    """
+    """替换大模型出口，并把「被要了哪个模型角色」记下来。"""
 
     roles: list[str] = []
 
-    async def _factory(role: str = "fast") -> LLMProvider:
+    async def _factory(role: str = "default") -> LLMProvider:
         roles.append(role)
         return llm
 
@@ -76,160 +69,88 @@ def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> list[str]
     return roles
 
 
-# ─────────────────────────────────────────────────────────────── 关闭
+# ─────────────────────────────────────────────────────────── 正常路径
 
 
-def test_disabled_rewrite_never_builds_a_model(monkeypatch: pytest.MonkeyPatch) -> None:
-    """默认关闭：连大模型都不装配。证法是「换成会抛错的桩仍然通过」。"""
+def test_rewrite_uses_the_single_default_role(monkeypatch: pytest.MonkeyPatch) -> None:
+    """改写装配一次大模型，角色是唯一的 ``default``。"""
 
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
+    roles = _install_llm(
+        monkeypatch, _FakeLLM(result=QueryRewrite(query="退款多久到账"))
+    )
 
-    async def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
-        raise AssertionError("关闭改写时不许装配大模型")
+    outcome = asyncio.run(rewrite_query(query="退钱怎么弄", hint="人事制度库"))
 
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)
-
-    outcome = asyncio.run(rewrite_query(query="背调要问啥", hint="人事制度库"))
-
-    assert outcome.query == "背调要问啥", "关闭时 effective_query 就是原句"
-    assert outcome.applied is False
-    assert outcome.reason is None, "没开启不是降级"
-    assert outcome.duration_ms is None, "没调用就没有耗时"
+    assert outcome.query == "退款多久到账"
+    assert outcome.duration_ms >= 0
+    assert roles == ["default"]
 
 
-# ─────────────────────────────────────────────────────────────── 成功
+def test_rewrite_prompt_only_asks_for_a_rewrite(monkeypatch: pytest.MonkeyPatch) -> None:
+    """提示词只描述改写，不给答题角色；可选 hint 带上知识库名称 / 描述。"""
 
-
-def test_rewrite_replaces_the_query_using_the_fast_model_role(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    llm = _FakeLLM(result=QueryRewrite(query="  背景调查的标准问题清单  "))
-    roles = _install_llm(monkeypatch, llm)
-
-    outcome = asyncio.run(rewrite_query(query="背调要问啥", hint="人事制度库"))
-
-    assert outcome.query == "背景调查的标准问题清单", "去掉模型带来的首尾空白"
-    assert outcome.applied is True
-    assert outcome.reason is None
-    assert outcome.duration_ms is not None
-    assert roles == ["fast"], "改写必须用 fast 模型角色，不是 strong"
-
-
-def test_prompt_only_rewrites_and_carries_the_knowledge_base_hint(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """提示词只做改写、不做问答；用户原话与知识库名称 / 描述都要在。"""
-
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    llm = _FakeLLM(result=QueryRewrite(query="背景调查问题清单"))
+    llm = _FakeLLM(result=QueryRewrite(query="退款到账时限"))
     _install_llm(monkeypatch, llm)
 
-    asyncio.run(rewrite_query(query="背调要问啥", hint="人事制度库（入职与离职制度）"))
+    asyncio.run(rewrite_query(query="退钱怎么弄", hint="人事制度库（入职与离职制度）"))
 
-    sent = llm.calls[0]
-    assert "背调要问啥" in sent["user"]
-    assert "人事制度库" in sent["user"] and "入职与离职制度" in sent["user"]
-    # 只做改写：系统提示词必须明确「不回答、不解释、不编造」，并给字数上限。
-    for instruction in ("改写", "不回答", "不编造", "30"):
-        assert instruction in sent["system"]
+    system, user = llm.calls[0]["system"], llm.calls[0]["user"]
+    assert "不回答" in system and "不编造" in system
+    assert "退钱怎么弄" in user
+    assert "人事制度库（入职与离职制度）" in user
 
 
-def test_rewrite_works_without_a_hint(monkeypatch: pytest.MonkeyPatch) -> None:
-    """知识库名称 / 描述是**可选**的：没有它也要能改写，只是提示词更短。"""
-
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    llm = _FakeLLM(result=QueryRewrite(query="退款流程"))
-    _install_llm(monkeypatch, llm)
-
-    outcome = asyncio.run(rewrite_query(query="退钱怎么弄", hint=None))
-
-    assert outcome.query == "退款流程"
-    assert "知识库" not in llm.calls[0]["user"]
-
-
-# ─────────────────────────────────────────────────────── 失败即降级
-
-
-def test_rewrite_timeout_falls_back_to_the_raw_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    """超时：回退原句 + 固定原因，不抛出去。"""
-
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    monkeypatch.setattr(settings, "QUERY_REWRITE_TIMEOUT_MS", 10)
-    llm = _FakeLLM(result=QueryRewrite(query="不该走到这里"), delay=1.0)
-    _install_llm(monkeypatch, llm)
-
-    outcome = asyncio.run(rewrite_query(query="背调要问啥", hint=None))
-
-    assert outcome.query == "背调要问啥"
-    assert outcome.applied is False
-    assert outcome.reason == REASON_REWRITE_FAILED
-
-
-def test_rewrite_error_falls_back_to_the_raw_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    llm = _FakeLLM(error=RuntimeError("模型服务 502"))
-    _install_llm(monkeypatch, llm)
-
-    outcome = asyncio.run(rewrite_query(query="背调要问啥", hint=None))
-
-    assert outcome.query == "背调要问啥"
-    assert outcome.reason == "query rewrite failed", "一因一码，不拼异常文本"
-    assert "502" not in (outcome.reason or "")
+# ───────────────────────────────────────── 模型调用失败：整单 50003
 
 
 @pytest.mark.parametrize(
-    "returned",
+    "llm",
     [
-        QueryRewrite(query="   "),
-        QueryRewrite(query=""),
-        {"query": ""},
-        None,
+        _FakeLLM(error=RuntimeError("模型服务 502")),
+        _FakeLLM(result=QueryRewrite(query="  ")),
+        _FakeLLM(result=QueryRewrite(query="")),
+        _FakeLLM(result={"query": ""}),
+        _FakeLLM(result=None),
+        _FakeLLM(result={"oops": 1}),
     ],
+    ids=["exception", "blank", "empty", "dict_empty", "none", "malformed"],
 )
-def test_rewrite_empty_result_falls_back_to_the_raw_query(
-    monkeypatch: pytest.MonkeyPatch, returned: Any
+def test_a_model_call_failure_is_a_50003(
+    monkeypatch: pytest.MonkeyPatch, llm: _FakeLLM
 ) -> None:
-    """空返回 / 空串同样是失败：绝不能把 ``effective_query`` 变成空串去检索。"""
+    """超时 / 抛错 / 空返回 / 空串 / 结构不合法 → 统一 50003，绝不回退原句。"""
 
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    _install_llm(monkeypatch, _FakeLLM(result=returned))
+    _install_llm(monkeypatch, llm)
 
-    outcome = asyncio.run(rewrite_query(query="背调要问啥", hint=None))
+    with pytest.raises(AppError) as caught:
+        asyncio.run(rewrite_query(query="背调要问啥", hint=None))
 
-    assert outcome.query == "背调要问啥"
-    assert outcome.applied is False
-    assert outcome.reason == REASON_REWRITE_FAILED
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
-def test_rewrite_malformed_result_falls_back_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """结构不合法（不是 schema、也不是带 ``query`` 的 dict）→ 降级，不冒泡。"""
+def test_timeout_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> None:
+    """超时也是模型调用失败，不降级。"""
 
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    _install_llm(monkeypatch, _FakeLLM(result={"oops": 1}))
+    _install_llm(
+        monkeypatch,
+        _FakeLLM(result=QueryRewrite(query="不该走到这里"), delay=1.0),
+    )
 
-    outcome = asyncio.run(rewrite_query(query="背调要问啥", hint=None))
+    with pytest.raises(AppError) as caught:
+        asyncio.run(rewrite_query(query="背调要问啥", hint=None, timeout_ms=10))
 
-    assert outcome.query == "背调要问啥"
-    assert outcome.reason == REASON_REWRITE_FAILED
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
-def test_rewrite_assembly_failure_falls_back_instead_of_raising(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """装配期抛错（例如 ``LLM_PROVIDER`` 写错）同样只降级：它是可选优化，不是检索前提。"""
+def test_assembly_failure_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> None:
+    """装配期抛错（供应商拼错）也是模型调用失败，不降级。"""
 
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-
-    async def _boom(_role: str = "fast") -> LLMProvider:
+    async def _boom(_role: str = "default") -> LLMProvider:
         raise ValueError("未知的大模型供应商 'typo'")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _boom)
 
-    outcome = asyncio.run(rewrite_query(query="背调要问啥", hint=None))
+    with pytest.raises(AppError) as caught:
+        asyncio.run(rewrite_query(query="背调要问啥", hint=None))
 
-    assert outcome.query == "背调要问啥"
-    assert outcome.applied is False
-    assert outcome.reason == REASON_REWRITE_FAILED
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED

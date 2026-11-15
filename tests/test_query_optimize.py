@@ -1,16 +1,15 @@
-"""查询优化的编排：先改写、再同义词扩展（模块接缝）。
+"""查询加工的编排（第 13 步）：恒等变换与「改写 → 同义词扩展」（模块接缝）。
 
-两层处理的**顺序**是这张票的核心：改写补语义、同义词补字面。顺序反了，同义词表就
-匹配不到「改写之后才出现」的词，等于白配。
+两层处理的**顺序**是核心：改写补语义、同义词补字面。顺序反了，同义词表就匹配不到
+「改写之后才出现」的词，等于白配。
 
-本文件守的契约（父 spec「代码结构与模块边界」：查询优化拆成独立模块，同义词扩展是
-纯函数；「查询优化 → 召回」）：
+本文件守的契约：
 
-* 两个开关都关 → ``raw / effective / search`` 是同一句，且一次模型都不调；
-* 只开改写 → ``search_query`` 跟着 ``effective_query`` 走（同义词表在但开关关 = 不扩展）；
-* 只开同义词 → ``effective_query`` 是原句，``search_query`` 是扩展后的句子；
-* 两个都开 → ``effective_query`` 是改写结果，``search_query`` 是**在改写结果上**扩展的；
-* 改写失败 → ``effective_query`` 回退原句，同义词**仍然作用在原句上**，不整单失败。
+* ``direct_query``（`/rag/retrieve`）：三句全等于原句，一次模型都不调；
+* ``optimize_for_rewrite``（`/rag/rewrite`）：``effective_query`` 是改写结果，
+  ``search_query`` 是**在改写结果上**做同义词扩展的句子；
+* 同义词开关关闭时 ``search_query`` 跟着 ``effective_query`` 走；
+* 改写模型调用失败 → 抛 ``50003``，不回退原句、不产出结果。
 """
 
 from __future__ import annotations
@@ -21,22 +20,25 @@ from typing import Any
 import pytest
 
 from app.core.config import settings
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.llm.base import LLMProvider
-from app.services.query.optimizer import QueryProcessResult, optimize_query
+from app.services.query.optimizer import (
+    QueryProcessResult,
+    direct_query,
+    optimize_for_rewrite,
+)
 from app.services.query.rewrite import QueryRewrite
 from app.services.query.synonyms import collect_synonym_groups
 
 
 class _FakeLLM(LLMProvider):
-    """替身大模型：改写阶段唯一会用到的方法就是 ``chat_structured``。"""
-
     def __init__(self, *, result: Any = None, error: Exception | None = None) -> None:
         self._result = result
         self._error = error
-        self.system_prompts: list[str] = []
+        self.calls: list[str] = []
 
     async def chat_structured(self, schema, *, system: str, user: str) -> Any:
-        self.system_prompts.append(system)
+        self.calls.append(schema.__name__)
         if self._error is not None:
             raise self._error
         return self._result
@@ -45,134 +47,104 @@ class _FakeLLM(LLMProvider):
         raise AssertionError("改写只走结构化输出")
 
 
-def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> None:
-    """把大模型出口换成**协程**替身（票 #137：真货要 ``await``，替身不许比它宽容）。"""
-
-    async def _build(role: str = "fast") -> LLMProvider:
+def _install(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> None:
+    async def _factory(_role: str = "default") -> LLMProvider:
         return llm
 
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", _build)
+    monkeypatch.setattr("app.providers.llm.get_llm_provider", _factory)
 
 
-def _install_forbidden_llm(monkeypatch: pytest.MonkeyPatch, message: str) -> None:
-    """装配一旦被调用就当场失败的替身（同样必须是协程）。"""
+def _groups(*terms: str):
+    """一张「命中 terms、追加 expand」的库级同义词表。"""
 
-    async def _build(role: str = "fast") -> LLMProvider:  # pragma: no cover
-        raise AssertionError(message)
-
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", _build)
-
-
-# 「退款」这一组：中文精确子串；expand 里故意放两个词，验证空格分隔的追加形状。
-_SYNONYMS = ({"terms": ["退款", "退钱"], "expand": ["退款流程", "售后"]},)
+    return collect_synonym_groups(
+        [{"synonyms": [{"terms": list(terms), "expand": ["返还货款"]}]}]
+    )
 
 
-def _switches(monkeypatch: pytest.MonkeyPatch, *, rewrite: bool, synonyms: bool) -> None:
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", rewrite)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", synonyms)
+# ─────────────────────────────────────────────────────────── direct
 
 
-def _groups(table: list[dict[str, list[str]]]) -> tuple:
-    """把「库里存的那种 JSON 形状」变成纯函数要的词表。"""
+def test_direct_query_is_an_identity_transform() -> None:
+    """`/rag/retrieve`：三句全等于原句，vector_queries 单元素。"""
 
-    return collect_synonym_groups([{"synonyms": table}])
-
-
-# ───────────────────────────────────────────────────────── 两个都关
-
-
-def test_both_switches_off_keeps_all_three_queries_equal_and_calls_no_model(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """回归红线：两个开关关掉时这一步是**恒等变换**。"""
-
-    _switches(monkeypatch, rewrite=False, synonyms=False)
-    _install_forbidden_llm(monkeypatch, "关掉时不许装配大模型")
-
-    result = asyncio.run(optimize_query(query="退款怎么走", synonym_groups=_groups(_SYNONYMS)))
+    result = direct_query("退款怎么走")
 
     assert isinstance(result, QueryProcessResult)
-    assert result.raw_query == result.effective_query == result.search_query == "退款怎么走"
+    assert (result.raw_query, result.effective_query, result.search_query) == (
+        "退款怎么走",
+        "退款怎么走",
+        "退款怎么走",
+    )
+    assert result.vector_queries == ("退款怎么走",)
     assert result.rewrite_applied is False
-    assert result.rewrite_degraded is False
-    assert result.rewrite_reason is None
+    assert result.duration_ms == 0.0
 
 
-# ───────────────────────────────────────────────────────── 单开一层
+# ─────────────────────────────────────────────────────────── rewrite
 
 
-def test_rewrite_only_makes_search_query_follow_effective_query(
+def test_rewrite_feeds_the_effective_query_to_the_vector_union(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """只开改写：关键词一路也拿改写后的句子，同义词表在但开关关 = 不扩展。"""
+    """改写成功：向量一路是「原句 + 改写句」两句，顺序固定。"""
 
-    _switches(monkeypatch, rewrite=True, synonyms=False)
-    _install_llm(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款的处理流程")))
+    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
+    _install(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款到账时限")))
 
-    result = asyncio.run(optimize_query(query="退钱怎么弄", synonym_groups=_groups(_SYNONYMS)))
+    result = asyncio.run(optimize_for_rewrite(query="退钱怎么弄"))
 
-    assert result.effective_query == "退款的处理流程"
-    assert result.search_query == "退款的处理流程", "同义词关着，即便句子里有「退款」也不扩展"
+    assert result.vector_queries == ("退钱怎么弄", "退款到账时限")
+    assert result.effective_query == "退款到账时限"
+    assert result.search_query == "退款到账时限"
     assert result.rewrite_applied is True
 
 
-def test_synonyms_only_expand_the_raw_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    _switches(monkeypatch, rewrite=False, synonyms=True)
-    _install_forbidden_llm(monkeypatch, "同义词不需要大模型")
-
-    result = asyncio.run(optimize_query(query="退钱怎么弄", synonym_groups=_groups(_SYNONYMS)))
-
-    assert result.effective_query == "退钱怎么弄"
-    assert result.search_query == "退钱怎么弄 退款流程 售后"
-
-
-# ───────────────────────────────────────────────────────── 两层都开
-
-
-def test_synonym_expansion_runs_on_the_rewritten_sentence(
+def test_synonyms_are_expanded_on_the_rewritten_sentence(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """顺序钉死：同义词匹配的是 ``effective_query``，不是用户原话。
+    """同义词在**改写结果上**扩展，不是在原句上。"""
 
-    原话「退钱怎么弄」不含「退款」以外的命中词，改写结果「退款的处理流程」含「退款」；
-    如果实现先扩展再改写（或者用原话去扩展），这条用例就会拿到没扩展的 ``search_query``。
-    """
+    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
+    _install(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款到账时限")))
 
-    _switches(monkeypatch, rewrite=True, synonyms=True)
-    # 原话里没有「退款」两字，只有「退钱」——同义词表两种都配了，所以这里再收紧一次：
-    # 让词表只认「退款」，就能证明扩展发生在改写**之后**。
-    groups = _groups([{"terms": ["退款"], "expand": ["退款流程"]}])
-    _install_llm(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款的办理流程")))
+    result = asyncio.run(
+        optimize_for_rewrite(query="退钱怎么弄", synonym_groups=_groups("退款"))
+    )
 
-    result = asyncio.run(optimize_query(query="退钱怎么弄", synonym_groups=groups))
-
-    assert result.effective_query == "退款的办理流程"
-    assert result.search_query == "退款的办理流程 退款流程"
+    # 改写句里含「退款」→ 命中该组 → 追加 expand，所以 search_query 比 effective 长。
+    assert "返还货款" in result.search_query
+    assert result.search_query != result.effective_query
 
 
-def test_rewrite_failure_falls_back_then_synonyms_still_expand_the_raw_query(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """改写失败：``effective_query`` 回退原句，同义词照常扩展原句，且标记降级。"""
+def test_identical_rewrite_is_deduplicated(monkeypatch: pytest.MonkeyPatch) -> None:
+    """模型原样返回时，vector_queries 去重成一句。"""
 
-    _switches(monkeypatch, rewrite=True, synonyms=True)
-    _install_llm(monkeypatch, _FakeLLM(error=RuntimeError("timeout")))
+    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
+    _install(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款怎么走")))
 
-    result = asyncio.run(optimize_query(query="退款怎么走", synonym_groups=_groups(_SYNONYMS)))
+    result = asyncio.run(optimize_for_rewrite(query="退款怎么走"))
 
-    assert result.effective_query == "退款怎么走"
-    assert result.search_query == "退款怎么走 退款流程 售后"
-    assert result.rewrite_applied is False
-    assert result.rewrite_degraded is True
-    assert result.rewrite_reason == "query rewrite failed"
+    assert result.vector_queries == ("退款怎么走",)
 
 
-def test_optimize_query_reports_a_duration(monkeypatch: pytest.MonkeyPatch) -> None:
-    """耗时是这一步的可观测事实：关掉时也要有（几乎为 0），不能是 ``None``。"""
+def test_a_failed_rewrite_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> None:
+    """改写失败 → 整单 50003，绝不回退原句继续检索。"""
 
-    _switches(monkeypatch, rewrite=False, synonyms=True)
+    _install(monkeypatch, _FakeLLM(error=RuntimeError("模型服务 502")))
 
-    result = asyncio.run(optimize_query(query="退款怎么走", synonym_groups=_groups(_SYNONYMS)))
+    with pytest.raises(AppError) as caught:
+        asyncio.run(optimize_for_rewrite(query="退款怎么走", synonym_groups=_groups("退款")))
 
-    assert result.duration_ms is not None
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
+
+
+def test_optimize_for_rewrite_reports_a_duration(monkeypatch: pytest.MonkeyPatch) -> None:
+    """耗时是查询加工那一段的真实读数（非 0 也由替身决定，这里只断言非负）。"""
+
+    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
+    _install(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款到账时限")))
+
+    result = asyncio.run(optimize_for_rewrite(query="退款怎么走"))
+
     assert result.duration_ms >= 0

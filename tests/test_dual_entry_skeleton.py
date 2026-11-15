@@ -218,9 +218,15 @@ def test_mcp_tools_have_the_declared_signatures() -> None:
     )
     tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
 
-    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases", "rag_research"}
-    params = getattr(tools["rag_retrieve"], "parameters", {}) or {}
-    assert set(params.get("properties", {})) == {"kb_ids", "query"}
-    # 第三个工具与它字面同形（票 #151）：数据面两个工具的签名只表达「问什么、查哪些库」。
-    research_params = getattr(tools["rag_research"], "parameters", {}) or {}
-    assert set(research_params.get("properties", {})) == {"kb_ids", "query"}
+    # 第 13 步：四条端点 → 四把检索/研究工具 + 列库工具，共五把。
+    assert set(tools) == {
+        "rag_retrieve",
+        "rag_rewrite",
+        "rag_decompose",
+        "rag_research",
+        "rag_list_knowledge_bases",
+    }
+    # 五把工具同一份权限表达：签名里只有 kb_ids + query（列库工具无参）。
+    for name in ("rag_retrieve", "rag_rewrite", "rag_decompose", "rag_research"):
+        params = getattr(tools[name], "parameters", {}) or {}
+        assert set(params.get("properties", {})) == {"kb_ids", "query"}, name

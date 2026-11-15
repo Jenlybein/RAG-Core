@@ -52,7 +52,7 @@ from app.schemas.rag import parse_retrieve_request
 from app.schemas.research import parse_research_request
 from app.services.data_scope import scoped_kb_ids
 from app.services.research_gate import gated_research
-from app.services.retrieval_gate import gated_retrieve
+from app.services.retrieval_gate import gated_decompose, gated_retrieve
 
 
 async def _key_context(db: Any) -> KeyContext:
@@ -106,6 +106,57 @@ def create_mcp_server(
             return result.model_dump()
         except AppError as exc:
             # 业务失败不是协议错误：按 JSON-RPC 结果表达，文本里带 code。
+            raise ValueError(f"{exc.code.value}|{exc.msg}") from exc
+        finally:
+            await db.close()
+
+    @mcp.tool(name="rag_rewrite")
+    async def rag_rewrite(kb_ids: list[str], query: str) -> dict:
+        """换一种说法再检索切片：一次大模型调用，原句与改写句并池取优（不生成答案）。
+
+        失败整单 50003（客户重试）。普通确定性问题请先用 rag_retrieve（零模型调用）。
+        请求只有 kb_ids + query，与 HTTP 的 POST /api/v1/rag/rewrite 同一份实现。
+        """
+
+        db = get_async_db()
+        try:
+            key = await _key_context(db)
+            payload = parse_retrieve_request(kb_ids=kb_ids, query=query)
+            result = await gated_retrieve(
+                db,
+                key=key,
+                kb_ids=payload.kb_ids,
+                query=payload.query,
+                variant="rewrite",
+                retrieve=retrieve,
+            )
+            return result.model_dump()
+        except AppError as exc:
+            raise ValueError(f"{exc.code.value}|{exc.msg}") from exc
+        finally:
+            await db.close()
+
+    @mcp.tool(name="rag_decompose")
+    async def rag_decompose(kb_ids: list[str], query: str) -> dict:
+        """把复合问题拆成子问题，各查一次再合并成一份切片列表（不生成答案）。
+
+        每条结果带 matched_queries；要点与子查询原句在 metadata。约 1 次模型调用 +
+        ≤3 次检索。普通单一问题请先用 rag_retrieve。请求只有 kb_ids + query，
+        与 HTTP 的 POST /api/v1/rag/decompose 同一份实现。
+        """
+
+        db = get_async_db()
+        try:
+            key = await _key_context(db)
+            payload = parse_retrieve_request(kb_ids=kb_ids, query=query)
+            result = await gated_decompose(
+                db,
+                key=key,
+                kb_ids=payload.kb_ids,
+                query=payload.query,
+            )
+            return result.model_dump()
+        except AppError as exc:
             raise ValueError(f"{exc.code.value}|{exc.msg}") from exc
         finally:
             await db.close()

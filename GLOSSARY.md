@@ -240,7 +240,7 @@ _Avoid_: 检索引擎, 完整检索服务, retrieve 服务
 _Avoid_: 精排, 二次排序, 粗排
 
 **降级原因（degraded_reason）**：
-降级时回给调用方的固定英文串，只有四个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排），后到的不覆盖。
+降级时回给调用方的固定英文串，只有四个：`vector search failed` / `keyword search failed` / `rerank failed` / `rerank quota exhausted`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（通道 → 重排），后到的不覆盖。第 13 步退役 `query rewrite failed`（改写已是端点，模型调用失败整单 `50003`；词条留作解释历史归属索引行），并新增 `rerank quota exhausted`（重排额度用尽时跳过重排，不拒绝整单）。
 _Avoid_: 错误信息, 异常原因, 失败详情, 中文译名
 
 **诚实空（honest empty）**：

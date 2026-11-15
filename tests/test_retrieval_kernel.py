@@ -58,7 +58,8 @@ KERNEL_PATH = REPO_ROOT / "app" / "services" / "retrieval" / "kernel.py"
 #: 内核只吃调用方递进来的参数，自己去问配置就等于范围有了两个来源。
 _FORBIDDEN_IN_KERNEL: tuple[str, ...] = (
     "settings",
-    "optimize_query",
+    "direct_query",
+    "optimize_for_rewrite",
     "ensure_visible",
     "record_retrieval_trace",
     "emit_retrieval_trace_off_loop",

@@ -724,12 +724,20 @@ def test_mcp_tool_signatures_expose_no_privileged_fields() -> None:
     )
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
-    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases", "rag_research"}
-    properties = set(getattr(tools["rag_retrieve"], "parameters", {})["properties"])
-    assert properties == {"kb_ids", "query"}
-    # 第三个工具（票 #151）走的是同一份权限表达：签名里只有 kb_ids + query。
-    research = set(getattr(tools["rag_research"], "parameters", {})["properties"])
-    assert research == {"kb_ids", "query"}
+    # 第 13 步：四条端点 → 四把检索/研究工具 + 列库工具，共五把。
+    assert set(tools) == {
+        "rag_retrieve",
+        "rag_rewrite",
+        "rag_decompose",
+        "rag_research",
+        "rag_list_knowledge_bases",
+    }
+    # 五把工具同一份权限表达：签名里只有 kb_ids + query（列库工具无参）。
+    for name in ("rag_retrieve", "rag_rewrite", "rag_decompose", "rag_research"):
+        assert set(getattr(tools[name], "parameters", {})["properties"]) == {
+            "kb_ids",
+            "query",
+        }, name
 
     privileged = {
         "tenant",

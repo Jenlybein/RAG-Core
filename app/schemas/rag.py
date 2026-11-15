@@ -110,17 +110,20 @@ class RetrievedChunk(BaseModel):
     # **不改分数、不改排名，只附加内容**。``content`` 仍是切片原文（ADR-0012 决策 3），
     # 父节正文单独一栏是为了不破坏「引用能指回那一片」。
     parent_content: str | None = None
+    # 问题分解后检索专用：哪几条子问题把这一节顶上来的。跨子问题的 ``score`` 不可比，
+    # 这个字段是「它为什么出现」的唯一答案。直接检索 / 改写检索不产生它。
+    matched_queries: list[str] | None = None
 
     @model_serializer(mode="wrap")
-    def _omit_absent_parent_content(self, handler: Any) -> dict[str, Any]:
-        """没补父节时，这个键**连存在都不存在**。
+    def _omit_absent_optional_fields(self, handler: Any) -> dict[str, Any]:
+        """没补的字段，键**连存在都不存在**。
 
         ``null`` 也是一个字节：「关闭时响应逐字节不变」是红线上的一句话，所以这里显式
-        摘掉——与 ``metadata`` 摘 ``trace_id``、重排身份键那两次修订同一条纪律。
+        摘掉——与 ``metadata`` 摘 ``trace_id``、重排身份键那几次修订同一条纪律。
         """
 
         dumped = handler(self)
-        for name in ("parent_content",):
+        for name in ("parent_content", "matched_queries"):
             if dumped.get(name) is None:
                 dumped.pop(name, None)
         return dumped

@@ -38,13 +38,18 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.llm.base import LLMProvider
-from app.services.query.optimizer import QueryProcessResult, optimize_query
+from app.services.query.optimizer import (
+    QueryProcessResult,
+    direct_query,
+    optimize_for_rewrite,
+)
 from app.services.query.rewrite import QueryRewrite
 from app.services.query.synonyms import collect_synonym_groups
 from tests.fake_db import AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
+REWRITE_PATH = "/api/v1/rag/rewrite"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
 
@@ -290,7 +295,7 @@ def _offline_client(
         main.app.dependency_overrides.clear()
 
 
-def _response(client: TestClient, **body: Any) -> Any:
+def _response(client: TestClient, *, path: str = RETRIEVE_PATH, **body: Any) -> Any:
     payload: dict[str, Any] = {
         "kb_ids": [KB_A],
         "query": RAW_QUERY,
@@ -298,7 +303,7 @@ def _response(client: TestClient, **body: Any) -> Any:
     # 票 #77：``mode`` / ``top_k`` / ``include_parent`` 这批旧请求字段改由密钥配置表达，
     # 助手把它们翻译成「造一个 custom 档的假身份」，调用点保持原样。
     payload.update(IDENTITY.apply({"mode": "hybrid", "top_k": 5, **body}))
-    return client.post(RETRIEVE_PATH, json=payload)
+    return client.post(path, json=payload)
 
 
 def _chunk_ids(body: dict) -> list[str]:
@@ -383,34 +388,29 @@ def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> None:
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_llm)
 
 
-# ───────────────────────────────── 接缝一：optimize_query 产出两句话
+# ───────────────────────────────── 接缝一：两条加工的产出形状
 
 
-def test_rewrite_off_yields_exactly_the_raw_vector_query(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """关闭改写：向量一路只有原句，三个查询字段仍是恒等变换。"""
+def test_direct_retrieve_is_an_identity_transform() -> None:
+    """`/rag/retrieve`：向量一路只有原句，三个查询字段恒等变换、零模型调用。"""
 
-    _switches(monkeypatch, rewrite=False, synonyms=False)
-
-    result = asyncio.run(optimize_query(query=RAW_QUERY))
+    result = direct_query(RAW_QUERY)
 
     assert isinstance(result, QueryProcessResult)
     assert result.vector_queries == (RAW_QUERY,)
     assert result.raw_query == result.effective_query == result.search_query == RAW_QUERY
     assert result.rewrite_applied is False
-    assert result.rewrite_degraded is False
 
 
-def test_rewrite_success_yields_raw_then_effective_in_a_fixed_order(
+def test_rewrite_yields_raw_then_effective_in_a_fixed_order(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """开启且成功：``(原句, 改写句)`` 顺序固定、两句都非空；effective 仍给重排。"""
+    """`/rag/rewrite` 成功：``(原句, 改写句)`` 顺序固定；effective 仍给重排。"""
 
     _switches(monkeypatch, rewrite=True)
     _install_llm(monkeypatch, _RewriteLLM(rewritten=REWRITTEN))
 
-    result = asyncio.run(optimize_query(query=RAW_QUERY))
+    result = asyncio.run(optimize_for_rewrite(query=RAW_QUERY))
 
     assert result.vector_queries == (RAW_QUERY, REWRITTEN)
     assert all(query.strip() for query in result.vector_queries)
@@ -425,7 +425,7 @@ def test_rewrite_same_as_raw_is_deduplicated(monkeypatch: pytest.MonkeyPatch) ->
     _switches(monkeypatch, rewrite=True)
     _install_llm(monkeypatch, _RewriteLLM(rewritten=RAW_QUERY))
 
-    result = asyncio.run(optimize_query(query=RAW_QUERY))
+    result = asyncio.run(optimize_for_rewrite(query=RAW_QUERY))
 
     assert result.vector_queries == (RAW_QUERY,)
     assert result.effective_query == RAW_QUERY
@@ -434,41 +434,31 @@ def test_rewrite_same_as_raw_is_deduplicated(monkeypatch: pytest.MonkeyPatch) ->
 def test_synonym_expansion_still_only_touches_the_keyword_query(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """``search_query`` 完全不变：同义词只追加给关键词一路，不污染向量查询池。"""
+    """``vector_queries`` 完全不变：同义词只追加给关键词一路，不污染向量查询池。"""
 
     _switches(monkeypatch, rewrite=True, synonyms=True)
     _install_llm(monkeypatch, _RewriteLLM(rewritten=REWRITTEN))
     groups = collect_synonym_groups([{"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}])
 
-    result = asyncio.run(optimize_query(query=RAW_QUERY, synonym_groups=groups))
+    result = asyncio.run(optimize_for_rewrite(query=RAW_QUERY, synonym_groups=groups))
 
     assert result.vector_queries == (RAW_QUERY, REWRITTEN)
     assert result.search_query == "退款的处理流程 退款流程"
 
 
-def test_rewrite_failure_yields_only_the_raw_query_and_keeps_degradation(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """改写失败：只剩原句一路（等同于关闭），降级事实一字不改。"""
+def test_a_failed_rewrite_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> None:
+    """改写模型失败 → 整单 50003，不再「只剩原句一路 + 降级原因」。"""
+
+    from app.core.exceptions import AppError, ErrorCode
+    import pytest
 
     _switches(monkeypatch, rewrite=True, synonyms=True)
     _install_llm(monkeypatch, _RewriteLLM(error=TimeoutError("模型超时")))
 
-    result = asyncio.run(
-        optimize_query(
-            query=RAW_QUERY,
-            synonym_groups=collect_synonym_groups(
-                [{"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}]
-            ),
-        )
-    )
+    with pytest.raises(AppError) as caught:
+        asyncio.run(optimize_for_rewrite(query=RAW_QUERY))
 
-    assert result.vector_queries == (RAW_QUERY,)
-    assert result.effective_query == RAW_QUERY
-    assert result.search_query == "退钱怎么弄 退款"
-    assert result.rewrite_applied is False
-    assert result.rewrite_degraded is True
-    assert result.rewrite_reason == "query rewrite failed"
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
 # ───────────────────────────────── 接缝二：ASGI 上的并集检索
@@ -496,7 +486,7 @@ def test_rewrite_on_embeds_and_searches_both_queries(
         llm=llm,
         kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
     ) as fake:
-        body = _response(fake["client"], include_parent=False).json()
+        body = _response(fake["client"], path=REWRITE_PATH, include_parent=False).json()
 
     assert body["code"] == 0
     # 查询侧 EmbeddingProvider 没有批量接口：两句 = 两次 embed_query（并发发出）。
@@ -528,7 +518,7 @@ def test_union_keeps_hits_that_only_one_of_the_two_queries_found(
     with _offline_client(
         monkeypatch, vector=vector, keyword=_FakeKeyword(rows=[]), llm=llm
     ) as fake:
-        body = _response(fake["client"], include_parent=False).json()
+        body = _response(fake["client"], path=REWRITE_PATH, include_parent=False).json()
 
     chunks = body["data"]["retrieved_chunks"]
     assert set(_chunk_ids(body)) == {"A", "B"}, "两边的命中都进了向量池"
@@ -560,7 +550,7 @@ def test_duplicate_hit_is_deduplicated_taking_better_rank_and_higher_score(
     with _offline_client(
         monkeypatch, vector=vector, keyword=_FakeKeyword(rows=[]), llm=llm
     ) as fake:
-        body = _response(fake["client"], include_parent=False).json()
+        body = _response(fake["client"], path=REWRITE_PATH, include_parent=False).json()
 
     chunks = body["data"]["retrieved_chunks"]
     assert len(chunks) == 2, "同一 (kb_id, chunk_id) 只留一条"
@@ -592,16 +582,16 @@ def test_multi_query_embeddings_are_issued_concurrently(
         keyword=_FakeKeyword(rows=[]),
         llm=_RewriteLLM(rewritten=REWRITTEN),
     ) as fake:
-        _response(fake["client"], include_parent=False)
+        _response(fake["client"], path=REWRITE_PATH, include_parent=False)
 
     assert embedding.queries == [RAW_QUERY, REWRITTEN]
     assert embedding.max_in_flight == 2, "两次嵌入同时在飞，而不是串行"
 
 
-def test_rewrite_failure_uses_only_one_vector_query(
+def test_a_failed_rewrite_is_a_50003_and_touches_no_retrieval(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """改写失败：嵌入与向量检索都只剩一次，降级语义不变。"""
+    """第 13 步：改写失败整单 50003，一次嵌入 / 向量检索都不发，不再静默降级。"""
 
     _switches(monkeypatch, rewrite=True)
     vector = _FakeVectorStore(rows=[_vector_row("c1", score=0.9)])
@@ -612,13 +602,12 @@ def test_rewrite_failure_uses_only_one_vector_query(
         keyword=_FakeKeyword(rows=[]),
         llm=_RewriteLLM(error=RuntimeError("模型服务 502")),
     ) as fake:
-        body = _response(fake["client"], include_parent=False).json()
+        body = _response(fake["client"], path=REWRITE_PATH, include_parent=False).json()
 
-    assert fake["embedding"].queries == [RAW_QUERY]
-    assert fake["vector"].seen == [1.0]
-    assert len(fake["vector"].calls) == 1
-    assert _metadata(body)["degraded"] is True
-    assert _metadata(body)["degraded_reason"] == "query rewrite failed"
+    assert body["code"] == 50003, "模型失败不再包成 code 0 的降级结果"
+    assert body["data"] is None, "失败响应没有 data，也就没有降级原因字段"
+    assert fake["embedding"].queries == [], "被拒的请求不该白烧一次嵌入"
+    assert fake["vector"].calls == []
 
 
 def test_vector_single_mode_also_searches_both_queries(
@@ -640,7 +629,7 @@ def test_vector_single_mode_also_searches_both_queries(
         keyword=_FakeKeyword(rows=[_keyword_row("k1")]),
         llm=_RewriteLLM(rewritten=REWRITTEN),
     ) as fake:
-        vector_body = _response(fake["client"], mode="vector", include_parent=False).json()
+        vector_body = _response(fake["client"], path=REWRITE_PATH, mode="vector", include_parent=False).json()
 
     assert fake["embedding"].queries == [RAW_QUERY, REWRITTEN]
     assert fake["vector"].seen == [1.0, 2.0]
@@ -675,7 +664,7 @@ def test_one_failing_embedding_degrades_the_whole_vector_branch(
         keyword=_FakeKeyword(rows=[_keyword_row("k1")]),
         llm=_RewriteLLM(rewritten=REWRITTEN),
     ) as fake:
-        body = _response(fake["client"], include_parent=False).json()
+        body = _response(fake["client"], path=REWRITE_PATH, include_parent=False).json()
 
     assert body["code"] == 0
     assert _metadata(body)["degraded"] is True

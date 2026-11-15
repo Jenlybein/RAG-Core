@@ -462,12 +462,13 @@ def test_sub_queries_do_not_rewrite_or_account(
         raise AssertionError("Research 的子检索不该经过这一步")
 
     monkeypatch.setattr(rag_service, "retrieve", _boom)
-    monkeypatch.setattr(rag_service, "optimize_query", _boom)
+    monkeypatch.setattr(rag_service, "direct_query", _boom)
+    monkeypatch.setattr(rag_service, "optimize_for_rewrite", _boom)
     monkeypatch.setattr(rag_service, "record_retrieval_trace", _boom)
     monkeypatch.setattr(rag_service, "emit_retrieval_trace_off_loop", _boom)
     monkeypatch.setattr(retrieval_gate, "gated_retrieve", _boom)
     monkeypatch.setattr(quota_gate, "retrieval_quota", _boom)
-    monkeypatch.setattr(optimizer, "optimize_query", _boom)
+    monkeypatch.setattr(optimizer, "optimize_for_rewrite", _boom)
 
     data = entry.post()["data"]
 
@@ -494,7 +495,8 @@ def test_the_sub_search_never_writes_an_attribution_row_by_source() -> None:
     state_machine = (root / "app" / "services" / "research.py").read_text(encoding="utf-8")
     for forbidden in (
         "rag_service",
-        "optimize_query",
+        "direct_query",
+        "optimize_for_rewrite",
         "record_retrieval_trace",
         "emit_retrieval_trace",
     ):

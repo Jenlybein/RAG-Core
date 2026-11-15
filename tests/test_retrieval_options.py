@@ -463,7 +463,15 @@ def test_the_composition_root_receives_the_resolved_options(
     service = importlib.import_module("app.services.rag_service")
     seen: dict[str, Any] = {}
 
-    async def spy(_db: Any, *, tenant_id: str, kb_ids: list[str], query: str, options: Any) -> dict:
+    async def spy(
+        _db: Any,
+        *,
+        tenant_id: str,
+        kb_ids: list[str],
+        query: str,
+        options: Any,
+        query_variant: str = "direct",
+    ) -> dict:
         seen["options"] = options
         return {
             "query": query,

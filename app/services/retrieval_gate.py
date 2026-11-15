@@ -26,7 +26,7 @@ HTTP 路由与 MCP 工具写的是**同一段五步序列**，过去是两处各
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -50,6 +50,7 @@ async def gated_retrieve(
     key: KeyContext,
     kb_ids: list[str],
     query: str,
+    variant: Literal["direct", "rewrite"] = "direct",
     retrieve: RetrieveCallable | None = None,
 ) -> RetrieveData:
     """按六道关卡的顺序跑完整次检索，返回**已经校验成形**的响应数据。
@@ -96,10 +97,60 @@ async def gated_retrieve(
         kb_ids=kb_ids,
         query=query,
         options=options,
+        query_variant=variant,
     )
 
     # 第 5 步：响应成形之后才 +1。校验失败的响应不是一次成功调用，所以顺序不能倒过来；
     # 失败 / 异常 / 校验不通过的路径都不会走到这里（ADR-0018「成功后才计数」）。
+    result = RetrieveData.model_validate(payload)
+    await quota.record_success()
+    return result
+
+
+async def gated_decompose(
+    db: AsyncSession,
+    *,
+    key: KeyContext,
+    kb_ids: list[str],
+    query: str,
+) -> RetrieveData:
+    """`/rag/decompose` 的五道关卡：与 `gated_retrieve` 同构，召回换成多内核链。
+
+    白名单 → 套餐复核 / 参数展开 → 配额 → 分解检索 → 成功记账。第 4 步的组合根是
+    ``app.services.decompose_gate.decompose_retrieve``（一次分解 + N 次内核 + 合并），
+    其余四步与直接检索共用同一份判定，两条入口不可能判出两种答案。
+    """
+
+    from app.services.decompose_gate import decompose_retrieve
+
+    # 第 1 步：白名单。
+    ensure_kb_scope(policy=key.policy, kb_ids=kb_ids)
+    # 第 2 步：套餐复核 + 参数展开 + 单次库数。
+    options = resolve_retrieval_options(
+        policy=key.policy,
+        plan=key.plan,
+        kb_count=len(kb_ids),
+    )
+    # 第 3 步：秒级限流 → 日配额（第 13 步起分解检索会换到自己的计量账，
+    # 由批次 C 接线；此刻仍与检索共用，保证这一批可独立验证）。
+    quota = retrieval_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    )
+    await quota.ensure_available()
+
+    # 第 4 步：分解 → N 次内核 → 合并。
+    payload = await decompose_retrieve(
+        db,
+        tenant_id=key.tenant_id,
+        kb_ids=kb_ids,
+        query=query,
+        options=options,
+    )
+
+    # 第 5 步：响应成形之后才 +1。
     result = RetrieveData.model_validate(payload)
     await quota.record_success()
     return result

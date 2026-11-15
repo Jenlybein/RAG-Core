@@ -21,8 +21,10 @@
 再加上**空结果原因计算**与 **``metadata`` 组装**：前者的答案属于「这次调用遇到了什么」，
 后者是响应契约（ADR-0010）而不是检索步骤。
 
-**唯一的大模型调用是查询改写**（票 6），而且它由 ``app/services/query/`` 负责、失败即
-降级：本模块只决定「哪一路拿哪一句」，不认识模型、不认识提示词。
+**查询加工由端点决定**（第 13 步）：``/rag/retrieve`` 走 ``direct_query`` 恒等变换，
+零模型调用；``/rag/rewrite`` 走 ``optimize_for_rewrite``，一次 ``default`` 模型调用，
+失败整单 ``50003``。本模块只决定「哪一路拿哪一句」，不认识提示词；两条端点共用
+下面这同一段组合根（``query_variant`` 是唯一分叉）。
 
 **三种模式的边界（票 3 / 票 4 / 票 5）**：
 
@@ -30,9 +32,9 @@
   （N 个库 = N 次查询，票 5 之前是两条通道各查一遍 = 2N 次）。拒绝（20008）先于
   召回发生，且不参与降级。它返回的**库行**顺着往下传：票 6 要用它们的 ``settings``
   （同义词表）与名称 / 描述（改写提示），再查一次库就等于每库两次。
-* **查询优化在召回之前**（票 6 / #31）：``vector_queries`` 给向量一路逐句召回
-  （改写成功 = 原句 + 改写句，关闭 / 失败 = 只有原句），``effective_query`` 给重排，
-  ``search_query`` 给关键词一路。两个开关默认关闭，关闭时这一步是恒等变换。
+* **查询加工在召回之前**（票 6 / #31，第 13 步改由端点决定）：``vector_queries`` 给
+  向量一路逐句召回（改写端点 = 原句 + 改写句，直接检索 = 只有原句），
+  ``effective_query`` 给重排，``search_query`` 给关键词一路。直接检索是恒等变换。
   三条查询串**原样交给内核**（它不再加工一遍）。
 * ``vector`` 按 ``vector_queries`` 逐句 ``embed_query``、逐句一次范围召回覆盖全部
   「库 + 版本」配对，并成一个池后按分数排序截到 ``top_k``；关闭改写时只有一句，
@@ -50,8 +52,8 @@
   绝不偷偷退回向量——调用方选 bm25 往往就是在评测单路效果。
 * **混合模式对称降级**：哪一路挂了都用另一路的结果，``code`` 仍为 0，
   ``metadata.retrieval.degraded`` 与 ``degraded_reason`` 如实说明；两路都挂才拒绝。
-* **降级原因一因一码、先到的才算根因**：改写发生在召回之前，所以它先失败时，通道
-  故障与重排失败都不覆盖它。内核交回它自己那几段的原因，本条合成在这里做。
+* **降级原因一因一码**：内核交回它自己那几段的原因（通道故障 / 重排失败 /
+  重排额度用尽），外层直接采用。第 13 步起改写失败是整单 ``50003``，不再产出降级串。
 
 **三种结局**（父 spec「降级矩阵」）：拒绝（业务错误）/ 降级（成功 + 标记）/
 诚实空（成功 + ``empty_reason``）。空结果不是故障：把它当故障处理会让监控
@@ -104,6 +106,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable, Mapping
+from typing import Literal
 
 import structlog
 
@@ -120,7 +123,7 @@ from app.providers.vectorstores import get_vector_store
 from app.repositories import chunk_repository
 from app.services import result_collapse
 from app.services.knowledge_base_access import ensure_visible
-from app.services.query.optimizer import optimize_query
+from app.services.query.optimizer import direct_query, optimize_for_rewrite
 from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.kernel import retrieve_kernel
 from app.services.retrieval_options import (
@@ -153,6 +156,7 @@ async def retrieve(
     kb_ids: list[str],
     query: str,
     options: RetrievalOptions,
+    query_variant: Literal["direct", "rewrite"] = "direct",
     stage_timer: StageTimer | None = None,
     rerank_factory: Callable[[], Awaitable[object]] | None = None,
 ) -> dict:
@@ -226,19 +230,20 @@ async def retrieve(
         await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids
     ]
 
-    # 查询优化：召回之前把用户那句话加工成「向量逐句列表 + 关键词一句 + 重排一句」
-    # （GLOSSARY「检索链路」：查询优化 → 召回 → 融合 → 重排）。改写开关读 ``options``：
-    # 它是「档位想要 ∧ 本机装了」的合取，关闭时这一步是恒等变换。
+    # 查询加工由**端点**决定：direct 是恒等变换（零模型调用），rewrite 才做一次改写。
+    # 这条分支不再读密钥配置里的改写开关——「这次用多好」由调用方选 URL 表达。
     with timer.measure(STAGE_QUERY_OPTIMIZATION):
-        optimized = await optimize_query(
-            query=query,
-            # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
-            synonym_groups=collect_synonym_groups(
-                [getattr(kb, "settings", None) for kb in visible_kbs]
-            ),
-            rewrite_hint=_rewrite_hint(visible_kbs),
-            rewrite_enabled=options.rewrite,
-        )
+        if query_variant == "rewrite":
+            optimized = await optimize_for_rewrite(
+                query=query,
+                # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
+                synonym_groups=collect_synonym_groups(
+                    [getattr(kb, "settings", None) for kb in visible_kbs]
+                ),
+                rewrite_hint=_rewrite_hint(visible_kbs),
+            )
+        else:
+            optimized = direct_query(query)
 
     # 范围由**这一次调用**解析一次：``kb_id → 索引版本`` 的映射（不是两个平行数组，
     # 配对关系只能从映射里读出来）。内核与将来的 Research 都吃这一份，不各自去造。
@@ -284,9 +289,9 @@ async def retrieve(
     )
 
     collapsed = outcome.chunks
-    # 一因一码，先到的才是根因：改写发生在召回之前，所以它已经在场时通道故障与
-    # 重排失败都不该覆盖它。
-    degraded_reason = optimized.rewrite_reason or outcome.degraded_reason
+    # 第 13 步：改写失败整单 50003，不再有「先到的降级原因」。唯一的降级产出方是内核
+    # 自己那几步（通道故障 / 重排失败 / 重排额度用尽）。
+    degraded_reason = outcome.degraded_reason
     degraded = degraded_reason is not None
 
     # 空结果判定用**同一个范围**（``kb_id → 生效版本`` 的映射）：换一个版本口径去数，
@@ -304,15 +309,13 @@ async def retrieve(
         "rerank": outcome.rerank,
     }
     if optimized.rewrite_applied:
-        # 查询优化的**实际用句**（#31）：不记录它，评测里就分不清「名次变了是因为
+        # 查询加工的**实际用句**（#31）：不记录它，评测里就分不清「名次变了是因为
         # 检索不行，还是因为改写把问题改坏了」——q16 的退化当年正是因此无法归因。
         #
-        # 只在改写**真的发生**时才加这一栏：改写关闭 / 失败时它是恒等变换（用句就是
-        # 原话），加进去只会让「关闭改写时响应逐字节不变」那条回归红线失效，而
-        # 没有任何可归因的信息增加。
+        # 只在改写**真的发生**时（即 /rag/rewrite）才加这一栏：/rag/retrieve 是恒等
+        # 变换，加进去会让「原句直查逐字节不变」那条回归红线失效，且没有信息增量。
         retrieval_meta["query_optimization"] = {
             "rewrite_applied": True,
-            "rewrite_degraded": optimized.rewrite_degraded,
             "effective_query": optimized.effective_query,
             "vector_queries": list(optimized.vector_queries),
         }
