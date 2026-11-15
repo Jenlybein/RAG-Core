@@ -7,6 +7,7 @@
 * :func:`create` —— 落一条新版本行（只 flush，让 ``(document_id, version)`` 唯一约束
   在这里撞出来）；
 * :func:`archive_current_except` —— 把别的当前稿行转归档（切指针的另一半，#175）；
+* :func:`mark_current` —— 把某一稿转回当前稿（回滚的另一半，#176）；
 * :func:`list_by_document` —— 列版本（按稿号倒序，#175 的读接口）；
 * :func:`source_file_paths` —— 这篇文档各稿的源文件路径（删文档时一起清掉）；
 * :func:`delete_for_document` —— 删文档时把这一篇的版本行带走（#172）。
@@ -111,6 +112,29 @@ async def archive_current_except(db: AsyncSession, document_id: str, *, keep: in
     )
 
 
+async def mark_current(db: AsyncSession, document_id: str, *, version: int) -> None:
+    """把第 ``version`` 稿转成 ``current``（回滚的另一半，#176）。
+
+    建版本那条路径只做「归档旧的、插入新的」——新行天生就是 ``current``。回滚不一样：
+    目标是**已经存在的一行归档稿**，它得先被改回 ``current``，否则「每篇文档恰好一条
+    当前稿版本行」这条不变式在指针切过去之后就断了（指针指着一行 ``archived``）。
+
+    一条 ``UPDATE ... WHERE`` 而不是「读出来改属性再 flush」：与
+    :func:`archive_current_except` 同一条纪律——这一行此刻可能已经在身份映射里
+    （服务层为了拿正文读过它），逐字段改会让「库里是什么」与「会话里是什么」有两个答案。
+    """
+
+    await db.execute(
+        update(DocumentVersion)
+        .where(
+            DocumentVersion.document_id == document_id,
+            DocumentVersion.version == version,
+        )
+        .values(status=DOCUMENT_VERSION_CURRENT)
+        .execution_options(synchronize_session=False)
+    )
+
+
 async def list_by_document(db: AsyncSession, document_id: str) -> list[DocumentVersion]:
     """这篇文档的全部版本行，**按稿号倒序**（现在这一稿在最前）。
 
@@ -163,6 +187,7 @@ __all__ = [
     "delete_for_document",
     "get_by_version",
     "list_by_document",
+    "mark_current",
     "max_version",
     "source_file_paths",
 ]
