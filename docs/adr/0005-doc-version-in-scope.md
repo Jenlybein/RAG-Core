@@ -1,8 +1,8 @@
 # 0005. 文档版本（`doc_version`）纳入实现范围，与 `index_version` 正交
 
-- 状态：已采纳
+- 状态：已采纳；**落地时的命名与清除键已由文末「第 1 次修订」校正**（表名 `document_versions`、清除键扩到「文档 + 稿次」、指针列改名 `current_version`、状态词 `current` / `archived`）
 - 日期：2026-11-03
-- 相关：`GLOSSARY.md`「文档版本」「索引版本」、「docs/架构.md」③知识与文档
+- 相关：`GLOSSARY.md`「文档版本」「当前稿指针」「版本行」「清除」「索引版本」、「docs/架构.md」③知识与文档、**[ADR-0031](0031-document-version-management.md)「文档版本管理」**（本步落地的八个决策，本文只校正契约层的命名）
 
 ## 背景
 
@@ -50,3 +50,21 @@
 | 不做文档版本，只留索引版本 | 审计与事故归因直接做不到；而且 `content` 是原地覆盖的，改了稿就再也回不到「当时引用的原文」 |
 | 与 `index_version` 合并成一个号 | 两类语义被压成一个数，重建与改稿无法区分（见背景） |
 | 只存版本行不留切片 | 回滚时切片已不存在，必须全量重建才能查——回滚从秒级退化成分钟级 |
+
+## 第 1 次修订（第 12 步，#180，2026-11-16）：落地时的五个名字与一条删除键
+
+本文写在实现之前，其中五处**名字与键**按落地时的实际形状校正。**四个决策（正交、默认只查当前稿、约束落在 SQL / filter、每条结果带稿号）一个字没动**——变的只是它们叫什么、按什么删。为什么是这些名字而不是更省事的另一种，见 [ADR-0031](0031-document-version-management.md) 决策二。
+
+| 本文初版的说法 | 现在（以代码为准） | 依据 |
+| --- | --- | --- |
+| `doc_versions` 表 | **`document_versions`** | 票 #172 建表；`app/models/document_version.py`。表名的选择与仓库其它表一致（全称、复数），`doc_versions` 从未落库 |
+| `doc_versions` 表的字段：`doc_version` / `checksum` / 状态 / 创建时间 | **`version`**（稿号本体）、`content`、`source_file_path`、`checksum`（定长 64 的 sha256 hex）、**`status`**、`created_at`、`document_id` | 同上；`(document_id, version)` 唯一 |
+| 「状态」语义未写死 | **`current` / `archived`** 两个取值，带 `CHECK` 约束。回到旧稿是**新写一行 `current`**，不是把旧行改回 `current`（时间轴单调，中间那几次变更不被抹掉） | `app/models/document_version.py` 的 `DOCUMENT_VERSION_CURRENT` / `DOCUMENT_VERSION_ARCHIVED` |
+| 「文档行上的 `doc_version`」 | **`documents.current_version`**（原列改名，保数据）。它是**指针**，不是「这一片属于第几稿」——后者是 `chunks.doc_version` | 票 #171；本修订最贵的一条，理由见 ADR-0031 决策二 |
+| 「`chunks` 与 ES mapping 都带 `doc_version`」 | `chunks.doc_version` 是**真实列**（非空、默认 1，带 `(document_id, doc_version)` 复合索引）；**JSONB 元数据里那份副本已删除**（稿号只能有一个来源）。ES mapping 侧是 `doc_version`（keyword）+ `is_current`（boolean）两个字段，**召回只过滤 `is_current`** | 票 #173 / #174；`app/models/chunk.py`、`app/providers/keyword_search/query_builder.py` |
+| 「`purge` 的删除键必须扩一位（`document_id + doc_version`）」——本文「代价」一节把它写成一条**风险** | 现在它是**已落地的契约**：清除键是「**文档 + 稿次**」，**向量与关键词两个存储都要删**（默认接线两个都清）；**不传稿次 = 清整篇文档的所有稿**（删文档那条路径用的就是这一支） | 票 #173；`purge_document_chunks(..., doc_version=...)`、`tests/test_document_version_delete.py` |
+
+两条补充，都不改决策、只补边界：
+
+- **本文「只存版本行不留切片」那一行的否决理由，在落地时被保留策略接住了**：每稿各留切片（ADR-0031 决策一），代价由默认 3 稿的保留窗口封顶，清理走脚本（ADR-0031 决策四）。本文没写窗口，因为当时还没到那一层。
+- **ES 的 mapping 补丁是 additive 的**：存量物理索引用 `put_mapping` 补 `doc_version` / `is_current` 两个字段即可，**不强制重建索引版本**——ES 对未映射字段的 `term` 查询不报错、只是命中 0 条，所以不补就是关键词路静默全空（ADR-0031 决策三）。
