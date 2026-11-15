@@ -192,7 +192,7 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
 
 
 def test_mcp_tools_have_the_declared_signatures() -> None:
-    """两个工具第 1 步就挂好；rag_retrieve 暴露 kb_ids + query。"""
+    """三个工具第 1 步就挂好；两个数据面工具都只暴露 kb_ids + query。"""
 
     import asyncio
 
@@ -218,6 +218,9 @@ def test_mcp_tools_have_the_declared_signatures() -> None:
     )
     tools = {t.name: t for t in asyncio.run(mcp.list_tools())}
 
-    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases"}
+    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases", "rag_research"}
     params = getattr(tools["rag_retrieve"], "parameters", {}) or {}
     assert set(params.get("properties", {})) == {"kb_ids", "query"}
+    # 第三个工具与它字面同形（票 #151）：数据面两个工具的签名只表达「问什么、查哪些库」。
+    research_params = getattr(tools["rag_research"], "parameters", {}) or {}
+    assert set(research_params.get("properties", {})) == {"kb_ids", "query"}

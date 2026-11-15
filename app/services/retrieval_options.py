@@ -65,6 +65,9 @@ TENANT_POLICY_KEY: Final[str] = "tenant_policy"
 
 MODE_VECTOR: Final[str] = "vector"
 MODE_HYBRID: Final[str] = "hybrid"
+#: 关键词单路。与上面两个同一套词表（``RetrievalMode`` 也有它）：三种模式的**分支**
+#: 在内核（``app/services/retrieval/kernel.py``），词表只该有一份。
+MODE_BM25: Final[str] = "bm25"
 
 
 @dataclass(frozen=True)
@@ -193,7 +196,7 @@ def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
 
 
 def server_default_chain() -> ProfileChain:
-    """部署缺省的那条链路：四个值全部来自服务端配置。
+    """部署缺省的那条链路：三个开关各读一处服务端配置。
 
     它只做三件事：``custom`` 档的逐键回落、未知档位的兜底、以及给「缺省行为」一个
     可引用的名字。**没有哪一档的预设读它**——档位是产品契约，不跟着部署配置漂。

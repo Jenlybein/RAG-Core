@@ -1,0 +1,122 @@
+{
+  "_readme": [
+    "引用语料（票 A3 / #145）的落库布局与**引用边清单**。",
+    "",
+    "为什么是独立目录：eval/corpus/ 是 137 道基线题的尺子，往里加文档等于基线当场失效",
+    "（#138 的验收第 1 条）。这批文档只服务 8 道定向题（eval/refs-questions.json），",
+    "落进自己的知识库 kb-refs，与 kb-eval* 不相交。",
+    "",
+    "为什么清单里还写着 reference_inventory：语料的价值全在「显式引用表达」上，",
+    "而这类句子最容易被后续编辑顺手改掉（改个措辞、加个标点、拆成两句），改完不报错、",
+    "只是图上少一条边。所以这里把**每条边**连同它的原文证据一起钉住，由",
+    "tests/test_eval_refs.py 拿抽取器重抽一遍逐条对账——对不上就红，不靠人眼。",
+    "",
+    "形式（form）取值与 ADR-0027 允许的三种显式表达一一对应：",
+    "- explicit_cross_doc：详见《X》第 N 节（跨文档，引号书名 + 节号）；",
+    "- same_doc：参见本文第 N 节（同文档，指回自己）；",
+    "- markdown_link：Markdown 链接（可带「第 N 节」，也可只指到文档）。",
+    "",
+    "section 一律写成「节号」而不是标题全文：refund_policy 的节号是 1..5，points_policy",
+    "另有 2.1 / 2.2 两个三级小节。节号与标题的对应由标题自身的编号前缀表达",
+    "（## 3. 退款到账与凭证、### 2.2 抵扣上限），不靠顺序推断——顺序一改就全错。"
+  ],
+  "kbs": [
+    {
+      "kb_id": "kb-refs",
+      "name": "引用语料库·会员权益",
+      "description": "3 篇同一业务域（退款 / 促销 / 积分）的中文文档，彼此之间带显式引用表达：见 reference_inventory",
+      "documents": ["refund_policy.md", "promo_rules.md", "points_policy.md"]
+    }
+  ],
+  "documents": {
+    "refund_policy": {
+      "title": "会员订单退款政策",
+      "file": "refund_policy.md",
+      "sections": {
+        "1": "适用范围与退款类型",
+        "2": "退款时限与审核",
+        "3": "退款到账与凭证",
+        "4": "部分退款与优惠分摊",
+        "5": "积分与等级变更后的处理"
+      }
+    },
+    "promo_rules": {
+      "title": "促销活动与优惠券使用规则",
+      "file": "promo_rules.md",
+      "sections": {
+        "1": "活动类型与叠加原则",
+        "2": "满减与折扣的计算口径",
+        "3": "优惠券与退款的关系",
+        "4": "优惠券的有效期与失效"
+      }
+    },
+    "points_policy": {
+      "title": "积分规则",
+      "file": "points_policy.md",
+      "sections": {
+        "1": "积分获取与计算",
+        "2": "积分抵扣与使用上限",
+        "2.1": "抵扣比例",
+        "2.2": "抵扣上限",
+        "3": "积分退还与失效",
+        "4": "积分等级与保级"
+      }
+    }
+  },
+  "reference_inventory": [
+    {
+      "from": { "document": "refund_policy", "section": "1" },
+      "to": { "document": "points_policy", "section": "3" },
+      "form": "markdown_link",
+      "evidence": "会员积分如何获取、如何失效，见[《积分规则》](./points_policy.md)第 3 节"
+    },
+    {
+      "from": { "document": "refund_policy", "section": "2" },
+      "to": { "document": "promo_rules", "section": "3" },
+      "form": "explicit_cross_doc",
+      "evidence": "券在退款时是否退回、退回之后何时失效，详见《促销活动与优惠券使用规则》第 3 节"
+    },
+    {
+      "from": { "document": "refund_policy", "section": "4" },
+      "to": { "document": "refund_policy", "section": "5" },
+      "form": "same_doc",
+      "evidence": "退回的积分算「已使用积分」还是「失效积分」，参见本文第 5 节"
+    },
+    {
+      "from": { "document": "promo_rules", "section": "1" },
+      "to": { "document": "points_policy", "section": "2.2" },
+      "form": "explicit_cross_doc",
+      "evidence": "积分抵扣有独立的上限，上限口径见《积分规则》第 2.2 节"
+    },
+    {
+      "from": { "document": "promo_rules", "section": "2" },
+      "to": { "document": "promo_rules", "section": "3" },
+      "form": "same_doc",
+      "evidence": "退款时退款基数怎么算，参见本文第 3 节"
+    },
+    {
+      "from": { "document": "promo_rules", "section": "3" },
+      "to": { "document": "points_policy", "section": "2" },
+      "form": "markdown_link",
+      "evidence": "积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算"
+    },
+    {
+      "from": { "document": "promo_rules", "section": "4" },
+      "to": { "document": "refund_policy", "section": "1" },
+      "form": "explicit_cross_doc",
+      "evidence": "整单退款的定义与它对订单状态的后果，详见《会员订单退款政策》第 1 节"
+    },
+    {
+      "from": { "document": "points_policy", "section": "3" },
+      "to": { "document": "points_policy", "section": "2" },
+      "form": "same_doc",
+      "evidence": "积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节"
+    },
+    {
+      "from": { "document": "points_policy", "section": "4" },
+      "to": { "document": "refund_policy", "section": "4" },
+      "form": "markdown_link",
+      "evidence": "净额里的退款部分如何分摊，以[《会员订单退款政策》](./refund_policy.md)第 4 节为准"
+    }
+  ]
+}

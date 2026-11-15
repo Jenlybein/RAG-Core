@@ -1,0 +1,729 @@
+"""#168 评测脚本的用例：**标准答案机械可查**与**选题条件的机械性**（不连库、不连模型）。
+
+这组用例守的是本票两条最容易被「顺手放宽」的规矩：
+
+1. 「证据章节 ∈ expected」必须是**字符串比对**得出的（节号 / heading 分支），不许人工判断；
+2. 「B 组每题在 `top_k=2` 下 expected 缺席」必须有**机械证据**，而不是题面上的一句自述。
+
+所以用例全部打在纯函数上：喂构造的行与标注，断言比对结果与选题结果。真跑（连库 + 真模型）
+的部分不在这里测——那部分由 `plan` / `run` 的产物（`results.json`）留痕。
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+
+from scripts.eval_t168_rescue import (
+    B_TOP_K,
+    FOLLOWUP_QUERY_CAP,
+    GROUP_A,
+    GROUP_B,
+    NOMINAL_CALLS_PER_CASE,
+    RESCUE_FALSE,
+    RESCUE_NOT,
+    RESCUE_TRUE,
+    RESCUE_UNRESOLVED,
+    STATUS_INSUFFICIENT,
+    SUPPORT_NONE,
+    SUPPORT_SUPPORTED,
+    SUPPORT_UNKNOWN,
+    WORST_CALLS_PER_CASE,
+    EvalCase,
+    Expected,
+    MaterialRef,
+    Probe,
+    RescueClaim,
+    archive_gaps,
+    build_cases,
+    case_order_key,
+    check_archived_premise,
+    check_case_set,
+    classify_unknown_points,
+    document_stem_of,
+    heading_in_branch,
+    infer_material_rounds,
+    material_matches,
+    material_ref,
+    missing_expected,
+    normalize_heading,
+    predict_model_calls,
+    recompute_metrics,
+    rejudge_control,
+    rescue_summary,
+    section_of_heading,
+    select_b2_cases,
+)
+
+
+def _claim(outcome: str, *, case: str = "c1") -> RescueClaim:
+    """一条最简 claim（只关心分类与计数的用例用它）。"""
+
+    final_status = {
+        RESCUE_TRUE: SUPPORT_SUPPORTED,
+        RESCUE_FALSE: SUPPORT_SUPPORTED,
+        RESCUE_NOT: SUPPORT_NONE,
+    }.get(outcome, SUPPORT_UNKNOWN)
+    return RescueClaim(
+        case=case,
+        point_id="A1",
+        point_text="某要点",
+        final_status=final_status,
+        outcome=outcome,
+    )
+
+
+# ───────────────────────────────────────────────── 标准答案：节号口径（refs 语料）
+
+
+def test_section_number_is_read_from_the_last_heading_segment() -> None:
+    assert section_of_heading("会员订单退款政策 > 2. 退款时限与审核") == "2"
+    assert section_of_heading("积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限") == "2.2"
+    # 没有节号的分支（eval 语料的 heading 就不带号）：空串，不会误匹配任何节
+    assert section_of_heading("终端型号与配件指南 > 整机规格（标准款）") == ""
+
+
+def test_section_annotation_matches_only_the_same_document_and_section() -> None:
+    expected = Expected(document="refund_policy", section="2", kind="section")
+    assert material_matches(
+        expected,
+        MaterialRef(
+            document="refund_policy",
+            section="2",
+            heading="任意 > 2. x",
+            section_id="s",
+            chunk_id="c",
+        ),
+    )
+    # 同一节号、不同文档 → 不算
+    assert not material_matches(
+        expected,
+        MaterialRef(
+            document="promo_rules", section="2", heading="任意 > 2. x", section_id="s", chunk_id="c"
+        ),
+    )
+    # 同一文档、别的节 → 不算
+    assert not material_matches(
+        expected,
+        MaterialRef(
+            document="refund_policy",
+            section="3",
+            heading="任意 > 3. x",
+            section_id="s",
+            chunk_id="c",
+        ),
+    )
+
+
+# ─────────────────────────────────────────────── 标准答案：heading 分支口径（eval 语料）
+
+
+def test_heading_branch_accepts_parent_and_child_but_never_a_sibling() -> None:
+    expected = "终端型号与配件指南 > 整机规格（标准款）"
+    assert heading_in_branch(expected, expected)  # 同等
+    # 材料是它下面的 h3（「一节大于窗口」时切块器会这样交付）
+    assert heading_in_branch(expected, expected + " > 电源与散热")
+    # 材料是它的父 h2（标准答案标在 h3 上时反过来也会出现）
+    assert heading_in_branch(expected + " > 电源与散热", expected)
+    # 兄弟节：前缀相同但不是同一条分支 → 不算
+    assert not heading_in_branch(expected, "终端型号与配件指南 > 整机规格（增强款）")
+    assert not heading_in_branch("终端型号与配件指南", "价格与折扣对照表 > 配件价格")
+
+
+def test_normalize_heading_只有排版差异时视为同一节() -> None:
+    assert normalize_heading("  A  >  B ") == normalize_heading("A > B")
+    assert normalize_heading("A > > B") == "A > B"
+
+
+def test_heading_annotation_requires_the_same_document() -> None:
+    expected = Expected(
+        document="support_errors", heading="售后 > 配额与限流类错误（一）", kind="heading"
+    )
+    assert material_matches(
+        expected,
+        MaterialRef(
+            document="support_errors",
+            section="",
+            heading="售后 > 配额与限流类错误（一）",
+            section_id="s",
+            chunk_id="c",
+        ),
+    )
+    assert not material_matches(
+        expected,
+        MaterialRef(
+            document="ops_runbook",
+            section="",
+            heading="售后 > 配额与限流类错误（一）",
+            section_id="s",
+            chunk_id="c",
+        ),
+    )
+
+
+# ─────────────────────────────────────────────── 文档词干（两套语料同一函数）
+
+
+@pytest.mark.parametrize(
+    ("document_id", "source_filename", "stem"),
+    [
+        ("eval-doc-support_errors", None, "support_errors"),
+        ("1f8b8b74-0eac-4220-a5df-5f13a5a39e91", "refund_policy.md", "refund_policy"),
+        (
+            "1f8b8b74-0eac-4220-a5df-5f13a5a39e91",
+            "eval/corpus-refs/points_policy.md",
+            "points_policy",
+        ),
+    ],
+)
+def test_document_stem_covers_both_corpora(
+    document_id: str, source_filename: str | None, stem: str
+) -> None:
+    assert document_stem_of(document_id, source_filename) == stem
+
+
+def test_material_ref_reads_the_run_row_shape() -> None:
+    row: dict[str, Any] = {
+        "document_id": "eval-doc-support_errors",
+        "chunk_id": "chunk-1",
+        "section_id": "sec-1",
+        "heading_path": "售后故障与错误码速查 > 配额与限流类错误（一）",
+    }
+    ref = material_ref(row, stems={"eval-doc-support_errors": "support_errors"})
+    assert ref.document == "support_errors"
+    assert ref.section == ""
+    assert ref.heading == "售后故障与错误码速查 > 配额与限流类错误（一）"
+
+
+def test_missing_expected_keeps_the_annotation_order() -> None:
+    expected = (
+        Expected(document="promo_rules", section="3"),
+        Expected(document="points_policy", section="3"),
+        Expected(document="refund_policy", section="1"),
+    )
+    materials = [
+        MaterialRef(document="promo_rules", section="3", heading="", section_id="a", chunk_id="a"),
+        MaterialRef(
+            document="refund_policy", section="4", heading="", section_id="b", chunk_id="b"
+        ),
+    ]
+    assert [item.label for item in missing_expected(expected, materials)] == [
+        "points_policy:3",
+        "refund_policy:1",
+    ]
+
+
+# ─────────────────────────────────────────────── 选题：机械条件与排序
+
+
+def _probe(
+    *,
+    source: str,
+    origin: str,
+    missing: int = 1,
+    total: int = 1,
+    top_k: int = B_TOP_K,
+) -> Probe:
+    expected = tuple(Expected(document=f"d{index}", section=str(index)) for index in range(total))
+    hits = tuple(
+        MaterialRef(
+            document=f"d{index}", section=str(index), heading="", section_id="s", chunk_id="c"
+        )
+        for index in range(total - missing)
+    )
+    return Probe(
+        source=source,
+        origin_id=origin,
+        query=f"query-{origin}",
+        top_k=top_k,
+        expected=expected,
+        hits=hits,
+        missing=expected[total - missing :] if missing else (),
+    )
+
+
+def test_selection_takes_refs_first_then_eval_with_all_missing_then_partial() -> None:
+    probes = [
+        _probe(source="eval", origin="q9", missing=1, total=1),  # 全部缺席
+        _probe(source="eval", origin="q100", missing=1, total=1),  # 全部缺席（自然序在 q9 之后）
+        _probe(source="eval", origin="q13", missing=1, total=2),  # 部分缺席
+        _probe(source="refs", origin="r02", missing=1, total=2),
+        _probe(source="refs", origin="r10", missing=2, total=2),
+        _probe(source="eval", origin="q1", missing=0, total=1),  # 落选：top-2 已覆盖
+    ]
+    chosen = select_b2_cases(probes, limit=4)
+    assert [(probe.source, probe.origin_id) for probe in chosen] == [
+        ("refs", "r02"),
+        ("refs", "r10"),
+        ("eval", "q9"),
+        ("eval", "q100"),
+    ]
+
+
+def test_selection_never_picks_a_probe_whose_expected_is_fully_hit() -> None:
+    probes = [_probe(source="refs", origin="r01", missing=0, total=1)]
+    assert select_b2_cases(probes) == []
+
+
+def test_case_order_key_is_natural() -> None:
+    ids = ["q100", "q13", "q9", "r08", "r10"]
+    assert sorted(ids, key=case_order_key) == ["q9", "q13", "q100", "r08", "r10"]
+
+
+def test_build_cases_numbers_them_in_selection_order() -> None:
+    probes = [
+        _probe(source="refs", origin="r02", missing=1, total=2),
+        _probe(source="refs", origin="r03", missing=1, total=2),
+    ]
+    cases = build_cases(probes)
+    assert [case.case_id for case in cases] == ["B01", "B02"]
+    assert [case.group for case in cases] == [GROUP_B, GROUP_B]
+    assert [case.origin_id for case in cases] == ["r02", "r03"]
+
+
+# ─────────────────────────────────────────────── 题集不变量（选题条件真的成立）
+
+
+def _cases(count: int, *, source: str = "refs", top_k: int = B_TOP_K) -> list[EvalCase]:
+    return [
+        EvalCase(
+            case_id=f"B{index:02d}",
+            group=GROUP_B,
+            source=source,
+            origin_id=f"r{index:02d}",
+            query=f"q{index}",
+            expected=(Expected(document="d", section="1"),),
+            top_k=top_k,
+        )
+        for index in range(1, count + 1)
+    ]
+
+
+def test_check_case_set_passes_when_ten_cases_and_every_probe_shows_a_miss() -> None:
+    cases = _cases(10)
+    probes = [
+        _probe(source=case.source, origin=case.origin_id, missing=1, total=2) for case in cases
+    ]
+    assert check_case_set(cases, probes=probes)["ok"] is True
+
+
+def test_check_case_set_fails_when_a_question_has_no_mechanical_miss() -> None:
+    cases = _cases(10)
+    probes = [
+        _probe(source=case.source, origin=case.origin_id, missing=1, total=2) for case in cases
+    ]
+    probes[3] = _probe(source=cases[3].source, origin=cases[3].origin_id, missing=0, total=1)
+    result = check_case_set(cases, probes=probes)
+    assert result["ok"] is False
+    assert any("选题条件不成立" in problem for problem in result["problems"])
+
+
+def test_check_case_set_fails_when_case_count_is_wrong_or_answer_key_is_missing() -> None:
+    cases = _cases(9)
+    result = check_case_set(cases)
+    assert result["ok"] is False
+    assert any("题数" in problem for problem in result["problems"])
+
+    cases = _cases(10)
+    cases[0] = EvalCase(
+        case_id=cases[0].case_id,
+        group=GROUP_B,
+        source=cases[0].source,
+        origin_id=cases[0].origin_id,
+        query=cases[0].query,
+        expected=(),
+        top_k=B_TOP_K,
+    )
+    result = check_case_set(cases)
+    assert any("标准答案" in problem for problem in result["problems"])
+
+
+# ─────────────────────────────────────────────── 归档：缺什么、前提还在不在
+
+
+def _archive(**overrides: Any) -> dict[str, Any]:
+    questions = {
+        "r01": {"query": "q1", "stop_reason": "max_rounds", "hits": [{"chunk_id": "a"}]},
+        "r06": {"query": "q2", "stop_reason": "max_rounds", "hits": [{"chunk_id": "b"}]},
+        "r08": {"query": "q3", "stop_reason": "max_rounds", "hits": [{"chunk_id": "c"}]},
+    }
+    questions.update(overrides.pop("questions", {}))
+    return {
+        "max_rounds_ids": ["r01", "r06", "r08"],
+        "questions": questions,
+        **overrides,
+    }
+
+
+def test_archive_gaps_reports_that_the_archive_cannot_be_rejudged_in_place() -> None:
+    """归档只有材料与停止原因，没有要点清单 / 逐要点 coverage / 补证切分。"""
+
+    gaps = archive_gaps(_archive())
+    assert gaps["reusable_as_is"] is False
+    assert gaps["missing"]["points"] == ["r01", "r06", "r08"]
+    assert gaps["missing"]["coverage"] == ["r01", "r06", "r08"]
+    assert gaps["missing"]["followup_split"] == ["r01", "r06", "r08"]
+
+
+def test_archive_gaps_notices_when_a_run_does_record_coverage() -> None:
+    archive = _archive(
+        questions={
+            "r01": {"query": "q1", "stop_reason": "max_rounds", "hits": [{}], "coverage": []}
+        }
+    )
+    gaps = archive_gaps(archive)
+    assert gaps["missing"]["coverage"] == ["r06", "r08"]
+
+
+def test_check_archived_premise_pins_the_three_questions() -> None:
+    check_archived_premise(_archive())  # 不抛
+    with pytest.raises(RuntimeError):
+        check_archived_premise(_archive(max_rounds_ids=["r01", "r06"]))
+    with pytest.raises(RuntimeError):
+        check_archived_premise(_archive(questions={"r08": {"query": "q3", "hits": []}}))
+
+
+# ─────────────────────────────────────────────── 预算与分账
+
+
+def test_predict_model_calls_fits_the_cap_and_sums_the_breakdown() -> None:
+    predicted = predict_model_calls()
+    spec = 3 * NOMINAL_CALLS_PER_CASE + 10 * 2 * NOMINAL_CALLS_PER_CASE
+    tight = 10 * NOMINAL_CALLS_PER_CASE
+    assert predicted["spec_nominal"] == spec
+    assert predicted["nominal"] == spec + tight
+    assert predicted["spec_worst"] == 3 * WORST_CALLS_PER_CASE + 10 * 2 * WORST_CALLS_PER_CASE
+    assert predicted["worst"] == predicted["spec_worst"] + 10 * WORST_CALLS_PER_CASE
+    # 票面设计本身在硬顶之内；**追加条件让名义与最坏都纸面超界**（实际花掉的是 108，
+    # 预算闸按最坏预留、按实际扣账，所以没有超跑）。这两个布尔值分开写，就是为了让
+    # 「纸面超了」与「实际超了」不被混成一句话。
+    assert predicted["spec_fits"] is True
+    assert predicted["nominal_fits"] is False
+    assert predicted["breakdown"]["A"]["cases"] == 3
+    assert predicted["breakdown"]["B"]["conditions"] == 2
+    assert predicted["breakdown"]["B-tight"]["cases"] == 10
+
+
+def test_predict_model_calls_flags_an_over_budget_plan() -> None:
+    predicted = predict_model_calls(b_cases=20, tight_cases=0)
+    assert predicted["worst_fits"] is False
+
+
+def test_case_groups_are_the_two_documented_ones() -> None:
+    assert {GROUP_A, GROUP_B} == {"A", "B"}
+
+
+# ─────────────────────────────────────────────── 救回三分类（本票的核心口径）
+
+
+def _materials(*, in_expected: bool = True) -> tuple[MaterialRef, ...]:
+    """两条材料：E1 落在 expected 里，E2 是别的节。"""
+
+    document = "refund_policy" if in_expected else "promo_rules"
+    return (
+        MaterialRef(
+            document=document, section="2", heading="h > 2. x", section_id="s1", chunk_id="c1"
+        ),
+        MaterialRef(
+            document="points_policy",
+            section="4",
+            heading="h > 4. y",
+            section_id="s2",
+            chunk_id="c2",
+        ),
+    )
+
+
+def test_supported_with_evidence_inside_expected_is_a_true_rescue() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_SUPPORTED, ("E1",))],
+        materials=_materials(in_expected=True),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_TRUE]
+    assert claims[0].matched == ("refund_policy:2",)
+
+
+def test_supported_with_evidence_outside_expected_is_a_false_rescue() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_SUPPORTED, ("E1",))],
+        materials=_materials(in_expected=False),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_FALSE]
+    assert claims[0].matched == ()
+    # 负向读数的证据也留着：报告要能说清「它凭什么被判成 supported」
+    assert claims[0].evidence[0].label.startswith("promo_rules")
+
+
+def test_unknown_to_none_is_not_rescued() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_NONE, ())],
+        materials=_materials(),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_NOT]
+
+
+def test_still_unknown_is_single_out_and_not_counted_as_a_rescue() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_UNKNOWN, ("E1",))],
+        materials=_materials(),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_UNRESOLVED]
+
+
+def test_classification_ignores_points_that_were_never_unknown() -> None:
+    """分母只收「复查前落 unknown」的要点：别的要点没有机会被救回，也不许被算成「未救回」。"""
+
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_NONE, ()), ("A2", SUPPORT_SUPPORTED, ("E1",))],
+        materials=_materials(),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.point_id for claim in claims] == ["A1"]
+
+
+def test_rescue_summary_与分母_机会数是唯一分母() -> None:
+    claims = [
+        _claim(RESCUE_TRUE, case="c1"),
+        _claim(RESCUE_TRUE, case="c1"),
+        _claim(RESCUE_FALSE, case="c2"),
+        _claim(RESCUE_NOT, case="c2"),
+        _claim(RESCUE_UNRESOLVED, case="c3"),
+    ]
+    summary = rescue_summary(claims, cases=4)
+    assert summary["opportunity_points"] == 4  # 仍 unknown 的不进分母
+    assert summary["opportunity_cases"] == 2
+    assert summary["counts"][RESCUE_TRUE] == 2
+    assert summary["rates"][RESCUE_TRUE] == 0.5
+    assert summary["rates"][RESCUE_FALSE] == 0.25
+    assert summary["rates"][RESCUE_NOT] == 0.25
+    assert summary["no_chance_cases"] == 2
+
+
+def test_rescue_summary_does_not_print_a_rate_when_there_was_no_opportunity() -> None:
+    """机会数 0 时比率必须是 **None**，不能是 0.0——「没造出机会」与「救回率为零」不是一件事。"""
+
+    summary = rescue_summary([_claim(RESCUE_UNRESOLVED)], cases=1)
+    assert summary["opportunity_points"] == 0
+    assert summary["rates"][RESCUE_TRUE] is None
+    assert summary["rates"][RESCUE_NOT] is None
+    assert summary["no_chance_cases"] == 1
+
+
+def test_no_chance_cases_are_counted_per_case_not_per_point() -> None:
+    summary = rescue_summary([_claim(RESCUE_TRUE, case="c1")], cases=3)
+    assert summary["opportunity_cases"] == 1
+    assert summary["no_chance_cases"] == 2
+
+
+# ─────────────────────────────────────────────── ⑤ 的接缝：关掉 / 观察都要还原
+
+
+def test_rejudge_patch_is_always_restored_even_when_the_run_explodes() -> None:
+    """一个漏还原的补丁会让后面每一题**静默**跑错条件，而读数看起来完全正常。"""
+
+    from app.services import research as research_service
+
+    original = research_service._Run._rejudge
+    with rejudge_control(mode="off") as sink:
+        assert research_service._Run._rejudge is not original
+        assert sink == []
+    assert research_service._Run._rejudge is original
+
+    with pytest.raises(RuntimeError):
+        with rejudge_control(mode="spy"):
+            raise RuntimeError("boom")
+    assert research_service._Run._rejudge is original
+
+
+# ─────────────────────────────────────────────── 材料轮次（首轮 vs 补证）
+
+
+def test_infer_material_rounds_replays_merge_order_and_dedupes_by_section() -> None:
+    """材料池的顺序 = 调用顺序 + 返回顺序；同一节第二次命中不算新增。"""
+
+    calls = [
+        {"query": "首轮 A", "rows": [{"section_id": "s1"}, {"section_id": "s2"}]},
+        {"query": "首轮 B", "rows": [{"section_id": "s2"}, {"section_id": "s3"}]},
+        {"query": "补证 A", "rows": [{"section_id": "s1"}, {"section_id": "s4"}]},
+    ]
+    rounds, per_call = infer_material_rounds(
+        calls, round_of_query={"首轮 A": 1, "首轮 B": 1, "补证 A": 2}
+    )
+    assert rounds == [1, 1, 1, 2]  # s1 s2 s3 来自首轮，s4 来自补证
+    assert [call["added"] for call in per_call] == [2, 1, 1]
+    assert per_call[2]["round"] == 2
+
+
+def test_infer_material_rounds_treats_unknown_queries_as_first_round() -> None:
+    """规划失败会退回原问题跑一次（不是 PlanQuery），那一条按首轮算。"""
+
+    rounds, _ = infer_material_rounds(
+        [{"query": "原问题", "rows": [{"chunk_id": "c1"}]}], round_of_query={}
+    )
+    assert rounds == [1]
+
+
+# ─────────────────────────────────────────────── 离线复算（0 次调用）
+
+
+def _record(
+    *,
+    case: str,
+    group: str,
+    fivefold: bool,
+    claims: list[dict[str, Any]] | None = None,
+    unknown_ids: list[str] | None = None,
+    gaps: list[str] | None = None,
+    model_calls: int = 4,
+    answered: bool = True,
+    insufficient: int = 1,
+    points: int = 2,
+    condition: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "case": case,
+        "group": group,
+        "condition": condition or ("fivefold" if fivefold else "control"),
+        "fivefold": fivefold,
+        "claims": claims or [],
+        "unknown_ids": unknown_ids or [],
+        "gaps": gaps or [],
+        "model_calls": model_calls,
+        "answered": answered,
+        "insufficient": insufficient,
+        "points": [{"point_id": f"A{i}", "text": "t"} for i in range(1, points + 1)],
+        "followup_rounds": 1 if unknown_ids else 0,
+    }
+
+
+def _claim_row(outcome: str, *, case: str) -> dict[str, Any]:
+    return {
+        "case": case,
+        "point_id": "A1",
+        "point": "某要点",
+        "final_status": "supported" if outcome in (RESCUE_TRUE, RESCUE_FALSE) else "none",
+        "evidence_ids": ["E1"],
+        "matched_expected": ["refund_policy:2"] if outcome == RESCUE_TRUE else [],
+        "evidence_rounds": [2],
+        "outcome": outcome,
+    }
+
+
+def test_recompute_metrics_uses_opportunity_points_as_the_only_denominator() -> None:
+    payload = {
+        "records": [
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=True,
+                claims=[
+                    _claim_row(RESCUE_TRUE, case="B01"),
+                    _claim_row(RESCUE_NOT, case="B01"),
+                ],
+                unknown_ids=["A1", "A2"],
+                gaps=["A2"],
+            ),
+            _record(
+                case="B02",
+                group=GROUP_B,
+                fivefold=True,
+                claims=[_claim_row(RESCUE_FALSE, case="B02")],
+                unknown_ids=["A1"],
+            ),
+            _record(case="B03", group=GROUP_B, fivefold=True),  # 无机会
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=False,
+                unknown_ids=["A1"],
+                model_calls=3,
+            ),
+            _record(
+                case="A01",
+                group=GROUP_A,
+                fivefold=True,
+                claims=[_claim_row(RESCUE_NOT, case="A01")],
+                unknown_ids=["A1"],
+            ),
+        ]
+    }
+    metrics = recompute_metrics(payload)["metrics"]
+    assert metrics["B"]["opportunity_points"] == 3
+    assert metrics["B"]["counts"][RESCUE_TRUE] == 1
+    assert metrics["B"]["counts"][RESCUE_FALSE] == 1
+    assert metrics["B"]["counts"][RESCUE_NOT] == 1
+    assert metrics["B"]["rates"][RESCUE_TRUE] == round(1 / 3, 4)
+    assert metrics["B"]["opportunity_cases"] == 2
+    assert metrics["B"]["no_chance_cases"] == 1
+    assert metrics["B"]["unknown_points"] == 3
+    assert metrics["B"]["gaps_total"] == 1
+    # ⑤ 关掉那一趟不报救回率（没有复查结论），但 unknown 是可数的
+    assert metrics["B_control"]["rescue_applicable"] is False
+    assert metrics["B_control"]["rates"][RESCUE_TRUE] is None
+    assert metrics["B_control"]["unknown_cases"] == 1
+    assert metrics["A"]["opportunity_points"] == 1
+    assert metrics["model_calls"]["actual"] == 4 + 4 + 4 + 3 + 4
+    assert metrics["model_calls"]["by_condition"]["control"] == 3
+
+
+def test_recompute_metrics_keeps_the追加条件_out_of_the_main_reading() -> None:
+    """B-tight 与 B 组**是同一批题**，只靠 `condition` 区分；按 group 分会把它混进主读数。"""
+
+    payload = {
+        "records": [
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=True,
+                claims=[_claim_row(RESCUE_NOT, case="B01")],
+                unknown_ids=["A1"],
+            ),
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=True,
+                condition="tight",
+                claims=[_claim_row(RESCUE_TRUE, case="B01")],
+                unknown_ids=["A1"],
+            ),
+        ]
+    }
+    metrics = recompute_metrics(payload)["metrics"]
+    assert metrics["B"]["opportunity_points"] == 1
+    assert metrics["B"]["counts"][RESCUE_TRUE] == 0
+    assert metrics["B_tight"]["opportunity_points"] == 1
+    assert metrics["B_tight"]["counts"][RESCUE_TRUE] == 1
+    assert metrics["model_calls"]["by_condition"] == {"fivefold": 4, "tight": 4}
+
+
+# ─────────────────────────────────────────────── 与生产常量同源
+
+
+def test_constants_mirror_the_production_contract() -> None:
+    """抄在生产旁边的那几个字面量必须与生产一致——抄漏了就是两套契约。"""
+
+    from app.services import research as research_service
+    from app.services.citation_blocks import STATUS_INSUFFICIENT as PROD_INSUFFICIENT
+    from app.services.research_limits import (
+        MAX_FOLLOWUP_QUERIES,
+        MAX_MODEL_CALLS,
+        MAX_MODEL_CALLS_WITH_FALLBACK,
+    )
+
+    assert FOLLOWUP_QUERY_CAP == MAX_FOLLOWUP_QUERIES
+    assert NOMINAL_CALLS_PER_CASE == MAX_MODEL_CALLS
+    assert WORST_CALLS_PER_CASE == MAX_MODEL_CALLS_WITH_FALLBACK
+    assert SUPPORT_SUPPORTED == research_service.SUPPORT_SUPPORTED
+    assert SUPPORT_NONE == research_service.SUPPORT_NONE
+    assert SUPPORT_UNKNOWN == research_service.SUPPORT_UNKNOWN
+    assert STATUS_INSUFFICIENT == PROD_INSUFFICIENT

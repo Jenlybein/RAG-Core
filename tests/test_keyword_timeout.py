@@ -7,10 +7,11 @@
 ES 客户端自己的重试把一次 DNS 失败累计成 ~19 秒（日志里能数出 4 次 attempt）。
 关键词是**可降级**的一路（ADR-0021 同一口径），所以预算必须有界。
 
-**预算落在 Provider 里，不落在调用方。** 关键词通道有两份实现——单通道走
-`rag_service._retrieve_by_keyword`，混合模式走 `pipeline._keyword_branch`（控制台看到的
-就是后者）。写在调用方就得写两遍，而写两遍的下场是漂移：第一版只改了前者，实测**依然
-19 秒**，因为控制台走的是后者。这个教训写在测试里，免得下一次又只改一半。
+**预算落在 Provider 里，不落在调用方。** 关键词通道有两份实现——单模式走
+`app.services.retrieval.kernel._retrieve_by_keyword`（票 #140 之前它在 `rag_service` 里），
+混合模式走 `pipeline._keyword_branch`（控制台看到的就是后者）。写在调用方就得写两遍，
+而写两遍的下场是漂移：第一版只改了前者，实测**依然 19 秒**，因为控制台走的是后者。
+这个教训写在测试里，免得下一次又只改一半。
 
 接缝：
 - `ElasticsearchKeywordSearchProvider` + 假客户端（连得上但永远不返回）——验预算本身；
@@ -26,6 +27,7 @@ from typing import Any
 import pytest
 
 from app.core.exceptions import AppError, ErrorCode
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.observability.stage_timing import StageTimer
 from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
 from app.services.retrieval import pipeline
@@ -120,7 +122,7 @@ def test_the_hybrid_keyword_channel_degrades_fast_instead_of_waiting() -> None:
         asyncio.run(
             pipeline._keyword_branch(
                 tenant_id="tenant_demo",
-                kb_ids=["kb-a"],
+                index_versions={"kb-a": DEFAULT_INDEX_VERSION},
                 query="退款多久到账",
                 top_k=5,
                 keyword_factory=lambda: provider,
@@ -144,7 +146,7 @@ def test_the_hybrid_keyword_channel_records_the_failed_stage() -> None:
         asyncio.run(
             pipeline._keyword_branch(
                 tenant_id="tenant_demo",
-                kb_ids=["kb-a"],
+                index_versions={"kb-a": DEFAULT_INDEX_VERSION},
                 query="退款",
                 top_k=5,
                 keyword_factory=lambda: provider,

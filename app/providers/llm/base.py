@@ -16,6 +16,21 @@ from pydantic import BaseModel
 
 
 class LLMProvider(ABC):
+    @property
+    def available(self) -> bool:
+        """这项能力**这台机器上装没装**（不是「这次答得好不好」）。
+
+        与 ``KeywordSearchProvider.available`` / ``RerankProvider.available`` 是**同一个
+        信号、同一个名字**：空实现（没配 key）返回 ``False``，于是调用点可以连一次注定
+        失败、还要计一次成本的调用都省掉。三个 Provider 用同一个词是刻意的——各叫各的
+        （曾经一个叫 ``enabled``、一个叫 ``available``）会让人以为它们不是一件事。
+
+        票 #149 是第一个需要它的模型调用点：Research 的生成阶段要区分「强模型没配」
+        （直接换快模型，不白问一次）与「强模型调用失败」（已经付过钱，兜底另记一笔）。
+        """
+
+        return True
+
     @abstractmethod
     async def chat_structured(
         self,

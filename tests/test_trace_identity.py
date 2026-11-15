@@ -45,13 +45,15 @@ KB_ID = "kb-trace"
 QUERY_SENTINEL = "T101-QUERY-SENTINEL-4f7c"
 CONTENT_SENTINEL = "T101-CONTENT-SENTINEL-9a1e"
 
-#: 归属索引只允许这十列（顺序由模型定义，集合不许多也不许少）。
+#: 归属索引只允许这十一列（顺序由模型定义，集合不许多也不许少）。
+#: 第十一列 ``index_versions`` 是 ADR-0025 决策六声明的契约变更（``{kb_id: version}`` 映射）。
 EXPECTED_COLUMNS = frozenset(
     {
         "id",
         "tenant_id",
         "trace_id",
         "kb_ids",
+        "index_versions",
         "chunk_ids",
         "top_k",
         "latency_ms",

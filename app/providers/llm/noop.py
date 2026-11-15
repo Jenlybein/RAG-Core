@@ -17,6 +17,12 @@ _UNAVAILABLE = "未配置大模型 key，LLM 能力在此环境不可用"
 
 
 class NoopLLMProvider(LLMProvider):
+    @property
+    def available(self) -> bool:
+        """没配 key = 这项能力这台机器上没有（``KeywordSearchProvider`` 同一个信号）。"""
+
+        return False
+
     async def chat_structured(
         self,
         schema: type[BaseModel] | dict[str, Any],

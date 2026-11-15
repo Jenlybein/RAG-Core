@@ -24,13 +24,17 @@ class AuthTenantData(BaseModel):
 
 
 class AuthMeData(BaseModel):
-    """数据面 ``/me`` 的三栏：租户身份、套餐快照、今日租户级用量。
+    """数据面 ``/me`` 的四栏：租户身份、套餐快照、今日检索用量、今日 Research 用量。
 
     ``usage`` **不可缺省**：数据面调用方一定属于某个租户（Key 挂在租户上），所以它
     总要得到一份用量——开关关着时 ``used`` 为 ``None`` + ``source="not_tracked"``，
     那是一个明确的状态，不是缺值。
+
+    ``research_usage``（票 #150）与 ``usage`` **同形**，读的是 Research 那一本账：两条
+    链路的额度互相独立，合成一个数字就答不了「我还能跑几次 Research」。
     """
 
     tenant: AuthTenantData
     plan: PlanSnapshotData
     usage: UsageData
+    research_usage: UsageData

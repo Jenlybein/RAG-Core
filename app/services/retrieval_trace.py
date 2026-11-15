@@ -45,6 +45,7 @@ async def record_retrieval_trace(
     trace_id: str,
     tenant_id: str,
     kb_ids: list[str],
+    index_versions: dict[str, str],
     chunk_ids: list[str],
     top_k: int,
     latency_ms: int,
@@ -56,6 +57,10 @@ async def record_retrieval_trace(
     参数全是**已经算好的事实**（身份、范围、结局），这里不做判定也不改口径：
     ``degraded_reason`` / ``empty_reason`` 直接来自本次响应的 ``metadata.retrieval``，
     于是「库里那一行」与「回给调用方的那个响应」不会各说一套。
+
+    ``index_versions`` 是「这次查的是哪次构建」（ADR-0025 决策六）：与本次检索范围
+    **同一份映射**（``kb_id → version``），由调用方在召回之前解析好递进来。它只存
+    版本名（结构），不存原文；多这一列不改变「独立短事务、失败只留 warning」的性质。
     """
 
     session: AsyncSession | None = None
@@ -70,6 +75,7 @@ async def record_retrieval_trace(
                     tenant_id=tenant_id,
                     trace_id=trace_id,
                     kb_ids=list(kb_ids),
+                    index_versions=dict(index_versions),
                     chunk_ids=list(chunk_ids),
                     top_k=top_k,
                     latency_ms=latency_ms,

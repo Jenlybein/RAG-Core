@@ -1,0 +1,717 @@
+{
+  "run_id": "20261114T111803Z",
+  "generated_at": "2026-11-14T11:18:03+00:00",
+  "source": "live",
+  "switches": {
+    "graph": "on",
+    "research": "off",
+    "rerank": "on"
+  },
+  "rerank_effective": true,
+  "capabilities": {
+    "graph": "available",
+    "research": "available"
+  },
+  "exercised": {
+    "graph": true,
+    "research": false
+  },
+  "index_versions": {
+    "ddae7e35-1858-4861-b9eb-631cfc778feb": "v2"
+  },
+  "premise": {
+    "comparable_with_original_project": false,
+    "why": "本仓库的语料与题集都是自己的，复现原项目那组效果数字（+4.9% / −82.5% / +3.4pp）既不成立也不可比（#138 Out of Scope）。"
+  },
+  "corpus": {
+    "dir": "eval/corpus-refs",
+    "documents": [
+      "points_policy",
+      "promo_rules",
+      "refund_policy"
+    ],
+    "reference_edges": 9,
+    "digest": "2dd07e55d50b"
+  },
+  "questions": {
+    "path": "eval/refs-questions.json",
+    "count": 8,
+    "by_mechanism": {
+      "cross_document": 2,
+      "cross_section": 2,
+      "dependent_hop": 2,
+      "parallel_points": 2
+    },
+    "k": 5
+  },
+  "predicted_calls": {
+    "embedding": 8,
+    "rerank": 8,
+    "research_llm": 0,
+    "research_searches": 0,
+    "total": 16,
+    "notes": {
+      "embedding": "8 题 × 1 次查询向量（--source live，改写关）",
+      "rerank": "8 题 × 1 次重排（重排开着）",
+      "research_llm": "未启用（research=off）"
+    },
+    "research_llm_budget": {
+      "hard_cap": 3,
+      "with_strong_model_fallback": 4,
+      "sub_searches": 5
+    }
+  },
+  "metrics": {
+    "stop_reason_distribution": {
+      "status": "disabled",
+      "exercised": false,
+      "counts": {},
+      "total": 0
+    },
+    "retrieval_termination": {
+      "returned": 8
+    },
+    "citation_traceability": {
+      "hits": 40,
+      "traceable": 40,
+      "rate": 1.0,
+      "untraceable": []
+    },
+    "research": {
+      "evidence_state": {},
+      "questions_with_evidence_state": 0,
+      "evidence_blocks": 0,
+      "blocks_with_evidence": 0,
+      "dangling_evidence": []
+    },
+    "graph_injection": {
+      "graphs_reported": 8,
+      "injected": 0,
+      "seeds": 80,
+      "questions_with_injection": 0
+    },
+    "latency_ms": {
+      "p50": 406.05,
+      "p95": 3033.83,
+      "max": 3033.83,
+      "total": 5923.15
+    },
+    "model_calls": {
+      "total": 16,
+      "by_question": {
+        "r01": 2,
+        "r02": 2,
+        "r03": 2,
+        "r04": 2,
+        "r05": 2,
+        "r06": 2,
+        "r07": 2,
+        "r08": 2
+      },
+      "questions_with_calls": 8
+    }
+  },
+  "coverage": {
+    "r01": {
+      "expected": 2,
+      "found": 2,
+      "found_keys": [
+        "refund_policy:2",
+        "refund_policy:3"
+      ],
+      "missing": []
+    },
+    "r02": {
+      "expected": 2,
+      "found": 2,
+      "found_keys": [
+        "points_policy:3",
+        "points_policy:1"
+      ],
+      "missing": []
+    },
+    "r03": {
+      "expected": 2,
+      "found": 1,
+      "found_keys": [
+        "promo_rules:3"
+      ],
+      "missing": [
+        "refund_policy:2"
+      ]
+    },
+    "r04": {
+      "expected": 2,
+      "found": 2,
+      "found_keys": [
+        "points_policy:2.2",
+        "promo_rules:1"
+      ],
+      "missing": []
+    },
+    "r05": {
+      "expected": 3,
+      "found": 3,
+      "found_keys": [
+        "promo_rules:3",
+        "points_policy:3",
+        "refund_policy:1"
+      ],
+      "missing": []
+    },
+    "r06": {
+      "expected": 3,
+      "found": 3,
+      "found_keys": [
+        "promo_rules:1",
+        "promo_rules:2",
+        "promo_rules:3"
+      ],
+      "missing": []
+    },
+    "r07": {
+      "expected": 3,
+      "found": 2,
+      "found_keys": [
+        "promo_rules:3",
+        "points_policy:3"
+      ],
+      "missing": [
+        "refund_policy:2"
+      ]
+    },
+    "r08": {
+      "expected": 3,
+      "found": 2,
+      "found_keys": [
+        "points_policy:4",
+        "refund_policy:4"
+      ],
+      "missing": [
+        "points_policy:2.2"
+      ]
+    }
+  },
+  "per_question": [
+    {
+      "id": "r01",
+      "mechanism": "cross_section",
+      "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 3033.83,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "24b02f00-baeb-4411-a649-d940fef806c4",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+          "section": "3",
+          "score": 0.9351849866181712,
+          "retrieval_source": null,
+          "content": "## 3. 退款到账与凭证\n\n审核通过后进入退款执行，到账时间从执行日开始计算而不是从申请日开始。银行卡一般 3 个工作日，第三方支付 1 到 2 个工作日，对公转账最长 5 个工作日；积分抵扣部分不入退款通道，按积分规则原路返还。凭证包括订单号、支付流水号、签收凭证与问题照片。缺少支付流水号时，审核无法确认原路退回的目标账户。"
+        },
+        {
+          "chunk_id": "2f4431e0-81bd-488b-a2f2-2c079735a50e",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 2. 退款时限与审核",
+          "section": "2",
+          "score": 0.8102511906689797,
+          "retrieval_source": null,
+          "content": "## 2. 退款时限与审核\n\n无理由退款须在签收次日起 7 天内提交，质量问题退款放宽到 30 天，需要附检测结论或现场照片。提交之后审核在 2 个工作日内完成，审核内容包括订单状态、支付渠道、是否已开票、以及是否存在未结清欠款。材料不全时审核会挂起并通知补充，挂起时间不计入审核时限。\n\n用了优惠券的订单，券在退款时是否退回、退回之后何时失效，详见《促销活动与优惠券使用规则》第 3 节。"
+        },
+        {
+          "chunk_id": "f34c9e6b-e164-4adc-939a-d2b46cc0824b",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 1. 积分获取与计算",
+          "section": "1",
+          "score": 0.27236094542707434,
+          "retrieval_source": null,
+          "content": "## 1. 积分获取与计算\n\n消费积分按订单实付金额每满 1 元计 1 分，运费不计分。积分在订单完成（确认收货且无退款申请）后第 3 天发放，发放后有效期 12 个月。活动期间的双倍积分按活动规则单独发放，与基础积分分开计算有效期。积分不可转让、不可提现，只能用于抵扣或兑换。"
+        },
+        {
+          "chunk_id": "8df3b2bd-b10d-427d-97ea-d9ca874509b4",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+          "section": "4",
+          "score": 0.27163765864842226,
+          "retrieval_source": null,
+          "content": "## 4. 优惠券的有效期与失效\n\n优惠券有效期以发放时标注为准，一般是领取后 30 天。券在订单提交时即被占用，订单取消或整单退款后释放；释放回来的券如果已过原有效期则直接失效。整单退款的定义与它对订单状态的后果，详见《会员订单退款政策》第 1 节。"
+        },
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.2628392451101843,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        }
+      ]
+    },
+    {
+      "id": "r02",
+      "mechanism": "cross_section",
+      "query": "退款办完之后退回来的那部分积分，有效期是从退款日重新算 12 个月，还是按原来的时间算？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 376.44,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 3. 积分退还与失效",
+          "section": "3",
+          "score": 0.9999999999556506,
+          "retrieval_source": null,
+          "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+        },
+        {
+          "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+          "section": "5",
+          "score": 0.9999999998919586,
+          "retrieval_source": null,
+          "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+        },
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.9237494559882895,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        },
+        {
+          "chunk_id": "f34c9e6b-e164-4adc-939a-d2b46cc0824b",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 1. 积分获取与计算",
+          "section": "1",
+          "score": 0.8107252514856105,
+          "retrieval_source": null,
+          "content": "## 1. 积分获取与计算\n\n消费积分按订单实付金额每满 1 元计 1 分，运费不计分。积分在订单完成（确认收货且无退款申请）后第 3 天发放，发放后有效期 12 个月。活动期间的双倍积分按活动规则单独发放，与基础积分分开计算有效期。积分不可转让、不可提现，只能用于抵扣或兑换。"
+        },
+        {
+          "chunk_id": "24b02f00-baeb-4411-a649-d940fef806c4",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+          "section": "3",
+          "score": 0.7538835071817565,
+          "retrieval_source": null,
+          "content": "## 3. 退款到账与凭证\n\n审核通过后进入退款执行，到账时间从执行日开始计算而不是从申请日开始。银行卡一般 3 个工作日，第三方支付 1 到 2 个工作日，对公转账最长 5 个工作日；积分抵扣部分不入退款通道，按积分规则原路返还。凭证包括订单号、支付流水号、签收凭证与问题照片。缺少支付流水号时，审核无法确认原路退回的目标账户。"
+        }
+      ]
+    },
+    {
+      "id": "r03",
+      "mechanism": "cross_document",
+      "query": "退款办完之后，之前抵掉的那部分优惠还能不能再用，有效期会不会跟着延长？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 400.78,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.9889509754471999,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        },
+        {
+          "chunk_id": "8df3b2bd-b10d-427d-97ea-d9ca874509b4",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+          "section": "4",
+          "score": 0.8856145077936137,
+          "retrieval_source": null,
+          "content": "## 4. 优惠券的有效期与失效\n\n优惠券有效期以发放时标注为准，一般是领取后 30 天。券在订单提交时即被占用，订单取消或整单退款后释放；释放回来的券如果已过原有效期则直接失效。整单退款的定义与它对订单状态的后果，详见《会员订单退款政策》第 1 节。"
+        },
+        {
+          "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+          "section": "5",
+          "score": 0.8763345432003641,
+          "retrieval_source": null,
+          "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+        },
+        {
+          "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 3. 积分退还与失效",
+          "section": "3",
+          "score": 0.8201083905197459,
+          "retrieval_source": null,
+          "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+        },
+        {
+          "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊",
+          "section": "4",
+          "score": 0.7860645696272648,
+          "retrieval_source": null,
+          "content": "## 4. 部分退款与优惠分摊\n\n部分退款按商品实付金额折算，运费与优惠券优惠按订单金额占比分摊，不单独退还。分摊顺序是：先按商品实付金额占比拆优惠券金额，再把运费按件数平摊到剩余商品。部分退款之后订单状态仍为已完成，剩余商品的保修期不变。同一订单可以多次部分退款，但累计金额不得超过实付金额。\n\n积分抵扣金额随商品一起按比例退回，退回的积分算「已使用积分」还是「失效积分」，参见本文第 5 节。"
+        }
+      ]
+    },
+    {
+      "id": "r04",
+      "mechanism": "cross_document",
+      "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 446.89,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+          "section": "2.2",
+          "score": 0.9999999999998171,
+          "retrieval_source": null,
+          "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+        },
+        {
+          "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+          "section": "1",
+          "score": 0.558664631490402,
+          "retrieval_source": null,
+          "content": "## 1. 活动类型与叠加原则\n\n当前在售的促销分四类：满减、折扣、优惠券与积分抵扣。叠加原则只有一条：同一订单最多命中一个满减和一个折扣，优惠券与积分抵扣可以叠加，但抵扣之后实付金额不得低于 0.01 元。积分抵扣有独立的上限，上限口径见《积分规则》第 2.2 节，本规则不重复。"
+        },
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.4229678732194216,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        },
+        {
+          "chunk_id": "21f41e63-1407-495d-b21d-d808ac3508f0",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 4. 积分等级与保级",
+          "section": "4",
+          "score": 0.3353022620256836,
+          "retrieval_source": null,
+          "content": "## 4. 积分等级与保级\n\n等级按自然年内的净消费金额判定，净消费金额 = 订单实付金额 − 退款金额 − 积分抵扣金额。银卡 2000 元、金卡 8000 元、白金 20000 元。保级在每年 1 月 1 日按上一年净额重算，未达标降一级。净额里的退款部分如何分摊，以[《会员订单退款政策》](./refund_policy.md)第 4 节为准。"
+        },
+        {
+          "chunk_id": "f34c9e6b-e164-4adc-939a-d2b46cc0824b",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 1. 积分获取与计算",
+          "section": "1",
+          "score": 0.31760653776350134,
+          "retrieval_source": null,
+          "content": "## 1. 积分获取与计算\n\n消费积分按订单实付金额每满 1 元计 1 分，运费不计分。积分在订单完成（确认收货且无退款申请）后第 3 天发放，发放后有效期 12 个月。活动期间的双倍积分按活动规则单独发放，与基础积分分开计算有效期。积分不可转让、不可提现，只能用于抵扣或兑换。"
+        }
+      ]
+    },
+    {
+      "id": "r05",
+      "mechanism": "parallel_points",
+      "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 422.07,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.9440872542123148,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        },
+        {
+          "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 3. 积分退还与失效",
+          "section": "3",
+          "score": 0.8537113892683333,
+          "retrieval_source": null,
+          "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+        },
+        {
+          "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+          "section": "5",
+          "score": 0.8532907360661657,
+          "retrieval_source": null,
+          "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+        },
+        {
+          "chunk_id": "8df3b2bd-b10d-427d-97ea-d9ca874509b4",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 4. 优惠券的有效期与失效",
+          "section": "4",
+          "score": 0.8218092550252076,
+          "retrieval_source": null,
+          "content": "## 4. 优惠券的有效期与失效\n\n优惠券有效期以发放时标注为准，一般是领取后 30 天。券在订单提交时即被占用，订单取消或整单退款后释放；释放回来的券如果已过原有效期则直接失效。整单退款的定义与它对订单状态的后果，详见《会员订单退款政策》第 1 节。"
+        },
+        {
+          "chunk_id": "23081a84-27e6-45c8-9678-32305b4c4052",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 1. 适用范围与退款类型",
+          "section": "1",
+          "score": 0.7713005761269147,
+          "retrieval_source": null,
+          "content": "## 1. 适用范围与退款类型\n\n本政策适用于会员在官方商城、线下门店与小程序三个渠道下的实物订单与服务订单。退款分三种类型：整单退款、部分退款与积分抵扣部分退还。整单退款把订单内全部商品与分摊后的运费一起退回，订单随即关闭；部分退款只退存在问题的商品，剩余商品继续履约；积分抵扣部分退还只处理用积分抵扣过的那一段金额，不改变商品的履约状态。判定走哪一种，先看订单是否已全部履约，再看是否存在积分抵扣。\n\n会员积分如何获取、如何失效，见[《积分规则》](./points_policy.md)第 3 节，本政策不重复积分口径。"
+        }
+      ]
+    },
+    {
+      "id": "r06",
+      "mechanism": "parallel_points",
+      "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 442.08,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "bb68ecc4-8f60-45ce-98cb-077c675f597e",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 1. 活动类型与叠加原则",
+          "section": "1",
+          "score": 0.9984292874894751,
+          "retrieval_source": null,
+          "content": "## 1. 活动类型与叠加原则\n\n当前在售的促销分四类：满减、折扣、优惠券与积分抵扣。叠加原则只有一条：同一订单最多命中一个满减和一个折扣，优惠券与积分抵扣可以叠加，但抵扣之后实付金额不得低于 0.01 元。积分抵扣有独立的上限，上限口径见《积分规则》第 2.2 节，本规则不重复。"
+        },
+        {
+          "chunk_id": "2809d099-c339-4fbd-ad68-81d7617fb74d",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 2. 满减与折扣的计算口径",
+          "section": "2",
+          "score": 0.9868116987399147,
+          "retrieval_source": null,
+          "content": "## 2. 满减与折扣的计算口径\n\n满减按订单商品金额（不含运费）判定门槛，折扣按商品金额逐件折算后取合计。两者同时命中时先算折扣、再判满减门槛；优惠券金额在满减之后扣减。退款时退款基数怎么算，参见本文第 3 节。"
+        },
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.9049053793578995,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        },
+        {
+          "chunk_id": "c0105363-e77e-4e22-880b-4aaa9bb9a6fb",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 2. 积分抵扣与使用上限 > 2.2 抵扣上限",
+          "section": "2.2",
+          "score": 0.7517939391190901,
+          "retrieval_source": null,
+          "content": "### 2.2 抵扣上限\n\n单笔订单抵扣上限取「商品金额的 50%」与「200 元」两个限额中较小的那个。会员等级为银卡及以上时，200 元的固定上限提高到 500 元；等级折扣与积分抵扣可以叠加，但实付金额不得低于 0.01 元。"
+        },
+        {
+          "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊",
+          "section": "4",
+          "score": 0.5080845758624205,
+          "retrieval_source": null,
+          "content": "## 4. 部分退款与优惠分摊\n\n部分退款按商品实付金额折算，运费与优惠券优惠按订单金额占比分摊，不单独退还。分摊顺序是：先按商品实付金额占比拆优惠券金额，再把运费按件数平摊到剩余商品。部分退款之后订单状态仍为已完成，剩余商品的保修期不变。同一订单可以多次部分退款，但累计金额不得超过实付金额。\n\n积分抵扣金额随商品一起按比例退回，退回的积分算「已使用积分」还是「失效积分」，参见本文第 5 节。"
+        }
+      ]
+    },
+    {
+      "id": "r07",
+      "mechanism": "dependent_hop",
+      "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 395.01,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.9989178615550058,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        },
+        {
+          "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+          "section": "5",
+          "score": 0.9485178160775367,
+          "retrieval_source": null,
+          "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+        },
+        {
+          "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 3. 积分退还与失效",
+          "section": "3",
+          "score": 0.9381127649178216,
+          "retrieval_source": null,
+          "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+        },
+        {
+          "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊",
+          "section": "4",
+          "score": 0.8829998814632243,
+          "retrieval_source": null,
+          "content": "## 4. 部分退款与优惠分摊\n\n部分退款按商品实付金额折算，运费与优惠券优惠按订单金额占比分摊，不单独退还。分摊顺序是：先按商品实付金额占比拆优惠券金额，再把运费按件数平摊到剩余商品。部分退款之后订单状态仍为已完成，剩余商品的保修期不变。同一订单可以多次部分退款，但累计金额不得超过实付金额。\n\n积分抵扣金额随商品一起按比例退回，退回的积分算「已使用积分」还是「失效积分」，参见本文第 5 节。"
+        },
+        {
+          "chunk_id": "24b02f00-baeb-4411-a649-d940fef806c4",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 3. 退款到账与凭证",
+          "section": "3",
+          "score": 0.8435573063385973,
+          "retrieval_source": null,
+          "content": "## 3. 退款到账与凭证\n\n审核通过后进入退款执行，到账时间从执行日开始计算而不是从申请日开始。银行卡一般 3 个工作日，第三方支付 1 到 2 个工作日，对公转账最长 5 个工作日；积分抵扣部分不入退款通道，按积分规则原路返还。凭证包括订单号、支付流水号、签收凭证与问题照片。缺少支付流水号时，审核无法确认原路退回的目标账户。"
+        }
+      ]
+    },
+    {
+      "id": "r08",
+      "mechanism": "dependent_hop",
+      "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+      "stop_reason": null,
+      "termination": "returned",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": null,
+      "latency_ms": 406.05,
+      "model_calls": 2,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": 0,
+      "graph_seeds": 10,
+      "hits": [
+        {
+          "chunk_id": "21f41e63-1407-495d-b21d-d808ac3508f0",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 4. 积分等级与保级",
+          "section": "4",
+          "score": 0.9960309594956296,
+          "retrieval_source": null,
+          "content": "## 4. 积分等级与保级\n\n等级按自然年内的净消费金额判定，净消费金额 = 订单实付金额 − 退款金额 − 积分抵扣金额。银卡 2000 元、金卡 8000 元、白金 20000 元。保级在每年 1 月 1 日按上一年净额重算，未达标降一级。净额里的退款部分如何分摊，以[《会员订单退款政策》](./refund_policy.md)第 4 节为准。"
+        },
+        {
+          "chunk_id": "2980d473-c685-4143-962c-573519c5e86f",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 5. 积分与等级变更后的处理",
+          "section": "5",
+          "score": 0.9729778146469428,
+          "retrieval_source": null,
+          "content": "## 5. 积分与等级变更后的处理\n\n积分抵扣部分随部分退款按比例返还，返还的积分恢复原有效期，不重新计算 12 个月。整单退款时返还全部抵扣积分，但已经因为订单完成而发放的消费积分要同步扣回。积分返还发生在退款执行成功之后，退款失败时不返还。等级判定所用的年度消费金额按退款后的净额重算，降级在下一个等级评估日生效。"
+        },
+        {
+          "chunk_id": "77abe971-dd82-48c3-ae91-a606e32ae821",
+          "document": "refund_policy",
+          "heading_path": "会员订单退款政策 > 4. 部分退款与优惠分摊",
+          "section": "4",
+          "score": 0.8781867059800608,
+          "retrieval_source": null,
+          "content": "## 4. 部分退款与优惠分摊\n\n部分退款按商品实付金额折算，运费与优惠券优惠按订单金额占比分摊，不单独退还。分摊顺序是：先按商品实付金额占比拆优惠券金额，再把运费按件数平摊到剩余商品。部分退款之后订单状态仍为已完成，剩余商品的保修期不变。同一订单可以多次部分退款，但累计金额不得超过实付金额。\n\n积分抵扣金额随商品一起按比例退回，退回的积分算「已使用积分」还是「失效积分」，参见本文第 5 节。"
+        },
+        {
+          "chunk_id": "40020d4a-124d-40f1-b761-6476adea7129",
+          "document": "promo_rules",
+          "heading_path": "促销活动与优惠券使用规则 > 3. 优惠券与退款的关系",
+          "section": "3",
+          "score": 0.8059184186356767,
+          "retrieval_source": null,
+          "content": "## 3. 优惠券与退款的关系\n\n优惠券在整单退款时按原规则返还，返还的券沿用原有效期，不延长；部分退款不返还券，只按比例从退款金额中扣除券的优惠分摊。已过期的券在退款时不返还，也不折现。券返还发生在退款执行成功之后，退款失败时不返还。\n\n积分抵扣与优惠券的抵扣上限不同，积分侧的上限按[《积分规则》](./points_policy.md)第 2 节计算；两者叠加时先扣券再扣积分。"
+        },
+        {
+          "chunk_id": "14ba6465-0285-4614-bf91-14fcfc7a9c53",
+          "document": "points_policy",
+          "heading_path": "积分规则 > 3. 积分退还与失效",
+          "section": "3",
+          "score": 0.7965342511234261,
+          "retrieval_source": null,
+          "content": "## 3. 积分退还与失效\n\n退款时返还的积分是「已使用积分」而不是「失效积分」：返还的积分恢复原有效期，不重新计算 12 个月；已经过期被清零的积分不返还。积分抵扣部分在退款时按商品比例分摊返还，分摊口径参见本文第 2 节。整单退款返还全部抵扣积分，同时扣回该订单已发放的消费积分；如果消费积分已经被使用，按 1 元 = 100 积分折算成欠款，从下一次退款或下一次积分发放中抵扣。"
+        }
+      ]
+    }
+  ]
+}

@@ -62,7 +62,28 @@ class VectorStore(ABC):
         """
 
     @abstractmethod
+    async def count_by_scope(
+        self, db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
+    ) -> int:
+        """该库在**某一个版本**里有多少条可检索的向量（``ready`` 前的四项计数之一）。
+
+        「切片数」问的是库里的行，「向量数」问的是**向量存储里的可检索载体**：同一个
+        pgvector 实现上两者天然相等（向量就存在切片行里），换一个向量库实现就会分叉。
+        分成两次读数不是冗余——写失败的那一半会在这里露出来，而「四项计数相等」正是
+        为了不让半成品上线（ADR-0025 决策一）。
+        """
+
+    @abstractmethod
     async def delete_by_document_id(
-        self, db: AsyncSession, document_id: str, *, tenant_id: str
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
     ) -> None:
-        """删某文档的全部切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。"""
+        """删某文档的切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。
+
+        ``index_version`` 是**删除范围**（#142）：给了版本只删那一版（重建新版本时绝不
+        碰线上那一版），``None`` 删全部版本（删文档）。
+        """

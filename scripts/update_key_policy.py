@@ -19,7 +19,8 @@
 用法：``uv run python scripts/update_key_policy.py --policy-id <id>
 [--name <名字>] [--profile speed|balanced|quality|custom]
 [--research|--no-research] [--hybrid|--no-hybrid] [--rerank|--no-rerank]
-[--rewrite|--no-rewrite] [--include-parent|--no-include-parent]
+[--rewrite|--no-rewrite]
+[--include-parent|--no-include-parent]
 [--expand-table-rows|--no-expand-table-rows] [--qps N] [--daily N]
 [--kb-id kb-1 ... | --clear-kb-ids]``。
 退出码：成功为 0；未给 ``--policy-id``、一个待改字段都没给、或 ``--kb-id`` /

@@ -47,7 +47,11 @@ def _data(profile: str, spec: ProfilePresetSpec) -> ProfilePresetData:
     """注册表条目 → 响应行：字段逐个点名，不用 ``**spec`` 展开（照 ``model_configs`` 的写法）。"""
 
     return ProfilePresetData(
-        profile=profile, mode=spec.mode, top_k=spec.top_k, rerank=spec.rerank, rewrite=spec.rewrite
+        profile=profile,
+        mode=spec.mode,
+        top_k=spec.top_k,
+        rerank=spec.rerank,
+        rewrite=spec.rewrite,
     )
 
 

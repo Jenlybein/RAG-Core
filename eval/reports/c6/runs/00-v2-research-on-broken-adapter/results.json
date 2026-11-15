@@ -1,0 +1,352 @@
+{
+  "run_id": "20261114T112354Z",
+  "generated_at": "2026-11-14T11:23:54+00:00",
+  "source": "live",
+  "switches": {
+    "graph": "off",
+    "research": "on",
+    "rerank": "on"
+  },
+  "rerank_effective": true,
+  "capabilities": {
+    "graph": "available",
+    "research": "available"
+  },
+  "exercised": {
+    "graph": false,
+    "research": true
+  },
+  "index_versions": {
+    "ddae7e35-1858-4861-b9eb-631cfc778feb": "v2"
+  },
+  "llm_chain": {
+    "llm_endpoint_source": "model_configs",
+    "llm_model": "deepseek-v4-1-flash-economy-261017",
+    "llm_config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "premise": {
+    "comparable_with_original_project": false,
+    "why": "本仓库的语料与题集都是自己的，复现原项目那组效果数字（+4.9% / −82.5% / +3.4pp）既不成立也不可比（#138 Out of Scope）。"
+  },
+  "corpus": {
+    "dir": "eval/corpus-refs",
+    "documents": [
+      "points_policy",
+      "promo_rules",
+      "refund_policy"
+    ],
+    "reference_edges": 9,
+    "digest": "2dd07e55d50b"
+  },
+  "questions": {
+    "path": "eval/refs-questions.json",
+    "count": 8,
+    "by_mechanism": {
+      "cross_document": 2,
+      "cross_section": 2,
+      "dependent_hop": 2,
+      "parallel_points": 2
+    },
+    "k": 5
+  },
+  "predicted_calls": {
+    "embedding": 8,
+    "rerank": 8,
+    "research_llm": 32,
+    "research_searches": 40,
+    "total": 128,
+    "notes": {
+      "embedding": "8 题 × 1 次查询向量（--source live，改写关）",
+      "rerank": "8 题 × 1 次重排（重排开着）",
+      "research_llm": "会真的走 /rag/research：每题 ≤4 次模型调用 + ≤5 条子检索（每条 1 次嵌入 + 1 次重排），按上限估"
+    },
+    "research_llm_budget": {
+      "hard_cap": 3,
+      "with_strong_model_fallback": 4,
+      "sub_searches": 5
+    }
+  },
+  "metrics": {
+    "stop_reason_distribution": {
+      "status": "available",
+      "exercised": true,
+      "counts": {},
+      "total": 0,
+      "unknown": []
+    },
+    "retrieval_termination": {
+      "error:AttributeError": 8
+    },
+    "citation_traceability": {
+      "hits": 0,
+      "traceable": 0,
+      "rate": null,
+      "untraceable": []
+    },
+    "research": {
+      "evidence_state": {},
+      "questions_with_evidence_state": 0,
+      "evidence_blocks": 0,
+      "blocks_with_evidence": 0,
+      "dangling_evidence": []
+    },
+    "graph_injection": {
+      "graphs_reported": 0,
+      "injected": 0,
+      "seeds": 0,
+      "questions_with_injection": 0
+    },
+    "latency_ms": {
+      "p50": 31813.52,
+      "p95": 59895.97,
+      "max": 59895.97,
+      "total": 293237.61
+    },
+    "model_calls": {
+      "total": 0,
+      "by_question": {
+        "r01": 0,
+        "r02": 0,
+        "r03": 0,
+        "r04": 0,
+        "r05": 0,
+        "r06": 0,
+        "r07": 0,
+        "r08": 0
+      },
+      "questions_with_calls": 0
+    }
+  },
+  "coverage": {
+    "r01": {
+      "expected": 2,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "refund_policy:2",
+        "refund_policy:3"
+      ]
+    },
+    "r02": {
+      "expected": 2,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "points_policy:3",
+        "points_policy:1"
+      ]
+    },
+    "r03": {
+      "expected": 2,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "promo_rules:3",
+        "refund_policy:2"
+      ]
+    },
+    "r04": {
+      "expected": 2,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "points_policy:2.2",
+        "promo_rules:1"
+      ]
+    },
+    "r05": {
+      "expected": 3,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "promo_rules:3",
+        "points_policy:3",
+        "refund_policy:1"
+      ]
+    },
+    "r06": {
+      "expected": 3,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "promo_rules:1",
+        "promo_rules:2",
+        "promo_rules:3"
+      ]
+    },
+    "r07": {
+      "expected": 3,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "refund_policy:2",
+        "promo_rules:3",
+        "points_policy:3"
+      ]
+    },
+    "r08": {
+      "expected": 3,
+      "found": 0,
+      "found_keys": [],
+      "missing": [
+        "points_policy:4",
+        "refund_policy:4",
+        "points_policy:2.2"
+      ]
+    }
+  },
+  "per_question": [
+    {
+      "id": "r01",
+      "mechanism": "cross_section",
+      "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 59895.97,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    },
+    {
+      "id": "r02",
+      "mechanism": "cross_section",
+      "query": "退款办完之后退回来的那部分积分，有效期是从退款日重新算 12 个月，还是按原来的时间算？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 18442.78,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    },
+    {
+      "id": "r03",
+      "mechanism": "cross_document",
+      "query": "退款办完之后，之前抵掉的那部分优惠还能不能再用，有效期会不会跟着延长？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 31813.52,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    },
+    {
+      "id": "r04",
+      "mechanism": "cross_document",
+      "query": "银卡会员下单的时候，抵扣的固定封顶能提到多少？和商品金额的比例限制怎么取舍？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 23834.16,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    },
+    {
+      "id": "r05",
+      "mechanism": "parallel_points",
+      "query": "整单退款的时候，客户会连着问三件事：券还能不能用、积分退不退、运费退不退？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 31825.73,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    },
+    {
+      "id": "r06",
+      "mechanism": "parallel_points",
+      "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 48250.34,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    },
+    {
+      "id": "r07",
+      "mechanism": "dependent_hop",
+      "query": "订单同时用了券和积分，整单退款的时候谁的优惠先被扣掉，各自什么时候返还给我？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 22997.59,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    },
+    {
+      "id": "r08",
+      "mechanism": "dependent_hop",
+      "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+      "stop_reason": null,
+      "termination": "error:AttributeError",
+      "empty_reason": null,
+      "degraded_reason": null,
+      "error": "AttributeError",
+      "latency_ms": 56177.52,
+      "model_calls": 0,
+      "evidence_state": null,
+      "citation_blocks": 0,
+      "citations_with_evidence": 0,
+      "dangling_evidence_ids": [],
+      "graph_injected": null,
+      "graph_seeds": null,
+      "hits": []
+    }
+  ]
+}

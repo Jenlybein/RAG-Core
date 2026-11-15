@@ -34,7 +34,7 @@ class ProfilePresetListData(BaseModel):
 
 
 class ProfilePresetPatchRequest(BaseModel):
-    """部分更新。四个字段都可缺省；``None`` 表示「这一项不改」。"""
+    """部分更新。五个字段都可缺省；``None`` 表示「这一项不改」。"""
 
     model_config = ConfigDict(extra="forbid")
 

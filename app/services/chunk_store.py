@@ -26,12 +26,24 @@ from app.providers.keyword_search import KeywordSearchProvider
 
 
 class ChunkStore(Protocol):
-    """切片写入契约：两处存储都满足它，索引编排只认它。"""
+    """切片写入契约：两处存储都满足它，索引编排只认它。
+
+    ``index_version`` 是**删除的范围**（#142）：
+
+    * 给了版本 → 只清那个版本，别的版本原样留着。重建新版本时必须这样——把线上那一版
+      一起删掉，构建期间的检索就会**空一阵**（这正是「构建期间线上照旧查旧版本」要防的）；
+    * ``None`` → 清该文档的全部版本。删文档走这条：文档没了，任何版本里的切片都不该留下。
+    """
 
     async def add_chunks(self, db: AsyncSession, chunks: list[dict]) -> None: ...
 
     async def delete_by_document_id(
-        self, db: AsyncSession, document_id: str, *, tenant_id: str
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
     ) -> None: ...
 
 
@@ -46,9 +58,16 @@ class KeywordSearchChunkStore:
         await self._provider.add_chunks(chunks)
 
     async def delete_by_document_id(
-        self, db: AsyncSession, document_id: str, *, tenant_id: str
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
     ) -> None:
-        await self._provider.delete_by_document_id(document_id, tenant_id=tenant_id)
+        await self._provider.delete_by_document_id(
+            document_id, tenant_id=tenant_id, index_version=index_version
+        )
 
 
 def build_chunk_stores(

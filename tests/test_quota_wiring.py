@@ -29,6 +29,7 @@ from app.core import redis_client
 from app.core.auth import DEV_KEY_POLICY, KeyContext
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import QuotaCounters, QuotaWindow, daily_key, qps_key
@@ -300,6 +301,8 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
             split_strategy="size",
             allowed_formats=["markdown"],
             settings={"chunk_size": 400},
+            # 检索范围从库行里读生效版本（票 #141）。
+            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     async def _visible_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:

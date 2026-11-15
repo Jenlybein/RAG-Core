@@ -295,7 +295,9 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
         embeddings=SimpleNamespace(),
         stores=[],
     )
-    doc = SimpleNamespace(kb_id="kb-1", tenant_id="tenant-demo")
+    # 文档行真的有三列：`id` 是节的身份证的一半（#143，`stable_hash(文档 id : 标题路径)`），
+    # 替身少给一列就不再等价于真行。
+    doc = SimpleNamespace(id="doc-1", kb_id="kb-1", tenant_id="tenant-demo")
 
     splitter, strategy = asyncio.run(service._resolve_splitter(None, doc))
 

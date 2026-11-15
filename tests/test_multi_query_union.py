@@ -36,6 +36,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.llm.base import LLMProvider
 from app.services.query.optimizer import QueryProcessResult, optimize_query
 from app.services.query.rewrite import QueryRewrite
@@ -85,6 +86,11 @@ _TRACE_ID_RE = re.compile(r',"trace_id":"[0-9a-f]{32}"')
 #: 它们与 ``trace_id`` 是同一类东西：有意的契约新增，不是检索行为变化。比对前整段摘掉，
 #: 基线常量因此一个都不用重采——「除这两个新键外逐字节不变」由同一组数字继续证明。
 _RERANK_IDENTITY_RE = re.compile(r',"provider":(?:null|"[^"]*"),"model":(?:null|"[^"]*")')
+
+#: #147 起 ``metadata.tenant_policy`` 曾多出 ``orchestration``，比对时摘过一段（第七次修订）；
+#: ADR-0029 收窄（#138）把它撤掉之后，**这一段摘除不需要了**——键不存在，响应文本直接
+#: 回到基线，哈希常量仍然一个都没重采。也就是说这个键从来只是「被摘掉才对齐」，撤掉之后
+#: 连摘都不用摘：这正是「它没碰过别的字节」的最终形态。
 
 
 # ─────────────────────────────────────────────────────────────── 替身
@@ -253,10 +259,13 @@ def _offline_client(
 
     async def _kb_for_tenant(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return SimpleNamespace(
+            id=kb_id,
             tenant_id=tenant_id,
             settings=tables.get(kb_id) or {},
             name="",
             description="",
+            # 真行上有的两列（票 #141）：检索范围从库行里读生效版本。
+            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)
@@ -318,6 +327,11 @@ def _without_trace_id(text: str) -> str:
     见 :data:`_RERANK_IDENTITY_RE`），处理方式与 ``trace_id`` **完全相同**：它们是有意的
     契约新增，摘掉之后仍与旧基线逐字节相同。这两段摘除各自都要求「至少命中一次」——
     否则这条比对会退化成「什么也没摘、什么也没比」。
+
+    #147 起 ``metadata.tenant_policy`` 曾多出 ``orchestration``，当时按同一手法摘过一段；
+    #138（ADR-0029）把它撤掉之后那一段摘除**不再需要**：键不存在，响应文本直接与 #78 那版
+    基线逐字节相同，三个哈希常量一次都没重采。这条哈希因此同时证明了「撤销只删了那个键、
+    没有碰别的字节」。
     """
 
     without_trace = _TRACE_ID_RE.sub("", text)
@@ -342,6 +356,10 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             response = _response(fake["client"], mode=mode)
         assert response.status_code == 200
         assert _TRACE_ID_RE.search(response.text), "摘除必须真的命中一次，否则这条比对是空比对"
+        # 回显里那个键（#147 加的、#138 撤掉的）**不许再出现**：它一旦回来，下面三个
+        # 哈希就会与基线不等，而这条断言把失败原因直接指到「谁把性质上不属于默认路径的
+        # 东西塞回了 tenant_policy」。
+        assert '"orchestration"' not in response.text, "tenant_policy 回显不许再出现这个键"
         if mode == "hybrid":
             # 重排关着时 ``rerank`` 仍是字典（applied=false …），身份键是 null；它们必须
             # 真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了这两个键」。

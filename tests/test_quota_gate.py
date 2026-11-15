@@ -99,6 +99,8 @@ def _policy(*, qps: int = 3, daily: int = 100) -> KeyPolicySnapshot:
         query_rewrite_allowed=False,
         retrieve_qps=qps,
         retrieve_daily=daily,
+        research_qps=0,
+        research_daily=0,
         profile=PROFILE_SPEED,
         include_parent=True,
         expand_table_rows=True,

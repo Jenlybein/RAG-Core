@@ -1,0 +1,117 @@
+{
+  "generated_at": "2026-11-14T11:02:41+00:00",
+  "issue": "#153 (C6) 端到端验收的评测环境",
+  "purpose": "v1/v2 对照 · 图谱开/关 · Research 开/关 · 20 题守分抽样",
+  "tenant": {
+    "tenant_id": "tenant_c6",
+    "plan": {
+      "code": "pro",
+      "research_allowed": true,
+      "orchestration_allowed": true,
+      "research_qps": 1,
+      "research_daily": 100,
+      "max_kb": 50,
+      "changes": {}
+    }
+  },
+  "key_policy": {
+    "policy_id": "6ab58b9d-1363-4055-b6de-18edaaa1ccd4",
+    "targets": {
+      "expand_table_rows": true,
+      "hybrid_allowed": true,
+      "include_parent": true,
+      "orchestration_allowed": true,
+      "profile": "quality",
+      "query_rewrite_allowed": true,
+      "rerank_allowed": true,
+      "research_allowed": true,
+      "research_daily": 100,
+      "research_qps": 1,
+      "retrieve_daily": 100000,
+      "retrieve_qps": 50
+    }
+  },
+  "api_key": {
+    "key_id": "638c3294-c903-44e8-9a74-7e311f87ed10",
+    "label": "c6-acceptance",
+    "value": "（不落这份文件）"
+  },
+  "knowledge_base": {
+    "kb_id": "ddae7e35-1858-4861-b9eb-631cfc778feb",
+    "name": "引用语料库·会员权益",
+    "split_strategy": "structure",
+    "documents": [
+      "points_policy.md",
+      "promo_rules.md",
+      "refund_policy.md"
+    ]
+  },
+  "profile_presets": {
+    "quality": {
+      "profile": "quality",
+      "mode": "hybrid",
+      "top_k": 5,
+      "rerank": true,
+      "rewrite": true,
+      "orchestration": false
+    }
+  },
+  "keyword_index": {
+    "alias": "rag_chunks_c6",
+    "note": "评测专用别名（机制与生产相同：物理索引按版本隔离 <alias>__<version>、别名指向 active）。本机集群里的 rag_chunks 还是未迁移的物理索引，见模块文档。"
+  },
+  "corpus": {
+    "dir": "eval/corpus-refs",
+    "documents": [
+      "points_policy",
+      "promo_rules",
+      "refund_policy"
+    ],
+    "reference_inventory": 9
+  },
+  "index_versions": {
+    "ingest_version": "v1",
+    "build_version": "v2",
+    "rows": [
+      {
+        "version": "v1",
+        "status": "archived",
+        "document_count": null,
+        "chunk_count": null
+      },
+      {
+        "version": "v2",
+        "status": "active",
+        "document_count": 3,
+        "chunk_count": 15
+      }
+    ],
+    "counts": {
+      "chunks": {
+        "v1": 15,
+        "v2": 15
+      },
+      "sections": {
+        "v1": 15,
+        "v2": 15
+      },
+      "edges": {
+        "v1": {
+          "parent": 2,
+          "reference": 5,
+          "sibling": 22
+        },
+        "v2": {
+          "parent": 2,
+          "reference": 9,
+          "sibling": 22
+        }
+      }
+    },
+    "active": "v2",
+    "reference_edges": {
+      "v1": 5,
+      "v2": 9
+    }
+  }
+}

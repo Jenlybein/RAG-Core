@@ -9,15 +9,20 @@
 `heading_path` 都指向错误的章节，而且不会报任何错——只有检索结果会悄悄变差。
 所以栈只在 h1/h2/h3 处 flush，且 flush 使用**遇到下一个 h1/h2/h3 之前的**栈内容。
 
-`section_id` 刻意做成 `sha256(heading_path)` 的确定性哈希，而不是随机 ID：
-重建索引后同一章节必须仍能对上父子关系，随机 ID 会让这条关系静默断裂。
+`section_id` 是 `stable_hash(文档 id : 标题路径)`（#143，ADR-0025 决策五）：确定性哈希而
+不是随机 ID，重建后同一章节必须仍能对上；**并且带文档 id**，否则两份文档的同名章节会撞
+成同一个 id。它**不含版本**——版本由引用方的数据范围表达，不进 id。
+
+因为 id 里要放文档 id，切块器构造时必须知道「我在切哪一份文档」（`document_id`）。不传时
+身份退化成「只在本篇内可比」：同一篇两次切仍得同一个 id，但两份文档的同名章节会撞。生产
+路径（`IndexingService`）永远传，脚本 / 用例按需传——那里的产物只在自己进程里比较。
 """
 
-import hashlib
 import re
 from dataclasses import dataclass
 
 from app.utils.provenance import page_from_heading
+from app.utils.section_identity import parent_section_id_of, section_id_of
 from app.utils.text_splitter import SplitPiece, TextSplitter
 from app.utils.window_splitter import Slicer, default_slicer
 
@@ -61,7 +66,8 @@ class MarkdownStructuredSplitter(TextSplitter):
     栈维护错一处不会抛异常，却会让其后每个切片的出处都错——改动这里必须用
     「标题边界」与「同输入 section_id 稳定」两类测试兜住。
     表格与代码块整块保留；超长节在节内二次切，重叠不跨标题边界。
-    `section_id` 是 heading_path 的内容哈希，重建后父子关系仍能稳定对上。
+    `section_id` = ``stable_hash(文档 id : heading_path)``（不含版本），重建后父子关系
+    仍能稳定对上，跨文档同名章节也分得开。
     """
 
     # 切片边界到 h3。再深就不切了：h4 往往是「请求 / 响应 / 错误码」这类
@@ -74,6 +80,8 @@ class MarkdownStructuredSplitter(TextSplitter):
         chunk_overlap: int = 50,
         table_max_rows: int = 10,
         slicer: Slicer = default_slicer,
+        *,
+        document_id: str = "",
     ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
@@ -85,6 +93,10 @@ class MarkdownStructuredSplitter(TextSplitter):
         # 片内窗口的接缝：默认按 Qwen token + 分隔符回退。评测要跑「硬切」或
         # 「字符尺子」时，把自己的切片器传进来——生产代码里不留这些分支。
         self._slicer = slicer
+        # 节的身份证用它 + 标题路径算（见 app.utils.section_identity）。缺省空串是
+        # 「只在本篇内可比」：同一篇两次切仍稳定，两份文档的同名章节会撞——生产路径
+        # 由 IndexingService 永远传真 id，且有用例钉住这条接线。
+        self.document_id = document_id
 
     def split(self, text: str) -> list[SplitPiece]:
         """扫描全文，按 h1/h2/h3 边界产出一组带 provenance 的切片。"""
@@ -195,6 +207,7 @@ class MarkdownStructuredSplitter(TextSplitter):
                             piece.table_part,
                             piece.code_part,
                             page,
+                            document_id=self.document_id,
                         ),
                     )
                 )
@@ -432,10 +445,6 @@ def _classify_text(text: str) -> str:
     return "list" if list_lines > len(lines) / 2 else "prose"
 
 
-def _section_segments(heading_path: str) -> list[str]:
-    return heading_path.split(" > ") if heading_path else []
-
-
 def _metadata(
     heading_path: str,
     order_index: int,
@@ -443,18 +452,24 @@ def _metadata(
     table_part: int,
     code_part: int = 0,
     page: int | None = None,
+    *,
+    document_id: str = "",
 ) -> dict[str, object]:
-    segments = _section_segments(heading_path)
-    section_id = hashlib.sha256(heading_path.encode("utf-8")).hexdigest()
-    parent_section_id = (
-        hashlib.sha256(" > ".join(segments[:-1]).encode("utf-8")).hexdigest()
-        if len(segments) >= 2
-        else None
-    )
+    """一片的 provenance。节的身份证由 :mod:`app.utils.section_identity` 算（只有那一份）。
+
+    `parent_section_id` 仍是「上一级路径算出来的那个 id」——只是现在与 `section_id` 用
+    同一份算法、同一个文档 id，于是父节自己有正文时，它一定等于父节那一片的 `section_id`；
+    父节只有标题、正文全在子节里的情况下，父节本身**不产切片**（标题行被 `_is_heading_only`
+    滤掉），那个 id 在本版本里没有切片与之对应。这是切块器的既有行为，不是身份算法的问题：
+    核对脚本因此把悬空父 id 分成「父节无正文」与「身份对不上」两档，只有后者算错。
+    """
+
     return {
         "heading_path": heading_path,
-        "section_id": section_id,
-        "parent_section_id": parent_section_id,
+        "section_id": section_id_of(document_id=document_id, heading_path=heading_path),
+        "parent_section_id": parent_section_id_of(
+            document_id=document_id, heading_path=heading_path
+        ),
         "order_index": order_index,
         "chunk_type": chunk_type,
         "table_part": table_part,

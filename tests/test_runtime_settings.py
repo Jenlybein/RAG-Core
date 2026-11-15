@@ -683,6 +683,8 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
                 allowed_kb_ids=[],
                 retrieve_qps=10,
                 retrieve_daily=5000,
+                research_qps=0,
+                research_daily=0,
                 profile="quality",
             )
         )
@@ -695,6 +697,8 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
             allowed_kb_ids=[],
             retrieve_qps=3,
             retrieve_daily=500,
+            research_qps=0,
+            research_daily=0,
             profile="speed",
         )
     )
@@ -766,6 +770,8 @@ async def test_a_policy_whose_plan_never_granted_the_capability_is_not_reported(
             allowed_kb_ids=[],
             retrieve_qps=3,
             retrieve_daily=500,
+            research_qps=0,
+            research_daily=0,
             profile="quality",
         )
     )

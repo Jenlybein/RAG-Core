@@ -30,7 +30,9 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
+from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
+from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
@@ -70,7 +72,9 @@ class _RecordingStore:
         self.tenant_ids: list[str] = []
         self.written: list[list[dict[str, Any]]] = []
 
-    async def delete_by_document_id(self, _db: Any, document_id: str, *, tenant_id: str) -> None:
+    async def delete_by_document_id(
+        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+    ) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)
         self.tenant_ids.append(tenant_id)
@@ -130,6 +134,15 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
     enqueued: list[dict[str, Any]] = []
     store = _RecordingStore()
     monkeypatch.setattr(routes, "enqueue_document", lambda **kwargs: enqueued.append(kwargs))
+
+    # 写入目标版本来自库上的生效版本（#142）。这条用例的临时库里只有 ``documents``，
+    # 于是把「问库要版本」这一步换成固定的 v1——与迁移回填、索引流水线的老行为同值。
+    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
+        return DEFAULT_INDEX_VERSION
+
+    monkeypatch.setattr(
+        knowledge_base_repository, "get_effective_index_version", _effective_version
+    )
 
     main.app.dependency_overrides[get_async_db] = _request_session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)

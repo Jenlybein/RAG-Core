@@ -35,6 +35,13 @@ jobs:
         run: uv run ruff format --check tests
       - name: Type check
         run: uv run mypy app
+      - name: Frozen eval assets
+        # 守住 eval/corpus 与 eval/baseline 的内容指纹（#138 验收第 1 条 / 票 #156 接线）。
+        # 往里加一篇文档、改一个字、删一个文件，都等于基线当场失效——那三件事在这里变成
+        # 一条红的 CI，而不是「下次跑评测才发现分数对不上」。
+        # 红的时候先想清楚为什么（换语料要重跑 baseline 并归档），再跑
+        # `uv run python scripts/eval_refs.py freeze --write` 把清单一起提交，让变更留在历史里。
+        run: uv run python scripts/eval_refs.py check-frozen
       - name: Fetch Qwen tokenizer vocab
         # 切块窗口按 Qwen token 计长，词表是必需资产（2.56 MB，带 SHA256 校验）。
         # 缺它所有切块用例都会失败，所以这一步放在 Test 之前。

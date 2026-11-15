@@ -15,14 +15,14 @@
 （``app/services/chunk_store.py``），不经过它。
 """
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
 from sqlalchemy import Integer, Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import Chunk
+from app.models.chunk import Chunk, scope_filter
 
 
 def _meta_statement(
@@ -47,9 +47,7 @@ async def fetch_meta_by_chunk_ids(
     if not chunk_ids or not kb_ids:
         return {}
     rows = (
-        await db.execute(
-            _meta_statement(tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=chunk_ids)
-        )
+        await db.execute(_meta_statement(tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=chunk_ids))
     ).all()
     return {(str(row.kb_id), str(row.id)): dict(row.meta or {}) for row in rows}
 
@@ -96,7 +94,13 @@ def _group_unit_rows(
     grouped: dict[tuple[str, str], list[tuple[int, str, str, str, int]]] = {}
     for document_id, path, index, content, chunk_id, chunk_type, table_part in rows:
         grouped.setdefault((str(document_id), str(path)), []).append(
-            (int(index or 0), str(content), str(chunk_id), str(chunk_type or ""), int(table_part or 0))
+            (
+                int(index or 0),
+                str(content),
+                str(chunk_id),
+                str(chunk_type or ""),
+                int(table_part or 0),
+            )
         )
     return grouped
 
@@ -122,35 +126,158 @@ async def fetch_unit_rows(
     return _group_unit_rows(list((await db.execute(stmt)).all()))
 
 
-def _count_by_kb_ids_statement(
-    *, tenant_id: str, kb_ids: list[str], index_version: str | None
-) -> Select[tuple[int]]:
-    """空结果判定的计数语句：租户 + 库 + （可选）索引版本。"""
+def build_parent_rows_statement(
+    *,
+    tenant_id: str,
+    document_ids: Sequence[str],
+    heading_paths: Sequence[str],
+    index_version: str | None = None,
+) -> Select[tuple[str, str, int, str]]:
+    """**父节自己的**正文：按 ``(文档, 精确标题路径)`` 取，供「折叠关闭时补父节」用（#144）。
 
+    为什么要一条新查询、而不是复用 :func:`_unit_rows_statement`：那条是**前缀**语义
+    （``path = p OR path LIKE 'p > %'``），拿它取父节会把命中片自己与它的兄弟节一起
+    拼回来——材料量翻倍，而 ADR-0027 决策 7 说的正是「不要再翻一倍」。所以这里只认
+    **等值**：父节自己那几片，不多不少。
+
+    排序按 ``chunk_index``：父节正文拼回去必须与文档里的顺序一致（ADR-0010 的确定性）。
+    """
+
+    heading = Chunk.meta["heading_path"].astext
+    chunk_index = Chunk.meta["chunk_index"].astext.cast(Integer)
     stmt = (
-        select(func.count())
-        .select_from(Chunk)
-        .where(Chunk.tenant_id == tenant_id, Chunk.kb_id.in_(kb_ids))
+        select(Chunk.document_id, heading, chunk_index, Chunk.content)
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.document_id.in_(sorted({str(item) for item in document_ids})),
+            heading.in_(sorted({str(item) for item in heading_paths})),
+        )
+        .order_by(Chunk.document_id, chunk_index, Chunk.id)
     )
     if index_version is not None:
         stmt = stmt.where(Chunk.index_version == index_version)
     return stmt
 
 
+async def fetch_parent_rows(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    document_ids: Sequence[str],
+    heading_paths: Sequence[str],
+    index_version: str | None = None,
+) -> dict[tuple[str, str], list[str]]:
+    """``{(文档 id, 父节路径): [父节自己那几片的正文…]}``，按文档顺序。
+
+    只在这一版本身份里取（``index_version`` 由调用方按「这份文档所属库」给出）：
+    跨版本拼父节会让重建中途的检索拿到两套切法拼起来的上下文。
+    """
+
+    if not document_ids or not heading_paths:
+        return {}
+    rows = (
+        await db.execute(
+            build_parent_rows_statement(
+                tenant_id=tenant_id,
+                document_ids=list(document_ids),
+                heading_paths=list(heading_paths),
+                index_version=index_version,
+            )
+        )
+    ).all()
+    parents: dict[tuple[str, str], list[str]] = {}
+    for document_id, path, _index, content in rows:
+        parents.setdefault((str(document_id), str(path)), []).append(str(content or ""))
+    return parents
+
+
+def _count_by_kb_ids_statement(
+    *, tenant_id: str, index_versions: Mapping[str, str]
+) -> Select[tuple[int]]:
+    """空结果判定的计数语句：租户 + 范围。
+
+    范围用的是**召回时那一条配对条件**（``app.models.chunk.scope_filter``），不是
+    「所有库 × 所有版本」：口径一旦与召回不同，「库里有内容、本次没命中」就会被
+    误判成「空库」，而这正是 ``empty_reason`` 唯一要说清的事。
+    """
+
+    return (
+        select(func.count())
+        .select_from(Chunk)
+        .where(Chunk.tenant_id == tenant_id, scope_filter(index_versions))
+    )
+
+
 async def count_by_kb_ids(
-    db: AsyncSession, *, tenant_id: str, kb_ids: list[str], index_version: str | None = None
+    db: AsyncSession, *, tenant_id: str, index_versions: Mapping[str, str]
 ) -> int:
     """:func:`count_by_kb_ids` 的异步面（检索链路，第 11 步票 #127）。
 
-    口径与同步版逐字相同：同一条语句、同一个版本过滤、同一个强制租户参数。
+    口径与召回逐字相同：同一条配对条件、同一个强制租户参数。
+
+    ``index_versions`` 是 ``kb_id → 生效版本`` 的映射（ADR-0025），**不是**一个版本
+    常量：多库各自 pin 在不同构建上时，用一个常量的计数会把「别的版本有内容」算成
+    「这个库没有内容」。
     """
 
-    if not kb_ids:
+    if not index_versions:
         return 0
-    stmt = _count_by_kb_ids_statement(
-        tenant_id=tenant_id, kb_ids=kb_ids, index_version=index_version
+    stmt = _count_by_kb_ids_statement(tenant_id=tenant_id, index_versions=index_versions)
+    return int((await db.execute(stmt)).scalar_one())
+
+
+async def count_by_index_version(
+    db: AsyncSession, kb_id: str, *, tenant_id: str, index_version: str
+) -> int:
+    """该库在**某一个版本**里有多少切片（``ready`` 前的四项计数之一，ADR-0025）。
+
+    与 ``count_by_kb_ids`` 的区别只有一个：这里问的是「某一次构建产出了多少片」，而那
+    一条问的是「按生效版本能不能召回」。两者都带租户，也都不许省。
+    """
+
+    stmt = (
+        select(func.count())
+        .select_from(Chunk)
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.kb_id == kb_id,
+            Chunk.index_version == index_version,
+        )
     )
     return int((await db.execute(stmt)).scalar_one())
+
+
+async def list_section_identity_rows(
+    db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
+) -> list[tuple[str, str, str, str | None]]:
+    """这个版本里**每个节**的 ``(文档 id, 标题路径, section_id, parent_section_id)``。
+
+    核对脚本用它验「节的身份证」自洽（#143）：同一节的多片共享同一份 meta，所以先
+    ``distinct`` 再判——一片一行会让「这条节被判了 20 次」变成报错条数虚高。
+
+    读的是 ``metadata``（JSONB）里的三个键，不是新增的列：节的身份从第 3 步起就随切片
+    落在那份 meta 里，核对不该为了它改表（改表要连带改迁移与回填，而这里只需要「读得到」）。
+    """
+
+    stmt = (
+        select(
+            Chunk.document_id,
+            Chunk.meta["heading_path"].astext,
+            Chunk.meta["section_id"].astext,
+            Chunk.meta["parent_section_id"].astext,
+        )
+        .where(
+            Chunk.tenant_id == tenant_id,
+            Chunk.kb_id == kb_id,
+            Chunk.index_version == index_version,
+        )
+        .distinct()
+    )
+    rows = (await db.execute(stmt)).all()
+    return [
+        (str(document_id), str(path or ""), str(section_id or ""), parent or None)
+        for document_id, path, section_id, parent in rows
+    ]
 
 
 async def count_by_document_ids(

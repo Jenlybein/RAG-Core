@@ -32,6 +32,8 @@ frontend/dist/
 
 # ── 评测产物 ──
 eval/runs/
+# 引用语料跑批的产物（#145）：读数留在本地，结论由 C6 出，不进仓库。
+eval/refs-runs/
 
 # ── 编辑器 / 系统 ──
 .vscode/

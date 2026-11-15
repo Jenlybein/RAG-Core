@@ -25,7 +25,7 @@ from app.models.plan import (
     preset_mismatches,
 )
 
-# 票面真值表：11 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
+# 票面真值表：13 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
 # 否则「常量等于它自己」的同义反复什么都守不住。name 是展示名，票面没定字面值，
 # 另有用例只要求非空且互不相同。
 SPEC_TABLE: dict[str, dict[str, Any]] = {
@@ -37,6 +37,10 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "research_allowed": False,
         "retrieve_qps": 3,
         "retrieve_daily": 500,
+        # Research 的两个独立配额（票 #150）：0 等同于关闭，与 ``research_allowed``
+        # 一起表达「这一档没有这项能力」。
+        "research_qps": 0,
+        "research_daily": 0,
         "max_kb": 1,
         "max_kb_per_retrieve": 1,
         "max_documents_per_kb": 30,
@@ -50,6 +54,8 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "research_allowed": False,
         "retrieve_qps": 10,
         "retrieve_daily": 5000,
+        "research_qps": 0,
+        "research_daily": 0,
         "max_kb": 5,
         "max_kb_per_retrieve": 3,
         "max_documents_per_kb": 200,
@@ -63,6 +69,10 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "research_allowed": True,
         "retrieve_qps": 50,
         "retrieve_daily": 100000,
+        # 票面：专业版 1 QPS / 100 次每天（一次 Research 约 30 秒、3–4 次模型调用，
+        # 独立配额就是为了不让它吃掉普通检索的额度）。
+        "research_qps": 1,
+        "research_daily": 100,
         "max_kb": 50,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
@@ -91,10 +101,10 @@ def test_the_three_plans_are_exactly_the_decided_codes() -> None:
 
 @pytest.mark.parametrize("code", PLAN_CODES)
 def test_each_plan_carries_the_decided_values(code: str) -> None:
-    """逐列比对票面：11 个业务列一个不漏。"""
+    """逐列比对票面：13 个业务列一个不漏。"""
 
     spec = PLAN_PRESETS[code]
-    assert len(PLAN_BUSINESS_COLUMNS) == 11
+    assert len(PLAN_BUSINESS_COLUMNS) == 13
     for column in PLAN_BUSINESS_COLUMNS:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 
@@ -150,7 +160,7 @@ def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None
 def test_dropping_any_single_business_column_fails_reconciliation(column: str) -> None:
     """把某一列改成「播种时漏掉」的样子（值不是常量里的那个），对账必须点名那一列。
 
-    这条用例是「漏一列即失败」的可执行定义：它逐列把 11 个业务列各试一遍，
+    这条用例是「漏一列即失败」的可执行定义：它逐列把 13 个业务列各试一遍，
     只要对账逻辑少覆盖任何一列，对应的那条用例就会拿到空列表而失败。
     """
 

@@ -77,6 +77,15 @@ class KnowledgeBase(Base):
     allowed_formats: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
     # chunk_size 存在 settings 里，读取统一走 settings_of()。
     settings: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # 当前**生效**的索引构建版本（ADR-0025 决策一 / 决策四）：检索范围从这里读，
+    # 不再是从「所有库都配 v1」那个常量。**可空**是刻意的：
+    #
+    # * 还没有任何生效构建的库就是 NULL——那是合法状态（#142 的激活流程会填上）；
+    # * 迁移回填漏做时它也必须是 NULL，否则「未回填」这个状态就无从被发现。
+    #
+    # 检索侧因此有一条守卫（``app/models/index_version.py::resolve_index_versions``）：
+    # 拿到 NULL 就拒绝本次检索，而不是按空范围查出一份「看起来像没命中」的空结果。
+    active_index_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 

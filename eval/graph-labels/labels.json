@@ -1,0 +1,1230 @@
+{
+  "version": 1,
+  "issue": 158,
+  "readme": "eval/graph-labels/README.md",
+  "_schema": {
+    "label": "explicit / ambiguous / implicit / noise（判据见 README「判据」一节）",
+    "form": "title_section / same_doc / markdown_link / anchor / chinese_ordinal / other（票面要求的六类）",
+    "form_detail": "form=other 时的细分（adr_decision、document_level、section_clause…），见 README「形态细分」",
+    "source_section": "标注点所在节（标题的最后一段）；source_section_path 用于文档内同名的节",
+    "target": "explicit 才有：目标文档键 + 目标节标题（或 path）",
+    "evidence": "标注点原文片段，必须在源文档里**唯一**出现（用例会核）"
+  },
+  "tiers": {
+    "engineering": {
+      "kb_id": "kb-labels-engineering",
+      "label": "工程文档（真）",
+      "extrapolable_to": "带链接、带编号、互相引用决策条目（ADR / RFC / 设计文档）的技术文档库",
+      "not_extrapolable_to": "非 Markdown 的二进制文档（PDF / Word 上传件）、以及不带任何编号体系的白板式笔记",
+      "source_selection": "按文档簇整取：本步相关的三篇 ADR（0027 / 0028 / 0013）。它们是为决策写的真实文档，不是为本票写的测试材料；抽取器与它们没有共同作者关系（抽取器出自 0027，但 0027 本身是决策文档，不是抽取器的期望输出）",
+      "note": "目录里另外 40 篇真实文档（其余 ADR、README、GLOSSARY、docs/*.md）只作为**解析目标**参与，不做出边测量"
+    },
+    "policy": {
+      "kb_id": "kb-labels-policy",
+      "label": "政策散文（合成）",
+      "extrapolable_to": "不可外推。仅用于暴露缺口（条 / 款、以…为准、见附件、全角数字、英文 Section）",
+      "not_extrapolable_to": "全部。这五篇是为本票自拟的，尽管按真实政策文本的写法（条款编号、以…为准、见附件）组织",
+      "source_selection": "5 篇：会员服务协议（章-节）、权益与积分细则（条）、优惠券规则（条）、SLA（节）、英文附件（Section）。标题编号写成中文法规的惯例（「第 N 条」「第 N 节」），不是「N.」"
+    },
+    "minutes": {
+      "kb_id": "kb-labels-minutes",
+      "label": "会议纪要（合成）",
+      "extrapolable_to": "不可外推。仅用于证明「指代型引用（见上周那份 / 按上次说的）正则做不好」",
+      "not_extrapolable_to": "全部。2 篇自拟纪要，满篇相对指代",
+      "source_selection": "2 篇：产品周会、发布评审。刻意让其中一条写成正式写法（《…纪要》第 3 节），用来证明「纪要不是不能建边，是绝大部分写法没有可解析定位符」"
+    }
+  },
+  "corpora": {
+    "engineering": {
+      "source_documents": [
+        "eng-adr-0027",
+        "eng-adr-0028",
+        "eng-adr-0013"
+      ],
+      "target_globs": [
+        "docs/adr/*.md",
+        "docs/*.md",
+        "docs/agents/*.md",
+        "AGENTS.md",
+        "README.md",
+        "GLOSSARY.md",
+        "eval/ACCEPTANCE.md",
+        "deploy/README.md",
+        "tests/README.md"
+      ]
+    },
+    "policy": {
+      "source_documents": [
+        "pol-p01",
+        "pol-p02",
+        "pol-p03",
+        "pol-p04",
+        "pol-p05"
+      ],
+      "target_globs": [
+        "eval/graph-labels/corpus/policy/*.md"
+      ]
+    },
+    "minutes": {
+      "source_documents": [
+        "min-m01",
+        "min-m02"
+      ],
+      "target_globs": [
+        "eval/graph-labels/corpus/minutes/*.md"
+      ]
+    }
+  },
+  "exclude": {
+    "engineering": [
+      "docs/adr/0015-token-window-and-vocab.md"
+    ],
+    "_reason": "0015 的正文里含 `<|endoftext|>` 这个 tiktoken 特殊 token 的字面量，生产的切块器会抛 ValueError（见 app/utils/tokenizer.py）——这一篇在本测量里进不了目录。这是**另一件事**（上传含该字面量的文档会炸索引），已在 report.md 的「顺带发现」里单列，不混进本票的分母。**该缺陷已于 #160 修复（2026-11-15）：正文里的特殊 token 字面量现在按数据编码，见 ADR-0015 末节。**"
+  },
+  "documents": {
+    "eng-adr-0027": {
+      "path": "docs/adr/0027-graph-section-edges.md"
+    },
+    "eng-adr-0028": {
+      "path": "docs/adr/0028-retrieval-kernel-boundary.md"
+    },
+    "eng-adr-0013": {
+      "path": "docs/adr/0013-collapse-to-sections.md"
+    },
+    "eng-adr-0025": {
+      "path": "docs/adr/0025-index-as-build-artifact.md"
+    },
+    "eng-adr-0010": {
+      "path": "docs/adr/0010-retrieval-contract.md"
+    },
+    "pol-p01": {
+      "path": "eval/graph-labels/corpus/policy/p01-membership-agreement.md"
+    },
+    "pol-p02": {
+      "path": "eval/graph-labels/corpus/policy/p02-benefits-and-points.md"
+    },
+    "pol-p03": {
+      "path": "eval/graph-labels/corpus/policy/p03-coupon-rules.md"
+    },
+    "pol-p04": {
+      "path": "eval/graph-labels/corpus/policy/p04-sla-terms.md"
+    },
+    "pol-p05": {
+      "path": "eval/graph-labels/corpus/policy/p05-annex-b-english.md"
+    },
+    "min-m01": {
+      "path": "eval/graph-labels/corpus/minutes/m01-weekly-sync.md"
+    },
+    "min-m02": {
+      "path": "eval/graph-labels/corpus/minutes/m02-release-review.md"
+    }
+  },
+  "labels": [
+    {
+      "id": "eng-0027-01",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "背景",
+      "evidence": "「详见《促销活动与优惠券使用规则》2.4 节」",
+      "label": "noise",
+      "form": "title_section",
+      "form_detail": "quoted_example",
+      "note": "转述别人的文档里怎么写字，不是本节依赖；目标文档也不在本库（《促销…》出自 A3 语料）"
+    },
+    {
+      "id": "eng-0027-02",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "1. 节点是「节」，不是切片",
+      "evidence": "（ADR-0025 决策五）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "adr_decision",
+      "target": {
+        "document": "eng-adr-0025",
+        "section": "决策五：节的身份证不含版本"
+      },
+      "note": "真实工程文档指节的写法：文档编号 + 决策序号"
+    },
+    {
+      "id": "eng-0027-03",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "1. 节点是「节」，不是切片",
+      "evidence": "（ADR-0025 决策一）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "adr_decision",
+      "target": {
+        "document": "eng-adr-0025",
+        "section": "决策一：一次构建 = 一个不可变版本"
+      }
+    },
+    {
+      "id": "eng-0027-04",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "2. 只有三种边型",
+      "evidence": "不是结构关系，见决策 3。",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "3. 只认文档显式表达，不按相似度猜边"
+      },
+      "note": "同文档 + 「决策 N」定位符。抽取器只认「本文第 N 节」"
+    },
+    {
+      "id": "eng-0027-05",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "2. 只有三种边型",
+      "evidence": "「参见《X》第 2.4 节」「本文件第三节」、Markdown 链接、同文档锚点 |",
+      "label": "noise",
+      "form": "same_doc",
+      "form_detail": "syntax_example",
+      "note": "表格里的**格式示例**（列头是「例子」）。抽取器会在这里建出一条真边——把示例当成真引用，正是本票要抓的误报"
+    },
+    {
+      "id": "eng-0027-06",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "3. 只认文档显式表达，不按相似度猜边",
+      "evidence": "「参见《X》第 N 节」「本文件第三节」、Markdown 链接、同文档锚点。",
+      "label": "noise",
+      "form": "same_doc",
+      "form_detail": "syntax_example",
+      "note": "同上，第二次列举格式；源节与目标同节，抽取器即使认出来也是自环保守丢弃"
+    },
+    {
+      "id": "eng-0027-07",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "3. 只认文档显式表达，不按相似度猜边",
+      "evidence": "ADR-0025 的 `ready` 闸门",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用，没有节定位符——节点是节，表达不了"
+    },
+    {
+      "id": "eng-0027-08",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "4. 只做候选，不做裁决",
+      "evidence": "ADR-0013 决策 6）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "adr_decision",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "6. over-fetch 补足条数"
+      }
+    },
+    {
+      "id": "eng-0027-09",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "5. 跨库边允许存在，注入时按请求范围过滤",
+      "evidence": "「详见《另一个库的规则》2.4 节」",
+      "label": "noise",
+      "form": "title_section",
+      "form_detail": "quoted_example",
+      "note": "举例（说明跨库解析不到目标），不是本节依赖；《另一个库的规则》不在本库"
+    },
+    {
+      "id": "eng-0027-10",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "5. 跨库边允许存在，注入时按请求范围过滤",
+      "evidence": "按决策 3「目标歧义",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "3. 只认文档显式表达，不按相似度猜边"
+      }
+    },
+    {
+      "id": "eng-0027-11",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "5. 跨库边允许存在，注入时按请求范围过滤",
+      "evidence": "（见翻案条件），而不是把表约束收紧",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "relative_heading",
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "翻案条件",
+        "path": "0027. 图谱只建节级边、只做候选不做裁决 > 翻案条件"
+      }
+    },
+    {
+      "id": "eng-0027-12",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "被否掉的方案",
+      "evidence": "交付单元是节（ADR-0013）",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "eng-0027-13",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "被否掉的方案",
+      "evidence": "见决策 4：那是让图谱裁决相关性",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "4. 只做候选，不做裁决"
+      }
+    },
+    {
+      "id": "eng-0027-14",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "被否掉的方案",
+      "evidence": "等真需要多跳再说（见翻案条件）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "relative_heading",
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "翻案条件",
+        "path": "0027. 图谱只建节级边、只做候选不做裁决 > 翻案条件"
+      }
+    },
+    {
+      "id": "eng-0027-15",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "被否掉的方案",
+      "evidence": "越权该在查询侧堵（决策 5）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "target": {
+        "document": "eng-adr-0027",
+        "section": "5. 跨库边允许存在，注入时按请求范围过滤"
+      }
+    },
+    {
+      "id": "eng-0027-16",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "影响范围",
+      "evidence": "与切片写进**同一个版本**（ADR-0025）",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "eng-0027-17",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "翻案条件（开关归属）",
+      "evidence": "这是与决策二（`score = 0`，相关性交给重排）直接冲突的一步",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "note": "定位符与括注自相矛盾：「决策二」在本文是「只有三种边型」，而 `score = 0` 在决策 4。看不懂就不建边（ADR-0027 决策 3）"
+    },
+    {
+      "id": "eng-0027-18",
+      "tier": "engineering",
+      "document": "eng-adr-0027",
+      "source_section": "3. 只认文档显式表达，不按相似度猜边",
+      "evidence": "或「第三节」在两篇里都成立",
+      "label": "noise",
+      "form": "other",
+      "form_detail": "syntax_example",
+      "note": "裸节号示例，且抽取器本来就不认裸节号"
+    },
+    {
+      "id": "eng-0028-01",
+      "tier": "engineering",
+      "document": "eng-adr-0028",
+      "source_section": "1. 内核 = 六步，边界写死",
+      "evidence": "三种检索方式与 Research 都要吃（ADR-0027）。",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用。它真正指的那一节在 0027 的「落法」里，但引用本身没写定位符"
+    },
+    {
+      "id": "eng-0028-02",
+      "tier": "engineering",
+      "document": "eng-adr-0028",
+      "source_section": "4. 形态：一个内核，两个调用方",
+      "evidence": "不各长一套（ADR-0008 的同一形状）",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "eng-0028-03",
+      "tier": "engineering",
+      "document": "eng-adr-0028",
+      "source_section": "被否掉的方案",
+      "evidence": "见背景四条：每条子查询再改写一次",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "relative_heading",
+      "target": {
+        "document": "eng-adr-0028",
+        "section": "背景"
+      }
+    },
+    {
+      "id": "eng-0028-04",
+      "tier": "engineering",
+      "document": "eng-adr-0028",
+      "source_section": "被否掉的方案",
+      "evidence": "这与 ADR-0024 删同步栈是同一条理由",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "eng-0028-05",
+      "tier": "engineering",
+      "document": "eng-adr-0028",
+      "source_section": "被否掉的方案",
+      "evidence": "（ADR-0013「备选方案」最后一条）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "adr_quoted_heading",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "备选方案"
+      },
+      "note": "「ADR 编号 + 引号里的节标题」：真实文档的另一种指节写法"
+    },
+    {
+      "id": "eng-0028-06",
+      "tier": "engineering",
+      "document": "eng-adr-0028",
+      "source_section": "被否掉的方案",
+      "evidence": "折叠是交付口径的一部分（ADR-0013：小片算分、大块交付）",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "括注是内容转述（不是标题原文），落不到具体一节"
+    },
+    {
+      "id": "eng-0013-01",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "0013. 一条检索结果代表一节，而不是一个切片",
+      "evidence": "两个折叠开关的归属已由第 7 步修订改为「密钥配置」，见文末「后续修订（第 7 步）」",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "relative_heading",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "后续修订（第 7 步，#73，2026-11-10）：折叠开关改由密钥配置提供"
+      },
+      "note": "「文末 + 标题前缀」：人一眼能落地，机械匹配没有这条规则"
+    },
+    {
+      "id": "eng-0013-02",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "0013. 一条检索结果代表一节，而不是一个切片",
+      "evidence": "（#143 / #156）登记，见文末「后续修订（第 11 步）」",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "relative_heading",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "后续修订（第 11 步，#143 / #156）：响应里的 `section_id` 有两种含义，别混"
+      }
+    },
+    {
+      "id": "eng-0013-03",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "背景",
+      "evidence": "ADR-0012 的解法是给结果**附加**",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "eng-0013-04",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "1. 折叠：用小片算分，用大块交付",
+      "evidence": "（分级，见下）",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "relative_pointer",
+      "note": "「见下」：相对位置，没有可解析的定位符"
+    },
+    {
+      "id": "eng-0013-05",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后续修订（第 11 步，#143 / #156）：响应里的 `section_id` 有两种含义，别混",
+      "evidence": "决策 2 说「身份是 `section_id`」",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "2. 身份是 `section_id`，`chunk_id` 降级为代表片"
+      }
+    },
+    {
+      "id": "eng-0013-06",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后续修订（第 7 步，#73，2026-11-10）：折叠开关改由密钥配置提供",
+      "evidence": "**本文「后果」一节里「要旧体积传 `include_parent=false`」",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "relative_heading",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "后果",
+        "path": "0013. 一条检索结果代表一节，而不是一个切片 > 后果"
+      },
+      "note": "「后果」在本文有两节（顶层一节、第 7 步修订下一节），靠「本文」+ 位置无歧义，但按标题一对两节就是歧义"
+    },
+    {
+      "id": "eng-0013-07",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后果",
+      "source_section_path": "0013. 一条检索结果代表一节，而不是一个切片 > 后续修订（第 7 步，#73，2026-11-10）：折叠开关改由密钥配置提供 > 后果",
+      "evidence": "与本文「后果」一节那两句话冲突之处以此节为准",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "relative_heading",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "后果",
+        "path": "0013. 一条检索结果代表一节，而不是一个切片 > 后果"
+      }
+    },
+    {
+      "id": "eng-0013-08",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后续修订（第 7 步，#73，2026-11-10）：折叠开关改由密钥配置提供",
+      "evidence": "（见 [ADR-0010](0010-retrieval-contract.md)「第三次修订」）",
+      "label": "explicit",
+      "form": "markdown_link",
+      "form_detail": "link_quoted_heading",
+      "target": {
+        "document": "eng-adr-0010",
+        "section": "第三次修订（第 7 步，#73，2026-11-10）：请求只剩两个字段"
+      },
+      "note": "链接只指到文件，节靠链接**外面**的引号标题给出。抽取器会把它解成整篇（落到 0010 的 h1 元信息块）"
+    },
+    {
+      "id": "eng-0013-09",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后续修订（第 7 步，#73，2026-11-10）：折叠开关改由密钥配置提供",
+      "evidence": "决策 1–6 与「以小片算分、以大块交付」的主干一律不变",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "range_reference",
+      "note": "范围引用（决策 1–6）：目标不是一个节；而父节「决策」只有标题、无正文，不在目录里"
+    },
+    {
+      "id": "eng-0013-10",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后续修订（第 11 步，#143 / #156）：响应里的 `section_id` 有两种含义，别混",
+      "evidence": "（#143，见 [ADR-0025](0025-index-as-build-artifact.md) 决策五）",
+      "label": "explicit",
+      "form": "markdown_link",
+      "form_detail": "link_decision",
+      "target": {
+        "document": "eng-adr-0025",
+        "section": "决策五：节的身份证不含版本"
+      },
+      "note": "链接 + 链接外面的「决策五」"
+    },
+    {
+      "id": "eng-0013-11",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "备选方案",
+      "evidence": "**继续用 ADR-0012 的附加字段**：否决。",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "整篇引用（且 0012 已被取代）"
+    },
+    {
+      "id": "eng-0013-12",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "0013. 一条检索结果代表一节，而不是一个切片",
+      "evidence": "ADR-0012「装饰字段（已取代）」",
+      "label": "noise",
+      "form": "other",
+      "form_detail": "superseded",
+      "note": "「已取代」语境：提到是为了说明它不适用。真实工程文档里这一类出现在「相关」行，形态是纯文本、不建边"
+    },
+    {
+      "id": "pol-p01-01",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第一节 适用范围",
+      "evidence": "以《会员权益与积分细则》为准",
+      "label": "ambiguous",
+      "form": "title_section",
+      "form_detail": "document_level",
+      "note": "「以…为准」是政策最常见的跨文档引用，但只指到文件、不指到节"
+    },
+    {
+      "id": "pol-p01-02",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第一节 适用范围",
+      "evidence": "以单独签署的采购合同为准",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "目标不在库里（采购合同不是知识库文档）"
+    },
+    {
+      "id": "pol-p01-03",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第二节 定义与解释",
+      "evidence": "按《会员权益与积分细则》第 2 条的解释执行",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "title_clause",
+      "target": {
+        "document": "pol-p02",
+        "section": "第 2 条 积分抵扣与上限"
+      }
+    },
+    {
+      "id": "pol-p01-04",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第一节 等级与积分",
+      "evidence": "等级划分与保级规则由《会员权益与积分细则》规定",
+      "label": "ambiguous",
+      "form": "title_section",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "pol-p01-05",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第一节 等级与积分",
+      "evidence": "按《会员权益与积分细则》第 2 条执行",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "title_clause",
+      "target": {
+        "document": "pol-p02",
+        "section": "第 2 条 积分抵扣与上限"
+      }
+    },
+    {
+      "id": "pol-p01-06",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第二节 优惠券",
+      "evidence": "以《优惠券与促销规则》为准",
+      "label": "ambiguous",
+      "form": "title_section",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "pol-p01-07",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第一节 退款条件",
+      "evidence": "详见第三章第二节",
+      "label": "explicit",
+      "form": "chinese_ordinal",
+      "form_detail": "chapter_section",
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      },
+      "note": "章-节双层（票面点名的便宜缺口之一），且章只是标题层、不是节"
+    },
+    {
+      "id": "pol-p01-08",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第一节 退款条件",
+      "evidence": "见[退款流程](#第二节-退款流程)",
+      "label": "explicit",
+      "form": "anchor",
+      "form_detail": "anchor_section_title",
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      },
+      "note": "同文档锚点，锚点文本就是标题原文（这是抽取器唯一支持的同文档定位）"
+    },
+    {
+      "id": "pol-p01-09",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第二节 退款流程",
+      "evidence": "凭证要求见附件：《退款凭证清单》",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "attachment",
+      "note": "「见附件」：附件是文档，不是节；且附件文档不在本库"
+    },
+    {
+      "id": "pol-p01-10",
+      "tier": "policy",
+      "document": "pol-p01",
+      "source_section": "第三节 争议处理",
+      "evidence": "按《会员权益与积分细则》第 4 条提交仲裁",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "title_clause",
+      "target": {
+        "document": "pol-p02",
+        "section": "第 4 条 等级判定与保级"
+      }
+    },
+    {
+      "id": "pol-p02-01",
+      "tier": "policy",
+      "document": "pol-p02",
+      "source_section": "第 2 条 积分抵扣与上限",
+      "evidence": "分摊口径见第 3 条",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "bare_clause",
+      "note": "裸条号：本文还是别处？与 ADR-0027 对「第 3 节」的弃权口径一致"
+    },
+    {
+      "id": "pol-p02-02",
+      "tier": "policy",
+      "document": "pol-p02",
+      "source_section": "第 3 条 积分在退款时的处理",
+      "evidence": "两者的差别见第 5 条",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "bare_clause",
+      "note": "裸条号"
+    },
+    {
+      "id": "pol-p02-03",
+      "tier": "policy",
+      "document": "pol-p02",
+      "source_section": "第 4 条 等级判定与保级",
+      "evidence": "按《会员服务协议（2026 年修订）》第三章第二节执行",
+      "label": "explicit",
+      "form": "chinese_ordinal",
+      "form_detail": "chapter_section",
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      }
+    },
+    {
+      "id": "pol-p02-04",
+      "tier": "policy",
+      "document": "pol-p02",
+      "source_section": "第 4 条 等级判定与保级",
+      "evidence": "叠加顺序见第２条第二款",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "fullwidth_clause",
+      "note": "全角数字 + 裸条号 + 「款」（比节还细一级）"
+    },
+    {
+      "id": "pol-p02-05",
+      "tier": "policy",
+      "document": "pol-p02",
+      "source_section": "第 5 条 已使用积分与失效积分",
+      "evidence": "另按第 4 条计算",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "bare_clause",
+      "note": "裸条号"
+    },
+    {
+      "id": "pol-p03-01",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 1 条 优惠券的类型与叠加",
+      "evidence": "见本政策第 4 条",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "policy_clause",
+      "target": {
+        "document": "pol-p03",
+        "section": "第 4 条 优惠券与积分的叠加"
+      },
+      "note": "同文档限定语写成「本政策」——抽取器的限定语只有「本文件 / 本文 / 本篇」"
+    },
+    {
+      "id": "pol-p03-02",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 3 条 优惠券在退款时的处理",
+      "evidence": "按《会员服务协议（2026 年修订）》第三章第二节执行",
+      "label": "explicit",
+      "form": "chinese_ordinal",
+      "form_detail": "chapter_section",
+      "target": {
+        "document": "pol-p01",
+        "section": "第二节 退款流程"
+      }
+    },
+    {
+      "id": "pol-p03-03",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 3 条 优惠券在退款时的处理",
+      "evidence": "参见本文第 2 条",
+      "label": "explicit",
+      "form": "same_doc",
+      "form_detail": "same_doc_clause",
+      "target": {
+        "document": "pol-p03",
+        "section": "第 2 条 满减与折扣的计算口径"
+      },
+      "note": "限定语对（本文）、后缀不对（条 vs 节）"
+    },
+    {
+      "id": "pol-p03-04",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 4 条 优惠券与积分的叠加",
+      "evidence": "按《会员权益与积分细则》第 2 条执行",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "title_clause",
+      "target": {
+        "document": "pol-p02",
+        "section": "第 2 条 积分抵扣与上限"
+      }
+    },
+    {
+      "id": "pol-p03-05",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 4 条 优惠券与积分的叠加",
+      "evidence": "积分在退款时的返还口径见《会员权益与积分细则》第 3 条",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "title_clause",
+      "target": {
+        "document": "pol-p02",
+        "section": "第 3 条 积分在退款时的处理"
+      }
+    },
+    {
+      "id": "pol-p03-06",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 5 条 活动期间的特殊约定",
+      "evidence": "以活动页公告为准",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "目标不在库（活动页是外部页面）"
+    },
+    {
+      "id": "pol-p03-07",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 5 条 活动期间的特殊约定",
+      "evidence": "按第 1 条载明的有效期自然失效",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "bare_clause",
+      "note": "裸条号"
+    },
+    {
+      "id": "pol-p03-08",
+      "tier": "policy",
+      "document": "pol-p03",
+      "source_section": "第 5 条 活动期间的特殊约定",
+      "evidence": "原《优惠券使用细则》第 2 条已废止，不再适用",
+      "label": "noise",
+      "form": "other",
+      "form_detail": "deprecated",
+      "note": "「已废止 / 不再适用」：提到是为了说明它不适用；目标文档也不在本库，所以这一类在本档不会长成误报"
+    },
+    {
+      "id": "pol-p04-01",
+      "tier": "policy",
+      "document": "pol-p04",
+      "source_section": "第 1 节 适用范围与术语",
+      "evidence": "会员服务的可用性承诺见《会员服务协议（2026 年修订）》",
+      "label": "ambiguous",
+      "form": "title_section",
+      "form_detail": "document_level",
+      "note": "整篇引用"
+    },
+    {
+      "id": "pol-p04-02",
+      "tier": "policy",
+      "document": "pol-p04",
+      "source_section": "第 1 节 适用范围与术语",
+      "evidence": "两份文件的口径不一致时，以本文件为准",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "「本文件为准」= 整篇（自指），不是某一节"
+    },
+    {
+      "id": "pol-p04-03",
+      "tier": "policy",
+      "document": "pol-p04",
+      "source_section": "第 2 节 可用性的计算方式",
+      "evidence": "计费口径与赔偿基数见第 3 节",
+      "label": "ambiguous",
+      "form": "same_doc",
+      "form_detail": "bare_section",
+      "note": "裸节号（这是抽取器「故意不认」的那一类）"
+    },
+    {
+      "id": "pol-p04-04",
+      "tier": "policy",
+      "document": "pol-p04",
+      "source_section": "第 3 节 赔偿标准",
+      "evidence": "赔偿的申请时限与材料要求见第 4 节",
+      "label": "ambiguous",
+      "form": "same_doc",
+      "form_detail": "bare_section",
+      "note": "裸节号"
+    },
+    {
+      "id": "pol-p04-05",
+      "tier": "policy",
+      "document": "pol-p04",
+      "source_section": "第 3 节 赔偿标准",
+      "evidence": "本文件第４节末尾附有材料清单",
+      "label": "explicit",
+      "form": "same_doc",
+      "form_detail": "fullwidth_section",
+      "target": {
+        "document": "pol-p04",
+        "section": "第 4 节 赔偿的申请与免责"
+      },
+      "note": "限定语对、后缀对，**全角数字**不对（票面点名的便宜缺口）"
+    },
+    {
+      "id": "pol-p04-06",
+      "tier": "policy",
+      "document": "pol-p04",
+      "source_section": "第 4 节 赔偿的申请与免责",
+      "evidence": "免责事由的认定以本文件第 1 节的术语定义为准",
+      "label": "explicit",
+      "form": "same_doc",
+      "form_detail": "same_doc_section",
+      "target": {
+        "document": "pol-p04",
+        "section": "第 1 节 适用范围与术语"
+      },
+      "note": "写法完全在抽取器的规则内，但标题写成「第 N 节 X」而不是「N. X」——节号解析不到"
+    },
+    {
+      "id": "pol-p04-07",
+      "tier": "policy",
+      "document": "pol-p04",
+      "source_section": "第 5 节 附则",
+      "evidence": "本文件与采购合同冲突时，以采购合同为准",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "document_level",
+      "note": "目标不在库"
+    },
+    {
+      "id": "pol-p05-01",
+      "tier": "policy",
+      "document": "pol-p05",
+      "source_section": "Section 1 Scope",
+      "evidence": "set out in Section 2",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "english_section",
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 2 Availability"
+      }
+    },
+    {
+      "id": "pol-p05-02",
+      "tier": "policy",
+      "document": "pol-p05",
+      "source_section": "Section 1 Scope",
+      "evidence": "the compensation schedule is described in Section 3",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "english_section",
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 3 Compensation"
+      }
+    },
+    {
+      "id": "pol-p05-03",
+      "tier": "policy",
+      "document": "pol-p05",
+      "source_section": "Section 2 Availability",
+      "evidence": "See Section 4 for the claims process",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "english_section",
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 4 Claims and Exclusions"
+      }
+    },
+    {
+      "id": "pol-p05-04",
+      "tier": "policy",
+      "document": "pol-p05",
+      "source_section": "Section 3 Compensation",
+      "evidence": "The cap described in Section 2 applies to every claim",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "english_section",
+      "target": {
+        "document": "pol-p05",
+        "section": "Section 2 Availability"
+      }
+    },
+    {
+      "id": "pol-p05-05",
+      "tier": "policy",
+      "document": "pol-p05",
+      "source_section": "Section 4 Claims and Exclusions",
+      "evidence": "The exclusions listed in Section 1 of the SLA terms",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "english_section",
+      "target": {
+        "document": "pol-p04",
+        "section": "第 1 节 适用范围与术语"
+      }
+    },
+    {
+      "id": "min-m01-01",
+      "tier": "minutes",
+      "document": "min-m01",
+      "source_section": "1. 上周遗留",
+      "evidence": "见上周那份纪要",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型：只有「上周那份」，没有文档名、没有节号"
+    },
+    {
+      "id": "min-m01-02",
+      "tier": "minutes",
+      "document": "min-m01",
+      "source_section": "1. 上周遗留",
+      "evidence": "按上次说的那样",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型"
+    },
+    {
+      "id": "min-m01-03",
+      "tier": "minutes",
+      "document": "min-m01",
+      "source_section": "2. 退款与优惠券的交叉口径",
+      "evidence": "附上上周那份客服数据",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型（附件也没有名字）"
+    },
+    {
+      "id": "min-m01-04",
+      "tier": "minutes",
+      "document": "min-m01",
+      "source_section": "3. 灰度节奏",
+      "evidence": "指标定义在上次的运维评审里过过一次",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型"
+    },
+    {
+      "id": "min-m01-05",
+      "tier": "minutes",
+      "document": "min-m01",
+      "source_section": "3. 灰度节奏",
+      "evidence": "回滚步骤按运维手册来",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型（「运维手册」不在库，也没说哪一节）"
+    },
+    {
+      "id": "min-m01-06",
+      "tier": "minutes",
+      "document": "min-m01",
+      "source_section": "4. 待办",
+      "evidence": "按上周确定的说法写",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型"
+    },
+    {
+      "id": "min-m01-07",
+      "tier": "minutes",
+      "document": "min-m01",
+      "source_section": "5. 下次会议",
+      "evidence": "议题按上面第 2 条遗留的问题排",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "bare_clause",
+      "note": "相对位置（上面）+ 条号：不是节的写法，且「上面」在分块之后没有位置信息"
+    },
+    {
+      "id": "min-m02-01",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "1. 本次发布范围",
+      "evidence": "灰度的放量节奏见《产品周会纪要（2026-11-03）》第 3 节",
+      "label": "explicit",
+      "form": "title_section",
+      "form_detail": "title_section",
+      "target": {
+        "document": "min-m01",
+        "section": "3. 灰度节奏"
+      },
+      "note": "纪要里偶尔出现的正式写法——这是本档唯一一条抽取器能建的边"
+    },
+    {
+      "id": "min-m02-02",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "1. 本次发布范围",
+      "evidence": "排序口径仍按上次评审说的那一版",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型"
+    },
+    {
+      "id": "min-m02-03",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "2. 风险与回滚",
+      "evidence": "三个看板的定义在上一次的运维评审里过了",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型"
+    },
+    {
+      "id": "min-m02-04",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "2. 风险与回滚",
+      "evidence": "负责人按上次分工来",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型"
+    },
+    {
+      "id": "min-m02-05",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "3. 测试结论",
+      "evidence": "参照上个月那份环境对比表",
+      "label": "implicit",
+      "form": "other",
+      "form_detail": "pronoun",
+      "note": "指代型"
+    },
+    {
+      "id": "min-m02-06",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "3. 测试结论",
+      "evidence": "那张表已经作废，只看第二版",
+      "label": "noise",
+      "form": "other",
+      "form_detail": "deprecated",
+      "note": "「已作废」语境（同时也是指代型）"
+    },
+    {
+      "id": "min-m02-07",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "4. 遗留与待办",
+      "evidence": "阈值来源按第 2 条的三块看板",
+      "label": "ambiguous",
+      "form": "other",
+      "form_detail": "bare_clause",
+      "note": "裸条号"
+    },
+    {
+      "id": "min-m02-08",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "4. 遗留与待办",
+      "evidence": "本纪要第 1 条的结论需要在下次周会复核一次",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "policy_clause",
+      "target": {
+        "document": "min-m02",
+        "section": "1. 本次发布范围"
+      },
+      "note": "限定语写成「本纪要」——不在抽取器的限定语表里"
+    },
+    {
+      "id": "min-m02-09",
+      "tier": "minutes",
+      "document": "min-m02",
+      "source_section": "4. 遗留与待办",
+      "evidence": "《产品周会纪要（2026-11-03）》第 4 节的待办已全部关闭，本次不再追踪",
+      "label": "noise",
+      "form": "title_section",
+      "form_detail": "deprecated_context",
+      "note": "「已全部关闭 / 不再追踪」语境：提到是为了说明它不用再跟。这一条会被抽出器建出一条边——否定语境专项的那条误报"
+    },
+    {
+      "id": "eng-0013-13",
+      "tier": "engineering",
+      "document": "eng-adr-0013",
+      "source_section": "后果",
+      "evidence": "（决策 6）",
+      "label": "explicit",
+      "form": "other",
+      "form_detail": "same_doc_decision",
+      "target": {
+        "document": "eng-adr-0013",
+        "section": "6. over-fetch 补足条数"
+      },
+      "note": "作者指向本文第 6 条决策。**本条是测量中发现的标注遗漏**（重测把它算成了 FP），补的依据是原文「（决策 6）」+ 本文标题清单「6. over-fetch 补足条数」，不是依据抽取器输出。"
+    }
+  ]
+}

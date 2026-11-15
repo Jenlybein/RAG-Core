@@ -20,7 +20,7 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_serializer
 
 from app.core.exceptions import AppError, ErrorCode
 
@@ -106,6 +106,24 @@ class RetrievedChunk(BaseModel):
     doc_version: int | None = None
     # 这一片是用哪种策略切的：跨库检索时用来解释片长差异。
     split_strategy: str | None = None
+    # 折叠关闭时的父节正文（#144 / ADR-0027 决策 7）：交付单元小于「节」时补上，
+    # **不改分数、不改排名，只附加内容**。``content`` 仍是切片原文（ADR-0012 决策 3），
+    # 父节正文单独一栏是为了不破坏「引用能指回那一片」。
+    parent_content: str | None = None
+
+    @model_serializer(mode="wrap")
+    def _omit_absent_parent_content(self, handler: Any) -> dict[str, Any]:
+        """没补父节时，这个键**连存在都不存在**。
+
+        ``null`` 也是一个字节：「关闭时响应逐字节不变」是红线上的一句话，所以这里显式
+        摘掉——与 ``metadata`` 摘 ``trace_id``、重排身份键那两次修订同一条纪律。
+        """
+
+        dumped = handler(self)
+        for name in ("parent_content",):
+            if dumped.get(name) is None:
+                dumped.pop(name, None)
+        return dumped
 
 
 class RetrieveData(BaseModel):
@@ -113,3 +131,4 @@ class RetrieveData(BaseModel):
     kb_ids: list[str]
     retrieved_chunks: list[RetrievedChunk]
     metadata: dict
+

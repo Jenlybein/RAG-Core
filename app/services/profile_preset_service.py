@@ -51,7 +51,10 @@ ACTION_PROFILE_UPDATE: Final[str] = "profile.update"
 
 def _spec_of(row: ProfilePreset) -> ProfilePresetSpec:
     return ProfilePresetSpec(
-        mode=row.mode, top_k=row.top_k, rerank=bool(row.rerank), rewrite=bool(row.rewrite)
+        mode=row.mode,
+        top_k=row.top_k,
+        rerank=bool(row.rerank),
+        rewrite=bool(row.rewrite),
     )
 
 
@@ -148,7 +151,11 @@ async def patch_preset(
         # 而原因只是迁移漏了播种。
         seed = DEFAULT_PRESETS[profile]
         row = ProfilePreset(
-            profile=profile, mode=seed.mode, top_k=seed.top_k, rerank=seed.rerank, rewrite=seed.rewrite
+            profile=profile,
+            mode=seed.mode,
+            top_k=seed.top_k,
+            rerank=seed.rerank,
+            rewrite=seed.rewrite,
         )
         db.add(row)
 

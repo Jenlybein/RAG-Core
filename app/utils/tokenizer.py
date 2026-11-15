@@ -11,6 +11,12 @@
 **词表是必需资产，缺失即拒绝启动**：切块结果由词表决定，缺词表就只能换近似词表，
 而近似会让同一个库在不同部署上切出不同的片——那种差异是静默的，比直接失败难查
 一个数量级。这与 `pdf-inspector` 的失败二分是同一个原则：部署问题不伪装成质量判断。
+
+**正文里的特殊 token 字面量按数据处理（#160）**：`_SPECIAL_TOKENS` 是为了让 id 与 Qwen 词表对齐，
+但文档正文里出现 `<|endoftext|>` 这类字面量是**正常内容**（技术文档讲提示词时经常提到它）。
+所以两处编码调用都传 `disallowed_special=()`：正文永远被当数据编码，绝不让它变成控制信号。
+这条与「词表缺失即拒绝启动」同一条纪律的两面——**该严的地方严（缺词表不许启动），
+该松的地方松（正文里的字面量是数据）**。
 """
 
 from __future__ import annotations
@@ -108,7 +114,7 @@ def token_count(text: str) -> int:
         encoding = _encoding()
     chunk = 100_000
     return sum(
-        len(encoding.encode(text[index : index + chunk]))
+        len(encoding.encode(text[index : index + chunk], disallowed_special=()))
         for index in range(0, len(text), chunk)
     )
 
@@ -123,7 +129,7 @@ def encode_ids(text: str) -> list[int]:
     chunk = 100_000
     ids: list[int] = []
     for index in range(0, len(text), chunk):
-        ids.extend(encoding.encode(text[index : index + chunk]))
+        ids.extend(encoding.encode(text[index : index + chunk], disallowed_special=()))
     return ids
 
 

@@ -20,10 +20,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
-
-from app.models.chunk import default_index_versions
 
 
 def _score(row: dict) -> float:
@@ -74,7 +72,7 @@ async def vector_recall(
     *,
     db: Any,
     tenant_id: str,
-    kb_ids: list[str],
+    index_versions: Mapping[str, str],
     queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
@@ -82,6 +80,11 @@ async def vector_recall(
     single_query_order: Literal["stable", "tiebreak"] = "stable",
 ) -> list[dict]:
     """每句各嵌一次、各做一次范围召回，并成一个池后截到 ``top_k``。
+
+    ``index_versions`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
+    这里不再自己造一份。范围由「一次调用」决定（索引即构建产物之后还要读库里的生效
+    版本，那是每次调用一次的事），而本函数会被多查询各调一次——两处各造一遍，
+    「这次查的是哪个版本」就有了两个来源。
 
     单句时**仍走旧的快路径**：一次 ``embed_query``、一次 ``similarity_search_scope``，
     调用次数与逐字节响应都不变。排序口径由 ``single_query_order`` 选，因为历史上
@@ -101,7 +104,6 @@ async def vector_recall(
     if not queries:
         return []
 
-    index_versions = default_index_versions(kb_ids)
     provider = embedding_factory()
     store = vector_factory()
 
@@ -113,7 +115,7 @@ async def vector_recall(
                 query_vector,
                 tenant_id=tenant_id,
                 # 映射而不是两个平行数组：配对关系只能从映射里读出来。
-                index_versions=index_versions,
+                index_versions=dict(index_versions),
                 top_k=top_k,
             )
             for query_vector in vectors

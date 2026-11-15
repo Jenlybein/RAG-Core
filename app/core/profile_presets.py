@@ -37,7 +37,7 @@ logger = structlog.get_logger(__name__)
 
 @dataclass(frozen=True)
 class ProfilePresetSpec:
-    """一个档位的参数。字段与 ``profile_presets`` 的四个业务列一一对应。"""
+    """一个档位的参数。字段与 ``profile_presets`` 的业务列一一对应。"""
 
     mode: str
     top_k: int

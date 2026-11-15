@@ -642,6 +642,23 @@ def test_no_baseline_is_not_red_but_says_so() -> None:
     assert "基线" in gate["summary"]
 
 
+def test_a_dead_keyword_leg_has_its_own_verdict_label() -> None:
+    """关键词一路空跑的判定不能显示成「通过」的文案（票 #157 §②）。
+
+    这一类数字是「纯向量冒名的混检」：分数可能很好看，但门禁不能认。报告里的判定词
+    必须与「绿」「不可比」「无基线」都不同——否则读报告的人只会看到「居然没红」。
+    """
+
+    payload, _baseline = _gate_payload()
+    payload["gate"]["verdict"] = "keyword_leg_dead"
+    payload["gate"]["passed"] = False
+
+    report = render_report(payload)
+
+    assert "关键词一路空跑" in report
+    assert "绿（通过）" not in report
+
+
 def test_a_different_question_set_is_incomparable() -> None:
     """两侧题集不同（或一侧被 --limit 裁剪）时，任何差值都不成立。"""
 

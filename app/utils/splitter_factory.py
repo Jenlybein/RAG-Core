@@ -33,12 +33,18 @@ def build_splitter(
     chunk_size: int = DEFAULT_CHUNK_SIZE,
     chunk_overlap: int | None = None,
     table_max_rows: int | None = None,
+    document_id: str = "",
 ) -> TextSplitter:
     """按策略名构造切块器；未知策略回落到 ``structure``。
 
     回落而不是抛错：策略列有 CHECK 约束，正常路径不会出现非法值；真出现了
     （比如手工改库），带着默认策略继续索引比让整条链路失败更有用——切法不理想
     总好过文档永远进不了库。
+
+    ``document_id`` 进的是**节的身份证**（``stable_hash(文档 id : 标题路径)``，#143）：
+    它必须由调用方给「我在切哪一份文档」，因为切块器自己只能看见正文。索引流水线永远
+    传（有用例钉住这条接线）；评测 / 运维脚本只在自己进程里比较产物，可以不传——那时
+    id 退化成「只在本篇内可比」。``size`` 策略不产 ``section_id``，这个参数对它无意义。
     """
 
     from app.core.config import settings
@@ -54,4 +60,5 @@ def build_splitter(
         chunk_size=chunk_size,
         chunk_overlap=overlap,
         table_max_rows=max_rows,
+        document_id=document_id,
     )
