@@ -75,6 +75,20 @@ def test_checksum_is_a_64_hex_sha256() -> None:
     assert digest == SHA256_OF_REFUND_SENTENCE
 
 
+def test_the_version_row_column_is_wide_enough_for_the_digest() -> None:
+    """版本行的 ``checksum`` 列装得下摘要本身：宽度与摘要长度**同一来源**。
+
+    这两个数字曾经各写一份（模型的 ``CHECKSUM_LENGTH`` 与 :mod:`app.utils.checksum` 的
+    ``CHECKSUM_HEX_LENGTH``），改口径时只会改到一边——症状是写入被截断、或迁移与模型的列宽
+    不一致，而两者都不报错。断言取「摘要真的有多长」，不是再写一个 64。
+    """
+
+    from app.models.document_version import DocumentVersion
+
+    column = DocumentVersion.__table__.c.checksum
+    assert column.type.length == len(checksum_of(REFUND_SENTENCE))
+
+
 def test_the_same_content_written_differently_yields_one_checksum() -> None:
     """同一份正文的三种写法（Windows 换行 / 首尾空白 / 两者叠加）只有一个校验和。"""
 

@@ -36,14 +36,12 @@ from sqlalchemy import CheckConstraint, DateTime, Integer, String, Text, UniqueC
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, now
+from app.utils.checksum import CHECKSUM_HEX_LENGTH
 
 #: 状态：这一稿是文档的当前稿。
 DOCUMENT_VERSION_CURRENT = "current"
 #: 状态：这一稿已经被新稿取代（保留窗口内仍可回滚 / 只读直查）。
 DOCUMENT_VERSION_ARCHIVED = "archived"
-
-#: 校验和列的长度：``sha256`` 的十六进制位数（与 :mod:`app.utils.checksum` 同一口径）。
-CHECKSUM_LENGTH = 64
 
 
 class DocumentVersion(Base):
@@ -71,7 +69,9 @@ class DocumentVersion(Base):
     # 重解析用的源文件；JSON 上传的文档没有源文件，因此可空。
     source_file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     # 规范化后的正文的 sha256（唯一入口 app.utils.checksum）。判重、回滚与对账都读它。
-    checksum: Mapped[str] = mapped_column(String(CHECKSUM_LENGTH), nullable=False)
+    # 列长直接取那边的常量（``CHECKSUM_HEX_LENGTH``）：两个 64 各写一份的那一年，改口径时
+    # 只会改到一边，而症状是「写入时太长被截断 / 迁移里宽度不一致」。
+    checksum: Mapped[str] = mapped_column(String(CHECKSUM_HEX_LENGTH), nullable=False)
     status: Mapped[str] = mapped_column(
         String(16),
         default=DOCUMENT_VERSION_CURRENT,
