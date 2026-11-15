@@ -80,24 +80,11 @@ ROLLBACK_PATH = "/console/documents/{document_id}/versions/{version}/rollback"
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
 
-class _ConsoleSession(RecordingSession):
-    """``RecordingSession`` + 「提交了几次」——写接口的事务边界是真的走了一遍生产实现。"""
-
-    def __init__(self, *, rows: dict[type, list[Any]], calls: list[str]) -> None:
-        super().__init__(rows=rows)
-        self.calls = calls
-
-    def commit(self) -> None:
-        super().commit()
-        self.calls.append("commit")
-
-
 @dataclass(frozen=True)
 class _Harness:
     client: TestClient
-    db: _ConsoleSession
+    db: RecordingSession
     enqueued: list[dict[str, Any]]
-    version_calls: list[str]
 
     def login(self, username: str, password: str) -> Any:
         return self.client.post("/console/login", json={"username": username, "password": password})
@@ -109,13 +96,6 @@ class _Harness:
 
     def audit_entries(self) -> list[AuditLog]:
         return [row for row in self.db.added if isinstance(row, AuditLog)]
-
-    def versions_of(self, document_id: str) -> list[DocumentVersion]:
-        return [
-            row
-            for row in self.db._rows.get(DocumentVersion, [])
-            if row.document_id == document_id
-        ]
 
     def document(self, document_id: str) -> Any:
         return next(doc for doc in self.db._rows.get(Document, []) if doc.id == document_id)
@@ -216,7 +196,9 @@ def _world() -> dict[type, list[Any]]:
             DOC_ALPHA,
             number,
             content=DRAFTS[number],
-            status=DOCUMENT_VERSION_CURRENT if number == CURRENT_DRAFT else DOCUMENT_VERSION_ARCHIVED,
+            status=DOCUMENT_VERSION_CURRENT
+            if number == CURRENT_DRAFT
+            else DOCUMENT_VERSION_ARCHIVED,
             created_at=datetime(2026, 11, number, 10, 0, 0),
         )
         for number in (3, 2, 1)
@@ -260,14 +242,11 @@ def versions(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     console_deps = importlib.import_module("app.api.console_deps")
     dispatch = importlib.import_module("app.services.index_dispatch")
 
-    calls: list[str] = []
-    session = _ConsoleSession(rows=_world(), calls=calls)
+    session = RecordingSession(rows=_world())
     cache = MemoryPlanCache()
     enqueued: list[dict[str, Any]] = []
-    version_calls: list[str] = []
 
     def _archive_except(_db: Any, document_id: str, *, keep: int) -> None:
-        version_calls.append(f"archive-except:{document_id}:{keep}")
         for row in session._rows.get(DocumentVersion, []):
             if (
                 row.document_id == document_id
@@ -277,7 +256,6 @@ def versions(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
                 row.status = DOCUMENT_VERSION_ARCHIVED
 
     def _mark_current(_db: Any, document_id: str, *, version: int) -> None:
-        version_calls.append(f"mark-current:{document_id}:{version}")
         for row in session._rows.get(DocumentVersion, []):
             if row.document_id == document_id and row.version == version:
                 row.status = DOCUMENT_VERSION_CURRENT
@@ -298,9 +276,7 @@ def versions(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         document_version_repository, "archive_current_except", _archive_except_async
     )
     monkeypatch.setattr(document_version_repository, "mark_current", _mark_current_async)
-    monkeypatch.setattr(
-        document_repository, "count_processing_for_tenant", _count_processing
-    )
+    monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing)
     # ``rollback_to_version`` 在 ``after_commit`` 回调里用**自己模块绑定的**
     # ``enqueue_document``（函数内 import）：换模块属性就是换它。
     monkeypatch.setattr(dispatch, "enqueue_document", _enqueue)
@@ -309,12 +285,7 @@ def versions(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     override_all_db(main.app, session)
     try:
         with TestClient(main.app) as client:
-            yield _Harness(
-                client=client,
-                db=session,
-                enqueued=enqueued,
-                version_calls=version_calls,
-            )
+            yield _Harness(client=client, db=session, enqueued=enqueued)
     finally:
         main.app.dependency_overrides.clear()
 
@@ -534,9 +505,7 @@ def test_rollback_without_the_anti_csrf_header_is_forbidden(versions: _Harness) 
 
     assert versions.login("alice", USER_PASSWORD).json()["code"] == 0
 
-    body = versions.client.post(
-        ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=1)
-    ).json()
+    body = versions.client.post(ROLLBACK_PATH.format(document_id=DOC_ALPHA, version=1)).json()
 
     assert body["code"] == ErrorCode.FORBIDDEN
     assert versions.document(DOC_ALPHA).current_version == CURRENT_DRAFT
@@ -551,6 +520,3 @@ def test_rollback_without_a_session_is_unauthorized(versions: _Harness) -> None:
     ).json()
 
     assert body["code"] == ErrorCode.UNAUTHORIZED
-
-
-
