@@ -25,12 +25,9 @@
 from __future__ import annotations
 
 import asyncio
-import importlib.util
-import sys
 from collections.abc import AsyncIterator, Sequence
 from datetime import datetime
 from pathlib import Path
-from types import ModuleType
 from typing import Any
 
 import pytest
@@ -40,6 +37,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
+from app.providers.keyword_search.noop import NoopKeywordSearchProvider
+from app.providers.keyword_search.query_builder import (
+    CURRENT_DRAFT_FIELD,
+    DOC_VERSION_FIELD,
+    build_current_draft_versions_query,
+)
 from app.repositories import chunk_repository, document_repository, document_version_repository
 from app.services import document_version_reconcile as reconcile_module
 from app.services.document_version_reconcile import (
@@ -469,4 +473,146 @@ async def test_the_reads_never_touch_a_column_the_model_does_not_declare(
     assert "chunks.doc_version" in sql
     assert "chunks.document_id" in sql
     assert "group by" in sql.lower()
+
+
+# ───────────────────────────── ③ 关键词那一维：provider 的只读能力（跨系统）
+
+
+
+def test_the_keyword_read_asks_only_this_tenants_current_draft_chunks() -> None:
+    """三个过滤条件都不能省：租户（ADR-0006）、``is_current``（#174）、这批文档。"""
+
+    payload = build_current_draft_versions_query(tenant_id=TENANT, document_ids=["doc-1"])
+
+    assert payload["size"] == 0, "只要聚合结果，不要命中行（文档多的时候那是几百 KB 正文）"
+    filters = payload["query"]["bool"]["filter"]
+    assert {"term": {"tenant_id": TENANT}} in filters
+    assert {"term": {CURRENT_DRAFT_FIELD: True}} in filters
+    assert {"terms": {"document_id": ["doc-1"]}} in filters
+    assert DOC_VERSION_FIELD in payload["aggs"]["documents"]["aggs"]["drafts"]["terms"]["field"]
+
+
+class _FakeSearchClient:
+    """只实现 ``search`` 的假客户端：记下实参，回一份可编排的响应。"""
+
+    def __init__(self, response: dict | None = None, *, error: BaseException | None = None) -> None:
+        self.calls: list[dict] = []
+        self._response = response or {}
+        self._error = error
+
+    async def search(self, **kwargs: Any) -> dict:
+        self.calls.append(kwargs)
+        if self._error is not None:
+            raise self._error
+        return self._response
+
+
+def _es_provider(client: Any) -> ElasticsearchKeywordSearchProvider:
+    return ElasticsearchKeywordSearchProvider(
+        url="http://es.example:9200", index_name="rag_chunks", client=client
+    )
+
+
+def _buckets(*pairs: tuple[str, Sequence[int]]) -> dict:
+    return {
+        "aggregations": {
+            "documents": {
+                "buckets": [
+                    {
+                        "key": document_id,
+                        # mapping 里 ``doc_version`` 是 keyword：桶的 key 是**字符串**。
+                        "drafts": {"buckets": [{"key": str(version)} for version in versions]},
+                    }
+                    for document_id, versions in pairs
+                ]
+            }
+        }
+    }
+
+
+def test_the_provider_returns_the_drafts_marked_current_per_document() -> None:
+    """``{document_id: [稿号…]}``：一篇正常只有一个，多于一个是分歧的现场（由判据判）。"""
+
+    client = _FakeSearchClient(_buckets(("doc-1", [2]), ("doc-2", [1])))
+
+    versions = asyncio.run(
+        _es_provider(client).current_draft_versions(
+            tenant_id=TENANT, document_ids=["doc-1", "doc-2"]
+        )
+    )
+
+    assert versions == {"doc-1": [2], "doc-2": [1]}
+    assert client.calls[0]["index"] == "rag_chunks", "查的是**别名**（线上那一份）"
+
+
+def test_a_document_outside_the_aggregation_is_absent_from_the_answer() -> None:
+    """一条「当前稿」切片都没标的文档**不出现在**答案里（判据按「空」解释它）。"""
+
+    client = _FakeSearchClient(_buckets(("doc-1", [2])))
+
+    versions = asyncio.run(
+        _es_provider(client).current_draft_versions(
+            tenant_id=TENANT, document_ids=["doc-1", "doc-2"]
+        )
+    )
+
+    assert versions == {"doc-1": [2]}
+    assert "doc-2" not in versions
+
+
+def test_an_empty_batch_does_not_send_a_query() -> None:
+    """空批次不发语句：``--limit 0`` 或空库不该换来一条 ``terms: []`` 的查询。"""
+
+    client = _FakeSearchClient(_buckets())
+
+    assert (
+        asyncio.run(
+            _es_provider(client).current_draft_versions(tenant_id=TENANT, document_ids=[])
+        )
+        == {}
+    )
+    assert client.calls == []
+
+
+def test_a_missing_alias_is_an_honest_empty_answer() -> None:
+    """索引还没建 = 关键词库里什么都没有（不是故障）：回空，判据按「没标」记信息项。"""
+
+    from elasticsearch import NotFoundError
+
+    client = _FakeSearchClient(error=NotFoundError(404, "no such index", {}))
+
+    assert (
+        asyncio.run(
+            _es_provider(client).current_draft_versions(
+                tenant_id=TENANT, document_ids=["doc-1"]
+            )
+        )
+        == {}
+    )
+
+
+def test_a_failing_read_is_raised_so_the_caller_can_call_it_undecidable() -> None:
+    """读不到就抛（不在这里吞）：调用方要把「能力在、这次读不到」与「能力不存在」分开打印。"""
+
+    client = _FakeSearchClient(error=RuntimeError("cluster is down"))
+
+    with pytest.raises(RuntimeError, match="cluster is down"):
+        asyncio.run(
+            _es_provider(client).current_draft_versions(
+                tenant_id=TENANT, document_ids=["doc-1"]
+            )
+        )
+
+
+def test_the_noop_provider_declares_the_capability_absent() -> None:
+    """空实现：能力不存在 → 这一维不可判定。它照旧实现方法（形状一致），但先看 ``available``。"""
+
+    provider = NoopKeywordSearchProvider()
+
+    assert provider.available is False
+    assert (
+        asyncio.run(provider.current_draft_versions(tenant_id=TENANT, document_ids=["doc-1"]))
+        == {}
+    )
+
 

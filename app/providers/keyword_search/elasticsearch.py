@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -21,8 +22,10 @@ from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.keyword_search.query_builder import (
+    CURRENT_DRAFT_VERSIONS_AGG,
     build_bm25_query,
     build_current_draft_update,
+    build_current_draft_versions_query,
     build_es_mapping,
     build_keyword_documents,
     build_mapping_update,
@@ -398,3 +401,42 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             )
         except NotFoundError:
             return None
+
+    async def current_draft_versions(
+        self, *, tenant_id: str, document_ids: Sequence[str]
+    ) -> dict[str, list[int]]:
+        """读回这批文档里**标成「当前稿」**的稿号（对账用，#179）。
+
+        一条两层聚合打完整批（先按文档分组、组内数稿号），因此**不取命中行**：一篇文档
+        的当前稿切片可能有几百片，把正文捞回来只为读两个字段是白花带宽。
+
+        查的是**别名**（``self._index_name``）：线上那一份才是「关键词索引认为的当前稿」。
+
+        桶的 key 是**字符串**（mapping 里 ``doc_version`` 是 keyword），所以这里显式
+        ``int()``——把 ``"3"`` 直接交给判据去和整数指针比，那一维会永远显示「相等」。
+
+        失败语义：空批次与「索引还不存在」都回 ``{}``（没有可答的东西）；其余异常照常抛，
+        由对账脚本分成「能力不存在」与「这一次读不到」两种不可判定——Provider 不替调用方
+        决定这两件事要不要区分。
+        """
+
+        ids = [str(document_id) for document_id in document_ids if document_id]
+        if not ids:
+            return {}
+        try:
+            response = await self._get_client().search(
+                index=self._index_name,
+                **build_current_draft_versions_query(tenant_id=tenant_id, document_ids=ids),
+            )
+        except NotFoundError:
+            return {}
+
+        buckets = ((response.get("aggregations") or {}).get(CURRENT_DRAFT_VERSIONS_AGG) or {}).get(
+            "buckets"
+        ) or []
+        return {
+            str(bucket.get("key")): [
+                int(item.get("key")) for item in (bucket.get("drafts") or {}).get("buckets") or []
+            ]
+            for bucket in buckets
+        }

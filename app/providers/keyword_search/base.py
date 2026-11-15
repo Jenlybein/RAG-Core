@@ -14,6 +14,7 @@
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 
 class KeywordSearchProvider(ABC):
@@ -108,4 +109,27 @@ class KeywordSearchProvider(ABC):
 
         **实现方的失败语义**：抛异常即可，调用方（``app.services.keyword_draft``）负责
         降级成 warning。Provider 自己不要在内部吞掉错误——那样「没翻成」就没有任何痕迹。
+        """
+
+    @abstractmethod
+    async def current_draft_versions(
+        self, *, tenant_id: str, document_ids: Sequence[str]
+    ) -> dict[str, list[int]]:
+        """这批文档在关键词索引里**被标成「当前稿」**的稿号（对账用，#179）。
+
+        返回 ``{document_id: [doc_version…]}``。一篇正常只有一个稿号（当前稿的每一片都带
+        同一个）；**多于一个就是分歧的现场**，由调用方（``app.services.document_version_reconcile``）
+        判，Provider 只如实回答。
+
+        为什么这条读能力必须挂在 Provider 上，而不是让脚本自己去连 ES：查询体、别名、
+        版本命名都是这一层的事（``build_current_draft_versions_query`` 就在旁边）；脚本
+        自己拼一遍，就是第二套「关键词索引长什么样」的知识，而它只会在 ES 升级时过期。
+
+        **查的是别名**（``self._index_name``）：线上那一份才是「关键词索引认为的当前稿」，
+        已归档的物理版本不参与检索，也就没有对账的意义。
+
+        **空批次不发语句**（回 ``{}``）：一次空扫描不该换来一条 ``terms: []`` 的查询。
+        **索引还不存在**（``NotFoundError``）回 ``{}``：那是「关键词库里一个字都没有」，
+        不是故障。**其他失败一律抛**：调用方要把「能力不存在」与「能力在、这一次读不到」
+        分成两种不可判定（前者不用排障，后者要）。
         """
