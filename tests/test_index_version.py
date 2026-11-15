@@ -27,14 +27,16 @@ import pytest_asyncio
 from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from app.core.exceptions import AppError, ErrorCode
 from app.models.chunk import Chunk, DEFAULT_INDEX_VERSION
+from app.models.document_version import DocumentVersion
 from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores.pgvector import PgVectorStore
 from app.repositories import document_repository, knowledge_base_repository
 from app.services import indexing_service
 from app.services.indexing_service import IndexingService
 from app.utils.text_splitter import SplitPiece
-from tests.fake_db import ZERO_COUNT
+from tests.fake_db import AsyncRecordingSession, ZERO_COUNT
 
 TENANT_ID = "tenant_demo"
 KB_ID = "kb-1"
@@ -342,3 +344,166 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
     ]
     assert embeddings.texts != [chunk["content"] for chunk in chunks], "两者必须是不同的文本"
     assert [chunk["index_version"] for chunk in chunks] == ["v1", "v1"]
+
+
+# ------------------------------------------------- 重建正文来自版本表（#173 / ADR-0005 D6）
+
+
+class _TextRecordingSplitter:
+    """记录「切的是哪段正文」的切块器：正文来源是这一票要断言的东西。"""
+
+    def __init__(self, pieces: list[SplitPiece]) -> None:
+        self.pieces = pieces
+        self.inputs: list[str] = []
+
+    def split(self, text: str) -> list[SplitPiece]:
+        self.inputs.append(text)
+        return self.pieces
+
+
+def _document(**overrides: Any) -> SimpleNamespace:
+    fields: dict[str, Any] = {
+        "id": DOCUMENT_ID,
+        "tenant_id": TENANT_ID,
+        "kb_id": KB_ID,
+        "title": "错误码查询",
+        "content": "旧稿正文：E1024 表示证书过期。",
+        "source_type": "markdown",
+        "current_version": 2,
+        "source_filename": "售后手册.md",
+    }
+    fields.update(overrides)
+    return SimpleNamespace(**fields)
+
+
+def _version_row(version: int, content: str) -> DocumentVersion:
+    return DocumentVersion(
+        id=f"ver-{version}",
+        document_id=DOCUMENT_ID,
+        version=version,
+        content=content,
+        checksum="0" * 64,
+    )
+
+
+def _patch_rebuild_collaborators(
+    monkeypatch: pytest.MonkeyPatch, document: SimpleNamespace
+) -> None:
+    """把索引编排的协作者换成替身：只留下「正文从哪儿来」这一处真的逻辑。"""
+
+    async def _get_by_id(_db: Any, _id: str) -> Any:
+        return document
+
+    async def _claim(*_a: Any, **_k: Any) -> bool:
+        return True
+
+    async def _update_status(*_a: Any, **_k: Any) -> None:
+        return None
+
+    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
+        return DEFAULT_INDEX_VERSION
+
+    monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
+    monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "update_status", _update_status)
+    monkeypatch.setattr(
+        knowledge_base_repository, "get_effective_index_version", _effective_version
+    )
+
+
+def test_rebuild_takes_the_body_from_the_version_row_not_the_document_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """文档行是旧稿、版本表是新稿：切的是**版本表**那一份（ADR-0005 D6）。
+
+    指针与正文的真值分家正是这一票要堵的洞：``documents.content`` 只是热路径的快照，
+    重建、重解析、回滚一律从版本行读正文。这里把两处写成不同内容，切块器收到哪一份
+    就说明了真值在哪一份。
+    """
+
+    _patch_rebuild_collaborators(monkeypatch, _document(current_version=2))
+    monkeypatch.setattr(
+        indexing_service,
+        "prepare_document_content",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("有版本行时不该再读文档行快照")
+        ),
+    )
+    splitter = _TextRecordingSplitter(
+        [SplitPiece(text="新稿正文：E1024 表示证书已过期。", metadata={"heading_path": "错误码"})]
+    )
+    store = _RecordingStore()
+    session = AsyncRecordingSession(rows={DocumentVersion: [_version_row(2, "新稿正文：E1024 表示证书已过期。")]})
+
+    service = IndexingService(splitter=splitter, embeddings=_StubEmbeddings(), stores=[store])
+    asyncio.run(service.index_existing_document(session, DOCUMENT_ID, doc_version=2))
+
+    assert splitter.inputs == ["新稿正文：E1024 表示证书已过期。"]
+    assert store.written[0][0]["content"] == "新稿正文：E1024 表示证书已过期。"
+    assert store.written[0][0]["doc_version"] == 2
+
+
+def test_rebuild_falls_back_to_the_document_row_when_the_draft_has_no_version_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """没有版本行时仍走文档行正文：迁移之后、建版本的写路径落地之前的老数据不能炸。
+
+    #175 起每次改稿都会写一行版本行，到那时这条兜底路径只剩历史数据与兜底脚本会走；
+    它保留的理由是「读不到真值时不猜」——宁可读那份与指针同源的快照，也不能因为
+    一行历史数据缺失让整篇文档永远索引不了。
+    """
+
+    _patch_rebuild_collaborators(monkeypatch, _document(current_version=2))
+    monkeypatch.setattr(
+        indexing_service,
+        "prepare_document_content",
+        lambda doc, *, reparse=False: ParsedDocument(
+            content=doc.content, source_type="markdown", metadata={"from": "db"}
+        ),
+    )
+    splitter = _TextRecordingSplitter(
+        [SplitPiece(text="旧稿正文：E1024 表示证书过期。", metadata={"heading_path": "错误码"})]
+    )
+    store = _RecordingStore()
+
+    service = IndexingService(
+        splitter=splitter, embeddings=_StubEmbeddings(), stores=[store]
+    )
+    asyncio.run(service.index_existing_document(AsyncRecordingSession(), DOCUMENT_ID))
+
+    assert splitter.inputs == ["旧稿正文：E1024 表示证书过期。"]
+
+
+def test_rebuild_rejects_an_explicit_draft_that_has_no_version_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """显式指定了第 1 稿、而指针已经走到第 2 稿、库里也没有第 1 稿的版本行：拒绝。
+
+    这就是「迟到任务写错稿」的那一格：指针在它到达之后前移了，文档行里现在装的是
+    第 2 稿。若这时回落去读文档行，写出来的切片会**带着第 1 稿的编号装着第 2 稿的
+    正文**——比直接失败难查得多。错误码复用既有的「文档不存在」（#175 才加「稿不存在」）。
+    """
+
+    _patch_rebuild_collaborators(monkeypatch, _document(current_version=2))
+    monkeypatch.setattr(
+        indexing_service,
+        "prepare_document_content",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("指定了过期稿次时不该静默读文档行")
+        ),
+    )
+    store = _RecordingStore()
+
+    service = IndexingService(
+        splitter=_StubSplitter([]), embeddings=_StubEmbeddings(), stores=[store]
+    )
+
+    with pytest.raises(AppError) as caught:
+        asyncio.run(
+            service.index_existing_document(
+                AsyncRecordingSession(), DOCUMENT_ID, doc_version=1
+            )
+        )
+
+    assert caught.value.code is ErrorCode.NOT_FOUND
+    assert store.written == [], "一行切片都不许写"

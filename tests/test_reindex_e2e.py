@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
+from app.models.document_version import DocumentVersion
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
@@ -114,6 +115,9 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
 
     seed_engine = create_engine(f"sqlite:///{database_path}")
     Document.__table__.create(seed_engine)
+    # 版本表也建出来（#172 的迁移后真库就有它）：重建的正文真值从这张表读（#173），
+    # 少了它这条跨层用例会在「查不到表」上炸，而不是在它想验的租约 / 切片上。
+    DocumentVersion.__table__.create(seed_engine)
     with sessionmaker(bind=seed_engine)() as seed_session:
         seed_session.add(
             Document(

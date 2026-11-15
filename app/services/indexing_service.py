@@ -51,6 +51,19 @@
 ``index_version``，它来自调用方（整库构建写新版本）或库上的生效版本（上传 / 单篇
 重建写回线上那一版），**不是**写死的常量。删除同样按版本收窄：重建只清目标版本的
 旧行，线上那一版在构建期间原样可查（ADR-0025 决策二）。
+
+**这一片属于第几稿（#173）**：切片字典顶层的 ``doc_version`` 落 ``chunks.doc_version``
+真实列，清除也按它收窄——重建第 2 稿时第 1 稿的切片原样留着（ADR-0005 D4 选 B）。
+稿号有两个可能的来源：调用方显式给的（任务载荷，见 ``app.services.index_dispatch``）
+优先，没给才回落文档行的当前稿指针。**迟到的任务因此不会写错稿**：它的稿号在投递那
+一刻就固定了，不再向指针二次确认。
+
+**重建的正文从版本表读（#173 / ADR-0005 D6）**：``documents.content`` 只是热路径快照，
+真值是 ``document_versions.content``。指针刚切过时两者会不一致，而错的那一份恰好是
+文档行——拿它切块会写出「标着第 N 稿、装着别的稿正文」的切片。重解析（``reparse=True``）
+是唯一例外：它的全部意义就是再读一遍源文件。没有版本行时回落文档行（建版本的写路径
+在 #175 才落地，历史数据只有文档行那份），但若调用方显式指定的是**过期稿次**则拒绝——
+那时回落等于静默写错。
 """
 
 from __future__ import annotations
@@ -66,10 +79,15 @@ from app.models.document import Document
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
+from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores import get_vector_store
-from app.repositories import document_repository, knowledge_base_repository
+from app.repositories import (
+    document_repository,
+    document_version_repository,
+    knowledge_base_repository,
+)
 from app.services.chunk_store import ChunkStore, build_chunk_stores
-from app.services.document_ingestion import prepare_document_content
+from app.services.document_ingestion import content_from_version, prepare_document_content
 from app.services.section_context import summarize_sections
 from app.utils.id_generator import new_chunk_id
 from app.utils.retrieval_text import build_retrieval_text
@@ -172,6 +190,47 @@ class IndexingService:
         )
         return splitter, strategy
 
+    async def _content_of(
+        self,
+        db: AsyncSession,
+        doc: Document,
+        *,
+        draft: int,
+        requested_draft: int | None,
+        reparse: bool,
+    ) -> ParsedDocument:
+        """这次索引的正文从哪来：**版本表优先**，读不到才谈回落（#173 / ADR-0005 D6）。
+
+        三个分支，顺序是契约：
+
+        1. ``reparse=True`` → 读源文件重解析。重解析的全部意义就是「再解析一遍」，
+           版本行里那份正文正是上一次解析的产物，读它等于没重解析；
+        2. 版本表里有这一稿 → 用它。**正文的真值在版本表**，``documents.content``
+           只是热路径快照（D6）。指针刚切过时这两份会不一致，而错的那一份恰好是
+           文档行：拿它切块会写出「标着第 N 稿、装着别的稿正文」的切片；
+        3. 版本表里没有这一稿：
+           * 调用方**显式指定**了一个不是当前指针的稿号 → 拒绝。这是迟到任务的现场：
+             它算的是旧稿，指针已经前移，文档行里装的是别的稿。这时回落去读文档行
+             会静默写错；错误码复用既有的「文档不存在」（「稿不存在」在 #175 才加）；
+           * 否则回落文档行 / 磁盘（``prepare_document_content``）。建版本的写路径
+             落地（#175）之前，库里本来就没有版本行；老数据与兜底脚本都靠这条路，
+             缺了它一篇历史文档会永远索引不了。
+        """
+
+        # 分支 1：显式要求重解析。
+        if reparse:
+            return prepare_document_content(doc, reparse=True)
+
+        version_row = await document_version_repository.get_by_version(db, str(doc.id), draft)
+        if version_row is not None:
+            # 分支 2：正文真值在版本表。
+            return content_from_version(version_row, source_type=doc.source_type)
+
+        # 分支 3：没有版本行。
+        if requested_draft is not None and requested_draft != doc.current_version:
+            raise AppError(ErrorCode.NOT_FOUND, "document version not found")
+        return prepare_document_content(doc, reparse=False)
+
     async def index_existing_document(
         self,
         db: AsyncSession,
@@ -179,6 +238,7 @@ class IndexingService:
         *,
         reparse: bool = False,
         index_version: str | None = None,
+        doc_version: int | None = None,
         allow_success: bool = False,
     ) -> int:
         """把一份已经登记在库的文档索引成切片，返回写入的切片数。
@@ -194,6 +254,13 @@ class IndexingService:
         激活 v2 之后再上传的文档若写进 v1，检索按 (库, 生效版本) 配对时就一条都匹配
         不上，而症状是「这个库没内容」（ADR-0025 决策七）。
 
+        ``doc_version`` 是**这一片属于第几稿**（#173）：调用方显式给（任务载荷，见
+        ``app.services.index_dispatch``）时一律以它为准；不传时回落文档行的当前稿指针
+        ``documents.current_version``。**为什么必须能显式给**：指针是活数据，任务可能
+        迟到——回滚刚把指针切回第 1 稿时，一个还在路上、本来算的是第 2 稿的任务若去读
+        指针，就会把第 2 稿的内容写成第 1 稿的切片。稿号在投递那一刻就固定下来，
+        Worker 不再向指针二次确认。
+
         会话是 ``AsyncSession``（Worker 常驻循环里那一个），两段事务的提交点是
         ``app.db.transaction`` 的异步孪生 ``async_commit_now``；**提交次数与改造前
         逐条相同**：抢占后一次、purge + 写入 + 状态回写一次。异常路径不在这里回滚——
@@ -203,6 +270,9 @@ class IndexingService:
         doc = await document_repository.get_by_id(db, document_id)
         if doc is None:
             raise AppError(ErrorCode.NOT_FOUND, "document not found")
+
+        # 这次索引写的是哪一稿：调用方给的优先（迟到任务不许改口），否则读指针。
+        draft = doc_version if doc_version is not None else doc.current_version
 
         # 目标版本在**抢占之前**定下来：抢占了却不写（版本解析失败）会留下一份新鲜租约，
         # 下一次尝试反而抢不到。
@@ -225,7 +295,9 @@ class IndexingService:
             )
             return 0
 
-        parsed = prepare_document_content(doc, reparse=reparse)
+        parsed = await self._content_of(
+            db, doc, draft=draft, requested_draft=doc_version, reparse=reparse
+        )
 
         # 正文回写（#170）：解析成功后把全文写进文档行，此后**不带「重解析」的重建
         # 直接读库内正文**（``prepare_document_content`` 的分支 A），不再回磁盘。
@@ -299,9 +371,9 @@ class IndexingService:
                 # 稿号：这一片属于第几稿，落 ``chunks.doc_version`` 这个**真实列**（#173）。
                 # 放在字典顶层而不是 meta 里：稿号只有一个来源，而 JSONB 那份副本在
                 # #172 的迁移里已经从存量行上删掉了（ADR-0005 D2「三个名字各说各的事」）。
-                # 值仍是「这一片属于第几稿」，来自文档行上的当前稿指针
+                # 值来自上面解析出的 ``draft``：显式给了就用调用方那份，否则是当前稿指针
                 # （``documents.current_version``）。
-                "doc_version": doc.current_version,
+                "doc_version": draft,
                 "meta": {
                     # 解析器产出的 metadata 必须跟着切片走，否则「元数据.engine 含 ocr」
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
@@ -337,12 +409,14 @@ class IndexingService:
         ]
 
         # Tx2：先删后写 + 建关系边 + 状态回写，一次提交；任一步失败都由调用方回滚。
+        # 清除按「这一稿」收窄：别的稿的切片一个字节都不动（#173，ADR-0005 D4 选 B）。
         await purge_document_chunks(
             db,
             document_id,
             tenant_id=doc.tenant_id,
             stores=self._stores,
             index_version=version,
+            doc_version=draft,
         )
         for store in self._stores:
             await store.add_chunks(db, chunks)
