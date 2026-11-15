@@ -305,10 +305,10 @@ def test_the_default_window_retains_three_drafts() -> None:
 
 
 def test_the_plan_keeps_the_drafts_inside_the_window_and_expires_the_rest() -> None:
-    """五稿（1–4 归档、5 当前）留 3 稿 → 该清 2 和 1，且最老的排在前面。
+    """五稿（1–4 归档、5 当前）留 3 稿 → 该清 2 和 1，且**最新的排在前面**。
 
-    顺序不是装饰：清理按这个顺序逐稿去清切片，先走最老的，失败时日志里的「清到哪一稿」
-    才对得上运维的直觉。
+    顺序不是装饰：`RetentionPlan.expired_versions` 的契约是稿号倒序（最近的在前），
+    dry-run 原样打印它、`--apply` 也按它逐稿清切片，两边逐字对得上。
     """
 
     plan = document_version_service.retention_plan(

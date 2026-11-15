@@ -237,8 +237,9 @@ async def list_archived_at_or_below(
     写成查询条件而不是调用方的一句 if，库里残留的低稿号当前行（历史事故、人工修数）就
     不会被交出去，也就不会被删掉。
 
-    排序仍放 SQL 里（与 :func:`list_by_document` 同一理由）：调用方按「最老的先走」的顺序
-    打印 / 逐稿清切片，应用层再排一次只会多一次整表读。
+    排序仍放 SQL 里（与 :func:`list_by_document` 同一理由）：调用方按「**最新的在前**」的
+    顺序打印 / 逐稿清切片（``RetentionPlan.expired_versions`` 的契约，dry-run 先看到近期那
+    几稿），应用层再排一次只会多一次整表读。
     """
 
     statement = (
