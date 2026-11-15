@@ -59,14 +59,43 @@ def store_document_file(
     ``source_filename`` 是调用方给的原始文件名（只进列，不进路径）。
     """
 
-    suffix = extension_of(filename)
+    relative = PurePosixPath(tenant_id) / f"{document_id}{extension_of(filename)}"
+    return _store_upload(relative=relative, filename=filename, data=data)
+
+
+def store_version_file(
+    *, tenant_id: str, document_id: str, version: int, filename: str, data: bytes
+) -> tuple[str, str]:
+    """第 ``version`` 稿的源文件落盘：路径里**带稿号**，返回 ``(路径, 原始文件名)``。
+
+    ## 为什么不复用上传那个路径
+
+    上传的路径是 ``<tenant>/<doc_id><ext>``——一篇文档一份原文件。第 2 稿若也写这个路径，
+    它就把第 1 稿的源文件**覆盖**了：重解析第 1 稿时读到的是第 2 稿的字节，而症状是
+    「重建之后内容莫名其妙变了」，不报错也不留痕。
+
+    稿号是服务端在锁内算出来的（见 ``app.services.document_version_service``），所以这一层
+    只拿现成的号拼路径，不猜「这次大概是第几稿」。
+
+    白名单与大小上限和上传共用同一条判定：同一个库收不收这种文件，不该因为「这是新版本」
+    就换一套口径。
+    """
+
+    relative = PurePosixPath(tenant_id) / f"{document_id}.v{version}{extension_of(filename)}"
+    return _store_upload(relative=relative, filename=filename, data=data)
+
+
+def _store_upload(
+    *, relative: PurePosixPath, filename: str, data: bytes
+) -> tuple[str, str]:
+    """两条落盘路径共用的一段：白名单 → 大小上限 → 建目录 → 写字节。"""
+
     # 复用 source_type_of 的判定，不在这里再写一次白名单比对：白名单就是
     # SOURCE_TYPE_BY_EXTENSION 的键集，两处各判一次只会有两种口径。
     source_type_of(filename)
     if len(data) > settings.DOCUMENT_MAX_SIZE_MB * 1024 * 1024:
         raise AppError(ErrorCode.FILE_TOO_LARGE)
 
-    relative = PurePosixPath(tenant_id) / f"{document_id}{suffix}"
     target = resolve_document_storage_path(str(relative))
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(data)

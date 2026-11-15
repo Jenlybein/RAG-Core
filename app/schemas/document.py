@@ -10,7 +10,7 @@ content 必填）；文件模式的 kb_id / title / file 走 Form，由路由手
 
 from datetime import datetime
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class UploadDocumentRequest(BaseModel):
@@ -68,3 +68,132 @@ class DeleteDocumentData(BaseModel):
 
     document_id: str
     deleted: bool
+
+
+class CreateDocumentVersionRequest(BaseModel):
+    """提交新版本的 JSON 入口：只要正文（标题、知识库都属于文档本身，不在这一层改）。
+
+    ``extra="forbid"``：多传一个 ``document_id`` / ``version`` 之类的字段要被 20002 拒，
+    而不是被静默忽略——「我传了版本号，服务端却自己算了一个」是最难查的那类分歧。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1)
+
+
+class CreateDocumentVersionData(BaseModel):
+    """建版本的受理回执：新稿次已落库、文档已置处理中并投递了重建。
+
+    ``version`` 是刚建好的稿号，``previous_version`` 是提交生效前的那一稿——两者一起给，
+    调用方不必再列一次版本就知道「这次改的是第几稿」。``checksum`` 是**规范化后**正文的
+    ``sha256``：之后按稿直查 / 对账都用同一个口径。
+    """
+
+    document_id: str
+    version: int
+    previous_version: int
+    checksum: str
+    status: int
+
+
+class DocumentVersionItem(BaseModel):
+    """版本列表里的一行。
+
+    ``content`` **默认不给**（``None``）：正文可能是整篇文档，列表接口的调用方通常只关心
+    「改过几稿、哪一稿是哪天」。要看正文得显式要求（``?include_content=true``）。
+
+    ``char_count`` 是这一稿正文的**字符数**（``len``）。它与切块窗口（按模型分词计的
+    token 长度）不是一回事：这里回答的只是「这一稿有多长」，而正文默认不返回，所以
+    「哪一稿是那一大篇」只能靠它看出来。
+
+    **不给 ``source_file_path``**：那是服务端存储根下的相对路径（``tenant/<id>.v2.md``），
+    调用方拿它做不了任何事，而把内部路径暴露出去只会扩大泄露面。重解析要读它，但那是
+    Worker 的事（版本行自己留着）。
+    """
+
+    version: int
+    status: str
+    checksum: str
+    char_count: int
+    created_at: datetime
+    content: str | None = None
+
+
+class DocumentVersionListData(BaseModel):
+    """列版本的出参：按稿号**倒序**（现在这一稿在最前），加上当前稿指针。"""
+
+    document_id: str
+    current_version: int
+    items: list[DocumentVersionItem]
+
+
+class RollbackDocumentVersionData(BaseModel):
+    """回滚受理的回执：指针已拨回 ``version``，文档已置处理中并投递了重建。
+
+    ``previous_version`` 是回滚生效前的那一稿——调用方不必再列一次版本就知道「从哪一稿
+    退回哪一稿」。与建版本的回执不同，这里**没有 ``checksum``**：回滚不产生新正文，
+    目标稿的校验和早就在版本行上了（列版本能拿到）。
+
+    ``status`` 恒为 ``PROCESSING``：回滚之后切片要重建，终态仍需轮询
+    ``GET /documents?kb_id=``——「回滚受理」不等于「已经能检索到新内容」。
+    """
+
+    document_id: str
+    version: int
+    previous_version: int
+    status: int
+
+
+class SearchDocumentVersionRequest(BaseModel):
+    """按版本直查的请求：只有一句问句。
+
+    ``extra="forbid"`` 与 ``/rag/retrieve`` 同一条纪律：多传 ``top_k`` / ``mode`` 之类要被
+    20002 拒，而不是被静默忽略——静默忽略会让调用方以为自己的参数生效了。直查是排查工具，
+    条数与通道（只向量路）都是链路常数，不是调用参数。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    query: str = Field(min_length=1)
+
+    @field_validator("query")
+    @classmethod
+    def _reject_blank_query(cls, value: str) -> str:
+        """纯空白不是「一个问题」（与 ``RetrieveRequest`` 同一条规则）。"""
+
+        if not value.strip():
+            raise ValueError("query must not be blank or whitespace-only")
+        return value
+
+
+class DocumentVersionChunk(BaseModel):
+    """某一稿上的一条检索结果。
+
+    ``doc_version`` 是**这一片属于第几稿**（真实列上读出来的），不是回显请求参数：
+    回显参数会让「查错了稿」变成一件看不出来的事。
+    """
+
+    chunk_id: str
+    content: str
+    score: float
+    doc_version: int
+
+
+class SearchDocumentVersionData(BaseModel):
+    """按版本直查的回包。
+
+    ``is_current`` 是这条路径唯一的「时间感」：同一句 query 在第 1 稿与第 3 稿上分别查，
+    结果不同才有排查价值，而调用方需要知道「我查的这一稿此刻是不是当前稿」。
+
+    **没有 ``metadata`` / ``trace_id``**：直查不写归属索引（票面明写「不写归属索引」），
+    自然也没有一次调用对应的痕迹。**也没有 BM25 分数**：关键词索引只带 ``is_current``
+    一个布尔，历史稿的切片标记为 ``False``，查历史稿只能走向量路（见
+    ``app.services.version_search`` 的模块文档）。
+    """
+
+    document_id: str
+    version: int
+    is_current: bool
+    query: str
+    retrieved_chunks: list[DocumentVersionChunk]

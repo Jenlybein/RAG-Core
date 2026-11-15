@@ -67,6 +67,7 @@ class _StubIndexing:
         document_id: str,
         *,
         index_version: str | None = None,
+        doc_version: int | None = None,
         allow_success: bool = False,
         reparse: bool = False,
     ) -> int:

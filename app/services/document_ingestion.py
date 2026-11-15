@@ -1,13 +1,20 @@
-"""唯一解析入口：把一份 ``Document`` 变成 ``ParsedDocument``。
+"""唯一解析入口：把一份 ``Document``（或它的一行版本）变成 ``ParsedDocument``。
 
 **项目里只有这里有「文档 → 文本」的转换。** 上传路由、Celery 任务、重建 / 删除
 脚本都必须调用 ``prepare_document_content``，绝不在自己那里按文件类型 if/elif
 分流；下游只看到一条 Markdown 风格的字符串，完全不感知原始格式。
 
-三分支：
+``prepare_document_content`` 对文档行分三分支：
 A. 库里已有正文且不需要重解析 → 直接用 ``document.content``（不碰磁盘）；
 B. 有源文件路径 → 读字节，交给注册表按文件名选解析器；
 C. 两者都没有 → ``DOCUMENT_PARSE_FAILED``。
+
+``content_from_version`` 是重建侧的入口（#173）：正文的真值在版本表（ADR-0005 D6），
+``documents.content`` 只是热路径的快照。
+
+``parse_source_file`` 是**重解析**侧的入口（#182）：重解析要读的是「这一稿自己的源文件」，
+而文档行上的路径只指向最新一次上传。两者都走同一个解析注册表——「字节 → 文本」全项目
+只有一份实现，否则两个入口会在某次改动里解析出不同的正文，而那个差异不会在任何地方报错。
 
 同步实现：解析是纯 CPU 活（读字节、解码 / 转 HTML / 抽文本），异步只在外层——
 T4 的 Celery 任务包住整条流水线。
@@ -17,6 +24,7 @@ from pathlib import Path
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.document import Document
+from app.models.document_version import DocumentVersion
 from app.providers.parsers import get_parser_registry
 from app.providers.parsers.base import ParsedDocument
 
@@ -31,19 +39,73 @@ def prepare_document_content(document: Document, *, reparse: bool = False) -> Pa
         )
 
     if document.source_file_path:
-        data = _read_source_file(document.source_file_path)
         # 解析器按扩展名选。正常上传一定有 source_filename；但历史行、人手修过的行可能没有，
         # 那时退回落盘路径自己的扩展名——否则错误码是「no parser supports: 」(空名字)，
         # 读的人完全看不出该补什么。这个兜底只在这种缺名字的情况下生效。
-        filename = document.source_filename or Path(document.source_file_path).name
-        parsed = get_parser_registry().parse(data, filename=filename)
-        if not parsed.content.strip():
-            raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "解析之后没有可提取文字")
-        return parsed
+        return parse_source_file(
+            document.source_file_path, filename=document.source_filename
+        )
 
     raise AppError(
         ErrorCode.DOCUMENT_PARSE_FAILED,
         "document content and file are both empty",
+    )
+
+
+def parse_source_file(path: str | None, *, filename: str | None = None) -> ParsedDocument:
+    """从**一份落盘的源文件**解析出正文（重解析的入口，#182）。
+
+    与 ``prepare_document_content`` 的分支 B 是同一条路：读字节 → 按文件名选解析器。
+    抽成函数是因为重解析要传的是**版本行自己的**路径（``<doc>.v<N><ext>``），而不是
+    文档行上那份（它只指向最新一次上传）；两者读的是不同文件，走的却必须是同一个解析器。
+
+    路径为空（JSON 提交的稿次没有源文件）或文件已不在盘上时，一律
+    ``DOCUMENT_PARSE_FAILED``：重解析没有源文件就没有正文，拿库里的旧正文凑合等于
+    「重解析」这件事没发生，而调用方会以为换了解析器。解析出空正文与上传那条链路同一
+    口径（``DOCUMENT_CONTENT_EMPTY``）。
+    """
+
+    if not path:
+        raise AppError(ErrorCode.DOCUMENT_PARSE_FAILED, "document version has no source file")
+    data = _read_source_file(path)
+    return parse_uploaded_bytes(data, filename=filename or Path(path).name)
+
+
+def parse_uploaded_bytes(data: bytes, *, filename: str) -> ParsedDocument:
+    """把**一次提交上传的字节**解析成 ``ParsedDocument``（第二条解析入口，#175）。
+
+    为什么它必须在这里：提交新版本时文件还没落盘（先解析、后算校验和、判重通过之后才
+    写盘），所以走不了 :func:`prepare_document_content` 的「从文档行读」那几个分支。
+    但「字节 → 文本」这件事全项目只许有一份实现，否则两个入口会在某次改动里解析出不同的
+    正文，而那个差异不会在任何地方报错。
+
+    空的解析结果按 20024 拒：没有正文的稿次没有意义（与上传那条链路同一口径）。
+    """
+
+    parsed = get_parser_registry().parse(data, filename=filename)
+    if not parsed.content.strip():
+        raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "解析之后没有可提取文字")
+    return parsed
+
+
+def content_from_version(
+    version: DocumentVersion, *, source_type: str | None
+) -> ParsedDocument:
+    """把一行**版本行**变成切块器的输入（重建的正文真值，ADR-0005 D6 / #173）。
+
+    与分支 A 同一口径：正文已经在库里，不碰磁盘、不再解析。``metadata`` 因此退化成
+    ``{"from": "db"}``——**这不带 ``parser`` 键**是已知边界：解析器的身份是「当初怎么
+    解析出这份正文」的现场信息，它属于上传那一次；重建只是消费同一份正文，凭空补一个
+    ``parser`` 反而是在猜。要留下解析器身份，得由版本行自己记（后续票）。
+
+    ``source_type`` 取文档行上的那份：版本行只记正文、校验和与源文件路径（ADR-0005
+    D3 的列集），没有格式列；格式在同一篇文档里不会变。
+    """
+
+    return ParsedDocument(
+        content=version.content,
+        source_type=source_type or "text",
+        metadata={"from": "db"},
     )
 
 

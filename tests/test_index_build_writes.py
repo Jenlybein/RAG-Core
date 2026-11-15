@@ -75,6 +75,7 @@ class _RecordingStore:
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.purge_versions.append(index_version)
 
@@ -103,6 +104,7 @@ class _StubIndexing:
         document_id: str,
         *,
         index_version: str | None = None,
+        doc_version: int | None = None,
         allow_success: bool = False,
         reparse: bool = False,
     ) -> int:
@@ -122,8 +124,10 @@ def _document(document_id: str, *, status: int = DocumentStatus.SUCCESS) -> Simp
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="售后手册",
-        doc_version=1,
+        current_version=1,
         source_filename="售后手册.md",
+        # 真行上一定有这一列（首个版本行会把它抄进版本行，#175）。
+        source_file_path=None,
         status=status,
         content="正文",
     )

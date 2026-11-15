@@ -296,7 +296,10 @@ def test_dispatch_wiring_is_real_even_when_offline(_offline_dispatch: tuple) -> 
     """离线替身**不许**把「投递接线」一起盖掉：kwargs 与 task_id 得由真实代码组装。
 
     构造一条最小的调用，然后读记账器：``task_id`` 必须是 ``doc:<id>`` 形状，``kwargs``
-    五个键一个不少。这条用例证明我们桩在 ``apply_async``，而不是桩在 ``enqueue_document``。
+    六个键一个不少。这条用例证明我们桩在 ``apply_async``，而不是桩在 ``enqueue_document``。
+
+    ``doc_version`` 是第 6 个键（#173）：稿号在**投递那一刻**就定下来，随任务一起走。
+    不接受「Worker 自己读当前指针」——回滚刚切完指针时，一个迟到的任务会写错稿。
     """
 
     from app.services import index_dispatch
@@ -307,6 +310,7 @@ def test_dispatch_wiring_is_real_even_when_offline(_offline_dispatch: tuple) -> 
         kb_id="kb-1",
         request_id="req-1",
         reparse=True,
+        doc_version=2,
     )
 
     index_calls, _side_calls = _offline_dispatch
@@ -319,4 +323,27 @@ def test_dispatch_wiring_is_real_even_when_offline(_offline_dispatch: tuple) -> 
         "kb_id": "kb-1",
         "request_id": "req-1",
         "reparse": True,
+        "doc_version": 2,
     }
+
+
+def test_dispatch_sends_no_draft_when_the_caller_does_not_know_one(
+    _offline_dispatch: tuple,
+) -> None:
+    """不知道稿号的调用方（运维脚本的老调用点）投递 ``None``：Worker 回落当前指针。
+
+    这个 ``None`` 是**显式**的：键始终在载荷里，于是「这次索引算的是哪一稿」在任务
+    记录里一眼可见，而不是「有键就是知道、没键就是不知道」这种靠缺席表达的状态。
+    """
+
+    from app.services import index_dispatch
+
+    index_dispatch.enqueue_document(
+        document_id="doc-wiring",
+        tenant_id="t-1",
+        kb_id="kb-1",
+        request_id=None,
+    )
+
+    index_calls, _side_calls = _offline_dispatch
+    assert index_calls[0]["kwargs"]["doc_version"] is None

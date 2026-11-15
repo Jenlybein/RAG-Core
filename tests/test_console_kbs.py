@@ -105,6 +105,17 @@ class _ConsoleSession(RecordingSession):
                     del rows[index]
                     return
 
+    def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        """删文档这条路径上唯一的 ``DELETE`` 语句是「删版本行」（#172）。
+
+        版本行没有外键可依靠（仓库零外键），所以删文档时必须显式删它们；记进 ``calls``
+        才看得见这一步有没有发生、发生在第几步。
+        """
+
+        if str(statement).lstrip().upper().startswith("DELETE"):
+            self.calls.append("delete-version-rows")
+        return super().execute(statement, *args, **kwargs)
+
     def commit(self) -> None:
         super().commit()
         self.calls.append("commit")
@@ -119,7 +130,13 @@ class _RecordingStore:
         self.tenant_ids: list[str] = []
 
     async def delete_by_document_id(
-        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)
@@ -249,6 +266,9 @@ def _doc(
         index_claimed_at=index_claimed_at,
         error_message=error_message,
         created_at=created_at,
+        # 当前稿指针：真行上非空、默认 1（#171 改名）。重建投递要读它，随任务带稿号
+        # （#173），所以替身也得有这个字段——缺了不是「没稿号」而是 AttributeError。
+        current_version=1,
     )
 
 
@@ -795,6 +815,8 @@ def test_json_upload_returns_processing_and_audits_without_the_body_text(
             "kb_id": KB_ALPHA_ONE,
             "request_id": "console-upload-req",
             "reparse": False,
+            # 新登记的文档从第 1 稿开始，稿号随任务走（#173）。
+            "doc_version": 1,
         }
     ]
 
@@ -888,6 +910,8 @@ def test_reindex_failed_document_returns_processing_and_audits_before_after(
             "kb_id": KB_ALPHA_ONE,
             "request_id": "console-reindex-req",
             "reparse": True,
+            # 控制面与数据面同一条约定（#173）：稿号在投递那一刻从指针取下来。
+            "doc_version": 1,
         }
     ]
 
@@ -1008,7 +1032,7 @@ def test_reindex_of_another_tenant_or_missing_document_is_not_found(
 def test_delete_document_purges_file_and_row_in_the_original_order(
     kbs: _Harness, tmp_path: Path
 ) -> None:
-    """清除顺序不变：purge → 删原文件 → 删行 → （审计）→ 提交。"""
+    """清除顺序不变：purge → 删原文件 → 删版本行 → 删行 → （审计）→ 提交。"""
 
     source = tmp_path / "alpha-done.md"
     source.write_text("# body", encoding="utf-8")
@@ -1027,9 +1051,10 @@ def test_delete_document_purges_file_and_row_in_the_original_order(
 
     purge_at = kbs.calls.index("purge")
     remove_at = kbs.calls.index("remove-file", purge_at)
-    delete_at = kbs.calls.index("delete-row", remove_at)
+    version_at = kbs.calls.index("delete-version-rows", remove_at)
+    delete_at = kbs.calls.index("delete-row", version_at)
     commit_at = kbs.calls.index("commit", delete_at)
-    assert purge_at < remove_at < delete_at < commit_at, "顺序是契约的一部分，不能重排"
+    assert purge_at < remove_at < version_at < delete_at < commit_at, "顺序是契约的一部分，不能重排"
     assert all(doc.id != DOC_ALPHA_DONE for doc in kbs.db._rows.get(Document, []))
 
     entry = kbs.audit_entries()[-1]
@@ -1044,6 +1069,30 @@ def test_delete_document_purges_file_and_row_in_the_original_order(
         "source_type": "markdown",
     }
     assert entry.after_snapshot is None
+
+
+def test_delete_document_also_deletes_its_version_rows(kbs: _Harness) -> None:
+    """零外键的代价（#172）：控制面删文档也要显式删版本行，不能只靠数据面那条路径。"""
+
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = kbs.client.delete(
+        DELETE_DOC_PATH.format(document_id=DOC_ALPHA_DONE), headers=WRITE_HEADERS
+    )
+
+    assert kbs.data(response) == {"document_id": DOC_ALPHA_DONE, "deleted": True}
+    statements = [
+        statement
+        for statement in kbs.db.statements
+        if statement.lstrip().upper().startswith("DELETE")
+    ]
+    assert len(statements) == 1, f"只该有一条 DELETE，实际 {statements}"
+    assert "document_versions" in statements[0], "删的是版本表"
+    assert "delete-version-rows" in kbs.calls
+    version_at = kbs.calls.index("delete-version-rows")
+    delete_at = kbs.calls.index("delete-row", version_at)
+    assert version_at < delete_at, "先清这一篇的从属数据，再删主行"
+    assert kbs.calls[delete_at:].count("commit") == 1, "与删行同一笔事务，只提交一次"
 
 
 def test_delete_document_being_processed_is_rejected(kbs: _Harness) -> None:
@@ -1148,6 +1197,30 @@ def test_read_content_parses_the_source_file_for_file_mode(kbs: _Harness, tmp_pa
     assert "正文一段" in data["content"]
     assert data["length"] == len(data["content"])
     assert data["truncated"] is False
+
+
+def test_read_content_of_a_file_uploaded_document_serves_the_written_back_body(
+    kbs: _Harness, tmp_path: Path
+) -> None:
+    """文件上传的文档：Worker 回写正文之后，调试台读的是**库里**的真实正文（#170）。
+
+    这里刻意让落盘文件不可用（源文件被清理 / 迁移时丢了）：接口仍然回得来，就说明
+    正文真的落库了。此前这一类文档只能靠现场解析源文件——文件不在就只剩一条报错，
+    而「文档正文」在库里始终是空串。
+    """
+
+    document = kbs.document(DOC_ALPHA_DONE)
+    document.source_file_path = str(tmp_path / "cleaned-up.md")  # 这个文件不存在
+    document.source_filename = "cleaned-up.md"
+    document.content = ALPHA_BODY
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    data = kbs.data(kbs.client.get(READ_CONTENT_PATH.format(document_id=DOC_ALPHA_DONE)))
+
+    assert data["content"] == ALPHA_BODY
+    assert data["length"] == len(ALPHA_BODY)
+    assert data["truncated"] is False
+    assert data["status"] == DocumentStatus.SUCCESS
 
 
 def test_read_content_truncates_but_reports_the_real_length(kbs: _Harness) -> None:

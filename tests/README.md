@@ -3,8 +3,8 @@
 本文件是验证矩阵落档：说明每一层测试守什么、当前基线计数、离线 / OCR / 集成三套
 运行命令，以及只能由人执行的容器检查与评测复跑方式。早先按 integration tip `30af3cb`
 统计的「48 条测试」与旧版「不引入项目级 conftest.py」的说法都已作废；下面的计数来自
-当前 tip（第 11 步收尾，2026-11-13 实测：**1739 条用例，1722 passed / 17 skipped**）。
-其中「1739 条用例」是 `uv run pytest --collect-only` 的收集数，「1722 passed / 17 skipped」
+当前 tip（第 12 步 12 张票全部合并 + 两轴评审修复后，2026-11-16 实测：**2631 条用例，2614 passed / 17 skipped**）。
+其中「2631 条用例」是 `uv run pytest --collect-only -q` 的收集数，「2614 passed / 17 skipped」
 是 `uv run pytest -q` 的实测输出，两者相加正好是收集数。
 
 ## 分层
@@ -74,16 +74,25 @@
 
 写路径的 SQL 级证据不在离线套件里（内存 SQLite 只覆盖同步孪生）：`tests/test_integration_cas.py` 有两条 `AsyncSession` 上的 CAS / 重试生命周期用例，`tests/test_integration_worker_loop.py` 有一条并发 24 任务、池上限 15 的连接数用例，都走 `RAG_INTEGRATION_DATABASE_URL` 门禁。
 
+**第 12 步（文档版本管理）新增的测试落点**：这一轮**零新增生产接缝**（父 spec 写死的：三处接缝全部既有），测试散在四层，每一层守的东西不同——**表形状那一层回答「库长什么样」，ASGI 那一层回答「调用方看到什么」，Worker 那一层回答「写进去的是不是同一件事」，脚本那一层回答「运维的命令说话算不算数」**：
+
+- **表形状 / 迁移（⑧，离线）**：`document_versions` 一稿一行（`(document_id, version)` 唯一、**零外键**、`status` 的 `CHECK` 只有 `current` / `archived`）、`chunks.doc_version` 是**真实列**（非空、默认 1、带 `(document_id, doc_version)` 复合索引）且 **JSONB 那份副本已删**、`documents` 的稿次列改名后**值不丢**、归属索引加 `doc_versions` 映射列。迁移一表一迁移、升降对称；`test_retrieval_trace_doc_versions_migration.py` 把 `op` 换成**有状态记录器**，先按十一列的真实形状摆好 `retrieval_traces`、再叠本迁移逐列比对。迁移里两条硬口径在这里变成可执行断言：**回填的校验和必须等于 `app.utils.checksum` 算出来的那个值**、**有切片的文档正文缺失时硬停**；「不能 `alembic upgrade --sql` 离线渲染」也有用例守着那个拒绝分支。文件：`test_document_version_tables.py`、`test_document_versions_migration.py`、`test_document_current_version_migration.py`、`test_retrieval_trace_doc_versions_migration.py`。
+- **ASGI（②）**：四条数据面接口 + 两条控制面接口的错误码与回包形状，全部只看统一响应体与库里留下的行。判重 `20031`、并发冲突 `20029`（撞的是**真**唯一约束，不是替身点头）、处理中 `20025`、稿不存在 `20030`、已是当前稿 `20032`；列版本默认**不带**正文、要正文需显式要求；调试台那两条与数据面**走同一个服务**但换身份（会话 cookie + `x-requested-with`，写路由登记进控制面清单），并且真登录一次拿 cookie、不另造登录流程。「检索只看当前稿」与「回滚后立刻可检索」在真实路由上跨层钉住——后者等价于「切指针 + 新切片带新稿号 + `is_current` 已翻」三件事同时成立。文件：`test_document_version_apis.py`、`test_document_version_rollback_api.py`、`test_document_version_search.py`、`test_console_document_versions.py`、`test_retrieval_current_draft.py`、`test_document_version_rollback_e2e.py`。
+- **Worker 任务（③）**：**正文回写与「删旧切片 + 写新切片 + 状态回写」落在同一笔事务**（`test_indexing_task.py`）；切片带着稿号落库、`purge` 只删目标稿且**两个存储都删**（`test_indexing_dual_write.py`）；重建的正文取自**版本行**而不是文档行快照、重解析**写回同一稿的版本行**且读**这一稿自己的**源文件、任务载荷显式带稿号（`test_document_version_reparse.py`、`test_document_version_write.py`、`test_document_version_repository.py`——后两个用 `sqlite+aiosqlite` 的真会话，钉的是唯一约束、`UPDATE ... WHERE` 与 `ORDER BY` 这些**只有数据库才有答案**的东西）；关键词索引的 `is_current` 翻转登记在**提交之后**、翻转失败只降级不挡主链（`test_keyword_current_draft.py`）。
+- **运维脚本（⑧，离线）**：三条命令的入参、dry-run 与 `--apply` 的分界、退出码——`test_document_version_retention.py`（窗口按**稿数**算、只删**归档**稿、造 5 稿清理后剩 3/4/5、删除键是「文档 + 稿次」且**先删切片再删版本行**、跑第二遍没有候选）、`test_document_content_backfill.py`（只挑正文为空的候选行、`--kb-id` / `--limit` 收窄、**读不到源文件的跳过不算失败**）、`test_document_version_reconcile.py`（四条判据各自的「一致 / 不一致」、关键词能力不可用时那一维记 `undecidable` **不判失败**、有分歧非 0 退出、「在途窗口」与「缺字段」是信息项不是分歧）。另有一条把两个票的边界连起来钉：**保留策略删掉的稿不能回滚**（`test_document_version_rollback.py`）。
+
+纯函数那一侧只补了既有纯函数的用例，没有新文件结构：`test_checksum.py`（规范化只磨三样、同一个意思的两种写法算出同一个校验和）、`test_keyword_query_builder.py`（mapping 的两个字段、召回只带 `is_current` term、`put_mapping` 的调用形状与幂等——**不连真桶**）、`test_retrieval_current_draft.py`（「当前稿」谓词在五处逐字相同）。另有一个新文件 `test_document_chunk_count.py`：内存 SQLite 里造同一文档两稿各若干片，钉住文档列表与控制面知识库树的 `chunk_count` **只数当前稿**——这条数错不报错，只是把各留存稿的切片相加（留 3 稿就约 3 倍）。真实 Elasticsearch 与真 PostgreSQL 仍然只在 env-gated 用例里打；**迁移的守门验收（同一 query 迁移前后条数一致）在真实容器上跑一次，作为上线检查项，不进离线套件**。
+
 ## 当前基线
 
 | 场景 | 命令 | 期望 |
 | --- | --- | --- |
-| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `1722 passed, 17 skipped`（共收集 1739 条） |
-| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 1736 deselected` |
-| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `1725 passed, 14 skipped`（3 条由 skip 变 pass） |
-| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 1736 deselected` |
-| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 1725 deselected` |
-| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 1725 deselected` |
+| 默认离线（**有没有 `.env` 都一样**） | `uv run pytest -q` | `2614 passed, 17 skipped`（共收集 2631 条） |
+| 只跑 OCR（无资产机器） | `uv run pytest -m ocr -q` | `3 skipped, 2628 deselected` |
+| 装了 OCR 资产的机器跑全量 | `uv run pytest -q` | `2617 passed, 14 skipped`（3 条由 skip 变 pass） |
+| 只跑 OCR（有资产机器） | `uv run pytest -m ocr -q` | `3 passed, 2628 deselected` |
+| 只跑集成用例（一个环境变量都没设） | `uv run pytest -m integration -q` | `14 skipped, 2617 deselected` |
+| 只跑真 PostgreSQL 集成用例 | `RAG_INTEGRATION_DATABASE_URL=... uv run pytest -m integration -q` | `10 passed, 4 skipped, 2617 deselected` |
 
 17 条 skip 分**四道门禁**，都不是失败：
 
@@ -93,13 +102,13 @@
   其中 1 条守「查询侧分析器在真实 ES 上真的生效」，见第 4 步票 8 的 `_chinese_` 陷阱）；
 - 1 条嵌入等价性用例（`RAG_INTEGRATION_EMBEDDING=1` 才跑，它会真的调模型）。
 
-CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `1722 passed, 17 skipped`；`ocr`
+CI 的 `quality` job 不装资产、不起容器，所以那里恒为 `2614 passed, 17 skipped`；`ocr`
 与 `integration` 是独立 job，由 `workflow_dispatch` 或 `run-ocr` 标签手动触发。
 
-> 数字怎么来的：`uv run pytest -q --collect-only` 收集 1739 条，`-m ocr` 选中 3 条、
-> `-m integration` 选中 14 条。收集 = passed + skipped（1719 + 17 = 1736；装了 OCR 资产时
-> 1722 + 14 = 1736），deselect = 收集 − 选中（`-m ocr`：1736 − 3 = 1733；
-> `-m integration`：1736 − 14 = 1722）。任何一条测试增减后按这三行重算，不要照抄上一版。
+> 数字怎么来的：`uv run pytest -q --collect-only` 收集 2631 条，`-m ocr` 选中 3 条、
+> `-m integration` 选中 14 条。收集 = passed + skipped（2614 + 17 = 2631；装了 OCR 资产时
+> 2617 + 14 = 2631），deselect = 收集 − 选中（`-m ocr`：2631 − 3 = 2628；
+> `-m integration`：2631 − 14 = 2617）。任何一条测试增减后按这三行重算，不要照抄上一版。
 
 **CI 对齐检查**：把 `.env` 挪走后 `uv run pytest -q` 必须与带 `.env` 的结果完全一致。
 `tests/test_business_errors.py` 与 `tests/test_exception_boundary.py` 的 `client` fixture

@@ -20,9 +20,11 @@
 租约语义因此不可能在两套入口之间漂移。
 
 同步的那几个**仍有读者，但不与上面的异步路径共用**：运维脚本
-（``reindex_knowledge_base`` / ``requeue_stuck_documents``）与启动期装载是独立进程 /
-线程池里的同步读；``get_by_id_for_tenant`` / ``list_by_kb`` 两个同步孪生现在只剩测试在用
-（生产零调用点），留着是为了让状态机的 SQL 级用例能直接读行，不作为第二套生产写法。
+（``reindex_knowledge_base`` / ``requeue_stuck_documents`` /
+``backfill_document_content``）与启动期装载是独立进程 / 线程池里的同步读；
+``get_by_id_for_tenant`` / ``list_by_kb``
+两个同步孪生现在只剩测试在用（生产零调用点），留着是为了让状态机的 SQL 级用例能直接
+读行，不作为第二套生产写法。
 """
 
 from datetime import datetime, timedelta
@@ -111,6 +113,93 @@ def list_stuck(
     if kb_id is not None:
         stmt = stmt.where(Document.kb_id == kb_id)
     return list(db.execute(stmt.order_by(Document.created_at)).scalars().all())
+
+
+def list_missing_content(
+    db: Session, *, kb_id: str | None = None, limit: int | None = None
+) -> list[Document]:
+    """扫出「正文为空」的文档：正文回写之前登记的历史行（第 12 步票 #170）。
+
+    ## 这条查询的纪律（ADR-0006「第 1 次修订」）
+
+    * **仅运维脚本使用**：唯一调用方是 ``scripts/backfill_document_content.py``；
+    * **跨租户是刻意的**：它没有 ``tenant_id`` 参数（连可选都没有）——「库里还有哪些文档
+      没有正文」是整库的一次性运维问题，按租户切分会让别的租户里缺正文的文档永远补不上；
+    * **数据面禁用**：检索 / 列表 / 管控接口一律不得调用它；那些路径上的强制租户过滤
+      不能省，也不得拿这一条当先例。
+
+    判定是 ``content`` 为空串或 ``NULL``：历史行两种都可能（建表时没有默认值的那批
+    是 ``NULL``，文件上传的那批是空串）。``kb_id`` 只缩小范围，``limit`` 供运维先看
+    一小批再决定，两者都不改变「正文为空」的定义。
+    """
+
+    stmt = select(Document).where(func.coalesce(Document.content, "") == "")
+    if kb_id is not None:
+        stmt = stmt.where(Document.kb_id == kb_id)
+    stmt = stmt.order_by(Document.created_at)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.execute(stmt).scalars().all())
+
+
+async def list_with_expired_versions(
+    db: AsyncSession, *, retain: int, kb_id: str | None = None, limit: int | None = None
+) -> list[Document]:
+    """扫出「保留窗口可能非空」的文档：当前稿号 > 保留稿数（第 12 步票 #178）。
+
+    ## 这条查询的纪律（ADR-0006「第 1 次修订」）
+
+    * **仅运维脚本使用**：唯一调用方是 ``scripts/purge_document_versions.py``；
+    * **跨租户是刻意的**：它没有 ``tenant_id`` 参数——清理要问的是「整库里谁的保留窗口
+      非空」，按租户切分只会让一次清理跑成 N 次、且漏掉运维没想到的那些租户；
+    * **数据面禁用**：检索 / 列表 / 管控接口一律不得调用它（也不得拿它当先例）。
+
+    窗口下界是 ``当前稿号 - retain``，所以只有当它 >= 1 时才可能有稿子落在窗口外——
+    一篇只长到第 3 稿、窗口又留 3 稿的文档不必被扫出来，``>=`` 会让绝大多数文档白跑。
+
+    判定用的是**指针**（``documents.current_version``）而不是版本行的 ``max``：窗口按稿数
+    从指针算起是业务定义（D10），两份真值不一致时行为要可预期，而不是随 ``max`` 漂移。
+
+    它这里是**异步**的，与 :func:`list_missing_content` 不同：清理必须走
+    ``purge_document_chunks``，那条只接受 ``AsyncSession``（异步栈第 11 步起），脚本于是
+    整条链都在异步会话上。
+    """
+
+    stmt = select(Document).where(Document.current_version > retain)
+    if kb_id is not None:
+        stmt = stmt.where(Document.kb_id == kb_id)
+    stmt = stmt.order_by(Document.created_at, Document.id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
+
+
+async def list_for_version_reconcile(
+    db: AsyncSession, *, kb_id: str | None = None, limit: int | None = None
+) -> list[Document]:
+    """扫出要参与**文档版本对账**的文档（第 12 步票 #179）。
+
+    ## 这条查询的纪律（ADR-0006「第 1 次修订」）
+
+    * **仅运维脚本使用**：唯一调用方是 ``scripts/verify_document_versions.py``；
+    * **跨租户是刻意的**：它没有 ``tenant_id`` 参数——对账的对象是整库的存量数据，
+      按租户切分会让「另一个租户里的分歧」永远看不见（这正是对上账票存在的意义）；
+    * **数据面禁用**：检索 / 列表 / 管控接口一律不得调用它。
+
+    关键词那一维在读的时候**照旧逐租户传**（ADR-0006 的强制过滤在那儿不能省）：
+    这条扫描只交出「要对账哪些文档」，拿文档 id 去读内容的那一步仍然带租户。
+
+    ``created_at, id`` 双键排序：同一秒建出来的几篇文档之间也要有**确定**的顺序，
+    否则 ``--limit`` 两次跑出来的那两篇可能不是同一批（运维据此定位，不是抽奖）。
+    """
+
+    stmt = select(Document)
+    if kb_id is not None:
+        stmt = stmt.where(Document.kb_id == kb_id)
+    stmt = stmt.order_by(Document.created_at, Document.id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
 
 
 def list_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> list[Document]:
@@ -444,3 +533,50 @@ async def count_processing_for_tenant(
         _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
     )
     return int(result.scalar_one())
+
+
+# ──────────────── 写路径的行锁（第 12 步票 #175：建版本）
+
+
+def lock_statement(document_id: str, *, tenant_id: str):
+    """建版本前的**锁读**语句：``SELECT ... WHERE id + tenant FOR UPDATE``。
+
+    ## 为什么必须有这一句
+
+    稿号是 ``max(version) + 1``（列上没有默认值，见
+    ``app.models.document_version``）。没有行锁时，两个提交会各自读到同一个 ``max``、
+    算出同一个稿号，然后由 ``(document_id, version)`` 唯一约束把其中一个打回去——
+    用户看到的是一次莫名其妙的「请重试」，而它本来就是一次可以正常串行化的写。
+
+    锁的对象是**文档行**（不是版本表）：版本表的行还不存在，锁不了；而「这篇文档的
+    稿次时间轴」正好就是文档行上的当前稿指针，锁它就等于锁住了这条时间轴。
+
+    ## 为什么租户条件也在锁语句里
+
+    跨租户一律「不存在」（ADR-0006）：锁不到行就等于「没有这篇文档」，随后的守卫照旧
+    抛 20016。把租户过滤留在外面（先按 id 锁、再判租户）会让别人的请求等在这把锁上
+    ——一次跨租户探测就变成了一次针对目标文档的锁等待。
+
+    SQLite 方言会忽略 ``FOR UPDATE``（它没有行锁），所以离线用例只能断言**语句形状**；
+    真正的串行化由 PostgreSQL 给。
+    """
+
+    return (
+        select(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .with_for_update()
+    )
+
+
+async def lock_for_version(
+    db: AsyncSession, document_id: str, *, tenant_id: str
+) -> Document | None:
+    """按 id + 租户锁住文档行并读回它；没有这一行就 ``None``（=「文档不存在」）。
+
+    调用方在拿到这把锁之后才允许算稿号、写版本行、切指针、置处理中——顺序是契约的一部分：
+    先锁再读，读到的 ``max`` 与 ``current_version`` 才是别人的提交已经落地的那个值。
+    ``scalars().first()`` 而不是 ``scalar_one_or_none()``：替身会话对锁读只实现前者
+    （与 ``documents.get_by_id_for_tenant_async`` 的收尾一致）。
+    """
+
+    return (await db.execute(lock_statement(document_id, tenant_id=tenant_id))).scalars().first()

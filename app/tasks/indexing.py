@@ -149,6 +149,7 @@ async def _index_in_the_worker_loop(
     tenant_id: str,
     kb_id: str,
     reparse: bool,
+    doc_version: int | None,
     retries: int,
     max_retries: int,
 ) -> None:
@@ -156,12 +157,17 @@ async def _index_in_the_worker_loop(
 
     会话不跨任务复用（一个任务一笔会话、一笔事务边界），复用的是**连接池**——池归循环，
     会话归任务。这个区别是 ADR-0023 决策三的另一半：引擎是进程级的，绑循环的是连接。
+
+    ``doc_version`` 是载荷带来的「这次算哪一稿」（#173），原样交给流水线：Worker 不读
+    指针，迟到的任务因此不会把别的稿写进来。
     """
 
     db = async_session_factory()()
     try:
         try:
-            await IndexingService().index_existing_document(db, document_id, reparse=reparse)
+            await IndexingService().index_existing_document(
+                db, document_id, reparse=reparse, doc_version=doc_version
+            )
         except Exception as exc:  # noqa: BLE001 - 分类处置见 _settle_failure
             await _settle_failure(
                 db,
@@ -185,6 +191,7 @@ def _run_indexing(
     kb_id: str,
     request_id: str | None = None,
     reparse: bool = False,
+    doc_version: int | None = None,
 ) -> None:
     """任务体：与 Celery 装饰器分离，便于用轻量 ``self`` 替身离线测试。
 
@@ -217,6 +224,7 @@ def _run_indexing(
                 tenant_id=tenant_id,
                 kb_id=kb_id,
                 reparse=reparse,
+                doc_version=doc_version,
                 retries=retries,
                 max_retries=max_retries,
             )
@@ -238,11 +246,16 @@ def index_document_task(
     kb_id: str,
     request_id: str | None = None,
     reparse: bool = False,
+    doc_version: int | None = None,
 ) -> None:
     """投递缝（``app/services/index_dispatch.py``）约定的任务入口。
 
     去重不靠 ``task_id``：并发去重由 ``try_claim_for_indexing`` 的数据库 CAS 保证，
     ``task_id=f"doc:{document_id}"`` 只是给日志 / 追踪看。
+
+    ``doc_version`` 是投递方在**投递那一刻**定下的稿号（#173）：Worker 不向指针二次
+    确认，所以迟到的任务不会把别的稿写进来。``None`` 表示投递方不知道（老调用点），
+    此时流水线回落文档行的当前稿指针。
     """
 
     _run_indexing(
@@ -252,4 +265,5 @@ def index_document_task(
         kb_id=kb_id,
         request_id=request_id,
         reparse=reparse,
+        doc_version=doc_version,
     )

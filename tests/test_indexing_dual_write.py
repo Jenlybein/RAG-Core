@@ -30,7 +30,7 @@ from app.providers.parsers.base import ParsedDocument
 from app.repositories import document_repository, knowledge_base_repository
 from app.services import indexing_service
 from app.services.chunk_store import KeywordSearchChunkStore, build_chunk_stores
-from app.services.indexing_service import IndexingService
+from app.services.indexing_service import IndexingService, purge_document_chunks
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
 from tests import fake_db
@@ -54,6 +54,11 @@ class _FakeSession:
         self.info: dict[str, Any] = {}
         self.commits = 0
         self.rollbacks = 0
+        #: ``add`` 进来的行（首个版本行，#175）。真会话里 ``add`` 是同步的。
+        self.added: list[Any] = []
+
+    def add(self, row: Any) -> None:
+        self.added.append(row)
 
     async def commit(self) -> None:
         self.commits += 1
@@ -80,13 +85,25 @@ class _RecordingStore:
         self.calls = calls
         self.name = name
         self.deleted: list[tuple[str, str]] = []
+        self.purged: dict[str, Any] | None = None
         self.written: list[list[dict[str, Any]]] = []
 
     async def delete_by_document_id(
-        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append((document_id, tenant_id))
+        self.purged = {
+            "tenant_id": tenant_id,
+            "index_version": index_version,
+            "doc_version": doc_version,
+        }
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
         self.calls.append(f"add:{self.name}")
@@ -100,6 +117,7 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
         self.calls = calls
         self.written: list[list[dict[str, Any]]] = []
         self.deleted: list[tuple[str, str]] = []
+        self.purged: dict[str, Any] | None = None
         self.fail_on_add = fail_on_add
 
     @property
@@ -113,10 +131,20 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
         self.written.append(chunks)
 
     async def delete_by_document_id(
-        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge:keyword")
         self.deleted.append((document_id, tenant_id))
+        self.purged = {
+            "tenant_id": tenant_id,
+            "index_version": index_version,
+            "doc_version": doc_version,
+        }
 
 
 class _StubEmbeddings:
@@ -139,15 +167,20 @@ class _StubSplitter:
         return self.pieces
 
 
-def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]) -> None:
+def _patch_indexing(
+    monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece], pointer: int = 1
+) -> None:
     document = SimpleNamespace(
         id=DOC_ID,
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="售后手册",
         content="raw",
-        doc_version=1,
+        current_version=pointer,
         source_filename="售后手册.md",
+        # 真行上一定有这一列（首个版本行会把它抄进版本行，#175）；替身缺了它，
+        # 「补版本行」那一步会在套件里炸成一个与业务无关的 AttributeError。
+        source_file_path=None,
     )
 
     async def _get_by_id(_db: Any, _id: str) -> Any:
@@ -208,6 +241,54 @@ def test_keyword_store_satisfies_the_same_write_contract() -> None:
     assert calls == ["add:keyword", "purge:keyword"]
 
 
+def test_purge_scopes_both_stores_by_document_and_draft() -> None:
+    """清除键扩到「文档 + 稿次」时两个存储都按新键删（#173）。
+
+    只删一边会留下永远查不到的幽灵切片：删了向量侧的稿 2、关键词侧还留着，那批文档
+    既不会被召回（向量那一路没有它），也永远不会被清掉——除非重建重新踩到同一稿。
+    所以编排层把同一个 ``doc_version`` 原样发给列表里的每一处存储。
+    """
+
+    calls: list[str] = []
+    vector = _RecordingStore(calls)
+    provider = _RecordingKeywordProvider(calls)
+    stores = build_chunk_stores(vector, provider)
+
+    asyncio.run(
+        purge_document_chunks(
+            _FakeSession(), DOC_ID, tenant_id=TENANT_ID, stores=stores, doc_version=2
+        )
+    )
+
+    assert calls == ["purge:vector", "purge:keyword"]
+    assert [store.purged for store in (vector, provider)] == [
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": 2},
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": 2},
+    ], "两处存储收到的必须是同一个稿号"
+
+
+def test_purge_without_a_draft_keeps_deleting_the_whole_document() -> None:
+    """不传稿次时行为不变：删整篇的所有稿，两个存储都按老键删。"""
+
+    calls: list[str] = []
+    vector = _RecordingStore(calls)
+    provider = _RecordingKeywordProvider(calls)
+
+    asyncio.run(
+        purge_document_chunks(
+            _FakeSession(),
+            DOC_ID,
+            tenant_id=TENANT_ID,
+            stores=build_chunk_stores(vector, provider),
+        )
+    )
+
+    assert [store.purged for store in (vector, provider)] == [
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": None},
+        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": None},
+    ]
+
+
 def test_build_chunk_stores_pairs_vector_store_with_keyword_provider() -> None:
     """默认接线的形状：两个元素，顺序是「向量在前、关键词在后」。"""
 
@@ -266,6 +347,62 @@ def test_indexing_writes_to_both_stores_through_the_same_list(
     assert written[0]["meta"]["title"] == "售后手册"
 
 
+def test_slice_carries_the_draft_number_at_top_level_and_never_in_meta(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """稿号只有一个来源：切片字典**顶层**的 ``doc_version``（落真实列），meta 里那份删掉。
+
+    ``chunks.doc_version`` 是真实列（#172 的迁移建的），写它要的是顶层这个键——
+    向量存储按列写入时读的就是它（见 ``tests/test_index_version.py`` 的落库断言）。
+    JSONB 里再留一份就有了两个来源，而两个来源迟早不一致：一个说第 3 稿、列上说第 2 稿，
+    排查的人根本看不出哪个算数。值仍是「这一片属于第几稿」，来自文档行的当前稿指针。
+    """
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text=ORIGINAL, metadata={"heading_path": HEADING})]
+    _patch_indexing(monkeypatch, pieces=pieces, pointer=4)
+
+    vector = _RecordingStore(calls)
+    provider = _RecordingKeywordProvider(calls)
+    monkeypatch.setattr(indexing_service, "get_vector_store", lambda: vector)
+    monkeypatch.setattr(indexing_service, "get_keyword_search_provider", lambda: provider)
+
+    service = IndexingService(splitter=_StubSplitter(pieces), embeddings=_StubEmbeddings())
+    asyncio.run(service.index_existing_document(_FakeSession(), DOC_ID))
+
+    written = provider.written[0]
+    assert written[0]["doc_version"] == 4, "稿号在顶层，值来自当前稿指针"
+    assert "doc_version" not in written[0]["meta"], "JSONB 里不许再留一份稿号"
+    assert vector.written[0][0]["meta"] == written[0]["meta"], "两路存的必须是同一份 meta"
+    assert vector.written[0][0]["doc_version"] == 4, "两路读到的稿号是同一个"
+
+
+def test_slice_carries_the_current_draft_marker_at_the_top_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """切片字典**顶层**带稿号与「当前稿」标记（#174）：关键词侧要拿它们生成两个 ES 字段。
+
+    为什么放顶层而不是 meta：召回过滤要的是一个布尔 term，而 meta 是「这一版快照」的
+    自由字典——把过滤维度埋在里头，等于让关键词侧去挖一个没人保证的键。指针用不等于
+    默认值的 4 钉住「值来自文档行的当前稿指针」。
+    """
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text=ORIGINAL, metadata={"heading_path": HEADING})]
+    _patch_indexing(monkeypatch, pieces=pieces, pointer=4)
+
+    provider = _RecordingKeywordProvider(calls)
+    monkeypatch.setattr(indexing_service, "get_vector_store", lambda: _RecordingStore(calls))
+    monkeypatch.setattr(indexing_service, "get_keyword_search_provider", lambda: provider)
+
+    service = IndexingService(splitter=_StubSplitter(pieces), embeddings=_StubEmbeddings())
+    asyncio.run(service.index_existing_document(_FakeSession(), DOC_ID))
+
+    written = provider.written[0][0]
+    assert written["doc_version"] == 4, "稿号在切片字典顶层，值来自当前稿指针"
+    assert written["is_current"] is True, "这一批切片就是当前稿"
+
+
 def test_indexing_fails_as_a_whole_when_the_keyword_store_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -308,7 +445,7 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="售后手册",
-        doc_version=1,
+        current_version=1,
         source_type="text",
         source_file_path=None,
         status=DocumentStatus.SUCCESS,

@@ -24,7 +24,11 @@
 
 from __future__ import annotations
 
-from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, DEFAULT_INDEX_VERSION
+from app.models.chunk import (
+    CHUNK_TYPE_REFERENCE_POINTER,
+    DEFAULT_DOC_VERSION,
+    DEFAULT_INDEX_VERSION,
+)
 
 # 可检索文本的字段名。切片原文另存 ``content``（只存不索引），用来原样回给调用方。
 RETRIEVAL_TEXT_FIELD = "retrieval_text"
@@ -32,6 +36,17 @@ RETRIEVAL_TEXT_FIELD = "retrieval_text"
 #: 切片类型字段（#152）。**存进关键词文档是为了过滤它**：纯路标切片只用来建边，
 #: 不参与召回——它进候选池只会占名额，还会把「命中一句『参见别处』」变成一次成功召回。
 CHUNK_TYPE_FIELD = "chunk_type"
+
+#: 稿号字段（#174）。值是「这一片属于第几稿」（``chunks.doc_version`` 的副本）。
+DOC_VERSION_FIELD = "doc_version"
+
+#: 「当前稿」标记（#174）。**召回只用一个布尔 term 过滤它**。
+#:
+#: 为什么是布尔而不是「按文档枚举稿号」：父 spec 明确否决了成对枚举
+#: ``(document_id, doc_version)`` 子句——那种写法的查询体会随库里的文档数一起长，
+#: 库一大就是一次必现的超时。布尔的作用域是「这一片」，索引期算好，召回时只剩一个
+#: 常量条件，查询体大小与数据量无关。
+CURRENT_DRAFT_FIELD = "is_current"
 
 # 写入 / 查询分词器：写入细粒度、查询智能模式。
 INDEX_ANALYZER = "ik_max_word"
@@ -184,6 +199,32 @@ SOURCE_FIELDS = (
 )
 
 
+def build_mapping_update() -> dict:
+    """存量物理索引要补的那一小块 mapping（#174，additive ``put_mapping`` 的载荷）。
+
+    **为什么需要它**：物理索引是第 11 步建的，那时还没有 ``doc_version`` /
+    ``is_current`` 两个字段。ES 对**未映射**字段的 ``term`` 查询不报错，只是命中 0 条
+   ——症状是关键词路静默全空，而向量路照常返回结果，混合检索看起来只是「少了一路」。
+
+    为什么补 mapping 而不是重建索引：``settings`` 与 ``analysis`` 是索引级的、不能后补，
+    但**字段**可以 additive 地加。存量索引里的老文档没有这两个键，它们的 ``is_current``
+    term 匹配不到——那正是「老数据没有稿号信息」的如实结果，由对账脚本而不是检索来管。
+    **载荷只含 ``properties``**：带上 settings 会被 ES 直接拒绝。
+
+    只有这两个字段在这里定义一次：:func:`build_es_mapping` 与补丁共用同一份，写两遍
+    迟早一边加了字段、另一边漏掉。
+    """
+
+    return {
+        "properties": {
+            # 稿号：过滤维度，精确匹配不分词（以后「按稿只读直查」也要用它）。
+            DOC_VERSION_FIELD: {"type": "keyword"},
+            # 当前稿标记：只做布尔匹配，召回时是一个常量 term。
+            CURRENT_DRAFT_FIELD: {"type": "boolean"},
+        }
+    }
+
+
 def build_es_mapping() -> dict:
     """返回建索引的请求体（``indices.create(index=..., **build_es_mapping())``）。
 
@@ -240,6 +281,9 @@ def build_es_mapping() -> dict:
                 },
                 # 切片原文：只存不索引，响应里给调用方的必须是原文而不是检索文本。
                 "content": {"type": "text", "index": False},
+                # 稿号与「当前稿」标记：定义在 ``build_mapping_update`` 一处，
+                # 存量索引的补丁用同一份（#174）。
+                **build_mapping_update()["properties"],
             }
         },
     }
@@ -295,6 +339,10 @@ def build_bm25_query(
                     # 有 must，ES 的默认 minimum_should_match 会退化成 0，
                     # 于是「库 + 版本」这对条件变成了纯加分项——过滤形同虚设。
                     {"bool": {"should": pairing, "minimum_should_match": 1}},
+                    # 只看当前稿（#174）：与向量侧 ``current_draft_filter()`` 同一个口径，
+                    # 只是一个布尔 term。漏掉它，两稿切片并存时关键词路会多召回一份旧稿，
+                    # 而结果看起来完全正常（同一段内容出现两次）。
+                    {"term": {CURRENT_DRAFT_FIELD: True}},
                 ],
                 # 路标切片不进候选（#152）：它没有信息量，命中它等于没命中。
                 # ``must_not`` 里没有这个字段的老文档不受影响（term 不匹配即通过）。
@@ -305,7 +353,11 @@ def build_bm25_query(
 
 
 def build_purge_query(
-    *, document_id: str, tenant_id: str, index_version: str | None = None
+    *,
+    document_id: str,
+    tenant_id: str,
+    index_version: str | None = None,
+    doc_version: int | None = None,
 ) -> dict:
     """返回 ``delete_by_query`` 的请求体：只删这个租户的这一份文档。
 
@@ -315,6 +367,11 @@ def build_purge_query(
     ``index_version`` 非空时再加一条版本过滤（#142）：重建新版本只清目标版本，
     线上那一版原样留着。物理索引本来就按版本隔离，这条过滤是第二道防线——它会在
     「写进了错误物理索引」时把误删挡住，而那种错一旦发生，删掉的就是线上数据。
+
+    ``doc_version`` 非空时再加一条稿号过滤（#173）：重建第 2 稿只清第 2 稿的关键词文档，
+    旧稿原样留着。这条过滤是**必须的**（不像版本过滤只是第二道防线）：同一张物理索引里
+    本来就同时装着这篇文档的每一稿，少了它，重建一次就把旧稿从关键词那一路抹掉了，
+    而向量那一路还在——两路对同一稿给出不同答案。``None`` = 这篇文档的所有稿。
     """
 
     filters: list[dict] = [
@@ -323,8 +380,112 @@ def build_purge_query(
     ]
     if index_version is not None:
         filters.append({"term": {"index_version": index_version}})
+    if doc_version is not None:
+        filters.append({"term": {DOC_VERSION_FIELD: doc_version}})
 
     return {"query": {"bool": {"filter": filters}}}
+
+
+def build_current_draft_update(
+    *, document_id: str, tenant_id: str, doc_version: int
+) -> dict:
+    """返回「把这篇文档的当前稿标记翻到某一稿」的 ``update_by_query`` 请求体（#175）。
+
+    ## 为什么是 ``update_by_query`` 而不是「逐条改」
+
+    这篇文档的切片数随文档长短变化，逐条 ``update`` 就是 N 次往返，而它跑在请求提交之后
+    的那一小段时间里。``update_by_query`` 是一条请求打完整批。
+
+    ## 脚本为什么读 ``_source`` 而不是 ``doc[...]``
+
+    mapping 里 ``doc_version`` 是 **keyword**：``doc['doc_version'].value`` 取出来是字符串
+    ``"3"``，与写进去的整数 3 比较永远不等——那会把**所有**切片标成「非当前稿」，症状是
+    关键词路静默全空（向量路照常返回，看起来只是少了一路）。``ctx._source`` 是写入时的
+    原样值（整数），所以比较成立。
+
+    ## 为什么过滤条件两个都在 ``filter`` 里
+
+    ``tenant_id`` 与 ``document_id`` 少一个就会翻到别的租户 / 别的文档的切片：前者是越权，
+    后者是把别人的当前稿标记搅乱——两者都不报错。
+    """
+
+    return {
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"tenant_id": tenant_id}},
+                    {"term": {"document_id": document_id}},
+                ]
+            }
+        },
+        "script": {
+            "lang": "painless",
+            "source": (
+                f"ctx._source.{CURRENT_DRAFT_FIELD} = "
+                f"(ctx._source.{DOC_VERSION_FIELD} == params.{DOC_VERSION_FIELD})"
+            ),
+            "params": {DOC_VERSION_FIELD: doc_version},
+        },
+    }
+
+
+#: 对账聚合里「按文档分组」的那一层（#179）。名字只在请求体里出现一次，用常量是因为
+#: 解析响应的一方要按同一个键去取——两处各写一个字符串，改一处就会静默读出空结果。
+CURRENT_DRAFT_VERSIONS_AGG = "documents"
+
+#: 每篇文档最多数几个不同的「当前稿」稿号。正常只有一个；多于一个就是分歧的现场
+#: （对账要把它列出来）。取 10 而不是 1：截断会让「两个稿号都被标成当前稿」这种
+#: 分歧看起来只有一个，而它恰恰是要抓的那一条。
+CURRENT_DRAFT_BUCKETS_PER_DOCUMENT = 10
+
+
+def build_current_draft_versions_query(*, tenant_id: str, document_ids: list[str]) -> dict:
+    """返回「这批文档里**标成当前稿**的切片按文档分组数稿号」的搜索请求体（#179）。
+
+    对账专用（``scripts/verify_document_versions.py``）：它问的是「关键词索引认为哪一稿
+    是当前稿」，与库里那条指针比。**只取聚合，不取命中**（``size: 0``）：一篇文档的
+    当前稿切片可能有几百片，把正文捞回来只为了读两个字段是白花带宽。
+
+    ## 为什么三个过滤条件一个都不能省
+
+    * ``tenant_id``：少了它就会把别的租户的稿号数进来（ADR-0006 的强制过滤同样适用于
+      对账——它是一句按租户隔离的读，不是跨租户统计）；
+    * ``is_current``：这就是被核对的那一个布尔（#174 的「当前稿」标记）；
+    * ``document_id``：限量到本次扫描的那一批文档，否则聚合会把整个索引的文档都数一遍
+      （库一大就是一次必现的超时）。
+
+    ## 为什么按 ``document_id`` 分组、再在组内数 ``doc_version``
+
+    ``doc_version`` 在 mapping 里是 keyword，两项 ``terms`` 聚合都成立；而**两层**聚合
+    才能同时回答「这篇文档有没有标当前稿」与「标的是哪一稿」。只做一层（数 doc_version）
+    就会丢掉「哪个稿号属于哪篇文档」，那正好是配对关系（ADR-0010 §5 同一条规矩）。
+    """
+
+    return {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"tenant_id": tenant_id}},
+                    {"term": {CURRENT_DRAFT_FIELD: True}},
+                    {"terms": {"document_id": list(document_ids)}},
+                ]
+            }
+        },
+        "aggs": {
+            CURRENT_DRAFT_VERSIONS_AGG: {
+                "terms": {"field": "document_id", "size": max(len(document_ids), 1)},
+                "aggs": {
+                    "drafts": {
+                        "terms": {
+                            "field": DOC_VERSION_FIELD,
+                            "size": CURRENT_DRAFT_BUCKETS_PER_DOCUMENT,
+                        }
+                    }
+                },
+            }
+        },
+    }
 
 
 def build_keyword_documents(chunks: list[dict]) -> list[dict]:
@@ -333,6 +494,11 @@ def build_keyword_documents(chunks: list[dict]) -> list[dict]:
     关键口径：**可检索字段装检索文本**（``build_retrieval_text`` 的产物），
     与向量侧共用一份文本；切片原文另存 ``content``（mapping 里只存不索引），
     这样 ``mode=bm25`` 回给调用方的仍是原文，而不是「文档：… 正文：…」。
+
+    **稿号与「当前稿」标记**（#174）从切片字典的**顶层**透传：``doc_version`` 是这一片
+    属于第几稿，``is_current`` 是索引期算好的布尔（召回只过滤它，不枚举文档）。
+    两个键都缺省成「第 1 稿 / 当前稿」——老调用点（评测脚本、离线重建）不传它们，
+    而写空值会让 ``is_current`` 的 term 一条都匹配不到。
     """
 
     return [
@@ -348,6 +514,33 @@ def build_keyword_documents(chunks: list[dict]) -> list[dict]:
             "content": chunk["content"],
             # 只为了过滤（路标切片不参与召回）；没有类型的老切片留空串。
             CHUNK_TYPE_FIELD: (chunk.get("meta") or {}).get("chunk_type", ""),
+            # 稿号（#173 + #174）：**只写这一处**。它既是 #173 的删除范围里那条可匹配的
+            # 字段（``build_purge_query`` 的稿号 term 查的就是它），也是 #174 的过滤维度
+            # （mapping 里 ``DOC_VERSION_FIELD`` 是 keyword）。值形态由 ``_doc_version_of``
+            # 统一钉成整数、缺省与 ``chunks.doc_version`` 列默认值同源——ES 的 keyword
+            # 做 term 匹配，写成字符串 "2" 与整数 2 是两个不同的值，所以形态必须一致。
+            DOC_VERSION_FIELD: _doc_version_of(chunk),
+            # 「这一片是不是当前稿」：召回时的唯一过滤条件（#174）。
+            CURRENT_DRAFT_FIELD: _is_current_of(chunk),
         }
         for chunk in chunks
     ]
+
+
+def _doc_version_of(chunk: dict) -> int:
+    """切片字典里的稿号；缺省与 ``chunks.doc_version`` 的列默认值同源。"""
+
+    version = chunk.get("doc_version")
+    return version if isinstance(version, int) else DEFAULT_DOC_VERSION
+
+
+def _is_current_of(chunk: dict) -> bool:
+    """切片字典里的「当前稿」标记；缺省按当前稿解释。
+
+    为什么缺省是 ``True`` 而不是 ``False``：写 ``False`` 会让**所有**老调用点写进去的
+    切片在召回时被这个 term 过滤掉——关键词路静默全空，比多召回一份旧稿难查得多。
+    索引期一定会显式给值（``indexing_service`` 按文档指针算），缺省只服务离线脚本。
+    """
+
+    flag = chunk.get("is_current")
+    return flag if isinstance(flag, bool) else True

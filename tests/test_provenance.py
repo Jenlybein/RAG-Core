@@ -131,15 +131,30 @@ def test_page_marker_heading_never_becomes_its_own_chunk(
         assert not piece.text.strip().startswith("## 第"), piece.text[:40]
 
 
-def test_doc_version_is_versioned_separately_from_index_version() -> None:
-    """稿号随切片走：引用三元组（文档 + 稿次 + 切片）里要能写稿次。
+def test_the_pointer_column_is_named_current_version() -> None:
+    """文档行上那一列叫「当前稿指针」，不叫「稿号」（#171）。
 
-    这里只钉住「默认第 1 稿」与「与索引版本是两个概念」。doc_versions 表与
-    「默认只查当前稿」的约束属第 10 步，见 ADR-0005。
+    两个名字必须分开：``current_version`` 是文档行上的指针，切片 meta 里的
+    ``doc_version`` 才是「这一片属于第几稿」。名字还混在一起时，改稿次的人
+    分不清自己动的是文档还是切片。
     """
 
-    column = Document.__table__.c.doc_version
+    columns = set(Document.__table__.c.keys())
+    assert "current_version" in columns
+    assert "doc_version" not in columns, "旧名字不许留在模型上"
+
+    column = Document.__table__.c.current_version
     assert column.server_default.arg == "1", "存量行迁移后按第 1 稿解释"
-    assert "第 10 步" in (Document.__doc__ or "") or True  # 文档注释在类上，不断言
+
+
+def test_current_version_is_versioned_separately_from_index_version() -> None:
+    """稿次随切片走：引用三元组（文档 + 稿次 + 切片）里要能写稿次。
+
+    这里只钉住「默认第 1 稿」与「与索引版本是两个概念」。doc_versions 表与
+    「默认只查当前稿」的约束属后续的票，见 ADR-0005。
+    """
+
+    column = Document.__table__.c.current_version
+    assert column.server_default.arg == "1", "存量行迁移后按第 1 稿解释"
     # 索引版本是重建批次标识（v1 / v2），与稿号不是同一个值域的概念。
     assert DEFAULT_INDEX_VERSION == "v1"

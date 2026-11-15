@@ -1,4 +1,4 @@
-"""控制面「管库管文档」的业务编排：树、建库、删空库、上传、重建、删除。
+"""控制面「管库管文档」的业务编排：树、建库、删空库、上传、重建、删除、版本列表与回滚。
 
 路由只做「取参数 → 调这里 → 装壳」，所有判定收在这一层。**与数据面同构**是这一票的
 主线：上传/重建/删除复用的不是另一套实现，而是 ``document_service.upload``、
@@ -19,7 +19,13 @@
 
 **审计只记 id / title / status 这类结构化字段，绝不记文档正文。** 控制面的写接口各自
 写一条账本（``kb.create`` / ``kb.delete`` / ``doc.upload`` / ``doc.reindex`` /
-``doc.delete``），读接口（树）不写。
+``doc.delete`` / ``doc.rollback``），读接口（树 / 原文 / 版本列表）不写。
+
+**版本相关的两条（#177）是委托，不是第二份实现**：版本列表交给
+``document_version_service.version_list_data``（与数据面那条列表接口同一个函数），回滚
+整段交给 ``document_version_service.rollback_to_version``。控制面这边只负责「会话租户 →
+套餐快照」「写一条账本」——切指针、归档当前稿、置处理中、提交后投递重建与翻关键词标记
+那一段顺序一旦写两遍，迟早只有一份是对的。
 
 跨租户与不存在都按各自对象已有的「不存在」码：库 ``20008``、文档 ``20016``，绝不返回
 「无权限」——可区分的拒绝会泄露资源存在性（ADR-0006 的同一口径）。
@@ -53,12 +59,14 @@ from app.providers.vectorstores import get_vector_store
 from app.repositories import (
     chunk_repository,
     document_repository,
+    document_version_repository,
     knowledge_base_repository,
     tenant_repository,
 )
 from app.services import (
     document_service,
     document_state,
+    document_version_service,
     knowledge_base_service,
     plan_service,
     static_quota,
@@ -80,6 +88,8 @@ ACTION_KB_DELETE: Final[str] = "kb.delete"
 ACTION_DOC_UPLOAD: Final[str] = "doc.upload"
 ACTION_DOC_REINDEX: Final[str] = "doc.reindex"
 ACTION_DOC_DELETE: Final[str] = "doc.delete"
+#: 回滚是一次指针改动（不产生新稿次）：账本里要能看出「从哪一稿退到哪一稿」（#177）。
+ACTION_DOC_ROLLBACK: Final[str] = "doc.rollback"
 
 #: 删非空库的对外提示。票面要求**消息里说要先删文档**：只说「参数非法」会让面板只能
 #: 弹一句「出错了」，而操作者其实知道下一步做什么。
@@ -325,6 +335,9 @@ async def reindex_document(
             kb_id=document.kb_id,
             request_id=request_id,
             reparse=reparse,
+            # 与数据面同一条约定（#173）：这次重建算哪一稿在投递那一刻从指针取下来，
+            # Worker 不再二次确认，迟到的任务因此不会把别的稿写进来。
+            doc_version=document.current_version,
         ),
     )
     return {
@@ -338,11 +351,14 @@ async def reindex_document(
 async def delete_document(
     db: AsyncSession, *, tenant_id: str, document_id: str, actor: ConsoleIdentity
 ) -> dict[str, Any]:
-    """删除文档：守卫 → purge 切片 → 删原文件 → 删行 → 审计 → 由请求边界提交。
+    """删除文档：守卫 → purge 切片 → 删原文件 → 删版本行 → 删行 → 审计 → 由请求边界提交。
 
     顺序是契约的一部分（见 ``app/api/routes/documents.py`` 的同名端点）；审计插在
-    「删行」与「提交」之间，不改动四步本身。有效处理中（租约未过期）拒绝删除；租约
+    「删行」与「提交」之间，不改动五步本身。有效处理中（租约未过期）拒绝删除；租约
     过期视为 Worker 卡死，允许删除。
+
+    版本行单独删一次（#172）：一张表都没有外键，库不会级联，所以与清除切片、删行
+    同一笔事务里显式删（``document_version_repository.delete_for_document``）。
     """
 
     document = await document_repository.get_by_id_for_tenant_async(
@@ -356,6 +372,7 @@ async def delete_document(
     stores = build_chunk_stores(get_vector_store(), get_keyword_search_provider())
     await purge_document_chunks(db, document_id, tenant_id=tenant_id, stores=stores)
     remove_document_file(document.source_file_path)
+    await document_version_repository.delete_for_document(db, document_id)
 
     before = _document_state_snapshot(document)
     await db.delete(document)
@@ -449,6 +466,89 @@ def _document_submission_snapshot(
 #: 是硬的负担（前端要把它放进 DOM）。超过就截断并**明确告诉调用方截断了**——静默截断
 #: 会让人以为文档只有这么长，进而怀疑索引漏了内容。
 DOCUMENT_CONTENT_MAX_CHARS: Final[int] = 200_000
+
+
+async def list_document_versions(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    document_id: str,
+    include_content: bool = False,
+) -> dict[str, Any]:
+    """列一篇文档的全部稿次（控制面**只读**：不改状态、不写审计、不碰索引）。
+
+    租户只来自会话；按 ``(id, tenant_id)`` 取不到文档就是「不存在」（20016），跨租户
+    同样如此——**不区分「没有」与「不是你的」**，可区分的拒绝会泄露资源存在性。
+
+    出参形状交给 :func:`app.services.document_version_service.version_list_data`：数据面
+    那条列表接口调的是**同一个函数**，于是「控制面多一列、数据面少一列」这种漂移没有
+    机会发生。读路径不声明事务依赖（与树、原文两条读接口同一条：读不提交）。
+    """
+
+    document = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=tenant_id
+    )
+    if document is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    rows = await document_version_repository.list_by_document(db, document_id)
+    return document_version_service.version_list_data(
+        document, rows, include_content=include_content
+    )
+
+
+async def rollback_document(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    document_id: str,
+    version: int,
+    actor: ConsoleIdentity,
+    cache: PlanCache,
+    request_id: str | None,
+) -> dict[str, Any]:
+    """把当前稿指针拨回第 ``version`` 稿：**整段委托** ``document_version_service``。
+
+    控制面这一段只做三件事，一件都不多做：
+
+    1. 会话租户 → 套餐快照（回滚也是一次重建，同样要过「并发处理数」配额）；
+    2. :func:`app.services.document_version_service.rollback_to_version` —— 切指针、当前稿
+       转归档、目标稿转当前稿、同步文档正文与源文件、置处理中，以及提交之后投递重建 +
+       翻转关键词索引的当前稿标记，全部在那一份实现里；
+    3. 写一条账本（``doc.rollback``），与业务写入同一笔事务、由请求边界提交。
+
+    **这里不许出现第二份「切指针 + 归档 + 投递」**：那是本步最贵的一段顺序（见
+    ``document_version_service`` 的模块文档），两份实现漂移的症状是「从面板回滚的文档
+    检索不到」。所以状态守卫（20025）、稿号判定（20030 / 20032）与被拒时的「什么都不写」
+    全部由被委托的服务给出，这里**不重复判一次**——重复判只会让两处迟早不一致。
+
+    账本记的是**指针的变化**（before / after 各一个稿号），不重复记标题与库：标题属于
+    文档本身，不在这次改动范围内；回执里的 ``previous_version`` 正好是「改前」的真值，
+    也就不必为了账本再读一次文档行。
+    """
+
+    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
+    data = await document_version_service.rollback_to_version(
+        db,
+        tenant_id=tenant_id,
+        document_id=document_id,
+        version=version,
+        plan=plan,
+        request_id=request_id,
+    )
+    await append_audit(
+        db,
+        actor=actor,
+        action=ACTION_DOC_ROLLBACK,
+        target=f"doc:{document_id}",
+        before={"document_id": document_id, "current_version": data["previous_version"]},
+        after={
+            "document_id": document_id,
+            "current_version": data["version"],
+            "status": data["status"],
+        },
+    )
+    return data
 
 
 async def read_document_content(

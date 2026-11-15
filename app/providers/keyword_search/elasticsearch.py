@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import weakref
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -21,9 +22,13 @@ from elasticsearch import AsyncElasticsearch, BadRequestError, NotFoundError
 from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.keyword_search.query_builder import (
+    CURRENT_DRAFT_VERSIONS_AGG,
     build_bm25_query,
+    build_current_draft_update,
+    build_current_draft_versions_query,
     build_es_mapping,
     build_keyword_documents,
+    build_mapping_update,
     build_purge_query,
 )
 from app.providers.keyword_search.versioned_index import (
@@ -69,6 +74,9 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         #: 已经确认存在的**物理索引名**集合。按版本分，因为每个版本是一张新索引；
         #: 只记一个布尔会让「v2 的索引还没建」在第一次写 v2 时被跳过。
         self._index_ready: set[str] = set()
+        #: 已经补过「当前稿」mapping 的物理索引（#174）。补丁幂等，但没必要每次写入
+        #: 都发一趟；失败的不记，于是下一次写入会重试。
+        self._mapping_patched: set[str] = set()
         self._timeout_s = timeout_s
         # **一个事件循环一个客户端**。见 `_get_client` 的注释：Celery 每个任务各
         # `asyncio.run` 一次，跨 loop 复用同一个 `AsyncElasticsearch` 会让连接池绑在
@@ -123,21 +131,54 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
 
         参数是物理索引名而不是别名：建完之后**不**自动挂别名——挂别名是激活的事
         （:meth:`activate_version`）。构建期间新建的 v2 索引没人指向它，正是想要的。
+
+        **已存在的索引要补一次 mapping**（#174）：第 11 步建好的物理索引里没有
+        ``doc_version`` / ``is_current`` 两个字段，而 ES 对未映射字段的 ``term``
+        查询不报错、只命中 0 条——关键词路会静默全空。补 mapping 是 additive 的，
+        不重建索引也不动已有文档，见 :func:`build_mapping_update`。
         """
 
         if index_name in self._index_ready:
             return
         client = self._get_client()
+        created = False
         if not await client.indices.exists(index=index_name):
             try:
                 await client.indices.create(index=index_name, **build_es_mapping())
+                created = True
             except BadRequestError as exc:
                 # 两个 Worker 同时第一次索引时，后手会拿到 400
                 # 「resource_already_exists_exception」。那是幂等，不是失败；
                 # 其他 400（mapping 写错等）必须照常抛出去。
                 if exc.error != "resource_already_exists_exception":
                     raise
+        if not created:
+            await self._patch_mapping(index_name)
         self._index_ready.add(index_name)
+
+    async def _patch_mapping(self, index_name: str) -> None:
+        """给存量物理索引补上「当前稿」两个字段（每张索引每进程只试一次）。
+
+        **失败不升级**：这是给老索引打的补丁，不是写入本身。集群只读、字段类型冲突这类
+        拒绝确实会让关键词路继续少一路结果，但让整篇文档因为一次元数据补丁而索引失败，
+        代价比它治的问题大——所以降级成一条 warning（带索引名，便于对账脚本与运维发现），
+        并且**不记进已补集合**：下次再遇到这张索引会重试。
+        """
+
+        if index_name in self._mapping_patched:
+            return
+        try:
+            await self._get_client().indices.put_mapping(
+                index=index_name, **build_mapping_update()
+            )
+        except Exception as exc:  # noqa: BLE001 - 见上：补丁失败不拖垮写入
+            logger.warning(
+                "keyword index mapping patch skipped",
+                index=index_name,
+                error=type(exc).__name__,
+            )
+            return
+        self._mapping_patched.add(index_name)
 
     async def ensure_version_index(self, version: str) -> str:
         """确保该版本的物理索引存在，返回它的名字（给激活用）。"""
@@ -293,7 +334,12 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         ]
 
     async def delete_by_document_id(
-        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         # 给了版本只清那一张物理索引（重建新版本时绝不碰线上那一版）；没给版本时用
         # ``<别名>__*`` 覆盖**全部**版本——删文档要在每个版本里都清掉，否则某个归档版本
@@ -311,6 +357,8 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
                     document_id=document_id,
                     tenant_id=tenant_id,
                     index_version=index_version,
+                    # 稿号是第二个删除范围（#173）：重建第 2 稿只清第 2 稿，旧稿原样留着。
+                    doc_version=doc_version,
                 ),
                 refresh=True,
                 # 通配符匹配到零张索引时 ES 会报「no such index」；那是「本来就没有可删的」。
@@ -319,3 +367,76 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         except NotFoundError:
             # 索引不存在 = 本来就没有可删的文档。
             return None
+
+    async def mark_current_draft(
+        self, document_id: str, *, tenant_id: str, doc_version: int
+    ) -> None:
+        """把这篇文档的关键词切片里「当前稿」标记翻到 ``doc_version``（#175）。
+
+        **打的是别名**（``self._index_name``）而不是物理索引名：检索永远只认别名，翻到一张
+        没人查的物理索引上等于没翻，而且不报错。别的物理版本保持原样——它们不被检索。
+
+        ``refresh=True``：这次翻转之后马上就会有人提问，索引刷新不及时的表现是「关键词路
+        偶发少了新稿的命中」。
+
+        ``conflicts="proceed"``：并发重建正在改同一批文档时会撞版本冲突，``proceed`` 让其余
+        文档照常更新；整批 abort 等于把这次翻转交给运气。冲突那几条会在下一次重建写切片时
+        按文档指针重新算出来（索引期写 ``is_current``）。
+
+        索引还不存在（``NotFoundError``）= 这次没有切片可翻，是诚实的 no-op；其余异常照常
+        抛给调用方，由 ``app.services.keyword_draft`` 降级成 warning——Provider 不替调用方
+        决定「这次失败能不能忍」。
+        """
+
+        try:
+            await self._get_client().update_by_query(
+                index=self._index_name,
+                **build_current_draft_update(
+                    document_id=document_id,
+                    tenant_id=tenant_id,
+                    doc_version=doc_version,
+                ),
+                refresh=True,
+                conflicts="proceed",
+            )
+        except NotFoundError:
+            return None
+
+    async def current_draft_versions(
+        self, *, tenant_id: str, document_ids: Sequence[str]
+    ) -> dict[str, list[int]]:
+        """读回这批文档里**标成「当前稿」**的稿号（对账用，#179）。
+
+        一条两层聚合打完整批（先按文档分组、组内数稿号），因此**不取命中行**：一篇文档
+        的当前稿切片可能有几百片，把正文捞回来只为读两个字段是白花带宽。
+
+        查的是**别名**（``self._index_name``）：线上那一份才是「关键词索引认为的当前稿」。
+
+        桶的 key 是**字符串**（mapping 里 ``doc_version`` 是 keyword），所以这里显式
+        ``int()``——把 ``"3"`` 直接交给判据去和整数指针比，那一维会永远显示「相等」。
+
+        失败语义：空批次与「索引还不存在」都回 ``{}``（没有可答的东西）；其余异常照常抛，
+        由对账脚本分成「能力不存在」与「这一次读不到」两种不可判定——Provider 不替调用方
+        决定这两件事要不要区分。
+        """
+
+        ids = [str(document_id) for document_id in document_ids if document_id]
+        if not ids:
+            return {}
+        try:
+            response = await self._get_client().search(
+                index=self._index_name,
+                **build_current_draft_versions_query(tenant_id=tenant_id, document_ids=ids),
+            )
+        except NotFoundError:
+            return {}
+
+        buckets = ((response.get("aggregations") or {}).get(CURRENT_DRAFT_VERSIONS_AGG) or {}).get(
+            "buckets"
+        ) or []
+        return {
+            str(bucket.get("key")): [
+                int(item.get("key")) for item in (bucket.get("drafts") or {}).get("buckets") or []
+            ]
+            for bucket in buckets
+        }

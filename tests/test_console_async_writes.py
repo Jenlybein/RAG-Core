@@ -38,6 +38,9 @@ CONSOLE_WRITE_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/console/knowledge-bases/{kb_id}/documents"),
     ("POST", "/console/documents/{document_id}/reindex"),
     ("DELETE", "/console/documents/{document_id}"),
+    # 回滚（#177）：切指针 + 写一条 doc.rollback 账本，必须一笔提交——面板上一次点击
+    # 要么整体生效、要么完全不生效。
+    ("POST", "/console/documents/{document_id}/versions/{version}/rollback"),
     ("POST", "/console/keys"),
     ("DELETE", "/console/keys/{key_id}"),
     ("PATCH", "/console/key-policies/{policy_id}"),

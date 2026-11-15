@@ -46,6 +46,7 @@ async def record_retrieval_trace(
     tenant_id: str,
     kb_ids: list[str],
     index_versions: dict[str, str],
+    doc_versions: dict[str, int],
     chunk_ids: list[str],
     top_k: int,
     latency_ms: int,
@@ -61,6 +62,12 @@ async def record_retrieval_trace(
     ``index_versions`` 是「这次查的是哪次构建」（ADR-0025 决策六）：与本次检索范围
     **同一份映射**（``kb_id → version``），由调用方在召回之前解析好递进来。它只存
     版本名（结构），不存原文；多这一列不改变「独立短事务、失败只留 warning」的性质。
+
+    ``doc_versions`` 是「这次命中的是哪几稿」（#179）：与交付单元**同一份映射**
+    （``document_id → doc_version``），由调用方从交付单元上那个真实列收口
+    （:func:`app.services.trace_identity.delivered_doc_versions`）。**没有默认值**：
+    这个参数一旦可以省略，「某条路径忘了记稿号」就会变成一列安静的 NULL，而这一列
+    存在的全部意义正是「事后还答得出那次查的是第几稿」。多条路径都要显式给值。
     """
 
     session: AsyncSession | None = None
@@ -76,6 +83,7 @@ async def record_retrieval_trace(
                     trace_id=trace_id,
                     kb_ids=list(kb_ids),
                     index_versions=dict(index_versions),
+                    doc_versions=dict(doc_versions),
                     chunk_ids=list(chunk_ids),
                     top_k=top_k,
                     latency_ms=latency_ms,

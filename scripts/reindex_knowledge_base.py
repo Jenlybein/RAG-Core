@@ -127,6 +127,9 @@ def reindex_documents(
                 kb_id=kb_id,
                 request_id=None,
                 reparse=False,
+                # 稿号取「投递这一刻」的指针（#173）：Worker 不再读指针，所以脚本即使
+                # 跑到一半有人回滚了这篇文档，这一次投递仍然算它当初那一稿。
+                doc_version=doc.current_version,
             )
         except Exception:
             failed += 1

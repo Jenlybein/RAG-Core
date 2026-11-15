@@ -33,6 +33,10 @@ class ChunkStore(Protocol):
     * 给了版本 → 只清那个版本，别的版本原样留着。重建新版本时必须这样——把线上那一版
       一起删掉，构建期间的检索就会**空一阵**（这正是「构建期间线上照旧查旧版本」要防的）；
     * ``None`` → 清该文档的全部版本。删文档走这条：文档没了，任何版本里的切片都不该留下。
+
+    ``doc_version`` 是**第二个删除范围**（#173，与索引版本正交）：给了稿号只清那一稿
+    （重建第 2 稿时第 1 稿的切片原样留着——「每稿各留切片」），``None`` 清这篇文档的
+    所有稿（删文档）。两条范围会同时给：同一稿可能被多个索引版本各写过一遍。
     """
 
     async def add_chunks(self, db: AsyncSession, chunks: list[dict]) -> None: ...
@@ -44,6 +48,7 @@ class ChunkStore(Protocol):
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None: ...
 
 
@@ -64,9 +69,13 @@ class KeywordSearchChunkStore:
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         await self._provider.delete_by_document_id(
-            document_id, tenant_id=tenant_id, index_version=index_version
+            document_id,
+            tenant_id=tenant_id,
+            index_version=index_version,
+            doc_version=doc_version,
         )
 
 

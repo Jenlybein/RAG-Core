@@ -130,3 +130,61 @@ async def parse_upload_request(
         content=getattr(payload, "content", ""),
         request_id=submitted_request_id(request),
     )
+
+
+@dataclass(frozen=True)
+class VersionInput:
+    """一次「提交新版本」请求被解析成的统一形状（#175）。
+
+    与 :class:`UploadInput` 同一个分流规则（multipart = 文件模式，其余 = JSON 模式），
+    差集只有一处：这里没有 ``kb_id`` / ``title``——文档是从路径里认的，标题属于文档本身，
+    改标题不是「建版本」这件事的一部分。
+    """
+
+    is_file: bool
+    filename: str | None
+    data: bytes
+    content: str
+    request_id: str | None
+
+
+async def parse_version_request(
+    request: Request,
+    *,
+    file: UploadFile | None,
+    json_model: type[BaseModel],
+) -> VersionInput:
+    """按 content-type 解析一次「提交新版本」，缺什么补什么、错什么按 20002 拒。
+
+    与 :func:`parse_upload_request` **共用同一批错误体常量**：缺文件、非法 JSON 都要在两个
+    入口给出逐字相同的 20002，否则调用方得按入口各写一套兜底。
+    """
+
+    content_type = request.headers.get("content-type", "")
+
+    if content_type.startswith("multipart/form-data"):
+        if file is None:
+            raise RequestValidationError([_MISSING_FILE_ERROR])
+        return VersionInput(
+            is_file=True,
+            filename=file.filename or "",
+            data=await file.read(),
+            content="",
+            request_id=submitted_request_id(request),
+        )
+
+    try:
+        payload = json_model.model_validate(await request.json())
+    except ValidationError as exc:
+        raise RequestValidationError(exc.errors()) from None
+    except ValueError:
+        raise RequestValidationError([_INVALID_JSON_ERROR]) from None
+
+    return VersionInput(
+        is_file=False,
+        filename=None,
+        data=b"",
+        content=getattr(payload, "content", ""),
+        request_id=submitted_request_id(request),
+    )
+

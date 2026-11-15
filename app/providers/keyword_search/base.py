@@ -14,6 +14,7 @@
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 
 class KeywordSearchProvider(ABC):
@@ -73,7 +74,12 @@ class KeywordSearchProvider(ABC):
 
     @abstractmethod
     async def delete_by_document_id(
-        self, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         """删某文档的关键词文档；必须带 tenant_id 过滤，否则会删到别的租户。
 
@@ -82,4 +88,48 @@ class KeywordSearchProvider(ABC):
         ``app/providers/keyword_search/versioned_index.py``），所以「全部版本」意味着
         遍历该库的全部版本物理索引——只删生效那一个会留下幽灵文档：某个归档版本被重新
         启用时，那些已删文档会原样回来。
+
+        ``doc_version`` 是**第二个删除范围**（#173，与索引版本正交）：给了稿号只删那一稿，
+        ``None`` 删这篇文档的所有稿（删文档那条老路径）。同一张物理索引里装着这篇文档的
+        每一稿，所以稿号在这里不是「第二道防线」而是**唯一**的那道：少了它，重建一次就
+        把旧稿从关键词那一路抹掉，而向量那一路还留着。
+        """
+
+    @abstractmethod
+    async def mark_current_draft(
+        self, document_id: str, *, tenant_id: str, doc_version: int
+    ) -> None:
+        """把这篇文档的关键词切片里「当前稿」标记翻到 ``doc_version``（#175）。
+
+        指针前移（``documents.current_version``）之后必须调它：不翻的话，旧稿的切片仍带着
+        ``is_current=true``，关键词路会继续召回旧稿，而**症状是同一段内容出现两次**——
+        向量那一路已经只看新稿了。
+
+        范围是「这一篇文档、这一个租户」：少任何一个，翻的就是别人的切片。
+
+        **实现方的失败语义**：抛异常即可，调用方（``app.services.keyword_draft``）负责
+        降级成 warning。Provider 自己不要在内部吞掉错误——那样「没翻成」就没有任何痕迹。
+        """
+
+    @abstractmethod
+    async def current_draft_versions(
+        self, *, tenant_id: str, document_ids: Sequence[str]
+    ) -> dict[str, list[int]]:
+        """这批文档在关键词索引里**被标成「当前稿」**的稿号（对账用，#179）。
+
+        返回 ``{document_id: [doc_version…]}``。一篇正常只有一个稿号（当前稿的每一片都带
+        同一个）；**多于一个就是分歧的现场**，由调用方（``app.services.document_version_reconcile``）
+        判，Provider 只如实回答。
+
+        为什么这条读能力必须挂在 Provider 上，而不是让脚本自己去连 ES：查询体、别名、
+        版本命名都是这一层的事（``build_current_draft_versions_query`` 就在旁边）；脚本
+        自己拼一遍，就是第二套「关键词索引长什么样」的知识，而它只会在 ES 升级时过期。
+
+        **查的是别名**（``self._index_name``）：线上那一份才是「关键词索引认为的当前稿」，
+        已归档的物理版本不参与检索，也就没有对账的意义。
+
+        **空批次不发语句**（回 ``{}``）：一次空扫描不该换来一条 ``terms: []`` 的查询。
+        **索引还不存在**（``NotFoundError``）回 ``{}``：那是「关键词库里一个字都没有」，
+        不是故障。**其他失败一律抛**：调用方要把「能力不存在」与「能力在、这一次读不到」
+        分成两种不可判定（前者不用排障，后者要）。
         """

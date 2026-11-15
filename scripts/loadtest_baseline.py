@@ -169,6 +169,9 @@ def _build_corpus() -> Corpus:
                 SimpleNamespace(
                     kb_id=KB_ID,
                     id=chunk_id,
+                    # 稿号是**真实列**（#174 起折叠从它取值，不再读 meta 里那份副本），
+                    # 替身行因此必须带这一列——缺了它，回查会在 int(None) 上炸掉。
+                    doc_version=1,
                     meta={
                         "chunk_type": "text",
                         "section_id": f"sec-{section}",
@@ -390,6 +393,26 @@ class ScriptedSession:
             self._record("close", started)
 
 
+def _table_names(froms: Any) -> set[str]:
+    """一条语句的 FROM 里出现了哪些表名（JOIN 进文档表之后 ``froms[0]`` 是个 Join）。
+
+    #174 给检索路径上的三条读各加了一次 ``JOIN documents``（「当前稿」条件要列与列比较），
+    于是「第一张表叫什么」这种判断不再成立——``froms[0].name`` 对 ``Join`` 是空串，
+    分派会静默落到 ``unknown``。这里摊平一层：Join 的左右两侧都算数。
+    """
+
+    names: set[str] = set()
+    for source in froms or ():
+        name = getattr(source, "name", None)
+        if isinstance(name, str) and name:
+            names.add(name)
+            continue
+        # Join / Alias 之类：把左右两侧递归摊平（深度只有一层，但不写死层数）。
+        for side in (getattr(source, "left", None), getattr(source, "right", None)):
+            names |= _table_names([side]) if side is not None else set()
+    return names
+
+
 def _shape_of(statement: Any) -> str:
     """按语句的**结构**分派（不编译：一次 compile 0.1~0.5ms，会污染读数）。
 
@@ -400,6 +423,9 @@ def _shape_of(statement: Any) -> str:
     * ``chunk_meta``：``SELECT chunks.kb_id, chunks.id, chunks.metadata ...``（折叠回查）；
     * ``unit_rows``：``SELECT ... chunks.content ...``（折叠取整节）；
     * ``vector``：向量分支那条 pgvector 语句（``<=>``，在**执行池线程**上）。
+
+    三条读自 #174 起都 JOIN 了 ``documents``（当前稿条件），所以表的判断走
+    :func:`_table_names` 而不是「第一张表」。
     """
 
     text = getattr(statement, "text", None)
@@ -411,10 +437,10 @@ def _shape_of(statement: Any) -> str:
         froms = statement.get_final_froms()
     except Exception:  # noqa: BLE001 - 不是 Select（UPDATE/DELETE 等）就不认识
         return "unknown"
-    table = getattr(froms[0], "name", "") if froms else ""
-    if table == "knowledge_bases":
+    tables = _table_names(froms)
+    if "knowledge_bases" in tables:
         return "kb_row"
-    if table != "chunks":
+    if "chunks" not in tables:
         return "unknown"
     names = {getattr(column, "name", "") or "" for column in statement.selected_columns}
     if "count" in names:

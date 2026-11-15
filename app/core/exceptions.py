@@ -43,6 +43,15 @@ class ErrorCode(IntEnum):
     FILE_TOO_LARGE = 20026
     REINDEX_REQUIRES_FORCE = 20027
     UNSUPPORTED_DOCUMENT_FORMAT = 20028
+    # ── 文档版本（第 12 步 · #175）────────────────────────────────────────────
+    # 稿号是**写入侧算出来的**（max(version) + 1），两个写入方同时算出同一个号时由
+    # (document_id, version) 唯一约束顶住：那时不是 500，而是「换个号再来一次」。
+    DOCUMENT_VERSION_CONFLICT = 20029
+    DOCUMENT_VERSION_NOT_FOUND = 20030
+    DOCUMENT_VERSION_UNCHANGED = 20031
+    # 「这一稿已经是当前稿」属于 #176 的回滚语义；本票用不到它，但词汇位先占好——
+    # 之后再补这个码时，「20032 是什么」不应该有第二种答案。
+    DOCUMENT_VERSION_ALREADY_ACTIVE = 20032
 
     # 3xxxx：存储段，仅预留，不定义成员（全表里没有调用点）。
 

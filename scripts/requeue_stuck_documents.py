@@ -112,6 +112,9 @@ def requeue_documents(
                 kb_id=doc.kb_id,
                 request_id=None,
                 reparse=False,
+                # 与脚本入口同一条约定（#173）：稿号在投递那一刻从指针取下来。被卡住的
+                # 任务算的还是当初那一稿，救援不该把它改写成「现在这一稿」。
+                doc_version=doc.current_version,
             )
         except Exception:
             failed += 1

@@ -101,7 +101,11 @@ from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
 from app.services.retrieval_options import RetrievalOptions
 from app.services.retrieval_trace import record_retrieval_trace
-from app.services.trace_identity import delivered_chunk_ids, trace_id_for
+from app.services.trace_identity import (
+    delivered_chunk_ids,
+    delivered_doc_versions,
+    trace_id_for,
+)
 from app.utils.id_generator import new_retrieval_log_id
 
 
@@ -301,6 +305,9 @@ async def gated_research(
         tenant_id=key.tenant_id,
         kb_ids=list(kb_ids),
         index_versions=dict(index_versions),
+        # 一次 Research = 一行归属索引（ADR-0028）：稿号同样取**最终证据**那些单元上的
+        # 真实列（#179）。子检索各自命中的稿不在这里记——它们不单独成行。
+        doc_versions=delivered_doc_versions(outcome.materials),
         chunk_ids=delivered_chunk_ids(outcome.materials),
         top_k=options.top_k,
         latency_ms=outcome.duration_ms,

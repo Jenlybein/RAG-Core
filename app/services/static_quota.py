@@ -15,6 +15,8 @@
 | 建知识库（``knowledge_base_service.create_kb``） | :func:`ensure_kb_quota` | 这个租户的库数 vs ``max_kb`` |
 | 上传文档（``document_service.upload``） | :func:`ensure_upload_quota` | 这个库的文档数 vs ``max_documents_per_kb``；再数全租户处理中文档 vs ``max_processing_documents`` |
 | 重建索引（``POST /documents/{id}/reindex``） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
+| 提交新版本（``POST /documents/{id}/versions``，#175） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
+| 回滚到某一稿（``POST /documents/{id}/versions/{v}/rollback``，#176） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
 
 把限制写在「控制台接口」上而不是这三处，是同一件事的另一种失败方式：脚本、CLI、将来
 另一个入口只要不经过那个接口，套餐就形同虚设。
@@ -85,7 +87,8 @@ async def ensure_upload_quota(
 async def ensure_processing_quota(db: AsyncSession, *, tenant_id: str, plan: PlanSpec) -> None:
     """再入队一份解析任务之前：这个租户还有没有并发处理名额。
 
-    上传与重建都调它。重建尤其不能漏：它跳过「单库文档数」（文档本来就在库里），
+    上传、重建、建版本、回滚**四条都调它**：四者的共同点不是「写哪个接口」，而是「都会让
+    队列里多一份解析任务」。重建尤其不能漏：它跳过「单库文档数」（文档本来就在库里），
     却照样往队列里塞一份工作。
     """
 

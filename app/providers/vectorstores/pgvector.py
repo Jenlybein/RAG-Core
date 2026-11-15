@@ -17,8 +17,10 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
+    DEFAULT_DOC_VERSION,
     DEFAULT_INDEX_VERSION,
     Chunk,
+    current_draft_filter,
     scope_filter,
 )
 from app.models.document import Document
@@ -66,6 +68,10 @@ class PgVectorStore(VectorStore):
                     meta=c.get("meta", {}),
                     # 索引版本随行落库；调用方没给时用列默认值，不写 NULL。
                     index_version=c.get("index_version", DEFAULT_INDEX_VERSION),
+                    # 稿号是**真实列**（#172 的迁移加的），写入侧在这一票跟上（#173）：
+                    # 调用方把「这一片属于第几稿」放在切片字典的顶层。缺省值与列默认值
+                    # 同源（第 1 稿），绝不写 NULL——列是非空的。
+                    doc_version=c.get("doc_version") or DEFAULT_DOC_VERSION,
                 )
                 for c in chunks
             ]
@@ -95,6 +101,7 @@ class PgVectorStore(VectorStore):
                 Chunk.tenant_id == tenant_id,
                 Chunk.kb_id == kb_id,
                 not_reference_pointer(),
+                current_draft_filter(),
             )
             .order_by(distance)
             .limit(top_k)
@@ -126,6 +133,10 @@ class PgVectorStore(VectorStore):
         以及每行**自带 ``kb_id``**（一次跨库召回，结果必须能归属到某个库）。
         打分口径完全一致：``score = 1 - 余弦距离``。
 
+        两条路径都带「只看当前稿」（``current_draft_filter``，#174）：两稿切片并存的
+        时刻（切稿之后、保留策略删掉旧稿之前）漏掉这一条，旧稿切片会以同等分数挤进
+        TopK，而结果看起来完全正常——只是同一段内容出现了两份。
+
         排序只按距离升序、一次取 ``top_k``：这是「一次全局召回」。分库各取
         ``top_k`` 再合并看着公平，实际让不相关的库也各占名额。
         """
@@ -145,6 +156,7 @@ class PgVectorStore(VectorStore):
                 Chunk.tenant_id == tenant_id,
                 build_scope_filter(index_versions),
                 not_reference_pointer(),
+                current_draft_filter(),
             )
             .order_by(distance)
             .limit(top_k)
@@ -155,6 +167,75 @@ class PgVectorStore(VectorStore):
                 "chunk_id": r.chunk_id,
                 "kb_id": r.kb_id,
                 "document_id": r.document_id,
+                "title": r.title,
+                "content": r.content,
+                "score": 1 - float(r.distance),
+            }
+            for r in rows
+        ]
+
+    async def similarity_search_document_version(
+        self,
+        db: AsyncSession,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        document_id: str,
+        doc_version: int,
+        index_version: str,
+        top_k: int,
+    ) -> list[dict]:
+        """锁定某篇某稿的召回：按版本只读直查的底层（#176）。
+
+        与 :meth:`similarity_search_scope` 的差别只有条件：范围从「``kb_id → 索引版本``
+        的配对映射」换成「一篇文档 + 一个稿号 + 一个索引版本」，而**``current_draft_filter``
+        被刻意去掉**——它的实现是 ``chunks.doc_version = documents.current_version``
+        （列与列比较），历史稿的切片一片都对不上；直查历史稿却带着它，结果永远是空，
+        而那看起来完全像「这一稿没内容」——正是这条路径要排查的那种误判。
+
+        去掉它带来两个必须由参数兜住的约束：
+
+        * ``tenant_id``：少了它就是跨租户召回（ADR-0006）；
+        * ``index_version``：旧索引版本的行还留在库里（#142 的「构建期间查旧版本」），
+          不按版本收窄会把两次构建的切片混进结果。
+
+        **默认路径一个字没改**：不传稿号的召回仍走 :meth:`similarity_search_scope`，
+        仍然只看当前稿（``tests/test_retrieval_current_draft.py`` 与
+        ``tests/test_document_version_search.py`` 各钉一遍）。
+
+        每行自带 ``doc_version``：回包要说清「这条是第几稿的片」，而稿号是真实列，
+        读它比相信调用方传入的稿号更可靠。
+        """
+
+        distance = Chunk.embedding.cosine_distance(query_vector).label("distance")
+        stmt = (
+            select(
+                Chunk.id.label("chunk_id"),
+                Chunk.kb_id,
+                Chunk.document_id,
+                Chunk.doc_version,
+                Chunk.content,
+                Document.title,
+                distance,
+            )
+            .join(Document, Document.id == Chunk.document_id)
+            .where(
+                Chunk.tenant_id == tenant_id,
+                Chunk.document_id == document_id,
+                Chunk.doc_version == doc_version,
+                Chunk.index_version == index_version,
+                not_reference_pointer(),
+            )
+            .order_by(distance)
+            .limit(top_k)
+        )
+        rows = (await db.execute(stmt)).all()
+        return [
+            {
+                "chunk_id": r.chunk_id,
+                "kb_id": r.kb_id,
+                "document_id": r.document_id,
+                "doc_version": r.doc_version,
                 "title": r.title,
                 "content": r.content,
                 "score": 1 - float(r.distance),
@@ -191,12 +272,19 @@ class PgVectorStore(VectorStore):
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
-        """删该文档的切片行；``index_version`` 非空时只删那一版（#142）。
+        """删该文档的切片行；两个范围参数都可缺省，缺省即「不按这一维收窄」。
+
+        ``index_version`` 非空时只删那一版（#142）。
 
         **带版本删是为了不弄空线上那一版**：重建 v2 时若把这份文档的 v1 行也删了，
         构建期间的检索会在一段时间里查不到它——而「构建期间线上照旧查旧版本」恰恰要求
         旧行原样不动。
+
+        ``doc_version`` 非空时只删那一稿（#173）：重建第 2 稿时第 1 稿的切片一个字节都
+        不动（ADR-0005 D4 选 B「每稿各留切片」）。两者正交：**同一稿可能被多轮索引版本
+        各写一遍**，所以两个条件要同时带。
         """
 
         statement = delete(Chunk).where(
@@ -204,5 +292,7 @@ class PgVectorStore(VectorStore):
         )
         if index_version is not None:
             statement = statement.where(Chunk.index_version == index_version)
+        if doc_version is not None:
+            statement = statement.where(Chunk.doc_version == doc_version)
         await db.execute(statement)
         await db.flush()

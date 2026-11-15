@@ -239,6 +239,31 @@ def test_delete_scoped_to_one_version_only_touches_that_physical_index() -> None
     )
 
 
+def test_delete_scoped_to_one_draft_filters_by_the_draft_number() -> None:
+    """按「文档 + 稿次」删（#173）：查询体里的稿号过滤与纯函数一字不差。
+
+    重建第 2 稿时只清第 2 稿的关键词文档：别稿的切片原样留着，否则回滚到第 1 稿时
+    关键词那一路会空着——而向量那一路还在，症状是「有的问题查得到、有的查不到」。
+    """
+
+    client = _FakeClient()
+
+    asyncio.run(
+        _provider(client).delete_by_document_id(
+            "doc-1", tenant_id=TENANT_ID, index_version="v2", doc_version=2
+        )
+    )
+
+    sent = client.delete_calls[0]
+    assert sent["index"] == "rag_chunks__v2"
+    assert (
+        sent["query"]
+        == build_purge_query(
+            document_id="doc-1", tenant_id=TENANT_ID, index_version="v2", doc_version=2
+        )["query"]
+    )
+
+
 def test_add_chunks_writes_the_retrieval_text_under_chunk_id() -> None:
     """写入用 chunk_id 当 ``_id``：重复索引同一份文档天然幂等。"""
 

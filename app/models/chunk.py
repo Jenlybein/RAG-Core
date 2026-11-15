@@ -19,15 +19,19 @@ content 是**切片原文**（原样返回给调用方）；送进 embedding 的
 from collections.abc import Mapping
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index, String, Text, and_, false, or_
+from sqlalchemy import Index, Integer, String, Text, and_, false, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.base import Base
+from app.models.document import Document
 
 # 切片默认索引版本；列默认值、索引期写入与迁移回填共用这一个常量。
 DEFAULT_INDEX_VERSION = "v1"
+
+#: 切片默认稿号（第 1 稿）：列默认值、关键词文档缺省值与迁移回填共用这一个常量。
+DEFAULT_DOC_VERSION = 1
 
 #: 路标切片的类型名：除了一句「参见别处」之外没有实质内容的片。
 #:
@@ -64,10 +68,34 @@ def scope_filter(index_versions: Mapping[str, str]) -> ColumnElement[bool]:
     return or_(*pairs)
 
 
+def current_draft_filter() -> ColumnElement[bool]:
+    """「这一片属于当前稿」：``chunks.doc_version = documents.current_version``（#174）。
+
+    这是全仓**唯一**一处「当前稿」谓词：向量召回、折叠取整节、空结果计数与溯源回查
+    都编译它，写四遍的下场是其中一遍迟早漏掉——而漏掉的那一处不会报错，只会「多召回
+    一份旧稿」或「把旧稿的切片当成当前稿的」。
+
+    为什么是**列与列比较**而不是应用层传一个稿号进来：
+
+    * 指针在文档行上（``documents.current_version``），由库来算就不会出现「缓存里的
+      指针过期」这种只在切稿瞬间成立的故障；
+    * 调用方因此不需要先查一次文档表——少一次往返，也少一个能传错的值。
+
+    前置条件：语句里必须 JOIN 了 ``documents``（``Document``），否则条件编译不出来。
+    不用 ``JOIN`` 的写法（先把当前稿号读出来再传参）会把「读指针」与「按指针过滤」
+    拆成两个时刻，中间正好是别人翻指针的窗口（ADR-0005）。
+
+    与 :func:`scope_filter` 正交：那个管「哪一次重建」（索引版本），这个管「哪一稿」。
+    """
+
+    return Chunk.doc_version == Document.current_version
+
+
 class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (
         Index("ix_chunks_tenant_id_kb_id_index_version", "tenant_id", "kb_id", "index_version"),
+        Index("ix_chunks_document_id_doc_version", "document_id", "doc_version"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -82,4 +110,15 @@ class Chunk(Base):
         nullable=False,
         default=DEFAULT_INDEX_VERSION,
         server_default=DEFAULT_INDEX_VERSION,
+    )
+    # 稿号：这一片属于第几稿（与「索引版本」正交，见 ADR-0005）。
+    #
+    # 它是**真实列**而不是 JSONB 里的一个键（#172）：稿号只有一个来源。检索侧自
+    # #174 起按它与文档的当前稿指针对齐（:func:`current_draft_filter`），所以这一列
+    # 的默认值必须与写入缺省、关键词文档缺省、迁移回填同源（``DEFAULT_DOC_VERSION``）。
+    doc_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=DEFAULT_DOC_VERSION,
+        server_default=str(DEFAULT_DOC_VERSION),
     )
