@@ -243,15 +243,19 @@ def _queue_side_effects(
     request_id: str | None,
     doc_version: int,
 ) -> None:
-    """登记「提交之后」的副作用：目前是投递重建（带稿号）。
+    """登记「提交之后」的两件副作用：投递重建（带稿号）+ 翻转关键词索引的当前稿标记。
 
-    **排在提交之后**：库先落地、副作用后发生。反过来的话，Worker 可能去读一行还没提交
-    的文档，任务跑得比事务快时看到的是旧稿。
+    **都排在提交之后**：库先落地、副作用后发生。反过来的话，Worker 可能去读一行还没提交
+    的文档，而关键词索引会指向一个还不存在的稿次（那一刻检索按 ``is_current`` 过滤，
+    命中的切片属于一份数据库里查不到的稿）。
 
     稿号在**投递那一刻**固定下来（#173）：Worker 不再回读指针，于是迟到的任务也不会写错稿。
+    两件副作用的失败语义不同：投递失败就是这次提交失败（异常照抛）；翻转失败只降级
+    （见 ``app.services.keyword_draft``）——索引里的标记是派生视图，不是真值。
     """
 
     from app.services.index_dispatch import enqueue_document, enqueue_document_after_commit
+    from app.services.keyword_draft import flip_current_draft_after_commit
 
     after_commit(
         db,
@@ -264,6 +268,14 @@ def _queue_side_effects(
             reparse=False,
             # 这次重建算的是**刚建好的那一稿**：库里的指针已经前移，但迟到的读取可能还没看到，
             # 所以随载荷带走。
+            doc_version=doc_version,
+        ),
+    )
+    after_commit(
+        db,
+        lambda: flip_current_draft_after_commit(
+            document_id=document_id,
+            tenant_id=tenant_id,
             doc_version=doc_version,
         ),
     )

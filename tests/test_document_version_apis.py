@@ -306,6 +306,50 @@ def test_nothing_is_dispatched_when_the_submission_is_rejected(api: SimpleNamesp
     assert api.publisher.calls == []
 
 
+def test_the_keyword_current_draft_flip_is_also_registered_after_the_commit(
+    api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """关键词索引的「当前稿」翻转也排在这一笔提交之后，而且带的是**新稿号**。
+
+    不翻的话，指针已经前移、旧稿切片却仍带着 ``is_current=true``：关键词路会继续召回旧稿，
+    而向量那一路已经只看新稿——两路对同一稿给出不同答案，症状是「同一段内容出现两次」。
+    """
+
+    _one_version_ready(api)
+    flips: list[dict[str, Any]] = []
+    keyword_draft = importlib.import_module("app.services.keyword_draft")
+
+    async def _record(*, document_id: str, tenant_id: str, doc_version: int) -> None:
+        flips.append(
+            {"document_id": document_id, "tenant_id": tenant_id, "doc_version": doc_version}
+        )
+
+    monkeypatch.setattr(keyword_draft, "flip_current_draft_after_commit", _record)
+
+    _submit(api)
+
+    assert flips == [{"document_id": DOC_ID, "tenant_id": TENANT_ID, "doc_version": 2}]
+
+
+def test_the_flip_is_not_scheduled_when_the_submission_is_rejected(
+    api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """被拒的提交连翻转都不登记：它挂在提交上。"""
+
+    _one_version_ready(api)
+    flips: list[dict[str, Any]] = []
+    keyword_draft = importlib.import_module("app.services.keyword_draft")
+
+    async def _record(**_kwargs: Any) -> None:
+        flips.append(_kwargs)
+
+    monkeypatch.setattr(keyword_draft, "flip_current_draft_after_commit", _record)
+
+    _submit(api, content=OLD_CONTENT)
+
+    assert flips == []
+
+
 # ── 内容未变 ──
 
 
