@@ -36,8 +36,6 @@
 
 ## 不做的事
 
-## 不做的事
-
 按版本直查（#176 的读侧，见 :mod:`app.services.version_search`）。本模块负责「往前长一稿」
 （:func:`create_version`）、「把指针拨回旧稿」（:func:`rollback_to_version`，#176）与「把窗口
 外的稿子清掉」（:func:`purge_expired_versions`，#178）——三者是同一条时间轴的不同操作，
