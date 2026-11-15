@@ -25,12 +25,14 @@
 ``app.db.transaction`` 的异步孪生。同一个路由文件里只剩一套会话依赖——迁移期那种
 「两个会话依赖并存」的形状随最后一个同步入口一起消失了。
 
-按 ``document_id`` 取文档一律经 ``get_by_id_for_tenant``（ADR-0006）：缺失与跨租户
-统一按「不存在」（20016）处理，不泄露存在性。守卫一律走 ``document_state`` 的
-``ensure_reindexable`` / ``ensure_deletable``，不在路由里另写 if。
+按 ``document_id`` 进来的入口一律先过 :func:`_scoped_document`（按 id + 租户取文档
+——缺失与跨租户统一按「不存在」（20016）处理，不泄露存在性——紧接着判数据范围白名单）：
+那两步在重建 / 删除 / 建版本 / 列版本 / 回滚 / 只读直查六处逐字相同，抄六份的下场是漏一处
+就是一条越权入口。守卫一律走 ``document_state`` 的 ``ensure_reindexable`` /
+``ensure_deletable``，不在路由里另写 if。
 
-四个入口都先过**第二道关卡**（数据范围白名单，``app.services.data_scope``）：上传与
-列文档按请求里的 ``kb_id`` 判，重建与删除按文档所属的库判。越界与跨租户同一个码
+**第二道关卡**（数据范围白名单，``app.services.data_scope``）：上传与列文档按请求里的
+``kb_id`` 判，其余按文档所属的库判（在 :func:`_scoped_document` 里）。越界与跨租户同一个码
 （20008），理由与 ``ensure_visible`` 相同——可区分的拒绝会泄露资源存在性。
 """
 
@@ -48,6 +50,7 @@ from app.core.auth import DevKeyContext
 from app.core.exceptions import AppError, ErrorCode
 from app.db.async_session import get_async_db, get_async_transaction
 from app.db.transaction import AsyncTransaction, after_commit
+from app.models.document import Document
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import (
@@ -185,6 +188,35 @@ async def list_documents(
     return ok(data)
 
 
+async def _scoped_document(
+    db: AsyncSession, *, document_id: str, key: DevKeyContext
+) -> Document:
+    """按 ``(id, tenant_id)`` 取文档 + 第二道关卡（数据范围白名单）——**六条入口共用这一份**。
+
+    顺序是契约，不能反：
+
+    1. **先按 id + 租户取**：缺失与跨租户统一「文档不存在」（20016），不泄露存在性；
+    2. **再判白名单**：这条入口按 ``document_id`` 进来，范围要看**它所属的库**（``doc.kb_id``），
+       所以必须先取到文档才判得了；越界与跨租户同一个码（20008），同样不泄露存在性。
+
+    为什么抽出来：这两步在重建 / 删除 / 建版本 / 列版本 / 回滚 / 只读直查六条入口上逐字相同，
+    六份拷贝里漏一处（少一次 ``ensure_kb_scope``、或先判范围再取文档）就是一条越权入口，
+    而它不报错——只是能点到别人的库。``*_document_version`` 这几条尤其容易漏：它们看起来
+    「只是按 id 读一篇文档」，与库白名单无关。
+
+    路由这一层不在这里做状态守卫（``document_state.ensure_*``）与套餐配额：那些是业务规则，
+    各自入口的守卫时机不同（重建看租约、回滚要读锁内的真值）。
+    """
+
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+    return doc
+
+
 @router.post(
     "/documents/{document_id}/reindex",
     response_model=ApiResponse[ReindexDocumentData],
@@ -216,15 +248,8 @@ async def reindex_document(
     Worker 的选择位，表示忽略库内 ``content``、重解析落盘原始文件。
     """
 
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=key.tenant_id
-    )
-    if doc is None:
-        raise AppError(ErrorCode.NOT_FOUND)
-
-    # 第二道关卡：白名单。这条入口按 ``document_id`` 进来，因此范围要看**它所属的库**；
-    # 取文档那一句已经强制带了租户，范围判定紧接着做，之后才轮到状态守卫。
-    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+    # 取文档 + 第二道关卡（白名单按它所属的库判），顺序与理由见 ``_scoped_document``。
+    doc = await _scoped_document(db, document_id=document_id, key=key)
 
     document_state.ensure_reindexable(doc, force=force)
 
@@ -292,14 +317,8 @@ async def delete_document(
     所以由这条路径显式删，且与清除切片、删行同一笔事务。
     """
 
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=key.tenant_id
-    )
-    if doc is None:
-        raise AppError(ErrorCode.NOT_FOUND)
-
-    # 第二道关卡：白名单（同重建：按文档进来，范围看它所属的库）。
-    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+    # 取文档 + 第二道关卡（同重建：范围按文档所属的库判，见 ``_scoped_document``）。
+    doc = await _scoped_document(db, document_id=document_id, key=key)
 
     document_state.ensure_deletable(doc)
 
@@ -358,13 +377,8 @@ async def create_document_version(
         request, file=file, json_model=CreateDocumentVersionRequest
     )
 
-    # 按 id + 租户取文档：缺失与跨租户统一 20016（不泄露存在性），随后才是范围白名单。
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=key.tenant_id
-    )
-    if doc is None:
-        raise AppError(ErrorCode.NOT_FOUND)
-    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+    # 按 id + 租户取文档（缺失与跨租户统一 20016，不泄露存在性），随后才是范围白名单。
+    await _scoped_document(db, document_id=document_id, key=key)
 
     data = await document_version_service.create_version(
         db,
@@ -400,14 +414,7 @@ async def list_document_versions(
     保证两者一致，但读的时候只认指针）。
     """
 
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=key.tenant_id
-    )
-    if doc is None:
-        raise AppError(ErrorCode.NOT_FOUND)
-
-    # 第二道关卡：白名单（与创建 / 重建 / 删除同一条，按文档所属的库判）。
-    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+    doc = await _scoped_document(db, document_id=document_id, key=key)
 
     rows = await document_version_repository.list_by_document(db, document_id)
     return ok(
@@ -450,14 +457,8 @@ async def rollback_document_version(
     ``app.db.transaction`` 一处；副作用（投递 + 翻标记）登记在 ``after_commit``。
     """
 
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=key.tenant_id
-    )
-    if doc is None:
-        raise AppError(ErrorCode.NOT_FOUND)
-
-    # 第二道关卡：白名单（与建版本 / 列版本 / 重建 / 删除同一条，按文档所属的库判）。
-    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+    # 取文档 + 第二道关卡（与建版本 / 列版本 / 重建 / 删除同一条，见 ``_scoped_document``）。
+    await _scoped_document(db, document_id=document_id, key=key)
 
     data = await document_version_service.rollback_to_version(
         db,
@@ -497,14 +498,8 @@ async def search_document_version(
     套统一信封。
     """
 
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=key.tenant_id
-    )
-    if doc is None:
-        raise AppError(ErrorCode.NOT_FOUND)
-
-    # 第二道关卡：白名单（与创建 / 列版本 / 回滚同一条，按文档所属的库判）。
-    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+    # 取文档 + 第二道关卡（与创建 / 列版本 / 回滚同一条，见 ``_scoped_document``）。
+    await _scoped_document(db, document_id=document_id, key=key)
 
     data = await version_search.search_document_version(
         db,
