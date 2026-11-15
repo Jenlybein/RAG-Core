@@ -43,7 +43,7 @@
 | #109 | 旁证跑批 + 控制台触发；未评分不按 0 分算 | `test_side_evidence.py` 12 条；实跑见下节 |
 | #110 | 低分导出；观测不可用即明确失败、不落空文件 | `test_export_eval_cases.py` 10 条；**实机跑通整条闭环**（见第六节）：真实反馈 → 反查 → 从栈取回问句原文 → 落候选集 |
 
-> 脚注（#141 追加，上表正文不动——它是第 9 步的验收快照）：`retrieval_traces` 自 [ADR-0025](adr/0025-index-as-build-artifact.md) 决策六起是**十一列**，新增 `index_versions`（`{kb_id: version}`，回答「这次查的是哪次构建」）。
+> 脚注（#141 追加，上表正文不动——它是第 9 步的验收快照）：`retrieval_traces` 自 [ADR-0025](adr/0025-index-as-build-artifact.md) 决策六起是**十一列**，新增 `index_versions`（`{kb_id: version}`，回答「这次查的是哪次构建」）。第 12 步（[ADR-0031](adr/0031-document-version-management.md)）再增至**十二列**，新增 `doc_versions`（`{document_id: doc_version}`，回答「这次命中的是哪几稿」）。
 
 ## 四、真实跑（带出处，能复现）
 

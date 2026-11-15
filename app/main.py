@@ -28,6 +28,8 @@
   POST   /console/knowledge-bases/{kb_id}/documents
   POST   /console/documents/{document_id}/reindex
   DELETE /console/documents/{document_id}
+  GET    /console/documents/{document_id}/versions          （第 12 步 #177：版本列表）
+  POST   /console/documents/{document_id}/versions/{v}/rollback  （第 12 步 #177：回滚，写门）
 
 HTTP 数据面（/api/v1/*）：
   GET    /api/v1/auth/me
@@ -37,6 +39,10 @@ HTTP 数据面（/api/v1/*）：
   GET    /api/v1/documents
   POST   /api/v1/documents/{document_id}/reindex
   DELETE /api/v1/documents/{document_id}
+  POST   /api/v1/documents/{document_id}/versions            （第 12 步 #175：建版本）
+  GET    /api/v1/documents/{document_id}/versions            （第 12 步 #175：列版本）
+  POST   /api/v1/documents/{document_id}/versions/{v}/rollback  （第 12 步 #176：回滚）
+  POST   /api/v1/documents/{document_id}/versions/{v}/search    （第 12 步 #176：按版本只读直查）
   POST   /api/v1/rag/retrieve
   POST   /api/v1/rag/research          （第 11 步 C 票：受控 Research，默认无授权=20013）
 
