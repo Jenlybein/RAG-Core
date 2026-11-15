@@ -9,6 +9,12 @@
 迁移期最容易漂移的东西——两边的租户过滤、版本过滤、排序一旦分叉，症状是「异步路径偶尔
 多出几条别人的切片」这种事后极难查的故障。
 
+**三条读都带「只看当前稿」**（#174）：``chunks.doc_version = documents.current_version``
+由 :func:`app.models.chunk.current_draft_filter` 一处编译，三条语句各 JOIN 一次文档表。
+数字上多了一次 JOIN，换来的是「两稿切片并存的窗口里，旧稿永远不会被折进整节、也不会被
+算进『库里有内容』」——这正是父 spec 点名的五个口径中的三个（另外两个在 Provider 里）。
+回查那条还是唯一把稿号带出来的地方：``doc_version`` 来自真实列。
+
 **文档列表的分组计数已经在异步面上**（第 11 步票 #130）：列文档（数据面）与控制面的树
 都换了 ``AsyncSession``，所以 ``count_by_document_ids`` 只剩这一份实现。写侧的
 ``delete_by_document_id`` 仍只有同步面——purge 走的是存储抽象
@@ -22,34 +28,68 @@ from sqlalchemy import Integer, Select, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import Chunk, scope_filter
+from app.models.chunk import Chunk, current_draft_filter, scope_filter
+from app.models.document import Document
+
+
+def _join_documents(statement: Select[Any]) -> Select[Any]:
+    """把文档表 JOIN 进来：**当前稿指针在文档行上**，不 JOIN 就没有「谁是当前稿」。
+
+    一并写成一个函数是为了让三条语句长得一样——各写一遍 ``.join(Document, ...)`` 时，
+    漏掉一处的那条查询不会报错，只会静默少一个条件（旧稿切片照旧被折进整节）。
+    """
+
+    return statement.join(Document, Document.id == Chunk.document_id)
 
 
 def _meta_statement(
     *, tenant_id: str, kb_ids: list[str], chunk_ids: list[str]
-) -> Select[tuple[str, str, dict]]:
-    """折叠回查：按 ``(kb_id, chunk_id)`` 一次取回 ``meta``。"""
+) -> Select[tuple[str, str, dict, int]]:
+    """折叠回查 / 溯源回查：按 ``(kb_id, chunk_id)`` 取回 ``meta`` 与稿号。
+
+    **稿号也在这里取**（``chunks.doc_version`` 列）：它是引用三元组（文档 + 稿次 + 切片）
+    的第三段，而 JSONB 里那份副本在 #172 的迁移里已经删掉。
+
+    **带当前稿条件**（#174）：切片被重建替换之后，旧 id 在这一条查询里查不到——调用方
+    据此把 ``doc_version`` 落成 ``null``（明确的「已过期」），而不是拿到当前稿那一行的
+    元数据、把当前稿的页码与稿号当成旧切片的。
+    """
 
     # 唯一键是 ``(kb_id, chunk_id)``（ADR-0010），不是单独的 chunk_id：跨库同 ID
     # 的两条结果必须能各自取到自己的 meta，不能被后到的那条覆盖。
-    return select(Chunk.kb_id, Chunk.id, Chunk.meta).where(
+    return _join_documents(
+        select(Chunk.kb_id, Chunk.id, Chunk.meta, Chunk.doc_version)
+    ).where(
         Chunk.tenant_id == tenant_id,
         Chunk.kb_id.in_(kb_ids),
         Chunk.id.in_(chunk_ids),
+        current_draft_filter(),
     )
 
 
 async def fetch_meta_by_chunk_ids(
     db: AsyncSession, *, tenant_id: str, kb_ids: list[str], chunk_ids: list[str]
 ) -> dict[tuple[str, str], dict]:
-    """:func:`fetch_meta_by_chunk_ids` 的异步面（检索链路，第 11 步票 #127）。"""
+    """:func:`fetch_meta_by_chunk_ids` 的异步面（检索链路，第 11 步票 #127）。
+
+    返回的每份 meta 里都带 ``doc_version``，**值来自真实列**（同名字段对外）。放在同一份
+    字典里而不是多返回一个结构：调用方（折叠补定位字段）只认一个键名，不关心它出身是列
+    还是 JSONB——#172 之后 JSONB 那份副本不再存在，两处读法迟早分叉。
+    """
 
     if not chunk_ids or not kb_ids:
         return {}
     rows = (
         await db.execute(_meta_statement(tenant_id=tenant_id, kb_ids=kb_ids, chunk_ids=chunk_ids))
     ).all()
-    return {(str(row.kb_id), str(row.id)): dict(row.meta or {}) for row in rows}
+    return {
+        (str(row.kb_id), str(row.id)): {
+            **(row.meta or {}),
+            # 列覆盖 JSONB：老行里或许还留着 ``doc_version`` 这个键，它已经不可信。
+            "doc_version": int(row.doc_version),
+        }
+        for row in rows
+    }
 
 
 def _unit_rows_statement(
@@ -59,14 +99,18 @@ def _unit_rows_statement(
     unit_paths: list[str],
     index_version: str | None,
 ) -> Select[tuple[str, str, int, str, str, str, int]]:
-    """折叠取整节：按 h2 级章节路径取该单元下的全部切片。"""
+    """折叠取整节：按 h2 级章节路径取该单元下的全部切片。
+
+    **只取当前稿的行**（#174）：漏掉这条条件的症状最隐蔽——命中片是当前稿的，折出来的
+    整节却拼上了旧稿的句子，「一半旧稿一半新稿」，而结果看起来完全正常。
+    """
 
     heading = Chunk.meta["heading_path"].astext
     clauses = []
     for path in unit_paths:
         clauses.append(heading == path)
         clauses.append(heading.like(f"{path} > %"))
-    stmt = (
+    stmt = _join_documents(
         select(
             Chunk.document_id,
             heading,
@@ -76,12 +120,14 @@ def _unit_rows_statement(
             Chunk.meta["chunk_type"].astext,
             Chunk.meta["table_part"].astext.cast(Integer),
         )
-        .where(
-            Chunk.tenant_id == tenant_id,
-            Chunk.document_id.in_(document_ids),
-            or_(*clauses),
-        )
-        .order_by(Chunk.document_id, Chunk.meta["chunk_index"].astext.cast(Integer), Chunk.id)
+    ).where(
+        Chunk.tenant_id == tenant_id,
+        Chunk.document_id.in_(document_ids),
+        or_(*clauses),
+        current_draft_filter(),
+    )
+    stmt = stmt.order_by(
+        Chunk.document_id, Chunk.meta["chunk_index"].astext.cast(Integer), Chunk.id
     )
     if index_version is not None:
         stmt = stmt.where(Chunk.index_version == index_version)
@@ -141,19 +187,22 @@ def build_parent_rows_statement(
     **等值**：父节自己那几片，不多不少。
 
     排序按 ``chunk_index``：父节正文拼回去必须与文档里的顺序一致（ADR-0010 的确定性）。
+
+    同样**只取当前稿**（#174）：它是 collapsed 关闭分支的第 6 个调用点，交付口径与
+    折叠取整节相同——补的父节正文若来自旧稿，读者拿到的是「这一段当初不是这样写的」。
     """
 
     heading = Chunk.meta["heading_path"].astext
     chunk_index = Chunk.meta["chunk_index"].astext.cast(Integer)
-    stmt = (
+    stmt = _join_documents(
         select(Chunk.document_id, heading, chunk_index, Chunk.content)
-        .where(
-            Chunk.tenant_id == tenant_id,
-            Chunk.document_id.in_(sorted({str(item) for item in document_ids})),
-            heading.in_(sorted({str(item) for item in heading_paths})),
-        )
-        .order_by(Chunk.document_id, chunk_index, Chunk.id)
+    ).where(
+        Chunk.tenant_id == tenant_id,
+        Chunk.document_id.in_(sorted({str(item) for item in document_ids})),
+        heading.in_(sorted({str(item) for item in heading_paths})),
+        current_draft_filter(),
     )
+    stmt = stmt.order_by(Chunk.document_id, chunk_index, Chunk.id)
     if index_version is not None:
         stmt = stmt.where(Chunk.index_version == index_version)
     return stmt
@@ -194,17 +243,23 @@ async def fetch_parent_rows(
 def _count_by_kb_ids_statement(
     *, tenant_id: str, index_versions: Mapping[str, str]
 ) -> Select[tuple[int]]:
-    """空结果判定的计数语句：租户 + 范围。
+    """空结果判定的计数语句：租户 + 范围 + 当前稿。
 
     范围用的是**召回时那一条配对条件**（``app.models.chunk.scope_filter``），不是
     「所有库 × 所有版本」：口径一旦与召回不同，「库里有内容、本次没命中」就会被
     误判成「空库」，而这正是 ``empty_reason`` 唯一要说清的事。
+
+    「当前稿」同理（#174）：数的是**召回真能看见的行**。少了这一条，两稿并存时计数会
+    说「库里有内容」（2 片）而召回一条都没有（当前稿那 0 片），于是
+    ``empty_reason`` 把「这一稿没内容」误报成「检索没命中」——两个原因的处置完全不同。
     """
 
-    return (
-        select(func.count())
-        .select_from(Chunk)
-        .where(Chunk.tenant_id == tenant_id, scope_filter(index_versions))
+    return _join_documents(
+        select(func.count()).select_from(Chunk)
+    ).where(
+        Chunk.tenant_id == tenant_id,
+        scope_filter(index_versions),
+        current_draft_filter(),
     )
 
 

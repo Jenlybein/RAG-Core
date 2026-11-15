@@ -26,10 +26,12 @@ class Document(Base):
     source_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     status: Mapped[int] = mapped_column(Integer, default=DocumentStatus.PROCESSING)
     # 当前稿指针（指向第几稿）。与 index_version（第几次重建）正交，见 ADR-0005。
-    # 名字与「稿号」分开：切片 meta 里的 doc_version 才是「这一片属于第几稿」，
-    # 这里只说文档行现在指着哪一稿。本步它还只随切片落库，**不参与过滤**：
-    # doc_versions 表与「默认只查当前稿」的约束留给后续的票；在那之前按稿次
-    # 过滤会拿到没有约束保护的结果。
+    # 名字与「稿号」分开：切片的 ``chunks.doc_version`` 才是「这一片属于第几稿」，
+    # 这里只说文档行现在指着哪一稿。自 #174 起它是**检索的范围条件**：向量 / 折叠 /
+    # 计数 / 溯源四条 SQL 都用 :func:`app.models.chunk.current_draft_filter` 与
+    # ``chunks.doc_version`` 做列比较，指针因此只有一个真值来源（这一行），
+    # 应用层不缓存它——缓存里的指针过期只在切稿那一瞬间成立，而那种 bug 只表现为
+    # 「多召回一份旧稿」。
     current_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
     # 索引租约开始时间（Worker 抢占时写）。它区分「已入队但 Worker 还没开工」
     # （NULL）与「已经被抢占、正在跑」（有时间戳）；没有这一列，仅凭 status 与

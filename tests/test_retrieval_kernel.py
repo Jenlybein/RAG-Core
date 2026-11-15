@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 
 from app.core.config import settings
-from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.chunk import DEFAULT_DOC_VERSION, DEFAULT_INDEX_VERSION
 from app.observability import reset_trace_sink, set_trace_sink
 from app.observability.stage_timing import (
     STAGE_COLLAPSE,
@@ -416,6 +416,9 @@ class _FoldSession:
 
     按调用顺序回答（不是解析 SQL）：多查一次会立刻表现为 IndexError，而不是静默通过。
     ``scopes`` 记下每次单元回查带的参数——「按版本分组」这件事因此可观察。
+
+    回查行上带 ``doc_version``（#174）：稿号是**真实列**，折叠补定位字段时读的是它，
+    不是 JSONB 里那份已经不可信的副本。替身缺这一列就不再等价于真行。
     """
 
     def __init__(
@@ -430,7 +433,12 @@ class _FoldSession:
             self.scopes.append({"kind": "meta"})
             return _Rows(
                 [
-                    SimpleNamespace(id=chunk_id, kb_id=kb_id, meta=meta)
+                    SimpleNamespace(
+                        id=chunk_id,
+                        kb_id=kb_id,
+                        meta=meta,
+                        doc_version=meta.get("doc_version") or DEFAULT_DOC_VERSION,
+                    )
                     for (kb_id, chunk_id), meta in self.metas.items()
                 ]
             )

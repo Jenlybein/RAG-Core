@@ -273,6 +273,10 @@ class IndexingService:
                 f"embedding count mismatch: {len(retrieval_texts)} texts -> {len(vectors)} vectors"
             )
 
+        # 这一批切片的稿号：就是文档行当前稿指针所指的那一稿。写成一个局部变量而不是
+        # 直接抄进字面量，是为了让下面那句「是不是当前稿」的比较**看得出比的是什么**——
+        # 等到「按归档稿重建」（#175/#176）有了别的稿号来源，这里不会静默变成一句谎话。
+        slice_doc_version = doc.current_version
         chunks: list[dict[str, Any]] = [
             {
                 "id": new_chunk_id(),
@@ -287,6 +291,12 @@ class IndexingService:
                 "embedding": vector,
                 # 写入目标版本：构建写新版本，上传 / 单篇重建写库上的生效版本（#142）。
                 "index_version": version,
+                # 稿号与「当前稿」标记（#174）：在**切片字典顶层**，不是 meta 里。
+                # 关键词侧靠它们写 ``doc_version`` / ``is_current`` 两个 ES 字段
+                # （召回只用 ``is_current`` 一个 term 过滤），向量侧照旧落
+                # ``chunks.doc_version`` 列。
+                "doc_version": slice_doc_version,
+                "is_current": slice_doc_version == doc.current_version,
                 "meta": {
                     # 解析器产出的 metadata 必须跟着切片走，否则「元数据.engine 含 ocr」
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。

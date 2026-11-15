@@ -224,6 +224,11 @@ async def _with_locating_fields(
 
     ``metas`` 可以由调用方传进来复用——折叠路径上已经查过一次，不该为同一批 ID
     再查一遍库。
+
+    **稿号来自真实列**（#174）：``fetch_meta_by_chunk_ids`` 把 ``chunks.doc_version``
+    带进这份 meta（#172 的迁移已删掉 JSONB 里那份副本），所以对外字段名不变、值只有一个
+    来源。回查不到这一片时 meta 是空字典，``doc_version`` 落成 ``null``——那是**如实**的
+    「这一片已经不在当前稿里了」，而不是静默沿用当前稿的稿号。
     """
 
     if metas is None:

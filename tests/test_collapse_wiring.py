@@ -11,7 +11,7 @@ import importlib
 from types import SimpleNamespace
 from typing import Any
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
+from app.models.chunk import DEFAULT_DOC_VERSION, DEFAULT_INDEX_VERSION
 from app.services import result_collapse
 from app.services.result_collapse import OVERFETCH_FACTOR
 from tests.fake_db import AsyncSessionAdapter
@@ -53,6 +53,10 @@ class _Session:
 
     顺序与 `collapse_results` 的调用顺序一致；用队列而不是解析 SQL，是为了让
     「多查了一次」这种回归立刻表现为 IndexError 而不是静默通过。
+
+    替身行上带 ``doc_version``（#174）：真行上它是一列（``chunks.doc_version``，
+    NOT NULL），回查时折叠读的就是这一列——题面里 ``meta`` 里那份 JSONB 副本自
+    #172 起已经不可信。替身缺这一列就不再等价于真行。
     """
 
     def __init__(self, *, metas: dict[str, dict], rows: list[tuple]) -> None:
@@ -66,7 +70,15 @@ class _Session:
         self.calls += 1
         if self.calls == 1:
             return _Rows(
-                [SimpleNamespace(id=cid, meta=meta, kb_id=KB) for cid, meta in self.metas.items()]
+                [
+                    SimpleNamespace(
+                        id=cid,
+                        meta=meta,
+                        kb_id=KB,
+                        doc_version=meta.get("doc_version") or DEFAULT_DOC_VERSION,
+                    )
+                    for cid, meta in self.metas.items()
+                ]
             )
         if self.calls == 2:
             return _Rows(self.rows)
@@ -247,7 +259,12 @@ def test_collapse_off_returns_the_raw_pieces() -> None:
             if self.calls == 1:
                 return _Rows(
                     [
-                        SimpleNamespace(id=cid, meta=meta, kb_id=KB)
+                        SimpleNamespace(
+                            id=cid,
+                            meta=meta,
+                            kb_id=KB,
+                            doc_version=meta.get("doc_version") or DEFAULT_DOC_VERSION,
+                        )
                         for cid, meta in self.metas.items()
                     ]
                 )
