@@ -19,20 +19,24 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 import pytest_asyncio
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
+from app.db.transaction import async_transaction
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.repositories import document_repository, document_version_repository
+from app.services import document_version_service
 from app.utils.status import DocumentStatus
 
 TENANT_ID = "tenant-a"
 KB_ID = "kb-1"
 OTHER_KB_ID = "kb-2"
+DOC_ID = "doc-1"
 
 _SCRIPTS_DIR = Path(__file__).resolve().parents[1] / "scripts"
 
@@ -52,7 +56,10 @@ async def retention_db() -> AsyncIterator[AsyncSession]:
     async with engine.begin() as connection:
         await connection.run_sync(Document.__table__.create)
         await connection.run_sync(DocumentVersion.__table__.create)
-    async with AsyncSession(engine) as session:
+    # ``expire_on_commit=False`` 与生产会话工厂一致（``app.db.async_session.AsyncSessionLocal``）：
+    # 清理脚本对每篇文档各开一笔事务，提交之后仍要读这一行的指针 / 租户，用默认的
+    # ``expire_on_commit=True`` 会在套件里造出一条生产上不存在的失败路径（``MissingGreenlet``）。
+    async with AsyncSession(engine, expire_on_commit=False) as session:
         try:
             yield session
         finally:
@@ -260,3 +267,355 @@ async def test_scan_can_be_narrowed_by_kb_and_capped(retention_db: AsyncSession)
 
     assert {doc.id for doc in only_kb} == {"doc-a", "doc-b"}
     assert len(capped) == 1
+
+
+# ───────────────────────────────── 服务层：窗口按稿数算（纯函数，先钉口径）
+
+
+@pytest.mark.parametrize(
+    ("current_version", "retain", "expected_floor"),
+    [
+        (5, 3, 2),
+        (4, 3, 1),
+        (3, 3, 0),
+        (9, 1, 8),
+        (1, 3, -2),
+    ],
+)
+def test_the_window_floor_is_the_current_draft_minus_the_retain_count(
+    current_version: int, retain: int, expected_floor: int
+) -> None:
+    """``当前稿号 - 保留稿数``：按**稿数**算，与时间无关（D10 / 用户故事 29）。
+
+    期望值是手算的字面量，不是「用同一个减法再算一遍」：这条钉的是「窗口就在稿号轴上」，
+    任何按 ``created_at`` 收窄的改法都会在这里露出来。
+    """
+
+    assert (
+        document_version_service.retention_floor(current_version, retain)
+        == expected_floor
+    )
+
+
+def test_the_default_window_retains_three_drafts() -> None:
+    """默认留 3 稿是**业务参数**（常量），不是环境变量 / 配置项。"""
+
+    assert document_version_service.RETAIN_VERSIONS == 3
+
+
+def test_the_plan_keeps_the_drafts_inside_the_window_and_expires_the_rest() -> None:
+    """五稿（1–4 归档、5 当前）留 3 稿 → 该清 2 和 1，且最老的排在前面。
+
+    顺序不是装饰：清理按这个顺序逐稿去清切片，先走最老的，失败时日志里的「清到哪一稿」
+    才对得上运维的直觉。
+    """
+
+    plan = document_version_service.retention_plan(
+        document_id=DOC_ID,
+        current_version=5,
+        archived_versions=[4, 3, 2, 1],
+        retain=3,
+    )
+
+    assert plan.expired_versions == (2, 1)
+    assert plan.floor == 2
+    assert not plan.is_empty
+
+
+def test_the_plan_is_empty_when_every_archived_draft_is_inside_the_window() -> None:
+    """窗口内的归档稿一个都不许清：只长到第 3 稿时，一篇也没有过期稿。"""
+
+    plan = document_version_service.retention_plan(
+        document_id=DOC_ID, current_version=3, archived_versions=[2, 1], retain=3
+    )
+
+    assert plan.expired_versions == ()
+    assert plan.is_empty
+
+
+# ─────────────────────────────────────────── 服务层：真的清（真 SQL + 存储替身）
+
+
+class _RecordingStore:
+    """切片存储替身：记下每次删除的**删除键**，并能在删的当场看一眼版本行还在不在。
+
+    ``rows_at_call`` 是「先删切片、再删版本行」这条顺序的直接证据：真到删切片那一刻，
+    版本行必须**全都还在**。``fail_on_version`` 让某一次删除抛错，用来验整笔回滚。
+    """
+
+    def __init__(self, *, fail_on_version: int | None = None) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self.rows_at_call: list[list[tuple[int, str]]] = []
+        self._fail_on_version = fail_on_version
+
+    async def delete_by_document_id(
+        self,
+        db: AsyncSession,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "document_id": document_id,
+                "tenant_id": tenant_id,
+                "index_version": index_version,
+                "doc_version": doc_version,
+            }
+        )
+        self.rows_at_call.append(await _versions_of(db, document_id))
+        if self._fail_on_version is not None and doc_version == self._fail_on_version:
+            raise RuntimeError("keyword store is down")
+
+
+async def _seed_five_drafts(db: AsyncSession) -> None:
+    """五稿：1–4 归档、5 当前，指针在 5（窗口留 3 稿时的典型形态）。"""
+
+    await _seed(
+        db,
+        _document(document_id=DOC_ID, current_version=5),
+        *[
+            _version(
+                document_id=DOC_ID,
+                version=version,
+                status="current" if version == 5 else "archived",
+            )
+            for version in range(1, 6)
+        ],
+    )
+    await db.commit()
+
+
+@pytest.mark.asyncio
+async def test_five_drafts_shrink_to_the_last_three(retention_db: AsyncSession) -> None:
+    """**验收：造 5 稿 → 清理后剩 3、4、5。**"""
+
+    await _seed_five_drafts(retention_db)
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    vector, keyword = _RecordingStore(), _RecordingStore()
+    async with async_transaction(retention_db):
+        plan = await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3, stores=[vector, keyword]
+        )
+
+    assert plan.expired_versions == (2, 1)
+    assert await _versions_of(retention_db, DOC_ID) == [
+        (3, "archived"),
+        (4, "archived"),
+        (5, "current"),
+    ]
+    assert [call["doc_version"] for call in vector.calls] == [2, 1], (
+        "向量存储里这一稿的切片要清掉"
+    )
+    assert [call["doc_version"] for call in keyword.calls] == [2, 1], (
+        "关键词存储是第二个存储，同样要清"
+    )
+
+
+@pytest.mark.asyncio
+async def test_chunk_deletion_key_carries_the_draft_and_leaves_index_version_open(
+    retention_db: AsyncSession,
+) -> None:
+    """删切片的键是**两维**的：``doc_version=这一稿``、``index_version=None``。
+
+    这一稿的切片可能散落在**多个索引版本**里（每次重建写一套），只删当前索引版本会留下
+    旧索引版本下的幽灵切片——它们永远不会被任何查询命中（检索 pin 在生效版本上），
+    却会一直占着向量库与关键词索引。所以清理必须按稿号清、版本放开。
+    """
+
+    await _seed_five_drafts(retention_db)
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    store = _RecordingStore()
+    async with async_transaction(retention_db):
+        await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3, stores=[store]
+        )
+
+    assert [call["index_version"] for call in store.calls] == [None, None]
+    assert [call["doc_version"] for call in store.calls] == [2, 1]
+    assert {call["tenant_id"] for call in store.calls} == {TENANT_ID}, (
+        "清除也强制带租户（ADR-0006）"
+    )
+    assert {call["document_id"] for call in store.calls} == {DOC_ID}
+
+
+@pytest.mark.asyncio
+async def test_chunks_are_deleted_before_the_version_rows(retention_db: AsyncSession) -> None:
+    """顺序是契约：清切片那一刻，这一篇的五条版本行**全都还在**。
+
+    反过来（先删版本行）时，事务一旦回滚就留下「行没了、切片还在」的孤儿——那批切片
+    永远查不到、也不知道属于哪一稿。
+    """
+
+    await _seed_five_drafts(retention_db)
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    store = _RecordingStore()
+    async with async_transaction(retention_db):
+        await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3, stores=[store]
+        )
+
+    assert [len(rows) for rows in store.rows_at_call] == [5, 5], (
+        "清切片时版本行必须还没删"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_current_draft_is_never_deleted_even_when_it_falls_outside_the_window(
+    retention_db: AsyncSession,
+) -> None:
+    """指针在 9、当前稿行却还是 1（历史事故）：v1 落在窗口外也不许删。
+
+    「只删归档稿」是**状态**条件，「窗口」是**稿号**条件；两者分开写，数据不正常时
+    仍然是当前稿优先。
+    """
+
+    await _seed(
+        retention_db,
+        _document(document_id=DOC_ID, current_version=9),
+        _version(document_id=DOC_ID, version=1, status="current"),
+        *[
+            _version(document_id=DOC_ID, version=version, status="archived")
+            for version in range(2, 9)
+        ],
+    )
+    await retention_db.commit()
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    store = _RecordingStore()
+    async with async_transaction(retention_db):
+        plan = await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3, stores=[store]
+        )
+
+    assert plan.expired_versions == (6, 5, 4, 3, 2)
+    remaining = await _versions_of(retention_db, DOC_ID)
+    assert (1, "current") in remaining, "当前稿永远在"
+    assert [version for version, _status in remaining] == [1, 7, 8]
+
+
+@pytest.mark.asyncio
+async def test_a_failure_while_purging_rolls_the_whole_document_back(
+    retention_db: AsyncSession,
+) -> None:
+    """中途失败整笔回滚：不留「切片已删、版本行还在」或「版本行删了一半」的半份。"""
+
+    await _seed_five_drafts(retention_db)
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    vector = _RecordingStore()
+    keyword = _RecordingStore(fail_on_version=1)
+
+    with pytest.raises(RuntimeError, match="keyword store is down"):
+        async with async_transaction(retention_db):
+            await document_version_service.purge_expired_versions(
+                retention_db, document=document, retain=3, stores=[vector, keyword]
+            )
+
+    assert [len(rows) for rows in vector.rows_at_call] == [5, 5], "两稿都先清了切片"
+    assert await _versions_of(retention_db, DOC_ID) == [
+        (1, "archived"),
+        (2, "archived"),
+        (3, "archived"),
+        (4, "archived"),
+        (5, "current"),
+    ], "事务回滚：版本行一条都不能少"
+
+
+@pytest.mark.asyncio
+async def test_purging_twice_is_a_no_op_the_second_time(retention_db: AsyncSession) -> None:
+    """幂等：清理完再跑一遍，没有候选、不发 DELETE、不碰存储。"""
+
+    await _seed_five_drafts(retention_db)
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    async with async_transaction(retention_db):
+        await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3, stores=[_RecordingStore()]
+        )
+
+    store = _RecordingStore()
+    async with async_transaction(retention_db):
+        plan = await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3, stores=[store]
+        )
+
+    assert plan.is_empty
+    assert store.calls == []
+    assert await _versions_of(retention_db, DOC_ID) == [
+        (3, "archived"),
+        (4, "archived"),
+        (5, "current"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_smaller_retain_count_widens_the_window(retention_db: AsyncSession) -> None:
+    """``retain`` 覆盖默认 3：留 2 稿时第 3 稿也出局（脚本的 ``--retain`` 走的就是它）。"""
+
+    await _seed_five_drafts(retention_db)
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    store = _RecordingStore()
+    async with async_transaction(retention_db):
+        plan = await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=2, stores=[store]
+        )
+
+    assert plan.expired_versions == (3, 2, 1)
+    assert await _versions_of(retention_db, DOC_ID) == [(4, "archived"), (5, "current")]
+
+
+@pytest.mark.asyncio
+async def test_the_window_counts_drafts_not_time(retention_db: AsyncSession) -> None:
+    """窗口按稿数算：十年前建的稿子只要在窗口内就留着，一分钟前建的过期稿照样清。
+
+    时间是**无关变量**——所以这里把日期摆成「越老越新都在窗口里」，任何按
+    ``created_at`` 收窄的改法都会把老稿子清掉，然后在这条用例上红。
+    """
+
+    await _seed(
+        retention_db,
+        _document(document_id=DOC_ID, current_version=5),
+        *[
+            DocumentVersion(
+                id=f"{DOC_ID}-v{version}",
+                document_id=DOC_ID,
+                version=version,
+                content=f"第 {version} 稿",
+                checksum="0" * 64,
+                status="current" if version == 5 else "archived",
+                # 窗口内的第 3、4、5 稿是最早创建的三行（2015 年），窗口外的第 1、2 稿
+                # 反而是最新的——按时间清会把该留的清掉。
+                created_at=datetime(2015, 1, 1) if version >= 3 else datetime(2026, 11, 16),
+            )
+            for version in range(1, 6)
+        ],
+    )
+    await retention_db.commit()
+    document = await document_repository.get_by_id(retention_db, DOC_ID)
+    assert document is not None
+
+    async with async_transaction(retention_db):
+        plan = await document_version_service.purge_expired_versions(
+            retention_db, document=document, retain=3, stores=[_RecordingStore()]
+        )
+
+    assert plan.expired_versions == (2, 1)
+    assert await _versions_of(retention_db, DOC_ID) == [
+        (3, "archived"),
+        (4, "archived"),
+        (5, "current"),
+    ]
