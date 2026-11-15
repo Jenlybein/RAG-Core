@@ -297,6 +297,37 @@ async def test_a_purged_target_draft_is_not_found(env: SimpleNamespace) -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_draft_purged_by_the_real_retention_path_is_not_found(
+    env: SimpleNamespace,
+) -> None:
+    """真的跑一遍 #178 的清理，再回滚被清掉的那一稿 → 20030。
+
+    上一个用例是「手动删掉一行」，这一条走**真的** ``purge_expired_versions``：两条连着
+    才是「保留策略删掉的稿不能回滚」这个跨票承诺——只钉手动删除的话，清理路径哪天改成
+    「留墓碑 / 留弱引用」，这里不会红。
+    """
+
+    doc = await env.db.get(Document, DOC_ID)
+    async with async_transaction(env.db):
+        plan = await document_version_service.purge_expired_versions(
+            env.db, document=doc, retain=1, stores=[]
+        )
+
+    # 顺序不是这条用例要钉的（那是 #178 自己的契约）：只要求「这一批被清掉了」。
+    assert set(plan.expired_versions) == {1, 2}
+    assert [row.version for row in await _rows(env.db)] == [3]
+
+    with pytest.raises(AppError) as caught:
+        await _rollback(env, 1)
+
+    assert caught.value.code is ErrorCode.DOCUMENT_VERSION_NOT_FOUND
+    assert caught.value.data == {"version": 1}
+    doc = await env.db.get(Document, DOC_ID)
+    assert doc.current_version == 3, "被拒的回滚不动指针"
+    assert doc.status == DocumentStatus.SUCCESS
+
+
+@pytest.mark.asyncio
 async def test_an_unknown_or_cross_tenant_document_is_not_found(env: SimpleNamespace) -> None:
     """跨租户一律「不存在」（20016）：不返回「无权限」，不泄露资源存在性。"""
 
