@@ -106,10 +106,11 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     assert len(heads) == 1, f"整条链应当只有一个 head，实际 {heads}"
     # 链尾在合并时前移了：#152 的关系边表（``create_section_edges``）接在本条之后，
     # #138 撤销编排块的删列迁移（``drop_orchestration_switch``）再往后，#171 的文档
-    # 稿次列改名（``rename_documents_current_version``）又在删列迁移之后。
+    # 稿次列改名（``rename_documents_current_version``）又在删列迁移之后，#172 的文档
+    # 版本表与切片稿号列（``add_document_versions``）再接在改名之后。
     # 按仓库惯例，加最后一条迁移的人改这一行。
-    assert heads == [_revision_of(_migration_path("rename_documents_current_version"))], (
-        f"链尾应当是 #171 的改名迁移，实际 {heads}"
+    assert heads == [_revision_of(_migration_path("add_document_versions"))], (
+        f"链尾应当是 #172 的版本表迁移，实际 {heads}"
     )
 
 

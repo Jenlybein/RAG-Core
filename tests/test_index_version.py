@@ -43,6 +43,8 @@ EMBEDDING_DIM = 1536
 ORIGINAL_CONTENT = "切片原文：错误码 E1024 表示证书过期。"
 
 # 与 ORM 映射等价的 SQLite 建表语句（JSONB / Vector 用 SQLite 能接受的类型）。
+# 列必须与模型同形：ORM 的 INSERT 会把每一列都点出来，缺一列就是「表不存在」的
+# OperationalError，而不是一条更好懂的断言失败（#172 加稿号列时踩到）。
 CHUNKS_DDL = """
 CREATE TABLE chunks (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -52,7 +54,8 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
-    index_version VARCHAR(32) NOT NULL DEFAULT 'v1'
+    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+    doc_version INTEGER NOT NULL DEFAULT '1'
 )
 """
 

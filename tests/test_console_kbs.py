@@ -105,6 +105,17 @@ class _ConsoleSession(RecordingSession):
                     del rows[index]
                     return
 
+    def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        """删文档这条路径上唯一的 ``DELETE`` 语句是「删版本行」（#172）。
+
+        版本行没有外键可依靠（仓库零外键），所以删文档时必须显式删它们；记进 ``calls``
+        才看得见这一步有没有发生、发生在第几步。
+        """
+
+        if str(statement).lstrip().upper().startswith("DELETE"):
+            self.calls.append("delete-version-rows")
+        return super().execute(statement, *args, **kwargs)
+
     def commit(self) -> None:
         super().commit()
         self.calls.append("commit")
@@ -1008,7 +1019,7 @@ def test_reindex_of_another_tenant_or_missing_document_is_not_found(
 def test_delete_document_purges_file_and_row_in_the_original_order(
     kbs: _Harness, tmp_path: Path
 ) -> None:
-    """清除顺序不变：purge → 删原文件 → 删行 → （审计）→ 提交。"""
+    """清除顺序不变：purge → 删原文件 → 删版本行 → 删行 → （审计）→ 提交。"""
 
     source = tmp_path / "alpha-done.md"
     source.write_text("# body", encoding="utf-8")
@@ -1027,9 +1038,12 @@ def test_delete_document_purges_file_and_row_in_the_original_order(
 
     purge_at = kbs.calls.index("purge")
     remove_at = kbs.calls.index("remove-file", purge_at)
-    delete_at = kbs.calls.index("delete-row", remove_at)
+    version_at = kbs.calls.index("delete-version-rows", remove_at)
+    delete_at = kbs.calls.index("delete-row", version_at)
     commit_at = kbs.calls.index("commit", delete_at)
-    assert purge_at < remove_at < delete_at < commit_at, "顺序是契约的一部分，不能重排"
+    assert purge_at < remove_at < version_at < delete_at < commit_at, (
+        "顺序是契约的一部分，不能重排"
+    )
     assert all(doc.id != DOC_ALPHA_DONE for doc in kbs.db._rows.get(Document, []))
 
     entry = kbs.audit_entries()[-1]
@@ -1044,6 +1058,30 @@ def test_delete_document_purges_file_and_row_in_the_original_order(
         "source_type": "markdown",
     }
     assert entry.after_snapshot is None
+
+
+def test_delete_document_also_deletes_its_version_rows(kbs: _Harness) -> None:
+    """零外键的代价（#172）：控制面删文档也要显式删版本行，不能只靠数据面那条路径。"""
+
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = kbs.client.delete(
+        DELETE_DOC_PATH.format(document_id=DOC_ALPHA_DONE), headers=WRITE_HEADERS
+    )
+
+    assert kbs.data(response) == {"document_id": DOC_ALPHA_DONE, "deleted": True}
+    statements = [
+        statement
+        for statement in kbs.db.statements
+        if statement.lstrip().upper().startswith("DELETE")
+    ]
+    assert len(statements) == 1, f"只该有一条 DELETE，实际 {statements}"
+    assert "document_versions" in statements[0], "删的是版本表"
+    assert "delete-version-rows" in kbs.calls
+    version_at = kbs.calls.index("delete-version-rows")
+    delete_at = kbs.calls.index("delete-row", version_at)
+    assert version_at < delete_at, "先清这一篇的从属数据，再删主行"
+    assert kbs.calls[delete_at:].count("commit") == 1, "与删行同一笔事务，只提交一次"
 
 
 def test_delete_document_being_processed_is_rejected(kbs: _Harness) -> None:
