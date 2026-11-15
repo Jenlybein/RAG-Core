@@ -97,6 +97,7 @@ import re
 import sys
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Final
 
@@ -955,24 +956,12 @@ def build_plan(
     cases = build_cases(probes)
     # A 组那 3 题同时也在 refs 题集里（带 `expected` 节号标注），所以标准答案与 B 组同源：
     # 不另抄一份，而是按题号取同一份标注——两边判「证据章节 ∈ expected」用的是同一把尺子。
-    refs_by_id = {candidate.origin_id: candidate for candidate in load_refs_candidates()}
-    a_cases = [
-        EvalCase(
-            case_id=f"A{index:02d}",
-            group=GROUP_A,
-            source=REFS_SOURCE,
-            origin_id=question_id,
-            query=str(archive["questions"][question_id]["query"]),
-            expected=refs_by_id[question_id].expected,
-            top_k=A_TOP_K,
-        )
-        for index, question_id in enumerate(ARCHIVED_MAX_ROUNDS_IDS, start=1)
-    ]
-    predicted = predict_model_calls(b_cases=len(cases), a_cases=len(a_cases))
+    a_case_set = a_cases(archive)
+    predicted = predict_model_calls(b_cases=len(cases), a_cases=len(a_case_set))
     return {
         "predicted": predicted,
         "cases": cases,
-        "a_cases": a_cases,
+        "a_cases": a_case_set,
         "probes": list(probes),
         "selected": [(probe.source, probe.origin_id) for probe in select_b2_cases(probes)],
         "checks": check_case_set(list(cases) + list(a_cases), probes=probes),
@@ -1038,6 +1027,847 @@ def render_plan(plan: Mapping[str, Any]) -> str:
     return "\n".join(lines)
 
 
+# ─────────────────────────────────────────────────────────── 救回三分类
+
+
+@dataclass(frozen=True)
+class RescueClaim:
+    """一个**机会要点**的判决：复查前是 ``unknown``，复查之后落成了什么、凭什么落的。
+
+    ``matched`` 是本票那道「标准答案」闸的输出：证据里**落在 expected 里**的材料标签。
+    它有内容 ⇒ 真救回；`supported` 但它是空的 ⇒ 假救回（模型变乐观了，负向读数）。
+
+    ``evidence_rounds`` 记每条证据是**第几轮**检索带回来的（1 = 首轮，2 = 补证）：报告要能
+    说清「这个救回是靠补证捞到的材料，还是靠首轮就在池子里的材料」——后者其实是「复查读到了
+    首轮漏判的材料」，与「补证把材料捞回来」不是同一件事，读的时候要能分开。
+    """
+
+    case: str = ""
+    point_id: str = ""
+    point_text: str = ""
+    pre_status: str = SUPPORT_UNKNOWN
+    final_status: str = SUPPORT_UNKNOWN
+    evidence_ids: tuple[str, ...] = ()
+    evidence: tuple[MaterialRef, ...] = ()
+    matched: tuple[str, ...] = ()
+    evidence_rounds: tuple[int, ...] = ()
+    outcome: str = RESCUE_UNRESOLVED
+
+    def as_json(self) -> dict[str, Any]:
+        return {
+            "case": self.case,
+            "point_id": self.point_id,
+            "point": self.point_text,
+            "pre_status": self.pre_status,
+            "final_status": self.final_status,
+            "evidence_ids": list(self.evidence_ids),
+            "evidence": [item.as_json() for item in self.evidence],
+            "evidence_labels": [item.label for item in self.evidence],
+            "evidence_rounds": list(self.evidence_rounds),
+            "matched_expected": list(self.matched),
+            "outcome": self.outcome,
+        }
+
+
+CoverageRow = tuple[str, str, tuple[str, ...]]
+
+
+def coverage_rows(coverage: Sequence[Any]) -> list[CoverageRow]:
+    """把「逐要点判定」收成三元组——接受 :class:`PointVerdict`、字典或三元组本身。
+
+    三个来源（生产对象、落盘记录、用例构造）都要能喂进同一个分类函数，否则「口径只有一处」
+    就会退化成「每个调用点各写一份」。
+    """
+
+    rows: list[CoverageRow] = []
+    for item in coverage:
+        if isinstance(item, tuple) and len(item) == 3:
+            rows.append((str(item[0]), str(item[1]), tuple(str(e) for e in item[2])))
+            continue
+        if isinstance(item, Mapping):
+            point_id = str(item.get("point_id") or "")
+            status = str(item.get("status") or "")
+            evidence = tuple(str(e) for e in item.get("evidence_ids") or ())
+            rows.append((point_id, status, evidence))
+            continue
+        rows.append(
+            (
+                str(getattr(item, "point_id", "")),
+                str(getattr(item, "status", "")),
+                tuple(str(e) for e in getattr(item, "evidence_ids", ()) or ()),
+            )
+        )
+    return rows
+
+
+def evidence_materials(
+    evidence_ids: Sequence[str],
+    materials: Sequence[MaterialRef],
+    *,
+    rounds: Sequence[int] | None = None,
+) -> tuple[tuple[MaterialRef, ...], tuple[int, ...]]:
+    """``E1`` / ``E3`` → 材料池里那两条材料（1-based，与引用块同一套编号）。
+
+    越界的编号丢掉而不是猜一个：编号制度是「同一份材料池内不复用、不重排」，越界只可能是
+    记录坏了，猜一个等于替它编一条证据。
+    """
+
+    picked: list[MaterialRef] = []
+    picked_rounds: list[int] = []
+    for evidence_id in evidence_ids:
+        text = str(evidence_id)
+        if not text.startswith("E") or not text[1:].isdigit():
+            continue
+        index = int(text[1:]) - 1
+        if not 0 <= index < len(materials):
+            continue
+        picked.append(materials[index])
+        if rounds is not None and index < len(rounds):
+            picked_rounds.append(int(rounds[index]))
+    return tuple(picked), tuple(picked_rounds)
+
+
+def classify_unknown_points(
+    *,
+    unknown: Sequence[str],
+    coverage: Sequence[Any],
+    materials: Sequence[MaterialRef],
+    expected: Sequence[Expected],
+    texts: Mapping[str, str] | None = None,
+    rounds: Sequence[int] | None = None,
+    case: str = "",
+) -> list[RescueClaim]:
+    """**本票唯一的分类处**：把「复查前落 unknown 的要点」逐条判成三类（+ 仍未知）。
+
+    判据只有两条，都机械可查：
+
+    1. 复查后的状态（``supported`` / ``none`` / 仍是 ``unknown``）；
+    2. 若是 ``supported``，它的 ``evidence_ids`` 里**有没有**一条材料的章节落在 ``expected``
+       里（:func:`material_matches`）。
+
+    不做人工复核，也不「看一眼觉得像」——那正是本票要防的那件事。
+    """
+
+    final = {point_id: (status, evidence) for point_id, status, evidence in coverage_rows(coverage)}
+    claims: list[RescueClaim] = []
+    for point_id in unknown:
+        status, evidence_ids = final.get(point_id, (SUPPORT_UNKNOWN, ()))
+        picked, picked_rounds = evidence_materials(evidence_ids, materials, rounds=rounds)
+        matched: list[str] = []
+        if status == SUPPORT_SUPPORTED:
+            for material in picked:
+                if any(material_matches(item, material) for item in expected):
+                    matched.append(material.label)
+        if status == SUPPORT_SUPPORTED:
+            outcome = RESCUE_TRUE if matched else RESCUE_FALSE
+        elif status == SUPPORT_NONE:
+            outcome = RESCUE_NOT
+        else:
+            outcome = RESCUE_UNRESOLVED
+        claims.append(
+            RescueClaim(
+                case=case,
+                point_id=point_id,
+                point_text=(texts or {}).get(point_id, ""),
+                final_status=status,
+                evidence_ids=tuple(evidence_ids),
+                evidence=picked,
+                matched=tuple(dict.fromkeys(matched)),
+                evidence_rounds=picked_rounds,
+                outcome=outcome,
+            )
+        )
+    return claims
+
+
+def _rate(numerator: int, denominator: int) -> float | None:
+    """``None`` 而不是 0.0：分母为 0 时「没有读数」，不是「读数等于零」。"""
+
+    if denominator <= 0:
+        return None
+    return round(numerator / denominator, 4)
+
+
+def rescue_summary(claims: Sequence[RescueClaim], *, cases: int) -> dict[str, Any]:
+    """三分类的计数与比率。**分母只有一个**：机会数（要点级）。
+
+    「无机会」按**题**数：一题里没有任何要点落 ``unknown``（补证白跑一趟、或首轮就没有缺口），
+    这题就没有可复查的对象——它解释的是「机会造得少不少」，不是「救回率高低」。
+    """
+
+    counts = {name: 0 for name in RESCUE_OUTCOMES}
+    counts[RESCUE_UNRESOLVED] = 0
+    for claim in claims:
+        counts[claim.outcome] = counts.get(claim.outcome, 0) + 1
+    opportunity_points = sum(counts[name] for name in RESCUE_OUTCOMES)
+    cases_with_claim = {claim.case for claim in claims if claim.outcome in RESCUE_OUTCOMES}
+    rates = {name: _rate(counts[name], opportunity_points) for name in RESCUE_OUTCOMES}
+    return {
+        "opportunity_points": opportunity_points,
+        "opportunity_cases": len(cases_with_claim),
+        "cases": cases,
+        "no_chance_cases": max(0, cases - len(cases_with_claim)),
+        "counts": counts,
+        "rates": rates,
+        "denominator": "opportunity_points",
+    }
+
+
+# ─────────────────────────────────────────────────────────── ⑤ 的接缝（只在评测进程内）
+
+
+def _snapshot_of(run: Any) -> dict[str, Any]:
+    """复查前的那一格：``coverage`` 与材料条数（**只读**）。"""
+
+    return {
+        "coverage": [
+            (item.point_id, item.status, tuple(item.evidence_ids)) for item in run.coverage
+        ],
+        "materials": len(run.materials),
+        "points": [(point.point_id, point.text) for point in run.points],
+        "answered_queries": len(run.queries),
+    }
+
+
+class _RejudgeControl:
+    """把 ``research._Run._rejudge`` 换成「关掉」或「直通观察」，退出时**一律还原**。
+
+    为什么动类属性而不是给 `app/` 加一个开关：那会在生产代码里留一条「默认关、生产永不发生」
+    的分支，正是 ADR-0029 点名的死代码。为什么不是实例属性：本票走的是
+    :func:`app.services.research.run_research`（与生产同一条入口），实例由它自己造。
+
+    两种模式都必须**先拍照再动手**：``off`` 之后 `unknown` 就没人改了，快照是这一趟唯一的
+    「复查前」记录；``spy`` 则把快照与原始调用串起来（只读，不改状态）。
+    """
+
+    def __init__(self, mode: str) -> None:
+        if mode not in ("off", "spy"):
+            raise ValueError(f"未知的模式：{mode!r}")
+        self.mode = mode
+        self.sink: list[dict[str, Any]] = []
+        self._original: Any = None
+
+    def __enter__(self) -> list[dict[str, Any]]:
+        from app.services import research as research_service
+
+        self._original = research_service._Run._rejudge
+        original = self._original
+        mode = self.mode
+        sink = self.sink
+
+        async def _hook(run: Any) -> None:
+            sink.append(_snapshot_of(run))
+            if mode == "spy":
+                await original(run)
+            return None
+
+        research_service._Run._rejudge = _hook  # type: ignore[method-assign]
+        return self.sink
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        from app.services import research as research_service
+
+        research_service._Run._rejudge = self._original  # type: ignore[method-assign]
+
+
+def rejudge_control(*, mode: str) -> _RejudgeControl:
+    """``mode="spy"``：⑤ 开着，顺便留下复查前的快照；``mode="off"``：⑤ 关掉（对照条件）。"""
+
+    return _RejudgeControl(mode)
+
+
+# ─────────────────────────────────────────────────────────── 跑批（生产完整链路）
+
+
+async def _bind_model_chain() -> dict[str, Any]:
+    """把模型接入接到**生产那条链**（``model_configs`` 的角色指针），返回用的是哪一条。
+
+    不接会怎样：走 ``.env`` 的单供应商 key，与库里配的那条不是同一个账号，每道题都会在
+    生成阶段失败，读数看起来像「救回不行」——#153 / #165 / #167 都在评测侧踩过同一脚。
+    """
+
+    from app.core.config import settings
+    from app.providers.llm import set_role_resolver
+    from app.services import model_config_service
+
+    set_role_resolver(model_config_service.role_endpoint)
+    endpoint = await model_config_service.role_endpoint("fast")
+    if endpoint is None:
+        return {"llm_endpoint_source": "env", "llm_model": str(settings.LLM_MODEL)}
+    return {
+        "llm_endpoint_source": "model_configs",
+        "llm_model": str(endpoint.model),
+        "llm_config_id": str(endpoint.config_id),
+    }
+
+
+async def _fast_provider() -> Any:
+    from app.providers.llm import get_llm_provider
+
+    return await get_llm_provider("fast")
+
+
+async def _strong_provider() -> Any:
+    from app.providers.llm import get_llm_provider
+
+    return await get_llm_provider("strong")
+
+
+def infer_material_rounds(
+    calls: Sequence[Mapping[str, Any]],
+    *,
+    round_of_query: Mapping[str, int],
+) -> tuple[list[int], list[dict[str, Any]]]:
+    """按**调用顺序**重放检索，给每条材料标上「第几轮进来的」，并算出每条查询新增了几条。
+
+    为什么能这样重放：``_Run._parallel`` 用 ``asyncio.gather`` 跑一批查询，合并顺序与入参
+    顺序一致；``_merge`` 又是「按节去重、先到先得」。于是**调用顺序 + 返回顺序**完全决定了
+    材料池的顺序——与生产里那张表逐格同序，不需要往 `app/` 里加任何记账。
+    """
+
+    seen: set[str] = set()
+    rounds: list[int] = []
+    per_call: list[dict[str, Any]] = []
+    for call in calls:
+        query = str(call.get("query") or "")
+        round_no = int(round_of_query.get(normalize_heading(query), 1))
+        added = 0
+        returned: list[str] = []
+        for row in call.get("rows") or ():
+            key = str(row.get("section_id") or row.get("chunk_id") or "")
+            if not key:
+                continue
+            returned.append(key)
+            if key in seen:
+                continue
+            seen.add(key)
+            rounds.append(round_no)
+            added += 1
+        per_call.append({"query": query, "round": round_no, "added": added, "returned": returned})
+    return rounds, per_call
+
+
+def _insufficient_blocks(citations: Sequence[Mapping[str, Any]]) -> int:
+    """答案里「材料不足」块的数量（与引用块同一套词：``status == insufficient``）。"""
+
+    return sum(1 for block in citations if str(block.get("status")) == STATUS_INSUFFICIENT)
+
+
+async def _chunk_ids_present(db: Any, chunk_ids: Sequence[str]) -> dict[str, int]:
+    """归档里的 ``chunk_id`` 现在还查得到几条——归档是不是还指着同一批材料。"""
+
+    from sqlalchemy import bindparam, text
+
+    if not chunk_ids:
+        return {"archived": 0, "present": 0}
+    stmt = text("select count(*) from chunks where id in :ids").bindparams(
+        bindparam("ids", expanding=True)
+    )
+    present = (await db.execute(stmt, {"ids": list(chunk_ids)})).scalar()
+    return {"archived": len(chunk_ids), "present": int(present or 0)}
+
+
+async def run_case(
+    case: EvalCase,
+    *,
+    fivefold: bool,
+    index_versions: Mapping[str, str],
+    stems: Mapping[str, str],
+    archive: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """跑**生产完整链路**一次（真实检索内核 + 真实模型 + 完整状态机），返回一行台账。
+
+    每题一个会话：一次 Research 会跑 1~5 次子检索，长跑批共用一个会话会让连接在「既不在事务
+    里也没人用」的状态上挂十几分钟——那是评测机的运气，不是被测对象的行为。
+    """
+
+    from app.db.async_session import AsyncSessionLocal
+    from app.services.research import run_research
+    from app.services.research_gate import build_kernel_search
+
+    scope = _scope_of(case.source)
+    _apply_eval_settings(keyword_alias=scope["keyword_alias"])
+    degraded: list[str] = []
+    calls: list[dict[str, Any]] = []
+    archive_evidence: dict[str, Any] = {}
+
+    with rejudge_control(mode="spy" if fivefold else "off") as sink:
+        async with AsyncSessionLocal() as db:
+            inner = build_kernel_search(
+                db,
+                tenant_id=scope["tenant_id"],
+                index_versions=index_versions,
+                options=_retrieval_options(case.top_k),
+                on_degraded=degraded.append,
+            )
+
+            async def search(sub_query: str) -> list[dict[str, Any]]:
+                index = len(calls)
+                calls.append({"query": sub_query, "rows": []})
+                rows = [dict(row) for row in await inner(sub_query)]
+                calls[index]["rows"] = rows
+                return rows
+
+            outcome = await run_research(
+                query=case.query,
+                tenant_id=scope["tenant_id"],
+                search=search,
+                llm_factory=_fast_provider,
+                strong_llm_factory=_strong_provider,
+                sub_search_degraded=degraded,
+            )
+            if archive is not None:
+                item = (archive.get("questions") or {}).get(case.origin_id) or {}
+                hits = [str(row.get("chunk_id") or "") for row in item.get("hits") or ()]
+                archive_evidence = {
+                    "run": archive.get("run"),
+                    "stop_reason": item.get("stop_reason"),
+                    "hits": len(hits),
+                    **await _chunk_ids_present(db, [item for item in hits if item]),
+                }
+
+    return case_record(
+        case,
+        outcome,
+        fivefold=fivefold,
+        calls=calls,
+        sink=sink,
+        stems=stems,
+        archive_evidence=archive_evidence,
+    )
+
+
+RECORD_KEYS: Final[tuple[str, ...]] = (
+    "case",
+    "group",
+    "source",
+    "origin",
+    "condition",
+    "fivefold",
+    "query",
+    "top_k",
+    "expected",
+    "points",
+    "materials",
+    "materials_in_round1",
+    "round1_expected_found",
+    "round1_expected_missing",
+    "followup_calls",
+    "rounds_inferred",
+    "coverage_pre_rejudge",
+    "unknown_ids",
+    "coverage",
+    "gaps",
+    "claims",
+    "eventual_outcomes",
+    "searches",
+    "followup_rounds",
+    "model_calls",
+    "stop_reason",
+    "answered",
+    "answer_rejected_reason",
+    "insufficient",
+    "evidence_state",
+    "strong_model_fallback",
+    "sub_search_degraded",
+    "duration_ms",
+    "archive",
+)
+
+
+def case_record(
+    case: EvalCase,
+    outcome: Any,
+    *,
+    fivefold: bool,
+    calls: Sequence[Mapping[str, Any]],
+    sink: Sequence[Mapping[str, Any]],
+    stems: Mapping[str, str],
+    archive_evidence: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """一次 Research 的读数 → 一行台账（报告与 results.json 共用这一份）。"""
+
+    materials = [material_ref(row, stems=stems) for row in outcome.materials]
+    round_of_query = {normalize_heading(item.query): int(item.round) for item in outcome.queries}
+    rounds, per_call = infer_material_rounds(calls, round_of_query=round_of_query)
+    rounds_inferred = len(rounds) == len(materials)
+    if not rounds_inferred:
+        rounds = [1] * len(materials)
+
+    pre = dict(sink[0]) if sink else {}
+    unknown_ids = [
+        str(point_id)
+        for point_id, status, _ in pre.get("coverage") or ()
+        if status == SUPPORT_UNKNOWN
+    ]
+    texts = {str(point_id): str(text) for point_id, text in pre.get("points") or ()}
+    if not texts:
+        texts = {point.point_id: point.text for point in outcome.points}
+
+    claims = classify_unknown_points(
+        unknown=unknown_ids,
+        coverage=outcome.coverage,
+        materials=materials,
+        expected=case.expected,
+        texts=texts,
+        rounds=rounds,
+        case=case.case_id,
+    )
+    round1_materials = [item for item, round_no in zip(materials, rounds) if round_no == 1]
+    missing_round1 = missing_expected(case.expected, round1_materials)
+    found_round1 = [item for item in case.expected if item not in missing_round1]
+    citations = [dict(citation) for citation in outcome.citations]
+    record = {
+        "case": case.case_id,
+        "group": case.group,
+        "source": case.source,
+        "origin": case.origin_id,
+        "condition": CONDITION_FIVEFOLD if fivefold else CONDITION_CONTROL,
+        "fivefold": fivefold,
+        "query": case.query,
+        "top_k": case.top_k,
+        "expected": [item.as_json() for item in case.expected],
+        "points": [{"point_id": point.point_id, "text": point.text} for point in outcome.points],
+        "materials": len(materials),
+        "materials_in_round1": len(round1_materials),
+        "round1_expected_found": [item.label for item in found_round1],
+        "round1_expected_missing": [item.label for item in missing_round1],
+        "followup_calls": [call for call in per_call if call["round"] == 2],
+        "rounds_inferred": rounds_inferred,
+        "coverage_pre_rejudge": [
+            {"point_id": point_id, "status": status, "evidence_ids": list(evidence)}
+            for point_id, status, evidence in pre.get("coverage") or ()
+        ],
+        "unknown_ids": unknown_ids,
+        "coverage": [
+            {
+                "point_id": item.point_id,
+                "status": item.status,
+                "evidence_ids": list(item.evidence_ids),
+            }
+            for item in outcome.coverage
+        ],
+        "gaps": list(outcome.gaps),
+        "claims": [claim.as_json() for claim in claims],
+        "eventual_outcomes": rescue_summary(claims, cases=1),
+        "searches": int(outcome.searches),
+        "followup_rounds": int(outcome.followup_rounds),
+        "model_calls": int(outcome.model_calls),
+        "stop_reason": str(outcome.stop_reason.value),
+        "answered": outcome.answer is not None,
+        "answer_rejected_reason": outcome.answer_rejected_reason,
+        "insufficient": _insufficient_blocks(citations),
+        "evidence_state": outcome.evidence_state,
+        "strong_model_fallback": outcome.strong_model_fallback,
+        "sub_search_degraded": list(outcome.sub_search_degraded),
+        "duration_ms": int(outcome.duration_ms),
+        "archive": dict(archive_evidence or {}),
+    }
+    assert set(record) == set(RECORD_KEYS), set(record) ^ set(RECORD_KEYS)
+    return record
+
+
+async def run_cases(
+    cases: Sequence[EvalCase],
+    *,
+    budget: Budget,
+    fivefold: bool,
+    versions_by_source: Mapping[str, Mapping[str, str]],
+    stems_by_source: Mapping[str, Mapping[str, str]],
+    archive: Mapping[str, Any] | None = None,
+) -> list[dict[str, Any]]:
+    """逐题跑，**先预留再发**：预留不到就不跑下一题（预算是一条上限，不是一句愿望）。"""
+
+    records: list[dict[str, Any]] = []
+    for case in cases:
+        if not budget.can(WORST_CALLS_PER_CASE):
+            condition = CONDITION_FIVEFOLD if fivefold else CONDITION_CONTROL
+            budget.skip(f"{case.case_id}/{condition}", WORST_CALLS_PER_CASE)
+            continue
+        record = await run_case(
+            case,
+            fivefold=fivefold,
+            index_versions=versions_by_source[case.source],
+            stems=stems_by_source[case.source],
+            archive=archive,
+        )
+        budget.charge(int(record["model_calls"]))
+        records.append(record)
+        summary = record["eventual_outcomes"]
+        print(
+            f"  {record['case']}（{record['condition']}）: stop={record['stop_reason']} "
+            f"unknown={len(record['unknown_ids'])} 机会={summary['opportunity_points']} "
+            f"真/假/未={summary['counts'][RESCUE_TRUE]}/{summary['counts'][RESCUE_FALSE]}"
+            f"/{summary['counts'][RESCUE_NOT]} calls={record['model_calls']}"
+            f" rejected={record['answer_rejected_reason']}",
+            flush=True,
+        )
+    return records
+
+
+def recompute_metrics(payload: dict[str, Any]) -> dict[str, Any]:
+    """按当前口径重算所有指标（**0 次模型调用**）：产物与人读报告的唯一来源。"""
+
+    records = list(payload.get("records") or [])
+
+    def claims_of(items: Sequence[Mapping[str, Any]]) -> list[RescueClaim]:
+        out: list[RescueClaim] = []
+        for record in items:
+            for claim in record.get("claims") or ():
+                out.append(
+                    RescueClaim(
+                        case=str(claim.get("case") or ""),
+                        point_id=str(claim.get("point_id") or ""),
+                        point_text=str(claim.get("point") or ""),
+                        pre_status=str(claim.get("pre_status") or SUPPORT_UNKNOWN),
+                        final_status=str(claim.get("final_status") or SUPPORT_UNKNOWN),
+                        evidence_ids=tuple(str(e) for e in claim.get("evidence_ids") or ()),
+                        matched=tuple(str(e) for e in claim.get("matched_expected") or ()),
+                        evidence_rounds=tuple(int(r) for r in claim.get("evidence_rounds") or ()),
+                        outcome=str(claim.get("outcome") or RESCUE_UNRESOLVED),
+                    )
+                )
+        return out
+
+    a_on = [r for r in records if r.get("group") == GROUP_A and r.get("fivefold")]
+    b_on = [r for r in records if r.get("group") == GROUP_B and r.get("fivefold")]
+    b_off = [r for r in records if r.get("group") == GROUP_B and not r.get("fivefold")]
+
+    def group_block(items: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
+        claims = claims_of(items)
+        summary = rescue_summary(claims, cases=len(items))
+        summary["unknown_points"] = sum(len(item.get("unknown_ids") or ()) for item in items)
+        summary["points_total"] = sum(len(item.get("points") or ()) for item in items)
+        summary["cases_with_followup"] = sum(
+            1 for item in items if int(item.get("followup_rounds") or 0) > 0
+        )
+        summary["gaps_total"] = sum(len(item.get("gaps") or ()) for item in items)
+        summary["answered"] = sum(1 for item in items if item.get("answered"))
+        summary["insufficient_total"] = sum(int(item.get("insufficient") or 0) for item in items)
+        summary["model_calls"] = sum(int(item.get("model_calls") or 0) for item in items)
+        return summary
+
+    metrics: dict[str, Any] = {
+        "A": group_block(a_on),
+        "B": group_block(b_on),
+        "B_control": group_block(b_off),
+        "model_calls": {
+            "actual": sum(int(item.get("model_calls") or 0) for item in records),
+            "by_condition": {
+                CONDITION_FIVEFOLD: sum(
+                    int(item.get("model_calls") or 0) for item in records if item.get("fivefold")
+                ),
+                CONDITION_CONTROL: sum(
+                    int(item.get("model_calls") or 0)
+                    for item in records
+                    if not item.get("fivefold")
+                ),
+            },
+        },
+    }
+    control_unknown = sum(len(item.get("unknown_ids") or ()) for item in b_off)
+    metrics["B_control"]["unknown_points"] = control_unknown
+    metrics["B_control"]["unknown_cases"] = sum(1 for item in b_off if item.get("unknown_ids"))
+    payload["metrics"] = metrics
+    return payload
+
+
+# ─────────────────────────────────────────────────────────── 落盘
+
+
+def a_cases(archive: Mapping[str, Any]) -> list[EvalCase]:
+    """A 组那 3 题：题面来自归档，标准答案来自 refs 题集（同一把尺子）。"""
+
+    refs_by_id = {candidate.origin_id: candidate for candidate in load_refs_candidates()}
+    return [
+        EvalCase(
+            case_id=f"A{index:02d}",
+            group=GROUP_A,
+            source=REFS_SOURCE,
+            origin_id=question_id,
+            query=str(archive["questions"][question_id]["query"]),
+            expected=refs_by_id[question_id].expected,
+            top_k=A_TOP_K,
+        )
+        for index, question_id in enumerate(ARCHIVED_MAX_ROUNDS_IDS, start=1)
+    ]
+
+
+async def _scopes_by_source() -> tuple[
+    dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, Any]
+]:
+    """两套语料各自的索引版本与文档词干（一次进程只查一遍）。"""
+
+    from app.db.async_session import AsyncSessionLocal
+
+    versions_by_source: dict[str, dict[str, str]] = {}
+    stems_by_source: dict[str, dict[str, str]] = {}
+    environment: dict[str, Any] = {"sources": {}}
+    async with AsyncSessionLocal() as db:
+        for source in (REFS_SOURCE, EVAL_SOURCE):
+            scope = _scope_of(source)
+            _apply_eval_settings(keyword_alias=scope["keyword_alias"])
+            versions = await _resolve_scope(
+                db, tenant_id=scope["tenant_id"], kb_ids=scope["kb_ids"]
+            )
+            versions_by_source[source] = versions
+            stems_by_source[source] = await _document_stems(
+                db, tenant_id=scope["tenant_id"], kb_ids=scope["kb_ids"]
+            )
+            environment["sources"][source] = {
+                "tenant_id": scope["tenant_id"],
+                "kb_ids": scope["kb_ids"],
+                "keyword_alias": scope["keyword_alias"],
+                "index_versions": versions,
+                "documents": len(stems_by_source[source]),
+            }
+    return versions_by_source, stems_by_source, environment
+
+
+async def run_all(*, groups: Sequence[str], out_dir: Path) -> dict[str, Any]:
+    """跑指定的组并落盘（产物可增量补：先跑 A，再跑 B，前面的记录原样保留）。"""
+
+    archive = load_archived_max_rounds()
+    check_archived_premise(archive)
+    predicted = predict_model_calls()
+    print(
+        f"预计模型调用：名义 {predicted['nominal']} 次 / 最坏 {predicted['worst']} 次"
+        f"（硬顶 {predicted['budget']}）"
+    )
+    chain = await _bind_model_chain()
+    versions_by_source, stems_by_source, environment = await _scopes_by_source()
+
+    probes: list[Probe] = []
+    cases_b: list[EvalCase] = []
+    if GROUP_B in groups:
+        probes, probe_environment = await collect_probes()
+        environment["probe"] = probe_environment
+        cases_b = build_cases(probes)
+        print(
+            f"B 组选题：{[(case.case_id, case.origin_id) for case in cases_b]}"
+            f"（候选 {len(probes)} 题，expected 在 top-{B_TOP_K} 下缺席的 "
+            f"{sum(1 for probe in probes if probe.qualified)} 题）"
+        )
+    cases_a = a_cases(archive)
+    checks = check_case_set(list(cases_a) + list(cases_b), probes=probes or None)
+
+    budget = Budget()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    results_path = out_dir / "results.json"
+    previous: dict[str, Any] = {}
+    if results_path.exists():
+        previous = json.loads(results_path.read_text(encoding="utf-8"))
+
+    payload: dict[str, Any] = dict(previous)
+    payload.update(
+        {
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "issue": "#168 ⑤ 的「救回」这一面",
+            "llm_chain": chain,
+            "environment": environment,
+            "predicted_calls": predicted,
+            "checks": checks,
+            "archive": {
+                "run": archive.get("run"),
+                "generated_at": archive.get("generated_at"),
+                "index_versions": archive.get("index_versions"),
+                "llm_chain": archive.get("llm_chain"),
+                "max_rounds_ids": archive.get("max_rounds_ids"),
+            },
+            "archive_gaps": archive_gaps(archive),
+            "cases": [
+                {
+                    "case_id": case.case_id,
+                    "group": case.group,
+                    "source": case.source,
+                    "origin": case.origin_id,
+                    "query": case.query,
+                    "top_k": case.top_k,
+                    "expected": [item.as_json() for item in case.expected],
+                    "note": case.note,
+                    "mechanism": case.mechanism,
+                }
+                for case in list(cases_a) + list(cases_b)
+            ],
+            "probes": [probe.as_json() for probe in probes],
+        }
+    )
+
+    records = list(previous.get("records") or [])
+    if GROUP_A in groups:
+        records = [record for record in records if record.get("group") != GROUP_A]
+        print(f"跑 A 组（{CONDITION_FIVEFOLD}）：{[case.case_id for case in cases_a]}", flush=True)
+        records.extend(
+            await run_cases(
+                cases_a,
+                budget=budget,
+                fivefold=True,
+                versions_by_source=versions_by_source,
+                stems_by_source=stems_by_source,
+                archive=archive,
+            )
+        )
+    if GROUP_B in groups:
+        records = [record for record in records if record.get("group") != GROUP_B]
+        for fivefold in (True, False):
+            condition = CONDITION_FIVEFOLD if fivefold else CONDITION_CONTROL
+            print(f"跑 B 组（{condition}）：{[case.case_id for case in cases_b]}", flush=True)
+            records.extend(
+                await run_cases(
+                    cases_b,
+                    budget=budget,
+                    fivefold=fivefold,
+                    versions_by_source=versions_by_source,
+                    stems_by_source=stems_by_source,
+                    archive=archive,
+                )
+            )
+    order = {
+        (case.case_id, condition): index
+        for index, (case, condition) in enumerate(
+            (case, condition)
+            for case in list(cases_a) + list(cases_b)
+            for condition in (CONDITION_FIVEFOLD, CONDITION_CONTROL)
+        )
+    }
+    records.sort(
+        key=lambda record: order.get((str(record.get("case")), str(record.get("condition"))), 999)
+    )
+    payload["records"] = records
+    payload["groups_run"] = sorted({str(record.get("condition")) for record in records})
+    payload = recompute_metrics(payload)
+    model_calls = dict(payload["metrics"]["model_calls"])
+    model_calls["skipped"] = list(budget.skipped)
+    model_calls["predicted"] = predicted
+    model_calls["budget"] = MODEL_CALL_CAP
+    payload["model_calls"] = model_calls
+
+    results_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"实际模型调用：{model_calls['actual']} 次（硬顶 {MODEL_CALL_CAP}）")
+    if budget.skipped:
+        print("因预算跳过：" + "；".join(budget.skipped))
+    print(f"产物：{results_path}")
+    return payload
+
+
+def _recompute(out_dir: Path) -> int:
+    """不重跑、只重算：改统计口径不该重花那几十次调用。"""
+
+    results_path = out_dir / "results.json"
+    if not results_path.exists():
+        print(f"没有产物可重算：{results_path}")
+        return 1
+    payload = json.loads(results_path.read_text(encoding="utf-8"))
+    payload = recompute_metrics(payload)
+    results_path.write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    print(f"已重算：实际模型调用 {payload['metrics']['model_calls']['actual']} 次（未新增调用）")
+    return 0
+
+
 # ─────────────────────────────────────────────────────────── 命令行
 
 
@@ -1085,8 +1915,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     if args.command == "plan":
         return asyncio.run(run_plan(out_dir=out_dir))
-    print(f"{args.command} 尚未实现（下一里程碑）")
-    return 2
+    if args.command == "recompute":
+        return _recompute(out_dir)
+    asyncio.run(run_all(groups=tuple(args.groups), out_dir=out_dir))
+    return 0
 
 
 if __name__ == "__main__":

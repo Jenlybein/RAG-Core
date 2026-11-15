@@ -20,16 +20,25 @@ from scripts.eval_t168_rescue import (
     GROUP_A,
     GROUP_B,
     NOMINAL_CALLS_PER_CASE,
+    RESCUE_FALSE,
+    RESCUE_NOT,
+    RESCUE_TRUE,
+    RESCUE_UNRESOLVED,
+    SUPPORT_NONE,
+    SUPPORT_SUPPORTED,
+    SUPPORT_UNKNOWN,
     WORST_CALLS_PER_CASE,
     EvalCase,
     Expected,
     MaterialRef,
     Probe,
+    RescueClaim,
     archive_gaps,
     build_cases,
     case_order_key,
     check_archived_premise,
     check_case_set,
+    classify_unknown_points,
     document_stem_of,
     heading_in_branch,
     material_matches,
@@ -37,9 +46,29 @@ from scripts.eval_t168_rescue import (
     missing_expected,
     normalize_heading,
     predict_model_calls,
+    rejudge_control,
+    rescue_summary,
     section_of_heading,
     select_b2_cases,
 )
+
+
+def _claim(outcome: str, *, case: str = "c1") -> RescueClaim:
+    """一条最简 claim（只关心分类与计数的用例用它）。"""
+
+    final_status = {
+        RESCUE_TRUE: SUPPORT_SUPPORTED,
+        RESCUE_FALSE: SUPPORT_SUPPORTED,
+        RESCUE_NOT: SUPPORT_NONE,
+    }.get(outcome, SUPPORT_UNKNOWN)
+    return RescueClaim(
+        case=case,
+        point_id="A1",
+        point_text="某要点",
+        final_status=final_status,
+        outcome=outcome,
+    )
+
 
 # ───────────────────────────────────────────────── 标准答案：节号口径（refs 语料）
 
@@ -371,3 +400,134 @@ def test_predict_model_calls_flags_an_over_budget_plan() -> None:
 
 def test_case_groups_are_the_two_documented_ones() -> None:
     assert {GROUP_A, GROUP_B} == {"A", "B"}
+
+
+# ─────────────────────────────────────────────── 救回三分类（本票的核心口径）
+
+
+def _materials(*, in_expected: bool = True) -> tuple[MaterialRef, ...]:
+    """两条材料：E1 落在 expected 里，E2 是别的节。"""
+
+    document = "refund_policy" if in_expected else "promo_rules"
+    return (
+        MaterialRef(
+            document=document, section="2", heading="h > 2. x", section_id="s1", chunk_id="c1"
+        ),
+        MaterialRef(
+            document="points_policy",
+            section="4",
+            heading="h > 4. y",
+            section_id="s2",
+            chunk_id="c2",
+        ),
+    )
+
+
+def test_supported_with_evidence_inside_expected_is_a_true_rescue() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_SUPPORTED, ("E1",))],
+        materials=_materials(in_expected=True),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_TRUE]
+    assert claims[0].matched == ("refund_policy:2",)
+
+
+def test_supported_with_evidence_outside_expected_is_a_false_rescue() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_SUPPORTED, ("E1",))],
+        materials=_materials(in_expected=False),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_FALSE]
+    assert claims[0].matched == ()
+    # 负向读数的证据也留着：报告要能说清「它凭什么被判成 supported」
+    assert claims[0].evidence[0].label.startswith("promo_rules")
+
+
+def test_unknown_to_none_is_not_rescued() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_NONE, ())],
+        materials=_materials(),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_NOT]
+
+
+def test_still_unknown_is_single_out_and_not_counted_as_a_rescue() -> None:
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_UNKNOWN, ("E1",))],
+        materials=_materials(),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.outcome for claim in claims] == [RESCUE_UNRESOLVED]
+
+
+def test_classification_ignores_points_that_were_never_unknown() -> None:
+    """分母只收「复查前落 unknown」的要点：别的要点没有机会被救回，也不许被算成「未救回」。"""
+
+    claims = classify_unknown_points(
+        unknown=["A1"],
+        coverage=[("A1", SUPPORT_NONE, ()), ("A2", SUPPORT_SUPPORTED, ("E1",))],
+        materials=_materials(),
+        expected=(Expected(document="refund_policy", section="2"),),
+    )
+    assert [claim.point_id for claim in claims] == ["A1"]
+
+
+def test_rescue_summary_与分母_机会数是唯一分母() -> None:
+    claims = [
+        _claim(RESCUE_TRUE, case="c1"),
+        _claim(RESCUE_TRUE, case="c1"),
+        _claim(RESCUE_FALSE, case="c2"),
+        _claim(RESCUE_NOT, case="c2"),
+        _claim(RESCUE_UNRESOLVED, case="c3"),
+    ]
+    summary = rescue_summary(claims, cases=4)
+    assert summary["opportunity_points"] == 4  # 仍 unknown 的不进分母
+    assert summary["opportunity_cases"] == 2
+    assert summary["counts"][RESCUE_TRUE] == 2
+    assert summary["rates"][RESCUE_TRUE] == 0.5
+    assert summary["rates"][RESCUE_FALSE] == 0.25
+    assert summary["rates"][RESCUE_NOT] == 0.25
+    assert summary["no_chance_cases"] == 2
+
+
+def test_rescue_summary_does_not_print_a_rate_when_there_was_no_opportunity() -> None:
+    """机会数 0 时比率必须是 **None**，不能是 0.0——「没造出机会」与「救回率为零」不是一件事。"""
+
+    summary = rescue_summary([_claim(RESCUE_UNRESOLVED)], cases=1)
+    assert summary["opportunity_points"] == 0
+    assert summary["rates"][RESCUE_TRUE] is None
+    assert summary["rates"][RESCUE_NOT] is None
+    assert summary["no_chance_cases"] == 1
+
+
+def test_no_chance_cases_are_counted_per_case_not_per_point() -> None:
+    summary = rescue_summary([_claim(RESCUE_TRUE, case="c1")], cases=3)
+    assert summary["opportunity_cases"] == 1
+    assert summary["no_chance_cases"] == 2
+
+
+# ─────────────────────────────────────────────── ⑤ 的接缝：关掉 / 观察都要还原
+
+
+def test_rejudge_patch_is_always_restored_even_when_the_run_explodes() -> None:
+    """一个漏还原的补丁会让后面每一题**静默**跑错条件，而读数看起来完全正常。"""
+
+    from app.services import research as research_service
+
+    original = research_service._Run._rejudge
+    with rejudge_control(mode="off") as sink:
+        assert research_service._Run._rejudge is not original
+        assert sink == []
+    assert research_service._Run._rejudge is original
+
+    with pytest.raises(RuntimeError):
+        with rejudge_control(mode="spy"):
+            raise RuntimeError("boom")
+    assert research_service._Run._rejudge is original

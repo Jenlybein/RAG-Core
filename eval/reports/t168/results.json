@@ -1,0 +1,796 @@
+{
+  "generated_at": "2026-11-15T10:18:16+00:00",
+  "issue": "#168 ⑤ 的「救回」这一面",
+  "llm_chain": {
+    "llm_endpoint_source": "model_configs",
+    "llm_model": "deepseek-v4-1-flash-economy-261017",
+    "llm_config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+  },
+  "environment": {
+    "sources": {
+      "refs": {
+        "tenant_id": "tenant_c6",
+        "kb_ids": [
+          "ddae7e35-1858-4861-b9eb-631cfc778feb"
+        ],
+        "keyword_alias": "rag_chunks_c6",
+        "index_versions": {
+          "ddae7e35-1858-4861-b9eb-631cfc778feb": "v2"
+        },
+        "documents": 3
+      },
+      "eval": {
+        "tenant_id": "tenant_demo",
+        "kb_ids": [
+          "kb-eval",
+          "kb-eval-biz",
+          "kb-eval-long",
+          "kb-eval-ops",
+          "kb-eval-ref"
+        ],
+        "keyword_alias": "rag_chunks_eval",
+        "index_versions": {
+          "kb-eval": "v1",
+          "kb-eval-ops": "v1",
+          "kb-eval-biz": "v1",
+          "kb-eval-long": "v1",
+          "kb-eval-ref": "v1"
+        },
+        "documents": 21
+      }
+    }
+  },
+  "predicted_calls": {
+    "nominal": 92,
+    "worst": 115,
+    "budget": 120,
+    "nominal_fits": true,
+    "worst_fits": true,
+    "breakdown": {
+      "A": {
+        "cases": 3,
+        "conditions": 1,
+        "nominal": 12,
+        "worst": 15
+      },
+      "B": {
+        "cases": 10,
+        "conditions": 2,
+        "nominal": 80,
+        "worst": 100
+      }
+    }
+  },
+  "checks": {
+    "ok": false,
+    "problems": [
+      "B 组题数 0 != 10"
+    ],
+    "cases": 3,
+    "b_cases": 0,
+    "sources": [
+      "refs"
+    ],
+    "top_k": [
+      5
+    ]
+  },
+  "archive": {
+    "run": "eval\\reports\\c6\\runs\\04-v2-research-on\\results.json",
+    "generated_at": "2026-11-14T11:30:51+00:00",
+    "index_versions": {
+      "ddae7e35-1858-4861-b9eb-631cfc778feb": "v2"
+    },
+    "llm_chain": {
+      "llm_endpoint_source": "model_configs",
+      "llm_model": "deepseek-v4-1-flash-economy-261017",
+      "llm_config_id": "78b47ae9-7691-4566-8d2c-d95adbfd3a5e"
+    },
+    "max_rounds_ids": [
+      "r01",
+      "r06",
+      "r08"
+    ]
+  },
+  "archive_gaps": {
+    "missing": {
+      "points": [
+        "r01",
+        "r06",
+        "r08"
+      ],
+      "coverage": [
+        "r01",
+        "r06",
+        "r08"
+      ],
+      "followup_split": [
+        "r01",
+        "r06",
+        "r08"
+      ]
+    },
+    "present": {
+      "points": [],
+      "coverage": [],
+      "followup_split": []
+    },
+    "questions": [
+      "r01",
+      "r06",
+      "r08"
+    ],
+    "reusable_as_is": false
+  },
+  "cases": [
+    {
+      "case_id": "A01",
+      "group": "A",
+      "source": "refs",
+      "origin": "r01",
+      "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+      "top_k": 5,
+      "expected": [
+        {
+          "document": "refund_policy",
+          "section": "2",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        },
+        {
+          "document": "refund_policy",
+          "section": "3",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        }
+      ],
+      "note": "",
+      "mechanism": ""
+    },
+    {
+      "case_id": "A02",
+      "group": "A",
+      "source": "refs",
+      "origin": "r06",
+      "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+      "top_k": 5,
+      "expected": [
+        {
+          "document": "promo_rules",
+          "section": "1",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        },
+        {
+          "document": "promo_rules",
+          "section": "2",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        },
+        {
+          "document": "promo_rules",
+          "section": "3",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        }
+      ],
+      "note": "",
+      "mechanism": ""
+    },
+    {
+      "case_id": "A03",
+      "group": "A",
+      "source": "refs",
+      "origin": "r08",
+      "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+      "top_k": 5,
+      "expected": [
+        {
+          "document": "points_policy",
+          "section": "4",
+          "heading": null,
+          "role": "hop1",
+          "kind": "section"
+        },
+        {
+          "document": "refund_policy",
+          "section": "4",
+          "heading": null,
+          "role": "hop2",
+          "kind": "section"
+        },
+        {
+          "document": "points_policy",
+          "section": "2.2",
+          "heading": null,
+          "role": "hop2",
+          "kind": "section"
+        }
+      ],
+      "note": "",
+      "mechanism": ""
+    }
+  ],
+  "probes": [],
+  "records": [
+    {
+      "case": "A01",
+      "group": "A",
+      "source": "refs",
+      "origin": "r01",
+      "condition": "fivefold",
+      "fivefold": true,
+      "query": "从提交退款申请到钱真正到账，中间要经过哪几步，每一步大概要多久？",
+      "top_k": 5,
+      "expected": [
+        {
+          "document": "refund_policy",
+          "section": "2",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        },
+        {
+          "document": "refund_policy",
+          "section": "3",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        }
+      ],
+      "points": [
+        {
+          "point_id": "A1",
+          "text": "提交退款申请后由商家或平台审核确认"
+        },
+        {
+          "point_id": "A2",
+          "text": "审核通过后发起退款并原路退回支付渠道"
+        },
+        {
+          "point_id": "A3",
+          "text": "银行或支付渠道处理入账所需的时间"
+        }
+      ],
+      "materials": 6,
+      "materials_in_round1": 6,
+      "round1_expected_found": [
+        "refund_policy:2",
+        "refund_policy:3"
+      ],
+      "round1_expected_missing": [],
+      "followup_calls": [],
+      "rounds_inferred": true,
+      "coverage_pre_rejudge": [],
+      "unknown_ids": [],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        }
+      ],
+      "gaps": [],
+      "claims": [],
+      "eventual_outcomes": {
+        "opportunity_points": 0,
+        "opportunity_cases": 0,
+        "cases": 1,
+        "no_chance_cases": 1,
+        "counts": {
+          "true_rescue": 0,
+          "false_rescue": 0,
+          "not_rescued": 0,
+          "still_unknown": 0
+        },
+        "rates": {
+          "true_rescue": null,
+          "false_rescue": null,
+          "not_rescued": null
+        },
+        "denominator": "opportunity_points"
+      },
+      "searches": 3,
+      "followup_rounds": 0,
+      "model_calls": 3,
+      "stop_reason": "evidence_complete",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "insufficient": 2,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 28671,
+      "archive": {
+        "run": "eval\\reports\\c6\\runs\\04-v2-research-on\\results.json",
+        "stop_reason": "max_rounds",
+        "hits": 10,
+        "archived": 10,
+        "present": 10
+      }
+    },
+    {
+      "case": "A02",
+      "group": "A",
+      "source": "refs",
+      "origin": "r06",
+      "condition": "fivefold",
+      "fivefold": true,
+      "query": "一场活动里，满减、折扣、优惠券和积分抵扣到底能怎么叠加，先算哪一个？",
+      "top_k": 5,
+      "expected": [
+        {
+          "document": "promo_rules",
+          "section": "1",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        },
+        {
+          "document": "promo_rules",
+          "section": "2",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        },
+        {
+          "document": "promo_rules",
+          "section": "3",
+          "heading": null,
+          "role": "core",
+          "kind": "section"
+        }
+      ],
+      "points": [
+        {
+          "point_id": "A1",
+          "text": "明确各类优惠能否叠加及互斥条件"
+        },
+        {
+          "point_id": "A2",
+          "text": "确认满减与折扣的先后计算顺序"
+        },
+        {
+          "point_id": "A3",
+          "text": "确定优惠券应在满减折扣后使用"
+        },
+        {
+          "point_id": "A4",
+          "text": "积分抵扣受订单实付金额与上限约束"
+        },
+        {
+          "point_id": "A5",
+          "text": "系统按优惠优先级和门槛自动试算"
+        }
+      ],
+      "materials": 6,
+      "materials_in_round1": 5,
+      "round1_expected_found": [
+        "promo_rules:1",
+        "promo_rules:2",
+        "promo_rules:3"
+      ],
+      "round1_expected_missing": [],
+      "followup_calls": [
+        {
+          "query": "结算时系统按优惠优先级与使用门槛自动试算最优优惠组合的规则",
+          "round": 2,
+          "added": 1,
+          "returned": [
+            "8c764e13fc2310fda12d1057f98c8ea491c436b6eb50add9c386b371e68c2148",
+            "c1deadd22efb9bcc7b61c40cea8da943d8763c7b12255e5863ae61a38500dafe",
+            "9de0708693e680ca22d91f17a3d21b89c93800ec303eabc22acbf08328021b28",
+            "edd63eec168a6b96aa22f11a2a7e270e56b9772e95ea826754b34be8f8fe6919",
+            "831ffffa9aee9b40aff2cae3f7322f24b86adb2b9625a3039bcba7742692d12e"
+          ]
+        },
+        {
+          "query": "促销计算引擎 优惠叠加 自动计算顺序 满减 折扣 优惠券 积分 依次试算",
+          "round": 2,
+          "added": 0,
+          "returned": [
+            "8c764e13fc2310fda12d1057f98c8ea491c436b6eb50add9c386b371e68c2148",
+            "c1deadd22efb9bcc7b61c40cea8da943d8763c7b12255e5863ae61a38500dafe",
+            "edd63eec168a6b96aa22f11a2a7e270e56b9772e95ea826754b34be8f8fe6919",
+            "9de0708693e680ca22d91f17a3d21b89c93800ec303eabc22acbf08328021b28",
+            "831ffffa9aee9b40aff2cae3f7322f24b86adb2b9625a3039bcba7742692d12e"
+          ]
+        }
+      ],
+      "rounds_inferred": true,
+      "coverage_pre_rejudge": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A4",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A5",
+          "status": "unknown",
+          "evidence_ids": []
+        }
+      ],
+      "unknown_ids": [
+        "A5"
+      ],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "supported",
+          "evidence_ids": [
+            "E2"
+          ]
+        },
+        {
+          "point_id": "A4",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A5",
+          "status": "none",
+          "evidence_ids": []
+        }
+      ],
+      "gaps": [
+        "A5"
+      ],
+      "claims": [
+        {
+          "case": "A02",
+          "point_id": "A5",
+          "point": "系统按优惠优先级和门槛自动试算",
+          "pre_status": "unknown",
+          "final_status": "none",
+          "evidence_ids": [],
+          "evidence": [],
+          "evidence_labels": [],
+          "evidence_rounds": [],
+          "matched_expected": [],
+          "outcome": "not_rescued"
+        }
+      ],
+      "eventual_outcomes": {
+        "opportunity_points": 1,
+        "opportunity_cases": 1,
+        "cases": 1,
+        "no_chance_cases": 0,
+        "counts": {
+          "true_rescue": 0,
+          "false_rescue": 0,
+          "not_rescued": 1,
+          "still_unknown": 0
+        },
+        "rates": {
+          "true_rescue": 0.0,
+          "false_rescue": 0.0,
+          "not_rescued": 1.0
+        },
+        "denominator": "opportunity_points"
+      },
+      "searches": 5,
+      "followup_rounds": 1,
+      "model_calls": 4,
+      "stop_reason": "max_rounds",
+      "answered": true,
+      "answer_rejected_reason": null,
+      "insufficient": 1,
+      "evidence_state": "partial",
+      "strong_model_fallback": null,
+      "sub_search_degraded": [],
+      "duration_ms": 67062,
+      "archive": {
+        "run": "eval\\reports\\c6\\runs\\04-v2-research-on\\results.json",
+        "stop_reason": "max_rounds",
+        "hits": 7,
+        "archived": 7,
+        "present": 7
+      }
+    },
+    {
+      "case": "A03",
+      "group": "A",
+      "source": "refs",
+      "origin": "r08",
+      "condition": "fivefold",
+      "fivefold": true,
+      "query": "银卡会员用了积分抵扣的订单做了部分退款，算保级净额的时候，抵扣金额和退款金额分别怎么扣？",
+      "top_k": 5,
+      "expected": [
+        {
+          "document": "points_policy",
+          "section": "4",
+          "heading": null,
+          "role": "hop1",
+          "kind": "section"
+        },
+        {
+          "document": "refund_policy",
+          "section": "4",
+          "heading": null,
+          "role": "hop2",
+          "kind": "section"
+        },
+        {
+          "document": "points_policy",
+          "section": "2.2",
+          "heading": null,
+          "role": "hop2",
+          "kind": "section"
+        }
+      ],
+      "points": [
+        {
+          "point_id": "A1",
+          "text": "积分抵扣在部分退款时按比例退回并冲减抵扣金额。"
+        },
+        {
+          "point_id": "A2",
+          "text": "退款金额按实付部分从保级净额中扣除。"
+        },
+        {
+          "point_id": "A3",
+          "text": "银卡保级净额以实际支付金额为计算口径。"
+        }
+      ],
+      "materials": 8,
+      "materials_in_round1": 8,
+      "round1_expected_found": [
+        "points_policy:4",
+        "refund_policy:4",
+        "points_policy:2.2"
+      ],
+      "round1_expected_missing": [],
+      "followup_calls": [],
+      "rounds_inferred": true,
+      "coverage_pre_rejudge": [],
+      "unknown_ids": [],
+      "coverage": [
+        {
+          "point_id": "A1",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E2",
+            "E4"
+          ]
+        },
+        {
+          "point_id": "A2",
+          "status": "supported",
+          "evidence_ids": [
+            "E1",
+            "E6"
+          ]
+        },
+        {
+          "point_id": "A3",
+          "status": "supported",
+          "evidence_ids": [
+            "E6"
+          ]
+        }
+      ],
+      "gaps": [],
+      "claims": [],
+      "eventual_outcomes": {
+        "opportunity_points": 0,
+        "opportunity_cases": 0,
+        "cases": 1,
+        "no_chance_cases": 1,
+        "counts": {
+          "true_rescue": 0,
+          "false_rescue": 0,
+          "not_rescued": 0,
+          "still_unknown": 0
+        },
+        "rates": {
+          "true_rescue": null,
+          "false_rescue": null,
+          "not_rescued": null
+        },
+        "denominator": "opportunity_points"
+      },
+      "searches": 3,
+      "followup_rounds": 0,
+      "model_calls": 4,
+      "stop_reason": "evidence_complete",
+      "answered": false,
+      "answer_rejected_reason": "malformed answer output",
+      "insufficient": 0,
+      "evidence_state": "missing",
+      "strong_model_fallback": "strong model failed",
+      "sub_search_degraded": [],
+      "duration_ms": 83610,
+      "archive": {
+        "run": "eval\\reports\\c6\\runs\\04-v2-research-on\\results.json",
+        "stop_reason": "max_rounds",
+        "hits": 11,
+        "archived": 11,
+        "present": 11
+      }
+    }
+  ],
+  "groups_run": [
+    "fivefold"
+  ],
+  "metrics": {
+    "A": {
+      "opportunity_points": 1,
+      "opportunity_cases": 1,
+      "cases": 3,
+      "no_chance_cases": 2,
+      "counts": {
+        "true_rescue": 0,
+        "false_rescue": 0,
+        "not_rescued": 1,
+        "still_unknown": 0
+      },
+      "rates": {
+        "true_rescue": 0.0,
+        "false_rescue": 0.0,
+        "not_rescued": 1.0
+      },
+      "denominator": "opportunity_points",
+      "unknown_points": 1,
+      "points_total": 11,
+      "cases_with_followup": 1,
+      "gaps_total": 1,
+      "answered": 2,
+      "insufficient_total": 3,
+      "model_calls": 11
+    },
+    "B": {
+      "opportunity_points": 0,
+      "opportunity_cases": 0,
+      "cases": 0,
+      "no_chance_cases": 0,
+      "counts": {
+        "true_rescue": 0,
+        "false_rescue": 0,
+        "not_rescued": 0,
+        "still_unknown": 0
+      },
+      "rates": {
+        "true_rescue": null,
+        "false_rescue": null,
+        "not_rescued": null
+      },
+      "denominator": "opportunity_points",
+      "unknown_points": 0,
+      "points_total": 0,
+      "cases_with_followup": 0,
+      "gaps_total": 0,
+      "answered": 0,
+      "insufficient_total": 0,
+      "model_calls": 0
+    },
+    "B_control": {
+      "opportunity_points": 0,
+      "opportunity_cases": 0,
+      "cases": 0,
+      "no_chance_cases": 0,
+      "counts": {
+        "true_rescue": 0,
+        "false_rescue": 0,
+        "not_rescued": 0,
+        "still_unknown": 0
+      },
+      "rates": {
+        "true_rescue": null,
+        "false_rescue": null,
+        "not_rescued": null
+      },
+      "denominator": "opportunity_points",
+      "unknown_points": 0,
+      "points_total": 0,
+      "cases_with_followup": 0,
+      "gaps_total": 0,
+      "answered": 0,
+      "insufficient_total": 0,
+      "model_calls": 0,
+      "unknown_cases": 0
+    },
+    "model_calls": {
+      "actual": 11,
+      "by_condition": {
+        "fivefold": 11,
+        "control": 0
+      }
+    }
+  },
+  "model_calls": {
+    "actual": 11,
+    "by_condition": {
+      "fivefold": 11,
+      "control": 0
+    },
+    "skipped": [],
+    "predicted": {
+      "nominal": 92,
+      "worst": 115,
+      "budget": 120,
+      "nominal_fits": true,
+      "worst_fits": true,
+      "breakdown": {
+        "A": {
+          "cases": 3,
+          "conditions": 1,
+          "nominal": 12,
+          "worst": 15
+        },
+        "B": {
+          "cases": 10,
+          "conditions": 2,
+          "nominal": 80,
+          "worst": 100
+        }
+      }
+    },
+    "budget": 120
+  }
+}
