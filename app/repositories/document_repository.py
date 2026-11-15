@@ -20,9 +20,11 @@
 租约语义因此不可能在两套入口之间漂移。
 
 同步的那几个**仍有读者，但不与上面的异步路径共用**：运维脚本
-（``reindex_knowledge_base`` / ``requeue_stuck_documents``）与启动期装载是独立进程 /
-线程池里的同步读；``get_by_id_for_tenant`` / ``list_by_kb`` 两个同步孪生现在只剩测试在用
-（生产零调用点），留着是为了让状态机的 SQL 级用例能直接读行，不作为第二套生产写法。
+（``reindex_knowledge_base`` / ``requeue_stuck_documents`` /
+``backfill_document_content``）与启动期装载是独立进程 / 线程池里的同步读；
+``get_by_id_for_tenant`` / ``list_by_kb``
+两个同步孪生现在只剩测试在用（生产零调用点），留着是为了让状态机的 SQL 级用例能直接
+读行，不作为第二套生产写法。
 """
 
 from datetime import datetime, timedelta
@@ -111,6 +113,28 @@ def list_stuck(
     if kb_id is not None:
         stmt = stmt.where(Document.kb_id == kb_id)
     return list(db.execute(stmt.order_by(Document.created_at)).scalars().all())
+
+
+def list_missing_content(
+    db: Session, *, kb_id: str | None = None, limit: int | None = None
+) -> list[Document]:
+    """扫出「正文为空」的文档：正文回写之前登记的历史行（第 12 步票 #170）。
+
+    只要 ``scripts/backfill_document_content.py`` 调用，数据面禁止使用——它回答的是
+    「库里还有哪些文档没有正文」这个一次性运维问题，不是任何一种业务查询。
+
+    判定是 ``content`` 为空串或 ``NULL``：历史行两种都可能（建表时没有默认值的那批
+    是 ``NULL``，文件上传的那批是空串）。``kb_id`` 只缩小范围，``limit`` 供运维先看
+    一小批再决定，两者都不改变「正文为空」的定义。
+    """
+
+    stmt = select(Document).where(func.coalesce(Document.content, "") == "")
+    if kb_id is not None:
+        stmt = stmt.where(Document.kb_id == kb_id)
+    stmt = stmt.order_by(Document.created_at)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list(db.execute(stmt).scalars().all())
 
 
 def list_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> list[Document]:
