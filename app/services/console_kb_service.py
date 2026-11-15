@@ -53,6 +53,7 @@ from app.providers.vectorstores import get_vector_store
 from app.repositories import (
     chunk_repository,
     document_repository,
+    document_version_repository,
     knowledge_base_repository,
     tenant_repository,
 )
@@ -338,11 +339,14 @@ async def reindex_document(
 async def delete_document(
     db: AsyncSession, *, tenant_id: str, document_id: str, actor: ConsoleIdentity
 ) -> dict[str, Any]:
-    """删除文档：守卫 → purge 切片 → 删原文件 → 删行 → 审计 → 由请求边界提交。
+    """删除文档：守卫 → purge 切片 → 删原文件 → 删版本行 → 删行 → 审计 → 由请求边界提交。
 
     顺序是契约的一部分（见 ``app/api/routes/documents.py`` 的同名端点）；审计插在
-    「删行」与「提交」之间，不改动四步本身。有效处理中（租约未过期）拒绝删除；租约
+    「删行」与「提交」之间，不改动五步本身。有效处理中（租约未过期）拒绝删除；租约
     过期视为 Worker 卡死，允许删除。
+
+    版本行单独删一次（#172）：一张表都没有外键，库不会级联，所以与清除切片、删行
+    同一笔事务里显式删（``document_version_repository.delete_for_document``）。
     """
 
     document = await document_repository.get_by_id_for_tenant_async(
@@ -356,6 +360,7 @@ async def delete_document(
     stores = build_chunk_stores(get_vector_store(), get_keyword_search_provider())
     await purge_document_chunks(db, document_id, tenant_id=tenant_id, stores=stores)
     remove_document_file(document.source_file_path)
+    await document_version_repository.delete_for_document(db, document_id)
 
     before = _document_state_snapshot(document)
     await db.delete(document)

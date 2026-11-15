@@ -38,7 +38,11 @@ from app.db.async_session import get_async_db, get_async_transaction
 from app.db.transaction import AsyncTransaction, after_commit
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
-from app.repositories import chunk_repository, document_repository
+from app.repositories import (
+    chunk_repository,
+    document_repository,
+    document_version_repository,
+)
 from app.schemas.common import ApiResponse, ok
 from app.schemas.document import (
     DeleteDocumentData,
@@ -249,12 +253,15 @@ async def delete_document(
     key: DevKeyContext = Depends(get_current_key),
     tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[DeleteDocumentData]:
-    """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删行 → 由 ``tx`` 提交。
+    """守卫通过后按固定顺序删除：清除切片 → 删原文件 → 删版本行 → 删行 → 由 ``tx`` 提交。
 
     ``purge_document_chunks`` 遍历存储列表（向量存储 + 关键词检索，接线见
     ``app.services.chunk_store.build_chunk_stores``），因此删文档不需要知道存储
     形态；删除切片同样强制带租户（ADR-0006）。有效处理中（租约未过期）拒绝删除
     （20025）；租约过期视为 Worker 卡死，允许删除。
+
+    **版本行单独删一次**（#172）：一张表都没有外键（仓库零外键），库不会替我们级联，
+    所以由这条路径显式删，且与清除切片、删行同一笔事务。
     """
 
     doc = await document_repository.get_by_id_for_tenant_async(
@@ -275,6 +282,7 @@ async def delete_document(
         stores=build_chunk_stores(get_vector_store(), get_keyword_search_provider()),
     )
     remove_document_file(doc.source_file_path)
+    await document_version_repository.delete_for_document(db, document_id)
     await db.delete(doc)
 
     logger.info(

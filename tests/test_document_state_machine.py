@@ -367,6 +367,17 @@ class _FakeSession(RecordingSession):
         self.calls.append("add")
         super().add(obj)
 
+    def execute(self, statement: Any, *args: Any, **kwargs: Any) -> Any:
+        """顺序契约自 #172 起多一步「删版本行」——它是这条路径上唯一的 ``DELETE`` 语句。
+
+        版本行没有外键可依靠（仓库零外键），删文档时必须显式删它们，而且要和删文档行
+        落在同一笔里。把这一步记进 ``calls`` 才看得见它有没有发生、发生在第几步。
+        """
+
+        if str(statement).lstrip().upper().startswith("DELETE"):
+            self.calls.append("delete-version-rows")
+        return super().execute(statement, *args, **kwargs)
+
     def delete(self, doc: Any) -> None:
         self.calls.append("delete-row")
         super().delete(doc)
@@ -681,7 +692,7 @@ def test_delete_allowed_document_purges_file_and_row_in_order(
     status: int,
     claim_age_seconds: int | None,
 ) -> None:
-    """失败 / 成功 / 租约过期都能删：purge → 删文件 → 删行 → 提交，一步不少。"""
+    """失败 / 成功 / 租约过期都能删：purge → 删文件 → 删版本行 → 删行 → 提交，一步不少。"""
 
     source = tmp_path / f"{DOC_ID}.md"
     source.write_text("# body", encoding="utf-8")
@@ -694,12 +705,43 @@ def test_delete_allowed_document_purges_file_and_row_in_order(
     body = response.json()
     assert body["code"] == 0
     assert body["data"] == {"document_id": DOC_ID, "deleted": True}
-    assert offline_api.calls == ["purge:pgvector", "remove-file", "delete-row", "commit"]
+    assert offline_api.calls == [
+        "purge:pgvector",
+        "remove-file",
+        "delete-version-rows",
+        "delete-row",
+        "commit",
+    ]
     assert offline_api.store.deleted == [DOC_ID], "切片的清除走存储列表，不直连某个存储"
     assert offline_api.store.tenant_ids == [TENANT_ID], "删除切片也必须强制带租户"
     assert not source.exists(), "原文件必须删掉"
     assert offline_api.session.deleted == [doc]
     assert offline_api.session.commits == 1
+
+
+def test_delete_document_also_deletes_its_version_rows_in_the_same_transaction(
+    offline_api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """零外键的代价（#172）：版本行由这条路径显式删，和文档行同一笔事务。"""
+
+    doc = _document(status=DocumentStatus.SUCCESS)
+    _install_lookup(monkeypatch, doc)
+
+    response = offline_api.client.delete(f"/api/v1/documents/{DOC_ID}")
+
+    assert response.json()["code"] == 0
+    statements = [
+        statement
+        for statement in offline_api.session.statements
+        if statement.lstrip().upper().startswith("DELETE")
+    ]
+    assert len(statements) == 1, f"只该有一条 DELETE，实际 {statements}"
+    assert "document_versions" in statements[0], "删的是版本表，不是别的表"
+    assert "document_id" in statements[0], "按文档 id 删（不是整表清空）"
+    assert offline_api.calls.index("delete-version-rows") < offline_api.calls.index("delete-row"), (
+        "先清这一篇的从属数据，再删主行"
+    )
+    assert offline_api.session.commits == 1, "与删行同一笔事务，不许各自提交"
 
 
 def test_delete_document_without_source_file_still_removes_the_row(
@@ -714,7 +756,13 @@ def test_delete_document_without_source_file_still_removes_the_row(
 
     body = response.json()
     assert body["code"] == 0
-    assert offline_api.calls == ["purge:pgvector", "remove-file", "delete-row", "commit"]
+    assert offline_api.calls == [
+        "purge:pgvector",
+        "remove-file",
+        "delete-version-rows",
+        "delete-row",
+        "commit",
+    ]
     assert offline_api.store.deleted == [DOC_ID]
     assert offline_api.store.tenant_ids == [TENANT_ID]
     assert offline_api.session.deleted == [doc]
