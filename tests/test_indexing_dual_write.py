@@ -294,6 +294,32 @@ def test_slice_meta_keeps_the_draft_number_key_and_reads_it_from_the_pointer(
     assert vector.written[0][0]["meta"] == written[0]["meta"], "两路存的必须是同一份 meta"
 
 
+def test_slice_carries_the_current_draft_marker_at_the_top_level(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """切片字典**顶层**带稿号与「当前稿」标记（#174）：关键词侧要拿它们生成两个 ES 字段。
+
+    为什么放顶层而不是 meta：召回过滤要的是一个布尔 term，而 meta 是「这一版快照」的
+    自由字典——把过滤维度埋在里头，等于让关键词侧去挖一个没人保证的键。指针用不等于
+    默认值的 4 钉住「值来自文档行的当前稿指针」。
+    """
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text=ORIGINAL, metadata={"heading_path": HEADING})]
+    _patch_indexing(monkeypatch, pieces=pieces, pointer=4)
+
+    provider = _RecordingKeywordProvider(calls)
+    monkeypatch.setattr(indexing_service, "get_vector_store", lambda: _RecordingStore(calls))
+    monkeypatch.setattr(indexing_service, "get_keyword_search_provider", lambda: provider)
+
+    service = IndexingService(splitter=_StubSplitter(pieces), embeddings=_StubEmbeddings())
+    asyncio.run(service.index_existing_document(_FakeSession(), DOC_ID))
+
+    written = provider.written[0][0]
+    assert written["doc_version"] == 4, "稿号在切片字典顶层，值来自当前稿指针"
+    assert written["is_current"] is True, "这一批切片就是当前稿"
+
+
 def test_indexing_fails_as_a_whole_when_the_keyword_store_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

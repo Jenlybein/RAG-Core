@@ -24,6 +24,7 @@ from app.providers.keyword_search.query_builder import (
     build_bm25_query,
     build_es_mapping,
     build_keyword_documents,
+    build_mapping_update,
     build_purge_query,
 )
 from app.providers.keyword_search.versioned_index import (
@@ -69,6 +70,9 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         #: 已经确认存在的**物理索引名**集合。按版本分，因为每个版本是一张新索引；
         #: 只记一个布尔会让「v2 的索引还没建」在第一次写 v2 时被跳过。
         self._index_ready: set[str] = set()
+        #: 已经补过「当前稿」mapping 的物理索引（#174）。补丁幂等，但没必要每次写入
+        #: 都发一趟；失败的不记，于是下一次写入会重试。
+        self._mapping_patched: set[str] = set()
         self._timeout_s = timeout_s
         # **一个事件循环一个客户端**。见 `_get_client` 的注释：Celery 每个任务各
         # `asyncio.run` 一次，跨 loop 复用同一个 `AsyncElasticsearch` 会让连接池绑在
@@ -123,21 +127,54 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
 
         参数是物理索引名而不是别名：建完之后**不**自动挂别名——挂别名是激活的事
         （:meth:`activate_version`）。构建期间新建的 v2 索引没人指向它，正是想要的。
+
+        **已存在的索引要补一次 mapping**（#174）：第 11 步建好的物理索引里没有
+        ``doc_version`` / ``is_current`` 两个字段，而 ES 对未映射字段的 ``term``
+        查询不报错、只命中 0 条——关键词路会静默全空。补 mapping 是 additive 的，
+        不重建索引也不动已有文档，见 :func:`build_mapping_update`。
         """
 
         if index_name in self._index_ready:
             return
         client = self._get_client()
+        created = False
         if not await client.indices.exists(index=index_name):
             try:
                 await client.indices.create(index=index_name, **build_es_mapping())
+                created = True
             except BadRequestError as exc:
                 # 两个 Worker 同时第一次索引时，后手会拿到 400
                 # 「resource_already_exists_exception」。那是幂等，不是失败；
                 # 其他 400（mapping 写错等）必须照常抛出去。
                 if exc.error != "resource_already_exists_exception":
                     raise
+        if not created:
+            await self._patch_mapping(index_name)
         self._index_ready.add(index_name)
+
+    async def _patch_mapping(self, index_name: str) -> None:
+        """给存量物理索引补上「当前稿」两个字段（每张索引每进程只试一次）。
+
+        **失败不升级**：这是给老索引打的补丁，不是写入本身。集群只读、字段类型冲突这类
+        拒绝确实会让关键词路继续少一路结果，但让整篇文档因为一次元数据补丁而索引失败，
+        代价比它治的问题大——所以降级成一条 warning（带索引名，便于对账脚本与运维发现），
+        并且**不记进已补集合**：下次再遇到这张索引会重试。
+        """
+
+        if index_name in self._mapping_patched:
+            return
+        try:
+            await self._get_client().indices.put_mapping(
+                index=index_name, **build_mapping_update()
+            )
+        except Exception as exc:  # noqa: BLE001 - 见上：补丁失败不拖垮写入
+            logger.warning(
+                "keyword index mapping patch skipped",
+                index=index_name,
+                error=type(exc).__name__,
+            )
+            return
+        self._mapping_patched.add(index_name)
 
     async def ensure_version_index(self, version: str) -> str:
         """确保该版本的物理索引存在，返回它的名字（给激活用）。"""
