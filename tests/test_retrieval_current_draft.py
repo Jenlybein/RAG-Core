@@ -23,10 +23,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import AsyncIterator
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+import pytest_asyncio
+from sqlalchemy import text
 from sqlalchemy.dialects import postgresql
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.chunk import DEFAULT_DOC_VERSION
 from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
@@ -38,6 +43,7 @@ from app.providers.keyword_search.query_builder import (
     build_mapping_update,
 )
 from app.providers.vectorstores.pgvector import PgVectorStore
+from app.repositories import chunk_repository
 
 TENANT = "tenant_demo"
 KB = "kb-a"
@@ -336,3 +342,278 @@ def test_without_a_keyword_engine_the_current_draft_dimension_is_not_judged() ->
         asyncio.run(provider.add_chunks([_chunk("chunk-1", doc_version=1, is_current=True)]))
         is None
     )
+
+
+# ───────────────────────────────────── 三～五、折叠 / 计数 / 溯源（真 SQL 跑一遍）
+# 上面两节用「编译出来的 SQL」钉结构；这一节起**真的把两稿写进一张表**再查一次，
+# 因为「只返回当前稿」是关于**行**的断言，光看 SQL 文本挡不住「JOIN 了但条件写反了」。
+# 表用 SQLite 建（与 ``test_index_version.py`` 同一套做法：``JSONB`` / ``Vector`` 换成
+# SQLite 能接受的类型），语句本身是仓储里那几条**生产语句**，不是复制品。
+
+DOCUMENTS_DDL = """
+CREATE TABLE documents (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(36) NOT NULL,
+    current_version INTEGER NOT NULL DEFAULT '1'
+)
+"""
+
+CHUNKS_DDL = """
+CREATE TABLE chunks (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(36) NOT NULL,
+    document_id VARCHAR(36) NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    metadata JSON NOT NULL,
+    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+    doc_version INTEGER NOT NULL DEFAULT '1'
+)
+"""
+
+UNIT_PATH = "退款 > 流程"
+
+#: 两稿并存的时刻：文档行指着第 2 稿，第 1 稿的切片按保留策略还在（ADR-0005 选 B）。
+#: 这是本票唯一真正危险的窗口——五处条件漏掉任何一处，症状都只是「多了一份/少了一份」。
+SEEDED_ROWS = (
+    "INSERT INTO documents (id, tenant_id, kb_id, current_version) "
+    f"VALUES ('doc-1', '{TENANT}', '{KB}', 2)",
+    "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('chunk-v1', '{TENANT}', '{KB}', 'doc-1', "
+    f"'旧稿正文：三个工作日到账。', '[]', '{{\"heading_path\": \"{UNIT_PATH}\"}}', 'v1', 1)",
+    "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('chunk-v2', '{TENANT}', '{KB}', 'doc-1', "
+    f"'当前稿正文：五个工作日到账。', '[]', '{{\"heading_path\": \"{UNIT_PATH}\"}}', 'v1', 2)",
+)
+
+
+@pytest_asyncio.fixture
+async def two_drafts() -> AsyncIterator[AsyncSession]:
+    """一张真表，两稿切片并存，指针指着第 2 稿（一个用例一个干净的内存库）。"""
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        for statement in (DOCUMENTS_DDL, CHUNKS_DDL, *SEEDED_ROWS):
+            await connection.execute(text(statement))
+    async with AsyncSession(engine) as session:
+        try:
+            yield session
+        finally:
+            await session.rollback()
+    await engine.dispose()
+
+
+def test_only_the_two_recall_paths_deliver_the_current_draft() -> None:
+    """验收：造同一文档两稿各一份切片、指针指向 v2 → **两条召回路径都只返回 v2**。
+
+    向量路：SQL 里是列与列的相等（``chunks.doc_version`` = ``documents.current_version``），
+    指针在哪一稿，召回就落在哪一稿，应用层不缓存指针。
+    关键词路：索引期算好的布尔在 filter 里；两稿写进 ES 的文档一个 ``true`` 一个
+    ``false``，所以旧稿连候选都进不来。
+    """
+
+    # 向量路：同一条语句配「指针指向第 2 稿」就是它真实的过滤口径。
+    session = _CapturingSession()
+    asyncio.run(
+        PgVectorStore().similarity_search_scope(
+            session, [0.1, 0.2, 0.3], tenant_id=TENANT, index_versions={KB: "v1"}, top_k=5
+        )
+    )
+    sql = _sql(session.statement)
+    assert "chunks.doc_version = documents.current_version" in sql
+
+    # 关键词路：两稿的切片字典各自带标记，写进 ES 后只有一个 is_current=true。
+    documents = build_keyword_documents(
+        [
+            _chunk("chunk-v1", doc_version=1, is_current=False),
+            _chunk("chunk-v2", doc_version=2, is_current=True),
+        ]
+    )
+    assert [document["chunk_id"] for document in documents if document["is_current"]] == [
+        "chunk-v2"
+    ], "旧稿切片写进去时就标成「不是当前稿」"
+
+    query = build_bm25_query(
+        tenant_id=TENANT, index_versions={KB: "v1"}, search_query="退款", top_k=5
+    )
+    assert {"term": {"is_current": True}} in query["query"]["bool"]["filter"], (
+        "关键词路只认当前稿：这一个 term 就是两稿切片的分界线"
+    )
+
+
+@pytest.mark.asyncio
+async def test_unit_rows_never_stitch_the_two_drafts_together(two_drafts: AsyncSession) -> None:
+    """折叠取整节：整节正文只来自当前稿，旧稿的行一片都不许混进来。
+
+    漏掉这一处的症状最隐蔽：命中片是当前稿的，折出来的整节却拼上了旧稿的句子
+    ——「一半旧稿一半新稿」，而结果看起来完全正常。
+    """
+
+    statement = chunk_repository._unit_rows_statement(
+        tenant_id=TENANT,
+        document_ids=["doc-1"],
+        unit_paths=[UNIT_PATH],
+        index_version="v1",
+    )
+    sql = _sql(statement)
+    assert "chunks.doc_version = documents.current_version" in sql
+
+    rows = (await two_drafts.execute(statement)).all()
+    assert [(row.id, row.content) for row in rows] == [("chunk-v2", "当前稿正文：五个工作日到账。")]
+
+
+@pytest.mark.asyncio
+async def test_parent_rows_read_only_the_current_draft(two_drafts: AsyncSession) -> None:
+    """折叠关闭时补的**父节正文**也只看当前稿（同一个交付口径，第 6 处调用点）。"""
+
+    statement = chunk_repository.build_parent_rows_statement(
+        tenant_id=TENANT, document_ids=["doc-1"], heading_paths=[UNIT_PATH], index_version="v1"
+    )
+    assert "chunks.doc_version = documents.current_version" in _sql(statement)
+
+    rows = (await two_drafts.execute(statement)).all()
+    assert [row.content for row in rows] == ["当前稿正文：五个工作日到账。"]
+
+
+@pytest.mark.asyncio
+async def test_empty_reason_count_uses_the_same_current_draft_predicate(
+    two_drafts: AsyncSession,
+) -> None:
+    """空结果计数：库里有两稿共两片，但**当前稿只有一片**——口径必须与召回一致。
+
+    这一处漏掉时会说「库里有内容」（2 片），而召回一条都没有（被当前稿条件挡住），
+    于是 ``empty_reason`` 把「这个稿没内容」误报成「检索没命中」。
+    """
+
+    statement = chunk_repository._count_by_kb_ids_statement(
+        tenant_id=TENANT, index_versions={KB: "v1"}
+    )
+    sql = _sql(statement)
+    assert "chunks.doc_version = documents.current_version" in sql
+
+    assert int((await two_drafts.execute(statement)).scalar_one()) == 1
+
+
+@pytest.mark.asyncio
+async def test_provenance_lookup_filters_by_draft_and_reads_the_number_from_the_column(
+    two_drafts: AsyncSession,
+) -> None:
+    """溯源回查：按切片 id 反查时**也带稿号条件**，且稿号读的是真实列。
+
+    稿号的第四条条件不能省（父 spec D9）：少了它，切片被重建替换之后，回查会拿到
+    当前稿那一行并把它的稿号/页码当成旧切片的——「静默返回当前稿」，而不是如实说
+    这一片已经不在了（``doc_version`` 落成 ``null``，见下一条用例）。
+    """
+
+    statement = chunk_repository._meta_statement(
+        tenant_id=TENANT, kb_ids=[KB], chunk_ids=["chunk-v1", "chunk-v2"]
+    )
+    assert "chunks.doc_version = documents.current_version" in _sql(statement)
+
+    metas = await chunk_repository.fetch_meta_by_chunk_ids(
+        two_drafts, tenant_id=TENANT, kb_ids=[KB], chunk_ids=["chunk-v1", "chunk-v2"]
+    )
+    assert set(metas) == {(KB, "chunk-v2")}, "旧稿的切片不在回查结果里"
+    assert metas[(KB, "chunk-v2")]["doc_version"] == 2, "稿号来自 chunks.doc_version 列"
+
+
+class _StaleSession:
+    """回查一律空结果的会话替身：模拟「这一片已被重建替换」。
+
+    ``unit_queries`` 记下有没有人去查单元行——那一步一旦发生，交付的正文就会是
+    **当前稿**的整节，正是「静默返回当前稿正文」那条要挡住的故障。
+    """
+
+    def __init__(self) -> None:
+        self.unit_queries = 0
+
+    async def execute(self, statement: Any) -> Any:
+        text = str(statement)
+        if "LIKE" in text:
+            self.unit_queries += 1
+        return SimpleNamespace(all=lambda: [], scalar_one=lambda: 0)
+
+
+def test_a_replaced_chunk_is_reported_as_expired_not_as_the_current_draft() -> None:
+    """切片被替换后：稿号落成 ``null``（明确的「已过期」），正文仍是召回时那一片。"""
+
+    from app.services.retrieval import collapse as collapse_module
+
+    session = _StaleSession()
+    stale_hit = {
+        "document_id": "doc-1",
+        "chunk_id": "chunk-gone",
+        "kb_id": KB,
+        "title": "售后手册",
+        "content": "召回时那一片的正文。",
+        "score": 0.9,
+    }
+
+    results = asyncio.run(
+        collapse_module.collapse_results(
+            session,
+            tenant_id=TENANT,
+            chunks=[stale_hit],
+            index_versions={KB: "v1"},
+            top_k=5,
+            fold_to_sections=True,
+            expand_table_rows=True,
+        )
+    )
+
+    assert session.unit_queries == 0, "回查不到这一片 → 不查单元行，当前稿的整节拼不进来"
+    assert results[0]["doc_version"] is None, "回查不到 = 这一片已过期，如实给 null"
+    assert results[0]["content"] == "召回时那一片的正文。", "正文不许被当前稿内容替换"
+
+
+def test_the_response_draft_number_ignores_the_jsonb_copy() -> None:
+    """对外 ``doc_version`` 取真实列，不取 JSONB 里那份副本（#172 已把它删掉）。"""
+
+    from app.services.retrieval import collapse as collapse_module
+
+    class _RowSession:
+        """第一次回查给一行（带列上的稿号），之后的单元行查询给空。"""
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def execute(self, _statement: Any) -> Any:
+            self.calls += 1
+            if self.calls > 1:
+                return SimpleNamespace(all=lambda: [], scalar_one=lambda: 0)
+            return SimpleNamespace(
+                all=lambda: [
+                    SimpleNamespace(
+                        id="chunk-v2",
+                        kb_id=KB,
+                        # 老数据里可能还留着这份副本；它已经不可信。
+                        meta={"heading_path": UNIT_PATH, "doc_version": 1},
+                        doc_version=2,
+                    )
+                ]
+            )
+
+    results = asyncio.run(
+        collapse_module.collapse_results(
+            _RowSession(),
+            tenant_id=TENANT,
+            chunks=[
+                {
+                    "document_id": "doc-1",
+                    "chunk_id": "chunk-v2",
+                    "kb_id": KB,
+                    "title": "售后手册",
+                    "content": "当前稿正文。",
+                    "score": 0.9,
+                }
+            ],
+            index_versions={KB: "v1"},
+            top_k=5,
+            fold_to_sections=True,
+            expand_table_rows=True,
+        )
+    )
+
+    assert results[0]["doc_version"] == 2, "对外字段名不变，值来自真实列"
