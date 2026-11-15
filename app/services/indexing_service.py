@@ -88,7 +88,11 @@ from app.repositories import (
     knowledge_base_repository,
 )
 from app.services.chunk_store import ChunkStore, build_chunk_stores
-from app.services.document_ingestion import content_from_version, prepare_document_content
+from app.services.document_ingestion import (
+    content_from_version,
+    parse_source_file,
+    prepare_document_content,
+)
 from app.services.section_context import summarize_sections
 from app.utils.checksum import checksum_of
 from app.utils.id_generator import new_chunk_id, new_version_id
@@ -159,9 +163,32 @@ class _ContentSource(NamedTuple):
     reparsed: bool = False
 
 
+def _reparse_source(
+    doc: Document, version_row: DocumentVersion | None
+) -> ParsedDocument:
+    """重解析读**哪一份字节**：这一稿自己的源文件优先（#182）。
+
+    ## 为什么不是文档行上的路径
+
+    每一稿的源文件都按稿号落盘（``<doc>.v<N><ext>``，见
+    :func:`app.services.document_storage.store_version_file`），而 ``documents`` 上的
+    那一列只指向**最新一次上传**。重解析第 1 稿时读文档行，解析到的是第 2 稿的字节——
+    症状是「重建之后内容莫名其妙变了」，既不报错也不留痕，而它正是本票要堵的洞。
+
+    ## 没有源文件时不回落
+
+    目标稿没有可读源文件（JSON 提交的稿次、文件已从盘上消失）就报 ``DOCUMENT_PARSE_FAILED``。
+    回落读文档行那份只有在**这一稿还没有版本行**时才成立（#172 之前的存量文档全靠它），
+    那时没有别的字节可读，也就没有「读错稿」的风险。
+    """
+
+    if version_row is None:
+        return prepare_document_content(doc, reparse=True)
+    return parse_source_file(version_row.source_file_path, filename=doc.source_filename)
+
+
 class IndexingService:
     """Worker 侧的索引编排：一份已登记的文档 → 可检索的切片。"""
-
     def __init__(
         self,
         *,
@@ -247,7 +274,7 @@ class IndexingService:
         # 分支 1：显式要求重解析。
         if reparse:
             return _ContentSource(
-                parsed=prepare_document_content(doc, reparse=True),
+                parsed=_reparse_source(doc, version_row),
                 version_row=version_row,
                 reparsed=True,
             )
