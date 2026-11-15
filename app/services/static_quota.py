@@ -15,6 +15,7 @@
 | 建知识库（``knowledge_base_service.create_kb``） | :func:`ensure_kb_quota` | 这个租户的库数 vs ``max_kb`` |
 | 上传文档（``document_service.upload``） | :func:`ensure_upload_quota` | 这个库的文档数 vs ``max_documents_per_kb``；再数全租户处理中文档 vs ``max_processing_documents`` |
 | 重建索引（``POST /documents/{id}/reindex``） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
+| 提交新版本（``POST /documents/{id}/versions``，#175） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
 
 把限制写在「控制台接口」上而不是这三处，是同一件事的另一种失败方式：脚本、CLI、将来
 另一个入口只要不经过那个接口，套餐就形同虚设。

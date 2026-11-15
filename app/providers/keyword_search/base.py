@@ -93,3 +93,19 @@ class KeywordSearchProvider(ABC):
         每一稿，所以稿号在这里不是「第二道防线」而是**唯一**的那道：少了它，重建一次就
         把旧稿从关键词那一路抹掉，而向量那一路还留着。
         """
+
+    @abstractmethod
+    async def mark_current_draft(
+        self, document_id: str, *, tenant_id: str, doc_version: int
+    ) -> None:
+        """把这篇文档的关键词切片里「当前稿」标记翻到 ``doc_version``（#175）。
+
+        指针前移（``documents.current_version``）之后必须调它：不翻的话，旧稿的切片仍带着
+        ``is_current=true``，关键词路会继续召回旧稿，而**症状是同一段内容出现两次**——
+        向量那一路已经只看新稿了。
+
+        范围是「这一篇文档、这一个租户」：少任何一个，翻的就是别人的切片。
+
+        **实现方的失败语义**：抛异常即可，调用方（``app.services.keyword_draft``）负责
+        降级成 warning。Provider 自己不要在内部吞掉错误——那样「没翻成」就没有任何痕迹。
+        """

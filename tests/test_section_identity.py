@@ -194,6 +194,11 @@ class _PipelineSession:
         self.info: dict[str, Any] = {}
         self._document = document
         self.commits = 0
+        #: ``add`` 进来的行（首个版本行，#175）。真会话里 ``add`` 是同步的。
+        self.added: list[Any] = []
+
+    def add(self, row: Any) -> None:
+        self.added.append(row)
 
     async def get(self, _model: Any, ident: Any) -> Any | None:
         return self._document if ident == self._document.id else None

@@ -1,4 +1,4 @@
-"""文档接口：异步上传、状态查询、重建索引与删除。
+"""文档接口：异步上传、状态查询、重建索引、删除，以及版本（建 / 列）。
 
 只有一个模块、一个 router：
   * ``POST /documents/upload`` —— 单端点按 content-type 分流（multipart = 文件模式，
@@ -8,8 +8,12 @@
     标记排队（不盖租约）→ 由请求事务提交 → 投递；purge、抢占与写入仍只在 Worker
     的事务里发生。
   * ``DELETE /documents/{document_id}`` —— 守卫通过后按租户清除切片、删原文件、删记录。
+  * ``POST /documents/{document_id}/versions`` —— 提交一份新正文，得到下一个稿次
+    （#175；写路径的顺序见 ``app.services.document_version_service``）。
+  * ``GET /documents/{document_id}/versions?include_content=`` —— 这篇文档改过几稿，
+    按稿号倒序，正文默认不带（#175）。
 
-三条写入口都声明事务依赖：一个请求一笔事务，成功提交、异常回滚，提交点只在
+写入口都声明事务依赖：一个请求一笔事务，成功提交、异常回滚，提交点只在
 :mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
 
 四条入口全部在异步栈上（第 11 步票 #130 收尾）：``Depends(get_async_db)`` +
@@ -31,7 +35,11 @@ from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_key
-from app.api.upload_parsing import parse_upload_request, submitted_request_id
+from app.api.upload_parsing import (
+    parse_upload_request,
+    parse_version_request,
+    submitted_request_id,
+)
 from app.core.auth import DevKeyContext
 from app.core.exceptions import AppError, ErrorCode
 from app.db.async_session import get_async_db, get_async_transaction
@@ -45,14 +53,18 @@ from app.repositories import (
 )
 from app.schemas.common import ApiResponse, ok
 from app.schemas.document import (
+    CreateDocumentVersionData,
+    CreateDocumentVersionRequest,
     DeleteDocumentData,
     DocumentListData,
     DocumentListItem,
+    DocumentVersionItem,
+    DocumentVersionListData,
     ReindexDocumentData,
     UploadDocumentData,
     UploadDocumentRequest,
 )
-from app.services import document_service, document_state, static_quota
+from app.services import document_service, document_state, document_version_service, static_quota
 from app.services.chunk_store import build_chunk_stores
 from app.services.data_scope import ensure_kb_scope
 from app.services.document_storage import remove_document_file
@@ -285,6 +297,11 @@ async def delete_document(
         stores=build_chunk_stores(get_vector_store(), get_keyword_search_provider()),
     )
     remove_document_file(doc.source_file_path)
+    # 版本行的源文件按**稿号**落盘（``<doc_id>.v<N><ext>``，#175），所以它们不会出现在
+    # ``doc.source_file_path`` 里：不清就是一批永远无人认领的文件（文档行与版本行都没了，
+    # 没有任何地方还记着这些路径）。
+    for version_file in await document_version_repository.source_file_paths(db, document_id):
+        remove_document_file(version_file)
     await document_version_repository.delete_for_document(db, document_id)
     await db.delete(doc)
 
@@ -296,3 +313,103 @@ async def delete_document(
         source_type=doc.source_type,
     )
     return ok(DeleteDocumentData(document_id=document_id, deleted=True))
+
+
+@router.post(
+    "/documents/{document_id}/versions",
+    response_model=ApiResponse[CreateDocumentVersionData],
+    summary="提交新版本（建一个稿次，随后重建）",
+)
+async def create_document_version(
+    document_id: str,
+    request: Request,
+    file: UploadFile | None = File(None),
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+    tx: AsyncTransaction = Depends(get_async_transaction),
+) -> ApiResponse[CreateDocumentVersionData]:
+    """提交一份新正文（JSON ``{"content": ...}`` 或 multipart 的 ``file``）→ 新稿次。
+
+    顺序与理由见 ``app.services.document_version_service``。路由这一层只做三件事：
+    **按 content-type 分流**（与上传共用 ``app.api.upload_parsing`` 里那套错误体）、
+    **第二道关卡**（数据范围白名单，按文档所属的库判；越界与跨租户同一个码 20008）、
+    以及把结果套进统一信封。
+
+    为什么守卫在路由里而判重在服务里：范围白名单是**授权**，它属于 HTTP 入口（每条入口
+    各有各的来源：API Key 的 policy / 控制面的会话租户）；而「内容有没有变」「稿号是几」
+    是业务规则，属于服务。写接口因此照旧声明 ``Depends(get_async_transaction)``：
+    一个请求一笔事务，提交点只在 ``app.db.transaction`` 一处。
+    """
+
+    submitted = await parse_version_request(
+        request, file=file, json_model=CreateDocumentVersionRequest
+    )
+
+    # 按 id + 租户取文档：缺失与跨租户统一 20016（不泄露存在性），随后才是范围白名单。
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+
+    data = await document_version_service.create_version(
+        db,
+        tenant_id=key.tenant_id,
+        document_id=document_id,
+        plan=key.plan,
+        content=submitted.content,
+        filename=submitted.filename,
+        data=submitted.data,
+        request_id=submitted.request_id,
+    )
+    return ok(CreateDocumentVersionData.model_validate(data))
+
+
+@router.get(
+    "/documents/{document_id}/versions",
+    response_model=ApiResponse[DocumentVersionListData],
+    summary="列文档的版本（按稿号倒序，默认不带正文）",
+)
+async def list_document_versions(
+    document_id: str,
+    include_content: bool = Query(False),
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+) -> ApiResponse[DocumentVersionListData]:
+    """返回这篇文档的全部稿次，**按稿号倒序**（现在这一稿在最前）+ 当前稿指针。
+
+    **正文默认不给**（``include_content=False``）：一批整篇正文的响应既大又慢，而列表的
+    常见用途是「这篇文档改过几稿、最近一稿是哪天」。要看某一稿的正文得显式要求。
+
+    读入口**不声明**事务依赖：读路径不提交（见模块文档）。当前稿指针取文档行上的那一列，
+    不取「状态是 current 的那一行」——指针是唯一真值，版本行的状态是它的派生（#175 的写路径
+    保证两者一致，但读的时候只认指针）。
+    """
+
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    # 第二道关卡：白名单（与创建 / 重建 / 删除同一条，按文档所属的库判）。
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+
+    rows = await document_version_repository.list_by_document(db, document_id)
+    return ok(
+        DocumentVersionListData(
+            document_id=document_id,
+            current_version=doc.current_version,
+            items=[
+                DocumentVersionItem(
+                    version=row.version,
+                    status=row.status,
+                    checksum=row.checksum,
+                    created_at=row.created_at,
+                    content=row.content if include_content else None,
+                )
+                for row in rows
+            ],
+        )
+    )

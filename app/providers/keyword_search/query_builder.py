@@ -386,6 +386,49 @@ def build_purge_query(
     return {"query": {"bool": {"filter": filters}}}
 
 
+def build_current_draft_update(
+    *, document_id: str, tenant_id: str, doc_version: int
+) -> dict:
+    """返回「把这篇文档的当前稿标记翻到某一稿」的 ``update_by_query`` 请求体（#175）。
+
+    ## 为什么是 ``update_by_query`` 而不是「逐条改」
+
+    这篇文档的切片数随文档长短变化，逐条 ``update`` 就是 N 次往返，而它跑在请求提交之后
+    的那一小段时间里。``update_by_query`` 是一条请求打完整批。
+
+    ## 脚本为什么读 ``_source`` 而不是 ``doc[...]``
+
+    mapping 里 ``doc_version`` 是 **keyword**：``doc['doc_version'].value`` 取出来是字符串
+    ``"3"``，与写进去的整数 3 比较永远不等——那会把**所有**切片标成「非当前稿」，症状是
+    关键词路静默全空（向量路照常返回，看起来只是少了一路）。``ctx._source`` 是写入时的
+    原样值（整数），所以比较成立。
+
+    ## 为什么过滤条件两个都在 ``filter`` 里
+
+    ``tenant_id`` 与 ``document_id`` 少一个就会翻到别的租户 / 别的文档的切片：前者是越权，
+    后者是把别人的当前稿标记搅乱——两者都不报错。
+    """
+
+    return {
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"tenant_id": tenant_id}},
+                    {"term": {"document_id": document_id}},
+                ]
+            }
+        },
+        "script": {
+            "lang": "painless",
+            "source": (
+                f"ctx._source.{CURRENT_DRAFT_FIELD} = "
+                f"(ctx._source.{DOC_VERSION_FIELD} == params.{DOC_VERSION_FIELD})"
+            ),
+            "params": {DOC_VERSION_FIELD: doc_version},
+        },
+    }
+
+
 def build_keyword_documents(chunks: list[dict]) -> list[dict]:
     """把索引编排的切片字典转成 ES 文档（``_id`` 用 chunk_id，写入天然幂等）。
 

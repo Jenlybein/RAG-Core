@@ -47,3 +47,10 @@ class NoopKeywordSearchProvider(KeywordSearchProvider):
         doc_version: int | None = None,
     ) -> None:
         return None
+
+    async def mark_current_draft(
+        self, document_id: str, *, tenant_id: str, doc_version: int
+    ) -> None:
+        """没有关键词索引这回事 → 没有标记可翻（#175）。"""
+
+        return None

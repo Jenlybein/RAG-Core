@@ -468,3 +468,50 @@ async def count_processing_for_tenant(
         _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
     )
     return int(result.scalar_one())
+
+
+# ──────────────── 写路径的行锁（第 12 步票 #175：建版本）
+
+
+def lock_statement(document_id: str, *, tenant_id: str):
+    """建版本前的**锁读**语句：``SELECT ... WHERE id + tenant FOR UPDATE``。
+
+    ## 为什么必须有这一句
+
+    稿号是 ``max(version) + 1``（列上没有默认值，见
+    ``app.models.document_version``）。没有行锁时，两个提交会各自读到同一个 ``max``、
+    算出同一个稿号，然后由 ``(document_id, version)`` 唯一约束把其中一个打回去——
+    用户看到的是一次莫名其妙的「请重试」，而它本来就是一次可以正常串行化的写。
+
+    锁的对象是**文档行**（不是版本表）：版本表的行还不存在，锁不了；而「这篇文档的
+    稿次时间轴」正好就是文档行上的当前稿指针，锁它就等于锁住了这条时间轴。
+
+    ## 为什么租户条件也在锁语句里
+
+    跨租户一律「不存在」（ADR-0006）：锁不到行就等于「没有这篇文档」，随后的守卫照旧
+    抛 20016。把租户过滤留在外面（先按 id 锁、再判租户）会让别人的请求等在这把锁上
+    ——一次跨租户探测就变成了一次针对目标文档的锁等待。
+
+    SQLite 方言会忽略 ``FOR UPDATE``（它没有行锁），所以离线用例只能断言**语句形状**；
+    真正的串行化由 PostgreSQL 给。
+    """
+
+    return (
+        select(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .with_for_update()
+    )
+
+
+async def lock_for_version(
+    db: AsyncSession, document_id: str, *, tenant_id: str
+) -> Document | None:
+    """按 id + 租户锁住文档行并读回它；没有这一行就 ``None``（=「文档不存在」）。
+
+    调用方在拿到这把锁之后才允许算稿号、写版本行、切指针、置处理中——顺序是契约的一部分：
+    先锁再读，读到的 ``max`` 与 ``current_version`` 才是别人的提交已经落地的那个值。
+    ``scalars().first()`` 而不是 ``scalar_one_or_none()``：替身会话对锁读只实现前者
+    （与 ``documents.get_by_id_for_tenant_async`` 的收尾一致）。
+    """
+
+    return (await db.execute(lock_statement(document_id, tenant_id=tenant_id))).scalars().first()

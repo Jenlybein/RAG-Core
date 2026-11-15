@@ -22,6 +22,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.providers.keyword_search.base import KeywordSearchProvider
 from app.providers.keyword_search.query_builder import (
     build_bm25_query,
+    build_current_draft_update,
     build_es_mapping,
     build_keyword_documents,
     build_mapping_update,
@@ -362,4 +363,38 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             )
         except NotFoundError:
             # 索引不存在 = 本来就没有可删的文档。
+            return None
+
+    async def mark_current_draft(
+        self, document_id: str, *, tenant_id: str, doc_version: int
+    ) -> None:
+        """把这篇文档的关键词切片里「当前稿」标记翻到 ``doc_version``（#175）。
+
+        **打的是别名**（``self._index_name``）而不是物理索引名：检索永远只认别名，翻到一张
+        没人查的物理索引上等于没翻，而且不报错。别的物理版本保持原样——它们不被检索。
+
+        ``refresh=True``：这次翻转之后马上就会有人提问，索引刷新不及时的表现是「关键词路
+        偶发少了新稿的命中」。
+
+        ``conflicts="proceed"``：并发重建正在改同一批文档时会撞版本冲突，``proceed`` 让其余
+        文档照常更新；整批 abort 等于把这次翻转交给运气。冲突那几条会在下一次重建写切片时
+        按文档指针重新算出来（索引期写 ``is_current``）。
+
+        索引还不存在（``NotFoundError``）= 这次没有切片可翻，是诚实的 no-op；其余异常照常
+        抛给调用方，由 ``app.services.keyword_draft`` 降级成 warning——Provider 不替调用方
+        决定「这次失败能不能忍」。
+        """
+
+        try:
+            await self._get_client().update_by_query(
+                index=self._index_name,
+                **build_current_draft_update(
+                    document_id=document_id,
+                    tenant_id=tenant_id,
+                    doc_version=doc_version,
+                ),
+                refresh=True,
+                conflicts="proceed",
+            )
+        except NotFoundError:
             return None

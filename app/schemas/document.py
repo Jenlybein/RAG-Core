@@ -68,3 +68,56 @@ class DeleteDocumentData(BaseModel):
 
     document_id: str
     deleted: bool
+
+
+class CreateDocumentVersionRequest(BaseModel):
+    """提交新版本的 JSON 入口：只要正文（标题、知识库都属于文档本身，不在这一层改）。
+
+    ``extra="forbid"``：多传一个 ``document_id`` / ``version`` 之类的字段要被 20002 拒，
+    而不是被静默忽略——「我传了版本号，服务端却自己算了一个」是最难查的那类分歧。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1)
+
+
+class CreateDocumentVersionData(BaseModel):
+    """建版本的受理回执：新稿次已落库、文档已置处理中并投递了重建。
+
+    ``version`` 是刚建好的稿号，``previous_version`` 是提交生效前的那一稿——两者一起给，
+    调用方不必再列一次版本就知道「这次改的是第几稿」。``checksum`` 是**规范化后**正文的
+    ``sha256``：之后按稿直查 / 对账都用同一个口径。
+    """
+
+    document_id: str
+    version: int
+    previous_version: int
+    checksum: str
+    status: int
+
+
+class DocumentVersionItem(BaseModel):
+    """版本列表里的一行。
+
+    ``content`` **默认不给**（``None``）：正文可能是整篇文档，列表接口的调用方通常只关心
+    「改过几稿、哪一稿是哪天」。要看正文得显式要求（``?include_content=true``）。
+
+    **不给 ``source_file_path``**：那是服务端存储根下的相对路径（``tenant/<id>.v2.md``），
+    调用方拿它做不了任何事，而把内部路径暴露出去只会扩大泄露面。重解析要读它，但那是
+    Worker 的事（版本行自己留着）。
+    """
+
+    version: int
+    status: str
+    checksum: str
+    created_at: datetime
+    content: str | None = None
+
+
+class DocumentVersionListData(BaseModel):
+    """列版本的出参：按稿号**倒序**（现在这一稿在最前），加上当前稿指针。"""
+
+    document_id: str
+    current_version: int
+    items: list[DocumentVersionItem]

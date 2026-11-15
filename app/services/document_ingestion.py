@@ -40,15 +40,29 @@ def prepare_document_content(document: Document, *, reparse: bool = False) -> Pa
         # 那时退回落盘路径自己的扩展名——否则错误码是「no parser supports: 」(空名字)，
         # 读的人完全看不出该补什么。这个兜底只在这种缺名字的情况下生效。
         filename = document.source_filename or Path(document.source_file_path).name
-        parsed = get_parser_registry().parse(data, filename=filename)
-        if not parsed.content.strip():
-            raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "解析之后没有可提取文字")
-        return parsed
+        return parse_uploaded_bytes(data, filename=filename)
 
     raise AppError(
         ErrorCode.DOCUMENT_PARSE_FAILED,
         "document content and file are both empty",
     )
+
+
+def parse_uploaded_bytes(data: bytes, *, filename: str) -> ParsedDocument:
+    """把**一次提交上传的字节**解析成 ``ParsedDocument``（第二条解析入口，#175）。
+
+    为什么它必须在这里：提交新版本时文件还没落盘（先解析、后算校验和、判重通过之后才
+    写盘），所以走不了 :func:`prepare_document_content` 的「从文档行读」那几个分支。
+    但「字节 → 文本」这件事全项目只许有一份实现，否则两个入口会在某次改动里解析出不同的
+    正文，而那个差异不会在任何地方报错。
+
+    空的解析结果按 20024 拒：没有正文的稿次没有意义（与上传那条链路同一口径）。
+    """
+
+    parsed = get_parser_registry().parse(data, filename=filename)
+    if not parsed.content.strip():
+        raise AppError(ErrorCode.DOCUMENT_CONTENT_EMPTY, "解析之后没有可提取文字")
+    return parsed
 
 
 def content_from_version(
