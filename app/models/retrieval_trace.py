@@ -5,7 +5,7 @@
 备份、只读副本、``pg_dump`` 都会把它带走，所以它上面的每一个字都是长期承诺。原文只允许
 进内网观测栈（按 ``trace_id`` 查回来）。
 
-留下的十一列全部可枚举：
+留下的十二列全部可枚举：
 
 ====================  ==========================================================
 ``id``                行 id，**对外即 ``log_id``**；由中台用 UUID v4 生成
@@ -13,6 +13,7 @@
 ``trace_id``          ``log_id`` 的确定性派生（32 位十六进制），NOT NULL
 ``kb_ids``            这次查了哪些库（一次检索可以多库）
 ``index_versions``    这次查的是**哪一次构建**：``{kb_id: version}`` 映射
+``doc_versions``        这次命中的是**第几稿**：``{document_id: doc_version}`` 映射
 ``chunk_ids``         交付单元的代表片 + 溯源片 id，**只存 id**
 ``top_k``             这次要了几条
 ``latency_ms``        这次多慢
@@ -27,6 +28,16 @@
 ADR-0010 §5 明令禁止的「两个独立集合」，``['kb-a','kb-b']`` 配 ``['v1','v2']`` 拼得出
 「A 库配 B 库版本」这种不存在的组合，而且不报错。版本名是结构（``v1``），不是原文，
 所以 ADR-0021「只存结构」的红线不受影响。
+
+``doc_versions`` 是**又一次契约变更**（#179，本表因此从十一列变十二列），形状与
+``index_versions`` **完全同形**，理由也同一条：**文档 → 稿号**的配对关系只能从映射里
+读出来。为什么要它（用户故事第 3 条）：``chunk_ids`` 只答得出「命中过哪些片」，而片会被
+保留策略物理删掉（#178），删掉之后那一串 id 就再也答不出「那次查的是第几稿」——
+稿号必须自己留在这一行上。稿号是整数、文档 id 是结构，两者都不是原文。
+
+**为什么不做成 ``document_ids`` + ``doc_versions`` 两个数组**：错位就是静默错归因，
+而且不会报错（ADR-0010 §5）；同一条理由两次踩，代价是「事后复盘时把 A 文档的稿号
+安在 B 文档头上」，那种错没有人会当场发现。
 
 三条不能改的性质：
 
@@ -64,6 +75,10 @@ class RetrievalTrace(Base):
     #: 「这次查的是哪次构建」——``{kb_id: version}``，与检索范围**同一个形状**。
     #: 可空：迁移之前写下的行没有版本可记（那时版本恒为 v1，没人需要在日志里记它）。
     index_versions: Mapped[dict | None] = mapped_column(JSONB, default=dict, nullable=True)
+    #: 「这次命中的是哪几稿」——``{document_id: doc_version}``，与 ``index_versions``
+    #: **同一个形状**（#179）。可空：迁移之前写下的行没有稿号可记（那时稿号恒为 1）。
+    #: 值来自交付单元上那个真实列（``chunks.doc_version``，#174），不是另算一遍。
+    doc_versions: Mapped[dict | None] = mapped_column(JSONB, default=dict, nullable=True)
     #: 只存 id：正文在切片表里有一份，分数明细属于评测与 trace。重复存只会多一份会过期的副本。
     chunk_ids: Mapped[list] = mapped_column(JSONB, default=list)
     top_k: Mapped[int] = mapped_column(Integer)

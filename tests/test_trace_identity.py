@@ -45,8 +45,10 @@ KB_ID = "kb-trace"
 QUERY_SENTINEL = "T101-QUERY-SENTINEL-4f7c"
 CONTENT_SENTINEL = "T101-CONTENT-SENTINEL-9a1e"
 
-#: 归属索引只允许这十一列（顺序由模型定义，集合不许多也不许少）。
-#: 第十一列 ``index_versions`` 是 ADR-0025 决策六声明的契约变更（``{kb_id: version}`` 映射）。
+#: 归属索引只允许这十二列（顺序由模型定义，集合不许多也不许少）。
+#: 第十一列 ``index_versions`` 是 ADR-0025 决策六声明的契约变更（``{kb_id: version}`` 映射）；
+#: 第十二列 ``doc_versions`` 是 #179 的契约变更（``{document_id: doc_version}`` 映射，
+#: 同一个形状）：片被保留策略清掉之后，「那次查的是第几稿」只剩这一列能答。
 EXPECTED_COLUMNS = frozenset(
     {
         "id",
@@ -54,6 +56,7 @@ EXPECTED_COLUMNS = frozenset(
         "trace_id",
         "kb_ids",
         "index_versions",
+        "doc_versions",
         "chunk_ids",
         "top_k",
         "latency_ms",
