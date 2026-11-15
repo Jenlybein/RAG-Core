@@ -547,3 +547,50 @@ def test_the_draft_from_the_payload_wins_over_the_pointer(
     assert splitter.inputs == ["第 2 稿正文：证书有效期 90 天。"]
     assert store.written[0][0]["doc_version"] == 2, "切片稿号跟载荷走"
     assert store.purged is not None and store.purged["doc_version"] == 2, "清除范围也跟载荷走"
+
+
+@pytest.mark.asyncio
+async def test_reindexing_the_second_draft_keeps_the_first_drafts_slices(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """真 SQL 上跑一次 v2 重建：v1 的切片仍在、内容一字未变（ADR-0005 D4 选 B）。
+
+    这是「每稿各留切片」的正面证据：清除按「文档 + 稿次」收窄，写入另起一组行。少了这
+    一条，回滚到第 1 稿时那些切片已经没了——而「回滚可秒级」正是选 B 的理由。
+    """
+
+    engine = create_async_engine("sqlite+aiosqlite://")
+    async with engine.begin() as connection:
+        # chunks 用 SQLite 能接受的等价 DDL（JSONB / Vector 见本模块文档）；
+        # 版本表直接借 ORM 建——它没有 SQLite 不认识的列类型。
+        await connection.execute(text(CHUNKS_DDL))
+        await connection.run_sync(DocumentVersion.__table__.create)
+    try:
+        async with AsyncSession(engine) as session:
+            store = PgVectorStore()
+            # 第 1 稿的切片已经写好了（线上正在用的那一版）。
+            await store.add_chunks(session, [_draft_chunk("chunk-v1", 1)])
+            session.add(_version_row(2, "第 2 稿正文：证书有效期 90 天。"))
+            await session.commit()
+
+            _patch_rebuild_collaborators(monkeypatch, _document(current_version=1))
+            splitter = _TextRecordingSplitter(
+                [SplitPiece(text="第 2 稿正文：证书有效期 90 天。", metadata={"heading_path": "错误码"})]
+            )
+            service = IndexingService(
+                splitter=splitter, embeddings=_StubEmbeddings(), stores=[store]
+            )
+
+            await service.index_existing_document(session, DOCUMENT_ID, doc_version=2)
+
+            rows = (
+                await session.execute(
+                    select(Chunk.doc_version, Chunk.content).order_by(Chunk.doc_version)
+                )
+            ).all()
+            assert [(row.doc_version, row.content) for row in rows] == [
+                (1, ORIGINAL_CONTENT),
+                (2, "第 2 稿正文：证书有效期 90 天。"),
+            ], "v1 原样留着，v2 另起一组"
+    finally:
+        await engine.dispose()
