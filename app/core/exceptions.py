@@ -66,6 +66,9 @@ class ErrorCode(IntEnum):
     SERVER_ERROR = 50000
     SYSTEM_BUSY = 50001
     RETRIEVAL_FAILED = 50002
+    # 第 13 步：改写 / 分解 / Research 四阶段的大模型调用失败统一为**整单失败**，
+    # 不再有「失败即降级」的静默路径。可重试语义写在响应契约里，调用方按码重试。
+    MODEL_CALL_FAILED = 50003
 
 
 def default_message(code: ErrorCode) -> str:

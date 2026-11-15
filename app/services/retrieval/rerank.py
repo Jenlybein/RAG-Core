@@ -37,6 +37,11 @@ logger = structlog.get_logger(__name__)
 # 同一层级，文案写死，不随异常信息变化。
 REASON_RERANK_FAILED = "rerank failed"
 
+#: 重排额度用尽：重排是可选优化，没额度时**跳过**而不是整单拒绝。
+#: 它与 ``REASON_RERANK_FAILED`` 分开——「这一步没跑成」与「这一步没额度可跑」
+#: 是两件事，混成一个串会让监控分不清「服务挂了」与「该加额度了」。
+REASON_RERANK_QUOTA_EXHAUSTED = "rerank quota exhausted"
+
 
 @dataclass(frozen=True)
 class RerankOutcome:
