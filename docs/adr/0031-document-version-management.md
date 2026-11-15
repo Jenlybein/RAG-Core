@@ -160,6 +160,8 @@ Chunk.doc_version == doc.doc_version      # 语义错位，但类型完全正确
 - `chunks.doc_version` 用 `NOT NULL + server_default '1'`，于是**加列那一刻存量行就自动有值**，不需要「先加可空列 → 回填 → 再加约束」的三步舞（大表上三步更贵，中间还留一段没有约束的窗口）。默认值 1 是回填前的临时真值，紧接着的第 ④ 步按 `documents.current_version` 逐行覆盖（查不到文档的孤儿切片按第 1 稿解释）；
 - 这是对 spec 顺序的**有意偏离，不是漏做**。反过来（先回填后断言）在断言失败时也已经写过一半行，需要靠事务回滚抹掉，而「抹掉」与「没写过」在审计上不是一回事。
 
+**这条迁移的上游窗口也由脚本自己把着门**（`scripts/backfill_document_content.py`，2026-11-16 补）：它在启动时用 SQLAlchemy 的 inspector 查 `document_versions` 表，**已经在**就拒绝运行、打印说明并以非 0 退出。理由是这条脚本的适用期只有「正文回写已上线、本迁移未跑」这一段：迁移会把 `documents.content` 抄进版本行，此后不变量是「文档正文 == 当前稿正文」，而那条脚本只改文档正文、不碰版本行——跑在迁移之后等于把两份真值拆开，且**不报错**。升级之后要补正文，正确姿势是重建 / 重解析（`POST /console/documents/{document_id}/reindex?reparse=true`，成功文档要 `force=true`）：那条链路同时回写文档正文与版本行。由此还带出一条对它自己的纪律：**候选查询不许引用本次迁移之后才存在的列**（`current_version`、`document_versions`）——它跑在迁移之前，那些列那时还不存在；所以候选走显式列集（`MissingContentDocument`，见 `document_repository.list_missing_content` 的纪律），`tests/test_document_content_backfill.py` 用一张「只有老列」的表把它钉住。
+
 ## 后果
 
 ### 正面
