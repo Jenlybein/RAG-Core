@@ -16,9 +16,12 @@
 
 from __future__ import annotations
 
+import importlib.util
+import sys
 from collections.abc import AsyncIterator
 from datetime import datetime
 from pathlib import Path
+from types import ModuleType
 from typing import Any
 
 import pytest
@@ -32,6 +35,7 @@ from app.models.document_version import DocumentVersion
 from app.repositories import document_repository, document_version_repository
 from app.services import document_version_service
 from app.utils.status import DocumentStatus
+from tests.fake_db import AsyncRecordingSession
 
 TENANT_ID = "tenant-a"
 KB_ID = "kb-1"
@@ -619,3 +623,275 @@ async def test_the_window_counts_drafts_not_time(retention_db: AsyncSession) -> 
         (4, "archived"),
         (5, "current"),
     ]
+
+
+# ────────────────────────────────────────────────── 运维脚本：dry-run / --apply
+
+_SCRIPT_MODULE = "purge_document_versions"
+
+
+def _load_script(module_name: str) -> ModuleType:
+    """从文件加载脚本（``scripts*`` 不在安装包里）：加载本身也要成功——导入即安全。"""
+
+    path = _SCRIPTS_DIR / f"{module_name}.py"
+    spec = importlib.util.spec_from_file_location(f"t178_script_{module_name}", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
+
+
+@pytest.fixture
+def purge_script() -> ModuleType:
+    return _load_script(_SCRIPT_MODULE)
+
+
+def _five_drafts_session() -> AsyncRecordingSession:
+    """假库里的两篇文档：``doc-1`` 有 5 稿（1–4 归档，该清 1、2），``doc-2`` 窗口内一稿不多。
+
+    ``doc-2`` 的指针也在 5（所以会被扫到），但它只有第 4 稿归档——「扫到」与「有事可做」
+    是两回事，统计里分别记 ``considered`` 与 ``documents``。
+    """
+
+    documents = [
+        _document(document_id=DOC_ID, current_version=5),
+        _document(document_id="doc-2", current_version=5),
+    ]
+    versions = [
+        _version(
+            document_id=DOC_ID,
+            version=version,
+            status="current" if version == 5 else "archived",
+        )
+        for version in range(1, 6)
+    ] + [
+        _version(document_id="doc-2", version=4),
+        _version(document_id="doc-2", version=5, status="current"),
+    ]
+    return AsyncRecordingSession(rows={Document: documents, DocumentVersion: versions})
+
+
+def _delete_statements(session: AsyncRecordingSession) -> list[str]:
+    return [
+        statement
+        for statement in session.statements
+        if statement.lstrip().upper().startswith("DELETE")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_the_script_defaults_to_dry_run_and_writes_nothing(
+    purge_script: ModuleType,
+) -> None:
+    """默认只报告：扫到几篇、将删哪些稿，**不发 DELETE、不提交**。"""
+
+    session = _five_drafts_session()
+
+    stats = await purge_script.purge_expired(session)
+
+    assert stats == purge_script.PurgeStats(
+        considered=2,
+        documents=1,
+        expired=2,
+        purged=0,
+        failed=0,
+        pending=((DOC_ID, (2, 1)),),
+    )
+    assert _delete_statements(session) == [], "dry-run 不许删任何行"
+    assert session.commits == 0, "dry-run 不许提交"
+
+
+@pytest.mark.asyncio
+async def test_apply_purges_each_document_in_its_own_transaction(
+    purge_script: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--apply``：逐篇一笔事务调清理服务，统计与提交次数都对得上。"""
+
+    session = _five_drafts_session()
+    calls: list[dict[str, Any]] = []
+
+    async def _purge(db: Any, *, document: Any, retain: int, stores: Any = None) -> Any:
+        calls.append({"document_id": document.id, "retain": retain})
+        return document_version_service.retention_plan(
+            document_id=document.id,
+            current_version=5,
+            archived_versions=[2, 1],
+            retain=retain,
+        )
+
+    monkeypatch.setattr(purge_script, "purge_expired_versions", _purge)
+
+    stats = await purge_script.purge_expired(session, apply=True)
+
+    assert stats == purge_script.PurgeStats(
+        considered=2, documents=1, expired=2, purged=2, failed=0, pending=()
+    )
+    assert calls == [{"document_id": DOC_ID, "retain": 3}]
+    assert session.commits == 1, "一篇文档一笔事务（没有候选稿的文档不开事务）"
+
+
+@pytest.mark.asyncio
+async def test_a_failing_document_is_counted_and_the_others_still_run(
+    purge_script: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一篇失败记 failed 并继续；另一篇照清——运维跑一次要能把剩下的都做完。"""
+
+    documents = [
+        _document(document_id="doc-boom", current_version=5),
+        _document(document_id=DOC_ID, current_version=5),
+    ]
+    versions = [
+        _version(document_id=document_id, version=version, status="archived")
+        for document_id in ("doc-boom", DOC_ID)
+        for version in range(1, 5)
+    ] + [
+        _version(document_id="doc-boom", version=5, status="current"),
+        _version(document_id=DOC_ID, version=5, status="current"),
+    ]
+    session = AsyncRecordingSession(rows={Document: documents, DocumentVersion: versions})
+    calls: list[str] = []
+
+    async def _purge(db: Any, *, document: Any, retain: int, stores: Any = None) -> Any:
+        calls.append(document.id)
+        if document.id == "doc-boom":
+            raise RuntimeError("vector store is down")
+        return document_version_service.retention_plan(
+            document_id=document.id,
+            current_version=5,
+            archived_versions=[2, 1],
+            retain=retain,
+        )
+
+    monkeypatch.setattr(purge_script, "purge_expired_versions", _purge)
+
+    stats = await purge_script.purge_expired(session, apply=True)
+
+    assert calls == ["doc-boom", DOC_ID]
+    assert (stats.documents, stats.expired, stats.purged, stats.failed) == (2, 4, 2, 1)
+
+
+@pytest.mark.asyncio
+async def test_retain_overrides_the_default_window(
+    purge_script: ModuleType, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--retain 2`` 把窗口收紧：第 3 稿也出局（默认只清 1、2）。"""
+
+    session = _five_drafts_session()
+
+    stats = await purge_script.purge_expired(session, retain=2)
+
+    assert stats.pending == ((DOC_ID, (3, 2, 1)),)
+    assert stats.expired == 3
+
+
+# ────────────────────────────────────────────────────────── 退出码与打印
+
+
+@pytest.mark.parametrize(
+    ("stats", "expected"),
+    [
+        (dict(considered=2, documents=1, expired=2, purged=2, failed=0), 0),
+        (dict(considered=2, documents=2, expired=4, purged=2, failed=1), 0),
+        (dict(considered=1, documents=1, expired=2, purged=0, failed=1), 1),
+        (dict(considered=0), 0),
+    ],
+)
+def test_the_exit_code_follows_the_shared_rule(
+    purge_script: ModuleType, stats: dict[str, Any], expected: int
+) -> None:
+    """有失败且一篇都没清成才退 1；部分失败仍算跑过（``_ops_common.exit_code_for``）。"""
+
+    assert (
+        purge_script.exit_code_for(purge_script.PurgeStats(**stats)) == expected
+    )
+
+
+def _patch_session(
+    monkeypatch: pytest.MonkeyPatch, module: ModuleType, session: AsyncRecordingSession
+) -> None:
+    async def _open() -> Any:
+        return session
+
+    monkeypatch.setattr(module, "_open_session", _open)
+    monkeypatch.setattr(module, "setup_logging", lambda: None)
+
+
+def test_main_defaults_to_dry_run_and_prints_what_would_be_deleted(
+    purge_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """CLI 默认 dry-run：模式写进标题，统计逐行打印，**将删的稿子按文档列出来**。"""
+
+    session = _five_drafts_session()
+    _patch_session(monkeypatch, purge_script, session)
+
+    exit_code = purge_script.main([])
+
+    out = capsys.readouterr().out
+    assert exit_code == 0
+    assert "dry-run" in out
+    assert "retain=3" in out
+    assert "considered: 2" in out
+    assert "documents: 1" in out
+    assert "expired: 2" in out
+    assert "purged: 0" in out
+    assert f"{DOC_ID}  2, 1" in out, "将删的稿号必须按文档列出来"
+    assert session.closed
+
+
+def test_main_apply_passes_the_scope_and_retain_down(
+    purge_script: ModuleType,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """``--apply`` 才把 apply=True 传下去；``--kb-id`` / ``--limit`` / ``--retain`` 原样透传。"""
+
+    session = _five_drafts_session()
+    _patch_session(monkeypatch, purge_script, session)
+    captured: dict[str, Any] = {}
+
+    async def _run(_db: Any, **kwargs: Any) -> Any:
+        captured.update(kwargs)
+        return purge_script.PurgeStats(considered=1, documents=1, expired=2, purged=2)
+
+    monkeypatch.setattr(purge_script, "purge_expired", _run)
+
+    exit_code = purge_script.main(
+        ["--apply", "--kb-id", KB_ID, "--limit", "5", "--retain", "2"]
+    )
+
+    out = capsys.readouterr().out
+    assert captured == {"kb_id": KB_ID, "limit": 5, "retain": 2, "apply": True}
+    assert exit_code == 0
+    assert "live" in out
+    assert "purged: 2" in out
+    assert session.closed
+
+
+def test_a_negative_retain_is_rejected_with_exit_code_two(purge_script: ModuleType) -> None:
+    """``--retain -1`` 是非法入参：argparse 挡下并退 2（静默当成 0 会把窗口算错）。"""
+
+    with pytest.raises(SystemExit) as excinfo:
+        purge_script.main(["--retain", "-1"])
+
+    assert excinfo.value.code == 2
+
+
+def test_the_cleanup_stays_a_run_once_script(purge_script: ModuleType) -> None:
+    """不引入 Celery beat 或任何调度进程：入口是 ``main(argv)``，Celery 没有 beat 计划。
+
+    这一票刻意不碰调度基础设施——怎么定时是运维的事（``cron`` / 任务计划调这个脚本）。
+    """
+
+    from app.celery_app import celery_app
+
+    assert callable(purge_script.main)
+    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), (
+        "保留策略不进调度基础设施"
+    )
