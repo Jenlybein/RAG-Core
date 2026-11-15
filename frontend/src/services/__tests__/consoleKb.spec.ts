@@ -15,7 +15,9 @@ import {
   createKbConsole,
   deleteDocumentConsole,
   fetchConsoleTree,
+  fetchDocumentVersionsConsole,
   reindexDocumentConsole,
+  rollbackDocumentVersionConsole,
   toKnowledgeBaseNodes,
   uploadConsole,
 } from '../consoleKb'
@@ -317,5 +319,39 @@ describe('reindexDocumentConsole', () => {
     await reindexDocumentConsole('doc_1', { reparse: true, force: true })
 
     expect(mocks.post.mock.calls[0][2]).toEqual({ params: { reparse: true, force: true } })
+  })
+})
+
+describe('fetchDocumentVersionsConsole', () => {
+  it('GET /console/documents/{document_id}/versions，正文默认不拉', async () => {
+    const list = { document_id: 'doc_1', current_version: 2, items: [] }
+    mocks.get.mockResolvedValue(list)
+
+    await expect(fetchDocumentVersionsConsole('doc_1')).resolves.toEqual(list)
+
+    const [url, config] = mocks.get.mock.calls[0]
+    expect(url).toBe('/console/documents/doc_1/versions')
+    // 显式给 include_content=false：省略它也能跑，但「默认不拉正文」这条值得钉在请求上。
+    expect(config).toEqual({ params: { include_content: false } })
+  })
+
+  it('显式要正文时带 include_content=true', async () => {
+    mocks.get.mockResolvedValue({ document_id: 'doc_1', current_version: 2, items: [] })
+
+    await fetchDocumentVersionsConsole('doc_1', { includeContent: true })
+
+    expect(mocks.get.mock.calls[0][1]).toEqual({ params: { include_content: true } })
+  })
+})
+
+describe('rollbackDocumentVersionConsole', () => {
+  it('POST /console/documents/{document_id}/versions/{version}/rollback', async () => {
+    const receipt = { document_id: 'doc_1', version: 1, previous_version: 2, status: 3 }
+    mocks.post.mockResolvedValue(receipt)
+
+    await expect(rollbackDocumentVersionConsole('doc_1', 1)).resolves.toEqual(receipt)
+
+    // 稿号在**路径**里，且必须是被点的那一稿：参数错位会让「回滚 v1」变成「回滚 v2」。
+    expect(mocks.post).toHaveBeenCalledWith('/console/documents/doc_1/versions/1/rollback')
   })
 })

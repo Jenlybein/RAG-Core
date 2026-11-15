@@ -27,6 +27,7 @@ import { useRouter } from 'vue-router'
 
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import CreateKbDialog from '../components/CreateKbDialog.vue'
+import DocumentVersionsDialog from '../components/DocumentVersionsDialog.vue'
 import PageHeader from '../components/PageHeader.vue'
 import StatusBadge from '../components/StatusBadge.vue'
 import UploadPickerDialog from '../components/UploadPickerDialog.vue'
@@ -37,7 +38,7 @@ import {
   type UploadRowStatus,
 } from '../composables/useUploadDocuments'
 import { useTreePolling } from '../composables/useTreePolling'
-import { ApiError } from '../lib/envelope'
+import { errorText } from '../lib/errorText'
 import {
   deleteDocumentConsole,
   deleteKbConsole,
@@ -61,15 +62,6 @@ const STATUS_TEXT: Record<UploadRowStatus, string> = {
   processing: '已提交，正在后台索引',
   failed: '上传失败',
   unknown: '未知状态',
-}
-
-function errorText(value: unknown): string {
-  if (value instanceof ApiError) {
-    // -1 是协议/连通性问题，没有业务码可对照；其余带上码，便于和后端日志对齐。
-    return value.code === -1 ? value.message : `${value.message}（业务码 ${value.code}）`
-  }
-  if (value instanceof Error) return value.message
-  return String(value)
 }
 
 /**
@@ -168,6 +160,32 @@ async function openContent(row: unknown): Promise<void> {
   } finally {
     contentLoading.value = false
   }
+}
+
+// ───────── 版本列表与回滚 ─────────
+const versionsOpen = ref(false)
+const versionsDocId = ref<string | null>(null)
+const versionsDocTitle = ref('')
+const versionsBusy = ref(false)
+
+/**
+ * 版本弹窗认 `document_id`（不是整行）：树每 3 秒被轮询替换，存下来的行会是一份旧快照
+ * ——「刚回滚完，弹窗里还是旧的当前稿」正是那种只在轮询窗口里出现的假象。
+ *
+ * `busy` 取的是点击那一刻的行状态；文档在后端开始重建后行会变成处理中，弹窗里的回滚
+ * 按钮跟着消失，与后端的 20025 守卫对齐。
+ */
+function openVersions(row: unknown): void {
+  if (!isDocRow(row)) return
+  versionsDocId.value = row.document_id
+  versionsDocTitle.value = row.title
+  versionsBusy.value = row.status === 3
+  versionsOpen.value = true
+}
+
+function afterRolledBack(): void {
+  // 回滚只是**受理**（回执 status=3），切块要重建；进度与终态都靠树轮询，这里先刷一次。
+  void refresh()
 }
 
 // ───────── 新建 / 上传弹窗 ─────────
@@ -560,13 +578,17 @@ function goRetrieve(kbId: string): void {
             </template>
           </el-table-column>
 
-          <el-table-column label="操作" width="220">
+          <el-table-column label="操作" width="260">
             <template #default="{ row }">
               <div class="flex flex-wrap items-center gap-1">
                 <!-- 查看原文对处理中也可用：读不改状态。失败文档的原文恰恰是判断
                      「为什么解析出错」的唯一依据，所以它不跟写操作一起被藏起来。 -->
                 <el-button link type="primary" size="small" @click="openContent(row)">
                   查看原文
+                </el-button>
+                <!-- 版本列表同样只读：任何时候都能看「这篇文档改过几稿」。 -->
+                <el-button link type="primary" size="small" @click="openVersions(row)">
+                  版本
                 </el-button>
                 <!-- 处理中没有任何写操作：此刻重建会回 20025、删除会回 20025，按钮只是陷阱。 -->
                 <span v-if="row.status === 3" class="text-xs text-slate-400">处理中</span>
@@ -656,6 +678,15 @@ function goRetrieve(kbId: string): void {
       v-model="createOpen"
       @created="afterCreated"
       @continue-upload="continueUploadTo"
+    />
+
+    <!-- 版本时间轴：列表只读，回滚要过「会影响所有调用方」的确认（票 #177）。 -->
+    <DocumentVersionsDialog
+      v-model="versionsOpen"
+      :document-id="versionsDocId"
+      :document-title="versionsDocTitle"
+      :busy="versionsBusy"
+      @rolled-back="afterRolledBack"
     />
 
     <UploadPickerDialog

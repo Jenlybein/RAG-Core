@@ -4,7 +4,9 @@ import type {
   DocumentDeleteReceipt,
   DocumentListItem,
   DocumentReindexReceipt,
+  DocumentRollbackReceipt,
   DocumentUploadReceipt,
+  DocumentVersionList,
 } from '../types/document'
 import type {
   ConsoleTreeData,
@@ -136,8 +138,40 @@ export function reindexDocumentConsole(
 }
 
 /**
- * 线上树 → 既有 `KnowledgeBaseNode[]`。
+ * 列一篇文档的**保留稿次**（控制面只读，按稿号倒序）。
  *
+ * `includeContent` 默认 false：正文可能是整篇文档，而列表只需要稿号 / 状态 / 校验和 /
+ * 字符数 / 时间。要正文再显式要求——不要求时后端一格都不会返回。
+ */
+export function fetchDocumentVersionsConsole(
+  documentId: string,
+  options: { includeContent?: boolean } = {},
+): Promise<DocumentVersionList> {
+  return consoleHttp.get<DocumentVersionList>(`/console/documents/${documentId}/versions`, {
+    params: { include_content: options.includeContent ?? false },
+  })
+}
+
+/**
+ * 回滚到某一稿。**会影响所有调用方**：面板上一次点击就会改掉整个租户检索到的内容，
+ * 所以调用方必须先二次确认（`DocumentVersionsDialog` 的确认框写的就是这句话）。
+ *
+ * 回执 `status` 恒为 3：后端切指针 + 置处理中 + 投递重建，「已受理」不等于「已经能
+ * 检索到旧内容」；终态要等树轮询看到成功。
+ *
+ * 三种拒绝与数据面同码：20025 处理中 / 20030 这一稿不存在 / 20032 已经是当前稿。
+ */
+export function rollbackDocumentVersionConsole(
+  documentId: string,
+  version: number,
+): Promise<DocumentRollbackReceipt> {
+  return consoleHttp.post<DocumentRollbackReceipt>(
+    `/console/documents/${documentId}/versions/${version}/rollback`,
+  )
+}
+
+/**
+ * 线上树 → 既有 `KnowledgeBaseNode[]`。
  * 抽成纯函数而不是留在 `fetchTree` 里：映射是本次切换唯一真正变了的行为，
  * 纯函数让空库、多个库、字段缺省三种形状都能在 vitest 里直接钉住，不用起后端。
  *

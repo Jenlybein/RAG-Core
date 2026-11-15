@@ -68,3 +68,39 @@ export interface DocumentContent {
   truncated: boolean
   length: number
 }
+
+/**
+ * 版本列表里的一行（`GET /console/documents/{id}/versions`，控制面只读）。
+ *
+ * `char_count` 是这一稿正文的**字符数**：正文默认不返回，所以「哪一稿是那一大篇」只能
+ * 靠它回答。它与切块窗口那个口径（按模型分词的 token 长度）不是一回事——同一段中文，
+ * 字符数与分词长度相差近一倍。
+ */
+export interface DocumentVersionItem {
+  version: number
+  /** `current` / `archived`：指针（`current_version`）指向的那一稿是 current。 */
+  status: string
+  checksum: string
+  char_count: number
+  created_at: string
+  /** 只有显式要正文时才有值；列表默认 `null`。 */
+  content: string | null
+}
+
+/** 一篇文档的全部保留稿次（按稿号倒序）+ 当前稿指针。 */
+export interface DocumentVersionList {
+  document_id: string
+  current_version: number
+  items: DocumentVersionItem[]
+}
+
+/**
+ * 回滚回执。`status` 恒为 3（已受理、后台重建）：切指针不等于回滚完成——库里的切片
+ * 还是上一稿的，终态要轮询知识库树才能看到。
+ */
+export interface DocumentRollbackReceipt {
+  document_id: string
+  version: number
+  previous_version: number
+  status: number
+}

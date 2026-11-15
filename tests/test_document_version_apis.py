@@ -562,6 +562,12 @@ def test_listing_versions_is_newest_first_and_hides_the_content_by_default(
     assert [item["version"] for item in data["items"]] == [3, 2, 1]
     assert [item["status"] for item in data["items"]] == ["current", "archived", "archived"]
     assert [item["content"] for item in data["items"]] == [None, None, None]
+    # 字符数在「不给正文」时是唯一能回答「这一稿有多长」的字段（#177 加进共享形状）。
+    assert [item["char_count"] for item in data["items"]] == [
+        len("第三稿正文。"),
+        len("第二稿正文。"),
+        len("第一稿正文。"),
+    ]
 
 
 def test_listing_versions_returns_the_content_only_when_asked(api: SimpleNamespace) -> None:
