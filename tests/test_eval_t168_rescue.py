@@ -17,6 +17,7 @@ import pytest
 
 from scripts.eval_t168_rescue import (
     B_TOP_K,
+    FOLLOWUP_QUERY_CAP,
     GROUP_A,
     GROUP_B,
     NOMINAL_CALLS_PER_CASE,
@@ -24,6 +25,7 @@ from scripts.eval_t168_rescue import (
     RESCUE_NOT,
     RESCUE_TRUE,
     RESCUE_UNRESOLVED,
+    STATUS_INSUFFICIENT,
     SUPPORT_NONE,
     SUPPORT_SUPPORTED,
     SUPPORT_UNKNOWN,
@@ -41,11 +43,13 @@ from scripts.eval_t168_rescue import (
     classify_unknown_points,
     document_stem_of,
     heading_in_branch,
+    infer_material_rounds,
     material_matches,
     material_ref,
     missing_expected,
     normalize_heading,
     predict_model_calls,
+    recompute_metrics,
     rejudge_control,
     rescue_summary,
     section_of_heading,
@@ -385,16 +389,24 @@ def test_check_archived_premise_pins_the_three_questions() -> None:
 
 def test_predict_model_calls_fits_the_cap_and_sums_the_breakdown() -> None:
     predicted = predict_model_calls()
-    assert predicted["nominal"] == 3 * NOMINAL_CALLS_PER_CASE + 10 * 2 * NOMINAL_CALLS_PER_CASE
-    assert predicted["worst"] == 3 * WORST_CALLS_PER_CASE + 10 * 2 * WORST_CALLS_PER_CASE
-    assert predicted["worst_fits"] is True
-    assert predicted["worst"] <= predicted["budget"]
+    spec = 3 * NOMINAL_CALLS_PER_CASE + 10 * 2 * NOMINAL_CALLS_PER_CASE
+    tight = 10 * NOMINAL_CALLS_PER_CASE
+    assert predicted["spec_nominal"] == spec
+    assert predicted["nominal"] == spec + tight
+    assert predicted["spec_worst"] == 3 * WORST_CALLS_PER_CASE + 10 * 2 * WORST_CALLS_PER_CASE
+    assert predicted["worst"] == predicted["spec_worst"] + 10 * WORST_CALLS_PER_CASE
+    # 票面设计本身在硬顶之内；**追加条件让名义与最坏都纸面超界**（实际花掉的是 108，
+    # 预算闸按最坏预留、按实际扣账，所以没有超跑）。这两个布尔值分开写，就是为了让
+    # 「纸面超了」与「实际超了」不被混成一句话。
+    assert predicted["spec_fits"] is True
+    assert predicted["nominal_fits"] is False
     assert predicted["breakdown"]["A"]["cases"] == 3
     assert predicted["breakdown"]["B"]["conditions"] == 2
+    assert predicted["breakdown"]["B-tight"]["cases"] == 10
 
 
 def test_predict_model_calls_flags_an_over_budget_plan() -> None:
-    predicted = predict_model_calls(b_cases=20)
+    predicted = predict_model_calls(b_cases=20, tight_cases=0)
     assert predicted["worst_fits"] is False
 
 
@@ -531,3 +543,187 @@ def test_rejudge_patch_is_always_restored_even_when_the_run_explodes() -> None:
         with rejudge_control(mode="spy"):
             raise RuntimeError("boom")
     assert research_service._Run._rejudge is original
+
+
+# ─────────────────────────────────────────────── 材料轮次（首轮 vs 补证）
+
+
+def test_infer_material_rounds_replays_merge_order_and_dedupes_by_section() -> None:
+    """材料池的顺序 = 调用顺序 + 返回顺序；同一节第二次命中不算新增。"""
+
+    calls = [
+        {"query": "首轮 A", "rows": [{"section_id": "s1"}, {"section_id": "s2"}]},
+        {"query": "首轮 B", "rows": [{"section_id": "s2"}, {"section_id": "s3"}]},
+        {"query": "补证 A", "rows": [{"section_id": "s1"}, {"section_id": "s4"}]},
+    ]
+    rounds, per_call = infer_material_rounds(
+        calls, round_of_query={"首轮 A": 1, "首轮 B": 1, "补证 A": 2}
+    )
+    assert rounds == [1, 1, 1, 2]  # s1 s2 s3 来自首轮，s4 来自补证
+    assert [call["added"] for call in per_call] == [2, 1, 1]
+    assert per_call[2]["round"] == 2
+
+
+def test_infer_material_rounds_treats_unknown_queries_as_first_round() -> None:
+    """规划失败会退回原问题跑一次（不是 PlanQuery），那一条按首轮算。"""
+
+    rounds, _ = infer_material_rounds(
+        [{"query": "原问题", "rows": [{"chunk_id": "c1"}]}], round_of_query={}
+    )
+    assert rounds == [1]
+
+
+# ─────────────────────────────────────────────── 离线复算（0 次调用）
+
+
+def _record(
+    *,
+    case: str,
+    group: str,
+    fivefold: bool,
+    claims: list[dict[str, Any]] | None = None,
+    unknown_ids: list[str] | None = None,
+    gaps: list[str] | None = None,
+    model_calls: int = 4,
+    answered: bool = True,
+    insufficient: int = 1,
+    points: int = 2,
+    condition: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "case": case,
+        "group": group,
+        "condition": condition or ("fivefold" if fivefold else "control"),
+        "fivefold": fivefold,
+        "claims": claims or [],
+        "unknown_ids": unknown_ids or [],
+        "gaps": gaps or [],
+        "model_calls": model_calls,
+        "answered": answered,
+        "insufficient": insufficient,
+        "points": [{"point_id": f"A{i}", "text": "t"} for i in range(1, points + 1)],
+        "followup_rounds": 1 if unknown_ids else 0,
+    }
+
+
+def _claim_row(outcome: str, *, case: str) -> dict[str, Any]:
+    return {
+        "case": case,
+        "point_id": "A1",
+        "point": "某要点",
+        "final_status": "supported" if outcome in (RESCUE_TRUE, RESCUE_FALSE) else "none",
+        "evidence_ids": ["E1"],
+        "matched_expected": ["refund_policy:2"] if outcome == RESCUE_TRUE else [],
+        "evidence_rounds": [2],
+        "outcome": outcome,
+    }
+
+
+def test_recompute_metrics_uses_opportunity_points_as_the_only_denominator() -> None:
+    payload = {
+        "records": [
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=True,
+                claims=[
+                    _claim_row(RESCUE_TRUE, case="B01"),
+                    _claim_row(RESCUE_NOT, case="B01"),
+                ],
+                unknown_ids=["A1", "A2"],
+                gaps=["A2"],
+            ),
+            _record(
+                case="B02",
+                group=GROUP_B,
+                fivefold=True,
+                claims=[_claim_row(RESCUE_FALSE, case="B02")],
+                unknown_ids=["A1"],
+            ),
+            _record(case="B03", group=GROUP_B, fivefold=True),  # 无机会
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=False,
+                unknown_ids=["A1"],
+                model_calls=3,
+            ),
+            _record(
+                case="A01",
+                group=GROUP_A,
+                fivefold=True,
+                claims=[_claim_row(RESCUE_NOT, case="A01")],
+                unknown_ids=["A1"],
+            ),
+        ]
+    }
+    metrics = recompute_metrics(payload)["metrics"]
+    assert metrics["B"]["opportunity_points"] == 3
+    assert metrics["B"]["counts"][RESCUE_TRUE] == 1
+    assert metrics["B"]["counts"][RESCUE_FALSE] == 1
+    assert metrics["B"]["counts"][RESCUE_NOT] == 1
+    assert metrics["B"]["rates"][RESCUE_TRUE] == round(1 / 3, 4)
+    assert metrics["B"]["opportunity_cases"] == 2
+    assert metrics["B"]["no_chance_cases"] == 1
+    assert metrics["B"]["unknown_points"] == 3
+    assert metrics["B"]["gaps_total"] == 1
+    # ⑤ 关掉那一趟不报救回率（没有复查结论），但 unknown 是可数的
+    assert metrics["B_control"]["rescue_applicable"] is False
+    assert metrics["B_control"]["rates"][RESCUE_TRUE] is None
+    assert metrics["B_control"]["unknown_cases"] == 1
+    assert metrics["A"]["opportunity_points"] == 1
+    assert metrics["model_calls"]["actual"] == 4 + 4 + 4 + 3 + 4
+    assert metrics["model_calls"]["by_condition"]["control"] == 3
+
+
+def test_recompute_metrics_keeps_the追加条件_out_of_the_main_reading() -> None:
+    """B-tight 与 B 组**是同一批题**，只靠 `condition` 区分；按 group 分会把它混进主读数。"""
+
+    payload = {
+        "records": [
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=True,
+                claims=[_claim_row(RESCUE_NOT, case="B01")],
+                unknown_ids=["A1"],
+            ),
+            _record(
+                case="B01",
+                group=GROUP_B,
+                fivefold=True,
+                condition="tight",
+                claims=[_claim_row(RESCUE_TRUE, case="B01")],
+                unknown_ids=["A1"],
+            ),
+        ]
+    }
+    metrics = recompute_metrics(payload)["metrics"]
+    assert metrics["B"]["opportunity_points"] == 1
+    assert metrics["B"]["counts"][RESCUE_TRUE] == 0
+    assert metrics["B_tight"]["opportunity_points"] == 1
+    assert metrics["B_tight"]["counts"][RESCUE_TRUE] == 1
+    assert metrics["model_calls"]["by_condition"] == {"fivefold": 4, "tight": 4}
+
+
+# ─────────────────────────────────────────────── 与生产常量同源
+
+
+def test_constants_mirror_the_production_contract() -> None:
+    """抄在生产旁边的那几个字面量必须与生产一致——抄漏了就是两套契约。"""
+
+    from app.services import research as research_service
+    from app.services.citation_blocks import STATUS_INSUFFICIENT as PROD_INSUFFICIENT
+    from app.services.research_limits import (
+        MAX_FOLLOWUP_QUERIES,
+        MAX_MODEL_CALLS,
+        MAX_MODEL_CALLS_WITH_FALLBACK,
+    )
+
+    assert FOLLOWUP_QUERY_CAP == MAX_FOLLOWUP_QUERIES
+    assert NOMINAL_CALLS_PER_CASE == MAX_MODEL_CALLS
+    assert WORST_CALLS_PER_CASE == MAX_MODEL_CALLS_WITH_FALLBACK
+    assert SUPPORT_SUPPORTED == research_service.SUPPORT_SUPPORTED
+    assert SUPPORT_NONE == research_service.SUPPORT_NONE
+    assert SUPPORT_UNKNOWN == research_service.SUPPORT_UNKNOWN
+    assert STATUS_INSUFFICIENT == PROD_INSUFFICIENT
