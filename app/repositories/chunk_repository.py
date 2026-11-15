@@ -302,6 +302,49 @@ async def count_by_index_version(
     return int((await db.execute(stmt)).scalar_one())
 
 
+def _draft_counts_statement(document_ids: Sequence[str]) -> Select[Any]:
+    """对账用的分组语句：``(文档, 稿号) → 几片``（#179）。
+
+    一条语句同时回答两件事，所以不必扫两遍表：
+
+    * **出现过哪些稿号**（检查 1：它们每一个都得有版本行）；
+    * **某一稿有几片**（信息项：指针那一稿若一片都没有，要么重建还没跑完，要么这篇本来
+      就没有内容）。
+
+    读的是 ``chunks.doc_version`` **列**（#172 起稿号只有一个来源），不是 JSONB 里那份
+    副本——那份已经不可信，而且老行里可能还残留着。
+    """
+
+    return (
+        select(Chunk.document_id, Chunk.doc_version, func.count())
+        .where(Chunk.document_id.in_(tuple(document_ids)))
+        .group_by(Chunk.document_id, Chunk.doc_version)
+        .order_by(Chunk.document_id, Chunk.doc_version)
+    )
+
+
+async def draft_counts(
+    db: AsyncSession, *, document_ids: Sequence[str]
+) -> list[tuple[str, int, int]]:
+    """这批文档的 ``(文档 id, 稿号, 切片数)``，按 (文档, 稿号) 升序（#179）。
+
+    只有 ``scripts/verify_document_versions.py`` 调用。**空列表不发语句**：一次空扫描
+    （``--limit 0`` 或空库）不该产生一条 ``IN ()`` 的查询。
+
+    没有刻意带租户：入参是调用方从 ``documents`` 表读出来的文档 id（UUID，跨租户撞不上），
+    而对账要看的正是「整库」的分布；租户过滤在检索路径上不能省，在**对账**这条只读扫描上
+    会让另一个租户里的分歧永远看不见。
+    """
+
+    if not document_ids:
+        return []
+    rows = (await db.execute(_draft_counts_statement(document_ids))).all()
+    return [
+        (str(document_id), int(doc_version), int(count))
+        for document_id, doc_version, count in rows
+    ]
+
+
 async def list_section_identity_rows(
     db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
 ) -> list[tuple[str, str, str, str | None]]:

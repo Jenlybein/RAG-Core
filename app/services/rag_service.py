@@ -133,6 +133,7 @@ from app.services.retrieval_options import (
 from app.services.retrieval_trace import record_retrieval_trace
 from app.services.trace_identity import (
     delivered_chunk_ids,
+    delivered_doc_versions,
     tenant_fingerprint,
     trace_id_for,
 )
@@ -358,6 +359,11 @@ async def retrieve(
         # 不是另算一遍。版本一旦会变，同一个 ``kb_ids + query`` 两次调用的差异
         # 就只剩这一列能归因——切法变了？文档变了？还是召回抖了？
         index_versions=dict(index_versions),
+        # 「这次命中的是哪几稿」（#179）：与上面那份交付单元**同一份映射**
+        # （``document_id → doc_version``），值来自 ``chunks.doc_version`` 列（#174）。
+        # 片会被保留策略物理删掉（#178），删掉之后 ``chunk_ids`` 只是一串 id——
+        # 「那次查的是第几稿」只剩这一列能答。
+        doc_versions=delivered_doc_versions(collapsed),
         chunk_ids=delivered_chunk_ids(collapsed),
         top_k=resolved_top_k,
         latency_ms=int((time.perf_counter() - started_at) * 1000),

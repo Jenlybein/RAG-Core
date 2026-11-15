@@ -273,7 +273,7 @@ def test_the_migration_is_named_after_its_twelve_hex_revision() -> None:
 
 
 def test_it_chains_onto_the_previous_head_and_stays_in_the_single_chain() -> None:
-    """接在 #171 的改名迁移后面，且仍是**唯一**一条链的链尾。"""
+    """接在 #171 的改名迁移后面，且仍在**唯一**一条链上（链尾会随新迁移前移）。"""
 
     path = _migration_path()
     assert _down_revision_of(path) == PREVIOUS_HEAD
@@ -284,7 +284,6 @@ def test_it_chains_onto_the_previous_head_and_stays_in_the_single_chain() -> Non
     heads = set(revisions) - down_revisions
 
     assert len(heads) == 1, f"迁移链必须只有一条，实际 head={sorted(heads)}"
-    assert _revision_of(path) in heads, "本票的迁移应当就是当前链尾"
 
     walked: list[str] = []
     cursor: str | None = next(iter(heads))
@@ -295,6 +294,10 @@ def test_it_chains_onto_the_previous_head_and_stays_in_the_single_chain() -> Non
             assert parent in revisions, f"{parent}: down_revision 指向一条不存在的迁移"
         cursor = parent
 
+    # 不写「本条的 revision 就是当前 head」：同一批票会接在它后面（#179 给归属索引加
+    # 一列映射就走在这里之后），而本条要守的性质是「接得上、不另起一头」，不是
+    # 「永远在最后」——同一条理由见 ``test_retrieval_trace_migration.py`` 里那段注释。
+    assert _revision_of(path) in walked, "本票的迁移必须仍在唯一的链上"
     assert PREVIOUS_HEAD in walked, "旧 head 不在链上"
 
 

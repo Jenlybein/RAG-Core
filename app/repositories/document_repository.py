@@ -163,6 +163,30 @@ async def list_with_expired_versions(
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def list_for_version_reconcile(
+    db: AsyncSession, *, kb_id: str | None = None, limit: int | None = None
+) -> list[Document]:
+    """扫出要参与**文档版本对账**的文档（第 12 步票 #179）。
+
+    与 :func:`list_missing_content` / :func:`list_with_expired_versions` 同一个处境：
+    只有运维脚本（``scripts/verify_document_versions.py``）调用，数据面禁止使用——它回答
+    的是「库里现在有哪些文档需要对账」，不是任何一种业务查询。**它刻意没有租户参数**：
+    对账的对象是整库的存量数据（跨租户），而按租户切分会让「另一个租户里的分歧」永远
+    看不见；关键词那一维在读的时候逐租户传（ADR-0006 的强制过滤在那儿不能省）。
+
+    ``created_at, id`` 双键排序：同一秒建出来的几篇文档之间也要有**确定**的顺序，
+    否则 ``--limit`` 两次跑出来的那两篇可能不是同一批（运维据此定位，不是抽奖）。
+    """
+
+    stmt = select(Document)
+    if kb_id is not None:
+        stmt = stmt.where(Document.kb_id == kb_id)
+    stmt = stmt.order_by(Document.created_at, Document.id)
+    if limit is not None:
+        stmt = stmt.limit(limit)
+    return list((await db.execute(stmt)).scalars().all())
+
+
 def list_by_kb(db: Session, kb_id: str, *, tenant_id: str) -> list[Document]:
     """该租户在该知识库下的全部文档，按创建时间升序（列表即轮询进度的时间线）。
 

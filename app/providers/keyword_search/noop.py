@@ -5,6 +5,8 @@
 空列表冒充「查过了、没命中」。
 """
 
+from collections.abc import Sequence
+
 from app.providers.keyword_search.base import KeywordSearchProvider
 
 
@@ -54,3 +56,12 @@ class NoopKeywordSearchProvider(KeywordSearchProvider):
         """没有关键词索引这回事 → 没有标记可翻（#175）。"""
 
         return None
+
+    async def current_draft_versions(
+        self, *, tenant_id: str, document_ids: Sequence[str]
+    ) -> dict[str, list[int]]:
+        """能力不存在 → 空映射（#179）。**调用方必须先看 ``available``**，否则会把
+        「这台机器没部署引擎」读成「关键词索引里一篇都没标当前稿」──那正是对账要分开的
+        两种状态。这里不抛异常：形状与 ES 实现一致，脚本据此走同一条代码路径。"""
+
+        return {}

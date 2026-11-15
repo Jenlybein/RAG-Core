@@ -61,6 +61,36 @@ def tenant_fingerprint(tenant_id: str) -> str:
     return digest[:TENANT_FINGERPRINT_LENGTH]
 
 
+def delivered_doc_versions(results: Iterable[Mapping[str, object]]) -> dict[str, int]:
+    """这次交付的每个**文档**落在第几稿：``{document_id: doc_version}``（#179）。
+
+    为什么归属索引需要它：``chunk_ids`` 只答得出「命中过哪些片」，而片会被保留策略物理
+    删掉（#178），删掉之后那一串 id 再也答不出「那次查的是第几稿」（用户故事第 3 条）。
+
+    **映射，不是两个并列数组**：与 ``index_versions``（``{kb_id: 版本}``）同一条规矩
+    （ADR-0010 §5）——``['doc-a','doc-b']`` 配 ``[2,1]`` 拼得出「A 文档配 B 文档稿号」
+    这种不存在的组合，而且不报错。
+
+    为什么读的是**交付单元上的 ``doc_version``**：它是 ``chunks.doc_version`` 列的副本
+    （#174 起稿号只有一个来源），由折叠在回查时带上来。**取不到稿号的单元直接跳过**：
+    那意味着这一片已经被重建替换（``doc_version`` 落成 ``null``，见
+    ``app.services.retrieval.collapse``），猜一个「当前稿」正是对账脚本要抓的那种静默
+    错归因。同一篇文档在几条单元里出现时只会有一个稿号（检索只交付当前稿），万一不是，
+    后到的覆盖先到的——这一列用于归因，判定留给对账脚本。
+    """
+
+    versions: dict[str, int] = {}
+    for result in results:
+        document_id = result.get("document_id")
+        doc_version = result.get("doc_version")
+        if not isinstance(document_id, str) or not document_id:
+            continue
+        if not isinstance(doc_version, int):
+            continue
+        versions[document_id] = doc_version
+    return versions
+
+
 def delivered_chunk_ids(results: Iterable[Mapping[str, object]]) -> list[str]:
     """这次交给调用方的**交付单元**里涉及哪些切片 id（代表片在前，溯源片随后）。
 

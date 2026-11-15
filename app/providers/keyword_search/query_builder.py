@@ -429,6 +429,65 @@ def build_current_draft_update(
     }
 
 
+#: 对账聚合里「按文档分组」的那一层（#179）。名字只在请求体里出现一次，用常量是因为
+#: 解析响应的一方要按同一个键去取——两处各写一个字符串，改一处就会静默读出空结果。
+CURRENT_DRAFT_VERSIONS_AGG = "documents"
+
+#: 每篇文档最多数几个不同的「当前稿」稿号。正常只有一个；多于一个就是分歧的现场
+#: （对账要把它列出来）。取 10 而不是 1：截断会让「两个稿号都被标成当前稿」这种
+#: 分歧看起来只有一个，而它恰恰是要抓的那一条。
+CURRENT_DRAFT_BUCKETS_PER_DOCUMENT = 10
+
+
+def build_current_draft_versions_query(*, tenant_id: str, document_ids: list[str]) -> dict:
+    """返回「这批文档里**标成当前稿**的切片按文档分组数稿号」的搜索请求体（#179）。
+
+    对账专用（``scripts/verify_document_versions.py``）：它问的是「关键词索引认为哪一稿
+    是当前稿」，与库里那条指针比。**只取聚合，不取命中**（``size: 0``）：一篇文档的
+    当前稿切片可能有几百片，把正文捞回来只为了读两个字段是白花带宽。
+
+    ## 为什么三个过滤条件一个都不能省
+
+    * ``tenant_id``：少了它就会把别的租户的稿号数进来（ADR-0006 的强制过滤同样适用于
+      对账——它是一句按租户隔离的读，不是跨租户统计）；
+    * ``is_current``：这就是被核对的那一个布尔（#174 的「当前稿」标记）；
+    * ``document_id``：限量到本次扫描的那一批文档，否则聚合会把整个索引的文档都数一遍
+      （库一大就是一次必现的超时）。
+
+    ## 为什么按 ``document_id`` 分组、再在组内数 ``doc_version``
+
+    ``doc_version`` 在 mapping 里是 keyword，两项 ``terms`` 聚合都成立；而**两层**聚合
+    才能同时回答「这篇文档有没有标当前稿」与「标的是哪一稿」。只做一层（数 doc_version）
+    就会丢掉「哪个稿号属于哪篇文档」，那正好是配对关系（ADR-0010 §5 同一条规矩）。
+    """
+
+    return {
+        "size": 0,
+        "query": {
+            "bool": {
+                "filter": [
+                    {"term": {"tenant_id": tenant_id}},
+                    {"term": {CURRENT_DRAFT_FIELD: True}},
+                    {"terms": {"document_id": list(document_ids)}},
+                ]
+            }
+        },
+        "aggs": {
+            CURRENT_DRAFT_VERSIONS_AGG: {
+                "terms": {"field": "document_id", "size": max(len(document_ids), 1)},
+                "aggs": {
+                    "drafts": {
+                        "terms": {
+                            "field": DOC_VERSION_FIELD,
+                            "size": CURRENT_DRAFT_BUCKETS_PER_DOCUMENT,
+                        }
+                    }
+                },
+            }
+        },
+    }
+
+
 def build_keyword_documents(chunks: list[dict]) -> list[dict]:
     """把索引编排的切片字典转成 ES 文档（``_id`` 用 chunk_id，写入天然幂等）。
 
