@@ -14,6 +14,8 @@
     按稿号倒序，正文默认不带（#175）。
   * ``POST /documents/{document_id}/versions/{version}/rollback`` —— 把当前稿指针拨回
     某一稿，并投递一次重建让这篇文档立刻重新可检索（#176）。
+  * ``POST /documents/{document_id}/versions/{version}/search`` —— 在某一稿上**只读直查**
+    （不改指针、不重建、不写归属索引；只走向量路，#176）。
 
 写入口都声明事务依赖：一个请求一笔事务，成功提交、异常回滚，提交点只在
 :mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
@@ -64,10 +66,18 @@ from app.schemas.document import (
     DocumentVersionListData,
     ReindexDocumentData,
     RollbackDocumentVersionData,
+    SearchDocumentVersionData,
+    SearchDocumentVersionRequest,
     UploadDocumentData,
     UploadDocumentRequest,
 )
-from app.services import document_service, document_state, document_version_service, static_quota
+from app.services import (
+    document_service,
+    document_state,
+    document_version_service,
+    static_quota,
+    version_search,
+)
 from app.services.chunk_store import build_chunk_stores
 from app.services.data_scope import ensure_kb_scope
 from app.services.document_storage import remove_document_file
@@ -465,3 +475,49 @@ async def rollback_document_version(
         request_id=submitted_request_id(request),
     )
     return ok(RollbackDocumentVersionData.model_validate(data))
+
+
+@router.post(
+    "/documents/{document_id}/versions/{version}/search",
+    response_model=ApiResponse[SearchDocumentVersionData],
+    summary="在某一稿上只读直查（不改指针、不重建、不写归属索引）",
+)
+async def search_document_version(
+    document_id: str,
+    version: int,
+    payload: SearchDocumentVersionRequest,
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+) -> ApiResponse[SearchDocumentVersionData]:
+    """在某篇文档的某一稿上检索一次，**什么都不改**。
+
+    排查工具：同一句 query 在当前稿与某一历史稿上分别查，差异就说明「是不是这一稿的内容
+    没被索引 / 被别的稿盖住了」。
+
+    三条边界写在 ``app.services.version_search`` 的模块文档里，这里只重复最容易误解的一条：
+    **只走向量路**。关键词索引只有 ``is_current`` 一个布尔，历史稿切片标记为 ``False``，要
+    查历史稿就得给 ES 再加一个「指定稿号」谓词——超出本票范围。所以直查的回包里没有 BM25
+    分数，它**不是**一次混合检索。
+
+    读入口**不声明**事务依赖（与列版本同一条：读路径不提交）。路由这一层只做三件事：
+    取文档（缺失 / 跨租户 20016）、第二道关卡（数据范围白名单，按文档所属的库判）、
+    套统一信封。
+    """
+
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    # 第二道关卡：白名单（与创建 / 列版本 / 回滚同一条，按文档所属的库判）。
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+
+    data = await version_search.search_document_version(
+        db,
+        tenant_id=key.tenant_id,
+        document_id=document_id,
+        version=version,
+        query=payload.query,
+    )
+    return ok(SearchDocumentVersionData.model_validate(data))
