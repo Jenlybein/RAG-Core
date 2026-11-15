@@ -1107,3 +1107,61 @@ def test_reparse_reads_the_source_file_of_the_target_draft(
     assert version_row.content == "# 第一稿\n\n第一稿的正文", "读的是这一稿自己的源文件"
     assert "第二稿" not in version_row.content, "读到了另一稿的字节"
     assert env.document.content == "第一稿的旧正文", "旧稿的产物不覆盖文档行"
+
+def test_reparse_fails_on_a_draft_without_a_source_file_and_writes_nothing(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """目标稿没有可读源文件 → 沿用既有错误码 20023，且一条写都没发生（不留半份）。
+
+    JSON 提交的稿次没有源文件。这时拿文档行那份顶替是**更坏**的选择：那份字节属于
+    最新一次上传，不是这一稿的——解析出来会是一份「标着第 N 稿、装着别的稿正文」的
+    正文，而它恰好是 T10 对账要抓的分歧。宁可报错：正文、校验和、切片、状态全保持原样。
+    """
+
+    from app.models.document_version import DocumentVersion
+    from app.repositories import document_version_repository
+    from app.utils.checksum import checksum_of
+
+    decoy_file = tmp_path / "doc.v2.md"
+    decoy_file.write_text("# 第二稿\n\n第二稿的正文", encoding="utf-8", newline="\n")
+
+    version_row = DocumentVersion(
+        id="v1",
+        document_id=DOC_ID,
+        version=1,
+        content="第一稿的正文",
+        checksum=checksum_of("第一稿的正文"),
+        status="current",
+        source_file_path=None,
+    )
+
+    async def _existing_version(_db: Any, _document_id: str, _version: int) -> Any:
+        return version_row
+
+    monkeypatch.setattr(document_version_repository, "get_by_version", _existing_version)
+
+    document = _document()
+    document.content = "第一稿的正文"
+    document.source_file_path = str(decoy_file)
+    document.source_filename = "doc.v2.md"
+    env = _patch_service_environment(
+        monkeypatch,
+        [],
+        pieces=[SplitPiece(text="p", metadata={})],
+        vectors=[[0.1]],
+        document=document,
+        patch_parse=False,
+    )
+
+    with pytest.raises(AppError) as exc_info:
+        asyncio.run(env.service.index_existing_document(env.session, DOC_ID, reparse=True))
+
+    assert exc_info.value.code is ErrorCode.DOCUMENT_PARSE_FAILED
+    assert (version_row.content, version_row.checksum) == (
+        "第一稿的正文",
+        checksum_of("第一稿的正文"),
+    ), "版本行原样不动"
+    assert env.document.content == "第一稿的正文", "文档行原样不动"
+    assert env.session.commits == 1, "只有抢占那一笔提交；Tx2 一次都没提交"
+    assert (env.stores[0].deleted, env.stores[0].written) == ([], []), "没有半份写入"
+    assert _added_versions(env) == [], "不补行、不新增版本行"

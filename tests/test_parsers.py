@@ -24,7 +24,7 @@ from app.providers.parsers.docx import DocxParser
 from app.providers.parsers.html import HtmlParser
 from app.providers.parsers.pdf import PdfParser
 from app.providers.parsers.text import TextParser
-from app.services.document_ingestion import prepare_document_content
+from app.services.document_ingestion import parse_source_file, prepare_document_content
 
 
 class _StubMessage:
@@ -384,3 +384,34 @@ def test_prepare_rejects_document_with_neither_content_nor_file() -> None:
 
     assert exc_info.value.code is ErrorCode.DOCUMENT_PARSE_FAILED
     assert exc_info.value.msg == "document content and file are both empty"
+
+
+# ── 重解析侧的入口（#182）：读的是**这一稿自己的**文件 ──
+
+
+def test_parse_source_file_reads_the_given_path(monkeypatch: pytest.MonkeyPatch) -> None:
+    """按传进来的路径读字节：调用方（重解析）拿得到「这一稿的源文件」，而不是文档行那份。"""
+
+    seen: list[str] = []
+
+    def _read(path: Path) -> bytes:
+        seen.append(path.name)
+        return "# 第三稿".encode()
+
+    monkeypatch.setattr(Path, "read_bytes", _read)
+
+    parsed = parse_source_file("C:/data/doc.v3.md")
+
+    assert seen == ["doc.v3.md"]
+    assert parsed.content == "# 第三稿"
+    assert parsed.source_type == "markdown"
+
+
+def test_parse_source_file_rejects_a_draft_without_a_path() -> None:
+    """没有源文件的稿次（JSON 提交）重解析 → 20023，不拿库里的正文凑合。"""
+
+    with pytest.raises(AppError) as exc_info:
+        parse_source_file(None)
+
+    assert exc_info.value.code is ErrorCode.DOCUMENT_PARSE_FAILED
+    assert exc_info.value.msg == "document version has no source file"
