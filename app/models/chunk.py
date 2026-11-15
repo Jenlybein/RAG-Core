@@ -19,7 +19,7 @@ content 是**切片原文**（原样返回给调用方）；送进 embedding 的
 from collections.abc import Mapping
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index, String, Text, and_, false, or_
+from sqlalchemy import Index, Integer, String, Text, and_, false, or_
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.elements import ColumnElement
@@ -68,6 +68,7 @@ class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (
         Index("ix_chunks_tenant_id_kb_id_index_version", "tenant_id", "kb_id", "index_version"),
+        Index("ix_chunks_document_id_doc_version", "document_id", "doc_version"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -82,4 +83,15 @@ class Chunk(Base):
         nullable=False,
         default=DEFAULT_INDEX_VERSION,
         server_default=DEFAULT_INDEX_VERSION,
+    )
+    # 稿号：这一片属于第几稿（与「索引版本」正交，见 ADR-0005）。
+    #
+    # 它是**真实列**而不是 JSONB 里的一个键（#172）：稿号只有一个来源。写入侧怎么填
+    # 属于后续的票；这里只保证列在、非空、默认第 1 稿——存量切片在迁移里按所属文档的
+    # 当前稿指针回填，于是「切片稿号 = 文档指针」在迁移完成那一刻就成立。
+    doc_version: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=1,
+        server_default="1",
     )
