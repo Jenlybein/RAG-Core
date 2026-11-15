@@ -54,6 +54,11 @@ class _FakeSession:
         self.info: dict[str, Any] = {}
         self.commits = 0
         self.rollbacks = 0
+        #: ``add`` 进来的行（首个版本行，#175）。真会话里 ``add`` 是同步的。
+        self.added: list[Any] = []
+
+    def add(self, row: Any) -> None:
+        self.added.append(row)
 
     async def commit(self) -> None:
         self.commits += 1
@@ -173,6 +178,9 @@ def _patch_indexing(
         content="raw",
         current_version=pointer,
         source_filename="售后手册.md",
+        # 真行上一定有这一列（首个版本行会把它抄进版本行，#175）；替身缺了它，
+        # 「补版本行」那一步会在套件里炸成一个与业务无关的 AttributeError。
+        source_file_path=None,
     )
 
     async def _get_by_id(_db: Any, _id: str) -> Any:

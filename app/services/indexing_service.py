@@ -76,6 +76,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import async_commit_now
 from app.models.document import Document
+from app.models.document_version import DOCUMENT_VERSION_CURRENT, DocumentVersion
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
@@ -89,7 +90,8 @@ from app.repositories import (
 from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import content_from_version, prepare_document_content
 from app.services.section_context import summarize_sections
-from app.utils.id_generator import new_chunk_id
+from app.utils.checksum import checksum_of
+from app.utils.id_generator import new_chunk_id, new_version_id
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
 from app.utils.splitter_factory import build_splitter
@@ -427,6 +429,9 @@ class IndexingService:
         for store in self._stores:
             await store.add_chunks(db, chunks)
 
+        # 首个版本行（#175）：与切片、正文回写、状态同一笔事务。
+        await self._ensure_version_row(db, doc, draft=draft, content=parsed.content)
+
         await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
         await async_commit_now(db)
         logger.info(
@@ -438,3 +443,51 @@ class IndexingService:
             index_version=version,
         )
         return len(chunks)
+    async def _ensure_version_row(
+        self, db: AsyncSession, doc: Document, *, draft: int, content: str
+    ) -> None:
+        """「每篇成功文档恰好一条当前稿版本行」——缺了就在这一笔事务里补上（#175）。
+
+        ## 为什么必须补
+
+        上传链路只登记文档、不建版本行（``app.services.document_service.upload`` 的职责就是
+        「登记 + 投递」）。#172 之前上传的存量文档靠迁移回填过版本行，而**#172 之后新上传的
+        文档**两边都没有——于是「版本表里有这一稿的正文」这条不变量对它们不成立，
+        「当时引用的是哪一版」自然也就没有答案。补在**索引成功**这一刻，是因为此时才第一次
+        有了确切的正文（文件上传的正文是解析出来的，上传那一刻还没有）。
+
+        ## 为什么只补当前稿
+
+        ``draft != doc.current_version`` 时一律不补：迟到的**重解析**任务会带着旧稿号跑完
+        （它按源文件重解析，压根不查版本表），给它建行等于在时间轴上编造一稿——正文是现在
+        的源文件，稿号却是旧的。
+
+        ## 为什么不在这里无条件收紧 ``_content_of``
+
+        「没有版本行就报错」会打挂上传链路（刚上传的文档本来就没有版本行）。读路径保持
+        「版本行优先、没有就回落文档行」，写路径负责把缺的那一条补上——一松一紧各管一段。
+
+        ## 正文为什么原样存（不在这里规范化）
+
+        版本行的正文是**重建时会读到**的那份文本（ADR-0005 D6）。规范化会削掉首尾空行、
+        换掉换行符，于是「重建一次」切出的切片与当初那次不再逐字相同——而校验和本身
+        （:func:`app.utils.checksum.checksum_of`）内部已经规范化，判重不受影响。
+        """
+
+        if draft != doc.current_version:
+            return
+        existing = await document_version_repository.get_by_version(db, str(doc.id), draft)
+        if existing is not None:
+            return
+        await document_version_repository.create(
+            db,
+            DocumentVersion(
+                id=new_version_id(),
+                document_id=str(doc.id),
+                version=draft,
+                content=content,
+                source_file_path=doc.source_file_path,
+                checksum=checksum_of(content),
+                status=DOCUMENT_VERSION_CURRENT,
+            ),
+        )

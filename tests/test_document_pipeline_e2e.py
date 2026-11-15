@@ -83,6 +83,11 @@ class _FakeSession:
         # ``AsyncSession.add`` 与真会话一样**是同步的**：它只把对象挂进 unit of work。
         self._rows[instance.id] = instance
 
+    def rows_of(self, model: Any) -> list[Any]:
+        """某一类已经 ``add`` 进来的行（版本行这类表不按文档 id 取，用例用它读）。"""
+
+        return [row for row in self._rows.values() if isinstance(row, model)]
+
     async def get(self, _model: Any, ident: Any) -> Any | None:
         return self._rows.get(ident)
 
@@ -532,3 +537,44 @@ def test_same_markdown_loses_heading_path_in_a_size_kb(
         "没有章节边界就没有 section_id，折叠与页码对这类切片不生效"
     )
     assert len(chunks) != 8, "两种策略切出来的形状必须不同，而不是同一份结果换个名字"
+
+
+def test_an_uploaded_document_ends_up_with_exactly_one_current_version_row(
+    pipeline_env: SimpleNamespace,
+) -> None:
+    """上传 → 索引成功 → **恰好一条**当前稿版本行，且与指针一致（#175）。
+
+    不变量：每篇索引成功的文档恰好一条当前稿版本行。上传链路只登记文档、不建版本行，
+    所以这一条由索引成功那一笔事务补上——否则 #172 之后新上传的文档会「没有版本行」，
+    「当时引用的是哪一版」对它们就永远没有答案。
+
+    正文取的是**这次索引用的那一份**（文件上传的正文是解析出来的，上传那一刻还没有），
+    于是它与文档行上的正文回写、切片、状态是同一笔事务的产物。
+    """
+
+    from app.models.document_version import DocumentVersion
+    from app.utils.checksum import checksum_of
+
+    body = FIXTURE_PATH.read_bytes()
+    response = pipeline_env.client.post(
+        "/api/v1/documents/upload",
+        data={"kb_id": KB_ID},
+        files={"file": (SOURCE_FILENAME, body, "text/markdown")},
+    )
+    document_id = response.json()["data"]["document_id"]
+
+    versions = pipeline_env.session.rows_of(DocumentVersion)
+    assert len(versions) == 1, "恰好一条：重复投递 / 重建不该把版本表写重"
+    row = versions[0]
+    doc = _stored_document(pipeline_env.session, document_id)
+
+    assert doc is not None
+    assert row.document_id == document_id
+    assert row.version == doc.current_version == 1, "版本行与当前稿指针必须一致"
+    assert row.status == "current"
+    # 正文就是这次索引**实际切块**的那一份（不另做规范化）：版本行的正文是重建时会读到的
+    # 文本（ADR-0005 D6），改写它等于让「重建一次」切出与当初不同的切片。
+    assert row.content == doc.content, "版本行里的正文就是文档行回写的那一份"
+    assert row.content, "索引成功的文档不该有空的版本行"
+    assert row.checksum == checksum_of(row.content)
+    assert row.source_file_path == doc.source_file_path

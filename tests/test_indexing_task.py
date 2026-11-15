@@ -63,6 +63,11 @@ class _FakeSession:
         self.commits = 0
         self.rollbacks = 0
         self.closed = False
+        #: ``add`` 进来的行（首个版本行，#175）。真会话里 ``add`` 是同步的。
+        self.added: list[Any] = []
+
+    def add(self, obj: Any) -> None:
+        self.added.append(obj)
 
     async def commit(self) -> None:
         self.commits += 1
@@ -871,3 +876,104 @@ def test_worker_process_signals_bind_and_release_the_resident_loop() -> None:
 
     assert loop.closed is True
     assert loop.alive is False, "关停信号之后线程必须已经退出"
+
+
+# ------------------------------------------------- 首个版本行（#175：每篇成功文档恰好一条）
+#
+# 不变量：**每篇索引成功的文档恰好一条当前稿版本行，且与指针一致**。
+# 上传链路（`document_service.upload`）不建版本行——它只登记文档；版本行由索引成功那一笔
+# 补上，于是「T3 之后新上传的文档没有版本行」这个洞在这里合上。
+
+
+def _added_versions(env: SimpleNamespace) -> list[Any]:
+    from app.models.document_version import DocumentVersion
+
+    return [row for row in env.session.added if isinstance(row, DocumentVersion)]
+
+
+def test_service_records_the_first_version_row_for_the_current_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """没有版本行 → 按**这次索引的正文**补一条，且与切片、状态落在同一笔事务里。"""
+
+    from app.models.document_version import DocumentVersion
+    from app.utils.checksum import checksum_of
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text="first piece", metadata={"heading_path": "Intro"})]
+    env = _patch_service_environment(
+        monkeypatch, calls, pieces=pieces, vectors=[[0.1]], parsed_content=PARSED_TEXT
+    )
+
+    asyncio.run(env.service.index_existing_document(env.session, DOC_ID))
+
+    rows = _added_versions(env)
+    assert len(rows) == 1
+    row = rows[0]
+    assert isinstance(row, DocumentVersion)
+    assert (row.document_id, row.version, row.status) == (DOC_ID, 1, "current")
+    assert row.content == PARSED_TEXT, "版本行里的正文就是这次索引用的那一份"
+    assert row.checksum == checksum_of(PARSED_TEXT), "校验和走同一个入口"
+    assert env.session.commits == 2, "补版本行不额外提交：它是 Tx2 的一部分"
+    assert calls.index("add:main") < calls.index(f"update_status:{DocumentStatus.SUCCESS}")
+
+
+def test_service_does_not_add_a_second_version_row_when_one_exists(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """已经有这一稿的版本行 → 一条都不加（重复投递不许把版本表写重）。"""
+
+    from app.models.document_version import DocumentVersion
+    from app.repositories import document_version_repository
+    from app.utils.checksum import checksum_of
+
+    existing = DocumentVersion(
+        id="v1",
+        document_id=DOC_ID,
+        version=1,
+        content=PARSED_TEXT,
+        checksum=checksum_of(PARSED_TEXT),
+        status="current",
+    )
+
+    async def _existing(_db: Any, _document_id: str, _version: int) -> Any:
+        return existing
+
+    calls: list[str] = []
+    env = _patch_service_environment(
+        monkeypatch, calls, pieces=[SplitPiece(text="p", metadata={})], vectors=[[0.1]]
+    )
+    monkeypatch.setattr(document_version_repository, "get_by_version", _existing)
+
+    asyncio.run(env.service.index_existing_document(env.session, DOC_ID))
+
+    assert _added_versions(env) == []
+
+
+def test_service_never_fabricates_a_version_row_for_an_older_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """迟到的**重解析**任务带着旧稿号时，不许为那一稿凭空建行。
+
+    重解析走的是「按源文件再解析一遍」那条分支（压根不查版本表），所以它真的会带着一个
+    不等于当前指针的稿号跑完。给它建行等于在时间轴上编造一稿：正文是**现在**的源文件，
+    稿号却是旧的。
+    """
+
+    document = _document()
+    document.current_version = 2
+    calls: list[str] = []
+    env = _patch_service_environment(
+        monkeypatch,
+        calls,
+        pieces=[SplitPiece(text="p", metadata={})],
+        vectors=[[0.1]],
+        document=document,
+        parsed_content=PARSED_TEXT,
+    )
+
+    asyncio.run(
+        env.service.index_existing_document(env.session, DOC_ID, doc_version=1, reparse=True)
+    )
+
+    assert _added_versions(env) == []

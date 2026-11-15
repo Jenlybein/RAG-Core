@@ -126,6 +126,8 @@ def _document(document_id: str, *, status: int = DocumentStatus.SUCCESS) -> Simp
         title="售后手册",
         current_version=1,
         source_filename="售后手册.md",
+        # 真行上一定有这一列（首个版本行会把它抄进版本行，#175）。
+        source_file_path=None,
         status=status,
         content="正文",
     )
