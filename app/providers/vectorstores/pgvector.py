@@ -174,6 +174,75 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
+    async def similarity_search_document_version(
+        self,
+        db: AsyncSession,
+        query_vector: list[float],
+        *,
+        tenant_id: str,
+        document_id: str,
+        doc_version: int,
+        index_version: str,
+        top_k: int,
+    ) -> list[dict]:
+        """锁定某篇某稿的召回：按版本只读直查的底层（#176）。
+
+        与 :meth:`similarity_search_scope` 的差别只有条件：范围从「``kb_id → 索引版本``
+        的配对映射」换成「一篇文档 + 一个稿号 + 一个索引版本」，而**``current_draft_filter``
+        被刻意去掉**——它的实现是 ``chunks.doc_version = documents.current_version``
+        （列与列比较），历史稿的切片一片都对不上；直查历史稿却带着它，结果永远是空，
+        而那看起来完全像「这一稿没内容」——正是这条路径要排查的那种误判。
+
+        去掉它带来两个必须由参数兜住的约束：
+
+        * ``tenant_id``：少了它就是跨租户召回（ADR-0006）；
+        * ``index_version``：旧索引版本的行还留在库里（#142 的「构建期间查旧版本」），
+          不按版本收窄会把两次构建的切片混进结果。
+
+        **默认路径一个字没改**：不传稿号的召回仍走 :meth:`similarity_search_scope`，
+        仍然只看当前稿（``tests/test_retrieval_current_draft.py`` 与
+        ``tests/test_document_version_search.py`` 各钉一遍）。
+
+        每行自带 ``doc_version``：回包要说清「这条是第几稿的片」，而稿号是真实列，
+        读它比相信调用方传入的稿号更可靠。
+        """
+
+        distance = Chunk.embedding.cosine_distance(query_vector).label("distance")
+        stmt = (
+            select(
+                Chunk.id.label("chunk_id"),
+                Chunk.kb_id,
+                Chunk.document_id,
+                Chunk.doc_version,
+                Chunk.content,
+                Document.title,
+                distance,
+            )
+            .join(Document, Document.id == Chunk.document_id)
+            .where(
+                Chunk.tenant_id == tenant_id,
+                Chunk.document_id == document_id,
+                Chunk.doc_version == doc_version,
+                Chunk.index_version == index_version,
+                not_reference_pointer(),
+            )
+            .order_by(distance)
+            .limit(top_k)
+        )
+        rows = (await db.execute(stmt)).all()
+        return [
+            {
+                "chunk_id": r.chunk_id,
+                "kb_id": r.kb_id,
+                "document_id": r.document_id,
+                "doc_version": r.doc_version,
+                "title": r.title,
+                "content": r.content,
+                "score": 1 - float(r.distance),
+            }
+            for r in rows
+        ]
+
     async def count_by_scope(
         self, db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
     ) -> int:

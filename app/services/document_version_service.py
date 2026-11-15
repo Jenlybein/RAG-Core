@@ -1,7 +1,9 @@
-"""建版本：把一份新正文变成文档的下一个稿次（#175，ADR-0005 D2 / D3 / D5）。
+"""建版本与回滚：把一份新正文变成下一个稿次，或把当前稿指针拨回某一旧稿
+（#175 / #176，ADR-0005 D2 / D3 / D5）。
 
-这是文档版本管理的第一条**用户可见**写路径：提交一份正文（JSON 或文件），得到一个新稿次；
-提交与当前稿相同的东西被判「内容未变」；两个提交撞上同一个稿号时回「冲突，请重试」。
+建版本是文档版本管理的第一条**用户可见**写路径：提交一份正文（JSON 或文件），得到一个新
+稿次；提交与当前稿相同的东西被判「内容未变」；两个提交撞上同一个稿号时回「冲突，请重试」。
+回滚是第二条：把指针拨回任意仍在保留窗口内的稿次，并让这篇文档**立刻能被检索到**。
 
 ## 顺序是契约（一步都不能颠倒）
 
@@ -34,9 +36,12 @@
 
 ## 不做的事
 
-回滚（#176）、按版本直查（#176）。本模块负责「往前长一稿」（:func:`create_version`）与
-「把窗口外的稿子清掉」（:func:`purge_expired_versions`，#178）——两者是同一条时间轴的
-两端，所以留在同一个服务里。
+## 不做的事
+
+按版本直查（#176 的读侧，见 :mod:`app.services.version_search`）。本模块负责「往前长一稿」
+（:func:`create_version`）、「把指针拨回旧稿」（:func:`rollback_to_version`，#176）与「把窗口
+外的稿子清掉」（:func:`purge_expired_versions`，#178）——三者是同一条时间轴的不同操作，
+所以留在同一个服务里。
 
 ## 保留窗口（#178）
 
@@ -51,6 +56,9 @@
 
 清理是**幂等**的：跑第二遍没有候选、不发语句。触发靠运维脚本
 （``scripts/purge_document_versions.py``），本模块不引入任何调度。
+
+**与回滚的关系**（#176 的「稿不存在」正是靠它造出来的）：清理会把这些稿的版本行整行删掉，
+之后拿这个稿号回滚 / 直查只会得到「稿不存在」（20030）——不做墓碑。
 """
 
 from __future__ import annotations
@@ -396,6 +404,135 @@ async def create_version(
         "version": version,
         "previous_version": previous_version,
         "checksum": checksum,
+        "status": DocumentStatus.PROCESSING,
+    }
+
+
+async def rollback_to_version(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    document_id: str,
+    version: int,
+    plan: PlanSpec,
+    request_id: str | None = None,
+) -> dict:
+    """把当前稿指针拨回第 ``version`` 稿，并让这篇文档立刻回到「等重建」的状态。
+
+    ## 回滚 = 一笔事务里的四件事，外加提交之后的两件
+
+    1. **当前稿转归档**：时间轴只有一条「当前」，两行同时 ``current`` 会让「这篇文档的
+       当前稿切片」有两个答案（检索按 ``chunks.doc_version = documents.current_version``
+       过滤，指针只有一个，但版本行是派生真值——它必须与指针一致）；
+    2. **目标稿转当前稿**：目标是一行**已存在的归档稿**，不是新写一行。回滚不产生新稿
+       次：稿号是「这一稿存在过」的身份，回滚是「重新选中它」，时间轴因此不增长
+       （与「重放旧正文要建新稿次」是两件事）；
+    3. **指针前移（这里其实是后移）**：``documents.current_version = version``。指针是
+       唯一真值（见 ``app.models.chunk.current_draft_filter``）；
+    4. **文档正文同步为目标稿正文 + 置处理中**：文档行是当前稿的热路径快照（D6）。源文件
+       路径也一起换（见下）。置处理中是因为切片要重建——此刻库里的切片还是上一稿的。
+    5. **提交之后**：投递重建（载荷带**目标稿号**）+ 翻转关键词索引的「当前稿」标记。
+       两件都在 :func:`_queue_side_effects` 里登记。
+
+    ## 为什么一律重建（不做「条件重建」）
+
+    第一版正确优先：切片还在、索引版本也一致时跳过重建可以省一次解析，但判据本身要读
+    切片表 + 索引版本 + 稿号三处状态，而任何一处判错都表现为「回滚成功、检索里还是旧
+    内容」——那正是本票要消灭的症状。代价只是多一次重建。
+
+    ## 为什么源文件路径跟着换
+
+    ``documents.source_file_path`` 是**当前稿**的源文件（#175 起按稿号落盘：
+    ``<doc_id>.v<N><ext>``）。回滚不换它，之后一次 ``reparse=true`` 的重建会拿**上一稿**
+    的字节重新解析，而那份字节看起来完全正常、错误要通过内容差异才能发现。
+
+    ``source_filename`` 不换：它是文档级别的「原始上传时叫什么」，版本行只记路径，
+    没有可回填的真值。
+
+    ## 守卫与锁的顺序
+
+    先按 ``(id, tenant_id)`` 取文档（缺失与跨租户统一「不存在」，20016）→ 状态守卫
+    （有效处理中 20025）→ 静态配额（回滚同样往队列塞一份解析任务）→ **锁文档行**。
+    锁内复核一次守卫与指针：守卫与锁之间的窗口里，Worker 可能刚好开工、另一个请求可能
+    刚好切了稿。目标稿的读取也在锁内——锁外读到的那一行可能正被保留策略删掉。
+
+    """  # noqa: D401 - 句型统一
+
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=tenant_id
+    )
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    # 处理中则拒：Worker 正在写这篇文档的切片，这时切指针会让「哪一稿的切片」变成掷骰子。
+    ensure_versionable(doc)
+    # 静态配额：回滚也是一次重建，同样要过「并发处理数」——与建版本 / 重建同一条口径。
+    await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
+
+    # 锁内的一切才是真值（守卫与锁之间可能有人开工、有人切了指针）。
+    locked = await document_repository.lock_for_version(
+        db, document_id, tenant_id=tenant_id
+    )
+    if locked is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+    ensure_versionable(locked)
+
+    target = await document_version_repository.get_by_version(db, document_id, version)
+    if target is None:
+        # 已经被保留策略物理删除（#178）：「这一稿不存在」，**不做墓碑**。
+        # 补一行墓碑会把「删过」变永久数据，而墓碑本身还要参与稿号 / 保留窗口的判定。
+        raise AppError(
+            ErrorCode.DOCUMENT_VERSION_NOT_FOUND,
+            "要回滚到的稿次不存在",
+            data={"version": version},
+        )
+
+    previous_version = locked.current_version
+    if version == previous_version:
+        raise AppError(
+            ErrorCode.DOCUMENT_VERSION_ALREADY_ACTIVE,
+            "这一稿已经是当前稿",
+            data={"version": version},
+        )
+
+    # ① 当前稿转归档 ② 目标稿转当前稿。顺序不能反：先归档会把「除 keep 之外」的当前稿
+    # 全打掉，再选中目标；反过来的话目标行在中间那一刻是孤儿（两行都不是当前稿）。
+    await document_version_repository.archive_current_except(
+        db, document_id, keep=version
+    )
+    await document_version_repository.mark_current(db, document_id, version=version)
+
+    # ③ 指针前移 ④ 文档正文 / 源文件同步为目标稿 + 置处理中。
+    locked.current_version = version
+    locked.content = target.content
+    locked.source_file_path = target.source_file_path
+    locked.status = DocumentStatus.PROCESSING
+    locked.error_message = None
+    locked.index_claimed_at = None
+    await db.flush()
+
+    # ⑤ 投递重建（带目标稿号）⑥ 翻转关键词索引的当前稿标记。
+    _queue_side_effects(
+        db,
+        document_id=document_id,
+        tenant_id=tenant_id,
+        kb_id=locked.kb_id,
+        request_id=request_id,
+        doc_version=version,
+    )
+
+    logger.info(
+        "document version rolled back",
+        document_id=document_id,
+        tenant_id=tenant_id,
+        kb_id=locked.kb_id,
+        doc_version=version,
+        previous_version=previous_version,
+    )
+    return {
+        "document_id": document_id,
+        "version": version,
+        "previous_version": previous_version,
         "status": DocumentStatus.PROCESSING,
     }
 
