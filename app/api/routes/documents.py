@@ -10,6 +10,8 @@
   * ``DELETE /documents/{document_id}`` —— 守卫通过后按租户清除切片、删原文件、删记录。
   * ``POST /documents/{document_id}/versions`` —— 提交一份新正文，得到下一个稿次
     （#175；写路径的顺序见 ``app.services.document_version_service``）。
+  * ``GET /documents/{document_id}/versions?include_content=`` —— 这篇文档改过几稿，
+    按稿号倒序，正文默认不带（#175）。
 
 写入口都声明事务依赖：一个请求一笔事务，成功提交、异常回滚，提交点只在
 :mod:`app.db.transaction` 一处。读入口（列文档）**不声明**——读路径不该提交。
@@ -56,6 +58,8 @@ from app.schemas.document import (
     DeleteDocumentData,
     DocumentListData,
     DocumentListItem,
+    DocumentVersionItem,
+    DocumentVersionListData,
     ReindexDocumentData,
     UploadDocumentData,
     UploadDocumentRequest,
@@ -355,3 +359,52 @@ async def create_document_version(
         request_id=submitted.request_id,
     )
     return ok(CreateDocumentVersionData.model_validate(data))
+
+
+@router.get(
+    "/documents/{document_id}/versions",
+    response_model=ApiResponse[DocumentVersionListData],
+    summary="列文档的版本（按稿号倒序，默认不带正文）",
+)
+async def list_document_versions(
+    document_id: str,
+    include_content: bool = Query(False),
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+) -> ApiResponse[DocumentVersionListData]:
+    """返回这篇文档的全部稿次，**按稿号倒序**（现在这一稿在最前）+ 当前稿指针。
+
+    **正文默认不给**（``include_content=False``）：一批整篇正文的响应既大又慢，而列表的
+    常见用途是「这篇文档改过几稿、最近一稿是哪天」。要看某一稿的正文得显式要求。
+
+    读入口**不声明**事务依赖：读路径不提交（见模块文档）。当前稿指针取文档行上的那一列，
+    不取「状态是 current 的那一行」——指针是唯一真值，版本行的状态是它的派生（#175 的写路径
+    保证两者一致，但读的时候只认指针）。
+    """
+
+    doc = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=key.tenant_id
+    )
+    if doc is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    # 第二道关卡：白名单（与创建 / 重建 / 删除同一条，按文档所属的库判）。
+    ensure_kb_scope(policy=key.policy, kb_ids=[doc.kb_id])
+
+    rows = await document_version_repository.list_by_document(db, document_id)
+    return ok(
+        DocumentVersionListData(
+            document_id=document_id,
+            current_version=doc.current_version,
+            items=[
+                DocumentVersionItem(
+                    version=row.version,
+                    status=row.status,
+                    checksum=row.checksum,
+                    created_at=row.created_at,
+                    content=row.content if include_content else None,
+                )
+                for row in rows
+            ],
+        )
+    )

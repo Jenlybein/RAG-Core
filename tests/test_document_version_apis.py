@@ -537,4 +537,76 @@ def test_a_file_submission_is_parsed_and_keeps_its_own_source_copy(
     assert (Path(settings.DOCUMENT_STORAGE_PATH) / stored).exists()
 
 
-# ── 列版本（下一单元落地） ──
+# ── 列版本 ──
+
+def test_listing_versions_is_newest_first_and_hides_the_content_by_default(
+    api: SimpleNamespace,
+) -> None:
+    """按稿号**倒序**；默认不带正文（一批整篇正文的响应没人想要），要正文得显式要求。"""
+
+    api.seed(
+        _doc_row(current_version=3, content="第三稿正文。"),
+        _version_row(version_id="v1", version=1, content="第一稿正文。", status="archived"),
+        _version_row(version_id="v2", version=2, content="第二稿正文。", status="archived"),
+        _version_row(version_id="v3", version=3, content="第三稿正文。"),
+    )
+
+    response = api.client.get(VERSIONS_URL)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["code"] == 0
+    data = body["data"]
+    assert data["document_id"] == DOC_ID
+    assert data["current_version"] == 3
+    assert [item["version"] for item in data["items"]] == [3, 2, 1]
+    assert [item["status"] for item in data["items"]] == ["current", "archived", "archived"]
+    assert [item["content"] for item in data["items"]] == [None, None, None]
+
+
+def test_listing_versions_returns_the_content_only_when_asked(api: SimpleNamespace) -> None:
+    """``?include_content=true`` 才带正文；其余字段两种情况下逐字相同。"""
+
+    api.seed(
+        _doc_row(current_version=2, content="第二稿正文。"),
+        _version_row(version_id="v1", version=1, content="第一稿正文。", status="archived"),
+        _version_row(version_id="v2", version=2, content="第二稿正文。"),
+    )
+
+    response = api.client.get(f"{VERSIONS_URL}?include_content=true")
+
+    items = response.json()["data"]["items"]
+    assert [item["content"] for item in items] == ["第二稿正文。", "第一稿正文。"]
+    assert items[0]["version"] == 2
+    assert len(items[0]["checksum"]) == 64, "校验和两种情况下都给（判重与对账要用）"
+
+
+def test_listing_versions_of_another_tenants_document_is_not_found(api: SimpleNamespace) -> None:
+    """跨租户一律「不存在」（20016）：列表也不泄露存在性。"""
+
+    _one_version_ready(api)
+    api.set_tenant("tenant-b")
+
+    response = api.client.get(VERSIONS_URL)
+
+    body = response.json()
+    assert response.status_code == 200
+    assert body["code"] == int(Codes.NOT_FOUND)
+    assert body["data"] is None
+
+
+def test_listing_versions_of_a_document_without_rows_is_an_empty_list(
+    api: SimpleNamespace,
+) -> None:
+    """#172 之前的上传、或还没索引成功的文档：空列表 + 当前指针，不是 20030。
+
+    「这篇文档没有历史稿」是正常状态；20030 留给「指名要看某一稿、而那一稿不存在」
+    （那是 #176 的按稿直查）。
+    """
+
+    api.seed(_doc_row(current_version=1))
+
+    body = api.client.get(VERSIONS_URL).json()
+
+    assert body["code"] == 0
+    assert body["data"] == {"document_id": DOC_ID, "current_version": 1, "items": []}

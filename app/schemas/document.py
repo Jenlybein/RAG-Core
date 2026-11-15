@@ -102,12 +102,15 @@ class DocumentVersionItem(BaseModel):
 
     ``content`` **默认不给**（``None``）：正文可能是整篇文档，列表接口的调用方通常只关心
     「改过几稿、哪一稿是哪天」。要看正文得显式要求（``?include_content=true``）。
+
+    **不给 ``source_file_path``**：那是服务端存储根下的相对路径（``tenant/<id>.v2.md``），
+    调用方拿它做不了任何事，而把内部路径暴露出去只会扩大泄露面。重解析要读它，但那是
+    Worker 的事（版本行自己留着）。
     """
 
     version: int
     status: str
     checksum: str
-    source_file_path: str | None = None
     created_at: datetime
     content: str | None = None
 
