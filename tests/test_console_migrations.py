@@ -156,8 +156,9 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # （``drop_orchestration_switch``）再接在关系边表之后；#171 文档稿次列改名
     # （``rename_documents_current_version``）再接在删列迁移之后；#172 的文档版本表与
     # 切片稿号列（``add_document_versions``）再接在改名之后；#179 的归属索引「文档 → 稿号」
-    # 映射列（``add_trace_doc_versions``）再接在版本表之后。
-    assert heads == {_revision_of(_migration_path("add_trace_doc_versions"))}
+    # 映射列（``add_trace_doc_versions``）再接在版本表之后；第 13 步 T1 的新授权/计量列
+    # （``add_retrieval_authorization``）接在它之后。
+    assert heads == {_revision_of(_migration_path("add_retrieval_authorization"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
