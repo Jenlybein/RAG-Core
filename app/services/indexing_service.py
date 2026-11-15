@@ -266,7 +266,8 @@ class IndexingService:
         3. 版本表里没有这一稿：
            * 调用方**显式指定**了一个不是当前指针的稿号 → 拒绝。这是迟到任务的现场：
              它算的是旧稿，指针已经前移，文档行里装的是别的稿。这时回落去读文档行
-             会静默写错；错误码复用既有的「文档不存在」（「稿不存在」在 #175 才加）；
+             会静默写错；错误码是 20030「稿不存在」（``DOCUMENT_VERSION_NOT_FOUND``），
+             不是 20016「文档不存在」——文档在，没有的是那一稿（ADR-0007：一个含义一个码）；
            * 否则回落文档行 / 磁盘（``prepare_document_content``）。建版本的写路径
              落地（#175）之前，库里本来就没有版本行；老数据与兜底脚本都靠这条路，
              缺了它一篇历史文档会永远索引不了。
@@ -296,7 +297,13 @@ class IndexingService:
 
         # 分支 3：没有版本行。
         if requested_draft is not None and requested_draft != doc.current_version:
-            raise AppError(ErrorCode.NOT_FOUND, "document version not found")
+            # 「这一稿不存在」，不是「这篇文档不存在」：回 20016 会让调用方去查一份它手里
+            # 有 id 的文档为什么「不存在」，而真因是那一稿被保留策略清掉了（#178）。
+            raise AppError(
+                ErrorCode.DOCUMENT_VERSION_NOT_FOUND,
+                "要重建的稿次不存在",
+                data={"version": requested_draft},
+            )
         return _ContentSource(parsed=prepare_document_content(doc, reparse=False))
 
     async def index_existing_document(

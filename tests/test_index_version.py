@@ -500,7 +500,11 @@ def test_rebuild_rejects_an_explicit_draft_that_has_no_version_row(
 
     这就是「迟到任务写错稿」的那一格：指针在它到达之后前移了，文档行里现在装的是
     第 2 稿。若这时回落去读文档行，写出来的切片会**带着第 1 稿的编号装着第 2 稿的
-    正文**——比直接失败难查得多。错误码复用既有的「文档不存在」（#175 才加「稿不存在」）。
+    正文**——比直接失败难查得多。
+
+    错误码是 **20030「稿不存在」**，不是 20016「文档不存在」（ADR-0007：一个含义一个码）。
+    文档明明存在、只是那一稿被保留策略清掉了，回成「文档不存在」会让调用方去查一份它
+    手里有 id 的文档为什么「不存在」。
     """
 
     _patch_rebuild_collaborators(monkeypatch, _document(current_version=2))
@@ -520,7 +524,9 @@ def test_rebuild_rejects_an_explicit_draft_that_has_no_version_row(
             service.index_existing_document(AsyncRecordingSession(), DOCUMENT_ID, doc_version=1)
         )
 
-    assert caught.value.code is ErrorCode.NOT_FOUND
+    assert caught.value.code is ErrorCode.DOCUMENT_VERSION_NOT_FOUND
+    assert int(caught.value.code) == 20030, "「稿不存在」是 20030，不是「文档不存在」20016"
+    assert caught.value.data == {"version": 1}, "把要的是哪一稿带回去，调用方才知道查什么"
     assert store.written == [], "一行切片都不许写"
 
 
