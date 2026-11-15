@@ -28,6 +28,7 @@
 """
 
 from datetime import datetime, timedelta
+from typing import NamedTuple
 
 from sqlalchemy import ColumnElement, and_, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -115,9 +116,47 @@ def list_stuck(
     return list(db.execute(stmt.order_by(Document.created_at)).scalars().all())
 
 
+class MissingContentDocument(NamedTuple):
+    """「正文为空」的一行候选：**只有补齐脚本真正需要的列**（无 ORM 实体）。
+
+    为什么不是 ``Document`` 实体：候选查询必须能在**升级前**跑（见
+    :func:`list_missing_content` 的纪律），而实体映射会自然演化——#171 那次改名
+    （``doc_version`` → ``current_version``）之后，``select(Document)`` 就要求老库里
+    存在一列还不存在的列，于是「升级前先补正文」这条路径在升级前直接崩掉。具名列集把
+    「这次查询依赖哪些列」写成可读的清单，加列的人必须来这里显式加一行并为此负责。
+
+    ``content`` 与 ``source_*`` 一并取回：脚本要靠它们判断「这篇有没有正文」，以及
+    「源文件在哪、按什么名字解析」。
+    """
+
+    id: str
+    tenant_id: str
+    kb_id: str
+    content: str | None
+    source_type: str | None
+    source_file_path: str | None
+    source_filename: str | None
+
+
+#: 候选查询的列集（顺序与 :class:`MissingContentDocument` 的字段一一对应）。
+#:
+#: **不许**出现第 12 步（文档版本管理）之后才存在的列——``current_version`` 是典型反例：
+#: 老库上它还不存在，而这条查询恰恰要在升级前跑。``created_at`` 可以用（老库就有），
+#: 它只出现在 ``ORDER BY`` 里，不进这份清单。
+_MISSING_CONTENT_COLUMNS = (
+    Document.id,
+    Document.tenant_id,
+    Document.kb_id,
+    Document.content,
+    Document.source_type,
+    Document.source_file_path,
+    Document.source_filename,
+)
+
+
 def list_missing_content(
     db: Session, *, kb_id: str | None = None, limit: int | None = None
-) -> list[Document]:
+) -> list[MissingContentDocument]:
     """扫出「正文为空」的文档：正文回写之前登记的历史行（第 12 步票 #170）。
 
     ## 这条查询的纪律（ADR-0006「第 1 次修订」）
@@ -128,18 +167,56 @@ def list_missing_content(
     * **数据面禁用**：检索 / 列表 / 管控接口一律不得调用它；那些路径上的强制租户过滤
       不能省，也不得拿这一条当先例。
 
+    ## 第二条纪律：**这条查询必须能在升级前跑**
+
+    脚本的使命是「先补正文，再跑迁移」（迁移会拦「有切片却正文为空」的文档，并把正文
+    抄进版本行）。所以这次查询**永远不许引用迁移之后才存在的列**——它跑在迁移**之前**，
+    那些列那时还不存在。``select(Document)`` 正是一次反面教材：实体加了
+    ``current_version``（#171 改名）之后，这条查询在老库上直接
+    ``UndefinedColumn: column documents.current_version does not exist``，而它本来该在
+    升级前正常工作。
+
+    于是这里显式列选择（:data:`_MISSING_CONTENT_COLUMNS`），返回具名的
+    :class:`MissingContentDocument`。**将来要给这条查询加列的人，请先回答「老库上有没有
+    这一列」**：迁移之后才有的列一律不加，需要它的信息就在脚本里按 id 二次读（并接受
+    「升级后拒跑」这条守卫）。``tests/test_document_content_backfill.py`` 用**只有老列**的
+    表结构钉住这条纪律。
+
     判定是 ``content`` 为空串或 ``NULL``：历史行两种都可能（建表时没有默认值的那批
     是 ``NULL``，文件上传的那批是空串）。``kb_id`` 只缩小范围，``limit`` 供运维先看
     一小批再决定，两者都不改变「正文为空」的定义。
     """
 
-    stmt = select(Document).where(func.coalesce(Document.content, "") == "")
+    stmt = select(*_MISSING_CONTENT_COLUMNS).where(
+        func.coalesce(Document.content, "") == ""
+    )
     if kb_id is not None:
         stmt = stmt.where(Document.kb_id == kb_id)
     stmt = stmt.order_by(Document.created_at)
     if limit is not None:
         stmt = stmt.limit(limit)
-    return list(db.execute(stmt).scalars().all())
+    return [MissingContentDocument(*row) for row in db.execute(stmt).all()]
+
+
+def set_content(db: Session, document_id: str, content: str) -> None:
+    """把解析出的正文写回 ``documents.content``（#170；只 execute + flush，不提交）。
+
+    为什么是 ``UPDATE`` 语句而不是 ``candidate.content = ...``：候选查询刻意不交出 ORM
+    实体（见 :func:`list_missing_content`），写回也就不该把实体请回来——这条路径要能在
+    升级前跑，而实体写回意味着「整行映射都在前提里」。写哪一行由 ``document_id`` 定，
+    正文由调用方给，不经过 ORM 的脏检查。
+
+    提交点纪律：这里**不** commit。补齐脚本一篇一笔事务（一篇失败不影响其余），提交边界
+    由它掌握，与整个仓库「写入不带提交」的分工一致。
+    """
+
+    db.execute(
+        update(Document)
+        .where(Document.id == document_id)
+        .values(content=content)
+        .execution_options(synchronize_session=False)
+    )
+    db.flush()
 
 
 async def list_with_expired_versions(
