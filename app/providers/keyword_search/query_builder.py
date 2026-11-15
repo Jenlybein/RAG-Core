@@ -24,7 +24,10 @@
 
 from __future__ import annotations
 
-from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, DEFAULT_INDEX_VERSION
+from app.models.chunk import (
+    CHUNK_TYPE_REFERENCE_POINTER,
+    DEFAULT_INDEX_VERSION,
+)
 
 # 可检索文本的字段名。切片原文另存 ``content``（只存不索引），用来原样回给调用方。
 RETRIEVAL_TEXT_FIELD = "retrieval_text"
@@ -32,6 +35,17 @@ RETRIEVAL_TEXT_FIELD = "retrieval_text"
 #: 切片类型字段（#152）。**存进关键词文档是为了过滤它**：纯路标切片只用来建边，
 #: 不参与召回——它进候选池只会占名额，还会把「命中一句『参见别处』」变成一次成功召回。
 CHUNK_TYPE_FIELD = "chunk_type"
+
+#: 稿号字段（#174）。值是「这一片属于第几稿」（``chunks.doc_version`` 的副本）。
+DOC_VERSION_FIELD = "doc_version"
+
+#: 「当前稿」标记（#174）。**召回只用一个布尔 term 过滤它**。
+#:
+#: 为什么是布尔而不是「按文档枚举稿号」：父 spec 明确否决了成对枚举
+#: ``(document_id, doc_version)`` 子句——那种写法的查询体会随库里的文档数一起长，
+#: 库一大就是一次必现的超时。布尔的作用域是「这一片」，索引期算好，召回时只剩一个
+#: 常量条件，查询体大小与数据量无关。
+CURRENT_DRAFT_FIELD = "is_current"
 
 # 写入 / 查询分词器：写入细粒度、查询智能模式。
 INDEX_ANALYZER = "ik_max_word"

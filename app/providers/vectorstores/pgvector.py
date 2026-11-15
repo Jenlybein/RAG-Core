@@ -19,6 +19,7 @@ from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
     DEFAULT_INDEX_VERSION,
     Chunk,
+    current_draft_filter,
     scope_filter,
 )
 from app.models.document import Document
@@ -95,6 +96,7 @@ class PgVectorStore(VectorStore):
                 Chunk.tenant_id == tenant_id,
                 Chunk.kb_id == kb_id,
                 not_reference_pointer(),
+                current_draft_filter(),
             )
             .order_by(distance)
             .limit(top_k)
@@ -126,6 +128,10 @@ class PgVectorStore(VectorStore):
         以及每行**自带 ``kb_id``**（一次跨库召回，结果必须能归属到某个库）。
         打分口径完全一致：``score = 1 - 余弦距离``。
 
+        两条路径都带「只看当前稿」（``current_draft_filter``，#174）：两稿切片并存的
+        时刻（切稿之后、保留策略删掉旧稿之前）漏掉这一条，旧稿切片会以同等分数挤进
+        TopK，而结果看起来完全正常——只是同一段内容出现了两份。
+
         排序只按距离升序、一次取 ``top_k``：这是「一次全局召回」。分库各取
         ``top_k`` 再合并看着公平，实际让不相关的库也各占名额。
         """
@@ -145,6 +151,7 @@ class PgVectorStore(VectorStore):
                 Chunk.tenant_id == tenant_id,
                 build_scope_filter(index_versions),
                 not_reference_pointer(),
+                current_draft_filter(),
             )
             .order_by(distance)
             .limit(top_k)
