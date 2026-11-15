@@ -20,6 +20,20 @@ from collections.abc import Sequence
 class KeywordSearchProvider(ABC):
     """关键词检索能力。"""
 
+    async def aclose(self) -> None:
+        """释放 Provider 持有的外部资源。**默认什么都不做**，引擎实现按需覆盖。
+
+        调用时机只有两个：**应用关停**（lifespan 的退出段）与**脚本退出前**。
+        ``AsyncElasticsearch`` 的连接池挂在 aiohttp 会话上，不显式关就只能在解释器
+        退出时由 GC 兜底，日志里留下一串 ``Unclosed client session`` / ``Unclosed
+        connector``——噪声会盖住真正要看的日志（这是实测踩过的）。
+
+        **不许**在每次检索后调用：ES 客户端按事件循环缓存，一次检索关一次等于把连接池
+        拆了重搭，TLS 握手开销会回到「每查一次重建一个客户端」的水平。
+        """
+
+        return None
+
     @property
     @abstractmethod
     def available(self) -> bool:

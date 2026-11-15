@@ -215,10 +215,21 @@ def _keyword_available(provider: Any) -> bool:
 
 def _keyword_provider() -> Any:
     """当前配置的关键词实现（惰性 import：模块导入时不构造 Provider / 不建引擎）。"""
-
     from app.providers.keyword_search import get_keyword_search_provider
 
     return get_keyword_search_provider()
+
+
+async def _close_keyword_provider() -> None:
+    """退出前关掉已构造的关键词客户端（惰性 import，且只关已存在的）。
+
+    不关的后果是进程收尾时刷出一串 ``Unclosed client session``——那是噪声，但噪声会把
+    「这次对账为什么退出码是 1」真正的原因埋掉。
+    """
+
+    from app.providers.keyword_search import aclose_keyword_search_provider
+
+    await aclose_keyword_search_provider()
 
 
 def _by_tenant(documents: Sequence[Document]) -> list[tuple[str, list[str]]]:
@@ -318,6 +329,9 @@ async def _run(args: argparse.Namespace) -> int:
         report = await reconcile_document_versions(db, kb_id=args.kb_id, limit=args.limit)
     finally:
         await db.close()
+        # 关键词客户端挂在 aiohttp 会话上：不在这里关，进程退出时就会刷出
+        # 「Unclosed client session」把真正的退出原因埋掉。只关已经构造过的实例。
+        await _close_keyword_provider()
 
     scope = "all knowledge bases" if args.kb_id is None else f"kb_id={args.kb_id}"
     for line in _render(report, scope=scope):
