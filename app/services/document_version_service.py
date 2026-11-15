@@ -34,10 +34,29 @@
 
 ## 不做的事
 
-回滚（#176）、按版本直查（#176）、保留策略（#178）。本模块只负责「往前长一稿」。
+回滚（#176）、按版本直查（#176）。本模块负责「往前长一稿」（:func:`create_version`）与
+「把窗口外的稿子清掉」（:func:`purge_expired_versions`，#178）——两者是同一条时间轴的
+两端，所以留在同一个服务里。
+
+## 保留窗口（#178）
+
+留最近 :data:`RETAIN_VERSIONS` 稿，窗口外的**归档**稿连切片带版本行一起清掉。三条口径：
+
+* 窗口按**稿数**算（``当前稿号 - 保留稿数``），不按时间：一天改十稿的文档不会保留几十个
+  工作日的切片；
+* 只删 ``archived``，**当前稿永不删**——哪怕它是 v1 而指针在 v9（库里残留的低稿号当前行）；
+* 删除走两维键：``doc_version=这一稿`` + ``index_version=None``。这一稿的切片可能散落在
+  **多个索引版本**里（每重建一次写一套），只删当前索引版本会留下旧索引版本下的幽灵切片，
+  而它们永远不会被任何查询命中（检索 pin 在生效版本上），只会一直占着存储。
+
+清理是**幂等**的：跑第二遍没有候选、不发语句。触发靠运维脚本
+（``scripts/purge_document_versions.py``），本模块不引入任何调度。
 """
 
 from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 
 import structlog
 from sqlalchemy.exc import IntegrityError
@@ -45,10 +64,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import after_commit
+from app.models.document import Document
 from app.models.document_version import DOCUMENT_VERSION_CURRENT, DocumentVersion
 from app.models.plan import PlanSpec
 from app.repositories import document_repository, document_version_repository
 from app.services import static_quota
+from app.services.chunk_store import ChunkStore
 from app.services.document_ingestion import parse_uploaded_bytes
 from app.services.document_state import ensure_versionable
 from app.services.document_storage import store_version_file
@@ -57,6 +78,181 @@ from app.utils.id_generator import new_version_id
 from app.utils.status import DocumentStatus
 
 logger = structlog.get_logger(__name__)
+
+#: 默认保留稿数（#178 / D10）。这是**业务参数**，不是技术参数：它决定「审计能回查几稿」，
+#: 所以是源码里的常量，不读环境变量、不进配置中心。运维脚本的 ``--retain`` 可以按库 / 按
+#: 次覆盖它（一次性动作），但默认值只有这一处。
+RETAIN_VERSIONS = 3
+
+
+@dataclass(frozen=True)
+class RetentionPlan:
+    """一次保留清理的**判定结果**（要清哪几稿），不含「删没删」。
+
+    与「执行」分开，dry-run 才有东西可打印：脚本不写库时拿到的就是这一份，于是
+    「dry-run 看到什么」与「``--apply`` 删什么」由同一段计算回答，不会两处漂移。
+    """
+
+    document_id: str
+    #: 这篇文档的当前稿指针（窗口的起点）。
+    current_version: int
+    #: 这次生效的保留稿数（默认 :data:`RETAIN_VERSIONS`，脚本 ``--retain`` 可覆盖）。
+    retain: int
+    #: 窗口下界（含）：稿号 <= 它的归档稿在窗口外。
+    floor: int
+    #: 要清掉的稿号，**最老的排在前面**（清理按这个顺序逐稿去清切片）。
+    expired_versions: tuple[int, ...]
+
+    @property
+    def is_empty(self) -> bool:
+        """这一篇没有过期稿（窗口内 / 还没长到窗口外）。"""
+
+        return not self.expired_versions
+
+    @property
+    def expired_count(self) -> int:
+        """要清掉几稿。"""
+
+        return len(self.expired_versions)
+
+
+def retention_floor(current_version: int, retain: int = RETAIN_VERSIONS) -> int:
+    """窗口下界（含）：稿号 ``<=`` 它的归档稿在窗口外。
+
+    按**稿数**算（``当前稿号 - 保留稿数``），与时间无关：窗口是稿号轴上的一段，不是日历上
+    的一段。返回值可以 <= 0（这篇文档还没长到窗口外），此时任何稿号都不该被清——
+    查询那一侧因此也不必发出去。
+    """
+
+    return current_version - retain
+
+
+def retention_plan(
+    *,
+    document_id: str,
+    current_version: int,
+    archived_versions: Iterable[int],
+    retain: int = RETAIN_VERSIONS,
+) -> RetentionPlan:
+    """由「当前稿号 + 这篇文档的归档稿号」算出要清哪几稿（纯函数，不碰库）。
+
+    只在这里做窗口判定，调用方（服务 / 脚本）不重复实现一遍减法：两份判定迟早对不上，
+    而症状是「dry-run 说要删 3 稿、``--apply`` 删了 2 稿」。
+
+    顺序按稿号**倒序**（最老的先走），与仓储的查询顺序一致：清理逐稿去清切片，先走最老的
+    那一稿，失败时日志里的「清到哪一稿」才对得上运维的直觉。
+    """
+
+    floor = retention_floor(current_version, retain)
+    expired = tuple(sorted((v for v in archived_versions if v <= floor), reverse=True))
+    return RetentionPlan(
+        document_id=document_id,
+        current_version=current_version,
+        retain=retain,
+        floor=floor,
+        expired_versions=expired,
+    )
+
+
+async def plan_retention(
+    db: AsyncSession, *, document: Document, retain: int = RETAIN_VERSIONS
+) -> RetentionPlan:
+    """读出这篇文档的归档稿，算出这次要清哪几稿（**只读**，dry-run 用它）。"""
+
+    plan = retention_plan(
+        document_id=str(document.id),
+        current_version=document.current_version,
+        archived_versions=(),
+        retain=retain,
+    )
+    if plan.floor < 1:
+        # 窗口下界 <= 0：稿号从 1 起算，任何一稿都在窗口内。跳过那次查询。
+        return plan
+    rows = await document_version_repository.list_archived_at_or_below(
+        db, plan.document_id, version=plan.floor
+    )
+    return retention_plan(
+        document_id=plan.document_id,
+        current_version=document.current_version,
+        archived_versions=[row.version for row in rows],
+        retain=retain,
+    )
+
+
+async def purge_expired_versions(
+    db: AsyncSession,
+    *,
+    document: Document,
+    retain: int = RETAIN_VERSIONS,
+    stores: Sequence[ChunkStore] | None = None,
+) -> RetentionPlan:
+    """把窗口外的归档稿**连切片带版本行**清掉，返回这次清掉的判定（不提交）。
+
+    顺序是契约，一步都不能颠倒：
+
+    1. 先算窗口（:func:`plan_retention`）；
+    2. **先删切片**：逐稿调 :func:`app.services.indexing_service.purge_document_chunks`，
+       它遍历 ``stores``（默认接线是向量存储 + 关键词检索两个存储）；
+    3. **再删版本行**：一条 ``DELETE ... IN (...)`` 打整批。
+
+    反过来的顺序一旦回滚，留下的是「切片还在、版本行没了」——那批切片永远不被任何查询
+    命中，也无法再被定位到属于哪一稿，比半份更坏。事务边界在调用方（脚本按**每篇文档
+    一笔** ``async with async_transaction(db)``），失败时整笔回滚，不留半份。
+
+    **删除键是两维的**：``doc_version=这一稿`` 且 ``index_version=None``。这一稿的切片
+    可能散落在多个索引版本里（每重建一次写一套），只删当前索引版本会留下旧索引版本下的
+    幽灵切片——检索 pin 在生效版本上，它们永远不会被召回，却会一直占着向量库与关键词
+    索引。反过来「稿号不收窄」更不行：那会把还在窗口内的稿一起清掉。
+
+    ``stores`` 只在测试里注入（默认按 ``build_chunk_stores`` 现建）。没有候选稿时连存储
+    都不建：清理脚本在「没什么可清」的库上不该去连向量库 / 关键词引擎。
+    """
+
+    plan = await plan_retention(db, document=document, retain=retain)
+    if plan.is_empty:
+        return plan
+
+    from app.services.indexing_service import purge_document_chunks
+
+    resolved = list(stores) if stores is not None else _default_chunk_stores()
+    tenant_id = str(document.tenant_id)
+    for version in plan.expired_versions:
+        await purge_document_chunks(
+            db,
+            plan.document_id,
+            tenant_id=tenant_id,
+            stores=resolved,
+            # 见上面的「删除键是两维的」：索引版本放开，只收窄稿号。
+            index_version=None,
+            doc_version=version,
+        )
+    await document_version_repository.delete_versions(
+        db, plan.document_id, plan.expired_versions
+    )
+
+    logger.info(
+        "document versions purged",
+        document_id=plan.document_id,
+        tenant_id=tenant_id,
+        current_version=plan.current_version,
+        retain=plan.retain,
+        expired_versions=list(plan.expired_versions),
+    )
+    return plan
+
+
+def _default_chunk_stores() -> list[ChunkStore]:
+    """默认接线：与索引流水线同一份 ``build_chunk_stores``（向量 + 关键词）。
+
+    惰性 import：``app.providers`` 那一批会按配置构造客户端，服务模块在导入时不该顺手
+    把 Provider 全装一遍（脚本「导入即安全」这条也靠它）。
+    """
+
+    from app.providers.keyword_search import get_keyword_search_provider
+    from app.providers.vectorstores import get_vector_store
+    from app.services.chunk_store import build_chunk_stores
+
+    return build_chunk_stores(get_vector_store(), get_keyword_search_provider())
 
 
 async def create_version(
