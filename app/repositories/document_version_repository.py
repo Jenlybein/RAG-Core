@@ -6,6 +6,7 @@
 * :func:`max_version` —— 这篇文档现在最高是第几稿（建版本的 ``+1`` 从它起算，#175）；
 * :func:`create` —— 落一条新版本行（只 flush，让 ``(document_id, version)`` 唯一约束
   在这里撞出来）；
+* :func:`rewrite_content` —— 把**同一稿**的正文与校验和换掉（重解析的写回，#182）；
 * :func:`archive_current_except` —— 把别的当前稿行转归档（切指针的另一半，#175）；
 * :func:`list_by_document` —— 列版本（按稿号倒序，#175 的读接口）；
 * :func:`source_file_paths` —— 这篇文档各稿的源文件路径（删文档时一起清掉）；
@@ -38,6 +39,7 @@ from app.models.document_version import (
     DOCUMENT_VERSION_CURRENT,
     DocumentVersion,
 )
+from app.utils.checksum import checksum_of
 
 
 async def get_by_version(
@@ -85,6 +87,40 @@ async def create(db: AsyncSession, version: DocumentVersion) -> DocumentVersion:
     """
 
     db.add(version)
+    await db.flush()
+    return version
+
+
+async def rewrite_content(
+    db: AsyncSession, version: DocumentVersion, *, content: str
+) -> DocumentVersion:
+    """把**这一稿**的正文与校验和一起换掉（重解析的写回，#182）。
+
+    ## 为什么是改写同一行，而不是新加一稿
+
+    重解析不是「改稿」：同一份原始文件，换一个解析器再读一遍，稿次没变。新加一行等于
+    在时间轴上凭空长出一稿，而 ``max(version) + 1`` 的下一次提交会跟着错位；更直接的
+    症状是「文档正文 == 当前稿正文」这条对账口径永久不成立。
+
+    稿号、``status``（当前 / 归档）、``created_at``、``id`` 一律不动：重解析不是切稿，
+    归档稿重新解析完仍是归档稿。
+
+    ## 校验和为什么由本层算，而不是调用方传进来
+
+    传进来的话，「正文」与「校验和」就是两个独立输入，调用方某天传了一份规范化过的正文
+    配一份没规范化的校验和，库里的两列从此互相矛盾——而对账读的正是校验和。由这里用
+    唯一入口 :func:`app.utils.checksum.checksum_of` 从刚写进去的那份正文现算，
+    「两列说的是同一份文本」就是**构造上**成立的，不靠调用方守纪律。
+
+    ## 只 flush
+
+    与 :func:`create` 同一口径：这一笔写与切片、文档行正文、状态回写同属 Tx2，提交点
+    在 Worker 那一层（``app.db.transaction.async_commit_now``）。这里 flush 一下，让
+    「重解析之后同一段代码里再读这行」拿到的是新值。
+    """
+
+    version.content = content
+    version.checksum = checksum_of(content)
     await db.flush()
     return version
 
@@ -164,6 +200,7 @@ __all__ = [
     "get_by_version",
     "list_by_document",
     "max_version",
+    "rewrite_content",
     "source_file_paths",
 ]
 
