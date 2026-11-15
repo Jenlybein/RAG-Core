@@ -194,7 +194,7 @@ def _document(document_id: str) -> SimpleNamespace:
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="售后手册",
-        doc_version=1,
+        current_version=1,
         status=DocumentStatus.SUCCESS,
     )
 

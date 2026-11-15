@@ -295,8 +295,10 @@ class IndexingService:
                     # 页号由切块器从「第 N 页」标题带下来（PDF 才有）；Markdown 为空。
                     "page": piece.metadata.get("page"),
                     # 稿号：让引用三元组（文档 + 稿次 + 切片）里有稿次可写。
-                    # 本步不参与过滤，见 ADR-0005 与第 10 步。
-                    "doc_version": doc.doc_version,
+                    # 键名是「这一片属于第几稿」，值来自文档行上的当前稿指针
+                    # （``documents.current_version``，#171 只改了列名，没改这个键、
+                    # 也没改语义）。本步不参与过滤，见 ADR-0005 与后续的票。
+                    "doc_version": doc.current_version,
                     "title": doc.title,
                     # 原始文件名随切片落一份（#152 的修订）：Markdown 链接写的是文件名
                     # （``./points_policy.md``），而标题是《积分规则》——建边时按文件名才对得上。
