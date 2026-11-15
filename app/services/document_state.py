@@ -26,6 +26,25 @@ def is_effectively_processing(
 def ensure_deletable(document: Document) -> None:
     """删除文档的前置守卫：有效处理中拒绝（20025）。"""
 
+    _ensure_not_processing(document)
+
+
+def ensure_versionable(document: Document) -> None:
+    """建版本的前置守卫：有效处理中拒绝（20025，复用既有的「文档处理中」）。
+
+    为什么复用 20025 而不新造一个「忙」的码：**一个含义一个码**。再造一个，调用方就得
+    靠「两个码都要处理」才不误判，漏掉一个的症状是「偶发一个没见过的码」。租约口径也与
+    删除 / 重建完全一致：``PROCESSING`` 但 ``index_claimed_at`` 为空（已入队未开工）或
+    租约过期（Worker 卡死）都不算「有人在处理」——刚提交过一稿的文档正处在「已排队未
+    开工」，那时再来一稿是正常的。
+    """
+
+    _ensure_not_processing(document)
+
+
+def _ensure_not_processing(document: Document) -> None:
+    """三条写路径共用的那一句：有效处理中就拒绝。"""
+
     if is_effectively_processing(document):
         raise AppError(ErrorCode.DOCUMENT_IS_PROCESSING)
 

@@ -82,6 +82,15 @@ def new_chunk_id() -> str:
     return new_id()
 
 
+def new_version_id() -> str:
+    """版本行（``document_versions``）的主键（#175）。
+
+    ``(document_id, version)`` 才有业务含义；这一列只是行的身份证，所以用同一套 UUID v4。
+    """
+
+    return new_id()
+
+
 def new_retrieval_log_id() -> str:
     return new_id()
 
