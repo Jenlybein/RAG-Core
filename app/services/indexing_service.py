@@ -519,6 +519,7 @@ class IndexingService:
             index_version=version,
         )
         return len(chunks)
+
     async def _record_version_content(
         self,
         db: AsyncSession,
