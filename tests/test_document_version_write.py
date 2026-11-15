@@ -27,6 +27,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import async_transaction
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_PRESETS, PLAN_PRO
 from app.repositories import document_version_repository
 from app.services import document_version_service
 from app.utils.status import DocumentStatus
@@ -117,6 +118,7 @@ async def _submit(
             env.db,
             tenant_id=tenant_id,
             document_id=DOC_ID,
+            plan=PLAN_PRESETS[PLAN_PRO],
             content=content,
             filename=filename,
             data=data,

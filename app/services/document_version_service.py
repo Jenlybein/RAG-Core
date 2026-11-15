@@ -46,7 +46,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import after_commit
 from app.models.document_version import DOCUMENT_VERSION_CURRENT, DocumentVersion
+from app.models.plan import PlanSpec
 from app.repositories import document_repository, document_version_repository
+from app.services import static_quota
 from app.services.document_ingestion import parse_uploaded_bytes
 from app.services.document_state import ensure_versionable
 from app.services.document_storage import store_version_file
@@ -62,6 +64,7 @@ async def create_version(
     *,
     tenant_id: str,
     document_id: str,
+    plan: PlanSpec,
     content: str = "",
     filename: str | None = None,
     data: bytes = b"",
@@ -71,6 +74,9 @@ async def create_version(
 
     两种模式由入口按 content-type 决定：``filename`` 非空 = 文件模式（正文由**既有解析
     入口**解析上传的字节），否则 JSON 模式（``content`` 直接用）。
+
+    ``plan`` 是静态配额要用的套餐快照：一次提交等于往队列里塞一份解析任务，和重建那条
+    路径一样必须过「并发处理数」——这是唯一一条「不超自己的上限也会伤害别人」的配额。
     """
 
     doc = await document_repository.get_by_id_for_tenant_async(
@@ -81,6 +87,8 @@ async def create_version(
 
     # 处理中则拒：Worker 正在写这篇文档的切片，这时切稿会让「哪一稿的切片」变成掷骰子。
     ensure_versionable(doc)
+    # 静态配额紧跟在状态守卫之后、**写任何东西之前**：被拒的提交既不建行也不入队。
+    await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
 
     text = await _resolve_text(filename=filename, content=content, data=data)
     checksum = checksum_of(text)
