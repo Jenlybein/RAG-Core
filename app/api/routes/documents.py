@@ -62,7 +62,6 @@ from app.schemas.document import (
     DeleteDocumentData,
     DocumentListData,
     DocumentListItem,
-    DocumentVersionItem,
     DocumentVersionListData,
     ReindexDocumentData,
     RollbackDocumentVersionData,
@@ -411,19 +410,12 @@ async def list_document_versions(
 
     rows = await document_version_repository.list_by_document(db, document_id)
     return ok(
-        DocumentVersionListData(
-            document_id=document_id,
-            current_version=doc.current_version,
-            items=[
-                DocumentVersionItem(
-                    version=row.version,
-                    status=row.status,
-                    checksum=row.checksum,
-                    created_at=row.created_at,
-                    content=row.content if include_content else None,
-                )
-                for row in rows
-            ],
+        DocumentVersionListData.model_validate(
+            # 出参形状由服务层决定（控制面那条列表接口调的是同一个函数）：
+            # 「一行给哪些字段」写两遍就会两处漂移，而两边的前端共用一个版式。
+            document_version_service.version_list_data(
+                doc, rows, include_content=include_content
+            )
         )
     )
 

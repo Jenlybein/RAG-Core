@@ -103,6 +103,10 @@ class DocumentVersionItem(BaseModel):
     ``content`` **默认不给**（``None``）：正文可能是整篇文档，列表接口的调用方通常只关心
     「改过几稿、哪一稿是哪天」。要看正文得显式要求（``?include_content=true``）。
 
+    ``char_count`` 是这一稿正文的**字符数**（``len``）。它与切块窗口（按模型分词计的
+    token 长度）不是一回事：这里回答的只是「这一稿有多长」，而正文默认不返回，所以
+    「哪一稿是那一大篇」只能靠它看出来。
+
     **不给 ``source_file_path``**：那是服务端存储根下的相对路径（``tenant/<id>.v2.md``），
     调用方拿它做不了任何事，而把内部路径暴露出去只会扩大泄露面。重解析要读它，但那是
     Worker 的事（版本行自己留着）。
@@ -111,6 +115,7 @@ class DocumentVersionItem(BaseModel):
     version: int
     status: str
     checksum: str
+    char_count: int
     created_at: datetime
     content: str | None = None
 

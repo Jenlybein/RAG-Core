@@ -48,6 +48,7 @@ from app.schemas.console_kbs import (
 from app.schemas.document import (
     DeleteDocumentData,
     DocumentListItem,
+    DocumentVersionListData,
     ReindexDocumentData,
     UploadDocumentData,
 )
@@ -189,6 +190,35 @@ async def upload_document(
         request_id=upload.request_id,
     )
     return ok(UploadDocumentData.model_validate(data))
+
+
+@router.get(
+    "/documents/{document_id}/versions",
+    response_model=ApiResponse[DocumentVersionListData],
+    summary="列一篇文档的版本（按稿号倒序，正文按需返回）",
+)
+async def list_document_versions(
+    document_id: str = Path(..., min_length=1),
+    include_content: bool = Query(False),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: AsyncSession = Depends(get_async_db),
+) -> ApiResponse[DocumentVersionListData]:
+    """这篇文档的全部稿次（按稿号倒序，现在这一稿在最前）+ 当前稿指针。
+
+    走**读门**（``require_console_tenant``）：看版本不改任何状态，也不该要求
+    ``x-requested-with``。租户只来自会话，跨租户与不存在同为 20016。
+
+    出参字段由 ``document_version_service.version_list_data`` 决定——与数据面那条列表
+    接口是同一个函数（控制面换的是门，不是契约）。
+    """
+
+    data = await console_kb_service.list_document_versions(
+        db,
+        tenant_id=tenant_id_of(identity),
+        document_id=document_id,
+        include_content=include_content,
+    )
+    return ok(DocumentVersionListData.model_validate(data))
 
 
 @router.post(

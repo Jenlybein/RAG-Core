@@ -60,6 +60,7 @@ from app.repositories import (
 from app.services import (
     document_service,
     document_state,
+    document_version_service,
     knowledge_base_service,
     plan_service,
     static_quota,
@@ -457,6 +458,35 @@ def _document_submission_snapshot(
 #: 是硬的负担（前端要把它放进 DOM）。超过就截断并**明确告诉调用方截断了**——静默截断
 #: 会让人以为文档只有这么长，进而怀疑索引漏了内容。
 DOCUMENT_CONTENT_MAX_CHARS: Final[int] = 200_000
+
+
+async def list_document_versions(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    document_id: str,
+    include_content: bool = False,
+) -> dict[str, Any]:
+    """列一篇文档的全部稿次（控制面**只读**：不改状态、不写审计、不碰索引）。
+
+    租户只来自会话；按 ``(id, tenant_id)`` 取不到文档就是「不存在」（20016），跨租户
+    同样如此——**不区分「没有」与「不是你的」**，可区分的拒绝会泄露资源存在性。
+
+    出参形状交给 :func:`app.services.document_version_service.version_list_data`：数据面
+    那条列表接口调的是**同一个函数**，于是「控制面多一列、数据面少一列」这种漂移没有
+    机会发生。读路径不声明事务依赖（与树、原文两条读接口同一条：读不提交）。
+    """
+
+    document = await document_repository.get_by_id_for_tenant_async(
+        db, document_id, tenant_id=tenant_id
+    )
+    if document is None:
+        raise AppError(ErrorCode.NOT_FOUND)
+
+    rows = await document_version_repository.list_by_document(db, document_id)
+    return document_version_service.version_list_data(
+        document, rows, include_content=include_content
+    )
 
 
 async def read_document_content(

@@ -65,6 +65,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
+from typing import Any
 
 import structlog
 from sqlalchemy.exc import IntegrityError
@@ -261,6 +262,45 @@ def _default_chunk_stores() -> list[ChunkStore]:
     from app.services.chunk_store import build_chunk_stores
 
     return build_chunk_stores(get_vector_store(), get_keyword_search_provider())
+
+
+def version_list_data(
+    document: Document,
+    rows: Sequence[DocumentVersion],
+    *,
+    include_content: bool = False,
+) -> dict[str, Any]:
+    """版本行 + 文档行 → 版本列表出参（**唯一**一处决定「一行给哪些字段」）。
+
+    两个入口共用这一份：数据面（API Key，``GET /documents/{id}/versions``）与控制面
+    （会话，``GET /console/documents/{id}/versions``）。两边各写一遍的下场是「控制面多一列、
+    数据面少一列」，而前端共用一个版式——那种漂移不会报错，只会让某个页面上的数字缺口。
+
+    ``char_count`` 是这一稿正文的**字符数**（``len``），与切块窗口那个 token 口径无关：
+    正文默认不返回，于是「这一稿有多长」只能靠它回答。
+
+    正文按需（``include_content``）：一批整篇正文的响应既大又慢，而列表的常见用途是
+    「这篇文档改过几稿、哪一稿是哪天」。
+
+    当前稿指针取**文档行**上的那一列，不取「状态是 current 的那一行」：指针是唯一真值，
+    版本行的状态是它的派生（写路径保证两者一致，但读的时候只认指针）。
+    """
+
+    return {
+        "document_id": str(document.id),
+        "current_version": document.current_version,
+        "items": [
+            {
+                "version": row.version,
+                "status": row.status,
+                "checksum": row.checksum,
+                "char_count": len(row.content or ""),
+                "created_at": row.created_at,
+                "content": (row.content or "") if include_content else None,
+            }
+            for row in rows
+        ],
+    }
 
 
 async def create_version(
