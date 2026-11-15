@@ -75,6 +75,7 @@ class _RecordingStore:
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.purge_versions.append(index_version)
 
@@ -103,6 +104,7 @@ class _StubIndexing:
         document_id: str,
         *,
         index_version: str | None = None,
+        doc_version: int | None = None,
         allow_success: bool = False,
         reparse: bool = False,
     ) -> int:

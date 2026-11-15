@@ -204,6 +204,8 @@ def test_json_upload_returns_processing_and_only_enqueues(offline: SimpleNamespa
             "kb_id": KB_ID,
             "request_id": "t3-json-req",
             "reparse": False,
+            # 新登记的文档从第 1 稿开始；稿号随任务走，Worker 不必回读指针（#173）。
+            "doc_version": 1,
         }
     ], "登记完成后必须把索引任务投递出去，且带上请求关联标识"
 

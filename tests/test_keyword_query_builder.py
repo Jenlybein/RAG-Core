@@ -329,6 +329,30 @@ def test_purge_query_deletes_by_document_and_tenant_only() -> None:
     }
 
 
+def test_purge_query_can_be_scoped_to_one_draft() -> None:
+    """按「文档 + 稿次」清理（#173）：只删这一稿的关键词文档。
+
+    旧稿的关键词文档必须原样留着（ADR-0005 D4 选 B：每稿各留切片），否则重建 v2
+    会把 v1 从关键词索引里抹掉，而向量侧还留着——两路对同一稿给出不同答案。
+    """
+
+    query = build_purge_query(document_id="doc-1", tenant_id=TENANT_ID, doc_version=2)
+
+    assert {"term": {"doc_version": 2}} in query["query"]["bool"]["filter"]
+    assert {"term": {"document_id": "doc-1"}} in query["query"]["bool"]["filter"]
+
+
+def test_purge_query_without_a_draft_still_clears_every_draft() -> None:
+    """``doc_version=None`` 是「这篇文档的所有稿」——删文档那条老路径仍要清干净。"""
+
+    query = build_purge_query(document_id="doc-1", tenant_id=TENANT_ID, doc_version=None)
+
+    assert [list(clause["term"]) for clause in query["query"]["bool"]["filter"]] == [
+        ["tenant_id"],
+        ["document_id"],
+    ]
+
+
 # ──────────────────────────────────────────────────── 切片 → 关键词文档
 
 
@@ -376,6 +400,29 @@ def test_keyword_documents_carry_every_scope_field() -> None:
     assert document["document_id"] == "doc-1"
     assert document["chunk_id"] == "chunk-1"
     assert document["title"] == "售后手册"
+
+
+def test_keyword_documents_carry_the_draft_number() -> None:
+    """关键词文档也带稿号（#173）：按「文档 + 稿次」删除要有一条字段可过滤。
+
+    少了它，``build_purge_query(doc_version=...)`` 在 ES 上匹配不到任何文档——重建会把
+    同一稿的旧关键词文档留在索引里，而向量侧已经删掉了：两路对同一稿给出不同答案。
+    """
+
+    chunk = _chunk()
+    chunk["doc_version"] = 2
+
+    document = build_keyword_documents([chunk])[0]
+
+    assert document["doc_version"] == 2
+
+
+def test_keyword_documents_fall_back_to_the_first_draft() -> None:
+    """没给稿号时与 ``chunks.doc_version`` 的列默认值同源，不写空值。"""
+
+    document = build_keyword_documents([_chunk()])[0]
+
+    assert document["doc_version"] == 1
 
 
 def test_keyword_documents_fall_back_to_the_default_index_version() -> None:

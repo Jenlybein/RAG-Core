@@ -130,7 +130,13 @@ class _RecordingStore:
         self.tenant_ids: list[str] = []
 
     async def delete_by_document_id(
-        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)
@@ -260,6 +266,9 @@ def _doc(
         index_claimed_at=index_claimed_at,
         error_message=error_message,
         created_at=created_at,
+        # 当前稿指针：真行上非空、默认 1（#171 改名）。重建投递要读它，随任务带稿号
+        # （#173），所以替身也得有这个字段——缺了不是「没稿号」而是 AttributeError。
+        current_version=1,
     )
 
 
@@ -806,6 +815,8 @@ def test_json_upload_returns_processing_and_audits_without_the_body_text(
             "kb_id": KB_ALPHA_ONE,
             "request_id": "console-upload-req",
             "reparse": False,
+            # 新登记的文档从第 1 稿开始，稿号随任务走（#173）。
+            "doc_version": 1,
         }
     ]
 
@@ -899,6 +910,8 @@ def test_reindex_failed_document_returns_processing_and_audits_before_after(
             "kb_id": KB_ALPHA_ONE,
             "request_id": "console-reindex-req",
             "reparse": True,
+            # 控制面与数据面同一条约定（#173）：稿号在投递那一刻从指针取下来。
+            "doc_version": 1,
         }
     ]
 

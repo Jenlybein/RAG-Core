@@ -222,6 +222,9 @@ async def reindex_document(
             kb_id=doc.kb_id,
             request_id=submitted_request_id(request),
             reparse=reparse,
+            # 稿号在**这里**从指针取下来、随任务走（#173）：Worker 不再读指针，所以
+            # 这次重建算哪一稿在投递那一刻就定了。指针之后被回滚改动也不影响它。
+            doc_version=doc.current_version,
         ),
     )
     logger.info(

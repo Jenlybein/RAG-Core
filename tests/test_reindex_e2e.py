@@ -32,6 +32,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
+from app.models.document_version import DocumentVersion
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
@@ -73,7 +74,13 @@ class _RecordingStore:
         self.written: list[list[dict[str, Any]]] = []
 
     async def delete_by_document_id(
-        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)
@@ -108,6 +115,9 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
 
     seed_engine = create_engine(f"sqlite:///{database_path}")
     Document.__table__.create(seed_engine)
+    # 版本表也建出来（#172 的迁移后真库就有它）：重建的正文真值从这张表读（#173），
+    # 少了它这条跨层用例会在「查不到表」上炸，而不是在它想验的租约 / 切片上。
+    DocumentVersion.__table__.create(seed_engine)
     with sessionmaker(bind=seed_engine)() as seed_session:
         seed_session.add(
             Document(
@@ -219,6 +229,8 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
             "kb_id": KB_ID,
             "request_id": REQUEST_ID,
             "reparse": False,
+            # 稿号在**投递那一刻**从指针取下来、随任务走（#173）：Worker 不再去读指针。
+            "doc_version": 1,
         }
     ]
 

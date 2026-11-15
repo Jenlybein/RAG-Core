@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import after_commit
+from app.models.chunk import DEFAULT_DOC_VERSION
 from app.models.document import Document
 from app.models.knowledge_base import FORMAT_MARKDOWN, KnowledgeBase, formats_of
 from app.models.plan import PlanSpec
@@ -117,6 +118,10 @@ async def upload(
             source_file_path=source_file_path,
             source_filename=source_filename,
             status=DocumentStatus.PROCESSING,
+            # 当前稿指针显式写成第 1 稿（与列默认值同一个常量）：投递任务时要把它放进
+            # 载荷（#173），而列默认值要到 INSERT 那一刻才生效——这一行在 ``create``
+            # 之前就已经要读了，别让「读到的指针」取决于有没有 flush 过。
+            current_version=DEFAULT_DOC_VERSION,
         )
     else:
         doc = Document(
@@ -127,6 +132,7 @@ async def upload(
             content=content,
             source_type=source_type,
             status=DocumentStatus.PROCESSING,
+            current_version=DEFAULT_DOC_VERSION,
         )
 
     await document_repository.create(db, doc)
@@ -143,6 +149,9 @@ async def upload(
             kb_id=kb_id,
             request_id=request_id,
             reparse=False,
+            # 新登记的文档从第 1 稿开始：create 已经 flush，指针是这一行上的真值（#173）。
+            # 随任务带上它，于是「这次索引算哪一稿」写进了载荷，Worker 不必回读指针。
+            doc_version=doc.current_version,
         ),
     )
 

@@ -326,6 +326,9 @@ async def reindex_document(
             kb_id=document.kb_id,
             request_id=request_id,
             reparse=reparse,
+            # 与数据面同一条约定（#173）：这次重建算哪一稿在投递那一刻从指针取下来，
+            # Worker 不再二次确认，迟到的任务因此不会把别的稿写进来。
+            doc_version=document.current_version,
         ),
     )
     return {

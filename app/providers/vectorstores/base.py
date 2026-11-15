@@ -81,9 +81,13 @@ class VectorStore(ABC):
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         """删某文档的切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。
 
         ``index_version`` 是**删除范围**（#142）：给了版本只删那一版（重建新版本时绝不
         碰线上那一版），``None`` 删全部版本（删文档）。
+
+        ``doc_version`` 是**第二个删除范围**（#173，与索引版本正交）：给了稿号只删那一稿
+        （重建第 2 稿绝不碰第 1 稿的切片），``None`` 删这篇文档的所有稿（删文档那条老路径）。
         """

@@ -397,7 +397,13 @@ class _RecordingStore:
         self.tenant_ids: list[str] = []
 
     async def delete_by_document_id(
-        self, _db: Any, document_id: str, *, tenant_id: str, index_version: str | None = None
+        self,
+        _db: Any,
+        document_id: str,
+        *,
+        tenant_id: str,
+        index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append(document_id)
@@ -433,6 +439,9 @@ def _document(
         index_claimed_at=claimed_at,
         error_message=None,
         created_at=datetime(2026, 1, 1, 1, 1, 1),
+        # 当前稿指针：真行上非空、默认 1（#171）。重建投递要读它随任务带稿号（#173），
+        # 替身缺这个字段就不是「没有稿号」而是 AttributeError。
+        current_version=1,
     )
 
 
@@ -541,6 +550,8 @@ def test_reindex_failed_document_is_enqueued_with_reparse_forwarded(
             "kb_id": KB_ID,
             "request_id": REINDEX_REQUEST_ID,
             "reparse": True,
+            # 稿号随载荷走（#173）：投递那一刻从指针取下来，Worker 不再读指针。
+            "doc_version": 1,
         }
     ]
 
@@ -595,6 +606,7 @@ def test_reindex_success_document_with_force_is_prepared_and_enqueued(
             "kb_id": KB_ID,
             "request_id": "t5-force-req",
             "reparse": False,
+            "doc_version": 1,
         }
     ]
 
@@ -852,10 +864,16 @@ def reindex_script() -> ModuleType:
 
 
 def _script_documents(*document_ids: str) -> list[SimpleNamespace]:
-    """脚本扫描结果的替身：行自带 tenant_id / kb_id，投递时按行口径。"""
+    """脚本扫描结果的替身：行自带 tenant_id / kb_id / 当前稿指针，投递时按行口径。"""
 
     return [
-        SimpleNamespace(id=document_id, tenant_id=TENANT_ID, kb_id=KB_ID)
+        SimpleNamespace(
+            id=document_id,
+            tenant_id=TENANT_ID,
+            kb_id=KB_ID,
+            # 稿号也按行口径（#173）：脚本在投递那一刻把它写进任务载荷。
+            current_version=1,
+        )
         for document_id in document_ids
     ]
 
@@ -942,6 +960,8 @@ def test_reindex_script_counts_submitted_skipped_and_failed(
             "kb_id": KB_ID,
             "request_id": None,
             "reparse": False,
+            # 稿号按行口径随任务走（#173）：脚本跑到一半有人回滚，这一次也仍算原来那一稿。
+            "doc_version": 1,
         }
     ]
     assert session.commits == 2, "抢到的两篇都先提交再投递，抢不到的不提交"
@@ -1144,6 +1164,8 @@ def test_requeue_script_counts_requeued_skipped_and_failed(
             "kb_id": KB_ID,
             "request_id": None,
             "reparse": False,
+            # 稿号同样按行口径（#173）：救援不该把被卡住的任务改写成「现在这一稿」。
+            "doc_version": 1,
         }
     ], "卡死扫描默认跨租户，投递时用行自带的 tenant_id / kb_id"
     assert session.commits == 2

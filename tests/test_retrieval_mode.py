@@ -133,7 +133,9 @@ class _FakeKeywordSearch:
     async def add_chunks(self, chunks):  # pragma: no cover - 检索链路不写
         raise AssertionError("检索链路不应写索引")
 
-    async def delete_by_document_id(self, document_id, *, tenant_id):  # pragma: no cover
+    async def delete_by_document_id(
+        self, document_id, *, tenant_id, index_version=None, doc_version=None
+    ):  # pragma: no cover
         raise AssertionError("检索链路不应删索引")
 
 

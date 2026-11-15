@@ -17,6 +17,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
+    DEFAULT_DOC_VERSION,
     DEFAULT_INDEX_VERSION,
     Chunk,
     current_draft_filter,
@@ -67,6 +68,10 @@ class PgVectorStore(VectorStore):
                     meta=c.get("meta", {}),
                     # 索引版本随行落库；调用方没给时用列默认值，不写 NULL。
                     index_version=c.get("index_version", DEFAULT_INDEX_VERSION),
+                    # 稿号是**真实列**（#172 的迁移加的），写入侧在这一票跟上（#173）：
+                    # 调用方把「这一片属于第几稿」放在切片字典的顶层。缺省值与列默认值
+                    # 同源（第 1 稿），绝不写 NULL——列是非空的。
+                    doc_version=c.get("doc_version") or DEFAULT_DOC_VERSION,
                 )
                 for c in chunks
             ]
@@ -198,12 +203,19 @@ class PgVectorStore(VectorStore):
         *,
         tenant_id: str,
         index_version: str | None = None,
+        doc_version: int | None = None,
     ) -> None:
-        """删该文档的切片行；``index_version`` 非空时只删那一版（#142）。
+        """删该文档的切片行；两个范围参数都可缺省，缺省即「不按这一维收窄」。
+
+        ``index_version`` 非空时只删那一版（#142）。
 
         **带版本删是为了不弄空线上那一版**：重建 v2 时若把这份文档的 v1 行也删了，
         构建期间的检索会在一段时间里查不到它——而「构建期间线上照旧查旧版本」恰恰要求
         旧行原样不动。
+
+        ``doc_version`` 非空时只删那一稿（#173）：重建第 2 稿时第 1 稿的切片一个字节都
+        不动（ADR-0005 D4 选 B「每稿各留切片」）。两者正交：**同一稿可能被多轮索引版本
+        各写一遍**，所以两个条件要同时带。
         """
 
         statement = delete(Chunk).where(
@@ -211,5 +223,7 @@ class PgVectorStore(VectorStore):
         )
         if index_version is not None:
             statement = statement.where(Chunk.index_version == index_version)
+        if doc_version is not None:
+            statement = statement.where(Chunk.doc_version == doc_version)
         await db.execute(statement)
         await db.flush()
