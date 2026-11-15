@@ -139,14 +139,16 @@ class _StubSplitter:
         return self.pieces
 
 
-def _patch_indexing(monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece]) -> None:
+def _patch_indexing(
+    monkeypatch: pytest.MonkeyPatch, *, pieces: list[SplitPiece], pointer: int = 1
+) -> None:
     document = SimpleNamespace(
         id=DOC_ID,
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="售后手册",
         content="raw",
-        doc_version=1,
+        current_version=pointer,
         source_filename="售后手册.md",
     )
 
@@ -266,6 +268,32 @@ def test_indexing_writes_to_both_stores_through_the_same_list(
     assert written[0]["meta"]["title"] == "售后手册"
 
 
+def test_slice_meta_keeps_the_draft_number_key_and_reads_it_from_the_pointer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """切片 meta 里的 ``doc_version`` 仍是「这一片属于第几稿」，值来自文档行的指针。
+
+    列改名（#171）只换取值来源：键名与语义都不动。折叠逻辑与对外回包读的就是这份
+    meta，改键名等于悄悄改契约——所以这里用不等于默认值的 4 钉住「值来自指针」。
+    """
+
+    calls: list[str] = []
+    pieces = [SplitPiece(text=ORIGINAL, metadata={"heading_path": HEADING})]
+    _patch_indexing(monkeypatch, pieces=pieces, pointer=4)
+
+    vector = _RecordingStore(calls)
+    provider = _RecordingKeywordProvider(calls)
+    monkeypatch.setattr(indexing_service, "get_vector_store", lambda: vector)
+    monkeypatch.setattr(indexing_service, "get_keyword_search_provider", lambda: provider)
+
+    service = IndexingService(splitter=_StubSplitter(pieces), embeddings=_StubEmbeddings())
+    asyncio.run(service.index_existing_document(_FakeSession(), DOC_ID))
+
+    written = provider.written[0]
+    assert written[0]["meta"]["doc_version"] == 4, "稿号仍在 meta 里，值来自当前稿指针"
+    assert vector.written[0][0]["meta"] == written[0]["meta"], "两路存的必须是同一份 meta"
+
+
 def test_indexing_fails_as_a_whole_when_the_keyword_store_fails(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -308,7 +336,7 @@ def test_deleting_a_document_purges_both_stores(monkeypatch: pytest.MonkeyPatch)
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
         title="售后手册",
-        doc_version=1,
+        current_version=1,
         source_type="text",
         source_file_path=None,
         status=DocumentStatus.SUCCESS,
