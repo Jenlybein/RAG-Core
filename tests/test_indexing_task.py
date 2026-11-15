@@ -977,3 +977,58 @@ def test_service_never_fabricates_a_version_row_for_an_older_draft(
     )
 
     assert _added_versions(env) == []
+
+# ------------------------------------ 重解析写回同一稿（#182：正文真值只有一个地方）
+#
+# 不变量：**重解析之后，这一稿的版本行正文就是本次解析结果，文档行正文也是它**。
+# 在那之前 ``reparse=True`` 只改写文档行，版本行留着上一份解析产物——「正文真值在版本表」
+# 当场分叉，而 T10 的对账第一条硬检查正好是「文档正文 == 当前稿正文」。
+
+
+def test_reparse_writes_the_parsed_text_back_to_the_same_draft_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """重解析的产物落在**同一稿的版本行**上：正文与校验和换掉，稿号不变、不新增行。
+
+    文档行跟着同步（那一稿就是当前稿），于是「文档正文 == 当前稿正文」当场成立。
+    校验和必须跟着换：对账读的是它，只换正文会让两列互相矛盾。
+    """
+
+    from app.models.document_version import DocumentVersion
+    from app.repositories import document_version_repository
+    from app.utils.checksum import checksum_of
+
+    version_row = DocumentVersion(
+        id="v1",
+        document_id=DOC_ID,
+        version=1,
+        content="旧解析结果（2025 版）",
+        checksum=checksum_of("旧解析结果（2025 版）"),
+        status="current",
+    )
+
+    async def _existing_version(_db: Any, _document_id: str, _version: int) -> Any:
+        return version_row
+
+    monkeypatch.setattr(document_version_repository, "get_by_version", _existing_version)
+
+    document = _document()
+    document.content = "旧解析结果（2025 版）"
+    calls: list[str] = []
+    env = _patch_service_environment(
+        monkeypatch,
+        calls,
+        pieces=[SplitPiece(text="p", metadata={})],
+        vectors=[[0.1]],
+        document=document,
+        parsed_content=REPARSED_TEXT,
+    )
+
+    asyncio.run(env.service.index_existing_document(env.session, DOC_ID, reparse=True))
+
+    assert version_row.content == REPARSED_TEXT, "版本行正文必须是本次解析结果"
+    assert version_row.checksum == checksum_of(REPARSED_TEXT), "校验和跟着正文一起换"
+    assert (version_row.version, version_row.status) == (1, "current"), "稿号与状态不变"
+    assert _added_versions(env) == [], "重解析不新增版本行"
+    assert env.document.content == REPARSED_TEXT, "文档行跟着当前稿同步"
+    assert env.session.commits == 2, "写回不额外提交：它是 Tx2 的一部分"

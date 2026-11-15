@@ -68,7 +68,7 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, NamedTuple
 
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -143,8 +143,25 @@ async def purge_document_chunks(
         )
 
 
+class _ContentSource(NamedTuple):
+    """这次索引的正文从哪来，以及它该写回**哪一行**版本记录（#182）。
+
+    ``reparsed`` 为真表示这份正文是「这次重新解析源文件」的产物——同一份原始文件换了个
+    解析器再读一遍，稿次没变，所以它要落回 ``version_row`` 那一行（正文 + 校验和一起换），
+    而不是新增一稿。为假时正文本来就来自版本表或文档行，没有要写回的东西。
+
+    ``version_row`` 为 ``None`` 表示这一稿还没有版本行（#172 之前的存量数据、刚上传还没
+    索引过的文档）：缺的那一条由 :meth:`IndexingService._ensure_version_row` 补。
+    """
+
+    parsed: ParsedDocument
+    version_row: DocumentVersion | None = None
+    reparsed: bool = False
+
+
 class IndexingService:
     """Worker 侧的索引编排：一份已登记的文档 → 可检索的切片。"""
+
     def __init__(
         self,
         *,
@@ -200,13 +217,14 @@ class IndexingService:
         draft: int,
         requested_draft: int | None,
         reparse: bool,
-    ) -> ParsedDocument:
+    ) -> _ContentSource:
         """这次索引的正文从哪来：**版本表优先**，读不到才谈回落（#173 / ADR-0005 D6）。
 
         三个分支，顺序是契约：
 
         1. ``reparse=True`` → 读源文件重解析。重解析的全部意义就是「再解析一遍」，
-           版本行里那份正文正是上一次解析的产物，读它等于没重解析；
+           版本行里那份正文正是上一次解析的产物，读它等于没重解析；**产物写回这一稿的
+           版本行**（#182），于是「同一份原始文件换个解析器」不会把正文真值撕成两份；
         2. 版本表里有这一稿 → 用它。**正文的真值在版本表**，``documents.content``
            只是热路径快照（D6）。指针刚切过时这两份会不一致，而错的那一份恰好是
            文档行：拿它切块会写出「标着第 N 稿、装着别的稿正文」的切片；
@@ -217,21 +235,34 @@ class IndexingService:
            * 否则回落文档行 / 磁盘（``prepare_document_content``）。建版本的写路径
              落地（#175）之前，库里本来就没有版本行；老数据与兜底脚本都靠这条路，
              缺了它一篇历史文档会永远索引不了。
+
+        版本行在**分支 1 也要读**（尽管不用它的正文）：它决定重解析的产物写回哪一行，
+        也决定读哪一份源文件。少了这次读，重解析就只能盲写文档行——那正是 #182 的洞。
         """
+
+        version_row = await document_version_repository.get_by_version(
+            db, str(doc.id), draft
+        )
 
         # 分支 1：显式要求重解析。
         if reparse:
-            return prepare_document_content(doc, reparse=True)
+            return _ContentSource(
+                parsed=prepare_document_content(doc, reparse=True),
+                version_row=version_row,
+                reparsed=True,
+            )
 
-        version_row = await document_version_repository.get_by_version(db, str(doc.id), draft)
         if version_row is not None:
             # 分支 2：正文真值在版本表。
-            return content_from_version(version_row, source_type=doc.source_type)
+            return _ContentSource(
+                parsed=content_from_version(version_row, source_type=doc.source_type),
+                version_row=version_row,
+            )
 
         # 分支 3：没有版本行。
         if requested_draft is not None and requested_draft != doc.current_version:
             raise AppError(ErrorCode.NOT_FOUND, "document version not found")
-        return prepare_document_content(doc, reparse=False)
+        return _ContentSource(parsed=prepare_document_content(doc, reparse=False))
 
     async def index_existing_document(
         self,
@@ -297,15 +328,22 @@ class IndexingService:
             )
             return 0
 
-        parsed = await self._content_of(
+        source = await self._content_of(
             db, doc, draft=draft, requested_draft=doc_version, reparse=reparse
         )
+        parsed = source.parsed
 
         # 正文回写（#170）：解析成功后把全文写进文档行，此后**不带「重解析」的重建
         # 直接读库内正文**（``prepare_document_content`` 的分支 A），不再回磁盘。
         # 回写不单独提交：它与 purge、写入新切片、状态回写同属下面那笔 Tx2，任何一步
         # 失败都由任务体整笔撤销，不会留下「正文是新的、切片还是旧的」这种半份状态。
-        doc.content = parsed.content
+        #
+        # **只在这一稿就是当前稿时回写**（#182）：迟到的重解析任务算的是旧稿，它解析
+        # 出来的正文不是文档行该显示的那一稿，照写就会让「文档正文 == 当前稿正文」
+        # 这条对账口径当场不成立。旧稿的产物落到**它自己那一行**版本记录上（见下面的
+        # ``_record_version_content``），一个字都不丢。
+        if draft == doc.current_version:
+            doc.content = parsed.content
 
         # 切块器按**所属知识库**的配置现建：策略与窗口是库级属性，同一个库里
         # 混用两种切法会让片长不可比。
@@ -429,8 +467,11 @@ class IndexingService:
         for store in self._stores:
             await store.add_chunks(db, chunks)
 
-        # 首个版本行（#175）：与切片、正文回写、状态同一笔事务。
-        await self._ensure_version_row(db, doc, draft=draft, content=parsed.content)
+        # 版本行：这一稿已有就按需要改写它（重解析，#182），没有就补当前稿那一条（#175）。
+        # 与切片、正文回写、状态同一笔事务。
+        await self._record_version_content(
+            db, doc, draft=draft, source=source, content=parsed.content
+        )
 
         await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
         await async_commit_now(db)
@@ -443,6 +484,39 @@ class IndexingService:
             index_version=version,
         )
         return len(chunks)
+    async def _record_version_content(
+        self,
+        db: AsyncSession,
+        doc: Document,
+        *,
+        draft: int,
+        source: _ContentSource,
+        content: str,
+    ) -> None:
+        """把这次索引用的正文落到版本表：**有这一稿就改写它，没有就补当前稿那一条**。
+
+        两条规则的边界是「这次是不是重新解析出来的正文」：
+
+        * ``source.reparsed`` 且这一稿已有版本行 → **改写同一行**（正文 + 校验和，
+          :func:`app.repositories.document_version_repository.rewrite_content`）。
+          重解析不是改稿：同一份原始文件换了个解析器再读一遍，稿号不变、不新增行、
+          不动指针与归档状态（#182）。不这么做的话，文档行被改写而版本行留着上一份
+          解析产物——「正文真值在版本表」这条不变量当场破，T10 的对账永远红；
+        * 否则这一稿还没有版本行 → :meth:`_ensure_version_row` 补（#175），且只补
+          当前稿：给一个迟到任务的旧稿号凭空建行等于在时间轴上编造一稿。
+
+        非重解析的那两支（正文来自版本表 / 文档行）什么都不用写：版本行本来就是正文
+        真值，重算一遍校验和既无必要，也会把「存量行的校验和是怎么来的」悄悄改写。
+        """
+
+        if source.version_row is not None:
+            if source.reparsed:
+                await document_version_repository.rewrite_content(
+                    db, source.version_row, content=content
+                )
+            return
+        await self._ensure_version_row(db, doc, draft=draft, content=content)
+
     async def _ensure_version_row(
         self, db: AsyncSession, doc: Document, *, draft: int, content: str
     ) -> None:
