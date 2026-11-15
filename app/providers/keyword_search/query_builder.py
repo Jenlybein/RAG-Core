@@ -24,7 +24,11 @@
 
 from __future__ import annotations
 
-from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, DEFAULT_INDEX_VERSION
+from app.models.chunk import (
+    CHUNK_TYPE_REFERENCE_POINTER,
+    DEFAULT_DOC_VERSION,
+    DEFAULT_INDEX_VERSION,
+)
 
 # 可检索文本的字段名。切片原文另存 ``content``（只存不索引），用来原样回给调用方。
 RETRIEVAL_TEXT_FIELD = "retrieval_text"
@@ -341,6 +345,9 @@ def build_keyword_documents(chunks: list[dict]) -> list[dict]:
             "kb_id": chunk["kb_id"],
             # 索引版本是数据范围的一部分：缺省值与 chunks 列默认值同源。
             "index_version": chunk.get("index_version") or DEFAULT_INDEX_VERSION,
+            # 稿号也是过滤维度（#173）：按「文档 + 稿次」清理要有一条字段可匹配。
+            # 缺省值与 chunks 列默认值同源（第 1 稿），不写空值。
+            "doc_version": chunk.get("doc_version") or DEFAULT_DOC_VERSION,
             "document_id": chunk["document_id"],
             "chunk_id": chunk["id"],
             "title": (chunk.get("meta") or {}).get("title", ""),

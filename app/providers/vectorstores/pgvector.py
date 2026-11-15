@@ -17,6 +17,7 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
+    DEFAULT_DOC_VERSION,
     DEFAULT_INDEX_VERSION,
     Chunk,
     scope_filter,
@@ -66,6 +67,10 @@ class PgVectorStore(VectorStore):
                     meta=c.get("meta", {}),
                     # 索引版本随行落库；调用方没给时用列默认值，不写 NULL。
                     index_version=c.get("index_version", DEFAULT_INDEX_VERSION),
+                    # 稿号是**真实列**（#172 的迁移加的），写入侧在这一票跟上（#173）：
+                    # 调用方把「这一片属于第几稿」放在切片字典的顶层。缺省值与列默认值
+                    # 同源（第 1 稿），绝不写 NULL——列是非空的。
+                    doc_version=c.get("doc_version") or DEFAULT_DOC_VERSION,
                 )
                 for c in chunks
             ]

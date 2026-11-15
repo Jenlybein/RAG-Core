@@ -268,13 +268,15 @@ def test_indexing_writes_to_both_stores_through_the_same_list(
     assert written[0]["meta"]["title"] == "售后手册"
 
 
-def test_slice_meta_keeps_the_draft_number_key_and_reads_it_from_the_pointer(
+def test_slice_carries_the_draft_number_at_top_level_and_never_in_meta(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """切片 meta 里的 ``doc_version`` 仍是「这一片属于第几稿」，值来自文档行的指针。
+    """稿号只有一个来源：切片字典**顶层**的 ``doc_version``（落真实列），meta 里那份删掉。
 
-    列改名（#171）只换取值来源：键名与语义都不动。折叠逻辑与对外回包读的就是这份
-    meta，改键名等于悄悄改契约——所以这里用不等于默认值的 4 钉住「值来自指针」。
+    ``chunks.doc_version`` 是真实列（#172 的迁移建的），写它要的是顶层这个键——
+    向量存储按列写入时读的就是它（见 ``tests/test_index_version.py`` 的落库断言）。
+    JSONB 里再留一份就有了两个来源，而两个来源迟早不一致：一个说第 3 稿、列上说第 2 稿，
+    排查的人根本看不出哪个算数。值仍是「这一片属于第几稿」，来自文档行的当前稿指针。
     """
 
     calls: list[str] = []
@@ -290,8 +292,10 @@ def test_slice_meta_keeps_the_draft_number_key_and_reads_it_from_the_pointer(
     asyncio.run(service.index_existing_document(_FakeSession(), DOC_ID))
 
     written = provider.written[0]
-    assert written[0]["meta"]["doc_version"] == 4, "稿号仍在 meta 里，值来自当前稿指针"
+    assert written[0]["doc_version"] == 4, "稿号在顶层，值来自当前稿指针"
+    assert "doc_version" not in written[0]["meta"], "JSONB 里不许再留一份稿号"
     assert vector.written[0][0]["meta"] == written[0]["meta"], "两路存的必须是同一份 meta"
+    assert vector.written[0][0]["doc_version"] == 4, "两路读到的稿号是同一个"
 
 
 def test_indexing_fails_as_a_whole_when_the_keyword_store_fails(

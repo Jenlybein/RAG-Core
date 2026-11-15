@@ -287,6 +287,12 @@ class IndexingService:
                 "embedding": vector,
                 # 写入目标版本：构建写新版本，上传 / 单篇重建写库上的生效版本（#142）。
                 "index_version": version,
+                # 稿号：这一片属于第几稿，落 ``chunks.doc_version`` 这个**真实列**（#173）。
+                # 放在字典顶层而不是 meta 里：稿号只有一个来源，而 JSONB 那份副本在
+                # #172 的迁移里已经从存量行上删掉了（ADR-0005 D2「三个名字各说各的事」）。
+                # 值仍是「这一片属于第几稿」，来自文档行上的当前稿指针
+                # （``documents.current_version``）。
+                "doc_version": doc.current_version,
                 "meta": {
                     # 解析器产出的 metadata 必须跟着切片走，否则「元数据.engine 含 ocr」
                     # 这类验收根本无从查起（本步实测踩过）：显式合并，切块字段优先。
@@ -305,11 +311,9 @@ class IndexingService:
                     ),
                     # 页号由切块器从「第 N 页」标题带下来（PDF 才有）；Markdown 为空。
                     "page": piece.metadata.get("page"),
-                    # 稿号：让引用三元组（文档 + 稿次 + 切片）里有稿次可写。
-                    # 键名是「这一片属于第几稿」，值来自文档行上的当前稿指针
-                    # （``documents.current_version``，#171 只改了列名，没改这个键、
-                    # 也没改语义）。本步不参与过滤，见 ADR-0005 与后续的票。
-                    "doc_version": doc.current_version,
+                    # **这里没有 doc_version**：稿号是 ``chunks.doc_version`` 那一列
+                    # （见上面的顶层键）。JSONB 里再留一份就有两个来源，而 #172 的迁移
+                    # 已经把存量行上那份删掉了——写入侧必须一起改，否则新行又把副本塞回来。
                     "title": doc.title,
                     # 原始文件名随切片落一份（#152 的修订）：Markdown 链接写的是文件名
                     # （``./points_policy.md``），而标题是《积分规则》——建边时按文件名才对得上。

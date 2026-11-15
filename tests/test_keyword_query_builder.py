@@ -378,6 +378,29 @@ def test_keyword_documents_carry_every_scope_field() -> None:
     assert document["title"] == "售后手册"
 
 
+def test_keyword_documents_carry_the_draft_number() -> None:
+    """关键词文档也带稿号（#173）：按「文档 + 稿次」删除要有一条字段可过滤。
+
+    少了它，``build_purge_query(doc_version=...)`` 在 ES 上匹配不到任何文档——重建会把
+    同一稿的旧关键词文档留在索引里，而向量侧已经删掉了：两路对同一稿给出不同答案。
+    """
+
+    chunk = _chunk()
+    chunk["doc_version"] = 2
+
+    document = build_keyword_documents([chunk])[0]
+
+    assert document["doc_version"] == 2
+
+
+def test_keyword_documents_fall_back_to_the_first_draft() -> None:
+    """没给稿号时与 ``chunks.doc_version`` 的列默认值同源，不写空值。"""
+
+    document = build_keyword_documents([_chunk()])[0]
+
+    assert document["doc_version"] == 1
+
+
 def test_keyword_documents_fall_back_to_the_default_index_version() -> None:
     """调用方没给版本时用列默认值相同的常量，绝不写空串。"""
 

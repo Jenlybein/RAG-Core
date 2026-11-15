@@ -122,6 +122,38 @@ async def test_add_chunks_falls_back_to_the_default_index_version(
     assert row.index_version == "v1"
 
 
+@pytest.mark.asyncio
+async def test_add_chunks_persists_the_draft_number_in_the_real_column(
+    chunk_session: AsyncSession,
+) -> None:
+    """稿号落在 ``chunks.doc_version`` 这一列上，而不是 JSONB 里的一个键（#173）。
+
+    列是 #172 的迁移加的；写入侧在这一票跟上，于是「这一片属于第几稿」有了
+    唯一的存放处——按稿删除、按稿过滤都读它。
+    """
+
+    chunk = _chunk()
+    chunk["doc_version"] = 3
+
+    await PgVectorStore().add_chunks(chunk_session, [chunk])
+    await chunk_session.commit()
+
+    row = (await chunk_session.execute(select(Chunk))).scalar_one()
+    assert row.doc_version == 3
+    assert "doc_version" not in (row.meta or {}), "JSONB 里不再留第二份稿号"
+
+
+@pytest.mark.asyncio
+async def test_add_chunks_falls_back_to_the_first_draft(chunk_session: AsyncSession) -> None:
+    """调用方没给稿号时由列默认值兜底（第 1 稿），绝不写 NULL。"""
+
+    await PgVectorStore().add_chunks(chunk_session, [_chunk()])
+    await chunk_session.commit()
+
+    row = (await chunk_session.execute(select(Chunk))).scalar_one()
+    assert row.doc_version == 1
+
+
 # --------------------------------------------------------------- 索引编排的写入契约
 
 
