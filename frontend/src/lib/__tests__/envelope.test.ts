@@ -68,6 +68,31 @@ describe('unwrapEnvelope：业务码是唯一真相，HTTP 状态不参与判断
     expect(consoleSide.message).toContain('登录')
   })
 
+  it('20033 说清「问题里没有内容」并给出下一步：它不是服务故障', () => {
+    // 三条模型端点（改写 / 分解 / Research）在任何模型调用之前拒掉无内容的问题。
+    // 文案若只说「请求失败」，用户会去查部署、重签 Key——那种排查永远修不好。
+    const error = catchError(() =>
+      unwrapEnvelope(
+        { code: 20033, msg: 'query has no searchable content', data: null },
+        'data',
+      ),
+    )
+
+    expect(error.code).toBe(20033)
+    expect(error.message).toContain('没有可检索的内容')
+    expect(error.message).toContain('再试')
+    // 排障时仍能对回后端日志原文。
+    expect(error.backendMsg).toBe('query has no searchable content')
+  })
+
+  it('没登记的码退回后端原文，后端也没原文时至少露出业务码', () => {
+    const withBackend = catchError(() => unwrapEnvelope({ code: 29999, msg: 'detail', data: null }, 'data'))
+    const bare = catchError(() => unwrapEnvelope({ code: 29999, msg: '', data: null }, 'data'))
+
+    expect(withBackend.message).toBe('detail')
+    expect(bare.message).toContain('29999')
+  })
+
   it('20011 是「没权限」，不是「掉登录」', () => {
     const error = catchError(() =>
       unwrapEnvelope({ code: 20011, msg: 'missing x-requested-with header', data: null }, 'console'),

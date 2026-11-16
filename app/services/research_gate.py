@@ -97,6 +97,7 @@ from app.services import result_collapse
 from app.services.data_scope import ensure_kb_scope
 from app.services.knowledge_base_access import ensure_visible
 from app.services.profile_policy import resolve_retrieval_options
+from app.services.query_content import ensure_query_has_content
 from app.services.quota_gate import llm_quota, rerank_quota
 from app.services.rerank_gate import degrade_rerank_if_exhausted
 from app.services.research import Clock, LLMFactory, SearchCallable, run_research
@@ -245,6 +246,11 @@ async def gated_research(
 
     # 第 2 步：能力位。拒绝是明确的 20013，不退回普通检索。
     ensure_research_allowed(policy=key.policy, plan=key.plan)
+
+    # 第 2.5 步：问题里没有可检索的内容 → 20033。位置在**任何模型调用之前**：
+    # Research 一次要花 3~4 次模型调用与 30 秒，为 ``啊啊啊`` 付这笔钱、再拿规划器
+    # 自述的几条「要点」当证据召回，是这一票要根治的那个现象。
+    ensure_query_has_content(query)
 
     # 第 3 步：这套集成的检索参数（模式 / 条数 / 重排 / 折叠 / 库数上限）。Research 没有
     # 自己的质量参数：子检索用这套集成本来会用的一组参数，套餐复核也在这里一并做。

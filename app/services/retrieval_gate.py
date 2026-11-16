@@ -37,6 +37,7 @@ from app.schemas.rag import RetrieveData
 from app.services import rag_service
 from app.services.data_scope import ensure_kb_scope
 from app.services.profile_policy import resolve_retrieval_options
+from app.services.query_content import ensure_query_has_content
 from app.services.quota_gate import llm_quota, rerank_quota, retrieval_quota
 from app.services.rerank_gate import degrade_rerank_if_exhausted
 from app.services.retrieval_authorization import ensure_endpoint_allowed
@@ -90,6 +91,12 @@ async def gated_retrieve(
             ErrorCode.FEATURE_NOT_ALLOWED,
             "rewrite is not available on this deployment (QUERY_REWRITE_ENABLED is off)",
         )
+
+    # 第 1.6 步：问题里有没有可检索的内容。只挡**模型端点**（``/rewrite`` 走这条），
+    # ``/retrieve`` 不挡：它不读语义、只做召回，判定它「有没有意义」是另一件事。
+    # 位置刻意在配额之前——被拒的请求一次都不扣额度（ADR-0018）。
+    if variant == "rewrite":
+        ensure_query_has_content(query)
 
     # 第 2 步：套餐复核 + 参数解析 + 单次库数。越权在这里就失败，一次嵌入都不该烧。
     options = resolve_retrieval_options(
@@ -177,6 +184,10 @@ async def gated_decompose(
     ensure_kb_scope(policy=key.policy, kb_ids=kb_ids)
     # 第 1.5 步（第 13 步）：分解检索的端点位。位为假 → 20013，不降级成直接检索。
     ensure_endpoint_allowed(policy=key.policy, plan=key.plan, endpoint="decompose")
+    # 第 1.6 步：问题里没有可检索的内容 → 20033，在任何模型调用与配额之前。
+    # 没有这道闸，分解器会为 ``啊啊啊`` 编出几条「要点」再拿它们去召回，调用方拿到
+    # code=0 与一串无关切片，看不出问题不在自己。
+    ensure_query_has_content(query)
     # 第 2 步：套餐复核 + 参数展开 + 单次库数。
     options = resolve_retrieval_options(
         policy=key.policy,

@@ -18,7 +18,7 @@
  * 这里也不编造。`metadata.trace_id` 从 #101 起有了，但本页不摊它——它在这张卡上的用途只有
  * 一个：与瀑布图里那根线对上（见下方「六段耗时」面板的说明）。
  */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
+import { useMutation, useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -33,7 +33,7 @@ import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
-import { KEYS_QUERY_KEY, fetchKeys, patchPolicy } from '../services/keyService'
+import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { decomposeRetrieve, research, retrieve, rewriteRetrieve } from '../services/ragService'
 import {
   MY_KB_QUERY_KEY,
@@ -42,14 +42,7 @@ import {
 } from '../services/scopeService'
 import { fetchRuntimeInfo, runtimeInfoQueryKey } from '../services/traceService'
 import { useRetrieveStore } from '../stores/retrieve'
-import {
-  RETRIEVAL_MODES,
-  TOP_K_MAX,
-  TOP_K_MIN,
-  type KbOption,
-  type KeyData,
-  type KeyPolicyPatch,
-} from '../types/key'
+import type { KbOption, KeyData } from '../types/key'
 import type { ResearchData } from '../types/research'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
@@ -567,77 +560,6 @@ const currentKeySummary = computed(() => {
   }
 })
 
-// —— 实验用：在这把 Key 上改三项检索参数 ——
-/**
- * 为什么「改配置」而不是「请求里带参数」：请求体只有 `kb_ids + query`，`mode` / `top_k` /
- * `rerank` 是**配置**（ADR-0032）。所以调试台做实验的方式是**写回这把 Key 的配置**，再调一次。
- *
- * 这一点必须写在界面上而不是只写在代码注释里：用户点「保存」时得知道影响面是
- * 「所有用这把 Key 的调用」，不是「只影响这一次」。
- */
-const queryClient = useQueryClient()
-
-// `mode` 用传输类型 `string` 而不是 `RetrievalMode`：`KeyPolicyInput` 就是这么写的，
-// 在这里强收窄只会在赋值处多一次 cast；候选值由 `RETRIEVAL_MODES` 提供，源头已经收口。
-const paramDraft = ref<{
-  mode: string
-  top_k: number
-  rerank: boolean
-} | null>(null)
-const paramsSaving = ref(false)
-
-/**
- * 草稿跟服务端对齐的时机：打开弹窗、换 Key、保存成功后（`policy` 会被 `['keys']` 的
- * 重新拉取换掉）。**编辑期间不覆盖**——否则用户正在改的时候输入框会被打回原值。
- */
-watch(
-  [policy, configDialogOpen],
-  ([value, open]) => {
-    if (!open || value === null) return
-    paramDraft.value = {
-      mode: value.retrieval_mode,
-      top_k: value.retrieval_top_k,
-      rerank: value.retrieval_rerank,
-    }
-  },
-  { immediate: true },
-)
-
-/** 只提交真的变了的字段：与配置编辑器同一套规矩，避免一次无意义的写入。 */
-const paramPatch = computed<KeyPolicyPatch>(() => {
-  const draft = paramDraft.value
-  const current = policy.value
-  if (draft === null || current === null) return {}
-  const patch: KeyPolicyPatch = {}
-  if (draft.mode !== current.retrieval_mode) patch.retrieval_mode = draft.mode
-  if (draft.top_k !== current.retrieval_top_k) patch.retrieval_top_k = draft.top_k
-  if (draft.rerank !== current.retrieval_rerank) patch.retrieval_rerank = draft.rerank
-  return patch
-})
-const canSaveParams = computed<boolean>(() => Object.keys(paramPatch.value).length > 0)
-
-/** 「参数要重排、但这把 Key 没给重排位」是自相矛盾，写前就说明，别等 20015。 */
-const rerankBitMissing = computed<boolean>(
-  () => paramDraft.value?.rerank === true && policy.value?.rerank_allowed !== true,
-)
-
-async function saveParams(): Promise<void> {
-  const current = policy.value
-  if (current === null || paramsSaving.value || !canSaveParams.value) return
-  paramsSaving.value = true
-  try {
-    await patchPolicy(current.policy_id, paramPatch.value)
-    // 重新拉 `/console/keys`：卡片摘要与只读摘要都读它，不刷新会停在旧值上。
-    await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
-    ElMessage.success('已写入这把 Key 的配置 —— 下一次检索按新参数跑')
-  } catch (error) {
-    // 与 Key 编辑页同一套：这类失败（20015「哪一列超了哪个上限」）正文长，框内一行
-    // 容易被忽略，统一走 toast，停留久一点、可手动关掉。
-    ElMessage.error({ message: errorText(error), duration: 8000, showClose: true })
-  } finally {
-    paramsSaving.value = false
-  }
-}
 
 /**
  * 结果列表读**两种**响应里的同一件事：`/retrieve` 家族叫 `retrieved_chunks`，
@@ -701,8 +623,17 @@ async function copyResponseJson(): Promise<void> {
  */
 const expandedChunks = ref<Set<string>>(new Set())
 
-/** 完整响应字段树默认展开：用户要的就是「全都看到」，再点一次纯属多余。 */
-const responseOpen = ref(true)
+/**
+ * 「全部展开 / 全部收起」的广播：`null` = 还没点过（各节点按默认深度显示）。
+ * 点过之后是 `'open' / 'closed'`，序号一变，树里每一层都对齐到这个方向。
+ */
+const expandAll = ref<'open' | 'closed' | null>(null)
+const expandSerial = ref(0)
+
+function expandTree(open: boolean): void {
+  expandAll.value = open ? 'open' : 'closed'
+  expandSerial.value += 1
+}
 
 function toggleChunkFields(chunkId: string): void {
   // 换一个新 Set 而不是原地增删：Vue 才对 Set 的变更做响应（原地改它不会触发渲染）。
@@ -914,21 +845,14 @@ async function sendRating(): Promise<void> {
           <span class="chip">库 {{ store.selectedCount }}</span>
         </span>
         <!--
-          实验入口必须有名字地摆在这儿：只写「修改配置」时，想换检索方式的人不会想到点它
-          （那是「改配置」，不像「换检索方式」）。同一个弹窗，第二种说法。
+          入口按它**真正能改的东西**命名。`mode` / `top_k` / `rerank` 已经从这里撤走
+          （那是 Key 配置，改它去 Key 管理页），所以这里只剩「选 Key 与库」——继续叫
+          「换检索方式」会让人点进来找一个已经不存在的下拉。
         -->
         <span class="flex items-center gap-3 text-xs">
           <button
-            v-if="policy !== null"
             type="button"
             class="text-brand underline underline-offset-2 transition hover:text-ink"
-            @click="configDialogOpen = true"
-          >
-            换检索方式 / 参数
-          </button>
-          <button
-            type="button"
-            class="text-muted underline underline-offset-2 transition hover:text-ink"
             @click="configDialogOpen = true"
           >
             选 Key 与库
@@ -1066,67 +990,7 @@ async function sendRating(): Promise<void> {
           </dl>
         </div>
 
-        <!-- ② 检索参数：调试台的实验入口。改这三项 = 改这把 Key 的配置 -->
-        <div v-if="policy !== null && paramDraft !== null" class="border-t border-line pt-4">
-          <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <span class="text-xs font-medium text-ink">检索参数（实验用）</span>
-            <span class="text-xs text-muted">保存后点「检索」，就按新参数跑</span>
-          </div>
-          <div class="mt-2 grid gap-3 sm:grid-cols-3">
-            <div>
-              <label class="mb-1 block text-xs text-muted">检索方式</label>
-              <el-select v-model="paramDraft.mode" class="w-full">
-                <el-option v-for="mode in RETRIEVAL_MODES" :key="mode" :label="mode" :value="mode" />
-              </el-select>
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-muted">返回条数（top_k）</label>
-              <el-input-number
-                v-model="paramDraft.top_k"
-                :min="TOP_K_MIN"
-                :max="TOP_K_MAX"
-                controls-position="right"
-                class="!w-full"
-              />
-            </div>
-            <div>
-              <label class="mb-1 block text-xs text-muted">结果重排</label>
-              <el-switch v-model="paramDraft.rerank" />
-            </div>
-          </div>
-
-          <p
-            v-if="rerankBitMissing"
-            class="mt-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
-          >
-            rerank 授权位没开 —— 保存会被拒。先去
-            <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
-            打开它。
-          </p>
-
-          <div class="mt-2.5 flex flex-wrap items-center gap-2">
-            <el-button
-              size="small"
-              :disabled="!canSaveParams || paramsSaving"
-              :loading="paramsSaving"
-              @click="saveParams"
-            >
-              保存到这把 Key
-            </el-button>
-            <span class="text-xs text-muted">写配置 · 影响所有用这把 Key 的调用</span>
-            <el-tooltip
-              content="超出套餐封顶会被裁到上限，并在运行摘要的 clipped 里回显"
-              placement="top"
-              :show-after="200"
-            >
-              <span class="cursor-help text-xs text-muted underline decoration-dotted underline-offset-2">
-                超限会怎样
-              </span>
-            </el-tooltip>
-          </div>
-        </div>
-
-        <!-- ③ 要查的知识库 -->
+        <!-- ② 要查的知识库 -->
         <div class="border-t border-line pt-4">
           <div class="flex flex-wrap items-baseline justify-between gap-2">
             <span class="text-xs font-medium text-ink">要查的知识库</span>
@@ -1356,45 +1220,6 @@ async function sendRating(): Promise<void> {
         </li>
       </ul>
 
-      <!--
-        完整响应：这次回包的**全部字段**。四类响应的形状各不相同（`metadata.retrieval` 里
-        可能带 `rerank` / `query_optimization` / `decomposition`，Research 是另一套
-        `plan` / `rounds` / `coverage` / `citations`），所以这里递归摊开整棵树，而不是按
-        接口维护一张「要显示哪些字段」的表——那张表天然会漏，而漏掉的往往正是排障要看的。
-        列表那两栏单独交代条数：逐条字段在上方各卡片的「全部字段」里。
-      -->
-      <div v-if="responseFields !== null" class="mt-5 border-t border-line pt-4">
-        <div class="flex flex-wrap items-center justify-between gap-2">
-          <span class="text-xs font-medium text-ink">
-            完整响应字段
-            <span class="ml-1 font-normal text-muted">
-              这次 {{ lastCapability }} 回的全部字段
-            </span>
-          </span>
-          <span class="flex items-center gap-3 text-xs">
-            <button
-              type="button"
-              class="text-brand underline underline-offset-2 transition hover:text-ink"
-              @click="copyResponseJson"
-            >
-              复制原始 JSON
-            </button>
-            <button
-              type="button"
-              class="text-muted underline underline-offset-2 transition hover:text-ink"
-              @click="responseOpen = !responseOpen"
-            >
-              {{ responseOpen ? '收起' : '展开' }}
-            </button>
-          </span>
-        </div>
-        <div
-          v-if="responseOpen"
-          class="mt-2 rounded-control bg-surface-muted px-3 py-2.5 text-xs"
-        >
-          <ResponseFields :value="responseFields" />
-        </div>
-      </div>
 
     </el-card>
       </div>
@@ -1557,6 +1382,56 @@ async function sendRating(): Promise<void> {
             </p>
           </div>
         </div>
+      </div>
+    </section>
+
+    <!--
+      完整响应字段：这次回包的**全部字段**，单独一张卡，贴在「这次的诊断」正下方。
+      四类响应的形状各不相同（`metadata.retrieval` 里可能带 `rerank` / `query_optimization` /
+      `decomposition`，Research 是另一套 `plan` / `rounds` / `coverage` / `citations`），
+      所以这里递归摊开整棵树，而不是按接口维护一张「要显示哪些字段」的表——那张表天然会漏，
+      而漏掉的往往正是排障要看的。列表那两栏单独交代条数：逐条字段在左栏各卡片的「全部字段」里。
+    -->
+    <section v-if="responseFields !== null" class="card px-5 py-4">
+      <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <h2 class="section-title">完整响应字段</h2>
+        <span class="flex items-center gap-3 text-xs">
+          <button
+            type="button"
+            class="text-muted underline underline-offset-2 transition hover:text-ink"
+            @click="expandTree(true)"
+          >
+            全部展开
+          </button>
+          <button
+            type="button"
+            class="text-muted underline underline-offset-2 transition hover:text-ink"
+            @click="expandTree(false)"
+          >
+            全部收起
+          </button>
+          <button
+            type="button"
+            class="text-brand underline underline-offset-2 transition hover:text-ink"
+            @click="copyResponseJson"
+          >
+            复制 JSON
+          </button>
+        </span>
+      </div>
+      <p class="mt-1 text-xs text-muted">这次 {{ lastCapability }} 回的全部字段</p>
+      <!--
+        折叠树而不是整棵摊开：`/rewrite` 一次能回 50 条切片、`decomposition` 能拆五六条
+        子问题，全部摊开会把这一栏撑成几屏，反而什么都看不出。默认开到第二层
+        （顶层字段 + `metadata` 下各分组各占一行、项数写在标头上），要细节再点开。
+      -->
+      <div class="mt-2.5 rounded-control bg-surface-muted px-3 py-2.5 text-xs">
+        <ResponseFields
+          :value="responseFields"
+          :default-open-depth="1"
+          :expand-all="expandAll"
+          :serial="expandSerial"
+        />
       </div>
     </section>
       </div>
