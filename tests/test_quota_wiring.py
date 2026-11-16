@@ -30,12 +30,13 @@ from app.core.auth import DEV_KEY_POLICY, KeyContext
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION
-from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import QuotaCounters, QuotaWindow, daily_key, qps_key
 from app.utils.status import DocumentStatus
 from tests import fake_db
 from tests.fake_db import AsyncSessionAdapter, RecordingSession
+from tests.support.policy import PROFILE_SPEED
 
 TENANT_ID = "tenant_acme"
 KEY_A = "key-a"

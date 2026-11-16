@@ -80,7 +80,10 @@ from app.repositories import (
 from app.services.plan_admin import IMPACT_SAMPLE_LIMIT, ImpactGroup
 from app.services.console_service import append_audit
 from app.services import model_config_service
-from app.services.retrieval_options import MODE_HYBRID, profile_chain_of
+from app.services.retrieval_options import (
+    MODE_HYBRID,
+    retrieval_params_of,
+)
 from app.utils.id_generator import MASK_HIDDEN, mask_secret
 
 logger = structlog.get_logger(__name__)
@@ -1038,10 +1041,12 @@ async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> Setting
 
     判定口径（与 #82 的「能力开关影响预览」一节同一句）：
 
-    * ``quality`` 档的链路是「混合 + 重排 + 改写」——关掉 ``RERANK_ENABLED`` 或
-      ``QUERY_REWRITE_ENABLED`` 都让它的承诺少一步；
-    * ``balanced`` / 任意 ``custom`` 只要链路是 ``hybrid``，就依赖关键词通道——
-      把 ``KEYWORD_SEARCH_PROVIDER`` 关成 ``none`` 时它们只剩向量一路。
+    * 一份配置的 ``rerank`` 参数为真、且套餐给过重排位——关掉 ``RERANK_ENABLED`` 会让它
+      少一步；
+    * 一份配置的 ``rewrite_allowed`` 位为真——关掉 ``QUERY_REWRITE_ENABLED`` 之后
+      ``/rag/rewrite`` 就没有可用的改写器了；
+    * 任意配置的参数是 ``mode=hybrid``，就依赖关键词通道——把 ``KEYWORD_SEARCH_PROVIDER``
+      关成 ``none`` 时它们只剩向量一路。
 
     两个额外的过滤条件，都是为了「只报真正会变的」：
 
@@ -1065,17 +1070,19 @@ async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> Setting
         plan = await _plan_of(db, policy)
         if plan is None:
             continue
-        chain = profile_chain_of(policy_snapshot_of(policy))
+        snapshot = policy_snapshot_of(policy)
+        params = retrieval_params_of(snapshot)
         name = await _tenant_name(db, policy.tenant_id)
 
         quality_loss = (
-            (turning_off_rerank and chain.rerank and plan.rerank_allowed)
-            or (turning_off_rewrite and chain.rewrite and plan.query_rewrite_allowed)
+            turning_off_rerank and params.rerank and plan.rerank_allowed
+        ) or (
+            turning_off_rewrite and snapshot.rewrite_allowed and plan.rewrite_allowed
         )
         if quality_loss and name not in degraded:
             degraded.append(name)
 
-        keyword_loss = losing_keyword and chain.mode == MODE_HYBRID and plan.hybrid_allowed
+        keyword_loss = losing_keyword and params.mode == MODE_HYBRID
         if keyword_loss and name not in lost:
             lost.append(name)
 

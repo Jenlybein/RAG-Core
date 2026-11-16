@@ -58,7 +58,7 @@ from app.repositories import (
     tenant_repository,
 )
 from app.services import plan_admin, plan_service
-from app.services.quota_gate import RESEARCH_NAMESPACE, read_tenant_daily_usage
+from app.services.quota_gate import LLM_NAMESPACE, read_tenant_daily_usage
 from app.utils.id_generator import new_id
 
 #: 登录失败的**唯一**对外提示：它同时覆盖「查无此人」与「口令不对」。
@@ -92,7 +92,7 @@ class ConsoleView:
     「套餐日配额还剩多少」这个问题的答案。开关关着时 ``usage.used`` 为 ``None``
     （未统计），不是 0（见 :class:`DailyUsageView`）。
 
-    ``research_usage`` 是**另一本账**的同一份形状（票 #150）：Research 有独立的
+    ``llm_usage`` 是**另一本账**的同一份形状（票 #150）：Research 有独立的
     ``research_daily``，两栏分开报，面板才答得出「哪一项快用完了」。
     """
 
@@ -100,7 +100,7 @@ class ConsoleView:
     tenant: Tenant | None
     plan: PlanSpec | None
     usage: DailyUsageView | None = None
-    research_usage: DailyUsageView | None = None
+    llm_usage: DailyUsageView | None = None
 
 
 @dataclass(frozen=True)
@@ -246,12 +246,11 @@ async def view_for(
             used=await read_tenant_daily_usage(tenant_id=tenant.id),
             limit=plan.retrieve_daily,
         ),
-        research_usage=DailyUsageView(
-            # Research 那本账（票 #150）：同一个只读路径、同一个窗口口径，只是另一个键前缀。
-            used=await read_tenant_daily_usage(
-                tenant_id=tenant.id, namespace=RESEARCH_NAMESPACE
-            ),
-            limit=plan.research_daily,
+        llm_usage=DailyUsageView(
+            # 大模型那本账（第 13 步三本账之一）：同一个只读路径、同一个窗口口径，只是另
+            # 一个键前缀。Research 与改写都花这本账上的钱，所以这一栏就是「今天的模型成本」。
+            used=await read_tenant_daily_usage(tenant_id=tenant.id, namespace=LLM_NAMESPACE),
+            limit=plan.llm_daily,
         ),
     )
 
@@ -343,8 +342,7 @@ async def patch_plan(
         impact = await plan_admin.preview_impact(
             db,
             plan_id=plan_id,
-            max_kb=after["max_kb"],
-            allowed_profiles=after["allowed_profiles"],
+            after=after,
         )
         return PlanPatchResult(
             plan_id=plan_id,

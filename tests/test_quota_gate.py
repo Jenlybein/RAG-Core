@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 
 from app.core.exceptions import AppError, ErrorCode
-from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import (
     DAILY_TTL_SECONDS,
@@ -39,6 +39,7 @@ from app.services.quota_gate import (
     QuotaCounters,
     retrieval_quota,
 )
+from tests.support.policy import PROFILE_SPEED
 
 TENANT_ID = "tenant_acme"
 KEY_ID = "key-1"

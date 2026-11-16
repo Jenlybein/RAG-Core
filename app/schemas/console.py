@@ -51,35 +51,30 @@ class PlanSnapshotData(BaseModel):
     """``/console/me`` 里的套餐快照：**没有 plan_id**，租户那一栏里已经有了。
 
     快照来自缓存/解析结果（:class:`app.models.plan.PlanSpec`），它刻意不带主键——判定内核
-    只关心「这一档的 13 个值」。
+    只关心「这一档的能力位、额度与上限」。
     """
 
     code: str
     name: str
-    # 第 13 步：五个档位/旧能力字段已物理删除，列在响应里只为前端兼容壳；
-    # 给缺省值，缺了也不让旧缓存/审计快照的 Pydantic 校验炸掉。
-    allowed_profiles: list[str] = []
-    hybrid_allowed: bool = False
-    rerank_allowed: bool = False
-    query_rewrite_allowed: bool = False
-    research_allowed: bool = False
-    retrieve_qps: int = 0
-    retrieve_daily: int = 0
-    research_qps: int = 0
-    research_daily: int = 0
-    max_kb: int = 0
-    max_kb_per_retrieve: int = 0
-    max_documents_per_kb: int = 0
-    max_processing_documents: int = 0
-    # 第 13 步新增：五个端点位、三本账的额度与质量封顶（控制面要显示/编辑）。
-    retrieve_allowed: bool = True
-    rewrite_allowed: bool = False
-    decompose_allowed: bool = False
-    rerank_qps: int = 0
-    rerank_daily: int = 0
-    llm_qps: int = 0
-    llm_daily: int = 0
-    max_top_k: int = 0
+    # ── 五个授权位（与密钥配置同名同义，这里是上限）。
+    retrieve_allowed: bool
+    rewrite_allowed: bool
+    decompose_allowed: bool
+    research_allowed: bool
+    rerank_allowed: bool
+    # ── 三本账 × 两格。
+    retrieve_qps: int
+    retrieve_daily: int
+    rerank_qps: int
+    rerank_daily: int
+    llm_qps: int
+    llm_daily: int
+    # ── 质量封顶与规模上限。
+    max_top_k: int
+    max_kb: int
+    max_kb_per_retrieve: int
+    max_documents_per_kb: int
+    max_processing_documents: int
 
 
 class PlanData(PlanSnapshotData):
@@ -127,7 +122,7 @@ class MeData(BaseModel):
     #: 今日租户级 **Research** 用量（票 #150）：与 ``usage`` **同形**（``used`` + ``limit``
     #: + ``source=daily_counter``），只是读另一本账（``quota:research:*``）。分开报是因为
     #: 两条链路各有各的额度——把它们加在一起，面板上就没有「哪一项快用完了」这个答案了。
-    research_usage: UsageData | None = None
+    llm_usage: UsageData | None = None
     # 第 13 步：profile_presets 字段随档位表删除——参数直存，档位预设不再存在。
 
 
@@ -139,8 +134,9 @@ class ImpactGroupData(BaseModel):
 class PlanImpactData(BaseModel):
     tenants_checked: int
     over_max_kb: ImpactGroupData
-    lose_profile: ImpactGroupData
-    policies_losing_profile: int
+    #: 新授权位之下「配置给了、套餐不给」的租户（下一次调用撞 20013，改配置撞 20015）。
+    over_capability: ImpactGroupData
+    policies_over_capability: int
 
 
 class PlanPatchRequest(BaseModel):
@@ -150,17 +146,23 @@ class PlanPatchRequest(BaseModel):
     operation: Literal["update", "delete"] = "update"
     code: str | None = Field(default=None, min_length=1, max_length=32)
     name: str | None = Field(default=None, min_length=1, max_length=128)
-    allowed_profiles: list[str] | None = None
-    hybrid_allowed: bool | None = None
-    rerank_allowed: bool | None = None
-    query_rewrite_allowed: bool | None = None
+    # ── 五个授权位。
+    retrieve_allowed: bool | None = None
+    rewrite_allowed: bool | None = None
+    decompose_allowed: bool | None = None
     research_allowed: bool | None = None
+    rerank_allowed: bool | None = None
+    # ── 三本账 × 两格。``retrieve`` 那两格必须 ≥ 1；加工能力的两本**允许填 0**
+    #: （= 这项能力没买），负数仍被 ``20018`` 拒掉（判据在
+    #: :func:`app.services.plan_admin.validate_patch`）。
     retrieve_qps: int | None = None
     retrieve_daily: int | None = None
-    #: Research 的两列：**允许填 0**（= 关闭），这与上面两列的「必须 ≥ 1」刻意不同。
-    #: 负数仍然被 ``20018`` 拒掉（判据在 :func:`app.services.plan_admin.validate_patch`）。
-    research_qps: int | None = None
-    research_daily: int | None = None
+    rerank_qps: int | None = None
+    rerank_daily: int | None = None
+    llm_qps: int | None = None
+    llm_daily: int | None = None
+    #: 质量封顶：0 = 不额外封顶（退回平台硬上限）。
+    max_top_k: int | None = None
     max_kb: int | None = None
     max_kb_per_retrieve: int | None = None
     max_documents_per_kb: int | None = None
@@ -264,25 +266,13 @@ def tenant_data(tenant: Tenant) -> TenantData:
 
 
 def _business_values(source: object) -> dict[str, Any]:
-    """12 个业务列的值（``allowed_profiles`` 转成 JSON 友好的 list）。
+    """套餐的全部业务列值。
 
     列清单来自 ``PLAN_SPEC_COLUMNS``，所以加一列时两个映射函数一起跟上，不会出现
     「API 少回一列而服务端算得出」这种半截状态。
     """
 
-    values = plan_columns_of(source)
-    # 第 13 步：五个档位/旧能力列已物理删除。schema 仍声明它们（前端兼容壳），
-    # 这里按缺省补齐，避免 Pydantic 的 missing 校验失败。
-    for key, default in (
-        ("allowed_profiles", []),
-        ("hybrid_allowed", False),
-        ("query_rewrite_allowed", False),
-        ("research_qps", 0),
-        ("research_daily", 0),
-    ):
-        value = values.get(key, default)
-        values[key] = list(value) if key == "allowed_profiles" and value else value
-    return values
+    return plan_columns_of(source)
 
 
 def plan_snapshot_data(plan: PlanSpec) -> PlanSnapshotData:

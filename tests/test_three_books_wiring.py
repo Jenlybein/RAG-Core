@@ -11,13 +11,14 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from app.core.auth import KeyContext
-from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO
 from app.services.quota_gate import (
     LLM_NAMESPACE,
     RERANK_NAMESPACE,
     QuotaCounters,
 )
+from tests.support.policy import PROFILE_SPEED
 
 TENANT_ID = "tenant_acme"
 KEY_ID = "key-1"

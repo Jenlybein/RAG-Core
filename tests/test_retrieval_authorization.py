@@ -1,190 +1,91 @@
-"""第 13 步 · T1（expand）：新授权/计量词表、四档套餐种子、参数组合别名与数据搬迁。
+"""五个授权位 + 三本账的词表，以及四档种子的倍率口径（第 13 步 · ADR-0032）。
 
-这一票是 **expand**：新形式**加在旁边**，旧的 ``PLAN_CODES`` / ``PLAN_PRESETS`` /
-``PlanSpec`` / ``KeyPolicySnapshot`` 一个都不碰。所以本文件只测新模块自己的外部行为，
-不碰任何运行时判定——真相源切换留给 T8 contract。
-
-四组断言都拿**独立真值**（spec 里逐项拍过板的数字与映射）比对，不用被测模块自己的常量
-反推，避免「断言就是实现的复述」。
+这个文件守的是**词表只有一处**这条纪律：能力名、列名映射、账本名都从
+``app.services.retrieval_authorization`` / ``app.services.quota_gate`` 取，任何别处再写
+一份字面量都算重复定义。四档的数值则从 ``PLAN_PRESETS`` 取——它是唯一真相源（迁移
+``d7e3b8a1f642`` 写的就是同一组数，由 ``test_four_tier_plan_migration.py`` 对账）。
 """
 
 from __future__ import annotations
 
 import pytest
 
+from app.models.plan import PLAN_CODES, PLAN_PRESETS
+from app.services.quota_gate import METER_BOOKS, METER_LEVELS, METER_WINDOWS
 from app.services.retrieval_authorization import (
     CAPABILITIES,
-    METER_BOOKS,
-    METER_LEVELS,
-    METER_WINDOWS,
-    PARAM_PRESETS,
-    TIER_SEEDS,
-    RetrievalParams,
-    meter_column_names,
-    migrate_legacy_params,
+    CAPABILITY_COLUMNS,
+    ENDPOINT_CAPABILITY,
 )
 
 
-# ───────────────────────────────────────────────────────────────── 词表与维度
+def test_the_five_authorization_bits_are_the_decided_names() -> None:
+    """授权位是五个、名字固定、顺序固定（控制面与种子的列顺序都读这一处）。"""
+
+    assert CAPABILITIES == ("retrieve", "rewrite", "decompose", "research", "rerank")
+    assert len(set(CAPABILITIES)) == 5
 
 
-def test_capability_vocabulary_is_the_five_endpoint_level_bits() -> None:
-    """五个授权位：retrieve 是基线，其余四条对应四条加工端点与重排。"""
+def test_every_capability_has_exactly_one_column_and_no_second_table() -> None:
+    """能力名 → 列名只有一份映射，且列名是 ``<能力>_allowed``。
 
-    assert set(CAPABILITIES) == {
-        "retrieve",
-        "rewrite",
-        "decompose",
-        "research",
-        "rerank",
-    }
-
-
-def test_meter_dimensions_are_three_books_by_two_levels_by_two_windows() -> None:
-    """三本账 × 两格 = 6 个列名；两级是**两张表各存一份同名列**，故共 12 个计数器。
-
-    两级（Key / 租户）不是 12 个不同列名：套餐表与密钥配置表各自有 ``retrieve_qps``
-    等六列，列名相同、层级由所在表区分（ADR-0018 两级配额的既有形状）。
+    ``KeyPolicySnapshot`` 与 ``PlanSpec`` 上这五列同名同义，所以一份映射就够——判定不再
+    区分「问配置」还是「问套餐」。这条用例挡的是「有人又手写一遍列名」。
     """
 
-    assert set(METER_BOOKS) == {"retrieve", "rerank", "llm"}
-    assert set(METER_LEVELS) == {"key", "tenant"}
-    assert set(METER_WINDOWS) == {"qps", "daily"}
-    assert len(meter_column_names()) == 6
-    assert len(set(meter_column_names())) == 6
-    # 12 = 6 个列名 × 2 张表（两级）。
-    assert len(meter_column_names()) * len(METER_LEVELS) == 12
+    assert CAPABILITY_COLUMNS == {name: f"{name}_allowed" for name in CAPABILITIES}
 
 
-def test_meter_column_names_are_book_first_then_window() -> None:
-    """列名形状是「账本_窗口」，与既有 retrieve_qps / retrieve_daily 同形。"""
+def test_four_endpoints_map_to_four_bits_and_rerank_is_not_one() -> None:
+    """四个端点各有一个位；``rerank`` **不是端点**，它是质量位。"""
 
-    assert "retrieve_qps" in meter_column_names()
-    assert "retrieve_daily" in meter_column_names()
-    assert "rerank_qps" in meter_column_names()
-    assert "llm_daily" in meter_column_names()
-
-
-# ─────────────────────────────────────────────────────────── 四档套餐种子
-
-
-def test_there_are_exactly_four_tiers_named_free_plus_pro_max() -> None:
-    assert set(TIER_SEEDS) == {"free", "plus", "pro", "max"}
+    assert ENDPOINT_CAPABILITY == {
+        "retrieve": "retrieve",
+        "rewrite": "rewrite",
+        "decompose": "decompose",
+        "research": "research",
+    }
+    assert "rerank" not in ENDPOINT_CAPABILITY
+    assert set(ENDPOINT_CAPABILITY.values()) <= set(CAPABILITIES)
 
 
-def test_free_grants_only_the_baseline_retrieve_bit_and_no_rerank_or_llm_quota() -> None:
-    """free 只允许检索（无 rerank）：另外两位额度为 0，授权位只有 retrieve。"""
+def test_the_three_books_and_their_two_levels_and_windows() -> None:
+    """三本账按**资源**开户：内核调用、重排调用、大模型调用；每本两级 × 两格。"""
 
-    free = TIER_SEEDS["free"]
-    assert free.capabilities == frozenset({"retrieve"})
-    assert (free.rerank_qps, free.rerank_daily) == (0, 0)
-    assert (free.llm_qps, free.llm_daily) == (0, 0)
-    assert free.max_top_k == 5
+    assert METER_BOOKS == ("retrieve", "rerank", "llm")
+    assert METER_LEVELS == ("key", "tenant")
+    assert METER_WINDOWS == ("qps", "daily")
 
 
-def test_plus_is_the_baseline_and_pro_and_max_are_five_and_twenty_times_it() -> None:
-    """plus = 1x、pro = 5x、max = 20x；三本账都按同一倍数放大。"""
+def test_free_opens_only_the_baseline_bit_and_buys_no_processing_capacity() -> None:
+    """免费档只给 ``retrieve`` 一个位；两本加工账的额度都是 0（= 没买）。"""
 
-    plus, pro, maximum = TIER_SEEDS["plus"], TIER_SEEDS["pro"], TIER_SEEDS["max"]
-    assert (plus.retrieve_qps, plus.retrieve_daily) == (10, 5000)
-    for attribute in (
-        "retrieve_qps",
-        "retrieve_daily",
-        "rerank_qps",
-        "rerank_daily",
-        "llm_qps",
-        "llm_daily",
-    ):
-        base = getattr(plus, attribute)
-        assert getattr(pro, attribute) == base * 5, attribute
-        assert getattr(maximum, attribute) == base * 20, attribute
-
-
-def test_max_top_k_is_editable_per_tier() -> None:
-    """free 5 / plus 10 / pro 15 / max 20 —— 档位白名单退役后唯一的质量封顶。"""
-
-    assert [TIER_SEEDS[code].max_top_k for code in ("free", "plus", "pro", "max")] == [
-        5,
-        10,
-        15,
-        20,
+    free = PLAN_PRESETS["free"]
+    assert free.retrieve_allowed is True
+    assert [free.rewrite_allowed, free.decompose_allowed, free.research_allowed, free.rerank_allowed] == [
+        False,
+        False,
+        False,
+        False,
     ]
+    assert (free.rerank_qps, free.rerank_daily, free.llm_qps, free.llm_daily) == (0, 0, 0, 0)
 
 
-def test_plus_pro_max_grant_all_five_bits() -> None:
-    for code in ("plus", "pro", "max"):
-        assert TIER_SEEDS[code].capabilities == frozenset(CAPABILITIES), code
+@pytest.mark.parametrize("column", ["retrieve_qps", "retrieve_daily", "rerank_qps", "rerank_daily", "llm_qps", "llm_daily"])
+def test_pro_is_five_times_plus_and_max_is_twenty_times_plus(column: str) -> None:
+    """倍率口径：plus 是基准，pro = 5×，max = 20×（逐列成立，不只是总量）。"""
+
+    plus = getattr(PLAN_PRESETS["plus"], column)
+    assert getattr(PLAN_PRESETS["pro"], column) == plus * 5, column
+    assert getattr(PLAN_PRESETS["max"], column) == plus * 20, column
 
 
-# ───────────────────────────────────────────────────── 参数组合别名与搬迁
+def test_the_four_tiers_are_ordered_by_max_top_k() -> None:
+    """唯一的质量封顶随档位单调递增，且都落在平台硬上限之内。"""
 
+    from app.services.retrieval_options import MAX_TOP_K
 
-def test_the_three_legacy_profile_names_are_parameter_aliases_only() -> None:
-    """speed / balanced / quality 只是三项参数的组合别名，不再是后端档位。"""
-
-    assert PARAM_PRESETS["speed"] == RetrievalParams(mode="vector", top_k=5, rerank=False)
-    assert PARAM_PRESETS["balanced"] == RetrievalParams(mode="hybrid", top_k=5, rerank=False)
-    assert PARAM_PRESETS["quality"] == RetrievalParams(mode="hybrid", top_k=5, rerank=True)
-
-
-@pytest.mark.parametrize(
-    ("profile", "expected"),
-    [
-        ("speed", RetrievalParams(mode="vector", top_k=5, rerank=False)),
-        ("balanced", RetrievalParams(mode="hybrid", top_k=5, rerank=False)),
-        ("quality", RetrievalParams(mode="hybrid", top_k=5, rerank=True)),
-    ],
-)
-def test_named_profiles_expand_into_the_three_parameters(
-    profile: str, expected: RetrievalParams
-) -> None:
-    """旧 profile 按预设展开；custom_options 一个都不读（完整替换）。"""
-
-    result = migrate_legacy_params(
-        profile=profile,
-        custom_options={"mode": "vector", "top_k": 99, "rerank": False},
-        defaults=RetrievalParams(mode="bm25", top_k=3, rerank=False),
-    )
-    assert result == expected
-
-
-def test_custom_profile_overrides_each_key_and_drops_the_rewrite_key() -> None:
-    """custom 逐键覆盖部署缺省；rewrite 键丢弃（改写已是端点，不是参数）。"""
-
-    result = migrate_legacy_params(
-        profile="custom",
-        custom_options={"mode": "hybrid", "top_k": 10, "rerank": True, "rewrite": True},
-        defaults=RetrievalParams(mode="vector", top_k=5, rerank=False),
-    )
-    assert result == RetrievalParams(mode="hybrid", top_k=10, rerank=True)
-
-
-def test_custom_profile_with_missing_keys_falls_back_per_key() -> None:
-    result = migrate_legacy_params(
-        profile="custom",
-        custom_options={"rerank": True},
-        defaults=RetrievalParams(mode="bm25", top_k=7, rerank=False),
-    )
-    assert result == RetrievalParams(mode="bm25", top_k=7, rerank=True)
-
-
-def test_unknown_or_missing_profile_falls_back_to_deployment_defaults() -> None:
-    defaults = RetrievalParams(mode="vector", top_k=5, rerank=False)
-    for profile in (None, "platinum", "", "quality "):
-        assert migrate_legacy_params(profile=profile, custom_options={}, defaults=defaults) == defaults
-
-
-def test_non_boolean_and_out_of_range_manual_values_do_not_silently_apply() -> None:
-    """字符串 "false"、负数 top_k、未知 mode 都不许悄悄生效（沿用旧 custom 的收敛口径）。"""
-
-    defaults = RetrievalParams(mode="hybrid", top_k=5, rerank=False)
-    result = migrate_legacy_params(
-        profile="custom",
-        custom_options={
-            "mode": "not-a-mode",
-            "top_k": -3,
-            "rerank": "false",
-        },
-        defaults=defaults,
-    )
-    assert result == defaults
+    caps = [PLAN_PRESETS[code].max_top_k for code in PLAN_CODES]
+    assert caps == sorted(caps)
+    assert len(set(caps)) == 4
+    assert max(caps) <= MAX_TOP_K

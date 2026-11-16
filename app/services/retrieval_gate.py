@@ -26,6 +26,7 @@ HTTP 路由与 MCP 工具写的是**同一段五步序列**，过去是两处各
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+from dataclasses import replace
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -36,6 +37,7 @@ from app.services import rag_service
 from app.services.data_scope import ensure_kb_scope
 from app.services.profile_policy import resolve_retrieval_options
 from app.services.quota_gate import llm_quota, rerank_quota, retrieval_quota
+from app.services.retrieval.rerank import REASON_RERANK_QUOTA_EXHAUSTED
 from app.services.retrieval_authorization import ensure_endpoint_allowed
 
 #: ``rag_service.retrieve`` 的形状：组合根只认「一个会话 + 已解析参数」。
@@ -112,6 +114,24 @@ async def gated_retrieve(
     if llm is not None:
         await llm.ensure_available()
 
+    # 第 3.5 步（第 13 步）：重排是**可选的优化**，额度用尽时跳过而不是拒绝整单
+    # （ADR-0032、用户故事 15）。用 ``has_capacity`` 问一句而不是 try/except：后者会把
+    # 「这把 Key 没买重排」（该拒绝）与「今天排太多次了」（该跳过）混成一件事。
+    # 跳过时必须留下原因——少了这一步却在响应里一个字都不提，就是看不见的降级。
+    if options.rerank:
+        rerank_ledger = rerank_quota(
+            policy=key.policy,
+            plan=key.plan,
+            tenant_id=key.tenant_id,
+            key_id=key.key_id,
+        )
+        if not await rerank_ledger.has_capacity():
+            options = replace(
+                options,
+                rerank=False,
+                rerank_skipped_reason=REASON_RERANK_QUOTA_EXHAUSTED,
+            )
+
     # 第 4 步：召回。组合根拿到的是已经解析完的参数，它不再读请求体、也不再读请求里的质量
     # 字段（那些字段根本不存在）。
     payload = await retriever(
@@ -168,8 +188,8 @@ async def gated_decompose(
         plan=key.plan,
         kb_count=len(kb_ids),
     )
-    # 第 3 步：秒级限流 → 日配额（第 13 步起分解检索会换到自己的计量账，
-    # 由批次 C 接线；此刻仍与检索共用，保证这一批可独立验证）。
+    # 第 3 步：秒级限流 → 日配额。retrieve 那本账记**内核调用次数**，所以进门按 1 次
+    # 预检、成功之后按实际跑的 N 次记账（见第 5 步）。
     quota = retrieval_quota(
         policy=key.policy,
         plan=key.plan,
@@ -187,6 +207,21 @@ async def gated_decompose(
     )
     await llm.ensure_available()
 
+    # 第 3.5 步：重排额度用尽 → 跳过重排 + 记原因（不拒绝整单），与直接检索同一条纪律。
+    if options.rerank:
+        rerank_ledger = rerank_quota(
+            policy=key.policy,
+            plan=key.plan,
+            tenant_id=key.tenant_id,
+            key_id=key.key_id,
+        )
+        if not await rerank_ledger.has_capacity():
+            options = replace(
+                options,
+                rerank=False,
+                rerank_skipped_reason=REASON_RERANK_QUOTA_EXHAUSTED,
+            )
+
     # 第 4 步：分解 → N 次内核 → 合并。
     payload = await decompose_retrieve(
         db,
@@ -196,8 +231,13 @@ async def gated_decompose(
         options=options,
     )
 
-    # 第 5 步：响应成形之后才 +1。
+    # 第 5 步：响应成形之后才记账。
     result = RetrieveData.model_validate(payload)
-    await quota.record_success()
+    # retrieve 那本账记的是**内核调用次数**，所以分解检索记 N 而不是 1（ADR-0032）。
+    # N 从响应的 ``decomposition.queries`` 读：那就是这次真正跑过的子查询清单，
+    # 是链路自己交回的事实，而不是门禁在外面又数一遍（数两遍迟早不一致）。
+    decomposition = (result.metadata or {}).get("retrieval", {}).get("decomposition") or {}
+    kernel_calls = len(decomposition.get("queries") or ())
+    await quota.record_n(kernel_calls)
     await llm.record_n(1)  # 那一次分解规划，按实际发生计入 llm 账。
     return result

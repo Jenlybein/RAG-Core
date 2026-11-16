@@ -273,6 +273,9 @@ async def retrieve(
         # 逐字节一致（候选多了也不会有下次重排去挑）。
         recall_depth=max(resolved_top_k, settings.HYBRID_RECALL_TOP_K),
         rerank_enabled=options.rerank,
+        # 重排额度用尽时 ``options.rerank`` 已被门禁折成 False，同时也记下了原因：
+        # 这里把它交给内核，好让「跳过」在响应里有名有姓（rerank quota exhausted）。
+        rerank_quota_exhausted=options.rerank_skipped_reason is not None,
         rerank_candidates=settings.RERANK_MAX_CANDIDATES if options.rerank else None,
         rerank_factory=rerank_factory,
         # 形状偏好读同一个 ``options``：它们是**这次调用的参数**，不是内核的可选开关。

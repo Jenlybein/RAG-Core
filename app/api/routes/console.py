@@ -81,11 +81,11 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
         ),
         # Research 用量与检索用量**同形**（票 #150）：同一个 ``usage_data`` 映射，
         # 只是这一栏读另一本账（``quota:research:*``）。
-        research_usage=(
+        llm_usage=(
             usage_data(
-                used=view.research_usage.used, limit=view.research_usage.limit
+                used=view.llm_usage.used, limit=view.llm_usage.limit
             )
-            if view.research_usage is not None
+            if view.llm_usage is not None
             else None
         ),
     )
@@ -104,11 +104,11 @@ def _impact_data(impact: PlanImpact | None) -> PlanImpactData | None:
             count=impact.over_max_kb.count,
             sample=list(impact.over_max_kb.sample),
         ),
-        lose_profile=ImpactGroupData(
-            count=impact.lose_profile.count,
-            sample=list(impact.lose_profile.sample),
+        over_capability=ImpactGroupData(
+            count=impact.over_capability.count,
+            sample=list(impact.over_capability.sample),
         ),
-        policies_losing_profile=impact.policies_losing_profile,
+        policies_over_capability=impact.policies_over_capability,
     )
 
 

@@ -30,11 +30,11 @@ class AuthMeData(BaseModel):
     总要得到一份用量——开关关着时 ``used`` 为 ``None`` + ``source="not_tracked"``，
     那是一个明确的状态，不是缺值。
 
-    ``research_usage``（票 #150）与 ``usage`` **同形**，读的是 Research 那一本账：两条
+    ``llm_usage``（票 #150）与 ``usage`` **同形**，读的是 Research 那一本账：两条
     链路的额度互相独立，合成一个数字就答不了「我还能跑几次 Research」。
     """
 
     tenant: AuthTenantData
     plan: PlanSnapshotData
     usage: UsageData
-    research_usage: UsageData
+    llm_usage: UsageData

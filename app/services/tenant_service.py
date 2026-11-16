@@ -110,10 +110,10 @@ def _require_plan(db: Session, code: str) -> Plan:
 
 
 def _default_policy(*, tenant_id: str, plan: Plan, kb_ids: Sequence[str]) -> KeyPolicy:
-    """最小权限的默认配置：能力全关、上限照抄套餐、档位取白名单第一档。
+    """最小权限的默认配置：只开基线 ``retrieve``，额度与上限照抄套餐。
 
-    能力开关**显式写 False** 而不是留给列默认值：列默认值哪天被改成 ``True``，
-    这里发出去的 Key 就自带重排与改写，而签发脚本不会有任何异常。
+    五个授权位与两本加工账**显式写 False / 0** 而不是留给列默认值：列默认值哪天被改成
+    ``True``，这里发出去的 Key 就自带重排与大模型额度，而签发脚本不会有任何异常。
     """
 
     spec = plan_spec_of(plan)
@@ -122,16 +122,22 @@ def _default_policy(*, tenant_id: str, plan: Plan, kb_ids: Sequence[str]) -> Key
         tenant_id=tenant_id,
         name=DEFAULT_POLICY_NAME,
         allowed_kb_ids=list(kb_ids),
+        retrieve_allowed=True,
+        rewrite_allowed=False,
+        decompose_allowed=False,
         research_allowed=False,
         rerank_allowed=False,
+        # 检索那本账照抄套餐；两本加工账取 0（= 这套集成没买这两项能力）。
         retrieve_qps=spec.retrieve_qps,
         retrieve_daily=spec.retrieve_daily,
-        # 第 13 步：三项参数取部署缺省（最小权限里没有加工能力）。
+        rerank_qps=0,
+        rerank_daily=0,
+        llm_qps=0,
+        llm_daily=0,
+        # 三项参数取最小权限组合：原句直查、5 条、不重排。
         retrieval_mode="vector",
         retrieval_top_k=5,
         retrieval_rerank=False,
         include_parent=True,
         expand_table_rows=True,
-        # deprecated 壳：profile 只是兼容值（存影子不落库），取套餐兼容壳的第一档。
-        profile=(spec.allowed_profiles or ("speed",))[0],
     )

@@ -1,16 +1,19 @@
 """materialize retrieval parameters（第 13 步 · I 阶段：物理删档位存储）
 
-把等价载体 ``key_policies.custom_options`` 里的三项参数搬成真列，然后删除档位存储形态：
+把「档位 + 一组手工参数」搬成三项真列，然后删除档位存储形态：
 
 * 加真列 ``key_policies.retrieval_mode`` / ``retrieval_top_k`` / ``retrieval_rerank``；
-* 从 ``custom_options`` 的 ``mode`` / ``top_k`` / ``rerank`` 三个键搬迁（缺键按旧部署缺省）；
+* **数据搬迁**：旧 ``profile`` 按预设**展开**（speed→vector/5/false、balanced→hybrid/5/false、
+  quality→hybrid/5/true），``custom`` 再逐键覆盖，未知档位回落部署缺省；
+  ``custom_options.rewrite`` 键丢弃（改写已是端点）；
 * 删列：``plans.allowed_profiles``、``key_policies.profile`` / ``custom_options``、
   两表的旧能力列 ``hybrid_allowed`` / ``query_rewrite_allowed`` 与旧
   ``research_qps`` / ``research_daily``；
 * 删表 ``profile_presets``。
 
-**这是纯存储层等价变换**：行为语义已由 ADR-0032 交付，三项参数此前从 custom_options
-直读；本迁移只是把「直存」从 JSONB 的一个键变成一列。对外契约逐字节不变。
+**搬迁必须读 ``profile``**：只读 ``custom_options`` 会让所有 ``quality`` / ``balanced``
+的存量配置静默退化成 ``vector/5/false``——重排与混合检索没了，日志里一条异常都没有。
+展开用的预设值就是被删的 ``profile_presets`` 表种下的那三行。
 
 历史迁移一律不改（已落地环境的回放一致性），所以这里用一条新迁移接在当前 head 之后。
 ``downgrade`` 反向把真列写回 ``custom_options``、重建表与列，保证可回滚。
@@ -54,28 +57,59 @@ DROPPED_COLUMNS: tuple[tuple[str, str], ...] = (
 
 
 def upgrade() -> None:
-    # 1. 加三列，存量行先填旧部署缺省（随后被 custom_options 里的真值覆盖）。
+    # 1. 加三列，存量行先填旧部署缺省（随后被第 2 步的真值覆盖）。
     for name, type_, default in PARAM_COLUMNS:
         op.add_column(
             "key_policies",
             sa.Column(name, type_, nullable=False, server_default=sa.literal(default)),
         )
 
-    # 2. 数据搬迁：custom_options 是租户可写的 JSONB，缺键/错型都按旧缺省处理。
+    # 2. 数据搬迁：**先按旧 ``profile`` 展开，再让 ``custom`` 逐键覆盖**。
+    #
+    # 这一段是本迁移唯一有业务语义的地方，也是最容易做错的地方：只读
+    # ``custom_options``、把 ``profile`` 直接丢掉，会让所有 ``quality`` / ``balanced``
+    # 的存量配置**静默退化成 vector/5/false**——客户升级后重排没了、混合没了，而日志里
+    # 一条异常都没有。展开规则与旧 ``profile_presets`` 表的种子一致：
+    #
+    # * ``speed``    → vector / 5  / false
+    # * ``balanced`` → hybrid / 5  / false
+    # * ``quality``  → hybrid / 5  / true
+    # * ``custom``   → 逐键覆盖；缺键 / 错型回落部署缺省（vector / 5 / false）
+    # * 其它（未知档位、空值）→ 部署缺省
+    #
+    # ``custom_options.rewrite`` 键**丢弃**：改写已经是 ``/rag/rewrite`` 端点，不再是参数。
     op.execute(
         """
         UPDATE key_policies
-        SET retrieval_mode = COALESCE(NULLIF(custom_options->>'mode', ''), 'vector'),
-            retrieval_top_k = COALESCE(
-                CASE WHEN jsonb_typeof(custom_options->'top_k') = 'number'
-                     THEN (custom_options->>'top_k')::int END,
-                5
-            ),
-            retrieval_rerank = COALESCE(
-                CASE WHEN jsonb_typeof(custom_options->'rerank') = 'boolean'
-                     THEN (custom_options->>'rerank')::boolean END,
-                false
-            )
+        SET retrieval_mode = CASE profile
+                WHEN 'speed' THEN 'vector'
+                WHEN 'balanced' THEN 'hybrid'
+                WHEN 'quality' THEN 'hybrid'
+                WHEN 'custom' THEN CASE
+                    WHEN custom_options->>'mode' IN ('vector', 'bm25', 'hybrid')
+                    THEN custom_options->>'mode'
+                    ELSE 'vector'
+                END
+                ELSE 'vector'
+            END,
+            retrieval_top_k = CASE profile
+                WHEN 'custom' THEN CASE
+                    WHEN jsonb_typeof(custom_options->'top_k') = 'number'
+                         AND (custom_options->>'top_k')::int >= 1
+                    THEN (custom_options->>'top_k')::int
+                    ELSE 5
+                END
+                ELSE 5
+            END,
+            retrieval_rerank = CASE profile
+                WHEN 'quality' THEN true
+                WHEN 'custom' THEN CASE
+                    WHEN jsonb_typeof(custom_options->'rerank') = 'boolean'
+                    THEN (custom_options->>'rerank')::boolean
+                    ELSE false
+                END
+                ELSE false
+            END
         """
     )
 
@@ -83,6 +117,11 @@ def upgrade() -> None:
     for table, column in DROPPED_COLUMNS:
         op.drop_column(table, column)
     op.drop_table("profile_presets")
+
+    # 4. 收掉 server_default：搬迁完成后，新行必须由写入方显式给值，
+    #    否则「漏填三项参数」会被一个看起来合理的 ``vector/5/false`` 悄悄盖住。
+    for name, _type, _default in PARAM_COLUMNS:
+        op.alter_column("key_policies", name, server_default=None)
 
 
 def downgrade() -> None:

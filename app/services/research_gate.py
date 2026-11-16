@@ -27,14 +27,15 @@ HTTP 入口（本票）与 MCP 工具 ``rag_research``（#151）写的是**同�
 用完了）回答的是三个不同的问题，对应三种不同的处置：换套餐、退避重试、提额。合并任意两个
 都会让调用方写不出重试策略。
 
-「配额为 0」与「能力开关为假」**共用** ``20013``：0 是配置细节，答成 ``20014`` 就等于告诉
-调用方「这个租户买了 Research，只是额度填了 0」。
+「配额为 0」这个说法在第 13 步已经不存在了：Research 没有自己的额度列，只剩 ``research``
+授权位（位为假 → ``20013``）。成本由 ``llm`` 那本账计，额度用尽是 ``20014``——两个码、
+两件事，调用方据此能分清「该升级套餐」与「该等明天」。
 
-## 配额是独立的一本账
+## 成本记在 llm 那本账上
 
-两列 ``research_qps`` / ``research_daily`` 与检索那两列同构（两级同记），但键前缀是
-``quota:research``（``app.services.quota_gate`` 的 ``RESEARCH_NAMESPACE``）：一次 Research
-约 30 秒、3–4 次模型调用，它不该吃掉同一租户的检索额度。
+一次 Research 约 30 秒、3–4 次大模型调用，它的成本就是那几次调用，所以记在 ``llm`` 账
+（``app.services.quota_gate`` 的 ``LLM_NAMESPACE``），不再单开 ``quota:research``
+（票 #150 的那本已随第 13 步退役）。
 
 ## 进门只查、成功后记一次，且只记一次
 
@@ -77,6 +78,7 @@ ADR-0026「影响范围」把这条钉死：一次 Research = 一个 ``log_id`` 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
+from dataclasses import replace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -87,6 +89,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.models.index_version import resolve_index_versions
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
+from app.observability.stage_timing import StageTimer
 from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
@@ -95,10 +98,11 @@ from app.services import result_collapse
 from app.services.data_scope import ensure_kb_scope
 from app.services.knowledge_base_access import ensure_visible
 from app.services.profile_policy import resolve_retrieval_options
-from app.services.quota_gate import llm_quota, research_quota
+from app.services.quota_gate import llm_quota, rerank_quota
 from app.services.research import Clock, LLMFactory, SearchCallable, run_research
 from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
+from app.services.retrieval.rerank import REASON_RERANK_QUOTA_EXHAUSTED
 from app.services.retrieval_options import RetrievalOptions
 from app.services.retrieval_trace import record_retrieval_trace
 from app.services.trace_identity import (
@@ -115,35 +119,18 @@ def ensure_research_allowed(*, policy: KeyPolicySnapshot, plan: PlanSpec) -> Non
     两层都要，是因为它们回答的是两个不同的问题（ADR-0018）：套餐说「这个租户买没买」，
     密钥配置说「这套集成要不要」。任何一层没开就拒绝——不是「悄悄退回普通检索」。
 
-    **配额为 0 与能力为假走同一个判据、同一个码**（票 #150 的 AC）：``research_qps`` /
-    ``research_daily`` 上的 0 表示「这项能力实际上不存在」。若它答成 ``20014``（额度用尽），
-    调用方就能从错误码反推出「这个租户其实买了 Research，只是额度填了 0」——那正是票面
-    不许泄露的配置细节。0 是**配置事实**，与 ``RATE_LIMIT_ENABLED`` 无关，所以这一步不看
-    限流开关。
+    第 13 步起 Research **没有自己的额度账**（ADR-0032）：它的成本就是那几次大模型调用，
+    由 ``llm`` 那本账计。所以这里只判两个位；「额度用尽」由 ``llm`` 账答 ``20014``，
+    与位的真假是两个码、两件事。
     """
 
-    if policy.research_allowed and plan.research_allowed and _has_research_quota(policy, plan):
+    if policy.research_allowed and plan.research_allowed:
         return
     raise AppError(
         ErrorCode.FEATURE_NOT_ALLOWED,
         f"research is not allowed (plan {plan.code!r}, key policy "
         f"research_allowed={policy.research_allowed})",
     )
-
-
-def _has_research_quota(policy: KeyPolicySnapshot, plan: PlanSpec) -> bool:
-    """四个配额格子全是正数吗？任何一个为 0 都等于「没有这项能力」。
-
-    四个而不是两个：配置的额度不得高于套餐（自洽校验守着），但历史行、手改的库都可能
-    不一致；只要有一格是 0，这次调用就不可能跑起来，于是它该在能力位那一步被拒。
-    """
-
-    return min(
-        policy.research_qps,
-        policy.research_daily,
-        plan.research_qps,
-        plan.research_daily,
-    ) > 0
 
 
 def build_kernel_search(
@@ -153,6 +140,7 @@ def build_kernel_search(
     index_versions: Mapping[str, str],
     options: RetrievalOptions,
     on_degraded: Callable[[str], None] | None = None,
+    stage_timer: StageTimer | None = None,
 ) -> SearchCallable:
     """把「一次子查询」装配成「一次内核调用」（ADR-0028 §4 的注入缝在生产侧的实现）。
 
@@ -168,6 +156,10 @@ def build_kernel_search(
     降级原因不能丢（「关键词一路挂了、只是碰巧向量一路也命中了」的那次调用看起来完全正常），
     但它又不许变成「每条子查询各写一行归属索引」或者「各发一份观测」——所以它被交回给
     调用方攒成一个列表，最后进响应的 ``metadata`` 与那唯一一行归属索引。
+
+    ``stage_timer`` 是**共用的收集器**（第 13 步）：分解检索要把 N 次内核的耗时记进
+    **同一份** trace，段名与 ``/rag/retrieve`` 同源（``StageTimer`` 允许同名段依次追加）。
+    子检索仍然不各发一份观测（ADR-0028），只是各自往同一个收集器里记一笔。
     """
 
     recall_top_k = (
@@ -193,9 +185,12 @@ def build_kernel_search(
             recall_top_k=recall_top_k,
             recall_depth=recall_depth,
             rerank_enabled=options.rerank,
+            rerank_quota_exhausted=options.rerank_skipped_reason is not None,
             rerank_candidates=rerank_candidates,
             fold_to_sections=options.fold_to_sections,
             expand_table_rows=options.expand_table_rows,
+            # 同一个收集器：N 次内核的段依次追加进这一份 trace。
+            stage_timer=stage_timer,
             # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有 monkeypatch 接缝）。
             embedding_factory=get_embedding_provider,
             vector_factory=get_vector_store,
@@ -252,10 +247,12 @@ async def gated_research(
     )
 
     # 第 4 步：秒级限流 → 第 5 步：日配额（``20005`` / ``20014``）。**进门只查**，记账在
-    # 最后一步——ADR-0018「被拒绝的请求不扣额度」。这两列是**独立**的一本账（键前缀
-    # ``quota:research``）：一次 Research 比普通检索贵一个量级，它不该吃掉检索的额度。
-    # 开关关着时这本账是 no-op，默认套件因此不需要 Redis。
-    quota = research_quota(
+    # 最后一步——ADR-0018「被拒绝的请求不扣额度」。
+    #
+    # 第 13 步：Research 不再有独立的一本账（ADR-0032）。它的成本就是那几次大模型调用，
+    # 记在 ``llm`` 那本上——另开一本等于把同一份成本记两遍，而「一次 Research 记一次」
+    # 这条纪律仍然成立：唯一的记账点在状态机之后。
+    quota = llm_quota(
         policy=key.policy,
         plan=key.plan,
         tenant_id=key.tenant_id,
@@ -263,8 +260,21 @@ async def gated_research(
     )
     await quota.ensure_available()
 
-    # 第 6 步：范围解析（``kb_id → 生效版本`` 的映射，一次调用一次）。没有生效版本的库
-    # 在这里就被拦下，而不是让 N 条子查询各拼一条恒不匹配的条件。
+    # 第 5.5 步：重排额度用尽 → 子检索跳过重排 + 记原因，整单照跑（ADR-0032）。
+    # 「一次可选优化没额度」不该让一次 30 秒的 Research 白等之后失败。
+    if options.rerank:
+        rerank_ledger = rerank_quota(
+            policy=key.policy,
+            plan=key.plan,
+            tenant_id=key.tenant_id,
+            key_id=key.key_id,
+        )
+        if not await rerank_ledger.has_capacity():
+            options = replace(
+                options,
+                rerank=False,
+                rerank_skipped_reason=REASON_RERANK_QUOTA_EXHAUSTED,
+            )
     visible_kbs = [
         await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id) for kb_id in kb_ids
     ]

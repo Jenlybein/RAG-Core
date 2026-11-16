@@ -19,17 +19,18 @@ import pytest
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.models.api_key import ApiKey
-from app.models.key_policy import PROFILE_BALANCED, PROFILE_CUSTOM, KeyPolicy
-from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_STANDARD, PLAN_PRESETS, Plan, plan_row_of
+from app.models.key_policy import KeyPolicy
+from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_PLUS, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
+from tests.support.policy import PROFILE_BALANCED, PROFILE_CUSTOM
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
 POLICY_ID = "22222222-2222-4222-8222-222222222222"
 KEY_ID = "33333333-3333-4333-8333-333333333333"
 KEY_VALUE = "rc_live_0123456789abcdef0123456789abcdef"
-PLAN_IDS = {PLAN_FREE: 1, PLAN_STANDARD: 2, PLAN_PRO: 3}
+PLAN_IDS = {PLAN_FREE: 1, PLAN_PLUS: 2, PLAN_PRO: 3}
 
 
 class _Request:
@@ -462,10 +463,10 @@ async def test_resolve_plan_reads_the_row_on_a_miss_and_caches_it() -> None:
 
     cache = MemoryPlanCache()
 
-    plan = await resolve_plan(_session(), PLAN_IDS[PLAN_STANDARD], cache=cache)
+    plan = await resolve_plan(_session(), PLAN_IDS[PLAN_PLUS], cache=cache)
 
-    assert plan == PLAN_PRESETS[PLAN_STANDARD]
-    assert cache.set_calls == [PLAN_IDS[PLAN_STANDARD]]
+    assert plan == PLAN_PRESETS[PLAN_PLUS]
+    assert cache.set_calls == [PLAN_IDS[PLAN_PLUS]]
 
 
 @pytest.mark.asyncio
@@ -539,11 +540,11 @@ async def test_redis_plan_cache_keys_by_plan_id_and_round_trips_the_snapshot() -
     client = _FakeRedis()
     cache = RedisPlanCache(client, ttl_seconds=60)
 
-    await cache.set(PLAN_IDS[PLAN_STANDARD], PLAN_PRESETS[PLAN_STANDARD])
+    await cache.set(PLAN_IDS[PLAN_PLUS], PLAN_PRESETS[PLAN_PLUS])
 
-    assert list(client.values) == [f"plan:{PLAN_IDS[PLAN_STANDARD]}"]
-    assert client.expiries == {f"plan:{PLAN_IDS[PLAN_STANDARD]}": 60}
-    assert await cache.get(PLAN_IDS[PLAN_STANDARD]) == PLAN_PRESETS[PLAN_STANDARD]
+    assert list(client.values) == [f"plan:{PLAN_IDS[PLAN_PLUS]}"]
+    assert client.expiries == {f"plan:{PLAN_IDS[PLAN_PLUS]}": 60}
+    assert await cache.get(PLAN_IDS[PLAN_PLUS]) == PLAN_PRESETS[PLAN_PLUS]
     assert await cache.get(PLAN_IDS[PLAN_PRO]) is None
 
 

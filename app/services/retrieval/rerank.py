@@ -94,6 +94,7 @@ async def rerank_stage(
     top_n: int,
     enabled: bool,
     provider_factory: Callable[[], Awaitable[RerankProvider]] | None = None,
+    quota_exhausted: bool = False,
 ) -> RerankOutcome:
     """对融合后的候选重排一次；失败时保留融合顺序并给出原因。
 
@@ -115,6 +116,11 @@ async def rerank_stage(
     截断放在这里而不是只放在 Provider 里，是因为失败 / 未开启这两条路径根本不经过
     Provider。
 
+    ``quota_exhausted`` 是**第四种现实**（第 13 步）：这次调用本该重排，但重排额度用尽，
+    所以跳过并把 ``rerank quota exhausted`` 记进原因。它与 ``enabled=False`` 走同一段
+    代码（都不调 Provider），差别只在原因串——把两者混成同一条路径，调用方就永远看不出
+    「我的重排被额度掐掉了」，而那正是最该被告警的一件事。
+
     ``provider_factory`` 是**注入缝**（票 #116）：缺省仍走 ``get_rerank_provider``
     （既有 monkeypatch 接缝，一行不用改），评测可以显式装配旧的大模型重排做对照。
     工厂以可调用对象传进来而不是在这里直接 import，与 ``hybrid_retrieve`` 里几个
@@ -134,7 +140,16 @@ async def rerank_stage(
         # 这次调用不含重排 = 「没有这一步」，与「本机没装重排」是同一件事的两面：
         # 不装配 Provider、不为它花时间，融合顺序原样返回（截到 top_n）。
         kept = list(chunks)[:top_n]
-        return RerankOutcome(kept, None, False, len(chunks), len(kept), None)
+        # 但「本该跑、额度不够所以跳过」是**第三种**事实，必须带上原因（ADR-0032）：
+        # 少了这一步而响应里一个字都不提，正是本步要消灭的那种看不见的降级。
+        return RerankOutcome(
+            kept,
+            REASON_RERANK_QUOTA_EXHAUSTED if quota_exhausted else None,
+            False,
+            len(chunks),
+            len(kept),
+            None,
+        )
 
     # 缺省走模块级名字（不是默认参数）：既有用例 monkeypatch 的就是这个名字，默认参数
     # 会在 import 期把旧函数对象焊死在签名里，那条接缝就失效了。缺省这一条**不读库**，

@@ -3,7 +3,7 @@
 票 #78 在本文件里换掉了两处**故意的临时断言**：命名档位曾经等于「服务端缺省」
 （那时它们还没有预设），现在每一档都跑自己那条链路。两条接缝不变：
 
-1. **纯函数直测**（本文件上半）：``profile_chain_of`` 把一份密钥配置快照展开成「这次调用
+1. **纯函数直测**（本文件上半）：``retrieval_params_of`` 把一份密钥配置快照展开成「这次调用
    用哪条链路」——模式、条数、重排、改写。它不碰数据库、不碰请求、不碰套餐，所以边界
    （缺键、值不认识、命名档位忽略手动参数）都在这里逐条钉住。
 2. **ASGI 边界**（本文件下半）：同一件事在真实应用上的样子——旧字段进请求体拿
@@ -28,10 +28,6 @@ from app.core.auth import DEV_KEY_POLICY
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.key_policy import (
-    PROFILE_BALANCED,
-    PROFILE_CUSTOM,
-    PROFILE_QUALITY,
-    PROFILE_SPEED,
     KeyPolicySnapshot,
 )
 from app.models.plan import PLAN_PRESETS, PLAN_PRO
@@ -39,12 +35,13 @@ from app.services.result_collapse import OVERFETCH_FACTOR
 from app.services.retrieval_options import (
     MAX_TOP_K,
     RetrievalOptions,
-    ProfileChain,
-    profile_chain_of,
+    RetrievalParams,
+    retrieval_params_of,
 )
 from app.services.profile_policy import resolve_retrieval_options
 from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
+from tests.support.policy import PROFILE_BALANCED, PROFILE_CUSTOM, PROFILE_QUALITY, PROFILE_SPEED
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
@@ -178,14 +175,14 @@ def test_the_profile_name_no_longer_chooses_the_chain(
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
     monkeypatch.setattr(settings, "TOP_K", 9)
 
-    chain = profile_chain_of(
+    chain = retrieval_params_of(
         _policy(
             profile=profile,
             custom_options=(("mode", "hybrid"), ("top_k", 3), ("rerank", True)),
         )
     )
 
-    assert chain == ProfileChain(mode="hybrid", top_k=3, rerank=True, rewrite=False)
+    assert chain == RetrievalParams(mode="hybrid", top_k=3, rerank=True, rewrite=False)
 
 
 def test_the_shape_group_is_not_custom_only() -> None:

@@ -29,23 +29,31 @@
 话说，「查」与「记」看的是同一个键——否则进门查 A 秒、记账写 B 秒，窗口的正确性就取决
 于请求跑得多快。
 
-## 两本账：检索一本，Research 一本（票 #150）
+## 三本账：检索、重排、大模型（第 13 步，ADR-0032）
 
-**形状完全同构，键前缀不同**。检索用 ``quota:*``，Research 用 ``quota:research:*``：
+**形状完全同构，键前缀不同**。按**资源**开户，不按端点开户：
 
-| 这本账 | 上限来自 | 键前缀 |
-| --- | --- | --- |
-| 检索 | ``retrieve_qps`` / ``retrieve_daily`` | ``quota`` |
-| 受控 Research | ``research_qps`` / ``research_daily`` | ``quota:research`` |
+| 这本账 | 记什么 | 上限来自 | 键前缀 |
+| --- | --- | --- | --- |
+| retrieve | 内核调用次数（一次 decompose 记 N） | ``retrieve_qps`` / ``retrieve_daily`` | ``quota`` |
+| rerank | 重排调用次数 | ``rerank_qps`` / ``rerank_daily`` | ``quota:rerank`` |
+| llm | 实际发生的大模型调用次数 | ``llm_qps`` / ``llm_daily`` | ``quota:llm`` |
 
-分成两本账是因为成本相差一个量级：一次 Research 约 30 秒、3–4 次模型调用，与普通检索共用
-一份额度会让「偶尔问一次大问题」把当天的检索额度吃掉。两本账共用同一份实现
-（:class:`QuotaLedger` + :class:`QuotaLimits`），差别只有「读哪两列」与「写哪个前缀」——
-所以「两级同记、只有成功才记、两个错误码」这三条纪律不会在某一天只落到一条链路上。
+按端点开户会造出一个虚构单位（「一次 decompose」），而按资源开户，成本表里的每一行都能
+在链路上找到真实的对应动作。三本账共用同一份实现（:class:`QuotaLedger` +
+:class:`QuotaLimits`），差别只有「读哪两列」与「写哪个前缀」——所以「两级同记、只有成功
+才记、两个错误码」这三条纪律不会在某一天只落到一条链路上。
 
-Research 那两列的**0 表示关闭**（与 ``research_allowed=False`` 同一个答复码 ``20013``），
-这个判定不在本模块：它在门禁（``app.services.research_gate``）的「能力位」那一步，
-因为它是配置事实、与计数开关无关。
+**Research 没有自己的账**：它的成本本来就是那几次大模型调用，另开一本等于把同一份成本
+记两遍（票 #150 的 ``quota:research`` 已随第 13 步退役）。它的入口只认 ``research``
+授权位与 ``llm`` 账。
+
+新账的**四格全 0 表示「没配额度」= no-op**（不判、不记）：从旧版本升级上来的 Key 与套餐
+在那几列上是迁移缺省 0，若把它当成「一次都不许用」，升级当天就会把所有人拦下来。
+
+加工能力那两列的 **0 表示关闭**（与位为假同一个答复码 ``20013``），这个判定不在本模块：
+它在门禁（``app.services.retrieval_gate`` / ``research_gate``）的「能力位」那一步，因为
+它是配置事实、与计数开关无关。
 
 ## 只有成功才记账，所以「查」与「记」必须分开
 
@@ -107,11 +115,22 @@ from app.services.quota_limits import ensure_under_limit
 LEVEL_KEY: Final[str] = "key"
 LEVEL_TENANT: Final[str] = "tenant"
 
-#: 两本账的键前缀。检索那本**逐字不变**（``quota``）——它已经在生产上跑着，改前缀等于
-#: 把当天所有人的用量清零；Research 那本多一段 ``research``，于是两本账互不相干。
+#: 三本账的**名字**（不带窗口）。它是「按资源计量」这条决定的词表：一次分解检索会跑 N 次
+#: 内核、可能各重排一次、再加一次大模型调用，三本账各自对应链路上一类真实动作。
+#: 列名 = ``账本_窗口``（见 :class:`QuotaLimits` 的三个 ``for_*`` 工厂）。
+METER_BOOKS: Final[tuple[str, ...]] = ("retrieve", "rerank", "llm")
+#: 两级计数：Key 级卡住单个外部应用，租户级把同一租户下所有 Key 聚合起来。
+METER_LEVELS: Final[tuple[str, ...]] = (LEVEL_KEY, LEVEL_TENANT)
+#: 两格：每秒与每日。
+METER_WINDOWS: Final[tuple[str, ...]] = ("qps", "daily")
+
+#: 三本账的键前缀。检索那本**逐字不变**（``quota``）——它已经在生产上跑着，改前缀等于
+#: 把当天所有人的用量清零；重排与大模型各一本，键前缀互不相干。
+#
+#: 票 #150 的 ``quota:research`` 那本账已退役（第 13 步）：Research 的成本本来就是「几次
+#: 大模型调用」，另开一本账等于把同一份成本记两遍；现在它读 ``llm`` 那本。旧键靠日桶
+#: TTL 自然过期，不需要清理动作。
 KEY_NAMESPACE: Final[str] = "quota"
-RESEARCH_NAMESPACE: Final[str] = "quota:research"
-#: 第 13 步三本账：重排与大模型各一本，键前缀与检索 / Research 都不相干。
 RERANK_NAMESPACE: Final[str] = "quota:rerank"
 LLM_NAMESPACE: Final[str] = "quota:llm"
 
@@ -173,8 +192,8 @@ def qps_key(
 ) -> str:
     """QPS 桶的键：``quota:qps:key:<key_id>:<epoch_second>``。
 
-    ``namespace`` 缺省是检索那本账，所以既有调用点与用例里的键**逐字不变**；Research 传
-    :data:`RESEARCH_NAMESPACE` 拿到 ``quota:research:qps:...``。
+    ``namespace`` 缺省是检索那本账，所以既有调用点与用例里的键**逐字不变**；重排与大模型
+    各传 :data:`RERANK_NAMESPACE` / :data:`LLM_NAMESPACE`。
     """
 
     return QPS_KEY_TEMPLATE.format(
@@ -282,12 +301,13 @@ def _as_count(raw: str | bytes | None) -> int:
 class QuotaLimits:
     """一次调用的四个上限 + 这本账的键前缀与报错口径。
 
-    四个上限按「两级」摆开（Key 级卡单个应用、租户级聚合），两条链路各有一份来源：
+    四个上限按「两级」摆开（Key 级卡单个应用、租户级聚合），三本账各有一份来源：
 
-    * 检索：密钥配置的 ``retrieve_qps`` / ``retrieve_daily`` 与套餐的同名列；
-    * Research：密钥配置与套餐的 ``research_qps`` / ``research_daily``。
+    * retrieve：密钥配置的 ``retrieve_qps`` / ``retrieve_daily`` 与套餐的同名列；
+    * rerank：``rerank_*`` 四列；
+    * llm：``llm_*`` 四列。
 
-    ``namespace`` 决定写哪本账（见模块文档「两本账」）；``label`` 只进报错文案，
+    ``namespace`` 决定写哪本账（见模块文档「三本账」）；``label`` 只进报错文案，
     于是「哪条链路超限了」在日志里可读，而判据与错误码仍然只有一份。
     """
 
@@ -310,23 +330,6 @@ class QuotaLimits:
         )
 
     @classmethod
-    def for_research(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
-        """Research 那本账：读 ``research_*`` 四列，键前缀多一段 ``research``。
-
-        0 在这里**不该出现**：门禁的「能力位」那一步已经把 0 当成「关闭」拒绝掉了
-        （``20013``）。真走到这里还带着 0，说明有人绕过了门禁，而此时按「额度已用尽」
-        （``20014``）拒绝是更保守的一侧——它不会让一次调用白跑。
-        """
-
-        return cls(
-            key_qps=policy.research_qps,
-            tenant_qps=plan.research_qps,
-            key_daily=policy.research_daily,
-            tenant_daily=plan.research_daily,
-            namespace=RESEARCH_NAMESPACE,
-            label="research ",
-        )
-
     @classmethod
     def for_rerank(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
         """第 13 步三本账之一：重排调用次数，读 ``rerank_*`` 四列。"""
@@ -415,6 +418,28 @@ class QuotaLedger:
             suffix="per window",
         )
 
+    async def has_capacity(self) -> bool:
+        """还能不能再跑一次？（只读，不记账、不抛错）
+
+        :meth:`ensure_available` 的**问句式**版本，只给「这一步是可选的」那种调用点用：
+        重排额度用尽时正确行为是**跳过重排并如实标原因**，不是拒绝整单（ADR-0032）。
+        有了这个探针，那条纪律就只有一处实现，而不是在调用点里 ``try/except`` 一个
+        ``AppError`` —— 后者会把「这把 Key 压根没买重排」和「今天排太多次了」混成一件
+        事，而它们的正确处置恰好相反（前者该拒绝，后者该跳过）。
+
+        判据与 :meth:`ensure_available` 逐条相同，所以两者不可能给出相反的结论。
+        """
+
+        if not self.enabled or self.counters is None:
+            return True
+
+        return (
+            await self._read_qps(LEVEL_KEY, self.key_id) < self.limits.key_qps
+            and await self._read_qps(LEVEL_TENANT, self.tenant_id) < self.limits.tenant_qps
+            and await self._read_daily(LEVEL_KEY, self.key_id) < self.limits.key_daily
+            and await self._read_daily(LEVEL_TENANT, self.tenant_id) < self.limits.tenant_daily
+        )
+
     async def record_success(self) -> None:
         """业务成功之后才调它：两级各记一次（n=1）。
 
@@ -460,11 +485,12 @@ async def read_tenant_daily_usage(
     """读租户级「今日已用」：**只发一条 GET**，绝不 ``INCR`` / ``EXPIRE``。
 
     面板刷新不是一次检索，读路径因此不能借「顺手初始化」把计数 +1，也不能靠写操作
-    去探测键是否存在。这里与 :func:`retrieval_quota` / :func:`research_quota` 共用同一个
-    窗口口径（UTC、按天分桶），所以控制台看到的数与门禁判的数一定是同一个桶。
+    去探测键是否存在。这里与 :func:`retrieval_quota` / :func:`rerank_quota` /
+    :func:`llm_quota` 共用同一个窗口口径（UTC、按天分桶），所以控制台看到的数与门禁判的
+    数一定是同一个桶。
 
-    ``namespace`` 选读哪本账：控制面与 ``/auth/me`` 各报一栏（检索 / Research），两栏的
-    形状相同（``used`` + ``limit`` + ``source=daily_counter``），只是桶不同。
+    ``namespace`` 选读哪本账：控制面与 ``/auth/me`` 各报几栏（检索 / 重排 / 大模型），
+    几栏的形状相同（``used`` + ``limit`` + ``source=daily_counter``），只是桶不同。
 
     返回 ``None`` 表示**平台现在没有在数**：``RATE_LIMIT_ENABLED`` 关着时
     ``record_success`` 整段是 no-op，计数键根本不会被写出来。此时报 ``0`` 是编造——
@@ -612,26 +638,3 @@ def llm_quota(
     )
 
 
-def research_quota(
-    *,
-    policy: KeyPolicySnapshot,
-    plan: PlanSpec,
-    tenant_id: str,
-    key_id: str,
-    counters: QuotaCounters | None = None,
-    enabled: bool | None = None,
-) -> QuotaLedger:
-    """开 Research 那本额度账（票 #150）：同一份实现、另一组列、另一个键前缀。
-
-    与检索那本**同构**——两级同记、进门只查、成功后记一次、两个错误码——但不共享桶。
-    调用方是 ``research_gate.gated_research``：它在能力位那一步已经拒绝了「配额为 0」
-    （答 ``20013``），所以这里拿到的上限都是正的。
-    """
-
-    return _open_ledger(
-        limits=QuotaLimits.for_research(policy=policy, plan=plan),
-        tenant_id=tenant_id,
-        key_id=key_id,
-        counters=counters,
-        enabled=enabled,
-    )

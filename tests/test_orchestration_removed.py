@@ -24,7 +24,7 @@ import inspect
 from dataclasses import fields
 from pathlib import Path
 
-from app.models.key_policy import PROFILE_QUALITY, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.schemas.rag import RetrieveData
 from app.services.citation_blocks import (
@@ -33,11 +33,12 @@ from app.services.citation_blocks import (
     COMPLETENESS_PARTIAL,
 )
 from app.services.retrieval_options import (
-    ProfileChain,
+    RetrievalParams,
     RetrievalOptions,
     TenantPolicy,
     tenant_policy_echo,
 )
+from tests.support.policy import PROFILE_QUALITY
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 
@@ -133,7 +134,7 @@ def test_the_contract_has_no_orchestration_key() -> None:
 
     assert "orchestration" not in RetrieveData.model_fields
     assert _BANNED not in inspect.signature(RetrievalOptions).parameters
-    assert "orchestration" not in {field.name for field in fields(ProfileChain)}
+    assert "orchestration" not in {field.name for field in fields(RetrievalParams)}
 
     options = RetrievalOptions(
         mode="vector",

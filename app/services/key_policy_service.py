@@ -42,7 +42,6 @@ from sqlalchemy.orm import Session
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES
 from app.models.key_policy import (
-    PROFILES,
     KeyPolicy,
     KeyPolicySnapshot,
     policy_snapshot_of,
@@ -50,75 +49,70 @@ from app.models.key_policy import (
 from app.models.plan import Plan, plan_spec_of
 from app.repositories import key_policy_repository, plan_repository, tenant_repository
 from app.services.profile_policy import ensure_policy_consistent
-from app.services.retrieval_options import (
-    CUSTOM_OPTION_MODE,
-    CUSTOM_OPTION_RERANK,
-    CUSTOM_OPTION_REWRITE,
-    CUSTOM_OPTION_TOP_K,
-    MIN_TOP_K,
-)
+from app.services.retrieval_options import MIN_TOP_K
 from app.utils.id_generator import new_id
 
-#: 能通过本函数改的**快照标量**字段：自定义档的手动参数（``custom_options``）不是标量，
-#: 它走单独的「逐键校验 + 合并」，所以不在这个元组里；``unrestricted_scope`` 仍然刻意除外。
+#: 能通过本函数改的**快照标量**字段：全部列都是标量了（``custom_options`` 已随档位退役），
+#: ``unrestricted_scope`` 仍然刻意除外——它不是库里的列，是合成快照的标记。
 POLICY_FIELDS: Final[tuple[str, ...]] = tuple(
     field.name
     for field in fields(KeyPolicySnapshot)
-    if field.name not in ("custom_options", "unrestricted_scope")
+    if field.name != "unrestricted_scope"
 )
 
 #: 只落在行上、不在快照里的字段（快照不用它做判定，所以单独一行）。
 ROW_FIELDS: Final[tuple[str, ...]] = ("name",)
 
 #: 本函数接受的**全部**字段：未知字段直接报错，避免拼错一个列名却悄悄没改。
-EDITABLE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ROW_FIELDS + ("custom_options",)
+EDITABLE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ROW_FIELDS
 
-#: ``custom_options`` 的四个合法键（与 :mod:`app.services.retrieval_options` 的
-#: ``CUSTOM_OPTION_*`` 常量同源）。未知键直接拒绝：拼错一个键等于「写了但没生效」。
-CUSTOM_OPTION_KEYS: Final[tuple[str, ...]] = (
-    CUSTOM_OPTION_MODE,
-    CUSTOM_OPTION_TOP_K,
-    CUSTOM_OPTION_RERANK,
-    CUSTOM_OPTION_REWRITE,
-)
+#: 签发时新建配置接受的字段：与「改配置」同一套（没有任何只写一次就锁死的列）。
+CREATE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS
 
-#: 签发时新建配置接受的字段：改配置能改的十一个 + ``custom_options``（只在新建时确定）。
-CREATE_FIELDS: Final[tuple[str, ...]] = POLICY_FIELDS + ("custom_options",)
-
-#: 新建配置时**必须**由调用方给出的三个值：档位、QPS、日配额。忘了填不该被一个看起来
+#: 新建配置时**必须**由调用方给出的两个值：QPS、日配额。忘了填不该被一个看起来
 #: 合理的兜底值掩盖——「默认 10 QPS」会悄悄发出比调用方预期更大的额度。
 CREATE_REQUIRED_FIELDS: Final[tuple[str, ...]] = (
-    "profile",
     "retrieve_qps",
     "retrieve_daily",
 )
 
-#: 新建配置时可省略字段的默认值：与 ``key_policies`` 列默认值同义（能力全关、形状全开、
-#: 白名单为空 = 什么都还没圈定）。显式写出来，不依赖列默认值——列默认值哪天被改成 ``True``，
-#: 新建的 Key 就自带重排与改写，而签发路径不会有任何异常。
+#: 新建配置时可省略字段的默认值：与 ``key_policies`` 列默认值同义（只开基线
+#: ``retrieve`` 一个位、加工能力的两本账全 0、形状全开、白名单为空 = 什么都还没圈定）。
+#: 显式写出来，不依赖列默认值——列默认值哪天被改成 ``True``，新建的 Key 就自带重排与
+#: 大模型额度，而签发路径不会有任何异常。
 CREATE_DEFAULTS: Final[dict[str, Any]] = {
     "allowed_kb_ids": (),
+    "retrieve_allowed": True,
+    "rewrite_allowed": False,
+    "decompose_allowed": False,
     "research_allowed": False,
-    "hybrid_allowed": False,
     "rerank_allowed": False,
-    "query_rewrite_allowed": False,
-    # Research 的两个独立配额（票 #150）：默认 0 = 关闭。新发一把 Key 不该自带一项
-    # 约 30 秒、3–4 次模型调用的能力——要用就由人来填。
-    "research_qps": 0,
-    "research_daily": 0,
+    # 加工能力的两本账：默认 0 = 这项能力没买。新发一把 Key 不该自带一次改写或一次
+    # 约 30 秒的 Research——要用就由人来填。
+    "rerank_qps": 0,
+    "rerank_daily": 0,
+    "llm_qps": 0,
+    "llm_daily": 0,
+    # 三项直参数：最便宜、最可预测的组合（原句直查、5 条、不重排）。
+    "retrieval_mode": "vector",
+    "retrieval_top_k": 5,
+    "retrieval_rerank": False,
     "include_parent": True,
     "expand_table_rows": True,
-    "custom_options": {},
 }
 
 #: 必须 ≥ 1 的两个限额列：0 或负数不是一个合法额度，是「一次都不许用」的另一种写法。
 NUMERIC_FIELDS: Final[tuple[str, ...]] = ("retrieve_qps", "retrieve_daily")
 
-#: 允许为 0 的两个 Research 配额列（票 #150）：0 **就是**「关闭」，与
-#: ``research_allowed=False`` 给同一个答复码。负数仍然拒绝——那不是一个额度。
-#: 与 :data:`NUMERIC_FIELDS` 分开写，是因为「0 合法」与「0 等于停服」是两条相反的规则，
-#: 混在一个元组里迟早会被一次「顺手统一」抹平。
-ZEROABLE_FIELDS: Final[tuple[str, ...]] = ("research_qps", "research_daily")
+#: 允许为 0 的四个加工能力额度列：0 **就是**「这项能力没买」，与位为假给同一个答复码。
+#: 负数仍然拒绝——那不是一个额度。与 :data:`NUMERIC_FIELDS` 分开写，是因为「0 合法」与
+#: 「0 等于停服」是两条相反的规则，混在一个元组里迟早会被一次「顺手统一」抹平。
+ZEROABLE_FIELDS: Final[tuple[str, ...]] = (
+    "rerank_qps",
+    "rerank_daily",
+    "llm_qps",
+    "llm_daily",
+)
 
 
 @dataclass(frozen=True)
@@ -227,20 +221,11 @@ def _apply_validated(
     """
 
     values = _validated(changes)
-    custom_options = values.pop("custom_options", None)
     # 校验用的是**快照**（判定内核看到的那份形状），而不是还没 flush 的行：行上的
     # 布尔属性在写入前可能是 None，拿它做包含关系判断会得到「关着」的假结论。
     # ``name`` 只落在行上，不参与自洽校验，所以只把快照字段交给 ``replace``。
     snapshot_values = {column: values[column] for column in POLICY_FIELDS if column in values}
     candidate = replace(policy_snapshot_of(policy), **snapshot_values)
-    if custom_options is not None:
-        merged_options = {
-            **dict(policy_snapshot_of(policy).custom_options),
-            **custom_options,
-        }
-        candidate = replace(
-            candidate, custom_options=tuple(sorted(merged_options.items()))
-        )
     ensure_policy_consistent(policy=candidate, plan=plan_spec_of(plan))
 
     before = policy_values_of(policy)
@@ -249,16 +234,10 @@ def _apply_validated(
         setattr(policy, column, list(value) if column == "allowed_kb_ids" else value)
     if "name" in values:
         policy.name = values["name"]
-    if custom_options is not None:
-        # 部分更新：只覆盖这次给出的键，其余保持原样（面板一次只改一个输入框）。
-        policy.custom_options = {**dict(policy.custom_options or {}), **custom_options}
 
     after = policy_values_of(policy)
-    changed_fields = list(values)
-    if custom_options is not None:
-        changed_fields.append("custom_options")
     changed = tuple(
-        sorted(column for column in changed_fields if before[column] != after[column])
+        sorted(column for column in values if before.get(column) != after.get(column))
     )
     return PolicyUpdate(
         policy_id=policy.id,
@@ -306,29 +285,27 @@ def _build_policy_row(
     """校验入参、造出「将来那一行」并跑自洽校验（**纯函数**：不碰会话）。"""
 
     checked = _validated_create(values)
-    # 第 13 步 I 阶段：三项参数从 custom_options 搬到真列（写侧也跟着切）。
-    options = dict(checked.get("custom_options") or {})
     row = KeyPolicy(
         id=new_id(),
         tenant_id=tenant_id,
         name=name,
         allowed_kb_ids=list(checked["allowed_kb_ids"]),
-        research_allowed=checked.get("research_allowed", False),
-        rerank_allowed=checked.get("rerank_allowed", False),
+        retrieve_allowed=checked["retrieve_allowed"],
+        rewrite_allowed=checked["rewrite_allowed"],
+        decompose_allowed=checked["decompose_allowed"],
+        research_allowed=checked["research_allowed"],
+        rerank_allowed=checked["rerank_allowed"],
         retrieve_qps=checked["retrieve_qps"],
         retrieve_daily=checked["retrieve_daily"],
+        rerank_qps=checked["rerank_qps"],
+        rerank_daily=checked["rerank_daily"],
+        llm_qps=checked["llm_qps"],
+        llm_daily=checked["llm_daily"],
+        retrieval_mode=checked["retrieval_mode"],
+        retrieval_top_k=checked["retrieval_top_k"],
+        retrieval_rerank=checked["retrieval_rerank"],
         include_parent=checked["include_parent"],
         expand_table_rows=checked["expand_table_rows"],
-        retrieval_mode=str(options.get("mode", "vector")),
-        retrieval_top_k=int(options.get("top_k", 5)),
-        retrieval_rerank=bool(options.get("rerank", False)),
-        # deprecated 壳：旧脚本/测试仍按 profile 表达，值存影子不落库。
-        profile=checked.get("profile", ""),
-        custom_options=options,
-        hybrid_allowed=checked.get("hybrid_allowed", False),
-        query_rewrite_allowed=checked.get("query_rewrite_allowed", False),
-        research_qps=checked.get("research_qps", 0),
-        research_daily=checked.get("research_daily", 0),
     )
     ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan_spec_of(plan))
     return row
@@ -363,8 +340,21 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("白名单里的知识库标识不能为空")
         values["allowed_kb_ids"] = kb_ids
 
-    if "profile" in values and values["profile"] not in PROFILES:
-        raise ValueError(f"未知档位：{values['profile']}（可选：{'/'.join(PROFILES)}）")
+    if "retrieval_mode" in values and values["retrieval_mode"] not in SUPPORTED_RETRIEVAL_MODES:
+        raise ValueError(
+            f"retrieval_mode 只能是 {'/'.join(SUPPORTED_RETRIEVAL_MODES)}，"
+            f"收到：{values['retrieval_mode']!r}"
+        )
+
+    if "retrieval_top_k" in values:
+        top_k = values["retrieval_top_k"]
+        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < MIN_TOP_K:
+            raise ValueError(f"retrieval_top_k 必须是 ≥ {MIN_TOP_K} 的整数，收到：{top_k!r}")
+
+    if "retrieval_rerank" in values and not isinstance(values["retrieval_rerank"], bool):
+        raise ValueError(
+            f"retrieval_rerank 必须是布尔值，收到：{values['retrieval_rerank']!r}"
+        )
 
     for column in NUMERIC_FIELDS:
         if column in values:
@@ -376,7 +366,7 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
     for column in ZEROABLE_FIELDS:
         if column in values:
             limit = values[column]
-            # 0 合法（= 关闭），负数不合法（不是一个额度）。``bool`` 同样不许混进来。
+            # 0 合法（= 没买这项能力），负数不合法（不是一个额度）。``bool`` 同样不许混进来。
             if isinstance(limit, bool) or not isinstance(limit, int) or limit < 0:
                 raise ValueError(f"{column} 必须是 ≥ 0 的整数（0 = 关闭），收到：{limit!r}")
 
@@ -386,68 +376,14 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError("配置名不能为空")
         values["name"] = name
 
-    if "custom_options" in values:
-        values["custom_options"] = _validated_custom_options(values["custom_options"])
-
-    return values
-
-
-def _validated_custom_options(raw: Any) -> dict[str, Any]:
-    """逐键校验 ``custom_options``，返回**只含合法键**的字典。
-
-    四个键各自校验：``mode`` 必须落在 :data:`SUPPORTED_RETRIEVAL_MODES`，``top_k`` 是
-    ≥ ``MIN_TOP_K`` 的整数（``bool`` 是 ``int`` 的子类，``True`` 不能当成 1 放行），
-    ``rerank`` / ``rewrite`` 是布尔。未知键直接拒绝——拼错一个键等于
-    「写了但没生效」，而面板上看到的是「已保存」。
-
-    **不因为当前 ``profile`` 不是 ``custom`` 就拒绝**：这批手动参数是「延后生效的数据」，
-    面板可以先写好参数、下一次请求再切档位；若这里按当前档位拒绝，前端就被迫把「切档位」
-    与「写参数」压进同一个请求，而两个 PATCH 本来就不在一个事务里、面板也做不到原子。
-    命名档位是**完整替换**、只有 ``custom`` 档才读这批键，这是产品契约（见 GLOSSARY
-    「档位」那条），不是这里的校验职责。
-    """
-
-    if not isinstance(raw, dict):
-        raise ValueError(f"custom_options 必须是对象，收到：{type(raw).__name__}")
-
-    unknown = sorted(set(raw) - set(CUSTOM_OPTION_KEYS))
-    if unknown:
-        raise ValueError(
-            f"custom_options 里有未知键：{', '.join(unknown)}"
-            f"（可选：{', '.join(CUSTOM_OPTION_KEYS)}）"
-        )
-
-    values: dict[str, Any] = {}
-    if CUSTOM_OPTION_MODE in raw:
-        mode = raw[CUSTOM_OPTION_MODE]
-        if mode not in SUPPORTED_RETRIEVAL_MODES:
-            raise ValueError(
-                f"custom_options.mode 只能是 {'/'.join(SUPPORTED_RETRIEVAL_MODES)}，"
-                f"收到：{mode!r}"
-            )
-        values[CUSTOM_OPTION_MODE] = mode
-    if CUSTOM_OPTION_TOP_K in raw:
-        top_k = raw[CUSTOM_OPTION_TOP_K]
-        if isinstance(top_k, bool) or not isinstance(top_k, int) or top_k < MIN_TOP_K:
-            raise ValueError(
-                f"custom_options.top_k 必须是 ≥ {MIN_TOP_K} 的整数，收到：{top_k!r}"
-            )
-        values[CUSTOM_OPTION_TOP_K] = top_k
-    for flag in (CUSTOM_OPTION_RERANK, CUSTOM_OPTION_REWRITE):
-        if flag in raw:
-            flag_value = raw[flag]
-            if not isinstance(flag_value, bool):
-                raise ValueError(f"custom_options.{flag} 必须是布尔值，收到：{flag_value!r}")
-            values[flag] = flag_value
     return values
 
 
 def _validated_create(values: Mapping[str, Any]) -> dict[str, Any]:
-    """校验并规整「新建配置」的入参，返回可直接落到行上的完整 12 个值。
+    """校验并规整「新建配置」的入参，返回可直接落到行上的全部列值。
 
-    与 :func:`_validated` 共用同一套逐字段校验（档位名、限额 ≥ 1、白名单非空串、
-    ``custom_options`` 的逐键校验），只是新建时字段可以省略、由 :data:`CREATE_DEFAULTS`
-    补齐。
+    与 :func:`_validated` 共用同一套逐字段校验（模式词表、条数 ≥ 1、限额、白名单非空串），
+    只是新建时字段可以省略、由 :data:`CREATE_DEFAULTS` 补齐。
     """
 
     provided = dict(values)
@@ -461,25 +397,18 @@ def _validated_create(values: Mapping[str, Any]) -> dict[str, Any]:
     if missing:
         raise ValueError(f"缺少必填字段：{', '.join(missing)}")
 
-    merged = {**CREATE_DEFAULTS, **provided}
-    custom_options = merged.pop("custom_options", None) or {}
-
-    checked = _validated(merged)
-    checked["custom_options"] = _validated_custom_options(custom_options)
-    return checked
+    return _validated({**CREATE_DEFAULTS, **provided})
 
 
 def _values_of(policy: KeyPolicy, snapshot: KeyPolicySnapshot) -> dict[str, Any]:
     """行 + 快照 → 同一份「审查看得懂」的字段值：改前与改后都从这里造。
 
     左半边（``name``）只活在行上，右半边来自快照；两份拼成一个扁平字典，脚本才能
-    打印「字段: 旧值 -> 新值」，审计也用同一个形状。``custom_options`` 一并带上：新建时
-    它是配置内容的一部分，审计里缺了它就看不出「这套 custom 参数是什么」。
+    打印「字段: 旧值 -> 新值」，审计也用同一个形状。
     """
 
     values: dict[str, Any] = {"name": policy.name}
     for field_name in POLICY_FIELDS:
         value = getattr(snapshot, field_name)
         values[field_name] = list(value) if field_name == "allowed_kb_ids" else value
-    values["custom_options"] = dict(snapshot.custom_options)
     return values

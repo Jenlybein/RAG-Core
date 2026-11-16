@@ -23,7 +23,8 @@ from dataclasses import replace
 from typing import Any
 
 from app.core.auth import DEV_KEY_POLICY, KeyContext
-from app.models.key_policy import PROFILE_CUSTOM, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
+from tests.support.policy import PROFILE_CUSTOM
 
 #: 票 #77 从请求体里删掉的四个字段。助手据此把「老写法」翻译成「密钥配置」。
 QUALITY_FIELDS: tuple[str, ...] = (

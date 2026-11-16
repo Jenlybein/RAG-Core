@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 
 from app.core.auth import DEV_KEY_POLICY, KeyContext
 from app.core.exceptions import ErrorCode
-from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.models.retrieval_trace import RetrievalTrace
 from app.providers.llm.base import LLMProvider
@@ -37,6 +37,7 @@ from app.services.citation_blocks import (
     COMPLETENESS_PARTIAL,
 )
 from tests.fake_db import AsyncRecordingSession, AsyncSessionAdapter, EmptySession, async_visible_kb
+from tests.support.policy import PROFILE_SPEED
 
 TENANT_ID = "tenant_demo"
 RESEARCH_PATH = "/api/v1/rag/research"

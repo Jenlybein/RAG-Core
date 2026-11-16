@@ -78,6 +78,9 @@ async def retrieve_kernel(
     top_k: int,
     recall_top_k: int,
     rerank_enabled: bool,
+    #: 重排本该跑、但重排额度用尽（第 13 步）：跳过并把原因记进本次结果。
+    #: 与 ``rerank_enabled=False`` 的区别只在原因串——「跳过」与「不要」必须分得开。
+    rerank_quota_exhausted: bool = False,
     fold_to_sections: bool,
     expand_table_rows: bool,
     embedding_factory: Callable[[], Any],
@@ -138,6 +141,7 @@ async def retrieve_kernel(
             # 「这次要不要重排」由本次的已解析参数说了算：装了重排的机器上，不要重排的
             # 那一档也不该被顺手排一遍。
             rerank_enabled=rerank_enabled,
+            rerank_quota_exhausted=rerank_quota_exhausted,
             rerank_factory=rerank_factory,
             stage_timer=timer,
         )

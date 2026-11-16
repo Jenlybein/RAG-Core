@@ -104,6 +104,9 @@ async def decompose_retrieve(
     point_texts: list[str] = [point.text for point in points]
 
     # ② 内核装配：三条查询串全等于子查询本身（分解出的查询不再二次改写）。
+    # ``stage_timer`` 由本函数持有并交给每次内核调用：N 次内核的召回 / 融合 / 重排 / 折叠
+    # 段**依次追加进同一份 trace**（同名段不覆盖），于是「哪一条子问题慢」在一条 trace 里
+    # 就能看出来，而不是 N 份互不相干的观测（ADR-0028 §「子检索不单独发观测」）。
     degraded_reasons: list[str] = []
     search = build_kernel_search(
         db,
@@ -111,6 +114,7 @@ async def decompose_retrieve(
         index_versions=index_versions,
         options=options,
         on_degraded=degraded_reasons.append,
+        stage_timer=timer,
     )
 
     # ③ 并行跑 N 次内核（保序：asyncio.gather 的结果顺序与入参一致）。

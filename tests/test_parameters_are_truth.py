@@ -10,12 +10,10 @@ from __future__ import annotations
 import pytest
 
 from app.models.key_policy import (
-    PROFILE_BALANCED,
-    PROFILE_QUALITY,
-    PROFILE_SPEED,
     KeyPolicySnapshot,
 )
-from app.services.retrieval_options import ProfileChain, profile_chain_of
+from app.services.retrieval_options import RetrievalParams, retrieval_params_of
+from tests.support.policy import PROFILE_BALANCED, PROFILE_QUALITY, PROFILE_SPEED
 
 
 def _policy(**overrides: object) -> KeyPolicySnapshot:
@@ -42,17 +40,17 @@ def _policy(**overrides: object) -> KeyPolicySnapshot:
 def test_parameters_are_read_directly_from_the_policy() -> None:
     """三项参数直读值，不按 profile 展开预设。"""
 
-    chain = profile_chain_of(_policy())
+    chain = retrieval_params_of(_policy())
 
-    assert chain == ProfileChain(mode="hybrid", top_k=9, rerank=True, rewrite=False)
+    assert chain == RetrievalParams(mode="hybrid", top_k=9, rerank=True, rewrite=False)
 
 
 def test_changing_the_profile_name_changes_nothing() -> None:
     """改档位名不改变一次调用的参数——名字已经不是 truth。"""
 
-    speed = profile_chain_of(_policy(profile=PROFILE_SPEED))
-    quality = profile_chain_of(_policy(profile=PROFILE_QUALITY))
-    balanced = profile_chain_of(_policy(profile=PROFILE_BALANCED))
+    speed = retrieval_params_of(_policy(profile=PROFILE_SPEED))
+    quality = retrieval_params_of(_policy(profile=PROFILE_QUALITY))
+    balanced = retrieval_params_of(_policy(profile=PROFILE_BALANCED))
 
     assert speed == quality == balanced
 
@@ -60,7 +58,7 @@ def test_changing_the_profile_name_changes_nothing() -> None:
 def test_missing_keys_fall_back_to_the_deployment_defaults() -> None:
     """缺键逐键回落部署缺省（不是回落到某个档位预设）。"""
 
-    chain = profile_chain_of(_policy(custom_options=()))
+    chain = retrieval_params_of(_policy(custom_options=()))
 
     assert chain.mode == "hybrid"  # settings.RETRIEVAL_MODE 的缺省
     assert chain.top_k == 5  # settings.TOP_K 的缺省
@@ -77,6 +75,6 @@ def test_missing_keys_fall_back_to_the_deployment_defaults() -> None:
 def test_bad_values_do_not_silently_apply(raw: dict, expected: str) -> None:
     """错值按缺键处理，不把链路改成谁也没同意过的形状。"""
 
-    chain = profile_chain_of(_policy(custom_options=tuple(sorted(raw.items()))))
+    chain = retrieval_params_of(_policy(custom_options=tuple(sorted(raw.items()))))
 
     assert chain.mode == expected

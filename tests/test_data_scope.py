@@ -18,11 +18,11 @@ import pytest
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.key_policy import (
-    PROFILE_SPEED,
     KeyPolicy,
     KeyPolicySnapshot,
     policy_snapshot_of,
 )
+from tests.support.policy import PROFILE_SPEED
 
 
 def _policy(allowed: tuple[str, ...] = ("kb-a", "kb-b")) -> KeyPolicySnapshot:
