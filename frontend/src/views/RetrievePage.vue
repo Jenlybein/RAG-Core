@@ -27,6 +27,7 @@ import CollapsibleCard from '../components/CollapsibleCard.vue'
 import ComparePanel from '../components/ComparePanel.vue'
 import DataPlanePanel from '../components/DataPlanePanel.vue'
 import PageHeader from '../components/PageHeader.vue'
+import ResponseFields from '../components/ResponseFields.vue'
 import RunSummary from '../components/RunSummary.vue'
 import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
@@ -648,6 +649,68 @@ const chunks = computed(() => {
   return result.value?.retrieved_chunks ?? []
 })
 const emptyReason = computed(() => result.value?.metadata.retrieval.empty_reason ?? null)
+
+/**
+ * 这次响应的**顶层字段全集**（列表那两栏除外）。
+ *
+ * 为什么把列表剔掉而不是整份 dump：`/rewrite` 一次能回 50 条切片，逐条字段摊在树里会
+ * 把整棵树埋掉；而列表里的每一条本来就有自己的卡片，卡片下方还能再摊「全部字段」。
+ * 于是「全部字段」这条要求落到两处、各司其职：
+ * * 这里——顶层与 `metadata` 一整棵树（`rerank` / `query_optimization` /
+ *   `decomposition` / `tenant_policy` / Research 的 `plan` / `rounds` / `coverage` …）；
+ * * 每条结果卡片——那一条切片的每一个字段。
+ *
+ * 不按接口写死字段表：四个端点各带各的分组，写死的表天然会漏。
+ */
+const responseFields = computed<Record<string, unknown> | null>(() => {
+  const data = researchResult.value ?? result.value
+  if (data === null) return null
+  const fields: Record<string, unknown> = {
+    ...(data as unknown as Record<string, unknown>),
+  }
+  for (const key of ['retrieved_chunks', 'materials']) {
+    const list = fields[key]
+    if (Array.isArray(list)) {
+      // 用一句话交代条数，把逐条字段明确指到卡片上——不静默丢掉那一栏。
+      fields[key] = `［${list.length} 条，逐条字段见上方各卡片的「全部字段」］`
+    }
+  }
+  return fields
+})
+
+const responseJson = computed<string>(() => {
+  const data = researchResult.value ?? result.value
+  return data === null ? '' : JSON.stringify(data, null, 2)
+})
+
+async function copyResponseJson(): Promise<void> {
+  if (responseJson.value === '') return
+  try {
+    await navigator.clipboard.writeText(responseJson.value)
+    ElMessage.success('已复制完整响应的 JSON')
+  } catch {
+    ElMessage.error('浏览器没有授予剪贴板权限，没能复制')
+  }
+}
+
+/**
+ * 每条结果自己的「全部字段」展开状态（按 chunk_id 记）。
+ *
+ * 默认收起：50 条切片各摊 20 个字段会把正文埋掉。但**要能摊开**——`source_chunk_ids` /
+ * `section_id` / `rrf_score` 这些字段没有卡片展示，而它们恰恰是排障时要看的。
+ */
+const expandedChunks = ref<Set<string>>(new Set())
+
+/** 完整响应字段树默认展开：用户要的就是「全都看到」，再点一次纯属多余。 */
+const responseOpen = ref(true)
+
+function toggleChunkFields(chunkId: string): void {
+  // 换一个新 Set 而不是原地增删：Vue 才对 Set 的变更做响应（原地改它不会触发渲染）。
+  const next = new Set(expandedChunks.value)
+  if (next.has(chunkId)) next.delete(chunkId)
+  else next.add(chunkId)
+  expandedChunks.value = next
+}
 const emptyCopy = computed(() =>
   result.value !== null && result.value.retrieved_chunks.length === 0
     ? describeEmptyReason(emptyReason.value)
@@ -1274,9 +1337,64 @@ async function sendRating(): Promise<void> {
             <span :title="chunk.chunk_id">切片 {{ shortId(chunk.chunk_id) }}</span>
             <span :title="chunk.document_id">文档 {{ shortId(chunk.document_id) }}</span>
             <span v-if="chunk.kb_id !== null" :title="chunk.kb_id">库 {{ shortId(chunk.kb_id) }}</span>
+            <!-- 这条切片契约里的**每一个**字段（含卡片没展示的 rrf_score / section_id / source_chunk_ids）。 -->
+            <button
+              type="button"
+              class="text-brand underline underline-offset-2 transition hover:text-ink"
+              @click="toggleChunkFields(chunk.chunk_id)"
+            >
+              {{ expandedChunks.has(chunk.chunk_id) ? '收起字段' : '全部字段' }}
+            </button>
+          </div>
+
+          <div
+            v-if="expandedChunks.has(chunk.chunk_id)"
+            class="mt-2 rounded-control bg-surface-muted px-3 py-2 text-xs"
+          >
+            <ResponseFields :value="chunk" />
           </div>
         </li>
       </ul>
+
+      <!--
+        完整响应：这次回包的**全部字段**。四类响应的形状各不相同（`metadata.retrieval` 里
+        可能带 `rerank` / `query_optimization` / `decomposition`，Research 是另一套
+        `plan` / `rounds` / `coverage` / `citations`），所以这里递归摊开整棵树，而不是按
+        接口维护一张「要显示哪些字段」的表——那张表天然会漏，而漏掉的往往正是排障要看的。
+        列表那两栏单独交代条数：逐条字段在上方各卡片的「全部字段」里。
+      -->
+      <div v-if="responseFields !== null" class="mt-5 border-t border-line pt-4">
+        <div class="flex flex-wrap items-center justify-between gap-2">
+          <span class="text-xs font-medium text-ink">
+            完整响应字段
+            <span class="ml-1 font-normal text-muted">
+              这次 {{ lastCapability }} 回的全部字段
+            </span>
+          </span>
+          <span class="flex items-center gap-3 text-xs">
+            <button
+              type="button"
+              class="text-brand underline underline-offset-2 transition hover:text-ink"
+              @click="copyResponseJson"
+            >
+              复制原始 JSON
+            </button>
+            <button
+              type="button"
+              class="text-muted underline underline-offset-2 transition hover:text-ink"
+              @click="responseOpen = !responseOpen"
+            >
+              {{ responseOpen ? '收起' : '展开' }}
+            </button>
+          </span>
+        </div>
+        <div
+          v-if="responseOpen"
+          class="mt-2 rounded-control bg-surface-muted px-3 py-2.5 text-xs"
+        >
+          <ResponseFields :value="responseFields" />
+        </div>
+      </div>
 
     </el-card>
       </div>
