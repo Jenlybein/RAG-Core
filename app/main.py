@@ -73,6 +73,7 @@ from app.api.routes.console_observability import (
 )
 from app.core.config import settings
 from app.core.http_clients import aclose_http_client
+from app.providers.embedding import get_embedding_provider
 from app.utils import tokenizer
 from app.db.async_session import AsyncSessionLocal
 from app.providers.llm import set_role_resolver
@@ -113,7 +114,20 @@ async def app_lifespan(app: FastAPI):
     # 切块的窗口口径依赖 Qwen 词表：缺它就只能换近似词表，而近似会让同一个库在
     # 不同部署上切出不同的片。所以启动时就要验，带病启动比启动失败更难查。
     tokenizer.verify_ready()
-    # 第 13 步：档位参数注册表已随 profile_presets 表一起删除，不再有启动期装载。
+    # 冷启动预热嵌入：**构建客户端 + 真发一次最小调用**。两件事都要做：
+    # * 构建要付 `langchain_openai` 的导入（实测约 2.9 s）；
+    # * 首次真实调用要付 DNS + TLS + 模型冷启动（实测 3.16 s，之后 107 ms）。
+    # 两者都是**同步**或首调用成本，留在请求路径里就会让第一个用户请求慢 3～7 秒
+    # （实测 7.7 s vs 热态 0.4 s），而且会把关键词那一路的 2 秒预算一起拖垮——事件循环
+    # 忙着导入时，`wait_for` 的定时器排不上队，于是首请求还会被记成一次
+    # `keyword search failed` 的假降级。放到启动期付一次，请求路径就没有这段停顿。
+    # 失败只记 warning：预热是优化不是启动前提（真有问题会在请求时暴露，那时的报错
+    # 带着请求上下文，比启动日志更好查）。
+    try:
+        embedding_warmer = get_embedding_provider()
+        await embedding_warmer.embed_query("warmup")
+    except Exception as exc:  # noqa: BLE001 - 预热失败不该让服务起不来
+        logger.warning("embedding warmup skipped", error=type(exc).__name__)
     try:
         yield
     finally:

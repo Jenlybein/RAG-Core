@@ -36,6 +36,38 @@ export function totalOf(stages: StageTiming[]): number {
 }
 
 /**
+ * 哪几段是**并行**的：组内同时开始，所以组内耗时只该算最长的那一支。
+ *
+ * 现在只有一组：混合检索的向量一路与关键词一路同时发出（`asyncio.gather`）。少了这条
+ * 知识，把六段一加就会算出「合计 13261ms」而这次请求只花了 7710ms——读的人会以为数据
+ * 错了，或者以为自己看漏了一段。
+ */
+export const PARALLEL_STAGE_GROUPS: readonly (readonly string[])[] = [
+  ['vector_recall', 'keyword_recall'],
+]
+
+/**
+ * 关键路径耗时：顺序段相加，并行组取最长的一支。
+ *
+ * 它回答的是「这次请求最少花了多久」，与 `totalOf`（各段简单相加）不是一回事：后者受
+ * 并行影响会偏大，只用来说明「一条条算下来花了多少活」。两者都有用，别混用。
+ *
+ * 组里只到了一半（另一路没发生或没记上）时**不抵扣**：那时它就不是并行了，按顺序算
+ * 才是诚实的。
+ */
+export function elapsedOf(stages: StageTiming[]): number {
+  const byName = new Map(stages.map((stage) => [stage.name, stage.duration_ms]))
+  let total = totalOf(stages)
+  for (const group of PARALLEL_STAGE_GROUPS) {
+    const durations = group.map((name) => byName.get(name))
+    if (durations.every((value) => value !== undefined)) {
+      total -= Math.min(...(durations as number[]))
+    }
+  }
+  return total
+}
+
+/**
  * 毫秒 → 条宽。合计为 0 时一律给 0%：一段都没耗时的时候，画任何宽度都是在编数据。
  *
  * 这里**不设最小宽度**：比例就是比例；「太短看不见」由 CSS 的 `min-width` 兜（那是显示

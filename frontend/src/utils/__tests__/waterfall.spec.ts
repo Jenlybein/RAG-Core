@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { barWidth, describeSource, toWaterfallRows, totalOf } from '../waterfall'
+import { barWidth, describeSource, elapsedOf, toWaterfallRows, totalOf } from '../waterfall'
 
 /**
  * 瀑布图的条宽与文案（#103）。
@@ -89,5 +89,35 @@ describe('describeSource', () => {
     expect(describeSource('jsonl')).toBe('本地记录')
     expect(describeSource('langfuse')).toBe('观测服务')
     expect(describeSource(null)).toBe('—')
+  })
+})
+
+describe('elapsedOf', () => {
+  it('向量与关键词并行时取较长的一支，不是两段相加', () => {
+    // 真实读数：六段相加 13261.6ms，而这次请求只花了 7710ms。
+    expect(
+      elapsedOf([
+        { name: 'query_optimization', duration_ms: 0.4 },
+        { name: 'vector_recall', duration_ms: 6689.3 },
+        { name: 'keyword_recall', duration_ms: 6347.5 },
+        { name: 'fusion', duration_ms: 0.4 },
+        { name: 'rerank', duration_ms: 195.5 },
+        { name: 'collapse', duration_ms: 28.5 },
+      ]),
+    ).toBeCloseTo(6914.1, 1)
+  })
+
+  it('只有一路时按顺序算（那时它不是并行，抵扣就是编数据）', () => {
+    expect(
+      elapsedOf([
+        { name: 'vector_recall', duration_ms: 30 },
+        { name: 'collapse', duration_ms: 5 },
+      ]),
+    ).toBe(35)
+  })
+
+  it('两路都没发生时等于各段之和', () => {
+    expect(elapsedOf([{ name: 'collapse', duration_ms: 5 }])).toBe(5)
+    expect(elapsedOf([])).toBe(0)
   })
 })

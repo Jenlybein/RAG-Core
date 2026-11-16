@@ -18,7 +18,7 @@ import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import {
   describeSource,
   toWaterfallRows,
-  totalOf,
+  elapsedOf,
 } from '../utils/waterfall'
 
 const props = defineProps<{
@@ -27,7 +27,7 @@ const props = defineProps<{
 }>()
 
 const rows = computed(() => toWaterfallRows(props.data.stages))
-const totalMs = computed(() => totalOf(props.data.stages).toFixed(1))
+const elapsedMs = computed(() => elapsedOf(props.data.stages).toFixed(1))
 const sourceLabel = computed(() => describeSource(props.data.source))
 const hasStages = computed(() => props.data.stages.length > 0)
 
@@ -76,8 +76,14 @@ const emptyCopy = computed(() => {
         <span>retrieved {{ data.created_at === null ? '—' : data.created_at }}</span>
       </span>
       <span v-if="hasStages" class="text-muted">
-        六段合计
-        <span class="font-mono text-ink">{{ totalMs }}</span> ms ·
+        <el-tooltip
+          content="向量一路与关键词一路是同时发出的（并行），所以这里取较长的那一支，而不是把两段相加"
+          placement="top"
+          :show-after="200"
+        >
+          <span class="cursor-help underline decoration-dotted underline-offset-2">关键路径</span>
+        </el-tooltip>
+        <span class="font-mono text-ink">{{ elapsedMs }}</span> ms ·
         本次总耗时
         <span class="font-mono text-ink">{{ data.latency_ms }}</span> ms
       </span>
