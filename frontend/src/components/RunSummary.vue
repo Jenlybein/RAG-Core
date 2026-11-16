@@ -40,15 +40,26 @@ const hasTenantPolicy = computed(() => props.metadata.tenant_policy !== undefine
       降级那一路的分数、名次会是「—」。
     </div>
 
-    <dl class="grid gap-x-6 gap-y-3 text-sm sm:grid-cols-2 lg:grid-cols-3">
-      <div v-for="row in rows" :key="row.field">
-        <dt class="text-xs text-slate-400">
+    <!--
+      **一行一项**，不是多列网格。原来用的是 `lg:grid-cols-3`：这一栏在最窄的右列里只有
+      ~340px，三列把每格压到 100px 出头，而 `tenant_policy.clipped` 这种字段名不换行，
+      于是直接溢到隔壁格子里，标签和值叠在一起互相盖住（真实截图就是这样）。
+      行布局不依赖容器宽度：标签在左、值在右，放不下就换行，永远不会越界。
+      列宽不再参与决定可读性，这段就再也不会因为「换个屏幕宽度」而崩。
+    -->
+    <dl class="text-sm">
+      <div
+        v-for="row in rows"
+        :key="row.field"
+        class="flex flex-wrap items-baseline gap-x-3 gap-y-0.5 border-b border-line/70 py-1.5 last:border-b-0"
+      >
+        <dt class="min-w-0 break-all text-xs text-slate-400">
           {{ row.label }}
-          <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-xs text-slate-500">
+          <code class="ml-1 rounded bg-slate-100 px-1 font-mono text-[11px] text-slate-500">
             {{ row.field }}
           </code>
         </dt>
-        <dd class="mt-0.5 break-all font-mono text-slate-800">
+        <dd class="ml-auto min-w-0 break-all text-right font-mono text-slate-800">
           <el-tooltip v-if="row.hint !== null" :content="row.hint" placement="top">
             <span class="cursor-help underline decoration-slate-300 decoration-dotted">
               {{ row.value }}
@@ -63,8 +74,7 @@ const hasTenantPolicy = computed(() => props.metadata.tenant_policy !== undefine
       这次响应没有 <code>tenant_policy</code>：只有经套餐门禁解析的调用才有这一栏。
     </p>
     <p v-else class="mt-3 text-xs text-slate-400">
-      <code>tenant_policy</code> 是「本次实际生效」的唯一真相：档位想要的重排 / 改写
-      可能被部署能力或套餐上限裁掉，以上面显示的值为准。
+      <code>tenant_policy</code> 是本次实际生效的值（重排 / 改写可能被能力或上限裁掉）。
     </p>
   </div>
 </template>
