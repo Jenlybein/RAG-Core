@@ -25,94 +25,84 @@ from app.models.plan import (
     plan_spec_of,
     preset_mismatches,
 )
-
-# 票面真值表：21 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
+# 票面真值表：16 个业务列 × 四档。这份字面量是**独立来源**，刻意不从常量里推导——
 # 否则「常量等于它自己」的同义反复什么都守不住。name 是展示名，票面没定字面值，
 # 另有用例只要求非空且互不相同。
 #
-# 第 13 步新增 8 列：三个端点位 + 两本新账四列 + max_top_k。种子里它们取
-# PlanSpec 的 expand 缺省（此刻还没接进门禁，T8 才切成四档各自的真值）。
-_EXPAND_SEED: dict[str, Any] = {
-    "retrieve_allowed": True,
-    "rewrite_allowed": True,
-    "decompose_allowed": True,
-    "rerank_qps": 0,
-    "rerank_daily": 0,
-    "llm_qps": 0,
-    "llm_daily": 0,
-}
+# 倍率口径（spec #184）：plus 是基准（1×），pro = 5×，max = 20×；free 只开基线
+# ``retrieve`` 一个授权位，两本加工账都是 0（= 没买这项能力）。
 SPEC_TABLE: dict[str, dict[str, Any]] = {
     "free": {
-        "allowed_profiles": ("speed",),
-        "hybrid_allowed": False,
-        "rerank_allowed": False,
-        "query_rewrite_allowed": False,
+        "retrieve_allowed": True,
+        "rewrite_allowed": False,
+        "decompose_allowed": False,
         "research_allowed": False,
+        "rerank_allowed": False,
         "retrieve_qps": 3,
         "retrieve_daily": 500,
-        # Research 的两个独立配额（票 #150）：0 等同于关闭，与 ``research_allowed``
-        # 一起表达「这一档没有这项能力」。
-        "research_qps": 0,
-        "research_daily": 0,
+        "rerank_qps": 0,
+        "rerank_daily": 0,
+        "llm_qps": 0,
+        "llm_daily": 0,
+        "max_top_k": 5,
         "max_kb": 1,
         "max_kb_per_retrieve": 1,
         "max_documents_per_kb": 30,
         "max_processing_documents": 1,
-        "max_top_k": 5,
-        **_EXPAND_SEED,
     },
     "plus": {
-        "allowed_profiles": ("speed", "balanced", "custom"),
-        "hybrid_allowed": True,
-        "rerank_allowed": False,
-        "query_rewrite_allowed": False,
-        "research_allowed": False,
+        "retrieve_allowed": True,
+        "rewrite_allowed": True,
+        "decompose_allowed": True,
+        "research_allowed": True,
+        "rerank_allowed": True,
         "retrieve_qps": 10,
         "retrieve_daily": 5000,
-        "research_qps": 0,
-        "research_daily": 0,
+        "rerank_qps": 3,
+        "rerank_daily": 1000,
+        "llm_qps": 1,
+        "llm_daily": 300,
+        "max_top_k": 10,
         "max_kb": 5,
         "max_kb_per_retrieve": 3,
         "max_documents_per_kb": 200,
         "max_processing_documents": 2,
-        "max_top_k": 10,
-        **_EXPAND_SEED,
     },
     "pro": {
-        "allowed_profiles": ("speed", "balanced", "quality", "custom"),
-        "hybrid_allowed": True,
-        "rerank_allowed": True,
-        "query_rewrite_allowed": True,
+        "retrieve_allowed": True,
+        "rewrite_allowed": True,
+        "decompose_allowed": True,
         "research_allowed": True,
+        "rerank_allowed": True,
         "retrieve_qps": 50,
-        "retrieve_daily": 100000,
-        # 票面：专业版 1 QPS / 100 次每天（一次 Research 约 30 秒、3–4 次模型调用，
-        # 独立配额就是为了不让它吃掉普通检索的额度）。
-        "research_qps": 1,
-        "research_daily": 100,
+        "retrieve_daily": 25000,
+        "rerank_qps": 15,
+        "rerank_daily": 5000,
+        "llm_qps": 5,
+        "llm_daily": 1500,
+        "max_top_k": 15,
         "max_kb": 50,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
         "max_processing_documents": 10,
-        "max_top_k": 15,
-        **_EXPAND_SEED,
     },
     "max": {
-        "allowed_profiles": ("speed", "balanced", "quality", "custom"),
-        "hybrid_allowed": True,
-        "rerank_allowed": True,
-        "query_rewrite_allowed": True,
+        "retrieve_allowed": True,
+        "rewrite_allowed": True,
+        "decompose_allowed": True,
         "research_allowed": True,
+        "rerank_allowed": True,
         "retrieve_qps": 200,
         "retrieve_daily": 100000,
-        "research_qps": 1,
-        "research_daily": 100,
+        "rerank_qps": 60,
+        "rerank_daily": 20000,
+        "llm_qps": 20,
+        "llm_daily": 6000,
+        "max_top_k": 20,
         "max_kb": 50,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
         "max_processing_documents": 10,
-        "max_top_k": 20,
-        **_EXPAND_SEED,
     },
 }
 
@@ -158,23 +148,16 @@ def test_plan_display_names_are_present_and_distinct() -> None:
 
 
 def test_the_spec_fields_are_exactly_the_columns() -> None:
-    """映射对象真实字段与列一一对应；deprecated 兼容壳不在列清单里。"""
+    """映射对象真实字段与列一一对应；没有任何「兼容壳」字段。"""
 
     field_names = [field.name for field in dataclasses.fields(PlanSpec)]
-    deprecated = {
-        "allowed_profiles",
-        "hybrid_allowed",
-        "query_rewrite_allowed",
-        "research_qps",
-        "research_daily",
-    }
-    assert set(field_names) == set(["code", "name", *PLAN_BUSINESS_COLUMNS]) | deprecated
-    assert len(field_names) == len(PLAN_BUSINESS_COLUMNS) + 2 + len(deprecated)
+    assert set(field_names) == {"code", "name", *PLAN_BUSINESS_COLUMNS}
+    assert len(field_names) == len(PLAN_BUSINESS_COLUMNS) + 2
 
 
 @pytest.mark.parametrize("code", PLAN_CODES)
 def test_mapping_a_seeded_row_back_yields_the_constant(code: str) -> None:
-    """播种用怎么建行，回来就怎么映射：真实列逐项相等（deprecated 壳不比）。"""
+    """播种用怎么建行，回来就怎么映射：逐列相等。"""
 
     row = plan_row_of(PLAN_PRESETS[code])
     mapped = plan_spec_of(row)
@@ -190,10 +173,10 @@ def test_reconciliation_passes_after_seeding_all_three_plans() -> None:
 
 
 def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None:
-    """行映射兜底：真实列缺一列就是 KeyError，而不是静默变成兜底值。
+    """行映射兜底：缺一列就是 ``KeyError``，而不是静默变成兜底值。
 
-    第 13 步所有快照字段都有默认值（兼容旧缓存），所以从 dict 构造不再报错；
-    守门点移到 :func:`plan_spec_from_mapping`——它仍对缺失的真实列抛 KeyError。
+    快照字段**没有默认值**，所以守门点在 :func:`plan_spec_from_mapping`：少一列直接抛，
+    不会悄悄变成一个「看起来合理」的值。
     """
 
     from app.models.plan import plan_spec_from_mapping
@@ -202,9 +185,6 @@ def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None
         column: getattr(PLAN_PRESETS["pro"], column) for column in PLAN_SPEC_COLUMNS
     }
     for column in PLAN_SPEC_COLUMNS:
-        # 有 _EXPAND_DEFAULTS 兜底的列（含 max_top_k）缺了不报，跳过。
-        if column in _EXPAND_SEED or column == "max_top_k":
-            continue
         partial = {key: value for key, value in complete.items() if key != column}
         with pytest.raises(KeyError):
             plan_spec_from_mapping(partial)
