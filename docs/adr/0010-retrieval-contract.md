@@ -560,3 +560,7 @@ ADR-0010 第三次修订的结论不变。
 
 - **图谱**：语料足够大且召回深度压到"相似度真的会漏"、有一批**只靠显式引用才能找到**且有答案影响的材料、隐式关联另有办法、且有人愿意承担持续加规则的成本——四条同时成立才重新考虑；
 - **编排**：出现「我要结构化材料但不要答案」的真实需求，**且**能把两次调用压到一次、延迟压到 5 秒内。否则它应该留在 Research 内部。
+
+## 第 13 步修订（ADR-0032）
+
+检索不再是单一端点：新增 `/rag/rewrite` / `/rag/decompose` / `/rag/research`，与 `/rag/retrieve` 并列，请求体一律 `kb_ids + query`（本 ADR 的「第三次修订」依旧成立）。`tenant_policy` 回显改报参数本身（plan/mode/top_k/rerank/kb_count/clipped），删 `requested_profile` 与 `rewrite`；黄金哈希据此重采。详见 [ADR-0032](0032-four-retrieval-endpoints.md)。
