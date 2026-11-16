@@ -93,8 +93,8 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
         query_rewrite_allowed=False,
         retrieve_qps=3,
         retrieve_daily=500,
-        research_qps=0,
-        research_daily=0,
+        llm_qps=0,
+        llm_daily=0,
         profile="speed",
         include_parent=True,
         expand_table_rows=True,
@@ -410,9 +410,8 @@ def test_update_policy_script_writes_the_new_values(
                 POLICY_ID,
                 "--name",
                 "订单机器人",
-                "--profile",
-                "balanced",
-                "--hybrid",
+                "--mode",
+                "hybrid",
                 "--no-include-parent",
                 "--qps",
                 "8",
@@ -429,8 +428,8 @@ def test_update_policy_script_writes_the_new_values(
 
     policy = session._rows[KeyPolicy][0]
     assert policy.name == "订单机器人"
-    assert policy.profile == "balanced"
-    assert policy.hybrid_allowed is True
+    assert (policy.retrieval_mode, policy.retrieval_top_k) == ("hybrid", 5)
+    assert policy.retrieval_top_k == 5
     # 没动的字段保持原样：脚本是「改这几项」，不是「整行重写」。
     assert policy.rerank_allowed is False
     assert policy.research_allowed is False
@@ -443,8 +442,8 @@ def test_update_policy_script_writes_the_new_values(
 
     out = capsys.readouterr().out
     assert f"key policy: {POLICY_ID}" in out
-    assert "profile: speed -> balanced" in out
-    assert "hybrid_allowed: False -> True" in out
+    assert "retrieval_mode: vector -> hybrid" in out
+    assert "retrieval_top_k" not in out, "没给的字段不该出现在改动清单里"
 
 
 def test_update_policy_script_can_clear_the_kb_whitelist(
@@ -469,8 +468,8 @@ def test_update_policy_script_can_clear_the_kb_whitelist(
         # free 的限额是 qps 3 / daily 500
         ["--qps", "4"],
         ["--daily", "501"],
-        # free 没有混合检索能力
-        ["--hybrid"],
+        # free 没有加工能力（rewrite / decompose / research / rerank 位）
+        ["--rewrite-allowed"],
     ],
 )
 def test_update_policy_script_refuses_an_inconsistent_configuration(
@@ -488,9 +487,9 @@ def test_update_policy_script_refuses_an_inconsistent_configuration(
 
     assert capsys.readouterr().err.strip(), "不自洽必须打印原因"
     policy = session._rows[KeyPolicy][0]
-    assert policy.profile == "speed"
+    assert policy.retrieval_mode == "vector"
     assert (policy.retrieve_qps, policy.retrieve_daily) == (3, 500)
-    assert policy.hybrid_allowed is False
+    assert policy.retrieval_rerank is False
     assert session.commits == 0
     assert session.rollbacks == 1
 
@@ -498,9 +497,9 @@ def test_update_policy_script_refuses_an_inconsistent_configuration(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--profile", "balanced"],  # 少了 --policy-id
+        ["--mode", "hybrid"],  # 少了 --policy-id
         ["--policy-id", POLICY_ID],  # 一个字段都没给
-        ["--policy-id", POLICY_ID, "--profile", "platinum"],
+        ["--policy-id", POLICY_ID, "--mode", "platinum"],
         ["--policy-id", POLICY_ID, "--kb-id", "kb-1", "--clear-kb-ids"],
     ],
 )
@@ -547,8 +546,10 @@ def test_update_policy_script_help_lists_the_editable_fields(
     for flag in (
         "--policy-id",
         "--name",
-        "--profile",
-        "--hybrid",
+        "--mode",
+        "--top-k",
+        "--rerank",
+        "--rerank-allowed",
         "--include-parent",
         "--qps",
         "--daily",

@@ -11,6 +11,8 @@
 """
 
 from __future__ import annotations
+
+from app.core.exceptions import ErrorCode
 from tests.support.policy import policy_row
 
 from dataclasses import dataclass
@@ -113,33 +115,35 @@ def _policy(
     tenant_id: str,
     name: str,
     *,
-    profile: str,
-    allowed_kb_ids: list[str] | None = None,
-    hybrid: bool = False,
+    mode: str = "vector",
+    top_k: int = 5,
     rerank: bool = False,
-    rewrite: bool = False,
+    allowed_kb_ids: list[str] | None = None,
     qps: int = 10,
     daily: int = 5000,
 ) -> KeyPolicy:
-    """一套自洽的密钥配置：``quality`` 必须把三件事都打开，否则它自己就不成立。"""
+    """一套自洽的密钥配置：要重排就得同时给重排位，否则它自己就不成立。"""
 
     return policy_row(
-        id=policy_id,
+        policy_id=policy_id,
         tenant_id=tenant_id,
         name=name,
-        allowed_kb_ids=list(allowed_kb_ids or []),
+        allowed_kb_ids=tuple(allowed_kb_ids or ()),
+        rewrite_allowed=False,
+        decompose_allowed=False,
         research_allowed=False,
-        hybrid_allowed=hybrid,
         rerank_allowed=rerank,
-        query_rewrite_allowed=rewrite,
         retrieve_qps=qps,
         retrieve_daily=daily,
-        research_qps=0,
-        research_daily=0,
-        profile=profile,
+        rerank_qps=0,
+        rerank_daily=0,
+        llm_qps=0,
+        llm_daily=0,
+        custom_options=tuple(
+            sorted({"mode": mode, "top_k": top_k, "rerank": rerank}.items())
+        ),
         include_parent=True,
         expand_table_rows=True,
-        custom_options={},
     )
 
 
@@ -171,13 +175,12 @@ def _world() -> dict[type, list[Any]]:
                 POLICY_ALPHA,
                 TENANT_ALPHA,
                 "alpha-default",
-                profile="quality",
-                allowed_kb_ids=["kb-a1"],
-                hybrid=True,
+                mode="hybrid",
+                top_k=5,
                 rerank=True,
-                rewrite=True,
+                allowed_kb_ids=["kb-a1"],
             ),
-            _policy(POLICY_BETA, TENANT_BETA, "beta-default", profile="speed", hybrid=True),
+            _policy(POLICY_BETA, TENANT_BETA, "beta-default", mode="hybrid", top_k=5),
         ],
         ApiKey: [
             _api_key(KEY_ALPHA, TENANT_ALPHA, POLICY_ALPHA, KEY_ALPHA_VALUE, "alpha-bot"),
@@ -226,16 +229,16 @@ def test_listing_keys_returns_the_plaintext_and_the_masked_form(console: _Harnes
     assert item["status"] == "active"
     policy = item["policy"]
     assert policy["policy_id"] == POLICY_ALPHA
-    assert policy["profile"] == "quality"
+    assert policy["retrieval_mode"] == "hybrid"
     assert policy["allowed_kb_ids"] == ["kb-a1"]
-    assert policy["hybrid_allowed"] is True
+    assert policy["retrieval_mode"] == "hybrid"
     assert policy["rerank_allowed"] is True
-    assert policy["query_rewrite_allowed"] is True
+    assert policy["rewrite_allowed"] is False
     assert policy["research_allowed"] is False
     assert (policy["retrieve_qps"], policy["retrieve_daily"]) == (10, 5000)
     assert policy["include_parent"] is True
     assert policy["expand_table_rows"] is True
-    assert policy["custom_options"] == {}
+    assert (policy["retrieval_top_k"], policy["retrieval_rerank"]) == (5, True)
 
 
 def test_listing_keys_never_mentions_another_tenant(console: _Harness) -> None:
@@ -268,16 +271,22 @@ def test_listing_keys_without_a_session_is_unauthorized(console: _Harness) -> No
 #: 一套自洽的默认签发请求：``pro`` 套餐下 ``balanced`` 只需要 hybrid。
 _ISSUE_POLICY = {
     "allowed_kb_ids": ["kb-a1", "kb-a2"],
+    "retrieve_allowed": True,
+    "rewrite_allowed": False,
+    "decompose_allowed": False,
     "research_allowed": False,
-    "hybrid_allowed": True,
     "rerank_allowed": False,
-    "query_rewrite_allowed": False,
     "retrieve_qps": 5,
     "retrieve_daily": 1000,
-    "profile": "balanced",
+    "rerank_qps": 0,
+    "rerank_daily": 0,
+    "llm_qps": 0,
+    "llm_daily": 0,
+    "retrieval_mode": "hybrid",
+    "retrieval_top_k": 5,
+    "retrieval_rerank": False,
     "include_parent": True,
     "expand_table_rows": False,
-    "custom_options": {},
 }
 
 
@@ -300,7 +309,7 @@ def test_issuing_a_key_creates_its_policy_and_returns_the_plaintext(console: _Ha
     assert data["key_value"].startswith("rc_live_")
     assert data["key_masked"] == f"rc_live_…{data['key_value'][-4:]}"
     assert data["status"] == "active"
-    assert data["policy"]["profile"] == "balanced"
+    assert data["policy"]["retrieval_mode"] == "hybrid"
     assert data["policy"]["allowed_kb_ids"] == ["kb-a1", "kb-a2"]
     assert data["policy"]["expand_table_rows"] is False
 
@@ -319,7 +328,7 @@ def test_issuing_a_key_creates_its_policy_and_returns_the_plaintext(console: _Ha
     assert entry.action == "key.issue"
     assert entry.target == f"key:{data['key_id']}"
     assert entry.before_snapshot is None
-    assert entry.after_snapshot["policy"]["profile"] == "balanced"
+    assert entry.after_snapshot["policy"]["retrieval_mode"] == "hybrid"
     # 审计是跨租户给管理员看的：这里只留 masked，不留可用凭证。
     assert entry.after_snapshot["key_masked"] == data["key_masked"]
     assert data["key_value"] not in str(entry.after_snapshot)
@@ -359,19 +368,6 @@ def test_issuing_a_key_without_the_anti_csrf_header_is_rejected(console: _Harnes
     assert console.code(response) == 20011
     assert console.db.added_of(ApiKey) == []
     assert console.audit_entries() == []
-
-
-def test_issuing_an_old_profile_name_with_capabilities_off_succeeds(console: _Harness) -> None:
-    """第 13 步：档位名不再承诺能力，关着重排/改写也不再是自相矛盾。"""
-
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
-
-    response = _issue(console, profile="quality", rerank_allowed=False, query_rewrite_allowed=False)
-
-    assert console.code(response) == 0
-    assert console.db.added_of(KeyPolicy)
-
-
 def test_issuing_a_policy_over_the_plan_limit_is_a_20015(console: _Harness) -> None:
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
 
@@ -380,18 +376,6 @@ def test_issuing_a_policy_over_the_plan_limit_is_a_20015(console: _Harness) -> N
     assert console.code(response) == 20015
     assert console.db.added_of(ApiKey) == []
     assert console.db.added_of(KeyPolicy) == []
-
-
-def test_issuing_an_unknown_profile_is_a_20015(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
-
-    response = _issue(console, profile="turbo")
-
-    assert console.code(response) == 20015
-    assert console.db.added_of(ApiKey) == []
-    assert console.db.added_of(KeyPolicy) == []
-
-
 # ──────────────────────────────────────────────────────── DELETE /console/keys/{id}
 
 
@@ -489,7 +473,7 @@ def test_a_policy_patch_is_a_partial_update_with_a_before_and_after_snapshot(
     assert data["after"]["expand_table_rows"] is False
     assert data["changed"] == ["expand_table_rows", "retrieve_daily", "retrieve_qps"]
     # 没给的字段保持原样：档位还是 quality、白名单还是那一个库。
-    assert data["after"]["profile"] == "quality"
+    assert data["after"]["retrieval_mode"] == "hybrid"
     assert data["after"]["allowed_kb_ids"] == ["kb-a1"]
 
     row = console.policy_row(POLICY_ALPHA)
@@ -518,27 +502,27 @@ def test_a_policy_patch_opens_research_and_takes_effect_without_reissuing_the_ke
 
     response = console.client.patch(
         f"/console/key-policies/{POLICY_ALPHA}",
-        json={"research_allowed": True, "research_qps": 1, "research_daily": 100},
+        json={"research_allowed": True, "llm_qps": 2, "llm_daily": 200},
         headers=WRITE_HEADERS,
     )
 
     data = console.data(response)
     assert data["after"]["research_allowed"] is True
-    assert (data["after"]["research_qps"], data["after"]["research_daily"]) == (1, 100)
-    assert {"research_allowed", "research_qps", "research_daily"} <= set(data["changed"])
+    assert (data["after"]["llm_qps"], data["after"]["llm_daily"]) == (2, 200)
+    assert {"research_allowed", "llm_qps", "llm_daily"} <= set(data["changed"])
 
     row = console.policy_row(POLICY_ALPHA)
-    assert (row.research_qps, row.research_daily) == (1, 100)
+    assert (row.llm_qps, row.llm_daily) == (2, 200)
     snapshot = policy_snapshot_of(row)
-    assert (snapshot.research_qps, snapshot.research_daily) == (1, 100), (
+    assert (snapshot.llm_qps, snapshot.llm_daily) == (2, 200), (
         "下一次调用拿到的快照就是新值：不必重签 Key"
     )
 
     entry = console.audit_entries()[-1]
     assert entry.action == "key_policy.update"
-    assert entry.before_snapshot["research_qps"] == 0
-    assert entry.after_snapshot["research_qps"] == 1
-    assert entry.after_snapshot["research_daily"] == 100
+    assert entry.before_snapshot["llm_qps"] == 0
+    assert entry.after_snapshot["llm_qps"] == 2
+    assert entry.after_snapshot["llm_daily"] == 200
 
 
 def test_a_policy_patch_rejects_a_negative_research_quota(console: _Harness) -> None:
@@ -549,42 +533,13 @@ def test_a_policy_patch_rejects_a_negative_research_quota(console: _Harness) -> 
 
     response = console.client.patch(
         f"/console/key-policies/{POLICY_ALPHA}",
-        json={"research_daily": -1},
+        json={"llm_daily": -1},
         headers=WRITE_HEADERS,
     )
 
     assert console.code(response) == 20015
-    assert console.policy_row(POLICY_ALPHA).research_daily == 0
+    assert console.policy_row(POLICY_ALPHA).llm_daily == 0
     assert len(console.audit_entries()) == audits_before
-
-
-def test_a_policy_patch_can_move_to_a_profile_the_plan_allows(console: _Harness) -> None:
-    """``standard`` 允许 ``balanced``：改档位是正常动作，不必新签 Key。"""
-
-    assert console.login("bob", USER_PASSWORD).json()["code"] == 0
-
-    response = console.client.patch(
-        f"/console/key-policies/{POLICY_BETA}", json={"profile": "balanced"}, headers=WRITE_HEADERS
-    )
-
-    data = console.data(response)
-    assert data["after"]["profile"] == "balanced"
-    assert console.policy_row(POLICY_BETA).profile == "balanced"
-
-
-def test_a_policy_patch_to_an_old_profile_name_succeeds(console: _Harness) -> None:
-    """第 13 步：档位名不参与门禁，换名不再是越权（也不改变实际参数）。"""
-
-    assert console.login("bob", USER_PASSWORD).json()["code"] == 0
-
-    response = console.client.patch(
-        f"/console/key-policies/{POLICY_BETA}", json={"profile": "quality"}, headers=WRITE_HEADERS
-    )
-
-    assert console.code(response) == 0
-    assert console.policy_row(POLICY_BETA).profile == "quality"
-
-
 def test_a_policy_patch_over_the_plan_limit_is_a_20015(console: _Harness) -> None:
     assert console.login("bob", USER_PASSWORD).json()["code"] == 0
 
@@ -596,19 +551,19 @@ def test_a_policy_patch_over_the_plan_limit_is_a_20015(console: _Harness) -> Non
     assert console.policy_row(POLICY_BETA).retrieve_qps == 10
 
 
-def test_a_policy_patch_that_grants_a_capability_the_plan_lacks_is_a_20015(
+def test_a_policy_patch_beyond_the_plan_quota_is_a_20015(
     console: _Harness,
 ) -> None:
     assert console.login("bob", USER_PASSWORD).json()["code"] == 0
 
     response = console.client.patch(
         f"/console/key-policies/{POLICY_BETA}",
-        json={"rerank_allowed": True},
+        json={"retrieve_daily": 10**9},
         headers=WRITE_HEADERS,
     )
 
     assert console.code(response) == 20015
-    assert console.policy_row(POLICY_BETA).rerank_allowed is False
+    assert console.policy_row(POLICY_BETA).retrieve_daily != 10**9
 
 
 def test_a_policy_patch_on_another_tenants_policy_is_not_found(console: _Harness) -> None:
@@ -664,7 +619,9 @@ def test_a_policy_patch_without_the_anti_csrf_header_is_rejected(console: _Harne
     assert console.audit_entries() == []
 
 
-# ────────────────────────────────────── custom_options（custom 档的手动参数，票 #91 补充）
+# ────────────────────────────────────── 三项直参数（第 13 步：档位退役）
+
+_NEW_PARAMS = {"retrieval_mode": "bm25", "retrieval_top_k": 7, "retrieval_rerank": False}
 
 
 def _patch_policy(console: _Harness, policy_id: str, payload: dict[str, Any]) -> Any:
@@ -673,81 +630,56 @@ def _patch_policy(console: _Harness, policy_id: str, payload: dict[str, Any]) ->
     )
 
 
-def test_custom_options_are_writeable_and_read_back_off_the_custom_profile(
-    console: _Harness,
-) -> None:
-    """不要求 ``profile == custom``：参数可以先写好，下一次再切档位（延后生效的数据）。
+def test_the_three_parameters_are_writeable_and_read_back(console: _Harness) -> None:
+    """三项参数各自是一列，改完立刻回显——不存在「写进 JSON 但没人读」的中间态。"""
 
-    这里用的还是 ``quality`` 档——正因如此才证明「写参数」与「当前档位」是两件事。
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    data = console.data(_patch_policy(console, POLICY_ALPHA, dict(_NEW_PARAMS)))
+
+    assert data["after"]["retrieval_mode"] == "bm25"
+    assert data["after"]["retrieval_top_k"] == 7
+    assert data["after"]["retrieval_rerank"] is False
+    assert set(data["changed"]) == set(_NEW_PARAMS)
+    row = console.policy_row(POLICY_ALPHA)
+    assert (row.retrieval_mode, row.retrieval_top_k, row.retrieval_rerank) == ("bm25", 7, False)
+
+
+def test_an_unknown_mode_is_a_20015_not_a_request_shape_error(console: _Harness) -> None:
+    """拼错一个模式是**配置不成立**（20015），不是请求结构错误（20002）。
+
+    两者的补救动作不同：20002 要改调用，20015 要改配置内容。
     """
 
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
 
-    options = {"mode": "hybrid", "top_k": 5, "rerank": True, "rewrite": True}
-    data = console.data(_patch_policy(console, POLICY_ALPHA, {"custom_options": options}))
+    response = _patch_policy(console, POLICY_ALPHA, {"retrieval_mode": "bing"})
 
-    assert data["after"]["custom_options"] == options
-    assert data["before"]["custom_options"] == {}
-    assert data["changed"] == ["custom_options"]
-    # 档位没被这次请求改掉：写参数不是切档位的副作用。
-    assert data["after"]["profile"] == "quality"
-
-    assert console.policy_row(POLICY_ALPHA).custom_options == options
-    listed = console.data(console.client.get("/console/keys"))["keys"][0]["policy"]
-    assert listed["custom_options"] == options
-
-    entry = console.audit_entries()[-1]
-    assert entry.action == "key_policy.update"
-    assert entry.after_snapshot["custom_options"] == options
+    assert console.code(response) == ErrorCode.PARAM_ERROR
+    assert console.policy_row(POLICY_ALPHA).retrieval_mode != "bing"
 
 
-def test_a_custom_options_top_k_below_one_is_a_20015(console: _Harness) -> None:
+def test_a_top_k_below_one_is_a_20015(console: _Harness) -> None:
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
 
-    response = _patch_policy(console, POLICY_ALPHA, {"custom_options": {"top_k": 0}})
+    response = _patch_policy(console, POLICY_ALPHA, {"retrieval_top_k": 0})
 
-    assert console.code(response) == 20015
-    assert console.policy_row(POLICY_ALPHA).custom_options == {}
-    assert console.audit_entries() == []
-
-
-def test_an_unknown_custom_mode_is_a_20015(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
-
-    response = _patch_policy(console, POLICY_ALPHA, {"custom_options": {"mode": "bing"}})
-
-    assert console.code(response) == 20015
-    assert console.policy_row(POLICY_ALPHA).custom_options == {}
-    assert console.audit_entries() == []
+    assert console.code(response) == ErrorCode.PARAM_ERROR
+    assert console.policy_row(POLICY_ALPHA).retrieval_top_k != 0
 
 
-def test_an_unknown_custom_option_key_is_a_20015(console: _Harness) -> None:
-    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
-
-    response = _patch_policy(console, POLICY_ALPHA, {"custom_options": {"max_kb": 3}})
-
-    assert console.code(response) == 20015
-    assert console.policy_row(POLICY_ALPHA).custom_options == {}
-    assert console.audit_entries() == []
-
-
-def test_a_partial_custom_options_patch_merges_instead_of_replacing(console: _Harness) -> None:
-    """只传 ``rerank`` 时，已经写好的 ``mode`` / ``top_k`` 不被清空。"""
+def test_the_parameters_are_patched_one_at_a_time_without_touching_the_others(
+    console: _Harness,
+) -> None:
+    """面板一次只改一个输入框：只发一个字段，另外两个保持原样。"""
 
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    before = console.policy_row(POLICY_ALPHA)
 
-    first = console.data(
-        _patch_policy(console, POLICY_ALPHA, {"custom_options": {"mode": "bm25", "top_k": 7}})
-    )
-    assert first["after"]["custom_options"] == {"mode": "bm25", "top_k": 7}
+    _patch_policy(console, POLICY_ALPHA, {"retrieval_mode": "bm25"})
+    _patch_policy(console, POLICY_ALPHA, {"retrieval_top_k": 9})
 
-    second = console.data(
-        _patch_policy(console, POLICY_ALPHA, {"custom_options": {"rerank": True}})
-    )
-    assert second["after"]["custom_options"] == {"mode": "bm25", "top_k": 7, "rerank": True}
-    assert second["changed"] == ["custom_options"]
-    assert console.policy_row(POLICY_ALPHA).custom_options == {
-        "mode": "bm25",
-        "top_k": 7,
-        "rerank": True,
-    }
+    row = console.policy_row(POLICY_ALPHA)
+    assert row.retrieval_mode == "bm25"
+    assert row.retrieval_top_k == 9
+    assert row.retrieval_rerank == before.retrieval_rerank

@@ -53,8 +53,12 @@ KB = "kb-a"
 
 
 def _policy(**kwargs: Any) -> KeyPolicySnapshot:
-    """一份只关心参数与授权位的快照；夹具词汇（档位名 / 已退役列名）由 tests.support 翻译。"""
+    """一份只关心参数与授权位的快照；夹具词汇（档位名 / 已退役列名）由 tests.support 翻译。
 
+    白名单关卡不在本文件的射程内（它是 #76 的事），所以默认不做范围收窄。
+    """
+
+    kwargs.setdefault("unrestricted_scope", True)
     return support_policy(**kwargs)
 def _plan(code: str, **overrides: Any) -> PlanSpec:
     """三档种子之一，按需改几列（模拟管理员在控制台把某一档调低）。"""

@@ -103,6 +103,10 @@ def policy(
     llm_qps: int = 0,
     llm_daily: int = 0,
     allowed_kb_ids: tuple[str, ...] = ("kb-1",),
+    #: 真实配置行永远是**受限**的（``policy_snapshot_of`` 不映射这个标记，它默认 False）。
+    #: 只有内置开发身份那份是 ``True``；夹具默认跟真实行一致，免得「白名单关卡」在用例里
+    #: 被一个上游缺省悄悄关掉。
+    unrestricted_scope: bool = False,
     **overrides: Any,
 ) -> KeyPolicySnapshot:
     """一份只关心参数与授权位的快照；其余字段取内置开发身份那份。
@@ -138,6 +142,7 @@ def policy(
         "retrieval_mode": mode,
         "retrieval_top_k": top_k,
         "retrieval_rerank": rerank,
+        "unrestricted_scope": unrestricted_scope,
     }
     values.update(overrides)
     return dataclasses.replace(DEV_KEY_POLICY, **values)
