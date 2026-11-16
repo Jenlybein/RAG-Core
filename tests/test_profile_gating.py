@@ -211,7 +211,8 @@ def test_custom_over_the_plan_is_clipped_and_the_clip_list_names_the_fields() ->
             rerank_allowed=True,
             query_rewrite_allowed=True,
         ),
-        plan=_plan(PLAN_STANDARD),
+        # max_top_k=0 = 套餐不额外封顶，这条测的是平台硬上限那一层。
+        plan=_plan(PLAN_STANDARD, max_top_k=0),
         kb_count=1,
     )
 
@@ -753,7 +754,7 @@ def test_a_clipped_custom_call_still_succeeds_and_says_what_was_cut(entry: _Entr
             custom_options=(("mode", "hybrid"), ("top_k", MAX_TOP_K + 10), ("rerank", True)),
             rerank_allowed=True,
         ),
-        plan=_plan(PLAN_STANDARD),
+        plan=_plan(PLAN_STANDARD, max_top_k=0),  # 这条测平台硬上限那一层
     )
 
     body = entry.post()

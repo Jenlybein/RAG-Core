@@ -25,14 +25,14 @@ from sqlalchemy import DateTime, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, now
-from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_STANDARD, check_plan_code
+from app.models.plan import PLAN_FREE, PLAN_MAX, PLAN_STANDARD, check_plan_code
 
 #: 新建租户的套餐：没说就是最低档。
 DEFAULT_PLAN_CODE: Final[str] = PLAN_FREE
-#: 升级前就已存在的租户：按标准档建档，不按最低档。
+#: 升级前就已存在的租户：按标准档（现 plus）建档，不按最低档。
 EXISTING_TENANT_PLAN_CODE: Final[str] = PLAN_STANDARD
-#: 本地演示租户：按最高档，演示要看到完整能力。
-DEMO_TENANT_PLAN_CODE: Final[str] = PLAN_PRO
+#: 本地演示租户：按最高档（现 max），演示要看到完整能力。
+DEMO_TENANT_PLAN_CODE: Final[str] = PLAN_MAX
 
 
 def resolve_plan_code(plan_code: str | None) -> str:

@@ -33,7 +33,7 @@ API_KEY_PATTERN = re.compile(r"^rc_live_[0-9a-f]{32}$")
 
 
 def _plan_rows() -> list[Plan]:
-    """播种后的三档行；主键由数据库自增，假会话里手工给（1=free, 2=standard, 3=pro）。"""
+    """播种后的四档行；主键由数据库自增，假会话里手工给（1=free, 2=plus, 3=pro, 4=max）。"""
 
     rows: list[Plan] = []
     for index, code in enumerate(PLAN_CODES, start=1):
@@ -81,13 +81,13 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
 # ───────────────────────────────────────────────────────────────── 套餐播种
 
 
-def test_seeding_an_empty_plans_table_writes_the_three_plans_and_reconciles() -> None:
+def test_seeding_an_empty_plans_table_writes_the_four_plans_and_reconciles() -> None:
     session = _session()
 
     stats = seed_plans(session)
 
     written = session.added_of(Plan)
-    assert stats.inserted == 3
+    assert stats.inserted == 4
     assert [row.code for row in written] == list(PLAN_CODES)
     assert preset_mismatches(written) == [], "播种出来的行必须与常量逐列一致"
     assert session.commits == 1
@@ -111,14 +111,14 @@ def test_seeding_does_not_overwrite_a_table_that_already_has_rows() -> None:
 # ─────────────────────────────────────────────────────────── 升级前租户的回填
 
 
-def test_existing_tenants_get_standard_and_the_demo_tenant_gets_the_top_plan() -> None:
+def test_existing_tenants_get_plus_and_the_demo_tenant_gets_the_top_plan() -> None:
     session = _session(plans=_plan_rows(), tenant_ids=[DEMO_TENANT, ACME_TENANT])
 
     stats = backfill_tenants(session, demo_tenant_id=DEMO_TENANT)
 
     created = {row.id: row for row in session.added_of(Tenant)}
-    assert created[DEMO_TENANT].plan_id == PLAN_CODES.index("pro") + 1
-    assert created[ACME_TENANT].plan_id == PLAN_CODES.index("standard") + 1
+    assert created[DEMO_TENANT].plan_id == PLAN_CODES.index("max") + 1
+    assert created[ACME_TENANT].plan_id == PLAN_CODES.index("plus") + 1
     assert (stats.considered, stats.created, stats.kept) == (2, 2, 0)
     assert session.commits == 1
 
@@ -207,7 +207,7 @@ def test_a_new_tenant_can_take_a_named_plan() -> None:
 def test_creating_a_tenant_with_an_unknown_plan_fails_loudly() -> None:
     session = _session(plans=_plan_rows())
 
-    with pytest.raises(ValueError, match="free/standard/pro"):
+    with pytest.raises(ValueError, match="free/plus/pro/max"):
         create_tenant(session, tenant_id=ACME_TENANT, name="Acme", plan_code="platinum")
 
     assert session.added == []

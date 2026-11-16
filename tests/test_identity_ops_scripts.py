@@ -149,11 +149,11 @@ def test_seed_script_seeds_the_plans_then_backfills_old_tenants(
     assert [row.code for row in session.added_of(Plan)] == list(PLAN_CODES)
     plan_ids = {row.id: row.code for row in session.added_of(Plan)}
     backfilled = {row.id: plan_ids[row.plan_id] for row in session.added_of(Tenant)}
-    assert backfilled == {DEMO_TENANT: "pro", ACME_TENANT: "standard"}
+    assert backfilled == {DEMO_TENANT: "max", ACME_TENANT: "plus"}
     assert session.closed
 
     out = capsys.readouterr().out
-    assert "inserted: 3" in out
+    assert "inserted: 4" in out
     assert "created: 2" in out
 
 
@@ -180,7 +180,7 @@ def test_create_tenant_script_prints_the_tenant_and_its_default_policy(
 
     assert (
         create_script.main(
-            ["--id", ACME_TENANT, "--name", "Acme 公司", "--plan", "standard", "--kb-id", "kb-1"]
+            ["--id", ACME_TENANT, "--name", "Acme 公司", "--plan", "plus", "--kb-id", "kb-1"]
         )
         == 0
     )
@@ -380,7 +380,7 @@ def test_change_plan_script_reports_a_missing_tenant_on_stderr(
 # ───────────────────────────────────────────────────────────── 改密钥配置（#72 缺口 2）
 
 
-def _update_session(*, plan_id: int = PLAN_CODES.index("standard") + 1) -> RecordingSession:
+def _update_session(*, plan_id: int = PLAN_CODES.index("plus") + 1) -> RecordingSession:
     """标准档租户 + 一套 speed 配置：balanced 可用、hybrid 允许，改得动的空间最大。"""
 
     return RecordingSession(

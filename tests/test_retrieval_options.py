@@ -205,7 +205,14 @@ def test_custom_top_k_above_the_hard_cap_is_clamped_not_silently_dropped() -> No
     一处说明。裁剪 + 回显是同一件事的可解释版本（``clipped`` 里会有 ``top_k``）。
     """
 
-    options = _resolve(_policy(custom_options=(("top_k", MAX_TOP_K + 7),)))
+    # max_top_k=0 = 套餐不额外封顶，才轮到平台硬上限 MAX_TOP_K 生效。
+    from dataclasses import replace
+
+    options = resolve_retrieval_options(
+        policy=_policy(custom_options=(("top_k", MAX_TOP_K + 7),)),
+        plan=replace(PLAN_PRESETS[PLAN_PRO], max_top_k=0),
+        kb_count=1,
+    )
 
     assert options.top_k == MAX_TOP_K
     assert options.tenant_policy is not None

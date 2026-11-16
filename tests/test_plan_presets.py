@@ -40,7 +40,6 @@ _EXPAND_SEED: dict[str, Any] = {
     "rerank_daily": 0,
     "llm_qps": 0,
     "llm_daily": 0,
-    "max_top_k": 0,
 }
 SPEC_TABLE: dict[str, dict[str, Any]] = {
     "free": {
@@ -59,9 +58,10 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb_per_retrieve": 1,
         "max_documents_per_kb": 30,
         "max_processing_documents": 1,
+        "max_top_k": 5,
         **_EXPAND_SEED,
     },
-    "standard": {
+    "plus": {
         "allowed_profiles": ("speed", "balanced", "custom"),
         "hybrid_allowed": True,
         "rerank_allowed": False,
@@ -75,6 +75,7 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb_per_retrieve": 3,
         "max_documents_per_kb": 200,
         "max_processing_documents": 2,
+        "max_top_k": 10,
         **_EXPAND_SEED,
     },
     "pro": {
@@ -93,6 +94,24 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
         "max_processing_documents": 10,
+        "max_top_k": 15,
+        **_EXPAND_SEED,
+    },
+    "max": {
+        "allowed_profiles": ("speed", "balanced", "quality", "custom"),
+        "hybrid_allowed": True,
+        "rerank_allowed": True,
+        "query_rewrite_allowed": True,
+        "research_allowed": True,
+        "retrieve_qps": 200,
+        "retrieve_daily": 100000,
+        "research_qps": 1,
+        "research_daily": 100,
+        "max_kb": 50,
+        "max_kb_per_retrieve": 5,
+        "max_documents_per_kb": 5000,
+        "max_processing_documents": 10,
+        "max_top_k": 20,
         **_EXPAND_SEED,
     },
 }
@@ -111,8 +130,9 @@ def _tampered_value(column: str, current: Any) -> Any:
 # ──────────────────────────────────────────────────────────── 种子本身符合票面
 
 
-def test_the_three_plans_are_exactly_the_decided_codes() -> None:
-    assert PLAN_CODES == ("free", "standard", "pro")
+def test_the_four_plans_are_exactly_the_decided_codes() -> None:
+    # 第 13 步：standard 改名 plus，新增 max。
+    assert PLAN_CODES == ("free", "plus", "pro", "max")
     assert set(PLAN_PRESETS) == set(PLAN_CODES)
 
 
@@ -182,7 +202,8 @@ def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None
         column: getattr(PLAN_PRESETS["pro"], column) for column in PLAN_SPEC_COLUMNS
     }
     for column in PLAN_SPEC_COLUMNS:
-        if column in _EXPAND_SEED:
+        # 有 _EXPAND_DEFAULTS 兜底的列（含 max_top_k）缺了不报，跳过。
+        if column in _EXPAND_SEED or column == "max_top_k":
             continue
         partial = {key: value for key, value in complete.items() if key != column}
         with pytest.raises(KeyError):
@@ -228,9 +249,9 @@ def test_two_rows_with_the_same_code_are_reported() -> None:
 def test_a_plan_that_was_never_seeded_is_reported() -> None:
     """表里少一档也要报：否则最高档被误删之后，谁都不会发现。"""
 
-    rows = [plan_row_of(PLAN_PRESETS[code]) for code in ("free", "standard")]
+    rows = [plan_row_of(PLAN_PRESETS[code]) for code in ("free", "plus", "pro")]
 
-    assert preset_mismatches(rows) == ["pro: 库里没有这一档"]
+    assert preset_mismatches(rows) == ["max: 库里没有这一档"]
 
 
 def test_a_row_whose_code_is_not_a_known_plan_is_reported() -> None:

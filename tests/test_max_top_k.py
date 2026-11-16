@@ -7,7 +7,7 @@
 from __future__ import annotations
 
 from app.core.config import settings
-from app.models.plan import PLAN_PRESETS
+from app.models.plan import PLAN_CODES, PLAN_PRESETS
 from app.services.profile_policy import resolve_retrieval_options
 from app.services.retrieval_options import (
     MAX_TOP_K,
@@ -18,11 +18,9 @@ from tests.test_retrieval_options import _policy  # noqa: F401 - 复用既有假
 
 
 def test_the_four_tiers_carry_the_agreed_max_top_k() -> None:
-    """四档的 max_top_k 是 spec 拍过的数（旧三档种子暂用 0 = 平台硬上限）。"""
+    """四档的 max_top_k 是 spec 拍过的数：free/plus/pro/max = 5/10/15/20。"""
 
-    # 新四档种子在 retrieval_authorization.TIER_SEEDS 里；这里只断言旧 PlanSpec
-    # 的兼容语义：未知档（max_top_k=0）退回平台硬上限。
-    assert all(spec.max_top_k == 0 for spec in PLAN_PRESETS.values())
+    assert [PLAN_PRESETS[code].max_top_k for code in PLAN_CODES] == [5, 10, 15, 20]
 
 
 def test_top_k_is_clamped_to_the_plan_cap_and_reported() -> None:

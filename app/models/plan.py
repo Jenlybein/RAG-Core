@@ -37,11 +37,15 @@ from app.models.key_policy import (
 )
 
 PLAN_FREE: Final[str] = "free"
-PLAN_STANDARD: Final[str] = "standard"
+PLAN_PLUS: Final[str] = "plus"
 PLAN_PRO: Final[str] = "pro"
+PLAN_MAX: Final[str] = "max"
 
-# 三档的名字就是 ``code``：脚本入参、库里的行、错误信息里出现的都是这三个词之一。
-PLAN_CODES: Final[tuple[str, ...]] = (PLAN_FREE, PLAN_STANDARD, PLAN_PRO)
+#: 第 13 步：standard 改名为 plus；保留别名常量让旧调用点继续编译（值指向 plus）。
+PLAN_STANDARD: Final[str] = PLAN_PLUS
+
+# 四档的名字就是 ``code``：脚本入参、库里的行、错误信息里出现的都是这四个词之一。
+PLAN_CODES: Final[tuple[str, ...]] = (PLAN_FREE, PLAN_PLUS, PLAN_PRO, PLAN_MAX)
 
 #: 快照/行上不属于业务列的两个身份列。它们不上面板、不参与「上限与能力」的对账。
 PLAN_IDENTITY_COLUMNS: Final[tuple[str, ...]] = ("code", "name")
@@ -213,7 +217,7 @@ PLAN_NUMERIC_COLUMNS: Final[tuple[str, ...]] = tuple(
 )
 
 
-#: 三档的种子值。**只在 plans 表为空时写入**（见 ``identity_seeding.seed_plans``），
+#: 四档的种子值。**只在 plans 表为空时写入**（见 ``identity_seeding.seed_plans``），
 #: 之后库里的行才是真相——运营改过的额度不允许被下一次启动悄悄改回去。
 PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
     PLAN_FREE: PlanSpec(
@@ -228,14 +232,15 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         retrieve_daily=500,
         research_qps=0,
         research_daily=0,
+        max_top_k=5,
         max_kb=1,
         max_kb_per_retrieve=1,
         max_documents_per_kb=30,
         max_processing_documents=1,
     ),
-    PLAN_STANDARD: PlanSpec(
-        code=PLAN_STANDARD,
-        name="标准版",
+    PLAN_PLUS: PlanSpec(
+        code=PLAN_PLUS,
+        name="进阶版",
         allowed_profiles=("speed", "balanced", "custom"),
         hybrid_allowed=True,
         rerank_allowed=False,
@@ -245,6 +250,7 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         retrieve_daily=5000,
         research_qps=0,
         research_daily=0,
+        max_top_k=10,
         max_kb=5,
         max_kb_per_retrieve=3,
         max_documents_per_kb=200,
@@ -262,6 +268,25 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         retrieve_daily=100000,
         research_qps=1,
         research_daily=100,
+        max_top_k=15,
+        max_kb=50,
+        max_kb_per_retrieve=5,
+        max_documents_per_kb=5000,
+        max_processing_documents=10,
+    ),
+    PLAN_MAX: PlanSpec(
+        code=PLAN_MAX,
+        name="旗舰版",
+        allowed_profiles=("speed", "balanced", "quality", "custom"),
+        hybrid_allowed=True,
+        rerank_allowed=True,
+        query_rewrite_allowed=True,
+        research_allowed=True,
+        retrieve_qps=200,
+        retrieve_daily=100000,
+        research_qps=1,
+        research_daily=100,
+        max_top_k=20,
         max_kb=50,
         max_kb_per_retrieve=5,
         max_documents_per_kb=5000,

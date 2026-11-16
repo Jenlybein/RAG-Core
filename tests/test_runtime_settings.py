@@ -665,7 +665,7 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
     """
 
     plans: list[Plan] = []
-    for index, code in enumerate(("free", "standard", "pro"), start=1):
+    for index, code in enumerate(("free", "plus", "pro", "max"), start=1):
         row = plan_row_of(PLAN_PRESETS[code])
         row.id = index
         plans.append(row)

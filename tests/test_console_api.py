@@ -407,7 +407,7 @@ def test_an_admin_lists_every_plan_and_every_account(console: _Harness) -> None:
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     plans = console.client.get("/console/plans").json()["data"]["plans"]
-    assert [plan["code"] for plan in plans] == ["free", "standard", "pro"]
+    assert [plan["code"] for plan in plans] == ["free", "plus", "pro", "max"]
 
     accounts = console.client.get("/console/accounts").json()["data"]["accounts"]
     assert {item["username"] for item in accounts} == {"admin", "alice", "bob"}
