@@ -1,4 +1,5 @@
 import { dataHttp } from '../lib/dataHttp'
+import type { ResearchData } from '../types/research'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 
 /**
@@ -34,8 +35,8 @@ export function decomposeRetrieve(payload: RetrieveRequest): Promise<RetrieveDat
 }
 
 /** 受控 Research：多轮补证 + 引用块（响应形状不同，单独的类型）。 */
-export function research(payload: RetrieveRequest): Promise<unknown> {
-  return dataHttp.post('/api/v1/rag/research', {
+export function research(payload: RetrieveRequest): Promise<ResearchData> {
+  return dataHttp.post<ResearchData>('/api/v1/rag/research', {
     kb_ids: payload.kb_ids,
     query: payload.query,
   })

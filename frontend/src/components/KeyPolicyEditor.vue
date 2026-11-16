@@ -52,13 +52,15 @@ function capabilityDisabled(field: (typeof POLICY_CAPABILITY_FIELDS)[number]): b
   return props.plan !== null && !props.plan[field]
 }
 
-const planCapabilityText = computed(() => {
-  const plan = props.plan
-  if (plan === null) return ''
-  const allowed = POLICY_CAPABILITY_FIELDS.filter((field) => plan[field]).map(
-    (field) => CAPABILITY_LABELS[field].split(' · ')[0],
-  )
-  return allowed.length === 0 ? '' : allowed.join(' / ')
+/** 套餐没给 rerank 位时，「结果重排」这个开关直接不可开——不是「开了也不生效」。 */
+const rerankDisabled = computed<boolean>(
+  () => props.plan !== null && !props.plan.rerank_allowed,
+)
+
+/** 条数上限写进标签里，省掉字段下面那行「套餐封顶 N」：一句话说完，不留第二处解释。 */
+const topKLabel = computed<string>(() => {
+  const cap = props.plan?.max_top_k ?? 0
+  return cap > 0 ? `返回条数（现套餐最高 ${cap} 条）` : '返回条数'
 })
 
 /** 套餐的 `max_top_k` 封顶；0 表示不额外封顶，退回平台硬上限（与后端裁剪同义）。 */
@@ -108,7 +110,7 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
     <!-- ① 检索参数：主决策。预设按钮一键填三项，每一项仍可单独改 -->
     <section>
       <h3 class="section-title mb-2">检索参数</h3>
-      <div class="mb-3 flex flex-wrap items-center gap-2">
+      <div class="mb-3">
         <el-dropdown trigger="click" @command="fillPresetByName">
           <el-button size="small">使用预设配置</el-button>
           <template #dropdown>
@@ -124,9 +126,6 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
             </el-dropdown-menu>
           </template>
         </el-dropdown>
-        <span class="text-xs text-muted">
-          选一个会覆盖下面三项，之后仍可单独改。预设只是填空，不是档位。
-        </span>
       </div>
 
       <div class="grid gap-3 sm:grid-cols-3">
@@ -137,7 +136,7 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
           </el-select>
         </div>
         <div>
-          <label class="mb-1 block text-xs text-muted">返回条数（top_k）</label>
+          <label class="mb-1 block text-xs text-muted">{{ topKLabel }}</label>
           <el-input-number
             v-model="form.retrieval_top_k"
             :min="TOP_K_MIN"
@@ -145,21 +144,27 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
             controls-position="right"
             class="!w-full"
           />
-          <p v-if="plan !== null && plan.max_top_k > 0" class="mt-1 text-xs text-muted">
-            套餐封顶 {{ plan.max_top_k }}
-          </p>
         </div>
         <div>
           <label class="mb-1 block text-xs text-muted">结果重排</label>
-          <el-switch v-model="form.retrieval_rerank" />
-          <p class="mt-1 text-xs text-muted">还需下方 rerank 授权位打开才生效。</p>
+          <el-tooltip
+            content="本套餐不支持"
+            placement="top"
+            :disabled="!rerankDisabled"
+            :show-after="200"
+          >
+            <span class="inline-flex">
+              <el-switch v-model="form.retrieval_rerank" :disabled="rerankDisabled" />
+            </span>
+          </el-tooltip>
         </div>
       </div>
     </section>
 
     <!-- ② 数据范围：第二重要的决定 -->
     <section>
-      <h3 class="section-title mb-2">数据范围</h3>
+      <h3 class="section-title mb-0.5">数据范围</h3>
+      <p class="mb-2 text-xs text-muted">设置可以检索的知识库</p>
       <el-select
         v-model="form.allowed_kb_ids"
         multiple
@@ -176,34 +181,36 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
           :value="kb.kb_id"
         />
       </el-select>
-      <p class="mt-1.5 text-xs leading-relaxed text-muted">
-        只有圈进来的库能被这把 Key 检索；留空表示「什么都没圈定」，不是「全部」。
-        <template v-if="onlyKbId !== null">
-          <el-button link type="primary" size="small" class="!ml-1" @click="form.allowed_kb_ids = [onlyKbId]">
-            圈定唯一那个库
-          </el-button>
-        </template>
-      </p>
+      <el-button
+        v-if="onlyKbId !== null"
+        link
+        type="primary"
+        size="small"
+        class="!mt-1 !px-0"
+        @click="form.allowed_kb_ids = [onlyKbId]"
+      >
+        圈定唯一那个库
+      </el-button>
     </section>
 
     <!-- ③ 能力开关：五个授权位，套餐没给的置灰 -->
     <section>
-      <h3 class="section-title mb-0.5">能力开关</h3>
-      <p class="mb-2 text-xs leading-relaxed text-muted">
-        只能在套餐授权范围内使用。<template v-if="planCapabilityText !== ''">
-          本套餐可用：{{ planCapabilityText }}。
-        </template>
-      </p>
-      <div class="grid gap-x-4 gap-y-1.5 sm:grid-cols-2">
-        <el-checkbox
+      <h3 class="section-title mb-2">能力开关</h3>
+      <div class="grid gap-x-4 gap-y-2 sm:grid-cols-2">
+        <el-tooltip
           v-for="field in POLICY_CAPABILITY_FIELDS"
           :key="field"
-          v-model="form[field]"
-          :disabled="capabilityDisabled(field)"
+          content="本套餐不支持"
+          placement="top"
+          :disabled="!capabilityDisabled(field)"
+          :show-after="200"
         >
-          {{ CAPABILITY_LABELS[field] }}
-          <span v-if="capabilityDisabled(field)" class="text-xs text-muted">（当前套餐不支持）</span>
-        </el-checkbox>
+          <span class="inline-flex">
+            <el-checkbox v-model="form[field]" :disabled="capabilityDisabled(field)">
+              {{ CAPABILITY_LABELS[field] }}
+            </el-checkbox>
+          </span>
+        </el-tooltip>
       </div>
     </section>
 

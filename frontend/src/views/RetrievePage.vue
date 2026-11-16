@@ -33,7 +33,7 @@ import { ApiError } from '../lib/envelope'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
 import { KEYS_QUERY_KEY, fetchKeys, patchPolicy } from '../services/keyService'
-import { retrieve } from '../services/ragService'
+import { decomposeRetrieve, research, retrieve, rewriteRetrieve } from '../services/ragService'
 import {
   MY_KB_QUERY_KEY,
   fetchMyKnowledgeBases,
@@ -49,6 +49,7 @@ import {
   type KeyData,
   type KeyPolicyPatch,
 } from '../types/key'
+import type { ResearchData } from '../types/research'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import { feedbackErrorCopy, isValidScore, scoreStars } from '../utils/feedback'
@@ -341,7 +342,81 @@ function onSelectionChange(values: Array<string | number | boolean>): void {
   store.setSelection(values.filter((value): value is string => typeof value === 'string'))
 }
 
-// —— ② 问题与检索 ——
+// —— ② 用哪一项能力（四条端点）与问题 ——
+
+/**
+ * 四条数据面端点就是四项**能力**，各有各的账：`retrieve` 零模型调用、`rewrite` /
+ * `decompose` 各一次模型调用 + N 次内核、`research` 多轮补证。所以「用哪条」是发起
+ * 检索前的一个决定，而不是页面的固定行为——调试台要能换着比。
+ *
+ * 能不能选由**授权位**决定（不在前端猜）：位是假的直接置灰，点不了也就不可能拿到
+ * 20013 才回头查配置。
+ */
+type Capability = 'retrieve' | 'rewrite' | 'decompose' | 'research'
+
+interface CapabilityOption {
+  key: Capability
+  label: string
+  /** 一句话说清这条链路花什么，用来选。 */
+  hint: string
+  bit:
+    | 'retrieve_allowed'
+    | 'rewrite_allowed'
+    | 'decompose_allowed'
+    | 'research_allowed'
+}
+
+const CAPABILITY_OPTIONS: readonly CapabilityOption[] = [
+  { key: 'retrieve', label: '检索', hint: '原句直查，零模型调用', bit: 'retrieve_allowed' },
+  { key: 'rewrite', label: '改写后检索', hint: '一次改写，原句与改写句并池', bit: 'rewrite_allowed' },
+  { key: 'decompose', label: '分解后检索', hint: '拆子问题，各查一次再合并', bit: 'decompose_allowed' },
+  { key: 'research', label: '研究模式', hint: '多轮补证 + 引用块，最贵', bit: 'research_allowed' },
+]
+
+const runCapability = ref<Capability>('retrieve')
+
+/** 这套配置允许哪些能力（位为假即不支持）。没有配置时一个都不允许。 */
+function capabilityAllowed(option: CapabilityOption): boolean {
+  return policy.value?.[option.bit] === true
+}
+
+/** 换 Key 后落在不支持的能力上时，退到第一个支持的（否则按钮指向一条必 20013 的路）。 */
+watch(
+  [policy, runCapability],
+  () => {
+    if (policy.value === null) return
+    const current = CAPABILITY_OPTIONS.find((item) => item.key === runCapability.value)
+    if (current !== undefined && capabilityAllowed(current)) return
+    const fallback = CAPABILITY_OPTIONS.find((item) => capabilityAllowed(item))
+    if (fallback !== undefined) runCapability.value = fallback.key
+  },
+  { immediate: true },
+)
+
+const currentCapability = computed<CapabilityOption>(
+  () => CAPABILITY_OPTIONS.find((item) => item.key === runCapability.value) ?? CAPABILITY_OPTIONS[0],
+)
+
+/** 这次响应用的是哪条链路：渲染分支与「摘要能不能用」都读它，不读页面当前选择。 */
+const lastCapability = ref<Capability>('retrieve')
+
+function callCapability(
+  capability: Capability,
+  payload: RetrieveRequest,
+): Promise<RetrieveData | ResearchData> {
+  switch (capability) {
+    case 'rewrite':
+      return rewriteRetrieve(payload)
+    case 'decompose':
+      return decomposeRetrieve(payload)
+    case 'research':
+      return research(payload)
+    default:
+      return retrieve(payload)
+  }
+}
+
+
 const queryText = ref('')
 
 const trimmedQuery = computed(() => queryText.value.trim())
@@ -351,11 +426,20 @@ const blockReason = computed(() => {
   if (policy.value === null) return '这把 Key 没有可用的密钥配置 —— 去 Key 管理页改一下'
   if (store.selectedCount === 0) return '还没勾库 —— 点「修改配置」勾选至少一个知识库'
   if (trimmedQuery.value === '') return '先写要检索的问题（全空白不算问题）'
+  if (!capabilityAllowed(currentCapability.value)) {
+    return `这把 Key 没开「${currentCapability.value.label}」这个能力`
+  }
   return ''
 })
 
 // —— ③ 结果 / ④ 摘要 ——
 const result = ref<RetrieveData | null>(null)
+/**
+ * `/rag/research` 的响应**另存一格**，不并进 `result`：它是另一个形状（`answer` /
+ * `citations` / `materials` / `plan` / `rounds` / `coverage`），合并成一个「都有」的类型
+ * 会让两边的字段都变成可能为空，渲染反而更容易错。
+ */
+const researchResult = ref<ResearchData | null>(null)
 const runError = ref<{ message: string; limitHint: boolean } | null>(null)
 
 // —— ⑤ 对比历史（只在内存） ——
@@ -378,13 +462,37 @@ function unpinBase(): void {
   pinnedSeq.value = null
 }
 
-const { mutate, isPending: running } = useMutation({
-  mutationFn: (payload: RetrieveRequest) => retrieve(payload),
+interface RunVars {
+  capability: Capability
+  payload: RetrieveRequest
+}
+
+const { mutate, isPending: running } = useMutation<
+  RetrieveData | ResearchData,
+  Error,
+  RunVars
+>({
+  mutationFn: (vars: RunVars) => callCapability(vars.capability, vars.payload),
   onMutate: () => {
     runError.value = null
   },
-  onSuccess: (data) => {
-    result.value = data
+  onSuccess: (data, vars) => {
+    // 页面上的选择此刻可能已经变了，所以渲染分支读**这次请求**带的那一项能力。
+    lastCapability.value = vars.capability
+    result.value = null
+    researchResult.value = null
+
+    if (vars.capability === 'research') {
+      const researchData = data as ResearchData
+      researchResult.value = researchData
+      // Research 不进对比历史：`ComparePanel` 比的是同一份检索结果的排名与分数，
+      // 而 Research 的产物是引用块 + 多轮材料，两列并排比不出「改了什么」。
+      void prepareRating(researchData.metadata.trace_id)
+      return
+    }
+
+    const retrieveData = data as RetrieveData
+    result.value = retrieveData
     // 只有成功的检索才进历史：失败没有 `RetrieveData` 可对比，硬造一条空记录会让
     // 「第 N 次」名不副实，也会把基准的编号整体错位。
     const seq = nextSeq
@@ -394,22 +502,24 @@ const { mutate, isPending: running } = useMutation({
     history.value = pushHistory(history.value, {
       seq,
       at: new Date().toISOString(),
-      data,
+      data: retrieveData,
     })
     // 这一次的线换掉了：重新反查 log_id，评分控件随之绑定到**这次**结果。
     // 反查失败不报错弹窗（那只是「不能打分」），由控件里的文案说明。
-    void prepareRating(data.metadata.trace_id)
+    void prepareRating(retrieveData.metadata.trace_id)
   },
   onError: (error) => {
     // 本次失败就清掉上一次的结果：旧卡片配新报错会让人以为「这次也成功了一部分」，
     // 而摘要更必须永远对应最近一次响应，不能停在上一次。
     result.value = null
+    researchResult.value = null
     ratingLogId.value = null
     ratingSaved.value = null
     ratingScore.value = 0
     ratingError.value = null
     runError.value = {
       message: errorText(error),
+      // 20013 在这一页有两种成因：库数超限，或者这套配置没开当前能力。提示要能同时解释。
       limitHint: error instanceof ApiError && error.code === 20013,
     }
   },
@@ -418,7 +528,10 @@ const { mutate, isPending: running } = useMutation({
 function submitRetrieve(): void {
   if (blockReason.value !== '' || running.value) return
   // 拷一份再发：请求在途时用户改勾选，不该顺手改掉这次请求的 `kb_ids`。
-  mutate({ kb_ids: [...store.selectedKbIds], query: trimmedQuery.value })
+  mutate({
+    capability: runCapability.value,
+    payload: { kb_ids: [...store.selectedKbIds], query: trimmedQuery.value },
+  })
 }
 
 /**
@@ -526,7 +639,15 @@ async function saveParams(): Promise<void> {
   }
 }
 
-const chunks = computed(() => result.value?.retrieved_chunks ?? [])
+/**
+ * 结果列表读**两种**响应里的同一件事：`/retrieve` 家族叫 `retrieved_chunks`，
+ * `/research` 叫 `materials`——后端是同一个值对象（`RetrievedChunk`），所以这里只按
+ * 「这次是哪条能力」取那一栏，不为两边各写一套渲染。
+ */
+const chunks = computed(() => {
+  if (researchResult.value !== null) return researchResult.value.materials
+  return result.value?.retrieved_chunks ?? []
+})
 const emptyReason = computed(() => result.value?.metadata.retrieval.empty_reason ?? null)
 const emptyCopy = computed(() =>
   result.value !== null && result.value.retrieved_chunks.length === 0
@@ -597,7 +718,9 @@ const ratingResolving = ref(false)
 const ratingSubmitting = ref(false)
 
 /** 当前这次检索的 `trace_id`（响应里永远有值）。换一次检索就换一根线。 */
-const currentTraceId = computed(() => result.value?.metadata.trace_id ?? null)
+const currentTraceId = computed(
+  () => researchResult.value?.metadata.trace_id ?? result.value?.metadata.trace_id ?? null,
+)
 
 const ratingDisabledCopy = computed(() => {
   if (result.value === null) return '先发一次检索，再给这次结果打分。'
@@ -747,6 +870,29 @@ async function sendRating(): Promise<void> {
       </div>
 
       <div class="mt-5 border-t border-line pt-5">
+        <!-- 用哪项能力：四条端点各有各的成本，选错就不是「同一次检索的另一种说法」。 -->
+        <div class="mb-4">
+          <label class="mb-1.5 block text-xs text-muted">用哪项能力</label>
+          <el-radio-group v-model="runCapability" size="small">
+            <el-tooltip
+              v-for="option in CAPABILITY_OPTIONS"
+              :key="option.key"
+              :content="capabilityAllowed(option) ? option.hint : '这把 Key 没开这个能力'"
+              placement="top"
+              :show-after="200"
+            >
+              <span class="inline-flex">
+                <el-radio-button
+                  :value="option.key"
+                  :disabled="policy !== null && !capabilityAllowed(option)"
+                >
+                  {{ option.label }}
+                </el-radio-button>
+              </span>
+            </el-tooltip>
+          </el-radio-group>
+          <p class="mt-1.5 text-xs text-muted">{{ currentCapability.hint }}</p>
+        </div>
         <el-form label-position="top" @submit.prevent="submitRetrieve">
           <el-form-item>
             <el-input
@@ -1024,9 +1170,41 @@ async function sendRating(): Promise<void> {
         </p>
       </div>
 
-      <p v-else-if="result === null" class="text-sm text-slate-400">
+      <p v-else-if="result === null && researchResult === null" class="text-sm text-slate-400">
         还没发起检索：先选 Key、勾库、写问题，再点「检索」。
       </p>
+
+      <!--
+        Research 的产物多一栏 `answer`：它是引用块的渲染串，四条硬校验任一不过就是 null
+        （材料照给）。所以这里「answer 为空」不是失败，只是没有合规引用——把停止原因与
+        覆盖缺口摆在同一行，读的人一眼知道为什么短了。
+      -->
+      <div
+        v-if="researchResult !== null"
+        class="rounded border border-line bg-slate-50 px-4 py-3"
+      >
+        <p class="text-xs text-muted">
+          停止原因
+          <span class="font-mono text-slate-600">{{ researchResult.metadata.stop_reason }}</span>
+          · 子检索 {{ researchResult.rounds.searches }} 次 · 证据
+          <span class="font-mono text-slate-600">{{ researchResult.metadata.evidence_state }}</span>
+        </p>
+        <p
+          v-if="researchResult.answer === null"
+          class="mt-2 text-sm text-slate-600"
+        >
+          没有通过校验的引用块，<span class="font-mono text-xs">answer</span> 为空；下面照样给出材料。
+        </p>
+        <p v-else class="mt-2 whitespace-pre-wrap break-words text-sm leading-[1.8] text-slate-800">
+          {{ researchResult.answer }}
+        </p>
+        <p
+          v-if="researchResult.coverage.gaps.length > 0"
+          class="mt-1.5 text-xs text-[#7a5b00]"
+        >
+          未覆盖的要点：{{ researchResult.coverage.gaps.join('、') }}
+        </p>
+      </div>
 
       <div
         v-else-if="emptyCopy !== null"
@@ -1040,7 +1218,7 @@ async function sendRating(): Promise<void> {
         </p>
       </div>
 
-      <ul v-else class="divide-y divide-line">
+      <ul v-if="chunks.length > 0" class="divide-y divide-line">
         <!--
           每条结果重排成「主行 / 正文 / 底注」三段。旧版把 5 个分数指标铺成两行 dl、
           再把两个 UUID 铺成一行，整块看下来是**一堆元数据而没有正文**——`chunk.content`
