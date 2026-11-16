@@ -169,15 +169,25 @@ def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
     再改名。
     """
 
-    manual = dict(policy.custom_options)
+    # 第 13 步 I 阶段：优先读三项真列（policy_snapshot_of 已从真列填好）；
+    # custom_options 仅在旧夹具直接构造快照时兜底，真库路径永远走真列。
+    mode = getattr(policy, "retrieval_mode", None)
+    top_k = getattr(policy, "retrieval_top_k", None)
+    rerank = getattr(policy, "retrieval_rerank", None)
+    if mode is None and top_k is None and rerank is None:
+        manual = dict(policy.custom_options)
+        return ProfileChain(
+            mode=_manual_mode(manual),
+            top_k=_manual_top_k(manual),
+            rerank=_manual_flag(manual, CUSTOM_OPTION_RERANK, fallback=False),
+            rewrite=_manual_flag(manual, CUSTOM_OPTION_REWRITE, fallback=False),
+        )
     return ProfileChain(
-        mode=_manual_mode(manual),
-        top_k=_manual_top_k(manual),
-        # 第 13 步：缺键 = 不要重排（质量由配置直存参数表达，不再回落部署缺省）。
-        rerank=_manual_flag(manual, CUSTOM_OPTION_RERANK, fallback=False),
-        # 改写已是 /rag/rewrite 端点，这个值不再影响任何检索行为（rag_service 不读它），
-        # 仅为兼容仍断言它的既有用例保留读取；T8 会连字段一起删。
-        rewrite=_manual_flag(manual, CUSTOM_OPTION_REWRITE, fallback=False),
+        mode=str(mode),
+        top_k=int(top_k) if isinstance(top_k, int) and not isinstance(top_k, bool) else 5,
+        rerank=bool(rerank),
+        # 改写已是 /rag/rewrite 端点，不参与这条链路。
+        rewrite=False,
     )
 
 

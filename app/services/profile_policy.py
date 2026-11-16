@@ -176,26 +176,10 @@ def ensure_policy_consistent(*, policy: KeyPolicySnapshot, plan: PlanSpec) -> No
     「意图 ∧ 能力」的合取已经把这种情况兜住了）。
     """
 
-    profile = policy.profile
-    if profile not in PROFILES:
-        raise AppError(ErrorCode.PARAM_ERROR, f"unknown profile: {profile!r}")
+    # 第 13 步：档位不存在了，删掉「档位名合法 / 在白名单 / 档位所需能力」三层校验。
+    # 只保留配置开关 ⊆ 套餐能力 + 数值上限——这两条与档位无关，仍要守。
 
-    if profile not in plan.allowed_profiles:
-        raise AppError(
-            ErrorCode.PARAM_ERROR,
-            f"profile {profile!r} is not allowed by plan {plan.code!r}",
-        )
-
-    # 第一段：档位所需能力 ⊆ 配置自己的能力开关。选了 quality 却关着重排，这套配置从
-    # 落地那一刻就是自相矛盾的——它配置出来的 Key 每次调用都会撞在门禁上。
-    for capability in sorted(_needed_capabilities(policy)):
-        if not _grants(policy, capability):
-            raise AppError(
-                ErrorCode.PARAM_ERROR,
-                f"profile {profile!r} needs {capability!r} but the policy switch is off",
-            )
-
-    # 第二段：配置自己的能力开关 ⊆ 套餐允许的能力。配置只能在套餐上限内分配，不能凭空
+    # 配置自己的能力开关 ⊆ 套餐允许的能力。配置只能在套餐上限内分配，不能凭空
     # 造能力——否则运行时门禁会先放行、再在下一次套餐复核时失败。
     for capability, attribute in CAPABILITY_SWITCHES.items():
         if getattr(policy, attribute) and not _grants(plan, capability):

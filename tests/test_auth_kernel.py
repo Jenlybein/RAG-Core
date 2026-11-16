@@ -69,17 +69,15 @@ def _policy_row(
         name="console",
         allowed_kb_ids=["kb-1"],
         research_allowed=True,
-        hybrid_allowed=True,
         rerank_allowed=False,
-        query_rewrite_allowed=False,
         retrieve_qps=7,
         retrieve_daily=70,
-        research_qps=0,
-        research_daily=0,
-        profile=profile,
         include_parent=include_parent,
         expand_table_rows=expand_table_rows,
-        custom_options={"top_k": 3},
+        # 第 13 步：三项参数走真列；profile/custom_options 已物理删除。
+        retrieval_mode="vector",
+        retrieval_top_k=3,
+        retrieval_rerank=False,
     )
 
 
@@ -390,18 +388,16 @@ async def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
     assert context.policy == KeyPolicySnapshot(
         allowed_kb_ids=("kb-1",),
         research_allowed=True,
-        hybrid_allowed=True,
         rerank_allowed=False,
-        query_rewrite_allowed=False,
         retrieve_qps=7,
         retrieve_daily=70,
-        research_qps=0,
-        research_daily=0,
-        profile=PROFILE_BALANCED,
         include_parent=False,
         expand_table_rows=True,
-        custom_options=(("top_k", 3),),
-        # 第 13 步新列：假行没显式配，按迁移的 server_default 回填读出的值。
+        # 第 13 步：三项参数从假行的真列读（_policy_row 显式写了 mode=vector/top_k=3）。
+        retrieval_mode="vector",
+        retrieval_top_k=3,
+        retrieval_rerank=False,
+        # 授权位与三本账：假行没显式配，按迁移的 server_default 回填读出的值。
         retrieve_allowed=True,
         rewrite_allowed=False,
         decompose_allowed=False,

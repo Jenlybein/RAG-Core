@@ -306,23 +306,29 @@ def _build_policy_row(
     """校验入参、造出「将来那一行」并跑自洽校验（**纯函数**：不碰会话）。"""
 
     checked = _validated_create(values)
+    # 第 13 步 I 阶段：三项参数从 custom_options 搬到真列（写侧也跟着切）。
+    options = dict(checked.get("custom_options") or {})
     row = KeyPolicy(
         id=new_id(),
         tenant_id=tenant_id,
         name=name,
         allowed_kb_ids=list(checked["allowed_kb_ids"]),
-        research_allowed=checked["research_allowed"],
-        hybrid_allowed=checked["hybrid_allowed"],
-        rerank_allowed=checked["rerank_allowed"],
-        query_rewrite_allowed=checked["query_rewrite_allowed"],
+        research_allowed=checked.get("research_allowed", False),
+        rerank_allowed=checked.get("rerank_allowed", False),
         retrieve_qps=checked["retrieve_qps"],
         retrieve_daily=checked["retrieve_daily"],
-        research_qps=checked["research_qps"],
-        research_daily=checked["research_daily"],
-        profile=checked["profile"],
         include_parent=checked["include_parent"],
         expand_table_rows=checked["expand_table_rows"],
-        custom_options=checked["custom_options"],
+        retrieval_mode=str(options.get("mode", "vector")),
+        retrieval_top_k=int(options.get("top_k", 5)),
+        retrieval_rerank=bool(options.get("rerank", False)),
+        # deprecated 壳：旧脚本/测试仍按 profile 表达，值存影子不落库。
+        profile=checked.get("profile", ""),
+        custom_options=options,
+        hybrid_allowed=checked.get("hybrid_allowed", False),
+        query_rewrite_allowed=checked.get("query_rewrite_allowed", False),
+        research_qps=checked.get("research_qps", 0),
+        research_daily=checked.get("research_daily", 0),
     )
     ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan_spec_of(plan))
     return row

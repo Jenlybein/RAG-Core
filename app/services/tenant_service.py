@@ -123,17 +123,15 @@ def _default_policy(*, tenant_id: str, plan: Plan, kb_ids: Sequence[str]) -> Key
         name=DEFAULT_POLICY_NAME,
         allowed_kb_ids=list(kb_ids),
         research_allowed=False,
-        hybrid_allowed=False,
         rerank_allowed=False,
-        query_rewrite_allowed=False,
         retrieve_qps=spec.retrieve_qps,
         retrieve_daily=spec.retrieve_daily,
-        # Research 的两个独立额度默认 0 = 关闭（票 #150）：最小权限默认里没有它，
-        # 与上面四行能力开关同一个理由——新配置不该自带一项重资源能力。
-        research_qps=0,
-        research_daily=0,
-        profile=spec.allowed_profiles[0],
+        # 第 13 步：三项参数取部署缺省（最小权限里没有加工能力）。
+        retrieval_mode="vector",
+        retrieval_top_k=5,
+        retrieval_rerank=False,
         include_parent=True,
         expand_table_rows=True,
-        custom_options={},
+        # deprecated 壳：profile 只是兼容值（存影子不落库），取套餐兼容壳的第一档。
+        profile=(spec.allowed_profiles or ("speed",))[0],
     )

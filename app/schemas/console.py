@@ -57,22 +57,30 @@ class PlanSnapshotData(BaseModel):
 
     code: str
     name: str
-    allowed_profiles: list[str]
-    hybrid_allowed: bool
-    rerank_allowed: bool
-    query_rewrite_allowed: bool
-    research_allowed: bool
-    retrieve_qps: int
-    retrieve_daily: int
-    #: Research 的两个独立配额（票 #150）。0 = 关闭，与 ``research_allowed=False`` 同一个
-    #: 答复码——面板照实显示 0，不换成 ``null``：那会让「这一档没有这项能力」看起来像
-    #: 「这一列还没配」。
-    research_qps: int
-    research_daily: int
-    max_kb: int
-    max_kb_per_retrieve: int
-    max_documents_per_kb: int
-    max_processing_documents: int
+    # 第 13 步：五个档位/旧能力字段已物理删除，列在响应里只为前端兼容壳；
+    # 给缺省值，缺了也不让旧缓存/审计快照的 Pydantic 校验炸掉。
+    allowed_profiles: list[str] = []
+    hybrid_allowed: bool = False
+    rerank_allowed: bool = False
+    query_rewrite_allowed: bool = False
+    research_allowed: bool = False
+    retrieve_qps: int = 0
+    retrieve_daily: int = 0
+    research_qps: int = 0
+    research_daily: int = 0
+    max_kb: int = 0
+    max_kb_per_retrieve: int = 0
+    max_documents_per_kb: int = 0
+    max_processing_documents: int = 0
+    # 第 13 步新增：五个端点位、三本账的额度与质量封顶（控制面要显示/编辑）。
+    retrieve_allowed: bool = True
+    rewrite_allowed: bool = False
+    decompose_allowed: bool = False
+    rerank_qps: int = 0
+    rerank_daily: int = 0
+    llm_qps: int = 0
+    llm_daily: int = 0
+    max_top_k: int = 0
 
 
 class PlanData(PlanSnapshotData):
@@ -268,7 +276,17 @@ def _business_values(source: object) -> dict[str, Any]:
     """
 
     values = plan_columns_of(source)
-    values["allowed_profiles"] = list(values["allowed_profiles"])
+    # 第 13 步：五个档位/旧能力列已物理删除。schema 仍声明它们（前端兼容壳），
+    # 这里按缺省补齐，避免 Pydantic 的 missing 校验失败。
+    for key, default in (
+        ("allowed_profiles", []),
+        ("hybrid_allowed", False),
+        ("query_rewrite_allowed", False),
+        ("research_qps", 0),
+        ("research_daily", 0),
+    ):
+        value = values.get(key, default)
+        values[key] = list(value) if key == "allowed_profiles" and value else value
     return values
 
 

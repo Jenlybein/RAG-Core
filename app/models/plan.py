@@ -50,20 +50,57 @@ PLAN_IDENTITY_COLUMNS: Final[tuple[str, ...]] = ("code", "name")
 class Plan(Base):
     __tablename__ = "plans"
 
+    # 第 13 步 I 阶段：这些列已物理删除。构造器兼容旧调用点，值存影子属性不落库。
+    _DEPRECATED_KWARGS = frozenset(
+        {
+            "allowed_profiles",
+            "hybrid_allowed",
+            "query_rewrite_allowed",
+            "research_qps",
+            "research_daily",
+        }
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._deprecated: dict[str, Any] = {
+            key: kwargs.pop(key)
+            for key in tuple(kwargs)
+            if key in self._DEPRECATED_KWARGS
+        }
+        super().__init__(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        """已删列的属性读回落到影子值（旧代码/测试夹具）。"""
+
+        if name in self._DEPRECATED_KWARGS:
+            shadow = self.__dict__.get("_deprecated", {})
+            if name in shadow:
+                return shadow[name]
+            return {
+                "allowed_profiles": [],
+                "hybrid_allowed": False,
+                "query_rewrite_allowed": False,
+                "research_qps": 0,
+                "research_daily": 0,
+            }[name]
+        raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """已删列的写入落到影子（旧控制面用 setattr 改 allowed_profiles 等仍能生效）。"""
+
+        if name in self._DEPRECATED_KWARGS and "_deprecated" in self.__dict__:
+            self.__dict__["_deprecated"][name] = value
+        else:
+            super().__setattr__(name, value)
+
     # 整数自增主键：引用方（tenants / 将来别的表）只需要存一个数字。用 uuid 表达
     # 「三档」只是让每行多 32 个字符，还得额外维护 code 唯一。
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
     name: Mapped[str] = mapped_column(String(128))
-    # 档位白名单：这个档位允许用哪些质量档位（speed / balanced / quality / custom）。
-    # 存成白名单而不是「最低档位」：将来出现新的档位组合时，白名单能表达「只给这两档」，
-    # 序关系表达不了。
-    allowed_profiles: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    # 四个能力开关与八个上限：拆成独立列而不是一个大 JSONB，是因为面板要逐字段渲染、
-    # 校验、写审计；塞进 JSONB 之后，「这次改了哪一项」就又变成要解析的内容了。
-    hybrid_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 第 13 步 I 阶段：allowed_profiles / hybrid_allowed / query_rewrite_allowed 与
+    # research_qps / research_daily 五列物理删除（档位存储 + 旧能力列）。
     rerank_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
-    query_rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     research_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     # 第 13 步 T1 迁移加的列。retrieve_allowed 缺省 True（基线能力，存量行不静默停服）。
     retrieve_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
@@ -76,12 +113,6 @@ class Plan(Base):
     max_top_k: Mapped[int] = mapped_column(Integer, default=0)
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
-    # Research 的两个**独立**配额（票 #150）：重资源调用不跟普通检索挤在同一本账上，
-    # 否则一次 30 秒、3–4 次模型调用的 Research 会让同一租户的检索提前撞额度。
-    # 0 表示**关闭**（与 ``research_allowed=False`` 同一个答复码），所以这两列允许为 0——
-    # 这是它们与 ``retrieve_qps`` / ``retrieve_daily``（必须 ≥ 1）的刻意差别。
-    research_qps: Mapped[int] = mapped_column(Integer, default=0)
-    research_daily: Mapped[int] = mapped_column(Integer, default=0)
     max_kb: Mapped[int] = mapped_column(Integer)
     max_kb_per_retrieve: Mapped[int] = mapped_column(Integer)
     max_documents_per_kb: Mapped[int] = mapped_column(Integer)
@@ -101,19 +132,21 @@ class PlanSpec:
 
     code: str
     name: str
-    allowed_profiles: tuple[str, ...]
-    hybrid_allowed: bool
-    rerank_allowed: bool
-    query_rewrite_allowed: bool
-    research_allowed: bool
-    retrieve_qps: int
-    retrieve_daily: int
-    research_qps: int
-    research_daily: int
-    max_kb: int
-    max_kb_per_retrieve: int
-    max_documents_per_kb: int
-    max_processing_documents: int
+    # 第 13 步 I 阶段：以下五列物理已删，留作 deprecated 兼容字段（默认空/0）。
+    allowed_profiles: tuple[str, ...] = ()
+    hybrid_allowed: bool = False
+    query_rewrite_allowed: bool = False
+    research_qps: int = 0
+    research_daily: int = 0
+    # 仍存在的业务列。
+    rerank_allowed: bool = False
+    research_allowed: bool = False
+    retrieve_qps: int = 0
+    retrieve_daily: int = 0
+    max_kb: int = 0
+    max_kb_per_retrieve: int = 0
+    max_documents_per_kb: int = 0
+    max_processing_documents: int = 0
     # ── 第 13 步 T1 的新列：三个新增端点位 + 两本新账四列 + max_top_k。
     # ``research_allowed`` / ``rerank_allowed`` 复用已有字段。带缺省值让所有既有
     # 构造点不炸（expand 段）；T8 切真相源时再收紧。
@@ -127,9 +160,23 @@ class PlanSpec:
     max_top_k: int = 0
 
 
+#: 第 13 步 I 阶段：档位存储列已物理删除，这些字段只在快照里作 deprecated 兼容壳，
+#: 不参与行映射 / 缓存 / 对账（否则会去读库里已不存在的列）。
+_DEPRECATED_PLAN_FIELDS: Final[frozenset[str]] = frozenset(
+    {
+        "allowed_profiles",
+        "hybrid_allowed",
+        "query_rewrite_allowed",
+        "research_qps",
+        "research_daily",
+    }
+)
+
 #: 快照的全部列名（字段顺序就是列顺序，``PLAN_SPEC_COLUMNS`` 因此也是行/缓存读取的清单）。
 PLAN_SPEC_COLUMNS: Final[tuple[str, ...]] = tuple(
-    field.name for field in dataclasses.fields(PlanSpec)
+    field.name
+    for field in dataclasses.fields(PlanSpec)
+    if field.name not in _DEPRECATED_PLAN_FIELDS
 )
 
 #: 面板上会出现输入框的 13 列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
@@ -172,15 +219,13 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
     PLAN_FREE: PlanSpec(
         code=PLAN_FREE,
         name="免费版",
-        allowed_profiles=(PROFILE_SPEED,),
+        allowed_profiles=("speed",),
         hybrid_allowed=False,
         rerank_allowed=False,
         query_rewrite_allowed=False,
         research_allowed=False,
         retrieve_qps=3,
         retrieve_daily=500,
-        # Research 在这一档没有授权（``research_allowed=False``），两个配额写 0 而不是
-        # 留一个「看起来能用」的数：配额为 0 与能力为假给的是同一个答复（票 #150）。
         research_qps=0,
         research_daily=0,
         max_kb=1,
@@ -191,7 +236,7 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
     PLAN_STANDARD: PlanSpec(
         code=PLAN_STANDARD,
         name="标准版",
-        allowed_profiles=(PROFILE_SPEED, PROFILE_BALANCED, PROFILE_CUSTOM),
+        allowed_profiles=("speed", "balanced", "custom"),
         hybrid_allowed=True,
         rerank_allowed=False,
         query_rewrite_allowed=False,
@@ -208,15 +253,13 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
     PLAN_PRO: PlanSpec(
         code=PLAN_PRO,
         name="专业版",
-        allowed_profiles=(PROFILE_SPEED, PROFILE_BALANCED, PROFILE_QUALITY, PROFILE_CUSTOM),
+        allowed_profiles=("speed", "balanced", "quality", "custom"),
         hybrid_allowed=True,
         rerank_allowed=True,
         query_rewrite_allowed=True,
         research_allowed=True,
         retrieve_qps=50,
         retrieve_daily=100000,
-        # 票面：专业版 1 QPS / 100 次每天。独立两列的理由是成本——一次 Research 约 30 秒、
-        # 3–4 次模型调用，它不该与普通检索共享同一份额度（那会让检索提前撞上限）。
         research_qps=1,
         research_daily=100,
         max_kb=50,
@@ -248,10 +291,20 @@ def plan_columns_of(source: object) -> dict[str, Any]:
 
     # 第 13 步 expand 段：新列在部分测试夹具（SimpleNamespace）上可能不存在，
     # 按 _EXPAND_DEFAULTS 兜一次；真 ORM 行一定有这些列。
-    return {
+    columns = {
         column: getattr(source, column, _EXPAND_DEFAULTS.get(column))
         for column in PLAN_SPEC_COLUMNS
     }
+    # deprecated 字段不落库，但兼容壳需要读到值：
+    # - ORM 行的旧值存在影子属性里；
+    # - PlanSpec 快照/种子里它们是真实属性。
+    shadow = getattr(source, "_deprecated", {}) or {}
+    for name in _DEPRECATED_PLAN_FIELDS:
+        if name in shadow:
+            columns[name] = shadow[name]
+        elif hasattr(source, name):
+            columns[name] = getattr(source, name)
+    return columns
 
 
 #: 第 13 步 expand 段：这些新列在**旧缓存 JSON**里可能不存在，允许按缺省填充；
@@ -284,7 +337,12 @@ def plan_spec_from_mapping(values: Mapping[str, Any]) -> PlanSpec:
             kwargs[column] = _EXPAND_DEFAULTS[column]
         else:
             raise KeyError(column)
-    kwargs["allowed_profiles"] = tuple(kwargs["allowed_profiles"])
+    # 第 13 步：五个 deprecated 字段不落库，但影子属性/旧缓存里带着值时原样读进兼容壳。
+    if "allowed_profiles" in values:
+        kwargs["allowed_profiles"] = tuple(values["allowed_profiles"])
+    for name in ("hybrid_allowed", "query_rewrite_allowed", "research_qps", "research_daily"):
+        if name in values:
+            kwargs[name] = values[name]
     # ``**dict[str, Any]`` 会让类型检查器左右为难；运行时的「缺列即 TypeError」才是这里
     # 要守的契约（见 tests/test_plan_presets.py 的构造式兜底用例）。
     return PlanSpec(**kwargs)
@@ -305,7 +363,7 @@ def plan_row_of(spec: PlanSpec) -> Plan:
     """种子 → 待插入的行。只给「表为空时的首次播种」用，别拿它覆盖已有行。"""
 
     values: dict[str, Any] = plan_columns_of(spec)
-    values["allowed_profiles"] = list(values["allowed_profiles"])
+    # 第 13 步：deprecated 字段的值由 Plan.__init__ 收进影子属性，不落库。
     return Plan(**values)
 
 
@@ -335,8 +393,9 @@ def preset_mismatches(rows: Iterable[Plan]) -> list[str]:
             continue
         expected = PLAN_PRESETS[code]
         mapped = plan_spec_of(seeded)
-        for field in dataclasses.fields(PlanSpec):
-            if getattr(mapped, field.name) != getattr(expected, field.name):
-                mismatches.append(f"{code}.{field.name}")
+        # 第 13 步：只对账真实存在的列；deprecated 兼容字段（旧档位存储）不比对。
+        for field_name in PLAN_SPEC_COLUMNS:
+            if getattr(mapped, field_name) != getattr(expected, field_name):
+                mismatches.append(f"{code}.{field_name}")
 
     return mismatches

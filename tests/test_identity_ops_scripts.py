@@ -464,8 +464,7 @@ def test_update_policy_script_can_clear_the_kb_whitelist(
 @pytest.mark.parametrize(
     "argv",
     [
-        # free 只允许 speed：换成 balanced 不自洽
-        ["--profile", "balanced"],
+        # 第 13 步：档位名不再参与自洽校验，不再有「free 只允许 speed」这一条。
         # free 的限额是 qps 3 / daily 500
         ["--qps", "4"],
         ["--daily", "501"],

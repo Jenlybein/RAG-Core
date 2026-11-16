@@ -102,7 +102,7 @@ def test_tenants_timestamps_come_from_the_shared_now_helper() -> None:
 
 
 def test_plans_has_every_business_column() -> None:
-    """面板上会出现输入框的 21 列一列都不能只活在代码里（第 13 步扩了 8 列）。"""
+    """面板上会出现输入框的 16 列一列都不能只活在代码里（第 13 步删了 5 个档位列）。"""
 
     table = Plan.__table__
     business = tuple(
@@ -111,7 +111,7 @@ def test_plans_has_every_business_column() -> None:
         if column.name not in {"id", "code", "name", "updated_at"}
     )
     assert set(business) == set(PLAN_BUSINESS_COLUMNS)
-    assert len(business) == 21
+    assert len(business) == 16
     for column in PLAN_BUSINESS_COLUMNS:
         assert not table.c[column].nullable, f"{column} 不允许为空"
 
@@ -125,8 +125,10 @@ def test_plans_identity_is_an_integer_primary_key_with_a_unique_code() -> None:
     assert table.c.code.index is True
 
 
-def test_plans_allowed_profiles_is_a_jsonb_list() -> None:
-    assert isinstance(Plan.__table__.c.allowed_profiles.type, JSONB)
+def test_plans_no_longer_has_allowed_profiles() -> None:
+    """第 13 步：档位白名单列已物理删除。"""
+
+    assert "allowed_profiles" not in Plan.__table__.c
 
 
 def test_plans_has_only_updated_at() -> None:
@@ -170,40 +172,39 @@ def test_key_policies_shape() -> None:
     assert table.c.tenant_id.index is True
     assert table.c.name.type.length == 128
     assert isinstance(table.c.allowed_kb_ids.type, JSONB)
-    assert isinstance(table.c.custom_options.type, JSONB)
-    assert table.c.profile.type.length == 32
+    # 第 13 步：三项参数搬成真列，档位/JSONB 载体列已物理删除。
+    assert "custom_options" not in table.c
+    assert "profile" not in table.c
+    for column in ("retrieval_mode", "retrieval_top_k", "retrieval_rerank"):
+        assert column in table.c
 
 
 def test_key_policy_switches_start_closed_but_result_shape_starts_open() -> None:
-    """能力开关默认全关（重排与改写最贵），结果形状默认开（与既有响应一致）。"""
+    """授权位默认不全开（加工端点最贵），结果形状默认开（与既有响应一致）。"""
 
-    for column in (
-        "research_allowed",
-        "hybrid_allowed",
-        "rerank_allowed",
-        "query_rewrite_allowed",
-    ):
+    for column in ("research_allowed", "rerank_allowed", "rewrite_allowed", "decompose_allowed"):
         assert _default_arg(KeyPolicy, column) is False, column
+    assert _default_arg(KeyPolicy, "retrieve_allowed") is True, "基线检索默认开"
     for column in ("include_parent", "expand_table_rows"):
         assert _default_arg(KeyPolicy, column) is True, column
-    assert _default_arg(KeyPolicy, "custom_options") is dict
+    assert _default_arg(KeyPolicy, "retrieval_mode") == "vector"
+    assert _default_arg(KeyPolicy, "retrieval_top_k") == 5
+    assert _default_arg(KeyPolicy, "retrieval_rerank") is False
 
 
 def test_key_policies_limits_are_integers() -> None:
     table = KeyPolicy.__table__
-    for column in ("retrieve_qps", "retrieve_daily", "research_qps", "research_daily"):
+    for column in ("retrieve_qps", "retrieve_daily", "rerank_qps", "rerank_daily", "llm_qps", "llm_daily"):
         assert table.c[column].type.python_type is int
 
 
-def test_the_two_research_quotas_default_to_zero() -> None:
-    """票 #150：新 Key 的 Research 配额默认 0 = 关闭，与「签发时能力全关」同一个精神。
+def test_the_three_book_quotas_default_to_zero() -> None:
+    """第 13 步：三本账的新增两本默认 0 = 未启用（旧 Key 升级不被误拒）。"""
 
-    默认值写在列上（而不是只写在服务层）是因为「行是手工插的」也时有可能发生：
-    列默认 0 让这种行自己就是关闭状态，而不会得到一个「看起来像没配」的 NULL。
-    """
-
-    assert _default_arg(KeyPolicy, "research_qps") == 0
-    assert _default_arg(KeyPolicy, "research_daily") == 0
+    assert _default_arg(KeyPolicy, "rerank_qps") == 0
+    assert _default_arg(KeyPolicy, "rerank_daily") == 0
+    assert _default_arg(KeyPolicy, "llm_qps") == 0
+    assert _default_arg(KeyPolicy, "llm_daily") == 0
 
 
 # ─────────────────────────────────────────────────────────────────────── api_keys

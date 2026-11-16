@@ -109,7 +109,10 @@ def test_it_chains_onto_the_single_head() -> None:
     revisions = {_revision_of(p): p for p in paths}
     pointed = {_down_revision_of(p) for p in paths} - {None}
     heads = set(revisions) - pointed
-    assert heads == {_revision_of(path)}, f"链尾应当是 T1 这条，实际 {sorted(heads)}"
+    # 链尾后来前移过：I 阶段的物化迁移接在 T1 之后（历史迁移不改，新增一条）。
+    new_head_files = sorted(VERSIONS_DIR.glob("*_materialize_retrieval_parameters.py"))
+    assert len(new_head_files) == 1
+    assert heads == {_revision_of(new_head_files[0])}, f"链尾应当是物化迁移，实际 {sorted(heads)}"
 
 
 def test_upgrade_adds_every_new_column_and_touches_nothing_else() -> None:

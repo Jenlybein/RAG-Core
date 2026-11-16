@@ -444,36 +444,29 @@ def test_resolved_options_never_drift_from_their_echo() -> None:
 # ───────────────────────────────────────────── 配置时自洽校验
 
 
-def test_a_quality_profile_on_a_free_plan_is_rejected_at_creation() -> None:
-    """免费档的 Key 配成高质量档：**建配置时**就拒绝（``20015``），不进库。
+def test_an_old_profile_name_on_a_free_plan_is_ignored_at_creation() -> None:
+    """第 13 步：档位名已废弃，不再做白名单校验（开关不超套餐即可）。"""
 
-    创建是一瞬间、有人盯着的动作；留到运行时，就是客户的生产调用在午夜开始报错。
-    """
+    ensure_policy_consistent(
+        policy=_policy(
+            profile=PROFILE_QUALITY,
+            hybrid_allowed=False,
+            rerank_allowed=False,
+            query_rewrite_allowed=False,
+            research_allowed=False,
+        ),
+        plan=_plan(PLAN_FREE),
+    )
 
-    with pytest.raises(AppError) as excinfo:
-        ensure_policy_consistent(policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_FREE))
 
-    assert excinfo.value.code is ErrorCode.PARAM_ERROR
-    assert PROFILE_QUALITY in excinfo.value.msg
-
-
-def test_a_profile_needing_a_capability_the_policy_switches_do_not_grant_is_rejected() -> None:
-    """第一段包含：档位所需能力 ⊆ 配置自己的能力开关。
-
-    ``quality`` 要重排、配置却关着重排——这套配置从落地那一刻就是自相矛盾的。
-    """
+def test_policy_switches_below_the_plan_are_still_rejected() -> None:
+    """第 13 步：档位所需能力校验已删，但「配置开关 ⊆ 套餐能力」这条仍守。"""
 
     with pytest.raises(AppError) as excinfo:
         ensure_policy_consistent(
-            policy=_policy(
-                profile=PROFILE_QUALITY,
-                hybrid_allowed=True,
-                rerank_allowed=False,
-                query_rewrite_allowed=True,
-            ),
-            plan=_plan(PLAN_PRO),
+            policy=_policy(hybrid_allowed=False, rerank_allowed=True, research_allowed=True),
+            plan=_plan(PLAN_FREE, rerank_allowed=False, research_allowed=False),
         )
-
     assert excinfo.value.code is ErrorCode.PARAM_ERROR
     assert "rerank" in excinfo.value.msg
 
@@ -575,13 +568,11 @@ def test_a_consistent_custom_policy_needs_nothing_it_does_not_ask_for() -> None:
     )
 
 
-def test_an_unknown_profile_is_rejected_at_creation() -> None:
-    """档位名必须是已知枚举：手打成 ``qualty`` 就不许落库。"""
+def test_an_unknown_profile_name_is_ignored_at_creation() -> None:
+    """第 13 步：档位名不再参与判定，手写错的名字也不影响任何行为。"""
 
-    with pytest.raises(AppError) as excinfo:
-        ensure_policy_consistent(policy=_policy(profile="qualty"), plan=_plan(PLAN_PRO))
-
-    assert excinfo.value.code is ErrorCode.PARAM_ERROR
+    # 不再抛错：profile 是 deprecated 兼容壳，配置是否自洽只看真列与数值上限。
+    ensure_policy_consistent(policy=_policy(profile="qualty"), plan=_plan(PLAN_PRO))
 
 
 # ───────────────────────────────────────────── 开发身份跟着部署缺省走

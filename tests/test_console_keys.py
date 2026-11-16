@@ -360,19 +360,15 @@ def test_issuing_a_key_without_the_anti_csrf_header_is_rejected(console: _Harnes
     assert console.audit_entries() == []
 
 
-def test_issuing_a_profile_whose_capabilities_are_off_is_a_20015(console: _Harness) -> None:
-    """``quality`` 承诺重排 + 改写；配置开关没开，这套配置落地那一刻就自相矛盾。"""
+def test_issuing_an_old_profile_name_with_capabilities_off_succeeds(console: _Harness) -> None:
+    """第 13 步：档位名不再承诺能力，关着重排/改写也不再是自相矛盾。"""
 
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
-    commits_before = console.db.commits
 
     response = _issue(console, profile="quality", rerank_allowed=False, query_rewrite_allowed=False)
 
-    assert console.code(response) == 20015
-    assert console.db.added_of(ApiKey) == []
-    assert console.db.added_of(KeyPolicy) == []
-    assert console.db.commits == commits_before
-    assert console.audit_entries() == []
+    assert console.code(response) == 0
+    assert console.db.added_of(KeyPolicy)
 
 
 def test_issuing_a_policy_over_the_plan_limit_is_a_20015(console: _Harness) -> None:
@@ -575,18 +571,17 @@ def test_a_policy_patch_can_move_to_a_profile_the_plan_allows(console: _Harness)
     assert console.policy_row(POLICY_BETA).profile == "balanced"
 
 
-def test_a_policy_patch_to_a_profile_outside_the_plan_is_a_20015(console: _Harness) -> None:
+def test_a_policy_patch_to_an_old_profile_name_succeeds(console: _Harness) -> None:
+    """第 13 步：档位名不参与门禁，换名不再是越权（也不改变实际参数）。"""
+
     assert console.login("bob", USER_PASSWORD).json()["code"] == 0
-    commits_before = console.db.commits
 
     response = console.client.patch(
         f"/console/key-policies/{POLICY_BETA}", json={"profile": "quality"}, headers=WRITE_HEADERS
     )
 
-    assert console.code(response) == 20015
-    assert console.policy_row(POLICY_BETA).profile == "speed"
-    assert console.db.commits == commits_before
-    assert console.audit_entries() == []
+    assert console.code(response) == 0
+    assert console.policy_row(POLICY_BETA).profile == "quality"
 
 
 def test_a_policy_patch_over_the_plan_limit_is_a_20015(console: _Harness) -> None:

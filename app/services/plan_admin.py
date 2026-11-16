@@ -76,6 +76,11 @@ def plan_snapshot(row: Plan) -> dict[str, Any]:
     for column in PLAN_BUSINESS_COLUMNS:
         value = getattr(row, column)
         snapshot[column] = list(value) if column == "allowed_profiles" else value
+    # 第 13 步：五个兼容列已物理删除，但审计快照仍带它们（旧审计格式兼容），
+    # 值从 ORM 行的影子属性读（没有则中性缺省）。
+    for column in ("allowed_profiles", "hybrid_allowed", "query_rewrite_allowed", "research_qps", "research_daily"):
+        if column not in snapshot:
+            snapshot[column] = getattr(row, column, None)
     return snapshot
 
 

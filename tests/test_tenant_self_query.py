@@ -246,6 +246,15 @@ def _check_plan_snapshot(data: Any, plan_code: str) -> None:
         "max_kb_per_retrieve",
         "max_documents_per_kb",
         "max_processing_documents",
+        # 第 13 步新增的端点位、三本账与质量封顶。
+        "retrieve_allowed",
+        "rewrite_allowed",
+        "decompose_allowed",
+        "rerank_qps",
+        "rerank_daily",
+        "llm_qps",
+        "llm_daily",
+        "max_top_k",
     }
     assert snapshot["code"] == plan.code
     assert snapshot["name"] == plan.name

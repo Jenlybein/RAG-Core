@@ -18,6 +18,7 @@ import pytest
 from app.models.plan import (
     PLAN_BUSINESS_COLUMNS,
     PLAN_CODES,
+    PLAN_SPEC_COLUMNS,
     PLAN_PRESETS,
     PlanSpec,
     plan_row_of,
@@ -120,7 +121,9 @@ def test_each_plan_carries_the_decided_values(code: str) -> None:
     """逐列比对票面：21 个业务列一个不漏。"""
 
     spec = PLAN_PRESETS[code]
-    assert len(PLAN_BUSINESS_COLUMNS) == 21
+    # 第 13 步 I 阶段：allowed_profiles / hybrid_allowed / query_rewrite_allowed /
+    # research_qps / research_daily 五列物理删除，业务列从 21 降到 16。
+    assert len(PLAN_BUSINESS_COLUMNS) == 16
     for column in PLAN_BUSINESS_COLUMNS:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 
@@ -135,19 +138,29 @@ def test_plan_display_names_are_present_and_distinct() -> None:
 
 
 def test_the_spec_fields_are_exactly_the_columns() -> None:
-    """映射对象是「列的镜像」：字段名与列名一一对应，改名就两边一起改。"""
+    """映射对象真实字段与列一一对应；deprecated 兼容壳不在列清单里。"""
 
     field_names = [field.name for field in dataclasses.fields(PlanSpec)]
-    assert field_names == ["code", "name", *PLAN_BUSINESS_COLUMNS]
+    deprecated = {
+        "allowed_profiles",
+        "hybrid_allowed",
+        "query_rewrite_allowed",
+        "research_qps",
+        "research_daily",
+    }
+    assert set(field_names) == set(["code", "name", *PLAN_BUSINESS_COLUMNS]) | deprecated
+    assert len(field_names) == len(PLAN_BUSINESS_COLUMNS) + 2 + len(deprecated)
 
 
 @pytest.mark.parametrize("code", PLAN_CODES)
 def test_mapping_a_seeded_row_back_yields_the_constant(code: str) -> None:
-    """播种用怎么建行，回来就怎么映射：这是「表即真相」的往返。"""
+    """播种用怎么建行，回来就怎么映射：真实列逐项相等（deprecated 壳不比）。"""
 
     row = plan_row_of(PLAN_PRESETS[code])
+    mapped = plan_spec_of(row)
 
-    assert plan_spec_of(row) == PLAN_PRESETS[code]
+    for column in PLAN_BUSINESS_COLUMNS:
+        assert getattr(mapped, column) == getattr(PLAN_PRESETS[code], column), column
 
 
 def test_reconciliation_passes_after_seeding_all_three_plans() -> None:
@@ -157,22 +170,23 @@ def test_reconciliation_passes_after_seeding_all_three_plans() -> None:
 
 
 def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None:
-    """构造式兜底：旧列没有默认值，漏传一列就是 TypeError，而不是静默变成 None。
+    """行映射兜底：真实列缺一列就是 KeyError，而不是静默变成兜底值。
 
-    第 13 步的 8 个 expand 新列**带缺省**（迁移要兼容旧缓存），所以不参与这条
-    「漏一列即失败」的守门；T8 切真相源时它们会收紧为无缺省，再回到这条断言里。
+    第 13 步所有快照字段都有默认值（兼容旧缓存），所以从 dict 构造不再报错；
+    守门点移到 :func:`plan_spec_from_mapping`——它仍对缺失的真实列抛 KeyError。
     """
 
+    from app.models.plan import plan_spec_from_mapping
+
     complete = {
-        field.name: getattr(PLAN_PRESETS["pro"], field.name)
-        for field in dataclasses.fields(PlanSpec)
+        column: getattr(PLAN_PRESETS["pro"], column) for column in PLAN_SPEC_COLUMNS
     }
-    for column in PLAN_BUSINESS_COLUMNS:
+    for column in PLAN_SPEC_COLUMNS:
         if column in _EXPAND_SEED:
             continue
         partial = {key: value for key, value in complete.items() if key != column}
-        with pytest.raises(TypeError):
-            PlanSpec(**partial)
+        with pytest.raises(KeyError):
+            plan_spec_from_mapping(partial)
 
 
 # ──────────────────────────────── 对账必须逐列生效：丢一列就得失败，不能静默通过

@@ -40,6 +40,53 @@ PROFILES: Final[tuple[str, ...]] = (
 class KeyPolicy(Base):
     __tablename__ = "key_policies"
 
+    # 第 13 步 I 阶段：这些列已物理删除。构造器仍接受它们（测试夹具 / 旧脚本的调用
+    # 方式），值存进影子属性供 policy_snapshot_of 读取，**不落库、不进 ORM 映射**。
+    _DEPRECATED_KWARGS = frozenset(
+        {
+            "hybrid_allowed",
+            "query_rewrite_allowed",
+            "profile",
+            "custom_options",
+            "research_qps",
+            "research_daily",
+        }
+    )
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._deprecated: dict[str, Any] = {
+            key: kwargs.pop(key)
+            for key in tuple(kwargs)
+            if key in self._DEPRECATED_KWARGS
+        }
+        super().__init__(**kwargs)
+
+    def __getattr__(self, name: str) -> Any:
+        """已删列的属性读回落到影子值（旧代码/测试夹具），没有则按标准 AttributeError。"""
+
+        if name in self._DEPRECATED_KWARGS:
+            shadow = self.__dict__.get("_deprecated", {})
+            if name in shadow:
+                return shadow[name]
+            # 未显式给过的废弃字段返回中性值，而不是报错——它们是 no-op 概念。
+            return {
+                "hybrid_allowed": False,
+                "query_rewrite_allowed": False,
+                "profile": "",
+                "custom_options": {},
+                "research_qps": 0,
+                "research_daily": 0,
+            }[name]
+        raise AttributeError(name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """已删列的写入落到影子（旧脚本用 setattr 改 profile 等仍能生效）。"""
+
+        if name in self._DEPRECATED_KWARGS and "_deprecated" in self.__dict__:
+            self.__dict__["_deprecated"][name] = value
+        else:
+            super().__setattr__(name, value)
+
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     # 裸字符串、不加外键：与既有四张业务表的风格一致，引用完整性由应用层校验。
     tenant_id: Mapped[str] = mapped_column(String(64), index=True)
@@ -47,12 +94,10 @@ class KeyPolicy(Base):
     # 数据范围：这套集成能查哪些库。空列表表示「还没圈定」，不是「全部」——
     # 「全部」一旦成为空列表的含义，把白名单清空就成了开闸。
     allowed_kb_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    # 能力开关：租户在套餐上限内给这套集成的分配。默认全关——新发一把 Key 不该自带
-    # 重排与改写，那是最贵的两项。
+    # 能力开关：租户在套餐上限内给这套集成的分配。第 13 步删掉 hybrid/query_rewrite
+    # 两个旧开关（质量/加工维度已不在这里表达），只留授权位。
     research_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
-    hybrid_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     rerank_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
-    query_rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     # 第 13 步 T1 迁移加的列（与 plans 同形，max_top_k 只在套餐上）。
     retrieve_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
     rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
@@ -64,21 +109,13 @@ class KeyPolicy(Base):
     # 限额：Key 级计数卡住单个外部应用，租户级聚合由套餐上限卡住（两级计数）。
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
-    # Research 的两个独立配额（票 #150），与检索那两列**同构**（两级同记），但键前缀与
-    # 计数桶都是另一本账：重资源调用不吃掉普通检索的额度。默认 0 = 关闭——新发一把 Key
-    # 不该自带一项约 30 秒、3–4 次模型调用的能力。
-    research_qps: Mapped[int] = mapped_column(Integer, default=0)
-    research_daily: Mapped[int] = mapped_column(Integer, default=0)
-    # 建 Key 时选定的档位；调用方改不了。改档位就是改这张配置，改完立刻生效。
-    profile: Mapped[str] = mapped_column(String(32))
-    # 结果形状偏好：折叠成整节 / 表格行折回整表。默认都开（与既有响应默认一致），
-    # 否则同一把 Key 升级前后返回形状会变。
+    # 第 13 步 I 阶段：三项参数从 custom_options 搬成真列（物理删档位存储）。
+    retrieval_mode: Mapped[str] = mapped_column(String(16), default="vector")
+    retrieval_top_k: Mapped[int] = mapped_column(Integer, default=5)
+    retrieval_rerank: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 结果形状偏好：折叠成整节 / 表格行折回整表。默认都开（与既有响应默认一致）。
     include_parent: Mapped[bool] = mapped_column(Boolean, default=True)
     expand_table_rows: Mapped[bool] = mapped_column(Boolean, default=True)
-    # custom 档才读的手工参数（检索方式、返回条数、是否重排、是否改写）。存 JSONB 是
-    # 因为它的键随档位演进而变，逐个开列会让「custom 档多一个参数」变成一次迁移；
-    # 但它的**语义**只在 profile='custom' 时成立，别的档位下这里的内容不生效。
-    custom_options: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
@@ -109,17 +146,21 @@ class KeyPolicySnapshot:
 
     allowed_kb_ids: tuple[str, ...]
     research_allowed: bool
-    hybrid_allowed: bool
     rerank_allowed: bool
-    query_rewrite_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
-    #: Research 的两个独立配额（票 #150）。0 = 关闭；与 ``research_allowed`` 给同一个答复码。
-    research_qps: int
-    research_daily: int
-    profile: str
     include_parent: bool
     expand_table_rows: bool
+    #: 第 13 步三项参数的真值（从真列读）。None = 旧夹具未显式给，回退 custom_options。
+    retrieval_mode: str | None = None
+    retrieval_top_k: int | None = None
+    retrieval_rerank: bool | None = None
+    # ── deprecated 兼容字段：物理列已删，保留仅为守住旧测试/缓存构造点，不参与判定。
+    hybrid_allowed: bool = False
+    query_rewrite_allowed: bool = False
+    research_qps: int = 0
+    research_daily: int = 0
+    profile: str = ""
     custom_options: tuple[tuple[str, Any], ...] = ()
     #: 只有内置开发身份的那份快照把它打开（见类文档末段）；缺省 = 受限。
     unrestricted_scope: bool = False
@@ -148,27 +189,64 @@ def _expand_int(row: object, name: str) -> int:
     return 0 if value is None else int(value)
 
 
+def _param_from_row(row: object, column: str, key: str, default: Any) -> Any:
+    """第 13 步 I 阶段：先读真列；未 flush 的行 / 旧夹具回退到 deprecated custom_options。"""
+
+    value = getattr(row, column, None)
+    if value is not None:
+        return value
+    options = getattr(row, "custom_options", None) or {}
+    if isinstance(options, dict) and key in options:
+        return options[key]
+    return default
+
+
 def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
-    """把一行密钥配置映射成快照；逐字段搬运，不做任何类型兜底（理由见上）。"""
+    """把一行密钥配置映射成快照；三项参数从真列读，旧列留空兼容字段。"""
+
+    research_allowed = _expand_bit(row, "research_allowed", default=False)
+    rerank_allowed = _expand_bit(row, "rerank_allowed", default=False)
+    shadow = getattr(row, "_deprecated", {}) or {}
+
+    def _shadow(name: str, default: Any) -> Any:
+        return shadow.get(name, default)
+
+    raw_options = shadow.get("custom_options") or getattr(row, "custom_options", None) or {}
+    has_shadow_params = isinstance(raw_options, dict) and bool(raw_options)
+
+    if has_shadow_params:
+        # 旧夹具/旧缓存只给 custom_options：三项参数以它为准（真库行 custom_options
+        # 已物理删除，不会有影子值，永远走下面的真列分支）。
+        mode = raw_options.get("mode", "vector")
+        top_k = raw_options.get("top_k", 5)
+        rerank = raw_options.get("rerank", False)
+        # 真列字段留 None，让 profile_chain_of 走 custom_options 兜底路径。
+        param_mode: str | None = None
+        param_top_k: int | None = None
+        param_rerank: bool | None = None
+    else:
+        param_mode = str(_param_from_row(row, "retrieval_mode", "mode", "vector"))
+        param_top_k = int(_param_from_row(row, "retrieval_top_k", "top_k", 5))
+        param_rerank = bool(_param_from_row(row, "retrieval_rerank", "rerank", False))
 
     return KeyPolicySnapshot(
         allowed_kb_ids=tuple(row.allowed_kb_ids),
-        research_allowed=row.research_allowed,
-        hybrid_allowed=row.hybrid_allowed,
-        rerank_allowed=row.rerank_allowed,
-        query_rewrite_allowed=row.query_rewrite_allowed,
+        research_allowed=research_allowed,
+        rerank_allowed=rerank_allowed,
         retrieve_qps=row.retrieve_qps,
         retrieve_daily=row.retrieve_daily,
-        research_qps=row.research_qps,
-        research_daily=row.research_daily,
-        profile=row.profile,
         include_parent=row.include_parent,
         expand_table_rows=row.expand_table_rows,
-        # 按键排序：JSONB 本来就重排键，这里再稳定一次，快照相等性才不依赖读出顺序。
-        custom_options=tuple(sorted((row.custom_options or {}).items())),
-        # 第 13 步新列：expand 段过渡。未 flush 的 ORM 行读出来是 None（SQLAlchemy
-        # 的 Python 侧 default 要 INSERT 才生效），SimpleNamespace 夹具则干脆没属性，
-        # 两种都按缺省填充。真库行 upgrade() 时已被 server_default 回填，读到的就是真值。
+        retrieval_mode=param_mode,
+        retrieval_top_k=param_top_k,
+        retrieval_rerank=param_rerank,
+        # deprecated 兼容字段：物理列已删，值来自构造器影子属性（旧夹具）或默认。
+        hybrid_allowed=bool(_shadow("hybrid_allowed", False)),
+        query_rewrite_allowed=bool(_shadow("query_rewrite_allowed", False)),
+        research_qps=int(_shadow("research_qps", 0)),
+        research_daily=int(_shadow("research_daily", 0)),
+        profile=str(_shadow("profile", "") or ""),
+        custom_options=tuple(sorted(raw_options.items())) if isinstance(raw_options, dict) else (),
         retrieve_allowed=_expand_bit(row, "retrieve_allowed", default=True),
         rewrite_allowed=_expand_bit(row, "rewrite_allowed", default=False),
         decompose_allowed=_expand_bit(row, "decompose_allowed", default=False),
