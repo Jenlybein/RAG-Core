@@ -143,7 +143,6 @@ function shortKeyId(row: unknown): string {
 const editingKey = ref<KeyData | null>(null)
 const editorOpen = ref(false)
 const issueLabel = ref('')
-const saveError = ref('')
 const saving = ref(false)
 const form = ref<PolicyForm>(newPolicyForm())
 
@@ -180,7 +179,6 @@ function newPolicyForm(): PolicyForm {
 function openIssue(): void {
   editingKey.value = null
   issueLabel.value = ''
-  saveError.value = ''
   form.value = newPolicyForm()
   editorOpen.value = true
 }
@@ -195,7 +193,6 @@ function openEdit(row: unknown): void {
   }
   editingKey.value = key
   issueLabel.value = key.label ?? ''
-  saveError.value = ''
   form.value = policyFormFrom(key.policy)
   editorOpen.value = true
 }
@@ -207,7 +204,6 @@ const editorTitle = computed(() =>
 function closeEditor(): void {
   editorOpen.value = false
   editingKey.value = null
-  saveError.value = ''
 }
 
 const canSave = computed(() => {
@@ -219,7 +215,6 @@ const canSave = computed(() => {
 
 async function save(): Promise<void> {
   if (!canSave.value) return
-  saveError.value = ''
   saving.value = true
   try {
     const target = editingKey.value
@@ -248,8 +243,14 @@ async function save(): Promise<void> {
     )
     closeEditor()
   } catch (error) {
-    // 失败时保留对话框：错误文案已经说明原因，用户多半只想改一个值再试。
-    saveError.value = errorText(error)
+    // 失败时保留对话框：用户多半只想改一个值再试。错误文案走 **toast** 而不是框内红字——
+    // 20015 的正文是「哪一列超了哪个上限」，框内那一行在长表单底部很容易被忽略；
+    // 停留久一点、可手动关掉，够读完再改。
+    ElMessage.error({
+      message: errorText(error),
+      duration: 8000,
+      showClose: true,
+    })
   } finally {
     saving.value = false
   }
@@ -480,13 +481,6 @@ watch(
         :kb-options="kbOptions"
         :plan="plan"
       />
-
-      <div
-        v-if="saveError !== ''"
-        class="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700"
-      >
-        {{ saveError }}
-      </div>
 
       <template #footer>
         <div class="flex justify-end gap-2">

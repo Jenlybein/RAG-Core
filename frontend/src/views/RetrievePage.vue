@@ -584,7 +584,6 @@ const paramDraft = ref<{
   rerank: boolean
 } | null>(null)
 const paramsSaving = ref(false)
-const paramsError = ref('')
 
 /**
  * 草稿跟服务端对齐的时机：打开弹窗、换 Key、保存成功后（`policy` 会被 `['keys']` 的
@@ -599,7 +598,6 @@ watch(
       top_k: value.retrieval_top_k,
       rerank: value.retrieval_rerank,
     }
-    paramsError.value = ''
   },
   { immediate: true },
 )
@@ -626,14 +624,15 @@ async function saveParams(): Promise<void> {
   const current = policy.value
   if (current === null || paramsSaving.value || !canSaveParams.value) return
   paramsSaving.value = true
-  paramsError.value = ''
   try {
     await patchPolicy(current.policy_id, paramPatch.value)
     // 重新拉 `/console/keys`：卡片摘要与只读摘要都读它，不刷新会停在旧值上。
     await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
     ElMessage.success('已写入这把 Key 的配置 —— 下一次检索按新参数跑')
   } catch (error) {
-    paramsError.value = errorText(error)
+    // 与 Key 编辑页同一套：这类失败（20015「哪一列超了哪个上限」）正文长，框内一行
+    // 容易被忽略，统一走 toast，停留久一点、可手动关掉。
+    ElMessage.error({ message: errorText(error), duration: 8000, showClose: true })
   } finally {
     paramsSaving.value = false
   }
@@ -1052,12 +1051,6 @@ async function sendRating(): Promise<void> {
               <code class="font-mono text-xs">clipped</code> 里回显。
             </span>
           </div>
-          <p
-            v-if="paramsError !== ''"
-            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
-          >
-            {{ paramsError }}
-          </p>
         </div>
 
         <!-- ③ 要查的知识库 -->
