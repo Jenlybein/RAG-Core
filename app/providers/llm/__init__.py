@@ -5,7 +5,7 @@
 
 ## 解析顺序（#94 起，顺序本身就是契约）
 
-1. ``runtime_settings`` 的**角色指针**（``model.role.fast`` / ``model.role.strong``）指向
+1. ``runtime_settings`` 的**角色指针**（``model.role.default``，词表只在 ``app/core/model_roles.py``）指向
    一条 ``model_configs`` 行 → 用那一行的 provider / base_url / model / api_key 装配；
 2. 没有指针、或指针指向的行已经消失 → 回落 ``.env`` 的单供应商（改造前的行为）；
 3. ``.env`` 也没配 key → 空实现（**离线与 CI 的行为必须逐字不变**，这是 #94 的回归红线）。

@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import get_console_admin, require_console_admin_write
 from app.core.console_auth import ConsoleIdentity
+from app.core.model_roles import MODEL_ROLES
 from app.db.async_session import get_async_db, get_async_transaction
 from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
@@ -83,7 +84,14 @@ async def list_model_configs(
     """列表。``api_key`` 在响应里永远是 ``sk-…abcd``；明文只从 ``/{id}/secret`` 出一次。"""
 
     rows = await model_config_service.list_configs(db)
-    return ok(ModelConfigListData(items=[_row_data(row) for row in rows]))
+    return ok(
+        ModelConfigListData(
+            items=[_row_data(row) for row in rows],
+            # 角色词表与运行时同源（`MODEL_ROLES`）：面板照它渲染下拉，就不会再出现
+            # 「界面上能选、后端不认识」的角色名。
+            roles=list(MODEL_ROLES),
+        )
+    )
 
 
 @router.post(

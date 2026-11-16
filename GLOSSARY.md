@@ -388,10 +388,6 @@ _Avoid_: 完整度自评, 覆盖率（评测侧的口径）, confidence
 Research 响应 `metadata.sub_search_degraded_reasons` 里的列表：**子检索**各自降级了哪几条原因，取的就是既有「降级原因」里那几个固定串（例如 `keyword search failed`、`vector search failed`），去重后原样上交。它必须由检索那一层递上来——「查的时候降级了」在材料正文里看不出来；而子检索又不能各写一行归属索引（一次 Research 只写一行）。它**不是停止原因**：一次 Research 可以带着一条子检索降级一路答完，`stop_reason` 仍然是 `evidence_complete`。
 _Avoid_: 失败原因（那是异常，这是降级）, degraded_reason（那是检索响应里的单个字段名）, 子检索报错
 
-**strong_model_fallback**：
-Research 响应 `metadata.strong_model_fallback`：生成阶段是不是**快模型兜的底**，以及为什么。两个固定串，一因一码：`strong model unavailable`（这台机器没装强模型，换快模型是对的，不该报警）与 `strong model failed`（装了但这次没答出来，要进统计与告警）；没兜底时是 `null`。它说的是**强模型这一路为什么没用上**，不是「兜底成功了没有」——后者读 `model_calls`（含兜底位的第 4 格有没有被用掉）与 `answer` 是否为空（`app/services/research.py` 的 `STRONG_MODEL_*`）。
-_Avoid_: 模型降级（会与「降级原因」混）, fallback 成功（这一个字段不表达成败）, 备用模型, 二次作答
-
 ## 接入面
 
 **接入面**：

@@ -33,13 +33,12 @@ import {
   updateModelConfig,
 } from '../../services/consoleModels'
 import { updateSettings } from '../../services/consoleSettings'
-import type { ModelConfigCreateRequest, ModelConfigData, ModelConfigPatchRequest, ModelRole } from '../../types/modelConfig'
+import type { ModelConfigCreateRequest, ModelConfigData, ModelConfigPatchRequest } from '../../types/modelConfig'
 import { errorText } from '../../utils/errorText'
 import {
-  MODEL_ROLES,
-  MODEL_ROLE_HINTS,
   MODEL_VENDORS,
   referencedRolesOf,
+  roleHint,
   roleOptions,
   vendorLabel,
 } from '../../utils/modelsPage'
@@ -64,11 +63,18 @@ const options = computed(() => roleOptions(configs.value))
 // ───────────────────────────────────────────────── 角色指向
 
 /**
+ * 角色词表：**后端给的那一份**（`GET /console/model-configs` 的 `roles`），不再在前端
+ * 写死。写死过一次 `fast` / `strong`，而第 13 步把角色并成了一个 `default`——结果面板
+ * 让人选两个后端不认识的角色（保存必 20015），真正该改的 `default` 却不在界面上。
+ */
+const roles = computed<readonly string[]>(() => configsQuery.data.value?.roles ?? [])
+
+/**
  * 当前指向与编辑中的指向分成两份：`pointers` 是服务端事实（每次列表刷新重算），
  * `roleDraft` 是管理员这次要保存的值。混成一份会在列表刷新时把正在改的选择冲掉。
  */
-const pointers = reactive<Record<ModelRole, string>>({ fast: '', strong: '' })
-const roleDraft = reactive<Record<ModelRole, string>>({ fast: '', strong: '' })
+const pointers = reactive<Record<string, string>>({})
+const roleDraft = reactive<Record<string, string>>({})
 const rolesLoaded = ref(false)
 const savingRoles = ref(false)
 
@@ -77,10 +83,14 @@ const savingRoles = ref(false)
  * 指针若指向一条已被手工删掉的行，则没有任何行声明这个角色 → 视为「不指向」
  * （运行时本来也会回落到 `.env`，与后端的处理一致）。
  */
-function pointersFrom(items: readonly ModelConfigData[]): Record<ModelRole, string> {
-  const result: Record<ModelRole, string> = { fast: '', strong: '' }
+function pointersFrom(
+  items: readonly ModelConfigData[],
+  knownRoles: readonly string[],
+): Record<string, string> {
+  const result: Record<string, string> = {}
+  for (const role of knownRoles) result[role] = ''
   for (const config of items) {
-    for (const role of referencedRolesOf(config)) {
+    for (const role of referencedRolesOf(config, knownRoles)) {
       result[role] = config.id
     }
   }
@@ -94,7 +104,7 @@ watch(
   () => configsQuery.data.value,
   (data) => {
     if (data === undefined || rolesLoaded.value) return
-    const current = pointersFrom(data.items)
+    const current = pointersFrom(data.items, data.roles)
     Object.assign(pointers, current)
     Object.assign(roleDraft, current)
     rolesLoaded.value = true
@@ -105,7 +115,7 @@ watch(
 /** 这次要提交的指针键：只发真的变了的角色，没动的角色不写库也不进审计。 */
 const roleChanges = computed<Record<string, string>>(() => {
   const values: Record<string, string> = {}
-  for (const role of MODEL_ROLES) {
+  for (const role of roles.value) {
     if (roleDraft[role] !== pointers[role]) {
       values[`${ROLE_POINTER_PREFIX}${role}`] = roleDraft[role]
     }
@@ -450,10 +460,10 @@ async function refresh(): Promise<void> {
       </div>
 
       <div class="mt-4 grid gap-4 sm:grid-cols-2">
-        <div v-for="role in MODEL_ROLES" :key="role">
+        <div v-for="role in roles" :key="role">
           <label class="mb-1 flex flex-wrap items-baseline gap-1.5">
             <span class="font-mono text-[12px] font-semibold text-ink">{{ role }}</span>
-            <span class="text-xs text-muted">{{ MODEL_ROLE_HINTS[role] }}</span>
+            <span class="text-xs text-muted">{{ roleHint(role) }}</span>
           </label>
           <el-select v-model="roleDraft[role]" class="w-full" :disabled="options.length === 1">
             <el-option

@@ -5,12 +5,17 @@
  *
  * - **`api_key` 在列表与表单里永远是 masked**（`sk-…abcd`）。明文只有「显示原文」
  *   弹窗这一条出口，见 `ModelConfigSecretData`；
- * - **`roles` 由服务端算好**（`fast` / `strong`）。页面不再自己去 `GET /console/settings`
+ * - **`roles` 由服务端算好**。页面不再自己去 `GET /console/settings`
  *   拼「指针值 = 配置 id」这条知识——那等于让前端复述一遍后端已经算过的关系。
  */
 
-/** 模型角色。键名 `model.role.<role>` 由后端 `app/core/model_roles.py` 推导。 */
-export type ModelRole = 'fast' | 'strong'
+/**
+ * 模型角色。**词表由后端给**（`ModelConfigListData.roles`，源自
+ * `app/core/model_roles.py`），这里不再写死：写死过一次 `fast` / `strong`，而第 13 步
+ * 已经把角色并成一个 `default`，于是面板能选的角色后端不认识、真正该改的那个反而不在
+ * 界面上。
+ */
+export type ModelRole = string
 
 /** 列表里的一行（也是新增 / 改配置后的那一行）。 */
 export interface ModelConfigData {
@@ -31,6 +36,8 @@ export interface ModelConfigData {
 /** `GET /console/model-configs` 的 data。 */
 export interface ModelConfigListData {
   items: ModelConfigData[]
+  /** 角色词表（服务端 `MODEL_ROLES` 的镜像，顺序即展示顺序）。 */
+  roles: string[]
 }
 
 /** `POST /console/model-configs` 的请求体。`base_url` / `api_key` 空串合法。 */

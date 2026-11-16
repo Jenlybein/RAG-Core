@@ -34,7 +34,7 @@ class ModelConfigData(BaseModel):
     model: str
     #: **永远 masked**。明文只从 ``/{id}/secret`` 出一次。
     api_key: str
-    #: 现在指向这条配置的角色（``fast`` / ``strong``）；没有角色指向时为空列表。
+    #: 现在指向这条配置的角色（第 13 步起只有 ``default``）；没有角色指向时为空列表。
     roles: list[str]
     created_at: datetime
     updated_at: datetime
@@ -42,6 +42,11 @@ class ModelConfigData(BaseModel):
 
 class ModelConfigListData(BaseModel):
     items: list[ModelConfigData]
+    #: 角色词表（与 app.core.model_roles.MODEL_ROLES 同源）。放在列表响应里，
+    #: 而不是让面板自己写死一份：前端那份写死过 fast / strong，而第 13 步已经把
+    #: 角色并成一个 default——两边各写一份的结果是面板让你选两个后端不认识的
+    #: 角色名，保存必然 20015，而真正该改的 default 反而不在界面上。
+    roles: list[str] = Field(default_factory=list)
 
 
 class ModelConfigCreateRequest(BaseModel):

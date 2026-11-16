@@ -78,7 +78,7 @@ def test_migration_chains_onto_the_single_head() -> None:
                 downs.add(value.group(1))
     heads = set(revisions) - downs
     # 链尾后来前移过：四档套餐迁移接在本迁移之后。
-    assert heads == {"d7e3b8a1f642"}
+    assert heads == {"a4c81f60d9b2"}
     module = _load()
     assert module.down_revision == PREVIOUS
 

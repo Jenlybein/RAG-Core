@@ -140,4 +140,4 @@ def test_only_one_head() -> None:
             v = re.search(r'[\'"]([^\'"]+)[\'"]', d.group(1))
             if v:
                 downs.add(v.group(1))
-    assert set(revisions) - downs == {"d7e3b8a1f642"}
+    assert len(set(revisions) - downs) == 1

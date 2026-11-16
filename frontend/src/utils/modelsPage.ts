@@ -1,4 +1,4 @@
-import type { ModelConfigData, ModelRole } from '../types/modelConfig'
+import type { ModelConfigData } from '../types/modelConfig'
 
 /**
  * **模型配置页专用**的判定与展示规则（纯函数）。
@@ -12,29 +12,47 @@ import type { ModelConfigData, ModelRole } from '../types/modelConfig'
  * 都能用 vitest 直接钉死。
  */
 
-/** 两个模型角色，顺序与后端 `app/core/model_roles.MODEL_ROLES` 一致（先快后准）。 */
-export const MODEL_ROLES: readonly ModelRole[] = ['fast', 'strong']
+/**
+ * 各角色的中文说明：面板上写清楚「它是干什么的」，而不是只给一个英文单词。
+ *
+ * **词表不在前端**：角色清单由 `GET /console/model-configs` 的 `roles` 给（后端
+ * `app/core/model_roles.MODEL_ROLES` 是唯一出处）。这里只剩「某个角色叫什么」，查不到
+ * 就退回角色名本身——将来后端加角色，面板仍然能用，只是少了那句中文。
+ */
+export const MODEL_ROLE_LABELS: Record<string, string> = {
+  default: 'default（平台唯一的模型角色：改写 / 分解 / Research 都用它）',
+  // 第 13 步之前的两档角色。留着是为了在旧响应 / 手工写库时仍能显示人话，
+  // 但它们**不在候选词表里**了：面板不会再让人选它们。
+  fast: 'fast（已撤销：第 13 步并入 default）',
+  strong: 'strong（已撤销：第 13 步并入 default）',
+}
 
-/** 各角色的中文说明：面板上写清楚「它是干什么的」，而不是只给一个英文单词。 */
-export const MODEL_ROLE_LABELS: Record<ModelRole, string> = {
-  fast: 'fast（快速调用：查询改写）',
-  strong: 'strong（需要思考的生成）',
+/** 角色的一行说明；词表里没有的角色就显示角色名本身，不编一句解释。 */
+export function roleHint(role: string): string {
+  const label = MODEL_ROLE_LABELS[role]
+  if (label === undefined) return role
+  const parts = label.split('（')
+  return parts.length > 1 ? parts[1].replace('）', '') : label
 }
 
 /**
- * 角色的**一行说明**（取标签括号里的那半句）。
- *
- * 为什么要拆：`MODEL_ROLE_LABELS` 是「名字 + 解释」一体，直接当下拉标题会把标题撑成
- * 一行长句，两个角色并排时更难扫。面板上名字用等宽小字、解释单独一行，才读得出
- * 「这是两档角色」。
- *
- * **`fast` 不再承担重排**（第 10 步票 3）：重排走专用 Cross-Encoder 端点
- * （`RERANK_BASE_URL` / `RERANK_MODEL`），与这里的两档模型角色无关。旧文案写「同时承担
- * 重排」会让管理员以为换掉 fast 就能换重排模型——那是面板在说假话。
+ * 已撤销的两个角色。**只用于给旧数据打标签**，不参与候选词表——`RolesGate` 的下拉
+ * 只渲染后端给的那一份。
  */
-export const MODEL_ROLE_HINTS: Record<ModelRole, string> = {
-  fast: '快速调用：查询改写',
-  strong: '需要思考的生成',
+export const RETIRED_MODEL_ROLES: readonly string[] = ['fast', 'strong']
+
+/**
+ * 这条配置现在被哪些角色引用（按 `knownRoles` 的顺序，丢掉词表外的脏值）。
+ *
+ * `knownRoles` 来自 `GET /console/model-configs` 的 `roles`：顺序即展示顺序，前端不再
+ * 自带一份。旧实现拿硬编码的 `['fast','strong']` 过滤，于是 `default` 被静默丢掉，
+ * 面板显示「没有被引用」——那是错的。
+ */
+export function referencedRolesOf(
+  config: Pick<ModelConfigData, 'roles'>,
+  knownRoles: readonly string[],
+): string[] {
+  return knownRoles.filter((role) => config.roles.includes(role))
 }
 
 /**
@@ -98,13 +116,3 @@ export function roleOptions(configs: readonly RoleOptionSource[]): RoleOption[] 
   ]
 }
 
-/**
- * 这条配置现在被哪些角色引用。
- *
- * 只读后端返回的 `roles`（服务端已经算过「指针值 = 配置 id」），前端不自己猜；同时
- * 丢掉未知角色——`roles` 是裸字符串数组，手工写库或将来加角色时可能带着脏值，照着它
- * 渲染会看到一个不存在的角色标签。
- */
-export function referencedRolesOf(config: Pick<ModelConfigData, 'roles'>): ModelRole[] {
-  return MODEL_ROLES.filter((role) => config.roles.includes(role))
-}
