@@ -803,18 +803,23 @@ async function sendRating(): Promise<void> {
       <!-- 一行只读摘要。不显示的话，用户每次检索前都得开弹窗确认用的是哪把 Key、哪些库。 -->
       <p v-if="keysPending" class="text-xs text-muted">正在读取 Key 列表…</p>
       <!--
-        服务端在「开发身份模式」时，控制台签发的 Key **一把都不生效**（只认内置占位 Key）。
-        这件事必须在这里说，而不是等检索失败后再说：失败时看到的「Key 无效」会把人送去
-        反复重签一把永远不会生效的 Key。真实踩过。
+        服务端是「开发身份模式」时，控制台签发的 Key **一把都不生效**（只认内置占位 Key）。
+        必须在检索前说，否则失败时看到的「Key 无效」会把人送去反复重签一把永远不会生效的 Key。
+        一行说完，怎么改塞进 tooltip：这条提示常驻，句子越长越像背景噪音。
       -->
       <div
         v-if="authDisabled"
-        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
+        class="flex flex-wrap items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
-        <strong>服务端当前是开发身份模式（AUTH_ENABLED=false）</strong>：检索会用内置开发身份，
-        下面选的 Key <strong>不参与鉴权</strong>，所以拿真实 Key 直接调接口会得到 20010。
-        要用真实 Key，把 <code class="font-mono">AUTH_ENABLED</code> 设为
-        <code class="font-mono">true</code> 并重启 API。
+        <strong>开发身份模式</strong>
+        <span>· 所选 Key 不参与鉴权</span>
+        <el-tooltip
+          content="把 AUTH_ENABLED 设为 true 并重启 API，控制台签发的 Key 才会生效"
+          placement="top"
+          :show-after="200"
+        >
+          <span class="cursor-help underline decoration-dotted underline-offset-2">怎么改</span>
+        </el-tooltip>
       </div>
       <div
         v-else-if="keysError !== ''"
@@ -824,48 +829,48 @@ async function sendRating(): Promise<void> {
       </div>
       <div
         v-else-if="keys.length === 0"
-        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
+        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
-        还没有任何 API Key：先去
-        <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
-        签发一把。
+        还没有 API Key ——
+        <RouterLink to="/keys" class="text-brand underline">去签发一把</RouterLink>
       </div>
-      <div v-else class="rounded-control bg-surface-muted px-3 py-2.5">
-        <div
-          class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-xs"
-        >
-          <span class="flex flex-wrap items-baseline gap-2">
-            <span class="text-muted">当前 Key</span>
-            <template v-if="currentKeySummary !== null">
-              <span class="font-mono text-[12px] font-medium text-ink">
-                {{ currentKeySummary.label }}
-              </span>
-              <span class="font-mono text-xs text-slate-400">
-                {{ currentKeySummary.masked }}
-              </span>
-              <span class="text-line-strong">·</span>
-              <span :class="currentKeySummary.mode === null ? 'text-[#7a5b00]' : 'text-muted'">
-                {{ currentKeySummary.mode ?? '配置缺失' }}
-              </span>
-            </template>
-            <span v-else class="text-[#7a5b00]">未选择 —— 点「修改配置」选一把</span>
-          </span>
-          <span class="flex flex-wrap items-center gap-2 text-xs">
-            <span class="text-muted">已选 {{ store.selectedCount }} 个库</span>
-            <!--
-              实验入口必须有名字地摆在这儿：只写「修改配置」时，想换检索方式的人不会想到
-              点它（那是「改配置」，不像「换检索方式」）。同一个弹窗，第二种说法。
-            -->
-            <button
-              v-if="policy !== null"
-              type="button"
-              class="text-brand underline underline-offset-2 transition hover:text-ink"
-              @click="configDialogOpen = true"
+      <div v-else class="flex flex-wrap items-center justify-between gap-2">
+        <!-- 摘要用 chip 而不是一句话：三个值各自可辨，扫一眼就够，不用读句子。 -->
+        <span class="flex flex-wrap items-center gap-1.5">
+          <template v-if="currentKeySummary !== null">
+            <span class="chip font-mono">{{ currentKeySummary.label }}</span>
+            <span class="chip font-mono text-slate-400">{{ currentKeySummary.masked }}</span>
+            <span
+              class="chip font-mono"
+              :class="currentKeySummary.mode === null ? 'text-[#7a5b00]' : ''"
             >
-              换检索方式 / 参数
-            </button>
-          </span>
-        </div>
+              {{ currentKeySummary.mode ?? '配置缺失' }}
+            </span>
+          </template>
+          <span v-else class="text-xs text-[#7a5b00]">未选 Key</span>
+          <span class="chip">库 {{ store.selectedCount }}</span>
+        </span>
+        <!--
+          实验入口必须有名字地摆在这儿：只写「修改配置」时，想换检索方式的人不会想到点它
+          （那是「改配置」，不像「换检索方式」）。同一个弹窗，第二种说法。
+        -->
+        <span class="flex items-center gap-3 text-xs">
+          <button
+            v-if="policy !== null"
+            type="button"
+            class="text-brand underline underline-offset-2 transition hover:text-ink"
+            @click="configDialogOpen = true"
+          >
+            换检索方式 / 参数
+          </button>
+          <button
+            type="button"
+            class="text-muted underline underline-offset-2 transition hover:text-ink"
+            @click="configDialogOpen = true"
+          >
+            选 Key 与库
+          </button>
+        </span>
       </div>
 
       <div class="mt-5 border-t border-line pt-5">
@@ -1031,9 +1036,9 @@ async function sendRating(): Promise<void> {
             v-if="rerankBitMissing"
             class="mt-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
           >
-            这把 Key 的 rerank <strong>授权位</strong>是关的：参数写 true 会被拒（业务码 20015）。
-            先去 <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
-            打开那个位，再回来保存。
+            rerank 授权位没开 —— 保存会被拒。先去
+            <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
+            打开它。
           </p>
 
           <div class="mt-2.5 flex flex-wrap items-center gap-2">
@@ -1045,11 +1050,16 @@ async function sendRating(): Promise<void> {
             >
               保存到这把 Key
             </el-button>
-            <span class="text-xs leading-relaxed text-muted">
-              这是<strong class="text-ink">写配置</strong>，不是只影响这一次：保存后所有用这把 Key 的调用都按新参数跑。
-              超出套餐封顶会被裁到上限，并在运行摘要的
-              <code class="font-mono text-xs">clipped</code> 里回显。
-            </span>
+            <span class="text-xs text-muted">写配置 · 影响所有用这把 Key 的调用</span>
+            <el-tooltip
+              content="超出套餐封顶会被裁到上限，并在运行摘要的 clipped 里回显"
+              placement="top"
+              :show-after="200"
+            >
+              <span class="cursor-help text-xs text-muted underline decoration-dotted underline-offset-2">
+                超限会怎样
+              </span>
+            </el-tooltip>
           </div>
         </div>
 
@@ -1061,14 +1071,19 @@ async function sendRating(): Promise<void> {
               已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
             </span>
           </div>
-          <p class="mt-1 text-xs leading-relaxed text-muted">
-            这份清单是<strong class="text-ink">服务端</strong>按这把 Key 的配置过滤后的结果
-            （<code class="font-mono text-xs">GET /api/v1/knowledge-bases</code>）：
-            列出来的都能勾，没列出来的这把 Key 查不到。
+          <p class="mt-1 text-xs text-muted">
+            只列这把 Key 能查的库
+            <el-tooltip
+              content="清单由服务端按这把 Key 的配置过滤（GET /api/v1/knowledge-bases），与检索用的是同一份判定"
+              placement="top"
+              :show-after="200"
+            >
+              <span class="cursor-help underline decoration-dotted underline-offset-2">来源</span>
+            </el-tooltip>
           </p>
 
           <p v-if="store.selectedKeyId === null" class="mt-2.5 text-xs text-muted">
-            先选一把 Key —— 可用库清单要按那把 Key 的范围去问服务端。
+            先选一把 Key
           </p>
           <p v-else-if="treePending" class="mt-2.5 text-xs text-muted">
             正在问服务端：这把 Key 能查哪些库…
@@ -1276,24 +1291,23 @@ async function sendRating(): Promise<void> {
     -->
     <section class="card px-5 py-4">
       <h2 class="section-title">这次的诊断</h2>
-      <p class="mt-1 text-xs text-muted">运行摘要 · 六段耗时 · 打分</p>
       <div class="mt-3 space-y-3">
         <!--
           运行摘要收进结果卡底部、默认收起。它原来自己占一张卡，与结果并列——但它是
           「这次为什么这样跑」的元信息，读结果的当下不需要，需要一个入口就够了。
         -->
-        <div class="mt-4 border-t border-line pt-3">
+        <div class="border-t border-line pt-3">
           <button
             type="button"
             class="flex items-center gap-1.5 text-xs text-muted transition hover:text-ink"
             @click="summaryOpen = !summaryOpen"
           >
             <span class="text-[9px]">{{ summaryOpen ? '▼' : '▶' }}</span>
-            运行摘要 · 这次后端实际生效的值
+            运行摘要
           </button>
           <RunSummary v-if="summaryOpen && result !== null" class="mt-3" :metadata="result.metadata" />
           <p v-if="summaryOpen && result === null" class="mt-2 text-xs text-muted">
-            还没有响应：跑一次检索后，这里显示后端这次实际生效的值。
+            跑一次检索后显示
           </p>
         </div>
 
@@ -1309,16 +1323,15 @@ async function sendRating(): Promise<void> {
             @click="waterfallOpen = !waterfallOpen"
           >
             <span class="text-[9px]">{{ waterfallOpen ? '▼' : '▶' }}</span>
-            六段耗时 · 按 log_id 看六段瀑布
+            六段耗时
           </button>
 
           <div v-if="waterfallOpen" class="mt-3">
             <!-- 有这次检索的响应时：一键看，不用抄 UUID（与评分控件共用同一个反查结果）。 -->
             <template v-if="ratingLogId !== null">
-              <p class="text-xs leading-relaxed text-muted">
-                看
-                <span class="font-mono text-xs text-slate-500">{{ ratingLogId.slice(0, 8) }}…</span>
-                这次检索的六段耗时（关掉观测也能从本地记录看）。
+              <p class="text-xs text-muted">
+                这次检索
+                <span class="font-mono text-slate-500">{{ ratingLogId.slice(0, 8) }}…</span>
               </p>
               <div class="mt-2">
                 <el-button size="small" :loading="waterfallLoading" @click="loadWaterfall">
@@ -1328,10 +1341,8 @@ async function sendRating(): Promise<void> {
             </template>
             <!-- 没有响应（例如只在工单里拿到一个 log_id）时，才退回手填。 -->
             <template v-else>
-              <p class="text-xs leading-relaxed text-muted">
-                手填
-                <code class="rounded bg-slate-100 px-1 font-mono text-xs text-slate-500">log_id</code>
-                （归属索引里那一行的 id）。这次的检索记录还没定位到，所以没有可一键查看的目标。
+              <p class="text-xs text-muted">
+                手填 <code class="rounded bg-slate-100 px-1 font-mono text-slate-500">log_id</code>
               </p>
               <div class="mt-2 flex flex-wrap items-center gap-2">
                 <el-input
@@ -1360,7 +1371,7 @@ async function sendRating(): Promise<void> {
               {{ waterfallError }}
             </p>
             <p v-else-if="ratingLogId === null && trimmedLogId === ''" class="mt-2 text-xs text-muted">
-              还没填 log_id。填上之后再点「看瀑布」。
+              先填 log_id
             </p>
             <StageWaterfall v-else-if="waterfall !== null" class="mt-3" :data="waterfall" />
           </div>
@@ -1371,10 +1382,10 @@ async function sendRating(): Promise<void> {
           它绑定的是**当前这次检索**（trace_id → 反查 log_id），不需要手填 UUID；
           观测开关不参与可用性判断——反馈以本地为准，观测栈挂了照样能打分。
         -->
-        <div class="mt-3 border-t border-line pt-3">
-          <p class="text-xs font-medium text-slate-600">给这次检索打分</p>
+        <div class="border-t border-line pt-3">
+          <p class="text-xs font-medium text-slate-600">打分</p>
 
-          <p v-if="ratingDisabledCopy !== ''" class="mt-2 text-xs leading-relaxed text-muted">
+          <p v-if="ratingDisabledCopy !== ''" class="mt-2 text-xs text-muted">
             {{ ratingDisabledCopy }}
           </p>
           <div v-else class="mt-2">

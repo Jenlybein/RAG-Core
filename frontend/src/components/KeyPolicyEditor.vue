@@ -63,6 +63,19 @@ const topKLabel = computed<string>(() => {
   return cap > 0 ? `返回条数（现套餐最高 ${cap} 条）` : '返回条数'
 })
 
+/**
+ * 三本账每一项的套餐上限：**输入时**就封住，而不是等保存后回一个 20015。
+ *
+ * 后端仍会校验（它是最后一道，不是唯一一道）——这里做的是「不让错误产生」：填到
+ * 100000 而套餐只给 25000 时，输入框本来就上不去，用户不必先读一段报错再回来改。
+ * `plan` 还没拿到时不封顶，编辑框照旧可用，后端兜底。
+ */
+function quotaCeiling(key: (typeof QUOTA_INPUTS)[number]['key']): number {
+  const plan = props.plan
+  if (plan === null) return 1_000_000
+  return plan[key]
+}
+
 /** 套餐的 `max_top_k` 封顶；0 表示不额外封顶，退回平台硬上限（与后端裁剪同义）。 */
 const topKMax = computed(() => {
   const cap = props.plan?.max_top_k ?? 0
@@ -226,34 +239,29 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
 
         <div class="space-y-5 pt-1">
           <div>
-            <h4 class="mb-1 text-[12px] font-semibold text-slate-700">限额（三本账）</h4>
-            <p class="mb-2 text-xs leading-relaxed text-muted">
-              检索、重排、模型各记各的账；加工能力的额度填 0 表示「不给这项额度」。
-            </p>
+            <h4 class="mb-1.5 text-[12px] font-semibold text-slate-700">限额（三本账）</h4>
             <div class="grid gap-3 sm:grid-cols-2">
               <div v-for="input in QUOTA_INPUTS" :key="input.key">
-                <label class="mb-1 block text-xs text-muted">{{ input.label }}</label>
+                <label class="mb-1 block text-xs text-muted">
+                  {{ input.label }}
+                  <span class="text-slate-400">· 最高 {{ quotaCeiling(input.key) }}</span>
+                </label>
                 <div class="flex items-center gap-2">
                   <el-input-number
                     v-model="form[input.key]"
                     :min="input.min"
+                    :max="quotaCeiling(input.key)"
                     :step="input.step"
                     controls-position="right"
                   />
                   <span class="text-xs text-muted">{{ input.unit }}</span>
                 </div>
-                <p v-if="plan !== null" class="mt-1 text-xs text-muted">
-                  套餐上限 {{ plan[input.key] }}
-                </p>
               </div>
             </div>
           </div>
 
           <div>
-            <h4 class="mb-1 text-[12px] font-semibold text-slate-700">结果形状</h4>
-            <p class="mb-2 text-xs leading-relaxed text-muted">
-              只改返回的上下文形状，不影响召回与排序。
-            </p>
+            <h4 class="mb-1.5 text-[12px] font-semibold text-slate-700">结果形状</h4>
             <!--
               这里显示的是**概念名**（small-to-big / rows-to-table），不是请求体字段名。
               字段仍然是 `include_parent` / `expand_table_rows`：后端那两个 schema 是
