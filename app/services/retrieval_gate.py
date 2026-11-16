@@ -26,7 +26,6 @@ HTTP 路由与 MCP 工具写的是**同一段五步序列**，过去是两处各
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
-from dataclasses import replace
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -39,7 +38,7 @@ from app.services import rag_service
 from app.services.data_scope import ensure_kb_scope
 from app.services.profile_policy import resolve_retrieval_options
 from app.services.quota_gate import llm_quota, rerank_quota, retrieval_quota
-from app.services.retrieval.rerank import REASON_RERANK_QUOTA_EXHAUSTED
+from app.services.rerank_gate import degrade_rerank_if_exhausted
 from app.services.retrieval_authorization import ensure_endpoint_allowed
 
 #: ``rag_service.retrieve`` 的形状：组合根只认「一个会话 + 已解析参数」。
@@ -125,22 +124,8 @@ async def gated_retrieve(
         await llm.ensure_available()
 
     # 第 3.5 步（第 13 步）：重排是**可选的优化**，额度用尽时跳过而不是拒绝整单
-    # （ADR-0032、用户故事 15）。用 ``has_capacity`` 问一句而不是 try/except：后者会把
-    # 「这把 Key 没买重排」（该拒绝）与「今天排太多次了」（该跳过）混成一件事。
-    # 跳过时必须留下原因——少了这一步却在响应里一个字都不提，就是看不见的降级。
-    if options.rerank:
-        rerank_ledger = rerank_quota(
-            policy=key.policy,
-            plan=key.plan,
-            tenant_id=key.tenant_id,
-            key_id=key.key_id,
-        )
-        if not await rerank_ledger.has_capacity():
-            options = replace(
-                options,
-                rerank=False,
-                rerank_skipped_reason=REASON_RERANK_QUOTA_EXHAUSTED,
-            )
+    # （ADR-0032、用户故事 15）。三条链路共用 ``degrade_rerank_if_exhausted`` 一处实现。
+    options = await degrade_rerank_if_exhausted(options, key)
 
     # 第 4 步：召回。组合根拿到的是已经解析完的参数，它不再读请求体、也不再读请求里的质量
     # 字段（那些字段根本不存在）。
@@ -218,19 +203,7 @@ async def gated_decompose(
     await llm.ensure_available()
 
     # 第 3.5 步：重排额度用尽 → 跳过重排 + 记原因（不拒绝整单），与直接检索同一条纪律。
-    if options.rerank:
-        rerank_ledger = rerank_quota(
-            policy=key.policy,
-            plan=key.plan,
-            tenant_id=key.tenant_id,
-            key_id=key.key_id,
-        )
-        if not await rerank_ledger.has_capacity():
-            options = replace(
-                options,
-                rerank=False,
-                rerank_skipped_reason=REASON_RERANK_QUOTA_EXHAUSTED,
-            )
+    options = await degrade_rerank_if_exhausted(options, key)
 
     # 第 4 步：分解 → N 次内核 → 合并。重排实际发生几次由观察点交回（第 5 步记账用）。
     rerank_count = 0

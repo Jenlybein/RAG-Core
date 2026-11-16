@@ -78,7 +78,6 @@ ADR-0026「影响范围」把这条钉死：一次 Research = 一个 ``log_id`` 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import replace
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,10 +98,10 @@ from app.services.data_scope import ensure_kb_scope
 from app.services.knowledge_base_access import ensure_visible
 from app.services.profile_policy import resolve_retrieval_options
 from app.services.quota_gate import llm_quota, rerank_quota
+from app.services.rerank_gate import degrade_rerank_if_exhausted
 from app.services.research import Clock, LLMFactory, SearchCallable, run_research
 from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
-from app.services.retrieval.rerank import REASON_RERANK_QUOTA_EXHAUSTED
 from app.services.retrieval_options import RetrievalOptions
 from app.services.retrieval_trace import record_retrieval_trace
 from app.services.trace_identity import (
@@ -271,19 +270,7 @@ async def gated_research(
 
     # 第 5.5 步：重排额度用尽 → 子检索跳过重排 + 记原因，整单照跑（ADR-0032）。
     # 「一次可选优化没额度」不该让一次 30 秒的 Research 白等之后失败。
-    if options.rerank:
-        rerank_ledger = rerank_quota(
-            policy=key.policy,
-            plan=key.plan,
-            tenant_id=key.tenant_id,
-            key_id=key.key_id,
-        )
-        if not await rerank_ledger.has_capacity():
-            options = replace(
-                options,
-                rerank=False,
-                rerank_skipped_reason=REASON_RERANK_QUOTA_EXHAUSTED,
-            )
+    options = await degrade_rerank_if_exhausted(options, key)
     visible_kbs = [
         await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id) for kb_id in kb_ids
     ]

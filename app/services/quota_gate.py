@@ -108,7 +108,7 @@ from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
-from app.services.quota_limits import ensure_under_limit
+from app.services.quota_limits import ensure_under_limit, has_room
 
 #: 两级计数的两个名字。直接用字面量拼进键里（``quota:qps:tenant:...``），
 #: 运维一眼能看出这个键属于哪一级，而不必回来读代码。
@@ -357,6 +357,20 @@ class QuotaLimits:
 
 
 @dataclass(frozen=True)
+class _QuotaCell:
+    """一格额度：已经记了多少、上限多少、判失败时报什么码、话怎么说。
+
+    ``code`` 与 ``what`` 只被拒绝路径用（探测路径只关心 ``has_room``），但两格放在一起
+    才能保证「四格」这件事只写一遍——分开写时新增一本账就得改两个方法。
+    """
+
+    used: int
+    limit: int
+    code: ErrorCode
+    what: str
+
+
+@dataclass(frozen=True)
 class QuotaLedger:
     """一条链路的额度账本：进门查一次（:meth:`ensure_available`）、成功后记一次。
 
@@ -382,40 +396,19 @@ class QuotaLedger:
         if not self.enabled:
             return
 
-        # 第一道：秒级限流。Key 级在前——它更窄、更可能是调用方自己要修的那件事
-        # （「我这个应用打得太快」），而租户级超限往往要另一个应用的负责人一起看。
-        # 判据只有一份（``quota_limits.ensure_under_limit``），静态配额用的也是它。
-        ensure_under_limit(
-            used=await self._read_qps(LEVEL_KEY, self.key_id),
-            limit=self.limits.key_qps,
-            code=ErrorCode.API_RATE_LIMIT,
-            what=f"{self.limits.label}qps of key {self.key_id}",
-            suffix="per window",
-        )
-        ensure_under_limit(
-            used=await self._read_qps(LEVEL_TENANT, self.tenant_id),
-            limit=self.limits.tenant_qps,
-            code=ErrorCode.API_RATE_LIMIT,
-            what=f"{self.limits.label}qps of tenant {self.tenant_id}",
-            suffix="per window",
-        )
-
-        # 第二道：日配额。注意**比的是当前额度**，不是某个记下来的快照：管理员把日
-        # 配额改小，下一次调用就按新值判（AC「改小日配额后立刻生效，不需要重启」）。
-        ensure_under_limit(
-            used=await self._read_daily(LEVEL_KEY, self.key_id),
-            limit=self.limits.key_daily,
-            code=ErrorCode.QUOTA_EXCEEDED,
-            what=f"{self.limits.label}daily quota of key {self.key_id}",
-            suffix="per window",
-        )
-        ensure_under_limit(
-            used=await self._read_daily(LEVEL_TENANT, self.tenant_id),
-            limit=self.limits.tenant_daily,
-            code=ErrorCode.QUOTA_EXCEEDED,
-            what=f"{self.limits.label}daily quota of tenant {self.tenant_id}",
-            suffix="per window",
-        )
+        # 判据只有一份（``quota_limits.ensure_under_limit``），四格的读数也只有一份
+        # （``_cells``）——顺序即判定顺序：Key 级秒级在前，它更窄、更可能是调用方自己
+        # 要修的那件事（「我这个应用打得太快」），而租户级超限往往要另一个应用的负责人
+        # 一起看。日配额**比的是当前额度**，不是某个记下来的快照：管理员把日配额改小，
+        # 下一次调用就按新值判（AC「改小日配额后立刻生效，不需要重启」）。
+        for cell in await self._cells():
+            ensure_under_limit(
+                used=cell.used,
+                limit=cell.limit,
+                code=cell.code,
+                what=cell.what,
+                suffix="per window",
+            )
 
     async def has_capacity(self) -> bool:
         """还能不能再跑一次？（只读，不记账、不抛错）
@@ -426,18 +419,14 @@ class QuotaLedger:
         ``AppError`` —— 后者会把「这把 Key 压根没买重排」和「今天排太多次了」混成一件
         事，而它们的正确处置恰好相反（前者该拒绝，后者该跳过）。
 
-        判据与 :meth:`ensure_available` 逐条相同，所以两者不可能给出相反的结论。
+        与 :meth:`ensure_available` 读同一份 ``_cells``、走同一条判据
+        （``quota_limits.has_room``），所以两者**不可能**给出相反的结论。
         """
 
         if not self.enabled or self.counters is None:
             return True
 
-        return (
-            await self._read_qps(LEVEL_KEY, self.key_id) < self.limits.key_qps
-            and await self._read_qps(LEVEL_TENANT, self.tenant_id) < self.limits.tenant_qps
-            and await self._read_daily(LEVEL_KEY, self.key_id) < self.limits.key_daily
-            and await self._read_daily(LEVEL_TENANT, self.tenant_id) < self.limits.tenant_daily
-        )
+        return all(has_room(used=cell.used, limit=cell.limit) for cell in await self._cells())
 
     async def record_success(self) -> None:
         """业务成功之后才调它：两级各记一次（n=1）。
@@ -464,6 +453,40 @@ class QuotaLedger:
             for level, ident in ((LEVEL_KEY, self.key_id), (LEVEL_TENANT, self.tenant_id)):
                 await self.counters.add_qps(level=level, ident=ident, window=self.window)
                 await self.counters.add_daily(level=level, ident=ident, window=self.window)
+
+    async def _cells(self) -> tuple[_QuotaCell, ...]:
+        """四格「已用 / 上限」：Key 秒级、租户秒级、Key 日额、租户日额（顺序即判定顺序）。
+
+        两个公开方法都只读这一份：读数一次、判据一处，所以「先拦一道」与「先问一句」
+        不可能因为某处漏改一格而给出相反的结论。
+        """
+
+        return (
+            _QuotaCell(
+                used=await self._read_qps(LEVEL_KEY, self.key_id),
+                limit=self.limits.key_qps,
+                code=ErrorCode.API_RATE_LIMIT,
+                what=f"{self.limits.label}qps of key {self.key_id}",
+            ),
+            _QuotaCell(
+                used=await self._read_qps(LEVEL_TENANT, self.tenant_id),
+                limit=self.limits.tenant_qps,
+                code=ErrorCode.API_RATE_LIMIT,
+                what=f"{self.limits.label}qps of tenant {self.tenant_id}",
+            ),
+            _QuotaCell(
+                used=await self._read_daily(LEVEL_KEY, self.key_id),
+                limit=self.limits.key_daily,
+                code=ErrorCode.QUOTA_EXCEEDED,
+                what=f"{self.limits.label}daily quota of key {self.key_id}",
+            ),
+            _QuotaCell(
+                used=await self._read_daily(LEVEL_TENANT, self.tenant_id),
+                limit=self.limits.tenant_daily,
+                code=ErrorCode.QUOTA_EXCEEDED,
+                what=f"{self.limits.label}daily quota of tenant {self.tenant_id}",
+            ),
+        )
 
     async def _read_qps(self, level: str, ident: str) -> int:
         assert self.counters is not None  # 只有 enabled 时才会走到这里
