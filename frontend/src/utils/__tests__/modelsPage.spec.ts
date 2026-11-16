@@ -77,3 +77,15 @@ describe('角色文案', () => {
     expect(roleHint('some-future-role')).toBe('some-future-role')
   })
 })
+
+describe('referencedRolesOf 的兜底', () => {
+  it('词表还没到（undefined）时返回空，而不是让整页崩', () => {
+    // 真实故障：模板漏传第二个参数 → `.filter` of undefined → /admin/models 白屏。
+    // 少一个角色胶囊可以接受，白屏不可以。
+    expect(referencedRolesOf({ roles: ['default'] }, undefined)).toEqual([])
+  })
+
+  it('空词表同样是空列表（还没载入时不该假装「被引用」）', () => {
+    expect(referencedRolesOf({ roles: ['default'] }, [])).toEqual([])
+  })
+})

@@ -407,13 +407,13 @@ async function refresh(): Promise<void> {
               <div class="flex flex-wrap gap-1">
                 <!-- 中性胶囊而不是成功绿：被引用是事实，不是「好」或「成功」。 -->
                 <span
-                  v-for="role in referencedRolesOf(config)"
+                  v-for="role in referencedRolesOf(config, roles)"
                   :key="role"
                   class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-xs text-slate-600"
                 >
                   {{ role }}
                 </span>
-                <span v-if="referencedRolesOf(config).length === 0" class="text-xs text-slate-400">
+                <span v-if="referencedRolesOf(config, roles).length === 0" class="text-xs text-slate-400">
                   —
                 </span>
               </div>

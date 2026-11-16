@@ -48,10 +48,22 @@ export const RETIRED_MODEL_ROLES: readonly string[] = ['fast', 'strong']
  * 自带一份。旧实现拿硬编码的 `['fast','strong']` 过滤，于是 `default` 被静默丢掉，
  * 面板显示「没有被引用」——那是错的。
  */
+/**
+ * 这条配置现在被哪些角色引用（按 `knownRoles` 的顺序，丢掉词表外的脏值）。
+ *
+ * `knownRoles` 来自 `GET /console/model-configs` 的 `roles`：顺序即展示顺序，前端不再
+ * 自带一份。旧实现拿硬编码的 `['fast','strong']` 过滤，于是 `default` 被静默丢掉，
+ * 面板显示「没有被引用」——那是错的。
+ *
+ * 词表允许是 `undefined`：调用点分布在模板里（表格每一行都会算），而**空词表不该让整页
+ * 崩掉**。真实踩过：模板漏传第二个参数 → `.filter` of undefined → 整个 `/admin/models`
+ * 变成「页面渲染出错」。少一个角色胶囊是可接受的降级，白屏不是。
+ */
 export function referencedRolesOf(
   config: Pick<ModelConfigData, 'roles'>,
-  knownRoles: readonly string[],
+  knownRoles: readonly string[] | undefined,
 ): string[] {
+  if (knownRoles === undefined) return []
   return knownRoles.filter((role) => config.roles.includes(role))
 }
 
