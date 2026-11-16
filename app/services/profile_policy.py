@@ -61,17 +61,9 @@ from dataclasses import replace
 from typing import Any, Final
 
 from app.core.exceptions import AppError, ErrorCode
-from app.core.profile_presets import profile_preset_of
-from app.models.key_policy import (
-    PROFILES,
-    PROFILE_CUSTOM,
-    KeyPolicySnapshot,
-)
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
 from app.services.retrieval_options import (
-    CUSTOM_OPTION_MODE,
-    CUSTOM_OPTION_RERANK,
-    CUSTOM_OPTION_REWRITE,
     MAX_TOP_K,
     MODE_HYBRID,
     ProfileChain,
@@ -79,7 +71,6 @@ from app.services.retrieval_options import (
     TenantPolicy,
     options_from_chain,
     profile_chain_of,
-    server_default_chain,
 )
 
 CAPABILITY_HYBRID: str = "hybrid"
@@ -282,41 +273,6 @@ def _capabilities_of_chain(chain: ProfileChain) -> frozenset[str]:
         mode=chain.mode,
         rerank=chain.rerank,
         rewrite=chain.rewrite,
-    )
-
-
-def _needed_capabilities(policy: KeyPolicySnapshot) -> frozenset[str]:
-    """配置里那**一个**档位需要哪些能力。
-
-    命名档位看预设；``custom`` 只看写下来的手动参数（缺键不算「需要」，理由见
-    :func:`ensure_policy_consistent` 末段）。
-
-    预设缺失时按部署缺省算，与 ``profile_chain_of`` 的兜底同一条口径：一个刚被加进
-    ``PROFILES`` 还没配预设的档位名，不该在这里炸成 ``KeyError``——那会让「建配置」这条
-    低频路径以 500 的方式失败，而真正的信息只是「这个名字还没有预设」。
-    """
-
-    if policy.profile != PROFILE_CUSTOM:
-        preset = profile_preset_of(policy.profile)
-        # 预设来自注册表（可被后台改），所以这里必须与 `profile_chain_of` 读同一份：
-        # 「档位需要哪些能力」与「档位展开成什么链路」若各读一处，后台把 quality 的
-        # rerank 关掉之后，门禁会继续要求 rerank 能力，保存被拒而界面看不出原因。
-        return _capabilities_of_chain(
-            server_default_chain()
-            if preset is None
-            else ProfileChain(
-                mode=preset.mode,
-                top_k=preset.top_k,
-                rerank=preset.rerank,
-                rewrite=preset.rewrite,
-            )
-        )
-
-    manual = dict(policy.custom_options)
-    return _capabilities_of(
-        mode=manual.get(CUSTOM_OPTION_MODE),
-        rerank=manual.get(CUSTOM_OPTION_RERANK) is True,
-        rewrite=manual.get(CUSTOM_OPTION_REWRITE) is True,
     )
 
 

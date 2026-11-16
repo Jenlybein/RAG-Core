@@ -35,8 +35,6 @@ import {
   type KeyProfile,
   type PolicyForm,
 } from '../types/key'
-import type { ProfilePresetData } from '../types/profilePreset'
-import { describePreset } from '../services/consoleProfiles'
 import { disabledProfiles, visibleCustomOptions } from '../utils/keyPolicy'
 
 /** 父级持有的表单对象：子组件直接改它，保存时读的是同一份状态。 */
@@ -47,12 +45,6 @@ const props = defineProps<{
   allowedProfiles: string[]
   /** 控制面树里的库：`allowed_kb_ids` 的候选来源。 */
   kbOptions: KbOption[]
-  /**
-   * 四个档位的当前参数（`me.profile_presets`）。**这是「档位能干什么」的唯一数据源**：
-   * 后台能改它，所以前端不能写死「quality = 含重排」——那样后台关掉重排之后界面还在
-   * 承诺它。空数组时退回只显示档位名（旧后端不返回这个字段）。
-   */
-  presets?: ProfilePresetData[]
   /** 套餐的能力/限额提示；缺省（例如还没读到 `me`）时只显示不块状的说明。 */
   planHint: {
     hybridAllowed: boolean
@@ -99,33 +91,16 @@ const planCapabilityText = computed(() => {
 const qpsCap = computed(() => props.planHint?.retrieveQps ?? null)
 const dailyCap = computed(() => props.planHint?.retrieveDaily ?? null)
 
-/** 档位名 → 参数。空数组或漏一档时返回 `undefined`，由模板决定怎么退化。 */
-function presetOf(profile: string): ProfilePresetData | undefined {
-  const list = props.presets ?? []
-  return list.find((item) => item.profile === profile)
-}
-
 /**
- * 卡片上那一行小字：**档位实际会做什么**（来自后台可改的参数），而不是写死的文案。
- * 拿不到参数时退回原来的静态说明——「不知道」不该显示成「什么都没配」。
+ * 第 13 步：档位预设表已删除，卡片提示不再读后台参数，直接用静态说明。
+ * 这三个名字只是把 mode/top_k/rerank 一键填好的预设按钮，不承诺实际是否生效。
  */
 function cardHint(profile: KeyProfile): string {
-  const preset = presetOf(profile)
-  if (preset === undefined) return PROFILE_CARDS[profile].hint
-  return describePreset(preset)
+  return PROFILE_CARDS[profile].hint
 }
 
-/**
- * 悬浮提示的正文：参数 + 一句「这是意图不是生效值」。
- * 为什么补这句：套餐允许 rerank、档位想要 rerank，但本机没装重排时它**不会跑**，
- * 而用户看到「结果重排」会以为一定会重排。
- */
 function presetTooltip(profile: KeyProfile): string {
-  const preset = presetOf(profile)
-  if (preset === undefined) {
-    return `${PROFILE_CARDS[profile].title}：${PROFILE_CARDS[profile].hint}（还没读到参数）`
-  }
-  return `${preset.profile} 档位的参数：${describePreset(preset)}。重排与改写是「想要」，实际还要本机装了才会跑。`
+  return `${PROFILE_CARDS[profile].title}：${PROFILE_CARDS[profile].hint}`
 }
 
 /** 只有一个库时不必让用户展开下拉：省掉一次没有信息量的点击。 */

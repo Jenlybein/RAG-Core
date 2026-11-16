@@ -82,12 +82,6 @@ const routes = [
     component: () => import('../views/admin/RetrievalPage.vue'),
   },
   {
-    path: '/admin/profiles',
-    name: 'admin-profiles',
-    // 档位预设：四个质量档位的参数（平台级配置，改完对下一次检索立即生效）。
-    component: () => import('../views/admin/ProfilesPage.vue'),
-  },
-  {
     path: '/admin/observability',
     name: 'admin-observability',
     // 观测总览：跨租户的检索量 / 耗时 / 降级 / 评分 + 观测栈层（后者可降级）。

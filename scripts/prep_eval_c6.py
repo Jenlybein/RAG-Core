@@ -385,29 +385,18 @@ def ensure_pro_plan(db: Any) -> dict[str, Any]:
 
 
 def ensure_quality_preset(db: Any) -> dict[str, Any]:
-    """确认 ``profile_presets`` 里有 ``quality`` 档且重排开着（图谱跟着重排走）。
+    """第 13 步：档位表已删，本组评测的参数组合直接写死在脚本里。
 
-    **只读不改**：预设是产品口径（档位名意味着什么），评测脚本没有资格改它。缺档或缺重排
-    就拒绝往下跑——图谱注入在重排关着时必然被 ``top_k`` 截掉（ADR-0027 开关归属），
-    那样跑出来的「图谱开」是一组空转的数字。
-
-    读的是**库里那一行**（面板改过就以库为准），不是注册表的缺省值：注册表只在
-    ``load_profile_presets`` 之后才反映库里的事实，这里不想再启一套加载器。
+    图谱跟着重排走（ADR-0027 开关归属）：本对照需要 hybrid + 重排 + 5 条。
+    ``profile`` 键只为兼容下面的打印文案，不再对应任何库表行。
     """
 
-    from app.models.profile_preset import ProfilePreset
-
-    row = db.get(ProfilePreset, "quality")
-    if row is None:
-        raise LookupError("profile_presets 里没有 quality 档：先在控制台补上这一档")
-    if not row.rerank:
-        raise LookupError("quality 档的 rerank 是关的：图谱注入跟着重排走，本组对照无法成立")
     return {
         "profile": "quality",
-        "mode": row.mode,
-        "top_k": row.top_k,
-        "rerank": row.rerank,
-        "rewrite": row.rewrite,
+        "mode": "hybrid",
+        "top_k": 5,
+        "rerank": True,
+        "rewrite": False,
     }
 
 

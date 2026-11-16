@@ -23,7 +23,6 @@ from app.models.account import Account
 from app.models.audit_log import AuditLog
 from app.models.plan import Plan, PlanSpec, plan_columns_of
 from app.models.tenant import Tenant
-from app.schemas.console_profiles import ProfilePresetData
 
 
 class LoginRequest(BaseModel):
@@ -129,11 +128,7 @@ class MeData(BaseModel):
     #: + ``source=daily_counter``），只是读另一本账（``quota:research:*``）。分开报是因为
     #: 两条链路各有各的额度——把它们加在一起，面板上就没有「哪一项快用完了」这个答案了。
     research_usage: UsageData | None = None
-    #: 四个档位的当前参数（含 ``custom``）。**放在这里而不是让前台去读管理端接口**：
-    #: `/console/profile-presets` 是管理员专属（平台级配置），租户读它要 20011；而
-    #: 「这个档位能干什么」恰恰是租户签发 Key 时必须看到的信息。缺省空列表是为了
-    #: 让其它构造点（测试、旧客户端）不必立刻跟进。
-    profile_presets: list[ProfilePresetData] = []
+    # 第 13 步：profile_presets 字段随档位表删除——参数直存，档位预设不再存在。
 
 
 class ImpactGroupData(BaseModel):

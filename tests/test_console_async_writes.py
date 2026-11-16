@@ -45,7 +45,6 @@ CONSOLE_WRITE_ROUTES: tuple[tuple[str, str], ...] = (
     ("DELETE", "/console/keys/{key_id}"),
     ("PATCH", "/console/key-policies/{policy_id}"),
     ("PATCH", "/console/settings"),
-    ("PATCH", "/console/profile-presets/{profile}"),
     ("POST", "/console/model-configs"),
     ("PATCH", "/console/model-configs/{config_id}"),
     ("DELETE", "/console/model-configs/{config_id}"),

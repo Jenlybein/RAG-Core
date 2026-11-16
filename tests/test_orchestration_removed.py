@@ -24,10 +24,8 @@ import inspect
 from dataclasses import fields
 from pathlib import Path
 
-from app.core.profile_presets import DEFAULT_PRESETS, ProfilePresetSpec
-from app.models.key_policy import PROFILE_CUSTOM, PROFILE_QUALITY, KeyPolicySnapshot
+from app.models.key_policy import PROFILE_QUALITY, KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
-from app.models.profile_preset import ProfilePreset
 from app.schemas.rag import RetrieveData
 from app.services.citation_blocks import (
     COMPLETENESS_COMPLETE,
@@ -106,36 +104,25 @@ def test_no_app_file_mentions_it_at_all() -> None:
     assert _mentions_anywhere() == [], "编排的名字不许在 app/ 里残留（迁移与 ADR 除外）"
 
 
-def test_the_four_profile_presets_have_no_such_field() -> None:
-    """**硬要求 1**：四个档位预设都不再有该字段，且有用例钉住。
+def test_the_profile_preset_carrier_is_gone() -> None:
+    """第 13 步：档位预设整体删除（表 + 模块 + 注册表），不再有「四个档位」这个载体。"""
 
-    逐个档位断言 ``not hasattr``，而不是只断言 dataclass 的字段清单：前者连「有人用
-    ``setattr`` 塞一个动态属性」这种歪路也堵住（frozen dataclass 本来就塞不进去，
-    但这条断言读起来是「这个档位没有这个能力」，而不是「这个类型现在有几个字段」）。
-    """
+    from importlib.util import find_spec
 
-    assert set(DEFAULT_PRESETS) == {"speed", "balanced", "quality", PROFILE_CUSTOM}
-    for profile, spec in DEFAULT_PRESETS.items():
-        assert not hasattr(spec, _BANNED), f"档位 {profile!r} 仍然带着编排开关"
-        assert tuple(field.name for field in fields(spec)) == (
-            "mode",
-            "top_k",
-            "rerank",
-            "rewrite",
-        )
+    for module in (
+        "app.models.profile_preset",
+        "app.core.profile_presets",
+        "app.services.profile_preset_service",
+    ):
+        assert find_spec(module) is None, f"{module} 仍可导入，档位预设没删净"
 
 
-def test_the_three_switch_carriers_lose_their_column() -> None:
-    """三层开关的三个载体（套餐 / 密钥配置 / 档位）都不许再留那一列。
-
-    三层是 ADR-0018 的机制：只要有一个载体还留着字段，这个能力就仍然「装得回去」。
-    """
+def test_the_two_switch_carriers_lose_their_column() -> None:
+    """两个开关载体（套餐 / 密钥配置）都不许再留编排列；档位载体已整体删除。"""
 
     assert not hasattr(PLAN_PRESETS[PLAN_PRO], _BANNED + "_allowed")
     assert "orchestration_allowed" not in {field.name for field in fields(PlanSpec)}
     assert "orchestration_allowed" not in {field.name for field in fields(KeyPolicySnapshot)}
-    assert "orchestration" not in ProfilePreset.__table__.columns
-    assert "orchestration" not in {field.name for field in fields(ProfilePresetSpec)}
 
 
 def test_the_contract_has_no_orchestration_key() -> None:

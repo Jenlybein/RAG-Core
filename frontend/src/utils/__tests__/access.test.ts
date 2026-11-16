@@ -64,15 +64,14 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
     },
   )
 
-  it('管理员入口恰好是已落地的八条真实路由', () => {
-    // 第 13 步：语义评测从用户面板搬来 /admin/evaluation，成为第八条。
+  it('管理员入口恰好是已落地的七条真实路由', () => {
+    // 第 13 步：语义评测搬来 /admin/evaluation；档位预设页随档位概念删除。
     expect(navFor('admin').map((item) => item.to)).toEqual([
       '/admin/accounts',
       '/admin/plans',
       '/admin/audit',
       '/admin/models',
       '/admin/retrieval',
-      '/admin/profiles',
       '/admin/observability',
       '/admin/evaluation',
     ])

@@ -65,7 +65,6 @@ from app.api.routes.console import router as console_router
 from app.api.routes.console_kbs import router as console_kbs_router
 from app.api.routes.console_keys import router as console_keys_router
 from app.api.routes.console_models import router as console_models_router
-from app.api.routes.console_profiles import router as console_profiles_router
 from app.api.routes.console_settings import router as console_settings_router
 from app.api.routes.console_traces import router as console_traces_router
 from app.api.routes.console_eval import router as console_eval_router
@@ -74,14 +73,12 @@ from app.api.routes.console_observability import (
 )
 from app.core.config import settings
 from app.core.http_clients import aclose_http_client
-from app.core.profile_presets import load_profile_presets, set_profile_preset_loader
 from app.utils import tokenizer
 from app.db.async_session import AsyncSessionLocal
-from app.db.session_factory import session_factory
 from app.providers.llm import set_role_resolver
 from app.providers.keyword_search import aclose_keyword_search_provider
 from app.repositories import knowledge_base_repository
-from app.services import model_config_service, profile_preset_service, rag_service
+from app.services import model_config_service, rag_service
 
 # ── T2: 结构化日志（模块级幂等初始化，不进 lifespan）──
 from app.core.logging import setup_logging
@@ -97,24 +94,6 @@ logger = structlog.get_logger(__name__)
 # Worker 是另一个进程、不走 app.main，在 ``app/tasks/indexing.py`` 里再注入一次。
 set_role_resolver(model_config_service.role_endpoint)
 # ── #94/#82 结束 ──
-
-
-def _load_profile_presets_from_db() -> None:
-    """档位参数装载器。组合根是唯一知道「去哪开会话」的地方，注册表那边只留一个可注入钩子
-    （见 ``app.core.profile_presets``）。
-
-    **会话走注入缝**（``app.db.session_factory``）而不是直接 ``SessionLocal``：默认套件把
-    那个注入点换成了内存替身，于是启动期这一次读**不碰真库**。此前这里直接拿
-    ``SessionLocal``，两条路径不通——离线套件的每一个用例都要在 app 启动时去连一次
-    PostgreSQL，等连接超时才失败（本机实测每次 4.09 秒，全量因此从几分钟涨到半小时）。
-    「默认套件离线」这句话在启动期这一处曾因此不成立。
-    """
-
-    with session_factory()() as db:
-        profile_preset_service.load_into_registry(db)
-
-
-set_profile_preset_loader(_load_profile_presets_from_db)
 
 
 @asynccontextmanager
@@ -134,10 +113,7 @@ async def app_lifespan(app: FastAPI):
     # 切块的窗口口径依赖 Qwen 词表：缺它就只能换近似词表，而近似会让同一个库在
     # 不同部署上切出不同的片。所以启动时就要验，带病启动比启动失败更难查。
     tokenizer.verify_ready()
-
-    # 档位参数装载一次。失败由 `load_profile_presets` 自己吞掉并记 warning（迁移没跑的
-    # 库要能启动），这里不做二次兜底——两处兜底会让人分不清是哪一处救回的。
-    load_profile_presets()
+    # 第 13 步：档位参数注册表已随 profile_presets 表一起删除，不再有启动期装载。
     try:
         yield
     finally:
@@ -195,8 +171,6 @@ app.include_router(console_keys_router)
 app.include_router(console_settings_router)
 # 多模型配置（#94）同样自带前缀：六条接口与配置中台平级挂载。
 app.include_router(console_models_router)
-# 档位预设（平台级配置，只有管理员读写）：两条接口。
-app.include_router(console_profiles_router)
 # 瀑布图（#103）：按 log_id 读回六段耗时，先本地记录、后观测服务。
 app.include_router(console_traces_router)
 # 语义旁证（#109）：触发一次旁证跑批并读它的状态。

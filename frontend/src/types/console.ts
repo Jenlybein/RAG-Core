@@ -7,8 +7,6 @@
  * 使用处被 TS 拦住，比一个 `unknown` 更早暴露契约漂移。
  */
 
-import type { ProfilePresetData } from './profilePreset'
-
 /** `accounts.role` 的取值：`admin` 是平台管理员，其余（缺省 `user`）都是租户账号。 */
 export type ConsoleRole = 'admin' | 'user' | string
 
@@ -58,12 +56,5 @@ export interface ConsoleMe {
   tenant: ConsoleTenant | null
   plan: ConsolePlanSnapshot | null
   usage: ConsoleUsage | null
-  /**
-   * 四个档位的当前参数（含 `custom`）。**租户面板靠它展示「这个档位能干什么」**——
-   * `/console/profile-presets` 是管理员专属，租户读它要 20011。
-   *
-   * 缺省空数组：旧后端不会发这个字段，页面按「不知道参数」渲染（只显示档位名），
-   * 而不是崩掉或编一份看起来合理的数据出来。
-   */
-  profile_presets?: ProfilePresetData[]
+  // 第 13 步：profile_presets 字段随档位表删除——参数直存，不再有档位预设。
 }

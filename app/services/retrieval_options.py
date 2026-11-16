@@ -33,7 +33,6 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal, cast
 
 from app.core.config import SUPPORTED_RETRIEVAL_MODES, settings
-from app.core.profile_presets import profile_preset_of
 from app.providers.rerank import rerank_capability
 from app.models.key_policy import (
     PROFILE_BALANCED,

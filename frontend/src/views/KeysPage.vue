@@ -63,13 +63,7 @@ const meQuery = useQuery({
 })
 const plan = computed(() => meQuery.data.value?.plan ?? null)
 const allowedProfiles = computed(() => plan.value?.allowed_profiles ?? [])
-/**
- * 档位参数（含当前套餐没开放的那几档）。
- *
- * 后台改完档位参数、前台下一次进这个页面就能看到新值——两个进程读的是同一张表，
- * 而 `me` 的这份是注册表里的快照（管理端写入后立刻刷新）。
- */
-const profilePresets = computed(() => meQuery.data.value?.profile_presets ?? [])
+// 第 13 步：档位预设随表删除；卡片提示改为静态说明，不再从 me 读参数。
 
 const treeQuery = useQuery({
   // 与列表页 / 检索页共用同一份树缓存：库清单本来就是同一个接口。
@@ -498,7 +492,6 @@ watch(
         :allowed-profiles="allowedProfiles"
         :kb-options="kbOptions"
         :plan-hint="planHint"
-        :presets="profilePresets"
       />
 
       <p v-if="keysLoaded && allowedProfiles.length === 0" class="mt-3 text-xs text-amber-700">
