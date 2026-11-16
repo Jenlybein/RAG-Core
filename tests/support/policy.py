@@ -44,6 +44,8 @@ PARAM_PRESETS: dict[str, tuple[str, int, bool]] = {
 
 #: 已被迁移删除的列名：夹具可以继续传，构造器会丢掉（理由见 :func:`policy`）。
 RETIRED_FIELDS: tuple[str, ...] = (
+    "profile",
+    "custom_options",
     "hybrid_allowed",
     "query_rewrite_allowed",
     "research_qps",

@@ -14,6 +14,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
 
 import asyncio
 import dataclasses
@@ -60,9 +61,7 @@ def _policy(
 ) -> KeyPolicySnapshot:
     """一份只关心「配置 → 参数」的密钥配置快照；其余字段取内置开发身份那份。"""
 
-    return dataclasses.replace(
-        DEV_KEY_POLICY,
-        profile=profile,
+    return support_policy(profile=profile,
         include_parent=include_parent,
         expand_table_rows=expand_table_rows,
         custom_options=custom_options,

@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
 
 import importlib
 import re
@@ -150,9 +151,7 @@ def _policy(
 ) -> KeyPolicySnapshot:
     """只关心本票两列的一份配置快照；档位取 speed 是为了把链路钉成向量一路。"""
 
-    return replace(
-        DEV_KEY_POLICY,
-        profile=profile,
+    return support_policy(profile=profile,
         allowed_kb_ids=allowed_kb_ids,
         retrieve_qps=qps,
         retrieve_daily=daily,

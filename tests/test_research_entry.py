@@ -16,6 +16,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
 
 import dataclasses
 import importlib
@@ -190,9 +191,7 @@ def _answer_output(*blocks: dict) -> dict:
 def _policy(*, research_allowed: bool = True) -> KeyPolicySnapshot:
     """这套集成的密钥配置：档位 ``speed``（走向量一路，替身只需一条通道）。"""
 
-    return dataclasses.replace(
-        DEV_KEY_POLICY,
-        profile=PROFILE_SPEED,
+    return support_policy(profile=PROFILE_SPEED,
         research_allowed=research_allowed,
     )
 

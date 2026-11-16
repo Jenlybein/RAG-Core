@@ -17,9 +17,9 @@
   （理由写在服务模块文档里）。
 
 用法：``uv run python scripts/update_key_policy.py --policy-id <id>
-[--name <名字>] [--mode vector|bm25|hybrid] [--top-k N] [--rerank|--no-rerank]
-[--retrieve|--no-retrieve] [--rewrite|--no-rewrite] [--decompose|--no-decompose]
-[--research|--no-research]
+[--name <名字>] [--mode vector|bm25|hybrid] [--top-k N] [--rerank|--no-rerank] [--rerank-allowed|--no-rerank-allowed]
+[--retrieve-allowed|--no-retrieve-allowed] [--rewrite-allowed|--no-rewrite-allowed] [--decompose-allowed|--no-decompose-allowed]
+[--research-allowed|--no-research-allowed]
 [--include-parent|--no-include-parent]
 [--expand-table-rows|--no-expand-table-rows] [--qps N] [--daily N]
 [--kb-id kb-1 ... | --clear-kb-ids]``。
@@ -59,11 +59,11 @@ EFFECT_NOTE = (
 #: 第 13 步删掉了 ``--hybrid`` / ``--rewrite`` 的旧语义：混合检索成了普通参数，
 #: 改写成了 ``/rag/rewrite`` 端点，两者都不再由能力开关表达。
 SWITCHES: tuple[tuple[str, str, str], ...] = (
-    ("retrieve", "retrieve", "retrieve_allowed"),
-    ("rewrite", "rewrite", "rewrite_allowed"),
-    ("decompose", "decompose", "decompose_allowed"),
-    ("research", "research", "research_allowed"),
-    ("rerank", "rerank", "rerank_allowed"),
+    ("retrieve-allowed", "retrieve_allowed", "retrieve_allowed"),
+    ("rewrite-allowed", "rewrite_allowed", "rewrite_allowed"),
+    ("decompose-allowed", "decompose_allowed", "decompose_allowed"),
+    ("research-allowed", "research_allowed", "research_allowed"),
+    ("rerank-allowed", "rerank_allowed", "rerank_allowed"),
     ("include-parent", "include_parent", "include_parent"),
     ("expand-table-rows", "expand_table_rows", "expand_table_rows"),
 )
