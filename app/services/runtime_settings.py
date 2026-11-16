@@ -1037,7 +1037,7 @@ async def _plan_of(db: AsyncSession, policy: KeyPolicy) -> Plan | None:
 
 
 async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> SettingsImpact:
-    """只读试算：这一批改动会让哪些**租户**的质量档位退化、哪些会丢掉关键词通道。
+    """只读试算：这一批改动会让哪些**租户**的检索质量退化、哪些会丢掉关键词通道。
 
     判定口径（与 #82 的「能力开关影响预览」一节同一句）：
 

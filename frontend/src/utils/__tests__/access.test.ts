@@ -21,6 +21,7 @@ function meOf(role: string, tenantId: string | null): ConsoleMe {
     tenant: null,
     plan: null,
     usage: null,
+    llm_usage: null,
   }
 }
 

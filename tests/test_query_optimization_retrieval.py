@@ -315,6 +315,7 @@ def test_a_failed_rewrite_is_a_50003_and_touches_no_channel(
 ) -> None:
     """`/rag/rewrite` 模型失败 → 50003，不降级、不返回切片、不烧一次召回。"""
 
+    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
     llm = _SchemaAwareLLM(error=TimeoutError("模型超时"))
 
     with _offline_client(
@@ -333,6 +334,8 @@ def test_a_failed_rewrite_happens_before_any_channel_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """模型失败发生在召回之前：后面的通道故障根本没有机会发生。"""
+
+    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
     class _BrokenKeyword(_RecordingKeyword):
         async def keyword_search(self, query, *, tenant_id, index_versions, top_k):

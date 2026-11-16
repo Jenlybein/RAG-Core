@@ -1,8 +1,8 @@
 """把 C6（#153）端到端验收要的那套评测环境**一次装好**，而且可以重跑。
 
 ```text
-① 套餐      专业版：orchestration_allowed / research_qps / research_daily（迁移回填的是 0）
-② 租户+配置 一个专用租户、一套 quality 档的密钥配置、一把 Key
+① 套餐      专业版：五个授权位 + 三本账额度（四档迁移已写进库里，这里做幂等修复）
+② 租户+配置 一个专用租户、一套全能力密钥配置（hybrid / 5 条 / 要重排）、一把 Key
 ③ 知识库    一个独立库（不与 kb-eval* 相交），structure 切法
 ④ 入库      3 篇引用语料走**生产入库路径**：上传登记 → Worker 的索引体 → 切片
 ⑤ 构建      #142 的构建流水线：原样重建到 v2、四项计数校验、单事务激活
@@ -64,7 +64,7 @@
 ## 用法
 
 ```bash
-# 一次装完（默认 tenant_c6 / pro / quality 档）
+# 一次装完（默认 tenant_c6 / pro / 全能力配置）
 uv run python scripts/prep_eval_c6.py
 
 # 只补环境、不构建（想手工观察 v1 那一版时用）
@@ -76,7 +76,7 @@ uv run python scripts/prep_eval_c6.py --tenant-id tenant_c6b
 
 产物：
 
-* ``eval/reports/c6/environment.json``——**可提交**的环境快照（id、套餐、档位、计数、
+* ``eval/reports/c6/environment.json``——**可提交**的环境快照（id、套餐、参数、计数、
   版本行），报告里每个数字都能拿它复核；**不含 Key 原文**；
 * ``eval/refs-runs/c6-state.json``——**gitignore** 的本机状态（含 Key 原文），给后续
   ``eval_refs.py`` 命令直接取用。
@@ -139,23 +139,41 @@ REFERENCE_KB_DESCRIPTION = (
 
 #: 专业版那两列的目标值（#153 §①：迁移回填的是 0，这是刻意的，别改种子）。
 PRO_PLAN_CODE = "pro"
+#: 专业版那五列授权位与六格额度。四档迁移（``d7e3b8a1f642``）已经把种子值写进库里，
+#: 这里再显式给一遍是为了**幂等修复**：手工改过库的环境重跑本脚本能回到评测需要的形状，
+#: 第二次跑则零变更（``plan_changes`` 只报不一致的列）。
 PRO_PLAN_TARGETS: dict[str, Any] = {
-    "research_qps": 1,
-    "research_daily": 100,
+    "retrieve_allowed": True,
+    "rewrite_allowed": True,
+    "decompose_allowed": True,
+    "research_allowed": True,
+    "rerank_allowed": True,
+    "retrieve_qps": 50,
+    "retrieve_daily": 25000,
+    "rerank_qps": 15,
+    "rerank_daily": 5000,
+    "llm_qps": 5,
+    "llm_daily": 1500,
 }
 
-#: 密钥配置的目标形状：quality 档 + 四个能力开关全开 + 两本配额。
-#: ``quality`` 预设要求 hybrid / rerank / rewrite 三项能力，少一项就 ``20015``（配置不自洽）。
+#: 密钥配置的目标形状：五个授权位全开 + 三本账额度 + 「hybrid / 5 条 / 要重排」三项参数。
+#: 第 13 步没有档位，所以这里写的就是最终值；``retrieval_rerank=True`` 要求同时给
+#: ``rerank_allowed``，否则自洽校验会以 ``20015`` 拒掉（配置自相矛盾）。
 POLICY_TARGETS: dict[str, Any] = {
-    "profile": "quality",
-    "hybrid_allowed": True,
-    "rerank_allowed": True,
-    "query_rewrite_allowed": True,
+    "retrieve_allowed": True,
+    "rewrite_allowed": True,
+    "decompose_allowed": True,
     "research_allowed": True,
+    "rerank_allowed": True,
     "retrieve_qps": 50,
-    "retrieve_daily": 100000,
-    "research_qps": 1,
-    "research_daily": 100,
+    "retrieve_daily": 25000,
+    "rerank_qps": 15,
+    "rerank_daily": 5000,
+    "llm_qps": 5,
+    "llm_daily": 1500,
+    "retrieval_mode": "hybrid",
+    "retrieval_top_k": 5,
+    "retrieval_rerank": True,
     "include_parent": True,
     "expand_table_rows": True,
 }
@@ -303,7 +321,7 @@ def environment_snapshot(
             "split_strategy": "structure",
             "documents": list(correlation.documents),
         },
-        "profile_presets": {"quality": preset_row},
+        "retrieval_params": preset_row,
         "keyword_index": {
             "alias": keyword_alias,
             "note": (
@@ -376,27 +394,33 @@ def ensure_pro_plan(db: Any) -> dict[str, Any]:
     spec: PlanSpec = plan_spec_of(row)
     return {
         "code": spec.code,
+        "retrieve_allowed": spec.retrieve_allowed,
+        "rewrite_allowed": spec.rewrite_allowed,
+        "decompose_allowed": spec.decompose_allowed,
         "research_allowed": spec.research_allowed,
-        "research_qps": spec.research_qps,
-        "research_daily": spec.research_daily,
+        "rerank_allowed": spec.rerank_allowed,
+        "retrieve_qps": spec.retrieve_qps,
+        "retrieve_daily": spec.retrieve_daily,
+        "rerank_qps": spec.rerank_qps,
+        "rerank_daily": spec.rerank_daily,
+        "llm_qps": spec.llm_qps,
+        "llm_daily": spec.llm_daily,
         "max_kb": spec.max_kb,
         "changes": dict(sorted(patch.changes.items())),
     }
 
 
 def ensure_quality_preset(db: Any) -> dict[str, Any]:
-    """第 13 步：档位表已删，本组评测的参数组合直接写死在脚本里。
+    """本组评测要的那套参数组合（第 13 步：没有档位表，直接就是三项参数）。
 
     图谱跟着重排走（ADR-0027 开关归属）：本对照需要 hybrid + 重排 + 5 条。
-    ``profile`` 键只为兼容下面的打印文案，不再对应任何库表行。
+    返回值只进环境快照与打印文案，不对应任何库表行。
     """
 
     return {
-        "profile": "quality",
         "mode": "hybrid",
         "top_k": 5,
         "rerank": True,
-        "rewrite": False,
     }
 
 
@@ -476,7 +500,7 @@ async def ensure_kb(db: Any, *, tenant_id: str, plan: Any, name: str) -> dict[st
 
 
 async def ensure_policy(db: Any, *, tenant_id: str, kb_id: str, plan: Any) -> dict[str, Any]:
-    """把该租户那套密钥配置改成 quality 档 + 全能力 + 两本配额，并做一次自洽校验。"""
+    """把该租户那套密钥配置改成全能力 + 三本账额度，并做一次自洽校验。"""
 
     from sqlalchemy import select
 
@@ -503,12 +527,12 @@ async def ensure_policy(db: Any, *, tenant_id: str, kb_id: str, plan: Any) -> di
     await db.commit()
     await db.refresh(row)
 
-    # 配置时自洽校验（ADR-0018 第 2 条）：档位要的能力 ⊆ 配置开关 ⊆ 套餐能力，数值不超限。
+    # 配置时自洽校验（ADR-0018 第 2 条）：配置的位 ⊆ 套餐的位，数值不超过套餐额度。
     # 写坏了要在这里炸，而不是等到第一次调用才 ``20015``。
     ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan)
     return {
         "policy_id": row.id,
-        "profile": row.profile,
+        "retrieval_mode": row.retrieval_mode,
         "changes": dict(sorted(patch.changes.items())),
         "allowed_kb_ids": list(row.allowed_kb_ids),
     }
@@ -877,7 +901,7 @@ async def _prepare(
 
         policy = await ensure_policy(db, tenant_id=tenant_id, kb_id=kb["kb_id"], plan=tenant_plan)
         print(
-            f"policy    : {policy['policy_id']} profile={policy['profile']} "
+            f"policy    : {policy['policy_id']} mode={policy['retrieval_mode']} "
             f"kb_ids={policy['allowed_kb_ids']} changes={policy['changes'] or '（已达标）'}"
         )
 
@@ -1038,7 +1062,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         session.close()
 
     print(f"plan      : {plan_row['code']} changes={plan_row['changes'] or '（已达标）'}")
-    print(f"preset    : quality {preset_row}")
+    print(f"params    : {preset_row}")
     print(f"tenant    : {tenant['tenant_id']}（{'新建' if tenant['created'] else '复用'}）")
 
     try:

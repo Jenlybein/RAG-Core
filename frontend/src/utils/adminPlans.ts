@@ -4,15 +4,15 @@ import type {
   PlanImpact,
   PlanNumericField,
   PlanPatchBody,
+  PlanZeroableField,
 } from '../types/consoleAdmin'
-import { KEY_PROFILES, type KeyProfile } from '../types/key'
 
 /**
  * 套餐页与账号页的判定规则，全部放在这里，不散在组件里。
  *
- * 为什么抽成纯函数：这些规则（影响面要不要确认、哪些档位允许被写、保存发哪些字段）
- * 是产品规则，不是渲染细节。放进 `PlansPage.vue` 就只能在浏览器里点一遍才能验，
- * 而这里用 vitest 直接钉死；组件只剩「什么时候调用、拿到结果怎么展示」。
+ * 为什么抽成纯函数：这些规则（影响面要不要确认、保存发哪些字段）是产品规则，不是渲染
+ * 细节。放进 `PlansPage.vue` 就只能在浏览器里点一遍才能验，而这里用 vitest 直接钉死；
+ * 组件只剩「什么时候调用、拿到结果怎么展示」。
  *
  * 一条贯穿全文的取舍：**影响面的数字一律来自 `count`**。后端的 `sample` 最多只放 5 个
  * 名字（`IMPACT_SAMPLE_LIMIT`），它是「快速扫一眼」的材料，不是计数；拿 `sample.length`
@@ -20,16 +20,7 @@ import { KEY_PROFILES, type KeyProfile } from '../types/key'
  */
 
 /**
- * 档位白名单的四个已知值。
- *
- * **名单只写在 `types/key.ts` 的 `KEY_PROFILES` 一处**（密钥配置的那份契约的真相），
- * 这里只 import 过来用，不再抄第二份——套餐页与 Key 页必须永远认同同一组档位名，
- * 多写一份就会在加档位时漏掉其中一处。
- */
-export type ProfileCode = KeyProfile
-
-/**
- * 六个数值上限的展示配置：面板上一字段一行，单位必须写出来。
+ * 六个「≥ 1」数值上限的展示配置：面板上一字段一行，单位必须写出来。
  *
  * 后端只存数字、没有单位——「5」是每秒 5 次还是每天 5 次，只取决于列名，而列名不该
  * 让用户去后台查。单位写在这里，标签与字段名的对应关系也只有这一份。
@@ -48,52 +39,57 @@ export interface PlanNumberField {
 }
 
 export const PLAN_NUMBER_FIELDS: readonly PlanNumberField[] = [
-  { key: 'retrieve_qps', label: '检索 QPS', unit: '次/秒', short: 'QPS' },
-  { key: 'retrieve_daily', label: '日检索上限', unit: '次/天', short: '日上限' },
+  { key: 'retrieve_qps', label: '检索 QPS', unit: '次/秒', short: '检索QPS' },
+  { key: 'retrieve_daily', label: '日检索上限', unit: '次/天', short: '检索日上限' },
   { key: 'max_kb', label: '知识库上限', unit: '个', short: '库' },
   { key: 'max_kb_per_retrieve', label: '单次检索库数', unit: '个', short: '单次库' },
   { key: 'max_documents_per_kb', label: '每库文档上限', unit: '个', short: '每库文档' },
   { key: 'max_processing_documents', label: '并发处理文档', unit: '个', short: '并发' },
 ]
 
-/** 四个能力开关的展示配置；与六个上限一样，字段名到中文标签的映射只写这一处。 */
+/** 五个「≥ 0」数值列的展示配置；0 在这里是「关闭 / 不额外封顶」，不是填错。 */
+export interface PlanZeroableNumberField {
+  readonly key: PlanZeroableField
+  readonly label: string
+  readonly unit: string
+  readonly short: string
+}
+
+export const PLAN_ZEROABLE_FIELDS: readonly PlanZeroableNumberField[] = [
+  { key: 'rerank_qps', label: '重排 QPS', unit: '次/秒', short: '重排QPS' },
+  { key: 'rerank_daily', label: '日重排上限', unit: '次/天', short: '重排日上限' },
+  { key: 'llm_qps', label: '模型 QPS', unit: '次/秒', short: '模型QPS' },
+  { key: 'llm_daily', label: '日模型上限', unit: '次/天', short: '模型日上限' },
+  { key: 'max_top_k', label: 'top_k 封顶', unit: '条', short: 'top_k' },
+]
+
+/** 五个授权位的展示配置；字段名到中文标签的映射只写这一处。 */
 export interface PlanCapability {
   readonly key: PlanCapabilityField
   readonly label: string
 }
 
 export const PLAN_CAPABILITIES: readonly PlanCapability[] = [
-  { key: 'hybrid_allowed', label: '混合检索' },
-  { key: 'rerank_allowed', label: '重排' },
-  { key: 'query_rewrite_allowed', label: '查询改写' },
+  { key: 'retrieve_allowed', label: '检索' },
+  { key: 'rewrite_allowed', label: '查询改写' },
+  { key: 'decompose_allowed', label: '查询分解' },
   { key: 'research_allowed', label: '研究模式（Research）' },
+  { key: 'rerank_allowed', label: '重排' },
 ]
-
-/**
- * 从任意字符串数组里挑出四个已知档位。
- *
- * 两个作用：渲染勾选框时不被库里的脏值（手改库、旧枚举）带出一个不存在的勾选项；
- * 保存时也绝不把这些值发回后端（后端会判 20018「未知档位」）。
- * 输出按 `KEY_PROFILES` 的固定顺序，于是「集合相同、顺序不同」在 `buildPlanPatch` 里
- * 可以直接按数组比较，不会被误判成一次改动。
- */
-export function pickKnownProfiles(values: readonly string[]): ProfileCode[] {
-  return KEY_PROFILES.filter((code) => values.includes(code))
-}
 
 /**
  * 影响面是否值得停下来问一句。
  *
- * `policies_losing_profile` 单独判一次：它数的是密钥配置（比租户更细），后端正常时
- * 它非零必然伴随 `lose_profile` 非零，但这里不依赖那个不变量——确认弹窗宁可多弹一次，
+ * `policies_over_capability` 单独判一次：它数的是密钥配置（比租户更细），后端正常时
+ * 它非零必然伴随 `over_capability` 非零，但这里不依赖那个不变量——确认弹窗宁可多弹一次，
  * 也不要因为「上游保证过」而漏掉一次会让客户调用开始报 20013 的保存。
  */
 export function shouldConfirm(impact: PlanImpact | null | undefined): boolean {
   if (impact === null || impact === undefined) return false
   return (
     impact.over_max_kb.count > 0 ||
-    impact.lose_profile.count > 0 ||
-    impact.policies_losing_profile > 0
+    impact.over_capability.count > 0 ||
+    impact.policies_over_capability > 0
   )
 }
 
@@ -116,15 +112,15 @@ export function impactLines(impact: PlanImpact | null | undefined): string[] {
     )
   }
 
-  if (impact.lose_profile.count > 0) {
+  if (impact.over_capability.count > 0) {
     lines.push(
-      `${impact.lose_profile.count} 个租户的当前档位不在新的白名单里，` +
-        `涉及 ${impact.policies_losing_profile} 条密钥配置` +
-        sampleHint(impact.lose_profile.sample),
+      `${impact.over_capability.count} 个租户的密钥配置会超出新的授权范围，` +
+        `涉及 ${impact.policies_over_capability} 条密钥配置` +
+        sampleHint(impact.over_capability.sample),
     )
-  } else if (impact.policies_losing_profile > 0) {
+  } else if (impact.policies_over_capability > 0) {
     // 后端正常时走不到这里；万一试算只报了配置条数，也不能让弹窗正文空着。
-    lines.push(`${impact.policies_losing_profile} 条密钥配置会失去当前档位`)
+    lines.push(`${impact.policies_over_capability} 条密钥配置会超出新的授权范围`)
   }
 
   return lines
@@ -134,11 +130,6 @@ function sampleHint(sample: readonly string[]): string {
   if (sample.length === 0) return ''
   // 明确写「示例」：它是名单的开头几个，不是全部，也不是计数。
   return `；示例：${sample.join('、')}`
-}
-
-function sameProfiles(a: readonly ProfileCode[], b: readonly ProfileCode[]): boolean {
-  // 两边都经 pickKnownProfiles 归一（固定顺序、去重），所以逐位比较就是集合比较。
-  return a.length === b.length && a.every((profile, index) => profile === b[index])
 }
 
 /**
@@ -161,12 +152,6 @@ export function buildPlanPatch(
     patch.name = name
   }
 
-  const nextProfiles = pickKnownProfiles(draft.allowed_profiles)
-  const currentProfiles = pickKnownProfiles(before.allowed_profiles)
-  if (!sameProfiles(nextProfiles, currentProfiles)) {
-    patch.allowed_profiles = nextProfiles
-  }
-
   for (const field of PLAN_CAPABILITIES) {
     if (draft[field.key] !== before[field.key]) {
       patch[field.key] = draft[field.key]
@@ -174,6 +159,12 @@ export function buildPlanPatch(
   }
 
   for (const field of PLAN_NUMBER_FIELDS) {
+    if (draft[field.key] !== before[field.key]) {
+      patch[field.key] = draft[field.key]
+    }
+  }
+
+  for (const field of PLAN_ZEROABLE_FIELDS) {
     if (draft[field.key] !== before[field.key]) {
       patch[field.key] = draft[field.key]
     }

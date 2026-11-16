@@ -1,4 +1,4 @@
-"""整段门禁化的检索：白名单 → 档位门禁 → 配额 → 召回 → 成功记账（票 #76 / #78 / #79）。
+"""整段门禁化的检索：白名单 → 授权位 → 参数解析 → 配额 → 召回 → 成功记账（票 #76 / #78 / #79）。
 
 HTTP 路由与 MCP 工具写的是**同一段五步序列**，过去是两处各写一遍、注释都说「同一份实现」。
 两份拷贝的第六道关卡意味着改两处，而「改了一处、另一处忘了」正是这类判定最坏的失败方式：
@@ -9,7 +9,7 @@ HTTP 路由与 MCP 工具写的是**同一段五步序列**，过去是两处各
 
 ```text
 1 白名单      kb_ids ⊆ allowed_kb_ids            → 20008
-2 套餐复核    + 档位展开与门禁 + 单次库数       → 20013
+2 套餐复核    授权位 + 参数解析 + 单次库数        → 20013
 3 配额        秒级限流 → 日配额                  → 20005 / 20014
 4 召回        交给组合根 rag_service.retrieve
 5 记账        业务成功、响应也成形之后才 +1
@@ -32,6 +32,8 @@ from typing import Any, Literal
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.auth import KeyContext
+from app.core.config import settings
+from app.core.exceptions import AppError, ErrorCode
 from app.schemas.rag import RetrieveData
 from app.services import rag_service
 from app.services.data_scope import ensure_kb_scope
@@ -75,14 +77,22 @@ async def gated_retrieve(
     ensure_kb_scope(policy=key.policy, kb_ids=kb_ids)
 
     # 第 1.5 步（第 13 步）：端点级授权位。位为假 → 20013，且不降级成另一条端点。
-    # 它比档位展开更早：没买这个能力的请求连参数都不该算。
+    # 它比参数解析更早：没买这个能力的请求连参数都不该算。
     ensure_endpoint_allowed(
         policy=key.policy,
         plan=key.plan,
         endpoint="rewrite" if variant == "rewrite" else "retrieve",
     )
+    # 改写还有一道**部署能力**：这台机器没开改写器时，/rag/rewrite 明确拒绝（20013），
+    # 不静默退化成原句直查——那会让调用方以为买到的改写真的发生了（与重排「折进生效值」
+    # 不同：重排是可选优化，改写是这条端点的全部身份）。影响预览对这条开关的承诺据此成立。
+    if variant == "rewrite" and not settings.QUERY_REWRITE_ENABLED:
+        raise AppError(
+            ErrorCode.FEATURE_NOT_ALLOWED,
+            "rewrite is not available on this deployment (QUERY_REWRITE_ENABLED is off)",
+        )
 
-    # 第 2 步：套餐复核 + 档位展开与门禁 + 单次库数。越权在这里就失败，一次嵌入都不该烧。
+    # 第 2 步：套餐复核 + 参数解析 + 单次库数。越权在这里就失败，一次嵌入都不该烧。
     options = resolve_retrieval_options(
         policy=key.policy,
         plan=key.plan,
@@ -222,13 +232,20 @@ async def gated_decompose(
                 rerank_skipped_reason=REASON_RERANK_QUOTA_EXHAUSTED,
             )
 
-    # 第 4 步：分解 → N 次内核 → 合并。
+    # 第 4 步：分解 → N 次内核 → 合并。重排实际发生几次由观察点交回（第 5 步记账用）。
+    rerank_count = 0
+
+    def _count_rerank() -> None:
+        nonlocal rerank_count
+        rerank_count += 1
+
     payload = await decompose_retrieve(
         db,
         tenant_id=key.tenant_id,
         kb_ids=kb_ids,
         query=query,
         options=options,
+        on_rerank=_count_rerank,
     )
 
     # 第 5 步：响应成形之后才记账。
@@ -240,4 +257,11 @@ async def gated_decompose(
     kernel_calls = len(decomposition.get("queries") or ())
     await quota.record_n(kernel_calls)
     await llm.record_n(1)  # 那一次分解规划，按实际发生计入 llm 账。
+    # rerank 账按实际发生记：N 条子检索各自真跑的那几次（全 0 时账本 no-op）。
+    await rerank_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    ).record_n(rerank_count)
     return result

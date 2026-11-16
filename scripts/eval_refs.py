@@ -775,7 +775,6 @@ async def evaluate_live_question(
                     expand_table_rows=True,
                     # 重排是「同一台机器上的今天」的一部分，由 --rerank 钉死。
                     rerank=rerank_enabled,
-                    rewrite=False,
                 ),
             )
             _apply_retrieval(outcome, response, document_names)
@@ -833,7 +832,7 @@ async def run_live(
     一次」的事与线上完全一致。这条路径不改 ``app/`` 任何一行——评测脚本装配应用，是既有
     做法（``scripts/eval_retrieval.py`` 同形）。
 
-    本题集**不开启**查询改写（``rewrite=False``）：改写会把「跨文档」这一层的措辞差异
+    本题集**不走查询改写端点**（原句直查）：改写会把「跨文档」这一层的措辞差异
     抹平，测出来的就不是题集想测的东西了。折叠与表格行折回保持默认开启。
     """
 

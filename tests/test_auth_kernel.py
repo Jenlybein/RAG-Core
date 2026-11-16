@@ -23,7 +23,6 @@ from app.models.key_policy import KeyPolicy
 from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_PLUS, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
-from tests.support.policy import PROFILE_BALANCED, PROFILE_CUSTOM
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
@@ -60,7 +59,6 @@ def _tenant_row(
 def _policy_row(
     *,
     tenant_id: str = TENANT_ID,
-    profile: str = PROFILE_BALANCED,
     include_parent: bool = False,
     expand_table_rows: bool = True,
 ) -> KeyPolicy:
@@ -79,6 +77,15 @@ def _policy_row(
         retrieval_mode="vector",
         retrieval_top_k=3,
         retrieval_rerank=False,
+        # 内存假行不经过 INSERT，列的 default= 不会生效：其余位与账逐列显式写，
+        # 与迁移 server_default 回填后的真实行同值。
+        retrieve_allowed=True,
+        rewrite_allowed=False,
+        decompose_allowed=False,
+        rerank_qps=0,
+        rerank_daily=0,
+        llm_qps=0,
+        llm_daily=0,
     )
 
 
@@ -147,26 +154,26 @@ def test_context_is_constructible_from_a_tenant_id_alone() -> None:
     assert context.plan == DEV_KEY_PLAN
 
 
-def test_development_snapshot_is_a_full_pro_policy_at_custom_following_the_deployment() -> None:
-    """开发身份的配置=「全能力 + ``custom`` 档且不给手动参数 + 两种形状都开」，套餐=最高档。
+def test_development_snapshot_is_a_full_pro_policy_following_the_deployment() -> None:
+    """开发身份的配置=「五个授权位全开 + 三项参数跟部署缺省 + 两种形状都开」，套餐=最高档。
 
     能力全开是为了「开发身份不因配置层的开关改变现行为」：重排 / 改写是否真的跑，
-    仍由服务端配置决定。档位取 ``custom`` 而**不是**任何一个命名档位，则是因为命名档位
-    是完整替换：#78 之后 ``speed`` 意味着「只走向量一路」，钉在它上面会让本地默认模式从
-    ``RETRIEVAL_MODE`` 悄悄变成 ``vector``；预设值将来再改一次，开发身份又漂一次。
-    ``custom`` + 空 ``custom_options`` 是「逐键跟着部署缺省走」的唯一表达。
+    仍由服务端配置决定。三项参数直取部署缺省（``RETRIEVAL_MODE`` / ``TOP_K`` /
+    重排能力）而**不是**钉死某个组合别名：钉在别名上会让本地默认模式悄悄漂移，
+    别名取值将来再改一次，开发身份又漂一次。
     """
 
     from app.core.auth import DEV_KEY_POLICY
 
-    assert DEV_KEY_POLICY.profile == PROFILE_CUSTOM
-    assert DEV_KEY_POLICY.custom_options == (), "不许钉任何手动参数：缺键 = 跟 .env 走"
+    assert DEV_KEY_POLICY.retrieval_mode == settings.RETRIEVAL_MODE
+    assert DEV_KEY_POLICY.retrieval_top_k == settings.TOP_K
     assert (
+        DEV_KEY_POLICY.retrieve_allowed,
+        DEV_KEY_POLICY.rewrite_allowed,
+        DEV_KEY_POLICY.decompose_allowed,
         DEV_KEY_POLICY.research_allowed,
-        DEV_KEY_POLICY.hybrid_allowed,
         DEV_KEY_POLICY.rerank_allowed,
-        DEV_KEY_POLICY.query_rewrite_allowed,
-    ) == (True, True, True, True)
+    ) == (True, True, True, True, True)
     assert DEV_KEY_POLICY.include_parent is True
     assert DEV_KEY_POLICY.expand_table_rows is True
     assert DEV_KEY_POLICY.retrieve_qps == PLAN_PRESETS[PLAN_PRO].retrieve_qps

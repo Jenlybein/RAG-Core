@@ -12,7 +12,7 @@
 * **响应形状**：计划（要点 + 绑定要点的查询）、轮次只给计数、材料是交付单元（与
   ``/rag/retrieve`` 同一个值对象）、``answer`` 是引用块的渲染串、元数据带身份与三条
   不丢信息的字段；内部候选池一份都不出去；
-* **任何模型阶段失败都不整单报错**：``code 0`` + 材料 + 一个 ``degraded``。
+* **任何模型阶段失败都整单 ``50003``**（第 13 步：不再有降级出口，客户重试）。
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ from typing import Any, get_args
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.auth import DEV_KEY_POLICY, KeyContext
+from app.core.auth import KeyContext
 from app.core.exceptions import ErrorCode
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
@@ -110,9 +110,8 @@ def _row(key: str, content: str) -> dict[str, Any]:
 class _ScriptedLLM(LLMProvider):
     """规划 + 判断 + 生成三次结构化调用；按调用顺序交出预置输出。
 
-    生产里规划 / 判断走 ``fast``、生成走 ``strong``；本文件的夹具把两档都指向同一个替身
-    （``get_llm_provider`` 只认角色，替身不看角色），所以响应栈按**实际发生的顺序**排：
-    规划 → 判断 → 生成。生成失败之后的兜底会再要一次，那一条由用例自己决定给不给。
+    第 13 步起只有一个 ``default`` 模型角色，三个阶段共用同一个替身，响应栈按**实际发生
+    的顺序**排：规划 → 判断 → 生成。模型失败整单 50003，没有兜底再问一次。
     """
 
     def __init__(self, *responses: object) -> None:
@@ -189,10 +188,12 @@ def _answer_output(*blocks: dict) -> dict:
 
 
 def _policy(*, research_allowed: bool = True) -> KeyPolicySnapshot:
-    """这套集成的密钥配置：档位 ``speed``（走向量一路，替身只需一条通道）。"""
+    """这套集成的密钥配置：``speed`` 别名（向量一路，替身只需一条通道），白名单含本用例的库。"""
 
-    return support_policy(profile=PROFILE_SPEED,
+    return support_policy(
+        profile=PROFILE_SPEED,
         research_allowed=research_allowed,
+        allowed_kb_ids=(KB,),
     )
 
 
@@ -258,7 +259,7 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
     # 于是「写了几行、写了什么」是可断言的，而不会真的去连一次 PostgreSQL。
     factory_mod.set_async_session_factory(lambda: entry.trace_session)
 
-    async def _fake_llm(role: str = "fast") -> LLMProvider:
+    async def _fake_llm(role: str = "default") -> LLMProvider:
         return entry.llm
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _fake_llm)

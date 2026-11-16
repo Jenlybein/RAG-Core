@@ -56,12 +56,12 @@ def test_plan_patch_is_empty_when_the_plan_already_matches() -> None:
 
 
 def test_plan_patch_lists_only_the_columns_that_differ() -> None:
-    """迁移回填的是 0：第一次跑必须把 Research 那两列列出来。"""
+    """手工把某几格改小之后，重跑必须把它们改回评测需要的值（只报这几格）。"""
 
-    patch = prep.plan_changes(_plan_row(research_qps=0, research_daily=0))
+    patch = prep.plan_changes(_plan_row(retrieve_qps=1, llm_daily=0))
 
     assert patch.changed is True
-    assert patch.changes == {"research_qps": 1, "research_daily": 100}
+    assert patch.changes == {"retrieve_qps": 50, "llm_daily": 1500}
 
 
 def test_policy_patch_requires_exactly_one_knowledge_base() -> None:
@@ -76,9 +76,11 @@ def test_policy_patch_requires_exactly_one_knowledge_base() -> None:
 def test_policy_patch_does_not_touch_the_limits_that_are_already_right() -> None:
     """只报缺的列：把整张表每次重写一遍，读的人就分不清「谁改了什么」。"""
 
-    patch = prep.policy_changes(_policy_row(profile="speed", research_allowed=False), kb_id=KB_ID)
+    patch = prep.policy_changes(
+        _policy_row(retrieval_mode="vector", research_allowed=False), kb_id=KB_ID
+    )
 
-    assert patch.changes == {"profile": "quality", "research_allowed": True}
+    assert patch.changes == {"retrieval_mode": "hybrid", "research_allowed": True}
 
 
 def test_reference_edge_count_ignores_sibling_and_parent_edges() -> None:
@@ -114,7 +116,7 @@ def _correlation() -> prep.Correlation:
 def _snapshot() -> dict:
     return prep.environment_snapshot(
         correlation=_correlation(),
-        plan_row={"code": "pro", "research_qps": 1, "research_daily": 100},
+        plan_row={"code": "pro", "llm_qps": 5, "llm_daily": 1500},
         preset_row={"profile": "quality", "rerank": True},
         corpus={"dir": "eval/corpus-refs", "documents": [], "reference_inventory": 9},
     )
@@ -165,8 +167,8 @@ def test_the_snapshot_names_the_ingest_and_build_versions() -> None:
     assert versions["build_version"] == prep.BUILD_VERSION == "v2"
 
 
-@pytest.mark.parametrize("switch", ("research_qps", "research_daily"))
-def test_the_pro_plan_targets_are_the_two_columns_the_spec_names(switch: str) -> None:
+@pytest.mark.parametrize("switch", ("llm_qps", "llm_daily"))
+def test_the_pro_plan_targets_are_the_llm_book_the_spec_names(switch: str) -> None:
     """#153 §① 点名的 Research 两列；它们不许悄悄变（变了两份报告的 on/off 都跑不起来）。"""
 
     assert switch in prep.PRO_PLAN_TARGETS

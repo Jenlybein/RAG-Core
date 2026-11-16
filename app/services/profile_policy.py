@@ -39,6 +39,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
 from app.providers.rerank import rerank_capability
+from app.services.quota_gate import METER_BOOKS
 from app.services.retrieval_authorization import CAPABILITIES, CAPABILITY_COLUMNS
 from app.services.retrieval_options import (
     MAX_TOP_K,
@@ -141,8 +142,8 @@ def ensure_policy_consistent(*, policy: KeyPolicySnapshot, plan: PlanSpec) -> No
 
     # 第三段：数值不得超过套餐。三本账各两格，逐对判——写成「超过就拒绝」，与面板上
     # 那几个输入框一一对应。加工能力的两本账允许为 0（= 这套集成不用它），所以判据是
-    # 「大于」，不是「≤ 0 即拒绝」。
-    for book in ("retrieve", "rerank", "llm"):
+    # 「大于」，不是「≤ 0 即拒绝」。账本名字从词表取，不写第二份。
+    for book in METER_BOOKS:
         for window in ("qps", "daily"):
             column = f"{book}_{window}"
             granted = getattr(policy, column)

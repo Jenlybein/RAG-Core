@@ -160,8 +160,9 @@ def build_retriever():
                     fold_to_sections=True,
                     expand_table_rows=True,
                     rerank=settings.RERANK_ENABLED,
-                    rewrite=settings.QUERY_REWRITE_ENABLED,
                 ),
+                # 第 13 步：加工方式由端点表达。部署开着改写器就跑改写链，否则原句直查。
+                query_variant="rewrite" if settings.QUERY_REWRITE_ENABLED else "direct",
             )
         return [str(chunk.get("content") or "") for chunk in response["retrieved_chunks"]]
 

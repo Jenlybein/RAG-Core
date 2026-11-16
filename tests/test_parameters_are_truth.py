@@ -1,8 +1,8 @@
 """第 13 步 · T8（契约）：三项参数直存，`profile` 不再是判定的输入。
 
 后端不再有「档位」：一次调用用多好，完全由密钥配置里直存的
-``mode`` / ``top_k`` / ``rerank`` 三项参数决定。``profile`` 字段可能还在库里（兼容旧缓存），
-但**改它不该改变任何检索行为**——这正是本文件要钉死的性质。
+``mode`` / ``top_k`` / ``rerank`` 三项参数决定。``profile`` 列已被迁移删除，夹具词汇里
+它只剩「组合别名」的身份——**换别名不该改变任何检索行为**，这正是本文件要钉死的性质。
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ def test_parameters_are_read_directly_from_the_policy() -> None:
 
     chain = retrieval_params_of(_policy())
 
-    assert chain == RetrievalParams(mode="hybrid", top_k=9, rerank=True, rewrite=False)
+    assert chain == RetrievalParams(mode="hybrid", top_k=9, rerank=True)
 
 
 def test_changing_the_profile_name_changes_nothing() -> None:

@@ -29,12 +29,8 @@ class _Holder:
 
 def test_each_endpoint_maps_to_exactly_one_capability_bit() -> None:
     assert set(ENDPOINT_CAPABILITY) == {"retrieve", "rewrite", "decompose", "research"}
-    assert set(ENDPOINT_CAPABILITY.values()) == {
-        "retrieve_allowed",
-        "rewrite_allowed",
-        "decompose_allowed",
-        "research_allowed",
-    }
+    # 映射的值是**能力名**；列名由 CAPABILITY_COLUMNS 统一派生（一处词表）。
+    assert set(ENDPOINT_CAPABILITY.values()) == {"retrieve", "rewrite", "decompose", "research"}
     # rerank 是质量位，不是端点位：它不通过这道门禁，而是由重排额度单独判。
     assert "rerank" not in ENDPOINT_CAPABILITY
 
@@ -43,8 +39,7 @@ def test_each_endpoint_maps_to_exactly_one_capability_bit() -> None:
 def test_both_layers_must_grant_the_bit(endpoint: str) -> None:
     """任何一层没开都拒绝；两层都开才放行。"""
 
-    bit = ENDPOINT_CAPABILITY[endpoint]
-    capability = bit.removesuffix("_allowed")
+    capability = ENDPOINT_CAPABILITY[endpoint]
 
     assert ensure_endpoint_allowed(
         policy=_Holder(), plan=_Holder(), endpoint=endpoint

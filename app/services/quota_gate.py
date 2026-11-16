@@ -330,7 +330,6 @@ class QuotaLimits:
         )
 
     @classmethod
-    @classmethod
     def for_rerank(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
         """第 13 步三本账之一：重排调用次数，读 ``rerank_*`` 四列。"""
 

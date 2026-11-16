@@ -3,8 +3,8 @@
  * `/keys`：本租户的 Key 列表 + 签发 + 编辑密钥配置 + 删除。
  *
  * 页面自己只做三件事：什么时候请求（`useQuery` / 直接 await 的写操作）、弹哪个框、
- * 把结果放到哪。请求形状归 `services/keyService.ts`，判定（哪些档位被套餐挡住、
- * 哪些字段算改动、custom 参数何时生效）归 `utils/keyPolicy.ts`——组件里不再写第二份。
+ * 把结果放到哪。请求形状归 `services/keyService.ts`，判定（哪些字段算改动、预设怎么填）
+ * 归 `utils/keyPolicy.ts`——组件里不再写第二份。
  *
  * 两条与安全相关的取舍（issue #92 / ADR-0004）：
  *
@@ -29,7 +29,7 @@ import { KEYS_QUERY_KEY, createKey, deleteKey, fetchKeys, patchPolicy } from '..
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { useRetrieveStore } from '../stores/retrieve'
 import {
-  CUSTOM_TOP_K_DEFAULT,
+  TOP_K_DEFAULT,
   type KbOption,
   type KeyData,
   type KeyPolicyData,
@@ -62,8 +62,6 @@ const meQuery = useQuery({
   retry: false,
 })
 const plan = computed(() => meQuery.data.value?.plan ?? null)
-const allowedProfiles = computed(() => plan.value?.allowed_profiles ?? [])
-// 第 13 步：档位预设随表删除；卡片提示改为静态说明，不再从 me 读参数。
 
 const treeQuery = useQuery({
   // 与列表页 / 检索页共用同一份树缓存：库清单本来就是同一个接口。
@@ -86,21 +84,6 @@ const keysError = computed(() =>
 )
 // 模板只对顶层 ref 自动解包；`keysQuery.isPending` 是嵌套的 Ref，先摘出来再用。
 const keysPending = keysQuery.isPending
-const keysLoaded = keysQuery.isSuccess
-
-/** 编辑器里的套餐提示；`plan` 为空时给 `null`，组件就不摆那句「套餐允许」的空话。 */
-const planHint = computed(() => {
-  const value = plan.value
-  if (value === null) return null
-  return {
-    researchAllowed: value.research_allowed,
-    hybridAllowed: value.hybrid_allowed,
-    rerankAllowed: value.rerank_allowed,
-    queryRewriteAllowed: value.query_rewrite_allowed,
-    retrieveQps: value.retrieve_qps,
-    retrieveDaily: value.retrieve_daily,
-  }
-})
 
 // —— 表格摘要 ——
 
@@ -121,8 +104,7 @@ function isKeyRow(row: unknown): row is KeyData {
 /**
  * 配置摘要拆成若干「标签块」（chips），而不是一整串文字。
  *
- * 原来那是一句话：`quality · hybrid / rerank / query_rewrite · 白名单 1 个库 · 10 次/秒 /
- * 5000 次/天`。它放在表格列里，列一窄就折行，而且会折在「hybrid /」中间——看着像坏了。
+ * 一整句话放在表格列里，列一窄就折行，而且会折在词中间——看着像坏了。
  * 拆成 chips 之后，换行只发生在块与块之间，每一块都是完整语义，怎么折都不难看。
  */
 function policyChips(row: unknown): string[] {
@@ -130,13 +112,14 @@ function policyChips(row: unknown): string[] {
   const policy: KeyPolicyData | null = key.policy
   if (policy === null) return ['配置缺失']
   const capabilities: string[] = []
+  if (policy.retrieve_allowed) capabilities.push('retrieve')
+  if (policy.rewrite_allowed) capabilities.push('rewrite')
+  if (policy.decompose_allowed) capabilities.push('decompose')
   if (policy.research_allowed) capabilities.push('research')
-  if (policy.hybrid_allowed) capabilities.push('hybrid')
   if (policy.rerank_allowed) capabilities.push('rerank')
-  if (policy.query_rewrite_allowed) capabilities.push('query_rewrite')
   return [
-    policy.profile,
-    capabilities.length === 0 ? '无额外能力' : capabilities.join(' / '),
+    `${policy.retrieval_mode} · top_k ${policy.retrieval_top_k}${policy.retrieval_rerank ? ' · 重排' : ''}`,
+    capabilities.length === 0 ? '无授权能力' : capabilities.join(' / '),
     `白名单 ${policy.allowed_kb_ids.length} 个库`,
     `${policy.retrieve_qps} 次/秒`,
     `${policy.retrieve_daily} 次/天`,
@@ -167,25 +150,30 @@ const form = ref<PolicyForm>(newPolicyForm())
 /**
  * 新建一套配置的初始值。
  *
- * 三处刻意的默认：白名单空（什么都没圈定）、能力全关（最贵的两项不该新 Key 自带）、
- * 形状全开（与既有响应默认一致）。限额与档位必须有值，且默认落在套餐上限内——
- * 「忘了填」不该被一个看起来合理的硬编码掩盖。
+ * 与后端 `KeyPolicyInput` 的默认值同义：只开基线 retrieve 一个位、加工能力的两本账
+ * 全 0（新 Key 不该自带一次改写或一次 Research）、形状全开、白名单空（什么都没圈定）。
+ * 检索限额默认落在套餐上限内——「忘了填」不该被一个看起来合理的硬编码掩盖。
  */
 function newPolicyForm(): PolicyForm {
   const planValue = plan.value
-  const defaultProfile = allowedProfiles.value[0] ?? 'speed'
   return {
     allowed_kb_ids: [],
+    retrieve_allowed: true,
+    rewrite_allowed: false,
+    decompose_allowed: false,
     research_allowed: false,
-    hybrid_allowed: false,
     rerank_allowed: false,
-    query_rewrite_allowed: false,
     retrieve_qps: planValue?.retrieve_qps ?? 1,
     retrieve_daily: planValue?.retrieve_daily ?? 1,
-    profile: defaultProfile,
+    rerank_qps: 0,
+    rerank_daily: 0,
+    llm_qps: 0,
+    llm_daily: 0,
+    retrieval_mode: 'vector',
+    retrieval_top_k: TOP_K_DEFAULT,
+    retrieval_rerank: false,
     include_parent: true,
     expand_table_rows: true,
-    custom_options: { mode: 'vector', top_k: CUSTOM_TOP_K_DEFAULT, rerank: false, rewrite: false },
   }
 }
 
@@ -224,8 +212,8 @@ function closeEditor(): void {
 
 const canSave = computed(() => {
   if (saving.value) return false
-  if (form.value.profile === '') return false
   if (form.value.retrieve_qps < 1 || form.value.retrieve_daily < 1) return false
+  if (form.value.retrieval_top_k < 1) return false
   return true
 })
 
@@ -374,7 +362,7 @@ watch(
   <section class="space-y-6">
   <PageHeader
     title="API Key"
-    subtitle="一把 Key 绑一套配置：库范围、能力、限额、档位。"
+    subtitle="一把 Key 绑一套配置：库范围、能力、限额、检索参数。"
   />
     <el-card shadow="never">
       <template #header>
@@ -489,15 +477,9 @@ watch(
 
       <KeyPolicyEditor
         v-model="form"
-        :allowed-profiles="allowedProfiles"
         :kb-options="kbOptions"
-        :plan-hint="planHint"
+        :plan="plan"
       />
-
-      <p v-if="keysLoaded && allowedProfiles.length === 0" class="mt-3 text-xs text-amber-700">
-        还没读到套餐的档位白名单（`me.plan.allowed_profiles` 为空）：四个档位都会置灰，
-        先确认账号确实属于一个租户。
-      </p>
 
       <div
         v-if="saveError !== ''"

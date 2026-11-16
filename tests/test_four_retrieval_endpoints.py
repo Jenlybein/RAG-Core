@@ -36,8 +36,8 @@ class _PlanLLM(u._RewriteLLM):
         return QueryRewrite(query="").model_dump()
 
 
-def _client(monkeypatch: pytest.MonkeyPatch, *, llm=None):
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
+def _client(monkeypatch: pytest.MonkeyPatch, *, llm=None, rewrite_enabled=False):
+    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", rewrite_enabled)
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
     return u._offline_client(monkeypatch, llm=llm)
@@ -87,7 +87,7 @@ def test_rewrite_embeds_both_the_raw_and_the_rewritten_query(
     """`/rag/rewrite` 一次改写，向量一路两句并池。"""
 
     llm = u._RewriteLLM(rewritten=u.REWRITTEN)
-    with _client(monkeypatch, llm=llm) as fake:
+    with _client(monkeypatch, llm=llm, rewrite_enabled=True) as fake:
         body = u._response(fake["client"], path=u.REWRITE_PATH).json()
 
     assert body["code"] == 0

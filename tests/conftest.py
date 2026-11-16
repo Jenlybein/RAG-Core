@@ -85,6 +85,13 @@ os.environ["TRACE_SINK"] = "none"
 # 业务行为；需要真实 Key 那条路的用例会**显式**把开关拨过去（见
 # `tests/test_tenant_wiring.py` 里两种身份各走一遍的用例），所以这里写死不会掩盖任何东西。
 os.environ["AUTH_ENABLED"] = "false"
+# 强制清空：**代理环境变量不进套件**。httpx 0.28 在构造 AsyncClient 时把 NO_PROXY 逐条
+# 解析成 mounts，IPv6 条目（`[::1]` / `::1`）会被解析成非法 URL（Invalid port），于是
+# 机器上只要装着代理工具写下的 NO_PROXY，一批 Provider / 客户端用例就整片红——而代码
+# 一行没改。套件的前提是离线、不走任何代理；有没有代理是部署环境的事实，不是套件的事实。
+for _proxy_var in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "NO_PROXY"):
+    os.environ.pop(_proxy_var, None)
+    os.environ.pop(_proxy_var.lower(), None)
 
 
 class _MemorySettingsCache:

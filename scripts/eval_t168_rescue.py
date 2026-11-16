@@ -809,7 +809,6 @@ def _retrieval_options(top_k: int) -> Any:
         fold_to_sections=True,
         expand_table_rows=False,
         rerank=False,
-        rewrite=False,
     )
 
 

@@ -30,13 +30,21 @@ export interface ConsoleTenant {
 export interface ConsolePlanSnapshot {
   code: string
   name: string
-  allowed_profiles: string[]
-  hybrid_allowed: boolean
-  rerank_allowed: boolean
-  query_rewrite_allowed: boolean
+  /** 五个授权位（与密钥配置同名同义，这里是上限）。 */
+  retrieve_allowed: boolean
+  rewrite_allowed: boolean
+  decompose_allowed: boolean
   research_allowed: boolean
+  rerank_allowed: boolean
+  /** 三本账 × 两格。 */
   retrieve_qps: number
   retrieve_daily: number
+  rerank_qps: number
+  rerank_daily: number
+  llm_qps: number
+  llm_daily: number
+  /** 质量封顶（0 = 不额外封顶，退回平台硬上限）与四个规模上限。 */
+  max_top_k: number
   max_kb: number
   max_kb_per_retrieve: number
   max_documents_per_kb: number
@@ -56,5 +64,6 @@ export interface ConsoleMe {
   tenant: ConsoleTenant | null
   plan: ConsolePlanSnapshot | null
   usage: ConsoleUsage | null
-  // 第 13 步：profile_presets 字段随档位表删除——参数直存，不再有档位预设。
+  /** 今日租户级模型用量：与 `usage` 同形，读的是 llm 那本账；管理员为 `null`。 */
+  llm_usage: ConsoleUsage | null
 }

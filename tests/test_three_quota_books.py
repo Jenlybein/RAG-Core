@@ -8,11 +8,11 @@
 """
 
 from __future__ import annotations
-from tests.support.policy import policy as support_policy
 
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
+from typing import Any
 
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO
@@ -24,7 +24,7 @@ from app.services.quota_gate import (
     llm_quota,
     rerank_quota,
 )
-from tests.support.policy import PROFILE_SPEED
+from tests.support.policy import policy as support_policy
 
 TENANT_ID = "tenant_acme"
 KEY_ID = "key-1"
@@ -65,8 +65,9 @@ def _plan(**overrides: int) -> object:
 
 
 def test_rerank_and_llm_books_read_their_own_columns_and_namespaces() -> None:
-    r = QuotaLimits.for_rerank(policy=_policy(), plan=_plan())  # type: ignore[arg-type]
-    l = QuotaLimits.for_llm(policy=_policy(), plan=_plan())  # type: ignore[arg-type]
+    p = _policy(rerank_qps=5, rerank_daily=50, llm_qps=2, llm_daily=20)
+    r = QuotaLimits.for_rerank(policy=p, plan=_plan())  # type: ignore[arg-type]
+    l = QuotaLimits.for_llm(policy=p, plan=_plan())  # type: ignore[arg-type]
 
     assert (r.key_qps, r.tenant_qps, r.key_daily, r.tenant_daily) == (5, 7, 50, 70)
     assert r.namespace == RERANK_NAMESPACE

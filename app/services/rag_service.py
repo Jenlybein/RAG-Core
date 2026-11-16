@@ -59,12 +59,12 @@
 诚实空（成功 + ``empty_reason``）。空结果不是故障：把它当故障处理会让监控
 满地假警报，也让调用方误以为该重试。
 
-**质量参数从哪来（第 7 步，#77 / #78）**：请求体只有 ``kb_ids`` + ``query``；模式、返回
-条数、重排、改写、折叠与表格展开由平台层从密钥配置解析、并过完五道门禁
-（``app.services.profile_policy``）后交成一个 :class:`RetrievalOptions` 进来。本模块因此
-**不再认识请求模型**，也不再为任何一个参数写「没传就取缺省」的分支；两个布尔开关
-（``options.rerank`` / ``options.rewrite``）同理——它们是**生效值**（档位意图 ∧ 本机
-能力），本模块不再自己去问一次 ``settings``。
+**质量参数从哪来（第 7 步，#77 / #78；第 13 步修订）**：请求体只有 ``kb_ids`` + ``query``；
+模式、返回条数、重排、折叠与表格展开由平台层从密钥配置解析、并过完门禁
+（``app.services.profile_policy``）后交成一个 :class:`RetrievalOptions` 进来；改写则由
+``query_variant`` 表达（``/rag/retrieve`` 恒等原句，``/rag/rewrite`` 才加工）。本模块因此
+**不再认识请求模型**，也不再为任何一个参数写「没传就取缺省」的分支；``options.rerank``
+是**生效值**（配置意图 ∧ 授权位 ∧ 本机能力），本模块不再自己去问一次 ``settings``。
 
 ``recall_depth`` / ``rerank_candidates`` 这两个**服务端旋钮**仍在这里读
 （``HYBRID_RECALL_TOP_K`` / ``RERANK_MAX_CANDIDATES``）：它们是「这台机器怎么部署」，

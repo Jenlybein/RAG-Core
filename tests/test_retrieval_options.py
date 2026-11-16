@@ -58,13 +58,28 @@ def _policy(
     include_parent: bool = True,
     expand_table_rows: bool = True,
     custom_options: tuple[tuple[str, object], ...] = (),
+    **overrides: Any,
 ) -> KeyPolicySnapshot:
-    """一份只关心「配置 → 参数」的密钥配置快照；其余字段取内置开发身份那份。"""
+    """一份只关心「配置 → 参数」的密钥配置快照；其余字段取内置开发身份那份。
 
-    return support_policy(profile=profile,
+    授权位默认只开基线 ``retrieve``：本文件测的是参数读取，不是门禁；多开的位会让
+    「配置的位 ⊆ 套餐的位」在边界用例里先失败，而那不是这里要看的东西。
+    """
+
+    values: dict[str, Any] = {
+        "rewrite_allowed": False,
+        "decompose_allowed": False,
+        "research_allowed": False,
+        "rerank_allowed": False,
+        "allowed_kb_ids": (KB_A,),
+    }
+    values.update(overrides)
+    return support_policy(
+        profile=profile,
         include_parent=include_parent,
         expand_table_rows=expand_table_rows,
         custom_options=custom_options,
+        **values,
     )
 
 
@@ -95,10 +110,10 @@ def test_custom_policy_manual_parameters_are_taken_verbatim(
                 ("mode", "bm25"),
                 ("top_k", 3),
                 ("rerank", True),
-                ("rewrite", True),
             ),
             include_parent=False,
             expand_table_rows=False,
+            rerank_allowed=True,
         )
     )
 
@@ -106,10 +121,9 @@ def test_custom_policy_manual_parameters_are_taken_verbatim(
         options.mode,
         options.top_k,
         options.rerank,
-        options.rewrite,
         options.fold_to_sections,
         options.expand_table_rows,
-    ) == ("bm25", 3, True, True, False, False)
+    ) == ("bm25", 3, True, False, False)
 
 
 def test_custom_policy_missing_keys_fall_back_to_server_defaults(
@@ -125,7 +139,7 @@ def test_custom_policy_missing_keys_fall_back_to_server_defaults(
 
     assert options.mode == "bm25", "给了的键必须生效"
     assert options.top_k == 7, "没给的键回落到服务端缺省"
-    assert (options.rerank, options.rewrite) == (False, False)
+    assert options.rerank is False
     assert options.fold_to_sections is True
     assert options.expand_table_rows is False
 
@@ -181,7 +195,7 @@ def test_the_profile_name_no_longer_chooses_the_chain(
         )
     )
 
-    assert chain == RetrievalParams(mode="hybrid", top_k=3, rerank=True, rewrite=False)
+    assert chain == RetrievalParams(mode="hybrid", top_k=3, rerank=True)
 
 
 def test_the_shape_group_is_not_custom_only() -> None:
@@ -474,7 +488,7 @@ def test_the_composition_root_receives_the_resolved_options(
     assert (options.mode, options.top_k) == ("vector", 4)
     assert (options.fold_to_sections, options.expand_table_rows) == (False, True)
     assert options.tenant_policy is not None
-    assert options.tenant_policy.requested_profile == PROFILE_CUSTOM
+    assert options.tenant_policy.plan == PLAN_PRO
 
 
 def test_http_and_mcp_accept_literally_the_same_arguments() -> None:

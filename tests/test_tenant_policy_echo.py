@@ -20,8 +20,7 @@ def test_echo_reports_the_parameters_not_a_profile_name() -> None:
         fold_to_sections=True,
         expand_table_rows=True,
         rerank=True,
-        rewrite=False,
-        tenant_policy=TenantPolicy(plan="pro", requested_profile="quality", clipped=("top_k",)),
+        tenant_policy=TenantPolicy(plan="pro", clipped=("top_k",)),
     )
 
     echo = tenant_policy_echo(options, kb_count=2)
@@ -45,7 +44,6 @@ def test_echo_is_none_without_a_gate_resolved_policy() -> None:
         fold_to_sections=True,
         expand_table_rows=True,
         rerank=False,
-        rewrite=False,
     )
 
     assert tenant_policy_echo(options, kb_count=1) is None

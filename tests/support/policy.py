@@ -17,7 +17,8 @@
 * ``balanced`` → hybrid / 5 / false
 * ``quality``  → hybrid / 5 / true
 
-``custom`` 不是表里的一行：它表示「逐键覆盖部署缺省」，缺键取 vector / 5 / false。
+``custom`` 不是表里的一行：它表示「逐键覆盖**部署缺省**」，缺键取当前部署配置
+（``RETRIEVAL_MODE`` / ``TOP_K`` / 不重排），与旧语义「缺键跟部署走」一致。
 """
 
 from __future__ import annotations

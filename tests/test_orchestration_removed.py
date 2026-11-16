@@ -38,7 +38,6 @@ from app.services.retrieval_options import (
     TenantPolicy,
     tenant_policy_echo,
 )
-from tests.support.policy import PROFILE_QUALITY
 
 APP_ROOT = Path(__file__).resolve().parents[1] / "app"
 
@@ -142,8 +141,7 @@ def test_the_contract_has_no_orchestration_key() -> None:
         fold_to_sections=True,
         expand_table_rows=True,
         rerank=False,
-        rewrite=False,
-        tenant_policy=TenantPolicy(plan="pro", requested_profile=PROFILE_QUALITY),
+        tenant_policy=TenantPolicy(plan="pro"),
     )
     echo = tenant_policy_echo(options, kb_count=1)
     assert echo is not None

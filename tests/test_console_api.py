@@ -119,10 +119,10 @@ def _kb(kb_id: str, tenant_id: str) -> KnowledgeBase:
 
 
 def _world() -> dict[type, list[Any]]:
-    """一套最小但完整的世界：两种角色、两个租户、三档套餐、四个库、两套密钥配置。
+    """一套最小但完整的世界：两种角色、两个租户、四档套餐、四个库、两套密钥配置。
 
     影响面测试要用到的形状都在这里：Alpha 有 3 个库（多于新的 ``max_kb=2``），且它的
-    密钥配置挂着 ``quality`` 档（新的白名单只留 ``speed``）；Beta 两个条件都不撞。
+    密钥配置开了重排位（补丁把套餐的 ``rerank_allowed`` 关掉）；Beta 两个条件都不撞。
     """
 
     return {
@@ -153,6 +153,7 @@ def _world() -> dict[type, list[Any]]:
                 llm_qps=0,
                 llm_daily=0,
                 profile="quality",
+                rerank_allowed=True,
             ),
             policy_row(
                 id="policy-beta",
@@ -432,7 +433,7 @@ def test_my_view_never_mentions_another_tenant(console: _Harness) -> None:
 
 # ─────────────────────────────────────────────────────────── 改套餐：试算与落库
 
-_IMPACT_PATCH = {"max_kb": 2, "allowed_profiles": ["speed"]}
+_IMPACT_PATCH = {"max_kb": 2, "rerank_allowed": False}
 
 
 def test_dry_run_returns_the_impact_but_writes_nothing(console: _Harness) -> None:
@@ -453,8 +454,8 @@ def test_dry_run_returns_the_impact_but_writes_nothing(console: _Harness) -> Non
     assert data["impact"] == {
         "tenants_checked": 2,
         "over_max_kb": {"count": 1, "sample": ["Alpha Corp"]},
-        "lose_profile": {"count": 1, "sample": ["Alpha Corp"]},
-        "policies_losing_profile": 1,
+        "over_capability": {"count": 1, "sample": ["Alpha Corp"]},
+        "policies_over_capability": 1,
     }
     assert console.plan_row(3).max_kb == 50
     # 「试算不写」断言的是**没有写行**，不是「没有提交」：一笔请求总有一笔事务，
@@ -497,7 +498,7 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
 
     row = console.plan_row(3)
     assert row.max_kb == 2
-    assert row.allowed_profiles == ["speed"]
+    assert row.rerank_allowed is False
     assert console.db.commits == commits_before + 1
 
     # 删缓存，不是写缓存：旧条目消失，且没有一次 set。
@@ -536,12 +537,12 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
     asyncio.run(_after_patch())
 
 
-def test_a_plan_patch_can_close_and_reopen_research_quotas(console: _Harness) -> None:
-    """Research 的两个额度在面板上**可关可开**（票 #150）：0 = 关闭，负数仍然是 ``20018``。"""
+def test_a_plan_patch_can_close_and_reopen_llm_quotas(console: _Harness) -> None:
+    """llm 账的两个额度在面板上**可关可开**（第 13 步）：0 = 关闭，负数仍然是 ``20018``。"""
 
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
     console.cache.items[3] = plan_spec_of(console.plan_row(3))
-    assert (console.plan_row(3).llm_qps, console.plan_row(3).llm_daily) == (1, 100)
+    assert (console.plan_row(3).llm_qps, console.plan_row(3).llm_daily) == (5, 1500)
 
     response = console.client.patch(
         "/console/plans/3?dry_run=false",
@@ -558,7 +559,7 @@ def test_a_plan_patch_can_close_and_reopen_research_quotas(console: _Harness) ->
     entry = console.audit_entries()[-1]
     assert entry.action == "plan.update"
     assert entry.target == "plan:3"
-    assert entry.before_snapshot["llm_daily"] == 100
+    assert entry.before_snapshot["llm_daily"] == 1500
     assert entry.after_snapshot["llm_daily"] == 0, "关掉这一项也要留下前后两侧"
 
     # 负数不是一个额度：与「retrieve_qps 填 0」不同，这里只拒负数、放行 0。
@@ -571,17 +572,18 @@ def test_a_plan_patch_can_close_and_reopen_research_quotas(console: _Harness) ->
     assert len(console.audit_entries()) == audits_before
 
 
-def test_an_unknown_profile_is_a_plan_invalid_error(console: _Harness) -> None:
+def test_a_retired_profile_column_is_rejected_at_the_request_boundary(console: _Harness) -> None:
+    """档位白名单列已物理删除：补丁里再出现它，请求体契约当场拒（20002），不静默忽略。"""
+
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     response = console.client.patch(
         "/console/plans/3?dry_run=false",
-        json={"allowed_profiles": ["qualty"]},
+        json={"allowed_profiles": ["speed"]},
         headers=WRITE_HEADERS,
     )
 
-    assert response.json()["code"] == 20018
-    assert console.plan_row(3).allowed_profiles != ["qualty"]
+    assert response.json()["code"] == 20002
     assert console.audit_entries() == []
 
 
@@ -754,7 +756,7 @@ def test_me_reports_todays_tenant_usage_when_the_counter_exists(
     usage = _usage_of(console.client.get("/console/me"))
     assert usage == {
         "used": 42,
-        "limit": 100000,
+        "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "daily_counter",
         "note": None,
     }
@@ -775,7 +777,7 @@ def test_switch_on_without_a_counter_is_a_known_zero_not_unknown(
     usage = _usage_of(console.client.get("/console/me"))
     assert usage == {
         "used": 0,
-        "limit": 100000,
+        "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "daily_counter",
         "note": None,
     }
@@ -797,7 +799,7 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
 
     assert usage == {
         "used": None,
-        "limit": 100000,
+        "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "not_tracked",
         "note": (
             "today's usage is not tracked: rate limiting is disabled (RATE_LIMIT_ENABLED=false)"

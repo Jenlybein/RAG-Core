@@ -73,8 +73,6 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
         allowed_kb_ids=[],
         retrieve_qps=3,
         retrieve_daily=500,
-        research_qps=0,
-        research_daily=0,
         profile="speed",
     )
 
@@ -183,16 +181,27 @@ def test_a_new_tenant_gets_a_key_policy_so_a_key_can_be_issued_right_away() -> N
     assert session.added_of(KeyPolicy) == [policy]
     assert policy.tenant_id == ACME_TENANT
     assert policy.allowed_kb_ids == ["kb-1"]
-    assert policy.profile == "speed"
+    # 三项参数取最小权限组合：原句直查、5 条、不重排。
+    assert (policy.retrieval_mode, policy.retrieval_top_k, policy.retrieval_rerank) == (
+        "vector",
+        5,
+        False,
+    )
     assert (policy.retrieve_qps, policy.retrieve_daily) == (3, 500)
     assert not any(
         [
+            policy.rewrite_allowed,
+            policy.decompose_allowed,
             policy.research_allowed,
-            policy.hybrid_allowed,
             policy.rerank_allowed,
-            policy.query_rewrite_allowed,
         ]
-    ), "新配置不授予任何能力：重排与改写是最贵的两项"
+    ), "新配置只开基线 retrieve：加工与重排是最贵的几项"
+    assert (policy.rerank_qps, policy.rerank_daily, policy.llm_qps, policy.llm_daily) == (
+        0,
+        0,
+        0,
+        0,
+    )
 
 
 def test_a_new_tenant_can_take_a_named_plan() -> None:
@@ -202,7 +211,7 @@ def test_a_new_tenant_can_take_a_named_plan() -> None:
         created = create_tenant(session, tenant_id=ACME_TENANT, name="Acme", plan_code="pro")
 
     assert created.tenant.plan_id == PLAN_CODES.index("pro") + 1
-    assert created.policy.profile == "speed", "档位白名单的第一档是 speed，与套餐无关"
+    assert created.policy.retrieval_mode == "vector", "默认参数是最小权限组合，与套餐无关"
 
 
 def test_creating_a_tenant_with_an_unknown_plan_fails_loudly() -> None:

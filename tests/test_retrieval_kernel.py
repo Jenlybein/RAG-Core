@@ -667,8 +667,6 @@ def _options() -> RetrievalOptions:
         fold_to_sections=False,
         expand_table_rows=False,
         rerank=False,
-        rewrite=False,
-        # #146 的第三层开关也是必填（默认关闭）：两票合并时这条构造点漏了它。
     )
 
 

@@ -140,6 +140,7 @@ def build_kernel_search(
     index_versions: Mapping[str, str],
     options: RetrievalOptions,
     on_degraded: Callable[[str], None] | None = None,
+    on_rerank: Callable[[], None] | None = None,
     stage_timer: StageTimer | None = None,
 ) -> SearchCallable:
     """把「一次子查询」装配成「一次内核调用」（ADR-0028 §4 的注入缝在生产侧的实现）。
@@ -156,6 +157,10 @@ def build_kernel_search(
     降级原因不能丢（「关键词一路挂了、只是碰巧向量一路也命中了」的那次调用看起来完全正常），
     但它又不许变成「每条子查询各写一行归属索引」或者「各发一份观测」——所以它被交回给
     调用方攒成一个列表，最后进响应的 ``metadata`` 与那唯一一行归属索引。
+
+    ``on_rerank`` 是**重排实际发生的观察点**（第 13 步）：子检索每真跑一次重排调它一次，
+    外层据此按实际发生记 rerank 账。与 ``on_degraded`` 同一条纪律：内核只交回事实，
+    记账仍在门禁那唯一一处。
 
     ``stage_timer`` 是**共用的收集器**（第 13 步）：分解检索要把 N 次内核的耗时记进
     **同一份** trace，段名与 ``/rag/retrieve`` 同源（``StageTimer`` 允许同名段依次追加）。
@@ -200,6 +205,10 @@ def build_kernel_search(
         # （重排、耗时）由外层的观测负责（ADR-0028：子检索不单独发观测）。
         if outcome.degraded_reason and on_degraded is not None:
             on_degraded(outcome.degraded_reason)
+        # 重排**真的发生了**才报一次：外层据此按实际发生记 rerank 账（ADR-0032）。
+        # 内核不碰账本，它只交回事实——记账仍是外层那唯一一处。
+        if on_rerank is not None and (outcome.rerank or {}).get("applied"):
+            on_rerank()
         # 只要交付单元。
         return outcome.chunks
 
@@ -239,7 +248,7 @@ async def gated_research(
     ensure_research_allowed(policy=key.policy, plan=key.plan)
 
     # 第 3 步：这套集成的检索参数（模式 / 条数 / 重排 / 折叠 / 库数上限）。Research 没有
-    # 自己的质量参数：子检索用这套集成本来会用的一组参数，档位门禁也在这里一并复核。
+    # 自己的质量参数：子检索用这套集成本来会用的一组参数，套餐复核也在这里一并做。
     options = resolve_retrieval_options(
         policy=key.policy,
         plan=key.plan,
@@ -288,6 +297,12 @@ async def gated_research(
     # 第 8 步：状态机。检索内核按「一次子查询一次」注入，两个模型角色同理；子检索的降级
     # 原因经由同一个列表回到这里（它既要进响应，也要进那唯一一行归属索引）。
     sub_search_degraded: list[str] = []
+    rerank_count = 0
+
+    def _count_rerank() -> None:
+        nonlocal rerank_count
+        rerank_count += 1
+
     outcome = await run_research(
         query=query,
         tenant_id=key.tenant_id,
@@ -298,6 +313,7 @@ async def gated_research(
             index_versions=index_versions,
             options=options,
             on_degraded=sub_search_degraded.append,
+            on_rerank=_count_rerank,
         ),
         llm_factory=llm_factory,
         sub_search_degraded=sub_search_degraded,
@@ -334,12 +350,10 @@ async def gated_research(
             trace_id=trace_id,
         )
     )
-    # 第 11 步：成功之后才 +1，两级各一次（票 #150「一次 Research 只记一次」）。这是整次调用
-    # **唯一**的记账点：第 8 步那条内核被调了 1~5 次，但它碰不到这本账；被拒绝、失败或响应
-    # 校验不过的调用都走不到这一行。
-    await quota.record_success()
-    # 第 13 步：同一批实际发生写进 llm 账（按 model_calls 计，全 0 时账本 no-op），
-    # 于是「大模型花在哪」在 llm 账上可归因，而旧的 research 账继续守着能力位/上限语义。
+    # 第 11 步：成功之后才记账，两级各一次。这是整次调用**唯一**的记账点：第 8 步那条
+    # 内核被调了 1~5 次，但它碰不到这本账；被拒绝、失败或响应校验不过的调用都走不到这里。
+    # llm 账按**实际发生**记 N（``model_calls``），不再额外 +1——「实际发生几次就记几次」
+    # 是契约本身（ADR-0032），多记一次就把 Research 的成本凭空抬高了一截。
     llm = llm_quota(
         policy=key.policy,
         plan=key.plan,
@@ -347,6 +361,13 @@ async def gated_research(
         key_id=key.key_id,
     )
     await llm.record_n(outcome.model_calls)
+    # 重排账同样按实际发生记：子检索每真跑一次重排，观察点就 +1（全 0 时账本 no-op）。
+    await rerank_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    ).record_n(rerank_count)
     return data
 
 

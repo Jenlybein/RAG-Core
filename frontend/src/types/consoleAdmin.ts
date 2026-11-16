@@ -13,13 +13,21 @@ export interface PlanData {
   plan_id: number
   code: string
   name: string
-  allowed_profiles: string[]
-  hybrid_allowed: boolean
-  rerank_allowed: boolean
-  query_rewrite_allowed: boolean
+  /** 五个授权位（与密钥配置同名同义，这里是上限）。 */
+  retrieve_allowed: boolean
+  rewrite_allowed: boolean
+  decompose_allowed: boolean
   research_allowed: boolean
+  rerank_allowed: boolean
+  /** 三本账 × 两格；`retrieve_*` ≥1，其余四格 0 合法（= 这项能力没买）。 */
   retrieve_qps: number
   retrieve_daily: number
+  rerank_qps: number
+  rerank_daily: number
+  llm_qps: number
+  llm_daily: number
+  /** 质量封顶：0 = 不额外封顶，退回平台硬上限。 */
+  max_top_k: number
   max_kb: number
   max_kb_per_retrieve: number
   max_documents_per_kb: number
@@ -83,8 +91,9 @@ export interface ImpactGroup {
 export interface PlanImpact {
   tenants_checked: number
   over_max_kb: ImpactGroup
-  lose_profile: ImpactGroup
-  policies_losing_profile: number
+  /** 新授权位之下「配置给了、套餐不给」的租户（下一次调用撞 20013）。 */
+  over_capability: ImpactGroup
+  policies_over_capability: number
 }
 
 /** 改 / 删套餐的请求体（`PlanPatchRequest`）；`null` 与「不发」等价，这里用可选键表达。 */
@@ -92,13 +101,18 @@ export interface PlanPatchBody {
   operation?: 'update' | 'delete'
   code?: string
   name?: string
-  allowed_profiles?: string[]
-  hybrid_allowed?: boolean
-  rerank_allowed?: boolean
-  query_rewrite_allowed?: boolean
+  retrieve_allowed?: boolean
+  rewrite_allowed?: boolean
+  decompose_allowed?: boolean
   research_allowed?: boolean
+  rerank_allowed?: boolean
   retrieve_qps?: number
   retrieve_daily?: number
+  rerank_qps?: number
+  rerank_daily?: number
+  llm_qps?: number
+  llm_daily?: number
+  max_top_k?: number
   max_kb?: number
   max_kb_per_retrieve?: number
   max_documents_per_kb?: number
@@ -146,12 +160,21 @@ export type PlanNumericField =
   | 'max_documents_per_kb'
   | 'max_processing_documents'
 
-/** 四个能力开关。 */
+/** 五个「≥ 0」的数值列（0 = 关闭 / 不额外封顶）；清单来自后端 `PLAN_ZEROABLE_COLUMNS`。 */
+export type PlanZeroableField =
+  | 'rerank_qps'
+  | 'rerank_daily'
+  | 'llm_qps'
+  | 'llm_daily'
+  | 'max_top_k'
+
+/** 五个授权位。 */
 export type PlanCapabilityField =
-  | 'hybrid_allowed'
-  | 'rerank_allowed'
-  | 'query_rewrite_allowed'
+  | 'retrieve_allowed'
+  | 'rewrite_allowed'
+  | 'decompose_allowed'
   | 'research_allowed'
+  | 'rerank_allowed'
 
 /**
  * 套餐编辑表单真正能改的字段。
@@ -163,15 +186,7 @@ export type PlanCapabilityField =
 export type PlanEditableFields = Pick<
   PlanData,
   | 'name'
-  | 'allowed_profiles'
-  | 'hybrid_allowed'
-  | 'rerank_allowed'
-  | 'query_rewrite_allowed'
-  | 'research_allowed'
-  | 'retrieve_qps'
-  | 'retrieve_daily'
-  | 'max_kb'
-  | 'max_kb_per_retrieve'
-  | 'max_documents_per_kb'
-  | 'max_processing_documents'
+  | PlanCapabilityField
+  | PlanNumericField
+  | PlanZeroableField
 >

@@ -29,9 +29,13 @@ class _Recorder:
         self.dropped_tables: list[str] = []
         self.created_tables: list[str] = []
         self.executed: list[str] = []
+        self.altered: list[tuple[str, str, Any]] = []
 
     def add_column(self, table: str, column: Any) -> None:
         self.added.append((table, column.name))
+
+    def alter_column(self, table: str, column: str, **kwargs: Any) -> None:
+        self.altered.append((table, column, kwargs.get("server_default")))
 
     def drop_column(self, table: str, column: str, **_k: Any) -> None:
         self.dropped.append((table, column))
@@ -96,6 +100,11 @@ def test_upgrade_adds_three_columns_drops_old_columns_and_table() -> None:
     assert ("plans", "research_qps") in rec.dropped
     assert rec.dropped_tables == ["profile_presets"]
     assert len(rec.executed) == 1, "custom_options → 真列的数据搬迁必须发生"
+    # 搬迁完成后收掉 server_default：新行必须由写入方显式给值。
+    assert {(table, column) for table, column, _ in rec.altered} == {
+        ("key_policies", name) for name in ("retrieval_mode", "retrieval_top_k", "retrieval_rerank")
+    }
+    assert all(default is None for _, _, default in rec.altered)
 
 
 def test_downgrade_rebuilds_table_columns_and_writes_back() -> None:

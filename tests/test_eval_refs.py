@@ -670,7 +670,6 @@ def _research_data(*, stop_reason: str = "evidence_complete", model_calls: int =
             "trace_id": "t-1",
             "evidence_state": "partial",
             "sub_search_degraded_reasons": [],
-            "strong_model_fallback": None,
         },
     }
 

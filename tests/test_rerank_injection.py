@@ -305,7 +305,6 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
                 fold_to_sections=True,
                 expand_table_rows=True,
                 rerank=True,
-                rewrite=False,
             ),
             rerank_factory=factory,
         )

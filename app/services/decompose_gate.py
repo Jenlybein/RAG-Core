@@ -65,11 +65,15 @@ async def decompose_retrieve(
     query: str,
     options: RetrievalOptions,
     llm_factory: LLMFactory | None = None,
+    on_rerank: Callable[[], None] | None = None,
 ) -> dict:
     """跑一次「分解 → N 次内核 → 合并」，返回与 `/rag/retrieve` 同形的响应数据。
 
     模型调用失败（规划阶段）→ 整单 ``50003``，与 `/rag/rewrite` / Research 一致。
     子检索自身的故障按内核既有规矩上抛或降级，不在这里二次包装。
+
+    ``on_rerank``：子检索每真跑一次重排报一次，外层据此按实际发生记 rerank 账
+    （ADR-0032）——分解的重排是 N 次独立动作，不是一次整体重排。
     """
 
     timer = StageTimer()
@@ -114,6 +118,7 @@ async def decompose_retrieve(
         index_versions=index_versions,
         options=options,
         on_degraded=degraded_reasons.append,
+        on_rerank=on_rerank,
         stage_timer=timer,
     )
 
