@@ -18,7 +18,7 @@
  * 这里也不编造。`metadata.trace_id` 从 #101 起有了，但本页不摊它——它在这张卡上的用途只有
  * 一个：与瀑布图里那根线对上（见下方「六段耗时」面板的说明）。
  */
-import { useMutation, useQuery } from '@tanstack/vue-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 import { useRoute } from 'vue-router'
@@ -32,7 +32,7 @@ import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
-import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
+import { KEYS_QUERY_KEY, fetchKeys, patchPolicy } from '../services/keyService'
 import { retrieve } from '../services/ragService'
 import {
   MY_KB_QUERY_KEY,
@@ -41,7 +41,14 @@ import {
 } from '../services/scopeService'
 import { fetchRuntimeInfo, runtimeInfoQueryKey } from '../services/traceService'
 import { useRetrieveStore } from '../stores/retrieve'
-import type { KbOption, KeyData } from '../types/key'
+import {
+  RETRIEVAL_MODES,
+  TOP_K_MAX,
+  TOP_K_MIN,
+  type KbOption,
+  type KeyData,
+  type KeyPolicyPatch,
+} from '../types/key'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import { feedbackErrorCopy, isValidScore, scoreStars } from '../utils/feedback'
@@ -446,6 +453,79 @@ const currentKeySummary = computed(() => {
   }
 })
 
+// —— 实验用：在这把 Key 上改三项检索参数 ——
+/**
+ * 为什么「改配置」而不是「请求里带参数」：请求体只有 `kb_ids + query`，`mode` / `top_k` /
+ * `rerank` 是**配置**（ADR-0032）。所以调试台做实验的方式是**写回这把 Key 的配置**，再调一次。
+ *
+ * 这一点必须写在界面上而不是只写在代码注释里：用户点「保存」时得知道影响面是
+ * 「所有用这把 Key 的调用」，不是「只影响这一次」。
+ */
+const queryClient = useQueryClient()
+
+// `mode` 用传输类型 `string` 而不是 `RetrievalMode`：`KeyPolicyInput` 就是这么写的，
+// 在这里强收窄只会在赋值处多一次 cast；候选值由 `RETRIEVAL_MODES` 提供，源头已经收口。
+const paramDraft = ref<{
+  mode: string
+  top_k: number
+  rerank: boolean
+} | null>(null)
+const paramsSaving = ref(false)
+const paramsError = ref('')
+
+/**
+ * 草稿跟服务端对齐的时机：打开弹窗、换 Key、保存成功后（`policy` 会被 `['keys']` 的
+ * 重新拉取换掉）。**编辑期间不覆盖**——否则用户正在改的时候输入框会被打回原值。
+ */
+watch(
+  [policy, configDialogOpen],
+  ([value, open]) => {
+    if (!open || value === null) return
+    paramDraft.value = {
+      mode: value.retrieval_mode,
+      top_k: value.retrieval_top_k,
+      rerank: value.retrieval_rerank,
+    }
+    paramsError.value = ''
+  },
+  { immediate: true },
+)
+
+/** 只提交真的变了的字段：与配置编辑器同一套规矩，避免一次无意义的写入。 */
+const paramPatch = computed<KeyPolicyPatch>(() => {
+  const draft = paramDraft.value
+  const current = policy.value
+  if (draft === null || current === null) return {}
+  const patch: KeyPolicyPatch = {}
+  if (draft.mode !== current.retrieval_mode) patch.retrieval_mode = draft.mode
+  if (draft.top_k !== current.retrieval_top_k) patch.retrieval_top_k = draft.top_k
+  if (draft.rerank !== current.retrieval_rerank) patch.retrieval_rerank = draft.rerank
+  return patch
+})
+const canSaveParams = computed<boolean>(() => Object.keys(paramPatch.value).length > 0)
+
+/** 「参数要重排、但这把 Key 没给重排位」是自相矛盾，写前就说明，别等 20015。 */
+const rerankBitMissing = computed<boolean>(
+  () => paramDraft.value?.rerank === true && policy.value?.rerank_allowed !== true,
+)
+
+async function saveParams(): Promise<void> {
+  const current = policy.value
+  if (current === null || paramsSaving.value || !canSaveParams.value) return
+  paramsSaving.value = true
+  paramsError.value = ''
+  try {
+    await patchPolicy(current.policy_id, paramPatch.value)
+    // 重新拉 `/console/keys`：卡片摘要与只读摘要都读它，不刷新会停在旧值上。
+    await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
+    ElMessage.success('已写入这把 Key 的配置 —— 下一次检索按新参数跑')
+  } catch (error) {
+    paramsError.value = errorText(error)
+  } finally {
+    paramsSaving.value = false
+  }
+}
+
 const chunks = computed(() => result.value?.retrieved_chunks ?? [])
 const emptyReason = computed(() => result.value?.metadata.retrieval.empty_reason ?? null)
 const emptyCopy = computed(() =>
@@ -648,7 +728,21 @@ async function sendRating(): Promise<void> {
             </template>
             <span v-else class="text-[#7a5b00]">未选择 —— 点「修改配置」选一把</span>
           </span>
-          <span class="text-muted">已选 {{ store.selectedCount }} 个库</span>
+          <span class="flex flex-wrap items-center gap-2 text-xs">
+            <span class="text-muted">已选 {{ store.selectedCount }} 个库</span>
+            <!--
+              实验入口必须有名字地摆在这儿：只写「修改配置」时，想换检索方式的人不会想到
+              点它（那是「改配置」，不像「换检索方式」）。同一个弹窗，第二种说法。
+            -->
+            <button
+              v-if="policy !== null"
+              type="button"
+              class="text-brand underline underline-offset-2 transition hover:text-ink"
+              @click="configDialogOpen = true"
+            >
+              换检索方式 / 参数
+            </button>
+          </span>
         </div>
       </div>
 
@@ -759,7 +853,68 @@ async function sendRating(): Promise<void> {
           </dl>
         </div>
 
-        <!-- ② 要查的知识库 -->
+        <!-- ② 检索参数：调试台的实验入口。改这三项 = 改这把 Key 的配置 -->
+        <div v-if="policy !== null && paramDraft !== null" class="border-t border-line pt-4">
+          <div class="flex flex-wrap items-baseline justify-between gap-2">
+            <span class="text-xs font-medium text-ink">检索参数（实验用）</span>
+            <span class="text-xs text-muted">保存后点「检索」，就按新参数跑</span>
+          </div>
+          <div class="mt-2 grid gap-3 sm:grid-cols-3">
+            <div>
+              <label class="mb-1 block text-xs text-muted">检索方式</label>
+              <el-select v-model="paramDraft.mode" class="w-full">
+                <el-option v-for="mode in RETRIEVAL_MODES" :key="mode" :label="mode" :value="mode" />
+              </el-select>
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-muted">返回条数（top_k）</label>
+              <el-input-number
+                v-model="paramDraft.top_k"
+                :min="TOP_K_MIN"
+                :max="TOP_K_MAX"
+                controls-position="right"
+                class="!w-full"
+              />
+            </div>
+            <div>
+              <label class="mb-1 block text-xs text-muted">结果重排</label>
+              <el-switch v-model="paramDraft.rerank" />
+            </div>
+          </div>
+
+          <p
+            v-if="rerankBitMissing"
+            class="mt-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
+          >
+            这把 Key 的 rerank <strong>授权位</strong>是关的：参数写 true 会被拒（业务码 20015）。
+            先去 <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
+            打开那个位，再回来保存。
+          </p>
+
+          <div class="mt-2.5 flex flex-wrap items-center gap-2">
+            <el-button
+              size="small"
+              :disabled="!canSaveParams || paramsSaving"
+              :loading="paramsSaving"
+              @click="saveParams"
+            >
+              保存到这把 Key
+            </el-button>
+            <span class="text-xs leading-relaxed text-muted">
+              这是<strong class="text-ink">写配置</strong>，不是只影响这一次：保存后所有用这把 Key 的调用都按新参数跑。
+              超出套餐封顶会被裁到上限，并在运行摘要的
+              <code class="font-mono text-xs">clipped</code> 里回显。
+            </span>
+          </div>
+          <p
+            v-if="paramsError !== ''"
+            class="mt-2 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+          >
+            {{ paramsError }}
+          </p>
+        </div>
+
+        <!-- ③ 要查的知识库 -->
         <div class="border-t border-line pt-4">
           <div class="flex flex-wrap items-baseline justify-between gap-2">
             <span class="text-xs font-medium text-ink">要查的知识库</span>

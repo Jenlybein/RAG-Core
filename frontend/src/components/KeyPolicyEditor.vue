@@ -67,16 +67,14 @@ const topKMax = computed(() => {
   return cap > 0 ? Math.min(TOP_K_MAX, cap) : TOP_K_MAX
 })
 
-/** 当前三项参数恰好等于某个预设时高亮它：让用户看出「现在就是 speed 那组值」。 */
-function presetActive(preset: (typeof PARAM_PRESETS)[number]): boolean {
-  return (
-    form.value.retrieval_mode === preset.mode &&
-    form.value.retrieval_top_k === preset.top_k &&
-    form.value.retrieval_rerank === preset.rerank
-  )
-}
-
-function fillPreset(preset: (typeof PARAM_PRESETS)[number]): void {
+/**
+ * 预设是**动作**，不是**状态**：它们不出现在表单里（后端也没有这一列），只在用户
+ * 主动选一下时把三项参数填好。所以界面用「按钮 + 下拉」而不是一排常驻的选中态按钮——
+ * 常驻按钮会被读成「当前选的是 balanced 档」，而档位这个概念第 13 步已经不存在了。
+ */
+function fillPresetByName(name: string): void {
+  const preset = PARAM_PRESETS.find((item) => item.name === name)
+  if (preset === undefined) return
   form.value = applyParamPreset(form.value, preset)
 }
 
@@ -110,28 +108,25 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
     <!-- ① 检索参数：主决策。预设按钮一键填三项，每一项仍可单独改 -->
     <section>
       <h3 class="section-title mb-2">检索参数</h3>
-      <div class="mb-3 flex flex-wrap gap-2">
-        <el-tooltip
-          v-for="preset in PARAM_PRESETS"
-          :key="preset.name"
-          :content="`一键填好：${preset.hint}`"
-          placement="top"
-          :show-after="300"
-        >
-          <button
-            type="button"
-            class="rounded-control border px-3 py-1.5 text-xs font-medium transition-colors duration-150"
-            :class="
-              presetActive(preset)
-                ? 'border-accent bg-accent-soft text-ink'
-                : 'border-line bg-surface text-muted hover:border-line-strong'
-            "
-            @click="fillPreset(preset)"
-          >
-            {{ preset.name }}
-          </button>
-        </el-tooltip>
-        <span class="self-center text-xs text-muted">预设只填下面三项，之后仍可单独改。</span>
+      <div class="mb-3 flex flex-wrap items-center gap-2">
+        <el-dropdown trigger="click" @command="fillPresetByName">
+          <el-button size="small">使用预设配置</el-button>
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item
+                v-for="preset in PARAM_PRESETS"
+                :key="preset.name"
+                :command="preset.name"
+              >
+                <span class="font-medium text-ink">{{ preset.name }}</span>
+                <span class="ml-2 text-xs text-muted">{{ preset.hint }}</span>
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+        <span class="text-xs text-muted">
+          选一个会覆盖下面三项，之后仍可单独改。预设只是填空，不是档位。
+        </span>
       </div>
 
       <div class="grid gap-3 sm:grid-cols-3">
