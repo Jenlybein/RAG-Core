@@ -26,7 +26,8 @@ import dataclasses
 from typing import Any
 
 from app.core.auth import DEV_KEY_POLICY
-from app.models.key_policy import KeyPolicySnapshot
+from app.core.config import settings
+from app.models.key_policy import KeyPolicy, KeyPolicySnapshot
 
 PROFILE_SPEED: str = "speed"
 PROFILE_BALANCED: str = "balanced"
@@ -53,12 +54,22 @@ RETIRED_FIELDS: tuple[str, ...] = (
 def params_of(
     *, profile: str = PROFILE_CUSTOM, custom_options: tuple[tuple[str, object], ...] = ()
 ) -> tuple[str, int, bool]:
-    """把夹具词汇展开成 ``(mode, top_k, rerank)``；规则见模块文档。"""
+    """把夹具词汇展开成 ``(mode, top_k, rerank)``。
 
-    if profile in PARAM_PRESETS:
-        return PARAM_PRESETS[profile]
+    **显式给的参数永远赢过档位名**：第 13 步之后三项参数才是真相，档位名只是一个「打底
+    用的组合别名」。所以命名档位先按表铺一层底，``custom_options`` 里出现的键再逐键覆盖
+    ——这与生产一致（生产连档位名都没有，参数就是全部）。
 
-    mode, top_k, rerank = ("vector", 5, False)
+    ``custom``（以及表里没有的名字）的底是**部署缺省**（``RETRIEVAL_MODE`` / ``TOP_K`` /
+    不重排），而不是写死的 ``vector``：旧语义里「缺键」就是「跟部署配置走」，写成字面量会
+    让「本地 vs CI 跑的不是同一条链路」。
+    """
+
+    base = PARAM_PRESETS.get(profile)
+    if base is None:
+        mode, top_k, rerank = (settings.RETRIEVAL_MODE, settings.TOP_K, False)
+    else:
+        mode, top_k, rerank = base
     raw = dict(custom_options)
     if raw.get("mode") in ("vector", "bm25", "hybrid"):
         mode = str(raw["mode"])
@@ -130,12 +141,68 @@ def policy(
     return dataclasses.replace(DEV_KEY_POLICY, **values)
 
 
+def policy_row(
+    *,
+    policy_id: str = "policy-1",
+    tenant_id: str = "tenant_demo",
+    name: str = "默认配置",
+    profile: str = PROFILE_CUSTOM,
+    custom_options: tuple[tuple[str, object], ...] = (),
+    include_parent: bool = True,
+    expand_table_rows: bool = True,
+    retrieve_allowed: bool = True,
+    rewrite_allowed: bool = False,
+    decompose_allowed: bool = False,
+    research_allowed: bool = False,
+    rerank_allowed: bool = False,
+    retrieve_qps: int = 1,
+    retrieve_daily: int = 100,
+    rerank_qps: int = 0,
+    rerank_daily: int = 0,
+    llm_qps: int = 0,
+    llm_daily: int = 0,
+    allowed_kb_ids: tuple[str, ...] = ("kb-1",),
+    **overrides: Any,
+) -> KeyPolicy:
+    """一份密钥配置**行**（列的形状）；夹具词汇与 :func:`policy` 相同。"""
+
+    mode, top_k, rerank = params_of(profile=profile, custom_options=custom_options)
+    for retired in RETIRED_FIELDS:
+        overrides.pop(retired, None)
+    values: dict[str, Any] = {
+        "id": policy_id,
+        "tenant_id": tenant_id,
+        "name": name,
+        "allowed_kb_ids": list(allowed_kb_ids),
+        "retrieve_allowed": retrieve_allowed,
+        "rewrite_allowed": rewrite_allowed,
+        "decompose_allowed": decompose_allowed,
+        "research_allowed": research_allowed,
+        "rerank_allowed": rerank_allowed,
+        "retrieve_qps": retrieve_qps,
+        "retrieve_daily": retrieve_daily,
+        "rerank_qps": rerank_qps,
+        "rerank_daily": rerank_daily,
+        "llm_qps": llm_qps,
+        "llm_daily": llm_daily,
+        "retrieval_mode": mode,
+        "retrieval_top_k": top_k,
+        "retrieval_rerank": rerank,
+        "include_parent": include_parent,
+        "expand_table_rows": expand_table_rows,
+    }
+    values.update(overrides)
+    return KeyPolicy(**values)
+
+
 __all__ = [
     "PARAM_PRESETS",
     "PROFILE_BALANCED",
     "PROFILE_CUSTOM",
     "PROFILE_QUALITY",
     "PROFILE_SPEED",
+    "RETIRED_FIELDS",
     "params_of",
     "policy",
+    "policy_row",
 ]

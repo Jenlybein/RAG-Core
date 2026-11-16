@@ -10,6 +10,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -142,7 +143,7 @@ def _world() -> dict[type, list[Any]]:
             _kb("kb-b1", TENANT_BETA),
         ],
         KeyPolicy: [
-            KeyPolicy(
+            policy_row(
                 id="policy-alpha",
                 tenant_id=TENANT_ALPHA,
                 name="alpha-default",
@@ -153,7 +154,7 @@ def _world() -> dict[type, list[Any]]:
                 research_daily=0,
                 profile="quality",
             ),
-            KeyPolicy(
+            policy_row(
                 id="policy-beta",
                 tenant_id=TENANT_BETA,
                 name="beta-default",

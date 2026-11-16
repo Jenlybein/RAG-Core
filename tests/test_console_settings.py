@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import importlib.util
 import re
@@ -150,7 +151,7 @@ def _account(
 
 
 def _policy(policy_id: str, tenant_id: str, profile: str) -> KeyPolicy:
-    return KeyPolicy(
+    return policy_row(
         id=policy_id,
         tenant_id=tenant_id,
         name=policy_id,

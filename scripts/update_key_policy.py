@@ -17,9 +17,9 @@
   （理由写在服务模块文档里）。
 
 用法：``uv run python scripts/update_key_policy.py --policy-id <id>
-[--name <名字>] [--profile speed|balanced|quality|custom]
-[--research|--no-research] [--hybrid|--no-hybrid] [--rerank|--no-rerank]
-[--rewrite|--no-rewrite]
+[--name <名字>] [--mode vector|bm25|hybrid] [--top-k N] [--rerank|--no-rerank]
+[--retrieve|--no-retrieve] [--rewrite|--no-rewrite] [--decompose|--no-decompose]
+[--research|--no-research]
 [--include-parent|--no-include-parent]
 [--expand-table-rows|--no-expand-table-rows] [--qps N] [--daily N]
 [--kb-id kb-1 ... | --clear-kb-ids]``。
@@ -41,7 +41,6 @@ from app.core.exceptions import AppError
 from app.core.logging import setup_logging
 from app.db.session import SessionLocal
 from app.db.transaction import transaction
-from app.models.key_policy import PROFILES
 from app.services.key_policy_service import update_key_policy
 
 # scripts* 不在安装包里，把自身目录放进 sys.path 才能导入 _ops_common（见该模块文档）。
@@ -55,13 +54,16 @@ EFFECT_NOTE = (
     "re-issued."
 )
 
-#: ``(命令行选项, argparse dest, 落在哪一列)``。能力开关与形状开关共用这一份对应
+#: ``(命令行选项, argparse dest, 落在哪一列)``。五个授权位与两个形状开关共用这一份对应
 #: 关系：三处各写一遍时，拼错一处就会「改了一个不存在的键」，而服务层会报未知字段。
+#: 第 13 步删掉了 ``--hybrid`` / ``--rewrite`` 的旧语义：混合检索成了普通参数，
+#: 改写成了 ``/rag/rewrite`` 端点，两者都不再由能力开关表达。
 SWITCHES: tuple[tuple[str, str, str], ...] = (
+    ("retrieve", "retrieve", "retrieve_allowed"),
+    ("rewrite", "rewrite", "rewrite_allowed"),
+    ("decompose", "decompose", "decompose_allowed"),
     ("research", "research", "research_allowed"),
-    ("hybrid", "hybrid", "hybrid_allowed"),
     ("rerank", "rerank", "rerank_allowed"),
-    ("rewrite", "rewrite", "query_rewrite_allowed"),
     ("include-parent", "include_parent", "include_parent"),
     ("expand-table-rows", "expand_table_rows", "expand_table_rows"),
 )
@@ -86,10 +88,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--policy-id", required=True, help="key policy id (from create_tenant.py)")
     parser.add_argument("--name", default=None, help="display name of this key policy")
     parser.add_argument(
-        "--profile",
-        choices=PROFILES,
+        "--mode",
+        choices=["vector", "bm25", "hybrid"],
         default=None,
-        help="default retrieval profile; a named profile is a full replacement",
+        help="retrieval mode stored directly on the policy (no profile indirection)",
+    )
+    parser.add_argument("--top-k", type=int, default=None, help="how many hits to return")
+    parser.add_argument(
+        "--rerank",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="whether this integration wants rerank (needs the rerank authorization bit)",
     )
     for option, _dest, column in SWITCHES:
         parser.add_argument(
@@ -123,8 +132,12 @@ def _changes_of(args: argparse.Namespace) -> dict[str, Any]:
     changes: dict[str, Any] = {}
     if args.name is not None:
         changes["name"] = args.name
-    if args.profile is not None:
-        changes["profile"] = args.profile
+    if args.mode is not None:
+        changes["retrieval_mode"] = args.mode
+    if args.top_k is not None:
+        changes["retrieval_top_k"] = args.top_k
+    if args.rerank is not None:
+        changes["retrieval_rerank"] = args.rerank
     for _option, dest, column in SWITCHES:
         value = getattr(args, dest)
         if value is not None:

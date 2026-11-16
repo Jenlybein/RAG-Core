@@ -10,6 +10,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import asyncio
 
@@ -676,7 +677,7 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
         tenant_id = f"t{number}"
         tenants.append(Tenant(id=tenant_id, name=f"租户{number}", plan_id=3, status="active"))
         policies.append(
-            KeyPolicy(
+            policy_row(
                 id=f"p{number}",
                 tenant_id=tenant_id,
                 name=f"quality-{number}",
@@ -693,7 +694,7 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
         )
     tenants.append(Tenant(id="free-1", name="免费租户", plan_id=1, status="active"))
     policies.append(
-        KeyPolicy(
+        policy_row(
             id="p-free",
             tenant_id="free-1",
             name="free-speed",
@@ -756,7 +757,7 @@ async def test_a_policy_whose_plan_never_granted_the_capability_is_not_reported(
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
     world = _impact_world(mutual_tenants=1)
     world[KeyPolicy].append(
-        KeyPolicy(
+        policy_row(
             id="p-free-quality",
             tenant_id="free-1",
             name="mislabelled",

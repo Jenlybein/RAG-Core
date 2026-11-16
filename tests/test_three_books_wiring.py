@@ -5,6 +5,7 @@ rerank 账按「这次排没排」记。用 dict 假计数器，不碰 Redis。
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
 
 import asyncio
 from dataclasses import replace
@@ -41,27 +42,10 @@ class _Store:
         pass
 
 
-def _policy(**overrides: int) -> KeyPolicySnapshot:
-    base: dict[str, object] = dict(
-        allowed_kb_ids=("kb-1",),
-        research_allowed=True,
-        hybrid_allowed=True,
-        rerank_allowed=True,
-        query_rewrite_allowed=False,
-        retrieve_qps=3,
-        retrieve_daily=100,
-        research_qps=1,
-        research_daily=100,
-        profile=PROFILE_SPEED,
-        include_parent=True,
-        expand_table_rows=True,
-        rerank_qps=5,
-        rerank_daily=50,
-        llm_qps=2,
-        llm_daily=20,
-    )
-    base.update(overrides)
-    return KeyPolicySnapshot(**base)  # type: ignore[arg-type]
+def _policy(**overrides: Any) -> KeyPolicySnapshot:
+    """一份只关心授权位与额度的快照；夹具词汇由 tests.support 翻译（含已退役列名）。"""
+
+    return support_policy(**overrides)
 
 
 def _plan(**overrides: int) -> object:

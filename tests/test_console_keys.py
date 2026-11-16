@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 from dataclasses import dataclass
 from typing import Any
@@ -122,7 +123,7 @@ def _policy(
 ) -> KeyPolicy:
     """一套自洽的密钥配置：``quality`` 必须把三件事都打开，否则它自己就不成立。"""
 
-    return KeyPolicy(
+    return policy_row(
         id=policy_id,
         tenant_id=tenant_id,
         name=name,

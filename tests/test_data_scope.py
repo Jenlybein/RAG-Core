@@ -13,6 +13,9 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
+from tests.support.policy import policy as support_policy
+from tests.support.policy import PROFILE_SPEED
 
 import pytest
 
@@ -22,13 +25,12 @@ from app.models.key_policy import (
     KeyPolicySnapshot,
     policy_snapshot_of,
 )
-from tests.support.policy import PROFILE_SPEED
 
 
 def _policy(allowed: tuple[str, ...] = ("kb-a", "kb-b")) -> KeyPolicySnapshot:
     """一套「真实」密钥配置（白名单受限）。字段值抄自一处手工构造的期望，不是再算一遍。"""
 
-    return KeyPolicySnapshot(
+    return support_policy(
         allowed_kb_ids=allowed,
         research_allowed=False,
         hybrid_allowed=True,
@@ -141,7 +143,7 @@ def test_the_exception_marker_defaults_to_restricted() -> None:
 def test_a_policy_row_maps_to_a_restricted_snapshot() -> None:
     """从库里读出来的配置**永远**是受限的：只有合成出来的开发快照能豁免。"""
 
-    row = KeyPolicy(
+    row = policy_row(
         id="22222222-2222-4222-8222-222222222222",
         tenant_id="tenant_acme",
         name="console",

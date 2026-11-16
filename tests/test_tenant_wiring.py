@@ -15,6 +15,8 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
+from tests.support.policy import PROFILE_QUALITY, PROFILE_SPEED
 
 import importlib
 import inspect
@@ -37,7 +39,6 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_PLUS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import AsyncSessionAdapter, RecordingSession
-from tests.support.policy import PROFILE_QUALITY, PROFILE_SPEED
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
@@ -90,7 +91,7 @@ def _tenant_row(*, tenant_id: str = TENANT_ID, plan_code: str = PLAN_PRO) -> Ten
 
 
 def _policy_row(*, allowed_kb_ids: list[str], profile: str = PROFILE_SPEED) -> KeyPolicy:
-    return KeyPolicy(
+    return policy_row(
         id=POLICY_ID,
         tenant_id=TENANT_ID,
         name="外部应用",

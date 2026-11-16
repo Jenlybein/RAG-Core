@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import importlib
 from dataclasses import dataclass
@@ -79,7 +80,7 @@ def _key_row(key_id: str, key_value: str, *, tenant_id: str, policy_id: str) -> 
 
 
 def _policy_row(policy_id: str, *, tenant_id: str, profile: str, qps: int, daily: int) -> KeyPolicy:
-    return KeyPolicy(
+    return policy_row(
         id=policy_id,
         tenant_id=tenant_id,
         name="外部应用",

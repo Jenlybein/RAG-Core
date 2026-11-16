@@ -14,27 +14,21 @@ from app.models.key_policy import (
 )
 from app.services.retrieval_options import RetrievalParams, retrieval_params_of
 from tests.support.policy import PROFILE_BALANCED, PROFILE_QUALITY, PROFILE_SPEED
+from tests.support.policy import policy as support_policy
 
 
 def _policy(**overrides: object) -> KeyPolicySnapshot:
-    base: dict[str, object] = dict(
-        allowed_kb_ids=("kb-a",),
-        research_allowed=True,
-        hybrid_allowed=True,
-        rerank_allowed=True,
-        query_rewrite_allowed=False,
-        retrieve_qps=10,
-        retrieve_daily=1000,
-        research_qps=1,
-        research_daily=100,
-        profile=PROFILE_SPEED,
-        include_parent=True,
-        expand_table_rows=True,
-        # 三项参数直存：mode/top_k/rerank。
-        custom_options=(("mode", "hybrid"), ("top_k", 9), ("rerank", True)),
-    )
-    base.update(overrides)
-    return KeyPolicySnapshot(**base)  # type: ignore[arg-type]
+    """一份只关心三项参数与授权位的快照；夹具词汇由 tests.support 翻译。
+
+    文件默认值就是「一条 hybrid / 9 条 / 要重排」的链路——本文件测的是「参数直读」，
+    所以默认值本身必须三项都非缺省，才能与「按档位展开」区分开。
+    """
+
+    values: dict[str, object] = {
+        "custom_options": (("mode", "hybrid"), ("top_k", 9), ("rerank", True))
+    }
+    values.update(overrides)
+    return support_policy(**values)
 
 
 def test_parameters_are_read_directly_from_the_policy() -> None:

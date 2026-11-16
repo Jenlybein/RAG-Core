@@ -8,6 +8,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import importlib.util
 import re
@@ -81,7 +82,7 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
     测试里校验出的结论与真实库里的行为不一致。
     """
 
-    return KeyPolicy(
+    return policy_row(
         id=POLICY_ID,
         tenant_id=tenant_id,
         name="default",

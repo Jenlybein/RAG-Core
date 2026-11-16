@@ -21,6 +21,8 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
+from tests.support.policy import PROFILE_SPEED
 
 import asyncio
 from collections.abc import Coroutine
@@ -39,7 +41,6 @@ from app.services.quota_gate import (
     QuotaCounters,
     retrieval_quota,
 )
-from tests.support.policy import PROFILE_SPEED
 
 TENANT_ID = "tenant_acme"
 KEY_ID = "key-1"
@@ -92,7 +93,7 @@ def _counting_at(store: Any, moment: datetime) -> QuotaCounters:
 def _policy(*, qps: int = 3, daily: int = 100) -> KeyPolicySnapshot:
     """一份最小的密钥配置快照：本票只关心它的两个限额。"""
 
-    return KeyPolicySnapshot(
+    return support_policy(
         allowed_kb_ids=("kb-1",),
         research_allowed=False,
         hybrid_allowed=False,

@@ -19,12 +19,11 @@ payload.update(IDENTITY.apply(body))             # 请求助手：摘走旧字�
 
 from __future__ import annotations
 
-from dataclasses import replace
 from typing import Any
 
 from app.core.auth import DEV_KEY_POLICY, KeyContext
 from app.models.key_policy import KeyPolicySnapshot
-from tests.support.policy import PROFILE_CUSTOM
+from tests.support.policy import policy
 
 #: 票 #77 从请求体里删掉的四个字段。助手据此把「老写法」翻译成「密钥配置」。
 QUALITY_FIELDS: tuple[str, ...] = (
@@ -69,10 +68,10 @@ class RetrievalIdentity:
         include_parent: bool = True,
         expand_table_rows: bool = True,
     ) -> None:
-        """造一份配置：三项参数（mode/top_k/rerank）直存在 custom_options 里。
+        """造一份配置：三项参数直存（``retrieval_mode`` / ``retrieval_top_k`` / ``retrieval_rerank``）。
 
         第 13 步起后端不再有档位，这三项就是「用多好」的全部真相。没传 mode/top_k
-        逐键回落部署缺省；没传 rerank 就是「不要重排」。
+        就取部署缺省（``RETRIEVAL_MODE`` / ``TOP_K``）；没传 rerank 就是「不要重排」。
         """
 
         manual: dict[str, object] = {}
@@ -83,14 +82,13 @@ class RetrievalIdentity:
         if rerank is not None:
             manual["rerank"] = rerank
 
-        self._policy = replace(
-            # 以内置开发身份那份为底：它的 ``unrestricted_scope`` 打开，白名单关卡
-            # 不在本票的范围内（它是 #76 的事，另有专门的用例）。
-            DEV_KEY_POLICY,
-            profile=PROFILE_CUSTOM,
+        # 以内置开发身份那份为底：它的 ``unrestricted_scope`` 打开，白名单关卡
+        # 不在本票的范围内（它是 #76 的事，另有专门的用例）。
+        self._policy = policy(
+            custom_options=tuple(sorted(manual.items())),
             include_parent=include_parent,
             expand_table_rows=expand_table_rows,
-            custom_options=tuple(sorted(manual.items())),
+            unrestricted_scope=True,
         )
 
     def apply(self, body: dict[str, Any]) -> dict[str, Any]:

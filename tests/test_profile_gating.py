@@ -52,46 +52,10 @@ KB = "kb-a"
 # ───────────────────────────────────────────── 展开：命名档位是完整替换
 
 
-def _policy(
-    *,
-    profile: str = PROFILE_CUSTOM,
-    include_parent: bool = True,
-    expand_table_rows: bool = True,
-    custom_options: tuple[tuple[str, object], ...] = (),
-    retrieve_allowed: bool = True,
-    rewrite_allowed: bool = True,
-    decompose_allowed: bool = True,
-    rerank_allowed: bool = True,
-    research_allowed: bool = False,
-    # 限额默认取「四档都容得下」的最小值：本文件测的是授权位与参数，不是数值门禁。
-    retrieve_qps: int = 1,
-    retrieve_daily: int = 100,
-    rerank_qps: int = 0,
-    rerank_daily: int = 0,
-    llm_qps: int = 0,
-    llm_daily: int = 0,
-    allowed_kb_ids: tuple[str, ...] = ("kb-1",),
-) -> KeyPolicySnapshot:
-    """一份只关心参数与授权位的快照；夹具词汇（档位名）由 tests.support 翻译。"""
+def _policy(**kwargs: Any) -> KeyPolicySnapshot:
+    """一份只关心参数与授权位的快照；夹具词汇（档位名 / 已退役列名）由 tests.support 翻译。"""
 
-    return support_policy(
-        profile=profile,
-        include_parent=include_parent,
-        expand_table_rows=expand_table_rows,
-        custom_options=custom_options,
-        retrieve_allowed=retrieve_allowed,
-        rewrite_allowed=rewrite_allowed,
-        decompose_allowed=decompose_allowed,
-        rerank_allowed=rerank_allowed,
-        research_allowed=research_allowed,
-        retrieve_qps=retrieve_qps,
-        retrieve_daily=retrieve_daily,
-        rerank_qps=rerank_qps,
-        rerank_daily=rerank_daily,
-        llm_qps=llm_qps,
-        llm_daily=llm_daily,
-        allowed_kb_ids=allowed_kb_ids,
-    )
+    return support_policy(**kwargs)
 def _plan(code: str, **overrides: Any) -> PlanSpec:
     """三档种子之一，按需改几列（模拟管理员在控制台把某一档调低）。"""
 
@@ -112,7 +76,7 @@ def test_the_declared_parameters_win_over_the_profile_name(profile: str) -> None
         )
     )
 
-    assert chain == RetrievalParams(mode="bm25", top_k=1, rerank=False, rewrite=False)
+    assert chain == RetrievalParams(mode="bm25", top_k=1, rerank=False)
 
 
 def test_a_named_profile_still_takes_the_result_shape_group() -> None:
@@ -143,7 +107,7 @@ def test_custom_reads_its_manual_parameters() -> None:
         )
     )
 
-    assert chain == RetrievalParams(mode="bm25", top_k=3, rerank=True, rewrite=True)
+    assert chain == RetrievalParams(mode="bm25", top_k=3, rerank=True)
 
 
 def test_missing_parameters_fall_back_per_key(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -154,7 +118,7 @@ def test_missing_parameters_fall_back_per_key(monkeypatch: pytest.MonkeyPatch) -
 
     chain = retrieval_params_of(_policy(custom_options=(("mode", "vector"),)))
 
-    assert chain == RetrievalParams(mode="vector", top_k=7, rerank=False, rewrite=False)
+    assert chain == RetrievalParams(mode="vector", top_k=7, rerank=False)
 
 
 # ───────────────────────────────────── 门禁：一律裁剪回显，没有档位白名单
@@ -170,27 +134,6 @@ def test_the_profile_name_never_gates_a_call() -> None:
             kb_count=1,
         )
         assert options.mode == "vector", profile
-
-
-def test_a_dropped_capability_is_clipped_and_reported_not_rejected() -> None:
-    """套餐事后撤了重排 → 裁剪 + 回显，不再「拒绝整单」。
-
-    名字不再是产品契约，没有「静默把高质量改成没重排」的问题——超上限就如实裁掉并
-    在 ``clipped`` 里说出来，调用方一眼能看到。
-    """
-
-    plan = _plan(PLAN_PRO, rerank_allowed=False)
-    options = resolve_retrieval_options(
-        policy=_policy(
-            custom_options=(("mode", "hybrid"), ("rerank", True)), rerank_allowed=True
-        ),
-        plan=plan,
-        kb_count=1,
-    )
-
-    assert options.rerank is False
-    assert options.tenant_policy is not None
-    assert "rerank" in options.tenant_policy.clipped
 
 
 def test_only_top_k_is_clipped_and_the_clip_list_says_so() -> None:
@@ -213,7 +156,7 @@ def test_only_top_k_is_clipped_and_the_clip_list_says_so() -> None:
 
     assert options.top_k == MAX_TOP_K, "条数夹到平台硬上限"
     assert options.mode == "hybrid", "模式不再被套餐裁剪"
-    assert options.rerank is True, "重排是授权位的事，不是裁剪的事"
+    assert "rerank" not in options.tenant_policy.clipped, "重排是授权位的事，不是裁剪的事"
     assert options.tenant_policy is not None
     assert options.tenant_policy.clipped == ("top_k",), "clipped 只剩一种来源"
 
@@ -313,11 +256,9 @@ def test_an_installed_capability_lets_the_profile_run_it() -> None:
         plan=_plan(PLAN_PRO),
         kb_count=1,
         rerank_capable=True,
-        rewrite_capable=True,
     )
 
     assert options.rerank is False
-    assert options.rewrite is False
 
 
 def test_with_the_switches_off_a_quality_profile_runs_exactly_the_balanced_chain(
@@ -326,7 +267,7 @@ def test_with_the_switches_off_a_quality_profile_runs_exactly_the_balanced_chain
     """部署开关关着时，``quality`` 与 ``balanced`` 的链路参数**逐项相同**。
 
     这就是「开关关着时行为逐字节不变」的可断言形态：多买的一档在这台机器上带不来
-    任何额外动作，回显里也如实写着 rerank / rewrite 为 false。
+    任何额外动作，回显里也如实写着 rerank 为 false（改写已是端点，不再是参数）。
     """
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
@@ -339,7 +280,7 @@ def test_with_the_switches_off_a_quality_profile_runs_exactly_the_balanced_chain
         policy=_policy(profile=PROFILE_BALANCED), plan=_plan(PLAN_PRO), kb_count=1
     )
 
-    chain = ("mode", "top_k", "rerank", "rewrite", "fold_to_sections", "expand_table_rows")
+    chain = ("mode", "top_k", "rerank", "fold_to_sections", "expand_table_rows")
     assert tuple(getattr(quality, name) for name in chain) == tuple(
         getattr(balanced, name) for name in chain
     )
@@ -391,7 +332,7 @@ def test_the_echo_carries_the_clipped_fields() -> None:
     echo = tenant_policy_echo(options, kb_count=1)
 
     assert echo is not None
-    assert echo["clipped"] == ["top_k", "rerank"]
+    assert echo["clipped"] == ["top_k"]
     assert echo["plan"] == PLAN_PLUS
     assert "requested_profile" not in echo
 
@@ -408,7 +349,6 @@ def test_an_unresolved_options_object_has_no_echo() -> None:
         fold_to_sections=True,
         expand_table_rows=True,
         rerank=False,
-        rewrite=False,
     )
 
     assert options.tenant_policy is None
@@ -436,12 +376,15 @@ def test_resolved_options_never_drift_from_their_echo() -> None:
 def test_an_old_profile_name_on_a_free_plan_is_ignored_at_creation() -> None:
     """第 13 步：档位名已废弃，不再做白名单校验（开关不超套餐即可）。"""
 
+    # 档位名不再参与判定；只要五个授权位与额度不超套餐就通过。注意 ``retrieval_rerank``
+    # 跟着 ``quality`` 的组合别名是 true，所以重排位也得关掉才自洽。
     ensure_policy_consistent(
         policy=_policy(
             profile=PROFILE_QUALITY,
-            hybrid_allowed=False,
+            retrieval_rerank=False,
+            rewrite_allowed=False,
+            decompose_allowed=False,
             rerank_allowed=False,
-            query_rewrite_allowed=False,
             research_allowed=False,
         ),
         plan=_plan(PLAN_FREE),
@@ -453,7 +396,12 @@ def test_policy_switches_below_the_plan_are_still_rejected() -> None:
 
     with pytest.raises(AppError) as excinfo:
         ensure_policy_consistent(
-            policy=_policy(hybrid_allowed=False, rerank_allowed=True, research_allowed=True),
+            policy=_policy(
+                rewrite_allowed=False,
+                decompose_allowed=False,
+                research_allowed=False,
+                rerank_allowed=True,
+            ),
             plan=_plan(PLAN_FREE, rerank_allowed=False, research_allowed=False),
         )
     assert excinfo.value.code is ErrorCode.PARAM_ERROR
@@ -465,8 +413,13 @@ def test_a_policy_switch_beyond_the_plan_is_rejected() -> None:
 
     with pytest.raises(AppError) as excinfo:
         ensure_policy_consistent(
-            policy=_policy(profile=PROFILE_SPEED, rerank_allowed=True),
-            plan=_plan(PLAN_PLUS),
+            policy=_policy(
+                rewrite_allowed=False,
+                decompose_allowed=False,
+                research_allowed=False,
+                rerank_allowed=True,
+            ),
+            plan=_plan(PLAN_FREE),
         )
 
     assert excinfo.value.code is ErrorCode.PARAM_ERROR
@@ -585,31 +538,27 @@ def test_an_unknown_profile_name_is_ignored_at_creation() -> None:
 # ───────────────────────────────────────────── 开发身份跟着部署缺省走
 
 
-def test_the_development_identity_is_custom_so_it_tracks_the_deployment(
+def test_the_development_identity_is_a_snapshot_of_the_deployment(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """内置开发身份 = ``custom`` + 全部缺键 → 每一项都跟着 ``.env`` 走。
+    """内置开发身份把部署缺省**快照**在启动时，三项参数就是它，不再二次回落到 settings。
 
-    钉在一个命名档位上是错的：#78 之后 ``speed`` 意味着「只走向量一路」，本地的默认
-    模式会从 ``RETRIEVAL_MODE`` 悄悄变成 ``vector``；预设值将来再改一次，本地又漂一次。
+    第 13 步之前开发身份用 ``custom`` + 空 ``custom_options`` 表达「跟 .env 走」，那是
+    因为参数存的是「缺键」。现在参数是**存下来的值**，所以这层回落不存在了：改 ``.env``
+    要重启，与真实密钥配置同一条规律——这比「本地悄悄和 CI 跑不同的链路」更可预测。
     """
 
+    # 快照在 import 时就定型了，之后再改 settings 不会影响它。
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
     monkeypatch.setattr(settings, "TOP_K", 9)
-    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
-    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
-    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
-    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
-
-    assert DEV_KEY_POLICY.profile == PROFILE_CUSTOM
-    assert DEV_KEY_POLICY.custom_options == ()
 
     options = resolve_retrieval_options(policy=DEV_KEY_POLICY, plan=DEV_KEY_PLAN, kb_count=1)
 
-    assert (options.mode, options.top_k) == ("bm25", 9)
-    # 第 13 步：rerank 缺键 = 不要，不再跟部署开关走。
-    assert (options.rerank, options.rewrite) == (False, False)
+    assert options.mode == DEV_KEY_POLICY.retrieval_mode
+    assert options.top_k == DEV_KEY_POLICY.retrieval_top_k
+    assert options.mode != "bm25" or settings.RETRIEVAL_MODE == "bm25"
+    # 开发身份不声明重排（要重排就在快照里写 true），所以这次不重排。
+    assert options.rerank is False
 
 
 # ───────────────────────────────────────────── ASGI 边界：真实响应里的码与回显
@@ -714,20 +663,33 @@ def test_an_old_profile_name_does_not_block_a_call(entry: _Entry) -> None:
     assert body["code"] == ErrorCode.SUCCESS, "档位名不再决定能否调用"
 
 
-def test_a_plan_downgrade_clips_the_next_call(entry: _Entry) -> None:
-    """管理员事后把套餐调低 → 下一次调用按新套餐裁剪参数，不必等缓存过期。"""
+def test_a_plan_downgrade_takes_effect_on_the_next_call(entry: _Entry) -> None:
+    """管理员事后把套餐调低 → 下一次调用按新套餐生效，不必等缓存过期。
+
+    第 13 步起「被收回的东西」有两种，各按自己的规矩处理：
+
+    * ``max_top_k`` 变小 → **裁剪 + 回显**（``clipped`` 里出现 ``top_k``）；
+    * 授权位被收回 → 重排的生效值折成 false（位 ∧ 位 的合取），而这份配置本身已经
+      **不自洽**了：下一次改配置会被 ``20015`` 拒，管理员必须先调配置再降套餐。
+    """
 
     policy = _policy(
-        custom_options=(("mode", "hybrid"), ("rerank", True)), rerank_allowed=True
+        custom_options=(("mode", "hybrid"), ("rerank", True), ("top_k", 40)),
+        rerank_allowed=True,
     )
     entry.use(policy=policy, plan=_plan(PLAN_PRO))
     assert entry.post()["data"]["metadata"]["retrieval"]["rerank"] is not None
 
-    entry.use(policy=policy, plan=_plan(PLAN_FREE, rerank_allowed=False))
+    downgraded = _plan(PLAN_FREE, rerank_allowed=False)
+    entry.use(policy=policy, plan=downgraded)
     body = entry.post()
 
-    assert body["code"] == ErrorCode.SUCCESS
-    assert "rerank" in body["data"]["metadata"]["tenant_policy"]["clipped"]
+    assert body["code"] == ErrorCode.SUCCESS, "降级不该让进行中的集成当场失败"
+    metadata = body["data"]["metadata"]
+    assert metadata["tenant_policy"]["rerank"] is False, "位被收回 → 这次不重排"
+    assert "top_k" in metadata["tenant_policy"]["clipped"], "条数按新的封顶裁剪"
+    with pytest.raises(AppError):
+        ensure_policy_consistent(policy=policy, plan=downgraded)
 
 
 def test_the_response_carries_the_tenant_policy_it_actually_ran(entry: _Entry) -> None:
@@ -767,7 +729,7 @@ def test_a_clipped_custom_call_still_succeeds_and_says_what_was_cut(entry: _Entr
 
     assert body["code"] == ErrorCode.SUCCESS
     echo = body["data"]["metadata"]["tenant_policy"]
-    assert echo["clipped"] == ["top_k", "rerank"]
+    assert echo["clipped"] == ["top_k"]
     assert echo["top_k"] == MAX_TOP_K
     assert echo["rerank"] is False
     assert body["data"]["metadata"]["top_k"] == MAX_TOP_K, "回显与生效值同一个来源"

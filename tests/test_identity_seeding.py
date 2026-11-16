@@ -7,6 +7,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import re
 
@@ -65,7 +66,7 @@ def _tenant_row(tenant_id: str, *, plan_id: int) -> Tenant:
 
 
 def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
-    return KeyPolicy(
+    return policy_row(
         id=POLICY_ID,
         tenant_id=tenant_id,
         name="default",
