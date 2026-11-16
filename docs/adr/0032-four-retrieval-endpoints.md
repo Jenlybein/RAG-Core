@@ -28,7 +28,9 @@
 
 ### 3. 后端取消档位
 
-`profile_chain_of` 直读配置里三项参数 `mode/top_k/rerank`（存于 `custom_options`，T8 起为等价载体），缺键逐键回落部署缺省；`rerank` 缺键 = 不要。`profile` 字段可能还在旧缓存里，但**不参与任何判定**——改档位名不改变一次调用的参数。所有超限一视同仁：裁剪 + 回显，没有「命名档位越权就拒绝」这一档。档位名退化成前端预设按钮与文档评测里的参数组合别名。
+`profile_chain_of` 直读配置里三项参数 `mode/top_k/rerank`——物理上已落为 `key_policies` 的三列（迁移 `b4f6c1d90e27` 从 `custom_options` 搬迁而来），缺键逐键回落部署缺省；`rerank` 缺键 = 不要。`profile_presets` 表、`profile` / `allowed_profiles` / `custom_options` 列与全部档位模块已物理删除；旧缓存里的 `profile` 名不参与任何判定。所有超限一视同仁：裁剪 + 回显，没有「命名档位越权就拒绝」这一档。档位名退化成前端预设按钮与文档评测里的参数组合别名。
+
+四档套餐（`free / plus / pro / max`，`standard` 改名 `plus`、新增 `max`，各带 `max_top_k` 5/10/15/20）由迁移 `d7e3b8a1f642` 播种，仍是**可编辑的授权数据**。
 
 ### 4. 分解检索的合并口径
 
