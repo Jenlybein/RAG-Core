@@ -111,6 +111,9 @@ LEVEL_TENANT: Final[str] = "tenant"
 #: 把当天所有人的用量清零；Research 那本多一段 ``research``，于是两本账互不相干。
 KEY_NAMESPACE: Final[str] = "quota"
 RESEARCH_NAMESPACE: Final[str] = "quota:research"
+#: 第 13 步三本账：重排与大模型各一本，键前缀与检索 / Research 都不相干。
+RERANK_NAMESPACE: Final[str] = "quota:rerank"
+LLM_NAMESPACE: Final[str] = "quota:llm"
 
 #: 键形状。``quota:`` 前缀与套餐缓存（``plan:``）、Celery 的 0/1 号库都分开——
 #: 同一个 Redis 实例上，前缀是唯一能让人分清「哪些键可以清」的东西。
@@ -324,6 +327,32 @@ class QuotaLimits:
             label="research ",
         )
 
+    @classmethod
+    def for_rerank(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
+        """第 13 步三本账之一：重排调用次数，读 ``rerank_*`` 四列。"""
+
+        return cls(
+            key_qps=policy.rerank_qps,
+            tenant_qps=plan.rerank_qps,
+            key_daily=policy.rerank_daily,
+            tenant_daily=plan.rerank_daily,
+            namespace=RERANK_NAMESPACE,
+            label="rerank ",
+        )
+
+    @classmethod
+    def for_llm(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
+        """第 13 步三本账之一：大模型调用次数，读 ``llm_*`` 四列。"""
+
+        return cls(
+            key_qps=policy.llm_qps,
+            tenant_qps=plan.llm_qps,
+            key_daily=policy.llm_daily,
+            tenant_daily=plan.llm_daily,
+            namespace=LLM_NAMESPACE,
+            label="llm ",
+        )
+
 
 @dataclass(frozen=True)
 class QuotaLedger:
@@ -387,19 +416,30 @@ class QuotaLedger:
         )
 
     async def record_success(self) -> None:
-        """业务成功之后才调它：两级各记一次，**一次请求只记一次**。
+        """业务成功之后才调它：两级各记一次（n=1）。
 
         「一次跨多库检索 / 一次跨多条子查询的 Research 只计一次」不是这里的判断——本对象
         根本不知道这次查了几个库、跑了几条子查询。正因为不知道，它才不可能按库 / 按子查询
         记账（票 #150 的 AC「一次 Research 只记一次」在结构上就成立）。
         """
 
-        if not self.enabled or self.counters is None:
+        await self.record_n(1)
+
+    async def record_n(self, n: int) -> None:
+        """按**实际发生的次数**记账（第 13 步）：llm/rerank 一本账里一次调用可能跑 N 次。
+
+        ``n <= 0`` 是 no-op：没发生就不记。记的位置仍是「业务成功之后」——被拒与
+        失败的请求不扣额度这条纪律不因为支持多次而松动。调用方给几就记几，本对象
+        不替它判断「这次到底跑了几步」。
+        """
+
+        if n <= 0 or not self.enabled or self.counters is None:
             return
 
-        for level, ident in ((LEVEL_KEY, self.key_id), (LEVEL_TENANT, self.tenant_id)):
-            await self.counters.add_qps(level=level, ident=ident, window=self.window)
-            await self.counters.add_daily(level=level, ident=ident, window=self.window)
+        for _ in range(n):
+            for level, ident in ((LEVEL_KEY, self.key_id), (LEVEL_TENANT, self.tenant_id)):
+                await self.counters.add_qps(level=level, ident=ident, window=self.window)
+                await self.counters.add_daily(level=level, ident=ident, window=self.window)
 
     async def _read_qps(self, level: str, ident: str) -> int:
         assert self.counters is not None  # 只有 enabled 时才会走到这里
@@ -505,6 +545,46 @@ def retrieval_quota(
 
     return _open_ledger(
         limits=QuotaLimits.for_retrieval(policy=policy, plan=plan),
+        tenant_id=tenant_id,
+        key_id=key_id,
+        counters=counters,
+        enabled=enabled,
+    )
+
+
+def rerank_quota(
+    *,
+    policy: KeyPolicySnapshot,
+    plan: PlanSpec,
+    tenant_id: str,
+    key_id: str,
+    counters: QuotaCounters | None = None,
+    enabled: bool | None = None,
+) -> QuotaLedger:
+    """第 13 步三本账之一：重排调用次数（读 ``rerank_*`` 四列，独立键前缀）。"""
+
+    return _open_ledger(
+        limits=QuotaLimits.for_rerank(policy=policy, plan=plan),
+        tenant_id=tenant_id,
+        key_id=key_id,
+        counters=counters,
+        enabled=enabled,
+    )
+
+
+def llm_quota(
+    *,
+    policy: KeyPolicySnapshot,
+    plan: PlanSpec,
+    tenant_id: str,
+    key_id: str,
+    counters: QuotaCounters | None = None,
+    enabled: bool | None = None,
+) -> QuotaLedger:
+    """第 13 步三本账之一：大模型调用次数（读 ``llm_*`` 四列，独立键前缀）。"""
+
+    return _open_ledger(
+        limits=QuotaLimits.for_llm(policy=policy, plan=plan),
         tenant_id=tenant_id,
         key_id=key_id,
         counters=counters,
