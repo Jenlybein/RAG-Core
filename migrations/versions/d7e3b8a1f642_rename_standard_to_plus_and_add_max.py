@@ -141,11 +141,15 @@ def upgrade() -> None:
         op.execute(f"UPDATE plans SET {_assignments(_TIER_VALUES[code])} WHERE code='{code}'")
 
     # 3. 插入 max（幂等：WHERE NOT EXISTS）。
+    #
+    # ``updated_at`` 必须显式给 ``now()``：它是 ``NOT NULL`` 且**没有 server_default**
+    # （默认值在 ORM 的 Python 侧，``app/models/plan.py``）。裸 INSERT 绕过 ORM，漏了它
+    # 就是 NotNullViolation——而单测只断言 SQL 字符串形状，看不见这件事，只有真库能看见。
     values = {"code": "max", **_TIER_VALUES["max"]}
     columns = ", ".join(values)
     literals = ", ".join(_sql_literal(value) for value in values.values())
     op.execute(
-        f"INSERT INTO plans ({columns}) SELECT {literals} "
+        f"INSERT INTO plans ({columns}, updated_at) SELECT {literals}, now() "
         "WHERE NOT EXISTS (SELECT 1 FROM plans WHERE code='max')"
     )
 

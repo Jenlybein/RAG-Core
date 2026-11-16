@@ -61,6 +61,35 @@ def test_upgrade_renames_standard_sets_max_top_k_and_inserts_max() -> None:
     assert dict(zip(columns, literals))["max_top_k"] == "20"
 
 
+def test_the_insert_covers_every_column_that_has_no_default() -> None:
+    """`max` 那行 INSERT 必须覆盖**所有 NOT NULL 且无默认值**的列。
+
+    裸 SQL 绕过 ORM，而 ORM 的 ``default=`` 是**Python 侧**的——数据库里并没有默认值。
+    漏一列就是 `NotNullViolation`，而「只断言 SQL 字符串形状」的用例看不见它：真库一跑
+    就炸（本步实测踩到，漏的是 ``updated_at``）。这条用例把「哪些列必须给」从当前模型
+    推出来，而不是抄一份列名清单。
+    """
+
+    from app.models.plan import Plan
+
+    required = {
+        column.name
+        for column in Plan.__table__.columns
+        if not column.nullable
+        and column.server_default is None
+        and not column.primary_key  # id 由序列给值
+    }
+
+    module = _load()
+    rec = _Recorder()
+    module.op = rec
+    module.upgrade()
+
+    insert = next(sql for sql in rec.executed if sql.startswith("INSERT INTO plans"))
+    columns = {name.strip() for name in insert[insert.index("(") + 1 : insert.index(")")].split(",")}
+    assert required <= columns, f"INSERT 漏了这些必填列：{sorted(required - columns)}"
+
+
 def test_downgrade_reverts_everything() -> None:
     module = _load()
     rec = _Recorder()
