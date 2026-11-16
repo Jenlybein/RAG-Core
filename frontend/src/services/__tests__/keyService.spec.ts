@@ -30,31 +30,43 @@ const KEY_ROW: KeyData = {
     policy_id: 'policy_1',
     name: '集成 A',
     allowed_kb_ids: ['kb_1'],
+    retrieve_allowed: true,
+    rewrite_allowed: false,
+    decompose_allowed: false,
     research_allowed: false,
-    hybrid_allowed: true,
     rerank_allowed: false,
-    query_rewrite_allowed: false,
     retrieve_qps: 10,
     retrieve_daily: 1000,
-    profile: 'balanced',
+    rerank_qps: 0,
+    rerank_daily: 0,
+    llm_qps: 0,
+    llm_daily: 0,
+    retrieval_mode: 'hybrid',
+    retrieval_top_k: 5,
+    retrieval_rerank: false,
     include_parent: true,
     expand_table_rows: true,
-    custom_options: {},
   },
 }
 
 const POLICY_INPUT: KeyPolicyInput = {
   allowed_kb_ids: ['kb_1'],
+  retrieve_allowed: true,
+  rewrite_allowed: false,
+  decompose_allowed: false,
   research_allowed: false,
-  hybrid_allowed: true,
   rerank_allowed: false,
-  query_rewrite_allowed: false,
   retrieve_qps: 10,
   retrieve_daily: 1000,
-  profile: 'balanced',
+  rerank_qps: 0,
+  rerank_daily: 0,
+  llm_qps: 0,
+  llm_daily: 0,
+  retrieval_mode: 'hybrid',
+  retrieval_top_k: 5,
+  retrieval_rerank: false,
   include_parent: true,
   expand_table_rows: true,
-  custom_options: {},
 }
 
 describe('fetchKeys', () => {
@@ -110,15 +122,15 @@ describe('patchPolicy', () => {
     expect(mocks.patch).toHaveBeenCalledTimes(1)
     const [url, body] = mocks.patch.mock.calls[0]
     expect(url).toBe('/console/key-policies/policy_1')
-    // custom_options 是**部分合并**：只发这次改的键，不能整份替换。
+    // 部分更新：只发这次改的键，不能整份替换。
     expect(body).toEqual({ retrieve_qps: 5 })
   })
 
-  it('custom_options 的补丁按键原样透传（合并语义交给后端）', async () => {
+  it('直参数的补丁按字段原样透传（三项各自独立可改）', async () => {
     mocks.patch.mockResolvedValue({ policy_id: 'policy_1', before: {}, after: {}, changed: [] })
 
-    await patchPolicy('policy_1', { custom_options: { top_k: 8 } })
+    await patchPolicy('policy_1', { retrieval_top_k: 8 })
 
-    expect(mocks.patch.mock.calls[0][1]).toEqual({ custom_options: { top_k: 8 } })
+    expect(mocks.patch.mock.calls[0][1]).toEqual({ retrieval_top_k: 8 })
   })
 })

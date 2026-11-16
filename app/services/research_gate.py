@@ -27,14 +27,15 @@ HTTP 入口（本票）与 MCP 工具 ``rag_research``（#151）写的是**同�
 用完了）回答的是三个不同的问题，对应三种不同的处置：换套餐、退避重试、提额。合并任意两个
 都会让调用方写不出重试策略。
 
-「配额为 0」与「能力开关为假」**共用** ``20013``：0 是配置细节，答成 ``20014`` 就等于告诉
-调用方「这个租户买了 Research，只是额度填了 0」。
+「配额为 0」这个说法在第 13 步已经不存在了：Research 没有自己的额度列，只剩 ``research``
+授权位（位为假 → ``20013``）。成本由 ``llm`` 那本账计，额度用尽是 ``20014``——两个码、
+两件事，调用方据此能分清「该升级套餐」与「该等明天」。
 
-## 配额是独立的一本账
+## 成本记在 llm 那本账上
 
-两列 ``research_qps`` / ``research_daily`` 与检索那两列同构（两级同记），但键前缀是
-``quota:research``（``app.services.quota_gate`` 的 ``RESEARCH_NAMESPACE``）：一次 Research
-约 30 秒、3–4 次模型调用，它不该吃掉同一租户的检索额度。
+一次 Research 约 30 秒、3–4 次大模型调用，它的成本就是那几次调用，所以记在 ``llm`` 账
+（``app.services.quota_gate`` 的 ``LLM_NAMESPACE``），不再单开 ``quota:research``
+（票 #150 的那本已随第 13 步退役）。
 
 ## 进门只查、成功后记一次，且只记一次
 
@@ -87,6 +88,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.models.index_version import resolve_index_versions
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
+from app.observability.stage_timing import StageTimer
 from app.providers.embedding import get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
@@ -95,7 +97,8 @@ from app.services import result_collapse
 from app.services.data_scope import ensure_kb_scope
 from app.services.knowledge_base_access import ensure_visible
 from app.services.profile_policy import resolve_retrieval_options
-from app.services.quota_gate import research_quota
+from app.services.quota_gate import llm_quota, rerank_quota
+from app.services.rerank_gate import degrade_rerank_if_exhausted
 from app.services.research import Clock, LLMFactory, SearchCallable, run_research
 from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
@@ -115,35 +118,18 @@ def ensure_research_allowed(*, policy: KeyPolicySnapshot, plan: PlanSpec) -> Non
     两层都要，是因为它们回答的是两个不同的问题（ADR-0018）：套餐说「这个租户买没买」，
     密钥配置说「这套集成要不要」。任何一层没开就拒绝——不是「悄悄退回普通检索」。
 
-    **配额为 0 与能力为假走同一个判据、同一个码**（票 #150 的 AC）：``research_qps`` /
-    ``research_daily`` 上的 0 表示「这项能力实际上不存在」。若它答成 ``20014``（额度用尽），
-    调用方就能从错误码反推出「这个租户其实买了 Research，只是额度填了 0」——那正是票面
-    不许泄露的配置细节。0 是**配置事实**，与 ``RATE_LIMIT_ENABLED`` 无关，所以这一步不看
-    限流开关。
+    第 13 步起 Research **没有自己的额度账**（ADR-0032）：它的成本就是那几次大模型调用，
+    由 ``llm`` 那本账计。所以这里只判两个位；「额度用尽」由 ``llm`` 账答 ``20014``，
+    与位的真假是两个码、两件事。
     """
 
-    if policy.research_allowed and plan.research_allowed and _has_research_quota(policy, plan):
+    if policy.research_allowed and plan.research_allowed:
         return
     raise AppError(
         ErrorCode.FEATURE_NOT_ALLOWED,
         f"research is not allowed (plan {plan.code!r}, key policy "
         f"research_allowed={policy.research_allowed})",
     )
-
-
-def _has_research_quota(policy: KeyPolicySnapshot, plan: PlanSpec) -> bool:
-    """四个配额格子全是正数吗？任何一个为 0 都等于「没有这项能力」。
-
-    四个而不是两个：配置的额度不得高于套餐（自洽校验守着），但历史行、手改的库都可能
-    不一致；只要有一格是 0，这次调用就不可能跑起来，于是它该在能力位那一步被拒。
-    """
-
-    return min(
-        policy.research_qps,
-        policy.research_daily,
-        plan.research_qps,
-        plan.research_daily,
-    ) > 0
 
 
 def build_kernel_search(
@@ -153,6 +139,8 @@ def build_kernel_search(
     index_versions: Mapping[str, str],
     options: RetrievalOptions,
     on_degraded: Callable[[str], None] | None = None,
+    on_rerank: Callable[[], None] | None = None,
+    stage_timer: StageTimer | None = None,
 ) -> SearchCallable:
     """把「一次子查询」装配成「一次内核调用」（ADR-0028 §4 的注入缝在生产侧的实现）。
 
@@ -168,6 +156,14 @@ def build_kernel_search(
     降级原因不能丢（「关键词一路挂了、只是碰巧向量一路也命中了」的那次调用看起来完全正常），
     但它又不许变成「每条子查询各写一行归属索引」或者「各发一份观测」——所以它被交回给
     调用方攒成一个列表，最后进响应的 ``metadata`` 与那唯一一行归属索引。
+
+    ``on_rerank`` 是**重排实际发生的观察点**（第 13 步）：子检索每真跑一次重排调它一次，
+    外层据此按实际发生记 rerank 账。与 ``on_degraded`` 同一条纪律：内核只交回事实，
+    记账仍在门禁那唯一一处。
+
+    ``stage_timer`` 是**共用的收集器**（第 13 步）：分解检索要把 N 次内核的耗时记进
+    **同一份** trace，段名与 ``/rag/retrieve`` 同源（``StageTimer`` 允许同名段依次追加）。
+    子检索仍然不各发一份观测（ADR-0028），只是各自往同一个收集器里记一笔。
     """
 
     recall_top_k = (
@@ -193,9 +189,12 @@ def build_kernel_search(
             recall_top_k=recall_top_k,
             recall_depth=recall_depth,
             rerank_enabled=options.rerank,
+            rerank_quota_exhausted=options.rerank_skipped_reason is not None,
             rerank_candidates=rerank_candidates,
             fold_to_sections=options.fold_to_sections,
             expand_table_rows=options.expand_table_rows,
+            # 同一个收集器：N 次内核的段依次追加进这一份 trace。
+            stage_timer=stage_timer,
             # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有 monkeypatch 接缝）。
             embedding_factory=get_embedding_provider,
             vector_factory=get_vector_store,
@@ -205,6 +204,10 @@ def build_kernel_search(
         # （重排、耗时）由外层的观测负责（ADR-0028：子检索不单独发观测）。
         if outcome.degraded_reason and on_degraded is not None:
             on_degraded(outcome.degraded_reason)
+        # 重排**真的发生了**才报一次：外层据此按实际发生记 rerank 账（ADR-0032）。
+        # 内核不碰账本，它只交回事实——记账仍是外层那唯一一处。
+        if on_rerank is not None and (outcome.rerank or {}).get("applied"):
+            on_rerank()
         # 只要交付单元。
         return outcome.chunks
 
@@ -219,15 +222,14 @@ async def gated_research(
     query: str,
     search: SearchCallable | None = None,
     llm_factory: LLMFactory | None = None,
-    strong_llm_factory: LLMFactory | None = None,
     clock: Clock | None = None,
 ) -> ResearchData:
     """按门禁顺序跑完整次 Research，返回**已经校验成形**的响应数据。
 
-    ``search`` / ``llm_factory`` / ``strong_llm_factory`` / ``clock`` 是四个注入缝（父 spec
-    #138：「新服务 Research 吃注入的检索内核 + 模型工厂」）。生产路径一个都不传——缺省走
-    真实内核、两个真实模型角色与 ``time.monotonic``；用例换掉它们就能在不发网络的前提
-    下验完门禁、降级与上限。
+    ``search`` / ``llm_factory`` / ``clock`` 是三个注入缝（父 spec #138）。生产路径一个
+    都不传——缺省走真实内核、唯一的 ``default`` 模型角色与 ``time.monotonic``；用例换掉
+    它们就能在不发网络的前提下验完门禁与上限。第 13 步起模型调用失败整单 50003，
+    不再有强模型工厂与兜底注入缝。
 
     参数非法、越权、无授权、超限都在这里抛出 ``AppError``（ADR-0007：业务失败，HTTP 200 +
     非零 ``code``）。**子检索自身的故障原样上抛**：它意味着这套集成的检索不可用，而
@@ -245,7 +247,7 @@ async def gated_research(
     ensure_research_allowed(policy=key.policy, plan=key.plan)
 
     # 第 3 步：这套集成的检索参数（模式 / 条数 / 重排 / 折叠 / 库数上限）。Research 没有
-    # 自己的质量参数：子检索用这套集成本来会用的一组参数，档位门禁也在这里一并复核。
+    # 自己的质量参数：子检索用这套集成本来会用的一组参数，套餐复核也在这里一并做。
     options = resolve_retrieval_options(
         policy=key.policy,
         plan=key.plan,
@@ -253,10 +255,12 @@ async def gated_research(
     )
 
     # 第 4 步：秒级限流 → 第 5 步：日配额（``20005`` / ``20014``）。**进门只查**，记账在
-    # 最后一步——ADR-0018「被拒绝的请求不扣额度」。这两列是**独立**的一本账（键前缀
-    # ``quota:research``）：一次 Research 比普通检索贵一个量级，它不该吃掉检索的额度。
-    # 开关关着时这本账是 no-op，默认套件因此不需要 Redis。
-    quota = research_quota(
+    # 最后一步——ADR-0018「被拒绝的请求不扣额度」。
+    #
+    # 第 13 步：Research 不再有独立的一本账（ADR-0032）。它的成本就是那几次大模型调用，
+    # 记在 ``llm`` 那本上——另开一本等于把同一份成本记两遍，而「一次 Research 记一次」
+    # 这条纪律仍然成立：唯一的记账点在状态机之后。
+    quota = llm_quota(
         policy=key.policy,
         plan=key.plan,
         tenant_id=key.tenant_id,
@@ -264,8 +268,9 @@ async def gated_research(
     )
     await quota.ensure_available()
 
-    # 第 6 步：范围解析（``kb_id → 生效版本`` 的映射，一次调用一次）。没有生效版本的库
-    # 在这里就被拦下，而不是让 N 条子查询各拼一条恒不匹配的条件。
+    # 第 5.5 步：重排额度用尽 → 子检索跳过重排 + 记原因，整单照跑（ADR-0032）。
+    # 「一次可选优化没额度」不该让一次 30 秒的 Research 白等之后失败。
+    options = await degrade_rerank_if_exhausted(options, key)
     visible_kbs = [
         await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id) for kb_id in kb_ids
     ]
@@ -279,6 +284,12 @@ async def gated_research(
     # 第 8 步：状态机。检索内核按「一次子查询一次」注入，两个模型角色同理；子检索的降级
     # 原因经由同一个列表回到这里（它既要进响应，也要进那唯一一行归属索引）。
     sub_search_degraded: list[str] = []
+    rerank_count = 0
+
+    def _count_rerank() -> None:
+        nonlocal rerank_count
+        rerank_count += 1
+
     outcome = await run_research(
         query=query,
         tenant_id=key.tenant_id,
@@ -289,9 +300,9 @@ async def gated_research(
             index_versions=index_versions,
             options=options,
             on_degraded=sub_search_degraded.append,
+            on_rerank=_count_rerank,
         ),
         llm_factory=llm_factory,
-        strong_llm_factory=strong_llm_factory,
         sub_search_degraded=sub_search_degraded,
         clock=clock,
     )
@@ -326,23 +337,37 @@ async def gated_research(
             trace_id=trace_id,
         )
     )
-    # 第 11 步：成功之后才 +1，两级各一次（票 #150「一次 Research 只记一次」）。这是整次调用
-    # **唯一**的记账点：第 8 步那条内核被调了 1~5 次，但它碰不到这本账；被拒绝、失败或响应
-    # 校验不过的调用都走不到这一行。
-    await quota.record_success()
+    # 第 11 步：成功之后才记账，两级各一次。这是整次调用**唯一**的记账点：第 8 步那条
+    # 内核被调了 1~5 次，但它碰不到这本账；被拒绝、失败或响应校验不过的调用都走不到这里。
+    # llm 账按**实际发生**记 N（``model_calls``），不再额外 +1——「实际发生几次就记几次」
+    # 是契约本身（ADR-0032），多记一次就把 Research 的成本凭空抬高了一截。
+    llm = llm_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    )
+    await llm.record_n(outcome.model_calls)
+    # 重排账同样按实际发生记：子检索每真跑一次重排，观察点就 +1（全 0 时账本 no-op）。
+    await rerank_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    ).record_n(rerank_count)
     return data
 
 
 def _degraded_reason_of(outcome: Any) -> str | None:
     """归属索引那一列只记**一条**原因（一因一码，先到的才是根因）。
 
-    顺序：子检索自己的降级 > 生成阶段换了快模型。前者发生在材料到手之前，后者是收尾时
-    的事——两条中哪一条先发生，哪一条才是解释「这一次为什么不如预期」的那一条。
+    第 13 步之后唯一的产出方是子检索自己的降级：模型调用失败整单 50003，不会走到
+    写归属索引这一步；强模型兜底字段已经删除。
     """
 
     if outcome.sub_search_degraded:
         return outcome.sub_search_degraded[0]
-    return outcome.strong_model_fallback
+    return None
 
 
 __all__ = ["build_kernel_search", "ensure_research_allowed", "gated_research"]

@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import importlib.util
 import re
@@ -150,7 +151,7 @@ def _account(
 
 
 def _policy(policy_id: str, tenant_id: str, profile: str) -> KeyPolicy:
-    return KeyPolicy(
+    return policy_row(
         id=policy_id,
         tenant_id=tenant_id,
         name=policy_id,
@@ -160,6 +161,10 @@ def _policy(policy_id: str, tenant_id: str, profile: str) -> KeyPolicy:
         research_qps=0,
         research_daily=0,
         profile=profile,
+        # 第 13 步：重排由配置直存参数表达。两个 quality 配置直存 rerank=true，
+        # 于是「关掉 RERANK_ENABLED」的影响面仍能数出这两个租户。
+        custom_options={"rerank": True},
+        rerank_allowed=True,
     )
 
 
@@ -321,7 +326,7 @@ def test_the_listing_returns_three_tiers_with_editable_and_why_columns(console: 
     assert rows["CHUNK_SIZE"]["tier"] == "restart"
     assert rows["RERANK_TIMEOUT_SECONDS"]["source"] == "env"
     assert rows["RERANK_TIMEOUT_SECONDS"]["invalid"] is False
-    assert rows["model.role.fast"]["tier"] == "hot"
+    assert rows["model.role.default"]["tier"] == "hot"
 
 
 def test_an_illegal_row_marks_the_line_red_and_falls_back_to_the_env_value(

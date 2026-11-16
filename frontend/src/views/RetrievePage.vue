@@ -277,7 +277,7 @@ function onKeyChange(value: unknown): void {
 }
 
 /**
- * 选中 Key 的**只读**配置摘要：档位 / 能力 / 限额 / 结果形状。
+ * 选中 Key 的**只读**配置摘要：检索参数 / 能力 / 限额 / 结果形状。
  *
  * 这里**故意不列数据范围**：那把 Key 圈了哪些库，下方「勾选知识库」逐条摆着同一份
  * 信息（名字 + id + 能不能勾）。同一件事在一屏里写两遍，读者要花时间确认「这两处
@@ -287,12 +287,18 @@ const policyRows = computed(() => {
   const value = policy.value
   if (value === null) return []
   const capabilities: string[] = []
+  if (value.retrieve_allowed) capabilities.push('retrieve')
+  if (value.rewrite_allowed) capabilities.push('rewrite')
+  if (value.decompose_allowed) capabilities.push('decompose')
   if (value.research_allowed) capabilities.push('research')
-  if (value.hybrid_allowed) capabilities.push('hybrid')
   if (value.rerank_allowed) capabilities.push('rerank')
-  if (value.query_rewrite_allowed) capabilities.push('query_rewrite')
   return [
-    { label: '档位', value: value.profile },
+    {
+      label: '检索参数',
+      value: `${value.retrieval_mode} · top_k ${value.retrieval_top_k} · ${
+        value.retrieval_rerank ? '重排' : '不重排'
+      }`,
+    },
     {
       label: '生效能力',
       value: capabilities.length === 0 ? '全关' : capabilities.join(' / '),
@@ -430,13 +436,13 @@ const summaryOpen = ref(false)
  */
 const configDialogOpen = ref(false)
 
-/** 卡片上那一行只读摘要：当前这把 Key 是谁、档位是什么。 */
+/** 卡片上那一行只读摘要：当前这把 Key 是谁、检索方式是什么。 */
 const currentKeySummary = computed(() => {
   if (selectedKey.value === null) return null
   return {
     label: selectedKey.value.label ?? '（未命名）',
     masked: selectedKey.value.key_masked,
-    profile: policy.value?.profile ?? null,
+    mode: policy.value?.retrieval_mode ?? null,
   }
 })
 
@@ -636,8 +642,8 @@ async function sendRating(): Promise<void> {
                 {{ currentKeySummary.masked }}
               </span>
               <span class="text-line-strong">·</span>
-              <span :class="currentKeySummary.profile === null ? 'text-[#7a5b00]' : 'text-muted'">
-                档位 {{ currentKeySummary.profile ?? '缺失' }}
+              <span :class="currentKeySummary.mode === null ? 'text-[#7a5b00]' : 'text-muted'">
+                {{ currentKeySummary.mode ?? '配置缺失' }}
               </span>
             </template>
             <span v-else class="text-[#7a5b00]">未选择 —— 点「修改配置」选一把</span>

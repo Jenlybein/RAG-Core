@@ -8,6 +8,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import importlib.util
 import re
@@ -81,7 +82,7 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
     测试里校验出的结论与真实库里的行为不一致。
     """
 
-    return KeyPolicy(
+    return policy_row(
         id=POLICY_ID,
         tenant_id=tenant_id,
         name="default",
@@ -92,8 +93,8 @@ def _policy_row(tenant_id: str = ACME_TENANT) -> KeyPolicy:
         query_rewrite_allowed=False,
         retrieve_qps=3,
         retrieve_daily=500,
-        research_qps=0,
-        research_daily=0,
+        llm_qps=0,
+        llm_daily=0,
         profile="speed",
         include_parent=True,
         expand_table_rows=True,
@@ -149,11 +150,11 @@ def test_seed_script_seeds_the_plans_then_backfills_old_tenants(
     assert [row.code for row in session.added_of(Plan)] == list(PLAN_CODES)
     plan_ids = {row.id: row.code for row in session.added_of(Plan)}
     backfilled = {row.id: plan_ids[row.plan_id] for row in session.added_of(Tenant)}
-    assert backfilled == {DEMO_TENANT: "pro", ACME_TENANT: "standard"}
+    assert backfilled == {DEMO_TENANT: "max", ACME_TENANT: "plus"}
     assert session.closed
 
     out = capsys.readouterr().out
-    assert "inserted: 3" in out
+    assert "inserted: 4" in out
     assert "created: 2" in out
 
 
@@ -180,7 +181,7 @@ def test_create_tenant_script_prints_the_tenant_and_its_default_policy(
 
     assert (
         create_script.main(
-            ["--id", ACME_TENANT, "--name", "Acme 公司", "--plan", "standard", "--kb-id", "kb-1"]
+            ["--id", ACME_TENANT, "--name", "Acme 公司", "--plan", "plus", "--kb-id", "kb-1"]
         )
         == 0
     )
@@ -380,7 +381,7 @@ def test_change_plan_script_reports_a_missing_tenant_on_stderr(
 # ───────────────────────────────────────────────────────────── 改密钥配置（#72 缺口 2）
 
 
-def _update_session(*, plan_id: int = PLAN_CODES.index("standard") + 1) -> RecordingSession:
+def _update_session(*, plan_id: int = PLAN_CODES.index("plus") + 1) -> RecordingSession:
     """标准档租户 + 一套 speed 配置：balanced 可用、hybrid 允许，改得动的空间最大。"""
 
     return RecordingSession(
@@ -409,9 +410,8 @@ def test_update_policy_script_writes_the_new_values(
                 POLICY_ID,
                 "--name",
                 "订单机器人",
-                "--profile",
-                "balanced",
-                "--hybrid",
+                "--mode",
+                "hybrid",
                 "--no-include-parent",
                 "--qps",
                 "8",
@@ -428,8 +428,8 @@ def test_update_policy_script_writes_the_new_values(
 
     policy = session._rows[KeyPolicy][0]
     assert policy.name == "订单机器人"
-    assert policy.profile == "balanced"
-    assert policy.hybrid_allowed is True
+    assert (policy.retrieval_mode, policy.retrieval_top_k) == ("hybrid", 5)
+    assert policy.retrieval_top_k == 5
     # 没动的字段保持原样：脚本是「改这几项」，不是「整行重写」。
     assert policy.rerank_allowed is False
     assert policy.research_allowed is False
@@ -442,8 +442,8 @@ def test_update_policy_script_writes_the_new_values(
 
     out = capsys.readouterr().out
     assert f"key policy: {POLICY_ID}" in out
-    assert "profile: speed -> balanced" in out
-    assert "hybrid_allowed: False -> True" in out
+    assert "retrieval_mode: vector -> hybrid" in out
+    assert "retrieval_top_k" not in out, "没给的字段不该出现在改动清单里"
 
 
 def test_update_policy_script_can_clear_the_kb_whitelist(
@@ -464,13 +464,12 @@ def test_update_policy_script_can_clear_the_kb_whitelist(
 @pytest.mark.parametrize(
     "argv",
     [
-        # free 只允许 speed：换成 balanced 不自洽
-        ["--profile", "balanced"],
+        # 第 13 步：档位名不再参与自洽校验，不再有「free 只允许 speed」这一条。
         # free 的限额是 qps 3 / daily 500
         ["--qps", "4"],
         ["--daily", "501"],
-        # free 没有混合检索能力
-        ["--hybrid"],
+        # free 没有加工能力（rewrite / decompose / research / rerank 位）
+        ["--rewrite-allowed"],
     ],
 )
 def test_update_policy_script_refuses_an_inconsistent_configuration(
@@ -488,9 +487,9 @@ def test_update_policy_script_refuses_an_inconsistent_configuration(
 
     assert capsys.readouterr().err.strip(), "不自洽必须打印原因"
     policy = session._rows[KeyPolicy][0]
-    assert policy.profile == "speed"
+    assert policy.retrieval_mode == "vector"
     assert (policy.retrieve_qps, policy.retrieve_daily) == (3, 500)
-    assert policy.hybrid_allowed is False
+    assert policy.retrieval_rerank is False
     assert session.commits == 0
     assert session.rollbacks == 1
 
@@ -498,9 +497,9 @@ def test_update_policy_script_refuses_an_inconsistent_configuration(
 @pytest.mark.parametrize(
     "argv",
     [
-        ["--profile", "balanced"],  # 少了 --policy-id
+        ["--mode", "hybrid"],  # 少了 --policy-id
         ["--policy-id", POLICY_ID],  # 一个字段都没给
-        ["--policy-id", POLICY_ID, "--profile", "platinum"],
+        ["--policy-id", POLICY_ID, "--mode", "platinum"],
         ["--policy-id", POLICY_ID, "--kb-id", "kb-1", "--clear-kb-ids"],
     ],
 )
@@ -547,8 +546,10 @@ def test_update_policy_script_help_lists_the_editable_fields(
     for flag in (
         "--policy-id",
         "--name",
-        "--profile",
-        "--hybrid",
+        "--mode",
+        "--top-k",
+        "--rerank",
+        "--rerank-allowed",
         "--include-parent",
         "--qps",
         "--daily",

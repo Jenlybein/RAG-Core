@@ -110,19 +110,26 @@ class _Clock:
 
 
 class _ScriptedLLM(LLMProvider):
-    """按顺序交出预置输出；记下每次问的是哪个 schema。
+    """按 schema 交出预置输出；记下每次问的是哪个 schema。
 
-    预置项是异常时当场抛出（验降级出口）；否则原样返回给服务收敛。``spend`` 让某一次调用
-    「占掉一段预算」——阶段预算是阶段间检查，所以**模型调用本身**也要能被推到越线。
+    单一 ``default`` 角色下四个阶段共用一份替身：生成阶段（``AnswerOut``）走专门的那一份
+    预置输出，规划 / 判定 / 复查（``ResearchPlan`` / ``CoverageJudgement``）按给定的顺序
+    队列消费。这样「有没有 ⑤ 复查」不会打乱生成阶段该拿到的东西。
+
+    预置项是异常时当场抛出；``spend`` 让某一次调用「占掉一段预算」——阶段预算是阶段间
+    检查，所以**模型调用本身**也要能被推到越线。
     """
 
     def __init__(
         self,
         *responses: object,
+        answer: object | None = None,
         clock: _Clock | None = None,
         spend: Mapping[str, float] | None = None,
     ) -> None:
         self._responses = list(responses)
+        self._answer = answer
+        self._answer_used = False
         self.calls: list[str] = []
         self.prompts: list[str] = []
         self._clock = clock
@@ -131,9 +138,18 @@ class _ScriptedLLM(LLMProvider):
     async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
         self.calls.append(schema.__name__)
         self.prompts.append(user)
-        if not self._responses:
-            raise AssertionError(f"预置输出用完了：还有一次 {schema.__name__} 没有应答")
-        item = self._responses.pop(0)
+        if schema.__name__ == "AnswerOut":
+            item = self._answer
+            self._answer_used = True
+        elif not self._responses and schema.__name__ == "CoverageJudgement":
+            # ⑤ 复查：用例若没显式给复查输出，就交回一份「全 supported」的合法判定。
+            # 这些用例关心的是「补证跑了几轮 / 有没有多花一次判定」，不是复查的结论；
+            # 给缺省值让它们不必各写一份与主题无关的脚本。
+            item = _covered()
+        else:
+            if not self._responses:
+                raise AssertionError(f"预置输出用完了：还有一次 {schema.__name__} 没有应答")
+            item = self._responses.pop(0)
         if isinstance(item, BaseException):
             raise item
         spend = self._spend.get(schema.__name__)
@@ -217,23 +233,29 @@ def _run(
     spend: Mapping[str, float] | None = None,
     strong: LLMProvider | None = None,
 ) -> tuple[research.ResearchOutcome, _ScriptedLLM, _Search]:
-    """跑一次五步：``responses`` 是**规划 + 判断**的预置输出，生成另有一份脚本替身。
+    """跑一次五步：单一 ``default`` 角色，四阶段共用一份脚本替身。
 
-    生成（第 ⑤ 步，票 #149）走的是 ``strong`` 角色，所以它必须有自己的一份工厂：本文件的
-    用例都在数「规划 / 判断被问了几次」，把生成混进同一个替身会让那些计数失去意义。
+    ``responses`` 是**规划 + 判断**的预置输出；生成阶段缺省补一个合法块。第 13 步删掉了
+    第二个模型工厂，生成不再单独占一份替身——但 ``spend`` 仍按 schema 名计数，
+    ``AnswerOut`` 与 ``ResearchPlan`` / ``CoverageJudgement`` 不同名，所以预算用例不受影响。
     """
 
     probe = search if search is not None else _Search()
     running_clock = clock or _Clock()
-    llm = _ScriptedLLM(*responses, clock=running_clock, spend=spend)
-    generator = strong if strong is not None else _ScriptedLLM(_answer_blocks())
+    if strong is None:
+        answer: object = _answer_blocks()
+    elif isinstance(strong, _ScriptedLLM):
+        # ``_partial_recovery_run`` 传的是一份脚本替身：取它的第一条预置输出。
+        answer = strong._responses[0]
+    else:
+        answer = strong
+    llm = _ScriptedLLM(*responses, answer=answer, clock=running_clock, spend=spend)
     outcome = asyncio.run(
         research.run_research(
             query=QUERY,
             tenant_id=TENANT,
             search=probe,
             llm_factory=_factory(llm),
-            strong_llm_factory=_factory(generator),
             clock=running_clock,
         )
     )
@@ -272,7 +294,10 @@ def test_the_state_machine_never_reads_settings_or_the_environment() -> None:
 
 
 def test_the_seven_stop_reasons_are_one_vocabulary() -> None:
-    """七种停止原因就是这七个词：响应、日志、统计读同一份枚举。"""
+    """六种停止原因就是这六个词：响应、日志、统计读同一份枚举。
+
+    第 13 步退役 ``degraded``：模型调用失败整单 50003，不再有降级出口。
+    """
 
     assert {reason.value for reason in StopReason} == {
         "evidence_complete",
@@ -281,7 +306,6 @@ def test_the_seven_stop_reasons_are_one_vocabulary() -> None:
         "duplicate_query",
         "timeout",
         "budget_exhausted",
-        "degraded",
     }
 
 
@@ -312,7 +336,7 @@ def test_a_covered_question_stops_after_the_first_round() -> None:
     # 规划 + 判断 + 生成各一次（票 #149 起第 ⑤ 步会真的花掉第三次调用）。
     assert outcome.model_calls == 3
     assert outcome.searches == 2
-    assert llm.calls == ["ResearchPlan", "CoverageJudgement"]
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement", "AnswerOut"]
 
 
 def test_a_multi_point_question_gets_two_rounds_of_materials() -> None:
@@ -397,7 +421,9 @@ def test_the_point_cap_truncates_the_plan_to_five_points() -> None:
         queries=[{"point": index, "query": f"查询{index}"} for index in range(1, 6)],
     )
 
-    outcome, _, probe = _run(plan, _covered(), search=_Search(default=[_row("a")]))
+    outcome, _, probe = _run(
+        plan, _covered(points=MAX_POINTS), search=_Search(default=[_row("a")])
+    )
 
     assert [point.text for point in outcome.points] == points[:MAX_POINTS]
     assert len(outcome.points) == MAX_POINTS == 5
@@ -522,44 +548,29 @@ def test_the_stage_budget_also_guards_the_final_answer_slot() -> None:
 # ─────────────────────────────────────────── 越界防护：模型只能点已存在的要点序号
 
 
-def test_a_query_pointing_at_a_missing_point_is_rejected() -> None:
-    """规划里有一条查询绑到不存在的要点 → 整份计划作废，退回原问题检索（降级出口一）。"""
+@pytest.mark.parametrize(
+    ("plan", "judgement"),
+    [
+        # 查询绑到不存在的要点：规划输出不合法。
+        (_plan(points=["退款时限"], queries=[{"point": 2, "query": "退款多久到账"}]), _covered()),
+        # 判断器点了一个不存在的要点：判定输出不合法。
+        (_plan(), _followup(point=9)),
+        # 只有要点、没有查询的计划：规划输出不合法。
+        (_plan(queries=[]), _covered()),
+    ],
+    ids=["plan_bad_point", "judgement_bad_point", "plan_no_query"],
+)
+def test_an_illegal_model_output_is_a_50003(plan: object, judgement: object) -> None:
+    """规划 / 判定输出不合法 = 模型答了但形状不对 → 整单 50003（客户重试）。
 
-    plan = _plan(points=["退款时限"], queries=[{"point": 2, "query": "退款多久到账"}])
-    search = _Search(default=[_row("a")])
+    旧行为是「退回原问题 / 停止补证 + stop_reason=degraded」；第 13 步删掉降级出口，
+    这些形状不合法的输入与模型抛异常走同一个可重试的码。
+    """
 
-    outcome, _, probe = _run(plan, _covered(), search=search)
+    with pytest.raises(AppError) as caught:
+        _run(plan, judgement, search=_Search(default=[_row("a")]))
 
-    assert probe.calls == [QUERY], "退回的是原问题，不是那条点错序号的查询"
-    assert outcome.stop_reason is StopReason.DEGRADED
-    assert outcome.points == ()
-    assert outcome.queries == ()
-    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a"]
-
-
-def test_a_followup_pointing_at_a_missing_point_stops_the_round() -> None:
-    """判断器点了一个不存在的要点 → 停止补证、标记降级、首轮材料照给。"""
-
-    rows = [_row("a"), _row("b")]
-    search = _Search({"退款多久到账": [rows[0]], "退款需要哪些材料": [rows[1]]})
-
-    outcome, _, probe = _run(_plan(), _followup(point=9), search=search)
-
-    assert probe.calls == ["退款多久到账", "退款需要哪些材料"]
-    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
-    assert outcome.followup_rounds == 0
-    assert outcome.stop_reason is StopReason.DEGRADED
-
-
-def test_a_plan_without_any_query_falls_back_to_the_original_question() -> None:
-    """只有要点、没有查询的计划不构成一次检索计划 → 规划失败 → 退回原问题。"""
-
-    search = _Search(default=[_row("a")])
-
-    outcome, _, probe = _run(_plan(queries=[]), _covered(), search=search)
-
-    assert probe.calls == [QUERY]
-    assert outcome.stop_reason is StopReason.DEGRADED
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
 def test_the_judgement_prompt_carries_materials_without_internal_ids() -> None:
@@ -578,38 +589,26 @@ def test_the_judgement_prompt_carries_materials_without_internal_ids() -> None:
     assert outcome.stop_reason is StopReason.EVIDENCE_COMPLETE
 
 
-# ────────────────────────────────────────────────── 降级出口：规划 / 判断失败
+# ─────────────────────────── 第 13 步：模型调用失败即整单 50003（无降级出口）
 
 
-def test_a_failed_planner_falls_back_to_one_plain_search() -> None:
-    """规划阶段抛异常 → 原问题跑一次，材料照给，停止原因 degraded。"""
+@pytest.mark.parametrize(
+    ("plan", "judgement", "expected_schema_calls"),
+    [
+        (RuntimeError("模型服务 502"), _covered(), ["ResearchPlan"]),
+        (_plan(), RuntimeError("模型超时"), ["ResearchPlan", "CoverageJudgement"]),
+    ],
+    ids=["planner_exception", "decider_exception"],
+)
+def test_a_model_exception_at_any_stage_is_a_50003(
+    plan: object, judgement: object, expected_schema_calls: list[str]
+) -> None:
+    """规划 / 判定抛异常 → 整单 50003；不再退回原问题、不再标 degraded。"""
 
-    search = _Search(default=[_row("a")])
+    with pytest.raises(AppError) as caught:
+        _run(plan, judgement, search=_Search(default=[_row("a")]))
 
-    outcome, llm, probe = _run(RuntimeError("模型服务 502"), _covered(), search=search)
-
-    assert probe.calls == [QUERY], "降级只跑一次，且跑的是原问题"
-    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a"]
-    assert outcome.stop_reason is StopReason.DEGRADED
-    # 已经发出的那次调用仍然计成本（它可能已经计过费）；降级之后材料照给，
-    # 于是第 ⑤ 步仍会用这份材料生成引用块——那是**降级之后唯一还能做对的事**。
-    assert outcome.model_calls == 2
-    assert llm.calls == ["ResearchPlan"]
-
-
-def test_a_failed_decider_stops_the_followup_but_keeps_the_materials() -> None:
-    """判断阶段抛异常 → 不补证、标降级；首轮材料完整交回。"""
-
-    rows = [_row("a"), _row("b")]
-    search = _Search({"退款多久到账": [rows[0]], "退款需要哪些材料": [rows[1]]})
-
-    outcome, llm, probe = _run(_plan(), RuntimeError("模型超时"), search=search)
-
-    assert probe.calls == ["退款多久到账", "退款需要哪些材料"]
-    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
-    assert outcome.followup_rounds == 0
-    assert outcome.stop_reason is StopReason.DEGRADED
-    assert llm.calls == ["ResearchPlan", "CoverageJudgement"]
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
 def test_the_stage_budget_is_checked_before_the_followup_round() -> None:
@@ -706,7 +705,7 @@ def test_a_recovered_point_is_judged_again_instead_of_staying_unknown() -> None:
     assert outcome.gaps == ()
     # 规划 + 判断 + **复查** + 生成。
     assert outcome.model_calls == 4
-    assert llm.calls == ["ResearchPlan", "CoverageJudgement", "CoverageJudgement"]
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement", "CoverageJudgement", "AnswerOut"]
 
 
 def test_the_rejudged_point_keeps_pointing_at_the_newly_added_material() -> None:
@@ -758,25 +757,21 @@ def test_a_followup_that_changed_nothing_does_not_spend_a_judgement() -> None:
     assert outcome.stop_reason is StopReason.NO_NEW_EVIDENCE
     assert outcome.gaps == ("A2",)
     assert outcome.model_calls == 3
-    assert llm.calls == ["ResearchPlan", "CoverageJudgement"]
+    assert llm.calls == ["ResearchPlan", "CoverageJudgement", "AnswerOut"]
 
 
-def test_a_failed_rejudge_keeps_the_point_unknown_instead_of_guessing() -> None:
-    """复查失败 → **保持** ``unknown``。不知道比猜一边好，而且不能因此少一次调用计数。"""
+def test_a_failed_rejudge_is_a_model_call_failure() -> None:
+    """⑤ 复查的模型调用失败 → 整单 50003（第 13 步），不再保持 unknown 假装跑完了。"""
 
-    outcome, llm, _ = _run(
-        _plan(),
-        _followup(),
-        RuntimeError("复查也挂了"),
-        search=_supplemented_search(),
-    )
+    with pytest.raises(AppError) as caught:
+        _run(
+            _plan(),
+            _followup(),
+            RuntimeError("复查也挂了"),
+            search=_supplemented_search(),
+        )
 
-    statuses = {item.point_id: item.status for item in outcome.coverage}
-    assert statuses["A2"] == "unknown"
-    # ``unknown`` 不进 gaps：不知道的时候既不该声明材料不足，也不该假装有支撑。
-    assert outcome.gaps == ()
-    assert outcome.stop_reason is StopReason.MAX_ROUNDS
-    assert llm.calls == ["ResearchPlan", "CoverageJudgement", "CoverageJudgement"]
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
 def _gap_answer() -> dict:

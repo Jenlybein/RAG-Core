@@ -27,6 +27,9 @@ import inspect
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+import pytest
+
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.llm.base import LLMProvider
 from app.services import research
 from app.services.citation_blocks import REJECTED_GAP_NOT_DECLARED
@@ -158,22 +161,28 @@ def _run(
     search: _Search | None = None,
     strong: LLMProvider | None = None,
 ) -> tuple[research.ResearchOutcome, _Scripted, _Search]:
-    """跑一次完整五步：``responses`` 是规划 + 覆盖判定的预置输出，生成另有一份脚本替身。"""
+    """跑一次完整五步：单一 ``default`` 角色，所有阶段（规划 / 判定 / 生成）共用一份脚本。
+
+    ``responses`` 是规划 + 覆盖判定的预置输出；生成阶段缺省补一个合法块。旧的
+    ``strong`` 参数保留为「生成阶段的脚本替身」，但它现在只是把那一份输出接到同一条
+    脚本的末尾（第 13 步起不再有第二个模型工厂）。
+    """
 
     probe = search if search is not None else _Search()
-    llm = _Scripted(*responses)
-    generator = (
-        strong
-        if strong is not None
-        else _Scripted(_blocks(_block("3 个工作日内到账。", primary=(1,))))
-    )
+    if strong is None:
+        generator_output: object = _blocks(_block("3 个工作日内到账。", primary=(1,)))
+    elif isinstance(strong, _Scripted):
+        # ``_gap_run`` 传的是一份脚本替身：取它的第一条预置输出接到同一条脚本末尾。
+        generator_output = strong._responses[0]
+    else:
+        generator_output = strong
+    llm = _Scripted(*responses, generator_output)
     outcome = asyncio.run(
         research.run_research(
             query=QUERY,
             tenant_id=TENANT,
             search=probe,
             llm_factory=_factory(llm),
-            strong_llm_factory=_factory(generator),
         )
     )
     return outcome, llm, probe
@@ -240,7 +249,7 @@ def test_a_point_without_a_retrieval_query_is_searched_with_its_own_text() -> No
     outcome, _, probe = _run(plan, _judge(_supported(1, 1), _supported(2, 1)), search=search)
 
     assert probe.calls == ["查询1", "所需材料"], "缺的那条要用要点正文补，且不能是空串"
-    assert outcome.stop_reason is not StopReason.DEGRADED
+    assert outcome.stop_reason is StopReason.EVIDENCE_COMPLETE
     assert [point.point_id for point in outcome.points] == ["A1", "A2"], "要点一个都不许丢"
 
 
@@ -256,7 +265,7 @@ def test_every_point_gets_its_own_query_even_when_the_round_cap_runs_fewer() -> 
     assert probe.calls == [f"查询{i}" for i in range(1, MAX_FIRST_ROUND_QUERIES + 1)]
     assert [point.text for point in outcome.points] == points
     assert outcome.searches == MAX_FIRST_ROUND_QUERIES, "首轮成本上限照旧管住检索次数"
-    assert outcome.stop_reason is not StopReason.DEGRADED
+    assert outcome.stop_reason is StopReason.EVIDENCE_COMPLETE
 
 
 # ───────────────────────────────────────── ② 逐要点覆盖判定：``none`` 是可表达的输出
@@ -282,71 +291,33 @@ def test_the_judgement_answers_each_point_with_support_or_none() -> None:
     assert outcome.gaps == ("A2",)
 
 
-def test_a_verdict_that_skips_a_point_is_not_accepted() -> None:
-    """少答一个要点 = 这份判定不能用（退回「不知道」，而不是被当成「有材料」）。
+@pytest.mark.parametrize(
+    "verdicts",
+    [
+        # 少答一个要点：不替换成「不知道」，也不替模型猜一边。
+        (_supported(1, 1),),
+        # supported 却不给材料序号 = 自相矛盾。
+        (_supported(1), _supported(2, 1)),
+        # none 却挂着材料序号 = 自相矛盾。
+        (_supported(1, 1), {"point": 2, "status": "none", "materials": [1]}),
+        # 指向不存在的材料 = 越界。
+        (_supported(1, 9), _none(2)),
+        # 出现计划中没有的要点序号 = 越界。
+        (_supported(1, 1), _supported(2, 1), _none(9)),
+    ],
+    ids=["missing_point", "supported_without_material", "none_with_material", "beyond_pool", "unknown_point"],
+)
+def test_an_illegal_verdict_is_a_model_call_failure(verdicts: tuple) -> None:
+    """判定输出不合法 = 模型答了但形状不对 → 第 13 步起整单 50003（客户重试）。
 
-    漏答不能默认成 supported（那是乐观），也不能默认成 none（那是凭空造缺口）——
-    两种猜测都在替模型回答它没回答的问题，所以整份判定作废，``coverage`` 保持 unknown。
+    旧行为是「整份判定作废 + coverage 全 unknown + stop_reason=degraded」；模型失败
+    即失败之后，这条静默降级路径已删除，五种非法输入统一收敛成同一个可重试的码。
     """
 
-    search = _Search(default=[_row("a")])
+    with pytest.raises(AppError) as caught:
+        _run(_plan(), _judge(*verdicts), search=_Search(default=[_row("a")]))
 
-    outcome, _, _ = _run(_plan(), _judge(_supported(1, 1)), search=search)
-
-    assert [item.status for item in outcome.coverage] == ["unknown", "unknown"]
-    assert outcome.gaps == ()
-    assert outcome.stop_reason is StopReason.DEGRADED
-
-
-def test_a_supported_verdict_must_point_at_materials() -> None:
-    """``supported`` 却不给材料序号 = 自相矛盾（「有支撑」必须有指向）。"""
-
-    outcome, _, _ = _run(
-        _plan(),
-        _judge(_supported(1), _supported(2, 1)),
-        search=_Search(default=[_row("a")]),
-    )
-
-    assert outcome.stop_reason is StopReason.DEGRADED
-    assert [item.status for item in outcome.coverage] == ["unknown", "unknown"]
-
-
-def test_a_none_verdict_must_not_point_at_materials() -> None:
-    """``none`` 却挂着材料序号 = 自相矛盾（要么给序号，要么说没有）。"""
-
-    contradiction = {"point": 2, "status": "none", "materials": [1]}
-
-    outcome, _, _ = _run(
-        _plan(),
-        _judge(_supported(1, 1), contradiction),
-        search=_Search(default=[_row("a")]),
-    )
-
-    assert outcome.stop_reason is StopReason.DEGRADED
-    assert outcome.gaps == ()
-
-
-def test_a_verdict_may_not_point_beyond_the_material_pool() -> None:
-    """要点指向不存在的材料 = 越界（模型只能点它真的看见的那几条）。"""
-
-    outcome, _, _ = _run(
-        _plan(), _judge(_supported(1, 9), _none(2)), search=_Search(default=[_row("a")])
-    )
-
-    assert outcome.stop_reason is StopReason.DEGRADED
-    assert outcome.gaps == ()
-
-
-def test_a_verdict_on_a_point_that_does_not_exist_is_rejected() -> None:
-    """判定里出现计划中没有的要点序号 = 越界。"""
-
-    outcome, _, _ = _run(
-        _plan(),
-        _judge(_supported(1, 1), _supported(2, 1), _none(9)),
-        search=_Search(default=[_row("a")]),
-    )
-
-    assert outcome.stop_reason is StopReason.DEGRADED
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
 def test_the_judgement_prompt_defines_support_as_readable_not_related() -> None:
@@ -412,27 +383,34 @@ def test_a_gap_without_a_proposed_query_is_searched_with_the_point_text() -> Non
     assert outcome.gaps == ("A2",)
 
 
-def test_a_point_that_the_followup_recovered_is_unknown_not_supported() -> None:
-    """补证给缺口要点带回了新材料 → 它是 ``unknown``：材料到了，但支撑**没有再审一次**。
+def test_a_point_that_the_followup_recovered_is_rejudged() -> None:
+    """补证给缺口要点带回了新材料 → ⑤ 复查再判一次，把它落成结论（不再留 ``unknown``）。
 
-    这是本票最容易做错的一格。状态机固定五步、不回头复判，所以「补回来一条材料」不等于
-    「这个要点被支撑了」——把它记成 supported 是乐观（正是 ADR-0029 反对的那种），记成
-    none 则会让缺口闸把一份其实有材料的答案判死。
+    单一 ``default`` 角色下规划 / 判定 / 复查 / 生成按阶段顺序走同一份脚本：这里显式给
+    出「复查」的第三次输出，断言它真的被消费，而不是被静默跳过。
     """
 
     search = _Search({"查询1": [_row("a")], "超期退款需要哪些材料": [_row("c")]})
+    rejudge = _judge(_supported(1, 1), _supported(2, 2))
 
-    outcome, _, _ = _run(
+    outcome, llm, _ = _run(
         _plan(),
-        _judge(_none(2), _supported(1, 1), queries=[{"point": 2, "query": "超期退款需要哪些材料"}]),
+        _judge(_supported(1, 1), _none(2), queries=[{"point": 2, "query": "超期退款需要哪些材料"}]),
+        rejudge,
         search=search,
     )
 
+    assert llm.calls == [
+        "ResearchPlan",
+        "CoverageJudgement",
+        "CoverageJudgement",  # ⑤ 复查
+        "AnswerOut",
+    ]
     assert [(item.point_id, item.status) for item in outcome.coverage] == [
         ("A1", "supported"),
-        ("A2", "unknown"),
+        ("A2", "supported"),
     ]
-    assert outcome.gaps == (), "材料已经到了，这不再是「知道没有」"
+    assert outcome.gaps == ()
     assert outcome.stop_reason is StopReason.MAX_ROUNDS
 
 
@@ -468,14 +446,20 @@ def test_the_coverage_block_reaches_the_response() -> None:
 
 
 def _gap_run(*blocks: dict[str, Any]) -> tuple[research.ResearchOutcome, _Scripted, _Search]:
-    """跑一次**带真缺口**的 Research：A2 在材料里没有支撑，补证也没捞回来。"""
+    """跑一次**带真缺口**的 Research：A2 在材料里没有支撑，补证也没捞回来。
+
+    返回的第二项是**实际持有所有 prompt 的那份脚本**（单一 default 角色），
+    调用方用它断言生成提示词。
+    """
 
     search = _Search({"查询1": [_row("a")], "查询2": []})
-    strong = _Scripted(_blocks(*blocks))
-    outcome, _, probe = _run(
-        _plan(), _judge(_supported(1, 1), _none(2)), search=search, strong=strong
+    outcome, llm, probe = _run(
+        _plan(),
+        _judge(_supported(1, 1), _none(2)),
+        search=search,
+        strong=_Scripted(_blocks(*blocks)),
     )
-    return outcome, strong, probe
+    return outcome, llm, probe
 
 
 def test_the_answer_must_declare_a_gap_and_never_fill_it_from_its_own_knowledge() -> None:
@@ -536,7 +520,7 @@ def test_the_finalizer_is_told_which_points_are_uncovered() -> None:
         _block("未找到所需材料的说明。", kind="insufficient"),
     )
 
-    prompt = strong.prompts[0]
+    prompt = strong.prompts[-1]
     assert "所需材料" in prompt, "缺口要点的正文必须点名"
     assert "材料不足" in prompt
     assert outcome.answer is not None

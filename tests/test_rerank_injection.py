@@ -254,20 +254,18 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
             chunks=[], degraded=False, degraded_reason=None, rerank=None, graph=None
         )
 
-    async def _identity_query(**kwargs: Any) -> Any:
+    def _identity_query(query: str, **_kwargs: Any) -> Any:
         return SimpleNamespace(
-            raw_query=kwargs["query"],
-            effective_query=kwargs["query"],
-            search_query=kwargs["query"],
-            vector_queries=(kwargs["query"],),
+            raw_query=query,
+            effective_query=query,
+            search_query=query,
+            vector_queries=(query,),
             rewrite_applied=False,
-            rewrite_degraded=False,
-            rewrite_reason=None,
             duration_ms=0.0,
         )
 
     monkeypatch.setattr(kernel, "hybrid_retrieve", _fake_hybrid)
-    monkeypatch.setattr(service, "optimize_query", _identity_query)
+    monkeypatch.setattr(service, "direct_query", _identity_query)
 
     async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
         return SimpleNamespace(
@@ -307,7 +305,6 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
                 fold_to_sections=True,
                 expand_table_rows=True,
                 rerank=True,
-                rewrite=False,
             ),
             rerank_factory=factory,
         )

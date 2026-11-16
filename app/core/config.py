@@ -120,11 +120,9 @@ class Settings(BaseSettings):
     LLM_PROVIDER: str = "deepseek"
     # 留空 = 用该供应商的默认地址（千问例外：工作空间 ID 嵌在 URL 里，必须自己填）。
     LLM_BASE_URL: str = ""
+    # 第 13 步起只有一个模型角色 default：模型名、思考强度各一个来源。
     LLM_MODEL: str = "deepseek-flash"
-    LLM_STRONG_MODEL: str = "deepseek-v4-pro"
     LLM_TIMEOUT_SECONDS: float = 60.0
-    # 思考强度只作用于 strong 模型角色；fast 模型角色在 Provider 里写死关闭
-    # （改写与重排要低延迟）。
     LLM_REASONING_EFFORT: str = "off"
 
     # 各供应商的 key。哪个留空，就等于「这台机器没配这家」——工厂据此退回空实现。

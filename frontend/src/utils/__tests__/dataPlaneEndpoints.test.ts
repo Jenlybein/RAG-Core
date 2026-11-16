@@ -43,10 +43,14 @@ describe('dataPlaneEndpoints：接口清单的规矩', () => {
     }
   })
 
-  it('清单覆盖了数据面全部 9 条路由', () => {
+  it('清单覆盖了数据面全部 12 条路由', () => {
     // 后端路由表改动时，这条会红——提醒两边一起改，而不是让清单悄悄过期。
+    // 第 13 步新增 rewrite / decompose / research 三条检索能力端点。
     expect(DATA_PLANE_ENDPOINTS.map((endpoint) => `${endpoint.method} ${endpoint.path}`)).toEqual([
       'POST /rag/retrieve',
+      'POST /rag/rewrite',
+      'POST /rag/decompose',
+      'POST /rag/research',
       'POST /rag/feedback',
       'GET /knowledge-bases',
       'GET /auth/me',

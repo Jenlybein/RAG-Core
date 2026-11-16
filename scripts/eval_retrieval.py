@@ -972,6 +972,7 @@ async def _run_question(
     top_k: int,
     kb_ids: Sequence[str],
     rerank_factory: Callable[[], Awaitable[Any]] | None = None,
+    query_variant: str = "direct",
 ) -> QuestionOutcome:
     started = time.perf_counter()
     outcome = QuestionOutcome(id=question.id, query=question.query, mode=mode)
@@ -986,9 +987,10 @@ async def _run_question(
             # 所以直接构造，两个形状开关保持与新缺省一致（折叠 + 表格行折回整表），
             # 这样历史评测口径不变。
             #
-            # #78 起 ``rerank`` / ``rewrite`` 也是这个对象上的**生效值**（档位意图 ∧
-            # 本机能力）。评测没有租户、没有套餐，所以它自己承担「本机能力」这一半：
-            # 直接照抄服务端开关，历史评测跑的还是这台机器上那条链路。
+            # #78 起 ``rerank`` 也是这个对象上的**生效值**（意图 ∧ 本机能力）。评测没有
+            # 租户、没有套餐，所以它自己承担「本机能力」这一半：直接照抄服务端开关，
+            # 历史评测跑的还是这台机器上那条链路。改写不在这里拨开关——它由
+            # ``query_variant`` 表达（第 13 步：加工方式由端点决定）。
             # ``tenant_policy`` 留空——这一次没有套餐参与判定，编一个出来只会误导。
             options=RetrievalOptions(
                 mode=mode,
@@ -996,11 +998,13 @@ async def _run_question(
                 fold_to_sections=True,
                 expand_table_rows=True,
                 rerank=settings.RERANK_ENABLED,
-                rewrite=settings.QUERY_REWRITE_ENABLED,
             ),
             # 重排实现由调用方决定（#116）：``--rerank-provider llm`` 时这里是一个显式
             # 装配旧实现的工厂；缺省 ``None`` 表示走生产工厂（专用端点那条链）。
             rerank_factory=rerank_factory,
+            # 第 13 步：加工方式由端点表达。rewrite 对照走真正的改写链，
+            # 不再拨已失效的 QUERY_REWRITE_ENABLED 开关。
+            query_variant=query_variant,  # type: ignore[arg-type]
         )
     except AppError as exc:
         # 单模式失败是**预期结果**（验收第 7 条就是要求它明确失败），不是脚本故障：
@@ -1286,11 +1290,17 @@ async def _run_group(
     mode: str,
     kb_ids: Sequence[str],
     top_k: int,
+    query_variant: str = "direct",
 ) -> dict[str, Any]:
     per_question: list[dict[str, Any]] = []
     for question in questions:
         outcome = await _run_question(
-            async_db, question, mode=mode, top_k=top_k, kb_ids=kb_ids
+            async_db,
+            question,
+            mode=mode,
+            top_k=top_k,
+            kb_ids=kb_ids,
+            query_variant=query_variant,
         )
         per_question.append(
             _score_question(
@@ -2330,6 +2340,8 @@ async def _run(args: argparse.Namespace) -> int:
         if not environment.llm_configured:
             print(f"rewrite  : SKIPPED ({environment.llm_probe})")
         else:
+            # 第 13 步：改写是对照端点 /rag/rewrite（query_variant=rewrite），
+            # 直接检索是 /rag/retrieve（direct）。不再拨已失效的 QUERY_REWRITE_ENABLED。
             rewrite_off = await _run_group(
                 db,
                 questions,
@@ -2339,8 +2351,8 @@ async def _run(args: argparse.Namespace) -> int:
                 mode=MODE_HYBRID,
                 kb_ids=kb_ids,
                 top_k=top_k,
+                query_variant="direct",
             )
-            settings.QUERY_REWRITE_ENABLED = True
             rewrite_on = await _run_group(
                 db,
                 questions,
@@ -2350,8 +2362,8 @@ async def _run(args: argparse.Namespace) -> int:
                 mode=MODE_HYBRID,
                 kb_ids=kb_ids,
                 top_k=top_k,
+                query_variant="rewrite",
             )
-            settings.QUERY_REWRITE_ENABLED = False
             rewrite = {
                 "executed": True,
                 "reason": "",

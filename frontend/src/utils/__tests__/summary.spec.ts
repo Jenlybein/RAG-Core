@@ -30,11 +30,9 @@ const METADATA: RetrievalMetadata = {
   },
   tenant_policy: {
     plan: 'quality',
-    requested_profile: 'speed',
     mode: 'hybrid',
     top_k: 5,
     rerank: false,
-    rewrite: false,
     kb_count: 2,
     clipped: [],
   },
@@ -61,9 +59,9 @@ describe('buildRunSummary', () => {
     const rows = buildRunSummary(METADATA)
 
     expect(valueOf(rows, 'tenant_policy.plan')).toBe('quality')
-    expect(valueOf(rows, 'tenant_policy.requested_profile')).toBe('speed')
+    expect(valueOf(rows, 'tenant_policy.mode')).toBe('hybrid')
+    expect(valueOf(rows, 'tenant_policy.top_k')).toBe('5')
     expect(valueOf(rows, 'tenant_policy.rerank')).toBe('false')
-    expect(valueOf(rows, 'tenant_policy.rewrite')).toBe('false')
     expect(valueOf(rows, 'tenant_policy.kb_count')).toBe('2')
     expect(valueOf(rows, 'tenant_policy.clipped')).toBe('—')
   })

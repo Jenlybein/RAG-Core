@@ -169,7 +169,7 @@ def _world() -> dict[type, list[Any]]:
         #: 开局 fast 指向第一条；strong 不指向（回落 .env）。
         RuntimeSetting: [
             RuntimeSetting(
-                key="model.role.fast",
+                key="model.role.default",
                 value="config-deepseek",
                 updated_by=ADMIN_ID,
                 updated_at=SEEDED_AT,
@@ -232,7 +232,6 @@ def _isolate_env_path(monkeypatch: pytest.MonkeyPatch) -> None:
     for name in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY"):
         monkeypatch.setattr(settings, name, "")
     monkeypatch.setattr(settings, "LLM_MODEL", "deepseek-flash")
-    monkeypatch.setattr(settings, "LLM_STRONG_MODEL", "deepseek-v4-pro")
     monkeypatch.setattr(settings, "LLM_BASE_URL", "")
     monkeypatch.setattr(settings, "LLM_REASONING_EFFORT", "off")
 
@@ -408,7 +407,7 @@ def test_an_admin_can_read_the_model_config_list(console: _Harness) -> None:
     rows = console.configs(console.client.get("/console/model-configs"))
 
     assert [row["id"] for row in rows] == ["config-deepseek", "config-ark"]
-    assert rows[0]["roles"] == ["fast"]
+    assert rows[0]["roles"] == ["default"]
     assert rows[1]["roles"] == []
     # 列表里永远只有 masked 形态：明文 Key 连一个子串都不许出现。
     assert SECRET_SENTINEL not in console.client.get("/console/model-configs").text
@@ -416,25 +415,24 @@ def test_an_admin_can_read_the_model_config_list(console: _Harness) -> None:
     assert rows[0]["api_key"].endswith("abcd")
 
 
-def test_a_config_pointed_at_by_both_roles_shows_both_and_cannot_be_deleted(
+def test_a_config_pointed_at_by_the_default_role_cannot_be_deleted(
     console: _Harness,
 ) -> None:
-    """同一个配置被 fast 与 strong 同时指向是常见配置：列表要两个角色都显示，
-    删除时也要把**两个**角色都报出来（只报一个会让管理员改完一个还是删不掉）。
+    """第 13 步起只有 ``default`` 一个角色：指向它的配置在列表里显示该角色，
+    删除时也被这一个引用挡住（不是两个）。
     """
 
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
-    assert console.patch_setting({"model.role.strong": "config-deepseek"}).json()["code"] == 0
 
     rows = console.configs(console.client.get("/console/model-configs"))
-    assert rows[0]["roles"] == ["fast", "strong"]
+    assert rows[0]["roles"] == ["default"]
 
     response = console.client.delete(
         "/console/model-configs/config-deepseek", headers=WRITE_HEADERS
     )
     body = response.json()
     assert body["code"] == 20015
-    assert "fast" in body["msg"] and "strong" in body["msg"]
+    assert "default" in body["msg"]
     assert console.config_row("config-deepseek") is not None
 
 
@@ -555,7 +553,7 @@ def test_deleting_a_config_referenced_by_a_role_is_rejected(console: _Harness) -
 
     body = response.json()
     assert body["code"] == 20015
-    assert "fast" in body["msg"] and "指向" in body["msg"]
+    assert "default" in body["msg"] and "指向" in body["msg"]
     assert console.config_row("config-deepseek") is not None, "被拒的删除不许删掉任何行"
     assert console.db.added_of(AuditLog) == []
 
@@ -565,7 +563,7 @@ def test_a_config_becomes_deletable_after_the_pointer_is_cleared(console: _Harne
 
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
-    cleared = console.patch_setting({"model.role.fast": ""})
+    cleared = console.patch_setting({"model.role.default": ""})
     assert cleared.json()["code"] == 0, cleared.json()
 
     response = console.client.delete(
@@ -735,7 +733,7 @@ def test_the_migration_chains_onto_the_runtime_settings_head() -> None:
 
 
 def test_writing_a_pointer_to_a_missing_config_is_rejected(console: _Harness) -> None:
-    """写 ``model.role.fast = "不存在-id"`` → ``20015``，且指针行保持原值。
+    """写 ``model.role.default = "不存在-id"`` → ``20015``，且指针行保持原值。
 
     校验点必须在**服务层**（``runtime_settings.patch_runtime_settings``）：指针将来还有
     CLI / 迁移脚本等入口，判定写进路由的话每个入口都得再写一遍。
@@ -743,12 +741,12 @@ def test_writing_a_pointer_to_a_missing_config_is_rejected(console: _Harness) ->
 
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
-    response = console.patch_setting({"model.role.fast": "no-such-config"})
+    response = console.patch_setting({"model.role.default": "no-such-config"})
 
     body = response.json()
     assert body["code"] == 20015
     assert "该模型配置不存在" in body["msg"]
-    assert console.pointer_row("model.role.fast").value == "config-deepseek"
+    assert console.pointer_row("model.role.default").value == "config-deepseek"
     assert console.audit_entries() == []
 
 
@@ -767,12 +765,12 @@ async def test_writing_an_existing_config_id_moves_the_pointer_and_the_next_call
     monkeypatch.setattr(settings, "LLM_MODEL", "env-fast-model")
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
-    moved = console.patch_setting({"model.role.fast": "config-ark"})
+    moved = console.patch_setting({"model.role.default": "config-ark"})
     assert moved.json()["code"] == 0, moved.json()
-    assert console.pointer_row("model.role.fast").value == "config-ark"
+    assert console.pointer_row("model.role.default").value == "config-ark"
 
     captured = _capture_chat_model(monkeypatch)
-    provider = await get_llm_provider("fast")
+    provider = await get_llm_provider()
     # 装配发生在**第一次要用模型**的时候（#117：Provider 缓存、模型每次现装），
     # 所以这里显式取一次模型——捕获到的就是这次检索真会用的那组参数。
     assert provider.chat_model is not None
@@ -804,9 +802,9 @@ def test_writing_null_or_an_empty_pointer_means_fall_back_to_env(console: _Harne
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
 
     for value in ("", None):
-        response = console.patch_setting({"model.role.fast": value})
+        response = console.patch_setting({"model.role.default": value})
         assert response.json()["code"] == 0, (value, response.json())
-        assert console.pointer_row("model.role.fast").value == ""
+        assert console.pointer_row("model.role.default").value == ""
 
 
 @pytest.mark.asyncio
@@ -816,10 +814,10 @@ async def test_a_cleared_pointer_makes_the_next_provider_use_the_env_single_vend
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
     monkeypatch.setattr(settings, "LLM_MODEL", "env-fast-model")
     assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
-    assert console.patch_setting({"model.role.fast": ""}).json()["code"] == 0
+    assert console.patch_setting({"model.role.default": ""}).json()["code"] == 0
 
     captured = _capture_chat_model(monkeypatch)
-    provider = await get_llm_provider("fast")
+    provider = await get_llm_provider()
     # 模型在第一次要用时才现装（#117），先把它取出来再断言「拼了什么参数」。
     assert provider.chat_model is not None
 
@@ -845,36 +843,27 @@ async def test_no_model_config_and_no_pointer_reproduces_the_env_path(
     console.db._rows[RuntimeSetting] = []
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
     monkeypatch.setattr(settings, "LLM_MODEL", "deepseek-flash")
-    monkeypatch.setattr(settings, "LLM_STRONG_MODEL", "deepseek-v4-pro")
     monkeypatch.setattr(settings, "LLM_BASE_URL", "")
     monkeypatch.setattr(settings, "LLM_REASONING_EFFORT", "high")
 
     captured = _capture_chat_model(monkeypatch)
 
-    # 模型在第一次要用时才现装（#117）：两档各取一次，捕获顺序才是 fast → strong。
-    assert (await get_llm_provider("fast")).chat_model is not None
-    assert (await get_llm_provider("strong")).chat_model is not None
+    # 第 13 步起只有一个 default 角色：装配一次，思考强度由部署配置决定。
+    assert (await get_llm_provider()).chat_model is not None
 
-    assert captured[0] == (
-        "deepseek-flash",
-        {
-            "model_provider": "openai",
-            "api_key": "sk-env-deepseek",
-            "timeout": settings.LLM_TIMEOUT_SECONDS,
-            "base_url": "https://api.deepseek.com/v1",
-            "temperature": 0,
-        },
-    )
-    assert captured[1] == (
-        "deepseek-v4-pro",
-        {
-            "model_provider": "openai",
-            "api_key": "sk-env-deepseek",
-            "timeout": settings.LLM_TIMEOUT_SECONDS,
-            "base_url": "https://api.deepseek.com/v1",
-            "reasoning_effort": "high",
-        },
-    )
+    assert captured == [
+        (
+            "deepseek-flash",
+            {
+                "model_provider": "openai",
+                "api_key": "sk-env-deepseek",
+                "timeout": settings.LLM_TIMEOUT_SECONDS,
+                "base_url": "https://api.deepseek.com/v1",
+                "temperature": 0,
+                "reasoning_effort": "high",
+            },
+        )
+    ]
 
 
 @pytest.mark.asyncio
@@ -887,8 +876,8 @@ async def test_no_key_anywhere_still_returns_the_noop_provider(
     console.db._rows[RuntimeSetting] = []
     monkeypatch.setattr(settings, "DEEPSEEK_API_KEY", "")
 
-    assert isinstance(await get_llm_provider("fast"), NoopLLMProvider)
-    assert isinstance(await get_llm_provider("strong"), NoopLLMProvider)
+    assert isinstance(await get_llm_provider(), NoopLLMProvider)
+    assert isinstance(await get_llm_provider(), NoopLLMProvider)
 
 
 @pytest.mark.asyncio
@@ -907,7 +896,7 @@ async def test_a_pointer_to_a_row_deleted_behind_the_api_falls_back_to_env_witho
     monkeypatch.setattr(settings, "LLM_MODEL", "env-fast-model")
 
     captured = _capture_chat_model(monkeypatch)
-    provider = await get_llm_provider("fast")
+    provider = await get_llm_provider()
     # 模型在第一次要用时才现装（#117），先把它取出来再断言「拼了什么参数」。
     assert provider.chat_model is not None
 
@@ -938,7 +927,7 @@ async def test_role_resolution_reads_the_pointer_through_the_async_session(
 
     monkeypatch.setattr(model_config_service, "async_session_factory", lambda: _open)
 
-    endpoint = await model_config_service.role_endpoint("fast")
+    endpoint = await model_config_service.role_endpoint("default")
 
     assert endpoint is not None
     assert endpoint.config_id == "config-deepseek"
@@ -968,16 +957,15 @@ async def test_a_failing_role_read_still_falls_back_to_env(
 
     monkeypatch.setattr(model_config_service, "async_session_factory", lambda: _BrokenSession)
 
-    assert await model_config_service.role_endpoint("fast") is None
-    assert await model_config_service.resolve_role_config("fast") is None
+    assert await model_config_service.role_endpoint("default") is None
+    assert await model_config_service.resolve_role_config("default") is None
 
 
-def test_the_rerank_follows_fast_and_has_no_separate_config(console: _Harness) -> None:
-    """**重排跟随 fast**：没有「重排模型」这一条配置，也没有第三个指针键。
+def test_the_rerank_has_no_separate_model_config(console: _Harness) -> None:
+    """第 13 步起只有一个 ``default`` 模型角色，重排也没有独立的「重排模型」指针。
 
-    一期 ``RerankProvider`` 包着 ``LLMProvider``（ADR-0002）；面板若出现「重排模型」下拉，
-    用户会以为它可独立配置，而实际上改了也不会生效。这条用例把「白名单里只有两个指针键」
-    钉住，避免后来人顺手加一个不存在的配置位。
+    面板若出现「重排模型」下拉，用户会以为它可独立配置，而实际上改了也不会生效。
+    这条用例把「白名单里只有这一个指针键」钉住。
     """
 
     pointer_keys = [
@@ -985,7 +973,7 @@ def test_the_rerank_follows_fast_and_has_no_separate_config(console: _Harness) -
         for key, spec in runtime_settings.SETTING_SPECS.items()
         if spec.target == runtime_settings.TARGET_POINTER
     ]
-    assert pointer_keys == ["model.role.fast", "model.role.strong"]
+    assert pointer_keys == ["model.role.default"]
     assert not any("rerank" in key for key in pointer_keys)
 
 

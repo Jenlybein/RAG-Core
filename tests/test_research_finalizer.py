@@ -1,15 +1,16 @@
-"""票 #149：状态机第 ⑤ 步——Finalizer 接线、四条校验的出口、强模型兜底与降级观察点。
+"""第 13 步 · 状态机第 ⑤ 步——Finalizer 接线、四条校验的出口、模型失败即整单失败。
 
 这一层验的是**状态机的第 ⑤ 步**，不是块本身（块的判定在
 ``tests/test_research_citation_blocks.py`` 里逐条钉住）：
 
 * **Finalizer 只吃最终材料池**：材料池里没有 id、提示词里也没有，模型只能点序号；
 * **任一硬校验不过 → ``answer = None``**，而材料、计划、轮次、停止原因照给（ADR-0026 §3）；
-* **强模型未配置 / 失败 / 超时 → 快模型兜底**，并在 ``strong_model_fallback`` 标一个固定串，
-  **不报错**；换了兜底之后模型调用次数仍不越过含兜底位的上限；
-* **子检索自身的降级原因不被丢掉**：去重后进 ``sub_search_degraded``（一因一码的固定串）。
+* **第 13 步：模型调用失败即整单 50003**（客户重试）。平台不再分强弱模型，四个阶段
+  （规划 / 判定 / 复查 / 生成）共用同一个 ``default`` 角色，没有「换模型兜底」这条路；
+* **子检索自身的降级原因不被丢掉**：去重后进 ``sub_search_degraded``（一因一码）。
 
-模型是三份脚本替身（规划 / 判断 / 生成），检索内核是记账替身：不发网络、不连库。
+模型是**一份**脚本替身（按阶段顺序交出 规划 / 判定 / 生成 三种输出），检索内核是
+记账替身：不发网络、不连库。
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from typing import Any
 
 import pytest
 
+from app.core.exceptions import AppError, ErrorCode
 from app.providers.llm.base import LLMProvider
 from app.services import research
 from app.services.citation_blocks import (
@@ -27,7 +29,7 @@ from app.services.citation_blocks import (
     REJECTED_CONFLICT_ADJUDICATED,
     REJECTED_UNRESOLVED_REFERENCE,
 )
-from app.services.research_limits import MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK, StopReason
+from app.services.research_limits import MAX_MODEL_CALLS, StopReason
 
 TENANT = "tenant_demo"
 QUERY = "退款多久到账，需要哪些材料"
@@ -80,34 +82,6 @@ class _Scripted(LLMProvider):
         if isinstance(item, BaseException):
             raise item
         return item
-
-    async def chat_json(self, *, system: str, user: str) -> dict:
-        raise AssertionError("Research 只走结构化输出")
-
-
-class _Unavailable(LLMProvider):
-    """未配置强模型时工厂交回的空实现：``available`` 为假，且**一问就炸**（证明没问）。"""
-
-    available = False
-
-    async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
-        raise AssertionError("强模型未配置时不该发起调用")
-
-    async def chat_json(self, *, system: str, user: str) -> dict:
-        raise AssertionError("Research 只走结构化输出")
-
-
-class _Slow(LLMProvider):
-    """慢到超时的强模型：每次调用先睡一段（用真实 ``asyncio.sleep``，配一个极小的预算）。"""
-
-    def __init__(self, seconds: float = 0.2) -> None:
-        self.seconds = seconds
-        self.calls = 0
-
-    async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
-        self.calls += 1
-        await asyncio.sleep(self.seconds)
-        raise AssertionError("睡醒之后不该真的交回答案")
 
     async def chat_json(self, *, system: str, user: str) -> dict:
         raise AssertionError("Research 只走结构化输出")
@@ -167,41 +141,36 @@ def _two_rows() -> _Search:
     return _Search({"退款多久到账": [_row("a")], "退款需要哪些材料": [_row("b")]})
 
 
+def _default_llm(*, blocks: object | None = None, judgement: dict | None = None) -> _Scripted:
+    """一份脚本按阶段顺序服务四次模型调用里实际发生的那几次。"""
+
+    return _Scripted(
+        _plan(),
+        judgement if judgement is not None else _covered(),
+        blocks if blocks is not None else _blocks(_block("3 个工作日内到账。", primary=(2,))),
+    )
+
+
 def _run(
     *,
-    blocks: object | None = None,
-    fast: LLMProvider | None = None,
-    strong: LLMProvider | None = None,
+    llm: LLMProvider | None = None,
     search: _Search | None = None,
     sub_search_degraded: Sequence[str] = (),
-    judgement: dict | None = None,
-) -> tuple[research.ResearchOutcome, _Scripted, LLMProvider, _Search]:
-    """跑一次完整五步：``fast`` 是规划 / 覆盖判定（缺省脚本），``strong`` 是生成。"""
+) -> tuple[research.ResearchOutcome, LLMProvider, _Search]:
+    """跑一次完整五步：单一 ``default`` 角色（缺省脚本），四阶段共用一份工厂。"""
 
+    provider = llm if llm is not None else _default_llm()
     probe = search if search is not None else _two_rows()
-    planner = (
-        fast
-        if fast is not None
-        else _Scripted(_plan(), judgement if judgement is not None else _covered())
-    )
-    generator = (
-        strong
-        if strong is not None
-        else _Scripted(
-            blocks if blocks is not None else _blocks(_block("3 个工作日内到账。", primary=(2,)))
-        )
-    )
     outcome = asyncio.run(
         research.run_research(
             query=QUERY,
             tenant_id=TENANT,
             search=probe,
-            llm_factory=_factory(planner),
-            strong_llm_factory=_factory(generator),
+            llm_factory=_factory(provider),
             sub_search_degraded=sub_search_degraded,
         )
     )
-    return outcome, planner, generator, probe
+    return outcome, provider, probe
 
 
 # ─────────────────────────────────────────── 正常路径：块 + 渲染串 + 完整度
@@ -210,7 +179,7 @@ def _run(
 def test_a_round_produces_citation_blocks_from_the_material_pool() -> None:
     """覆盖全材料 → 每块至少引一条核心片；``answer`` 就是这些块的渲染串。"""
 
-    outcome, planner, strong, _ = _run(blocks=_blocks(_block("3 个工作日内到账。", primary=(2,))))
+    outcome, provider, _ = _run(llm=_default_llm(blocks=_blocks(_block("3 个工作日内到账。", primary=(2,)))))
 
     assert outcome.answer == "3 个工作日内到账。（E2）"
     assert list(outcome.citations) == [
@@ -220,37 +189,33 @@ def test_a_round_produces_citation_blocks_from_the_material_pool() -> None:
             "status": "supported",
         }
     ]
-    # 三个角色各一次：规划 / 判断 / 生成。**没有补证，所以没有 ⑤ 复查**——
-    # ``MAX_MODEL_CALLS`` 是上限（4），典型路径仍是 3 次。
+    # 三个模型阶段各一次：规划 / 判断 / 生成。**没有补证，所以没有 ⑤ 复查**——
+    # MAX_MODEL_CALLS 是上限（4），典型路径仍是 3 次。
     assert outcome.model_calls == 3 < MAX_MODEL_CALLS
-    assert planner.calls == ["ResearchPlan", "CoverageJudgement"]
-    assert isinstance(strong, _Scripted) and strong.calls == ["AnswerOut"]
+    assert isinstance(provider, _Scripted)
+    assert provider.calls == ["ResearchPlan", "CoverageJudgement", "AnswerOut"]
     assert outcome.evidence_state == "complete"
-    assert outcome.strong_model_fallback is None
     assert outcome.stop_reason is StopReason.EVIDENCE_COMPLETE
 
 
 def test_a_missing_point_becomes_an_insufficient_block_not_invented_text() -> None:
-    """材料只盖住一个要点 → 另一块必须是 ``insufficient``（承认不足），完整度是 ``partial``。
+    """材料只盖住一个要点 → 另一块必须是 ``insufficient``（承认不足），完整度是 ``partial``。"""
 
-    票 #164 起这条用例的判定也换成了真的：覆盖判定把 A2 判成 ``none``（材料里没有它），
-    于是这是**真缺口**——生成阶段必须针对它给一块 ``insufficient``（缺口闸，见
-    ``tests/test_research_coverage.py``）。
-    """
-
-    outcome, _, _, _ = _run(
-        search=_Search({"退款多久到账": [_row("a")], "退款需要哪些材料": []}),
-        judgement={
-            "points": [
-                {"point": 1, "status": "supported", "materials": [1]},
-                {"point": 2, "status": "none", "materials": []},
-            ],
-            "queries": [{"point": 2, "query": "超期退款需要哪些材料"}],
-        },
-        blocks=_blocks(
-            _block("超期退款需人工审核。", primary=(1,)),
-            _block("未找到所需材料的说明。", kind="insufficient"),
+    outcome, _, _, = _run(
+        llm=_default_llm(
+            judgement={
+                "points": [
+                    {"point": 1, "status": "supported", "materials": [1]},
+                    {"point": 2, "status": "none", "materials": []},
+                ],
+                "queries": [{"point": 2, "query": "超期退款需要哪些材料"}],
+            },
+            blocks=_blocks(
+                _block("超期退款需人工审核。", primary=(1,)),
+                _block("未找到所需材料的说明。", kind="insufficient"),
+            ),
         ),
+        search=_Search({"退款多久到账": [_row("a")], "退款需要哪些材料": []}),
     )
 
     assert [citation["status"] for citation in outcome.citations] == [
@@ -265,24 +230,39 @@ def test_a_missing_point_becomes_an_insufficient_block_not_invented_text() -> No
 def test_the_finalizer_prompt_carries_materials_without_internal_ids() -> None:
     """提示词里只有序号、标题与摘录——切片 id / 文档 id / 节 id 一个都不进去。"""
 
-    _, _, strong, _ = _run()
+    _, provider, _ = _run()
 
-    prompt = strong.prompts[0]
+    assert isinstance(provider, _Scripted)
+    prompt = provider.prompts[-1]
     for internal in ("chunk-a", "chunk-b", "doc-a", "section-a"):
         assert internal not in prompt
 
 
 def test_no_material_means_no_model_call_and_no_answer() -> None:
-    """材料池为空 → 不调生成（问了也只能编）：``answer = None``、``evidence_state = missing``。"""
+    """材料池为空 → 不调生成（问了也只能编）：``answer = None``、``evidence_state = missing``。
 
-    outcome, planner, strong, _ = _run(search=_Search())
+    判定阶段仍然跑一次（它是覆盖判定的入口），所以脚本替身给两份输出：规划 + 一份
+    「所有要点都是 none / 没有支撑」的合法判定（空材料下它没有材料可引用）。
+    """
+
+    empty_judgement = {
+        "points": [
+            {"point": 1, "status": "none", "materials": []},
+            {"point": 2, "status": "none", "materials": []},
+        ],
+        "queries": [],
+    }
+    outcome, provider, _ = _run(
+        llm=_Scripted(_plan(), empty_judgement),
+        search=_Search(),
+    )
 
     assert outcome.answer is None
     assert outcome.citations == ()
     assert outcome.evidence_state == "missing"
-    assert isinstance(strong, _Scripted) and strong.calls == [], "没有材料就不该问生成"
+    assert isinstance(provider, _Scripted)
+    assert provider.calls == ["ResearchPlan", "CoverageJudgement"], "没有材料就不该问生成"
     assert outcome.model_calls == 2
-    assert planner.calls == ["ResearchPlan", "CoverageJudgement"]
 
 
 # ─────────────────────────────────────────── 四条校验的出口：answer 落成 null
@@ -291,7 +271,7 @@ def test_no_material_means_no_model_call_and_no_answer() -> None:
 def test_an_assertion_without_a_citation_leaves_the_answer_empty() -> None:
     """有结论却不引证据 → 整份答案作废，材料与计划照给。"""
 
-    outcome, _, _, _ = _run(blocks=_blocks(_block("退款 3 个工作日到账。")))
+    outcome, _, _, = _run(llm=_default_llm(blocks=_blocks(_block("退款 3 个工作日到账。"))))
 
     assert outcome.answer is None
     assert outcome.citations == ()
@@ -306,7 +286,9 @@ def test_an_assertion_without_a_citation_leaves_the_answer_empty() -> None:
 def test_an_out_of_range_citation_leaves_the_answer_empty() -> None:
     """下标越界 → ``answer = null``（不猜、不截）。"""
 
-    outcome, _, _, _ = _run(blocks=_blocks(_block("3 个工作日内到账。", primary=(9,))))
+    outcome, _, _, = _run(
+        llm=_default_llm(blocks=_blocks(_block("3 个工作日内到账。", primary=(9,))))
+    )
 
     assert outcome.answer is None
     assert outcome.answer_rejected_reason == REJECTED_UNRESOLVED_REFERENCE
@@ -316,8 +298,10 @@ def test_an_out_of_range_citation_leaves_the_answer_empty() -> None:
 def test_an_internal_identifier_in_the_answer_leaves_it_empty() -> None:
     """答案里漏出切片 id → ``answer = null``。"""
 
-    outcome, _, _, _ = _run(
-        blocks=_blocks(_block("按 chunk-a 的说法，3 个工作日内到账。", primary=(2,)))
+    outcome, _, _, = _run(
+        llm=_default_llm(
+            blocks=_blocks(_block("按 chunk-a 的说法，3 个工作日内到账。", primary=(2,)))
+        )
     )
 
     assert outcome.answer is None
@@ -327,15 +311,17 @@ def test_an_internal_identifier_in_the_answer_leaves_it_empty() -> None:
 def test_a_conflict_verdict_leaves_the_answer_empty() -> None:
     """多来源块里替用户裁决 → ``answer = null``（冲突要拆成两块、各自带来源）。"""
 
-    outcome, _, _, _ = _run(
+    outcome, _, _, = _run(
+        llm=_default_llm(
+            blocks=_blocks(
+                _block("以《退款政策》为准：3 个工作日内到账。", primary=(1,), supporting=(2,))
+            )
+        ),
         search=_Search(
             {
                 "退款多久到账": [_row("a", document="doc-a")],
                 "退款需要哪些材料": [_row("b", document="doc-b")],
             }
-        ),
-        blocks=_blocks(
-            _block("以《退款政策》为准：3 个工作日内到账。", primary=(1,), supporting=(2,))
         ),
     )
 
@@ -343,80 +329,35 @@ def test_a_conflict_verdict_leaves_the_answer_empty() -> None:
     assert outcome.answer_rejected_reason == REJECTED_CONFLICT_ADJUDICATED
 
 
-# ─────────────────────────────────────────── 降级：强模型未配置 / 失败 / 超时
+# ─────────────────────────── 第 13 步：模型调用失败即整单 50003（无兜底）
 
 
-def test_a_missing_strong_model_falls_back_to_the_fast_one() -> None:
-    """强模型没配 → 直接用快模型生成一次（不白问一次），并标 ``unavailable``。"""
+@pytest.mark.parametrize("stage_index", [0, 1, 2], ids=["plan", "judge", "finalize"])
+def test_a_model_call_failure_at_any_stage_is_a_50003(stage_index: int) -> None:
+    """规划 / 判定 / 生成任一阶段的模型调用失败 → 整单 50003，不再静默降级。"""
 
-    strong = _Unavailable()
-    outcome, planner, _, _ = _run(
-        fast=_Scripted(_plan(), _covered(), _blocks(_block("3 个工作日内到账。", primary=(2,)))),
-        strong=strong,
-    )
+    responses: list[object] = [_plan(), _covered(), _blocks(_block("3 个工作日内到账。", primary=(2,)))]
+    responses[stage_index] = RuntimeError("模型服务 502")
+    llm = _Scripted(*responses)
 
-    assert outcome.answer == "3 个工作日内到账。（E2）"
-    assert outcome.strong_model_fallback == research.STRONG_MODEL_UNAVAILABLE
-    # 未配置的那一次没有发生，所以总调用次数仍是 3（规划 + 判断 + 生成）。
-    assert outcome.model_calls == 3 < MAX_MODEL_CALLS
+    with pytest.raises(AppError) as caught:
+        _run(llm=llm)
 
-
-def test_a_failing_strong_model_falls_back_to_the_fast_one() -> None:
-    """强模型调用失败 → 快模型兜底、标记 ``failed``，**不报错**。"""
-
-    strong = _Scripted(RuntimeError("模型服务 502"))
-    outcome, _, _, _ = _run(
-        fast=_Scripted(_plan(), _covered(), _blocks(_block("3 个工作日内到账。", primary=(2,)))),
-        strong=strong,
-    )
-
-    assert outcome.answer == "3 个工作日内到账。（E2）"
-    assert outcome.strong_model_fallback == research.STRONG_MODEL_FAILED
-    assert isinstance(strong, _Scripted) and strong.calls == ["AnswerOut"]
-    assert outcome.model_calls == 4
+    assert caught.value.code is ErrorCode.MODEL_CALL_FAILED
 
 
-def test_a_timing_out_strong_model_falls_back_to_the_fast_one(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """强模型超时 → 同样兜底（超时就是一次失败：那条请求已经发出去过）。"""
+def test_a_model_call_failure_does_not_produce_a_fallback_marker() -> None:
+    """失败就是失败：响应里没有 ``strong_model_fallback`` 这种「其实降级过」的字段。"""
 
-    monkeypatch.setattr(research, "FINALIZER_TIMEOUT_SECONDS", 0.01)
-    strong = _Slow(seconds=0.2)
-    outcome, _, _, _ = _run(
-        fast=_Scripted(_plan(), _covered(), _blocks(_block("3 个工作日内到账。", primary=(2,)))),
-        strong=strong,
-    )
-
-    assert outcome.answer == "3 个工作日内到账。（E2）"
-    assert outcome.strong_model_fallback == research.STRONG_MODEL_FAILED
-    assert strong.calls == 1
+    outcome_fields = set(research.ResearchOutcome.__dataclass_fields__)
+    assert "strong_model_fallback" not in outcome_fields
 
 
-def test_the_model_calls_never_exceed_the_ceiling_even_with_the_fallback() -> None:
-    """强模型失败、快模型也失败 → 真正发出去的调用不超过含兜底位的上限，``answer = null``。"""
+def test_the_model_calls_never_exceed_the_ceiling() -> None:
+    """典型路径 3 次（规划 + 判断 + 生成），没有补证与复查时不超过 MAX_MODEL_CALLS。"""
 
-    outcome, _, _, _ = _run(
-        fast=_Scripted(_plan(), _covered(), RuntimeError("快模型也挂了")),
-        strong=_Scripted(RuntimeError("强模型挂了")),
-    )
-
-    assert outcome.model_calls == 4 < MAX_MODEL_CALLS_WITH_FALLBACK == 5
-    assert outcome.answer is None
-    assert outcome.strong_model_fallback == research.STRONG_MODEL_FAILED
-    assert [row["chunk_id"] for row in outcome.materials] == ["chunk-a", "chunk-b"]
-
-
-def test_an_illegal_strong_output_is_retried_once_on_the_fast_model() -> None:
-    """强模型交回不合法结构（不是异常）→ 也算失败，兜底一次；仍不合法就 ``answer = null``。"""
-
-    outcome, _, _, _ = _run(
-        fast=_Scripted(_plan(), _covered(), _blocks(_block("3 个工作日内到账。", primary=(2,)))),
-        strong=_Scripted({"blocks": "不是列表"}),
-    )
-
-    assert outcome.answer == "3 个工作日内到账。（E2）", "结构不合法属于「这次没答出来」"
-    assert outcome.strong_model_fallback == research.STRONG_MODEL_FAILED
+    outcome, _, _ = _run()
+    assert outcome.model_calls == 3 <= MAX_MODEL_CALLS
 
 
 # ─────────────────────────────────────────── 子检索降级：一因一码、去重
@@ -425,7 +366,7 @@ def test_an_illegal_strong_output_is_retried_once_on_the_fast_model() -> None:
 def test_degraded_sub_searches_are_collected_once_per_reason() -> None:
     """子检索自身的降级原因去重后进 ``sub_search_degraded``（一因一码，不拼异常文本）。"""
 
-    outcome, _, _, _ = _run(
+    outcome, _, _ = _run(
         sub_search_degraded=[
             "vector search failed",
             "vector search failed",
@@ -436,10 +377,9 @@ def test_degraded_sub_searches_are_collected_once_per_reason() -> None:
     assert outcome.sub_search_degraded == ("vector search failed", "keyword search failed")
 
 
-def test_a_clean_run_has_no_degraded_reason_and_no_fallback() -> None:
-    """正常路径两个字段都为空——「没有降级」不能被一个占位串说成有。"""
+def test_a_clean_run_has_no_degraded_reason() -> None:
+    """正常路径没有降级原因——「没有降级」不能被一个占位串说成有。"""
 
-    outcome, _, _, _ = _run()
+    outcome, _, _ = _run()
 
     assert outcome.sub_search_degraded == ()
-    assert outcome.strong_model_fallback is None

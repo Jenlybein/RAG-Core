@@ -82,11 +82,6 @@ const SUMMARY_FIELDS: ReadonlyArray<{
     read: (data) => textOf(data.metadata.tenant_policy?.rerank),
   },
   {
-    field: 'tenant_policy.rewrite',
-    label: '查询改写',
-    read: (data) => textOf(data.metadata.tenant_policy?.rewrite),
-  },
-  {
     field: 'tenant_policy.clipped',
     label: '被套餐裁掉的字段',
     read: (data) => clippedText(data.metadata.tenant_policy),
@@ -97,9 +92,14 @@ const SUMMARY_FIELDS: ReadonlyArray<{
     read: (data) => textOf(data.metadata.tenant_policy?.plan),
   },
   {
-    field: 'tenant_policy.requested_profile',
-    label: '要求的档位',
-    read: (data) => textOf(data.metadata.tenant_policy?.requested_profile),
+    field: 'tenant_policy.mode',
+    label: '检索方式',
+    read: (data) => textOf(data.metadata.tenant_policy?.mode),
+  },
+  {
+    field: 'tenant_policy.top_k',
+    label: '返回条数',
+    read: (data) => textOf(data.metadata.tenant_policy?.top_k),
   },
 ]
 

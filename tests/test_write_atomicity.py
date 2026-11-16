@@ -156,7 +156,7 @@ def _issue_key(client: TestClient) -> Any:
         "/console/keys",
         json={
             "label": "atomic-key",
-            "policy": {"profile": "speed", "retrieve_qps": 1, "retrieve_daily": 10},
+            "policy": {"retrieval_mode": "vector", "retrieve_qps": 1, "retrieve_daily": 10},
         },
         headers=WRITE_HEADERS,
     )

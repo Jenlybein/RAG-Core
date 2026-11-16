@@ -1,40 +1,27 @@
 """表 8：key_policies —— 密钥配置（签发 API Key 时绑定的那一套）。
 
-一套配置回答「**这套集成**能用多好、能用多少」：数据范围（可用知识库白名单）、能力
-开关、限额、默认档位、结果形状偏好。它属于租户、租户内可复用，所以独立成表——若把
-这些字段直接摊进 ``api_keys``，租户内换一把 Key 就得重建一遍配置，改一处忘一处，
-而「删掉配置 → 引用它的 Key 一起失效」也没地方写。本期按一对一用，但表结构不锁死这一点。
+一套配置回答「**这套集成**能用多好、能用多少」：数据范围（可用知识库白名单）、五个
+授权位、三本账额度（Key 级那一半）、三项直参数与结果形状偏好。它属于租户、租户内可
+复用，所以独立成表——若把这些字段直接摊进 ``api_keys``，租户内换一把 Key 就得重建
+一遍配置，改一处忘一处，而「删掉配置 → 引用它的 Key 一起失效」也没地方写。
 
-``profile``（档位）与能力开关是两件事：命名档位是**完整替换**（``quality`` 承诺
-混合 + 重排 + 改写整条链路），配置里的开关是租户在上限内给这套集成的额外分配。
-自洽校验（档位所需能力 ⊆ 配置开关 ⊆ 套餐能力）不在本表实现，由服务层在写入前判——
-列上能做的只有「别让空值冒出来」，做了也表达不出三层包含关系。
+**第 13 步起后端没有「档位」这个概念**：一套配置用多好由三项直参数
+``retrieval_mode / retrieval_top_k / retrieval_rerank`` 表达，档位名（speed /
+balanced / quality）只剩前端填充按钮与文档别名两处身份，不进表、不进快照、不参与
+任何判定。授权位回答「能不能用这条端点」，额度回答「用了多少」，参数回答「用多好」，
+三者是三种事实，各存各的列（ADR-0032）。
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any, Final
 
 from sqlalchemy import Boolean, DateTime, Integer, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base, now
-
-# 四个质量档位名。写成常量而不是散落的字面量：套餐的 ``allowed_profiles`` 与
-# 密钥配置的 ``profile`` 必须用同一套词，两边各写一遍迟早拼错一个。
-PROFILE_SPEED: Final[str] = "speed"
-PROFILE_BALANCED: Final[str] = "balanced"
-PROFILE_QUALITY: Final[str] = "quality"
-PROFILE_CUSTOM: Final[str] = "custom"
-PROFILES: Final[tuple[str, ...]] = (
-    PROFILE_SPEED,
-    PROFILE_BALANCED,
-    PROFILE_QUALITY,
-    PROFILE_CUSTOM,
-)
 
 
 class KeyPolicy(Base):
@@ -47,30 +34,29 @@ class KeyPolicy(Base):
     # 数据范围：这套集成能查哪些库。空列表表示「还没圈定」，不是「全部」——
     # 「全部」一旦成为空列表的含义，把白名单清空就成了开闸。
     allowed_kb_ids: Mapped[list[str]] = mapped_column(JSONB, nullable=False)
-    # 能力开关：租户在套餐上限内给这套集成的分配。默认全关——新发一把 Key 不该自带
-    # 重排与改写，那是最贵的两项。
+    # ── 五个授权位（能不能用）：与 ``app.services.retrieval_authorization.CAPABILITIES``
+    # 一一对应，列名 = 能力名 + ``_allowed``。默认只开基线 ``retrieve``——
+    # 新发一把 Key 不该自带加工能力与重排，那是最贵的几项。
+    retrieve_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    decompose_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     research_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
-    hybrid_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     rerank_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
-    query_rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
-    # 限额：Key 级计数卡住单个外部应用，租户级聚合由套餐上限卡住（两级计数）。
+    # ── 三本账的 Key 级那一半（用多少）：retrieve 记内核调用次数、rerank 记重排次数、
+    # llm 记实际发生的大模型调用次数。两级计数：本表卡单个外部应用，套餐卡租户聚合。
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
-    # Research 的两个独立配额（票 #150），与检索那两列**同构**（两级同记），但键前缀与
-    # 计数桶都是另一本账：重资源调用不吃掉普通检索的额度。默认 0 = 关闭——新发一把 Key
-    # 不该自带一项约 30 秒、3–4 次模型调用的能力。
-    research_qps: Mapped[int] = mapped_column(Integer, default=0)
-    research_daily: Mapped[int] = mapped_column(Integer, default=0)
-    # 建 Key 时选定的档位；调用方改不了。改档位就是改这张配置，改完立刻生效。
-    profile: Mapped[str] = mapped_column(String(32))
-    # 结果形状偏好：折叠成整节 / 表格行折回整表。默认都开（与既有响应默认一致），
-    # 否则同一把 Key 升级前后返回形状会变。
+    rerank_qps: Mapped[int] = mapped_column(Integer, default=0)
+    rerank_daily: Mapped[int] = mapped_column(Integer, default=0)
+    llm_qps: Mapped[int] = mapped_column(Integer, default=0)
+    llm_daily: Mapped[int] = mapped_column(Integer, default=0)
+    # ── 三项直参数（用多好）：档位退役后这就是唯一真相。
+    retrieval_mode: Mapped[str] = mapped_column(String(16), default="vector")
+    retrieval_top_k: Mapped[int] = mapped_column(Integer, default=5)
+    retrieval_rerank: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 结果形状偏好：折叠成整节 / 表格行折回整表。默认都开（与既有响应默认一致）。
     include_parent: Mapped[bool] = mapped_column(Boolean, default=True)
     expand_table_rows: Mapped[bool] = mapped_column(Boolean, default=True)
-    # custom 档才读的手工参数（检索方式、返回条数、是否重排、是否改写）。存 JSONB 是
-    # 因为它的键随档位演进而变，逐个开列会让「custom 档多一个参数」变成一次迁移；
-    # 但它的**语义**只在 profile='custom' 时成立，别的档位下这里的内容不生效。
-    custom_options: Mapped[dict] = mapped_column(JSONB, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
 
@@ -79,7 +65,7 @@ class KeyPolicy(Base):
 class KeyPolicySnapshot:
     """一套密钥配置的**只读快照**：判定内核把它随身带着，下游只读不写。
 
-    与 :class:`app.models.plan.PlanSpec` 同一套做法：字段一一对应行里的列、没有默认值
+    与 :class:`app.models.plan.PlanSpec` 同一套做法：字段一一对应行里的列、**没有默认值**
     （映射漏一列就是 ``TypeError``），且**不做 ``bool()`` / ``int()`` 兜底**——行里某列
     是 ``NULL`` 时兜底会把它变成 ``False`` 或 ``0``，而「能力全关」恰好是合法组合，
     于是一个播种 / 落库错误会静静通过。
@@ -87,10 +73,6 @@ class KeyPolicySnapshot:
     为什么单独做一个快照而不是直接拿着 ORM 行：行绑在会话生命周期上，请求结束就过期；
     而判定结论要被后面的关卡（白名单、套餐复核、限流、配额）在同一个请求里反复读，
     读到一个已经 detach 的行只会得到 ``DetachedInstanceError``，比「读到旧值」更难查。
-
-    ``custom_options`` 用「（键, 值）对」而不是 ``dict``：frozen 的 dataclass 里塞一个
-    可变 dict，等于给「冻结」留了个后门——拿到快照的人可以顺手改掉它，而这份快照可能
-    正被同一个请求里的其它关卡共享。要字典形状时调用方自己 ``dict(...)`` 造一份。
 
     ``unrestricted_scope`` 是「这把 Key 不做数据范围收窄」的**显式标记**，默认
     ``False``（受限）。它存在是因为内置开发身份没有白名单可言，而 ``allowed_kb_ids``
@@ -100,19 +82,22 @@ class KeyPolicySnapshot:
     """
 
     allowed_kb_ids: tuple[str, ...]
+    retrieve_allowed: bool
+    rewrite_allowed: bool
+    decompose_allowed: bool
     research_allowed: bool
-    hybrid_allowed: bool
     rerank_allowed: bool
-    query_rewrite_allowed: bool
     retrieve_qps: int
     retrieve_daily: int
-    #: Research 的两个独立配额（票 #150）。0 = 关闭；与 ``research_allowed`` 给同一个答复码。
-    research_qps: int
-    research_daily: int
-    profile: str
+    rerank_qps: int
+    rerank_daily: int
+    llm_qps: int
+    llm_daily: int
+    retrieval_mode: str
+    retrieval_top_k: int
+    retrieval_rerank: bool
     include_parent: bool
     expand_table_rows: bool
-    custom_options: tuple[tuple[str, Any], ...] = ()
     #: 只有内置开发身份的那份快照把它打开（见类文档末段）；缺省 = 受限。
     unrestricted_scope: bool = False
 
@@ -122,17 +107,20 @@ def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
 
     return KeyPolicySnapshot(
         allowed_kb_ids=tuple(row.allowed_kb_ids),
+        retrieve_allowed=row.retrieve_allowed,
+        rewrite_allowed=row.rewrite_allowed,
+        decompose_allowed=row.decompose_allowed,
         research_allowed=row.research_allowed,
-        hybrid_allowed=row.hybrid_allowed,
         rerank_allowed=row.rerank_allowed,
-        query_rewrite_allowed=row.query_rewrite_allowed,
         retrieve_qps=row.retrieve_qps,
         retrieve_daily=row.retrieve_daily,
-        research_qps=row.research_qps,
-        research_daily=row.research_daily,
-        profile=row.profile,
+        rerank_qps=row.rerank_qps,
+        rerank_daily=row.rerank_daily,
+        llm_qps=row.llm_qps,
+        llm_daily=row.llm_daily,
+        retrieval_mode=row.retrieval_mode,
+        retrieval_top_k=row.retrieval_top_k,
+        retrieval_rerank=row.retrieval_rerank,
         include_parent=row.include_parent,
         expand_table_rows=row.expand_table_rows,
-        # 按键排序：JSONB 本来就重排键，这里再稳定一次，快照相等性才不依赖读出顺序。
-        custom_options=tuple(sorted((row.custom_options or {}).items())),
     )

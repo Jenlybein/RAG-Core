@@ -33,10 +33,8 @@ from app.core.console_auth import (
     session_ttl_seconds,
 )
 from app.core.plan_cache import PlanCache
-from app.core.profile_presets import get_profile_presets
 from app.db.async_session import get_async_db, get_async_transaction
 from app.db.transaction import AsyncTransaction
-from app.models.key_policy import PROFILES
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import (
     AccountItem,
@@ -59,7 +57,6 @@ from app.schemas.console import (
     tenant_data,
     usage_data,
 )
-from app.schemas.console_profiles import ProfilePresetData
 from app.services import console_service
 from app.services.login_throttle import login_throttle
 from app.services.plan_admin import PlanImpact
@@ -70,12 +67,9 @@ router = APIRouter(prefix="/console", tags=["console"])
 def _me_data(view: console_service.ConsoleView) -> MeData:
     """「我的视图」→ 响应体；管理员没有租户，于是 tenant / plan / usage 三栏为 ``null``。
 
-    档位参数取自进程级注册表（启动时装载过，管理端写入后即时刷新），所以这里不需要一个
-    数据库会话——这也是把「这个档位能干什么」并进``me``而不另开租户接口的原因：
-    ``/console/profile-presets`` 是管理员专属，租户读它要 20011。
+    第 13 步：档位参数注册表（profile_presets）已随表一起删除，``me`` 不再回显档位预设。
     """
 
-    presets = get_profile_presets()
     return MeData(
         account=account_data(view.account),
         tenant=tenant_data(view.tenant) if view.tenant is not None else None,
@@ -87,25 +81,13 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
         ),
         # Research 用量与检索用量**同形**（票 #150）：同一个 ``usage_data`` 映射，
         # 只是这一栏读另一本账（``quota:research:*``）。
-        research_usage=(
+        llm_usage=(
             usage_data(
-                used=view.research_usage.used, limit=view.research_usage.limit
+                used=view.llm_usage.used, limit=view.llm_usage.limit
             )
-            if view.research_usage is not None
+            if view.llm_usage is not None
             else None
         ),
-        # 顺序沿用 `PROFILES`，与 `/console/profile-presets` 同一条词表。
-        profile_presets=[
-            ProfilePresetData(
-                profile=profile,
-                mode=spec.mode,
-                top_k=spec.top_k,
-                rerank=spec.rerank,
-                rewrite=spec.rewrite,
-            )
-            for profile in PROFILES
-            if (spec := presets.get(profile)) is not None
-        ],
     )
 
 
@@ -122,11 +104,11 @@ def _impact_data(impact: PlanImpact | None) -> PlanImpactData | None:
             count=impact.over_max_kb.count,
             sample=list(impact.over_max_kb.sample),
         ),
-        lose_profile=ImpactGroupData(
-            count=impact.lose_profile.count,
-            sample=list(impact.lose_profile.sample),
+        over_capability=ImpactGroupData(
+            count=impact.over_capability.count,
+            sample=list(impact.over_capability.sample),
         ),
-        policies_losing_profile=impact.policies_losing_profile,
+        policies_over_capability=impact.policies_over_capability,
     )
 
 

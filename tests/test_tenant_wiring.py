@@ -15,6 +15,8 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
+from tests.support.policy import PROFILE_QUALITY, PROFILE_SPEED
 
 import importlib
 import inspect
@@ -32,9 +34,9 @@ from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.api_key import ApiKey
 from app.models.chunk import DEFAULT_INDEX_VERSION
-from app.models.key_policy import PROFILE_QUALITY, PROFILE_SPEED, KeyPolicy
+from app.models.key_policy import KeyPolicy
 from app.models.knowledge_base import KnowledgeBase
-from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_STANDARD, Plan, plan_row_of
+from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_PLUS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import AsyncSessionAdapter, RecordingSession
 
@@ -43,7 +45,7 @@ OTHER_TENANT_ID = "tenant_other"
 POLICY_ID = "22222222-2222-4222-8222-222222222222"
 KEY_ID = "33333333-3333-4333-8333-333333333333"
 KEY_VALUE = "rc_live_0123456789abcdef0123456789abcdef"
-PLAN_IDS = {PLAN_FREE: 1, PLAN_STANDARD: 2, PLAN_PRO: 3}
+PLAN_IDS = {PLAN_FREE: 1, PLAN_PLUS: 2, PLAN_PRO: 3}
 
 KB_IN_SCOPE = "kb-in-scope"
 KB_OUT_OF_SCOPE = "kb-out-of-scope"
@@ -89,7 +91,7 @@ def _tenant_row(*, tenant_id: str = TENANT_ID, plan_code: str = PLAN_PRO) -> Ten
 
 
 def _policy_row(*, allowed_kb_ids: list[str], profile: str = PROFILE_SPEED) -> KeyPolicy:
-    return KeyPolicy(
+    return policy_row(
         id=POLICY_ID,
         tenant_id=TENANT_ID,
         name="外部应用",
@@ -649,14 +651,12 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
         entries.mcp_call("rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"})
     )
 
+    # 第 13 步：回显改报参数本身，两条入口拿到的仍是同一份 options。
     expected = {
         "plan": PLAN_PRO,
-        "requested_profile": PROFILE_SPEED,
         "mode": "vector",
         "top_k": 5,
         "rerank": False,
-        "rewrite": False,
-        # 编排（#147）：两条入口回显的是同一份 ``options``，所以这个键也必须逐字相同。
         "kb_count": 1,
         "clipped": [],
     }
@@ -664,18 +664,18 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
     assert mcp_payload["metadata"]["tenant_policy"] == expected
 
 
-def test_both_entries_reject_a_profile_the_plan_does_not_allow(
+def test_an_old_profile_name_is_not_a_gate_on_either_entry(
     quality_on_free: EntryClient,
 ) -> None:
-    """档位门禁只有一份：同一把挂 ``quality`` 的 Key 打两扇门，都是 ``20013``。"""
+    """第 13 步：档位名不再是门禁。同一把挂着旧 ``quality`` 名的 Key 打两扇门，都成功。"""
 
-    http_code = quality_on_free.retrieve([KB_IN_SCOPE])["code"]
+    http_body = quality_on_free.retrieve([KB_IN_SCOPE])
     result = quality_on_free.mcp_call(
         "rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"}
     )
 
-    assert result["isError"] is True
-    assert http_code == _mcp_code(result) == ErrorCode.FEATURE_NOT_ALLOWED
+    assert http_body["code"] == ErrorCode.SUCCESS
+    assert result["isError"] is not True
 
 
 def test_each_entry_keeps_exactly_one_adapter_and_the_kernel_keeps_no_shim() -> None:
@@ -724,12 +724,20 @@ def test_mcp_tool_signatures_expose_no_privileged_fields() -> None:
     )
     tools = {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
-    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases", "rag_research"}
-    properties = set(getattr(tools["rag_retrieve"], "parameters", {})["properties"])
-    assert properties == {"kb_ids", "query"}
-    # 第三个工具（票 #151）走的是同一份权限表达：签名里只有 kb_ids + query。
-    research = set(getattr(tools["rag_research"], "parameters", {})["properties"])
-    assert research == {"kb_ids", "query"}
+    # 第 13 步：四条端点 → 四把检索/研究工具 + 列库工具，共五把。
+    assert set(tools) == {
+        "rag_retrieve",
+        "rag_rewrite",
+        "rag_decompose",
+        "rag_research",
+        "rag_list_knowledge_bases",
+    }
+    # 五把工具同一份权限表达：签名里只有 kb_ids + query（列库工具无参）。
+    for name in ("rag_retrieve", "rag_rewrite", "rag_decompose", "rag_research"):
+        assert set(getattr(tools[name], "parameters", {})["properties"]) == {
+            "kb_ids",
+            "query",
+        }, name
 
     privileged = {
         "tenant",

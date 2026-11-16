@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import importlib
 from dataclasses import dataclass
@@ -79,23 +80,18 @@ def _key_row(key_id: str, key_value: str, *, tenant_id: str, policy_id: str) -> 
 
 
 def _policy_row(policy_id: str, *, tenant_id: str, profile: str, qps: int, daily: int) -> KeyPolicy:
-    return KeyPolicy(
+    return policy_row(
         id=policy_id,
         tenant_id=tenant_id,
         name="外部应用",
         allowed_kb_ids=[],
         research_allowed=False,
-        hybrid_allowed=False,
         rerank_allowed=False,
-        query_rewrite_allowed=False,
         retrieve_qps=qps,
         retrieve_daily=daily,
-        research_qps=0,
-        research_daily=0,
         profile=profile,
         include_parent=True,
         expand_table_rows=True,
-        custom_options={},
     )
 
 
@@ -226,44 +222,34 @@ def exploding_store() -> Any:
 
 
 def _check_plan_snapshot(data: Any, plan_code: str) -> None:
-    """套餐快照的对外形状：名称 + 能力开关 + 八个数值上限，一列不多一列不少。"""
+    """套餐快照的对外形状：名称 + 五个授权位 + 三本账 + 质量封顶 + 四个规模上限。"""
 
     plan = PLAN_PRESETS[plan_code]
     snapshot = data["plan"]
     assert set(snapshot) == {
         "code",
         "name",
-        "allowed_profiles",
-        "hybrid_allowed",
-        "rerank_allowed",
-        "query_rewrite_allowed",
+        # 五个授权位（能不能用）。
+        "retrieve_allowed",
+        "rewrite_allowed",
+        "decompose_allowed",
         "research_allowed",
+        "rerank_allowed",
+        # 三本账的租户级那一半（用多少）。
         "retrieve_qps",
         "retrieve_daily",
-        "research_qps",
-        "research_daily",
+        "rerank_qps",
+        "rerank_daily",
+        "llm_qps",
+        "llm_daily",
+        # 质量封顶与规模上限。
+        "max_top_k",
         "max_kb",
         "max_kb_per_retrieve",
         "max_documents_per_kb",
         "max_processing_documents",
     }
-    assert snapshot["code"] == plan.code
-    assert snapshot["name"] == plan.name
-    assert snapshot["allowed_profiles"] == list(plan.allowed_profiles)
-    for column in (
-        "hybrid_allowed",
-        "rerank_allowed",
-        "query_rewrite_allowed",
-        "research_allowed",
-        "retrieve_qps",
-        "retrieve_daily",
-        "research_qps",
-        "research_daily",
-        "max_kb",
-        "max_kb_per_retrieve",
-        "max_documents_per_kb",
-        "max_processing_documents",
-    ):
+    for column in set(snapshot):
         assert snapshot[column] == getattr(plan, column)
 
 
@@ -288,10 +274,11 @@ def test_me_returns_the_callers_identity_plan_and_todays_usage(
         "source": "daily_counter",
         "note": None,
     }
-    # Research 那一本账**同形**但各算各的（票 #150）：上限取 research_daily。
-    assert data["research_usage"] == {
+    # llm 那一本账**同形**但各算各的（第 13 步：Research 的成本记在 llm 账上）：
+    # 上限取 llm_daily。
+    assert data["llm_usage"] == {
         "used": 0,
-        "limit": PLAN_PRESETS["pro"].research_daily,
+        "limit": PLAN_PRESETS["pro"].llm_daily,
         "source": "daily_counter",
         "note": None,
     }
@@ -360,12 +347,12 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
     assert exploding_store.calls == [], "关掉时连一条 Redis 命令都不该发"
 
 
-def test_the_research_usage_reads_its_own_bucket(
+def test_the_llm_usage_reads_its_own_bucket(
     me: _Harness, monkeypatch: pytest.MonkeyPatch, counter_store: _ReadOnlyCounterStore
 ) -> None:
-    """检索用量与 Research 用量各读各的桶（票 #150）：同形，但不许相加。"""
+    """检索用量与 llm 用量各读各的桶（第 13 步三本账）：同形，但不许相加。"""
 
-    from app.services.quota_gate import RESEARCH_NAMESPACE
+    from app.services.quota_gate import LLM_NAMESPACE
 
     monkeypatch.setattr(settings, "RATE_LIMIT_ENABLED", True)
     window = QuotaCounters(counter_store).window()
@@ -375,15 +362,15 @@ def test_the_research_usage_reads_its_own_bucket(
             level=LEVEL_TENANT,
             ident=TENANT_ALPHA,
             window=window,
-            namespace=RESEARCH_NAMESPACE,
+            namespace=LLM_NAMESPACE,
         )
     ] = 3
 
     data = me.data(KEY_ALPHA)
 
     assert data["usage"]["used"] == 7
-    assert data["research_usage"]["used"] == 3, "两本账互不相加"
-    assert data["research_usage"]["limit"] == PLAN_PRESETS["pro"].research_daily
+    assert data["llm_usage"]["used"] == 3, "两本账互不相加"
+    assert data["llm_usage"]["limit"] == PLAN_PRESETS["pro"].llm_daily
 
 
 def test_reading_today_usage_never_increments_anything(

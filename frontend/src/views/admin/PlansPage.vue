@@ -9,8 +9,8 @@
  *    影响面只能在事后从审计里看到，而客户已经当场超限。
  * 2. **影响面的数字用 `count`**：后端 `sample` 最多只放 5 个名字，拿 `sample.length`
  *    当条件会在受影响对象更多时漏掉弹窗。判定在 `utils/adminPlans.ts`（有 vitest）。
- * 3. **档位只勾选、不自由输入**：四个勾选框来自常量，保存前再用 `buildPlanPatch` 过滤
- *    一遍，未知值不可能发到后端。
+ * 3. **授权位只勾选、不自由输入**：五个勾选框来自常量，保存时 `buildPlanPatch` 只发
+ *    真的改了的位，未知字段不可能发到后端（`extra=forbid` 会判 20002）。
  *
  * **删除入口暂时下线**。后端 `DELETE /console/plans/{plan_id}` 仍在（还被 `20019` 引用
  * 判定守着），但界面上不提供入口：删掉一个套餐的后果是「用它判定的所有租户当场换档」，
@@ -31,13 +31,12 @@ import {
   updatePlan,
 } from '../../services/consoleAdmin'
 import type { PlanData, PlanEditableFields, PlanImpact } from '../../types/consoleAdmin'
-import { KEY_PROFILES } from '../../types/key'
 import {
   PLAN_CAPABILITIES,
   PLAN_NUMBER_FIELDS,
+  PLAN_ZEROABLE_FIELDS,
   buildPlanPatch,
   impactLines,
-  pickKnownProfiles,
   shouldConfirm,
 } from '../../utils/adminPlans'
 import { formatDateTime } from '../../utils/datetime'
@@ -56,13 +55,18 @@ const loadError = computed(() =>
 function editableOf(plan: PlanData): PlanEditableFields {
   return {
     name: plan.name,
-    allowed_profiles: pickKnownProfiles(plan.allowed_profiles),
-    hybrid_allowed: plan.hybrid_allowed,
-    rerank_allowed: plan.rerank_allowed,
-    query_rewrite_allowed: plan.query_rewrite_allowed,
+    retrieve_allowed: plan.retrieve_allowed,
+    rewrite_allowed: plan.rewrite_allowed,
+    decompose_allowed: plan.decompose_allowed,
     research_allowed: plan.research_allowed,
+    rerank_allowed: plan.rerank_allowed,
     retrieve_qps: plan.retrieve_qps,
     retrieve_daily: plan.retrieve_daily,
+    rerank_qps: plan.rerank_qps,
+    rerank_daily: plan.rerank_daily,
+    llm_qps: plan.llm_qps,
+    llm_daily: plan.llm_daily,
+    max_top_k: plan.max_top_k,
     max_kb: plan.max_kb,
     max_kb_per_retrieve: plan.max_kb_per_retrieve,
     max_documents_per_kb: plan.max_documents_per_kb,
@@ -73,13 +77,18 @@ function editableOf(plan: PlanData): PlanEditableFields {
 function emptyDraft(): PlanEditableFields {
   return {
     name: '',
-    allowed_profiles: [],
-    hybrid_allowed: false,
-    rerank_allowed: false,
-    query_rewrite_allowed: false,
+    retrieve_allowed: true,
+    rewrite_allowed: false,
+    decompose_allowed: false,
     research_allowed: false,
+    rerank_allowed: false,
     retrieve_qps: 1,
     retrieve_daily: 1,
+    rerank_qps: 0,
+    rerank_daily: 0,
+    llm_qps: 0,
+    llm_daily: 0,
+    max_top_k: 0,
     max_kb: 1,
     max_kb_per_retrieve: 1,
     max_documents_per_kb: 1,
@@ -96,8 +105,8 @@ const dialogVisible = ref(false)
 /**
  * 两步保存走通用组合式函数：试算 → （有影响才）确认 → 真写。
  *
- * 判定与文案仍留在本页：套餐的 `PlanImpact` 形状（租户超库数 / 失去档位）与检索参数页
- * 的 `SettingsImpact` 不同，确认条件也只有本页能判。组合式函数只负责顺序与 loading。
+ * 判定与文案仍留在本页：套餐的 `PlanImpact` 形状（租户超库数 / 超出新授权范围）与检索
+ * 参数页的 `SettingsImpact` 不同，确认条件也只有本页能判。组合式函数只负责顺序与 loading。
  */
 const { saving, save: runDryRunSave } = useDryRunSave<PlanImpact>({
   formatImpact: (impact) => {
@@ -140,11 +149,6 @@ async function save(): Promise<void> {
     ElMessage.warning('套餐名不能为空')
     return
   }
-  if (draft.allowed_profiles.length === 0) {
-    // 后端也会拒（20018），这里先说清楚原因：空白名单等于把这个套餐下的 Key 当场停用。
-    ElMessage.warning('至少勾选一个档位：空白名单会让这个套餐下的 Key 当场全部不可用')
-    return
-  }
   for (const field of PLAN_NUMBER_FIELDS) {
     const value = draft[field.key]
     if (!Number.isInteger(value) || value < 1) {
@@ -152,9 +156,12 @@ async function save(): Promise<void> {
       return
     }
   }
-  if (!draft.allowed_profiles.every((code) => (KEY_PROFILES as readonly string[]).includes(code))) {
-    ElMessage.warning('档位只能从 speed / balanced / quality / custom 里选')
-    return
+  for (const field of PLAN_ZEROABLE_FIELDS) {
+    const value = draft[field.key]
+    if (!Number.isInteger(value) || value < 0) {
+      ElMessage.warning(`${field.label}必须是 ≥ 0 的整数（0 = 关闭 / 不额外封顶）`)
+      return
+    }
   }
 
   const patch = buildPlanPatch(editableOf(plan), draft)
@@ -216,8 +223,7 @@ async function refresh(): Promise<void> {
         <thead>
           <tr>
             <th class="th-label px-3 py-2 text-left">套餐</th>
-            <th class="th-label px-3 py-2 text-left">档位白名单</th>
-            <th class="th-label px-3 py-2 text-left">能力开关</th>
+            <th class="th-label px-3 py-2 text-left">授权位</th>
             <th class="th-label px-3 py-2 text-left">上限</th>
             <th class="th-label px-3 py-2 text-left">更新时间</th>
             <th class="th-label px-3 py-2 text-left">操作</th>
@@ -228,22 +234,6 @@ async function refresh(): Promise<void> {
             <td class="px-3 py-3">
               <p class="font-medium text-ink">{{ plan.name }}</p>
               <p class="font-mono text-xs text-muted">{{ plan.code }}</p>
-            </td>
-
-            <!-- 档位用 chips：`speed / balanced / custom` 这种长串在列里会折在斜杠中间。 -->
-            <td class="px-3 py-3">
-              <div class="flex flex-wrap gap-1">
-                <span
-                  v-for="code in plan.allowed_profiles"
-                  :key="code"
-                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 font-mono text-xs text-slate-600"
-                >
-                  {{ code }}
-                </span>
-                <span v-if="plan.allowed_profiles.length === 0" class="text-xs text-slate-400">
-                  —
-                </span>
-              </div>
             </td>
 
             <td class="px-3 py-3">
@@ -269,6 +259,14 @@ async function refresh(): Promise<void> {
               <div class="flex flex-wrap gap-1">
                 <span
                   v-for="field in PLAN_NUMBER_FIELDS"
+                  :key="field.key"
+                  class="rounded-full border border-line bg-surface-muted px-2 py-0.5 text-xs whitespace-nowrap text-slate-600"
+                  :title="field.label"
+                >
+                  {{ field.short }} {{ plan[field.key] }} {{ field.unit }}
+                </span>
+                <span
+                  v-for="field in PLAN_ZEROABLE_FIELDS"
                   :key="field.key"
                   class="rounded-full border border-line bg-surface-muted px-2 py-0.5 text-xs whitespace-nowrap text-slate-600"
                   :title="field.label"
@@ -311,22 +309,10 @@ async function refresh(): Promise<void> {
         </label>
 
         <div>
-          <p class="mb-2 text-xs text-muted">
-            档位白名单
-            <span class="ml-1">（四个勾选框，没有自由输入）</span>
-          </p>
-          <el-checkbox-group v-model="draft.allowed_profiles">
-            <el-checkbox-button v-for="code in KEY_PROFILES" :key="code" :value="code">
-              {{ code }}
-            </el-checkbox-button>
-          </el-checkbox-group>
-        </div>
-
-        <div>
-          <p class="mb-2 text-xs text-muted">能力开关</p>
+          <p class="mb-2 text-xs text-muted">授权位</p>
           <!--
             用勾选框而不是开关：Element 的 switch 关闭态是一块浅粉，压在这套米白上很扎眼，
-            而「这个能力开没开」本来就是勾选语义。四个并排也更好一眼扫完。
+            而「这个能力开没开」本来就是勾选语义。五个并排也更好一眼扫完。
           -->
           <div class="grid gap-x-6 gap-y-1.5 sm:grid-cols-2">
             <el-checkbox
@@ -360,8 +346,32 @@ async function refresh(): Promise<void> {
           </div>
         </div>
 
+        <div>
+          <p class="mb-2 text-xs text-muted">
+            加工额度与质量封顶
+            <span class="ml-1">（0 = 这项能力没买 / 不额外封顶）</span>
+          </p>
+          <div class="grid gap-3 sm:grid-cols-2">
+            <label
+              v-for="field in PLAN_ZEROABLE_FIELDS"
+              :key="field.key"
+              class="flex items-center gap-2"
+            >
+              <span class="w-28 shrink-0 text-xs text-muted">{{ field.label }}</span>
+              <el-input-number
+                v-model="draft[field.key]"
+                :min="0"
+                :step="1"
+                controls-position="right"
+                style="width: 96px"
+              />
+              <span class="text-xs text-muted">{{ field.unit }}</span>
+            </label>
+          </div>
+        </div>
+
         <p class="rounded-control bg-surface-muted px-3 py-2 text-xs leading-relaxed text-muted">
-          点「保存」只先试算：有租户会超库数或失去档位时，会再弹一次确认，确认后才落库。
+          点「保存」只先试算：有租户会超库数或超出新的授权范围时，会再弹一次确认，确认后才落库。
         </p>
       </div>
 

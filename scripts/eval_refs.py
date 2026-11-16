@@ -705,9 +705,8 @@ def _apply_research(
     meta = data.get("metadata") or {}
     outcome.stop_reason = meta.get("stop_reason")
     outcome.evidence_state = meta.get("evidence_state")
-    outcome.degraded_reason = (meta.get("sub_search_degraded_reasons") or [None])[0] or meta.get(
-        "strong_model_fallback"
-    )
+    # 第 13 步：唯一的降级产出方是子检索；强模型兜底字段已经删除。
+    outcome.degraded_reason = (meta.get("sub_search_degraded_reasons") or [None])[0]
     outcome.hits = [
         _hit_from_chunk(row, dict(document_names)) for row in data.get("materials") or []
     ]
@@ -776,7 +775,6 @@ async def evaluate_live_question(
                     expand_table_rows=True,
                     # 重排是「同一台机器上的今天」的一部分，由 --rerank 钉死。
                     rerank=rerank_enabled,
-                    rewrite=False,
                 ),
             )
             _apply_retrieval(outcome, response, document_names)
@@ -834,7 +832,7 @@ async def run_live(
     一次」的事与线上完全一致。这条路径不改 ``app/`` 任何一行——评测脚本装配应用，是既有
     做法（``scripts/eval_retrieval.py`` 同形）。
 
-    本题集**不开启**查询改写（``rewrite=False``）：改写会把「跨文档」这一层的措辞差异
+    本题集**不走查询改写端点**（原句直查）：改写会把「跨文档」这一层的措辞差异
     抹平，测出来的就不是题集想测的东西了。折叠与表格行折回保持默认开启。
     """
 
@@ -1085,20 +1083,22 @@ def model_call_stats(outcomes: Sequence[Outcome]) -> dict[str, Any]:
     }
 
 
-def research_model_call_budget() -> tuple[int, int]:
-    """一次 Research 的模型调用硬顶与**含兜底位**的硬顶：``(3, 4)``。
+def research_model_call_budget() -> int:
+    """一次 Research 的模型调用硬顶（第 13 步起就是 ``MAX_MODEL_CALLS``）。
 
-    **从代码常量读，不在这里抄一份**（#156）：#148 写的是「3 次」，#149 之后生成阶段多一个
-    强模型失败的兜底位变成「最多 4 次」。报告、用例、脚本各处如果各写一个数字，迟早出现
+    **从代码常量读，不在这里抄一份**（#156）：模型失败整单 50003、不再有强模型兜底，
+    所以「典型次数」与「含兜底的硬顶」不再是两个数字。报告、用例、脚本各处如果
+    各写一个数字，迟早出现
     「脚本文案说 3、代码允许 4」这种两套口径——而它恰好是成本话题，读的人会当真。
 
     惰性导入：这个模块只依赖标准库，但 ``scripts/`` 的既有纪律是「dry-run 不 import 应用」，
     保持它能让空跑自检仍然只碰标准库。
     """
 
-    from app.services.research_limits import MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK
+    from app.services.research_limits import MAX_MODEL_CALLS
 
-    return MAX_MODEL_CALLS, MAX_MODEL_CALLS_WITH_FALLBACK
+    # 第 13 步删掉了「强模型失败换快模型兜底」那第五次调用：硬顶就是 MAX_MODEL_CALLS。
+    return MAX_MODEL_CALLS
 
 
 def research_search_budget() -> int:
@@ -1136,7 +1136,7 @@ def predict_calls(
     * 能力已装但**这次不采集**（dry-run / fixture 不连库）：0 次是「没采集」，不是「免费」。
       这一条最容易读错，所以它连硬顶一起印出来。
 
-    真的会跑 Research 时用**上限**估：每题 ≤ ``MAX_MODEL_CALLS_WITH_FALLBACK`` 次 LLM +
+    真的会跑 Research 时用**上限**估：每题 ≤ ``MAX_MODEL_CALLS`` 次 LLM +
     ≤ ``research_search_budget()`` 条子检索 ×（嵌入 [+ 重排]）。上限而不是典型值，是因为
     「跑之前打印预计」的用途是**别超预算**；跑完再打实际值。
     """
@@ -1145,7 +1145,7 @@ def predict_calls(
     rerank = question_count if (embedding and rerank_enabled) else 0
     research_llm = 0
     research_searches = 0
-    calls, calls_with_fallback = research_model_call_budget()
+    calls = research_model_call_budget()
     searches_cap = research_search_budget()
     will_run = (
         research_enabled and research_status == CAPABILITY_AVAILABLE and source == SOURCE_LIVE
@@ -1156,18 +1156,17 @@ def predict_calls(
         # 能力没装：实际不会发出任何请求，也不按「将来会有 3 次」预扣。
         research_note = f"未落地（{CAPABILITY_NOT_IMPLEMENTED}），实际不会发出任何请求"
     elif will_run:
-        research_llm = question_count * calls_with_fallback
+        research_llm = question_count * calls
         research_searches = question_count * searches_cap
         research_note = (
-            f"会真的走 /rag/research：每题 ≤{calls_with_fallback} 次模型调用 + "
+            f"会真的走 /rag/research：每题 ≤{calls} 次模型调用 + "
             f"≤{searches_cap} 条子检索（每条 1 次嵌入"
             f"{' + 1 次重排' if rerank_enabled else ''}），按上限估"
         )
     else:
         research_note = (
             f"能力已就位，但本次不采集（--source {source} 不连库），实际 0 次；"
-            f"一次 Research 的硬顶是 {calls} 次模型调用（含生成阶段的强模型兜底位最多 "
-            f"{calls_with_fallback} 次）"
+            f"一次 Research 的硬顶是 {calls} 次模型调用"
         )
     research_total = research_llm + research_searches * (1 + (1 if rerank_enabled else 0))
     return {
@@ -1192,7 +1191,6 @@ def predict_calls(
         # 硬顶单独一栏：它是「一次 Research 最多烧几次」，与「这次跑打不打算调」无关。
         "research_llm_budget": {
             "hard_cap": calls,
-            "with_strong_model_fallback": calls_with_fallback,
             "sub_searches": searches_cap,
         },
     }
@@ -1648,13 +1646,13 @@ def _graph_note(status: str) -> str:
 def _research_note(status: str) -> str:
     """Research 那一栏的说明；硬顶从代码常量取，避免「报告说 3、代码允许 4」。"""
 
-    calls, with_fallback = research_model_call_budget()
+    calls = research_model_call_budget()
     if status == CAPABILITY_AVAILABLE:
         return (
             "`/rag/research` 与 MCP `rag_research` 已就位（同一份 `gated_research`）；"
-            f"一次调用硬顶 {calls} 次模型调用（含生成兜底 {with_fallback} 次）"
+            f"一次调用硬顶 {calls} 次模型调用"
         )
-    return "`/rag/research` 或 `research_gate` 不在——七种停止原因、引用块四条硬校验一条都不存在"
+    return "`/rag/research` 或 `research_gate` 不在——六种停止原因、引用块四条硬校验一条都不存在"
 
 
 def render_report(payload: dict[str, Any], config: RunConfig) -> str:

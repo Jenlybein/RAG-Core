@@ -41,6 +41,11 @@ export interface RetrievedChunk {
   page: number | null
   doc_version: number | null
   split_strategy: string | null
+  /**
+   * 问题分解检索专用：哪几条子问题把这一节顶上来的。直接检索 / 改写检索没有这个键
+   * （后端缺省时不序列化），所以是可选。
+   */
+  matched_queries?: string[]
 }
 
 /** `metadata.retrieval.rerank`：重排事实；单模式下恒为 null。 */
@@ -76,18 +81,20 @@ export interface RetrievalBlock {
    * 契约的一部分（字段缺失不等于响应坏了）。
    */
   query_optimization?: unknown
+  /**
+   * 第 13 步问题分解检索：这次拆出的要点与子查询原句。只有 /rag/decompose 有。
+   */
+  decomposition?: { points: string[]; queries: string[] }
 }
 
 /** `metadata.tenant_policy`：这次调用**实际生效**了什么（GLOSSARY）。 */
 export interface TenantPolicy {
   plan: string
-  requested_profile: string
   mode: string
   top_k: number
   rerank: boolean
-  rewrite: boolean
   kb_count: number
-  /** 被套餐上限裁掉的字段名；空数组表示没裁。 */
+  /** 被平台/套餐上限裁掉的字段名；空数组表示没裁。 */
   clipped: string[]
 }
 

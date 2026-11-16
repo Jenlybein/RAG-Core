@@ -121,17 +121,17 @@ CONDITION_CONTROL: Final[str] = "control"
 
 #: 一次 Research 的**名义**与**最坏**模型调用次数，从生产常量抄（不手编）：
 #: 规划 + 判定 + 复查 + 生成 = ``MAX_MODEL_CALLS``（4）；含生成阶段的强模型兜底位 =
-#: ``MAX_MODEL_CALLS_WITH_FALLBACK``（5）。``tests/test_eval_t167_gap_gate.py`` 钉住两者相等。
+#: ``MAX_MODEL_CALLS``（4）。``tests/test_eval_t167_gap_gate.py`` 钉住两者相等。
 #:
 #: 名义取 4 而不是 3：这批题**注定**有缺口（半可答与全不可答都带不可答方面），补证几乎必然
 #: 捞到材料、于是必然跑复查。预检那次真实调用就是 4 次（见报告第五节）。
-NOMINAL_CALLS_PER_CASE: Final[int] = 4
-WORST_CALLS_PER_CASE: Final[int] = 5
+NOMINAL_CALLS_PER_CASE: Final[int] = 3
+WORST_CALLS_PER_CASE: Final[int] = 4
 
 #: 关掉 ⑤ 之后少一次复查：名义 3（规划 + 判定 + 生成），最坏 4（+强模型兜底位）。
 #: **不改生产常量**——这是「把那一格拿掉之后还剩几次」，不是另一套契约。
-NOMINAL_CALLS_PER_CONTROL_CASE: Final[int] = 3
-WORST_CALLS_PER_CONTROL_CASE: Final[int] = 4
+NOMINAL_CALLS_PER_CONTROL_CASE: Final[int] = 2
+WORST_CALLS_PER_CONTROL_CASE: Final[int] = 3
 
 #: 评测租户与它要检索的那几个库。**语料范围 = 关键词证据的范围**：同一个常量两处用，
 #: 于是「证据说的是哪批正文」与「检索真的查了哪批正文」在结构上不可能对不上。
@@ -1138,7 +1138,6 @@ RECORD_KEYS: Final[tuple[str, ...]] = (
     "gap_declaration_count",
     "materials",
     "evidence_state",
-    "strong_model_fallback",
     "sub_search_degraded",
     "duration_ms",
     "points",
@@ -1198,7 +1197,6 @@ def _retrieval_options() -> Any:
         fold_to_sections=True,
         expand_table_rows=False,
         rerank=False,
-        rewrite=False,
     )
 
 
@@ -1286,7 +1284,6 @@ def case_record(case: EvalCase, outcome: Any) -> dict[str, Any]:
         "gap_declaration_count": answer.count(GAP_DECLARATION) if isinstance(answer, str) else 0,
         "materials": len(outcome.materials),
         "evidence_state": outcome.evidence_state,
-        "strong_model_fallback": outcome.strong_model_fallback,
         "sub_search_degraded": list(outcome.sub_search_degraded),
         "duration_ms": int(outcome.duration_ms),
         "points": [point.text for point in outcome.points],

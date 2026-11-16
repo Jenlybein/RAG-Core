@@ -57,11 +57,9 @@ function metadataOf(): RetrievalMetadata {
     },
     tenant_policy: {
       plan: 'pro',
-      requested_profile: 'quality',
       mode: 'hybrid',
       top_k: 3,
       rerank: true,
-      rewrite: true,
       kb_count: 1,
       clipped: [],
     },

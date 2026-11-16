@@ -11,6 +11,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
 
 import importlib
 import re
@@ -30,12 +31,13 @@ from app.core.auth import DEV_KEY_POLICY, KeyContext
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION
-from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import QuotaCounters, QuotaWindow, daily_key, qps_key
 from app.utils.status import DocumentStatus
 from tests import fake_db
 from tests.fake_db import AsyncSessionAdapter, RecordingSession
+from tests.support.policy import PROFILE_SPEED
 
 TENANT_ID = "tenant_acme"
 KEY_A = "key-a"
@@ -149,9 +151,7 @@ def _policy(
 ) -> KeyPolicySnapshot:
     """只关心本票两列的一份配置快照；档位取 speed 是为了把链路钉成向量一路。"""
 
-    return replace(
-        DEV_KEY_POLICY,
-        profile=profile,
+    return support_policy(profile=profile,
         allowed_kb_ids=allowed_kb_ids,
         retrieve_qps=qps,
         retrieve_daily=daily,

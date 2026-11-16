@@ -2,7 +2,7 @@
 
 这份文件守两件在线下就能钉住的事：
 
-1. **形状**（结构守卫，写法照 ``tests/test_transaction.py``）：八条只读端点从
+1. **形状**（结构守卫，写法照 ``tests/test_transaction.py``）：只读端点从
    :func:`app.db.async_session.get_async_db` 取会话；同步的 ``get_db`` / ``get_transaction``
    两个依赖**连名字都不存在**。默认套件离线，没有真库可用，「这条路径走的是哪套会话」
    只能从依赖树上读出来；不钉住它，一张票改完可能只改了一半而全绿。
@@ -30,11 +30,11 @@ from app.core.redis_client import (
     set_sync_redis_client,
 )
 
-#: 本票搬的八条只读端点：密钥 / 套餐 / 档位 / 运行时设置 / 审计 / traces 的列表与详情。
+#: 本票搬的只读端点：密钥 / 套餐 / 运行时设置 / 审计 / traces 的列表与详情。
+#: 第 13 步：档位预设端点随 profile_presets 表一起删除。
 READ_PATHS: tuple[str, ...] = (
     "/console/keys",
     "/console/plans",
-    "/console/profile-presets",
     "/console/settings",
     "/console/audit-logs",
     "/console/retrieval-traces",
@@ -50,7 +50,6 @@ WRITE_PATHS: tuple[tuple[str, str], ...] = (
     ("PATCH", "/console/plans/{plan_id}"),
     ("PATCH", "/console/accounts/{account_id}"),
     ("PATCH", "/console/settings"),
-    ("PATCH", "/console/profile-presets/{profile}"),
 )
 
 

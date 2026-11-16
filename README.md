@@ -143,7 +143,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 ```
 
 `.env` 默认 `AUTH_ENABLED=true`，所以数据面认的是 `api_keys` 表里的**真实 Key**
-（`rc_live_…`）：`tenant_id`、密钥配置白名单、档位、配额都由那把 Key 决定。
+（`rc_live_…`）：`tenant_id`、密钥配置白名单、五项授权位、三本账额度都由那把 Key 决定。
 
 **内置开发身份**（`Authorization: Bearer dev-key`，固定租户 `tenant_demo`、配置全开）只在
 `AUTH_ENABLED=false` 时可达。这个开关一旦漏配会**静默降级**——数据面只认占位 Key，调试台
@@ -164,7 +164,7 @@ powershell -File scripts/dev-api.ps1   # Windows
 
 评测与验收矩阵留痕在 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)（**第 4 步的 8 篇 / 245 片 / 26 题是历史快照**；当前语料已扩容，以该文件为准）。
 
-**第 7 步已完成**：占位 Key 换成 `api_keys` 表真校验，「质量档位」锁在密钥配置上；`mode` / `top_k` 已经不在请求体里。做法与可复现步骤见下节。
+**第 7 步已完成**：占位 Key 换成 `api_keys` 表真校验，质量参数与授权位锁在密钥配置上；`mode` / `top_k` 已经不在请求体里。做法与可复现步骤见下节。
 
 ## 第 7 步：多租户（已落地）
 
@@ -179,7 +179,7 @@ uv run python scripts/issue_api_key.py --tenant-id tenant_acme --policy-id <上�
 uv run python scripts/create_admin.py --username admin   # 控制台第一个管理员（口令只存 scrypt 哈希）
 ```
 
-`create_tenant.py` 会顺手建一套**最小权限**的密钥配置：能力全关、上限照抄套餐、档位取套餐白名单的第一档；**空白名单 = 一个库都不许查**（不是「全部」）。所以新租户的第一个库要走「建库 → 把 `kb_id` 圈进白名单」两步。
+`create_tenant.py` 会顺手建一套**最小权限**的密钥配置：授权位只开 `retrieve`、额度照抄套餐、参数取部署缺省；**空白名单 = 一个库都不许查**（不是「全部」）。所以新租户的第一个库要走「建库 → 把 `kb_id` 圈进白名单」两步。
 
 ### 2. 打开真实鉴权（`.env`，生产必须）
 
@@ -213,7 +213,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
   -d '{"kb_ids":["<kb_id>"],"query":"设备证书过期怎么处理"}'
 ```
 
-成功时 `code: 0`，`metadata.tenant_policy` 回显本次实际生效的 `plan` / `requested_profile` / `mode` / `top_k` / `rerank` / `rewrite` / `kb_count` / `clipped`。`data` 顶层只有 `query` / `kb_ids` / `retrieved_chunks` / `metadata` 四个键——第 11 步收窄把「独立编排块」整条撤掉了（ADR-0029），要「用模型加工材料」只剩受控 Research 一个出口。MCP 侧用同一把 Key：先 `initialize`（响应头里的 `mcp-session-id` 要带回），再 `notifications/initialized`，然后 `tools/call` 调 `rag_retrieve`，参数仍是 `{"kb_ids":[...],"query":"..."}`；两条入口的鉴权、白名单与档位门禁是同一份实现，拿到的 data 载荷逐字段相同（见 `tests/test_tenant_wiring.py`）。
+成功时 `code: 0`，`metadata.tenant_policy` 回显本次实际生效的 `plan` / `mode` / `top_k` / `rerank` / `kb_count` / `clipped`。`data` 顶层只有 `query` / `kb_ids` / `retrieved_chunks` / `metadata` 四个键——第 11 步收窄把「独立编排块」整条撤掉了（ADR-0029），要「用模型加工材料」只剩受控 Research 一个出口。MCP 侧用同一把 Key：先 `initialize`（响应头里的 `mcp-session-id` 要带回），再 `notifications/initialized`，然后 `tools/call` 调 `rag_retrieve`，参数仍是 `{"kb_ids":[...],"query":"..."}`；两条入口的鉴权、白名单与授权门禁是同一份实现，拿到的 data 载荷逐字段相同（见 `tests/test_tenant_wiring.py`）。
 
 ### 5. 越权回「不存在」
 
@@ -228,7 +228,7 @@ curl --noproxy '*' -sS http://127.0.0.1:8000/api/v1/auth/me \
   -H "Authorization: Bearer rc_live_<32位hex>"
 ```
 
-返回 `{code, msg, data}`，`data` 三栏：`tenant`（`tenant_id` / `name`）、`plan`（`code` / `name` / 四个能力开关 / 六个数值上限 / `allowed_profiles`）、`usage`（`used` / `limit` / `source`）。用量读的是与控制台 `/console/me` **同一个**租户级日桶，只读不扣：`RATE_LIMIT_ENABLED=true` 时 `source: "daily_counter"`；关着时 `used: null` + `source: "not_tracked"`——平台没在统计，报 0 会骗人。两扇 `/me` 的门**不合并**：这一扇只认 API Key，`/console/me` 只认会话 cookie。
+返回 `{code, msg, data}`，`data` 三栏：`tenant`（`tenant_id` / `name`）、`plan`（`code` / `name` / 五个授权位 / 三本账六格额度 / 三项检索参数 / `max_top_k` / 四个规模上限）、`usage`（`used` / `limit` / `source`）。用量读的是与控制台 `/console/me` **同一个**租户级日桶，只读不扣：`RATE_LIMIT_ENABLED=true` 时 `source: "daily_counter"`；关着时 `used: null` + `source: "not_tracked"`——平台没在统计，报 0 会骗人。两扇 `/me` 的门**不合并**：这一扇只认 API Key，`/console/me` 只认会话 cookie。
 
 ### 7. 套餐改完立刻生效
 
@@ -238,18 +238,18 @@ curl --noproxy '*' -sS http://127.0.0.1:8000/api/v1/auth/me \
 curl --noproxy '*' -sS -c cookie.txt -X POST http://127.0.0.1:8000/console/login \
   -H "Content-Type: application/json" -d '{"username":"admin","password":"<口令>"}'
 
-# 先试算（dry_run 默认 true：只算不写，返回会超库数的租户、会失去档位的租户与受影响配置条数）
+# 先试算（dry_run 默认 true：只算不写，返回会超库数的租户、会超出套餐能力的配置与受影响条数）
 curl --noproxy '*' -sS -b cookie.txt -X PATCH "http://127.0.0.1:8000/console/plans/<plan_id>" \
   -H "x-requested-with: XMLHttpRequest" -H "Content-Type: application/json" \
-  -d '{"operation":"update","allowed_profiles":["speed","balanced"]}'
+  -d '{"operation":"update","max_top_k":10,"rerank_qps":5}'
 
 # 再落库：dry_run=false。落库与审计同一事务，提交后删套餐缓存。
 curl --noproxy '*' -sS -b cookie.txt -X PATCH "http://127.0.0.1:8000/console/plans/<plan_id>?dry_run=false" \
   -H "x-requested-with: XMLHttpRequest" -H "Content-Type: application/json" \
-  -d '{"operation":"update","allowed_profiles":["speed","balanced"]}'
+  -d '{"operation":"update","max_top_k":10,"rerank_qps":5}'
 ```
 
-把某个正在被用的档位从白名单里去掉之后，挂着那个档位的 Key **下一次调用**就是 `20013`；把日配额改小，**下一次超限就是 `20014`**——不需要重启，也不需要等缓存过期。运维侧也可以 `uv run python scripts/change_tenant_plan.py --tenant-id tenant_acme --plan free`（它改的是租户的 `plan_id` 指针）。
+把某个授权位关掉之后，没那个位的 Key **下一次调用**就是 `20013`；把日额度改小，**下一次超限就是 `20014`**——不需要重启，也不需要等缓存过期。运维侧也可以 `uv run python scripts/change_tenant_plan.py --tenant-id tenant_acme --plan free`（它改的是租户的 `plan_id` 指针）。
 
 ## 运行与验证（离线）
 

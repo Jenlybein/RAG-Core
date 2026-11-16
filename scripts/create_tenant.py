@@ -100,7 +100,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             created.tenant.plan_id,
             created.tenant.name,
             created.policy.id,
-            created.policy.profile,
+            created.policy.retrieval_mode,
             created.policy.retrieve_qps,
             created.policy.retrieve_daily,
             list(created.policy.allowed_kb_ids),
@@ -120,14 +120,14 @@ def main(argv: Sequence[str] | None = None) -> int:
         plan_id,
         tenant_name,
         policy_id,
-        profile,
+        mode,
         qps,
         daily,
         kb_ids,
     ) = report
     print(f"tenant: {tenant_id} plan_id={plan_id} name={tenant_name}")
     print(
-        f"key policy: {policy_id} profile={profile} "
+        f"key policy: {policy_id} mode={mode} "
         f"qps={qps} daily={daily} kb_ids={kb_ids}"
     )
     print_summary(

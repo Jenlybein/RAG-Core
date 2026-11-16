@@ -10,6 +10,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy_row
 
 import asyncio
 
@@ -364,15 +365,15 @@ def test_an_unknown_key_in_the_database_is_ignored(cache: Any) -> None:
 
 
 def test_pointer_keys_are_whitelisted_but_not_merged_into_settings(cache: Any) -> None:
-    """``model.role.fast`` 只被业务代码读，``Settings`` 上没有对应字段。"""
+    """``model.role.default`` 只被业务代码读，``Settings`` 上没有对应字段。"""
 
-    db = _session(_row("model.role.fast", "config-1"))
+    db = _session(_row("model.role.default", "config-1"))
 
     report = runtime_settings.apply_runtime_overrides(db, cache=cache)
 
-    assert report.valid["model.role.fast"] == "config-1"
-    assert "model.role.fast" not in report.merge_values(include_restart=True)
-    assert not hasattr(settings, "model.role.fast")
+    assert report.valid["model.role.default"] == "config-1"
+    assert "model.role.default" not in report.merge_values(include_restart=True)
+    assert not hasattr(settings, "model.role.default")
 
 
 # ──────────────────────────────────────────────────────────────────────── 回归红线
@@ -665,7 +666,7 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
     """
 
     plans: list[Plan] = []
-    for index, code in enumerate(("free", "standard", "pro"), start=1):
+    for index, code in enumerate(("free", "plus", "pro", "max"), start=1):
         row = plan_row_of(PLAN_PRESETS[code])
         row.id = index
         plans.append(row)
@@ -676,7 +677,7 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
         tenant_id = f"t{number}"
         tenants.append(Tenant(id=tenant_id, name=f"租户{number}", plan_id=3, status="active"))
         policies.append(
-            KeyPolicy(
+            policy_row(
                 id=f"p{number}",
                 tenant_id=tenant_id,
                 name=f"quality-{number}",
@@ -686,11 +687,14 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
                 research_qps=0,
                 research_daily=0,
                 profile="quality",
+                # 第 13 步：重排由配置直存参数表达，quality 配置直存 rerank=true。
+                custom_options={"rerank": True},
+                rerank_allowed=True,
             )
         )
     tenants.append(Tenant(id="free-1", name="免费租户", plan_id=1, status="active"))
     policies.append(
-        KeyPolicy(
+        policy_row(
             id="p-free",
             tenant_id="free-1",
             name="free-speed",
@@ -716,16 +720,6 @@ async def test_turning_off_rerank_reports_every_quality_tenant(cache: Any, monke
     assert len(impact.quality_degraded.sample) == 5, "sample 只放前 5 个名字"
     assert impact.quality_degraded.sample[0] == "租户1"
     assert impact.keyword_channel_lost.count == 0
-
-
-@pytest.mark.asyncio
-async def test_turning_off_rewrite_also_degrades_quality(cache: Any, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    db = _session(world=_impact_world())
-
-    impact = await runtime_settings.preview_impact(db, {"QUERY_REWRITE_ENABLED": False})
-
-    assert impact.quality_degraded.count == 6
 
 
 @pytest.mark.asyncio
@@ -763,7 +757,7 @@ async def test_a_policy_whose_plan_never_granted_the_capability_is_not_reported(
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
     world = _impact_world(mutual_tenants=1)
     world[KeyPolicy].append(
-        KeyPolicy(
+        policy_row(
             id="p-free-quality",
             tenant_id="free-1",
             name="mislabelled",

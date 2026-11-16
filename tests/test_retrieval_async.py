@@ -311,7 +311,6 @@ async def _cancelled_retrieval(
         fold_to_sections=False,
         expand_table_rows=False,
         rerank=False,
-        rewrite=False,
     )
     task = asyncio.create_task(
         service.retrieve(

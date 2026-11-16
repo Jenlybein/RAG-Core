@@ -71,15 +71,22 @@ def _tools() -> dict[str, Any]:
     return {tool.name: tool for tool in asyncio.run(mcp.list_tools())}
 
 
-def test_tools_list_grows_from_two_to_three() -> None:
-    """``tools/list`` 从两个变三个，第三个与 HTTP 请求体同形（``kb_ids`` + ``query``）。"""
+def test_tools_list_has_five_tools() -> None:
+    """第 13 步：四把检索/研究工具 + 列库工具，共五把；四把与 HTTP 请求体同形。"""
 
     tools = _tools()
 
-    assert set(tools) == {"rag_retrieve", "rag_list_knowledge_bases", "rag_research"}
-    schema = getattr(tools["rag_research"], "parameters", {}) or {}
-    assert set(schema["properties"]) == {"kb_ids", "query"}
-    assert schema.get("required") == ["kb_ids", "query"]
+    assert set(tools) == {
+        "rag_retrieve",
+        "rag_rewrite",
+        "rag_decompose",
+        "rag_research",
+        "rag_list_knowledge_bases",
+    }
+    for name in ("rag_retrieve", "rag_rewrite", "rag_decompose", "rag_research"):
+        schema = getattr(tools[name], "parameters", {}) or {}
+        assert set(schema["properties"]) == {"kb_ids", "query"}, name
+        assert schema.get("required") == ["kb_ids", "query"], name
 
 
 def test_the_description_states_the_cost_and_points_at_rag_retrieve() -> None:

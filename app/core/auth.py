@@ -35,8 +35,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
-from app.models.key_policy import PROFILE_CUSTOM, KeyPolicySnapshot, policy_snapshot_of
+from app.models.key_policy import KeyPolicySnapshot, policy_snapshot_of
 from app.models.plan import PLAN_PRO, PLAN_PRESETS, PlanSpec
+from app.providers.rerank import rerank_capability
 from app.repositories import api_key_repository, key_policy_repository, tenant_repository
 from app.services.plan_service import resolve_plan
 
@@ -58,19 +59,16 @@ DEV_KEY_LABEL: Final[str] = "内置开发身份"
 
 #: 内置开发身份的密钥配置快照：**全能力 + custom 档 + 两种形状都开**。
 #:
-#: - 四个能力开关全开：开发身份不因配置层的开关改变现行为——重排 / 改写是否真的跑，
-#:   仍由服务端配置（``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED``）决定；
-#: - 档位取 ``custom`` 且 ``custom_options`` 为空：**每一项都跟着 ``.env`` 走**。
-#:   这里曾经钉在 ``speed`` 上（当时它还没有预设、等于服务端缺省），#78 给了它真预设
-#:   之后 ``speed`` 就明确意味着「只走向量一路，5 条，不重排、不改写」——本地默认模式
-#:   会从 ``RETRIEVAL_MODE`` 悄悄变成 ``vector``，而本地起的服务与 CI 从此测的不是同一条
-#:   链路。凡命名档位都钉死了一段产品行为，预设值一改，开发身份就跟着漂一次；``custom``
-#:   + 全缺键才是「跟部署配置完全一致」的唯一表达（缺键 = 逐键回落部署缺省）；
+#: - 五个授权位全开：开发身份不因配置层的开关改变现行为——重排是否真的跑，仍由服务端
+#:   配置（``RERANK_ENABLED``）与本机是否装了重排端点决定；
+#: - 三项参数照抄部署缺省（``RETRIEVAL_MODE`` / ``TOP_K`` / 重排能力）：开发身份唯一的
+#:   正当语义是「跟部署配置完全一致」。从前这里钉在 ``custom`` + 空 ``custom_options``
+#:   上表达同一件事，档位退役后直接写值即可，不必再借一个名字；
 #: - 两种形状偏好都开：与既有响应默认一致（折叠成整节、表格行折回整表）；
 #: - 限额照抄最高档：开发身份没有套餐主体，额度判定不该在本地把开发自己限住。
 #:
 #: 套餐仍取最高档（``DEV_KEY_PLAN``）：它是「本地演示要看完整能力」的选择，同时保证了
-#: 五道门禁在本地永不会把开发自己拦下来。
+#: 各道门禁在本地永不会把开发自己拦下来。
 #:
 #: ``allowed_kb_ids`` 是空元组：仓库里的约定是「空 = 还没圈定，不是全部」，而内置开发
 #: 身份没有白名单可言。空元组在这里**只表示这一件事**——「不做范围收窄」由
@@ -78,20 +76,24 @@ DEV_KEY_LABEL: Final[str] = "内置开发身份"
 #: 「全部」，真实配置清空白名单就会变成开闸，而那是要失败关闭的一侧。
 DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     allowed_kb_ids=(),
+    retrieve_allowed=True,
+    rewrite_allowed=True,
+    decompose_allowed=True,
     research_allowed=True,
-    hybrid_allowed=True,
     rerank_allowed=True,
-    query_rewrite_allowed=True,
     retrieve_qps=PLAN_PRESETS[PLAN_PRO].retrieve_qps,
     retrieve_daily=PLAN_PRESETS[PLAN_PRO].retrieve_daily,
-    # 内置开发身份照抄最高档的 Research 配额（票 #150）：它要能演示整条链路，
-    # 而「0 = 关闭」会让 `rag_research` 在本地开发里直接撞 20013。
-    research_qps=PLAN_PRESETS[PLAN_PRO].research_qps,
-    research_daily=PLAN_PRESETS[PLAN_PRO].research_daily,
-    profile=PROFILE_CUSTOM,
+    # 加工能力的两本账照抄最高档：开发身份要能演示整条链路，而「0 = 未启用」会让
+    # 本地开发里的重排与改写直接撞额度。
+    rerank_qps=PLAN_PRESETS[PLAN_PRO].rerank_qps,
+    rerank_daily=PLAN_PRESETS[PLAN_PRO].rerank_daily,
+    llm_qps=PLAN_PRESETS[PLAN_PRO].llm_qps,
+    llm_daily=PLAN_PRESETS[PLAN_PRO].llm_daily,
+    retrieval_mode=settings.RETRIEVAL_MODE,
+    retrieval_top_k=settings.TOP_K,
+    retrieval_rerank=rerank_capability(),
     include_parent=True,
     expand_table_rows=True,
-    custom_options=(),
     unrestricted_scope=True,
 )
 

@@ -11,42 +11,54 @@ vi.mock('../../lib/dataHttp', () => ({
 }))
 
 import * as ragServiceModule from '../ragService'
-import { retrieve } from '../ragService'
+import {
+  retrieve,
+  rewriteRetrieve,
+  decomposeRetrieve,
+  research,
+} from '../ragService'
 
 beforeEach(() => {
   mocks.post.mockReset()
   mocks.get.mockReset()
 })
 
-/**
- * 请求体只有 `kb_ids` + `query`（00-facts §4/§5、ADR-0010「第三次修订」）。
- *
- * 这里用 `toEqual` 而不是逐个 `toHaveBeenCalledWith` 的部分匹配：后者允许请求体里
- * 多出字段而不报警，而「多带一个质量字段」正是会被后端 20002 拒掉的形态。
- * 期望值写死字面量，不复用被测函数的入参对象（否则断言只是回显）。
- */
-describe('retrieve', () => {
-  it('POST /api/v1/rag/retrieve，请求体只有 kb_ids 与 query', async () => {
-    mocks.post.mockResolvedValue({
-      query: '退款多久到账',
-      kb_ids: ['kb_1'],
-      retrieved_chunks: [],
-      metadata: {},
-    })
+const RESPONSE = {
+  query: '退款多久到账',
+  kb_ids: ['kb_1'],
+  retrieved_chunks: [],
+  metadata: {},
+}
 
-    await retrieve({ kb_ids: ['kb_1'], query: '退款多久到账' })
+/**
+ * 四条检索能力端点的请求体都只有 `kb_ids` + `query`（ADR-0010）。
+ * 加工方式由端点表达，质量参数由 Key 配置表达，页面不拼任何质量字段。
+ * `toEqual` 而非部分匹配：多带一个字段会被后端 20002 拒掉，必须当场发现。
+ */
+describe.each([
+  ['retrieve', retrieve, '/api/v1/rag/retrieve'],
+  ['rewriteRetrieve', rewriteRetrieve, '/api/v1/rag/rewrite'],
+  ['decomposeRetrieve', decomposeRetrieve, '/api/v1/rag/decompose'],
+  ['research', research, '/api/v1/rag/research'],
+] as const)('%s', (_name, fn, path) => {
+  it(`POST ${path}，请求体只有 kb_ids 与 query`, async () => {
+    mocks.post.mockResolvedValue(RESPONSE)
+
+    await fn({ kb_ids: ['kb_1'], query: '退款多久到账' })
 
     expect(mocks.post).toHaveBeenCalledTimes(1)
     const [url, body] = mocks.post.mock.calls[0]
-    expect(url).toBe('/api/v1/rag/retrieve')
+    expect(url).toBe(path)
     expect(body).toEqual({ kb_ids: ['kb_1'], query: '退款多久到账' })
-    // 质量字段一个都不许出现：它们只能来自这把 Key 的密钥配置。
     expect(Object.keys(body)).toEqual(['kb_ids', 'query'])
   })
+})
 
-  it('这是唯一的数据面调用点：服务模块不再导出「列库」等第二条数据面入口', () => {
-    // #92 之后，可勾选的库来自控制面树（`fetchTree()`），数据面只剩检索这一条。
-    // 用模块的导出面把这条边界钉住：有人把 `fetchPickableKnowledgeBases` 加回来会先变红。
-    expect(Object.keys(ragServiceModule)).toEqual(['retrieve'])
+describe('数据面边界', () => {
+  it('服务模块只导出四条检索端点（列库走控制面树，不是数据面）', () => {
+    // #92 的边界：数据面客户端只发检索类请求；可勾选的库来自控制面 fetchTree()。
+    expect(Object.keys(ragServiceModule).sort()).toEqual(
+      ['decomposeRetrieve', 'research', 'retrieve', 'rewriteRetrieve'].sort(),
+    )
   })
 })

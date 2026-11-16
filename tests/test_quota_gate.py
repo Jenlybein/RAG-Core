@@ -21,6 +21,8 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
+from tests.support.policy import PROFILE_SPEED
 
 import asyncio
 from collections.abc import Coroutine
@@ -31,7 +33,7 @@ from typing import Any
 import pytest
 
 from app.core.exceptions import AppError, ErrorCode
-from app.models.key_policy import PROFILE_SPEED, KeyPolicySnapshot
+from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
 from app.services.quota_gate import (
     DAILY_TTL_SECONDS,
@@ -91,7 +93,7 @@ def _counting_at(store: Any, moment: datetime) -> QuotaCounters:
 def _policy(*, qps: int = 3, daily: int = 100) -> KeyPolicySnapshot:
     """一份最小的密钥配置快照：本票只关心它的两个限额。"""
 
-    return KeyPolicySnapshot(
+    return support_policy(
         allowed_kb_ids=("kb-1",),
         research_allowed=False,
         hybrid_allowed=False,
@@ -374,5 +376,49 @@ def test_the_counter_service_builds_its_client_through_the_single_injection_poin
             redis_client.reset_redis_client()
 
         assert sum(store.values.values()) == 4, "两级各记 qps + daily 一次"
+
+    _run(scenario())
+
+
+# ─────────────────────────────── 探测与拦截：同一条判据、同一份读数
+
+
+@pytest.mark.parametrize(
+    ("cell", "level"),
+    [
+        ("key_qps", "key"),
+        ("tenant_qps", "tenant"),
+        ("key_daily", "key"),
+        ("tenant_daily", "tenant"),
+    ],
+)
+def test_the_probe_and_the_gate_always_agree(cell: str, level: str) -> None:
+    """``has_capacity`` 与 ``ensure_available`` 必须给出同一个结论——四格逐格验。
+
+    这两个方法问的是同一件事（「现在还能不能跑一次」），只是一个抛错、一个返回布尔。
+    判据写两遍时，改了一处就会让「探针说能跑」和「门禁说没额度」同时成立：探针那一侧
+    会照常重排，然后在记账时才发现超了，或者反过来——明明还有余量却被跳过。
+    """
+
+    async def scenario() -> None:
+        store = _FakeCounterStore()
+        gate = _gate(store, policy=_policy(qps=2, daily=2), plan=_plan(qps=2, daily=2))
+        counters = _counting_at(store, MOMENT)
+        window = counters.window()
+
+        # 余量还在：两边都说「能」。
+        assert await gate.has_capacity() is True
+        await gate.ensure_available()  # 不抛就是「能」
+
+        # 把这一格填到上限：两边必须同时翻面。
+        for _ in range(2):
+            if cell.endswith("qps"):
+                await counters.add_qps(level=level, ident=KEY_ID if level == "key" else TENANT_ID, window=window)
+            else:
+                await counters.add_daily(level=level, ident=KEY_ID if level == "key" else TENANT_ID, window=window)
+
+        assert await gate.has_capacity() is False
+        with pytest.raises(AppError):
+            await gate.ensure_available()
 
     _run(scenario())

@@ -85,7 +85,16 @@ def _world() -> dict[Any, list[Any]]:
         role="user",
         status="active",
     )
-    return {Plan: _plan_rows(), Tenant: [tenant], Account: [account]}
+    # 第 13 步：语义评测搬进管理员后台，测试改用管理员登录（tenant_id 为空）。
+    admin = Account(
+        id="00000000-0000-4000-8000-000000000003",
+        tenant_id=None,
+        username="root",
+        password_hash=passwords.hash_password("admin-password"),
+        role="admin",
+        status="active",
+    )
+    return {Plan: _plan_rows(), Tenant: [tenant], Account: [account, admin]}
 
 
 @pytest.fixture
@@ -109,7 +118,7 @@ def asgi(runs_root: Path):
         with TestClient(main.app) as client:
             assert (
                 client.post(
-                    "/console/login", json={"username": "alice", "password": "user-password"}
+                    "/console/login", json={"username": "root", "password": "admin-password"}
                 ).json()["code"]
                 == 0
             )
@@ -169,17 +178,22 @@ class _Identity:
         self.tenant_id = tenant_id
 
 
-def test_list_shows_this_tenants_runs_newest_first(runs_root: Path) -> None:
+def test_list_shows_all_runs_newest_first(runs_root: Path) -> None:
+    """第 13 步：管理员看全部跑批（平台自检产物），按 run_id 倒序。"""
+
     _run(runs_root, "20260101T000000Z", summary={"context_precision": 0.5})
     _run(runs_root, "20260102T000000Z", summary={"context_precision": 0.7})
     _run(runs_root, "20260103T000000Z", tenant_id="tenant_other")
 
-    body = console_eval.list_side_evidence_runs(limit=10, identity=_Identity("tenant_demo"))
+    body = console_eval.list_side_evidence_runs(limit=10, identity=_Identity(None))
     items = body.data["items"]
 
-    # 倒序 + 不含别人的
-    assert [item["run_id"] for item in items] == ["20260102T000000Z", "20260101T000000Z"]
-    assert items[0]["summary"]["context_precision"] == 0.7
+    assert [item["run_id"] for item in items] == [
+        "20260103T000000Z",
+        "20260102T000000Z",
+        "20260101T000000Z",
+    ]
+    assert items[1]["summary"]["context_precision"] == 0.7
 
 
 def test_list_respects_the_limit(runs_root: Path) -> None:
@@ -222,16 +236,16 @@ def test_report_is_returned_as_markdown(runs_root: Path) -> None:
     assert body.data["report"] == "# 旁证报告\n\nCP 0.8\n"
 
 
-def test_report_of_another_tenant_is_null_not_an_error(runs_root: Path) -> None:
-    """跨租户与不存在同一个答复：不能区分出「这个 run 在别人那儿存在」。"""
+def test_admin_reads_a_report_from_any_tenant(runs_root: Path) -> None:
+    """第 13 步：语义评测是平台自检，管理员可读全部跑批报告（不再按租户隔离）。"""
 
-    _run(runs_root, "20260101T000000Z", tenant_id="tenant_other", report="# 别人的报告\n")
+    _run(runs_root, "20260101T000000Z", tenant_id="tenant_other", report="# 报告\n")
 
     body = console_eval.read_side_evidence_report(
-        run_id="20260101T000000Z", identity=_Identity("tenant_demo")
+        run_id="20260101T000000Z", identity=_Identity(None)
     )
 
-    assert body.data["report"] is None
+    assert body.data["report"] == "# 报告\n"
 
 
 def test_an_illegal_run_id_shape_reads_nothing(runs_root: Path) -> None:

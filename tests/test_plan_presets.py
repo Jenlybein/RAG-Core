@@ -18,61 +18,87 @@ import pytest
 from app.models.plan import (
     PLAN_BUSINESS_COLUMNS,
     PLAN_CODES,
+    PLAN_SPEC_COLUMNS,
     PLAN_PRESETS,
     PlanSpec,
     plan_row_of,
     plan_spec_of,
     preset_mismatches,
 )
-
-# 票面真值表：13 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
+# 票面真值表：16 个业务列 × 四档。这份字面量是**独立来源**，刻意不从常量里推导——
 # 否则「常量等于它自己」的同义反复什么都守不住。name 是展示名，票面没定字面值，
 # 另有用例只要求非空且互不相同。
+#
+# 倍率口径（spec #184）：plus 是基准（1×），pro = 5×，max = 20×；free 只开基线
+# ``retrieve`` 一个授权位，两本加工账都是 0（= 没买这项能力）。
 SPEC_TABLE: dict[str, dict[str, Any]] = {
     "free": {
-        "allowed_profiles": ("speed",),
-        "hybrid_allowed": False,
-        "rerank_allowed": False,
-        "query_rewrite_allowed": False,
+        "retrieve_allowed": True,
+        "rewrite_allowed": False,
+        "decompose_allowed": False,
         "research_allowed": False,
+        "rerank_allowed": False,
         "retrieve_qps": 3,
         "retrieve_daily": 500,
-        # Research 的两个独立配额（票 #150）：0 等同于关闭，与 ``research_allowed``
-        # 一起表达「这一档没有这项能力」。
-        "research_qps": 0,
-        "research_daily": 0,
+        "rerank_qps": 0,
+        "rerank_daily": 0,
+        "llm_qps": 0,
+        "llm_daily": 0,
+        "max_top_k": 5,
         "max_kb": 1,
         "max_kb_per_retrieve": 1,
         "max_documents_per_kb": 30,
         "max_processing_documents": 1,
     },
-    "standard": {
-        "allowed_profiles": ("speed", "balanced", "custom"),
-        "hybrid_allowed": True,
-        "rerank_allowed": False,
-        "query_rewrite_allowed": False,
-        "research_allowed": False,
+    "plus": {
+        "retrieve_allowed": True,
+        "rewrite_allowed": True,
+        "decompose_allowed": True,
+        "research_allowed": True,
+        "rerank_allowed": True,
         "retrieve_qps": 10,
         "retrieve_daily": 5000,
-        "research_qps": 0,
-        "research_daily": 0,
+        "rerank_qps": 3,
+        "rerank_daily": 1000,
+        "llm_qps": 1,
+        "llm_daily": 300,
+        "max_top_k": 10,
         "max_kb": 5,
         "max_kb_per_retrieve": 3,
         "max_documents_per_kb": 200,
         "max_processing_documents": 2,
     },
     "pro": {
-        "allowed_profiles": ("speed", "balanced", "quality", "custom"),
-        "hybrid_allowed": True,
-        "rerank_allowed": True,
-        "query_rewrite_allowed": True,
+        "retrieve_allowed": True,
+        "rewrite_allowed": True,
+        "decompose_allowed": True,
         "research_allowed": True,
+        "rerank_allowed": True,
         "retrieve_qps": 50,
+        "retrieve_daily": 25000,
+        "rerank_qps": 15,
+        "rerank_daily": 5000,
+        "llm_qps": 5,
+        "llm_daily": 1500,
+        "max_top_k": 15,
+        "max_kb": 50,
+        "max_kb_per_retrieve": 5,
+        "max_documents_per_kb": 5000,
+        "max_processing_documents": 10,
+    },
+    "max": {
+        "retrieve_allowed": True,
+        "rewrite_allowed": True,
+        "decompose_allowed": True,
+        "research_allowed": True,
+        "rerank_allowed": True,
+        "retrieve_qps": 200,
         "retrieve_daily": 100000,
-        # 票面：专业版 1 QPS / 100 次每天（一次 Research 约 30 秒、3–4 次模型调用，
-        # 独立配额就是为了不让它吃掉普通检索的额度）。
-        "research_qps": 1,
-        "research_daily": 100,
+        "rerank_qps": 60,
+        "rerank_daily": 20000,
+        "llm_qps": 20,
+        "llm_daily": 6000,
+        "max_top_k": 20,
         "max_kb": 50,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
@@ -94,17 +120,20 @@ def _tampered_value(column: str, current: Any) -> Any:
 # ──────────────────────────────────────────────────────────── 种子本身符合票面
 
 
-def test_the_three_plans_are_exactly_the_decided_codes() -> None:
-    assert PLAN_CODES == ("free", "standard", "pro")
+def test_the_four_plans_are_exactly_the_decided_codes() -> None:
+    # 第 13 步：standard 改名 plus，新增 max。
+    assert PLAN_CODES == ("free", "plus", "pro", "max")
     assert set(PLAN_PRESETS) == set(PLAN_CODES)
 
 
 @pytest.mark.parametrize("code", PLAN_CODES)
 def test_each_plan_carries_the_decided_values(code: str) -> None:
-    """逐列比对票面：13 个业务列一个不漏。"""
+    """逐列比对票面：21 个业务列一个不漏。"""
 
     spec = PLAN_PRESETS[code]
-    assert len(PLAN_BUSINESS_COLUMNS) == 13
+    # 第 13 步 I 阶段：allowed_profiles / hybrid_allowed / query_rewrite_allowed /
+    # research_qps / research_daily 五列物理删除，业务列从 21 降到 16。
+    assert len(PLAN_BUSINESS_COLUMNS) == 16
     for column in PLAN_BUSINESS_COLUMNS:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 
@@ -119,19 +148,22 @@ def test_plan_display_names_are_present_and_distinct() -> None:
 
 
 def test_the_spec_fields_are_exactly_the_columns() -> None:
-    """映射对象是「列的镜像」：字段名与列名一一对应，改名就两边一起改。"""
+    """映射对象真实字段与列一一对应；没有任何「兼容壳」字段。"""
 
     field_names = [field.name for field in dataclasses.fields(PlanSpec)]
-    assert field_names == ["code", "name", *PLAN_BUSINESS_COLUMNS]
+    assert set(field_names) == {"code", "name", *PLAN_BUSINESS_COLUMNS}
+    assert len(field_names) == len(PLAN_BUSINESS_COLUMNS) + 2
 
 
 @pytest.mark.parametrize("code", PLAN_CODES)
 def test_mapping_a_seeded_row_back_yields_the_constant(code: str) -> None:
-    """播种用怎么建行，回来就怎么映射：这是「表即真相」的往返。"""
+    """播种用怎么建行，回来就怎么映射：逐列相等。"""
 
     row = plan_row_of(PLAN_PRESETS[code])
+    mapped = plan_spec_of(row)
 
-    assert plan_spec_of(row) == PLAN_PRESETS[code]
+    for column in PLAN_BUSINESS_COLUMNS:
+        assert getattr(mapped, column) == getattr(PLAN_PRESETS[code], column), column
 
 
 def test_reconciliation_passes_after_seeding_all_three_plans() -> None:
@@ -141,16 +173,21 @@ def test_reconciliation_passes_after_seeding_all_three_plans() -> None:
 
 
 def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None:
-    """构造式兜底：字段没有默认值，漏传一列就是 TypeError，而不是静默变成 None。"""
+    """行映射兜底：缺一列就是 ``KeyError``，而不是静默变成兜底值。
+
+    快照字段**没有默认值**，所以守门点在 :func:`plan_spec_from_mapping`：少一列直接抛，
+    不会悄悄变成一个「看起来合理」的值。
+    """
+
+    from app.models.plan import plan_spec_from_mapping
 
     complete = {
-        field.name: getattr(PLAN_PRESETS["pro"], field.name)
-        for field in dataclasses.fields(PlanSpec)
+        column: getattr(PLAN_PRESETS["pro"], column) for column in PLAN_SPEC_COLUMNS
     }
-    for column in PLAN_BUSINESS_COLUMNS:
+    for column in PLAN_SPEC_COLUMNS:
         partial = {key: value for key, value in complete.items() if key != column}
-        with pytest.raises(TypeError):
-            PlanSpec(**partial)
+        with pytest.raises(KeyError):
+            plan_spec_from_mapping(partial)
 
 
 # ──────────────────────────────── 对账必须逐列生效：丢一列就得失败，不能静默通过
@@ -192,9 +229,9 @@ def test_two_rows_with_the_same_code_are_reported() -> None:
 def test_a_plan_that_was_never_seeded_is_reported() -> None:
     """表里少一档也要报：否则最高档被误删之后，谁都不会发现。"""
 
-    rows = [plan_row_of(PLAN_PRESETS[code]) for code in ("free", "standard")]
+    rows = [plan_row_of(PLAN_PRESETS[code]) for code in ("free", "plus", "pro")]
 
-    assert preset_mismatches(rows) == ["pro: 库里没有这一档"]
+    assert preset_mismatches(rows) == ["max: 库里没有这一档"]
 
 
 def test_a_row_whose_code_is_not_a_known_plan_is_reported() -> None:

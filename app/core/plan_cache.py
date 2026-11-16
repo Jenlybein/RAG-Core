@@ -92,7 +92,7 @@ class RedisPlanCache:
 
 
 def _to_payload(plan: PlanSpec) -> dict[str, Any]:
-    """快照 → 可 JSON 化的字典；``allowed_profiles`` 的元组由 ``json`` 自然写成数组。"""
+    """快照 → 可 JSON 化的字典；元组列由 ``json`` 自然写成数组。"""
 
     return asdict(plan)
 
@@ -100,8 +100,8 @@ def _to_payload(plan: PlanSpec) -> dict[str, Any]:
 def _from_payload(payload: dict[str, Any]) -> PlanSpec:
     """字典 → 快照：列清单来自 :data:`PLAN_SPEC_COLUMNS`，缺一列就是 ``KeyError``。
 
-    转换只有一个来源（:func:`app.models.plan.plan_spec_from_mapping`）：``allowed_profiles``
-    的数组 → 元组只在那里做一次，这里不复制一份。缓存里的脏数据（多一个键、少一个键）
+    转换只有一个来源（:func:`app.models.plan.plan_spec_from_mapping`）：数组 → 元组
+    只在那里做一次，这里不复制一份。缓存里的脏数据（多一个键、少一个键）
     仍然会按列清单暴露出来，而缓存的职责只是「把刚才读到的行原样还回去」。
     """
 

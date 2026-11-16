@@ -24,11 +24,9 @@ import type {
 function policyOf(overrides: Partial<TenantPolicy> = {}): TenantPolicy {
   return {
     plan: 'free',
-    requested_profile: 'speed',
     mode: 'vector',
     top_k: 5,
     rerank: false,
-    rewrite: false,
     kb_count: 1,
     clipped: [],
     ...overrides,
@@ -139,10 +137,10 @@ describe('diffSummary：运行摘要逐字段比对', () => {
       'mode',
       'top_k',
       'tenant_policy.rerank',
-      'tenant_policy.rewrite',
       'tenant_policy.clipped',
       'tenant_policy.plan',
-      'tenant_policy.requested_profile',
+      'tenant_policy.mode',
+      'tenant_policy.top_k',
     ])
     // 没变也要有据可查：只标 changed=false，不删行。
     expect(rows.every((row) => row.changed === false)).toBe(true)
@@ -150,13 +148,13 @@ describe('diffSummary：运行摘要逐字段比对', () => {
     expect(rowOf(rows, 'mode').after).toBe('vector')
   })
 
-  it('mode / top_k / rerank / rewrite 变了就标出来，值两边都给出', () => {
+  it('mode / top_k / rerank / tenant_policy 参数变了就标出来，值两边都给出', () => {
     const base = dataOf()
     const current = dataOf({
       metadata: metadataOf({
         mode: 'hybrid',
         top_k: 8,
-        tenant_policy: policyOf({ mode: 'hybrid', top_k: 8, rerank: true, rewrite: true }),
+        tenant_policy: policyOf({ mode: 'hybrid', top_k: 8, rerank: true }),
       }),
     })
 
@@ -167,7 +165,8 @@ describe('diffSummary：运行摘要逐字段比对', () => {
       'mode',
       'top_k',
       'tenant_policy.rerank',
-      'tenant_policy.rewrite',
+      'tenant_policy.mode',
+      'tenant_policy.top_k',
     ])
     expect(rowOf(rows, 'mode').before).toBe('vector')
     expect(rowOf(rows, 'mode').after).toBe('hybrid')

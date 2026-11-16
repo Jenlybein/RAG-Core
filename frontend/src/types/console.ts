@@ -7,8 +7,6 @@
  * 使用处被 TS 拦住，比一个 `unknown` 更早暴露契约漂移。
  */
 
-import type { ProfilePresetData } from './profilePreset'
-
 /** `accounts.role` 的取值：`admin` 是平台管理员，其余（缺省 `user`）都是租户账号。 */
 export type ConsoleRole = 'admin' | 'user' | string
 
@@ -32,13 +30,21 @@ export interface ConsoleTenant {
 export interface ConsolePlanSnapshot {
   code: string
   name: string
-  allowed_profiles: string[]
-  hybrid_allowed: boolean
-  rerank_allowed: boolean
-  query_rewrite_allowed: boolean
+  /** 五个授权位（与密钥配置同名同义，这里是上限）。 */
+  retrieve_allowed: boolean
+  rewrite_allowed: boolean
+  decompose_allowed: boolean
   research_allowed: boolean
+  rerank_allowed: boolean
+  /** 三本账 × 两格。 */
   retrieve_qps: number
   retrieve_daily: number
+  rerank_qps: number
+  rerank_daily: number
+  llm_qps: number
+  llm_daily: number
+  /** 质量封顶（0 = 不额外封顶，退回平台硬上限）与四个规模上限。 */
+  max_top_k: number
   max_kb: number
   max_kb_per_retrieve: number
   max_documents_per_kb: number
@@ -58,12 +64,6 @@ export interface ConsoleMe {
   tenant: ConsoleTenant | null
   plan: ConsolePlanSnapshot | null
   usage: ConsoleUsage | null
-  /**
-   * 四个档位的当前参数（含 `custom`）。**租户面板靠它展示「这个档位能干什么」**——
-   * `/console/profile-presets` 是管理员专属，租户读它要 20011。
-   *
-   * 缺省空数组：旧后端不会发这个字段，页面按「不知道参数」渲染（只显示档位名），
-   * 而不是崩掉或编一份看起来合理的数据出来。
-   */
-  profile_presets?: ProfilePresetData[]
+  /** 今日租户级模型用量：与 `usage` 同形，读的是 llm 那本账；管理员为 `null`。 */
+  llm_usage: ConsoleUsage | null
 }

@@ -48,8 +48,8 @@ function rowOf(wrapper: ReturnType<typeof mountPanel>, path: string) {
 }
 
 describe('DataPlanePanel：清单与试跑', () => {
-  it('列出全部 9 条数据面接口', () => {
-    expect(rows(mountPanel({ kbId: 'kb-a', hasKey: true }))).toHaveLength(9)
+  it('列出全部 12 条数据面接口（第 13 步新增三条检索能力）', () => {
+    expect(rows(mountPanel({ kbId: 'kb-a', hasKey: true }))).toHaveLength(12)
   })
 
   it('写操作只列出，不给「试一下」', () => {

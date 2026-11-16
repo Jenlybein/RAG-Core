@@ -148,9 +148,9 @@ def _offline_client(monkeypatch: pytest.MonkeyPatch, *, llm: LLMProvider) -> Ite
         main.app.dependency_overrides.clear()
 
 
-def _retrieve(client: TestClient, *, top_k: int = TOP_K) -> dict:
-    # 票 #77：``mode`` / ``top_k`` 改由密钥配置表达（custom 档），请求体只剩两个字段。
-    IDENTITY.use(mode="hybrid", top_k=top_k)
+def _retrieve(client: TestClient, *, top_k: int = TOP_K, rerank: bool = True) -> dict:
+    # 第 13 步：三项参数直存配置；请求体只剩两个字段。
+    IDENTITY.use(mode="hybrid", top_k=top_k, rerank=rerank)
     response = client.post(
         RETRIEVE_PATH,
         json={"kb_ids": [KB_A], "query": "退款怎么走"},

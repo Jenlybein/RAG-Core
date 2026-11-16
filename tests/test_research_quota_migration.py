@@ -110,8 +110,8 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     # 版本表与切片稿号列（``add_document_versions``）再接在改名之后；#179 的归属索引
     # 「文档 → 稿号」映射列（``add_trace_doc_versions``）再接在版本表之后。
     # 按仓库惯例，加最后一条迁移的人改这一行。
-    assert heads == [_revision_of(_migration_path("add_trace_doc_versions"))], (
-        f"链尾应当是 #179 的归属索引映射列迁移，实际 {heads}"
+    assert heads == [_revision_of(_migration_path("rename_standard_to_plus_and_add_max"))], (
+        f"链尾应当是第 13 步 T1 的新授权/计量列迁移，实际 {heads}"
     )
 
 

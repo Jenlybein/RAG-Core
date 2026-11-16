@@ -135,7 +135,7 @@ async def patch_model_config(
 @router.delete(
     "/model-configs/{config_id}",
     response_model=ApiResponse[ModelConfigDeleteData],
-    summary="删一条模型接入（被 fast/strong 指向时拒绝）",
+    summary="删一条模型接入（被 default 角色指向时拒绝）",
 )
 async def delete_model_config(
     config_id: str,

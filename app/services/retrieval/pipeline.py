@@ -105,6 +105,7 @@ async def hybrid_retrieve(
     recall_depth: int | None = None,
     rerank_candidates: int | None = None,
     rerank_enabled: bool,
+    rerank_quota_exhausted: bool = False,
     rerank_factory: Callable[[], Awaitable[Any]] | None = None,
     stage_timer: StageTimer | None = None,
 ) -> HybridOutcome:
@@ -228,6 +229,7 @@ async def hybrid_retrieve(
         top_n=top_k,
         enabled=rerank_enabled,
         provider_factory=rerank_factory,
+        quota_exhausted=rerank_quota_exhausted,
     )
     # 「重排发生没发生」只有一个答案：``RerankOutcome.duration_ms``。它为空就说明这一步
     # 根本没走（关闭 / 没装 / 没有候选），于是**不记录这一段**，而不是记一个 0。

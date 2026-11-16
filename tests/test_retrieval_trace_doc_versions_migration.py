@@ -182,7 +182,9 @@ def test_it_chains_onto_the_previous_head_and_stays_in_the_single_chain() -> Non
     heads = set(revisions) - down_revisions
 
     assert len(heads) == 1, f"迁移链必须只有一条，实际 head={sorted(heads)}"
-    assert _revision_of(path) in heads, "本票的迁移应当就是当前链尾"
+    # 链尾后来前移过（第 13 步 T1 的 add_retrieval_authorization 接在本票之后），
+    # 所以「本票是链尾」这半句不再成立；改守「本票仍在唯一一条链上」。
+    assert _revision_of(path) in revisions, "本票的迁移应当仍在链上"
 
     walked: list[str] = []
     cursor: str | None = next(iter(heads))

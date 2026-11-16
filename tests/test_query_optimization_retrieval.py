@@ -36,6 +36,7 @@ from tests.fake_db import AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
+REWRITE_PATH = "/api/v1/rag/rewrite"
 TENANT_ID = "tenant_demo"
 KB_A = "kb-a"
 KB_B = "kb-b"
@@ -230,10 +231,12 @@ def _offline_client(
         main.app.dependency_overrides.clear()
 
 
-def _post(client: TestClient, **body: Any) -> dict:
+def _post(client: TestClient, *, path: str = RETRIEVE_PATH, **body: Any) -> dict:
     payload = {"kb_ids": [KB_A], "query": "退钱怎么弄"}
-    payload.update(IDENTITY.apply({"mode": "hybrid", **body}))
-    response = client.post(RETRIEVE_PATH, json=payload)
+    # 第 13 步：重排由配置直存参数决定，用 RERANK_ENABLED 同步表达「配置想要重排」。
+    rerank = bool(getattr(settings, "RERANK_ENABLED", False))
+    payload.update(IDENTITY.apply({"mode": "hybrid", "rerank": rerank, **body}))
+    response = client.post(path, json=payload)
     assert response.status_code == 200
     return response.json()
 
@@ -261,7 +264,7 @@ def test_hybrid_mode_feeds_each_channel_its_own_query(monkeypatch: pytest.Monkey
     }
 
     with _offline_client(monkeypatch, kb_settings=kb_settings, llm=llm) as fake:
-        body = _post(fake["client"])
+        body = _post(fake["client"], path=REWRITE_PATH)
 
     assert body["code"] == 0
     # #31：改写开启是「原句 + 改写句都搜」而不是替换；顺序固定为 raw → effective。
@@ -296,7 +299,7 @@ def test_rerank_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> Non
         kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
         llm=llm,
     ) as fake:
-        _post(fake["client"])
+        _post(fake["client"], path=REWRITE_PATH)
 
     assert llm.schemas[:2] == ["QueryRewrite", "RerankRanking"], "先改写、后重排"
     assert llm.rerank_prompts, "重排真的调用了模型"
@@ -304,17 +307,15 @@ def test_rerank_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> Non
     assert "退款流程" not in llm.rerank_prompts[0], "同义词扩展只喂关键词一路"
 
 
-# ─────────────────────────────────────────────── 改写失败：降级但照常返回
+# ─────────────────────────────────── 第 13 步：改写模型失败即整单 50003
 
 
-def test_rewrite_failure_returns_results_and_marks_degraded(
+def test_a_failed_rewrite_is_a_50003_and_touches_no_channel(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """混合 + 改写失败 → 仍返回结果，``degraded=true``，原因固定。"""
+    """`/rag/rewrite` 模型失败 → 50003，不降级、不返回切片、不烧一次召回。"""
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
-
     llm = _SchemaAwareLLM(error=TimeoutError("模型超时"))
 
     with _offline_client(
@@ -322,25 +323,19 @@ def test_rewrite_failure_returns_results_and_marks_degraded(
         kb_settings={KB_A: {"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}},
         llm=llm,
     ) as fake:
-        body = _post(fake["client"])
+        body = _post(fake["client"], path=REWRITE_PATH)
 
-    assert body["code"] == 0, "改写失败绝不整单失败"
-    assert _chunk_ids(body) == ["c1", "c2"], "检索照常返回"
-    metadata = _retrieval_metadata(body)
-    assert metadata["degraded"] is True
-    assert metadata["degraded_reason"] == REASON_REWRITE_FAILED, "一因一码，不拼异常文本"
-    # 回退原句之后，同义词仍然作用在原句上（不是放弃整段优化）。
-    assert fake["embedding"].queries == ["退钱怎么弄"]
-    assert fake["keyword"].queries == ["退钱怎么弄 退款"]
+    assert body["code"] == 50003, "模型失败不再包成 code 0 的降级结果"
+    assert body["data"] is None
+    assert fake["embedding"].queries == [], "被拒的请求不该白烧一次嵌入"
 
 
-def test_rewrite_failure_is_not_overridden_by_a_later_channel_failure(
+def test_a_failed_rewrite_happens_before_any_channel_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """改写先失败、通道后失败：一因一码，**先到的那个**才是根因。"""
+    """模型失败发生在召回之前：后面的通道故障根本没有机会发生。"""
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
 
     class _BrokenKeyword(_RecordingKeyword):
         async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
@@ -349,13 +344,10 @@ def test_rewrite_failure_is_not_overridden_by_a_later_channel_failure(
     llm = _SchemaAwareLLM(error=RuntimeError("模型服务 502"))
 
     with _offline_client(monkeypatch, llm=llm, keyword=_BrokenKeyword()) as fake:
-        body = _post(fake["client"])
+        body = _post(fake["client"], path=REWRITE_PATH)
 
-    assert body["code"] == 0, "一路挂了仍返回另一路的结果"
-    metadata = _retrieval_metadata(body)
-    assert metadata["degraded"] is True
-    assert metadata["degraded_reason"] == REASON_REWRITE_FAILED, "先到的原因不许被覆盖"
-    assert _chunk_ids(body) == ["c1"], "只剩向量一路的结果"
+    assert body["code"] == 50003
+    assert body["data"] is None
 
 
 # ─────────────────────────────────────────────── 单模式：各自生效
@@ -374,7 +366,7 @@ def test_vector_mode_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -
         kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
         llm=llm,
     ) as fake:
-        body = _post(fake["client"], mode="vector")
+        body = _post(fake["client"], path=REWRITE_PATH, mode="vector")
 
     assert body["code"] == 0
     # #31：单模式同样吃并集，顺序固定；改写句仍在其中（effective_query 语义保留）。
@@ -395,7 +387,7 @@ def test_bm25_mode_uses_the_search_query(monkeypatch: pytest.MonkeyPatch) -> Non
         kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
         llm=llm,
     ) as fake:
-        body = _post(fake["client"], mode="bm25")
+        body = _post(fake["client"], path=REWRITE_PATH, mode="bm25")
 
     assert body["code"] == 0
     assert fake["keyword"].queries == ["退款的处理流程 退款流程"]
@@ -405,45 +397,41 @@ def test_bm25_mode_uses_the_search_query(monkeypatch: pytest.MonkeyPatch) -> Non
 # ───────────────────────────────── 词表是库级配置：多库合并、改完立即生效
 
 
-def test_synonym_tables_of_all_involved_knowledge_bases_are_merged(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """多库检索合并本次涉及的库的词表；不相干的库（不在本次请求里）不参与。"""
+def test_synonym_tables_of_all_involved_knowledge_bases_are_merged() -> None:
+    """多库检索合并本次涉及的库的词表；不相干的库（不在本次请求里）不参与。
 
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
+    第 13 步起这是纯函数缝（``collect_synonym_groups`` + ``expand_synonyms``）：
+    `/rag/rewrite` 的关键词一路吃的就是这一份结果，与端点装配无关。
+    """
 
-    kb_settings = {
-        KB_A: {"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]},
-        KB_B: {"synonyms": [{"terms": ["发票"], "expand": ["开票"]}]},
-        "kb-not-in-request": {"synonyms": [{"terms": ["退钱"], "expand": ["不该出现"]}]},
-    }
+    from app.services.query.synonyms import collect_synonym_groups, expand_synonyms
 
-    with _offline_client(monkeypatch, kb_settings=kb_settings) as fake:
-        body = _post(fake["client"], kb_ids=[KB_A, KB_B], query="退钱和发票")
+    tables = [
+        {"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]},
+        {"synonyms": [{"terms": ["发票"], "expand": ["开票"]}]},
+    ]
+    groups = collect_synonym_groups(tables)
 
-    assert body["code"] == 0
-    assert fake["keyword"].queries == ["退钱和发票 退款 开票"]
-    assert "不该出现" not in fake["keyword"].queries[0]
+    search_query = expand_synonyms("退钱和发票", groups)
+
+    assert search_query == "退钱和发票 退款 开票"
+    assert "不该出现" not in search_query
 
 
-def test_synonym_table_edit_takes_effect_on_the_next_request(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_synonym_table_edit_takes_effect_on_the_next_request() -> None:
     """改词表下一次请求立即生效——它每次请求都从 settings 读，不落任何索引。"""
 
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
+    from app.services.query.synonyms import collect_synonym_groups, expand_synonyms
 
-    kb_settings: dict[str, dict] = {KB_A: {"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}}
+    first = collect_synonym_groups(
+        [{"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}]
+    )
+    second = collect_synonym_groups(
+        [{"synonyms": [{"terms": ["退钱"], "expand": ["退款", "售后"]}]}]
+    )
 
-    with _offline_client(monkeypatch, kb_settings=kb_settings) as fake:
-        _post(fake["client"], mode="bm25")
-        # 租户在控制台里把词表改了。
-        kb_settings[KB_A] = {"synonyms": [{"terms": ["退钱"], "expand": ["退款", "售后"]}]}
-        _post(fake["client"], mode="bm25")
-
-    assert fake["keyword"].queries == ["退钱怎么弄 退款", "退钱怎么弄 退款 售后"]
+    assert expand_synonyms("退钱怎么弄", first) == "退钱怎么弄 退款"
+    assert expand_synonyms("退钱怎么弄", second) == "退钱怎么弄 退款 售后"
 
 
 # ─────────────────────────────────────────── 两个开关都关闭：与票 4 一致

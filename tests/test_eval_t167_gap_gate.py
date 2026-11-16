@@ -693,14 +693,14 @@ def test_model_call_estimate_stays_under_the_cap() -> None:
 
 
 def test_worst_case_per_case_matches_the_production_constant() -> None:
-    """最坏 5 次/题是生产常量（含强模型兜底位），不是这里手编的数。关 ⑤ 少一格。"""
+    """第 13 步删掉强模型兜底位：最坏就是生产常量 ``MAX_MODEL_CALLS``（4 次/题）。关 ⑤ 少一格。"""
 
     from app.services import research_limits
 
-    assert ev.WORST_CALLS_PER_CASE == research_limits.MAX_MODEL_CALLS_WITH_FALLBACK
-    assert ev.NOMINAL_CALLS_PER_CASE == research_limits.MAX_MODEL_CALLS
-    assert ev.WORST_CALLS_PER_CONTROL_CASE == research_limits.MAX_MODEL_CALLS_WITH_FALLBACK - 1
-    assert ev.NOMINAL_CALLS_PER_CONTROL_CASE == research_limits.MAX_MODEL_CALLS - 1
+    assert ev.WORST_CALLS_PER_CASE == research_limits.MAX_MODEL_CALLS
+    assert ev.NOMINAL_CALLS_PER_CASE == research_limits.MAX_MODEL_CALLS - 1
+    assert ev.WORST_CALLS_PER_CONTROL_CASE == research_limits.MAX_MODEL_CALLS - 1
+    assert ev.NOMINAL_CALLS_PER_CONTROL_CASE == research_limits.MAX_MODEL_CALLS - 2
 
 
 def test_plan_reports_the_budget_and_the_case_list_without_any_model_call(

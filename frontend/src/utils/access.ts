@@ -32,13 +32,13 @@ export const USER_NAV: readonly NavItem[] = [
   { to: '/keys', label: 'Key 与密钥配置' },
   { to: '/retrieve', label: '检索调试台' },
   { to: '/traces', label: '检索记录' },
-  // 「语义评测」而不是「语义旁证」：后者是术语表里的**指标类型**（旁证指标 vs 门禁指标），
-  // 对使用者是黑话。入口名说人话，把「旁证」留在解释里。
-  { to: '/evaluation', label: '语义评测' },
+  // 第 13 步：语义评测是平台自检工具（跑固定语料、管理员看），不是租户自助功能——
+  // 移到管理员面板 /admin/evaluation。
 ]
 
 /**
- * 管理员入口，五条真实路由：账号 / 套餐 / 审计（#95）与模型配置 / 检索参数（#96）。
+ * 管理员入口，七条真实路由：账号 / 套餐 / 审计 / 模型配置 / 检索参数 / 观测 / 语义评测。
+ * 第 13 步起档位预设页随档位概念一起删除。
  *
  * 这里只放**真实存在**的路由：顶栏 `AppHeader.vue` 直接渲染 `navFor(role)` 的结果，
  * 所以补入口只改这一处，不要在组件里再抄一份；指向一个还没实现的路由，点了就是一片
@@ -50,8 +50,9 @@ export const ADMIN_NAV: readonly NavItem[] = [
   { to: '/admin/audit', label: '审计日志' },
   { to: '/admin/models', label: '模型配置' },
   { to: '/admin/retrieval', label: '检索参数' },
-  { to: '/admin/profiles', label: '档位预设' },
   { to: '/admin/observability', label: '观测' },
+  // 第 13 步：语义评测从用户面板搬进管理员后台（平台自检工具，不是租户功能）。
+  { to: '/admin/evaluation', label: '语义评测' },
 ]
 
 /**

@@ -42,7 +42,7 @@ from app.schemas.rag import RetrieveData, RetrieveRequest
 from app.schemas.research import ResearchData, ResearchRequest
 from app.services import retrieval_feedback
 from app.services.research_gate import gated_research
-from app.services.retrieval_gate import gated_retrieve
+from app.services.retrieval_gate import gated_decompose, gated_retrieve
 
 router = APIRouter()
 
@@ -56,6 +56,55 @@ async def retrieve(
     # 六道关卡的顺序与判定只在 gated_retrieve 里，MCP 一侧调的是同一个函数：越权、超限
     # 与配额用尽都在那里失败，本路由不判规则、也不各长一套。
     result = await gated_retrieve(
+        db,
+        key=key,
+        kb_ids=payload.kb_ids,
+        query=payload.query,
+        variant="direct",
+    )
+    return ok(result)
+
+
+@router.post("/rag/rewrite", response_model=ApiResponse[RetrieveData], summary="改写后检索相关切片")
+async def rewrite_retrieve(
+    payload: RetrieveRequest,
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+) -> ApiResponse[RetrieveData]:
+    """换一种说法再查：一次 ``default`` 模型调用，向量一路「原句 + 改写句」并池取优。
+
+    调用方选这条端点就是要花这一次模型调用；失败整单 ``50003``（客户重试），绝不
+    静默回退成原句直查。请求体与 ``/rag/retrieve`` 逐字段相同。
+    """
+
+    result = await gated_retrieve(
+        db,
+        key=key,
+        kb_ids=payload.kb_ids,
+        query=payload.query,
+        variant="rewrite",
+    )
+    return ok(result)
+
+
+@router.post(
+    "/rag/decompose",
+    response_model=ApiResponse[RetrieveData],
+    summary="问题分解后检索（每条子问题各查一次，合并交付）",
+)
+async def decompose(
+    payload: RetrieveRequest,
+    db: AsyncSession = Depends(get_async_db),
+    key: DevKeyContext = Depends(get_current_key),
+) -> ApiResponse[RetrieveData]:
+    """把复合问题拆成互不重叠的子问题，各跑一次检索内核，合并成一份列表。
+
+    一次分解（模型调用）+ ≤3 次内核；不做补证、不生成引用块，交付的仍是切片。
+    每条结果带 ``matched_queries``；``metadata`` 回显要点与子查询原句。分解模型失败
+    整单 ``50003``。归属索引与 trace 各一份。
+    """
+
+    result = await gated_decompose(
         db,
         key=key,
         kb_ids=payload.kb_ids,

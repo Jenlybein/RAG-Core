@@ -5,8 +5,16 @@
 ## 边界
 
 **检索（retrieve）**：
-中台对外的唯一业务动作：给定一个 query，返回最相关的切片。不生成答案。
-_Avoid_: 搜索, 问答, chat, 对话
+中台对外的一组业务能力，四条端点共用一份检索内核：`/rag/retrieve`（原句直查，零模型调用）、`/rag/rewrite`（换说法后查）、`/rag/decompose`（拆成子问题分别查再合并）、`/rag/research`（受控 Research，生成引用块）。输入都是 `kb_ids + query`，返回的主体都是切片；不生成给终端用户的答案（[ADR-0032](docs/adr/0032-four-retrieval-endpoints.md)）。
+_Avoid_: 搜索, 问答, chat, 对话, 检索服务（指单条端点时）
+
+**授权位（capability bit）**：
+回答「这把 Key 能不能用这条端点」的五个布尔位：`retrieve / rewrite / decompose / research / rerank`。套餐与密钥配置两层都给才放行，否则 `20013`。它是配置事实，与「用了多少」无关（见「计量账」）。
+_Avoid_: 能力开关（旧称）, 权限位, 档位（不是一回事）
+
+**计量账（meter book）**：
+回答「这次调用花掉多少资源」的三本计数：retrieve（内核调用次数，分解检索记 N）/ rerank（重排次数）/ llm（实际大模型调用次数），每本 Key 与租户两级、QPS 与日额两格。位假（`20013`）与额度尽（`20014`）是两个问题。新账四格全 0 表示没配额度、账本不启用。
+_Avoid_: 配额（只指其中一格）, 限流（那是 QPS 一道）, 两本账（旧口径）
 
 **生成答案**：
 租户的职责：把检索结果拼成给用户的回答。中台不做这件事。**唯一例外是「引用块」**：受控 Research 的 `/rag/research` 会生成引用块（文本 + 证据下标 + supported/insufficient），它仍不是「给终端用户的回答」，也不叫答案——顶层 `answer` 只是引用块的渲染串，校验不过就是 `null`（[ADR-0026](docs/adr/0026-research-citation-blocks.md)）。
@@ -31,12 +39,12 @@ _Avoid_: 超管, 系统账号, 后台用户
 _Avoid_: 终端用户（可以说，但不是正名）, 访客, 客户
 
 **套餐（Plan）**：
-租户被授予的能力档位（free / standard / pro），决定**上限**：能用哪些能力、配额最高到多少。它是**可编辑的授权数据，不是代码里的常量**：管理员能改它的内容，改之前能先看影响面（会让哪几个账号当场超限），改完即时生效，每次改动留档（[ADR-0017](docs/adr/0017-plans-in-database.md)）。具体到每个外部应用的授权，由 API Key 引用的密钥配置在租户套餐的上限内分配。
+租户被授予的档位（free / plus / pro / max），决定**上限**：五个授权位、三本账的额度、`max_top_k` 与规模上限。它是**可编辑的授权数据，不是代码里的常量**：管理员能改它的内容，改之前能先看影响面，改完即时生效，每次改动留档（[ADR-0017](docs/adr/0017-plans-in-database.md)）。具体到每个外部应用的授权，由 API Key 引用的密钥配置在租户套餐的上限内分配。
 _Avoid_: 版本, 等级, tier, 计划
 
-**档位（Profile）**：
-一套质量档位的正名，四选一：speed / balanced / quality / custom。它在**签发 API Key 时就定下**，由密钥配置携带；调用方永远不能指定它，也没有任何请求字段能改变它。命名档位是**完整替换**——档位名承诺一整条链路（例如 quality = 混合检索 + 重排 + 查询改写），预设之外的参数一律不生效；只有 custom 档才读密钥配置里那批手动参数。**换档位就是改这把 Key 的密钥配置**（改完即时生效，不必重签 Key），不是改请求。与套餐是两层约束：套餐决定「能不能用」，档位决定「这套集成平时用多好」。**模型角色的 `fast` / `strong` 不叫档位**，见「模型角色」。
-_Avoid_: 套餐（混用时）, 模式, preset, 级别
+**档位（Profile，已退役）**：
+speed / balanced / quality / custom 曾是四个命名质量档位，第 13 步起**后端不再有档位这个概念**：一次调用用多好由密钥配置里直存的 `mode / top_k / rerank` 三项参数决定，改档位名不再改变任何行为。这三个名字只活在前端编辑器的「参数预设按钮」与文档评测里的参数组合别名中；`profile` 字段可能还在旧缓存里，但不参与判定（[ADR-0032](docs/adr/0032-four-retrieval-endpoints.md)）。
+_Avoid_: 套餐（混用时）, 模式, preset, 级别, 质量档位（指已退役的判定概念）
 
 **数据范围组**：
 描述「查哪份数据」的一组概念，**当前只剩 `kb_ids`**：`index_version` 由服务端决定（每个库取它**当前生效的构建版本**，不再是固定常量 `v1`，见「构建版本」与 [ADR-0025](docs/adr/0025-index-as-build-artifact.md)），并且**永远不是请求参数**——让调用方指定版本就是让它回到旧切法。能用哪些知识库由 API Key 的密钥配置圈定（数据范围白名单），请求只能在范围内收窄、不能扩大；越界与跨租户一律返回「不存在」。
@@ -240,7 +248,7 @@ _Avoid_: 检索引擎, 完整检索服务, retrieve 服务
 _Avoid_: 精排, 二次排序, 粗排
 
 **降级原因（degraded_reason）**：
-降级时回给调用方的固定英文串，只有四个：`vector search failed` / `keyword search failed` / `rerank failed` / `query rewrite failed`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（改写 → 通道 → 重排），后到的不覆盖。
+降级时回给调用方的固定英文串，只有四个：`vector search failed` / `keyword search failed` / `rerank failed` / `rerank quota exhausted`。一因一码、不拼异常文本；同时发生多个失败时，先到的原因是根因（通道 → 重排），后到的不覆盖。第 13 步退役 `query rewrite failed`（改写已是端点，模型调用失败整单 `50003`；词条留作解释历史归属索引行），并新增 `rerank quota exhausted`（重排额度用尽时跳过重排，不拒绝整单）。
 _Avoid_: 错误信息, 异常原因, 失败详情, 中文译名
 
 **诚实空（honest empty）**：
@@ -311,17 +319,17 @@ _Avoid_: 七类, 七个子类, 七个子目录
 ## 模型接入
 
 **模型配置（ModelConfig）**：
-一行 = 一套可用的模型接入：供应商、端点、模型名与凭证。它是**可增删的配置数据，不是部署常量**——管理员在控制台增删多条，再由两个**模型角色**各指向一条。它与「模型角色」不是一回事：角色是用途（fast / strong），配置是这台机器上有哪些接入可用。
-**重排既没有独立的模型配置，也不进这张表**：它是 chat 供应商语义的表，重排走的是部署配置（`RERANK_*` 一组，见「重排端点」），硬加一个用途位只会多出「改了也不生效」的配置项（[ADR-0022](docs/adr/0022-rerank-endpoint-and-loop-isolation.md)）。库里一行都没有时，回落 `.env` 的单供应商；`.env` 也没配，就是空实现（离线与 CI 行为不变）。
+一行 = 一套可用的模型接入：供应商、端点、模型名与凭证。它是**可增删的配置数据，不是部署常量**——管理员在控制台增删多条，再由唯一的**模型角色 `default`** 指向其中一条。它与「模型角色」不是一回事：角色是用途，配置是这台机器上有哪些接入可用。
+**重排既没有独立的模型配置，也不进这张表**：它是 chat 供应商语义的表，重排走的是部署配置（`RERANK_*` 一组，见「重排端点」）（[ADR-0022](docs/adr/0022-rerank-endpoint-and-loop-isolation.md)）。库里一行都没有时，回落 `.env` 的单供应商；`.env` 也没配，就是空实现（离线与 CI 行为不变）。
 _Avoid_: 模型列表, provider 配置, 模型源
 
 **模型角色（model role）**：
-大模型用途的两个固定角色：`fast`（查询改写：要快、要稳，DeepSeek 上写死关闭思考）与 `strong`（留给 Research：要准）。配置名分别是 `LLM_MODEL` 与 `LLM_STRONG_MODEL`。它是**用途角色**，与「套餐」「质量档位」都不是一回事。**重排不在其中**：重排打的是自己的端点，不指向任何角色（见「重排端点」）。
-_Avoid_: tier, 档位（已被「质量档位」占用）, 级别, 套餐
+第 13 步起只有**一个**角色 `default`（配置名 `LLM_MODEL`）：改写、分解、Research 四阶段共用它。原先的 `fast` / `strong` 双角色与「强模型兜底」已删除——模型调用失败整单 `50003`，不再分工「快/准」（[ADR-0032](docs/adr/0032-four-retrieval-endpoints.md)）。它与「套餐」「档位」都不是一回事。**重排不在其中**：重排打自己的端点（见「重排端点」）。
+_Avoid_: tier, 档位, 级别, 套餐, fast, strong
 
 **重排端点**：
 重排请求打的那台服务：OpenAI 兼容的 `/reranks` 端点，模型是专用的 Cross-Encoder（`qwen3.7-text-rerank`），由**部署配置**决定地址、模型与超时，密钥留空时回落 `MODEL_API_KEY`。
-它与「模型角色」不是一回事：角色是**用途**（fast / strong），端点是**这套用途自己的一台服务**；重排不指向任何角色，因此也不是「模型配置」里的一行。**路径段与嵌入不同**——嵌入是 `compatible-mode/v1`、重排是 `compatible-api/v1`，两者不能互相顶替。
+它与「模型角色」不是一回事：角色（唯一的 `default`）是大模型用途，端点是**重排自己的一台服务**；重排不指向任何角色，因此也不是「模型配置」里的一行。**路径段与嵌入不同**——嵌入是 `compatible-mode/v1`、重排是 `compatible-api/v1`，两者不能互相顶替。
 _Avoid_: 重排模型配置, 重排角色, rerank provider 配置
 
 **available**：
@@ -364,7 +372,7 @@ _Avoid_: 路标片, 指针片（口语）
 _Avoid_: 证据块, 答案片段, 引用片段, Evidence Pack
 
 **停止原因（stop_reason）**：
-Research 结束的原因，固定**七个**英文枚举，**不许翻译**，界面、日志、响应必须用同一套词：`evidence_complete` / `no_new_evidence` / `max_rounds` / `duplicate_query` / `timeout` / `budget_exhausted` / `degraded`。它是穷举的枚举而不是自由文本：按原因做统计与告警，加第八个要先改这条。
+Research 结束的原因，固定**六个**英文枚举，**不许翻译**，界面、日志、响应必须用同一套词：`evidence_complete` / `no_new_evidence` / `max_rounds` / `duplicate_query` / `timeout` / `budget_exhausted`。第 13 步退役 `degraded`（模型失败改整单 `50003`，不再有降级出口；词条留作解释历史响应）。它是穷举的枚举而不是自由文本：按原因做统计与告警，加第七个要先改这条。
 它与「有没有答出来」是**两件事**：`degraded` 说的是「规划或判断这一步降级了」，不蕴含 `answer` 为 `null`——材料够时生成阶段照常产出通过四条硬校验的引用块（`app/services/research.py` 的 `execute` 不论停止原因都进第 ⑤ 步，除非阶段预算已用尽）。
 _Avoid_: 结束原因（中文译名）, finish_reason, 终止条件, stop reason（空格写法）
 

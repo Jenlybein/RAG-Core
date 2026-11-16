@@ -55,13 +55,6 @@ const routes = [
     component: () => import('../views/TracesPage.vue'),
   },
   {
-    path: '/evaluation',
-    name: 'evaluation',
-    // 语义评测（#109 从检索页独立出来）：LLM 裁判跑 50 题，只提示、不阻断。
-    // 独立成页的原因：它的结论按「轮」成立，不按「这一次检索」成立。
-    component: () => import('../views/EvaluationPage.vue'),
-  },
-  {
     path: '/admin/accounts',
     name: 'admin-accounts',
     component: () => import('../views/admin/AccountsPage.vue'),
@@ -89,17 +82,18 @@ const routes = [
     component: () => import('../views/admin/RetrievalPage.vue'),
   },
   {
-    path: '/admin/profiles',
-    name: 'admin-profiles',
-    // 档位预设：四个质量档位的参数（平台级配置，改完对下一次检索立即生效）。
-    component: () => import('../views/admin/ProfilesPage.vue'),
-  },
-  {
     path: '/admin/observability',
     name: 'admin-observability',
     // 观测总览：跨租户的检索量 / 耗时 / 降级 / 评分 + 观测栈层（后者可降级）。
     // 与「检索记录」的区别：那页是单租户、按单条 trace 看；这页是平台级、按窗口看趋势。
     component: () => import('../views/admin/ObservabilityPage.vue'),
+  },
+  {
+    path: '/admin/evaluation',
+    name: 'admin-evaluation',
+    // 第 13 步：语义评测从 /evaluation 搬进管理员后台。用 LLM 裁判跑固定语料，
+    // 只提示、不阻断；它是平台自检工具，不是租户自助功能。
+    component: () => import('../views/EvaluationPage.vue'),
   },
   /**
    * 兜底路由：没匹配上任何一条就落到这里。

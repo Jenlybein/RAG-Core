@@ -8,11 +8,25 @@
 
 判据写成 ``>=`` 而不是 ``>``：``used`` 是**已经记下的次数 / 已有的行数**，这次请求 /
 这次写入会是第 ``used + 1`` 个。允许它当且仅当 ``used + 1 <= limit``。
+
+判据本身只有一个定义（:func:`has_room`）：拒绝路径与「先问一句」的探测路径
+（重排额度用尽时跳过重排）都调它，所以两条路径不可能给出相反的结论。
 """
 
 from __future__ import annotations
 
 from app.core.exceptions import AppError, ErrorCode
+
+
+def has_room(*, used: int, limit: int) -> bool:
+    """同一条判据的**问句形式**：这一次还能不能放行。
+
+    ``used`` 是已经记下的次数 / 已有的行数，所以「还有余量」等价于 ``used + 1 <= limit``。
+    拒绝路径（:func:`ensure_under_limit`）与探测路径（``QuotaLedger.has_capacity``）都走
+    这里，``>=`` 还是 ``>`` 只在**这一行**决定。
+    """
+
+    return used < limit
 
 
 def ensure_under_limit(
@@ -30,5 +44,5 @@ def ensure_under_limit(
     文案的差异只是把各自的口径如实写出来。
     """
 
-    if used >= limit:
+    if not has_room(used=used, limit=limit):
         raise AppError(code, f"{what} exceeded: {used} used of {limit} {suffix}")

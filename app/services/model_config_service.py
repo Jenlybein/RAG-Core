@@ -79,8 +79,8 @@ AUDIT_TARGET_PREFIX: Final[str] = "model:"
 
 #: 删除被引用时的拒绝措辞。**必须给出下一步动作**（先改指向），否则管理员只知道「删不掉」。
 MSG_REFERENCED: Final[str] = (
-    "这条模型配置仍被角色 {roles} 引用，先把 fast/strong 的指向改掉"
-    "（PATCH /console/settings 把 model.role.<角色> 写空串即可清空）"
+    "这条模型配置仍被角色 {roles} 引用，先把 default 的指向改掉"
+    "（PATCH /console/settings 把 model.role.default 写空串即可清空）"
 )
 
 #: 角色指向写了一个不存在的 id。整句里带上键名与那个 id，管理员才找得到是哪一项。

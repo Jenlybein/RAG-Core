@@ -82,7 +82,9 @@ const DEGRADED_REASON_HINTS: Record<string, string> = {
   'vector search failed': '向量召回这一路失败：这次只用关键词一路的结果，语义相似度与向量名次会缺失。',
   'keyword search failed': '关键词召回这一路失败：这次只用向量一路的结果，关键词匹配分与关键词名次会缺失。',
   'rerank failed': '重排失败：已回落到融合排序，名次可能不如预期；结果本身仍然可用。',
-  'query rewrite failed': '查询改写失败：这次用原句检索，没有用改写后的问句。',
+  'rerank quota exhausted': '重排额度用尽：这次跳过重排，结果与未重排时一致。',
+  // 历史码：改写失败自第 13 步起整单 50003，不再产出降级串；保留解释只为老日志可读。
+  'query rewrite failed': '（历史）查询改写失败：老版本用原句检索，新版改为整单失败 50003。',
 }
 
 export function degradedReasonHint(reason: string | null | undefined): string | null {
@@ -141,14 +143,9 @@ export function buildRunSummary(metadata: RetrievalMetadata): SummaryRow[] {
 
   rows.push(
     { label: '套餐', field: 'tenant_policy.plan', value: policy.plan, hint: null },
-    {
-      label: '要求的档位',
-      field: 'tenant_policy.requested_profile',
-      value: policy.requested_profile,
-      hint: null,
-    },
+    { label: '检索方式', field: 'tenant_policy.mode', value: policy.mode, hint: null },
+    { label: '返回条数', field: 'tenant_policy.top_k', value: String(policy.top_k), hint: null },
     { label: '重排', field: 'tenant_policy.rerank', value: String(policy.rerank), hint: null },
-    { label: '查询改写', field: 'tenant_policy.rewrite', value: String(policy.rewrite), hint: null },
     { label: '本次库数', field: 'tenant_policy.kb_count', value: String(policy.kb_count), hint: null },
     {
       label: '被套餐裁掉的字段',

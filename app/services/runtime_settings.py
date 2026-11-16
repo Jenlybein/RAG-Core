@@ -60,7 +60,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, settings
 from app.core.exceptions import AppError, ErrorCode
-from app.core.model_roles import MODEL_FAST, MODEL_STRONG, role_pointer_key
+from app.core.model_roles import MODEL_DEFAULT, role_pointer_key
 from app.core.runtime_settings_cache import (
     CACHE_TTL_SECONDS,
     RuntimeSettingsCache,
@@ -80,7 +80,10 @@ from app.repositories import (
 from app.services.plan_admin import IMPACT_SAMPLE_LIMIT, ImpactGroup
 from app.services.console_service import append_audit
 from app.services import model_config_service
-from app.services.retrieval_options import MODE_HYBRID, profile_chain_of
+from app.services.retrieval_options import (
+    MODE_HYBRID,
+    retrieval_params_of,
+)
 from app.utils.id_generator import MASK_HIDDEN, mask_secret
 
 logger = structlog.get_logger(__name__)
@@ -339,12 +342,7 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
     "LLM_MODEL": _spec(
         TIER_HOT,
         TARGET_SETTINGS,
-        "fast 模型角色（查询改写）在下次装配时读它；重排已改用专用端点，不再跟随 fast",
-    ),
-    "LLM_STRONG_MODEL": _spec(
-        TIER_HOT,
-        TARGET_SETTINGS,
-        "strong 模型角色在下次装配时读它；思考强度只作用于这个角色",
+        "唯一的 default 模型角色在下次装配时读它（改写 / 分解 / Research 都走它）",
     ),
     "LLM_TIMEOUT_SECONDS": _spec(
         TIER_HOT,
@@ -473,17 +471,12 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
         minimum=60,
     ),
     # ── 角色指向（#94 写、这里只登记档位与理由，不参与 Settings 合并）──
-    # 键名来自 app.core.model_roles 的推导（写死字面量等于第二份真相：
-    # 工厂、删除判定与面板都按同一对名字读，改名时只允许改一处）。
-    role_pointer_key(MODEL_FAST): _spec(
+    # 第 13 步起只有 default 一个角色：键名来自 app.core.model_roles 的推导，
+    # 工厂、删除判定与面板都按同一份词表读，改名时只允许改一处。
+    role_pointer_key(MODEL_DEFAULT): _spec(
         TIER_HOT,
         TARGET_POINTER,
-        "指向哪条模型配置；fast 用于查询改写（重排已换成专用端点，不再跟随这个角色）",
-    ),
-    role_pointer_key(MODEL_STRONG): _spec(
-        TIER_HOT,
-        TARGET_POINTER,
-        "指向哪条模型配置；strong 用于需要思考的生成，思考强度只作用于它",
+        "指向哪条模型配置；改写 / 分解 / Research 四阶段共用这一个角色",
     ),
 }
 
@@ -1044,14 +1037,16 @@ async def _plan_of(db: AsyncSession, policy: KeyPolicy) -> Plan | None:
 
 
 async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> SettingsImpact:
-    """只读试算：这一批改动会让哪些**租户**的质量档位退化、哪些会丢掉关键词通道。
+    """只读试算：这一批改动会让哪些**租户**的检索质量退化、哪些会丢掉关键词通道。
 
     判定口径（与 #82 的「能力开关影响预览」一节同一句）：
 
-    * ``quality`` 档的链路是「混合 + 重排 + 改写」——关掉 ``RERANK_ENABLED`` 或
-      ``QUERY_REWRITE_ENABLED`` 都让它的承诺少一步；
-    * ``balanced`` / 任意 ``custom`` 只要链路是 ``hybrid``，就依赖关键词通道——
-      把 ``KEYWORD_SEARCH_PROVIDER`` 关成 ``none`` 时它们只剩向量一路。
+    * 一份配置的 ``rerank`` 参数为真、且套餐给过重排位——关掉 ``RERANK_ENABLED`` 会让它
+      少一步；
+    * 一份配置的 ``rewrite_allowed`` 位为真——关掉 ``QUERY_REWRITE_ENABLED`` 之后
+      ``/rag/rewrite`` 就没有可用的改写器了；
+    * 任意配置的参数是 ``mode=hybrid``，就依赖关键词通道——把 ``KEYWORD_SEARCH_PROVIDER``
+      关成 ``none`` 时它们只剩向量一路。
 
     两个额外的过滤条件，都是为了「只报真正会变的」：
 
@@ -1075,17 +1070,19 @@ async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> Setting
         plan = await _plan_of(db, policy)
         if plan is None:
             continue
-        chain = profile_chain_of(policy_snapshot_of(policy))
+        snapshot = policy_snapshot_of(policy)
+        params = retrieval_params_of(snapshot)
         name = await _tenant_name(db, policy.tenant_id)
 
         quality_loss = (
-            (turning_off_rerank and chain.rerank and plan.rerank_allowed)
-            or (turning_off_rewrite and chain.rewrite and plan.query_rewrite_allowed)
+            turning_off_rerank and params.rerank and plan.rerank_allowed
+        ) or (
+            turning_off_rewrite and snapshot.rewrite_allowed and plan.rewrite_allowed
         )
         if quality_loss and name not in degraded:
             degraded.append(name)
 
-        keyword_loss = losing_keyword and chain.mode == MODE_HYBRID and plan.hybrid_allowed
+        keyword_loss = losing_keyword and params.mode == MODE_HYBRID
         if keyword_loss and name not in lost:
             lost.append(name)
 

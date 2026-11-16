@@ -120,7 +120,7 @@ async def test_factory_returns_noop_when_no_key_configured(
     """没配任何 key 的机器（离线测试 / CI）必须能拿到空实现而不是启动失败。"""
 
     assert isinstance(await get_llm_provider(), NoopLLMProvider)
-    assert isinstance(await get_llm_provider("strong"), NoopLLMProvider)
+    assert isinstance(await get_llm_provider(), NoopLLMProvider)
 
 
 # ───────────────────────────────────── 角色解析器：注入点与回落（#82 的层向修复）
@@ -155,7 +155,7 @@ async def test_a_resolver_returning_none_falls_back_to_env(
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
     isolated_settings.setattr(settings, "LLM_MODEL", "env-fast-model")
 
-    provider = await get_llm_provider("fast")
+    provider = await get_llm_provider()
 
     assert isinstance(provider, LangChainLLMProvider)
     assert provider.model_name == "env-fast-model"
@@ -180,7 +180,7 @@ async def test_an_injected_endpoint_is_assembled_without_the_services_layer(
     # `.env` 里给的是另一家的 key：装配必须只看注入的那一条，不许把它和 env 混在一起。
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
 
-    provider = await get_llm_provider("fast")
+    provider = await get_llm_provider()
 
     assert provider.model_name == "doubao-pro"
     assert type(provider.chat_model).__name__ == "ChatOpenAI"
@@ -215,10 +215,10 @@ async def test_the_factory_and_its_resolver_are_coroutines(
     set_role_resolver(_resolver)
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-env-deepseek")
 
-    provider = await get_llm_provider("fast")
+    provider = await get_llm_provider()
 
     assert provider.model_name == "doubao-pro"
-    assert requested == ["fast"], "解析器真的被 await 了一次，而不是拿了个形状不对的返回值"
+    assert requested == ["default"], "解析器真的被 await 了一次，而不是拿了个形状不对的返回值"
 
 
 def test_the_provider_layer_does_not_import_the_services_layer() -> None:
@@ -299,17 +299,16 @@ def test_default_llm_provider_is_a_supported_vendor() -> None:
 
 
 @pytest.mark.asyncio
-async def test_factory_maps_fast_and_strong_tiers_to_their_models(
+async def test_the_single_role_reads_the_one_model_name(
     isolated_settings: pytest.MonkeyPatch,
 ) -> None:
-    """fast 与 strong 是两个模型名，选错档位在真实调用里只表现为「贵了 / 慢了」。"""
+    """第 13 步起只有一个 default 角色：模型名只有一个来源（LLM_MODEL）。"""
 
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
     isolated_settings.setattr(settings, "LLM_MODEL", "deepseek-flash")
-    isolated_settings.setattr(settings, "LLM_STRONG_MODEL", "deepseek-v4-pro")
 
     assert (await get_llm_provider()).model_name == "deepseek-flash"
-    assert (await get_llm_provider("strong")).model_name == "deepseek-v4-pro"
+    assert (await get_llm_provider()).model_name == "deepseek-flash"
 
 
 @pytest.mark.parametrize(
@@ -342,22 +341,20 @@ async def test_each_vendor_is_reachable_with_environment_variables_only(
 
 
 @pytest.mark.asyncio
-async def test_fast_tier_never_enables_reasoning(isolated_settings: pytest.MonkeyPatch) -> None:
-    """fast 档写死关思考模式：改写与重排要的是低延迟与稳定输出。
-
-    这一条不能用「配置文件里别写 high」来保证——那是运维纪律，不是代码约束。
-    """
+async def test_reasoning_effort_follows_deployment_config(
+    isolated_settings: pytest.MonkeyPatch,
+) -> None:
+    """单一角色：思考强度由部署配置决定（不再按 fast/strong 分叉）。"""
 
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
     isolated_settings.setattr(settings, "LLM_REASONING_EFFORT", "high")
 
-    assert (await get_llm_provider("fast")).chat_model.reasoning_effort is None
-    assert (await get_llm_provider("strong")).chat_model.reasoning_effort == "high"
+    assert (await get_llm_provider()).chat_model.reasoning_effort == "high"
 
 
 @pytest.mark.asyncio
 async def test_unknown_tier_is_rejected(isolated_settings: pytest.MonkeyPatch) -> None:
-    """档位只有两档；写错要立刻炸，不能悄悄按 fast 跑。"""
+    """只有一个 ``default`` 角色；写错要立刻炸，不能悄悄按它跑。"""
 
     isolated_settings.setattr(settings, "DEEPSEEK_API_KEY", "sk-test")
 

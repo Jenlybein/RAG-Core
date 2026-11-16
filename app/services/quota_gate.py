@@ -29,23 +29,31 @@
 话说，「查」与「记」看的是同一个键——否则进门查 A 秒、记账写 B 秒，窗口的正确性就取决
 于请求跑得多快。
 
-## 两本账：检索一本，Research 一本（票 #150）
+## 三本账：检索、重排、大模型（第 13 步，ADR-0032）
 
-**形状完全同构，键前缀不同**。检索用 ``quota:*``，Research 用 ``quota:research:*``：
+**形状完全同构，键前缀不同**。按**资源**开户，不按端点开户：
 
-| 这本账 | 上限来自 | 键前缀 |
-| --- | --- | --- |
-| 检索 | ``retrieve_qps`` / ``retrieve_daily`` | ``quota`` |
-| 受控 Research | ``research_qps`` / ``research_daily`` | ``quota:research`` |
+| 这本账 | 记什么 | 上限来自 | 键前缀 |
+| --- | --- | --- | --- |
+| retrieve | 内核调用次数（一次 decompose 记 N） | ``retrieve_qps`` / ``retrieve_daily`` | ``quota`` |
+| rerank | 重排调用次数 | ``rerank_qps`` / ``rerank_daily`` | ``quota:rerank`` |
+| llm | 实际发生的大模型调用次数 | ``llm_qps`` / ``llm_daily`` | ``quota:llm`` |
 
-分成两本账是因为成本相差一个量级：一次 Research 约 30 秒、3–4 次模型调用，与普通检索共用
-一份额度会让「偶尔问一次大问题」把当天的检索额度吃掉。两本账共用同一份实现
-（:class:`QuotaLedger` + :class:`QuotaLimits`），差别只有「读哪两列」与「写哪个前缀」——
-所以「两级同记、只有成功才记、两个错误码」这三条纪律不会在某一天只落到一条链路上。
+按端点开户会造出一个虚构单位（「一次 decompose」），而按资源开户，成本表里的每一行都能
+在链路上找到真实的对应动作。三本账共用同一份实现（:class:`QuotaLedger` +
+:class:`QuotaLimits`），差别只有「读哪两列」与「写哪个前缀」——所以「两级同记、只有成功
+才记、两个错误码」这三条纪律不会在某一天只落到一条链路上。
 
-Research 那两列的**0 表示关闭**（与 ``research_allowed=False`` 同一个答复码 ``20013``），
-这个判定不在本模块：它在门禁（``app.services.research_gate``）的「能力位」那一步，
-因为它是配置事实、与计数开关无关。
+**Research 没有自己的账**：它的成本本来就是那几次大模型调用，另开一本等于把同一份成本
+记两遍（票 #150 的 ``quota:research`` 已随第 13 步退役）。它的入口只认 ``research``
+授权位与 ``llm`` 账。
+
+新账的**四格全 0 表示「没配额度」= no-op**（不判、不记）：从旧版本升级上来的 Key 与套餐
+在那几列上是迁移缺省 0，若把它当成「一次都不许用」，升级当天就会把所有人拦下来。
+
+加工能力那两列的 **0 表示关闭**（与位为假同一个答复码 ``20013``），这个判定不在本模块：
+它在门禁（``app.services.retrieval_gate`` / ``research_gate``）的「能力位」那一步，因为
+它是配置事实、与计数开关无关。
 
 ## 只有成功才记账，所以「查」与「记」必须分开
 
@@ -100,17 +108,31 @@ from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
-from app.services.quota_limits import ensure_under_limit
+from app.services.quota_limits import ensure_under_limit, has_room
 
 #: 两级计数的两个名字。直接用字面量拼进键里（``quota:qps:tenant:...``），
 #: 运维一眼能看出这个键属于哪一级，而不必回来读代码。
 LEVEL_KEY: Final[str] = "key"
 LEVEL_TENANT: Final[str] = "tenant"
 
-#: 两本账的键前缀。检索那本**逐字不变**（``quota``）——它已经在生产上跑着，改前缀等于
-#: 把当天所有人的用量清零；Research 那本多一段 ``research``，于是两本账互不相干。
+#: 三本账的**名字**（不带窗口）。它是「按资源计量」这条决定的词表：一次分解检索会跑 N 次
+#: 内核、可能各重排一次、再加一次大模型调用，三本账各自对应链路上一类真实动作。
+#: 列名 = ``账本_窗口``（见 :class:`QuotaLimits` 的三个 ``for_*`` 工厂）。
+METER_BOOKS: Final[tuple[str, ...]] = ("retrieve", "rerank", "llm")
+#: 两级计数：Key 级卡住单个外部应用，租户级把同一租户下所有 Key 聚合起来。
+METER_LEVELS: Final[tuple[str, ...]] = (LEVEL_KEY, LEVEL_TENANT)
+#: 两格：每秒与每日。
+METER_WINDOWS: Final[tuple[str, ...]] = ("qps", "daily")
+
+#: 三本账的键前缀。检索那本**逐字不变**（``quota``）——它已经在生产上跑着，改前缀等于
+#: 把当天所有人的用量清零；重排与大模型各一本，键前缀互不相干。
+#
+#: 票 #150 的 ``quota:research`` 那本账已退役（第 13 步）：Research 的成本本来就是「几次
+#: 大模型调用」，另开一本账等于把同一份成本记两遍；现在它读 ``llm`` 那本。旧键靠日桶
+#: TTL 自然过期，不需要清理动作。
 KEY_NAMESPACE: Final[str] = "quota"
-RESEARCH_NAMESPACE: Final[str] = "quota:research"
+RERANK_NAMESPACE: Final[str] = "quota:rerank"
+LLM_NAMESPACE: Final[str] = "quota:llm"
 
 #: 键形状。``quota:`` 前缀与套餐缓存（``plan:``）、Celery 的 0/1 号库都分开——
 #: 同一个 Redis 实例上，前缀是唯一能让人分清「哪些键可以清」的东西。
@@ -170,8 +192,8 @@ def qps_key(
 ) -> str:
     """QPS 桶的键：``quota:qps:key:<key_id>:<epoch_second>``。
 
-    ``namespace`` 缺省是检索那本账，所以既有调用点与用例里的键**逐字不变**；Research 传
-    :data:`RESEARCH_NAMESPACE` 拿到 ``quota:research:qps:...``。
+    ``namespace`` 缺省是检索那本账，所以既有调用点与用例里的键**逐字不变**；重排与大模型
+    各传 :data:`RERANK_NAMESPACE` / :data:`LLM_NAMESPACE`。
     """
 
     return QPS_KEY_TEMPLATE.format(
@@ -279,12 +301,13 @@ def _as_count(raw: str | bytes | None) -> int:
 class QuotaLimits:
     """一次调用的四个上限 + 这本账的键前缀与报错口径。
 
-    四个上限按「两级」摆开（Key 级卡单个应用、租户级聚合），两条链路各有一份来源：
+    四个上限按「两级」摆开（Key 级卡单个应用、租户级聚合），三本账各有一份来源：
 
-    * 检索：密钥配置的 ``retrieve_qps`` / ``retrieve_daily`` 与套餐的同名列；
-    * Research：密钥配置与套餐的 ``research_qps`` / ``research_daily``。
+    * retrieve：密钥配置的 ``retrieve_qps`` / ``retrieve_daily`` 与套餐的同名列；
+    * rerank：``rerank_*`` 四列；
+    * llm：``llm_*`` 四列。
 
-    ``namespace`` 决定写哪本账（见模块文档「两本账」）；``label`` 只进报错文案，
+    ``namespace`` 决定写哪本账（见模块文档「三本账」）；``label`` 只进报错文案，
     于是「哪条链路超限了」在日志里可读，而判据与错误码仍然只有一份。
     """
 
@@ -307,22 +330,44 @@ class QuotaLimits:
         )
 
     @classmethod
-    def for_research(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
-        """Research 那本账：读 ``research_*`` 四列，键前缀多一段 ``research``。
-
-        0 在这里**不该出现**：门禁的「能力位」那一步已经把 0 当成「关闭」拒绝掉了
-        （``20013``）。真走到这里还带着 0，说明有人绕过了门禁，而此时按「额度已用尽」
-        （``20014``）拒绝是更保守的一侧——它不会让一次调用白跑。
-        """
+    def for_rerank(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
+        """第 13 步三本账之一：重排调用次数，读 ``rerank_*`` 四列。"""
 
         return cls(
-            key_qps=policy.research_qps,
-            tenant_qps=plan.research_qps,
-            key_daily=policy.research_daily,
-            tenant_daily=plan.research_daily,
-            namespace=RESEARCH_NAMESPACE,
-            label="research ",
+            key_qps=policy.rerank_qps,
+            tenant_qps=plan.rerank_qps,
+            key_daily=policy.rerank_daily,
+            tenant_daily=plan.rerank_daily,
+            namespace=RERANK_NAMESPACE,
+            label="rerank ",
         )
+
+    @classmethod
+    def for_llm(cls, *, policy: KeyPolicySnapshot, plan: PlanSpec) -> QuotaLimits:
+        """第 13 步三本账之一：大模型调用次数，读 ``llm_*`` 四列。"""
+
+        return cls(
+            key_qps=policy.llm_qps,
+            tenant_qps=plan.llm_qps,
+            key_daily=policy.llm_daily,
+            tenant_daily=plan.llm_daily,
+            namespace=LLM_NAMESPACE,
+            label="llm ",
+        )
+
+
+@dataclass(frozen=True)
+class _QuotaCell:
+    """一格额度：已经记了多少、上限多少、判失败时报什么码、话怎么说。
+
+    ``code`` 与 ``what`` 只被拒绝路径用（探测路径只关心 ``has_room``），但两格放在一起
+    才能保证「四格」这件事只写一遍——分开写时新增一本账就得改两个方法。
+    """
+
+    used: int
+    limit: int
+    code: ErrorCode
+    what: str
 
 
 @dataclass(frozen=True)
@@ -351,55 +396,97 @@ class QuotaLedger:
         if not self.enabled:
             return
 
-        # 第一道：秒级限流。Key 级在前——它更窄、更可能是调用方自己要修的那件事
-        # （「我这个应用打得太快」），而租户级超限往往要另一个应用的负责人一起看。
-        # 判据只有一份（``quota_limits.ensure_under_limit``），静态配额用的也是它。
-        ensure_under_limit(
-            used=await self._read_qps(LEVEL_KEY, self.key_id),
-            limit=self.limits.key_qps,
-            code=ErrorCode.API_RATE_LIMIT,
-            what=f"{self.limits.label}qps of key {self.key_id}",
-            suffix="per window",
-        )
-        ensure_under_limit(
-            used=await self._read_qps(LEVEL_TENANT, self.tenant_id),
-            limit=self.limits.tenant_qps,
-            code=ErrorCode.API_RATE_LIMIT,
-            what=f"{self.limits.label}qps of tenant {self.tenant_id}",
-            suffix="per window",
-        )
+        # 判据只有一份（``quota_limits.ensure_under_limit``），四格的读数也只有一份
+        # （``_cells``）——顺序即判定顺序：Key 级秒级在前，它更窄、更可能是调用方自己
+        # 要修的那件事（「我这个应用打得太快」），而租户级超限往往要另一个应用的负责人
+        # 一起看。日配额**比的是当前额度**，不是某个记下来的快照：管理员把日配额改小，
+        # 下一次调用就按新值判（AC「改小日配额后立刻生效，不需要重启」）。
+        for cell in await self._cells():
+            ensure_under_limit(
+                used=cell.used,
+                limit=cell.limit,
+                code=cell.code,
+                what=cell.what,
+                suffix="per window",
+            )
 
-        # 第二道：日配额。注意**比的是当前额度**，不是某个记下来的快照：管理员把日
-        # 配额改小，下一次调用就按新值判（AC「改小日配额后立刻生效，不需要重启」）。
-        ensure_under_limit(
-            used=await self._read_daily(LEVEL_KEY, self.key_id),
-            limit=self.limits.key_daily,
-            code=ErrorCode.QUOTA_EXCEEDED,
-            what=f"{self.limits.label}daily quota of key {self.key_id}",
-            suffix="per window",
-        )
-        ensure_under_limit(
-            used=await self._read_daily(LEVEL_TENANT, self.tenant_id),
-            limit=self.limits.tenant_daily,
-            code=ErrorCode.QUOTA_EXCEEDED,
-            what=f"{self.limits.label}daily quota of tenant {self.tenant_id}",
-            suffix="per window",
-        )
+    async def has_capacity(self) -> bool:
+        """还能不能再跑一次？（只读，不记账、不抛错）
+
+        :meth:`ensure_available` 的**问句式**版本，只给「这一步是可选的」那种调用点用：
+        重排额度用尽时正确行为是**跳过重排并如实标原因**，不是拒绝整单（ADR-0032）。
+        有了这个探针，那条纪律就只有一处实现，而不是在调用点里 ``try/except`` 一个
+        ``AppError`` —— 后者会把「这把 Key 压根没买重排」和「今天排太多次了」混成一件
+        事，而它们的正确处置恰好相反（前者该拒绝，后者该跳过）。
+
+        与 :meth:`ensure_available` 读同一份 ``_cells``、走同一条判据
+        （``quota_limits.has_room``），所以两者**不可能**给出相反的结论。
+        """
+
+        if not self.enabled or self.counters is None:
+            return True
+
+        return all(has_room(used=cell.used, limit=cell.limit) for cell in await self._cells())
 
     async def record_success(self) -> None:
-        """业务成功之后才调它：两级各记一次，**一次请求只记一次**。
+        """业务成功之后才调它：两级各记一次（n=1）。
 
         「一次跨多库检索 / 一次跨多条子查询的 Research 只计一次」不是这里的判断——本对象
         根本不知道这次查了几个库、跑了几条子查询。正因为不知道，它才不可能按库 / 按子查询
         记账（票 #150 的 AC「一次 Research 只记一次」在结构上就成立）。
         """
 
-        if not self.enabled or self.counters is None:
+        await self.record_n(1)
+
+    async def record_n(self, n: int) -> None:
+        """按**实际发生的次数**记账（第 13 步）：llm/rerank 一本账里一次调用可能跑 N 次。
+
+        ``n <= 0`` 是 no-op：没发生就不记。记的位置仍是「业务成功之后」——被拒与
+        失败的请求不扣额度这条纪律不因为支持多次而松动。调用方给几就记几，本对象
+        不替它判断「这次到底跑了几步」。
+        """
+
+        if n <= 0 or not self.enabled or self.counters is None:
             return
 
-        for level, ident in ((LEVEL_KEY, self.key_id), (LEVEL_TENANT, self.tenant_id)):
-            await self.counters.add_qps(level=level, ident=ident, window=self.window)
-            await self.counters.add_daily(level=level, ident=ident, window=self.window)
+        for _ in range(n):
+            for level, ident in ((LEVEL_KEY, self.key_id), (LEVEL_TENANT, self.tenant_id)):
+                await self.counters.add_qps(level=level, ident=ident, window=self.window)
+                await self.counters.add_daily(level=level, ident=ident, window=self.window)
+
+    async def _cells(self) -> tuple[_QuotaCell, ...]:
+        """四格「已用 / 上限」：Key 秒级、租户秒级、Key 日额、租户日额（顺序即判定顺序）。
+
+        两个公开方法都只读这一份：读数一次、判据一处，所以「先拦一道」与「先问一句」
+        不可能因为某处漏改一格而给出相反的结论。
+        """
+
+        return (
+            _QuotaCell(
+                used=await self._read_qps(LEVEL_KEY, self.key_id),
+                limit=self.limits.key_qps,
+                code=ErrorCode.API_RATE_LIMIT,
+                what=f"{self.limits.label}qps of key {self.key_id}",
+            ),
+            _QuotaCell(
+                used=await self._read_qps(LEVEL_TENANT, self.tenant_id),
+                limit=self.limits.tenant_qps,
+                code=ErrorCode.API_RATE_LIMIT,
+                what=f"{self.limits.label}qps of tenant {self.tenant_id}",
+            ),
+            _QuotaCell(
+                used=await self._read_daily(LEVEL_KEY, self.key_id),
+                limit=self.limits.key_daily,
+                code=ErrorCode.QUOTA_EXCEEDED,
+                what=f"{self.limits.label}daily quota of key {self.key_id}",
+            ),
+            _QuotaCell(
+                used=await self._read_daily(LEVEL_TENANT, self.tenant_id),
+                limit=self.limits.tenant_daily,
+                code=ErrorCode.QUOTA_EXCEEDED,
+                what=f"{self.limits.label}daily quota of tenant {self.tenant_id}",
+            ),
+        )
 
     async def _read_qps(self, level: str, ident: str) -> int:
         assert self.counters is not None  # 只有 enabled 时才会走到这里
@@ -420,11 +507,12 @@ async def read_tenant_daily_usage(
     """读租户级「今日已用」：**只发一条 GET**，绝不 ``INCR`` / ``EXPIRE``。
 
     面板刷新不是一次检索，读路径因此不能借「顺手初始化」把计数 +1，也不能靠写操作
-    去探测键是否存在。这里与 :func:`retrieval_quota` / :func:`research_quota` 共用同一个
-    窗口口径（UTC、按天分桶），所以控制台看到的数与门禁判的数一定是同一个桶。
+    去探测键是否存在。这里与 :func:`retrieval_quota` / :func:`rerank_quota` /
+    :func:`llm_quota` 共用同一个窗口口径（UTC、按天分桶），所以控制台看到的数与门禁判的
+    数一定是同一个桶。
 
-    ``namespace`` 选读哪本账：控制面与 ``/auth/me`` 各报一栏（检索 / Research），两栏的
-    形状相同（``used`` + ``limit`` + ``source=daily_counter``），只是桶不同。
+    ``namespace`` 选读哪本账：控制面与 ``/auth/me`` 各报几栏（检索 / 重排 / 大模型），
+    几栏的形状相同（``used`` + ``limit`` + ``source=daily_counter``），只是桶不同。
 
     返回 ``None`` 表示**平台现在没有在数**：``RATE_LIMIT_ENABLED`` 关着时
     ``record_success`` 整段是 no-op，计数键根本不会被写出来。此时报 ``0`` 是编造——
@@ -512,7 +600,25 @@ def retrieval_quota(
     )
 
 
-def research_quota(
+def _new_book_enabled(limits: QuotaLimits, enabled: bool | None) -> bool:
+    """第 13 步新账的启用判据：四格全 0 = 没给这项能力配额度 → 账本 no-op。
+
+    ``retrieve_qps`` 必须 ≥ 1（0 = 停服，创建时就拒），但 rerank / llm 这两本新账的
+    0 是**正常缺省**（旧 Key 升级上来就是 0），不该让这些 Key 连加工端点都调不了。
+    所以全 0 视为「这本账没启用」：不查、不记、不拒；配了任一格才真正开始限流计数。
+    """
+
+    if enabled is False:
+        return False
+    configured = any(
+        (limits.key_qps, limits.tenant_qps, limits.key_daily, limits.tenant_daily)
+    )
+    if not configured:
+        return False
+    return settings.RATE_LIMIT_ENABLED if enabled is None else enabled
+
+
+def rerank_quota(
     *,
     policy: KeyPolicySnapshot,
     plan: PlanSpec,
@@ -521,17 +627,36 @@ def research_quota(
     counters: QuotaCounters | None = None,
     enabled: bool | None = None,
 ) -> QuotaLedger:
-    """开 Research 那本额度账（票 #150）：同一份实现、另一组列、另一个键前缀。
+    """第 13 步三本账之一：重排调用次数（读 ``rerank_*`` 四列，独立键前缀）。"""
 
-    与检索那本**同构**——两级同记、进门只查、成功后记一次、两个错误码——但不共享桶。
-    调用方是 ``research_gate.gated_research``：它在能力位那一步已经拒绝了「配额为 0」
-    （答 ``20013``），所以这里拿到的上限都是正的。
-    """
-
+    limits = QuotaLimits.for_rerank(policy=policy, plan=plan)
     return _open_ledger(
-        limits=QuotaLimits.for_research(policy=policy, plan=plan),
+        limits=limits,
         tenant_id=tenant_id,
         key_id=key_id,
         counters=counters,
-        enabled=enabled,
+        enabled=_new_book_enabled(limits, enabled),
     )
+
+
+def llm_quota(
+    *,
+    policy: KeyPolicySnapshot,
+    plan: PlanSpec,
+    tenant_id: str,
+    key_id: str,
+    counters: QuotaCounters | None = None,
+    enabled: bool | None = None,
+) -> QuotaLedger:
+    """第 13 步三本账之一：大模型调用次数（读 ``llm_*`` 四列，独立键前缀）。"""
+
+    limits = QuotaLimits.for_llm(policy=policy, plan=plan)
+    return _open_ledger(
+        limits=limits,
+        tenant_id=tenant_id,
+        key_id=key_id,
+        counters=counters,
+        enabled=_new_book_enabled(limits, enabled),
+    )
+
+

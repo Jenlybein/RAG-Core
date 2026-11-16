@@ -35,11 +35,9 @@ function metadataOf(): RetrievalMetadata {
     },
     tenant_policy: {
       plan: 'pro',
-      requested_profile: 'quality',
       mode: 'hybrid',
       top_k: 5,
       rerank: false,
-      rewrite: true,
       kb_count: 1,
       // 空集合 = 没被套餐裁掉任何字段，界面显示「—」而不是空串。
       clipped: [],

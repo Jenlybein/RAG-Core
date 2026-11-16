@@ -3,7 +3,7 @@
 票 #78 在本文件里换掉了两处**故意的临时断言**：命名档位曾经等于「服务端缺省」
 （那时它们还没有预设），现在每一档都跑自己那条链路。两条接缝不变：
 
-1. **纯函数直测**（本文件上半）：``profile_chain_of`` 把一份密钥配置快照展开成「这次调用
+1. **纯函数直测**（本文件上半）：``retrieval_params_of`` 把一份密钥配置快照展开成「这次调用
    用哪条链路」——模式、条数、重排、改写。它不碰数据库、不碰请求、不碰套餐，所以边界
    （缺键、值不认识、命名档位忽略手动参数）都在这里逐条钉住。
 2. **ASGI 边界**（本文件下半）：同一件事在真实应用上的样子——旧字段进请求体拿
@@ -14,6 +14,7 @@
 """
 
 from __future__ import annotations
+from tests.support.policy import policy as support_policy
 
 import asyncio
 import dataclasses
@@ -28,10 +29,6 @@ from app.core.auth import DEV_KEY_POLICY
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.key_policy import (
-    PROFILE_BALANCED,
-    PROFILE_CUSTOM,
-    PROFILE_QUALITY,
-    PROFILE_SPEED,
     KeyPolicySnapshot,
 )
 from app.models.plan import PLAN_PRESETS, PLAN_PRO
@@ -39,12 +36,13 @@ from app.services.result_collapse import OVERFETCH_FACTOR
 from app.services.retrieval_options import (
     MAX_TOP_K,
     RetrievalOptions,
-    ProfileChain,
-    profile_chain_of,
+    RetrievalParams,
+    retrieval_params_of,
 )
 from app.services.profile_policy import resolve_retrieval_options
 from tests.fake_db import AsyncSessionAdapter, EmptySession, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
+from tests.support.policy import PROFILE_BALANCED, PROFILE_CUSTOM, PROFILE_QUALITY, PROFILE_SPEED
 
 RETRIEVE_PATH = "/api/v1/rag/retrieve"
 TENANT_ID = "tenant_demo"
@@ -60,15 +58,28 @@ def _policy(
     include_parent: bool = True,
     expand_table_rows: bool = True,
     custom_options: tuple[tuple[str, object], ...] = (),
+    **overrides: Any,
 ) -> KeyPolicySnapshot:
-    """一份只关心「配置 → 参数」的密钥配置快照；其余字段取内置开发身份那份。"""
+    """一份只关心「配置 → 参数」的密钥配置快照；其余字段取内置开发身份那份。
 
-    return dataclasses.replace(
-        DEV_KEY_POLICY,
+    授权位默认只开基线 ``retrieve``：本文件测的是参数读取，不是门禁；多开的位会让
+    「配置的位 ⊆ 套餐的位」在边界用例里先失败，而那不是这里要看的东西。
+    """
+
+    values: dict[str, Any] = {
+        "rewrite_allowed": False,
+        "decompose_allowed": False,
+        "research_allowed": False,
+        "rerank_allowed": False,
+        "allowed_kb_ids": (KB_A,),
+    }
+    values.update(overrides)
+    return support_policy(
         profile=profile,
         include_parent=include_parent,
         expand_table_rows=expand_table_rows,
         custom_options=custom_options,
+        **values,
     )
 
 
@@ -99,10 +110,10 @@ def test_custom_policy_manual_parameters_are_taken_verbatim(
                 ("mode", "bm25"),
                 ("top_k", 3),
                 ("rerank", True),
-                ("rewrite", True),
             ),
             include_parent=False,
             expand_table_rows=False,
+            rerank_allowed=True,
         )
     )
 
@@ -110,10 +121,9 @@ def test_custom_policy_manual_parameters_are_taken_verbatim(
         options.mode,
         options.top_k,
         options.rerank,
-        options.rewrite,
         options.fold_to_sections,
         options.expand_table_rows,
-    ) == ("bm25", 3, True, True, False, False)
+    ) == ("bm25", 3, True, False, False)
 
 
 def test_custom_policy_missing_keys_fall_back_to_server_defaults(
@@ -123,18 +133,13 @@ def test_custom_policy_missing_keys_fall_back_to_server_defaults(
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "vector")
     monkeypatch.setattr(settings, "TOP_K", 7)
-    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
-    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
-    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
-    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
-    # 只给了 mode：top_k / 重排 / 改写都走部署缺省，形状开关仍读配置自己的列。
+    # 只给了 mode：top_k 回落部署缺省；rerank 缺键 = 不要；形状开关读配置自己的列。
     options = _resolve(_policy(custom_options=(("mode", "bm25"),), expand_table_rows=False))
 
     assert options.mode == "bm25", "给了的键必须生效"
     assert options.top_k == 7, "没给的键回落到服务端缺省"
-    assert (options.rerank, options.rewrite) == (True, False)
+    assert options.rerank is False
     assert options.fold_to_sections is True
     assert options.expand_table_rows is False
 
@@ -170,51 +175,27 @@ def test_custom_policy_unusable_values_fall_back_per_key(
         assert options.top_k == 5, f"top_k={bad_top_k!r} 应回落到服务端缺省"
 
 
-@pytest.mark.parametrize(
-    ("profile", "expected"),
-    [
-        # 三档的全部内容写在票面（#78）上，这里逐字抄一遍；编排（#146）三档都不开。
-        (
-            PROFILE_SPEED,
-            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False),
-        ),
-        (
-            PROFILE_BALANCED,
-            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False),
-        ),
-        (
-            PROFILE_QUALITY,
-            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True),
-        ),
-    ],
-)
-def test_a_named_profile_is_its_chain_not_the_server_defaults(
-    monkeypatch: pytest.MonkeyPatch, profile: str, expected: ProfileChain
+@pytest.mark.parametrize("profile", [PROFILE_SPEED, PROFILE_BALANCED, PROFILE_QUALITY])
+def test_the_profile_name_no_longer_chooses_the_chain(
+    monkeypatch: pytest.MonkeyPatch, profile: str
 ) -> None:
-    """命名档位 = 它自己那条链路（票 #78 换掉了「暂时等于服务端缺省」）。
+    """第 13 步：后端不再有档位，三项参数直存，改档位名不改变链路。
 
-    把部署缺省设成**与每一档都不同**的值，再把配置里塞满手动参数：结果仍然是预设那五项
-    ——命名档位是完整替换，配置里的 ``custom_options`` 一个都不生效。
+    三条参数从 ``custom_options`` 直读；``profile`` 字段还可能在旧缓存里，但
+    **不参与判定**。这条用例逐档跑一遍，断言三档拿到的是同一条参数组合。
     """
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
     monkeypatch.setattr(settings, "TOP_K", 9)
-    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
-    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
-    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
-    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
-    chain = profile_chain_of(
+    chain = retrieval_params_of(
         _policy(
             profile=profile,
-            custom_options=(("mode", "bm25"), ("top_k", 1)),
-            include_parent=False,
-            expand_table_rows=False,
+            custom_options=(("mode", "hybrid"), ("top_k", 3), ("rerank", True)),
         )
     )
 
-    assert chain == expected
+    assert chain == RetrievalParams(mode="hybrid", top_k=3, rerank=True)
 
 
 def test_the_shape_group_is_not_custom_only() -> None:
@@ -234,7 +215,14 @@ def test_custom_top_k_above_the_hard_cap_is_clamped_not_silently_dropped() -> No
     一处说明。裁剪 + 回显是同一件事的可解释版本（``clipped`` 里会有 ``top_k``）。
     """
 
-    options = _resolve(_policy(custom_options=(("top_k", MAX_TOP_K + 7),)))
+    # max_top_k=0 = 套餐不额外封顶，才轮到平台硬上限 MAX_TOP_K 生效。
+    from dataclasses import replace
+
+    options = resolve_retrieval_options(
+        policy=_policy(custom_options=(("top_k", MAX_TOP_K + 7),)),
+        plan=replace(PLAN_PRESETS[PLAN_PRO], max_top_k=0),
+        kb_count=1,
+    )
 
     assert options.top_k == MAX_TOP_K
     assert options.tenant_policy is not None
@@ -423,13 +411,13 @@ def test_a_custom_policy_shape_switch_reaches_the_recall_depth(
     assert fake["vector"].scope_calls[0]["top_k"] == 2, "不折叠就不该多取"
 
 
-def test_a_named_profile_policy_runs_its_own_chain(
+def test_the_policy_parameters_drive_the_chain_at_the_boundary(
     fake: dict[str, Any], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """命名档位在边界处就是它自己那条链路（票 #78 换掉了「暂时等于服务端缺省」）。
+    """第 13 步：链路在边界处由直存参数决定，档位名说了不算。
 
-    部署缺省设成 ``bm25`` + 9 条，配置里还塞了 ``mode=bm25, top_k=1``：``balanced`` 档
-    仍然走混合检索、返回 5 条——预设之外的东西一个都不生效。
+    部署缺省设成 ``bm25`` + 9 条，配置里直存 ``mode=hybrid, top_k=1``：
+    走的就是混合检索、1 条——与 ``profile`` 字段无关。
     """
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "bm25")
@@ -437,17 +425,16 @@ def test_a_named_profile_policy_runs_its_own_chain(
     IDENTITY.use_policy(
         _policy(
             profile=PROFILE_BALANCED,
-            custom_options=(("mode", "bm25"), ("top_k", 1)),
+            custom_options=(("mode", "hybrid"), ("top_k", 1)),
         )
     )
 
     body = _post(fake["client"])
 
-    assert body["data"]["metadata"]["mode"] == "hybrid", "balanced 的链路是混合检索"
-    assert body["data"]["metadata"]["top_k"] == 5, "预设的条数是 5，不跟 TOP_K 漂"
+    assert body["data"]["metadata"]["mode"] == "hybrid", "直存的 mode 生效"
+    assert body["data"]["metadata"]["top_k"] == 1, "直存的 top_k 生效，不跟预设/部署漂"
     assert fake["keyword"].calls, "混合链路里关键词一路真的被调了"
     assert fake["embedding"].queries, "混合链路里向量一路真的被调了"
-    assert fake["keyword"].calls[0]["top_k"] != 1, "配置里的 top_k 不该漏进召回"
 
 
 def test_the_composition_root_receives_the_resolved_options(
@@ -463,7 +450,15 @@ def test_the_composition_root_receives_the_resolved_options(
     service = importlib.import_module("app.services.rag_service")
     seen: dict[str, Any] = {}
 
-    async def spy(_db: Any, *, tenant_id: str, kb_ids: list[str], query: str, options: Any) -> dict:
+    async def spy(
+        _db: Any,
+        *,
+        tenant_id: str,
+        kb_ids: list[str],
+        query: str,
+        options: Any,
+        query_variant: str = "direct",
+    ) -> dict:
         seen["options"] = options
         return {
             "query": query,
@@ -493,7 +488,7 @@ def test_the_composition_root_receives_the_resolved_options(
     assert (options.mode, options.top_k) == ("vector", 4)
     assert (options.fold_to_sections, options.expand_table_rows) == (False, True)
     assert options.tenant_policy is not None
-    assert options.tenant_policy.requested_profile == PROFILE_CUSTOM
+    assert options.tenant_policy.plan == PLAN_PRO
 
 
 def test_http_and_mcp_accept_literally_the_same_arguments() -> None:

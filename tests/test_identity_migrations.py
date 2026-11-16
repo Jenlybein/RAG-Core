@@ -155,9 +155,10 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # 关系边表之后；#171 文档稿次列改名（rename_documents_current_version）再接在
     # 删列迁移之后；#172 的文档版本表与切片稿号列（add_document_versions）再接在改名
     # 之后；#179 的归属索引「文档 → 稿号」映射列（add_trace_doc_versions）再接在版本表
-    # 之后。每加一条迁移改这一行是**刻意的**：
+    # 之后；第 13 步 T1 的新授权/计量列（add_retrieval_authorization）再接在它之后。
+    # 每加一条迁移改这一行是**刻意的**：
     # 「链尾是哪个文件」要人看一眼确认，不由代码自动推导。
-    assert heads == {_revision_of(_migration_path("add_trace_doc_versions"))}
+    assert heads == {_revision_of(_migration_path("rename_standard_to_plus_and_add_max"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
