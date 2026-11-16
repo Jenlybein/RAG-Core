@@ -23,7 +23,7 @@ T8 contract 才删除旧形式。在此之前，本模块不参与任何运行�
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Any, Final
 
 # ───────────────────────────────────────────────────────────────── 授权位
 
@@ -37,6 +37,37 @@ CAPABILITIES: Final[tuple[str, ...]] = (
     "research",
     "rerank",
 )
+
+#: 端点 → 它的授权位列名。``rerank`` 不在这里：它是质量位，不是一次调用对应的端点，
+#: 由重排额度单独判（额度用尽 → 跳过重排 + 降级串，不拒绝整单）。
+ENDPOINT_CAPABILITY: Final[dict[str, str]] = {
+    "retrieve": "retrieve_allowed",
+    "rewrite": "rewrite_allowed",
+    "decompose": "decompose_allowed",
+    "research": "research_allowed",
+}
+
+
+def ensure_endpoint_allowed(*, policy: Any, plan: Any, endpoint: str) -> None:
+    """套餐与密钥配置**两层都得给**这个端点的位，否则 ``20013``。
+
+    两层回答的是两个不同的问题（ADR-0018）：套餐说「这个租户买没买」，密钥配置说
+    「这套集成要不要」。位为假是配置事实，答 ``FEATURE_NOT_ALLOWED``；额度用尽是
+    另一回事（``QUOTA_EXCEEDED`` 20014），这里的门禁不碰计数、不把两者混成一个码。
+    """
+
+    bit = ENDPOINT_CAPABILITY.get(endpoint)
+    if bit is None:
+        raise ValueError(f"未知检索端点 {endpoint!r}，只支持 {sorted(ENDPOINT_CAPABILITY)}")
+    if getattr(policy, bit, False) and getattr(plan, bit, False):
+        return
+    from app.core.exceptions import AppError, ErrorCode
+
+    raise AppError(
+        ErrorCode.FEATURE_NOT_ALLOWED,
+        f"{endpoint} is not allowed (plan {getattr(plan, 'code', '?')!r}, "
+        f"key policy {bit}={getattr(policy, bit, False)})",
+    )
 
 
 # ───────────────────────────────────────────────────────────────── 计量维度
@@ -205,6 +236,8 @@ TIER_SEEDS: Final[dict[str, TierSeed]] = {
 
 __all__ = [
     "CAPABILITIES",
+    "ENDPOINT_CAPABILITY",
+    "ensure_endpoint_allowed",
     "METER_BOOKS",
     "METER_LEVELS",
     "METER_WINDOWS",

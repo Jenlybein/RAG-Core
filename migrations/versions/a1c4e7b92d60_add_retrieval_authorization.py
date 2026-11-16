@@ -35,13 +35,13 @@ down_revision: Union[str, None] = "3f7b2c9d5e14"
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 
-#: 五个端点级授权位。布尔，缺省 false。
+#: 真正**新增**的端点级授权位。布尔，缺省 false。
+#: ``research_allowed`` / ``rerank_allowed`` 在两张表里早已有列（旧能力开关）：
+#: 第 13 步是**复用并升级语义**，不是再加一列——重复 add_column 会让真库升级直接失败。
 CAPABILITY_COLUMNS: tuple[str, ...] = (
     "retrieve_allowed",
     "rewrite_allowed",
     "decompose_allowed",
-    "research_allowed",
-    "rerank_allowed",
 )
 
 #: 另外两本账的四列。整数，缺省 0。

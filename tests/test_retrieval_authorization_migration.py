@@ -26,14 +26,12 @@ VERSIONS_DIR = Path(__file__).resolve().parent.parent / "migrations" / "versions
 SLUG = "add_retrieval_authorization"
 PREVIOUS_HEAD = "3f7b2c9d5e14"
 
-#: 五个授权位（布尔，缺省 false = 不额外开能力；retrieve 是基线，缺省也给 false，
-#: 因为这一票的新列**不参与判定**，真正接线在 T2）。
+#: 真正**新增**的三个授权位（布尔，缺省 false）。``research_allowed`` /
+#: ``rerank_allowed`` 两张表早已有列，第 13 步复用它们，不许重复 add_column。
 CAPABILITY_COLUMNS = (
     "retrieve_allowed",
     "rewrite_allowed",
     "decompose_allowed",
-    "research_allowed",
-    "rerank_allowed",
 )
 
 #: 三本账 × 两格 = 6 列。其中 ``retrieve_qps`` / ``retrieve_daily`` **本来就存在**
