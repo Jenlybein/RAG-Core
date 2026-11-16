@@ -41,9 +41,7 @@ def test_both_layers_must_grant_the_bit(endpoint: str) -> None:
 
     capability = ENDPOINT_CAPABILITY[endpoint]
 
-    assert ensure_endpoint_allowed(
-        policy=_Holder(), plan=_Holder(), endpoint=endpoint
-    ) is None
+    assert ensure_endpoint_allowed(policy=_Holder(), plan=_Holder(), endpoint=endpoint) is None
 
     with pytest.raises(AppError) as denied:
         ensure_endpoint_allowed(
@@ -60,9 +58,7 @@ def test_both_layers_must_grant_the_bit(endpoint: str) -> None:
 
 def test_a_denied_endpoint_names_itself_in_the_message() -> None:
     with pytest.raises(AppError) as denied:
-        ensure_endpoint_allowed(
-            policy=_Holder(rewrite=False), plan=_Holder(), endpoint="rewrite"
-        )
+        ensure_endpoint_allowed(policy=_Holder(rewrite=False), plan=_Holder(), endpoint="rewrite")
 
     assert "rewrite" in denied.value.msg
 

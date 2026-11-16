@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient
 from fastmcp.utilities.lifespan import combine_lifespans
 
 from app.core import redis_client
-from app.core.auth import DEV_KEY_POLICY, KeyContext
+from app.core.auth import KeyContext
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION
@@ -151,7 +151,8 @@ def _policy(
 ) -> KeyPolicySnapshot:
     """只关心本票两列的一份配置快照；档位取 speed 是为了把链路钉成向量一路。"""
 
-    return support_policy(profile=profile,
+    return support_policy(
+        profile=profile,
         allowed_kb_ids=allowed_kb_ids,
         retrieve_qps=qps,
         retrieve_daily=daily,

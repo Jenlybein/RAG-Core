@@ -25,6 +25,7 @@ from app.models.plan import (
     plan_spec_of,
     preset_mismatches,
 )
+
 # 票面真值表：16 个业务列 × 四档。这份字面量是**独立来源**，刻意不从常量里推导——
 # 否则「常量等于它自己」的同义反复什么都守不住。name 是展示名，票面没定字面值，
 # 另有用例只要求非空且互不相同。
@@ -181,9 +182,7 @@ def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None
 
     from app.models.plan import plan_spec_from_mapping
 
-    complete = {
-        column: getattr(PLAN_PRESETS["pro"], column) for column in PLAN_SPEC_COLUMNS
-    }
+    complete = {column: getattr(PLAN_PRESETS["pro"], column) for column in PLAN_SPEC_COLUMNS}
     for column in PLAN_SPEC_COLUMNS:
         partial = {key: value for key, value in complete.items() if key != column}
         with pytest.raises(KeyError):

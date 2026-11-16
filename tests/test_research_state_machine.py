@@ -421,9 +421,7 @@ def test_the_point_cap_truncates_the_plan_to_five_points() -> None:
         queries=[{"point": index, "query": f"查询{index}"} for index in range(1, 6)],
     )
 
-    outcome, _, probe = _run(
-        plan, _covered(points=MAX_POINTS), search=_Search(default=[_row("a")])
-    )
+    outcome, _, probe = _run(plan, _covered(points=MAX_POINTS), search=_Search(default=[_row("a")]))
 
     assert [point.text for point in outcome.points] == points[:MAX_POINTS]
     assert len(outcome.points) == MAX_POINTS == 5

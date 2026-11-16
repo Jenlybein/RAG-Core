@@ -39,9 +39,7 @@ def test_each_sub_query_gets_a_guaranteed_slot_even_when_one_is_dominant() -> No
     a = [_row(f"a{i}", score=0.99 - i * 0.01) for i in range(3)]
     b = [_row("b0", score=0.10)]
 
-    merged = merge_sub_query_results(
-        [("查询A", a), ("查询B", b)], top_k=4
-    )
+    merged = merge_sub_query_results([("查询A", a), ("查询B", b)], top_k=4)
 
     keys = [row["chunk_id"] for row in merged]
     assert "chunk-b0" in keys, "B 的唯一命中必须保住一个名额"
@@ -54,9 +52,7 @@ def test_remaining_slots_are_filled_by_round_robin() -> None:
     a = [_row(f"a{i}", score=0.9 - i * 0.01) for i in range(3)]
     b = [_row(f"b{i}", score=0.7 - i * 0.01) for i in range(3)]
 
-    merged = merge_sub_query_results(
-        [("查询A", a), ("查询B", b)], top_k=5
-    )
+    merged = merge_sub_query_results([("查询A", a), ("查询B", b)], top_k=5)
 
     # 保底：A 的 a0、B 的 b0；轮转补：a1 / b1 / a2（第 5 个名额）。
     assert [row["chunk_id"] for row in merged] == [

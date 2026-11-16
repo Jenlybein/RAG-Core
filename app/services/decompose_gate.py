@@ -25,7 +25,6 @@ from app.core.exceptions import AppError, ErrorCode
 from app.models.index_version import resolve_index_versions
 from app.observability import emit_retrieval_trace_off_loop
 from app.observability.stage_timing import StageTimer
-from app.services import result_collapse
 from app.services.decompose import merge_sub_query_results
 from app.services.knowledge_base_access import ensure_visible
 from app.services.research import (
@@ -125,13 +124,15 @@ async def decompose_retrieve(
     # ③ 并行跑 N 次内核（保序：asyncio.gather 的结果顺序与入参一致）。
     import asyncio
 
-    results: list[list[dict[str, Any]]] = list(
+    # 类型跟着注入缝走（``SearchCallable`` 返回的是 ``Sequence[Mapping]``，不是
+    # ``list[dict]``）：这里只做转发，不复制成别的形状——那会白白多拷一份候选集。
+    rows_per_query: list[Sequence[Mapping[str, Any]]] = list(
         await asyncio.gather(*(search(sub_query) for sub_query in sub_queries))
     )
 
     # ④ 合并：每条子问题保底 1 条 + 轮转填满 + 去重。
     merged = merge_sub_query_results(
-        list(zip(sub_queries, results, strict=True)), top_k=options.top_k
+        list(zip(sub_queries, rows_per_query, strict=True)), top_k=options.top_k
     )
 
     # 降级原因只保留子检索自己的一条（先到的算根因），不额外发明新串。

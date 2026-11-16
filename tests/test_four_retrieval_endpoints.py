@@ -124,18 +124,18 @@ def test_decompose_merges_into_one_list_with_matched_queries(
     research_gate = importlib.import_module("app.services.research_gate")
     monkeypatch.setattr(research_gate, "get_vector_store", lambda: vector)
     monkeypatch.setattr(research_gate, "get_keyword_search_provider", lambda: keyword)
-    monkeypatch.setattr(
-        research_gate, "get_embedding_provider", lambda: u._RecordingEmbedding()
-    )
+    monkeypatch.setattr(research_gate, "get_embedding_provider", lambda: u._RecordingEmbedding())
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
-    with u._offline_client(
-        monkeypatch, llm=llm, vector=vector, keyword=keyword
-    ) as fake:
-        body = fake["client"].post(
-            "/api/v1/rag/decompose",
-            json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
-        ).json()
+    with u._offline_client(monkeypatch, llm=llm, vector=vector, keyword=keyword) as fake:
+        body = (
+            fake["client"]
+            .post(
+                "/api/v1/rag/decompose",
+                json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
+            )
+            .json()
+        )
 
     assert body["code"] == 0, body
     chunks = body["data"]["retrieved_chunks"]
@@ -158,9 +158,13 @@ def test_a_failed_decomposition_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> N
             raise RuntimeError("模型服务 502")
 
     with _client(monkeypatch, llm=_Boom()) as fake:
-        body = fake["client"].post(
-            "/api/v1/rag/decompose",
-            json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
-        ).json()
+        body = (
+            fake["client"]
+            .post(
+                "/api/v1/rag/decompose",
+                json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
+            )
+            .json()
+        )
 
     assert body["code"] == 50003

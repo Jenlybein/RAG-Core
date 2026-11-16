@@ -139,9 +139,7 @@ def _policy(
         rerank_daily=0,
         llm_qps=0,
         llm_daily=0,
-        custom_options=tuple(
-            sorted({"mode": mode, "top_k": top_k, "rerank": rerank}.items())
-        ),
+        custom_options=tuple(sorted({"mode": mode, "top_k": top_k, "rerank": rerank}.items())),
         include_parent=True,
         expand_table_rows=True,
     )
@@ -368,6 +366,8 @@ def test_issuing_a_key_without_the_anti_csrf_header_is_rejected(console: _Harnes
     assert console.code(response) == 20011
     assert console.db.added_of(ApiKey) == []
     assert console.audit_entries() == []
+
+
 def test_issuing_a_policy_over_the_plan_limit_is_a_20015(console: _Harness) -> None:
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
 
@@ -376,6 +376,8 @@ def test_issuing_a_policy_over_the_plan_limit_is_a_20015(console: _Harness) -> N
     assert console.code(response) == 20015
     assert console.db.added_of(ApiKey) == []
     assert console.db.added_of(KeyPolicy) == []
+
+
 # ──────────────────────────────────────────────────────── DELETE /console/keys/{id}
 
 
@@ -540,6 +542,8 @@ def test_a_policy_patch_rejects_a_negative_research_quota(console: _Harness) -> 
     assert console.code(response) == 20015
     assert console.policy_row(POLICY_ALPHA).llm_daily == 0
     assert len(console.audit_entries()) == audits_before
+
+
 def test_a_policy_patch_over_the_plan_limit_is_a_20015(console: _Harness) -> None:
     assert console.login("bob", USER_PASSWORD).json()["code"] == 0
 

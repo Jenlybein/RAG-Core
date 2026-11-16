@@ -24,7 +24,6 @@ Revises: b4f6c1d90e27
 
 from typing import Sequence, Union
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "d7e3b8a1f642"

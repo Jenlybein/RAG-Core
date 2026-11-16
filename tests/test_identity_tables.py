@@ -194,7 +194,14 @@ def test_key_policy_switches_start_closed_but_result_shape_starts_open() -> None
 
 def test_key_policies_limits_are_integers() -> None:
     table = KeyPolicy.__table__
-    for column in ("retrieve_qps", "retrieve_daily", "rerank_qps", "rerank_daily", "llm_qps", "llm_daily"):
+    for column in (
+        "retrieve_qps",
+        "retrieve_daily",
+        "rerank_qps",
+        "rerank_daily",
+        "llm_qps",
+        "llm_daily",
+    ):
         assert table.c[column].type.python_type is int
 
 

@@ -413,9 +413,13 @@ def test_the_probe_and_the_gate_always_agree(cell: str, level: str) -> None:
         # 把这一格填到上限：两边必须同时翻面。
         for _ in range(2):
             if cell.endswith("qps"):
-                await counters.add_qps(level=level, ident=KEY_ID if level == "key" else TENANT_ID, window=window)
+                await counters.add_qps(
+                    level=level, ident=KEY_ID if level == "key" else TENANT_ID, window=window
+                )
             else:
-                await counters.add_daily(level=level, ident=KEY_ID if level == "key" else TENANT_ID, window=window)
+                await counters.add_daily(
+                    level=level, ident=KEY_ID if level == "key" else TENANT_ID, window=window
+                )
 
         assert await gate.has_capacity() is False
         with pytest.raises(AppError):

@@ -57,9 +57,7 @@ def _install(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> None:
 def _groups(*terms: str):
     """一张「命中 terms、追加 expand」的库级同义词表。"""
 
-    return collect_synonym_groups(
-        [{"synonyms": [{"terms": list(terms), "expand": ["返还货款"]}]}]
-    )
+    return collect_synonym_groups([{"synonyms": [{"terms": list(terms), "expand": ["返还货款"]}]}])
 
 
 # ─────────────────────────────────────────────────────────── direct
@@ -108,9 +106,7 @@ def test_synonyms_are_expanded_on_the_rewritten_sentence(
     monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
     _install(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款到账时限")))
 
-    result = asyncio.run(
-        optimize_for_rewrite(query="退钱怎么弄", synonym_groups=_groups("退款"))
-    )
+    result = asyncio.run(optimize_for_rewrite(query="退钱怎么弄", synonym_groups=_groups("退款")))
 
     # 改写句里含「退款」→ 命中该组 → 追加 expand，所以 search_query 比 effective 长。
     assert "返还货款" in result.search_query

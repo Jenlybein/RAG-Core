@@ -62,7 +62,12 @@ def test_free_opens_only_the_baseline_bit_and_buys_no_processing_capacity() -> N
 
     free = PLAN_PRESETS["free"]
     assert free.retrieve_allowed is True
-    assert [free.rewrite_allowed, free.decompose_allowed, free.research_allowed, free.rerank_allowed] == [
+    assert [
+        free.rewrite_allowed,
+        free.decompose_allowed,
+        free.research_allowed,
+        free.rerank_allowed,
+    ] == [
         False,
         False,
         False,
@@ -71,7 +76,10 @@ def test_free_opens_only_the_baseline_bit_and_buys_no_processing_capacity() -> N
     assert (free.rerank_qps, free.rerank_daily, free.llm_qps, free.llm_daily) == (0, 0, 0, 0)
 
 
-@pytest.mark.parametrize("column", ["retrieve_qps", "retrieve_daily", "rerank_qps", "rerank_daily", "llm_qps", "llm_daily"])
+@pytest.mark.parametrize(
+    "column",
+    ["retrieve_qps", "retrieve_daily", "rerank_qps", "rerank_daily", "llm_qps", "llm_daily"],
+)
 def test_pro_is_five_times_plus_and_max_is_twenty_times_plus(column: str) -> None:
     """倍率口径：plus 是基准，pro = 5×，max = 20×（逐列成立，不只是总量）。"""
 

@@ -6,14 +6,8 @@
 
 from __future__ import annotations
 
-from app.core.config import settings
 from app.models.plan import PLAN_CODES, PLAN_PRESETS
 from app.services.profile_policy import resolve_retrieval_options
-from app.services.retrieval_options import (
-    MAX_TOP_K,
-    RetrievalOptions,
-    tenant_policy_echo,
-)
 from tests.test_retrieval_options import _policy  # noqa: F401 - 复用既有假配置构造器
 
 

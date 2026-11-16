@@ -60,6 +60,8 @@ def _policy(**kwargs: Any) -> KeyPolicySnapshot:
 
     kwargs.setdefault("unrestricted_scope", True)
     return support_policy(**kwargs)
+
+
 def _plan(code: str, **overrides: Any) -> PlanSpec:
     """三档种子之一，按需改几列（模拟管理员在控制台把某一档调低）。"""
 

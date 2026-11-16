@@ -78,8 +78,7 @@ REWRITTEN = "退款的处理流程"
 # **#101 没有重采**，而且刻意不重采：响应多出的 ``metadata.trace_id`` 每次调用都不同，
 # 没法进黄金哈希，所以 ``_response_hashes`` 在比对前把它归一化成一个占位符。
 _BASELINE_SOURCE = (
-    "第 13 步重采（相对第 7 步：tenant_policy 删 requested_profile / rewrite 两键，"
-    "改报参数本身）"
+    "第 13 步重采（相对第 7 步：tenant_policy 删 requested_profile / rewrite 两键，改报参数本身）"
 )
 _BASELINE_SHA256: dict[str, str] = {
     "hybrid": "29beef4d43f0339d79228946ea9bd5e1b1511bf71f877cd64c113238686f3e80",
@@ -632,7 +631,9 @@ def test_vector_single_mode_also_searches_both_queries(
         keyword=_FakeKeyword(rows=[_keyword_row("k1")]),
         llm=_RewriteLLM(rewritten=REWRITTEN),
     ) as fake:
-        vector_body = _response(fake["client"], path=REWRITE_PATH, mode="vector", include_parent=False).json()
+        vector_body = _response(
+            fake["client"], path=REWRITE_PATH, mode="vector", include_parent=False
+        ).json()
 
     assert fake["embedding"].queries == [RAW_QUERY, REWRITTEN]
     assert fake["vector"].seen == [1.0, 2.0]

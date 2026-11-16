@@ -25,7 +25,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.core.auth import DEV_KEY_POLICY
 from app.core.config import settings
 from app.core.exceptions import ErrorCode
 from app.models.key_policy import (

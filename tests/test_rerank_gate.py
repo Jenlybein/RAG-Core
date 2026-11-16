@@ -154,9 +154,7 @@ def test_an_exhausted_rerank_book_degrades_instead_of_failing(
     research_gate = importlib.import_module("app.services.research_gate")
     monkeypatch.setattr(research_gate, "get_vector_store", lambda: vector)
     monkeypatch.setattr(research_gate, "get_keyword_search_provider", lambda: keyword)
-    monkeypatch.setattr(
-        research_gate, "get_embedding_provider", lambda: u._RecordingEmbedding()
-    )
+    monkeypatch.setattr(research_gate, "get_embedding_provider", lambda: u._RecordingEmbedding())
 
     llm = _PlanLLM(_plan()) if "decompose" in path else None
     with u._offline_client(monkeypatch, llm=llm, vector=vector, keyword=keyword) as fake:

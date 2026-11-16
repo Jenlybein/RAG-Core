@@ -32,10 +32,14 @@ def test_a_denied_decompose_bit_returns_20013_before_any_search(
             policy=denied_policy,
             plan=DEV_KEY_PLAN,
         )
-        body = fake["client"].post(
-            "/api/v1/rag/decompose",
-            json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
-        ).json()
+        body = (
+            fake["client"]
+            .post(
+                "/api/v1/rag/decompose",
+                json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
+            )
+            .json()
+        )
 
     assert body["code"] == ErrorCode.FEATURE_NOT_ALLOWED
     assert body["data"] is None
@@ -62,10 +66,14 @@ def test_a_denied_rewrite_bit_returns_20013_before_any_model(
             policy=denied_policy,
             plan=DEV_KEY_PLAN,
         )
-        body = fake["client"].post(
-            "/api/v1/rag/rewrite",
-            json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
-        ).json()
+        body = (
+            fake["client"]
+            .post(
+                "/api/v1/rag/rewrite",
+                json={"kb_ids": [u.KB_A], "query": u.RAW_QUERY},
+            )
+            .json()
+        )
 
     assert body["code"] == ErrorCode.FEATURE_NOT_ALLOWED
 
@@ -78,9 +86,7 @@ def test_retrieve_stays_available_when_processing_bits_are_off(
     from app.api.deps import get_current_key
     from app.main import app
 
-    lean_policy = replace(
-        DEV_KEY_POLICY, rewrite_allowed=False, decompose_allowed=False
-    )
+    lean_policy = replace(DEV_KEY_POLICY, rewrite_allowed=False, decompose_allowed=False)
 
     with u._offline_client(monkeypatch) as fake:
         app.dependency_overrides[get_current_key] = lambda: KeyContext(

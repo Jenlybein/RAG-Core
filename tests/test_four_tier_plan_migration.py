@@ -86,7 +86,9 @@ def test_the_insert_covers_every_column_that_has_no_default() -> None:
     module.upgrade()
 
     insert = next(sql for sql in rec.executed if sql.startswith("INSERT INTO plans"))
-    columns = {name.strip() for name in insert[insert.index("(") + 1 : insert.index(")")].split(",")}
+    columns = {
+        name.strip() for name in insert[insert.index("(") + 1 : insert.index(")")].split(",")
+    }
     assert required <= columns, f"INSERT 漏了这些必填列：{sorted(required - columns)}"
 
 

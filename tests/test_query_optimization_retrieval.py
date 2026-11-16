@@ -423,9 +423,7 @@ def test_synonym_table_edit_takes_effect_on_the_next_request() -> None:
 
     from app.services.query.synonyms import collect_synonym_groups, expand_synonyms
 
-    first = collect_synonym_groups(
-        [{"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}]
-    )
+    first = collect_synonym_groups([{"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}])
     second = collect_synonym_groups(
         [{"synonyms": [{"terms": ["退钱"], "expand": ["退款", "售后"]}]}]
     )

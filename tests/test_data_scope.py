@@ -21,7 +21,6 @@ import pytest
 
 from app.core.exceptions import AppError, ErrorCode
 from app.models.key_policy import (
-    KeyPolicy,
     KeyPolicySnapshot,
     policy_snapshot_of,
 )

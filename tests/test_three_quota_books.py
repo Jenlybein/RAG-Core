@@ -67,13 +67,13 @@ def _plan(**overrides: int) -> object:
 def test_rerank_and_llm_books_read_their_own_columns_and_namespaces() -> None:
     p = _policy(rerank_qps=5, rerank_daily=50, llm_qps=2, llm_daily=20)
     r = QuotaLimits.for_rerank(policy=p, plan=_plan())  # type: ignore[arg-type]
-    l = QuotaLimits.for_llm(policy=p, plan=_plan())  # type: ignore[arg-type]
+    m = QuotaLimits.for_llm(policy=p, plan=_plan())  # type: ignore[arg-type]
 
     assert (r.key_qps, r.tenant_qps, r.key_daily, r.tenant_daily) == (5, 7, 50, 70)
     assert r.namespace == RERANK_NAMESPACE
-    assert (l.key_qps, l.tenant_qps, l.key_daily, l.tenant_daily) == (2, 3, 20, 30)
-    assert l.namespace == LLM_NAMESPACE
-    assert r.namespace != l.namespace
+    assert (m.key_qps, m.tenant_qps, m.key_daily, m.tenant_daily) == (2, 3, 20, 30)
+    assert m.namespace == LLM_NAMESPACE
+    assert r.namespace != m.namespace
 
 
 def test_record_n_counts_n_times_at_both_levels() -> None:
@@ -81,8 +81,12 @@ def test_record_n_counts_n_times_at_both_levels() -> None:
     # 注入 counters 时由它自己定 namespace（生产路径则由 limits.namespace 构造）。
     counters = QuotaCounters(store, clock=lambda: MOMENT, namespace=LLM_NAMESPACE)
     ledger = llm_quota(
-        policy=_policy(), plan=_plan(), tenant_id=TENANT_ID, key_id=KEY_ID,  # type: ignore[arg-type]
-        counters=counters, enabled=True,
+        policy=_policy(),
+        plan=_plan(),
+        tenant_id=TENANT_ID,
+        key_id=KEY_ID,  # type: ignore[arg-type]
+        counters=counters,
+        enabled=True,
     )
 
     asyncio.run(ledger.record_n(3))
@@ -97,8 +101,12 @@ def test_record_n_of_zero_or_negative_is_a_noop() -> None:
     store = _Store()
     counters = QuotaCounters(store, clock=lambda: MOMENT, namespace=RERANK_NAMESPACE)
     ledger = rerank_quota(
-        policy=_policy(), plan=_plan(), tenant_id=TENANT_ID, key_id=KEY_ID,  # type: ignore[arg-type]
-        counters=counters, enabled=True,
+        policy=_policy(),
+        plan=_plan(),
+        tenant_id=TENANT_ID,
+        key_id=KEY_ID,  # type: ignore[arg-type]
+        counters=counters,
+        enabled=True,
     )
 
     asyncio.run(ledger.record_n(0))

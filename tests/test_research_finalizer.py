@@ -179,7 +179,9 @@ def _run(
 def test_a_round_produces_citation_blocks_from_the_material_pool() -> None:
     """覆盖全材料 → 每块至少引一条核心片；``answer`` 就是这些块的渲染串。"""
 
-    outcome, provider, _ = _run(llm=_default_llm(blocks=_blocks(_block("3 个工作日内到账。", primary=(2,)))))
+    outcome, provider, _ = _run(
+        llm=_default_llm(blocks=_blocks(_block("3 个工作日内到账。", primary=(2,))))
+    )
 
     assert outcome.answer == "3 个工作日内到账。（E2）"
     assert list(outcome.citations) == [
@@ -201,7 +203,11 @@ def test_a_round_produces_citation_blocks_from_the_material_pool() -> None:
 def test_a_missing_point_becomes_an_insufficient_block_not_invented_text() -> None:
     """材料只盖住一个要点 → 另一块必须是 ``insufficient``（承认不足），完整度是 ``partial``。"""
 
-    outcome, _, _, = _run(
+    (
+        outcome,
+        _,
+        _,
+    ) = _run(
         llm=_default_llm(
             judgement={
                 "points": [
@@ -271,7 +277,11 @@ def test_no_material_means_no_model_call_and_no_answer() -> None:
 def test_an_assertion_without_a_citation_leaves_the_answer_empty() -> None:
     """有结论却不引证据 → 整份答案作废，材料与计划照给。"""
 
-    outcome, _, _, = _run(llm=_default_llm(blocks=_blocks(_block("退款 3 个工作日到账。"))))
+    (
+        outcome,
+        _,
+        _,
+    ) = _run(llm=_default_llm(blocks=_blocks(_block("退款 3 个工作日到账。"))))
 
     assert outcome.answer is None
     assert outcome.citations == ()
@@ -286,9 +296,11 @@ def test_an_assertion_without_a_citation_leaves_the_answer_empty() -> None:
 def test_an_out_of_range_citation_leaves_the_answer_empty() -> None:
     """下标越界 → ``answer = null``（不猜、不截）。"""
 
-    outcome, _, _, = _run(
-        llm=_default_llm(blocks=_blocks(_block("3 个工作日内到账。", primary=(9,))))
-    )
+    (
+        outcome,
+        _,
+        _,
+    ) = _run(llm=_default_llm(blocks=_blocks(_block("3 个工作日内到账。", primary=(9,)))))
 
     assert outcome.answer is None
     assert outcome.answer_rejected_reason == REJECTED_UNRESOLVED_REFERENCE
@@ -298,7 +310,11 @@ def test_an_out_of_range_citation_leaves_the_answer_empty() -> None:
 def test_an_internal_identifier_in_the_answer_leaves_it_empty() -> None:
     """答案里漏出切片 id → ``answer = null``。"""
 
-    outcome, _, _, = _run(
+    (
+        outcome,
+        _,
+        _,
+    ) = _run(
         llm=_default_llm(
             blocks=_blocks(_block("按 chunk-a 的说法，3 个工作日内到账。", primary=(2,)))
         )
@@ -311,7 +327,11 @@ def test_an_internal_identifier_in_the_answer_leaves_it_empty() -> None:
 def test_a_conflict_verdict_leaves_the_answer_empty() -> None:
     """多来源块里替用户裁决 → ``answer = null``（冲突要拆成两块、各自带来源）。"""
 
-    outcome, _, _, = _run(
+    (
+        outcome,
+        _,
+        _,
+    ) = _run(
         llm=_default_llm(
             blocks=_blocks(
                 _block("以《退款政策》为准：3 个工作日内到账。", primary=(1,), supporting=(2,))
@@ -336,7 +356,11 @@ def test_a_conflict_verdict_leaves_the_answer_empty() -> None:
 def test_a_model_call_failure_at_any_stage_is_a_50003(stage_index: int) -> None:
     """规划 / 判定 / 生成任一阶段的模型调用失败 → 整单 50003，不再静默降级。"""
 
-    responses: list[object] = [_plan(), _covered(), _blocks(_block("3 个工作日内到账。", primary=(2,)))]
+    responses: list[object] = [
+        _plan(),
+        _covered(),
+        _blocks(_block("3 个工作日内到账。", primary=(2,))),
+    ]
     responses[stage_index] = RuntimeError("模型服务 502")
     llm = _Scripted(*responses)
 

@@ -305,7 +305,13 @@ def test_the_judgement_answers_each_point_with_support_or_none() -> None:
         # 出现计划中没有的要点序号 = 越界。
         (_supported(1, 1), _supported(2, 1), _none(9)),
     ],
-    ids=["missing_point", "supported_without_material", "none_with_material", "beyond_pool", "unknown_point"],
+    ids=[
+        "missing_point",
+        "supported_without_material",
+        "none_with_material",
+        "beyond_pool",
+        "unknown_point",
+    ],
 )
 def test_an_illegal_verdict_is_a_model_call_failure(verdicts: tuple) -> None:
     """判定输出不合法 = 模型答了但形状不对 → 第 13 步起整单 50003（客户重试）。

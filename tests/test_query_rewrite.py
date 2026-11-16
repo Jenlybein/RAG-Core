@@ -75,9 +75,7 @@ def _install_llm(monkeypatch: pytest.MonkeyPatch, llm: LLMProvider) -> list[str]
 def test_rewrite_uses_the_single_default_role(monkeypatch: pytest.MonkeyPatch) -> None:
     """改写装配一次大模型，角色是唯一的 ``default``。"""
 
-    roles = _install_llm(
-        monkeypatch, _FakeLLM(result=QueryRewrite(query="退款多久到账"))
-    )
+    roles = _install_llm(monkeypatch, _FakeLLM(result=QueryRewrite(query="退款多久到账")))
 
     outcome = asyncio.run(rewrite_query(query="退钱怎么弄", hint="人事制度库"))
 
@@ -115,9 +113,7 @@ def test_rewrite_prompt_only_asks_for_a_rewrite(monkeypatch: pytest.MonkeyPatch)
     ],
     ids=["exception", "blank", "empty", "dict_empty", "none", "malformed"],
 )
-def test_a_model_call_failure_is_a_50003(
-    monkeypatch: pytest.MonkeyPatch, llm: _FakeLLM
-) -> None:
+def test_a_model_call_failure_is_a_50003(monkeypatch: pytest.MonkeyPatch, llm: _FakeLLM) -> None:
     """超时 / 抛错 / 空返回 / 空串 / 结构不合法 → 统一 50003，绝不回退原句。"""
 
     _install_llm(monkeypatch, llm)

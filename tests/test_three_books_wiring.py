@@ -7,11 +7,11 @@ rerank 账按「这次排没排」记。用 dict 假计数器，不碰 Redis。
 from __future__ import annotations
 from tests.support.policy import policy as support_policy
 
+from typing import Any
 import asyncio
 from dataclasses import replace
 from datetime import datetime, timezone
 
-from app.core.auth import KeyContext
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO
 from app.services.quota_gate import (
@@ -19,7 +19,6 @@ from app.services.quota_gate import (
     RERANK_NAMESPACE,
     QuotaCounters,
 )
-from tests.support.policy import PROFILE_SPEED
 
 TENANT_ID = "tenant_acme"
 KEY_ID = "key-1"
@@ -49,9 +48,7 @@ def _policy(**overrides: Any) -> KeyPolicySnapshot:
 
 
 def _plan(**overrides: int) -> object:
-    values: dict[str, int] = dict(
-        rerank_qps=7, rerank_daily=70, llm_qps=3, llm_daily=30
-    )
+    values: dict[str, int] = dict(rerank_qps=7, rerank_daily=70, llm_qps=3, llm_daily=30)
     values.update(overrides)
     return replace(PLAN_PRESETS[PLAN_PRO], **values)
 
@@ -64,8 +61,11 @@ def test_an_all_zero_llm_book_is_a_noop_for_legacy_keys() -> None:
     store = _Store()
     counters = QuotaCounters(store, clock=lambda: MOMENT, namespace=LLM_NAMESPACE)
     ledger = llm_quota(
-        policy=_policy(llm_qps=0, llm_daily=0), plan=_plan(llm_qps=0, llm_daily=0),  # type: ignore[arg-type]
-        tenant_id=TENANT_ID, key_id=KEY_ID, counters=counters,
+        policy=_policy(llm_qps=0, llm_daily=0),
+        plan=_plan(llm_qps=0, llm_daily=0),  # type: ignore[arg-type]
+        tenant_id=TENANT_ID,
+        key_id=KEY_ID,
+        counters=counters,
     )
     assert ledger.enabled is False
     asyncio.run(ledger.ensure_available())
@@ -81,8 +81,12 @@ def test_a_configured_llm_book_records_the_actual_count() -> None:
     store = _Store()
     counters = QuotaCounters(store, clock=lambda: MOMENT, namespace=LLM_NAMESPACE)
     ledger = llm_quota(
-        policy=_policy(), plan=_plan(), tenant_id=TENANT_ID, key_id=KEY_ID,  # type: ignore[arg-type]
-        counters=counters, enabled=True,
+        policy=_policy(),
+        plan=_plan(),
+        tenant_id=TENANT_ID,
+        key_id=KEY_ID,  # type: ignore[arg-type]
+        counters=counters,
+        enabled=True,
     )
     asyncio.run(ledger.record_n(4))
     assert all(value == 4 for value in store.values.values())
@@ -97,8 +101,12 @@ def test_a_configured_rerank_book_records_only_witheld_applied() -> None:
     store = _Store()
     counters = QuotaCounters(store, clock=lambda: MOMENT, namespace=RERANK_NAMESPACE)
     ledger = rerank_quota(
-        policy=_policy(), plan=_plan(), tenant_id=TENANT_ID, key_id=KEY_ID,  # type: ignore[arg-type]
-        counters=counters, enabled=True,
+        policy=_policy(),
+        plan=_plan(),
+        tenant_id=TENANT_ID,
+        key_id=KEY_ID,  # type: ignore[arg-type]
+        counters=counters,
+        enabled=True,
     )
     applied = True  # 模拟 metadata.retrieval.rerank.applied
     asyncio.run(ledger.record_n(1 if applied else 0))
