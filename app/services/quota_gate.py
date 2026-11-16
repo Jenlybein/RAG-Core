@@ -552,6 +552,24 @@ def retrieval_quota(
     )
 
 
+def _new_book_enabled(limits: QuotaLimits, enabled: bool | None) -> bool:
+    """第 13 步新账的启用判据：四格全 0 = 没给这项能力配额度 → 账本 no-op。
+
+    ``retrieve_qps`` 必须 ≥ 1（0 = 停服，创建时就拒），但 rerank / llm 这两本新账的
+    0 是**正常缺省**（旧 Key 升级上来就是 0），不该让这些 Key 连加工端点都调不了。
+    所以全 0 视为「这本账没启用」：不查、不记、不拒；配了任一格才真正开始限流计数。
+    """
+
+    if enabled is False:
+        return False
+    configured = any(
+        (limits.key_qps, limits.tenant_qps, limits.key_daily, limits.tenant_daily)
+    )
+    if not configured:
+        return False
+    return settings.RATE_LIMIT_ENABLED if enabled is None else enabled
+
+
 def rerank_quota(
     *,
     policy: KeyPolicySnapshot,
@@ -563,12 +581,13 @@ def rerank_quota(
 ) -> QuotaLedger:
     """第 13 步三本账之一：重排调用次数（读 ``rerank_*`` 四列，独立键前缀）。"""
 
+    limits = QuotaLimits.for_rerank(policy=policy, plan=plan)
     return _open_ledger(
-        limits=QuotaLimits.for_rerank(policy=policy, plan=plan),
+        limits=limits,
         tenant_id=tenant_id,
         key_id=key_id,
         counters=counters,
-        enabled=enabled,
+        enabled=_new_book_enabled(limits, enabled),
     )
 
 
@@ -583,12 +602,13 @@ def llm_quota(
 ) -> QuotaLedger:
     """第 13 步三本账之一：大模型调用次数（读 ``llm_*`` 四列，独立键前缀）。"""
 
+    limits = QuotaLimits.for_llm(policy=policy, plan=plan)
     return _open_ledger(
-        limits=QuotaLimits.for_llm(policy=policy, plan=plan),
+        limits=limits,
         tenant_id=tenant_id,
         key_id=key_id,
         counters=counters,
-        enabled=enabled,
+        enabled=_new_book_enabled(limits, enabled),
     )
 
 

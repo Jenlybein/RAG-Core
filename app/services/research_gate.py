@@ -95,7 +95,7 @@ from app.services import result_collapse
 from app.services.data_scope import ensure_kb_scope
 from app.services.knowledge_base_access import ensure_visible
 from app.services.profile_policy import resolve_retrieval_options
-from app.services.quota_gate import research_quota
+from app.services.quota_gate import llm_quota, research_quota
 from app.services.research import Clock, LLMFactory, SearchCallable, run_research
 from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
@@ -328,6 +328,15 @@ async def gated_research(
     # **唯一**的记账点：第 8 步那条内核被调了 1~5 次，但它碰不到这本账；被拒绝、失败或响应
     # 校验不过的调用都走不到这一行。
     await quota.record_success()
+    # 第 13 步：同一批实际发生写进 llm 账（按 model_calls 计，全 0 时账本 no-op），
+    # 于是「大模型花在哪」在 llm 账上可归因，而旧的 research 账继续守着能力位/上限语义。
+    llm = llm_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    )
+    await llm.record_n(outcome.model_calls)
     return data
 
 

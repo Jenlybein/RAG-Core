@@ -35,7 +35,7 @@ from app.schemas.rag import RetrieveData
 from app.services import rag_service
 from app.services.data_scope import ensure_kb_scope
 from app.services.profile_policy import resolve_retrieval_options
-from app.services.quota_gate import retrieval_quota
+from app.services.quota_gate import llm_quota, rerank_quota, retrieval_quota
 from app.services.retrieval_authorization import ensure_endpoint_allowed
 
 #: ``rag_service.retrieve`` 的形状：组合根只认「一个会话 + 已解析参数」。
@@ -98,6 +98,20 @@ async def gated_retrieve(
     )
     await quota.ensure_available()
 
+    # 第 13 步：改写端点额外吃一次 llm 账（全 0 时账本 no-op，旧 Key 不受影响）。
+    llm = (
+        llm_quota(
+            policy=key.policy,
+            plan=key.plan,
+            tenant_id=key.tenant_id,
+            key_id=key.key_id,
+        )
+        if variant == "rewrite"
+        else None
+    )
+    if llm is not None:
+        await llm.ensure_available()
+
     # 第 4 步：召回。组合根拿到的是已经解析完的参数，它不再读请求体、也不再读请求里的质量
     # 字段（那些字段根本不存在）。
     payload = await retriever(
@@ -113,6 +127,18 @@ async def gated_retrieve(
     # 失败 / 异常 / 校验不通过的路径都不会走到这里（ADR-0018「成功后才计数」）。
     result = RetrieveData.model_validate(payload)
     await quota.record_success()
+    if llm is not None:
+        await llm.record_n(1)  # 改写这一次大模型调用，按实际发生计入 llm 账。
+    # 第 13 步：重排账按实际发生记（applied=true 才算一次）。全 0 时账本 no-op。
+    rerank_meta = (result.metadata or {}).get("retrieval", {}).get("rerank") or {}
+    if rerank_meta.get("applied"):
+        rerank = rerank_quota(
+            policy=key.policy,
+            plan=key.plan,
+            tenant_id=key.tenant_id,
+            key_id=key.key_id,
+        )
+        await rerank.record_n(1)
     return result
 
 
@@ -152,6 +178,15 @@ async def gated_decompose(
     )
     await quota.ensure_available()
 
+    # 第 13 步：分解那一次规划是大模型调用，吃 llm 账（全 0 时 no-op）。
+    llm = llm_quota(
+        policy=key.policy,
+        plan=key.plan,
+        tenant_id=key.tenant_id,
+        key_id=key.key_id,
+    )
+    await llm.ensure_available()
+
     # 第 4 步：分解 → N 次内核 → 合并。
     payload = await decompose_retrieve(
         db,
@@ -164,4 +199,5 @@ async def gated_decompose(
     # 第 5 步：响应成形之后才 +1。
     result = RetrieveData.model_validate(payload)
     await quota.record_success()
+    await llm.record_n(1)  # 那一次分解规划，按实际发生计入 llm 账。
     return result
