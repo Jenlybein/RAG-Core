@@ -233,7 +233,9 @@ def _offline_client(
 
 def _post(client: TestClient, *, path: str = RETRIEVE_PATH, **body: Any) -> dict:
     payload = {"kb_ids": [KB_A], "query": "退钱怎么弄"}
-    payload.update(IDENTITY.apply({"mode": "hybrid", **body}))
+    # 第 13 步：重排由配置直存参数决定，用 RERANK_ENABLED 同步表达「配置想要重排」。
+    rerank = bool(getattr(settings, "RERANK_ENABLED", False))
+    payload.update(IDENTITY.apply({"mode": "hybrid", "rerank": rerank, **body}))
     response = client.post(path, json=payload)
     assert response.status_code == 200
     return response.json()

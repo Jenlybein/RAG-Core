@@ -662,18 +662,18 @@ def test_both_entries_echo_the_tenant_policy_they_actually_ran(entries: EntryCli
     assert mcp_payload["metadata"]["tenant_policy"] == expected
 
 
-def test_both_entries_reject_a_profile_the_plan_does_not_allow(
+def test_an_old_profile_name_is_not_a_gate_on_either_entry(
     quality_on_free: EntryClient,
 ) -> None:
-    """档位门禁只有一份：同一把挂 ``quality`` 的 Key 打两扇门，都是 ``20013``。"""
+    """第 13 步：档位名不再是门禁。同一把挂着旧 ``quality`` 名的 Key 打两扇门，都成功。"""
 
-    http_code = quality_on_free.retrieve([KB_IN_SCOPE])["code"]
+    http_body = quality_on_free.retrieve([KB_IN_SCOPE])
     result = quality_on_free.mcp_call(
         "rag_retrieve", {"kb_ids": [KB_IN_SCOPE], "query": "退款多久到账"}
     )
 
-    assert result["isError"] is True
-    assert http_code == _mcp_code(result) == ErrorCode.FEATURE_NOT_ALLOWED
+    assert http_body["code"] == ErrorCode.SUCCESS
+    assert result["isError"] is not True
 
 
 def test_each_entry_keeps_exactly_one_adapter_and_the_kernel_keeps_no_shim() -> None:

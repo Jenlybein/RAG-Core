@@ -202,7 +202,10 @@ def _offline_client(
 
 def _post(client: TestClient, **body: Any) -> dict:
     payload = {"kb_ids": [KB_A], "query": "退款怎么走"}
-    payload.update(IDENTITY.apply({"mode": "hybrid", **body}))
+    # 第 13 步：重排由配置直存的 rerank 参数决定。测试助手用 RERANK_ENABLED 这个
+    # 既有的「开」开关同步表达「配置想要重排」。走 apply 一起传，避免它二次 use 覆盖。
+    rerank = bool(getattr(settings, "RERANK_ENABLED", False))
+    payload.update(IDENTITY.apply({"mode": "hybrid", "rerank": rerank, **body}))
     response = client.post(RETRIEVE_PATH, json=payload)
     assert response.status_code == 200
     return response.json()

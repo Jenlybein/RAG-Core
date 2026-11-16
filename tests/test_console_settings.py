@@ -160,6 +160,10 @@ def _policy(policy_id: str, tenant_id: str, profile: str) -> KeyPolicy:
         research_qps=0,
         research_daily=0,
         profile=profile,
+        # 第 13 步：重排由配置直存参数表达。两个 quality 配置直存 rerank=true，
+        # 于是「关掉 RERANK_ENABLED」的影响面仍能数出这两个租户。
+        custom_options={"rerank": True},
+        rerank_allowed=True,
     )
 
 

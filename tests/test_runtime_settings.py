@@ -686,6 +686,9 @@ def _impact_world(*, mutual_tenants: int = 6) -> dict[type, list[Any]]:
                 research_qps=0,
                 research_daily=0,
                 profile="quality",
+                # 第 13 步：重排由配置直存参数表达，quality 配置直存 rerank=true。
+                custom_options={"rerank": True},
+                rerank_allowed=True,
             )
         )
     tenants.append(Tenant(id="free-1", name="免费租户", plan_id=1, status="active"))
@@ -716,16 +719,6 @@ async def test_turning_off_rerank_reports_every_quality_tenant(cache: Any, monke
     assert len(impact.quality_degraded.sample) == 5, "sample 只放前 5 个名字"
     assert impact.quality_degraded.sample[0] == "租户1"
     assert impact.keyword_channel_lost.count == 0
-
-
-@pytest.mark.asyncio
-async def test_turning_off_rewrite_also_degrades_quality(cache: Any, monkeypatch) -> None:
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    db = _session(world=_impact_world())
-
-    impact = await runtime_settings.preview_impact(db, {"QUERY_REWRITE_ENABLED": False})
-
-    assert impact.quality_degraded.count == 6
 
 
 @pytest.mark.asyncio

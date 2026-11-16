@@ -158,40 +158,26 @@ class RetrievalOptions:
 
 
 def profile_chain_of(policy: KeyPolicySnapshot) -> ProfileChain:
-    """把配置里的档位**展开**成一整条链路（五道门的第 2 道，纯数据那一步）。
+    """把配置里**直存的三项参数**读成一条链路（第 13 步：后端不再有档位）。
 
-    * 命名档位：查档位注册表（``app.core.profile_presets``，真相是 ``profile_presets``
-      表），**配置里的 ``custom_options`` 一个都不读**——完整替换，不是「预设打底、
-      配置覆盖」；
-    * ``custom``：读那批手动参数，**逐键**回落部署缺省（``RETRIEVAL_MODE`` /
-      ``TOP_K`` / ``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED``）；
-    * 未知档位名：回落到部署缺省。配置写入时已经验过词表，这里只兜底，不把调用当场
-      打死——与 ``custom`` 档「值不认识按缺键处理」同一条口径。
+    ``mode`` / ``top_k`` / ``rerank`` 从 ``custom_options`` 逐键读，缺键回落部署缺省；
+    ``profile`` 字段可能还在库里（兼容旧缓存），但**不参与判定**——改档位名不再改变
+    一次调用的参数。这是「参数即真理」的落地：名字只是前端预设与文档别名。
+
+    函数名叫 ``profile_chain_of`` 是为了兼容既有调用点（``profile_policy``、测试、
+    评测脚本），它的语义已经从「展开档位」变成「读直存参数」，T8 物理删档位表时
+    再改名。
     """
 
-    if policy.profile == PROFILE_CUSTOM:
-        manual = dict(policy.custom_options)
-        return ProfileChain(
-            mode=_manual_mode(manual),
-            top_k=_manual_top_k(manual),
-            # 缺键 = 「跟部署缺省走」：部署开关就是「这台机器有没有这项能力」的缺省意图。
-            rerank=_manual_flag(manual, CUSTOM_OPTION_RERANK, fallback=rerank_capability()),
-            rewrite=_manual_flag(
-                manual, CUSTOM_OPTION_REWRITE, fallback=settings.QUERY_REWRITE_ENABLED
-            ),
-        )
-
-    preset = profile_preset_of(policy.profile)
-    if preset is None:
-        return server_default_chain()
-    # 注册表里的参数是**档位意图**；这里只是把它搬成一个不可变的 ProfileChain。
-    # 为什么不直接用注册表里的对象：ProfileChain 是这个模块的值对象，它的不可变性与
-    # 四项齐备由构造处保证；注册表那份是可被管理端替换的普通 dataclass，两者不该混用。
+    manual = dict(policy.custom_options)
     return ProfileChain(
-        mode=preset.mode,
-        top_k=preset.top_k,
-        rerank=preset.rerank,
-        rewrite=preset.rewrite,
+        mode=_manual_mode(manual),
+        top_k=_manual_top_k(manual),
+        # 第 13 步：缺键 = 不要重排（质量由配置直存参数表达，不再回落部署缺省）。
+        rerank=_manual_flag(manual, CUSTOM_OPTION_RERANK, fallback=False),
+        # 改写已是 /rag/rewrite 端点，这个值不再影响任何检索行为（rag_service 不读它），
+        # 仅为兼容仍断言它的既有用例保留读取；T8 会连字段一起删。
+        rewrite=_manual_flag(manual, CUSTOM_OPTION_REWRITE, fallback=False),
     )
 
 

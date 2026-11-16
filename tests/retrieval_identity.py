@@ -26,7 +26,13 @@ from app.core.auth import DEV_KEY_POLICY, KeyContext
 from app.models.key_policy import PROFILE_CUSTOM, KeyPolicySnapshot
 
 #: 票 #77 从请求体里删掉的四个字段。助手据此把「老写法」翻译成「密钥配置」。
-QUALITY_FIELDS: tuple[str, ...] = ("mode", "top_k", "include_parent", "expand_table_rows")
+QUALITY_FIELDS: tuple[str, ...] = (
+    "mode",
+    "top_k",
+    "rerank",  # 第 13 步：重排由配置直存参数决定，也走这条「摘请求字段」的路。
+    "include_parent",
+    "expand_table_rows",
+)
 
 
 class RetrievalIdentity:
@@ -58,14 +64,14 @@ class RetrievalIdentity:
         *,
         mode: str | None = None,
         top_k: int | None = None,
+        rerank: bool | None = None,
         include_parent: bool = True,
         expand_table_rows: bool = True,
     ) -> None:
-        """造一份 ``custom`` 档的配置：手动参数 = 原来请求里想传的那几个值。
+        """造一份配置：三项参数（mode/top_k/rerank）直存在 custom_options 里。
 
-        与旧请求体的缺省一一对应：没传 ``mode`` 就回到「服务端缺省模式」，没传
-        ``top_k`` 就回到「服务端缺省条数」——由 ``retrieval_options.profile_chain_of``
-        的逐键回落实现，助手这里不复制一份缺省值。
+        第 13 步起后端不再有档位，这三项就是「用多好」的全部真相。没传 mode/top_k
+        逐键回落部署缺省；没传 rerank 就是「不要重排」。
         """
 
         manual: dict[str, object] = {}
@@ -73,6 +79,8 @@ class RetrievalIdentity:
             manual["mode"] = mode
         if top_k is not None:
             manual["top_k"] = top_k
+        if rerank is not None:
+            manual["rerank"] = rerank
 
         self._policy = replace(
             # 以内置开发身份那份为底：它的 ``unrestricted_scope`` 打开，白名单关卡

@@ -123,24 +123,11 @@ def resolve_retrieval_options(
 
     profile = policy.profile
 
-    # 第 1 道：档位必须在套餐的白名单里。管理员把套餐调低之后，挂旧档位的 Key 下一次
-    # 调用就撞在这里——不是「等缓存过期」，也不是「悄悄按新套餐降级跑」。
-    if profile not in plan.allowed_profiles:
-        raise AppError(
-            ErrorCode.FEATURE_NOT_ALLOWED,
-            f"profile {profile!r} is not allowed by plan {plan.code!r}",
-        )
-
-    # 第 2 道：展开。命名档位是完整替换，custom 才读手动参数（见 retrieval_options）。
-    chain = profile_chain_of(policy)
-    clipped: tuple[str, ...] = ()
-
-    if profile == PROFILE_CUSTOM:
-        # 第 4 道：custom 档超限只裁剪，不拒绝（平台兜住上限，但不剥夺使用权）。
-        chain, clipped = _clip_to_plan(chain, plan)
-    else:
-        # 第 3 道：命名档位的能力门禁。**不降级**：名字是产品契约，少一步就是另一个档。
-        _ensure_named_profile_granted(profile=profile, chain=chain, plan=plan)
+    # 第 13 步：后端不再有档位。``profile`` 字段可能还在旧缓存里，但不再参与判定——
+    # 不查白名单、不按名字做能力门禁。三项参数直存（见 profile_chain_of），所有配置
+    # 一视同仁：超套餐上限就**裁剪 + 回显**，没有「命名档位被拒」这一档了（名字不再
+    # 承诺任何链路，也就无从「被改成谎言」）。
+    chain, clipped = _clip_to_plan(profile_chain_of(policy), plan)
 
     # 第 5 道：单次检索库数。拒绝而不是裁剪——把 3 个库悄悄截成 1 个，改的是「查什么」，
     # 调用方会拿到一份看起来完整、其实范围少了一半的答案（作用域不许被静默改写）。

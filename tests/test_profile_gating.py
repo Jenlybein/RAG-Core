@@ -100,43 +100,21 @@ def _plan(code: str, **overrides: Any) -> PlanSpec:
     return dataclasses.replace(PLAN_PRESETS[code], **overrides)
 
 
-@pytest.mark.parametrize(
-    ("profile", "expected"),
-    [
-        # 三档的全部内容写在票面上，这里逐字抄一遍：任何一个预设被改动，这条就变红。
-        (
-            PROFILE_SPEED,
-            ProfileChain(mode="vector", top_k=5, rerank=False, rewrite=False),
-        ),
-        (
-            PROFILE_BALANCED,
-            ProfileChain(mode="hybrid", top_k=5, rerank=False, rewrite=False),
-        ),
-        (
-            PROFILE_QUALITY,
-            ProfileChain(mode="hybrid", top_k=5, rerank=True, rewrite=True),
-        ),
-    ],
-)
-def test_each_named_profile_expands_to_exactly_its_chain(
-    profile: str, expected: ProfileChain
-) -> None:
-    """命名档位 = 一整条链路：模式、条数、是否重排、是否改写、是否编排，五项一个不少。
+@pytest.mark.parametrize("profile", [PROFILE_SPEED, PROFILE_BALANCED, PROFILE_QUALITY])
+def test_the_declared_parameters_win_over_the_profile_name(profile: str) -> None:
+    """第 13 步：链路三项参数直存，档位名不再决定任何东西。
 
-    同时在配置里塞一批手动参数与两个关掉的结果形状——命名档位下它们**一个都不生效**
-    （完整替换，不是「预设打底、配置覆盖」）。
+    同一批参数、三个不同的档位名，拿到的是同一条链路——这是「后端无档位」的可执行定义。
     """
 
     chain = profile_chain_of(
         _policy(
             profile=profile,
             custom_options=(("mode", "bm25"), ("top_k", 1), ("rerank", False)),
-            include_parent=False,
-            expand_table_rows=False,
         )
     )
 
-    assert chain == expected
+    assert chain == ProfileChain(mode="bm25", top_k=1, rerank=False, rewrite=False)
 
 
 def test_a_named_profile_still_takes_the_result_shape_group() -> None:
@@ -170,83 +148,51 @@ def test_custom_reads_its_manual_parameters() -> None:
     assert chain == ProfileChain(mode="bm25", top_k=3, rerank=True, rewrite=True)
 
 
-def test_custom_falls_back_per_key_to_the_deployment_defaults(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """缺键 = 「这个键没给」，逐键回落到**部署缺省**（不是整份作废）。"""
+def test_missing_parameters_fall_back_per_key(monkeypatch: pytest.MonkeyPatch) -> None:
+    """第 13 步：mode/top_k 缺键逐键回落部署缺省；rerank 缺键 = 不要。"""
 
     monkeypatch.setattr(settings, "RETRIEVAL_MODE", "hybrid")
     monkeypatch.setattr(settings, "TOP_K", 7)
-    # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
-    monkeypatch.setattr(settings, "RERANK_ENABLED", True)
-    monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
-    monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
-    chain = profile_chain_of(_policy(profile=PROFILE_CUSTOM, custom_options=(("mode", "vector"),)))
+    chain = profile_chain_of(_policy(custom_options=(("mode", "vector"),)))
 
-    assert chain == ProfileChain(mode="vector", top_k=7, rerank=True, rewrite=True)
+    assert chain == ProfileChain(mode="vector", top_k=7, rerank=False, rewrite=False)
 
 
-# ───────────────────────────────────────────── 五道门：顺序、拒绝与裁剪
+# ───────────────────────────────────── 门禁：一律裁剪回显，没有档位白名单
 
 
-def test_a_profile_outside_the_plan_is_a_feature_error() -> None:
-    """第 1 道：档位不在套餐白名单 → ``20013``，连展开都不该发生。"""
+def test_the_profile_name_never_gates_a_call() -> None:
+    """第 13 步：档位名不参与任何门禁。同样的参数，任何 profile 都跑得通。"""
 
-    with pytest.raises(AppError) as excinfo:
-        resolve_retrieval_options(
-            policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_FREE), kb_count=1
+    for profile in (PROFILE_SPEED, PROFILE_BALANCED, PROFILE_QUALITY, PROFILE_CUSTOM):
+        options = resolve_retrieval_options(
+            policy=_policy(profile=profile, custom_options=(("mode", "vector"),)),
+            plan=_plan(PLAN_FREE),
+            kb_count=1,
         )
-
-    assert excinfo.value.code is ErrorCode.FEATURE_NOT_ALLOWED
-    assert PROFILE_QUALITY in excinfo.value.msg
+        assert options.mode == "vector", profile
 
 
-def test_a_named_profile_that_needs_a_dropped_capability_is_rejected_not_degraded() -> None:
-    """第 3 道：档位仍在白名单里，但套餐事后撤了重排 → 拒绝，绝不悄悄少一步。
+def test_a_dropped_capability_is_clipped_and_reported_not_rejected() -> None:
+    """套餐事后撤了重排 → 裁剪 + 回显，不再「拒绝整单」。
 
-    管理员把 ``pro`` 的 ``rerank_allowed`` 关掉之后，挂 ``quality`` 的 Key 下一次调用
-    就失败——名字是产品契约，静默降级成「高质量 = 混合但没重排」才是欺骗。
+    名字不再是产品契约，没有「静默把高质量改成没重排」的问题——超上限就如实裁掉并
+    在 ``clipped`` 里说出来，调用方一眼能看到。
     """
 
     plan = _plan(PLAN_PRO, rerank_allowed=False)
-
-    with pytest.raises(AppError) as excinfo:
-        resolve_retrieval_options(policy=_policy(profile=PROFILE_QUALITY), plan=plan, kb_count=1)
-
-    assert excinfo.value.code is ErrorCode.FEATURE_NOT_ALLOWED
-    assert "rerank" in excinfo.value.msg
-
-
-def test_the_same_excess_is_rejected_for_a_named_profile_and_clipped_for_custom() -> None:
-    """两种超限反应刻意不同，这是整个票的中心。
-
-    同一个套餐（没有重排）、同一批越权参数：命名档位被**拒绝**，``custom`` 档被
-    **裁剪并回显**——前者是名字被改成谎言，后者只是平台兜住上限。
-    """
-
-    plan = _plan(PLAN_STANDARD)
-
-    with pytest.raises(AppError) as excinfo:
-        resolve_retrieval_options(
-            policy=_policy(profile=PROFILE_QUALITY, rerank_allowed=True),
-            plan=plan,
-            kb_count=1,
-        )
-    assert excinfo.value.code is ErrorCode.FEATURE_NOT_ALLOWED
-
-    clipped = resolve_retrieval_options(
+    options = resolve_retrieval_options(
         policy=_policy(
-            profile=PROFILE_CUSTOM,
-            custom_options=(("mode", "hybrid"), ("rerank", True), ("rewrite", True)),
+            custom_options=(("mode", "hybrid"), ("rerank", True)), rerank_allowed=True
         ),
         plan=plan,
         kb_count=1,
     )
-    assert clipped.tenant_policy is not None
-    assert clipped.tenant_policy.clipped == ("rerank", "rewrite"), "裁剪必须回显被裁字段"
-    assert clipped.rerank is False and clipped.rewrite is False
+
+    assert options.rerank is False
+    assert options.tenant_policy is not None
+    assert "rerank" in options.tenant_policy.clipped
 
 
 def test_custom_over_the_plan_is_clipped_and_the_clip_list_names_the_fields() -> None:
@@ -329,51 +275,45 @@ def test_too_many_knowledge_bases_in_one_request_is_rejected_not_narrowed() -> N
     assert "knowledge bases" in excinfo.value.msg
 
 
-def test_the_profile_gate_runs_before_the_knowledge_base_count_gate() -> None:
-    """顺序：档位先判、库数后判。两处都越权时报的必须是**档位**那一条。
-
-    顺序反了不会更安全，只会让排障变猜谜：同一次配置错误有时报「档位不允许」、
-    有时报「库太多」，取决于这次带了几 个库。
-    """
+def test_too_many_kb_is_rejected_regardless_of_the_profile_name() -> None:
+    """库数上限这道门与档位名无关：名字不再参与判定，库数照旧是硬拒绝。"""
 
     with pytest.raises(AppError) as excinfo:
         resolve_retrieval_options(
-            # free 档只允许 speed；这里同时给了 quality 与 3 个库，两处都越权。
-            policy=_policy(profile=PROFILE_QUALITY),
+            policy=_policy(profile=PROFILE_QUALITY, custom_options=(("mode", "vector"),)),
             plan=_plan(PLAN_FREE),
             kb_count=3,
         )
 
     assert excinfo.value.code is ErrorCode.FEATURE_NOT_ALLOWED
-    assert PROFILE_QUALITY in excinfo.value.msg
-    assert "knowledge bases" not in excinfo.value.msg
+    assert "knowledge bases" in excinfo.value.msg
 
 
 # ───────────────────────────────────────────── 部署能力 vs 档位意图
 
 
-def test_the_deployment_switch_holds_rerank_and_rewrite_off(
+def test_the_deployment_switch_holds_rerank_off(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """档位表达**意图**，部署开关表达**这台机器装没装**，生效值是两者的合取。
+    """参数表达**意图**，部署开关表达**这台机器装没装**，生效值是两者的合取。
 
-    本机没配重排 / 改写（``RERANK_ENABLED`` / ``QUERY_REWRITE_ENABLED`` 关着）时，
-    ``quality`` 档回显的 rerank / rewrite 必须是 ``False``——档位绝不能凭空变出一个
-    部署没配的 Provider。
+    本机没配重排（``RERANK_ENABLED`` 关着）时，即使配置直存 ``rerank=true``，
+    生效值也必须是 ``False``——配置绝不能凭空变出一个部署没配的 Provider。
+    改写不再是配置项（它是 /rag/rewrite 端点），这里只验重排。
     """
 
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
-    monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
 
     options = resolve_retrieval_options(
-        policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_PRO), kb_count=1
+        policy=_policy(custom_options=(("rerank", True),), rerank_allowed=True),
+        plan=_plan(PLAN_PRO),
+        kb_count=1,
     )
 
     assert options.rerank is False
-    assert options.rewrite is False
-    # 意图没被抹掉：展开那一层仍然写着 quality 要重排与改写，只是这台机器给不了。
-    intent = profile_chain_of(_policy(profile=PROFILE_QUALITY))
-    assert (intent.rerank, intent.rewrite) == (True, True)
+    # 意图没被抹掉：展开那一层仍写着要重排，只是这台机器给不了。
+    intent = profile_chain_of(_policy(custom_options=(("rerank", True),)))
+    assert intent.rerank is True
 
 
 def test_an_installed_capability_lets_the_profile_run_it() -> None:
@@ -429,7 +369,12 @@ def test_the_echo_reports_what_actually_ran(monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
     options = resolve_retrieval_options(
-        policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_PRO), kb_count=2
+        policy=_policy(
+            custom_options=(("mode", "hybrid"), ("top_k", 5), ("rerank", True)),
+            rerank_allowed=True,
+        ),
+        plan=_plan(PLAN_PRO),
+        kb_count=2,
     )
 
     # 第 13 步：回显改报参数本身，不再有 requested_profile / rewrite。
@@ -665,7 +610,8 @@ def test_the_development_identity_is_custom_so_it_tracks_the_deployment(
     options = resolve_retrieval_options(policy=DEV_KEY_POLICY, plan=DEV_KEY_PLAN, kb_count=1)
 
     assert (options.mode, options.top_k) == ("bm25", 9)
-    assert (options.rerank, options.rewrite) == (True, False)
+    # 第 13 步：rerank 缺键 = 不要，不再跟部署开关走。
+    assert (options.rerank, options.rewrite) == (False, False)
 
 
 # ───────────────────────────────────────────── ASGI 边界：真实响应里的码与回显
@@ -760,26 +706,30 @@ def entry(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Entry]:
         main.app.dependency_overrides.clear()
 
 
-def test_a_key_configured_with_a_forbidden_profile_fails_at_the_boundary(entry: _Entry) -> None:
-    """免费档的 Key 挂着 ``quality``：调用当场 ``20013``（不降级、不执行）。"""
+def test_an_old_profile_name_does_not_block_a_call(entry: _Entry) -> None:
+    """第 13 步：旧缓存里挂着 ``quality`` 的 Key 不再被拒——档位名不是门禁。"""
 
     entry.use(policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_FREE))
 
     body = entry.post()
 
-    assert body["code"] == ErrorCode.FEATURE_NOT_ALLOWED
-    assert body["data"] is None
+    assert body["code"] == ErrorCode.SUCCESS, "档位名不再决定能否调用"
 
 
-def test_a_plan_downgrade_fails_the_next_call(entry: _Entry) -> None:
-    """管理员事后把套餐调低 → 下一次调用就按新套餐判，不必等缓存过期、不必重签 Key。"""
+def test_a_plan_downgrade_clips_the_next_call(entry: _Entry) -> None:
+    """管理员事后把套餐调低 → 下一次调用按新套餐裁剪参数，不必等缓存过期。"""
 
-    entry.use(policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_PRO))
-    assert entry.post()["code"] == ErrorCode.SUCCESS
+    policy = _policy(
+        custom_options=(("mode", "hybrid"), ("rerank", True)), rerank_allowed=True
+    )
+    entry.use(policy=policy, plan=_plan(PLAN_PRO))
+    assert entry.post()["data"]["metadata"]["retrieval"]["rerank"] is not None
 
-    entry.use(policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_FREE))
+    entry.use(policy=policy, plan=_plan(PLAN_FREE, rerank_allowed=False))
+    body = entry.post()
 
-    assert entry.post()["code"] == ErrorCode.FEATURE_NOT_ALLOWED
+    assert body["code"] == ErrorCode.SUCCESS
+    assert "rerank" in body["data"]["metadata"]["tenant_policy"]["clipped"]
 
 
 def test_the_response_carries_the_tenant_policy_it_actually_ran(entry: _Entry) -> None:
@@ -869,33 +819,31 @@ def _install_rerank(monkeypatch: pytest.MonkeyPatch) -> _RecordingRerank:
     return provider
 
 
-def test_a_profile_that_does_not_ask_for_rerank_leaves_it_off_even_when_installed(
+def test_rerank_stays_off_when_not_requested_even_when_installed(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """``balanced`` 在装了重排的机器上**也不许**重排（意图 ∧ 能力，不是「能力就够」）。
-
-    这是本票最容易漏的一条：重排阶段过去只问「Provider 可不可用」，于是同一台机器上
-    ``balanced`` 与 ``quality`` 跑出来是同一条链路，而回显里还写着 ``rerank: false``
-    ——那正是「回显是谎言」的样子。
-    """
+    """配置没直存 rerank=true 时，装了重排也不许用（意图 ∧ 能力，不是「能力就够」）。"""
 
     provider = _install_rerank(monkeypatch)
-    entry.use(policy=_policy(profile=PROFILE_BALANCED), plan=_plan(PLAN_PRO))
+    entry.use(policy=_policy(rerank_allowed=True), plan=_plan(PLAN_PRO))
 
     body = entry.post()
 
     assert body["data"]["metadata"]["tenant_policy"]["rerank"] is False
     assert body["data"]["metadata"]["retrieval"]["rerank"]["applied"] is False
-    assert provider.calls == [], "档位没要重排，装了也不许用"
+    assert provider.calls == [], "参数没要重排，装了也不许用"
 
 
-def test_a_profile_that_asks_for_rerank_uses_the_installed_one(
+def test_rerank_runs_when_requested_and_installed(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """对照组：同一台机器、同一个假 Provider，``quality`` 档的重排真的跑了。"""
+    """对照组：同一台机器、同一个假 Provider，配置直存 rerank=true 时重排真的跑了。"""
 
     provider = _install_rerank(monkeypatch)
-    entry.use(policy=_policy(profile=PROFILE_QUALITY), plan=_plan(PLAN_PRO))
+    entry.use(
+        policy=_policy(custom_options=(("rerank", True),), rerank_allowed=True),
+        plan=_plan(PLAN_PRO),
+    )
 
     body = entry.post()
 
