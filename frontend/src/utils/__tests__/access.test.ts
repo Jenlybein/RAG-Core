@@ -28,20 +28,15 @@ const normalMe = meOf('user', 'tenant-a')
 const adminMe = meOf('admin', null)
 
 describe('navFor：入口按角色分流，未知身份一个入口都不给', () => {
-  it('普通账号拿到用户面板的五条入口', () => {
-    // 建库与上传已并入「知识库管理」，所以前三条是三条而不是四条：入口数要跟着页面数走，
-    // 多出来的一条只会让人在两页之间找「这个动作在哪一页」。
-    //
-    // 第四条 `/traces`（检索记录）回答「已经发生过什么」；在此之前瀑布 / 评分 / 评测都要
-    // 先知道一个 log_id，而那个 id 只能回调用方系统里翻。
-    // 第五条 `/evaluation`（语义评测）从检索页右栏独立出来：它的结论按「轮」成立
-    // （整批 50 题），不按「这一次检索」成立——挂在检索页里，两种语义会互相污染。
+  it('普通账号拿到用户面板的四条入口', () => {
+    // 建库与上传已并入「知识库管理」，入口数跟着页面数走。
+    // 第四条 `/traces`（检索记录）回答「已经发生过什么」。
+    // 第 13 步：语义评测是平台自检工具，搬到管理员后台，用户面板不再有它。
     expect(navFor('user').map((item) => item.to)).toEqual([
       '/knowledge-bases',
       '/keys',
       '/retrieve',
       '/traces',
-      '/evaluation',
     ])
   })
 
@@ -69,10 +64,8 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
     },
   )
 
-  it('管理员入口恰好是已落地的七条真实路由', () => {
-    // #95 落地账号 / 套餐 / 审计，#96 补模型配置与检索参数，档位预设（/admin/profiles）
-    // 再接一条；观测总览（/admin/observability）是最后加的。七条都必须有对应路由，
-    // 否则顶栏点过去就是一片空白。
+  it('管理员入口恰好是已落地的八条真实路由', () => {
+    // 第 13 步：语义评测从用户面板搬来 /admin/evaluation，成为第八条。
     expect(navFor('admin').map((item) => item.to)).toEqual([
       '/admin/accounts',
       '/admin/plans',
@@ -81,6 +74,7 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
       '/admin/retrieval',
       '/admin/profiles',
       '/admin/observability',
+      '/admin/evaluation',
     ])
   })
 })

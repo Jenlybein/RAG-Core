@@ -22,7 +22,8 @@ from pathlib import Path
 
 from fastapi import APIRouter, Depends, Path as PathParam
 
-from app.api.console_deps import require_console_tenant, tenant_id_of
+from app.api.console_deps import get_console_admin
+from app.core.config import settings
 from app.core.console_auth import ConsoleIdentity
 from app.schemas.common import ApiResponse, ok
 from app.services.eval_manifest import REPO_ROOT
@@ -49,7 +50,7 @@ RUNS_ROOT = REPO_ROOT / "eval" / "runs" / "side-evidence"
     summary="触发一次语义旁证跑批（不进闸门）",
 )
 def trigger_side_evidence(
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(get_console_admin),
     limit: int | None = None,
 ) -> ApiResponse[dict]:
     """投递一次跑批并立刻返回 ``run_id``；结果要靠查状态那条端点。"""
@@ -60,7 +61,9 @@ def trigger_side_evidence(
         run_id=run_id,
         out_dir=str(out_dir),
         limit=limit,
-        tenant_id=tenant_id_of(identity),
+        # 第 13 步：语义评测搬进管理员后台。管理员不属于任何租户（tenant_id 为空），
+        # 跑批身份固定为评测语料所属的开发租户——它是平台自检，不是某个租户的数据。
+        tenant_id=settings.DEV_TENANT_ID,
     )
     return ok(
         {
@@ -123,7 +126,7 @@ def _summary_of(run_dir: Path) -> dict | None:
 )
 def list_side_evidence_runs(
     limit: int = 10,
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(get_console_admin),
 ) -> ApiResponse[dict]:
     """按 run_id 倒序列出最近的跑批，**只列本租户的**。
 
@@ -137,7 +140,7 @@ def list_side_evidence_runs(
     if not RUNS_ROOT.is_dir():
         return ok({"items": [], "limit": limit})
 
-    wanted = tenant_id_of(identity)
+    # 第 13 步：管理员看全部跑批（平台自检产物，不按租户隔离）。
     items: list[dict] = []
     for run_dir in sorted(
         (p for p in RUNS_ROOT.iterdir() if p.is_dir() and _RUN_ID.match(p.name)),
@@ -147,8 +150,6 @@ def list_side_evidence_runs(
         if len(items) >= limit:
             break
         status = _read_status(run_dir)
-        if status is not None and status.get("tenant_id") not in (None, wanted):
-            continue
         items.append(
             {
                 "run_id": run_dir.name,
@@ -169,7 +170,7 @@ def list_side_evidence_runs(
 )
 def read_side_evidence_report(
     run_id: str = PathParam(..., description="触发时返回的 run_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(get_console_admin),
 ) -> ApiResponse[dict]:
     """把 ``report.md`` 的正文交给前端，由它在弹窗里渲染。
 
@@ -178,16 +179,13 @@ def read_side_evidence_report(
     交给调用方。这里只认 ``_RUN_ID`` 形状、只读那一个固定文件名、并校验归属。
 
     报告里**没有原文**（旁证只算分、不落问句正文），所以整段下发是安全的。
+    第 13 步：管理员读全部跑批报告，不再按租户归属过滤。
     """
 
     if not _RUN_ID.match(run_id):
         return ok({"run_id": run_id, "report": None})
 
     run_dir = RUNS_ROOT / run_id
-    status = _read_status(run_dir)
-    if status is not None and status.get("tenant_id") not in (None, tenant_id_of(identity)):
-        return ok({"run_id": run_id, "report": None})
-
     path = run_dir / "report.md"
     if not path.is_file():
         return ok({"run_id": run_id, "report": None})
@@ -201,7 +199,7 @@ def read_side_evidence_report(
 )
 def side_evidence_status(
     run_id: str = PathParam(..., description="触发时返回的 run_id"),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
+    identity: ConsoleIdentity = Depends(get_console_admin),
 ) -> ApiResponse[dict]:
     """读一轮跑批的状态、裁判模型与汇总；``queued`` 表示「还没有结论」，不是错误。
 
@@ -222,11 +220,7 @@ def side_evidence_status(
     if status is None:
         return _queued(run_id)
 
-    # 归属校验：``run_id`` 只是一个时间戳形状的字符串，谁都能编一个去猜别人的目录。
-    # 状态文件里记着发起它那个租户，对不上就按「不存在」处理——与瀑布、反查、反馈同一口径：
-    # 不区分「不存在」与「不属于你」。
-    if status.get("tenant_id") not in (None, tenant_id_of(identity)):
-        return _queued(run_id)
+    # 第 13 步：管理员读全部跑批状态，不再按租户归属过滤（平台自检产物）。
     return ok(
         {
             "run_id": run_id,

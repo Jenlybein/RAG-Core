@@ -32,9 +32,8 @@ export const USER_NAV: readonly NavItem[] = [
   { to: '/keys', label: 'Key 与密钥配置' },
   { to: '/retrieve', label: '检索调试台' },
   { to: '/traces', label: '检索记录' },
-  // 「语义评测」而不是「语义旁证」：后者是术语表里的**指标类型**（旁证指标 vs 门禁指标），
-  // 对使用者是黑话。入口名说人话，把「旁证」留在解释里。
-  { to: '/evaluation', label: '语义评测' },
+  // 第 13 步：语义评测是平台自检工具（跑固定语料、管理员看），不是租户自助功能——
+  // 移到管理员面板 /admin/evaluation。
 ]
 
 /**
@@ -52,6 +51,8 @@ export const ADMIN_NAV: readonly NavItem[] = [
   { to: '/admin/retrieval', label: '检索参数' },
   { to: '/admin/profiles', label: '档位预设' },
   { to: '/admin/observability', label: '观测' },
+  // 第 13 步：语义评测从用户面板搬进管理员后台（平台自检工具，不是租户功能）。
+  { to: '/admin/evaluation', label: '语义评测' },
 ]
 
 /**

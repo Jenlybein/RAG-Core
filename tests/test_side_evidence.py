@@ -320,14 +320,12 @@ def test_a_traversal_shaped_run_id_is_treated_as_absent(
     assert body.data["status"] == "queued"
 
 
-def test_another_tenants_run_is_not_readable(
+def test_admin_can_read_a_run_from_any_tenant(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`run_id` 只是时间戳形状，谁都能编一个；归属对不上就当「不存在」。
+    """第 13 步：语义评测搬进管理员后台，平台自检产物对所有管理员可读。
 
-    这条是本轮 code-review 查出来的：状态查询原先只校验「你是控制面的人」，不校验
-    「这次跑批是你的」，于是任一租户凭猜出来的 run_id 就能读到别人的旁证产物——而产物
-    里有**题库问句**。答复口径与瀑布 / 反查 / 反馈一致：不区分「不存在」与「不属于你」。
+    归属隔离是租户面板时代的规则；管理员不属于任何租户，看的是平台全量跑批。
     """
 
     from app.api.routes import console_eval
@@ -349,8 +347,8 @@ def test_another_tenants_run_is_not_readable(
 
     body = console_eval.side_evidence_status(run_id="20260101T000000Z", identity=_identity())
 
-    assert body.data["status"] == "queued"
-    assert body.data["summary"] is None
+    assert body.data["status"] == "ok"
+    assert body.data["judge_model"] == "fake-judge-v1"
 
 
 def test_a_run_without_a_tenant_record_is_still_readable(

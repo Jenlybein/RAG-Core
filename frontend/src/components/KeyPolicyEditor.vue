@@ -66,11 +66,17 @@ const props = defineProps<{
 
 const blockedProfiles = computed(() => new Set(disabledProfiles(props.allowedProfiles)))
 
-/** 卡片上的两行：短名 + 一句差别。`custom` 的说明指向下面那组手动参数。 */
+/**
+ * 卡片上的两行：短名 + 一句差别。
+ *
+ * 第 13 步：后端不再有档位概念——这三个名字只是**参数预设按钮**，点一下把
+ * mode/top_k/rerank 填进下面那组直存参数；它们不承诺链路、不参与判定。
+ * 改写不再是质量参数（它是 /rag/rewrite 端点），所以 quality 的说明里去掉了它。
+ */
 const PROFILE_CARDS: Record<KeyProfile, { title: string; hint: string }> = {
-  speed: { title: 'speed', hint: '只走向量检索，最快最省' },
-  balanced: { title: 'balanced', hint: '向量 + 关键词，两路都召回' },
-  quality: { title: 'quality', hint: '混合检索 + 重排 + 改写' },
+  speed: { title: 'speed', hint: '预设：只走向量检索' },
+  balanced: { title: 'balanced', hint: '预设：向量 + 关键词' },
+  quality: { title: 'quality', hint: '预设：混合检索 + 重排' },
   custom: { title: 'custom', hint: '自己填检索方式与条数' },
 }
 

@@ -38,8 +38,26 @@ export const DATA_PLANE_ENDPOINTS: readonly DataPlaneEndpoint[] = [
   {
     method: 'POST',
     path: '/rag/retrieve',
-    purpose: '检索（本页上方那块就是它）',
-    gate: '白名单 → 套餐 → 档位 → 限流 → 日配额，五道门禁全过才召回',
+    purpose: '原句直查（零模型调用，本页上方那块就是它）',
+    gate: '白名单 → 检索授权位 → 参数门禁 → 限流 → 日配额；不加工查询',
+  },
+  {
+    method: 'POST',
+    path: '/rag/rewrite',
+    purpose: '换个说法再查（一次改写模型调用，原句与改写句并池取优）',
+    gate: '同直查 + rewrite 授权位 + llm 额度；改写失败整单 50003',
+  },
+  {
+    method: 'POST',
+    path: '/rag/decompose',
+    purpose: '问题分解后检索（拆成子问题各查一次，合并成一份列表）',
+    gate: '同直查 + decompose 授权位 + llm 额度；每条结果带 matched_queries',
+  },
+  {
+    method: 'POST',
+    path: '/rag/research',
+    purpose: '受控 Research（多轮补证 + 引用块，约 30 秒）',
+    gate: '白名单 → research 授权位 → 配额；模型失败整单 50003',
   },
   {
     method: 'POST',
