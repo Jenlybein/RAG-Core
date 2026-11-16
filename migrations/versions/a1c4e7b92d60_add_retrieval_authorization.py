@@ -58,9 +58,16 @@ PLAN_ONLY_COLUMNS: tuple[str, ...] = ("max_top_k",)
 
 
 def _add(table: str, name: str) -> None:
-    """按列的类型加一列；布尔用 false、整数用 0，都非空且回填存量行。"""
+    """按列的类型加一列，都非空且回填存量行。
 
-    if name in CAPABILITY_COLUMNS:
+    ``retrieve_allowed`` 回填 **true**：它是基线能力，四档套餐都开。存量客户升级后
+    连直接检索都用不了是最坏的静默停服。另两个新位是新增加工能力，回填 false
+    （要开就由控制面板显式分配）。
+    """
+
+    if name == "retrieve_allowed":
+        column = sa.Column(name, sa.Boolean(), nullable=False, server_default=sa.true())
+    elif name in CAPABILITY_COLUMNS:
         column = sa.Column(name, sa.Boolean(), nullable=False, server_default=sa.false())
     else:
         column = sa.Column(name, sa.Integer(), nullable=False, server_default="0")

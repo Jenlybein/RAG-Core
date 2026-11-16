@@ -401,6 +401,14 @@ async def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
         include_parent=False,
         expand_table_rows=True,
         custom_options=(("top_k", 3),),
+        # 第 13 步新列：假行没显式配，按迁移的 server_default 回填读出的值。
+        retrieve_allowed=True,
+        rewrite_allowed=False,
+        decompose_allowed=False,
+        rerank_qps=0,
+        rerank_daily=0,
+        llm_qps=0,
+        llm_daily=0,
     )
     assert context.plan == PLAN_PRESETS[PLAN_PRO]
     assert cache.set_calls == [PLAN_IDS[PLAN_PRO]], "套餐缓存的键必须是 plan id"

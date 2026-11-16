@@ -25,9 +25,22 @@ from app.models.plan import (
     preset_mismatches,
 )
 
-# 票面真值表：13 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
+# 票面真值表：21 个业务列 × 三档。这份字面量是**独立来源**，刻意不从常量里推导——
 # 否则「常量等于它自己」的同义反复什么都守不住。name 是展示名，票面没定字面值，
 # 另有用例只要求非空且互不相同。
+#
+# 第 13 步新增 8 列：三个端点位 + 两本新账四列 + max_top_k。种子里它们取
+# PlanSpec 的 expand 缺省（此刻还没接进门禁，T8 才切成四档各自的真值）。
+_EXPAND_SEED: dict[str, Any] = {
+    "retrieve_allowed": True,
+    "rewrite_allowed": True,
+    "decompose_allowed": True,
+    "rerank_qps": 0,
+    "rerank_daily": 0,
+    "llm_qps": 0,
+    "llm_daily": 0,
+    "max_top_k": 0,
+}
 SPEC_TABLE: dict[str, dict[str, Any]] = {
     "free": {
         "allowed_profiles": ("speed",),
@@ -45,6 +58,7 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb_per_retrieve": 1,
         "max_documents_per_kb": 30,
         "max_processing_documents": 1,
+        **_EXPAND_SEED,
     },
     "standard": {
         "allowed_profiles": ("speed", "balanced", "custom"),
@@ -60,6 +74,7 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb_per_retrieve": 3,
         "max_documents_per_kb": 200,
         "max_processing_documents": 2,
+        **_EXPAND_SEED,
     },
     "pro": {
         "allowed_profiles": ("speed", "balanced", "quality", "custom"),
@@ -77,6 +92,7 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
         "max_processing_documents": 10,
+        **_EXPAND_SEED,
     },
 }
 
@@ -101,10 +117,10 @@ def test_the_three_plans_are_exactly_the_decided_codes() -> None:
 
 @pytest.mark.parametrize("code", PLAN_CODES)
 def test_each_plan_carries_the_decided_values(code: str) -> None:
-    """逐列比对票面：13 个业务列一个不漏。"""
+    """逐列比对票面：21 个业务列一个不漏。"""
 
     spec = PLAN_PRESETS[code]
-    assert len(PLAN_BUSINESS_COLUMNS) == 13
+    assert len(PLAN_BUSINESS_COLUMNS) == 21
     for column in PLAN_BUSINESS_COLUMNS:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 
@@ -141,13 +157,19 @@ def test_reconciliation_passes_after_seeding_all_three_plans() -> None:
 
 
 def test_a_mapper_that_forgets_a_column_cannot_even_construct_the_spec() -> None:
-    """构造式兜底：字段没有默认值，漏传一列就是 TypeError，而不是静默变成 None。"""
+    """构造式兜底：旧列没有默认值，漏传一列就是 TypeError，而不是静默变成 None。
+
+    第 13 步的 8 个 expand 新列**带缺省**（迁移要兼容旧缓存），所以不参与这条
+    「漏一列即失败」的守门；T8 切真相源时它们会收紧为无缺省，再回到这条断言里。
+    """
 
     complete = {
         field.name: getattr(PLAN_PRESETS["pro"], field.name)
         for field in dataclasses.fields(PlanSpec)
     }
     for column in PLAN_BUSINESS_COLUMNS:
+        if column in _EXPAND_SEED:
+            continue
         partial = {key: value for key, value in complete.items() if key != column}
         with pytest.raises(TypeError):
             PlanSpec(**partial)

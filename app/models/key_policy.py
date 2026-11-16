@@ -53,6 +53,14 @@ class KeyPolicy(Base):
     hybrid_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     rerank_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     query_rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 第 13 步 T1 迁移加的列（与 plans 同形，max_top_k 只在套餐上）。
+    retrieve_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    decompose_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    rerank_qps: Mapped[int] = mapped_column(Integer, default=0)
+    rerank_daily: Mapped[int] = mapped_column(Integer, default=0)
+    llm_qps: Mapped[int] = mapped_column(Integer, default=0)
+    llm_daily: Mapped[int] = mapped_column(Integer, default=0)
     # 限额：Key 级计数卡住单个外部应用，租户级聚合由套餐上限卡住（两级计数）。
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
@@ -115,6 +123,29 @@ class KeyPolicySnapshot:
     custom_options: tuple[tuple[str, Any], ...] = ()
     #: 只有内置开发身份的那份快照把它打开（见类文档末段）；缺省 = 受限。
     unrestricted_scope: bool = False
+    # ── 第 13 步 T1 的新列（expand 段）。带缺省值让既有构造点不炸；
+    # retrieve 缺省 True（基线能力），另两个新增加工位缺省 True 由迁移回填 false 覆盖。
+    retrieve_allowed: bool = True
+    rewrite_allowed: bool = True
+    decompose_allowed: bool = True
+    rerank_qps: int = 0
+    rerank_daily: int = 0
+    llm_qps: int = 0
+    llm_daily: int = 0
+
+
+def _expand_bit(row: object, name: str, *, default: bool) -> bool:
+    """读第 13 步新位；未 flush 的 ORM 行 / 缺属性的夹具按缺省填（expand 段过渡）。"""
+
+    value = getattr(row, name, None)
+    return default if value is None else bool(value)
+
+
+def _expand_int(row: object, name: str) -> int:
+    """读第 13 步新账列；None 按 0 填。"""
+
+    value = getattr(row, name, None)
+    return 0 if value is None else int(value)
 
 
 def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
@@ -135,4 +166,14 @@ def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
         expand_table_rows=row.expand_table_rows,
         # 按键排序：JSONB 本来就重排键，这里再稳定一次，快照相等性才不依赖读出顺序。
         custom_options=tuple(sorted((row.custom_options or {}).items())),
+        # 第 13 步新列：expand 段过渡。未 flush 的 ORM 行读出来是 None（SQLAlchemy
+        # 的 Python 侧 default 要 INSERT 才生效），SimpleNamespace 夹具则干脆没属性，
+        # 两种都按缺省填充。真库行 upgrade() 时已被 server_default 回填，读到的就是真值。
+        retrieve_allowed=_expand_bit(row, "retrieve_allowed", default=True),
+        rewrite_allowed=_expand_bit(row, "rewrite_allowed", default=False),
+        decompose_allowed=_expand_bit(row, "decompose_allowed", default=False),
+        rerank_qps=_expand_int(row, "rerank_qps"),
+        rerank_daily=_expand_int(row, "rerank_daily"),
+        llm_qps=_expand_int(row, "llm_qps"),
+        llm_daily=_expand_int(row, "llm_daily"),
     )

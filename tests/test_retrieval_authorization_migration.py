@@ -138,8 +138,10 @@ def test_every_new_column_is_not_null_with_a_server_default() -> None:
         assert column.nullable is False, f"{table}.{column.name} 必须非空"
         assert column.server_default is not None, f"{table}.{column.name} 需要回填缺省"
         if column.name in CAPABILITY_COLUMNS:
-            # 布尔位缺省 false。
             assert column.type.python_type is bool
+            # 基线能力回填 true，另两个新增加工位回填 false。
+            expected = "true" if column.name == "retrieve_allowed" else "false"
+            assert str(column.server_default.arg).lower() in (expected, f"{expected}()")
         else:
             # 整数列（四列计量 + max_top_k）缺省 0，此刻都不参与判定。
             assert column.type.python_type is int

@@ -102,7 +102,7 @@ def test_tenants_timestamps_come_from_the_shared_now_helper() -> None:
 
 
 def test_plans_has_every_business_column() -> None:
-    """面板上会出现输入框的 13 列一列都不能只活在代码里。"""
+    """面板上会出现输入框的 21 列一列都不能只活在代码里（第 13 步扩了 8 列）。"""
 
     table = Plan.__table__
     business = tuple(
@@ -111,7 +111,7 @@ def test_plans_has_every_business_column() -> None:
         if column.name not in {"id", "code", "name", "updated_at"}
     )
     assert set(business) == set(PLAN_BUSINESS_COLUMNS)
-    assert len(business) == 13
+    assert len(business) == 21
     for column in PLAN_BUSINESS_COLUMNS:
         assert not table.c[column].nullable, f"{column} 不允许为空"
 

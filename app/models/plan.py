@@ -65,6 +65,15 @@ class Plan(Base):
     rerank_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     query_rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
     research_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    # 第 13 步 T1 迁移加的列。retrieve_allowed 缺省 True（基线能力，存量行不静默停服）。
+    retrieve_allowed: Mapped[bool] = mapped_column(Boolean, default=True)
+    rewrite_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    decompose_allowed: Mapped[bool] = mapped_column(Boolean, default=False)
+    rerank_qps: Mapped[int] = mapped_column(Integer, default=0)
+    rerank_daily: Mapped[int] = mapped_column(Integer, default=0)
+    llm_qps: Mapped[int] = mapped_column(Integer, default=0)
+    llm_daily: Mapped[int] = mapped_column(Integer, default=0)
+    max_top_k: Mapped[int] = mapped_column(Integer, default=0)
     retrieve_qps: Mapped[int] = mapped_column(Integer)
     retrieve_daily: Mapped[int] = mapped_column(Integer)
     # Research 的两个**独立**配额（票 #150）：重资源调用不跟普通检索挤在同一本账上，
@@ -105,6 +114,17 @@ class PlanSpec:
     max_kb_per_retrieve: int
     max_documents_per_kb: int
     max_processing_documents: int
+    # ── 第 13 步 T1 的新列：三个新增端点位 + 两本新账四列 + max_top_k。
+    # ``research_allowed`` / ``rerank_allowed`` 复用已有字段。带缺省值让所有既有
+    # 构造点不炸（expand 段）；T8 切真相源时再收紧。
+    retrieve_allowed: bool = True
+    rewrite_allowed: bool = True
+    decompose_allowed: bool = True
+    rerank_qps: int = 0
+    rerank_daily: int = 0
+    llm_qps: int = 0
+    llm_daily: int = 0
+    max_top_k: int = 0
 
 
 #: 快照的全部列名（字段顺序就是列顺序，``PLAN_SPEC_COLUMNS`` 因此也是行/缓存读取的清单）。
@@ -124,7 +144,17 @@ _PLAN_FIELD_TYPES: Final[dict[str, Any]] = get_type_hints(PlanSpec)
 
 #: **允许为 0** 的两个数值列（票 #150）：0 在这里是「关闭」，不是「额度填错」。
 #: 与 ``retrieve_qps`` 的语义刻意相反——那条 0 等于当场停服，是必须拒绝的输入。
-PLAN_ZEROABLE_COLUMNS: Final[tuple[str, ...]] = ("research_qps", "research_daily")
+PLAN_ZEROABLE_COLUMNS: Final[tuple[str, ...]] = (
+    "research_qps",
+    "research_daily",
+    # 第 13 步：三本账里的「新增加工能力」额度允许为 0（= 这项能力没买）。
+    "rerank_qps",
+    "rerank_daily",
+    "llm_qps",
+    "llm_daily",
+    # max_top_k=0 表示「不额外封顶，退回平台硬上限 MAX_TOP_K」，也是合法值。
+    "max_top_k",
+)
 
 #: 改得到、需要校验「≥ 1」的数值上限。从快照字段的类型推导：加一列数值上限不必
 #: 再改一份手写清单。四个能力开关是布尔列，没有「≥ 1」这道校验，所以不在这里；
@@ -216,17 +246,44 @@ def plan_columns_of(source: object) -> dict[str, Any]:
     让它进入快照或审计只会把内部结构变成对外契约。
     """
 
-    return {column: getattr(source, column) for column in PLAN_SPEC_COLUMNS}
+    # 第 13 步 expand 段：新列在部分测试夹具（SimpleNamespace）上可能不存在，
+    # 按 _EXPAND_DEFAULTS 兜一次；真 ORM 行一定有这些列。
+    return {
+        column: getattr(source, column, _EXPAND_DEFAULTS.get(column))
+        for column in PLAN_SPEC_COLUMNS
+    }
+
+
+#: 第 13 步 expand 段：这些新列在**旧缓存 JSON**里可能不存在，允许按缺省填充；
+#: 其余旧列缺一列仍是 ``KeyError``（缓存脏数据不许被静默补成兜底值）。
+_EXPAND_DEFAULTS: Final[dict[str, Any]] = {
+    "retrieve_allowed": True,
+    "rewrite_allowed": True,
+    "decompose_allowed": True,
+    "rerank_qps": 0,
+    "rerank_daily": 0,
+    "llm_qps": 0,
+    "llm_daily": 0,
+    "max_top_k": 0,
+}
 
 
 def plan_spec_from_mapping(values: Mapping[str, Any]) -> PlanSpec:
     """按列名从映射造快照（ORM 行与缓存 JSON 都走这里）。
 
     ``allowed_profiles`` 在库里/JSON 里是数组，在快照里是元组——转换只在这里做一次。
-    少一列就是 ``KeyError``（缓存脏数据不许被静默补成兜底值），多一列被忽略。
+    旧列少一列就是 ``KeyError``；第 13 步新列允许按 :data:`_EXPAND_DEFAULTS` 填充
+    （旧缓存里没有它们，不该让升级后的读取当场失败）。多一列被忽略。
     """
 
-    kwargs: dict[str, Any] = {column: values[column] for column in PLAN_SPEC_COLUMNS}
+    kwargs: dict[str, Any] = {}
+    for column in PLAN_SPEC_COLUMNS:
+        if column in values:
+            kwargs[column] = values[column]
+        elif column in _EXPAND_DEFAULTS:
+            kwargs[column] = _EXPAND_DEFAULTS[column]
+        else:
+            raise KeyError(column)
     kwargs["allowed_profiles"] = tuple(kwargs["allowed_profiles"])
     # ``**dict[str, Any]`` 会让类型检查器左右为难；运行时的「缺列即 TypeError」才是这里
     # 要守的契约（见 tests/test_plan_presets.py 的构造式兜底用例）。

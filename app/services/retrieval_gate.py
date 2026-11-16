@@ -36,6 +36,7 @@ from app.services import rag_service
 from app.services.data_scope import ensure_kb_scope
 from app.services.profile_policy import resolve_retrieval_options
 from app.services.quota_gate import retrieval_quota
+from app.services.retrieval_authorization import ensure_endpoint_allowed
 
 #: ``rag_service.retrieve`` 的形状：组合根只认「一个会话 + 已解析参数」。
 #: MCP 的 ``create_mcp_server`` 把它做成可注入的回调（既有接缝，测试与 app.main 都在用），
@@ -70,6 +71,14 @@ async def gated_retrieve(
     # 第 1 步：白名单。身份已经解出来（``key`` 就在手上），限流、配额与召回都还没开始——
     # 顺序反了会让越权请求先扣掉客户当天的额度（ADR-0018「六道关卡」）。
     ensure_kb_scope(policy=key.policy, kb_ids=kb_ids)
+
+    # 第 1.5 步（第 13 步）：端点级授权位。位为假 → 20013，且不降级成另一条端点。
+    # 它比档位展开更早：没买这个能力的请求连参数都不该算。
+    ensure_endpoint_allowed(
+        policy=key.policy,
+        plan=key.plan,
+        endpoint="rewrite" if variant == "rewrite" else "retrieve",
+    )
 
     # 第 2 步：套餐复核 + 档位展开与门禁 + 单次库数。越权在这里就失败，一次嵌入都不该烧。
     options = resolve_retrieval_options(
@@ -125,6 +134,8 @@ async def gated_decompose(
 
     # 第 1 步：白名单。
     ensure_kb_scope(policy=key.policy, kb_ids=kb_ids)
+    # 第 1.5 步（第 13 步）：分解检索的端点位。位为假 → 20013，不降级成直接检索。
+    ensure_endpoint_allowed(policy=key.policy, plan=key.plan, endpoint="decompose")
     # 第 2 步：套餐复核 + 参数展开 + 单次库数。
     options = resolve_retrieval_options(
         policy=key.policy,
