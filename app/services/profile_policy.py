@@ -268,8 +268,11 @@ def _clip_to_plan(chain: ProfileChain, plan: PlanSpec) -> tuple[ProfileChain, tu
         clipped.append(FIELD_MODE)
 
     top_k = chain.top_k
-    if top_k > MAX_TOP_K:
-        top_k = MAX_TOP_K
+    # 第 13 步：先夹平台硬上限，再夹套餐的 max_top_k（每档的质量封顶）。
+    # max_top_k=0 表示旧数据没有这一档配置，退回平台硬上限（迁移缺省值）。
+    cap = min(MAX_TOP_K, plan.max_top_k) if plan.max_top_k > 0 else MAX_TOP_K
+    if top_k > cap:
+        top_k = cap
         clipped.append(FIELD_TOP_K)
 
     rerank = chain.rerank
