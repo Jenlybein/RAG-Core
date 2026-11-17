@@ -27,10 +27,12 @@ from app.observability import emit_retrieval_trace_off_loop
 from app.observability.stage_timing import StageTimer
 from app.services.decompose import merge_sub_query_results
 from app.services.knowledge_base_access import ensure_visible
+from app.services.query_intent import ensure_search_intent
 from app.services.research import (
     ResearchPlan,
     _PLANNER_SYSTEM,
     _coerce_plan,
+    _plan_intent,
     build_planner_prompt,
 )
 from app.services.research_gate import build_kernel_search
@@ -94,10 +96,25 @@ async def decompose_retrieve(
             system=_PLANNER_SYSTEM,
             user=build_planner_prompt(query=query),
         )
-        points, planned_queries = _coerce_plan(raw)
     except Exception as exc:  # noqa: BLE001 - 统一翻成可重试的业务失败
         logger.warning(
             "decompose model call failed",
+            tenant=tenant_fingerprint(tenant_id),
+            error=type(exc).__name__,
+        )
+        raise AppError(ErrorCode.MODEL_CALL_FAILED) from exc
+
+    # 意图判定**先于**计划校验，且在两段 ``try`` 之间：判成 ``no_content`` 时计划本来就是
+    # 空的（模型按提示词留空点与查询），先校验会把它当成「一份没法执行的计划」翻成 50003；
+    # 而后面的 ``except`` 会把这个 20033 一起翻成 50003，调用方就分不清该换问法还是该重试。
+    intent, reason = _plan_intent(raw)
+    ensure_search_intent(intent=intent, reason=reason)
+
+    try:
+        points, planned_queries = _coerce_plan(raw)
+    except Exception as exc:  # noqa: BLE001 - 形状不合法 = 这次模型回答没法用
+        logger.warning(
+            "decompose plan output rejected",
             tenant=tenant_fingerprint(tenant_id),
             error=type(exc).__name__,
         )

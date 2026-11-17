@@ -171,7 +171,11 @@ class Settings(BaseSettings):
     QUERY_REWRITE_ENABLED: bool = False
     # 改写的超时（毫秒）。超时按失败处理 → 回退原句并标降级。它必须小于客户端超时：
     # 一个慢调用把整次检索拖到客户端先放弃，比降级更糟。
-    QUERY_REWRITE_TIMEOUT_MS: int = 2000
+    #
+    # 第 14 步起这一次调用**同时做意图判定**（`QueryRewrite.intent`），输出比原来多两个
+    # 字段；在推理型模型上实测一次改写 1.4~2.0 秒，撞上 2 秒预算就会出现「真实问题被判
+    # 成 50003」——那是最坏的一种假失败（用户以为服务坏了）。所以预算跟着工作量上调。
+    QUERY_REWRITE_TIMEOUT_MS: int = 4000
     # 同义词扩展是纯函数，不需要模型也不需要超时；开与不开只影响关键词一路。
     SYNONYM_EXPANSION_ENABLED: bool = False
 

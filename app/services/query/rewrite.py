@@ -25,31 +25,52 @@ from dataclasses import dataclass
 from typing import Any
 
 import structlog
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
+from app.services.query_intent import INTENT_NO_CONTENT, INTENT_SEARCH, QueryIntent, ensure_search_intent
 
 logger = structlog.get_logger(__name__)
 
-# 系统提示词只描述「怎么改写」，绝不描述「怎么回答」：给模型一个答题的角色，
-# 它就会顺手把答案写进 effective_query，而那段文字会原样拿去查库。
+# 系统提示词只描述「怎么改写」与「什么情况不改写」，绝不描述「怎么回答」：给模型一个
+# 答题的角色，它就会顺手把答案写进 effective_query，而那段文字会原样拿去查库。
 _SYSTEM_PROMPT = (
     "你是检索查询改写器：把用户的一句口语化问题改写成一条适合在文档库里检索的中文短句。"
     "只做改写，不回答用户的问题、不解释、不扩展话题、不编造用户没有提供的信息。"
     "改写结果不超过 30 个字，只输出改写后的那句话本身。"
+    "**先判意图**：如果这句话里没有任何想查的东西（只有标点、符号、感叹词、复读的字符，"
+    "或者纯粹是情绪发泄而没有信息需求），把 intent 设为 no_content、query 留空；"
+    "只要它问到了任何具体的事情，intent 就是 search，然后照上面的要求改写。"
 )
 
 
 class QueryRewrite(BaseModel):
-    """结构化输出的形状：一个 ``query`` 字段。
+    """结构化输出的形状：改写结果 + 意图判定。
 
     用 schema 而不是自由文本，是为了让「模型说了什么」有可校验的形状——各家在结构化
     输出上的差异由大模型层消化。空串由本模块判为失败（那是「模型什么都没改出来」，
     不是「用户问了个空问题」）。
+
+     ``intent`` **缺省 search**：模型没给这个字段、或给了不认识的值，一律按「有内容」
+    继续跑。判定失败不该变成「所有请求都被拒」——这道闸是优化，不是安全边界。
+     ``reason`` 只进日志与错误提示，不进响应契约。
     """
 
     query: str
+    intent: QueryIntent = INTENT_SEARCH
+    reason: str | None = None
+
+    @field_validator("intent", mode="before")
+    def _unknown_intent_means_search(cls, value: Any) -> QueryIntent:
+        """不认识的取值一律当成 ``search``。
+
+        ``Literal`` 直接校验会把「模型回了 ``no-intent`` 这种词」变成一个结构错误，
+        于是整单变成 ``50003``（客户重试也修不好）。判定字段的正确失败方式是**放行**：
+        它只是优化，不是安全边界。
+        """
+
+        return INTENT_NO_CONTENT if value == INTENT_NO_CONTENT else INTENT_SEARCH  # type: ignore[return-value]
 
 
 @dataclass(frozen=True)
@@ -109,7 +130,7 @@ async def rewrite_query(
             timeout=(timeout_ms if timeout_ms is not None else settings.QUERY_REWRITE_TIMEOUT_MS)
             / 1000,
         )
-        rewritten = _coerce(raw).query.strip()
+        result = _coerce(raw)
     except Exception as exc:  # noqa: BLE001 - 统一翻成可重试的业务失败
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         logger.warning(
@@ -121,6 +142,14 @@ async def rewrite_query(
         raise AppError(ErrorCode.MODEL_CALL_FAILED) from exc
 
     duration_ms = round((time.perf_counter() - started) * 1000, 2)
+
+    # 意图判定跟着**这一次**调用走：模型说「没有想查的东西」就停在这里，不降级成原句直查
+    # （降级会让调用方以为改写真的发生了）。这一句必须在 try 之外：``20033`` 被包在
+    # 那个 ``except Exception`` 里会被翻成 ``50003``，调用方就分不清「问题是垃圾」与
+    # 「模型挂了」。
+    ensure_search_intent(intent=result.intent, reason=result.reason)
+
+    rewritten = result.query.strip()
     if not rewritten:
         logger.warning("query rewrite returned nothing", duration_ms=duration_ms)
         raise AppError(ErrorCode.MODEL_CALL_FAILED)

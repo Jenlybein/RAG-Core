@@ -81,9 +81,15 @@ from dataclasses import dataclass
 from typing import Any, Final, Literal
 
 import structlog
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.core.exceptions import AppError, ErrorCode
+from app.services.query_intent import (
+    INTENT_NO_CONTENT,
+    INTENT_SEARCH,
+    QueryIntent,
+    ensure_search_intent,
+)
 from app.services.citation_blocks import (
     COMPLETENESS_MISSING,
     FINALIZER_SYSTEM,
@@ -162,10 +168,25 @@ class PlannedQuery(BaseModel):
 
 
 class ResearchPlan(BaseModel):
-    """规划阶段的结构化输出：要点 + 首轮查询。**没有答案，没有正文。**"""
+    """规划阶段的结构化输出：意图判定 + 要点 + 首轮查询。**没有答案，没有正文。**
+
+    ``intent`` 与 ``/rewrite`` 共用一套词表（``app.services.query_intent``）：规划器本来
+    就要读一遍问题，顺手判「这句话到底有没有想查的东西」不额外花钱；判成
+    ``no_content`` 时端点在任何子检索之前停下（``/decompose`` 省掉 N 次内核，
+    ``/research`` 省掉子检索、补证与生成）。
+
+    缺省 ``search``、不认识的值也归到 ``search``——判定失败应放行，不该让所有请求都
+    变成 ``50003``。
+    """
 
     points: list[str] = Field(default_factory=list)
     queries: list[PlannedQuery] = Field(default_factory=list)
+    intent: QueryIntent = INTENT_SEARCH
+    reason: str | None = None
+
+    @field_validator("intent", mode="before")
+    def _unknown_intent_means_search(cls, value: Any) -> QueryIntent:
+        return INTENT_NO_CONTENT if value == INTENT_NO_CONTENT else INTENT_SEARCH  # type: ignore[return-value]
 
 
 class PointSupportOut(BaseModel):
@@ -300,8 +321,12 @@ class ResearchOutcome:
 
 
 _PLANNER_SYSTEM = (
-    "你在为一次知识库检索做计划。给定用户的问题：第一，列出回答它需要的要点，"
-    f"每个要点一句不超过 30 字的中文，最多 {MAX_POINTS} 个；第二，为**每一个**要点各给一条"
+    "你在为一次知识库检索做计划。给定用户的问题：第一步，先判**意图**——如果这句话里"
+    "没有任何想查的东西（只有标点、符号、感叹词、复读的字符，或纯粹是情绪发泄而没有"
+    "信息需求），把 intent 设为 no_content、reason 用一句话说明，**要点与查询都留空**，"
+    "到此为止；只要它问到了任何具体的事，intent 就是 search，再照下面继续。"
+    "第二步（intent 为 search 时）：列出回答它需要的要点，"
+    f"每个要点一句不超过 30 字的中文，最多 {MAX_POINTS} 个；第三，为**每一个**要点各给一条"
     f"可以直接拿去检索的查询（一个要点一条，一条都不能少），每条查询绑定它对应的要点序号"
     f"（从 1 起）；首轮最多执行 {MAX_FIRST_ROUND_QUERIES} 条查询，但**不要为了省查询而少列要点**"
     "——要点列少了，那一块就永远不会被检索到，缺口也不会出现（这是这次设计最忌讳的失败）。"
@@ -524,6 +549,31 @@ def _ensure_every_point_queried(
         if index not in queried:
             filled.append((index, points[index - 1].text))
     return filled
+
+
+def _plan_intent(raw: Any) -> tuple[str, str | None]:
+    """从规划输出里取意图判定 ``(intent, reason)``；取不到就是 ``("search", None)``。
+
+    与 :func:`_coerce_plan` 分开的**唯一理由**：规划失败（``_IllegalOutput``）要走
+    ``50003``（客户可重试），而「问题里没有内容」要走 ``20033``（客户该改问题）。两件
+    事混在一个 try 里，后者就会被翻成前者——调用方从此分不清该重试还是该换问法。
+
+    模型给的是 dict / BaseModel / 别的形状都行：这里只挑两个可选字段，缺省即放行。
+    """
+
+    if isinstance(raw, ResearchPlan):
+        return raw.intent, raw.reason
+    if isinstance(raw, BaseModel):
+        payload: Mapping[str, Any] = raw.model_dump()
+    elif isinstance(raw, Mapping):
+        payload = raw
+    else:
+        return INTENT_SEARCH, None
+    intent = payload.get("intent")
+    reason = payload.get("reason")
+    if intent == INTENT_NO_CONTENT:
+        return INTENT_NO_CONTENT, reason if isinstance(reason, str) else None
+    return INTENT_SEARCH, None
 
 
 def _coerce_plan(raw: Any) -> tuple[list[PlanPoint], list[PlanQuery]]:
@@ -761,13 +811,19 @@ class _Run:
     # ── ① 规划 ──
 
     async def _plan(self) -> None:
-        """拆要点与子查询；模型调用失败 → 整单 50003（客户重试）。"""
+        """拆要点与子查询；模型调用失败 → 整单 50003（客户重试）。
+
+        规划这一步顺手带着意图判定（``ResearchPlan.intent``）：判成 ``no_content`` 时在
+        **任何子检索之前**抛 ``20033``——Research 一次要花 3~4 次模型调用与几十秒，
+        为一句「啊啊啊」付这笔钱、再拿规划器自述的要点当证据，是这一步要根治的现象。
+        判定放在 ``try`` 之外：``20033`` 被那个 ``except Exception`` 包住就会翻成
+        ``50003``，调用方从此分不清「该换问法」与「该重试」。
+        """
 
         try:
             raw = await self._call(
                 ResearchPlan, _PLANNER_SYSTEM, build_planner_prompt(query=self.query)
             )
-            points, queries = _coerce_plan(raw)
         except Exception as exc:  # noqa: BLE001 - 统一翻成可重试的业务失败
             logger.warning(
                 "research planning model call failed",
@@ -776,6 +832,24 @@ class _Run:
                 error=type(exc).__name__,
             )
             raise AppError(ErrorCode.MODEL_CALL_FAILED) from exc
+
+        # 意图判定**先于**计划校验，且在两段 ``try`` 之间：判成 ``no_content`` 时计划本来
+        # 就是空的（模型按提示词留空点与查询），先校验会把它当成「一份没法执行的计划」翻成
+        # 50003；而后面的 ``except`` 会把这个 20033 一起翻成 50003。
+        intent, reason = _plan_intent(raw)
+        ensure_search_intent(intent=intent, reason=reason)
+
+        try:
+            points, queries = _coerce_plan(raw)
+        except Exception as exc:  # noqa: BLE001 - 形状不合法 = 这次模型回答没法用
+            logger.warning(
+                "research plan output rejected",
+                tenant=tenant_fingerprint(self.tenant_id),
+                stage="plan",
+                error=type(exc).__name__,
+            )
+            raise AppError(ErrorCode.MODEL_CALL_FAILED) from exc
+
         self.points = points
         self.queries.extend(queries)
 

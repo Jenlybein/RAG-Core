@@ -1,25 +1,24 @@
-"""无内容问题（`20033`）的验收：判定口径 + 三条端点真的接上了这道闸。
+"""`20033` 的验收：意图判定**跟着端点自己的那次模型调用**走，不另发一次调用。
 
-## 为什么要有这一组
+## 这一票的形状
 
-真实见过：问 ``啊啊啊啊啊啊啊``，分解器给出四条「要点」（「输入中没有实义词」「连续感叹
-词通常反映情绪激动」…），再拿它们去召回，返回五条与业务无关的切片，而响应的 ``code``
-是 **0**。调用方拿不到任何提示，只会以为「这个库只答得出这种东西」。
+三条模型端点本来就要调一次大模型（改写 / 规划）。意图识别做成那次调用的一个 schema
+字段（`QueryRewrite.intent` / `ResearchPlan.intent`），模型说 `no_content` 时端点在任何
+**嵌入 / 检索 / 重排 / 记账**之前停下。所以这里守四件事：
 
-所以这里守两件事：
+1. **不额外花钱**：判定不产生第二次模型调用（用「调用计数」的替身钉住）；
+2. **真的停下**：判掉之后连嵌入都不发（`/rewrite`）、连一次内核都不跑（`/decompose`）；
+3. **失败即放行**：模型没给 `intent`、或给了不认识的词，一律按 `search` 继续——
+   判定是优化，不是安全边界；
+4. **码不混用**：没有内容是 `20033`，模型调用失败是 `50003`。混了调用方就分不清
+   「该换问法」还是「该重试」。
 
-1. **判定口径**是确定的（同一个输入两次判出同一个答案），并且宁可漏判不可误判——
-   ``E1025``、``怎么办退款`` 这类真实问题一个都不许被挡住；
-2. **接线**是真的：三条模型端点在**任何模型调用与配额之前**返回 ``20033``。只用纯函数
-   用例守着函数本身，等于允许调用点悄悄退回老写法——那正是这一票要治的现象。
-
-``/retrieve`` 刻意**不加**这道闸：它不读语义、只做召回。这是设计上的不对称，不是漏做，
-所以下面也有一条用例把它钉住，免得后来有人「顺手补上」。
+还有一条不属于语义判断的硬边界：只剩标点 / 符号 / 空白的问题，在任何模型调用之前就被
+挡掉（那是零成本的确定性判断，没有争议）。
 """
 
 from __future__ import annotations
 
-import importlib
 from typing import Any
 
 import pytest
@@ -28,91 +27,115 @@ import tests.test_multi_query_union as u
 import tests.test_four_retrieval_endpoints as four
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
-from app.services.query_content import content_chars, ensure_query_has_content, is_meaningless
+from app.services import query_intent
+from app.services.query.rewrite import QueryRewrite
+from app.services.query_content import content_chars, has_no_content
+from app.services.research import ResearchPlan
 
-#: 截图里那条真实输入。
-SPAM_QUERY = "啊啊啊啊啊啊啊啊啊啊啊"
+#: 截图里那条真实输入（去掉标点的判定不看它，模型判它没有检索意图）。
+SPAM_QUERY = "啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊啊a"
 
 
-# ───────────────────────────────────────────────────── 判定口径（纯函数）
+# ───────────────────────────────────────────── 模型侧：schema 的失败即放行
 
 
-@pytest.mark.parametrize(
-    "query",
-    [
-        "啊啊啊啊啊啊啊啊啊啊啊",  # 感叹词 spam
-        "哈哈哈",  # 象声词
-        "哦哦",
-        "嗯嗯嗯嗯",
-        "xxxx",  # 同一个字符重复
-        "AAAA",
-        "。。。",  # 只有标点
-        "？？？",
-        "...",
-        "🙂🙂",  # emoji 全是符号
-        "  \t\n  ",  # 只有空白
-    ],
-)
-def test_queries_without_content_are_rejected(query: str) -> None:
-    assert is_meaningless(query) is True
+@pytest.mark.parametrize("payload", [{}, {"intent": None}, {"intent": "随便什么词"}])
+def test_unknown_or_missing_intent_means_search(payload: dict) -> None:
+    """模型没给、给了空、给了不认识的词 —— 一律按 ``search`` 放行。
+
+    ``Literal`` 直接校验会把这些变成一个结构错误，于是整单 50003（客户重试也修不好）。
+    判定字段的正确失败方式是放行。
+    """
+
+    assert QueryRewrite.model_validate({"query": "退款怎么弄", **payload}).intent == "search"
+    assert ResearchPlan.model_validate({"points": [], "queries": [], **payload}).intent == "search"
+
+
+def test_no_content_is_recognised_verbatim() -> None:
+    assert QueryRewrite.model_validate({"query": "", "intent": "no_content"}).intent == "no_content"
+    assert (
+        ResearchPlan.model_validate(
+            {"points": [], "queries": [], "intent": "no_content", "reason": "只有感叹词"}
+        ).reason
+        == "只有感叹词"
+    )
+
+
+def test_the_gate_raises_the_documented_code() -> None:
+    with pytest.raises(AppError) as caught:
+        query_intent.ensure_search_intent(intent="no_content", reason="只有感叹词")
+
+    assert caught.value.code == ErrorCode.QUERY_HAS_NO_CONTENT
+    # 文案要说清「不是服务坏了」，否则调用方会去查部署、重签 Key。
+    assert "no searchable content" in caught.value.msg
+
+
+def test_a_search_verdict_is_a_no_op() -> None:
+    query_intent.ensure_search_intent(intent="search")
+    query_intent.ensure_search_intent(intent=None)
+
+
+# ───────────────────────────────────────────── 词法：只剩一条硬边界
+
+
+@pytest.mark.parametrize("query", ["？？？", "...", "🙂🙂", "   ", "\t\n"])
+def test_punctuation_only_is_blocked_before_any_model_call(query: str) -> None:
+    assert has_no_content(query) is True
+    with pytest.raises(AppError) as caught:
+        from app.services.query_content import ensure_query_has_content
+
+        ensure_query_has_content(query)
+    assert caught.value.code == ErrorCode.QUERY_HAS_NO_CONTENT
 
 
 @pytest.mark.parametrize(
     "query",
     [
         "退钱怎么弄",
-        "E1025",  # 短查询也是有效问题
-        "怎么办退款",  # 虚词 + 实词
-        "啊啊啊退款多久到账",  # 带语气词的正常问句
-        "哈尔滨的退货政策",  # 含「哈」这个感叹词字，但整体是实词
-        "7",  # 单个字符不重复：可能是编号
-        "一般纳税人的认定标准",  # 「一般」既是填充词也是业务术语
-        "a",  # 单字符拉丁字母：不判无内容
+        "E1025",  # 上一版把它误杀过
+        SPAM_QUERY,  # 这一版交给模型判，词法不再猜
+        "一般纳税人的认定标准",
     ],
 )
-def test_real_questions_are_not_rejected(query: str) -> None:
-    assert is_meaningless(query) is False
+def test_everything_else_goes_to_the_model(query: str) -> None:
+    """词法只挡「一个字都没有」的输入，其余全部交给模型。
+
+    这里刻意把 ``SPAM_QUERY`` 也算进「放行」：语义判断不在这一层，它在
+    ``intent`` 字段里。上一版正是在这里扩展规则，才先漏判又误杀。
+    """
+
+    assert has_no_content(query) is False
+    assert content_chars(query) != ""
 
 
-def test_judgement_is_deterministic_for_the_same_input() -> None:
-    assert {is_meaningless(SPAM_QUERY) for _ in range(5)} == {True}
+# ───────────────────────────────────────────── 接线：三条端点
 
 
-def test_fullwidth_and_halfwidth_punctuation_are_the_same_input() -> None:
-    """NFKC 归一：全角 ``？？？`` 与半角 ``???`` 必须判出同一个答案。"""
+class _CountingLLM:
+    """回答 ``no_content`` 的模型替身，并数自己被调用了几次（只该是一次）。"""
 
-    assert is_meaningless("？？？") is is_meaningless("???") is True
-    assert content_chars("ＡＢＣ") == "ABC"
-
-
-def test_the_gate_raises_the_documented_code() -> None:
-    with pytest.raises(AppError) as caught:
-        ensure_query_has_content(SPAM_QUERY)
-
-    assert caught.value.code == ErrorCode.QUERY_HAS_NO_CONTENT
-    # 文案要说清「不是服务坏了」，否则调用方会去查部署。
-    assert "no searchable content" in caught.value.msg
-
-
-def test_the_gate_is_a_no_op_for_real_questions() -> None:
-    ensure_query_has_content("退钱怎么弄")  # 不抛就是通过
-
-
-# ───────────────────────────────────────────────────── 接线（三条端点）
-
-
-class _ExplodingLLM:
-    """「不许被装到大模型上」的替身：任何一次用量都让用例失败。"""
-
-    def __init__(self) -> None:
+    def __init__(self, *, intent: str = "no_content", reply: Any = None) -> None:
         self.calls = 0
+        self._intent = intent
+        self._reply = reply
 
-    def factory(self):
-        def _make(*_args: Any, **_kwargs: Any) -> Any:
-            self.calls += 1
-            raise AssertionError("无内容问题不该走到任何一次模型调用")
+    def for_rewrite(self):
+        async def _factory(*_args: Any, **_kwargs: Any) -> Any:
+            return self
 
-        return _make
+        return _factory
+
+    async def chat_structured(self, schema: Any, *, system: str, user: str) -> Any:
+        self.calls += 1
+        if self._reply is not None:
+            return self._reply
+        name = getattr(schema, "__name__", "")
+        if name == "ResearchPlan":
+            return ResearchPlan(points=[], queries=[], intent=self._intent, reason="只有感叹词")
+        return QueryRewrite(query="", intent=self._intent, reason="只有感叹词")
+
+    async def chat_json(self, *, system: str, user: str) -> dict:  # pragma: no cover
+        raise AssertionError("这些端点只走结构化输出")
 
 
 def _client(monkeypatch: pytest.MonkeyPatch, *, rewrite_enabled: bool = False, llm=None):
@@ -128,62 +151,66 @@ def _post(client: Any, path: str, query: str) -> dict[str, Any]:
     return response.json()
 
 
-@pytest.mark.parametrize(
-    "path",
-    [u.REWRITE_PATH, "/api/v1/rag/decompose"],
-)
-def test_model_endpoints_return_20033_without_any_model_call(
-    monkeypatch: pytest.MonkeyPatch, path: str
-) -> None:
-    """改写 / 分解：无内容问题 → ``20033``，且一次模型都不装、一条材料都不给。"""
-
-    llm = _ExplodingLLM()
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", llm.factory)
-
-    with _client(monkeypatch, rewrite_enabled=True) as fake:
-        body = _post(fake["client"], path, SPAM_QUERY)
-
-    assert body["code"] == int(ErrorCode.QUERY_HAS_NO_CONTENT), body
-    # 不返回任何检索结果：没有材料、也没有任何「要点」被编出来。
-    assert body["data"] is None
-    assert llm.calls == 0
-    # 连嵌入都不该发：这道闸在任何外部调用之前。
-    assert fake["embedding"].queries == []
+def _restore_policy(original: Any) -> None:
+    u.IDENTITY.use_policy(original)  # noqa: SLF001 - 测试助手
 
 
-def test_research_returns_20033_without_any_model_call(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Research：一次 3~4 次模型调用、30 秒的链路，更不该为无内容问题付这笔钱。"""
+def _use_research_policy() -> None:
+    """Research 需要能力位；夹具默认不带，用完由调用方还原。"""
 
-    llm = _ExplodingLLM()
-    monkeypatch.setattr("app.providers.llm.get_llm_provider", llm.factory)
-
-    identity = u.IDENTITY
-    original = identity._policy  # noqa: SLF001 - 测试助手，读回原值用于还原
     from tests.support.policy import policy
 
-    # 白名单必须显式带上这个库：夹具默认 `allowed_kb_ids=("kb-1",)`，不写就会先在
-    # 第 1 步拿到 20008，挡住本用例真正要验的第 2.5 步。
-    identity.use_policy(policy(research_allowed=True, allowed_kb_ids=(u.KB_A,)))
-    try:
-        with _client(monkeypatch) as fake:
-            body = _post(fake["client"], "/api/v1/rag/research", SPAM_QUERY)
-    finally:
-        identity.use_policy(original)
+    u.IDENTITY.use_policy(  # noqa: SLF001 - 测试助手
+        policy(research_allowed=True, allowed_kb_ids=(u.KB_A,))
+    )
+
+
+def test_rewrite_stops_when_the_model_says_no_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`/rewrite`：模型判掉就停，**连嵌入都不发**，也绝不降级成原句直查。"""
+
+    llm = _CountingLLM()
+    with _client(monkeypatch, rewrite_enabled=True, llm=llm) as fake:
+        body = _post(fake["client"], u.REWRITE_PATH, SPAM_QUERY)
 
     assert body["code"] == int(ErrorCode.QUERY_HAS_NO_CONTENT), body
     assert body["data"] is None
-    assert llm.calls == 0
+    # 判定就是那一次改写调用本身：没有第二次模型调用。
+    assert llm.calls == 1
 
 
-def test_rewrite_is_not_blocked_for_a_real_question(monkeypatch: pytest.MonkeyPatch) -> None:
-    """同一把 Key：换成一条真实问题就不该拿到 ``20033``（这道闸不是把端点关了）。
+def test_decompose_stops_before_any_kernel(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`/decompose`：判掉之后一次内核都不跑（否则就是 11 秒 + 5 条无关切片）。"""
 
-    这里断言的是**语义**（这一票没有误杀真实问题），不是「替身被调了几次」：跨模块的
-    provider 替身在全量跑时会被别的用例换掉，用调用日志当断言只会得到一条随运行顺序
-    变色的用例。误杀的代价本来就该由纯函数用例（上面那组）来守。
-    """
+    llm = _CountingLLM()
+    with _client(monkeypatch, llm=llm) as fake:
+        body = _post(fake["client"], "/api/v1/rag/decompose", SPAM_QUERY)
 
-    llm = u._RewriteLLM(rewritten=u.REWRITTEN)
+    assert body["code"] == int(ErrorCode.QUERY_HAS_NO_CONTENT), body
+    assert body["data"] is None
+    assert llm.calls == 1
+
+
+def test_research_stops_before_any_sub_search(monkeypatch: pytest.MonkeyPatch) -> None:
+    """`/research`：判掉之后不跑子检索、不补证、不生成。"""
+
+    llm = _CountingLLM()
+    original = u.IDENTITY._policy  # noqa: SLF001
+    _use_research_policy()
+    try:
+        with _client(monkeypatch, llm=llm) as fake:
+            body = _post(fake["client"], "/api/v1/rag/research", SPAM_QUERY)
+    finally:
+        _restore_policy(original)
+
+    assert body["code"] == int(ErrorCode.QUERY_HAS_NO_CONTENT), body
+    assert body["data"] is None
+    assert llm.calls == 1
+
+
+def test_rewrite_continues_for_a_real_question(monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一把 Key、同一套替身：换成一条真实问题就照常跑（这道闸不是把端点关了）。"""
+
+    llm = _CountingLLM(intent="search", reply=QueryRewrite(query=u.REWRITTEN))
     with _client(monkeypatch, rewrite_enabled=True, llm=llm) as fake:
         body = _post(fake["client"], u.REWRITE_PATH, u.RAW_QUERY)
 
@@ -191,24 +218,23 @@ def test_rewrite_is_not_blocked_for_a_real_question(monkeypatch: pytest.MonkeyPa
 
 
 def test_plain_retrieve_is_deliberately_not_gated(monkeypatch: pytest.MonkeyPatch) -> None:
-    """`/retrieve` 不读语义、只做召回，所以**不加**这道闸。
+    """`/retrieve` 不读语义、只做召回，所以既不走意图判定、也不走那条词法硬边界。
 
     真要被挡住的是「为一句没有内容的问题编出几条要点、再拿它们去查」的那三条链路。
-    给直接检索加闸会让「这个库到底有没有相关材料」这个基本问题问不出来——那是另一种
-    损失。所以这里钉住的是**不对称本身**，不是漏做。
+    给直接检索加闸会让「这个库到底有没有相关材料」这个基本问题问不出来。
     """
 
     with _client(monkeypatch) as fake:
-        body = _post(fake["client"], u.RETRIEVE_PATH, SPAM_QUERY)
+        body = _post(fake["client"], u.RETRIEVE_PATH, "？？？")
 
-    # 断言的是「没有拿到那道闸的码」，而不是「一定成功」：直接检索成不成功取决于向量库，
-    # 而这一票要钉的只有一件事——这道闸**不覆盖** `/retrieve`。
     assert body["code"] != int(ErrorCode.QUERY_HAS_NO_CONTENT), body
 
 
-def test_decompose_endpoint_is_registered_where_the_doc_says() -> None:
-    """端点仍在（这道闸不该把路由改掉）。"""
+def test_all_four_endpoints_are_still_registered() -> None:
+    """这道闸不改路由：四条端点仍在。"""
+
+    import importlib
 
     gate = importlib.import_module("app.services.retrieval_gate")
     assert hasattr(gate, "gated_decompose")
-    assert hasattr(four, "_plan")  # 同目录既有助手仍可用
+    assert hasattr(four, "_plan")
