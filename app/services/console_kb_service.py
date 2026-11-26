@@ -475,9 +475,6 @@ async def update_kb_settings(
             build_id=build.id,
             tenant_id=tenant_id,
             request_id=request_id,
-            # 载荷里仍然带着它：给运维手动投 ``build_index_version_task`` 时用（那条入口
-            # 照样认这个参数）。真正决定「激活不激活」的是构建行上的那一格。
-            activate=True,
         ),
     )
     return {

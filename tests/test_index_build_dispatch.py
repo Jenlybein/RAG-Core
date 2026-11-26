@@ -263,7 +263,9 @@ def test_build_tasks_are_routed_to_the_dedicated_queue() -> None:
 
     assert routes["app.tasks.index_build.dispatch_build_task"]["queue"] == "build"
     assert routes["app.tasks.index_build.build_document_task"]["queue"] == "build"
-    assert routes["app.tasks.index_build.build_index_version_task"]["queue"] == "build"
+    assert "app.tasks.index_build.build_index_version_task" not in routes, (
+        "旧的一次跑完整个库的任务已删：构建只有派活 + 按篇投递一种形状"
+    )
     # 用户点的那一下不隔离：它是一次请求的后续，不是后台维护。
     assert "app.tasks.indexing.index_document_task" not in routes
 
@@ -271,7 +273,7 @@ def test_build_tasks_are_routed_to_the_dedicated_queue() -> None:
 def test_registering_the_offline_seams_keeps_them_injected() -> None:
     """两道新缝默认处于注入状态——否则「起一次构建」的用例会真往本机 Redis 投几百条消息。"""
 
-    assert index_dispatch.build_publisher_is_injected()
+    assert index_dispatch.build_document_publisher_is_injected()
     # 恢复之后仍是注入态（conftest 的 autouse 会在下一个用例重新注入）。
     index_dispatch.set_build_document_publisher(None)
     assert not index_dispatch.build_document_publisher_is_injected()

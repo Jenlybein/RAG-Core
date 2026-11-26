@@ -34,92 +34,9 @@ from app.db.session_factory import async_session_factory
 from app.db.worker_loop import run_in_worker_loop
 from app.providers.llm import set_role_resolver
 from app.services import model_config_service, runtime_settings
-from app.models.index_version import INDEX_BUILD_READY
 from app.services.index_build_service import IndexBuildService
 
 logger = structlog.get_logger(__name__)
-
-
-async def _build_in_the_worker_loop(
-    build_id: str, *, tenant_id: str, activate: bool = False
-) -> None:
-    """常驻循环里的一次构建：开一个任务会话 → 跑编排 → 无论如何关掉它。
-
-    会话不跨任务复用（一个任务一笔会话），复用的是**连接池**（池归循环、会话归任务，
-    ADR-0023 决策三）。
-
-    ``activate``（第 16 步 #207）：构建成功后**立刻激活**。它只给「改了切块设置」
-    那一条路径用——那种改动的语义就是「改完就该生效」，让人再去点一次激活等于把
-    「设置页已保存」变成半句话。常规重建仍然停在 ``ready``（ADR-0025 决策三：
-    先 ready、观察一会儿再切，是运维可见的一步）。
-    """
-
-    db = async_session_factory()()
-    try:
-        service = IndexBuildService()
-        row = await service.build(db, build_id, tenant_id=tenant_id)
-        if activate and row.status == INDEX_BUILD_READY:
-            try:
-                await service.activate(db, build_id, tenant_id=tenant_id)
-            except Exception as exc:  # noqa: BLE001 - 切换失败不能把「构建成功了」抹掉
-                # 构建本身是好的（``ready``），失败的是**切换**那一步（例如关键词别名切不动）。
-                # 这里不能让异常冒上去：那会把一个刚建好的版本标成失败，运维再重建一次也是白建。
-                # 留在 ``ready`` + 一条 warning 才是事实：版本可用，只是还没上线，可以重试激活。
-                logger.warning(
-                    "index build activation failed; leaving the build ready",
-                    build_id=build_id,
-                    tenant_id=tenant_id,
-                    reason=type(exc).__name__,
-                )
-    finally:
-        # 不能省：被放弃的 checked-out 连接即使 dispose 了也会停在 idle in transaction。
-        await db.close()
-
-
-def _run_build(
-    self: Any,
-    build_id: str,
-    *,
-    tenant_id: str,
-    request_id: str | None = None,
-    activate: bool = False,
-) -> None:
-    """任务体：与 Celery 装饰器分离，便于用轻量 ``self`` 替身离线测试。"""
-
-    if request_id:
-        bind_contextvars(request_id=request_id)
-    try:
-        # Worker 进程也要跟上配置（#93）：切块窗口、嵌入批次都可能被管理员刚改过。
-        runtime_settings.ensure_runtime_overrides()
-        # 模型角色解析器同样要在这个进程里接上（#82），与单篇索引任务一致。
-        set_role_resolver(model_config_service.role_endpoint)
-        # 投**工厂**：协程在常驻循环里才被创建，从那一刻起属于那个循环。
-        run_in_worker_loop(
-            lambda: _build_in_the_worker_loop(build_id, tenant_id=tenant_id, activate=activate)
-        )
-    finally:
-        if request_id:
-            clear_contextvars()
-
-
-@celery_app.task(bind=True, max_retries=0)
-def build_index_version_task(
-    self,
-    build_id: str,
-    *,
-    tenant_id: str,
-    request_id: str | None = None,
-    #: 构建成功后立刻激活（第 16 步 #207 的「改设置就生效」那条路径专用）。
-    activate: bool = False,
-) -> None:
-    """索引构建任务入口：按 ``build_id`` 跑一次「逐文档重建 → ready」。
-
-    去重不靠 ``task_id``：一个库同时只允许一条 ``building`` 行，那是数据库层面的事实
-    （``app/services/index_build_service.py::start_build``）；即使同一个 build_id 被投递
-    两次，第二次进来看见的已经是 ``ready`` 或 ``failed``，直接跳过。
-    """
-
-    _run_build(self, build_id, tenant_id=tenant_id, request_id=request_id, activate=activate)
 
 
 # ── 按篇投递的两条任务（#215）──────────────────────────────────────────────
@@ -143,14 +60,15 @@ def _run_dispatch(
     *,
     tenant_id: str,
     request_id: str | None = None,
-    activate: bool = False,
 ) -> None:
-    """派活任务体。``activate`` 在这个进程里**不用**：激活发生在收敛成 ready 之后，而
-    收敛可能由最后一篇子任务、清扫器或运维脚本任意一方触发——所以「要不要自动激活」记在
-    **构建行**上（``auto_activate``，迁移 ``f1a4b8d6c392``），由 ``converge`` 读到。
+    """派活任务体。
 
-    参数留着是为了兼容手动投递时传它（``activate=True`` 只影响日志与载荷，不再决定行为）；
-    #215 之前它靠载荷传到子任务，改为按篇投递之后那趟传递消失了，这里的注释曾是假的。
+    **它没有 ``activate`` 参数**：要不要自动激活记在**构建行**上（``auto_activate``，迁移
+    ``f1a4b8d6c392``），由 ``converge`` 读到——因为收敛可能由最后一篇子任务、清扫器或运维
+    脚本任意一方触发，把布尔量塞进这一条消息的载荷里，换任何一条触发路径都会丢。
+
+    （第一版实现确实把它当载荷一路带着，然后在改按篇投递时半路丢了：症状是「改了切块设置、
+    构建跑完停在 ready 不激活」。评审把这一跳补回构建行，死参数一并删掉。）
     """
 
     if request_id:
@@ -175,7 +93,6 @@ def dispatch_build_task(
     *,
     tenant_id: str,
     request_id: str | None = None,
-    activate: bool = False,
 ) -> None:
     """派活任务入口：``start_build`` 提交之后投的这一条（#215）。
 
@@ -184,7 +101,7 @@ def dispatch_build_task(
     让其余篇不投。
     """
 
-    _run_dispatch(self, build_id, tenant_id=tenant_id, request_id=request_id, activate=activate)
+    _run_dispatch(self, build_id, tenant_id=tenant_id, request_id=request_id)
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=10)

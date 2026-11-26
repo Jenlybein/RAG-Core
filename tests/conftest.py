@@ -149,7 +149,8 @@ def _offline_dispatch():
     会真的往本机 Redis 投一条消息，而那个 Worker 会把测试库当成生产库重建。它单独一个槽、
     单独一个记账器，但**不**进 yield 的元组：既有的两条缝已经有一批用例按
     `(index_calls, side_evidence_calls) = _offline_dispatch` 解包，加一项会让它们全红。
-    要断言构建投递的用例自己 `set_build_task_publisher` 注入观察器（见
+    要断言构建投递的用例自己 `set_build_document_publisher` / `set_build_dispatch_publisher`
+注入观察器（见
     `tests/test_index_rebuild_identity.py`）。
 
     第 17 步又多了两条缝（#215）：**派活**（`dispatch_build_task`）与**构建子任务**
@@ -167,11 +168,9 @@ def _offline_dispatch():
 
     index_recorder = _RecordingPublisher()
     side_evidence_recorder = _RecordingPublisher()
-    build_recorder = _RecordingPublisher()
     build_document_recorder = _RecordingPublisher()
     build_dispatch_recorder = _RecordingPublisher()
     index_dispatch.set_task_publisher(index_recorder)
-    index_dispatch.set_build_task_publisher(build_recorder)
     index_dispatch.set_build_document_publisher(build_document_recorder)
     index_dispatch.set_build_dispatch_publisher(build_dispatch_recorder)
     side_evidence_dispatch.set_side_evidence_publisher(side_evidence_recorder)
@@ -179,7 +178,6 @@ def _offline_dispatch():
         yield index_recorder.calls, side_evidence_recorder.calls
     finally:
         index_dispatch.set_task_publisher(None)
-        index_dispatch.set_build_task_publisher(None)
         index_dispatch.set_build_document_publisher(None)
         index_dispatch.set_build_dispatch_publisher(None)
         side_evidence_dispatch.set_side_evidence_publisher(None)

@@ -46,7 +46,7 @@ from app.db.transaction import async_commit_now, async_rollback_now
 from app.db.worker_loop import run_in_worker_loop
 from app.providers.llm import set_role_resolver
 from app.repositories import document_repository
-from app.services import index_build_service, indexing_service
+from app.services import index_build_service
 from app.services.indexing_service import INDEXING_FAILED_MESSAGE, IndexingService
 from app.services import model_config_service, runtime_settings
 from app.utils.status import DocumentStatus
@@ -166,7 +166,10 @@ async def _record_build_outcome(
     或清扫器判定没人再补时，才允许「不够 → failed」。
     """
 
-    written = await index_build_service.record_outcome(
+    # ``record_outcome`` 是**构建服务的方法**（它要读构建行、推进进度、失败写明细、再判收敛），
+    # 不是模块级函数。以前这里写成 ``index_build_service.record_outcome``（模块级），
+    # 而这条路径从来没有被任何用例走到——所以直到补上「任务体」用例才炸出来。
+    written = await index_build_service.IndexBuildService().record_outcome(
         db,
         build_id,
         tenant_id=tenant_id,
@@ -220,7 +223,9 @@ async def _settle_failure(
             build_id=build_id,
             ok=False,
             title=title,
-            reason=indexing_service.BUILD_DOCUMENT_FAILED_REASON,
+            # 常量在**构建服务**里（它是「未入新版本」明细的文案），不在单篇索引服务里。
+            # 这条分支以前从未被任何用例走到，所以这个错前缀一直没被发现。
+            reason=index_build_service.BUILD_DOCUMENT_FAILED_REASON,
         )
         logger.exception(
             "index build document failed",

@@ -641,4 +641,6 @@ def test_importing_the_build_task_registers_it() -> None:
 
     import app.tasks.index_build  # noqa: F401 - 导入本身是被测行为
 
-    assert "app.tasks.index_build.build_index_version_task" in celery_app.tasks
+    # 旧「一次跑完整个库」的任务入口已删（#215 起构建是派活 + 按篇投递，运维要一次跑完
+    # 走 scripts/reconcile_build.py —— 那条路径按 build_id 收敛，不会产生第二种构建语义）。
+    assert "app.tasks.index_build.build_index_version_task" not in celery_app.tasks

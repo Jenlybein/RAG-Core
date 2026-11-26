@@ -9,7 +9,7 @@
 ## 两道投递缝
 
 - :func:`enqueue_document` —— 索引任务（``index_document_task``）；
-- :func:`enqueue_index_build` —— 整库构建任务（``build_index_version_task``，#143）；
+- :func:`enqueue_index_build` —— 整库构建的**派活**任务（``dispatch_build_task``，#215）；
 - :func:`app.services.side_evidence_dispatch.enqueue_side_evidence` —— 旁证跑批任务。
 
 三条缝各持一个 :class:`PublisherSlot`。**槽是注入点**：离线套件把生产任务对象换成记账
@@ -143,12 +143,6 @@ def enqueue_document(
     )
 
 
-def _build_task() -> TaskPublisher:
-    from app.tasks.index_build import build_index_version_task
-
-    return build_index_version_task
-
-
 def _build_document_task() -> TaskPublisher:
     from app.tasks.index_build import build_document_task
 
@@ -160,9 +154,6 @@ def _build_dispatch_task() -> TaskPublisher:
 
     return dispatch_build_task
 
-
-#: 整库构建任务的发布器槽（与索引任务分开，见模块文档「两道投递缝」）。
-_build_slot = PublisherSlot(_build_task, name="index_build")
 
 #: 构建子任务（按篇投递之后的那一条，走 ``build`` 队列）的发布器槽。
 _build_document_slot = PublisherSlot(_build_document_task, name="index_build_document")
@@ -237,12 +228,11 @@ def enqueue_build_dispatch(
     build_id: str,
     tenant_id: str,
     request_id: str | None,
-    activate: bool = False,
 ) -> None:
     """把「给这一版派活」投进 ``build`` 队列（#215）。
 
-    ``activate`` 跟着派活任务走：真正激活要等收敛成 ``ready`` 之后，而收敛发生在最后一个
-    子任务那一侧——所以「要不要激活」必须一路传到那里，不能在派活时就丢掉。
+    **载荷里没有 ``activate``**：要不要自动激活记在构建行上（``auto_activate``），由收敛那一步
+    读——原因是收敛可以被任意一方触发，而「一路传下去」在改成按篇投递时断过一次。
     """
 
     _dispatch_slot.current().apply_async(
@@ -250,28 +240,9 @@ def enqueue_build_dispatch(
             "build_id": build_id,
             "tenant_id": tenant_id,
             "request_id": request_id,
-            "activate": activate,
         },
         task_id=f"build-dispatch:{build_id}",
     )
-
-
-def set_build_task_publisher(publisher: TaskPublisher | None) -> None:
-    """注入构建任务的发布器（离线套件设为记账版；``None`` 复原生产实现）。"""
-
-    _build_slot.set(publisher)
-
-
-def get_build_task_publisher() -> TaskPublisher:
-    """取构建任务当前生效的发布器（注入的优先，否则生产实现）。"""
-
-    return _build_slot.current()
-
-
-def build_publisher_is_injected() -> bool:
-    """构建投递缝是否处于注入状态（给离线自检用）。"""
-
-    return _build_slot.is_injected()
 
 
 def enqueue_index_build(
@@ -279,8 +250,6 @@ def enqueue_index_build(
     build_id: str,
     tenant_id: str,
     request_id: str | None,
-    #: 构建成功后立刻激活（第 16 步 #207）：只有「改了切块设置就生效」那条路径传 True。
-    activate: bool = False,
 ) -> None:
     """把「**给这一版派活**」投递到 Broker（#215）。
 
@@ -295,8 +264,10 @@ def enqueue_index_build(
     见 ADR-0034 决策三。派活任务只做一件事：把「这一版该建哪些篇」翻译成一批子任务，
     每篇走的是与用户重建**完全相同**的那条流水线。
 
-    ``build_index_version_task`` 仍然保留：运维要「一次性跑完」时还能手动投它（
-    ``scripts/reconcile_build.py`` 与排障都用得上），但它不再是构建的默认形状。
+    旧的一次跑完整个库的任务（``build_index_version_task``）**已随 #215 删除**：它既是另一种
+    构建语义（进度不可见、失败粒度是整个库），又没有任何入口会投它——留着只会让人以为
+    「构建有两种形状」。运维要按需推进某一次构建的入口是 ``scripts/reconcile_build.py``：
+    它按 ``build_id`` 收敛/续建，不产生第二种语义。
 
     与 :func:`enqueue_document` 一样是**同步**的 ``apply_async``：调用方是运维脚本
     （独立进程、同步到底）与将来的控制面入口；请求路径上要投递构建时，参照
@@ -307,7 +278,6 @@ def enqueue_index_build(
         build_id=build_id,
         tenant_id=tenant_id,
         request_id=request_id,
-        activate=activate,
     )
 
 
@@ -317,7 +287,6 @@ async def enqueue_index_build_after_commit(
     build_id: str,
     tenant_id: str,
     request_id: str | None,
-    activate: bool = False,
 ) -> None:
     """``after_commit`` 用的异步版本：参数与 :func:`enqueue_index_build` 逐字一致。
 
@@ -330,7 +299,6 @@ async def enqueue_index_build_after_commit(
         build_id=build_id,
         tenant_id=tenant_id,
         request_id=request_id,
-        activate=activate,
     )
 
 

@@ -515,9 +515,9 @@ def test_the_rebuild_script_starts_a_building_row_and_dispatches_the_build_task(
                 "build_id": row.id,
                 "tenant_id": TENANT_ID,
                 "request_id": f"ops-rebuild:{row.id}",
-                # 运维脚本不自动激活（ADR-0025 决策三：ready 是运维可见的一步）。
-                # 只有「改切块设置」那条控制面路径才传 True。
-                "activate": False,
+                # 载荷里**没有** ``activate``：自动激活记在构建行上（``auto_activate``）。
+                # 这条运维路径的构建行是 ``auto_activate=False``——建完停在 ready，等运维看完
+                # 再点（ADR-0025 决策三）；只有「改切块设置」那条控制面路径会置真。
             },
             # #215：投的是**派活**任务，所以 task_id 走派活那一条。
             "task_id": f"build-dispatch:{row.id}",

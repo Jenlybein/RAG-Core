@@ -318,8 +318,9 @@ async def test_the_rebuild_is_enqueued_with_auto_activation(
             "build_id": "build-1",
             "tenant_id": "tenant_demo",
             "request_id": None,
-            # 这一条就是本用例的重点：改设置起的构建**带激活**。
-            "activate": True,
+            # 这里**不再**有 ``activate``：它记在构建行上（``start_build(auto_activate=True)``，
+            # 见上一个用例），而载荷里带一个「决定激活与否」的布尔量在改成按篇投递时断过一次。
+            # 本用例现在守的是「投递仍然只登记一次、且走 after_commit」。
         }
     ]
 

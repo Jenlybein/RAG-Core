@@ -62,7 +62,6 @@ celery_app.conf.update(
     #
     #   dispatch_build_task  派活：把一个库翻译成一批子任务
     #   build_document_task  子任务：一篇文档写进这一版
-    #   build_index_version_task  （兼容路径）一次任务跑完整个库
     #
     # 为什么要分开：一次 5000 篇的构建会产生 5000 条消息。留在默认队列里，它们会把同一个
     # 租户乃至所有租户的上传任务压在后面几十分钟——而队列长度本身是运维要看的信号。
@@ -73,7 +72,6 @@ celery_app.conf.update(
     task_routes={
         "app.tasks.index_build.dispatch_build_task": {"queue": "build"},
         "app.tasks.index_build.build_document_task": {"queue": "build"},
-        "app.tasks.index_build.build_index_version_task": {"queue": "build"},
     },
 )
 
