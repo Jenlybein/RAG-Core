@@ -119,6 +119,7 @@ def test_record_n_of_zero_or_negative_is_a_noop() -> None:
 
 # ─────────────────────────────────────────────── 读数：三本账清单只写一处
 
+
 def test_meter_usage_reads_each_book_from_its_own_namespace_and_column(
     monkeypatch: Any,
 ) -> None:
