@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import threading
 import uuid
+from collections.abc import Callable
 from datetime import timedelta
 from typing import Final
 
@@ -100,7 +101,9 @@ async def _try_lock(ttl: int = SWEEP_LOCK_TTL_SECONDS) -> bool:
         return False
 
 
-async def sweep_once() -> dict[str, int]:
+async def sweep_once(
+    *, session_factory: Callable[[], Any] | None = None
+) -> dict[str, int]:
     """跑一遍清扫，返回这一轮各项处置的计数（给日志与测试断言用）。
 
     顺序固定：**先收尾、再补投、最后救租约**。
@@ -109,9 +112,14 @@ async def sweep_once() -> dict[str, int]:
       本身就是「别再等了」的结论）。
     * 再补投：期限没到但缺篇——补上就还有救。
     * 最后救租约：单篇的租约过期与构建无关，放最后。
+
+    ``session_factory`` 只为**测试**留：它让用例能把这一趟绑到真库上，而不是绑到进程级的
+    那个工厂（离线套件把它换成了不写库的替身，见 ``tests/conftest.py``）。生产路径不传，
+    用进程级工厂——一个兜底任务的会话来源不该是可配置的。
     """
 
-    async with async_session_factory()() as db:
+    factory = session_factory or async_session_factory
+    async with factory()() as db:
         service = IndexBuildService()
         settled = 0
         redispatched = 0
@@ -192,6 +200,11 @@ async def sweep_once() -> dict[str, int]:
                 kb_id=str(document.kb_id),
                 attempts=attempts,
             )
+
+        # 三个阶段的写都在这一笔事务里（收尾那一步自己提交过，重复提交是 no-op）。
+        # **必须提交**：不提交的话，「清租约 + 回排队中」与「重投次数加一」会随会话关闭被
+        # 回滚——症状是清扫器日志说有动作、库里一行没变，与「清扫器没跑」一模一样。
+        await db.commit()
 
         if settled or redispatched or revived:
             logger.info(
