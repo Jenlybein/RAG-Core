@@ -4,11 +4,16 @@
 ``UPDATE ... WHERE``，两个 Worker 同时抢时，Postgres 的行锁 + READ COMMITTED
 重评估会让后到者 ``rowcount=0``，于是它直接跳过。
 
-**索引权的归属只有一处**：入队侧（重建端点 / 两个运维脚本）只调用
-:func:`prepare_for_indexing` 把文档置成「已排队、未开工」（``index_claimed_at=NULL``，
-不盖租约）；Worker 才是唯一的抢占者，调用 :func:`try_claim_for_indexing` 盖租约。
+**索引权的归属只有一处**：入队侧（上传 / 重建 / 建版本 / 回滚 / 两个运维脚本）只调用
+:func:`prepare_for_indexing` 把文档置成「已排队、未开工」（``status=QUEUED``、
+``index_claimed_at=NULL``，不盖租约）；Worker 才是唯一的抢占者，调用
+:func:`try_claim_for_indexing` 盖租约（``status=PROCESSING`` + 抢占时间）。
 若入队侧也抢先盖租约，Worker 的 WHERE 会因「租约新鲜」而拒绝它，重建与重试都会
 变成静默 no-op。
+
+**「谁在跑」只由租约回答**（ADR-0034 决策一）：``status=PROCESSING`` 只是「Worker 抢占时
+盖的章」，过期之后它不再说明任何事；:func:`is_lease_alive` 是这条判定的纯函数版本，
+删除 / 重建 / 建版本 / 回滚的守卫都读它。
 
 ## 异步孪生（第 11 步票 #132 / #130）
 
@@ -47,7 +52,7 @@ SQL——CAS 的判定条件与租约语义因此不可能在两套入口之间�
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from sqlalchemy import ColumnElement, and_, func, or_, select, update
+from sqlalchemy import ColumnElement, and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Update
@@ -59,6 +64,8 @@ from app.utils.status import DocumentStatus
 # 索引租约秒数（运维策略，不是部署配置）：超过这个时长仍停在 PROCESSING 的文档
 # 视为「Worker 卡死」，允许被重新抢占 / 删除 / 重建。否则 Worker 崩一次就永久
 # 锁死——正是教程里「永远卡在处理中且不报错」的坑。
+# 窗口长度按「最慢的一篇也不至于被判死」定；任务执行期间靠心跳在窗口内续租
+# （ADR-0034 决策七），所以长文档不会被误判成死。
 DOCUMENT_LEASE_SECONDS = 600
 
 
@@ -104,13 +111,20 @@ def list_stuck(
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     kb_id: str | None = None,
 ) -> list[Document]:
-    """扫出「卡死」的文档：``PROCESSING`` 且租约缺失或已过期。
+    """扫出「卡死」的文档：排队中，或 ``PROCESSING`` 且租约缺失或已过期。
 
     运维扫描：显式跨租户；只有 ``scripts/requeue_stuck_documents.py`` 调用，
     数据面禁止使用。``tenant_id`` 一旦给出就强制过滤。
 
-    判定与 CAS 的可抢占条件完全一致：``index_claimed_at IS NULL`` 是「已入队但
-    Worker 还没开工」，早于 ``now - lease_seconds`` 是「Worker 崩了 / 卡住」。
+    判定与 CAS 的可抢占条件完全一致（ADR-0034 决策一）：
+
+    * ``status=QUEUED``：已经收下但没有 Worker 接。任务丢了一条消息（Broker 丢包、
+      Worker 崩在 ``ack`` 之前）之后，这一行永远不会自己动，只有这里能把它重新送出去。
+      重投是**幂等**的——迟到的重复任务在抢占时会被 CAS 挡掉（``rowcount=0``），
+      不会多切一遍。
+    * ``status=PROCESSING`` 且 ``index_claimed_at IS NULL``：迁移期兼容形状，等价于排队中。
+    * ``status=PROCESSING`` 且租约早于 ``now - lease_seconds``：Worker 崩了 / 卡住。
+
     有效租约内的处理中不算卡死，不能被这条查询救回。``kb_id`` 只缩小范围，
     不改变「卡死」的定义；缺省扫全部知识库（``tenant_id`` 缺省为 None，仅有
     运维权限的本地脚本会这样用）。
@@ -118,11 +132,16 @@ def list_stuck(
 
     lease_before = now() - timedelta(seconds=lease_seconds)
     stmt = select(Document).where(
-        Document.status == DocumentStatus.PROCESSING,
         or_(
-            Document.index_claimed_at.is_(None),
-            Document.index_claimed_at < lease_before,
-        ),
+            Document.status == DocumentStatus.QUEUED,
+            and_(
+                Document.status == DocumentStatus.PROCESSING,
+                or_(
+                    Document.index_claimed_at.is_(None),
+                    Document.index_claimed_at < lease_before,
+                ),
+            ),
+        )
     )
     if tenant_id is not None:
         stmt = stmt.where(Document.tenant_id == tenant_id)
@@ -318,7 +337,12 @@ def _count_by_kb_statement(kb_id: str, *, tenant_id: str):
 
 
 def _count_processing_statement(*, tenant_id: str, lease_before: datetime):
-    """「这个租户真的在占用 Worker 的文档数」的那一条计数（同步与异步孪生共用）。"""
+    """「这个租户真的在占用 Worker 的文档数」的那一条计数（同步与异步孪生共用）。
+
+    只数**租约有效**的 ``PROCESSING``：四态之后「在跑」的唯一证据是租约（ADR-0034
+    决策一），排队中（4）没有租约、也就不占任何 Worker。旧口径里的「``3`` 且租约为空
+    也算」是三态时代的代理判据，迁移之后那种行只剩尚未迁移的存量。
+    """
 
     return (
         select(func.count())
@@ -326,10 +350,8 @@ def _count_processing_statement(*, tenant_id: str, lease_before: datetime):
         .where(
             Document.tenant_id == tenant_id,
             Document.status == DocumentStatus.PROCESSING,
-            or_(
-                Document.index_claimed_at.is_(None),
-                Document.index_claimed_at >= lease_before,
-            ),
+            Document.index_claimed_at.is_not(None),
+            Document.index_claimed_at >= lease_before,
         )
     )
 
@@ -339,12 +361,19 @@ def _claimable_conditions(
 ) -> list[ColumnElement[bool]]:
     """可抢占的行条件（纯条件，不含语句）：抢占与「准备入队」共用同一份。
 
-    失败可重试；处理中但 ``index_claimed_at`` 为空（已入队未开工）或早于
-    ``now - lease_seconds``（Worker 卡死）可抢占；``allow_success`` 时成功文档也允许
-    显式 force 重建。抽成一处，防止两个函数的判定漂移。
+    ADR-0034 决策一的**唯一**一处定义：
+
+    * ``4 排队中``：被收下、没人接——正常路径；
+    * ``3 且租约为空或已过期``：迁移期兼容 + Worker 崩了 / 卡住（租约过期等义于排队中）；
+    * ``2 失败``：失败可重试；
+    * ``allow_success``：构建形状额外允许重建一篇已经成功的文档（ADR-0034 决策二）。
+
+    抽成一处，防止入队与抢占两个函数的判定漂移——漂移的症状是「重建静默 no-op」或
+    「同一篇被两个 Worker 各切一遍」。
     """
 
     claimable: list[ColumnElement[bool]] = [
+        Document.status == DocumentStatus.QUEUED,
         Document.status == DocumentStatus.FAILED,
         and_(
             Document.status == DocumentStatus.PROCESSING,
@@ -367,7 +396,12 @@ def _prepare_statement(
     allow_success: bool,
     prepared_at: datetime,
 ) -> Update:
-    """「准备入队」那条 ``UPDATE``：同步与异步两个入口执行的是同一条语句。"""
+    """「准备入队」那条 ``UPDATE``：同步与异步两个入口执行的是同一条语句。
+
+    写的是 ``status=QUEUED``（不是 PROCESSING）：入队侧只说「已收下、排队等 Worker」，
+    真正在跑的印章由 Worker 在抢占时盖。三态时代这里写 3 却清租约，等于用同一个字面值
+    表达「排队」和「在跑」两件事——那正是这次要拆掉的混淆。
+    """
 
     lease_before = prepared_at - timedelta(seconds=lease_seconds)
     return (
@@ -378,7 +412,7 @@ def _prepare_statement(
             or_(*_claimable_conditions(lease_before, allow_success=allow_success)),
         )
         .values(
-            status=DocumentStatus.PROCESSING,
+            status=DocumentStatus.QUEUED,
             index_claimed_at=None,
             error_message=None,
             updated_at=prepared_at,
@@ -395,11 +429,11 @@ def prepare_for_indexing(
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     allow_success: bool,
 ) -> bool:
-    """入队侧：把可重建的文档标记为「已排队、未开工」；``rowcount > 0`` 即成功。
+    """入队侧：把可重建的文档标记为「排队中」；``rowcount > 0`` 即成功。
 
     与 :func:`try_claim_for_indexing` 用同一份可重建条件，但**不盖租约**：
     ``index_claimed_at=NULL`` 才允许 Worker 之后抢占。这里只做状态准备（
-    ``status=PROCESSING``、清 ``error_message``、抬 ``updated_at``），真正的
+    ``status=QUEUED``、清 ``error_message``、抬 ``updated_at``），真正的
     索引权由 Worker 唯一负责。``tenant_id`` 是强制过滤参数（ADR-0006）。
     """
 
@@ -433,7 +467,7 @@ def try_claim_for_indexing(
     只能知道「抢到了」，核对时只能重新读一次时间——那一次读与这里的写之间就有一道缝。
 
     Worker 一律用 ``allow_success=False``：重建端点已经用
-    :func:`prepare_for_indexing` 把 SUCCESS 文档置成 PROCESSING，ACK 丢失导致的
+    :func:`prepare_for_indexing` 把 SUCCESS 文档置成 QUEUED，ACK 丢失导致的
     迟到重复投递必须抢不到，否则会在 SUCCESS 之后重写切片。
     """
 
@@ -496,12 +530,16 @@ def _claim_token_statement(document_id: str, *, tenant_id: str):
 
 
 def release_index_claim(db: Session, document_id: str, *, tenant_id: str) -> None:
-    """释放索引租约：``index_claimed_at=NULL``，``status`` 原样保留。
+    """释放索引租约：``index_claimed_at=NULL``，``PROCESSING`` 归一成 ``QUEUED``。
 
     可重试失败在 ``self.retry`` 之前调用它：不释放的话，重试的下一次
     :func:`try_claim_for_indexing` 会看到仍然新鲜的租约而抢不到，重试永远不执行。
-    只清租约、不改状态，失败文档因此走「失败可重试」分支，处理中文档则回到
-    「已排队未开工」。``tenant_id`` 是强制过滤参数（ADR-0006）。
+
+    ``3 → 4`` 的归一不是语义要求（「``3`` 且租约为空」本来就等义于排队中），而是
+    实现选择（ADR-0034 决策一「清扫器重投」那一行）：把行写成它实际所处的状态，
+    界面与「在跑」的判据才不会依赖一条过期租约。**只归一 ``PROCESSING``**——
+    ``FAILED`` / ``SUCCESS`` 上的租约清理不该顺手改状态，那是另一件事的终态。
+    ``tenant_id`` 是强制过滤参数（ADR-0006）。
     """
 
     db.execute(_release_statement(document_id, tenant_id=tenant_id))
@@ -513,17 +551,25 @@ def _release_statement(document_id: str, *, tenant_id: str) -> Update:
     return (
         update(Document)
         .where(Document.id == document_id, Document.tenant_id == tenant_id)
-        .values(index_claimed_at=None)
+        .values(
+            index_claimed_at=None,
+            status=case(
+                (Document.status == DocumentStatus.PROCESSING, DocumentStatus.QUEUED),
+                else_=Document.status,
+            ),
+        )
         .execution_options(synchronize_session=False)
     )
 
 
 def is_lease_alive(document: Document, *, lease_seconds: int = DOCUMENT_LEASE_SECONDS) -> bool:
-    """纯函数：这份文档是否仍处于「有效处理中」。
+    """纯函数：这份文档是否仍处于「有效处理中」（=此刻真的有人在跑）。
 
-    ``status=PROCESSING`` 且 ``index_claimed_at`` 在 ``[now - lease_seconds, now]``
-    窗口内才算有人真的在跑。``index_claimed_at is None``（已入队未开工）与租约过期
-    （Worker 卡死）都不算，因此允许被删除 / 重建 / 重新抢占。
+    **只看 ``PROCESSING``**（ADR-0034 决策一）：``QUEUED`` 没有租约、也不该有，因此
+    永远不是「在跑」；排队中的文档可以删除（撤回排队）、可以重新提交（替换排队）。
+    ``PROCESSING`` 还要求 ``index_claimed_at`` 在 ``[now - lease_seconds, now]`` 窗口内；
+    ``index_claimed_at is None``（迁移期兼容形状）与租约过期（Worker 卡死）都不算，
+    因此允许被删除 / 重建 / 重新抢占。
     """
 
     if document.status != DocumentStatus.PROCESSING:

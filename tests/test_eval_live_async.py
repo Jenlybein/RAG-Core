@@ -207,7 +207,7 @@ async def test_ensure_document_inserts_a_claimable_row() -> None:
     assert row.index_claimed_at is None, "占着租约的行会让 Worker 静默跳过，重跑就不再索引"
     from app.utils.status import DocumentStatus
 
-    assert row.status == DocumentStatus.PROCESSING
+    assert row.status == DocumentStatus.QUEUED, "脚本把行摆成「排队中」等 Worker 接"
 
 
 # ────────────────────────────────────────────────── 暖机：冷启动不许记到首题头上

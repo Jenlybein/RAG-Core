@@ -388,13 +388,13 @@ def test_rollback_switches_the_pointer_and_enqueues_exactly_one_rebuild(
         "document_id": DOC_ALPHA,
         "version": 1,
         "previous_version": CURRENT_DRAFT,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
     }
 
     document = versions.document(DOC_ALPHA)
     assert document.current_version == 1
     assert document.content == DRAFTS[1], "文档行是当前稿的热路径快照，正文一起换"
-    assert document.status == DocumentStatus.PROCESSING
+    assert document.status == DocumentStatus.QUEUED
 
     # 版本行状态翻转是**可观测的**：再列一次版本就能看到（替身会话按真实语义改了内存行）。
     data = versions.data(versions.client.get(VERSIONS_PATH.format(document_id=DOC_ALPHA)))

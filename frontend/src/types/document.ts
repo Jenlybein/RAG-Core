@@ -1,10 +1,10 @@
 /** 数据面文档接口的请求 / 回执类型。字段照 `step8/00-facts.md` §4，不自己发明。 */
 
-/** 上传回执。异步化后上传只登记 + 投递，`status` 恒为 3（处理中）。 */
+/** 上传回执。异步化后上传只登记 + 投递，`status` 恒为 4（排队中）。 */
 export interface DocumentUploadReceipt {
   document_id: string
   kb_id: string
-  /** 1 成功 / 2 失败 / 3 处理中（`app/utils/status.py` 的 DocumentStatus）。 */
+  /** 1 成功 / 2 失败 / 3 索引中 / 4 排队中（`app/utils/status.py` 的 DocumentStatus）。 */
   status: number
   chunk_count: number
   error_message: string | null
@@ -26,7 +26,7 @@ export interface DocumentUploadReceipt {
 export interface DocumentListItem {
   document_id: string
   title: string
-  /** 1 成功 / 2 失败 / 3 索引中；映射只走 `StatusBadge`。 */
+  /** 1 成功 / 2 失败 / 3 索引中 / 4 排队中；映射只走 `StatusBadge`。 */
   status: number
   chunk_count: number
   error_message: string | null
@@ -62,7 +62,7 @@ export interface DocumentContent {
   title: string
   source_type: string
   source_filename: string | null
-  /** 1 成功 / 2 失败 / 3 索引中；原文能看与索引成功是两件事。 */
+  /** 1 成功 / 2 失败 / 3 索引中 / 4 排队中；原文能看与索引成功是两件事。 */
   status: number
   content: string
   truncated: boolean

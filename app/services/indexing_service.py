@@ -23,10 +23,10 @@
 库不改）：Celery prefork 每个子进程同一时刻只跑一个任务，把 CPU 活丢进线程只会多一层，
 换不来任何并发（ADR-0023「并发由进程数给，不由循环数给」）。
 
-**索引权只由 Worker 抢占。** 入队侧（重建端点 / 运维脚本）已经用
-``prepare_for_indexing`` 把文档置成「已排队、未开工」（不盖租约），Worker 进来后
+**索引权只由 Worker 抢占。** 入队侧（上传 / 重建 / 建版本 / 回滚 / 运维脚本）已经用
+``prepare_for_indexing`` 把文档置成「排队中」（``status=4``，不盖租约），Worker 进来后
 用 ``try_claim_for_indexing(allow_success=False)`` 盖租约。``allow_success=False``
-是必须的：force 重建的路由已经做过 SUCCESS→PROCESSING 的状态准备，ACK 丢失导致的
+是必须的：force 重建的路由已经做过「成功 → 排队中」的状态准备，ACK 丢失导致的
 迟到重复投递不能在 SUCCESS 之后重新抢占并重写切片。
 
 并发去重靠数据库 CAS，不靠 Celery 的 ``task_id``：``acks_late`` 让投递至少一次，
@@ -331,7 +331,7 @@ class IndexingService:
         ``reparse=True`` 强制重解析原始文件（忽略库内正文）；``allow_success=True`` 让
         **已经是 SUCCESS 的文档**也能被抢占——那是「整库重建到新版本」（#142）要的：
         重建的输入本来就是成功文档。上传 / 重建路由仍走默认值（路由先用
-        ``prepare_for_indexing`` 做过 SUCCESS→PROCESSING 的准备），迟到重复投递不能
+        ``prepare_for_indexing`` 做过「成功 → 排队中」的准备），迟到重复投递不能
         重新抢占成功文档。
 
         ``index_version`` 是**写入目标**（#142）：构建写它自己的新版本；不传时取该库

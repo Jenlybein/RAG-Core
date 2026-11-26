@@ -8,8 +8,9 @@
 
 三处顺序是契约的一部分，不是随手排的：
 
-- **重建只准备入队、不盖租约**：路由先走 ``ensure_reindexable``（处理中 20025、成功
-  未 force 20027），再 ``prepare_for_indexing`` 把行置成「已排队、未开工」，最后投递；
+- **重建只准备入队、不盖租约**：路由先走 ``ensure_reindexable``（有效处理中 20025、成功
+  未 force 20027），再 ``prepare_for_indexing`` 把行置成「排队中」（``status=4``，
+  不写租约），最后投递；
   Worker 才是唯一抢占者。若这里先盖租约，Worker 会因租约新鲜而拒绝执行，重建变成
   静默 no-op。
 - **删除文档的清除顺序**：purge 切片 → 删原文件 → 删行 → 提交。审计插在「删行」与
@@ -452,7 +453,7 @@ async def upload_document(
     data: bytes = b"",
     request_id: str | None = None,
 ) -> dict[str, Any]:
-    """上传文档：登记 + 投递复用 ``document_service.upload``，立即回 ``status=3``。
+    """上传文档：登记 + 投递复用 ``document_service.upload``，立即回 ``status=4``（排队中）。
 
     ``document_service.upload`` 只登记、不提交（投递也由它登记在提交之后），所以这里的
     审计与登记行**落在同一笔请求事务里**：审计写不进去时登记也不落库，不会留下「文档
@@ -493,7 +494,7 @@ async def reindex_document(
     cache: PlanCache,
     request_id: str | None,
 ) -> dict[str, Any]:
-    """单文档重建：守卫 → 准备入队 → 审计（同一笔事务）→ 投递，立即回 ``status=3``。
+    """单文档重建：守卫 → 准备入队 → 审计（同一笔事务）→ 投递，立即回 ``status=4``。
 
     顺序与数据面逐字一致：先按 id + 租户取（缺失/跨租户 20016），再
     ``ensure_reindexable``（20025 / 20027），再过并发处理配额，然后
@@ -530,7 +531,7 @@ async def reindex_document(
         before=before,
         after={
             **before,
-            "status": DocumentStatus.PROCESSING,
+            "status": DocumentStatus.QUEUED,
             "reparse": reparse,
             "force": force,
         },
@@ -551,7 +552,7 @@ async def reindex_document(
     )
     return {
         "document_id": document_id,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "reparse": reparse,
     }
@@ -563,8 +564,9 @@ async def delete_document(
     """删除文档：守卫 → purge 切片 → 删原文件 → 删版本行 → 删行 → 审计 → 由请求边界提交。
 
     顺序是契约的一部分（见 ``app/api/routes/documents.py`` 的同名端点）；审计插在
-    「删行」与「提交」之间，不改动五步本身。有效处理中（租约未过期）拒绝删除；租约
-    过期视为 Worker 卡死，允许删除。
+    「删行」与「提交」之间，不改动五步本身。有效处理中（租约未过期）拒绝删除；
+    **排队中的文档可以直接删**（等于撤回排队，迟到的任务抢占不到，ADR-0034 决策一）；
+    租约过期视为 Worker 卡死，同样允许删除。
 
     版本行单独删一次（#172）：一张表都没有外键，库不会级联，所以与清除切片、删行
     同一笔事务里显式删（``document_version_repository.delete_for_document``）。

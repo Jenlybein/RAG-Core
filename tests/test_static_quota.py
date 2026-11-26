@@ -119,13 +119,17 @@ async def test_counting_a_kbs_documents_ignores_other_kbs_and_other_tenants(
 async def test_the_processing_count_only_counts_documents_that_are_really_in_flight(
     db: AsyncSession,
 ) -> None:
-    """成功 / 失败的不算；已排队未开工的算（它占着队列）；有效租约内的算。"""
+    """成功 / 失败 / 排队中都不算；只有有效租约内的索引中算。
+
+    四态之后「在跑」的唯一证据是租约（ADR-0034 决策一）：排队中（4）没有租约，也就
+    不占任何 Worker——把它数进「并发处理名额」，等于让排队本身变成拒绝别人的理由。
+    """
 
     db.add_all(
         [
             _document("done", status=DocumentStatus.SUCCESS),
             _document("failed", status=DocumentStatus.FAILED),
-            _document("queued", status=DocumentStatus.PROCESSING),
+            _document("queued", status=DocumentStatus.QUEUED),
             _document(
                 "running",
                 status=DocumentStatus.PROCESSING,
@@ -135,7 +139,7 @@ async def test_the_processing_count_only_counts_documents_that_are_really_in_fli
     )
     await db.flush()
 
-    assert await document_repository.count_processing_for_tenant(db, tenant_id=TENANT_ID) == 2
+    assert await document_repository.count_processing_for_tenant(db, tenant_id=TENANT_ID) == 1
 
 
 @pytest.mark.asyncio
@@ -200,7 +204,7 @@ async def test_the_reindex_path_charges_the_concurrent_processing_allowance(
     """重建同样入队一次解析任务，因此也要过并发处理数——否则它就是绕过口。"""
 
     plan = _plan(max_processing_documents=1)
-    db.add(_document("queued", status=DocumentStatus.PROCESSING))
+    db.add(_document("running", status=DocumentStatus.PROCESSING, claimed_at=now()))
     await db.flush()
 
     with pytest.raises(AppError) as exc:

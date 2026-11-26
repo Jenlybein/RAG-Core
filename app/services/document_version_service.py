@@ -8,8 +8,10 @@
 ## 顺序是契约（一步都不能颠倒）
 
 1. **取文档**（按 id + 租户）：缺失与跨租户统一「不存在」，不泄露存在性；
-2. **处理中则拒**：有效租约内的 ``PROCESSING`` 说明 Worker 正在写这篇文档的切片，
-   这时切稿会让「哪一稿的切片」变成掷骰子；
+2. **有效处理中则拒**：租约有效的 ``PROCESSING``（真的在跑）说明 Worker 正在写这篇文档的
+   切片，这时切稿会让「哪一稿的切片」变成掷骰子。**排队中（4）不拒**：那一稿还没被任何
+   Worker 接走，新提交就是「替换排队」——旧的投递迟到时会在抢占那一步抢不到（
+   ``rowcount=0``），因此不会有两个任务同时跑（ADR-0034 决策一）；
 3. **拿正文**：JSON 入口直接给；文件入口走**既有解析入口**（
    :func:`app.services.document_ingestion.parse_uploaded_bytes`），不在这里按扩展名分流；
 4. **规范化 + 算校验和**：唯一入口 :mod:`app.utils.checksum`。判重、行里的 ``checksum``、
@@ -19,7 +21,7 @@
 6. **锁文档行**（``SELECT ... FOR UPDATE``）：稿次时间轴就是文档行上的当前稿指针，锁它
    就等于锁住这条时间轴。锁内复核一次租约（守卫与锁之间的时间差里 Worker 可能刚好开工）；
 7. **稿号 = max + 1**：算在锁内，后一个提交看到的一定是前一个写下的行；
-8. **写新版本行（当前稿）+ 旧当前稿转归档 + 指针前移 + 文档正文同步 + 置处理中**；
+8. **写新版本行（当前稿）+ 旧当前稿转归档 + 指针前移 + 文档正文同步 + 置排队中**；
 9. **``flush``**：让 ``(document_id, version)`` 唯一约束在写路径里撞出来，映射成
    「冲突，请重试」（20029）。拖到提交才撞就只剩 500 了。
 
@@ -329,7 +331,8 @@ async def create_version(
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
-    # 处理中则拒：Worker 正在写这篇文档的切片，这时切稿会让「哪一稿的切片」变成掷骰子。
+    # 有效处理中则拒：Worker 正在写这篇文档的切片，这时切稿会让「哪一稿的切片」变成掷骰子；
+    # 排队中（4）可以直接替换——那个任务还没被接走，迟到的那一份在抢占时会被 CAS 挡掉。
     ensure_versionable(doc)
     # 静态配额紧跟在状态守卫之后、**写任何东西之前**：被拒的提交既不建行也不入队。
     await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
@@ -411,12 +414,12 @@ async def create_version(
         db, document_id, keep=version
     )
 
-    # 指针前移 + 文档正文同步（D6：文档行是当前稿的热路径快照）+ 置处理中。
+    # 指针前移 + 文档正文同步（D6：文档行是当前稿的热路径快照）+ 置排队中（4）。
     locked.current_version = version
     locked.content = text
-    locked.status = DocumentStatus.PROCESSING
-    # 清掉上一轮的失败文案与租约：「已排队、未开工」才是这次提交之后的状态，
-    # Worker 仍是唯一的抢占者（它进来时才盖 index_claimed_at）。
+    locked.status = DocumentStatus.QUEUED
+    # 清掉上一轮的失败文案与租约：「排队中」才是这次提交之后的状态（新区块要等 Worker
+    # 接走才算索引中），Worker 仍是唯一的抢占者（它进来时才盖 index_claimed_at）。
     locked.error_message = None
     locked.index_claimed_at = None
     await db.flush()
@@ -444,7 +447,7 @@ async def create_version(
         "version": version,
         "previous_version": previous_version,
         "checksum": checksum,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
     }
 
 
@@ -469,8 +472,9 @@ async def rollback_to_version(
        （与「重放旧正文要建新稿次」是两件事）；
     3. **指针前移（这里其实是后移）**：``documents.current_version = version``。指针是
        唯一真值（见 ``app.models.chunk.current_draft_filter``）；
-    4. **文档正文同步为目标稿正文 + 置处理中**：文档行是当前稿的热路径快照（D6）。源文件
-       路径也一起换（见下）。置处理中是因为切片要重建——此刻库里的切片还是上一稿的。
+    4. **文档正文同步为目标稿正文 + 置排队中（4）**：文档行是当前稿的热路径快照（D6）。源文件
+       路径也一起换（见下）。置排队中是因为切片要重建——此刻库里的切片还是上一稿的，而新的
+       那一次要等 Worker 接走才算索引中。
     5. **提交之后**：投递重建（载荷带**目标稿号**）+ 翻转关键词索引的「当前稿」标记。
        两件都在 :func:`_queue_side_effects` 里登记。
 
@@ -504,7 +508,8 @@ async def rollback_to_version(
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
-    # 处理中则拒：Worker 正在写这篇文档的切片，这时切指针会让「哪一稿的切片」变成掷骰子。
+    # 有效处理中则拒：Worker 正在写这篇文档的切片，这时切指针会让「哪一稿的切片」变成
+    # 掷骰子；排队中（4）可以直接回滚——那是「替换排队」，不会出现两个任务同时跑。
     ensure_versionable(doc)
     # 静态配额：回滚也是一次重建，同样要过「并发处理数」——与建版本 / 重建同一条口径。
     await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
@@ -542,11 +547,11 @@ async def rollback_to_version(
     )
     await document_version_repository.mark_current(db, document_id, version=version)
 
-    # ③ 指针前移 ④ 文档正文 / 源文件同步为目标稿 + 置处理中。
+    # ③ 指针前移 ④ 文档正文 / 源文件同步为目标稿 + 置排队中（要等 Worker 接走才算索引中）。
     locked.current_version = version
     locked.content = target.content
     locked.source_file_path = target.source_file_path
-    locked.status = DocumentStatus.PROCESSING
+    locked.status = DocumentStatus.QUEUED
     locked.error_message = None
     locked.index_claimed_at = None
     await db.flush()
@@ -573,7 +578,7 @@ async def rollback_to_version(
         "document_id": document_id,
         "version": version,
         "previous_version": previous_version,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
     }
 
 

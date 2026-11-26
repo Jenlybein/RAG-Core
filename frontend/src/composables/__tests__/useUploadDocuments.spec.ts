@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '../../lib/envelope'
 import type { DocumentUploadReceipt } from '../../types/document'
+import { DOCUMENT_STATUS } from '../../utils/documentStatus'
 import { useUploadDocuments, type UploadFileItem } from '../useUploadDocuments'
 
 function makeItem(fileName: string): UploadFileItem {
@@ -9,7 +10,10 @@ function makeItem(fileName: string): UploadFileItem {
   return { fileName, file: { name: fileName } as unknown as File }
 }
 
-function makeReceipt(documentId: string, status = 3): DocumentUploadReceipt {
+function makeReceipt(
+  documentId: string,
+  status: number = DOCUMENT_STATUS.QUEUED,
+): DocumentUploadReceipt {
   return {
     document_id: documentId,
     kb_id: 'kb-1',
@@ -59,12 +63,54 @@ describe('useUploadDocuments', () => {
     ).resolves.toBeUndefined()
 
     const rows = uploader.results.value
-    expect(rows.map((row) => row.status)).toEqual(['processing', 'failed', 'processing'])
+    // 上传回执一律是 4（排队中）：后端只登记 + 投递，还没人接。
+    expect(rows.map((row) => row.status)).toEqual(['queued', 'failed', 'queued'])
     // 展示的是 `lib/envelope.ts` 里那份人话（20028 的既定文案），业务码单独留给页面补出来。
     expect(rows[1]?.errorMessage).toBe('该格式不被这个知识库接收：换文件或换库')
     expect(rows[1]?.errorCode).toBe(20028)
     expect(upload).toHaveBeenCalledTimes(3)
     expect(uploader.succeededCount.value).toBe(2)
+    expect(uploader.failedCount.value).toBe(1)
+  })
+
+  it('排队中与索引中都不显示分块数（后台还没开始切）', async () => {
+    const upload = vi.fn(async (item: UploadFileItem) =>
+      makeReceipt(
+        `doc-${item.fileName}`,
+        item.fileName === 'done.md'
+          ? DOCUMENT_STATUS.SUCCESS
+          : DOCUMENT_STATUS.QUEUED,
+      ),
+    )
+
+    const uploader = useUploadDocuments({ upload })
+    await uploader.uploadAll('kb-1', [makeItem('queued.md'), makeItem('done.md')])
+
+    const [queued, done] = uploader.results.value
+    expect(queued?.chunkCount).toBeNull()
+    // 成功的那一行如实显示 0 块：它是结论，不是「还没算」。
+    expect(done?.chunkCount).toBe(0)
+  })
+
+  it('四态各自折成自己的行状态，未知值不猜', async () => {
+    const statuses = [1, 2, 3, 4, 99]
+    const upload = vi.fn(async (item: UploadFileItem) => {
+      const index = Number.parseInt(item.fileName, 10)
+      return makeReceipt(`doc-${index}`, statuses[index])
+    })
+
+    const uploader = useUploadDocuments({ upload })
+    await uploader.uploadAll('kb-1', statuses.map((_, index) => makeItem(`${index}`)))
+
+    expect(uploader.results.value.map((row) => row.status)).toEqual([
+      'success',
+      'failed',
+      'processing',
+      'queued',
+      'unknown',
+    ])
+    // 「成功」这一栏把排队中与索引中都算上：后端受理了就是这次上传的成功。
+    expect(uploader.succeededCount.value).toBe(3)
     expect(uploader.failedCount.value).toBe(1)
   })
 })

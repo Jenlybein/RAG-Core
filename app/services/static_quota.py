@@ -27,9 +27,11 @@
 **这是唯一一条「不超自己的上限也会伤害别人」的配额**，也是最容易漏写的一条：上传是一个
 一个来的，单看一次请求都很合理。
 
-判定口径是「status=处理中 **且**（还没被抢占 **或** 租约仍然有效）」（
-``document_repository.count_processing_for_tenant``）：超出租约的行按 Worker 卡死处理，
-不占名额——它们本来就不占任何 Worker，把它们也数进去等于一次崩溃永久吃掉一个名额。
+判定口径是「status=索引中（3）**且**租约仍然有效」（
+``document_repository.count_processing_for_tenant``）：四态之后「在跑」的唯一证据是租约
+（ADR-0034 决策一），排队中（4）没有租约、不占任何 Worker，因此不计入；超出租约的行按
+Worker 卡死处理，同样不占名额——它们本来就不占任何 Worker，把它们也数进去等于一次崩溃
+永久吃掉一个名额。
 
 超限一律 :attr:`~app.core.exceptions.ErrorCode.QUOTA_EXCEEDED`（``20014``）：与日配额
 同一个码，因为调用方的反应是同一个——「提额或换套餐」，重试没有意义。它与秒级限流

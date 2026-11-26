@@ -155,7 +155,7 @@ async def test_rollback_moves_the_pointer_back_and_reopens_the_document(
     doc = await env.db.get(Document, DOC_ID)
     assert doc.current_version == 1, "当前稿指针必须回到 1"
     assert doc.content == CONTENTS[1], "文档行是当前稿的热路径快照"
-    assert doc.status == DocumentStatus.PROCESSING, "旧稿的切片要重建，所以置处理中"
+    assert doc.status == DocumentStatus.QUEUED, "旧稿的切片要重建，所以置排队中（等 Worker 接走）"
     assert doc.index_claimed_at is None, "排队不盖租约：Worker 才是唯一抢占者"
     assert doc.error_message is None
     assert doc.source_file_path == "tenant-a/doc-1.v1.md", (

@@ -381,7 +381,7 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
     assert payload["code"] == 0
     assert payload["msg"] == "success"
     data = payload["data"]
-    assert data["status"] == DocumentStatus.PROCESSING, "上传接口仍只回「已登记、处理中」"
+    assert data["status"] == DocumentStatus.QUEUED, "上传接口回的是「已登记、排队中」"
     assert data["chunk_count"] == 0
     assert data["error_message"] is None
 
