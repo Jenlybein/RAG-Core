@@ -129,6 +129,9 @@ class _VersionedStore:
                     embedding=[0.0] * 1536,
                     meta=chunk["meta"],
                     index_version=chunk["index_version"],
+                    # 稿号也照抄（#214）：收敛真值按「该版本 + 该稿」数已有切片的文档数，
+                    # 少了这一列，真库上一条都匹配不上，构建会被判成「一篇都没重建」。
+                    doc_version=chunk["doc_version"],
                 )
             )
 
@@ -167,6 +170,10 @@ def _document(document_id: str) -> Document:
         content=MARKDOWN,
         source_type="text",
         status=DocumentStatus.SUCCESS,
+        # 当前稿指针显式给 1（真行上这一列非空、默认 1）：#214 起构建开始时要快照一个统一
+        # 稿号，而收敛真值按「该版本 + 该稿」数已有的切片。假行留成 NULL 的话，快照与切片
+        # 的稿号就对不上，构建会被判成「一篇都没重建」——那不是真库会发生的事。
+        current_version=1,
     )
 
 

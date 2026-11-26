@@ -52,9 +52,7 @@ async def get_for_tenant(
     return row
 
 
-async def list_for_kb(
-    db: AsyncSession, kb_id: str, *, tenant_id: str
-) -> list[IndexBuildVersion]:
+async def list_for_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> list[IndexBuildVersion]:
     """该库的全部版本行（按创建时间升序）——「还能回到哪一版」的清单。"""
 
     statement = (
@@ -68,9 +66,7 @@ async def list_for_kb(
     return list((await db.execute(statement)).scalars().all())
 
 
-async def find_active(
-    db: AsyncSession, kb_id: str, *, tenant_id: str
-) -> IndexBuildVersion | None:
+async def find_active(db: AsyncSession, kb_id: str, *, tenant_id: str) -> IndexBuildVersion | None:
     """该库当前生效的那一行（部分唯一索引保证最多一行）。"""
 
     statement = select(IndexBuildVersion).where(
@@ -101,4 +97,35 @@ async def list_stalled(
         )
         .order_by(IndexBuildVersion.created_at)
     )
+    return list((await db.execute(statement)).scalars().all())
+
+
+async def list_overdue(
+    db: AsyncSession,
+    *,
+    at: datetime,
+    tenant_id: str | None = None,
+    kb_id: str | None = None,
+) -> list[IndexBuildVersion]:
+    """过了**收敛期限**仍是 ``building`` 的行 = 「该收敛却没收敛」（#214）。
+
+    与 :func:`list_stalled` 的区别是判据从「年龄」换成了「构建行自己的租约」：期限是按
+    参与篇数估出来的（见 ``index_build_service.converge_deadline_for``），一篇一小时的库
+    与一篇八秒的库不该用同一个阈值。清扫器（后续票）要问的正是这个：**谁的死线过了**。
+
+    ``tenant_id`` 可省略，是给跨租户的清扫器留的唯一一处「不带租户读」：它**只读**、不改
+    任何行，每一行都自己带着 ``tenant_id``，真正的写动作仍由调用方带着明确租户去做
+    （ADR-0006 要求的是「写路径不许跨租户」，不是「读不到自己的名单」）。运维脚本给
+    ``--tenant-id`` 时照旧收窄。
+    """
+
+    statement = select(IndexBuildVersion).where(
+        IndexBuildVersion.status == INDEX_BUILD_BUILDING,
+        IndexBuildVersion.converge_deadline < at,
+    )
+    if tenant_id is not None:
+        statement = statement.where(IndexBuildVersion.tenant_id == tenant_id)
+    if kb_id is not None:
+        statement = statement.where(IndexBuildVersion.kb_id == kb_id)
+    statement = statement.order_by(IndexBuildVersion.converge_deadline)
     return list((await db.execute(statement)).scalars().all())
