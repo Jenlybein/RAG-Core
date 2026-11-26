@@ -148,12 +148,30 @@ def _label_of(index: int, window: Window) -> str:
 INDEX_ENDPOINT: Final[str] = "index"
 
 
+def _denies_index(endpoint_column: Any) -> Any:
+    """「这一行不是索引行」的判据，两张表共用**同一份**（``usage_events`` / ``usage_daily``）。
+
+    ## 为什么要一个共用判据
+
+    这条规则在两类口径上必须一致：明细表（``usage_events``，短窗口）与汇总表
+    （``usage_daily``，长窗口）。两处各写一遍的后果不是「代码难看」，是**两个窗口给出不同
+    的请求数**——用户切到「30 天」看到的总量比「1 天」×30 还大或还小，而两边都自称「请求」。
+
+    ## 为什么要 ``or_(IS NULL, != 'index')`` 而不是只写 ``!=``
+
+    ``!=`` 在 SQL 里对 NULL 返回 NULL（不是真），于是**端点为空的历史行会被静默过滤掉**。
+    ``usage_events.endpoint`` 可空（改造前的老行是 NULL），所以必须显式把 NULL 放行。
+    ``usage_daily.endpoint`` 是不可空的主键列（老行是空字符串 ``''``），``'' != 'index'`` 为真,
+    同一句判据在它上面自然成立——所以这一份判据对两张表都正确，不必分叉。
+    """
+
+    return or_(endpoint_column.is_(None), endpoint_column != INDEX_ENDPOINT)
+
+
 def _exclude_index_rows(statement: Select[Any]) -> Select[Any]:
     """把索引行从**请求统计**里排除（``_totals_from_events`` / ``_buckets_from_events``）。"""
 
-    return statement.where(
-        or_(UsageEvent.endpoint.is_(None), UsageEvent.endpoint != INDEX_ENDPOINT)
-    )
+    return statement.where(_denies_index(UsageEvent.endpoint))
 
 
 async def _chunk_tokens(
@@ -330,7 +348,7 @@ async def _daily_buckets(
             UsageDaily.day >= window.since.date(),
             UsageDaily.day < window.until.date(),
             # 与两条合计路径同一条排除规则：索引行不进请求统计。
-            UsageDaily.endpoint != INDEX_ENDPOINT,
+            _denies_index(UsageDaily.endpoint),
         )
         .group_by(UsageDaily.day)
         .order_by(UsageDaily.day)
@@ -407,7 +425,7 @@ async def _totals_from_daily(
         statement = statement.where(UsageDaily.key_id == key_id)
     # 与明细路径同一条排除规则：索引行不进请求统计。
     statement = statement.where(
-        UsageDaily.endpoint != INDEX_ENDPOINT
+        _denies_index(UsageDaily.endpoint)
     )
     mapping = (await db.execute(statement)).one()._mapping
     requests = int(mapping["requests"] or 0)

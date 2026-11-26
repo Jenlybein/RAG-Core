@@ -366,6 +366,34 @@ def can_transition(current: str, target: str) -> bool:
     return target in ALLOWED_TRANSITIONS.get(current, frozenset())
 
 
+#: 「失败原因文案 ⇄ 异常类」的唯一一张表：:func:`_failure_reason_of` 按数字选文案，
+#: ``IndexBuildService._aborted`` 按文案选异常类。两个方向共用一个映射。
+_FAILURE_BY_REASON: dict[str, type[AppError]] = {
+    BUILD_NOTHING_TO_REBUILD_MESSAGE: IndexBuildNothingToRebuild,
+    BUILD_INCOMPLETE_MESSAGE: IndexBuildIncomplete,
+    BUILD_FAILED_MESSAGE: IndexBuildIncomplete,
+}
+
+
+def _failure_reason_of(truth: TruthSnapshot) -> str:
+    """按真值选**失败原因文案**（:data:`_FAILURE_BY_REASON` 的正向）。
+
+    三档的区分是为了让排查从「哪种失败」开始，而不是从「构建失败了」开始：
+
+    * 参与篇数 > 0 而真值 0 —— 一篇都没进来（多半是版本 / 稿号对不上，或全都抢不到租约）；
+    * 真值 < 参与篇数 —— 进来了一部分但没盖满；
+    * 其余（真值够但有明细）—— 建满了、但有几篇没进来，运维去查 ``failed_documents``。
+
+    文案本身**不拼异常原文**（脱敏纪律与单篇失败一致）。
+    """
+
+    if truth.planned > 0 and truth.documents == 0:
+        return BUILD_NOTHING_TO_REBUILD_MESSAGE
+    if truth.documents < truth.planned:
+        return BUILD_INCOMPLETE_MESSAGE
+    return BUILD_FAILED_MESSAGE
+
+
 def converge_deadline_for(planned: int, *, started_at: datetime) -> datetime:
     """起构建那一刻算出这次构建的**收敛期限**（纯函数，ADR-0034 决策五）。
 
@@ -759,12 +787,19 @@ class IndexBuildService:
     def _aborted(converged: IndexBuildVersion) -> AppError:
         """把 converge 落下的结论翻回一个异常（任务日志与调用方看得见的那种）。
 
-        两个类分开是为了让排查从「哪种失败」开始，而不是从「构建失败了」开始：一篇都没进来
-        与进来了一部分但没盖满，指向的是两批完全不同的文档。
+        ## 为什么只有一张表
+
+        「失败原因文案 ⇄ 异常类」是**同一个映射的两个方向**：:func:`_failure_reason_of`
+        按数字选文案，这里按文案选异常类。两套并列的 ``if`` 迟早会在某天给出两个答案
+        （文案改了、异常没跟着改，症状是「一类失败被报成另一类」），所以它们共用
+        :data:`_FAILURE_BY_REASON` 一张表。
         """
 
-        if converged.error_message == BUILD_NOTHING_TO_REBUILD_MESSAGE:
-            return IndexBuildNothingToRebuild()
+        for reason, error_type in _FAILURE_BY_REASON.items():
+            if converged.error_message == reason:
+                return error_type()
+        # 兜底：不是收敛选出来的文案（例如运维手工改过 error_message）。归到「不完整」那一档
+        # ——它比「一篇都没进来」更保守：不声称「库里是空的」。
         return IndexBuildIncomplete()
 
     # ── 收敛：真值 → 结论 → 一次状态迁移（#214）───────────────
@@ -874,11 +909,7 @@ class IndexBuildService:
                 return await self._auto_activate(db, ready, tenant_id=tenant_id)
             return ready
 
-        reason = BUILD_FAILED_MESSAGE
-        if truth.planned > 0 and truth.documents == 0:
-            reason = BUILD_NOTHING_TO_REBUILD_MESSAGE
-        elif truth.documents < truth.planned:
-            reason = BUILD_INCOMPLETE_MESSAGE
+        reason = _failure_reason_of(truth)
         # 明细存在但真值够：这是「建满了、但有篇没进来」——归到不完整那一档，运维去查
         # ``failed_documents`` 里那几条（文案本身不拼异常原文）。
         logger.warning(
