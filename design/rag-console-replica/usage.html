@@ -169,6 +169,29 @@
                 <span class="meter-used">已用 300</span>
               </div>
             </div>
+
+            <!--
+              第四本账（第 17 步 #222 / #223）：**索引期的 embedding 消耗，按 token 计**。
+              前三本数的是「请求侧调用了几次」，一次整库重建在它们上面留不下任何痕迹——
+              用户因此能一边看到「今天没怎么用」，一边被嵌入账单追着跑。这一栏就是补它。
+
+              单位是 token 而不是次数（所以名字后面带一个 `token` 标签）：四栏并排时不说
+              单位，「1,280 次」与「1,280 token」看起来像同一个量。
+            -->
+            <div class="meter">
+              <div class="meter-top">
+                <span class="meter-name"><i class="meter-dot meter-dot--chunk"></i>切块<span class="meter-unit">token</span></span>
+                <span class="meter-left">
+                  <span class="meter-label">剩余</span>
+                  <span class="meter-remain">3.1M</span>
+                  <span class="meter-of">/ 4M</span>
+                </span>
+              </div>
+              <div class="meter-bottom">
+                <div class="progress"><span style="width: 23%"></span></div>
+                <span class="meter-used">已用 0.9M</span>
+              </div>
+            </div>
           </div>
         </section>
 
