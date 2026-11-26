@@ -44,7 +44,6 @@ export const PLAN_NUMBER_FIELDS: readonly PlanNumberField[] = [
   { key: 'max_kb', label: '知识库上限', unit: '个', short: '库' },
   { key: 'max_kb_per_retrieve', label: '单次检索库数', unit: '个', short: '单次库' },
   { key: 'max_documents_per_kb', label: '每库文档上限', unit: '个', short: '每库文档' },
-  { key: 'max_processing_documents', label: '并发处理文档', unit: '个', short: '并发' },
 ]
 
 /** 五个「≥ 0」数值列的展示配置；0 在这里是「关闭 / 不额外封顶」，不是填错。 */

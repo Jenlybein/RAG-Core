@@ -336,26 +336,6 @@ def _count_by_kb_statement(kb_id: str, *, tenant_id: str):
     )
 
 
-def _count_processing_statement(*, tenant_id: str, lease_before: datetime):
-    """「这个租户真的在占用 Worker 的文档数」的那一条计数（同步与异步孪生共用）。
-
-    只数**租约有效**的 ``PROCESSING``：四态之后「在跑」的唯一证据是租约（ADR-0034
-    决策一），排队中（4）没有租约、也就不占任何 Worker。旧口径里的「``3`` 且租约为空
-    也算」是三态时代的代理判据，迁移之后那种行只剩尚未迁移的存量。
-    """
-
-    return (
-        select(func.count())
-        .select_from(Document)
-        .where(
-            Document.tenant_id == tenant_id,
-            Document.status == DocumentStatus.PROCESSING,
-            Document.index_claimed_at.is_not(None),
-            Document.index_claimed_at >= lease_before,
-        )
-    )
-
-
 def _claimable_conditions(
     lease_before: datetime, *, allow_success: bool
 ) -> list[ColumnElement[bool]]:
@@ -750,18 +730,6 @@ async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
     """该租户在该知识库下的文档总数（静态配额「单库文档数」的唯一计数处，票 #79）。"""
 
     result = await db.execute(_count_by_kb_statement(kb_id, tenant_id=tenant_id))
-    return int(result.scalar_one())
-
-
-async def count_processing_for_tenant(
-    db: AsyncSession, *, tenant_id: str, lease_seconds: int = DOCUMENT_LEASE_SECONDS
-) -> int:
-    """本租户真的在占用 Worker 的文档数（语义同 :func:`count_processing_for_tenant`）。"""
-
-    lease_before = now() - timedelta(seconds=lease_seconds)
-    result = await db.execute(
-        _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
-    )
     return int(result.scalar_one())
 
 

@@ -70,7 +70,10 @@ class Plan(Base):
     max_kb: Mapped[int] = mapped_column(Integer)
     max_kb_per_retrieve: Mapped[int] = mapped_column(Integer)
     max_documents_per_kb: Mapped[int] = mapped_column(Integer)
-    max_processing_documents: Mapped[int] = mapped_column(Integer)
+    # **没有** ``max_processing_documents``：那条「同时处理中篇数」的配额已删除（#218，
+    # 理由与代价见 ADR-0034 决策八——它量的「索引中」本身不可信，而入口拒绝也不是对
+    # 「别人排队变长」的处置）。列的取值留档在 ADR-0034 决策八，迁移的 downgrade 会
+    # 按那四档原值把列加回去。
     # 只有 updated_at，没有 created_at：套餐是「系统级配置」，被关心的是「上一次谁把它
     # 改成了什么」，第一版什么时候建出来的没有运营含义。
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -101,7 +104,6 @@ class PlanSpec:
     max_kb: int
     max_kb_per_retrieve: int
     max_documents_per_kb: int
-    max_processing_documents: int
 
 
 #: 快照的全部列名（字段顺序就是列顺序，``PLAN_SPEC_COLUMNS`` 因此也是行/缓存读取的清单）。
@@ -109,7 +111,7 @@ PLAN_SPEC_COLUMNS: Final[tuple[str, ...]] = tuple(
     field.name for field in dataclasses.fields(PlanSpec)
 )
 
-#: 面板上会出现输入框的 13 列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
+#: 面板上会出现输入框的业务列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
 #: 顺序只影响对账报告的可读性，不参与任何判定。
 PLAN_BUSINESS_COLUMNS: Final[tuple[str, ...]] = tuple(
     column for column in PLAN_SPEC_COLUMNS if column not in PLAN_IDENTITY_COLUMNS
@@ -165,7 +167,6 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         max_kb=1,
         max_kb_per_retrieve=1,
         max_documents_per_kb=30,
-        max_processing_documents=1,
     ),
     PLAN_PLUS: PlanSpec(
         code=PLAN_PLUS,
@@ -185,7 +186,6 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         max_kb=5,
         max_kb_per_retrieve=3,
         max_documents_per_kb=200,
-        max_processing_documents=2,
     ),
     PLAN_PRO: PlanSpec(
         code=PLAN_PRO,
@@ -205,7 +205,6 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         max_kb=50,
         max_kb_per_retrieve=5,
         max_documents_per_kb=5000,
-        max_processing_documents=10,
     ),
     PLAN_MAX: PlanSpec(
         code=PLAN_MAX,
@@ -225,7 +224,6 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         max_kb=50,
         max_kb_per_retrieve=5,
         max_documents_per_kb=5000,
-        max_processing_documents=10,
     ),
 }
 

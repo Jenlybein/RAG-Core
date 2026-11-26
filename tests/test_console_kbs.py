@@ -384,18 +384,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     def _count_documents(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return len(_list_documents(_db, kb_id, tenant_id=tenant_id))
 
-    def _count_processing(_db: Any, *, tenant_id: str) -> int:
-        """替身版「本租户占着 Worker 的文档数」：只数租约有效的索引中（ADR-0034 决策一）。"""
-        lease = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS)
-        return sum(
-            1
-            for doc in session._rows.get(Document, [])
-            if doc.tenant_id == tenant_id
-            and doc.status == DocumentStatus.PROCESSING
-            and doc.index_claimed_at is not None
-            and doc.index_claimed_at >= lease
-        )
-
     def _prepare(
         _db: Any, document_id: str, *, tenant_id: str, allow_success: bool, **_kwargs: Any
     ) -> bool:
@@ -448,9 +436,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     async def _count_documents_async(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return _count_documents(_db, kb_id, tenant_id=tenant_id)
 
-    async def _count_processing_async(_db: Any, *, tenant_id: str, **_kwargs: Any) -> int:
-        return _count_processing(_db, tenant_id=tenant_id)
-
     async def _prepare_async(
         db: Any, document_id: str, *, tenant_id: str, allow_success: bool, **kwargs: Any
     ) -> bool:
@@ -468,7 +453,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _document_lookup_async)
     monkeypatch.setattr(document_repository, "list_by_kb_async", _list_documents_async)
     monkeypatch.setattr(document_repository, "count_by_kb", _count_documents_async)
-    monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing_async)
     monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
     monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks_async)
     monkeypatch.setattr(console_kb_service, "get_vector_store", lambda: store)
@@ -720,7 +704,7 @@ def test_create_kb_rejects_a_tenant_id_in_the_body(kbs: _Harness) -> None:
 
 
 def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
-    """面板不是绕过套餐的后门：静态库数配额由 ``create_kb`` 判（20014），且不写账本。"""
+    """面板不是绕过套餐的后门：静态库数配额由 ``create_kb`` 判（``20034``），且不写账本。"""
 
     tenant = next(row for row in kbs.db._rows[Tenant] if row.id == TENANT_ALPHA)
     tenant.plan_id = 1  # free：max_kb=1，而 Alpha 已经有 2 个库
@@ -732,7 +716,9 @@ def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
         headers=WRITE_HEADERS,
     )
 
-    assert response.json()["code"] == ErrorCode.QUOTA_EXCEEDED
+    body = response.json()
+    assert body["code"] == ErrorCode.KB_COUNT_QUOTA_EXCEEDED
+    assert body["data"] == {"reason": "kb_count", "used": 2, "limit": 1, "plan": "free"}
     assert len(kbs.db._rows[KnowledgeBase]) == 3, "被配额拒绝的库不落行"
     assert kbs.audit_entries() == []
 

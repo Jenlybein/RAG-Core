@@ -161,8 +161,8 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # （``add_retrieval_authorization``）接在它之后；数据面 API Key 改「只存哈希」
     # （``hash_api_key_secrets``）再接在模型角色指针合并之后；#199 的归属索引记号改造之后
     # 是第 16 步 #207 的单条结果上限与构建参数（``unit_cap_and_build_params``），再接 #214 的
-    # 文档状态拆出「排队中」（``queue_document_status``）——当前链尾。
-    assert heads == {_revision_of(_migration_path("queue_document_status"))}
+    # 删套餐「同时处理中篇数」（``drop_plans_max_processing_documents``）——当前链尾。
+    assert heads == {_revision_of(_migration_path("drop_plans_max_processing_documents"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

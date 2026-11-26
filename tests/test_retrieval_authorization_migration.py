@@ -111,7 +111,7 @@ def test_it_chains_onto_the_single_head() -> None:
     heads = set(revisions) - pointed
     # 链尾后来前移过：I 阶段的物化迁移接在 T1 之后，「API Key 只存哈希」再接在物化迁移之后
     # （历史迁移不改，新增一条）；第 16 步 #207 之后是 #214 的构建收敛四列。
-    new_head_files = sorted(VERSIONS_DIR.glob("*_queue_document_status.py"))
+    new_head_files = sorted(VERSIONS_DIR.glob("*_drop_plans_max_processing_documents.py"))
     assert len(new_head_files) == 1
     assert heads == {_revision_of(new_head_files[0])}, (
         f"链尾应当是「构建收敛四列」，实际 {sorted(heads)}"

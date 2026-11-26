@@ -49,7 +49,6 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb": 1,
         "max_kb_per_retrieve": 1,
         "max_documents_per_kb": 30,
-        "max_processing_documents": 1,
     },
     "plus": {
         "retrieve_allowed": True,
@@ -67,7 +66,6 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb": 5,
         "max_kb_per_retrieve": 3,
         "max_documents_per_kb": 200,
-        "max_processing_documents": 2,
     },
     "pro": {
         "retrieve_allowed": True,
@@ -85,7 +83,6 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb": 50,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
-        "max_processing_documents": 10,
     },
     "max": {
         "retrieve_allowed": True,
@@ -103,7 +100,6 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb": 50,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
-        "max_processing_documents": 10,
     },
 }
 
@@ -134,7 +130,7 @@ def test_each_plan_carries_the_decided_values(code: str) -> None:
     spec = PLAN_PRESETS[code]
     # 第 13 步 I 阶段：allowed_profiles / hybrid_allowed / query_rewrite_allowed /
     # research_qps / research_daily 五列物理删除，业务列从 21 降到 16。
-    assert len(PLAN_BUSINESS_COLUMNS) == 16
+    assert len(PLAN_BUSINESS_COLUMNS) == 15
     for column in PLAN_BUSINESS_COLUMNS:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 

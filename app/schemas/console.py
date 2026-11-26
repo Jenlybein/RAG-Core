@@ -74,7 +74,7 @@ class PlanSnapshotData(BaseModel):
     max_kb: int
     max_kb_per_retrieve: int
     max_documents_per_kb: int
-    max_processing_documents: int
+    # 「并发处理名额」这一列已删除（#218，ADR-0034 决策八）：写入口一律接受、全部排队。
 
 
 class PlanData(PlanSnapshotData):
@@ -169,7 +169,6 @@ class PlanPatchRequest(BaseModel):
     max_kb: int | None = None
     max_kb_per_retrieve: int | None = None
     max_documents_per_kb: int | None = None
-    max_processing_documents: int | None = None
 
     def provided(self) -> dict[str, Any]:
         """这次真的要写的字段：没发的、以及发了 ``null`` 的都不算。"""

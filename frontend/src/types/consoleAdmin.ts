@@ -31,7 +31,6 @@ export interface PlanData {
   max_kb: number
   max_kb_per_retrieve: number
   max_documents_per_kb: number
-  max_processing_documents: number
   /** 后端是 `datetime`；没有时区后缀，前端按本地时间展示（见 `utils/datetime.ts`）。 */
   updated_at: string | null
 }
@@ -116,7 +115,6 @@ export interface PlanPatchBody {
   max_kb?: number
   max_kb_per_retrieve?: number
   max_documents_per_kb?: number
-  max_processing_documents?: number
 }
 
 /** `PATCH /console/plans/{id}` 的 data：试算与真写共用这个形状。 */
@@ -158,7 +156,6 @@ export type PlanNumericField =
   | 'max_kb'
   | 'max_kb_per_retrieve'
   | 'max_documents_per_kb'
-  | 'max_processing_documents'
 
 /** 五个「≥ 0」的数值列（0 = 关闭 / 不额外封顶）；清单来自后端 `PLAN_ZEROABLE_COLUMNS`。 */
 export type PlanZeroableField =

@@ -406,8 +406,10 @@ class QuotaLedger:
                 used=cell.used,
                 limit=cell.limit,
                 code=cell.code,
-                what=cell.what,
-                suffix="per window",
+                # 这一本是**按天 / 按秒的调用次数**，处置是「等重置或提额」，所以文案
+                # 保持英文骨架（运维日志语境）。容量型上限（库数 / 文档数）另有专属码与
+                # 中文人话，两者不再共用一句（#219，ADR-0035 决策七）。
+                message=f"{cell.what} exceeded: {cell.used} used of {cell.limit} per window",
             )
 
     async def has_capacity(self) -> bool:
