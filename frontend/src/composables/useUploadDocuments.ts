@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 
 import { ApiError } from '../lib/envelope'
 import type { DocumentUploadReceipt } from '../types/document'
+import { DOCUMENT_STATUS } from '../utils/documentStatus'
 
 /** 一批待上传文件里的一份。`fileName` 是展示名（选文件夹时带相对路径）。 */
 export interface UploadFileItem {
@@ -9,10 +10,22 @@ export interface UploadFileItem {
   fileName: string
 }
 
-/** 结果行的状态：pending 只在本份请求还没回来时出现。 */
-export type UploadRowStatus = 'pending' | 'success' | 'failed' | 'processing' | 'unknown'
+/**
+ * 结果行的状态：pending 只在本份请求还没回来时出现。
+ *
+ * `queued`（回执 4 排队中）与 `processing`（回执 3 索引中）分开：上传之后后端一律回排队中，
+ * 这一行要说的是「已收下、在排队」，而「索引中」是 Worker 已经接走的另一种事实。
+ * 两者都算这一次上传成功（后端受理了），也都不显示分块数。
+ */
+export type UploadRowStatus =
+  | 'pending'
+  | 'success'
+  | 'failed'
+  | 'queued'
+  | 'processing'
+  | 'unknown'
 
-/** 上传结果行。`chunk_count` 只在终态有意义；处理中保持 null 由页面显示「—」。 */
+/** 上传结果行。`chunk_count` 只在终态有意义；排队中 / 索引中保持 null 由页面显示「—」。 */
 export interface UploadResultRow {
   key: string
   fileName: string
@@ -33,10 +46,19 @@ export interface UseUploadDocumentsOptions {
 
 /** 回执里的整数状态折成页面可直接分文案的枚举；未知值不猜，交给页面显「未知状态」。 */
 function rowStatusOf(receiptStatus: number): UploadRowStatus {
-  if (receiptStatus === 1) return 'success'
-  if (receiptStatus === 2) return 'failed'
-  if (receiptStatus === 3) return 'processing'
+  if (receiptStatus === DOCUMENT_STATUS.SUCCESS) return 'success'
+  if (receiptStatus === DOCUMENT_STATUS.FAILED) return 'failed'
+  if (receiptStatus === DOCUMENT_STATUS.QUEUED) return 'queued'
+  if (receiptStatus === DOCUMENT_STATUS.PROCESSING) return 'processing'
   return 'unknown'
+}
+
+/** 回执里这两种状态都意味着「还没开始切」，`chunk_count` 的 0 不是结论。 */
+function isNotYetChunked(receiptStatus: number): boolean {
+  return (
+    receiptStatus === DOCUMENT_STATUS.QUEUED ||
+    receiptStatus === DOCUMENT_STATUS.PROCESSING
+  )
 }
 
 function errorMessageOf(error: unknown): string {
@@ -51,10 +73,13 @@ export function useUploadDocuments(options: UseUploadDocumentsOptions) {
   const running = ref(false)
   let seq = 0
 
-  // 「成功」包含 status=3：上传只做登记，后端已受理并投递索引任务就是这一次成功；
+  // 「成功」包含排队中 / 索引中：上传只做登记，后端已受理并投递索引任务就是这一次成功；
   // 把它算成失败或未完成会让整批上传看起来全灭。
   const succeededCount = computed(
-    () => results.value.filter((row) => row.status === 'success' || row.status === 'processing').length,
+    () =>
+      results.value.filter(
+        (row) => row.status === 'success' || row.status === 'queued' || row.status === 'processing',
+      ).length,
   )
   const failedCount = computed(
     () => results.value.filter((row) => row.status === 'failed').length,
@@ -91,9 +116,9 @@ export function useUploadDocuments(options: UseUploadDocumentsOptions) {
             fileName: item.fileName,
             status: rowStatusOf(receipt.status),
             documentId: receipt.document_id,
-            // status=3 的 chunk_count 恒为 0（后台还没开始切），null 让页面显示「—」，
+            // 排队中 / 索引中的 chunk_count 恒为 0（后台还没开始切），null 让页面显示「—」，
             // 避免把「尚未切片」误读成「没切出东西」。
-            chunkCount: receipt.status === 3 ? null : receipt.chunk_count,
+            chunkCount: isNotYetChunked(receipt.status) ? null : receipt.chunk_count,
             errorMessage: receipt.error_message,
             errorCode: null,
           }

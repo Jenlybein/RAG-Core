@@ -148,7 +148,7 @@ async def test_new_content_creates_the_next_draft_and_archives_the_old_one(
     doc = await env.db.get(Document, DOC_ID)
     assert doc.current_version == 2, "当前稿指针必须前移"
     assert doc.content == NEW_CONTENT, "文档行是当前稿的热路径快照"
-    assert doc.status == DocumentStatus.PROCESSING, "新稿要重建，所以置处理中"
+    assert doc.status == DocumentStatus.QUEUED, "新稿要重建，所以置排队中（等 Worker 接走）"
     assert doc.index_claimed_at is None, "排队不盖租约：Worker 才是唯一抢占者"
 
 

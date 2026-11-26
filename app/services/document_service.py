@@ -1,6 +1,6 @@
 """文档业务：异步上传登记 + 准入判定 + 状态机。
 
-上传只做登记：校验知识库 → **判定格式准入** → 建 ``Document(status=PROCESSING)``
+上传只做登记：校验知识库 → **判定格式准入** → 建 ``Document(status=QUEUED)``
 → 文件模式落盘 / JSON 模式直接落正文 → 登记「提交后投递索引任务」 → 立即返回。
 **请求线程不解析、不向量化**，进程内的耗时与文档大小无关；进度由
 ``GET /documents?kb_id=`` 轮询，后端的解析 / 切块 / 向量化与失败留痕、脱敏文案
@@ -117,7 +117,7 @@ async def upload(
             source_type=source_type,
             source_file_path=source_file_path,
             source_filename=source_filename,
-            status=DocumentStatus.PROCESSING,
+            status=DocumentStatus.QUEUED,
             # 当前稿指针显式写成第 1 稿（与列默认值同一个常量）：投递任务时要把它放进
             # 载荷（#173），而列默认值要到 INSERT 那一刻才生效——这一行在 ``create``
             # 之前就已经要读了，别让「读到的指针」取决于有没有 flush 过。
@@ -131,7 +131,7 @@ async def upload(
             title=title or "",
             content=content,
             source_type=source_type,
-            status=DocumentStatus.PROCESSING,
+            status=DocumentStatus.QUEUED,
             current_version=DEFAULT_DOC_VERSION,
         )
 
@@ -165,7 +165,7 @@ async def upload(
     return {
         "document_id": document_id,
         "kb_id": kb_id,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "error_message": None,
         "source_type": source_type,

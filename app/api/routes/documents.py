@@ -2,12 +2,13 @@
 
 只有一个模块、一个 router：
   * ``POST /documents/upload`` —— 单端点按 content-type 分流（multipart = 文件模式，
-    其余 = JSON 模式）。只登记 + 投递索引任务，立即返回 ``status=3``。
+    其余 = JSON 模式）。只登记 + 投递索引任务，立即返回 ``status=4``（排队中）。
   * ``GET /documents?kb_id=`` —— 该知识库下的文档列表，异步化后调用方唯一的进度观测口。
   * ``POST /documents/{document_id}/reindex?reparse=&force=`` —— 单文档重建：守卫 →
     标记排队（不盖租约）→ 由请求事务提交 → 投递；purge、抢占与写入仍只在 Worker
     的事务里发生。
   * ``DELETE /documents/{document_id}`` —— 守卫通过后按租户清除切片、删原文件、删记录。
+    排队中的文档可以直接删（=撤回排队，ADR-0034 决策一）。
   * ``POST /documents/{document_id}/versions`` —— 提交一份新正文，得到下一个稿次
     （#175；写路径的顺序见 ``app.services.document_version_service``）。
   * ``GET /documents/{document_id}/versions?include_content=`` —— 这篇文档改过几稿，
@@ -235,12 +236,12 @@ async def reindex_document(
     key: DevKeyContext = Depends(get_current_key),
     tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ReindexDocumentData]:
-    """守卫 → 标记排队（不盖租约）→ 由 ``tx`` 提交 → 投递，立即返回 ``status=3``。
+    """守卫 → 标记排队（不盖租约）→ 由 ``tx`` 提交 → 投递，立即返回 ``status=4``。
 
     顺序是契约的一部分：先按 id + 租户取文档（缺失 / 跨租户统一 20016），再走
     ``ensure_reindexable``（有效处理中 20025；成功且未 ``force`` 20027），然后
-    ``prepare_for_indexing`` 把可重建的行置成「已排队、未开工」
-    （``index_claimed_at=NULL``；不在这里盖租约）。准备失败说明这一行已被一个
+    ``prepare_for_indexing`` 把可重建的行置成「排队中」
+    （``status=4``、``index_claimed_at=NULL``；不在这里盖租约）。准备失败说明这一行已被一个
     有效租约占住（守卫看的是旧快照），可能刚好有 Worker 抢先；仍按 20025 回绝。
     提交后把任务交给 Worker；
     **Worker 是唯一的租约抢占者**（``try_claim_for_indexing``），它进来时才盖
@@ -292,7 +293,7 @@ async def reindex_document(
     return ok(
         ReindexDocumentData(
             document_id=document_id,
-            status=DocumentStatus.PROCESSING,
+            status=DocumentStatus.QUEUED,
             chunk_count=0,
             reparse=reparse,
         )
@@ -315,7 +316,8 @@ async def delete_document(
     ``purge_document_chunks`` 遍历存储列表（向量存储 + 关键词检索，接线见
     ``app.services.chunk_store.build_chunk_stores``），因此删文档不需要知道存储
     形态；删除切片同样强制带租户（ADR-0006）。有效处理中（租约未过期）拒绝删除
-    （20025）；租约过期视为 Worker 卡死，允许删除。
+    （20025）；**排队中可以删**——那等于撤回排队，迟到的任务在抢占那一步抢不到，
+    不产生切片（ADR-0034 决策一）；租约过期视为 Worker 卡死，同样允许删除。
 
     **版本行单独删一次**（#172）：一张表都没有外键（仓库零外键），库不会替我们级联，
     所以由这条路径显式删，且与清除切片、删行同一笔事务。

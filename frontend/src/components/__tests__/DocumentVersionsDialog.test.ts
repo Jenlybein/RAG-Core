@@ -72,7 +72,7 @@ const VERSIONS = {
   ],
 }
 
-function mountDialog(props: { busy?: boolean } = {}) {
+function mountDialog(props: { documentStatus?: number | null } = {}) {
   return mount(DocumentVersionsDialog, {
     props: {
       modelValue: true,
@@ -94,7 +94,7 @@ beforeEach(() => {
   mocks.fetchVersions.mockResolvedValue(VERSIONS)
   // 回执按**被请求的那一稿**回答：写死一个稿号会让「参数带错」这类接线错误看起来正常。
   mocks.rollback.mockImplementation((documentId: string, version: number) =>
-    Promise.resolve({ document_id: documentId, version, previous_version: 3, status: 3 }),
+    Promise.resolve({ document_id: documentId, version, previous_version: 3, status: 4 }),
   )
 })
 
@@ -125,11 +125,20 @@ describe('DocumentVersionsDialog：列表', () => {
     ])
   })
 
-  it('文档正在索引时不给回滚按钮（后端会回 20025）', async () => {
-    const wrapper = mountDialog({ busy: true })
+  it('文档正在索引（3）时不给回滚按钮（后端会回 20025）', async () => {
+    const wrapper = mountDialog({ documentStatus: 3 })
     await flushPromises()
 
     expect(rollbackButtons(wrapper)).toHaveLength(0)
+  })
+
+  it('文档在排队中（4）时照样给回滚按钮：排队中可回滚（=替换排队）', async () => {
+    // 四态的关键区别：排队中没有 Worker 在写切片，后端守卫（只看租约）不拦。
+    // 这里若跟着「索引中」一起被禁，排队就又成了囚笼。
+    const wrapper = mountDialog({ documentStatus: 4 })
+    await flushPromises()
+
+    expect(rollbackButtons(wrapper)).toHaveLength(2)
   })
 
   it('读取失败时把后端原话显示出来，而不是假装空列表', async () => {

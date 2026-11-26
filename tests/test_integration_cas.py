@@ -121,7 +121,7 @@ def _seed(
 
 
 def test_prepare_then_claim_succeeds_on_real_postgres(db: Session) -> None:
-    """重建契约：准备入队不盖租约，Worker 随后必须抢得到。"""
+    """重建契约：准备入队只写排队中、不盖租约，Worker 随后必须抢得到。"""
 
     _seed(db, "it-prepare-then-claim", status=DocumentStatus.SUCCESS)
 
@@ -132,7 +132,7 @@ def test_prepare_then_claim_succeeds_on_real_postgres(db: Session) -> None:
 
     row = db.get(Document, "it-prepare-then-claim")
     assert row is not None
-    assert row.status == DocumentStatus.PROCESSING
+    assert row.status == DocumentStatus.QUEUED
     assert row.index_claimed_at is None
 
     assert document_repository.try_claim_for_indexing(
@@ -142,6 +142,7 @@ def test_prepare_then_claim_succeeds_on_real_postgres(db: Session) -> None:
 
     row = db.get(Document, "it-prepare-then-claim")
     assert row is not None
+    assert row.status == DocumentStatus.PROCESSING, "抢占即 4 → 3"
     assert row.index_claimed_at is not None
 
 
@@ -173,7 +174,7 @@ def test_release_re_enables_the_claim_on_real_postgres(db: Session) -> None:
 
     row = db.get(Document, "it-release-reclaim")
     assert row is not None
-    assert row.status == DocumentStatus.PROCESSING
+    assert row.status == DocumentStatus.QUEUED, "释放租约把 3 归一成 4：它现在就是在排队"
     assert row.index_claimed_at is None
 
     assert document_repository.try_claim_for_indexing(

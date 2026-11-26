@@ -52,7 +52,7 @@ class DocumentListData(BaseModel):
 class ReindexDocumentData(BaseModel):
     """重建索引的受理回执：文档已被重新置为处理中并投递。
 
-    ``status`` 恒为 ``PROCESSING``、``chunk_count`` 恒为 0：重建端点只受理，
+    ``status`` 恒为 ``QUEUED``（4 排队中）、``chunk_count`` 恒为 0：重建端点只受理，
     purge + 写入 + 状态回写全部发生在 Worker 的同一个事务里，调用方要确认终态
     仍需轮询 ``GET /documents?kb_id=``。``reparse`` 回显是否要求重解析原始文件。
     """
@@ -83,7 +83,7 @@ class CreateDocumentVersionRequest(BaseModel):
 
 
 class CreateDocumentVersionData(BaseModel):
-    """建版本的受理回执：新稿次已落库、文档已置处理中并投递了重建。
+    """建版本的受理回执：新稿次已落库、文档已置排队中并投递了重建。
 
     ``version`` 是刚建好的稿号，``previous_version`` 是提交生效前的那一稿——两者一起给，
     调用方不必再列一次版本就知道「这次改的是第几稿」。``checksum`` 是**规范化后**正文的
@@ -129,13 +129,13 @@ class DocumentVersionListData(BaseModel):
 
 
 class RollbackDocumentVersionData(BaseModel):
-    """回滚受理的回执：指针已拨回 ``version``，文档已置处理中并投递了重建。
+    """回滚受理的回执：指针已拨回 ``version``，文档已置排队中并投递了重建。
 
     ``previous_version`` 是回滚生效前的那一稿——调用方不必再列一次版本就知道「从哪一稿
     退回哪一稿」。与建版本的回执不同，这里**没有 ``checksum``**：回滚不产生新正文，
     目标稿的校验和早就在版本行上了（列版本能拿到）。
 
-    ``status`` 恒为 ``PROCESSING``：回滚之后切片要重建，终态仍需轮询
+    ``status`` 恒为 ``QUEUED``（4 排队中）：回滚之后切片要重建，终态仍需轮询
     ``GET /documents?kb_id=``——「回滚受理」不等于「已经能检索到新内容」。
     """
 

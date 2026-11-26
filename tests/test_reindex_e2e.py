@@ -218,7 +218,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
     assert body["code"] == 0
     assert body["data"] == {
         "document_id": DOC_ID,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "reparse": False,
     }
@@ -236,7 +236,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
 
     doc = _read_document(reindex_env.database_path)
     assert doc is not None
-    assert doc.status == DocumentStatus.PROCESSING
+    assert doc.status == DocumentStatus.QUEUED
     assert doc.index_claimed_at is None, "路由只准备入队，绝不盖租约"
 
     service = IndexingService(

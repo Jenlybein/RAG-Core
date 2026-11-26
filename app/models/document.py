@@ -24,7 +24,10 @@ class Document(Base):
     source_type: Mapped[str] = mapped_column(String(32), default="text")
     source_file_path: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     source_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
-    status: Mapped[int] = mapped_column(Integer, default=DocumentStatus.PROCESSING)
+    # 默认「排队中」（4）：刚出现的文档行只可能是被收下、还没人接（ADR-0034 决策一）。
+    # 三态时代这里默认 3，于是「没有租约的 3」成了新行的常态，把「在排队」与「在跑」
+    # 混成了同一个字面值。真正写状态的是入队侧与 Worker（它们都显式给值），这只是兜底。
+    status: Mapped[int] = mapped_column(Integer, default=DocumentStatus.QUEUED)
     # 当前稿指针（指向第几稿）。与 index_version（第几次重建）正交，见 ADR-0005。
     # 名字与「稿号」分开：切片的 ``chunks.doc_version`` 才是「这一片属于第几稿」，
     # 这里只说文档行现在指着哪一稿。自 #174 起它是**检索的范围条件**：向量 / 折叠 /

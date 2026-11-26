@@ -240,7 +240,7 @@ def test_after_rolling_back_to_draft_one_every_retrievable_slice_is_draft_one(
 
     state = _read_state(rollback_env.database_path)
     assert state.pointer == 1
-    assert state.status == DocumentStatus.PROCESSING
+    assert state.status == DocumentStatus.QUEUED, "回滚之后要先重建，所以置排队中"
     assert state.content == CONTENTS[1], "文档行先同步成目标稿正文（热路径快照）"
     assert state.versions == [(1, "current"), (2, "archived"), (3, "archived")]
 

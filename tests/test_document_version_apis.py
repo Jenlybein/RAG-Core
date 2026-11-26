@@ -263,14 +263,14 @@ def test_submitting_new_content_returns_the_next_draft(api: SimpleNamespace) -> 
     assert body["data"]["document_id"] == DOC_ID
     assert body["data"]["version"] == 2
     assert body["data"]["previous_version"] == 1
-    assert body["data"]["status"] == DocumentStatus.PROCESSING
+    assert body["data"]["status"] == DocumentStatus.QUEUED
     assert len(body["data"]["checksum"]) == 64
 
     assert api.rows() == [(1, "archived", OLD_CONTENT), (2, "current", NEW_CONTENT)]
     doc = api.document()
     assert doc.current_version == 2
     assert doc.content == NEW_CONTENT
-    assert doc.status == DocumentStatus.PROCESSING
+    assert doc.status == DocumentStatus.QUEUED, "新稿要重建，所以置排队中（等 Worker 接走）"
     assert doc.index_claimed_at is None, "排队不盖租约：Worker 才是唯一抢占者"
 
 

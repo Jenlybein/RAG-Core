@@ -385,13 +385,15 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         return len(_list_documents(_db, kb_id, tenant_id=tenant_id))
 
     def _count_processing(_db: Any, *, tenant_id: str) -> int:
+        """替身版「本租户占着 Worker 的文档数」：只数租约有效的索引中（ADR-0034 决策一）。"""
         lease = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS)
         return sum(
             1
             for doc in session._rows.get(Document, [])
             if doc.tenant_id == tenant_id
             and doc.status == DocumentStatus.PROCESSING
-            and (doc.index_claimed_at is None or doc.index_claimed_at >= lease)
+            and doc.index_claimed_at is not None
+            and doc.index_claimed_at >= lease
         )
 
     def _prepare(
@@ -407,11 +409,16 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         doc = _document_lookup(None, document_id, tenant_id=tenant_id)
         if doc is None:
             return False
-        if doc.status == DocumentStatus.PROCESSING and doc.index_claimed_at is not None:
-            return False
+        lease = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS)
+        if (
+            doc.status == DocumentStatus.PROCESSING
+            and doc.index_claimed_at is not None
+            and doc.index_claimed_at >= lease
+        ):
+            return False  # 有效租约 = 真在跑，抢不走；排队中 / 过期 / 失败都可准备
         if doc.status == DocumentStatus.SUCCESS and not allow_success:
             return False
-        doc.status = DocumentStatus.PROCESSING
+        doc.status = DocumentStatus.QUEUED
         doc.index_claimed_at = None
         doc.error_message = None
         return True
@@ -794,7 +801,7 @@ def test_delete_kb_of_another_tenant_or_missing_is_not_found(kbs: _Harness, kb_i
 # ─────────────────────────────────────────────────────────────────────── 上传文档
 
 
-def test_json_upload_returns_processing_and_audits_without_the_body_text(
+def test_json_upload_returns_queued_and_audits_without_the_body_text(
     kbs: _Harness,
 ) -> None:
     """单端点 JSON 分支：立即回 status=3，审计只留 id/title/status，不留正文。"""
@@ -809,13 +816,13 @@ def test_json_upload_returns_processing_and_audits_without_the_body_text(
 
     data = kbs.data(response)
     assert data["kb_id"] == KB_ALPHA_ONE
-    assert data["status"] == DocumentStatus.PROCESSING
+    assert data["status"] == DocumentStatus.QUEUED
     assert data["chunk_count"] == 0
     assert data["source_type"] == "markdown"
 
     document = kbs.document(data["document_id"])
     assert document.content == CONTENT_SENTINEL, "JSON 分支直接落正文，不读请求线程之外的解析"
-    assert document.status == DocumentStatus.PROCESSING
+    assert document.status == DocumentStatus.QUEUED
 
     assert kbs.enqueued == [
         {
@@ -834,11 +841,11 @@ def test_json_upload_returns_processing_and_audits_without_the_body_text(
     assert entry.action == "doc.upload"
     assert entry.target == f"doc:{data['document_id']}"
     assert entry.before_snapshot is None
-    assert entry.after_snapshot["status"] == DocumentStatus.PROCESSING
+    assert entry.after_snapshot["status"] == DocumentStatus.QUEUED
     assert CONTENT_SENTINEL not in json.dumps(entry.after_snapshot, ensure_ascii=False)
 
 
-def test_multipart_upload_stores_the_file_and_returns_processing(kbs: _Harness) -> None:
+def test_multipart_upload_stores_the_file_and_returns_queued(kbs: _Harness) -> None:
     """文件分支：落盘由 ``document_service.upload`` 收口，正文留给 Worker 解析。"""
 
     assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
@@ -851,7 +858,7 @@ def test_multipart_upload_stores_the_file_and_returns_processing(kbs: _Harness) 
     )
 
     data = kbs.data(response)
-    assert data["status"] == DocumentStatus.PROCESSING
+    assert data["status"] == DocumentStatus.QUEUED
     assert data["source_type"] == "markdown"
 
     document = kbs.document(data["document_id"])
@@ -887,7 +894,7 @@ def test_upload_to_another_tenant_or_missing_kb_is_not_found(kbs: _Harness, kb_i
 # ─────────────────────────────────────────────────────────────────────── 重建索引
 
 
-def test_reindex_failed_document_returns_processing_and_audits_before_after(
+def test_reindex_failed_document_returns_queued_and_audits_before_after(
     kbs: _Harness,
 ) -> None:
     assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
@@ -901,7 +908,7 @@ def test_reindex_failed_document_returns_processing_and_audits_before_after(
     data = kbs.data(response)
     assert data == {
         "document_id": DOC_ALPHA_FAILED,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "reparse": True,
     }
@@ -928,7 +935,7 @@ def test_reindex_failed_document_returns_processing_and_audits_before_after(
     assert entry.action == "doc.reindex"
     assert entry.target == f"doc:{DOC_ALPHA_FAILED}"
     assert entry.before_snapshot["status"] == DocumentStatus.FAILED
-    assert entry.after_snapshot["status"] == DocumentStatus.PROCESSING
+    assert entry.after_snapshot["status"] == DocumentStatus.QUEUED
     assert entry.after_snapshot["reparse"] is True
     assert CONTENT_SENTINEL not in json.dumps(entry.before_snapshot, ensure_ascii=False)
 
@@ -958,7 +965,7 @@ def test_reindex_success_document_with_force_is_prepared(kbs: _Harness) -> None:
         headers=WRITE_HEADERS,
     )
 
-    assert kbs.data(response)["status"] == DocumentStatus.PROCESSING
+    assert kbs.data(response)["status"] == DocumentStatus.QUEUED
     assert kbs.prepares == [
         {
             "document_id": DOC_ALPHA_DONE,

@@ -753,9 +753,9 @@ async def _ensure_knowledge_base(
 
 
 async def _ensure_document(db: Any, doc: CorpusDoc) -> None:
-    """把文档重置成「已排队、未开工」——与运维脚本用的那个状态准备一致。
+    """把文档重置成「排队中（4）」——与运维脚本用的那个状态准备一致。
 
-    ``status=PROCESSING`` + ``index_claimed_at=NULL`` 正好是 Worker 可抢占的条件，
+    ``status=QUEUED`` + ``index_claimed_at=NULL`` 正好是可抢占条件的「排队中」那一支，
     所以重跑不会撞上「另一位 Worker 持有租约」而静默跳过。
     """
 
@@ -770,7 +770,7 @@ async def _ensure_document(db: Any, doc: CorpusDoc) -> None:
                     title=doc.title,
                     content=doc.text,
                     source_type="markdown",
-                    status=DocumentStatus.PROCESSING,
+                    status=DocumentStatus.QUEUED,
                     index_claimed_at=None,
                 )
             )
@@ -778,7 +778,7 @@ async def _ensure_document(db: Any, doc: CorpusDoc) -> None:
             row.kb_id = doc.kb_id
             row.title = doc.title
             row.content = doc.text
-            row.status = DocumentStatus.PROCESSING
+            row.status = DocumentStatus.QUEUED
             row.index_claimed_at = None
             row.error_message = None
             row.updated_at = now()

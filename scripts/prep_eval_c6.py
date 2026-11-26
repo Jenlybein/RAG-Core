@@ -545,7 +545,7 @@ class _NullPublisher:
     """把「投递索引任务」换成记账版：本脚本自己就地跑 Worker 的那一段。
 
     为什么可以这样：``enqueue_document`` 的唯一职责是把 ``document_id`` 交给 Broker。本地
-    没有 Worker，投出去只会让那一行 ``PROCESSING`` 永远躺着；就地跑
+    没有 Worker，投出去只会让那一行停在 ``QUEUED``（排队中）永远等不到人接；就地跑
     ``IndexingService.index_existing_document``（Worker 任务体的同一段）才是「索引真的发生了」。
     注入点就是既有那两个槽（``offline 套件`` 用的是同一条缝）。
     """
