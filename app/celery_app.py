@@ -47,7 +47,14 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
     # 没有 include，Worker 进程永远不会 import 任务模块：enqueue_document 投出去的
     # 任务会被当成 "Received unregistered task" 直接消费掉，索引流水线静默不跑。
-    include=["app.tasks.indexing", "app.tasks.side_evidence", "app.tasks.index_build"],
+    include=[
+        "app.tasks.indexing",
+        "app.tasks.side_evidence",
+        "app.tasks.index_build",
+        # 清扫器（#225）：Worker 必须 import 它，否则 beat 投出来的消息会被当作
+        # "unregistered task" 消费掉——症状是「清扫器配了但从来没跑」。
+        "app.tasks.index_sweeper",
+    ],
 )
 celery_app.conf.update(
     task_acks_late=True,
@@ -70,6 +77,20 @@ celery_app.conf.update(
         "app.tasks.index_build.dispatch_build_task": {"queue": "build"},
         "app.tasks.index_build.build_document_task": {"queue": "build"},
         "app.tasks.index_build.build_index_version_task": {"queue": "build"},
+        # 清扫器（#225）走**维护队列**：它必须在「所有并发槽位都被构建占满」时也能跑——
+        # 塞进 build 队列会被自己的队列堵住，那是最讽刺的失败模式。
+        "app.tasks.index_sweeper.sweep_index_state_task": {"queue": "maintenance"},
+    },
+    # 周期性任务（#225）：没有请求的时候也要把「卡住」的东西收掉。
+    #
+    # 用 ``beat_schedule`` 而不是在 worker 启动钩子里跑：钩子只在**进程启动时**执行一次，
+    # 而清扫要的是「每 5 分钟」。这也要求部署时跑一个 ``celery beat`` 进程——compose 里
+    # 有 ``beat`` 服务，见 ``deploy/docker-compose.yml``。
+    beat_schedule={
+        "sweep-index-state": {
+            "task": "app.tasks.index_sweeper.sweep_index_state_task",
+            "schedule": 5 * 60.0,
+        },
     },
 )
 

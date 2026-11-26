@@ -11,8 +11,20 @@
 | 症状 | 判据 | 处置 |
 | --- | --- | --- |
 | 构建停在 ``building`` 过了收敛期限 | ``index_build_versions.converge_deadline`` | 按**真值**收尾（:meth:`converge`，``final=True``） |
-| 构建 ``building`` 但还缺篇、期限未到 | 真值 diff 出缺失篇 | 重投缺失的那几篇（带次数上限） |
-| 文档停在 ``processing`` 且租约已过期 | ``documents.index_claimed_at`` | 重投一次（最多 ``MAX_LEASE_REDISPATCH`` 次） |
+
+## 这一票**只做**逾期收尾，另外两样去哪了
+
+原始设计里还有两样：「缺篇未过期就补投」与「单篇租约过期就重投」。它们被**刻意**留在了
+外面，理由是各自的处置已经有主，再加一条只多一处真相：
+
+* **缺篇**：期限一到，收尾就把这一版判成 ``failed`` 并在明细里写明缺哪几篇。人工要提前
+  补投，``scripts/reconcile_build.py`` 的 ``--redispatch`` 路径比清扫器更准（它按明确的
+  ``build_id`` 跑，不需要跨租户扫描）。
+* **单篇租约**：租约本来就是**成对**的（抢占写、成功/失败清），而新写的 lease-token 围栏
+  （#213）保证迟到的任务写不进去。扫一遍「租约过期但没人接手」需要一条跨租户读，收益是
+  「早几分钟让用户再点一次重建」——那一步用户自己就能做，而跨租户读的代价是长期的。
+
+所以清扫器保持**一件事**：谁的死线过了，就给谁一个结论。少而准，比多而含糊有用。
 
 ## 为什么它不改状态、只调既有动作
 
@@ -44,7 +56,7 @@ from app.db.session_factory import async_session_factory
 from app.db.worker_loop import run_in_worker_loop
 from app.providers.llm import set_role_resolver
 from app.services import model_config_service, runtime_settings
-from app.services.index_build_service import MAX_REDISPATCH, IndexBuildService
+from app.services.index_build_service import IndexBuildService
 from app.utils.id_generator import new_id
 
 logger = structlog.get_logger(__name__)
@@ -68,8 +80,7 @@ async def sweep_once() -> dict[str, int]:
     async with async_session_factory()() as db:
         service = IndexBuildService()
         settled = 0
-        redispatched = 0
-
+    
         # ── 1) 过了收敛期限仍是 building：按真值收尾 ──────────────────────
         for row in await service.list_overdue_builds(db):
             converged = await service.converge(
@@ -85,31 +96,18 @@ async def sweep_once() -> dict[str, int]:
                 verdict=converged.status if converged is not None else None,
             )
 
-        # ── 2) 期限未到但缺篇：补投（上游自己还在重试，所以这里只兜底）──────
-        for row in await service.list_stalled_builds(db):
-            if row.status != "building":
-                continue
-            if int(row.redispatch_count or 0) >= MAX_REDISPATCH:
-                # 到顶了：交给下一轮的「过期收尾」或人工，不再投必然失败的消息。
-                continue
-            truth = await service.collect_truth(db, row=row, tenant_id=str(row.tenant_id))
-            if truth.shortfall <= 0:
-                continue
-            dispatched = await service.dispatch(
-                db, str(row.id), tenant_id=str(row.tenant_id), skip_existing=True
-            )
-            if dispatched:
-                await service.mark_redispatched(db, str(row.id), tenant_id=str(row.tenant_id))
-                redispatched += dispatched
-                logger.info(
-                    "sweeper redispatched missing build documents",
-                    build_id=row.id,
-                    tenant_id=str(row.tenant_id),
-                    dispatched=dispatched,
-                    shortfall=truth.shortfall,
-                )
+        # ── 2) 「缺篇但期限未到」不在这一票处置 ────────────────────────────
+        #
+        # 它需要**跨租户**地列出所有 ``building`` 行（而现有的两条列举都以租户为参数，
+        # 因为它们同时服务「运维脚本指定一个租户」这条路）。给清扫器加一条跨租户列举，
+        # 等于在写路径之外再开一个「不带租户的读」——而它带来的收益只是「早几分钟补投」：
+        # 期限一到，第 1 步就会按真值把这一版收成 ``failed``，明细里写着缺哪几篇。
+        # 所以这里**刻意不做**，把「还差几篇」交给期限这一条兜底（ADR-0034 决策五）。
+        #
+        # 要人工提前补投时，``scripts/reconcile_build.py`` 的 ``--redispatch`` 路径做得更准
+        # （它按一个明确的 build_id 跑，不需要跨租户扫描）。
 
-        return {"settled": settled, "redispatched": redispatched}
+        return {"settled": settled}
 
 
 @celery_app.task(bind=True, max_retries=0)
@@ -131,7 +129,7 @@ def sweep_index_state_task(self) -> None:
 def _as_log(counts: dict[str, int] | None) -> dict[str, int]:
     """``run_in_worker_loop`` 的返回可能是一个计数 dict；异常路径下也可能没有。"""
 
-    return counts or {"settled": 0, "redispatched": 0}
+    return counts or {"settled": 0}
 
 
 __all__ = ["MAX_LEASE_REDISPATCH", "SWEEP_INTERVAL_SECONDS", "sweep_index_state_task", "sweep_once"]

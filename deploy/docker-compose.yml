@@ -134,10 +134,24 @@ services:
     # 与 api 共用同一个镜像标签：Docker 只构建一次，两边跑同一份代码。
     image: rag-core-app:local
     container_name: rag-worker
-    # **只消费默认队列**：不加 ``-Q build``，否则构建任务会被常规 worker 抢走，
-    # `worker-build` 那条隔离就名存实亡（见下面 worker-build 的注释）。
+    # **不消费 `build` 队列**：加了它构建任务会被常规 worker 抢走，`worker-build` 那条
+    # 隔离就名存实亡（见下面 worker-build 的注释）。
+    #
+    # 但**要消费 `maintenance`**（#225 的清扫器）：它必须在「构建把两个槽位都占满」时也
+    # 跑得起来，而 default + maintenance 两条队列共用这 2 个槽位本来是竞争——清扫任务很轻
+    # （几毫秒的读与收敛），排进来最多让一次上传晚几百毫秒，比「清扫器被自己的队列饿死」
+    # 好得多。
     command:
-      ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=2"]
+      [
+        "celery",
+        "-A",
+        "app.celery_app:celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=2",
+        "-Q",
+        "celery,maintenance",
+      ]
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:123456@postgres:5432/rag_db
@@ -160,6 +174,29 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── 定时调度（第 17 步 · #225 的清扫器需要它）─────────────────────────────────
+  # 为什么必须有这个进程：``beat_schedule`` 只是**声明**，真正把任务按时投出去的是
+  # ``celery beat``。没有它，清扫器永远不跑——而「配了但没跑」正是这一票要消灭的那类
+  # 静默失效（它比没配更糟：日志里有过一条配置，运维会以为已经兜住了）。
+  #
+  # 只跑一个实例：多副本的 beat 会把同一个任务投多次（清扫器幂等，但队列会被喂成假的
+  # 队列长度）。要横向扩这只进程，得先上分布式锁，那是另一个票。
+  beat:
+    image: rag-core-app:local
+    container_name: rag-beat
+    env_file: ../.env
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:123456@postgres:5432/rag_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      REDIS_URL: redis://redis:6379/2
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+    command:
+      ["celery", "-A", "app.celery_app:celery_app", "beat", "--loglevel=info"]
+    depends_on:
       redis:
         condition: service_healthy
 
