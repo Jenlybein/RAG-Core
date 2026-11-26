@@ -44,13 +44,15 @@
         vertical-align: top;
       }
       .tier-table .col-key {
+        width: 38%;
+      }
+      /* 值这一列要放下批大小那行的一句旁注（「当前模型 X（单批上限 Y），建议 ≤ Y」），
+         34% 在 1280 宽会把「≤ 20」挤到第二行；两列各让 2% / 6% 给值列。 */
+      .tier-table .col-value {
         width: 40%;
       }
-      .tier-table .col-value {
-        width: 34%;
-      }
       .tier-table .col-src {
-        width: 26%;
+        width: 22%;
       }
       .tier-table .select {
         width: 180px;
@@ -116,6 +118,36 @@
         flex-wrap: wrap;
         align-items: center;
         gap: var(--sp-2);
+      }
+
+      /* 只读值（需重启档里没放开编辑的那些行）：等宽、可断行，连接串别把列撑破 */
+      .val-ro {
+        display: block;
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+        line-height: 1.6;
+        color: var(--text-regular);
+        word-break: break-all;
+      }
+
+      /* 批大小那一行的两句旁注（票 #224）：
+         第一句是「这个模型一批能吃几条」，第二句是「保存不等于生效」。
+         颜色全部走令牌，深色模式跟着换，不写死。 */
+      .batch-hint {
+        margin-top: 6px;
+        font-size: var(--fs-12);
+        line-height: 1.6;
+        color: var(--muted);
+      }
+      .batch-notice {
+        display: inline-block;
+        margin-top: 6px;
+        padding: 2px 8px;
+        border-radius: 6px;
+        background: var(--accent-soft);
+        color: var(--text-regular);
+        font-size: var(--fs-12);
+        line-height: 1.6;
       }
 
       /* 来源：一枚点 + 等宽短标签。实心 = 已被面板覆盖，空环 = 来自 .env */
@@ -230,13 +262,12 @@
             </button>
           </div>
 
-          <!-- ── 第二档：待重启（收起） ── -->
-          <div class="collapse-item">
-            <button class="collapse-trigger" type="button" aria-expanded="false">
+          <!-- ── 第二档：待重启（展开，因为票 #224 在这一档里放开了一项） ── -->
+          <div class="collapse-item is-open">
+            <button class="collapse-trigger" type="button" aria-expanded="true">
               <span class="trigger-main">
                 <span class="tier-title">可迁但需重启 + 重建</span>
-                <span class="hint">8 项</span>
-                <span class="badge badge--fail">1 项需注意</span>
+                <span class="hint">12 项</span>
               </span>
               <svg
                 class="chev"
@@ -251,6 +282,164 @@
                 <path d="m4 6 4 4 4-4" />
               </svg>
             </button>
+
+            <!--
+              这一档默认只读（改了要重启进程 / 重建数据）。唯一的例外是 EMBEDDING_BATCH_SIZE：
+              它只决定「一次请求塞几条切片」，不改已落库数据的形状，所以给一个输入框，
+              并在旁边写清当前模型的单批上限与「保存后需重启 Worker 生效」。
+            -->
+            <div class="collapse-body">
+              <div class="table-wrap">
+                <table class="table tier-table" aria-label="需重启档的检索参数">
+                  <thead>
+                    <tr>
+                      <th class="col-key">配置项</th>
+                      <th class="col-value">有效值</th>
+                      <th class="col-src">来源</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><p class="mono t-12 strong">EMBEDDING_MODEL</p></td>
+                      <td><span class="val-ro">qwen3.7-text-embedding</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">EMBEDDING_DIMENSIONS</p></td>
+                      <td><span class="val-ro">1536</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">EMBEDDING_PROVIDER</p></td>
+                      <td><span class="val-ro">openai_compatible</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <!-- 票 #224：这一档里唯一可编辑的一行 -->
+                    <tr>
+                      <td>
+                        <div class="key-line">
+                          <p class="mono t-12 strong">EMBEDDING_BATCH_SIZE</p>
+                          <span class="badge badge--ok">面板可改</span>
+                        </div>
+                      </td>
+                      <td>
+                        <div class="input-number">
+                          <span>10</span>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 7.5 3.5-3.5 3.5 3.5" />
+                            </svg>
+                          </i>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 4.5 3.5 3.5 3.5-3.5" />
+                            </svg>
+                          </i>
+                        </div>
+                        <p class="batch-hint">当前模型 qwen3.7-text-embedding（单批上限 20），建议 ≤ 20</p>
+                        <p class="batch-notice">保存后需重启 Worker 生效</p>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">MODEL_BASE_URL</p></td>
+                      <td>
+                        <span class="val-ro">https://dashscope.aliyuncs.com/compatible-mode/v1</span>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">MODEL_API_KEY</p></td>
+                      <td><span class="val-ro">••••••••a1b2</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">KEYWORD_SEARCH_PROVIDER</p></td>
+                      <td><span class="val-ro">elasticsearch</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">ELASTICSEARCH_URL</p></td>
+                      <td><span class="val-ro">http://localhost:9200</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">ELASTICSEARCH_INDEX</p></td>
+                      <td><span class="val-ro">rag_chunks</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">CHUNK_SIZE</p></td>
+                      <td><span class="val-ro">512</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">CHUNK_OVERLAP</p></td>
+                      <td><span class="val-ro">50</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">TABLE_MAX_ROWS_PER_CHUNK</p></td>
+                      <td><span class="val-ro">10</span></td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
 
           <!-- ── 第三档：热生效（展开） ── -->
