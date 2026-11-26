@@ -184,8 +184,11 @@ async def record_failure(db: AsyncSession, build_id: str, *, tenant_id: str, ent
         )
         .values(
             documents_done=IndexBuildVersion.documents_done + 1,
+            # `cast("[]", JSONB)` 会把**字符串** "[]" 转成 JSONB 里的一个字符串值，
+            # 于是第一次追加得到 `["[]", {...}]`——明细里凭空多一条空条目，界面上就会多出
+            # 一行空白。`jsonb_build_array()` 无参才是真的空数组 `[]`。
             failed_documents=func.coalesce(
-                IndexBuildVersion.failed_documents, cast("[]", JSONB)
+                IndexBuildVersion.failed_documents, func.jsonb_build_array()
             ).op("||")(merge),
         )
         .execution_options(synchronize_session=False)

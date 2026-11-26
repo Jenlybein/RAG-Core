@@ -377,8 +377,11 @@ def test_start_build_is_refused_when_the_library_has_documents_but_none_can_part
     with pytest.raises(AppError) as ctx:
         asyncio.run(_service().start_build(session, kb_id=KB_ID, tenant_id=TENANT_ID))
 
-    assert ctx.value.code == ErrorCode.PARAM_ERROR
+    # 用 20038 而不是 20015：20015 在前端有一句固定的通用文案，会盖掉后端写的人话。
+    assert ctx.value.code == ErrorCode.KB_NOTHING_TO_REBUILD
     assert "2 篇" in str(ctx.value), "文案要说清是「几篇、为什么都不行」"
+    # 有一篇在排队 → 该做的是「等」，不是「去点重建」（点重建会撞 20025）。
+    assert "等" in str(ctx.value)
 
 
 # ─────────────────────────────────────────────────────────── 失败留痕

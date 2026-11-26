@@ -39,7 +39,7 @@ import {
   type UploadRowStatus,
 } from '../composables/useUploadDocuments'
 import { useTreePolling } from '../composables/useTreePolling'
-import { errorText } from '../lib/errorText'
+import { errorCodeOf, errorText } from '../lib/errorText'
 import {
   deleteDocumentConsole,
   deleteKbConsole,
@@ -51,6 +51,7 @@ import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
 import type { DocumentContent, DocumentListItem } from '../types/document'
 import type { BuildProgress, KnowledgeBaseNode } from '../types/knowledgeBase'
 import { DOCUMENT_STATUS, isDocumentBusy } from '../utils/documentStatus'
+import { formatTokens } from '../utils/usageFormat'
 
 const SPLIT_LABELS: Record<string, string> = {
   structure: '结构切块',
@@ -104,12 +105,6 @@ function usagePercent(row: KnowledgeBaseNode): number {
  * 精确到个位在容量条上只是噪音：用户要判断的是「还剩多少」，不是「还差 137 个」。
  * 与后端的 `_format_tokens` 同一个取舍（那边也是量级 + 一位小数），两处显示才一致。
  */
-function formatTokens(value: number): string {
-  if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(1)} 亿`
-  if (value >= 10_000) return `${(value / 10_000).toFixed(1)} 万`
-  return String(value)
-}
-
 function chunkTotal(documents: DocumentListItem[]): number {
   return documents.reduce((sum, doc) => sum + (doc.chunk_count ?? 0), 0)
 }
@@ -290,6 +285,7 @@ type PendingAction =
   | { kind: 'deleteKb'; kb: KnowledgeBaseNode }
   | { kind: 'deleteDoc'; document: DocumentListItem }
   | { kind: 'reindex'; document: DocumentListItem }
+  | { kind: 'reindexAll'; kb: KnowledgeBaseNode }
 
 const pendingAction = ref<PendingAction | null>(null)
 const confirmOpen = ref(false)
@@ -299,6 +295,7 @@ const dialogTitle = computed(() => {
   if (action === null) return ''
   if (action.kind === 'deleteKb') return '删除知识库'
   if (action.kind === 'deleteDoc') return '删除文档'
+  if (action.kind === 'reindexAll') return '把这个库的所有文档重新排进重建队列'
   // 排队中不是「重试」（没有失败过），而是「替换排队」——换一份内容或换一次解析。
   if (action.document.status === DOCUMENT_STATUS.QUEUED) return '重新提交（替换排队）'
   return action.document.status === DOCUMENT_STATUS.SUCCESS ? '重建索引（覆盖现有索引）' : '重试索引'
@@ -312,6 +309,22 @@ const dialogMessage = computed(() => {
     if (count === 0) return `确认删除空知识库《${action.kb.name}》？删除后无法恢复。`
     // 非空库后端会拒绝；提前说清规则与做法，比让用户撞一次 20015 更好。
     return `《${action.kb.name}》里还有 ${count} 篇文档，删不掉。先在这个库的详情里把文档删空，再删库。`
+  }
+  if (action.kind === 'reindexAll') {
+    const count = action.kb.documents.length
+    const overrides = action.kb.documents.filter(
+      (document) => document.status === DOCUMENT_STATUS.SUCCESS,
+    ).length
+    // 逐篇重建会写回**当前生效版本**——它清不掉「需重建」横幅（那条要重新起一次构建），
+    // 也不能把「正在索引的那一篇」重排。这两点必须在确认框里说清，否则用户点完会以为
+    // 「设置已经生效了」。
+    return (
+      `确认把《${action.kb.name}》里的 ${count} 篇文档逐篇重新排进重建队列？` +
+      (overrides > 0
+        ? `其中 ${overrides} 篇已有可用索引，会被新的切块结果覆盖（旧索引丢弃）。`
+        : '') +
+      '正在索引的那几篇会被后端跳过。注意：这不会让新切块设置生效——那要改一次设置再保存。'
+    )
   }
   if (action.kind === 'deleteDoc') {
     // 排队中删除 = 撤回排队：说清楚「迟到的任务不会再切」，否则用户会担心删除删不干净。
@@ -335,6 +348,7 @@ const dialogMessage = computed(() => {
 const dialogConfirmText = computed(() => {
   const action = pendingAction.value
   if (action === null) return '确认'
+  if (action.kind === 'reindexAll') return '全部重排'
   if (action.kind === 'reindex') {
     if (action.document.status === DOCUMENT_STATUS.QUEUED) return '替换排队'
     return action.document.status === DOCUMENT_STATUS.SUCCESS ? '覆盖重建' : '重试'
@@ -342,7 +356,10 @@ const dialogConfirmText = computed(() => {
   return '删除'
 })
 
-const dialogDanger = computed(() => pendingAction.value?.kind !== 'reindex')
+const dialogDanger = computed(
+  () =>
+    pendingAction.value?.kind !== 'reindex' && pendingAction.value?.kind !== 'reindexAll',
+)
 /** 非空库不允许点删除确认：规则来自后端，这里只是别给一个注定失败的按钮。 */
 const confirmDisabled = computed(
   () => pendingAction.value?.kind === 'deleteKb' && pendingAction.value.kb.documents.length > 0,
@@ -357,6 +374,12 @@ function askDeleteKb(row: unknown): void {
 function askDeleteDoc(row: unknown): void {
   if (!isDocRow(row)) return
   pendingAction.value = { kind: 'deleteDoc', document: row }
+  confirmOpen.value = true
+}
+
+function askReindexAll(row: unknown): void {
+  if (!isKbRow(row)) return
+  pendingAction.value = { kind: 'reindexAll', kb: row }
   confirmOpen.value = true
 }
 
@@ -430,17 +453,18 @@ const reindexMutation = useMutation({
  *
  * 与单篇那条同一判据（见 `reindexMutation`）：已成功（1）的文档必须显式 `force`，否则后端
  * 回 20027 替用户保住能用的索引；失败（2）/ 排队中（4）/ 索引中（3，租约已过期那种）本来
- * 就在可重建那一档。**索引中且租约新鲜的真在跑**也会被后端拒（20025），那一条我们跳过、
- * 不算失败——它本来就在队列里。
+ * 就在可重建那一档。
+ *
+ * **索引中且租约新鲜的那几篇**会被后端拒（20025「正在索引」）：`alreadyRunning` 计数，
+ * 不计入失败——它本来就在队列里，把它报成「没能提交」会让用户以为要再点一次。
  *
  * ## 并发与失败的处置
  *
  * 串行发（一篇一条，最多几十篇）：并发发会让后端同时接到 N 个重建请求，而它们每一个都会走
- * 「置排队中 + 投递」，服务端的限流/审计日志会瞬间多出 N 条噪声。串行的另一个好处是进度可
- * 报——`已提交 7 / 10` 是用户真正想看的那个数。
+ * 「置排队中 + 投递」，服务端的限流/审计日志会瞬间多出 N 条噪声。
  *
- * 单篇失败不中断：继续投其余，最后把失败的那几条列出来。把「9 篇成功、1 篇被拒」报成「操作
- * 失败」是不诚实的——用户再点一次那一篇就行。
+ * 单篇失败不中断：继续投其余，最后把失败的那几条**列出来**。把「9 篇成功、1 篇被拒」报成
+ * 「操作失败」是不诚实的——用户再点一次那一篇就行。
  */
 const bulkReindexing = ref(false)
 
@@ -450,6 +474,7 @@ async function reindexAllDocuments(kb: KnowledgeBaseNode): Promise<void> {
   bulkReindexing.value = true
   const failed: string[] = []
   let submitted = 0
+  let alreadyRunning = 0
   try {
     for (const document of documents) {
       try {
@@ -458,11 +483,20 @@ async function reindexAllDocuments(kb: KnowledgeBaseNode): Promise<void> {
         })
         submitted += 1
       } catch (error) {
+        // 20025 = 正在索引（租约新鲜）：它本来就在队列里，跳过而不算失败。
+        if (errorCodeOf(error) === 20025) {
+          alreadyRunning += 1
+          continue
+        }
         failed.push(`${document.title}：${errorText(error)}`)
       }
     }
     if (submitted > 0) {
-      ElMessage.success(`已把 ${submitted} 篇文档提交重建，稍后自动刷新`)
+      ElMessage.success(
+        `已把 ${submitted} 篇文档提交重建` +
+          (alreadyRunning > 0 ? `（${alreadyRunning} 篇正在索引，已跳过）` : '') +
+          '，稍后自动刷新',
+      )
     }
     if (failed.length > 0) {
       // 逐条列出来：只说「有 N 篇失败」等于让用户自己去翻哪几篇。
@@ -491,7 +525,12 @@ function confirmAction(): void {
   if (action === null) return
   if (action.kind === 'deleteKb') deleteKbMutation.mutate(action.kb)
   else if (action.kind === 'deleteDoc') deleteDocMutation.mutate(action.document)
-  else reindexMutation.mutate(action.document)
+  else if (action.kind === 'reindexAll') {
+    // 一键重建是**逐篇**投递（不新增后端能力），但它一次覆盖整库，所以要过同一个确认框
+    // ——单篇重建都要确认「旧索引会被丢弃」，整库重建没有理由更宽松。
+    closeDialog()
+    void reindexAllDocuments(action.kb)
+  } else reindexMutation.mutate(action.document)
 }
 
 function goRetrieve(kbId: string): void {
@@ -697,7 +736,7 @@ function goRetrieve(kbId: string): void {
               size="small"
               :disabled="bulkReindexing || row.build_progress !== null || row.documents.length === 0"
               :loading="bulkReindexing"
-              @click="reindexAllDocuments(row)"
+              @click="askReindexAll(row)"
             >
               一键重建
             </el-button>

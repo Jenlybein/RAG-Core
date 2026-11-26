@@ -135,7 +135,12 @@ function option() {
         ...axisCommon,
         // 右轴不画横向网格线：两条轴的刻度线叠在一起会让读数分辨率糊掉。
         splitLine: { show: false },
-        axisLabel: { ...axisCommon.axisLabel, formatter: '{value}' },
+        // 右轴是 token：整库重建一次就是几十万，不折行显示会撑爆轴线宽度。
+        axisLabel: {
+          ...axisCommon.axisLabel,
+          formatter: (value: number) =>
+            value >= 10000 ? `${(value / 10000).toFixed(0)}万` : String(value),
+        },
         name: 'token',
         nameTextStyle: { color: palette.muted, fontSize: 11, fontFamily: palette.font },
       },
@@ -217,6 +222,6 @@ watch(() => props.kind, render)
     class="w-full"
     :style="{ height: `${height}px` }"
     role="img"
-    :aria-label="kind === 'quality' ? '成功率与 P95 耗时趋势' : '三本账用量趋势'"
+    :aria-label="kind === 'quality' ? '成功率与 P95 耗时趋势' : '四本账用量趋势（右轴为切块 token）'"
   />
 </template>

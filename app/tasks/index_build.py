@@ -49,7 +49,13 @@ async def _dispatch_in_the_worker_loop(
 
     db = async_session_factory()()
     try:
-        await IndexBuildService().dispatch(db, build_id, tenant_id=tenant_id)
+        # `settle_when_nothing_to_send=True`：派活是这一轮构建的**唯一入口**，它投完就该
+        # 有结论（空库 → ready 空版本；有文档但协调不下来 → 交给守卫判 failed）。清扫器的
+        # 补投路径**不传**这个开关——它每 60 秒跑一次，撞上「最后一篇正在处理」时参与集
+        # 必然为空，那时收尾会打死一个健康的构建。
+        await IndexBuildService().dispatch(
+            db, build_id, tenant_id=tenant_id, settle_when_nothing_to_send=True
+        )
     finally:
         await db.close()
 

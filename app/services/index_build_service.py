@@ -342,6 +342,10 @@ class BuildTruth:
     planned: int
     #: 判据用的稿号；``None`` = 没有稿号快照（老行），此时真值不按稿过滤。
     doc_version: int | None = None
+    #: 库里**实际有多少文档**（不论状态）。只用于区分「真空库」与「有文档但一篇都不合格」：
+    #: 后者不许产出 ready 空版本，也不该用「去看 worker 日志」这句文案（那时没有 worker 参与）。
+    #: 默认 0 让老调用方（只喂三个字段的地方）不必改。
+    documents_in_kb: int = 0
 
     @property
     def shortfall(self) -> int:
@@ -387,7 +391,10 @@ def _failure_reason_of(truth: BuildTruth) -> str:
     文案本身**不拼异常原文**（脱敏纪律与单篇失败一致）。
     """
 
-    if truth.planned > 0 and truth.documents == 0:
+    # 第一档看两个数：参与篇数 > 0（老口径），**或**库里实际有文档（守卫新增的那一格）。
+    # 只看 ``planned`` 会让「库里有十篇、但没有一篇可参与」（planned=0）掉进第三档，
+    # 落成「去看 worker 日志」——而那时一篇子任务都没投出去，日志里什么都不会有。
+    if truth.documents == 0 and (truth.planned > 0 or truth.documents_in_kb > 0):
         return BUILD_NOTHING_TO_REBUILD_MESSAGE
     if truth.documents < truth.planned:
         return BUILD_INCOMPLETE_MESSAGE
@@ -442,6 +449,28 @@ def decide_convergence(*, truth: int, planned: int, failed: int, final: bool = T
     if truth >= planned:
         return INDEX_BUILD_READY
     return INDEX_BUILD_FAILED if final else CONVERGE_WAIT
+
+
+def _nothing_to_rebuild_message(*, total: int, pending: int) -> str:
+    """「起不了构建」的**下一步**文案：按文档状态说清该做什么。
+
+    两种情形指向的动作不同，混成一句会让人做错事：
+
+    * 有篇在排队 / 正在索引 → 该做的是**等它跑完**（这时点「重建」只会撞 20025「正在索引」）；
+    * 全都是失败 → 该做的是点「重建」或重新上传。
+
+    ``pending`` 是「排队中 + 索引中」的篇数，``total`` 是该库文档总数。
+    """
+
+    if pending > 0:
+        return (
+            f"这个库里有 {total} 篇文档，其中 {pending} 篇还在排队或正在索引——"
+            "构建只重建「成功」的文档。等它们跑完（或失败后点「重建」）再改设置。"
+        )
+    return (
+        f"这个库里有 {total} 篇文档，但没有一篇处于「成功」状态——"
+        "构建只重建成功的文档。先对失败的文档点「重建」或重新上传，再改设置。"
+    )
 
 
 def guard_against_an_empty_version(verdict: str, *, planned: int, documents_in_kb: int) -> str:
@@ -548,7 +577,18 @@ class IndexBuildService:
         existing = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
         running = next((row for row in existing if row.status == INDEX_BUILD_BUILDING), None)
         if running is not None:
-            raise IndexBuildAlreadyRunning(running)
+            # ── 存量卡住的行：先就地收敛，再判断要不要拒绝 ──
+            #
+            # 现场 #226 的第二半：一条 `planned = 0` 的 `building` 行（起它的时候库里一篇
+            # 可参与的文档都没有）会永远占着这个位置——并发守卫让用户「再也改不了设置」，
+            # 而清扫器不一定在跑（`RATE_LIMIT_ENABLED=off` 的部署里它根本不启动）。
+            # 所以入口自己先给它一个结论：这种行**必然**收敛成 failed（守卫的判据），收敛
+            # 之后 `running` 就空了，用户这一次保存能直接继续。
+            if running.documents_planned == 0:
+                await self.converge(db, str(running.id), tenant_id=tenant_id, final=True)
+                running = None
+            else:
+                raise IndexBuildAlreadyRunning(running)
 
         # 建库只写了一列、没写行（#141 的落法）：激活时要能归档「上一版」，就必须先把
         # 当前生效版本补成一行。缺了它，第一轮构建的激活会「找不到旧 active 可归档」，
@@ -575,10 +615,17 @@ class IndexBuildService:
         if planned == 0:
             total = await document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id)
             if total > 0:
+                # 按状态分支给下一步动作：全都当「失败的文档」会让刚上传的用户去点重建，
+                # 而它们其实在排队或正在索引——那种情形该做的是**等**。
+                pending = await document_repository.count_by_kb_in_states(
+                    db,
+                    kb_id,
+                    tenant_id=tenant_id,
+                    statuses=(DocumentStatus.QUEUED, DocumentStatus.PROCESSING),
+                )
                 raise AppError(
-                    ErrorCode.PARAM_ERROR,
-                    f"这个库里有 {total} 篇文档，但没有一篇处于「成功」状态——"
-                    "构建只重建成功的文档。先对失败的文档点「重建」或重新上传，再改设置。",
+                    ErrorCode.KB_NOTHING_TO_REBUILD,
+                    _nothing_to_rebuild_message(total=total, pending=pending),
                 )
         started_at = now()
 
@@ -877,7 +924,17 @@ class IndexBuildService:
             index_version=str(row.version),
             doc_version=draft,
         )
-        return BuildTruth(documents=documents, planned=int(planned or 0), doc_version=draft)
+        # 顺手读一次「库里有几篇」：守卫（空库 vs 全失败）与失败文案（该不该提 worker 日志）
+        # 都要这个数。放这里是**一次**读，而不是两处各读一次——两处读还可能读到不同的值。
+        documents_in_kb = await document_repository.count_by_kb(
+            db, str(row.kb_id), tenant_id=tenant_id
+        )
+        return BuildTruth(
+            documents=documents,
+            planned=int(planned or 0),
+            doc_version=draft,
+            documents_in_kb=documents_in_kb,
+        )
 
     async def converge(
         self,
@@ -1007,6 +1064,7 @@ class IndexBuildService:
         batch_size: int = DISPATCH_BATCH_SIZE,
         skip_existing: bool = True,
         publish: Callable[..., None] | None = None,
+        settle_when_nothing_to_send: bool = False,
     ) -> int:
         """把这一版**该建的文档逐篇投进构建队列**，返回投了多少篇（#215）。
 
@@ -1082,20 +1140,19 @@ class IndexBuildService:
             dispatched=dispatched,
             skipped=len(documents) - len(participating),
         )
-        if dispatched == 0:
-            # ── 一篇都没投出去：**必须在这里给结论**，否则这一行永远停在 building ──
-            #
-            # 正常情况下 `dispatched == 0` 只有一种来源：**空库**（0 篇文档）。这时派活
-            # 投完就把这一轮结束掉——空版本是 ADR-0025 允许的合法产物（空库本来就检索不到
-            # 东西），而停在 `building` 的后果是 `start_build` 的并发守卫让这个库**再也改
-            # 不了设置**，用户看到的是「提示库在重建中，但进度永远不动」。
-            #
-            # 「有文档但一篇都不可参与」这种情况在 `start_build` 那里就被拒了，走到这里只剩
-            # 真空库；所以 `final=True` 是安全的（`converge` 对 `planned == 0` 另有守卫，见
-            # `_no_participant_guard`）。
-            #
-            # 为什么不在 `dispatched > 0` 时也收敛：那会把「子任务还没跑」误判成「不够 →
-            # failed」。收敛等子任务自己来（或清扫器按期限来）。
+        # ── 0 篇投出时可选择「当场给结论」——**只有派活任务能这么做** ──
+        #
+        # 现场 #226：库里十篇全失败 → 参与 0 → 派活投了 0 条就正常返回 → 没有任何一方收尾
+        # → 构建行永远 `building` → 并发守卫让用户**再也改不了这个库的设置**。
+        #
+        # 但「0 篇」不能一律收尾：**清扫器的补投路径也会调用本方法**，而它在构建跑到最后
+        # 一篇时必然看到「参与集为空」——因为正在跑的那一篇状态是 `PROCESSING`，不在
+        # 「状态=成功」的参与集里。那一刻收尾就是 `decide_convergence(truth < planned,
+        # final=True)` → **把健康的构建当场判 failed**（而子任务还在写切片）。
+        #
+        # 所以这个动作是**调用方显式要的**：派活任务要（它知道自己是这一轮的唯一入口）；
+        # 清扫器不要（它只是按 60 秒节拍补缺，收尾归期限那一条路）。
+        if dispatched == 0 and settle_when_nothing_to_send:
             await self.converge(db, build_id, tenant_id=tenant_id, final=True)
         return dispatched
 

@@ -41,3 +41,16 @@ export function p95Label(source: 'exact' | 'histogram' | 'histogram_missing'): s
   if (source === 'histogram_missing') return 'P95（汇总缺失）'
   return 'P95'
 }
+
+/**
+ * token 数量的人类读法：`12.4 万` / `1.3 亿`。
+ *
+ * 第四本账是 token（一次整库重建就是几十万），原样打印出来是一串没人愿意数的数字。
+ * **刻意不四舍五入到个位以下**：这是「大概烧了多少」的读数，不是账目核对，保留一位小数
+ * 就够，多出来的精度反而让人以为它准。
+ */
+export function formatTokens(value: number): string {
+  if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(1)} 亿`
+  if (value >= 10_000) return `${(value / 10_000).toFixed(1)} 万`
+  return String(value)
+}

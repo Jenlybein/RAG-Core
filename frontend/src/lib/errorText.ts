@@ -16,3 +16,13 @@ export function errorText(value: unknown): string {
   if (value instanceof Error) return value.message
   return String(value)
 }
+
+/**
+ * 这次失败的业务码（不是协议/连通性问题时）。
+ *
+ * `errorText` 是给**用户**看的句子；分类处置（例如「20025 正在索引 → 跳过而不算失败」）
+ * 需要的是一个数，不是一句话。两个工具一起用：先分类，再决定要不要把它当成失败。
+ */
+export function errorCodeOf(value: unknown): number {
+  return value instanceof ApiError ? value.code : -1
+}

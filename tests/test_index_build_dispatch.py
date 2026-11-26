@@ -294,12 +294,34 @@ pytestmark_integration = [
 ]
 
 
+def _seed_kb(session: Session) -> None:
+    """种一行知识库：`converge` 走 `rebuild_truth` 时要确认这个库还在。
+
+    两条集成用例以前一直 skip（没有 `RAG_INTEGRATION_DATABASE_URL` 时整个文件跳过），所以
+    「夹具漏种 KB」这件事直到带变量真跑才暴露——报的是 `KNOWLEDGE_BASE_NOT_FOUND`，
+    与用例想验的东西毫无关系。
+    """
+
+    session.merge(
+        KnowledgeBase(
+            id=KB_ID,
+            tenant_id=TENANT_ID,
+            name="构建派活集成库",
+            split_strategy="structure",
+            allowed_formats=["markdown"],
+            active_index_version=None,
+        )
+    )
+
+
 @pytest.fixture
 def sync_db() -> Any:
     """真库上的同步会话；只建本文件要用的表、只删本文件种下的行。"""
 
     assert INTEGRATION_DATABASE_URL is not None
-    engine: Engine = create_engine(INTEGRATION_DATABASE_URL)
+    engine: Engine = create_engine(
+        INTEGRATION_DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+    )
     Base.metadata.create_all(bind=engine, tables=_TABLES)
     factory = sessionmaker(bind=engine, future=True)
     session: Session = factory()
@@ -309,6 +331,9 @@ def sync_db() -> Any:
         session.execute(
             text("DELETE FROM index_build_versions WHERE tenant_id = :tenant"),
             {"tenant": TENANT_ID},
+        )
+        session.execute(
+            text("DELETE FROM knowledge_bases WHERE tenant_id = :tenant"), {"tenant": TENANT_ID}
         )
         session.commit()
         yield session
@@ -323,7 +348,9 @@ def async_db() -> Any:
     """与 ``sync_db`` 指向同一个库的异步会话（被测代码是异步栈）。"""
 
     assert INTEGRATION_DATABASE_URL is not None
-    engine = create_async_engine(INTEGRATION_DATABASE_URL)
+    engine = create_async_engine(
+        INTEGRATION_DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
+    )
     factory = AsyncSession(engine, expire_on_commit=False)
     try:
         yield factory
@@ -361,8 +388,10 @@ def test_resume_query_only_counts_this_version_and_draft(
             kb_id=KB_ID,
             document_id=document_id,
             content="片",
-            retrieval_text="检索文本",
-            embedding=[0.0] * 8,
+            # `retrieval_text` 不是 `chunks` 的列（它是检索期拼出来的，见 ADR-0035 的
+            # 两种 token 口径）。这条用例以前一直 skip，所以这个不存在的字段没人发现。
+            # 维度必须与库里那一列一致（1536）：写 8 会在真库上撞 pgvector 的类型检查。
+            embedding=[0.0] * 1536,
             index_version=version,
             doc_version=draft,
             meta={},
@@ -401,6 +430,7 @@ def test_a_failed_document_is_recorded_and_keeps_its_status(
 
     import asyncio
 
+    _seed_kb(sync_db)
     sync_db.add(_document_row("fails-here"))
     sync_db.add(_build_row(planned=2))
     sync_db.commit()
@@ -515,7 +545,12 @@ async def test_a_dispatch_that_sent_nothing_settles_the_build_immediately(
     monkeypatch.setattr(IndexBuildService, "converge", _converge)
 
     dispatched = await IndexBuildService().dispatch(
-        None, BUILD_ID, tenant_id=TENANT_ID, publish=lambda **_: recorded.append(1)
+        None,
+        BUILD_ID,
+        tenant_id=TENANT_ID,
+        publish=lambda **_: recorded.append(1),
+        # 派活任务就是这么调的（`app/tasks/index_build._dispatch_in_the_worker_loop`）。
+        settle_when_nothing_to_send=True,
     )
 
     assert dispatched == 0
@@ -523,4 +558,61 @@ async def test_a_dispatch_that_sent_nothing_settles_the_build_immediately(
     assert converged == [(BUILD_ID, True)], (
         "0 篇投出去就必须当场 `final=True` 收尾——否则这一行永远停在 building，"
         "而并发守卫会让这个库再也改不了设置"
+    )
+
+
+@pytest.mark.anyio
+async def test_a_sweeper_redispatch_must_not_settle_a_healthy_build(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """清扫器补投路径上的「0 篇」**不是**「没有可建的了」。
+
+    这是 #226 修复第一版的回归（被 Spec 轴评审抓出来）：清扫器每 60 秒对每条 `building`
+    行补投缺的篇，而构建跑到**最后一篇**时参与集必然为空——那篇状态是 `PROCESSING`，
+    不在「状态=成功」的参与集里。若那时收尾，`decide_convergence(truth < planned,
+    final=True)` 会把一个**健康**的构建当场判 failed，而子任务还在写切片。
+
+    所以「0 篇即收尾」是派活任务的**显式选择**（`settle_when_nothing_to_send`），默认关。
+    """
+
+    documents: list[Any] = []
+    converged: list[tuple[str, bool]] = []
+
+    async def _get_row(_db: Any, build_id: str, *, tenant_id: str) -> Any:
+        return _build_row(planned=4)
+
+    async def _get_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        return KnowledgeBase(
+            id=KB_ID,
+            tenant_id=TENANT_ID,
+            name="库",
+            split_strategy="structure",
+            allowed_formats=["markdown"],
+            active_index_version=None,
+        )
+
+    async def _list_documents(_db: Any, kb_id: str, *, tenant_id: str) -> list[Any]:
+        return documents
+
+    async def _no_chunks(*_args: Any, **_kwargs: Any) -> set[str]:
+        return set()
+
+    async def _converge(self: Any, _db: Any, build_id: str, *, tenant_id: str, final: bool) -> Any:
+        converged.append((build_id, final))
+        return None
+
+    monkeypatch.setattr("app.repositories.index_version_repository.get_for_tenant", _get_row)
+    monkeypatch.setattr("app.repositories.knowledge_base_repository.get_by_id_for_tenant", _get_kb)
+    monkeypatch.setattr("app.repositories.document_repository.list_by_kb_async", _list_documents)
+    monkeypatch.setattr("app.repositories.chunk_repository.list_indexed_document_ids", _no_chunks)
+    monkeypatch.setattr(IndexBuildService, "converge", _converge)
+
+    # 与清扫器一致的调用形状：不传 `settle_when_nothing_to_send`。
+    await IndexBuildService().dispatch(
+        None, BUILD_ID, tenant_id=TENANT_ID, publish=lambda **_: None
+    )
+
+    assert converged == [], (
+        "清扫器补投撞上「最后一篇在处理」时参与集为空是**正常**的；"
+        "那一刻收尾会把健康构建判死（子任务还在写切片）"
     )

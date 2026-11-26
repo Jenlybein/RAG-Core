@@ -189,9 +189,16 @@ async def _chunk_tokens(
     硬塞进同一条查询，只能二选一：要么把索引行读回来（请求数、成功率、分位一起失真），
     要么把它们排除（第四本账永远 0）。所以分成两条，语义各自干净。
 
-    ``key_id`` 这里**没有意义**（索引行不带 Key），传进来的话查询仍是安全的（只会得到 0），
-    但调用方不该指望它能按 Key 细分——索引不是某个 Key 发起的动作。
+    ## 单 Key 视图：**返回 0**，不返回租户的合计
+
+    索引行不带 Key 身份（索引不是某把 Key 发起的动作），所以「按 Key 过滤」在这里得不到任何
+    行。实现上两条路都能走通：加一个 ``key_id == None`` 的过滤（一排零，语义含糊）或者干脆
+    在函数入口返回 0（**明确**：这把 Key 没有切块账）。选后者，因为单 Key 页面的读者会把这
+    条线当成「这把 Key 烧了多少 token」——返回租户合计就是**泄漏**。
     """
+
+    if key_id is not None:
+        return 0
 
     if window.uses_daily:
         statement = select(func.coalesce(func.sum(UsageDaily.meter_chunk), 0)).where(
@@ -319,7 +326,7 @@ async def _buckets_from_events(
 
 
 async def _chunk_buckets(
-    db: AsyncSession, *, window: Window, tenant_id: str | None
+    db: AsyncSession, *, window: Window, tenant_id: str | None, key_id: str | None = None
 ) -> dict[int, int]:
     """**按桶**的第四本账（切块 token），返回 ``{桶序号: token 数}``。
 
@@ -336,24 +343,53 @@ async def _chunk_buckets(
 
     曲线图要的是「四本账各用了多少」的趋势，合计只够画一个数字。合计那条
     （`_chunk_tokens`）仍然保留：它同时用于我的视图与下钻，两者不该互相等。
+
+    ## **必须和合计读同一张表**
+
+    这条查询原来无条件读 `usage_events`，而合计（`_chunk_tokens`）在长窗口读 `usage_daily`。
+    后果是同一份响应里 `totals.meter_chunk` 与 `sum(buckets[].meter_chunk)` 可能**不相等**
+    ——今天 rollup 还没跑完时两者差一截，而 90 天以后的明细已经被
+    `scripts/purge_usage_events.py` 按 ADR-0033 决策五删掉、折线会静默变成 0 而合计仍非 0。
+    所以这里按 `window.uses_daily` 分叉，与合计完全同源。
     """
 
-    index = _bucket_index(UsageEvent.created_at, window).label("bucket")
-    statement = (
-        select(index, func.coalesce(func.sum(UsageEvent.meter_chunk), 0).label("chunk"))
-        .where(
-            UsageEvent.created_at >= window.since,
-            UsageEvent.created_at < window.until,
-            # 补集：只收索引行（与 `_denies_index` 互为反面）。
-            UsageEvent.endpoint == INDEX_ENDPOINT,
+    # 单 Key 视图恒空（理由与 `_chunk_tokens` 同一段：索引行没有 Key 身份，返回租户合计
+    # 会把单 Key 页面变成一种泄漏）。
+    if key_id is not None:
+        return {}
+
+    if window.uses_daily:
+        # 长窗口读日汇总：一桶就是一天，桶序号 = 距窗口起点的天数（与 `_daily_buckets` 同构）。
+        index = (func.date(UsageDaily.day) - window.since.date()).label("bucket")
+        statement = (
+            select(index, func.coalesce(func.sum(UsageDaily.meter_chunk), 0).label("chunk"))
+            .where(
+                UsageDaily.day >= window.since.date(),
+                UsageDaily.day < window.until.date(),
+                UsageDaily.endpoint == INDEX_ENDPOINT,
+            )
+            .group_by(index)
+            .order_by(index)
         )
-        .group_by(index)
-        .order_by(index)
-    )
-    # 第四本账**只有租户级**：`key_id` 不参与（索引没有 Key 这个概念），但租户必须过滤——
-    # 管理员看全站时传 `None`，那时读的是所有租户的合计（与 `_chunk_tokens` 同一口径）。
-    if tenant_id is not None:
-        statement = statement.where(UsageEvent.tenant_id == tenant_id)
+        if tenant_id is not None:
+            statement = statement.where(UsageDaily.tenant_id == tenant_id)
+    else:
+        index = _bucket_index(UsageEvent.created_at, window).label("bucket")
+        statement = (
+            select(index, func.coalesce(func.sum(UsageEvent.meter_chunk), 0).label("chunk"))
+            .where(
+                UsageEvent.created_at >= window.since,
+                UsageEvent.created_at < window.until,
+                # 补集：只收索引行（与 `_denies_index` 互为反面）。
+                UsageEvent.endpoint == INDEX_ENDPOINT,
+            )
+            .group_by(index)
+            .order_by(index)
+        )
+        # 第四本账**只有租户级**：`key_id` 不参与（索引没有 Key 这个概念），但租户必须过滤
+        # ——管理员看全站时传 `None`，那时读的是所有租户的合计（与 `_chunk_tokens` 同口径）。
+        if tenant_id is not None:
+            statement = statement.where(UsageEvent.tenant_id == tenant_id)
     rows = (await db.execute(statement)).all()
     return {int(row._mapping["bucket"]): int(row._mapping["chunk"] or 0) for row in rows}
 
@@ -523,7 +559,7 @@ async def series(
     # 那个窗口的桶本身就是「天」，所以这里两条路径都以明细表为准：短窗口有明细、长窗口
     # 的每一天也仍然有明细（rollup 只是额外的一张快照，不删明细）。
     # 第四本账**只有租户级**，所以 `key_id` 不参与这条查询（索引没有 Key 这个概念）。
-    chunk_by_bucket = await _chunk_buckets(db, window=window, tenant_id=tenant_id)
+    chunk_by_bucket = await _chunk_buckets(db, window=window, tenant_id=tenant_id, key_id=key_id)
     for position, bucket in enumerate(buckets):
         bucket["meter_chunk"] = chunk_by_bucket.get(position, 0)
 

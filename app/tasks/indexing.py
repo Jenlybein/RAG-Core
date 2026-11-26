@@ -87,7 +87,7 @@ def _failure_message(exc: BaseException | None) -> str:
     """
 
     if isinstance(exc, AppError) and int(exc.code) == int(ErrorCode.KB_TOKEN_QUOTA_EXCEEDED):
-        text = str(exc.message or "").strip()
+        text = str(exc.msg or "").strip()
         if text:
             return text
     return INDEXING_FAILED_MESSAGE
@@ -98,7 +98,7 @@ async def _mark_failed(
 ) -> None:
     """失败留痕：回滚半成品事务，另起一段写 ``status=2`` + 清租约 + 脱敏固定文案。
 
-    **唯一例外是容量型拒绝（20036）**：那时 ``exc.message`` 是**我们自己写的**中文句
+    **唯一例外是容量型拒绝（20036）**：那时 ``exc.msg`` 是**我们自己写的**中文句
     （带「本篇 X / 已用 Y / 上限 Z / 套餐」，见 ``static_quota``），不含异常原文、路径或
     SQL，落库是安全的；而通用英文文案会让用户看到一句与真实原因无关的话。用错误码判断，
     不靠「异常类型像不像」——将来别的 ``AppError`` 走到这里，仍然只落通用文案。

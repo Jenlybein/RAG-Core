@@ -934,6 +934,32 @@ async def count_tokens_in_kb(
     return int(getattr(value, "token_count", 0) or 0)
 
 
+async def count_by_kb_in_states(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    statuses: tuple[int, ...],
+) -> int:
+    """该库下处于给定状态的文档数（「还在排队 / 正在索引」这类计数用）。
+
+    单独一个函数而不是给 ``count_by_kb`` 加可选参数：那个函数是**配额**的唯一计数处
+    （单库文档数上限），它要读的永远是「全部」。把状态塞进去会让「配额算的是不是全量」
+    变成每次调用都要重新确认的问题。
+    """
+
+    result = await db.execute(
+        select(func.count())
+        .select_from(Document)
+        .where(
+            Document.kb_id == kb_id,
+            Document.tenant_id == tenant_id,
+            Document.status.in_(list(statuses)),
+        )
+    )
+    return int(result.scalar_one())
+
+
 async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
     """该租户在该知识库下的文档总数（静态配额「单库文档数」的唯一计数处，票 #79）。"""
 

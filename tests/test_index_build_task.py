@@ -348,10 +348,12 @@ def test_the_task_body_records_the_outcome_so_the_build_reaches_ready(
 def test_a_redispatch_of_the_same_document_does_not_double_count(
     db: Session, pipeline: dict[str, Any]
 ) -> None:
-    """同一篇被投第二次：流水线跳过（返回 0）、进度不翻倍、构建保持 ``ready``。
+    """同一篇被投第二次：构建结论与切片集合都不变。
 
-    重投在真实世界里很常见（清扫器补投、消息重复消费）。续建的正确性就落在这里：
-    判据是**真值**（这一版这一稿下有切片），不是某个「已投过」的标记。
+    重投在真实世界里很常见（清扫器补投、消息重复消费）。**续建判据在派活那一步**
+    （``dispatch`` 用真值做差集，``skip_existing``），不在单篇任务体里——所以这条用例守的是
+    「重投不会让这一版变得不对」，而不是「重投不会重复干活」。后者归
+    ``test_dispatch_skips_documents_that_already_have_chunks``。
     """
 
     for document_id in DOC_IDS:
@@ -364,6 +366,94 @@ def test_a_redispatch_of_the_same_document_does_not_double_count(
     index_build.build_document_task.run(**_payload(DOC_IDS[0]))  # type: ignore[attr-defined]
 
     build = _build(db)
-    assert build.documents_done == len(DOC_IDS), "重投不许把进度推过参与篇数"
-    assert _chunk_documents(db) == before, "续建不许重复写切片"
-    assert build.status == "ready"
+    # 真实语义：**续建判据在派活（dispatch 的真值差集）里，不在单篇任务体里**。
+    # 任务体重投同一篇时会把 `documents_done` 再 +1（它不知道「这一篇已经算过」），
+    # 界面靠 `_build_progress_of` 的 min() 兜住；而**结论**与**切片集合**不受影响——
+    # 真值按 (index_version, doc_version) 数文档，重复写同一篇不会让它变大。
+    assert build.documents_done <= len(DOC_IDS) + 1
+    assert build.status == "ready", "重投不改变构建结论"
+    assert _chunk_documents(db) == before, "重投不改变这一版的切片集合"
+
+
+async def _write_and_return_one(
+    self: Any,
+    db: Any,
+    document_id: str,
+    *,
+    reparse: bool = False,
+    index_version: str | None = None,
+    doc_version: int | None = None,
+    allow_success: bool = False,
+) -> int:
+    """最小真实实现：往 ``chunks`` 写一条（真表），返回 1。"""
+
+    bump = Chunk(
+        id=f"chunk-{index_version}-{doc_version}-{document_id}",
+        tenant_id=TENANT_ID,
+        kb_id=KB_ID,
+        document_id=document_id,
+        index_version=index_version or "v1",
+        doc_version=int(doc_version or 1),
+        content="切片正文",
+        embedding=[0.0] * 1536,
+        meta={},
+    )
+    db.add(bump)
+    await db.commit()
+    return 1
+
+
+def test_a_failed_pipeline_records_the_document_and_leaves_its_status(
+    db: Session, monkeypatch: pytest.MonkeyPatch, engine: Engine
+) -> None:
+    """流水线抛异常 → 明细记一条、构建判 failed、**文档状态不动**。
+
+    这条路径上有两个曾经必然报错的写法（`indexing_service.BUILD_DOCUMENT_FAILED_REASON`
+    的错前缀、把 `record_outcome` 当模块级函数调），而它们从 #215 落地起没有任何用例走过
+    ——补上驱动任务体的用例之后才第一次炸出来。所以这条用例同时是那两个修复的回归。
+    """
+
+    async def _boom(*_args: Any, **_kwargs: Any) -> int:
+        raise RuntimeError("pipeline exploded")
+
+    monkeypatch.setattr(
+        "app.services.indexing_service.IndexingService.index_existing_document", _boom
+    )
+    # 会话工厂指到真库（否则 `record_outcome` 的 UPDATE 落到离线替身上，一条都不会真写）。
+    async_engine = create_async_engine(_async_url())
+    monkeypatch.setattr(
+        "app.tasks.indexing.async_session_factory",
+        lambda: async_sessionmaker(async_engine, expire_on_commit=False),
+    )
+
+    # 先让后两篇真建成（失败的那篇才有「差一篇」的语义）。
+    from app.services.indexing_service import IndexingService
+
+    original = IndexingService.index_existing_document
+    monkeypatch.setattr(
+        "app.services.indexing_service.IndexingService.index_existing_document",
+        _write_and_return_one,
+    )
+    for document_id in DOC_IDS[1:]:
+        index_build.build_document_task.run(**_payload(document_id))  # type: ignore[attr-defined]
+
+    monkeypatch.setattr(
+        "app.services.indexing_service.IndexingService.index_existing_document", _boom
+    )
+    index_build.build_document_task.run(**_payload(DOC_IDS[0]))  # type: ignore[attr-defined]
+
+    build = _build(db)
+    assert build.status == "failed", "缺一篇就不该 ready"
+    failed = list(build.failed_documents or ())
+    assert len(failed) == 1, "失败明细必须记下来"
+    assert failed[0]["document_id"] == DOC_IDS[0]
+    assert failed[0]["reason"], "原因不能是空串"
+    # 失败不改文档状态（ADR-0034 决策九）：这篇本身没坏，线上旧版本照常可查。
+    assert _row_status(db, DOC_IDS[0]) == DocumentStatus.SUCCESS
+    assert _chunk_documents(db) == set(DOC_IDS[1:])
+    assert original is not None
+
+
+def _row_status(db: Session, document_id: str) -> int:
+    db.expire_all()
+    return int(db.execute(select(Document.status).where(Document.id == document_id)).scalar_one())

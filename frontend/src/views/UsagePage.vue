@@ -21,7 +21,14 @@ import UsageChart from '../components/UsageChart.vue'
 import { fetchTenantUsage, usageQueryKey } from '../services/usageService'
 import { USAGE_WINDOWS, type UsageWindow } from '../types/usage'
 import { errorText } from '../utils/errorText'
-import { formatCount, formatMs, formatRatio, p95Label, sourceLabel } from '../utils/usageFormat'
+import {
+  formatCount,
+  formatMs,
+  formatRatio,
+  formatTokens,
+  p95Label,
+  sourceLabel,
+} from '../utils/usageFormat'
 
 const router = useRouter()
 const window = ref<UsageWindow>('1d')
@@ -44,6 +51,8 @@ const kpis = computed(() => {
     unknown: totals?.unknownCode ?? 0,
     failed: totals?.failed ?? 0,
     meters: [totals?.meterR ?? 0, totals?.meterRr ?? 0, totals?.meterLlm ?? 0] as const,
+    // 第四本账单位是 token，与前三条（次数）不同量纲，所以不并进 `meters` 那个数组。
+    chunkTokens: totals?.meterChunk ?? 0,
   }
 })
 
@@ -89,15 +98,21 @@ function openKey(keyId: string): void {
         <div class="card card-body">
           <p class="metric-label">{{ p95Label(data?.p95Source ?? 'exact') }}</p>
           <p class="metric-value mt-1 text-[26px]">{{ formatMs(kpis.p95) }}</p>
-          <p class="mt-1 text-xs text-muted">三本账 {{ kpis.meters[0] }} / {{ kpis.meters[1] }} / {{ kpis.meters[2] }}</p>
+          <p class="mt-1 text-xs text-muted">
+        三本账 {{ kpis.meters[0] }} / {{ kpis.meters[1] }} / {{ kpis.meters[2] }}
+        <span class="text-muted">· 切块 {{ formatTokens(kpis.chunkTokens) }} token</span>
+      </p>
         </div>
       </div>
 
       <section class="card card-body">
         <div class="flex items-baseline justify-between gap-2">
-          <h2 class="section-title">三本账</h2>
+          <h2 class="section-title">四本账</h2>
           <span class="text-xs text-muted">{{ sourceLabel(data?.source ?? 'events') }} · 最后一桶未走完</span>
         </div>
+        <p class="mt-1 text-xs text-muted">
+          左轴：检索 / 重排 / 大模型（次数，堆叠）；右轴：切块（token，单条线）—— 两者量纲不同，不合并。
+        </p>
         <div v-if="(data?.buckets.length ?? 0) === 0" class="py-10 text-center text-sm text-muted">
           这个窗口内还没有调用记录。
         </div>
