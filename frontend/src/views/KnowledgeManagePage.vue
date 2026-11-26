@@ -413,6 +413,72 @@ const reindexMutation = useMutation({
   },
 })
 
+/**
+ * 一键重建这个库里的**所有**文档（第 17 步）。
+ *
+ * ## 为什么是「逐篇投递」而不是「起一个整库构建」
+ *
+ * 用户要的是「把这些失败的、旧的篇重新排进队列」——那不是一次整库构建，也不需要它：
+ * 整库构建会产出**新的索引版本**（v3）并要求四项计数对账才上线，而这个库现在的处境往往是
+ * 「版本 v2 是好的，只是里面有几篇当初失败了」。用构建去救它们，等于为了补几篇重切整个库，
+ * 还要等收敛与激活。
+ *
+ * 逐篇走的是**现有**的单篇重建接口（`POST /console/documents/{id}/reindex`），语义与用户
+ * 一篇篇点「重建」完全一致：不新增后端能力、不新增状态机，只是把点击循环起来。
+ *
+ * ## 为什么按状态决定 force
+ *
+ * 与单篇那条同一判据（见 `reindexMutation`）：已成功（1）的文档必须显式 `force`，否则后端
+ * 回 20027 替用户保住能用的索引；失败（2）/ 排队中（4）/ 索引中（3，租约已过期那种）本来
+ * 就在可重建那一档。**索引中且租约新鲜的真在跑**也会被后端拒（20025），那一条我们跳过、
+ * 不算失败——它本来就在队列里。
+ *
+ * ## 并发与失败的处置
+ *
+ * 串行发（一篇一条，最多几十篇）：并发发会让后端同时接到 N 个重建请求，而它们每一个都会走
+ * 「置排队中 + 投递」，服务端的限流/审计日志会瞬间多出 N 条噪声。串行的另一个好处是进度可
+ * 报——`已提交 7 / 10` 是用户真正想看的那个数。
+ *
+ * 单篇失败不中断：继续投其余，最后把失败的那几条列出来。把「9 篇成功、1 篇被拒」报成「操作
+ * 失败」是不诚实的——用户再点一次那一篇就行。
+ */
+const bulkReindexing = ref(false)
+
+async function reindexAllDocuments(kb: KnowledgeBaseNode): Promise<void> {
+  const documents = kb.documents
+  if (documents.length === 0) return
+  bulkReindexing.value = true
+  const failed: string[] = []
+  let submitted = 0
+  try {
+    for (const document of documents) {
+      try {
+        await reindexDocumentConsole(document.document_id, {
+          force: document.status === DOCUMENT_STATUS.SUCCESS,
+        })
+        submitted += 1
+      } catch (error) {
+        failed.push(`${document.title}：${errorText(error)}`)
+      }
+    }
+    if (submitted > 0) {
+      ElMessage.success(`已把 ${submitted} 篇文档提交重建，稍后自动刷新`)
+    }
+    if (failed.length > 0) {
+      // 逐条列出来：只说「有 N 篇失败」等于让用户自己去翻哪几篇。
+      ElMessage.warning({
+        message: `有 ${failed.length} 篇没能提交：${failed.slice(0, 3).join('；')}${
+          failed.length > 3 ? ' …' : ''
+        }`,
+        duration: 6000,
+      })
+    }
+    void refresh()
+  } finally {
+    bulkReindexing.value = false
+  }
+}
+
 const acting = computed(
   () =>
     deleteKbMutation.isPending.value ||
@@ -620,8 +686,37 @@ function goRetrieve(kbId: string): void {
             <el-button link type="primary" size="small" @click="openUpload(row.kb_id)">上传</el-button>
             <el-button link type="primary" size="small" @click="goRetrieve(row.kb_id)">检索</el-button>
             <el-button link type="primary" size="small" @click="openSettings(row)">设置</el-button>
+            <!--
+              一键重建（第 17 步）：把库里**所有**文档逐篇投进现有的单篇重建队列。
+              `build_progress` 非空（这个库正在跑构建）时禁用——构建正在重切整个库，再插一批
+              单篇重建会与之互相打（同一篇被两条路径同时抢租约，两边都以为自己该写）。
+            -->
+            <el-button
+              link
+              type="primary"
+              size="small"
+              :disabled="bulkReindexing || row.build_progress !== null || row.documents.length === 0"
+              :loading="bulkReindexing"
+              @click="reindexAllDocuments(row)"
+            >
+              一键重建
+            </el-button>
             <el-button link type="danger" size="small" @click="askDeleteKb(row)">删除</el-button>
-            <span class="ml-auto text-xs text-muted group-hover:text-ink">详情 →</span>
+            <!--
+              「详情」必须是个**真按钮**（第 17 步修）：
+              它以前是一行纯文字（`详情 →`），而它所在的按钮组有 `@click.stop`（防误触发整卡），
+              于是点它既不发请求、也不冒泡到卡片的 `@click` —— 用户看到的就是「点了没反应」。
+              现在显式调 `openDetail(row)`，与整卡点击同一条路径。
+            -->
+            <el-button
+              class="ml-auto"
+              link
+              type="primary"
+              size="small"
+              @click="openDetail(row)"
+            >
+              详情 →
+            </el-button>
           </div>
         </div>
       </div>

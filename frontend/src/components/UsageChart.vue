@@ -2,7 +2,7 @@
 /**
  * 用量图（第 14 步 #203）：两种形态，一个组件。
  *
- * - `stacked`：三本账的堆叠柱（检索 / 重排 / 大模型）——「用掉多少」；
+ * - `stacked`：**四本账**（检索 / 重排 / 大模型 三条堆叠柱 = 次数，加切块一条线 = token）；
  * - `quality`：成功率（左轴 %）+ P95（右轴 ms）——「好不好」。
  *
  * 三件刻意为之的事：
@@ -124,7 +124,22 @@ function option() {
 
   return {
     ...base,
-    yAxis: { type: 'value' as const, minInterval: 1, ...axisCommon },
+    // **两个 Y 轴**：左轴是「调用了几次」（前三本），右轴是「烧了多少 token」（第四本）。
+    // 这不是排版选择而是量纲约束——把 token 堆进那三根柱子里，柱高就是「次数 + token」，
+    // 一个没有意义的和。所以第四本单独一条线，图例里标明单位。
+    yAxis: [
+      { type: 'value' as const, minInterval: 1, ...axisCommon },
+      {
+        type: 'value' as const,
+        minInterval: 1,
+        ...axisCommon,
+        // 右轴不画横向网格线：两条轴的刻度线叠在一起会让读数分辨率糊掉。
+        splitLine: { show: false },
+        axisLabel: { ...axisCommon.axisLabel, formatter: '{value}' },
+        name: 'token',
+        nameTextStyle: { color: palette.muted, fontSize: 11, fontFamily: palette.font },
+      },
+    ],
     series: [
       {
         name: '检索',
@@ -149,6 +164,20 @@ function option() {
         barMaxWidth: 22,
         itemStyle: { color: palette.violet, borderRadius: [3, 3, 0, 0] },
         data: props.buckets.map((item) => item.meterLlm),
+      },
+      {
+        // 第四本账：切块（**token**，右轴）。用折线而不是第四根柱——它不是同一根柱子上的
+        // 一段，而是另一把尺子；画成柱会被人下意识地和旁边那根堆叠柱比高低。
+        name: '切块（token）',
+        type: 'line' as const,
+        smooth: false,
+        symbol: 'circle',
+        symbolSize: 4,
+        yAxisIndex: 1,
+        connectNulls: false,
+        lineStyle: { width: 1.5, color: palette.teal },
+        itemStyle: { color: palette.teal },
+        data: props.buckets.map((item) => item.meterChunk),
       },
     ],
   }

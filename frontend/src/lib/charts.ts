@@ -26,6 +26,7 @@ export interface ChartPalette {
   accent: string
   warm: string
   violet: string
+  teal: string
   danger: string
   surface: string
   font: string
@@ -51,6 +52,7 @@ const FALLBACK: ChartPalette = {
   accent: '#0071e3',
   warm: '#ff9f0a',
   violet: '#5e5ce6',
+  teal: SERIES_TEAL,
   danger: '#ff3b30',
   surface: '#ffffff',
   font: '-apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif',
@@ -82,6 +84,7 @@ export function chartPalette(): ChartPalette {
     accent: readVar(styles, '--c-accent', FALLBACK.accent),
     warm: SERIES_WARM,
     violet: SERIES_VIOLET,
+  teal: SERIES_TEAL,
     danger: readVar(styles, '--c-danger', FALLBACK.danger),
     surface: readVar(styles, '--c-surface', FALLBACK.surface),
     font: readVar(styles, '--font-sans', FALLBACK.font),

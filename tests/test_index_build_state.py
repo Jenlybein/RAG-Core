@@ -342,20 +342,43 @@ def test_start_build_snapshots_the_participants_the_draft_and_the_deadline() -> 
     assert row.converge_deadline > row.created_at
 
 
-def test_start_build_records_a_draft_even_when_nothing_can_participate() -> None:
-    """空库起构建：分母为 0，稿号仍然落一个值（列非空；「没有稿号」由 0 篇表达）。"""
+def test_start_build_records_a_draft_even_when_the_library_is_empty() -> None:
+    """**真空库**起构建：分母为 0，稿号仍然落一个值（列非空；「没有稿号」由 0 篇表达）。
 
-    session = _session(
-        versions=[_version(version="v1")],
-        kb=_kb("v1"),
-        documents=[_document("doc-failed", draft=2, status=DocumentStatus.FAILED)],
-    )
+    空库产出空版本是 ADR-0025 允许的合法产物，所以这条路径照旧成立。
+    """
+
+    session = _session(versions=[_version(version="v1")], kb=_kb("v1"), documents=[])
 
     row = asyncio.run(_service().start_build(session, kb_id=KB_ID, tenant_id=TENANT_ID))
 
     assert row.documents_planned == 0
     assert row.doc_version == 1, "没有可参与的文档时记 1，不为空"
     assert row.converge_deadline == converge_deadline_for(0, started_at=row.created_at)
+
+
+def test_start_build_is_refused_when_the_library_has_documents_but_none_can_participate() -> None:
+    """**有文档、但全是失败 / 排队中**：拒绝起构建，而不是产出一个空的「成功」版本。
+
+    这条是现场故障的回归用例：库里 10 篇全失败时如果还允许起构建，会得到一次「0 篇参与」
+    的构建——它要么永远停在 `building`（并发守卫让用户再也改不了设置），要么收敛成 `ready`
+    并**激活一个空版本**（线上检索一条都查不到，界面却写着「构建成功」）。
+    """
+
+    session = _session(
+        versions=[_version(version="v1")],
+        kb=_kb("v1"),
+        documents=[
+            _document("doc-failed", draft=2, status=DocumentStatus.FAILED),
+            _document("doc-queued", draft=2, status=DocumentStatus.QUEUED),
+        ],
+    )
+
+    with pytest.raises(AppError) as ctx:
+        asyncio.run(_service().start_build(session, kb_id=KB_ID, tenant_id=TENANT_ID))
+
+    assert ctx.value.code == ErrorCode.PARAM_ERROR
+    assert "2 篇" in str(ctx.value), "文案要说清是「几篇、为什么都不行」"
 
 
 # ─────────────────────────────────────────────────────────── 失败留痕

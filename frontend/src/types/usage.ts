@@ -40,6 +40,15 @@ export interface UsageBucket {
   meterR: number
   meterRr: number
   meterLlm: number
+  /**
+   * 第四本账（切块，单位 **token**，第 17 步 #222 / #223）。
+   *
+   * 与前三个**单位不同**：它们是「调用了几次」，它是「烧了多少 token」。所以它在图上不堆进
+   * 同一根柱子，而是走右轴单独一条——堆进去会让两根不同量纲的柱子相加，读出来的高度毫无意义。
+   *
+   * 只有租户级：单 Key 视图里它恒是 0（索引没有「哪把 Key 发起的」这回事）。
+   */
+  meterChunk: number
   /** 这一桶里没有样本时是 `null`。 */
   p95Ms: number | null
 }
@@ -56,6 +65,15 @@ export interface UsageTotals {
   meterR: number
   meterRr: number
   meterLlm: number
+  /**
+   * 第四本账（切块，单位 **token**，第 17 步 #222 / #223）。
+   *
+   * 与前三个**单位不同**：它们是「调用了几次」，它是「烧了多少 token」。所以它在图上不堆进
+   * 同一根柱子，而是走右轴单独一条——堆进去会让两根不同量纲的柱子相加，读出来的高度毫无意义。
+   *
+   * 只有租户级：单 Key 视图里它恒是 0（索引没有「哪把 Key 发起的」这回事）。
+   */
+  meterChunk: number
 }
 
 export interface UsageAlert {

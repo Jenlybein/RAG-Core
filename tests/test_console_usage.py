@@ -157,8 +157,9 @@ async def test_a_short_window_reads_the_detail_table_and_pads_empty_buckets() ->
     session = _StubSession(
         _Result(rows=[]),
         _Result(one=empty_totals),
-        # 第四本账（#222）是单独一条查询：索引行被排除出请求统计，所以另读一次。
+        # 第四本账（#222）是单独两条查询：合计一条 + 按桶一条（曲线图要四本并列）。
         _Result(scalar=0),
+        _Result(rows=[]),
     )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
@@ -218,8 +219,9 @@ async def test_every_tenant_scoped_query_carries_the_tenant() -> None:
                 unknown_code=0,
             )
         ),
-        # 第四本账（#222）：它也必须带租户（跨租户的用量合计是一条不该存在的查询）。
+        # 第四本账（#222）：两条都必须带租户（跨租户的用量合计是一条不该存在的查询）。
         _Result(scalar=0),
+        _Result(rows=[]),
     )
 
     await console_usage.series(
@@ -279,8 +281,9 @@ async def test_success_rate_ignores_rows_whose_outcome_was_never_recorded() -> N
     session = _StubSession(
         _Result(rows=[]),
         _Result(one=all_legacy),
-        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        # 第四本账（#222）：合计一条 + 按桶一条。
         _Result(scalar=0),
+        _Result(rows=[]),
     )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
@@ -306,8 +309,10 @@ async def test_success_rate_denominator_is_the_known_ones_only() -> None:
     session = _StubSession(
         _Result(rows=[]),
         _Result(one=mixed),
-        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        # 第四本账（#222）：索引行不进请求统计，因此单独读一次合计……
         _Result(scalar=0),
+        # ……再读一次**按桶**的量（曲线图要四本并列，见 `_chunk_buckets`）。
+        _Result(rows=[]),
     )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
@@ -526,8 +531,10 @@ async def test_failed_counts_only_the_known_outcomes() -> None:
     session = _StubSession(
         _Result(rows=[]),
         _Result(one=mixed),
-        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        # 第四本账（#222）：索引行不进请求统计，因此单独读一次合计……
         _Result(scalar=0),
+        # ……再读一次**按桶**的量（曲线图要四本并列，见 `_chunk_buckets`）。
+        _Result(rows=[]),
     )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
@@ -555,8 +562,9 @@ async def test_a_window_of_purely_legacy_rows_reports_no_failures() -> None:
     session = _StubSession(
         _Result(rows=[]),
         _Result(one=legacy),
-        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        # 第四本账（#222）：合计一条 + 按桶一条（曲线图四本并列要后者）。
         _Result(scalar=0),
+        _Result(rows=[]),
     )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))

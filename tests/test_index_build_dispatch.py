@@ -463,3 +463,64 @@ def test_redispatch_is_capped_and_a_runaway_build_is_failed(
     assert build is not None
     assert counts[-1] == MAX_REDISPATCH + 1
     assert build.status == "failed", "超上限的构建必须收尾，不许再等"
+
+
+@pytest.mark.asyncio
+async def test_a_dispatch_that_sent_nothing_settles_the_build_immediately(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一篇都没投出去时，派活任务**必须当场收尾**，不能让构建停在 building。
+
+    现场 #226 就是这条：库里十篇全失败 → 参与 0 篇 → `dispatched == 0` → 派活任务正常返回，
+    谁都没收尾 → 构建行永远 `building`。后果是 `start_build` 的并发守卫让用户**再也改不了
+    这个库的设置**（界面提示「库在重建中」，而进度永远不动）。
+
+    收敛的口径与别处一致：空库（0 篇文档）→ `ready`（空版本是 ADR-0025 允许的）；
+    「有文档但一篇都不可参与」在 `start_build` 那一步就被拒了，走不到这里。
+    """
+
+    documents = [
+        _document_row(f"failed-doc-{index}", status=DocumentStatus.FAILED) for index in range(3)
+    ]
+    recorded: list[dict[str, Any]] = []
+    converged: list[tuple[str, bool]] = []
+
+    async def _get_row(_db: Any, build_id: str, *, tenant_id: str) -> Any:
+        return _build_row(planned=0)
+
+    async def _get_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        return KnowledgeBase(
+            id=KB_ID,
+            tenant_id=TENANT_ID,
+            name="库",
+            split_strategy="structure",
+            allowed_formats=["markdown"],
+            active_index_version=None,
+        )
+
+    async def _list_documents(_db: Any, kb_id: str, *, tenant_id: str) -> list[Any]:
+        return documents
+
+    async def _no_chunks(*_args: Any, **_kwargs: Any) -> set[str]:
+        return set()
+
+    async def _converge(self: Any, _db: Any, build_id: str, *, tenant_id: str, final: bool) -> Any:
+        converged.append((build_id, final))
+        return None
+
+    monkeypatch.setattr("app.repositories.index_version_repository.get_for_tenant", _get_row)
+    monkeypatch.setattr("app.repositories.knowledge_base_repository.get_by_id_for_tenant", _get_kb)
+    monkeypatch.setattr("app.repositories.document_repository.list_by_kb_async", _list_documents)
+    monkeypatch.setattr("app.repositories.chunk_repository.list_indexed_document_ids", _no_chunks)
+    monkeypatch.setattr(IndexBuildService, "converge", _converge)
+
+    dispatched = await IndexBuildService().dispatch(
+        None, BUILD_ID, tenant_id=TENANT_ID, publish=lambda **_: recorded.append(1)
+    )
+
+    assert dispatched == 0
+    assert recorded == [], "一篇都不可参与时不该有任何投递"
+    assert converged == [(BUILD_ID, True)], (
+        "0 篇投出去就必须当场 `final=True` 收尾——否则这一行永远停在 building，"
+        "而并发守卫会让这个库再也改不了设置"
+    )

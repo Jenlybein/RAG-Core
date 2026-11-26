@@ -24,6 +24,7 @@ from app.models.index_version import (
     INDEX_BUILD_READY,
 )
 from app.services.index_build_service import (
+    guard_against_an_empty_version,
     CONVERGE_BASE_SECONDS,
     CONVERGE_MAX_SECONDS,
     CONVERGE_PER_DOCUMENT_SECONDS,
@@ -173,3 +174,30 @@ def test_a_negative_planned_count_does_not_shorten_the_base_budget() -> None:
     assert converge_deadline_for(-5, started_at=started) == converge_deadline_for(
         0, started_at=started
     )
+
+
+# ────────────────────────────────────────────── 空版本守卫（现场 #226）
+
+
+def test_an_empty_library_with_zero_planned_is_allowed_to_be_ready() -> None:
+    """**真空库**产出空版本是 ADR-0025 允许的：库本来就检索不到东西。"""
+
+    assert guard_against_an_empty_version("ready", planned=0, documents_in_kb=0) == "ready"
+
+
+def test_a_library_full_of_failed_documents_must_not_produce_a_ready_version() -> None:
+    """有文档、但没有一篇可参与 → **failed**。
+
+    现场 #226 就是这个：十篇全失败时起了一次 0 篇构建，真值与计划都是 0，纯判据给出 ready
+    ——一旦激活，线上检索一条都查不到，界面上却写着「构建成功」。
+    """
+
+    assert guard_against_an_empty_version("ready", planned=0, documents_in_kb=10) == "failed"
+
+
+def test_the_guard_leaves_every_other_verdict_alone() -> None:
+    """守卫只碰「0 篇参与的 ready」这一种组合，别的判决原样放行。"""
+
+    assert guard_against_an_empty_version("failed", planned=0, documents_in_kb=5) == "failed"
+    assert guard_against_an_empty_version("wait", planned=0, documents_in_kb=5) == "wait"
+    assert guard_against_an_empty_version("ready", planned=3, documents_in_kb=10) == "ready"

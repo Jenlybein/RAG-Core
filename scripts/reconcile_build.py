@@ -76,6 +76,7 @@ from app.services.index_build_service import (
     BuildTruth,
     IndexBuildService,
     decide_convergence,
+    guard_against_an_empty_version,
 )
 from app.utils.status import DocumentStatus
 
@@ -193,6 +194,16 @@ async def inspect_build(
         )
         missing = tuple(sorted(expected - indexed))
     verdict = decide_convergence(truth=truth.documents, planned=truth.planned, failed=0, final=True)
+    # 「0 篇参与」时脚本与服务必须给同一个结论，所以守卫是**共用的纯函数**（#226 的现场就
+    # 是脚本报 ready、而服务写下去该是 failed——照脚本执行会激活一个空版本）。
+    if verdict == INDEX_BUILD_READY and truth.planned == 0:
+        verdict = guard_against_an_empty_version(
+            verdict,
+            planned=truth.planned,
+            documents_in_kb=await document_repository.count_by_kb(
+                db, str(row.kb_id), tenant_id=tenant_id
+            ),
+        )
     return BuildReport(row=row, truth=truth, missing=missing, verdict=verdict)
 
 

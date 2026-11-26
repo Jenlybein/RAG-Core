@@ -318,6 +318,46 @@ async def _buckets_from_events(
 # ───────────────────────────────────────────────────────── 日汇总窗口
 
 
+async def _chunk_buckets(
+    db: AsyncSession, *, window: Window, tenant_id: str | None
+) -> dict[int, int]:
+    """**按桶**的第四本账（切块 token），返回 ``{桶序号: token 数}``。
+
+    ## 为什么另起一条查询，而不是从 `_buckets_from_events` 里一起取
+
+    请求统计那一条**排除**索引行（`_denies_index`）——它们混进去会让「请求数」多出一百条、
+    成功率凭空掉一截、P95 被一个几分钟的批次拉爆。而第四本账的消耗**只存在于**索引行上。
+    两个口径的过滤条件互为补集，合在一条 SQL 里写出来就是「先排除、再要回来」，读者很难相
+    信那是对的。分开两条、各自写清自己的补集，比一条绕来绕去的强。
+
+    也正因为它是补集，它**不做** `_exclude_index_rows`，而是只收 ``endpoint == 'index'``。
+
+    ## 为什么按桶而不只给合计
+
+    曲线图要的是「四本账各用了多少」的趋势，合计只够画一个数字。合计那条
+    （`_chunk_tokens`）仍然保留：它同时用于我的视图与下钻，两者不该互相等。
+    """
+
+    index = _bucket_index(UsageEvent.created_at, window).label("bucket")
+    statement = (
+        select(index, func.coalesce(func.sum(UsageEvent.meter_chunk), 0).label("chunk"))
+        .where(
+            UsageEvent.created_at >= window.since,
+            UsageEvent.created_at < window.until,
+            # 补集：只收索引行（与 `_denies_index` 互为反面）。
+            UsageEvent.endpoint == INDEX_ENDPOINT,
+        )
+        .group_by(index)
+        .order_by(index)
+    )
+    # 第四本账**只有租户级**：`key_id` 不参与（索引没有 Key 这个概念），但租户必须过滤——
+    # 管理员看全站时传 `None`，那时读的是所有租户的合计（与 `_chunk_tokens` 同一口径）。
+    if tenant_id is not None:
+        statement = statement.where(UsageEvent.tenant_id == tenant_id)
+    rows = (await db.execute(statement)).all()
+    return {int(row._mapping["bucket"]): int(row._mapping["chunk"] or 0) for row in rows}
+
+
 async def _daily_buckets(
     db: AsyncSession, *, window: Window, tenant_id: str | None, key_id: str | None
 ) -> list[dict[str, Any]]:
@@ -478,6 +518,14 @@ async def series(
     totals["meter_chunk"] = await _chunk_tokens(
         db, window=window, tenant_id=tenant_id, key_id=key_id
     )
+    # 曲线图要「四本并列」，就必须有每桶的切块量（合计只够画一个数字）。窗口用的是
+    # `uses_daily` 时明细表可能已经没有这段的行了——但 `usage_daily` 是按天汇总的，
+    # 那个窗口的桶本身就是「天」，所以这里两条路径都以明细表为准：短窗口有明细、长窗口
+    # 的每一天也仍然有明细（rollup 只是额外的一张快照，不删明细）。
+    # 第四本账**只有租户级**，所以 `key_id` 不参与这条查询（索引没有 Key 这个概念）。
+    chunk_by_bucket = await _chunk_buckets(db, window=window, tenant_id=tenant_id)
+    for position, bucket in enumerate(buckets):
+        bucket["meter_chunk"] = chunk_by_bucket.get(position, 0)
 
     return {
         "window": window.name,

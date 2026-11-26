@@ -444,6 +444,32 @@ def decide_convergence(*, truth: int, planned: int, failed: int, final: bool = T
     return INDEX_BUILD_FAILED if final else CONVERGE_WAIT
 
 
+def guard_against_an_empty_version(verdict: str, *, planned: int, documents_in_kb: int) -> str:
+    """把「0 篇参与、0 篇建成」的 ``ready`` 判成 ``failed``——**当库里还有文档时**。
+
+    ## 为什么这不是 ``decide_convergence`` 的一部分
+
+    ``decide_convergence`` 是**纯函数**：它只看真值、计划数与失败明细，不读库。而这条守卫需要
+    回答「库里到底有没有文档」——那是另一次读。混进纯函数会让它不再纯，也就不再能用四条真值
+    组合把它钉死。
+
+    但它必须**只有一处**：任务体（``converge``）、运维脚本（``reconcile_build.py``）、清扫器
+    都算这一句话。否则会出现「脚本说该 ready、服务写下去却是 failed」这种两个真相并存。
+
+    ## 三种情况的区分
+
+    * 空库（``documents_in_kb == 0``）：``ready`` 是对的——空库产出空版本是 ADR-0025 允许的，
+      它本来就检索不到东西。
+    * 有文档、但一篇都不可参与（全失败 / 全排队中）：``failed``——若激活这个空版本，线上检索
+      会一条都查不到，而界面上写着「构建成功」。
+    * ``planned > 0``：守卫不参与，按 ``decide_convergence`` 的判决走。
+    """
+
+    if verdict != INDEX_BUILD_READY or planned != 0:
+        return verdict
+    return INDEX_BUILD_FAILED if documents_in_kb > 0 else verdict
+
+
 def ensure_transition(row: IndexBuildVersion, target: str) -> None:
     """迁移不合法就抛 :class:`IndexBuildInvalidTransition`，合法则什么都不做。"""
 
@@ -536,6 +562,24 @@ class IndexBuildService:
         planned, draft = await document_repository.participating_snapshot(
             db, kb_id, tenant_id=tenant_id
         )
+        # ── 「有文档、但一篇都不可参与」不是「空库构建」──
+        #
+        # 这个库当前可能一个文档都没有（合法空库，产出空版本是 ADR-0025 允许的），也可能
+        # **有十篇、但全是失败 / 排队中**（构建只重建 `1 成功` 的文档）。后者的正确处置是
+        # 立刻告诉用户「先重建那些失败的篇」，而不是起一个 0 篇的构建：
+        #
+        # 那种构建会一路走到 `ready` 并**激活一个空版本**——线上检索从此一条都查不到，而
+        # 界面上「构建成功」。这正是本步反复要消灭的形态（「版本正常、检索全空」）。
+        # 它还会在收敛之前一直占着 `building` 行，于是 `start_build` 的并发守卫让用户
+        # **再也改不了这个库的设置**（症状是「提示库在重建中，但进度永远不动」）。
+        if planned == 0:
+            total = await document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id)
+            if total > 0:
+                raise AppError(
+                    ErrorCode.PARAM_ERROR,
+                    f"这个库里有 {total} 篇文档，但没有一篇处于「成功」状态——"
+                    "构建只重建成功的文档。先对失败的文档点「重建」或重新上传，再改设置。",
+                )
         started_at = now()
 
         row = IndexBuildVersion(
@@ -885,6 +929,16 @@ class IndexBuildService:
             failed=failed_count,
             final=final,
         )
+        # ── 守卫：``planned == 0`` 但库里**有**文档 → 不许 ready ──
+        #
+        # 判据本身在 ``guard_against_an_empty_version``（纯函数，与 ``reconcile_build.py``
+        # 共用同一处）：`start_build` 已经在起构建那一刻拒掉这种请求，这条守卫守的是**已经
+        # 躺在库里的存量行**（升级前卡住的构建、以及清扫器按期限收尾那条路径）。
+        if verdict == INDEX_BUILD_READY and truth.planned == 0:
+            total = await document_repository.count_by_kb(db, str(row.kb_id), tenant_id=tenant_id)
+            verdict = guard_against_an_empty_version(
+                verdict, planned=truth.planned, documents_in_kb=total
+            )
         if verdict == CONVERGE_WAIT:
             logger.info(
                 "index build waiting for more documents",
@@ -1028,6 +1082,21 @@ class IndexBuildService:
             dispatched=dispatched,
             skipped=len(documents) - len(participating),
         )
+        if dispatched == 0:
+            # ── 一篇都没投出去：**必须在这里给结论**，否则这一行永远停在 building ──
+            #
+            # 正常情况下 `dispatched == 0` 只有一种来源：**空库**（0 篇文档）。这时派活
+            # 投完就把这一轮结束掉——空版本是 ADR-0025 允许的合法产物（空库本来就检索不到
+            # 东西），而停在 `building` 的后果是 `start_build` 的并发守卫让这个库**再也改
+            # 不了设置**，用户看到的是「提示库在重建中，但进度永远不动」。
+            #
+            # 「有文档但一篇都不可参与」这种情况在 `start_build` 那里就被拒了，走到这里只剩
+            # 真空库；所以 `final=True` 是安全的（`converge` 对 `planned == 0` 另有守卫，见
+            # `_no_participant_guard`）。
+            #
+            # 为什么不在 `dispatched > 0` 时也收敛：那会把「子任务还没跑」误判成「不够 →
+            # failed」。收敛等子任务自己来（或清扫器按期限来）。
+            await self.converge(db, build_id, tenant_id=tenant_id, final=True)
         return dispatched
 
     async def record_outcome(

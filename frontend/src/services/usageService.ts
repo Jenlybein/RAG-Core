@@ -36,6 +36,8 @@ interface RawBucket {
   meter_r: number
   meter_rr: number
   meter_llm: number
+  /** 第四本账（切块 token）；后端按桶给，见 `console_usage._chunk_buckets`。 */
+  meter_chunk: number
   p95_ms: number | null
 }
 
@@ -50,6 +52,7 @@ interface RawTotals {
   meter_r: number
   meter_rr: number
   meter_llm: number
+  meter_chunk: number
 }
 
 interface RawSeries {
@@ -99,6 +102,7 @@ function toBucket(raw: RawBucket): UsageBucket {
     meterR: raw.meter_r,
     meterRr: raw.meter_rr,
     meterLlm: raw.meter_llm,
+    meterChunk: raw.meter_chunk ?? 0,
     p95Ms: raw.p95_ms,
   }
 }
@@ -115,6 +119,7 @@ function toTotals(raw: RawTotals): UsageTotals {
     meterR: raw.meter_r,
     meterRr: raw.meter_rr,
     meterLlm: raw.meter_llm,
+    meterChunk: raw.meter_chunk ?? 0,
   }
 }
 
