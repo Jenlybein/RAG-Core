@@ -54,9 +54,7 @@ def get_by_id_for_tenant(db: Session, document_id: str, *, tenant_id: str) -> Do
     可选过滤器；无租户的那一条（:func:`get_by_id`，异步）只留给 Worker 任务路径。
     """
 
-    stmt = select(Document).where(
-        Document.id == document_id, Document.tenant_id == tenant_id
-    )
+    stmt = select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
     return db.execute(stmt).scalar_one_or_none()
 
 
@@ -187,9 +185,7 @@ def list_missing_content(
     一小批再决定，两者都不改变「正文为空」的定义。
     """
 
-    stmt = select(*_MISSING_CONTENT_COLUMNS).where(
-        func.coalesce(Document.content, "") == ""
-    )
+    stmt = select(*_MISSING_CONTENT_COLUMNS).where(func.coalesce(Document.content, "") == "")
     if kb_id is not None:
         stmt = stmt.where(Document.kb_id == kb_id)
     stmt = stmt.order_by(Document.created_at)
@@ -517,9 +513,7 @@ async def get_by_id_for_tenant_async(
 ) -> Document | None:
     """按 id + 租户取（语义同同步版 :func:`get_by_id_for_tenant`；控制面与数据面都走它）。"""
 
-    stmt = select(Document).where(
-        Document.id == document_id, Document.tenant_id == tenant_id
-    )
+    stmt = select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
@@ -585,9 +579,7 @@ async def try_claim_for_indexing_async(
     return int(result.rowcount or 0) > 0
 
 
-async def release_index_claim_async(
-    db: AsyncSession, document_id: str, *, tenant_id: str
-) -> None:
+async def release_index_claim_async(db: AsyncSession, document_id: str, *, tenant_id: str) -> None:
     """释放索引租约（语义同 :func:`release_index_claim`）。"""
 
     await db.execute(_release_statement(document_id, tenant_id=tenant_id))
@@ -610,6 +602,38 @@ async def count_processing_for_tenant(
         _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
     )
     return int(result.scalar_one())
+
+
+async def participating_snapshot(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> tuple[int, int | None]:
+    """起构建那一刻的**参与篇数与统一稿号**：``(count, max(current_version))``。
+
+    这是 #214 那两列快照的唯一来源，两条聚合读共用同一份过滤条件（``status=1``：只有成功
+    的文档有可切的正文；失败 / 排队中的文档该由单篇重试解决，不属于构建）。
+
+    **为什么是两条语句而不是把文档行读一遍**：``start_build`` 跑在请求路径上（控制台改设置
+    就会发起），一次把整库文档连同正文读进内存，等于让一次设置保存去背起整库的正文体积。
+    两条 ``SELECT count / max`` 只读索引与指针；而「入口不遍历文档行」也正是 ADR-0034
+    决策三写下的形状（按篇投递之后更是如此）。
+
+    **为什么稿号取最大值**：库里的文档各自演进（回滚会把某篇的指针往回切），而一次构建产出
+    的切片必须统一算一稿——混着数的后果是同一批切片一半旧稿一半新稿（ADR-0031 决策七）。
+    取最大值是「这一库的稿号已经走到第几」唯一不需要猜的口径；真值判据按它数，缺一篇就是
+    缺一篇，不会因为某篇往回滚过就把一次正常的构建判成完成。没有可参与的文档时回 ``None``
+    （不是 0）：``None`` 的意思才是「这一稿没法挑」。
+    """
+
+    conditions = (
+        Document.kb_id == kb_id,
+        Document.tenant_id == tenant_id,
+        Document.status == DocumentStatus.SUCCESS,
+    )
+    count_statement = select(func.count()).select_from(Document).where(*conditions)
+    draft_statement = select(func.max(Document.current_version)).where(*conditions)
+    count = int((await db.execute(count_statement)).scalar_one())
+    draft = (await db.execute(draft_statement)).scalar_one()
+    return count, (int(draft) if draft is not None else None)
 
 
 # ──────────────── 写路径的行锁（第 12 步票 #175：建版本）

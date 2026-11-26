@@ -150,18 +150,25 @@ def _session(
     )
 
 
-def _chunk(chunk_id: str, *, version: str = TARGET_VERSION) -> Any:
-    """一行切片（真 ORM 对象，不 flush）：给 ``ready`` 前的「切片数」读数用。"""
+def _chunk(chunk_id: str, *, version: str = TARGET_VERSION, document_id: str = "doc-1") -> Any:
+    """一行切片（真 ORM 对象，不 flush）：给 ``ready`` 前的两项读数用。
+
+    两项读数指「切片数」（四项计数之一）与**收敛真值**（#214：该版本该稿下已经有切片的
+    文档数）。后者按 ``document_id`` 去重、并要求稿号与构建行的稿号快照一致，所以这一行必须
+    带 ``doc_version``，且不同文档的切片要挂不同的 ``document_id``——两篇都挂 ``doc-1`` 在
+    真库上只算一篇，真值就不够了。
+    """
 
     return Chunk(
         id=chunk_id,
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
-        document_id="doc-1",
+        document_id=document_id,
         content="正文",
         embedding=[0.0] * 1536,
         meta={},
         index_version=version,
+        doc_version=1,
     )
 
 
@@ -305,8 +312,9 @@ def test_the_build_rebuilds_every_success_document_into_the_target_version() -> 
             _document("doc-processing", status=DocumentStatus.PROCESSING),
         ],
         versions=[building],
-        # 两篇成功文档各产出 1 片：切片数与向量数必须对得上，构建才能 ready。
-        chunks=[_chunk("c1"), _chunk("c2")],
+        # 两篇成功文档各产出 1 片：切片数与向量数必须对得上，构建才能 ready；
+        # 而收敛真值按「有切片的文档数」数，所以两片要挂在两篇文档上。
+        chunks=[_chunk("c1", document_id="doc-ok-1"), _chunk("c2", document_id="doc-ok-2")],
     )
 
     asyncio.run(_build_service(indexing, vectors=2).build(session, "build-v2", tenant_id=TENANT_ID))
