@@ -29,6 +29,7 @@ from typing import Any
 import pytest
 
 from app.core.config import settings
+from app.db.base import now
 from app.models.chunk import Chunk
 from app.models.document import Document
 from app.models.index_version import (
@@ -181,7 +182,12 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, documents: dict[str, Doc
     async def _get_by_id(_db: Any, document_id: str) -> Any:
         return documents.get(document_id)
 
-    async def _claim(*_args: Any, **_kwargs: Any) -> bool:
+    async def _claim(*_args: Any, **_kwargs: Any) -> Any:
+        # 抢到回租约令牌（#213）。令牌核对的判定只认真库（行锁 + 库里那个时间戳），
+        # 本文件验的是节目录 / 稿号这类身份，与租约归属无关，因此固定放行。
+        return now()
+
+    async def _holds_index_claim(*_args: Any, **_kwargs: Any) -> bool:
         return True
 
     async def _split_config(*_args: Any, **_kwargs: Any) -> tuple[str, int]:
@@ -192,6 +198,7 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, documents: dict[str, Doc
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(knowledge_base_repository, "get_split_config", _split_config)
     monkeypatch.setattr(
         knowledge_base_repository, "get_effective_index_version", _effective_version

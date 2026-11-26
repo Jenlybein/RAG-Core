@@ -227,7 +227,10 @@ def _run(scenario: Callable[[AsyncSession], Awaitable[T]]) -> T:
 
 
 def test_async_claim_after_prepare_succeeds_on_real_postgres(db: Session) -> None:
-    """重建契约在异步入口上同样成立：准备入队不盖租约，Worker 随后抢得到。"""
+    """重建契约在异步入口上同样成立：准备入队不盖租约，Worker 随后抢得到。
+
+    抢占成功回的是**租约令牌**（#213）而不是 ``True``：``None`` 表示没抢到。
+    """
 
     _seed(db, "it-async-claim", status=DocumentStatus.SUCCESS)
     assert document_repository.prepare_for_indexing(
@@ -235,7 +238,7 @@ def test_async_claim_after_prepare_succeeds_on_real_postgres(db: Session) -> Non
     )
     db.commit()
 
-    async def _scenario(session: AsyncSession) -> tuple[bool, bool]:
+    async def _scenario(session: AsyncSession) -> tuple[datetime | None, datetime | None]:
         first = await document_repository.try_claim_for_indexing_async(
             session, "it-async-claim", tenant_id=TENANT_ID, allow_success=False
         )
@@ -247,8 +250,8 @@ def test_async_claim_after_prepare_succeeds_on_real_postgres(db: Session) -> Non
 
     first, second = _run(_scenario)
 
-    assert first is True, "准备入队之后 Worker 必须抢得到"
-    assert second is False, "有效租约下第二次抢占必须失败——重复投递不会重复切片"
+    assert first is not None, "准备入队之后 Worker 必须抢得到"
+    assert second is None, "有效租约下第二次抢占必须失败——重复投递不会重复切片"
 
 
 def test_async_release_re_enables_the_claim_on_real_postgres(db: Session) -> None:
@@ -256,7 +259,7 @@ def test_async_release_re_enables_the_claim_on_real_postgres(db: Session) -> Non
 
     _seed(db, "it-async-release", status=DocumentStatus.FAILED)
 
-    async def _scenario(session: AsyncSession) -> tuple[bool, bool]:
+    async def _scenario(session: AsyncSession) -> tuple[datetime | None, datetime | None]:
         first = await document_repository.try_claim_for_indexing_async(
             session, "it-async-release", tenant_id=TENANT_ID, allow_success=False
         )
@@ -272,5 +275,5 @@ def test_async_release_re_enables_the_claim_on_real_postgres(db: Session) -> Non
 
     first, again = _run(_scenario)
 
-    assert first is True
-    assert again is True, "释放租约之后重试必须抢得到，否则重试永远是静默 no-op"
+    assert first is not None
+    assert again is not None, "释放租约之后重试必须抢得到，否则重试永远是静默 no-op"

@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from app.db.base import now
 from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk
 from app.models.document import Document
 from app.models.index_version import (
@@ -180,22 +181,28 @@ class _RecordingVectorStore:
 
 
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, document: Any) -> list[str]:
-    """把流水线的三个外部协作者换成替身；返回「被抢占的文档」记录。"""
+    """把流水线的三个外部协作者换成替身；返回「被抢占的文档」记录。
+
+    抢占替身回**租约令牌**（#213），令牌核对在离线替身上固定放行：能不能核对只看「库里
+    那一行的 ``index_claimed_at`` 是不是我写的那个时间戳」，而假会话不模拟写语句对行的
+    效果——那条判定由 ``tests/test_integration_indexing_lease.py`` 在真库上验。
+    状态回写同理：这里既不断言它、也不替掉它（#212 不许再把回写函数换成记录器）。
+    """
 
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(_db: Any, document_id: str, **kwargs: Any) -> bool:
+    async def _claim(_db: Any, document_id: str, **kwargs: Any) -> Any:
         claims.append(f"{document_id}:{kwargs.get('allow_success')}")
-        return True
+        return now()
 
-    async def _update_status(*_args: Any, **_kwargs: Any) -> None:
-        return None
+    async def _holds_index_claim(*_args: Any, **_kwargs: Any) -> bool:
+        return True
 
     claims: list[str] = []
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
-    monkeypatch.setattr(document_repository, "update_status", _update_status)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
