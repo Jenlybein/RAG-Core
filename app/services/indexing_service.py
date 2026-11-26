@@ -83,6 +83,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from datetime import datetime
 from typing import Any, NamedTuple
 
 import structlog
@@ -213,6 +215,7 @@ class IndexingService:
         splitter: TextSplitter | None = None,
         embeddings: EmbeddingProvider | None = None,
         stores: list[ChunkStore] | None = None,
+        heartbeat_session_factory: Callable[[], AsyncSession] | None = None,
     ) -> None:
         # 注入的切块器优先：测试用它把切块与接线解耦。生产路径不注入，
         # 每份文档在索引时按**所属知识库**的配置现建切块器。
@@ -225,6 +228,63 @@ class IndexingService:
             if stores is not None
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
+        # 心跳用**独立会话**（#225）：见 ``_heartbeat`` 的注释——用流水线那个会话提交，会把
+        # 内存里已经改过、但本应等到 Tx2 才落库的正文一起刷出去。
+        self._heartbeat_sessions = heartbeat_session_factory
+
+    async def _heartbeat(self, doc: Document, token: datetime) -> None:
+        """刷新这一篇的心跳并立刻提交（#225）。
+
+        ## 为什么立刻提交，而不是并进 Tx2
+
+        心跳要证明的是「**此刻**还活着」。并进 Tx2 的话它要等到最后才落库——而 Tx2 正是
+        「跑完了」那一刻，那时已经不需要证明了。
+
+        ## 为什么必须用**独立会话**
+
+        用它手里那个流水线会话提交，会把内存里已经改过、但**本应等到 Tx2 才落库**的东西一起
+        刷出去——`doc.content = parsed.content` 就在心跳之前执行。于是「正文、切片、版本行、
+        状态同一笔事务」这条纪律（第 11 步起就有的硬约束）被一次心跳悄悄破坏，库里会出现
+        「正文是新的、切片还是旧的」的半份状态。独立会话只写 ``index_heartbeat_at`` 一列。
+
+        ## 为什么丢了心跳不拦任务
+
+        续租失败有两种可能：租约已被别人接走（那 Tx2 的 fencing 会把整笔放弃，回滚是安全的），
+        或者只是这一条 UPDATE 出了问题。前者由 fencing 兜住，后者不该让一次已经跑了一半的
+        索引作废——所以这里只记一条 warning，让流水线继续（真要出事，Tx2 会拒掉整笔）。
+        """
+
+        sessions = self._heartbeat_sessions
+        heartbeat_db: AsyncSession | None = None
+        try:
+            if sessions is not None:
+                heartbeat_db = sessions()
+            else:
+                from app.db.session_factory import async_session_factory
+
+                heartbeat_db = async_session_factory()()
+            renewed = await document_repository.renew_claim(
+                heartbeat_db, doc.id, tenant_id=doc.tenant_id, token=token
+            )
+            await async_commit_now(heartbeat_db)
+            await heartbeat_db.close()
+        except Exception:  # noqa: BLE001 - 心跳失败不该让流水线中断（fencing 另有兜底）
+            if heartbeat_db is not None:
+                await async_rollback_now(heartbeat_db)
+            logger.warning(
+                "indexing heartbeat failed",
+                document_id=doc.id,
+                tenant_id=doc.tenant_id,
+                kb_id=doc.kb_id,
+            )
+            return
+        if not renewed:
+            logger.warning(
+                "indexing heartbeat rejected: the lease no longer belongs to this task",
+                document_id=doc.id,
+                tenant_id=doc.tenant_id,
+                kb_id=doc.kb_id,
+            )
 
     async def _plan_of(self, db: AsyncSession, doc: Document) -> PlanSpec:
         """这篇文档所属租户的套餐快照（容量判据的输入，#220）。
@@ -423,6 +483,16 @@ class IndexingService:
         # ── 单库 token 容量硬拦（#220 / ADR-0035 决策四）────────────────────
         #
         # 位置选在**切块之前**：容量不够时连切都不必切（切块与嵌入是真正花钱的两步）。
+        # ── 心跳（#225）：解析刚结束，先证明「我还活着」──────────────
+        #
+        # 为什么在这里：解析是整条流水线最长的静默段（大 PDF 几十秒），而这段时间里租约
+        # 一个字节都不会动——清扫器据此会把它当成「接了之后没声了」，然后抢走重投，于是
+        # 同一篇被索引两遍（白烧一轮 embedding）。心跳只刷新 ``index_heartbeat_at``，
+        # **不动** ``index_claimed_at``：那是 fencing 令牌，改了 Tx2 会把自己拒掉。
+        #
+        # 单独一次短提交，不等 Tx2：心跳的意义就是「还没到最后也要有活的证据」。
+        await self._heartbeat(doc, claim_token)
+
         # 口径是**正文** token，与单库容量判据同一把尺子；每日额度那边记的是检索文本
         # token（多出标题与节说明前缀），两个数字各管一件事。
         tokens = token_count(parsed.content)
@@ -481,6 +551,8 @@ class IndexingService:
             )
             for piece in pieces
         ]
+        # 嵌入前再续一次：节说明与检索文本的构造也可能花掉几十秒（每节一次模型调用）。
+        await self._heartbeat(doc, claim_token)
         vectors = await self._embeddings.embed_texts(retrieval_texts)
         if len(vectors) != len(retrieval_texts):
             raise ValueError(

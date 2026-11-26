@@ -270,10 +270,25 @@ def _patch_service_environment(
         knowledge_base_repository, "get_effective_index_version", _effective_version
     )
 
-    service = IndexingService(splitter=_StubSplitter(pieces), embeddings=embeddings, stores=stores)
+    # 心跳用**独立会话**（#225）：与流水线会话分开。分开之后这条用例同时钉住两件事——
+    # 心跳真的写了一次、而它**没有**经过流水线会话（Tx2 的提交次数因此不变）。
+    heartbeat_sessions: list[_FakeSession] = []
+
+    def _heartbeat_session() -> _FakeSession:
+        session = _FakeSession(calls)
+        heartbeat_sessions.append(session)
+        return session
+
+    service = IndexingService(
+        splitter=_StubSplitter(pieces),
+        embeddings=embeddings,
+        stores=stores,
+        heartbeat_session_factory=_heartbeat_session,
+    )
     return SimpleNamespace(
         service=service,
         session=_FakeSession(calls),
+        heartbeat_sessions=heartbeat_sessions,
         document=doc,
         stores=stores,
         embeddings=embeddings,
@@ -308,6 +323,11 @@ def test_service_indexes_document_through_claim_purge_write_success(
         "claim",
         "commit",  # Tx1：抢占后立刻提交，不把 embedding 包在行锁里
         "parse",
+        # 心跳（#225）：解析是最长的静默段，先证明「我还活着」——只刷心跳，不动令牌。
+        "update:documents",
+        "commit",
+        "update:documents",  # 嵌入前再续一次（节说明构造也可能几十秒）
+        "commit",
         "embed",
         "fence",  # Tx2 开头核对租约令牌（#213），在 purge 之前
         "purge:main",
@@ -317,7 +337,7 @@ def test_service_indexes_document_through_claim_purge_write_success(
         "update:documents.status",  # 状态回写是一条 UPDATE 语句（#212）
         "commit",  # Tx2：purge + 写入 + 计量 + 状态一次性提交
     ]
-    assert env.session.commits == 2, "抢占一段、写入一段，恰好两次提交"
+    assert env.session.commits == 2, "抢占一段 + 写入一段（心跳走独立会话）"
     assert env.session.rollbacks == 0
     assert env.claim_calls == [{"tenant_id": TENANT_ID, "allow_success": False}], (
         "Worker 是唯一抢租约的一方，且迟到重复投递不得重新抢占 SUCCESS"
@@ -539,7 +559,15 @@ def test_service_rejects_empty_pieces_before_embedding(monkeypatch: pytest.Monke
         asyncio.run(env.service.index_existing_document(env.session, DOC_ID))
 
     assert excinfo.value.code == ErrorCode.DOCUMENT_CONTENT_EMPTY
-    assert calls == ["get_by_id", "claim", "commit", "parse"]
+    assert calls == [
+        "get_by_id",
+        "claim",
+        "commit",
+        "parse",
+        # 解析完先续一次心跳（#225）。
+        "update:documents",
+        "commit",
+    ]
     assert env.stores[0].deleted == []
 
 

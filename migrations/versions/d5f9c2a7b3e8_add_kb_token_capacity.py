@@ -53,15 +53,22 @@ depends_on: str | Sequence[str] | None = None
 
 #: 四档种子值（ADR-0035 决策六）。迁移里写第二份拷贝是刻意的：历史脚本不许 import
 #: 应用代码，否则「当时那份代码」会被今天的改动悄悄改写。护栏用例逐列对账这两份。
+#: 每个值两格：``max_tokens_per_kb`` 是**新列**（本次才加的，不存在「运营改过」的值）；
+#: ``max_kb`` 是**已有列**，所以它多一格 ``was`` —— 只有在库里那个值**仍然是旧种子值**时
+#: 才动它。
+#:
+#: 为什么要 ``was``：spec 明写「只在空值上写，**不覆盖运营改过的值**」。一个租户运营把 free
+#: 档的库数从 1 调到 5，这条迁移若无条件写成 3，等于**把运营的决定改回去**，而且没有任何
+#: 提示——运维会在下一次有人报「怎么只能建 3 个库了」时才发现。带上 ``was`` 之后：
+#:
+#: * 全新库：种子已经是新值（3），``max_kb = 1`` 不成立 → 不动，正确；
+#: * 刚升级的老库：``max_kb`` 还是 1 → 改成 3，正确；
+#: * 运营改过的库：``max_kb`` 是 5 → 不匹配 → 保持 5，正确。
 _TIER_VALUES: dict[str, dict[str, int]] = {
-    # ``max_kb`` 一起改：ADR-0035 决策六把免费档从 1 个库放到 3 个、进阶档从 5 放到 10
-    # （专业/旗舰两档本来就是 50 / 50，改到 50 / 100 里专业档不变、旗舰档留在这里一并写）。
-    # **历史迁移不许改**（它要在当时那份代码上跑），所以「种子改了」必须由后来的迁移补上——
-    # 这正是这一条 UPDATE 在做的事。
-    "free": {"max_tokens_per_kb": 30_000, "max_kb": 3},
-    "plus": {"max_tokens_per_kb": 300_000, "max_kb": 10},
-    "pro": {"max_tokens_per_kb": 2_000_000, "max_kb": 50},
-    "max": {"max_tokens_per_kb": 5_000_000, "max_kb": 100},
+    "free": {"max_tokens_per_kb": 30_000, "max_kb": 3, "was": 1},
+    "plus": {"max_tokens_per_kb": 300_000, "max_kb": 10, "was": 5},
+    "pro": {"max_tokens_per_kb": 2_000_000, "max_kb": 50, "was": 50},
+    "max": {"max_tokens_per_kb": 5_000_000, "max_kb": 100, "was": 50},
 }
 
 #: 回填**下界**：按正文的字符数记（中文一字约 1 token 量级，英文一字不到 1）。它是过渡值，
@@ -78,14 +85,17 @@ def upgrade() -> None:
         sa.Column("max_tokens_per_kb", sa.Integer(), nullable=False, server_default="30000"),
     )
     for code, values in _TIER_VALUES.items():
+        # 新列直接写（本次才加，不存在运营改过的值）。
         op.execute(
             sa.text(
-                "UPDATE plans SET max_tokens_per_kb = :limit, max_kb = :kbs WHERE code = :code"
-            ).bindparams(
-                limit=values["max_tokens_per_kb"],
-                kbs=values["max_kb"],
-                code=code,
-            )
+                "UPDATE plans SET max_tokens_per_kb = :limit WHERE code = :code"
+            ).bindparams(limit=values["max_tokens_per_kb"], code=code)
+        )
+        # 已有列只在**还是旧种子值**时才动（理由见 _TIER_VALUES 的注释）。
+        op.execute(
+            sa.text(
+                "UPDATE plans SET max_kb = :kbs WHERE code = :code AND max_kb = :was"
+            ).bindparams(kbs=values["max_kb"], was=values["was"], code=code)
         )
 
     # 2) 文档列：正文 token 数（0 = 还没算过）。

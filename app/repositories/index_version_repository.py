@@ -213,3 +213,32 @@ async def bump_redispatch(db: AsyncSession, build_id: str, *, tenant_id: str) ->
     )
     value = (await db.execute(statement)).scalar_one_or_none()
     return int(value or 0)
+
+
+async def list_undone(
+    db: AsyncSession,
+    *,
+    tenant_id: str | None = None,
+    kb_id: str | None = None,
+    limit: int = 200,
+) -> list[IndexBuildVersion]:
+    """所有**还在建**的构建（清扫器「缺篇补投」那条要的名单，#225）。
+
+    与 :func:`list_overdue` 的差别是判据：那条问「谁的死线过了」，这条问「谁还没建完」。
+    清扫器两样都要——过了期限的收尾，没过期限但缺篇的补投。
+
+    ``tenant_id`` 可省略是给清扫器留的唯一一处「不带租户读」：它**只读**、每行自带
+    ``tenant_id``，写动作仍由调用方逐行带明确租户去做（同一理由见 :func:`list_overdue`）。
+
+    ``limit`` 让「一轮清扫」有可预期的时长：上千个构建同时卡住时，剩下的交给下一轮。
+    """
+
+    statement = select(IndexBuildVersion).where(
+        IndexBuildVersion.status == INDEX_BUILD_BUILDING
+    )
+    if tenant_id is not None:
+        statement = statement.where(IndexBuildVersion.tenant_id == tenant_id)
+    if kb_id is not None:
+        statement = statement.where(IndexBuildVersion.kb_id == kb_id)
+    statement = statement.order_by(IndexBuildVersion.created_at).limit(limit)
+    return list((await db.execute(statement)).scalars().all())

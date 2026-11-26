@@ -45,6 +45,7 @@ from typing import Final, Mapping, Sequence
 
 import structlog
 from sqlalchemy import (
+    Boolean,
     CheckConstraint,
     DateTime,
     Index,
@@ -178,6 +179,14 @@ class IndexBuildVersion(Base):
     #: 构建子任务失败时**不改文档状态**（那篇文档本身没坏，线上旧版本照常可查），只在这里
     #: 追加一条。空列表与非空列表之别就是收敛判据里 ``failed`` 那一项。
     failed_documents: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    #: 这一版收敛成 ``ready`` 之后要不要**立刻激活**（#215 的回归修法，迁移 ``f1a4b8d6c392``）。
+    #:
+    #: 只有「管理员改了切块设置」那条路径置真——它的语义是「改完就该生效」。存在构建行上
+    #: 而不是放进每篇子任务的载荷：收敛可以被任意一方触发（最后一篇 / 清扫器 / 运维脚本），
+    #: 它们读同一格，行为才一致。
+    auto_activate: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default="false", default=False
+    )
     #: 清扫器重投过几次（ADR-0034 决策七的兜底上限）。超过上限就收成 ``failed``——
     #: 「一直重投也救不回来」必须有个尽头，否则一个坏构建会把清扫器拖成永动机。
     redispatch_count: Mapped[int] = mapped_column(

@@ -48,6 +48,23 @@ class Document(Base):
     #: 各管一件事，混用会让「容量没满但额度超了」这种解释不清的场面出现。
     #:
     #: 0 = 还没算过（存量行由回填脚本补；迁移里只填了一个按字符数的**下界**）。
+    #: 最近一次心跳（#225，迁移 ``c3d6e9f2b5a8``）：任务**跑着的时候**周期性刷新。
+    #:
+    #: 它与 ``index_claimed_at`` 分工：那是 fencing 令牌（永不变，谁持有谁就是主人），这是
+    #: 「还活着吗」的证据（会变）。合成一列只有两个坏结果：清扫器抢走正在跑的长文档（白跑
+    #: 一轮 embedding），或者长文档永远不被救（Worker 挂了就一直停在「索引中」）。
+    index_heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: 清扫器救过这一篇几次（#225，迁移 ``a2b5c8d1e4f9``）。
+    #:
+    #: 为什么存在文档行而不是 Redis：它要表达的是「这篇文档已经试过 N 次」——那是文档的事实，
+    #: 该跟着文档行一起活着、一起被删。放在 Redis 里会随重启/过期归零，于是那篇文档又开始
+    #: 无限重投，而用户看到的是永远转圈。
+    #:
+    #: **成功索引时清零**（与状态同一笔事务）：不清零的话，一篇曾经被救回 3 次的好文档，
+    #: 第 4 次万一再卡住就直接被判失败。
+    redispatch_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
     token_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
     )

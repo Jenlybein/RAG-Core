@@ -752,6 +752,153 @@ async def release_index_claim_async(db: AsyncSession, document_id: str, *, tenan
     await db.execute(_release_statement(document_id, tenant_id=tenant_id))
 
 
+async def renew_claim(
+    db: AsyncSession, document_id: str, *, tenant_id: str, token: datetime
+) -> bool:
+    """把这一篇的心跳刷成「现在」，返回是否仍然持有租约（#225）。
+
+    ## 为什么令牌要参与 WHERE
+
+    只有**当前主人**能续租。不核对令牌的话，一个已经被清扫器接走（或已被别的新任务抢到）
+    的旧任务醒来会继续刷新心跳——于是清扫器再也救不了这一篇，而它在队列里永远是「看起来
+    活着」。``token`` 就是 ``index_claimed_at`` 的那个值（抢占时拿到的，永不变）。
+
+    ## 为什么改的是 ``index_heartbeat_at`` 而不是 ``index_claimed_at``
+
+    改令牌等于换钥匙：Tx2 的 fencing（#213）核对的是原来那个值，改了就把自己拒掉。这是
+    「心跳与租约分家」的全部理由。
+
+    ## 调用方要 commit
+
+    它自己不开事务（与仓储里的其它写函数同一条纪律：事务边界只有 ``app/db/transaction.py``
+    能定）。流水线在解析后与每批嵌入后各调一次，各配一次短提交——心跳的意义是「还没到最后
+    也要证明我活着」，所以它不能等 Tx2。
+    """
+
+    statement = (
+        update(Document)
+        .where(
+            Document.id == document_id,
+            Document.tenant_id == tenant_id,
+            Document.status == DocumentStatus.PROCESSING,
+            Document.index_claimed_at == token,
+        )
+        .values(index_heartbeat_at=now())
+        .execution_options(synchronize_session=False)
+    )
+    return int((await db.execute(statement)).rowcount or 0) > 0
+
+
+async def list_stale_claims(
+    db: AsyncSession, *, claimed_before: datetime, limit: int = 200
+) -> list[Document]:
+    """租约已经过期、却仍停在 ``3 索引中`` 的文档（清扫器的第三个目标，#225）。
+
+    ## 为什么这条查询**不带租户**
+
+    它服务的对象是清扫器，而清扫器是**跨租户**的后台动作（它不属于任何租户）。这是本仓库
+    里极少数允许「不带租户读」的地方，理由与 ``index_version_repository.list_overdue``
+    完全相同：它**只读**、每一行都自带 ``tenant_id``，而真正的写动作仍由调用方逐行带着
+    明确的租户去做（ADR-0006 要求的是「写路径不许跨租户」，不是「读不到自己的名单」）。
+
+    ## 为什么带 ``limit``
+
+    一个部署里可能有上千篇同时卡住（Worker 全挂过一次）。一次全捞回来会在清扫线程里造一个
+    上千行的循环，而清扫器每轮只该做一点事——剩下的交给下一轮。上限不是为了省内存，是
+    为了让「一轮清扫」有一个可预期的时长。
+
+    ## 为什么要 ``index_claimed_at IS NOT NULL``
+
+    没有租约的 ``3`` 是「排队中被误记成处理中」的老行（迁移 ``b3f7c2a91d40`` 已经把它们
+    改成 4 了，但手工改库仍可能造出来）。它们该由入队侧重新投，而不是由清扫器「清一个不存在
+    的租约」。
+    """
+
+    statement = (
+        select(Document)
+        .where(
+            Document.status == DocumentStatus.PROCESSING,
+            Document.index_claimed_at.is_not(None),
+            # 判「死了没」看**心跳**（会变），不看令牌（永不变，见模型里那两列的注释）。
+            # ``COALESCE`` 回落：改造前抢过但没写过心跳的行按抢占时间算，于是它们不会因为
+            # 「心跳为空」被当成「从来没活过」。
+            func.coalesce(Document.index_heartbeat_at, Document.index_claimed_at)
+            < claimed_before,
+        )
+        .order_by(Document.index_claimed_at)
+        .limit(limit)
+    )
+    return list((await db.execute(statement)).scalars().all())
+
+
+async def clear_stale_claim(
+    db: AsyncSession, document_id: str, *, tenant_id: str
+) -> int:
+    """把过期租约清掉并**推进重投计数**，返回影响行数（#225）。
+
+    ## 为什么先清租约
+
+    不清的话，新投出去的任务在 CAS 抢占时会看到「仍然新鲜的租约」而抢不到——重投变成一次
+    **静默 no-op**。那正是「清扫器配了但看起来没跑」的形状：日志里有清扫记录，文档却一直
+    没动。
+
+    ## 为什么状态回到 ``4 排队中``
+
+    它现在的处境就是「排队中」：没人持有它，等着被 Worker 抢。留在 ``3`` 会让界面继续显示
+    「索引中」——而用户看到的正是这次要消灭的那句话。
+
+    ``redispatch_count + 1`` 与清租约同一笔语句：分开写会留下「计数加了但租约没清」的
+    窗口，那时新任务抢不到、而计数已经用掉了。
+    """
+
+    statement = (
+        update(Document)
+        .where(
+            Document.id == document_id,
+            Document.tenant_id == tenant_id,
+            Document.status == DocumentStatus.PROCESSING,
+        )
+        .values(
+            status=DocumentStatus.QUEUED,
+            index_claimed_at=None,
+            index_heartbeat_at=None,
+            redispatch_count=Document.redispatch_count + 1,
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return int((await db.execute(statement)).rowcount or 0)
+
+
+async def mark_stale_as_failed(
+    db: AsyncSession, document_id: str, *, tenant_id: str, message: str | None = None
+) -> int:
+    """重投次数用尽：把这篇标成 ``2 失败``，返回影响行数（#225）。
+
+    **「救不回来」也是一个必须兑现的结论**：没有这一步，那篇文档会永远停在「索引中」，
+    而用户既不知道它坏了、也没有任何可做的动作。标成失败之后，界面上出现的是「失败 + 原因 +
+    重建按钮」——用户能处置。
+
+    文案默认用既有的失败常量（``INDEXING_FAILED_MESSAGE``），调用方也可以给一个更具体的。
+    """
+
+    statement = (
+        update(Document)
+        .where(
+            Document.id == document_id,
+            Document.tenant_id == tenant_id,
+            Document.status == DocumentStatus.PROCESSING,
+        )
+        .values(
+            status=DocumentStatus.FAILED,
+            index_claimed_at=None,
+            index_heartbeat_at=None,
+            error_message=message if message is not None else "文档长时间没有得到处理结果，请重建",
+        )
+        .execution_options(synchronize_session=False)
+    )
+    return int((await db.execute(statement)).rowcount or 0)
+
+
 async def count_tokens_in_kb(
     db: AsyncSession,
     kb_id: str,

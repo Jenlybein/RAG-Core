@@ -47,10 +47,9 @@ from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
 from app.db.base import now
 from app.models.usage_event import UsageEvent
-from app.services import quota_gate
 from app.services.quota_gate import CHUNK_NAMESPACE, QuotaCounters
 from app.services.trace_identity import trace_id_for
-from app.utils.id_generator import new_id, new_retrieval_log_id
+from app.utils.id_generator import new_retrieval_log_id
 
 logger = structlog.get_logger(__name__)
 

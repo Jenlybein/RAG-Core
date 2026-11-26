@@ -51,9 +51,6 @@ celery_app = Celery(
         "app.tasks.indexing",
         "app.tasks.side_evidence",
         "app.tasks.index_build",
-        # 清扫器（#225）：Worker 必须 import 它，否则 beat 投出来的消息会被当作
-        # "unregistered task" 消费掉——症状是「清扫器配了但从来没跑」。
-        "app.tasks.index_sweeper",
     ],
 )
 celery_app.conf.update(
@@ -77,20 +74,6 @@ celery_app.conf.update(
         "app.tasks.index_build.dispatch_build_task": {"queue": "build"},
         "app.tasks.index_build.build_document_task": {"queue": "build"},
         "app.tasks.index_build.build_index_version_task": {"queue": "build"},
-        # 清扫器（#225）走**维护队列**：它必须在「所有并发槽位都被构建占满」时也能跑——
-        # 塞进 build 队列会被自己的队列堵住，那是最讽刺的失败模式。
-        "app.tasks.index_sweeper.sweep_index_state_task": {"queue": "maintenance"},
-    },
-    # 周期性任务（#225）：没有请求的时候也要把「卡住」的东西收掉。
-    #
-    # 用 ``beat_schedule`` 而不是在 worker 启动钩子里跑：钩子只在**进程启动时**执行一次，
-    # 而清扫要的是「每 5 分钟」。这也要求部署时跑一个 ``celery beat`` 进程——compose 里
-    # 有 ``beat`` 服务，见 ``deploy/docker-compose.yml``。
-    beat_schedule={
-        "sweep-index-state": {
-            "task": "app.tasks.index_sweeper.sweep_index_state_task",
-            "schedule": 5 * 60.0,
-        },
     },
 )
 
@@ -117,6 +100,16 @@ def _start_worker_loop(**_kwargs: object) -> None:
     """
 
     get_worker_loop().start()
+    # 清扫器（#225）：Worker 进程内的守护线程 + Redis 单实例锁。
+    #
+    # 为什么**不**用 ``celery beat``（第一版实现用过，被 spec 的 Out of Scope 否掉了）：
+    # 那要多一个必须部署的进程、多一条要同步的队列，而清扫器只是兜底。线程方案下
+    # 「N 核 × 周期」变成「N 个线程抢一把锁，只有一个真的跑」——这正是 spec 说的单实例锁。
+    #
+    # 启动放在这里（而不是第一条任务）：清扫器要在**没有请求**的时候也跑。
+    from app.tasks.index_sweeper import start_sweeper_thread
+
+    start_sweeper_thread()
 
 
 @worker_process_shutdown.connect
@@ -124,6 +117,13 @@ def _stop_worker_loop(**_kwargs: object) -> None:
     """确定性释放：在循环还活着的时候 ``dispose`` 引擎、关该循环名下的 HTTP 客户端。
 
     重复关停是幂等的；每一步失败只记 warning——收尾阶段抛异常会盖掉真正的退出原因。
+
+    **清扫线程要在这之前停**（#225）：它会往常驻循环提交协程，循环没了它就抛
+    ``RuntimeError: Event loop is closed``——那不是业务错误，但会盖掉真正的退出原因。
     """
 
+    # 先停清扫线程，再停它依赖的那个循环（顺序反了就会在上面的 RuntimeError 上收尾）。
+    from app.tasks.index_sweeper import stop_sweeper_thread
+
+    stop_sweeper_thread()
     shutdown_worker_loop()

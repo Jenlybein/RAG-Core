@@ -477,6 +477,7 @@ class IndexBuildService:
         kb_id: str,
         tenant_id: str,
         version: str | None = None,
+        auto_activate: bool = False,
     ) -> IndexBuildVersion:
         """为这个库建一行 ``building``，返回它（版本名缺省由已有版本算出）。
 
@@ -529,6 +530,10 @@ class IndexBuildService:
             documents_done=0,
             # 收敛期限 = 构建行自己的租约：最晚什么时候必须有人给它一个结论（决策五）。
             converge_deadline=converge_deadline_for(planned, started_at=started_at),
+            # 「改切块设置」那条路径置真：这一版收敛成 ready 后就该立刻生效（迁移
+            # ``f1a4b8d6c392``）。其余路径一律 false——常规重建停在 ready 等运维点激活，
+            # 那是 ADR-0025 决策三明确要留的一步。
+            auto_activate=auto_activate,
         )
         try:
             await index_version_repository.create(db, row)
@@ -705,6 +710,51 @@ class IndexBuildService:
         )
         return converged
 
+    async def _auto_activate(
+        self, db: AsyncSession, ready: IndexBuildVersion, *, tenant_id: str
+    ) -> IndexBuildVersion:
+        """``auto_activate`` 为真的构建收敛成 ready 后立刻激活（#215 的回归修法）。
+
+        ## 为什么失败只记 warning、把行留在 ready
+
+        构建本身是好的（``ready`` + 四项计数已过），失败的是**切换**那一步（例如关键词别名
+        切不动）。把刚建好的版本标成失败，运维重建一次也是白建；而 ``ready`` 是事实：版本可用，
+        只是还没上线，可以重试激活。
+
+        这与 ``build_index_version_task`` 的既有处置逐字一致——两条入口对同一件事给同一个
+        答案，才不会出现「手动跑的会自动激活、面板点的不会」。
+
+        ## 为什么用同一个会话、但要接住异常
+
+        ``activate`` 自己 ``commit``：ready 那条结论在 ``mark_ready`` 里**已经提交过了**
+        （所以这里出异常不会把「这一版 ready」一起回滚掉），而 ``activate`` 的内部实现是
+        「别名 → 一笔事务（归档旧 active + 本行 active + 库列）」，失败时它自己回滚半成品。
+        这里只负责**不让异常冒到收敛的调用方**：对调用方（一篇文章的构建子任务）来说，
+        「这版已经 ready、只是没激活」是成功的，不是失败。
+        """
+
+        try:
+            activated = await self.activate(db, ready.id, tenant_id=tenant_id)
+        except Exception as exc:  # noqa: BLE001 - 切换失败不能把「构建成功了」抹掉
+            logger.warning(
+                "index build auto-activation failed; leaving the build ready",
+                build_id=ready.id,
+                tenant_id=tenant_id,
+                kb_id=str(ready.kb_id),
+                version=str(ready.version),
+                reason=type(exc).__name__,
+            )
+            logger.debug("auto-activation failure detail", exc_info=exc)
+            return ready
+        logger.info(
+            "index build auto-activated",
+            build_id=ready.id,
+            tenant_id=tenant_id,
+            kb_id=str(ready.kb_id),
+            version=str(ready.version),
+        )
+        return activated
+
     @staticmethod
     def _aborted(converged: IndexBuildVersion) -> AppError:
         """把 converge 落下的结论翻回一个异常（任务日志与调用方看得见的那种）。
@@ -816,7 +866,13 @@ class IndexBuildService:
             # （续建、重投之后两者会不一样，而「这一版由几篇文档构成」问的是前者）。
             row.document_count = truth.documents
             counts = await self.collect_counts(db, kb=kb, version=row.version)
-            return await self.mark_ready(db, build_id, tenant_id=tenant_id, counts=counts)
+            ready = await self.mark_ready(db, build_id, tenant_id=tenant_id, counts=counts)
+            # 「改切块设置」那条路径：收敛成 ready 之后就立刻激活（#215 的回归修法）。
+            # 判断依据是**构建行上的这一格**，不是某个任务的载荷——清扫器、运维脚本收尾时
+            # 读到的是同一个答案。
+            if ready.status == INDEX_BUILD_READY and bool(ready.auto_activate):
+                return await self._auto_activate(db, ready, tenant_id=tenant_id)
+            return ready
 
         reason = BUILD_FAILED_MESSAGE
         if truth.planned > 0 and truth.documents == 0:
@@ -1483,6 +1539,27 @@ class IndexBuildService:
                 older_than_seconds=older_than_seconds,
             )
         return rows
+
+    async def list_undone_builds(
+        self,
+        db: AsyncSession,
+        *,
+        tenant_id: str | None = None,
+        kb_id: str | None = None,
+    ) -> list[IndexBuildVersion]:
+        """**还没建完**的构建（清扫器「缺篇补投」用的名单，#225）。
+
+        与 :meth:`list_overdue_builds` 的判据正交：那条问「死线过了没」，这条问「篇够了没」。
+        清扫器两样都要，因为它们的处置不同——过期就收尾（别再等了），没过期但缺篇就补投
+        （还有救）。
+
+        ``tenant_id`` 可省略是给跨租户的清扫器留的（只读、每行自带租户，理由同
+        :meth:`list_overdue_builds`）。
+        """
+
+        return await index_version_repository.list_undone(
+            db, tenant_id=tenant_id, kb_id=kb_id
+        )
 
     async def list_overdue_builds(
         self,

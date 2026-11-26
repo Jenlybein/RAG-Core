@@ -426,7 +426,13 @@ async def update_kb_settings(
     )
 
     # 起构建：它就是「这次设置何时生效」的时间点。并发由 start_build 自己守（50001）。
-    build = await IndexBuildService().start_build(db, kb_id=kb_id, tenant_id=tenant_id)
+    #
+    # ``auto_activate=True`` 记在**构建行**上（迁移 ``f1a4b8d6c392``）：这条路径的语义就是
+    # 「改完就该生效」。之前它作为载荷传给派活任务，而 #215 改按篇投递之后那个布尔量在半路
+    # 丢了——症状是构建跑完停在 ready 不激活，前端「需重建」提示一直挂着（#215 的回归）。
+    build = await IndexBuildService().start_build(
+        db, kb_id=kb_id, tenant_id=tenant_id, auto_activate=True
+    )
     after_commit(
         db,
         lambda: enqueue_index_build_after_commit(
@@ -434,7 +440,8 @@ async def update_kb_settings(
             build_id=build.id,
             tenant_id=tenant_id,
             request_id=request_id,
-            # 改设置这条路径**要**自动激活：它的语义就是「改完就该生效」。
+            # 载荷里仍然带着它：给运维手动投 ``build_index_version_task`` 时用（那条入口
+            # 照样认这个参数）。真正决定「激活不激活」的是构建行上的那一格。
             activate=True,
         ),
     )

@@ -145,8 +145,13 @@ def _run_dispatch(
     request_id: str | None = None,
     activate: bool = False,
 ) -> None:
-    """派活任务体。``activate`` 不在这里用，但要**带进子任务**：激活发生在收敛成 ready
-    之后，而那一步在最后一篇子任务那一侧。所以它由派活任务原样传到每条子任务上。"""
+    """派活任务体。``activate`` 在这个进程里**不用**：激活发生在收敛成 ready 之后，而
+    收敛可能由最后一篇子任务、清扫器或运维脚本任意一方触发——所以「要不要自动激活」记在
+    **构建行**上（``auto_activate``，迁移 ``f1a4b8d6c392``），由 ``converge`` 读到。
+
+    参数留着是为了兼容手动投递时传它（``activate=True`` 只影响日志与载荷，不再决定行为）；
+    #215 之前它靠载荷传到子任务，改为按篇投递之后那趟传递消失了，这里的注释曾是假的。
+    """
 
     if request_id:
         bind_contextvars(request_id=request_id)
