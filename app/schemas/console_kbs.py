@@ -75,6 +75,18 @@ class BuildProgressData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class TokenUsageData(BaseModel):
+    """一个库的 token 容量占用（#221 / 用户故事 #13）。
+
+    ``limit`` 来自套餐（``max_tokens_per_kb``），``used`` 是库里所有文档 ``token_count``
+    的合计。**空库也报**（used=0）而不是 ``None``：界面上「0 / 3 万」是一句有用的话，
+    「未统计」在这里没有意义——这个数是我们自己算的。
+    """
+
+    used: int
+    limit: int
+
+
 class KnowledgeBaseNode(BaseModel):
     """一条库 + 它名下的全部文档（控制面按会话租户取全量，不做白名单收窄）。"""
 
@@ -91,6 +103,8 @@ class KnowledgeBaseNode(BaseModel):
     #: 进行中的构建（没有就是 ``None``）。列表与详情都靠它显示「重建中 37 / 500」，
     #: 前端在它非空时轮询（#216）。
     build_progress: BuildProgressData | None = None
+    #: 这个库的 token 容量占用；``None`` 只出现在「拿不到套餐」的降级路径上。
+    token_usage: TokenUsageData | None = None
     documents: list[DocumentListItem]
 
 

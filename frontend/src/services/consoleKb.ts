@@ -213,6 +213,7 @@ export function toKnowledgeBaseNodes(data: ConsoleTreeData): KnowledgeBaseNode[]
     // 每一条都挂一个「需重建」，那种噪音会让人学会忽略这个提示。
     section_part_max_chars: node.section_part_max_chars ?? KB_SECTION_PART_DEFAULT,
     build_progress: node.build_progress ?? null,
+    token_usage: node.token_usage ?? null,
     needs_rebuild: node.needs_rebuild ?? false,
     documents: (node.documents ?? []).map(toDocumentListItem),
   }))
@@ -228,5 +229,6 @@ function toDocumentListItem(document: ConsoleTreeDocument): DocumentListItem {
     error_message: document.error_message ?? null,
     source_type: document.source_type,
     created_at: document.created_at,
+    token_count: document.token_count ?? 0,
   }
 }

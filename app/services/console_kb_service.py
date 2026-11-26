@@ -54,7 +54,7 @@ from app.core.plan_cache import PlanCache
 from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.index_version import INDEX_BUILD_BUILDING
-from app.schemas.console_kbs import BuildFailureData, BuildProgressData
+from app.schemas.console_kbs import BuildFailureData, BuildProgressData, TokenUsageData
 from app.models.knowledge_base import (
     MAX_CHUNK_SIZE,
     MAX_SECTION_PART_MAX_CHARS,
@@ -139,6 +139,8 @@ class TreeDocument:
     error_message: str | None
     source_type: str
     created_at: datetime
+    #: 这一篇的正文 token 数（#220），与容量判据同一把尺子。
+    token_count: int = 0
 
 
 @dataclass(frozen=True)
@@ -158,6 +160,8 @@ class TreeKnowledgeBase:
     #: 进行中的构建进度与失败明细（#216）；``None`` = 这个库没有构建在跑。
     #: 放在最后是因为 dataclass 的「带默认值的字段必须在后」——顺序不是随便放的。
     build_progress: BuildProgressData | None = None
+    #: 这个库的 token 容量占用（#221 / 用户故事 #13）；``None`` 只出现在容量读不到的降级路径上。
+    token_usage: TokenUsageData | None = None
 
 
 async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBase]:
@@ -168,6 +172,11 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
     绝不按文档逐条查——一个租户有几个库、每个库几百份文档时那是几百次往返。
     """
 
+    # 套餐在**循环外**解析一次：容量上限是租户级属性，每个库都查一遍套餐既多几次往返，
+    # 又让「同一个库在同一次响应里有两个上限」这种错有机可乘。
+    plan = await plan_service.resolve_plan(
+        db, await _tenant_plan_id(db, tenant_id=tenant_id)
+    )
     nodes: list[TreeKnowledgeBase] = []
     for kb in await knowledge_base_repository.list_by_tenant(db, tenant_id):
         documents = await document_repository.list_by_kb_async(db, kb.id, tenant_id=tenant_id)
@@ -184,6 +193,9 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                 section_part_max_chars=settings_of(kb)["section_part_max_chars"],
                 needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
                 build_progress=await _build_progress_of(db, kb_id=kb.id, tenant_id=tenant_id),
+                token_usage=await _token_usage_of(
+                    db, kb_id=kb.id, tenant_id=tenant_id, plan=plan
+                ),
                 documents=[
                     TreeDocument(
                         document_id=document.id,
@@ -193,6 +205,9 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                         error_message=document.error_message,
                         source_type=document.source_type,
                         created_at=document.created_at,
+                        # 新列（#220）对老行/半截对象的安全默认：`token_count` 在
+                        # 迁移回填之前是 0，与 schema 的默认值一致。
+                        token_count=int(getattr(document, "token_count", 0) or 0),
                     )
                     for document in documents
                 ],
@@ -288,6 +303,27 @@ async def _build_progress_of(
         ],
         failure_count=len(failures),
     )
+
+
+async def _token_usage_of(
+    db: AsyncSession, *, kb_id: str, tenant_id: str, plan: PlanSpec
+) -> TokenUsageData | None:
+    """这个库的 token 容量占用（#221 / 用户故事 #13）。
+
+    ``used`` 是**已落库**的 ``token_count`` 合计（不是现算正文）——它是容量判据真正用的那个
+    数，进度条与硬拦必须同源，否则「显示 2.9 万、传上去被拒在 3.1 万」会同时出现。
+
+    空库报 ``0 / 上限``而不是 ``None``：这个数是自己算的，没有「读不到」这回事。
+    """
+
+    try:
+        used = await document_repository.count_tokens_in_kb(db, kb_id, tenant_id=tenant_id)
+    except Exception:  # noqa: BLE001 - 容量显示失败不能把整个树打成 500
+        logger.warning(
+            "kb token usage unavailable", kb_id=kb_id, tenant_id=tenant_id
+        )
+        return None
+    return TokenUsageData(used=used, limit=int(plan.max_tokens_per_kb))
 
 
 async def _needs_rebuild(db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str) -> bool:

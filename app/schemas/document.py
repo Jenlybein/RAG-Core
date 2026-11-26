@@ -43,6 +43,12 @@ class DocumentListItem(BaseModel):
     error_message: str | None = None
     source_type: str
     created_at: datetime
+    #: 这一篇的**正文** token 数（#220），容量判据的那把尺子。
+    #:
+    #: 为什么要有它（用户故事 #12）：没有这个数字，用户在「库还剩多少空间」面前只能靠猜；
+    #: 有了它，「再传一篇 5 万 token 的文档会不会超」就是一道自己能算的算术题。
+    #: 口径与切块窗口那个 token 数**同一把尺子**（Qwen 词表），不是字符数。
+    token_count: int = 0
 
 
 class DocumentListData(BaseModel):

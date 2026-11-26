@@ -142,6 +142,13 @@ export interface KnowledgeBaseNode {
   needs_rebuild: boolean
   /** 进行中的构建（#216）；`null` = 这个库没有构建在跑。 */
   build_progress: BuildProgress | null
+  /**
+   * 库级 token 容量占用（第 17 步 #221 / 用户故事 #13）；`null` = 容量读不到的降级路径。
+   *
+   * `used` 是**已落库**的 `token_count` 合计——与容量硬拦同一个数，所以进度条不会与
+   * 「传上去被拒」自相矛盾。
+   */
+  token_usage?: { used: number; limit: number } | null
   documents: DocumentListItem[]
 }
 

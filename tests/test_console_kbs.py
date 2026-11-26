@@ -591,6 +591,8 @@ def test_tree_returns_all_kbs_with_documents_and_grouped_chunk_counts(
         "needs_rebuild",
         # 第 17 步 #216：进行中的构建进度与未入新版本的明细（没有构建时是 null）。
         "build_progress",
+        # 第 17 步 #221：库级 token 容量占用「已用 / 上限」（用户故事 #13）。
+        "token_usage",
         "documents",
     }
     assert populated["split_strategy"] == "structure"
@@ -618,6 +620,8 @@ def test_tree_returns_all_kbs_with_documents_and_grouped_chunk_counts(
         "error_message",
         "source_type",
         "created_at",
+        # 第 17 步 #220：每篇文档的正文 token 数（用户故事 #12）。
+        "token_count",
     }
 
     # 空库必须是 []（前端靠它区分父子行），不是 null，也不是「没有 documents 键」。

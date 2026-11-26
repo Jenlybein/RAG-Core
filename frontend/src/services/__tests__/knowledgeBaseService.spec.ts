@@ -35,6 +35,7 @@ describe('fetchTree', () => {
           section_part_max_chars: 2000,
           needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
           documents: [
             {
               document_id: 'doc_1',
@@ -44,6 +45,7 @@ describe('fetchTree', () => {
               error_message: null,
               source_type: 'markdown',
               created_at: '2026-01-01T00:00:00Z',
+              token_count: 0,
             },
           ],
         },
@@ -56,6 +58,7 @@ describe('fetchTree', () => {
           section_part_max_chars: 2000,
           needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
           documents: [],
         },
       ],
@@ -72,6 +75,7 @@ describe('fetchTree', () => {
         section_part_max_chars: 2000,
         needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
         documents: [
           {
             document_id: 'doc_1',
@@ -81,6 +85,7 @@ describe('fetchTree', () => {
             error_message: null,
             source_type: 'markdown',
             created_at: '2026-01-01T00:00:00Z',
+            token_count: 0,
           },
         ],
       },
@@ -93,6 +98,7 @@ describe('fetchTree', () => {
         section_part_max_chars: 2000,
         needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
         documents: [],
       },
     ])

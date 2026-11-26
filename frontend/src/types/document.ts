@@ -32,6 +32,14 @@ export interface DocumentListItem {
   error_message: string | null
   source_type: string
   created_at: string
+  /**
+   * 这一篇的正文 token 数（第 17 步 #220）。
+   *
+   * 与「切块窗口」那个 token 数是同一把尺子（Qwen 词表），所以它可以和库容量上限直接
+   * 相加比较——这一点是用户故事 #12 的全部意义：用户能自己算出「再传一篇会不会超」。
+   * 老行（迁移回填前）是 0。
+   */
+  token_count?: number
 }
 
 /**

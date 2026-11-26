@@ -46,6 +46,7 @@ describe('toKnowledgeBaseNodes', () => {
           section_part_max_chars: 2000,
           needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
           documents: [],
         },
       ],
@@ -61,6 +62,7 @@ describe('toKnowledgeBaseNodes', () => {
         section_part_max_chars: 2000,
         needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
         documents: [],
       },
     ])
@@ -78,6 +80,7 @@ describe('toKnowledgeBaseNodes', () => {
           section_part_max_chars: 2000,
           needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
           documents: [
             {
               document_id: 'doc_1',
@@ -85,6 +88,7 @@ describe('toKnowledgeBaseNodes', () => {
               status: 3,
               chunk_count: 0,
               error_message: null,
+      token_count: 0,
               source_type: 'markdown',
               created_at: '2026-01-01T00:00:00Z',
             },
@@ -99,6 +103,7 @@ describe('toKnowledgeBaseNodes', () => {
           section_part_max_chars: 2000,
           needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
           documents: [
             {
               document_id: 'doc_2',
@@ -115,6 +120,7 @@ describe('toKnowledgeBaseNodes', () => {
               status: 1,
               chunk_count: 18,
               error_message: null,
+      token_count: 0,
               source_type: 'text',
               created_at: '2026-01-03T00:00:00Z',
             },
@@ -133,6 +139,7 @@ describe('toKnowledgeBaseNodes', () => {
         section_part_max_chars: 2000,
         needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
         documents: [
           {
             document_id: 'doc_1',
@@ -140,6 +147,7 @@ describe('toKnowledgeBaseNodes', () => {
             status: 3,
             chunk_count: 0,
             error_message: null,
+      token_count: 0,
             source_type: 'markdown',
             created_at: '2026-01-01T00:00:00Z',
           },
@@ -154,6 +162,7 @@ describe('toKnowledgeBaseNodes', () => {
         section_part_max_chars: 2000,
         needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
         documents: [
           {
             document_id: 'doc_2',
@@ -170,6 +179,7 @@ describe('toKnowledgeBaseNodes', () => {
             status: 1,
             chunk_count: 18,
             error_message: null,
+      token_count: 0,
             source_type: 'text',
             created_at: '2026-01-03T00:00:00Z',
           },
@@ -190,6 +200,7 @@ describe('toKnowledgeBaseNodes', () => {
           section_part_max_chars: 2000,
           needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
           documents: [
             {
               document_id: 'doc_old',
@@ -214,6 +225,7 @@ describe('toKnowledgeBaseNodes', () => {
         section_part_max_chars: 2000,
         needs_rebuild: false,
   build_progress: null,
+        token_usage: null,
         documents: [
           {
             document_id: 'doc_old',
@@ -221,6 +233,7 @@ describe('toKnowledgeBaseNodes', () => {
             status: 1,
             chunk_count: 3,
             error_message: null,
+      token_count: 0,
             source_type: 'text',
             created_at: '2026-02-01T00:00:00Z',
           },

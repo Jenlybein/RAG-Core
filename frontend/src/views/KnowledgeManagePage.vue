@@ -91,6 +91,25 @@ const refetchTree = treeQuery.refetch
 const tree = computed<KnowledgeBaseNode[]>(() => treeQuery.data.value ?? [])
 
 /** 分块总数：详情与列表都要，按行求和放在一处，避免两个地方各算一遍。 */
+/** 容量占用百分比；上限为 0 时按 0 处理（那是异常配置，不该除以零让页面炸掉）。 */
+function usagePercent(row: KnowledgeBaseNode): number {
+  const usage = row.token_usage
+  if (!usage || usage.limit <= 0) return 0
+  return Math.round((usage.used / usage.limit) * 100)
+}
+
+/**
+ * token 数的量级写法（「12.4 万」/「3 万」）。
+ *
+ * 精确到个位在容量条上只是噪音：用户要判断的是「还剩多少」，不是「还差 137 个」。
+ * 与后端的 `_format_tokens` 同一个取舍（那边也是量级 + 一位小数），两处显示才一致。
+ */
+function formatTokens(value: number): string {
+  if (value >= 100_000_000) return `${(value / 100_000_000).toFixed(1)} 亿`
+  if (value >= 10_000) return `${(value / 10_000).toFixed(1)} 万`
+  return String(value)
+}
+
 function chunkTotal(documents: DocumentListItem[]): number {
   return documents.reduce((sum, doc) => sum + (doc.chunk_count ?? 0), 0)
 }
@@ -509,6 +528,36 @@ function goRetrieve(kbId: string): void {
               <p class="metric-value">{{ row.section_part_max_chars }}</p>
               <p class="metric-label">节段上限</p>
             </div>
+          </div>
+
+          <!--
+            容量条（第 17 步 #221 / 用户故事 #13）：用户在**上传之前**就该知道还剩多少空间。
+
+            `used` 是已落库的 token 合计——与容量硬拦同一个数。刻意不做「再加一篇会不会超」的
+            预测：那需要知道下一篇多大，而那是上传之后才有的事。这里只回答「现在装了多少」。
+
+            快满（≥90%）换成警示色、满了写「已满，需先删文档」：都是同一句话的两种语气，
+            而「已满」时的处置（删文档）与「额度用尽」时的处置（等明天）是两句话——混在一起
+            会让用户白删。
+          -->
+          <div
+            v-if="row.token_usage"
+            class="mt-2 flex items-center gap-2 text-xs"
+            :class="usagePercent(row) >= 100 ? 'text-amber-700' : 'text-slate-500'"
+          >
+            <span class="shrink-0 tabular-nums">
+              {{ formatTokens(row.token_usage.used) }} / {{ formatTokens(row.token_usage.limit) }}
+              token
+            </span>
+            <div class="h-1.5 flex-1 overflow-hidden rounded-full bg-slate-100">
+              <div
+                class="h-full rounded-full"
+                :class="usagePercent(row) >= 100 ? 'bg-amber-500' : usagePercent(row) >= 90 ? 'bg-orange-400' : 'bg-sky-500'"
+                :style="{ width: `${Math.min(usagePercent(row), 100)}%` }"
+              ></div>
+            </div>
+            <span v-if="usagePercent(row) >= 100" class="shrink-0 font-medium">已满，需先删文档</span>
+            <span v-else class="shrink-0">余 {{ formatTokens(row.token_usage.limit - row.token_usage.used) }}</span>
           </div>
 
           <!--
