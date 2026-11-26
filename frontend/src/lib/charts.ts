@@ -38,7 +38,7 @@ export interface ChartPalette {
  * 也不该有：这两个色只回答「这是哪一本账」，不表达状态。写在这里而不是各页面各写一遍，
  * 否则同一个方点在两个地方会是两个颜色（`--c-star` 在深色下是 #ffd60a，与这里的 #ff9f0a 不同）。
  */
-export const SERIES_ACCENT = 'var(--accent)'
+export const SERIES_ACCENT = 'rgb(var(--c-accent))'
 export const SERIES_WARM = '#ff9f0a'
 export const SERIES_VIOLET = '#5e5ce6'
 
@@ -54,24 +54,34 @@ const FALLBACK: ChartPalette = {
   font: '-apple-system, "SF Pro Text", "PingFang SC", "Microsoft YaHei", sans-serif',
 }
 
+/** 令牌是 RGB 三元组，读出来裹成 `rgb()`；空值或已是完整色值时原样返回。 */
 function readVar(styles: CSSStyleDeclaration, name: string, fallback: string): string {
   const value = styles.getPropertyValue(name).trim()
-  return value === '' ? fallback : value
+  if (value === '') return fallback
+  // 「210 210 215」→「rgb(210 210 215)」；「#e5e5ea」这类完整值不重复包裹。
+  return /^[\d.\s]+$/.test(value) ? `rgb(${value})` : value
 }
 
-/** 读当前主题下的实际颜色。每次重画都读一遍：主题可能刚被切换。 */
+/**
+ * 读当前主题下的实际颜色。每次重画都读一遍：主题可能刚被切换。
+ *
+ * 令牌是 **RGB 三元组**（`--c-ink: 232 236 243`），所以这里要裹一层 `rgb()`；
+ * 读 `--c-*` 而不是 `--ink` / `--accent` 这些旧别名——那些别名只存在于设计稿的
+ * `tokens.css` 里，应用侧从来没有，照着读只会一路落到 FALLBACK，深色下图表就用
+ * 浅色的字与线画在深底上（看起来像没上色）。
+ */
 export function chartPalette(): ChartPalette {
   if (typeof window === 'undefined') return FALLBACK
   const styles = window.getComputedStyle(document.documentElement)
   return {
-    ink: readVar(styles, '--ink', FALLBACK.ink),
-    muted: readVar(styles, '--muted', FALLBACK.muted),
-    line: readVar(styles, '--line-lighter', FALLBACK.line),
-    accent: readVar(styles, '--accent', FALLBACK.accent),
+    ink: readVar(styles, '--c-ink', FALLBACK.ink),
+    muted: readVar(styles, '--c-muted', FALLBACK.muted),
+    line: readVar(styles, '--c-line', FALLBACK.line),
+    accent: readVar(styles, '--c-accent', FALLBACK.accent),
     warm: SERIES_WARM,
     violet: SERIES_VIOLET,
-    danger: readVar(styles, '--danger', FALLBACK.danger),
-    surface: readVar(styles, '--surface', FALLBACK.surface),
+    danger: readVar(styles, '--c-danger', FALLBACK.danger),
+    surface: readVar(styles, '--c-surface', FALLBACK.surface),
     font: readVar(styles, '--font-sans', FALLBACK.font),
   }
 }

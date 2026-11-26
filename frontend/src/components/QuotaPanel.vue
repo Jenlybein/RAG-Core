@@ -111,7 +111,7 @@ const untracked = computed(() => {
       {{ untracked ? '限流关闭 · ' : '' }}UTC 日界 · 本地 08:00 换天
     </p>
 
-    <div class="quota-block">
+    <div class="quota-block mt-5">
       <div v-for="row in rows" :key="row.key" class="quota" :class="`quota--${row.state}`">
         <div class="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-2">
           <span class="flex items-center gap-[7px] text-[13px] text-ink">
