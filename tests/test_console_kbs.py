@@ -589,12 +589,16 @@ def test_tree_returns_all_kbs_with_documents_and_grouped_chunk_counts(
         # 第 16 步 #207：切块设置的回显 + 「这一版参数与当前设置不一致」的提示。
         "section_part_max_chars",
         "needs_rebuild",
+        # 第 17 步 #216：进行中的构建进度与未入新版本的明细（没有构建时是 null）。
+        "build_progress",
         "documents",
     }
     assert populated["split_strategy"] == "structure"
     assert populated["allowed_formats"] == ["markdown"]
     assert populated["chunk_size"] == 512
     assert populated["section_part_max_chars"] == 2000
+    # 没有构建在跑时必须是 null，不是空对象：前端按「null 才不轮询」判定。
+    assert populated["build_progress"] is None
     # 假行没有生效版本行 → 按「需要重建」处理（宁可多提示一次，也不要少提示）。
     assert populated["needs_rebuild"] is True
 

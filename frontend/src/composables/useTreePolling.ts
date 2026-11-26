@@ -25,6 +25,10 @@ export function shouldContinuePolling(
 ): number | false {
   if (tree === null || tree === undefined) return false
   for (const knowledgeBase of tree) {
+    // 进行中的整库构建也要轮询（#216）：进度条与「未入新版本」明细都要跟着动。
+    // 这一条与「文档在跑」分开判，是因为**构建期间文档状态可能全是成功**——构建子任务
+    // 不把文档标成待处理（失败也不改状态），只看文档会让进度条永远停在第一格。
+    if (knowledgeBase.build_progress) return POLL_INTERVAL_MS
     for (const document of knowledgeBase.documents) {
       if (isPendingDocument(document.status)) return POLL_INTERVAL_MS
     }

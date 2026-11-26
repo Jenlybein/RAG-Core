@@ -45,6 +45,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 1024,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+  build_progress: null,
           documents: [],
         },
       ],
@@ -59,6 +60,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 1024,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+  build_progress: null,
         documents: [],
       },
     ])
@@ -75,6 +77,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 512,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+  build_progress: null,
           documents: [
             {
               document_id: 'doc_1',
@@ -95,6 +98,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 1024,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+  build_progress: null,
           documents: [
             {
               document_id: 'doc_2',
@@ -128,6 +132,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 512,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+  build_progress: null,
         documents: [
           {
             document_id: 'doc_1',
@@ -148,6 +153,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 1024,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+  build_progress: null,
         documents: [
           {
             document_id: 'doc_2',
@@ -183,6 +189,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 512,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+  build_progress: null,
           documents: [
             {
               document_id: 'doc_old',
@@ -206,6 +213,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 512,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+  build_progress: null,
         documents: [
           {
             document_id: 'doc_old',

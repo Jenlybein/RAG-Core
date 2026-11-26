@@ -212,6 +212,7 @@ export function toKnowledgeBaseNodes(data: ConsoleTreeData): KnowledgeBaseNode[]
     // 而「需重建」缺省成 `false`：这里没有库的版本参数可比，猜 `true` 会让列表上
     // 每一条都挂一个「需重建」，那种噪音会让人学会忽略这个提示。
     section_part_max_chars: node.section_part_max_chars ?? KB_SECTION_PART_DEFAULT,
+    build_progress: node.build_progress ?? null,
     needs_rebuild: node.needs_rebuild ?? false,
     documents: (node.documents ?? []).map(toDocumentListItem),
   }))

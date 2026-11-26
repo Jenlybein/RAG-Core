@@ -54,6 +54,7 @@ from app.core.plan_cache import PlanCache
 from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.index_version import INDEX_BUILD_BUILDING
+from app.schemas.console_kbs import BuildFailureData, BuildProgressData
 from app.models.knowledge_base import (
     MAX_CHUNK_SIZE,
     MAX_SECTION_PART_MAX_CHARS,
@@ -153,6 +154,9 @@ class TreeKnowledgeBase:
     #: 库当前设置与生效那一版的构建参数不一致 → 这个库要重建才生效（见 ``needs_rebuild``）。
     needs_rebuild: bool
     documents: list[TreeDocument]
+    #: 进行中的构建进度与失败明细（#216）；``None`` = 这个库没有构建在跑。
+    #: 放在最后是因为 dataclass 的「带默认值的字段必须在后」——顺序不是随便放的。
+    build_progress: BuildProgressData | None = None
 
 
 async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBase]:
@@ -178,6 +182,7 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                 chunk_size=settings_of(kb)["chunk_size"],
                 section_part_max_chars=settings_of(kb)["section_part_max_chars"],
                 needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
+                build_progress=await _build_progress_of(db, kb_id=kb.id, tenant_id=tenant_id),
                 documents=[
                     TreeDocument(
                         document_id=document.id,
@@ -234,6 +239,54 @@ async def create_kb(
         after=_kb_snapshot_of_data(data),
     )
     return data
+
+
+#: 进度里最多回几条失败明细。界面只给前几条、其余折成「还有 N 篇」；回全量会让一次 500
+#: 篇失败的构建把树接口的响应撑到几 MB，而用户从来不会去读第 300 条。
+BUILD_FAILURES_IN_PROGRESS: Final[int] = 5
+
+
+async def _build_progress_of(
+    db: AsyncSession, *, kb_id: str, tenant_id: str
+) -> BuildProgressData | None:
+    """这个库**进行中**的那次构建的进度与失败明细；没有就 ``None``（#216）。
+
+    ## 为什么读三列而不是「去数已有切片的文档」
+
+    数真值（``COUNT(DISTINCT document_id)``）是**收尾判据**要的，它回答「该不该 ready」。
+    界面要回答的是另一个问题：「这一批还剩多少没结果」。两者口径不同：真值里续建早就有的
+    篇不算「这轮刚建的」，而进度里它们是「有结果」的。所以界面读构建行自己记的进度，不去
+    重算真值——重算在界面上只会显示一个让人困惑的数字（比如刚起构建就 100 / 500）。
+
+    ## 为什么不查 ``ready`` / ``failed`` 的行
+
+    进度只服务「还在跑」这一种状态。已经收尾的那一次如果也回，界面上就会出现一条永远
+    不会动的进度条（而且它多半停在不对的数字上，比如失败那轮 3 / 500）。
+    """
+
+    rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
+    running = next((row for row in rows if row.status == INDEX_BUILD_BUILDING), None)
+    if running is None:
+        return None
+    planned = max(int(running.documents_planned or 0), 0)
+    done = min(max(int(running.documents_done or 0), 0), planned)
+    failures = list(running.failed_documents or ())
+    return BuildProgressData(
+        build_id=running.id,
+        version=running.version,
+        planned=planned,
+        done=done,
+        pending=max(planned - done, 0),
+        failures=[
+            BuildFailureData(
+                document_id=str(entry.get("document_id") or ""),
+                title=str(entry.get("title") or ""),
+                reason=str(entry.get("reason") or ""),
+            )
+            for entry in failures[:BUILD_FAILURES_IN_PROGRESS]
+        ],
+        failure_count=len(failures),
+    )
 
 
 async def _needs_rebuild(db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str) -> bool:

@@ -49,7 +49,7 @@ import {
 } from '../services/consoleKb'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
 import type { DocumentContent, DocumentListItem } from '../types/document'
-import type { KnowledgeBaseNode } from '../types/knowledgeBase'
+import type { BuildProgress, KnowledgeBaseNode } from '../types/knowledgeBase'
 import { DOCUMENT_STATUS, isDocumentBusy } from '../utils/documentStatus'
 
 const SPLIT_LABELS: Record<string, string> = {
@@ -93,6 +93,19 @@ const tree = computed<KnowledgeBaseNode[]>(() => treeQuery.data.value ?? [])
 /** 分块总数：详情与列表都要，按行求和放在一处，避免两个地方各算一遍。 */
 function chunkTotal(documents: DocumentListItem[]): number {
   return documents.reduce((sum, doc) => sum + (doc.chunk_count ?? 0), 0)
+}
+
+/**
+ * 构建进度百分比（#216）。
+ *
+ * 两个边界都必须显式处理，否则进度条会给错误信号：
+ * - `planned === 0` 时回 0 而不是 NaN（空库建版本是合法情形，`0 / 0` 不是）；
+ * - `done === planned` 时回 100（断言「满了」，而不是留一格空白让人以为还差一点）。
+ */
+function progressPercent(progress: BuildProgress): number {
+  if (progress.planned <= 0) return 0
+  const ratio = (progress.done / progress.planned) * 100
+  return Math.max(0, Math.min(100, Math.round(ratio)))
 }
 
 // 搜索只在客户端过滤知识库名称：没有搜索参数的后端接口，前端不能自己发明一个 query。
@@ -496,6 +509,50 @@ function goRetrieve(kbId: string): void {
               <p class="metric-value">{{ row.section_part_max_chars }}</p>
               <p class="metric-label">节段上限</p>
             </div>
+          </div>
+
+          <!--
+            「重建中 37 / 500」（第 17 步 #216）：之前只有一个转圈图标，用户既判断不出还剩
+            多久，也看不出是不是卡住了。进度条读的是后端记的 documents_done / planned；旁边
+            那行「N 篇未入新版本」直接来自构建行的失败明细，点开能看到具体是哪几篇、为什么。
+          -->
+          <div v-if="row.build_progress" class="mt-1 rounded-md bg-sky-50 px-2 py-1.5">
+            <div class="flex items-center justify-between gap-2 text-xs text-sky-800">
+              <span>
+                重建中 {{ row.build_progress.done }} / {{ row.build_progress.planned }}
+                <span class="text-sky-600">（{{ row.build_progress.version }}）</span>
+              </span>
+              <span v-if="row.build_progress.failure_count > 0" class="font-medium text-amber-700">
+                {{ row.build_progress.failure_count }} 篇未入新版本
+              </span>
+            </div>
+            <div
+              class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sky-100"
+              role="progressbar"
+              :aria-valuenow="progressPercent(row.build_progress)"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <div
+                class="h-full rounded-full bg-sky-500 transition-[width] duration-500"
+                :style="{ width: progressPercent(row.build_progress) + '%' }"
+              />
+            </div>
+            <ul v-if="row.build_progress.failures.length > 0" class="mt-1 space-y-0.5">
+              <li
+                v-for="failure in row.build_progress.failures"
+                :key="failure.document_id"
+                class="truncate text-[11px] text-amber-700"
+              >
+                · {{ failure.title }}（{{ failure.reason }}）
+              </li>
+            </ul>
+            <p
+              v-if="row.build_progress.failure_count > row.build_progress.failures.length"
+              class="mt-0.5 text-[11px] text-muted"
+            >
+              还有 {{ row.build_progress.failure_count - row.build_progress.failures.length }} 篇未列出
+            </p>
           </div>
 
           <!--

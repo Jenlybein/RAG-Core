@@ -25,7 +25,11 @@ function documentWith(status: number): DocumentListItem {
   }
 }
 
-function knowledgeBaseWith(name: string, documents: DocumentListItem[]): KnowledgeBaseNode {
+function knowledgeBaseWith(
+  name: string,
+  documents: DocumentListItem[],
+  options: { buildProgress?: KnowledgeBaseNode['build_progress'] } = {},
+): KnowledgeBaseNode {
   return {
     kb_id: `kb-${name}`,
     name,
@@ -34,7 +38,21 @@ function knowledgeBaseWith(name: string, documents: DocumentListItem[]): Knowled
     chunk_size: 512,
     section_part_max_chars: 2000,
     needs_rebuild: false,
+    build_progress: options.buildProgress ?? null,
     documents,
+  }
+}
+
+function buildProgress(overrides: Partial<NonNullable<KnowledgeBaseNode['build_progress']>> = {}) {
+  return {
+    build_id: 'build-1',
+    version: 'v2',
+    planned: 500,
+    done: 37,
+    pending: 463,
+    failures: [],
+    failure_count: 0,
+    ...overrides,
   }
 }
 
@@ -83,5 +101,16 @@ describe('shouldContinuePolling', () => {
       knowledgeBaseWith('b', [documentWith(4), documentWith(1)]),
     ]
     expect(shouldContinuePolling(withQueued)).toBe(3000)
+  })
+
+  it('有整库构建在跑时也轮询，即使所有文档状态都是成功', () => {
+    // #216：构建子任务不改文档状态（失败也不改），所以只看文档会让进度条永远停在第一格。
+    const tree = [knowledgeBaseWith('a', [documentWith(1)], { buildProgress: buildProgress() })]
+    expect(shouldContinuePolling(tree)).toBe(3000)
+  })
+
+  it('构建收尾（build_progress 为 null）且文档全终态时停止轮询', () => {
+    const tree = [knowledgeBaseWith('a', [documentWith(1)], { buildProgress: null })]
+    expect(shouldContinuePolling(tree)).toBe(false)
   })
 })

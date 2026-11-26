@@ -36,6 +36,45 @@ class ConsoleUploadDocumentRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
+class BuildFailureData(BaseModel):
+    """「未入新版本」的一条明细：哪一篇、叫什么、为什么。"""
+
+    document_id: str
+    title: str
+    reason: str
+
+
+class BuildProgressData(BaseModel):
+    """一次进行中的整库构建的进度与失败明细（#216）。
+
+    ## 为什么「未入新版本」跟着进度一起回
+
+    用户看到的两个问题其实是同一个：「还要等多久」与「为什么有些篇没进来」。分两次请求
+    去问，就会在两次之间看见不一致的中间态（进度 500/500，明细还是上一轮的）。这里一次
+    给全，前端一次渲染。
+
+    ``done`` 是**进度条**（抢不到的不计、续建跳过的不计），``planned`` 是起构建那刻的快照，
+    所以 ``done < planned`` 里既有「还在跑」也有「失败了」。判断「还剩多少要跑」看
+    ``pending``，判断「有没有出问题」看 ``failures``——两个字段语义不同，别互相替代。
+    """
+
+    build_id: str
+    version: str
+    #: 参与篇数快照（分母）。
+    planned: int
+    #: 已有结果的篇数（进度条；失败也算「有结果」）。
+    done: int
+    #: 还没有结果的篇数 = ``max(planned - done, 0)``。
+    pending: int
+    #: 未入新版本的明细（最多回这么多条：界面只给前几条，其余折叠成「还有 N 篇」）。
+    failures: list[BuildFailureData] = []
+    #: 失败总数（``failures`` 可能被截断，这个数不截断）。
+    failure_count: int = 0
+
+    #: 与其它控制面 schema 同一条纪律：多余字段不许悄悄进来。
+    model_config = ConfigDict(extra="forbid")
+
+
 class KnowledgeBaseNode(BaseModel):
     """一条库 + 它名下的全部文档（控制面按会话租户取全量，不做白名单收窄）。"""
 
@@ -49,6 +88,9 @@ class KnowledgeBaseNode(BaseModel):
     #: 库当前设置与**生效那一版**的构建参数已不一致 → 这个库需要重建才生效。
     #: 老版本行没留参数（``params`` 为 NULL）时也判 ``True``：宁可多提示一次。
     needs_rebuild: bool = False
+    #: 进行中的构建（没有就是 ``None``）。列表与详情都靠它显示「重建中 37 / 500」，
+    #: 前端在它非空时轮询（#216）。
+    build_progress: BuildProgressData | None = None
     documents: list[DocumentListItem]
 
 
