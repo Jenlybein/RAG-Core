@@ -220,6 +220,8 @@ def test_console_me_reports_three_meter_books_in_the_same_shape(console: _Harnes
             "limit": limit,
             "source": "not_tracked",
             "note": USAGE_NOTE_NOT_TRACKED,
+            # 第 17 步 #223：每栏带自己的计量单位（前三本按次数、第四本按 token）。
+            "unit": "calls",
         }, f"{field} 的上限必须来自自己那一列"
         assert set(data[field]) == set(data["usage"]), "同形：字段集必须一致"
 
@@ -766,6 +768,7 @@ def test_me_reports_todays_tenant_usage_when_the_counter_exists(
         "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "daily_counter",
         "note": None,
+        "unit": "calls",
     }
 
 
@@ -787,6 +790,7 @@ def test_switch_on_without_a_counter_is_a_known_zero_not_unknown(
         "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "daily_counter",
         "note": None,
+        "unit": "calls",
     }
 
 
@@ -811,6 +815,7 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
         "note": (
             "today's usage is not tracked: rate limiting is disabled (RATE_LIMIT_ENABLED=false)"
         ),
+        "unit": "calls",
     }
     assert exploding.calls == [], "关掉时连一条 Redis 命令都不该发"
 

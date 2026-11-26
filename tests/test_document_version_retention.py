@@ -32,6 +32,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.db.transaction import async_transaction
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_FREE, Plan
+from app.models.tenant import Tenant
 from app.repositories import document_repository, document_version_repository
 from app.services import document_version_service
 from app.utils.status import DocumentStatus
@@ -60,6 +62,10 @@ async def retention_db() -> AsyncIterator[AsyncSession]:
     async with engine.begin() as connection:
         await connection.run_sync(Document.__table__.create)
         await connection.run_sync(DocumentVersion.__table__.create)
+        # 租户与套餐（#220）：索引流水线要读租户套餐来判单库 token 容量。
+        # 少了这两张，这条用例会在「no such table: tenants」上炸。
+        await connection.run_sync(Tenant.__table__.create)
+        await connection.run_sync(Plan.__table__.create)
     # ``expire_on_commit=False`` 与生产会话工厂一致（``app.db.async_session.AsyncSessionLocal``）：
     # 清理脚本对每篇文档各开一笔事务，提交之后仍要读这一行的指针 / 租户，用默认的
     # ``expire_on_commit=True`` 会在套件里造出一条生产上不存在的失败路径（``MissingGreenlet``）。
@@ -914,4 +920,13 @@ def test_the_cleanup_stays_a_run_once_script(purge_script: ModuleType) -> None:
     from app.celery_app import celery_app
 
     assert callable(purge_script.main)
-    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), "保留策略不进调度基础设施"
+    # 判据从「没有 beat 计划」收紧成「**这个脚本**不在计划里」：第 17 步 #225 给清扫器加了
+    # 一条周期任务（``beat_schedule``），而那与「清理脚本保持一次性」并不冲突——用「计划为空」
+    # 当证据会把两件事绑在一起，于是一次正当的调度新增就会把这条护栏撞红，而它想守的东西
+    # （**脚本本身**不许被排进调度）反而没被验到。
+    schedule = getattr(celery_app.conf, "beat_schedule", None) or {}
+    scheduled_tasks = {entry.get("task") for entry in schedule.values()} if schedule else set()
+    assert purge_script.__name__ not in scheduled_tasks
+    assert not any("retention" in str(name) or "purge" in str(name) for name in scheduled_tasks), (
+        "保留策略不进调度基础设施"
+    )

@@ -24,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_FREE, Plan
+from app.models.tenant import Tenant
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.checksum import checksum_of
@@ -111,6 +113,10 @@ async def test_reconciliation_holds_after_reparse_document_content_equals_curren
     async with engine.begin() as connection:
         await connection.run_sync(Document.__table__.create)
         await connection.run_sync(DocumentVersion.__table__.create)
+        # 租户与套餐（#220）：索引流水线要读租户套餐来判单库 token 容量。
+        # 少了这两张，这条用例会在「no such table: tenants」上炸。
+        await connection.run_sync(Tenant.__table__.create)
+        await connection.run_sync(Plan.__table__.create)
 
     sessions = async_sessionmaker(bind=engine, expire_on_commit=False)
     async with sessions() as seed:

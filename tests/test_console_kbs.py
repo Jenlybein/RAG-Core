@@ -711,7 +711,13 @@ def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
     """面板不是绕过套餐的后门：静态库数配额由 ``create_kb`` 判（``20034``），且不写账本。"""
 
     tenant = next(row for row in kbs.db._rows[Tenant] if row.id == TENANT_ALPHA)
-    tenant.plan_id = 1  # free：max_kb=1，而 Alpha 已经有 2 个库
+    # free 档的库数上限是 3（ADR-0035 决策六从 1 放到 3），而 Alpha 已经有 2 个库 → 不超。
+    # 这一票要验的是「配额真的在判」，所以把上限压到 2（= 已用）再试。
+    tenant.plan_id = 1  # free
+    free_plan = next(row for row in kbs.db._rows[Plan] if row.code == "free")
+    free_plan.max_kb = 2
+    free_plan.max_tokens_per_kb = 30_000
+    free_plan.chunk_daily_tokens = 300_000
     assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
 
     response = kbs.client.post(
@@ -722,7 +728,7 @@ def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
 
     body = response.json()
     assert body["code"] == ErrorCode.KB_COUNT_QUOTA_EXCEEDED
-    assert body["data"] == {"reason": "kb_count", "used": 2, "limit": 1, "plan": "free"}
+    assert body["data"] == {"reason": "kb_count", "used": 2, "limit": 2, "plan": "free"}
     assert len(kbs.db._rows[KnowledgeBase]) == 3, "被配额拒绝的库不落行"
     assert kbs.audit_entries() == []
 

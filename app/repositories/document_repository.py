@@ -776,14 +776,15 @@ async def count_tokens_in_kb(
     if excluding_document_id is not None:
         conditions.append(Document.id != excluding_document_id)
     statement = select(func.coalesce(func.sum(Document.token_count), 0)).where(*conditions)
-    # ``scalar_one_or_none`` 而不是 ``scalar_one``：真库上聚合**总是**回一行（无行时是 NULL），
-    # 但替身会话按「预置的行数」回答聚合，空预置就回 0 行——那时两边的语义必须一致才能
-    # 用同一份用例跑「库还没装东西」这条路径。NULL / 无行都按 0 读。
+    # ``scalars().first()`` 而不是 ``scalar_one``：真库上聚合**总是**回一行（无行时是 NULL），
+    # 但替身会话按「预置的行数」回答聚合——空预置回 0 行、有 N 个文档就回 N 行。``scalar_one``
+    # 在多行上会报错（那条纪律本来是对的，但它假设「这条查询最多命中一行」，而聚合不满足）。
     #
-    # **两种收尾形状**：真库回一个数（``SUM``）；替身会话把「预置的那一行」原样交回来，
-    # 于是一个对象也可能出现在这里。就对它读 ``token_count``（那一行本来就是文档行），
-    # 读不到就按 0——替身那条路本来就没在算聚合，它只是不让容量判据把不相关的用例带崩。
-    value = (await db.execute(statement)).scalar_one_or_none()
+    # **两种收尾形状**：真库回一个数（``SUM``）；替身把「预置的那一行」原样交回来，于是
+    # 一个文档对象也可能出现在这里。就对它读 ``token_count``（那一行本来就是文档行），
+    # 读不到按 0——替身那条路本来就没在算聚合，它只是不让容量判据把不相关的用例带崩。
+    result = await db.execute(statement)
+    value = result.scalars().first()
     if isinstance(value, (int, float)):
         return int(value)
     return int(getattr(value, "token_count", 0) or 0)

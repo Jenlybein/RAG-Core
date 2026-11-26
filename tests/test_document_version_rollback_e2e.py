@@ -40,6 +40,8 @@ from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk, current_draft_filter
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_FREE, Plan
+from app.models.tenant import Tenant
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
@@ -131,6 +133,9 @@ def rollback_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     seed_engine = create_engine(f"sqlite:///{database_path}")
     Document.__table__.create(seed_engine)
     DocumentVersion.__table__.create(seed_engine)
+    # 租户与套餐（#220）：索引流水线要读租户套餐来判单库 token 容量。
+    Tenant.__table__.create(seed_engine)
+    Plan.__table__.create(seed_engine)
     with sessionmaker(bind=seed_engine)() as seed_session:
         seed_session.add(
             Document(
