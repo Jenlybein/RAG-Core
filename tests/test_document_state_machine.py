@@ -245,12 +245,15 @@ def test_prepare_then_claim_makes_a_reindex_actually_indexable(
     claimed = document_repository.try_claim_for_indexing(
         document_db, "doc-reindex", tenant_id=TENANT_ID, allow_success=False
     )
-    assert claimed is True, "旧的双重抢占会把这里变成 rowcount=0：重建静默 no-op"
+    assert claimed is not None, "旧的双重抢占会把这里变成没抢到：重建静默 no-op"
     document_db.commit()
 
     row = document_db.get(Document, "doc-reindex")
     assert row is not None
     assert row.status == DocumentStatus.PROCESSING, "抢到即 4 → 3"
+    assert row.index_claimed_at == claimed, (
+        "抢占回的是**这一条语句实际写进库的**租约令牌（#213），不是另取一次时间"
+    )
     assert row.index_claimed_at is not None, "Worker 抢到后才写租约"
 
 
@@ -301,7 +304,7 @@ def test_prepare_refuses_while_another_worker_holds_a_live_lease(
         document_repository.try_claim_for_indexing(
             document_db, "doc-running", tenant_id=TENANT_ID, allow_success=True
         )
-        is False
+        is None
     )
 
 
@@ -313,7 +316,7 @@ def test_a_second_claim_on_a_live_lease_fails(document_db: Session) -> None:
         document_repository.try_claim_for_indexing(
             document_db, "doc-once", tenant_id=TENANT_ID, allow_success=False
         )
-        is True
+        is not None
     )
     document_db.commit()
 
@@ -321,7 +324,7 @@ def test_a_second_claim_on_a_live_lease_fails(document_db: Session) -> None:
         document_repository.try_claim_for_indexing(
             document_db, "doc-once", tenant_id=TENANT_ID, allow_success=False
         )
-        is False
+        is None
     )
 
 
@@ -333,7 +336,7 @@ def test_release_then_reclaim_supports_the_retry_lifecycle(document_db: Session)
         document_repository.try_claim_for_indexing(
             document_db, "doc-retry", tenant_id=TENANT_ID, allow_success=False
         )
-        is True
+        is not None
     )
     document_db.commit()
 
@@ -351,7 +354,7 @@ def test_release_then_reclaim_supports_the_retry_lifecycle(document_db: Session)
         document_repository.try_claim_for_indexing(
             document_db, "doc-retry", tenant_id=TENANT_ID, allow_success=False
         )
-        is True
+        is not None
     ), "不释放租约的话，重试的 CAS 永远抢不到"
 
 

@@ -20,6 +20,7 @@ from typing import Any
 
 import pytest
 
+from app.db.base import now
 from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk
 from app.models.document import Document
 from app.models.index_version import (
@@ -150,18 +151,25 @@ def _session(
     )
 
 
-def _chunk(chunk_id: str, *, version: str = TARGET_VERSION) -> Any:
-    """一行切片（真 ORM 对象，不 flush）：给 ``ready`` 前的「切片数」读数用。"""
+def _chunk(chunk_id: str, *, version: str = TARGET_VERSION, document_id: str = "doc-1") -> Any:
+    """一行切片（真 ORM 对象，不 flush）：给 ``ready`` 前的两项读数用。
+
+    两项读数指「切片数」（四项计数之一）与**收敛真值**（#214：该版本该稿下已经有切片的
+    文档数）。后者按 ``document_id`` 去重、并要求稿号与构建行的稿号快照一致，所以这一行必须
+    带 ``doc_version``，且不同文档的切片要挂不同的 ``document_id``——两篇都挂 ``doc-1`` 在
+    真库上只算一篇，真值就不够了。
+    """
 
     return Chunk(
         id=chunk_id,
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
-        document_id="doc-1",
+        document_id=document_id,
         content="正文",
         embedding=[0.0] * 1536,
         meta={},
         index_version=version,
+        doc_version=1,
     )
 
 
@@ -180,22 +188,28 @@ class _RecordingVectorStore:
 
 
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, document: Any) -> list[str]:
-    """把流水线的三个外部协作者换成替身；返回「被抢占的文档」记录。"""
+    """把流水线的三个外部协作者换成替身；返回「被抢占的文档」记录。
+
+    抢占替身回**租约令牌**（#213），令牌核对在离线替身上固定放行：能不能核对只看「库里
+    那一行的 ``index_claimed_at`` 是不是我写的那个时间戳」，而假会话不模拟写语句对行的
+    效果——那条判定由 ``tests/test_integration_indexing_lease.py`` 在真库上验。
+    状态回写同理：这里既不断言它、也不替掉它（#212 不许再把回写函数换成记录器）。
+    """
 
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(_db: Any, document_id: str, **kwargs: Any) -> bool:
+    async def _claim(_db: Any, document_id: str, **kwargs: Any) -> Any:
         claims.append(f"{document_id}:{kwargs.get('allow_success')}")
-        return True
+        return now()
 
-    async def _update_status(*_args: Any, **_kwargs: Any) -> None:
-        return None
+    async def _holds_index_claim(*_args: Any, **_kwargs: Any) -> bool:
+        return True
 
     claims: list[str] = []
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
-    monkeypatch.setattr(document_repository, "update_status", _update_status)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
@@ -305,8 +319,9 @@ def test_the_build_rebuilds_every_success_document_into_the_target_version() -> 
             _document("doc-processing", status=DocumentStatus.PROCESSING),
         ],
         versions=[building],
-        # 两篇成功文档各产出 1 片：切片数与向量数必须对得上，构建才能 ready。
-        chunks=[_chunk("c1"), _chunk("c2")],
+        # 两篇成功文档各产出 1 片：切片数与向量数必须对得上，构建才能 ready；
+        # 而收敛真值按「有切片的文档数」数，所以两片要挂在两篇文档上。
+        chunks=[_chunk("c1", document_id="doc-ok-1"), _chunk("c2", document_id="doc-ok-2")],
     )
 
     asyncio.run(_build_service(indexing, vectors=2).build(session, "build-v2", tenant_id=TENANT_ID))

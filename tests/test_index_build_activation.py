@@ -32,9 +32,11 @@ from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.services.index_build_service import (
     BUILD_COUNTS_MISMATCH_MESSAGE,
     BUILD_FAILED_MESSAGE,
+    BUILD_NOTHING_TO_REBUILD_MESSAGE,
     BuildCounts,
     IndexBuildCountsMismatch,
     IndexBuildInvalidTransition,
+    IndexBuildNothingToRebuild,
     IndexBuildService,
     describe_stalled_builds,
 )
@@ -153,8 +155,16 @@ def _row(
     )
 
 
-def _chunk(chunk_id: str, *, version: str = TARGET) -> Any:
-    """一行切片（真 ORM 对象，不 flush）：给「切片数」那一次计数读数用。"""
+def _chunk(
+    chunk_id: str, *, version: str = TARGET, doc_version: int = 1, document_id: str = "doc-1"
+) -> Any:
+    """一行切片（真 ORM 对象，不 flush）：给「切片数」与**收敛真值**这两次读数用。
+
+    #214 起真值数的是「该版本该稿下**有切片的文档数**」（``COUNT(DISTINCT document_id)``），
+    所以每篇文档各给一行、``document_id`` 必须与参与文档对得上：两行切片都挂在 ``doc-1``
+    上在真库上只算**一篇**，而真值只要比参与篇数少就不许 ready。替身的计数不区分 distinct，
+    照「两行都是 doc-1」摆预置行于是会假绿——这条用例得按真库的口径摆。
+    """
 
     from app.models.chunk import Chunk
 
@@ -162,11 +172,12 @@ def _chunk(chunk_id: str, *, version: str = TARGET) -> Any:
         id=chunk_id,
         tenant_id=TENANT_ID,
         kb_id=KB_ID,
-        document_id="doc-1",
+        document_id=document_id,
         content="正文",
         embedding=[0.0] * 1536,
         meta={},
         index_version=version,
+        doc_version=doc_version,
     )
 
 
@@ -515,14 +526,20 @@ def test_build_ends_at_ready_with_the_counts_snapshotted() -> None:
         versions=[live, building],
         kb=kb,
         documents=[_document("doc-1"), _document("doc-2")],
-        chunks=[_chunk("c1"), _chunk("c2"), _chunk("c-old", version=LIVE)],
+        # 两篇参与文档各有切片：真值（2 篇）够得分母（2 篇），四项计数也各自相等。
+        chunks=[
+            _chunk("c1", document_id="doc-1"),
+            _chunk("c2", document_id="doc-2"),
+            _chunk("c-old", version=LIVE),
+        ],
     )
 
     row = asyncio.run(service.build(session, "build-v2", tenant_id=TENANT_ID))
 
     assert indexing.calls == ["doc-1", "doc-2"]
     assert row.status == INDEX_BUILD_READY
-    assert row.document_count == 2
+    assert row.document_count == 2, "document_count 落的是收尾时读到的真值（两篇）"
+    assert row.documents_done == 2, "进度只数真的重建成功的篇数"
     assert row.chunk_count == 2, "计数快照来自 slabs=2 / vectors=2 / keyword=2 的共同读数"
     assert kb.active_index_version == LIVE, "ready 不等于上线"
     assert keyword.activate_calls == []
@@ -537,7 +554,11 @@ def test_a_build_with_mismatched_counts_lands_failed_with_that_reason() -> None:
     building = _row(TARGET, INDEX_BUILD_BUILDING, build_id="build-v2")
     kb = _kb(LIVE)
     session = _session(
-        versions=[live, building], kb=kb, documents=[_document("doc-1"), _document("doc-2")]
+        versions=[live, building],
+        kb=kb,
+        documents=[_document("doc-1"), _document("doc-2")],
+        # 真值先要够（否则会先被收敛判成「一篇都没重建」），剩下的分歧才轮到四项计数说话。
+        chunks=[_chunk("c1", document_id="doc-1"), _chunk("c2", document_id="doc-2")],
     )
 
     with pytest.raises(IndexBuildCountsMismatch):
@@ -546,6 +567,42 @@ def test_a_build_with_mismatched_counts_lands_failed_with_that_reason() -> None:
     assert building.status == INDEX_BUILD_FAILED
     assert building.error_message == BUILD_COUNTS_MISMATCH_MESSAGE
     assert kb.active_index_version == LIVE
+
+
+def test_a_build_that_wrote_no_chunk_is_failed_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**一篇都没真重建**（返回值 0 = 抢不到）→ 收敛判成 failed，绝不是 ready。
+
+    这是 #214 的核心回归：旧实现丢掉 ``index_existing_document`` 的返回值、抢不到也计一篇
+    「已重建」，而唯一的空版本守卫数的正是这个假计数——于是四项计数在 0=0=0 时三方相等，
+    空版本一路 ready 并激活，线上静默变成「版本正常、检索全空」。
+    """
+
+    class _NothingWritten:
+        """流水线替身：每次都「抢不到」（返回 0），一片都不写。"""
+
+        async def index_existing_document(self, *_args: Any, **_kwargs: Any) -> int:
+            return 0
+
+    service, _, _ = _service(indexing=_NothingWritten(), vectors=0, documents=0)
+    live = _row(LIVE, INDEX_BUILD_ACTIVE, build_id="build-v1")
+    building = _row(TARGET, INDEX_BUILD_BUILDING, build_id="build-v2")
+    kb = _kb(LIVE)
+    session = _session(
+        versions=[live, building],
+        kb=kb,
+        documents=[_document("doc-1"), _document("doc-2")],
+        chunks=[],
+    )
+
+    with pytest.raises(IndexBuildNothingToRebuild):
+        asyncio.run(service.build(session, "build-v2", tenant_id=TENANT_ID))
+
+    assert building.status == INDEX_BUILD_FAILED, "真值为 0 绝不许 ready"
+    assert building.error_message == BUILD_NOTHING_TO_REBUILD_MESSAGE
+    assert building.documents_done == 0, "抢不到的不许计入已重建"
+    assert kb.active_index_version == LIVE, "失败不碰生效版本"
 
 
 def test_a_generic_build_failure_uses_the_generic_reason() -> None:

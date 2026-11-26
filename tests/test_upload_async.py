@@ -724,7 +724,9 @@ def _claim(
     *,
     allow_success: bool = False,
     lease_seconds: int = document_repository.DOCUMENT_LEASE_SECONDS,
-) -> bool:
+) -> datetime | None:
+    """抢占一次并提交；返回**租约令牌**（``None`` = 没抢到，#213）。"""
+
     claimed = document_repository.try_claim_for_indexing(
         db,
         document_id,
@@ -739,19 +741,20 @@ def _claim(
 def test_claim_takes_failed_document_and_clears_error(document_db: Session) -> None:
     _seed_document(document_db, "doc-failed", status=DocumentStatus.FAILED, error_message="boom")
 
-    assert _claim(document_db, "doc-failed") is True
+    claimed = _claim(document_db, "doc-failed")
+    assert claimed is not None
 
     row = document_db.get(Document, "doc-failed")
     assert row is not None
     assert row.status == DocumentStatus.PROCESSING
     assert row.error_message is None
-    assert row.index_claimed_at is not None
+    assert row.index_claimed_at == claimed, "返回的令牌就是这一条语句写进库的那个时间戳"
 
 
 def test_claim_takes_enqueued_document_never_started(document_db: Session) -> None:
     _seed_document(document_db, "doc-queued", status=DocumentStatus.PROCESSING, claimed_at=None)
 
-    assert _claim(document_db, "doc-queued") is True
+    assert _claim(document_db, "doc-queued") is not None
 
     row = document_db.get(Document, "doc-queued")
     assert row is not None
@@ -761,7 +764,7 @@ def test_claim_takes_enqueued_document_never_started(document_db: Session) -> No
 def test_fresh_claim_blocks_a_second_worker(document_db: Session) -> None:
     _seed_document(document_db, "doc-running", status=DocumentStatus.PROCESSING, claimed_at=now())
 
-    assert _claim(document_db, "doc-running") is False
+    assert _claim(document_db, "doc-running") is None
 
     row = document_db.get(Document, "doc-running")
     assert row is not None
@@ -772,18 +775,18 @@ def test_expired_lease_can_be_reclaimed(document_db: Session) -> None:
     stale = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS + 1)
     _seed_document(document_db, "doc-stuck", status=DocumentStatus.PROCESSING, claimed_at=stale)
 
-    assert _claim(document_db, "doc-stuck") is True
+    assert _claim(document_db, "doc-stuck") is not None
 
 
 def test_success_document_is_only_claimable_with_allow_success(document_db: Session) -> None:
     _seed_document(document_db, "doc-done", status=DocumentStatus.SUCCESS)
 
-    assert _claim(document_db, "doc-done", allow_success=False) is False
-    assert _claim(document_db, "doc-done", allow_success=True) is True
+    assert _claim(document_db, "doc-done", allow_success=False) is None
+    assert _claim(document_db, "doc-done", allow_success=True) is not None
 
 
-def test_claim_of_missing_document_is_false(document_db: Session) -> None:
-    assert _claim(document_db, "doc-missing") is False
+def test_claim_of_missing_document_is_none(document_db: Session) -> None:
+    assert _claim(document_db, "doc-missing") is None
 
 
 def test_list_by_kb_excludes_other_tenants_and_orders_by_created_at(

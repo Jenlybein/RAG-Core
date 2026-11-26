@@ -159,8 +159,10 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # 映射列（``add_trace_doc_versions``）再接在版本表之后；第 13 步 T1 的新授权/计量列
     # 第 13 步 T1 的新授权/计量列
     # （``add_retrieval_authorization``）接在它之后；数据面 API Key 改「只存哈希」
-    # （``hash_api_key_secrets``）再接在模型角色指针合并之后。
-    assert heads == {_revision_of(_migration_path("unit_cap_and_build_params"))}
+    # （``hash_api_key_secrets``）再接在模型角色指针合并之后；#199 的归属索引记号改造之后
+    # 是第 16 步 #207 的单条结果上限与构建参数（``unit_cap_and_build_params``），再接 #214 的
+    # 构建收敛四列（``add_build_convergence_columns``）——当前链尾。
+    assert heads == {_revision_of(_migration_path("add_build_convergence_columns"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
