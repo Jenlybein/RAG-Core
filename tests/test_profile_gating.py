@@ -437,7 +437,8 @@ def test_a_policy_switch_beyond_the_plan_is_rejected() -> None:
     [
         {"retrieve_qps": PLAN_PRESETS[PLAN_PLUS].retrieve_qps + 1},
         {"retrieve_daily": PLAN_PRESETS[PLAN_PLUS].retrieve_daily + 1},
-        {"allowed_kb_ids": ("kb-1", "kb-2", "kb-3", "kb-4", "kb-5", "kb-6")},
+        # plus 档的库数上限从 5 提到 10（ADR-0035 决策六），所以「超限」要给到 11 个。
+        {"allowed_kb_ids": tuple(f"kb-{index}" for index in range(11))},
     ],
 )
 def test_a_policy_limit_beyond_the_plan_is_rejected(overrides: dict[str, Any]) -> None:

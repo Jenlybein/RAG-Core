@@ -555,7 +555,7 @@ def test_the_model_declares_the_same_table_as_the_migration() -> None:
     # * ``documents_planned`` / ``doc_version`` / ``documents_done`` / ``converge_deadline``：
     #   票 #214（构建收敛的四列，迁移 ``b2c7d4e91a35``）；
     # * ``failed_documents`` / ``redispatch_count``：票 #215（未入新版本的明细与重投次数，
-    #   迁移 ``c4e8f1b6a2d7``）。
+    #   迁移 ``e6a1d8c5f247``）。
     # 名单仍然是「逐列核对」而不是「至少包含」：漂移的方向可能是**少**一列（迁移漏写），
     # 那一种用「至少包含」永远验不出来。
     added_later = {

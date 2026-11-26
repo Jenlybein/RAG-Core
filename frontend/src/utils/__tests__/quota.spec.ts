@@ -15,6 +15,7 @@ const usage = (used: number | null, limit: number): ConsoleUsage => ({
   limit,
   source: used === null ? 'not_tracked' : 'daily_counter',
   note: null,
+  unit: 'calls',
 })
 
 describe('额度读数', () => {

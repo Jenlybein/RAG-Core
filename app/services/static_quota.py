@@ -92,6 +92,20 @@ KB_COUNT_QUOTA: CapacityQuota = CapacityQuota(
     ),
 )
 
+#: 「单库 token 超上限」（#220）：删的是**这个库**里的旧文档——容量按内容算，删一篇长文
+#: 腾出来的空间比删十篇短文还多。
+#:
+#: 文案里「本篇 / 已用」两个数字由调用方给（入口预检时没有「本篇」，解析后硬拦时才有）。
+KB_TOKEN_QUOTA: CapacityQuota = CapacityQuota(
+    code=ErrorCode.KB_TOKEN_QUOTA_EXCEEDED,
+    reason="kb_token_count",
+    message=(
+        "这个知识库的 token 容量已用尽：已用 {used} / 上限 {limit} token，当前套餐 {plan}；"
+        "删掉该库里的旧文档就能继续上传，或找运营把套餐上限提上去"
+    ),
+)
+
+
 #: 「单库文档数超套餐」：删的是**这个库**里的旧文档，不是别的库的。
 KB_DOCUMENT_QUOTA: CapacityQuota = CapacityQuota(
     code=ErrorCode.KB_DOCUMENT_QUOTA_EXCEEDED,
@@ -126,6 +140,50 @@ async def ensure_upload_quota(
         quota=KB_DOCUMENT_QUOTA,
         used=used_documents,
         limit=plan.max_documents_per_kb,
+        plan=plan,
+    )
+    # 容量：库里已经装满就不再收新的（这一篇会占多少要等解析完才知道，见
+    # ``ensure_kb_token_quota`` 的注释）。
+    await ensure_kb_token_quota(
+        db, tenant_id=tenant_id, kb_id=kb_id, plan=plan
+    )
+
+
+async def ensure_kb_token_quota(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    kb_id: str,
+    plan: PlanSpec,
+    excluding_document_id: str | None = None,
+    incoming: int = 0,
+) -> None:
+    """这个库的 token 容量还够不够（``plan.max_tokens_per_kb``）。
+
+    ## 为什么要 ``excluding_document_id``
+
+    重建一篇**已经在库里**的文档时，它自己占的空间要算它自己的。不排除它，库装满之后
+    连重建都做不了（「重建会因为库满被拒」——那是一个自锁，而不是容量上限该有的行为）。
+    这条口径写在 ADR-0035 决策四。
+
+    ## 为什么 ``incoming`` 默认 0
+
+    入口预检时**还不知道这一篇会占多少**（解析发生在 Worker 里、可能要跑几十秒）。所以
+    入口能答的只有「库是不是已经满了」；「加上这一篇会不会超」要等解析完再答一次
+    （``incoming`` 就是那一次用的）。两次检查各有各的问题，缺一不可：
+
+    * 只有入口预检 → 库差一点满时，用户要等两分钟才看到失败；
+    * 只有解析后硬拦 → 库早满了还让请求进来，白解析一次、白排一次队。
+    """
+
+    used = await document_repository.count_tokens_in_kb(
+        db, kb_id, tenant_id=tenant_id, excluding_document_id=excluding_document_id
+    )
+    projected = used + max(incoming, 0)
+    _ensure_under(
+        quota=KB_TOKEN_QUOTA,
+        used=projected,
+        limit=plan.max_tokens_per_kb,
         plan=plan,
     )
 

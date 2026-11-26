@@ -51,7 +51,9 @@ async def me(key: DevKeyContext = Depends(get_current_key)) -> ApiResponse[AuthM
             plan=plan_snapshot_data(key.plan),
             **{
                 book.field: usage_data(
-                    used=meters[book.field].used, limit=meters[book.field].limit
+                    used=meters[book.field].used,
+                    limit=meters[book.field].limit,
+                    unit=meters[book.field].unit,
                 )
                 for book in METER_BOOKS
             },

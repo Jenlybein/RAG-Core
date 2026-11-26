@@ -75,6 +75,16 @@ class _FakeSession:
     async def delete(self, _row: Any) -> None:
         return None
 
+    async def get(self, _model: Any, _primary_key: Any) -> Any:
+        """替身里没有租户行（#220 的容量判据要读它）。
+
+        回 ``None`` 的效果是「这个租户查不到」，而索引服务对此的口径是**按最保守的一档**
+        （free）判——免费档的容量上限最小，所以替身环境下的用例不会因为「容量默认无限」
+        而漏掉一条真实会被拒的路径。真库里的那条路径由集成用例覆盖。
+        """
+
+        return None
+
     async def execute(self, statement: Any) -> Any:
         """读查询表示空版本（建关系边读节目录，#152）；写语句记下原文并回「写了一行」。
 

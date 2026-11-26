@@ -97,11 +97,14 @@ from app.providers.embedding import EmbeddingProvider, get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores import get_vector_store
+from app.models.plan import PLAN_FREE, PLAN_PRESETS, PlanSpec
 from app.repositories import (
     document_repository,
     document_version_repository,
     knowledge_base_repository,
+    tenant_repository,
 )
+from app.services import chunk_ledger, plan_service, static_quota
 from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import (
     content_from_version,
@@ -110,6 +113,7 @@ from app.services.document_ingestion import (
 )
 from app.services.section_context import summarize_sections
 from app.utils.checksum import checksum_of
+from app.utils.tokenizer import token_count
 from app.utils.id_generator import new_chunk_id, new_version_id
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
@@ -221,6 +225,22 @@ class IndexingService:
             if stores is not None
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
+
+    async def _plan_of(self, db: AsyncSession, doc: Document) -> PlanSpec:
+        """这篇文档所属租户的套餐快照（容量判据的输入，#220）。
+
+        为什么由索引服务自己取、而不是让任务体传进来：任务体不该知道「容量上限」这件事
+        （它只管调度），而索引服务是**做这件事的人**。取法与数据面完全同一份
+        （``plan_service.resolve_plan`` + 租户行上的 ``plan_id``），所以「面板上改了套餐、
+        下一次处理就按新值判」这一点在这里也成立。
+        """
+
+        tenant = await tenant_repository.get_by_id_async(db, doc.tenant_id)
+        if tenant is None:
+            # 租户行不见了却还有文档在跑：这是人手改库才会出现的状态。按最保守的一档判
+            # （free），宁可拒一次也不要让一个已经没有归属的租户按高档位放行。
+            return PLAN_PRESETS[PLAN_FREE]
+        return await plan_service.resolve_plan(db, tenant.plan_id)
 
     async def _resolve_splitter(self, db: AsyncSession, doc: Document) -> tuple[TextSplitter, str]:
         """按文档所属知识库的配置构造切块器，返回 (切块器, 策略名)。
@@ -400,6 +420,26 @@ class IndexingService:
         if draft == doc.current_version:
             doc.content = parsed.content
 
+        # ── 单库 token 容量硬拦（#220 / ADR-0035 决策四）────────────────────
+        #
+        # 位置选在**切块之前**：容量不够时连切都不必切（切块与嵌入是真正花钱的两步）。
+        # 口径是**正文** token，与单库容量判据同一把尺子；每日额度那边记的是检索文本
+        # token（多出标题与节说明前缀），两个数字各管一件事。
+        tokens = token_count(parsed.content)
+        # 套餐取一次、两处复用（容量判据与日额度）：查两遍**不会**得到两个答案，但会让
+        # 「这两条上限来自同一份套餐」这件事在代码里看不出来。
+        plan = await self._plan_of(db, doc)
+        await static_quota.ensure_kb_token_quota(
+            db,
+            tenant_id=doc.tenant_id,
+            kb_id=doc.kb_id,
+            plan=plan,
+            # 排除自己：重建一篇已在库里的文档时，它占的空间要算它自己的，
+            # 否则库装满之后连重建都做不了（自锁，不是上限该有的行为）。
+            excluding_document_id=doc.id,
+            incoming=tokens,
+        )
+
         # 切块器按**所属知识库**的配置现建：策略与窗口是库级属性，同一个库里
         # 混用两种切法会让片长不可比。
         splitter, split_strategy = await self._resolve_splitter(db, doc)
@@ -539,6 +579,23 @@ class IndexingService:
             index_version=version,
             doc_version=draft,
         )
+        # ── 第四本账：每日切块额度（#222 / ADR-0035 决策三）──────────────
+        #
+        # 位置在**嵌入之前**：那一步才是花钱的。记的是**检索文本** token（真正发给嵌入模型的
+        # 那一份：文档名 + 节标题路径 + 节说明前缀 + 正文），不是正文 token——后者是本库容量
+        # 判据的口径。两个数字各管一件事，混用会让「容量没满但额度超了」解释不清。
+        #
+        # 超额抛 20037，让这一篇落失败（切片还没写、向量还没算），额度一分不扣：
+        # 先判后记（ADR-0018），否则「拒绝之后额度更少了」会让用户永远恢复不了。
+        await chunk_ledger.charge_chunk_tokens(
+            db,
+            tenant_id=doc.tenant_id,
+            tokens=sum(token_count(chunk.get("retrieval_text") or "") for chunk in chunks),
+            limit=plan.chunk_daily_tokens,
+            plan_name=plan.name,
+            plan_code=plan.code,
+        )
+
         for store in self._stores:
             await store.add_chunks(db, chunks)
 
@@ -550,6 +607,11 @@ class IndexingService:
 
         # 状态回写走一条显式 UPDATE（#212），并**检查它影响了几行**：库里这一行若已被删
         # （或租户对不上），写得「成功」而实际一行没动正是本票要堵的那类静默失效。
+        # 正文 token 数：容量判据的唯一计量。与切片、状态同一笔事务——半份状态（切片写了
+        # 而计量没写）会让下一次容量判定按一个偏小的数放行。
+        await document_repository.update_token_count(
+            db, document_id, tenant_id=doc.tenant_id, token_count=tokens
+        )
         written = await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
         if written != 1:
             logger.warning(
@@ -566,6 +628,7 @@ class IndexingService:
             tenant_id=doc.tenant_id,
             kb_id=doc.kb_id,
             chunk_count=len(chunks),
+            token_count=tokens,
             index_version=version,
         )
         return len(chunks)

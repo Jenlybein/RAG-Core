@@ -35,10 +35,18 @@ class _Row(dict):
 
 
 class _Result:
-    def __init__(self, *, rows: list[Any] | None = None, one: Any = None, scalar: Any = 0) -> None:
+    def __init__(
+        self,
+        *,
+        rows: list[Any] | None = None,
+        one: Any = None,
+        scalar: Any = 0,
+        scalar_one: Any | None = None,
+    ) -> None:
         self._rows = rows or []
         self._one = one if one is not None else _Row()
         self._scalar = scalar
+        self._scalar_one = scalar if scalar_one is None else scalar_one
 
     def all(self) -> list[Any]:
         return self._rows
@@ -50,6 +58,11 @@ class _Result:
         return self
 
     def scalar_one(self) -> Any:
+        return self._scalar_one
+
+    def scalar_one_or_none(self) -> Any:
+        """聚合查询的收尾：第四本账那条用的就是它（空结果按 0 读）。"""
+
         return self._scalar
 
 
@@ -138,9 +151,14 @@ async def test_a_short_window_reads_the_detail_table_and_pads_empty_buckets() ->
         p95=None,
         meter_r=0,
         meter_rr=0,
-        meter_llm=0,
+        meter_llm=0, meter_chunk=0,
     )
-    session = _StubSession(_Result(rows=[]), _Result(one=empty_totals))
+    session = _StubSession(
+        _Result(rows=[]),
+        _Result(one=empty_totals),
+        # 第四本账（#222）是单独一条查询：索引行被排除出请求统计，所以另读一次。
+        _Result(scalar=0),
+    )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
 
@@ -159,11 +177,16 @@ async def test_a_long_window_reads_the_daily_table_and_labels_the_histogram() ->
         unknown=1,
         meter_r=10,
         meter_rr=0,
-        meter_llm=0,
+        meter_llm=0, meter_chunk=0,
         **{f"lat_b{index}": (2 if index == 1 else 0) for index in range(7)},
     )
     # 桶 1 有 2 个样本 → 用第 1 档的中点回答 P95；这里只验「标注」与「不是平均值」。
-    session = _StubSession(_Result(rows=[]), _Result(one=daily_totals), _Result(scalar=0))
+    session = _StubSession(
+        _Result(rows=[]),
+        _Result(one=daily_totals),
+        _Result(scalar=0),
+        _Result(scalar=0),
+    )
 
     data = await console_usage.series(session, window=console_usage.parse_window("30d"))
 
@@ -188,10 +211,12 @@ async def test_every_tenant_scoped_query_carries_the_tenant() -> None:
                 unknown=0,
                 meter_r=0,
                 meter_rr=0,
-                meter_llm=0,
+                meter_llm=0, meter_chunk=0,
                 unknown_code=0,
             )
         ),
+        # 第四本账（#222）：它也必须带租户（跨租户的用量合计是一条不该存在的查询）。
+        _Result(scalar=0),
     )
 
     await console_usage.series(
@@ -238,9 +263,14 @@ async def test_success_rate_ignores_rows_whose_outcome_was_never_recorded() -> N
     """
 
     all_legacy = _Row(
-        requests=3, ok=0, unknown=3, p50=100.0, p95=200.0, meter_r=0, meter_rr=0, meter_llm=0
+        requests=3, ok=0, unknown=3, p50=100.0, p95=200.0, meter_r=0, meter_rr=0, meter_llm=0, meter_chunk=0
     )
-    session = _StubSession(_Result(rows=[]), _Result(one=all_legacy))
+    session = _StubSession(
+        _Result(rows=[]),
+        _Result(one=all_legacy),
+        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        _Result(scalar=0),
+    )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
 
@@ -252,9 +282,14 @@ async def test_success_rate_ignores_rows_whose_outcome_was_never_recorded() -> N
 @pytest.mark.asyncio
 async def test_success_rate_denominator_is_the_known_ones_only() -> None:
     mixed = _Row(
-        requests=5, ok=2, unknown=1, p50=100.0, p95=200.0, meter_r=0, meter_rr=0, meter_llm=0
+        requests=5, ok=2, unknown=1, p50=100.0, p95=200.0, meter_r=0, meter_rr=0, meter_llm=0, meter_chunk=0
     )
-    session = _StubSession(_Result(rows=[]), _Result(one=mixed))
+    session = _StubSession(
+        _Result(rows=[]),
+        _Result(one=mixed),
+        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        _Result(scalar=0),
+    )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
 
@@ -459,9 +494,14 @@ async def test_failed_counts_only_the_known_outcomes() -> None:
     """
 
     mixed = _Row(
-        requests=5, ok=2, unknown=1, p50=100.0, p95=200.0, meter_r=0, meter_rr=0, meter_llm=0
+        requests=5, ok=2, unknown=1, p50=100.0, p95=200.0, meter_r=0, meter_rr=0, meter_llm=0, meter_chunk=0
     )
-    session = _StubSession(_Result(rows=[]), _Result(one=mixed))
+    session = _StubSession(
+        _Result(rows=[]),
+        _Result(one=mixed),
+        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        _Result(scalar=0),
+    )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
 
@@ -475,9 +515,14 @@ async def test_a_window_of_purely_legacy_rows_reports_no_failures() -> None:
     """整窗都是迁移前的行：失败 0 次、成功率「未统计」，而不是「全挂了」。"""
 
     legacy = _Row(
-        requests=4, ok=0, unknown=4, p50=None, p95=None, meter_r=0, meter_rr=0, meter_llm=0
+        requests=4, ok=0, unknown=4, p50=None, p95=None, meter_r=0, meter_rr=0, meter_llm=0, meter_chunk=0
     )
-    session = _StubSession(_Result(rows=[]), _Result(one=legacy))
+    session = _StubSession(
+        _Result(rows=[]),
+        _Result(one=legacy),
+        # 第四本账（#222）：索引行不进请求统计，因此单独读一次。
+        _Result(scalar=0),
+    )
 
     data = await console_usage.series(session, window=console_usage.parse_window("1d"))
 

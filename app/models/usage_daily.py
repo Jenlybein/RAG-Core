@@ -74,6 +74,9 @@ class UsageDaily(Base):
     meter_r: Mapped[int] = mapped_column(Integer, default=0)
     meter_rr: Mapped[int] = mapped_column(Integer, default=0)
     meter_llm: Mapped[int] = mapped_column(Integer, default=0)
+    #: 第四本账（切块 / 索引期 embedding，ADR-0035 决策三）：**按 token 计**。
+    #: 前三列数次数，这一列数 token——单位不同是刻意的，账单也只认后者。
+    meter_chunk: Mapped[int] = mapped_column(Integer, default=0)
     #: 耗时合计与样本数（平均耗时用；分位走下面的直方图）。
     lat_sum_ms: Mapped[int] = mapped_column(Integer, default=0)
 

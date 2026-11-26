@@ -41,6 +41,16 @@ class Document(Base):
     # 刚写过的 updated_at 无法区分两者，CAS 会永远抢不到或永远抢到，任务去重
     # 也就无从谈起。
     index_claimed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    #: 正文 token 数（#220 / ADR-0035 决策一）：单库容量判据的**唯一计量**。
+    #:
+    #: 口径是**正文**（与版本行正文同源），不是「发给嵌入模型的那份检索文本」——后者多出
+    #: 标题、节标题路径与节说明前缀（差 10–20%），那是**每日切块额度**的口径。两个数字
+    #: 各管一件事，混用会让「容量没满但额度超了」这种解释不清的场面出现。
+    #:
+    #: 0 = 还没算过（存量行由回填脚本补；迁移里只填了一个按字符数的**下界**）。
+    token_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)

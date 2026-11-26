@@ -51,6 +51,9 @@ SCALAR_COLUMNS = (
     "meter_r",
     "meter_rr",
     "meter_llm",
+    # 第四本账（切块，按 token 计）。**它不进 requests / ok_requests**：索引行不是一次
+    # API 调用，混进请求数会让成功率与 P50/P95 一起失真（见 ``_fetch_page`` 的排除规则）。
+    "meter_chunk",
     "lat_sum_ms",
 )
 
@@ -72,6 +75,8 @@ class Cell:
     meter_r: int = 0
     meter_rr: int = 0
     meter_llm: int = 0
+    #: 切块 token（只有索引行会带它，单位是 token 不是次数）。
+    meter_chunk: int = 0
     lat_sum_ms: int = 0
     buckets: list[int] = field(default_factory=lambda: [0] * LATENCY_BUCKET_COUNT)
 
@@ -84,6 +89,7 @@ class Cell:
         self.meter_r += int(row.get("meter_r") or 0)
         self.meter_rr += int(row.get("meter_rr") or 0)
         self.meter_llm += int(row.get("meter_llm") or 0)
+        self.meter_chunk += int(row.get("meter_chunk") or 0)
         latency = int(row.get("latency_ms") or 0)
         self.lat_sum_ms += latency
         self.buckets[bucket_of(latency)] += 1
@@ -184,6 +190,7 @@ async def _fetch_page(
             UsageEvent.meter_r,
             UsageEvent.meter_rr,
             UsageEvent.meter_llm,
+            UsageEvent.meter_chunk,
             UsageEvent.latency_ms,
         )
         .where(UsageEvent.created_at >= start, UsageEvent.created_at < end)

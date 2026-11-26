@@ -83,7 +83,7 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
             book.field: (
                 None
                 if (meter := getattr(view, book.field)) is None
-                else usage_data(used=meter.used, limit=meter.limit)
+                else usage_data(used=meter.used, limit=meter.limit, unit=meter.unit)
             )
             for book in console_service.METER_BOOKS
         },

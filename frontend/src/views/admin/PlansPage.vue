@@ -70,6 +70,8 @@ function editableOf(plan: PlanData): PlanEditableFields {
     max_kb: plan.max_kb,
     max_kb_per_retrieve: plan.max_kb_per_retrieve,
     max_documents_per_kb: plan.max_documents_per_kb,
+    max_tokens_per_kb: plan.max_tokens_per_kb,
+    chunk_daily_tokens: plan.chunk_daily_tokens,
   }
 }
 
@@ -91,6 +93,10 @@ function emptyDraft(): PlanEditableFields {
     max_kb: 1,
     max_kb_per_retrieve: 1,
     max_documents_per_kb: 1,
+    // 新建草稿的容量初值：给「最小可用」而不是 0——0 会让这个套餐下所有写入当场被拒
+    // （容量判据的意义就是「装不装得下」，填 0 等于「什么也装不下」）。
+    max_tokens_per_kb: 30_000,
+    chunk_daily_tokens: 300_000,
   }
 }
 

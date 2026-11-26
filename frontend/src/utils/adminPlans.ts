@@ -44,6 +44,11 @@ export const PLAN_NUMBER_FIELDS: readonly PlanNumberField[] = [
   { key: 'max_kb', label: '知识库上限', unit: '个', short: '库' },
   { key: 'max_kb_per_retrieve', label: '单次检索库数', unit: '个', short: '单次库' },
   { key: 'max_documents_per_kb', label: '每库文档上限', unit: '个', short: '每库文档' },
+  // 第 17 步 #220 / #221：容量按**内容**算，不再只数行数——一篇长文与一篇短文都算 1 篇时，
+  // 「200 篇」可能只装了 4 万 token，也可能装了 4000 万。
+  { key: 'max_tokens_per_kb', label: '每库 token 上限', unit: 'token', short: '每库token' },
+  // 第 17 步 #222 / #221：第四本账的日额度（索引期 embedding）。单位是 token，不是次数。
+  { key: 'chunk_daily_tokens', label: '每日切块额度', unit: 'token/天', short: '切块日额度' },
 ]
 
 /** 五个「≥ 0」数值列的展示配置；0 在这里是「关闭 / 不额外封顶」，不是填错。 */

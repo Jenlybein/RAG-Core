@@ -600,6 +600,32 @@ async def list_by_kb_async(db: AsyncSession, kb_id: str, *, tenant_id: str) -> l
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def update_token_count(
+    db: AsyncSession, document_id: str, *, tenant_id: str, token_count: int
+) -> int:
+    """把这一篇的正文 token 数写进行，返回影响的行数（#220）。
+
+    ## 为什么是语句而不是「改对象属性」
+
+    与 ``update_status`` 同一条纪律（#212 的教训）：抢占、入队准备都是**语句**改库，而会话
+    又是 ``expire_on_commit=False``——内存对象可能停留在旧值上。用语句写，这一列的真相
+    就只有库里那一份，也不会有「赋成本来就是的值被 ORM 吞掉」这种静默失败。
+
+    ## 为什么返回值被检查
+
+    一行都没动 = 这篇文档在跑的过程中被删了 / 租户对不上。那时「写成功了」是个假象，而
+    容量判据会按一个偏小的总量放行下一次上传。
+    """
+
+    statement = (
+        update(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .values(token_count=max(int(token_count), 0))
+        .execution_options(synchronize_session=False)
+    )
+    return int((await db.execute(statement)).rowcount or 0)
+
+
 async def update_status(
     db: AsyncSession, doc: Document, status: int, error_message: str | None = None
 ) -> int:
@@ -724,6 +750,43 @@ async def release_index_claim_async(db: AsyncSession, document_id: str, *, tenan
     """释放索引租约（语义同 :func:`release_index_claim`）。"""
 
     await db.execute(_release_statement(document_id, tenant_id=tenant_id))
+
+
+async def count_tokens_in_kb(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    excluding_document_id: str | None = None,
+) -> int:
+    """这个库的**正文 token 总量**（容量判据，ADR-0035 决策四）。
+
+    ``excluding_document_id`` 排除某一篇：重建一篇已在库里的文档时，它自己占的空间要算它
+    自己的——不排除它会形成自锁（库装满之后连重建都做不了，而那是个功能倒退，不是上限
+    该有的行为）。
+
+    为什么数 ``SUM`` 而不是「把文档读出来在 Python 里累加」：几百篇长文档的正文可能有几十
+    MB，读回来只为了求和是浪费；而且这件事本来就该由数据库回答。
+    """
+
+    conditions = [
+        Document.kb_id == kb_id,
+        Document.tenant_id == tenant_id,
+    ]
+    if excluding_document_id is not None:
+        conditions.append(Document.id != excluding_document_id)
+    statement = select(func.coalesce(func.sum(Document.token_count), 0)).where(*conditions)
+    # ``scalar_one_or_none`` 而不是 ``scalar_one``：真库上聚合**总是**回一行（无行时是 NULL），
+    # 但替身会话按「预置的行数」回答聚合，空预置就回 0 行——那时两边的语义必须一致才能
+    # 用同一份用例跑「库还没装东西」这条路径。NULL / 无行都按 0 读。
+    #
+    # **两种收尾形状**：真库回一个数（``SUM``）；替身会话把「预置的那一行」原样交回来，
+    # 于是一个对象也可能出现在这里。就对它读 ``token_count``（那一行本来就是文档行），
+    # 读不到就按 0——替身那条路本来就没在算聚合，它只是不让容量判据把不相关的用例带崩。
+    value = (await db.execute(statement)).scalar_one_or_none()
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(getattr(value, "token_count", 0) or 0)
 
 
 async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:

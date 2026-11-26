@@ -59,6 +59,7 @@ from app.repositories import (
 )
 from app.services import plan_admin, plan_service
 from app.services.quota_gate import (
+    CHUNK_NAMESPACE,
     KEY_NAMESPACE,
     LLM_NAMESPACE,
     RERANK_NAMESPACE,
@@ -86,6 +87,8 @@ class DailyUsageView:
 
     used: int | None
     limit: int
+    #: 这一栏的计量单位（``"calls"`` 次数 / ``"tokens"`` token）。第四本账是 token。
+    unit: str = "calls"
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,9 @@ class MeterBookView:
     field: str
     plan_limit: str
     namespace: str = KEY_NAMESPACE
+    #: 这一栏的**单位**（``"calls"`` / ``"tokens"``）。第四本账（切块）按 token 计，
+    #: 前三本按次数计——四栏摆在一起时，不说清楚单位就会让两个不同的量看起来可比。
+    unit: str = "calls"
 
 
 #: 三本账的清单（顺序即面板上的顺序）。字段名与 ``ConsoleView`` / ``MeData`` 对齐。
@@ -107,6 +113,15 @@ METER_BOOKS: Final[tuple[MeterBookView, ...]] = (
     MeterBookView(field="usage", plan_limit="retrieve_daily"),
     MeterBookView(field="rerank_usage", plan_limit="rerank_daily", namespace=RERANK_NAMESPACE),
     MeterBookView(field="llm_usage", plan_limit="llm_daily", namespace=LLM_NAMESPACE),
+    # 第四本账（第 17 步 #222/#223）：索引期的 embedding 消耗，**按 token 计**。
+    # 它是这一票要补的「看不见的那本账」——前三本只数请求侧的调用次数，一次整库重建
+    # 在它们上面留不下任何痕迹。
+    MeterBookView(
+        field="chunk_usage",
+        plan_limit="chunk_daily_tokens",
+        namespace=CHUNK_NAMESPACE,
+        unit="tokens",
+    ),
 )
 
 
@@ -122,6 +137,7 @@ async def meter_usage(*, tenant_id: str, plan: PlanSpec) -> dict[str, DailyUsage
         book.field: DailyUsageView(
             used=await read_tenant_daily_usage(tenant_id=tenant_id, namespace=book.namespace),
             limit=getattr(plan, book.plan_limit),
+            unit=book.unit,
         )
         for book in METER_BOOKS
     }
@@ -147,6 +163,9 @@ class ConsoleView:
     usage: DailyUsageView | None = None
     llm_usage: DailyUsageView | None = None
     rerank_usage: DailyUsageView | None = None
+    #: 第四本账（切块，按 token）。诚实地多一栏，而不是把它加进上面任何一栏：
+    #: 加进 ``usage`` 会让「今天检索了多少次」变成一个看不懂的数。
+    chunk_usage: DailyUsageView | None = None
 
 
 @dataclass(frozen=True)

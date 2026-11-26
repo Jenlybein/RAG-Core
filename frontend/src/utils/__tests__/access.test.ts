@@ -23,6 +23,7 @@ function meOf(role: string, tenantId: string | null): ConsoleMe {
     usage: null,
     llm_usage: null,
     rerank_usage: null,
+  chunk_usage: null,
   }
 }
 

@@ -42,6 +42,8 @@ function planOf(overrides: Partial<PlanEditableFields> = {}): PlanEditableFields
     max_kb: 50,
     max_kb_per_retrieve: 5,
     max_documents_per_kb: 5000,
+    max_tokens_per_kb: 2_000_000,
+    chunk_daily_tokens: 9_000_000,
     ...overrides,
   }
 }

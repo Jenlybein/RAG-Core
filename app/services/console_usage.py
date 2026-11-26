@@ -25,9 +25,9 @@ from collections.abc import Mapping as MappingABC
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-from typing import Any, Literal
+from typing import Any, Final, Literal
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -133,6 +133,70 @@ def _label_of(index: int, window: Window) -> str:
     return moment.strftime("%H:%M")
 
 
+#: 「索引行」的端点标记（``chunk_ledger.INDEX_ENDPOINT``）。
+#:
+#: 为什么要把它们挡在请求统计之外（ADR-0035 决策三）：索引不是一次 API 调用——它由后台
+#: Worker 触发、没有「哪把 Key 发起的」（``key_id`` 恒为 NULL）、也没有「成功/失败」的一半
+#: 口径（失败那篇甚至不写明细）。把它们混进来，症状是三处同时失真：
+#:
+#: * ``requests`` 平白多出一批「一次请求」；
+#: * ``success_rate`` 的分母被撑大，成功率看上去莫名其妙地掉；
+#: * ``p50/p95`` 被一个几分钟的批次一起拉爆（而那次「请求」的耗时根本无从比较）。
+#:
+#: 但它**贡献 ``meter_chunk``**：第四本账的消耗只存在于这类行上，挡掉它就等于把要看的
+#: 东西一起挡掉了。所以规则是「排除出请求统计，保留计量」——不是「排除整行」。
+INDEX_ENDPOINT: Final[str] = "index"
+
+
+def _exclude_index_rows(statement: Select[Any]) -> Select[Any]:
+    """把索引行从**请求统计**里排除（``_totals_from_events`` / ``_buckets_from_events``）。"""
+
+    return statement.where(
+        or_(UsageEvent.endpoint.is_(None), UsageEvent.endpoint != INDEX_ENDPOINT)
+    )
+
+
+async def _chunk_tokens(
+    db: AsyncSession, *, window: Window, tenant_id: str | None, key_id: str | None
+) -> int:
+    """第四本账在窗口内的合计（token）。
+
+    ## 为什么单独一条查询，而不是塞进 ``_totals_from_*``
+
+    那两条合计查询**把索引行整行排除**（不对，它们排除的是索引行出请求统计——见
+    ``_exclude_index_rows``）。而第四本账的消耗**只存在于索引行上**。两者互补：
+    「请求统计不含索引」与「切块计量只来自索引」是同一条排除规则的两面。
+
+    硬塞进同一条查询，只能二选一：要么把索引行读回来（请求数、成功率、分位一起失真），
+    要么把它们排除（第四本账永远 0）。所以分成两条，语义各自干净。
+
+    ``key_id`` 这里**没有意义**（索引行不带 Key），传进来的话查询仍是安全的（只会得到 0），
+    但调用方不该指望它能按 Key 细分——索引不是某个 Key 发起的动作。
+    """
+
+    if window.uses_daily:
+        statement = select(
+            func.coalesce(func.sum(UsageDaily.meter_chunk), 0)
+        ).where(
+            UsageDaily.day >= window.since.date(),
+            UsageDaily.day < window.until.date(),
+            UsageDaily.endpoint == INDEX_ENDPOINT,
+        )
+        if tenant_id is not None:
+            statement = statement.where(UsageDaily.tenant_id == tenant_id)
+    else:
+        statement = select(
+            func.coalesce(func.sum(UsageEvent.meter_chunk), 0)
+        ).where(
+            UsageEvent.created_at >= window.since,
+            UsageEvent.created_at < window.until,
+            UsageEvent.endpoint == INDEX_ENDPOINT,
+        )
+        if tenant_id is not None:
+            statement = statement.where(UsageEvent.tenant_id == tenant_id)
+    return int((await db.execute(statement)).scalar_one_or_none() or 0)
+
+
 async def _totals_from_events(
     db: AsyncSession, *, window: Window, tenant_id: str | None, key_id: str | None
 ) -> dict[str, Any]:
@@ -151,6 +215,7 @@ async def _totals_from_events(
         func.coalesce(func.sum(UsageEvent.meter_llm), 0).label("meter_llm"),
     ).where(UsageEvent.created_at >= window.since, UsageEvent.created_at < window.until)
     statement = _scope(statement, tenant_id=tenant_id, key_id=key_id)
+    statement = _exclude_index_rows(statement)
     mapping = (await db.execute(statement)).one()._mapping
     requests = int(mapping["requests"] or 0)
     ok = int(mapping["ok"] or 0)
@@ -170,6 +235,9 @@ async def _totals_from_events(
         "meter_r": int(mapping["meter_r"] or 0),
         "meter_rr": int(mapping["meter_rr"] or 0),
         "meter_llm": int(mapping["meter_llm"] or 0),
+        # 第四本账另读一次（见 ``_chunk_tokens``）：索引行被排除出请求统计，所以这一栏
+        # 不能从同一条查询里取。先给 0，``series`` 会用专用查询覆盖它。
+        "meter_chunk": 0,
     }
 
 
@@ -205,6 +273,8 @@ async def _buckets_from_events(
         .order_by(index)
     )
     statement = _scope(statement, tenant_id=tenant_id, key_id=key_id)
+    # 时间桶也排除索引行：否则某个 10 分钟里「请求数」会突然多出一百条，而它们全是索引
+    statement = _exclude_index_rows(statement)
     rows = (await db.execute(statement)).all()
 
     found = {int(row._mapping["bucket"]): row._mapping for row in rows}
@@ -256,7 +326,12 @@ async def _daily_buckets(
                 for index in range(LATENCY_BUCKET_COUNT)
             ),
         )
-        .where(UsageDaily.day >= window.since.date(), UsageDaily.day < window.until.date())
+        .where(
+            UsageDaily.day >= window.since.date(),
+            UsageDaily.day < window.until.date(),
+            # 与两条合计路径同一条排除规则：索引行不进请求统计。
+            UsageDaily.endpoint != INDEX_ENDPOINT,
+        )
         .group_by(UsageDaily.day)
         .order_by(UsageDaily.day)
     )
@@ -330,6 +405,10 @@ async def _totals_from_daily(
         statement = statement.where(UsageDaily.tenant_id == tenant_id)
     if key_id is not None:
         statement = statement.where(UsageDaily.key_id == key_id)
+    # 与明细路径同一条排除规则：索引行不进请求统计。
+    statement = statement.where(
+        UsageDaily.endpoint != INDEX_ENDPOINT
+    )
     mapping = (await db.execute(statement)).one()._mapping
     requests = int(mapping["requests"] or 0)
     ok = int(mapping["ok"] or 0)
@@ -349,6 +428,9 @@ async def _totals_from_daily(
         "meter_r": int(mapping["meter_r"] or 0),
         "meter_rr": int(mapping["meter_rr"] or 0),
         "meter_llm": int(mapping["meter_llm"] or 0),
+        # 第四本账另读一次（见 ``_chunk_tokens``）：索引行被排除出请求统计，所以这一栏
+        # 不能从同一条查询里取。先给 0，``series`` 会用专用查询覆盖它。
+        "meter_chunk": 0,
     }
 
 
@@ -378,6 +460,11 @@ async def series(
         buckets = await _buckets_from_events(db, window=window, tenant_id=tenant_id, key_id=key_id)
         totals = await _totals_from_events(db, window=window, tenant_id=tenant_id, key_id=key_id)
         source, p95_source = "events", "exact"
+
+    # 第四本账单独读（理由见 ``_chunk_tokens``）：覆盖掉 totals 里那个占位的 0。
+    totals["meter_chunk"] = await _chunk_tokens(
+        db, window=window, tenant_id=tenant_id, key_id=key_id
+    )
 
     return {
         "window": window.name,
@@ -645,7 +732,7 @@ async def _count_code(
             statement = statement.where(UsageEvent.tenant_id == tenant_id)
         if key_id is not None:
             statement = statement.where(UsageEvent.key_id == key_id)
-    return int((await db.execute(statement)).scalar_one() or 0)
+    return int((await db.execute(statement)).scalar_one_or_none() or 0)
 
 
 async def _has_events(

@@ -32,6 +32,8 @@ from app.db.base import now
 from app.models.chunk import Chunk, DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_FREE, Plan
+from app.models.tenant import Tenant
 from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores.pgvector import PgVectorStore
 from app.repositories import document_repository, knowledge_base_repository
@@ -233,6 +235,14 @@ class _FakeSession:
         self.commits += 1
 
     async def rollback(self) -> None:
+        return None
+
+    async def get(self, _model: Any, _primary_key: Any) -> Any:
+        """点查回 ``None``：替身里没有租户行（#220 的容量判据要读它）。
+
+        回 ``None`` = 「这个租户查不到」，索引服务对此按最保守的一档（free）判。
+        """
+
         return None
 
     async def flush(self) -> None:
@@ -604,8 +614,39 @@ async def test_reindexing_the_second_draft_keeps_the_first_drafts_slices(
         # 状态回写是一条 UPDATE（#212）：这条用例跑的是真 SQL，所以 documents 表也得建，
         # 否则收尾那句回写会炸成「no such table」，而它炸的位置与这一票要验的东西无关。
         await connection.run_sync(Document.__table__.create)
+        # 租户与套餐（#220）：索引流水线要读租户的套餐来判单库 token 容量。没有这两张表，
+        # 这条用例会在「no such table: tenants」上炸，而它想验的是「每稿各留切片」。
+        await connection.run_sync(Tenant.__table__.create)
+        await connection.run_sync(Plan.__table__.create)
     try:
         async with AsyncSession(engine) as session:
+            # free 档：容量上限 3 万 token，用例的正文远小于它（不会误撞容量闸门）。
+            session.add(
+                Plan(
+                    id=1,
+                    code=PLAN_FREE,
+                    name="免费版",
+                    retrieve_allowed=True,
+                    rewrite_allowed=False,
+                    decompose_allowed=False,
+                    research_allowed=False,
+                    rerank_allowed=False,
+                    retrieve_qps=3,
+                    retrieve_daily=500,
+                    rerank_qps=0,
+                    rerank_daily=0,
+                    llm_qps=0,
+                    llm_daily=0,
+                    max_top_k=5,
+                    max_kb=3,
+                    max_kb_per_retrieve=1,
+                    max_documents_per_kb=30,
+                    max_tokens_per_kb=30_000,
+                    chunk_daily_tokens=300_000,
+                )
+            )
+            session.add(Tenant(id=TENANT_ID, name="演示租户", plan_id=1, status="active"))
+            await session.commit()
             store = PgVectorStore()
             # 第 1 稿的切片已经写好了（线上正在用的那一版）。
             await store.add_chunks(session, [_draft_chunk("chunk-v1", 1)])

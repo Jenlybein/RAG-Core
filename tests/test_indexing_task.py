@@ -100,7 +100,16 @@ class _FakeSession:
         self.closed = True
 
     async def get(self, _model: Any, _ident: Any) -> Any:
-        raise AssertionError("取行由仓储替身接管，会话替身不该被直接问到")
+        """点查一行回 ``None``：替身里没有租户行（#220 的容量判据要读它）。
+
+        为什么不再直接抛断言：容量判据（``indexing_service._plan_of``）走
+        ``tenant_repository.get_by_id_async`` → ``db.get``，而这条缝**没有**仓储替身
+        （租户读取本来就直连会话）。回 ``None`` 的效果是「这个租户查不到」，索引服务对此
+        的口径是按最保守的一档（free）判——替身环境因此也不会因为「容量默认无限」而漏掉
+        一条真实会被拒的路径。
+        """
+
+        return None
 
     async def execute(self, statement: Any) -> Any:
         """读查询由仓储替身接管；写语句记下原文并回「写了一行」。
@@ -303,8 +312,10 @@ def test_service_indexes_document_through_claim_purge_write_success(
         "fence",  # Tx2 开头核对租约令牌（#213），在 purge 之前
         "purge:main",
         "add:main",
+        # 正文 token 数（#220）：容量判据的计量，与状态同一笔 Tx2 写。
+        "update:documents",
         "update:documents.status",  # 状态回写是一条 UPDATE 语句（#212）
-        "commit",  # Tx2：purge + 写入 + 状态一次性提交
+        "commit",  # Tx2：purge + 写入 + 计量 + 状态一次性提交
     ]
     assert env.session.commits == 2, "抢占一段、写入一段，恰好两次提交"
     assert env.session.rollbacks == 0
