@@ -15,7 +15,7 @@
 import { useQuery } from '@tanstack/vue-query'
 import { computed } from 'vue'
 
-import { SERIES_ACCENT, SERIES_VIOLET, SERIES_WARM } from '../lib/charts'
+import { SERIES_ACCENT, SERIES_TEAL, SERIES_VIOLET, SERIES_WARM } from '../lib/charts'
 import { CONSOLE_ME_QUERY_KEY, fetchMe } from '../services/console'
 import type { ConsoleUsage } from '../types/console'
 import { isWordState, remainingOf, showsMeter, stateOf, usedPercentOf, type QuotaState } from '../utils/quota'
@@ -87,6 +87,10 @@ const rows = computed<BookRow[]>(() => {
     toRow('retrieve', '检索', SERIES_ACCENT, data?.usage ?? null),
     toRow('rerank', '重排', SERIES_WARM, data?.rerank_usage ?? null),
     toRow('llm', '大模型', SERIES_VIOLET, data?.llm_usage ?? null),
+    // 第四本账（#223）：索引期的 embedding 消耗，**按 token 计**。前三栏数的是「请求侧
+    // 调用了几次」，一次整库重建在它们上面留不下痕迹——这一栏就是补那个洞的。
+    // 单位不同是刻意的：界面上必须说清楚，否则「3000 次」与「3000 token」看着像同一个量。
+    toRow('chunk', '切块', SERIES_TEAL, data?.chunk_usage ?? null),
   ]
 })
 

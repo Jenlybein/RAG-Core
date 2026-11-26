@@ -41,6 +41,8 @@ export interface ChartPalette {
 export const SERIES_ACCENT = 'rgb(var(--c-accent))'
 export const SERIES_WARM = '#ff9f0a'
 export const SERIES_VIOLET = '#5e5ce6'
+/** 第四本账（切块）：与前三本同属「用量」系列，颜色区分只为了在四栏里分得开。 */
+export const SERIES_TEAL = '#30b0c7'
 
 const FALLBACK: ChartPalette = {
   ink: '#1d1d1f',

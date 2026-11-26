@@ -194,8 +194,20 @@ services:
       CELERY_RESULT_BACKEND: redis://redis:6379/1
       REDIS_URL: redis://redis:6379/2
       ELASTICSEARCH_URL: http://elasticsearch:9200
+    # ``--schedule`` 指到 ``/tmp``：容器里的 ``/app`` 对非 root 用户不一定可写，而 beat 要把
+    # 「上次跑到哪儿」落成一个文件（缺省是工作目录下的 ``celerybeat-schedule``）。踩到的症状
+    # 是容器一启动就 ``Exited (1)`` + 日志里 ``Permission denied: 'celerybeat-schedule'``——
+    # 一个「配置看着没错、进程却起不来」的形态。放到 ``/tmp`` 之后它随容器重建，正好也是
+    # 我们想要的语义（调度状态不该跨部署继承）。
     command:
-      ["celery", "-A", "app.celery_app:celery_app", "beat", "--loglevel=info"]
+      [
+        "celery",
+        "-A",
+        "app.celery_app:celery_app",
+        "beat",
+        "--loglevel=info",
+        "--schedule=/tmp/celerybeat-schedule",
+      ]
     depends_on:
       redis:
         condition: service_healthy
