@@ -38,23 +38,23 @@ export function groupByTier(rows: readonly SettingRow[]): TierGroup[] {
   return groups
 }
 
+/** 面板上以可编辑控件渲染的批大小键名（提示文案、保存提示与例外名单都认这一个常量）。 */
+export const EMBEDDING_BATCH_SIZE_KEY = 'EMBEDDING_BATCH_SIZE'
+
 /**
  * 「需重启」档里**在面板上**放开编辑的那几个键（票 #224）。
  *
- * 为什么要开这个例外：``EMBEDDING_BATCH_SIZE`` 只决定「一次 HTTP 请求塞几条切片」，不改
- * 任何已落库数据的形状（``CHUNK_SIZE`` / ``EMBEDDING_DIMENSIONS`` 那种「换了就要重建」
+ * 为什么要开这个例外：`EMBEDDING_BATCH_SIZE` 只决定「一次 HTTP 请求塞几条切片」，不改
+ * 任何已落库数据的形状（`CHUNK_SIZE` / `EMBEDDING_DIMENSIONS` 那种「换了就要重建」
  * 的键不在此列），而它典型的调优场景是「线上在烧钱、要立刻压下来」——让管理员去改 `.env`
  * 再重起整条链路，恰恰在最急的时候最慢。后端的白名单里对这一个键给了上界（25）与
  * 供应商事实（单批上限），复核责任仍在白名单那一侧。
  *
  * **是一份逐键的名单，不是「restart 档整体可写」这个开关**：后者等于把 #93/#96 定下的
- * 「需重启档在面板上只读」整条规则拆掉，而真正危险的是 ``CHUNK_SIZE`` / ``EMBEDDING_MODEL``
+ * 「需重启档在面板上只读」整条规则拆掉，而真正危险的是 `CHUNK_SIZE` / `EMBEDDING_MODEL`
  * 这类会让新旧数据形状混在一起的键。多放开一个键，就往这里加一行。
  */
-export const RESTART_PANEL_WRITABLE_KEYS: readonly string[] = ['EMBEDDING_BATCH_SIZE']
-
-/** 面板上以可编辑控件渲染的批大小键名（提示文案与保存提示都按它认这一行）。 */
-export const EMBEDDING_BATCH_SIZE_KEY = 'EMBEDDING_BATCH_SIZE'
+export const RESTART_PANEL_WRITABLE_KEYS: readonly string[] = [EMBEDDING_BATCH_SIZE_KEY]
 
 /**
  * 这一行在面板上能不能编辑。
