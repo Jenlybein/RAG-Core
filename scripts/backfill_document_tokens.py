@@ -205,9 +205,7 @@ def run(
         if used > limit_tokens and (document.tenant_id, document.kb_id) not in [
             (item[0], item[1]) for item in report.over_limit
         ]:
-            report.over_limit.append(
-                (document.tenant_id, document.kb_id, used, limit_tokens)
-            )
+            report.over_limit.append((document.tenant_id, document.kb_id, used, limit_tokens))
 
     return report
 

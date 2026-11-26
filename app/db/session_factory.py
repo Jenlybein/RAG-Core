@@ -68,9 +68,7 @@ def set_async_session_factory(factory: Callable[[], AsyncSession] | None) -> Non
     _async_override = factory
 
 
-async def close_quietly(
-    session: AsyncSession | None, *, on_failure: Callable[[str], None]
-) -> None:
+async def close_quietly(session: AsyncSession | None, *, on_failure: Callable[[str], None]) -> None:
     """:func:`close_quietly` 的异步孪生：关一个异步的**独立短事务**会话。
 
     同样的三条：没有单独 ``rollback``（未提交的事务随 ``close`` 结束）、``close`` 自己

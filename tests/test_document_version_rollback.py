@@ -33,7 +33,6 @@ from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import async_transaction
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
-from app.models.plan import PLAN_PRESETS, PLAN_PRO
 from app.services import document_version_service, keyword_draft
 from app.utils.status import DocumentStatus
 

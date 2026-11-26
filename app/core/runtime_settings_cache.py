@@ -128,9 +128,7 @@ def get_settings_cache() -> RuntimeSettingsCache:
         # 延迟 import：只有真正走生产实现时才需要 redis 那一条依赖链。
         from app.core.redis_client import get_redis_client, get_sync_redis_client
 
-        _cache = RedisRuntimeSettingsCache(
-            get_sync_redis_client(), async_client=get_redis_client()
-        )
+        _cache = RedisRuntimeSettingsCache(get_sync_redis_client(), async_client=get_redis_client())
     return _cache
 
 

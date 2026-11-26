@@ -123,9 +123,7 @@ class UpdateKBSettingsRequest(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=255)
     description: str | None = None
     split_strategy: SplitStrategy | None = None
-    chunk_size: int | None = Field(
-        default=None, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE
-    )
+    chunk_size: int | None = Field(default=None, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE)
     section_part_max_chars: int | None = Field(
         default=None, ge=MIN_SECTION_PART_MAX_CHARS, le=MAX_SECTION_PART_MAX_CHARS
     )

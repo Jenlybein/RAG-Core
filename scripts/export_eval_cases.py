@@ -60,12 +60,17 @@ def load_samples() -> list[LowScoreSample]:
 
     from app.db.session import SessionLocal
 
-    rows = SessionLocal().execute(
-        text(
-            "select f.log_id, f.score, f.created_at, t.tenant_id, t.trace_id, t.kb_ids "
-            "from retrieval_feedback f join usage_events t on t.id = f.log_id"
+    rows = (
+        SessionLocal()
+        .execute(
+            text(
+                "select f.log_id, f.score, f.created_at, t.tenant_id, t.trace_id, t.kb_ids "
+                "from retrieval_feedback f join usage_events t on t.id = f.log_id"
+            )
         )
-    ).mappings().all()
+        .mappings()
+        .all()
+    )
     return [
         LowScoreSample(
             log_id=str(row["log_id"]),
@@ -143,7 +148,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
 
     picked = select_low_scores(
-        samples, max_score=args.max_score, days=args.days, now_epoch=time.time(), kb_filter=args.kb_ids
+        samples,
+        max_score=args.max_score,
+        days=args.days,
+        now_epoch=time.time(),
+        kb_filter=args.kb_ids,
     )
     print(f"筛出低分记录 {len(picked)} 条（阈值 ≤{args.max_score}、最近 {args.days} 天）")
 

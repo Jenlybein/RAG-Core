@@ -84,7 +84,9 @@ MSG_REFERENCED: Final[str] = (
 )
 
 #: 角色指向写了一个不存在的 id。整句里带上键名与那个 id，管理员才找得到是哪一项。
-MSG_UNKNOWN_TARGET: Final[str] = "该模型配置不存在：{value}（{key} 只能指向 model_configs 里现存的 id，写空串表示回落 .env）"
+MSG_UNKNOWN_TARGET: Final[str] = (
+    "该模型配置不存在：{value}（{key} 只能指向 model_configs 里现存的 id，写空串表示回落 .env）"
+)
 
 #: 供应商必须是注册表里的六家之一。出厂预设只是**可选项的清单**，不是自由字符串：
 #: 装配知识（框架 provider 名 / 默认地址 / key 落点）在 ``app/providers/llm`` 里按名字
@@ -358,9 +360,7 @@ async def create_config(
         before=None,
         after=_masked_snapshot(spec),
     )
-    return ConfigRowView(
-        spec=spec, roles=(), created_at=row.created_at, updated_at=row.updated_at
-    )
+    return ConfigRowView(spec=spec, roles=(), created_at=row.created_at, updated_at=row.updated_at)
 
 
 async def patch_config(
@@ -448,9 +448,7 @@ async def reveal_secret(db: AsyncSession, *, actor: Any, config_id: str) -> str:
 # ───────────────────────────────────────────────────────── 运行时解析（装配点入口）
 
 
-async def resolve_role_config(
-    role: str, db: AsyncSession | None = None
-) -> ModelConfigSpec | None:
+async def resolve_role_config(role: str, db: AsyncSession | None = None) -> ModelConfigSpec | None:
     """角色 → 它现在该用的那一条配置；``None`` 表示「没有指向，回落 ``.env``」。
 
     三步都在这里：读指针（一次查询）、按 id 找行、行不见了就记 warning 并返回

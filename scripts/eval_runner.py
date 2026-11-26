@@ -1003,9 +1003,7 @@ def rerank_provider_choice(args: argparse.Namespace) -> str:
 
     choice = str(getattr(args, "rerank_provider", RERANK_PROVIDER_AUTO)).strip().lower()
     if choice not in RERANK_PROVIDER_CHOICES:
-        raise SystemExit(
-            f"--rerank-provider 只能是 {RERANK_PROVIDER_CHOICES}，收到 {choice!r}"
-        )
+        raise SystemExit(f"--rerank-provider 只能是 {RERANK_PROVIDER_CHOICES}，收到 {choice!r}")
     return choice
 
 

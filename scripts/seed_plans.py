@@ -30,13 +30,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ops_common import print_summary  # noqa: E402
 
 PLANS_NOTE = (
-    'NOTE: plans are seeded only while the plans table is empty; an operator-edited '
+    "NOTE: plans are seeded only while the plans table is empty; an operator-edited "
     'table is left untouched, so "inserted: 0" is the normal result on a live install.'
 )
 TENANTS_NOTE = (
-    'NOTE: tenants that existed before the upgrade get the standard plan, the demo tenant '
-    'the top plan. Tenants created later start on the lowest plan; the database is the truth '
-    'from then on.'
+    "NOTE: tenants that existed before the upgrade get the standard plan, the demo tenant "
+    "the top plan. Tenants created later start on the lowest plan; the database is the truth "
+    "from then on."
 )
 
 

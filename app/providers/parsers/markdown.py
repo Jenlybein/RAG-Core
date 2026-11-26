@@ -5,7 +5,10 @@ from app.providers.parsers.base import DocumentParser, ParsedDocument
 
 class MarkdownParser(DocumentParser):
     def supports(self, filename: str, mime: str = "") -> bool:
-        return filename.lower().endswith((".md", ".markdown")) or mime in ("text/markdown", "text/x-markdown")
+        return filename.lower().endswith((".md", ".markdown")) or mime in (
+            "text/markdown",
+            "text/x-markdown",
+        )
 
     def parse(self, file_bytes: bytes, *, filename: str) -> ParsedDocument:
         return ParsedDocument(

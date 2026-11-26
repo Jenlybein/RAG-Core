@@ -57,8 +57,7 @@ def merge_sub_query_results(
 
     # 每条子查询先按自己的顺序留一个有身份的序列；空身份的行一律丢弃。
     streams: list[tuple[str, list[Mapping[str, Any]]]] = [
-        (query, [row for row in rows if _identity_of(row) is not None])
-        for query, rows in results
+        (query, [row for row in rows if _identity_of(row) is not None]) for query, rows in results
     ]
 
     delivered: dict[str, dict[str, Any]] = {}

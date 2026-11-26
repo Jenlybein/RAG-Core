@@ -114,9 +114,7 @@ def test_only_a_live_lease_blocks_the_operation(status: int) -> None:
     document_state.ensure_deletable(_document(status))
 
     with pytest.raises(AppError) as caught:
-        document_state.ensure_deletable(
-            _document(DocumentStatus.PROCESSING, claimed_at=now())
-        )
+        document_state.ensure_deletable(_document(DocumentStatus.PROCESSING, claimed_at=now()))
     assert caught.value.code is ErrorCode.DOCUMENT_IS_PROCESSING
 
 
@@ -125,9 +123,7 @@ def test_a_queued_row_with_a_stale_lease_is_still_not_busy() -> None:
 
     stale = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS + 1)
     assert (
-        document_state.is_effectively_processing(
-            _document(DocumentStatus.QUEUED, claimed_at=stale)
-        )
+        document_state.is_effectively_processing(_document(DocumentStatus.QUEUED, claimed_at=stale))
         is False
     )
 

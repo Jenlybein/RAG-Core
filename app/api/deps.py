@@ -26,9 +26,7 @@ from app.core.auth import KeyContext, resolve_identity
 from app.db.async_session import get_async_db
 
 
-async def get_current_key(
-    request: Request, db: AsyncSession = Depends(get_async_db)
-) -> KeyContext:
+async def get_current_key(request: Request, db: AsyncSession = Depends(get_async_db)) -> KeyContext:
     """路由的鉴权依赖：把请求与本次会话交给判定内核，原样返回它的结论。"""
 
     return await resolve_identity(request, db)

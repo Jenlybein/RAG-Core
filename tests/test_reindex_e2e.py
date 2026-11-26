@@ -149,9 +149,7 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
                 chunk_daily_tokens=300_000,
             )
         )
-        seed_session.add(
-            Tenant(id=TENANT_ID, name="演示租户", plan_id=1, status="active")
-        )
+        seed_session.add(Tenant(id=TENANT_ID, name="演示租户", plan_id=1, status="active"))
         seed_session.add(
             Document(
                 id=DOC_ID,

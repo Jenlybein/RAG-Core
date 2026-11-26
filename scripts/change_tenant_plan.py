@@ -53,9 +53,7 @@ class PlanChangeStats:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Move a tenant to another plan.")
     parser.add_argument("--tenant-id", required=True, help="tenant to change")
-    parser.add_argument(
-        "--plan", required=True, choices=PLAN_CODES, help="target plan code"
-    )
+    parser.add_argument("--plan", required=True, choices=PLAN_CODES, help="target plan code")
     return parser
 
 

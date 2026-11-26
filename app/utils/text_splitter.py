@@ -50,7 +50,5 @@ class WindowTextSplitter(TextSplitter):
     def split(self, text: str) -> list[SplitPiece]:
         return [
             SplitPiece(text=piece)
-            for piece in text_pieces(
-                text, size=self.chunk_size, overlap=self.chunk_overlap
-            )
+            for piece in text_pieces(text, size=self.chunk_size, overlap=self.chunk_overlap)
         ]

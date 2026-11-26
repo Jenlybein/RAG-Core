@@ -72,9 +72,7 @@ def get_owner_tenant_id(db: Session, kb_id: str) -> str | None:
     return None if kb is None else str(kb.tenant_id)
 
 
-async def get_split_config(
-    db: AsyncSession, kb_id: str, *, tenant_id: str
-) -> tuple[str, int, int]:
+async def get_split_config(db: AsyncSession, kb_id: str, *, tenant_id: str) -> tuple[str, int, int]:
     """取该库的切块配置 (strategy, chunk_size, section_part_max_chars)。
 
     库不存在或跨租户时回落到默认值，而不是抛错：索引任务是异步的，库在这期间
@@ -96,9 +94,7 @@ async def get_split_config(
     return kb.split_strategy, values["chunk_size"], values["section_part_max_chars"]
 
 
-async def get_effective_index_version(
-    db: AsyncSession, kb_id: str, *, tenant_id: str
-) -> str:
+async def get_effective_index_version(db: AsyncSession, kb_id: str, *, tenant_id: str) -> str:
     """该库当前生效的索引版本 = 索引写入的**缺省目标**（#142）。
 
     与 :func:`get_split_config` 同一口径：库不存在或跨租户时回落到
@@ -136,8 +132,6 @@ async def count_by_tenant(db: AsyncSession, tenant_id: str) -> int:
     """
 
     stmt = (
-        select(func.count())
-        .select_from(KnowledgeBase)
-        .where(KnowledgeBase.tenant_id == tenant_id)
+        select(func.count()).select_from(KnowledgeBase).where(KnowledgeBase.tenant_id == tenant_id)
     )
     return int((await db.execute(stmt)).scalar_one())

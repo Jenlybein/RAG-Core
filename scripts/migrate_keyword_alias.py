@@ -192,7 +192,12 @@ async def migrate_keyword_alias(
     if state is IndexState.ALIAS:
         messages.append("名字已经是别名：迁移过了（本脚本是幂等的 no-op）")
         return MigrationOutcome(
-            state=state, alias=alias, version=version, source=alias, dest=dest, messages=tuple(messages)
+            state=state,
+            alias=alias,
+            version=version,
+            source=alias,
+            dest=dest,
+            messages=tuple(messages),
         )
     if state is IndexState.ABSENT:
         messages.append(
@@ -200,7 +205,12 @@ async def migrate_keyword_alias(
             f"同类物理索引：{version_index_pattern(alias)}）"
         )
         return MigrationOutcome(
-            state=state, alias=alias, version=version, source=alias, dest=dest, messages=tuple(messages)
+            state=state,
+            alias=alias,
+            version=version,
+            source=alias,
+            dest=dest,
+            messages=tuple(messages),
         )
 
     source_documents = await _count(client, alias)
@@ -239,9 +249,7 @@ async def migrate_keyword_alias(
     response = await client.reindex(**reindex_body(source=alias, dest=dest, version=version))
     failures = response.get("failures") or []
     if failures:
-        raise MigrationRefused(
-            f"reindex 报错 {len(failures)} 条，已停：{failures[0]!r}"
-        )
+        raise MigrationRefused(f"reindex 报错 {len(failures)} 条，已停：{failures[0]!r}")
     messages.append(f"③ reindex 完成（{response.get('total', source_documents)} 条）")
 
     dest_documents = await _count(client, dest)
@@ -256,9 +264,7 @@ async def migrate_keyword_alias(
     await client.indices.update_aliases(actions=add_alias_actions(alias=alias, index=dest))
     messages.append(f"⑤ 已删 {alias} 并把别名指向 {dest}")
 
-    logger.info(
-        "keyword alias migrated", alias=alias, version=version, documents=dest_documents
-    )
+    logger.info("keyword alias migrated", alias=alias, version=version, documents=dest_documents)
     return MigrationOutcome(
         state=state,
         alias=alias,

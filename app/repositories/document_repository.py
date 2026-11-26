@@ -822,8 +822,7 @@ async def list_stale_claims(
             # 判「死了没」看**心跳**（会变），不看令牌（永不变，见模型里那两列的注释）。
             # ``COALESCE`` 回落：改造前抢过但没写过心跳的行按抢占时间算，于是它们不会因为
             # 「心跳为空」被当成「从来没活过」。
-            func.coalesce(Document.index_heartbeat_at, Document.index_claimed_at)
-            < claimed_before,
+            func.coalesce(Document.index_heartbeat_at, Document.index_claimed_at) < claimed_before,
         )
         .order_by(Document.index_claimed_at)
         .limit(limit)
@@ -831,9 +830,7 @@ async def list_stale_claims(
     return list((await db.execute(statement)).scalars().all())
 
 
-async def clear_stale_claim(
-    db: AsyncSession, document_id: str, *, tenant_id: str
-) -> int:
+async def clear_stale_claim(db: AsyncSession, document_id: str, *, tenant_id: str) -> int:
     """把过期租约清掉并**推进重投计数**，返回影响行数（#225）。
 
     ## 为什么先清租约

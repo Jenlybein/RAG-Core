@@ -100,9 +100,7 @@ async def search_document_version(
     """
 
     started_at = time.perf_counter()
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=tenant_id
-    )
+    doc = await document_repository.get_by_id_for_tenant_async(db, document_id, tenant_id=tenant_id)
     if doc is None:
         await record_version_search(
             tenant_id=tenant_id,

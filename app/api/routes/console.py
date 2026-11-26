@@ -332,7 +332,9 @@ async def patch_account(
         tenant_status=payload.tenant_status,
         actor=identity,
     )
-    return ok(AccountPatchData(account_id=result.account_id, before=result.before, after=result.after))
+    return ok(
+        AccountPatchData(account_id=result.account_id, before=result.before, after=result.after)
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────── 审计

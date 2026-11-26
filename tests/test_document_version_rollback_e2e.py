@@ -40,7 +40,7 @@ from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk, current_draft_filter
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
-from app.models.plan import PLAN_FREE, Plan
+from app.models.plan import Plan
 from app.models.tenant import Tenant
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService

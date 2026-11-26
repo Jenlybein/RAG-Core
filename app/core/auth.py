@@ -100,7 +100,8 @@ DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     retrieval_mode=settings.RETRIEVAL_MODE,
     retrieval_top_k=settings.TOP_K,
     retrieval_rerank=rerank_capability(),
-    include_parent=True, max_unit_chars=2000,
+    include_parent=True,
+    max_unit_chars=2000,
     expand_table_rows=True,
     unrestricted_scope=True,
 )
@@ -199,9 +200,7 @@ async def resolve_identity(
             raise AppError(ErrorCode.UNAUTHORIZED, MSG_DEV_MODE_REJECTS_REAL_KEY)
         return _dev_identity()
 
-    return await _identity_from_key(
-        db, token, plan_cache=plan_cache, verify_cache=verify_cache
-    )
+    return await _identity_from_key(db, token, plan_cache=plan_cache, verify_cache=verify_cache)
 
 
 def _dev_identity() -> KeyContext:

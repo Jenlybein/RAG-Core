@@ -98,9 +98,7 @@ async def upload(
 
     # 两条静态配额在这里一起判：上传是唯一会同时撞上「单库文档数」与「并发处理数」的
     # 动作，绑成一个函数之后，第二个上传入口很难只接一半。
-    await static_quota.ensure_upload_quota(
-        db, tenant_id=tenant_id, kb_id=kb_id, plan=plan
-    )
+    await static_quota.ensure_upload_quota(db, tenant_id=tenant_id, kb_id=kb_id, plan=plan)
 
     document_id = new_document_id()
 

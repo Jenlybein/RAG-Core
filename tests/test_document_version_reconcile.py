@@ -40,7 +40,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
-from app.models.plan import PLAN_FREE, Plan
+from app.models.plan import Plan
 from app.models.tenant import Tenant
 from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider

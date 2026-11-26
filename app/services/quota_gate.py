@@ -191,18 +191,14 @@ class CounterClient(Protocol):
     async def expire(self, key: str, ttl: int) -> Any: ...
 
 
-def qps_key(
-    *, level: str, ident: str, window: QuotaWindow, namespace: str = KEY_NAMESPACE
-) -> str:
+def qps_key(*, level: str, ident: str, window: QuotaWindow, namespace: str = KEY_NAMESPACE) -> str:
     """QPS 桶的键：``quota:qps:key:<key_id>:<epoch_second>``。
 
     ``namespace`` 缺省是检索那本账，所以既有调用点与用例里的键**逐字不变**；重排与大模型
     各传 :data:`RERANK_NAMESPACE` / :data:`LLM_NAMESPACE`。
     """
 
-    return QPS_KEY_TEMPLATE.format(
-        namespace=namespace, level=level, ident=ident, window=window.qps
-    )
+    return QPS_KEY_TEMPLATE.format(namespace=namespace, level=level, ident=ident, window=window.qps)
 
 
 def daily_key(
@@ -625,9 +621,7 @@ def _new_book_enabled(limits: QuotaLimits, enabled: bool | None) -> bool:
 
     if enabled is False:
         return False
-    configured = any(
-        (limits.key_qps, limits.tenant_qps, limits.key_daily, limits.tenant_daily)
-    )
+    configured = any((limits.key_qps, limits.tenant_qps, limits.key_daily, limits.tenant_daily))
     if not configured:
         return False
     return settings.RATE_LIMIT_ENABLED if enabled is None else enabled
@@ -673,5 +667,3 @@ def llm_quota(
         counters=counters,
         enabled=_new_book_enabled(limits, enabled),
     )
-
-

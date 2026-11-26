@@ -25,9 +25,7 @@ from app.providers.keyword_search import get_keyword_search_provider
 logger = structlog.get_logger(__name__)
 
 
-async def flip_current_draft(
-    *, document_id: str, tenant_id: str, doc_version: int
-) -> None:
+async def flip_current_draft(*, document_id: str, tenant_id: str, doc_version: int) -> None:
     """把这篇文档的关键词切片里「当前稿」标记翻到 ``doc_version``。
 
     ``available`` 为假时不发那一趟请求：没部署关键词引擎就没有标记可翻，而空实现也只是
@@ -37,9 +35,7 @@ async def flip_current_draft(
     provider = get_keyword_search_provider()
     if not provider.available:
         return
-    await provider.mark_current_draft(
-        document_id, tenant_id=tenant_id, doc_version=doc_version
-    )
+    await provider.mark_current_draft(document_id, tenant_id=tenant_id, doc_version=doc_version)
 
 
 async def flip_current_draft_after_commit(

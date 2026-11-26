@@ -217,9 +217,7 @@ def rerank_stats(per_question: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
 
     applied = [fact for fact in facts if fact.get("applied") is True]
     durations = sorted(
-        float(fact["duration_ms"])
-        for fact in applied
-        if is_measured(fact.get("duration_ms"))
+        float(fact["duration_ms"]) for fact in applied if is_measured(fact.get("duration_ms"))
     )
     count = len(durations)
     duration = {
@@ -1231,7 +1229,9 @@ def _rerank_section(payload: Mapping[str, Any]) -> list[str]:
 
     # 复现命令要指向**这份归档真有的那一路**：老归档的 metrics 里没有 rerank，
     # 印一条 `--select metrics.rerank` 只会让人以为「这个数字本来就是空的」。
-    source_key = "metrics.rerank" if (payload.get("metrics") or {}).get("rerank") else "per_question"
+    source_key = (
+        "metrics.rerank" if (payload.get("metrics") or {}).get("rerank") else "per_question"
+    )
     duration = stats.get("duration") or {}
     ratio = stats.get("applied_ratio")
     switches = (payload.get("environment") or {}).get("retrieval") or {}
@@ -1271,9 +1271,7 @@ def _rerank_section(payload: Mapping[str, Any]) -> list[str]:
     return lines
 
 
-def _production_budget_note(
-    per_question: Sequence[Mapping[str, Any]], budget: float
-) -> list[str]:
+def _production_budget_note(per_question: Sequence[Mapping[str, Any]], budget: float) -> list[str]:
     """把「这一轮抬高了上限」换算成「按生产预算会有几道降级」。
 
     能算是因为逐题留下了重排自己的耗时：超过生产预算的那些题，在生产预算下**一定会**
@@ -1289,11 +1287,14 @@ def _production_budget_note(
         and is_measured(item["rerank"].get("duration_ms"))
     ]
     budget_ms = PRODUCTION_RERANK_TIMEOUT_SECONDS * 1000.0
-    over = [item for item in per_question
-            if isinstance(item, Mapping)
-            and isinstance(item.get("rerank"), Mapping)
-            and is_measured(item["rerank"].get("duration_ms"))
-            and float(item["rerank"]["duration_ms"]) > budget_ms]
+    over = [
+        item
+        for item in per_question
+        if isinstance(item, Mapping)
+        and isinstance(item.get("rerank"), Mapping)
+        and is_measured(item["rerank"].get("duration_ms"))
+        and float(item["rerank"]["duration_ms"]) > budget_ms
+    ]
     if not durations:
         return ["- 按生产预算会降级几道：无法从本次数据推断（逐题重排耗时没留下）。", ""]
     ids = "、".join(str(item.get("id")) for item in over) or "无"

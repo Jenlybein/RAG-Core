@@ -81,9 +81,7 @@ async def optimize_for_rewrite(
     rewrite = await rewrite_query(query=query, hint=rewrite_hint)
     effective_query = rewrite.query
 
-    recall_queries = tuple(
-        dict.fromkeys(text for text in (query, effective_query) if text.strip())
-    )
+    recall_queries = tuple(dict.fromkeys(text for text in (query, effective_query) if text.strip()))
 
     return QueryProcessResult(
         raw_query=query,

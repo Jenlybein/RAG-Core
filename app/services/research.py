@@ -145,12 +145,13 @@ SUPPORT_UNKNOWN: Final[str] = "unknown"
 #: 这些拒绝码来自「结构本身不对」：它不是一次「模型答了但不能发」，而是一次「没答出来」，
 #: 因此值得换一个模型再问一次。四条硬校验的码不在此列——那些是「答了，但结论不能发」，
 #: 换模型重问等于用成本换概率，而 ADR-0026 要的是整单不生成。
-_STRUCTURAL_REJECTIONS: Final[frozenset[str]] = frozenset({REJECTED_MALFORMED, REJECTED_EMPTY_BLOCK})
+_STRUCTURAL_REJECTIONS: Final[frozenset[str]] = frozenset(
+    {REJECTED_MALFORMED, REJECTED_EMPTY_BLOCK}
+)
 
 
 class _AttemptFailed(Exception):
     """一次生成尝试没拿到可用的结构化输出（结构不对 / 超时）。只在本模块内部流转。"""
-
 
 
 # ─────────────────────────────────────────────────────────── 结构化输出（模型只给两种文本）
@@ -506,9 +507,7 @@ def _bound_queries(
         if key in seen:
             continue
         seen.add(key)
-        bound.append(
-            PlanQuery(point_id=points[point - 1].point_id, query=text, round=round_no)
-        )
+        bound.append(PlanQuery(point_id=points[point - 1].point_id, query=text, round=round_no))
     if len(bound) > limit:
         logger.warning(
             "research queries over the cap", wanted=len(bound), kept=limit, round=round_no
@@ -905,13 +904,9 @@ class _Run:
             raw = await self._call(
                 CoverageJudgement,
                 _JUDGE_SYSTEM,
-                build_judge_prompt(
-                    query=self.query, points=self.points, materials=self.materials
-                ),
+                build_judge_prompt(query=self.query, points=self.points, materials=self.materials),
             )
-            verdicts = _coerce_coverage(
-                raw, points=self.points, material_count=len(self.materials)
-            )
+            verdicts = _coerce_coverage(raw, points=self.points, material_count=len(self.materials))
             queries = _bound_queries(_coerce_judged_queries(raw), points=self.points, round_no=2)
         except Exception as exc:  # noqa: BLE001 - 统一翻成可重试的业务失败
             logger.warning(
@@ -964,9 +959,7 @@ class _Run:
             kept.append(PlanQuery(point_id=point_id, query=texts[point_id], round=2))
         return kept
 
-    def _settle_after_followup(
-        self, queries: Sequence[PlanQuery], added: Sequence[int]
-    ) -> None:
+    def _settle_after_followup(self, queries: Sequence[PlanQuery], added: Sequence[int]) -> None:
         """补证之后把缺口收成两种状态：仍然没有材料的（``none``）与材料到了的（``unknown``）。
 
         「材料到了」不等于「这个要点被支撑了」：所以这里**不**记 ``supported``（那是乐观，
@@ -977,11 +970,7 @@ class _Run:
         材料的那些要点仍是 ``none``，它们是真缺口，不复查。**
         """
 
-        recovered = {
-            item.point_id
-            for item, count in zip(queries, added, strict=True)
-            if count > 0
-        }
+        recovered = {item.point_id for item, count in zip(queries, added, strict=True) if count > 0}
         self.coverage = [
             PointVerdict(item.point_id, SUPPORT_UNKNOWN, item.evidence_ids)
             if item.status == SUPPORT_NONE and item.point_id in recovered
@@ -1176,8 +1165,7 @@ class _Run:
         if self._judged:
             return tuple(self.coverage)
         return tuple(
-            PointVerdict(point_id=point.point_id, status=SUPPORT_UNKNOWN)
-            for point in self.points
+            PointVerdict(point_id=point.point_id, status=SUPPORT_UNKNOWN) for point in self.points
         )
 
     def _outcome(self, reason: StopReason) -> ResearchOutcome:

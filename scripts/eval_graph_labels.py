@@ -110,6 +110,7 @@ def _load_rejected_scheme() -> None:
     extract_section_edges = section_edges
     RELATION_REFERENCE = relation_reference
 
+
 #: 票面阈值：**两个条件同时成立**才允许「不引入 LLM」。
 RECALL_FLOOR = 0.7
 PRECISION_FLOOR = 0.95
@@ -266,11 +267,7 @@ def _documents_for(labels: LabelSet, tier: str, root: Path) -> dict[str, Path]:
             if relative in excluded:
                 continue
             key = next(
-                (
-                    known
-                    for known, known_path in labels.documents.items()
-                    if known_path == relative
-                ),
+                (known for known, known_path in labels.documents.items() if known_path == relative),
                 relative,
             )
             resolved.setdefault(key, path)
@@ -336,23 +333,17 @@ def section_of_evidence(corpus: TierCorpus, item: LabelItem) -> SectionText:
     所以这时按标注收窄；收窄后仍不是恰好一节就照旧当场报错——**不猜**。
     """
 
-    hits = [
-        entry for entry in corpus.sections[item.document] if item.evidence in entry.text
-    ]
+    hits = [entry for entry in corpus.sections[item.document] if item.evidence in entry.text]
     headings = {entry.record.heading_path for entry in hits}
     if len(headings) != 1:
         narrowed = hits
         if item.source_section_path is not None:
             narrowed = [
-                entry
-                for entry in hits
-                if entry.record.heading_path == item.source_section_path
+                entry for entry in hits if entry.record.heading_path == item.source_section_path
             ]
         elif item.source_section:
             narrowed = [
-                entry
-                for entry in hits
-                if entry.record.heading_title == item.source_section
+                entry for entry in hits if entry.record.heading_title == item.source_section
             ]
         narrowed_headings = {entry.record.heading_path for entry in narrowed}
         if len(narrowed_headings) == 1:
@@ -601,9 +592,7 @@ def unmatched_explicit(
     * ``解析侧·目标落到了别处``：建出了边，但落到另一个节上（整篇链接落到 h1 元信息块）。
     """
 
-    wrong_target_ids = {
-        identifier for _, identifier in score.attribution.values() if identifier
-    }
+    wrong_target_ids = {identifier for _, identifier in score.attribution.values() if identifier}
     rows: list[tuple[LabelItem, str]] = []
     for item in items:
         if item.label != "explicit" or _is_true(item, corpus, score):
@@ -751,7 +740,9 @@ def render_report(
     add("")
     add("**结论先说**")
     add("")
-    add(f"- 总体：precision **{_ratio(decision.precision)}**、recall **{_ratio(decision.recall)}**。")
+    add(
+        f"- 总体：precision **{_ratio(decision.precision)}**、recall **{_ratio(decision.recall)}**。"
+    )
     add(f"- 判定：{decision.reason}。")
     if decision.introduce_llm:
         add(
@@ -771,9 +762,7 @@ def render_report(
 
     add("## 一、按文档形态分档（票面第 2 条：不许只报总体）")
     add("")
-    add(
-        "| 档 | 源文档 | 标注条数 | 其中 `explicit` | 建出边 | TP | FP | FN | precision | recall |"
-    )
+    add("| 档 | 源文档 | 标注条数 | 其中 `explicit` | 建出边 | TP | FP | FN | precision | recall |")
     add("| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |")
     for tier in tiers:
         score = scores[tier]
@@ -853,7 +842,9 @@ def render_report(
     )
     add("")
     lucky = [
-        (tier, item) for tier in tiers for item in lucky_hits(corpora[tier], labels.of_tier(tier), scores[tier])
+        (tier, item)
+        for tier in tiers
+        for item in lucky_hits(corpora[tier], labels.of_tier(tier), scores[tier])
     ]
     if not lucky:
         add("（本测量集里没有）")
@@ -914,8 +905,10 @@ def render_report(
     add("")
     for tier in tiers:
         meta = labels.tiers[tier]
-        add(f"**{meta['label']}**（{len(corpora[tier].sections)} 篇进目录，"
-            f"{len(labels.source_documents(tier))} 篇被标注）")
+        add(
+            f"**{meta['label']}**（{len(corpora[tier].sections)} 篇进目录，"
+            f"{len(labels.source_documents(tier))} 篇被标注）"
+        )
         add("")
         add(f"- 取材：{meta['source_selection']}")
         add(f"- 可外推到：{meta['extrapolable_to']}")
@@ -960,9 +953,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = list(argv if argv is not None else sys.argv[1:])
     base = Path(__file__).resolve().parents[1]
     labels, corpora, scores = run(base)
-    rows = {
-        tier: form_rows(corpora[tier], labels.of_tier(tier), scores[tier]) for tier in scores
-    }
+    rows = {tier: form_rows(corpora[tier], labels.of_tier(tier), scores[tier]) for tier in scores}
     precision, recall = pooled([scores[tier] for tier in scores])
     decision = decide(recall, precision)
     report = render_report(labels, corpora, scores, rows, decision)

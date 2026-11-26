@@ -65,9 +65,7 @@ class Document(Base):
     redispatch_count: Mapped[int] = mapped_column(
         Integer, nullable=False, server_default="0", default=0
     )
-    token_count: Mapped[int] = mapped_column(
-        Integer, nullable=False, server_default="0", default=0
-    )
+    token_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0", default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)

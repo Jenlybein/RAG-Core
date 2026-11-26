@@ -85,9 +85,7 @@ def store_version_file(
     return _store_upload(relative=relative, filename=filename, data=data)
 
 
-def _store_upload(
-    *, relative: PurePosixPath, filename: str, data: bytes
-) -> tuple[str, str]:
+def _store_upload(*, relative: PurePosixPath, filename: str, data: bytes) -> tuple[str, str]:
     """两条落盘路径共用的一段：白名单 → 大小上限 → 建目录 → 写字节。"""
 
     # 复用 source_type_of 的判定，不在这里再写一次白名单比对：白名单就是

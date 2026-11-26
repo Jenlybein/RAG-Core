@@ -143,9 +143,7 @@ def reindex_documents(
             continue
         submitted += 1
 
-    return ReindexStats(
-        considered=considered, submitted=submitted, skipped=skipped, failed=failed
-    )
+    return ReindexStats(considered=considered, submitted=submitted, skipped=skipped, failed=failed)
 
 
 def _build_parser() -> argparse.ArgumentParser:

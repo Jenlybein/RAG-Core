@@ -108,8 +108,7 @@ async def list_keys(db: AsyncSession, *, actor: ConsoleIdentity) -> list[KeyRowV
 
     tenant_id = _verified_tenant_id(actor)
     policies = {
-        policy.id: policy
-        for policy in await key_policy_repository.list_by_tenant(db, tenant_id)
+        policy.id: policy for policy in await key_policy_repository.list_by_tenant(db, tenant_id)
     }
     return [
         KeyRowView(api_key=api_key, policy=policies.get(api_key.policy_id))
@@ -187,9 +186,7 @@ async def delete_key(db: AsyncSession, *, actor: ConsoleIdentity, key_id: str) -
     return DeletedKey(key_id=key_id)
 
 
-async def _policy_of_key(
-    db: AsyncSession, api_key: ApiKey, tenant_id: str
-) -> KeyPolicy | None:
+async def _policy_of_key(db: AsyncSession, api_key: ApiKey, tenant_id: str) -> KeyPolicy | None:
     """Key 引用的配置；指向别的租户（手修库造出来的坏数据）时按「没有」处理。
 
     只用于审计快照：把别人的配置回显进这个租户的账本，等于把配置内容泄露出去。
@@ -272,7 +269,5 @@ def _key_audit_snapshot(api_key: ApiKey, policy: KeyPolicy | None) -> dict[str, 
         "label": api_key.label,
         "status": api_key.status,
         "key_masked": mask_api_key_tail(api_key.key_tail),
-        "policy": (
-            key_policy_service.policy_values_of(policy) if policy is not None else None
-        ),
+        "policy": (key_policy_service.policy_values_of(policy) if policy is not None else None),
     }

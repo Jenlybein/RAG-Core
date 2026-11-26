@@ -20,7 +20,14 @@
 
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_serializer
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_serializer,
+)
 
 from app.core.exceptions import AppError, ErrorCode
 
@@ -140,4 +147,3 @@ class RetrieveData(BaseModel):
     kb_ids: list[str]
     retrieved_chunks: list[RetrievedChunk]
     metadata: dict
-

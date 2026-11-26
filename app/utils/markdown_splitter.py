@@ -126,9 +126,7 @@ class MarkdownStructuredSplitter(TextSplitter):
 
         def flush_section() -> None:
             nonlocal blocks, deep_paths
-            sections.append(
-                (_resolve_heading_path(section_path, deep_paths), blocks, page)
-            )
+            sections.append((_resolve_heading_path(section_path, deep_paths), blocks, page))
             blocks = []
             deep_paths = []
 
@@ -186,9 +184,7 @@ class MarkdownStructuredSplitter(TextSplitter):
         flush_section()
         return self._assemble(sections)
 
-    def _assemble(
-        self, sections: list[tuple[str, list[_Block], int | None]]
-    ) -> list[SplitPiece]:
+    def _assemble(self, sections: list[tuple[str, list[_Block], int | None]]) -> list[SplitPiece]:
         pieces: list[SplitPiece] = []
         for heading_path, blocks, page in sections:
             # 重复过滤只比较本节内紧邻的上一片；每节 flush 时重置基线。
@@ -367,9 +363,6 @@ def _table_row_texts(group: list[str]) -> list[str]:
         if pairs:
             texts.append("，".join(pairs))
     return texts
-
-
-
 
 
 def _push_heading(stack: list[tuple[int, str]], level: int, title: str) -> None:

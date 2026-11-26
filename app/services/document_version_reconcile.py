@@ -70,6 +70,7 @@ KEYWORD_REASON_ABSENT = "keyword search capability is not available"
 #: 不可判定的原因之二：能力在，这一次读不到（集群故障 / 超时）。这是运维问题。
 KEYWORD_REASON_FAILED = "keyword search read failed"
 
+
 class VersionRow(NamedTuple):
     """一篇文档的**一行版本行读数**：对账只读这三样，不搬整行 ORM 对象进来。
 
@@ -116,9 +117,7 @@ class DocumentFacts:
     def current_rows(self) -> tuple[VersionRow, ...]:
         """状态是 ``current`` 的那些版本行。"""
 
-        return tuple(
-            row for row in self.version_rows if row.status == DOCUMENT_VERSION_CURRENT
-        )
+        return tuple(row for row in self.version_rows if row.status == DOCUMENT_VERSION_CURRENT)
 
     def chunks_of(self, version: int) -> int:
         """第 ``version`` 稿有几片（没读过就是 0）。"""
@@ -274,7 +273,9 @@ def keyword_current_draft_disagreements(facts: DocumentFacts) -> tuple[Discrepan
 
     if facts.keyword_current_versions is None:
         return ()
-    wrong = sorted(version for version in facts.keyword_current_versions if version != facts.pointer)
+    wrong = sorted(
+        version for version in facts.keyword_current_versions if version != facts.pointer
+    )
     if not wrong:
         return ()
     return (
@@ -358,9 +359,7 @@ def reconcile(
     )
 
 
-def keyword_state_of(
-    *, available: bool, error: str | None = None
-) -> tuple[str, str | None]:
+def keyword_state_of(*, available: bool, error: str | None = None) -> tuple[str, str | None]:
     """关键词那一维的判定：能力在不在、这一次读没读到 → ``(状态, 原因)``。
 
     三种组合只有两种状态（``CHECKED`` / ``UNDECIDABLE``），而**原因**要分开：

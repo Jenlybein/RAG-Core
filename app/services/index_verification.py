@@ -128,9 +128,7 @@ def judge_counts(counts: BuildCounts) -> CountsVerdict:
 
     problems: list[str] = []
     if counts.knowledge_bases != 1:
-        problems.append(
-            f"知识库计数应为 1（本次核对的库），实际 {counts.knowledge_bases}"
-        )
+        problems.append(f"知识库计数应为 1（本次核对的库），实际 {counts.knowledge_bases}")
     if counts.chunks == 0:
         problems.append("切片计数为 0：这个版本没有任何切片")
     if counts.vectors == 0:
@@ -169,13 +167,9 @@ def verify_identity(rows: Iterable[IdentityRow]) -> IdentityReport:
     without_body = 0
 
     for row in rows:
-        expected = section_id_of(
-            document_id=row.document_id, heading_path=row.heading_path
-        )
+        expected = section_id_of(document_id=row.document_id, heading_path=row.heading_path)
         if row.section_id != expected:
-            mismatched_sections.append(
-                f"{row.document_id}/{row.heading_path or '(空路径)'}"
-            )
+            mismatched_sections.append(f"{row.document_id}/{row.heading_path or '(空路径)'}")
 
         expected_parent = parent_section_id_of(
             document_id=row.document_id, heading_path=row.heading_path
@@ -183,9 +177,7 @@ def verify_identity(rows: Iterable[IdentityRow]) -> IdentityReport:
         stored_parent = row.parent_section_id or None
         if stored_parent is None:
             if expected_parent is not None:
-                missing_parents.append(
-                    f"{row.document_id}/{row.heading_path or '(空路径)'}"
-                )
+                missing_parents.append(f"{row.document_id}/{row.heading_path or '(空路径)'}")
             continue
         parented += 1
         if stored_parent != expected_parent:
@@ -228,9 +220,7 @@ def verify_identity(rows: Iterable[IdentityRow]) -> IdentityReport:
         missing_parents,
     )
     shared = {
-        section_id: docs
-        for section_id, docs in documents_by_section.items()
-        if len(docs) > 1
+        section_id: docs for section_id, docs in documents_by_section.items() if len(docs) > 1
     }
     _add(
         "section_shared_across_documents",

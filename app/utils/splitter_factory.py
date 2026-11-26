@@ -52,9 +52,7 @@ def build_splitter(
     from app.core.config import settings
 
     overlap = settings.CHUNK_OVERLAP if chunk_overlap is None else chunk_overlap
-    max_rows = (
-        settings.TABLE_MAX_ROWS_PER_CHUNK if table_max_rows is None else table_max_rows
-    )
+    max_rows = settings.TABLE_MAX_ROWS_PER_CHUNK if table_max_rows is None else table_max_rows
 
     if strategy == SPLIT_SIZE:
         # ``size`` 策略不认标题，也就没有「节」可切段——它按固定窗口切，片的粒度由

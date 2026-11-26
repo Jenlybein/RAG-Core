@@ -479,7 +479,6 @@ async def _warm_up(async_db: Any, *, kb_ids: Sequence[str], top_k: int) -> dict[
     }
 
 
-
 def _load_questions() -> tuple[list[Question], int]:
     payload = json.loads(QUESTIONS_PATH.read_text(encoding="utf-8"))
     problems: list[str] = []
@@ -565,7 +564,6 @@ def _es_concrete_indices(index_name: str, *, separator: str) -> list[str]:
     return sorted({str(item["index"]) for item in response.json() if item.get("index")})
 
 
-
 def _assert_query_analyzer(index_name: str) -> None:
     """确认 ``--reuse`` 的目标索引确实是**当前** mapping 建的。
 
@@ -596,21 +594,16 @@ def _assert_query_analyzer(index_name: str) -> None:
     entries = response.json()
     prefix = f"{index_name}{VERSION_SEPARATOR}"
     resolved = next(
-        (
-            value
-            for key, value in entries.items()
-            if key == index_name or key.startswith(prefix)
-        ),
+        (value for key, value in entries.items() if key == index_name or key.startswith(prefix)),
         None,
     )
     if resolved is None:
-        raise SystemExit(f"--reuse 的索引 {index_name} 读不到 settings（集群返回的键：{sorted(entries)}）。")
+        raise SystemExit(
+            f"--reuse 的索引 {index_name} 读不到 settings（集群返回的键：{sorted(entries)}）。"
+        )
 
     analyzers = (
-        resolved.get("settings", {})
-        .get("index", {})
-        .get("analysis", {})
-        .get("analyzer", {})
+        resolved.get("settings", {}).get("index", {}).get("analysis", {}).get("analyzer", {})
     )
     if QUERY_ANALYZER not in analyzers:
         raise SystemExit(
@@ -1444,9 +1437,7 @@ def keyword_hit_report(
     return {
         "question_id": question_id,
         "passed": hit_rank is not None,
-        "reason": (
-            f"第 {hit_rank} 名命中相关片" if hit_rank is not None else "一条相关片都没命中"
-        ),
+        "reason": (f"第 {hit_rank} 名命中相关片" if hit_rank is not None else "一条相关片都没命中"),
         "returned_count": len(returned),
         "hit_count": sum(1 for chunk_id in returned if chunk_id in relevant),
         "hit_rank": hit_rank,
@@ -1474,9 +1465,7 @@ async def keyword_probe(
     bm25 分支），它只发一次 ES 查询。预算因此不受影响。
     """
 
-    outcome = await _run_question(
-        async_db, question, mode=MODE_BM25, top_k=top_k, kb_ids=kb_ids
-    )
+    outcome = await _run_question(async_db, question, mode=MODE_BM25, top_k=top_k, kb_ids=kb_ids)
     group = {
         "per_question": [
             {
@@ -1699,9 +1688,7 @@ async def _run_degraded_probe(async_db: Any, *, top_k: int) -> dict[str, dict[st
     hybrid = await _run_question(
         async_db, probe, mode=MODE_HYBRID, top_k=top_k, kb_ids=[PRIMARY_KB_ID]
     )
-    bm25 = await _run_question(
-        async_db, probe, mode=MODE_BM25, top_k=top_k, kb_ids=[PRIMARY_KB_ID]
-    )
+    bm25 = await _run_question(async_db, probe, mode=MODE_BM25, top_k=top_k, kb_ids=[PRIMARY_KB_ID])
 
     hybrid_ok = (
         hybrid.error is None

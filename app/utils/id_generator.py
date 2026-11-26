@@ -131,8 +131,7 @@ def new_api_key_value(key_id: str) -> str:
     """
 
     return (
-        f"{API_KEY_PREFIX}{key_id}{API_KEY_SEPARATOR}"
-        f"{secrets.token_hex(API_KEY_HEX_LENGTH // 2)}"
+        f"{API_KEY_PREFIX}{key_id}{API_KEY_SEPARATOR}{secrets.token_hex(API_KEY_HEX_LENGTH // 2)}"
     )
 
 

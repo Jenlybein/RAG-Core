@@ -122,13 +122,9 @@ async def resolve_console_identity(
     """
 
     session_id = _session_id_of(request)
-    session = _ensure_session_usable(
-        await console_session_repository.get_by_id(db, session_id)
-    )
+    session = _ensure_session_usable(await console_session_repository.get_by_id(db, session_id))
     return identity_of(
-        _ensure_account_usable(
-            await account_repository.get_by_id(db, session.account_id)
-        )
+        _ensure_account_usable(await account_repository.get_by_id(db, session.account_id))
     )
 
 

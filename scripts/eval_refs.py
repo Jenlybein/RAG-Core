@@ -1406,9 +1406,7 @@ def exercised_sides(
     live = config.source == SOURCE_LIVE
     return {
         "graph": (
-            live
-            and config.graph == "on"
-            and capabilities.get("graph") == CAPABILITY_AVAILABLE
+            live and config.graph == "on" and capabilities.get("graph") == CAPABILITY_AVAILABLE
         ),
         "research": (
             live
@@ -1637,9 +1635,7 @@ def _graph_note(status: str) -> str:
     """图谱那一栏的说明：**状态说什么就写什么**，不写死的「还没落地」。"""
 
     if status == CAPABILITY_AVAILABLE:
-        return (
-            "注入服务已装配；注入项 score=0、按本次请求的库与版本过滤，名次交给重排"
-        )
+        return "注入服务已装配；注入项 score=0、按本次请求的库与版本过滤，名次交给重排"
     return (
         "注入服务与组合根那条缝都已随 #138 的范围变更撤销（理由：价值不成立，不是抽取不准）；"
         f"要复现那一组读数回到 tag `{REJECTED_SCHEME_TAG}`"

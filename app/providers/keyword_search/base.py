@@ -54,9 +54,7 @@ class KeywordSearchProvider(ABC):
         """
 
     @abstractmethod
-    async def count_documents(
-        self, *, tenant_id: str, kb_id: str, index_version: str
-    ) -> int:
+    async def count_documents(self, *, tenant_id: str, kb_id: str, index_version: str) -> int:
         """该版本在这个库里的关键词文档数（``ready`` 前的四项计数之一，ADR-0025）。
 
         只数**目标版本那一个物理索引**里这个租户 / 库 / 版本的文档：数错索引等于让

@@ -41,7 +41,9 @@ async def list_all_async(db: AsyncSession) -> list[RuntimeSetting]:
     之外，见 ``app/core/runtime_settings_cache``）。
     """
 
-    return list((await db.execute(select(RuntimeSetting).order_by(RuntimeSetting.key))).scalars().all())
+    return list(
+        (await db.execute(select(RuntimeSetting).order_by(RuntimeSetting.key))).scalars().all()
+    )
 
 
 async def get_by_key(db: AsyncSession, key: str) -> RuntimeSetting | None:
@@ -67,9 +69,7 @@ async def upsert(
 
     row = await get_by_key(db, key)
     if row is None:
-        row = RuntimeSetting(
-            key=key, value=value, updated_by=updated_by, updated_at=updated_at
-        )
+        row = RuntimeSetting(key=key, value=value, updated_by=updated_by, updated_at=updated_at)
         db.add(row)
     else:
         row.value = value

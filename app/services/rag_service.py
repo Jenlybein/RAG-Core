@@ -275,7 +275,7 @@ async def retrieve(
         # 形状偏好读同一个 ``options``：它们是**这次调用的参数**，不是内核的可选开关。
         fold_to_sections=options.fold_to_sections,
         expand_table_rows=options.expand_table_rows,
-            max_unit_chars=options.max_unit_chars,
+        max_unit_chars=options.max_unit_chars,
         # 收集器显式传进去：内核在召回 / 融合 / 重排 / 折叠四处记，段名与上面的常量同源。
         stage_timer=timer,
         # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有 monkeypatch 接缝）。

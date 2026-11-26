@@ -187,4 +187,3 @@ async def parse_version_request(
         content=getattr(payload, "content", ""),
         request_id=submitted_request_id(request),
     )
-

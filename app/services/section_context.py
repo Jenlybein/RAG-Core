@@ -69,9 +69,7 @@ def _coerce(raw: Any) -> str:
     return ""
 
 
-async def summarize_sections(
-    sections: list[tuple[str, str, str]], *, title: str
-) -> dict[str, str]:
+async def summarize_sections(sections: list[tuple[str, str, str]], *, title: str) -> dict[str, str]:
     """为给定节生成说明，返回 ``{section_id: 说明}``。
 
     ``sections`` 是 ``[(section_id, heading_path, 本节全文)]``，已经按 section_id

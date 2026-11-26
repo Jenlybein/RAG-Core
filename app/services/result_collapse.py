@@ -44,6 +44,7 @@ from typing import Mapping, NamedTuple, Sequence
 CHUNK_TABLE = "table"
 CHUNK_TABLE_ROW = "table_row"
 
+
 # 单元种类：折叠的粒度由它决定，也是 ``unit_key`` 的第一段。
 class UnitKey(NamedTuple):
     """单元键。
@@ -288,9 +289,7 @@ def _section_content(
 def _length(rows: SectionRows, first: int, last: int) -> int:
     """这一段拼起来有多长（含 ``\\n\\n`` 分隔）。"""
 
-    return sum(len(rows[index][1]) for index in range(first, last + 1)) + 2 * (
-        last - first
-    )
+    return sum(len(rows[index][1]) for index in range(first, last + 1)) + 2 * (last - first)
 
 
 def _shrink(

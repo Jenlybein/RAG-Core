@@ -83,9 +83,7 @@ async def issue_key(
         label=payload.label,
         policy_values=payload.policy.provided(),
     )
-    return ok(
-        issued_key_data_of(issued.api_key, issued.policy, issued.plaintext)
-    )
+    return ok(issued_key_data_of(issued.api_key, issued.policy, issued.plaintext))
 
 
 @router.delete(
@@ -133,4 +131,3 @@ async def patch_key_policy(
             changed=list(result.changed),
         )
     )
-

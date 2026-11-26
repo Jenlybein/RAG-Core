@@ -65,9 +65,7 @@ class RedisKeyVerifyCache:
         ttl_seconds: int | None = None,
     ) -> None:
         self._client = client
-        self._ttl = (
-            settings.KEY_VERIFY_CACHE_TTL_SECONDS if ttl_seconds is None else ttl_seconds
-        )
+        self._ttl = settings.KEY_VERIFY_CACHE_TTL_SECONDS if ttl_seconds is None else ttl_seconds
 
     async def key_id_of(self, token: str) -> str | None:
         raw = await self._client.get(cache_key(token))

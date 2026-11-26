@@ -248,9 +248,7 @@ class WorkerLoop:
                         checked_out=pool.checkedout(),
                     )
                 except Exception:  # noqa: BLE001 - 观测失败不许挡住关停
-                    logger.warning(
-                        "worker_loop_pool_state_failed", loop=self._name, exc_info=True
-                    )
+                    logger.warning("worker_loop_pool_state_failed", loop=self._name, exc_info=True)
             try:
                 await engine.dispose()
             except Exception:  # noqa: BLE001 - 关停路径不抛
@@ -306,6 +304,7 @@ def reset_worker_loop() -> None:
 # 没有 lifespan、也没有接 Celery 信号的进程（脚本 / 排障）靠它兜底：daemon 线程不会拖住
 # 解释器退出，但**连接会不会被关**取决于这里有没有跑过一次 dispose。
 atexit.register(shutdown_worker_loop)
+
 
 def run_in_worker_loop(factory: Callable[[], Awaitable[T]]) -> T:
     """把**工厂**投进本进程的常驻循环并等结果。

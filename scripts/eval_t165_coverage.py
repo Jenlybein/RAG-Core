@@ -266,7 +266,9 @@ def refs_unit_key(units: Mapping[str, Unit], *, document: str, section: str) -> 
 def base_unit_key(*, document: str, heading_path: str) -> str:
     """137 题库的标注直接给 ``heading_path``（完整路径），折叠口径取前两段。"""
 
-    return f"{document}::{unit_of(Section(path=tuple(heading_path.split(' > ')), level=2, text=''))}"
+    return (
+        f"{document}::{unit_of(Section(path=tuple(heading_path.split(' > ')), level=2, text=''))}"
+    )
 
 
 # ─────────────────────────────────────────────────────────── 标注（冻结在问题侧）
@@ -364,8 +366,16 @@ _REFS_LABELS: Final[dict[str, dict[str, Any]]] = {
 _BASE_LABELS: Final[dict[str, dict[str, Any]]] = {
     "q16": {
         "points": (
-            ("证书过期这类告警的现象与处置入口", "support_errors", "售后故障与错误码速查 > 连接与证书类错误（一）"),
-            ("证书轮换的四步流程，以及过程中不重启平台入口", "ops_runbook", "值班处置手册 > 证书轮换操作步骤"),
+            (
+                "证书过期这类告警的现象与处置入口",
+                "support_errors",
+                "售后故障与错误码速查 > 连接与证书类错误（一）",
+            ),
+            (
+                "证书轮换的四步流程，以及过程中不重启平台入口",
+                "ops_runbook",
+                "值班处置手册 > 证书轮换操作步骤",
+            ),
         ),
         "drop": 1,
     },
@@ -437,7 +447,9 @@ def load_base_cases() -> list[Case]:
     for case_id, spec in _BASE_LABELS.items():
         question = by_id[case_id]
         points = tuple(
-            LabelPoint(text=text, unit=base_unit_key(document=document, heading_path=path), source=path)
+            LabelPoint(
+                text=text, unit=base_unit_key(document=document, heading_path=path), source=path
+            )
             for text, document, path in spec["points"]
         )
         unit_keys = tuple(dict.fromkeys(point.unit for point in points))
@@ -454,6 +466,7 @@ def load_base_cases() -> list[Case]:
             )
         )
     return cases
+
 
 # ─────────────────────────────────────────────────────────── 三个条件的池子
 
@@ -517,9 +530,7 @@ def select_distractors(
         if target is None:
             continue
         siblings = by_document.get(target.document, [])
-        position = next(
-            (index for index, unit in enumerate(siblings) if unit.key == key), None
-        )
+        position = next((index for index, unit in enumerate(siblings) if unit.key == key), None)
         if position is None:
             continue
         for offset in range(1, len(siblings)):
@@ -705,6 +716,7 @@ def recompute_metrics(payload: dict[str, Any]) -> dict[str, Any]:
         unknown["records"] = rows
     payload["archived"] = archived_followup_reading()
     return payload
+
 
 def _sum_counts(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     keys = (
@@ -920,12 +932,15 @@ def render_plan(plan: Mapping[str, Any]) -> str:
         a = row.get("A") or {}
         b = row.get("B")
         c = row.get("C") or {}
-        b_cell = "跳过" if isinstance(b, str) else f"{b.get('materials', 0)} 条（删 {b.get('dropped')}）"
+        b_cell = (
+            "跳过" if isinstance(b, str) else f"{b.get('materials', 0)} 条（删 {b.get('dropped')}）"
+        )
         lines.append(
             f"| {row['case']} | {row['corpus']} | {len(row['points'])} | "
             f"{a.get('materials', 0)} 条 | {b_cell} | {c.get('materials', 0)} 条 |"
         )
     return "\n".join(lines) + "\n"
+
 
 # ─────────────────────────────────────────────────────────── 判定：走生产那条路
 
@@ -1121,7 +1136,9 @@ async def run_conditions(
                     llm_factory=llm_factory,
                 )
                 budget.charge(judgement.model_calls)
-                records.append(case_record(case, condition=condition, pool=pool, judgement=judgement))
+                records.append(
+                    case_record(case, condition=condition, pool=pool, judgement=judgement)
+                )
                 print(
                     f"  {label}: {judgement.statuses or f'作废（{judgement.invalid_reason}）'}",
                     flush=True,
@@ -1194,7 +1211,11 @@ async def run_full_research(
 
     answer = outcome.answer
     coverage = [
-        {"point_id": verdict.point_id, "status": verdict.status, "evidence_ids": list(verdict.evidence_ids)}
+        {
+            "point_id": verdict.point_id,
+            "status": verdict.status,
+            "evidence_ids": list(verdict.evidence_ids),
+        }
         for verdict in outcome.coverage
     ]
     return {
@@ -1273,6 +1294,7 @@ def unknown_reading(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         ],
     }
 
+
 # ─────────────────────────────────────────────────────────── 报告
 
 
@@ -1306,7 +1328,9 @@ POST_HOC_FINDINGS: Final[tuple[dict[str, str], ...]] = (
 #: 要点必然落成 ``unknown``（:meth:`_Run._settle_after_followup` 的规则）。
 #: 于是它是「补证发生过而且真的捞到东西」的**真实频率**，正好补上构造组只能证明机制、
 #: 证明不了频率的那一格。
-ARCHIVED_RUN: Final[Path] = EVAL_DIR / "reports" / "c6" / "runs" / "04-v2-research-on" / "results.json"
+ARCHIVED_RUN: Final[Path] = (
+    EVAL_DIR / "reports" / "c6" / "runs" / "04-v2-research-on" / "results.json"
+)
 
 
 def _display_path(path: Path) -> str:
@@ -1316,6 +1340,7 @@ def _display_path(path: Path) -> str:
         return path.resolve().relative_to(REPO_ROOT).as_posix()
     except ValueError:
         return str(path)
+
 
 def archived_followup_reading(path: Path | None = None) -> dict[str, Any]:
     """从归档产物里数「补证捞到新材料」的真实频率（不调用模型，不读库）。
@@ -1343,10 +1368,9 @@ def archived_followup_reading(path: Path | None = None) -> dict[str, Any]:
         "stop_reasons": reasons,
         "recovered": recovered,
         "rate_recovered": _rate(recovered, len(rows)),
-        "cases": [
-            {"case": row.get("id"), "stop_reason": row.get("stop_reason")} for row in rows
-        ],
+        "cases": [{"case": row.get("id"), "stop_reason": row.get("stop_reason")} for row in rows],
     }
+
 
 def _fmt_rate(value: Any) -> str:
     if value is None:
@@ -1413,7 +1437,7 @@ def recommendation(payload: Mapping[str, Any]) -> list[str]:
             f"（判据线 {_fmt_rate(UNKNOWN_TOLERANCE)}）。"
         )
 
-    threshold_hit = (combined if combined is not None else real_rate)
+    threshold_hit = combined if combined is not None else real_rate
     if threshold_hit is not None and float(threshold_hit) >= UNKNOWN_TOLERANCE:
         lines.append(
             "- **结论：该加 ⑤（补证后再判一次）**。`unknown` 不是罕见的边缘态："
@@ -1520,7 +1544,12 @@ def render_report(payload: Mapping[str, Any]) -> str:
             metrics_c and metrics_c["unknown_分子"],
             metrics_c and metrics_c["unknown_分母"],
         ),
-        ("判定作废率（A+B+C）", _rate(overall_invalid, overall_cases), overall_invalid, overall_cases),
+        (
+            "判定作废率（A+B+C）",
+            _rate(overall_invalid, overall_cases),
+            overall_invalid,
+            overall_cases,
+        ),
         (
             "证据指向准确率（C）",
             metrics_c and metrics_c["证据指向准确率"],
@@ -1589,8 +1618,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
                 mark = "" if point["status"] == point["expected"] else "❗"
                 cells.append(f"{point['point'][:18]}→{point['status']}{mark}")
             lines.append(
-                f"| {record['case']} | {record['pool']['materials']} 条 | "
-                f"{'；'.join(cells)} |"
+                f"| {record['case']} | {record['pool']['materials']} 条 | {'；'.join(cells)} |"
             )
         invalid = [record for record in cases if record.get("invalid_reason")]
         if invalid:
@@ -1710,6 +1738,7 @@ def render_report(payload: Mapping[str, Any]) -> str:
     ]
     return "\n".join(lines) + "\n"
 
+
 # ─────────────────────────────────────────────────────────── 装配：模型链与全量跑
 
 
@@ -1751,8 +1780,10 @@ async def _strong_provider() -> Any:
 
 
 def _print_budget(predicted: Mapping[str, Any]) -> None:
-    print(f"预计模型调用：名义 {predicted['nominal']} 次 / 最坏 {predicted['worst']} 次"
-          f"（硬顶 {predicted['budget']}）")
+    print(
+        f"预计模型调用：名义 {predicted['nominal']} 次 / 最坏 {predicted['worst']} 次"
+        f"（硬顶 {predicted['budget']}）"
+    )
     for name, count in predicted["groups"].items():
         print(f"  - {name}: {count}")
 
@@ -1779,7 +1810,9 @@ async def _run_gap_gate(
         budget.charge(int(record["model_calls"]))
         record["verdict"] = gate_verdict(record)
         records.append(record)
-        print(f"  {label}: {record['verdict']['status']}（{record['verdict']['reason']}）", flush=True)
+        print(
+            f"  {label}: {record['verdict']['status']}（{record['verdict']['reason']}）", flush=True
+        )
     return {"cases": records}
 
 

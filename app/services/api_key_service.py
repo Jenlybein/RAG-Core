@@ -67,13 +67,9 @@ def issue_api_key(
     if policy is None:
         raise LookupError(f"密钥配置不存在：{policy_id}")
     if policy.tenant_id != tenant_id:
-        raise ValueError(
-            f"密钥配置 {policy_id} 不属于租户 {tenant_id}：跨租户引用一律拒绝"
-        )
+        raise ValueError(f"密钥配置 {policy_id} 不属于租户 {tenant_id}：跨租户引用一律拒绝")
 
-    minted = create_api_key_row(
-        db, tenant_id=tenant_id, policy_id=policy_id, label=label
-    )
+    minted = create_api_key_row(db, tenant_id=tenant_id, policy_id=policy_id, label=label)
     # 提交点不在这里：脚本用 ``with transaction(db)`` 圈住，请求路径由路由的事务依赖兜住。
     return minted
 

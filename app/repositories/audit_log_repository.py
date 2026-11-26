@@ -33,9 +33,7 @@ async def list_page(
     带进来；面板的筛选值直接取这些枚举，也就不存在「前缀写一半」的模糊地带。
     """
 
-    statement = (
-        _filtered(action).order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
-    )
+    statement = _filtered(action).order_by(AuditLog.created_at.desc()).offset(offset).limit(limit)
     return list((await db.execute(statement)).scalars().all())
 
 

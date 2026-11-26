@@ -254,9 +254,7 @@ async def list_archived_at_or_below(
     return list((await db.execute(statement)).scalars().all())
 
 
-async def delete_versions(
-    db: AsyncSession, document_id: str, versions: Sequence[int]
-) -> None:
+async def delete_versions(db: AsyncSession, document_id: str, versions: Sequence[int]) -> None:
     """按稿号删这篇文档的版本行（保留策略的另一半，#178）；空列表是 no-op。
 
     一条 ``DELETE ... IN (...)`` 打掉整批，不逐行 ``db.delete``：删的是同一篇文档的同一段
@@ -306,4 +304,3 @@ __all__ = [
     "rewrite_content",
     "source_file_paths",
 ]
-

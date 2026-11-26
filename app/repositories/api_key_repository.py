@@ -56,9 +56,7 @@ async def list_by_tenant(db: AsyncSession, tenant_id: str) -> list[ApiKey]:
     """
 
     statement = (
-        select(ApiKey)
-        .where(ApiKey.tenant_id == tenant_id)
-        .order_by(ApiKey.created_at, ApiKey.id)
+        select(ApiKey).where(ApiKey.tenant_id == tenant_id).order_by(ApiKey.created_at, ApiKey.id)
     )
     return list((await db.execute(statement)).scalars().all())
 

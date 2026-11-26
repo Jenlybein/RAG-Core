@@ -45,7 +45,7 @@ import threading
 import uuid
 from collections.abc import Callable
 from datetime import timedelta
-from typing import Final
+from typing import Any, Final
 
 import structlog
 
@@ -101,9 +101,7 @@ async def _try_lock(ttl: int = SWEEP_LOCK_TTL_SECONDS) -> bool:
         return False
 
 
-async def sweep_once(
-    *, session_factory: Callable[[], Any] | None = None
-) -> dict[str, int]:
+async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dict[str, int]:
     """跑一遍清扫，返回这一轮各项处置的计数（给日志与测试断言用）。
 
     顺序固定：**先收尾、再补投、最后救租约**。
@@ -127,9 +125,7 @@ async def sweep_once(
 
         # ── 1) 过了收敛期限仍是 building：按真值收尾 ──────────────────────
         for row in await service.list_overdue_builds(db):
-            converged = await service.converge(
-                db, row.id, tenant_id=str(row.tenant_id), final=True
-            )
+            converged = await service.converge(db, row.id, tenant_id=str(row.tenant_id), final=True)
             settled += 1
             logger.info(
                 "sweeper settled an overdue index build",
@@ -259,9 +255,7 @@ def start_sweeper_thread() -> None:
         logger.info("index sweeper not started: RATE_LIMIT_ENABLED is off")
         return
     _sweeper_stop.clear()
-    _sweeper_thread = threading.Thread(
-        target=_sweeper_loop, name="index-sweeper", daemon=True
-    )
+    _sweeper_thread = threading.Thread(target=_sweeper_loop, name="index-sweeper", daemon=True)
     _sweeper_thread.start()
     logger.info("index sweeper started", interval_seconds=SWEEP_INTERVAL_SECONDS)
 

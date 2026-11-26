@@ -76,9 +76,7 @@ def db_engine() -> Iterator[Engine]:
 
     assert INTEGRATION_DATABASE_URL is not None
     engine = create_engine(INTEGRATION_DATABASE_URL)
-    Base.metadata.create_all(
-        bind=engine, tables=[Document.__table__, KnowledgeBase.__table__]
-    )
+    Base.metadata.create_all(bind=engine, tables=[Document.__table__, KnowledgeBase.__table__])
     try:
         yield engine
     finally:
@@ -302,9 +300,12 @@ def test_deleting_a_queued_row_leaves_the_late_task_unclaimable(db: Session) -> 
     db.delete(row)
     db.commit()
 
-    assert document_repository.try_claim_for_indexing(
-        db, "qs-queued-deleted", tenant_id=TENANT_ID, allow_success=False
-    ) is False, "行已经不在了：迟到的任务抢不到，也就不会写出任何切片"
+    assert (
+        document_repository.try_claim_for_indexing(
+            db, "qs-queued-deleted", tenant_id=TENANT_ID, allow_success=False
+        )
+        is False
+    ), "行已经不在了：迟到的任务抢不到，也就不会写出任何切片"
     assert db.get(Document, "qs-queued-deleted") is None, "删除之后不能被迟到任务「复活」"
 
 

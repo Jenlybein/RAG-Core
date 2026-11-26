@@ -293,9 +293,7 @@ class Settings(BaseSettings):
         allowed = SUPPORTED_RETRIEVAL_MODES
         normalized = value.strip().lower()
         if normalized not in allowed:
-            raise ValueError(
-                f"RETRIEVAL_MODE 只支持 {allowed}，当前是 {value!r}。"
-            )
+            raise ValueError(f"RETRIEVAL_MODE 只支持 {allowed}，当前是 {value!r}。")
         return normalized
 
     @field_validator("TRACE_SINK")
@@ -311,9 +309,7 @@ class Settings(BaseSettings):
         allowed = SUPPORTED_TRACE_SINKS
         normalized = value.strip().lower()
         if normalized not in allowed:
-            raise ValueError(
-                f"TRACE_SINK 只支持 {allowed}，当前是 {value!r}。"
-            )
+            raise ValueError(f"TRACE_SINK 只支持 {allowed}，当前是 {value!r}。")
         return normalized
 
     @field_validator("LLM_PROVIDER")
@@ -334,9 +330,7 @@ class Settings(BaseSettings):
         allowed = LLM_VENDORS
         normalized = value.strip().lower()
         if normalized not in allowed:
-            raise ValueError(
-                f"LLM_PROVIDER 只支持 {allowed}，当前是 {value!r}。"
-            )
+            raise ValueError(f"LLM_PROVIDER 只支持 {allowed}，当前是 {value!r}。")
         return normalized
 
 

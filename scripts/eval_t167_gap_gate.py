@@ -401,13 +401,9 @@ def check_case_set() -> dict[str, Any]:
 
     a_cases = [case for case in cases if case.group == GROUP_A]
     b_cases = [case for case in cases if case.group == GROUP_B]
-    base_ids_ok = all(
-        case.base_id in bank for case in cases if case.base_id is not None
-    )
+    base_ids_ok = all(case.base_id in bank for case in cases if case.base_id is not None)
     prefix_ok = all(
-        case.query.startswith(bank[case.base_id])
-        for case in a_cases
-        if case.base_id is not None
+        case.query.startswith(bank[case.base_id]) for case in a_cases if case.base_id is not None
     )
     keywords = [case.keyword for case in cases]
     return {
@@ -672,16 +668,13 @@ def _core_metrics(records: Sequence[Mapping[str, Any]]) -> dict[str, Metric]:
         if str(record.get("answer_rejected_reason")) == REJECTED_GAP_NOT_DECLARED
     )
     triggered = sum(
-        1
-        for record in records
-        if int(record.get("model_calls") or 0) >= TRIGGER_MIN_MODEL_CALLS
+        1 for record in records if int(record.get("model_calls") or 0) >= TRIGGER_MIN_MODEL_CALLS
     )
     residual_unknown = sum(
         1
         for record in records
         if any(
-            str(point.get("status")) == SUPPORT_UNKNOWN
-            for point in record.get("coverage") or []
+            str(point.get("status")) == SUPPORT_UNKNOWN for point in record.get("coverage") or []
         )
     )
     return {
@@ -705,9 +698,7 @@ def _primary(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
 def _control(records: Sequence[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     """对照条件（关 ⑤）的记录。"""
 
-    return [
-        record for record in records if str(record.get("condition")) == CONDITION_CONTROL
-    ]
+    return [record for record in records if str(record.get("condition")) == CONDITION_CONTROL]
 
 
 def _normalized(text: Any) -> str:
@@ -781,8 +772,13 @@ def unknown_frequency(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         unknown_points += len(point_ids)
         key = str(len(point_ids))
         counts[key] = counts.get(key, 0) + 1
-        per_case.append({"case": record.get("case"), "unknown": len(point_ids),
-                         "points": len(record.get("points") or [])})
+        per_case.append(
+            {
+                "case": record.get("case"),
+                "unknown": len(point_ids),
+                "points": len(record.get("points") or []),
+            }
+        )
     with_unknown = sum(count for key, count in counts.items() if key != "0")
     return {
         "cases": len(cases),
@@ -941,9 +937,7 @@ def summarize(records: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
         for group in (GROUP_A, GROUP_B)
     }
     metrics["by_group"]["声明对齐度"] = {
-        group: declaration_alignment(
-            [record for record in records if record.get("group") == group]
-        )
+        group: declaration_alignment([record for record in records if record.get("group") == group])
         for group in (GROUP_A, GROUP_B)
     }
     return metrics
@@ -1213,12 +1207,16 @@ async def _resolve_scope(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> d
     from app.models.knowledge_base import KnowledgeBase
 
     rows = (
-        await db.execute(
-            select(KnowledgeBase).where(
-                KnowledgeBase.tenant_id == tenant_id, KnowledgeBase.id.in_(list(kb_ids))
+        (
+            await db.execute(
+                select(KnowledgeBase).where(
+                    KnowledgeBase.tenant_id == tenant_id, KnowledgeBase.id.in_(list(kb_ids))
+                )
             )
         )
-    ).scalars().all()
+        .scalars()
+        .all()
+    )
     return dict(resolve_index_versions(list(rows)))
 
 
@@ -1278,9 +1276,7 @@ def case_record(case: EvalCase, outcome: Any) -> dict[str, Any]:
         "answer_rejected_reason": outcome.answer_rejected_reason,
         "citations": citations,
         "insufficient": insufficient_blocks({"citations": citations}),
-        "declared_insufficient": bool(
-            isinstance(answer, str) and GAP_DECLARATION in answer
-        ),
+        "declared_insufficient": bool(isinstance(answer, str) and GAP_DECLARATION in answer),
         "gap_declaration_count": answer.count(GAP_DECLARATION) if isinstance(answer, str) else 0,
         "materials": len(outcome.materials),
         "evidence_state": outcome.evidence_state,
@@ -1331,7 +1327,9 @@ async def run_case(
     return record
 
 
-async def _run_without_rejudge(case: EvalCase, *, index_versions: Mapping[str, str]) -> dict[str, Any]:
+async def _run_without_rejudge(
+    case: EvalCase, *, index_versions: Mapping[str, str]
+) -> dict[str, Any]:
     """跑一次**关掉 ⑤** 的 Research——对照条件，只在评测进程内生效。
 
     关法：把 ``research._Run._rejudge`` 换成一个直接返回的 async no-op，跑完在 ``finally``
@@ -1473,11 +1471,7 @@ def _rejected_cases(records: Sequence[Mapping[str, Any]]) -> list[str]:
 def _degraded_cases(records: Sequence[Mapping[str, Any]]) -> list[str]:
     """子检索降级过的题：一旦关键词或向量一路挂了，读数是「单路检索下的闸门行为」。"""
 
-    return [
-        str(record.get("case"))
-        for record in records
-        if record.get("sub_search_degraded")
-    ]
+    return [str(record.get("case")) for record in records if record.get("sub_search_degraded")]
 
 
 def text_level_verdict(payload: Mapping[str, Any]) -> list[str]:
@@ -1745,7 +1739,7 @@ def fivefold_section(payload: Mapping[str, Any]) -> list[str]:
         "只能把 ⑤ 关掉再跑一次。",
         "",
         "- 关法（**只在评测进程内，`app/` 一个字节不改**）："
-        "`setattr(research._Run, \"_rejudge\", async no-op)`，跑完在 `finally` 里换回来。"
+        '`setattr(research._Run, "_rejudge", async no-op)`，跑完在 `finally` 里换回来。'
         "不把 ⑤ 做成配置开关，是因为那会在生产代码里留一条「默认关、生产永不发生」的分支"
         "——ADR-0029 点名的死代码。",
         f"- 配对：**{comparison.get('paired_cases')}** 题（A 组每题跑两次，"
@@ -1895,7 +1889,13 @@ def render_report(payload: Mapping[str, Any]) -> str:
     if not alignment.get("pairs"):
         lines.append("| （没有样本） | 0 |")
 
-    lines += ["", "### 分组对照（A 半可答 / B 全不可答）", "", "| 组 | 缺口出现率 | 拦截率 | ⑤ 触发率 | unknown 残留率 |", "| --- | --- | --- | --- | --- |"]
+    lines += [
+        "",
+        "### 分组对照（A 半可答 / B 全不可答）",
+        "",
+        "| 组 | 缺口出现率 | 拦截率 | ⑤ 触发率 | unknown 残留率 |",
+        "| --- | --- | --- | --- | --- |",
+    ]
     for group in (GROUP_A, GROUP_B):
         group_metrics = (metrics.get("by_group") or {}).get(group) or {}
         lines.append(
@@ -2159,9 +2159,7 @@ async def run_all(
             target_groups, fivefold = plan_of_runs[label]
             cases = [case for case in load_cases() if case.group in target_groups]
             condition = CONDITION_FIVEFOLD if fivefold else CONDITION_CONTROL
-            print(
-                f"跑 {label} 组（{condition}）：{[case.case_id for case in cases]}", flush=True
-            )
+            print(f"跑 {label} 组（{condition}）：{[case.case_id for case in cases]}", flush=True)
             records.extend(
                 await run_cases(
                     cases,

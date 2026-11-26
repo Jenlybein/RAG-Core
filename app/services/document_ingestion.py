@@ -42,9 +42,7 @@ def prepare_document_content(document: Document, *, reparse: bool = False) -> Pa
         # 解析器按扩展名选。正常上传一定有 source_filename；但历史行、人手修过的行可能没有，
         # 那时退回落盘路径自己的扩展名——否则错误码是「no parser supports: 」(空名字)，
         # 读的人完全看不出该补什么。这个兜底只在这种缺名字的情况下生效。
-        return parse_source_file(
-            document.source_file_path, filename=document.source_filename
-        )
+        return parse_source_file(document.source_file_path, filename=document.source_filename)
 
     raise AppError(
         ErrorCode.DOCUMENT_PARSE_FAILED,
@@ -88,9 +86,7 @@ def parse_uploaded_bytes(data: bytes, *, filename: str) -> ParsedDocument:
     return parsed
 
 
-def content_from_version(
-    version: DocumentVersion, *, source_type: str | None
-) -> ParsedDocument:
+def content_from_version(version: DocumentVersion, *, source_type: str | None) -> ParsedDocument:
     """把一行**版本行**变成切块器的输入（重建的正文真值，ADR-0005 D6 / #173）。
 
     与分支 A 同一口径：正文已经在库里，不碰磁盘、不再解析。``metadata`` 因此退化成

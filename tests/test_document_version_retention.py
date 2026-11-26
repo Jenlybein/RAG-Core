@@ -32,7 +32,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from app.db.transaction import async_transaction
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
-from app.models.plan import PLAN_FREE, Plan
+from app.models.plan import Plan
 from app.models.tenant import Tenant
 from app.repositories import document_repository, document_version_repository
 from app.services import document_version_service

@@ -55,9 +55,7 @@ from app.utils.id_generator import new_id
 #: 能通过本函数改的**快照标量**字段：全部列都是标量了（``custom_options`` 已随档位退役），
 #: ``unrestricted_scope`` 仍然刻意除外——它不是库里的列，是合成快照的标记。
 POLICY_FIELDS: Final[tuple[str, ...]] = tuple(
-    field.name
-    for field in fields(KeyPolicySnapshot)
-    if field.name != "unrestricted_scope"
+    field.name for field in fields(KeyPolicySnapshot) if field.name != "unrestricted_scope"
 )
 
 #: 只落在行上、不在快照里的字段（快照不用它做判定，所以单独一行）。
@@ -136,9 +134,7 @@ class PolicyUpdate:
     changed: tuple[str, ...]
 
 
-def update_key_policy(
-    db: Session, *, policy_id: str, changes: Mapping[str, Any]
-) -> PolicyUpdate:
+def update_key_policy(db: Session, *, policy_id: str, changes: Mapping[str, Any]) -> PolicyUpdate:
     """把 ``changes`` 里给出的字段改到这套配置上；失败时一行都不落库。
 
     错误分三类，与目录里的兄弟服务一致（脚本按这三类打消息、退 1）：
@@ -212,9 +208,7 @@ async def _policy_bundle_async(db: AsyncSession, policy_id: str) -> tuple[KeyPol
     return policy, plan
 
 
-def _apply_validated(
-    policy: KeyPolicy, plan: Plan, changes: Mapping[str, Any]
-) -> PolicyUpdate:
+def _apply_validated(policy: KeyPolicy, plan: Plan, changes: Mapping[str, Any]) -> PolicyUpdate:
     """规则本体：校验 → 候选快照 → 自洽校验 → 写进行。会话类型在这里不存在。
 
     「先校验、后写行」的顺序是这条路径的全部安全性来源：不自洽的请求连「改了一半」
@@ -237,9 +231,7 @@ def _apply_validated(
         policy.name = values["name"]
 
     after = policy_values_of(policy)
-    changed = tuple(
-        sorted(column for column in values if before.get(column) != after.get(column))
-    )
+    changed = tuple(sorted(column for column in values if before.get(column) != after.get(column)))
     return PolicyUpdate(
         policy_id=policy.id,
         tenant_id=policy.tenant_id,
@@ -305,7 +297,8 @@ def _build_policy_row(
         retrieval_mode=checked["retrieval_mode"],
         retrieval_top_k=checked["retrieval_top_k"],
         retrieval_rerank=checked["retrieval_rerank"],
-        include_parent=checked["include_parent"], max_unit_chars=checked["max_unit_chars"],
+        include_parent=checked["include_parent"],
+        max_unit_chars=checked["max_unit_chars"],
         expand_table_rows=checked["expand_table_rows"],
     )
     ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan_spec_of(plan))
@@ -329,9 +322,7 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
 
     unknown = sorted(set(changes) - set(EDITABLE_FIELDS))
     if unknown:
-        raise ValueError(
-            f"未知字段：{', '.join(unknown)}（可改：{', '.join(EDITABLE_FIELDS)}）"
-        )
+        raise ValueError(f"未知字段：{', '.join(unknown)}（可改：{', '.join(EDITABLE_FIELDS)}）")
 
     values: dict[str, Any] = dict(changes)
 
@@ -353,9 +344,7 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
             raise ValueError(f"retrieval_top_k 必须是 ≥ {MIN_TOP_K} 的整数，收到：{top_k!r}")
 
     if "retrieval_rerank" in values and not isinstance(values["retrieval_rerank"], bool):
-        raise ValueError(
-            f"retrieval_rerank 必须是布尔值，收到：{values['retrieval_rerank']!r}"
-        )
+        raise ValueError(f"retrieval_rerank 必须是布尔值，收到：{values['retrieval_rerank']!r}")
 
     if "max_unit_chars" in values:
         # 一条结果正文的硬上限（第 16 步 #207）。上下界不是拍脑袋：下界 200 是「一片的
@@ -397,9 +386,7 @@ def _validated_create(values: Mapping[str, Any]) -> dict[str, Any]:
     provided = dict(values)
     unknown = sorted(set(provided) - set(CREATE_FIELDS))
     if unknown:
-        raise ValueError(
-            f"未知字段：{', '.join(unknown)}（可选：{', '.join(CREATE_FIELDS)}）"
-        )
+        raise ValueError(f"未知字段：{', '.join(unknown)}（可选：{', '.join(CREATE_FIELDS)}）")
 
     missing = [column for column in CREATE_REQUIRED_FIELDS if column not in provided]
     if missing:

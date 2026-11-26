@@ -23,9 +23,7 @@ class NoopKeywordSearchProvider(KeywordSearchProvider):
     ) -> list[dict]:
         return []
 
-    async def count_documents(
-        self, *, tenant_id: str, kb_id: str, index_version: str
-    ) -> int:
+    async def count_documents(self, *, tenant_id: str, kb_id: str, index_version: str) -> int:
         """能力不存在 → 0。构建编排据此**不把这一维**算进四项计数（见构建服务）。"""
 
         return 0

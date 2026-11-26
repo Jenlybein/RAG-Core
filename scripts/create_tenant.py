@@ -36,8 +36,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _ops_common import print_summary  # noqa: E402
 
 CREATED_NOTE = (
-    'NOTE: the key policy above is the one to pass to issue_api_key.py. It grants no extra '
-    'capabilities; limits come from the tenant plan at creation time.'
+    "NOTE: the key policy above is the one to pass to issue_api_key.py. It grants no extra "
+    "capabilities; limits come from the tenant plan at creation time."
 )
 
 
@@ -126,10 +126,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         kb_ids,
     ) = report
     print(f"tenant: {tenant_id} plan_id={plan_id} name={tenant_name}")
-    print(
-        f"key policy: {policy_id} mode={mode} "
-        f"qps={qps} daily={daily} kb_ids={kb_ids}"
-    )
+    print(f"key policy: {policy_id} mode={mode} qps={qps} daily={daily} kb_ids={kb_ids}")
     print_summary(
         f"create_tenant: {tenant_id}",
         stats=CreateTenantStats(created=1),

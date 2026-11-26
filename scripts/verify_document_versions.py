@@ -109,9 +109,7 @@ async def reconcile_document_versions(
     的原因**。
     """
 
-    documents = await document_repository.list_for_version_reconcile(
-        db, kb_id=kb_id, limit=limit
-    )
+    documents = await document_repository.list_for_version_reconcile(db, kb_id=kb_id, limit=limit)
     keyword_versions, keyword_state, keyword_reason = await _keyword_current_versions(
         documents, provider if provider is not None else _keyword_provider()
     )
@@ -126,9 +124,7 @@ async def reconcile_document_versions(
         document_ids = [document.id for document in batch]
         version_rows = await document_version_repository.list_for_documents(db, document_ids)
         counts = await chunk_repository.draft_counts(db, document_ids=document_ids)
-        facts.extend(
-            _facts_of(batch, version_rows=version_rows, counts=counts, keyword=answered)
-        )
+        facts.extend(_facts_of(batch, version_rows=version_rows, counts=counts, keyword=answered))
 
     return reconcile(facts, keyword_state=keyword_state, keyword_reason=keyword_reason)
 
@@ -262,9 +258,7 @@ def _render(report: ReconcileReport, *, scope: str) -> list[str]:
     for index, (name, items) in enumerate(report.checks, start=1):
         label = CHECK_LABELS[name]
         if name == CHECK_KEYWORD_CURRENT_DRAFT and report.keyword_undecidable:
-            lines.append(
-                f"  check {index}/4 {label}: undecidable（{report.keyword_reason}）"
-            )
+            lines.append(f"  check {index}/4 {label}: undecidable（{report.keyword_reason}）")
             continue
         lines.append(f"  check {index}/4 {label}: {len(items)} disagreement(s)")
         lines.extend(f"    - {item.render()}" for item in items)
@@ -273,22 +267,16 @@ def _render(report: ReconcileReport, *, scope: str) -> list[str]:
         f"  info: pointer drafts without chunks: {len(report.pointer_drafts_without_chunks)}"
         "（rebuild may still be in flight — not a failure）"
     )
-    lines.extend(
-        f"    - {item.render()}" for item in report.pointer_drafts_without_chunks
-    )
+    lines.extend(f"    - {item.render()}" for item in report.pointer_drafts_without_chunks)
     if not report.keyword_undecidable:
         lines.append(
             "  info: keyword drafts without a current-draft slice: "
             f"{len(report.keyword_drafts_without_current)}（legacy docs / not written yet"
             " — not a failure）"
         )
-        lines.extend(
-            f"    - {item.render()}" for item in report.keyword_drafts_without_current
-        )
+        lines.extend(f"    - {item.render()}" for item in report.keyword_drafts_without_current)
     else:
-        lines.append(
-            "  （关键词那一维不可判定：能力不存在与数据缺失是两件事，这一维不判失败）"
-        )
+        lines.append("  （关键词那一维不可判定：能力不存在与数据缺失是两件事，这一维不判失败）")
     return lines
 
 

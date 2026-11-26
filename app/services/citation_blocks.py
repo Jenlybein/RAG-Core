@@ -195,7 +195,9 @@ def render_answer(citations: Sequence[Citation]) -> str:
     return "\n".join(lines)
 
 
-def evidence_state_of(*, citations: Sequence[Citation], materials: Sequence[Mapping[str, Any]]) -> str:
+def evidence_state_of(
+    *, citations: Sequence[Citation], materials: Sequence[Mapping[str, Any]]
+) -> str:
     """三态完整度：**由核心片数算出来**（不看模型自评，ADR-0029 决策二）。
 
     ``complete`` = 每一块都有核心片；``partial`` = 部分块有；``missing`` = 一条都没有
@@ -238,9 +240,7 @@ def build_finalizer_prompt(
         budget -= len(excerpt)
         title = str(row.get("title") or "")
         heading = str(row.get("heading_path") or "")
-        lines.append(
-            f"{index}. 《{title}》{f' · {heading}' if heading else ''}\n{excerpt}"
-        )
+        lines.append(f"{index}. 《{title}》{f' · {heading}' if heading else ''}\n{excerpt}")
     prompt = (
         f"问题：{query[:MAX_FINALIZER_QUERY_CHARS]}\n\n"
         f"最终材料（共 {len(materials)} 条，序号即引用下标）：\n" + "\n\n".join(lines)

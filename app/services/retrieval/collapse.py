@@ -182,9 +182,7 @@ async def collapse_results(
             result_collapse.UnitKey(
                 result_collapse.UNIT_SECTION, document_id, unit_id, "", section_part
             )
-        ] = tuple(
-            (index, content, chunk_id) for index, content, chunk_id, _type, _part in rows
-        )
+        ] = tuple((index, content, chunk_id) for index, content, chunk_id, _type, _part in rows)
         for _index, content, _chunk_id, chunk_type, table_part in rows:
             if chunk_type == "table":
                 tables[
@@ -204,9 +202,7 @@ async def collapse_results(
 
     # 唯一键是 (kb_id, chunk_id)（ADR-0010）：跨库同 ID 的两条结果必须能各自取到
     # 自己那条，否则代表片会拿错库的分数字段，甚至拿到空 dict。
-    by_result = {
-        (str(chunk.get("kb_id")), str(chunk.get("chunk_id"))): chunk for chunk in chunks
-    }
+    by_result = {(str(chunk.get("kb_id")), str(chunk.get("chunk_id"))): chunk for chunk in chunks}
     results: list[dict] = []
     for unit in units:
         # 以代表片那条结果为底：向量分 / 融合分 / 名次这些对外字段要原样保留，

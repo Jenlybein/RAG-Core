@@ -188,9 +188,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         if index_name in self._mapping_patched:
             return
         try:
-            await self._get_client().indices.put_mapping(
-                index=index_name, **build_mapping_update()
-            )
+            await self._get_client().indices.put_mapping(index=index_name, **build_mapping_update())
         except Exception as exc:  # noqa: BLE001 - 见上：补丁失败不拖垮写入
             logger.warning(
                 "keyword index mapping patch skipped",
@@ -228,9 +226,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         client = self._get_client()
         target = await self.ensure_version_index(version)
         current = await self._alias_targets()
-        actions = build_alias_actions(
-            alias=self._index_name, target=target, current=current
-        )
+        actions = build_alias_actions(alias=self._index_name, target=target, current=current)
         if not actions:
             # 已经指向目标：重复激活是幂等的 no-op，不多发一次可能失败的写。
             return
@@ -267,9 +263,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             await self.ensure_index(index_name)
             operations: list[dict] = []
             for document in group:
-                operations.append(
-                    {"index": {"_index": index_name, "_id": document["chunk_id"]}}
-                )
+                operations.append({"index": {"_index": index_name, "_id": document["chunk_id"]}})
                 operations.append(document)
 
             response = await self._get_client().bulk(operations=operations, refresh=True)
@@ -285,9 +279,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
                     ErrorCode.API_REQUEST_ERROR, "elasticsearch bulk indexing reported errors"
                 )
 
-    async def count_documents(
-        self, *, tenant_id: str, kb_id: str, index_version: str
-    ) -> int:
+    async def count_documents(self, *, tenant_id: str, kb_id: str, index_version: str) -> int:
         """数目标版本物理索引里这个租户 / 库 / 版本的文档数（``ready`` 前的校验）。
 
         版本条件在这层**看着冗余**（物理索引本来就只装一个版本），但它挡住的是最贵的一

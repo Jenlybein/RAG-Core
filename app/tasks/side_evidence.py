@@ -82,8 +82,13 @@ def run_side_evidence_task(
         cases = [case for case in payload.get("cases", []) if case.get("status") == "ok"]
         if not cases:
             write_run(
-                out_dir=target, run_id=run_id, judge_model="unknown", summary={}, results=[],
-                status="failed", error="没有可用的答案集：先跑 scripts/build_answer_set.py",
+                out_dir=target,
+                run_id=run_id,
+                judge_model="unknown",
+                summary={},
+                results=[],
+                status="failed",
+                error="没有可用的答案集：先跑 scripts/build_answer_set.py",
                 tenant_id=tenant_id,
             )
             return {"status": "failed", "run_id": run_id}
@@ -107,7 +112,13 @@ def run_side_evidence_task(
     except Exception as exc:  # noqa: BLE001 - 任务失败要落成状态，而不是只在 Worker 日志里
         logger.exception("side evidence crashed", run_id=run_id)
         write_run(
-            out_dir=target, run_id=run_id, judge_model="unknown", summary={}, results=[],
-            status="failed", error=f"{type(exc).__name__}: {exc}", tenant_id=tenant_id,
+            out_dir=target,
+            run_id=run_id,
+            judge_model="unknown",
+            summary={},
+            results=[],
+            status="failed",
+            error=f"{type(exc).__name__}: {exc}",
+            tenant_id=tenant_id,
         )
         return {"status": "failed", "run_id": run_id}

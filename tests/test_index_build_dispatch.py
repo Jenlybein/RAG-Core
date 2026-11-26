@@ -399,7 +399,6 @@ def test_a_failed_document_is_recorded_and_keeps_its_status(
 
     import asyncio
 
-
     sync_db.add(_document_row("fails-here"))
     sync_db.add(_build_row(planned=2))
     sync_db.commit()

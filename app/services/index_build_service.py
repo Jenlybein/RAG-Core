@@ -375,7 +375,7 @@ _FAILURE_BY_REASON: dict[str, type[AppError]] = {
 }
 
 
-def _failure_reason_of(truth: TruthSnapshot) -> str:
+def _failure_reason_of(truth: BuildTruth) -> str:
     """按真值选**失败原因文案**（:data:`_FAILURE_BY_REASON` 的正向）。
 
     三档的区分是为了让排查从「哪种失败」开始，而不是从「构建失败了」开始：
@@ -1588,9 +1588,7 @@ class IndexBuildService:
         :meth:`list_overdue_builds`）。
         """
 
-        return await index_version_repository.list_undone(
-            db, tenant_id=tenant_id, kb_id=kb_id
-        )
+        return await index_version_repository.list_undone(db, tenant_id=tenant_id, kb_id=kb_id)
 
     async def list_overdue_builds(
         self,

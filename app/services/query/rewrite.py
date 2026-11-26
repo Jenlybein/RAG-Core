@@ -29,7 +29,12 @@ from pydantic import BaseModel, field_validator
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
-from app.services.query_intent import INTENT_NO_CONTENT, INTENT_SEARCH, QueryIntent, ensure_search_intent
+from app.services.query_intent import (
+    INTENT_NO_CONTENT,
+    INTENT_SEARCH,
+    QueryIntent,
+    ensure_search_intent,
+)
 
 logger = structlog.get_logger(__name__)
 

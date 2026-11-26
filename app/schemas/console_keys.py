@@ -233,9 +233,7 @@ def key_data_of(api_key: ApiKey, policy: KeyPolicy | None) -> KeyData:
     )
 
 
-def issued_key_data_of(
-    api_key: ApiKey, policy: KeyPolicy | None, plaintext: str
-) -> IssuedKeyData:
+def issued_key_data_of(api_key: ApiKey, policy: KeyPolicy | None, plaintext: str) -> IssuedKeyData:
     """签发响应：列表那一行 + 原文。``plaintext`` 由服务层的 :class:`MintedKey` 给。"""
 
     row = key_data_of(api_key, policy)

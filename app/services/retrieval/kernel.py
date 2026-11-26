@@ -181,9 +181,7 @@ async def retrieve_kernel(
             max_unit_chars=max_unit_chars,
         )
 
-    return KernelOutcome(
-        chunks=collapsed, degraded_reason=degraded_reason, rerank=rerank_info
-    )
+    return KernelOutcome(chunks=collapsed, degraded_reason=degraded_reason, rerank=rerank_info)
 
 
 async def _retrieve_by_vector(

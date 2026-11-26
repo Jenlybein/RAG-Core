@@ -237,12 +237,8 @@ def create_mcp_server(
     return mcp
 
 
-def create_mcp_http_app(
-    *, get_async_db: Callable, retrieve: Callable, list_kbs: Callable
-):
+def create_mcp_http_app(*, get_async_db: Callable, retrieve: Callable, list_kbs: Callable):
     """挂成子应用；path="/" 让外层 mount 成为唯一的前缀来源。"""
 
-    mcp = create_mcp_server(
-        get_async_db=get_async_db, retrieve=retrieve, list_kbs=list_kbs
-    )
+    mcp = create_mcp_server(get_async_db=get_async_db, retrieve=retrieve, list_kbs=list_kbs)
     return mcp.http_app(path="/", transport="streamable-http", json_response=True)

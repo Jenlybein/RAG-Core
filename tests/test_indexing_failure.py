@@ -151,9 +151,7 @@ def _upload(client: TestClient):
     return client.post("/api/v1/documents/upload", json=_upload_payload())
 
 
-def test_upload_registers_queued_and_never_writes_index_logs(
-    offline_upload, log_dir: Path
-) -> None:
+def test_upload_registers_queued_and_never_writes_index_logs(offline_upload, log_dir: Path) -> None:
     """上传只登记：status=3、chunk_count=0、投递一次，且请求线程不写索引日志。"""
 
     client, session, enqueued = offline_upload

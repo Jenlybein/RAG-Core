@@ -30,9 +30,7 @@ class CreateKBRequest(BaseModel):
     split_strategy: SplitStrategy
     # 不传就按策略补全：structure → [markdown]，size → 五种全开。
     allowed_formats: list[FormatKind] | None = None
-    chunk_size: int = Field(
-        default=DEFAULT_CHUNK_SIZE, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE
-    )
+    chunk_size: int = Field(default=DEFAULT_CHUNK_SIZE, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE)
     #: 节段上限（第 16 步 #207）：超过就在片边界把一节切成几段。改它必须重建索引。
     section_part_max_chars: int = Field(
         default=DEFAULT_SECTION_PART_MAX_CHARS,

@@ -824,11 +824,7 @@ def ensure_api_key(
     )
 
     if existing is not None:
-        parsed = (
-            split_api_key_value(preferred_key_value)
-            if preferred_key_value
-            else None
-        )
+        parsed = split_api_key_value(preferred_key_value) if preferred_key_value else None
         if parsed is not None:
             preferred_key_id, secret = parsed
             if preferred_key_id == existing.id and verify_password(secret, existing.key_hash):
@@ -1136,4 +1132,3 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

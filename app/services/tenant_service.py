@@ -72,9 +72,7 @@ def create_tenant(
     # 超限。判在**落库之前**：不自洽的配置一旦进库，第一次调用就会失败，而那时改的是
     # 客户的生产配置；创建这里失败只是一次脚本 / 面板操作，有人盯着，改一下就好。
     ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan_spec_of(plan))
-    tenant = tenant_repository.create(
-        db, Tenant(id=tenant_id, name=name, plan_id=plan.id)
-    )
+    tenant = tenant_repository.create(db, Tenant(id=tenant_id, name=name, plan_id=plan.id))
     policy = key_policy_repository.create(db, row)
     # 提交由调用方圈：脚本 with transaction(db)。
     return CreatedTenant(tenant=tenant, policy=policy)
@@ -138,6 +136,7 @@ def _default_policy(*, tenant_id: str, plan: Plan, kb_ids: Sequence[str]) -> Key
         retrieval_mode="vector",
         retrieval_top_k=5,
         retrieval_rerank=False,
-        include_parent=True, max_unit_chars=2000,
+        include_parent=True,
+        max_unit_chars=2000,
         expand_table_rows=True,
     )

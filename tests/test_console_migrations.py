@@ -163,7 +163,7 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # 是第 16 步 #207 的单条结果上限与构建参数（``unit_cap_and_build_params``），再接 #214 的
     # 构建失败明细与重投次数（``add_build_failure_detail``）之后是 #220 的单库 token 容量
     # （``add_kb_token_capacity``）、#222 的每日切块账、#215 的构建自动激活列、#225 的
-# 重投计数与心跳三列
+    # 重投计数与心跳三列
     # ——当前链尾。
     assert heads == {_revision_of(_migration_path("add_document_index_heartbeat"))}
 

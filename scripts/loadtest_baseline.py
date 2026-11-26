@@ -130,7 +130,10 @@ def _build_corpus() -> Corpus:
         2: ["c4", "c5"],
         3: ["c6", "c7", "c8"],
     }
-    content = {f"c{index}": f"第 {index} 片的正文：这里放一段与问句无关的说明文字。" for index in range(1, 9)}
+    content = {
+        f"c{index}": f"第 {index} 片的正文：这里放一段与问句无关的说明文字。"
+        for index in range(1, 9)
+    }
 
     def _row(chunk_id: str, section: int, *, score: float, kb_id: str | None = None) -> dict:
         document_id, heading_path = sections[section]
@@ -277,6 +280,7 @@ VECTOR_SQL = text(
     "SELECT chunk_id FROM chunks WHERE tenant_id = :tenant_id "
     "ORDER BY embedding <=> :query_vector LIMIT :top_k"
 )
+
 
 class ScriptedSession:
     """**异步**会话替身：只回答检索路径真正用到的那几种语句形状（第 11 步票 #127）。
@@ -588,8 +592,8 @@ class Harness:
         identity.use()
 
         # 两处都**间接**调用 ``self._new_session``：敏感性跑换的是这个属性，注入缝本身不动。
-        self.app.dependency_overrides[async_session_module.get_async_db] = (
-            lambda: self._new_session()
+        self.app.dependency_overrides[async_session_module.get_async_db] = lambda: (
+            self._new_session()
         )
         self.app.dependency_overrides[get_current_key] = identity.context
 
@@ -863,9 +867,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     levels = _levels_of(args.levels)
     if args.requests < 1:
         raise SystemExit("--requests 至少 1")
-    sweep_values = [
-        float(item) for item in args.sweep_db.replace(" ", "").split(",") if item
-    ]
+    sweep_values = [float(item) for item in args.sweep_db.replace(" ", "").split(",") if item]
 
     # 覆盖护栏放在开跑之前：跑到一半才拒绝，等于白跑一轮还让人以为成功了。
     _refuse_to_overwrite_baseline(

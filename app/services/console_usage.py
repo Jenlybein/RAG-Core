@@ -80,6 +80,7 @@ def _failed_of(*, requests: int, ok: int, unknown: int) -> int:
 
     return max(0, requests - ok - unknown)
 
+
 def _now_local_naive() -> datetime:
     """列里存的形状：本地裸时间（``app.db.base.now``）。"""
 
@@ -193,9 +194,7 @@ async def _chunk_tokens(
     """
 
     if window.uses_daily:
-        statement = select(
-            func.coalesce(func.sum(UsageDaily.meter_chunk), 0)
-        ).where(
+        statement = select(func.coalesce(func.sum(UsageDaily.meter_chunk), 0)).where(
             UsageDaily.day >= window.since.date(),
             UsageDaily.day < window.until.date(),
             UsageDaily.endpoint == INDEX_ENDPOINT,
@@ -203,9 +202,7 @@ async def _chunk_tokens(
         if tenant_id is not None:
             statement = statement.where(UsageDaily.tenant_id == tenant_id)
     else:
-        statement = select(
-            func.coalesce(func.sum(UsageEvent.meter_chunk), 0)
-        ).where(
+        statement = select(func.coalesce(func.sum(UsageEvent.meter_chunk), 0)).where(
             UsageEvent.created_at >= window.since,
             UsageEvent.created_at < window.until,
             UsageEvent.endpoint == INDEX_ENDPOINT,
@@ -424,9 +421,7 @@ async def _totals_from_daily(
     if key_id is not None:
         statement = statement.where(UsageDaily.key_id == key_id)
     # 与明细路径同一条排除规则：索引行不进请求统计。
-    statement = statement.where(
-        _denies_index(UsageDaily.endpoint)
-    )
+    statement = statement.where(_denies_index(UsageDaily.endpoint))
     mapping = (await db.execute(statement)).one()._mapping
     requests = int(mapping["requests"] or 0)
     ok = int(mapping["ok"] or 0)

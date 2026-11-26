@@ -137,9 +137,7 @@ class DbLedger:
         return list(self._calls)
 
     def record(self, method: str, duration_ms: float, *, blocking: bool) -> None:
-        self._calls.append(
-            DbCall(method=method, duration_ms=float(duration_ms), blocking=blocking)
-        )
+        self._calls.append(DbCall(method=method, duration_ms=float(duration_ms), blocking=blocking))
 
     def reset(self) -> None:
         self._calls.clear()
@@ -209,9 +207,7 @@ class LevelResult:
             "db_call_ms": self.db_call_ms,
             "latency": {key: round(value, 3) for key, value in self.latency.items()},
             "db": self.db.as_dict(),
-            "cross_check": {
-                key: round(value, 6) for key, value in self.cross_check.items()
-            },
+            "cross_check": {key: round(value, 6) for key, value in self.cross_check.items()},
         }
 
 
@@ -312,9 +308,7 @@ def render_report(
         "- **P50 / P95**：逐请求墙钟耗时，升序第 `⌈p/100 × N⌉` 个，**不插值**（最近秩法）。"
         "与 `scripts/eval_gate.py` 的延迟口径同一把尺子。"
     )
-    lines.append(
-        "- **吞吐**：该档完成的请求数 ÷ 该档墙钟（req/s）。"
-    )
+    lines.append("- **吞吐**：该档完成的请求数 ÷ 该档墙钟（req/s）。")
     lines.append(
         "- **错误率**：HTTP 非 200 或业务码非 0 的占比。**降级单列**：混合模式降级是成功响应"
         "（`code=0` + `degraded_reason`），算进错误率会让「并发下悄悄只剩一路」看不见。"
@@ -327,9 +321,7 @@ def render_report(
 
     lines.append("## 三、三档并发读数")
     lines.append("")
-    lines.append(
-        "| 并发 | 请求数 | P50 (ms) | P95 (ms) | 吞吐 (req/s) | 错误率 | 降级率 |"
-    )
+    lines.append("| 并发 | 请求数 | P50 (ms) | P95 (ms) | 吞吐 (req/s) | 错误率 | 降级率 |")
     lines.append("| --- | --- | --- | --- | --- | --- | --- |")
     for level in levels:
         lines.append(
@@ -350,7 +342,9 @@ def render_report(
         first_p95 = first.latency.get("p95_ms", 0.0)
         last_p95 = last.latency.get("p95_ms", 0.0)
         p95_growth = (last_p95 / first_p95) if first_p95 else 0.0
-        throughput_growth = (last.throughput_rps / first.throughput_rps) if first.throughput_rps else 0.0
+        throughput_growth = (
+            (last.throughput_rps / first.throughput_rps) if first.throughput_rps else 0.0
+        )
         concurrency_growth = last.concurrency / first.concurrency if first.concurrency else 0.0
         lines.append(
             "从 {c1} 并发到 {c2} 并发（并发 ×{cg:g}）：P95 从 {p1} ms 涨到 {p2} ms"
@@ -402,9 +396,7 @@ def render_report(
     )
     lines.append("| --- | --- | --- | --- | --- | --- |")
     for level in levels:
-        per_request = (
-            level.db.blocking_calls / level.requests if level.requests else 0.0
-        )
+        per_request = level.db.blocking_calls / level.requests if level.requests else 0.0
         serial_ms = level.cross_check.get("serial_ms_per_request", 0.0)
         busy = level.cross_check.get("loop_busy_share", 0.0)
         lines.append(
@@ -421,9 +413,7 @@ def render_report(
     if levels:
         top = levels[-1]
         if top.db.by_method:
-            lines.append(
-                f"最高一档（{top.concurrency} 并发）按方法分解（主循环线程，ms）："
-            )
+            lines.append(f"最高一档（{top.concurrency} 并发）按方法分解（主循环线程，ms）：")
             lines.append("")
             lines.append("| 方法 | 耗时 (ms) |")
             lines.append("| --- | --- |")
@@ -454,9 +444,7 @@ def render_report(
                 "`commit` 这几次往返。它们现在都是 `await` 的，因此记在最后一列。"
             )
             lines.append("")
-    lines.append(
-        "两个占比是**两件事**，都要看："
-    )
+    lines.append("两个占比是**两件事**，都要看：")
     lines.append("")
     lines.append(
         "- **占请求时间** = 阻塞耗时 ÷ 这次请求的墙钟。它回答「这次请求里有多少时间被同步"
@@ -484,7 +472,9 @@ def render_report(
             "所以绝对数只在这组假设下成立。形状（并发越高越差、吞吐封顶）不随它改变。"
         )
         lines.append("")
-        lines.append("| 单次 DB (ms) | 并发 | P50 (ms) | P95 (ms) | 吞吐 (req/s) | 阻塞主循环的墙钟比例 |")
+        lines.append(
+            "| 单次 DB (ms) | 并发 | P50 (ms) | P95 (ms) | 吞吐 (req/s) | 阻塞主循环的墙钟比例 |"
+        )
         lines.append("| --- | --- | --- | --- | --- | --- |")
         for level in db_sweep:
             lines.append(
@@ -501,9 +491,7 @@ def render_report(
 
     lines.append("## 五、与第 10 步的既有读数对照")
     lines.append("")
-    lines.append(
-        "| 读数 | 值 | 口径 | 能不能直接比 |"
-    )
+    lines.append("| 读数 | 值 | 口径 | 能不能直接比 |")
     lines.append("| --- | --- | --- | --- |")
     lines.append(
         "| 第 10 步 · 单请求 P95 | **{p95} ms** | 评测口径：127 题逐题耗时，最近秩法；"

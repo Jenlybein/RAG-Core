@@ -72,6 +72,7 @@ def _async_url() -> str:
 
     return INTEGRATION_DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
+
 #: 本文件专用的租户与库：清理只按它们收口，绝不扫别人的行。
 TENANT_ID = "tenant_sweeper"
 KB_ID = "kb-sweeper"

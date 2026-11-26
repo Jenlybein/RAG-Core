@@ -150,9 +150,7 @@ def _read_source_text(document: MissingContentDocument) -> str:
     的纪律）。
     """
 
-    return parse_source_file(
-        document.source_file_path, filename=document.source_filename
-    ).content
+    return parse_source_file(document.source_file_path, filename=document.source_filename).content
 
 
 def backfill_documents(
@@ -262,9 +260,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if database_is_migrated(db):
             print(ALREADY_MIGRATED_MESSAGE, file=sys.stderr)
             return 2
-        stats = backfill_documents(
-            db, kb_id=args.kb_id, limit=args.limit, apply=args.apply
-        )
+        stats = backfill_documents(db, kb_id=args.kb_id, limit=args.limit, apply=args.apply)
     finally:
         db.close()
 

@@ -202,17 +202,17 @@ SOURCE_FIELDS = (
 def build_mapping_update() -> dict:
     """存量物理索引要补的那一小块 mapping（#174，additive ``put_mapping`` 的载荷）。
 
-    **为什么需要它**：物理索引是第 11 步建的，那时还没有 ``doc_version`` /
-    ``is_current`` 两个字段。ES 对**未映射**字段的 ``term`` 查询不报错，只是命中 0 条
-   ——症状是关键词路静默全空，而向量路照常返回结果，混合检索看起来只是「少了一路」。
+     **为什么需要它**：物理索引是第 11 步建的，那时还没有 ``doc_version`` /
+     ``is_current`` 两个字段。ES 对**未映射**字段的 ``term`` 查询不报错，只是命中 0 条
+    ——症状是关键词路静默全空，而向量路照常返回结果，混合检索看起来只是「少了一路」。
 
-    为什么补 mapping 而不是重建索引：``settings`` 与 ``analysis`` 是索引级的、不能后补，
-    但**字段**可以 additive 地加。存量索引里的老文档没有这两个键，它们的 ``is_current``
-    term 匹配不到——那正是「老数据没有稿号信息」的如实结果，由对账脚本而不是检索来管。
-    **载荷只含 ``properties``**：带上 settings 会被 ES 直接拒绝。
+     为什么补 mapping 而不是重建索引：``settings`` 与 ``analysis`` 是索引级的、不能后补，
+     但**字段**可以 additive 地加。存量索引里的老文档没有这两个键，它们的 ``is_current``
+     term 匹配不到——那正是「老数据没有稿号信息」的如实结果，由对账脚本而不是检索来管。
+     **载荷只含 ``properties``**：带上 settings 会被 ES 直接拒绝。
 
-    只有这两个字段在这里定义一次：:func:`build_es_mapping` 与补丁共用同一份，写两遍
-    迟早一边加了字段、另一边漏掉。
+     只有这两个字段在这里定义一次：:func:`build_es_mapping` 与补丁共用同一份，写两遍
+     迟早一边加了字段、另一边漏掉。
     """
 
     return {
@@ -386,9 +386,7 @@ def build_purge_query(
     return {"query": {"bool": {"filter": filters}}}
 
 
-def build_current_draft_update(
-    *, document_id: str, tenant_id: str, doc_version: int
-) -> dict:
+def build_current_draft_update(*, document_id: str, tenant_id: str, doc_version: int) -> dict:
     """返回「把这篇文档的当前稿标记翻到某一稿」的 ``update_by_query`` 请求体（#175）。
 
     ## 为什么是 ``update_by_query`` 而不是「逐条改」

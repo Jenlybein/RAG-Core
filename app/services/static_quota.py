@@ -144,9 +144,7 @@ async def ensure_upload_quota(
     )
     # 容量：库里已经装满就不再收新的（这一篇会占多少要等解析完才知道，见
     # ``ensure_kb_token_quota`` 的注释）。
-    await ensure_kb_token_quota(
-        db, tenant_id=tenant_id, kb_id=kb_id, plan=plan
-    )
+    await ensure_kb_token_quota(db, tenant_id=tenant_id, kb_id=kb_id, plan=plan)
 
 
 async def ensure_kb_token_quota(

@@ -29,9 +29,7 @@ from app.repositories import knowledge_base_repository
 async def ensure_visible(db: AsyncSession, *, tenant_id: str, kb_id: str) -> KnowledgeBase:
     """返回该租户可见的知识库，否则抛 20008；不泄露它是否存在。"""
 
-    kb = await knowledge_base_repository.get_by_id_for_tenant(
-        db, kb_id, tenant_id=tenant_id
-    )
+    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
     return kb

@@ -18,9 +18,7 @@ from app.providers.parsers.text import TextParser
 
 
 def get_parser_registry() -> ParserRegistry:
-    return ParserRegistry(
-        [DocxParser(), PdfParser(), HtmlParser(), TextParser(), MarkdownParser()]
-    )
+    return ParserRegistry([DocxParser(), PdfParser(), HtmlParser(), TextParser(), MarkdownParser()])
 
 
 __all__ = [

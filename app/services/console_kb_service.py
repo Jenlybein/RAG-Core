@@ -39,6 +39,8 @@
 
 from __future__ import annotations
 
+import structlog
+
 
 from collections.abc import Sequence
 from dataclasses import dataclass
@@ -99,6 +101,8 @@ from app.services.index_build_service import IndexBuildService
 
 from app.services.indexing_service import purge_document_chunks
 from app.utils.status import DocumentStatus
+
+logger = structlog.get_logger(__name__)
 
 
 #: 审计动作名：列表与筛选取的是这些字符串，因此只在服务层写一次。
@@ -174,9 +178,7 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
 
     # 套餐在**循环外**解析一次：容量上限是租户级属性，每个库都查一遍套餐既多几次往返，
     # 又让「同一个库在同一次响应里有两个上限」这种错有机可乘。
-    plan = await plan_service.resolve_plan(
-        db, await _tenant_plan_id(db, tenant_id=tenant_id)
-    )
+    plan = await plan_service.resolve_plan(db, await _tenant_plan_id(db, tenant_id=tenant_id))
     nodes: list[TreeKnowledgeBase] = []
     for kb in await knowledge_base_repository.list_by_tenant(db, tenant_id):
         documents = await document_repository.list_by_kb_async(db, kb.id, tenant_id=tenant_id)
@@ -193,9 +195,7 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                 section_part_max_chars=settings_of(kb)["section_part_max_chars"],
                 needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
                 build_progress=await _build_progress_of(db, kb_id=kb.id, tenant_id=tenant_id),
-                token_usage=await _token_usage_of(
-                    db, kb_id=kb.id, tenant_id=tenant_id, plan=plan
-                ),
+                token_usage=await _token_usage_of(db, kb_id=kb.id, tenant_id=tenant_id, plan=plan),
                 documents=[
                     TreeDocument(
                         document_id=document.id,
@@ -319,9 +319,7 @@ async def _token_usage_of(
     try:
         used = await document_repository.count_tokens_in_kb(db, kb_id, tenant_id=tenant_id)
     except Exception:  # noqa: BLE001 - 容量显示失败不能把整个树打成 500
-        logger.warning(
-            "kb token usage unavailable", kb_id=kb_id, tenant_id=tenant_id
-        )
+        logger.warning("kb token usage unavailable", kb_id=kb_id, tenant_id=tenant_id)
         return None
     return TokenUsageData(used=used, limit=int(plan.max_tokens_per_kb))
 
@@ -599,9 +597,7 @@ async def reindex_document(
     #
     # 真值判据（解析后、知道本篇多少 token 那一次）仍在 Worker 里，这一道只是把
     # 「注定失败」挡在代价最低的地方。
-    plan = await plan_service.resolve_plan(
-        db, await _tenant_plan_id(db, tenant_id=tenant_id)
-    )
+    plan = await plan_service.resolve_plan(db, await _tenant_plan_id(db, tenant_id=tenant_id))
     await static_quota.ensure_kb_token_quota(
         db,
         tenant_id=tenant_id,

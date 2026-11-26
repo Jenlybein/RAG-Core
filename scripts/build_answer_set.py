@@ -353,9 +353,7 @@ def _is_negated(text: str, start: int, *, window: int = 12) -> bool:
     return any(marker in head for marker in _NEGATION_MARKERS)
 
 
-def check_answer(
-    answer: str, sources: Sequence[str], *, question: str = ""
-) -> dict[str, Any]:
+def check_answer(answer: str, sources: Sequence[str], *, question: str = "") -> dict[str, Any]:
     """机械校验：答案里的每个事实原子都要在**所给切片正文**里找得到。
 
     返回：
@@ -399,12 +397,8 @@ def check_answer(
             entry["in_question"] = bool(asked) and atom.text in asked
         checked.append(entry)
 
-    missing = [
-        item for item in checked if not item["found"] and item["origin"] != "chinese"
-    ]
-    soft_missing = [
-        item for item in checked if not item["found"] and item["origin"] == "chinese"
-    ]
+    missing = [item for item in checked if not item["found"] and item["origin"] != "chinese"]
+    soft_missing = [item for item in checked if not item["found"] and item["origin"] == "chinese"]
     return {
         "passed": not missing,
         "missing": missing,
@@ -456,9 +450,7 @@ def allocate_quotas(
 
     warnings: list[str] = []
     eligible = {
-        name: size
-        for name, size in pools.items()
-        if size > 0 and name not in EXCLUDED_TYPES
+        name: size for name, size in pools.items() if size > 0 and name not in EXCLUDED_TYPES
     }
     if only:
         requested = list(only)
@@ -581,7 +573,9 @@ def select_cases(
     # 产物按「题型 → 题号」排：报告 diff 才读得懂；limit 的取样顺序不影响落盘顺序。
     rotated.sort(key=lambda question: (question.type, question.id))
     return [
-        SelectedCase(id=question.id, type=question.type, query=question.query, labels=question.labels)
+        SelectedCase(
+            id=question.id, type=question.type, query=question.query, labels=question.labels
+        )
         for question in rotated
     ]
 
@@ -622,7 +616,11 @@ def build_prompt(case: SelectedCase, sources: Sequence[SourceChunk]) -> tuple[st
     """
 
     system = _PROMPT_RULES + (_FALSE_PREMISE_RULE if case.type == "false_premise" else "")
-    blocks: list[str] = [f"问题：{case.query}", "", f"只能依据下列片段回答（共 {len(sources)} 条）："]
+    blocks: list[str] = [
+        f"问题：{case.query}",
+        "",
+        f"只能依据下列片段回答（共 {len(sources)} 条）：",
+    ]
     for index, source in enumerate(sources, start=1):
         blocks.extend(
             [
@@ -717,9 +715,7 @@ async def run_generation(
             else:
                 record["status"] = "ok"
                 record["answer"] = answer
-                record["checks"] = check_answer(
-                    answer, [source.content for source in sources]
-                )
+                record["checks"] = check_answer(answer, [source.content for source in sources])
         record["elapsed_ms"] = round((time.perf_counter() - started) * 1000, 2)
         records.append(record)
     return records
@@ -748,7 +744,10 @@ def _public_case(record: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def pick_spot_checks(
-    records: Sequence[Mapping[str, Any]], *, seed: int = DEFAULT_SEED, count: int = DEFAULT_SPOT_COUNT
+    records: Sequence[Mapping[str, Any]],
+    *,
+    seed: int = DEFAULT_SEED,
+    count: int = DEFAULT_SPOT_COUNT,
 ) -> list[dict[str, Any]]:
     """人工抽检的候选：固定种子抽 ``count`` 条**已生成**的题，带依据片段前 200 字。
 
@@ -797,7 +796,9 @@ def build_payload(
     statuses = Counter(str(record.get("status")) for record in records)
     ok_count = statuses.get("ok", 0)
     check_passed = sum(
-        1 for record in records if record.get("status") == "ok" and record.get("checks", {}).get("passed")
+        1
+        for record in records
+        if record.get("status") == "ok" and record.get("checks", {}).get("passed")
     )
     stats = {
         "requested": len(records),
@@ -812,7 +813,8 @@ def build_payload(
     per_type: dict[str, dict[str, int]] = {}
     for record in records:
         block = per_type.setdefault(
-            str(record.get("type")), {"count": 0, "ok": 0, "refused": 0, "failed": 0, "check_passed": 0}
+            str(record.get("type")),
+            {"count": 0, "ok": 0, "refused": 0, "failed": 0, "check_passed": 0},
         )
         block["count"] += 1
         status = str(record.get("status"))
@@ -895,7 +897,9 @@ def render_report(payload: Mapping[str, Any], *, trial: Mapping[str, Any] | None
         "",
         f"- 生成时间：{payload.get('generated_at')}",
         f"- 裁判模型：`{payload.get('judge_model')}`"
-        + (f"（供应商 `{judge.get('provider')}`，地址 `{judge.get('base_url')}`）" if judge else ""),
+        + (
+            f"（供应商 `{judge.get('provider')}`，地址 `{judge.get('base_url')}`）" if judge else ""
+        ),
         f"- 题库：`eval/questions.json`（sha256 `{questions_version.get('sha256')}`，"
         f"{questions_version.get('count')} 题）",
         f"- 语料：版本 `{corpus.get('version')}`，{corpus.get('documents')} 篇 / {corpus.get('chunks')} 片",
@@ -966,7 +970,9 @@ def render_report(payload: Mapping[str, Any], *, trial: Mapping[str, Any] | None
             lines.append(f"- **{item.get('id')}**（{item.get('type')}）：缺失 {missing}")
             lines.append(f"  - 答案：{item.get('answer')}")
         lines.append("")
-        lines.append("按票面要求，这些条目**只标出不改写**：答案原样保留，供人或后续的裁判流程判读。")
+        lines.append(
+            "按票面要求，这些条目**只标出不改写**：答案原样保留，供人或后续的裁判流程判读。"
+        )
     else:
         lines.append("无（生成成功的题全部通过机械校验）。")
     lines.append("")
@@ -994,7 +1000,9 @@ def render_report(payload: Mapping[str, Any], *, trial: Mapping[str, Any] | None
                 ]
             )
         lines.append("**抽检结论**：以上逐条人工核对，答案中的事实、数字与编号均可回溯到所给片段；")
-        lines.append("未发现库外知识。若后续复核发现偏差，在这里追加一条记录，不要改动作业产物本身。")
+        lines.append(
+            "未发现库外知识。若后续复核发现偏差，在这里追加一条记录，不要改动作业产物本身。"
+        )
     else:
         lines.append("无（本次没有生成成功的题可供抽检）。")
     lines.append("")
@@ -1045,7 +1053,7 @@ def render_report(payload: Mapping[str, Any], *, trial: Mapping[str, Any] | None
             "## 八、复现命令",
             "",
             "```powershell",
-            "$env:UV_DEFAULT_INDEX=\"https://mirrors.aliyun.com/pypi/simple/\"",
+            '$env:UV_DEFAULT_INDEX="https://mirrors.aliyun.com/pypi/simple/"',
             "uv sync --frozen",
             "uv run --frozen python scripts/build_answer_set.py --limit 3 "
             "--out eval/answers_v1.trial.json --no-report",
@@ -1067,7 +1075,9 @@ def load_questions() -> list[QuestionRef]:
 
     questions, _ = _load_questions()
     return [
-        QuestionRef(id=question.id, type=question.type, query=question.query, labels=question.labels)
+        QuestionRef(
+            id=question.id, type=question.type, query=question.query, labels=question.labels
+        )
         for question in questions
     ]
 
@@ -1225,15 +1235,26 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="生成旁证答案集：只喂标注切片、机械校验、失败留痕（#108）",
     )
-    parser.add_argument("--limit", type=int, default=None, help="只跑前 N 题（跨题型轮转），用于验证通路")
-    parser.add_argument("--types", default=None, help="只跑这些题型，逗号分隔（如 exact_code,model_number）")
-    parser.add_argument("--seed", type=int, default=DEFAULT_SEED, help=f"选题种子（默认 {DEFAULT_SEED}）")
-    parser.add_argument("--total", type=int, default=DEFAULT_TOTAL, help=f"总题数（默认 {DEFAULT_TOTAL}）")
+    parser.add_argument(
+        "--limit", type=int, default=None, help="只跑前 N 题（跨题型轮转），用于验证通路"
+    )
+    parser.add_argument(
+        "--types", default=None, help="只跑这些题型，逗号分隔（如 exact_code,model_number）"
+    )
+    parser.add_argument(
+        "--seed", type=int, default=DEFAULT_SEED, help=f"选题种子（默认 {DEFAULT_SEED}）"
+    )
+    parser.add_argument(
+        "--total", type=int, default=DEFAULT_TOTAL, help=f"总题数（默认 {DEFAULT_TOTAL}）"
+    )
     parser.add_argument(
         "--per-type-min", type=int, default=DEFAULT_PER_TYPE_MIN, help="每题型下限（默认 2）"
     )
     parser.add_argument(
-        "--per-type-max", type=int, default=None, help="每题型上限（默认不限；给 3 会因 11×3<50 报警）"
+        "--per-type-max",
+        type=int,
+        default=None,
+        help="每题型上限（默认不限；给 3 会因 11×3<50 报警）",
     )
     parser.add_argument("--out", default=str(DEFAULT_OUT), help="机读产物路径")
     parser.add_argument("--report", default=None, help="人读报告路径（默认与 --out 同名前缀）")
@@ -1274,7 +1295,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     chunks, files = load_corpus_chunks()
     corpus = corpus_snapshot(files, chunks)
 
-    only = tuple(name.strip() for name in args.types.split(",") if name.strip()) if args.types else None
+    only = (
+        tuple(name.strip() for name in args.types.split(",") if name.strip())
+        if args.types
+        else None
+    )
     quotas, quota_warnings = allocate_quotas(
         type_pools(questions),
         total=args.total,
@@ -1334,9 +1359,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    out_path.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
-    )
+    out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     stats = payload["stats"]
     print(
         f"写盘 {out_path}：成功 {stats['ok']} / 拒答 {stats['refused']} / 失败 {stats['failed']}，"

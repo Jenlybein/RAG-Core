@@ -697,8 +697,7 @@ class OverrideReport:
         return {
             key: value
             for key, value in self.valid.items()
-            if SETTING_SPECS[key].target == TARGET_SETTINGS
-            and SETTING_SPECS[key].tier in tiers
+            if SETTING_SPECS[key].target == TARGET_SETTINGS and SETTING_SPECS[key].tier in tiers
         }
 
 
@@ -851,9 +850,7 @@ def _apply_report(report: OverrideReport, *, include_restart: bool) -> bool:
     # * 上一次覆盖过、这次库里已经没有的**热更键** → 写回 `.env` 缺省值；
     # * 上一次覆盖过的**第二档键** → **不回收**：它的值只能由下一次重启重新读入，
     #   运行期把它改回缺省同样是一次「不重启就换了 chunk_size」的静默生效。
-    restored = {
-        key for key in previous - set(candidates) if SETTING_SPECS[key].tier == TIER_HOT
-    }
+    restored = {key for key in previous - set(candidates) if SETTING_SPECS[key].tier == TIER_HOT}
     kept_restart = {key for key in previous if SETTING_SPECS[key].tier == TIER_RESTART}
     to_apply = set(candidates) | restored
     # 只写「这次被覆盖的键」「第二档已经生效过的键（值不变）」与「要回收的热更键」：
@@ -904,10 +901,7 @@ def ensure_runtime_overrides(
     global _refreshing
     current = time.monotonic()
     with _state_lock:
-        if (
-            _last_checked_at is not None
-            and current - _last_checked_at < REFRESH_INTERVAL_SECONDS
-        ):
+        if _last_checked_at is not None and current - _last_checked_at < REFRESH_INTERVAL_SECONDS:
             return
         if _refreshing:
             return
@@ -1137,9 +1131,7 @@ async def preview_impact(db: AsyncSession, values: Mapping[str, Any]) -> Setting
         params = retrieval_params_of(snapshot)
         name = await _tenant_name(db, policy.tenant_id)
 
-        quality_loss = (
-            turning_off_rerank and params.rerank and plan.rerank_allowed
-        ) or (
+        quality_loss = (turning_off_rerank and params.rerank and plan.rerank_allowed) or (
             turning_off_rewrite and snapshot.rewrite_allowed and plan.rewrite_allowed
         )
         if quality_loss and name not in degraded:

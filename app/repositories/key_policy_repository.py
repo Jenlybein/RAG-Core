@@ -59,7 +59,5 @@ async def list_by_tenant(db: AsyncSession, tenant_id: str) -> list[KeyPolicy]:
     按 id 排序只为让两次读的结果稳定；顺序不参与任何判定。
     """
 
-    statement = (
-        select(KeyPolicy).where(KeyPolicy.tenant_id == tenant_id).order_by(KeyPolicy.id)
-    )
+    statement = select(KeyPolicy).where(KeyPolicy.tenant_id == tenant_id).order_by(KeyPolicy.id)
     return list((await db.execute(statement)).scalars().all())

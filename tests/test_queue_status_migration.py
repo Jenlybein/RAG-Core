@@ -228,9 +228,7 @@ def test_the_migration_never_touches_the_schema(direction: str) -> None:
     """纯数据迁移：列集合与列序逐项不变，一行 DDL 都没有。"""
 
     connection = _migrate(direction)
-    columns = [
-        column["name"] for column in sa.inspect(connection).get_columns("documents")
-    ]
+    columns = [column["name"] for column in sa.inspect(connection).get_columns("documents")]
 
     assert columns == [
         "id",

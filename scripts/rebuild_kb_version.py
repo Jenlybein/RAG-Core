@@ -77,9 +77,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 logger = structlog.get_logger(__name__)
 
 
-async def resolve_tenant_id(
-    db: AsyncSession, *, kb_id: str, tenant_id: str | None
-) -> str:
+async def resolve_tenant_id(db: AsyncSession, *, kb_id: str, tenant_id: str | None) -> str:
     """``--tenant-id`` 缺省时取该库的 ``tenant_id``；库不存在抛 ``LookupError``。
 
     运维脚本是唯一「先不知道租户」的调用点（与 ``reindex_knowledge_base`` 同一处处境）：

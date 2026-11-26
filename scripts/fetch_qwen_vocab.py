@@ -58,9 +58,7 @@ def _wheel_url() -> str:
     with urllib.request.urlopen(api, timeout=30) as response:
         payload = json.load(response)
     for item in payload["urls"]:
-        if item["packagetype"] == "bdist_wheel" and item["filename"].endswith(
-            "-none-any.whl"
-        ):
+        if item["packagetype"] == "bdist_wheel" and item["filename"].endswith("-none-any.whl"):
             return str(item["url"])
     raise SystemExit(f"dashscope {DASHSCOPE_VERSION} 没有找到 any-wheel")
 

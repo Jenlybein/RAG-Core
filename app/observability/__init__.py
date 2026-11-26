@@ -197,7 +197,4 @@ async def emit_feedback_score_off_loop(
     与 trace 那一支同一条理由；反馈接口也在请求路径上，观测栈慢不该把它的 P95 一起拖下去。
     """
 
-    await asyncio.to_thread(
-        emit_feedback_score, trace_id=trace_id, score=score, comment=comment
-    )
-
+    await asyncio.to_thread(emit_feedback_score, trace_id=trace_id, score=score, comment=comment)

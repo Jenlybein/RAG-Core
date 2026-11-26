@@ -83,9 +83,7 @@ async def verify_knowledge_base(
     )
     identity = verify_identity(IdentityRow(*row) for row in rows)
 
-    print(
-        f"verify_index_counts: kb_id={kb.id} tenant_id={tenant_id} version={version}"
-    )
+    print(f"verify_index_counts: kb_id={kb.id} tenant_id={tenant_id} version={version}")
     for label, value in describe_counts(counts):
         print(f"  {label}: {value}")
     if counts.keyword_documents is None:

@@ -145,9 +145,7 @@ def test_meter_usage_reads_each_book_from_its_own_namespace_and_column(
 
     # 第四本账（#222/#223）是新增的第四栏：切块的 token 桶，与前三本互不相干。
     assert seen == [KEY_NAMESPACE, RERANK_NAMESPACE, LLM_NAMESPACE, CHUNK_NAMESPACE]
-    assert books["usage"] == console_service.DailyUsageView(
-        used=3, limit=free.retrieve_daily
-    )
+    assert books["usage"] == console_service.DailyUsageView(used=3, limit=free.retrieve_daily)
     assert books["chunk_usage"].limit == free.chunk_daily_tokens
     assert books["chunk_usage"].unit == "tokens", "第四本账按 token 计，不是次数"
     assert books["rerank_usage"].limit == 0, "free 档不含重排：上限就该是 0，由面板画「未开通」"

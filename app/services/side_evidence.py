@@ -74,9 +74,7 @@ _QUOTA_MARKERS = ("AccountQuotaExceeded", "429", "TooManyRequests", "quota")
 _AUTH_MARKERS = ("401", "403", "Unauthorized", "invalid_api_key", "AuthenticationError")
 #: 供应商在 429 里会写恢复时间（`reset at 2026-11-16 00:00:00 +0800 CST`）。
 #: 抽取是**尽力而为**：抽不到就不提时间，绝不让它是这条诊断的前提。
-_RESET_AT = re.compile(
-    r"reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})"
-)
+_RESET_AT = re.compile(r"reset at (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} [+-]\d{4})")
 
 
 def diagnose_all_unscored(errors: Sequence[str]) -> str:
@@ -179,10 +177,24 @@ def build_report(
 
     errors = [item for item in results if item.error]
     if errors:
-        lines += ["", "## 裁判失败的题（**已从平均里排除**，不是 0 分）", "", "| 题 | 原因 |", "| --- | --- |"]
+        lines += [
+            "",
+            "## 裁判失败的题（**已从平均里排除**，不是 0 分）",
+            "",
+            "| 题 | 原因 |",
+            "| --- | --- |",
+        ]
         lines += [f"| {item.id} | {item.error} |" for item in errors]
 
-    lines += ["", "## 复现", "", "```powershell", "uv run python scripts/eval_side_evidence.py", "```", ""]
+    lines += [
+        "",
+        "## 复现",
+        "",
+        "```powershell",
+        "uv run python scripts/eval_side_evidence.py",
+        "```",
+        "",
+    ]
     return "\n".join(lines)
 
 
@@ -225,15 +237,19 @@ def write_status(
 
     target = out_dir / "status.json"
     temporary = out_dir / ".status.json.tmp"
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
+    temporary.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     os.replace(temporary, target)
 
 
 def write_run(
-    *, out_dir: Path, run_id: str, judge_model: str, summary: Mapping[str, Any],
-    results: Sequence[CaseResult], status: str, error: str | None = None,
+    *,
+    out_dir: Path,
+    run_id: str,
+    judge_model: str,
+    summary: Mapping[str, Any],
+    results: Sequence[CaseResult],
+    status: str,
+    error: str | None = None,
     tenant_id: str | None = None,
     progress: Mapping[str, Any] | None = None,
 ) -> None:
@@ -370,8 +386,14 @@ async def run_side_evidence(
         status = "ok"
         error = None
     write_run(
-        out_dir=out_dir, run_id=run_id, judge_model=judge.model, summary=summary,
-        results=results, status=status, error=error, tenant_id=tenant_id,
+        out_dir=out_dir,
+        run_id=run_id,
+        judge_model=judge.model,
+        summary=summary,
+        results=results,
+        status=status,
+        error=error,
+        tenant_id=tenant_id,
         progress={"done": total, "total": total},
     )
     return {"summary": summary, "status": status, "error": error}

@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
-from app.models.plan import PLAN_FREE, Plan
+from app.models.plan import Plan
 from app.models.tenant import Tenant
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService

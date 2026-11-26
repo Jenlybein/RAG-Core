@@ -65,9 +65,7 @@ def seed_plans(db: Session) -> PlanSeedStats:
     return PlanSeedStats(inserted=len(PLAN_CODES))
 
 
-def backfill_tenants(
-    db: Session, *, demo_tenant_id: str | None = None
-) -> TenantBackfillStats:
+def backfill_tenants(db: Session, *, demo_tenant_id: str | None = None) -> TenantBackfillStats:
     """给旧租户建档并按口径分档；已经有租户行的不动。
 
     ``demo_tenant_id`` 缺省取服务端配置里的开发租户（``DEV_TENANT_ID``）。做成入参是为了
@@ -90,9 +88,7 @@ def backfill_tenants(
             plan = plan_repository.get_by_code(db, code)
             if plan is None:
                 # 缺档位时立刻停手、不提交：半批「有租户没套餐」比一行都没建更难收拾。
-                raise LookupError(
-                    f"套餐 {code} 还没播种：先跑 scripts/seed_plans.py 再回填租户"
-                )
+                raise LookupError(f"套餐 {code} 还没播种：先跑 scripts/seed_plans.py 再回填租户")
             plan_ids[code] = plan.id
 
         tenant_repository.create(

@@ -233,9 +233,7 @@ async def list_undone(
     ``limit`` 让「一轮清扫」有可预期的时长：上千个构建同时卡住时，剩下的交给下一轮。
     """
 
-    statement = select(IndexBuildVersion).where(
-        IndexBuildVersion.status == INDEX_BUILD_BUILDING
-    )
+    statement = select(IndexBuildVersion).where(IndexBuildVersion.status == INDEX_BUILD_BUILDING)
     if tenant_id is not None:
         statement = statement.where(IndexBuildVersion.tenant_id == tenant_id)
     if kb_id is not None:

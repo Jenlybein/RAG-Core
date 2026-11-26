@@ -107,17 +107,13 @@ async def build_judge() -> RagasJudge:
     except Exception as exc:  # noqa: BLE001 - 读配置失败不该让旁证整轮跑不了
         # 但**必须留痕**：静默 pass 会让「裁判用的是 .env 还是库里那套」变成一个
         # 查不出来的问题——那正是本轮实跑踩过的坑（.env 过期 key vs 库里有效 key）。
-        logger.warning(
-            "side_evidence_model_config_unreadable", error=type(exc).__name__
-        )
+        logger.warning("side_evidence_model_config_unreadable", error=type(exc).__name__)
 
     if not (base_url and model and api_key):
         base_url = settings.LLM_BASE_URL or ARK_DEFAULT_BASE_URL
         model = settings.LLM_MODEL
         api_key = getattr(settings, "ARK_API_KEY", "")
-        logger.warning(
-            "side_evidence_judge_falls_back_to_env", model=model, has_key=bool(api_key)
-        )
+        logger.warning("side_evidence_judge_falls_back_to_env", model=model, has_key=bool(api_key))
 
     client = AsyncOpenAI(base_url=base_url, api_key=api_key, timeout=120)
     llm = llm_factory(model, client=client)

@@ -23,9 +23,7 @@ CHUNK_TABLE_ROW = "table_row"
 
 # 型号形态：2–4 个大写字母 + 短横 + 3–5 位数字，后面可以跟一个后缀词。
 # 覆盖 XR-2000、XR-2000 Pro、SFP-10G、AX-3000 Max 这类写法。
-_MODEL_RE = re.compile(
-    r"\b[A-Z]{2,4}-\d{1,5}(?:[A-Z]|\s+(?:Pro|Plus|Max|Lite|Mini|SE))?\b"
-)
+_MODEL_RE = re.compile(r"\b[A-Z]{2,4}-\d{1,5}(?:[A-Z]|\s+(?:Pro|Plus|Max|Lite|Mini|SE))?\b")
 
 
 def model_tokens(content: str) -> list[str]:

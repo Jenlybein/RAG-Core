@@ -161,7 +161,9 @@ async def preview_impact(
 
     max_kb = int(after["max_kb"])
     # 只比这一刻真正会被收回的位：新值里为真、库里可能为真的那些列。
-    revoked = [CAPABILITY_COLUMNS[name] for name in CAPABILITIES if not after.get(CAPABILITY_COLUMNS[name])]
+    revoked = [
+        CAPABILITY_COLUMNS[name] for name in CAPABILITIES if not after.get(CAPABILITY_COLUMNS[name])
+    ]
 
     over_names: list[str] = []
     losing_names: list[str] = []

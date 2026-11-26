@@ -320,9 +320,7 @@ def usage_data(*, used: int | None, limit: int, unit: str = "calls") -> UsageDat
             note=USAGE_NOTE_NOT_TRACKED,
             unit=unit,
         )
-    return UsageData(
-        used=used, limit=limit, source=USAGE_SOURCE_DAILY_COUNTER, unit=unit
-    )
+    return UsageData(used=used, limit=limit, source=USAGE_SOURCE_DAILY_COUNTER, unit=unit)
 
 
 def audit_log_item(entry: AuditLog) -> AuditLogItem:

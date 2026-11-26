@@ -217,9 +217,7 @@ async def login(
     return session, await view_for(db, account, cache=cache)
 
 
-async def _authenticate(
-    db: AsyncSession, *, username: str, password: str
-) -> Account:
+async def _authenticate(db: AsyncSession, *, username: str, password: str) -> Account:
     """:func:`login` 的第一步：验口令；失败一律 ``20010``。"""
 
     account = await account_repository.get_by_username_async(db, username)
@@ -431,9 +429,7 @@ async def patch_plan(
     )
 
 
-async def _ensure_code_free(
-    db: AsyncSession, *, plan_id: int, patch: dict[str, Any]
-) -> None:
+async def _ensure_code_free(db: AsyncSession, *, plan_id: int, patch: dict[str, Any]) -> None:
     """改 ``code`` 时不许撞上另一档：``code`` 是脚本与日志指代套餐的名字。
 
     「另一档」按主键比，不按 code 比：把自己改成自己原来那个 code 是合法的空改动。
@@ -447,7 +443,9 @@ async def _ensure_code_free(
         raise AppError(ErrorCode.PLAN_INVALID, f"plan code already in use: {code}")
 
 
-def _invalidation_of(cache: PlanCache | None, plan_id: int) -> Callable[[], Coroutine[Any, Any, None]]:
+def _invalidation_of(
+    cache: PlanCache | None, plan_id: int
+) -> Callable[[], Coroutine[Any, Any, None]]:
     """提交之后删套餐缓存的那个动作（一个协程，由异步事务 ``await`` 它）。
 
     套餐缓存是异步 Redis（票 #129）：``after_commit`` 的回调在**提交之后**的同一个事件
@@ -578,9 +576,7 @@ async def list_audit_logs(
     """
 
     return AuditPage(
-        rows=await audit_log_repository.list_page(
-            db, limit=limit, offset=offset, action=action
-        ),
+        rows=await audit_log_repository.list_page(db, limit=limit, offset=offset, action=action),
         total=await audit_log_repository.count(db, action=action),
     )
 

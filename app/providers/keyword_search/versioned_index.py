@@ -75,9 +75,7 @@ def build_alias_actions(
     if target in current and len(current) == 1:
         return []
     actions: list[dict[str, dict[str, str]]] = [
-        {"remove": {"index": index, "alias": alias}}
-        for index in current
-        if index != target
+        {"remove": {"index": index, "alias": alias}} for index in current if index != target
     ]
     if target not in current:
         actions.append({"add": {"index": target, "alias": alias}})
