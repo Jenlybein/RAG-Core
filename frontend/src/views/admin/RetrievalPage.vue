@@ -19,10 +19,12 @@
  *    值；页面显示 `invalid_reason` 与「已回退到 .env 值」，管理员据此去修那一行。
  * 6. **角色指针行在这里也能改**：它们是热更键，保存走同一条 PATCH；但更顺手的方式是
  *    到模型配置页用下拉改指向。
- * 7. **需重启档在面板上只读**：#93/#96 的验收都要求「需重启重建档在面板上不可编辑」。
- *    这一档不渲染任何输入控件，只显示当前值与来源；`source === 'db'` 的行标
- *    「已写入库，待重启生效」，要改请走运维流程。保存时因此只提交 hot 档的改动，
- *    没有 hot 改动时保存按钮禁用。
+ * 7. **需重启档默认只读，逐键例外**：#93/#96 的验收要求「需重启重建档在面板上不可编辑」，
+ *    这一档照旧不渲染输入控件，只显示当前值与来源；`source === 'db'` 的行标「已写入库，
+ *    待重启生效」。唯一的例外是 `EMBEDDING_BATCH_SIZE`（票 #224，名单在
+ *    `utils/settingsTier.ts` 的 `RESTART_PANEL_WRITABLE_KEYS`）：它只决定一次请求塞几条
+ *    切片，不改已落库数据的形状，所以给一个输入框 + 两句提示（当前模型的单批上限、
+ *    「保存后需重启 Worker 生效」）。没有改动的可写行不进提交，保存按钮也据此禁用。
  */
 import { useQuery, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
@@ -45,10 +47,13 @@ import { errorText } from '../../utils/errorText'
 import { impactLines, shouldConfirmImpact } from '../../utils/impactPreview'
 import { MODEL_VENDORS } from '../../utils/modelsPage'
 import {
+  EMBEDDING_BATCH_SIZE_KEY,
+  embeddingBatchHintOf,
   groupByTier,
   isEditable,
   isRolePointerKey,
   kindOf,
+  restartNoticeOf,
   validateHotValue,
 } from '../../utils/settingsTier'
 
@@ -64,6 +69,14 @@ const loading = computed(() => settingsQuery.isPending.value)
 const loadError = computed(() =>
   settingsQuery.isError.value ? errorText(settingsQuery.error.value) : '',
 )
+
+/**
+ * 批大小那一行的提示素材（当前生效模型 + 它的单批上限）。
+ *
+ * 由后端给：模型→单批上限是供应商事实，前端再写一张表就是第三份真相。旧版后端没这个
+ * 字段时是 `null`，页面只是少一句建议，不会显示半句话。
+ */
+const embeddingHint = computed(() => settingsQuery.data.value?.embedding_batch ?? null)
 
 /**
  * 组顺序照后端、空组不渲染。
@@ -158,10 +171,10 @@ function sameValue(row: SettingRow, next: SettingValue): boolean {
 }
 
 /**
- * 这次提交的差异：只发真动过的 **hot** 行，没动的键不写库也不进审计。
+ * 这次提交的差异：只发真动过的**可写**行，没动的键不写库也不进审计。
  *
- * `isEditable` 已经把 locked 与 restart 排除在外，所以这里天然只收集热更档：
- * restart 档在面板上只读，改它要走运维流程。
+ * `isEditable` 已经把 locked 与「需重启档里没放开的那些键」排除在外，所以这里收集的是
+ * hot 档 + 票 #224 放开的那一项（`EMBEDDING_BATCH_SIZE`）。
  */
 const changes = computed<Record<string, SettingValue>>(() => {
   const values: Record<string, SettingValue> = {}
@@ -177,7 +190,7 @@ const changes = computed<Record<string, SettingValue>>(() => {
   return values
 })
 
-/** 只有 hot 档有改动时才允许保存；按钮的禁用条件就是它。 */
+/** 有可写行的改动时才允许保存；按钮的禁用条件就是它。 */
 const dirty = computed(() => Object.keys(changes.value).length > 0)
 
 /**
@@ -233,6 +246,17 @@ function alertCountOf(group: { tier: string; rows: readonly SettingRow[] }): num
 }
 
 /**
+ * 这一组里可在面板上改的行数（票 #224）。
+ *
+ * 为什么要放在组标题上：`EMBEDDING_BATCH_SIZE` 住在「需重启」档里，而这一档默认收起。
+ * 没有这个标记，管理员永远不知道有这么一项可以在面板上改——他只会看到「需重启 = 只读」，
+ * 然后继续去改 .env（正是这一票要终结的那条路）。
+ */
+function writableCountOf(group: { tier: string; rows: readonly SettingRow[] }): number {
+  return group.rows.filter((row) => isEditable(row)).length
+}
+
+/**
  * 档位徽章配色。暖色令牌，与 StatusBadge / statusPill 同一组语义色：
  * 热生效=成功绿、待重启=警示黄、只读=中性。
  *
@@ -254,8 +278,8 @@ function tierBadgeText(tier: string): string {
 /**
  * 保存：校验 → 两步保存（试算 → 有影响才确认 → 真写）。
  *
- * `values` 只含 hot 档的改动（`changes` 已排除 restart / locked）。两步顺序与 loading
- * 交给 `useDryRunSave`；本页只负责逐行校验、影响面文案，以及成功后的提示与缓存刷新。
+ * `values` 只含可写行的改动（`changes` 已排除 locked 与未放开的 restart 行）。两步顺序与
+ * loading 交给 `useDryRunSave`；本页只负责逐行校验、影响面文案，以及成功后的提示与缓存刷新。
  */
 async function save(): Promise<void> {
   const values = { ...changes.value }
@@ -288,18 +312,22 @@ async function save(): Promise<void> {
   if (outcome.status === 'cancelled') return
 
   const result = outcome.result
-  notifySaved(result.hot.length > 0, result.restart.length > 0, result.note)
+  notifySaved(result.hot, result.restart, result.note)
   await queryClient.invalidateQueries({ queryKey: SETTINGS_QUERY_KEY })
 }
 
 /**
- * 保存成功的提示必须区分两档。热更的「Ns」用后端返回的 `cache_ttl_seconds`，
- * 不写死 30：TTL 改过之后，页面上的承诺要跟着后端变。
+ * 保存成功的提示必须区分三句，因为「什么时候生效」是三种不同的事实：
+ *
+ * - 热更：`Ns` 用后端返回的 `cache_ttl_seconds`，不写死 30（TTL 改过之后页面要跟着变）；
+ * - 批大小（票 #224）：它跑在 Worker 里，重启 API 进程不解决问题，所以明说 Worker；
+ * - 其余「需重启」键：泛指「重启后生效」。
  */
-function notifySaved(hasHot: boolean, hasRestart: boolean, note: string): void {
+function notifySaved(hot: readonly string[], restart: readonly string[], note: string): void {
   const parts: string[] = []
-  if (hasHot) parts.push(`已推送（各进程 ${cacheTtl.value}s 内生效）`)
-  if (hasRestart) parts.push('已保存，待重启生效')
+  if (hot.length > 0) parts.push(`已推送（各进程 ${cacheTtl.value}s 内生效）`)
+  if (restart.includes(EMBEDDING_BATCH_SIZE_KEY)) parts.push('已保存，需重启 Worker 生效')
+  if (restart.some((key) => key !== EMBEDDING_BATCH_SIZE_KEY)) parts.push('已保存，待重启生效')
   ElMessage.success(parts.length > 0 ? parts.join('；') : note || '已保存')
 }
 
@@ -359,6 +387,13 @@ async function refresh(): Promise<void> {
                 {{ tierBadgeText(group.tier) }}
               </span>
               <span class="text-xs text-muted">{{ group.rows.length }} 项</span>
+              <!-- 收起态的唯一线索：这一档里有几项其实是可改的（票 #224）。 -->
+              <span
+                v-if="group.tier !== 'hot' && writableCountOf(group) > 0"
+                class="rounded-full bg-[#E4EDDD] px-2 py-0.5 text-xs text-[#3C5228]"
+              >
+                {{ writableCountOf(group) }} 项可改
+              </span>
               <span
                 v-if="alertCountOf(group) > 0"
                 class="rounded-full bg-[#F7E2DD] px-2 py-0.5 text-xs text-[#8C2F22]"
@@ -404,6 +439,8 @@ async function refresh(): Promise<void> {
                       v-model="numberDrafts[row.key]"
                       controls-position="right"
                       style="width: 140px"
+                      :min="row.minimum ?? undefined"
+                      :max="row.maximum ?? undefined"
                     />
                     <el-select
                       v-else-if="domainOf(row) !== null"
@@ -425,6 +462,24 @@ async function refresh(): Promise<void> {
                         isRolePointerKey(row.key) ? '留空 = 不指向（回落 .env）' : ''
                       "
                     />
+
+                    <!--
+                      票 #224：批大小这一行旁边的两句提示。第一句是「这个模型一批能吃几条」
+                      （值由后端给，前端不抄供应商事实表），第二句是「保存不等于生效」——
+                      它跑在 Worker 里，只重启 API 进程看不到任何变化。
+                    -->
+                    <p
+                      v-if="embeddingBatchHintOf(row, embeddingHint) !== null"
+                      class="mt-1 text-xs leading-relaxed text-muted"
+                    >
+                      {{ embeddingBatchHintOf(row, embeddingHint) }}
+                    </p>
+                    <p
+                      v-if="restartNoticeOf(row) !== null"
+                      class="mt-1 rounded bg-[#fff8e6] px-1.5 py-0.5 text-xs text-[#7a5b00]"
+                    >
+                      {{ restartNoticeOf(row) }}
+                    </p>
                   </template>
                   <!-- 只读值：连接串很长，限宽 + break-all，别把「为什么」那列挤没。 -->
                   <span
@@ -443,8 +498,9 @@ async function refresh(): Promise<void> {
                 <td class="px-3 py-3 text-xs whitespace-nowrap">
                   <span v-if="row.source === 'db'" class="font-medium text-ink">已被面板覆盖</span>
                   <span v-else class="text-muted">来自 .env</span>
-                  <!-- restart 档不许在面板上改，但库里可能已有旧写入：标出来是「待生效」，
-                       否则这里看起来与 .env 值一样，没人知道它在等一次重启。 -->
+                  <!-- restart 档默认不许在面板上改（票 #224 放开的批大小是逐键例外），但库里
+                       可能已有旧写入：标出来是「待生效」，否则这里看起来与 .env 值一样，
+                       没人知道它在等一次重启。 -->
                   <span
                     v-if="group.tier === 'restart' && row.source === 'db'"
                     class="mt-1 block rounded bg-[#fff8e6] px-1.5 py-0.5 text-[#7a5b00]"

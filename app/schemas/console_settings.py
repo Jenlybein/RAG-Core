@@ -47,6 +47,10 @@ class SettingRowData(BaseModel):
     why: str
     #: 标红的行这里会有一句人话原因；正常行是 ``null``。
     invalid_reason: str | None = None
+    #: 白名单声明的取值边界（没声明就是 ``null``）。页面按它拦住一眼可见的越界，
+    #: **不抄第三份边界表**：边界只在 ``SETTING_SPECS`` 声明一次。
+    minimum: float | None = None
+    maximum: float | None = None
 
 
 class SettingTierGroupData(BaseModel):
@@ -58,11 +62,25 @@ class SettingTierGroupData(BaseModel):
     settings: list[SettingRowData]
 
 
+class EmbeddingBatchHintData(BaseModel):
+    """面板上嵌入批大小那一行的提示素材（票 #224）。
+
+    ``model`` 是进程**正在用**的嵌入模型，``limit`` 是它的单批上限。页面把这句拼成
+    「当前模型 X（单批上限 Y），建议 ≤ Y」。为什么由后端给而不是前端写一张模型表：
+    模型→上限是供应商事实（:mod:`app.core.embedding_batch`），抄到前端就会漂移。
+    """
+
+    model: str
+    limit: int
+
+
 class SettingsListData(BaseModel):
     #: 按「只读 → 需重启 → 热生效」固定顺序分三组。
     groups: list[SettingTierGroupData]
     #: 缓存有效期（秒）。页面必须用它而不是写死 30：这是「各进程 30s 内生效」的依据。
     cache_ttl_seconds: int
+    #: 嵌入批大小那一行的提示素材（当前模型 + 它的单批上限）。
+    embedding_batch: EmbeddingBatchHintData
 
 
 class SettingsPatchRequest(BaseModel):
