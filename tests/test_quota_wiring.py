@@ -4,7 +4,9 @@
 
 * **检索入口**（HTTP 与 MCP 两条入口挂同一个应用）：网关放在档位门禁之后、业务执行之前；
   成功后两级各记一次，拒绝与失败一次都不记；秒级超限是 ``20005``、额度用尽是 ``20014``。
-* **写路径**（建库 / 上传 / 重建）：落行或入队**之前**到库里数行，超限 ``20014``。
+* **写路径**（建库 / 上传 / 重建）：落行或入队**之前**到库里数行；按天调用额度用尽是
+  ``20014``，而**容量型**上限各用自己的码——库数满 ``20034``、单库文档数满 ``20035``
+  （#219，ADR-0035 决策七：三种处置完全不同，共用一句文案必然有两种是错话）。
 
 默认套件全程离线：身份由依赖覆盖直接给出，计数器注入一个「dict + TTL 账本」的假客户端
 （经 ``app.core.redis_client.set_redis_client`` 这唯一注入点），不碰 PostgreSQL、不碰真 Redis。
@@ -572,7 +574,11 @@ def test_mcp_counts_a_successful_retrieval_at_both_levels(entry: _Entry) -> None
 def test_building_the_n_plus_first_knowledge_base_is_a_quota_error(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """库数上限落在建库这条写路径上：第 N+1 个库当场 20014，且不落行。"""
+    """库数上限落在建库这条写路径上：第 N+1 个库当场 ``20034``，且不落行。
+
+    码是**专属**的（#219，ADR-0035 决策七）：老实现回 ``20014``，前端只能给一句「等额度
+    重置或去密钥配置调整」——而这里该做的是删库或提额，等多久都不会变。
+    """
 
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_kb=1))
@@ -584,7 +590,11 @@ def test_building_the_n_plus_first_knowledge_base_is_a_quota_error(
 
     body = entry.create_kb()
 
-    assert body["code"] == ErrorCode.QUOTA_EXCEEDED
+    assert body["code"] == ErrorCode.KB_COUNT_QUOTA_EXCEEDED
+    # 文案是中文人话，带已用 / 上限 / 套餐与处置；数字同时以机器可读的形式给出。
+    assert "已用 1 个" in body["msg"] and "上限 1 个" in body["msg"]
+    assert PLAN_FREE in body["msg"]
+    assert body["data"] == {"reason": "kb_count", "used": 1, "limit": 1, "plan": PLAN_FREE}
     assert entry.session.added == [], "被拒的请求不落行"
 
 
@@ -610,7 +620,7 @@ def test_the_last_knowledge_base_under_the_limit_is_allowed(
 def test_uploading_over_documents_per_kb_is_a_quota_error(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """单库文档数：库满了就不再落行、不再入队。"""
+    """单库文档数：库满了就不再落行、不再入队，码是 ``20035``（与库数满 ``20034`` 分开）。"""
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
     entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_documents_per_kb=30))
@@ -626,7 +636,14 @@ def test_uploading_over_documents_per_kb_is_a_quota_error(
 
     body = entry.upload()
 
-    assert body["code"] == ErrorCode.QUOTA_EXCEEDED
+    assert body["code"] == ErrorCode.KB_DOCUMENT_QUOTA_EXCEEDED
+    assert "已用 30 篇" in body["msg"] and "上限 30 篇" in body["msg"]
+    assert body["data"] == {
+        "reason": "kb_document_count",
+        "used": 30,
+        "limit": 30,
+        "plan": PLAN_FREE,
+    }
     assert entry.async_session.added == [], "被拒的上传不该在异步会话上留下行"
     assert entry.enqueued == [], "被拒的上传不该往队列里塞任务"
 

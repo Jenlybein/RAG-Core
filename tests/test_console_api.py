@@ -538,7 +538,8 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
         assert fresh.max_kb == 2
         with pytest.raises(AppError) as raised:
             await static_quota.ensure_kb_quota(console.db_view, tenant_id=TENANT_ALPHA, plan=fresh)
-        assert raised.value.code == ErrorCode.QUOTA_EXCEEDED
+        # 库数满有自己的码（#219）：老实现回 20014，那句「等额度重置」在这里是错话。
+        assert raised.value.code == ErrorCode.KB_COUNT_QUOTA_EXCEEDED
 
     asyncio.run(_after_patch())
 

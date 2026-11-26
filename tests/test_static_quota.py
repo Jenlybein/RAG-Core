@@ -1,4 +1,4 @@
-"""票 #79：静态资源配额（库数 / 单库文档数 / 并发处理数）的写路径校验。
+"""票 #79 / #219：静态资源配额（库数 / 单库文档数 / 并发处理数）的写路径校验。
 
 这三项**不记在 Redis 里**，而是到库里数行——它们是「现在有多少」，不是「用掉了多少次」。
 在 Redis 里再存一份就必须在删除、状态流转、Worker 崩溃时同步，漏一处就是两个真相；
@@ -9,7 +9,9 @@
 * **计数**是真 SQL。SQLite 内存库只建 ``documents`` 一张表（``knowledge_bases`` 的 JSONB
   列 SQLite 建不出来），验证「按库、按租户、按状态」这三条查询真的只数该数的行——尤其是
   「跨租户的行不算」与「Worker 卡死的行不占名额」；
-* **判定**是纯阈值比较：计到上限内放行，达到上限拒绝，错误码 ``20014``。
+* **判定**是纯阈值比较：计到上限内放行，达到上限拒绝。**码按种类分**（#219）：库数满
+  ``20034``、单库文档数满 ``20035``；并发处理数（#218 前还在）仍是 ``20014``。分码的
+  理由见 ADR-0035 决策七——三种处置完全不同，共用一句话就必然有两种是错话。
 
 **为什么内存库也换成了异步**（第 11 步票 #130）：配额的三条判定都只剩异步面，而它们
 数的是 ``select(func.count())`` 这类真 SQL（``status`` + 租约窗口，假会话模拟不来）。
@@ -176,7 +178,19 @@ async def test_the_document_allowance_allows_the_last_upload_and_rejects_the_nex
     await db.flush()
     with pytest.raises(AppError) as exc:
         await static_quota.ensure_upload_quota(db, tenant_id=TENANT_ID, kb_id=KB_ID, plan=plan)
-    assert exc.value.code is ErrorCode.QUOTA_EXCEEDED
+    assert exc.value.code is ErrorCode.KB_DOCUMENT_QUOTA_EXCEEDED
+    # 文案要能直接给人看：带已用 / 上限 / 套餐，并指明处置（删该库旧文档或提额）。
+    assert "已用 2 篇" in exc.value.msg
+    assert f"上限 {plan.max_documents_per_kb} 篇" in exc.value.msg
+    assert plan.code in exc.value.msg
+    assert "删掉该库里的旧文档" in exc.value.msg
+    # 机器可读的那一份：面板据此渲染「已用 X / 上限 Y」，不必解析文案。
+    assert exc.value.data == {
+        "reason": "kb_document_count",
+        "used": 2,
+        "limit": 2,
+        "plan": plan.code,
+    }
 
 
 @pytest.mark.asyncio
@@ -229,4 +243,13 @@ async def test_the_knowledge_base_allowance_rejects_the_n_plus_first_kb(
     monkeypatch.setattr(knowledge_base_repository, "count_by_tenant", _one_kb)
     with pytest.raises(AppError) as exc:
         await static_quota.ensure_kb_quota(None, tenant_id=TENANT_ID, plan=plan)  # type: ignore[arg-type]
-    assert exc.value.code is ErrorCode.QUOTA_EXCEEDED
+    assert exc.value.code is ErrorCode.KB_COUNT_QUOTA_EXCEEDED
+    # 与「文档数满」是两个码、两句话：这里的处置是**删库**或提额，删文档没用。
+    assert "已用 1 个" in exc.value.msg and "上限 1 个" in exc.value.msg
+    assert "删掉不用的知识库" in exc.value.msg
+    assert exc.value.data == {
+        "reason": "kb_count",
+        "used": 1,
+        "limit": 1,
+        "plan": plan.code,
+    }

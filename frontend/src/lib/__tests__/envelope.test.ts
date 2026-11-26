@@ -85,6 +85,50 @@ describe('unwrapEnvelope：业务码是唯一真相，HTTP 状态不参与判断
     expect(error.backendMsg).toBe('query has no searchable content')
   })
 
+  it('20034 / 20035 各有一句中文人话：处置是「删东西或提额」，不是「等重置」', () => {
+    // 未登记的码会退化成「业务码 20034」——那就等于把「库满了」换成一串数字。
+    const kbCount = catchError(() =>
+      unwrapEnvelope(
+        { code: 20034, msg: 'knowledge base count exceeded', data: { reason: 'kb_count' } },
+        'console',
+      ),
+    )
+    const kbDocuments = catchError(() =>
+      unwrapEnvelope(
+        {
+          code: 20035,
+          msg: 'document count exceeded',
+          data: { reason: 'kb_document_count' },
+        },
+        'console',
+      ),
+    )
+
+    expect(kbCount.code).toBe(20034)
+    expect(kbCount.message).toContain('知识库数量')
+    expect(kbCount.message).toContain('删掉不用的知识库')
+    // 库数满与文档数满是**两个码、两句话**：删的对象不同（整个库 vs 库里的旧文档）。
+    expect(kbDocuments.code).toBe(20035)
+    expect(kbDocuments.message).toContain('旧文档')
+    expect(kbDocuments.message).not.toBe(kbCount.message)
+    // 「等重置」是 20014 那一类（按天额度）的处置，容量型拒绝抄过来就是错话。
+    for (const error of [kbCount, kbDocuments]) {
+      expect(error.message).not.toContain('重置')
+      expect(error.message).not.toContain('密钥配置')
+    }
+  })
+
+  it('20014 只剩「按天调用额度」：不再提套餐上限或密钥配置', () => {
+    const error = catchError(() =>
+      unwrapEnvelope({ code: 20014, msg: 'daily quota exceeded', data: null }, 'data'),
+    )
+
+    expect(error.message).toContain('额度')
+    expect(error.message).toContain('重置')
+    // 老文案把「删旧文档就能继续」和「要运营改套餐」都塞进一句「去密钥配置里调整」，错。
+    expect(error.message).not.toContain('密钥配置')
+  })
+
   it('没登记的码退回后端原文，后端也没原文时至少露出业务码', () => {
     const withBackend = catchError(() => unwrapEnvelope({ code: 29999, msg: 'detail', data: null }, 'data'))
     const bare = catchError(() => unwrapEnvelope({ code: 29999, msg: '', data: null }, 'data'))

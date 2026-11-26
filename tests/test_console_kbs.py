@@ -713,7 +713,7 @@ def test_create_kb_rejects_a_tenant_id_in_the_body(kbs: _Harness) -> None:
 
 
 def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
-    """面板不是绕过套餐的后门：静态库数配额由 ``create_kb`` 判（20014），且不写账本。"""
+    """面板不是绕过套餐的后门：静态库数配额由 ``create_kb`` 判（``20034``），且不写账本。"""
 
     tenant = next(row for row in kbs.db._rows[Tenant] if row.id == TENANT_ALPHA)
     tenant.plan_id = 1  # free：max_kb=1，而 Alpha 已经有 2 个库
@@ -725,7 +725,9 @@ def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
         headers=WRITE_HEADERS,
     )
 
-    assert response.json()["code"] == ErrorCode.QUOTA_EXCEEDED
+    body = response.json()
+    assert body["code"] == ErrorCode.KB_COUNT_QUOTA_EXCEEDED
+    assert body["data"] == {"reason": "kb_count", "used": 2, "limit": 1, "plan": "free"}
     assert len(kbs.db._rows[KnowledgeBase]) == 3, "被配额拒绝的库不落行"
     assert kbs.audit_entries() == []
 
