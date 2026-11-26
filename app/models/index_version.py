@@ -164,6 +164,26 @@ class IndexBuildVersion(Base):
         DateTime, nullable=False, server_default=text("now()")
     )
 
+    # ── #215：按篇投递之后新增的两列 ────────────────────────────────────────
+    #
+    #: 「未入新版本」的明细：``[{"document_id", "title", "reason"}]``。
+    #:
+    #: **为什么放在构建行而不是文档行**（ADR-0034 决策九）：
+    #:
+    #: * 它是**这一版**的属性，不是文档的属性——同一篇可能「没进 v2、进了 v3」，挂在文档行上
+    #:   就得每来一版改写一次，语义迟早变脏；
+    #: * 它天然就是**续建的清单**：清扫器读这一格就知道缺哪几篇、为什么缺；
+    #: * 版本列表页直接能显示「497 / 500 篇，3 篇未入」，比在文档列表里插一堆红旗更好读。
+    #:
+    #: 构建子任务失败时**不改文档状态**（那篇文档本身没坏，线上旧版本照常可查），只在这里
+    #: 追加一条。空列表与非空列表之别就是收敛判据里 ``failed`` 那一项。
+    failed_documents: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    #: 清扫器重投过几次（ADR-0034 决策七的兜底上限）。超过上限就收成 ``failed``——
+    #: 「一直重投也救不回来」必须有个尽头，否则一个坏构建会把清扫器拖成永动机。
+    redispatch_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+
 
 class IndexVersionUnresolved(AppError):
     """守卫：有库还没有生效版本，**在启用版本过滤之前**把这次检索显式拦下。

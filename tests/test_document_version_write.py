@@ -118,7 +118,6 @@ async def _submit(
             env.db,
             tenant_id=tenant_id,
             document_id=DOC_ID,
-            plan=PLAN_PRESETS[PLAN_PRO],
             content=content,
             filename=filename,
             data=data,

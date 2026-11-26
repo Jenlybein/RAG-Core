@@ -607,7 +607,14 @@ class _FailingService:
         self.exc = exc
 
     async def index_existing_document(
-        self, _db: Any, _document_id: str, *, reparse: bool = False, doc_version=None
+        self,
+        _db: Any,
+        _document_id: str,
+        *,
+        reparse: bool = False,
+        doc_version=None,
+        index_version=None,
+        allow_success: bool = False,
     ) -> int:
         raise self.exc
 
@@ -789,6 +796,8 @@ def test_task_passes_the_draft_number_from_the_payload_to_the_pipeline(
             *,
             reparse: bool = False,
             doc_version: int | None = None,
+            index_version: str | None = None,
+            allow_success: bool = False,
         ) -> int:
             observed.append(doc_version)
             return 1
@@ -816,6 +825,8 @@ def test_task_passes_no_draft_when_the_payload_carries_none(
             *,
             reparse: bool = False,
             doc_version: int | None = None,
+            index_version: str | None = None,
+            allow_success: bool = False,
         ) -> int:
             observed.append(doc_version)
             return 1
@@ -837,7 +848,14 @@ def test_task_binds_request_id_for_the_duration_of_the_run(
 
     class _RecordingService:
         async def index_existing_document(
-            self, _db: Any, _document_id: str, *, reparse: bool = False, doc_version=None
+            self,
+            _db: Any,
+            _document_id: str,
+            *,
+            reparse: bool = False,
+            doc_version=None,
+            index_version=None,
+            allow_success: bool = False,
         ) -> int:
             observed.append(get_contextvars())
             return 2

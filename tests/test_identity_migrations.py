@@ -162,8 +162,8 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # 「链尾是哪个文件」要人看一眼才确认，不该由代码自动推导。
     # 数据面 API Key 改「只存哈希」（``hash_api_key_secrets``）接在模型角色指针合并之后。
     # 第 16 步 #207 的单条结果上限与构建参数（``unit_cap_and_build_params``）之后是 #214 的
-    # 删套餐「同时处理中篇数」（``drop_plans_max_processing_documents``）——当前链尾。
-    assert heads == {_revision_of(_migration_path("drop_plans_max_processing_documents"))}
+    # 构建失败明细与重投次数（``add_build_failure_detail``）——当前链尾。
+    assert heads == {_revision_of(_migration_path("add_build_failure_detail"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

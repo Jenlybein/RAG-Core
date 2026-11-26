@@ -134,6 +134,10 @@ services:
     # 与 api 共用同一个镜像标签：Docker 只构建一次，两边跑同一份代码。
     image: rag-core-app:local
     container_name: rag-worker
+    # **只消费默认队列**：不加 ``-Q build``，否则构建任务会被常规 worker 抢走，
+    # `worker-build` 那条隔离就名存实亡（见下面 worker-build 的注释）。
+    command:
+      ["celery", "-A", "app.celery_app:celery_app", "worker", "--loglevel=info", "--concurrency=2"]
     env_file: ../.env
     environment:
       DATABASE_URL: postgresql+psycopg://postgres:123456@postgres:5432/rag_db
@@ -152,6 +156,58 @@ services:
       - ../data/uploads:/app/data/uploads
       # 旁证跑批的产物目录：**必须与 api 共享**。状态由 Worker 写、由 API 读；不共享时
       # API 永远读不到 status.json，前端看到的就是「一直 queued」。
+      - eval_runs:/app/eval/runs
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── 构建专用 Worker（第 17 步 · #215）──────────────────────────────────────────
+  # 为什么单独一个进程，而不是让常规 worker 多消费一条队列：
+  #
+  #   同一进程用 ``-Q celery,build`` 消费两条队列**无法限制构建并发**——prefork 子进程看到
+  #   两条队列就都抢，构建任务照样能占满所有槽位。「隔离」在这里的含义是**独立进程**，
+  #   不是「同一批进程多看一条队列」。
+  #
+  # 它买到的是：一次 5000 篇的构建再长，也只占它自己这一槽；常规 worker 的 2 个槽位始终
+  # 留给用户的上传与单篇重建。
+  #
+  # 代价要说在前面：多一个进程 = 多一套数据库连接预算（异步池 5 + 溢出 10 = 15 条）。
+  # ``docs/架构.md``「链路与连接 → 数据库连接预算」那一节按进程数重算，改这里的数字
+  # 必须同时改那一节，否则运维会按一个已经不对的算式去调 ``max_connections``。
+  worker-build:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: rag-core-app:local
+    container_name: rag-worker-build
+    env_file: ../.env
+    # 与常规 worker 逐条相同（同一批环境变量，理由见上面 worker 的注释）：`.env` 里所有
+    # 指向 localhost 的服务地址，在容器里都必须覆盖成服务名。
+    environment:
+      DATABASE_URL: postgresql+psycopg://postgres:123456@postgres:5432/rag_db
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      DOCUMENT_STORAGE_PATH: /app/data/uploads
+      REDIS_URL: redis://redis:6379/2
+      ELASTICSEARCH_URL: http://elasticsearch:9200
+      OCR_MODE: auto
+      OCR_OFFLINE: "true"
+    # 只消费 `build` 队列；并发 1：构建本来就是长任务，多开只会和常规 worker 抢数据库连接。
+    command:
+      [
+        "celery",
+        "-A",
+        "app.celery_app:celery_app",
+        "worker",
+        "--loglevel=info",
+        "--concurrency=1",
+        "-Q",
+        "build",
+      ]
+    volumes:
+      - ../data/uploads:/app/data/uploads
       - eval_runs:/app/eval/runs
     depends_on:
       postgres:

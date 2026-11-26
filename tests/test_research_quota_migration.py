@@ -110,8 +110,8 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     # 版本表与切片稿号列（``add_document_versions``）再接在改名之后；#179 的归属索引
     # 「文档 → 稿号」映射列（``add_trace_doc_versions``）再接在版本表之后。
     # 按仓库惯例，加最后一条迁移的人改这一行：第 16 步 #207 的（``unit_cap_and_build_params``）
-    # 之后是 #214 的删套餐「同时处理中篇数」（``drop_plans_max_processing_documents``）——当前链尾。
-    assert heads == [_revision_of(_migration_path("drop_plans_max_processing_documents"))], (
+    # 之后是 #214 的构建失败明细与重投次数（``add_build_failure_detail``）——当前链尾。
+    assert heads == [_revision_of(_migration_path("add_build_failure_detail"))], (
         f"链尾应当是「构建收敛四列」那条迁移，实际 {heads}"
     )
 

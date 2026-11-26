@@ -126,7 +126,6 @@ async def _rollback(
             tenant_id=tenant_id,
             document_id=DOC_ID,
             version=version,
-            plan=PLAN_PRESETS[PLAN_PRO],
         )
 
 

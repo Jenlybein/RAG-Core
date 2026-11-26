@@ -54,6 +54,23 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_track_started=True,
     broker_connection_retry_on_startup=True,
+    # 构建相关的三条任务走**专用队列**（#215，ADR-0034 决策三）：
+    #
+    #   dispatch_build_task  派活：把一个库翻译成一批子任务
+    #   build_document_task  子任务：一篇文档写进这一版
+    #   build_index_version_task  （兼容路径）一次任务跑完整个库
+    #
+    # 为什么要分开：一次 5000 篇的构建会产生 5000 条消息。留在默认队列里，它们会把同一个
+    # 租户乃至所有租户的上传任务压在后面几十分钟——而队列长度本身是运维要看的信号。
+    # 独立队列 + 独立 worker（``worker-build``，并发 1）之后，构建再长也只占它自己那一槽。
+    #
+    # 注意：**单篇重建不路由**。用户点一下重建应该和别人的上传排在一起——它是一次请求的
+    # 后续，不是后台维护。
+    task_routes={
+        "app.tasks.index_build.dispatch_build_task": {"queue": "build"},
+        "app.tasks.index_build.build_document_task": {"queue": "build"},
+        "app.tasks.index_build.build_index_version_task": {"queue": "build"},
+    },
 )
 
 

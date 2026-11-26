@@ -248,7 +248,6 @@ def _check_plan_snapshot(data: Any, plan_code: str) -> None:
         "max_kb",
         "max_kb_per_retrieve",
         "max_documents_per_kb",
-        "max_processing_documents",
     }
     for column in set(snapshot):
         assert snapshot[column] == getattr(plan, column)

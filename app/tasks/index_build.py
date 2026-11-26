@@ -120,3 +120,105 @@ def build_index_version_task(
     """
 
     _run_build(self, build_id, tenant_id=tenant_id, request_id=request_id, activate=activate)
+
+
+# ── 按篇投递的两条任务（#215）──────────────────────────────────────────────
+
+
+async def _dispatch_in_the_worker_loop(
+    build_id: str, *, tenant_id: str, request_id: str | None = None
+) -> None:
+    """常驻循环里的一次派活：读这一版该建哪些篇，逐条投进 ``build`` 队列。"""
+
+    db = async_session_factory()()
+    try:
+        await IndexBuildService().dispatch(db, build_id, tenant_id=tenant_id)
+    finally:
+        await db.close()
+
+
+def _run_dispatch(
+    self: Any,
+    build_id: str,
+    *,
+    tenant_id: str,
+    request_id: str | None = None,
+    activate: bool = False,
+) -> None:
+    """派活任务体。``activate`` 不在这里用，但要**带进子任务**：激活发生在收敛成 ready
+    之后，而那一步在最后一篇子任务那一侧。所以它由派活任务原样传到每条子任务上。"""
+
+    if request_id:
+        bind_contextvars(request_id=request_id)
+    try:
+        runtime_settings.ensure_runtime_overrides()
+        set_role_resolver(model_config_service.role_endpoint)
+        run_in_worker_loop(
+            lambda: _dispatch_in_the_worker_loop(
+                build_id, tenant_id=tenant_id, request_id=request_id
+            )
+        )
+    finally:
+        if request_id:
+            clear_contextvars()
+
+
+@celery_app.task(bind=True, max_retries=0)
+def dispatch_build_task(
+    self,
+    build_id: str,
+    *,
+    tenant_id: str,
+    request_id: str | None = None,
+    activate: bool = False,
+) -> None:
+    """派活任务入口：``start_build`` 提交之后投的这一条（#215）。
+
+    它**不跑索引**，只把「这一版该建哪些篇」翻译成一批子任务。把派活与执行分开，是为了让
+    两边的失败不互相污染：派活失败（读库出错）不该让某几篇被标成失败，而某一篇失败也不该
+    让其余篇不投。
+    """
+
+    _run_dispatch(self, build_id, tenant_id=tenant_id, request_id=request_id, activate=activate)
+
+
+@celery_app.task(bind=True, max_retries=2, default_retry_delay=10)
+def build_document_task(
+    self,
+    document_id: str,
+    *,
+    tenant_id: str,
+    kb_id: str,
+    build_id: str,
+    index_version: str,
+    doc_version: int,
+    allow_success: bool = True,
+) -> None:
+    """构建子任务入口：**一篇**文档写进**这一版**（#215）。
+
+    与 ``index_document_task`` 走同一条流水线（``_run_indexing``），差别只有三处、全部由
+    载荷带着走：
+
+    * 目标版本是**这一版**，不是库当前的生效版本；
+    * 失败**不改文档状态**，只把「文档 + 原因」记进构建行明细；
+    * 跑完要回去推进这一版的进度并尝试收敛。
+
+    ## 为什么单独一个任务名，而不是复用 ``index_document_task``
+
+    Celery 的 ``task_routes`` 只能按**任务名**路由。构建子任务要进 ``build`` 队列（否则
+    5000 条篇任务会把所有租户的上传淹掉），而用户发起的单篇重建应该留在默认队列——
+    同一个任务名做不到这件事，所以老老实实分成两个任务名、共用同一个实现。
+    """
+
+    from app.tasks.indexing import _run_indexing
+
+    _run_indexing(
+        self,
+        document_id,
+        tenant_id=tenant_id,
+        kb_id=kb_id,
+        build_id=build_id,
+        index_version=index_version,
+        doc_version=doc_version,
+        allow_success=allow_success,
+    )

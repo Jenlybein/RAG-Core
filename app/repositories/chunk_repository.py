@@ -314,6 +314,38 @@ async def count_by_index_version(
     return int((await db.execute(stmt)).scalar_one())
 
 
+async def list_indexed_document_ids(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    index_version: str,
+    doc_version: int | None = None,
+) -> set[str]:
+    """**续建的判据**：这一版（可选：这一稿）下已经有切片的文档 id 集合。
+
+    一次读回整批，而不是逐篇问 ``count``：续建要判几百上千篇，逐篇问会让「派活」这一步
+    自己变成一次 N+1 扫描（而它本来就只是投递前的一步准备）。
+
+    ``COUNT(DISTINCT ...)`` 那条（:func:`count_documents_in_version`）回答「够不够」，
+    这一条回答「哪几篇够了」——两者共用同一份过滤条件，不许各自漂移。
+    """
+
+    stmt = (
+        select(Chunk.document_id)
+        .distinct()
+        .where(
+            Chunk.kb_id == kb_id,
+            Chunk.tenant_id == tenant_id,
+            Chunk.index_version == index_version,
+        )
+    )
+    if doc_version is not None:
+        stmt = stmt.where(Chunk.doc_version == doc_version)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {str(row) for row in rows}
+
+
 async def count_documents_in_version(
     db: AsyncSession,
     kb_id: str,

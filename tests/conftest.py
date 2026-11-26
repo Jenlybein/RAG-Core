@@ -152,6 +152,11 @@ def _offline_dispatch():
     要断言构建投递的用例自己 `set_build_task_publisher` 注入观察器（见
     `tests/test_index_rebuild_identity.py`）。
 
+    第 17 步又多了两条缝（#215）：**派活**（`dispatch_build_task`）与**构建子任务**
+    （`build_document_task`）。它们同样必须默认离线，而且**理由更强**：一次派活会投出
+    成百上千条消息，真连本机 Redis 时那条 build 队列会瞬间塞满，之后的用例再问队列就是
+    在问上一个用例留下的垃圾。两条都只注入、不进 yield 元组（同一理由：既有解包形状）。
+
     与 tests/README「外部能力只换工厂函数」对齐：这里换的是**发布器这一个注入点**，不是
     monkeypatch 三个模块的私有全局。`enqueue_document` / `enqueue_index_build` /
     `enqueue_side_evidence` 仍是**真**的实现，用例照旧可以 monkeypatch 它们来断言业务层
@@ -163,14 +168,20 @@ def _offline_dispatch():
     index_recorder = _RecordingPublisher()
     side_evidence_recorder = _RecordingPublisher()
     build_recorder = _RecordingPublisher()
+    build_document_recorder = _RecordingPublisher()
+    build_dispatch_recorder = _RecordingPublisher()
     index_dispatch.set_task_publisher(index_recorder)
     index_dispatch.set_build_task_publisher(build_recorder)
+    index_dispatch.set_build_document_publisher(build_document_recorder)
+    index_dispatch.set_build_dispatch_publisher(build_dispatch_recorder)
     side_evidence_dispatch.set_side_evidence_publisher(side_evidence_recorder)
     try:
         yield index_recorder.calls, side_evidence_recorder.calls
     finally:
         index_dispatch.set_task_publisher(None)
         index_dispatch.set_build_task_publisher(None)
+        index_dispatch.set_build_document_publisher(None)
+        index_dispatch.set_build_dispatch_publisher(None)
         side_evidence_dispatch.set_side_evidence_publisher(None)
 
 

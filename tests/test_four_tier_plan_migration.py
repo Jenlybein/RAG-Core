@@ -104,6 +104,14 @@ def test_downgrade_reverts_everything() -> None:
     assert "max_top_k=0" in joined
 
 
+#: 历史迁移之后**又被删掉**的套餐列。历史迁移不许改（它要能在当时那份代码上跑），
+#: 而护栏用例要在「迁移表 vs 现在的种子」之间对齐，所以把已删列显式列出来。
+_REMOVED_PLAN_COLUMNS = {
+    # #218：并发处理名额（ADR-0034 决策八）。
+    "max_processing_documents",
+}
+
+
 def test_the_migration_values_are_exactly_the_seed_presets() -> None:
     """迁移里的四档数值必须与 ``PLAN_PRESETS`` 逐列相等。
 
@@ -118,8 +126,15 @@ def test_the_migration_values_are_exactly_the_seed_presets() -> None:
     module = _load()
     assert set(module._TIER_VALUES) == set(PLAN_PRESETS), "四档的 code 集合必须一致"
     for code, values in module._TIER_VALUES.items():
-        # 迁移表比业务列多一个 ``name``（展示名也要跟着改），除此之外必须一一对应。
-        assert set(values) == {*PLAN_BUSINESS_COLUMNS, "name"}, f"{code}: 列集合必须完整"
+        # 迁移表比业务列多两类东西：``name``（展示名也要跟着改），以及**历史迁移之后又被
+        # 删掉的列**（``max_processing_documents`` 随 #218 删除，但历史迁移不许改——它要能
+        # 在当时那份代码上跑）。所以这里的集合是「业务列 + 已删列 + name」，而逐列比对只
+        # 对**还在**的业务列做：已删列没有可比对的种子值了。
+        assert set(values) == {
+            *PLAN_BUSINESS_COLUMNS,
+            *_REMOVED_PLAN_COLUMNS,
+            "name",
+        }, f"{code}: 列集合必须完整"
         assert values["name"] == PLAN_PRESETS[code].name, f"{code}.name"
         for column in PLAN_BUSINESS_COLUMNS:
             assert values[column] == getattr(PLAN_PRESETS[code], column), f"{code}.{column}"

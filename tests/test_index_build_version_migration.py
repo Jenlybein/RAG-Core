@@ -550,10 +550,12 @@ def test_the_model_declares_the_same_table_as_the_migration() -> None:
     from app.models.index_version import INDEX_BUILD_STATUSES, IndexBuildVersion
 
     assert IndexBuildVersion.__tablename__ == "index_build_versions"
-    # 本迁移建的十一列之外，这张表后来又被两次加列：
+    # 本迁移建的十一列之外，这张表后来又加了七列：
     # * ``params``：第 16 步 #207（这一版构建用的切块参数）；
     # * ``documents_planned`` / ``doc_version`` / ``documents_done`` / ``converge_deadline``：
-    #   票 #214（构建收敛的四列，迁移 ``b2c7d4e91a35``）。
+    #   票 #214（构建收敛的四列，迁移 ``b2c7d4e91a35``）；
+    # * ``failed_documents`` / ``redispatch_count``：票 #215（未入新版本的明细与重投次数，
+    #   迁移 ``c4e8f1b6a2d7``）。
     # 名单仍然是「逐列核对」而不是「至少包含」：漂移的方向可能是**少**一列（迁移漏写），
     # 那一种用「至少包含」永远验不出来。
     added_later = {
@@ -562,6 +564,8 @@ def test_the_model_declares_the_same_table_as_the_migration() -> None:
         "doc_version",
         "documents_done",
         "converge_deadline",
+        "failed_documents",
+        "redispatch_count",
     }
     assert {column.key for column in IndexBuildVersion.__table__.columns} == set(
         EXPECTED_VERSION_COLUMNS

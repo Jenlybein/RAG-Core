@@ -111,7 +111,7 @@ def test_plans_has_every_business_column() -> None:
         if column.name not in {"id", "code", "name", "updated_at"}
     )
     assert set(business) == set(PLAN_BUSINESS_COLUMNS)
-    assert len(business) == 16
+    assert len(business) == 15
     for column in PLAN_BUSINESS_COLUMNS:
         assert not table.c[column].nullable, f"{column} 不允许为空"
 

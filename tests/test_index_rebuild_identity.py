@@ -498,7 +498,8 @@ def test_the_rebuild_script_starts_a_building_row_and_dispatches_the_build_task(
 
     module = _load_script("rebuild_kb_version")
     recorder = _RecordingPublisher()
-    index_dispatch.set_build_task_publisher(recorder)
+    # #215：构建默认形状改成「派活 + 按篇投递」，所以这条用例观察的是**派活**那条缝。
+    index_dispatch.set_build_dispatch_publisher(recorder)
 
     kb = _kb()
     session = AsyncRecordingSession(rows={KnowledgeBase: [kb], IndexBuildVersion: []})
@@ -518,7 +519,8 @@ def test_the_rebuild_script_starts_a_building_row_and_dispatches_the_build_task(
                 # 只有「改切块设置」那条控制面路径才传 True。
                 "activate": False,
             },
-            "task_id": f"build:{row.id}",
+            # #215：投的是**派活**任务，所以 task_id 走派活那一条。
+            "task_id": f"build-dispatch:{row.id}",
         }
     ]
 
