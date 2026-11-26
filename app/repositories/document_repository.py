@@ -16,8 +16,25 @@
 都走 ``AsyncSession``，所以本模块的 ``*_async`` 孪生覆盖这两条路径上的全部读与写（后缀与
 检索链路的 ``get_by_id_for_tenant`` / ``fetch_meta_by_chunk_ids`` 一致）。
 **语句本身只写一遍**（``_claim_statement`` / ``_release_statement`` / ``_prepare_statement`` /
-两个计数的 statement builder），同步与异步两个入口执行的是同一条 SQL——CAS 的判定条件与
-租约语义因此不可能在两套入口之间漂移。
+``_status_statement`` / 两个计数的 statement builder），同步与异步两个入口执行的是同一条
+SQL——CAS 的判定条件与租约语义因此不可能在两套入口之间漂移。
+
+## 状态回写是**语句**，不是「改对象属性」（#212）
+
+:func:`update_status` 执行一条显式 ``UPDATE``（带 ``tenant_id`` 过滤、同时抬
+``updated_at``），并把 ``rowcount`` 交给调用方。曾经的写法是给 ORM 对象赋属性再
+``flush``，它依赖脏检查——而抢占是一条 ``synchronize_session=False`` 的语句、会话又是
+``expire_on_commit=False``，于是「把属性赋成本来就是的那个值」不产生任何 UPDATE：整库构建
+跑完之后，库里的状态与 ``updated_at`` 永远停在抢占那一刻，而切片与向量都在。语句不猜，
+写没写进去由 ``rowcount`` 说。
+
+## 抢占带令牌（#213）
+
+:func:`try_claim_for_indexing` 抢到时**返回它实际写进库的那个时间戳**（没抢到是
+``None``）：这个值就是租约令牌，调用方拿着它去 Tx2 开头核对
+（:func:`holds_index_claim`）。不让调用方自己再读一次时间：那样读到的与写进库的会有微秒级
+差，令牌永远对不上。令牌挡住的是「租约过期被后续任务接走、旧任务稍后又醒来」——
+僵尸任务醒来时看到的已经是别人的时间戳，整笔放弃。
 
 同步的那几个**仍有读者，但不与上面的异步路径共用**：运维脚本
 （``reindex_knowledge_base`` / ``requeue_stuck_documents`` /
@@ -54,9 +71,7 @@ def get_by_id_for_tenant(db: Session, document_id: str, *, tenant_id: str) -> Do
     可选过滤器；无租户的那一条（:func:`get_by_id`，异步）只留给 Worker 任务路径。
     """
 
-    stmt = select(Document).where(
-        Document.id == document_id, Document.tenant_id == tenant_id
-    )
+    stmt = select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
     return db.execute(stmt).scalar_one_or_none()
 
 
@@ -187,9 +202,7 @@ def list_missing_content(
     一小批再决定，两者都不改变「正文为空」的定义。
     """
 
-    stmt = select(*_MISSING_CONTENT_COLUMNS).where(
-        func.coalesce(Document.content, "") == ""
-    )
+    stmt = select(*_MISSING_CONTENT_COLUMNS).where(func.coalesce(Document.content, "") == "")
     if kb_id is not None:
         stmt = stmt.where(Document.kb_id == kb_id)
     stmt = stmt.order_by(Document.created_at)
@@ -407,34 +420,48 @@ def try_claim_for_indexing(
     tenant_id: str,
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     allow_success: bool,
-) -> bool:
-    """Worker 侧的单条 ``UPDATE ... WHERE`` 抢占索引权；``rowcount > 0`` 即抢到。
+) -> datetime | None:
+    """Worker 侧的单条 ``UPDATE ... WHERE`` 抢占索引权；抢到回**租约令牌**，没抢到回 ``None``。
 
     可抢占的条件全部写在同一个 WHERE 里（见 :func:`_claimable_conditions`）；
     抢到即写入 ``status=PROCESSING`` 与新的抢占时间，并清掉上一次的
     ``error_message``。``tenant_id`` 是强制过滤参数（ADR-0006）。
     调用方提交事务后立刻释放行锁，不要在这里包住 embedding。
 
+    返回值是**这一条语句实际写进库的** ``index_claimed_at``（#213）：它就是租约令牌，
+    写切片那一笔事务的开头用 :func:`holds_index_claim` 核对它。返回 ``bool`` 曾让调用方
+    只能知道「抢到了」，核对时只能重新读一次时间——那一次读与这里的写之间就有一道缝。
+
     Worker 一律用 ``allow_success=False``：重建端点已经用
     :func:`prepare_for_indexing` 把 SUCCESS 文档置成 PROCESSING，ACK 丢失导致的
     迟到重复投递必须抢不到，否则会在 SUCCESS 之后重写切片。
     """
 
+    claimed_at = now()
     stmt = _claim_statement(
         document_id,
         tenant_id=tenant_id,
         lease_seconds=lease_seconds,
         allow_success=allow_success,
+        claimed_at=claimed_at,
     )
-    return int(db.execute(stmt).rowcount or 0) > 0
+    return claimed_at if int(db.execute(stmt).rowcount or 0) > 0 else None
 
 
 def _claim_statement(
-    document_id: str, *, tenant_id: str, lease_seconds: int, allow_success: bool
+    document_id: str,
+    *,
+    tenant_id: str,
+    lease_seconds: int,
+    allow_success: bool,
+    claimed_at: datetime,
 ) -> Update:
-    """抢占索引权的那一条 ``UPDATE``（同步与异步孪生共用，见模块文档「异步孪生」）。"""
+    """抢占索引权的那一条 ``UPDATE``（同步与异步孪生共用，见模块文档「异步孪生」）。
 
-    claimed_at = now()
+    ``claimed_at`` 由调用方传入而不是在这里现取：它就是抢占函数返回给调用方的租约令牌，
+    语句里写下的值与返回的值必须是**同一个对象**，否则令牌核对会因为微秒级差异而永远不等。
+    """
+
     lease_before = claimed_at - timedelta(seconds=lease_seconds)
     return (
         update(Document)
@@ -450,6 +477,21 @@ def _claim_statement(
             updated_at=claimed_at,
         )
         .execution_options(synchronize_session=False)
+    )
+
+
+def _claim_token_statement(document_id: str, *, tenant_id: str):
+    """Tx2 开头核对租约令牌的那一条 ``SELECT ... FOR UPDATE``（同步与异步孪生共用）。
+
+    ``FOR UPDATE`` 不是为了防别的写者（那由令牌判定负责），而是为了在读到令牌之后
+    到这一笔提交之前，没人能改掉这一行的租约：没有行锁时，另一个 Worker 可以在
+    核对的下一秒把行抢走，而这一笔仍然会写切片——令牌核对就成了「检查完就过期」。
+    """
+
+    return (
+        select(Document.index_claimed_at)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .with_for_update()
     )
 
 
@@ -517,9 +559,7 @@ async def get_by_id_for_tenant_async(
 ) -> Document | None:
     """按 id + 租户取（语义同同步版 :func:`get_by_id_for_tenant`；控制面与数据面都走它）。"""
 
-    stmt = select(Document).where(
-        Document.id == document_id, Document.tenant_id == tenant_id
-    )
+    stmt = select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
@@ -536,12 +576,54 @@ async def list_by_kb_async(db: AsyncSession, kb_id: str, *, tenant_id: str) -> l
 
 async def update_status(
     db: AsyncSession, doc: Document, status: int, error_message: str | None = None
-) -> None:
-    """回写状态与错误文案（只 flush，不提交）。"""
+) -> int:
+    """回写状态与错误文案：执行一条显式 ``UPDATE``（只 flush，不提交），返回影响行数。
 
-    doc.status = status
-    doc.error_message = error_message
-    await db.flush()
+    **为什么是语句而不是「改对象属性」**（#212）：见模块文档。一句话——抢占是
+    ``synchronize_session=False`` 的语句、会话``expire_on_commit=False``，于是内存里那份
+    文档可能落后于库；此时把属性赋成本来就有的值，ORM 判定无脏属性，一条 UPDATE 都不产生，
+    库里的状态就永远停在「索引中」。
+
+    返回 ``rowcount``：它是「真的写了」的唯一证据，调用方据此发现「没写进去」
+    （行在写之前被删掉了、``tenant_id`` 对不上）。``updated_at`` 与状态同一条语句抬，
+    于是「更新时间晚于抢占时刻」这件事在库里可查。
+
+    ``tenant_id`` 取自传入对象的租户（ADR-0006 要求写路径带租户过滤）；签名保持不变，
+    调用点一个都不用改。
+    """
+
+    result = await db.execute(
+        _status_statement(
+            str(doc.id),
+            tenant_id=doc.tenant_id,
+            status=status,
+            error_message=error_message,
+            updated_at=now(),
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def _status_statement(
+    document_id: str,
+    *,
+    tenant_id: str,
+    status: int,
+    error_message: str | None,
+    updated_at: datetime,
+) -> Update:
+    """状态回写的那一条 ``UPDATE``（同步与异步孪生共用；目前只有异步入口在执行）。
+
+    ``updated_at`` 显式写在 values 里而不是交给列的 ``onupdate``：这一条语句的全部意义
+    就是「库里这一行确实被写了」，时间戳跟着一起写死才不会在某种方言 / 选项下静默缺一半。
+    """
+
+    return (
+        update(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .values(status=status, error_message=error_message, updated_at=updated_at)
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def prepare_for_indexing_async(
@@ -571,23 +653,48 @@ async def try_claim_for_indexing_async(
     tenant_id: str,
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     allow_success: bool,
-) -> bool:
-    """Worker 侧抢占索引权；``rowcount > 0`` 即抢到（语义同 :func:`try_claim_for_indexing`）。"""
+) -> datetime | None:
+    """Worker 侧抢占索引权；抢到回租约令牌，没抢到回 ``None``。
 
+    语义与返回值都同 :func:`try_claim_for_indexing`（同一个 statement builder、同一个令牌）。
+    """
+
+    claimed_at = now()
     result = await db.execute(
         _claim_statement(
             document_id,
             tenant_id=tenant_id,
             lease_seconds=lease_seconds,
             allow_success=allow_success,
+            claimed_at=claimed_at,
         )
     )
-    return int(result.rowcount or 0) > 0
+    return claimed_at if int(result.rowcount or 0) > 0 else None
 
 
-async def release_index_claim_async(
-    db: AsyncSession, document_id: str, *, tenant_id: str
-) -> None:
+async def holds_index_claim_async(
+    db: AsyncSession, document_id: str, *, tenant_id: str, token: datetime
+) -> bool:
+    """这一行的租约是否**仍然是我抢到的那一次**（#213 的 fencing）。
+
+    写切片那一笔事务的**开头**调用它：``SELECT ... FOR UPDATE`` 锁住文档行并读出
+    ``index_claimed_at``，与手里的令牌比对。不等就是「租约已经过期、被后续任务接走了」，
+    调用方必须整笔放弃——僵尸任务醒来时写的每一行切片都会盖掉新主人的结果，而它自己的
+    状态回写还会把文档从「索引中」改回「成功」，症状是「重建完了，检索内容却是旧的」。
+
+    行不存在（文档被删）同样回 ``False``：没有租约可以属于我，也就不该往库里写切片。
+
+    ``FOR UPDATE`` 的理由见 :func:`_claim_token_statement`。``token`` 是
+    :func:`try_claim_for_indexing_async` 返回的**那个对象**，不是重新取的时间。
+    """
+
+    current = (
+        await db.execute(_claim_token_statement(document_id, tenant_id=tenant_id))
+    ).scalar_one_or_none()
+    return current is not None and current == token
+
+
+async def release_index_claim_async(db: AsyncSession, document_id: str, *, tenant_id: str) -> None:
     """释放索引租约（语义同 :func:`release_index_claim`）。"""
 
     await db.execute(_release_statement(document_id, tenant_id=tenant_id))
@@ -610,6 +717,38 @@ async def count_processing_for_tenant(
         _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
     )
     return int(result.scalar_one())
+
+
+async def participating_snapshot(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> tuple[int, int | None]:
+    """起构建那一刻的**参与篇数与统一稿号**：``(count, max(current_version))``。
+
+    这是 #214 那两列快照的唯一来源，两条聚合读共用同一份过滤条件（``status=1``：只有成功
+    的文档有可切的正文；失败 / 排队中的文档该由单篇重试解决，不属于构建）。
+
+    **为什么是两条语句而不是把文档行读一遍**：``start_build`` 跑在请求路径上（控制台改设置
+    就会发起），一次把整库文档连同正文读进内存，等于让一次设置保存去背起整库的正文体积。
+    两条 ``SELECT count / max`` 只读索引与指针；而「入口不遍历文档行」也正是 ADR-0034
+    决策三写下的形状（按篇投递之后更是如此）。
+
+    **为什么稿号取最大值**：库里的文档各自演进（回滚会把某篇的指针往回切），而一次构建产出
+    的切片必须统一算一稿——混着数的后果是同一批切片一半旧稿一半新稿（ADR-0031 决策七）。
+    取最大值是「这一库的稿号已经走到第几」唯一不需要猜的口径；真值判据按它数，缺一篇就是
+    缺一篇，不会因为某篇往回滚过就把一次正常的构建判成完成。没有可参与的文档时回 ``None``
+    （不是 0）：``None`` 的意思才是「这一稿没法挑」。
+    """
+
+    conditions = (
+        Document.kb_id == kb_id,
+        Document.tenant_id == tenant_id,
+        Document.status == DocumentStatus.SUCCESS,
+    )
+    count_statement = select(func.count()).select_from(Document).where(*conditions)
+    draft_statement = select(func.max(Document.current_version)).where(*conditions)
+    count = int((await db.execute(count_statement)).scalar_one())
+    draft = (await db.execute(draft_statement)).scalar_one()
+    return count, (int(draft) if draft is not None else None)
 
 
 # ──────────────── 写路径的行锁（第 12 步票 #175：建版本）

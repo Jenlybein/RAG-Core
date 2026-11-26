@@ -55,6 +55,19 @@ FAILED_MESSAGE = "document indexing failed"
 # --------------------------------------------------------------------------- 替身
 
 
+class _WriteResult:
+    """写语句的结果替身：只回答 ``rowcount``（语句确实发出去了 = 1 行）。
+
+    状态回写（#212）改成了执行一条 ``UPDATE``，它的返回值就是「真的写了」的证据。
+    离线替身**不模拟写语句对行的效果**（与 ``tests/fake_db`` 同一条口径），所以这里能
+    回答的只有「发出去了一行」；**库里那几行到底变成什么**由真库用例
+    ``tests/test_integration_indexing_lease.py`` 断言。
+    """
+
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+
 class _FakeSession:
     """最小**异步**会话替身：只记录 commit / rollback / close，不碰数据库。"""
 
@@ -66,6 +79,8 @@ class _FakeSession:
         self.closed = False
         #: ``add`` 进来的行（首个版本行，#175）。真会话里 ``add`` 是同步的。
         self.added: list[Any] = []
+        #: 发出去的**写**语句（字面量绑定，便于断言「写的是哪个状态」）。
+        self.statements: list[str] = []
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)
@@ -87,9 +102,22 @@ class _FakeSession:
     async def get(self, _model: Any, _ident: Any) -> Any:
         raise AssertionError("取行由仓储替身接管，会话替身不该被直接问到")
 
-    async def execute(self, _statement: Any) -> Any:
-        """读查询由仓储替身接管；这一条是建边读节目录（#152），替身表示空版本。"""
+    async def execute(self, statement: Any) -> Any:
+        """读查询由仓储替身接管；写语句记下原文并回「写了一行」。
 
+        状态回写与释放租约现在是**语句**而不是改属性（#212 / #213），于是这条缝上能看见
+        「写语句发出去了、写的是哪个状态」，看不见的只有「库里那行的值」——后者一律走
+        真库用例。
+        """
+
+        verb = (
+            str(statement).lstrip().split(maxsplit=1)[0].upper() if str(statement).strip() else ""
+        )
+        if verb in {"INSERT", "UPDATE", "DELETE"}:
+            sql = str(statement.compile(compile_kwargs={"literal_binds": True}))
+            self.statements.append(sql)
+            self.calls.append("update:documents.status" if "status=" in sql else "update:documents")
+            return _WriteResult(rowcount=1)
         return ZERO_COUNT
 
 
@@ -198,17 +226,18 @@ def _patch_service_environment(
         calls.append("get_by_id")
         return doc
 
-    async def _try_claim(_db: Any, _document_id: str, **kwargs: Any) -> bool:
+    async def _try_claim(_db: Any, _document_id: str, **kwargs: Any) -> Any:
         calls.append("claim")
         claim_calls.append(kwargs)
-        return claimed
+        # 抢到回**租约令牌**（#213）；抢不到回 None。
+        return now() if claimed else None
 
-    async def _update_status(
-        _db: Any, target: Any, status: int, error_message: str | None = None
-    ) -> None:
-        calls.append(f"update_status:{status}")
-        target.status = status
-        target.error_message = error_message
+    async def _holds_index_claim(*_args: Any, **_kwargs: Any) -> bool:
+        # 令牌核对的**判定**只认真库（行锁 + 库里那个时间戳）：这里的替身回答不了
+        # 「库里现在是谁的租约」，所以固定放行，由
+        # ``tests/test_integration_indexing_lease.py`` 用两条连接验真正的 fencing。
+        calls.append("fence")
+        return True
 
     def _prepare(target: Any, *, reparse: bool = False) -> ParsedDocument:
         calls.append("parse")
@@ -218,7 +247,7 @@ def _patch_service_environment(
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _try_claim)
-    monkeypatch.setattr(document_repository, "update_status", _update_status)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     if patch_parse:
         monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
 
@@ -271,9 +300,10 @@ def test_service_indexes_document_through_claim_purge_write_success(
         "commit",  # Tx1：抢占后立刻提交，不把 embedding 包在行锁里
         "parse",
         "embed",
+        "fence",  # Tx2 开头核对租约令牌（#213），在 purge 之前
         "purge:main",
         "add:main",
-        "update_status:1",  # SUCCESS
+        "update:documents.status",  # 状态回写是一条 UPDATE 语句（#212）
         "commit",  # Tx2：purge + 写入 + 状态一次性提交
     ]
     assert env.session.commits == 2, "抢占一段、写入一段，恰好两次提交"
@@ -281,7 +311,10 @@ def test_service_indexes_document_through_claim_purge_write_success(
     assert env.claim_calls == [{"tenant_id": TENANT_ID, "allow_success": False}], (
         "Worker 是唯一抢租约的一方，且迟到重复投递不得重新抢占 SUCCESS"
     )
-    assert env.document.status == DocumentStatus.SUCCESS
+    # **状态断言只在真库上做**：这条缝的替身不模拟写语句对行的效果，它只能证明「写了
+    # status=1 的那条 UPDATE 发出去了」；库里的值由
+    # ``tests/test_integration_indexing_lease.py`` 断言。
+    assert "status=1" in env.session.statements[-1], "Tx2 里发出去的是「成功」那条回写"
 
     written = env.stores[0].written[0]
     assert [chunk["meta"]["index"] for chunk in written] == [0, 1]
@@ -665,7 +698,12 @@ def test_retry_is_decided_and_raised_on_the_task_thread(
 
 
 def test_task_marks_failed_for_non_retryable_error(monkeypatch: pytest.MonkeyPatch) -> None:
-    """不可重试错误：不重试，写 status=2 + 脱敏固定文案，异常原文只进日志。"""
+    """不可重试错误：不重试，写 status=2 + 脱敏固定文案 + 清租约，异常原文只进日志。
+
+    **状态本身不在这条缝断言**：离线替身不模拟写语句对行的效果（它只证明「那条 UPDATE
+    发出去了、写的是失败 + 固定文案」），库里那三列的值由真库用例
+    ``test_marking_failed_really_writes_the_row_and_clears_the_lease`` 断言。
+    """
 
     session = _FakeSession()
     document = _document()
@@ -686,10 +724,16 @@ def test_task_marks_failed_for_non_retryable_error(monkeypatch: pytest.MonkeyPat
 
     assert task.retry_calls == []
     assert session.rollbacks == 1, "先回滚半成品事务"
-    assert document.status == DocumentStatus.FAILED
-    assert document.error_message == INDEXING_FAILED_MESSAGE, "只写脱敏固定文案"
-    assert PARSE_FAILURE_TEXT not in (document.error_message or ""), "异常原文不得落库"
-    assert document.index_claimed_at is None, "失败终态也必须清掉租约"
+    assert session.calls == [
+        "rollback",
+        "update:documents.status",
+        "release-claim",
+        "commit",
+    ], "回滚半成品 → 写失败 → 清租约 → 一次提交"
+    failed_write = session.statements[0]
+    assert "status=2" in failed_write, "写的是失败状态"
+    assert f"error_message='{INDEXING_FAILED_MESSAGE}'" in failed_write, "只写脱敏固定文案"
+    assert PARSE_FAILURE_TEXT not in failed_write, "异常原文不得落库"
     assert session.commits == 1
 
     failed = [entry for entry in logs if entry.get("event") == FAILED_MESSAGE]
@@ -719,8 +763,8 @@ def test_task_marks_failed_when_retries_are_exhausted(monkeypatch: pytest.Monkey
         )
 
     assert task.retry_calls == []
-    assert document.status == DocumentStatus.FAILED
-    assert document.error_message == INDEXING_FAILED_MESSAGE
+    assert "status=2" in session.statements[0], "库里写的是失败（值本身在真库用例上验）"
+    assert f"error_message='{INDEXING_FAILED_MESSAGE}'" in session.statements[0]
     assert len([entry for entry in logs if entry.get("event") == FAILED_MESSAGE]) == 1
 
 
@@ -919,7 +963,7 @@ def test_service_records_the_first_version_row_for_the_current_draft(
     assert row.content == PARSED_TEXT, "版本行里的正文就是这次索引用的那一份"
     assert row.checksum == checksum_of(PARSED_TEXT), "校验和走同一个入口"
     assert env.session.commits == 2, "补版本行不额外提交：它是 Tx2 的一部分"
-    assert calls.index("add:main") < calls.index(f"update_status:{DocumentStatus.SUCCESS}")
+    assert calls.index("add:main") < calls.index("update:documents.status")
 
 
 def test_service_does_not_add_a_second_version_row_when_one_exists(

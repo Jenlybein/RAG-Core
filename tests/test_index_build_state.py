@@ -22,6 +22,7 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from app.core.exceptions import AppError, ErrorCode
+from app.models.document import Document
 from app.models.index_version import (
     INDEX_BUILD_ACTIVE,
     INDEX_BUILD_ARCHIVED,
@@ -40,9 +41,12 @@ from app.services.index_build_service import (
     IndexBuildInvalidTransition,
     IndexBuildService,
     can_transition,
+    converge_deadline_for,
+    describe_overdue_builds,
     describe_stalled_builds,
     ensure_transition,
 )
+from app.utils.status import DocumentStatus
 from tests.fake_db import AsyncRecordingSession
 
 TENANT_ID = "tenant_build"
@@ -113,15 +117,38 @@ def _version(
     )
 
 
+def _document(
+    document_id: str,
+    *,
+    draft: int = 1,
+    status: int = DocumentStatus.SUCCESS,
+) -> Any:
+    """一行文档（起构建时那两条聚合读只用到这几个字段）。"""
+
+    return SimpleNamespace(
+        id=document_id,
+        tenant_id=TENANT_ID,
+        kb_id=KB_ID,
+        title=document_id,
+        current_version=draft,
+        status=status,
+    )
+
+
 def _session(
-    *, versions: list[IndexBuildVersion] | None = None, kb: Any | None = None
+    *,
+    versions: list[IndexBuildVersion] | None = None,
+    kb: Any | None = None,
+    documents: list[Any] | None = None,
 ) -> AsyncRecordingSession:
-    """异步假会话：预置版本行与知识库行（其余查询按替身口径回空）。"""
+    """异步假会话：预置版本行、知识库行与文档行（其余查询按替身口径回空）。"""
 
     return AsyncRecordingSession(
         rows={
             IndexBuildVersion: list(versions or []),
             KnowledgeBase: [kb] if kb is not None else [],
+            # #214 起起构建要快照「参与篇数 + 统一稿号」，那两条聚合读落在文档行上。
+            Document: list(documents or []),
         }
     )
 
@@ -286,6 +313,51 @@ def test_start_build_refuses_an_unknown_knowledge_base() -> None:
     assert session.added == []
 
 
+def test_start_build_snapshots_the_participants_the_draft_and_the_deadline() -> None:
+    """起构建时把**参与篇数 / 统一稿号 / 收敛期限**写进那一行（#214）。
+
+    没有这三样，收敛就只能回头去数计数器——而计数器漂高会让空版本上线（本次要修的故障）。
+    这里用假文档行验形状：只有 ``status=1`` 的文档参与，稿号取它们的当前稿指针最大值。
+    """
+
+    kb = _kb("v1")
+    session = _session(
+        versions=[_version(version="v1")],
+        kb=kb,
+        documents=[
+            _document("doc-a", draft=1),
+            _document("doc-b", draft=3),
+            _document("doc-failed", draft=3, status=DocumentStatus.FAILED),
+        ],
+    )
+
+    row = asyncio.run(_service().start_build(session, kb_id=KB_ID, tenant_id=TENANT_ID))
+
+    assert row.documents_planned == 2, "失败文档没有可切的正文，不参与构建，也不进分母"
+    assert row.doc_version == 3, "统一稿号 = 参与文档当前稿指针的最大值"
+    assert row.documents_done == 0, "进度从零开始，且它不参与判定"
+    assert row.converge_deadline == converge_deadline_for(2, started_at=row.created_at), (
+        "期限按参与篇数估出来（与库规模相关），不是固定值"
+    )
+    assert row.converge_deadline > row.created_at
+
+
+def test_start_build_records_a_draft_even_when_nothing_can_participate() -> None:
+    """空库起构建：分母为 0，稿号仍然落一个值（列非空；「没有稿号」由 0 篇表达）。"""
+
+    session = _session(
+        versions=[_version(version="v1")],
+        kb=_kb("v1"),
+        documents=[_document("doc-failed", draft=2, status=DocumentStatus.FAILED)],
+    )
+
+    row = asyncio.run(_service().start_build(session, kb_id=KB_ID, tenant_id=TENANT_ID))
+
+    assert row.documents_planned == 0
+    assert row.doc_version == 1, "没有可参与的文档时记 1，不为空"
+    assert row.converge_deadline == converge_deadline_for(0, started_at=row.created_at)
+
+
 # ─────────────────────────────────────────────────────────── 失败留痕
 
 
@@ -357,3 +429,30 @@ def test_stalled_builds_are_the_building_rows_older_than_the_threshold() -> None
     assert [row.id for row in found] == ["build-old"], "刚开始的那一行是在跑，不是卡住"
     assert "build-old" in describe_stalled_builds(found)
     assert describe_stalled_builds([]) == "no stalled index build"
+
+
+# ───────────────────────────── 「该收敛却没收敛」：按**收敛期限**判（#214 给自愈票的判据）
+
+
+def test_overdue_builds_are_the_building_rows_past_their_convergence_deadline() -> None:
+    """判据是**构建行自己的租约**，不是年龄：期限过了才是「该收敛却没收敛」。
+
+    与年龄判据（:meth:`list_stalled_builds`）的分工写死在这里：一行可能「开始很久了但期限
+    还没到」（大库），也可能「开始没多久但期限早过」（小库 + 估计错了）——后者才是需要立刻
+    按真值收尾的那一行。
+    """
+
+    now = datetime(2026, 11, 26, 12, 0, 0)
+    overdue = _version(version="v2", status=INDEX_BUILD_BUILDING, build_id="build-late")
+    overdue.converge_deadline = now - timedelta(minutes=5)
+    waiting = _version(version="v3", status=INDEX_BUILD_BUILDING, build_id="build-waiting")
+    waiting.converge_deadline = now + timedelta(hours=1)
+    settled = _version(version="v4", status=INDEX_BUILD_READY, build_id="build-ready")
+    settled.converge_deadline = now - timedelta(hours=2)
+    session = _session(versions=[overdue, waiting, settled], kb=_kb("v1"))
+
+    found = asyncio.run(_service().list_overdue_builds(session, tenant_id=TENANT_ID, at=now))
+
+    assert [row.id for row in found] == ["build-late"]
+    assert "build-late" in describe_overdue_builds(found)
+    assert describe_overdue_builds([]) == "no index build past its convergence deadline"
