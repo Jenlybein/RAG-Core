@@ -6,9 +6,16 @@
 **两段事务**是这里最重要的不变量：
 1. ``try_claim_for_indexing`` 抢到索引权后立刻 ``commit``。若把整条流水线包在
    行锁里，``GET /documents`` 在 Worker 跑完之前都会卡在这份文档那一行上。
+   **抢到的那一次调用还把租约令牌带回来**（#213）：这一条语句实际写进库的
+   ``index_claimed_at``，Tx2 的开头用它核对「这一行还是不是我的」。
 2. 解析 / 切块 / 向量化之后，purge（先删旧切片）+ 写入新切片 + ``status=SUCCESS``
    在同一段事务里提交：调用方永远不会看到「旧切片没了、新切片还没写」或
    「切片写好了、状态还是处理中」的中间态。异常时由调用方（Celery 任务）回滚。
+
+**Tx2 开头核对租约令牌（#213）**：Tx1 提交之后、Tx2 提交之前，租约可能过期并被另一个任务
+接走。若不管，旧任务醒来会 purge 掉新主人刚写的切片、再把自己的内容写回去，最后把状态从
+「索引中」改回「成功」——现象是「重建完了，检索到的却是旧内容」。令牌不等就整笔放弃
+（回滚 + warning + 返回 0），调用方按「跳过」处理，不重试。
 
 **第 11 步票 #132 起，这条流水线跑在异步栈上**：会话是 ``AsyncSession``（Worker 常驻
 循环里那一个，见 ``app/db/worker_loop.py``），两次提交走 ``async_commit_now``——提交点
@@ -82,7 +89,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.db.transaction import async_commit_now
+from app.db.transaction import async_commit_now, async_rollback_now
 from app.models.document import Document
 from app.models.document_version import DOCUMENT_VERSION_CURRENT, DocumentVersion
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
@@ -316,9 +323,10 @@ class IndexingService:
         doc_version: int | None = None,
         allow_success: bool = False,
     ) -> int:
-        """把一份已经登记在库的文档索引成切片，返回写入的切片数。
+        """把一份已经登记在库的文档索引成切片，返回写入的切片数；跳过时返回 0。
 
-        抢不到租约时返回 0：那是「另一个 Worker 正在跑」，调用方按跳过处理、不要重试。
+        「跳过」有两种，调用方都按「这一篇没写」处理、都不要重试：抢不到租约（另一个
+        Worker 正在跑），以及 Tx2 开头令牌核对失败（租约已被接走，见模块文档 #213）。
 
         ``reparse=True`` 强制重解析原始文件（忽略库内正文）；``allow_success=True`` 让
         **已经是 SUCCESS 的文档**也能被抢占——那是「整库重建到新版本」（#142）要的：
@@ -359,11 +367,14 @@ class IndexingService:
 
         # Tx1：抢占后立刻提交，只持锁一瞬间。抢不到说明另一个 Worker 已经在跑
         # 这份文档（重复投递 / 重试），直接跳过，绝不重复向量化。
-        claimed = await document_repository.try_claim_for_indexing_async(
+        #
+        # 抢占回的是**租约令牌**（#213）：这一条语句实际写进库的 ``index_claimed_at``。
+        # 下面 Tx2 的开头拿它核对「这一行还是不是我抢到的那一次」。
+        claim_token = await document_repository.try_claim_for_indexing_async(
             db, document_id, tenant_id=doc.tenant_id, allow_success=allow_success
         )
         await async_commit_now(db)
-        if not claimed:
+        if claim_token is None:
             logger.info(
                 "indexing skipped, another worker owns it",
                 document_id=document_id,
@@ -495,6 +506,30 @@ class IndexingService:
         ]
 
         # Tx2：先删后写 + 建关系边 + 状态回写，一次提交；任一步失败都由调用方回滚。
+        #
+        # **开头先核对租约令牌**（#213）：Tx1 提交之后到这一刻之间，租约可能已经过期并
+        # 被另一个任务接走（清扫器接活、或者重投的副本先跑完了）。此时这一笔写下去就是
+        # 「僵尸任务覆盖新主人的结果」——它的切片会先 purge 掉对方的，再把旧内容写回来。
+        # 令牌不等 → 整笔放弃：回滚（连正文回写一起撤销）、记一条 warning、返回 0。
+        # 不抛可重试错误：这里不是失败，是「已经有人干了，我该退场」。
+        #
+        # 放在 purge **之前**是关键：检查完之前一行都没改。
+        if not await document_repository.holds_index_claim_async(
+            db, document_id, tenant_id=doc.tenant_id, token=claim_token
+        ):
+            # 先把要进日志的两列取出来：``rollback`` 会让 ORM 对象过期，之后再读属性会触发
+            # 一次懒加载——异步会话里那是一次 ``MissingGreenlet``，而它会把「该退场」变成
+            # 「任务崩了」。
+            tenant_id, kb_id = doc.tenant_id, doc.kb_id
+            await async_rollback_now(db)
+            logger.warning(
+                "indexing aborted, the lease was taken over by another worker",
+                document_id=document_id,
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+            )
+            return 0
+
         # 清除按「这一稿」收窄：别的稿的切片一个字节都不动（#173，ADR-0005 D4 选 B）。
         await purge_document_chunks(
             db,

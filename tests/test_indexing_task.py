@@ -226,10 +226,18 @@ def _patch_service_environment(
         calls.append("get_by_id")
         return doc
 
-    async def _try_claim(_db: Any, _document_id: str, **kwargs: Any) -> bool:
+    async def _try_claim(_db: Any, _document_id: str, **kwargs: Any) -> Any:
         calls.append("claim")
         claim_calls.append(kwargs)
-        return claimed
+        # 抢到回**租约令牌**（#213）；抢不到回 None。
+        return now() if claimed else None
+
+    async def _holds_index_claim(*_args: Any, **_kwargs: Any) -> bool:
+        # 令牌核对的**判定**只认真库（行锁 + 库里那个时间戳）：这里的替身回答不了
+        # 「库里现在是谁的租约」，所以固定放行，由
+        # ``tests/test_integration_indexing_lease.py`` 用两条连接验真正的 fencing。
+        calls.append("fence")
+        return True
 
     def _prepare(target: Any, *, reparse: bool = False) -> ParsedDocument:
         calls.append("parse")
@@ -239,6 +247,7 @@ def _patch_service_environment(
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _try_claim)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     if patch_parse:
         monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
 
@@ -291,6 +300,7 @@ def test_service_indexes_document_through_claim_purge_write_success(
         "commit",  # Tx1：抢占后立刻提交，不把 embedding 包在行锁里
         "parse",
         "embed",
+        "fence",  # Tx2 开头核对租约令牌（#213），在 purge 之前
         "purge:main",
         "add:main",
         "update:documents.status",  # 状态回写是一条 UPDATE 语句（#212）

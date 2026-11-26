@@ -278,16 +278,33 @@ def pipeline_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
 
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _visible_kb)
 
-    async def _claim(db: Any, document_id: str, **_kwargs: Any) -> bool:
+    async def _claim(db: Any, document_id: str, **_kwargs: Any) -> Any:
         # 唯一换掉的仓储原语：真实实现是一条 SQL UPDATE（需要 PostgreSQL 行锁），
         # 内存会话跑不了；抢占成功后的两段事务仍由真实 IndexingService 驱动。
+        # 返回值是**租约令牌**（#213）：替身把同一行上的 ``index_claimed_at`` 设成同一个
+        # 值并把它交回去，于是流水线里的令牌核对在替身上也成立。
         doc = await db.get(Document, document_id)
         assert doc is not None
-        doc.index_claimed_at = now()
+        token = now()
+        doc.index_claimed_at = token
         claimed.append(document_id)
-        return True
+        return token
 
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+
+    async def _holds_index_claim(db: Any, document_id: str, *, tenant_id: str, token: Any) -> bool:
+        """令牌核对（#213）：替身按**同一行上的值**比对，不是在真语句上放行。
+
+        真实现是一条 ``SELECT ... FOR UPDATE`` + 逐值比较；内存会话跑不了那条语句，但
+        「令牌是不是这一行的当前值」这半个判定在替身上仍然成立。行锁与「另一个任务真的
+        改掉了租约」那半个只在真库上验（``tests/test_integration_indexing_lease.py``）。
+        """
+
+        assert tenant_id == TENANT_ID
+        doc = await db.get(Document, document_id)
+        return doc is not None and doc.index_claimed_at == token
+
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
 
     async def _prepare_for_indexing(db: Any, document_id: str, **_kwargs: Any) -> bool:
         # 同上：真实实现是 SQL UPDATE（SUCCESS→已排队、清租约）。重建入口要它把行

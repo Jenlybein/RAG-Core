@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 
+from app.db.base import now
 from app.models.document import Document
 from app.models.knowledge_base import SPLIT_STRUCTURE
 from app.services.result_collapse import unit_id_of, unit_path_of
@@ -294,7 +295,11 @@ def _index_one_document(
         document_ids.append(str(kwargs.get("document_id", "")))
         return real_build_splitter(strategy, **kwargs)
 
-    async def _claim(*_args: Any, **_kwargs: Any) -> bool:
+    async def _claim(*_args: Any, **_kwargs: Any) -> Any:
+        # 抢到回租约令牌（#213）；令牌核对只认真库，本文件验的是节身份证。
+        return now()
+
+    async def _holds_index_claim(*_args: Any, **_kwargs: Any) -> bool:
         return True
 
     async def _split_config(*_args: Any, **_kwargs: Any) -> tuple[str, int]:
@@ -305,6 +310,7 @@ def _index_one_document(
 
     monkeypatch.setattr(indexing_service, "build_splitter", _recording_build_splitter)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(knowledge_base_repository, "get_split_config", _split_config)
     monkeypatch.setattr(
         knowledge_base_repository, "get_effective_index_version", _effective_version

@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_key
 from app.core.auth import DevKeyContext
+from app.db.base import now
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.providers.parsers.base import ParsedDocument
@@ -205,11 +206,16 @@ def _patch_indexing(
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(*_a: Any, **_k: Any) -> bool:
+    async def _claim(*_a: Any, **_k: Any) -> Any:
+        # 抢到回租约令牌（#213）；核对本身（行锁 + 库里那个时间戳）只认真库。
+        return now()
+
+    async def _holds_index_claim(*_a: Any, **_k: Any) -> bool:
         return True
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",

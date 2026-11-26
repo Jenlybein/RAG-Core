@@ -28,6 +28,7 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.exceptions import AppError, ErrorCode
+from app.db.base import now
 from app.models.chunk import Chunk, DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
@@ -339,11 +340,15 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(*_a: Any, **_k: Any) -> bool:
+    async def _claim(*_a: Any, **_k: Any) -> Any:
+        return now()
+
+    async def _holds_index_claim(*_a: Any, **_k: Any) -> bool:
         return True
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
@@ -431,7 +436,12 @@ def _patch_rebuild_collaborators(
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(*_a: Any, **_k: Any) -> bool:
+    async def _claim(*_a: Any, **_k: Any) -> Any:
+        # 抢到回租约令牌（#213）。令牌核对的判定只认真库（行锁 + 库里那个时间戳），
+        # 这里固定放行——本文件验的是「正文从哪儿来」，不是租约归属。
+        return now()
+
+    async def _holds_index_claim(*_a: Any, **_k: Any) -> bool:
         return True
 
     async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
@@ -439,6 +449,7 @@ def _patch_rebuild_collaborators(
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         knowledge_base_repository, "get_effective_index_version", _effective_version
     )
