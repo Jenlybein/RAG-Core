@@ -36,6 +36,7 @@ from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import ImpactGroupData
 from app.schemas.console_settings import (
+    EmbeddingBatchHintData,
     SettingsImpactData,
     SettingsListData,
     SettingsPatchData,
@@ -61,6 +62,8 @@ def _row_data(row: SettingRowView) -> SettingRowData:
         invalid=row.invalid,
         why=row.why,
         invalid_reason=row.invalid_reason,
+        minimum=row.minimum,
+        maximum=row.maximum,
     )
 
 
@@ -80,7 +83,14 @@ def _list_data(rows: list[SettingRowView]) -> SettingsListData:
                 settings=[_row_data(row) for row in group_rows],
             )
         )
-    return SettingsListData(groups=groups, cache_ttl_seconds=CACHE_TTL_SECONDS)
+    # 当前生效模型与它的单批上限：面板上「建议 ≤ Y」的唯一来源。计算在服务层，
+    # 路由只装壳（模型→上限的表在 app/core/embedding_batch.py，别的地方不许再抄一份）。
+    model, limit = runtime_settings.embedding_batch_budget()
+    return SettingsListData(
+        groups=groups,
+        cache_ttl_seconds=CACHE_TTL_SECONDS,
+        embedding_batch=EmbeddingBatchHintData(model=model, limit=limit),
+    )
 
 
 def _impact_data(impact: SettingsImpact | None) -> SettingsImpactData | None:

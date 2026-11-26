@@ -30,6 +30,16 @@ export interface SettingRow {
   why: string
   /** 标红行的原因；正常行为 `null`。 */
   invalid_reason: string | null
+  /** 白名单声明的下界（没声明是 `null`）。页面按它拦越界，不抄第三份边界表。 */
+  minimum: number | null
+  /** 白名单声明的上界（没声明是 `null`）。票 #224：嵌入批大小是 25。 */
+  maximum: number | null
+}
+
+/** 嵌入批大小那一行的提示素材：当前生效模型与它的单批上限（值由后端给）。 */
+export interface EmbeddingBatchHint {
+  model: string
+  limit: number
 }
 
 /** 一档的全部行。`title` 由服务端写好。 */
@@ -45,6 +55,8 @@ export interface SettingsListData {
   groups: SettingTierGroup[]
   /** 缓存有效期（秒）。「各进程 Ns 内生效」的唯一依据，不许前端写死 30。 */
   cache_ttl_seconds: number
+  /** 嵌入批大小那一行的提示素材（当前生效模型 + 它的单批上限）。 */
+  embedding_batch: EmbeddingBatchHint
 }
 
 /** 影响面里的一组对象：`count` 是全量计数，`sample` 只是最多 5 个名字。 */

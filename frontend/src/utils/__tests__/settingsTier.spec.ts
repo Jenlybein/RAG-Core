@@ -1,16 +1,26 @@
 import { describe, expect, it } from 'vitest'
 
 import type { SettingRow } from '../../types/runtimeSettings'
-import { groupByTier, isEditable, kindOf, validateHotValue } from '../settingsTier'
+import {
+  EMBEDDING_BATCH_SIZE_KEY,
+  RESTART_PANEL_WRITABLE_KEYS,
+  RESTART_WORKER_NOTICE,
+  embeddingBatchHintOf,
+  groupByTier,
+  isEditable,
+  kindOf,
+  restartNoticeOf,
+  validateHotValue,
+} from '../settingsTier'
 
 /**
  * 这些用例钉的是检索参数页的渲染与保存规则，不碰组件：
  *
  * - 分组顺序必须跟后端给的行序（后端按 locked → restart → hot 排，前端不再排一次）；
  * - 某一档一行都没有时**不造空组**（否则页面上出现一个没有内容的标题，读者以为坏了）；
- * - locked 与 restart 两档都绝不允许前端提交（restart 档在面板上只读，改它走运维流程），
- *   数字/布尔的边界在发请求前拦住，省得把 20015 变成一次「看起来点了保存、其实后端拒了」
- *   的往返。
+ * - locked 档绝不允许前端提交；restart 档只放行 `RESTART_PANEL_WRITABLE_KEYS` 点名的键
+ *   （票 #224 之前是整档只读），数字/布尔的边界在发请求前拦住，省得把 20015 变成一次
+ *   「看起来点了保存、其实后端拒了」的往返。
  */
 
 function rowOf(overrides: Partial<SettingRow> = {}): SettingRow {
@@ -23,6 +33,8 @@ function rowOf(overrides: Partial<SettingRow> = {}): SettingRow {
     invalid: false,
     why: '缺省值是给 custom 档回落用的',
     invalid_reason: null,
+    minimum: null,
+    maximum: null,
     ...overrides,
   }
 }
@@ -64,7 +76,7 @@ describe('groupByTier：顺序照后端，缺档不造空组', () => {
   })
 })
 
-describe('isEditable：只有 hot 档可写，locked / restart 在面板上只读', () => {
+describe('isEditable：hot 档可写，locked 只读，restart 只放行点名的那一项', () => {
   it('locked 档一律只读', () => {
     // 即使后端将来把 editable 错报成 true，页面也不给写入口：这一档的 why 就是
     // 「能关掉鉴权」，前端不该把安全边界交给一个布尔字段。
@@ -72,11 +84,26 @@ describe('isEditable：只有 hot 档可写，locked / restart 在面板上只�
     expect(isEditable(rowOf({ tier: 'locked', editable: true }))).toBe(false)
   })
 
-  it('restart 档即使后端 editable=true 也只读：#93/#96 要求面板不可编辑', () => {
-    // 后端接受 restart 档的写库请求（它只表达「把意图记下来」），但验收要求面板上
-    // 不给入口，改它得走运维流程；保存时因此也不能出现 restart 的改动。
-    expect(isEditable(rowOf({ tier: 'restart', editable: true }))).toBe(false)
-    expect(isEditable(rowOf({ tier: 'restart', editable: false }))).toBe(false)
+  it('restart 档里只有批大小可编辑（票 #224），其余仍只读', () => {
+    // 验收原话：「该配置项在面板上可编辑，其余『需重启』项仍保持只读」。
+    expect(
+      isEditable(rowOf({ key: EMBEDDING_BATCH_SIZE_KEY, tier: 'restart', editable: true, value: 10 })),
+    ).toBe(true)
+    // 同一档的其它键：后端接受写库，但面板不给入口（改了要重建数据 / 重起整条链路）。
+    for (const key of ['CHUNK_SIZE', 'CHUNK_OVERLAP', 'EMBEDDING_MODEL', 'EMBEDDING_DIMENSIONS']) {
+      expect(isEditable(rowOf({ key, tier: 'restart', editable: true }))).toBe(false)
+    }
+  })
+
+  it('例外是逐键名单，不是「restart 档整体可写」的开关', () => {
+    // 名单本身也钉一下：把它扩成 .env 里那一整档，等于拆掉 #93/#96 的规则。
+    expect(RESTART_PANEL_WRITABLE_KEYS).toEqual([EMBEDDING_BATCH_SIZE_KEY])
+  })
+
+  it('批大小这一行在后端 editable=false 时仍只读（后端收紧时页面跟着收紧）', () => {
+    expect(
+      isEditable(rowOf({ key: EMBEDDING_BATCH_SIZE_KEY, tier: 'restart', editable: false })),
+    ).toBe(false)
   })
 
   it('hot 档仍按后端的 editable 决定', () => {
@@ -133,6 +160,38 @@ describe('validateHotValue：发请求前的类型与边界', () => {
     expect(validateHotValue(rowOf({ value: 5 }), 3).ok).toBe(true)
   })
 
+  it('数字行按响应里给的边界拦越界，并把「当前值」写进原因', () => {
+    // 边界来自后端那一行的 minimum / maximum（票 #224），前端不抄第三份表。
+    const batch = rowOf({
+      key: EMBEDDING_BATCH_SIZE_KEY,
+      tier: 'restart',
+      value: 10,
+      minimum: 1,
+      maximum: 25,
+    })
+
+    expect(validateHotValue(batch, 12)).toEqual({ ok: true, value: 12 })
+    expect(validateHotValue(batch, 25)).toEqual({ ok: true, value: 25 })
+
+    const tooSmall = validateHotValue(batch, 0)
+    expect(tooSmall.ok).toBe(false)
+    if (!tooSmall.ok) {
+      expect(tooSmall.message).toContain('≥ 1')
+      expect(tooSmall.message).toContain('当前 0')
+    }
+
+    const tooLarge = validateHotValue(batch, 26)
+    expect(tooLarge.ok).toBe(false)
+    if (!tooLarge.ok) {
+      expect(tooLarge.message).toContain('≤ 25')
+      expect(tooLarge.message).toContain('当前 26')
+    }
+  })
+
+  it('没有声明边界的数字行仍接受 0（边界由后端白名单判定，前端不复述一张会漂移的表）', () => {
+    expect(validateHotValue(rowOf({ value: 15 }), 0)).toEqual({ ok: true, value: 0 })
+  })
+
   it('角色指针行的值是 null 时按字符串处理，空串是「不指向」这个明确状态', () => {
     const row = rowOf({ key: 'model.role.fast', value: null })
 
@@ -146,5 +205,44 @@ describe('validateHotValue：发请求前的类型与边界', () => {
 
     expect(result.ok).toBe(false)
     if (!result.ok) expect(result.message).toContain('不可')
+  })
+})
+
+describe('批大小那一行的两句提示（票 #224）', () => {
+  const batchRow = rowOf({
+    key: EMBEDDING_BATCH_SIZE_KEY,
+    tier: 'restart',
+    value: 10,
+    minimum: 1,
+    maximum: 25,
+  })
+
+  it('提示里带上当前模型与它的单批上限，建议值就是那个上限', () => {
+    const text = embeddingBatchHintOf(batchRow, { model: 'qwen3.7-text-embedding', limit: 20 })
+
+    expect(text).toBe('当前模型 qwen3.7-text-embedding（单批上限 20），建议 ≤ 20')
+  })
+
+  it('别的行没有这句提示（模型只与嵌入批大小有关）', () => {
+    expect(embeddingBatchHintOf(rowOf({ key: 'CHUNK_SIZE', tier: 'restart' }), { model: 'x', limit: 10 })).toBeNull()
+    expect(embeddingBatchHintOf(rowOf({ tier: 'hot' }), { model: 'x', limit: 10 })).toBeNull()
+  })
+
+  it('后端没给素材时不给半句话（旧版后端 / 契约变更下的降级）', () => {
+    expect(embeddingBatchHintOf(batchRow, null)).toBeNull()
+    expect(embeddingBatchHintOf(batchRow, undefined)).toBeNull()
+    expect(embeddingBatchHintOf(batchRow, { model: '', limit: 10 })).toBeNull()
+    expect(embeddingBatchHintOf(batchRow, { model: 'x', limit: 0 })).toBeNull()
+  })
+
+  it('可编辑的「需重启」行旁边写「保存后需重启 Worker 生效」', () => {
+    expect(restartNoticeOf(batchRow)).toBe(RESTART_WORKER_NOTICE)
+    expect(RESTART_WORKER_NOTICE).toContain('重启 Worker')
+  })
+
+  it('只读的「需重启」行、热更行与只读行都不挂这句（没有保存动作可提醒）', () => {
+    expect(restartNoticeOf(rowOf({ key: 'CHUNK_SIZE', tier: 'restart' }))).toBeNull()
+    expect(restartNoticeOf(rowOf({ tier: 'hot' }))).toBeNull()
+    expect(restartNoticeOf(rowOf({ tier: 'locked', editable: false }))).toBeNull()
   })
 })
