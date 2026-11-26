@@ -30,6 +30,7 @@ from sqlalchemy.dialects.postgresql import JSONB
 import app.models as models_package
 from app.core import passwords
 from app.core.config import settings
+from app.core.embedding_batch import batch_limit_of
 from app.core.runtime_settings_cache import reset_settings_cache, set_settings_cache
 from app.db.base import Base
 from app.models.account import Account
@@ -495,6 +496,98 @@ def test_a_restart_tier_patch_reports_pending_restart_and_keeps_the_cache(
     assert "重启" in data["note"]
     assert console.cache.deleted == 0, "第二档不热更：删缓存没有意义"
     assert console.setting_row("CHUNK_SIZE").value == 256
+
+
+# ───────────────────────────────────────────── 票 #224：面板可改的嵌入批大小
+
+
+def test_the_listing_carries_the_bounds_and_the_current_model_batch_limit(
+    console: _Harness,
+) -> None:
+    """面板上「建议 ≤ Y」与「越界」两条提示所需的素材都在响应里。
+
+    页面不抄模型→上限的表（供应商事实），也不抄边界表（白名单事实）：两者都随响应返回。
+    """
+
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
+
+    body = console.data(console.client.get("/console/settings"))
+    rows = console.settings(console.client.get("/console/settings"))
+
+    assert body["embedding_batch"]["model"] == settings.EMBEDDING_MODEL
+    assert body["embedding_batch"]["limit"] == batch_limit_of(settings.EMBEDDING_MODEL)
+    assert body["embedding_batch"]["limit"] == 20, "当前模型是 qwen3.7-text-embedding"
+
+    batch = rows["EMBEDDING_BATCH_SIZE"]
+    assert batch["tier"] == "restart", "档位没变：改完仍要重启 Worker"
+    assert (batch["minimum"], batch["maximum"]) == (1, 25)
+    # 其余「需重启」键没有额外上界，返回 null 而不是 0（0 会被前端当成「不许大于 0」）。
+    assert rows["CHUNK_SIZE"]["maximum"] is None
+    assert rows["TOP_K"]["maximum"] is None
+
+
+def test_an_admin_can_write_the_embedding_batch_size(console: _Harness) -> None:
+    """验收原话：这一项在面板上可写（其余「需重启」项仍只读，那是页面的规则）。
+
+    写入口本身没有变化：仍然只给管理员、仍然落审计、仍然不删缓存（第二档不参与热更）。
+    """
+
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
+
+    response = console.client.patch(
+        "/console/settings?dry_run=false",
+        json={"values": {"EMBEDDING_BATCH_SIZE": 12}},
+        headers=WRITE_HEADERS,
+    )
+
+    data = console.data(response)
+    assert data["restart"] == ["EMBEDDING_BATCH_SIZE"]
+    assert data["hot"] == []
+    assert "重启" in data["note"], "保存成功的提示必须说清「要重启才生效」"
+    assert console.cache.deleted == 0
+
+    row = console.setting_row("EMBEDDING_BATCH_SIZE")
+    assert (row.value, row.updated_by) == (12, ADMIN_ID)
+
+    audit = console.audit_entries()[-1]
+    assert (audit.action, audit.target, audit.actor_id) == ("settings.patch", "settings", ADMIN_ID)
+    assert audit.after_snapshot == {"EMBEDDING_BATCH_SIZE": 12}
+
+
+@pytest.mark.parametrize("value", [0, 26])
+def test_an_out_of_range_batch_size_is_a_param_error_with_a_readable_reason(
+    console: _Harness, value: int
+) -> None:
+    """0 与超过上界的值都在 HTTP 边界被拒：码是既有的 20015，文案带具体数字。"""
+
+    assert console.login("admin", ADMIN_PASSWORD).json()["code"] == 0
+
+    response = console.client.patch(
+        "/console/settings?dry_run=false",
+        json={"values": {"EMBEDDING_BATCH_SIZE": value}},
+        headers=WRITE_HEADERS,
+    )
+
+    body = response.json()
+    assert body["code"] == 20015
+    assert "EMBEDDING_BATCH_SIZE" in body["msg"]
+    assert ("≥ 1" if value == 0 else "≤ 25") in body["msg"]
+    assert console.db.added_of(RuntimeSetting) == []
+
+
+def test_a_tenant_account_cannot_write_the_embedding_batch_size(console: _Harness) -> None:
+    """开这一项的例外**不是**放宽权限：租户账号写它仍然 20011，且一行都不许留。"""
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = console.client.patch(
+        "/console/settings?dry_run=false",
+        json={"values": {"EMBEDDING_BATCH_SIZE": 12}},
+        headers=WRITE_HEADERS,
+    )
+
+    assert response.json()["code"] == 20011
+    assert console.db.added_of(RuntimeSetting) == []
 
 
 def test_dry_run_previews_the_impact_of_turning_off_rerank(
