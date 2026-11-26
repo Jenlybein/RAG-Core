@@ -209,14 +209,14 @@ def test_rollback_answers_with_the_envelope_and_leaves_an_enqueued_rebuild(
         "document_id": DOC_ID,
         "version": 1,
         "previous_version": 3,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
     }
 
     assert api.rows() == [(1, "current"), (2, "archived"), (3, "archived")]
     doc = api.document()
     assert doc.current_version == 1
     assert doc.content == CONTENTS[1]
-    assert doc.status == DocumentStatus.PROCESSING
+    assert doc.status == DocumentStatus.QUEUED
 
     assert [call["kwargs"]["doc_version"] for call in api.publisher.calls] == [1]
     assert api.publisher.calls[0]["task_id"] == f"doc:{DOC_ID}"

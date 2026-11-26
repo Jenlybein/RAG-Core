@@ -178,7 +178,7 @@ export function fetchDocumentVersionsConsole(
  * 回滚到某一稿。**会影响所有调用方**：面板上一次点击就会改掉整个租户检索到的内容，
  * 所以调用方必须先二次确认（`DocumentVersionsDialog` 的确认框写的就是这句话）。
  *
- * 回执 `status` 恒为 3：后端切指针 + 置处理中 + 投递重建，「已受理」不等于「已经能
+ * 回执 `status` 恒为 4（排队中）：后端切指针 + 置排队中 + 投递重建，「已受理」不等于「已经能
  * 检索到旧内容」；终态要等树轮询看到成功。
  *
  * 三种拒绝与数据面同码：20025 处理中 / 20030 这一稿不存在 / 20032 已经是当前稿。
@@ -212,6 +212,7 @@ export function toKnowledgeBaseNodes(data: ConsoleTreeData): KnowledgeBaseNode[]
     // 而「需重建」缺省成 `false`：这里没有库的版本参数可比，猜 `true` 会让列表上
     // 每一条都挂一个「需重建」，那种噪音会让人学会忽略这个提示。
     section_part_max_chars: node.section_part_max_chars ?? KB_SECTION_PART_DEFAULT,
+    build_progress: node.build_progress ?? null,
     needs_rebuild: node.needs_rebuild ?? false,
     documents: (node.documents ?? []).map(toDocumentListItem),
   }))

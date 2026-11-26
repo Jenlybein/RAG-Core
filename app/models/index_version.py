@@ -19,6 +19,22 @@ building ──▶ ready ──(单事务切换)──▶ active ──▶ archi
 
 ``version`` 是**版本名**（``v1``、``v2``…），与 ``chunks.index_version`` 同宽同值域；
 ``document_count`` / ``chunk_count`` 是 ``ready`` 时的计数快照，用于激活前比对。
+
+## 四列「进度」各说各的事（#214）
+
+一次构建收不收尾，判据是**真值**（这一版这一稿下已经有切片的文档数），不是计数器
+（[ADR-0034](../../docs/adr/0034-queue-state-and-build-convergence.md) 决策四）。所以这一行上
+有四个容易混的数字，语义各不相同：
+
+| 列 | 它是什么 | 谁读它 |
+| --- | --- | --- |
+| ``documents_planned`` | 起构建那一刻这个库里**可参与构建**的篇数快照 | 收敛判据的分母（唯一参与判定的） |
+| ``doc_version`` | 这一轮构建统一按第几稿数 | 收敛判据的另一半（``该版本 + 该稿``） |
+| ``documents_done`` | 进度：本轮真重建成功的篇数 | **只做进度条**，任何判定都不许读它 |
+| ``document_count`` | ``ready`` 时的真值快照（这一版由几篇文档构成） | 报告 / 激活前的读数 |
+
+``documents_done`` 与 ``document_count`` 在收尾那一刻相等，但**不许互相顶替**：前者会随着
+重投、续建、清扫器来回变，后者是「这一版最后是几篇建的」。
 """
 
 from __future__ import annotations
@@ -28,7 +44,16 @@ from datetime import datetime
 from typing import Final, Mapping, Sequence
 
 import structlog
-from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    CheckConstraint,
+    DateTime,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -108,6 +133,56 @@ class IndexBuildVersion(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    # ── #214：构建收敛用的四列（语义见模块文档的表格）────────────────────────
+    #
+    #: 参与篇数快照：起构建那一刻该库 ``status=1`` 的文档数。
+    #:
+    #: **为什么必须是快照，而不是收尾时现数**：构建要跑很久，中途有人上传或删除文档；
+    #: 现数会让分母跟着漂——漂低会让「其实缺了几篇」的真值显得够（空版本上线的老路），
+    #: 漂高会让一次正常的构建永远收不了尾（ADR-0034 决策四）。
+    documents_planned: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    #: 稿号快照：这一轮构建统一按第几稿数（与 ``chunks.doc_version`` 同一个口径）。
+    #:
+    #: 取「起构建那一刻各文档当前稿指针的最大值」：库里的文档各自演进，而一次构建产出的
+    #: 切片要么都算这一稿、要么都不算——混着数的后果是「同一批切片一半旧稿一半新稿」，
+    #: 检索按当前稿过滤时看不出来，事后按稿对账才发现（ADR-0031 决策七）。
+    doc_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1", default=1)
+    #: 已完成数：本轮**真的**重建成功的篇数（抢不到的不计）。**只服务进度条**。
+    documents_done: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
+    #: 收敛期限：这一行**最晚什么时候必须有人给它一个结论**（构建行自己的租约）。
+    #:
+    #: 它不是「第几篇何时跑完」，而是一个把「等」变成有限区间的死线：过期之后任何一方
+    #: 都该按真值收尾（ADR-0034 决策五）。``server_default`` 取插入那一刻，是因为「没写
+    #: 期限」最保守的解释就是「已经该收尾了」——宁可让清扫器早一点看一眼，也不留一个
+    #: 永远等不到结论的 ``building`` 行。
+    converge_deadline: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=text("now()")
+    )
+
+    # ── #215：按篇投递之后新增的两列 ────────────────────────────────────────
+    #
+    #: 「未入新版本」的明细：``[{"document_id", "title", "reason"}]``。
+    #:
+    #: **为什么放在构建行而不是文档行**（ADR-0034 决策九）：
+    #:
+    #: * 它是**这一版**的属性，不是文档的属性——同一篇可能「没进 v2、进了 v3」，挂在文档行上
+    #:   就得每来一版改写一次，语义迟早变脏；
+    #: * 它天然就是**续建的清单**：清扫器读这一格就知道缺哪几篇、为什么缺；
+    #: * 版本列表页直接能显示「497 / 500 篇，3 篇未入」，比在文档列表里插一堆红旗更好读。
+    #:
+    #: 构建子任务失败时**不改文档状态**（那篇文档本身没坏，线上旧版本照常可查），只在这里
+    #: 追加一条。空列表与非空列表之别就是收敛判据里 ``failed`` 那一项。
+    failed_documents: Mapped[list | None] = mapped_column(JSONB, nullable=True)
+    #: 清扫器重投过几次（ADR-0034 决策七的兜底上限）。超过上限就收成 ``failed``——
+    #: 「一直重投也救不回来」必须有个尽头，否则一个坏构建会把清扫器拖成永动机。
+    redispatch_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, server_default="0", default=0
+    )
 
 
 class IndexVersionUnresolved(AppError):

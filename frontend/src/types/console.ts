@@ -48,7 +48,10 @@ export interface ConsolePlanSnapshot {
   max_kb: number
   max_kb_per_retrieve: number
   max_documents_per_kb: number
-  max_processing_documents: number
+  /** 单库累计正文 token 上限（第 17 步 #220 / ADR-0035 决策四）。 */
+  max_tokens_per_kb: number
+  /** 每日切块额度（token，第四本账）。索引期的 embedding 消耗按它管。 */
+  chunk_daily_tokens: number
 }
 
 export interface ConsoleUsage {
@@ -57,6 +60,8 @@ export interface ConsoleUsage {
   limit: number
   source: string
   note: string | null
+  /** 计量单位：前三本账是 `calls`，第四本账（切块）是 `tokens`。 */
+  unit: string
 }
 
 export interface ConsoleMe {
@@ -68,4 +73,6 @@ export interface ConsoleMe {
   llm_usage: ConsoleUsage | null
   /** 今日租户级重排用量：同上形状，读 `quota:rerank:*` 那本账；管理员为 `null`。 */
   rerank_usage: ConsoleUsage | null
+  /** 切块用量（第四本账）：形状同上、单位是 token；管理员为 `null`。 */
+  chunk_usage: ConsoleUsage | null
 }

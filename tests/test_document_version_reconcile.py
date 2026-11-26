@@ -40,6 +40,8 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_FREE, Plan
+from app.models.tenant import Tenant
 from app.providers.keyword_search.elasticsearch import ElasticsearchKeywordSearchProvider
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.providers.keyword_search.query_builder import (
@@ -401,6 +403,10 @@ async def reconcile_db() -> AsyncIterator[AsyncSession]:
     async with engine.begin() as connection:
         await connection.run_sync(Document.__table__.create)
         await connection.run_sync(DocumentVersion.__table__.create)
+        # 租户与套餐（#220）：索引流水线要读租户套餐来判单库 token 容量。
+        # 少了这两张，这条用例会在「no such table: tenants」上炸。
+        await connection.run_sync(Tenant.__table__.create)
+        await connection.run_sync(Plan.__table__.create)
         await connection.execute(text(CHUNKS_DDL))
         for row in SEEDED_CHUNKS:
             await connection.execute(
@@ -1003,4 +1009,13 @@ def test_the_reconcile_stays_a_run_once_script(verify_script: ModuleType) -> Non
     from app.celery_app import celery_app
 
     assert callable(verify_script.main)
-    assert getattr(celery_app.conf, "beat_schedule", None) in (None, {}), "对账不进调度基础设施"
+    # 判据从「没有 beat 计划」收紧成「**这个脚本**不在计划里」：第 17 步 #225 给清扫器加了
+    # 一条周期任务（``beat_schedule``），而那与「对账 / 清理脚本保持一次性」并不冲突——
+    # 用「计划为空」当证据会把两件事绑在一起，于是一次正当的调度新增就会把这条护栏撞红，
+    # 而它想守的东西（**脚本本身**不许被排进调度）反而没被验到。
+    schedule = getattr(celery_app.conf, "beat_schedule", None) or {}
+    scheduled_tasks = {entry.get("task") for entry in schedule.values()} if schedule else set()
+    assert verify_script.__name__ not in scheduled_tasks
+    assert not any(
+        "reconcile" in str(name) or "retention" in str(name) for name in scheduled_tasks
+    ), "对账 / 清理脚本不进调度基础设施"

@@ -28,8 +28,12 @@ from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.core.exceptions import AppError, ErrorCode
+from app.db.base import now
 from app.models.chunk import Chunk, DEFAULT_INDEX_VERSION
+from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_FREE, Plan
+from app.models.tenant import Tenant
 from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores.pgvector import PgVectorStore
 from app.repositories import document_repository, knowledge_base_repository
@@ -221,6 +225,8 @@ class _FakeSession:
         self.commits = 0
         #: ``add`` 进来的行（首个版本行，#175）。真会话里 ``add`` 是同步的。
         self.added: list[Any] = []
+        #: 发出去的**写**语句原文（状态回写是一条 UPDATE）。
+        self.statements: list[str] = []
 
     def add(self, row: Any) -> None:
         self.added.append(row)
@@ -231,13 +237,38 @@ class _FakeSession:
     async def rollback(self) -> None:
         return None
 
+    async def get(self, _model: Any, _primary_key: Any) -> Any:
+        """点查回 ``None``：替身里没有租户行（#220 的容量判据要读它）。
+
+        回 ``None`` = 「这个租户查不到」，索引服务对此按最保守的一档（free）判。
+        """
+
+        return None
+
     async def flush(self) -> None:
         return None
 
-    async def execute(self, _statement: Any) -> Any:
-        """建关系边会读一次「本版本的节目录」（#152）；这个替身表示空版本。"""
+    async def execute(self, statement: Any) -> Any:
+        """读查询表示空版本（#152）；写语句记下原文并回「写了一行」。
 
+        状态回写从 #212 起是一条显式 ``UPDATE``，它要读结果的 ``rowcount``；替身**不模拟
+        写语句对行的效果**（``tests/fake_db`` 的既有口径），库里那几行的值走真库用例。
+        """
+
+        verb = (
+            str(statement).lstrip().split(maxsplit=1)[0].upper() if str(statement).strip() else ""
+        )
+        if verb in {"INSERT", "UPDATE", "DELETE"}:
+            self.statements.append(str(statement.compile(compile_kwargs={"literal_binds": True})))
+            return _WriteResult(rowcount=1)
         return ZERO_COUNT
+
+
+class _WriteResult:
+    """写语句的结果替身：只回答 ``rowcount``（语句发出去了 = 1 行）。"""
+
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
 
 
 class _StubEmbeddings:
@@ -319,15 +350,15 @@ def test_indexing_embeds_retrieval_text_and_stores_the_original_content(
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(*_a: Any, **_k: Any) -> bool:
-        return True
+    async def _claim(*_a: Any, **_k: Any) -> Any:
+        return now()
 
-    async def _update_status(*_a: Any, **_k: Any) -> None:
-        return None
+    async def _holds_index_claim(*_a: Any, **_k: Any) -> bool:
+        return True
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
-    monkeypatch.setattr(document_repository, "update_status", _update_status)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
@@ -415,18 +446,20 @@ def _patch_rebuild_collaborators(
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(*_a: Any, **_k: Any) -> bool:
-        return True
+    async def _claim(*_a: Any, **_k: Any) -> Any:
+        # 抢到回租约令牌（#213）。令牌核对的判定只认真库（行锁 + 库里那个时间戳），
+        # 这里固定放行——本文件验的是「正文从哪儿来」，不是租约归属。
+        return now()
 
-    async def _update_status(*_a: Any, **_k: Any) -> None:
-        return None
+    async def _holds_index_claim(*_a: Any, **_k: Any) -> bool:
+        return True
 
     async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
         return DEFAULT_INDEX_VERSION
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
-    monkeypatch.setattr(document_repository, "update_status", _update_status)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         knowledge_base_repository, "get_effective_index_version", _effective_version
     )
@@ -578,8 +611,42 @@ async def test_reindexing_the_second_draft_keeps_the_first_drafts_slices(
         # 版本表直接借 ORM 建——它没有 SQLite 不认识的列类型。
         await connection.execute(text(CHUNKS_DDL))
         await connection.run_sync(DocumentVersion.__table__.create)
+        # 状态回写是一条 UPDATE（#212）：这条用例跑的是真 SQL，所以 documents 表也得建，
+        # 否则收尾那句回写会炸成「no such table」，而它炸的位置与这一票要验的东西无关。
+        await connection.run_sync(Document.__table__.create)
+        # 租户与套餐（#220）：索引流水线要读租户的套餐来判单库 token 容量。没有这两张表，
+        # 这条用例会在「no such table: tenants」上炸，而它想验的是「每稿各留切片」。
+        await connection.run_sync(Tenant.__table__.create)
+        await connection.run_sync(Plan.__table__.create)
     try:
         async with AsyncSession(engine) as session:
+            # free 档：容量上限 3 万 token，用例的正文远小于它（不会误撞容量闸门）。
+            session.add(
+                Plan(
+                    id=1,
+                    code=PLAN_FREE,
+                    name="免费版",
+                    retrieve_allowed=True,
+                    rewrite_allowed=False,
+                    decompose_allowed=False,
+                    research_allowed=False,
+                    rerank_allowed=False,
+                    retrieve_qps=3,
+                    retrieve_daily=500,
+                    rerank_qps=0,
+                    rerank_daily=0,
+                    llm_qps=0,
+                    llm_daily=0,
+                    max_top_k=5,
+                    max_kb=3,
+                    max_kb_per_retrieve=1,
+                    max_documents_per_kb=30,
+                    max_tokens_per_kb=30_000,
+                    chunk_daily_tokens=300_000,
+                )
+            )
+            session.add(Tenant(id=TENANT_ID, name="演示租户", plan_id=1, status="active"))
+            await session.commit()
             store = PgVectorStore()
             # 第 1 稿的切片已经写好了（线上正在用的那一版）。
             await store.add_chunks(session, [_draft_chunk("chunk-v1", 1)])

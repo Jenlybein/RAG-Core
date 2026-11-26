@@ -303,7 +303,14 @@ def test_the_worker_task_keeps_the_client_it_built_across_tasks(
 
     class _Service:
         async def index_existing_document(
-            self, _db: Any, _document_id: str, *, reparse: bool, doc_version=None
+            self,
+            _db: Any,
+            _document_id: str,
+            *,
+            reparse: bool,
+            doc_version=None,
+            index_version=None,
+            allow_success: bool = False,
         ):
             http_clients.get_http_client()  # 任务里真的会建客户端（嵌入要发请求）
             return None
@@ -345,7 +352,14 @@ def test_the_worker_task_leaves_the_client_open_even_when_indexing_fails(
 
     class _FailingService:
         async def index_existing_document(
-            self, _db: Any, _document_id: str, *, reparse: bool, doc_version=None
+            self,
+            _db: Any,
+            _document_id: str,
+            *,
+            reparse: bool,
+            doc_version=None,
+            index_version=None,
+            allow_success: bool = False,
         ):
             http_clients.get_http_client()
             raise RuntimeError("upstream exploded")

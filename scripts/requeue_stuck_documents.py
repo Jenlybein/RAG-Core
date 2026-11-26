@@ -1,19 +1,24 @@
-"""卡死文档恢复脚本（F5 的手工兜底）：重新投递租约已过期的 ``PROCESSING`` 文档。
+"""卡死文档恢复脚本（F5 的手工兜底）：重新投递排队中与租约过期的文档。
 
-为什么需要它：Worker 崩溃 / 被 kill 会把文档留在 ``status=3``，日志里既没有
-「跑完」也没有「失败」，也就是教程里那个最经典的坑——「永远卡在处理中且不报错」。
-自动侧由租约放行（``document_repository.DOCUMENT_LEASE_SECONDS``）：超过租约仍
-停在 3 的文档允许被重新抢占 / 删除 / 重建；这条脚本给运维一个**主动**手段，
+为什么需要它：Worker 崩溃 / 被 kill 会把文档留在 ``status=3``（索引中却没有租约），
+日志里既没有「跑完」也没有「失败」，也就是教程里那个最经典的坑——「永远卡在
+处理中且不报错」。自动侧由租约放行（``document_repository.DOCUMENT_LEASE_SECONDS``）：
+超过租约仍停在 3 的文档允许被重新抢占 / 删除 / 重建；这条脚本给运维一个**主动**手段，
 不必干等下一次自然重投。
 
 行为（对应设计契约 §4）：
-1. 查 ``status == PROCESSING AND (index_claimed_at IS NULL OR index_claimed_at <
-   now - lease)``，可选 ``--kb-id`` 缩小范围，缺省扫全部知识库；
+1. 查 ``status == QUEUED``，或 ``status == PROCESSING AND (index_claimed_at IS NULL OR
+   index_claimed_at < now - lease)``（四态之后那两支分别等于「排了队没人接」与
+   「接了之后没声了」，ADR-0034 决策七），可选 ``--kb-id`` 缩小范围，缺省扫全部知识库；
 2. 逐篇 ``prepare_for_indexing``（不带 ``allow_success``）：把文档重新标记为
-   「已排队、未开工」（``index_claimed_at=NULL``），**不盖租约**；准备不到记
+   「排队中」（``status=4``、``index_claimed_at=NULL``），**不盖租约**；准备不到记
    skipped，准备成功后立刻 ``commit`` 释放行锁；
 3. ``enqueue_document`` 重新投递，行自带的 ``tenant_id`` / ``kb_id`` 原样带上；
 4. 打印 ``requeued / skipped / failed`` 统计。
+
+**重复投递是安全的**：两次任务抢同一行时，后到的那个在 CAS 上拿到 ``rowcount=0``，
+不会多切一遍。这条脚本因而可以随时重跑，不必先确认「这一篇是不是真的丢了」。第 1 步
+把排队中的行也扫进来，正是依赖这条性质——旧口径的「``3`` 且无租约」被重投时同样如此。
 
 **租约只由 Worker 抢占**（``try_claim_for_indexing``）：脚本若自己先盖租约，
 Worker 的 CAS 会因租约新鲜而拒绝执行，恢复动作变成静默 no-op。
@@ -82,9 +87,7 @@ def requeue_documents(
 ) -> RequeueStats:
     """重新投递所有「卡死」的文档，返回统计（不打印）。"""
 
-    documents = document_repository.list_stuck(
-        db, kb_id=kb_id, lease_seconds=lease_seconds
-    )
+    documents = document_repository.list_stuck(db, kb_id=kb_id, lease_seconds=lease_seconds)
     considered = len(documents)
     requeued = 0
     skipped = 0
@@ -128,16 +131,14 @@ def requeue_documents(
             continue
         requeued += 1
 
-    return RequeueStats(
-        considered=considered, requeued=requeued, skipped=skipped, failed=failed
-    )
+    return RequeueStats(considered=considered, requeued=requeued, skipped=skipped, failed=failed)
 
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Re-dispatch documents stuck in PROCESSING whose lease has expired "
-            "(manual safety net for a crashed worker)."
+            "(queued documents included; manual safety net for a crashed worker)."
         )
     )
     parser.add_argument(

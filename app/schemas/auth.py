@@ -40,3 +40,5 @@ class AuthMeData(BaseModel):
     usage: UsageData
     rerank_usage: UsageData
     llm_usage: UsageData
+    #: 第四本账（切块，按 token，第 17 步 #222/#223）。单位与前三栏不同，见 ``UsageData.unit``。
+    chunk_usage: UsageData

@@ -8,8 +8,10 @@
 ## 顺序是契约（一步都不能颠倒）
 
 1. **取文档**（按 id + 租户）：缺失与跨租户统一「不存在」，不泄露存在性；
-2. **处理中则拒**：有效租约内的 ``PROCESSING`` 说明 Worker 正在写这篇文档的切片，
-   这时切稿会让「哪一稿的切片」变成掷骰子；
+2. **有效处理中则拒**：租约有效的 ``PROCESSING``（真的在跑）说明 Worker 正在写这篇文档的
+   切片，这时切稿会让「哪一稿的切片」变成掷骰子。**排队中（4）不拒**：那一稿还没被任何
+   Worker 接走，新提交就是「替换排队」——旧的投递迟到时会在抢占那一步抢不到（
+   ``rowcount=0``），因此不会有两个任务同时跑（ADR-0034 决策一）；
 3. **拿正文**：JSON 入口直接给；文件入口走**既有解析入口**（
    :func:`app.services.document_ingestion.parse_uploaded_bytes`），不在这里按扩展名分流；
 4. **规范化 + 算校验和**：唯一入口 :mod:`app.utils.checksum`。判重、行里的 ``checksum``、
@@ -19,7 +21,7 @@
 6. **锁文档行**（``SELECT ... FOR UPDATE``）：稿次时间轴就是文档行上的当前稿指针，锁它
    就等于锁住这条时间轴。锁内复核一次租约（守卫与锁之间的时间差里 Worker 可能刚好开工）；
 7. **稿号 = max + 1**：算在锁内，后一个提交看到的一定是前一个写下的行；
-8. **写新版本行（当前稿）+ 旧当前稿转归档 + 指针前移 + 文档正文同步 + 置处理中**；
+8. **写新版本行（当前稿）+ 旧当前稿转归档 + 指针前移 + 文档正文同步 + 置排队中**；
 9. **``flush``**：让 ``(document_id, version)`` 唯一约束在写路径里撞出来，映射成
    「冲突，请重试」（20029）。拖到提交才撞就只剩 500 了。
 
@@ -73,9 +75,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.document_version import DOCUMENT_VERSION_CURRENT, DocumentVersion
-from app.models.plan import PlanSpec
 from app.repositories import document_repository, document_version_repository
-from app.services import static_quota
 from app.services.chunk_store import ChunkStore
 from app.services.document_ingestion import parse_uploaded_bytes
 from app.services.document_state import ensure_versionable
@@ -235,9 +235,7 @@ async def purge_expired_versions(
             index_version=None,
             doc_version=version,
         )
-    await document_version_repository.delete_versions(
-        db, plan.document_id, plan.expired_versions
-    )
+    await document_version_repository.delete_versions(db, plan.document_id, plan.expired_versions)
 
     logger.info(
         "document versions purged",
@@ -308,7 +306,6 @@ async def create_version(
     *,
     tenant_id: str,
     document_id: str,
-    plan: PlanSpec,
     content: str = "",
     filename: str | None = None,
     data: bytes = b"",
@@ -319,20 +316,18 @@ async def create_version(
     两种模式由入口按 content-type 决定：``filename`` 非空 = 文件模式（正文由**既有解析
     入口**解析上传的字节），否则 JSON 模式（``content`` 直接用）。
 
-    ``plan`` 是静态配额要用的套餐快照：一次提交等于往队列里塞一份解析任务，和重建那条
-    路径一样必须过「并发处理数」——这是唯一一条「不超自己的上限也会伤害别人」的配额。
+    **不再收套餐快照**：改造前它只为「并发处理名额」那一道门禁而存在（一次提交等于往
+    队列里塞一份解析任务），那条配额已删除（#218，ADR-0034 决策八）。建版本因此不需要
+    知道租户在哪一档——它只按自己的状态守卫（处理中则拒）与租户归属判。
     """
 
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=tenant_id
-    )
+    doc = await document_repository.get_by_id_for_tenant_async(db, document_id, tenant_id=tenant_id)
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
-    # 处理中则拒：Worker 正在写这篇文档的切片，这时切稿会让「哪一稿的切片」变成掷骰子。
+    # 有效处理中则拒：Worker 正在写这篇文档的切片，这时切稿会让「哪一稿的切片」变成掷骰子；
+    # 排队中（4）可以直接替换——那个任务还没被接走，迟到的那一份在抢占时会被 CAS 挡掉。
     ensure_versionable(doc)
-    # 静态配额紧跟在状态守卫之后、**写任何东西之前**：被拒的提交既不建行也不入队。
-    await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
 
     text = await _resolve_text(filename=filename, content=content, data=data)
     checksum = checksum_of(text)
@@ -355,9 +350,7 @@ async def create_version(
         )
 
     # 锁内的一切才是真值：守卫与锁之间，Worker 可能刚好开工、另一个提交可能刚好切了指针。
-    locked = await document_repository.lock_for_version(
-        db, document_id, tenant_id=tenant_id
-    )
+    locked = await document_repository.lock_for_version(db, document_id, tenant_id=tenant_id)
     if locked is None:
         raise AppError(ErrorCode.NOT_FOUND)
     ensure_versionable(locked)
@@ -407,16 +400,14 @@ async def create_version(
         ) from None
 
     # 旧当前稿转归档（不复活、不删除：那是 #176 回滚与 #178 保留策略的事）。
-    await document_version_repository.archive_current_except(
-        db, document_id, keep=version
-    )
+    await document_version_repository.archive_current_except(db, document_id, keep=version)
 
-    # 指针前移 + 文档正文同步（D6：文档行是当前稿的热路径快照）+ 置处理中。
+    # 指针前移 + 文档正文同步（D6：文档行是当前稿的热路径快照）+ 置排队中（4）。
     locked.current_version = version
     locked.content = text
-    locked.status = DocumentStatus.PROCESSING
-    # 清掉上一轮的失败文案与租约：「已排队、未开工」才是这次提交之后的状态，
-    # Worker 仍是唯一的抢占者（它进来时才盖 index_claimed_at）。
+    locked.status = DocumentStatus.QUEUED
+    # 清掉上一轮的失败文案与租约：「排队中」才是这次提交之后的状态（新区块要等 Worker
+    # 接走才算索引中），Worker 仍是唯一的抢占者（它进来时才盖 index_claimed_at）。
     locked.error_message = None
     locked.index_claimed_at = None
     await db.flush()
@@ -444,7 +435,7 @@ async def create_version(
         "version": version,
         "previous_version": previous_version,
         "checksum": checksum,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
     }
 
 
@@ -454,7 +445,6 @@ async def rollback_to_version(
     tenant_id: str,
     document_id: str,
     version: int,
-    plan: PlanSpec,
     request_id: str | None = None,
 ) -> dict:
     """把当前稿指针拨回第 ``version`` 稿，并让这篇文档立刻回到「等重建」的状态。
@@ -469,8 +459,9 @@ async def rollback_to_version(
        （与「重放旧正文要建新稿次」是两件事）；
     3. **指针前移（这里其实是后移）**：``documents.current_version = version``。指针是
        唯一真值（见 ``app.models.chunk.current_draft_filter``）；
-    4. **文档正文同步为目标稿正文 + 置处理中**：文档行是当前稿的热路径快照（D6）。源文件
-       路径也一起换（见下）。置处理中是因为切片要重建——此刻库里的切片还是上一稿的。
+    4. **文档正文同步为目标稿正文 + 置排队中（4）**：文档行是当前稿的热路径快照（D6）。源文件
+       路径也一起换（见下）。置排队中是因为切片要重建——此刻库里的切片还是上一稿的，而新的
+       那一次要等 Worker 接走才算索引中。
     5. **提交之后**：投递重建（载荷带**目标稿号**）+ 翻转关键词索引的「当前稿」标记。
        两件都在 :func:`_queue_side_effects` 里登记。
 
@@ -492,27 +483,22 @@ async def rollback_to_version(
     ## 守卫与锁的顺序
 
     先按 ``(id, tenant_id)`` 取文档（缺失与跨租户统一「不存在」，20016）→ 状态守卫
-    （有效处理中 20025）→ 静态配额（回滚同样往队列塞一份解析任务）→ **锁文档行**。
+    （有效处理中 20025）→ **锁文档行**。
     锁内复核一次守卫与指针：守卫与锁之间的窗口里，Worker 可能刚好开工、另一个请求可能
     刚好切了稿。目标稿的读取也在锁内——锁外读到的那一行可能正被保留策略删掉。
 
     """  # noqa: D401 - 句型统一
 
-    doc = await document_repository.get_by_id_for_tenant_async(
-        db, document_id, tenant_id=tenant_id
-    )
+    doc = await document_repository.get_by_id_for_tenant_async(db, document_id, tenant_id=tenant_id)
     if doc is None:
         raise AppError(ErrorCode.NOT_FOUND)
 
-    # 处理中则拒：Worker 正在写这篇文档的切片，这时切指针会让「哪一稿的切片」变成掷骰子。
+    # 有效处理中则拒：Worker 正在写这篇文档的切片，这时切指针会让「哪一稿的切片」变成
+    # 掷骰子；排队中（4）可以直接回滚——那是「替换排队」，不会出现两个任务同时跑。
     ensure_versionable(doc)
-    # 静态配额：回滚也是一次重建，同样要过「并发处理数」——与建版本 / 重建同一条口径。
-    await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
 
     # 锁内的一切才是真值（守卫与锁之间可能有人开工、有人切了指针）。
-    locked = await document_repository.lock_for_version(
-        db, document_id, tenant_id=tenant_id
-    )
+    locked = await document_repository.lock_for_version(db, document_id, tenant_id=tenant_id)
     if locked is None:
         raise AppError(ErrorCode.NOT_FOUND)
     ensure_versionable(locked)
@@ -537,16 +523,14 @@ async def rollback_to_version(
 
     # ① 当前稿转归档 ② 目标稿转当前稿。顺序不能反：先归档会把「除 keep 之外」的当前稿
     # 全打掉，再选中目标；反过来的话目标行在中间那一刻是孤儿（两行都不是当前稿）。
-    await document_version_repository.archive_current_except(
-        db, document_id, keep=version
-    )
+    await document_version_repository.archive_current_except(db, document_id, keep=version)
     await document_version_repository.mark_current(db, document_id, version=version)
 
-    # ③ 指针前移 ④ 文档正文 / 源文件同步为目标稿 + 置处理中。
+    # ③ 指针前移 ④ 文档正文 / 源文件同步为目标稿 + 置排队中（要等 Worker 接走才算索引中）。
     locked.current_version = version
     locked.content = target.content
     locked.source_file_path = target.source_file_path
-    locked.status = DocumentStatus.PROCESSING
+    locked.status = DocumentStatus.QUEUED
     locked.error_message = None
     locked.index_claimed_at = None
     await db.flush()
@@ -573,7 +557,7 @@ async def rollback_to_version(
         "document_id": document_id,
         "version": version,
         "previous_version": previous_version,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
     }
 
 
@@ -599,9 +583,7 @@ async def _current_draft_checksum(db: AsyncSession, doc) -> str:
     版本行）——首个版本行由索引成功那一笔补上（见 ``IndexingService``）。
     """
 
-    current = await document_version_repository.get_by_version(
-        db, str(doc.id), doc.current_version
-    )
+    current = await document_version_repository.get_by_version(db, str(doc.id), doc.current_version)
     if current is not None:
         return current.checksum
     return checksum_of(doc.content or "")

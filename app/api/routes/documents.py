@@ -2,12 +2,13 @@
 
 只有一个模块、一个 router：
   * ``POST /documents/upload`` —— 单端点按 content-type 分流（multipart = 文件模式，
-    其余 = JSON 模式）。只登记 + 投递索引任务，立即返回 ``status=3``。
+    其余 = JSON 模式）。只登记 + 投递索引任务，立即返回 ``status=4``（排队中）。
   * ``GET /documents?kb_id=`` —— 该知识库下的文档列表，异步化后调用方唯一的进度观测口。
   * ``POST /documents/{document_id}/reindex?reparse=&force=`` —— 单文档重建：守卫 →
     标记排队（不盖租约）→ 由请求事务提交 → 投递；purge、抢占与写入仍只在 Worker
     的事务里发生。
   * ``DELETE /documents/{document_id}`` —— 守卫通过后按租户清除切片、删原文件、删记录。
+    排队中的文档可以直接删（=撤回排队，ADR-0034 决策一）。
   * ``POST /documents/{document_id}/versions`` —— 提交一份新正文，得到下一个稿次
     （#175；写路径的顺序见 ``app.services.document_version_service``）。
   * ``GET /documents/{document_id}/versions?include_content=`` —— 这篇文档改过几稿，
@@ -81,7 +82,6 @@ from app.services import (
     document_service,
     document_state,
     document_version_service,
-    static_quota,
     version_search,
 )
 from app.services.chunk_store import build_chunk_stores
@@ -192,9 +192,7 @@ async def list_documents(
     return ok(data)
 
 
-async def _scoped_document(
-    db: AsyncSession, *, document_id: str, key: DevKeyContext
-) -> Document:
+async def _scoped_document(db: AsyncSession, *, document_id: str, key: DevKeyContext) -> Document:
     """按 ``(id, tenant_id)`` 取文档 + 第二道关卡（数据范围白名单）——**六条入口共用这一份**。
 
     顺序是契约，不能反：
@@ -235,12 +233,12 @@ async def reindex_document(
     key: DevKeyContext = Depends(get_current_key),
     tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[ReindexDocumentData]:
-    """守卫 → 标记排队（不盖租约）→ 由 ``tx`` 提交 → 投递，立即返回 ``status=3``。
+    """守卫 → 标记排队（不盖租约）→ 由 ``tx`` 提交 → 投递，立即返回 ``status=4``。
 
     顺序是契约的一部分：先按 id + 租户取文档（缺失 / 跨租户统一 20016），再走
     ``ensure_reindexable``（有效处理中 20025；成功且未 ``force`` 20027），然后
-    ``prepare_for_indexing`` 把可重建的行置成「已排队、未开工」
-    （``index_claimed_at=NULL``；不在这里盖租约）。准备失败说明这一行已被一个
+    ``prepare_for_indexing`` 把可重建的行置成「排队中」
+    （``status=4``、``index_claimed_at=NULL``；不在这里盖租约）。准备失败说明这一行已被一个
     有效租约占住（守卫看的是旧快照），可能刚好有 Worker 抢先；仍按 20025 回绝。
     提交后把任务交给 Worker；
     **Worker 是唯一的租约抢占者**（``try_claim_for_indexing``），它进来时才盖
@@ -257,9 +255,9 @@ async def reindex_document(
 
     document_state.ensure_reindexable(doc, force=force)
 
-    # 静态配额：重建虽然跳过「单库文档数」（文档本来就在库里），却照样往队列塞一份
-    # 解析任务，所以必须过并发处理数——这是最容易漏、也最能饿死其他租户的一条。
-    await static_quota.ensure_processing_quota(db, tenant_id=key.tenant_id, plan=key.plan)
+    # 重建**不再**过「并发处理名额」（#218，ADR-0034 决策八）：它只往队列里多排一件事，
+    # 拒掉它既不能让别人的任务早点跑，也不解决「别人排队变长」——那件事的处置是队列与
+    # 调度，不是入口拒绝。写入口一律接受。
 
     prepared = await document_repository.prepare_for_indexing_async(
         db, document_id, tenant_id=key.tenant_id, allow_success=force
@@ -292,7 +290,7 @@ async def reindex_document(
     return ok(
         ReindexDocumentData(
             document_id=document_id,
-            status=DocumentStatus.PROCESSING,
+            status=DocumentStatus.QUEUED,
             chunk_count=0,
             reparse=reparse,
         )
@@ -315,7 +313,8 @@ async def delete_document(
     ``purge_document_chunks`` 遍历存储列表（向量存储 + 关键词检索，接线见
     ``app.services.chunk_store.build_chunk_stores``），因此删文档不需要知道存储
     形态；删除切片同样强制带租户（ADR-0006）。有效处理中（租约未过期）拒绝删除
-    （20025）；租约过期视为 Worker 卡死，允许删除。
+    （20025）；**排队中可以删**——那等于撤回排队，迟到的任务在抢占那一步抢不到，
+    不产生切片（ADR-0034 决策一）；租约过期视为 Worker 卡死，同样允许删除。
 
     **版本行单独删一次**（#172）：一张表都没有外键（仓库零外键），库不会替我们级联，
     所以由这条路径显式删，且与清除切片、删行同一笔事务。
@@ -388,7 +387,6 @@ async def create_document_version(
         db,
         tenant_id=key.tenant_id,
         document_id=document_id,
-        plan=key.plan,
         content=submitted.content,
         filename=submitted.filename,
         data=submitted.data,
@@ -425,9 +423,7 @@ async def list_document_versions(
         DocumentVersionListData.model_validate(
             # 出参形状由服务层决定（控制面那条列表接口调的是同一个函数）：
             # 「一行给哪些字段」写两遍就会两处漂移，而两边的前端共用一个版式。
-            document_version_service.version_list_data(
-                doc, rows, include_content=include_content
-            )
+            document_version_service.version_list_data(doc, rows, include_content=include_content)
         )
     )
 
@@ -469,7 +465,6 @@ async def rollback_document_version(
         tenant_id=key.tenant_id,
         document_id=document_id,
         version=version,
-        plan=key.plan,
         request_id=submitted_request_id(request),
     )
     return ok(RollbackDocumentVersionData.model_validate(data))

@@ -220,6 +220,8 @@ def test_console_me_reports_three_meter_books_in_the_same_shape(console: _Harnes
             "limit": limit,
             "source": "not_tracked",
             "note": USAGE_NOTE_NOT_TRACKED,
+            # 第 17 步 #223：每栏带自己的计量单位（前三本按次数、第四本按 token）。
+            "unit": "calls",
         }, f"{field} 的上限必须来自自己那一列"
         assert set(data[field]) == set(data["usage"]), "同形：字段集必须一致"
 
@@ -538,7 +540,8 @@ def test_a_real_patch_persists_invalidates_the_cache_and_writes_an_audit(
         assert fresh.max_kb == 2
         with pytest.raises(AppError) as raised:
             await static_quota.ensure_kb_quota(console.db_view, tenant_id=TENANT_ALPHA, plan=fresh)
-        assert raised.value.code == ErrorCode.QUOTA_EXCEEDED
+        # 库数满有自己的码（#219）：老实现回 20014，那句「等额度重置」在这里是错话。
+        assert raised.value.code == ErrorCode.KB_COUNT_QUOTA_EXCEEDED
 
     asyncio.run(_after_patch())
 
@@ -765,6 +768,7 @@ def test_me_reports_todays_tenant_usage_when_the_counter_exists(
         "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "daily_counter",
         "note": None,
+        "unit": "calls",
     }
 
 
@@ -786,6 +790,7 @@ def test_switch_on_without_a_counter_is_a_known_zero_not_unknown(
         "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "daily_counter",
         "note": None,
+        "unit": "calls",
     }
 
 
@@ -810,6 +815,7 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
         "note": (
             "today's usage is not tracked: rate limiting is disabled (RATE_LIMIT_ENABLED=false)"
         ),
+        "unit": "calls",
     }
     assert exploding.calls == [], "关掉时连一条 Redis 命令都不该发"
 

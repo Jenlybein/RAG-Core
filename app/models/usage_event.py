@@ -114,6 +114,8 @@ class UsageEvent(Base):
     #: 而 NULL 会让「0 次」与「不知道」混在一起。
     meter_r: Mapped[int] = mapped_column(Integer, default=0)
     meter_rr: Mapped[int] = mapped_column(Integer, default=0)
+    #: 第四本账（切块）：这一行消耗多少**检索文本 token**（0 = 这次没有索引消耗）。
+    meter_chunk: Mapped[int] = mapped_column(Integer, default=0)
     meter_llm: Mapped[int] = mapped_column(Integer, default=0)
     #: 一次检索可以查多个库，所以是列表而不是单值（旧表的 ``kb_id`` 单列已在 #101 删除）。
     kb_ids: Mapped[list] = mapped_column(JSONB, default=list)

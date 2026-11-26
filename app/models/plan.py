@@ -70,7 +70,16 @@ class Plan(Base):
     max_kb: Mapped[int] = mapped_column(Integer)
     max_kb_per_retrieve: Mapped[int] = mapped_column(Integer)
     max_documents_per_kb: Mapped[int] = mapped_column(Integer)
-    max_processing_documents: Mapped[int] = mapped_column(Integer)
+    #: 单库累计正文 token 上限（#220 / ADR-0035 决策四）。**与文档数上限并存**：行数那一条
+    #: 是廉价兜底（防「十万篇空文档」），token 这一条才是「装了多少内容」。
+    max_tokens_per_kb: Mapped[int] = mapped_column(Integer)
+    #: 每日切块额度（token，第四本账，ADR-0035 决策三/五）。索引期的 embedding 消耗按它管；
+    #: 0 = 这项能力没买（无日额度）——目前四档都不是 0，0 留作将来「停用索引」的表达。
+    chunk_daily_tokens: Mapped[int] = mapped_column(Integer)
+    # **没有** ``max_processing_documents``：那条「同时处理中篇数」的配额已删除（#218，
+    # 理由与代价见 ADR-0034 决策八——它量的「索引中」本身不可信，而入口拒绝也不是对
+    # 「别人排队变长」的处置）。列的取值留档在 ADR-0034 决策八，迁移的 downgrade 会
+    # 按那四档原值把列加回去。
     # 只有 updated_at，没有 created_at：套餐是「系统级配置」，被关心的是「上一次谁把它
     # 改成了什么」，第一版什么时候建出来的没有运营含义。
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -101,7 +110,8 @@ class PlanSpec:
     max_kb: int
     max_kb_per_retrieve: int
     max_documents_per_kb: int
-    max_processing_documents: int
+    max_tokens_per_kb: int
+    chunk_daily_tokens: int
 
 
 #: 快照的全部列名（字段顺序就是列顺序，``PLAN_SPEC_COLUMNS`` 因此也是行/缓存读取的清单）。
@@ -109,7 +119,7 @@ PLAN_SPEC_COLUMNS: Final[tuple[str, ...]] = tuple(
     field.name for field in dataclasses.fields(PlanSpec)
 )
 
-#: 面板上会出现输入框的 13 列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
+#: 面板上会出现输入框的业务列；对账、缓存、控制面映射与改套餐补丁校验都从这一处推导。
 #: 顺序只影响对账报告的可读性，不参与任何判定。
 PLAN_BUSINESS_COLUMNS: Final[tuple[str, ...]] = tuple(
     column for column in PLAN_SPEC_COLUMNS if column not in PLAN_IDENTITY_COLUMNS
@@ -162,10 +172,11 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         llm_qps=0,
         llm_daily=0,
         max_top_k=5,
-        max_kb=1,
+        max_kb=3,
         max_kb_per_retrieve=1,
         max_documents_per_kb=30,
-        max_processing_documents=1,
+        max_tokens_per_kb=30_000,
+        chunk_daily_tokens=300_000,
     ),
     PLAN_PLUS: PlanSpec(
         code=PLAN_PLUS,
@@ -182,10 +193,11 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         llm_qps=1,
         llm_daily=300,
         max_top_k=10,
-        max_kb=5,
+        max_kb=10,
         max_kb_per_retrieve=3,
         max_documents_per_kb=200,
-        max_processing_documents=2,
+        max_tokens_per_kb=300_000,
+        chunk_daily_tokens=4_000_000,
     ),
     PLAN_PRO: PlanSpec(
         code=PLAN_PRO,
@@ -205,7 +217,8 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         max_kb=50,
         max_kb_per_retrieve=5,
         max_documents_per_kb=5000,
-        max_processing_documents=10,
+        max_tokens_per_kb=2_000_000,
+        chunk_daily_tokens=9_000_000,
     ),
     PLAN_MAX: PlanSpec(
         code=PLAN_MAX,
@@ -222,10 +235,11 @@ PLAN_PRESETS: Final[dict[str, PlanSpec]] = {
         llm_qps=20,
         llm_daily=6000,
         max_top_k=20,
-        max_kb=50,
+        max_kb=100,
         max_kb_per_retrieve=5,
         max_documents_per_kb=5000,
-        max_processing_documents=10,
+        max_tokens_per_kb=5_000_000,
+        chunk_daily_tokens=15_000_000,
     ),
 }
 

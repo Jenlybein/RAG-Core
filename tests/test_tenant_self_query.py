@@ -248,7 +248,9 @@ def _check_plan_snapshot(data: Any, plan_code: str) -> None:
         "max_kb",
         "max_kb_per_retrieve",
         "max_documents_per_kb",
-        "max_processing_documents",
+        # 第 17 步 #220 / #222：单库 token 容量与每日切块额度（ADR-0035）。
+        "max_tokens_per_kb",
+        "chunk_daily_tokens",
     }
     for column in set(snapshot):
         assert snapshot[column] == getattr(plan, column)
@@ -274,6 +276,7 @@ def test_me_returns_the_callers_identity_plan_and_todays_usage(
         "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "daily_counter",
         "note": None,
+        "unit": "calls",
     }
     # 另外两本账**同形**但各算各的（第 13 步：重排与 Research 各记各的账）：上限各取
     # 自己那一列。三本账缺任何一栏，调用方就答不出「我还能跑几次重排」。
@@ -282,14 +285,20 @@ def test_me_returns_the_callers_identity_plan_and_todays_usage(
         "limit": PLAN_PRESETS["pro"].rerank_daily,
         "source": "daily_counter",
         "note": None,
+        "unit": "calls",
     }
     assert data["llm_usage"] == {
         "used": 0,
         "limit": PLAN_PRESETS["pro"].llm_daily,
         "source": "daily_counter",
         "note": None,
+        "unit": "calls",
     }
     assert set(data["rerank_usage"]) == set(data["llm_usage"]) == set(data["usage"])
+    # 第四本账（#223）：形状相同、单位不同（token），所以逐栏比对时只比形状。
+    assert data["chunk_usage"]["used"] == 0
+    assert data["chunk_usage"]["limit"] == PLAN_PRESETS["pro"].chunk_daily_tokens
+    assert data["chunk_usage"]["unit"] == "tokens"
 
 
 def test_a_missing_key_is_unauthorized_with_20010(me: _Harness) -> None:
@@ -366,6 +375,7 @@ def test_me_reports_usage_as_not_tracked_when_the_switch_is_off(
         "limit": PLAN_PRESETS["pro"].retrieve_daily,
         "source": "not_tracked",
         "note": USAGE_NOTE_NOT_TRACKED,
+        "unit": "calls",
     }
     assert exploding_store.calls == [], "关掉时连一条 Redis 命令都不该发"
 

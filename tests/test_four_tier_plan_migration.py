@@ -78,6 +78,8 @@ def test_the_insert_covers_every_column_that_has_no_default() -> None:
         if not column.nullable
         and column.server_default is None
         and not column.primary_key  # id 由序列给值
+        # 后来才加的列由后续迁移补（都把 server_default 写进了库），不归这条历史迁移。
+        and column.name not in _ADDED_AFTER_MIGRATION
     }
 
     module = _load()
@@ -104,6 +106,30 @@ def test_downgrade_reverts_everything() -> None:
     assert "max_top_k=0" in joined
 
 
+#: 历史迁移之后**又被删掉**的套餐列。历史迁移不许改（它要能在当时那份代码上跑），
+#: 而护栏用例要在「迁移表 vs 现在的种子」之间对齐，所以把已删列显式列出来。
+_REMOVED_PLAN_COLUMNS = {
+    # #218：并发处理名额（ADR-0034 决策八）。
+    "max_processing_documents",
+}
+
+#: **后来被后续迁移改过值**的列：历史迁移里的数字是当时的真相，而种子已经按 ADR 改过了。
+#: 逐列比对对这些列不成立（它们由新迁移负责对齐）。
+_RECONCILED_AFTER_MIGRATION = {
+    # #220：ADR-0035 决策六把免费档 1→3、进阶档 5→10、旗舰档 50→100。
+    "max_kb",
+}
+
+#: **后来才加**的套餐列：它们由后续迁移（带 server_default）补上，不由这条历史迁移的
+#: 裸 SQL 写入。两条护栏（「INSERT 覆盖必填列」与「迁移表逐列对账」）都必须把它们排除，
+#: 否则它们会让一条**本来正确**的历史迁移看起来是错的。
+_ADDED_AFTER_MIGRATION = {
+    # #220 / #222：单库 token 容量与每日切块额度（ADR-0035）。
+    "max_tokens_per_kb",
+    "chunk_daily_tokens",
+}
+
+
 def test_the_migration_values_are_exactly_the_seed_presets() -> None:
     """迁移里的四档数值必须与 ``PLAN_PRESETS`` 逐列相等。
 
@@ -118,10 +144,22 @@ def test_the_migration_values_are_exactly_the_seed_presets() -> None:
     module = _load()
     assert set(module._TIER_VALUES) == set(PLAN_PRESETS), "四档的 code 集合必须一致"
     for code, values in module._TIER_VALUES.items():
-        # 迁移表比业务列多一个 ``name``（展示名也要跟着改），除此之外必须一一对应。
-        assert set(values) == {*PLAN_BUSINESS_COLUMNS, "name"}, f"{code}: 列集合必须完整"
+        # 迁移表比业务列多两类东西：``name``（展示名也要跟着改），以及**历史迁移之后又被
+        # 删掉的列**（``max_processing_documents`` 随 #218 删除，但历史迁移不许改——它要能
+        # 在当时那份代码上跑）。所以这里的集合是「业务列 + 已删列 + name」，而逐列比对只
+        # 对**还在**的业务列做：已删列没有可比对的种子值了。
+        # 历史迁移表 = **当时**的业务列 + 已删列 + name；后来才加的列不在其中。
+        assert set(values) == {
+            *(set(PLAN_BUSINESS_COLUMNS) - _ADDED_AFTER_MIGRATION),
+            *_REMOVED_PLAN_COLUMNS,
+            "name",
+        }, f"{code}: 列集合必须完整"
         assert values["name"] == PLAN_PRESETS[code].name, f"{code}.name"
         for column in PLAN_BUSINESS_COLUMNS:
+            if column in _RECONCILED_AFTER_MIGRATION or column in _ADDED_AFTER_MIGRATION:
+                # 被后续迁移改过 / 后来才加的列由那些迁移负责对齐（见 ``d5f9c2a7b3e8`` /
+                # ``e6a1d8c5f247``）：历史迁移表里根本没有它们。
+                continue
             assert values[column] == getattr(PLAN_PRESETS[code], column), f"{code}.{column}"
 
 

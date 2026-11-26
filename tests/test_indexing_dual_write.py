@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import get_current_key
 from app.core.auth import DevKeyContext
+from app.db.base import now
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.providers.parsers.base import ParsedDocument
@@ -56,6 +57,8 @@ class _FakeSession:
         self.rollbacks = 0
         #: ``add`` 进来的行（首个版本行，#175）。真会话里 ``add`` 是同步的。
         self.added: list[Any] = []
+        #: 发出去的**写**语句原文（状态回写从 #212 起是一条 UPDATE，不是改属性）。
+        self.statements: list[str] = []
 
     def add(self, row: Any) -> None:
         self.added.append(row)
@@ -72,10 +75,37 @@ class _FakeSession:
     async def delete(self, _row: Any) -> None:
         return None
 
-    async def execute(self, _statement: Any) -> Any:
-        """建关系边会读一次「本版本的节目录」（#152）；这个替身表示空版本。"""
+    async def get(self, _model: Any, _primary_key: Any) -> Any:
+        """替身里没有租户行（#220 的容量判据要读它）。
 
+        回 ``None`` 的效果是「这个租户查不到」，而索引服务对此的口径是**按最保守的一档**
+        （free）判——免费档的容量上限最小，所以替身环境下的用例不会因为「容量默认无限」
+        而漏掉一条真实会被拒的路径。真库里的那条路径由集成用例覆盖。
+        """
+
+        return None
+
+    async def execute(self, statement: Any) -> Any:
+        """读查询表示空版本（建关系边读节目录，#152）；写语句记下原文并回「写了一行」。
+
+        替身**不模拟写语句对行的效果**（``tests/fake_db`` 的既有口径），所以这里能断言的
+        只有「这条 UPDATE 发没发出去」；库里那几行的值走真库用例。
+        """
+
+        verb = (
+            str(statement).lstrip().split(maxsplit=1)[0].upper() if str(statement).strip() else ""
+        )
+        if verb in {"INSERT", "UPDATE", "DELETE"}:
+            self.statements.append(str(statement.compile(compile_kwargs={"literal_binds": True})))
+            return _WriteResult(rowcount=1)
         return fake_db.ZERO_COUNT
+
+
+class _WriteResult:
+    """写语句的结果替身：只回答 ``rowcount``。"""
+
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
 
 
 class _RecordingStore:
@@ -186,12 +216,16 @@ def _patch_indexing(
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
 
-    async def _claim(*_a: Any, **_k: Any) -> bool:
+    async def _claim(*_a: Any, **_k: Any) -> Any:
+        # 抢到回租约令牌（#213）；核对本身（行锁 + 库里那个时间戳）只认真库。
+        return now()
+
+    async def _holds_index_claim(*_a: Any, **_k: Any) -> bool:
         return True
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
-    monkeypatch.setattr(document_repository, "update_status", _record_update_status)
+    monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",
@@ -206,20 +240,6 @@ def _patch_indexing(
     monkeypatch.setattr(
         knowledge_base_repository, "get_effective_index_version", _effective_version
     )
-
-
-_STATUS_CALLS: list[tuple[int, str | None]] = []
-
-
-async def _record_update_status(
-    _db: Any, _target: Any, status: int, error: str | None = None
-) -> None:
-    _STATUS_CALLS.append((status, error))
-
-
-@pytest.fixture(autouse=True)
-def _clear_status_calls() -> None:
-    _STATUS_CALLS.clear()
 
 
 # ─────────────────────────────────────── 写入契约：向量与关键词同形状
@@ -417,11 +437,14 @@ def test_indexing_fails_as_a_whole_when_the_keyword_store_fails(
     monkeypatch.setattr(indexing_service, "get_keyword_search_provider", lambda: provider)
 
     service = IndexingService(splitter=_StubSplitter(pieces), embeddings=_StubEmbeddings())
+    session = _FakeSession()
 
     with pytest.raises(RuntimeError, match="elasticsearch unavailable"):
-        asyncio.run(service.index_existing_document(_FakeSession(), DOC_ID))
+        asyncio.run(service.index_existing_document(session, DOC_ID))
 
-    assert [code for code, _ in _STATUS_CALLS] == [], "失败时不许回写 SUCCESS"
+    # 状态回写是一条 UPDATE（#212），所以「没回写成功」在这条缝上的可观察形状是
+    # 「一条带 status= 的写语句都没发出去」；库里的值由真库用例断言。
+    assert [sql for sql in session.statements if "status=" in sql] == [], "失败时不许回写 SUCCESS"
     assert "add:keyword" in calls
 
 

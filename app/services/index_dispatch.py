@@ -149,8 +149,111 @@ def _build_task() -> TaskPublisher:
     return build_index_version_task
 
 
+def _build_document_task() -> TaskPublisher:
+    from app.tasks.index_build import build_document_task
+
+    return build_document_task
+
+
+def _build_dispatch_task() -> TaskPublisher:
+    from app.tasks.index_build import dispatch_build_task
+
+    return dispatch_build_task
+
+
 #: 整库构建任务的发布器槽（与索引任务分开，见模块文档「两道投递缝」）。
 _build_slot = PublisherSlot(_build_task, name="index_build")
+
+#: 构建子任务（按篇投递之后的那一条，走 ``build`` 队列）的发布器槽。
+_build_document_slot = PublisherSlot(_build_document_task, name="index_build_document")
+
+#: 派活任务的发布器槽：它把「这一版该建哪些篇」翻译成一批子任务。
+_dispatch_slot = PublisherSlot(_build_dispatch_task, name="index_build_dispatch")
+
+
+def set_build_document_publisher(publisher: TaskPublisher | None) -> None:
+    """注入构建子任务的发布器（离线套件设记账版；``None`` 复原生产实现）。"""
+
+    _build_document_slot.set(publisher)
+
+
+def build_document_publisher_is_injected() -> bool:
+    """构建子任务的投递缝是否处于注入状态（给离线自检用）。"""
+
+    return _build_document_slot.is_injected()
+
+
+def build_dispatch_publisher_is_injected() -> bool:
+    """派活任务的投递缝是否处于注入状态（给离线自检用）。"""
+
+    return _dispatch_slot.is_injected()
+
+
+def set_build_dispatch_publisher(publisher: TaskPublisher | None) -> None:
+    """注入派活任务的发布器（同上）。"""
+
+    _dispatch_slot.set(publisher)
+
+
+def enqueue_build_document(
+    *,
+    document_id: str,
+    tenant_id: str,
+    kb_id: str,
+    build_id: str,
+    index_version: str,
+    doc_version: int,
+    allow_success: bool = True,
+    datestamp: object = None,
+) -> None:
+    """把**构建的一篇**投进 ``build`` 队列（#215）。
+
+    与 :func:`enqueue_document` 的差别只有三样，全都随载荷走：
+
+    * ``build_id``：这篇跑完要回去记账（推进这一版进度、失败写明细）；
+    * ``index_version``：写到**这一版**，不是库当前的生效版本；
+    * ``allow_success``：要重建的本来就是成功文档。
+
+    ``datestamp`` 让同一批投递共享一个时间戳（只用于排障时把「同一批」认出来），不参与
+    任何判定。
+    """
+
+    _build_document_slot.current().apply_async(
+        kwargs={
+            "document_id": document_id,
+            "tenant_id": tenant_id,
+            "kb_id": kb_id,
+            "build_id": build_id,
+            "index_version": index_version,
+            "doc_version": doc_version,
+            "allow_success": allow_success,
+        },
+        task_id=f"build-doc:{build_id}:{document_id}",
+    )
+
+
+def enqueue_build_dispatch(
+    *,
+    build_id: str,
+    tenant_id: str,
+    request_id: str | None,
+    activate: bool = False,
+) -> None:
+    """把「给这一版派活」投进 ``build`` 队列（#215）。
+
+    ``activate`` 跟着派活任务走：真正激活要等收敛成 ``ready`` 之后，而收敛发生在最后一个
+    子任务那一侧——所以「要不要激活」必须一路传到那里，不能在派活时就丢掉。
+    """
+
+    _dispatch_slot.current().apply_async(
+        kwargs={
+            "build_id": build_id,
+            "tenant_id": tenant_id,
+            "request_id": request_id,
+            "activate": activate,
+        },
+        task_id=f"build-dispatch:{build_id}",
+    )
 
 
 def set_build_task_publisher(publisher: TaskPublisher | None) -> None:
@@ -179,25 +282,32 @@ def enqueue_index_build(
     #: 构建成功后立刻激活（第 16 步 #207）：只有「改了切块设置就生效」那条路径传 True。
     activate: bool = False,
 ) -> None:
-    """把「整库构建到某个版本」投递到 Broker。
+    """把「**给这一版派活**」投递到 Broker（#215）。
 
-    ``build_id`` 才是任务的输入：目标版本、租户、知识库都记在那一行 ``building`` 上，
-    Worker 读行而不是读参数——参数里再带一份版本号，就有两个真相，而它们迟早不一致
-    （症状是「构建完成，但没人看得见的那个版本」）。
+    ``build_id`` 才是任务的输入：目标版本、租户、知识库、参与篇数与稿号快照都记在那一行
+    ``building`` 上，Worker 读行而不是读参数——参数里再带一份版本号，就有两个真相，而它们
+    迟早不一致（症状是「构建完成，但没人看得见的那个版本」）。
+
+    ## 为什么投的是派活任务而不是「跑完整个库」的任务
+
+    改造前这一条投的是 ``build_index_version_task``：一个任务顺序跑完整个库。它的三个代价
+    （失败粒度是整个库、进度不可见、整段时长占住一个 Worker 槽位）都不是调参能解决的，
+    见 ADR-0034 决策三。派活任务只做一件事：把「这一版该建哪些篇」翻译成一批子任务，
+    每篇走的是与用户重建**完全相同**的那条流水线。
+
+    ``build_index_version_task`` 仍然保留：运维要「一次性跑完」时还能手动投它（
+    ``scripts/reconcile_build.py`` 与排障都用得上），但它不再是构建的默认形状。
 
     与 :func:`enqueue_document` 一样是**同步**的 ``apply_async``：调用方是运维脚本
     （独立进程、同步到底）与将来的控制面入口；请求路径上要投递构建时，参照
     ``enqueue_document_after_commit`` 加一层 ``to_thread`` 包装。
     """
 
-    get_build_task_publisher().apply_async(
-        kwargs={
-            "build_id": build_id,
-            "tenant_id": tenant_id,
-            "request_id": request_id,
-            "activate": activate,
-        },
-        task_id=f"build:{build_id}",
+    enqueue_build_dispatch(
+        build_id=build_id,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        activate=activate,
     )
 
 

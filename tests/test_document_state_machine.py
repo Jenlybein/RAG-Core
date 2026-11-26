@@ -140,22 +140,50 @@ def test_list_by_kb_and_status_filters_tenant_kb_and_status(document_db: Session
     assert [row.id for row in rows] == ["doc-success-early", "doc-success-late"]
 
 
-def test_list_stuck_selects_processing_with_missing_or_expired_claim(
+def test_list_stuck_selects_queued_and_processing_with_missing_or_expired_claim(
     document_db: Session,
 ) -> None:
-    """卡死 = PROCESSING 且（从未开工 ‖ 抢占时间早于 now - lease）；有效租约不算。"""
+    """卡死 = 排队中（没人接）‖ PROCESSING 且（从未开工 ‖ 抢占早于 now - lease）；有效租约不算。
+
+    排队中这一支是四态带来的新形状：任务丢了一条消息之后，那一行永远不会自己动，
+    只有这条扫描能把它重新送出去。
+    """
 
     expired = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS + 1)
     fresh = now()
-    _seed_document(document_db, "doc-never-claimed", status=DocumentStatus.PROCESSING)
-    _seed_document(document_db, "doc-expired", status=DocumentStatus.PROCESSING, claimed_at=expired)
-    _seed_document(document_db, "doc-running", status=DocumentStatus.PROCESSING, claimed_at=fresh)
-    _seed_document(document_db, "doc-failed", status=DocumentStatus.FAILED)
-    _seed_document(document_db, "doc-success", status=DocumentStatus.SUCCESS)
+    _seed_document(
+        document_db, "doc-queued", status=DocumentStatus.QUEUED, created_at=datetime(2026, 1, 1)
+    )
+    _seed_document(
+        document_db,
+        "doc-never-claimed",
+        status=DocumentStatus.PROCESSING,
+        created_at=datetime(2026, 1, 2),
+    )
+    _seed_document(
+        document_db,
+        "doc-expired",
+        status=DocumentStatus.PROCESSING,
+        claimed_at=expired,
+        created_at=datetime(2026, 1, 3),
+    )
+    _seed_document(
+        document_db,
+        "doc-running",
+        status=DocumentStatus.PROCESSING,
+        claimed_at=fresh,
+        created_at=datetime(2026, 1, 4),
+    )
+    _seed_document(
+        document_db, "doc-failed", status=DocumentStatus.FAILED, created_at=datetime(2026, 1, 5)
+    )
+    _seed_document(
+        document_db, "doc-success", status=DocumentStatus.SUCCESS, created_at=datetime(2026, 1, 6)
+    )
 
     rows = document_repository.list_stuck(document_db)
 
-    assert [row.id for row in rows] == ["doc-never-claimed", "doc-expired"]
+    assert [row.id for row in rows] == ["doc-queued", "doc-never-claimed", "doc-expired"]
 
 
 def test_list_stuck_honours_kb_tenant_and_lease_filters(document_db: Session) -> None:
@@ -211,17 +239,21 @@ def test_prepare_then_claim_makes_a_reindex_actually_indexable(
 
     row = document_db.get(Document, "doc-reindex")
     assert row is not None
-    assert row.status == DocumentStatus.PROCESSING
+    assert row.status == DocumentStatus.QUEUED, "入队侧只写排队中"
     assert row.index_claimed_at is None, "入队侧绝不能盖租约；租约只属于 Worker"
 
     claimed = document_repository.try_claim_for_indexing(
         document_db, "doc-reindex", tenant_id=TENANT_ID, allow_success=False
     )
-    assert claimed is True, "旧的双重抢占会把这里变成 rowcount=0：重建静默 no-op"
+    assert claimed is not None, "旧的双重抢占会把这里变成没抢到：重建静默 no-op"
     document_db.commit()
 
     row = document_db.get(Document, "doc-reindex")
     assert row is not None
+    assert row.status == DocumentStatus.PROCESSING, "抢到即 4 → 3"
+    assert row.index_claimed_at == claimed, (
+        "抢占回的是**这一条语句实际写进库的**租约令牌（#213），不是另取一次时间"
+    )
     assert row.index_claimed_at is not None, "Worker 抢到后才写租约"
 
 
@@ -272,7 +304,7 @@ def test_prepare_refuses_while_another_worker_holds_a_live_lease(
         document_repository.try_claim_for_indexing(
             document_db, "doc-running", tenant_id=TENANT_ID, allow_success=True
         )
-        is False
+        is None
     )
 
 
@@ -284,7 +316,7 @@ def test_a_second_claim_on_a_live_lease_fails(document_db: Session) -> None:
         document_repository.try_claim_for_indexing(
             document_db, "doc-once", tenant_id=TENANT_ID, allow_success=False
         )
-        is True
+        is not None
     )
     document_db.commit()
 
@@ -292,7 +324,7 @@ def test_a_second_claim_on_a_live_lease_fails(document_db: Session) -> None:
         document_repository.try_claim_for_indexing(
             document_db, "doc-once", tenant_id=TENANT_ID, allow_success=False
         )
-        is False
+        is None
     )
 
 
@@ -304,24 +336,25 @@ def test_release_then_reclaim_supports_the_retry_lifecycle(document_db: Session)
         document_repository.try_claim_for_indexing(
             document_db, "doc-retry", tenant_id=TENANT_ID, allow_success=False
         )
-        is True
+        is not None
     )
     document_db.commit()
 
-    # 模拟可重试失败：只释放租约，status 保持 PROCESSING（失败文档重试路径）。
+    # 模拟可重试失败：释放租约，并把「索引中」归一成「排队中」（等 Celery 重投）。
     document_repository.release_index_claim(document_db, "doc-retry", tenant_id=TENANT_ID)
     document_db.commit()
 
     row = document_db.get(Document, "doc-retry")
     assert row is not None
-    assert row.status == DocumentStatus.PROCESSING, "release 只清租约，不动状态"
+    assert row.status == DocumentStatus.QUEUED, "release 把 3 归一成 4：重投之前它就是在排队"
     assert row.index_claimed_at is None
+    assert row.updated_at is not None
 
     assert (
         document_repository.try_claim_for_indexing(
             document_db, "doc-retry", tenant_id=TENANT_ID, allow_success=False
         )
-        is True
+        is not None
     ), "不释放租约的话，重试的 CAS 永远抢不到"
 
 
@@ -535,7 +568,7 @@ def test_reindex_failed_document_is_enqueued_with_reparse_forwarded(
     assert body["code"] == 0
     assert body["data"] == {
         "document_id": DOC_ID,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "reparse": True,
     }
@@ -591,7 +624,7 @@ def test_reindex_success_document_with_force_is_prepared_and_enqueued(
     assert body["code"] == 0
     assert body["data"] == {
         "document_id": DOC_ID,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "reparse": False,
     }
@@ -693,9 +726,10 @@ def test_reindex_missing_or_cross_tenant_document_is_not_found(
     [
         (DocumentStatus.FAILED, None),
         (DocumentStatus.SUCCESS, None),
+        (DocumentStatus.QUEUED, None),
         (DocumentStatus.PROCESSING, document_repository.DOCUMENT_LEASE_SECONDS + 1),
     ],
-    ids=["failed", "success", "expired-lease"],
+    ids=["failed", "success", "queued", "expired-lease"],
 )
 def test_delete_allowed_document_purges_file_and_row_in_order(
     offline_api: SimpleNamespace,
@@ -704,7 +738,11 @@ def test_delete_allowed_document_purges_file_and_row_in_order(
     status: int,
     claim_age_seconds: int | None,
 ) -> None:
-    """失败 / 成功 / 租约过期都能删：purge → 删文件 → 删版本行 → 删行 → 提交，一步不少。"""
+    """失败 / 成功 / **排队中** / 租约过期都能删：purge → 删文件 → 删版本行 → 删行 → 提交。
+
+    排队中那一档是本票的新权能（ADR-0034 决策一）：删掉它就是撤回排队，迟到的任务在抢占
+    那一步抢不到，因此不会产生切片。
+    """
 
     source = tmp_path / f"{DOC_ID}.md"
     source.write_text("# body", encoding="utf-8")

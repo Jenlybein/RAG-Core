@@ -6,9 +6,16 @@
 **两段事务**是这里最重要的不变量：
 1. ``try_claim_for_indexing`` 抢到索引权后立刻 ``commit``。若把整条流水线包在
    行锁里，``GET /documents`` 在 Worker 跑完之前都会卡在这份文档那一行上。
+   **抢到的那一次调用还把租约令牌带回来**（#213）：这一条语句实际写进库的
+   ``index_claimed_at``，Tx2 的开头用它核对「这一行还是不是我的」。
 2. 解析 / 切块 / 向量化之后，purge（先删旧切片）+ 写入新切片 + ``status=SUCCESS``
    在同一段事务里提交：调用方永远不会看到「旧切片没了、新切片还没写」或
    「切片写好了、状态还是处理中」的中间态。异常时由调用方（Celery 任务）回滚。
+
+**Tx2 开头核对租约令牌（#213）**：Tx1 提交之后、Tx2 提交之前，租约可能过期并被另一个任务
+接走。若不管，旧任务醒来会 purge 掉新主人刚写的切片、再把自己的内容写回去，最后把状态从
+「索引中」改回「成功」——现象是「重建完了，检索到的却是旧内容」。令牌不等就整笔放弃
+（回滚 + warning + 返回 0），调用方按「跳过」处理，不重试。
 
 **第 11 步票 #132 起，这条流水线跑在异步栈上**：会话是 ``AsyncSession``（Worker 常驻
 循环里那一个，见 ``app/db/worker_loop.py``），两次提交走 ``async_commit_now``——提交点
@@ -16,10 +23,10 @@
 库不改）：Celery prefork 每个子进程同一时刻只跑一个任务，把 CPU 活丢进线程只会多一层，
 换不来任何并发（ADR-0023「并发由进程数给，不由循环数给」）。
 
-**索引权只由 Worker 抢占。** 入队侧（重建端点 / 运维脚本）已经用
-``prepare_for_indexing`` 把文档置成「已排队、未开工」（不盖租约），Worker 进来后
+**索引权只由 Worker 抢占。** 入队侧（上传 / 重建 / 建版本 / 回滚 / 运维脚本）已经用
+``prepare_for_indexing`` 把文档置成「排队中」（``status=4``，不盖租约），Worker 进来后
 用 ``try_claim_for_indexing(allow_success=False)`` 盖租约。``allow_success=False``
-是必须的：force 重建的路由已经做过 SUCCESS→PROCESSING 的状态准备，ACK 丢失导致的
+是必须的：force 重建的路由已经做过「成功 → 排队中」的状态准备，ACK 丢失导致的
 迟到重复投递不能在 SUCCESS 之后重新抢占并重写切片。
 
 并发去重靠数据库 CAS，不靠 Celery 的 ``task_id``：``acks_late`` 让投递至少一次，
@@ -82,7 +89,7 @@ import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.exceptions import AppError, ErrorCode
-from app.db.transaction import async_commit_now
+from app.db.transaction import async_commit_now, async_rollback_now
 from app.models.document import Document
 from app.models.document_version import DOCUMENT_VERSION_CURRENT, DocumentVersion
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
@@ -90,11 +97,14 @@ from app.providers.embedding import EmbeddingProvider, get_embedding_provider
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores import get_vector_store
+from app.models.plan import PLAN_FREE, PLAN_PRESETS, PlanSpec
 from app.repositories import (
     document_repository,
     document_version_repository,
     knowledge_base_repository,
+    tenant_repository,
 )
+from app.services import chunk_ledger, plan_service, static_quota
 from app.services.chunk_store import ChunkStore, build_chunk_stores
 from app.services.document_ingestion import (
     content_from_version,
@@ -103,6 +113,7 @@ from app.services.document_ingestion import (
 )
 from app.services.section_context import summarize_sections
 from app.utils.checksum import checksum_of
+from app.utils.tokenizer import token_count
 from app.utils.id_generator import new_chunk_id, new_version_id
 from app.utils.retrieval_text import build_retrieval_text
 from app.utils.status import DocumentStatus
@@ -171,9 +182,7 @@ class _ContentSource(NamedTuple):
     reparsed: bool = False
 
 
-def _reparse_source(
-    doc: Document, version_row: DocumentVersion | None
-) -> ParsedDocument:
+def _reparse_source(doc: Document, version_row: DocumentVersion | None) -> ParsedDocument:
     """重解析读**哪一份字节**：这一稿自己的源文件优先（#182）。
 
     ## 为什么不是文档行上的路径
@@ -197,6 +206,7 @@ def _reparse_source(
 
 class IndexingService:
     """Worker 侧的索引编排：一份已登记的文档 → 可检索的切片。"""
+
     def __init__(
         self,
         *,
@@ -216,6 +226,22 @@ class IndexingService:
             else build_chunk_stores(get_vector_store(), get_keyword_search_provider())
         )
 
+    async def _plan_of(self, db: AsyncSession, doc: Document) -> PlanSpec:
+        """这篇文档所属租户的套餐快照（容量判据的输入，#220）。
+
+        为什么由索引服务自己取、而不是让任务体传进来：任务体不该知道「容量上限」这件事
+        （它只管调度），而索引服务是**做这件事的人**。取法与数据面完全同一份
+        （``plan_service.resolve_plan`` + 租户行上的 ``plan_id``），所以「面板上改了套餐、
+        下一次处理就按新值判」这一点在这里也成立。
+        """
+
+        tenant = await tenant_repository.get_by_id_async(db, doc.tenant_id)
+        if tenant is None:
+            # 租户行不见了却还有文档在跑：这是人手改库才会出现的状态。按最保守的一档判
+            # （free），宁可拒一次也不要让一个已经没有归属的租户按高档位放行。
+            return PLAN_PRESETS[PLAN_FREE]
+        return await plan_service.resolve_plan(db, tenant.plan_id)
+
     async def _resolve_splitter(self, db: AsyncSession, doc: Document) -> tuple[TextSplitter, str]:
         """按文档所属知识库的配置构造切块器，返回 (切块器, 策略名)。
 
@@ -231,16 +257,14 @@ class IndexingService:
             # 注入的切块器如实报告它是哪一类：把按字符切的说成 structure，
             # 会让切片 meta 里的 split_strategy 变成一句谎话，重建时对不上。
             injected: SplitStrategy = (
-                SPLIT_SIZE
-                if isinstance(self._splitter, WindowTextSplitter)
-                else SPLIT_STRUCTURE
+                SPLIT_SIZE if isinstance(self._splitter, WindowTextSplitter) else SPLIT_STRUCTURE
             )
             return self._splitter, injected
-        strategy, chunk_size, section_part_max_chars = (
-            await knowledge_base_repository.get_split_config(
-                db, doc.kb_id, tenant_id=doc.tenant_id
-            )
-        )
+        (
+            strategy,
+            chunk_size,
+            section_part_max_chars,
+        ) = await knowledge_base_repository.get_split_config(db, doc.kb_id, tenant_id=doc.tenant_id)
         splitter = build_splitter(
             strategy,
             chunk_size=chunk_size,
@@ -281,9 +305,7 @@ class IndexingService:
         也决定读哪一份源文件。少了这次读，重解析就只能盲写文档行——那正是 #182 的洞。
         """
 
-        version_row = await document_version_repository.get_by_version(
-            db, str(doc.id), draft
-        )
+        version_row = await document_version_repository.get_by_version(db, str(doc.id), draft)
 
         # 分支 1：显式要求重解析。
         if reparse:
@@ -321,12 +343,15 @@ class IndexingService:
         doc_version: int | None = None,
         allow_success: bool = False,
     ) -> int:
-        """把一份已经登记在库的文档索引成切片，返回写入的切片数。
+        """把一份已经登记在库的文档索引成切片，返回写入的切片数；跳过时返回 0。
+
+        「跳过」有两种，调用方都按「这一篇没写」处理、都不要重试：抢不到租约（另一个
+        Worker 正在跑），以及 Tx2 开头令牌核对失败（租约已被接走，见模块文档 #213）。
 
         ``reparse=True`` 强制重解析原始文件（忽略库内正文）；``allow_success=True`` 让
         **已经是 SUCCESS 的文档**也能被抢占——那是「整库重建到新版本」（#142）要的：
         重建的输入本来就是成功文档。上传 / 重建路由仍走默认值（路由先用
-        ``prepare_for_indexing`` 做过 SUCCESS→PROCESSING 的准备），迟到重复投递不能
+        ``prepare_for_indexing`` 做过「成功 → 排队中」的准备），迟到重复投递不能
         重新抢占成功文档。
 
         ``index_version`` 是**写入目标**（#142）：构建写它自己的新版本；不传时取该库
@@ -362,11 +387,14 @@ class IndexingService:
 
         # Tx1：抢占后立刻提交，只持锁一瞬间。抢不到说明另一个 Worker 已经在跑
         # 这份文档（重复投递 / 重试），直接跳过，绝不重复向量化。
-        claimed = await document_repository.try_claim_for_indexing_async(
+        #
+        # 抢占回的是**租约令牌**（#213）：这一条语句实际写进库的 ``index_claimed_at``。
+        # 下面 Tx2 的开头拿它核对「这一行还是不是我抢到的那一次」。
+        claim_token = await document_repository.try_claim_for_indexing_async(
             db, document_id, tenant_id=doc.tenant_id, allow_success=allow_success
         )
         await async_commit_now(db)
-        if not claimed:
+        if claim_token is None:
             logger.info(
                 "indexing skipped, another worker owns it",
                 document_id=document_id,
@@ -392,6 +420,26 @@ class IndexingService:
         if draft == doc.current_version:
             doc.content = parsed.content
 
+        # ── 单库 token 容量硬拦（#220 / ADR-0035 决策四）────────────────────
+        #
+        # 位置选在**切块之前**：容量不够时连切都不必切（切块与嵌入是真正花钱的两步）。
+        # 口径是**正文** token，与单库容量判据同一把尺子；每日额度那边记的是检索文本
+        # token（多出标题与节说明前缀），两个数字各管一件事。
+        tokens = token_count(parsed.content)
+        # 套餐取一次、两处复用（容量判据与日额度）：查两遍**不会**得到两个答案，但会让
+        # 「这两条上限来自同一份套餐」这件事在代码里看不出来。
+        plan = await self._plan_of(db, doc)
+        await static_quota.ensure_kb_token_quota(
+            db,
+            tenant_id=doc.tenant_id,
+            kb_id=doc.kb_id,
+            plan=plan,
+            # 排除自己：重建一篇已在库里的文档时，它占的空间要算它自己的，
+            # 否则库装满之后连重建都做不了（自锁，不是上限该有的行为）。
+            excluding_document_id=doc.id,
+            incoming=tokens,
+        )
+
         # 切块器按**所属知识库**的配置现建：策略与窗口是库级属性，同一个库里
         # 混用两种切法会让片长不可比。
         splitter, split_strategy = await self._resolve_splitter(db, doc)
@@ -408,9 +456,7 @@ class IndexingService:
             section_id = str(piece.metadata.get("section_id") or "")
             if not section_id:
                 continue
-            section_headings.setdefault(
-                section_id, str(piece.metadata.get("heading_path") or "")
-            )
+            section_headings.setdefault(section_id, str(piece.metadata.get("heading_path") or ""))
             section_texts.setdefault(section_id, []).append(piece.text)
         summaries = await summarize_sections(
             [
@@ -480,9 +526,7 @@ class IndexingService:
                     "split_strategy": split_strategy,
                     # 节说明也落库：排查时能看出「这条检索文本为什么这么拼」，
                     # 重建时也不必重新调模型。
-                    "section_context": summaries.get(
-                        str(piece.metadata.get("section_id") or "")
-                    ),
+                    "section_context": summaries.get(str(piece.metadata.get("section_id") or "")),
                     # 页号由切块器从「第 N 页」标题带下来（PDF 才有）；Markdown 为空。
                     "page": piece.metadata.get("page"),
                     # **这里没有 doc_version**：稿号是 ``chunks.doc_version`` 那一列
@@ -502,6 +546,30 @@ class IndexingService:
         ]
 
         # Tx2：先删后写 + 建关系边 + 状态回写，一次提交；任一步失败都由调用方回滚。
+        #
+        # **开头先核对租约令牌**（#213）：Tx1 提交之后到这一刻之间，租约可能已经过期并
+        # 被另一个任务接走（清扫器接活、或者重投的副本先跑完了）。此时这一笔写下去就是
+        # 「僵尸任务覆盖新主人的结果」——它的切片会先 purge 掉对方的，再把旧内容写回来。
+        # 令牌不等 → 整笔放弃：回滚（连正文回写一起撤销）、记一条 warning、返回 0。
+        # 不抛可重试错误：这里不是失败，是「已经有人干了，我该退场」。
+        #
+        # 放在 purge **之前**是关键：检查完之前一行都没改。
+        if not await document_repository.holds_index_claim_async(
+            db, document_id, tenant_id=doc.tenant_id, token=claim_token
+        ):
+            # 先把要进日志的两列取出来：``rollback`` 会让 ORM 对象过期，之后再读属性会触发
+            # 一次懒加载——异步会话里那是一次 ``MissingGreenlet``，而它会把「该退场」变成
+            # 「任务崩了」。
+            tenant_id, kb_id = doc.tenant_id, doc.kb_id
+            await async_rollback_now(db)
+            logger.warning(
+                "indexing aborted, the lease was taken over by another worker",
+                document_id=document_id,
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+            )
+            return 0
+
         # 清除按「这一稿」收窄：别的稿的切片一个字节都不动（#173，ADR-0005 D4 选 B）。
         await purge_document_chunks(
             db,
@@ -511,6 +579,23 @@ class IndexingService:
             index_version=version,
             doc_version=draft,
         )
+        # ── 第四本账：每日切块额度（#222 / ADR-0035 决策三）──────────────
+        #
+        # 位置在**嵌入之前**：那一步才是花钱的。记的是**检索文本** token（真正发给嵌入模型的
+        # 那一份：文档名 + 节标题路径 + 节说明前缀 + 正文），不是正文 token——后者是本库容量
+        # 判据的口径。两个数字各管一件事，混用会让「容量没满但额度超了」解释不清。
+        #
+        # 超额抛 20037，让这一篇落失败（切片还没写、向量还没算），额度一分不扣：
+        # 先判后记（ADR-0018），否则「拒绝之后额度更少了」会让用户永远恢复不了。
+        await chunk_ledger.charge_chunk_tokens(
+            db,
+            tenant_id=doc.tenant_id,
+            tokens=sum(token_count(chunk.get("retrieval_text") or "") for chunk in chunks),
+            limit=plan.chunk_daily_tokens,
+            plan_name=plan.name,
+            plan_code=plan.code,
+        )
+
         for store in self._stores:
             await store.add_chunks(db, chunks)
 
@@ -520,7 +605,22 @@ class IndexingService:
             db, doc, draft=draft, source=source, content=parsed.content
         )
 
-        await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
+        # 状态回写走一条显式 UPDATE（#212），并**检查它影响了几行**：库里这一行若已被删
+        # （或租户对不上），写得「成功」而实际一行没动正是本票要堵的那类静默失效。
+        # 正文 token 数：容量判据的唯一计量。与切片、状态同一笔事务——半份状态（切片写了
+        # 而计量没写）会让下一次容量判定按一个偏小的数放行。
+        await document_repository.update_token_count(
+            db, document_id, tenant_id=doc.tenant_id, token_count=tokens
+        )
+        written = await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
+        if written != 1:
+            logger.warning(
+                "document status write touched no row",
+                document_id=document_id,
+                tenant_id=doc.tenant_id,
+                kb_id=doc.kb_id,
+                written=written,
+            )
         await async_commit_now(db)
         logger.info(
             "document indexed",
@@ -528,6 +628,7 @@ class IndexingService:
             tenant_id=doc.tenant_id,
             kb_id=doc.kb_id,
             chunk_count=len(chunks),
+            token_count=tokens,
             index_version=version,
         )
         return len(chunks)

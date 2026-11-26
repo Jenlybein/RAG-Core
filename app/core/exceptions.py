@@ -57,6 +57,17 @@ class ErrorCode(IntEnum):
     # 再拿它们去召回，调用方拿到 code=0 与一串无关切片，看不出问题不在自己。判定口径见
     # ``app.services.query_content``；``/retrieve`` 不加这道闸（它不读语义、只做召回）。
     QUERY_HAS_NO_CONTENT = 20033
+    # ── 容量与切块额度（第 17 步 · #209）──────────────────────────────────────
+    # 与 20014 分开的理由是**调用方的处置不同**：库数 / 文档数 / 单库 token 满了都是「删点
+    # 东西就能继续」，日切块额度用尽只能「等重置或提额」。混在 20014 里时前端只能给一句
+    # 对三种情形都不对的文案（历史上正是如此：让人去密钥配置里改一个在套餐里的数字）。
+    #
+    # 四个码一次给全、按编号顺序排列，因为错误码全表是与本枚举逐项对账的（见
+    # ``tests/test_business_errors.py``）：表里先落、枚举后落会让对账当场红。
+    KB_COUNT_QUOTA_EXCEEDED = 20034
+    KB_DOCUMENT_QUOTA_EXCEEDED = 20035
+    KB_TOKEN_QUOTA_EXCEEDED = 20036
+    CHUNK_DAILY_QUOTA_EXCEEDED = 20037
 
     # 3xxxx：存储段，仅预留，不定义成员（全表里没有调用点）。
 

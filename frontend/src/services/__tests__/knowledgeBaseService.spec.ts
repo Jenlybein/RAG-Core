@@ -34,6 +34,7 @@ describe('fetchTree', () => {
           chunk_size: 512,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+  build_progress: null,
           documents: [
             {
               document_id: 'doc_1',
@@ -54,6 +55,7 @@ describe('fetchTree', () => {
           chunk_size: 1024,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+  build_progress: null,
           documents: [],
         },
       ],
@@ -69,6 +71,7 @@ describe('fetchTree', () => {
         chunk_size: 512,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+  build_progress: null,
         documents: [
           {
             document_id: 'doc_1',
@@ -89,6 +92,7 @@ describe('fetchTree', () => {
         chunk_size: 1024,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+  build_progress: null,
         documents: [],
       },
     ])

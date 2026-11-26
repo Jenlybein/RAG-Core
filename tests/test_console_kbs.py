@@ -384,16 +384,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     def _count_documents(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return len(_list_documents(_db, kb_id, tenant_id=tenant_id))
 
-    def _count_processing(_db: Any, *, tenant_id: str) -> int:
-        lease = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS)
-        return sum(
-            1
-            for doc in session._rows.get(Document, [])
-            if doc.tenant_id == tenant_id
-            and doc.status == DocumentStatus.PROCESSING
-            and (doc.index_claimed_at is None or doc.index_claimed_at >= lease)
-        )
-
     def _prepare(
         _db: Any, document_id: str, *, tenant_id: str, allow_success: bool, **_kwargs: Any
     ) -> bool:
@@ -407,11 +397,16 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         doc = _document_lookup(None, document_id, tenant_id=tenant_id)
         if doc is None:
             return False
-        if doc.status == DocumentStatus.PROCESSING and doc.index_claimed_at is not None:
-            return False
+        lease = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS)
+        if (
+            doc.status == DocumentStatus.PROCESSING
+            and doc.index_claimed_at is not None
+            and doc.index_claimed_at >= lease
+        ):
+            return False  # 有效租约 = 真在跑，抢不走；排队中 / 过期 / 失败都可准备
         if doc.status == DocumentStatus.SUCCESS and not allow_success:
             return False
-        doc.status = DocumentStatus.PROCESSING
+        doc.status = DocumentStatus.QUEUED
         doc.index_claimed_at = None
         doc.error_message = None
         return True
@@ -441,9 +436,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     async def _count_documents_async(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return _count_documents(_db, kb_id, tenant_id=tenant_id)
 
-    async def _count_processing_async(_db: Any, *, tenant_id: str, **_kwargs: Any) -> int:
-        return _count_processing(_db, tenant_id=tenant_id)
-
     async def _prepare_async(
         db: Any, document_id: str, *, tenant_id: str, allow_success: bool, **kwargs: Any
     ) -> bool:
@@ -461,7 +453,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _document_lookup_async)
     monkeypatch.setattr(document_repository, "list_by_kb_async", _list_documents_async)
     monkeypatch.setattr(document_repository, "count_by_kb", _count_documents_async)
-    monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing_async)
     monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
     monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks_async)
     monkeypatch.setattr(console_kb_service, "get_vector_store", lambda: store)
@@ -598,12 +589,16 @@ def test_tree_returns_all_kbs_with_documents_and_grouped_chunk_counts(
         # 第 16 步 #207：切块设置的回显 + 「这一版参数与当前设置不一致」的提示。
         "section_part_max_chars",
         "needs_rebuild",
+        # 第 17 步 #216：进行中的构建进度与未入新版本的明细（没有构建时是 null）。
+        "build_progress",
         "documents",
     }
     assert populated["split_strategy"] == "structure"
     assert populated["allowed_formats"] == ["markdown"]
     assert populated["chunk_size"] == 512
     assert populated["section_part_max_chars"] == 2000
+    # 没有构建在跑时必须是 null，不是空对象：前端按「null 才不轮询」判定。
+    assert populated["build_progress"] is None
     # 假行没有生效版本行 → 按「需要重建」处理（宁可多提示一次，也不要少提示）。
     assert populated["needs_rebuild"] is True
 
@@ -713,10 +708,16 @@ def test_create_kb_rejects_a_tenant_id_in_the_body(kbs: _Harness) -> None:
 
 
 def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
-    """面板不是绕过套餐的后门：静态库数配额由 ``create_kb`` 判（20014），且不写账本。"""
+    """面板不是绕过套餐的后门：静态库数配额由 ``create_kb`` 判（``20034``），且不写账本。"""
 
     tenant = next(row for row in kbs.db._rows[Tenant] if row.id == TENANT_ALPHA)
-    tenant.plan_id = 1  # free：max_kb=1，而 Alpha 已经有 2 个库
+    # free 档的库数上限是 3（ADR-0035 决策六从 1 放到 3），而 Alpha 已经有 2 个库 → 不超。
+    # 这一票要验的是「配额真的在判」，所以把上限压到 2（= 已用）再试。
+    tenant.plan_id = 1  # free
+    free_plan = next(row for row in kbs.db._rows[Plan] if row.code == "free")
+    free_plan.max_kb = 2
+    free_plan.max_tokens_per_kb = 30_000
+    free_plan.chunk_daily_tokens = 300_000
     assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
 
     response = kbs.client.post(
@@ -725,7 +726,9 @@ def test_create_kb_still_obeys_the_plan_kb_quota(kbs: _Harness) -> None:
         headers=WRITE_HEADERS,
     )
 
-    assert response.json()["code"] == ErrorCode.QUOTA_EXCEEDED
+    body = response.json()
+    assert body["code"] == ErrorCode.KB_COUNT_QUOTA_EXCEEDED
+    assert body["data"] == {"reason": "kb_count", "used": 2, "limit": 2, "plan": "free"}
     assert len(kbs.db._rows[KnowledgeBase]) == 3, "被配额拒绝的库不落行"
     assert kbs.audit_entries() == []
 
@@ -794,7 +797,7 @@ def test_delete_kb_of_another_tenant_or_missing_is_not_found(kbs: _Harness, kb_i
 # ─────────────────────────────────────────────────────────────────────── 上传文档
 
 
-def test_json_upload_returns_processing_and_audits_without_the_body_text(
+def test_json_upload_returns_queued_and_audits_without_the_body_text(
     kbs: _Harness,
 ) -> None:
     """单端点 JSON 分支：立即回 status=3，审计只留 id/title/status，不留正文。"""
@@ -809,13 +812,13 @@ def test_json_upload_returns_processing_and_audits_without_the_body_text(
 
     data = kbs.data(response)
     assert data["kb_id"] == KB_ALPHA_ONE
-    assert data["status"] == DocumentStatus.PROCESSING
+    assert data["status"] == DocumentStatus.QUEUED
     assert data["chunk_count"] == 0
     assert data["source_type"] == "markdown"
 
     document = kbs.document(data["document_id"])
     assert document.content == CONTENT_SENTINEL, "JSON 分支直接落正文，不读请求线程之外的解析"
-    assert document.status == DocumentStatus.PROCESSING
+    assert document.status == DocumentStatus.QUEUED
 
     assert kbs.enqueued == [
         {
@@ -834,11 +837,11 @@ def test_json_upload_returns_processing_and_audits_without_the_body_text(
     assert entry.action == "doc.upload"
     assert entry.target == f"doc:{data['document_id']}"
     assert entry.before_snapshot is None
-    assert entry.after_snapshot["status"] == DocumentStatus.PROCESSING
+    assert entry.after_snapshot["status"] == DocumentStatus.QUEUED
     assert CONTENT_SENTINEL not in json.dumps(entry.after_snapshot, ensure_ascii=False)
 
 
-def test_multipart_upload_stores_the_file_and_returns_processing(kbs: _Harness) -> None:
+def test_multipart_upload_stores_the_file_and_returns_queued(kbs: _Harness) -> None:
     """文件分支：落盘由 ``document_service.upload`` 收口，正文留给 Worker 解析。"""
 
     assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
@@ -851,7 +854,7 @@ def test_multipart_upload_stores_the_file_and_returns_processing(kbs: _Harness) 
     )
 
     data = kbs.data(response)
-    assert data["status"] == DocumentStatus.PROCESSING
+    assert data["status"] == DocumentStatus.QUEUED
     assert data["source_type"] == "markdown"
 
     document = kbs.document(data["document_id"])
@@ -887,7 +890,7 @@ def test_upload_to_another_tenant_or_missing_kb_is_not_found(kbs: _Harness, kb_i
 # ─────────────────────────────────────────────────────────────────────── 重建索引
 
 
-def test_reindex_failed_document_returns_processing_and_audits_before_after(
+def test_reindex_failed_document_returns_queued_and_audits_before_after(
     kbs: _Harness,
 ) -> None:
     assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
@@ -901,7 +904,7 @@ def test_reindex_failed_document_returns_processing_and_audits_before_after(
     data = kbs.data(response)
     assert data == {
         "document_id": DOC_ALPHA_FAILED,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "reparse": True,
     }
@@ -928,7 +931,7 @@ def test_reindex_failed_document_returns_processing_and_audits_before_after(
     assert entry.action == "doc.reindex"
     assert entry.target == f"doc:{DOC_ALPHA_FAILED}"
     assert entry.before_snapshot["status"] == DocumentStatus.FAILED
-    assert entry.after_snapshot["status"] == DocumentStatus.PROCESSING
+    assert entry.after_snapshot["status"] == DocumentStatus.QUEUED
     assert entry.after_snapshot["reparse"] is True
     assert CONTENT_SENTINEL not in json.dumps(entry.before_snapshot, ensure_ascii=False)
 
@@ -958,7 +961,7 @@ def test_reindex_success_document_with_force_is_prepared(kbs: _Harness) -> None:
         headers=WRITE_HEADERS,
     )
 
-    assert kbs.data(response)["status"] == DocumentStatus.PROCESSING
+    assert kbs.data(response)["status"] == DocumentStatus.QUEUED
     assert kbs.prepares == [
         {
             "document_id": DOC_ALPHA_DONE,

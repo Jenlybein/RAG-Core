@@ -27,6 +27,29 @@ building ──▶ ready ──(单事务切换)──▶ active ──▶ archi
 见 ``app/tasks/indexing.py``）。``failed`` 的版本不会自己重试——重建请重新发起一次构建，
 那是另一个版本号。
 
+## 收尾用真值，不用计数器（#214）
+
+**判据只有一条**（:func:`decide_convergence`）：这一版、这一稿下**已经有切片的文档数**
+（:func:`app.repositories.chunk_repository.count_documents_in_version`），与构建开始时快照
+的参与篇数比较。够了、且没有失败明细才允许 ``ready``；不够就是 ``failed``。
+
+为什么这件事值得单独写一段：在这之前，判据是一个**假计数**——构建循环丢掉了每篇重建函数
+的返回值，抢不到也算一篇「已重建」，而四项计数对账在「切片 0 / 向量 0 / 关键词 0」时三方
+相等，于是**一篇都没真正重建的构建也能 ready 并激活**，线上静默变成「版本正常、检索全
+空」。计数器漂高就会这样；真值不会：它任何时刻重算一次都得到同一个数，丢一条通知最多让
+收尾**晚一点**（[ADR-0034](../../docs/adr/0034-queue-state-and-build-convergence.md) 决策四）。
+
+三件事因此分开，**不许互相顶替**：
+
+| 动作 | 回答的问题 | 实现在哪 |
+| --- | --- | --- |
+| :meth:`IndexBuildService.collect_truth` | 现在真值是多少（读库） | 切片表 ``COUNT(DISTINCT document_id)`` + 构建行上的两个快照列 |
+| :func:`decide_convergence` | 该收了没有（纯函数） | 四个输入：真值 / 参与篇数 / 失败明细 / 是否最后一次 |
+| :meth:`IndexBuildService.converge` | 收（迁移状态，幂等） | 真值够走 :meth:`~IndexBuildService.mark_ready`（仍过四项计数），不够走 :meth:`~IndexBuildService.mark_failed` |
+
+``ready`` 依然要过 [ADR-0025](0025-index-as-build-artifact.md) 的四项计数对账：真值回答
+「该收了吗」，四项计数回答「这版能上线吗」，两个判据各自说话。
+
 ## 取消与进程死掉的差别（刻意不对称）
 
 * **任务内的异常**（含 Celery 的 ``SoftTimeLimitExceeded``）→ :meth:`IndexBuildService.build`
@@ -41,7 +64,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Final, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any, Final
 
 import structlog
 from sqlalchemy.exc import IntegrityError
@@ -70,6 +94,7 @@ from app.repositories import (
     index_version_repository,
     knowledge_base_repository,
 )
+from app.services.index_dispatch import enqueue_build_document
 from app.services.indexing_service import IndexingService
 from app.utils.id_generator import new_id
 from app.utils.status import DocumentStatus
@@ -104,8 +129,52 @@ BUILD_COUNTS_MISMATCH_MESSAGE: Final[str] = (
 BUILD_NOTHING_TO_REBUILD_MESSAGE: Final[str] = (
     "no document could be rebuilt; refusing to build an empty index version"
 )
+#: 真值不够、而这一轮不会有人再补时的话术（#214）。
+#:
+#: 与上面那条的分工：那条说的是「一篇都没进来」（库里有文档、真值 0），这条说的是
+#: 「进来了一部分、但没盖满快照的参与篇数」。两者对运维的指向不同——前者去查「为什么这批
+#: 文档全都没被重建」，后者去查「差的这几篇卡在哪」——所以不合并成一句。
+BUILD_INCOMPLETE_MESSAGE: Final[str] = (
+    "index build did not cover every planned document; refusing to mark it ready"
+)
 #: 一行 ``building`` 停留超过这个时长就当「有行、没任务」（运维可据此重跑或标失败）。
 BUILD_STALL_SECONDS: Final[int] = 60 * 60
+
+#: 收敛判定里的「还没到时候」（不是状态，是一个**不迁移**的结论）。
+CONVERGE_WAIT: Final[str] = "wait"
+
+#: 收敛期限的基数（秒）：即使只有一篇，也要给「投递 → 起任务 → 跑完」留出余量。
+CONVERGE_BASE_SECONDS: Final[int] = 15 * 60
+#: 每篇文档的收敛预算（秒）。
+#:
+#: **口径**：这是「整库跑完」的预算，不是「单篇」的预算——这一票的投递形状仍是**一个任务
+#: 跑完整个库**（按篇投递是 #215），所以期限必须覆盖这一整条循环。每篇 8 秒取的是保守
+#: 上界（嵌入按批走，单篇解析 + 切块 + 向量化通常几秒；大批量文档偏慢），宁可给宽一点：
+#: 期限判早了，代价是把一次**正常**的构建收成 ``failed``（ADR-0034 决策五的翻案条件里
+#: 明确把它当成一次误判）。#215 按篇投递之后每篇自带租约，这个公式应当随之收紧。
+CONVERGE_PER_DOCUMENT_SECONDS: Final[int] = 8
+#: 收敛期限的封顶（秒）。
+#:
+#: 6 小时：再大的库，也轮不到一个「跑完整个库」的任务在单进程里跑一整天——那已经不是慢，
+#: 是任务根本没被跑（进程死了 / 队列堵了），而这种情形该由清扫器发现，不该由期限假装能等。
+CONVERGE_MAX_SECONDS: Final[int] = 6 * 60 * 60
+
+#: 派活任务一次投多少篇（#215）。
+#:
+#: 一批几百条是 Broker 与 Worker 内存都舒服的量级。一次把 5000 条挤进 Redis 会让「构建」那条
+#: 队列一瞬间比所有租户的上传加起来还长——而队列长度本身就是运维要看的信号，淹掉它就等于
+#: 把这个信号弄坏。
+DISPATCH_BATCH_SIZE: Final[int] = 200
+
+#: 清扫器最多重投几次同一构建（ADR-0034 决策七）。
+#:
+#: 兜底必须有个尽头：一个永远救不回来的构建（例如某篇源文件坏了）会被清扫器每轮数出同一个
+#: 缺口、投同一批任务，队列里因此常年躺着一批必然失败的消息。到顶就收成 ``failed``——
+#: 「救不回来」也是一个必须兑现的结论。
+MAX_REDISPATCH: Final[int] = 3
+
+#: 「未入新版本」明细里单条原因的固定文案（不拼异常原文，与失败留痕同一条纪律）。
+BUILD_DOCUMENT_FAILED_REASON: Final[str] = "document indexing failed"
 
 #: 合法迁移表。空集合 = 终态，谁也别想再动它。
 ALLOWED_TRANSITIONS: Final[dict[str, frozenset[str]]] = {
@@ -229,22 +298,122 @@ class IndexBuildCountsMismatch(AppError):
         super().__init__(ErrorCode.SERVER_ERROR, BUILD_COUNTS_MISMATCH_MESSAGE)
 
 
+class IndexBuildIncomplete(AppError):
+    """真值不够、而这一轮不会有人再补：这次构建收成 ``failed``。
+
+    与 :class:`IndexBuildNothingToRebuild` 分两个类，是因为运维要查的是两件事：那条说
+    「一篇都没进来」，这一条说「进来了一部分、差的还在别处」。文案也各有一句
+    （:data:`BUILD_INCOMPLETE_MESSAGE` / :data:`BUILD_NOTHING_TO_REBUILD_MESSAGE`）。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.SERVER_ERROR, BUILD_INCOMPLETE_MESSAGE)
+
+
 class IndexBuildNothingToRebuild(AppError):
     """库里有文档，这一轮却一篇都没重建成功。
 
     绝大多数情形是「那些文档卡在 ``processing``」——上传或重建的 Worker 死在半路，
     认领时写的 ``processing`` 就再也没被改回来。它不是构建自己的错，但**不能假装
     建成了一个空版本**：那会被激活、会返回空结果，而症状看起来像「这个库没内容」。
+
+    #214 起这条守卫的判据换成了真值（:func:`decide_convergence`）：真值为 0、而参与篇数
+    快照大于 0 → 必然 ``failed``。它不再依赖任何计数器——空版本上线的那条路是从判据上拆掉的，
+    不是在判据之后又拦一道。
     """
 
     def __init__(self) -> None:
         super().__init__(ErrorCode.SERVER_ERROR, BUILD_NOTHING_TO_REBUILD_MESSAGE)
 
 
+@dataclass(frozen=True)
+class BuildTruth:
+    """收敛判据的一次读数快照（#214）：真值 / 分母 / 稿号。
+
+    三样东西一起返回，因为它们必须来自**同一次**判断：只把真值传给调用方，它就会自己去取
+    分母，而两次读之间的窗口里分母会变（那正是「快照 vs 现数」要分开的原因）。
+
+    ``documents`` 与 ``planned`` 的差就是「还缺几篇」；``as_dict`` 供日志与运维脚本打印。
+    """
+
+    #: 真值：这一版、这一稿下已经有切片的**文档数**。
+    documents: int
+    #: 参与篇数快照：起构建那一刻该库可参与构建的文档数。
+    planned: int
+    #: 判据用的稿号；``None`` = 没有稿号快照（老行），此时真值不按稿过滤。
+    doc_version: int | None = None
+
+    @property
+    def shortfall(self) -> int:
+        """还缺几篇（负数按 0：真值超过快照是「文档变多了」，不是欠账）。"""
+
+        return max(self.planned - self.documents, 0)
+
+    def as_dict(self) -> dict[str, int | None]:
+        """落日志用的扁平形状。"""
+
+        return {
+            "documents": self.documents,
+            "planned": self.planned,
+            "doc_version": self.doc_version,
+            "shortfall": self.shortfall,
+        }
+
+
 def can_transition(current: str, target: str) -> bool:
     """``current`` 能否直接迁到 ``target``（纯函数，状态机的真值表只有这一份）。"""
 
     return target in ALLOWED_TRANSITIONS.get(current, frozenset())
+
+
+def converge_deadline_for(planned: int, *, started_at: datetime) -> datetime:
+    """起构建那一刻算出这次构建的**收敛期限**（纯函数，ADR-0034 决策五）。
+
+    公式：``开始时刻 + 基数 + 每篇预算 × 参与篇数``，封顶 :data:`CONVERGE_MAX_SECONDS`。
+
+    三个常数各自的依据写在上面的常量注释里，这里只再强调一件事：**它是「最晚给我一个
+    结论」的时间点，不是「第几篇跑完」的时间点**。所以它与库规模相关（篇数越多越晚），
+    而与「现在跑到第几篇」无关——后者是进度，进度不做判据（同一个理由见
+    :func:`decide_convergence`）。
+
+    ``planned`` 为负按 0 算：调用方给负数说明它读错了库，而期限是**兜底**，兜底不该因为
+    一个坏输入变成一个立刻过期的死线。
+    """
+
+    documents = max(planned, 0)
+    budget = CONVERGE_BASE_SECONDS + CONVERGE_PER_DOCUMENT_SECONDS * documents
+    return started_at + timedelta(seconds=min(budget, CONVERGE_MAX_SECONDS))
+
+
+def decide_convergence(*, truth: int, planned: int, failed: int, final: bool = True) -> str:
+    """这一次构建**该不该收尾**：返回 ``ready`` / ``failed`` / :data:`CONVERGE_WAIT`。
+
+    纯函数，三个数字（加一个「是不是最后一次」）进去，一个结论出来——于是四种组合可以在
+    离线用例里逐条钉死，而不必去连库、造切片、摆时间。
+
+    | 真值 | 失败明细 | ``final`` | 结论 | 为什么 |
+    | --- | --- | --- | --- | --- |
+    | 够（≥ 参与篇数） | 无 | 任意 | ``ready`` | 该建的都建了 |
+    | 够 | 有 | 任意 | ``failed`` | 部分版本**永不上线**（ADR-0025）；有失败明细就不许它上线 |
+    | 不够 | 有 | 任意 | ``failed`` | 同上，且真值也不够 |
+    | 不够 | 无 | ``True`` | ``failed`` | 这一轮不会有人再补了（最后一篇跑完 / 期限已过） |
+    | 不够 | 无 | ``False`` | ``wait`` | 还可能有篇在飞：此时判死会把一次正常构建打回去 |
+
+    **``final`` 是什么**：调用方对「还有没有人会往这一版里写」的断言。一个任务跑完整个库的
+    形状（这一票）在循环结束时它恒为 ``True``；按篇投递与清扫器（#215 / #224）在期限之前
+    给 ``False``，让「还差几篇」如实表达成「再等等」。它是**参数**而不是时钟：判据里不引入
+    第二份时间真相，时间只从构建行的收敛期限来。
+
+    **``truth == planned == 0`` 时回 ``ready``**：那个库起构建时就没有可参与的文档，建一个
+    空版本是诚实的结果（老实现的同一口径）。「一篇都没重建成功」的守卫说的是 ``planned > 0``
+    而 ``truth == 0``——那才是「库里明明有文档，却一片都没进来」。
+    """
+
+    if failed > 0:
+        return INDEX_BUILD_FAILED
+    if truth >= planned:
+        return INDEX_BUILD_READY
+    return INDEX_BUILD_FAILED if final else CONVERGE_WAIT
 
 
 def ensure_transition(row: IndexBuildVersion, target: str) -> None:
@@ -317,18 +486,12 @@ class IndexBuildService:
         假守卫（TOCTOU），只做后者则拿不到「已经在建的是哪一行」这个可读的信息。
         """
 
-        kb = await knowledge_base_repository.get_by_id_for_tenant(
-            db, kb_id, tenant_id=tenant_id
-        )
+        kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
         if kb is None:
             raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
-        existing = await index_version_repository.list_for_kb(
-            db, kb_id, tenant_id=tenant_id
-        )
-        running = next(
-            (row for row in existing if row.status == INDEX_BUILD_BUILDING), None
-        )
+        existing = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
+        running = next((row for row in existing if row.status == INDEX_BUILD_BUILDING), None)
         if running is not None:
             raise IndexBuildAlreadyRunning(running)
 
@@ -337,6 +500,14 @@ class IndexBuildService:
         # 而库列被改掉之后旧版本的数据就永远停在「无人认领」的状态。
         adopted = await self._adopt_live_version(db, kb, existing)
         names = [row.version for row in existing] + ([adopted] if adopted else [])
+
+        # 起构建这一刻的**两个快照**（#214）：参与篇数与统一稿号。收敛时真值就是拿它们
+        # 当分母与筛子比的，所以它们必须写在开跑之前——构建跑起来之后这个库还会变
+        # （有人上传、有人删），而「这一轮该建几篇」不该跟着变。
+        planned, draft = await document_repository.participating_snapshot(
+            db, kb_id, tenant_id=tenant_id
+        )
+        started_at = now()
 
         row = IndexBuildVersion(
             id=new_id(),
@@ -348,7 +519,16 @@ class IndexBuildService:
             # 构建期间有人改库设置，这一版仍然属于旧参数——事后复盘「为什么这版还是整节」
             # 靠的就是这一格，而不是去猜当时的设置。
             params=build_params_of(kb),
-            created_at=now(),
+            created_at=started_at,
+            # 参与篇数快照：收敛判据的分母（真值 = 该版本该稿下已有切片的文档数）。
+            documents_planned=planned,
+            # 统一稿号：库里没有可参与的文档时记 1，因为这一列非空，而「没有稿号」这件事
+            # 已经由 ``documents_planned == 0`` 表达（分母为零，真值怎么数都够）。
+            doc_version=draft if draft is not None else 1,
+            # 进度从零开始，**只做进度条**（判定读真值，不读它）。
+            documents_done=0,
+            # 收敛期限 = 构建行自己的租约：最晚什么时候必须有人给它一个结论（决策五）。
+            converge_deadline=converge_deadline_for(planned, started_at=started_at),
         )
         try:
             await index_version_repository.create(db, row)
@@ -408,10 +588,8 @@ class IndexBuildService:
 
     # ── 跑一次构建 ────────────────────────────────────────────────
 
-    async def build(
-        self, db: AsyncSession, build_id: str, *, tenant_id: str
-    ) -> IndexBuildVersion:
-        """跑完一次构建：逐文档重建 → 四项计数核对 → ``ready``（激活是另一步）。
+    async def build(self, db: AsyncSession, build_id: str, *, tenant_id: str) -> IndexBuildVersion:
+        """跑完一次构建：逐文档重建 → **真值收敛**（该 ready 就 ready，否则 failed）。
 
         激活**不**在这里做：它要改线上（库上的生效版本列），必须是一个能被单独调起、
         单独重试、单独审计的动作。把两者塞进一个函数，运维就没有「先 ready、观察一会儿
@@ -424,11 +602,21 @@ class IndexBuildService:
 
         哪些文档参与：``SUCCESS`` 的那些。失败 / 处理中的文档没有可切的正文，把它们的
         失败再重放一遍只是把构建拖成失败；它们该由单篇重试解决，不属于构建。
+
+        ## 为什么计数这件事变了（#214）
+
+        ``index_existing_document`` 返回**写进去的切片数**，抢不到时返回 0。旧实现丢掉这个
+        返回值、每篇都 ``indexed += 1``，于是「一篇都没真重建」也能通过唯一的空版本守卫，
+        一路 ready 并激活（线上变成「版本正常、检索全空」）。现在：
+
+        * ``documents_done`` 只数**真的写进切片**的篇数（返回值 > 0），抢不到的不计；
+        * 它**只做进度条**，收不收尾由 :meth:`converge` 读真值决定。
+
+        投递形状**这一票不改**（仍是一个任务跑完整个库；按篇投递是 #215）：因此循环跑完
+        就等于「这一轮不会有人再补了」，收敛时 ``final=True``。
         """
 
-        row = await index_version_repository.get_for_tenant(
-            db, build_id, tenant_id=tenant_id
-        )
+        row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
         if row is None:
             raise AppError(ErrorCode.NOT_FOUND, "index build not found")
         if row.status != INDEX_BUILD_BUILDING:
@@ -451,45 +639,47 @@ class IndexBuildService:
             documents = await document_repository.list_by_kb_async(
                 db, row.kb_id, tenant_id=tenant_id
             )
+            # 进度从零开始数**这一轮**真写进切片的篇数。写回行上前先置 0：一行自己带着
+            # 上一轮的值（重投 / 同一行被跑第二遍）时，进度条不该从旧数字接着爬。
             indexed = 0
+            row.documents_done = indexed
             for document in documents:
                 if document.status != DocumentStatus.SUCCESS:
                     continue
-                await self._indexing.index_existing_document(
+                written = await self._indexing.index_existing_document(
                     db,
                     document.id,
                     # 目标版本是本票的唯一输入：写错版本等于「构建成功但没人看得见」。
                     index_version=row.version,
-                    # 稿号在**这一轮构建的此刻**定下来（#173）：整库构建要跑很久，中途有人
-                    # 回滚某篇文档不该让同一批切片一半是旧稿一半是新稿。
-                    doc_version=document.current_version,
+                    # 稿号用**构建行上的快照**（#215）：整库构建要跑很久，中途有人回滚某篇
+                    # 文档不该让同一批切片一半是旧稿一半是新稿。这里改读快照而不是读每篇
+                    # 自己的指针——按篇投递时子任务读的也是同一个快照，两条形状必须一致，
+                    # 否则「一次任务跑完整个库」与「按篇投递」会产出两套不同的稿号归属。
+                    doc_version=int(row.doc_version or 1),
                     # 重建的输入本来就是成功文档，必须允许抢占它们。
                     allow_success=True,
                 )
+                if written <= 0:
+                    # 抢不到（另一个 Worker 正拿着这一篇）：**不计入**已重建。这条 if 就是
+                    # 缺陷 2 的止血点——旧实现丢掉返回值，抢不到也计一篇，于是空版本能上线。
+                    logger.info(
+                        "index build skipped a document another worker owns",
+                        build_id=build_id,
+                        tenant_id=tenant_id,
+                        document_id=document.id,
+                    )
+                    continue
                 indexed += 1
-            # 库里有文档、却一篇都重建不出来 → 拒绝建出一个「空版本」（第 16 步 #207）。
-            # 空版本的四项计数自洽，能一路通过闸门变成 ready；它一旦被激活，检索会返回空
-            # 而结果看起来完全正常——那正是「不报错但全空」这类最难发现的状态。
-            if documents and indexed == 0:
-                raise IndexBuildNothingToRebuild()
-            # 计数快照里的文档数：**成功重建的篇数**（不是库里总行数——失败 / 处理中的
-            # 文档不参与构建，把它们算进去会让快照看起来「少了几篇」却查不出原因）。
-            row.document_count = indexed
-            counts = await self.collect_counts(db, kb=kb, version=row.version)
-            await self.mark_ready(db, build_id, tenant_id=tenant_id, counts=counts)
+                # 进度：写在这篇的提交**之后**，所以它落后「此刻真值」至多一篇——进度条
+                # 晚一篇无伤，判据根本不用它（下一次提交会把最新值带上去）。
+                row.documents_done = indexed
+
+            # 收尾：真值够 → ready（仍过四项计数）；不够 → failed。两件事都在 converge 里，
+            # 因为它要能被运维脚本 / 清扫器 / 最后一篇的持有者任意一方单独触发一次。
+            converged = await self.converge(db, build_id, tenant_id=tenant_id, final=True)
         except Exception as exc:  # noqa: BLE001 - 收成 failed，原因只留固定文案
             await async_rollback_now(db)
-            await self.mark_failed(
-                db,
-                build_id,
-                tenant_id=tenant_id,
-                # 一因一码：计数对不上与「跑崩了」是两件事，运维处置完全不同。
-                reason=(
-                    BUILD_COUNTS_MISMATCH_MESSAGE
-                    if isinstance(exc, IndexBuildCountsMismatch)
-                    else BUILD_FAILED_MESSAGE
-                ),
-            )
+            await self.settle_failure(db, build_id, tenant_id=tenant_id, cause=exc)
             logger.exception(
                 "index build aborted",
                 build_id=build_id,
@@ -499,15 +689,317 @@ class IndexBuildService:
             )
             raise
 
+        if converged.status == INDEX_BUILD_FAILED:
+            # converge 已经把结论（failed + 固定文案）落库了；这里再抛一次，是让「构建没成」
+            # 在任务日志与调用方那里都有痕迹——「静默失败」正是这次要堵的那类形态。
+            raise self._aborted(converged)
+
         logger.info(
             "index build ready",
             build_id=build_id,
             tenant_id=tenant_id,
+            kb_id=converged.kb_id,
+            version=converged.version,
+            document_count=converged.document_count,
+            rebuilt=indexed,
+        )
+        return converged
+
+    @staticmethod
+    def _aborted(converged: IndexBuildVersion) -> AppError:
+        """把 converge 落下的结论翻回一个异常（任务日志与调用方看得见的那种）。
+
+        两个类分开是为了让排查从「哪种失败」开始，而不是从「构建失败了」开始：一篇都没进来
+        与进来了一部分但没盖满，指向的是两批完全不同的文档。
+        """
+
+        if converged.error_message == BUILD_NOTHING_TO_REBUILD_MESSAGE:
+            return IndexBuildNothingToRebuild()
+        return IndexBuildIncomplete()
+
+    # ── 收敛：真值 → 结论 → 一次状态迁移（#214）───────────────
+
+    async def collect_truth(
+        self, db: AsyncSession, *, row: IndexBuildVersion, tenant_id: str
+    ) -> BuildTruth:
+        """读一次收敛判据：**这一版、这一稿下已经有切片的文档数**，配上分母与稿号。
+
+        真值来自 ``chunks`` 表（``COUNT(DISTINCT document_id)``），不是任何计数器：任何时刻
+        重算都得到同一个数，丢的通知最多让收尾晚一点（ADR-0034 决策四）。
+
+        **快照优先**：参与篇数与稿号都用构建行上起跑那一刻记下的值。没有快照的行（迁移之前
+        起的构建、用例里手工摆的行）才回落到「按此刻库里的可参与文档读一份」——这一支必须
+        存在，否则老行会带着 ``documents_planned = 0`` 走进判据，而分母为零意味着「真值 0
+        也够」，恰好把这次要堵的那条空版本上线的路又留一条缝。
+        """
+
+        planned = row.documents_planned
+        draft = row.doc_version
+        if planned is None or draft is None:
+            planned_now, draft_now = await document_repository.participating_snapshot(
+                db, str(row.kb_id), tenant_id=tenant_id
+            )
+            planned = planned_now if planned is None else planned
+            draft = draft_now if draft is None else draft
+        documents = await chunk_repository.count_documents_in_version(
+            db,
+            str(row.kb_id),
+            tenant_id=tenant_id,
+            index_version=str(row.version),
+            doc_version=draft,
+        )
+        return BuildTruth(documents=documents, planned=int(planned or 0), doc_version=draft)
+
+    async def converge(
+        self,
+        db: AsyncSession,
+        build_id: str,
+        *,
+        tenant_id: str,
+        final: bool = True,
+    ) -> IndexBuildVersion:
+        """给一次构建**下结论**：真值够就 ``ready``、不够就 ``failed``、还没到时候就等着。
+
+        **幂等**：只有 ``building`` 的行会被推进，重复调用在第一步就原样返回。所以这个动作
+        可以被任意一方触发——最后一篇跑完的那一方、清扫器、运维脚本——同时触发也不会收两次
+        尾，更不会把一个已经 ``ready`` 的构建改回 ``failed``：状态迁移由真值表守门
+        （:data:`ALLOWED_TRANSITIONS`），而这里连门都不推（``building`` 之外一概不动）。
+
+        ``final`` 的语义见 :func:`decide_convergence`：一个任务跑完整个库时恒为 ``True``；
+        按篇投递与清扫器在期限之前给 ``False``，让「还差几篇」如实表达成「再等等」。
+
+        ``ready`` 仍然要过四项计数（:meth:`mark_ready` 里的那道闸门），**不许绕过**：
+        真值回答「该收了吗」，四项计数回答「这版能上线吗」。
+        """
+
+        row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "index build not found")
+        if row.status != INDEX_BUILD_BUILDING:
+            logger.info(
+                "index build already settled, converge skipped",
+                build_id=build_id,
+                tenant_id=tenant_id,
+                status=row.status,
+            )
+            return row
+
+        kb = await knowledge_base_repository.get_by_id_for_tenant(
+            db, row.kb_id, tenant_id=tenant_id
+        )
+        if kb is None:
+            raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+        truth = await self.collect_truth(db, row=row, tenant_id=tenant_id)
+        # 失败明细是判据的第二个输入（#215）：真值只能回答「够不够」，回答不了「为什么不够」。
+        # 有明细就不许上线——部分版本永不上线（ADR-0025），哪怕真值恰好被别的版本凑够了。
+        failed_count = len(row.failed_documents or ())
+        verdict = decide_convergence(
+            truth=truth.documents,
+            planned=truth.planned,
+            failed=failed_count,
+            final=final,
+        )
+        if verdict == CONVERGE_WAIT:
+            logger.info(
+                "index build waiting for more documents",
+                build_id=build_id,
+                tenant_id=tenant_id,
+                kb_id=row.kb_id,
+                version=row.version,
+                **truth.as_dict(),
+            )
+            return row
+
+        if verdict == INDEX_BUILD_READY:
+            # 计数快照里的「篇数」用真值：它比「这一轮循环里数到了几篇」更接近事实
+            # （续建、重投之后两者会不一样，而「这一版由几篇文档构成」问的是前者）。
+            row.document_count = truth.documents
+            counts = await self.collect_counts(db, kb=kb, version=row.version)
+            return await self.mark_ready(db, build_id, tenant_id=tenant_id, counts=counts)
+
+        reason = BUILD_FAILED_MESSAGE
+        if truth.planned > 0 and truth.documents == 0:
+            reason = BUILD_NOTHING_TO_REBUILD_MESSAGE
+        elif truth.documents < truth.planned:
+            reason = BUILD_INCOMPLETE_MESSAGE
+        # 明细存在但真值够：这是「建满了、但有篇没进来」——归到不完整那一档，运维去查
+        # ``failed_documents`` 里那几条（文案本身不拼异常原文）。
+        logger.warning(
+            "index build cannot converge to ready",
+            build_id=build_id,
+            tenant_id=tenant_id,
             kb_id=row.kb_id,
             version=row.version,
-            document_count=indexed,
+            **truth.as_dict(),
         )
-        return row
+        failed = await self.mark_failed(db, build_id, tenant_id=tenant_id, reason=reason)
+        return failed if failed is not None else row
+
+    # ── 按篇投递（#215）──────────────────────────────────────────────
+
+    async def list_resume_targets(
+        self,
+        db: AsyncSession,
+        *,
+        row: IndexBuildVersion,
+        tenant_id: str,
+        documents: Sequence[Any],
+    ) -> list[Any]:
+        """从参与构建的文档里挑出**还需要建**的那些（续建）。"""
+
+        built = await chunk_repository.list_indexed_document_ids(
+            db,
+            str(row.kb_id),
+            tenant_id=tenant_id,
+            index_version=str(row.version),
+            doc_version=int(row.doc_version or 1),
+        )
+        return [doc for doc in documents if doc.id not in built]
+
+    async def dispatch(
+        self,
+        db: AsyncSession,
+        build_id: str,
+        *,
+        tenant_id: str,
+        batch_size: int = DISPATCH_BATCH_SIZE,
+        skip_existing: bool = True,
+        publish: Callable[..., None] | None = None,
+    ) -> int:
+        """把这一版**该建的文档逐篇投进构建队列**，返回投了多少篇（#215）。
+
+        ## 为什么按篇而不是「一个任务跑完整个库」
+
+        一个任务跑完整个库有三个代价，都不是「调一下」能解决的：失败粒度是整个库（第 4999
+        篇失败，前面 4998 篇的切片在 ``failed`` 版本下永远不激活，是孤儿数据）、进度不可见
+        （只有开始与结束两条日志）、以及它整段时长只占一个 Worker 槽位——5000 篇的库能让
+        别人的上传排队几十分钟。
+
+        按篇之后每篇走的是**同一条流水线**（``IndexingService.index_existing_document``）：
+        构建不是第二种索引，只是「带着 build_id 的一批单篇任务」。差异只有三处，全都由载荷
+        带着走（目标版本 / 投递后是否进排队态 / 失败写哪里）。
+
+        ## 续建
+
+        ``skip_existing`` 让重投与清扫器只补缺的篇：目标版本 + 稿号下已有切片的直接跳过。
+        重来一次不会再烧一整轮 embedding——这是按篇投递买到的最直接的收益。
+
+        ## 分批
+
+        一次 ``all()`` 读完再一口气投 5000 条会把 Broker 与本进程都顶住；这里按
+        ``batch_size`` 投，投完一批再继续。**不做 sleep**：投递本身是 ``apply_async``（写
+        Redis 一条命令），5000 条也就几秒；真需要背压时该由队列长度说话，不该在这里假装
+        睡一会儿就能解决问题。
+        """
+
+        row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
+        if row is None:
+            raise AppError(ErrorCode.NOT_FOUND, "index build not found")
+        if row.status != INDEX_BUILD_BUILDING:
+            logger.info(
+                "index build is not building, dispatch skipped",
+                build_id=build_id,
+                tenant_id=tenant_id,
+                status=row.status,
+            )
+            return 0
+
+        documents = await document_repository.list_by_kb_async(db, row.kb_id, tenant_id=tenant_id)
+        participating = [
+            document for document in documents if document.status == DocumentStatus.SUCCESS
+        ]
+        if skip_existing:
+            participating = await self.list_resume_targets(
+                db, row=row, tenant_id=tenant_id, documents=participating
+            )
+
+        publisher = publish if publish is not None else enqueue_build_document
+        dispatched = 0
+        datestamp = now()
+        for start in range(0, len(participating), batch_size):
+            for document in participating[start : start + batch_size]:
+                publisher(
+                    document_id=document.id,
+                    tenant_id=tenant_id,
+                    kb_id=str(row.kb_id),
+                    build_id=build_id,
+                    index_version=str(row.version),
+                    doc_version=int(row.doc_version or 1),
+                    # 构建要重建的本来就是成功文档；``allow_success`` 是流水线那一侧的开关。
+                    allow_success=True,
+                    datestamp=datestamp,
+                )
+                dispatched += 1
+        logger.info(
+            "index build dispatched",
+            build_id=build_id,
+            tenant_id=tenant_id,
+            kb_id=row.kb_id,
+            version=row.version,
+            planned=row.documents_planned,
+            dispatched=dispatched,
+            skipped=len(documents) - len(participating),
+        )
+        return dispatched
+
+    async def record_outcome(
+        self,
+        db: AsyncSession,
+        build_id: str,
+        *,
+        tenant_id: str,
+        document_id: str,
+        title: str,
+        ok: bool,
+        reason: str | None = None,
+    ) -> IndexBuildVersion | None:
+        """一篇构建子任务跑完后记账：推进进度；失败则追加明细（**不动文档状态**）。
+
+        ## 为什么失败不改文档状态
+
+        构建子任务失败时那篇文档本身没坏——线上旧版本照常可查、检索照常命中。把它标成
+        ``failed`` 会让用户看到「失败」却发现内容好好的，两者矛盾。所以失败只落在**构建行**
+        的明细里（ADR-0034 决策九），文档状态保持成功。跳过（已删 / 续建命中也算一堆）不记
+        失败、只推进进度。
+
+        ## 为什么用语句而不是改对象
+
+        ``documents_done`` 是**并发写**的：多个构建子任务各跑在自己的会话里，读-改-写必然
+        丢更新。那条 ``UPDATE ... SET documents_done = documents_done + 1`` 让数据库做加法，
+        并发因此不需要任何锁。明细同理用 JSONB 的 ``||`` 追加。
+
+        ## 返回值
+
+        更新后的行（``None`` 表示这行已经不是 ``building`` 了：重复投递 / 迟到任务）。
+        调用方拿到它才能再 :meth:`converge` 一次——「谁看见谁收尾」。
+        """
+
+        document_title = title or document_id
+        if ok:
+            await index_version_repository.advance_progress(db, build_id, tenant_id=tenant_id, by=1)
+        else:
+            await index_version_repository.record_failure(
+                db,
+                build_id,
+                tenant_id=tenant_id,
+                entry={
+                    "document_id": document_id,
+                    "title": document_title,
+                    "reason": reason or BUILD_DOCUMENT_FAILED_REASON,
+                },
+            )
+        await async_commit_now(db)
+        return await self.converge(db, build_id, tenant_id=tenant_id, final=False)
+
+    async def mark_redispatched(self, db: AsyncSession, build_id: str, *, tenant_id: str) -> int:
+        """把这一行的重投次数 +1，返回新值；超上限的行收成 ``failed``（ADR-0034 决策七）。"""
+
+        count = await index_version_repository.bump_redispatch(db, build_id, tenant_id=tenant_id)
+        await async_commit_now(db)
+        if count > MAX_REDISPATCH:
+            await self.mark_failed(db, build_id, tenant_id=tenant_id, reason=BUILD_FAILED_MESSAGE)
+        return count
 
     # ── 四项计数 ─────────────────────────────────────────────────
 
@@ -557,9 +1049,7 @@ class IndexBuildService:
         之后，用例就没法单独断言「计数不相等时 ready 被拒」这条验收。
         """
 
-        row = await index_version_repository.get_for_tenant(
-            db, build_id, tenant_id=tenant_id
-        )
+        row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
         if row is None:
             raise AppError(ErrorCode.NOT_FOUND, "index build not found")
         ensure_transition(row, INDEX_BUILD_READY)
@@ -630,9 +1120,7 @@ class IndexBuildService:
         只有在这里问一句才知道。
         """
 
-        row = await index_version_repository.get_for_tenant(
-            db, build_id, tenant_id=tenant_id
-        )
+        row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
         if row is None:
             raise AppError(ErrorCode.NOT_FOUND, "index build not found")
         # 先裁决「这一行配不配当回滚目标」，再问「它的数据还在不在」：状态不对的行
@@ -713,9 +1201,7 @@ class IndexBuildService:
         """
 
         if row is None:
-            row = await index_version_repository.get_for_tenant(
-                db, build_id, tenant_id=tenant_id
-            )
+            row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
         if row is None:
             raise AppError(ErrorCode.NOT_FOUND, "index build not found")
         ensure_activation_origin(row, origin_status=origin_status)
@@ -727,9 +1213,7 @@ class IndexBuildService:
         if kb is None:
             raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
-        previous = await index_version_repository.find_active(
-            db, row.kb_id, tenant_id=tenant_id
-        )
+        previous = await index_version_repository.find_active(db, row.kb_id, tenant_id=tenant_id)
         previous_version = previous.version if previous is not None else None
 
         # 收尾只能读普通值（#153 在真库上抓到）：那一笔事务一滚，ORM 行就过期了，再读属性
@@ -906,6 +1390,29 @@ class IndexBuildService:
 
     # ── 失败 ────────────────────────────────────────────────────
 
+    async def settle_failure(
+        self,
+        db: AsyncSession,
+        build_id: str,
+        *,
+        tenant_id: str,
+        cause: BaseException,
+    ) -> IndexBuildVersion | None:
+        """按异常挑一个原因，把这次构建收成 ``failed``。
+
+        **映射只有这一处**：任务体（:meth:`build`）与运维脚本（``scripts/reconcile_build.py``）
+        都会在一次收尾失败之后落到这里，两处各写一份 ``isinstance`` 判断的下场是——某一天
+        其中一处把「四项计数不一致」降级成了笼统的「跑崩了」，而运维照原因去查时查错了方向
+        （一因一码：这两种失败的处置完全不同）。
+        """
+
+        reason = (
+            BUILD_COUNTS_MISMATCH_MESSAGE
+            if isinstance(cause, IndexBuildCountsMismatch)
+            else BUILD_FAILED_MESSAGE
+        )
+        return await self.mark_failed(db, build_id, tenant_id=tenant_id, reason=reason)
+
     async def mark_failed(
         self,
         db: AsyncSession,
@@ -920,9 +1427,7 @@ class IndexBuildService:
         一层「没有这一行」的异常，只会把真正的原因盖掉。
         """
 
-        row = await index_version_repository.get_for_tenant(
-            db, build_id, tenant_id=tenant_id
-        )
+        row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
         if row is None:
             return None
         if not _is_failure_allowed(row):
@@ -979,6 +1484,43 @@ class IndexBuildService:
             )
         return rows
 
+    async def list_overdue_builds(
+        self,
+        db: AsyncSession,
+        *,
+        at: datetime | None = None,
+        tenant_id: str | None = None,
+        kb_id: str | None = None,
+    ) -> list[IndexBuildVersion]:
+        """**过了收敛期限仍是 ``building``** 的构建 = 「该收敛却没收敛」（#214）。
+
+        这是给自愈票（清扫器）留的判据，本票**不实现清扫器**：谁看见这个名单，谁就按真值
+        收一次尾（:meth:`converge`，幂等）。
+
+        与 :meth:`list_stalled_builds` 的差别是**判据换了**：那条按「年龄」判（一小时前开始
+        的就可疑），这条按**构建行自己的租约**判（期限按参与篇数估出来，一篇一小时的库与
+        一篇八秒的库不该用同一个阈值）。两条都留着，是因为它们回答两个不同的问题：
+        「这个进程是不是根本没跑」与「这次构建到底该不该等」。期限这一条才是权威判据。
+
+        ``tenant_id`` 可省略，只服务跨租户的清扫器；它**只读**，每一行都自带租户（写动作仍
+        由调用方带明确租户去做，见 ``index_version_repository.list_overdue``）。
+        """
+
+        moment = at or now()
+        rows = await index_version_repository.list_overdue(
+            db, at=moment, tenant_id=tenant_id, kb_id=kb_id
+        )
+        if rows:
+            logger.warning(
+                "index build passed its convergence deadline",
+                tenant_id=tenant_id,
+                kb_id=kb_id,
+                build_ids=[row.id for row in rows],
+                versions=[row.version for row in rows],
+                deadlines=[row.converge_deadline.isoformat() for row in rows],
+            )
+        return rows
+
 
 def describe_stalled_builds(rows: Sequence[IndexBuildVersion]) -> str:
     """把 :meth:`IndexBuildService.list_stalled_builds` 的结果拼成一行可读的话。
@@ -996,25 +1538,52 @@ def describe_stalled_builds(rows: Sequence[IndexBuildVersion]) -> str:
     return "stalled index builds: " + "; ".join(parts)
 
 
+def describe_overdue_builds(rows: Sequence[IndexBuildVersion]) -> str:
+    """把 :meth:`IndexBuildService.list_overdue_builds` 的结果拼成一行可读的话。
+
+    打印的是**期限**而不是开始时间：这条判据说的是「它欠一个结论已经欠了多久」，
+    运维据此决定先看哪一个。
+    """
+
+    if not rows:
+        return "no index build past its convergence deadline"
+    parts = [
+        f"{row.kb_id}/{row.version} (build {row.id}, deadline {row.converge_deadline.isoformat()})"
+        for row in rows
+    ]
+    return "index builds past their convergence deadline: " + "; ".join(parts)
+
+
 __all__ = [
     "ALLOWED_TRANSITIONS",
     "BUILD_ALREADY_RUNNING_MESSAGE",
     "BUILD_COUNTS_MISMATCH_MESSAGE",
     "BUILD_FAILED_MESSAGE",
+    "BUILD_INCOMPLETE_MESSAGE",
     "BUILD_INVALID_TRANSITION_MESSAGE",
+    "BUILD_NOTHING_TO_REBUILD_MESSAGE",
     "BUILD_STALL_SECONDS",
+    "CONVERGE_BASE_SECONDS",
+    "CONVERGE_MAX_SECONDS",
+    "CONVERGE_PER_DOCUMENT_SECONDS",
+    "CONVERGE_WAIT",
     "BuildCounts",
+    "BuildTruth",
     "IndexBuildAlreadyRunning",
     "IndexBuildCountsMismatch",
+    "IndexBuildIncomplete",
     "IndexBuildInvalidTransition",
+    "IndexBuildNothingToRebuild",
     "IndexBuildRollbackRefused",
     "IndexBuildService",
     "IndexBuildSwitchConflict",
     "ROLLBACK_DATA_MISSING_MESSAGE",
     "SWITCH_CONFLICT_MESSAGE",
     "can_transition",
+    "converge_deadline_for",
+    "decide_convergence",
+    "describe_overdue_builds",
     "describe_stalled_builds",
     "ensure_activation_origin",
     "ensure_transition",
 ]
-

@@ -104,6 +104,32 @@ export interface KnowledgeBaseDeleteReceipt {
  * 数据面的 `GET /knowledge-bases` 列表类型（`KnowledgeBaseSummary` / `KnowledgeBaseListData`）
  * 已随 #92 删除：那个端点前端不再调用，留着只会让人以为还有第二个取库入口。
  */
+/** 「未入新版本」的一条明细（#216）：哪一篇、叫什么、为什么。 */
+export interface BuildFailure {
+  document_id: string
+  title: string
+  reason: string
+}
+
+/**
+ * 进行中的整库构建（#216）。**没有构建时后端回 `null`，不是空对象**——
+ * 页面按 `null` 才不显示进度条，空对象会让「进度 0/0」的假条长期挂在那里。
+ */
+export interface BuildProgress {
+  build_id: string
+  version: string
+  /** 参与篇数快照（分母）。 */
+  planned: number
+  /** 已有结果的篇数（失败也算有结果）。 */
+  done: number
+  /** 还没有结果的篇数。 */
+  pending: number
+  /** 未入新版本的明细（后端最多回 5 条）。 */
+  failures: BuildFailure[]
+  /** 失败总数（`failures` 可能被截断，这个数不截断）。 */
+  failure_count: number
+}
+
 export interface KnowledgeBaseNode {
   kb_id: string
   name: string
@@ -114,6 +140,8 @@ export interface KnowledgeBaseNode {
   section_part_max_chars: number
   /** 库当前设置与生效那一版的构建参数已不一致 → 这个库需要重建才生效。 */
   needs_rebuild: boolean
+  /** 进行中的构建（#216）；`null` = 这个库没有构建在跑。 */
+  build_progress: BuildProgress | null
   documents: DocumentListItem[]
 }
 

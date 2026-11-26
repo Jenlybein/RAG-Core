@@ -119,6 +119,20 @@
   background: #5e5ce6;
 }
 
+/* 第四本账（第 17 步 #223）：切块，**按 token 计**。独立一卷青色，与前三栏区分开。 */
+.meter-dot--chunk {
+  background: #30b0c7;
+}
+
+/* 单位标签：四栏并排时不说单位，「1,280 次」与「1,280 token」会被读成同一个量。 */
+.meter-unit {
+  margin-left: 4px;
+  font-size: 10px;
+  font-weight: 400;
+  color: var(--muted);
+  letter-spacing: 0.02em;
+}
+
 .meter-left {
   display: inline-flex;
   align-items: baseline;

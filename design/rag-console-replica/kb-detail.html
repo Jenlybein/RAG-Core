@@ -79,6 +79,50 @@
         font-size: var(--fs-12);
         color: var(--muted);
       }
+
+      /* 整库构建进度（#216）：一条细进度条 + 一行失败计数。
+         颜色用 info 蓝而不是品牌色：它是「正在发生」的状态，不是可点击的东西。 */
+      .build-progress {
+        margin-top: 8px;
+        padding: 6px 8px;
+        border-radius: 6px;
+        background: var(--info-bg, #e8f1fb);
+      }
+      .build-progress-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+        font-size: 12px;
+        color: var(--info-ink, #17457a);
+      }
+      .build-progress-label b {
+        font-variant-numeric: tabular-nums;
+      }
+      .build-progress-fail {
+        font-weight: 500;
+        color: var(--warn-ink, #8a5a00);
+      }
+      .build-progress-track {
+        margin-top: 4px;
+        height: 6px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--info-ink, #17457a) 14%, transparent);
+        overflow: hidden;
+      }
+      .build-progress-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: var(--info-ink, #17457a);
+        transition: width 0.5s ease;
+      }
+      .build-progress-failures {
+        margin: 4px 0 0;
+        padding: 0;
+        list-style: none;
+        font-size: 11px;
+        color: var(--warn-ink, #8a5a00);
+      }
     </style>
   </head>
   <body>
@@ -229,6 +273,27 @@
           <div class="grow">
             <h2 class="dialog-title" id="kb-detail-title">产品手册</h2>
             <p class="dialog-sub">结构切块 · 4 篇 / 268 块 · 窗口 512 token</p>
+            <!--
+              整库构建进度（第 17 步 #216）：以前只有一个转圈图标，用户既判断不出还剩多久，
+              也看不出是不是卡住了。进度条读的是后端记的「已有结果的篇数 / 参与篇数快照」；
+              旁边那行「2 篇未入新版本」直接来自构建行的失败明细，点开能看到具体是哪几篇。
+              明细最多列 5 条，再多的折成「还有 N 篇」——几百条失败的清单没人会读。
+            -->
+            <div class="build-progress">
+              <div class="build-progress-head">
+                <span class="build-progress-label">
+                  重建中 <b>37</b> / 500 <span class="faint t-12">（v3）</span>
+                </span>
+                <span class="build-progress-fail">2 篇未入新版本</span>
+              </div>
+              <div class="build-progress-track" role="progressbar" aria-valuenow="7" aria-valuemin="0" aria-valuemax="100">
+                <div class="build-progress-fill" style="width: 7.4%"></div>
+              </div>
+              <ul class="build-progress-failures">
+                <li class="truncate">· 合同模板.docx（解析失败）</li>
+                <li class="truncate">· 附录.pdf（正文为空）</li>
+              </ul>
+            </div>
           </div>
           <button class="btn btn--primary btn--sm" type="button">上传文档</button>
           <button class="dialog-close" type="button" aria-label="关闭">✕</button>

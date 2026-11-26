@@ -161,7 +161,13 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # 每加一条迁移改一次，**故意**：
     # 「链尾是哪个文件」要人看一眼才确认，不该由代码自动推导。
     # 数据面 API Key 改「只存哈希」（``hash_api_key_secrets``）接在模型角色指针合并之后。
-    assert heads == {_revision_of(_migration_path("unit_cap_and_build_params"))}
+    # 第 16 步 #207 的单条结果上限与构建参数（``unit_cap_and_build_params``）之后是 #214 的
+    # 构建收敛四列（``add_build_convergence_columns``）、#217 的排队中状态
+    # （``queue_document_status``）、#218 删并发名额（``drop_plans_max_processing_documents``）、
+    # #215 的构建失败明细与重投次数（``add_build_failure_detail``）、#220 的单库 token 容量
+    # （``add_kb_token_capacity``），以及 #222 的每日切块账（``add_chunk_daily_ledger``）
+    # ——当前链尾。
+    assert heads == {_revision_of(_migration_path("add_chunk_daily_ledger"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

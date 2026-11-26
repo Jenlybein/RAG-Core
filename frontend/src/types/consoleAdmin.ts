@@ -31,7 +31,10 @@ export interface PlanData {
   max_kb: number
   max_kb_per_retrieve: number
   max_documents_per_kb: number
-  max_processing_documents: number
+  /** 单库累计正文 token 上限（第 17 步 #220）。与文档数上限并存：那一条是兜底，这一条才是容量。 */
+  max_tokens_per_kb: number
+  /** 每日切块额度（token，第四本账 #222）。 */
+  chunk_daily_tokens: number
   /** 后端是 `datetime`；没有时区后缀，前端按本地时间展示（见 `utils/datetime.ts`）。 */
   updated_at: string | null
 }
@@ -116,7 +119,8 @@ export interface PlanPatchBody {
   max_kb?: number
   max_kb_per_retrieve?: number
   max_documents_per_kb?: number
-  max_processing_documents?: number
+  max_tokens_per_kb?: number
+  chunk_daily_tokens?: number
 }
 
 /** `PATCH /console/plans/{id}` 的 data：试算与真写共用这个形状。 */
@@ -151,14 +155,15 @@ export interface AuditLogListData {
   offset: number
 }
 
-/** 六个「≥ 1」的数值上限；清单来自后端 `PLAN_NUMERIC_COLUMNS`。 */
+/** 「≥ 1」的数值上限；清单来自后端 `PLAN_NUMERIC_COLUMNS`。 */
 export type PlanNumericField =
   | 'retrieve_qps'
   | 'retrieve_daily'
   | 'max_kb'
   | 'max_kb_per_retrieve'
   | 'max_documents_per_kb'
-  | 'max_processing_documents'
+  | 'max_tokens_per_kb'
+  | 'chunk_daily_tokens'
 
 /** 五个「≥ 0」的数值列（0 = 关闭 / 不额外封顶）；清单来自后端 `PLAN_ZEROABLE_COLUMNS`。 */
 export type PlanZeroableField =

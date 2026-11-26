@@ -109,10 +109,11 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     # 稿次列改名（``rename_documents_current_version``）又在删列迁移之后，#172 的文档
     # 版本表与切片稿号列（``add_document_versions``）再接在改名之后；#179 的归属索引
     # 「文档 → 稿号」映射列（``add_trace_doc_versions``）再接在版本表之后。
-    # 按仓库惯例，加最后一条迁移的人改这一行：数据面 API Key 改「只存哈希」
-    # （``hash_api_key_secrets``）是当前链尾。
-    assert heads == [_revision_of(_migration_path("unit_cap_and_build_params"))], (
-        f"链尾应当是「归属索引改名 usage_events」那条迁移，实际 {heads}"
+    # 按仓库惯例，加最后一条迁移的人改这一行：第 16 步 #207 之后依次是 #214 的构建收敛四列、
+    # #217 的排队中状态、#218 删并发名额、#215 的构建失败明细、#220 的单库 token 容量，
+    # 以及 #222 的每日切块账（``add_chunk_daily_ledger``）——当前链尾。
+    assert heads == [_revision_of(_migration_path("add_chunk_daily_ledger"))], (
+        f"链尾应当是「构建收敛四列」那条迁移，实际 {heads}"
     )
 
 

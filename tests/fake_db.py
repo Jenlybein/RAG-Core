@@ -183,15 +183,19 @@ class CountResult:
 
     静态资源配额（票 #79）在写路径上数行，用的是 ``scalar_one()``；替身会话因此需要
     能回答「这个租户 / 这个库现在有多少行」。缺省 0 行，需要别的数字时由测试自己注入。
+
+    ``MAX`` 那条聚合读（票 #214 起 ``start_build`` 用 ``SELECT max(current_version)`` 快照
+    稿号）也落在这一类：空行时它回答 ``None``——真 SQL 的 ``max()`` 在空集上就是 NULL，
+    而「没有稿号」与「稿号是 0」是两件事。
     """
 
-    def __init__(self, value: int = 0) -> None:
+    def __init__(self, value: int | None = 0) -> None:
         self._value = value
 
-    def scalar_one(self) -> int:
+    def scalar_one(self) -> int | None:
         return self._value
 
-    def scalar_one_or_none(self) -> int:
+    def scalar_one_or_none(self) -> int | None:
         """「按 id 查一行再看有没有」的同一批调用也会落到替身上；计数场景恒有一个值。"""
 
         return self._value
@@ -223,6 +227,33 @@ def _orm_model_of(statement: Any) -> type | None:
         entity = description.get("entity")
         if isinstance(entity, type) and hasattr(entity, "__tablename__"):
             return entity
+    return None
+
+
+def _aggregate_column_key(statement: Any) -> str | None:
+    """``select(func.max(Model.列))`` 里被聚合的那一列叫什么（认不出就 ``None``）。
+
+    形状：``selected_columns[0]`` 是 ``functions.max`` 本身，被聚合的列挂在 ``.clause_expr``
+    上——而它在 SQL 渲染前还包着一层 ``Grouping``（``(documents.current_version)``），
+    Grouping 里又是一层 ``ClauseList``。所以往下剥：有 ``clauses`` 取第一个、有 ``element``
+    取它，直到碰到第一个真有 ``key`` 的节点。
+
+    认不出来就回 ``None``（不猜列名）：替身猜错列名只会让用例「碰巧绿」，而它本该因为
+    「这条语句替身不认识」而红。
+    """
+
+    for column in list(getattr(statement, "selected_columns", None) or []):
+        node: Any = getattr(column, "element", column)
+        node = getattr(node, "clause_expr", node)
+        while node is not None and not isinstance(getattr(node, "key", None), str):
+            clauses = getattr(node, "clauses", None)
+            if clauses:
+                node = clauses[0]
+                continue
+            node = getattr(node, "element", None)
+        key = getattr(node, "key", None)
+        if isinstance(key, str):
+            return key
     return None
 
 
@@ -431,6 +462,8 @@ class RecordingSession(EmptySession):
         self._record(statement)
         if str(statement).lstrip().upper().startswith("SELECT COUNT("):
             return CountResult(self._count_rows(statement))
+        if str(statement).lstrip().upper().startswith("SELECT MAX("):
+            return CountResult(self._max_rows(statement))
         model = _orm_model_of(statement)
         if model is not None:
             return _Rows(self._select_rows(statement, model))
@@ -486,6 +519,38 @@ class RecordingSession(EmptySession):
         # 计数语句的 ``WHERE`` 与 ``select(Model)`` 同形状（可 ``AND`` 组合的等值 / 范围
         # 条件），于是复用同一份匹配逻辑：写两份的下场是计数与读行对同一条件给出不同答案。
         return sum(1 for row in rows if _matches_where(row, criterion))
+
+    def _max_rows(self, statement: Any) -> Any:
+        """``SELECT max(列)`` 的最小口径：预置行里那一列的最大值，空集回 ``None``。
+
+        票 #214 起 ``start_build`` 用 ``max(documents.current_version)`` 快照统一稿号，而这
+        条读**没有 ORM 映射类**（``select(func.max(Model.列))`` 的 ``column_descriptions``
+        给不出实体），所以既走不到 ``_select_rows``，也不是 ``SELECT COUNT(`` 那一支。
+        这里按「从语句里读出表名与列名，再在预置行上求最大值」实现——与 :meth:`_count_rows`
+        同一条思路：替身只回答**仓储层真的用到的那几种形状**，别的一律炸。
+        """
+
+        try:
+            table = statement.get_final_froms()[0]
+        except (AttributeError, IndexError):
+            return None
+        model = next(
+            (candidate for candidate in self._rows if candidate.__tablename__ == table.name),
+            None,
+        )
+        if model is None:
+            return None
+        key = _aggregate_column_key(statement)
+        if key is None:
+            return None
+        criterion = getattr(statement, "whereclause", None)
+        values = [
+            getattr(row, key)
+            for row in self._rows.get(model, [])
+            if (criterion is None or _matches_where(row, criterion))
+            and getattr(row, key) is not None
+        ]
+        return max(values) if values else None
 
     def add(self, obj: Any) -> None:
         self.added.append(obj)

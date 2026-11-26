@@ -151,7 +151,7 @@ def _upload(client: TestClient):
     return client.post("/api/v1/documents/upload", json=_upload_payload())
 
 
-def test_upload_registers_processing_and_never_writes_index_logs(
+def test_upload_registers_queued_and_never_writes_index_logs(
     offline_upload, log_dir: Path
 ) -> None:
     """上传只登记：status=3、chunk_count=0、投递一次，且请求线程不写索引日志。"""
@@ -167,13 +167,15 @@ def test_upload_registers_processing_and_never_writes_index_logs(
     assert body["data"] == {
         "document_id": "doc-1",
         "kb_id": KB_ID,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "error_message": None,
         "source_type": "markdown",
     }
     assert session.commit_count == 1, "登记提交一次即返回，不写索引结果"
-    assert session.documents["doc-1"].status == DocumentStatus.PROCESSING
+    assert session.documents["doc-1"].status == DocumentStatus.QUEUED, (
+        "登记只写排队中：租约只由 Worker 在抢占时写"
+    )
     assert len(enqueued) == 1, "登记后必须投递一次索引任务"
     assert enqueued[0]["document_id"] == "doc-1"
     assert enqueued[0]["tenant_id"] == TENANT_ID

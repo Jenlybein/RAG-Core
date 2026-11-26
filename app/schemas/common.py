@@ -21,7 +21,12 @@ T = TypeVar("T")
 
 
 class ApiResponse(BaseModel, Generic[T]):
-    """所有接口的返回体。code=0 成功，非 0 失败；失败时 data 为 null。"""
+    """所有接口的返回体。code=0 成功，非 0 失败；失败时 data **通常**为 null。
+
+    唯一的例外是容量型拒绝（``20034`` / ``20035`` / ``20036``）：``data`` 里带
+    ``reason`` / ``used`` / ``limit`` / ``plan``，面板据此渲染「已用 X / 上限 Y」，
+    不必去解析文案里的数字（票 #219）。
+    """
 
     code: int = 0
     msg: str = "success"

@@ -46,6 +46,7 @@ from app.db.transaction import async_commit_now, async_rollback_now
 from app.db.worker_loop import run_in_worker_loop
 from app.providers.llm import set_role_resolver
 from app.repositories import document_repository
+from app.services import index_build_service, indexing_service
 from app.services.indexing_service import INDEXING_FAILED_MESSAGE, IndexingService
 from app.services import model_config_service, runtime_settings
 from app.utils.status import DocumentStatus
@@ -79,17 +80,29 @@ async def _mark_failed(
     ``exc`` 只为与调用处对齐，**绝不**写进 ``error_message``：失败原因只在
     ``logger.exception`` 的堆栈里，数据库只存固定文案（不含异常对象、路径或 SQL）。
     清 ``index_claimed_at`` 是为了让失败终态也不留下新鲜租约。
+
+    **这条路径不受 #213 的令牌核对约束**：它是**另一笔事务**、在失败之后重新读行，
+    写的是失败终态（不是切片），把它也挡掉只会让卡住的文档永远留在「索引中」。
+    清除租约同样走语句（``release_index_claim_async``）而不是给对象赋属性：与状态回写
+    （#212 改成 UPDATE 语句）保持同一种写法，免得「改了内存、库里没变」再来一次。
     """
 
     await async_rollback_now(db)
     doc = await document_repository.get_by_id(db, document_id)
     if doc is None:
         return
-    await document_repository.update_status(
+    written = await document_repository.update_status(
         db, doc, DocumentStatus.FAILED, INDEXING_FAILED_MESSAGE
     )
+    if written != 1:
+        logger.warning(
+            "failed status write touched no row",
+            document_id=document_id,
+            tenant_id=doc.tenant_id,
+            written=written,
+        )
     # 失败终态同样不保留租约：下一次重建 / 重试不能看到一份「新鲜的失败租约」。
-    doc.index_claimed_at = None
+    await document_repository.release_index_claim_async(db, document_id, tenant_id=doc.tenant_id)
     await async_commit_now(db)
 
 
@@ -109,6 +122,43 @@ class _RetryRequested(Exception):
         self.cause = cause
 
 
+async def _record_build_outcome(
+    db: AsyncSession,
+    document_id: str,
+    *,
+    tenant_id: str,
+    build_id: str,
+    ok: bool,
+    title: str = "",
+    reason: str | None = None,
+) -> None:
+    """把一篇构建子任务的结果记回构建行，并尝试收敛（#215）。
+
+    记完就 ``converge(final=False)``：「谁看见谁收尾」——最后一篇跑完的那一方负责收尾，而
+    它并不需要知道「我是不是最后一篇」（判据读真值，不读计数器）。``final=False`` 是因为
+    按篇投递时**任何一方都不该断言「不会有人再补」**：清扫器还可能重投，所以只有期限到了
+    或清扫器判定没人再补时，才允许「不够 → failed」。
+    """
+
+    written = await index_build_service.record_outcome(
+        db,
+        build_id,
+        tenant_id=tenant_id,
+        document_id=document_id,
+        title=title,
+        ok=ok,
+        reason=reason,
+    )
+    logger.info(
+        "index build document settled",
+        build_id=build_id,
+        document_id=document_id,
+        tenant_id=tenant_id,
+        ok=ok,
+        build_status=None if written is None else written.status,
+    )
+
+
 async def _settle_failure(
     db: AsyncSession,
     document_id: str,
@@ -118,20 +168,48 @@ async def _settle_failure(
     exc: BaseException,
     retries: int,
     max_retries: int,
+    build_id: str | None = None,
+    title: str = "",
 ) -> None:
     """任务失败后的两选一：可重试就释放租约并抛 :class:`_RetryRequested`，否则写失败终态。
 
     两条分支都跑在**同一个任务会话**上（就是流水线刚用完的那个），所以「回滚半成品 →
     释放租约 → 提交」是一笔连续的收尾，而不是另开一段。
+
+    ## 构建子任务失败：**不改文档状态**（#215）
+
+    那篇文档本身没坏：线上旧版本照常可查、检索照常命中。把它标成 ``failed`` 会让用户看到
+    失败却发现内容好好的。所以构建形状下：释放租约（让清扫器之后还能再抢这一篇）、把
+    「文档 + 原因」记进构建行的明细，然后收敛。文档状态原样留在成功。
     """
+
+    if build_id is not None:
+        await async_rollback_now(db)
+        await document_repository.release_index_claim_async(db, document_id, tenant_id=tenant_id)
+        await async_commit_now(db)
+        await _record_build_outcome(
+            db,
+            document_id,
+            tenant_id=tenant_id,
+            build_id=build_id,
+            ok=False,
+            title=title,
+            reason=indexing_service.BUILD_DOCUMENT_FAILED_REASON,
+        )
+        logger.exception(
+            "index build document failed",
+            document_id=document_id,
+            tenant_id=tenant_id,
+            kb_id=kb_id,
+            build_id=build_id,
+        )
+        return
 
     if _is_retryable(exc) and retries < max_retries:
         # 先释放租约再重试：否则下一次尝试的 CAS 会看到仍然新鲜的租约而
         # 抢不到，重试变成静默 no-op（status 也不会变成 2）。
         await async_rollback_now(db)
-        await document_repository.release_index_claim_async(
-            db, document_id, tenant_id=tenant_id
-        )
+        await document_repository.release_index_claim_async(db, document_id, tenant_id=tenant_id)
         await async_commit_now(db)
         raise _RetryRequested(exc)
     await _mark_failed(db, document_id, exc)
@@ -152,6 +230,9 @@ async def _index_in_the_worker_loop(
     doc_version: int | None,
     retries: int,
     max_retries: int,
+    build_id: str | None = None,
+    index_version: str | None = None,
+    allow_success: bool = False,
 ) -> None:
     """常驻循环里的一次索引：**开一个任务会话 → 跑流水线 → 无论如何关掉它**。
 
@@ -165,9 +246,22 @@ async def _index_in_the_worker_loop(
     db = async_session_factory()()
     try:
         try:
-            await IndexingService().index_existing_document(
-                db, document_id, reparse=reparse, doc_version=doc_version
+            written = await IndexingService().index_existing_document(
+                db,
+                document_id,
+                reparse=reparse,
+                doc_version=doc_version,
+                index_version=index_version,
+                allow_success=allow_success,
             )
+            if build_id is not None:
+                await _record_build_outcome(
+                    db,
+                    document_id,
+                    tenant_id=tenant_id,
+                    build_id=build_id,
+                    ok=written > 0,
+                )
         except Exception as exc:  # noqa: BLE001 - 分类处置见 _settle_failure
             await _settle_failure(
                 db,
@@ -177,6 +271,7 @@ async def _index_in_the_worker_loop(
                 exc=exc,
                 retries=retries,
                 max_retries=max_retries,
+                build_id=build_id,
             )
     finally:
         # 不能省：被放弃的 checked-out 连接即使 dispose 了也会停在 idle in transaction。
@@ -192,6 +287,9 @@ def _run_indexing(
     request_id: str | None = None,
     reparse: bool = False,
     doc_version: int | None = None,
+    build_id: str | None = None,
+    index_version: str | None = None,
+    allow_success: bool = False,
 ) -> None:
     """任务体：与 Celery 装饰器分离，便于用轻量 ``self`` 替身离线测试。
 
@@ -227,6 +325,9 @@ def _run_indexing(
                 doc_version=doc_version,
                 retries=retries,
                 max_retries=max_retries,
+                build_id=build_id,
+                index_version=index_version,
+                allow_success=allow_success,
             )
         )
     except _RetryRequested as signal:
@@ -247,6 +348,9 @@ def index_document_task(
     request_id: str | None = None,
     reparse: bool = False,
     doc_version: int | None = None,
+    build_id: str | None = None,
+    index_version: str | None = None,
+    allow_success: bool = False,
 ) -> None:
     """投递缝（``app/services/index_dispatch.py``）约定的任务入口。
 
@@ -266,4 +370,7 @@ def index_document_task(
         request_id=request_id,
         reparse=reparse,
         doc_version=doc_version,
+        build_id=build_id,
+        index_version=index_version,
+        allow_success=allow_success,
     )

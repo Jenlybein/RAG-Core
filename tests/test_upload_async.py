@@ -52,7 +52,7 @@ FILE_BODY = b"# Notes\n\nbody"
 EXPECTED_UPLOAD_DATA = {
     "document_id": "doc-1",
     "kb_id": KB_ID,
-    "status": DocumentStatus.PROCESSING,
+    "status": DocumentStatus.QUEUED,
     "chunk_count": 0,
     "error_message": None,
     "source_type": FORMAT_MARKDOWN,
@@ -176,8 +176,8 @@ def _upload_json(offline: SimpleNamespace, content: str = CONTENT_SENTINEL):
 # ── 上传：JSON 模式 ──
 
 
-def test_json_upload_returns_processing_and_only_enqueues(offline: SimpleNamespace) -> None:
-    """JSON 模式：直接落正文、status=3、chunk_count=0，请求线程只登记 + 投递。"""
+def test_json_upload_returns_queued_and_only_enqueues(offline: SimpleNamespace) -> None:
+    """JSON 模式：直接落正文、status=4（排队中）、chunk_count=0，请求线程只登记 + 投递。"""
 
     response = offline.client.post(
         "/api/v1/documents/upload",
@@ -192,7 +192,9 @@ def test_json_upload_returns_processing_and_only_enqueues(offline: SimpleNamespa
     assert body["data"] == EXPECTED_UPLOAD_DATA
 
     doc = offline.session.documents["doc-1"]
-    assert doc.status == DocumentStatus.PROCESSING
+    # 登记只写「排队中」：租约只由 Worker 在抢占时写，请求线程绝不盖章。
+    assert doc.status == DocumentStatus.QUEUED
+    assert doc.index_claimed_at is None, "入队侧不许写租约"
     assert doc.content == CONTENT_SENTINEL
     assert doc.source_type == FORMAT_MARKDOWN, "JSON 入口收的就是 markdown 风格文本"
     assert doc.source_file_path is None
@@ -529,7 +531,7 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
         SimpleNamespace(
             id="doc-c",
             title="C",
-            status=DocumentStatus.PROCESSING,
+            status=DocumentStatus.QUEUED,
             error_message=None,
             source_type="text",
             created_at=datetime(2026, 1, 3, 3, 3, 3),
@@ -559,7 +561,7 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
     assert [item["status"] for item in items] == [
         DocumentStatus.SUCCESS,
         DocumentStatus.FAILED,
-        DocumentStatus.PROCESSING,
+        DocumentStatus.QUEUED,
     ]
     assert [item["chunk_count"] for item in items] == [5, 2, 0]
     assert items[1]["error_message"] == "document indexing failed, please retry or contact support"
@@ -652,8 +654,12 @@ def test_expired_lease_counts_as_stuck_and_is_allowed() -> None:
     document_state.ensure_reindexable(stale, force=False)
 
 
-def test_enqueued_but_never_claimed_document_is_not_effectively_processing() -> None:
-    """status=3 但没有抢占时间戳 = 已入队未开工，没有人真的在跑。"""
+def test_a_legacy_processing_row_without_a_lease_is_not_effectively_processing() -> None:
+    """迁移期兼容形状：``3`` 且没有抢占时间戳 = 已入队未开工，没有人真的在跑。
+
+    四态之后新行不会再长成这样（入队侧写 4），但迁移之前 / 迁移过程中的存量行还在，
+    读侧必须继续把它当成「没人在跑」——否则迁移那几分钟里这些文档既删不掉也重建不了。
+    """
 
     queued = _document(DocumentStatus.PROCESSING, None)
 
@@ -718,7 +724,9 @@ def _claim(
     *,
     allow_success: bool = False,
     lease_seconds: int = document_repository.DOCUMENT_LEASE_SECONDS,
-) -> bool:
+) -> datetime | None:
+    """抢占一次并提交；返回**租约令牌**（``None`` = 没抢到，#213）。"""
+
     claimed = document_repository.try_claim_for_indexing(
         db,
         document_id,
@@ -733,19 +741,20 @@ def _claim(
 def test_claim_takes_failed_document_and_clears_error(document_db: Session) -> None:
     _seed_document(document_db, "doc-failed", status=DocumentStatus.FAILED, error_message="boom")
 
-    assert _claim(document_db, "doc-failed") is True
+    claimed = _claim(document_db, "doc-failed")
+    assert claimed is not None
 
     row = document_db.get(Document, "doc-failed")
     assert row is not None
     assert row.status == DocumentStatus.PROCESSING
     assert row.error_message is None
-    assert row.index_claimed_at is not None
+    assert row.index_claimed_at == claimed, "返回的令牌就是这一条语句写进库的那个时间戳"
 
 
 def test_claim_takes_enqueued_document_never_started(document_db: Session) -> None:
     _seed_document(document_db, "doc-queued", status=DocumentStatus.PROCESSING, claimed_at=None)
 
-    assert _claim(document_db, "doc-queued") is True
+    assert _claim(document_db, "doc-queued") is not None
 
     row = document_db.get(Document, "doc-queued")
     assert row is not None
@@ -755,7 +764,7 @@ def test_claim_takes_enqueued_document_never_started(document_db: Session) -> No
 def test_fresh_claim_blocks_a_second_worker(document_db: Session) -> None:
     _seed_document(document_db, "doc-running", status=DocumentStatus.PROCESSING, claimed_at=now())
 
-    assert _claim(document_db, "doc-running") is False
+    assert _claim(document_db, "doc-running") is None
 
     row = document_db.get(Document, "doc-running")
     assert row is not None
@@ -766,18 +775,18 @@ def test_expired_lease_can_be_reclaimed(document_db: Session) -> None:
     stale = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS + 1)
     _seed_document(document_db, "doc-stuck", status=DocumentStatus.PROCESSING, claimed_at=stale)
 
-    assert _claim(document_db, "doc-stuck") is True
+    assert _claim(document_db, "doc-stuck") is not None
 
 
 def test_success_document_is_only_claimable_with_allow_success(document_db: Session) -> None:
     _seed_document(document_db, "doc-done", status=DocumentStatus.SUCCESS)
 
-    assert _claim(document_db, "doc-done", allow_success=False) is False
-    assert _claim(document_db, "doc-done", allow_success=True) is True
+    assert _claim(document_db, "doc-done", allow_success=False) is None
+    assert _claim(document_db, "doc-done", allow_success=True) is not None
 
 
-def test_claim_of_missing_document_is_false(document_db: Session) -> None:
-    assert _claim(document_db, "doc-missing") is False
+def test_claim_of_missing_document_is_none(document_db: Session) -> None:
+    assert _claim(document_db, "doc-missing") is None
 
 
 def test_list_by_kb_excludes_other_tenants_and_orders_by_created_at(

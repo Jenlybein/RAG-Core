@@ -112,11 +112,15 @@
                     <div class="chip-row">
                       <span class="chip" title="检索 QPS">检索 QPS 3 次/秒</span>
                       <span class="chip" title="日检索上限">检索日上限 500 次/天</span>
-                      <span class="chip" title="知识库上限">库 1 个</span>
+                      <span class="chip" title="知识库上限">库 3 个</span>
                       <span class="chip" title="单次检索库数">单次库 1 个</span>
                       <span class="chip" title="每库文档上限">每库文档 30 个</span>
-                      <span class="chip" title="并发处理文档">并发 1 个</span>
-                      <span class="chip" title="重排 QPS">重排 QPS 0 次/秒</span>
+                      <!-- 容量按**内容**算（#220）：一篇长文与一篇短文都算 1 篇时，
+                           「30 篇」可能只装了 3 万 token，也可能装了 3000 万。 -->
+                      <span class="chip" title="每库 token 上限">每库 30K token</span>
+                      <!-- 第四本账（#222）：索引期的 embedding 消耗，按 token 计。 -->
+                      <span class="chip" title="每日切块额度">切块 300K token/天</span>
+                                            <span class="chip" title="重排 QPS">重排 QPS 0 次/秒</span>
                       <span class="chip" title="日重排上限">重排日上限 0 次/天</span>
                       <span class="chip" title="模型 QPS">模型 QPS 0 次/秒</span>
                       <span class="chip" title="日模型上限">模型日上限 0 次/天</span>
@@ -147,11 +151,12 @@
                     <div class="chip-row">
                       <span class="chip" title="检索 QPS">检索 QPS 10 次/秒</span>
                       <span class="chip" title="日检索上限">检索日上限 5,000 次/天</span>
-                      <span class="chip" title="知识库上限">库 5 个</span>
+                      <span class="chip" title="知识库上限">库 10 个</span>
                       <span class="chip" title="单次检索库数">单次库 3 个</span>
                       <span class="chip" title="每库文档上限">每库文档 200 个</span>
-                      <span class="chip" title="并发处理文档">并发 2 个</span>
-                      <span class="chip" title="重排 QPS">重排 QPS 3 次/秒</span>
+                      <span class="chip" title="每库 token 上限">每库 300K token</span>
+                      <span class="chip" title="每日切块额度">切块 4M token/天</span>
+                                            <span class="chip" title="重排 QPS">重排 QPS 3 次/秒</span>
                       <span class="chip" title="日重排上限">重排日上限 1,000 次/天</span>
                       <span class="chip" title="模型 QPS">模型 QPS 1 次/秒</span>
                       <span class="chip" title="日模型上限">模型日上限 300 次/天</span>
@@ -185,8 +190,9 @@
                       <span class="chip" title="知识库上限">库 50 个</span>
                       <span class="chip" title="单次检索库数">单次库 5 个</span>
                       <span class="chip" title="每库文档上限">每库文档 5,000 个</span>
-                      <span class="chip" title="并发处理文档">并发 10 个</span>
-                      <span class="chip" title="重排 QPS">重排 QPS 15 次/秒</span>
+                      <span class="chip" title="每库 token 上限">每库 2M token</span>
+                      <span class="chip" title="每日切块额度">切块 9M token/天</span>
+                                            <span class="chip" title="重排 QPS">重排 QPS 15 次/秒</span>
                       <span class="chip" title="日重排上限">重排日上限 5,000 次/天</span>
                       <span class="chip" title="模型 QPS">模型 QPS 5 次/秒</span>
                       <span class="chip" title="日模型上限">模型日上限 1,500 次/天</span>

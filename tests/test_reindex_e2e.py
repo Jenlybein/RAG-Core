@@ -33,6 +33,8 @@ from app.core.config import settings
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
+from app.models.plan import PLAN_FREE, Plan
+from app.models.tenant import Tenant
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
@@ -115,10 +117,41 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
 
     seed_engine = create_engine(f"sqlite:///{database_path}")
     Document.__table__.create(seed_engine)
+    # 租户与套餐表也要建（#220）：索引流水线会读租户的套餐来判**单库 token 容量**。
+    # 少了这两张，这条跨层用例会炸在「查不到表」上，而不是它想验的租约与切片。
+    Tenant.__table__.create(seed_engine)
+    Plan.__table__.create(seed_engine)
     # 版本表也建出来（#172 的迁移后真库就有它）：重建的正文真值从这张表读（#173），
     # 少了它这条跨层用例会在「查不到表」上炸，而不是在它想验的租约 / 切片上。
     DocumentVersion.__table__.create(seed_engine)
     with sessionmaker(bind=seed_engine)() as seed_session:
+        seed_session.add(
+            Plan(
+                id=1,
+                code=PLAN_FREE,
+                name="免费版",
+                retrieve_allowed=True,
+                rewrite_allowed=False,
+                decompose_allowed=False,
+                research_allowed=False,
+                rerank_allowed=False,
+                retrieve_qps=3,
+                retrieve_daily=500,
+                rerank_qps=0,
+                rerank_daily=0,
+                llm_qps=0,
+                llm_daily=0,
+                max_top_k=5,
+                max_kb=3,
+                max_kb_per_retrieve=1,
+                max_documents_per_kb=30,
+                max_tokens_per_kb=30_000,
+                chunk_daily_tokens=300_000,
+            )
+        )
+        seed_session.add(
+            Tenant(id=TENANT_ID, name="演示租户", plan_id=1, status="active")
+        )
         seed_session.add(
             Document(
                 id=DOC_ID,
@@ -218,7 +251,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
     assert body["code"] == 0
     assert body["data"] == {
         "document_id": DOC_ID,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
         "chunk_count": 0,
         "reparse": False,
     }
@@ -236,7 +269,7 @@ def test_reindex_route_then_worker_produces_chunks_and_success(
 
     doc = _read_document(reindex_env.database_path)
     assert doc is not None
-    assert doc.status == DocumentStatus.PROCESSING
+    assert doc.status == DocumentStatus.QUEUED
     assert doc.index_claimed_at is None, "路由只准备入队，绝不盖租约"
 
     service = IndexingService(

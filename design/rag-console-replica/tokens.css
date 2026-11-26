@@ -107,6 +107,9 @@
   --fail-ink: #7f2b1f;
   --indexing-bg: rgba(122, 91, 0, 0.11);
   --indexing-ink: #6b4f00;
+  /* 排队中：冷调石板蓝。与「索引中」的暖琥珀分开——一个在等，一个在跑。 */
+  --queued-bg: rgba(70, 82, 120, 0.1);
+  --queued-ink: #46527a;
   --unknown-bg: rgba(24, 33, 52, 0.07);
   --unknown-ink: #54545a;
 
@@ -409,6 +412,9 @@ label.radio,
     --fail-ink: #ff9d94;
     --indexing-bg: rgba(255, 200, 82, 0.16);
     --indexing-ink: #ffd27a;
+    /* 排队中：深色下提亮一档的冷蓝，仍与索引中的琥珀分得开。 */
+    --queued-bg: rgba(176, 190, 230, 0.16);
+    --queued-ink: #b0bee6;
     --unknown-bg: rgba(255, 255, 255, 0.08);
     --unknown-ink: #b4b4bb;
 
@@ -495,6 +501,9 @@ html:has(#theme-dark:checked) {
     --fail-ink: #ff9d94;
     --indexing-bg: rgba(255, 200, 82, 0.16);
     --indexing-ink: #ffd27a;
+    /* 排队中：深色下提亮一档的冷蓝，仍与索引中的琥珀分得开。 */
+    --queued-bg: rgba(176, 190, 230, 0.16);
+    --queued-ink: #b0bee6;
     --unknown-bg: rgba(255, 255, 255, 0.08);
     --unknown-ink: #b4b4bb;
 

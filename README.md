@@ -322,6 +322,8 @@ CI 在 push / PR 触发，依次跑 `uv sync --all-groups --frozen` → ruff 检
 - [ADR-0010 检索契约](docs/adr/0010-retrieval-contract.md) —— RRF `k=60`、tie-breaker、三种结局、`score` 语义变更与索引配对范围
 - [ADR-0011 LangChain 边界](docs/adr/0011-langchain-boundary.md) —— 框架只进 LLM / Embedding，检索链路零框架代码
 - [ADR-0017 套餐定义进库](docs/adr/0017-plans-in-database.md) / [ADR-0018 三层授权](docs/adr/0018-three-layer-authority.md) —— 第 7 步的两条核心决策
+- [ADR-0034 排队状态、构建按篇化与自愈](docs/adr/0034-queue-state-and-build-convergence.md) —— 文档状态四态、构建用真值收敛、租约令牌与自愈三件套，以及删除「并发处理名额」的代价
+- [ADR-0035 容量上限与第四本账](docs/adr/0035-capacity-limits-and-chunk-ledger.md) —— 两种 token 口径、四本账并列、三道容量门禁与四个新错误码（`20014` 收窄是破坏性变更）
 - [评测验收记录](eval/ACCEPTANCE.md) —— 切块改造的双口径对照、四组交叉与验收留痕
 - [GLOSSARY](GLOSSARY.md) —— 领域术语：正名与禁用词
 

@@ -25,7 +25,7 @@ documents.current_version`` 由 :func:`app.models.chunk.current_draft_filter` �
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import Integer, Select, and_, delete, func, or_, select
+from sqlalchemy import Integer, Select, and_, delete, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -58,9 +58,7 @@ def _meta_statement(
 
     # 唯一键是 ``(kb_id, chunk_id)``（ADR-0010），不是单独的 chunk_id：跨库同 ID
     # 的两条结果必须能各自取到自己的 meta，不能被后到的那条覆盖。
-    return _join_documents(
-        select(Chunk.kb_id, Chunk.id, Chunk.meta, Chunk.doc_version)
-    ).where(
+    return _join_documents(select(Chunk.kb_id, Chunk.id, Chunk.meta, Chunk.doc_version)).where(
         Chunk.tenant_id == tenant_id,
         Chunk.kb_id.in_(kb_ids),
         Chunk.id.in_(chunk_ids),
@@ -111,9 +109,7 @@ def _unit_rows_statement(
 
     heading = Chunk.meta["heading_path"].astext
     # ``coalesce(section_part, 0)``：老行没有这个键，它们属于第 0 段。
-    section_part = func.coalesce(
-        Chunk.meta["section_part"].astext.cast(Integer), 0
-    )
+    section_part = func.coalesce(Chunk.meta["section_part"].astext.cast(Integer), 0)
     clauses = []
     for path, part in units:
         path_clause = or_(heading == path, heading.like(f"{path} > %"))
@@ -214,9 +210,7 @@ def build_parent_rows_statement(
 
     heading = Chunk.meta["heading_path"].astext
     chunk_index = Chunk.meta["chunk_index"].astext.cast(Integer)
-    stmt = _join_documents(
-        select(Chunk.document_id, heading, chunk_index, Chunk.content)
-    ).where(
+    stmt = _join_documents(select(Chunk.document_id, heading, chunk_index, Chunk.content)).where(
         Chunk.tenant_id == tenant_id,
         Chunk.document_id.in_(sorted({str(item) for item in document_ids})),
         heading.in_(sorted({str(item) for item in heading_paths})),
@@ -274,9 +268,7 @@ def _count_by_kb_ids_statement(
     ``empty_reason`` 把「这一稿没内容」误报成「检索没命中」——两个原因的处置完全不同。
     """
 
-    return _join_documents(
-        select(func.count()).select_from(Chunk)
-    ).where(
+    return _join_documents(select(func.count()).select_from(Chunk)).where(
         Chunk.tenant_id == tenant_id,
         scope_filter(index_versions),
         current_draft_filter(),
@@ -322,6 +314,96 @@ async def count_by_index_version(
     return int((await db.execute(stmt)).scalar_one())
 
 
+async def list_indexed_document_ids(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    index_version: str,
+    doc_version: int | None = None,
+) -> set[str]:
+    """**续建的判据**：这一版（可选：这一稿）下已经有切片的文档 id 集合。
+
+    一次读回整批，而不是逐篇问 ``count``：续建要判几百上千篇，逐篇问会让「派活」这一步
+    自己变成一次 N+1 扫描（而它本来就只是投递前的一步准备）。
+
+    ``COUNT(DISTINCT ...)`` 那条（:func:`count_documents_in_version`）回答「够不够」，
+    这一条回答「哪几篇够了」——两者共用同一份过滤条件，不许各自漂移。
+    """
+
+    stmt = (
+        select(Chunk.document_id)
+        .distinct()
+        .where(
+            Chunk.kb_id == kb_id,
+            Chunk.tenant_id == tenant_id,
+            Chunk.index_version == index_version,
+        )
+    )
+    if doc_version is not None:
+        stmt = stmt.where(Chunk.doc_version == doc_version)
+    rows = (await db.execute(stmt)).scalars().all()
+    return {str(row) for row in rows}
+
+
+async def count_documents_in_version(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    index_version: str,
+    doc_version: int | None = None,
+) -> int:
+    """**构建收敛的真值**：该库在这一版（可选：这一稿）下已经有切片的**文档数**。
+
+    为什么数文档而不是数切片：「这次构建把该建的篇都建了吗」问的是篇。数切片会把「一篇
+    切了很多片」读成「建了很多篇」，一篇成功、其余全丢的构建照样显得够——那正是
+    [ADR-0034](../../docs/adr/0034-queue-state-and-build-convergence.md) 决策四要堵的
+    判据漂移。所以是 ``COUNT(DISTINCT document_id)``，不是 ``COUNT(*)``。
+
+    ``doc_version`` 为 ``None`` 时**不按稿过滤**（把这一版里出现的全部文档数进来）。这是给
+    「没有稿号快照的老行」留的一支：没有快照就没有立场替它挑一稿，而这一版里的切片本来就
+    只能是这一轮构建产出的（新版本号的第一次写入）。正常构建都会带上快照。
+
+    与 :func:`count_by_index_version` 的分工：那一条数**片**（四项计数对账要的是片的数量
+    与向量 / 关键词一致），这一条数**篇**（收敛判据）。两个口径各说各的事，不许互相冒名。
+    """
+
+    stmt = select(func.count(distinct(Chunk.document_id))).where(
+        Chunk.tenant_id == tenant_id,
+        Chunk.kb_id == kb_id,
+        Chunk.index_version == index_version,
+    )
+    if doc_version is not None:
+        stmt = stmt.where(Chunk.doc_version == doc_version)
+    return int((await db.execute(stmt)).scalar_one())
+
+
+async def list_document_ids_in_version(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    index_version: str,
+    doc_version: int | None = None,
+) -> set[str]:
+    """:func:`count_documents_in_version` 的**名单**版本：这一版里已经有切片的文档 id。
+
+    只服务运维脚本的「缺哪些篇」——判据本身不需要名单（数够了就够了），而运维要知道的是
+    「还差哪几篇，好去查那几篇为什么没进来」。取集合而不是列表：调用方要做的是差集。
+    """
+
+    stmt = select(Chunk.document_id).where(
+        Chunk.tenant_id == tenant_id,
+        Chunk.kb_id == kb_id,
+        Chunk.index_version == index_version,
+    )
+    if doc_version is not None:
+        stmt = stmt.where(Chunk.doc_version == doc_version)
+    stmt = stmt.distinct()
+    return {str(value) for value in (await db.execute(stmt)).scalars().all()}
+
+
 def _draft_counts_statement(document_ids: Sequence[str]) -> Select[Any]:
     """对账用的分组语句：``(文档, 稿号) → 几片``（#179）。
 
@@ -360,8 +442,7 @@ async def draft_counts(
         return []
     rows = (await db.execute(_draft_counts_statement(document_ids))).all()
     return [
-        (str(document_id), int(doc_version), int(count))
-        for document_id, doc_version, count in rows
+        (str(document_id), int(doc_version), int(count)) for document_id, doc_version, count in rows
     ]
 
 

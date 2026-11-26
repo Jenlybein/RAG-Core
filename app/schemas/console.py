@@ -74,7 +74,12 @@ class PlanSnapshotData(BaseModel):
     max_kb: int
     max_kb_per_retrieve: int
     max_documents_per_kb: int
-    max_processing_documents: int
+    #: 单库累计正文 token 上限（#220 / ADR-0035 决策四）。与文档数上限**并存**：
+    #: 行数那一条是廉价兜底，这一条才是「装了多少内容」。
+    max_tokens_per_kb: int
+    #: 每日切块额度（token，第四本账，ADR-0035 决策三）。索引期的 embedding 消耗按它管。
+    chunk_daily_tokens: int
+    # 「并发处理名额」这一列已删除（#218，ADR-0034 决策八）：写入口一律接受、全部排队。
 
 
 class PlanData(PlanSnapshotData):
@@ -110,6 +115,9 @@ class UsageData(BaseModel):
     limit: int
     source: UsageSource
     note: str | None = None
+    #: 这一栏的计量单位（``"calls"`` / ``"tokens"``）。第四本账（切块，第 17 步）按 token 计，
+    #: 前三本按次数计——四栏并列时必须说清楚，否则两个不同的量会被当成可比的。
+    unit: str = "calls"
 
 
 class MeData(BaseModel):
@@ -126,6 +134,13 @@ class MeData(BaseModel):
     #: 今日租户级 **重排** 用量：三本账里的第三本，同形、读 ``quota:rerank:*``，
     #: 上限来自套餐的 ``rerank_daily``。少报这一栏，三本账就只看得见两本。
     rerank_usage: UsageData | None = None
+    #: 今日租户级 **切块** 用量（第 17 步 #222/#223）：第四本账，同形，读
+    #: ``quota:chunk:daily:tenant:<tid>:<YYYYMMDD>``，上限来自套餐的 ``chunk_daily_tokens``。
+    #:
+    #: **单位是 token，不是次数**——与另外三本账不同。前两本按次数管「调用」，这一本按
+    #: token 管「内容量」。把四栏摆在一起时必须把单位说清楚，否则「今日 3000 次」与
+    #: 「今日 3000 token」看起来是同一个量。
+    chunk_usage: UsageData | None = None
     # 第 13 步：profile_presets 字段随档位表删除——参数直存，档位预设不再存在。
 
 
@@ -169,7 +184,11 @@ class PlanPatchRequest(BaseModel):
     max_kb: int | None = None
     max_kb_per_retrieve: int | None = None
     max_documents_per_kb: int | None = None
-    max_processing_documents: int | None = None
+    #: 单库 token 容量与每日切块额度（#221 / #220 / #222）。**必须 ≥ 1**：
+    #: 与「三本账的加工能力」不同，容量与额度填 0 会让**所有写入**当场被拒，
+    #: 那不是「没买这项能力」，而是「这个套餐什么也做不了」（判据在 ``plan_admin``）。
+    max_tokens_per_kb: int | None = None
+    chunk_daily_tokens: int | None = None
 
     def provided(self) -> dict[str, Any]:
         """这次真的要写的字段：没发的、以及发了 ``null`` 的都不算。"""
@@ -290,7 +309,7 @@ def plan_data(plan: Plan) -> PlanData:
     )
 
 
-def usage_data(*, used: int | None, limit: int) -> UsageData:
+def usage_data(*, used: int | None, limit: int, unit: str = "calls") -> UsageData:
     """内部用量视图 → 对外响应：``None`` 走「未统计」，绝不补成 0。"""
 
     if used is None:
@@ -299,8 +318,11 @@ def usage_data(*, used: int | None, limit: int) -> UsageData:
             limit=limit,
             source=USAGE_SOURCE_NOT_TRACKED,
             note=USAGE_NOTE_NOT_TRACKED,
+            unit=unit,
         )
-    return UsageData(used=used, limit=limit, source=USAGE_SOURCE_DAILY_COUNTER)
+    return UsageData(
+        used=used, limit=limit, source=USAGE_SOURCE_DAILY_COUNTER, unit=unit
+    )
 
 
 def audit_log_item(entry: AuditLog) -> AuditLogItem:

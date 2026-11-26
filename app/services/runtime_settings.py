@@ -59,6 +59,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, settings
+from app.core.embedding_batch import MAX_EMBEDDING_BATCH_SIZE, batch_limit_of
 from app.core.exceptions import AppError, ErrorCode
 from app.core.model_roles import MODEL_DEFAULT, role_pointer_key
 from app.core.runtime_settings_cache import (
@@ -131,6 +132,10 @@ class SettingSpec:
     ``RERANK_TIMEOUT_SECONDS=-1`` 这种值在 pydantic 眼里完全合法——但一个负的超时会让
     重排每次都「超时失败」，也就是静默地把这项能力关掉。所以下界必须在白名单里声明。
 
+    ``maximum`` 与 ``minimum`` 对称：有些键的**上界**不是「越大越糟」的类型问题，而是
+    外部系统的事实（票 #224：``EMBEDDING_BATCH_SIZE`` 超过模型单批上限就是一个必然 400
+    的请求）。这类上界必须在这里声明，``Settings`` 的字段类型（``int``）看不出来。
+
     ``secret`` 标记「值不能原样出现在面板与审计里」。本期只有 ``MODEL_API_KEY`` 一项
     （供应商 Key 的主体在 #94 的 ``model_configs`` 里）。
     """
@@ -139,6 +144,7 @@ class SettingSpec:
     target: str
     why: str
     minimum: float | None = None
+    maximum: float | None = None
     secret: bool = False
 
 
@@ -148,11 +154,19 @@ def _spec(
     why: str,
     *,
     minimum: float | None = None,
+    maximum: float | None = None,
     secret: bool = False,
 ) -> SettingSpec:
     """白名单条目的简写构造器：让上面那张表读起来是「一行一个键」，不是一屏 dataclass。"""
 
-    return SettingSpec(tier=tier, target=target, why=why, minimum=minimum, secret=secret)
+    return SettingSpec(
+        tier=tier,
+        target=target,
+        why=why,
+        minimum=minimum,
+        maximum=maximum,
+        secret=secret,
+    )
 
 
 #: 完整白名单，照 #82「配置中台」那张三档表。**这是唯一的写入边界**：不在这里的键，
@@ -280,8 +294,19 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
     "EMBEDDING_BATCH_SIZE": _spec(
         TIER_RESTART,
         TARGET_SETTINGS,
-        "批次大小在装配嵌入实现时决定；改它不影响已写入的数据，但要重启才用新值",
+        # 票 #224：这是**唯一**一项在面板上放开的「需重启」键（面板侧的判定在
+        # ``frontend/src/utils/settingsTier.ts`` 的 ``RESTART_PANEL_WRITABLE_KEYS``，
+        # 逐键例外，**不是**把整档 restart 变成可写）。为什么值得开这个例外：它只决定
+        # 「一次 HTTP 请求塞几条切片」，不改任何已落库数据的形状（与 CHUNK_SIZE /
+        # EMBEDDING_DIMENSIONS 那种「换了就要重建」的键不是一回事），而它的调优场景恰恰是
+        # 「线上在烧钱、要立刻压下来」，走 .env + 重起整条链路太慢。代价写在这句 why 里，
+        # 面板上渲染的也是这句。
+        "批次大小在装配嵌入实现时决定；它只决定一次请求塞几条切片，不改已落库数据，"
+        "但要重启 Worker 才用新值",
         minimum=1,
+        # 上界来自供应商事实（见 app/core/embedding_batch.py）：超过它就必然 400，
+        # 而 Provider 没有批级重试，代价是整篇文档白烧三遍 embedding。
+        maximum=MAX_EMBEDDING_BATCH_SIZE,
     ),
     "MODEL_BASE_URL": _spec(
         TIER_RESTART,
@@ -572,8 +597,14 @@ def _type_reason(key: str, value: Any) -> str | None:
     return None
 
 
+def _bound_text(bound: float) -> str:
+    """把白名单里的边界写成人话：``25.0`` 要是 ``25``，否则面板上出现「必须 ≤ 25.0」。"""
+
+    return str(int(bound)) if float(bound).is_integer() else str(bound)
+
+
 def _check_value(key: str, value: Any) -> tuple[Any, str | None]:
-    """单个键的完整校验：白名单档位 → 类型 → 下界 → ``Settings`` 的 validator。
+    """单个键的完整校验：白名单档位 → 类型 → 下界 / 上界 → ``Settings`` 的 validator。
 
     返回 ``(校验后的值, 失败原因)``。校验后的值可能被 validator 规范化过
     （``RETRIEVAL_MODE`` 会被转小写），合并必须用它，不能用原始输入。
@@ -592,7 +623,11 @@ def _check_value(key: str, value: Any) -> tuple[Any, str | None]:
     if reason is not None:
         return None, reason
     if spec.minimum is not None and value < spec.minimum:
-        return None, f"必须 ≥ {spec.minimum}（当前 {value}）"
+        return None, f"必须 ≥ {_bound_text(spec.minimum)}（当前 {value}）"
+    if spec.maximum is not None and value > spec.maximum:
+        # 上界也在这里判：``Settings`` 的字段类型看不出「25 以上必然被供应商 400」，
+        # 而那正是填错这一项的代价（整篇文档白烧三遍 embedding）。见 #224。
+        return None, f"必须 ≤ {_bound_text(spec.maximum)}（当前 {value}）"
     if spec.target == TARGET_POINTER:
         # 规范化：空值一律落成空串。库里 ``value`` 列非空，把「清空指向」写成 SQL NULL
         # 会撞 NOT NULL（JSON null 与 SQL NULL 在 SQLAlchemy 的绑定里是两件事）；
@@ -934,7 +969,12 @@ async def invalidate_runtime_settings_async(cache: RuntimeSettingsCache | None =
 
 @dataclass(frozen=True)
 class SettingRowView:
-    """面板上的一行：键、档位、能不能改、**有效值**、来源、是否非法、为什么在这一档。"""
+    """面板上的一行：键、档位、能不能改、**有效值**、来源、是否非法、为什么在这一档。
+
+    ``minimum`` / ``maximum`` 是白名单声明的边界（没声明就是 ``None``）。它们跟着行一起
+    返回，是为了让页面**不必抄一张会漂移的边界表**：前端只负责按后端给的边界拦住一眼可见
+    的错误（票 #224 的「越界给可读原因」在两侧都要成立）。
+    """
 
     key: str
     tier: str
@@ -944,6 +984,8 @@ class SettingRowView:
     invalid: bool
     why: str
     invalid_reason: str | None = None
+    minimum: float | None = None
+    maximum: float | None = None
 
 
 async def describe_settings(db: AsyncSession) -> list[SettingRowView]:
@@ -988,9 +1030,23 @@ async def describe_settings(db: AsyncSession) -> list[SettingRowView]:
                 invalid=invalid,
                 why=spec.why,
                 invalid_reason=reason,
+                minimum=spec.minimum,
+                maximum=spec.maximum,
             )
         )
     return rows
+
+
+def embedding_batch_budget() -> tuple[str, int]:
+    """当前**生效**的嵌入模型与它的单批上限（票 #224 面板提示的唯一来源）。
+
+    读进程单例而不是库里的行：这一项是「需重启」档，库里可能已经躺着一条待重启新值，
+    而「一次请求能塞几条」由**正在跑的那个实现**决定，那个实现读的正是单例。用库里的值
+    去算提示，会出现「面板说建议 ≤ Y，但重启前后都不是这个 Y」的错位。
+    """
+
+    model = str(getattr(settings, "EMBEDDING_MODEL", "") or "").strip()
+    return model, batch_limit_of(model)
 
 
 # ───────────────────────────────────────────────────────────────────────────────

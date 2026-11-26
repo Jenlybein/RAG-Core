@@ -132,6 +132,9 @@ METER_WINDOWS: Final[tuple[str, ...]] = ("qps", "daily")
 #: TTL 自然过期，不需要清理动作。
 KEY_NAMESPACE: Final[str] = "quota"
 RERANK_NAMESPACE: Final[str] = "quota:rerank"
+#: 第四本账（切块 / 索引期 embedding，ADR-0035 决策三）：**按 token 计**，不是按次数。
+#: 它只有租户级——索引是后台动作，Worker 里没有「哪把 Key 发起的」这个概念。
+CHUNK_NAMESPACE: Final[str] = "quota:chunk"
 LLM_NAMESPACE: Final[str] = "quota:llm"
 
 #: 键形状。``quota:`` 前缀与套餐缓存（``plan:``）、Celery 的 0/1 号库都分开——
@@ -181,6 +184,7 @@ class CounterClient(Protocol):
     """
 
     async def incr(self, key: str) -> Any: ...
+    async def incrby(self, key: str, amount: int) -> Any: ...
 
     async def get(self, key: str) -> str | bytes | None: ...
 
@@ -263,20 +267,29 @@ class QuotaCounters:
             QPS_TTL_SECONDS,
         )
 
-    async def add_daily(self, *, level: str, ident: str, window: QuotaWindow) -> None:
-        await self._add(
-            daily_key(level=level, ident=ident, window=window, namespace=self._namespace),
-            DAILY_TTL_SECONDS,
-        )
+    async def add_daily(self, *, level: str, ident: str, window: QuotaWindow, by: int = 1) -> None:
+        """日桶加分（``by`` 缺省 1 = 记一次调用）。
 
-    async def _add(self, key: str, ttl: int) -> None:
+        第四本账（切块）记的是 **token 数**，所以它走 ``by`` 这条路；前三本按次数，缺省即
+        逐次 +1。两者共用同一个桶形状与 TTL：桶就是「今天这个租户用了多少」，量的单位由
+        那本账自己决定。
+        """
+
+        key = daily_key(level=level, ident=ident, window=window, namespace=self._namespace)
+        await self._add(key, DAILY_TTL_SECONDS, by=by)
+
+    async def _add(self, key: str, ttl: int, *, by: int = 1) -> None:
         """``INCR`` 之后**立刻**续期：每次写都重置 TTL，桶的寿命从最后一次写算起。
 
         不写成「键不存在时设过期」的两步检查：那需要一条只有真 Redis 才原子的
         ``SET NX`` 语义，而这里对一个「本来就是短期窗口」的键，重复续期完全无害。
         """
 
-        await self._client.incr(key)
+        if by == 1:
+            await self._client.incr(key)
+        else:
+            # 按量（token）记账走 INCRBY：第四本账一次 +3000 token，不是 3000 次调用。
+            await self._client.incrby(key, by)
         await self._client.expire(key, ttl)
 
 
@@ -406,8 +419,10 @@ class QuotaLedger:
                 used=cell.used,
                 limit=cell.limit,
                 code=cell.code,
-                what=cell.what,
-                suffix="per window",
+                # 这一本是**按天 / 按秒的调用次数**，处置是「等重置或提额」，所以文案
+                # 保持英文骨架（运维日志语境）。容量型上限（库数 / 文档数）另有专属码与
+                # 中文人话，两者不再共用一句（#219，ADR-0035 决策七）。
+                message=f"{cell.what} exceeded: {cell.used} used of {cell.limit} per window",
             )
 
     async def has_capacity(self) -> bool:

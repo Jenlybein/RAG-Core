@@ -4,11 +4,16 @@
 ``UPDATE ... WHERE``，两个 Worker 同时抢时，Postgres 的行锁 + READ COMMITTED
 重评估会让后到者 ``rowcount=0``，于是它直接跳过。
 
-**索引权的归属只有一处**：入队侧（重建端点 / 两个运维脚本）只调用
-:func:`prepare_for_indexing` 把文档置成「已排队、未开工」（``index_claimed_at=NULL``，
-不盖租约）；Worker 才是唯一的抢占者，调用 :func:`try_claim_for_indexing` 盖租约。
+**索引权的归属只有一处**：入队侧（上传 / 重建 / 建版本 / 回滚 / 两个运维脚本）只调用
+:func:`prepare_for_indexing` 把文档置成「已排队、未开工」（``status=QUEUED``、
+``index_claimed_at=NULL``，不盖租约）；Worker 才是唯一的抢占者，调用
+:func:`try_claim_for_indexing` 盖租约（``status=PROCESSING`` + 抢占时间）。
 若入队侧也抢先盖租约，Worker 的 WHERE 会因「租约新鲜」而拒绝它，重建与重试都会
 变成静默 no-op。
+
+**「谁在跑」只由租约回答**（ADR-0034 决策一）：``status=PROCESSING`` 只是「Worker 抢占时
+盖的章」，过期之后它不再说明任何事；:func:`is_lease_alive` 是这条判定的纯函数版本，
+删除 / 重建 / 建版本 / 回滚的守卫都读它。
 
 ## 异步孪生（第 11 步票 #132 / #130）
 
@@ -16,8 +21,25 @@
 都走 ``AsyncSession``，所以本模块的 ``*_async`` 孪生覆盖这两条路径上的全部读与写（后缀与
 检索链路的 ``get_by_id_for_tenant`` / ``fetch_meta_by_chunk_ids`` 一致）。
 **语句本身只写一遍**（``_claim_statement`` / ``_release_statement`` / ``_prepare_statement`` /
-两个计数的 statement builder），同步与异步两个入口执行的是同一条 SQL——CAS 的判定条件与
-租约语义因此不可能在两套入口之间漂移。
+``_status_statement`` / 两个计数的 statement builder），同步与异步两个入口执行的是同一条
+SQL——CAS 的判定条件与租约语义因此不可能在两套入口之间漂移。
+
+## 状态回写是**语句**，不是「改对象属性」（#212）
+
+:func:`update_status` 执行一条显式 ``UPDATE``（带 ``tenant_id`` 过滤、同时抬
+``updated_at``），并把 ``rowcount`` 交给调用方。曾经的写法是给 ORM 对象赋属性再
+``flush``，它依赖脏检查——而抢占是一条 ``synchronize_session=False`` 的语句、会话又是
+``expire_on_commit=False``，于是「把属性赋成本来就是的那个值」不产生任何 UPDATE：整库构建
+跑完之后，库里的状态与 ``updated_at`` 永远停在抢占那一刻，而切片与向量都在。语句不猜，
+写没写进去由 ``rowcount`` 说。
+
+## 抢占带令牌（#213）
+
+:func:`try_claim_for_indexing` 抢到时**返回它实际写进库的那个时间戳**（没抢到是
+``None``）：这个值就是租约令牌，调用方拿着它去 Tx2 开头核对
+（:func:`holds_index_claim`）。不让调用方自己再读一次时间：那样读到的与写进库的会有微秒级
+差，令牌永远对不上。令牌挡住的是「租约过期被后续任务接走、旧任务稍后又醒来」——
+僵尸任务醒来时看到的已经是别人的时间戳，整笔放弃。
 
 同步的那几个**仍有读者，但不与上面的异步路径共用**：运维脚本
 （``reindex_knowledge_base`` / ``requeue_stuck_documents`` /
@@ -30,7 +52,7 @@
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
-from sqlalchemy import ColumnElement, and_, func, or_, select, update
+from sqlalchemy import ColumnElement, and_, case, func, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 from sqlalchemy.sql import Update
@@ -42,6 +64,8 @@ from app.utils.status import DocumentStatus
 # 索引租约秒数（运维策略，不是部署配置）：超过这个时长仍停在 PROCESSING 的文档
 # 视为「Worker 卡死」，允许被重新抢占 / 删除 / 重建。否则 Worker 崩一次就永久
 # 锁死——正是教程里「永远卡在处理中且不报错」的坑。
+# 窗口长度按「最慢的一篇也不至于被判死」定；任务执行期间靠心跳在窗口内续租
+# （ADR-0034 决策七），所以长文档不会被误判成死。
 DOCUMENT_LEASE_SECONDS = 600
 
 
@@ -54,9 +78,7 @@ def get_by_id_for_tenant(db: Session, document_id: str, *, tenant_id: str) -> Do
     可选过滤器；无租户的那一条（:func:`get_by_id`，异步）只留给 Worker 任务路径。
     """
 
-    stmt = select(Document).where(
-        Document.id == document_id, Document.tenant_id == tenant_id
-    )
+    stmt = select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
     return db.execute(stmt).scalar_one_or_none()
 
 
@@ -89,13 +111,20 @@ def list_stuck(
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     kb_id: str | None = None,
 ) -> list[Document]:
-    """扫出「卡死」的文档：``PROCESSING`` 且租约缺失或已过期。
+    """扫出「卡死」的文档：排队中，或 ``PROCESSING`` 且租约缺失或已过期。
 
     运维扫描：显式跨租户；只有 ``scripts/requeue_stuck_documents.py`` 调用，
     数据面禁止使用。``tenant_id`` 一旦给出就强制过滤。
 
-    判定与 CAS 的可抢占条件完全一致：``index_claimed_at IS NULL`` 是「已入队但
-    Worker 还没开工」，早于 ``now - lease_seconds`` 是「Worker 崩了 / 卡住」。
+    判定与 CAS 的可抢占条件完全一致（ADR-0034 决策一）：
+
+    * ``status=QUEUED``：已经收下但没有 Worker 接。任务丢了一条消息（Broker 丢包、
+      Worker 崩在 ``ack`` 之前）之后，这一行永远不会自己动，只有这里能把它重新送出去。
+      重投是**幂等**的——迟到的重复任务在抢占时会被 CAS 挡掉（``rowcount=0``），
+      不会多切一遍。
+    * ``status=PROCESSING`` 且 ``index_claimed_at IS NULL``：迁移期兼容形状，等价于排队中。
+    * ``status=PROCESSING`` 且租约早于 ``now - lease_seconds``：Worker 崩了 / 卡住。
+
     有效租约内的处理中不算卡死，不能被这条查询救回。``kb_id`` 只缩小范围，
     不改变「卡死」的定义；缺省扫全部知识库（``tenant_id`` 缺省为 None，仅有
     运维权限的本地脚本会这样用）。
@@ -103,11 +132,16 @@ def list_stuck(
 
     lease_before = now() - timedelta(seconds=lease_seconds)
     stmt = select(Document).where(
-        Document.status == DocumentStatus.PROCESSING,
         or_(
-            Document.index_claimed_at.is_(None),
-            Document.index_claimed_at < lease_before,
-        ),
+            Document.status == DocumentStatus.QUEUED,
+            and_(
+                Document.status == DocumentStatus.PROCESSING,
+                or_(
+                    Document.index_claimed_at.is_(None),
+                    Document.index_claimed_at < lease_before,
+                ),
+            ),
+        )
     )
     if tenant_id is not None:
         stmt = stmt.where(Document.tenant_id == tenant_id)
@@ -187,9 +221,7 @@ def list_missing_content(
     一小批再决定，两者都不改变「正文为空」的定义。
     """
 
-    stmt = select(*_MISSING_CONTENT_COLUMNS).where(
-        func.coalesce(Document.content, "") == ""
-    )
+    stmt = select(*_MISSING_CONTENT_COLUMNS).where(func.coalesce(Document.content, "") == "")
     if kb_id is not None:
         stmt = stmt.where(Document.kb_id == kb_id)
     stmt = stmt.order_by(Document.created_at)
@@ -304,34 +336,24 @@ def _count_by_kb_statement(kb_id: str, *, tenant_id: str):
     )
 
 
-def _count_processing_statement(*, tenant_id: str, lease_before: datetime):
-    """「这个租户真的在占用 Worker 的文档数」的那一条计数（同步与异步孪生共用）。"""
-
-    return (
-        select(func.count())
-        .select_from(Document)
-        .where(
-            Document.tenant_id == tenant_id,
-            Document.status == DocumentStatus.PROCESSING,
-            or_(
-                Document.index_claimed_at.is_(None),
-                Document.index_claimed_at >= lease_before,
-            ),
-        )
-    )
-
-
 def _claimable_conditions(
     lease_before: datetime, *, allow_success: bool
 ) -> list[ColumnElement[bool]]:
     """可抢占的行条件（纯条件，不含语句）：抢占与「准备入队」共用同一份。
 
-    失败可重试；处理中但 ``index_claimed_at`` 为空（已入队未开工）或早于
-    ``now - lease_seconds``（Worker 卡死）可抢占；``allow_success`` 时成功文档也允许
-    显式 force 重建。抽成一处，防止两个函数的判定漂移。
+    ADR-0034 决策一的**唯一**一处定义：
+
+    * ``4 排队中``：被收下、没人接——正常路径；
+    * ``3 且租约为空或已过期``：迁移期兼容 + Worker 崩了 / 卡住（租约过期等义于排队中）；
+    * ``2 失败``：失败可重试；
+    * ``allow_success``：构建形状额外允许重建一篇已经成功的文档（ADR-0034 决策二）。
+
+    抽成一处，防止入队与抢占两个函数的判定漂移——漂移的症状是「重建静默 no-op」或
+    「同一篇被两个 Worker 各切一遍」。
     """
 
     claimable: list[ColumnElement[bool]] = [
+        Document.status == DocumentStatus.QUEUED,
         Document.status == DocumentStatus.FAILED,
         and_(
             Document.status == DocumentStatus.PROCESSING,
@@ -354,7 +376,12 @@ def _prepare_statement(
     allow_success: bool,
     prepared_at: datetime,
 ) -> Update:
-    """「准备入队」那条 ``UPDATE``：同步与异步两个入口执行的是同一条语句。"""
+    """「准备入队」那条 ``UPDATE``：同步与异步两个入口执行的是同一条语句。
+
+    写的是 ``status=QUEUED``（不是 PROCESSING）：入队侧只说「已收下、排队等 Worker」，
+    真正在跑的印章由 Worker 在抢占时盖。三态时代这里写 3 却清租约，等于用同一个字面值
+    表达「排队」和「在跑」两件事——那正是这次要拆掉的混淆。
+    """
 
     lease_before = prepared_at - timedelta(seconds=lease_seconds)
     return (
@@ -365,7 +392,7 @@ def _prepare_statement(
             or_(*_claimable_conditions(lease_before, allow_success=allow_success)),
         )
         .values(
-            status=DocumentStatus.PROCESSING,
+            status=DocumentStatus.QUEUED,
             index_claimed_at=None,
             error_message=None,
             updated_at=prepared_at,
@@ -382,11 +409,11 @@ def prepare_for_indexing(
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     allow_success: bool,
 ) -> bool:
-    """入队侧：把可重建的文档标记为「已排队、未开工」；``rowcount > 0`` 即成功。
+    """入队侧：把可重建的文档标记为「排队中」；``rowcount > 0`` 即成功。
 
     与 :func:`try_claim_for_indexing` 用同一份可重建条件，但**不盖租约**：
     ``index_claimed_at=NULL`` 才允许 Worker 之后抢占。这里只做状态准备（
-    ``status=PROCESSING``、清 ``error_message``、抬 ``updated_at``），真正的
+    ``status=QUEUED``、清 ``error_message``、抬 ``updated_at``），真正的
     索引权由 Worker 唯一负责。``tenant_id`` 是强制过滤参数（ADR-0006）。
     """
 
@@ -407,34 +434,48 @@ def try_claim_for_indexing(
     tenant_id: str,
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     allow_success: bool,
-) -> bool:
-    """Worker 侧的单条 ``UPDATE ... WHERE`` 抢占索引权；``rowcount > 0`` 即抢到。
+) -> datetime | None:
+    """Worker 侧的单条 ``UPDATE ... WHERE`` 抢占索引权；抢到回**租约令牌**，没抢到回 ``None``。
 
     可抢占的条件全部写在同一个 WHERE 里（见 :func:`_claimable_conditions`）；
     抢到即写入 ``status=PROCESSING`` 与新的抢占时间，并清掉上一次的
     ``error_message``。``tenant_id`` 是强制过滤参数（ADR-0006）。
     调用方提交事务后立刻释放行锁，不要在这里包住 embedding。
 
+    返回值是**这一条语句实际写进库的** ``index_claimed_at``（#213）：它就是租约令牌，
+    写切片那一笔事务的开头用 :func:`holds_index_claim` 核对它。返回 ``bool`` 曾让调用方
+    只能知道「抢到了」，核对时只能重新读一次时间——那一次读与这里的写之间就有一道缝。
+
     Worker 一律用 ``allow_success=False``：重建端点已经用
-    :func:`prepare_for_indexing` 把 SUCCESS 文档置成 PROCESSING，ACK 丢失导致的
+    :func:`prepare_for_indexing` 把 SUCCESS 文档置成 QUEUED，ACK 丢失导致的
     迟到重复投递必须抢不到，否则会在 SUCCESS 之后重写切片。
     """
 
+    claimed_at = now()
     stmt = _claim_statement(
         document_id,
         tenant_id=tenant_id,
         lease_seconds=lease_seconds,
         allow_success=allow_success,
+        claimed_at=claimed_at,
     )
-    return int(db.execute(stmt).rowcount or 0) > 0
+    return claimed_at if int(db.execute(stmt).rowcount or 0) > 0 else None
 
 
 def _claim_statement(
-    document_id: str, *, tenant_id: str, lease_seconds: int, allow_success: bool
+    document_id: str,
+    *,
+    tenant_id: str,
+    lease_seconds: int,
+    allow_success: bool,
+    claimed_at: datetime,
 ) -> Update:
-    """抢占索引权的那一条 ``UPDATE``（同步与异步孪生共用，见模块文档「异步孪生」）。"""
+    """抢占索引权的那一条 ``UPDATE``（同步与异步孪生共用，见模块文档「异步孪生」）。
 
-    claimed_at = now()
+    ``claimed_at`` 由调用方传入而不是在这里现取：它就是抢占函数返回给调用方的租约令牌，
+    语句里写下的值与返回的值必须是**同一个对象**，否则令牌核对会因为微秒级差异而永远不等。
+    """
+
     lease_before = claimed_at - timedelta(seconds=lease_seconds)
     return (
         update(Document)
@@ -453,13 +494,32 @@ def _claim_statement(
     )
 
 
+def _claim_token_statement(document_id: str, *, tenant_id: str):
+    """Tx2 开头核对租约令牌的那一条 ``SELECT ... FOR UPDATE``（同步与异步孪生共用）。
+
+    ``FOR UPDATE`` 不是为了防别的写者（那由令牌判定负责），而是为了在读到令牌之后
+    到这一笔提交之前，没人能改掉这一行的租约：没有行锁时，另一个 Worker 可以在
+    核对的下一秒把行抢走，而这一笔仍然会写切片——令牌核对就成了「检查完就过期」。
+    """
+
+    return (
+        select(Document.index_claimed_at)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .with_for_update()
+    )
+
+
 def release_index_claim(db: Session, document_id: str, *, tenant_id: str) -> None:
-    """释放索引租约：``index_claimed_at=NULL``，``status`` 原样保留。
+    """释放索引租约：``index_claimed_at=NULL``，``PROCESSING`` 归一成 ``QUEUED``。
 
     可重试失败在 ``self.retry`` 之前调用它：不释放的话，重试的下一次
     :func:`try_claim_for_indexing` 会看到仍然新鲜的租约而抢不到，重试永远不执行。
-    只清租约、不改状态，失败文档因此走「失败可重试」分支，处理中文档则回到
-    「已排队未开工」。``tenant_id`` 是强制过滤参数（ADR-0006）。
+
+    ``3 → 4`` 的归一不是语义要求（「``3`` 且租约为空」本来就等义于排队中），而是
+    实现选择（ADR-0034 决策一「清扫器重投」那一行）：把行写成它实际所处的状态，
+    界面与「在跑」的判据才不会依赖一条过期租约。**只归一 ``PROCESSING``**——
+    ``FAILED`` / ``SUCCESS`` 上的租约清理不该顺手改状态，那是另一件事的终态。
+    ``tenant_id`` 是强制过滤参数（ADR-0006）。
     """
 
     db.execute(_release_statement(document_id, tenant_id=tenant_id))
@@ -471,17 +531,25 @@ def _release_statement(document_id: str, *, tenant_id: str) -> Update:
     return (
         update(Document)
         .where(Document.id == document_id, Document.tenant_id == tenant_id)
-        .values(index_claimed_at=None)
+        .values(
+            index_claimed_at=None,
+            status=case(
+                (Document.status == DocumentStatus.PROCESSING, DocumentStatus.QUEUED),
+                else_=Document.status,
+            ),
+        )
         .execution_options(synchronize_session=False)
     )
 
 
 def is_lease_alive(document: Document, *, lease_seconds: int = DOCUMENT_LEASE_SECONDS) -> bool:
-    """纯函数：这份文档是否仍处于「有效处理中」。
+    """纯函数：这份文档是否仍处于「有效处理中」（=此刻真的有人在跑）。
 
-    ``status=PROCESSING`` 且 ``index_claimed_at`` 在 ``[now - lease_seconds, now]``
-    窗口内才算有人真的在跑。``index_claimed_at is None``（已入队未开工）与租约过期
-    （Worker 卡死）都不算，因此允许被删除 / 重建 / 重新抢占。
+    **只看 ``PROCESSING``**（ADR-0034 决策一）：``QUEUED`` 没有租约、也不该有，因此
+    永远不是「在跑」；排队中的文档可以删除（撤回排队）、可以重新提交（替换排队）。
+    ``PROCESSING`` 还要求 ``index_claimed_at`` 在 ``[now - lease_seconds, now]`` 窗口内；
+    ``index_claimed_at is None``（迁移期兼容形状）与租约过期（Worker 卡死）都不算，
+    因此允许被删除 / 重建 / 重新抢占。
     """
 
     if document.status != DocumentStatus.PROCESSING:
@@ -517,9 +585,7 @@ async def get_by_id_for_tenant_async(
 ) -> Document | None:
     """按 id + 租户取（语义同同步版 :func:`get_by_id_for_tenant`；控制面与数据面都走它）。"""
 
-    stmt = select(Document).where(
-        Document.id == document_id, Document.tenant_id == tenant_id
-    )
+    stmt = select(Document).where(Document.id == document_id, Document.tenant_id == tenant_id)
     return (await db.execute(stmt)).scalar_one_or_none()
 
 
@@ -534,14 +600,82 @@ async def list_by_kb_async(db: AsyncSession, kb_id: str, *, tenant_id: str) -> l
     return list((await db.execute(stmt)).scalars().all())
 
 
+async def update_token_count(
+    db: AsyncSession, document_id: str, *, tenant_id: str, token_count: int
+) -> int:
+    """把这一篇的正文 token 数写进行，返回影响的行数（#220）。
+
+    ## 为什么是语句而不是「改对象属性」
+
+    与 ``update_status`` 同一条纪律（#212 的教训）：抢占、入队准备都是**语句**改库，而会话
+    又是 ``expire_on_commit=False``——内存对象可能停留在旧值上。用语句写，这一列的真相
+    就只有库里那一份，也不会有「赋成本来就是的值被 ORM 吞掉」这种静默失败。
+
+    ## 为什么返回值被检查
+
+    一行都没动 = 这篇文档在跑的过程中被删了 / 租户对不上。那时「写成功了」是个假象，而
+    容量判据会按一个偏小的总量放行下一次上传。
+    """
+
+    statement = (
+        update(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .values(token_count=max(int(token_count), 0))
+        .execution_options(synchronize_session=False)
+    )
+    return int((await db.execute(statement)).rowcount or 0)
+
+
 async def update_status(
     db: AsyncSession, doc: Document, status: int, error_message: str | None = None
-) -> None:
-    """回写状态与错误文案（只 flush，不提交）。"""
+) -> int:
+    """回写状态与错误文案：执行一条显式 ``UPDATE``（只 flush，不提交），返回影响行数。
 
-    doc.status = status
-    doc.error_message = error_message
-    await db.flush()
+    **为什么是语句而不是「改对象属性」**（#212）：见模块文档。一句话——抢占是
+    ``synchronize_session=False`` 的语句、会话``expire_on_commit=False``，于是内存里那份
+    文档可能落后于库；此时把属性赋成本来就有的值，ORM 判定无脏属性，一条 UPDATE 都不产生，
+    库里的状态就永远停在「索引中」。
+
+    返回 ``rowcount``：它是「真的写了」的唯一证据，调用方据此发现「没写进去」
+    （行在写之前被删掉了、``tenant_id`` 对不上）。``updated_at`` 与状态同一条语句抬，
+    于是「更新时间晚于抢占时刻」这件事在库里可查。
+
+    ``tenant_id`` 取自传入对象的租户（ADR-0006 要求写路径带租户过滤）；签名保持不变，
+    调用点一个都不用改。
+    """
+
+    result = await db.execute(
+        _status_statement(
+            str(doc.id),
+            tenant_id=doc.tenant_id,
+            status=status,
+            error_message=error_message,
+            updated_at=now(),
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def _status_statement(
+    document_id: str,
+    *,
+    tenant_id: str,
+    status: int,
+    error_message: str | None,
+    updated_at: datetime,
+) -> Update:
+    """状态回写的那一条 ``UPDATE``（同步与异步孪生共用；目前只有异步入口在执行）。
+
+    ``updated_at`` 显式写在 values 里而不是交给列的 ``onupdate``：这一条语句的全部意义
+    就是「库里这一行确实被写了」，时间戳跟着一起写死才不会在某种方言 / 选项下静默缺一半。
+    """
+
+    return (
+        update(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .values(status=status, error_message=error_message, updated_at=updated_at)
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def prepare_for_indexing_async(
@@ -571,26 +705,89 @@ async def try_claim_for_indexing_async(
     tenant_id: str,
     lease_seconds: int = DOCUMENT_LEASE_SECONDS,
     allow_success: bool,
-) -> bool:
-    """Worker 侧抢占索引权；``rowcount > 0`` 即抢到（语义同 :func:`try_claim_for_indexing`）。"""
+) -> datetime | None:
+    """Worker 侧抢占索引权；抢到回租约令牌，没抢到回 ``None``。
 
+    语义与返回值都同 :func:`try_claim_for_indexing`（同一个 statement builder、同一个令牌）。
+    """
+
+    claimed_at = now()
     result = await db.execute(
         _claim_statement(
             document_id,
             tenant_id=tenant_id,
             lease_seconds=lease_seconds,
             allow_success=allow_success,
+            claimed_at=claimed_at,
         )
     )
-    return int(result.rowcount or 0) > 0
+    return claimed_at if int(result.rowcount or 0) > 0 else None
 
 
-async def release_index_claim_async(
-    db: AsyncSession, document_id: str, *, tenant_id: str
-) -> None:
+async def holds_index_claim_async(
+    db: AsyncSession, document_id: str, *, tenant_id: str, token: datetime
+) -> bool:
+    """这一行的租约是否**仍然是我抢到的那一次**（#213 的 fencing）。
+
+    写切片那一笔事务的**开头**调用它：``SELECT ... FOR UPDATE`` 锁住文档行并读出
+    ``index_claimed_at``，与手里的令牌比对。不等就是「租约已经过期、被后续任务接走了」，
+    调用方必须整笔放弃——僵尸任务醒来时写的每一行切片都会盖掉新主人的结果，而它自己的
+    状态回写还会把文档从「索引中」改回「成功」，症状是「重建完了，检索内容却是旧的」。
+
+    行不存在（文档被删）同样回 ``False``：没有租约可以属于我，也就不该往库里写切片。
+
+    ``FOR UPDATE`` 的理由见 :func:`_claim_token_statement`。``token`` 是
+    :func:`try_claim_for_indexing_async` 返回的**那个对象**，不是重新取的时间。
+    """
+
+    current = (
+        await db.execute(_claim_token_statement(document_id, tenant_id=tenant_id))
+    ).scalar_one_or_none()
+    return current is not None and current == token
+
+
+async def release_index_claim_async(db: AsyncSession, document_id: str, *, tenant_id: str) -> None:
     """释放索引租约（语义同 :func:`release_index_claim`）。"""
 
     await db.execute(_release_statement(document_id, tenant_id=tenant_id))
+
+
+async def count_tokens_in_kb(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    excluding_document_id: str | None = None,
+) -> int:
+    """这个库的**正文 token 总量**（容量判据，ADR-0035 决策四）。
+
+    ``excluding_document_id`` 排除某一篇：重建一篇已在库里的文档时，它自己占的空间要算它
+    自己的——不排除它会形成自锁（库装满之后连重建都做不了，而那是个功能倒退，不是上限
+    该有的行为）。
+
+    为什么数 ``SUM`` 而不是「把文档读出来在 Python 里累加」：几百篇长文档的正文可能有几十
+    MB，读回来只为了求和是浪费；而且这件事本来就该由数据库回答。
+    """
+
+    conditions = [
+        Document.kb_id == kb_id,
+        Document.tenant_id == tenant_id,
+    ]
+    if excluding_document_id is not None:
+        conditions.append(Document.id != excluding_document_id)
+    statement = select(func.coalesce(func.sum(Document.token_count), 0)).where(*conditions)
+    # ``scalars().first()`` 而不是 ``scalar_one``：真库上聚合**总是**回一行（无行时是 NULL），
+    # 但替身会话按「预置的行数」回答聚合——空预置回 0 行、有 N 个文档就回 N 行。``scalar_one``
+    # 在多行上会报错（那条纪律本来是对的，但它假设「这条查询最多命中一行」，而聚合不满足）。
+    #
+    # **两种收尾形状**：真库回一个数（``SUM``）；替身把「预置的那一行」原样交回来，于是
+    # 一个文档对象也可能出现在这里。就对它读 ``token_count``（那一行本来就是文档行），
+    # 读不到按 0——替身那条路本来就没在算聚合，它只是不让容量判据把不相关的用例带崩。
+    result = await db.execute(statement)
+    value = result.scalars().first()
+    if isinstance(value, (int, float)):
+        return int(value)
+    return int(getattr(value, "token_count", 0) or 0)
 
 
 async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
@@ -600,16 +797,36 @@ async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
     return int(result.scalar_one())
 
 
-async def count_processing_for_tenant(
-    db: AsyncSession, *, tenant_id: str, lease_seconds: int = DOCUMENT_LEASE_SECONDS
-) -> int:
-    """本租户真的在占用 Worker 的文档数（语义同 :func:`count_processing_for_tenant`）。"""
+async def participating_snapshot(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> tuple[int, int | None]:
+    """起构建那一刻的**参与篇数与统一稿号**：``(count, max(current_version))``。
 
-    lease_before = now() - timedelta(seconds=lease_seconds)
-    result = await db.execute(
-        _count_processing_statement(tenant_id=tenant_id, lease_before=lease_before)
+    这是 #214 那两列快照的唯一来源，两条聚合读共用同一份过滤条件（``status=1``：只有成功
+    的文档有可切的正文；失败 / 排队中的文档该由单篇重试解决，不属于构建）。
+
+    **为什么是两条语句而不是把文档行读一遍**：``start_build`` 跑在请求路径上（控制台改设置
+    就会发起），一次把整库文档连同正文读进内存，等于让一次设置保存去背起整库的正文体积。
+    两条 ``SELECT count / max`` 只读索引与指针；而「入口不遍历文档行」也正是 ADR-0034
+    决策三写下的形状（按篇投递之后更是如此）。
+
+    **为什么稿号取最大值**：库里的文档各自演进（回滚会把某篇的指针往回切），而一次构建产出
+    的切片必须统一算一稿——混着数的后果是同一批切片一半旧稿一半新稿（ADR-0031 决策七）。
+    取最大值是「这一库的稿号已经走到第几」唯一不需要猜的口径；真值判据按它数，缺一篇就是
+    缺一篇，不会因为某篇往回滚过就把一次正常的构建判成完成。没有可参与的文档时回 ``None``
+    （不是 0）：``None`` 的意思才是「这一稿没法挑」。
+    """
+
+    conditions = (
+        Document.kb_id == kb_id,
+        Document.tenant_id == tenant_id,
+        Document.status == DocumentStatus.SUCCESS,
     )
-    return int(result.scalar_one())
+    count_statement = select(func.count()).select_from(Document).where(*conditions)
+    draft_statement = select(func.max(Document.current_version)).where(*conditions)
+    count = int((await db.execute(count_statement)).scalar_one())
+    draft = (await db.execute(draft_statement)).scalar_one()
+    return count, (int(draft) if draft is not None else None)
 
 
 # ──────────────── 写路径的行锁（第 12 步票 #175：建版本）

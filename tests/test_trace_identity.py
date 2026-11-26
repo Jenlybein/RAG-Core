@@ -62,6 +62,8 @@ EXPECTED_COLUMNS = frozenset(
         "meter_r",
         "meter_rr",
         "meter_llm",
+        # 第 17 步 #222：第四本账的计量列（索引行带它，检索行恒 0）。
+        "meter_chunk",
         "kb_ids",
         "index_versions",
         "doc_versions",

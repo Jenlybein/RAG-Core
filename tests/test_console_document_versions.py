@@ -49,7 +49,7 @@ from app.models.document_version import (
 )
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
-from app.repositories import document_repository, document_version_repository
+from app.repositories import document_version_repository
 from app.utils.checksum import checksum_of
 from app.utils.status import DocumentStatus
 from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
@@ -232,10 +232,11 @@ def _world() -> dict[type, list[Any]]:
 def versions(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     """真实应用 + 真实登录 + 内存会话；只替换「替身会话答不了的那几件事」。
 
-    被替换的三处：两处 ``UPDATE ... WHERE``（替身不模拟行变化，见模块文档）与
-    ``count_processing_for_tenant``（``SELECT count(*)`` 在替身上只是噪声）。业务判定
-    （``ensure_versionable`` / 静态配额 / ``rollback_to_version`` 的全过程 / 审计写法）
-    全部走真代码。
+    被替换的两处：都是 ``UPDATE ... WHERE``（替身不模拟行变化，见模块文档）。业务判定
+    （``ensure_versionable`` / ``rollback_to_version`` 的全过程 / 审计写法）全部走真代码。
+
+    曾经还替换 ``count_processing_for_tenant``——那条「同时处理中篇数」配额已随 #218
+    删除，替身里也就不再有这个噪声源。
     """
 
     main = importlib.import_module("app.main")
@@ -269,14 +270,11 @@ def versions(monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     async def _mark_current_async(db: Any, document_id: str, *, version: int) -> None:
         _mark_current(db, document_id, version=version)
 
-    async def _count_processing(_db: Any, *, tenant_id: str, **_kwargs: Any) -> int:
-        return 0
-
     monkeypatch.setattr(
         document_version_repository, "archive_current_except", _archive_except_async
     )
     monkeypatch.setattr(document_version_repository, "mark_current", _mark_current_async)
-    monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing)
+
     # ``rollback_to_version`` 在 ``after_commit`` 回调里用**自己模块绑定的**
     # ``enqueue_document``（函数内 import）：换模块属性就是换它。
     monkeypatch.setattr(dispatch, "enqueue_document", _enqueue)
@@ -388,13 +386,13 @@ def test_rollback_switches_the_pointer_and_enqueues_exactly_one_rebuild(
         "document_id": DOC_ALPHA,
         "version": 1,
         "previous_version": CURRENT_DRAFT,
-        "status": DocumentStatus.PROCESSING,
+        "status": DocumentStatus.QUEUED,
     }
 
     document = versions.document(DOC_ALPHA)
     assert document.current_version == 1
     assert document.content == DRAFTS[1], "文档行是当前稿的热路径快照，正文一起换"
-    assert document.status == DocumentStatus.PROCESSING
+    assert document.status == DocumentStatus.QUEUED
 
     # 版本行状态翻转是**可观测的**：再列一次版本就能看到（替身会话按真实语义改了内存行）。
     data = versions.data(versions.client.get(VERSIONS_PATH.format(document_id=DOC_ALPHA)))

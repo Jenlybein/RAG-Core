@@ -46,10 +46,12 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "llm_qps": 0,
         "llm_daily": 0,
         "max_top_k": 5,
-        "max_kb": 1,
+        "max_kb": 3,
         "max_kb_per_retrieve": 1,
         "max_documents_per_kb": 30,
-        "max_processing_documents": 1,
+        # ADR-0035 决策四/六：单库 30 万 token 容量、每天 30 万 token 切块额度。
+        "max_tokens_per_kb": 30_000,
+        "chunk_daily_tokens": 300_000,
     },
     "plus": {
         "retrieve_allowed": True,
@@ -64,10 +66,11 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "llm_qps": 1,
         "llm_daily": 300,
         "max_top_k": 10,
-        "max_kb": 5,
+        "max_kb": 10,
         "max_kb_per_retrieve": 3,
         "max_documents_per_kb": 200,
-        "max_processing_documents": 2,
+        "max_tokens_per_kb": 300_000,
+        "chunk_daily_tokens": 4_000_000,
     },
     "pro": {
         "retrieve_allowed": True,
@@ -85,7 +88,8 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "max_kb": 50,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
-        "max_processing_documents": 10,
+        "max_tokens_per_kb": 2_000_000,
+        "chunk_daily_tokens": 9_000_000,
     },
     "max": {
         "retrieve_allowed": True,
@@ -100,10 +104,11 @@ SPEC_TABLE: dict[str, dict[str, Any]] = {
         "llm_qps": 20,
         "llm_daily": 6000,
         "max_top_k": 20,
-        "max_kb": 50,
+        "max_kb": 100,
         "max_kb_per_retrieve": 5,
         "max_documents_per_kb": 5000,
-        "max_processing_documents": 10,
+        "max_tokens_per_kb": 5_000_000,
+        "chunk_daily_tokens": 15_000_000,
     },
 }
 
@@ -134,7 +139,8 @@ def test_each_plan_carries_the_decided_values(code: str) -> None:
     spec = PLAN_PRESETS[code]
     # 第 13 步 I 阶段：allowed_profiles / hybrid_allowed / query_rewrite_allowed /
     # research_qps / research_daily 五列物理删除，业务列从 21 降到 16。
-    assert len(PLAN_BUSINESS_COLUMNS) == 16
+    # 第 17 步 #220 / #222 又加两列：单库 token 容量与每日切块额度 → 17。
+    assert len(PLAN_BUSINESS_COLUMNS) == 17
     for column in PLAN_BUSINESS_COLUMNS:
         assert getattr(spec, column) == SPEC_TABLE[code][column], f"{code}.{column}"
 

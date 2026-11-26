@@ -49,7 +49,8 @@ import {
 } from '../services/consoleKb'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
 import type { DocumentContent, DocumentListItem } from '../types/document'
-import type { KnowledgeBaseNode } from '../types/knowledgeBase'
+import type { BuildProgress, KnowledgeBaseNode } from '../types/knowledgeBase'
+import { DOCUMENT_STATUS, isDocumentBusy } from '../utils/documentStatus'
 
 const SPLIT_LABELS: Record<string, string> = {
   structure: '结构切块',
@@ -59,8 +60,10 @@ const SPLIT_LABELS: Record<string, string> = {
 const STATUS_TEXT: Record<UploadRowStatus, string> = {
   pending: '上传中…',
   success: '上传成功',
-  // 回执里的 3 是「已受理、后台索引」，不是失败，更不是「0 个切片」。
-  processing: '已提交，正在后台索引',
+  // 回执里的 4 是「已收下、在排队」，3 是「Worker 已经接走、在索引」——都不是失败，
+  // 也都不是「0 个切片」。两种说法只用「排队中」与「索引中」这两个词（GLOSSARY）。
+  queued: '已提交，排队中',
+  processing: '已受理，索引中',
   failed: '上传失败',
   unknown: '未知状态',
 }
@@ -81,7 +84,7 @@ function isDocRow(row: unknown): row is DocumentListItem {
 const router = useRouter()
 const queryClient = useQueryClient()
 
-const { treeQuery, hasProcessing } = useTreePolling()
+const { treeQuery, hasPendingDocuments } = useTreePolling()
 const treePending = treeQuery.isPending
 const treeError = treeQuery.error
 const refetchTree = treeQuery.refetch
@@ -90,6 +93,19 @@ const tree = computed<KnowledgeBaseNode[]>(() => treeQuery.data.value ?? [])
 /** 分块总数：详情与列表都要，按行求和放在一处，避免两个地方各算一遍。 */
 function chunkTotal(documents: DocumentListItem[]): number {
   return documents.reduce((sum, doc) => sum + (doc.chunk_count ?? 0), 0)
+}
+
+/**
+ * 构建进度百分比（#216）。
+ *
+ * 两个边界都必须显式处理，否则进度条会给错误信号：
+ * - `planned === 0` 时回 0 而不是 NaN（空库建版本是合法情形，`0 / 0` 不是）；
+ * - `done === planned` 时回 100（断言「满了」，而不是留一格空白让人以为还差一点）。
+ */
+function progressPercent(progress: BuildProgress): number {
+  if (progress.planned <= 0) return 0
+  const ratio = (progress.done / progress.planned) * 100
+  return Math.max(0, Math.min(100, Math.round(ratio)))
 }
 
 // 搜索只在客户端过滤知识库名称：没有搜索参数的后端接口，前端不能自己发明一个 query。
@@ -167,25 +183,31 @@ async function openContent(row: unknown): Promise<void> {
 const versionsOpen = ref(false)
 const versionsDocId = ref<string | null>(null)
 const versionsDocTitle = ref('')
-const versionsBusy = ref(false)
+/**
+ * 打开版本弹窗时那一行的状态（四态原值，不是布尔）。
+ *
+ * 弹窗自己按 `isDocumentBusy` 判「给不给回滚」：只有索引中（3）可能真在跑。把它折成布尔
+ * 交给弹窗，就等于让「三种状态压成两种」发生在页面里，而压错的代价是一个本该能点的按钮消失。
+ */
+const versionsDocumentStatus = ref<number | null>(null)
 
 /**
  * 版本弹窗认 `document_id`（不是整行）：树每 3 秒被轮询替换，存下来的行会是一份旧快照
  * ——「刚回滚完，弹窗里还是旧的当前稿」正是那种只在轮询窗口里出现的假象。
  *
- * `busy` 取的是点击那一刻的行状态；文档在后端开始重建后行会变成处理中，弹窗里的回滚
- * 按钮跟着消失，与后端的 20025 守卫对齐。
+ * 状态取的是点击那一刻的行状态；文档在后端开始重建后行会变成排队中（4），而排队中仍然
+ * 允许回滚（后端守卫只看租约），所以这里不需要再跟着树刷新。
  */
 function openVersions(row: unknown): void {
   if (!isDocRow(row)) return
   versionsDocId.value = row.document_id
   versionsDocTitle.value = row.title
-  versionsBusy.value = row.status === 3
+  versionsDocumentStatus.value = row.status
   versionsOpen.value = true
 }
 
 function afterRolledBack(): void {
-  // 回滚只是**受理**（回执 status=3），切块要重建；进度与终态都靠树轮询，这里先刷一次。
+  // 回滚只是**受理**（回执 status=4 排队中），切块要重建；进度与终态都靠树轮询，这里先刷一次。
   void refresh()
 }
 
@@ -258,7 +280,9 @@ const dialogTitle = computed(() => {
   if (action === null) return ''
   if (action.kind === 'deleteKb') return '删除知识库'
   if (action.kind === 'deleteDoc') return '删除文档'
-  return action.document.status === 1 ? '重建索引（覆盖现有索引）' : '重试索引'
+  // 排队中不是「重试」（没有失败过），而是「替换排队」——换一份内容或换一次解析。
+  if (action.document.status === DOCUMENT_STATUS.QUEUED) return '重新提交（替换排队）'
+  return action.document.status === DOCUMENT_STATUS.SUCCESS ? '重建索引（覆盖现有索引）' : '重试索引'
 })
 
 const dialogMessage = computed(() => {
@@ -271,20 +295,31 @@ const dialogMessage = computed(() => {
     return `《${action.kb.name}》里还有 ${count} 篇文档，删不掉。先在这个库的详情里把文档删空，再删库。`
   }
   if (action.kind === 'deleteDoc') {
+    // 排队中删除 = 撤回排队：说清楚「迟到的任务不会再切」，否则用户会担心删除删不干净。
+    if (action.document.status === DOCUMENT_STATUS.QUEUED) {
+      return `确认撤回《${action.document.title}》的排队？它会连同已落库的记录一起被清掉，后台不会再为它切块。`
+    }
     return `确认删除《${action.document.title}》？后端会清除切片、删除原文与记录，无法撤销。`
   }
   // 成功的文档已有可用索引：force=true 会丢掉它，语义要说清。
-  if (action.document.status === 1) {
+  if (action.document.status === DOCUMENT_STATUS.SUCCESS) {
     return `《${action.document.title}》已经有可用索引。重建会用新的切块结果覆盖它（旧索引会被丢弃），确认继续？`
   }
-  // 重建回执恒为 status=3：说清楚「只是重新排队」，别让用户以为点完就恢复成功。
-  return `重新提交《${action.document.title}》的索引任务？提交后状态回到「索引中」，由后台重新处理。`
+  // 排队中的文档还没被 Worker 接走，重新提交只是替换这一次排队，不会两个任务同时跑。
+  if (action.document.status === DOCUMENT_STATUS.QUEUED) {
+    return `《${action.document.title}》正在排队中。重新提交会替换掉当前这次排队（旧任务不会再切一遍），确认继续？`
+  }
+  // 重建回执恒为 status=4（排队中）：说清楚「只是重新排队」，别让用户以为点完就恢复成功。
+  return `重新提交《${action.document.title}》的索引任务？提交后状态回到「排队中」，由后台接着处理。`
 })
 
 const dialogConfirmText = computed(() => {
   const action = pendingAction.value
   if (action === null) return '确认'
-  if (action.kind === 'reindex') return action.document.status === 1 ? '覆盖重建' : '重试'
+  if (action.kind === 'reindex') {
+    if (action.document.status === DOCUMENT_STATUS.QUEUED) return '替换排队'
+    return action.document.status === DOCUMENT_STATUS.SUCCESS ? '覆盖重建' : '重试'
+  }
   return '删除'
 })
 
@@ -345,7 +380,10 @@ const deleteDocMutation = useMutation({
 const reindexMutation = useMutation({
   mutationFn: (document: DocumentListItem) =>
     // 已成功的文档必须显式 force：后端否则回 20027，替用户保住还能用的索引。
-    reindexDocumentConsole(document.document_id, { force: document.status === 1 }),
+    // 排队中 / 失败 / 索引中（租约已过期那种）都不带 force——它们本来就在可重建那一档。
+    reindexDocumentConsole(document.document_id, {
+      force: document.status === DOCUMENT_STATUS.SUCCESS,
+    }),
   onSuccess: () => {
     ElMessage.success('已重新提交索引，稍后自动刷新')
     closeDialog()
@@ -396,13 +434,13 @@ function goRetrieve(kbId: string): void {
         </div>
       </template>
 
-      <!-- 处理中提示：只在确实有 status=3 时出现，不是常驻横幅。 -->
+      <!-- 在途提示：只在确实有文档排队中或索引中时出现，不是常驻横幅。 -->
       <div
-        v-if="hasProcessing"
+        v-if="hasPendingDocuments"
         class="mb-4 flex items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span>后台索引中</span>
+        <span>有文档在排队中或索引中，正在自动刷新</span>
       </div>
 
       <p v-if="treePending" class="py-8 text-center text-sm text-muted">正在读取知识库…</p>
@@ -471,6 +509,50 @@ function goRetrieve(kbId: string): void {
               <p class="metric-value">{{ row.section_part_max_chars }}</p>
               <p class="metric-label">节段上限</p>
             </div>
+          </div>
+
+          <!--
+            「重建中 37 / 500」（第 17 步 #216）：之前只有一个转圈图标，用户既判断不出还剩
+            多久，也看不出是不是卡住了。进度条读的是后端记的 documents_done / planned；旁边
+            那行「N 篇未入新版本」直接来自构建行的失败明细，点开能看到具体是哪几篇、为什么。
+          -->
+          <div v-if="row.build_progress" class="mt-1 rounded-md bg-sky-50 px-2 py-1.5">
+            <div class="flex items-center justify-between gap-2 text-xs text-sky-800">
+              <span>
+                重建中 {{ row.build_progress.done }} / {{ row.build_progress.planned }}
+                <span class="text-sky-600">（{{ row.build_progress.version }}）</span>
+              </span>
+              <span v-if="row.build_progress.failure_count > 0" class="font-medium text-amber-700">
+                {{ row.build_progress.failure_count }} 篇未入新版本
+              </span>
+            </div>
+            <div
+              class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sky-100"
+              role="progressbar"
+              :aria-valuenow="progressPercent(row.build_progress)"
+              aria-valuemin="0"
+              aria-valuemax="100"
+            >
+              <div
+                class="h-full rounded-full bg-sky-500 transition-[width] duration-500"
+                :style="{ width: progressPercent(row.build_progress) + '%' }"
+              />
+            </div>
+            <ul v-if="row.build_progress.failures.length > 0" class="mt-1 space-y-0.5">
+              <li
+                v-for="failure in row.build_progress.failures"
+                :key="failure.document_id"
+                class="truncate text-[11px] text-amber-700"
+              >
+                · {{ failure.title }}（{{ failure.reason }}）
+              </li>
+            </ul>
+            <p
+              v-if="row.build_progress.failure_count > row.build_progress.failures.length"
+              class="mt-0.5 text-[11px] text-muted"
+            >
+              还有 {{ row.build_progress.failure_count - row.build_progress.failures.length }} 篇未列出
+            </p>
           </div>
 
           <!--
@@ -600,7 +682,7 @@ function goRetrieve(kbId: string): void {
           <el-table-column label="操作" width="260">
             <template #default="{ row }">
               <div class="flex flex-wrap items-center gap-1">
-                <!-- 查看原文对处理中也可用：读不改状态。失败文档的原文恰恰是判断
+                <!-- 查看原文对排队中 / 索引中也可用：读不改状态。失败文档的原文恰恰是判断
                      「为什么解析出错」的唯一依据，所以它不跟写操作一起被藏起来。 -->
                 <el-button link type="primary" size="small" @click="openContent(row)">
                   查看原文
@@ -609,9 +691,11 @@ function goRetrieve(kbId: string): void {
                 <el-button link type="primary" size="small" @click="openVersions(row)">
                   版本
                 </el-button>
-                <!-- 处理中没有任何写操作：此刻重建会回 20025、删除会回 20025，按钮只是陷阱。 -->
-                <span v-if="row.status === 3" class="text-xs text-slate-400">处理中</span>
-                <template v-else-if="row.status === 1 || row.status === 2">
+                <!-- 索引中（3）没有任何写操作：此刻重建 / 删除都会回 20025（有人在写这篇的切片）。
+                     排队中（4）**可以删、可以重交**：那是撤回排队与替换排队（ADR-0034 决策一），
+                     按钮照给；失败与成功也在这一档。 -->
+                <span v-if="isDocumentBusy(row.status)" class="text-xs text-slate-400">索引中</span>
+                <template v-else-if="row.status === 1 || row.status === 2 || row.status === 4">
                   <el-button link type="primary" size="small" @click="askReindex(row)">
                     重建
                   </el-button>
@@ -703,7 +787,7 @@ function goRetrieve(kbId: string): void {
       v-model="versionsOpen"
       :document-id="versionsDocId"
       :document-title="versionsDocTitle"
-      :busy="versionsBusy"
+      :document-status="versionsDocumentStatus"
       @rolled-back="afterRolledBack"
     />
 

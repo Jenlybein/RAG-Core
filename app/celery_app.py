@@ -47,13 +47,51 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
     # 没有 include，Worker 进程永远不会 import 任务模块：enqueue_document 投出去的
     # 任务会被当成 "Received unregistered task" 直接消费掉，索引流水线静默不跑。
-    include=["app.tasks.indexing", "app.tasks.side_evidence", "app.tasks.index_build"],
+    include=[
+        "app.tasks.indexing",
+        "app.tasks.side_evidence",
+        "app.tasks.index_build",
+        # 清扫器（#225）：Worker 必须 import 它，否则 beat 投出来的消息会被当作
+        # "unregistered task" 消费掉——症状是「清扫器配了但从来没跑」。
+        "app.tasks.index_sweeper",
+    ],
 )
 celery_app.conf.update(
     task_acks_late=True,
     worker_prefetch_multiplier=1,
     task_track_started=True,
     broker_connection_retry_on_startup=True,
+    # 构建相关的三条任务走**专用队列**（#215，ADR-0034 决策三）：
+    #
+    #   dispatch_build_task  派活：把一个库翻译成一批子任务
+    #   build_document_task  子任务：一篇文档写进这一版
+    #   build_index_version_task  （兼容路径）一次任务跑完整个库
+    #
+    # 为什么要分开：一次 5000 篇的构建会产生 5000 条消息。留在默认队列里，它们会把同一个
+    # 租户乃至所有租户的上传任务压在后面几十分钟——而队列长度本身是运维要看的信号。
+    # 独立队列 + 独立 worker（``worker-build``，并发 1）之后，构建再长也只占它自己那一槽。
+    #
+    # 注意：**单篇重建不路由**。用户点一下重建应该和别人的上传排在一起——它是一次请求的
+    # 后续，不是后台维护。
+    task_routes={
+        "app.tasks.index_build.dispatch_build_task": {"queue": "build"},
+        "app.tasks.index_build.build_document_task": {"queue": "build"},
+        "app.tasks.index_build.build_index_version_task": {"queue": "build"},
+        # 清扫器（#225）走**维护队列**：它必须在「所有并发槽位都被构建占满」时也能跑——
+        # 塞进 build 队列会被自己的队列堵住，那是最讽刺的失败模式。
+        "app.tasks.index_sweeper.sweep_index_state_task": {"queue": "maintenance"},
+    },
+    # 周期性任务（#225）：没有请求的时候也要把「卡住」的东西收掉。
+    #
+    # 用 ``beat_schedule`` 而不是在 worker 启动钩子里跑：钩子只在**进程启动时**执行一次，
+    # 而清扫要的是「每 5 分钟」。这也要求部署时跑一个 ``celery beat`` 进程——compose 里
+    # 有 ``beat`` 服务，见 ``deploy/docker-compose.yml``。
+    beat_schedule={
+        "sweep-index-state": {
+            "task": "app.tasks.index_sweeper.sweep_index_state_task",
+            "schedule": 5 * 60.0,
+        },
+    },
 )
 
 

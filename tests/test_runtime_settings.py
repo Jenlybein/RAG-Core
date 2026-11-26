@@ -19,6 +19,7 @@ from typing import Any
 
 import pytest
 
+from app.core import embedding_batch
 from app.core.config import settings
 from app.db.transaction import async_transaction
 from app.core.exceptions import AppError, ErrorCode
@@ -610,6 +611,128 @@ async def test_a_restart_tier_write_does_not_delete_the_cache(cache: Any) -> Non
     assert result.hot == ()
     assert "重启" in result.note
     assert cache.deleted == 0
+
+
+# ───────────────────────────────────────────────────────── 票 #224：嵌入批大小
+
+
+def test_the_embedding_batch_size_upper_bound_is_the_most_permissive_supplier_limit() -> None:
+    """上界 25 的来历：受支持模型里最宽松的那个（v1/v2），不是随手取的一个整数。
+
+    为什么上界不取「当前模型的上限」：``EMBEDDING_MODEL`` 本身也是运行时配置，把上界绑在
+    一个会变的值上，会出现「昨天合法的 20、今天换模型之后变成非法」的事后翻案。25 是按
+    「永远不会被任何一个受支持模型拒绝」算出来的硬顶；具体该用多少由面板的建议值给。
+    """
+
+    spec = spec_of("EMBEDDING_BATCH_SIZE")
+    assert spec is not None
+    assert spec.tier == TIER_RESTART, "改完仍要重启 Worker 才生效，档位没有变"
+    assert spec.minimum == 1
+    assert spec.maximum == 25
+    assert spec.maximum == embedding_batch.MAX_EMBEDDING_BATCH_SIZE
+    assert embedding_batch.MAX_EMBEDDING_BATCH_SIZE == max(
+        embedding_batch.EMBEDDING_BATCH_LIMITS.values()
+    )
+
+    # 表本身与文档（docs/架构.md 的 embedding/ 那一行）一致；认不出的模型按最保守值走，
+    # 这样换模型时最坏情况只是多几次请求，而不是一次 400 把整篇文档打回。
+    assert embedding_batch.batch_limit_of("qwen3.7-text-embedding") == 20
+    assert embedding_batch.batch_limit_of("text-embedding-v3") == 10
+    assert embedding_batch.batch_limit_of("text-embedding-v4") == 10
+    assert embedding_batch.batch_limit_of("text-embedding-v1") == 25
+    assert embedding_batch.batch_limit_of("vendor/text-embedding-v3-20250301") == 10
+    assert embedding_batch.batch_limit_of("some-future-model") == 10
+    assert embedding_batch.batch_limit_of("") == 10
+
+
+def test_the_panel_gets_the_current_model_and_its_batch_limit() -> None:
+    """面板上那句「当前模型 X（单批上限 Y），建议 ≤ Y」的两个值都从后端来。
+
+    前端不写模型表：模型→单批上限是供应商事实，抄一份就会漂移；而这一行旁边的提示正是
+    管理员唯一能判断「我能不能填 20」的依据。
+    """
+
+    assert runtime_settings.embedding_batch_budget() == (
+        settings.EMBEDDING_MODEL,
+        embedding_batch.batch_limit_of(settings.EMBEDDING_MODEL),
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_valid_batch_size_is_written_and_audited(cache: Any) -> None:
+    """合法值（12）真的落库：行值、写者、审计前后快照都要对得上。"""
+
+    db = _session(_row("EMBEDDING_BATCH_SIZE", 10))
+
+    result = await runtime_settings.patch_runtime_settings(
+        db, values={"EMBEDDING_BATCH_SIZE": 12}, dry_run=False, actor=_actor(), cache=cache
+    )
+
+    assert result.restart == ("EMBEDDING_BATCH_SIZE",)
+    assert result.hot == ()
+    assert "重启" in result.note
+    assert result.before == {"EMBEDDING_BATCH_SIZE": 10}
+    assert result.after == {"EMBEDDING_BATCH_SIZE": 12}
+
+    row = runtime_setting_row(db, "EMBEDDING_BATCH_SIZE")
+    assert row.value == 12
+    assert row.updated_by == ADMIN_ID
+
+    audit = db.added_of(AuditLog)[-1]
+    assert (audit.action, audit.target, audit.actor_id) == ("settings.patch", "settings", ADMIN_ID)
+    assert audit.after_snapshot == {"EMBEDDING_BATCH_SIZE": 12}
+    assert cache.deleted == 0, "第二档不热更：删缓存没有意义"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (0, "≥ 1"),
+        (26, "≤ 25"),
+    ],
+)
+async def test_an_out_of_range_batch_size_is_rejected_with_a_readable_reason(
+    cache: Any, value: int, expected: str
+) -> None:
+    """0 与超过上界的值都被拒，且一项都没写、账本里也没有它们。
+
+    提示必须是「必须 ≤ 25（当前 26）」这种带数字的人话：面板把它原样显示出来，管理员据此
+    知道自己填的是什么、边界在哪。换成一句通用的「参数非法」，他只能再猜一次。
+    """
+
+    db = _session(_row("EMBEDDING_BATCH_SIZE", 10))
+
+    with pytest.raises(AppError) as raised:
+        await runtime_settings.patch_runtime_settings(
+            db, values={"EMBEDDING_BATCH_SIZE": value}, dry_run=False, actor=_actor(), cache=cache
+        )
+
+    assert raised.value.code == ErrorCode.PARAM_ERROR
+    assert expected in raised.value.msg
+    assert str(value) in raised.value.msg
+    assert runtime_setting_row(db, "EMBEDDING_BATCH_SIZE").value == 10, "被拒的改动不许落库"
+    assert db.added_of(AuditLog) == [], "没写就没有账"
+
+
+def test_a_db_row_above_the_upper_bound_is_discarded_on_read(cache: Any) -> None:
+    """有人绕过接口把库里写成 30：读时丢弃、回退 .env、标红，进程照常服务。
+
+    与下界同一个机制（``_check_value`` 在读写两条路上共用）：一个脏行不该让下一个请求崩，
+    但也不该被静默采纳——30 条一批去打百炼必然 400，代价是整篇文档白烧三遍 embedding。
+    """
+
+    db = _session(_row("EMBEDDING_BATCH_SIZE", 30))
+
+    report = runtime_settings.apply_runtime_overrides(db, cache=cache)
+
+    assert "EMBEDDING_BATCH_SIZE" in report.invalid
+    assert "≤ 25" in report.invalid["EMBEDDING_BATCH_SIZE"]
+    assert settings.EMBEDDING_BATCH_SIZE == runtime_settings.ENV_BASELINE["EMBEDDING_BATCH_SIZE"]
+
+    row = next(r for r in _settings_rows(db) if r.key == "EMBEDDING_BATCH_SIZE")
+    assert (row.invalid, row.source) == (True, "env")
+    assert row.invalid_reason and "≤ 25" in row.invalid_reason
 
 
 @pytest.mark.asyncio
