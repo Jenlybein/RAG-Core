@@ -35,7 +35,7 @@ VERSIONS_DIR = Path(__file__).resolve().parent.parent / "migrations" / "versions
 #: 本票的迁移（文件名里只写主题，不写具体编号——编号在文件里）。
 SLUG = "queue_document_status"
 #: 接在谁后面（``f8b3c2d91a70`` 是改造前那条 head）。
-PREVIOUS_HEAD = "f8b3c2d91a70"
+PREVIOUS_HEAD = "b2c7d4e91a35"
 
 #: 改造前的表：与当前模型逐列一致（本票只改数据，不动结构）。
 _BEFORE_DDL = """
