@@ -72,7 +72,7 @@ const VERSIONS = {
   ],
 }
 
-function mountDialog(props: { documentStatus?: number | null } = {}) {
+function mountDialog(props: { busy?: boolean } = {}) {
   return mount(DocumentVersionsDialog, {
     props: {
       modelValue: true,
@@ -126,7 +126,7 @@ describe('DocumentVersionsDialog：列表', () => {
   })
 
   it('文档正在索引（3）时不给回滚按钮（后端会回 20025）', async () => {
-    const wrapper = mountDialog({ documentStatus: 3 })
+    const wrapper = mountDialog({ busy: true })
     await flushPromises()
 
     expect(rollbackButtons(wrapper)).toHaveLength(0)
@@ -135,7 +135,7 @@ describe('DocumentVersionsDialog：列表', () => {
   it('文档在排队中（4）时照样给回滚按钮：排队中可回滚（=替换排队）', async () => {
     // 四态的关键区别：排队中没有 Worker 在写切片，后端守卫（只看租约）不拦。
     // 这里若跟着「索引中」一起被禁，排队就又成了囚笼。
-    const wrapper = mountDialog({ documentStatus: 4 })
+    const wrapper = mountDialog({ busy: false })
     await flushPromises()
 
     expect(rollbackButtons(wrapper)).toHaveLength(2)

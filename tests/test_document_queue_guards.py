@@ -180,7 +180,7 @@ def test_a_deleted_queued_row_cannot_be_claimed_by_the_late_task(document_db: Se
         document_repository.try_claim_for_indexing(
             document_db, "doc-queued", tenant_id=TENANT_ID, allow_success=False
         )
-        is False
+        is None
     )
 
 
@@ -193,7 +193,7 @@ def test_claiming_a_success_document_still_requires_allow_success(document_db: S
         document_repository.try_claim_for_indexing(
             document_db, "doc-done", tenant_id=TENANT_ID, allow_success=False
         )
-        is False
+        is None
     )
 
 
@@ -246,7 +246,7 @@ def test_the_async_prepare_and_claim_see_the_same_queue_state(tmp_path: Path) ->
         )
         seed_session.commit()
 
-    async def _scenario() -> tuple[bool, bool]:
+    async def _scenario() -> tuple[bool, datetime | None]:
         async_engine = create_async_engine(f"sqlite+aiosqlite:///{path}")
         try:
             async with AsyncSession(bind=async_engine, expire_on_commit=False) as session:
@@ -265,7 +265,7 @@ def test_the_async_prepare_and_claim_see_the_same_queue_state(tmp_path: Path) ->
     try:
         prepared, claimed = asyncio.run(_scenario())
 
-        assert (prepared, claimed) == (True, True)
+        assert prepared is True and claimed is not None, "抢占回的是租约令牌（#213）"
         with factory() as check_session:
             row = check_session.get(Document, "doc-async")
             assert row is not None
