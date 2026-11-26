@@ -499,6 +499,11 @@ class IndexingService:
         # 套餐取一次、两处复用（容量判据与日额度）：查两遍**不会**得到两个答案，但会让
         # 「这两条上限来自同一份套餐」这件事在代码里看不出来。
         plan = await self._plan_of(db, doc)
+        # 容量硬拦抛出的 ``AppError`` 会被 ``_mark_failed`` 写成 ``status=2`` + 一段**固定
+        # 脱敏文案**。那段文案若是通用的英文句子，用户只看到「document indexing failed」——
+        # 而真实原因是「这一篇 12 万 token，库上限 3 万」，这是两句完全不同的话。
+        # 所以 ``_mark_failed`` 会按错误码选文案：容量型用**我们自己写的**带数字中文句
+        # （不含异常原文，脱敏纪律不变），其余仍走通用文案。
         await static_quota.ensure_kb_token_quota(
             db,
             tenant_id=doc.tenant_id,

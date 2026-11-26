@@ -84,6 +84,7 @@ from app.services import (
     knowledge_base_service,
     plan_service,
 )
+from app.services import chunk_ledger, static_quota
 from app.services.chunk_store import build_chunk_stores
 from app.services.console_service import append_audit
 from app.services.document_ingestion import prepare_document_content
@@ -554,6 +555,32 @@ async def reindex_document(
     # 没有配额门禁：重建跳过「单库文档数」（文档本来就在库里），也不再数「同时处理中篇数」
     # ——那条配额已随 #218 删除，理由与代价见 ADR-0034 决策八（没有按租户的公平调度，
     # 批量提交会占满常规 Worker；缓解是构建走专用队列）。
+    # ── 入口预检（#220）：库已经装满了就不再收新的重建请求 ──
+    #
+    # 重建是「重新算这一篇」，不新增容量，所以**不排除它自己**——它占的空间要算它自己的
+    # （`excluding_document_id`）。但一条重建也可能落到一个早就超限的存量库上（那是 #220
+    # 允许存在的状态：超限的库仍然能检索），此时放它进来只会白解析一次、然后必然失败。
+    #
+    # 真值判据（解析后、知道本篇多少 token 那一次）仍在 Worker 里，这一道只是把
+    # 「注定失败」挡在代价最低的地方。
+    plan = await plan_service.resolve_plan(
+        db, await _tenant_plan_id(db, tenant_id=tenant_id)
+    )
+    await static_quota.ensure_kb_token_quota(
+        db,
+        tenant_id=tenant_id,
+        kb_id=document.kb_id,
+        plan=plan,
+        excluding_document_id=document.id,
+    )
+    # 日额度入口预检（#222）：额度早用尽的租户不该为一次注定失败的解析排两分钟队。
+    # 这就是「等明天重置」与「删文档」两种处置的**分口**——两件事各有各的码与两句话。
+    await chunk_ledger.ensure_chunk_daily_quota(
+        tenant_id=tenant_id,
+        limit=plan.chunk_daily_tokens,
+        plan_name=f"{plan.name}（{plan.code}）",
+    )
+
     before = _document_state_snapshot(document)
     prepared = await document_repository.prepare_for_indexing_async(
         db, document_id, tenant_id=tenant_id, allow_success=force
@@ -634,6 +661,21 @@ async def delete_document(
         after=None,
     )
     return {"document_id": document_id, "deleted": True}
+
+
+# ── 一处刻意的「不加门」────────────────────────────────────────────────────
+#
+# 建版本（新稿）与回滚（切回旧版本）**没有**容量与日额度的入口预检，这不是漏的：
+#
+# * 建版本是「同一份内容换一个稿号」，库里的总 token 量**不变**；
+# * 回滚是把生效版本切回去，库里一个字节都没多也没少。
+#
+# 给它们加容量门禁的后果很具体：一个已经超限的存量库（#220 明确允许它继续存在、继续检索），
+# 用户在那个时候**恰恰最需要**回滚到一个容量更小的旧版本——而门禁会把他拒在门外。这不是
+# 「更严格」，是把一条救援路径封死了。
+#
+# 真正会新增内容量的入口只有两个：**上传**（`ensure_upload_quota`）与**重建**
+# （`reindex_document` 里的那两道门）。门只加在「会让总量变大」的地方。
 
 
 async def _tenant_plan_id(db: AsyncSession, *, tenant_id: str) -> int:

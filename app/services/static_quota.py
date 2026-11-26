@@ -179,16 +179,40 @@ async def ensure_kb_token_quota(
     used = await document_repository.count_tokens_in_kb(
         db, kb_id, tenant_id=tenant_id, excluding_document_id=excluding_document_id
     )
-    projected = used + max(incoming, 0)
+    incoming = max(incoming, 0)
+    projected = used + incoming
     _ensure_under(
         quota=KB_TOKEN_QUOTA,
         used=projected,
         limit=plan.max_tokens_per_kb,
         plan=plan,
+        # 解析后那一次知道「本篇多少」，而入口预检不知道。带不带上这个数字是两种话：
+        #
+        # * 「已用 12.4 万 / 上限 3 万」——用户不知道「12.4 万」里有多少是这一篇的，也就
+        #   无法判断「删掉别的文档有没有用」；
+        # * 「本篇占 11.8 万 token，库内其他文档 0.6 万，上限 3 万」——用户立刻知道是这一篇
+        #   太大了，删文档没用，得拆它。
+        #
+        # 所以 ``incoming`` 大于 0 时换一句模板（票 #220 要的就是前者那句话）。
+        template=(
+            "这一篇文档就占 {incoming} token，加上库内其他文档共 {used}，上限 {limit} token"
+            "（当前套餐 {plan}）：这一篇超过了单库容量，压缩或拆成几篇再上传"
+            if incoming > 0
+            else None
+        ),
+        incoming=incoming,
     )
 
 
-def _ensure_under(*, quota: CapacityQuota, used: int, limit: int, plan: PlanSpec) -> None:
+def _ensure_under(
+    *,
+    quota: CapacityQuota,
+    used: int,
+    limit: int,
+    plan: PlanSpec,
+    template: str | None = None,
+    incoming: int = 0,
+) -> None:
     """``used >= limit`` 就按**这一种**配额的口径拒绝：码、文案、data 都取自 ``quota``。
 
     判据不在这里，仍然只有 :func:`app.services.quota_limits.ensure_under_limit` 那一处
@@ -196,10 +220,24 @@ def _ensure_under(*, quota: CapacityQuota, used: int, limit: int, plan: PlanSpec
     所以加一种容量上限 = 往表里加一行 :class:`CapacityQuota`，不是在函数里多一个分支。
     """
 
+    formatted = (template or quota.message).format(
+        used=used,
+        limit=limit,
+        plan=f"{plan.name}（{plan.code}）",
+        incoming=incoming,
+    )
     ensure_under_limit(
         used=used,
         limit=limit,
         code=quota.code,
-        message=quota.message.format(used=used, limit=limit, plan=f"{plan.name}（{plan.code}）"),
-        data={"reason": quota.reason, "used": used, "limit": limit, "plan": plan.code},
+        message=formatted,
+        data={
+            "reason": quota.reason,
+            "used": used,
+            "limit": limit,
+            "plan": plan.code,
+            # 本篇占多少只在这一条上限上成立（其它容量上限的量纲不是 token）。有它在，
+            # 前端才能说「删文档没用、得拆这一篇」而不是笼统的「容量满了」。
+            **({"incoming": incoming} if incoming > 0 else {}),
+        },
     )

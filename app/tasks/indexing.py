@@ -72,10 +72,36 @@ def _is_retryable(exc: BaseException) -> bool:
     return isinstance(exc, AppError) and exc.code in RETRYABLE_ERROR_CODES
 
 
+def _failure_message(exc: BaseException | None) -> str:
+    """落库的失败文案：默认通用脱敏句，**容量型拒绝**用后端给的中文（带数字）。
+
+    ## 为什么只放一条例外
+
+    其余异常的原文里可能有路径、SQL、内部主机名——那是排障信息，属于日志，不属于用户界面。
+    而容量型拒绝的 ``message`` 是 ``static_quota`` 里**我们自己写的**固定中文句
+    （「这一篇占 12.0 万 token，库上限 3 万 token（free 档），删掉旧文档或提额」），它天生
+    就是给用户看的那句话。
+
+    判据用**错误码**而不是异常类型：`AppError` 是个大筐，将来别的业务码走到这里仍然只落
+    通用文案——例外必须窄到只有这一条。
+    """
+
+    if isinstance(exc, AppError) and int(exc.code) == int(ErrorCode.KB_TOKEN_QUOTA_EXCEEDED):
+        text = str(exc.message or "").strip()
+        if text:
+            return text
+    return INDEXING_FAILED_MESSAGE
+
+
 async def _mark_failed(
     db: AsyncSession, document_id: str, exc: BaseException | None = None
 ) -> None:
     """失败留痕：回滚半成品事务，另起一段写 ``status=2`` + 清租约 + 脱敏固定文案。
+
+    **唯一例外是容量型拒绝（20036）**：那时 ``exc.message`` 是**我们自己写的**中文句
+    （带「本篇 X / 已用 Y / 上限 Z / 套餐」，见 ``static_quota``），不含异常原文、路径或
+    SQL，落库是安全的；而通用英文文案会让用户看到一句与真实原因无关的话。用错误码判断，
+    不靠「异常类型像不像」——将来别的 ``AppError`` 走到这里，仍然只落通用文案。
 
     ``exc`` 只为与调用处对齐，**绝不**写进 ``error_message``：失败原因只在
     ``logger.exception`` 的堆栈里，数据库只存固定文案（不含异常对象、路径或 SQL）。
@@ -92,7 +118,7 @@ async def _mark_failed(
     if doc is None:
         return
     written = await document_repository.update_status(
-        db, doc, DocumentStatus.FAILED, INDEXING_FAILED_MESSAGE
+        db, doc, DocumentStatus.FAILED, _failure_message(exc)
     )
     if written != 1:
         logger.warning(

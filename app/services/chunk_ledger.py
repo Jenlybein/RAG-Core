@@ -98,6 +98,67 @@ async def chunk_tokens_today(
     return await active.daily(level="tenant", ident=tenant_id, window=window)
 
 
+async def ensure_chunk_daily_quota(
+    *,
+    tenant_id: str,
+    limit: int,
+    plan_name: str,
+    clock: object = None,
+    counters: QuotaCounters | None = None,
+) -> None:
+    """**入口预检**：今天的切块额度是不是已经用尽了（#222 / #220 的第二处预检）。
+
+    ## 为什么入口要预检一次
+
+    Worker 里的硬拦（``charge_chunk_tokens`` 的「先判后记」）才是真判据——但那时文档已经
+    解析完、排过队了。额度早就用尽的租户每上传一篇就白排一次队、白解析一份文件，而用户等
+    两分钟只等到一句「今日额度已用尽」。
+
+    这与单库 token 容量的两道门是同一个形状（入口预检 + 解析后硬拦）：一个挡在代价最低处，
+    一个给准确判据。**两次都有，缺一不可。**
+
+    ## 为什么预检不预扣
+
+    解析前**不知道这一篇会花多少**（切多少片、检索文本多长）。预扣一个猜的数字等于编造
+    ——记真账的纪律（ADR-0018「先判后记」）不允许这么做。所以这里只回答「今天是不是已经
+    用尽了」，答「否」就放它进去，真账在 Worker 里记。
+
+    ## 为什么额度用完和「库满」必须是两句话
+
+    「删掉旧文档就能继续」与「只能等明天重置」是两种完全不同的处置。混成一句通用的
+    「配额已用尽」，用户会去删文档——而删多少都没用（额度是按**已消耗**记的，不随删除
+    回退）。这是票据 #219 分码的原始理由。
+    """
+
+    used = await chunk_tokens_today(tenant_id=tenant_id, clock=clock, counters=counters)
+    if used < limit:
+        return
+    raise AppError(
+        ErrorCode.CHUNK_DAILY_QUOTA_EXCEEDED,
+        CHUNK_DAILY_QUOTA_EXCEEDED_MESSAGE.format(
+            used=_format_tokens(used), limit=_format_tokens(limit), plan=plan_name
+        ),
+        data={
+            "reason": "chunk_daily_tokens",
+            "used": used,
+            "limit": limit,
+            "plan": plan_name,
+        },
+    )
+
+
+def _format_tokens(value: int) -> str:
+    """把 token 数写成「12.4 万」这种量级说法。
+
+    精确到个位在「3 万 token 的上限」面前是噪音：用户要判断的是「还剩多少空间」，不是
+    「还差 137 个」。与前端 ``formatCount`` 的取舍一致（那边也是量级 + 两位小数）。
+    """
+
+    if value >= 10_000:
+        return f"{value / 10_000:.1f} 万"
+    return str(value)
+
+
 async def charge_chunk_tokens(
     db: AsyncSession,
     *,
