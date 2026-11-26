@@ -232,6 +232,22 @@ async def charge_chunk_tokens(
             endpoint=INDEX_ENDPOINT,
             code=0,
             meter_chunk=amount,
+            # ``top_k`` 是 NOT NULL（它是请求侧「这次要了几条」的读数）。索引根本不是一次
+            # 检索请求，如实值应该是「不存在」——但列不允许 NULL，于是填 **0**：它是这个
+            # 列上唯一诚实的值（「这一行没有要几条这回事」），而不是随手填个 5 或 10 让人
+            # 误读成「索引按 top_k=10 召回了 10 条」。
+            #
+            # 这条在离线套件里**看不见**（``tests/fake_db.py`` 不模拟 NOT NULL），第一次
+            # 真跑索引才炸出来：``NotNullViolation: null value in column "top_k"``。
+            top_k=0,
+            # ``latency_ms`` 同样是 NOT NULL。索引不是一次请求，没有「这一次花了多少毫秒」
+            # 可言；而写 0 是诚实的（不是「很快」，是「这个量在这一行上不成立」）。真正该
+            # 关心耗时的地方是构建行的收敛期限，不是这里。
+            latency_ms=0,
+            # 这两个 jsonb 也是 NOT NULL（模型给了 ``default=dict``，但**那只是 Python 侧
+            # 的默认**，SQL 层没有 server_default——批量插入或直接构造时漏了就是 NOT NULL 违反）。
+            kb_ids=[],
+            chunk_ids=[],
         )
     )
     await _bump_daily(db, tenant_id=tenant_id, amount=amount)

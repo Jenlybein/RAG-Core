@@ -53,6 +53,7 @@ from app.core import redis_client
 from app.core.config import settings
 from app.db.base import now
 from app.db.session_factory import async_session_factory
+from app.db.transaction import async_commit_now
 from app.db.worker_loop import run_in_worker_loop
 from app.repositories import document_repository
 from app.services.index_build_service import MAX_REDISPATCH, IndexBuildService
@@ -200,7 +201,11 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
         # 三个阶段的写都在这一笔事务里（收尾那一步自己提交过，重复提交是 no-op）。
         # **必须提交**：不提交的话，「清租约 + 回排队中」与「重投次数加一」会随会话关闭被
         # 回滚——症状是清扫器日志说有动作、库里一行没变，与「清扫器没跑」一模一样。
-        await db.commit()
+        #
+        # 走 ``async_commit_now`` 而不是直接提交会话：提交点必须集中在一处（结构守卫见
+        # ``tests/test_transaction.py``）。清扫器是「非请求边界」的那一类调用方，与失败留痕、
+        # 心跳同一种形状。
+        await async_commit_now(db)
 
         if settled or redispatched or revived:
             logger.info(
