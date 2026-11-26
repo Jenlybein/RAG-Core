@@ -70,7 +70,6 @@ function editableOf(plan: PlanData): PlanEditableFields {
     max_kb: plan.max_kb,
     max_kb_per_retrieve: plan.max_kb_per_retrieve,
     max_documents_per_kb: plan.max_documents_per_kb,
-    max_processing_documents: plan.max_processing_documents,
   }
 }
 
@@ -92,7 +91,6 @@ function emptyDraft(): PlanEditableFields {
     max_kb: 1,
     max_kb_per_retrieve: 1,
     max_documents_per_kb: 1,
-    max_processing_documents: 1,
   }
 }
 

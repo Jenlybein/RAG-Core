@@ -81,7 +81,6 @@ from app.services import (
     document_service,
     document_state,
     document_version_service,
-    static_quota,
     version_search,
 )
 from app.services.chunk_store import build_chunk_stores
@@ -192,9 +191,7 @@ async def list_documents(
     return ok(data)
 
 
-async def _scoped_document(
-    db: AsyncSession, *, document_id: str, key: DevKeyContext
-) -> Document:
+async def _scoped_document(db: AsyncSession, *, document_id: str, key: DevKeyContext) -> Document:
     """按 ``(id, tenant_id)`` 取文档 + 第二道关卡（数据范围白名单）——**六条入口共用这一份**。
 
     顺序是契约，不能反：
@@ -257,9 +254,9 @@ async def reindex_document(
 
     document_state.ensure_reindexable(doc, force=force)
 
-    # 静态配额：重建虽然跳过「单库文档数」（文档本来就在库里），却照样往队列塞一份
-    # 解析任务，所以必须过并发处理数——这是最容易漏、也最能饿死其他租户的一条。
-    await static_quota.ensure_processing_quota(db, tenant_id=key.tenant_id, plan=key.plan)
+    # 重建**不再**过「并发处理名额」（#218，ADR-0034 决策八）：它只往队列里多排一件事，
+    # 拒掉它既不能让别人的任务早点跑，也不解决「别人排队变长」——那件事的处置是队列与
+    # 调度，不是入口拒绝。写入口一律接受。
 
     prepared = await document_repository.prepare_for_indexing_async(
         db, document_id, tenant_id=key.tenant_id, allow_success=force
@@ -388,7 +385,6 @@ async def create_document_version(
         db,
         tenant_id=key.tenant_id,
         document_id=document_id,
-        plan=key.plan,
         content=submitted.content,
         filename=submitted.filename,
         data=submitted.data,
@@ -425,9 +421,7 @@ async def list_document_versions(
         DocumentVersionListData.model_validate(
             # 出参形状由服务层决定（控制面那条列表接口调的是同一个函数）：
             # 「一行给哪些字段」写两遍就会两处漂移，而两边的前端共用一个版式。
-            document_version_service.version_list_data(
-                doc, rows, include_content=include_content
-            )
+            document_version_service.version_list_data(doc, rows, include_content=include_content)
         )
     )
 
@@ -469,7 +463,6 @@ async def rollback_document_version(
         tenant_id=key.tenant_id,
         document_id=document_id,
         version=version,
-        plan=key.plan,
         request_id=submitted_request_id(request),
     )
     return ok(RollbackDocumentVersionData.model_validate(data))

@@ -81,7 +81,6 @@ from app.services import (
     document_version_service,
     knowledge_base_service,
     plan_service,
-    static_quota,
 )
 from app.services.chunk_store import build_chunk_stores
 from app.services.console_service import append_audit
@@ -165,9 +164,7 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
 
     nodes: list[TreeKnowledgeBase] = []
     for kb in await knowledge_base_repository.list_by_tenant(db, tenant_id):
-        documents = await document_repository.list_by_kb_async(
-            db, kb.id, tenant_id=tenant_id
-        )
+        documents = await document_repository.list_by_kb_async(db, kb.id, tenant_id=tenant_id)
         counts = await chunk_repository.count_by_document_ids(
             db, [document.id for document in documents], tenant_id=tenant_id
         )
@@ -238,9 +235,7 @@ async def create_kb(
     return data
 
 
-async def _needs_rebuild(
-    db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str
-) -> bool:
+async def _needs_rebuild(db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str) -> bool:
     """这个库的切块设置是否已经**没被生效版本用上**（第 16 步 #207）。
 
     从**生效那一版**的 ``params`` 比，不是从最新版本比：``ready`` 但没激活的版本还没在服务，
@@ -258,9 +253,7 @@ async def _needs_rebuild(
     return needs_rebuild(kb, row.params)
 
 
-async def settings_preview(
-    db: AsyncSession, *, tenant_id: str, kb_id: str
-) -> dict[str, Any]:
+async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> dict[str, Any]:
     """确认弹窗要的那份事实：当前设置、生效版本用的参数、以及**这次重建的量**（第 16 步 #207）。
 
     为什么要单独一次读：确认弹窗里必须写清「这次会重建多少篇、多少片」。让人对着一个
@@ -271,27 +264,19 @@ async def settings_preview(
     只是让人在点之前就知道。
     """
 
-    kb = await knowledge_base_repository.get_by_id_for_tenant(
-        db, kb_id, tenant_id=tenant_id
-    )
+    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
-    documents = await document_repository.list_by_kb_async(
-        db, kb_id, tenant_id=tenant_id
-    )
+    documents = await document_repository.list_by_kb_async(db, kb_id, tenant_id=tenant_id)
     # 参与重建的只有能切出正文的那些：失败 / 处理中的文档没有可切的正文，
     # 把它们算进「将重建 N 篇」会让人以为这次能修好它们。
-    rebuildable = [
-        document for document in documents if document.status == DocumentStatus.SUCCESS
-    ]
+    rebuildable = [document for document in documents if document.status == DocumentStatus.SUCCESS]
     counts = await chunk_repository.count_by_document_ids(
         db, [document.id for document in rebuildable], tenant_id=tenant_id
     )
     rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
-    live = next(
-        (row for row in rows if row.version == kb.active_index_version), None
-    )
+    live = next((row for row in rows if row.version == kb.active_index_version), None)
     values = settings_of(kb)
     return {
         "kb_id": kb.id,
@@ -337,9 +322,7 @@ async def update_kb_settings(
     会让人以为自己刚才没改成，反而更糊涂。失败由 Worker 自己落 ``failed`` + 原因。
     """
 
-    kb = await knowledge_base_repository.get_by_id_for_tenant(
-        db, kb_id, tenant_id=tenant_id
-    )
+    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
@@ -418,9 +401,7 @@ async def delete_empty_kb(
 ) -> dict[str, Any]:
     """删库：仅空库。库内仍有文档 → ``20015``（提示先删文档）；缺失/跨租户 → ``20008``。"""
 
-    kb = await knowledge_base_repository.get_by_id_for_tenant(
-        db, kb_id, tenant_id=tenant_id
-    )
+    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
     if await document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id) > 0:
@@ -509,12 +490,9 @@ async def reindex_document(
 
     document_state.ensure_reindexable(document, force=force)
 
-    # 重建跳过「单库文档数」（文档本来就在库里），但照样占用一个 Worker 名额。
-    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
-    await static_quota.ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
-
-    # 改前快照在 prepare 之前取：那条 UPDATE 用 ``synchronize_session=False``，不该让
-    # 审计的「改前」依赖会话是否恰好刷新了对象。
+    # 没有配额门禁：重建跳过「单库文档数」（文档本来就在库里），也不再数「同时处理中篇数」
+    # ——那条配额已随 #218 删除，理由与代价见 ADR-0034 决策八（没有按租户的公平调度，
+    # 批量提交会占满常规 Worker；缓解是构建走专用队列）。
     before = _document_state_snapshot(document)
     prepared = await document_repository.prepare_for_indexing_async(
         db, document_id, tenant_id=tenant_id, allow_success=force
@@ -605,9 +583,7 @@ async def _tenant_plan_id(db: AsyncSession, *, tenant_id: str) -> int:
     return tenant.plan_id
 
 
-async def _plan_for_tenant(
-    db: AsyncSession, *, tenant_id: str, cache: PlanCache
-) -> PlanSpec:
+async def _plan_for_tenant(db: AsyncSession, *, tenant_id: str, cache: PlanCache) -> PlanSpec:
     """会话租户 → 它当前的套餐快照（走与数据面同一个解析与缓存）。"""
 
     return await plan_service.resolve_plan(
@@ -738,13 +714,12 @@ async def rollback_document(
     也就不必为了账本再读一次文档行。
     """
 
-    plan = await _plan_for_tenant(db, tenant_id=tenant_id, cache=cache)
+    # 回滚不再取套餐快照：它的那道门禁（同时处理中篇数）已随 #218 删除（ADR-0034 决策八）。
     data = await document_version_service.rollback_to_version(
         db,
         tenant_id=tenant_id,
         document_id=document_id,
         version=version,
-        plan=plan,
         request_id=request_id,
     )
     await append_audit(

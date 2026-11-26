@@ -1,7 +1,7 @@
-"""静态资源配额：库数、单库文档数、并发处理数 —— 全都在**写路径**上到库里数行。
+"""静态资源配额：库数、单库文档数 —— 全都在**写路径**上到库里数行。
 
 与 :mod:`app.services.quota_gate` 刻意分成两个模块：那两道关卡记的是「用掉了多少次」，
-每秒、每天都会变，所以进 Redis；这三项问的是「现在有多少行」，答案本来就只有一个地方
+每秒、每天都会变，所以进 Redis；这两项问的是「现在有多少行」，答案本来就只有一个地方
 ——数据库。在 Redis 里再存一份计数，就得在删除文档、状态流转、Worker 崩溃、重建索引
 每一条路径上同步它，漏一处就是两个真相，而错的那一个恰好会被用来拒绝客户。
 
@@ -13,13 +13,21 @@
 | 写路径 | 校验 | 数的是 |
 | --- | --- | --- |
 | 建知识库（``knowledge_base_service.create_kb``） | :func:`ensure_kb_quota` | 这个租户的库数 vs ``max_kb`` |
-| 上传文档（``document_service.upload``） | :func:`ensure_upload_quota` | 这个库的文档数 vs ``max_documents_per_kb``；再数全租户处理中文档 vs ``max_processing_documents`` |
-| 重建索引（``POST /documents/{id}/reindex``） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
-| 提交新版本（``POST /documents/{id}/versions``，#175） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
-| 回滚到某一稿（``POST /documents/{id}/versions/{v}/rollback``，#176） | :func:`ensure_processing_quota` | 全租户处理中文档 vs ``max_processing_documents`` |
+| 上传文档（``document_service.upload``） | :func:`ensure_upload_quota` | 这个库的文档数 vs ``max_documents_per_kb`` |
 
-把限制写在「控制台接口」上而不是这三处，是同一件事的另一种失败方式：脚本、CLI、将来
+把限制写在「控制台接口」上而不是这两处，是同一件事的另一种失败方式：脚本、CLI、将来
 另一个入口只要不经过那个接口，套餐就形同虚设。
+
+## 只剩「容量型」两条（票 #218）
+
+改造前这里还有第三条「并发处理数」：它数「索引中且租约有效」的行，在**所有**会入队解析
+任务的写入口（上传、两条重建入口、建版本、回滚）上判。它已被删除，理由与代价写在
+ADR-0034 决策八：那个「索引中」本身不可信（状态回写曾经静默失效，租约过期又代表没人跑），
+而**入口拒绝从来不是对「别人排队变长」的处置**——处置那件事的是队列与调度。
+
+于是这里只剩两条**容量**上限，它们只回答「这个租户自己装不装得下」，不控制并发、
+也不保护别人（保护别人的手段是构建专用队列与公平调度，后者明确没做）。写入口因此
+**一律接受**，上传与重建都只是往队列里排一件事。
 
 ## 每一条上限有自己的码与文案（票 #219）
 
@@ -28,7 +36,7 @@
 情形都是错的**：它们要的是「删点东西就能继续」，不是等重置；要动的是**套餐**（运营改），
 不是密钥配置（用户自己改）。错误码相同则前端连分辨都做不到。
 
-现在按「调用了方该做什么」分码（ADR-0035 决策七）：
+现在按「调用方该做什么」分码（ADR-0035 决策七）：
 
 * 库数满 → ``20034``，处置是**删库**或提额；
 * 单库文档数满 → ``20035``，处置是**删该库里的旧文档**或提额。
@@ -37,12 +45,6 @@
 （:data:`KB_COUNT_QUOTA` / :data:`KB_DOCUMENT_QUOTA`）——三样必须一起变，否则就会出现
 「20034 配着『等额度重置』」这种半截改造。响应 ``data`` 里同时带 ``used`` / ``limit`` /
 ``plan``，面板不必去解析文案里的数字。
-
-## 并发处理数这一条（已被 #218 删除）
-
-它曾数「索引中且租约有效」的行，理由是「不超自己的上限也会伤害别人」。这条配额的删除
-理由与代价写在 ADR-0034 决策八：它量的东西本身是假的（状态可漂），而入口拒绝从来不是
-对「别人排队变长」的处置。这里保留它的入口只是为了本票不动 #218 的地盘。
 
 ## 只剩异步面
 
@@ -111,11 +113,12 @@ async def ensure_kb_quota(db: AsyncSession, *, tenant_id: str, plan: PlanSpec) -
 async def ensure_upload_quota(
     db: AsyncSession, *, tenant_id: str, kb_id: str, plan: PlanSpec
 ) -> None:
-    """上传之前：这个库装得下（``max_documents_per_kb``），且租户还有并发名额。
+    """上传之前：这个库还装得下（``max_documents_per_kb``）。
 
-    两条**都在这里**、不在调用方分别调：上传是唯一会同时撞上这两条上限的动作，把它们
-    绑成一个函数之后，第二个上传入口很难只接一半（只接到单库文档数、漏掉并发数，
-    正是本票说的「最容易忘的那一条」）。
+    **只有这一条**：上传不再受「同时处理中篇数」限制（#218，ADR-0034 决策八）——处理中
+    的东西进了队列就排着，拒掉第 N+1 篇既不会让队列变短，也不是对「别人排队变长」的
+    处置。函数留在这里（而不是直接写在调用方里），是为了让「上传要过哪几条上限」仍然
+    只有一处答案：改这条口径时不必去找第二个上传入口。
     """
 
     used_documents = await document_repository.count_by_kb(db, kb_id, tenant_id=tenant_id)
@@ -124,27 +127,6 @@ async def ensure_upload_quota(
         used=used_documents,
         limit=plan.max_documents_per_kb,
         plan=plan,
-    )
-    await ensure_processing_quota(db, tenant_id=tenant_id, plan=plan)
-
-
-async def ensure_processing_quota(db: AsyncSession, *, tenant_id: str, plan: PlanSpec) -> None:
-    """再入队一份解析任务之前：这个租户还有没有并发处理名额。
-
-    上传、重建、建版本、回滚**四条都调它**：四者的共同点不是「写哪个接口」，而是「都会让
-    队列里多一份解析任务」。重建尤其不能漏：它跳过「单库文档数」（文档本来就在库里），
-    却照样往队列里塞一份工作。
-    """
-
-    used = await document_repository.count_processing_for_tenant(db, tenant_id=tenant_id)
-    ensure_under_limit(
-        used=used,
-        limit=plan.max_processing_documents,
-        code=ErrorCode.QUOTA_EXCEEDED,
-        message=(
-            f"concurrently processing documents of tenant {tenant_id} exceeded: "
-            f"{used} used of {plan.max_processing_documents} (plan {plan.code!r})"
-        ),
     )
 
 

@@ -48,7 +48,6 @@ export interface ConsolePlanSnapshot {
   max_kb: number
   max_kb_per_retrieve: number
   max_documents_per_kb: number
-  max_processing_documents: number
 }
 
 export interface ConsoleUsage {

@@ -22,7 +22,7 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import pytest
 import pytest_asyncio
@@ -83,12 +83,14 @@ def _document(
 
 
 def _plan(**overrides: int) -> PlanSpec:
-    """免费档做底：库 1、单库 30 篇、并发 1——三个限额都小到能一眼数清。"""
+    """免费档做底：库 1、单库 30 篇——两个限额都小到能一眼数清。
+
+    「同时处理中篇数」那条配额已随 #218 删除，所以这里也不再传它。
+    """
 
     values = {
         "max_kb": 1,
         "max_documents_per_kb": 30,
-        "max_processing_documents": 1,
     }
     values.update(overrides)
     base = PLAN_PRESETS[PLAN_FREE]
@@ -115,49 +117,6 @@ async def test_counting_a_kbs_documents_ignores_other_kbs_and_other_tenants(
     assert await document_repository.count_by_kb(db, KB_ID, tenant_id=TENANT_ID) == 2
     assert await document_repository.count_by_kb(db, OTHER_KB_ID, tenant_id=TENANT_ID) == 1
     assert await document_repository.count_by_kb(db, KB_ID, tenant_id=OTHER_TENANT_ID) == 1
-
-
-@pytest.mark.asyncio
-async def test_the_processing_count_only_counts_documents_that_are_really_in_flight(
-    db: AsyncSession,
-) -> None:
-    """成功 / 失败的不算；已排队未开工的算（它占着队列）；有效租约内的算。"""
-
-    db.add_all(
-        [
-            _document("done", status=DocumentStatus.SUCCESS),
-            _document("failed", status=DocumentStatus.FAILED),
-            _document("queued", status=DocumentStatus.PROCESSING),
-            _document(
-                "running",
-                status=DocumentStatus.PROCESSING,
-                claimed_at=now(),
-            ),
-        ]
-    )
-    await db.flush()
-
-    assert await document_repository.count_processing_for_tenant(db, tenant_id=TENANT_ID) == 2
-
-
-@pytest.mark.asyncio
-async def test_a_document_stuck_past_its_lease_does_not_hold_a_slot(db: AsyncSession) -> None:
-    """Worker 崩了之后那一行还写着「处理中」，但它已经不占任何 Worker。
-
-    把它也数进并发名额，等于一次崩溃永久吃掉一个名额，直到有人跑 requeue 脚本——
-    租户会看到「上传被拒」而库里没有任何文档在处理，排障只能靠猜。
-    """
-
-    db.add(
-        _document(
-            "stuck",
-            status=DocumentStatus.PROCESSING,
-            claimed_at=now() - timedelta(hours=1),
-        )
-    )
-    await db.flush()
-
-    assert await document_repository.count_processing_for_tenant(db, tenant_id=TENANT_ID) == 0
 
 
 # ───────────────────────────────────────────── 判定：阈值与错误码
@@ -194,32 +153,25 @@ async def test_the_document_allowance_allows_the_last_upload_and_rejects_the_nex
 
 
 @pytest.mark.asyncio
-async def test_the_concurrent_processing_allowance_is_enforced_on_upload(db: AsyncSession) -> None:
-    """并发处理数是「一个租户别把 Worker 全占满」的那一条：它也在上传路径上。"""
+async def test_a_crowded_worker_is_not_a_reason_to_reject_an_upload(db: AsyncSession) -> None:
+    """「同时处理中篇数」那条配额已删除：库里已经有一堆处理中的文档，上传照样放行。
 
-    plan = _plan(max_processing_documents=1)
-    db.add(_document("running", status=DocumentStatus.PROCESSING, claimed_at=now()))
+    这是 #218 的核心行为变化。旧口径下这里会被拒（``max_processing_documents=1``），
+    而拒绝的理由对用户毫无意义——他并没有超自己的任何上限，只是别人在排队。
+    排队是队列的事，不是入口的事（理由与代价见 ADR-0034 决策八）。
+    """
+
+    plan = _plan()
+    db.add_all(
+        [
+            _document("running", status=DocumentStatus.PROCESSING, claimed_at=now()),
+            _document("queued", status=DocumentStatus.PROCESSING),
+        ]
+    )
     await db.flush()
 
-    with pytest.raises(AppError) as exc:
-        await static_quota.ensure_upload_quota(db, tenant_id=TENANT_ID, kb_id=KB_ID, plan=plan)
-    assert exc.value.code is ErrorCode.QUOTA_EXCEEDED
-    assert "processing" in exc.value.msg
-
-
-@pytest.mark.asyncio
-async def test_the_reindex_path_charges_the_concurrent_processing_allowance(
-    db: AsyncSession,
-) -> None:
-    """重建同样入队一次解析任务，因此也要过并发处理数——否则它就是绕过口。"""
-
-    plan = _plan(max_processing_documents=1)
-    db.add(_document("queued", status=DocumentStatus.PROCESSING))
-    await db.flush()
-
-    with pytest.raises(AppError) as exc:
-        await static_quota.ensure_processing_quota(db, tenant_id=TENANT_ID, plan=plan)
-    assert exc.value.code is ErrorCode.QUOTA_EXCEEDED
+    # 不抛就是通过：这两行都在「处理中」，但没有任何门禁会去数它们。
+    await static_quota.ensure_upload_quota(db, tenant_id=TENANT_ID, kb_id=KB_ID, plan=plan)
 
 
 @pytest.mark.asyncio

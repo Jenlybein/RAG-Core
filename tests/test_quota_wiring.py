@@ -628,11 +628,7 @@ def test_uploading_over_documents_per_kb_is_a_quota_error(
     async def _count_docs(_db, _kb_id, *, tenant_id: str) -> int:
         return 30
 
-    async def _count_processing(_db, *, tenant_id: str) -> int:
-        return 0
-
     monkeypatch.setattr(doc_repo, "count_by_kb", _count_docs)
-    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
@@ -648,36 +644,34 @@ def test_uploading_over_documents_per_kb_is_a_quota_error(
     assert entry.enqueued == [], "被拒的上传不该往队列里塞任务"
 
 
-def test_uploading_over_the_concurrent_processing_allowance_is_a_quota_error(
+def test_a_crowded_worker_does_not_reject_an_upload(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """并发处理数是「别把其他租户的 Worker 饿死」的那一条，也在上传路径上。"""
+    """「同时处理中篇数」那条配额已删除：库里排着一堆处理中的文档，上传照样被接受。
+
+    这是 #218 的行为变化。旧口径下这里回 ``20014``，而那个拒绝对用户没有意义——
+    他并没有超自己的任何上限，只是别人在排队（见 ADR-0034 决策八）。
+    """
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
-    entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_processing_documents=1))
 
     async def _count_docs(_db, _kb_id, *, tenant_id: str) -> int:
         return 0
 
-    async def _count_processing(_db, *, tenant_id: str) -> int:
-        return 1
-
     monkeypatch.setattr(doc_repo, "count_by_kb", _count_docs)
-    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _count_processing)
 
     body = entry.upload()
 
-    assert body["code"] == ErrorCode.QUOTA_EXCEEDED
-    assert entry.enqueued == []
+    assert body["code"] == ErrorCode.SUCCESS
+    assert len(entry.enqueued) == 1, "接受之后必须照常投递一次索引任务"
 
 
-def test_reindex_charges_the_concurrent_processing_allowance(
+def test_reindex_is_accepted_while_the_worker_is_busy(
     entry: _Entry, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """重建跳过「单库文档数」（文档本来就在），却照样入队——不能漏掉并发这一条。"""
+    """重建同样不再过并发名额：它是入队，不是拒绝的理由。"""
 
     doc_repo = importlib.import_module("app.repositories.document_repository")
-    entry.use(plan=replace(PLAN_PRESETS[PLAN_FREE], max_processing_documents=1))
 
     async def _failed_doc(_db: Any, document_id: str, *, tenant_id: str) -> Any:
         return SimpleNamespace(
@@ -690,17 +684,25 @@ def test_reindex_charges_the_concurrent_processing_allowance(
             error_message="上次失败",
             source_type="markdown",
             source_file_path=None,
+            # 重建投递时路由会把「这一稿」写进任务载荷（#173），所以替身也要有指针。
+            current_version=1,
         )
 
-    async def _one_processing(_db: Any, *, tenant_id: str) -> int:
-        return 1
-
     monkeypatch.setattr(doc_repo, "get_by_id_for_tenant_async", _failed_doc)
-    monkeypatch.setattr(doc_repo, "count_processing_for_tenant", _one_processing)
+
+    # 替身会话不模拟 UPDATE 的效果（``prepare_for_indexing_async`` 恒为 False 会变成
+    # 20025「仍在处理中」）。这里直接把它桩成「准备好」，于是这条用例只验证**没有被
+    # 配额拒绝**这一件事——那正是 #218 要守住的边界。
+    async def _prepared(_db: Any, _document_id: str, *, tenant_id: str, **_kwargs: Any) -> bool:
+        return True
+
+    monkeypatch.setattr(doc_repo, "prepare_for_indexing_async", _prepared)
 
     response = entry.client.post("/api/v1/documents/doc-1/reindex")
     assert response.status_code == 200
 
     body = response.json()
-    assert body["code"] == ErrorCode.QUOTA_EXCEEDED
-    assert entry.enqueued == [], "被拒的重建不该入队"
+    assert body["code"] == ErrorCode.SUCCESS
+    # 不再断言 ``entry.enqueued``：投递登记在 ``after_commit`` 上、且走 ``to_thread``，
+    # 这条用例替换的那层（``enqueue_document``）在请求边界提交之前不会被调到。
+    # 这里要守的边界只有一条：**没有被配额拒绝**。投递本身由重建的 e2e 用例覆盖。

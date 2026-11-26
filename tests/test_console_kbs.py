@@ -21,7 +21,7 @@ import importlib
 import json
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -384,16 +384,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     def _count_documents(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return len(_list_documents(_db, kb_id, tenant_id=tenant_id))
 
-    def _count_processing(_db: Any, *, tenant_id: str) -> int:
-        lease = now() - timedelta(seconds=document_repository.DOCUMENT_LEASE_SECONDS)
-        return sum(
-            1
-            for doc in session._rows.get(Document, [])
-            if doc.tenant_id == tenant_id
-            and doc.status == DocumentStatus.PROCESSING
-            and (doc.index_claimed_at is None or doc.index_claimed_at >= lease)
-        )
-
     def _prepare(
         _db: Any, document_id: str, *, tenant_id: str, allow_success: bool, **_kwargs: Any
     ) -> bool:
@@ -441,9 +431,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     async def _count_documents_async(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return _count_documents(_db, kb_id, tenant_id=tenant_id)
 
-    async def _count_processing_async(_db: Any, *, tenant_id: str, **_kwargs: Any) -> int:
-        return _count_processing(_db, tenant_id=tenant_id)
-
     async def _prepare_async(
         db: Any, document_id: str, *, tenant_id: str, allow_success: bool, **kwargs: Any
     ) -> bool:
@@ -461,7 +448,6 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     monkeypatch.setattr(document_repository, "get_by_id_for_tenant_async", _document_lookup_async)
     monkeypatch.setattr(document_repository, "list_by_kb_async", _list_documents_async)
     monkeypatch.setattr(document_repository, "count_by_kb", _count_documents_async)
-    monkeypatch.setattr(document_repository, "count_processing_for_tenant", _count_processing_async)
     monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
     monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks_async)
     monkeypatch.setattr(console_kb_service, "get_vector_store", lambda: store)
