@@ -79,17 +79,29 @@ async def _mark_failed(
     ``exc`` 只为与调用处对齐，**绝不**写进 ``error_message``：失败原因只在
     ``logger.exception`` 的堆栈里，数据库只存固定文案（不含异常对象、路径或 SQL）。
     清 ``index_claimed_at`` 是为了让失败终态也不留下新鲜租约。
+
+    **这条路径是另一笔事务、失败之后重新读行**：不依赖流水线那一段里任何内存状态，
+    因此它也照常写——把它挡掉只会让卡住的文档永远留在「索引中」。
+    清除租约同样走语句（``release_index_claim_async``）而不是给对象赋属性：与状态回写
+    （#212 改成 UPDATE 语句）保持同一种写法，免得「改了内存、库里没变」再来一次。
     """
 
     await async_rollback_now(db)
     doc = await document_repository.get_by_id(db, document_id)
     if doc is None:
         return
-    await document_repository.update_status(
+    written = await document_repository.update_status(
         db, doc, DocumentStatus.FAILED, INDEXING_FAILED_MESSAGE
     )
+    if written != 1:
+        logger.warning(
+            "failed status write touched no row",
+            document_id=document_id,
+            tenant_id=doc.tenant_id,
+            written=written,
+        )
     # 失败终态同样不保留租约：下一次重建 / 重试不能看到一份「新鲜的失败租约」。
-    doc.index_claimed_at = None
+    await document_repository.release_index_claim_async(db, document_id, tenant_id=doc.tenant_id)
     await async_commit_now(db)
 
 
@@ -129,9 +141,7 @@ async def _settle_failure(
         # 先释放租约再重试：否则下一次尝试的 CAS 会看到仍然新鲜的租约而
         # 抢不到，重试变成静默 no-op（status 也不会变成 2）。
         await async_rollback_now(db)
-        await document_repository.release_index_claim_async(
-            db, document_id, tenant_id=tenant_id
-        )
+        await document_repository.release_index_claim_async(db, document_id, tenant_id=tenant_id)
         await async_commit_now(db)
         raise _RetryRequested(exc)
     await _mark_failed(db, document_id, exc)

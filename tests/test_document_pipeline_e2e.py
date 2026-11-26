@@ -30,6 +30,8 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import Update
+from sqlalchemy.sql import operators
 
 from app.core.config import settings
 from app.db.base import now
@@ -78,6 +80,8 @@ class _FakeSession:
         self._rows: dict[str, Any] = {}
         self.commits = 0
         self.rollbacks = 0
+        #: 发出去的**写**语句原文（状态回写从 #212 起是一条 UPDATE）。
+        self.statements: list[str] = []
 
     def add(self, instance: Any) -> None:
         # ``AsyncSession.add`` 与真会话一样**是同步的**：它只把对象挂进 unit of work。
@@ -94,9 +98,35 @@ class _FakeSession:
     async def flush(self) -> None:
         return None
 
-    async def execute(self, _statement: Any) -> Any:
-        # 上传前的静态配额会数行；这个替身表示空库。
+    async def execute(self, statement: Any) -> Any:
+        """写语句在这里**真的生效**（落到内存行上）；读查询回空库。
+
+        为什么这一份替身与 ``tests/fake_db`` 的口径不同：这条用例是**跨层端到端**的，
+        它跑完一次上传之后还要再发一次「重建」请求，而重建入口会读文档在库里的状态
+        （真库上那时已经是成功）。写语句不生效时，这条链路会断在「文档还在处理中」上，
+        断的位置与它要验的东西无关。
+
+        能生效的只有「等值 WHERE + values」这一种形状；其它形状一律不猜（真语句在真库上
+        跑）。**关于状态的真值断言不在这里**：库那一行最终是什么样由
+        ``tests/test_integration_indexing_lease.py`` 在真库上断言。
+        """
+
+        if isinstance(statement, Update):
+            self.statements.append(str(statement.compile(compile_kwargs={"literal_binds": True})))
+            self._apply(statement)
+            return _WriteResult(rowcount=1)
         return ZERO_COUNT
+
+    def _apply(self, statement: Update) -> None:
+        """按「列 = 字面量」的 WHERE 找到内存行，再把 values 写上去。"""
+
+        matches = _equalities_of(statement.whereclause)
+        if matches is None:
+            return
+        for row in self._rows.values():
+            if all(getattr(row, key, _MISSING) == value for key, value in matches.items()):
+                for column, bind in statement._values.items():
+                    setattr(row, column.key, bind.value)
 
     async def commit(self) -> None:
         self.commits += 1
@@ -106,6 +136,46 @@ class _FakeSession:
 
     async def close(self) -> None:
         return None
+
+
+class _WriteResult:
+    """写语句的结果替身：只回答 ``rowcount``。"""
+
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
+
+
+_MISSING = object()
+
+
+def _equalities_of(criterion: Any) -> dict[str, Any] | None:
+    """把「``列 = 字面量`` 的 AND 组合」读成字典；不是这种形状（或认不出来）就回 ``None``。
+
+    只服务上面那个内存替身：它不猜 SQL，认不出来就不生效，让真语句在真库上跑。
+    """
+
+    pairs: dict[str, Any] = {}
+    for node in getattr(criterion, "clauses", None) or (criterion,):
+        left = getattr(node, "left", None)
+        right = getattr(node, "right", None)
+        if left is None or right is None or getattr(node, "operator", None) is not operators.eq:
+            return None
+        value = getattr(right, "value", _MISSING)
+        key = getattr(left, "key", None)
+        if value is _MISSING or key is None:
+            return None
+        pairs[key] = value
+    return pairs
+
+
+def _assert_success_written(session: _FakeSession, *, why: str) -> None:
+    """「状态落到成功」在这条缝上的可观察形状：``UPDATE ... status=1`` 发出去了。
+
+    为什么不断言 ``doc.status``：状态回写从 #212 起是一条语句，而替身不模拟写语句对行的
+    效果，读内存里那份只会读到旧值（旧写法正是靠改内存对象让人误以为写成功了）。
+    """
+
+    assert any("status=1" in sql for sql in session.statements), why
 
 
 def _stored_document(session: _FakeSession, document_id: str) -> Any:
@@ -304,7 +374,7 @@ def test_markdown_upload_runs_the_whole_pipeline_into_indexed_chunks(
 
     doc = _stored_document(pipeline_env.session, document_id)
     assert doc is not None
-    assert doc.status == DocumentStatus.SUCCESS, "Worker 跑完后状态必须落到 SUCCESS"
+    _assert_success_written(pipeline_env.session, why="Worker 跑完后状态必须落到 SUCCESS")
     assert doc.error_message is None
     assert doc.index_claimed_at is not None
     assert doc.source_filename == SOURCE_FILENAME
@@ -438,7 +508,7 @@ def test_uploaded_content_is_written_back_and_a_forced_rebuild_reads_the_databas
 
     doc = _stored_document(pipeline_env.session, document_id)
     assert doc is not None
-    assert doc.status == DocumentStatus.SUCCESS
+    _assert_success_written(pipeline_env.session, why="第一次索引必须写成功")
     assert doc.content == expected, "文件上传的文档正文必须是解析器输出的全文"
     assert doc.content != "", "此前这里永远是空串——本票要补的就是这个洞"
 
@@ -457,7 +527,7 @@ def test_uploaded_content_is_written_back_and_a_forced_rebuild_reads_the_databas
 
     doc = _stored_document(pipeline_env.session, document_id)
     assert doc is not None
-    assert doc.status == DocumentStatus.SUCCESS, "读库内正文的重建必须成功，而不是去读磁盘"
+    _assert_success_written(pipeline_env.session, why="读库内正文的重建必须成功，而不是去读磁盘")
     assert doc.error_message is None
     assert doc.content == expected, "不带重解析的重建不改写正文"
 
@@ -481,7 +551,7 @@ def test_uploaded_content_is_written_back_and_a_forced_rebuild_reads_the_databas
 
     doc = _stored_document(pipeline_env.session, document_id)
     assert doc is not None
-    assert doc.status == DocumentStatus.SUCCESS
+    _assert_success_written(pipeline_env.session, why="重解析之后同样要写成功")
     assert doc.content == revised, "重解析之后文档行里是**新**正文，旧值被覆盖"
 
 

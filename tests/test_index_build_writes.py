@@ -180,7 +180,11 @@ class _RecordingVectorStore:
 
 
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, document: Any) -> list[str]:
-    """把流水线的三个外部协作者换成替身；返回「被抢占的文档」记录。"""
+    """把流水线的三个外部协作者换成替身；返回「被抢占的文档」记录。
+
+    状态回写既不断言、也不替掉它（#212 不许再把回写函数换成记录器）：它现在是一条
+    ``UPDATE``，在替身上发出去了就算过，库里那几行的值由真库用例断言。
+    """
 
     async def _get_by_id(_db: Any, _id: str) -> Any:
         return document
@@ -189,13 +193,9 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, document: Any) -> list[s
         claims.append(f"{document_id}:{kwargs.get('allow_success')}")
         return True
 
-    async def _update_status(*_args: Any, **_kwargs: Any) -> None:
-        return None
-
     claims: list[str] = []
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
-    monkeypatch.setattr(document_repository, "update_status", _update_status)
     monkeypatch.setattr(
         indexing_service,
         "prepare_document_content",

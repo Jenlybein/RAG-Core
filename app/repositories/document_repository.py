@@ -16,8 +16,17 @@
 都走 ``AsyncSession``，所以本模块的 ``*_async`` 孪生覆盖这两条路径上的全部读与写（后缀与
 检索链路的 ``get_by_id_for_tenant`` / ``fetch_meta_by_chunk_ids`` 一致）。
 **语句本身只写一遍**（``_claim_statement`` / ``_release_statement`` / ``_prepare_statement`` /
-两个计数的 statement builder），同步与异步两个入口执行的是同一条 SQL——CAS 的判定条件与
-租约语义因此不可能在两套入口之间漂移。
+``_status_statement`` / 两个计数的 statement builder），同步与异步两个入口执行的是同一条
+SQL——CAS 的判定条件与租约语义因此不可能在两套入口之间漂移。
+
+## 状态回写是**语句**，不是「改对象属性」（#212）
+
+:func:`update_status` 执行一条显式 ``UPDATE``（带 ``tenant_id`` 过滤、同时抬
+``updated_at``），并把 ``rowcount`` 交给调用方。曾经的写法是给 ORM 对象赋属性再
+``flush``，它依赖脏检查——而抢占是一条 ``synchronize_session=False`` 的语句、会话又是
+``expire_on_commit=False``，于是「把属性赋成本来就是的那个值」不产生任何 UPDATE：整库构建
+跑完之后，库里的状态与 ``updated_at`` 永远停在抢占那一刻，而切片与向量都在。语句不猜，
+写没写进去由 ``rowcount`` 说。
 
 同步的那几个**仍有读者，但不与上面的异步路径共用**：运维脚本
 （``reindex_knowledge_base`` / ``requeue_stuck_documents`` /
@@ -536,12 +545,54 @@ async def list_by_kb_async(db: AsyncSession, kb_id: str, *, tenant_id: str) -> l
 
 async def update_status(
     db: AsyncSession, doc: Document, status: int, error_message: str | None = None
-) -> None:
-    """回写状态与错误文案（只 flush，不提交）。"""
+) -> int:
+    """回写状态与错误文案：执行一条显式 ``UPDATE``（只 flush，不提交），返回影响行数。
 
-    doc.status = status
-    doc.error_message = error_message
-    await db.flush()
+    **为什么是语句而不是「改对象属性」**（#212）：见模块文档。一句话——抢占是
+    ``synchronize_session=False`` 的语句、会话``expire_on_commit=False``，于是内存里那份
+    文档可能落后于库；此时把属性赋成本来就有的值，ORM 判定无脏属性，一条 UPDATE 都不产生，
+    库里的状态就永远停在「索引中」。
+
+    返回 ``rowcount``：它是「真的写了」的唯一证据，调用方据此发现「没写进去」
+    （行在写之前被删掉了、``tenant_id`` 对不上）。``updated_at`` 与状态同一条语句抬，
+    于是「更新时间晚于抢占时刻」这件事在库里可查。
+
+    ``tenant_id`` 取自传入对象的租户（ADR-0006 要求写路径带租户过滤）；签名保持不变，
+    调用点一个都不用改。
+    """
+
+    result = await db.execute(
+        _status_statement(
+            str(doc.id),
+            tenant_id=doc.tenant_id,
+            status=status,
+            error_message=error_message,
+            updated_at=now(),
+        )
+    )
+    return int(result.rowcount or 0)
+
+
+def _status_statement(
+    document_id: str,
+    *,
+    tenant_id: str,
+    status: int,
+    error_message: str | None,
+    updated_at: datetime,
+) -> Update:
+    """状态回写的那一条 ``UPDATE``（同步与异步孪生共用；目前只有异步入口在执行）。
+
+    ``updated_at`` 显式写在 values 里而不是交给列的 ``onupdate``：这一条语句的全部意义
+    就是「库里这一行确实被写了」，时间戳跟着一起写死才不会在某种方言 / 选项下静默缺一半。
+    """
+
+    return (
+        update(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .values(status=status, error_message=error_message, updated_at=updated_at)
+        .execution_options(synchronize_session=False)
+    )
 
 
 async def prepare_for_indexing_async(

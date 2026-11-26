@@ -171,9 +171,7 @@ class _ContentSource(NamedTuple):
     reparsed: bool = False
 
 
-def _reparse_source(
-    doc: Document, version_row: DocumentVersion | None
-) -> ParsedDocument:
+def _reparse_source(doc: Document, version_row: DocumentVersion | None) -> ParsedDocument:
     """重解析读**哪一份字节**：这一稿自己的源文件优先（#182）。
 
     ## 为什么不是文档行上的路径
@@ -197,6 +195,7 @@ def _reparse_source(
 
 class IndexingService:
     """Worker 侧的索引编排：一份已登记的文档 → 可检索的切片。"""
+
     def __init__(
         self,
         *,
@@ -231,16 +230,14 @@ class IndexingService:
             # 注入的切块器如实报告它是哪一类：把按字符切的说成 structure，
             # 会让切片 meta 里的 split_strategy 变成一句谎话，重建时对不上。
             injected: SplitStrategy = (
-                SPLIT_SIZE
-                if isinstance(self._splitter, WindowTextSplitter)
-                else SPLIT_STRUCTURE
+                SPLIT_SIZE if isinstance(self._splitter, WindowTextSplitter) else SPLIT_STRUCTURE
             )
             return self._splitter, injected
-        strategy, chunk_size, section_part_max_chars = (
-            await knowledge_base_repository.get_split_config(
-                db, doc.kb_id, tenant_id=doc.tenant_id
-            )
-        )
+        (
+            strategy,
+            chunk_size,
+            section_part_max_chars,
+        ) = await knowledge_base_repository.get_split_config(db, doc.kb_id, tenant_id=doc.tenant_id)
         splitter = build_splitter(
             strategy,
             chunk_size=chunk_size,
@@ -281,9 +278,7 @@ class IndexingService:
         也决定读哪一份源文件。少了这次读，重解析就只能盲写文档行——那正是 #182 的洞。
         """
 
-        version_row = await document_version_repository.get_by_version(
-            db, str(doc.id), draft
-        )
+        version_row = await document_version_repository.get_by_version(db, str(doc.id), draft)
 
         # 分支 1：显式要求重解析。
         if reparse:
@@ -322,6 +317,8 @@ class IndexingService:
         allow_success: bool = False,
     ) -> int:
         """把一份已经登记在库的文档索引成切片，返回写入的切片数。
+
+        抢不到租约时返回 0：那是「另一个 Worker 正在跑」，调用方按跳过处理、不要重试。
 
         ``reparse=True`` 强制重解析原始文件（忽略库内正文）；``allow_success=True`` 让
         **已经是 SUCCESS 的文档**也能被抢占——那是「整库重建到新版本」（#142）要的：
@@ -408,9 +405,7 @@ class IndexingService:
             section_id = str(piece.metadata.get("section_id") or "")
             if not section_id:
                 continue
-            section_headings.setdefault(
-                section_id, str(piece.metadata.get("heading_path") or "")
-            )
+            section_headings.setdefault(section_id, str(piece.metadata.get("heading_path") or ""))
             section_texts.setdefault(section_id, []).append(piece.text)
         summaries = await summarize_sections(
             [
@@ -480,9 +475,7 @@ class IndexingService:
                     "split_strategy": split_strategy,
                     # 节说明也落库：排查时能看出「这条检索文本为什么这么拼」，
                     # 重建时也不必重新调模型。
-                    "section_context": summaries.get(
-                        str(piece.metadata.get("section_id") or "")
-                    ),
+                    "section_context": summaries.get(str(piece.metadata.get("section_id") or "")),
                     # 页号由切块器从「第 N 页」标题带下来（PDF 才有）；Markdown 为空。
                     "page": piece.metadata.get("page"),
                     # **这里没有 doc_version**：稿号是 ``chunks.doc_version`` 那一列
@@ -520,7 +513,17 @@ class IndexingService:
             db, doc, draft=draft, source=source, content=parsed.content
         )
 
-        await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
+        # 状态回写走一条显式 UPDATE（#212），并**检查它影响了几行**：库里这一行若已被删
+        # （或租户对不上），写得「成功」而实际一行没动正是本票要堵的那类静默失效。
+        written = await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
+        if written != 1:
+            logger.warning(
+                "document status write touched no row",
+                document_id=document_id,
+                tenant_id=doc.tenant_id,
+                kb_id=doc.kb_id,
+                written=written,
+            )
         await async_commit_now(db)
         logger.info(
             "document indexed",

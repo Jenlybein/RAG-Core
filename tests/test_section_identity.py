@@ -203,9 +203,15 @@ class _PipelineSession:
     async def get(self, _model: Any, ident: Any) -> Any | None:
         return self._document if ident == self._document.id else None
 
-    async def execute(self, _statement: Any) -> Any:
-        """抢占与库配置都已换成替身；这里只剩建边读节目录（#152），替身表示空版本。"""
+    async def execute(self, statement: Any) -> Any:
+        """抢占与库配置都已换成替身；这里只剩两件事：建边读节目录（#152，空版本）与
+        状态回写那条 ``UPDATE``（#212，回「写了一行」）。"""
 
+        verb = (
+            str(statement).lstrip().split(maxsplit=1)[0].upper() if str(statement).strip() else ""
+        )
+        if verb in {"INSERT", "UPDATE", "DELETE"}:
+            return _WriteResult(rowcount=1)
         return ZERO_COUNT
 
     async def flush(self) -> None:
@@ -219,6 +225,13 @@ class _PipelineSession:
 
     async def close(self) -> None:
         return None
+
+
+class _WriteResult:
+    """写语句的结果替身：只回答 ``rowcount``（语句发出去了 = 1 行）。"""
+
+    def __init__(self, rowcount: int) -> None:
+        self.rowcount = rowcount
 
 
 class _StubEmbeddings:
