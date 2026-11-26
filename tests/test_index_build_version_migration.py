@@ -554,8 +554,10 @@ def test_the_model_declares_the_same_table_as_the_migration() -> None:
     # * ``params``：第 16 步 #207（这一版构建用的切块参数）；
     # * ``documents_planned`` / ``doc_version`` / ``documents_done`` / ``converge_deadline``：
     #   票 #214（构建收敛的四列，迁移 ``b2c7d4e91a35``）；
-    # * ``failed_documents`` / ``redispatch_count``：票 #215（未入新版本的明细与重投次数，
-    #   迁移 ``e6a1d8c5f247``）。
+    # * ``failed_documents`` / ``redispatch_count``：票 #215 / #225（未入新版本的明细与重投次数，
+    #   迁移 ``c4e8f1b6a2d7``）；
+    # * ``auto_activate``：票 #215 的回归修法（改切块设置收敛成 ready 后立刻激活，迁移
+    #   ``f1a4b8d6c392``）。
     # 名单仍然是「逐列核对」而不是「至少包含」：漂移的方向可能是**少**一列（迁移漏写），
     # 那一种用「至少包含」永远验不出来。
     added_later = {
@@ -566,6 +568,7 @@ def test_the_model_declares_the_same_table_as_the_migration() -> None:
         "converge_deadline",
         "failed_documents",
         "redispatch_count",
+        "auto_activate",
     }
     assert {column.key for column in IndexBuildVersion.__table__.columns} == set(
         EXPECTED_VERSION_COLUMNS

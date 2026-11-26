@@ -65,6 +65,36 @@
           width: 100%;
         }
       }
+
+      /* 容量条（第 17 步 #221）：一条细条 + 一句「余多少」。
+         快满/满了的换色由页面上的 class 决定（这里只给默认态）。 */
+      .kb-capacity {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin: 6px 0 2px;
+        font-size: 11px;
+        color: var(--muted);
+        font-variant-numeric: tabular-nums;
+      }
+      .kb-capacity-text {
+        flex: none;
+      }
+      .kb-capacity-track {
+        flex: 1;
+        height: 4px;
+        border-radius: 999px;
+        background: color-mix(in srgb, var(--ink) 8%, transparent);
+        overflow: hidden;
+      }
+      .kb-capacity-fill {
+        height: 100%;
+        border-radius: 999px;
+        background: var(--accent);
+      }
+      .kb-capacity-note {
+        flex: none;
+      }
     </style>
   </head>
   <body>
@@ -152,6 +182,19 @@
                     <p class="metric-value">512</p>
                     <p class="metric-label">token 窗口</p>
                   </div>
+                </div>
+                <!--
+                  容量条（第 17 步 #221 / 用户故事 #13）：用户在**上传之前**就该知道还剩多少空间。
+                  「已用 1.8 万 / 3 万」是已落库的 token 合计，与容量硬拦同一个数——所以这条
+                  进度条不会和「传上去被拒」自相矛盾。快满换橙色、满了直接写「需先删文档」：
+                  那时的处置是删东西，而「额度用尽」的处置是等明天，是两句话。
+                -->
+                <div class="kb-capacity">
+                  <span class="kb-capacity-text">1.8 万 / 3 万 token</span>
+                  <div class="kb-capacity-track">
+                    <div class="kb-capacity-fill" style="width: 60%"></div>
+                  </div>
+                  <span class="kb-capacity-note">余 1.2 万</span>
                 </div>
                 <div class="kb-foot">
                   <button class="btn btn--text" type="button">上传</button>

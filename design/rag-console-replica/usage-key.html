@@ -162,6 +162,17 @@
               <div class="progress"><span style="width: 1%; background: linear-gradient(90deg, #7d7bf0, #5e5ce6)"></span></div>
               <span class="meter-num">2 / 300</span>
             </div>
+
+            <!--
+              为什么单 Key 视图**没有**「切块」那一栏（第 17 步 #222 / #223）：
+
+              切块额度是**租户级**的——索引是后台动作，没有「哪把 Key 发起的」这回事
+              （`key_id` 恒为 NULL）。按 Key 拆只会得到一堆 0，或者更糟：按比例捏一个假的分摊数。
+              所以这里不画第四栏，而是用一句话说清它去哪了——凭空消失会让人以为「用量页那栏是假的」。
+            -->
+            <p class="t-12 faint" style="margin-top: 10px">
+              切块额度是租户级的（索引由后台触发，不归属某把 Key）——见<strong>租户用量</strong>页的第四栏。
+            </p>
           </div>
         </section>
 

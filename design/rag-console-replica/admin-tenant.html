@@ -112,6 +112,34 @@
           </div>
         </div>
 
+        <!--
+          容量与额度（第 17 步 #221 / #222，用户故事 #34）：管理员下钻要看的不该只有「调用了几次」。
+          这四格是**这一票新增的全部可运营旋钮**——库数、文档数（旧有的两道）、单库 token、今日切块。
+          「剩余」比「上限」更该被看见：运营接到「能不能给他提额」的问题时，要看的就是还剩多少。
+        -->
+        <div class="grid grid-4" style="margin-top: 12px">
+          <div class="card card-body">
+            <p class="metric-label">知识库</p>
+            <p class="metric-value stat-value">6<span class="stat-unit">/ 10</span></p>
+            <p class="stat-foot">进阶版上限</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">文档总数</p>
+            <p class="metric-value stat-value">412<span class="stat-unit">/ 2,000</span></p>
+            <p class="stat-foot">10 个库 × 200 篇的合计口径</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">单库 token</p>
+            <p class="metric-value stat-value">1.8<span class="stat-unit">万 / 30 万</span></p>
+            <p class="stat-foot">最大的那个库</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">今日切块</p>
+            <p class="metric-value stat-value">0.9<span class="stat-unit">万 / 400 万</span></p>
+            <p class="stat-foot">按 token 计 · 租户级</p>
+          </div>
+        </div>
+
         <section class="card card-body">
           <div class="section-head">
             <h2 class="section-title">调用趋势</h2>

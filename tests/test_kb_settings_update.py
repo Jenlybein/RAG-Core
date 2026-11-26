@@ -115,9 +115,17 @@ class _FakeBuildService:
     calls: list[dict[str, Any]] = []
 
     async def start_build(
-        self, _db: Any, *, kb_id: str, tenant_id: str, version: str | None = None
+        self,
+        _db: Any,
+        *,
+        kb_id: str,
+        tenant_id: str,
+        version: str | None = None,
+        auto_activate: bool = False,
     ) -> Any:
-        _FakeBuildService.calls.append({"kb_id": kb_id, "tenant_id": tenant_id})
+        _FakeBuildService.calls.append(
+            {"kb_id": kb_id, "tenant_id": tenant_id, "auto_activate": auto_activate}
+        )
         return _FakeBuild()
 
 
@@ -207,7 +215,10 @@ async def test_a_confirmed_change_writes_settings_audit_and_starts_one_build(
     assert audits[0]["action"] == console_kb_service.ACTION_KB_SETTINGS_UPDATE
     assert audits[0]["before"]["section_part_max_chars"] == 2000
     assert audits[0]["after"]["section_part_max_chars"] == 1600
-    assert _FakeBuildService.calls == [{"kb_id": "kb-1", "tenant_id": "tenant_demo"}]
+    assert _FakeBuildService.calls == [
+        # 改设置这条路径**要**自动激活（#215 的回归修法：布尔量记在构建行上，不靠载荷传）
+        {"kb_id": "kb-1", "tenant_id": "tenant_demo", "auto_activate": True}
+    ]
     assert data["build_id"] == "build-1"
     assert len(scheduled) == 1, "投递登记在提交之后，不是当场发"
 

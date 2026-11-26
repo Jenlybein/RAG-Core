@@ -573,6 +573,8 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
         "error_message",
         "source_type",
         "created_at",
+        # 第 17 步 #220：每篇文档的正文 token 数（用户故事 #12）。
+        "token_count",
     }
     assert counter_calls == [["doc-a", "doc-b", "doc-c"]], "一次分组查询覆盖全部文档，别 N+1"
 

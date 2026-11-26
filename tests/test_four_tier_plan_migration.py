@@ -158,7 +158,7 @@ def test_the_migration_values_are_exactly_the_seed_presets() -> None:
         for column in PLAN_BUSINESS_COLUMNS:
             if column in _RECONCILED_AFTER_MIGRATION or column in _ADDED_AFTER_MIGRATION:
                 # 被后续迁移改过 / 后来才加的列由那些迁移负责对齐（见 ``d5f9c2a7b3e8`` /
-                # ``e6a1d8c5f247``）：历史迁移表里根本没有它们。
+                # ``c3d6e9f2b5a8``）：历史迁移表里根本没有它们。
                 continue
             assert values[column] == getattr(PLAN_PRESETS[code], column), f"{code}.{column}"
 
