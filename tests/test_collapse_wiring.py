@@ -116,9 +116,16 @@ def _meta(heading: str, **extra: Any) -> dict:
 
 
 def _row(
-    index: int, content: str, chunk_id: str, heading: str, kind: str = "prose", table_part: int = 0
+    index: int,
+    content: str,
+    chunk_id: str,
+    heading: str,
+    kind: str = "prose",
+    table_part: int = 0,
+    section_part: int = 0,
 ) -> tuple:
-    return (DOC, heading, index, content, chunk_id, kind, table_part)
+    # 行形态跟 ``_group_unit_rows`` 对齐：(文档, 路径, 节段号, 序号, 正文, id, 类型, table_part)
+    return (DOC, heading, section_part, index, content, chunk_id, kind, table_part)
 
 
 def test_two_hits_in_one_unit_occupy_one_slot() -> None:
@@ -142,7 +149,7 @@ def test_two_hits_in_one_unit_occupy_one_slot() -> None:
     assert len(results) == 1
     assert results[0]["chunk_id"] == "c-1", "代表片是分最高的那片"
     assert results[0]["section_id"] == UNIT_A, "身份是节，不是片"
-    assert results[0]["expansion"] == "parent"
+    assert results[0]["expansion"] == "neighbors", "命中两片给覆盖窗口（第 16 步 #207），不再整节"
     assert results[0]["source_chunk_ids"] == ["c-1", "c-2"]
     assert results[0]["content"] == "第零片。\n\n第一片。\n\n第二片。"
     assert results[0]["page"] == 3 and results[0]["doc_version"] == 1

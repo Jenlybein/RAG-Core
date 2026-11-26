@@ -1,0 +1,293 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>单 Key 用量 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="usage.css" />
+    <script src="assets/echarts.min.js"></script>
+    <script src="usage-charts.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="knowledge-bases.html">知识库管理</a>
+            <a class="nav-pill" href="keys.html">Key 与密钥配置</a>
+            <a class="nav-pill is-active" href="usage.html">用量</a>
+            <a class="nav-pill" href="retrieve.html">检索调试台</a>
+            <a class="nav-pill" href="traces.html">检索记录</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill">
+            <span class="account-name">bob</span>
+            <span class="account-role">联调租户B</span>
+          </span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">bob-prod</h1>
+          <div class="page-actions">
+            <div class="segmented" id="win" role="group" aria-label="统计时间窗">
+              <button type="button" data-win="1h">1 小时</button>
+              <button type="button" data-win="1d" class="is-active">1 天</button>
+              <button type="button" data-win="7d">7 天</button>
+              <button type="button" data-win="30d">30 天</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card card--panel">
+          <div class="card-head">
+            <span class="badge badge--ok">生效中</span>
+            <span class="mono-tag">rc_live_…4f3a2</span>
+            <a class="link-arrow" href="keys.html">
+              Key 与密钥配置
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </a>
+          </div>
+          <div class="card-body">
+            <div class="row wrap" style="gap: 6px">
+              <span class="chip">hybrid</span>
+              <span class="chip">top_k 8</span>
+              <span class="chip">rerank 开</span>
+              <span class="chip">库范围 3 个</span>
+              <span class="chip">展开表格行</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-4">
+          <div class="card card-body">
+            <p class="metric-label">调用次数</p>
+            <p class="metric-value stat-value" id="kpi-calls">—</p>
+            <p class="stat-foot" id="kpi-calls-foot">—</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">成功率</p>
+            <p class="metric-value stat-value" id="kpi-ok">—</p>
+            <p class="stat-foot" id="kpi-ok-foot">—</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">P95 耗时</p>
+            <p class="metric-value stat-value" id="kpi-p95">—</p>
+            <p class="stat-foot" id="kpi-p95-foot">—</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">今日额度</p>
+            <p class="metric-value stat-value">4<span class="stat-unit">%</span></p>
+            <p class="stat-foot">190 / 5,000</p>
+          </div>
+        </div>
+
+        <section class="card card-body">
+          <div class="section-head">
+            <h2 class="section-title">调用趋势</h2>
+            <span class="section-meta" id="trend-meta">—</span>
+          </div>
+          <div class="chart-box chart-box--lg" id="chart-trend"></div>
+        </section>
+
+        <div class="grid grid-2">
+          <section class="card card-body">
+            <div class="section-head">
+              <h2 class="section-title">延迟分布</h2>
+              <span class="section-meta">P95 612 · 最慢 1.5 s</span>
+            </div>
+            <div class="chart-box chart-box--md" id="chart-latency"></div>
+          </section>
+
+          <section class="card card-body">
+            <div class="section-head">
+              <h2 class="section-title">失败原因</h2>
+              <span class="section-meta" id="fail-meta">—</span>
+            </div>
+            <div class="chart-box chart-box--md" id="chart-fail"></div>
+          </section>
+        </div>
+
+        <section class="card card-body">
+          <div class="section-head">
+            <h2 class="section-title">额度</h2>
+            <span class="section-meta">取配置与套餐里更紧的那个</span>
+          </div>
+          <div class="mt-4 meter-block">
+            <div class="meter-row">
+              <span class="meter-name"><i class="meter-dot"></i>检索 / 今日</span>
+              <div class="progress"><span style="width: 4%"></span></div>
+              <span class="meter-num">190 / 5,000</span>
+            </div>
+            <div class="meter-row">
+              <span class="meter-name"><i class="meter-dot"></i>检索 / 每秒</span>
+              <div class="progress"><span style="width: 40%"></span></div>
+              <span class="meter-num">4 / 10</span>
+            </div>
+            <div class="meter-row">
+              <span class="meter-name"><i class="meter-dot meter-dot--rr"></i>重排 / 今日</span>
+              <div class="progress"><span style="width: 2%; background: linear-gradient(90deg, #ffb340, #ff9f0a)"></span></div>
+              <span class="meter-num">22 / 1,000</span>
+            </div>
+            <div class="meter-row">
+              <span class="meter-name"><i class="meter-dot meter-dot--llm"></i>大模型 / 今日</span>
+              <div class="progress"><span style="width: 1%; background: linear-gradient(90deg, #7d7bf0, #5e5ce6)"></span></div>
+              <span class="meter-num">2 / 300</span>
+            </div>
+          </div>
+        </section>
+
+        <section class="card card--panel">
+          <div class="card-head">
+            <span class="th-label">最近失败</span>
+            <a class="link-arrow" href="traces.html">
+              检索记录
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+            </a>
+          </div>
+          <div class="card-body">
+            <div class="table-wrap">
+              <table class="table table--nowrap">
+                <thead>
+                  <tr>
+                    <th>时间</th>
+                    <th>接口</th>
+                    <th>业务码</th>
+                    <th class="num-end">耗时</th>
+                    <th>trace</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td class="nowrap">04:31:07</td>
+                    <td class="muted">retrieve</td>
+                    <td><span class="badge badge--fail">20014 额度用尽</span></td>
+                    <td class="num-end">12<span class="unit">ms</span></td>
+                    <td class="mono muted">7c2a…</td>
+                  </tr>
+                  <tr>
+                    <td class="nowrap">03:58:44</td>
+                    <td class="muted">retrieve</td>
+                    <td><span class="badge badge--indexing">20013 越权</span></td>
+                    <td class="num-end">9<span class="unit">ms</span></td>
+                    <td class="mono muted">b18e…</td>
+                  </tr>
+                  <tr>
+                    <td class="nowrap">03:12:20</td>
+                    <td class="muted">rerank</td>
+                    <td><span class="badge badge--fail">50002 上游超时</span></td>
+                    <td class="num-end">15.0<span class="unit">s</span></td>
+                    <td class="mono muted">0d55…</td>
+                  </tr>
+                  <tr>
+                    <td class="nowrap">02:47:03</td>
+                    <td class="muted">retrieve</td>
+                    <td><span class="badge badge--indexing">20013 越权</span></td>
+                    <td class="num-end">8<span class="unit">ms</span></td>
+                    <td class="mono muted">e3f1…</td>
+                  </tr>
+                  <tr>
+                    <td class="nowrap">01:20:55</td>
+                    <td class="muted">retrieve</td>
+                    <td><span class="badge badge--fail">20014 额度用尽</span></td>
+                    <td class="num-end">11<span class="unit">ms</span></td>
+                    <td class="mono muted">5a90…</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script>
+      const U = window.UsageCharts;
+
+      // 这一把 Key 约占租户 62%
+      const KEY_BASE = 794;
+      const BUCKETS = ['<200', '200–400', '400–600', '600–800', '800–1k', '1–1.5s', '>1.5s'];
+      const BUCKET_N = [186, 412, 528, 301, 122, 47, 12];
+      const FAILS = [
+        { name: '20014 额度用尽', share: 0.61, color: (p) => p.danger },
+        { name: '20013 越权', share: 0.28, color: (p) => p.star },
+        { name: '50002 上游超时', share: 0.11, color: (p) => p.accent },
+      ];
+
+      const state = { win: '1d', failed: 0 };
+
+      function render() {
+        const data = U.series(state.win, KEY_BASE, 11);
+        const total = U.sum(data.r) + U.sum(data.rr) + U.sum(data.llm);
+        const p95 = Math.round(data.p95.reduce((a, b) => a + b, 0) / data.p95.length);
+        const failed = Math.max(1, Math.round(total * 0.006));
+        state.failed = failed;
+
+        const prev = Math.round(total * ({ '1h': 1.02, '1d': 1.11, '7d': 0.91, '30d': 1.19 }[state.win]));
+        const delta = ((total - prev) / prev) * 100;
+
+        document.getElementById('kpi-calls').innerHTML = `${U.fmt(total)}<span class="stat-unit">次</span>`;
+        document.getElementById('kpi-calls-foot').innerHTML =
+          `<span class="${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '↑' : '↓'} ${Math.abs(delta).toFixed(1)}%</span> · 较上一窗口`;
+        document.getElementById('kpi-ok').innerHTML =
+          `${(((total - failed) / total) * 100).toFixed(1)}<span class="stat-unit">%</span>`;
+        document.getElementById('kpi-ok-foot').textContent = `失败 ${U.fmt(failed)} 次`;
+        document.getElementById('kpi-p95').innerHTML = `${U.fmt(p95)}<span class="stat-unit">ms</span>`;
+        document.getElementById('kpi-p95-foot').textContent = `最慢一次 ${U.fmt(Math.max(...data.p95))} ms`;
+        document.getElementById('trend-meta').textContent = U.WINDOWS[state.win].label;
+        document.getElementById('fail-meta').textContent = `共 ${U.fmt(failed)} 次`;
+
+        U.repaint();
+      }
+
+      window.addEventListener('DOMContentLoaded', () => {
+        U.mount('chart-trend', (p) => U.meters(p, U.series(state.win, KEY_BASE, 11)));
+        U.mount('chart-latency', (p) => U.vbars(p, BUCKETS, BUCKET_N));
+        U.mount('chart-fail', (p) =>
+          U.hbars(p, FAILS.map((f) => ({ name: f.name, value: Math.round(state.failed * f.share), color: f.color })), {
+            formatter: '{c} 次',
+          }),
+        );
+        U.watchTheme();
+
+        document.getElementById('win').addEventListener('click', (e) => {
+          const btn = e.target.closest('button[data-win]');
+          if (!btn) return;
+          state.win = btn.dataset.win;
+          [...document.querySelectorAll('#win button')].forEach((b) => b.classList.toggle('is-active', b === btn));
+          render();
+        });
+
+        render();
+      });
+    </script>
+  </body>
+</html>

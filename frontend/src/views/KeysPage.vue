@@ -6,12 +6,11 @@
  * 把结果放到哪。请求形状归 `services/keyService.ts`，判定（哪些字段算改动、预设怎么填）
  * 归 `utils/keyPolicy.ts`——组件里不再写第二份。
  *
- * 两条与安全相关的取舍（issue #92 / ADR-0004）：
+ * 两条与安全相关的取舍（issue #92，ADR-0004 修订版）：
  *
- * - **默认只显示 masked**。`GET /console/keys` 会回明文（调试台要拿原文打真实接口），
- *   但界面上先给 `rc_live_…9f2c`；要看原文必须二次确认，并且看完即弃——不写进任何
- *   storage、不进 URL、不留第二份 ref。列表数据里的明文是接口本来就会回的，页面无法也
- *   不该改变这一点，能做的是不主动展示、不持久化；
+ * - **列表里只有打码形态**。库里只存 scrypt 哈希与末 5 位，原文只在**签发那一刻**的
+ *   响应里出现过一次（`key_plaintext`），所以页面没有「显示原文」这个动作可做；能做的是
+ *   在签发成功后当场把那一串联交给人（复制 / 直接去调试台试一把），弹窗关掉就不再保留；
  * - 管理员的 `tenant_id` 为空，用户面板接口对他一律 20011；路由守卫（#85）已经把他挡在
  *   `/admin/*`，本页不重写这道判定。
  */
@@ -29,7 +28,9 @@ import { KEYS_QUERY_KEY, createKey, deleteKey, fetchKeys, patchPolicy } from '..
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { useRetrieveStore } from '../stores/retrieve'
 import {
+  MAX_UNIT_CHARS_DEFAULT,
   TOP_K_DEFAULT,
+  type IssuedKeyData,
   type KbOption,
   type KeyData,
   type KeyPolicyData,
@@ -97,7 +98,7 @@ function isKeyRow(row: unknown): row is KeyData {
     row !== null &&
     'key_id' in row &&
     'key_masked' in row &&
-    'key_value' in row
+    'status' in row
   )
 }
 
@@ -129,12 +130,6 @@ function policyChips(row: unknown): string[] {
 function keyLabel(row: unknown): string {
   const key = row as KeyData
   return key.label === null || key.label.trim() === '' ? '（未命名）' : key.label
-}
-
-/** 只显示 id 的前 8 位：完整的 UUID 会把这一行撑开；要全的在 title 里悬停看。 */
-function shortKeyId(row: unknown): string {
-  const id = (row as KeyData).key_id
-  return id.length <= 8 ? id : `${id.slice(0, 8)}…`
 }
 
 // —— 签发 / 编辑对话框 ——
@@ -173,6 +168,7 @@ function newPolicyForm(): PolicyForm {
     retrieval_rerank: false,
     include_parent: true,
     expand_table_rows: true,
+    max_unit_chars: MAX_UNIT_CHARS_DEFAULT,
   }
 }
 
@@ -225,7 +221,8 @@ async function save(): Promise<void> {
       })
       // 失效后**等**刷新完成再关框：本票验收里的「保存后立刻回显」就是这个等待。
       await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
-      ElMessage.success(`已签发：${created.key_masked}`)
+      // 原文只在这一个响应里存在过一次：先把它交给弹窗，关框即丢弃。
+      issuedKey.value = created
       closeEditor()
       return
     }
@@ -295,47 +292,59 @@ async function confirmDelete(): Promise<void> {
   }
 }
 
-// —— 获取密钥（默认只给 masked；二次确认；看完不缓存） ——
+// —— 签发成功后的「只此一次」 ——
 
-const revealTarget = ref<KeyData | null>(null)
-const revealConfirmOpen = ref(false)
-/** 只在「原文」弹窗打开期间存在；关闭即置空，不留任何第二份副本。 */
-const revealed = ref<{ keyId: string; value: string } | null>(null)
+/**
+ * 刚签发的那个响应。**它是原文在本页唯一的副本**：库里没有、列表接口也不会再给。
+ *
+ * 关窗即置空——不写 storage、不进 URL、不留在别的 ref。想再用只能重签一把，所以弹窗里
+ * 给的是「复制」和「去调试台试用」两个出口，而不是一句「请妥善保存」。
+ */
+const issuedKey = ref<IssuedKeyData | null>(null)
+/** 复制成功/失败的即时反馈（按钮文案换一下，比 toast 更近）。 */
+const copied = ref(false)
 
-const revealConfirmMessage = computed(() => {
-  const key = revealTarget.value
-  if (key === null) return ''
-  return (
-    `《${keyLabel(key)}》的密钥会以明文显示在当前页面（列表里只显示 ${key.key_masked}）。` +
-    '请勿录屏或截图；关闭这个窗口后页面不再保留它。'
-  )
-})
-
-function askReveal(row: unknown): void {
-  if (!isKeyRow(row)) return
-  revealTarget.value = row
-  revealConfirmOpen.value = true
-}
-
-function revealNow(): void {
-  const key = revealTarget.value
-  revealConfirmOpen.value = false
-  revealTarget.value = null
-  if (key === null) return
-  revealed.value = { keyId: key.key_id, value: key.key_value }
-}
-
-function hideReveal(): void {
-  // 「看完不缓存」的唯一实现点：关窗即丢弃，不写 storage、不留在别的 ref。
-  revealed.value = null
-}
-
-const revealOpen = computed({
-  get: () => revealed.value !== null,
+const issuedOpen = computed({
+  get: () => issuedKey.value !== null,
   set: (open: boolean) => {
-    if (!open) hideReveal()
+    if (!open) closeIssued()
   },
 })
+
+function closeIssued(): void {
+  issuedKey.value = null
+  copied.value = false
+}
+
+async function copyIssuedKey(): Promise<void> {
+  const key = issuedKey.value
+  if (key === null) return
+  try {
+    await navigator.clipboard.writeText(key.key_plaintext)
+    copied.value = true
+  } catch {
+    // 剪贴板被浏览器拒绝（非 https、缺权限）时不要假装成功：让用户自己从输入框里选。
+    ElMessage.error('复制失败：请手动选中输入框里的内容复制')
+  }
+}
+
+/**
+ * 「去调试台试用」：把这串交给检索页的请求层，然后跳过去。
+ *
+ * 只写进内存（`lib/activeKey`）——调试台那台机器上的 Key 一律由用户自己粘贴，这里是
+ * 唯一一次「不用再粘」的例外，因为它就发生在签发之后的同一屏里。
+ */
+function goToDebug(): void {
+  const key = issuedKey.value
+  if (key === null) return
+  retrieveStore.selectKey({
+    keyId: key.key_id,
+    keyValue: key.key_plaintext,
+    allowedKbIds: key.policy?.allowed_kb_ids ?? [],
+  })
+  closeIssued()
+  void router.push('/retrieve')
+}
 
 // —— 「去改这把 Key 的配置」深链：`/keys?key_id=...` 直接打开它的编辑器 ——
 
@@ -363,7 +372,6 @@ watch(
   <section class="space-y-6">
   <PageHeader
     title="API Key"
-    subtitle="一把 Key 绑一套配置：库范围、能力、限额、检索参数。"
   />
     <el-card shadow="never">
       <template #header>
@@ -381,12 +389,8 @@ watch(
         {{ keysError }}
       </div>
 
-      <!-- 空态说下一步，不堆一句「还没有任何 Key」就完事 -->
       <div v-else-if="keys.length === 0" class="py-8 text-center">
         <p class="text-[15px] font-semibold text-ink">还没有 Key</p>
-        <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted">
-          签发一把之后，去「检索调试台」选中它就能用它的原文打真实接口。
-        </p>
         <el-button type="primary" class="!mt-5" @click="openIssue">签发新 Key</el-button>
       </div>
 
@@ -405,7 +409,10 @@ watch(
           class="flex flex-wrap items-start justify-between gap-x-6 gap-y-3 py-4 first:pt-1 last:pb-1"
         >
           <div class="min-w-0 flex-1 space-y-2">
-            <!-- 第一层：名字 + 状态 + 短 id -->
+            <!-- 第一层：名字 + 状态。
+                 key_id 不显示：它是数据面的行身份证，对使用者没有意义（要操作这把 Key
+                 就点右边按钮），而露出 UUID 只会让人以为那是一串「密钥」，
+                 反而增加「能不能贴到别处用」的误判。 -->
             <div class="flex flex-wrap items-center gap-2">
               <span class="text-sm font-semibold text-ink">{{ keyLabel(row) }}</span>
               <span
@@ -413,9 +420,6 @@ watch(
                 :style="statusPillStyle(row.status)"
               >
                 {{ keyStatusLabel(row.status) }}
-              </span>
-              <span class="font-mono text-xs text-muted" :title="row.key_id">
-                {{ shortKeyId(row) }}
               </span>
             </div>
 
@@ -436,9 +440,6 @@ watch(
               @click="openEdit(row)"
             >
               编辑配置
-            </el-button>
-            <el-button link type="primary" size="small" @click="askReveal(row)">
-              获取密钥
             </el-button>
             <!--
               文案刻意是「删除 Key」而不是「删除配置」：这个按钮删的是凭证行，
@@ -467,13 +468,12 @@ watch(
             v-model="issueLabel"
             maxlength="128"
             show-word-limit
-            placeholder="例如：集成 A —— 只给人看，鉴权不读它"
+            placeholder="例如：集成 A"
           />
         </el-form-item>
       </el-form>
       <p v-else class="mb-3 text-xs text-slate-500">
         正在编辑《{{ keyLabel(editingKey) }}》（<code class="font-mono">{{ editingKey.key_masked }}</code>）
-        的密钥配置；改完保存后，用它发起的下一次检索立即按新配置执行。
       </p>
 
       <KeyPolicyEditor
@@ -503,26 +503,38 @@ watch(
       @confirm="confirmDelete"
     />
 
-    <!-- 获取密钥的二次确认 -->
-    <ConfirmDialog
-      v-model="revealConfirmOpen"
-      title="获取密钥"
-      :message="revealConfirmMessage"
-      confirm-text="获取密钥"
-      @confirm="revealNow"
-    />
-
-    <!-- 明文弹窗：关掉即丢弃（`revealOpen` 的 setter 会清空 revealed） -->
-    <el-dialog v-model="revealOpen" append-to-body title="密钥明文（关闭后不再保留）" width="640px">
-      <el-input
-        :model-value="revealed?.value ?? ''"
-        readonly
-        class="font-mono"
-        placeholder=""
-      />
-      <p class="mt-2 text-xs text-slate-500">
-        不要截图或分享；这把 Key 的有效期与状态以列表里的状态列为准。
+    <!--
+      签发成功后的一次性弹窗：完整 Key 只在这里出现。关掉之后库里只剩 scrypt 哈希，
+      所以出口给两个——复制走，或者直接去调试台拿它打一次真实接口。
+    -->
+    <el-dialog
+      v-model="issuedOpen"
+      append-to-body
+      title="这把 Key 只显示这一次"
+      width="640px"
+    >
+      <p class="mb-2 text-sm text-ink">
+        服务端只保存它的哈希与末 5 位（列表里显示为
+        <code class="font-mono">{{ issuedKey?.key_masked }}</code>）。关掉这个窗口后就再也
+        取不回来了，丢了只能重新签发一把。
       </p>
+      <el-input
+        :model-value="issuedKey?.key_plaintext ?? ''"
+        readonly
+        type="textarea"
+        :rows="3"
+        class="font-mono"
+        @focus="($event.target as HTMLTextAreaElement | null)?.select()"
+      />
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2">
+          <el-button @click="closeIssued">我已保存</el-button>
+          <el-button type="primary" plain @click="copyIssuedKey">
+            {{ copied ? '已复制' : '复制' }}
+          </el-button>
+          <el-button type="primary" @click="goToDebug">去调试台试用</el-button>
+        </div>
+      </template>
     </el-dialog>
   </section>
 </template>

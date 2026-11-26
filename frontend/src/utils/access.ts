@@ -30,6 +30,8 @@ export interface NavItem {
 export const USER_NAV: readonly NavItem[] = [
   { to: '/knowledge-bases', label: '知识库管理' },
   { to: '/keys', label: 'Key 与密钥配置' },
+  // 第 14 步：用量排在 Key 之后——先管 Key，再看它用了多少。
+  { to: '/usage', label: '用量' },
   { to: '/retrieve', label: '检索调试台' },
   { to: '/traces', label: '检索记录' },
   // 第 13 步：语义评测是平台自检工具（跑固定语料、管理员看），不是租户自助功能——
@@ -51,6 +53,8 @@ export const ADMIN_NAV: readonly NavItem[] = [
   { to: '/admin/models', label: '模型配置' },
   { to: '/admin/retrieval', label: '检索参数' },
   { to: '/admin/observability', label: '观测' },
+  // 第 14 步：用量紧跟观测——同一块数据的两个视角（质量 / 量）。
+  { to: '/admin/usage', label: '用量' },
   // 第 13 步：语义评测从用户面板搬进管理员后台（平台自检工具，不是租户功能）。
   { to: '/admin/evaluation', label: '语义评测' },
 ]

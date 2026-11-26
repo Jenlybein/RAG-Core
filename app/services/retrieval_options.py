@@ -115,6 +115,9 @@ class RetrievalOptions:
     top_k: int
     fold_to_sections: bool
     expand_table_rows: bool
+    #: 一条结果 ``content`` 的硬上限（字符数，第 16 步 #207）。来自这把 Key 的配置，
+    #: 与 ``top_k`` 一样是「这次调用要多少东西」的旋钮。
+    max_unit_chars: int
     rerank: bool
     #: 重排**本该跑却没跑**的原因（第 13 步）：目前只有「额度用尽」一种，值是固定串
     #: ``rerank quota exhausted``。``rerank=False`` 时它才有意义，链路据它把降级原因
@@ -179,6 +182,7 @@ def options_from_params(
         top_k=params.top_k,
         fold_to_sections=policy.include_parent,
         expand_table_rows=policy.expand_table_rows,
+        max_unit_chars=policy.max_unit_chars,
         rerank=params.rerank and rerank_on,
         tenant_policy=tenant_policy,
     )

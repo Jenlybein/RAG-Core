@@ -18,7 +18,7 @@
  * 5. **非法行标红**：`invalid=true` 表示库里那一行读时校验失败、运行期已回退到 `.env`
  *    值；页面显示 `invalid_reason` 与「已回退到 .env 值」，管理员据此去修那一行。
  * 6. **角色指针行在这里也能改**：它们是热更键，保存走同一条 PATCH；但更顺手的方式是
- *    到模型配置页用下拉改指向，所以输入框旁给了一条链接与说明。
+ *    到模型配置页用下拉改指向。
  * 7. **需重启档在面板上只读**：#93/#96 的验收都要求「需重启重建档在面板上不可编辑」。
  *    这一档不渲染任何输入控件，只显示当前值与来源；`source === 'db'` 的行标
  *    「已写入库，待重启生效」，要改请走运维流程。保存时因此只提交 hot 档的改动，
@@ -251,20 +251,6 @@ function tierBadgeText(tier: string): string {
   return '只读'
 }
 
-/** 某一档的说明：页头那句总说明之外，每档还要写清楚它为什么这样。 */
-function tierHint(tier: string): string {
-  if (tier === 'locked') {
-    return '改了等于换基础设施或能关掉鉴权：面板不提供入口，只能由部署方改 .env。'
-  }
-  if (tier === 'restart') {
-    return (
-      '面板不提供写入口：要改请走运维流程（重启 + 数据重建后生效）。' +
-      '已写入库的值会显示出来，但运行中的进程仍按旧值跑。'
-    )
-  }
-  return `可热改：保存后各进程最多 ${cacheTtl.value}s 内收敛，下一次检索即按新值跑。`
-}
-
 /**
  * 保存：校验 → 两步保存（试算 → 有影响才确认 → 真写）。
  *
@@ -324,7 +310,7 @@ async function refresh(): Promise<void> {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="检索参数" subtitle="按「改完要做什么」分只读 / 待重启 / 热生效三档。">
+    <PageHeader title="检索参数">
       <template #actions>
         <el-button v-if="groups.length > 1" size="small" @click="toggleAll">
           {{ allOpen ? '全部收起' : '全部展开' }}
@@ -382,8 +368,6 @@ async function refresh(): Promise<void> {
             </div>
           </template>
 
-          <p class="text-xs leading-relaxed text-muted">{{ tierHint(group.tier) }}</p>
-
           <div class="mt-3 overflow-x-auto">
             <!--
               四列而不是五列：原来还有一列「状态」（只读 / 面板只读 / 可热改），而分区标题
@@ -409,13 +393,6 @@ async function refresh(): Promise<void> {
               >
                 <td class="px-3 py-3">
                   <p class="font-mono text-[12px] font-medium text-ink">{{ row.key }}</p>
-                  <p v-if="isRolePointerKey(row.key)" class="mt-1 text-xs text-muted">
-                    角色指向；也能去
-                    <RouterLink to="/admin/models" class="underline hover:text-accent">
-                      模型配置页
-                    </RouterLink>
-                    用下拉改
-                  </p>
                 </td>
 
                 <td class="max-w-[22rem] px-3 py-3">

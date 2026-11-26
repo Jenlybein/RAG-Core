@@ -1,4 +1,4 @@
-"""管理端观测聚合：**跨租户**读 ``retrieval_traces`` 与 ``retrieval_feedback``。
+"""管理端观测聚合：**跨租户**读 ``usage_events`` 与 ``retrieval_feedback``。
 
 为什么单独一个模块而不是塞进 ``retrieval_trace_repository``：那个模块的每个方法都**强制带
 ``tenant_id``**（ADR-0006 决策 1），而这里要回答的是平台级问题（「全体租户今天一共查了多少、
@@ -19,10 +19,25 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.retrieval_feedback import RetrievalFeedback
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 
 
-async def totals(db: AsyncSession, *, since: datetime) -> dict[str, Any]:
+def scope_conditions(scope: str) -> list[Any]:
+    """三段式的过滤条件：``all`` / ``ok`` / ``failed``（第 14 步 #202）。
+
+    为什么 ``failed`` 用 ``code != 0`` 而不是「``code <> 0`` 或者 ``code is null``」：
+    迁移之前的行**没有码**，它们既不是成功也不是失败。把它们算进失败会让「失败率」
+    凭空长出来，而且没有任何迹象。它们只出现在 ``all`` 里。
+    """
+
+    if scope == "ok":
+        return [UsageEvent.code == 0]
+    if scope == "failed":
+        return [UsageEvent.code != 0]
+    return []
+
+
+async def totals(db: AsyncSession, *, since: datetime, scope: str = "all") -> dict[str, Any]:
     """窗口内的总量、耗时分位与降级/空结果计数。
 
     ``percentile_cont`` 直接下推给 Postgres：把行拉回 Python 再排序，在「一屏监控」这个
@@ -31,16 +46,24 @@ async def totals(db: AsyncSession, *, since: datetime) -> dict[str, Any]:
 
     statement = select(
         func.count().label("total"),
-        func.percentile_cont(0.5).within_group(RetrievalTrace.latency_ms).label("p50"),
-        func.percentile_cont(0.95).within_group(RetrievalTrace.latency_ms).label("p95"),
-        func.max(RetrievalTrace.latency_ms).label("worst"),
-        func.count().filter(RetrievalTrace.degraded_reason.is_not(None)).label("degraded"),
-        func.count().filter(RetrievalTrace.empty_reason.is_not(None)).label("empty"),
-    ).where(RetrievalTrace.created_at >= since)
+        func.percentile_cont(0.5).within_group(UsageEvent.latency_ms).label("p50"),
+        func.percentile_cont(0.95).within_group(UsageEvent.latency_ms).label("p95"),
+        func.max(UsageEvent.latency_ms).label("worst"),
+        func.count().filter(UsageEvent.degraded_reason.is_not(None)).label("degraded"),
+        func.count().filter(UsageEvent.empty_reason.is_not(None)).label("empty"),
+        # 第 14 步（#202）：「全部」这一档现在也含被挡下的请求，所以要能把它们拆出来看。
+        func.count().filter(UsageEvent.code == 0).label("ok"),
+        func.count().filter(UsageEvent.code.is_distinct_from(0)).label("not_ok"),
+        func.count().filter(UsageEvent.code.is_(None)).label("unknown_code"),
+    ).where(UsageEvent.created_at >= since, *scope_conditions(scope))
     row = (await db.execute(statement)).one()
     mapping = row._mapping
     return {
         "total": int(mapping["total"] or 0),
+        "ok": int(mapping["ok"] or 0),
+        # 「没成功」不含「不知道」：迁移之前的行没有码，把它们算成失败会让失败率凭空长出来。
+        "failed": int(mapping["not_ok"] or 0) - int(mapping["unknown_code"] or 0),
+        "unknown_code": int(mapping["unknown_code"] or 0),
         "latency": {
             "p50": _as_float(mapping["p50"]),
             "p95": _as_float(mapping["p95"]),
@@ -51,18 +74,20 @@ async def totals(db: AsyncSession, *, since: datetime) -> dict[str, Any]:
     }
 
 
-async def by_tenant(db: AsyncSession, *, since: datetime, limit: int = 10) -> list[dict[str, Any]]:
+async def by_tenant(
+    db: AsyncSession, *, since: datetime, limit: int = 10, scope: str = "all"
+) -> list[dict[str, Any]]:
     """按调用量排的租户榜，附带各自的降级率与平均耗时。"""
 
     statement = (
         select(
-            RetrievalTrace.tenant_id,
+            UsageEvent.tenant_id,
             func.count().label("total"),
-            func.count().filter(RetrievalTrace.degraded_reason.is_not(None)).label("degraded"),
-            func.avg(RetrievalTrace.latency_ms).label("avg_latency"),
+            func.count().filter(UsageEvent.degraded_reason.is_not(None)).label("degraded"),
+            func.avg(UsageEvent.latency_ms).label("avg_latency"),
         )
-        .where(RetrievalTrace.created_at >= since)
-        .group_by(RetrievalTrace.tenant_id)
+        .where(UsageEvent.created_at >= since, *scope_conditions(scope))
+        .group_by(UsageEvent.tenant_id)
         .order_by(func.count().desc())
         .limit(limit)
     )
@@ -85,17 +110,17 @@ async def by_tenant(db: AsyncSession, *, since: datetime, limit: int = 10) -> li
     return out
 
 
-async def hourly(db: AsyncSession, *, since: datetime) -> list[dict[str, Any]]:
+async def hourly(db: AsyncSession, *, since: datetime, scope: str = "all") -> list[dict[str, Any]]:
     """按小时分桶的调用量，用来画趋势线。
 
     桶里没有数据的小时**不补 0**：补 0 会把「服务没起来那段时间」画成一条掉到底的折线，
     看起来像流量骤降。前端遇到空档就断开折线。
     """
 
-    bucket = func.date_trunc("hour", RetrievalTrace.created_at)
+    bucket = func.date_trunc("hour", UsageEvent.created_at)
     statement = (
         select(bucket.label("bucket"), func.count().label("total"))
-        .where(RetrievalTrace.created_at >= since)
+        .where(UsageEvent.created_at >= since, *scope_conditions(scope))
         .group_by(bucket)
         .order_by(bucket)
     )
@@ -113,7 +138,10 @@ async def rating_histogram(db: AsyncSession, *, since: datetime) -> dict[int, in
         .where(RetrievalFeedback.created_at >= since)
         .group_by(RetrievalFeedback.score)
     )
-    return {int(row._mapping["score"]): int(row._mapping["total"] or 0) for row in (await db.execute(statement)).all()}
+    return {
+        int(row._mapping["score"]): int(row._mapping["total"] or 0)
+        for row in (await db.execute(statement)).all()
+    }
 
 
 def _as_float(value: Any) -> float | None:

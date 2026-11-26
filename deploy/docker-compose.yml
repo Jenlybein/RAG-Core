@@ -185,6 +185,10 @@ services:
       # Key 都被判 20010「无效或已停用」，而界面上看起来像 Key 本身坏了（真踩过）。
       # 想跑开发身份模式（curl 一行就通）：把这一行改成 "false"。
       AUTH_ENABLED: "true"
+      # 限流与日配额（#208）：**显式写在这里**，与代码默认值（true）双向确认。
+      # 从前它是默认 false，容器里漏配就是「所有租户无限额度、平台看起来完全健康」——
+      # 正是本仓库最怕的那类静默故障。要跑「无限额度」的演示，把它改成 "false"。
+      RATE_LIMIT_ENABLED: "true"
       # 观测栈：容器内按服务名连，浏览器按对外地址跳（见 LANGFUSE_PUBLIC_URL 的注释）。
       LANGFUSE_HOST: http://langfuse-web:3000
       LANGFUSE_PUBLIC_URL: http://localhost:3000

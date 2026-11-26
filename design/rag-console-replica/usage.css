@@ -1,0 +1,291 @@
+/**
+ * 用量四屏的局部样式
+ *
+ * 只放这几屏用到、`app.css` 里没有的东西：指标卡的大数字、图表容器高度、额度条的行、
+ * 可点表格行。共用令牌一律走 `tokens.css`，这里不写新的颜色值（系列色在 `usage-charts.js`
+ * 里从 CSS 变量读）。
+ */
+
+/* ── 指标卡：名称 + 大数字 + 单位 ── */
+.stat-value {
+  margin-top: 6px;
+  font-size: var(--fs-26);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+}
+
+.stat-unit {
+  margin-left: 4px;
+  font-size: var(--fs-13);
+  font-weight: 400;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.stat-foot {
+  margin-top: 6px;
+  font-size: var(--fs-12);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-foot .up {
+  color: var(--ok-ink);
+}
+
+.stat-foot .down {
+  color: var(--fail-ink);
+}
+
+/* ── 图表容器 ── */
+.chart-box {
+  width: 100%;
+  height: 240px;
+}
+
+.chart-box--lg {
+  height: 268px;
+}
+
+.chart-box--md {
+  height: 196px;
+}
+
+.chart-box--sm {
+  height: 152px;
+}
+
+/* ── 今日额度：一行一本账，回答「还剩多少」 ──
+ *
+ * 上一行是名称与「剩余」——剩余才是这页要给的答案，所以给主字号；
+ * 下一行是消耗条与已用量，回答「用掉多少」。
+ * 条形只表达消耗程度，颜色按严重度升级：accent → star（≥80%）→ danger（100%）；
+ * 账本身份由名称前那个方点承担（与趋势图同一套系列色）。两条通道各说各的，不互相污染。
+ */
+.meter-block {
+  /* 不铺满整行：4% 的条放在 1,200px 宽里会只剩一道细线，看着像坏了；
+     但也不能太宽——剩余数字离名称太远就扫不到一行里去 */
+  max-width: 640px;
+  display: grid;
+}
+
+.meter + .meter {
+  margin-top: var(--sp-4);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line-lighter);
+}
+
+.meter-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: var(--sp-2) var(--sp-3);
+}
+
+.meter-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: var(--fs-13);
+  color: var(--ink);
+}
+
+/* 状态词只在非正常时出现：正常不该也挂一个「正常」，那是噪声 */
+.meter-state {
+  margin-left: 7px;
+  font-size: var(--fs-12);
+  font-weight: 500;
+  color: var(--indexing-ink);
+}
+
+.meter--out .meter-state {
+  color: var(--fail-ink);
+}
+
+.meter-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 3px;
+  background: var(--accent);
+  flex: none;
+}
+
+.meter-dot--rr {
+  background: var(--star);
+}
+
+.meter-dot--llm {
+  background: #5e5ce6;
+}
+
+.meter-left {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.meter-label {
+  font-size: var(--fs-12);
+  color: var(--muted);
+}
+
+.meter-remain {
+  font-size: var(--fs-17);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  color: var(--ink);
+}
+
+.meter-of {
+  font-size: var(--fs-12);
+  color: var(--muted);
+}
+
+.meter-bottom {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  margin-top: 7px;
+}
+
+.meter-bottom .progress {
+  flex: 1;
+}
+
+.meter-used {
+  font-size: var(--fs-12);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* 严重度：数字与条一起升级。只升一处会让人以为另一处还是「正常」 */
+.meter--near .meter-remain {
+  color: var(--indexing-ink);
+}
+
+.meter--near .progress > span {
+  background: var(--star);
+}
+
+.meter--out .meter-remain {
+  color: var(--fail-ink);
+}
+
+.meter--out .progress > span {
+  background: var(--danger);
+}
+
+/**
+ * 未统计：限流关着，计数从未写入 —— 平台不知道今天用了多少，
+ * 但**上限仍然知道**（它来自套餐）。所以：
+ *
+ * - 剩余位写「未统计」，用正文字号而不是数字字号——它不是数值，别占主数字的位置；
+ * - 条形换成虚线空槽：有空槽说明「这里本该有一条」，虚线说明「量未知」；
+ * - 不画 0%：0 是「查过确实是 0」，与「不知道」撞在一起就成了假话。
+ *
+ * 这是**整卡状态**（一本书没计数，三本都没有），所以三行一起变。
+ */
+.meter--unknown .meter-remain--word {
+  font-size: var(--fs-15);
+  font-weight: 500;
+  letter-spacing: 0;
+  color: var(--muted);
+}
+
+.progress--unknown {
+  background: transparent;
+  box-shadow: none;
+  border: 1px dashed var(--line-strong);
+  height: 7px;
+}
+
+/* ── 简单形式：只有「名称 | 条 | 已用 / 上限」，不算剩余 ──
+ *
+ * 单 Key 视图里的 QPS 行用它：每秒额度每秒归零，谈「今日剩余」没有意义；
+ * 而它仍然需要一根条来表达「这一刻用掉了多少」。
+ * 与上面的 `.meter` 是同一个组件的两档详略，不是两套视觉。
+ */
+.meter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 104px) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: var(--sp-3);
+}
+
+.meter-row + .meter-row {
+  margin-top: var(--sp-3);
+}
+
+.meter-num {
+  font-size: var(--fs-12);
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/**
+ * 用量页的两张表列数多（6 列），窄屏上浏览器会把列压到换行：
+ * 「2 分钟前」折成两行、数字与单位分家。这里拒绝折行，让 `.table-wrap`
+ * 的横向滚动接管——那本来就是这套窄屏表格的做法（不折字，横滑看）。
+ */
+.table--nowrap th,
+.table--nowrap td {
+  white-space: nowrap;
+}
+
+/* ── 可点表格行 ── */
+.table tbody tr.is-link {
+  cursor: pointer;
+}
+
+/* 表里那一列名字本身就是链接：给它 24px 的可点高度，不然只有字高 17px */
+.table a.ink.strong,
+.table span.ink.strong {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  white-space: nowrap;
+}
+
+/* ── 箭头链接（图标在 HTML 里，这里只给排布与可点高度） ── */
+.link-arrow {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 24px;
+  font-size: var(--fs-13);
+  color: var(--accent);
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .link-arrow:hover {
+    color: var(--accent-pressed);
+  }
+}
+
+/* ── 三栏说明（观测页的三段） ── */
+.scope-why {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--sp-4);
+}
+
+.scope-why h3 {
+  margin: 0 0 4px;
+  font-size: var(--fs-13);
+  font-weight: 600;
+  color: var(--ink);
+}
+
+@media (max-width: 900px) {
+  .scope-why {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .chart-box--lg {
+    height: 220px;
+  }
+}

@@ -65,7 +65,10 @@ router = APIRouter(prefix="/console", tags=["console"])
 
 
 def _me_data(view: console_service.ConsoleView) -> MeData:
-    """「我的视图」→ 响应体；管理员没有租户，于是 tenant / plan / usage 三栏为 ``null``。
+    """「我的视图」→ 响应体；管理员没有租户，于是 tenant / plan / 三本账全为 ``null``。
+
+    三本账按 :data:`console_service.METER_BOOKS` 循环，一份清单驱动三栏：字段名、
+    套餐列、日桶前缀都只在那张表里写一次（``/auth/me`` 用的是同一张表）。
 
     第 13 步：档位参数注册表（profile_presets）已随表一起删除，``me`` 不再回显档位预设。
     """
@@ -74,20 +77,16 @@ def _me_data(view: console_service.ConsoleView) -> MeData:
         account=account_data(view.account),
         tenant=tenant_data(view.tenant) if view.tenant is not None else None,
         plan=plan_snapshot_data(view.plan) if view.plan is not None else None,
-        usage=(
-            usage_data(used=view.usage.used, limit=view.usage.limit)
-            if view.usage is not None
-            else None
-        ),
-        # Research 用量与检索用量**同形**（票 #150）：同一个 ``usage_data`` 映射，
-        # 只是这一栏读另一本账（``quota:research:*``）。
-        llm_usage=(
-            usage_data(
-                used=view.llm_usage.used, limit=view.llm_usage.limit
+        # 三栏**同形**（票 #150）：同一个 ``usage_data`` 映射，只是各读各的账。
+        # 合成一个总数，面板上就没有「哪一本快用完了」这个答案了。
+        **{
+            book.field: (
+                None
+                if (meter := getattr(view, book.field)) is None
+                else usage_data(used=meter.used, limit=meter.limit)
             )
-            if view.llm_usage is not None
-            else None
-        ),
+            for book in console_service.METER_BOOKS
+        },
     )
 
 

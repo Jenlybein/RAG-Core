@@ -1089,7 +1089,6 @@ def _environment_section(payload: Mapping[str, Any]) -> list[str]:
         for label, key in (
             ("重排", "rerank_enabled"),
             ("改写", "query_rewrite_enabled"),
-            ("同义词扩展", "synonym_expansion_enabled"),
         )
     )
     rows = [

@@ -78,3 +78,29 @@ def test_source_chunk_ids_defaults_to_empty_list() -> None:
     assert chunk.source_chunk_ids == []
     assert chunk.section_id is None
     assert chunk.expansion is None
+
+
+def test_the_result_says_which_part_and_whether_it_was_cut() -> None:
+    """一条结果要能说出「这是同一节的第几段」与「正文被裁过没有」（第 16 步 #207）。
+
+    这两项都是**防误读**的字段：没有 ``section_part``，同一节的第 2 段看起来像另一节；
+    没有 ``truncated``，一个片段会被读成全文——而正文确实是有限的，只是调用方不知道。
+    """
+
+    chunk = RetrievedChunk.model_validate(_payload(section_part=2, truncated=True))
+
+    assert chunk.section_part == 2
+    assert chunk.truncated is True
+
+
+def test_an_old_index_result_defaults_to_part_zero_and_not_truncated() -> None:
+    """老索引没有段号、也没有裁过：缺省值必须是「第 0 段、没裁」。
+
+    缺省填反了（比如 ``truncated=True``）会让每一条老结果都挂着「被裁过」的标记，
+    那个提示很快就没人看了。
+    """
+
+    chunk = RetrievedChunk.model_validate(_payload())
+
+    assert chunk.section_part == 0
+    assert chunk.truncated is False

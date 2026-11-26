@@ -8,7 +8,8 @@ alembic 的 env.py 要 import 这个模块，确保每张表都注册到 Base.me
 第 8 步（#93）补上运行时配置覆盖表 ``runtime_settings``；#94 再补多模型配置表
 ``model_configs``；第 9 步（#105）再补反馈表 ``retrieval_feedback``；第 11 步（#141）
 再补索引构建版本表 ``index_build_versions``（ADR-0025：索引即构建产物）；第 12 步
-（#172）再补文档版本表 ``document_versions``（一稿一行）。
+（#172）再补文档版本表 ``document_versions``（一稿一行）；第 14 步（#199）把归属索引
+改名 ``usage_events`` 并补按天汇总表 ``usage_daily``（一行一次的账 + 13 个月的回溯）。
 """
 
 from app.models.account import Account
@@ -24,8 +25,9 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.model_config import ModelConfig
 from app.models.plan import Plan
 from app.models.retrieval_feedback import RetrievalFeedback
-from app.models.retrieval_trace import RetrievalTrace
 from app.models.runtime_setting import RuntimeSetting
+from app.models.usage_daily import UsageDaily
+from app.models.usage_event import UsageEvent
 from app.models.tenant import Tenant
 
 __all__ = [
@@ -42,7 +44,8 @@ __all__ = [
     "ModelConfig",
     "Plan",
     "RetrievalFeedback",
-    "RetrievalTrace",
     "RuntimeSetting",
     "Tenant",
+    "UsageDaily",
+    "UsageEvent",
 ]

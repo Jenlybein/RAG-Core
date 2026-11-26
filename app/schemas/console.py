@@ -119,10 +119,13 @@ class MeData(BaseModel):
     #: 今日租户级检索用量。管理员没有租户，因此为 ``None``；租户账号一定有一份
     #: ``UsageData``，其中 ``used=None`` 表示「开关关着、平台没在统计」。
     usage: UsageData | None = None
-    #: 今日租户级 **Research** 用量（票 #150）：与 ``usage`` **同形**（``used`` + ``limit``
-    #: + ``source=daily_counter``），只是读另一本账（``quota:research:*``）。分开报是因为
-    #: 两条链路各有各的额度——把它们加在一起，面板上就没有「哪一项快用完了」这个答案了。
+    #: 今日租户级 **大模型** 用量（票 #150）：与 ``usage`` **同形**（``used`` + ``limit``
+    #: + ``source``），只是读另一本账（``quota:llm:*``）。三本账分开报，是因为各本额度
+    #: 互不相干——把它们加在一起，面板上就没有「哪一本快用完了」这个答案了。
     llm_usage: UsageData | None = None
+    #: 今日租户级 **重排** 用量：三本账里的第三本，同形、读 ``quota:rerank:*``，
+    #: 上限来自套餐的 ``rerank_daily``。少报这一栏，三本账就只看得见两本。
+    rerank_usage: UsageData | None = None
     # 第 13 步：profile_presets 字段随档位表删除——参数直存，档位预设不再存在。
 
 

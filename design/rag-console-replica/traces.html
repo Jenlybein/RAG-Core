@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>检索记录 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 顶部筛选：下拉与刷新按钮同高，跟页面头右侧的基线对齐 */
+      .select--limit {
+        width: 104px;
+        height: 32px;
+      }
+      /* 桌面列宽来自 --page；窄屏时整表横向滚，不把 trace_id 挤到折行 */
+      .table {
+        min-width: 856px;
+        table-layout: fixed;
+      }
+      .col-time {
+        width: 168px;
+      }
+      .col-trace {
+        width: 132px;
+      }
+      .col-latency {
+        width: 92px;
+      }
+      .col-kb {
+        width: 72px;
+      }
+      .col-outcome {
+        width: 168px;
+      }
+      .col-score {
+        width: 84px;
+      }
+      .col-obs {
+        width: 140px;
+      }
+      /* 结局是纯文字，不是徽章：正常一行灰，降级 / 空结果 / 超时点成琥珀色（白底 6.2:1） */
+      .outcome {
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      .outcome--warn {
+        color: #9a4b08;
+      }
+      /* 评分：数字走 --text-regular，未评分是淡灰的「—」 */
+      .score {
+        color: var(--text-regular);
+      }
+      /* 观测栈外链：12px 蓝字下划线，只在去向是 langfuse 的行出现 */
+      .trace-link,
+      .obs-empty {
+        display: inline-block;
+        padding: 4px 0;
+        font-size: var(--fs-12);
+        line-height: 1.5;
+      }
+      .trace-link {
+        color: var(--accent);
+        text-decoration: underline;
+        text-underline-offset: 2px;
+        white-space: nowrap;
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .trace-link:hover {
+        
+                color: var(--accent-pressed);
+              
+      }
+    }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="knowledge-bases.html">知识库管理</a>
+            <a class="nav-pill" href="keys.html">Key 与密钥配置</a>
+            <a class="nav-pill" href="usage.html">用量</a>
+            <a class="nav-pill" href="retrieve.html">检索调试台</a>
+            <a class="nav-pill is-active" href="traces.html">检索记录</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill">
+            <span class="account-name">bob</span>
+          </span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">检索记录</h1>
+          <div class="page-actions">
+            <select class="select select--limit" aria-label="限制条数">
+              <option selected>10 条</option>
+              <option>20 条</option>
+              <option>50 条</option>
+              <option>100 条</option>
+            </select>
+            <button class="btn" type="button">
+              <svg
+                viewBox="0 0 24 24"
+                width="14"
+                height="14"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M20 11a8 8 0 1 0-2.6 5.9" />
+                <path d="M20 5v6h-6" />
+              </svg>
+              刷新
+            </button>
+          </div>
+        </div>
+
+        <div class="card card--panel">
+          <div class="card-body">
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th class="col-time">时间</th>
+                    <th class="col-trace">trace_id</th>
+                    <th class="col-latency num-end">耗时</th>
+                    <th class="col-kb num-end">库数</th>
+                    <th class="col-outcome">结局</th>
+                    <th class="col-score num-end">评分</th>
+                    <th class="col-obs"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="num t-12 muted">2026-11-22 14:31:08</span></td>
+                    <td>
+                      <span
+                        class="mono t-12 muted"
+                        title="a3f1c9d24e7b0e5661cd8a37f02b9c14"
+                        >a3f1c9d2…</span
+                      >
+                    </td>
+                    <td class="num num-end muted">412<span class="unit">ms</span></td>
+                    <td class="num num-end">2</td>
+                    <td><span class="outcome">正常</span></td>
+                    <td class="num num-end score">5<span class="unit">分</span></td>
+                    <td><a class="trace-link" href="#">在观测栈里打开</a></td>
+                  </tr>
+
+                  <tr>
+                    <td><span class="num t-12 muted">2026-11-22 14:28:41</span></td>
+                    <td>
+                      <span
+                        class="mono t-12 muted"
+                        title="7c05be8194a2f6d0b3e48c15a96d27ef"
+                        >7c05be81…</span
+                      >
+                    </td>
+                    <td class="num num-end muted">868<span class="unit">ms</span></td>
+                    <td class="num num-end">3</td>
+                    <td><span class="outcome">正常</span></td>
+                    <td class="num num-end score">4<span class="unit">分</span></td>
+                    <td><a class="trace-link" href="#">在观测栈里打开</a></td>
+                  </tr>
+
+                  <tr>
+                    <td><span class="num t-12 muted">2026-11-22 14:22:19</span></td>
+                    <td>
+                      <span
+                        class="mono t-12 muted"
+                        title="1d9e04af62c5b783e0a49fd153c8b206"
+                        >1d9e04af…</span
+                      >
+                    </td>
+                    <td class="num num-end muted">1,203<span class="unit">ms</span></td>
+                    <td class="num num-end">3</td>
+                    <td><span class="outcome outcome--warn">降级：重排超时</span></td>
+                    <td class="num-end"><span class="t-12 faint">—</span></td>
+                    <td><a class="trace-link" href="#">在观测栈里打开</a></td>
+                  </tr>
+
+                  <tr>
+                    <td><span class="num t-12 muted">2026-11-22 14:15:02</span></td>
+                    <td>
+                      <span
+                        class="mono t-12 muted"
+                        title="6b82f7c0934de15fa7c206b8e4d1935a"
+                        >6b82f7c0…</span
+                      >
+                    </td>
+                    <td class="num num-end muted">356<span class="unit">ms</span></td>
+                    <td class="num num-end">1</td>
+                    <td><span class="outcome outcome--warn">空结果：无召回</span></td>
+                    <td class="num-end"><span class="t-12 faint">—</span></td>
+                    <td><a class="trace-link" href="#">在观测栈里打开</a></td>
+                  </tr>
+
+                  <tr>
+                    <td><span class="num t-12 muted">2026-11-22 14:09:55</span></td>
+                    <td>
+                      <span
+                        class="mono t-12 muted"
+                        title="e4a1d63b05f792c8d1b4e60a37c58f92"
+                        >e4a1d63b…</span
+                      >
+                    </td>
+                    <td class="num num-end muted">507<span class="unit">ms</span></td>
+                    <td class="num num-end">2</td>
+                    <td><span class="outcome">正常</span></td>
+                    <td class="num num-end score">5<span class="unit">分</span></td>
+                    <td><a class="trace-link" href="#">在观测栈里打开</a></td>
+                  </tr>
+
+                  <tr>
+                    <td><span class="num t-12 muted">2026-11-22 13:58:12</span></td>
+                    <td>
+                      <span
+                        class="mono t-12 muted"
+                        title="2f6cb90d8134a7e5c0b92f6d48e13a70"
+                        >2f6cb90d…</span
+                      >
+                    </td>
+                    <td class="num num-end muted">274<span class="unit">ms</span></td>
+                    <td class="num num-end">0</td>
+                    <td><span class="outcome">正常</span></td>
+                    <td class="num-end"><span class="t-12 faint">—</span></td>
+                    <td>
+                      <span
+                        class="t-12 faint obs-empty"
+                        title="当前观测去向不是 langfuse，观测栈里没有这条 trace"
+                        >—</span
+                      >
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- 源码里的两态（读取失败 / 空态）备在这里，静态稿默认展示有数据的一态 -->
+        <div hidden>
+          <div class="alert alert--error">
+            读取检索记录失败：服务暂时不可用（业务码 20000）
+          </div>
+
+          <div class="empty">
+            <p class="empty-text">还没有检索记录。去「检索调试台」发一次检索，这里就会出现一行。</p>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

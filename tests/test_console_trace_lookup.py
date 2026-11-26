@@ -26,7 +26,7 @@ from fastapi.testclient import TestClient
 from app.core import passwords
 from app.models.account import Account
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
 from tests.fake_db import RecordingSession, override_all_db
@@ -61,8 +61,8 @@ def _account(account_id: str, username: str, tenant_id: str) -> Account:
     )
 
 
-def _trace(log_id: str, tenant_id: str) -> RetrievalTrace:
-    return RetrievalTrace(
+def _trace(log_id: str, tenant_id: str) -> UsageEvent:
+    return UsageEvent(
         id=log_id,
         tenant_id=tenant_id,
         trace_id=trace_id_for(log_id),
@@ -90,7 +90,7 @@ def _world() -> dict[type, list[Any]]:
     }
 
 
-def _trace_rows() -> list[RetrievalTrace]:
+def _trace_rows() -> list[UsageEvent]:
     """归属索引里的两行：Alpha 与 Beta 各一条（跨租户要的是「行在，但不属于你」）。"""
 
     return [_trace(LOG_ALPHA, TENANT_ALPHA), _trace("log-beta-0001", TENANT_BETA)]
@@ -113,7 +113,7 @@ def console() -> Iterator[_Harness]:
     console_deps = importlib.import_module("app.api.console_deps")
 
     world = _world()
-    world[RetrievalTrace] = _trace_rows()
+    world[UsageEvent] = _trace_rows()
     # 登录（写会话行）、身份判定与 trace_id 反查都在**同一个假库**上：身份判定自票 #129
     # 起走异步会话，它必须能读回登录刚写下的那一行，而读写看到同一个库正是生产里的形状
     # （两套连接池，一个库）。

@@ -172,7 +172,12 @@ def build_publisher_is_injected() -> bool:
 
 
 def enqueue_index_build(
-    *, build_id: str, tenant_id: str, request_id: str | None
+    *,
+    build_id: str,
+    tenant_id: str,
+    request_id: str | None,
+    #: 构建成功后立刻激活（第 16 步 #207）：只有「改了切块设置就生效」那条路径传 True。
+    activate: bool = False,
 ) -> None:
     """把「整库构建到某个版本」投递到 Broker。
 
@@ -190,8 +195,32 @@ def enqueue_index_build(
             "build_id": build_id,
             "tenant_id": tenant_id,
             "request_id": request_id,
+            "activate": activate,
         },
         task_id=f"build:{build_id}",
+    )
+
+
+async def enqueue_index_build_after_commit(
+    *,
+    publish: Callable[..., Any],
+    build_id: str,
+    tenant_id: str,
+    request_id: str | None,
+    activate: bool = False,
+) -> None:
+    """``after_commit`` 用的异步版本：参数与 :func:`enqueue_index_build` 逐字一致。
+
+    与 :func:`enqueue_document_after_commit` 同一条纪律：``publish`` 必须由调用方传自己
+    模块里的绑定，否则测试替身绕不过去，用例会在 ``to_thread`` 里真连 Broker。
+    """
+
+    await asyncio.to_thread(
+        publish,
+        build_id=build_id,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        activate=activate,
     )
 
 

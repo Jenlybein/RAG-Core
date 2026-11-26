@@ -84,6 +84,7 @@ async def collapse_results(
     top_k: int,
     fold_to_sections: bool,
     expand_table_rows: bool,
+    max_unit_chars: int = result_collapse.MAX_UNIT_CHARS_DEFAULT,
 ) -> list[dict]:
     """把命中的小片折成交付单元；关掉折叠时返回小片本身（与折叠之前逐字一致）。"""
 
@@ -106,6 +107,7 @@ async def collapse_results(
             chunks=with_locating,
             metas=metas,
             index_versions=index_versions,
+            max_unit_chars=max_unit_chars,
         )
 
     kb_ids = sorted({str(chunk["kb_id"]) for chunk in chunks if chunk.get("kb_id")})
@@ -135,43 +137,52 @@ async def collapse_results(
                 section_id=str(meta.get("section_id") or ""),
                 parent_section_id=str(meta.get("parent_section_id") or ""),
                 table_part=int(meta.get("table_part") or 0),
+                # 老索引没有这个键：缺省 0 = 整节，与切段之前完全一致。
+                section_part=int(meta.get("section_part") or 0),
                 heading_path=str(meta.get("heading_path") or ""),
                 kb_id=chunk.get("kb_id"),
             )
         )
 
-    # 一次查出这些单元（h2 级章节）下的全部切片，含挂在该节自己身上的片。
+    # 一次查出这些单元（h2 级章节**的某一节段**）下的全部切片，含挂在该节自己身上的片。
     # 用路径前缀而不是 parent_section_id：后者是上一级，对 h2 级的切片会指到 h1，
     # 按它归组会把整篇文档并成一个单元（这个坑真踩过）。
-    unit_paths = sorted(
+    #
+    # 键是 (路径, 节段号)：一个超长的 h2 在索引期被切成若干段（第 16 步 #207），
+    # 段与段是**不同的节**——只按路径取会把整节的片又拼回来，等于没切。
+    unit_keys = sorted(
         {
-            result_collapse.unit_path_of(hit.heading_path)
+            (result_collapse.unit_path_of(hit.heading_path), hit.section_part)
             for hit in hits
             if hit.heading_path
         }
     )
-    raw_rows: dict[tuple[str, str], list] = {}
-    if unit_paths:
+    raw_rows: dict[tuple[str, str, int], list] = {}
+    if unit_keys:
         for version, scoped_documents in _unit_row_scopes(chunks, index_versions):
             raw_rows.update(
                 await chunk_repository.fetch_unit_rows(
                     db,
                     tenant_id=tenant_id,
                     document_ids=scoped_documents,
-                    unit_paths=unit_paths,
+                    units=unit_keys,
                     index_version=version,
                 )
             )
 
-    # 一个单元键 = (种类, 文档, 单元 id[, table_part])。单元 id 由路径算出来
+    # 一个单元键 = (种类, 文档, 单元 id[, table_part][, 节段号])。单元 id 由路径算出来
     # （sha256(前两段)），所以不需要新增列，重建索引前后都稳定。
     sections: dict[result_collapse.UnitKey, result_collapse.SectionRows] = {}
     tables: dict[result_collapse.UnitKey, str] = {}
-    for (document_id, path), rows in raw_rows.items():
+    for (document_id, path, section_part), rows in raw_rows.items():
         unit_id = result_collapse.unit_id_of(path)
         if not unit_id:
             continue
-        sections[result_collapse.UnitKey(result_collapse.UNIT_SECTION, document_id, unit_id)] = tuple(
+        sections[
+            result_collapse.UnitKey(
+                result_collapse.UNIT_SECTION, document_id, unit_id, "", section_part
+            )
+        ] = tuple(
             (index, content, chunk_id) for index, content, chunk_id, _type, _part in rows
         )
         for _index, content, _chunk_id, chunk_type, table_part in rows:
@@ -188,6 +199,7 @@ async def collapse_results(
         tables=tables if expand_table_rows else None,
         top_k=top_k,
         merge_table_rows=expand_table_rows,
+        max_unit_chars=max_unit_chars,
     )
 
     # 唯一键是 (kb_id, chunk_id)（ADR-0010）：跨库同 ID 的两条结果必须能各自取到
@@ -207,6 +219,10 @@ async def collapse_results(
         row["heading_path"] = unit.heading_path or None
         row["source_chunk_ids"] = list(unit.source_chunk_ids)
         row["expansion"] = unit.expansion
+        # 第 16 步 #207：这条是同一节里的第几段，以及它被裁过没有。调用方要能分清
+        # 「同一节的第 2 段」不是另一节，也要知道片段后面还有内容。
+        row["section_part"] = unit.section_part
+        row["truncated"] = unit.truncated
         results.append(row)
 
     # meta 已经在上面查过一次，直接复用：同一次检索不为同一批 ID 查两遍库。
@@ -274,6 +290,7 @@ async def _with_parent_content(
     chunks: list[dict],
     metas: dict[tuple[str, str], dict],
     index_versions: Mapping[str, str],
+    max_unit_chars: int = result_collapse.MAX_UNIT_CHARS_DEFAULT,
 ) -> list[dict]:
     """折叠关闭时补**父节自己的**正文（ADR-0027 决策 7）：只附加内容，不改分数与排名。
 
@@ -321,5 +338,12 @@ async def _with_parent_content(
     for index, (document_id, parent_path) in targets.items():
         rows = parents.get((document_id, parent_path))
         if rows:
-            chunks[index]["parent_content"] = "\n\n".join(rows)
+            text = "\n\n".join(rows)
+            # 父节正文同样有上限（第 16 步 #207）：这条分支是「调用方自己关掉了折叠」，
+            # 但关掉折叠不等于允许把上万字塞回响应。
+            if len(text) > max_unit_chars:
+                chunks[index]["parent_content"] = text[:max_unit_chars]
+                chunks[index]["parent_content_truncated"] = True
+            else:
+                chunks[index]["parent_content"] = text
     return chunks

@@ -140,6 +140,7 @@ def test_the_contract_has_no_orchestration_key() -> None:
         top_k=5,
         fold_to_sections=True,
         expand_table_rows=True,
+        max_unit_chars=2000,
         rerank=False,
         tenant_policy=TenantPolicy(plan="pro"),
     )

@@ -549,7 +549,6 @@ async def _run(*, out_dir: Path | None) -> int:
     settings.ELASTICSEARCH_INDEX = KEYWORD_ALIAS
     settings.RERANK_ENABLED = False
     settings.QUERY_REWRITE_ENABLED = False
-    settings.SYNONYM_EXPANSION_ENABLED = False
 
     payload_questions = eval_refs.load_questions()
     questions = [

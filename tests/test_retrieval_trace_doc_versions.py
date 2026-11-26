@@ -32,7 +32,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.services import trace_identity
 from tests.fake_db import AsyncRecordingSession, AsyncSessionAdapter, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
@@ -57,7 +57,7 @@ IDENTITY = RetrievalIdentity(TENANT_ID)
 def test_the_trace_table_adds_a_doc_versions_mapping_column() -> None:
     """第十二列 `doc_versions`：**JSONB 映射**，可空（老行没有稿号可记）。"""
 
-    column = RetrievalTrace.__table__.columns["doc_versions"]
+    column = UsageEvent.__table__.columns["doc_versions"]
 
     assert str(column.type) == "JSONB", "映射必须是一个 JSON 对象，不是两个数组"
     assert column.nullable is True, "迁移之前写下的行没有稿号可记（那时稿号恒为 1）"
@@ -67,7 +67,7 @@ def test_the_column_is_named_for_the_draft_number_inside_the_mapping() -> None:
     """列名是 `doc_versions`（映射），与「当前稿指针」`current_version`、切片的
     `chunks.doc_version` 都不是同一件事——三个名字各说各的事（术语表「文档版本」）。"""
 
-    columns = {column.key for column in RetrievalTrace.__table__.columns}
+    columns = {column.key for column in UsageEvent.__table__.columns}
 
     assert "doc_versions" in columns
     assert "document_versions" not in columns, "别与版本表 `document_versions` 撞名"
@@ -112,7 +112,7 @@ def test_a_unit_without_a_draft_number_is_skipped_rather_than_guessed() -> None:
 # ────────────────────────────────────────────── 写入：服务层（独立短事务替身）
 
 
-def _record_trace(session: Any, **overrides: Any) -> list[RetrievalTrace]:
+def _record_trace(session: Any, **overrides: Any) -> list[UsageEvent]:
     """跑一次写入（走真实的 `record_retrieval_trace`），返回写进去的行。"""
 
     import asyncio
@@ -140,7 +140,7 @@ def _record_trace(session: Any, **overrides: Any) -> list[RetrievalTrace]:
         asyncio.run(service.record_retrieval_trace(**payload))
     finally:
         factory_mod.set_async_session_factory(None)
-    return session.added_of(RetrievalTrace)
+    return session.added_of(UsageEvent)
 
 
 def test_the_write_path_persists_the_draft_mapping() -> None:
@@ -293,7 +293,7 @@ def test_a_retrieval_records_the_draft_of_every_document_it_delivered(
     """
 
     with _offline_client(monkeypatch) as session:
-        rows = session.added_of(RetrievalTrace)
+        rows = session.added_of(UsageEvent)
 
     assert len(rows) == 1, "一次检索一行"
     assert rows[0].doc_versions == {"doc-1": 3, "doc-2": 1}

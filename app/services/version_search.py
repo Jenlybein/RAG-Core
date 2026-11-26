@@ -5,8 +5,15 @@
 
 ## 只读
 
-不改当前稿指针、不重建、**不写归属索引**（``retrieval_traces``）。一次排查不是一次检索：
-写进去会让「一次 Research」在统计里多出几行，而调用方完全看不出这件事。
+不改当前稿指针、不重建。**写账是另一件事，而且是必须的**（#208）：本模块提供
+:func:`record_version_search`，由调用方在每次直查结束后补一行 ``usage_events``。
+早先这里写的是「**不写归属索引**（``usage_events``）」，理由是「一次排查不是一次检索：
+写进去会让『一次 Research』在统计里多出几行」——**这条理由仍然成立**，所以那行账记的是
+``endpoint=version_search``、**三本账全 0**（它不扣任何额度、也不过配额门禁），只是
+让「谁在什么时候拿 Key 白调了一次 embedding」有据可查。留痕与扣费是两件事。
+
+本模块自己**仍然一次写都不做**：``search_document_version`` 是纯读，记账放在它外面
+（路由层与服务自己各补一次，见 :func:`record_version_search` 的文档）。
 
 ## 锁定「某篇某稿」，绕过「只看当前稿」
 
@@ -35,6 +42,9 @@ documents.current_version``，唯一的「当前稿」谓词）。历史稿的�
 
 from __future__ import annotations
 
+import time
+from collections.abc import Sequence
+
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -46,6 +56,10 @@ from app.repositories import (
     document_version_repository,
     knowledge_base_repository,
 )
+from app.services.retrieval_trace import record_retrieval_trace
+from app.services.trace_identity import trace_id_for
+from app.services.usage_meter import ENDPOINT_VERSION_SEARCH
+from app.utils.id_generator import new_retrieval_log_id
 
 logger = structlog.get_logger(__name__)
 
@@ -63,6 +77,7 @@ async def search_document_version(
     document_id: str,
     version: int,
     query: str,
+    key_id: str | None = None,
 ) -> dict:
     """在 ``document_id`` 的第 ``version`` 稿上跑一次只读向量检索。
 
@@ -78,17 +93,43 @@ async def search_document_version(
     回包带 ``is_current``：调用方要能一眼看出「查的这稿是不是当前稿」。它不是权限也不是
     开关，只是让排查的人知道结果代表哪个时刻。
 
-    读路径**不提交事务**：本函数一次写都不做，会话由调用方管理（路由层因此不声明事务依赖）。
+    读路径**不提交事务**：``search_document_version`` 一次写都不做，会话由调用方管理
+    （路由层因此不声明事务依赖）。**但每次调用都补一行账**（#208）——写账走
+    ``record_retrieval_trace`` 的独立短事务，失败只留 warning，不影响这次直查的返回。
+    三本账全 0：它不扣额度、也不过配额门禁，留痕只为可统计。
     """
 
+    started_at = time.perf_counter()
     doc = await document_repository.get_by_id_for_tenant_async(
         db, document_id, tenant_id=tenant_id
     )
     if doc is None:
+        await record_version_search(
+            tenant_id=tenant_id,
+            key_id=key_id,
+            document_id=document_id,
+            version=version,
+            kb_id=None,
+            index_version=None,
+            chunk_ids=(),
+            latency_ms=_elapsed_ms(started_at),
+            code=ErrorCode.NOT_FOUND,
+        )
         raise AppError(ErrorCode.NOT_FOUND)
 
     row = await document_version_repository.get_by_version(db, document_id, version)
     if row is None:
+        await record_version_search(
+            tenant_id=tenant_id,
+            key_id=key_id,
+            document_id=document_id,
+            version=version,
+            kb_id=doc.kb_id,
+            index_version=None,
+            chunk_ids=(),
+            latency_ms=_elapsed_ms(started_at),
+            code=ErrorCode.DOCUMENT_VERSION_NOT_FOUND,
+        )
         raise AppError(
             ErrorCode.DOCUMENT_VERSION_NOT_FOUND,
             "要查的稿次不存在",
@@ -110,7 +151,18 @@ async def search_document_version(
             index_version=index_version,
             top_k=VERSION_SEARCH_TOP_K,
         )
-    except AppError:
+    except AppError as exc:
+        await record_version_search(
+            tenant_id=tenant_id,
+            key_id=key_id,
+            document_id=document_id,
+            version=version,
+            kb_id=doc.kb_id,
+            index_version=index_version,
+            chunk_ids=(),
+            latency_ms=_elapsed_ms(started_at),
+            code=exc.code,
+        )
         raise
     except Exception as exc:  # noqa: BLE001 - 外部服务失败统一成 50002，见模块文档
         # 只记类型与范围：异常原文可能带着上游响应体（mapping 细节、内部字段名）。
@@ -121,7 +173,31 @@ async def search_document_version(
             doc_version=version,
             error=type(exc).__name__,
         )
+        await record_version_search(
+            tenant_id=tenant_id,
+            key_id=key_id,
+            document_id=document_id,
+            version=version,
+            kb_id=doc.kb_id,
+            index_version=index_version,
+            chunk_ids=(),
+            latency_ms=_elapsed_ms(started_at),
+            code=ErrorCode.RETRIEVAL_FAILED,
+        )
         raise AppError(ErrorCode.RETRIEVAL_FAILED, "version search failed") from exc
+
+    chunk_ids = [str(item["chunk_id"]) for item in rows]
+    await record_version_search(
+        tenant_id=tenant_id,
+        key_id=key_id,
+        document_id=document_id,
+        version=version,
+        kb_id=doc.kb_id,
+        index_version=index_version,
+        chunk_ids=chunk_ids,
+        latency_ms=_elapsed_ms(started_at),
+        code=0,
+    )
 
     return {
         "document_id": document_id,
@@ -140,4 +216,61 @@ async def search_document_version(
     }
 
 
-__all__ = ["VERSION_SEARCH_TOP_K", "search_document_version"]
+def _elapsed_ms(started_at: float) -> int:
+    """这次直查的墙钟耗时（毫秒）。整数毫秒：账本里的列就是整数。"""
+
+    return int((time.perf_counter() - started_at) * 1000)
+
+
+async def record_version_search(
+    *,
+    tenant_id: str,
+    key_id: str | None,
+    document_id: str,
+    version: int,
+    kb_id: str | None,
+    index_version: str | None,
+    chunk_ids: Sequence[str],
+    latency_ms: int,
+    code: int,
+) -> None:
+    """把一次直查写进 ``usage_events``：**一次调用一行**，三本账全 0（#208）。
+
+    为什么排查也要留一行：这条入口真的调一次 ``embed_query``（有模型成本），而此前账上
+    没有任何一行能回答「谁在拿 Key 白用它」。它**不扣任何额度**——三本账全 0、也不过配额
+    门禁——所以把它记成一次 ``retrieve`` 才会污染统计；记成自己的 ``version_search`` 不会。
+
+    ``index_versions`` 与 ``doc_versions`` 各一格：直查的语义就是「落在本次**某个构建**的
+    **某一稿**上」，这两项正是排查结论的依据（哪一版的数据、哪一稿的切片）。
+
+    失败也要记：``code`` 是这次的真实结局（``0`` = 成功，其余是业务码）。写账走
+    ``record_retrieval_trace`` 的独立短事务，任何失败只降级成一条 warning——账本坏了
+    不该让一次排查问不出来。
+    """
+
+    log_id = new_retrieval_log_id()
+    await record_retrieval_trace(
+        log_id=log_id,
+        trace_id=trace_id_for(log_id),
+        tenant_id=tenant_id,
+        key_id=key_id,
+        endpoint=ENDPOINT_VERSION_SEARCH,
+        code=code,
+        # 三本账全 0：它没有扣任何额度（不过配额门禁）。
+        meter_r=0,
+        meter_rr=0,
+        meter_llm=0,
+        kb_ids=[kb_id] if kb_id else [],
+        index_versions={kb_id: index_version} if kb_id and index_version else {},
+        doc_versions={document_id: version},
+        chunk_ids=list(chunk_ids),
+        top_k=VERSION_SEARCH_TOP_K,
+        latency_ms=latency_ms,
+        degraded_reason=None,
+        # 空结果不编原因：直查回答的是「这一稿里有没有这段内容」，两种空对排查者是同一个
+        # 答案；要区分得再查一次该稿的切片数，那是另一次的代价。
+        empty_reason=None,
+    )
+
+
+__all__ = ["VERSION_SEARCH_TOP_K", "record_version_search", "search_document_version"]

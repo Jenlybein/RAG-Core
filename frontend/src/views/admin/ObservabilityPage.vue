@@ -28,12 +28,18 @@ import {
 } from '../../services/adminObservability'
 import { errorText } from '../../utils/errorText'
 import { formatPercent } from '../../utils/format'
+import { USAGE_SCOPES, type UsageScope } from '../../types/usage'
 
 const hours = ref<ObsWindow>(24)
+/**
+ * 三段式（第 14 步 #202）：被拒的请求现在也落行，于是「全部」不再是「全部成功」。
+ * 默认停在「全部」——那是唯一不会有歧义的一档。
+ */
+const scope = ref<UsageScope>('all')
 
 const overviewQuery = useQuery({
-  queryKey: computed(() => observabilityOverviewQueryKey(hours.value)),
-  queryFn: () => fetchObservabilityOverview(hours.value),
+  queryKey: computed(() => observabilityOverviewQueryKey(hours.value, scope.value)),
+  queryFn: () => fetchObservabilityOverview(hours.value, scope.value),
 })
 const stagesQuery = useQuery({
   queryKey: computed(() => observabilityStagesQueryKey(hours.value)),
@@ -52,9 +58,15 @@ const loadError = computed(() =>
 )
 
 // —— KPI ——
+/**
+ * 降级率只在「只看成功」这一档里有意义：被挡下的请求既不降级也不是空结果。
+ * 另外两档返回 `null`，页面显示「—」——0% 会被读成「一点没降级」，而真相是「这一档不适用」。
+ */
+const ratesMeaningful = computed(() => overview.value?.rates_meaningful ?? false)
+
 const degradedRate = computed(() => {
   const data = overview.value
-  if (data === null || data.total === 0) return null
+  if (data === null || data.total === 0 || !ratesMeaningful.value) return null
   return data.degraded / data.total
 })
 
@@ -128,8 +140,13 @@ function onWindowChange(value: ObsWindow): void {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="观测" subtitle="跨租户的检索量、耗时与质量；数字不参与发布判定。">
+    <PageHeader title="观测">
       <template #actions>
+        <el-radio-group v-model="scope" size="small">
+          <el-radio-button v-for="item in USAGE_SCOPES" :key="item.value" :value="item.value">
+            {{ item.label }}
+          </el-radio-button>
+        </el-radio-group>
         <el-select
           :model-value="hours"
           size="small"
@@ -150,9 +167,15 @@ function onWindowChange(value: ObsWindow): void {
       <!-- KPI -->
       <div class="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <div class="card card-body">
-          <p class="metric-label">检索次数</p>
+          <p class="metric-label">请求数</p>
           <p class="metric-value mt-1 text-[26px]">{{ overview?.total ?? '—' }}</p>
-          <p class="mt-1 text-xs text-muted">窗口内写入归属索引的条数</p>
+          <p class="mt-1 text-xs text-muted">
+            成功 {{ overview?.ok ?? 0 }} · 失败 {{ overview?.failed ?? 0 }}<template
+              v-if="(overview?.unknown_code ?? 0) > 0"
+            >
+              · 未统计 {{ overview?.unknown_code }}</template
+            >
+          </p>
         </div>
         <div class="card card-body">
           <p class="metric-label">P50 耗时</p>
@@ -160,9 +183,16 @@ function onWindowChange(value: ObsWindow): void {
           <p class="mt-1 text-xs text-muted">P95 {{ ms(overview?.latency.p95) }} · 最慢 {{ ms(overview?.latency.worst) }}</p>
         </div>
         <div class="card card-body">
-          <p class="metric-label">降级率</p>
-          <p class="metric-value mt-1 text-[26px]">{{ rate(degradedRate) }}</p>
-          <p class="mt-1 text-xs text-muted">{{ overview?.degraded ?? 0 }} 次走到降级（关键词那一路挂了等）</p>
+          <p class="metric-label">
+            降级率<template v-if="!ratesMeaningful">（仅成功）</template>
+          </p>
+          <p class="metric-value mt-1 text-[26px]" :class="{ 'text-muted': !ratesMeaningful }">
+            {{ rate(degradedRate) }}
+          </p>
+          <p class="mt-1 text-xs text-muted">
+            <template v-if="ratesMeaningful">{{ overview?.degraded ?? 0 }} 次降级</template>
+            <template v-else>切到「只看成功」才有意义</template>
+          </p>
         </div>
         <div class="card card-body">
           <p class="metric-label">平均评分</p>
@@ -234,10 +264,6 @@ function onWindowChange(value: ObsWindow): void {
                   </tr>
                 </tbody>
               </table>
-              <p class="mt-3 text-xs text-muted">
-                观测栈里是我们自己写进去的 <code class="mono-tag">duration_ms</code>；
-                与本地层的「总耗时」不是同一个口径，两边数字不会严格相等。
-              </p>
             </div>
           </section>
 
@@ -283,7 +309,6 @@ function onWindowChange(value: ObsWindow): void {
                 <span class="text-xs text-muted">{{ bar.score }}★</span>
               </div>
             </div>
-            <p class="mt-3 text-xs text-muted">未打分的检索不出现在这里。</p>
           </section>
 
           <section class="card card-body">
@@ -315,9 +340,6 @@ function onWindowChange(value: ObsWindow): void {
             >
               打开 Langfuse →
             </a>
-            <p class="mt-3 text-xs text-muted">
-              这一页不显示密钥；看单个 trace 的细节请去 Langfuse 或「检索记录」。
-            </p>
           </section>
         </div>
       </div>

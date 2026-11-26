@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>模型配置 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 七列在最窄的屏上放不下：给表格一个下限，让 .table-wrap 横向滚，而不是把字挤断行 */
+      .table--models {
+        min-width: 940px;
+      }
+      .table--models tbody td:first-child p {
+        white-space: nowrap;
+      }
+      /* 模型名与 Key 不折行：窄屏让整张表横向滚，别把模型名拆成两行 */
+      .table--models tbody td:nth-child(3) {
+        white-space: nowrap;
+      }
+      .table--models tbody td:nth-child(5) {
+        white-space: nowrap;
+      }
+      /* 操作列三个小按钮排一行，不要折成两行 */
+      .table--models .cell-actions {
+        flex-wrap: nowrap;
+      }
+      /* 自建网关的接入地址：允许断行，但优先断在 <wbr>（域名之后）那一点 */
+      .table--models .url {
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+        overflow-wrap: anywhere;
+      }
+
+      /* 角色胶囊：面用 .chip 的玻璃药丸，这里只把字换成等宽 */
+      .role-pills {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-1);
+      }
+      .role-pill {
+        font-family: var(--font-mono);
+      }
+
+      /* 模型角色区：嵌在玻璃卡里的次级块（面与描边继承 .panel） */
+      .roles-block {
+        margin-top: var(--sp-8);
+        padding: var(--sp-5);
+        border-radius: var(--r-card);
+      }
+      .role-field > label {
+        display: block;
+        margin-bottom: 6px;
+        letter-spacing: 0.01em;
+      }
+
+      @media (max-width: 640px) {
+        .role-field + .role-field {
+          margin-top: var(--sp-4);
+        }
+      }
+
+      @media (max-width: 720px) {
+        .roles-block {
+          padding: var(--sp-4);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill is-active" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">模型配置</h1>
+          <div class="page-actions">
+            <span class="t-14 muted">3 条</span>
+            <button class="btn btn--sm" type="button">新增模型配置</button>
+            <button class="btn btn--sm" type="button">刷新</button>
+          </div>
+        </div>
+
+        <section class="card card-body">
+          <div class="table-wrap">
+            <table class="table table--models" aria-label="模型接入列表">
+              <thead>
+                <tr>
+                  <th>备注名</th>
+                  <th>供应商</th>
+                  <th>模型</th>
+                  <th>接入地址</th>
+                  <th>Key</th>
+                  <th>被哪些角色引用</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <p class="strong">生产</p>
+                    <p class="mono t-12 muted">mc_9f2a7c</p>
+                  </td>
+                  <td class="muted">DeepSeek</td>
+                  <td class="mono">deepseek-v4-pro</td>
+                  <td><span class="faint">默认地址</span></td>
+                  <td><span class="mono t-12 muted">sk-…3f9a</span></td>
+                  <td>
+                    <div class="role-pills">
+                      <span class="chip role-pill">fast</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="cell-actions">
+                      <button class="btn btn--sm" type="button">编辑</button>
+                      <button class="btn btn--sm" type="button">显示原文</button>
+                      <button class="btn btn--sm btn--danger" type="button">删除</button>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <p class="strong">备用</p>
+                    <p class="mono t-12 muted">mc_4b81de</p>
+                  </td>
+                  <td class="muted">通义千问</td>
+                  <td class="mono">qwen3-max</td>
+                  <td>
+                    <span class="url">https://dashscope.aliyuncs.com/<wbr />compatible-mode/v1</span>
+                  </td>
+                  <td><span class="mono t-12 muted">sk-…7c21</span></td>
+                  <td>
+                    <div class="role-pills">
+                      <span class="chip role-pill">strong</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="cell-actions">
+                      <button class="btn btn--sm" type="button">编辑</button>
+                      <button class="btn btn--sm" type="button">显示原文</button>
+                      <button class="btn btn--sm btn--danger" type="button">删除</button>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <p class="strong">嵌入</p>
+                    <p class="mono t-12 muted">mc_7c30b5</p>
+                  </td>
+                  <td class="muted">通义千问</td>
+                  <td class="mono">qwen3-embedding</td>
+                  <td><span class="faint">默认地址</span></td>
+                  <td><span class="t-12 faint">—（未填 Key）</span></td>
+                  <td><span class="faint">—</span></td>
+                  <td>
+                    <div class="cell-actions">
+                      <button class="btn btn--sm" type="button">编辑</button>
+                      <button class="btn btn--sm" type="button">显示原文</button>
+                      <button class="btn btn--sm btn--danger" type="button">删除</button>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="panel roles-block">
+            <h2 class="section-title">模型角色</h2>
+
+            <div class="grid grid-2 mt-4">
+              <div class="role-field">
+                <label class="mono t-12 strong" for="role-fast">fast</label>
+                <select class="select" id="role-fast">
+                  <option>不指向（回落 .env）</option>
+                  <option selected>deepseek-v4-pro</option>
+                  <option>qwen3-max</option>
+                  <option>qwen3-embedding</option>
+                </select>
+              </div>
+
+              <div class="role-field">
+                <label class="mono t-12 strong" for="role-strong">strong</label>
+                <select class="select" id="role-strong">
+                  <option>不指向（回落 .env）</option>
+                  <option>deepseek-v4-pro</option>
+                  <option selected>qwen3-max</option>
+                  <option>qwen3-embedding</option>
+                </select>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

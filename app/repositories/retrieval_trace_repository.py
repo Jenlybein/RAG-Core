@@ -1,4 +1,4 @@
-"""归属索引的数据访问：唯一能碰 ``retrieval_traces`` 表的一层。
+"""归属索引的数据访问：唯一能碰 ``usage_events`` 表的一层。
 
 **检索链路只写不读**。写侧只 ``flush`` 不 ``commit``（事务由 Service 收口，与其它仓储一致）。
 
@@ -16,10 +16,10 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 
 
-async def create(db: AsyncSession, trace: RetrievalTrace) -> RetrievalTrace:
+async def create(db: AsyncSession, trace: UsageEvent) -> UsageEvent:
     """写入一行归属索引：只 ``add`` + ``flush``，**不提交**（提交点是 ``app.db.transaction``）。
 
     ``add`` 是同步的（真 ``AsyncSession.add`` 也是同步），``flush`` 才要 ``await``——
@@ -34,7 +34,7 @@ async def create(db: AsyncSession, trace: RetrievalTrace) -> RetrievalTrace:
 
 async def get_by_id_for_tenant(
     db: AsyncSession, log_id: str, *, tenant_id: str
-) -> RetrievalTrace | None:
+) -> UsageEvent | None:
     """按 ``id``（对外即 ``log_id``）**且** ``tenant_id`` 取一行；缺失与跨租户都返回 ``None``。
 
     租户是**强制参数、不是可选过滤器**：调用方拿到 ``None`` 一律按「不存在」处理，
@@ -48,7 +48,7 @@ async def get_by_id_for_tenant(
     （``AsyncRecordingSession.get``）走的也是同一条路径。
     """
 
-    row = await db.get(RetrievalTrace, log_id)
+    row = await db.get(UsageEvent, log_id)
     if row is None or row.tenant_id != tenant_id:
         return None
     return row
@@ -56,7 +56,7 @@ async def get_by_id_for_tenant(
 
 async def get_by_trace_id_for_tenant(
     db: AsyncSession, trace_id: str, *, tenant_id: str
-) -> RetrievalTrace | None:
+) -> UsageEvent | None:
     """按 ``trace_id`` 且 ``tenant_id`` 取一行（#106 的反查）。
 
     **为什么需要反查**：检索响应里只有 ``metadata.trace_id``（ADR-0010 第五次修订的红线：
@@ -67,15 +67,15 @@ async def get_by_trace_id_for_tenant(
     租户同样是强制参数：跨租户与不存在一律 ``None``，与 ``get_by_id_for_tenant`` 同一口径。
     """
 
-    statement = select(RetrievalTrace).where(
-        RetrievalTrace.trace_id == trace_id, RetrievalTrace.tenant_id == tenant_id
+    statement = select(UsageEvent).where(
+        UsageEvent.trace_id == trace_id, UsageEvent.tenant_id == tenant_id
     )
     return (await db.execute(statement)).scalar_one_or_none()
 
 
 async def list_recent_for_tenant(
     db: AsyncSession, *, tenant_id: str, limit: int = 20
-) -> list[RetrievalTrace]:
+) -> list[UsageEvent]:
     """按时间倒序取本租户最近若干条归属索引（控制台「最近检索」列表）。
 
     **这是本模块唯一的「列表」读法，也是唯一一处不按 id 点查的地方**——所以它必须自带
@@ -87,9 +87,9 @@ async def list_recent_for_tenant(
     """
 
     statement = (
-        select(RetrievalTrace)
-        .where(RetrievalTrace.tenant_id == tenant_id)
-        .order_by(RetrievalTrace.created_at.desc())
+        select(UsageEvent)
+        .where(UsageEvent.tenant_id == tenant_id)
+        .order_by(UsageEvent.created_at.desc())
         .limit(limit)
     )
     return list((await db.execute(statement)).scalars().all())

@@ -243,18 +243,18 @@ def test_the_side_path_write_uses_the_async_factory(monkeypatch: pytest.MonkeyPa
     行都没收到**——写入确实已经整体搬到异步那一侧了。
     """
 
-    from app.models.retrieval_trace import RetrievalTrace
+    from app.models.usage_event import UsageEvent
 
     with _offline_client(monkeypatch) as fake:
         body = _post(fake["client"], mode="vector").json()
 
     trace_session: AsyncRecordingSession = fake["trace_session"]
-    rows = trace_session.added_of(RetrievalTrace)
+    rows = trace_session.added_of(UsageEvent)
     assert len(rows) == 1, "一次检索只留一行"
     assert rows[0].trace_id == body["data"]["metadata"]["trace_id"]
     assert trace_session.commits == 1
     assert trace_session.closed is True
-    assert fake["sync_session"].added_of(RetrievalTrace) == [], "同步会话不该再收到这一行"
+    assert fake["sync_session"].added_of(UsageEvent) == [], "同步会话不该再收到这一行"
 
 
 # ───────────────────────────────────────────────── 二、取消能传到正在飞的活
@@ -310,6 +310,7 @@ async def _cancelled_retrieval(
         top_k=2,
         fold_to_sections=False,
         expand_table_rows=False,
+        max_unit_chars=2000,
         rerank=False,
     )
     task = asyncio.create_task(

@@ -34,17 +34,25 @@ router = APIRouter(prefix="/console/admin", tags=["console"])
 )
 async def observability_overview(
     hours: int = Query(24, description="窗口小时数，取值 1/6/24/72/168；非法值收敛到 24"),
+    scope: str = Query(
+        "all",
+        description="统计范围：all（含被拒）/ ok（只算 code=0）/ failed（只算 code<>0）",
+    ),
     identity: ConsoleIdentity = Depends(get_console_admin),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[dict]:
     """跨租户的检索量与质量概况。
 
-    数据源是**我们自己的库**（`retrieval_traces` / `retrieval_feedback`），所以观测栈挂了
+    数据源是**我们自己的库**（`usage_events` / `retrieval_feedback`），所以观测栈挂了
     这里照样有数——这正是这张页面存在的意义：栈挂的那一刻，最需要的恰恰是「最后一次成功
     的请求是几点」。
+
+    `scope` 是三段式的第 14 步补充：被拒的请求（`20014` 等）现在也落行，于是「全部」
+    不再是「全部成功」。降级率与空结果率只在 `ok` 那一档里有意义（响应里的
+    `rates_meaningful` 会说这件事）。
     """
 
-    return ok(await admin_observability.overview(db, hours=hours))
+    return ok(await admin_observability.overview(db, hours=hours, scope=scope))
 
 
 @router.get(

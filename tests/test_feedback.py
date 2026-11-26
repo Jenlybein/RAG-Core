@@ -32,7 +32,7 @@ from fastapi.testclient import TestClient
 from app.core.auth import KeyContext
 from app.core.exceptions import ErrorCode
 from app.models.retrieval_feedback import RetrievalFeedback
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.observability import OBSERVABILITY_SCORE_FAILED_MESSAGE, set_trace_sink
 from app.services.trace_identity import trace_id_for
 from tests.fake_db import AsyncRecordingSession
@@ -58,10 +58,10 @@ def _trace_row(
     log_id: str = LOG_ID,
     trace_id: str = TRACE_ID,
     tenant_id: str = TENANT_ID,
-) -> RetrievalTrace:
+) -> UsageEvent:
     """归属索引里的一行：合法样本由它校验「存在 + 归属当前租户 + 与 trace_id 对得上」。"""
 
-    return RetrievalTrace(
+    return UsageEvent(
         id=log_id,
         tenant_id=tenant_id,
         trace_id=trace_id,
@@ -181,7 +181,7 @@ class _FeedbackApi:
 def _offline_api(
     monkeypatch: pytest.MonkeyPatch,
     *,
-    traces: list[RetrievalTrace] | None = None,
+    traces: list[UsageEvent] | None = None,
     tenant_id: str = TENANT_ID,
     write_session: AsyncRecordingSession | None = None,
     session_factory: Any = None,
@@ -198,7 +198,7 @@ def _offline_api(
 
     from app.api.deps import get_current_key
 
-    request_db = AsyncRecordingSession(rows={RetrievalTrace: list(traces or [])})
+    request_db = AsyncRecordingSession(rows={UsageEvent: list(traces or [])})
     write_session = write_session if write_session is not None else _FeedbackSession()
     factory_mod.set_async_session_factory(session_factory or (lambda: write_session))
 

@@ -43,3 +43,6 @@ desktop.ini
 
 # ── Agent 工作区（git worktree 落在这里，绝不入库）──
 .agents/
+
+# ── 临时脚本与日志（不入库）──
+.work/

@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>账号列表读取失败 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 读不出来时列表不该塌成空白：先给一行错误原文，再用三行骨架占住列表的形状 */
+      .skeleton-list {
+        display: grid;
+        gap: 22px;
+        padding: 6px 0;
+      }
+      .skeleton-bar {
+        height: 14px;
+        border: 1px solid var(--line);
+        border-radius: 7px;
+        background: var(--fill-md);
+      }
+      .skeleton-bar--40 {
+        width: 40%;
+      }
+      .skeleton-bar--62 {
+        width: 62%;
+      }
+      .skeleton-bar--28 {
+        width: 28%;
+      }
+      /* 共享的 .alert--error 底色写死为浅色，深色下正文压不住；这里只把底色换成语义变量 */
+      .alert--error {
+        background: var(--danger-soft);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill is-active" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">账号管理</h1>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn--sm" type="button">重试</button>
+          </div>
+        </div>
+
+        <div class="card card--panel">
+          <div class="card-body stack-4">
+            <div class="alert alert--error" role="alert">
+              账号列表读取失败：服务暂时不可用（业务码 20000）
+            </div>
+            <div class="row">
+              <button class="btn btn--sm" type="button">重试</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card card--panel">
+          <div class="card-body">
+            <div class="skeleton-list" aria-hidden="true">
+              <div class="skeleton-bar skeleton-bar--40"></div>
+              <div class="skeleton-bar skeleton-bar--62"></div>
+              <div class="skeleton-bar skeleton-bar--28"></div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

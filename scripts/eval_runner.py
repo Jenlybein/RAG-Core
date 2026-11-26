@@ -474,7 +474,6 @@ def environment_snapshot(
             "rerank_max_candidates": int(settings.RERANK_MAX_CANDIDATES),
             "rerank_chunk_max_chars": int(settings.RERANK_CHUNK_MAX_CHARS),
             "query_rewrite_enabled": bool(settings.QUERY_REWRITE_ENABLED),
-            "synonym_expansion_enabled": bool(settings.SYNONYM_EXPANSION_ENABLED),
             "vector_store": settings.VECTOR_STORE,
             "hybrid_recall_top_k": settings.HYBRID_RECALL_TOP_K,
             "fusion": "rrf",

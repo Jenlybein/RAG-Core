@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({
 // 只替换「网络那一层」：被测的是服务模块对控制面契约的承诺（路径、请求体、次数）。
 vi.mock('../../lib/consoleHttp', () => ({ consoleHttp: mocks }))
 
-import type { KeyData, KeyPolicyInput } from '../../types/key'
+import type { IssuedKeyData, KeyData, KeyPolicyInput } from '../../types/key'
 import { createKey, deleteKey, fetchKeys, patchPolicy } from '../keyService'
 
 beforeEach(() => {
@@ -23,8 +23,7 @@ beforeEach(() => {
 const KEY_ROW: KeyData = {
   key_id: 'key_1',
   label: '集成 A',
-  key_value: 'rc_live_0123456789abcdef',
-  key_masked: 'rc_live_…ef',
+  key_masked: 'rc_live_…4f3a2',
   status: 'active',
   policy: {
     policy_id: 'policy_1',
@@ -46,6 +45,7 @@ const KEY_ROW: KeyData = {
     retrieval_rerank: false,
     include_parent: true,
     expand_table_rows: true,
+  max_unit_chars: 2000,
   },
 }
 
@@ -67,6 +67,13 @@ const POLICY_INPUT: KeyPolicyInput = {
   retrieval_rerank: false,
   include_parent: true,
   expand_table_rows: true,
+  max_unit_chars: 2000,
+}
+
+/** 签发响应：列表那一行 + 只此一次的原文（库里只有 scrypt 哈希）。 */
+const ISSUED_KEY: IssuedKeyData = {
+  ...KEY_ROW,
+  key_plaintext: 'rc_live_key_1.' + 'a'.repeat(32),
 }
 
 describe('fetchKeys', () => {
@@ -81,9 +88,12 @@ describe('fetchKeys', () => {
 
 describe('createKey', () => {
   it('POST /console/keys，请求体是 {label, policy}；label 去掉首尾空白', async () => {
-    mocks.post.mockResolvedValue(KEY_ROW)
+    mocks.post.mockResolvedValue(ISSUED_KEY)
 
-    await createKey({ label: '  集成 A  ', policy: POLICY_INPUT })
+    const created = await createKey({ label: '  集成 A  ', policy: POLICY_INPUT })
+
+    // 原文随响应回来一次，服务层不裁剪、不改写：它交给弹窗原文显示。
+    expect(created.key_plaintext).toBe(ISSUED_KEY.key_plaintext)
 
     expect(mocks.post).toHaveBeenCalledTimes(1)
     const [url, body] = mocks.post.mock.calls[0]
@@ -93,7 +103,7 @@ describe('createKey', () => {
   })
 
   it('没有 label 时不发这个键，而不是发 null（请求体越干净越好）', async () => {
-    mocks.post.mockResolvedValue(KEY_ROW)
+    mocks.post.mockResolvedValue(ISSUED_KEY)
 
     await createKey({ label: '   ', policy: POLICY_INPUT })
 

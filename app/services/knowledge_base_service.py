@@ -24,6 +24,7 @@ from app.core.exceptions import AppError, ErrorCode
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_SECTION_PART_MAX_CHARS,
     KnowledgeBase,
     resolve_formats,
     settings_of,
@@ -43,6 +44,7 @@ async def create_kb(
     split_strategy: str,
     plan: PlanSpec,
     chunk_size: int = DEFAULT_CHUNK_SIZE,
+    section_part_max_chars: int = DEFAULT_SECTION_PART_MAX_CHARS,
     allowed_formats: Sequence[str] | None = None,
 ) -> dict:
     """建库：判定（策略 / 配额 / 格式）→ 落一行，**不提交**。
@@ -67,7 +69,12 @@ async def create_kb(
         description=description,
         split_strategy=split_strategy,
         allowed_formats=formats,
-        settings={"chunk_size": chunk_size},
+        settings={
+            "chunk_size": chunk_size,
+            # 节段上限（第 16 步 #207）：超过它就在片边界把一节切成几段。写在建库那一刻，
+            # 与别的切块旋钮同处一个家（``settings``），读取统一走 ``settings_of``。
+            "section_part_max_chars": section_part_max_chars,
+        },
         # 建库即声明生效索引版本（ADR-0025）：本步的索引流水线仍把切片写成
         # ``DEFAULT_INDEX_VERSION``，没有别的版本可查，所以新库的生效版本与产物同值。
         # 不写它的话，这个库的切片版本与库的「生效版本」对不上，检索一条都匹配不到——
@@ -84,5 +91,6 @@ async def create_kb(
         "split_strategy": kb.split_strategy,
         "allowed_formats": formats,
         "chunk_size": values["chunk_size"],
+        "section_part_max_chars": values["section_part_max_chars"],
         "created_at": kb.created_at,
     }

@@ -500,7 +500,7 @@ def test_same_markdown_loses_heading_path_in_a_size_kb(
     kb_repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     async def _split_config(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
-        return (SPLIT_SIZE, 800)
+        return SPLIT_SIZE, 800, 2000
 
     monkeypatch.setattr(kb_repo, "get_split_config", _split_config)
 

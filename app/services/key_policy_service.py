@@ -98,6 +98,7 @@ CREATE_DEFAULTS: Final[dict[str, Any]] = {
     "retrieval_top_k": 5,
     "retrieval_rerank": False,
     "include_parent": True,
+    "max_unit_chars": 2000,
     "expand_table_rows": True,
 }
 
@@ -304,7 +305,7 @@ def _build_policy_row(
         retrieval_mode=checked["retrieval_mode"],
         retrieval_top_k=checked["retrieval_top_k"],
         retrieval_rerank=checked["retrieval_rerank"],
-        include_parent=checked["include_parent"],
+        include_parent=checked["include_parent"], max_unit_chars=checked["max_unit_chars"],
         expand_table_rows=checked["expand_table_rows"],
     )
     ensure_policy_consistent(policy=policy_snapshot_of(row), plan=plan_spec_of(plan))
@@ -355,6 +356,13 @@ def _validated(changes: Mapping[str, Any]) -> dict[str, Any]:
         raise ValueError(
             f"retrieval_rerank 必须是布尔值，收到：{values['retrieval_rerank']!r}"
         )
+
+    if "max_unit_chars" in values:
+        # 一条结果正文的硬上限（第 16 步 #207）。上下界不是拍脑袋：下界 200 是「一片的
+        # 最小长度」，比它还小就等于永远只给半片；上界 20000 已经远超任何合理的上下文预算。
+        limit = values["max_unit_chars"]
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 200 <= limit <= 20000:
+            raise ValueError(f"max_unit_chars 必须是 200~20000 的整数，收到：{limit!r}")
 
     for column in NUMERIC_FIELDS:
         if column in values:

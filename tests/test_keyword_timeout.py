@@ -123,7 +123,7 @@ def test_the_hybrid_keyword_channel_degrades_fast_instead_of_waiting() -> None:
             pipeline._keyword_branch(
                 tenant_id="tenant_demo",
                 index_versions={"kb-a": DEFAULT_INDEX_VERSION},
-                query="退款多久到账",
+                queries=["退款多久到账"],
                 top_k=5,
                 keyword_factory=lambda: provider,
                 stage_timer=StageTimer(),
@@ -147,7 +147,7 @@ def test_the_hybrid_keyword_channel_records_the_failed_stage() -> None:
             pipeline._keyword_branch(
                 tenant_id="tenant_demo",
                 index_versions={"kb-a": DEFAULT_INDEX_VERSION},
-                query="退款",
+                queries=["退款"],
                 top_k=5,
                 keyword_factory=lambda: provider,
                 stage_timer=timer,

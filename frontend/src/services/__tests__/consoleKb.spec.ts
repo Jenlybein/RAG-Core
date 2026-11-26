@@ -43,6 +43,8 @@ describe('toKnowledgeBaseNodes', () => {
           split_strategy: 'size',
           allowed_formats: ['text'],
           chunk_size: 1024,
+          section_part_max_chars: 2000,
+          needs_rebuild: false,
           documents: [],
         },
       ],
@@ -55,6 +57,8 @@ describe('toKnowledgeBaseNodes', () => {
         split_strategy: 'size',
         allowed_formats: ['text'],
         chunk_size: 1024,
+        section_part_max_chars: 2000,
+        needs_rebuild: false,
         documents: [],
       },
     ])
@@ -69,6 +73,8 @@ describe('toKnowledgeBaseNodes', () => {
           split_strategy: 'structure',
           allowed_formats: ['markdown'],
           chunk_size: 512,
+          section_part_max_chars: 2000,
+          needs_rebuild: false,
           documents: [
             {
               document_id: 'doc_1',
@@ -87,6 +93,8 @@ describe('toKnowledgeBaseNodes', () => {
           split_strategy: 'size',
           allowed_formats: ['text', 'pdf'],
           chunk_size: 1024,
+          section_part_max_chars: 2000,
+          needs_rebuild: false,
           documents: [
             {
               document_id: 'doc_2',
@@ -118,6 +126,8 @@ describe('toKnowledgeBaseNodes', () => {
         split_strategy: 'structure',
         allowed_formats: ['markdown'],
         chunk_size: 512,
+        section_part_max_chars: 2000,
+        needs_rebuild: false,
         documents: [
           {
             document_id: 'doc_1',
@@ -136,6 +146,8 @@ describe('toKnowledgeBaseNodes', () => {
         split_strategy: 'size',
         allowed_formats: ['text', 'pdf'],
         chunk_size: 1024,
+        section_part_max_chars: 2000,
+        needs_rebuild: false,
         documents: [
           {
             document_id: 'doc_2',
@@ -169,6 +181,8 @@ describe('toKnowledgeBaseNodes', () => {
           name: '旧库',
           split_strategy: 'size',
           chunk_size: 512,
+          section_part_max_chars: 2000,
+          needs_rebuild: false,
           documents: [
             {
               document_id: 'doc_old',
@@ -190,6 +204,8 @@ describe('toKnowledgeBaseNodes', () => {
         split_strategy: 'size',
         allowed_formats: [],
         chunk_size: 512,
+        section_part_max_chars: 2000,
+        needs_rebuild: false,
         documents: [
           {
             document_id: 'doc_old',

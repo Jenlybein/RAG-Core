@@ -369,7 +369,6 @@ def _apply_batch_settings(
     settings.ELASTICSEARCH_INDEX = keyword_alias
     settings.RERANK_ENABLED = bool(rerank)
     settings.QUERY_REWRITE_ENABLED = False
-    settings.SYNONYM_EXPANSION_ENABLED = False
     settings.ORCHESTRATION_TIMEOUT_MS = int(orchestration_timeout_ms)
 
 

@@ -20,7 +20,7 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 
 VERSIONS_DIR = Path(__file__).resolve().parent.parent / "migrations" / "versions"
 
@@ -211,7 +211,7 @@ def test_upgrade_adds_exactly_one_mapping_column_next_to_the_index_versions_one(
 def test_the_model_puts_the_two_mapping_columns_side_by_side() -> None:
     """模型里的顺序是给读代码的人看的：两个映射列挨着（形状同源的东西放一起）。"""
 
-    keys = [column.key for column in RetrievalTrace.__table__.columns]
+    keys = [column.key for column in UsageEvent.__table__.columns]
 
     assert keys.index("doc_versions") == keys.index("index_versions") + 1
 

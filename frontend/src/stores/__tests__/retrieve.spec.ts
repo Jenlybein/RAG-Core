@@ -129,4 +129,19 @@ describe('retrieve store：选 Key 与白名单', () => {
     expect(store.isAllowed('kb_1')).toBe(true)
     expect(store.isAllowed('kb_2')).toBe(false)
   })
+
+  it('resyncScope 只换白名单，不碰请求层里的原文', () => {
+    const store = useRetrieveStore()
+    store.setSelection(['kb_1', 'kb_2'])
+    store.selectKey({ keyId: 'key_a', keyValue: 'rc_live_aaa', allowedKbIds: ['kb_1', 'kb_2'] })
+
+    const removed = store.resyncScope(['kb_1'])
+
+    // 列表刷新（例如刚在 /keys 改过白名单）走这条：这一侧手里没有原文，若写成
+    // `selectKey(..., keyValue: '')` 就会把请求层的 Key 清掉，下一次检索变成「还没选」。
+    expect(removed).toEqual(['kb_2'])
+    expect(store.allowedKbIds).toEqual(['kb_1'])
+    expect(store.selectedKeyId).toBe('key_a')
+    expect(getActiveKey()).toBe('rc_live_aaa')
+  })
 })

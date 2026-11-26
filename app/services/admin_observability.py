@@ -2,7 +2,7 @@
 
 分两层是有意的，也是这个模块最重要的设计决定：
 
-- **本地事实层**（:mod:`app.repositories.observability_repository`）：`retrieval_traces` 与
+- **本地事实层**（:mod:`app.repositories.observability_repository`）：`usage_events` 与
   `retrieval_feedback` 里的结构化事实，**零外部依赖**。观测栈挂了、langfuse 没配、容器没起，
   这一层照样有数。
 - **观测栈层**（Langfuse）：六段耗时的聚合。它有外部依赖，且只在 `TRACE_SINK=langfuse`
@@ -48,17 +48,24 @@ def window_start(hours: int) -> datetime:
     return datetime.now(timezone.utc) - timedelta(hours=safe)
 
 
-async def overview(db: AsyncSession, *, hours: int) -> dict[str, Any]:
-    """本地事实层的总览。观测栈是否可用**不影响**这个函数的返回。"""
+async def overview(db: AsyncSession, *, hours: int, scope: str = "all") -> dict[str, Any]:
+    """本地事实层的总览。观测栈是否可用**不影响**这个函数的返回。
+
+    ``scope`` 是三段式（``all`` / ``ok`` / ``failed``，第 14 步 #202）。它只影响「量」那几项；
+    ``rates_meaningful`` 告诉前端**这一档里降级率 / 空结果率有没有意义**——被挡下的请求
+    既不降级也不是空结果，所以另外两档里那两个数要显示「—」，不是 0。
+    """
 
     since = window_start(hours)
-    totals = await observability_repository.totals(db, since=since)
+    totals = await observability_repository.totals(db, since=since, scope=scope)
     ratings = await observability_repository.rating_histogram(db, since=since)
     rated = sum(ratings.values())
     weighted = sum(score * count for score, count in ratings.items())
     return {
         "window_hours": hours if hours in WINDOW_CHOICES else 24,
         "since": since.isoformat(),
+        "scope": scope if scope in ("ok", "failed") else "all",
+        "rates_meaningful": scope == "ok",
         **totals,
         "ratings": {
             "histogram": {str(score): ratings.get(score, 0) for score in range(1, 6)},
@@ -66,10 +73,10 @@ async def overview(db: AsyncSession, *, hours: int) -> dict[str, Any]:
             # 分母是「打过分的条数」；没有评分时是 None，不是 0。
             "average": round(weighted / rated, 2) if rated else None,
         },
-        "by_tenant": await observability_repository.by_tenant(db, since=since),
+        "by_tenant": await observability_repository.by_tenant(db, since=since, scope=scope),
         "hourly": [
             {"bucket": item["bucket"].isoformat(), "total": item["total"]}
-            for item in await observability_repository.hourly(db, since=since)
+            for item in await observability_repository.hourly(db, since=since, scope=scope)
         ],
     }
 
@@ -112,11 +119,7 @@ def stage_stats(*, hours: int, reader: Any | None = None) -> dict[str, Any]:
 
     since = window_start(hours)
     try:
-        observations = (
-            reader(since)
-            if reader is not None
-            else _read_observations_since(since)
-        )
+        observations = reader(since) if reader is not None else _read_observations_since(since)
     except Exception:  # noqa: BLE001 - 观测栈是旁路：取不到就降级，不冒到页面上
         return {"source": STAGE_SOURCE_NONE, "reason": "stack_unreachable", "stages": []}
 

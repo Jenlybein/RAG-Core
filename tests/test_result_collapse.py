@@ -43,6 +43,7 @@ def _hit(
     heading: str = HEAD_A,
     section_id: str = "s" * 8,
     table_part: int = 0,
+    section_part: int = 0,
     content: str | None = None,
     document_id: str = DOC,
 ) -> Hit:
@@ -55,6 +56,7 @@ def _hit(
         section_id=section_id,
         parent_section_id="h1" * 4,
         table_part=table_part,
+        section_part=section_part,
         heading_path=heading,
     )
 
@@ -123,16 +125,28 @@ def test_deep_h3_and_its_h2_land_in_the_same_unit() -> None:
     assert unit_key(hits[0]) == unit_key(hits[1])
 
 
-def test_multiple_pieces_of_one_unit_give_the_whole_unit() -> None:
-    """同一单元命中 ≥2 片时给整节。"""
+def test_multiple_pieces_of_one_unit_give_the_covering_window() -> None:
+    """同一单元命中多片时给**覆盖区间 + 两侧各一片**，不再给整节（第 16 步 #207）。
 
-    rows = _rows((0, "第一片。", "c-1"), (1, "第二片。", "c-2"), (2, "第三片。", "c-3"))
-    hits = [_hit("c-1", 0.9), _hit("c-2", 0.8)]
+    整节没有上限：一个 h2 上万字时，返回它就等于把响应撑爆。所以给多少改成由
+    「命中片的覆盖区间」决定，超出预算再从两端收缩。
+    """
+
+    rows = _rows(
+        (0, "第零片。", "c-0"),
+        (1, "第一片。", "c-1"),
+        (2, "第二片。", "c-2"),
+        (3, "第三片。", "c-3"),
+        (4, "第四片。", "c-4"),
+    )
+    # 命中第 1、3 片 → 覆盖区间 1..3，两侧各扩一片 → 0..4。
+    hits = [_hit("c-1", 0.9), _hit("c-3", 0.8)]
 
     units = collapse(hits, sections={UnitKey(UNIT_SECTION, DOC, UNIT_A): rows})
 
-    assert units[0].expansion == EXPANSION_PARENT
-    assert units[0].content == "第一片。\n\n第二片。\n\n第三片。"
+    assert units[0].expansion == EXPANSION_NEIGHBORS
+    assert units[0].content == "第零片。\n\n第一片。\n\n第二片。\n\n第三片。\n\n第四片。"
+    assert units[0].truncated is False
 
 
 def test_single_hit_gets_the_neighbour_window() -> None:
@@ -192,8 +206,12 @@ def test_two_different_tables_stay_separate() -> None:
     assert [unit.content for unit in units] == ["表一", "表二"]
 
 
-def test_hits_across_two_units_each_get_the_whole_unit() -> None:
-    """跨两个单元时各自成单元，都取整节。"""
+def test_hits_across_two_units_each_get_their_own_window() -> None:
+    """跨两个单元时各自成单元，但**不再**「每一节都给整节」（第 16 步 #207）。
+
+    跨节的「多节上下文」已经靠返回多条结果实现了；再让每节各自膨胀一次，
+    只会让总字数随命中分散程度线性放大。
+    """
 
     hits = [
         _hit("a-1", 0.9, heading=HEAD_A),
@@ -201,7 +219,7 @@ def test_hits_across_two_units_each_get_the_whole_unit() -> None:
     ]
     sections = {
         UnitKey(UNIT_SECTION, DOC, UNIT_A): _rows(
-            (0, "甲节第一片。", "a-1"), (1, "甲节第二片。", "a-2")
+            (0, "甲节第零片。", "a-0"), (1, "甲节第一片。", "a-1")
         ),
         UnitKey(UNIT_SECTION, DOC, UNIT_B): _rows((2, "乙节正文。", "b-1")),
     }
@@ -209,8 +227,8 @@ def test_hits_across_two_units_each_get_the_whole_unit() -> None:
     units = collapse(hits, sections=sections)
 
     assert len(units) == 2
-    assert all(unit.expansion == EXPANSION_PARENT for unit in units)
-    assert units[0].content == "甲节第一片。\n\n甲节第二片。"
+    assert all(unit.expansion == EXPANSION_NEIGHBORS for unit in units)
+    assert units[0].content == "甲节第零片。\n\n甲节第一片。"
     assert units[1].content == "乙节正文。"
 
 
@@ -332,3 +350,92 @@ def test_unit_key_rules(hit: Hit, expected: tuple) -> None:
 )
 def test_unit_path_of_truncates_to_two_segments(heading: str, expected: str) -> None:
     assert unit_path_of(heading) == expected
+
+
+# ─────────────────────────────────────────── 硬上限（第 16 步 #207）
+
+
+def test_the_content_is_capped_and_flagged() -> None:
+    """超过 ``max_unit_chars`` 时从两端收缩，并置 ``truncated``。
+
+    没有这条闸门时，一节命中多片就返回整节，实测上万字——而整条链路上没有任何上限。
+    """
+
+    rows = _rows(
+        *(
+            (index, f"第{index}片，每片四十个字符的字样占位字。" * 2, f"c-{index}")
+            for index in range(8)
+        )
+    )
+    hits = [_hit("c-3", 0.9)]
+
+    units = collapse(hits, sections={UnitKey(UNIT_SECTION, DOC, UNIT_A): rows}, max_unit_chars=80)
+
+    assert len(units[0].content) <= 80
+    assert units[0].truncated is True, "裁过就要说出来，否则调用方会把片段当全文"
+    assert "c-3" in units[0].source_chunk_ids, "命中片仍是这条的身份"
+
+
+def test_a_single_oversized_piece_is_hard_truncated() -> None:
+    """一片就比预算长时硬截：这是唯一允许「断在半句」的情况。"""
+
+    rows = _rows((0, "很长的正文。" * 200, "c-0"))
+    hits = [_hit("c-0", 0.9)]
+
+    units = collapse(hits, sections={UnitKey(UNIT_SECTION, DOC, UNIT_A): rows}, max_unit_chars=100)
+
+    assert len(units[0].content) == 100
+    assert units[0].truncated is True
+
+
+def test_a_table_that_is_too_long_is_capped_too() -> None:
+    """整表单元也受同一个上限：它就是另一条 ``content`` 的来源。"""
+
+    rows = [_hit("row-1", 0.9, chunk_type="table_row", table_part=1)]
+    tables = {UnitKey(UNIT_TABLE, DOC, UNIT_A, "1"): "表格正文。" * 300}
+
+    units = collapse(rows, tables=tables, max_unit_chars=80)
+
+    assert len(units[0].content) <= 80
+    assert units[0].truncated is True
+
+
+def test_a_hit_that_is_not_in_the_rows_falls_back_to_the_whole_unit() -> None:
+    """命中片的 id 在节内找不到（索引刚更新过、行已换稿）时退回整节。
+
+    这是唯一还保留「整节」形态的地方：此时没有位置可以算覆盖区间，与其造一个
+    假窗口，不如把这一节原样交出去——并且它同样受上限管（``truncated`` 会说）。
+    """
+
+    rows = _rows((0, "第零片。", "c-0"), (1, "第一片。", "c-1"))
+    hits = [_hit("c-9", 0.9)]
+
+    units = collapse(hits, sections={UnitKey(UNIT_SECTION, DOC, UNIT_A): rows})
+
+    assert units[0].expansion == EXPANSION_PARENT
+    assert units[0].content == "第零片。\n\n第一片。"
+
+
+def test_two_parts_of_one_section_are_two_units() -> None:
+    """同一个 h2 的两个**节段**是两个单元，不并回一条（第 16 步 #207）。
+
+    这是切段的意义所在：切了却在折叠时并回去，等于没切，响应照样上万字。
+    """
+
+    hits = [
+        _hit("a-1", 0.9, heading=HEAD_A, section_part=0),
+        _hit("a-9", 0.8, heading=HEAD_A, section_part=1),
+    ]
+    key0 = UnitKey(UNIT_SECTION, DOC, UNIT_A, "", 0)
+    key1 = UnitKey(UNIT_SECTION, DOC, UNIT_A, "", 1)
+    sections = {
+        key0: _rows((0, "第一段正文。", "a-1")),
+        key1: _rows((5, "第二段正文。", "a-9")),
+    }
+
+    units = collapse(hits, sections=sections)
+
+    assert len(units) == 2, "两段各占一个名额"
+    assert [unit.section_part for unit in units] == [0, 1]
+    assert units[0].content == "第一段正文。"
+    assert units[1].content == "第二段正文。"

@@ -32,7 +32,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.db.base import Base
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.services.trace_identity import delivered_chunk_ids, trace_id_for
 from tests.fake_db import AsyncRecordingSession, AsyncSessionAdapter, async_visible_kb
 from tests.retrieval_identity import RetrievalIdentity
@@ -54,6 +54,14 @@ EXPECTED_COLUMNS = frozenset(
         "id",
         "tenant_id",
         "trace_id",
+        # 第 14 步（#199）的六列：一行既是账也是归属索引，没有它们就没有 per-Key 视图、
+        # 没有成功率的分母、也没有三本账。
+        "key_id",
+        "endpoint",
+        "code",
+        "meter_r",
+        "meter_rr",
+        "meter_llm",
         "kb_ids",
         "index_versions",
         "doc_versions",
@@ -81,9 +89,7 @@ FORBIDDEN_COLUMN_WORDS = (
 IDENTITY = RetrievalIdentity(TENANT_ID)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
-#: 唯一允许提到旧表名的两处：initial 迁移（历史不改写）与本票的改名迁移（它必须说出旧名）。
-_OLD_NAME_IN_HISTORY = (Path("migrations") / "versions" / "d657b09304ca_initial.py",)
-_OLD_NAME_RE = re.compile(r"retrieval_logs")
+_OLD_NAME_RE = re.compile(r"retrieval_logs|retrieval_traces")
 
 
 # ────────────────────────────────────────────────────────────────── 离线替身
@@ -217,8 +223,8 @@ def _retrieve(client: TestClient, *, mode: str = "vector") -> dict:
     return response.json()
 
 
-def _trace_rows(session: AsyncRecordingSession) -> list[RetrievalTrace]:
-    return session.added_of(RetrievalTrace)
+def _trace_rows(session: AsyncRecordingSession) -> list[UsageEvent]:
+    return session.added_of(UsageEvent)
 
 
 @pytest.fixture(autouse=True)
@@ -418,13 +424,13 @@ def test_a_failed_write_still_returns_the_trace_id_and_only_warns(
 def test_the_index_keeps_only_the_enumerated_columns() -> None:
     """这张表跟业务库同生共死：它上面的每一列都是长期承诺，多一列就是多一份泄露面。"""
 
-    columns = {column.key for column in RetrievalTrace.__table__.columns}
+    columns = {column.key for column in UsageEvent.__table__.columns}
 
-    assert RetrievalTrace.__tablename__ == "retrieval_traces"
+    assert UsageEvent.__tablename__ == "usage_events"
     assert columns == set(EXPECTED_COLUMNS)
     for word in FORBIDDEN_COLUMN_WORDS:
         assert not [name for name in columns if word in name], f"索引里不该有 {word} 一类的列"
-    assert RetrievalTrace.__table__.columns["created_at"].default is not None, (
+    assert UsageEvent.__table__.columns["created_at"].default is not None, (
         "写入方不传时间：``created_at`` 必须由列默认值补齐"
     )
 
@@ -441,7 +447,7 @@ def test_no_column_of_the_written_row_carries_the_question_text(
 
     row = rows[0]
     scanned = {}
-    for column in RetrievalTrace.__table__.columns:
+    for column in UsageEvent.__table__.columns:
         scanned[column.key] = str(getattr(row, column.key))
     assert set(scanned) == set(EXPECTED_COLUMNS), "每一列都要真的扫过，不能挑几列"
 
@@ -451,7 +457,12 @@ def test_no_column_of_the_written_row_carries_the_question_text(
 
 
 def test_the_old_table_name_survives_only_where_history_requires_it() -> None:
-    """旧表名只许留在 initial 迁移与改名迁移里——其余代码与迁移清单一律用新名。"""
+    """旧表名只许留在迁移里——``app/`` 一律用新名。
+
+    迁移里为什么允许：它们是不可改写的追加历史（#101 用旧名建/改名，后续几条用旧名加列），
+    把历史迁移改写成新名会让「库是怎么变成现在这样的」变成一句谎话。而 ``app/`` 里一旦出现旧名，
+    就是「代码认的表」和「库里的表」对不上——那正是这条守卫要拦的。
+    """
 
     offenders: list[str] = []
     paths = sorted((REPO_ROOT / "app").rglob("*.py")) + sorted(
@@ -462,10 +473,8 @@ def test_the_old_table_name_survives_only_where_history_requires_it() -> None:
         text = path.read_text(encoding="utf-8")
         if not _OLD_NAME_RE.search(text):
             continue
-        if relative in _OLD_NAME_IN_HISTORY:
-            continue
-        # 改名迁移必须点出旧名（rename_table 的源表），它是唯一合法的另一处。
-        if relative.parent == Path("migrations") / "versions" and "rename" in relative.name:
+        # 迁移是追加历史，允许提到旧名（含「改名」那两条，它们必须说出源表名）。
+        if relative.parent == Path("migrations") / "versions":
             continue
         offenders.append(str(relative))
 

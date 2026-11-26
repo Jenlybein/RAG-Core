@@ -97,6 +97,12 @@ class RetrievedChunk(BaseModel):
     source_chunk_ids: list[str] = Field(default_factory=list)
     # 这次上下文给了多大范围：neighbors / parent / table / chunk（兜底，见折叠函数）。
     expansion: str | None = None
+    # 这条属于该节的第几段（第 16 步 #207）。一个超长 h2 在索引期被切成若干「节段」，
+    # 段与段是不同的节；``0`` 表示没被切过（也是老索引的形态）。
+    section_part: int = 0
+    # 这条的正文被裁过（``content`` 不是该单元的全部）。调用方据此知道「后面还有」——
+    # 没有这个标记，读者会把一个片段当成全文。
+    truncated: bool = False
     # 这一节的章节路径：引用要能显示「出自哪一节」。折叠后 parent 那层没了，
     # 所以路径直接平铺在这条结果上。
     heading_path: str | None = None

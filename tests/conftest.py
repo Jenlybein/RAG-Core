@@ -85,6 +85,16 @@ os.environ["TRACE_SINK"] = "none"
 # 业务行为；需要真实 Key 那条路的用例会**显式**把开关拨过去（见
 # `tests/test_tenant_wiring.py` 里两种身份各走一遍的用例），所以这里写死不会掩盖任何东西。
 os.environ["AUTH_ENABLED"] = "false"
+# 强制覆盖：**限流开关也必须由套件自己说了算**（#208）。
+#
+# 从 #208 起生产默认值是 `true`（曾经默认关，等于把「必须记得打开」交给部署方的记忆）。
+# 但套件的前提是**全程离线**：打开它就意味着每次检索都要连一条真实 Redis 去读写配额键，
+# 而绝大多数用例关心的不是限流、是限流**之后**的业务行为。让默认套件依赖 Redis，等于
+# 把红绿交给「这台机器今天开着哪些服务」——与上面 AUTH_ENABLED 一字不差的理由。
+#
+# 需要限流那一路的用例会**显式**把开关拨过去（`monkeypatch.setattr(settings, ...)`，
+# 见 tests/test_quota_wiring.py / test_console_api.py），所以这里写死 false 不掩盖任何东西。
+os.environ["RATE_LIMIT_ENABLED"] = "false"
 # 强制清空：**代理环境变量不进套件**。httpx 0.28 在构造 AsyncClient 时把 NO_PROXY 逐条
 # 解析成 mounts，IPv6 条目（`[::1]` / `::1`）会被解析成非法 URL（Invalid port），于是
 # 机器上只要装着代理工具写下的 NO_PROXY，一批 Provider / 客户端用例就整片红——而代码
@@ -189,14 +199,23 @@ def _offline_process_state():
     from app.providers.keyword_search import reset_keyword_search_provider_cache
     from app.providers.llm import reset_llm_provider_cache
     from app.providers.rerank import reset_rerank_provider_cache
+    from app.core.key_verify_cache import set_default_key_verify_cache
     from app.services import plan_service
-    from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
+    from tests.fake_db import (
+        AsyncRecordingSession,
+        MemoryKeyVerifyCache,
+        MemoryPlanCache,
+        RecordingSession,
+    )
 
     factory_mod.set_session_factory(RecordingSession)
     # 异步那一路同理（票 #128 起反馈写入走它）：不注入的话，旁路短事务会真的去连 PostgreSQL。
     factory_mod.set_async_session_factory(AsyncRecordingSession)
     set_settings_cache(_MemorySettingsCache())
     plan_service.set_default_plan_cache(MemoryPlanCache())
+    # Key 校验缓存同一条纪律：生产实现是 Redis，不注入的话任何一条走真鉴权的用例都会去连
+    # 本机 Redis（没开就报连接错误，开着则把用例结果交给那台机器今天的状态）。
+    set_default_key_verify_cache(MemoryKeyVerifyCache())
     reset_trace_sink()
     reset_keyword_search_provider_cache()
     reset_llm_provider_cache()
@@ -214,6 +233,7 @@ def _offline_process_state():
         factory_mod.set_async_session_factory(None)
         reset_settings_cache()
         plan_service.set_default_plan_cache(None)
+        set_default_key_verify_cache(None)
         reset_trace_sink()
         reset_keyword_search_provider_cache()
         reset_llm_provider_cache()

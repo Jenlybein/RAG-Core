@@ -224,9 +224,13 @@ def test_api_keys_shape() -> None:
     assert table.c.tenant_id.index is True
     assert table.c.policy_id.type.length == 36
     assert table.c.policy_id.index is True
-    assert table.c.key_value.type.length == 64
-    assert table.c.key_value.unique is True
-    assert table.c.key_value.index is True
+    # 库里只有哈希与末 5 位：原文一列都没有，于是「按原文一击命中」这条路不复存在。
+    assert "key_value" not in table.c
+    assert table.c.key_hash.type.length == 255
+    assert table.c.key_tail.type.length == 16
+    # 哈希不参与查找（行定位靠主键），加唯一索引等于给一个没人查的列建索引。
+    assert table.c.key_hash.unique is not True
+    assert table.c.key_hash.index is not True
     assert table.c.label.type.length == 128
     assert table.c.label.nullable is True
     assert table.c.last_used_at.nullable is True

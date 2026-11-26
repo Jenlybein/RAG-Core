@@ -158,7 +158,10 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # 之后；第 13 步 T1 的新授权/计量列（add_retrieval_authorization）再接在它之后。
     # 每加一条迁移改这一行是**刻意的**：
     # 「链尾是哪个文件」要人看一眼确认，不由代码自动推导。
-    assert heads == {_revision_of(_migration_path("merge_model_role_pointers"))}
+    # 每加一条迁移改一次，**故意**：
+    # 「链尾是哪个文件」要人看一眼才确认，不该由代码自动推导。
+    # 数据面 API Key 改「只存哈希」（``hash_api_key_secrets``）接在模型角色指针合并之后。
+    assert heads == {_revision_of(_migration_path("unit_cap_and_build_params"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

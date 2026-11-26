@@ -230,7 +230,7 @@ def _matches_where(row: Any, criterion: Any) -> bool:
     """``WHERE`` 只认「列 = 字面量」「列 IN (...)」「列 < / > 字面量」（可 ``AND`` 组合）。
 
     与 ``_FakeQuery._matches`` 同一条口径，只是补上了仓储层真的用到的几种写法：
-    ``audit_logs.action = ?``、``retrieval_traces.trace_id = ? AND tenant_id = ?``、
+    ``audit_logs.action = ?``、``usage_events.trace_id = ? AND tenant_id = ?``、
     ``retrieval_feedback.log_id IN (...)``、以及「比某个时刻更早」这类**时间比较**
     （``index_build_versions.created_at < cutoff``，见 #142 的「有行、没任务」检测）。
     """
@@ -295,6 +295,29 @@ class MemoryPlanCache:
     async def delete(self, plan_id: int) -> None:
         self.deleted.append(plan_id)
         self.items.pop(plan_id, None)
+
+
+class MemoryKeyVerifyCache:
+    """Key 校验缓存的内存假实现（契约见 ``app.core.key_verify_cache``）。
+
+    两个方法都是 ``async``，理由与 :class:`MemoryPlanCache` 一字不差：生产实现握的是
+    ``redis.asyncio``，替身不同形的话，「忘了 ``await``」在套件里会表现成「缓存永远不命中」，
+    而不是一条明确的失败。
+
+    ``remembered`` 记录每次回填，于是「第一次要算 scrypt、第二次不再算」可以直接断言；
+    ``items`` 是用例预置「已经验过」的入口。
+    """
+
+    def __init__(self) -> None:
+        self.items: dict[str, str] = {}
+        self.remembered: list[tuple[str, str]] = []
+
+    async def key_id_of(self, token: str) -> str | None:
+        return self.items.get(token)
+
+    async def remember(self, token: str, key_id: str) -> None:
+        self.remembered.append((token, key_id))
+        self.items[token] = key_id
 
 
 class _FakeQuery:

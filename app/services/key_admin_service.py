@@ -35,7 +35,7 @@ from app.models.api_key import ApiKey
 from app.models.key_policy import KeyPolicy
 from app.repositories import api_key_repository, key_policy_repository
 from app.services import api_key_service, console_service, key_policy_service
-from app.utils.id_generator import mask_api_key_value
+from app.utils.id_generator import mask_api_key_tail
 
 #: 审计里的动作名。列表与筛选都按它读，所以写在一处。``key.`` 与 ``key_policy.`` 两个
 #: 前缀让「动的是凭证还是配置」一眼可分——它们对客户的影响完全不同。
@@ -58,10 +58,15 @@ class KeyRowView:
 
 @dataclass(frozen=True)
 class IssuedKey:
-    """一次签发的产物：刚写入的 Key 行 + 连带建出来的配置行。"""
+    """一次签发的产物：刚写入的 Key 行 + 连带建出来的配置行 + **只此一次**的原文。
+
+    ``plaintext`` 是这条路线上唯一的原文出口：行里只有哈希与末 5 位。路由把它放进签发
+    响应，之后谁也取不回来。
+    """
 
     api_key: ApiKey
     policy: KeyPolicy
+    plaintext: str
 
 
 @dataclass(frozen=True)
@@ -140,9 +145,10 @@ async def issue_key(
     except LookupError as exc:
         raise AppError(ErrorCode.NOT_FOUND, str(exc)) from exc
 
-    api_key = await api_key_service.create_api_key_row_async(
+    minted = await api_key_service.create_api_key_row_async(
         db, tenant_id=tenant_id, policy_id=created.policy.id, label=label
     )
+    api_key = minted.api_key
     await console_service.append_audit(
         db,
         actor=actor,
@@ -151,7 +157,7 @@ async def issue_key(
         before=None,
         after=_key_audit_snapshot(api_key, created.policy),
     )
-    return IssuedKey(api_key=api_key, policy=created.policy)
+    return IssuedKey(api_key=api_key, policy=created.policy, plaintext=minted.plaintext)
 
 
 async def delete_key(db: AsyncSession, *, actor: ConsoleIdentity, key_id: str) -> DeletedKey:
@@ -252,10 +258,10 @@ def _policy_name_of(label: str | None) -> str:
 
 
 def _key_audit_snapshot(api_key: ApiKey, policy: KeyPolicy | None) -> dict[str, Any]:
-    """审计里的 Key 快照：**只留 masked**，不留可用凭证。
+    """审计里的 Key 快照：**只留打码形态**，不留可用凭证。
 
-    审计列表是管理员跨租户看的（``GET /console/audit-logs``），把明文写进去等于让平台
-    管理员顺手拿到每个租户的可用 Key——那会绕过「管理员进不了用户面板」这道边界。
+    审计列表是管理员跨租户看的（``GET /console/audit-logs``）。改哈希之后这里连「要不要
+    打码」都不必再判断——库里只剩 ``key_tail``，快照里能放的也只有它拼出来的那几个字符。
     ``policy`` 为 ``None``（配置缺失或指向别的租户）时如实回 ``null``，不编默认值。
     """
 
@@ -265,7 +271,7 @@ def _key_audit_snapshot(api_key: ApiKey, policy: KeyPolicy | None) -> dict[str, 
         "policy_id": api_key.policy_id,
         "label": api_key.label,
         "status": api_key.status,
-        "key_masked": mask_api_key_value(api_key.key_value),
+        "key_masked": mask_api_key_tail(api_key.key_tail),
         "policy": (
             key_policy_service.policy_values_of(policy) if policy is not None else None
         ),

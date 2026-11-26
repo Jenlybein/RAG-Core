@@ -25,12 +25,13 @@ from app.db.async_session import get_async_db, get_async_transaction
 from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_keys import (
-    KeyData,
+    IssuedKeyData,
     KeyDeleteData,
     KeyIssueRequest,
     KeyListData,
     KeyPolicyPatchData,
     KeyPolicyPatchRequest,
+    issued_key_data_of,
     key_data_of,
 )
 from app.services import key_admin_service
@@ -41,13 +42,13 @@ router = APIRouter(prefix="/console", tags=["console"])
 @router.get(
     "/keys",
     response_model=ApiResponse[KeyListData],
-    summary="本租户的 Key 列表（明文 + masked + 它引用的配置）",
+    summary="本租户的 Key 列表（打码形态 + 它引用的配置）",
 )
 async def list_keys(
     identity: ConsoleIdentity = Depends(require_console_tenant),
     db: AsyncSession = Depends(get_async_db),
 ) -> ApiResponse[KeyListData]:
-    """列出本租户的 Key。明文是本票的明确决定（ADR-0004），masked 是第二形态。
+    """列出本租户的 Key。**只有打码形态**（``rc_live_…4f3a2``）：原文在签发之后就不存在了。
 
     这条路径（含身份判定）在异步栈上（票 #129）。签发 / 删除 / 改配置也一样——它们在
     ADR-0024 之后同属异步栈，写路径另外声明 ``get_async_transaction``（票 #130）。
@@ -59,16 +60,19 @@ async def list_keys(
 
 @router.post(
     "/keys",
-    response_model=ApiResponse[KeyData],
-    summary="签发 Key（连带建一条密钥配置）",
+    response_model=ApiResponse[IssuedKeyData],
+    summary="签发 Key（连带建一条密钥配置，完整 Key 只在本响应里出现一次）",
 )
 async def issue_key(
     payload: KeyIssueRequest,
     identity: ConsoleIdentity = Depends(require_console_tenant_write),
     db: AsyncSession = Depends(get_async_db),
     tx: AsyncTransaction = Depends(get_async_transaction),
-) -> ApiResponse[KeyData]:
+) -> ApiResponse[IssuedKeyData]:
     """签发：``{label, policy}`` → 一把新 Key + 它引用的配置 + 一条审计。
+
+    ``key_plaintext`` 是**唯一**一次能看到完整 Key 的地方：库里只有 scrypt 哈希，此后
+    连平台管理员都取不回来。前端必须在这一刻把它交给人（复制 / 直接去调试台试一把）。
 
     配置不自洽（档位要的能力没开、超套餐上限）→ ``20015``，两行都不落库。
     """
@@ -79,7 +83,9 @@ async def issue_key(
         label=payload.label,
         policy_values=payload.policy.provided(),
     )
-    return ok(key_data_of(issued.api_key, issued.policy))
+    return ok(
+        issued_key_data_of(issued.api_key, issued.policy, issued.plaintext)
+    )
 
 
 @router.delete(

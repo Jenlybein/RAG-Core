@@ -52,7 +52,18 @@ from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
 from app.db.transaction import after_commit
 from app.models.document import Document
-from app.models.knowledge_base import KnowledgeBase, formats_of, settings_of
+from app.models.index_version import INDEX_BUILD_BUILDING
+from app.models.knowledge_base import (
+    MAX_CHUNK_SIZE,
+    MAX_SECTION_PART_MAX_CHARS,
+    MIN_CHUNK_SIZE,
+    MIN_SECTION_PART_MAX_CHARS,
+    KnowledgeBase,
+    formats_of,
+    needs_rebuild,
+    resolve_formats,
+    settings_of,
+)
 from app.models.plan import PlanSpec
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.vectorstores import get_vector_store
@@ -60,6 +71,7 @@ from app.repositories import (
     chunk_repository,
     document_repository,
     document_version_repository,
+    index_version_repository,
     knowledge_base_repository,
     tenant_repository,
 )
@@ -75,7 +87,13 @@ from app.services.chunk_store import build_chunk_stores
 from app.services.console_service import append_audit
 from app.services.document_ingestion import prepare_document_content
 from app.services.document_storage import remove_document_file
-from app.services.index_dispatch import enqueue_document, enqueue_document_after_commit
+from app.services.index_dispatch import (
+    enqueue_document,
+    enqueue_document_after_commit,
+    enqueue_index_build,
+    enqueue_index_build_after_commit,
+)
+from app.services.index_build_service import IndexBuildService
 
 from app.services.indexing_service import purge_document_chunks
 from app.utils.status import DocumentStatus
@@ -85,6 +103,8 @@ from app.utils.status import DocumentStatus
 #: 前缀把对象类型放在名字里（``kb.`` / ``doc.``），一个动作名就能看出动的是哪类行。
 ACTION_KB_CREATE: Final[str] = "kb.create"
 ACTION_KB_DELETE: Final[str] = "kb.delete"
+#: 改库的切块设置并重建（第 16 步 #207）：账本里要能看出「改了什么、为什么要重建」。
+ACTION_KB_SETTINGS_UPDATE: Final[str] = "kb.settings_update"
 ACTION_DOC_UPLOAD: Final[str] = "doc.upload"
 ACTION_DOC_REINDEX: Final[str] = "doc.reindex"
 ACTION_DOC_DELETE: Final[str] = "doc.delete"
@@ -94,6 +114,12 @@ ACTION_DOC_ROLLBACK: Final[str] = "doc.rollback"
 #: 删非空库的对外提示。票面要求**消息里说要先删文档**：只说「参数非法」会让面板只能
 #: 弹一句「出错了」，而操作者其实知道下一步做什么。
 MSG_KB_NOT_EMPTY: Final[str] = "该知识库下还有文档，请先删文档再删库"
+
+#: 改切块设置必须显式确认（第 16 步 #207）：确认之后会自动整库重建，那是几分钟到几十分钟的
+#: Worker 与一次全库重嵌入。没说清的「顺手改一下」不能悄悄变成这个代价。
+MSG_KB_SETTINGS_NEEDS_CONFIRM: Final[str] = (
+    "修改切块设置会触发整库重建，请在确认后再提交（confirm=true）"
+)
 
 #: 账号的租户行不存在（数据被改坏）时的提示。它不是「没权限」——会话里的账号指向了
 #: 一个不存在的租户，按未授权处理，前端该重新登录。
@@ -122,6 +148,10 @@ class TreeKnowledgeBase:
     split_strategy: str
     allowed_formats: list[str]
     chunk_size: int
+    #: 节段阈值（第 16 步 #207）：前端要能回显，否则「改设置」的弹窗只能显示默认值。
+    section_part_max_chars: int
+    #: 库当前设置与生效那一版的构建参数不一致 → 这个库要重建才生效（见 ``needs_rebuild``）。
+    needs_rebuild: bool
     documents: list[TreeDocument]
 
 
@@ -148,6 +178,8 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                 split_strategy=kb.split_strategy,
                 allowed_formats=formats_of(kb),
                 chunk_size=settings_of(kb)["chunk_size"],
+                section_part_max_chars=settings_of(kb)["section_part_max_chars"],
+                needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
                 documents=[
                     TreeDocument(
                         document_id=document.id,
@@ -175,6 +207,7 @@ async def create_kb(
     description: str | None,
     split_strategy: str,
     chunk_size: int,
+    section_part_max_chars: int,
     allowed_formats: Sequence[str] | None,
 ) -> dict[str, Any]:
     """建库：套餐校验与落库复用 ``knowledge_base_service``，审计与写入同一个事务。
@@ -191,6 +224,7 @@ async def create_kb(
         split_strategy=split_strategy,
         plan=plan,
         chunk_size=chunk_size,
+        section_part_max_chars=section_part_max_chars,
         allowed_formats=allowed_formats,
     )
     await append_audit(
@@ -202,6 +236,181 @@ async def create_kb(
         after=_kb_snapshot_of_data(data),
     )
     return data
+
+
+async def _needs_rebuild(
+    db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str
+) -> bool:
+    """这个库的切块设置是否已经**没被生效版本用上**（第 16 步 #207）。
+
+    从**生效那一版**的 ``params`` 比，不是从最新版本比：``ready`` 但没激活的版本还没在服务，
+    拿它做基准会让一个已经该重建的库显示成「已就绪」。生效版本找不到行（建库只写了库列）
+    时按需要重建——宁可多提示一次，也不要少提示。
+    """
+
+    live = kb.active_index_version
+    if live is None:
+        return True
+    rows = await index_version_repository.list_for_kb(db, kb.id, tenant_id=tenant_id)
+    row = next((item for item in rows if item.version == live), None)
+    if row is None:
+        return True
+    return needs_rebuild(kb, row.params)
+
+
+async def settings_preview(
+    db: AsyncSession, *, tenant_id: str, kb_id: str
+) -> dict[str, Any]:
+    """确认弹窗要的那份事实：当前设置、生效版本用的参数、以及**这次重建的量**（第 16 步 #207）。
+
+    为什么要单独一次读：确认弹窗里必须写清「这次会重建多少篇、多少片」。让人对着一个
+    「确定要重建吗？」点「确定」，等于把一次可能几十分钟的 Worker 变成盲盒——而误点的
+    代价是服务器和钱，不是一次刷新。
+
+    ``build_running`` 不是给前端做样子的：真有构建在跑时后端也会拒（``50001``），这一栏
+    只是让人在点之前就知道。
+    """
+
+    kb = await knowledge_base_repository.get_by_id_for_tenant(
+        db, kb_id, tenant_id=tenant_id
+    )
+    if kb is None:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+    documents = await document_repository.list_by_kb_async(
+        db, kb_id, tenant_id=tenant_id
+    )
+    # 参与重建的只有能切出正文的那些：失败 / 处理中的文档没有可切的正文，
+    # 把它们算进「将重建 N 篇」会让人以为这次能修好它们。
+    rebuildable = [
+        document for document in documents if document.status == DocumentStatus.SUCCESS
+    ]
+    counts = await chunk_repository.count_by_document_ids(
+        db, [document.id for document in rebuildable], tenant_id=tenant_id
+    )
+    rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
+    live = next(
+        (row for row in rows if row.version == kb.active_index_version), None
+    )
+    values = settings_of(kb)
+    return {
+        "kb_id": kb.id,
+        "name": kb.name,
+        "split_strategy": kb.split_strategy,
+        "allowed_formats": formats_of(kb),
+        "chunk_size": values["chunk_size"],
+        "section_part_max_chars": values["section_part_max_chars"],
+        # 生效版本的参数：NULL（老版本）时也如实回 None，前端据此显示「这一版没留参数」。
+        "live_params": live.params if live is not None else None,
+        "live_version": kb.active_index_version,
+        "needs_rebuild": needs_rebuild(kb, live.params if live is not None else None),
+        "build_running": any(row.status == INDEX_BUILD_BUILDING for row in rows),
+        "documents_to_rebuild": len(rebuildable),
+        "chunks_to_rebuild": sum(counts.values()),
+    }
+
+
+async def update_kb_settings(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    kb_id: str,
+    actor: ConsoleIdentity,
+    request_id: str | None,
+    split_strategy: str | None,
+    chunk_size: int | None,
+    section_part_max_chars: int | None,
+    confirmed: bool,
+    name: str | None = None,
+    description: str | None = None,
+) -> dict[str, Any]:
+    """改切块设置并**自动重建**（第 16 步 #207）。
+
+    切块参数是**索引期**的旋钮：改了不重建，读到的仍是旧切法，而页面看起来「已经改好了」。
+    所以这里一次做三件事：写设置、记一条审计、起一个构建——三者同一笔事务，构建的投递
+    登记在 ``after_commit`` 上（先让「已排队」落库，再让 Worker 去抢）。
+
+    **正在构建时拒绝**（``50001``）：排队会让「两次修改谁先谁后」变成不可预测，而设置只有
+    最后一份、构建产物却有多个版本，先后一乱就没人能说出「这个库现在到底按哪套参数切」。
+
+    **设置不回滚**：构建失败时旧版本继续服务、库上标「需重建」，但设置本身留着——回滚设置
+    会让人以为自己刚才没改成，反而更糊涂。失败由 Worker 自己落 ``failed`` + 原因。
+    """
+
+    kb = await knowledge_base_repository.get_by_id_for_tenant(
+        db, kb_id, tenant_id=tenant_id
+    )
+    if kb is None:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+    # 显式二次确认：这次改动会触发整库重建（全库重嵌入 + 重写 ES，可能几十分钟的 Worker）。
+    # 少了它，一次误点就是一次全库重算——而这个代价是**服务器与钱**，不是一次刷新。
+    if not confirmed:
+        raise AppError(ErrorCode.PARAM_ERROR, MSG_KB_SETTINGS_NEEDS_CONFIRM)
+
+    before = _kb_snapshot(kb)
+    values = settings_of(kb)
+    # 只改「这次真的发了」的字段：没发的保持原值，否则一次只想改阈值的请求会把策略也重置。
+    new_strategy = kb.split_strategy if split_strategy is None else split_strategy
+    new_chunk = values["chunk_size"] if chunk_size is None else chunk_size
+    new_part_max = (
+        values["section_part_max_chars"]
+        if section_part_max_chars is None
+        else section_part_max_chars
+    )
+    try:
+        resolve_formats(new_strategy, None)
+    except ValueError as exc:
+        raise AppError(ErrorCode.PARAM_ERROR, str(exc)) from exc
+    if not MIN_CHUNK_SIZE <= new_chunk <= MAX_CHUNK_SIZE:
+        raise AppError(
+            ErrorCode.PARAM_ERROR, f"chunk_size 必须在 {MIN_CHUNK_SIZE}~{MAX_CHUNK_SIZE} 之间"
+        )
+    if not MIN_SECTION_PART_MAX_CHARS <= new_part_max <= MAX_SECTION_PART_MAX_CHARS:
+        raise AppError(
+            ErrorCode.PARAM_ERROR,
+            f"section_part_max_chars 必须在 {MIN_SECTION_PART_MAX_CHARS}~"
+            f"{MAX_SECTION_PART_MAX_CHARS} 之间",
+        )
+
+    if name is not None:
+        kb.name = name
+    if description is not None:
+        kb.description = description
+    kb.split_strategy = new_strategy
+    kb.settings = {**values, "chunk_size": new_chunk, "section_part_max_chars": new_part_max}
+    await append_audit(
+        db,
+        actor=actor,
+        action=ACTION_KB_SETTINGS_UPDATE,
+        target=f"kb:{kb_id}",
+        before=before,
+        after=_kb_snapshot(kb),
+    )
+
+    # 起构建：它就是「这次设置何时生效」的时间点。并发由 start_build 自己守（50001）。
+    build = await IndexBuildService().start_build(db, kb_id=kb_id, tenant_id=tenant_id)
+    after_commit(
+        db,
+        lambda: enqueue_index_build_after_commit(
+            publish=enqueue_index_build,
+            build_id=build.id,
+            tenant_id=tenant_id,
+            request_id=request_id,
+            # 改设置这条路径**要**自动激活：它的语义就是「改完就该生效」。
+            activate=True,
+        ),
+    )
+    return {
+        "kb_id": kb_id,
+        "name": kb.name,
+        "split_strategy": kb.split_strategy,
+        "allowed_formats": formats_of(kb),
+        "chunk_size": new_chunk,
+        "section_part_max_chars": new_part_max,
+        "build_id": build.id,
+        "build_version": build.version,
+    }
 
 
 async def delete_empty_kb(
@@ -418,6 +627,7 @@ def _kb_snapshot(kb: KnowledgeBase) -> dict[str, Any]:
         "split_strategy": kb.split_strategy,
         "allowed_formats": formats_of(kb),
         "chunk_size": settings_of(kb)["chunk_size"],
+        "section_part_max_chars": settings_of(kb)["section_part_max_chars"],
     }
 
 
@@ -430,6 +640,7 @@ def _kb_snapshot_of_data(data: dict[str, Any]) -> dict[str, Any]:
         "split_strategy": data["split_strategy"],
         "allowed_formats": list(data["allowed_formats"]),
         "chunk_size": data["chunk_size"],
+        "section_part_max_chars": data["section_part_max_chars"],
     }
 
 

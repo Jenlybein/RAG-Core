@@ -1,0 +1,316 @@
+/**
+ * 设计令牌（唯一出处）。
+ *
+ * 与设计稿 `design/rag-console-replica/tokens.css` 同源：平灰画布 + 液态玻璃 + 语义色。
+ * 差别只有一处：这里的颜色都拆成 **RGB 三元组**，Tailwind 用
+ * `rgb(var(--c-x) / <alpha-value>)` 读，所以 `bg-surface/85`、`border-line/70`
+ * 这类带透明度的写法照旧能用——如果直接写 `var(--canvas)`，Tailwind 的 `/xx`
+ * 会失效（它只会输出 color-mix 或干脆不生效）。
+ *
+ * 换主题只换这一套值：组件与页面不写任何明暗分支。
+ */
+
+:root {
+  color-scheme: light;
+
+  /* ── 画布与面 ── */
+  --c-canvas: 228 232 239; /* 页面底：一整块平的中性灰，没有渐变、没有彩色光晕 */
+  --c-surface: 255 255 255; /* 卡片面 */
+  --c-surface-muted: 246 247 250; /* 卡片内的次级块（表头、代码块） */
+  --c-surface-sunken: 236 239 244; /* 内凹：输入框、进度槽 */
+
+  /* ── 文字 ── */
+  --c-ink: 29 29 31;
+  --c-muted: 91 91 97; /* 玻璃上要更沉一点才够 4.5:1 */
+  --c-faint: 108 108 114;
+  --c-disabled: 169 169 176;
+
+  /* ── 描边 ── */
+  --c-line: 210 210 215;
+  --c-line-strong: 184 184 191;
+
+  /* ── 强调 ── */
+  --c-accent: 0 113 227;
+  --c-accent-hover: 0 119 237;
+  --c-accent-soft: 232 242 255;
+  --c-brand: 0 113 227;
+  --c-danger: 215 0 21;
+  --c-star: 255 159 10;
+
+  /* ── 三态徽章（保留仓库 StatusBadge 的语义配色） ── */
+  --c-ok: 51 73 31;
+  --c-fail: 140 47 34;
+  --c-indexing: 107 79 0;
+  --c-unknown: 84 84 90;
+  --c-ok-bg: 228 237 221;
+  --c-fail-bg: 247 226 221;
+  --c-indexing-bg: 255 248 230;
+  --c-unknown-bg: 240 236 228;
+
+  /**
+   * ── 中性灰阶（映射 `slate-*`）──
+   * 页面里有几百处 `text-slate-500` / `bg-slate-100`，意义是「次要一点」「浅一档」。
+   * 深色下整体反转（50↔900），语义保持，颜色跟着主题走。
+   */
+  --c-slate-50: 245 245 247;
+  --c-slate-100: 232 232 237;
+  --c-slate-200: 210 210 215;
+  --c-slate-300: 184 184 191;
+  --c-slate-400: 134 134 139;
+  --c-slate-500: 110 110 115;
+  --c-slate-600: 81 81 84;
+  --c-slate-700: 58 58 60;
+  --c-slate-800: 29 29 31;
+  --c-slate-900: 0 0 0;
+
+  /* ══════════════ 液态玻璃 ══════════════
+   *
+   * 三档厚度：nav（顶栏，要盖住滚过的内容）/ card（主卡片）/ strong（弹窗、需要读字最久的层）。
+   * 一层玻璃 = 半透明面 + 折射模糊 + 亮边 + 上沿内高光 + 两层投影，缺一个都不像玻璃。
+   */
+  --glass-fill-nav: 255 255 255; /* 配 /92 用：顶栏比卡片实，否则内容从边上露头 */
+  --glass-fill-card: 255 255 255;
+  --glass-fill-strong: 255 255 255;
+  --glass-alpha-nav: 0.92;
+  --glass-alpha-card: 0.62;
+  --glass-alpha-strong: 0.82;
+  --glass-blur: blur(28px) saturate(185%);
+  --glass-blur-soft: blur(16px) saturate(170%);
+  --glass-stroke: rgb(255 255 255 / 0.9);
+  --glass-edge: rgb(24 33 52 / 0.08);
+  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 1), inset 0 -1px 0 rgb(255 255 255 / 0.42),
+    inset 1px 0 0 rgb(255 255 255 / 0.55), inset -1px 0 0 rgb(255 255 255 / 0.55);
+  --glass-shadow: 0 1px 3px rgb(24 33 52 / 0.07), 0 18px 32px -22px rgb(24 33 52 / 0.3),
+    0 34px 64px -36px rgb(24 33 52 / 0.3);
+  --glass-shadow-lift: 0 2px 8px rgb(24 33 52 / 0.1), 0 26px 44px -26px rgb(24 33 52 / 0.36),
+    0 48px 88px -44px rgb(24 33 52 / 0.36);
+  --glass-shadow-nav: 0 1px 2px rgb(24 33 52 / 0.07), 0 8px 20px -14px rgb(24 33 52 / 0.3);
+  /* 无障碍降级用的实底（prefers-reduced-transparency / prefers-contrast 时换成它） */
+  --glass-solid: 246 247 250;
+  --glass-solid-card: 255 255 255;
+
+  /* 语义化的填充与描边：组件一律用这三组，不在页面里写裸 rgba(255,255,255,α) */
+  --fill-hi: rgb(255 255 255 / 0.9);
+  --fill-md: rgb(255 255 255 / 0.56);
+  --fill-lo: rgb(255 255 255 / 0.42);
+  --fill-xlo: rgb(255 255 255 / 0.32);
+  --stroke-hi: rgb(255 255 255 / 0.82);
+  --stroke-md: rgb(255 255 255 / 0.62);
+  --stroke-lo: rgb(255 255 255 / 0.42);
+  --sheen: inset 0 1px 0 rgb(255 255 255 / 0.92);
+  --sheen-soft: inset 0 1px 0 rgb(255 255 255 / 0.45);
+  --well-shadow: inset 0 1px 2px rgb(24 33 52 / 0.07), inset 0 -1px 0 rgb(255 255 255 / 0.7);
+
+  /* ── 圆角 ── */
+  --r-card: 24px;
+  --r-control: 14px;
+  --r-small: 10px;
+  --r-pill: 980px;
+
+  /* ── 字号阶梯 ── */
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-17: 17px;
+  --fs-20: 20px;
+  --fs-26: 26px;
+  --fs-34: 34px;
+  --fs-44: 44px;
+
+  /* ── 间距（4 的倍数）── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-14: 56px;
+
+  /* ── 动效 ── */
+  --ease-glass: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-glass: 220ms;
+
+  /* ── 杂项（跟着主题走）── */
+  --selection-bg: rgb(0 113 227 / 0.18);
+  --scroll-thumb: rgb(24 33 52 / 0.22);
+  --scroll-thumb-hover: rgb(24 33 52 / 0.34);
+
+  /* ── Element Plus 对齐到同一套令牌 ── */
+  --el-color-primary: rgb(var(--c-accent));
+  --el-color-primary-light-3: rgb(61 147 236);
+  --el-color-primary-light-5: rgb(102 174 241);
+  --el-color-primary-light-7: rgb(153 201 246);
+  --el-color-primary-light-8: rgb(179 214 248);
+  --el-color-primary-light-9: rgb(var(--c-accent-soft));
+  --el-color-primary-dark-2: rgb(0 91 181);
+  --el-border-radius-base: var(--r-control);
+  --el-border-radius-small: var(--r-small);
+  --el-text-color-primary: rgb(var(--c-ink));
+  --el-text-color-regular: rgb(var(--c-slate-700));
+  --el-text-color-secondary: rgb(var(--c-muted));
+  --el-text-color-placeholder: rgb(var(--c-faint));
+  --el-text-color-disabled: rgb(var(--c-disabled));
+  --el-border-color: rgb(var(--c-line));
+  --el-border-color-light: rgb(var(--c-line));
+  --el-border-color-lighter: rgb(var(--c-line));
+  --el-border-color-extra-light: rgb(var(--c-line));
+  --el-bg-color: rgb(var(--c-surface));
+  --el-bg-color-overlay: rgb(var(--c-surface));
+  --el-fill-color-blank: rgb(var(--c-surface));
+  --el-fill-color-light: rgb(var(--c-surface-muted));
+  --el-fill-color-lighter: rgb(var(--c-surface-muted));
+  --el-overlay-color-lighter: rgb(0 0 0 / 0.28);
+  --el-overlay-color: rgb(0 0 0 / 0.48);
+  --el-table-header-bg-color: rgb(var(--c-surface-muted));
+  --el-table-border-color: rgb(var(--c-line));
+  --el-table-row-hover-bg-color: rgb(var(--c-surface-muted));
+  --el-box-shadow-light: 0 2px 8px rgb(0 0 0 / 0.04), 0 12px 32px -20px rgb(0 0 0 / 0.12);
+  --el-box-shadow: 0 4px 16px rgb(0 0 0 / 0.08), 0 24px 56px -24px rgb(0 0 0 / 0.28);
+  --el-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+}
+
+/**
+ * 深色：`theme.ts` 把 auto 解析成实际值后写 `data-theme`，所以这里只有一份深色值——
+ * 不需要「跟随系统」的媒体查询副本（那是纯 CSS 方案才要付的重复代价）。
+ */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --c-canvas: 20 22 26;
+  --c-surface: 34 38 45;
+  --c-surface-muted: 27 30 36;
+  --c-surface-sunken: 18 20 24;
+
+  --c-ink: 245 245 247;
+  --c-muted: 157 157 164;
+  --c-faint: 138 138 145;
+  --c-disabled: 106 106 113;
+
+  --c-line: 66 70 79;
+  --c-line-strong: 96 101 112;
+
+  --c-accent: 10 132 255;
+  --c-accent-hover: 44 148 255;
+  --c-accent-soft: 24 48 76;
+  --c-brand: 10 132 255;
+  --c-danger: 255 96 84;
+  --c-star: 255 214 10;
+
+  --c-ok: 173 214 138;
+  --c-fail: 255 157 148;
+  --c-indexing: 255 210 122;
+  --c-unknown: 180 180 187;
+  /* 徽章底：深色下用低亮度的同色系，不用高饱和浅底（那种浅底在深色页上像贴纸） */
+  --c-ok-bg: 44 58 34;
+  --c-fail-bg: 74 38 32;
+  --c-indexing-bg: 62 50 20;
+  --c-unknown-bg: 48 48 54;
+
+  /* 灰阶反转：深色下「浅一档」= 更暗一档 */
+  --c-slate-50: 34 38 45;
+  --c-slate-100: 42 46 53;
+  --c-slate-200: 52 57 65;
+  --c-slate-300: 66 70 79;
+  --c-slate-400: 96 101 112;
+  --c-slate-500: 138 138 145;
+  --c-slate-600: 157 157 164;
+  --c-slate-700: 201 201 208;
+  --c-slate-800: 226 226 232;
+  --c-slate-900: 245 245 247;
+
+  /* 深色玻璃 = 极低 alpha 的白叠在半透黑上：填充色本身也要换深。
+     沿用白色的话，白 62% 叠在黑底上是一块死灰，字全糊在里面。 */
+  --glass-fill-nav: 58 62 72;
+  --glass-fill-card: 42 46 54;
+  --glass-fill-strong: 58 63 74;
+  --glass-alpha-nav: 0.96;
+  --glass-alpha-card: 0.86;
+  --glass-alpha-strong: 0.92;
+  --glass-stroke: rgb(255 255 255 / 0.16);
+  --glass-edge: rgb(0 0 0 / 0.5);
+  --glass-highlight: inset 0 1px 0 rgb(255 255 255 / 0.14), inset 0 -1px 0 rgb(255 255 255 / 0.04);
+  --glass-shadow: 0 1px 3px rgb(0 0 0 / 0.5), 0 20px 36px -24px rgb(0 0 0 / 0.7);
+  --glass-shadow-lift: 0 2px 8px rgb(0 0 0 / 0.55), 0 30px 56px -30px rgb(0 0 0 / 0.8);
+  --glass-shadow-nav: 0 1px 2px rgb(0 0 0 / 0.4), 0 6px 16px -12px rgb(0 0 0 / 0.55);
+  --glass-solid: 28 31 37;
+  --glass-solid-card: 34 38 45;
+
+  --fill-hi: rgb(255 255 255 / 0.12);
+  --fill-md: rgb(255 255 255 / 0.08);
+  --fill-lo: rgb(255 255 255 / 0.055);
+  --fill-xlo: rgb(255 255 255 / 0.035);
+  --stroke-hi: rgb(255 255 255 / 0.18);
+  --stroke-md: rgb(255 255 255 / 0.12);
+  --stroke-lo: rgb(255 255 255 / 0.08);
+  --sheen: inset 0 1px 0 rgb(255 255 255 / 0.1);
+  --sheen-soft: inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --well-shadow: inset 0 1px 2px rgb(0 0 0 / 0.45), inset 0 -1px 0 rgb(255 255 255 / 0.05);
+
+  --selection-bg: rgb(10 132 255 / 0.3);
+  --scroll-thumb: rgb(255 255 255 / 0.18);
+  --scroll-thumb-hover: rgb(255 255 255 / 0.28);
+
+  /* Element Plus 的深色变量由 element-plus/theme-chalk/dark/css-vars.css 提供，
+     这里只把与品牌相关的几项拉回我们的令牌（它默认用 #409eff 那套蓝）。 */
+  --el-color-primary: rgb(var(--c-accent));
+  --el-color-primary-light-3: rgb(58 148 255);
+  --el-color-primary-light-5: rgb(80 160 255);
+  --el-color-primary-light-7: rgb(102 172 255);
+  --el-color-primary-light-8: rgb(113 178 255);
+  --el-color-primary-light-9: rgb(24 48 76);
+  --el-color-primary-dark-2: rgb(0 110 214);
+  --el-bg-color: rgb(var(--c-surface));
+  --el-bg-color-overlay: rgb(var(--c-surface));
+  --el-bg-color-page: rgb(var(--c-canvas));
+  --el-text-color-primary: rgb(var(--c-ink));
+  --el-text-color-regular: rgb(var(--c-slate-700));
+  --el-text-color-secondary: rgb(var(--c-muted));
+  --el-text-color-placeholder: rgb(var(--c-faint));
+  --el-border-color: rgb(var(--c-line));
+  --el-border-color-light: rgb(var(--c-line));
+  --el-border-color-lighter: rgb(var(--c-line));
+  --el-fill-color-blank: rgb(var(--c-surface));
+  --el-fill-color-light: rgb(var(--c-surface-muted));
+  --el-fill-color-lighter: rgb(var(--c-surface-muted));
+  --el-table-header-bg-color: rgb(var(--c-surface-muted));
+  --el-table-border-color: rgb(var(--c-line));
+  --el-table-row-hover-bg-color: rgb(var(--c-surface-muted));
+  --el-mask-color: rgb(0 0 0 / 0.6);
+}
+
+/**
+ * 三层无障碍降级：玻璃是「看得见 + 读得清」的前提，
+ * 用户把透明度 / 对比度 / 动效调低时，材料要跟着变成实底。
+ */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-alpha-nav: 1;
+    --glass-alpha-card: 1;
+    --glass-alpha-strong: 1;
+    --glass-blur: none;
+    --glass-blur-soft: none;
+    --el-bg-color: rgb(var(--glass-solid));
+    --el-bg-color-overlay: rgb(var(--glass-solid-card));
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --c-line: 120 124 132;
+    --c-line-strong: 80 84 92;
+    --c-muted: 60 60 66;
+    --c-faint: 60 60 66;
+  }
+  :root[data-theme='dark'] {
+    --c-line: 190 194 202;
+    --c-line-strong: 220 224 230;
+    --c-muted: 220 220 226;
+    --c-faint: 210 210 216;
+  }
+}

@@ -1,12 +1,21 @@
 import { VueQueryPlugin } from '@tanstack/vue-query'
 import ElementPlus from 'element-plus'
 import 'element-plus/dist/index.css'
+// Element Plus 的深色变量（`.dark` 选择器）。必须在 index.css 之后：
+// 它覆盖的是同一批 --el-* 变量，顺序反了就会被默认值顶回去。
+import 'element-plus/theme-chalk/dark/css-vars.css'
 import { createPinia } from 'pinia'
 import { createApp } from 'vue'
 
 import App from './App.vue'
+import { initTheme } from './lib/theme'
 import router from './router'
+// 令牌先于样式表：main.css 里的组件与 Element 覆盖都读 tokens.css 的变量。
+import './styles/tokens.css'
 import './styles/main.css'
+
+// 主题要在挂载之前落定，否则首帧会闪一次浅色（深色系统上尤其明显）。
+initTheme()
 
 /**
  * 启动失败必须看得见。

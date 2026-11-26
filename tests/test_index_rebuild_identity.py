@@ -185,7 +185,7 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, documents: dict[str, Doc
         return True
 
     async def _split_config(*_args: Any, **_kwargs: Any) -> tuple[str, int]:
-        return SPLIT_STRUCTURE, 800
+        return SPLIT_STRUCTURE, 800, 2000
 
     async def _effective_version(*_args: Any, **_kwargs: Any) -> str:
         return "v1"
@@ -500,6 +500,9 @@ def test_the_rebuild_script_starts_a_building_row_and_dispatches_the_build_task(
                 "build_id": row.id,
                 "tenant_id": TENANT_ID,
                 "request_id": f"ops-rebuild:{row.id}",
+                # 运维脚本不自动激活（ADR-0025 决策三：ready 是运维可见的一步）。
+                # 只有「改切块设置」那条控制面路径才传 True。
+                "activate": False,
             },
             "task_id": f"build:{row.id}",
         }

@@ -9,14 +9,19 @@
 解析顺序（顺序本身是判定的一部分）：
 
 1. 读出 Bearer token —— 没有就是「未授权」；
-2. 按明文查 ``api_keys``（ADR-0004）；
-3. Key 必须存在且 ``active``；
-4. Key 归属的租户必须存在且 ``active``；
-5. 组装上下文（租户、Key、密钥配置快照、套餐快照）。
+2. 拆 Key 串：``rc_live_<key_id>.<32 位十六进制>``，形状不对就是「格式不对」；
+3. 用串里的 ``key_id`` 一次主键命中 ``api_keys`` —— 库里只存哈希，没有可以做等值索引的
+   原文，行定位只能靠 Key 自己携带的身份证；
+4. 密钥本体过 ``scrypt`` 校验（:func:`app.core.passwords.verify_password`）；同一个 token
+   在 60 秒内验过的走校验缓存，跳过这一步；
+5. Key 必须存在且 ``active``；
+6. Key 归属的租户必须存在且 ``active``；
+7. 组装上下文（租户、Key、密钥配置快照、套餐快照）。
 
-四种失败全部映射到 :attr:`ErrorCode.UNAUTHORIZED`（``20010``），**消息可区分**：调用方
-需要知道「是少了 token、还是 Key 被停了」，但对外不区分「Key 不存在」与「Key 属于别人」
-——业务失败不是协议错误，HTTP 入口统一翻成 200 + 非零 ``code``（ADR-0007），这不是 401。
+五种失败全部映射到 :attr:`ErrorCode.UNAUTHORIZED`（``20010``），**消息可区分**：调用方
+需要知道「是少了 token、格式粘错了、还是 Key 被停了」，但对外不区分「Key 不存在」与
+「Key 属于别人」——业务失败不是协议错误，HTTP 入口统一翻成 200 + 非零 ``code``
+（ADR-0007），这不是 401。
 
 **开发开关**（``AUTH_ENABLED``）关闭时落进内置开发身份，但仍然要求那把固定的占位 token：
 退回「谁都不用带」意味着一个被意外暴露的开发实例对整个网络敞开，而要求这把固定 token
@@ -34,12 +39,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
+from app.core.key_verify_cache import KeyVerifyCache, get_default_key_verify_cache
 from app.core.plan_cache import PlanCache
+from app.core.passwords import verify_password
 from app.models.key_policy import KeyPolicySnapshot, policy_snapshot_of
 from app.models.plan import PLAN_PRO, PLAN_PRESETS, PlanSpec
 from app.providers.rerank import rerank_capability
 from app.repositories import api_key_repository, key_policy_repository, tenant_repository
 from app.services.plan_service import resolve_plan
+from app.utils.id_generator import split_api_key_value
 
 
 class HttpRequestLike(Protocol):
@@ -92,7 +100,7 @@ DEV_KEY_POLICY: Final[KeyPolicySnapshot] = KeyPolicySnapshot(
     retrieval_mode=settings.RETRIEVAL_MODE,
     retrieval_top_k=settings.TOP_K,
     retrieval_rerank=rerank_capability(),
-    include_parent=True,
+    include_parent=True, max_unit_chars=2000,
     expand_table_rows=True,
     unrestricted_scope=True,
 )
@@ -127,10 +135,17 @@ class KeyContext:
 #: 改它要连带 16 个测试文件的构造点，收益只是名字更好听。
 DevKeyContext = KeyContext
 
-# 四种未授权情形各自的提示。**同一档错误码、不同消息**：调用方分得清是哪一步拦下的，
+# 五种未授权情形各自的提示。**同一档错误码、不同消息**：调用方分得清是哪一步拦下的，
 # 运维看日志也不用靠猜。措辞刻意避开「Key 不属于这个租户」之类的信息——那等于告诉
 # 攻击者「这把 Key 是真的，只是不属于你」。
 MSG_MISSING_TOKEN = "请求没带 Bearer 令牌：把 API Key 放进 Authorization: Bearer <key>"
+#: 格式这一条是「粘贴」这种交付方式带来的：串被截断、少了一位、或者粘进来的是半截
+#: ``key_masked``（``rc_live_…4f3a2``）。不单列的话，它会被当成「Key 不存在」，
+#: 而那个提示会让人去核对一把其实完全正常的 Key。
+MSG_KEY_MALFORMED = (
+    "这把 API Key 的格式不对：它应当是 rc_live_<key_id>.<32 位密钥>，"
+    "从 Key 管理页整条复制一次（列表里显示的是打码形态，不能拿来调用）"
+)
 MSG_UNKNOWN_KEY = "这把 API Key 不存在：去 Key 管理页确认它是否已被删除，或重新签发一把"
 MSG_KEY_DISABLED = "这把 API Key 已被停用：去 Key 管理页把它启用，或换一把"
 MSG_TENANT_DISABLED = "这把 Key 所属的租户已被停用：联系管理员恢复租户后再用"
@@ -154,14 +169,16 @@ async def resolve_identity(
     *,
     auth_enabled: bool | None = None,
     plan_cache: PlanCache | None = None,
+    verify_cache: KeyVerifyCache | None = None,
 ) -> KeyContext:
     """判定这次请求是谁；失败一律抛 ``AppError(UNAUTHORIZED)``。
 
     ``auth_enabled`` 缺省读服务端配置。做成入参是为了让「开关开 / 关」两种行为都能被
     纯函数直接测到——不必 monkeypatch 全局配置，也就不会在测试之间留下污染。
 
-    ``plan_cache`` 是套餐缓存的注入口（生产传 Redis 实现，测试传内存假实现）；
-    缺省时由 :func:`app.services.plan_service.resolve_plan` 自己取默认缓存。
+    ``plan_cache`` / ``verify_cache`` 是两个缓存的注入口（生产传 Redis 实现，测试传内存
+    假实现）；缺省时各自取进程级默认实现。两个缓存的职责完全不同：一个省「读套餐行」，
+    一个省「重算 scrypt」，谁也补不了对方的洞。
 
     **``async`` 是票 #130 的收尾**：套餐缓存是 ``redis.asyncio``，读库是
     ``AsyncSession``，两者都只能在事件循环上 ``await``。迁移期那个「把协程交回主循环」
@@ -182,7 +199,9 @@ async def resolve_identity(
             raise AppError(ErrorCode.UNAUTHORIZED, MSG_DEV_MODE_REJECTS_REAL_KEY)
         return _dev_identity()
 
-    return await _identity_from_key(db, token, plan_cache=plan_cache)
+    return await _identity_from_key(
+        db, token, plan_cache=plan_cache, verify_cache=verify_cache
+    )
 
 
 def _dev_identity() -> KeyContext:
@@ -199,13 +218,28 @@ def _dev_identity() -> KeyContext:
 
 
 async def _identity_from_key(
-    db: AsyncSession, token: str, *, plan_cache: PlanCache | None
+    db: AsyncSession,
+    token: str,
+    *,
+    plan_cache: PlanCache | None,
+    verify_cache: KeyVerifyCache | None,
 ) -> KeyContext:
-    """开关打开后的真实路径：Key → 租户 → 密钥配置 → 套餐。"""
+    """开关打开后的真实路径：Key 串 → 行 → 密钥校验 → 租户 → 密钥配置 → 套餐。"""
 
-    key = await api_key_repository.get_by_value(db, token)
+    parsed = split_api_key_value(token)
+    if parsed is None:
+        raise AppError(ErrorCode.UNAUTHORIZED, MSG_KEY_MALFORMED)
+    key_id, secret = parsed
+
+    # 行定位靠串里的身份证，不靠原文——库里只有哈希，没有可做等值索引的东西。
+    key = await api_key_repository.get_by_id(db, key_id)
     if key is None:
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_UNKNOWN_KEY)
+
+    await _ensure_secret_matches(
+        token, secret, key_id=key_id, key_hash=key.key_hash, verify_cache=verify_cache
+    )
+
     if key.status != "active":
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_KEY_DISABLED)
 
@@ -231,6 +265,32 @@ async def _identity_from_key(
         policy=policy_snapshot_of(policy),
         plan=plan,
     )
+
+
+async def _ensure_secret_matches(
+    token: str,
+    secret: str,
+    *,
+    key_id: str,
+    key_hash: str,
+    verify_cache: KeyVerifyCache | None,
+) -> None:
+    """密钥本体过 scrypt 校验，同一个 token 在缓存窗口内只算一次。
+
+    **先校验、后看 ``status``**：反过来会让「只是一串 key_id、没有密钥」的人也能问出
+    「这一行是不是被停用了」。代价是停用后的请求每次都要白烧一次 scrypt，这正是缓存要
+    摊掉的那部分。
+
+    校验失败回的是 :data:`MSG_UNKNOWN_KEY`（不是「密钥不对」）：对调用方来说效果一样
+    ——换一把 Key；而这个措辞不告诉任何人「这个 key_id 是真的」。
+    """
+
+    cache = verify_cache if verify_cache is not None else get_default_key_verify_cache()
+    if await cache.key_id_of(token) == key_id:
+        return
+    if not verify_password(secret, key_hash):
+        raise AppError(ErrorCode.UNAUTHORIZED, MSG_UNKNOWN_KEY)
+    await cache.remember(token, key_id)
 
 
 def _bearer_token(request: HttpRequestLike) -> str | None:

@@ -140,7 +140,6 @@ class _CountingLLM:
 
 def _client(monkeypatch: pytest.MonkeyPatch, *, rewrite_enabled: bool = False, llm=None):
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", rewrite_enabled)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
     return u._offline_client(monkeypatch, llm=llm)
 

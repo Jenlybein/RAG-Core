@@ -3,88 +3,52 @@
 @tailwind utilities;
 
 /**
- * 全局：字体渲染 + 苹果式浅灰画布 + Element Plus 的令牌对齐。
+ * 全局样式：液态玻璃。
  *
- * Element Plus 的默认观感（蓝主色 + 4px 圆角 + 灰阴影）本来就和这里要做的事接近，
- * 但**细节全不对**：它的蓝偏深、圆角太小、阴影太重、表单边框太黑。这里不靠 !important
- * 一个个压组件，而是把它的 CSS 变量改到同一套令牌上：一次对齐，之后所有 el-* 自动跟着走。
+ * 所有颜色 / 圆角 / 阴影都来自 `tokens.css`（在 `main.ts` 里先于本文件导入）。
+ * 这里只做两件事：把 Element Plus 拉进同一套令牌，以及给「面」加上玻璃的物理层
+ * （半透明填充 + 折射模糊 + 亮边 + 内高光 + 两层投影）。
+ *
+ * 不以 `!important` 逐个压组件：Element 的观感靠 CSS 变量对齐，对齐一次，所有 el-* 跟着走；
+ * 只有它不暴露变量、或必须改结构的地方（遮罩层级、弹窗布局）才单独覆盖。
  */
-:root {
-  color-scheme: light;
-
-  /* 主色：苹果蓝。整页只有「蓝（可操作）」与「灰（其余）」两种色相。 */
-  --el-color-primary: #0071e3;
-  --el-color-primary-light-3: #3d93ec;
-  --el-color-primary-light-5: #66aef1;
-  --el-color-primary-light-7: #99c9f6;
-  --el-color-primary-light-8: #b3d6f8;
-  --el-color-primary-light-9: #e8f2ff;
-  --el-color-primary-dark-2: #005bb5;
-
-  /* 圆角：控件 12px、小元素 8px，与卡片 18px 形成层级 */
-  --el-border-radius-base: 12px;
-  --el-border-radius-small: 8px;
-
-  /* 文字与描边：苹果的中性灰阶 */
-  --el-text-color-primary: #1d1d1f;
-  --el-text-color-regular: #3a3a3c;
-  --el-text-color-secondary: #6e6e73;
-  --el-text-color-placeholder: #86868b;
-  --el-text-color-disabled: #b8b8bf;
-
-  --el-border-color: #d2d2d7;
-  --el-border-color-light: #e0e0e5;
-  --el-border-color-lighter: #e8e8ed;
-  --el-border-color-extra-light: #f2f2f5;
-
-  --el-bg-color: #ffffff;
-  --el-bg-color-overlay: #ffffff;
-  --el-fill-color-blank: #ffffff;
-  --el-fill-color-light: #f5f5f7;
-  --el-fill-color-lighter: #fafafc;
-
-  /**
-   * 遮罩：苹果的弹窗遮罩是干净的半透黑，不带任何色相。
-   */
-  --el-overlay-color-lighter: rgba(0, 0, 0, 0.28);
-  --el-overlay-color: rgba(0, 0, 0, 0.48);
-
-  --el-table-header-bg-color: #fafafc;
-  --el-table-border-color: #e8e8ed;
-  --el-table-row-hover-bg-color: #f5f5f7;
-
-  --el-box-shadow-light: 0 2px 8px rgba(0, 0, 0, 0.04), 0 12px 32px -20px rgba(0, 0, 0, 0.12);
-  --el-box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08), 0 24px 56px -24px rgba(0, 0, 0, 0.28);
-
-  --el-font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue',
-    'Segoe UI', 'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
-}
 
 body {
   @apply bg-canvas font-sans text-ink antialiased;
-  /* 苹果的正文视觉重量比默认值略轻，靠 -webkit-font-smoothing 而不是字号 */
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-feature-settings: 'tnum' 1; /* 表格里的数字等宽，列才对得齐 */
+  /* 触摸设备上不要有 300ms 的双击缩放延迟 */
+  touch-action: manipulation;
+  /* 页面本身不允许被「橡皮筋」拉出画布 —— 只有内层滚动容器可以 */
+  overscroll-behavior-y: none;
 }
 
 ::selection {
-  background: #f5f5f7;
-  color: #1d1d1f;
+  background: var(--selection-bg);
+  color: rgb(var(--c-ink));
 }
 
 /**
- * 键盘焦点必须看得见。默认的 Element Plus 焦点只在输入框上明显，链接与表格里的文字按钮
- * 基本没有反馈——Tab 走过去会跟丢。这里给一套统一的外描边，且只在 :focus-visible 生效，
- * 鼠标点击不会平白多出一圈。
+ * 键盘焦点：玻璃上单靠一圈蓝描边会「陷」进背景里，看不清。
+ * 这里用「蓝环 + 外侧 1px 白空隙」两圈：底色再怎么变，边都切得出来。
+ *
+ * 注意**不含 `input` / `textarea`**：Element Plus 的输入框是「外壳 `.el-input__wrapper`
+ * + 里面一个裸 `<input>`」两层结构。给它里面的 `<input>` 画外描边，描边会落在比外壳小
+ * 一圈、圆角也更小的地方——看起来就是「焦点框和输入框没重合、里面的框露出来了」。
+ * 所以 Element 的输入框焦点只画在外壳上（见下方 `.el-input__wrapper.is-focus`），
+ * 这里只处理没有外壳的原生控件。
  */
-:where(a, button, [role='button'], [tabindex]):focus-visible {
-  outline: 2px solid #1d1d1f;
+:where(a, button, [role='button'], [tabindex]):focus-visible,
+input:not([class*='el-']):focus-visible,
+select:focus-visible,
+textarea:not([class*='el-']):focus-visible {
+  outline: 2px solid rgb(var(--c-accent));
   outline-offset: 2px;
-  border-radius: 6px;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px var(--stroke-hi), 0 0 0 5px rgb(var(--c-accent) / 0.22);
 }
 
-/* 可点击的东西光标要是手型；Element 的部分内部元素默认是箭头 */
 a[href],
 button:not(:disabled),
 [role='button'],
@@ -92,6 +56,30 @@ button:not(:disabled),
 .el-radio:not(.is-disabled),
 .el-switch:not(.is-disabled) {
   cursor: pointer;
+}
+
+/* 可点目标在触摸设备上不要被长按选中文字（那种「蓝色选区闪一下」很不原生） */
+@media (pointer: coarse) {
+  button,
+  .el-button,
+  .nav-pill,
+  .chip,
+  label {
+    -webkit-user-select: none;
+    user-select: none;
+  }
+
+  /*
+   * iOS Safari 在输入框字号 <16px 时会在聚焦瞬间把整页放大——用户点一下账号框，
+   * 页面就跳到一个放大的版本，后退不回去。16px 是那个阈值，不是审美选择。
+   */
+  input:not([type='checkbox']):not([type='radio']),
+  textarea,
+  select,
+  .el-input__inner,
+  .el-textarea__inner {
+    font-size: 16px;
+  }
 }
 
 /* 尊重系统的减少动态偏好：动效一律关掉，但**不改变最终视觉状态** */
@@ -112,28 +100,41 @@ button:not(:disabled),
   height: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #d2d2d7;
+  background: var(--scroll-thumb);
   border-radius: 9999px;
   border: 3px solid transparent;
   background-clip: content-box;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #e8e8ed;
+  background: var(--scroll-thumb-hover);
   background-clip: content-box;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 
+/* ══════════════════════════ 材质的三个档位 ══════════════════════════
+ *
+ * 一层玻璃 = 半透明面 + backdrop-filter + 亮边 + 上沿内高光 + 两层投影。
+ * 三档只差厚度与模糊半径，不另起一套规则，免得三处各调一次、最后不一致。
+ *
+ * 用 @mixin 不现实（Tailwind 不管），所以每档写成一组变量，由 `.card` / `.panel` /
+ * `.el-dialog` 各自引用 —— 改厚度只改 tokens.css 里的 alpha。
+ */
 @layer components {
   /**
    * 卡片：整站唯一的「面」。
    *
-   * 苹果的卡片**没有描边**：白面直接浮在 #f5f5f7 上，形状靠 18px 圆角与一层几乎看不见的
-   * 投影定下来。这里去掉 border、保留极淡投影——加了描边会立刻从「苹果」退回「后台管理」。
+   * 苹果的卡片没有描边；这里保留玻璃的亮边（`--glass-stroke`）作为「材料的边缘」，
+   * 而不是「框线」——它只在光打到的地方亮，不是一圈实线。
    */
   .card {
-    @apply rounded-card bg-surface shadow-card;
+    @apply relative rounded-card;
+    background: rgb(var(--glass-fill-card) / var(--glass-alpha-card));
+    -webkit-backdrop-filter: var(--glass-blur);
+    backdrop-filter: var(--glass-blur);
+    box-shadow: var(--glass-shadow), var(--glass-highlight);
+    border: 1px solid var(--glass-stroke);
   }
 
   /* 卡片内边距：留白是苹果观感的主要来源，宁可松一点 */
@@ -146,10 +147,16 @@ button:not(:disabled),
    * 目的是一屏放下更多**真实信息**——但不靠把字号压到 10px 来换空间。
    */
   .panel {
-    @apply rounded-control border border-line bg-surface;
+    @apply relative rounded-control;
+    background: rgb(var(--glass-fill-card) / calc(var(--glass-alpha-card) - 0.06));
+    -webkit-backdrop-filter: var(--glass-blur-soft);
+    backdrop-filter: var(--glass-blur-soft);
+    box-shadow: var(--glass-shadow-nav), var(--sheen-soft);
+    border: 1px solid var(--glass-stroke);
   }
   .panel-head {
-    @apply flex flex-wrap items-baseline justify-between gap-2 border-b border-line px-4 py-3;
+    @apply flex flex-wrap items-baseline justify-between gap-2 px-4 py-3;
+    border-bottom: 1px solid rgb(var(--c-line) / 0.6);
   }
 
   /**
@@ -194,12 +201,35 @@ button:not(:disabled),
 
   /** 小胶囊：库名、档位、能力这类短标签。苹果的标签也走药丸形。 */
   .chip {
-    @apply inline-flex items-center gap-1 rounded-full bg-surface-muted px-2.5 py-1 text-[12px] text-slate-600;
+    @apply inline-flex items-center gap-1 rounded-pill px-2.5 py-1 text-[12px] text-muted;
+    background: var(--fill-md);
+    box-shadow: var(--sheen-soft);
   }
 
-  /* 顶栏导航：药丸 + 选中浅灰底（苹果的导航选中就是一块浅灰） */
+  /* 顶栏导航：药丸 + 选中浅底（苹果的导航选中就是一小块浮起） */
   .nav-pill {
-    @apply rounded-full px-3.5 py-1.5 text-[13px] font-normal transition-colors duration-150;
+    @apply rounded-pill px-3.5 py-1.5 text-[13px] font-normal transition-colors duration-150;
+  }
+  .nav-pill.is-active {
+    background: var(--fill-hi);
+    color: rgb(var(--c-ink));
+    font-weight: 500;
+    box-shadow: var(--sheen);
+  }
+
+  /**
+   * 导航轨道：窄屏上不折行，横向滚动。
+   *
+   * 折行的代价很大——五项入口在 390px 会占掉顶栏一半高度，一屏连标题都看不见。
+   * 用两端渐隐的 mask 提示「还有更多」，滚动条本身隐藏（滑块会把胶囊撑出一道灰边）。
+   */
+  .nav-track {
+    scrollbar-width: none;
+    scroll-snap-type: x proximity;
+    -webkit-overflow-scrolling: touch;
+  }
+  .nav-track::-webkit-scrollbar {
+    display: none;
   }
 
   /* 表头：苹果不用全大写，用 12px 中灰 */
@@ -209,38 +239,67 @@ button:not(:disabled),
 
   /** 行内代码：报告、诊断面板里到处是路径与字段名。 */
   .mono-tag {
-    @apply rounded bg-surface-muted px-1 py-0.5 font-mono text-[11px] text-slate-700;
+    @apply rounded-small px-1 py-0.5 font-mono text-[11px] text-slate-700;
+    background: var(--fill-md);
+  }
+
+  /**
+   * 主题三态开关：跟随 / 浅 / 深。
+   *
+   * 状态由 `ThemeSwitch.vue` 写进 `html[data-theme]`，这里只管长相。
+   * `bg-white/85` 这类浅色填充在深色下由 `[data-theme=dark]` 分支换掉 —— 见文件末尾。
+   */
+  .theme-switch {
+    @apply inline-flex items-center gap-0.5 rounded-pill p-0.5;
+    border: 1px solid var(--stroke-md);
+    background: var(--fill-xlo);
+    box-shadow: var(--sheen-soft);
+  }
+  .theme-opt {
+    @apply grid h-[22px] w-[26px] place-items-center rounded-pill text-muted transition-colors duration-150;
+  }
+  .theme-opt svg {
+    @apply h-[14px] w-[14px];
+  }
+  .theme-opt.is-on {
+    background: var(--fill-hi);
+    color: rgb(var(--c-ink));
+    box-shadow: 0 1px 3px rgb(24 33 52 / 0.16), var(--sheen);
   }
 }
 
-/* ───────────────────────── Element Plus 微调 ───────────────────────── */
+/* ══════════════════════════ Element Plus ══════════════════════════ */
 
 /**
  * 按钮：苹果的药丸形 + 蓝色实底主按钮。
  *
- * 这是「像不像苹果」的第二处关键：苹果站上没有方角按钮。圆角拉到 980px（药丸），
- * 主按钮是蓝底白字、hover 只提亮一点点，没有投影。
+ * 苹果站上没有方角按钮。圆角拉到 980px（药丸），主按钮是蓝底白字、hover 只提亮一点点。
  */
 .el-button {
   --el-button-font-weight: 400;
-  border-radius: 980px;
+  border-radius: var(--r-pill);
   padding-left: 18px;
   padding-right: 18px;
+  transition: background-color 160ms ease, box-shadow 160ms ease, transform 120ms ease;
+}
+.el-button:active:not(.is-disabled) {
+  transform: scale(0.97);
 }
 .el-button--primary {
-  --el-button-bg-color: var(--el-color-primary);
-  --el-button-border-color: var(--el-color-primary);
-  --el-button-hover-bg-color: var(--el-color-primary-light-3);
-  --el-button-hover-border-color: var(--el-color-primary-light-3);
-  --el-button-active-bg-color: var(--el-color-primary-dark-2);
-  --el-button-active-border-color: var(--el-color-primary-dark-2);
-  box-shadow: none;
+  --el-button-bg-color: rgb(var(--c-accent));
+  --el-button-border-color: rgb(var(--c-accent));
+  --el-button-hover-bg-color: rgb(var(--c-accent-hover));
+  --el-button-hover-border-color: rgb(var(--c-accent-hover));
+  --el-button-active-bg-color: rgb(0 91 181);
+  --el-button-active-border-color: rgb(0 91 181);
+  --el-button-text-color: #fff;
+  box-shadow: 0 6px 16px -8px rgb(var(--c-accent) / 0.9), var(--sheen-soft);
 }
 /* 文字按钮（表格行里的操作）不占方框，hover 时才浮出一层浅底 */
 .el-button.is-text {
   padding-left: 8px;
   padding-right: 8px;
-  border-radius: 8px;
+  border-radius: 10px;
 }
 /**
  * 禁用的主按钮：Element 默认把它刷成 primary 的中间调，看上去仍然「像是能点」。
@@ -248,69 +307,106 @@ button:not(:disabled),
  */
 .el-button.is-disabled,
 .el-button.is-disabled:hover {
-  --el-button-disabled-bg-color: #f5f5f7;
-  --el-button-disabled-border-color: #e8e8ed;
-  --el-button-disabled-text-color: #b8b8bf;
+  --el-button-disabled-bg-color: rgb(var(--c-slate-100));
+  --el-button-disabled-border-color: rgb(var(--c-line));
+  --el-button-disabled-text-color: rgb(var(--c-disabled));
   box-shadow: none;
 }
 
-/* 输入框：一条干净的细线 + 聚焦时蓝色描边（苹果的表单就是这种「无框感 + 蓝色对焦」） */
+/* 输入框：纸面内凹的一小槽 + 聚焦时蓝描边（苹果的表单就是「无框感 + 蓝色对焦」） */
 .el-input__wrapper,
 .el-textarea__inner {
   border-radius: var(--el-border-radius-base);
-  box-shadow: 0 0 0 1px var(--el-border-color) inset;
-  background-color: #fff;
+  box-shadow: var(--well-shadow);
+  background-color: rgb(var(--c-surface-sunken) / 0.7);
+  transition: box-shadow 160ms ease, background-color 160ms ease;
 }
 .el-input__wrapper:hover,
 .el-textarea__inner:hover {
-  box-shadow: 0 0 0 1px var(--el-border-color-darker, #b8b8bf) inset;
+  box-shadow: inset 0 0 0 1px rgb(var(--c-line-strong)), var(--well-shadow);
+}
+/**
+ * 焦点只画**一道**，而且贴着输入框自己的边（inset），不留缝隙。
+ *
+ * 两个坑都踩过：
+ * 1. 早期把焦点环画在里层原生 `<input>` 上 —— 它比外壳小一圈、圆角也更小，
+ *    于是「框里还有一个框」；
+ * 2. 后来改成外壳的 `outline` + `outline-offset: 1px` —— 那 1px 缝隙把外壳自己的
+ *    底色边界露了出来，看起来仍是两道边（截图里那条内框就是它）。
+ *
+ * 现在用 inset 阴影：与外壳同一个 border-box、同一个 14px 圆角、零缝隙，
+ * 视觉上就是输入框边框本身变蓝变粗，只有一条边。
+ */
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow: inset 0 0 0 2px rgb(var(--c-accent));
+  outline: none;
 }
 
 /**
- * Chrome 的自动填充会把输入框刷成浅蓝（或黄）并覆盖文字色，和这套暖色界面撞得很明显——
- * 登录页尤其难看：整页只有那一个框是蓝的。界面本身没有第二处蓝色，所以这里用超长
- * 过渡把填充底色顶掉，只保留文字色（`-webkit-text-fill-color` 必须显式给，
- * 否则 Chrome 用自己算的对比色）。
+ * Element 的输入框里那层原生 `<input>` 不参与绘制：不画框、不画圆角、不画焦点。
+ *
+ * 它的盒子比外壳 `.el-input__wrapper` 小一圈、圆角也不同（10px vs 14px），
+ * 只要它身上出现任何 shadow / outline，视觉上就是「框里还有一个框」。
+ * 焦点与边框统一由外壳表达（见上一条 `.el-input__wrapper.is-focus`）。
+ * 用 !important 是因为 Element 的深浅两套样式表都会往这个元素上写 box-shadow。
+ */
+.el-input__inner {
+  box-shadow: none !important;
+  border-radius: 0;
+  outline: none;
+}
+
+/**
+ * Chrome 的自动填充会把输入框刷成浅蓝（或黄）并覆盖文字色，和这套界面撞得很明显——
+ * 登录页尤其难看：整页只有那一个框是蓝的。这里用超长过渡把填充底色顶掉，
+ * 只保留文字色（`-webkit-text-fill-color` 必须显式给，否则 Chrome 用自己算的对比色）。
  */
 input:-webkit-autofill,
 input:-webkit-autofill:hover,
 input:-webkit-autofill:focus {
-  -webkit-text-fill-color: #1d1d1f;
-  -webkit-box-shadow: 0 0 0 1000px #fff inset;
-  box-shadow: 0 0 0 1000px #fff inset;
+  -webkit-text-fill-color: rgb(var(--c-ink));
+  -webkit-box-shadow: 0 0 0 1000px rgb(var(--c-surface)) inset;
+  box-shadow: 0 0 0 1000px rgb(var(--c-surface)) inset;
   transition: background-color 9999s ease-out 0s;
 }
 
-/* 表格：外框去掉，只留行间细线；表头用浅暖底 */
+/* 卡片容器：el-card 的圆角 / 描边对齐到 .card 那一套 */
 .el-card {
-  /* el-card 是 el-card 的默认观感：4px 圆角 + 灰边 + 几乎为零的阴影。
-     这里把它对齐到 .card 那一套，页面里就不用为了圆角再去手写一层 div。 */
-  --el-card-border-radius: 20px;
-  --el-card-border-color: #d2d2d7;
+  --el-card-border-radius: var(--r-card);
+  --el-card-border-color: var(--glass-stroke);
   --el-card-padding: 24px;
-  border-radius: 20px;
-  background: #fff;
-  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
+  border-radius: var(--r-card);
+  background: rgb(var(--glass-fill-card) / var(--glass-alpha-card));
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  box-shadow: var(--glass-shadow), var(--glass-highlight);
+  border: 1px solid var(--glass-stroke);
 }
 .el-card__header {
-  border-bottom: 1px solid #f2f2f5;
+  border-bottom: 1px solid rgb(var(--c-line) / 0.6);
   padding: 18px 24px;
 }
 .el-card.is-never-shadow {
-  box-shadow: 0 1px 2px rgba(28, 26, 21, 0.04), 0 12px 32px -18px rgba(28, 26, 21, 0.18);
+  box-shadow: var(--glass-shadow), var(--glass-highlight);
 }
-/* 卡片标题：比默认的 14px 大一号、字距收一点，与 .section-title 同一个节奏 */
 .el-card__header h2 {
   font-size: 15px;
   letter-spacing: -0.01em;
 }
 
+/* 表格：外框去掉，只留行间细线 */
 .el-table {
-  --el-table-border-color: #e8e8ed;
-  --el-table-header-text-color: #6e6e73;
-  --el-table-text-color: #1d1d1f;
-  border-radius: 12px;
+  --el-table-border-color: rgb(var(--c-line) / 0.7);
+  --el-table-header-text-color: rgb(var(--c-muted));
+  --el-table-text-color: rgb(var(--c-ink));
+  --el-table-bg-color: transparent;
+  --el-table-tr-bg-color: transparent;
+  --el-table-header-bg-color: rgb(var(--c-surface-muted) / 0.5);
+  --el-table-row-hover-bg-color: var(--fill-xlo);
+  border-radius: var(--r-control);
   font-size: 13px;
+  background: transparent;
 }
 .el-table th.el-table__cell {
   font-weight: 600;
@@ -318,19 +414,20 @@ input:-webkit-autofill:focus {
 .el-table__inner-wrapper::before {
   display: none; /* 底部那条通栏线在无外框的卡片里是多余的 */
 }
-
-.el-tag {
-  border-radius: 9999px;
-  font-weight: 500;
+/* 纯数值列右对齐：数位对齐才扫得快（.num-end 在页面里挂到表头与单元格上） */
+.el-table .num-end {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
 
-/**
- * 弹窗：这套界面里「偶发动作」的容器（建库、上传、签发 Key、改套餐都走它）。
- *
- * 注意不要在 `.el-dialog` 上加 padding——Element 的 header/body/footer 各自有内边距，
- * 外层再加一圈就成了「双重留白」，弹窗里的表单会被挤窄。这里只定圆角、阴影与标题排版，
- * 内边距统一走 `--el-dialog-padding-primary`。
- */
+.el-tag {
+  border-radius: var(--r-pill);
+  font-weight: 500;
+  border-color: rgb(var(--c-line) / 0.8);
+  background: var(--fill-md);
+  color: rgb(var(--c-muted));
+}
+
 /**
  * 弹窗遮罩的硬契约：**必须盖住整个视口，包括吸顶顶栏**。
  *
@@ -355,14 +452,28 @@ input:-webkit-autofill:focus {
   inset: 0 !important;
   height: 100vh !important;
   z-index: 2000 !important;
+  background: var(--el-overlay-color-lighter);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
 }
 
+/**
+ * 弹窗：这套界面里「偶发动作」的容器（建库、上传、签发 Key、改套餐都走它）。
+ * 它是最厚的那档玻璃（读字最久）。
+ *
+ * 注意不要在 `.el-dialog` 上加 padding——Element 的 header/body/footer 各自有内边距，
+ * 外层再加一圈就成了「双重留白」，弹窗里的表单会被挤窄。这里只定圆角、阴影与标题排版。
+ */
 .el-dialog {
   --el-dialog-padding-primary: 24px;
-  --el-dialog-border-radius: 20px;
-  border-radius: 20px;
+  --el-dialog-border-radius: var(--r-card);
+  border-radius: var(--r-card);
   overflow: hidden;
-  box-shadow: 0 2px 6px rgba(28, 26, 21, 0.06), 0 18px 48px -24px rgba(28, 26, 21, 0.24);
+  background: rgb(var(--glass-fill-strong) / var(--glass-alpha-strong));
+  -webkit-backdrop-filter: var(--glass-blur);
+  backdrop-filter: var(--glass-blur);
+  border: 1px solid var(--glass-stroke);
+  box-shadow: var(--glass-shadow-lift), var(--glass-highlight);
   /*
    * 长弹窗不能超出视口：模型配置、套餐编辑这些表单比一屏还高，撑出屏幕后底部的
    * 「保存」按钮就点不到了——而它恰恰是唯一能完成操作的地方。
@@ -376,7 +487,7 @@ input:-webkit-autofill:focus {
   font-size: 17px;
   font-weight: 600;
   letter-spacing: -0.01em;
-  color: #1d1d1f;
+  color: rgb(var(--c-ink));
 }
 .el-dialog__header {
   padding-bottom: 14px;
@@ -389,7 +500,7 @@ input:-webkit-autofill:focus {
 .el-dialog__footer {
   padding-top: 16px;
   flex: none;
-  border-top: 1px solid #f2f2f5;
+  border-top: 1px solid rgb(var(--c-line) / 0.6);
 }
 
 /**
@@ -401,9 +512,10 @@ input:-webkit-autofill:focus {
 .el-collapse {
   border-top: none;
   border-bottom: none;
+  background: transparent;
 }
 .el-collapse-item__header {
-  border-bottom: 1px solid #d2d2d7;
+  border-bottom: 1px solid rgb(var(--c-line) / 0.7);
   background: transparent;
   padding-left: 0;
   /*
@@ -420,23 +532,33 @@ input:-webkit-autofill:focus {
 }
 .el-collapse-item__wrap {
   background: transparent;
-  border-bottom: 1px solid #d2d2d7;
+  border-bottom: 1px solid rgb(var(--c-line) / 0.7);
 }
 .el-collapse-item__content {
   padding-bottom: 20px;
   padding-left: 0;
+  color: rgb(var(--c-ink));
 }
 
 .el-tooltip__popper,
 .el-popper.is-light {
-  border-radius: 10px;
-  border-color: var(--el-border-color);
-  box-shadow: var(--el-box-shadow-light);
+  border-radius: var(--r-small);
+  border-color: rgb(var(--c-line) / 0.8);
+  background: rgb(var(--c-surface) / 0.94);
+  -webkit-backdrop-filter: var(--glass-blur-soft);
+  backdrop-filter: var(--glass-blur-soft);
+  box-shadow: var(--glass-shadow-nav);
 }
 
 .el-pagination {
   --el-pagination-button-bg-color: transparent;
   font-weight: 500;
+}
+
+.el-switch.is-checked .el-switch__core {
+  background: rgb(var(--c-accent));
+  border-color: rgb(var(--c-accent));
+  box-shadow: 0 4px 12px -6px rgb(var(--c-accent) / 0.9);
 }
 
 /**
@@ -456,23 +578,23 @@ input:-webkit-autofill:focus {
   height: auto;
   margin: 0;
   padding: 0.625rem 0.75rem;
-  border: 1px solid var(--el-border-color);
-  border-radius: 12px;
-  background: #fff;
+  border: 1px solid rgb(var(--c-line) / 0.8);
+  border-radius: var(--r-control);
+  background: var(--fill-xlo);
   transition: border-color 0.15s, background-color 0.15s;
 }
 .kb-option.el-checkbox:hover:not(.is-disabled) {
-  border-color: var(--el-border-color-darker);
+  border-color: rgb(var(--c-line-strong));
 }
 /* 选中：实线深边 + 浅底，与全站「强调」用同一套颜色。 */
 .kb-option--on.el-checkbox {
-  border-color: #1d1d1f;
-  background: #fafafc;
+  border-color: rgb(var(--c-accent));
+  background: rgb(var(--c-accent) / 0.06);
 }
 /* 不可选（不在白名单）：虚线边，视觉上「这里本来有东西，但对你关着」。 */
 .kb-option--off.el-checkbox {
   border-style: dashed;
-  background: #fafafc;
+  background: var(--fill-xlo);
 }
 .kb-option .el-checkbox__input {
   margin-top: 1px;
@@ -482,4 +604,74 @@ input:-webkit-autofill:focus {
   padding-left: 0;
   white-space: normal;
   line-height: 1.3;
+}
+
+/* ══════════════════════════ 移动端 ══════════════════════════
+ *
+ * 目标不是「缩小桌面版」，而是「像一个装上去的 App」：没有粘住的 hover、
+ * 没有点击高亮、没有 100vh 引起的地址栏抖动、输入框不缩放页面。
+ */
+@media (max-width: 640px) {
+  /* 弹窗在窄屏变成底部 sheet：上沿两个圆角 + 抓手条 + 让出安全区 */
+  .el-dialog {
+    --el-dialog-width: 100% !important;
+    margin: 0 !important;
+    width: 100% !important;
+    max-width: 100%;
+    max-height: 88vh;
+    border-radius: var(--r-card) var(--r-card) 0 0;
+    border-bottom: 0;
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+  }
+  .el-dialog::before {
+    /* 抓手条：告诉人「这一块可以往下拖」，也把标题和屏幕边缘分开 */
+    content: '';
+    display: block;
+    width: 38px;
+    height: 4px;
+    margin: 8px auto 0;
+    border-radius: var(--r-pill);
+    background: rgb(var(--c-line-strong) / 0.9);
+  }
+  .el-dialog__header {
+    padding-top: 10px;
+  }
+}
+
+/* 触摸设备上唯一允许的按压反馈：轻微缩小；hover 全部关掉，避免「点一下就一直亮着」 */
+@media (hover: none) {
+  .nav-pill:hover,
+  .el-button:hover,
+  .theme-opt:hover {
+    background: inherit;
+  }
+}
+
+/* ══════════════════════════ 深色下需要换掉的几处 ══════════════════════════
+ *
+ * 绝大多数颜色都走变量，这里只处理「变量表达不了」的：Tailwind 的 `bg-white/85`
+ * （带 alpha 的白色，值已经烘进 utility 里）。把它们收回语义填充色。
+ */
+/* Tailwind 的 `border-white/50` 是烘进 utility 的白色，深色下要换成玻璃亮边 */
+:root[data-theme='dark'] .border-white\/50 {
+  border-color: rgb(255 255 255 / 0.16);
+}
+:root[data-theme='dark'] .bg-white\/85 {
+  background: rgb(58 62 72 / 0.96);
+}
+:root[data-theme='dark'] .bg-white\/80 {
+  background: rgb(58 62 72 / 0.94);
+}
+:root[data-theme='dark'] .bg-white {
+  background: rgb(var(--c-surface));
+}
+:root[data-theme='dark'] .text-white {
+  color: rgb(245 245 247);
+}
+:root[data-theme='dark'] .shadow-\[0_1px_2px_rgba\(28\,26\,21\,0\.22\)\] {
+  box-shadow: 0 1px 2px rgb(0 0 0 / 0.5), var(--sheen);
 }

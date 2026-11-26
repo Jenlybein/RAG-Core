@@ -122,7 +122,7 @@ async def retrieval_trace_by_trace_id(
     response_model=ApiResponse[dict],
     summary="最近若干次检索（控制台列表：时间 / 耗时 / 结局 / 是否已评分）",
 )
-async def recent_retrieval_traces(
+async def recent_usage_events(
     limit: int = Query(20, ge=1, le=100, description="返回条数上限"),
     identity: ConsoleIdentity = Depends(require_console_tenant),
     db: AsyncSession = Depends(get_async_db),

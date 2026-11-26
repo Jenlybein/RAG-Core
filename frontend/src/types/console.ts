@@ -66,4 +66,6 @@ export interface ConsoleMe {
   usage: ConsoleUsage | null
   /** 今日租户级模型用量：与 `usage` 同形，读的是 llm 那本账；管理员为 `null`。 */
   llm_usage: ConsoleUsage | null
+  /** 今日租户级重排用量：同上形状，读 `quota:rerank:*` 那本账；管理员为 `null`。 */
+  rerank_usage: ConsoleUsage | null
 }

@@ -77,8 +77,9 @@ def test_migration_chains_onto_the_single_head() -> None:
             if value:
                 downs.add(value.group(1))
     heads = set(revisions) - downs
-    # 链尾后来前移过：四档套餐迁移接在本迁移之后。
-    assert heads == {"a4c81f60d9b2"}
+    # 链尾后来前移过两次：数据面 API Key 改「只存哈希」，再把归属索引改名 ``usage_events``
+    # （第 14 步 #199）。这里只守「恰好一条链尾」，具体是哪条由链尾的守卫用例负责。
+    assert len(heads) == 1
     module = _load()
     assert module.down_revision == PREVIOUS
 

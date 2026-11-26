@@ -77,6 +77,7 @@ ADR-0026「影响范围」把这条钉死：一次 Research = 一个 ``log_id`` 
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
@@ -105,6 +106,7 @@ from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
 from app.services.retrieval_options import RetrievalOptions
 from app.services.retrieval_trace import record_retrieval_trace
+from app.services.usage_meter import ENDPOINT_RESEARCH, current_key, current_key_id, record_refusal
 from app.services.trace_identity import (
     delivered_chunk_ids,
     delivered_doc_versions,
@@ -182,10 +184,9 @@ def build_kernel_search(
             index_versions=index_versions,
             query=sub_query,
             mode=options.mode,
-            # 不做改写：三条查询串就是这一条子查询。
-            vector_queries=[sub_query],
+            # 不做改写：召回用句与重排用句都是这一条子查询。
+            recall_queries=[sub_query],
             rerank_query=sub_query,
-            keyword_query=sub_query,
             top_k=options.top_k,
             recall_top_k=recall_top_k,
             recall_depth=recall_depth,
@@ -194,6 +195,7 @@ def build_kernel_search(
             rerank_candidates=rerank_candidates,
             fold_to_sections=options.fold_to_sections,
             expand_table_rows=options.expand_table_rows,
+            max_unit_chars=options.max_unit_chars,
             # 同一个收集器：N 次内核的段依次追加进这一份 trace。
             stage_timer=stage_timer,
             # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有 monkeypatch 接缝）。
@@ -216,6 +218,47 @@ def build_kernel_search(
 
 
 async def gated_research(
+    db: AsyncSession,
+    *,
+    key: KeyContext,
+    kb_ids: list[str],
+    query: str,
+    search: SearchCallable | None = None,
+    llm_factory: LLMFactory | None = None,
+    clock: Clock | None = None,
+) -> ResearchData:
+    """Research 的公开入口：**被拒也要落一行账**（第 14 步 #200）。
+
+    判定全在 :func:`_gated_research`；这一层只把 ``AppError`` 抄成一行 ``usage_events``
+    再原样抛出，理由与 :func:`app.services.retrieval_gate.gated_retrieve` 逐字相同：
+    MCP 与 HTTP 共用这个函数，抄在路由上 MCP 的拒绝就不进账。
+    """
+
+    started_at = time.perf_counter()
+    try:
+        # 成功那一行账由状态机之后那段写；它要知道「是哪把 Key」，靠上下文拿。
+        with current_key(key.key_id):
+            return await _gated_research(
+                db,
+                key=key,
+                kb_ids=kb_ids,
+                query=query,
+                search=search,
+                llm_factory=llm_factory,
+                clock=clock,
+            )
+    except AppError as exc:
+        await record_refusal(
+            endpoint=ENDPOINT_RESEARCH,
+            key=key,
+            kb_ids=kb_ids,
+            code=int(exc.code),
+            started_at=started_at,
+        )
+        raise
+
+
+async def _gated_research(
     db: AsyncSession,
     *,
     key: KeyContext,
@@ -320,6 +363,14 @@ async def gated_research(
         log_id=log_id,
         trace_id=trace_id,
         tenant_id=key.tenant_id,
+        # 第 14 步（#200）：这一行同时是账——端点是 research，码是成功，
+        # 三本账按**实际发生**记：重排每真跑一次算一次，大模型调用就是状态机报的
+        # ``model_calls``；r 账不记（Research 不走 retrieve 那本账，见 ADR-0032）。
+        key_id=current_key_id(),
+        endpoint=ENDPOINT_RESEARCH,
+        code=0,
+        meter_rr=rerank_count,
+        meter_llm=outcome.model_calls,
         kb_ids=list(kb_ids),
         index_versions=dict(index_versions),
         # 一次 Research = 一行归属索引（ADR-0028）：稿号同样取**最终证据**那些单元上的

@@ -6,7 +6,7 @@
         --max-score 3 --days 30 --out eval/datasets/candidates.json
     uv run python scripts/export_eval_cases.py ... --merge --kb-id kb-eval
 
-**取数两半**：评分与归属来自本地两张表（`retrieval_feedback` + `retrieval_traces`），
+**取数两半**：评分与归属来自本地两张表（`retrieval_feedback` + `usage_events`），
 问句原文**只能**从观测服务按 `trace_id` 取（`langfuse_reader` 的读接口）。
 原文只在内存里过一遍，不写业务库（ADR-0021 决策 1）。
 
@@ -63,7 +63,7 @@ def load_samples() -> list[LowScoreSample]:
     rows = SessionLocal().execute(
         text(
             "select f.log_id, f.score, f.created_at, t.tenant_id, t.trace_id, t.kb_ids "
-            "from retrieval_feedback f join retrieval_traces t on t.id = f.log_id"
+            "from retrieval_feedback f join usage_events t on t.id = f.log_id"
         )
     ).mappings().all()
     return [

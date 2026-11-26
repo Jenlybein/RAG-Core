@@ -195,11 +195,12 @@ def console() -> Any:
 # ─────────────────────────────────────────────────────────────── 未登录 / 无权限
 
 
-def test_console_me_reports_llm_usage_in_the_same_shape(console: _Harness) -> None:
-    """``/console/me`` 多一栏 ``llm_usage``（票 #150），与 ``usage`` **同形**。
+def test_console_me_reports_three_meter_books_in_the_same_shape(console: _Harness) -> None:
+    """``/console/me`` 报**三本账**（检索 / 重排 / 大模型），三栏**同形**。
 
-    开关关着时两栏都是「未统计」：读数不存在，报 0 就是编造。两栏的上限各来自自己那一列
-    （``retrieve_daily`` / ``llm_daily``），因为两条链路各有各的额度。
+    开关关着时三栏都是「未统计」：读数不存在，报 0 就是编造。每栏的上限各来自自己那一列
+    （``retrieve_daily`` / ``rerank_daily`` / ``llm_daily``），因为三本账各有各的额度；
+    合成一个总数，面板上就没有「哪一本快用完了」这个答案了。
     """
 
     from app.schemas.console import USAGE_NOTE_NOT_TRACKED
@@ -208,14 +209,19 @@ def test_console_me_reports_llm_usage_in_the_same_shape(console: _Harness) -> No
 
     data = console.client.get("/console/me").json()["data"]
 
-    assert data["llm_usage"] == {
-        "used": None,
-        "limit": PLAN_PRESETS["pro"].llm_daily,
-        "source": "not_tracked",
-        "note": USAGE_NOTE_NOT_TRACKED,
-    }
-    assert data["usage"]["limit"] == PLAN_PRESETS["pro"].retrieve_daily
-    assert set(data["llm_usage"]) == set(data["usage"]), "同形：字段集必须一致"
+    pro = PLAN_PRESETS["pro"]
+    for field, limit in (
+        ("usage", pro.retrieve_daily),
+        ("rerank_usage", pro.rerank_daily),
+        ("llm_usage", pro.llm_daily),
+    ):
+        assert data[field] == {
+            "used": None,
+            "limit": limit,
+            "source": "not_tracked",
+            "note": USAGE_NOTE_NOT_TRACKED,
+        }, f"{field} 的上限必须来自自己那一列"
+        assert set(data[field]) == set(data["usage"]), "同形：字段集必须一致"
 
 
 def test_console_call_without_a_session_is_unauthorized(console: _Harness) -> None:

@@ -1,0 +1,391 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>审计日志 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 筛选条：两个下拉 + 一行总条数，不套容器、不加边框 */
+      .filters {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sp-3);
+      }
+      .filter {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--sp-2);
+        font-size: var(--fs-13);
+        color: var(--muted);
+      }
+      .filter .select {
+        width: 104px;
+        height: 30px;
+        padding-top: 0;
+        padding-bottom: 0;
+        font-size: var(--fs-13);
+      }
+      .filter .select--action {
+        width: 200px;
+      }
+      /* 改动列的药丸按钮：与表里其它小控件同一种玻璃，hover 提亮一档 */
+      .change-pill {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        padding: 2px 10px;
+        border: 1px solid var(--stroke-hi);
+        border-radius: var(--r-pill);
+        background: var(--fill-md);
+        color: var(--text-regular);
+        font-family: inherit;
+        font-size: var(--fs-12);
+        line-height: 1.5;
+        white-space: nowrap;
+        box-shadow: var(--sheen);
+        transition: background-color 160ms ease, color 160ms ease;
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .change-pill:hover {
+        
+                background: var(--fill-md);
+                color: var(--ink);
+              
+      }
+    }
+      .change-pill svg {
+        width: 10px;
+        height: 10px;
+        color: var(--faint);
+      }
+      /* 分页按钮：尺寸与 .pagination 的格子一致，去掉按钮自带的框；选中的那格由 .pagination 给白玻璃 */
+      .pagination button {
+        border: 0;
+        background: transparent;
+        color: var(--text-regular);
+        font-family: inherit;
+        font-size: var(--fs-13);
+        font-variant-numeric: tabular-nums;
+        transition: background-color 160ms ease, color 160ms ease;
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .pagination button:hover {
+        background: var(--fill-md);
+        color: var(--ink);
+      }
+      .pagination button.is-active:hover {
+        background: var(--fill-hi);
+        color: var(--ink);
+      }
+    }
+      .pagination button:disabled {
+        color: var(--disabled);
+        background: transparent;
+      }
+      .pagination svg {
+        width: 14px;
+        height: 14px;
+      }
+      /* 目标是一串 id：给它下限，窄屏让表格横向滚动，不要竖排折字 */
+      .table {
+        min-width: 780px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill is-active" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">审计日志</h1>
+          </div>
+          <div class="page-actions">
+            <button class="btn btn--sm" type="button">刷新</button>
+          </div>
+        </div>
+
+        <section class="card card-body">
+          <div class="filters">
+            <label class="filter">
+              <span>每页</span>
+              <select class="select" aria-label="每页条数">
+                <option selected>20 条</option>
+                <option>50 条</option>
+                <option>100 条</option>
+                <option>200 条</option>
+              </select>
+            </label>
+
+            <label class="filter">
+              <span>动作</span>
+              <select class="select select--action" aria-label="动作">
+                <option selected>全部动作</option>
+                <option>account.update</option>
+                <option>plan.update</option>
+                <option>key.issue</option>
+                <option>key_policy.update</option>
+                <option>settings.patch</option>
+                <option>model.patch</option>
+                <option>doc.reindex</option>
+                <option>kb.create</option>
+              </select>
+            </label>
+
+            <span class="t-13 muted">共 12 条</span>
+          </div>
+
+          <div class="table-wrap mt-5">
+            <table class="table">
+              <colgroup>
+                <col style="width: 168px" />
+                <col style="width: 190px" />
+                <col />
+                <col style="width: 100px" />
+                <col style="width: 116px" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="th-label" scope="col">时间</th>
+                  <th class="th-label" scope="col">动作</th>
+                  <th class="th-label" scope="col">目标</th>
+                  <th class="th-label" scope="col">操作者</th>
+                  <th class="th-label" scope="col">改动</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="num muted t-12">2026-11-22 14:31:08</td>
+                  <td class="mono t-12 strong">account.update</td>
+                  <td class="mono t-12">account:4c1f8a2e</td>
+                  <td class="t-12">alice</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      2 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-22 11:04:52</td>
+                  <td class="mono t-12 strong">plan.update</td>
+                  <td class="mono t-12">plan:2</td>
+                  <td class="t-12">alice</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      4 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-21 18:22:07</td>
+                  <td class="mono t-12 strong">key_policy.update</td>
+                  <td class="mono t-12">key:8a2d/tenant-acme</td>
+                  <td class="t-12">alice</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      3 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-21 08:03:55</td>
+                  <td class="mono t-12 strong">plan.update</td>
+                  <td class="mono t-12">plan:3</td>
+                  <td class="t-12">alice</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      1 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-20 16:47:19</td>
+                  <td class="mono t-12 strong">doc.reindex</td>
+                  <td class="mono t-12">doc:88c3e1f0</td>
+                  <td class="t-12">bob</td>
+                  <td><span class="faint t-12">—</span></td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-20 09:15:38</td>
+                  <td class="mono t-12 strong">kb.create</td>
+                  <td class="mono t-12">kb:4b7d02ae</td>
+                  <td class="t-12">carol</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      6 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-19 14:58:02</td>
+                  <td class="mono t-12 strong">settings.patch</td>
+                  <td class="mono t-12">settings:runtime</td>
+                  <td class="t-12 faint">（系统）</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      2 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-18 20:31:44</td>
+                  <td class="mono t-12 strong">model.patch</td>
+                  <td class="mono t-12">model:qwen3-embedding</td>
+                  <td class="t-12">alice</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      3 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-18 10:12:26</td>
+                  <td class="mono t-12 strong">key.issue</td>
+                  <td class="mono t-12">key:4f90/tenant-acme</td>
+                  <td class="t-12">bob</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      5 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-17 15:44:09</td>
+                  <td class="mono t-12 strong">settings.patch</td>
+                  <td class="mono t-12">settings:retrieval</td>
+                  <td class="t-12">alice</td>
+                  <td><span class="faint t-12">—</span></td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-16 09:28:41</td>
+                  <td class="mono t-12 strong">doc.rollback</td>
+                  <td class="mono t-12">doc:1f6b93ca</td>
+                  <td class="t-12">bob</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      2 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="num muted t-12">2026-11-14 17:05:33</td>
+                  <td class="mono t-12 strong">account.update</td>
+                  <td class="mono t-12">account:9e7c4a01</td>
+                  <td class="t-12">alice</td>
+                  <td>
+                    <button class="change-pill" type="button">
+                      1 项变更
+                      <svg viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                        <path d="m3 4.5 3 3 3-3" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                    </button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="row mt-4">
+            <nav class="pagination ml-auto" aria-label="分页">
+              <button type="button" disabled aria-label="上一页">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="m14 6-6 6 6 6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+              <button type="button" class="is-active" aria-current="page">1</button>
+              <button type="button" disabled aria-label="下一页">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                  <path d="m10 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                </svg>
+              </button>
+            </nav>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

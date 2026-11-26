@@ -170,7 +170,7 @@ def test_config_is_persisted_on_the_knowledge_base_row(client: Any) -> None:
     stored = client.fake_session.added[0]  # type: ignore[attr-defined]
     assert stored.split_strategy == "size"
     assert stored.allowed_formats == list(ALL_FORMATS)
-    assert stored.settings == {"chunk_size": 400}
+    assert stored.settings == {"chunk_size": 400, "section_part_max_chars": 2000}
 
 
 def test_list_shows_split_strategy_and_window(client: Any, monkeypatch) -> None:
@@ -257,7 +257,7 @@ def test_settings_out_of_range_falls_back_to_defaults() -> None:
 
     values = settings_of(kb)
 
-    assert values == {"chunk_size": DEFAULT_CHUNK_SIZE}
+    assert values == {"chunk_size": DEFAULT_CHUNK_SIZE, "section_part_max_chars": 2000}
 
 
 def test_legacy_merge_threshold_key_is_ignored() -> None:
@@ -269,13 +269,13 @@ def test_legacy_merge_threshold_key_is_ignored() -> None:
 
     kb = SimpleNamespace(settings={"chunk_size": 800, "merge_threshold": 150})
 
-    assert settings_of(kb) == {"chunk_size": 800}
+    assert settings_of(kb) == {"chunk_size": 800, "section_part_max_chars": 2000}
 
 
 def test_missing_kb_settings_yields_defaults() -> None:
     """库不存在时取配置回落默认，把「库不存在」留给后续流程去报。"""
 
-    assert settings_of(None) == {"chunk_size": DEFAULT_CHUNK_SIZE}
+    assert settings_of(None) == {"chunk_size": DEFAULT_CHUNK_SIZE, "section_part_max_chars": 2000}
 
 
 def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> None:
@@ -285,7 +285,7 @@ def test_indexing_service_builds_splitter_from_the_kb_config(monkeypatch) -> Non
     repo = importlib.import_module("app.repositories.knowledge_base_repository")
 
     async def _split_config(_db, _kb_id, *, tenant_id: str):
-        return (SPLIT_SIZE, 400)
+        return SPLIT_SIZE, 400, 2000
 
     # 票 #132 起索引流水线走异步会话，库级切块配置读的是异步孪生。
     monkeypatch.setattr(repo, "get_split_config", _split_config)

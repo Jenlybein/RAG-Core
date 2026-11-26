@@ -1,0 +1,1345 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>检索调试台 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* ───────────────────────── 本屏只补「检索页特有的形状」 ─────────────────────────
+         面层（半透明白、折射模糊、亮边高光）由 tokens.css 的 --glass-* 与 app.css 的
+         .card / .chip / .input 提供；这里只写布局，以及内嵌小块那层「比外层更实的雾面」——
+         不在玻璃上再叠第二层玻璃。 */
+
+      :root {
+        /* 玻璃上的两种状态底：淡蓝（当前 / 变了）与凹槽（轨道、进度槽） */
+        --wash-accent: rgba(0, 113, 227, 0.08);
+        --well: rgba(24, 33, 52, 0.08);
+        /* 内嵌小块：比外层更实的一层雾面 */
+        --inset-fill: var(--fill-md);
+        --inset-stroke: var(--stroke-hi);
+      }
+
+      /* 卡片标题：与 el-card__header h2 同口径（15px / 600 / 字距收一点） */
+      .card-title {
+        font-size: var(--fs-15);
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+      }
+
+      /* ① 一行只读摘要：三个 mono chip + 库数，右端一个入口 */
+      .key-chips {
+        gap: 6px;
+      }
+      .chip--mono {
+        font-family: var(--font-mono);
+      }
+      /* 掩码 Key 比名字退一档，但仍用 --muted 而不是 --faint：12px 小字要过对比度 */
+      .chip--quiet {
+        color: var(--muted);
+      }
+      /* 图标尺寸：SVG 不给宽高会撑成默认的 300×150 */
+      .btn svg {
+        flex: none;
+        width: 14px;
+        height: 14px;
+      }
+      .minw-0 {
+        min-width: 0;
+      }
+      .row-gap-2 {
+        gap: var(--sp-2);
+      }
+      .row-gap-3 {
+        gap: var(--sp-3);
+      }
+      .mt-1 {
+        margin-top: var(--sp-1);
+      }
+      .diag-label {
+        font-size: var(--fs-12);
+        font-weight: 500;
+        color: var(--text-regular);
+      }
+
+      /* 源里的 text-brand underline 链接（「选 Key 与库」「全部字段」「复制 JSON」）；
+         最小高度 24px 是点击区下限，18px 高的纯文字链接太难点中 */
+      .link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--accent);
+        font-family: inherit;
+        font-size: var(--fs-12);
+        line-height: 1.5;
+        text-decoration: underline;
+        text-underline-offset: 2px;
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .link:hover {
+        
+                color: var(--ink);
+              
+      }
+    }
+      .link--muted {
+        color: var(--muted);
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .link--muted:hover {
+        
+                color: var(--ink);
+              
+      }
+    }
+
+      /* ① 能力分段 + 问题框：一条细线把「设置摘要」和「动作」分开 */
+      .stack-sep {
+        margin-top: var(--sp-5);
+        padding-top: var(--sp-5);
+        border-top: 1px solid var(--line-lighter);
+      }
+      .field-caption {
+        display: block;
+        margin-bottom: 6px;
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      .segmented > button {
+        white-space: nowrap;
+      }
+
+      .textarea-wrap {
+        position: relative;
+      }
+      .textarea-wrap .textarea {
+        padding-bottom: 22px; /* 给右下角字数留位 */
+      }
+      .word-limit {
+        position: absolute;
+        right: 12px;
+        bottom: 5px;
+        font-size: var(--fs-12);
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+        pointer-events: none;
+      }
+      /* 动作行右对齐：准备动作在左，主按钮永远最右 */
+      .actions-end {
+        justify-content: flex-end;
+        gap: var(--sp-2);
+        margin-top: var(--sp-4);
+      }
+
+      /* 主体两栏：左「这一次的答案」右「诊断」（源 lg:grid-cols-[1fr_360px]，1024 起分栏） */
+      .work-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 380px;
+        align-items: start;
+        gap: var(--sp-6);
+      }
+      @media (max-width: 1023px) {
+        .work-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+
+      /* ③ 召回结果：一条 = 主行 / 正文 / 底注 */
+      .result-count {
+        font-size: var(--fs-14);
+        font-variant-numeric: tabular-nums;
+        color: var(--text-regular);
+      }
+      .result-list > li {
+        padding: var(--sp-5) 0;
+      }
+      .result-list > li + li {
+        border-top: 1px solid var(--line-lighter);
+      }
+      .result-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 4px var(--sp-4);
+      }
+      .result-title-line {
+        display: flex;
+        align-items: baseline;
+        gap: 10px;
+        min-width: 0;
+      }
+      .rank-pill {
+        flex: none;
+        padding: 1px 8px;
+        border-radius: var(--r-pill);
+        background: var(--accent-soft);
+        color: var(--ink);
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+        font-weight: 500;
+      }
+      .result-title {
+        min-width: 0;
+        overflow: hidden;
+        font-size: var(--fs-13);
+        font-weight: 600;
+        color: var(--ink);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .result-path {
+        min-width: 0;
+        overflow: hidden;
+        font-size: var(--fs-12);
+        color: var(--muted);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      /* 三个分数固定列宽、各列右端对齐：三张卡的 0.8421 / 0.7936 / 0.5107 才在一条竖线上。
+         列宽按内容收紧，右对齐后不会把「语义 / 关键词」推出一大段空白。 */
+      .result-scores {
+        display: grid;
+        grid-template-columns: 50px 68px 88px;
+        align-items: baseline;
+        justify-content: end;
+        justify-items: end;
+        gap: var(--sp-3);
+        flex: none;
+        margin-left: auto;
+      }
+      .score-main {
+        font-family: var(--font-mono);
+        font-size: var(--fs-13);
+        font-weight: 500;
+        font-variant-numeric: tabular-nums;
+        color: var(--ink);
+        text-align: right;
+        white-space: nowrap;
+      }
+      .score-sub {
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+        text-align: right;
+        white-space: nowrap;
+      }
+      /* 手机上把三列再收窄一点，保证 390 宽下仍是一行三列，不横向溢出 */
+      @media (max-width: 400px) {
+        .result-scores {
+          grid-template-columns: 48px 64px 86px;
+          gap: var(--sp-2);
+        }
+      }
+      /* 命中正文：44em 是一行的上限——窄栏里刚好，宽屏（单列）时也不会拉成长到读丢行的句子。
+         不用 pre-wrap：mock 正文里没有换行，而 pre-wrap 会让行尾那个空格挂在盒外。 */
+      .result-body {
+        margin-top: 10px;
+        max-width: 44em;
+        font-size: var(--fs-14);
+        line-height: 1.75;
+        color: var(--text-regular);
+        overflow-wrap: anywhere;
+      }
+      .result-meta {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 2px var(--sp-4);
+        margin-top: 10px;
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+
+      /* 右栏诊断卡：源 card px-5 py-4 */
+      .diag-card {
+        padding: var(--sp-4) var(--sp-5);
+      }
+      /* 折叠后标题行仍要能读出「里面是什么」：一行等宽摘要，不用展开 */
+      .diag-sum {
+        margin-left: auto;
+        font-size: var(--fs-12);
+      }
+      .toggle {
+        width: 100%;
+      }
+
+      .diag-block {
+        margin-top: var(--sp-3);
+        padding-top: var(--sp-3);
+        border-top: 1px solid var(--line-lighter);
+      }
+      /* 折叠入口：12px 灰字 + 一个跟着开合转向的箭头 */
+      .toggle {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 24px;
+        padding: 0;
+        border: 0;
+        background: none;
+        color: var(--muted);
+        font-family: inherit;
+        font-size: var(--fs-12);
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .toggle:hover {
+        
+                color: var(--ink);
+              
+      }
+    }
+      .toggle svg {
+        flex: none;
+        width: 11px;
+        height: 11px;
+        transition: transform 150ms;
+      }
+      .toggle svg.is-open {
+        transform: rotate(90deg);
+      }
+
+      /* 运行摘要：一行一项（窄栏里多列网格会把字段名压到互相重叠） */
+      .kv-rows {
+        margin-top: var(--sp-3);
+      }
+      .kv-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 2px var(--sp-3);
+        padding: 6px 0;
+        border-bottom: 1px solid var(--line-lighter);
+      }
+      .kv-row:last-child {
+        border-bottom: 0;
+      }
+      .kv-label {
+        min-width: 0;
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      /* 字段名的小玻璃签：内嵌小块，比外层实一档 */
+      .kv-field {
+        margin-left: 4px;
+        padding: 0 5px;
+        border: 1px solid var(--inset-stroke);
+        border-radius: 6px;
+        background: var(--fill-md);
+        color: var(--muted);
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+        word-break: break-all;
+      }
+      .kv-value {
+        margin-left: auto;
+        min-width: 0;
+        font-family: var(--font-mono);
+        font-size: var(--fs-13);
+        font-variant-numeric: tabular-nums;
+        color: var(--ink);
+        text-align: right;
+        word-break: break-all;
+      }
+
+      /* 六段耗时（瀑布）：条宽按时长占比，段名照英文原文；轨道是一道内凹的槽 */
+      .wf {
+        margin-top: var(--sp-3);
+      }
+      .wf-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: 2px var(--sp-4);
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      .wf-dot {
+        color: var(--muted);
+      }
+      .wf-num {
+        font-family: var(--font-mono);
+        font-variant-numeric: tabular-nums;
+        color: var(--ink);
+      }
+      .wf-list {
+        margin-top: var(--sp-3);
+      }
+      .wf-row {
+        display: flex;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+      .wf-row + .wf-row {
+        margin-top: 6px;
+      }
+      .wf-name {
+        flex: none;
+        width: 132px;
+        overflow: hidden;
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+        color: var(--text-regular);
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .wf-track {
+        flex: 1 1 0;
+        min-width: 0;
+        height: 10px;
+        overflow: hidden;
+        border-radius: var(--r-pill);
+        background: var(--well);
+        box-shadow: inset 0 1px 2px rgba(24, 33, 52, 0.12);
+      }
+      .wf-bar {
+        display: block;
+        height: 10px;
+        min-width: 2px;
+        border-radius: var(--r-pill);
+        background: linear-gradient(90deg, #1a86f5, #0071e3);
+        box-shadow: var(--sheen-soft);
+      }
+      .wf-ms {
+        flex: none;
+        width: 64px;
+        font-family: var(--font-mono);
+        font-size: var(--fs-13);
+        font-variant-numeric: tabular-nums;
+        color: var(--ink);
+        text-align: right;
+        white-space: nowrap;
+      }
+
+      /* 打分：五颗星是一排可点的小方块，选中是蓝底浅蓝 */
+      .score-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sp-1);
+        margin-top: var(--sp-2);
+      }
+      .star {
+        display: grid;
+        place-items: center;
+        width: 28px;
+        height: 26px;
+        border: 1px solid var(--inset-stroke);
+        border-radius: var(--r-small);
+        background: var(--inset-fill);
+        color: var(--muted);
+        box-shadow: var(--sheen);
+      }
+      .star svg {
+        width: 14px;
+        height: 14px;
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .star:hover {
+        
+                color: var(--star);
+              
+      }
+    }
+      .star.is-on {
+        border-color: rgba(0, 113, 227, 0.4);
+        background: var(--wash-accent);
+        color: var(--accent);
+        box-shadow: var(--sheen);
+      }
+      .score-read {
+        margin-left: var(--sp-2);
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+
+      /* 完整响应字段：一棵折叠树，一层缩进 12px；底是一层内嵌雾面，不叠第二层玻璃 */
+      .field-tree {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border: 1px solid var(--inset-stroke);
+        border-radius: var(--r-control);
+        background: var(--inset-fill);
+        box-shadow: var(--sheen);
+        font-size: var(--fs-12);
+        line-height: 1.75;
+        color: var(--text-regular);
+      }
+      .tree-children {
+        margin-left: 12px;
+      }
+      .tree-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 0 4px;
+      }
+      .tree-row--leaf {
+        padding-left: 15px;
+      }
+      .tree-chev {
+        flex: none;
+        align-self: center;
+        width: 10px;
+        height: 10px;
+        color: var(--faint);
+      }
+      .tree-chev.is-open {
+        transform: rotate(90deg);
+      }
+      .tree-key {
+        color: var(--muted);
+      }
+      .tree-sep,
+      .tree-count {
+        color: var(--muted);
+      }
+      .tree-str {
+        word-break: break-all;
+      }
+      .tree-num {
+        color: var(--ink);
+      }
+
+      /* 折叠卡的头部（能调的接口 / 对比面板）：标题区可点，操作区各管各的 */
+      .fold-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        padding: 14px var(--sp-5);
+      }
+      .fold-trigger {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        background: none;
+        text-align: left;
+      }
+      .fold-trigger svg {
+        flex: none;
+        width: 11px;
+        height: 11px;
+        margin-top: 7px;
+        color: var(--muted);
+        transition: transform 150ms;
+      }
+      .fold-trigger svg.is-open {
+        transform: rotate(90deg);
+      }
+      .fold-sub {
+        display: block;
+      }
+      .fold-body {
+        padding: var(--sp-4) var(--sp-5);
+        border-top: 1px solid var(--line-lighter);
+      }
+
+      /* 对比面板：最近几次 + 两列差异表 + 结果集变化 */
+      .mini-title {
+        font-size: var(--fs-12);
+        font-weight: 600;
+        color: var(--muted);
+      }
+      .history-cards {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-2);
+        margin-top: var(--sp-2);
+      }
+      .history-card {
+        min-width: 15rem;
+        padding: 10px var(--sp-3);
+        border: 1px solid var(--inset-stroke);
+        border-radius: var(--r-small);
+        background: var(--inset-fill);
+        box-shadow: var(--sheen);
+        font-size: var(--fs-12);
+      }
+      /* 当前这次：一块淡蓝玻璃，与结果表里「变了」的行同一个语言 */
+      .history-card.is-current {
+        border-color: rgba(0, 113, 227, 0.32);
+        background: var(--wash-accent);
+      }
+      .history-head {
+        gap: 2px var(--sp-2);
+      }
+      .history-meta {
+        margin-top: 4px;
+        color: var(--muted);
+        word-break: break-all;
+      }
+      .history-actions {
+        margin-top: var(--sp-2);
+      }
+      .diff-sect {
+        margin-top: var(--sp-4);
+        padding-top: var(--sp-3);
+        border-top: 1px solid var(--line-lighter);
+      }
+      .diff-sub-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-2);
+        margin-top: var(--sp-4);
+        padding-top: var(--sp-3);
+        border-top: 1px solid var(--line-lighter);
+      }
+      .diff-group {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        font-size: var(--fs-12);
+        font-weight: 600;
+        color: var(--muted);
+      }
+      .diff-list {
+        margin-top: 6px;
+      }
+      .diff-list > li {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        gap: 4px var(--sp-3);
+        padding: 6px 0;
+        font-size: var(--fs-13);
+      }
+      .diff-list > li + li {
+        border-top: 1px solid var(--line-lighter);
+      }
+      .diff-list > li.diff-item {
+        display: block;
+        padding: 8px 0;
+      }
+      /* 变了的行：整行淡蓝底，当前值强调，基准值退成灰 */
+      .row-changed td {
+        background: var(--wash-accent);
+      }
+      .cell-before {
+        color: var(--muted);
+      }
+      .cell-after {
+        color: var(--accent-pressed);
+        font-weight: 600;
+      }
+      .dir-up {
+        color: var(--accent-pressed);
+      }
+      .dir-none {
+        color: var(--muted);
+      }
+      .col-field {
+        width: 32%;
+      }
+      .col-side {
+        width: 34%;
+      }
+      .col-field-4 {
+        width: 24%;
+      }
+      .col-side-4 {
+        width: 30%;
+      }
+      .col-dir {
+        width: 12%;
+      }
+      /* 变化项的字段表：四列在窄屏上放不下，让它自己横滚，而不是把「综合排序分」折成两行 */
+      .table--nowrap th,
+      .table--nowrap td {
+        white-space: nowrap;
+      }
+      /* 窄屏：四列对比表按内容撑开、整表横滑；不设下限时会被压成每列十几像素、字被逐字截断 */
+      @media (max-width: 640px) {
+        .table--nowrap {
+          min-width: 520px;
+        }
+      }
+      /* 窄屏：标题与章节路径各自换行，别把「售后服务条款」截成「售后服务…」 */
+      @media (max-width: 640px) {
+        .result-title-line {
+          flex-wrap: wrap;
+        }
+        .result-title,
+        .result-path {
+          overflow: visible;
+          white-space: normal;
+        }
+      }
+      @media (max-width: 640px) {
+        .diag-card {
+          padding: var(--sp-4);
+        }
+        /* 窄屏上分段按钮收一档内距：四个标签恰好排成一行，不折行也不溢出 */
+        .segmented > button {
+          padding: 0 9px;
+        }
+        .wf-name {
+          width: 100px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="knowledge-bases.html">知识库管理</a>
+            <a class="nav-pill" href="keys.html">Key 与密钥配置</a>
+            <a class="nav-pill" href="usage.html">用量</a>
+            <a class="nav-pill is-active" href="retrieve.html">检索调试台</a>
+            <a class="nav-pill" href="traces.html">检索记录</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">bob</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">调试台</h1>
+            
+          </div>
+          <div class="page-actions">
+            <a class="btn" href="traces.html">
+              检索记录
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" aria-hidden="true">
+                <path d="M5 12h14M13.5 6.5 19 12l-5.5 5.5" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+            </a>
+          </div>
+        </div>
+
+        <!-- ① 发起检索：卡片上只留「动作」，一条只读摘要说明用的是哪把 Key、哪些库 -->
+        <div class="card card--panel">
+          <div class="card-head">
+            <h2 class="card-title">发起检索</h2>
+          </div>
+
+          <div class="card-body">
+            <div class="row wrap between">
+              <span class="row wrap key-chips">
+                <span class="chip chip--mono">bob-prod</span>
+                <span class="chip chip--mono chip--quiet">sk-rag-••••••9d3c</span>
+                <span class="chip chip--mono">hybrid</span>
+                <span class="chip">库 2</span>
+              </span>
+              <button class="link" type="button">选 Key 与库</button>
+            </div>
+
+            <div class="stack-sep">
+              <div>
+                <span class="field-caption">用哪项能力</span>
+                <div class="segmented" role="group" aria-label="用哪项能力">
+                  <button class="is-active" type="button" aria-pressed="true">检索</button>
+                  <button type="button">改写后检索</button>
+                  <button type="button" disabled title="这把 Key 没开这个能力">分解后检索</button>
+                  <button type="button" disabled title="这把 Key 没开这个能力">研究模式</button>
+                </div>
+              </div>
+
+              <div class="mt-4">
+                <div class="textarea-wrap">
+                  <textarea class="textarea" rows="3" maxlength="2000" aria-label="要检索的问题">退款申请提交后，一般几天能到账？需要准备哪些材料？</textarea>
+                  <span class="word-limit">26 / 2000</span>
+                </div>
+
+                <div class="row wrap actions-end">
+                  <button class="btn" type="button">修改配置</button>
+                  <button class="btn btn--primary" type="button">检索</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 主路径（左：答案）与诊断（右）两栏；窄屏落成单列 -->
+        <div class="work-grid">
+          <div class="minw-0">
+            <!-- ③ 召回结果 -->
+            <div class="card card--panel">
+              <div class="card-head">
+                <h2 class="card-title">召回结果</h2>
+                <span class="result-count">共 3 条</span>
+              </div>
+
+              <div class="card-body">
+                <ul class="result-list">
+                  <li>
+                    <div class="result-head">
+                      <div class="result-title-line">
+                        <span class="rank-pill">1</span>
+                        <h3 class="result-title">售后服务条款</h3>
+                        <span class="result-path">› 第 3 章 退款与到账 &gt; 3.2 到账时效</span>
+                      </div>
+                      <div class="result-scores">
+                        <span class="score-main">0.8421</span>
+                        <span class="score-sub">语义 87.4%</span>
+                        <span class="score-sub">关键词 0.6183</span>
+                      </div>
+                    </div>
+
+                    <p class="result-body">退款申请通过审核后，款项按原支付渠道退回：微信与支付宝一般 1～3 个工作日到账，银行卡 3～7 个工作日，跨境卡组织最长 15 个工作日。到账时间以支付机构的清算为准；超过上述区间时，可在「订单详情 · 退款进度」里查支付机构的受理单号。</p>
+
+                    <div class="result-meta">
+                      <span>扩展：parent</span>
+                      <span>语义名次 第 1 名</span>
+                      <span>关键词名次 第 4 名</span>
+                      <span title="9f3c1a7e-2b64-4c19-8d0a-5e7b3c1f04d2">切片 9f3c1a7e</span>
+                      <span title="4b2e8d61-77aa-4c02-9c31-2b0e4d8f6a15">文档 4b2e8d61</span>
+                      <span title="a6cf720a-31d8-4e57-8b90-6c2f7d1a04e3">库 a6cf720a</span>
+                      <button class="link" type="button">全部字段</button>
+                    </div>
+                  </li>
+
+                  <li>
+                    <div class="result-head">
+                      <div class="result-title-line">
+                        <span class="rank-pill">2</span>
+                        <h3 class="result-title">退款申请材料清单</h3>
+                        <span class="result-path">› 第 3 章 退款与到账 &gt; 3.1 申请材料</span>
+                      </div>
+                      <div class="result-scores">
+                        <span class="score-main">0.7936</span>
+                        <span class="score-sub">语义 81.2%</span>
+                        <span class="score-sub">关键词 0.5714</span>
+                      </div>
+                    </div>
+
+                    <p class="result-body">提交退款申请时需要准备：订单号（或支付流水号）、退款原因说明、能证明问题的凭证（照片或截图）。单笔金额超过 5,000 元时，另需上传盖章的情况说明。材料齐全的申请通常 1 个工作日内完成审核。</p>
+
+                    <div class="result-meta">
+                      <span>语义名次 第 2 名</span>
+                      <span>关键词名次 第 2 名</span>
+                      <span title="3c81b0d4-95f2-4a6e-8d11-c0f7b2e93a46">切片 3c81b0d4</span>
+                      <span title="7d21e9aa-05c4-4f38-a2b9-8e1d6c47f203">文档 7d21e9aa</span>
+                      <span title="9b04f3c8-6e21-4d7a-9c55-1a8f2b40d6e7">库 9b04f3c8</span>
+                      <button class="link" type="button">全部字段</button>
+                    </div>
+                  </li>
+
+                  <li>
+                    <div class="result-head">
+                      <div class="result-title-line">
+                        <span class="rank-pill">3</span>
+                        <h3 class="result-title">支付渠道对账说明</h3>
+                        <span class="result-path">› 附录 B 支付与对账 &gt; B.3 清算周期</span>
+                      </div>
+                      <div class="result-scores">
+                        <span class="score-main">0.5107</span>
+                        <span class="score-sub">语义 —</span>
+                        <span class="score-sub">关键词 0.4021</span>
+                      </div>
+                    </div>
+
+                    <p class="result-body">跨境卡组织的清算周期受交易日与假期影响：每周四 18:00 之后发起的退款，会并入下一清算批次，到账时间相应顺延 2～3 个工作日。</p>
+
+                    <div class="result-meta">
+                      <span>扩展：chunk</span>
+                      <span>语义名次 —</span>
+                      <span>关键词名次 第 1 名</span>
+                      <span title="6e0f7a2b-8c14-43d9-b7a0-5f2e93c1d8b4">切片 6e0f7a2b</span>
+                      <span title="1c93a5de-42b7-4e08-9a6f-3d5c81b0e724">文档 1c93a5de</span>
+                      <span title="a6cf720a-31d8-4e57-8b90-6c2f7d1a04e3">库 a6cf720a</span>
+                      <button class="link" type="button">全部字段</button>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <!-- 右栏：这次检索的诊断（运行摘要 / 六段耗时 / 打分）+ 完整响应字段 -->
+          <div class="stack-6">
+            <section class="card diag-card">
+              <h2 class="section-title">这次的诊断</h2>
+
+              <div class="diag-block">
+                <button class="toggle" type="button" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  运行摘要
+                  <span class="chip mono diag-sum">hybrid · top_k 5 · pro</span>
+                </button>
+
+                <dl class="kv-rows" hidden>
+                  <div class="kv-row">
+                    <dt class="kv-label">检索模式<span class="kv-field">mode</span></dt>
+                    <dd class="kv-value">hybrid</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">返回条数<span class="kv-field">top_k</span></dt>
+                    <dd class="kv-value">5</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">向量库<span class="kv-field">vector_store</span></dt>
+                    <dd class="kv-value">pgvector</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">是否降级<span class="kv-field">retrieval.degraded</span></dt>
+                    <dd class="kv-value">false</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">降级原因<span class="kv-field">retrieval.degraded_reason</span></dt>
+                    <dd class="kv-value">—</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">空结果原因<span class="kv-field">retrieval.empty_reason</span></dt>
+                    <dd class="kv-value">—</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">套餐<span class="kv-field">tenant_policy.plan</span></dt>
+                    <dd class="kv-value">pro</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">检索方式<span class="kv-field">tenant_policy.mode</span></dt>
+                    <dd class="kv-value">hybrid</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">返回条数<span class="kv-field">tenant_policy.top_k</span></dt>
+                    <dd class="kv-value">5</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">重排<span class="kv-field">tenant_policy.rerank</span></dt>
+                    <dd class="kv-value">true</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">本次库数<span class="kv-field">tenant_policy.kb_count</span></dt>
+                    <dd class="kv-value">2</dd>
+                  </div>
+                  <div class="kv-row">
+                    <dt class="kv-label">被套餐裁掉的字段<span class="kv-field">tenant_policy.clipped</span></dt>
+                    <dd class="kv-value">—</dd>
+                  </div>
+                </dl>
+              </div>
+
+              <div class="diag-block">
+                <button class="toggle" type="button" aria-expanded="false">
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                    <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                  </svg>
+                  六段耗时
+                  <span class="chip mono diag-sum">412 ms</span>
+                </button>
+
+                <div class="mt-3" hidden>
+                  <p class="t-12 muted">log_id <span class="mono ink">7f2a91c4…</span></p>
+                  <div class="mt-2">
+                    <button class="btn btn--sm" type="button">看这次检索的瀑布</button>
+                  </div>
+
+                  <div class="wf">
+                    <div class="wf-head">
+                      <span>
+                        来源 <span class="mono ink">本地记录</span> <span class="wf-dot">·</span> trace
+                        <span class="mono ink">9f3c1a7e</span> <span class="wf-dot">·</span> retrieved 2026-11-22 14:41:07
+                      </span>
+                      <span>
+                        关键路径 <span class="wf-num">412.0</span> ms · 本次总耗时 <span class="wf-num">412</span> ms
+                      </span>
+                    </div>
+
+                    <ul class="wf-list">
+                      <li class="wf-row">
+                        <span class="wf-name" title="查询优化">query_optimization</span>
+                        <span class="wf-track"><span class="wf-bar" style="width: 4.73%"></span></span>
+                        <span class="wf-ms">22.4<span class="unit">ms</span></span>
+                      </li>
+                      <li class="wf-row">
+                        <span class="wf-name" title="向量召回">vector_recall</span>
+                        <span class="wf-track"><span class="wf-bar" style="width: 33.52%"></span></span>
+                        <span class="wf-ms">158.6<span class="unit">ms</span></span>
+                      </li>
+                      <li class="wf-row">
+                        <span class="wf-name" title="关键词召回">keyword_recall</span>
+                        <span class="wf-track"><span class="wf-bar" style="width: 12.93%"></span></span>
+                        <span class="wf-ms">61.2<span class="unit">ms</span></span>
+                      </li>
+                      <li class="wf-row">
+                        <span class="wf-name" title="融合">fusion</span>
+                        <span class="wf-track"><span class="wf-bar" style="width: 1.01%"></span></span>
+                        <span class="wf-ms">4.8<span class="unit">ms</span></span>
+                      </li>
+                      <li class="wf-row">
+                        <span class="wf-name" title="重排">rerank</span>
+                        <span class="wf-track"><span class="wf-bar" style="width: 36.24%"></span></span>
+                        <span class="wf-ms">171.5<span class="unit">ms</span></span>
+                      </li>
+                      <li class="wf-row">
+                        <span class="wf-name" title="折叠">collapse</span>
+                        <span class="wf-track"><span class="wf-bar" style="width: 11.56%"></span></span>
+                        <span class="wf-ms">54.7<span class="unit">ms</span></span>
+                      </li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+
+              <div class="diag-block">
+                <p class="diag-label">打分</p>
+
+                <div class="score-row">
+                  <button class="star" type="button" aria-label="打 1 分">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true">
+                      <path d="m12 3.8 2.55 5.17 5.7.83-4.12 4.02.97 5.68L12 16.82l-5.1 2.68.97-5.68L3.75 9.8l5.7-.83z" />
+                    </svg>
+                  </button>
+                  <button class="star" type="button" aria-label="打 2 分">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true">
+                      <path d="m12 3.8 2.55 5.17 5.7.83-4.12 4.02.97 5.68L12 16.82l-5.1 2.68.97-5.68L3.75 9.8l5.7-.83z" />
+                    </svg>
+                  </button>
+                  <button class="star" type="button" aria-label="打 3 分">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true">
+                      <path d="m12 3.8 2.55 5.17 5.7.83-4.12 4.02.97 5.68L12 16.82l-5.1 2.68.97-5.68L3.75 9.8l5.7-.83z" />
+                    </svg>
+                  </button>
+                  <button class="star is-on" type="button" aria-label="打 4 分" aria-pressed="true">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true">
+                      <path d="m12 3.8 2.55 5.17 5.7.83-4.12 4.02.97 5.68L12 16.82l-5.1 2.68.97-5.68L3.75 9.8l5.7-.83z" />
+                    </svg>
+                  </button>
+                  <button class="star" type="button" aria-label="打 5 分">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linejoin="round" aria-hidden="true">
+                      <path d="m12 3.8 2.55 5.17 5.7.83-4.12 4.02.97 5.68L12 16.82l-5.1 2.68.97-5.68L3.75 9.8l5.7-.83z" />
+                    </svg>
+                  </button>
+                  <span class="score-read">4 分</span>
+                </div>
+
+                <input class="input mt-2" type="text" maxlength="512" placeholder="一句话说明" aria-label="评分说明" />
+
+                <div class="row wrap mt-2">
+                  <button class="btn btn--sm btn--primary" type="button">提交评分</button>
+                </div>
+              </div>
+            </section>
+
+            <!-- 完整响应字段：这次回包的全部字段，折叠树默认开到第二层 -->
+            <section class="card diag-card">
+              <div class="row wrap between">
+                <h2 class="section-title">完整响应字段</h2>
+                <span class="row wrap row-gap-3">
+                  <button class="link link--muted" type="button">全部展开</button>
+                  <button class="link link--muted" type="button">全部收起</button>
+                  <button class="link" type="button">复制 JSON</button>
+                </span>
+              </div>
+
+              <div class="field-tree">
+                <div class="tree-children">
+                  <div class="tree-row tree-row--leaf">
+                    <span class="tree-key">query</span><span class="tree-sep">:</span>
+                    <span class="tree-str">退款申请提交后，一般几天能到账？需要准备哪些材料？</span>
+                  </div>
+
+                  <div class="tree-row">
+                    <svg class="tree-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <span class="tree-key">kb_ids</span><span class="tree-count">[2 项]</span>
+                  </div>
+
+                  <div class="tree-row tree-row--leaf">
+                    <span class="tree-key">retrieved_chunks</span><span class="tree-sep">:</span>
+                    <span class="tree-str">［3 条，逐条字段见上方各卡片的「全部字段」］</span>
+                  </div>
+
+                  <div class="tree-row">
+                    <svg class="tree-chev is-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                      <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                    </svg>
+                    <span class="tree-key">metadata</span><span class="tree-count">{6 项}</span>
+                  </div>
+
+                  <div class="tree-children">
+                    <div class="tree-row tree-row--leaf">
+                      <span class="tree-key">mode</span><span class="tree-sep">:</span>
+                      <span class="tree-str">hybrid</span>
+                    </div>
+                    <div class="tree-row tree-row--leaf">
+                      <span class="tree-key">top_k</span><span class="tree-sep">:</span>
+                      <span class="tree-num">5</span>
+                    </div>
+                    <div class="tree-row tree-row--leaf">
+                      <span class="tree-key">vector_store</span><span class="tree-sep">:</span>
+                      <span class="tree-str">pgvector</span>
+                    </div>
+                    <div class="tree-row tree-row--leaf">
+                      <span class="tree-key">trace_id</span><span class="tree-sep">:</span>
+                      <span class="tree-str">9f3c1a7e-2b64-4c19-8d0a-5e7b3c1f04d2</span>
+                    </div>
+                    <div class="tree-row">
+                      <svg class="tree-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                      <span class="tree-key">retrieval</span><span class="tree-count">{5 项}</span>
+                    </div>
+                    <div class="tree-row">
+                      <svg class="tree-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                        <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+                      </svg>
+                      <span class="tree-key">tenant_policy</span><span class="tree-count">{6 项}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </div>
+
+        <!-- ⑨ 数据面接口清单：通栏，默认收起（收起时右上角仍写着里面有几条） -->
+        <section class="card">
+          <div class="fold-head">
+            <button class="fold-trigger" type="button" aria-expanded="false">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span class="minw-0">
+                <span class="section-title fold-sub">能调的接口</span>
+              </span>
+            </button>
+            <div class="row wrap row-gap-2">
+              <span class="chip">12 条</span>
+              <span class="chip">只读 3 条可试</span>
+            </div>
+          </div>
+        </section>
+
+        <!-- ④ 对比面板：会话内历史（刷新即清空），没有历史时整块不渲染 -->
+        <section class="card">
+          <div class="fold-head">
+            <button class="fold-trigger" type="button" aria-expanded="true">
+              <svg class="is-open" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <path d="m9 6 6 6-6 6" stroke-linecap="round" stroke-linejoin="round" />
+              </svg>
+              <span class="minw-0">
+                <span class="section-title fold-sub">对比面板</span>
+              </span>
+            </button>
+          </div>
+
+          <div class="fold-body">
+            <section>
+              <h3 class="mini-title">最近几次检索</h3>
+
+              <div class="history-cards">
+                <div class="history-card">
+                  <div class="row wrap history-head">
+                    <span class="strong t-12">第 1 次</span>
+                    <span class="muted t-12">2026-11-22 14:33:41</span>
+                  </div>
+                  <p class="history-meta"><span class="mono">hybrid</span> · top_k 3 · 3 条 · 退款申请提交后，一般几天能到账？需要准备哪些材料？</p>
+                  <div class="history-actions">
+                    <button class="btn btn--sm" type="button">钉为基准</button>
+                  </div>
+                </div>
+
+                <div class="history-card is-current">
+                  <div class="row wrap history-head">
+                    <span class="strong t-12">第 2 次</span>
+                    <span class="muted t-12">2026-11-22 14:41:07</span>
+                    <span class="badge badge--accent">当前</span>
+                  </div>
+                  <p class="history-meta"><span class="mono">hybrid</span> · top_k 5 · 3 条 · 退款申请提交后，一般几天能到账？需要准备哪些材料？</p>
+                  <div class="history-actions">
+                    <button class="btn btn--sm" type="button">钉为基准</button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="diff-sect">
+              <h3 class="t-14 strong ink">与第 1 次（2026-11-22 14:33:41）对比</h3>
+
+              <div class="table-wrap mt-3">
+                <table class="table table--nowrap">
+                  <colgroup>
+                    <col class="col-field" />
+                    <col class="col-side" />
+                    <col class="col-side" />
+                  </colgroup>
+                  <thead>
+                    <tr>
+                      <th>字段</th>
+                      <th>基准 · 第 1 次</th>
+                      <th>当前 · 第 2 次</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td>检索模式 <span class="kv-field">mode</span></td>
+                      <td class="mono">hybrid</td>
+                      <td class="mono">hybrid</td>
+                    </tr>
+                    <tr class="row-changed">
+                      <td>返回条数 <span class="kv-field">top_k</span></td>
+                      <td class="mono cell-before num">3</td>
+                      <td class="mono cell-after num">5</td>
+                    </tr>
+                    <tr class="row-changed">
+                      <td>重排 <span class="kv-field">tenant_policy.rerank</span></td>
+                      <td class="mono cell-before">false</td>
+                      <td class="mono cell-after">true</td>
+                    </tr>
+                    <tr>
+                      <td>被套餐裁掉的字段 <span class="kv-field">tenant_policy.clipped</span></td>
+                      <td class="mono">—</td>
+                      <td class="mono">—</td>
+                    </tr>
+                    <tr>
+                      <td>套餐 <span class="kv-field">tenant_policy.plan</span></td>
+                      <td class="mono">pro</td>
+                      <td class="mono">pro</td>
+                    </tr>
+                    <tr>
+                      <td>检索方式 <span class="kv-field">tenant_policy.mode</span></td>
+                      <td class="mono">hybrid</td>
+                      <td class="mono">hybrid</td>
+                    </tr>
+                    <tr class="row-changed">
+                      <td>返回条数 <span class="kv-field">tenant_policy.top_k</span></td>
+                      <td class="mono cell-before num">3</td>
+                      <td class="mono cell-after num">5</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+
+              <div class="diff-sub-head">
+                <h4 class="t-14 strong ink">召回结果的变化</h4>
+                <span class="t-12 muted">新增 1 · 消失 0 · 变化 1 · 其余 1 条一致</span>
+              </div>
+
+              <div class="mt-3">
+                <h5 class="diff-group">
+                  <span class="badge badge--accent">新增</span>
+                </h5>
+                <ul class="diff-list">
+                  <li>
+                    <span class="badge badge--neutral">第 3 名</span>
+                    <span class="ink">支付渠道对账说明</span>
+                    <span class="mono t-12 muted">分 0.5107</span>
+                    <span class="mono t-12 muted">6e0f7a2b</span>
+                    <span class="t-12 muted">库：<span class="mono">a6cf720a</span></span>
+                  </li>
+                </ul>
+              </div>
+
+              <div class="mt-3">
+                <h5 class="diff-group">
+                  <span class="badge badge--neutral">变化</span>
+                </h5>
+                <ul class="diff-list">
+                  <li class="diff-item">
+                    <div class="row wrap">
+                      <span class="ink">售后服务条款</span>
+                      <span class="mono t-12 muted">9f3c1a7e</span>
+                      <span class="t-12 muted">库：<span class="mono">a6cf720a</span></span>
+                    </div>
+
+                    <div class="table-wrap mt-2">
+                      <table class="table table--nowrap">
+                        <colgroup>
+                          <col class="col-field-4" />
+                          <col class="col-side-4" />
+                          <col class="col-dir" />
+                          <col class="col-side-4" />
+                        </colgroup>
+                        <thead>
+                          <tr>
+                            <th>字段</th>
+                            <th>基准</th>
+                            <th>方向</th>
+                            <th>当前</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          <tr>
+                            <td>综合排序分</td>
+                            <td class="mono cell-before num">0.7934</td>
+                            <td class="mono dir-up">↑</td>
+                            <td class="mono dir-up num">0.8421</td>
+                          </tr>
+                          <tr>
+                            <td>语义名次</td>
+                            <td class="mono cell-before">第 2 名</td>
+                            <td class="mono dir-up">↑</td>
+                            <td class="mono dir-up">第 1 名</td>
+                          </tr>
+                          <tr>
+                            <td>关键词名次</td>
+                            <td class="mono">第 4 名</td>
+                            <td class="mono dir-none">=</td>
+                            <td class="mono">第 4 名</td>
+                          </tr>
+                          <tr>
+                            <td>融合分</td>
+                            <td class="mono cell-before num">0.0287</td>
+                            <td class="mono dir-up">↑</td>
+                            <td class="mono dir-up num">0.0324</td>
+                          </tr>
+                          <tr>
+                            <td>结果位次</td>
+                            <td class="mono">第 1 名</td>
+                            <td class="mono dir-none">=</td>
+                            <td class="mono">第 1 名</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </section>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

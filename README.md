@@ -87,7 +87,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 - **两条通道**：向量（pgvector，`1 - 余弦距离`）与关键词（Elasticsearch 8.17.10 + IK 分词，BM25）并行召回。默认（改写关闭）每条通道只查**一次**、嵌入也只算一次；改写开启时向量一路按原句 / 改写句各查一次（#31，见下一条），但每次仍一次覆盖全部「知识库 + 索引版本」配对，**不按库循环**。
 - **融合契约**：`k=60` 服务端写死、不进请求体；唯一键 `(kb_id, chunk_id)`；同分顺序固定为 融合分降序 → 双路命中优先 → 最佳名次 → `kb_id` → `chunk_id`。完整契约见 [ADR-0010](docs/adr/0010-retrieval-contract.md)。
-- **查询优化与重排**：改写、同义词扩展、重排**默认关闭**，失败一律降级、不把整单打挂。改写开启时向量一路**原句 + 改写句都搜**（两句各嵌一次、各查一次，合成一个池再进 RRF；不再是「改写句替换原句」），关闭 / 改写失败时只搜原句；同义词只影响关键词那一路，重排仍看改写句——**两路拿不同的查询是设计，不是 bug**。
+- **查询优化与重排**：改写、重排**默认关闭**，失败一律降级、不把整单打挂。改写开启时**两路都搜「原句 + 改写句」**（向量各嵌一次、关键词各查一次，各自并成一个池再进 RRF；不再是「改写句替换原句」），关闭 / 改写失败时只搜原句；重排看**原句**（改写只负责召回）。第 15 步起**同义词扩展已下线**——词表靠人工维护，实测是帮倒忙的。
 - **模型接入**：大模型与嵌入走 LangChain（`fast` / `strong` 两个**模型角色**）；**检索层不引入框架**——召回、融合、重排编排、降级与响应契约全部自写，理由与可执行判据见 [ADR-0011](docs/adr/0011-langchain-boundary.md)。
 
 ### 三种结局，只有这三种
@@ -137,7 +137,7 @@ uv run pytest -q
 uv run uvicorn app.main:app --port 8000
 
 curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
-  -H "Authorization: Bearer rc_live_<你在 Key 管理页签发的>" \
+  -H "Authorization: Bearer rc_live_<key_id>.<32位hex>" \
   -H "Content-Type: application/json" \
   -d '{"kb_ids":["<你的 kb_id>"],"query":"设备证书过期怎么处理"}'
 ```
@@ -195,7 +195,7 @@ uv run uvicorn app.main:app --port 8000          # 改了 .env 之后要重启�
 
 # 建库本身不判白名单——白名单管的是「查哪些库」
 curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/knowledge-bases/create \
-  -H "Authorization: Bearer rc_live_<32位hex>" \
+  -H "Authorization: Bearer rc_live_<key_id>.<32位hex>" \
   -H "Content-Type: application/json" \
   -d '{"name":"Acme 手册","split_strategy":"size"}'
 
@@ -208,7 +208,7 @@ uv run python scripts/update_key_policy.py --policy-id <policy_id> --kb-id <kb_i
 
 ```bash
 curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
-  -H "Authorization: Bearer rc_live_<32位hex>" \
+  -H "Authorization: Bearer rc_live_<key_id>.<32位hex>" \
   -H "Content-Type: application/json" \
   -d '{"kb_ids":["<kb_id>"],"query":"设备证书过期怎么处理"}'
 ```
@@ -225,7 +225,7 @@ curl --noproxy '*' -sS -X POST http://127.0.0.1:8000/api/v1/rag/retrieve \
 
 ```bash
 curl --noproxy '*' -sS http://127.0.0.1:8000/api/v1/auth/me \
-  -H "Authorization: Bearer rc_live_<32位hex>"
+  -H "Authorization: Bearer rc_live_<key_id>.<32位hex>"
 ```
 
 返回 `{code, msg, data}`，`data` 三栏：`tenant`（`tenant_id` / `name`）、`plan`（`code` / `name` / 五个授权位 / 三本账六格额度 / 三项检索参数 / `max_top_k` / 四个规模上限）、`usage`（`used` / `limit` / `source`）。用量读的是与控制台 `/console/me` **同一个**租户级日桶，只读不扣：`RATE_LIMIT_ENABLED=true` 时 `source: "daily_counter"`；关着时 `used: null` + `source: "not_tracked"`——平台没在统计，报 0 会骗人。两扇 `/me` 的门**不合并**：这一扇只认 API Key，`/console/me` 只认会话 cookie。
@@ -251,6 +251,55 @@ curl --noproxy '*' -sS -b cookie.txt -X PATCH "http://127.0.0.1:8000/console/pla
 
 把某个授权位关掉之后，没那个位的 Key **下一次调用**就是 `20013`；把日额度改小，**下一次超限就是 `20014`**——不需要重启，也不需要等缓存过期。运维侧也可以 `uv run python scripts/change_tenant_plan.py --tenant-id tenant_acme --plan free`（它改的是租户的 `plan_id` 指针）。
 
+## 第 14 步：用量看板（已落地）
+
+一次请求一行的账（`usage_events`）+ 按天汇总（`usage_daily`），四个只读接口、四屏前端。
+口径写在 [ADR-0033](docs/adr/0033-usage-ledger-and-windows.md)，归属索引的第三次修订写在
+[ADR-0021](docs/adr/0021-observability-data-boundary.md)。
+
+### 四条接口（控制面，全部只读）
+
+| 路径 | 身份 | 说明 |
+| --- | --- | --- |
+| `GET /console/usage?window=&key_id=` | 租户 | 自己的用量；带 `key_id` 时先校验归属（不属于本租户就是 `20011`） |
+| `GET /console/admin/usage/site?window=` | 管理员 | 全站趋势 + 合计 + `alerts`（「需要看一眼」） |
+| `GET /console/admin/usage/tenants?window=&limit=` | 管理员 | 租户排名 |
+| `GET /console/admin/usage/tenants/{tenant_id}?window=` | 管理员 | 下钻到某个租户 |
+
+`window` 取 `1h` / `1d` / `7d` / `30d`（非法值收敛到 `1d`，不报 400）。响应里两个字段决定了页面怎么画：
+`source`（`events` 明细 / `daily` 日汇总）与 **`p95_source`**（`exact` / `histogram`——后者是 7 档直方图
+反解的近似值，误差约 13%，页面标题要写「近似」）。
+
+观测页同时多了三段式：
+
+```bash
+# 全部 / 只看成功 / 只看失败；降级率与空结果率只在 ok 那档有意义（响应的 rates_meaningful 会说这件事）
+curl --noproxy '*' -sS -b cookie.txt \
+  "http://127.0.0.1:8000/console/admin/observability/overview?hours=24&scope=failed"
+```
+
+### 三条口径（会反复被问）
+
+1. **成功率的分母只算「结局已知」的请求**。迁移之前的老行没有业务码，它们进「调用次数」、不进分母；
+   整窗都是老数据时成功率是 `null`，页面显示「未统计」——不是 `0%`。
+2. **日切是 UTC**（与配额窗口同一个口径），东八区意味着「一天从本地 08:00 开始」。
+3. **长窗的 P95 不能相加**：`usage_daily` 存 7 档延迟计数，查询时从桶反解分位；「把每天的 P95 再平均」
+   算出来的是「每天 P95 的中位数」，看起来像分位数但不是。
+
+### 两个运维脚本（不是定时任务）
+
+```bash
+uv run python scripts/rollup_usage_daily.py --days 3          # 按天汇总（幂等，先删后插）
+uv run python scripts/rollup_usage_daily.py --day 2026-11-23  # 补跑某一天
+uv run python scripts/purge_usage_events.py --keep-days 90    # 默认 dry-run
+uv run python scripts/purge_usage_events.py --apply           # 真删（明细 90 天 / 汇总 13 个月）
+```
+
+**顺序不能反**：先汇总、再删明细。反了等于把那一段从未汇总的历史直接丢掉。
+
+仓库没有调度器（没有 Celery beat），周期性作业一律由 `cron` / Windows 任务计划调这两个脚本。
+两条告警阈值在「检索参数」页里改（`USAGE_ALERT_QUOTA_PCT` 默认 80、`USAGE_ALERT_SUCCESS_DROP_PP` 默认 3），
+热生效、不需要重启。
 ## 运行与验证（离线）
 
 ```bash

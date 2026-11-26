@@ -2,7 +2,17 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!--
+      `viewport-fit=cover`：刘海屏上让内容铺到物理边缘，再用 env(safe-area-inset-*) 让开；
+      `interactive-widget=resizes-content`：键盘弹出时缩的是内容区而不是整页，输入框不会被顶走。
+    -->
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content"
+    />
+    <meta name="color-scheme" content="light dark" />
+    <!-- 浏览器自绘的界面（状态栏、地址栏）跟画布同色；theme.ts 在切换主题时会改写这条 -->
+    <meta name="theme-color" content="#e4e8ef" />
     <title>RAG-Core 调试台</title>
   </head>
   <body>

@@ -37,7 +37,7 @@ from app.core import passwords
 from app.core.config import settings
 from app.models.account import Account
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.models.tenant import Tenant
 from app.observability import emit_retrieval_trace, set_trace_sink
 from app.observability.jsonl_sink import JsonlTraceSink
@@ -174,8 +174,8 @@ def _account(
     )
 
 
-def _trace(log_id: str, tenant_id: str, *, latency_ms: int = 315) -> RetrievalTrace:
-    return RetrievalTrace(
+def _trace(log_id: str, tenant_id: str, *, latency_ms: int = 315) -> UsageEvent:
+    return UsageEvent(
         id=log_id,
         tenant_id=tenant_id,
         trace_id=trace_id_for(log_id),
@@ -204,7 +204,7 @@ def _world() -> dict[type, list[Any]]:
     }
 
 
-def _trace_rows() -> list[RetrievalTrace]:
+def _trace_rows() -> list[UsageEvent]:
     """归属索引里的两行：Alpha 与 Beta 各一条——跨租户用例要的是「行真的在，但不属于你」。"""
 
     return [
@@ -232,7 +232,7 @@ def console(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harnes
     monkeypatch.setattr(settings, "TRACE_SINK", "none")
 
     world = _world()
-    world[RetrievalTrace] = _trace_rows()
+    world[UsageEvent] = _trace_rows()
     # 登录（写会话行）、身份判定与归属校验都在**同一个假库**上（票 #130 起读写全在异步栈）。
     session = RecordingSession(rows=world)
     cache = MemoryPlanCache()

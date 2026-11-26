@@ -354,6 +354,7 @@ def test_an_unresolved_options_object_has_no_echo() -> None:
         top_k=5,
         fold_to_sections=True,
         expand_table_rows=True,
+        max_unit_chars=2000,
         rerank=False,
     )
 

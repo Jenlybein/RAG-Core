@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_SECTION_PART_MAX_CHARS,
     SPLIT_SIZE,
     SPLIT_STRUCTURE,
 )
@@ -34,6 +35,7 @@ def build_splitter(
     chunk_overlap: int | None = None,
     table_max_rows: int | None = None,
     document_id: str = "",
+    section_part_max_chars: int | None = None,
 ) -> TextSplitter:
     """按策略名构造切块器；未知策略回落到 ``structure``。
 
@@ -55,10 +57,17 @@ def build_splitter(
     )
 
     if strategy == SPLIT_SIZE:
+        # ``size`` 策略不认标题，也就没有「节」可切段——它按固定窗口切，片的粒度由
+        # ``chunk_size`` 决定，节段对它是无意义的旋钮（传了也不生效，不报错）。
         return WindowTextSplitter(chunk_size=chunk_size, chunk_overlap=overlap)
     return MarkdownStructuredSplitter(
         chunk_size=chunk_size,
         chunk_overlap=overlap,
         table_max_rows=max_rows,
         document_id=document_id,
+        section_part_max_chars=(
+            DEFAULT_SECTION_PART_MAX_CHARS
+            if section_part_max_chars is None
+            else section_part_max_chars
+        ),
     )

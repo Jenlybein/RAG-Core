@@ -16,25 +16,15 @@ const withHeader = computed(() => route.meta.layout !== 'blank')
 </script>
 
 <template>
-  <div class="relative min-h-screen bg-canvas">
-    <!--
-      顶部一层极淡的暖光：只是把「页面是一张纸」这件事说清楚，不给任何内容加对比度。
-      用 `absolute` 而不是 `fixed`——fixed 会跟着视口走，滚动时页面顶部一直被洗白，
-      看着像有东西在动；absolute 让它随内容一起滚走，只在页面顶端出现一次。
-    -->
-    <!--
-      顶部一层极淡的白色：苹果的页面是**纯平**的，没有渐变；这里只留一层几乎看不见的
-      提亮，让内容列与画布之间有一点呼吸。去掉原来那层暖色（#FDFCF8）——换到冷灰画布后
-      它会显出一块黄。
-    -->
-    <div
-      class="pointer-events-none absolute inset-x-0 top-0 h-72 bg-gradient-to-b from-white to-transparent opacity-70"
-      aria-hidden="true"
-    />
-
+  <!--
+    画布是**一整块平的中性灰**：不放渐变、不放彩色光晕。
+    层次全部由玻璃面自己给（半透明 + 模糊 + 亮边 + 两层投影），
+    背景一旦也带层次，两层就打架，看起来像没擦干净的屏幕。
+  -->
+  <div class="relative flex min-h-dvh flex-col bg-canvas">
     <AppHeader v-if="withHeader" />
 
-    <main class="relative mx-auto w-full max-w-page px-5 py-10 sm:px-8 sm:py-14">
+    <main class="relative mx-auto w-full max-w-page flex-1 px-5 pb-14 pt-8 sm:px-8 sm:pt-10">
       <RouterView />
     </main>
   </div>

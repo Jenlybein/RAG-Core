@@ -21,15 +21,19 @@ const props = defineProps<{
   errorMessage?: string | null
 }>()
 
-// 颜色来自 `00-facts.md` §10 / 前端约定「状态与颜色」，不引入第二套令牌。
-// 底色与文字色整体暖化一档：原来的 #D1FAE5 / #FEE2E2 是荧光色系的浅底，压在米白画布上
-// 像贴纸；换成偏灰的鼠尾草 / 陶土后，与卡片同一温度。四组对比度均 ≥4.5:1。
+// 颜色来自 `00-facts.md` §10 的语义配色，但**取 tokens.css 里的变量**：
+// 这套界面有深色主题，写死浅底徽章会在深色页上变成一块贴纸。
+// 四组对比度均 ≥4.5:1（浅色 / 深色各一套值）。
 const STATUS_STYLES: Record<number, StatusStyle> = {
-  1: { text: '成功', background: '#E4EDDD', color: '#3C5228' },
-  2: { text: '失败', background: '#F7E2DD', color: '#8C2F22' },
-  3: { text: '索引中', background: '#fff8e6', color: '#7a5b00' },
+  1: { text: '成功', background: 'rgb(var(--c-ok-bg))', color: 'rgb(var(--c-ok))' },
+  2: { text: '失败', background: 'rgb(var(--c-fail-bg))', color: 'rgb(var(--c-fail))' },
+  3: { text: '索引中', background: 'rgb(var(--c-indexing-bg))', color: 'rgb(var(--c-indexing))' },
 }
-const UNKNOWN_STYLE: StatusStyle = { text: '未知', background: '#F0ECE4', color: '#6B6558' }
+const UNKNOWN_STYLE: StatusStyle = {
+  text: '未知',
+  background: 'rgb(var(--c-unknown-bg))',
+  color: 'rgb(var(--c-unknown))',
+}
 
 const badgeStyle = computed(() => STATUS_STYLES[props.status] ?? UNKNOWN_STYLE)
 

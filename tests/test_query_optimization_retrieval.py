@@ -7,13 +7,16 @@
 
 本文件守的契约（父 spec「查询优化」「降级矩阵」、GLOSSARY「检索链路」）：
 
-* 混合模式：向量一路（含重排）拿 ``effective_query``，关键词一路拿 ``search_query``
-  ——两个替身各自记账，证明它们是**两个**查询而不是同一个；
-* 单模式也一致：``mode=vector`` 用 ``effective_query``，``mode=bm25`` 用 ``search_query``
-  （否则会出现「开了改写但 vector 模式没生效」这种意外）；
-* 改写失败：结果照常返回、``code=0``、``degraded=true``、原因固定 ``query rewrite failed``；
-* 词表来自**知识库的 settings**：多库合并、改词表下一次请求立即生效（不必重建索引）；
+* 混合模式：**两路拿同一组句子**（原句 + 改写句，第 15 步起对称）——两个替身各自记账，
+  证明它们收到的是同一对句子；
+* 单模式也一致：``mode=vector`` 与 ``mode=bm25`` 都逐句搜这一组（否则会出现「开了改写但
+  vector 模式只搜一句」这种意外）；
+* **重排拿原句**：改写只负责召回，不参与排序判据；
+* 改写失败：整单 ``50003``，不是 ``code=0`` 的降级结果；
 * **两个开关都关闭**时：两路都拿原句、一次模型都不调、响应与票 4 逐字段一致。
+
+第 15 步删掉了「词表来自知识库 settings」那一节（同义词扩展已下线）：
+``kb_settings`` 这个接缝还留着，但库里存着旧的 ``synonyms`` 也不会再被读取。
 """
 
 from __future__ import annotations
@@ -252,41 +255,45 @@ def _chunk_ids(body: dict) -> list[str]:
 # ─────────────────────────────────────────────── 混合模式：两路各拿自己的
 
 
-def test_hybrid_mode_feeds_each_channel_its_own_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    """向量一路（含重排）用 ``effective_query``，关键词一路用 ``search_query``。"""
+def test_hybrid_mode_feeds_both_channels_the_same_pair(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """**两路拿同一组句子**：向量与关键词都搜「原句 + 改写句」（第 15 步）。
+
+    第 15 步之前这里是「向量两句、关键词第三句（同义词扩展后的改写句）」，
+    所以旧断言里那句 ``!=``「两路拿不同的查询是设计」现在正好反过来。
+    """
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
 
     llm = _SchemaAwareLLM(rewritten="退款的处理流程")
-    kb_settings = {
-        KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]},
-    }
 
-    with _offline_client(monkeypatch, kb_settings=kb_settings, llm=llm) as fake:
+    with _offline_client(monkeypatch, llm=llm) as fake:
         body = _post(fake["client"], path=REWRITE_PATH)
 
     assert body["code"] == 0
-    # #31：改写开启是「原句 + 改写句都搜」而不是替换；顺序固定为 raw → effective。
-    # 旧断言钉的是替换语义（只有改写句），这里改成两句是收紧而非放宽。
+    # 改写开启是「原句 + 改写句都搜」而不是替换；顺序固定为 raw → rewritten。
     assert fake["embedding"].queries == ["退钱怎么弄", "退款的处理流程"]
-    assert fake["keyword"].queries == ["退款的处理流程 退款流程"], "关键词一路拿扩展后的句子"
-    assert fake["embedding"].queries != fake["keyword"].queries, "两路拿不同的查询是设计"
+    assert fake["keyword"].queries == ["退钱怎么弄", "退款的处理流程"], "关键词一路也搜这两句"
+    assert fake["embedding"].queries == fake["keyword"].queries, "两路对用句的看法必须一致"
     assert _retrieval_metadata(body)["degraded"] is False
     # 响应里的 query 仍是**原话**：调用方看到的是自己问的那句。
     assert body["data"]["query"] == "退钱怎么弄"
-    # #31：实际检索用句也留档——没有它，「这题为什么变差」无法归因。
+    # 实际检索用句也留档——没有它，「这题为什么变差」无法归因。
     optimization = _retrieval_metadata(body)["query_optimization"]
     assert optimization["rewrite_applied"] is True
     assert optimization["effective_query"] == "退款的处理流程"
-    assert optimization["vector_queries"] == ["退钱怎么弄", "退款的处理流程"]
+    assert optimization["recall_queries"] == ["退钱怎么弄", "退款的处理流程"]
 
 
-def test_rerank_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    """重排属于「语义那一侧」：它看到的也必须是 ``effective_query``。"""
+def test_rerank_uses_the_raw_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    """重排与改写无关：它看到的是**原句**（改写只负责召回）。
+
+    这是第 15 步有意改掉的口径：改写是为了「换一种说法去捞切片」，不是「替用户重新
+    表述问题」。让重排按改写句排序，等于让一次字面改写去影响语义排序的判据。
+    """
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
     # #116 起能力 = 开关 ∧ 端点配齐：只拨开关等于「说要重排但没接上端点」。
     monkeypatch.setattr(settings, "RERANK_ENABLED", True)
     monkeypatch.setattr(settings, "RERANK_BASE_URL", "https://rerank.example/v1")
@@ -294,17 +301,13 @@ def test_rerank_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> Non
 
     llm = _SchemaAwareLLM(rewritten="退款的处理流程")
 
-    with _offline_client(
-        monkeypatch,
-        kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
-        llm=llm,
-    ) as fake:
+    with _offline_client(monkeypatch, llm=llm) as fake:
         _post(fake["client"], path=REWRITE_PATH)
 
     assert llm.schemas[:2] == ["QueryRewrite", "RerankRanking"], "先改写、后重排"
     assert llm.rerank_prompts, "重排真的调用了模型"
-    assert "退款的处理流程" in llm.rerank_prompts[0], "重排看到的是改写后的句子"
-    assert "退款流程" not in llm.rerank_prompts[0], "同义词扩展只喂关键词一路"
+    assert "退钱怎么弄" in llm.rerank_prompts[0], "重排看到的是原句"
+    assert "退款的处理流程" not in llm.rerank_prompts[0], "改写句只去召回，不进重排"
 
 
 # ─────────────────────────────────── 第 13 步：改写模型失败即整单 50003
@@ -320,7 +323,6 @@ def test_a_failed_rewrite_is_a_50003_and_touches_no_channel(
 
     with _offline_client(
         monkeypatch,
-        kb_settings={KB_A: {"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}},
         llm=llm,
     ) as fake:
         body = _post(fake["client"], path=REWRITE_PATH)
@@ -353,19 +355,14 @@ def test_a_failed_rewrite_happens_before_any_channel_failure(
 # ─────────────────────────────────────────────── 单模式：各自生效
 
 
-def test_vector_mode_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``mode=vector`` 用 ``effective_query``：开了改写必须在这条路上也生效。"""
+def test_vector_mode_searches_both_sentences(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``mode=vector`` 同样逐句搜这两句：单模式不是「只搜改写句」的例外。"""
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
 
     llm = _SchemaAwareLLM(rewritten="退款的处理流程")
 
-    with _offline_client(
-        monkeypatch,
-        kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
-        llm=llm,
-    ) as fake:
+    with _offline_client(monkeypatch, llm=llm) as fake:
         body = _post(fake["client"], path=REWRITE_PATH, mode="vector")
 
     assert body["code"] == 0
@@ -374,62 +371,19 @@ def test_vector_mode_uses_the_effective_query(monkeypatch: pytest.MonkeyPatch) -
     assert fake["keyword"].queries == [], "单模式不碰另一路"
 
 
-def test_bm25_mode_uses_the_search_query(monkeypatch: pytest.MonkeyPatch) -> None:
-    """``mode=bm25`` 用 ``search_query``：同义词扩展必须在这条路上生效。"""
+def test_bm25_mode_searches_both_sentences(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``mode=bm25`` 逐句搜这两句：字面那一路的并集在单模式下也要成立。"""
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", True)
 
     llm = _SchemaAwareLLM(rewritten="退款的处理流程")
 
-    with _offline_client(
-        monkeypatch,
-        kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
-        llm=llm,
-    ) as fake:
+    with _offline_client(monkeypatch, llm=llm) as fake:
         body = _post(fake["client"], path=REWRITE_PATH, mode="bm25")
 
     assert body["code"] == 0
-    assert fake["keyword"].queries == ["退款的处理流程 退款流程"]
+    assert fake["keyword"].queries == ["退钱怎么弄", "退款的处理流程"]
     assert fake["embedding"].queries == [], "单模式不碰另一路"
-
-
-# ───────────────────────────────── 词表是库级配置：多库合并、改完立即生效
-
-
-def test_synonym_tables_of_all_involved_knowledge_bases_are_merged() -> None:
-    """多库检索合并本次涉及的库的词表；不相干的库（不在本次请求里）不参与。
-
-    第 13 步起这是纯函数缝（``collect_synonym_groups`` + ``expand_synonyms``）：
-    `/rag/rewrite` 的关键词一路吃的就是这一份结果，与端点装配无关。
-    """
-
-    from app.services.query.synonyms import collect_synonym_groups, expand_synonyms
-
-    tables = [
-        {"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]},
-        {"synonyms": [{"terms": ["发票"], "expand": ["开票"]}]},
-    ]
-    groups = collect_synonym_groups(tables)
-
-    search_query = expand_synonyms("退钱和发票", groups)
-
-    assert search_query == "退钱和发票 退款 开票"
-    assert "不该出现" not in search_query
-
-
-def test_synonym_table_edit_takes_effect_on_the_next_request() -> None:
-    """改词表下一次请求立即生效——它每次请求都从 settings 读，不落任何索引。"""
-
-    from app.services.query.synonyms import collect_synonym_groups, expand_synonyms
-
-    first = collect_synonym_groups([{"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}])
-    second = collect_synonym_groups(
-        [{"synonyms": [{"terms": ["退钱"], "expand": ["退款", "售后"]}]}]
-    )
-
-    assert expand_synonyms("退钱怎么弄", first) == "退钱怎么弄 退款"
-    assert expand_synonyms("退钱怎么弄", second) == "退钱怎么弄 退款 售后"
 
 
 # ─────────────────────────────────────────── 两个开关都关闭：与票 4 一致
@@ -441,17 +395,14 @@ def test_both_switches_off_keeps_the_raw_query_on_both_channels(
     """回归红线：两路都拿原句、一次模型都不调、``degraded=false``。"""
 
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
 
     async def _forbidden(_role: str = "fast") -> LLMProvider:  # pragma: no cover
         raise AssertionError("两个开关都关时不许装配大模型")
 
     monkeypatch.setattr("app.providers.llm.get_llm_provider", _forbidden)
 
-    # 库里配了词表也不该扩展：开关关着就是「没有这一步」。
-    with _offline_client(
-        monkeypatch, kb_settings={KB_A: {"synonyms": [{"terms": ["退钱"], "expand": ["退款"]}]}}
-    ) as fake:
+    # 库里就算还留着旧的 synonyms 配置也不该扩展：这一路已经不存在了。
+    with _offline_client(monkeypatch) as fake:
         body = _post(fake["client"])
 
     assert fake["embedding"].queries == ["退钱怎么弄"]

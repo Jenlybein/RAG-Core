@@ -31,21 +31,21 @@
 * **可见性预校验**：``retrieve`` 在进入任何分支之前把 ``kb_ids`` 逐个校验一遍
   （N 个库 = N 次查询，票 5 之前是两条通道各查一遍 = 2N 次）。拒绝（20008）先于
   召回发生，且不参与降级。它返回的**库行**顺着往下传：票 6 要用它们的 ``settings``
-  （同义词表）与名称 / 描述（改写提示），再查一次库就等于每库两次。
-* **查询加工在召回之前**（票 6 / #31，第 13 步改由端点决定）：``vector_queries`` 给
-  向量一路逐句召回（改写端点 = 原句 + 改写句，直接检索 = 只有原句），
-  ``effective_query`` 给重排，``search_query`` 给关键词一路。直接检索是恒等变换。
-  三条查询串**原样交给内核**（它不再加工一遍）。
-* ``vector`` 按 ``vector_queries`` 逐句 ``embed_query``、逐句一次范围召回覆盖全部
+  （第 15 步后不再有用，但库行仍要留下来给名称 / 描述做改写提示）与名称 / 描述（改写提示），
+  再查一次库就等于每库两次。
+* **查询加工在召回之前**（票 6 / #31，第 13 步改由端点决定）：``recall_queries``
+  给**两路**逐句召回（改写端点 = 原句 + 改写句，直接检索 = 只有原句），重排拿**原句**。
+  直接检索是恒等变换。这一组句子**原样交给内核**（它不再加工一遍）。
+* ``vector`` 按 ``recall_queries`` 逐句 ``embed_query``、逐句一次范围召回覆盖全部
   「库 + 版本」配对，并成一个池后按分数排序截到 ``top_k``；关闭改写时只有一句，
   调用次数、顺序与 ``score`` 口径全部与票 4 逐字节一致（回归红线）。
 * ``bm25`` 只走关键词一路：不向量化、不查向量库，``index_versions`` 是
   「kb_id → 索引版本」的映射（配对关系只能来自映射，不能是两个平行数组）。
 * ``hybrid`` 两路并行召回，RRF 融合（融合与降级判定在
   ``app/services/retrieval/``，本模块只负责把结果翻译成响应契约）。
-* **多库是每个查询一次全局召回**：关键词一路查一次；向量一路按 ``vector_queries``
-  逐句各查一次再并成一个池（#31），嵌入次数 = 句子数——分库各召回一批再合并是
-  假均衡，不相关的库也各占名额。
+* **多库是每个查询一次全局召回**：两路都按 ``recall_queries`` 逐句各查一次再并成一个池
+  （第 15 步起对称），嵌入 / 查询次数 = 句子数——分库各召回一批再合并是假均衡，
+  不相关的库也各占名额。
 * **「某库没有切片进入结果」不是失败**：不记 ``failed_kb_ids``，也不按结果条数
   推断某个库出了事；结果只按实际命中呈现。
 * **单模式不降级**：关键词引擎没配或调用失败一律 ``RETRIEVAL_FAILED``（50002），
@@ -124,7 +124,6 @@ from app.repositories import chunk_repository
 from app.services import result_collapse
 from app.services.knowledge_base_access import ensure_visible
 from app.services.query.optimizer import direct_query, optimize_for_rewrite
-from app.services.query.synonyms import collect_synonym_groups
 from app.services.retrieval.kernel import retrieve_kernel
 from app.services.retrieval_options import (
     MODE_BM25,
@@ -134,6 +133,7 @@ from app.services.retrieval_options import (
     tenant_policy_echo,
 )
 from app.services.retrieval_trace import record_retrieval_trace
+from app.services.usage_meter import current_key_id, current_meter_counts
 from app.services.trace_identity import (
     delivered_chunk_ids,
     delivered_doc_versions,
@@ -159,6 +159,7 @@ async def retrieve(
     query_variant: Literal["direct", "rewrite"] = "direct",
     stage_timer: StageTimer | None = None,
     rerank_factory: Callable[[], Awaitable[object]] | None = None,
+    write_trace: bool = True,
 ) -> dict:
     """按 ``options.mode`` 走一条通道（或并行两路）。
 
@@ -226,9 +227,7 @@ async def retrieve(
     # 顺手把这几个库的**行**留下来：票 6 起要用它们的 ``settings``（同义词表）与
     # 名称 / 描述（改写提示）。``ensure_visible`` 本来就把整行查出来了，丢掉它再去
     # 查一次库，就把「每库一次」变成「每库两次」。
-    visible_kbs = [
-        await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids
-    ]
+    visible_kbs = [await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
 
     # 查询加工由**端点**决定：direct 是恒等变换（零模型调用），rewrite 才做一次改写。
     # 这条分支不再读密钥配置里的改写开关——「这次用多好」由调用方选 URL 表达。
@@ -236,10 +235,6 @@ async def retrieve(
         if query_variant == "rewrite":
             optimized = await optimize_for_rewrite(
                 query=query,
-                # 词表是**库级配置**：只合并本次涉及的库，不跨库、不跨租户。
-                synonym_groups=collect_synonym_groups(
-                    [getattr(kb, "settings", None) for kb in visible_kbs]
-                ),
                 rewrite_hint=_rewrite_hint(visible_kbs),
             )
         else:
@@ -261,11 +256,10 @@ async def retrieve(
         index_versions=index_versions,
         query=query,
         mode=resolved_mode,
-        # 内核拿三条查询串：向量一路逐句都搜（改写成功时原句 + 改写句），重排看
-        # effective_query，关键词一路拿扩展后的句子（#31）。
-        vector_queries=optimized.vector_queries,
-        rerank_query=optimized.effective_query,
-        keyword_query=optimized.search_query,
+        # 内核拿一组召回用句（原句 + 改写句，**两路都逐句搜**，第 15 步起对称），
+        # 外加重排那一句。重排看的是**原句**：重排与改写无关（改写只影响召回）。
+        recall_queries=optimized.recall_queries,
+        rerank_query=query,
         top_k=resolved_top_k,
         recall_top_k=recall_top_k,
         # 「召回宽、返回窄、融合池更宽」：两个深度只在这里读配置，内核不碰 settings。
@@ -281,6 +275,7 @@ async def retrieve(
         # 形状偏好读同一个 ``options``：它们是**这次调用的参数**，不是内核的可选开关。
         fold_to_sections=options.fold_to_sections,
         expand_table_rows=options.expand_table_rows,
+            max_unit_chars=options.max_unit_chars,
         # 收集器显式传进去：内核在召回 / 融合 / 重排 / 折叠四处记，段名与上面的常量同源。
         stage_timer=timer,
         # 工厂以对象传入：测试替换工厂的位置因此仍只有一处（既有 monkeypatch 接缝）。
@@ -315,12 +310,16 @@ async def retrieve(
         # 查询加工的**实际用句**（#31）：不记录它，评测里就分不清「名次变了是因为
         # 检索不行，还是因为改写把问题改坏了」——q16 的退化当年正是因此无法归因。
         #
+        # 两栏分工（第 15 步）：``recall_queries`` 是**两路召回都搜的那一组**
+        # （原句 + 改写句）；``effective_query`` 只供归因——重排用的是原句，
+        # 它内部已经没有消费者了，但「这次改写说了什么」只有它答得出。
+        #
         # 只在改写**真的发生**时（即 /rag/rewrite）才加这一栏：/rag/retrieve 是恒等
         # 变换，加进去会让「原句直查逐字节不变」那条回归红线失效，且没有信息增量。
         retrieval_meta["query_optimization"] = {
             "rewrite_applied": True,
             "effective_query": optimized.effective_query,
-            "vector_queries": list(optimized.vector_queries),
+            "recall_queries": list(optimized.recall_queries),
         }
 
     metadata = _metadata_of(
@@ -353,31 +352,58 @@ async def retrieve(
         },
     )
 
-    # 归属索引的写入是**旁路**（ADR-0021 决策 2）：独立短事务、失败只留 warning。
+    # 归属索引 + 用量的写入是**旁路**（ADR-0021 决策 2）：独立短事务、失败只留 warning。
     # 放在这里而不是更早，是因为它要记「这次检索的结局」——降级原因与空结果原因在上一行
     # 才最终成形；而 ``trace_id`` 早在函数开头就派生好了，所以这次写入失败不影响响应。
-    await record_retrieval_trace(
-        log_id=log_id,
-        trace_id=trace_id,
-        tenant_id=tenant_id,
-        kb_ids=list(kb_ids),
-        # 「这次查的是哪次构建」（ADR-0025 决策六）：与本次范围**同一份映射**，
-        # 不是另算一遍。版本一旦会变，同一个 ``kb_ids + query`` 两次调用的差异
-        # 就只剩这一列能归因——切法变了？文档变了？还是召回抖了？
-        index_versions=dict(index_versions),
-        # 「这次命中的是哪几稿」（#179）：与上面那份交付单元**同一份映射**
-        # （``document_id → doc_version``），值来自 ``chunks.doc_version`` 列（#174）。
-        # 片会被保留策略物理删掉（#178），删掉之后 ``chunk_ids`` 只是一串 id——
-        # 「那次查的是第几稿」只剩这一列能答。
-        doc_versions=delivered_doc_versions(collapsed),
-        chunk_ids=delivered_chunk_ids(collapsed),
-        top_k=resolved_top_k,
-        latency_ms=int((time.perf_counter() - started_at) * 1000),
-        # 两个原因都从本次响应的那一层取，不另算一遍：库里那一行与回给调用方的响应
-        # 对同一件事必须只有一个答案。
-        degraded_reason=degraded_reason,
-        empty_reason=empty_reason,
-    )
+    #
+    # 第 14 步（#200）起这一行同时是**账**：``endpoint`` / ``code`` / 三本账随行写下去。
+    # ``write_trace=False`` 是给 **decompose** 用的：它一次请求跑 N 次内核，只有外层那次
+    # 「合并之后」的行才算一次调用——否则一次分解检索会在账上变成 N 行。
+    if write_trace:
+        rerank_meta = retrieval_meta.get("rerank") or {}
+        rerank_applied = bool(rerank_meta.get("applied") if isinstance(rerank_meta, dict) else None)
+        # 三本账**优先取门禁扣账那一刻记下的数字**（``meter_tally``）：那才是「额度被扣了几次」。
+        # 只有没过门禁的路径（内部评测的召回、Research 的子检索）上下文里没有 tally，
+        # 才回落到按「这次用了哪些能力」推一遍——推断只在没有真相的时候用。
+        tally = current_meter_counts()
+        if tally is not None:
+            meter_r, meter_rr, meter_llm = tally
+        else:
+            meter_r, meter_rr, meter_llm = (
+                1,
+                1 if rerank_applied else 0,
+                # 改写这条路真的调了一次模型（``/rag/retrieve`` 是恒等变换，不记）。
+                1 if query_variant == "rewrite" else 0,
+            )
+        await record_retrieval_trace(
+            log_id=log_id,
+            trace_id=trace_id,
+            tenant_id=tenant_id,
+            # 「是哪把 Key」来自上下文（门禁放进去的），不是参数：检索的接口不该为写账多长一个字段。
+            key_id=current_key_id(),
+            endpoint="rewrite" if query_variant == "rewrite" else "retrieve",
+            code=0,
+            meter_r=meter_r,
+            meter_rr=meter_rr,
+            meter_llm=meter_llm,
+            kb_ids=list(kb_ids),
+            # 「这次查的是哪次构建」（ADR-0025 决策六）：与本次范围**同一份映射**，
+            # 不是另算一遍。版本一旦会变，同一个 ``kb_ids + query`` 两次调用的差异
+            # 就只剩这一列能归因——切法变了？文档变了？还是召回抖了？
+            index_versions=dict(index_versions),
+            # 「这次命中的是哪几稿」（#179）：与上面那份交付单元**同一份映射**
+            # （``document_id → doc_version``），值来自 ``chunks.doc_version`` 列（#174）。
+            # 片会被保留策略物理删掉（#178），删掉之后 ``chunk_ids`` 只是一串 id——
+            # 「那次查的是第几稿」只剩这一列能答。
+            doc_versions=delivered_doc_versions(collapsed),
+            chunk_ids=delivered_chunk_ids(collapsed),
+            top_k=resolved_top_k,
+            latency_ms=int((time.perf_counter() - started_at) * 1000),
+            # 两个原因都从本次响应的那一层取，不另算一遍：库里那一行与回给调用方的响应
+            # 对同一件事必须只有一个答案。
+            degraded_reason=degraded_reason,
+            empty_reason=empty_reason,
+        )
 
     return {
         "query": query,

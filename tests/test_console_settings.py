@@ -617,3 +617,16 @@ def test_the_migration_chains_onto_the_previous_head() -> None:
     assert revision is not None and re.fullmatch(r"[0-9a-f]{12}", revision.group(1))
     assert down is not None and down.group(1) == "d4b7e2c5a890"
     assert path.name == f"{revision.group(1)}_create_runtime_settings.py"
+
+
+def test_the_rate_limit_switch_defaults_to_on() -> None:
+    """``RATE_LIMIT_ENABLED`` 的**字段默认值**是开（#208）。
+
+    查的是类上的默认值而不是 ``settings`` 实例：套件在 conftest 里把环境变量写成 false
+    （离线前提），实例读到的必然是 false——那正是本用例想绕开的那层。这里要钉的是
+    「一个全新部署、什么都不配，会发生什么」：以前是无限额度，现在是限流生效。
+    """
+
+    from app.core.config import Settings
+
+    assert Settings.model_fields["RATE_LIMIT_ENABLED"].default is True

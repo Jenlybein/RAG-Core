@@ -20,6 +20,11 @@ export const KB_CHUNK_SIZE_MIN = 200
 export const KB_CHUNK_SIZE_MAX = 2000
 export const KB_CHUNK_SIZE_DEFAULT = 512
 
+/** 节段阈值范围与默认值（单位字符，第 16 步 #207）。与后端 `knowledge_base.py` 同源。 */
+export const KB_SECTION_PART_MIN = 500
+export const KB_SECTION_PART_MAX = 10000
+export const KB_SECTION_PART_DEFAULT = 2000
+
 /** `POST /knowledge-bases/create` 的请求体；后端 `extra=forbid`，不能多传字段。 */
 export interface CreateKnowledgeBaseRequest {
   name: string
@@ -27,6 +32,8 @@ export interface CreateKnowledgeBaseRequest {
   split_strategy: KbSplitStrategy
   allowed_formats?: KbFormat[]
   chunk_size?: number
+  /** 节段阈值：可选，缺省 2000。 */
+  section_part_max_chars?: number
 }
 
 /** 建库回执：`kb_id` 就是要回填到上传表单的那个值。 */
@@ -37,7 +44,48 @@ export interface CreatedKnowledgeBase {
   split_strategy: string
   allowed_formats: string[]
   chunk_size: number
+  section_part_max_chars: number
   created_at: string
+}
+
+/** `PATCH /console/knowledge-bases/{kb_id}/settings` 的请求体。 */
+export interface UpdateKbSettingsRequest {
+  name?: string
+  description?: string
+  split_strategy?: KbSplitStrategy
+  chunk_size?: number
+  section_part_max_chars?: number
+  /** 显式二次确认：这次改动会触发整库重建。后端缺它即 20002。 */
+  confirm: boolean
+}
+
+/** 改设置的回执：新设置 + 这次重建的版本。 */
+export interface UpdateKbSettingsReceipt {
+  kb_id: string
+  name: string
+  split_strategy: string
+  allowed_formats: string[]
+  chunk_size: number
+  section_part_max_chars: number
+  build_id: string
+  build_version: string
+}
+
+/** 确认弹窗读的那份事实（`GET .../settings/preview`）。 */
+export interface KbSettingsPreview {
+  kb_id: string
+  name: string
+  split_strategy: string
+  allowed_formats: string[]
+  chunk_size: number
+  section_part_max_chars: number
+  /** 生效那一版的构建参数；`null` = 老版本没留参数。 */
+  live_params: Record<string, unknown> | null
+  live_version: string | null
+  needs_rebuild: boolean
+  build_running: boolean
+  documents_to_rebuild: number
+  chunks_to_rebuild: number
 }
 
 /** `DELETE /console/knowledge-bases/{kb_id}` 的回执；只对空库成功（库内有文档是 20015）。 */
@@ -62,6 +110,10 @@ export interface KnowledgeBaseNode {
   split_strategy: string
   allowed_formats: string[]
   chunk_size: number
+  /** 节段阈值（第 16 步 #207）：超过就在片边界把一节切成几段。改它必须重建索引。 */
+  section_part_max_chars: number
+  /** 库当前设置与生效那一版的构建参数已不一致 → 这个库需要重建才生效。 */
+  needs_rebuild: boolean
   documents: DocumentListItem[]
 }
 
@@ -80,9 +132,15 @@ export type ConsoleTreeDocument = Omit<DocumentListItem, 'error_message'> & {
   error_message?: string | null
 }
 
-export type ConsoleTreeKnowledgeBase = Omit<KnowledgeBaseNode, 'allowed_formats' | 'documents'> & {
+export type ConsoleTreeKnowledgeBase = Omit<
+  KnowledgeBaseNode,
+  'allowed_formats' | 'documents' | 'section_part_max_chars' | 'needs_rebuild'
+> & {
   allowed_formats?: string[]
   documents?: ConsoleTreeDocument[]
+  /** 第 16 步 #207：老缓存 / 半截负载可能没有这两项，映射层给安全默认。 */
+  section_part_max_chars?: number
+  needs_rebuild?: boolean
 }
 
 export interface ConsoleTreeData {

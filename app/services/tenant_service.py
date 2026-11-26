@@ -138,6 +138,6 @@ def _default_policy(*, tenant_id: str, plan: Plan, kb_ids: Sequence[str]) -> Key
         retrieval_mode="vector",
         retrieval_top_k=5,
         retrieval_rerank=False,
-        include_parent=True,
+        include_parent=True, max_unit_chars=2000,
         expand_table_rows=True,
     )

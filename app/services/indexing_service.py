@@ -236,11 +236,16 @@ class IndexingService:
                 else SPLIT_STRUCTURE
             )
             return self._splitter, injected
-        strategy, chunk_size = await knowledge_base_repository.get_split_config(
-            db, doc.kb_id, tenant_id=doc.tenant_id
+        strategy, chunk_size, section_part_max_chars = (
+            await knowledge_base_repository.get_split_config(
+                db, doc.kb_id, tenant_id=doc.tenant_id
+            )
         )
         splitter = build_splitter(
-            strategy, chunk_size=chunk_size, document_id=str(doc.id)
+            strategy,
+            chunk_size=chunk_size,
+            document_id=str(doc.id),
+            section_part_max_chars=section_part_max_chars,
         )
         return splitter, strategy
 

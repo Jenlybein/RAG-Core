@@ -25,7 +25,7 @@ documents.current_version`` 由 :func:`app.models.chunk.current_draft_filter` �
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from sqlalchemy import Integer, Select, delete, func, or_, select
+from sqlalchemy import Integer, Select, and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -97,24 +97,34 @@ def _unit_rows_statement(
     *,
     tenant_id: str,
     document_ids: list[str],
-    unit_paths: list[str],
+    units: Sequence[tuple[str, int]],
     index_version: str | None,
-) -> Select[tuple[str, str, int, str, str, str, int]]:
-    """折叠取整节：按 h2 级章节路径取该单元下的全部切片。
+) -> Select[tuple[str, str, int, int, str, str, str, int]]:
+    """折叠取一节段：按 h2 级章节路径**加节段号**取该单元下的全部切片。
 
     **只取当前稿的行**（#174）：漏掉这条条件的症状最隐蔽——命中片是当前稿的，折出来的
     整节却拼上了旧稿的句子，「一半旧稿一半新稿」，而结果看起来完全正常。
+
+    节段号取自 ``metadata``（JSONB），缺省按 0 处理：老索引里没有这个键，那里的一整节
+    就是第 0 段——与切段之前的取数范围逐行相同。
     """
 
     heading = Chunk.meta["heading_path"].astext
+    # ``coalesce(section_part, 0)``：老行没有这个键，它们属于第 0 段。
+    section_part = func.coalesce(
+        Chunk.meta["section_part"].astext.cast(Integer), 0
+    )
     clauses = []
-    for path in unit_paths:
-        clauses.append(heading == path)
-        clauses.append(heading.like(f"{path} > %"))
+    for path, part in units:
+        path_clause = or_(heading == path, heading.like(f"{path} > %"))
+        # 每个单元是「路径 AND 节段号」，单元之间 OR：否则 A 的第 1 段会把 B 的第 0 段
+        # 也一并取回来，折出来的正文就是两节的混合体。
+        clauses.append(and_(path_clause, section_part == part))
     stmt = _join_documents(
         select(
             Chunk.document_id,
             heading,
+            section_part.label("section_part"),
             Chunk.meta["chunk_index"].astext.cast(Integer),
             Chunk.content,
             Chunk.id,
@@ -137,10 +147,16 @@ def _unit_rows_statement(
 
 def _group_unit_rows(
     rows: Iterable[Sequence[Any]],
-) -> dict[tuple[str, str], list[tuple[int, str, str, str, int]]]:
-    grouped: dict[tuple[str, str], list[tuple[int, str, str, str, int]]] = {}
-    for document_id, path, index, content, chunk_id, chunk_type, table_part in rows:
-        grouped.setdefault((str(document_id), str(path)), []).append(
+) -> dict[tuple[str, str, int], list[tuple[int, str, str, str, int]]]:
+    """按 ``(文档, 单元路径, 节段号)`` 归组。
+
+    节段号进键（第 16 步 #207）：一个超长 h2 在索引期被切成若干段，段与段是不同的节；
+    只按路径归组会把整节的片又拼回来，正是这次要消灭的「上万字」。
+    """
+
+    grouped: dict[tuple[str, str, int], list[tuple[int, str, str, str, int]]] = {}
+    for document_id, path, section_part, index, content, chunk_id, chunk_type, table_part in rows:
+        grouped.setdefault((str(document_id), str(path), int(section_part or 0)), []).append(
             (
                 int(index or 0),
                 str(content),
@@ -157,17 +173,20 @@ async def fetch_unit_rows(
     *,
     tenant_id: str,
     document_ids: list[str],
-    unit_paths: list[str],
+    units: Sequence[tuple[str, int]],
     index_version: str | None = None,
-) -> dict[tuple[str, str], list[tuple[int, str, str, str, int]]]:
-    """:func:`fetch_unit_rows` 的异步面（检索链路，第 11 步票 #127）。"""
+) -> dict[tuple[str, str, int], list[tuple[int, str, str, str, int]]]:
+    """:func:`fetch_unit_rows` 的异步面（检索链路，第 11 步票 #127）。
 
-    if not document_ids or not unit_paths:
+    ``units`` 是 ``(单元路径, 节段号)`` 的列表——不是裸路径，理由见 :func:`_group_unit_rows`。
+    """
+
+    if not document_ids or not units:
         return {}
     stmt = _unit_rows_statement(
         tenant_id=tenant_id,
         document_ids=document_ids,
-        unit_paths=unit_paths,
+        units=units,
         index_version=index_version,
     )
     return _group_unit_rows(list((await db.execute(stmt)).all()))

@@ -38,7 +38,6 @@ import { errorText } from '../../utils/errorText'
 import {
   MODEL_VENDORS,
   referencedRolesOf,
-  roleHint,
   roleOptions,
   vendorLabel,
 } from '../../utils/modelsPage'
@@ -333,7 +332,7 @@ async function refresh(): Promise<void> {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="模型配置" subtitle="平台级：用哪家模型、哪个端点、哪把 Key。">
+    <PageHeader title="模型配置">
       <template #actions>
         <span v-if="configs.length > 0" class="text-sm text-muted">
           {{ configs.length }} 条
@@ -363,11 +362,6 @@ async function refresh(): Promise<void> {
       -->
       <div v-if="configs.length === 0" class="py-10 text-center">
         <p class="text-[15px] font-semibold text-ink">还没有模型配置</p>
-        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-          没有配置时运行时回落到
-          <span class="font-mono">.env</span>
-          的单供应商（离线 / CI 的行为不变）。新增一条之后，下面的「模型角色」就能指向它。
-        </p>
         <el-button type="primary" class="!mt-5" @click="openCreate">新增模型配置</el-button>
       </div>
 
@@ -432,20 +426,11 @@ async function refresh(): Promise<void> {
       </table>
     </div>
 
-    <!--
-      角色指向区。三处收拢：
-      - 保存按钮只在有改动时出现（常驻的灰色禁用按钮不传达任何信息）；
-      - 角色标题拆成「名字 + 半句解释」两行，两个角色并排时才读得出这是两档；
-      - 三句提示（键名、只能选不指向、已与服务器一致）合并成一条，按当前状态只显示相关的那句。
-    -->
+    <!-- 角色指向区：保存按钮只在有改动时出现（常驻的灰色禁用按钮不传达任何信息）。 -->
     <div class="mt-8 rounded-card border border-line bg-surface-muted p-5">
       <div class="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h3 class="section-title">模型角色</h3>
-          <p class="mt-1 text-xs leading-relaxed text-muted">
-            指向存在运行时配置里（<span class="font-mono">model.role.fast</span> /
-            <span class="font-mono">model.role.strong</span>）。选「不指向（回落 .env）」即撤销指向。
-          </p>
         </div>
         <el-button
           v-if="roleDirty"
@@ -463,7 +448,6 @@ async function refresh(): Promise<void> {
         <div v-for="role in roles" :key="role">
           <label class="mb-1 flex flex-wrap items-baseline gap-1.5">
             <span class="font-mono text-[12px] font-semibold text-ink">{{ role }}</span>
-            <span class="text-xs text-muted">{{ roleHint(role) }}</span>
           </label>
           <el-select v-model="roleDraft[role]" class="w-full" :disabled="options.length === 1">
             <el-option
@@ -477,10 +461,10 @@ async function refresh(): Promise<void> {
       </div>
 
       <p v-if="options.length === 1" class="mt-3 text-xs text-muted">
-        还没有任何模型配置，只能选「不指向（回落 .env）」。
+        还没有任何模型配置。
       </p>
       <p v-else-if="roleDirty" class="mt-3 text-xs text-amber-700">
-        有未保存的改动；保存后对下一次装配生效。
+        有未保存的改动。
       </p>
     </div>
 
@@ -519,9 +503,6 @@ async function refresh(): Promise<void> {
             />
           </el-select>
         </label>
-        <p class="-mt-2 pl-24 text-xs text-slate-400">
-          只支持这六家。自定义端点也选其中一家，把接入地址填成自建网关（后端按供应商名索引装配）。
-        </p>
 
         <label class="flex items-center gap-3">
           <span class="w-24 shrink-0 text-slate-500">模型名</span>
@@ -558,14 +539,7 @@ async function refresh(): Promise<void> {
             "
           />
         </label>
-        <p class="-mt-2 pl-24 text-xs text-slate-400">
-          编辑时留空表示不改；列表与表单里永远不展示明文，要看原文请用「显示原文」。
-        </p>
 
-        <p class="rounded bg-[#F8F9FA] px-3 py-2 text-xs text-slate-500">
-          供应商名必须属于六家预设（后端会拒未知值）；模型名与接入地址决定实际调用，
-          保存后下一次模型装配即生效。
-        </p>
       </div>
 
       <template #footer>
@@ -593,11 +567,7 @@ async function refresh(): Promise<void> {
           {{ secretValue }}
         </div>
         <p v-else class="rounded bg-[#F8F9FA] px-3 py-2 text-sm text-slate-500">
-          这条配置还没有填 Key（明文为空）。
-        </p>
-        <p class="text-xs text-slate-400">
-          关闭弹窗即丢弃这份明文，本页不把它写进任何存储。本次查看已在审计日志里留了一条
-          <span class="font-mono">model.reveal</span>。
+          这条配置还没有填 Key。
         </p>
       </div>
       <template #footer>

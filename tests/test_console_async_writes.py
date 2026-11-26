@@ -35,6 +35,9 @@ CONSOLE_WRITE_ROUTES: tuple[tuple[str, str], ...] = (
     ("PATCH", "/console/accounts/{account_id}"),
     ("POST", "/console/knowledge-bases"),
     ("DELETE", "/console/knowledge-bases/{kb_id}"),
+    # 改切块设置并自动重建（第 16 步 #207）：设置、审计、building 行同一笔提交，
+    # 投递登记在 after_commit 上——所以它也必须走异步事务依赖。
+    ("PATCH", "/console/knowledge-bases/{kb_id}/settings"),
     ("POST", "/console/knowledge-bases/{kb_id}/documents"),
     ("POST", "/console/documents/{document_id}/reindex"),
     ("DELETE", "/console/documents/{document_id}"),

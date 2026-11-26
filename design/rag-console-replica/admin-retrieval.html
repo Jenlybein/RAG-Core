@@ -1,0 +1,651 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>检索参数 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 折叠标题：左边「组名 + 条目数 + 异常数」，右边一个朝下的箭头 */
+      .trigger-main {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }
+      .tier-title {
+        font-size: var(--fs-14);
+        font-weight: 600;
+        letter-spacing: -0.01em;
+        color: var(--ink);
+      }
+      .chev {
+        flex: none;
+        width: 16px;
+        height: 16px;
+        color: var(--faint);
+        transition: transform 150ms;
+      }
+      .collapse-item.is-open .chev {
+        transform: rotate(180deg);
+      }
+
+      /* 档位表：三列，值那一列放控件 */
+      .tier-table {
+        min-width: 760px;
+      }
+      .tier-table td {
+        vertical-align: top;
+      }
+      .tier-table .col-key {
+        width: 40%;
+      }
+      .tier-table .col-value {
+        width: 34%;
+      }
+      .tier-table .col-src {
+        width: 26%;
+      }
+      .tier-table .select {
+        width: 180px;
+      }
+      .tier-table .input {
+        width: 100%;
+        max-width: 260px;
+      }
+      .tier-table .input-number {
+        width: 140px;
+      }
+      /* 手机上不要三列硬塞：档位表按「键名 → 有效值 → 来源」竖着叠成一段一条，
+         760px 的三列表在 390 宽只能看到最左一列，每一行都要横滑才读得完。 */
+      @media (max-width: 640px) {
+        .tier-table {
+          min-width: 0;
+        }
+        .tier-table thead {
+          display: none;
+        }
+        .tier-table tbody tr {
+          display: grid;
+          grid-template-columns: minmax(0, 1fr);
+          gap: 8px;
+          padding: 12px 12px;
+          border-bottom: 1px solid var(--line-lighter);
+        }
+        .tier-table tbody tr:last-child {
+          border-bottom: 0;
+        }
+        .tier-table td {
+          display: block;
+          padding: 0;
+          border: 0;
+        }
+        .tier-table .col-value .select,
+        .tier-table .col-value .input {
+          width: 100%;
+          max-width: none;
+        }
+        .tier-table .col-value .input-number {
+          width: 100%;
+        }
+        /* 可选：来源单独一行、小一号，与上面的值区分开 */
+        .tier-table td.col-src {
+          font-size: var(--fs-12);
+        }
+      }
+
+      /* 角色指向的键名本身就是去模型配置页的入口：给足命中区，不让它只是一行 14px 高的字 */
+      .key-link {
+        display: inline-flex;
+        align-items: center;
+        min-height: 28px;
+        padding: 2px 0;
+        text-decoration: underline;
+        text-underline-offset: 3px;
+      }
+
+      /* 键名一行里挂角标（异常行用） */
+      .key-line {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+
+      /* 来源：一枚点 + 等宽短标签。实心 = 已被面板覆盖，空环 = 来自 .env */
+      .src {
+        display: inline-flex;
+        align-items: center;
+        gap: 7px;
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+        color: var(--text-regular);
+      }
+      .src-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--accent);
+        box-shadow: 0 0 0 3px var(--accent-soft);
+      }
+      .src-dot--env {
+        background: transparent;
+        box-shadow: inset 0 0 0 1.5px var(--line-strong);
+      }
+
+      /* 异常行：底色走语义令牌——浅色是极淡的红，深色是同色系低 alpha，
+         不会在深色下变成一块亮斑 */
+      .tier-table tbody tr.is-invalid > td {
+        background: var(--danger-soft);
+      }
+
+      .link {
+        color: var(--accent);
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .link:hover {
+        
+                text-decoration: underline;
+              
+      }
+    }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill is-active" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">检索参数</h1>
+          <div class="page-actions">
+            <button class="btn btn--sm" type="button">全部收起</button>
+            <button class="btn btn--sm" type="button">刷新</button>
+          </div>
+        </div>
+
+        <section class="card card-body">
+          <!-- ── 第一档：只读（收起） ── -->
+          <div class="collapse-item">
+            <button class="collapse-trigger" type="button" aria-expanded="false">
+              <span class="trigger-main">
+                <span class="tier-title">不可迁移 · 只读展示</span>
+                <span class="hint">7 项</span>
+              </span>
+              <svg
+                class="chev"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m4 6 4 4 4-4" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- ── 第二档：待重启（收起） ── -->
+          <div class="collapse-item">
+            <button class="collapse-trigger" type="button" aria-expanded="false">
+              <span class="trigger-main">
+                <span class="tier-title">可迁但需重启 + 重建</span>
+                <span class="hint">8 项</span>
+                <span class="badge badge--fail">1 项需注意</span>
+              </span>
+              <svg
+                class="chev"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m4 6 4 4 4-4" />
+              </svg>
+            </button>
+          </div>
+
+          <!-- ── 第三档：热生效（展开） ── -->
+          <div class="collapse-item is-open">
+            <button class="collapse-trigger" type="button" aria-expanded="true">
+              <span class="trigger-main">
+                <span class="tier-title">可迁移 · 热生效</span>
+                <span class="hint">14 项</span>
+                <span class="badge badge--fail">1 项需注意</span>
+              </span>
+              <svg
+                class="chev"
+                viewBox="0 0 16 16"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="m4 6 4 4 4-4" />
+              </svg>
+            </button>
+
+            <div class="collapse-body">
+              <div class="table-wrap">
+                <table class="table tier-table" aria-label="热生效档的检索参数">
+                  <thead>
+                    <tr>
+                      <th class="col-key">配置项</th>
+                      <th class="col-value">有效值</th>
+                      <th class="col-src">来源</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td><p class="mono t-12 strong">LLM_PROVIDER</p></td>
+                      <td>
+                        <select class="select" aria-label="LLM_PROVIDER">
+                          <option>deepseek</option>
+                          <option>qwen</option>
+                          <option>ark</option>
+                          <option>openai</option>
+                          <option>anthropic</option>
+                          <option>gemini</option>
+                        </select>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot"></span>DB</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">LLM_MODEL</p></td>
+                      <td>
+                        <input
+                          class="input mono"
+                          type="text"
+                          value="deepseek-v4-pro"
+                          aria-label="LLM_MODEL"
+                        />
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">TOP_K</p></td>
+                      <td>
+                        <div class="input-number">
+                          <span>8</span>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 7.5 3.5-3.5 3.5 3.5" />
+                            </svg>
+                          </i>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 4.5 3.5 3.5 3.5-3.5" />
+                            </svg>
+                          </i>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot"></span>DB</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">RETRIEVAL_MODE</p></td>
+                      <td>
+                        <select class="select" aria-label="RETRIEVAL_MODE">
+                          <option>vector</option>
+                          <option>bm25</option>
+                          <option selected>hybrid</option>
+                        </select>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot"></span>DB</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">HYBRID_RECALL_TOP_K</p></td>
+                      <td>
+                        <div class="input-number">
+                          <span>40</span>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 7.5 3.5-3.5 3.5 3.5" />
+                            </svg>
+                          </i>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 4.5 3.5 3.5 3.5-3.5" />
+                            </svg>
+                          </i>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">RERANK_ENABLED</p></td>
+                      <td>
+                        <span
+                          class="switch is-on"
+                          role="switch"
+                          aria-checked="true"
+                          tabindex="0"
+                          aria-label="RERANK_ENABLED"
+                        ></span>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">RERANK_MODEL</p></td>
+                      <td>
+                        <input
+                          class="input mono"
+                          type="text"
+                          value="bge-reranker-v2-m3"
+                          aria-label="RERANK_MODEL"
+                        />
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">RERANK_MAX_CANDIDATES</p></td>
+                      <td>
+                        <div class="input-number">
+                          <span>24</span>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 7.5 3.5-3.5 3.5 3.5" />
+                            </svg>
+                          </i>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 4.5 3.5 3.5 3.5-3.5" />
+                            </svg>
+                          </i>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr class="is-invalid">
+                      <td>
+                        <div class="key-line">
+                          <p class="mono t-12 strong">RERANK_TIMEOUT_SECONDS</p>
+                          <span
+                            class="badge badge--fail"
+                            title="库里的值必须是数字，这一行已回退到 .env 值"
+                            >库值被丢弃</span
+                          >
+                        </div>
+                      </td>
+                      <td>
+                        <div class="input-number">
+                          <span>6</span>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 7.5 3.5-3.5 3.5 3.5" />
+                            </svg>
+                          </i>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 4.5 3.5 3.5 3.5-3.5" />
+                            </svg>
+                          </i>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">QUERY_REWRITE_ENABLED</p></td>
+                      <td>
+                        <span
+                          class="switch is-on"
+                          role="switch"
+                          aria-checked="true"
+                          tabindex="0"
+                          aria-label="QUERY_REWRITE_ENABLED"
+                        ></span>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">QUERY_REWRITE_TIMEOUT_MS</p></td>
+                      <td>
+                        <div class="input-number">
+                          <span>2500</span>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 7.5 3.5-3.5 3.5 3.5" />
+                            </svg>
+                          </i>
+                          <i aria-hidden="true">
+                            <svg
+                              viewBox="0 0 12 12"
+                              width="12"
+                              height="12"
+                              fill="none"
+                              stroke="currentColor"
+                              stroke-width="1.75"
+                              stroke-linecap="round"
+                              stroke-linejoin="round"
+                            >
+                              <path d="m2.5 4.5 3.5 3.5 3.5-3.5" />
+                            </svg>
+                          </i>
+                        </div>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td><p class="mono t-12 strong">SYNONYM_EXPANSION_ENABLED</p></td>
+                      <td>
+                        <span
+                          class="switch"
+                          role="switch"
+                          aria-checked="false"
+                          tabindex="0"
+                          aria-label="SYNONYM_EXPANSION_ENABLED"
+                        ></span>
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot src-dot--env"></span>.env</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td>
+                        <a class="link mono t-12 strong key-link" href="admin-models.html">model.role.fast</a>
+                      </td>
+                      <td>
+                        <input
+                          class="input mono"
+                          type="text"
+                          value="mc_9f2a7c"
+                          placeholder="留空 = 不指向（回落 .env）"
+                          aria-label="model.role.fast"
+                        />
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot"></span>DB</span>
+                      </td>
+                    </tr>
+
+                    <tr>
+                      <td>
+                        <a class="link mono t-12 strong key-link" href="admin-models.html">model.role.strong</a>
+                      </td>
+                      <td>
+                        <input
+                          class="input mono"
+                          type="text"
+                          value="mc_4b81de"
+                          placeholder="留空 = 不指向（回落 .env）"
+                          aria-label="model.role.strong"
+                        />
+                      </td>
+                      <td>
+                        <span class="src"><span class="src-dot"></span>DB</span>
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

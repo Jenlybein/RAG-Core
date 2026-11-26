@@ -428,6 +428,7 @@ def test_metadata_contract_is_complete() -> None:
 
     expected_keys = {
         "heading_path",
+        "section_part",
         "section_id",
         "parent_section_id",
         "order_index",
@@ -444,3 +445,62 @@ def test_metadata_contract_is_complete() -> None:
     assert parent.metadata["parent_section_id"] is None
     assert child.metadata["parent_section_id"] == parent.metadata["section_id"]
     assert child.metadata["table_part"] == 1, "非分组表格也算第 1 部分"
+
+
+# ─────────────────────────────── 节段（第 16 步 #207）
+
+
+def test_a_long_section_is_cut_into_parts_at_piece_boundaries() -> None:
+    """超过阈值的 h2 在**片边界**切成节段：段号递增，每段不超阈值，永不切句。
+
+    这是「一条结果不会上万字」的根：不切的话，一节命中 ≥2 片就要整节返回，
+    实测能到上万字。
+    """
+
+    paragraphs = [f"第{index}段，这里是一句完整的话。" * 12 for index in range(12)]
+    markdown = "## 长节\n\n" + "\n\n".join(paragraphs)
+
+    pieces = MarkdownStructuredSplitter(section_part_max_chars=400).split(markdown)
+
+    parts = [int(piece.metadata["section_part"]) for piece in pieces]
+    assert parts == sorted(parts), "段号只能递增，不能跳回上一段"
+    assert parts[0] == 0
+    assert parts[-1] >= 1, "这么长的节必须被切成多段"
+
+    # 每一段的累计字数不超过阈值——**除非**那一段只有一片、而那一片自己就超长
+    # （切块器从不切一片，所以那是唯一允许超阈值的情形）。
+    totals: dict[int, int] = {}
+    counts: dict[int, int] = {}
+    for piece in pieces:
+        part = int(piece.metadata["section_part"])
+        totals[part] = totals.get(part, 0) + len(piece.text)
+        counts[part] = counts.get(part, 0) + 1
+    for part, total in totals.items():
+        assert total <= 400 or counts[part] == 1, f"第 {part} 段 {total} 字，超过阈值"
+
+    # 每一段都是完整的句子：切点落在片边界，不会从句子中间断开。
+    for piece in pieces:
+        assert piece.text.strip().endswith("。"), "片尾必须是句号——永不切句"
+
+
+def test_a_short_section_stays_in_one_part() -> None:
+    """正常长度的节永远是第 0 段：切段不能影响绝大多数文档。"""
+
+    markdown = "## 小节\n\n一句话。\n"
+
+    pieces = MarkdownStructuredSplitter(section_part_max_chars=2000).split(markdown)
+
+    assert {int(piece.metadata["section_part"]) for piece in pieces} == {0}
+
+
+def test_each_part_gets_its_own_section_id() -> None:
+    """段与段是**不同的节**：`section_id` 必须不同，否则折叠时又会并回一节。"""
+
+    markdown = "## 长节\n\n" + "\n\n".join(f"第{index}段正文。" * 20 for index in range(10))
+
+    pieces = MarkdownStructuredSplitter(section_part_max_chars=300).split(markdown)
+
+    by_part: dict[int, str] = {}
+    for piece in pieces:
+        by_part[int(piece.metadata["section_part"])] = str(piece.metadata["section_id"])
+    assert len(set(by_part.values())) == len(by_part), "每段一个身份"

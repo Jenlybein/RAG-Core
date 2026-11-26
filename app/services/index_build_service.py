@@ -63,7 +63,7 @@ from app.models.index_version import (
 from app.providers.keyword_search import KeywordSearchProvider, get_keyword_search_provider
 from app.providers.vectorstores.base import VectorStore
 from app.providers.vectorstores import get_vector_store
-from app.models.knowledge_base import KnowledgeBase
+from app.models.knowledge_base import KnowledgeBase, build_params_of
 from app.repositories import (
     chunk_repository,
     document_repository,
@@ -95,6 +95,14 @@ SWITCH_CONFLICT_MESSAGE: Final[str] = (
 #: 四项计数不相等时拒绝 ``ready`` 的话术（半成品不许上线）。
 BUILD_COUNTS_MISMATCH_MESSAGE: Final[str] = (
     "index build counts do not match; refusing to mark it ready"
+)
+#: 库里有文档、这一轮却一篇都没重建成功时的话术（第 16 步 #207）。
+#:
+#: 为什么要把这件事当失败而不是「建成一个空版本」：空版本的四项计数**自洽**（0=0=0=0），
+#: 所以它能一路通过计数闸门变成 ``ready``——而它一旦被激活，检索会诚实地返回空结果，
+#: 读起来却像「这个库没内容」。症状不报错、只是全空，正是这个仓库最不愿意留下的那类状态。
+BUILD_NOTHING_TO_REBUILD_MESSAGE: Final[str] = (
+    "no document could be rebuilt; refusing to build an empty index version"
 )
 #: 一行 ``building`` 停留超过这个时长就当「有行、没任务」（运维可据此重跑或标失败）。
 BUILD_STALL_SECONDS: Final[int] = 60 * 60
@@ -221,6 +229,18 @@ class IndexBuildCountsMismatch(AppError):
         super().__init__(ErrorCode.SERVER_ERROR, BUILD_COUNTS_MISMATCH_MESSAGE)
 
 
+class IndexBuildNothingToRebuild(AppError):
+    """库里有文档，这一轮却一篇都没重建成功。
+
+    绝大多数情形是「那些文档卡在 ``processing``」——上传或重建的 Worker 死在半路，
+    认领时写的 ``processing`` 就再也没被改回来。它不是构建自己的错，但**不能假装
+    建成了一个空版本**：那会被激活、会返回空结果，而症状看起来像「这个库没内容」。
+    """
+
+    def __init__(self) -> None:
+        super().__init__(ErrorCode.SERVER_ERROR, BUILD_NOTHING_TO_REBUILD_MESSAGE)
+
+
 def can_transition(current: str, target: str) -> bool:
     """``current`` 能否直接迁到 ``target``（纯函数，状态机的真值表只有这一份）。"""
 
@@ -324,6 +344,10 @@ class IndexBuildService:
             kb_id=kb_id,
             version=version or next_version_name(names),
             status=INDEX_BUILD_BUILDING,
+            # 这一版是**用哪些切块参数**构出来的（第 16 步 #207）。记在开跑那一刻：
+            # 构建期间有人改库设置，这一版仍然属于旧参数——事后复盘「为什么这版还是整节」
+            # 靠的就是这一格，而不是去猜当时的设置。
+            params=build_params_of(kb),
             created_at=now(),
         )
         try:
@@ -443,6 +467,11 @@ class IndexBuildService:
                     allow_success=True,
                 )
                 indexed += 1
+            # 库里有文档、却一篇都重建不出来 → 拒绝建出一个「空版本」（第 16 步 #207）。
+            # 空版本的四项计数自洽，能一路通过闸门变成 ready；它一旦被激活，检索会返回空
+            # 而结果看起来完全正常——那正是「不报错但全空」这类最难发现的状态。
+            if documents and indexed == 0:
+                raise IndexBuildNothingToRebuild()
             # 计数快照里的文档数：**成功重建的篇数**（不是库里总行数——失败 / 处理中的
             # 文档不参与构建，把它们算进去会让快照看起来「少了几篇」却查不出原因）。
             row.document_count = indexed

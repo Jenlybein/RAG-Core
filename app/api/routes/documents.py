@@ -36,6 +36,10 @@
 （20008），理由与 ``ensure_visible`` 相同——可区分的拒绝会泄露资源存在性。
 """
 
+from __future__ import annotations
+
+import time
+
 import structlog
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -499,7 +503,26 @@ async def search_document_version(
     """
 
     # 取文档 + 第二道关卡（与创建 / 列版本 / 回滚同一条，见 ``_scoped_document``）。
-    await _scoped_document(db, document_id=document_id, key=key)
+    #
+    # 这一关的失败发生在**能算成本之前**（还没 embedding），但它仍然是一次调用：记一行
+    # ``code=<业务码>`` 的账，与成功那一行同一个端点名，账上才答得出「这条入口被谁试了
+    # 多少次」。服务内部自己记后面的那些（稿不存在 / 向量引擎失败 / 成功），互不重复。
+    started_at = time.perf_counter()
+    try:
+        await _scoped_document(db, document_id=document_id, key=key)
+    except AppError as exc:
+        await version_search.record_version_search(
+            tenant_id=key.tenant_id,
+            key_id=key.key_id,
+            document_id=document_id,
+            version=version,
+            kb_id=None,
+            index_version=None,
+            chunk_ids=(),
+            latency_ms=int((time.perf_counter() - started_at) * 1000),
+            code=exc.code,
+        )
+        raise
 
     data = await version_search.search_document_version(
         db,
@@ -507,5 +530,7 @@ async def search_document_version(
         document_id=document_id,
         version=version,
         query=payload.query,
+        # 账本上的「谁」：Key 级归属，与数据面其它端点同一个来源（不是请求参数）。
+        key_id=key.key_id,
     )
     return ok(SearchDocumentVersionData.model_validate(data))

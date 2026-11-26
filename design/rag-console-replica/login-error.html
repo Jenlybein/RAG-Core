@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>登录已过期 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 登录是一块单独浮起来的大玻璃：居中、四周留空、不和任何栏抢注意力 */
+      .login-page {
+        display: flex;
+        min-height: calc(100svh - 112px);
+        align-items: center;
+        justify-content: center;
+      }
+      .login-card {
+        width: 100%;
+        max-width: 400px;
+        padding: 40px 32px 32px;
+        border-radius: 30px;
+        background: var(--glass-grad-strong);
+        -webkit-backdrop-filter: blur(36px) saturate(190%);
+        backdrop-filter: blur(36px) saturate(190%);
+        box-shadow: var(--glass-shadow-lift), var(--glass-highlight);
+      }
+      .login-mark {
+        display: grid;
+        place-items: center;
+        width: 44px;
+        height: 44px;
+        border: 1px solid var(--stroke-lo);
+        border-radius: var(--r-control);
+        background: linear-gradient(180deg, #0a7cf0, #0062c6);
+        color: #fff;
+        font-size: var(--fs-17);
+        font-weight: 600;
+        line-height: 1;
+        box-shadow: 0 6px 16px -6px rgba(0, 90, 190, 0.8), var(--sheen-soft);
+      }
+      .login-title {
+        margin-top: var(--sp-5);
+        font-size: var(--fs-26);
+        font-weight: 600;
+        line-height: 1.15;
+        letter-spacing: -0.03em;
+        color: var(--ink);
+      }
+      .login-form {
+        margin-top: var(--sp-6);
+      }
+      /* 共享的 .alert--error 底色写死为浅色，深色下正文压不住；这里只把底色换成语义变量 */
+      .alert--error {
+        background: var(--danger-soft);
+      }
+      .login-form .alert {
+        margin-bottom: var(--sp-5);
+      }
+      .login-form .btn {
+        margin-top: var(--sp-6);
+      }
+      @media (max-width: 640px) {
+        /* 手机上不再强制一屏居中：卡片跟着页面留白走，避免多出一段空白滚动 */
+        .login-page {
+          min-height: auto;
+          padding: 8px 0;
+        }
+        .login-card {
+          padding: 28px 22px 24px;
+          border-radius: 26px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <div class="login-page">
+        <section class="card login-card">
+          <span class="login-mark" aria-hidden="true">R</span>
+          <h1 class="login-title">登录已过期</h1>
+
+          <form class="login-form" action="knowledge-bases.html">
+            <div class="alert alert--error" role="alert">账号或口令不对</div>
+
+            <label class="field">
+              <span class="field-label">账号</span>
+              <input
+                class="input input--lg"
+                name="username"
+                value="bob"
+                placeholder="username"
+                autocomplete="username"
+              />
+            </label>
+            <label class="field">
+              <span class="field-label">口令</span>
+              <input
+                class="input input--lg"
+                name="password"
+                type="password"
+                placeholder="password"
+                autocomplete="current-password"
+              />
+            </label>
+
+            <button class="btn btn--primary btn--lg btn--block" type="submit">重新登录</button>
+          </form>
+        </section>
+      </div>
+    </main>
+
+    <div class="theme-switch theme-switch--float" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>    </div>
+
+  </body>
+</html>

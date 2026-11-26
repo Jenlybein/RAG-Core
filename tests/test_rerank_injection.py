@@ -219,9 +219,8 @@ def test_the_pipeline_forwards_the_rerank_factory_to_the_stage(
             db=None,  # 两路分支都被替身接住，这条用例不需要真会话
             tenant_id="t",
             index_versions={"kb-a": DEFAULT_INDEX_VERSION},
-            vector_queries=["q"],
+            recall_queries=["q"],
             rerank_query="q",
-            keyword_query="q",
             top_k=3,
             embedding_factory=lambda: None,
             vector_factory=lambda: None,
@@ -259,7 +258,7 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
             raw_query=query,
             effective_query=query,
             search_query=query,
-            vector_queries=(query,),
+            recall_queries=(query,),
             rewrite_applied=False,
             duration_ms=0.0,
         )
@@ -304,6 +303,7 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
                 top_k=5,
                 fold_to_sections=True,
                 expand_table_rows=True,
+                max_unit_chars=2000,
                 rerank=True,
             ),
             rerank_factory=factory,

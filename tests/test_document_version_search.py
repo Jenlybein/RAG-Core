@@ -36,6 +36,7 @@ from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
+from app.core.exceptions import ErrorCode
 from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
     Chunk,
@@ -168,13 +169,16 @@ def test_the_default_recall_path_still_only_sees_the_current_draft() -> None:
     ).endswith("chunks.doc_version = documents.current_version"), "谓词本身只有一个来源"
 
 
-def test_the_read_only_path_never_imports_the_keyword_engine_or_the_attribution_index() -> None:
-    """直查只走向量路、只读：这条路径**不 import** 关键词引擎与归属索引。
+def test_the_read_only_path_never_imports_the_keyword_engine() -> None:
+    """直查只走向量路：这条路径**不 import** 关键词引擎（#176 的边界）。
 
     为什么用「import 表」而不是「调用次数」：这个边界是设计约束（关键词索引里只有
     ``is_current`` 一个布尔，查历史稿需要给 ES 再加一个「指定稿号」谓词，超出本票范围）。
-    一旦有人在服务里接上关键词路或写归属索引，这里会立刻红——而症状本来极难察觉
-    （直查多写一行 trace，统计里的一次「排查」就变成了「一次检索」）。
+    一旦有人在服务里接上关键词路，这里会立刻红——而症状本来极难察觉。
+
+    **归属索引从 #208 起不再被这条边界排除**：直查要记账（``endpoint=version_search``、
+    三本账全 0），所以 ``app.services.retrieval_trace`` 出现在 import 表里是设计的一部分。
+    它记的仍然**不是一次检索**——见下面的 ``test_a_version_search_writes_one_ledger_row``。
     """
 
     source = Path(version_search.__file__).read_text(encoding="utf-8")
@@ -186,7 +190,6 @@ def test_the_read_only_path_never_imports_the_keyword_engine_or_the_attribution_
             imported.add(node.module or "")
 
     assert not any("keyword_search" in name for name in imported), imported
-    assert not any("retrieval_trace" in name for name in imported), imported
 
 
 # ── 第 ② 层：接口边界（ASGI）──
@@ -511,3 +514,63 @@ def test_a_vector_store_failure_is_a_retrieval_failure_not_a_500(
 
     assert body["code"] == int(Codes.RETRIEVAL_FAILED) == 50002
     assert "html" not in body["msg"], "外部响应体不进回包（日志同样只记类型）"
+
+
+# ── 第 ③ 层：记账（#208）──
+
+
+def _captured_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, Any]]:
+    """把账本写入换成捕获：``version_search`` 只碰这一个符号，替身就够。"""
+
+    rows: list[dict[str, Any]] = []
+
+    async def _capture(**kwargs: Any) -> None:
+        rows.append(kwargs)
+
+    monkeypatch.setattr(version_search, "record_retrieval_trace", _capture)
+    return rows
+
+
+def test_a_successful_version_search_writes_one_ledger_row(
+    api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """一次成功的直查要留一行账：``endpoint=version_search``、**三本账全 0**、码为 0。
+
+    三本账全 0 是这条契约的重点：直查不扣任何额度（它不过配额门禁），把它记成一次
+    ``retrieve`` 才会污染统计。留痕只为回答「谁在拿 Key 白调 embedding」（#208）。
+    """
+
+    rows = _captured_rows(monkeypatch)
+
+    body = api.client.post(SEARCH_URL.format(version=1), json={"query": "退款"}).json()
+
+    assert body["code"] == 0
+    assert len(rows) == 1, "一次调用一行，不许多写也不许漏"
+    row = rows[0]
+    assert row["endpoint"] == "version_search"
+    assert row["code"] == 0
+    assert (row["meter_r"], row["meter_rr"], row["meter_llm"]) == (0, 0, 0)
+    assert row["kb_ids"] == [KB_ID]
+    assert row["index_versions"] == {KB_ID: DEFAULT_INDEX_VERSION}
+    assert row["doc_versions"] == {DOC_ID: 1}
+    assert row["chunk_ids"] == ["chunk-1-0", "chunk-1-1"]
+    assert row["top_k"] == version_search.VERSION_SEARCH_TOP_K
+
+
+def test_a_failed_version_search_still_writes_a_row_with_its_business_code(
+    api: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """失败也要留一行，码是这次的真实结局（这里是「稿不存在」20030）。
+
+    只记成功的账会给出「一直没有失败」的假象：一个写错稿号的调用方会反复撞 20030，
+    而账本上一个字都看不到。
+    """
+
+    rows = _captured_rows(monkeypatch)
+
+    body = api.client.post(SEARCH_URL.format(version=99), json={"query": "退款"}).json()
+
+    assert body["code"] == ErrorCode.DOCUMENT_VERSION_NOT_FOUND
+    assert len(rows) == 1
+    assert rows[0]["code"] == ErrorCode.DOCUMENT_VERSION_NOT_FOUND
+    assert (rows[0]["meter_r"], rows[0]["meter_rr"], rows[0]["meter_llm"]) == (0, 0, 0)

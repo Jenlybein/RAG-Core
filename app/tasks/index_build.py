@@ -34,21 +34,43 @@ from app.db.session_factory import async_session_factory
 from app.db.worker_loop import run_in_worker_loop
 from app.providers.llm import set_role_resolver
 from app.services import model_config_service, runtime_settings
+from app.models.index_version import INDEX_BUILD_READY
 from app.services.index_build_service import IndexBuildService
 
 logger = structlog.get_logger(__name__)
 
 
-async def _build_in_the_worker_loop(build_id: str, *, tenant_id: str) -> None:
+async def _build_in_the_worker_loop(
+    build_id: str, *, tenant_id: str, activate: bool = False
+) -> None:
     """常驻循环里的一次构建：开一个任务会话 → 跑编排 → 无论如何关掉它。
 
     会话不跨任务复用（一个任务一笔会话），复用的是**连接池**（池归循环、会话归任务，
     ADR-0023 决策三）。
+
+    ``activate``（第 16 步 #207）：构建成功后**立刻激活**。它只给「改了切块设置」
+    那一条路径用——那种改动的语义就是「改完就该生效」，让人再去点一次激活等于把
+    「设置页已保存」变成半句话。常规重建仍然停在 ``ready``（ADR-0025 决策三：
+    先 ready、观察一会儿再切，是运维可见的一步）。
     """
 
     db = async_session_factory()()
     try:
-        await IndexBuildService().build(db, build_id, tenant_id=tenant_id)
+        service = IndexBuildService()
+        row = await service.build(db, build_id, tenant_id=tenant_id)
+        if activate and row.status == INDEX_BUILD_READY:
+            try:
+                await service.activate(db, build_id, tenant_id=tenant_id)
+            except Exception as exc:  # noqa: BLE001 - 切换失败不能把「构建成功了」抹掉
+                # 构建本身是好的（``ready``），失败的是**切换**那一步（例如关键词别名切不动）。
+                # 这里不能让异常冒上去：那会把一个刚建好的版本标成失败，运维再重建一次也是白建。
+                # 留在 ``ready`` + 一条 warning 才是事实：版本可用，只是还没上线，可以重试激活。
+                logger.warning(
+                    "index build activation failed; leaving the build ready",
+                    build_id=build_id,
+                    tenant_id=tenant_id,
+                    reason=type(exc).__name__,
+                )
     finally:
         # 不能省：被放弃的 checked-out 连接即使 dispose 了也会停在 idle in transaction。
         await db.close()
@@ -60,6 +82,7 @@ def _run_build(
     *,
     tenant_id: str,
     request_id: str | None = None,
+    activate: bool = False,
 ) -> None:
     """任务体：与 Celery 装饰器分离，便于用轻量 ``self`` 替身离线测试。"""
 
@@ -72,7 +95,7 @@ def _run_build(
         set_role_resolver(model_config_service.role_endpoint)
         # 投**工厂**：协程在常驻循环里才被创建，从那一刻起属于那个循环。
         run_in_worker_loop(
-            lambda: _build_in_the_worker_loop(build_id, tenant_id=tenant_id)
+            lambda: _build_in_the_worker_loop(build_id, tenant_id=tenant_id, activate=activate)
         )
     finally:
         if request_id:
@@ -86,6 +109,8 @@ def build_index_version_task(
     *,
     tenant_id: str,
     request_id: str | None = None,
+    #: 构建成功后立刻激活（第 16 步 #207 的「改设置就生效」那条路径专用）。
+    activate: bool = False,
 ) -> None:
     """索引构建任务入口：按 ``build_id`` 跑一次「逐文档重建 → ready」。
 
@@ -94,4 +119,4 @@ def build_index_version_task(
     两次，第二次进来看见的已经是 ``ready`` 或 ``failed``，直接跳过。
     """
 
-    _run_build(self, build_id, tenant_id=tenant_id, request_id=request_id)
+    _run_build(self, build_id, tenant_id=tenant_id, request_id=request_id, activate=activate)

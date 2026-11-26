@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>页面不存在 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 只讲三件事：是 404、错在哪条路径、往哪走 */
+      .nf-card {
+        padding: 88px var(--sp-8) 72px;
+        text-align: center;
+        border-radius: 32px;
+      }
+      .nf-code {
+        font-size: 64px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: -0.04em;
+        color: #7c7c82; /* 装饰性大字也要 ≥3:1 */
+      }
+      .nf-title {
+        margin-top: var(--sp-4);
+        font-size: var(--fs-34);
+        font-weight: 600;
+        line-height: 1.12;
+        letter-spacing: -0.028em;
+      }
+      .nf-path {
+        display: inline-block;
+        margin-top: var(--sp-4);
+        padding: 5px 10px;
+        font-size: var(--fs-13);
+      }
+      .nf-actions {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: var(--sp-2);
+        margin-top: 32px;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="knowledge-bases.html">知识库管理</a>
+            <a class="nav-pill" href="keys.html">Key 与密钥配置</a>
+            <a class="nav-pill" href="usage.html">用量</a>
+            <a class="nav-pill" href="retrieve.html">检索调试台</a>
+            <a class="nav-pill" href="traces.html">检索记录</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">bob</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="card nf-card">
+        <p class="nf-code">404</p>
+        <h1 class="nf-title">没有这个页面</h1>
+        <code class="mono-tag nf-path">/admin/audit-logs</code>
+
+        <div class="nf-actions">
+          <a class="btn btn--primary" href="knowledge-bases.html">回到知识库</a>
+          <a class="btn" href="traces.html">检索记录</a>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

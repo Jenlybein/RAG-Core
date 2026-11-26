@@ -44,14 +44,21 @@ def stable_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
-def section_id_of(*, document_id: str, heading_path: str) -> str:
-    """节的身份证：``stable_hash(文档 id : 标题路径)``。
+def section_id_of(*, document_id: str, heading_path: str, part: int = 0) -> str:
+    """节的身份证：``stable_hash(文档 id : 标题路径[#段号])``。
 
     **关键字参数是刻意的**：两个都是字符串，按位置传参时写反了不会报错，只会得到一个
     同样合法、同样 64 位的哈希——一次静默的身份错位。
+
+    ``part`` 是**节段**（第 16 步 #207）：一个超长的 h2 会在片边界被切成若干段，
+    段与段是**不同的节**（否则折叠时又会并回一节，等于没切）。``part == 0`` 时种子
+    与切段之前**逐字节相同**——老索引里那些片的身份因此一个都没变，不需要回填。
     """
 
-    return stable_hash(f"{document_id}{IDENTITY_SEPARATOR}{heading_path}")
+    seed = f"{document_id}{IDENTITY_SEPARATOR}{heading_path}"
+    if part > 0:
+        seed = f"{seed}{IDENTITY_SEPARATOR}#{part}"
+    return stable_hash(seed)
 
 
 def parent_heading_path(heading_path: str) -> str | None:

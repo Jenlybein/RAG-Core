@@ -10,6 +10,7 @@ from __future__ import annotations
 from tests.support.policy import policy_row
 
 import re
+import uuid
 
 import pytest
 
@@ -30,7 +31,9 @@ DEMO_TENANT = "tenant_demo"
 ACME_TENANT = "tenant_acme"
 POLICY_ID = "11111111-1111-4111-8111-111111111111"
 
-API_KEY_PATTERN = re.compile(r"^rc_live_[0-9a-f]{32}$")
+#: ``rc_live_<行身份证>.<32 位十六进制>``：形如 ``rc_live_<uuid>.<32 位十六进制>``，
+#: 行身份证就是 ``api_keys.id``。
+API_KEY_PATTERN = re.compile(r"^rc_live_([0-9a-f-]{36})\.([0-9a-f]{32})$")
 
 
 def _plan_rows() -> list[Plan]:
@@ -305,11 +308,20 @@ def test_issuing_a_key_binds_it_to_the_policy_and_generates_a_live_value() -> No
     )
 
     with transaction(session):
-        key = issue_api_key(session, tenant_id=ACME_TENANT, policy_id=POLICY_ID, label="订单机器人")
+        minted = issue_api_key(
+            session, tenant_id=ACME_TENANT, policy_id=POLICY_ID, label="订单机器人"
+        )
 
+    key = minted.api_key
     assert isinstance(key, ApiKey)
-    assert API_KEY_PATTERN.fullmatch(key.key_value), key.key_value
+    matched = API_KEY_PATTERN.fullmatch(minted.plaintext)
+    assert matched is not None, minted.plaintext
+    # 串里带的就是这一行的主键：鉴权靠它定位，库里没有可做索引的原文。
+    assert matched.group(1) == key.id
     assert (key.tenant_id, key.policy_id, key.label) == (ACME_TENANT, POLICY_ID, "订单机器人")
+    # 行里只有哈希与末 5 位，原文不在其中任何一列。
+    assert key.key_hash.startswith("scrypt$")
+    assert key.key_tail == matched.group(2)[-5:]
     assert session.added_of(ApiKey) == [key]
     assert session.commits == 1
 
@@ -348,7 +360,9 @@ def test_issuing_a_key_with_missing_pieces_fails_loudly(
 
 
 def test_generated_key_values_are_live_prefixed_and_distinct() -> None:
-    values = {new_api_key_value() for _ in range(200)}
+    """同一批里没有重复，且每一串的形状都对；行身份证逐串不同。"""
+
+    values = {new_api_key_value(str(uuid.uuid4())) for _ in range(200)}
 
     assert len(values) == 200
     assert all(API_KEY_PATTERN.fullmatch(value) for value in values)

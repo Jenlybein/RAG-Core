@@ -124,7 +124,7 @@ function asTrace(row: unknown): RecentTrace {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="检索记录" subtitle="本租户最近的检索；点一行看六段耗时。">
+    <PageHeader title="检索记录">
       <template #actions>
         <el-select v-model="limit" size="small" class="w-24">
           <el-option :value="10" label="10 条" />
@@ -150,7 +150,7 @@ function asTrace(row: unknown): RecentTrace {
         v-loading="loading"
         :data="rows"
         size="small"
-        empty-text="还没有检索记录。去「检索调试台」发一次检索，这里就会出现一行。"
+        empty-text="还没有检索记录。"
         @row-click="(row: unknown) => openWaterfall(asTrace(row))"
       >
         <el-table-column label="时间" min-width="150">
@@ -239,7 +239,7 @@ function asTrace(row: unknown): RecentTrace {
         </p>
         <StageWaterfall v-if="waterfall.stages.length > 0" class="mt-3" :data="waterfall" />
         <p v-else class="mt-2 text-xs text-muted">
-          这条记录没有六段耗时（观测没开，或这一条没记上）。
+          这条记录没有六段耗时。
         </p>
       </template>
     </el-dialog>

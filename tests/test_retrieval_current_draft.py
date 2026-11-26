@@ -454,7 +454,8 @@ async def test_unit_rows_never_stitch_the_two_drafts_together(two_drafts: AsyncS
     statement = chunk_repository._unit_rows_statement(
         tenant_id=TENANT,
         document_ids=["doc-1"],
-        unit_paths=[UNIT_PATH],
+        # 单元是「(路径, 节段号)」（第 16 步 #207）：只按路径取会把整节的片又拼回来。
+        units=[(UNIT_PATH, 0)],
         index_version="v1",
     )
     sql = _sql(statement)

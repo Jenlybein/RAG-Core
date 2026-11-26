@@ -68,46 +68,41 @@ async function submit(): Promise<void> {
 <template>
   <!--
     登录页是一张「封面」：不套顶栏、垂直居中、四周留足空白。
-    它是整站第一印象，也是唯一一页可以不讲信息密度的地方——所以这里给品牌标记、
-    大标题与一句克制的说明，而不是把表单塞满。
+    它是整站第一印象，也是唯一一页可以不讲信息密度的地方——所以这里只给品牌标记、
+    大标题与表单本身，不写说明句：页面叫什么、要填什么，看布局就知道。
   -->
   <div class="mx-auto flex min-h-[70vh] w-full max-w-[380px] flex-col justify-center">
     <div
       v-if="backendOffline"
-      class="mb-4 rounded-control border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+      class="mb-4 rounded-control border border-danger/30 bg-danger/10 px-4 py-3 text-sm text-danger"
     >
-      <p class="font-semibold">后端连不上</p>
-      <p class="mt-1 leading-relaxed">
-        登录请求没有拿到业务码（不是账号问题）。确认后端已启动后再试。
-      </p>
+      后端连不上
     </div>
 
-    <section class="card px-7 py-9 shadow-lift">
+    <section class="card px-7 py-9">
       <span
-        class="grid h-10 w-10 place-items-center rounded-[13px] bg-accent text-base font-semibold text-white shadow-[0_2px_6px_rgba(28,26,21,0.22)]"
+        class="grid h-10 w-10 place-items-center rounded-[13px] bg-accent text-base font-semibold text-white shadow-[0_6px_16px_-6px_rgba(0,90,190,0.8)]"
         aria-hidden="true"
         >R</span
       >
-      <h1 class="mt-5 text-[26px] font-semibold leading-tight tracking-tightest text-ink">
-        登录调试台
-      </h1>
-      <p class="mt-1.5 text-[13px] leading-relaxed text-muted">
-        用控制台账号登录。登录态由服务端会话维护，刷新不会掉。
-      </p>
+      <h1 class="mt-5 text-[28px] font-semibold leading-tight tracking-tightest text-ink">登录</h1>
 
       <form class="mt-7 space-y-4" @submit.prevent="submit">
         <label class="block">
-          <span class="mb-1.5 block text-[12px] font-medium text-slate-600">账号</span>
+          <span class="field-label mb-1.5 block">账号</span>
           <el-input
             v-model="username"
             size="large"
             placeholder="username"
             autocomplete="username"
+            autocapitalize="none"
+            autocorrect="off"
+            spellcheck="false"
             :disabled="busy"
           />
         </label>
         <label class="block">
-          <span class="mb-1.5 block text-[12px] font-medium text-slate-600">口令</span>
+          <span class="field-label mb-1.5 block">口令</span>
           <el-input
             v-model="password"
             size="large"
@@ -121,7 +116,7 @@ async function submit(): Promise<void> {
 
         <p
           v-if="errorText !== ''"
-          class="rounded-control border border-red-200 bg-red-50 px-3 py-2 text-sm leading-relaxed text-red-800"
+          class="rounded-control border border-danger/30 bg-danger/10 px-3 py-2 text-sm leading-relaxed text-danger"
         >
           {{ errorText }}
         </p>

@@ -185,7 +185,9 @@ def _build_corpus() -> Corpus:
                 )
             )
             unit_rows.append(
-                (document_id, heading_path, index, content[chunk_id], chunk_id, "text", 0)
+                # 行形态跟 ``chunk_repository._group_unit_rows`` 对齐：(文档, 路径, 节段号,
+                # 序号, 正文, id, 类型, table_part)。节段号 0 = 这一节没被切段（第 16 步 #207）。
+                (document_id, heading_path, 0, index, content[chunk_id], chunk_id, "text", 0)
             )
     return Corpus(
         kb_row=SimpleNamespace(

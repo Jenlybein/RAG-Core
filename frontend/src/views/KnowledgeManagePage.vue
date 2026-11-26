@@ -26,6 +26,7 @@ import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import ConfirmDialog from '../components/ConfirmDialog.vue'
+import KbSettingsDialog from '../components/KbSettingsDialog.vue'
 import CreateKbDialog from '../components/CreateKbDialog.vue'
 import DocumentVersionsDialog from '../components/DocumentVersionsDialog.vue'
 import PageHeader from '../components/PageHeader.vue'
@@ -205,6 +206,14 @@ function openUpload(kbId: string): void {
   uploadOpen.value = true
 }
 
+/** 改切块设置（第 16 步 #207）：弹窗自己读预览、自己二次确认、成功后通知刷新。 */
+const settingsKbId = ref<string | null>(null)
+
+function openSettings(row: unknown): void {
+  if (!isKbRow(row)) return
+  settingsKbId.value = row.kb_id
+}
+
 function afterCreated(): void {
   void refresh()
 }
@@ -369,10 +378,7 @@ function goRetrieve(kbId: string): void {
 
 <template>
   <section class="space-y-6">
-    <PageHeader
-      title="知识库管理"
-      subtitle="建库、传文档、看索引进度。"
-    >
+    <PageHeader title="知识库管理">
       <template #actions>
         <el-button type="primary" @click="createOpen = true">新建知识库</el-button>
       </template>
@@ -396,7 +402,7 @@ function goRetrieve(kbId: string): void {
         class="mb-4 flex items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span>后台索引中，每 3 秒自动刷新</span>
+        <span>后台索引中</span>
       </div>
 
       <p v-if="treePending" class="py-8 text-center text-sm text-muted">正在读取知识库…</p>
@@ -412,9 +418,6 @@ function goRetrieve(kbId: string): void {
 
       <div v-else-if="tree.length === 0" class="py-12 text-center">
         <p class="text-base font-semibold text-ink">还没有知识库</p>
-        <p class="mx-auto mt-2 max-w-sm text-sm leading-relaxed text-muted">
-          文档要放进知识库才能被检索。
-        </p>
         <el-button type="primary" class="!mt-5" @click="createOpen = true">新建知识库</el-button>
       </div>
 
@@ -464,12 +467,28 @@ function goRetrieve(kbId: string): void {
               <p class="metric-value">{{ row.chunk_size }}</p>
               <p class="metric-label">token 窗口</p>
             </div>
+            <div>
+              <p class="metric-value">{{ row.section_part_max_chars }}</p>
+              <p class="metric-label">节段上限</p>
+            </div>
           </div>
+
+          <!--
+            「需重建」（第 16 步 #207）：切块设置是索引期旋钮，改了不重建，读到的还是旧切法。
+            这条提示必须看得见——否则「我明明改了阈值」只能在评测数字上慢慢发现。
+          -->
+          <p
+            v-if="row.needs_rebuild"
+            class="mt-1 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-700"
+          >
+            当前切块设置与生效索引版本不一致，需要重建后才生效。
+          </p>
 
           <!-- 按钮要阻止冒泡，否则会顺带触发整卡的「详情」 -->
           <div class="mt-1 flex flex-wrap items-center gap-1 border-t border-line pt-2.5" @click.stop>
             <el-button link type="primary" size="small" @click="openUpload(row.kb_id)">上传</el-button>
             <el-button link type="primary" size="small" @click="goRetrieve(row.kb_id)">检索</el-button>
+            <el-button link type="primary" size="small" @click="openSettings(row)">设置</el-button>
             <el-button link type="danger" size="small" @click="askDeleteKb(row)">删除</el-button>
             <span class="ml-auto text-xs text-muted group-hover:text-ink">详情 →</span>
           </div>
@@ -541,14 +560,14 @@ function goRetrieve(kbId: string): void {
         </el-input>
 
         <p v-if="detailKb === null" class="py-6 text-center text-sm text-slate-500">
-          这个知识库已不在列表里（可能刚被删除）。
+          这个知识库已不在列表里。
         </p>
 
         <p
           v-else-if="detailKb.documents.length === 0"
           class="rounded-control border border-line px-3 py-6 text-center text-sm text-slate-500"
         >
-          这个库还没有文档。点右上角「上传文档」把语料放进来。
+          这个库还没有文档。
         </p>
 
         <p
@@ -650,7 +669,6 @@ function goRetrieve(kbId: string): void {
             class="rounded-control border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
           >
             原文共 {{ contentData.length }} 字符，这里只显示前 {{ contentData.content.length }} 字符。
-            需要全文请下载原件或调整服务端上限。
           </div>
 
           <div
@@ -695,6 +713,8 @@ function goRetrieve(kbId: string): void {
       :preset-kb-id="uploadPresetKbId"
       @upload="handleUpload"
     />
+
+    <KbSettingsDialog :kb-id="settingsKbId" @updated="refresh" />
 
     <ConfirmDialog
       v-model="confirmOpen"

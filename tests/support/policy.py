@@ -198,6 +198,9 @@ def policy_row(
         "retrieval_rerank": rerank,
         "include_parent": include_parent,
         "expand_table_rows": expand_table_rows,
+        # 第 16 步 #207：正文上限。内存假行不经过 INSERT，列的 ``default=`` 不生效，
+        # 所以显式写——不写就是 ``None``，而快照不做兜底（缺值即 TypeError）。
+        "max_unit_chars": 2000,
     }
     values.update(overrides)
     return KeyPolicy(**values)

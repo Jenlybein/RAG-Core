@@ -18,6 +18,19 @@
 * ``tables``：``{单元键: 整表全文}``。
 
 拿不到内容时回落到命中片自身的正文——**绝不返回空结果**。
+
+## 一条结果能有多长
+
+**给多少由命中片数决定，且永远有界**（第 16 步 #207）：
+
+* 命中片**覆盖区间** + 两侧各一片，连续、不造缺口；
+* 超出 ``max_unit_chars`` 时**从两端收缩**（先砍离命中区间更远的那一侧），
+  命中片本身在预算内时不动它；
+* 连命中片都装不下才硬截，并置 ``truncated``——那种情况只在「一片就比预算长」时发生。
+
+为什么要这一步：没有上限时，一节命中 ≥2 片就返回整节，实测能到上万字，而整条链路上
+没有任何闸门。索引期切节段（#207 的 A 部分）之后正常情况下不会再触发上限，但历史索引、
+表格单元、以及「片边界使节段超阈值」都还在，所以这里必须是硬约束。
 """
 
 from __future__ import annotations
@@ -44,6 +57,8 @@ class UnitKey(NamedTuple):
     document_id: str
     section_id: str
     table_part: str = ""
+    #: 节段号（第 16 步 #207）。同一个 h2 被切成多段时，段与段是**不同的单元**。
+    section_part: int = 0
 
 
 UNIT_TABLE = "table"
@@ -63,6 +78,10 @@ EXPANSION_CHUNK = "chunk"
 # 样本量下，任何可调旋钮都会被评测调成过拟合值。实测每题平均 1.7 片同节命中。
 OVERFETCH_FACTOR = 3
 
+#: 一条结果 `content` 的硬上限（字符）。默认值与库阈值同值（#207 定稿）：正常情况下
+#: 节段 ≤ 库阈值 ≤ 上限，永不触发；只有历史索引 / 表格 / 片边界超阈值时才裁。
+MAX_UNIT_CHARS_DEFAULT = 2000
+
 # 同节切片的行形态：(序号, 正文, chunk_id)。序号是文档级 chunk_index。
 SectionRows = tuple[tuple[int, str, str], ...]
 
@@ -79,6 +98,8 @@ class Hit:
     section_id: str = ""
     parent_section_id: str = ""
     table_part: int = 0
+    #: 这条片属于该节的第几段（0 = 没切过的老数据，也是唯一一段）。
+    section_part: int = 0
     heading_path: str = ""
     kb_id: str | None = None
 
@@ -94,6 +115,11 @@ class Unit:
     content: str
     source_chunk_ids: tuple[str, ...]
     expansion: str
+    #: 这条的正文被裁过（``content`` 不是该单元的全部）。调用方据此知道「后面还有」。
+    truncated: bool = False
+    #: 这条属于该节的第几段（0 = 整节，也兼容老索引）。响应里给出去，调用方才知道
+    #: 「同一节的第 2 段」不是另一节。
+    section_part: int = 0
     heading_path: str = ""
     kb_id: str | None = None
 
@@ -146,7 +172,7 @@ def unit_key(hit: Hit, *, merge_table_rows: bool = True) -> UnitKey:
         # 退回按节归组会让它们又被并成一个名额，那正是它想避免的。
         return UnitKey(UNIT_CHUNK, hit.document_id, hit.chunk_id)
     if unit_id:
-        return UnitKey(UNIT_SECTION, hit.document_id, unit_id)
+        return UnitKey(UNIT_SECTION, hit.document_id, unit_id, "", hit.section_part)
     # 只有真的没有章节路径（无标题文档）才各自成单元。
     return UnitKey(UNIT_CHUNK, hit.document_id, hit.chunk_id)
 
@@ -158,6 +184,7 @@ def collapse(
     tables: Mapping[UnitKey, str] | None = None,
     top_k: int | None = None,
     merge_table_rows: bool = True,
+    max_unit_chars: int = MAX_UNIT_CHARS_DEFAULT,
 ) -> list[Unit]:
     """把命中列表折成交付单元列表。
 
@@ -183,11 +210,13 @@ def collapse(
         # 仍然显式取 max，避免调用方违反前置条件时算出奇怪的结果。
         best = max(group, key=lambda item: item.score)
         if key[0] == UNIT_TABLE:
-            content = (tables or {}).get(key) or best.content
+            # 表格单元也受同一个上限管：整表可能是上万字，而它同样是 ``content``。
+            raw = (tables or {}).get(key) or best.content
+            content, truncated = _capped(raw, max_unit_chars), len(raw) > max_unit_chars
             expansion = EXPANSION_TABLE
         else:
-            content, expansion = _section_content(
-                key, group, sections=sections, cross_unit=cross_unit
+            content, expansion, truncated = _section_content(
+                key, group, sections=sections, cross_unit=cross_unit, max_chars=max_unit_chars
             )
         units.append(
             Unit(
@@ -198,6 +227,8 @@ def collapse(
                 content=content,
                 source_chunk_ids=tuple(hit.chunk_id for hit in group),
                 expansion=expansion,
+                truncated=truncated,
+                section_part=key.section_part,
                 heading_path=best.heading_path,
                 kb_id=best.kb_id,
             )
@@ -227,23 +258,76 @@ def _section_content(
     *,
     sections: Mapping[UnitKey, SectionRows] | None,
     cross_unit: bool,
-) -> tuple[str, str]:
-    """决定这一节给多大范围：整节、邻居窗口，还是只能退回命中片自身。"""
+    max_chars: int,
+) -> tuple[str, str, bool]:
+    """决定这一节给多大范围：覆盖窗口，再按预算从两端收缩。
+
+    返回 ``(正文, expansion, 是否裁过)``。
+    """
 
     rows = (sections or {}).get(key)
     if not rows:
         # 拿不到同节内容（比如文档刚被删）时用命中片自身拼。宁可少上下文，
         # 也不能让这条结果变成空——空结果比短结果更糟。
-        return "\n\n".join(hit.content for hit in group), EXPANSION_CHUNK
+        return _capped("\n\n".join(hit.content for hit in group), max_chars), EXPANSION_CHUNK, False
 
     hit_ids = {hit.chunk_id for hit in group}
-    # 同一单元命中 ≥2 片、或本次检索跨了多个单元 → 整节。
-    if cross_unit or len(hit_ids) >= 2:
-        return "\n\n".join(row[1] for row in rows), EXPANSION_PARENT
-
     positions = [index for index, (_, _, cid) in enumerate(rows) if cid in hit_ids]
     if not positions:
-        return "\n\n".join(row[1] for row in rows), EXPANSION_PARENT
-    centre = positions[0]
-    window = rows[max(0, centre - 1) : centre + 2]
-    return "\n\n".join(row[1] for row in window), EXPANSION_NEIGHBORS
+        text, truncated = _shrink(rows, 0, len(rows) - 1, 0, len(rows) - 1, max_chars)
+        return text, EXPANSION_PARENT, truncated
+
+    # 命中片覆盖区间 + 两侧各一片：**连续的一段**，不造缺口。
+    span_first, span_last = min(positions), max(positions)
+    first = max(0, span_first - 1)
+    last = min(len(rows) - 1, span_last + 1)
+    text, truncated = _shrink(rows, first, last, span_first, span_last, max_chars)
+    return text, EXPANSION_NEIGHBORS, truncated
+
+
+def _length(rows: SectionRows, first: int, last: int) -> int:
+    """这一段拼起来有多长（含 ``\\n\\n`` 分隔）。"""
+
+    return sum(len(rows[index][1]) for index in range(first, last + 1)) + 2 * (
+        last - first
+    )
+
+
+def _shrink(
+    rows: SectionRows,
+    first: int,
+    last: int,
+    span_first: int,
+    span_last: int,
+    max_chars: int,
+) -> tuple[str, bool]:
+    """从两端收缩到预算内：先砍离命中区间更远的那一侧。
+
+    为什么按「边距」而不是「先砍尾巴」：命中片在节中间时，两侧的邻居价值相当，
+    按边距砍能让窗口尽量对称；而命中片本身在预算内时**永远不动**它——那是这条结果
+    存在的理由。只有连命中片都装不下才硬截（``truncated`` 仍然置位）。
+    """
+
+    truncation_happened = False
+    while _length(rows, first, last) > max_chars and last > first:
+        left_margin = span_first - first
+        right_margin = last - span_last
+        if left_margin > 0 and left_margin >= right_margin:
+            first += 1
+        elif right_margin > 0:
+            last -= 1
+        else:
+            # 只剩命中片本身还超预算：交给下面那次硬截，别再缩窗口。
+            break
+        truncation_happened = True
+
+    text = "\n\n".join(rows[index][1] for index in range(first, last + 1))
+    if len(text) > max_chars:
+        return _capped(text, max_chars), True
+    return text, truncation_happened
+
+
+def _capped(text: str, max_chars: int) -> str:
+    """硬截（只在「一片就比预算长」时发生）。**不补省略号**：那是正文里没有的字符。"""
+
+    return text[:max_chars]

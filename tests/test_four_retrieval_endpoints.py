@@ -38,7 +38,6 @@ class _PlanLLM(u._RewriteLLM):
 
 def _client(monkeypatch: pytest.MonkeyPatch, *, llm=None, rewrite_enabled=False):
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", rewrite_enabled)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
     return u._offline_client(monkeypatch, llm=llm)
 

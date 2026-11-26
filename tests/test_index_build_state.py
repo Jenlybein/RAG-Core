@@ -78,9 +78,19 @@ class _StubIndexing:
 
 
 def _kb(active: str | None = "v1", *, kb_id: str = KB_ID) -> SimpleNamespace:
-    """一行知识库（检索 / 构建只读这几个字段）。"""
+    """一行知识库（检索 / 构建只读这几个字段）。
 
-    return SimpleNamespace(id=kb_id, tenant_id=TENANT_ID, active_index_version=active)
+    第 16 步 #207 起 ``start_build`` 还要读切块设置来记 ``params``，所以假行带上
+    ``split_strategy`` 与 ``settings``——少这两个键就不再像一行真库。
+    """
+
+    return SimpleNamespace(
+        id=kb_id,
+        tenant_id=TENANT_ID,
+        active_index_version=active,
+        split_strategy="structure",
+        settings={"chunk_size": 512, "section_part_max_chars": 2000},
+    )
 
 
 def _version(

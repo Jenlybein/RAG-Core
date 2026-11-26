@@ -30,7 +30,7 @@ from app.core import passwords
 from app.core.config import settings
 from app.models.account import Account
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.models.tenant import Tenant
 from app.services.trace_identity import trace_id_for
 from tests.fake_db import RecordingSession, override_all_db
@@ -65,8 +65,8 @@ def _account(account_id: str, username: str, tenant_id: str) -> Account:
     )
 
 
-def _trace(log_id: str, tenant_id: str, *, degraded: str | None = None) -> RetrievalTrace:
-    return RetrievalTrace(
+def _trace(log_id: str, tenant_id: str, *, degraded: str | None = None) -> UsageEvent:
+    return UsageEvent(
         id=log_id,
         tenant_id=tenant_id,
         trace_id=trace_id_for(log_id),
@@ -91,7 +91,7 @@ def _world() -> dict[type, list[Any]]:
             _account(ALICE_ID, "alice", TENANT_ALPHA),
             _account(BOB_ID, "bob", TENANT_BETA),
         ],
-        RetrievalTrace: [],
+        UsageEvent: [],
     }
 
 
@@ -130,7 +130,7 @@ def console() -> Iterator[_Harness]:
 
 
 def _stub_repositories(
-    monkeypatch: pytest.MonkeyPatch, *, rows: list[RetrievalTrace], scores: dict[str, int]
+    monkeypatch: pytest.MonkeyPatch, *, rows: list[UsageEvent], scores: dict[str, int]
 ) -> dict[str, Any]:
     """把两个仓储换成记录参数的桩：这一层要验的是「路由怎么调仓储」，不是 SQL。
 
@@ -142,7 +142,7 @@ def _stub_repositories(
     feedback_repo = importlib.import_module("app.repositories.retrieval_feedback_repository")
     seen: dict[str, Any] = {}
 
-    async def _list_recent(db: Any, *, tenant_id: str, limit: int) -> list[RetrievalTrace]:
+    async def _list_recent(db: Any, *, tenant_id: str, limit: int) -> list[UsageEvent]:
         seen["tenant_id"] = tenant_id
         seen["limit"] = limit
         return rows

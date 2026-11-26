@@ -56,6 +56,9 @@ class KeyPolicy(Base):
     retrieval_rerank: Mapped[bool] = mapped_column(Boolean, default=False)
     # 结果形状偏好：折叠成整节 / 表格行折回整表。默认都开（与既有响应默认一致）。
     include_parent: Mapped[bool] = mapped_column(Boolean, default=True)
+    #: 一条结果 `content` 的硬上限（字符，第 16 步 #207）。与库的节段阈值同值 2000：
+    #: 正常情况下节段 ≤ 阈值 ≤ 上限，永不触发；它管的是老索引、表格与「片边界超阈值」。
+    max_unit_chars: Mapped[int] = mapped_column(Integer, default=2000)
     expand_table_rows: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now, onupdate=now)
@@ -98,6 +101,8 @@ class KeyPolicySnapshot:
     retrieval_rerank: bool
     include_parent: bool
     expand_table_rows: bool
+    #: 一条结果 ``content`` 的硬上限（字符数，第 16 步 #207）。
+    max_unit_chars: int
     #: 只有内置开发身份的那份快照把它打开（见类文档末段）；缺省 = 受限。
     unrestricted_scope: bool = False
 
@@ -122,5 +127,6 @@ def policy_snapshot_of(row: KeyPolicy) -> KeyPolicySnapshot:
         retrieval_top_k=row.retrieval_top_k,
         retrieval_rerank=row.retrieval_rerank,
         include_parent=row.include_parent,
+        max_unit_chars=row.max_unit_chars,
         expand_table_rows=row.expand_table_rows,
     )

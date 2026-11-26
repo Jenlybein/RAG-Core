@@ -2,7 +2,7 @@
  * 控制面 Key 与密钥配置的类型：字段逐个照 `app/schemas/console_keys.py`，
  * 一个都不发明。
  *
- * 为什么要在前端再抄一份契约：`GET /console/keys` 一行的形状（明文 + masked + 它引用的
+ * 为什么要在前端再抄一份契约：`GET /console/keys` 一行的形状（打码形态 + 它引用的
  * 那套配置）是页面的全部输入；只写 `unknown` 或随手 `any` 会让「后端加了一列」和
  * 「后端改了一列的名字」两种事故都等到运行时才暴露。这里显式列出来，`vue-tsc` 就会
  * 在字段名对不上时先报错。
@@ -11,8 +11,8 @@
  *
  * - **`policy` 可以是 `null`**（结构上成立：配置独立于 Key，删 Key 不删配置，反过来一条
  *   指向已不存在配置的 Key 也可能存在）。页面不能拿它当「一定有配置」来渲染；
- * - **`key_value` 是明文**（ADR-0004）：列表接口本来就回原文，因为调试台要拿它打真实接口。
- *   masked 只是摘要形态；页面默认只显示 masked，看原文必须二次确认，且不落任何 storage；
+ * - **列表里没有原文**：库里只存 scrypt 哈希与末 5 位，完整 Key 只在签发响应
+ *   （`IssuedKeyData.key_plaintext`）里出现一次。调试台由用户自己把那一串粘进去；
  * - **第 13 步起没有档位**（ADR-0032）：`profile` / `custom_options` 已从后端表里删除，
  *   用多好由 `retrieval_mode` / `retrieval_top_k` / `retrieval_rerank` 三项直参数表达。
  *   界面上的 speed / balanced / quality 只是「一键填好这三项」的预设按钮，不是契约字段。
@@ -27,6 +27,15 @@ export const TOP_K_MIN = 1
 export const TOP_K_MAX = 50
 /** 新建配置时的默认返回条数：与后端 `KeyPolicyInput.retrieval_top_k` 的默认值一致。 */
 export const TOP_K_DEFAULT = 5
+
+/**
+ * 一条结果正文的硬上限（字符，第 16 步 #207）。与后端
+ * `KeyPolicySnapshot.max_unit_chars` 的默认值同源；正常情况永不触发（节段 ≤ 库阈值 ≤ 上限），
+ * 它管的是老索引、表格单元与「片边界使节段超阈值」。
+ */
+export const MAX_UNIT_CHARS_DEFAULT = 2000
+export const MAX_UNIT_CHARS_MIN = 200
+export const MAX_UNIT_CHARS_MAX = 20000
 
 /** 五项授权位对应的配置字段名；清单与后端 `KeyPolicyData` 的第二组一致。 */
 export const POLICY_CAPABILITY_FIELDS = [
@@ -49,13 +58,14 @@ export const POLICY_QUOTA_FIELDS = [
 ] as const
 export type PolicyQuotaField = (typeof POLICY_QUOTA_FIELDS)[number]
 
-/** 三项直参数 + 两个形状开关。 */
+/** 三项直参数 + 两个形状开关 + 正文上限。 */
 export const POLICY_PARAM_FIELDS = [
   'retrieval_mode',
   'retrieval_top_k',
   'retrieval_rerank',
   'include_parent',
   'expand_table_rows',
+  'max_unit_chars',
 ] as const
 
 /**
@@ -106,6 +116,8 @@ export interface KeyPolicyInput {
   /** 第五组：结果形状。 */
   include_parent: boolean
   expand_table_rows: boolean
+  /** 一条结果正文的硬上限（字符）。与 `top_k` 同类：这次调用要多少东西。 */
+  max_unit_chars: number
 }
 
 /** 一套配置（列表 / 签发 / 改配置的响应都用这一个形状）。 */
@@ -114,17 +126,25 @@ export interface KeyPolicyData extends KeyPolicyInput {
   name: string
 }
 
-/** 一条 Key（列表的一行，也是签发成功的返回值）。 */
+/** 一条 Key（列表的一行）。 */
 export interface KeyData {
   key_id: string
   label: string | null
-  /** 明文。只进内存：显示它必须二次确认，**绝不写 localStorage / sessionStorage / URL**。 */
-  key_value: string
-  /** `rc_live_…9f2c`，列表与日志用的第二形态。 */
+  /** `rc_live_…4f3a2`：库里只有哈希与末 5 位，这是**唯一**能看到的形态。 */
   key_masked: string
   status: string
   /** 配置缺失（或指向别的租户的坏数据）时如实为 `null`，不是编一套默认值。 */
   policy: KeyPolicyData | null
+}
+
+/**
+ * 签发成功的返回值：列表那一行 + **只此一次**的完整 Key。
+ *
+ * `key_plaintext` 只在签发响应里出现。此后连平台管理员都取不回来（库里只存 scrypt
+ * 哈希），所以页面必须在弹窗里当场把它交给人：复制走，或者直接去调试台试一把。
+ */
+export interface IssuedKeyData extends KeyData {
+  key_plaintext: string
 }
 
 export interface KeyListData {

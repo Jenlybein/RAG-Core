@@ -27,10 +27,11 @@ from __future__ import annotations
 import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.base import now
 from app.db.session_factory import async_session_factory, close_quietly
 from app.db.transaction import async_transaction
-from app.models.retrieval_trace import RetrievalTrace
-from app.repositories import retrieval_trace_repository
+from app.models.usage_event import UsageEvent
+from app.repositories import api_key_repository, retrieval_trace_repository
 
 logger = structlog.get_logger(__name__)
 
@@ -52,8 +53,14 @@ async def record_retrieval_trace(
     latency_ms: int,
     degraded_reason: str | None,
     empty_reason: str | None,
+    endpoint: str | None = None,
+    code: int | None = None,
+    key_id: str | None = None,
+    meter_r: int = 0,
+    meter_rr: int = 0,
+    meter_llm: int = 0,
 ) -> None:
-    """把这一次检索的结构记录写进归属索引；任何失败都降级成一条 warning。
+    """把这一次请求写进 ``usage_events``（账 + 归属索引）；任何失败都降级成一条 warning。
 
     参数全是**已经算好的事实**（身份、范围、结局），这里不做判定也不改口径：
     ``degraded_reason`` / ``empty_reason`` 直接来自本次响应的 ``metadata.retrieval``，
@@ -68,6 +75,13 @@ async def record_retrieval_trace(
     （:func:`app.services.trace_identity.delivered_doc_versions`）。**没有默认值**：
     这个参数一旦可以省略，「某条路径忘了记稿号」就会变成一列安静的 NULL，而这一列
     存在的全部意义正是「事后还答得出那次查的是第几稿」。多条路径都要显式给值。
+
+    ``endpoint`` / ``code`` / ``key_id`` / 三本账是第 14 步（#200）补的六个字段：它们让这一行
+    同时是**账**。默认值是给「迁移期还有老调用方」留的兼容口，**新的调用点必须全部显式给**——
+    尤其是 ``code``：写成默认的 ``None`` 等于「这条不是一次调用」，看板会把它归进历史汇总。
+
+    ``key_id`` 非空时顺手把 ``api_keys.last_used_at`` 推到这一刻：那一列从建表起就没人写过，
+    而记账点恰好知道「这把 Key 刚刚用了一次」。
     """
 
     session: AsyncSession | None = None
@@ -77,10 +91,16 @@ async def record_retrieval_trace(
         async with async_transaction(session):
             await retrieval_trace_repository.create(
                 session,
-                RetrievalTrace(
+                UsageEvent(
                     id=log_id,
                     tenant_id=tenant_id,
                     trace_id=trace_id,
+                    key_id=key_id,
+                    endpoint=endpoint,
+                    code=code,
+                    meter_r=meter_r,
+                    meter_rr=meter_rr,
+                    meter_llm=meter_llm,
                     kb_ids=list(kb_ids),
                     index_versions=dict(index_versions),
                     doc_versions=dict(doc_versions),
@@ -91,6 +111,8 @@ async def record_retrieval_trace(
                     empty_reason=empty_reason,
                 ),
             )
+            if key_id is not None:
+                await api_key_repository.touch_last_used(session, key_id, now())
     except Exception as exc:  # noqa: BLE001 - 旁路：任何失败都不许冒到检索返回值上
         logger.warning(
             TRACE_WRITE_FAILED_MESSAGE,

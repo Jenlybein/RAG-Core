@@ -18,7 +18,6 @@ const route = useRoute()
     <h2 class="page-title mt-4">这个地址没有对应页面</h2>
     <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
       路径 <code class="mono-tag">{{ route.fullPath }}</code> 不在调试台的路由里。
-      可能是地址写错了，也可能这一页在重构里被并进了别处。
     </p>
 
     <div class="mt-7 flex flex-wrap justify-center gap-2">

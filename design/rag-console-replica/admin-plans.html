@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>套餐管理 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 授权位与上限都是一排小胶囊：授权位是语义色，上限是共用玻璃药丸 .chip */
+      .chip-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: var(--sp-1);
+      }
+      /* 上限一列要放十一个胶囊，给它最宽；窄屏整表横向滚动 */
+      .table {
+        min-width: 880px;
+      }
+      /* 源码行是 align-top：套餐名与第一排胶囊齐顶 */
+      .table td {
+        vertical-align: top;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill is-active" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">套餐管理</h1>
+          </div>
+          <div class="page-actions">
+            <span class="t-14 muted">3 档</span>
+            <button class="btn btn--sm" type="button">刷新</button>
+          </div>
+        </div>
+
+        <section class="card card-body">
+          <div class="table-wrap">
+            <table class="table">
+              <colgroup>
+                <col style="width: 168px" />
+                <col style="width: 250px" />
+                <col />
+                <col style="width: 160px" />
+                <col style="width: 88px" />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="th-label" scope="col">套餐</th>
+                  <th class="th-label" scope="col">授权位</th>
+                  <th class="th-label" scope="col">上限</th>
+                  <th class="th-label" scope="col">更新时间</th>
+                  <th class="th-label" scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>
+                    <p class="strong">免费版</p>
+                    <p class="sub mono">free</p>
+                  </td>
+                  <td>
+                    <div class="chip-row">
+                      <span class="badge badge--ok">检索</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="chip-row">
+                      <span class="chip" title="检索 QPS">检索 QPS 3 次/秒</span>
+                      <span class="chip" title="日检索上限">检索日上限 500 次/天</span>
+                      <span class="chip" title="知识库上限">库 1 个</span>
+                      <span class="chip" title="单次检索库数">单次库 1 个</span>
+                      <span class="chip" title="每库文档上限">每库文档 30 个</span>
+                      <span class="chip" title="并发处理文档">并发 1 个</span>
+                      <span class="chip" title="重排 QPS">重排 QPS 0 次/秒</span>
+                      <span class="chip" title="日重排上限">重排日上限 0 次/天</span>
+                      <span class="chip" title="模型 QPS">模型 QPS 0 次/秒</span>
+                      <span class="chip" title="日模型上限">模型日上限 0 次/天</span>
+                      <span class="chip" title="top_k 封顶">top_k 5 条</span>
+                    </div>
+                  </td>
+                  <td class="num muted t-12">2026-11-19 09:26:11</td>
+                  <td>
+                    <button class="btn btn--sm" type="button">编辑</button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <p class="strong">进阶版</p>
+                    <p class="sub mono">plus</p>
+                  </td>
+                  <td>
+                    <div class="chip-row">
+                      <span class="badge badge--ok">检索</span>
+                      <span class="badge badge--ok">查询改写</span>
+                      <span class="badge badge--ok">查询分解</span>
+                      <span class="badge badge--ok">研究模式</span>
+                      <span class="badge badge--ok">重排</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="chip-row">
+                      <span class="chip" title="检索 QPS">检索 QPS 10 次/秒</span>
+                      <span class="chip" title="日检索上限">检索日上限 5,000 次/天</span>
+                      <span class="chip" title="知识库上限">库 5 个</span>
+                      <span class="chip" title="单次检索库数">单次库 3 个</span>
+                      <span class="chip" title="每库文档上限">每库文档 200 个</span>
+                      <span class="chip" title="并发处理文档">并发 2 个</span>
+                      <span class="chip" title="重排 QPS">重排 QPS 3 次/秒</span>
+                      <span class="chip" title="日重排上限">重排日上限 1,000 次/天</span>
+                      <span class="chip" title="模型 QPS">模型 QPS 1 次/秒</span>
+                      <span class="chip" title="日模型上限">模型日上限 300 次/天</span>
+                      <span class="chip" title="top_k 封顶">top_k 10 条</span>
+                    </div>
+                  </td>
+                  <td class="num muted t-12">2026-11-06 17:48:20</td>
+                  <td>
+                    <button class="btn btn--sm" type="button">编辑</button>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td>
+                    <p class="strong">专业版</p>
+                    <p class="sub mono">pro</p>
+                  </td>
+                  <td>
+                    <div class="chip-row">
+                      <span class="badge badge--ok">检索</span>
+                      <span class="badge badge--ok">查询改写</span>
+                      <span class="badge badge--ok">查询分解</span>
+                      <span class="badge badge--ok">研究模式</span>
+                      <span class="badge badge--ok">重排</span>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="chip-row">
+                      <span class="chip" title="检索 QPS">检索 QPS 50 次/秒</span>
+                      <span class="chip" title="日检索上限">检索日上限 25,000 次/天</span>
+                      <span class="chip" title="知识库上限">库 50 个</span>
+                      <span class="chip" title="单次检索库数">单次库 5 个</span>
+                      <span class="chip" title="每库文档上限">每库文档 5,000 个</span>
+                      <span class="chip" title="并发处理文档">并发 10 个</span>
+                      <span class="chip" title="重排 QPS">重排 QPS 15 次/秒</span>
+                      <span class="chip" title="日重排上限">重排日上限 5,000 次/天</span>
+                      <span class="chip" title="模型 QPS">模型 QPS 5 次/秒</span>
+                      <span class="chip" title="日模型上限">模型日上限 1,500 次/天</span>
+                      <span class="chip" title="top_k 封顶">top_k 15 条</span>
+                    </div>
+                  </td>
+                  <td class="num muted t-12">2026-11-21 08:03:55</td>
+                  <td>
+                    <button class="btn btn--sm" type="button">编辑</button>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

@@ -17,6 +17,13 @@ from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.models.knowledge_base import (
+    MAX_CHUNK_SIZE,
+    MAX_SECTION_PART_MAX_CHARS,
+    MIN_CHUNK_SIZE,
+    MIN_SECTION_PART_MAX_CHARS,
+    SplitStrategy,
+)
 from app.schemas.document import DocumentListItem
 
 
@@ -37,7 +44,67 @@ class KnowledgeBaseNode(BaseModel):
     split_strategy: str
     allowed_formats: list[str]
     chunk_size: int
+    #: 节段阈值（第 16 步 #207）：库的切块设置之一，读侧要回显才能「改了再改」。
+    section_part_max_chars: int = 2000
+    #: 库当前设置与**生效那一版**的构建参数已不一致 → 这个库需要重建才生效。
+    #: 老版本行没留参数（``params`` 为 NULL）时也判 ``True``：宁可多提示一次。
+    needs_rebuild: bool = False
     documents: list[DocumentListItem]
+
+
+class UpdateKBSettingsRequest(BaseModel):
+    """改库的切块设置（第 16 步 #207）。
+
+    只收「改了就必须重建」的那几项 + 名称/描述。**不传 = 不改**（``None`` 语义），
+    否则一次只想改阈值的请求会把策略也重置掉。
+
+    ``confirm`` 是显式的二次确认：这次改动会触发整库重建（可能几十分钟的 Worker），
+    前端在确认弹窗里点过之后才带 ``true``。少了它，一次误点就是一次全库重嵌入。
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    description: str | None = None
+    split_strategy: SplitStrategy | None = None
+    chunk_size: int | None = Field(
+        default=None, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE
+    )
+    section_part_max_chars: int | None = Field(
+        default=None, ge=MIN_SECTION_PART_MAX_CHARS, le=MAX_SECTION_PART_MAX_CHARS
+    )
+    confirm: bool = False
+
+
+class UpdateKBSettingsData(BaseModel):
+    """改设置的回执：新设置 + 这次重建的版本。"""
+
+    kb_id: str
+    name: str
+    split_strategy: str
+    allowed_formats: list[str]
+    chunk_size: int
+    section_part_max_chars: int
+    build_id: str
+    build_version: str
+
+
+class KBSettingsPreviewData(BaseModel):
+    """改设置前的确认弹窗：当前设置、生效版本参数、以及这次重建的量。"""
+
+    kb_id: str
+    name: str
+    split_strategy: str
+    allowed_formats: list[str]
+    chunk_size: int
+    section_part_max_chars: int
+    #: 生效那一版的构建参数；``None`` = 老版本没留参数（不是「没有参数」）。
+    live_params: dict[str, object] | None = None
+    live_version: str | None = None
+    needs_rebuild: bool
+    build_running: bool
+    documents_to_rebuild: int
+    chunks_to_rebuild: int
 
 
 class KnowledgeBaseTreeData(BaseModel):

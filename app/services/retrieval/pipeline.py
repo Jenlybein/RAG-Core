@@ -4,11 +4,12 @@
 这次是不是降级），但**不负责**把它翻译成 HTTP 响应——响应壳与业务码归
 ``app.services.rag_service``。
 
-**两条通道拿不同的查询**（票 6 / #31）：查询优化在召回之前把用户那句话加工成
-``vector_queries``（向量一路逐句都搜；改写成功时是原句 + 改写句）、``effective_query``
-（给重排）与 ``search_query``（给关键词一路）。三者不同是设计而不是 bug——同义词补的
-是字面匹配，改写补的是语义；合成一句等于用其中一路的优化去污染另一路。两个开关都关
-时 ``vector_queries`` 只有原句，本模块的行为与票 4 逐字段一致。
+**两条通道拿同一组查询**（第 15 步起）：查询优化在召回之前把用户那句话加工成
+``recall_queries``（原句 + 改写句）。两路**都**逐句搜、各自并成一个池——向量逐句嵌、
+关键词逐句查，合并规则共用 ``merge_rows``（键 ``(kb_id, chunk_id)``、分数取更高）。
+第 15 步之前关键词只拿一句（同义词扩展后的改写句），两路对「这次到底问的是什么」
+看法不一致：改写把口语换成文档说法之后，字面路就再也搜不到只含原句词面的切片。
+只有一句时两路都退回单次调用，本模块的行为与票 4 逐字段一致。
 
 四条不许动的约定：
 
@@ -24,9 +25,9 @@
    ``app/services/retrieval/rerank.py`` 里的 ``rerank failed``；一律不拼异常文本——
    调用方按码做判断，异常文案变了不该影响判断。可见性拒绝（20008）不属于「通道故障」，
    照旧抛出。
-4. **多库 = 每个查询一次全局召回**：关键词一路查一次；向量一路按 ``vector_queries``
-   逐句各查一次，每次都覆盖全部「库 + 索引版本」配对，再并成**一个**池进既有 RRF
-   （#31；池内去重与取优在 ``vector_recall.py``，**不是**再嵌一层融合）。
+4. **多库 = 每个查询一次全局召回**：两路各按 ``recall_queries`` 逐句各查一次，每次都
+   覆盖全部「库 + 索引版本」配对，再并成**一个**池进既有 RRF（#31；池内去重与取优在
+   ``merge.py``，**不是**再嵌一层融合）。
    按库循环召回再合并是假均衡——不相关的库也各占名额，把真正该进来的切片挤掉。
    可见性校验不在这里：它在 ``rag_service.retrieve`` 进入任何分支之前统一做一遍
    （票 25），两条分支内不再重复。
@@ -55,6 +56,7 @@ from app.observability.stage_timing import (
     StageTimer,
 )
 from app.services.retrieval.fusion import fuse_by_rrf
+from app.services.retrieval.keyword_recall import keyword_recall
 from app.services.retrieval.rerank import rerank_stage
 from app.services.retrieval.vector_recall import vector_recall
 
@@ -95,9 +97,8 @@ async def hybrid_retrieve(
     db: AsyncSession,
     tenant_id: str,
     index_versions: Mapping[str, str],
-    vector_queries: Sequence[str],
+    recall_queries: Sequence[str],
     rerank_query: str,
-    keyword_query: str,
     top_k: int,
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
@@ -122,11 +123,11 @@ async def hybrid_retrieve(
     ``index_versions`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
     本模块不再自己造一份——范围是「一次调用」的属性，而这条链路会被多查询各调一次。
 
-    **两条通道拿不同的查询**（``vector_queries`` / ``keyword_query``）：查询优化在
-    召回之前就把一句话加工成「向量逐句列表 + 关键词一句 + 重排一句」。改写成功时
-    ``vector_queries`` 是原句与改写句两句，两句各自召回并成一个池（#31）；关掉开关时
-    它是单元素序列，行为与票 4 逐字节一致。重排仍只看 ``rerank_query``（``effective_query``：
-    「用户最终想问什么」），不看召回用的两句。
+    **两条通道拿同一组查询**（``vector_queries`` / ``keyword_queries``）：查询优化在召回
+    之前就把一句话加工成「原句 + 改写句」这一组，两路**都**逐句搜、各自并成一个池
+    （#31 起向量如此，第 15 步起关键词也如此）。改写成两句时两路各搜两次；只有一句时
+    两路都退回单次调用，行为与票 4 逐字节一致。重排看的是 ``rerank_query``——它是**原句**
+    （第 15 步：重排与改写无关），不看召回用的那两句。
 
     为什么不留 ``vector_query: str`` 的单数别名：唯一调用方是组合根，双形态只会把
     「这次到底是替换还是并集」变成调用方的隐式选择——那不会报错，只会静默地把
@@ -165,7 +166,7 @@ async def hybrid_retrieve(
                 db,
                 tenant_id=tenant_id,
                 index_versions=index_versions,
-                queries=vector_queries,
+                queries=recall_queries,
                 top_k=depth,
                 embedding_factory=embedding_factory,
                 vector_factory=vector_factory,
@@ -174,7 +175,7 @@ async def hybrid_retrieve(
             _keyword_branch(
                 tenant_id=tenant_id,
                 index_versions=index_versions,
-                query=keyword_query,
+                queries=recall_queries,
                 top_k=depth,
                 keyword_factory=keyword_factory,
                 stage_timer=timer,
@@ -312,38 +313,33 @@ async def _keyword_branch(
     *,
     tenant_id: str,
     index_versions: Mapping[str, str],
-    query: str,
+    queries: Sequence[str],
     top_k: int,
     keyword_factory: Callable[[], Any],
     stage_timer: StageTimer,
 ) -> list[dict]:
-    """关键词通道：租户 + 库/版本配对过滤；本身是异步 HTTP，不必进线程。
+    """关键词通道：**每句各查一次**，并成一个池（与向量路同一个合并规则，#15 步）。
 
     可见性不在这里校验：由内核的调用方（``rag_service.retrieve``）在进入任何分支之前
     统一预校验一次（两条分支各查一遍 = 每库 2 次查询，且「拒绝」会有两个来源）。
+
+    两句就查两次（第 15 步）：与向量路同形——各查一次再 ``merge_rows`` 合并。刻意
+    **不**做「一个请求里 should 两句」：那会把分数变成两句相加（与单句时的分数不可比），
+    而且召回池只有 ``top_k`` 条而不是各 ``top_k`` 条并起来——一句话独有的命中会被挤掉。
+    具体的 gather / 合并 / 错误翻译都在 ``keyword_recall`` 里，与 ``vector_recall`` 一一对称。
+
+    **任一句失败就是这一路失败**：绝不拿「另一句的半份结果」冒充完整召回池。失败由上层
+    按既有规则处理（混合降级 / 单模式硬失败）。
 
     失败的那一路也留下这一段耗时：它确实被走过、也的确花了时间（哪怕只是拒绝服务），
     把失败从计量里抹掉会让「这一次为什么慢」少掉最该看的那一行。
     """
 
     with stage_timer.measure(STAGE_KEYWORD_RECALL):
-        provider = keyword_factory()
-        if not provider.available:
-            # 空实现是「能力不存在」，不是「查过了没命中」——混合模式下它是这一路失败。
-            raise AppError(
-                ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
-            )
-
-        try:
-            rows = await provider.keyword_search(
-                query,
-                tenant_id=tenant_id,
-                index_versions=dict(index_versions),
-                top_k=top_k,
-            )
-        except AppError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - 引擎故障一律归为「这一路不可用」
-            raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
-
-    return list(rows[:top_k])
+        return await keyword_recall(
+            provider=keyword_factory(),
+            tenant_id=tenant_id,
+            index_versions=index_versions,
+            queries=queries,
+            top_k=top_k,
+        )

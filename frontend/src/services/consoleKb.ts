@@ -8,13 +8,17 @@ import type {
   DocumentUploadReceipt,
   DocumentVersionList,
 } from '../types/document'
+import { KB_SECTION_PART_DEFAULT } from '../types/knowledgeBase'
 import type {
   ConsoleTreeData,
   ConsoleTreeDocument,
   CreatedKnowledgeBase,
   CreateKnowledgeBaseRequest,
+  KbSettingsPreview,
   KnowledgeBaseDeleteReceipt,
   KnowledgeBaseNode,
+  UpdateKbSettingsReceipt,
+  UpdateKbSettingsRequest,
 } from '../types/knowledgeBase'
 
 /**
@@ -32,6 +36,24 @@ import type {
  * 回执也复用数据面的模型（换的是门，不是契约）。
  */
 export const CONSOLE_KB_TREE_PATH = '/console/knowledge-bases/tree'
+
+/** 改库切块设置（第 16 步 #207）：提交即整库重建，所以请求体里带 `confirm`。 */
+export function kbSettingsPath(kbId: string): string {
+  return `/console/knowledge-bases/${kbId}/settings`
+}
+
+/** 确认弹窗前读的那份事实：当前设置、生效参数、这次重建的量。 */
+export function fetchKbSettingsPreview(kbId: string): Promise<KbSettingsPreview> {
+  return consoleHttp.get<KbSettingsPreview>(`${kbSettingsPath(kbId)}/preview`)
+}
+
+/** 改设置并自动重建。`confirm=false` 时后端回 20002（不确认就不动）。 */
+export function updateKbSettingsConsole(
+  kbId: string,
+  payload: UpdateKbSettingsRequest,
+): Promise<UpdateKbSettingsReceipt> {
+  return consoleHttp.patch<UpdateKbSettingsReceipt>(kbSettingsPath(kbId), payload)
+}
 
 /** 读树：租户来自会话，后端不做白名单收窄（控制面要看整个租户）。 */
 export function fetchConsoleTree(): Promise<ConsoleTreeData> {
@@ -186,6 +208,11 @@ export function toKnowledgeBaseNodes(data: ConsoleTreeData): KnowledgeBaseNode[]
     split_strategy: node.split_strategy,
     allowed_formats: node.allowed_formats ?? [],
     chunk_size: node.chunk_size,
+    // 第 16 步 #207：老缓存里没有这两项时给安全默认——阈值按后端默认 2000，
+    // 而「需重建」缺省成 `false`：这里没有库的版本参数可比，猜 `true` 会让列表上
+    // 每一条都挂一个「需重建」，那种噪音会让人学会忽略这个提示。
+    section_part_max_chars: node.section_part_max_chars ?? KB_SECTION_PART_DEFAULT,
+    needs_rebuild: node.needs_rebuild ?? false,
     documents: (node.documents ?? []).map(toDocumentListItem),
   }))
 }

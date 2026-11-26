@@ -1,4 +1,5 @@
 import { consoleHttp } from '../lib/consoleHttp'
+import type { UsageScope } from '../types/usage'
 
 /**
  * 管理端「观测总览」的三个只读端点（`/console/admin/observability/*`）。
@@ -20,7 +21,19 @@ export type ObsWindow = (typeof OBS_WINDOWS)[number]
 export interface ObservabilityOverview {
   window_hours: number
   since: string
+  /** 三段式：全部 / 只看成功 / 只看失败（第 14 步）。 */
+  scope: UsageScope
+  /**
+   * 降级率 / 空结果率在这一档里**有没有意义**。
+   *
+   * 只有 `ok` 为真：被挡下的请求既不降级也不是空结果。另外两档要显示「—」而不是 0。
+   */
+  rates_meaningful: boolean
   total: number
+  /** 成功数（code = 0）与失败数（code 非 0，不含「未统计」）。 */
+  ok: number
+  failed: number
+  unknown_code: number
   latency: { p50: number | null; p95: number | null; worst: number | null }
   degraded: number
   empty: number
@@ -61,8 +74,11 @@ export interface ObservabilityStack {
   stack_layer_available: boolean
 }
 
-export function observabilityOverviewQueryKey(hours: number): readonly unknown[] {
-  return ['console', 'admin', 'observability', 'overview', hours]
+export function observabilityOverviewQueryKey(
+  hours: number,
+  scope: UsageScope = 'all',
+): readonly unknown[] {
+  return ['console', 'admin', 'observability', 'overview', hours, scope]
 }
 
 export function observabilityStagesQueryKey(hours: number): readonly unknown[] {
@@ -73,9 +89,12 @@ export function observabilityStackQueryKey(): readonly unknown[] {
   return ['console', 'admin', 'observability', 'stack']
 }
 
-export function fetchObservabilityOverview(hours: number): Promise<ObservabilityOverview> {
+export function fetchObservabilityOverview(
+  hours: number,
+  scope: UsageScope = 'all',
+): Promise<ObservabilityOverview> {
   return consoleHttp.get<ObservabilityOverview>('/console/admin/observability/overview', {
-    params: { hours },
+    params: { hours, scope },
   })
 }
 

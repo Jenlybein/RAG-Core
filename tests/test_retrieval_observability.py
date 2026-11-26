@@ -385,6 +385,7 @@ def _options(*, mode: str, rerank: bool = False, top_k: int = 2) -> RetrievalOpt
         top_k=top_k,
         fold_to_sections=False,
         expand_table_rows=False,
+        max_unit_chars=2000,
         rerank=rerank,
         tenant_policy=None,
     )

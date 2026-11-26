@@ -31,6 +31,7 @@ import ResponseFields from '../components/ResponseFields.vue'
 import RunSummary from '../components/RunSummary.vue'
 import StageWaterfall from '../components/StageWaterfall.vue'
 import { ApiError } from '../lib/envelope'
+import { keyIdOf } from '../lib/apiKey'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
 import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
@@ -173,21 +174,61 @@ const trialableCount = computed(
 )
 
 /**
- * 把选中的 Key 同步进 store（id + 原文 + 白名单），并把白名单外的已选库摘掉。
+ * 把用户粘进来的 Key 落到请求层：id + 原文 + 白名单，一次写完，并把白名单外的已选库摘掉。
  *
- * 为什么在 watch 里也调一次：`/keys` 改完白名单回到本页时，`['keys']` 会重新拉取，
- * 同一把 Key 的白名单可能已经变了；只靠「用户手动切 Key」不会重算，于是已选库里会留着
- * 一个刚被移除授权的库，下一次检索才会以 20008 失败。
+ * 原文从哪来：**用户自己粘**。库里只存 scrypt 哈希与末 5 位，列表接口没有原文可给，
+ * 所以这里先本地解出串里的行身份证（`lib/apiKey`），再在已拉取的列表里找到那一行——
+ * 于是「这把 Key 的配置」仍然显示得出来，而密钥本体只在 `Authorization` 头里出现。
+ *
+ * 解不出来 / 列表里没有这一行，都不落请求层：请求层里放一把明知不对的 Key，只会让下一次
+ * 检索拿到 20010，而那个码看起来像「你粘的 Key 失效了」——事实是它压根没粘对。
  */
-function syncSelectedKey(key: KeyData): void {
+const pasteDialogOpen = ref(false)
+const pastedKey = ref('')
+
+function openPasteDialog(): void {
+  pastedKey.value = ''
+  pasteDialogOpen.value = true
+}
+
+function submitPastedKey(): void {
+  const raw = pastedKey.value.trim()
+  if (raw === '') {
+    ElMessage.warning('先把 Key 粘进来')
+    return
+  }
+  const keyId = keyIdOf(raw)
+  if (keyId === null) {
+    ElMessage.error(
+      '格式不对：应当是 rc_live_<key_id>.<32 位密钥>。列表里显示的是打码形态（rc_live_…4f3a2），不能拿来调用。',
+    )
+    return
+  }
+  const key = keys.value.find((item) => item.key_id === keyId)
+  if (key === undefined) {
+    ElMessage.error('这把 Key 不在本租户的列表里：可能已被删除，或者它来自另一套环境')
+    return
+  }
   const removed = store.selectKey({
-    keyId: key.key_id,
-    keyValue: key.key_value,
-    // 这一轮先按**配置里的白名单**裁一次（快，不用等网络），等服务端那份真实清单回来
-    // 再裁一次（准）。两次都用同一个 store 方法，所以「请求层用的 Key」与「页面上勾的库」
-    // 只有一条同步路径。
+    keyId,
+    keyValue: raw,
     allowedKbIds: key.policy?.allowed_kb_ids ?? [],
   })
+  if (removed.length > 0) {
+    ElMessage.warning(`这些库不在新 Key 的白名单里，已移出选择：${removed.join('、')}`)
+  }
+  pastedKey.value = ''
+  pasteDialogOpen.value = false
+}
+
+/**
+ * 列表刷新之后只同步白名单，**不碰原文**。
+ *
+ * 走 `store.resyncScope` 而不是 `selectKey`：这一侧手里没有原文，若沿用后者就得给一个
+ * 空串，而那会把请求层的 Key 清掉——下一次检索于是变成「还没选 Key」。
+ */
+function resyncSelectedScope(key: KeyData): void {
+  const removed = store.resyncScope(key.policy?.allowed_kb_ids ?? [])
   if (removed.length > 0) {
     ElMessage.warning(`这些库不在新 Key 的白名单里，已移出选择：${removed.join('、')}`)
   }
@@ -197,10 +238,10 @@ watch(
   selectedKey,
   (key) => {
     if (key === null) return
-    // 只在「页面认定的那把」与 store 里的一致时同步：切换 Key 由 onKeyChange 负责，
+    // 只在「页面认定的那把」与 store 里的一致时同步：切换 Key 由 submitPastedKey 负责，
     // 这里管的是「同一把 Key 的数据刷新了」（例如刚在 /keys 改过白名单）。
     if (key.key_id !== store.selectedKeyId) return
-    syncSelectedKey(key)
+    resyncSelectedScope(key)
   },
   { immediate: true },
 )
@@ -208,9 +249,9 @@ watch(
 /**
  * 服务端清单回来之后**再裁一次**——这一次用的是真答案。
  *
- * 第一轮（`syncSelectedKey`）只能按配置里的白名单裁，因为那时网络还没回来；而配置是
+ * 第一轮（`resyncSelectedScope`）只能按配置里的白名单裁，因为那时网络还没回来；而配置是
  * 「意图」，服务端返回的是「意图应用到真实库表之后的结果」（库可能被删、被租户过滤）。
- * 两轮都走同一个 `store.selectKey`，所以不会出现两套裁剪逻辑。
+ * 两轮都走同一个 `store.resyncScope`，所以不会出现两套裁剪逻辑。
  *
  * 只在 `isSuccess` 时裁：请求还在飞时 `myKbs` 是空数组，拿它当「一个库都没有」会把用户
  * 的选择清空——那是把「还没问到」当成「没有」。
@@ -221,11 +262,7 @@ watch(
     if (!loaded) return
     const key = selectedKey.value
     if (key === null) return
-    const removed = store.selectKey({
-      keyId: key.key_id,
-      keyValue: key.key_value,
-      allowedKbIds: rows.map((kb) => kb.kb_id),
-    })
+    const removed = store.resyncScope(rows.map((kb) => kb.kb_id))
     if (removed.length > 0) {
       ElMessage.warning(
         `这些库已不在这把 Key 的可用范围内，已移出选择：${removed.join('、')}`,
@@ -246,37 +283,6 @@ watch(
   },
   { immediate: true },
 )
-
-/**
- * 只有一把 Key 时直接选上。
- *
- * 与上传页「清单里只有一个库就不再让用户点一次」是同一条规矩：这里点一次没有任何
- * 信息量，而不选就没法检索——多出来的这一次点击纯粹是摩擦。两把以上**不猜**：
- * 那时候选哪把是有意义的决定。
- *
- * 条件里的 `store.selectedKeyId === null` 保证它不会覆盖用户的选择（含从别处带过来的）。
- */
-watch(
-  [keys, keysLoaded],
-  ([rows, loaded]) => {
-    if (!loaded) return
-    if (store.selectedKeyId !== null) return
-    if (rows.length !== 1) return
-    syncSelectedKey(rows[0])
-  },
-  { immediate: true },
-)
-
-function onKeyChange(value: unknown): void {
-  const keyId = typeof value === 'string' ? value : null
-  if (keyId === null || keyId === '') {
-    store.clearKey()
-    return
-  }
-  const key = keys.value.find((item) => item.key_id === keyId)
-  if (key === undefined) return
-  syncSelectedKey(key)
-}
 
 /**
  * 选中 Key 的**只读**配置摘要：检索参数 / 能力 / 限额 / 结果形状。
@@ -416,7 +422,7 @@ const queryText = ref('')
 const trimmedQuery = computed(() => queryText.value.trim())
 /** 按钮禁用时把原因说出来：只灰掉按钮不说原因，用户会以为自己点错了。 */
 const blockReason = computed(() => {
-  if (selectedKey.value === null) return '还没选 Key —— 点「修改配置」选一把'
+  if (selectedKey.value === null) return '还没粘 Key —— 点「修改配置」把它粘进来'
   if (policy.value === null) return '这把 Key 没有可用的密钥配置 —— 去 Key 管理页改一下'
   if (store.selectedCount === 0) return '还没勾库 —— 点「修改配置」勾选至少一个知识库'
   if (trimmedQuery.value === '') return '先写要检索的问题（全空白不算问题）'
@@ -781,7 +787,6 @@ async function sendRating(): Promise<void> {
   <section class="space-y-6">
   <PageHeader
     title="调试台"
-    subtitle="用这把 Key 打一次真实检索，并检查召回质量。"
   />
     <!-- ① 选 Key 与检索范围 -->
     <!--
@@ -882,7 +887,6 @@ async function sendRating(): Promise<void> {
               </span>
             </el-tooltip>
           </el-radio-group>
-          <p class="mt-1.5 text-xs text-muted">{{ currentCapability.hint }}</p>
         </div>
         <el-form label-position="top" @submit.prevent="submitRetrieve">
           <el-form-item>
@@ -931,44 +935,34 @@ async function sendRating(): Promise<void> {
       width="880px"
     >
       <div class="space-y-5 text-sm">
-        <!-- ① Key -->
+        <!-- ① Key：由用户自己粘（库里只存哈希，列表接口没有原文） -->
         <div>
-          <label class="mb-1.5 block text-xs text-muted">当前选中的 Key</label>
+          <label class="mb-1.5 block text-xs text-muted">当前 Key</label>
           <p v-if="keysPending" class="text-xs text-muted">正在读取 Key 列表…</p>
           <p v-else-if="keys.length === 0" class="text-xs text-[#7a5b00]">
             还没有任何 API Key：先去
             <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
-            签发一把。
+            签发一把——签发成功的那一次窗口里会把它显示出来，复制下来再到这儿粘贴。
           </p>
-          <el-select
-            v-else
-            :model-value="store.selectedKeyId ?? undefined"
-            class="w-full"
-            clearable
-            filterable
-            placeholder="选择一把 Key 来发起检索"
-            @change="onKeyChange"
-          >
-            <el-option
-              v-for="key in keys"
-              :key="key.key_id"
-              :value="key.key_id"
-              :label="`${key.label ?? '（未命名）'} · ${key.key_masked}`"
-            >
-              <span class="font-mono text-xs">{{ key.label ?? '（未命名）' }}</span>
-              <span class="ml-2 text-xs text-slate-400">{{ key.key_masked }}</span>
-              <span v-if="key.policy === null" class="ml-2 text-xs text-[#7a5b00]">
-                配置缺失
-              </span>
-            </el-option>
-          </el-select>
+          <div v-else class="flex flex-wrap items-center gap-2">
+            <el-button @click="openPasteDialog">
+              {{ selectedKey === null ? '粘贴 API Key' : '换一把 Key' }}
+            </el-button>
+            <span v-if="selectedKey !== null" class="text-xs text-muted">
+              当前：
+              <code class="font-mono">{{ selectedKey.label ?? '（未命名）' }}</code>
+              ·
+              <code class="font-mono">{{ selectedKey.key_masked }}</code>
+            </span>
+            <span v-else class="text-xs text-muted">还没粘：把签发时那一整条复制过来</span>
+          </div>
         </div>
 
         <div
           v-if="policy === null && selectedKey !== null"
           class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
         >
-          这把 Key 没有绑定的密钥配置（可能被删除了）：它连「查哪些库」都没有答案，去
+          这把 Key 没有绑定的密钥配置。去
           <RouterLink
             :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
             class="text-brand underline"
@@ -998,19 +992,8 @@ async function sendRating(): Promise<void> {
               已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
             </span>
           </div>
-          <p class="mt-1 text-xs text-muted">
-            只列这把 Key 能查的库
-            <el-tooltip
-              content="清单由服务端按这把 Key 的配置过滤（GET /api/v1/knowledge-bases），与检索用的是同一份判定"
-              placement="top"
-              :show-after="200"
-            >
-              <span class="cursor-help underline decoration-dotted underline-offset-2">来源</span>
-            </el-tooltip>
-          </p>
-
           <p v-if="store.selectedKeyId === null" class="mt-2.5 text-xs text-muted">
-            先选一把 Key
+            先粘一把 Key
           </p>
           <p v-else-if="treePending" class="mt-2.5 text-xs text-muted">
             正在问服务端：这把 Key 能查哪些库…
@@ -1025,8 +1008,7 @@ async function sendRating(): Promise<void> {
             v-else-if="kbs.length === 0"
             class="mt-2.5 rounded-control border border-line bg-surface-muted px-3 py-2 text-xs text-slate-600"
           >
-            这把 Key 目前查不到任何库：可能这把 Key 一个库都没授权（去 Key 管理页改配置），
-            也可能本租户还没有库（先去建库并上传文档）。
+            这把 Key 目前查不到任何库。
             <RouterLink to="/keys" class="text-brand underline">去改 Key 配置</RouterLink>
           </div>
           <el-checkbox-group
@@ -1054,7 +1036,7 @@ async function sendRating(): Promise<void> {
             v-if="treeLoaded && unpickableSelected.length > 0"
             class="mt-3 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
           >
-            <p>这些已选库不在当前 Key 的白名单里（或不在这棵树的可见范围里），带它们检索大概率会失败：</p>
+            <p>这些已选库不在当前 Key 的白名单里，带它们检索大概率会失败：</p>
             <p class="mt-1 text-slate-700">{{ unpickableSelected.join('、') }}</p>
             <el-button class="mt-2" size="small" @click="dropUnpickable">移除这些选择</el-button>
           </div>
@@ -1073,12 +1055,45 @@ async function sendRating(): Promise<void> {
       </template>
     </el-dialog>
 
+    <!-- 粘贴 Key：原文只停在这个输入框与文件内的内存里，不写 storage、不进 URL -->
+    <el-dialog v-model="pasteDialogOpen" append-to-body title="粘贴 API Key" width="620px">
+      <p class="mb-2 text-sm text-ink">
+        完整 Key 只在签发时显示一次（列表里只有
+        <code class="font-mono">rc_live_…4f3a2</code>）。把那一整条
+        <code class="font-mono">rc_live_&lt;key_id&gt;.&lt;32 位密钥&gt;</code> 粘进来，
+        这一页才能拿它去调数据面。
+      </p>
+      <el-input
+        v-model="pastedKey"
+        type="password"
+        show-password
+        autocomplete="off"
+        spellcheck="false"
+        placeholder="rc_live_…"
+        class="font-mono"
+        @keyup.enter="submitPastedKey"
+      />
+      <p class="mt-2 text-xs text-muted">
+        只留在内存：刷新页面就要重新粘一次。别把它写进任何文档或聊天记录。
+      </p>
+      <template #footer>
+        <div class="flex justify-end gap-2">
+          <el-button @click="pasteDialogOpen = false">取消</el-button>
+          <el-button type="primary" @click="submitPastedKey">用它发起检索</el-button>
+        </div>
+      </template>
+    </el-dialog>
+
     <!--
       主体两栏：左边是「这一次检索的答案」，右边是「诊断」（旁证 / 接口清单）。
       窄屏自动落成单列。之前四张卡一路往下堆，一屏里既有正文又有仪表读数和接口表，
       眼睛没有落点；拆成两栏之后主路径（配置 → 提问 → 结果）始终在左栏一条线上。
+
+      断点用 lg（1024px）而不是 xl（1280px）：1280 起才分栏的话，1366×768 的笔记本
+      去掉浏览器边框就落在 1200 上下，正好永远看不到分栏——实际表现就是「一路往下堆」。
+      右栏是 380px 固定列，1024 宽时左栏仍有 ~550px，够读正文。
     -->
-    <div class="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_380px]">
+    <div class="grid items-start gap-6 lg:grid-cols-[minmax(0,1fr)_360px] xl:grid-cols-[minmax(0,1fr)_380px]">
       <div class="min-w-0 space-y-6">
     <!-- ③ 召回结果 -->
     <el-card shadow="never">
@@ -1128,7 +1143,7 @@ async function sendRating(): Promise<void> {
           v-if="researchResult.answer === null"
           class="mt-2 text-sm text-slate-600"
         >
-          没有通过校验的引用块，<span class="font-mono text-xs">answer</span> 为空；下面照样给出材料。
+          没有通过校验的引用块，<span class="font-mono text-xs">answer</span> 为空。
         </p>
         <p v-else class="mt-2 whitespace-pre-wrap break-words text-sm leading-[1.8] text-slate-800">
           {{ researchResult.answer }}
@@ -1419,7 +1434,6 @@ async function sendRating(): Promise<void> {
           </button>
         </span>
       </div>
-      <p class="mt-1 text-xs text-muted">这次 {{ lastCapability }} 回的全部字段</p>
       <!--
         折叠树而不是整棵摊开：`/rewrite` 一次能回 50 条切片、`decomposition` 能拆五六条
         子问题，全部摊开会把这一栏撑成几屏，反而什么都看不出。默认开到第二层

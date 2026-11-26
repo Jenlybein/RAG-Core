@@ -29,6 +29,8 @@ function knowledgeBaseWith(name: string, documents: DocumentListItem[]): Knowled
     split_strategy: 'structure',
     allowed_formats: ['markdown'],
     chunk_size: 512,
+    section_part_max_chars: 2000,
+    needs_rebuild: false,
     documents,
   }
 }

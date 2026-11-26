@@ -228,7 +228,7 @@ def _kb(kb_id: str, tenant_id: str) -> KnowledgeBase:
         description=None,
         split_strategy="structure",
         allowed_formats=["markdown"],
-        settings={"chunk_size": 512},
+        settings={"chunk_size": 512, "section_part_max_chars": 2000},
         created_at=datetime(2026, 1, 1, 9, 0, 0),
     )
 
@@ -595,11 +595,17 @@ def test_tree_returns_all_kbs_with_documents_and_grouped_chunk_counts(
         "split_strategy",
         "allowed_formats",
         "chunk_size",
+        # 第 16 步 #207：切块设置的回显 + 「这一版参数与当前设置不一致」的提示。
+        "section_part_max_chars",
+        "needs_rebuild",
         "documents",
     }
     assert populated["split_strategy"] == "structure"
     assert populated["allowed_formats"] == ["markdown"]
     assert populated["chunk_size"] == 512
+    assert populated["section_part_max_chars"] == 2000
+    # 假行没有生效版本行 → 按「需要重建」处理（宁可多提示一次，也不要少提示）。
+    assert populated["needs_rebuild"] is True
 
     documents = populated["documents"]
     assert [doc["document_id"] for doc in documents] == [DOC_ALPHA_DONE, DOC_ALPHA_FAILED]
@@ -682,6 +688,8 @@ def test_create_kb_uses_the_session_tenant_and_writes_one_audit(kbs: _Harness) -
         "split_strategy": "structure",
         "allowed_formats": ["markdown"],
         "chunk_size": 300,
+        # 第 16 步 #207：切块参数也是「改了就必然要重建」的那一类，进审计快照。
+        "section_part_max_chars": 2000,
     }
 
     listed = kbs.client.get(TREE_PATH).json()["data"]["knowledge_bases"]
@@ -744,6 +752,7 @@ def test_delete_empty_kb_removes_it_and_audits_before_only(kbs: _Harness) -> Non
         "split_strategy": "structure",
         "allowed_formats": ["markdown"],
         "chunk_size": 512,
+        "section_part_max_chars": 2000,
     }
     assert entry.after_snapshot is None
 

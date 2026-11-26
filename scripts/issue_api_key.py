@@ -1,8 +1,7 @@
 """发 Key：给某租户签一把绑定到指定密钥配置的 API Key。
 
-Key 是数据面唯一的凭证，所以脚本要打印原文——本期明文入库（ADR-0004：调试台要拿原文
-打真实接口），运维抄走的这一串就是唯一能用的那一串。生产改成「哈希 + 密文」之后，
-这里仍然会打印一次原文，但库里就再也取不出来了。
+Key 是数据面唯一的凭证，而**库里只存 scrypt 哈希**：脚本打印的这一次是它唯一的露面机会，
+错过就只能重签。运维抄走的这一串要立刻放进密钥管理系统或交给集成方，别留在终端历史里。
 
 为什么要显式给 ``--policy-id``：一把 Key 的行为（数据范围、能力开关、额度、档位）全都
 写在那套配置里。让脚本自己猜一套配置，等于让「这把 Key 能查什么」取决于脚本参数以外的
@@ -27,15 +26,15 @@ from app.db.session import SessionLocal
 from app.db.transaction import transaction
 from app.services.api_key_service import issue_api_key
 
-# scripts* 不在安装包里，把自身目录放进 sys.path 才能导入 _ops_common（见该模块文档）。
+# scripts* 不在安装包里，把自身目录放进去才能导入 _ops_common（见该模块文档）。
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _ops_common import print_summary  # noqa: E402
 
 PLAINTEXT_NOTE = (
-    "NOTE: the key value is stored in plaintext in this phase (ADR-0004), so it stays "
-    "readable from the database until the hash + ciphertext migration lands. Hand it to the "
-    "integrator over a private channel; it authenticates both the HTTP and the MCP entry."
+    "NOTE: the plaintext is shown exactly once. Only the scrypt hash and the last five "
+    "characters are stored, so a lost key can only be replaced by issuing a new one. It "
+    "authenticates both the HTTP and the MCP entry."
 )
 
 
@@ -71,7 +70,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     db = SessionLocal()
     try:
         with transaction(db):
-            api_key = issue_api_key(
+            minted = issue_api_key(
                 db, tenant_id=args.tenant_id, policy_id=args.policy_id, label=args.label
             )
     except (LookupError, ValueError) as exc:
@@ -81,7 +80,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     finally:
         db.close()
 
-    print(f"api key: {api_key.key_value}")
+    api_key = minted.api_key
+    print(f"api key: {minted.plaintext}")
     print(f"key id: {api_key.id} tenant_id={api_key.tenant_id} policy_id={api_key.policy_id}")
     print_summary(
         f"issue_api_key: {args.tenant_id}",

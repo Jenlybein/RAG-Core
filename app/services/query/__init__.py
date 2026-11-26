@@ -1,10 +1,13 @@
-"""查询加工：召回之前对 query 做的两步（第 13 步起由**端点**决定做不做）。
+"""查询加工：召回之前对 query 做的那一步（第 13 步起由**端点**决定做不做）。
 
 * ``/rag/retrieve``：``direct_query``，恒等变换，零模型调用；
-* ``/rag/rewrite``：``optimize_for_rewrite``，先改写（单一 ``default`` 模型角色），
-  再按知识库级词表做同义词扩展。
+* ``/rag/rewrite``：``optimize_for_rewrite``，改写一次（单一 ``default`` 模型角色），
+  产出「原句 + 改写句」这一组召回用句。
 
-它**不是第七类 Provider**：两者都没有自己的外部依赖（改写借 ``LLMProvider`` 出网），
+第 15 步起**同义词扩展已下线**：它的词表是库级人工配置，覆盖面与维护成本都不划算，
+而字面那一路现在吃的是「原句 + 改写句」这两句真实存在的话。
+
+它**不是第七类 Provider**：改写借 ``LLMProvider`` 出网，没有自己的外部依赖，
 归属业务编排层（ADR-0002）。
 """
 
@@ -18,24 +21,12 @@ from app.services.query.rewrite import (
     RewriteOutcome,
     rewrite_query,
 )
-from app.services.query.synonyms import (
-    SYNONYMS_SETTING_KEY,
-    SynonymGroup,
-    collect_synonym_groups,
-    expand_synonyms,
-    parse_synonym_groups,
-)
 
 __all__ = [
-    "SYNONYMS_SETTING_KEY",
     "QueryProcessResult",
     "QueryRewrite",
     "RewriteOutcome",
-    "SynonymGroup",
-    "collect_synonym_groups",
     "direct_query",
-    "expand_synonyms",
     "optimize_for_rewrite",
-    "parse_synonym_groups",
     "rewrite_query",
 ]

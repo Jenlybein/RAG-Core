@@ -34,7 +34,7 @@ from app.models.index_version import (
     effective_index_version,
     resolve_index_versions,
 )
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.providers.vectorstores.pgvector import build_scope_filter
 from tests.fake_db import AsyncRecordingSession, AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
@@ -303,7 +303,12 @@ def test_a_kb_that_was_never_backfilled_is_refused_before_any_recall(
     assert body["code"] == SERVER_ERROR_CODE
     assert body["msg"] == UNRESOLVED_INDEX_VERSION_MESSAGE
     assert fake["store"].scopes == [], "被拦下的请求一条召回语句都不该发出"
-    assert fake["trace_session"].added_of(RetrievalTrace) == [], "没有发生的检索不写归属索引"
+    # 第 14 步（#200）改了这条契约的反面：**没走到召回也要有一行账**，带业务码、没有交付物。
+    # 之前那一版只在成功路径末尾写行，于是这种请求在看板上完全不存在——成功率没有分母。
+    rows = fake["trace_session"].added_of(UsageEvent)
+    assert len(rows) == 1, "被拦下也是一次调用：账上要有一行"
+    assert rows[0].code == SERVER_ERROR_CODE
+    assert rows[0].chunk_ids == [] and rows[0].top_k == 0, "没走到召回，就不许有交付物"
 
 
 def test_the_trace_row_records_which_build_was_queried(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -315,7 +320,7 @@ def test_the_trace_row_records_which_build_was_queried(monkeypatch: pytest.Monke
         rows=[_row(KB_A, "v2", "chunk-a"), _row(KB_B, "v1", "chunk-b")],
     ) as fake:
         _retrieve(fake["client"], [KB_A, KB_B])
-        rows = fake["trace_session"].added_of(RetrievalTrace)
+        rows = fake["trace_session"].added_of(UsageEvent)
 
     assert len(rows) == 1, "一次检索一行（与 trace_id 一一对应）"
     assert rows[0].index_versions == {KB_A: "v2", KB_B: "v1"}, (

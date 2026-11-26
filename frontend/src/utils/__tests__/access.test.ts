@@ -22,6 +22,7 @@ function meOf(role: string, tenantId: string | null): ConsoleMe {
     plan: null,
     usage: null,
     llm_usage: null,
+    rerank_usage: null,
   }
 }
 
@@ -29,13 +30,15 @@ const normalMe = meOf('user', 'tenant-a')
 const adminMe = meOf('admin', null)
 
 describe('navFor：入口按角色分流，未知身份一个入口都不给', () => {
-  it('普通账号拿到用户面板的四条入口', () => {
+  it('普通账号拿到用户面板的五条入口', () => {
     // 建库与上传已并入「知识库管理」，入口数跟着页面数走。
     // 第四条 `/traces`（检索记录）回答「已经发生过什么」。
     // 第 13 步：语义评测是平台自检工具，搬到管理员后台，用户面板不再有它。
+    // 第 14 步：`/usage`（用量）排在 Key 之后——先管 Key，再看它用了多少。
     expect(navFor('user').map((item) => item.to)).toEqual([
       '/knowledge-bases',
       '/keys',
+      '/usage',
       '/retrieve',
       '/traces',
     ])
@@ -65,8 +68,9 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
     },
   )
 
-  it('管理员入口恰好是已落地的七条真实路由', () => {
+  it('管理员入口恰好是已落地的八条真实路由', () => {
     // 第 13 步：语义评测搬来 /admin/evaluation；档位预设页随档位概念删除。
+    // 第 14 步：/admin/usage（站点用量）紧跟观测——同一块数据的两个视角。
     expect(navFor('admin').map((item) => item.to)).toEqual([
       '/admin/accounts',
       '/admin/plans',
@@ -74,6 +78,7 @@ describe('navFor：入口按角色分流，未知身份一个入口都不给', (
       '/admin/models',
       '/admin/retrieval',
       '/admin/observability',
+      '/admin/usage',
       '/admin/evaluation',
     ])
   })

@@ -72,8 +72,10 @@ def get_owner_tenant_id(db: Session, kb_id: str) -> str | None:
     return None if kb is None else str(kb.tenant_id)
 
 
-async def get_split_config(db: AsyncSession, kb_id: str, *, tenant_id: str) -> tuple[str, int]:
-    """取该库的切块配置 (strategy, chunk_size)。
+async def get_split_config(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> tuple[str, int, int]:
+    """取该库的切块配置 (strategy, chunk_size, section_part_max_chars)。
 
     库不存在或跨租户时回落到默认值，而不是抛错：索引任务是异步的，库在这期间
     被删掉时应当按默认配置继续尝试，让后续流程报出「库不存在」这个真正的原因；
@@ -81,14 +83,17 @@ async def get_split_config(db: AsyncSession, kb_id: str, *, tenant_id: str) -> t
 
     策略列非空，这里也不再有「缺省就是 structure」的回退——那种回退会让
     「没有策略」这个本该不存在的情况被悄悄掩盖。
+
+    三项一次读回来而不是分两个函数：它们是**同一次构建**的参数，分两次读就有
+    「读到一半库被改了」的中间态，而那种中间态产出的索引没有对应的设置可解释。
     """
 
     kb: KnowledgeBase | None = await db.get(KnowledgeBase, kb_id)
     if kb is None or kb.tenant_id != tenant_id:
         values = settings_of(None)
-        return SPLIT_STRUCTURE, values["chunk_size"]
+        return SPLIT_STRUCTURE, values["chunk_size"], values["section_part_max_chars"]
     values = settings_of(kb)
-    return kb.split_strategy, values["chunk_size"]
+    return kb.split_strategy, values["chunk_size"], values["section_part_max_chars"]
 
 
 async def get_effective_index_version(

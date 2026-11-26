@@ -39,12 +39,14 @@ from app.models.knowledge_base import KnowledgeBase
 from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO, PLAN_PLUS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import AsyncSessionAdapter, RecordingSession
+from tests.support.keys import mint_key
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
 POLICY_ID = "22222222-2222-4222-8222-222222222222"
 KEY_ID = "33333333-3333-4333-8333-333333333333"
-KEY_VALUE = "rc_live_0123456789abcdef0123456789abcdef"
+#: 串里带行身份证：鉴权靠它一次主键命中（库里只有哈希，没有可做索引的原文）。
+KEY_VALUE = f"rc_live_{KEY_ID}." + "0123456789abcdef0123456789abcdef"
 PLAN_IDS = {PLAN_FREE: 1, PLAN_PLUS: 2, PLAN_PRO: 3}
 
 KB_IN_SCOPE = "kb-in-scope"
@@ -76,14 +78,13 @@ def _plan_rows() -> list[Plan]:
 
 
 def _key_row(*, tenant_id: str = TENANT_ID) -> ApiKey:
-    return ApiKey(
-        id=KEY_ID,
+    return mint_key(
+        key_id=KEY_ID,
         tenant_id=tenant_id,
         policy_id=POLICY_ID,
-        key_value=KEY_VALUE,
         label="外部应用",
-        status="active",
-    )
+        plaintext=KEY_VALUE,
+    ).api_key
 
 
 def _tenant_row(*, tenant_id: str = TENANT_ID, plan_code: str = PLAN_PRO) -> Tenant:

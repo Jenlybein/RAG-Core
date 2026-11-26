@@ -29,6 +29,7 @@ from typing import Final, Mapping, Sequence
 
 import structlog
 from sqlalchemy import CheckConstraint, DateTime, Index, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.core.exceptions import AppError, ErrorCode
@@ -100,6 +101,10 @@ class IndexBuildVersion(Base):
     document_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    #: 这一版是用**哪些切块参数**构出来的（第 16 步 #207）。切块参数是索引期旋钮，
+    #: 改了必须重建；记下来才能让控制台判断「库当前设置 ≠ 生效版本的参数」并标「需重建」。
+    #: **可空**是刻意的：老版本行补不出来，NULL = 「这一版没留参数」，读侧按「不一致」处理。
+    params: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
     activated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

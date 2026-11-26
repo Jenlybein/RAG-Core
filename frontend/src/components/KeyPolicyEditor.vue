@@ -18,6 +18,9 @@ import { computed } from 'vue'
 
 import type { ConsolePlanSnapshot } from '../types/console'
 import {
+  MAX_UNIT_CHARS_DEFAULT,
+  MAX_UNIT_CHARS_MAX,
+  MAX_UNIT_CHARS_MIN,
   PARAM_PRESETS,
   POLICY_CAPABILITY_FIELDS,
   RETRIEVAL_MODES,
@@ -275,6 +278,26 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
               <el-checkbox v-model="form.expand_table_rows">
                 rows-to-table · 检索表行返回整表
               </el-checkbox>
+            </div>
+            <!--
+              正文上限（第 16 步 #207）：与 `top_k` 同类——「这次调用要多少东西」。
+              正常情况下它永不触发（节段 ≤ 库阈值 ≤ 上限），它管的是老索引、表格单元，
+              以及「片边界使节段超阈值」的那一小撮。
+            -->
+            <div class="mt-2 flex items-center gap-2">
+              <span class="text-xs text-slate-600">单条结果正文上限</span>
+              <el-input-number
+                v-model="form.max_unit_chars"
+                :min="MAX_UNIT_CHARS_MIN"
+                :max="MAX_UNIT_CHARS_MAX"
+                :step="500"
+                controls-position="right"
+                class="w-32"
+              />
+              <span class="text-xs text-muted">
+                {{ MAX_UNIT_CHARS_MIN }}–{{ MAX_UNIT_CHARS_MAX }} 字，默认
+                {{ MAX_UNIT_CHARS_DEFAULT }}
+              </span>
             </div>
           </div>
         </div>

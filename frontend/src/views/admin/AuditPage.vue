@@ -98,7 +98,7 @@ async function refresh(): Promise<void> {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="审计日志" subtitle="控制面每一次改动的账本。本页只读。">
+    <PageHeader title="审计日志">
       <template #actions>
         <el-button size="small" :loading="auditQuery.isFetching.value" @click="refresh">
           刷新
@@ -152,8 +152,8 @@ async function refresh(): Promise<void> {
         <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
           {{
             actionFilter === ''
-              ? '还没有审计记录。控制面第一次改动之后这里就会有内容。'
-              : '没有匹配这个动作的记录。换一个动作，或清空筛选看全部。'
+              ? '还没有审计记录。'
+              : '没有匹配这个动作的记录。'
           }}
         </p>
       </div>

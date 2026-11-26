@@ -54,6 +54,13 @@ DEFAULT_CHUNK_SIZE = 512
 MIN_CHUNK_SIZE = 200
 MAX_CHUNK_SIZE = 2000
 
+#: 一个**节段**的字数上限（第 16 步 #207）：超长 h2 会在片边界被切成若干段。
+#: 下界 500 是为了不让一个「段」比几片还短（那样等于关掉折叠）；上界 10000
+#: 是「再大就没有意义」的界线——它已经超过检索期那条硬上限的常识取值。
+DEFAULT_SECTION_PART_MAX_CHARS = 2000
+MIN_SECTION_PART_MAX_CHARS = 500
+MAX_SECTION_PART_MAX_CHARS = 10000
+
 
 class KnowledgeBase(Base):
     __tablename__ = "knowledge_bases"
@@ -144,15 +151,56 @@ def formats_of(kb: KnowledgeBase | None) -> list[str]:
     return formats
 
 
+def build_params_of(kb: KnowledgeBase | None) -> dict[str, int | str]:
+    """这一版索引**用哪些切块参数**构出来的（第 16 步 #207）。
+
+    只收「改了就必然要让索引重建」的那几项：策略、片大小、节段上限。名称 / 描述 / 格式
+    不进——它们不影响切片产物，把它们算进去会让每个库永远显示「需重建」。
+
+    形状与 :func:`settings_of` 共用同一份口径（越界回落），因为比较的是「旧版参数 vs
+    当前设置」，两边口径一旦不同，一次误报就会让人学会忽略这个提示。
+    """
+
+    values = settings_of(kb)
+    return {
+        "split_strategy": (kb.split_strategy if kb is not None else SPLIT_STRUCTURE)
+        or SPLIT_STRUCTURE,
+        "chunk_size": values["chunk_size"],
+        "section_part_max_chars": values["section_part_max_chars"],
+    }
+
+
+def needs_rebuild(kb: KnowledgeBase, params: dict | None) -> bool:
+    """库当前设置与**生效那一版**的构建参数是否已经不一致。
+
+    ``params`` 为 ``None``（老版本行没留参数）时判 ``True``：宁可多提示一次重建，也不要
+    让「我明明改成 1600 了怎么还是整节」变成一句没人答得上的话。
+    """
+
+    if not params:
+        return True
+    current = build_params_of(kb)
+    return any(params.get(key) != current[key] for key in current)
+
+
 def settings_of(kb: KnowledgeBase | None) -> dict[str, int]:
     """从 settings 里取切块数值旋钮，缺失或越界时回落到默认值。
 
     越界值回落而不是抛错：正常路径上这些值由 Pydantic 挡住，能读到越界值只可能
     是手工改库或历史数据。带着默认值继续索引，好过让文档永远进不了库。
+
+    ``section_part_max_chars``（第 16 步 #207）是**节段**的字数上限：超过就在片边界
+    把这一节切成若干段，段与段是不同的节。它是「一条结果不会上万字」的根。
     """
 
     raw = (kb.settings if kb is not None else None) or {}
     chunk_size = raw.get("chunk_size", DEFAULT_CHUNK_SIZE)
     if not isinstance(chunk_size, int) or not MIN_CHUNK_SIZE <= chunk_size <= MAX_CHUNK_SIZE:
         chunk_size = DEFAULT_CHUNK_SIZE
-    return {"chunk_size": chunk_size}
+    part_max = raw.get("section_part_max_chars", DEFAULT_SECTION_PART_MAX_CHARS)
+    if (
+        not isinstance(part_max, int)
+        or not MIN_SECTION_PART_MAX_CHARS <= part_max <= MAX_SECTION_PART_MAX_CHARS
+    ):
+        part_max = DEFAULT_SECTION_PART_MAX_CHARS
+    return {"chunk_size": chunk_size, "section_part_max_chars": part_max}

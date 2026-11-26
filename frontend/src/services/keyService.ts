@@ -1,5 +1,6 @@
 import { consoleHttp } from '../lib/consoleHttp'
 import type {
+  IssuedKeyData,
   KeyData,
   KeyDeleteReceipt,
   KeyIssueRequest,
@@ -19,7 +20,7 @@ import type {
 /** Key 列表的 query key：签发 / 删除 / 改配置之后都失效它，列表立刻回显。 */
 export const KEYS_QUERY_KEY = ['keys'] as const
 
-/** 本租户的 Key 列表（每行带明文、masked 与它引用的配置）。 */
+/** 本租户的 Key 列表（每行带打码形态与它引用的配置；原文不在其中）。 */
 export function fetchKeys(): Promise<KeyData[]> {
   return consoleHttp.get<KeyListData>('/console/keys').then((data) => data.keys)
 }
@@ -27,13 +28,14 @@ export function fetchKeys(): Promise<KeyData[]> {
 /**
  * 签发一把 Key，连带建一套配置。
  *
- * `label` 只是备注名（鉴权永远不读它）；全空白按「没填」处理——发一个空的 `label`
- * 和发 `null` 对后端是同一件事，但请求体里少一个键更干净。
+ * 返回的 `key_plaintext` 是**唯一**一次能看到完整 Key 的地方：库里只存 scrypt 哈希，
+ * 弹窗关掉之后再想用它只能重签。`label` 只是备注名（鉴权永远不读它）；全空白按「没填」
+ * 处理——发一个空的 `label` 和发 `null` 对后端是同一件事，但请求体里少一个键更干净。
  */
-export function createKey(payload: KeyIssueRequest): Promise<KeyData> {
+export function createKey(payload: KeyIssueRequest): Promise<IssuedKeyData> {
   const label = (payload.label ?? '').trim()
   const body: KeyIssueRequest = label === '' ? { policy: payload.policy } : { label, policy: payload.policy }
-  return consoleHttp.post<KeyData>('/console/keys', body)
+  return consoleHttp.post<IssuedKeyData>('/console/keys', body)
 }
 
 /** 删一把 Key：配置独立于 Key，删凭证不连带删配置。 */

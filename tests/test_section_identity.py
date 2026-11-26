@@ -285,7 +285,7 @@ def _index_one_document(
         return True
 
     async def _split_config(*_args: Any, **_kwargs: Any) -> tuple[str, int]:
-        return SPLIT_STRUCTURE, 800
+        return SPLIT_STRUCTURE, 800, 2000
 
     async def _effective_version(*_args: Any, **_kwargs: Any) -> str:
         return "v1"

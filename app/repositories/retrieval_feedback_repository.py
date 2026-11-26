@@ -50,7 +50,7 @@ async def _get_by_log_id(db: AsyncSession, log_id: str) -> RetrievalFeedback | N
     「无租户的按 id 读取」。
 
     这里能不给租户，是因为 ``upsert`` 的**唯一**调用方 ``submit_feedback`` 已经先按
-    ``retrieval_traces`` 校验过归属（不存在 / 跨租户都返回 ``20021``）；而 ``log_id``
+    ``usage_events`` 校验过归属（不存在 / 跨租户都返回 ``20021``）；而 ``log_id``
     是 UUID v4、全局唯一，不存在「同一 log_id 属于两个租户」。这条不变量由
     ``tests/test_feedback.py`` 的越权用例守着。
     """

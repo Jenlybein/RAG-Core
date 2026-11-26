@@ -23,12 +23,16 @@ from app.models.key_policy import KeyPolicy
 from app.models.plan import PLAN_FREE, PLAN_PRO, PLAN_PLUS, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import AsyncRecordingSession, MemoryPlanCache, RecordingSession
+from tests.support.keys import mint_key
 
 TENANT_ID = "tenant_acme"
 OTHER_TENANT_ID = "tenant_other"
 POLICY_ID = "22222222-2222-4222-8222-222222222222"
 KEY_ID = "33333333-3333-4333-8333-333333333333"
-KEY_VALUE = "rc_live_0123456789abcdef0123456789abcdef"
+#: 这一组用例共用的那一把 Key：行与原文一起造，原文进 Bearer 头、哈希落进行里。
+#: 只造一次（scrypt 一次 50ms 量级），各用例按需拿它的行或原文。
+_SESSION_KEY = mint_key(key_id=KEY_ID, tenant_id=TENANT_ID, policy_id=POLICY_ID, label="控制台调试")
+KEY_VALUE = _SESSION_KEY.plaintext
 PLAN_IDS = {PLAN_FREE: 1, PLAN_PLUS: 2, PLAN_PRO: 3}
 
 
@@ -73,6 +77,7 @@ def _policy_row(
         retrieve_daily=70,
         include_parent=include_parent,
         expand_table_rows=expand_table_rows,
+        max_unit_chars=2000,
         # 第 13 步：三项参数走真列；profile/custom_options 已物理删除。
         retrieval_mode="vector",
         retrieval_top_k=3,
@@ -89,20 +94,27 @@ def _policy_row(
     )
 
 
-def _key_row(
-    key_value: str = KEY_VALUE,
-    *,
-    tenant_id: str = TENANT_ID,
-    status: str = "active",
-) -> ApiKey:
-    return ApiKey(
-        id=KEY_ID,
-        tenant_id=tenant_id,
+def _key_row(*, status: str = "active") -> ApiKey:
+    """这一组用例的那把 Key（同一个原文，两种状态各造一次）。
+
+    只造两次而不是每次调用都造：一次 ``hash_password`` 在这台机器上约 200ms，而这个
+    辅助函数在一个文件里被调用十来次——那会把「这条断言失败了吗」的反馈时间拖成分钟级。
+    """
+
+    return _KEY_ROWS[status]
+
+
+_KEY_ROWS = {
+    status: mint_key(
+        key_id=KEY_ID,
+        tenant_id=TENANT_ID,
         policy_id=POLICY_ID,
-        key_value=key_value,
         label="控制台调试",
         status=status,
-    )
+        plaintext=KEY_VALUE,
+    ).api_key
+    for status in ("active", "disabled")
+}
 
 
 def _session(
@@ -268,22 +280,29 @@ async def test_dev_mode_returns_the_built_in_identity_without_touching_the_datab
     assert context.key_label == "内置开发身份"
 
 
-# ───────────────────────────────────────────── 开关打开：四种未授权，同一个码
+# ───────────────────────────────────────────── 开关打开：五种未授权，同一个码
+
+
+#: 粘了一半的串：少了行身份证与密钥本体。它最容易发生在「复制时只选中了前一段」，
+#: 格式当场就不成立，而「Key 不存在」那条提示会让人去核对一把其实完好的 Key。
+MALFORMED_KEY = "rc_live_0123"
 
 
 async def _failures(*, session: RecordingSession) -> dict[str, AppError]:
-    """跑出四种未授权情形，按情形命名返回异常，供「同一个码、不同消息」比对。"""
+    """跑出五种未授权情形，按情形命名返回异常，供「同一个码、不同消息」比对。"""
 
     from app.core.auth import resolve_identity
 
     cases = {
         "missing": _Request(None),
+        "malformed": _Request(f"Bearer {MALFORMED_KEY}"),
         "unknown": _Request(f"Bearer {KEY_VALUE}"),
         "key_disabled": _Request(f"Bearer {KEY_VALUE}"),
         "tenant_disabled": _Request(f"Bearer {KEY_VALUE}"),
     }
     sessions = {
         "missing": session,
+        "malformed": session,
         "unknown": _session(keys=[], tenants=[_tenant_row()], policies=[_policy_row()]),
         "key_disabled": _session(
             keys=[_key_row(status="disabled")],
@@ -330,14 +349,97 @@ async def test_switch_on_rejects_an_unknown_token() -> None:
 
 
 @pytest.mark.asyncio
-async def test_all_four_unauthorized_cases_share_the_code_and_stay_distinguishable() -> None:
-    """四种情形**同一个**错误码，消息可区分——交付判据就是这么写的。"""
+async def test_all_five_unauthorized_cases_share_the_code_and_stay_distinguishable() -> None:
+    """五种情形**同一个**错误码，消息可区分——交付判据就是这么写的。"""
 
     caught = await _failures(session=_session(keys=[_key_row()], tenants=[_tenant_row()]))
 
     assert {exc.code for exc in caught.values()} == {ErrorCode.UNAUTHORIZED}
     messages = {name: exc.msg for name, exc in caught.items()}
-    assert len(set(messages.values())) == 4, f"四种情形必须能分辨，实际是 {messages}"
+    assert len(set(messages.values())) == 5, f"五种情形必须能分辨，实际是 {messages}"
+
+
+@pytest.mark.asyncio
+async def test_a_wrong_secret_is_indistinguishable_from_an_unknown_key() -> None:
+    """key_id 对、密钥本体错：回的是「Key 不存在」，不是「密钥不对」。
+
+    后者会告诉任何人「这个 key_id 是真的」——而 key_id 就印在面板的 URL 与列表里。
+    """
+
+    from app.core.auth import MSG_UNKNOWN_KEY, resolve_identity
+
+    wrong = "rc_live_" + KEY_ID + "." + "0" * 32
+    session = _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[_policy_row()])
+
+    with pytest.raises(AppError) as excinfo:
+        await resolve_identity(_Request(f"Bearer {wrong}"), session, auth_enabled=True)
+
+    assert excinfo.value.code is ErrorCode.UNAUTHORIZED
+    assert excinfo.value.msg == MSG_UNKNOWN_KEY
+
+
+@pytest.mark.asyncio
+async def test_a_verified_key_is_not_hashed_again_within_the_window(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """校验缓存命中：同一个 token 第二次不再付一次 scrypt。"""
+
+    from app.core import auth as auth_module
+    from app.core.auth import resolve_identity
+    from tests.fake_db import MemoryKeyVerifyCache
+
+    calls: list[str] = []
+    real_verify = auth_module.verify_password
+
+    def _counting(secret: str, encoded: str) -> bool:
+        calls.append(secret)
+        return real_verify(secret, encoded)
+
+    monkeypatch.setattr(auth_module, "verify_password", _counting)
+
+    cache = MemoryKeyVerifyCache()
+    session = _session(keys=[_key_row()], tenants=[_tenant_row()], policies=[_policy_row()])
+
+    for _ in range(2):
+        await resolve_identity(
+            _Request(f"Bearer {KEY_VALUE}"),
+            session,
+            auth_enabled=True,
+            plan_cache=MemoryPlanCache(),
+            verify_cache=cache,
+        )
+
+    assert len(calls) == 1, "第二次必须走缓存，不再算一遍 scrypt"
+    assert cache.remembered == [(KEY_VALUE, KEY_ID)]
+    # 缓存键是原文，值才是 key_id：Redis 里不出现 token，也不会出现「按 key_id 反查」的索引。
+    assert list(cache.items) == [KEY_VALUE]
+
+
+@pytest.mark.asyncio
+async def test_a_cached_token_still_needs_the_row() -> None:
+    """缓存只省 scrypt，**不省读库**：Key 被删之后那串立刻不可用。
+
+    这条是「缓存不负责撤销」的证据：命中缓存也照样按 key_id 读一次行，读不到就是未授权，
+    所以删 Key 不必等 60 秒。
+    """
+
+    from app.core.auth import resolve_identity
+    from tests.fake_db import MemoryKeyVerifyCache
+
+    cache = MemoryKeyVerifyCache()
+    cache.items[KEY_VALUE] = KEY_ID
+    session = _session(keys=[], tenants=[_tenant_row()], policies=[_policy_row()])
+
+    with pytest.raises(AppError) as excinfo:
+        await resolve_identity(
+            _Request(f"Bearer {KEY_VALUE}"),
+            session,
+            auth_enabled=True,
+            plan_cache=MemoryPlanCache(),
+            verify_cache=cache,
+        )
+
+    assert excinfo.value.code is ErrorCode.UNAUTHORIZED
 
 
 @pytest.mark.asyncio
@@ -401,6 +503,8 @@ async def test_an_active_key_resolves_to_its_tenant_policy_and_plan() -> None:
         retrieve_daily=70,
         include_parent=False,
         expand_table_rows=True,
+        # 第 16 步 #207：假行没显式写这一列，按迁移的 server_default 回填读出 2000。
+        max_unit_chars=2000,
         # 第 13 步：三项参数从假行的真列读（_policy_row 显式写了 mode=vector/top_k=3）。
         retrieval_mode="vector",
         retrieval_top_k=3,

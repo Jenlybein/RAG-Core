@@ -29,10 +29,8 @@ from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
 
-import structlog
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.exceptions import AppError, ErrorCode
 from app.observability.stage_timing import (
     STAGE_COLLAPSE,
     STAGE_KEYWORD_RECALL,
@@ -40,12 +38,11 @@ from app.observability.stage_timing import (
     StageTimer,
 )
 from app.services.retrieval.collapse import collapse_results
+from app.services.retrieval.keyword_recall import keyword_recall
 from app.services.retrieval.pipeline import hybrid_retrieve
 from app.services.retrieval.vector_recall import vector_recall
 from app.services.retrieval_options import MODE_BM25, MODE_HYBRID
 from app.utils.retrieval_fields import with_score_columns
-
-logger = structlog.get_logger(__name__)
 
 
 @dataclass(frozen=True)
@@ -72,9 +69,8 @@ async def retrieve_kernel(
     index_versions: Mapping[str, str],
     query: str,
     mode: str,
-    vector_queries: Sequence[str],
+    recall_queries: Sequence[str],
     rerank_query: str,
-    keyword_query: str,
     top_k: int,
     recall_top_k: int,
     rerank_enabled: bool,
@@ -83,6 +79,8 @@ async def retrieve_kernel(
     rerank_quota_exhausted: bool = False,
     fold_to_sections: bool,
     expand_table_rows: bool,
+    #: 一条结果正文的硬上限（第 16 步 #207）：折叠时按它从两端收缩。
+    max_unit_chars: int,
     embedding_factory: Callable[[], Any],
     vector_factory: Callable[[], Any],
     keyword_factory: Callable[[], Any],
@@ -97,9 +95,9 @@ async def retrieve_kernel(
     它由调用方解析好递进来，内核自己不去查「这个库现在生效哪个版本」——那是每次调用
     一次的事（ADR-0025），而内核会被调 N 次。
 
-    ``vector_queries`` / ``rerank_query`` / ``keyword_query`` 是**外层查询优化**的产物：
-    向量一路逐句都搜、重排只看「用户最终想问什么」、关键词一路拿扩展后的那一句。三者
-    不同是设计而不是 bug，内核原样使用、不再做第二次加工（Research 里再改写一遍会把
+    ``recall_queries`` / ``rerank_query`` 是**外层查询优化**的产物：**两路召回都逐句搜**
+    这一组（原句 + 改写句，第 15 步起两路对称）、重排只看 ``rerank_query``（原句，
+    重排与改写无关）。内核原样使用、不再做第二次加工（Research 里再改写一遍会把
     已分解的子查询揉回原问题）。
 
     ``top_k`` 是**最终返回条数**，``recall_top_k`` 是**召回条数**（折叠开着时已经含了
@@ -128,10 +126,9 @@ async def retrieve_kernel(
             db=db,
             tenant_id=tenant_id,
             index_versions=index_versions,
-            # 向量一路逐句都搜；重排仍看 rerank_query；关键词一路拿扩展后的句子。
-            vector_queries=vector_queries,
+            # 两路都逐句搜这一组；重排看 rerank_query（原句）。
+            recall_queries=recall_queries,
             rerank_query=rerank_query,
-            keyword_query=keyword_query,
             top_k=recall_top_k,
             embedding_factory=embedding_factory,
             vector_factory=vector_factory,
@@ -155,7 +152,7 @@ async def retrieve_kernel(
             db,
             tenant_id=tenant_id,
             index_versions=index_versions,
-            query=keyword_query,
+            queries=recall_queries,
             top_k=recall_top_k,
             keyword_factory=keyword_factory,
             stage_timer=timer,
@@ -165,7 +162,7 @@ async def retrieve_kernel(
             db,
             tenant_id=tenant_id,
             index_versions=index_versions,
-            queries=vector_queries,
+            queries=recall_queries,
             top_k=recall_top_k,
             embedding_factory=embedding_factory,
             vector_factory=vector_factory,
@@ -181,6 +178,7 @@ async def retrieve_kernel(
             top_k=top_k,
             fold_to_sections=fold_to_sections,
             expand_table_rows=expand_table_rows,
+            max_unit_chars=max_unit_chars,
         )
 
     return KernelOutcome(
@@ -231,7 +229,7 @@ async def _retrieve_by_keyword(
     *,
     tenant_id: str,
     index_versions: Mapping[str, str],
-    query: str,
+    queries: Sequence[str],
     top_k: int,
     keyword_factory: Callable[[], Any],
     stage_timer: StageTimer,
@@ -239,37 +237,18 @@ async def _retrieve_by_keyword(
     """关键词通道：租户 + 库/版本配对过滤，纯关键词打分。
 
     可见性不在这里校验：调用方已经在进入内核之前统一校验过一遍（ADR-0006 的先后顺序
-    不变：不可见的库先被拒绝）。关键词引擎的可用性检查仍在这里做——空实现是「能力不存在」，
-    不是「查过了没命中」。
+    不变：不可见的库先被拒绝）。多句的 gather / 合并 / 错误翻译交给 ``keyword_recall``
+    ——与混合模式那一支共用同一份实现（第 15 步：两路对用句的看法必须一致）。
     """
 
     with stage_timer.measure(STAGE_KEYWORD_RECALL):
-        try:
-            provider = keyword_factory()
-            if not provider.available:
-                raise AppError(
-                    ErrorCode.RETRIEVAL_FAILED, "keyword search engine is not configured"
-                )
-            # 预算由 Provider 自己兜住（`ElasticsearchKeywordSearchProvider.timeout_s`）：
-            # 关键词通道有单通道与混合两份调用点，写在这里就得写两遍，写两遍必漂移。
-            rows = await provider.keyword_search(
-                query,
-                tenant_id=tenant_id,
-                index_versions=dict(index_versions),
-                top_k=top_k,
-            )
-        except AppError:
-            raise
-        except Exception as exc:
-            # 引擎故障属于「这一路不可用」，不是整单 500：错误分类固定为 50002。
-            # 日志只记类型与范围，不记检索原文。
-            logger.warning(
-                "keyword search failed",
-                tenant_id=tenant_id,
-                kb_ids=list(index_versions),
-                error=type(exc).__name__,
-            )
-            raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc
+        rows = await keyword_recall(
+            provider=keyword_factory(),
+            tenant_id=tenant_id,
+            index_versions=index_versions,
+            queries=queries,
+            top_k=top_k,
+        )
 
     return [
         with_score_columns(

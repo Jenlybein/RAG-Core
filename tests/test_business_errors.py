@@ -333,6 +333,8 @@ def test_success_response_shape_is_unchanged(client, monkeypatch) -> None:
             "split_strategy": kwargs["split_strategy"],
             "allowed_formats": kwargs.get("allowed_formats") or ["markdown"],
             "chunk_size": kwargs.get("chunk_size", 800),
+            # 第 16 步 #207：建库回执多了节段阈值这一项。
+            "section_part_max_chars": kwargs.get("section_part_max_chars", 2000),
             "created_at": datetime(2024, 1, 2, 3, 4, 5),
         }
 

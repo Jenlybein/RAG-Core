@@ -2,8 +2,8 @@
 
 两个接缝，都是仓库里既有的：
 
-* 模块接缝 ``optimize_query``：断言 ``QueryProcessResult.vector_queries`` 的开关 / 失败 /
-  去重语义，以及 ``effective_query`` / ``search_query`` 原样不动；
+* 模块接缝 ``optimize_query``：断言 ``QueryProcessResult.recall_queries`` 的形状（顺序 /
+  去重 / 失败语义），以及 ``effective_query`` 只供归因、不再有第三句；
 * ASGI 接缝 ``POST /api/v1/rag/retrieve``：数据库依赖用 ``dependency_overrides`` 换掉，
   三个 Provider 工厂用离线替身换掉（与 ``tests/test_hybrid_retrieval.py`` 同一套做法）。
   全部替身不发网络、不连 PG / ES。
@@ -11,7 +11,7 @@
 守的契约：
 
 * 改写成功：嵌入收到**两句**（查询侧没有批量接口，故两次 ``embed_query`` 并发发出），
-  向量库被查**两次**，关键词仍只有一次且拿 ``search_query``；
+  向量库与关键词引擎**各查两次**、拿同一组句子（第 15 步起两路对称）；
 * 并集收益：原句命中 A、改写句命中 B，A 与 B 都进向量池；
 * 去重取优：同一 ``(kb_id, chunk_id)`` 只出现一次，保留名次更好的那份内容、
   分数取更高者，池按分数降序 + 确定性 tie-breaker 排好再截断；
@@ -44,7 +44,6 @@ from app.services.query.optimizer import (
     optimize_for_rewrite,
 )
 from app.services.query.rewrite import QueryRewrite
-from app.services.query.synonyms import collect_synonym_groups
 from tests.fake_db import AsyncSessionAdapter
 from tests.retrieval_identity import RetrievalIdentity
 
@@ -98,6 +97,12 @@ _RERANK_IDENTITY_RE = re.compile(r',"provider":(?:null|"[^"]*"),"model":(?:null|
 #: ADR-0029 收窄（#138）把它撤掉之后，**这一段摘除不需要了**——键不存在，响应文本直接
 #: 回到基线，哈希常量仍然一个都没重采。也就是说这个键从来只是「被摘掉才对齐」，撤掉之后
 #: 连摘都不用摘：这正是「它没碰过别的字节」的最终形态。
+
+#: #207 起每条结果多出两个**交付形状**字段（``section_part`` / ``truncated``）：前者是
+#: 「这是同一节的第几段」，后者是「正文被裁过没有」。它们与 ``trace_id`` 同一类东西——
+#: 有意的契约新增，不是检索行为变化；比对前整段摘掉，基线常量因此一个都不用重采。
+#: 顺序也是契约的一部分（两个键固定相邻出现），正则按位置钉住，改顺序就会红。
+_UNIT_BOUNDARY_RE = re.compile(r',"section_part":\d+,"truncated":(?:true|false)')
 
 
 # ─────────────────────────────────────────────────────────────── 替身
@@ -342,7 +347,8 @@ def _without_trace_id(text: str) -> str:
     """
 
     without_trace = _TRACE_ID_RE.sub("", text)
-    return _RERANK_IDENTITY_RE.sub("", without_trace)
+    without_rerank = _RERANK_IDENTITY_RE.sub("", without_trace)
+    return _UNIT_BOUNDARY_RE.sub("", without_rerank)
 
 
 def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
@@ -354,7 +360,6 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
 
     # 显式三个开关全关：黄金哈希守的是「默认路径」，不能被别的用例改过的 settings 影响。
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
 
     hashes: dict[str, str] = {}
@@ -371,13 +376,15 @@ def _response_hashes(monkeypatch: pytest.MonkeyPatch) -> dict[str, str]:
             # 重排关着时 ``rerank`` 仍是字典（applied=false …），身份键是 null；它们必须
             # 真的出现过一次，否则「摘掉之后仍等于旧基线」证明不了「只多了这两个键」。
             assert _RERANK_IDENTITY_RE.search(response.text), "身份键摘除也必须真的命中"
+        # 交付形状的两个新字段（#207）也必须真的出现过一次，否则「摘掉之后仍等于旧基线」
+        # 证明不了「只多了这两个键」——只是演示了一次干净的比对。
+        assert _UNIT_BOUNDARY_RE.search(response.text), "交付形状键的摘除也必须真的命中"
         hashes[mode] = hashlib.sha256(_without_trace_id(response.text).encode("utf-8")).hexdigest()
     return hashes
 
 
-def _switches(monkeypatch: pytest.MonkeyPatch, *, rewrite: bool, synonyms: bool = False) -> None:
+def _switches(monkeypatch: pytest.MonkeyPatch, *, rewrite: bool) -> None:
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", rewrite)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", synonyms)
     monkeypatch.setattr(settings, "RERANK_ENABLED", False)
 
 
@@ -399,8 +406,8 @@ def test_direct_retrieve_is_an_identity_transform() -> None:
     result = direct_query(RAW_QUERY)
 
     assert isinstance(result, QueryProcessResult)
-    assert result.vector_queries == (RAW_QUERY,)
-    assert result.raw_query == result.effective_query == result.search_query == RAW_QUERY
+    assert result.recall_queries == (RAW_QUERY,)
+    assert result.raw_query == result.effective_query == RAW_QUERY
     assert result.rewrite_applied is False
 
 
@@ -414,10 +421,9 @@ def test_rewrite_yields_raw_then_effective_in_a_fixed_order(
 
     result = asyncio.run(optimize_for_rewrite(query=RAW_QUERY))
 
-    assert result.vector_queries == (RAW_QUERY, REWRITTEN)
-    assert all(query.strip() for query in result.vector_queries)
+    assert result.recall_queries == (RAW_QUERY, REWRITTEN)
+    assert all(query.strip() for query in result.recall_queries)
     assert result.effective_query == REWRITTEN
-    assert result.search_query == REWRITTEN
     assert result.rewrite_applied is True
 
 
@@ -429,23 +435,30 @@ def test_rewrite_same_as_raw_is_deduplicated(monkeypatch: pytest.MonkeyPatch) ->
 
     result = asyncio.run(optimize_for_rewrite(query=RAW_QUERY))
 
-    assert result.vector_queries == (RAW_QUERY,)
+    assert result.recall_queries == (RAW_QUERY,)
     assert result.effective_query == RAW_QUERY
 
 
-def test_synonym_expansion_still_only_touches_the_keyword_query(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``vector_queries`` 完全不变：同义词只追加给关键词一路，不污染向量查询池。"""
+def test_the_same_sentences_feed_both_paths(monkeypatch: pytest.MonkeyPatch) -> None:
+    """**第 15 步的核心断言**：召回用句只有一组，两路都用它。
 
-    _switches(monkeypatch, rewrite=True, synonyms=True)
+    第 15 步之前这里是「向量拿两句、关键词拿第三句（同义词扩展后的改写句）」。现在
+    同义词下线，两条路对「这次到底问的是什么」必须看法一致——这正是不对称最难查的那类
+    偏差：它不报错，只是字面那一路悄悄少了一半词面。
+    """
+
+    _switches(monkeypatch, rewrite=True)
     _install_llm(monkeypatch, _RewriteLLM(rewritten=REWRITTEN))
-    groups = collect_synonym_groups([{"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}])
 
-    result = asyncio.run(optimize_for_rewrite(query=RAW_QUERY, synonym_groups=groups))
+    result = asyncio.run(optimize_for_rewrite(query=RAW_QUERY))
 
-    assert result.vector_queries == (RAW_QUERY, REWRITTEN)
-    assert result.search_query == "退款的处理流程 退款流程"
+    assert result.recall_queries == (RAW_QUERY, REWRITTEN)
+    # 只有一组：没有任何「只喂字面那一路」的第三句。
+    assert [name for name in vars(result) if "quer" in name] == [
+        "raw_query",
+        "effective_query",
+        "recall_queries",
+    ]
 
 
 def test_a_failed_rewrite_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -454,7 +467,7 @@ def test_a_failed_rewrite_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.core.exceptions import AppError, ErrorCode
     import pytest
 
-    _switches(monkeypatch, rewrite=True, synonyms=True)
+    _switches(monkeypatch, rewrite=True)
     _install_llm(monkeypatch, _RewriteLLM(error=TimeoutError("模型超时")))
 
     with pytest.raises(AppError) as caught:
@@ -469,9 +482,9 @@ def test_a_failed_rewrite_is_a_50003(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_rewrite_on_embeds_and_searches_both_queries(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """开启成功：嵌入收到两句、向量库查两次；关键词仍只一次且拿扩展后的句子。"""
+    """开启成功：**两路各两次**——嵌入收到两句、向量库查两次、关键词也查两次。"""
 
-    _switches(monkeypatch, rewrite=True, synonyms=True)
+    _switches(monkeypatch, rewrite=True)
     llm = _RewriteLLM(rewritten=REWRITTEN)
     vector = _FakeVectorStore(
         pools={
@@ -486,7 +499,6 @@ def test_rewrite_on_embeds_and_searches_both_queries(
         vector=vector,
         keyword=keyword,
         llm=llm,
-        kb_settings={KB_A: {"synonyms": [{"terms": ["退款"], "expand": ["退款流程"]}]}},
     ) as fake:
         body = _response(fake["client"], path=REWRITE_PATH, include_parent=False).json()
 
@@ -495,7 +507,7 @@ def test_rewrite_on_embeds_and_searches_both_queries(
     assert fake["embedding"].queries == [RAW_QUERY, REWRITTEN]
     assert fake["vector"].seen == [1.0, 2.0], "两句各做一次范围召回"
     assert len(fake["vector"].calls) == 2
-    assert fake["keyword"].queries == ["退款的处理流程 退款流程"], "关键词一路完全不变"
+    assert fake["keyword"].queries == [RAW_QUERY, REWRITTEN], "关键词一路也逐句搜这两句"
     assert _metadata(body)["degraded"] is False
 
 

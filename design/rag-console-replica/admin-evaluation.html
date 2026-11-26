@@ -1,0 +1,440 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>语义评测 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* ── 左边配置、右边本轮状态 ── */
+      .eval-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 400px;
+        gap: var(--sp-6);
+        align-items: start;
+      }
+
+      /* 表单两列：字段自带 16px 上距，在网格里要抹掉 */
+      .form-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: var(--sp-4) var(--sp-5);
+      }
+      .form-grid > .field + .field {
+        margin-top: 0;
+      }
+      .field--wide {
+        grid-column: 1 / -1;
+      }
+
+      /* 只读字段沿用输入框的玻璃槽，只改字体，不另铺一层更透的玻璃 */
+      .input--fixed {
+        color: var(--text-regular);
+        font-family: var(--font-mono);
+        font-size: var(--fs-12);
+      }
+
+      .check-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sp-5);
+        min-height: 34px;
+      }
+
+      /* 复选框：画 16px 的框，命中区放大到 24px */
+      .check-lg {
+        position: relative;
+        align-items: center;
+        min-height: 24px;
+      }
+      .check-lg input {
+        position: absolute;
+        top: 0;
+        left: 0;
+        width: 24px;
+        height: 24px;
+        margin: 0;
+        opacity: 0;
+      }
+      .check-lg input:focus-visible {
+        outline: none;
+      }
+      .check-lg .checkbox-box {
+        display: grid;
+        flex: none;
+        place-items: center;
+        width: 16px;
+        height: 16px;
+        border: 1px solid var(--glass-stroke);
+        border-radius: 5px;
+        background: var(--glass-fill-strong);
+        transition: background-color 150ms, border-color 150ms;
+      }
+      .check-lg input:checked + .checkbox-box {
+        border-color: var(--accent);
+        background: var(--accent);
+      }
+      .check-lg input:checked + .checkbox-box::after {
+        content: '';
+        width: 8px;
+        height: 4px;
+        border-left: 2px solid #fff;
+        border-bottom: 2px solid #fff;
+        transform: rotate(-45deg) translateY(-1px);
+      }
+      .check-lg input:focus-visible + .checkbox-box {
+        outline: 2px solid var(--accent);
+        outline-offset: 2px;
+      }
+
+      /* 本轮分数：四个数两行两列 */
+      .score-grid {
+        gap: var(--sp-4) var(--sp-5);
+        margin-top: var(--sp-5);
+      }
+      .score-value {
+        font-size: var(--fs-26);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+      }
+
+      .progress-row {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--sp-2);
+        margin-bottom: 8px;
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      .progress-pct {
+        font-size: var(--fs-13);
+        font-variant-numeric: tabular-nums;
+        color: var(--ink);
+      }
+
+      /* 表格里的通过率：进度条 + 百分比 */
+      .pass-cell {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 36px;
+        align-items: center;
+        gap: 10px;
+        min-width: 180px;
+      }
+      .pass-pct {
+        font-size: var(--fs-13);
+        font-variant-numeric: tabular-nums;
+        text-align: right;
+        white-space: nowrap;
+        color: var(--text-regular);
+      }
+      .progress.is-empty {
+        background: var(--line-lighter);
+        box-shadow: none;
+      }
+
+      /* 状态列 / run_id 下方那行小字不折行，窄屏让表格自己横向滚 */
+      .table .sub {
+        white-space: nowrap;
+      }
+
+      .card-foot--end {
+        display: flex;
+        justify-content: flex-end;
+      }
+
+      @media (max-width: 1000px) {
+        .eval-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      @media (max-width: 640px) {
+        .form-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill is-active" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">语义评测</h1>
+          <div class="page-actions">
+            <button class="btn btn--primary" type="button">
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M8 5.5 18.5 12 8 18.5Z" />
+              </svg>
+              触发一次评测
+            </button>
+          </div>
+        </div>
+
+        <div class="eval-grid">
+          <!-- 跑批配置 -->
+          <section class="card card--panel">
+            <div class="card-head">
+              <h2 class="section-title">跑批配置</h2>
+              <span class="chip">固定语料 · 50 题</span>
+            </div>
+            <div class="card-body">
+              <div class="form-grid">
+                <label class="field">
+                  <span class="field-label">题库</span>
+                  <input class="input input--fixed" value="eval/questions.json" readonly />
+                </label>
+
+                <label class="field">
+                  <span class="field-label">语料版本</span>
+                  <input class="input input--fixed" value="1946e4e5 · 21 篇 / 469 片" readonly />
+                </label>
+
+                <label class="field">
+                  <span class="field-label">裁判模型</span>
+                  <select class="select">
+                    <option selected>deepseek-flash</option>
+                    <option>deepseek-v4-pro</option>
+                  </select>
+                </label>
+
+                <label class="field">
+                  <span class="field-label">检索口径</span>
+                  <input class="input input--fixed" value="hybrid · top_k 5" readonly />
+                </label>
+
+                <div class="field field--wide">
+                  <span class="field-label">评分指标</span>
+                  <div class="check-row">
+                    <label class="checkbox check-lg">
+                      <input type="checkbox" checked />
+                      <span class="checkbox-box" aria-hidden="true"></span>
+                      <span>CP 上下文精确率</span>
+                    </label>
+                    <label class="checkbox check-lg">
+                      <input type="checkbox" checked />
+                      <span class="checkbox-box" aria-hidden="true"></span>
+                      <span>CR 上下文召回率</span>
+                    </label>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="card-foot card-foot--end">
+              <button class="btn" type="button">保存配置</button>
+            </div>
+          </section>
+
+          <!-- 当前这一轮：正在跑的那个对象，用抬起档，一屏只此一块 -->
+          <section class="card card--panel card--raise">
+            <div class="card-head">
+              <h2 class="section-title">当前这一轮</h2>
+              <span class="badge badge--accent">运行中</span>
+            </div>
+            <div class="card-body">
+              <p class="mono t-13">run_20261122_1451</p>
+              <p class="section-meta mt-2">14:51 · deepseek-flash · 剩余 25 s</p>
+
+              <div class="progress-row mt-5">
+                <span>已完成 38 / 50 题</span>
+                <span class="progress-pct">76%</span>
+              </div>
+              <div class="progress" role="progressbar" aria-valuemin="0" aria-valuemax="50" aria-valuenow="38">
+                <span style="width: 76%"></span>
+              </div>
+
+              <div class="grid grid-2 score-grid">
+                <div>
+                  <p class="metric-value score-value">0.84</p>
+                  <p class="metric-label">CP 上下文精确率</p>
+                </div>
+                <div>
+                  <p class="metric-value score-value">0.79</p>
+                  <p class="metric-label">CR 上下文召回率</p>
+                </div>
+                <div>
+                  <p class="metric-value score-value">38</p>
+                  <p class="metric-label">已评分</p>
+                </div>
+                <div>
+                  <p class="metric-value score-value">0</p>
+                  <p class="metric-label">未评分</p>
+                </div>
+              </div>
+            </div>
+          </section>
+        </div>
+
+        <!-- 最近跑批 -->
+        <section class="card card--panel">
+          <div class="card-head">
+            <span class="th-label">最近 5 轮 · 共 12 轮</span>
+            <button class="btn btn--text" type="button">刷新</button>
+          </div>
+
+          <div class="card-body">
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>run_id</th>
+                    <th>时间</th>
+                    <th class="num-end">样本数</th>
+                    <th class="num-end">通过率</th>
+                    <th>状态</th>
+                    <th class="num-end">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      <span class="mono t-12">run_20261122_0930</span>
+                      <p class="sub mono">deepseek-flash</p>
+                    </td>
+                    <td class="num muted">2026-11-22 09:30</td>
+                    <td class="num num-end">50</td>
+                    <td>
+                      <div class="pass-cell">
+                        <div class="progress" role="img" aria-label="通过率 86%"><span style="width: 86%"></span></div>
+                        <span class="pass-pct">86<span class="unit unit--pct">%</span></span>
+                      </div>
+                    </td>
+                    <td><span class="badge badge--ok">已完成</span></td>
+                    <td class="num-end"><button class="btn btn--text" type="button">报告</button></td>
+                  </tr>
+
+                  <tr>
+                    <td>
+                      <span class="mono t-12">run_20261121_2115</span>
+                      <p class="sub mono">deepseek-v4-pro</p>
+                    </td>
+                    <td class="num muted">2026-11-21 21:15</td>
+                    <td class="num num-end">50</td>
+                    <td>
+                      <div class="pass-cell">
+                        <div class="progress" role="img" aria-label="通过率 78%"><span style="width: 78%"></span></div>
+                        <span class="pass-pct">78<span class="unit unit--pct">%</span></span>
+                      </div>
+                    </td>
+                    <td><span class="badge badge--ok">已完成</span></td>
+                    <td class="num-end"><button class="btn btn--text" type="button">报告</button></td>
+                  </tr>
+
+                  <tr>
+                    <td>
+                      <span class="mono t-12">run_20261121_0930</span>
+                      <p class="sub mono">deepseek-flash</p>
+                    </td>
+                    <td class="num muted">2026-11-21 09:30</td>
+                    <td class="num num-end">50</td>
+                    <td>
+                      <div class="pass-cell">
+                        <div class="progress" role="img" aria-label="通过率 64%"><span style="width: 64%"></span></div>
+                        <span class="pass-pct">64<span class="unit unit--pct">%</span></span>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="badge badge--indexing">部分完成</span>
+                      <p class="sub">4 题未评上</p>
+                    </td>
+                    <td class="num-end"><button class="btn btn--text" type="button">报告</button></td>
+                  </tr>
+
+                  <tr>
+                    <td>
+                      <span class="mono t-12">run_20261120_1640</span>
+                      <p class="sub mono">deepseek-flash</p>
+                    </td>
+                    <td class="num muted">2026-11-20 16:40</td>
+                    <td class="num num-end">50</td>
+                    <td>
+                      <div class="pass-cell">
+                        <div class="progress is-empty" aria-hidden="true"></div>
+                        <span class="pass-pct muted">—</span>
+                      </div>
+                    </td>
+                    <td>
+                      <span class="badge badge--fail">失败</span>
+                      <p class="sub">无人消费</p>
+                    </td>
+                    <td class="num-end"><span class="hint">无报告</span></td>
+                  </tr>
+
+                  <tr>
+                    <td>
+                      <span class="mono t-12">run_20261120_1108</span>
+                      <p class="sub mono">deepseek-flash</p>
+                    </td>
+                    <td class="num muted">2026-11-20 11:08</td>
+                    <td class="num num-end">50</td>
+                    <td>
+                      <div class="pass-cell">
+                        <div class="progress" role="img" aria-label="通过率 90%"><span style="width: 90%"></span></div>
+                        <span class="pass-pct">90<span class="unit unit--pct">%</span></span>
+                      </div>
+                    </td>
+                    <td><span class="badge badge--ok">已完成</span></td>
+                    <td class="num-end"><button class="btn btn--text" type="button">报告</button></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

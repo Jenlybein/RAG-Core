@@ -1,0 +1,604 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>观测 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* ── 页面头的时间窗 ── */
+      .window-select {
+        width: 124px;
+        height: 32px;
+        font-size: var(--fs-13);
+      }
+
+      /* ── 指标卡：名称 + 大数字 + 单位 ── */
+      .stat-value {
+        margin-top: 6px;
+        font-size: var(--fs-26);
+        line-height: 1.15;
+        letter-spacing: -0.02em;
+      }
+      .stat-unit {
+        margin-left: 4px;
+        font-size: var(--fs-13);
+        font-weight: 400;
+        letter-spacing: 0;
+        color: var(--muted);
+      }
+
+      /* ── 每行「主区 + 320px 右栏」 ── */
+      .obs-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 320px;
+        gap: var(--sp-6);
+        align-items: start;
+      }
+      .section-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--sp-2);
+      }
+      .section-meta {
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+
+      /* ── 趋势折线：灰网格 + 一条蓝线 ── */
+      .trend-chart {
+        display: block;
+        width: 100%;
+        height: auto;
+        margin-top: var(--sp-4);
+      }
+      .trend-chart text {
+        font-family: var(--font-sans);
+        font-size: 12px;
+        fill: var(--muted);
+      }
+      .chart-grid line {
+        stroke: var(--line-lighter);
+        stroke-width: 1;
+      }
+      .chart-grid line.chart-base {
+        stroke: var(--line-light);
+      }
+      .chart-line {
+        fill: none;
+        stroke: var(--accent);
+        stroke-width: 1.5;
+        stroke-linejoin: round;
+        stroke-linecap: round;
+      }
+      .chart-dot {
+        fill: var(--accent);
+      }
+      .chart-foot {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: space-between;
+        gap: var(--sp-3);
+        margin-top: var(--sp-3);
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      .legend {
+        display: inline-flex;
+        align-items: center;
+        gap: 8px;
+      }
+      .legend-swatch {
+        width: 16px;
+        height: 2px;
+        border-radius: 2px;
+        background: var(--accent);
+      }
+
+      /* ── 评分分布柱状 ── */
+      .rating-chart {
+        display: flex;
+        align-items: flex-end;
+        gap: var(--sp-3);
+        height: 148px;
+        margin-top: var(--sp-5);
+      }
+      .rating-col {
+        display: flex;
+        flex: 1 1 0;
+        flex-direction: column;
+        align-items: center;
+        gap: 6px;
+        height: 100%;
+      }
+      .rating-count {
+        font-size: var(--fs-12);
+        font-variant-numeric: tabular-nums;
+        color: var(--muted);
+      }
+      .rating-track {
+        display: flex;
+        flex: 1 1 auto;
+        align-items: flex-end;
+        width: 100%;
+        min-height: 0;
+        border-radius: 6px 6px 0 0;
+        background: var(--line-light);
+        overflow: hidden;
+      }
+      .rating-fill {
+        width: 100%;
+        border-radius: 6px 6px 0 0;
+        background: var(--accent);
+      }
+      .rating-score {
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+
+      /* ── 右栏键值行 ── */
+      .mini-list > * + * {
+        margin-top: 10px;
+      }
+      .mini-row {
+        display: flex;
+        align-items: baseline;
+        justify-content: space-between;
+        gap: var(--sp-3);
+      }
+      .mini-row dt {
+        font-size: var(--fs-13);
+        color: var(--muted);
+      }
+      .mini-row dd {
+        margin: 0;
+        font-size: var(--fs-13);
+        color: var(--ink);
+      }
+      .link-arrow {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        min-height: 24px;
+        font-size: var(--fs-13);
+        color: var(--accent);
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .link-arrow:hover {
+        
+                color: var(--accent-pressed);
+              
+      }
+    }
+
+      /* ── 观测栈层清单（右栏竖排） ── */
+      .layer-list > li + li {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line-lighter);
+      }
+      .layer-name {
+        font-size: var(--fs-13);
+        font-weight: 500;
+        color: var(--ink);
+      }
+      .layer-tag {
+        margin-top: 4px;
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+
+      .warn-ink {
+        color: var(--indexing-ink);
+      }
+
+      @media (max-width: 1000px) {
+        .obs-grid {
+          grid-template-columns: minmax(0, 1fr);
+        }
+      }
+      @media (max-width: 640px) {
+        .rating-chart {
+          height: 120px;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill is-active" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">观测</h1>
+          <div class="page-actions">
+            <div class="segmented" role="group" aria-label="统计范围">
+              <button type="button" class="is-active">全部</button>
+              <button type="button">只看成功</button>
+              <button type="button">只看失败</button>
+            </div>
+            <select class="select window-select" aria-label="统计时间窗">
+              <option>近 1 小时</option>
+              <option>近 6 小时</option>
+              <option selected>近 24 小时</option>
+              <option>近 72 小时</option>
+              <option>近 168 小时</option>
+            </select>
+            <button class="btn" type="button">
+              <svg
+                width="14"
+                height="14"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M20.5 12a8.5 8.5 0 1 1-2.49-6.01" />
+                <path d="M20.5 4v4.5H16" />
+              </svg>
+              刷新
+            </button>
+          </div>
+        </div>
+
+        <!-- 平台级指标：默认落在「全部」，被挡下的请求不会降级，所以降级率在全部/失败两档里没有值 -->
+        <div class="grid grid-4">
+          <div class="card card-body">
+            <p class="metric-label">请求数</p>
+            <p class="metric-value stat-value">4,206<span class="stat-unit">次</span></p>
+            <p class="hint t-12 mt-2">成功 4,112 · 失败 94</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">P50 耗时</p>
+            <p class="metric-value stat-value">320<span class="stat-unit">ms</span></p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">降级率 · 仅成功</p>
+            <p class="metric-value stat-value muted">—</p>
+            <p class="hint t-12 mt-2">切到「只看成功」</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">平均评分</p>
+            <p class="metric-value stat-value">4.2</p>
+          </div>
+        </div>
+
+        <!-- 趋势 + 评分分布 -->
+        <div class="obs-grid">
+          <section class="card card-body">
+            <div class="section-head">
+              <h2 class="section-title">每小时请求数</h2>
+              <span class="section-meta">峰值 371 · 15:00</span>
+            </div>
+
+            <svg
+              class="trend-chart"
+              viewBox="0 0 700 196"
+              role="img"
+              aria-label="近 24 小时每小时请求数折线，峰值 371 次"
+            >
+              <g class="chart-grid">
+                <line x1="34" y1="18" x2="696" y2="18" />
+                <line x1="34" y1="51.5" x2="696" y2="51.5" />
+                <line x1="34" y1="85" x2="696" y2="85" />
+                <line x1="34" y1="118.5" x2="696" y2="118.5" />
+                <line class="chart-base" x1="34" y1="152" x2="696" y2="152" />
+              </g>
+              <g class="chart-axis" text-anchor="end">
+                <text x="26" y="22">400</text>
+                <text x="26" y="55.5">300</text>
+                <text x="26" y="89">200</text>
+                <text x="26" y="122.5">100</text>
+                <text x="26" y="156">0</text>
+              </g>
+              <g class="chart-axis" text-anchor="middle">
+                <text x="34" y="176" text-anchor="start">15:00</text>
+                <text x="149.13" y="176">19:00</text>
+                <text x="264.26" y="176">23:00</text>
+                <text x="379.39" y="176">03:00</text>
+                <text x="494.52" y="176">07:00</text>
+                <text x="609.65" y="176">11:00</text>
+                <text x="696" y="176" text-anchor="end">14:00</text>
+              </g>
+              <polyline
+                class="chart-line"
+                points="34.00,30.73 62.78,41.11 91.57,56.19 120.35,85.67 149.13,97.06 177.91,104.77 206.70,112.47 235.48,121.18 264.26,130.90 293.04,139.94 321.83,142.62 350.61,144.97 379.39,145.97 408.17,144.63 436.96,138.26 465.74,125.87 494.52,107.78 523.30,80.31 552.09,57.53 580.87,42.79 609.65,41.11 638.43,68.92 667.22,50.83 696.00,35.42"
+              />
+              <circle class="chart-dot" cx="696" cy="35.42" r="2.6" />
+            </svg>
+
+            <div class="chart-foot">
+              <span class="legend"><span class="legend-swatch" aria-hidden="true"></span>请求数（次/小时）</span>
+            </div>
+          </section>
+
+          <section class="card card-body">
+            <div class="section-head">
+              <h2 class="section-title">评分分布</h2>
+              <span class="section-meta">612 条</span>
+            </div>
+            <div
+              class="rating-chart"
+              role="img"
+              aria-label="评分分布：5 星 282 条、4 星 218 条、3 星 74 条、2 星 26 条、1 星 12 条"
+            >
+              <div class="rating-col">
+                <span class="rating-count">282</span>
+                <span class="rating-track"><span class="rating-fill" style="height: 100%"></span></span>
+                <span class="rating-score">5★</span>
+              </div>
+              <div class="rating-col">
+                <span class="rating-count">218</span>
+                <span class="rating-track"><span class="rating-fill" style="height: 77.3%"></span></span>
+                <span class="rating-score">4★</span>
+              </div>
+              <div class="rating-col">
+                <span class="rating-count">74</span>
+                <span class="rating-track"><span class="rating-fill" style="height: 26.2%"></span></span>
+                <span class="rating-score">3★</span>
+              </div>
+              <div class="rating-col">
+                <span class="rating-count">26</span>
+                <span class="rating-track"><span class="rating-fill" style="height: 9.2%"></span></span>
+                <span class="rating-score">2★</span>
+              </div>
+              <div class="rating-col">
+                <span class="rating-count">12</span>
+                <span class="rating-track"><span class="rating-fill" style="height: 4.3%"></span></span>
+                <span class="rating-score">1★</span>
+              </div>
+            </div>
+            <p class="section-meta mt-3">≥ 4★ 81.7%</p>
+          </section>
+        </div>
+
+        <!-- 六段耗时 + 观测栈 -->
+        <div class="obs-grid">
+          <section class="card card-body">
+            <div class="section-head">
+              <h2 class="section-title">六段耗时</h2>
+              <span class="chip">来自观测栈</span>
+            </div>
+
+            <div class="table-wrap mt-4">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>段</th>
+                    <th class="num-end">样本</th>
+                    <th class="num-end">P50</th>
+                    <th class="num-end">P95</th>
+                    <th class="num-end">占六段之和</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="mono t-12">query_optimization</span></td>
+                    <td class="num num-end">1,204</td>
+                    <td class="num num-end">12<span class="unit">ms</span></td>
+                    <td class="num num-end muted">28<span class="unit">ms</span></td>
+                    <td class="num num-end muted">4.1<span class="unit unit--pct">%</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">vector_recall</span></td>
+                    <td class="num num-end">1,186</td>
+                    <td class="num num-end">168<span class="unit">ms</span></td>
+                    <td class="num num-end muted">412<span class="unit">ms</span></td>
+                    <td class="num num-end muted">48.6<span class="unit unit--pct">%</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">keyword_recall</span></td>
+                    <td class="num num-end">1,142</td>
+                    <td class="num num-end">42<span class="unit">ms</span></td>
+                    <td class="num num-end muted">96<span class="unit">ms</span></td>
+                    <td class="num num-end muted">12.7<span class="unit unit--pct">%</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">fusion</span></td>
+                    <td class="num num-end">1,186</td>
+                    <td class="num num-end">8<span class="unit">ms</span></td>
+                    <td class="num num-end muted">19<span class="unit">ms</span></td>
+                    <td class="num num-end muted">2.4<span class="unit unit--pct">%</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">rerank</span></td>
+                    <td class="num num-end">684</td>
+                    <td class="num num-end">96<span class="unit">ms</span></td>
+                    <td class="num num-end muted">238<span class="unit">ms</span></td>
+                    <td class="num num-end muted">27.9<span class="unit unit--pct">%</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">collapse</span></td>
+                    <td class="num num-end">1,204</td>
+                    <td class="num num-end">9<span class="unit">ms</span></td>
+                    <td class="num num-end muted">34<span class="unit">ms</span></td>
+                    <td class="num num-end muted">4.3<span class="unit unit--pct">%</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card card-body">
+            <h2 class="section-title">观测栈</h2>
+            <dl class="mini-list mt-3">
+              <div class="mini-row">
+                <dt>去向</dt>
+                <dd class="mono t-12">langfuse</dd>
+              </div>
+              <div class="mini-row">
+                <dt>凭据</dt>
+                <dd>已配置</dd>
+              </div>
+              <div class="mini-row">
+                <dt>观测栈层</dt>
+                <dd>可用</dd>
+              </div>
+            </dl>
+            <a class="link-arrow mt-4" href="https://langfuse.internal" target="_blank" rel="noopener noreferrer">
+              打开 Langfuse
+              <svg
+                width="13"
+                height="13"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="1.75"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <path d="M14 5h5v5" />
+                <path d="M19 5l-7 7" />
+                <path d="M18 14v4a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h4" />
+              </svg>
+            </a>
+
+            <div class="divider mt-4"></div>
+            <div class="row between mt-3">
+              <span class="field-label">上次成功写入</span>
+              <span class="mono t-12">14:52</span>
+            </div>
+          </section>
+        </div>
+
+        <!-- 租户榜 + 观测栈层 -->
+        <div class="obs-grid">
+          <section class="card card-body">
+            <div class="section-head">
+              <h2 class="section-title">租户榜（按调用量）</h2>
+              <span class="section-meta">前 5 名 · 共 12 个租户</span>
+            </div>
+
+            <div class="table-wrap mt-4">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th>租户</th>
+                    <th class="num-end">检索</th>
+                    <th class="num-end">降级率</th>
+                    <th class="num-end">平均耗时</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><span class="mono t-12">tenant_acme</span></td>
+                    <td class="num num-end">1,842</td>
+                    <td class="num num-end muted">0.8<span class="unit unit--pct">%</span></td>
+                    <td class="num num-end muted">268<span class="unit">ms</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">tenant_beta</span></td>
+                    <td class="num num-end">1,204</td>
+                    <td class="num num-end muted">1.2<span class="unit unit--pct">%</span></td>
+                    <td class="num num-end muted">312<span class="unit">ms</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">tenant_gamma</span></td>
+                    <td class="num num-end">686</td>
+                    <td class="num num-end muted">2.9<span class="unit unit--pct">%</span></td>
+                    <td class="num num-end muted">421<span class="unit">ms</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">tenant_delta</span></td>
+                    <td class="num num-end">312</td>
+                    <td class="num num-end warn-ink">12.2<span class="unit unit--pct">%</span></td>
+                    <td class="num num-end muted">512<span class="unit">ms</span></td>
+                  </tr>
+                  <tr>
+                    <td><span class="mono t-12">tenant_eps</span></td>
+                    <td class="num num-end">138</td>
+                    <td class="num num-end muted">0.0<span class="unit unit--pct">%</span></td>
+                    <td class="num num-end muted">244<span class="unit">ms</span></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="card card-body">
+            <h2 class="section-title">观测栈层</h2>
+            <ul class="layer-list mt-4">
+              <li>
+                <div class="row between">
+                  <span class="layer-name">本地事实层</span>
+                  <span class="badge badge--ok">可用</span>
+                </div>
+                <p class="layer-tag">零外部依赖</p>
+              </li>
+              <li>
+                <div class="row between">
+                  <span class="layer-name">Langfuse</span>
+                  <span class="badge badge--ok">可用</span>
+                </div>
+                <p class="layer-tag">trace 读写</p>
+              </li>
+              <li>
+                <div class="row between">
+                  <span class="layer-name">OTel Collector</span>
+                  <span class="badge badge--indexing">降级</span>
+                </div>
+                <p class="layer-tag">span 转发</p>
+              </li>
+              <li>
+                <div class="row between">
+                  <span class="layer-name">JSONL 落盘</span>
+                  <span class="badge badge--ok">可用</span>
+                </div>
+                <p class="layer-tag">兜底通道</p>
+              </li>
+            </ul>
+          </section>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

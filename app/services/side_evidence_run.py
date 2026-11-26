@@ -23,6 +23,7 @@ from typing import Any, Sequence
 
 import structlog
 
+from app.services.result_collapse import MAX_UNIT_CHARS_DEFAULT
 from app.services.side_evidence import run_side_evidence
 
 logger = structlog.get_logger(__name__)
@@ -152,6 +153,9 @@ def build_retriever():
             response = await retrieve(
                 db,
                 tenant_id=settings.DEV_TENANT_ID,
+                # 旁证是**内部评测**跑的一次召回，不是租户的一次调用：不落用量账
+                # （第 14 步 #200）。否则开发者租户的用量会被评测跑分填满。
+                write_trace=False,
                 kb_ids=kb_ids,
                 query=question,
                 options=RetrievalOptions(
@@ -159,6 +163,9 @@ def build_retriever():
                     top_k=settings.TOP_K,
                     fold_to_sections=True,
                     expand_table_rows=True,
+                    # 评测跑分不写账，但正文上限要跟生产一致：否则「评测里好好的、
+                    # 线上被裁」这种差异会跑到指标里，而它其实与检索质量无关。
+                    max_unit_chars=MAX_UNIT_CHARS_DEFAULT,
                     rerank=settings.RERANK_ENABLED,
                 ),
                 # 第 13 步：加工方式由端点表达。部署开着改写器就跑改写链，否则原句直查。

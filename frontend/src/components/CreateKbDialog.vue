@@ -20,6 +20,9 @@ import {
   KB_CHUNK_SIZE_MAX,
   KB_CHUNK_SIZE_MIN,
   KB_FORMATS,
+  KB_SECTION_PART_DEFAULT,
+  KB_SECTION_PART_MAX,
+  KB_SECTION_PART_MIN,
   KB_SPLIT_STRATEGIES,
   type CreatedKnowledgeBase,
   type CreateKnowledgeBaseRequest,
@@ -55,6 +58,7 @@ const form = reactive({
   description: '',
   splitStrategy: 'structure' as KbSplitStrategy,
   chunkSize: KB_CHUNK_SIZE_DEFAULT,
+  sectionPartMaxChars: KB_SECTION_PART_DEFAULT,
 })
 // size 策略下用户的可勾选名单；structure 时不可见，也不参与请求。
 const sizeFormats = ref<KbFormat[]>([...KB_FORMATS])
@@ -83,6 +87,11 @@ const createFormSchema = z.object({
     .int('切块大小必须是整数')
     .min(KB_CHUNK_SIZE_MIN, `切块大小不能小于 ${KB_CHUNK_SIZE_MIN}`)
     .max(KB_CHUNK_SIZE_MAX, `切块大小不能大于 ${KB_CHUNK_SIZE_MAX}`),
+  section_part_max_chars: z
+    .number()
+    .int('节段上限必须是整数')
+    .min(KB_SECTION_PART_MIN, `节段上限不能小于 ${KB_SECTION_PART_MIN}`)
+    .max(KB_SECTION_PART_MAX, `节段上限不能大于 ${KB_SECTION_PART_MAX}`),
 })
 
 // structure 期间勾选框被隐藏；切回 size 时恢复五种全开，否则用户带着一份自己
@@ -107,6 +116,7 @@ function reset(): void {
   form.description = ''
   form.splitStrategy = 'structure'
   form.chunkSize = KB_CHUNK_SIZE_DEFAULT
+  form.sectionPartMaxChars = KB_SECTION_PART_DEFAULT
   sizeFormats.value = [...KB_FORMATS]
   advancedPanels.value = []
   formErrors.value = []
@@ -125,6 +135,7 @@ async function submit(): Promise<void> {
     split_strategy: form.splitStrategy,
     allowed_formats: selectedFormats.value,
     chunk_size: form.chunkSize,
+    section_part_max_chars: form.sectionPartMaxChars,
   })
   if (!parsed.success) {
     formErrors.value = parsed.error.issues.map((issue) => issue.message)
@@ -138,6 +149,7 @@ async function submit(): Promise<void> {
       split_strategy: parsed.data.split_strategy,
       allowed_formats: parsed.data.allowed_formats,
       chunk_size: parsed.data.chunk_size,
+      section_part_max_chars: parsed.data.section_part_max_chars,
     }
     // 后端 description 可选；空串按「没填」发，别把一个无意义的空字段塞进 extra=forbid 的请求。
     if (parsed.data.description !== '') payload.description = parsed.data.description
@@ -229,6 +241,24 @@ function continueUpload(): void {
             <p class="mt-1 text-xs text-muted">
               默认 {{ KB_CHUNK_SIZE_DEFAULT }} token ≈ 768–983 个汉字，范围
               {{ KB_CHUNK_SIZE_MIN }}–{{ KB_CHUNK_SIZE_MAX }}。
+            </p>
+          </el-form-item>
+
+          <!--
+            节段上限（第 16 步 #207）：一个 h2 超过这个字数就在片边界切成若干「节段」。
+            它是「一条结果不会上万字」的根；建库之后可以在库卡片上的「设置」里改（改完会重建）。
+          -->
+          <el-form-item label="节段上限（字）">
+            <el-input-number
+              v-model="form.sectionPartMaxChars"
+              :min="KB_SECTION_PART_MIN"
+              :max="KB_SECTION_PART_MAX"
+              :step="500"
+            />
+            <p class="mt-1 text-xs text-muted">
+              默认 {{ KB_SECTION_PART_DEFAULT }} 字，范围 {{ KB_SECTION_PART_MIN }}–{{
+                KB_SECTION_PART_MAX
+              }}。超过就在片边界把一节切成几段，永不切句。
             </p>
           </el-form-item>
         </el-collapse-item>

@@ -21,7 +21,7 @@ from app.core.auth import DevKeyContext
 from app.schemas.auth import AuthMeData, AuthTenantData
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console import plan_snapshot_data, usage_data
-from app.services.quota_gate import LLM_NAMESPACE, read_tenant_daily_usage
+from app.services.console_service import METER_BOOKS, meter_usage
 
 router = APIRouter()
 
@@ -34,29 +34,26 @@ router = APIRouter()
 async def me(key: DevKeyContext = Depends(get_current_key)) -> ApiResponse[AuthMeData]:
     """按这把 Key 的判定结论答四栏；不读任何跨租户的行，也不写任何计数。
 
-    ``tenant`` / ``plan`` 原样来自上下文；``usage`` 与 ``llm_usage`` 的 ``limit``
-    分别取套餐的 ``retrieve_daily`` 与 ``llm_daily``，``used`` 各走只读的租户日桶
-    （两本账，见 ``quota_gate`` 的 ``KEY_NAMESPACE`` / ``LLM_NAMESPACE``）——
-    与控制面 ``/me`` 是同一份口径（开关关着时如实报「未统计」，不是 0）。
+    ``tenant`` / ``plan`` 原样来自上下文；三本账（检索 / 重排 / 大模型）按
+    :data:`app.services.console_service.METER_BOOKS` 那张清单循环读，``limit`` 各取套餐上
+    自己那一列、``used`` 各走只读的租户日桶——与控制面 ``/me`` 是同一份口径、同一张清单
+    （开关关着时如实报「未统计」，不是 0）。
 
-    路由是 ``async def``（票 #133）：用量那两条只读路径走异步 Redis，必须在事件循环上
+    路由是 ``async def``（票 #133）：用量那几条只读路径走异步 Redis，必须在事件循环上
     ``await``。路由体不碰数据库；身份由 ``get_current_key``（异步依赖）在同一个
     ``AsyncSession`` 上解出，整条链路都在事件循环上 ``await``，没有同步读库。
     """
 
+    meters = await meter_usage(tenant_id=key.tenant_id, plan=key.plan)
     return ok(
         AuthMeData(
             tenant=AuthTenantData(tenant_id=key.tenant_id, name=key.tenant_name),
             plan=plan_snapshot_data(key.plan),
-            usage=usage_data(
-                used=await read_tenant_daily_usage(tenant_id=key.tenant_id),
-                limit=key.plan.retrieve_daily,
-            ),
-            llm_usage=usage_data(
-                used=await read_tenant_daily_usage(
-                    tenant_id=key.tenant_id, namespace=LLM_NAMESPACE
-                ),
-                limit=key.plan.llm_daily,
-            ),
+            **{
+                book.field: usage_data(
+                    used=meters[book.field].used, limit=meters[book.field].limit
+                )
+                for book in METER_BOOKS
+            },
         )
     )

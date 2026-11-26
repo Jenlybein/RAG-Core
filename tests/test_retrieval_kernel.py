@@ -211,14 +211,15 @@ def _kernel_kwargs(**overrides: Any) -> dict[str, Any]:
         "index_versions": {KB_A: DEFAULT_INDEX_VERSION},
         "query": QUERY,
         "mode": "vector",
-        "vector_queries": (QUERY,),
+        "recall_queries": (QUERY,),
         "rerank_query": QUERY,
-        "keyword_query": QUERY,
         "top_k": 2,
         "recall_top_k": 2,
         "rerank_enabled": False,
         "fold_to_sections": False,
         "expand_table_rows": False,
+        # 一条结果正文的硬上限（第 16 步 #207）：内核把它原样交给折叠。
+        "max_unit_chars": 2000,
     }
     kwargs.update(overrides)
     return kwargs
@@ -266,9 +267,8 @@ def test_the_kernel_takes_the_scope_queries_switches_and_timer_explicitly() -> N
         "index_versions",
         "query",
         "mode",
-        "vector_queries",
+        "recall_queries",
         "rerank_query",
-        "keyword_query",
         "top_k",
         "recall_top_k",
         "recall_depth",
@@ -467,8 +467,8 @@ def test_the_kernel_delivers_whole_sections_after_top_k() -> None:
         metas={("kb-a", "c-1"): _meta(heading), ("kb-a", "c-2"): _meta(heading)},
         units={
             DEFAULT_INDEX_VERSION: [
-                ("doc-1", heading, 0, "第一句。", "c-1", "prose", 0),
-                ("doc-1", heading, 1, "第二句。", "c-2", "prose", 0),
+                ("doc-1", heading, 0, 0, "第一句。", "c-1", "prose", 0),
+                ("doc-1", heading, 0, 1, "第二句。", "c-2", "prose", 0),
             ]
         },
     )
@@ -508,8 +508,8 @@ def test_the_section_lookup_is_scoped_per_index_version() -> None:
             ("kb-b", "c-b"): _meta(heading),
         },
         units={
-            "v1": [("doc-a", heading, 0, "甲。", "c-a", "prose", 0)],
-            "v2": [("doc-b", heading, 0, "乙。", "c-b", "prose", 0)],
+            "v1": [("doc-a", heading, 0, 0, "甲。", "c-a", "prose", 0)],
+            "v2": [("doc-b", heading, 0, 0, "乙。", "c-b", "prose", 0)],
         },
     )
 
@@ -666,6 +666,7 @@ def _options() -> RetrievalOptions:
         top_k=2,
         fold_to_sections=False,
         expand_table_rows=False,
+        max_unit_chars=2000,
         rerank=False,
     )
 
@@ -683,7 +684,6 @@ def _install_retrieve_stubs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     monkeypatch.setattr(service, "get_vector_store", lambda: vector)
     monkeypatch.setattr(service, "get_keyword_search_provider", lambda: keyword)
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", False)
-    monkeypatch.setattr(settings, "SYNONYM_EXPANSION_ENABLED", False)
 
     async def _visible(_db: Any, *, tenant_id: str, kb_id: str) -> Any:
         return SimpleNamespace(

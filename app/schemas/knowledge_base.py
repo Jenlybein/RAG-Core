@@ -10,8 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.knowledge_base import (
     DEFAULT_CHUNK_SIZE,
+    DEFAULT_SECTION_PART_MAX_CHARS,
     MAX_CHUNK_SIZE,
+    MAX_SECTION_PART_MAX_CHARS,
     MIN_CHUNK_SIZE,
+    MIN_SECTION_PART_MAX_CHARS,
     FormatKind,
     SplitStrategy,
 )
@@ -30,6 +33,12 @@ class CreateKBRequest(BaseModel):
     chunk_size: int = Field(
         default=DEFAULT_CHUNK_SIZE, ge=MIN_CHUNK_SIZE, le=MAX_CHUNK_SIZE
     )
+    #: 节段上限（第 16 步 #207）：超过就在片边界把一节切成几段。改它必须重建索引。
+    section_part_max_chars: int = Field(
+        default=DEFAULT_SECTION_PART_MAX_CHARS,
+        ge=MIN_SECTION_PART_MAX_CHARS,
+        le=MAX_SECTION_PART_MAX_CHARS,
+    )
 
 
 class CreateKBData(BaseModel):
@@ -39,6 +48,7 @@ class CreateKBData(BaseModel):
     split_strategy: str
     allowed_formats: list[str]
     chunk_size: int
+    section_part_max_chars: int
     created_at: datetime
 
 

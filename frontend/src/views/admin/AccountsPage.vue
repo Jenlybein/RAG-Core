@@ -153,7 +153,7 @@ async function refresh(): Promise<void> {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="账号管理" subtitle="跨租户查看与调整账号，改动下一次请求即生效。">
+    <PageHeader title="账号管理">
       <template #actions>
         <span v-if="accounts.length > 0" class="text-sm text-muted">
           {{ accounts.length }} 个账号
@@ -169,7 +169,7 @@ async function refresh(): Promise<void> {
       v-if="plansError !== ''"
       class="mt-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-800"
     >
-      套餐列表读取失败，换套餐下拉暂时不可用：{{ plansError }}
+      套餐列表读取失败：{{ plansError }}
     </p>
 
     <div v-if="loading" class="py-10 text-center text-sm text-slate-500">加载账号…</div>
@@ -185,9 +185,6 @@ async function refresh(): Promise<void> {
     <div v-else class="mt-5 overflow-x-auto">
       <div v-if="accounts.length === 0" class="py-10 text-center">
         <p class="text-[15px] font-semibold text-ink">还没有账号</p>
-        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-          管理员账号由 <span class="font-mono">scripts/create_admin.py</span> 创建，租户账号由后续工具创建。
-        </p>
       </div>
 
       <table v-else class="min-w-full text-sm">

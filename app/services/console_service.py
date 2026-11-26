@@ -58,7 +58,12 @@ from app.repositories import (
     tenant_repository,
 )
 from app.services import plan_admin, plan_service
-from app.services.quota_gate import LLM_NAMESPACE, read_tenant_daily_usage
+from app.services.quota_gate import (
+    KEY_NAMESPACE,
+    LLM_NAMESPACE,
+    RERANK_NAMESPACE,
+    read_tenant_daily_usage,
+)
 from app.utils.id_generator import new_id
 
 #: 登录失败的**唯一**对外提示：它同时覆盖「查无此人」与「口令不对」。
@@ -84,6 +89,45 @@ class DailyUsageView:
 
 
 @dataclass(frozen=True)
+class MeterBookView:
+    """一本账的身份：响应里的字段名、套餐上那一列、以及日桶的命名空间。
+
+    三本账（检索 / 重排 / 大模型）在 ``/console/me`` 与 ``/auth/me`` 上都是**同形**的一栏，
+    差别只有这三样。清单只写在这里一处——两张响应、两个路由都按它循环；否则加第四本账时
+    要同时改四个地方，而那四处一定有人忘一个。
+    """
+
+    field: str
+    plan_limit: str
+    namespace: str = KEY_NAMESPACE
+
+
+#: 三本账的清单（顺序即面板上的顺序）。字段名与 ``ConsoleView`` / ``MeData`` 对齐。
+METER_BOOKS: Final[tuple[MeterBookView, ...]] = (
+    MeterBookView(field="usage", plan_limit="retrieve_daily"),
+    MeterBookView(field="rerank_usage", plan_limit="rerank_daily", namespace=RERANK_NAMESPACE),
+    MeterBookView(field="llm_usage", plan_limit="llm_daily", namespace=LLM_NAMESPACE),
+)
+
+
+async def meter_usage(*, tenant_id: str, plan: PlanSpec) -> dict[str, DailyUsageView]:
+    """一次读齐三本账：`{字段名: 今日用量视图}`。
+
+    只读（:func:`read_tenant_daily_usage` 从不 ``INCR``）：面板刷新不是一次检索，读路径
+    不能顺手把计数 +1。``limit`` 取各自那一列，free 档的 0 表示「这一档不含这本账」，
+    由调用方（前端）显示成「未开通」，不在这里补成任何数。
+    """
+
+    return {
+        book.field: DailyUsageView(
+            used=await read_tenant_daily_usage(tenant_id=tenant_id, namespace=book.namespace),
+            limit=getattr(plan, book.plan_limit),
+        )
+        for book in METER_BOOKS
+    }
+
+
+@dataclass(frozen=True)
 class ConsoleView:
     """/console/me 与登录成功的同一份载荷：我在哪个租户、买的是哪一档、今天用了多少。
 
@@ -92,8 +136,9 @@ class ConsoleView:
     「套餐日配额还剩多少」这个问题的答案。开关关着时 ``usage.used`` 为 ``None``
     （未统计），不是 0（见 :class:`DailyUsageView`）。
 
-    ``llm_usage`` 是**另一本账**的同一份形状（票 #150）：Research 有独立的
-    ``research_daily``，两栏分开报，面板才答得出「哪一项快用完了」。
+    ``llm_usage`` / ``rerank_usage`` 是另外两本账的同一份形状（票 #150 的三本账）：
+    三本账各有各的额度列（``retrieve_daily`` / ``rerank_daily`` / ``llm_daily``），
+    分开报，面板才答得出「哪一本快用完了」。合成一个总数会把这个答案抹掉。
     """
 
     account: Account
@@ -101,6 +146,7 @@ class ConsoleView:
     plan: PlanSpec | None
     usage: DailyUsageView | None = None
     llm_usage: DailyUsageView | None = None
+    rerank_usage: DailyUsageView | None = None
 
 
 @dataclass(frozen=True)
@@ -241,17 +287,8 @@ async def view_for(
         account=account,
         tenant=tenant,
         plan=plan,
-        usage=DailyUsageView(
-            # 只读路径：读一次日桶，不在任何地方 +1（见 quota_gate.read_tenant_daily_usage）。
-            used=await read_tenant_daily_usage(tenant_id=tenant.id),
-            limit=plan.retrieve_daily,
-        ),
-        llm_usage=DailyUsageView(
-            # 大模型那本账（第 13 步三本账之一）：同一个只读路径、同一个窗口口径，只是另
-            # 一个键前缀。Research 与改写都花这本账上的钱，所以这一栏就是「今天的模型成本」。
-            used=await read_tenant_daily_usage(tenant_id=tenant.id, namespace=LLM_NAMESPACE),
-            limit=plan.llm_daily,
-        ),
+        # 三本账一次读齐（清单在 METER_BOOKS）：只读路径，读一次日桶，不在任何地方 +1。
+        **(await meter_usage(tenant_id=tenant.id, plan=plan)),
     )
 
 

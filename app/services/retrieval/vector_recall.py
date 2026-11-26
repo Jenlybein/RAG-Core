@@ -23,49 +23,7 @@ import asyncio
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, Literal
 
-
-def _score(row: dict) -> float:
-    return float(row.get("score") or 0.0)
-
-
-def _merge_rows(ranked_batches: list[list[dict]]) -> list[dict]:
-    """把每句各自的召回列表并成**一个**池：唯一键 ``(kb_id, chunk_id)``。
-
-    同一命中取「更好」的一次有两层意思：
-
-    * **名次**：保留 rank 更小的那份整行（content / title 等跟着名次走）；
-    * **分数**：取两次里更高者（不同查询的相似度可以比一比谁更有把握）。
-
-    去重后按分数降序、``kb_id`` / ``chunk_id`` 兜底排序，顺序不随查询先后漂移。
-    单批次时直接返回原列表的浅拷贝、**不排序**：两条调用方历史上各有自己的
-    排序口径（见 :func:`vector_recall`），这里一排序就会悄悄改变关闭时的同分顺序。
-    """
-
-    if len(ranked_batches) == 1:
-        return list(ranked_batches[0])
-
-    merged: dict[tuple[str | None, str], dict] = {}
-    best_rank: dict[tuple[str | None, str], int] = {}
-    for rows in ranked_batches:
-        for rank, row in enumerate(rows, start=1):
-            key = (row.get("kb_id"), str(row["chunk_id"]))
-            entry = merged.get(key)
-            if entry is None:
-                merged[key] = dict(row)
-                best_rank[key] = rank
-                continue
-            # 分数取更高者；整行只在名次更好时替换，避免把好名次的内容丢掉。
-            entry["score"] = max(_score(entry), _score(row))
-            if rank < best_rank[key]:
-                best_rank[key] = rank
-                row_score = entry["score"]
-                merged[key] = dict(row)
-                merged[key]["score"] = row_score
-
-    return sorted(
-        merged.values(),
-        key=lambda item: (-_score(item), item.get("kb_id") or "", item["chunk_id"]),
-    )
+from app.services.retrieval.merge import merge_rows
 
 
 async def vector_recall(
@@ -139,4 +97,4 @@ async def vector_recall(
             rows.sort(key=lambda item: item.get("score", 0.0), reverse=True)
         return rows[:top_k]
 
-    return _merge_rows(ranked_batches)[:top_k]
+    return merge_rows(ranked_batches)[:top_k]

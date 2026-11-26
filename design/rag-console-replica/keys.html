@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>API Key · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 列表做成卡片行而不是表格：配置摘要一列塞一整句话会折在词中间，
+         改成「名字 → 配置块 → 操作」三段的卡片行后，换行只发生在 chips 之间 */
+      .key-list > li {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: var(--sp-3) var(--sp-6);
+        padding: var(--sp-4) 0;
+        border-top: 1px solid var(--line-light);
+      }
+      .key-list > li:first-child {
+        padding-top: 2px;
+        border-top: 0;
+      }
+      .key-list > li:last-child {
+        padding-bottom: 2px;
+      }
+      .key-main {
+        flex: 1 1 380px;
+        min-width: 0;
+      }
+      .key-head {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sp-2);
+      }
+      .key-name {
+        font-size: var(--fs-14);
+        font-weight: 600;
+        color: var(--ink);
+      }
+
+      .key-chips {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 6px;
+        margin-top: var(--sp-2);
+      }
+      .key-actions {
+        display: flex;
+        flex-shrink: 0;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sp-1);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="knowledge-bases.html">知识库管理</a>
+            <a class="nav-pill is-active" href="keys.html">Key 与密钥配置</a>
+            <a class="nav-pill" href="usage.html">用量</a>
+            <a class="nav-pill" href="retrieve.html">检索调试台</a>
+            <a class="nav-pill" href="traces.html">检索记录</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill">
+            <span class="account-name">bob</span>
+          </span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">API Key</h1>
+        </div>
+
+        <div class="card card--panel">
+          <div class="card-head">
+            <span class="th-label">共 3 把</span>
+            <button class="btn btn--primary" type="button">签发新 Key</button>
+          </div>
+
+          <div class="card-body">
+            <ul class="key-list">
+              <li>
+                <div class="key-main">
+                  <div class="key-head">
+                    <span class="key-name">bob-prod</span>
+                    <span class="badge badge--ok">生效中</span>
+                  </div>
+                  <div class="key-chips">
+                    <span class="chip">hybrid</span>
+                    <span class="chip">top_k 8</span>
+                    <span class="chip">rerank 开</span>
+                    <span class="chip">库范围 2 个</span>
+                    <span class="chip">展开表格行</span>
+                  </div>
+                </div>
+                <div class="key-actions">
+                  <button class="btn btn--text" type="button">编辑配置</button>
+                  <button class="btn btn--text" type="button">获取密钥</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除 Key</button>
+                </div>
+              </li>
+
+              <li>
+                <div class="key-main">
+                  <div class="key-head">
+                    <span class="key-name">bob-staging</span>
+                    <span class="badge badge--ok">生效中</span>
+                  </div>
+                  <div class="key-chips">
+                    <span class="chip">dense</span>
+                    <span class="chip">top_k 5</span>
+                    <span class="chip">rerank 关</span>
+                    <span class="chip">库范围 1 个</span>
+                  </div>
+                </div>
+                <div class="key-actions">
+                  <button class="btn btn--text" type="button">编辑配置</button>
+                  <button class="btn btn--text" type="button">获取密钥</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除 Key</button>
+                </div>
+              </li>
+
+              <li>
+                <div class="key-main">
+                  <div class="key-head">
+                    <span class="key-name">bob-legacy</span>
+                    <span class="badge badge--neutral">已停用</span>
+                  </div>
+                  <div class="key-chips">
+                    <span class="chip">hybrid</span>
+                    <span class="chip">top_k 10</span>
+                    <span class="chip">未圈定任何库</span>
+                  </div>
+                </div>
+                <div class="key-actions">
+                  <button class="btn btn--text" type="button" disabled>编辑配置</button>
+                  <button class="btn btn--text" type="button">获取密钥</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除 Key</button>
+                </div>
+              </li>
+            </ul>
+          </div>
+        </div>
+
+        <!-- 源码里的两态（读取失败 / 空态）备在这里，静态稿默认展示有数据的一态 -->
+        <div hidden>
+          <div class="alert alert--error">读取 Key 列表失败：服务暂时不可用（业务码 20000）</div>
+          <div class="empty">
+            <p class="empty-title">还没有 Key</p>
+            <p class="empty-text">签发一把之后，去「检索调试台」选中它就能用它的原文打真实接口。</p>
+            <button class="btn btn--primary mt-5" type="button">签发新 Key</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

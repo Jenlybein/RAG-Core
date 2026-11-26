@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>账号管理 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 操作列两层：第一行两个状态按钮，第二行换套餐下拉（源码 flex-col gap-2 + w-44） */
+      .cell-stack {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-2);
+      }
+      .select--plan {
+        width: 176px;
+        height: 28px;
+        padding-top: 0;
+        padding-bottom: 0;
+        font-size: var(--fs-12);
+      }
+      /* 七列各有下限：窄屏横向滚动，不把租户名与时间挤成竖排 */
+      .table {
+        min-width: 940px;
+      }
+      /* 源码行是 align-top：操作列有两行时，用户名与按钮齐顶 */
+      .table td {
+        vertical-align: top;
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill is-active" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill"><span class="account-name">alice</span></span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">账号管理</h1>
+          </div>
+          <div class="page-actions">
+            <span class="t-14 muted">5 个账号</span>
+            <button class="btn btn--sm" type="button">刷新</button>
+          </div>
+        </div>
+
+        <section class="card card-body">
+          <div class="table-wrap">
+            <table class="table">
+              <colgroup>
+                <col style="width: 120px" />
+                <col style="width: 84px" />
+                <col style="width: 96px" />
+                <col style="width: 172px" />
+                <col style="width: 96px" />
+                <col style="width: 168px" />
+                <col />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th class="th-label" scope="col">用户名</th>
+                  <th class="th-label" scope="col">角色</th>
+                  <th class="th-label" scope="col">账号状态</th>
+                  <th class="th-label" scope="col">所属租户</th>
+                  <th class="th-label" scope="col">租户状态</th>
+                  <th class="th-label" scope="col">当前套餐</th>
+                  <th class="th-label" scope="col">操作</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="strong">alice</td>
+                  <td>管理员</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td><span class="faint">—</span></td>
+                  <td><span class="faint">—</span></td>
+                  <td><span class="faint">—</span></td>
+                  <td>
+                    <div class="cell-stack">
+                      <div class="cell-actions">
+                        <button class="btn btn--sm" type="button">停用账号</button>
+                      </div>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="strong">bob</td>
+                  <td>用户</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td>Acme 科技</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td>进阶版（plus）</td>
+                  <td>
+                    <div class="cell-stack">
+                      <div class="cell-actions">
+                        <button class="btn btn--sm" type="button">停用账号</button>
+                        <button class="btn btn--sm" type="button">停用租户</button>
+                      </div>
+                      <select class="select select--plan" aria-label="bob 所属租户的套餐">
+                        <option selected>换套餐</option>
+                        <option>免费版（free）</option>
+                        <option>进阶版（plus）</option>
+                        <option>专业版（pro）</option>
+                      </select>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="strong">carol</td>
+                  <td>用户</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td>Acme 科技</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td>进阶版（plus）</td>
+                  <td>
+                    <div class="cell-stack">
+                      <div class="cell-actions">
+                        <button class="btn btn--sm" type="button">停用账号</button>
+                        <button class="btn btn--sm" type="button">停用租户</button>
+                      </div>
+                      <select class="select select--plan" aria-label="carol 所属租户的套餐">
+                        <option selected>换套餐</option>
+                        <option>免费版（free）</option>
+                        <option>进阶版（plus）</option>
+                        <option>专业版（pro）</option>
+                      </select>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="strong">dave</td>
+                  <td>用户</td>
+                  <td><span class="badge badge--neutral">已停用</span></td>
+                  <td>Northwind 数据</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td>专业版（pro）</td>
+                  <td>
+                    <div class="cell-stack">
+                      <div class="cell-actions">
+                        <button class="btn btn--sm" type="button">启用账号</button>
+                        <button class="btn btn--sm" type="button">停用租户</button>
+                      </div>
+                      <select class="select select--plan" aria-label="dave 所属租户的套餐">
+                        <option selected>换套餐</option>
+                        <option>免费版（free）</option>
+                        <option>进阶版（plus）</option>
+                        <option>专业版（pro）</option>
+                      </select>
+                    </div>
+                  </td>
+                </tr>
+
+                <tr>
+                  <td class="strong">erin</td>
+                  <td>用户</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td>Northwind 数据</td>
+                  <td><span class="badge badge--ok">正常</span></td>
+                  <td>专业版（pro）</td>
+                  <td>
+                    <div class="cell-stack">
+                      <div class="cell-actions">
+                        <button class="btn btn--sm" type="button">停用账号</button>
+                        <button class="btn btn--sm" type="button">停用租户</button>
+                      </div>
+                      <select class="select select--plan" aria-label="erin 所属租户的套餐">
+                        <option selected>换套餐</option>
+                        <option>免费版（free）</option>
+                        <option>进阶版（plus）</option>
+                        <option>专业版（pro）</option>
+                      </select>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+  </body>
+</html>

@@ -109,9 +109,10 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     # 稿次列改名（``rename_documents_current_version``）又在删列迁移之后，#172 的文档
     # 版本表与切片稿号列（``add_document_versions``）再接在改名之后；#179 的归属索引
     # 「文档 → 稿号」映射列（``add_trace_doc_versions``）再接在版本表之后。
-    # 按仓库惯例，加最后一条迁移的人改这一行。
-    assert heads == [_revision_of(_migration_path("merge_model_role_pointers"))], (
-        f"链尾应当是第 13 步 T1 的新授权/计量列迁移，实际 {heads}"
+    # 按仓库惯例，加最后一条迁移的人改这一行：数据面 API Key 改「只存哈希」
+    # （``hash_api_key_secrets``）是当前链尾。
+    assert heads == [_revision_of(_migration_path("unit_cap_and_build_params"))], (
+        f"链尾应当是「归属索引改名 usage_events」那条迁移，实际 {heads}"
     )
 
 

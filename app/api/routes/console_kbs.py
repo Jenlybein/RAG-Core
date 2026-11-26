@@ -50,7 +50,10 @@ from app.schemas.console_kbs import (
     DocumentContentData,
     KnowledgeBaseNode,
     KnowledgeBaseTreeData,
+    UpdateKBSettingsData,
+    UpdateKBSettingsRequest,
 )
+from app.schemas.console_kbs import KBSettingsPreviewData
 from app.schemas.document import (
     DeleteDocumentData,
     DocumentListItem,
@@ -74,6 +77,8 @@ def _node_data(node: console_kb_service.TreeKnowledgeBase) -> KnowledgeBaseNode:
         split_strategy=node.split_strategy,
         allowed_formats=node.allowed_formats,
         chunk_size=node.chunk_size,
+        section_part_max_chars=node.section_part_max_chars,
+        needs_rebuild=node.needs_rebuild,
         documents=[
             DocumentListItem(
                 document_id=document.document_id,
@@ -104,6 +109,58 @@ async def knowledge_base_tree(
     return ok(KnowledgeBaseTreeData(knowledge_bases=[_node_data(node) for node in nodes]))
 
 
+@router.get(
+    "/knowledge-bases/{kb_id}/settings/preview",
+    response_model=ApiResponse[KBSettingsPreviewData],
+    summary="改切块设置前的确认信息（当前设置、生效参数、重建量）",
+)
+async def knowledge_base_settings_preview(
+    kb_id: str = Path(..., min_length=1),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: AsyncSession = Depends(get_async_db),
+) -> ApiResponse[KBSettingsPreviewData]:
+    """确认弹窗要的那份事实。只读，不改任何东西。"""
+
+    data = await console_kb_service.settings_preview(
+        db, tenant_id=tenant_id_of(identity), kb_id=kb_id
+    )
+    return ok(KBSettingsPreviewData.model_validate(data))
+
+
+@router.patch(
+    "/knowledge-bases/{kb_id}/settings",
+    response_model=ApiResponse[UpdateKBSettingsData],
+    summary="改切块设置并自动整库重建（需确认）",
+)
+async def update_knowledge_base_settings(
+    payload: UpdateKBSettingsRequest,
+    request: Request,
+    kb_id: str = Path(..., min_length=1),
+    identity: ConsoleIdentity = Depends(require_console_tenant_write),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
+) -> ApiResponse[UpdateKBSettingsData]:
+    """一次改完并重建：设置、审计、构建行同一笔事务；投递登记在提交之后。
+
+    ``confirm=false`` 直接 20002 —— 不确认就不动（这次改动的代价是整库重嵌入）。
+    """
+
+    data = await console_kb_service.update_kb_settings(
+        db,
+        tenant_id=tenant_id_of(identity),
+        kb_id=kb_id,
+        actor=identity,
+        request_id=submitted_request_id(request),
+        split_strategy=payload.split_strategy,
+        chunk_size=payload.chunk_size,
+        section_part_max_chars=payload.section_part_max_chars,
+        confirmed=payload.confirm,
+        name=payload.name,
+        description=payload.description,
+    )
+    return ok(UpdateKBSettingsData.model_validate(data))
+
+
 @router.post(
     "/knowledge-bases",
     response_model=ApiResponse[CreateKBData],
@@ -130,6 +187,7 @@ async def create_knowledge_base(
         description=payload.description,
         split_strategy=payload.split_strategy,
         chunk_size=payload.chunk_size,
+        section_part_max_chars=payload.section_part_max_chars,
         allowed_formats=payload.allowed_formats,
     )
     return ok(CreateKBData.model_validate(data))

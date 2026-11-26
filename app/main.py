@@ -71,6 +71,12 @@ from app.api.routes.console_eval import router as console_eval_router
 from app.api.routes.console_observability import (
     router as console_observability_router,
 )
+from app.api.routes.console_usage import (
+    admin_router as console_usage_admin_router,
+)
+from app.api.routes.console_usage import (
+    router as console_usage_router,
+)
 from app.core.config import settings
 from app.core.http_clients import aclose_http_client
 from app.providers.embedding import get_embedding_provider
@@ -191,6 +197,9 @@ app.include_router(console_traces_router)
 app.include_router(console_eval_router)
 # 观测总览（管理端，跨租户只读）：本地事实 + 观测栈聚合。
 app.include_router(console_observability_router)
+# 用量看板（第 14 步 #202）：租户看自己的、管理员看全站。两个前缀各挂一次。
+app.include_router(console_usage_router)
+app.include_router(console_usage_admin_router)
 
 # ── T4: HTTP 入口适配器（异常 → 统一响应；数据面与控制面共用同一套壳）──
 install_handlers(app)

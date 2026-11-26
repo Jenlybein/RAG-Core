@@ -204,10 +204,7 @@ onUnmounted(() => {
 
 <template>
   <section class="space-y-6">
-    <PageHeader
-      title="语义评测"
-      subtitle="模型裁判跑固定 50 题，出 CP / CR。只提示、不阻断——门禁另有确定性口径。"
-    >
+    <PageHeader title="语义评测">
       <template #actions>
         <el-button
           type="primary"
@@ -230,7 +227,7 @@ onUnmounted(() => {
         </p>
 
         <p v-else-if="sideEvidenceRunId === null" class="mt-3 text-sm text-muted">
-          还没有触发过。点右上角「触发一次评测」跑一轮（约 2~3 分钟，取决于裁判速度）。
+          还没有触发过。
         </p>
 
         <div v-else class="mt-3 space-y-3">
@@ -250,7 +247,6 @@ onUnmounted(() => {
 
           <p v-if="sideEvidenceJudgeModel" class="text-sm text-muted">
             裁判模型 <span class="font-mono text-ink">{{ sideEvidenceJudgeModel }}</span>
-            —— 换模型 = 换尺子，与旧报告不可比。
           </p>
 
           <div v-if="sideEvidenceStatus === 'running' && sideEvidenceProgress !== null" class="space-y-1.5">
@@ -283,10 +279,6 @@ onUnmounted(() => {
               <p class="metric-label">未评分</p>
             </div>
           </div>
-          <p v-if="sideEvidenceSummary?.scored !== undefined" class="text-xs text-muted">
-            CP / CR 的分母是「已评分」那一列，不是题目总数。
-          </p>
-
           <p v-if="sideEvidenceRunError" class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]">
             {{ sideEvidenceRunError }}
           </p>
@@ -343,7 +335,7 @@ onUnmounted(() => {
       <p v-if="reportError !== null" class="text-sm text-red-700">{{ reportError }}</p>
       <p v-else-if="reportLoading" class="text-sm text-muted">读取中…</p>
       <p v-else-if="reportText === null" class="text-sm text-muted">
-        这一轮没有报告文件（可能还在排队，或中途失败没落地）。
+        这一轮没有报告文件。
       </p>
       <div v-else class="max-h-[60vh] overflow-auto rounded-control bg-surface px-4 py-3" v-html="renderedReport" />
     </el-dialog>

@@ -16,6 +16,7 @@ import { useRoute, useRouter } from 'vue-router'
 import { ApiError } from '../lib/envelope'
 import { CONSOLE_ME_QUERY_KEY, fetchMe, submitLogout } from '../services/console'
 import { navFor } from '../utils/access'
+import ThemeSwitch from './ThemeSwitch.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -30,7 +31,6 @@ const meQuery = useQuery({
 
 const account = computed(() => meQuery.data.value?.account ?? null)
 const items = computed(() => navFor(account.value?.role))
-const roleLabel = computed(() => (account.value?.role === 'admin' ? '管理员' : '租户账号'))
 
 const loggingOut = ref(false)
 
@@ -60,64 +60,68 @@ async function logout(): Promise<void> {
 
 <template>
   <!--
-    吸顶磨砂顶栏（apple.com 的招牌）。三条取舍：
+    顶栏 = 一条透明的吸顶栏 + 一块浮在它中间的玻璃胶囊。
 
-    - **半透明白 + backdrop-blur**：苹果的导航就是内容从底下微微透上来。上一版这里是
-      不透明的，理由是「滚动时半透明色块像在动」；这次按设计语言的要求改回磨砂，并把
-      不透明度提到 80%、叠一层 saturate，透出来的内容足够模糊，不会被读成「栏在动」。
-    - **保留一条 1px 底边**：模糊之外还需要一条硬边界，否则浅色页面上栏与内容会糊在一起。
-    - 不再加投影：苹果的导航没有投影，靠模糊 + 细线定形。
+    为什么不整条做成玻璃带：设计稿里顶栏是一枚胶囊，左右留出画布；整条铺满会把
+    「内容是一张纸」的层次压平。但胶囊要自己把滚过的内容盖住 —— 栏高 = 胶囊高
+    （底部不留内距），填充足够实（nav 那档），否则内容会从胶囊边缘露出来。
+
+    这一条契约由 `appHeaderSticky.spec.ts` 守着：sticky 吸顶、磨砂有实底、有一条硬边。
+    断言从 header 元素迁到了下面的胶囊（`data-header-capsule`）——视觉上承担这三件事的
+    已经是胶囊，不是那条透明栏。
   -->
-  <header
-    class="sticky top-0 z-30 border-b border-line/70 bg-white/80 backdrop-blur-xl backdrop-saturate-150"
-  >
-    <div
-      class="mx-auto flex w-full max-w-page flex-wrap items-center justify-between gap-3 px-5 py-3 sm:px-8"
-    >
-      <div class="flex flex-wrap items-center gap-5">
+  <header class="sticky top-0 z-30">
+    <div class="mx-auto w-full max-w-page px-4 pt-3 sm:px-6">
+      <div
+        data-header-capsule
+        class="flex flex-wrap items-center gap-3 rounded-[22px] border border-white/50 bg-white/85 px-3.5 py-2.5 shadow-nav backdrop-blur-xl backdrop-saturate-150"
+      >
         <!--
-          品牌标记：一个近黑圆角方块里放一个极简的字形。不引图标库——这类位置一个字母
-          就够，vector 图标反而会抢走标题的注意力。
+          窄屏两行、桌面一行：
+          · 窄屏：第一行「品牌 —— 登出」，第二行整条导航横滑。五项入口挤在一行会把胶囊
+            撑出屏幕，右侧的账号与登出直接看不见（这是实测出来的，不是假设）。
+          · 桌面：品牌 + 导航 + 账号三块并排，导航 flex-1 吃掉多余宽度。
         -->
-        <RouterLink to="/" class="flex items-center gap-2.5">
-          <span
-            class="grid h-7 w-7 place-items-center rounded-[9px] bg-accent text-[13px] font-semibold leading-none text-white shadow-[0_1px_2px_rgba(28,26,21,0.22)]"
-            aria-hidden="true"
-            >R</span
-          >
-          <span class="text-[13px] font-semibold tracking-tight text-ink">RAG-Core</span>
-          <span class="hidden text-[13px] text-muted sm:inline">调试台</span>
-        </RouterLink>
+        <div class="flex w-full items-center justify-between gap-3 md:w-auto md:shrink-0">
+          <RouterLink to="/" class="flex shrink-0 items-center gap-2.5">
+            <span
+              class="grid h-7 w-7 place-items-center rounded-[9px] bg-accent text-[13px] font-semibold leading-none text-white shadow-[0_6px_16px_-6px_rgba(0,90,190,0.8)]"
+              aria-hidden="true"
+              >R</span
+            >
+            <span class="text-[13px] font-semibold tracking-tight text-ink">RAG-Core</span>
+          </RouterLink>
+
+          <!-- 窄屏的登出放这一行右侧：第二行整条给了导航，没有它的位置 -->
+          <el-button size="small" class="md:hidden" :loading="loggingOut" @click="logout">
+            登出
+          </el-button>
+        </div>
 
         <!-- 未登录或角色未知时 items 为空，导航整块不渲染：不做「猜一个角色」的兜底入口。 -->
-        <nav v-if="items.length > 0" class="flex flex-wrap items-center gap-0.5">
+        <nav
+          v-if="items.length > 0"
+          class="nav-track order-3 -mx-1 flex w-full min-w-0 items-center gap-0.5 overflow-x-auto px-1 md:order-none md:w-auto md:flex-1"
+        >
           <RouterLink
             v-for="item in items"
             :key="item.to"
             :to="item.to"
-            class="nav-pill"
-            :class="
-              isCurrent(item.to)
-                ? 'bg-slate-100 font-medium text-ink'
-                : 'text-slate-600 hover:bg-slate-100 hover:text-ink'
-            "
+            class="nav-pill shrink-0 whitespace-nowrap"
+            :class="isCurrent(item.to) ? 'is-active text-ink' : 'text-muted'"
           >
             {{ item.label }}
           </RouterLink>
         </nav>
-      </div>
 
-      <div class="flex items-center gap-3 text-sm">
-        <!-- 身份做成一个胶囊：名字是主色，角色是灰字——比「bob（租户账号）」整串更易扫读 -->
-        <span
-          v-if="account !== null"
-          class="flex items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1 text-[12px] shadow-[0_1px_1px_rgba(28,26,21,0.03)]"
-        >
-          <span class="font-medium text-ink">{{ account.username }}</span>
-          <span class="text-muted">·</span>
-          <span class="text-muted">{{ roleLabel }}</span>
-        </span>
-        <el-button size="small" :loading="loggingOut" @click="logout">登出</el-button>
+        <div class="hidden shrink-0 items-center gap-2.5 md:flex">
+          <ThemeSwitch />
+          <!-- 身份只留名字：角色已经由导航条目说明，重复一遍是噪声 -->
+          <span v-if="account !== null" class="flex items-center gap-1.5 text-[12px] text-ink">
+            <span class="font-medium">{{ account.username }}</span>
+          </span>
+          <el-button size="small" :loading="loggingOut" @click="logout">登出</el-button>
+        </div>
       </div>
     </div>
   </header>

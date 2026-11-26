@@ -32,6 +32,8 @@ describe('fetchTree', () => {
           split_strategy: 'structure',
           allowed_formats: ['markdown'],
           chunk_size: 512,
+          section_part_max_chars: 2000,
+          needs_rebuild: false,
           documents: [
             {
               document_id: 'doc_1',
@@ -50,6 +52,8 @@ describe('fetchTree', () => {
           split_strategy: 'size',
           allowed_formats: ['text'],
           chunk_size: 1024,
+          section_part_max_chars: 2000,
+          needs_rebuild: false,
           documents: [],
         },
       ],
@@ -63,6 +67,8 @@ describe('fetchTree', () => {
         split_strategy: 'structure',
         allowed_formats: ['markdown'],
         chunk_size: 512,
+        section_part_max_chars: 2000,
+        needs_rebuild: false,
         documents: [
           {
             document_id: 'doc_1',
@@ -81,6 +87,8 @@ describe('fetchTree', () => {
         split_strategy: 'size',
         allowed_formats: ['text'],
         chunk_size: 1024,
+        section_part_max_chars: 2000,
+        needs_rebuild: false,
         documents: [],
       },
     ])

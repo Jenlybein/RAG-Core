@@ -153,6 +153,7 @@ from app.db.async_session import AsyncSessionLocal, async_engine  # noqa: E402
 from app.db.transaction import async_transaction  # noqa: E402
 from app.models import Chunk, Document, KnowledgeBase  # noqa: E402
 from app.models.chunk import DEFAULT_INDEX_VERSION  # noqa: E402
+from app.services.result_collapse import MAX_UNIT_CHARS_DEFAULT  # noqa: E402
 from app.models.knowledge_base import (  # noqa: E402
     SPLIT_STRATEGIES,
     SPLIT_STRUCTURE,
@@ -239,7 +240,6 @@ class LiveEnvironment:
     top_k: int
     rerank_enabled: bool
     query_rewrite_enabled: bool
-    synonym_expansion_enabled: bool
     llm_configured: bool
     llm_probe: str
 
@@ -256,15 +256,12 @@ def _isolate_settings(*, top_k: int, rerank: bool = False) -> None:
     * ``RERANK_ENABLED``：默认 ``False``——重排会让 ``score`` 变成重排分、``rrf_score``
       只是历史值，「融合分手算对账」（验收第 4 条）就没法做了；但「重排开 vs 关」本身
       是要测的一件事（#114），所以它是个**参数**而不是写死的常量，由调用方显式传；
-    * ``SYNONYM_EXPANSION_ENABLED=False``：同义词只影响关键词一路，开着它做
-      「vector vs hybrid」等于在对比里混进第三个变量；
     * ``QUERY_REWRITE_ENABLED=False``：主对比先给出**关掉一切可选优化**的基线，
       改写开/关是单独一组。
     """
 
     settings.ELASTICSEARCH_INDEX = _eval_index_name()
     settings.RERANK_ENABLED = bool(rerank)
-    settings.SYNONYM_EXPANSION_ENABLED = False
     settings.QUERY_REWRITE_ENABLED = False
     settings.TOP_K = top_k
 
@@ -340,7 +337,6 @@ async def _preflight() -> LiveEnvironment:
         top_k=settings.TOP_K,
         rerank_enabled=settings.RERANK_ENABLED,
         query_rewrite_enabled=settings.QUERY_REWRITE_ENABLED,
-        synonym_expansion_enabled=settings.SYNONYM_EXPANSION_ENABLED,
         llm_configured=llm_configured,
         llm_probe=llm_probe,
     )
@@ -952,12 +948,12 @@ class QuestionOutcome:
     # 跑完就没了——基线要能事后回答「这一轮重排真的发生了」，所以它必须落进逐题明细。
     # 原样照抄而不是另算一份：两处口径一旦分叉，读数的人就不知道该信哪个。
     rerank: dict[str, Any] | None = None
-    # 实际检索用的句子（#31）：改写成功时 ``vector_queries`` 是两句（原句 + 改写句），
-    # 关闭 / 失败时只有原句；``effective_query`` 是重排看的那一句。留档是为了让
-    # 「这一题为什么变差」能归因，而不是只能猜。
+    # 实际检索用的句子（#31；第 15 步起两路共用这一组）：改写成功时是「原句 + 改写句」
+    # 两句，关闭 / 失败时只有原句。``effective_query`` 是改写句，只供归因——重排看的是
+    # **原句**（第 15 步）。留档是为了让「这一题为什么变差」能归因，而不是只能猜。
     effective_query: str | None = None
     rewrite_applied: bool = False
-    vector_queries: list[str] = field(default_factory=list)
+    recall_queries: list[str] = field(default_factory=list)
 
     @property
     def returned_ids(self) -> list[str]:
@@ -997,6 +993,9 @@ async def _run_question(
                 top_k=top_k,
                 fold_to_sections=True,
                 expand_table_rows=True,
+                # 评测与生产用同一个正文上限（第 16 步 #207）：否则「评测里好好的、
+                # 线上被裁」这种差异会跑进指标，而它其实与检索质量无关。
+                max_unit_chars=MAX_UNIT_CHARS_DEFAULT,
                 rerank=settings.RERANK_ENABLED,
             ),
             # 重排实现由调用方决定（#116）：``--rerank-provider llm`` 时这里是一个显式
@@ -1027,7 +1026,7 @@ async def _run_question(
     optimization = retrieval_meta.get("query_optimization") or {}
     outcome.effective_query = optimization.get("effective_query") or question.query
     outcome.rewrite_applied = bool(optimization.get("rewrite_applied"))
-    outcome.vector_queries = list(optimization.get("vector_queries") or [question.query])
+    outcome.recall_queries = list(optimization.get("recall_queries") or [question.query])
     return outcome
 
 
@@ -1107,7 +1106,7 @@ def _score_question(
         # 实际检索用句（#31）：改写开了就只有这一栏能解释名次变化。
         "effective_query": outcome.effective_query,
         "rewrite_applied": outcome.rewrite_applied,
-        "vector_queries": list(outcome.vector_queries),
+        "recall_queries": list(outcome.recall_queries),
         "status": status,
         "hits": len(hits),
         "relevant_total": len(relevant_set),
@@ -1991,9 +1990,8 @@ def _write_report(
         f"- 融合常数 `rrf_k={environment.rrf_k}`（服务端写死，不进请求体）；"
         f"`top_k={environment.top_k}`；每路召回深度 `{environment.hybrid_recall_top_k}`。",
         "- 重排："
-        f"{'开' if environment.rerank_enabled else '关'}；同义词扩展："
-        f"{'开' if environment.synonym_expansion_enabled else '关'}。"
-        "两者都在本次对比里显式关闭——它们是第三变量，混进来就说不清是谁的功劳。",
+        f"{'开' if environment.rerank_enabled else '关'}。"
+        "它在本轮对比里显式关闭——重排会让 `score` 变成重排分，融合分手算对账就做不了。",
         "- 三组对照：`mode=vector`（纯向量）、`mode=bm25`（关键词单路）、"
         "`mode=hybrid`（RRF 融合）。**v1 漏了 bm25 单路**，而它才是「BM25 补洞」的直接证据。",
         "",

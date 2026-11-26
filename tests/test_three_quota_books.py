@@ -15,8 +15,10 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.models.key_policy import KeyPolicySnapshot
-from app.models.plan import PLAN_PRESETS, PLAN_PRO
+from app.models.plan import PLAN_FREE, PLAN_PRESETS, PLAN_PRO
+from app.services import console_service
 from app.services.quota_gate import (
+    KEY_NAMESPACE,
     LLM_NAMESPACE,
     RERANK_NAMESPACE,
     QuotaCounters,
@@ -113,3 +115,39 @@ def test_record_n_of_zero_or_negative_is_a_noop() -> None:
     asyncio.run(ledger.record_n(-1))
 
     assert store.values == {}
+
+
+# ─────────────────────────────────────────────── 读数：三本账清单只写一处
+
+def test_meter_usage_reads_each_book_from_its_own_namespace_and_column(
+    monkeypatch: Any,
+) -> None:
+    """``meter_usage`` 按 ``METER_BOOKS`` 那张清单读三本账，各取各的桶与各取各的上限列。
+
+    这张清单是「三本账」的唯一真相源：``/console/me``、``/auth/me`` 与面板都靠它循环。
+    所以这里钉的是三件事：**三个命名空间各读一次**（不多不少）、上限来自**自己那一列**、
+    以及 free 档那两列是 0——前端据此画「未开通」，后端不替它补成任何数。
+    """
+
+    seen: list[str] = []
+
+    async def fake(*, tenant_id: str, namespace: str = KEY_NAMESPACE, **_: object) -> int:
+        assert tenant_id == TENANT_ID
+        seen.append(namespace)
+        return 3
+
+    monkeypatch.setattr(console_service, "read_tenant_daily_usage", fake)
+
+    free = PLAN_PRESETS[PLAN_FREE]
+    books = asyncio.run(console_service.meter_usage(tenant_id=TENANT_ID, plan=free))
+
+    assert seen == [KEY_NAMESPACE, RERANK_NAMESPACE, LLM_NAMESPACE]
+    assert books["usage"] == console_service.DailyUsageView(used=3, limit=free.retrieve_daily)
+    assert books["rerank_usage"].limit == 0, "free 档不含重排：上限就该是 0，由面板画「未开通」"
+    assert books["llm_usage"].limit == 0
+    assert set(books) == {book.field for book in console_service.METER_BOOKS}
+
+    pro = PLAN_PRESETS[PLAN_PRO]
+    pro_books = asyncio.run(console_service.meter_usage(tenant_id=TENANT_ID, plan=pro))
+    assert pro_books["rerank_usage"].limit == pro.rerank_daily
+    assert pro_books["llm_usage"].limit == pro.llm_daily

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>站点用量 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <link rel="stylesheet" href="usage.css" />
+    <script src="assets/echarts.min.js"></script>
+    <script src="usage-charts.js"></script>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill" href="admin-accounts.html">账号管理</a>
+            <a class="nav-pill" href="admin-plans.html">套餐管理</a>
+            <a class="nav-pill" href="admin-audit.html">审计日志</a>
+            <a class="nav-pill" href="admin-models.html">模型配置</a>
+            <a class="nav-pill" href="admin-retrieval.html">检索参数</a>
+            <a class="nav-pill" href="admin-observability.html">观测</a>
+            <a class="nav-pill is-active" href="admin-usage.html">用量</a>
+            <a class="nav-pill" href="admin-evaluation.html">语义评测</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill">
+            <span class="account-name">alice</span>
+            <span class="account-role">平台管理员</span>
+          </span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <h1 class="page-title">站点用量</h1>
+          <div class="page-actions">
+            <button class="btn" type="button">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12" /><path d="M7.5 10.5 12 15l4.5-4.5" /><path d="M4 20h16" /></svg>
+              导出 CSV
+            </button>
+            <div class="segmented" id="win" role="group" aria-label="统计时间窗">
+              <button type="button" data-win="1h">1 小时</button>
+              <button type="button" data-win="1d" class="is-active">1 天</button>
+              <button type="button" data-win="7d">7 天</button>
+              <button type="button" data-win="30d">30 天</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid grid-4">
+          <div class="card card-body">
+            <p class="metric-label">站点调用</p>
+            <p class="metric-value stat-value" id="kpi-calls">—</p>
+            <p class="stat-foot" id="kpi-calls-foot">—</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">有调用的租户</p>
+            <p class="metric-value stat-value" id="kpi-tenants">—</p>
+            <p class="stat-foot">共 3 个租户</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">成功率</p>
+            <p class="metric-value stat-value">97.4<span class="stat-unit">%</span></p>
+            <p class="stat-foot" id="kpi-ok-foot">—</p>
+          </div>
+          <div class="card card-body">
+            <p class="metric-label">P95 耗时</p>
+            <p class="metric-value stat-value" id="kpi-p95">—</p>
+            <p class="stat-foot">最慢：联调租户B 1,042 ms</p>
+          </div>
+        </div>
+
+        <section class="card card-body">
+          <div class="section-head">
+            <h2 class="section-title">全站趋势</h2>
+            <span class="section-meta" id="trend-meta">—</span>
+          </div>
+          <div class="chart-box chart-box--lg" id="chart-trend"></div>
+        </section>
+
+        <div class="grid grid-2">
+          <section class="card card--panel">
+            <div class="card-head">
+              <span class="th-label">租户排名 · 按调用次数</span>
+              <a class="link-arrow" href="admin-tenant.html">
+                下钻
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+              </a>
+            </div>
+            <div class="card-body">
+              <div class="table-wrap">
+                <table class="table table--nowrap">
+                  <thead>
+                    <tr>
+                      <th>租户</th>
+                      <th class="num-end">调用</th>
+                      <th class="num-end">成功率</th>
+                      <th class="num-end">P95</th>
+                      <th class="num-end">额度用尽</th>
+                    </tr>
+                  </thead>
+                  <tbody id="tenant-rows"></tbody>
+                </table>
+              </div>
+            </div>
+          </section>
+
+          <section class="card card-body">
+            <div class="section-head">
+              <h2 class="section-title">需要看一眼</h2>
+              <a class="link-arrow" href="admin-retrieval.html">
+                阈值
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
+              </a>
+            </div>
+            <div class="mt-4" style="display: grid; gap: 10px">
+              <div class="alert alert--error">
+                联调租户B · 成功率 94.1%（阈值 97.0%）· 额度用尽 276 次
+              </div>
+              <div class="alert alert--warn">
+                联调租户B · 日额 3,000 已满 · 09:40 起
+              </div>
+              <div class="alert alert--info">
+                联调租户B · P95 比上周高 180 ms · 同期重排翻倍
+              </div>
+              <div class="alert alert--info">
+                C6 验收租户 · 3 天零调用
+              </div>
+            </div>
+          </section>
+        </div>
+      </section>
+    </main>
+
+    <script>
+      const U = window.UsageCharts;
+
+      const SITE_BASE = 2050;
+      const TENANTS = [
+        { name: '联调租户B', id: 'tenant_beta', plan: '专业版', share: 0.78, ok: 94.1, p95: 1042, quotaShare: 0.86, href: 'admin-tenant.html' },
+        { name: '演示租户', id: 'tenant_demo', plan: '进阶版', share: 0.19, ok: 98.6, p95: 688, quotaShare: 0.12 },
+        { name: 'C6 验收租户', id: 'tenant_c6', plan: '专业版', share: 0.03, ok: 99.2, p95: 612, quotaShare: 0.02 },
+      ];
+
+      const state = { win: '1d' };
+
+      function renderRows(total, failed) {
+        const quotaHits = Math.round(failed * 0.85);
+        document.getElementById('tenant-rows').innerHTML = TENANTS.map((t) => {
+          const tone = t.ok < 95 ? 'badge--fail' : t.ok < 99 ? 'badge--indexing' : 'badge--ok';
+          const name = t.href ? `<a class="ink strong" href="${t.href}">${t.name}</a>` : `<span class="ink strong">${t.name}</span>`;
+          return `<tr${t.href ? ' class="is-link"' : ''}>
+            <td>${name}<span class="sub">${t.id} · ${t.plan}</span></td>
+            <td class="num-end">${U.fmt(Math.round(total * t.share))}</td>
+            <td class="num-end"><span class="badge ${tone}">${t.ok}%</span></td>
+            <td class="num-end">${U.fmt(t.p95)}<span class="unit">ms</span></td>
+            <td class="num-end">${U.fmt(Math.round(quotaHits * t.quotaShare))}</td>
+          </tr>`;
+        }).join('');
+      }
+
+      function render() {
+        const data = U.series(state.win, SITE_BASE, 5);
+        const total = U.sum(data.r) + U.sum(data.rr) + U.sum(data.llm);
+        const p95 = Math.round(data.p95.reduce((a, b) => a + b, 0) / data.p95.length);
+        const failed = Math.max(1, Math.round(total * 0.026));
+
+        const prev = Math.round(total * ({ '1h': 0.97, '1d': 1.07, '7d': 0.9, '30d': 1.12 }[state.win]));
+        const delta = ((total - prev) / prev) * 100;
+
+        document.getElementById('kpi-calls').innerHTML = `${U.fmt(total)}<span class="stat-unit">次</span>`;
+        document.getElementById('kpi-calls-foot').innerHTML =
+          `<span class="${delta >= 0 ? 'up' : 'down'}">${delta >= 0 ? '↑' : '↓'} ${Math.abs(delta).toFixed(1)}%</span> · 较上一窗口`;
+        document.getElementById('kpi-tenants').innerHTML =
+          `${state.win === '1h' ? 2 : 3}<span class="stat-unit">/ 3</span>`;
+        document.getElementById('kpi-ok-foot').textContent = `失败 ${U.fmt(failed)} 次 · 额度用尽 ${U.fmt(Math.round(failed * 0.85))} 次`;
+        document.getElementById('kpi-p95').innerHTML = `${U.fmt(p95)}<span class="stat-unit">ms</span>`;
+        document.getElementById('trend-meta').textContent = U.WINDOWS[state.win].label;
+
+        renderRows(total, failed);
+        U.repaint();
+      }
+
+      window.addEventListener('DOMContentLoaded', () => {
+        U.mount('chart-trend', (p) => U.meters(p, U.series(state.win, SITE_BASE, 5)));
+        U.watchTheme();
+
+        document.getElementById('win').addEventListener('click', (e) => {
+          const btn = e.target.closest('button[data-win]');
+          if (!btn) return;
+          state.win = btn.dataset.win;
+          [...document.querySelectorAll('#win button')].forEach((b) => b.classList.toggle('is-active', b === btn));
+          render();
+        });
+
+        render();
+      });
+    </script>
+  </body>
+</html>

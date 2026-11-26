@@ -1,0 +1,341 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>知识库详情 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      /* 背景页被弹窗遮住时仍要看得出是知识库管理 */
+      .kb-card {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+        padding: var(--sp-4);
+        border: 1px solid var(--stroke-hi);
+        border-radius: 18px;
+        background: var(--fill-md);
+        box-shadow: var(--sheen);
+      }
+      .kb-name {
+        font-size: var(--fs-15);
+        font-weight: 600;
+      }
+      .kb-formats {
+        margin-top: 2px;
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      .kb-metrics {
+        display: flex;
+        align-items: flex-end;
+        gap: var(--sp-5);
+      }
+      .search-256 {
+        width: 256px;
+      }
+
+      /* 详情弹窗：宽 880，头部自带操作，body 滚动，底部只有「关闭」 */
+      .detail-dialog {
+        max-width: 880px;
+      }
+      .detail-dialog .dialog-head {
+        padding-bottom: 14px;
+        border-bottom: 1px solid var(--line-lighter);
+      }
+      .detail-dialog .dialog-body {
+        padding-top: var(--sp-4);
+      }
+      .doc-cell {
+        display: flex;
+        flex-direction: column;
+        gap: 2px;
+      }
+      .doc-title {
+        font-size: var(--fs-14);
+        color: var(--ink);
+        word-break: break-all;
+      }
+      @media (max-width: 640px) {
+        /* 手机上四列塞不进 390：给表格一个下限让它横向滚，而不是把「分块数」挤没 */
+        .detail-dialog table {
+          min-width: 640px;
+        }
+        .detail-dialog .dialog-body {
+          padding-left: 16px;
+          padding-right: 16px;
+        }
+        .detail-dialog .dialog-head {
+          padding-left: 16px;
+          padding-right: 16px;
+        }
+      }
+      .doc-source {
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill is-active" href="knowledge-bases.html">知识库管理</a>
+            <a class="nav-pill" href="keys.html">Key 与密钥配置</a>
+            <a class="nav-pill" href="usage.html">用量</a>
+            <a class="nav-pill" href="retrieve.html">检索调试台</a>
+            <a class="nav-pill" href="traces.html">检索记录</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill">
+            <span class="account-name">bob</span>
+          </span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">知识库管理</h1>
+            
+          </div>
+          <div class="page-actions">
+            <button class="btn btn--primary" type="button">新建知识库</button>
+          </div>
+        </div>
+
+        <div class="card card--panel">
+          <div class="card-head">
+            <span class="th-label">6 个知识库</span>
+            <span class="search search-256">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16.5 16.5 4 4" stroke-linecap="round" />
+              </svg>
+              <input class="input" type="search" placeholder="搜索知识库" aria-label="搜索知识库" />
+            </span>
+          </div>
+
+          <div class="card-body">
+            <div class="grid grid-3">
+              <div class="kb-card">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">产品手册</p>
+                    <p class="kb-formats truncate">pdf、docx、md</p>
+                  </div>
+                  <span class="chip">结构切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">86</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">1,248</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">512</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="kb-card">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">客服工单语料</p>
+                    <p class="kb-formats truncate">xlsx、csv</p>
+                  </div>
+                  <span class="chip">窗口切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">132</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">3,610</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">256</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+              </div>
+
+              <div class="kb-card">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">合规与制度</p>
+                    <p class="kb-formats truncate">docx、pdf</p>
+                  </div>
+                  <span class="chip">结构切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">24</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">371</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">512</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- 库内文档的增删查改：整行可点进来的工作区 -->
+    <div class="dialog-overlay">
+      <div class="dialog detail-dialog" role="dialog" aria-modal="true" aria-labelledby="kb-detail-title">
+        <div class="dialog-head">
+          <div class="grow">
+            <h2 class="dialog-title" id="kb-detail-title">产品手册</h2>
+            <p class="dialog-sub">结构切块 · 4 篇 / 268 块 · 窗口 512 token</p>
+          </div>
+          <button class="btn btn--primary btn--sm" type="button">上传文档</button>
+          <button class="dialog-close" type="button" aria-label="关闭">✕</button>
+        </div>
+
+        <div class="dialog-body">
+          <div class="stack-3">
+            <span class="search">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16.5 16.5 4 4" stroke-linecap="round" />
+              </svg>
+              <input class="input" type="search" placeholder="搜索文档标题" aria-label="搜索文档标题" />
+            </span>
+
+            <div class="table-wrap">
+              <table class="table">
+                <thead>
+                  <tr>
+                    <th style="min-width: 240px">文档</th>
+                    <th style="width: 120px">状态</th>
+                    <th style="width: 90px">分块数</th>
+                    <th style="width: 260px">操作</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>
+                      <div class="doc-cell">
+                        <span class="doc-title">产品手册 v3.2.pdf</span>
+                        <span class="doc-source">pdf</span>
+                      </div>
+                    </td>
+                    <td><span class="badge badge--ok">成功</span></td>
+                    <td class="num">214<span class="unit">块</span></td>
+                    <td>
+                      <div class="cell-actions">
+                        <button class="btn btn--text" type="button">查看原文</button>
+                        <button class="btn btn--text" type="button">版本</button>
+                        <button class="btn btn--text" type="button">重建</button>
+                        <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div class="doc-cell">
+                        <span class="doc-title">售后政策.md</span>
+                        <span class="doc-source">markdown</span>
+                      </div>
+                    </td>
+                    <td><span class="badge badge--ok">成功</span></td>
+                    <td class="num">37<span class="unit">块</span></td>
+                    <td>
+                      <div class="cell-actions">
+                        <button class="btn btn--text" type="button">查看原文</button>
+                        <button class="btn btn--text" type="button">版本</button>
+                        <button class="btn btn--text" type="button">重建</button>
+                        <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div class="doc-cell">
+                        <span class="doc-title">安装指南.docx</span>
+                        <span class="doc-source">docx</span>
+                      </div>
+                    </td>
+                    <td><span class="badge badge--indexing">索引中</span></td>
+                    <td class="num">—</td>
+                    <td>
+                      <div class="cell-actions">
+                        <button class="btn btn--text" type="button">查看原文</button>
+                        <button class="btn btn--text" type="button">版本</button>
+                        <span class="t-12 faint">处理中</span>
+                      </div>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td>
+                      <div class="doc-cell">
+                        <span class="doc-title">定价表 2026Q4.xlsx</span>
+                        <span class="doc-source">xlsx</span>
+                      </div>
+                    </td>
+                    <td><span class="badge badge--fail">失败</span></td>
+                    <td class="num">0<span class="unit">块</span></td>
+                    <td>
+                      <div class="cell-actions">
+                        <button class="btn btn--text" type="button">查看原文</button>
+                        <button class="btn btn--text" type="button">版本</button>
+                        <button class="btn btn--text" type="button">重建</button>
+                        <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                      </div>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="dialog-foot">
+          <button class="btn" type="button">关闭</button>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

@@ -4,14 +4,14 @@ import { computed, ref } from 'vue'
 import { setActiveKey } from '../lib/activeKey'
 
 /**
- * 检索页的跨页面 UI 状态：勾了哪些库 + 选了哪把 Key。
+ * 检索页的跨页面 UI 状态：勾了哪些库 + 当前这把 Key。
  *
  * 为什么进 Pinia 而不是页面 `ref`：勾选与选 Key 都是「去建库 / 看列表 / 改配置再回来」
  * 时不该丢的东西，页面组件会随路由重建，只有应用级的 store 能活过这次重建。
  *
- * 本票（#92）在这里加了 `selectedKeyId` 与「这把 Key 的原文」：
+ * **Key 是用户自己粘进来的**（库里只存 scrypt 哈希，列表接口拿不到原文）：
  *
- * - 原文**只进内存**（本 store 的 ref + `lib/activeKey` 的模块变量），不落
+ * - 原文**只进内存**（本 store 不存它，只有 `lib/activeKey` 的模块变量），不落
  *   `localStorage` / `sessionStorage`，也不进 URL。刷新页面即失效——这是有意的；
  * - 原文与 id 由 :func:`selectKey` **一次性**写入 `lib/activeKey`：请求层认的 Key
  *   与页面显示的 Key 因此只有一条同步路径，不会出现「页面换了、请求还带旧 Key」；
@@ -19,13 +19,15 @@ import { setActiveKey } from '../lib/activeKey'
  *   移除**（并把被移除的 id 交回页面去提示）。留着它们会让下一次检索撞 20008，
  *   而错误要等请求之后才出现，用户看不到原因。空白名单表示「什么都没圈定」，
  *   不是「全部」——所以它也把已勾库全部移除。
+ * - 列表刷新（例如刚在 /keys 改过白名单）只换白名单、**不碰原文**：走
+ *   :func:`resyncScope`，它没有 keyValue 入参，因此不可能把一把空 Key 写进请求层。
  *
  * 也不落 storage：库 ID 本身不是凭据，但把它持久化会掩盖「换 Key 后白名单变了」这类
  * 真实问题——页面重新读一次可见库清单才更可信。
  */
 export interface SelectKeyInput {
   keyId: string
-  /** Key 原文（`GET /console/keys` 的 `key_value`）。 */
+  /** Key 原文（用户粘进来的那一串）。 */
   keyValue: string
   /** 这把 Key 的配置白名单；配置缺失时传空列表。 */
   allowedKbIds: string[]
@@ -77,8 +79,19 @@ export const useRetrieveStore = defineStore('retrieve', () => {
    */
   function selectKey(input: SelectKeyInput): string[] {
     selectedKeyId.value = input.keyId
-    allowedKbIds.value = [...new Set(input.allowedKbIds)]
     setActiveKey(input.keyValue)
+    return resyncScope(input.allowedKbIds)
+  }
+
+  /**
+   * 只换「这把 Key 能查哪些库」，**不动原文**。
+   *
+   * 列表刷新（刚在 /keys 改过白名单）走这一条：那一侧手里没有原文，若沿用 `selectKey`
+   * 就得给它一个空串——那会把请求层的 Key 清掉，下一次检索变成「还没选 Key」。
+   * 没有 keyValue 入参，这条错误在类型上就写不出来。
+   */
+  function resyncScope(allowedKbIdsInput: string[]): string[] {
+    allowedKbIds.value = [...new Set(allowedKbIdsInput)]
 
     const allowed = new Set(allowedKbIds.value)
     const removed = selectedKbIds.value.filter((kbId) => !allowed.has(kbId))
@@ -109,6 +122,7 @@ export const useRetrieveStore = defineStore('retrieve', () => {
     setSelection,
     prefill,
     selectKey,
+    resyncScope,
     clearKey,
     clear,
   }

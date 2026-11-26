@@ -28,16 +28,18 @@ from app.models.key_policy import KeyPolicy
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from app.services.quota_gate import LEVEL_TENANT, QuotaCounters, daily_key
+from tests.support.keys import mint_key
 
 TENANT_ALPHA = "tenant_alpha"
 TENANT_BETA = "tenant_beta"
 ALPHA_NAME = "Alpha 公司"
 BETA_NAME = "Beta 公司"
 
-KEY_ALPHA = "rc_live_" + "a" * 32
-KEY_BETA = "rc_live_" + "b" * 32
 KEY_ALPHA_ID = "key-alpha"
 KEY_BETA_ID = "key-beta"
+#: 串里带行身份证：鉴权靠它一次主键命中（库里只有哈希，没有可做索引的原文）。
+KEY_ALPHA = f"rc_live_{KEY_ALPHA_ID}." + "a" * 32
+KEY_BETA = f"rc_live_{KEY_BETA_ID}." + "b" * 32
 POLICY_ALPHA_ID = "policy-alpha"
 POLICY_BETA_ID = "policy-beta"
 
@@ -69,14 +71,13 @@ def _plan_rows() -> list[Plan]:
 
 
 def _key_row(key_id: str, key_value: str, *, tenant_id: str, policy_id: str) -> ApiKey:
-    return ApiKey(
-        id=key_id,
+    return mint_key(
+        key_id=key_id,
         tenant_id=tenant_id,
         policy_id=policy_id,
-        key_value=key_value,
         label="外部应用",
-        status="active",
-    )
+        plaintext=key_value,
+    ).api_key
 
 
 def _policy_row(policy_id: str, *, tenant_id: str, profile: str, qps: int, daily: int) -> KeyPolicy:
@@ -274,14 +275,21 @@ def test_me_returns_the_callers_identity_plan_and_todays_usage(
         "source": "daily_counter",
         "note": None,
     }
-    # llm 那一本账**同形**但各算各的（第 13 步：Research 的成本记在 llm 账上）：
-    # 上限取 llm_daily。
+    # 另外两本账**同形**但各算各的（第 13 步：重排与 Research 各记各的账）：上限各取
+    # 自己那一列。三本账缺任何一栏，调用方就答不出「我还能跑几次重排」。
+    assert data["rerank_usage"] == {
+        "used": 0,
+        "limit": PLAN_PRESETS["pro"].rerank_daily,
+        "source": "daily_counter",
+        "note": None,
+    }
     assert data["llm_usage"] == {
         "used": 0,
         "limit": PLAN_PRESETS["pro"].llm_daily,
         "source": "daily_counter",
         "note": None,
     }
+    assert set(data["rerank_usage"]) == set(data["llm_usage"]) == set(data["usage"])
 
 
 def test_a_missing_key_is_unauthorized_with_20010(me: _Harness) -> None:
@@ -292,7 +300,22 @@ def test_a_missing_key_is_unauthorized_with_20010(me: _Harness) -> None:
 
 
 def test_an_unknown_key_is_unauthorized_with_20010(me: _Harness) -> None:
-    body = me.get("rc_live_" + "0" * 32).json()
+    """**形状合法**但库里没有这把：走的是「Key 不存在」，不是「格式不对」。"""
+
+    body = me.get("rc_live_" + "00000000-0000-4000-8000-000000000000." + "0" * 32).json()
+
+    assert body["code"] == 20010
+    assert body["data"] is None
+
+
+def test_a_malformed_key_is_unauthorized_with_20010(me: _Harness) -> None:
+    """粘了一半的串（少了行身份证与密钥本体）：格式不成立，同样是 20010。
+
+    面板上那串打码形态（``rc_live_…4f3a2``）到不了这里——它带一个非 ASCII 的省略号，
+    HTTP 头根本装不下，客户端会先报错。
+    """
+
+    body = me.get("rc_live_0123").json()
 
     assert body["code"] == 20010
     assert body["data"] is None

@@ -30,7 +30,7 @@ DEMO_TENANT = "tenant_demo"
 ACME_TENANT = "tenant_acme"
 POLICY_ID = "11111111-1111-4111-8111-111111111111"
 
-API_KEY_PATTERN = re.compile(r"rc_live_[0-9a-f]{32}")
+API_KEY_PATTERN = re.compile(r"^rc_live_([0-9a-f-]{36})\.([0-9a-f]{32})$")
 
 
 def _load_script(module_name: str) -> ModuleType:
@@ -276,11 +276,18 @@ def test_issue_api_key_script_prints_the_generated_plaintext_key(
     issued = session.added_of(ApiKey)[0]
     assert issued.policy_id == POLICY_ID
     assert issued.label == "订单机器人"
-    assert API_KEY_PATTERN.fullmatch(issued.key_value)
+    # 行里只有哈希与末 5 位：原文只在这一刻的 stdout 里。
+    assert issued.key_hash.startswith("scrypt$")
     assert session.closed
 
     out = capsys.readouterr().out
-    assert issued.key_value in out
+    printed = re.search(r"^api key: (\S+)$", out, re.M)
+    assert printed is not None, out
+    matched = API_KEY_PATTERN.fullmatch(printed.group(1))
+    assert matched is not None, printed.group(1)
+    assert matched.group(1) == issued.id
+    assert issued.key_tail == matched.group(2)[-5:]
+    assert printed.group(1) not in str(issued.key_hash)
 
 
 def test_issue_api_key_script_refuses_a_policy_from_another_tenant(

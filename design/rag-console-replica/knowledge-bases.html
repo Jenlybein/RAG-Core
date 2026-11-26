@@ -1,0 +1,313 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="dsh-design" content="web" />
+    <meta name="theme-color" media="(prefers-color-scheme: light)" content="#e4e8ef" />
+    <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#14161a" />
+    <meta name="color-scheme" content="light" />
+    <title>知识库管理 · RAG-Core 调试台</title>
+    <link rel="stylesheet" href="tokens.css" />
+    <link rel="stylesheet" href="app.css" />
+    <style>
+      .kb-card {
+        display: flex;
+        flex-direction: column;
+        gap: var(--sp-3);
+        padding: var(--sp-4);
+        border: 1px solid var(--stroke-hi);
+        border-radius: 18px;
+        background: var(--fill-md);
+        box-shadow: var(--sheen);
+        text-align: left;
+        transition: background-color 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+      }
+
+    @media (hover: hover) and (pointer: fine) {
+      .kb-card:hover {
+        
+                border-color: var(--stroke-hi);
+                background: var(--fill-md);
+                box-shadow: 0 8px 20px -12px rgba(24, 33, 52, 0.35), inset 0 1px 0 #fff;
+              
+      }
+    }
+      .kb-name {
+        font-size: var(--fs-15);
+        font-weight: 600;
+        color: var(--ink);
+      }
+      .kb-formats {
+        margin-top: 2px;
+        font-size: var(--fs-12);
+        color: var(--muted);
+      }
+      .kb-metrics {
+        display: flex;
+        align-items: flex-end;
+        gap: var(--sp-5);
+      }
+      .kb-foot {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: var(--sp-1);
+        margin-top: var(--sp-1);
+        padding-top: 10px;
+        border-top: 1px solid var(--line-lighter);
+      }
+      .search-256 {
+        width: 256px;
+      }
+      @media (max-width: 640px) {
+        .search-256 {
+          width: 100%;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <header class="site-header">
+      <div class="header-inner">
+        <div class="header-left">
+          <a class="brand" href="knowledge-bases.html">
+            <span class="brand-mark" aria-hidden="true">R</span>
+            <span class="brand-name">RAG-Core</span>
+          </a>
+          <nav class="nav" aria-label="主导航">
+            <a class="nav-pill is-active" href="knowledge-bases.html">知识库管理</a>
+            <a class="nav-pill" href="keys.html">Key 与密钥配置</a>
+            <a class="nav-pill" href="usage.html">用量</a>
+            <a class="nav-pill" href="retrieve.html">检索调试台</a>
+            <a class="nav-pill" href="traces.html">检索记录</a>
+          </nav>
+        </div>
+        <div class="header-right">
+          <div class="theme-switch" role="radiogroup" aria-label="主题">
+            <input class="theme-input" type="radio" name="theme" id="theme-auto" checked aria-label="跟随系统" />
+            <label class="theme-opt" for="theme-auto" title="跟随系统">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><circle cx="12" cy="12" r="8" /><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor" stroke="none" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-light" aria-label="浅色" />
+            <label class="theme-opt" for="theme-light" title="浅色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2" /><path d="M12 3v2.2M12 18.8V21M3 12h2.2M18.8 12H21M5.6 5.6l1.6 1.6M16.8 16.8l1.6 1.6M18.4 5.6l-1.6 1.6M7.2 16.8l-1.6 1.6" /></svg>
+            </label>
+            <input class="theme-input" type="radio" name="theme" id="theme-dark" aria-label="深色" />
+            <label class="theme-opt" for="theme-dark" title="深色">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true"><path d="M20 14.2A8.4 8.4 0 1 1 9.8 3.8 6.8 6.8 0 0 0 20 14.2z" /></svg>
+            </label>          </div>
+          <span class="account-pill">
+            <span class="account-name">bob</span>
+          </span>
+          <button class="btn btn--sm" type="button">登出</button>
+        </div>
+      </div>
+    </header>
+
+    <main class="page">
+      <section class="stack-6">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">知识库管理</h1>
+            
+          </div>
+          <div class="page-actions">
+            <button class="btn btn--primary" type="button">新建知识库</button>
+          </div>
+        </div>
+
+        <div class="card card--panel">
+          <div class="card-head">
+            <span class="th-label">6 个知识库</span>
+            <span class="search search-256">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+                <circle cx="11" cy="11" r="7" />
+                <path d="m16.5 16.5 4 4" stroke-linecap="round" />
+              </svg>
+              <input class="input" type="search" placeholder="搜索知识库" aria-label="搜索知识库" />
+            </span>
+          </div>
+
+          <div class="card-body">
+            <div class="grid grid-3">
+              <div class="kb-card" role="button" tabindex="0" data-href="kb-detail.html">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">产品手册</p>
+                    <p class="kb-formats truncate">pdf、docx、md</p>
+                  </div>
+                  <span class="chip">结构切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">86</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">1,248</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">512</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+                <div class="kb-foot">
+                  <button class="btn btn--text" type="button">上传</button>
+                  <button class="btn btn--text" type="button">检索</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                </div>
+              </div>
+
+              <div class="kb-card" role="button" tabindex="0" data-href="kb-detail.html">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">客服工单语料</p>
+                    <p class="kb-formats truncate">xlsx、csv</p>
+                  </div>
+                  <span class="chip">窗口切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">132</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">3,610</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">256</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+                <div class="kb-foot">
+                  <button class="btn btn--text" type="button">上传</button>
+                  <button class="btn btn--text" type="button">检索</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                </div>
+              </div>
+
+              <div class="kb-card" role="button" tabindex="0" data-href="kb-detail.html">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">合规与制度</p>
+                    <p class="kb-formats truncate">docx、pdf</p>
+                  </div>
+                  <span class="chip">结构切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">24</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">371</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">512</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+                <div class="kb-foot">
+                  <button class="btn btn--text" type="button">上传</button>
+                  <button class="btn btn--text" type="button">检索</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                </div>
+              </div>
+
+              <div class="kb-card" role="button" tabindex="0" data-href="kb-detail.html">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">招投标文件</p>
+                    <p class="kb-formats truncate">pdf</p>
+                  </div>
+                  <span class="chip">结构切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">0</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">0</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">512</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+                <div class="kb-foot">
+                  <button class="btn btn--text" type="button">上传</button>
+                  <button class="btn btn--text" type="button">检索</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                </div>
+              </div>
+
+              <div class="kb-card" role="button" tabindex="0" data-href="kb-detail.html">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">研发 wiki 快照</p>
+                    <p class="kb-formats truncate">md</p>
+                  </div>
+                  <span class="chip">窗口切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">311</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">8,942</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">384</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+                <div class="kb-foot">
+                  <button class="btn btn--text" type="button">上传</button>
+                  <button class="btn btn--text" type="button">检索</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                </div>
+              </div>
+
+              <div class="kb-card" role="button" tabindex="0" data-href="kb-detail.html">
+                <div class="row row--top between">
+                  <div class="grow">
+                    <p class="kb-name truncate">售后 FAQ</p>
+                    <p class="kb-formats truncate">md、csv</p>
+                  </div>
+                  <span class="chip">结构切块</span>
+                </div>
+                <div class="kb-metrics">
+                  <div>
+                    <p class="metric-value">57</p>
+                    <p class="metric-label">篇文档</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">604</p>
+                    <p class="metric-label">个分块</p>
+                  </div>
+                  <div>
+                    <p class="metric-value">512</p>
+                    <p class="metric-label">token 窗口</p>
+                  </div>
+                </div>
+                <div class="kb-foot">
+                  <button class="btn btn--text" type="button">上传</button>
+                  <button class="btn btn--text" type="button">检索</button>
+                  <button class="btn btn--text btn--text-danger" type="button">删除</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

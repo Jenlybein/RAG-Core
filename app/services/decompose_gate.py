@@ -38,6 +38,7 @@ from app.services.research import (
 from app.services.research_gate import build_kernel_search
 from app.services.retrieval_options import RetrievalOptions
 from app.services.retrieval_trace import record_retrieval_trace
+from app.services.usage_meter import current_key_id, current_meter_counts
 from app.services.trace_identity import (
     delivered_chunk_ids,
     delivered_doc_versions,
@@ -82,9 +83,7 @@ async def decompose_retrieve(
     log_id = new_retrieval_log_id()
     trace_id = trace_id_for(log_id)
 
-    visible_kbs = [
-        await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids
-    ]
+    visible_kbs = [await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
     index_versions = resolve_index_versions(visible_kbs)
 
     # ① 分解：复用 Research 的 Planner（同一份提示词与收敛规则），只取子查询文本。
@@ -128,13 +127,23 @@ async def decompose_retrieve(
     # 段**依次追加进同一份 trace**（同名段不覆盖），于是「哪一条子问题慢」在一条 trace 里
     # 就能看出来，而不是 N 份互不相干的观测（ADR-0028 §「子检索不单独发观测」）。
     degraded_reasons: list[str] = []
+    # 重排实际发生几次（第 14 步 #200）：外层要按真实次数记 rerank 账，这一行账也要记同一个数。
+    # 在**转发的同时**数一次，而不是让调用方再数一遍——两份计数迟早会对不上。
+    rerank_count = 0
+
+    def _count_rerank() -> None:
+        nonlocal rerank_count
+        rerank_count += 1
+        if on_rerank is not None:
+            on_rerank()
+
     search = build_kernel_search(
         db,
         tenant_id=tenant_id,
         index_versions=index_versions,
         options=options,
         on_degraded=degraded_reasons.append,
-        on_rerank=on_rerank,
+        on_rerank=_count_rerank,
         stage_timer=timer,
     )
 
@@ -189,10 +198,25 @@ async def decompose_retrieve(
             "tenant": tenant_fingerprint(tenant_id),
         },
     )
+    # 三本账优先取门禁扣账那一刻记下的数字；没过门禁（脚本 / 内部评测）才用本地推断。
+    tally = current_meter_counts()
+    if tally is not None:
+        meter_r, meter_rr, meter_llm = tally
+    else:
+        # r 账按**内核调用次数**记 N（ADR-0032：分解检索真的跑了 N 次召回，只记 1 次就是少扣）；
+        # llm 账是那次规划调用；rerank 账是子检索真跑过的次数。
+        meter_r, meter_rr, meter_llm = len(sub_queries), rerank_count, 1
     await record_retrieval_trace(
         log_id=log_id,
         trace_id=trace_id,
         tenant_id=tenant_id,
+        # 第 14 步（#200）：这一行同时是账。
+        key_id=current_key_id(),
+        endpoint="decompose",
+        code=0,
+        meter_r=meter_r,
+        meter_rr=meter_rr,
+        meter_llm=meter_llm,
         kb_ids=list(kb_ids),
         index_versions=dict(index_versions),
         doc_versions=delivered_doc_versions(merged),

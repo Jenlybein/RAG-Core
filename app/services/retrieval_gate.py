@@ -26,6 +26,7 @@ HTTP 路由与 MCP 工具写的是**同一段五步序列**，过去是两处各
 from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
+import time
 from typing import Any, Literal
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,6 +42,18 @@ from app.services.query_content import ensure_query_has_content
 from app.services.quota_gate import llm_quota, rerank_quota, retrieval_quota
 from app.services.rerank_gate import degrade_rerank_if_exhausted
 from app.services.retrieval_authorization import ensure_endpoint_allowed
+from app.services.usage_meter import (
+    BOOK_LLM,
+    BOOK_R,
+    BOOK_RR,
+    ENDPOINT_DECOMPOSE,
+    ENDPOINT_RETRIEVE,
+    ENDPOINT_REWRITE,
+    count_meter,
+    current_key,
+    meter_tally,
+    record_refusal,
+)
 
 #: ``rag_service.retrieve`` 的形状：组合根只认「一个会话 + 已解析参数」。
 #: MCP 的 ``create_mcp_server`` 把它做成可注入的回调（既有接缝，测试与 app.main 都在用），
@@ -50,6 +63,44 @@ RetrieveCallable = Callable[..., Awaitable[dict[str, Any]]]
 
 
 async def gated_retrieve(
+    db: AsyncSession,
+    *,
+    key: KeyContext,
+    kb_ids: list[str],
+    query: str,
+    variant: Literal["direct", "rewrite"] = "direct",
+    retrieve: RetrieveCallable | None = None,
+) -> RetrieveData:
+    """六道关卡的公开入口：**被拒也要落一行账**（第 14 步 #200）。
+
+    判定本身全在 :func:`_gated_retrieve` 里，这一层只做一件事：把 ``AppError`` 抄成一行
+    ``usage_events`` 再原样抛出。抄在这里而不是抄在路由上，是因为 MCP 与 HTTP 共用这个
+    函数——抄在路由上，MCP 的拒绝就永远不会进账。
+
+    为什么不在这一层记**成功**：成功那一行要写「这次交付了哪些片、哪几稿」，那些东西
+    在组合根里才成形（``rag_service.retrieve``）。搬到这里就得把交付物再解析一遍，
+    等于制造第二份真相。
+    """
+
+    started_at = time.perf_counter()
+    try:
+        # 成功那一行账由组合根写；它要知道「是哪把 Key」，靠上下文拿（见 `usage_meter`）。
+        with current_key(key.key_id), meter_tally():
+            return await _gated_retrieve(
+                db, key=key, kb_ids=kb_ids, query=query, variant=variant, retrieve=retrieve
+            )
+    except AppError as exc:
+        await record_refusal(
+            endpoint=ENDPOINT_REWRITE if variant == "rewrite" else ENDPOINT_RETRIEVE,
+            key=key,
+            kb_ids=kb_ids,
+            code=int(exc.code),
+            started_at=started_at,
+        )
+        raise
+
+
+async def _gated_retrieve(
     db: AsyncSession,
     *,
     key: KeyContext,
@@ -151,6 +202,7 @@ async def gated_retrieve(
     await quota.record_success()
     if llm is not None:
         await llm.record_n(1)  # 改写这一次大模型调用，按实际发生计入 llm 账。
+        count_meter(BOOK_LLM, 1)  # 同一个数字进账本（看板读的是这一份，不重新猜）
     # 第 13 步：重排账按实际发生记（applied=true 才算一次）。全 0 时账本 no-op。
     rerank_meta = (result.metadata or {}).get("retrieval", {}).get("rerank") or {}
     if rerank_meta.get("applied"):
@@ -161,10 +213,35 @@ async def gated_retrieve(
             key_id=key.key_id,
         )
         await rerank.record_n(1)
+        count_meter(BOOK_RR, 1)
     return result
 
 
 async def gated_decompose(
+    db: AsyncSession,
+    *,
+    key: KeyContext,
+    kb_ids: list[str],
+    query: str,
+) -> RetrieveData:
+    """`/rag/decompose` 的公开入口：与 :func:`gated_retrieve` 同一套「被拒也落行」。"""
+
+    started_at = time.perf_counter()
+    try:
+        with current_key(key.key_id), meter_tally():
+            return await _gated_decompose(db, key=key, kb_ids=kb_ids, query=query)
+    except AppError as exc:
+        await record_refusal(
+            endpoint=ENDPOINT_DECOMPOSE,
+            key=key,
+            kb_ids=kb_ids,
+            code=int(exc.code),
+            started_at=started_at,
+        )
+        raise
+
+
+async def _gated_decompose(
     db: AsyncSession,
     *,
     key: KeyContext,
@@ -240,7 +317,9 @@ async def gated_decompose(
     decomposition = (result.metadata or {}).get("retrieval", {}).get("decomposition") or {}
     kernel_calls = len(decomposition.get("queries") or ())
     await quota.record_n(kernel_calls)
+    count_meter(BOOK_R, kernel_calls)  # 账本记的是**这次真扣了几次**，不是「应该扣几次」
     await llm.record_n(1)  # 那一次分解规划，按实际发生计入 llm 账。
+    count_meter(BOOK_LLM, 1)
     # rerank 账按实际发生记：N 条子检索各自真跑的那几次（全 0 时账本 no-op）。
     await rerank_quota(
         policy=key.policy,
@@ -248,4 +327,5 @@ async def gated_decompose(
         tenant_id=key.tenant_id,
         key_id=key.key_id,
     ).record_n(rerank_count)
+    count_meter(BOOK_RR, rerank_count)
     return result

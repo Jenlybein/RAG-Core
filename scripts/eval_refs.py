@@ -761,6 +761,7 @@ async def evaluate_live_question(
             )
             _apply_research(outcome, data, document_names, rerank_enabled=rerank_enabled)
         else:
+            from app.services.result_collapse import MAX_UNIT_CHARS_DEFAULT
             from app.services.retrieval_options import RetrievalOptions
 
             response = await seams.retrieve(
@@ -773,6 +774,8 @@ async def evaluate_live_question(
                     top_k=top_k,
                     fold_to_sections=True,
                     expand_table_rows=True,
+                    # 正文上限跟生产同值（第 16 步 #207）：评测与线上用的是同一把尺子。
+                    max_unit_chars=MAX_UNIT_CHARS_DEFAULT,
                     # 重排是「同一台机器上的今天」的一部分，由 --rerank 钉死。
                     rerank=rerank_enabled,
                 ),

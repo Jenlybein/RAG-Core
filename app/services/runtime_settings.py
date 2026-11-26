@@ -398,6 +398,18 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
         "超时由重排 Provider 每次调用时兜住；慢调用按失败处理并走降级",
         minimum=1,
     ),
+    "USAGE_ALERT_QUOTA_PCT": _spec(
+        TIER_HOT,
+        TARGET_SETTINGS,
+        "用量看板的「额度快满」阈值：只是提示口径，改完下一次查询就按新值判",
+        minimum=1,
+    ),
+    "USAGE_ALERT_SUCCESS_DROP_PP": _spec(
+        TIER_HOT,
+        TARGET_SETTINGS,
+        "用量看板的「成功率掉了」阈值（百分点）：只影响提示，不影响判定与配额",
+        minimum=0,
+    ),
     "QUERY_REWRITE_ENABLED": _spec(
         TIER_HOT,
         TARGET_SETTINGS,
@@ -408,11 +420,6 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
         TARGET_SETTINGS,
         "改写超时按每次调用生效；它必须小于客户端超时，否则降级也救不回来",
         minimum=1,
-    ),
-    "SYNONYM_EXPANSION_ENABLED": _spec(
-        TIER_HOT,
-        TARGET_SETTINGS,
-        "同义词扩展是纯函数，打开后下一次检索就多一份查询词，不需要重建",
     ),
     "SECTION_CONTEXT_ENABLED": _spec(
         TIER_HOT,

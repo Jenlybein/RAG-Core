@@ -191,7 +191,7 @@ async function refresh(): Promise<void> {
 
 <template>
   <section class="space-y-6">
-    <PageHeader title="套餐管理" subtitle="改套餐先试算影响面，确认后才落库。">
+    <PageHeader title="套餐管理">
       <template #actions>
         <span v-if="plans.length > 0" class="text-sm text-muted">{{ plans.length }} 档</span>
         <el-button size="small" :loading="plansQuery.isFetching.value" @click="refresh">
@@ -214,9 +214,6 @@ async function refresh(): Promise<void> {
     <div v-else class="mt-5 overflow-x-auto">
       <div v-if="plans.length === 0" class="py-10 text-center">
         <p class="text-[15px] font-semibold text-ink">还没有套餐</p>
-        <p class="mx-auto mt-2 max-w-md text-sm leading-relaxed text-muted">
-          套餐行由 <span class="font-mono">scripts/seed_plans.py</span> 首次播种。
-        </p>
       </div>
 
       <table v-else class="min-w-full text-sm">
@@ -300,7 +297,6 @@ async function refresh(): Promise<void> {
         <div class="flex flex-wrap items-baseline gap-2">
           <span class="w-20 shrink-0 text-xs text-muted">套餐标识</span>
           <span class="font-mono text-[13px] text-ink">{{ editingPlan?.code ?? '—' }}</span>
-          <span class="text-xs text-muted">（脚本与日志的指代，本页不提供改名）</span>
         </div>
 
         <label class="flex items-center gap-2">
@@ -326,7 +322,7 @@ async function refresh(): Promise<void> {
         </div>
 
         <div>
-          <p class="mb-2 text-xs text-muted">上限 <span class="ml-1">（每项都必须 ≥ 1）</span></p>
+          <p class="mb-2 text-xs text-muted">上限</p>
           <div class="grid gap-3 sm:grid-cols-2">
             <label
               v-for="field in PLAN_NUMBER_FIELDS"
@@ -349,7 +345,6 @@ async function refresh(): Promise<void> {
         <div>
           <p class="mb-2 text-xs text-muted">
             加工额度与质量封顶
-            <span class="ml-1">（0 = 这项能力没买 / 不额外封顶）</span>
           </p>
           <div class="grid gap-3 sm:grid-cols-2">
             <label
@@ -369,10 +364,6 @@ async function refresh(): Promise<void> {
             </label>
           </div>
         </div>
-
-        <p class="rounded-control bg-surface-muted px-3 py-2 text-xs leading-relaxed text-muted">
-          点「保存」只先试算：有租户会超库数或超出新的授权范围时，会再弹一次确认，确认后才落库。
-        </p>
       </div>
 
       <template #footer>

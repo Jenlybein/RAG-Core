@@ -55,6 +55,18 @@ const routes = [
     component: () => import('../views/TracesPage.vue'),
   },
   {
+    path: '/usage/keys/:keyId',
+    name: 'usage-key',
+    // 第 14 步：单把 Key 的用量。与 `/usage` 同一份服务与口径，只收窄到一把 Key。
+    component: () => import('../views/UsageKeyPage.vue'),
+  },
+  {
+    path: '/usage',
+    name: 'usage',
+    // 第 14 步：本租户的用量（三本账趋势 + 成功率/P95 + 按 Key 拆分）。
+    component: () => import('../views/UsagePage.vue'),
+  },
+  {
     path: '/admin/accounts',
     name: 'admin-accounts',
     component: () => import('../views/admin/AccountsPage.vue'),
@@ -87,6 +99,18 @@ const routes = [
     // 观测总览：跨租户的检索量 / 耗时 / 降级 / 评分 + 观测栈层（后者可降级）。
     // 与「检索记录」的区别：那页是单租户、按单条 trace 看；这页是平台级、按窗口看趋势。
     component: () => import('../views/admin/ObservabilityPage.vue'),
+  },
+  {
+    path: '/admin/usage',
+    name: 'admin-usage',
+    // 第 14 步：站点用量（全站趋势 + 租户排名 + 需要看一眼）。
+    component: () => import('../views/admin/UsagePage.vue'),
+  },
+  {
+    path: '/admin/usage/:tenantId',
+    name: 'admin-usage-tenant',
+    // 第 14 步：从排名下钻到某一个租户。
+    component: () => import('../views/admin/TenantUsagePage.vue'),
   },
   {
     path: '/admin/evaluation',

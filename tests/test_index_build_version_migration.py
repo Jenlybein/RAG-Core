@@ -550,9 +550,10 @@ def test_the_model_declares_the_same_table_as_the_migration() -> None:
     from app.models.index_version import INDEX_BUILD_STATUSES, IndexBuildVersion
 
     assert IndexBuildVersion.__tablename__ == "index_build_versions"
+    # ``params`` 是第 16 步 #207 后加的列（那一版构建用的切块参数），列在**新迁移**里。
     assert {column.key for column in IndexBuildVersion.__table__.columns} == set(
         EXPECTED_VERSION_COLUMNS
-    )
+    ) | {"params"}
     assert set(EXPECTED_STATUSES) == set(INDEX_BUILD_STATUSES)
 
     # 两条部分唯一索引也在模型上：迁移只是把模型里的约束照抄进库。
@@ -566,10 +567,10 @@ def test_the_model_declares_the_same_table_as_the_migration() -> None:
 
 def test_the_two_existing_tables_declare_the_columns_this_migration_adds() -> None:
     from app.models.knowledge_base import KnowledgeBase
-    from app.models.retrieval_trace import RetrievalTrace
+    from app.models.usage_event import UsageEvent
 
     kb_column = KnowledgeBase.__table__.columns["active_index_version"]
-    trace_column = RetrievalTrace.__table__.columns["index_versions"]
+    trace_column = UsageEvent.__table__.columns["index_versions"]
 
     assert kb_column.nullable is True, "「还没有生效构建」必须是可表达的状态"
     assert trace_column.nullable is True, "迁移之前的行没有版本可记"

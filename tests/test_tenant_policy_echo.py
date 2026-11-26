@@ -19,6 +19,7 @@ def test_echo_reports_the_parameters_not_a_profile_name() -> None:
         top_k=8,
         fold_to_sections=True,
         expand_table_rows=True,
+        max_unit_chars=2000,
         rerank=True,
         tenant_policy=TenantPolicy(plan="pro", clipped=("top_k",)),
     )
@@ -43,6 +44,7 @@ def test_echo_is_none_without_a_gate_resolved_policy() -> None:
         top_k=5,
         fold_to_sections=True,
         expand_table_rows=True,
+        max_unit_chars=2000,
         rerank=False,
     )
 

@@ -32,6 +32,7 @@ def _options(*, rerank: bool) -> RetrievalOptions:
         top_k=5,
         fold_to_sections=False,
         expand_table_rows=True,
+        max_unit_chars=2000,
         rerank=rerank,
     )
 

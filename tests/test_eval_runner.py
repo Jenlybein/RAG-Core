@@ -65,7 +65,6 @@ def _payload(
                 "top_k": 5,
                 "rerank_enabled": False,
                 "query_rewrite_enabled": False,
-                "synonym_expansion_enabled": False,
             },
             "embedding": {"model": "text-embedding-v4", "dimensions": 1024},
             "keyword": {"provider": "elasticsearch", "index": "rag_chunks_eval"},
@@ -111,7 +110,6 @@ def _restore_settings(monkeypatch) -> None:
     for name in (
         "RERANK_ENABLED",
         "QUERY_REWRITE_ENABLED",
-        "SYNONYM_EXPANSION_ENABLED",
         "TOP_K",
         "ELASTICSEARCH_INDEX",
     ):

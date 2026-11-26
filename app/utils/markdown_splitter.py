@@ -82,14 +82,20 @@ class MarkdownStructuredSplitter(TextSplitter):
         slicer: Slicer = default_slicer,
         *,
         document_id: str = "",
+        section_part_max_chars: int = 2000,
     ) -> None:
         if chunk_overlap >= chunk_size:
             raise ValueError("chunk_overlap must be smaller than chunk_size")
         if table_max_rows < 1:
             raise ValueError("table_max_rows must be at least 1")
+        if section_part_max_chars < 1:
+            raise ValueError("section_part_max_chars must be at least 1")
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.table_max_rows = table_max_rows
+        #: 一个**节段**最多多少字（第 16 步 #207）：超过就在片边界开新的一段。
+        #: 它是「一条结果不会上万字」的根——检索期的硬上限只是第二道保险。
+        self.section_part_max_chars = section_part_max_chars
         # 片内窗口的接缝：默认按 Qwen token + 分隔符回退。评测要跑「硬切」或
         # 「字符尺子」时，把自己的切片器传进来——生产代码里不留这些分支。
         self._slicer = slicer
@@ -196,7 +202,16 @@ class MarkdownStructuredSplitter(TextSplitter):
                     continue
                 kept.append(piece)
                 last_text = piece.text
+            section_part = 0
+            part_chars = 0
             for order_index, piece in enumerate(kept):
+                # 一个 h2 可能上万字，而「一条结果代表一节」意味着检索期会把它整节交出去。
+                # 所以在这里就把超长的节**切成节段**：只在片边界下刀，永不切句；
+                # 段与段是不同的节（`section_id` 含段号），折叠时不会又并回去。
+                if part_chars and part_chars + len(piece.text) > self.section_part_max_chars:
+                    section_part += 1
+                    part_chars = 0
+                part_chars += len(piece.text) + 2
                 pieces.append(
                     SplitPiece(
                         text=piece.text,
@@ -208,6 +223,7 @@ class MarkdownStructuredSplitter(TextSplitter):
                             piece.code_part,
                             page,
                             document_id=self.document_id,
+                            section_part=section_part,
                         ),
                     )
                 )
@@ -454,8 +470,12 @@ def _metadata(
     page: int | None = None,
     *,
     document_id: str = "",
+    section_part: int = 0,
 ) -> dict[str, object]:
     """一片的 provenance。节的身份证由 :mod:`app.utils.section_identity` 算（只有那一份）。
+
+    ``section_part`` 是**节段号**（第 16 步 #207）：一个超长的 h2 在片边界被切成若干段后，
+    段与段是不同的节，所以它进 ``section_id`` 的种子；``0`` 与切段之前逐字节相同。
 
     `parent_section_id` 仍是「上一级路径算出来的那个 id」——只是现在与 `section_id` 用
     同一份算法、同一个文档 id，于是父节自己有正文时，它一定等于父节那一片的 `section_id`；
@@ -466,7 +486,10 @@ def _metadata(
 
     return {
         "heading_path": heading_path,
-        "section_id": section_id_of(document_id=document_id, heading_path=heading_path),
+        "section_part": section_part,
+        "section_id": section_id_of(
+            document_id=document_id, heading_path=heading_path, part=section_part
+        ),
         "parent_section_id": parent_section_id_of(
             document_id=document_id, heading_path=heading_path
         ),

@@ -786,14 +786,26 @@ async def collect_correlation(
     )
 
 
-def ensure_api_key(db: Any, *, tenant_id: str, policy_id: str) -> dict[str, Any]:
-    """签发一把 Key（同租户同配置已有 active 的就复用，不再多发一把）。"""
+def ensure_api_key(
+    db: Any, *, tenant_id: str, policy_id: str, preferred_key_value: str | None = None
+) -> dict[str, Any]:
+    """签发一把 Key；同租户同配置已有 active 且**能验上**的就复用，不再多发一把。
+
+    库里只存 scrypt 哈希，所以「复用」不能靠读回原文——只能拿手里那一串去证明：
+    ``preferred_key_value`` 来自本地状态文件（上一次跑写下的那份），解析出 key_id 后用
+    scrypt 验一遍，对得上才算复用成功。
+
+    对不上（文件被删、库换过、Key 被重签过）就**作废旧行、重新签发**：静默沿用一把已经
+    不可用的 Key，只会让评测在第一次调用时以 20010 失败，而失败点离原因很远。
+    """
 
     from sqlalchemy import select
 
+    from app.core.passwords import verify_password
     from app.db.transaction import transaction
     from app.models.api_key import ApiKey
     from app.services.api_key_service import API_KEY_STATUS_ACTIVE, issue_api_key
+    from app.utils.id_generator import split_api_key_value
 
     existing = (
         (
@@ -810,13 +822,45 @@ def ensure_api_key(db: Any, *, tenant_id: str, policy_id: str) -> dict[str, Any]
         .scalars()
         .first()
     )
+
     if existing is not None:
-        return {"key_id": existing.id, "key_value": existing.key_value, "created": False}
+        parsed = (
+            split_api_key_value(preferred_key_value)
+            if preferred_key_value
+            else None
+        )
+        if parsed is not None:
+            preferred_key_id, secret = parsed
+            if preferred_key_id == existing.id and verify_password(secret, existing.key_hash):
+                return {
+                    "key_id": existing.id,
+                    "key_value": preferred_key_value,
+                    "created": False,
+                }
+        # 手里没有可用的原文：这一行对任何人都已经不可读了，留着它只会让下一次调用
+        # 撞上一个「Key 无效」，而真正的原因是原文早就没人记着。
+        with transaction(db):
+            db.delete(existing)
 
     with transaction(db):
-        issued = issue_api_key(db, tenant_id=tenant_id, policy_id=policy_id, label=KEY_LABEL)
-        report = {"key_id": issued.id, "key_value": issued.key_value, "created": True}
+        minted = issue_api_key(db, tenant_id=tenant_id, policy_id=policy_id, label=KEY_LABEL)
+        report = {"key_id": minted.api_key.id, "key_value": minted.plaintext, "created": True}
     return report
+
+
+def previous_key_value() -> str | None:
+    """上一次跑写下的那把 Key（本地状态文件里的原文）；没有或读不动就是 ``None``。
+
+    它只用来「证明能复用」，验不过就当没给——状态文件是 gitignore 的本机产物，
+    内容不可信。
+    """
+
+    try:
+        state = json.loads(LOCAL_STATE_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    value = state.get("key_value")
+    return value if isinstance(value, str) and value else None
 
 
 def _display(path: Path) -> str:
@@ -923,7 +967,12 @@ async def _prepare(
 
     session = _open_session()
     try:
-        key = ensure_api_key(session, tenant_id=tenant_id, policy_id=policy["policy_id"])
+        key = ensure_api_key(
+            session,
+            tenant_id=tenant_id,
+            policy_id=policy["policy_id"],
+            preferred_key_value=previous_key_value(),
+        )
     finally:
         session.close()
 

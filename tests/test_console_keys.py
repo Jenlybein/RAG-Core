@@ -22,6 +22,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core import passwords
+from app.core.config import settings
 from app.models.account import Account
 from app.models.api_key import ApiKey
 from app.models.audit_log import AuditLog
@@ -29,6 +30,7 @@ from app.models.key_policy import KeyPolicy, policy_snapshot_of
 from app.models.plan import PLAN_CODES, PLAN_PRESETS, Plan, plan_row_of
 from app.models.tenant import Tenant
 from tests.fake_db import MemoryPlanCache, RecordingSession, override_all_db
+from tests.support.keys import mint_key
 
 ADMIN_ID = "00000000-0000-4000-8000-000000000001"
 ALICE_ID = "00000000-0000-4000-8000-000000000002"
@@ -46,9 +48,17 @@ POLICY_BETA = "policy-beta"
 KEY_ALPHA = "key-alpha"
 KEY_BETA = "key-beta"
 
-#: 与 ``new_api_key_value()`` 同形：``rc_live_`` + 32 位十六进制；末四位拿来验 masked。
-KEY_ALPHA_VALUE = "rc_live_" + "0123456789abcdef0123456789ab9f2c"
-KEY_BETA_VALUE = "rc_live_" + "fedcba9876543210fedcba9876543210"
+#: 世界里的两把 Key：行与原文一起造（库里只存哈希，原文只在这一处留着）。
+_ALPHA_KEY = mint_key(
+    key_id=KEY_ALPHA, tenant_id=TENANT_ALPHA, policy_id=POLICY_ALPHA, label="alpha-bot"
+)
+_BETA_KEY = mint_key(
+    key_id=KEY_BETA, tenant_id=TENANT_BETA, policy_id=POLICY_BETA, label="beta-bot"
+)
+KEY_ALPHA_VALUE = _ALPHA_KEY.plaintext
+KEY_BETA_VALUE = _BETA_KEY.plaintext
+#: 面板与审计里唯一能看见的那一截（末 5 位）。
+ALPHA_TAIL = _ALPHA_KEY.secret[-5:]
 
 WRITE_HEADERS = {"x-requested-with": "XMLHttpRequest"}
 
@@ -146,14 +156,15 @@ def _policy(
 
 
 def _api_key(key_id: str, tenant_id: str, policy_id: str, value: str, label: str) -> ApiKey:
-    return ApiKey(
-        id=key_id,
+    """世界里的行：``value`` 是原文，哈希与末 5 位由 :mod:`tests.support.keys` 算。"""
+
+    return mint_key(
+        key_id=key_id,
         tenant_id=tenant_id,
         policy_id=policy_id,
-        key_value=value,
         label=label,
-        status="active",
-    )
+        plaintext=value,
+    ).api_key
 
 
 def _world() -> dict[type, list[Any]]:
@@ -180,10 +191,7 @@ def _world() -> dict[type, list[Any]]:
             ),
             _policy(POLICY_BETA, TENANT_BETA, "beta-default", mode="hybrid", top_k=5),
         ],
-        ApiKey: [
-            _api_key(KEY_ALPHA, TENANT_ALPHA, POLICY_ALPHA, KEY_ALPHA_VALUE, "alpha-bot"),
-            _api_key(KEY_BETA, TENANT_BETA, POLICY_BETA, KEY_BETA_VALUE, "beta-bot"),
-        ],
+        ApiKey: [_ALPHA_KEY.api_key, _BETA_KEY.api_key],
     }
 
 
@@ -209,21 +217,59 @@ def console() -> Any:
         main.app.dependency_overrides.clear()
 
 
+# ──────────────────────────────────────────── 闭环：签发 → 用那一串调数据面
+
+#: 数据面上「只看自己」的那条读接口：它过一次完整鉴权（拆串 + 哈希校验 + 租户 + 套餐）。
+ME_PATH = "/api/v1/auth/me"
+
+
+def test_the_issued_plaintext_authenticates_and_the_list_never_shows_it_again(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """端到端一次：签发拿到的原文能直接调数据面；之后再怎么读也拿不回它。
+
+    这条是「只此一次」的验收：签发响应里有原文、库里只有哈希、列表里只有末 5 位，
+    而那一串真能通过鉴权——四件事必须在同一条用例里对上，否则前三条都可以是假的。
+    """
+
+    monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    issued = console.data(_issue(console))
+    plaintext = issued["key_plaintext"]
+
+    response = console.client.get(ME_PATH, headers={"Authorization": f"Bearer {plaintext}"})
+
+    assert response.json()["code"] == 0, response.json()
+    assert response.json()["data"]["tenant"]["tenant_id"] == TENANT_ALPHA
+
+    # 同一个 token 第二次照样能用（走的是校验缓存），行为不因此改变。
+    again = console.client.get(ME_PATH, headers={"Authorization": f"Bearer {plaintext}"})
+    assert again.json()["code"] == 0
+
+    # 列表里再也看不到它：连末 5 位之外的任何一个字符都不该出现。
+    body = console.client.get("/console/keys").text
+    assert plaintext not in body
+    assert f"rc_live_…{plaintext[-5:]}" in body
+
+
 # ─────────────────────────────────────────────────────────────── GET /console/keys
 
 
-def test_listing_keys_returns_the_plaintext_and_the_masked_form(console: _Harness) -> None:
-    """ADR-0004 的明确取舍：调试台要拿原文打真实接口，所以本票返回明文。"""
+def test_listing_keys_returns_the_masked_form_and_no_plaintext(console: _Harness) -> None:
+    """列表里只有打码形态：原文在签发之后就取不回来了（库里只有 scrypt 哈希）。"""
 
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
 
+    body = console.client.get("/console/keys").text
     keys = console.data(console.client.get("/console/keys"))["keys"]
 
     assert [item["key_id"] for item in keys] == [KEY_ALPHA]
     item = keys[0]
     assert item["label"] == "alpha-bot"
-    assert item["key_value"] == KEY_ALPHA_VALUE
-    assert item["key_masked"] == "rc_live_…9f2c"
+    assert "key_value" not in item, "列表里不该再有这个字段：它只是一个恒为空的名字"
+    assert item["key_masked"] == f"rc_live_…{ALPHA_TAIL}"
+    assert KEY_ALPHA_VALUE not in body
     assert item["status"] == "active"
     policy = item["policy"]
     assert policy["policy_id"] == POLICY_ALPHA
@@ -245,7 +291,7 @@ def test_listing_keys_never_mentions_another_tenant(console: _Harness) -> None:
     body = console.client.get("/console/keys").text
 
     assert KEY_BETA in body
-    assert KEY_BETA_VALUE in body
+    assert KEY_BETA_VALUE not in body, "本租户的原文也不该出现在列表里"
     assert KEY_ALPHA not in body
     assert POLICY_ALPHA not in body
 
@@ -293,8 +339,13 @@ def _issue(console: _Harness, *, label: str = "alpha-new", **policy: Any) -> Any
     return console.client.post("/console/keys", json=body, headers=WRITE_HEADERS)
 
 
-def test_issuing_a_key_creates_its_policy_and_returns_the_plaintext(console: _Harness) -> None:
-    """签发是一整套：Key + 配置 + 一条审计，同一个事务里落定。"""
+def test_issuing_a_key_creates_its_policy_and_returns_the_plaintext_once(
+    console: _Harness,
+) -> None:
+    """签发是一整套：Key + 配置 + 一条审计，同一个事务里落定。
+
+    ``key_plaintext`` 是原文**唯一**一次露面：行里只有哈希与末 5 位。
+    """
 
     assert console.login("alice", USER_PASSWORD).json()["code"] == 0
     commits_before = console.db.commits
@@ -304,8 +355,11 @@ def test_issuing_a_key_creates_its_policy_and_returns_the_plaintext(console: _Ha
 
     assert data["key_id"] not in (KEY_ALPHA, KEY_BETA)
     assert data["label"] == "alpha-new"
-    assert data["key_value"].startswith("rc_live_")
-    assert data["key_masked"] == f"rc_live_…{data['key_value'][-4:]}"
+    plaintext = data["key_plaintext"]
+    assert plaintext.startswith(f"rc_live_{data['key_id']}."), "串里必须带行身份证"
+    assert len(plaintext) == len("rc_live_") + len(data["key_id"]) + 1 + 32
+    assert data["key_masked"] == f"rc_live_…{plaintext[-5:]}"
+    assert "key_value" not in data
     assert data["status"] == "active"
     assert data["policy"]["retrieval_mode"] == "hybrid"
     assert data["policy"]["allowed_kb_ids"] == ["kb-a1", "kb-a2"]
@@ -327,9 +381,13 @@ def test_issuing_a_key_creates_its_policy_and_returns_the_plaintext(console: _Ha
     assert entry.target == f"key:{data['key_id']}"
     assert entry.before_snapshot is None
     assert entry.after_snapshot["policy"]["retrieval_mode"] == "hybrid"
-    # 审计是跨租户给管理员看的：这里只留 masked，不留可用凭证。
+    # 审计是跨租户给管理员看的：这里只有打码形态，且原文一个子串都不许出现。
     assert entry.after_snapshot["key_masked"] == data["key_masked"]
-    assert data["key_value"] not in str(entry.after_snapshot)
+    assert plaintext not in str(entry.after_snapshot)
+    # 库里那一行也只有哈希与末 5 位：签发响应之外再也拿不到原文。
+    row = console.key_row(data["key_id"])
+    assert row.key_hash.startswith("scrypt$")
+    assert row.key_tail == plaintext[-5:]
 
 
 def test_a_key_issue_stays_in_the_callers_own_tenant(console: _Harness) -> None:
@@ -400,7 +458,7 @@ def test_deleting_a_key_keeps_its_policy_row(console: _Harness) -> None:
     entry = console.audit_entries()[-1]
     assert entry.action == "key.delete"
     assert entry.target == f"key:{KEY_ALPHA}"
-    assert entry.before_snapshot["key_masked"] == "rc_live_…9f2c"
+    assert entry.before_snapshot["key_masked"] == f"rc_live_…{ALPHA_TAIL}"
     assert entry.after_snapshot is None
 
     # 删完列表里就只剩其它 Key（这里本租户本来只有这一把，于是空）。

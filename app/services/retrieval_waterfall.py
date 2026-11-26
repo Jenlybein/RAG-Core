@@ -2,7 +2,7 @@
 
 一次请求要走三步，顺序不能换：
 
-1. **归属先判**（:func:`waterfall_of` 第一段）。先用归属索引 ``retrieval_traces`` 按
+1. **归属先判**（:func:`waterfall_of` 第一段）。先用归属索引 ``usage_events`` 按
    ``log_id`` 取一行、并校验它属于当前会话的租户；不属于就当**不存在**（``20016``），
    与仓库既有的越权口径一致（ADR-0006 / ``console_kb_service.read_document_content``）。
    这一步必须在读任何耗时之前：观测数据里没有租户，先读后判等于先把别人的耗时读进内存、
@@ -42,7 +42,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.observability.jsonl_sink import read_recent_records
 from app.observability.stage_timing import StageSpan, order_spans
 from app.repositories import retrieval_trace_repository
@@ -143,7 +143,7 @@ async def waterfall_of(
 
 
 def _waterfall(
-    row: RetrievalTrace,
+    row: UsageEvent,
     *,
     enabled: bool,
     source: str | None,

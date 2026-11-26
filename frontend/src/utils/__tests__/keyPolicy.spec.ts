@@ -33,6 +33,7 @@ const ORIGINAL: KeyPolicyData = {
   retrieval_rerank: false,
   include_parent: true,
   expand_table_rows: true,
+  max_unit_chars: 2000,
 }
 
 describe('policyFormFrom', () => {
@@ -57,6 +58,7 @@ describe('policyFormFrom', () => {
       retrieval_rerank: false,
       include_parent: true,
       expand_table_rows: true,
+  max_unit_chars: 2000,
     })
   })
 
@@ -157,6 +159,7 @@ describe('toPolicyInput', () => {
       retrieval_rerank: false,
       include_parent: true,
       expand_table_rows: true,
+  max_unit_chars: 2000,
     })
   })
 })

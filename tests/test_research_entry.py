@@ -30,7 +30,7 @@ from app.core.auth import KeyContext
 from app.core.exceptions import ErrorCode
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PLAN_PRESETS, PLAN_PRO, PlanSpec
-from app.models.retrieval_trace import RetrievalTrace
+from app.models.usage_event import UsageEvent
 from app.providers.llm.base import LLMProvider
 from app.services.citation_blocks import (
     COMPLETENESS_COMPLETE,
@@ -228,10 +228,10 @@ class _Entry:
             tenant_id=TENANT_ID, key_id="key-under-test", policy=policy, plan=plan
         )
 
-    def traces(self) -> list[RetrievalTrace]:
+    def traces(self) -> list[UsageEvent]:
         """这次调用写下的归属索引行（正常路径恰好一行）。"""
 
-        return [row for row in self.trace_session.added if isinstance(row, RetrievalTrace)]
+        return [row for row in self.trace_session.added if isinstance(row, UsageEvent)]
 
     def post(self, **extra: Any) -> dict:
         assert self.client is not None

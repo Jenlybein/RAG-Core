@@ -1,0 +1,597 @@
+/**
+ * RAG-Core 调试台 · 设计变量（液态玻璃版）
+ *
+ * 品牌仍取自仓库 frontend/tailwind.config.js 与 frontend/src/styles/main.css：
+ * 近黑墨 #1d1d1f、苹果蓝 #0071e3。面层从「纯白卡 + 浅灰底」换成液态玻璃：
+ * 半透明白、折射模糊、高光内边、分层阴影，底下一层极淡的环境色给玻璃一层可折射的东西。
+ */
+
+:root {
+  color-scheme: light;
+  /* ══════════════ 风格导出的语义名（放在最前面，顺序有意义）══════════════
+   *
+   * 设计台「存成我的风格」不读页面，只按**变量名**认角色：
+   *   底色 → bg / background / canvas / base …；正文 → text / ink / fg …
+   *   主色 → primary / brand；另外 surface / muted / line / radius / shadow / font。
+   * 认不出 primary 就直接判「这套设计没用设计变量」，连按钮都点不了。
+   *
+   * 所以这里先声明一层别名：内部继续用 --accent / --ink / --canvas，
+   * 导出时按上面的名字都能认到。**必须排在 :root 的最前面**——它遇到第一个
+   * 名字匹配的变量就停下，放后面会先命中 --glass-fill-card（半透明白）当 surface、
+   * --stroke-hi（白）当 line，存出来的风格底色就是错的。
+   */
+  --bg: var(--canvas);
+  --text: var(--ink);
+  --primary: var(--accent);
+  --brand: var(--accent);
+  --surface: #ffffff;
+  /* line 那一族在文件后面还有 --glass-stroke / --stroke-hi，先声明的这个会先命中 */
+  --border: rgba(24, 33, 52, 0.14);
+  --radius-card: var(--r-card);
+  --radius-control: var(--r-control);
+  /* 给导出用的一档短投影：整串太长会被它按长度丢掉 */
+  --shadow-card-flat: 0 1px 2px rgba(24, 33, 52, 0.06), 0 14px 30px -20px rgba(24, 33, 52, 0.26);
+
+
+  /* ── 环境底色：单一冷灰，平铺；玻璃靠明度差与阴影定形，不靠彩色光晕 ── */
+  --canvas: #e4e8ef;
+  --canvas-deep: #dce1ea;
+
+  /* ── 玻璃层 ── */
+  --glass-fill: rgba(255, 255, 255, 0.44); /* 浮层：顶栏、次级块 */
+  --glass-fill-card: rgba(255, 255, 255, 0.48); /* 主卡片 */
+  --glass-fill-strong: rgba(255, 255, 255, 0.64); /* 弹窗、需要读字最久的层 */
+  --glass-fill-soft: rgba(255, 255, 255, 0.32); /* 表头、内嵌块 */
+
+  /* ── 叠在玻璃上的小面：按「抬多高」分四档，亮色下是白，暗色下是很低的提亮 ──
+     控件、胶囊、表头、选中格都从这里取，暗色只需换这几个值，
+     不用去动 40 多处写死的半透明白。 */
+  --fill-hi: rgba(255, 255, 255, 0.9); /* 选中格、浮起的小块 */
+  --fill-md: rgba(255, 255, 255, 0.56); /* 控件底、表头 */
+  --fill-lo: rgba(255, 255, 255, 0.42); /* 次级块、悬停 */
+  --fill-xlo: rgba(255, 255, 255, 0.32); /* 最轻的一层 */
+  --stroke-hi: rgba(255, 255, 255, 0.82); /* 亮边 */
+  --stroke-md: rgba(255, 255, 255, 0.62);
+  --stroke-lo: rgba(255, 255, 255, 0.42);
+  --sheen: inset 0 1px 0 rgba(255, 255, 255, 0.92); /* 上沿高光 */
+  --sheen-soft: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+  --well-shadow: inset 0 1px 2px rgba(24, 33, 52, 0.07), inset 0 -1px 0 rgba(255, 255, 255, 0.7);
+  /* 玻璃的「厚度」靠上下两档白叠出来：上亮下暗，像一块有厚度的材料 */
+  --glass-grad: linear-gradient(168deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.72)); /* 顶栏：要盖住滚过的内容，比卡片更实 */
+  --glass-shadow-nav: 0 1px 2px rgba(24, 33, 52, 0.07), 0 8px 20px -14px rgba(24, 33, 52, 0.3);
+  --glass-grad-card: linear-gradient(168deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.44));
+  --glass-grad-strong: linear-gradient(168deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.58));
+  --glass-stroke: rgba(255, 255, 255, 0.9); /* 亮边：光打在玻璃边缘 */
+  --glass-edge: rgba(24, 33, 52, 0.08); /* 暗边：与背景分离的一线 */
+  --glass-blur: blur(28px) saturate(185%);
+  --glass-blur-soft: blur(16px) saturate(170%);
+  /* 亮边高光：上沿一道纯白（光打在材料顶面），下沿与左右各一道弱白（折射的余晖） */
+  --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 1), inset 0 -1px 0 rgba(255, 255, 255, 0.42),
+    inset 1px 0 0 rgba(255, 255, 255, 0.55), inset -1px 0 0 rgba(255, 255, 255, 0.55);
+  --glass-shadow: 0 1px 3px rgba(24, 33, 52, 0.07), 0 18px 32px -22px rgba(24, 33, 52, 0.3), 0 34px 64px -36px rgba(24, 33, 52, 0.3);
+  --glass-shadow-lift: 0 2px 8px rgba(24, 33, 52, 0.1), 0 26px 44px -26px rgba(24, 33, 52, 0.36), 0 48px 88px -44px rgba(24, 33, 52, 0.36);
+
+  /* ── 文字 ── */
+  --ink: #1d1d1f;
+  --text-regular: #333338;
+  --muted: #5b5b61; /* 玻璃上比纯白要更沉一点才够 4.5:1 */
+  --faint: #6c6c72;
+  --disabled: #a9a9b0;
+
+  /* ── 描边（用于表格分隔这类实线）── */
+  --line: rgba(24, 33, 52, 0.14);
+  --line-strong: rgba(24, 33, 52, 0.24);
+  --line-light: rgba(24, 33, 52, 0.08);
+  --line-lighter: rgba(24, 33, 52, 0.05);
+
+  /* ── 强调 ── */
+  --accent: #0071e3;
+  --accent-hover: #0077ed;
+  --accent-soft: rgba(0, 113, 227, 0.1);
+  --accent-pressed: #005bb5;
+  --danger: #d70015;
+  --danger-soft: rgba(215, 0, 21, 0.09);
+  --danger-ink: #8c2f22;
+  --star: #ff9f0a;
+
+  /* 跟着主题走的杂项：选中文字、滚动条（深色下要反过来，否则黑条看不见） */
+  --selection-bg: rgba(0, 113, 227, 0.18);
+  --scroll-thumb: rgba(24, 33, 52, 0.22);
+  --scroll-thumb-hover: rgba(24, 33, 52, 0.34);
+
+
+  /* 三态徽章：保留仓库 StatusBadge.vue 的语义配色，改成可叠在玻璃上的半透明版 */
+  --ok-bg: rgba(60, 82, 40, 0.1);
+  --ok-ink: #33491f;
+  --fail-bg: rgba(140, 47, 34, 0.1);
+  --fail-ink: #7f2b1f;
+  --indexing-bg: rgba(122, 91, 0, 0.11);
+  --indexing-ink: #6b4f00;
+  --unknown-bg: rgba(24, 33, 52, 0.07);
+  --unknown-ink: #54545a;
+
+  /* ── 字体 ── */
+  --font-sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', 'Segoe UI',
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', sans-serif;
+  --font-mono: 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+
+  /* ── 字号阶梯 ── */
+  --fs-11: 11px;
+  --fs-12: 12px;
+  --fs-13: 13px;
+  --fs-14: 14px;
+  --fs-15: 15px;
+  --fs-17: 17px;
+  --fs-20: 20px;
+  --fs-26: 26px;
+  --fs-34: 34px;
+  --fs-44: 44px;
+
+  /* ── 间距 ── */
+  --sp-1: 4px;
+  --sp-2: 8px;
+  --sp-3: 12px;
+  --sp-4: 16px;
+  --sp-5: 20px;
+  --sp-6: 24px;
+  --sp-8: 32px;
+  --sp-10: 40px;
+  --sp-12: 48px;
+  --sp-14: 56px;
+
+  /* ── 圆角：玻璃的半径比纸面更大，才有「一整块材料」的观感 ── */
+  --r-card: 24px;
+  --r-el-card: 24px;
+  --r-control: 14px;
+  --r-small: 10px;
+  --r-pill: 980px;
+
+  --shadow-card: var(--glass-shadow);
+  --shadow-card-el: var(--glass-shadow);
+  --shadow-lift: var(--glass-shadow-lift);
+  --shadow-dialog: var(--glass-shadow-lift);
+
+  --page: 1120px;
+
+  /* 降级用：实底与高对比 */
+  --glass-solid: #f6f7fa;
+  --glass-solid-card: #ffffff;
+  --glass-solid-soft: #f1f3f8;
+  --contrast-stroke: rgba(24, 33, 52, 0.5);
+  --contrast-muted: #47474c;
+  --contrast-faint: #4a4a50;
+
+  /* 材质化动效：玻璃不是「淡入」，是 blur 与 scale 一起到位 */
+  --ease-glass: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-glass: 220ms;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%; /* 横屏时不被浏览器放大字号 */
+  /* 点一下不要在元素上糊一层灰蓝：那是最响的「这是个网页」信号 */
+  -webkit-tap-highlight-color: transparent;
+  /* 整页下拉时不要触发下拉刷新 / 整页橡皮筋；内层滚动容器各自 contain */
+  overscroll-behavior: none;
+}
+
+/* 触摸设备的输入框：16px 起步，否则 iOS 聚焦时会把整页放大且不缩回来 */
+@media (pointer: coarse) {
+  input,
+  textarea,
+  select {
+    font-size: 16px;
+  }
+}
+
+/* 所有可点元素：去掉双击缩放等待，点击立即触发；长按不选中文字、不弹复制菜单 */
+button,
+a,
+[role='button'],
+.nav-pill,
+.chip,
+.segmented > button {
+  touch-action: manipulation;
+}
+button,
+[role='button'],
+.btn,
+.nav-pill,
+.chip,
+.segmented > button,
+label.checkbox,
+label.radio {
+  user-select: none;
+  -webkit-user-select: none;
+  -webkit-touch-callout: none;
+}
+
+body {
+  margin: 0;
+  /* dvh 跟住「浏览器栏收起/展开」后的真实可视区；100vh 在手机上永远高出那么一条 */
+  min-height: 100dvh;
+  color: var(--ink);
+  font-family: var(--font-sans);
+  font-size: var(--fs-14);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-feature-settings: 'tnum' 1;
+  /* 底色是一整块平的中性灰：玻璃的形只靠亮边、内高光与投影定下来 */
+  background: var(--canvas);
+}
+
+h1,
+h2,
+h3,
+h4,
+p,
+ul,
+ol {
+  margin: 0;
+}
+
+ul,
+ol {
+  padding: 0;
+  list-style: none;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+::selection {
+  background: var(--selection-bg);
+  color: var(--ink);
+}
+
+/**
+ * 键盘焦点：玻璃上单靠一圈蓝描边会「陷」进浅色背景里，看不清。
+ * 这里用「蓝环 + 外侧 1px 白空隙」两圈：底色再怎么变，边都切得出来。
+ */
+:where(a, button, [role='button'], [tabindex], input, select, textarea):focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 10px;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.85), 0 0 0 5px rgba(0, 113, 227, 0.22);
+}
+
+a[href],
+button:not(:disabled),
+[role='button'],
+label.checkbox,
+label.radio,
+.switch {
+  cursor: pointer;
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  border-radius: 9999px;
+  border: 3px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scroll-thumb-hover);
+  background-clip: content-box;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/**
+ * 三层无障碍降级：玻璃是「看得见但读得清」的前提，
+ * 用户把透明度 / 对比度 / 动效调低时，材料要跟着变成实底，而不是继续半透。
+ */
+@media (prefers-reduced-transparency: reduce) {
+  :root {
+    --glass-fill: var(--glass-solid);
+    --glass-fill-card: var(--glass-solid-card);
+    --glass-fill-strong: var(--glass-solid-card);
+    --glass-fill-soft: var(--glass-solid-soft);
+    --glass-grad: var(--glass-solid);
+    --glass-grad-card: var(--glass-solid-card);
+    --glass-grad-strong: var(--glass-solid-card);
+    --glass-blur: none;
+    --glass-blur-soft: none;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --glass-fill: var(--glass-solid);
+    --glass-fill-card: var(--glass-solid-card);
+    --glass-fill-strong: var(--glass-solid-card);
+    --glass-fill-soft: var(--glass-solid-soft);
+    --glass-grad: var(--glass-solid);
+    --glass-grad-card: var(--glass-solid-card);
+    --glass-grad-strong: var(--glass-solid-card);
+    --glass-stroke: var(--contrast-stroke);
+    --glass-edge: var(--contrast-stroke);
+    --muted: var(--contrast-muted);
+    --faint: var(--contrast-faint);
+    --glass-blur: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* ══════════════════════════ 深色 ══════════════════════════
+ *
+ * 玻璃在深色下才最像玻璃：底是近黑的中性灰，玻璃是「极低 alpha 的白」
+ * 叠在半透黑上，亮边收窄、投影加深。所有令牌在这里换一套值，
+ * 页面与组件不用改一行。
+ */
+/**
+ * 主题三态：跟随系统 / 手动浅 / 手动深。
+ *
+ * 状态存在每屏顶栏那三个 radio 上（.theme-switch），纯 CSS 用 :has() 读，
+ * 不需要 JS。灰阶与玻璃的三套值必须同步改：
+ *   · 「跟随」→ 这份 @media 块
+ *   · 「手动深」→ html:has(#theme-dark:checked)
+ *   · 「手动浅」→ 系统深色时的覆盖块（值是 :root 默认值的副本）
+ */
+@media (prefers-color-scheme: dark) {
+  :root {
+
+    color-scheme: dark;
+
+    --canvas: #14161a;
+    --canvas-deep: #0d0f12;
+
+    --glass-fill: rgba(38, 41, 48, 0.62);
+    --glass-fill-card: rgba(42, 45, 53, 0.68);
+    --glass-fill-strong: rgba(48, 52, 61, 0.78);
+    --glass-fill-soft: rgba(255, 255, 255, 0.05);
+    --glass-grad: linear-gradient(168deg, rgba(58, 62, 72, 0.96), rgba(34, 37, 44, 0.92));
+    --glass-shadow-nav: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 16px -12px rgba(0, 0, 0, 0.55);
+    --glass-grad-card: linear-gradient(168deg, rgba(52, 56, 66, 0.76), rgba(33, 36, 43, 0.62));
+    --glass-grad-strong: linear-gradient(168deg, rgba(58, 63, 74, 0.86), rgba(38, 41, 49, 0.76));
+    --glass-stroke: rgba(255, 255, 255, 0.16);
+    --glass-edge: rgba(0, 0, 0, 0.5);
+    --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+    --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 20px 36px -24px rgba(0, 0, 0, 0.7);
+    --glass-shadow-lift: 0 2px 8px rgba(0, 0, 0, 0.55), 0 30px 56px -30px rgba(0, 0, 0, 0.8);
+
+    /* 导出别名的深色对应值：目前页面不用它们，留着是为了将来谁用了也不会取到浅色值 */
+    --bg: var(--canvas);
+    --text: var(--ink);
+    --primary: var(--accent);
+    --brand: var(--accent);
+    --surface: var(--glass-solid-card);
+    --border: var(--line);
+    --radius-card: var(--r-card);
+    --radius-control: var(--r-control);
+
+    --ink: #f5f5f7;
+    --text-regular: #d9d9de;
+    --muted: #9d9da4;
+    --faint: #8a8a91;
+    --disabled: #6a6a71;
+
+    --line: rgba(255, 255, 255, 0.13);
+    --line-strong: rgba(255, 255, 255, 0.24);
+    --line-light: rgba(255, 255, 255, 0.09);
+    --line-lighter: rgba(255, 255, 255, 0.06);
+
+    --accent: #0a84ff;
+    --accent-hover: #3d9dff;
+    --accent-soft: rgba(10, 132, 255, 0.16);
+    --accent-pressed: #0060c9;
+    --danger: #ff453a;
+    --danger-soft: rgba(255, 69, 58, 0.14);
+    --danger-ink: #ff8e85;
+
+    --ok-bg: rgba(126, 190, 90, 0.16);
+    --ok-ink: #a8dc8a;
+    --fail-bg: rgba(255, 99, 82, 0.16);
+    --fail-ink: #ff9d94;
+    --indexing-bg: rgba(255, 200, 82, 0.16);
+    --indexing-ink: #ffd27a;
+    --unknown-bg: rgba(255, 255, 255, 0.08);
+    --unknown-ink: #b4b4bb;
+
+    --fill-hi: rgba(255, 255, 255, 0.12);
+    --fill-md: rgba(255, 255, 255, 0.08);
+    --fill-lo: rgba(255, 255, 255, 0.055);
+    --fill-xlo: rgba(255, 255, 255, 0.035);
+    --stroke-hi: rgba(255, 255, 255, 0.18);
+    --stroke-md: rgba(255, 255, 255, 0.12);
+    --stroke-lo: rgba(255, 255, 255, 0.08);
+    --sheen: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    --sheen-soft: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --well-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+
+    --glass-solid: #1c1f25;
+    --glass-solid-card: #22262d;
+    --glass-solid-soft: #1a1d22;
+    --contrast-stroke: rgba(255, 255, 255, 0.5);
+    --contrast-muted: #c9c9d0;
+    --contrast-faint: #c2c2c9;
+
+    --star: #ffd60a;
+    --selection-bg: rgba(10, 132, 255, 0.3);
+    --scroll-thumb: rgba(255, 255, 255, 0.18);
+    --scroll-thumb-hover: rgba(255, 255, 255, 0.28);
+  }
+}
+
+html:has(#theme-dark:checked) {
+  color-scheme: dark;
+
+    color-scheme: dark;
+
+    --canvas: #14161a;
+    --canvas-deep: #0d0f12;
+
+    --glass-fill: rgba(38, 41, 48, 0.62);
+    --glass-fill-card: rgba(42, 45, 53, 0.68);
+    --glass-fill-strong: rgba(48, 52, 61, 0.78);
+    --glass-fill-soft: rgba(255, 255, 255, 0.05);
+    --glass-grad: linear-gradient(168deg, rgba(58, 62, 72, 0.96), rgba(34, 37, 44, 0.92));
+    --glass-shadow-nav: 0 1px 2px rgba(0, 0, 0, 0.4), 0 6px 16px -12px rgba(0, 0, 0, 0.55);
+    --glass-grad-card: linear-gradient(168deg, rgba(52, 56, 66, 0.76), rgba(33, 36, 43, 0.62));
+    --glass-grad-strong: linear-gradient(168deg, rgba(58, 63, 74, 0.86), rgba(38, 41, 49, 0.76));
+    --glass-stroke: rgba(255, 255, 255, 0.16);
+    --glass-edge: rgba(0, 0, 0, 0.5);
+    --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 0.14),
+      inset 0 -1px 0 rgba(255, 255, 255, 0.04);
+    --glass-shadow: 0 1px 3px rgba(0, 0, 0, 0.5), 0 20px 36px -24px rgba(0, 0, 0, 0.7);
+    --glass-shadow-lift: 0 2px 8px rgba(0, 0, 0, 0.55), 0 30px 56px -30px rgba(0, 0, 0, 0.8);
+
+    /* 导出别名的深色对应值：目前页面不用它们，留着是为了将来谁用了也不会取到浅色值 */
+    --bg: var(--canvas);
+    --text: var(--ink);
+    --primary: var(--accent);
+    --brand: var(--accent);
+    --surface: var(--glass-solid-card);
+    --border: var(--line);
+    --radius-card: var(--r-card);
+    --radius-control: var(--r-control);
+
+    --ink: #f5f5f7;
+    --text-regular: #d9d9de;
+    --muted: #9d9da4;
+    --faint: #8a8a91;
+    --disabled: #6a6a71;
+
+    --line: rgba(255, 255, 255, 0.13);
+    --line-strong: rgba(255, 255, 255, 0.24);
+    --line-light: rgba(255, 255, 255, 0.09);
+    --line-lighter: rgba(255, 255, 255, 0.06);
+
+    --accent: #0a84ff;
+    --accent-hover: #3d9dff;
+    --accent-soft: rgba(10, 132, 255, 0.16);
+    --accent-pressed: #0060c9;
+    --danger: #ff453a;
+    --danger-soft: rgba(255, 69, 58, 0.14);
+    --danger-ink: #ff8e85;
+
+    --ok-bg: rgba(126, 190, 90, 0.16);
+    --ok-ink: #a8dc8a;
+    --fail-bg: rgba(255, 99, 82, 0.16);
+    --fail-ink: #ff9d94;
+    --indexing-bg: rgba(255, 200, 82, 0.16);
+    --indexing-ink: #ffd27a;
+    --unknown-bg: rgba(255, 255, 255, 0.08);
+    --unknown-ink: #b4b4bb;
+
+    --fill-hi: rgba(255, 255, 255, 0.12);
+    --fill-md: rgba(255, 255, 255, 0.08);
+    --fill-lo: rgba(255, 255, 255, 0.055);
+    --fill-xlo: rgba(255, 255, 255, 0.035);
+    --stroke-hi: rgba(255, 255, 255, 0.18);
+    --stroke-md: rgba(255, 255, 255, 0.12);
+    --stroke-lo: rgba(255, 255, 255, 0.08);
+    --sheen: inset 0 1px 0 rgba(255, 255, 255, 0.10);
+    --sheen-soft: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+    --well-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.45), inset 0 -1px 0 rgba(255, 255, 255, 0.05);
+
+    --glass-solid: #1c1f25;
+    --glass-solid-card: #22262d;
+    --glass-solid-soft: #1a1d22;
+    --contrast-stroke: rgba(255, 255, 255, 0.5);
+    --contrast-muted: #c9c9d0;
+    --contrast-faint: #c2c2c9;
+
+    --star: #ffd60a;
+    --selection-bg: rgba(10, 132, 255, 0.3);
+    --scroll-thumb: rgba(255, 255, 255, 0.18);
+    --scroll-thumb-hover: rgba(255, 255, 255, 0.28);
+}
+
+@media (prefers-color-scheme: dark) {
+  html:has(#theme-light:checked) {
+    color-scheme: light;
+    --canvas: #e4e8ef;
+    --canvas-deep: #dce1ea;
+    --glass-fill: rgba(255, 255, 255, 0.44);
+    --glass-fill-card: rgba(255, 255, 255, 0.48);
+    --glass-fill-strong: rgba(255, 255, 255, 0.64);
+    --glass-fill-soft: rgba(255, 255, 255, 0.32);
+    --glass-grad: linear-gradient(168deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.72));
+    --glass-shadow-nav: 0 1px 2px rgba(24, 33, 52, 0.07), 0 8px 20px -14px rgba(24, 33, 52, 0.3);
+    --glass-grad-card: linear-gradient(168deg, rgba(255, 255, 255, 0.82), rgba(255, 255, 255, 0.44));
+    --glass-grad-strong: linear-gradient(168deg, rgba(255, 255, 255, 0.92), rgba(255, 255, 255, 0.58));
+    --glass-stroke: rgba(255, 255, 255, 0.9);
+    --glass-edge: rgba(24, 33, 52, 0.08);
+    --glass-highlight: inset 0 1px 0 rgba(255, 255, 255, 1), inset 0 -1px 0 rgba(255, 255, 255, 0.42),
+    inset 1px 0 0 rgba(255, 255, 255, 0.55), inset -1px 0 0 rgba(255, 255, 255, 0.55);
+    --glass-shadow: 0 1px 3px rgba(24, 33, 52, 0.07), 0 18px 32px -22px rgba(24, 33, 52, 0.3), 0 34px 64px -36px rgba(24, 33, 52, 0.3);
+    --glass-shadow-lift: 0 2px 8px rgba(24, 33, 52, 0.1), 0 26px 44px -26px rgba(24, 33, 52, 0.36), 0 48px 88px -44px rgba(24, 33, 52, 0.36);
+    --bg: var(--canvas);
+    --text: var(--ink);
+    --primary: var(--accent);
+    --brand: var(--accent);
+    --surface: #ffffff;
+    --border: rgba(24, 33, 52, 0.14);
+    --radius-card: var(--r-card);
+    --radius-control: var(--r-control);
+    --ink: #1d1d1f;
+    --text-regular: #333338;
+    --muted: #5b5b61;
+    --faint: #6c6c72;
+    --disabled: #a9a9b0;
+    --line: rgba(24, 33, 52, 0.14);
+    --line-strong: rgba(24, 33, 52, 0.24);
+    --line-light: rgba(24, 33, 52, 0.08);
+    --line-lighter: rgba(24, 33, 52, 0.05);
+    --accent: #0071e3;
+    --accent-hover: #0077ed;
+    --accent-soft: rgba(0, 113, 227, 0.1);
+    --accent-pressed: #005bb5;
+    --danger: #d70015;
+    --danger-soft: rgba(215, 0, 21, 0.09);
+    --danger-ink: #8c2f22;
+    --ok-bg: rgba(60, 82, 40, 0.1);
+    --ok-ink: #33491f;
+    --fail-bg: rgba(140, 47, 34, 0.1);
+    --fail-ink: #7f2b1f;
+    --indexing-bg: rgba(122, 91, 0, 0.11);
+    --indexing-ink: #6b4f00;
+    --unknown-bg: rgba(24, 33, 52, 0.07);
+    --unknown-ink: #54545a;
+    --fill-hi: rgba(255, 255, 255, 0.9);
+    --fill-md: rgba(255, 255, 255, 0.56);
+    --fill-lo: rgba(255, 255, 255, 0.42);
+    --fill-xlo: rgba(255, 255, 255, 0.32);
+    --stroke-hi: rgba(255, 255, 255, 0.82);
+    --stroke-md: rgba(255, 255, 255, 0.62);
+    --stroke-lo: rgba(255, 255, 255, 0.42);
+    --sheen: inset 0 1px 0 rgba(255, 255, 255, 0.92);
+    --sheen-soft: inset 0 1px 0 rgba(255, 255, 255, 0.45);
+    --well-shadow: inset 0 1px 2px rgba(24, 33, 52, 0.07), inset 0 -1px 0 rgba(255, 255, 255, 0.7);
+    --glass-solid: #f6f7fa;
+    --glass-solid-card: #ffffff;
+    --glass-solid-soft: #f1f3f8;
+    --contrast-stroke: rgba(24, 33, 52, 0.5);
+    --contrast-muted: #47474c;
+    --contrast-faint: #4a4a50;
+    --star: #ff9f0a;
+    --selection-bg: rgba(0, 113, 227, 0.18);
+    --scroll-thumb: rgba(24, 33, 52, 0.22);
+    --scroll-thumb-hover: rgba(24, 33, 52, 0.34);
+  }
+}
