@@ -57,6 +57,7 @@ from app.db.transaction import async_commit_now, async_transaction
 from app.db.worker_loop import run_in_worker_loop
 from app.repositories import document_repository
 from app.services.index_build_service import MAX_REDISPATCH, IndexBuildService
+from app.services import retention
 from app.services.index_dispatch import enqueue_document
 from app.services.usage_rollup import days_missing_rollup, rollup_day
 
@@ -86,6 +87,11 @@ ROLLUP_INTERVAL_SECONDS: Final[int] = 300
 #: 补射窗口：最近多少天里「有明细、没汇总格」的日子要顺手补。30 天与看板最长的窗口一致——
 #: 比它更早的洞补了也看不见，只会白做一次聚合。
 MISSED_DAY_LOOKBACK: Final[int] = 30
+
+#: **保留期清理**的日节流（第 17 步现场八）。它一天只用跑一次：清的是「早于 N 天」的行，
+#: 多跑一次不会多删，但白扫一遍全库。
+RETENTION_LOCK_KEY: Final[str] = "lock:retention:daily"
+RETENTION_INTERVAL_SECONDS: Final[int] = 86_400
 
 #: 单篇文档的租约过期后最多重投几次。超过就把它标成失败——「一直重投也救不回来」必须有个
 #: 尽头，否则一篇坏掉的文档会让清扫器变成永动机，而用户看到的是永远转圈。
@@ -173,6 +179,79 @@ async def rollup_usage_once(
     if rolled:
         logger.info("usage rolled up", days=[str(day) for day in days], rolled=rolled)
     return {"rolled": rolled}
+
+
+async def retention_once(
+    *, session_factory: Callable[[], Any] | None = None, now: date | None = None
+) -> dict[str, int]:
+    """每天一次的保留期清理（第 17 步现场八）：用量明细 / 用量汇总 / 文档归档稿。
+
+    改造前这三件事各自是一个**人工脚本**（``purge_usage_events.py`` 与
+    ``purge_document_versions.py``）——「记得敲命令」不是一种可靠性，而它们的失败方式都是
+    **安静地慢慢变坏**（磁盘涨、检索变慢）。这里把它们挂到同一条守护线程上，每天一次。
+
+    ## 顺序：先清版本、再清用量
+
+    版本清理会落库（删切片 + 删版本行），每一篇一笔事务；用量清理也是落库。两者互不相干，
+    但没有理由让它们同开一个长事务——**分开两笔**，任一方失败另一方照走。
+
+    ## 节流 24 小时且**失败不重试**
+
+    清理是幂等的、每天都在，某一次失败留到下一轮就好。给它加「失败立即重试」只会让一次
+    坏掉的清理在一小时里跑六十遍。
+    """
+
+    try:
+        client = redis_client.get_redis_client()
+        got = bool(
+            await client.set(
+                RETENTION_LOCK_KEY, uuid.uuid4().hex, nx=True, ex=RETENTION_INTERVAL_SECONDS
+            )
+        )
+    except Exception:  # noqa: BLE001 - Redis 抽风不该让清理停摆到永久
+        logger.warning("retention could not acquire the throttle; skipping")
+        got = False
+    if not got:
+        return {"events_deleted": 0, "daily_deleted": 0, "versions_purged": 0}
+
+    factory = session_factory or async_session_factory
+    stats = {"events_deleted": 0, "daily_deleted": 0, "versions_purged": 0}
+
+    try:
+        async with factory()() as db:
+            version_outcome = await retention.purge_versions(db)
+        stats["versions_purged"] = version_outcome.purged_versions
+        if version_outcome.documents:
+            logger.info(
+                "retention purged archived drafts",
+                documents=version_outcome.documents,
+                purged_versions=version_outcome.purged_versions,
+                failed_documents=version_outcome.failed_documents,
+            )
+    except Exception as exc:  # noqa: BLE001 - 清版本失败不许挡住清用量
+        logger.warning("retention could not purge archived drafts", error=type(exc).__name__)
+
+    try:
+        async with factory()() as db:
+            async with async_transaction(db):
+                usage_outcome = await retention.purge_usage(db, now=now)
+        stats["events_deleted"] = usage_outcome.events_deleted
+        stats["daily_deleted"] = usage_outcome.daily_deleted
+        if usage_outcome.skipped_days:
+            logger.warning(
+                "retention kept usage detail whose daily cells are missing",
+                days=usage_outcome.skipped_days,
+            )
+        logger.info(
+            "retention purged usage rows",
+            events_deleted=usage_outcome.events_deleted,
+            daily_deleted=usage_outcome.daily_deleted,
+            skipped_days=len(usage_outcome.skipped_days),
+        )
+    except Exception as exc:  # noqa: BLE001 - 清用量失败只留 warning
+        logger.warning("retention could not purge usage rows", error=type(exc).__name__)
+
+    return stats
 
 
 async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dict[str, int]:
@@ -288,16 +367,26 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
                 revived=revived,
             )
 
-        # ── 4) 用量汇总：看板的 7d / 30d 靠它（现场七）─────────────────────
+        # ── 4) 用量汇总：看板的 7d / 30d 靠它，也是保留期清理的前提（现场七）──
         #
         # 放在**清扫之后**、用同一个 ``session_factory``：它不该与「救一篇卡住的文档」抢先后，
         # 而且它失败时只留一条 warning——最坏情况下看板的长窗口晚 5 分钟才更新。
+        #
+        # **必须排在保留期清理之前**：汇总带 30 天补射，先补洞、再删明细，被删的那天才有格
+        # 兜着（``retention.purge_usage`` 自己也会按天复核一遍，这里是第二道保险）。
         rolled = await rollup_usage_once(session_factory=factory)
+
+        # ── 5) 保留期清理：每天一次（现场八）──────────────────────────────
+        #
+        # 它是两个人工脚本（``purge_usage_events.py`` / ``purge_document_versions.py``）的自动版：
+        # 「记得敲命令」不是一种可靠性，而它们的失败方式是安静地慢慢变坏（磁盘涨、检索变慢）。
+        retention_stats = await retention_once(session_factory=factory)
         return {
             "settled": settled,
             "redispatched": redispatched,
             "revived": revived,
             "rolled": rolled["rolled"],
+            **retention_stats,
         }
 
 

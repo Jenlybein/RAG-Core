@@ -38,12 +38,25 @@ compose 定义）。这是刻意的：观测栈要用的 Postgres 就是业务�
 
 | 服务 | 容器名 | 端口 | 从哪一步需要 |
 | --- | --- | --- | --- |
+| **migrate**（一次性，同一个镜像） | `rag-migrate` | — | 每次起栈 |
 | postgres（`pgvector/pgvector:pg16`） | `pg16-pgvector` | 5432 | 阶段 1 |
 | redis（`redis:7-alpine`） | `rag-center-redis` | 6379 | 阶段 3 |
 | worker（`deploy/Dockerfile` 自建） | `rag-worker` | — | 阶段 3 |
 | **api**（同一个镜像，`uvicorn` 启动） | `rag-api` | **8000** | 阶段 9 |
 | **frontend**（`deploy/frontend.Dockerfile` 自建，nginx） | `rag-console` | **8080** | 阶段 9 |
 | elasticsearch（官方 8.17.10 + 自建 IK） | `rag-es` | 9200 | 阶段 4 |
+
+### 起栈即迁移：`migrate` 是一次性服务
+
+`docker compose up -d` 会**先**跑一个 `migrate` 容器（`alembic upgrade head`），它成功退出之后
+`api` / `worker` / `worker-build` 才启动（`depends_on: service_completed_successfully`）。
+
+从前这一步是人工的：换完代码要记得 `docker exec rag-api alembic upgrade head`。忘掉的症状不是
+报错，而是**新代码跑在老表结构上**——第 17 步现场五就是这么撞上的（路由已上线、那四列还没加）。
+
+为什么是单独一个一次性服务而不是塞进 api 的 entrypoint：三个容器同时启动时，只有迁移服务在跑
+DDL；塞进每个容器就等于三次并发迁移。链尾之后没有新迁移时，`alembic upgrade head` 是空操作
+（几毫秒），所以每次起栈都跑它是安全且便宜的。
 
 `api` 与 `worker` **共用同一个镜像标签**（`rag-core-app:local`）：Docker 只构建一次，两边跑
 同一份代码。镜像里带 OCR 运行时（那是 worker 才需要的），复用它是刻意的——「API 跑昨天的
