@@ -94,6 +94,23 @@ def settings_fingerprint(params: Mapping[str, Any] | None) -> str | None:
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()[:FINGERPRINT_HEX_LENGTH]
 
 
+def next_generation(current: int | None) -> int:
+    """这一次索引该写第几代：**在上一篇产物的基础上加一**。
+
+    ``None``（这篇还没有任何一代）从 :data:`FIRST_GENERATION` 起算，所以「第一份产物」与
+    迁移回填补出来的第 1 代是同一个号——两边不同源的话，回填过的文档第一次重建就会跳号，
+    而跳号本身不报错，只是让「保留最近 N 代」的窗口算错一格（少留或多留一份产物）。
+
+    ## 为什么是「每次索引都加一」，而不是「覆盖当前代」
+
+    覆盖会让「上一份产物」消失，于是既没有回滚的落点，也没有办法回答「换成新切法之后，
+    那几条答案变差是因为切法变了还是因为内容变了」——两份产物必须在库里同时存在才比得了。
+    代价是存储随重建次数增长，由保留策略（保留最近 N 代）收口。
+    """
+
+    return FIRST_GENERATION if current is None else current + 1
+
+
 def is_stale(settings_hash: str | None, current_fingerprint: str | None) -> bool:
     """这篇文档的产物是不是落后于库当前设置。
 

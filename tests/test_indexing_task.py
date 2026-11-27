@@ -334,6 +334,10 @@ def test_service_indexes_document_through_claim_purge_write_success(
         "add:main",
         # 正文 token 数（#220）：容量判据的计量，与状态同一笔 Tx2 写。
         "update:documents",
+        # 索引指针推进（现场九·第二步）：这一篇的「当前代」推到刚写的那一代，并记下这一代
+        # 用的设置指纹。**必须在状态回写之前、同一笔 Tx2 里**——分开写会出现「切片第 3 代、
+        # 文档还指着第 2 代」的中间态，而那段窗口里这篇在检索里对齐不上任何一个代。
+        "update:documents",
         "update:documents.status",  # 状态回写是一条 UPDATE 语句（#212）
         "commit",  # Tx2：purge + 写入 + 计量 + 状态一次性提交
     ]

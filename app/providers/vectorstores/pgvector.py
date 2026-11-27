@@ -18,6 +18,7 @@ from sqlalchemy.sql.elements import ColumnElement
 from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
     DEFAULT_DOC_VERSION,
+    DEFAULT_GENERATION,
     DEFAULT_INDEX_VERSION,
     Chunk,
     current_draft_filter,
@@ -72,6 +73,9 @@ class PgVectorStore(VectorStore):
                     # 调用方把「这一片属于第几稿」放在切片字典的顶层。缺省值与列默认值
                     # 同源（第 1 稿），绝不写 NULL——列是非空的。
                     doc_version=c.get("doc_version") or DEFAULT_DOC_VERSION,
+                    # 索引代（现场九）：调用方把「这一片属于第几代产物」放在切片字典顶层。
+                    # 缺省值与列默认值同源，绝不写 NULL——列是非空的。
+                    generation=c.get("generation") or DEFAULT_GENERATION,
                 )
                 for c in chunks
             ]

@@ -116,7 +116,14 @@ class _StubIndexing:
 
 
 def _kb(active: str | None = LIVE_VERSION) -> SimpleNamespace:
-    return SimpleNamespace(id=KB_ID, tenant_id=TENANT_ID, active_index_version=active)
+    # 现场九·第二步：写完切片要按该库的**当前设置**算指纹，夹具得带上这两项。
+    return SimpleNamespace(
+        id=KB_ID,
+        tenant_id=TENANT_ID,
+        active_index_version=active,
+        settings={"chunk_size": 512, "section_part_max_chars": 2000},
+        split_strategy="structure",
+    )
 
 
 def _document(document_id: str, *, status: int = DocumentStatus.SUCCESS) -> SimpleNamespace:

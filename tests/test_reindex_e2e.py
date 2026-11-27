@@ -25,7 +25,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -35,6 +35,7 @@ from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.models.plan import PLAN_FREE, Plan
 from app.models.tenant import Tenant
+from tests.support.sqlite_schema import KNOWLEDGE_BASES_DDL
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
@@ -116,6 +117,10 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
     database_path = tmp_path / "reindex.db"
 
     seed_engine = create_engine(f"sqlite:///{database_path}")
+    # 现场九·第二步：写完切片要按该库的当前设置算指纹，所以这条链会读
+    # ``knowledge_bases``。手写 DDL 的理由见 ``tests/support/sqlite_schema.py``。
+    with seed_engine.begin() as connection:
+        connection.execute(text(KNOWLEDGE_BASES_DDL))
     Document.__table__.create(seed_engine)
     # 租户与套餐表也要建（#220）：索引流水线会读租户的套餐来判**单库 token 容量**。
     # 少了这两张，这条跨层用例会炸在「查不到表」上，而不是它想验的租约与切片。

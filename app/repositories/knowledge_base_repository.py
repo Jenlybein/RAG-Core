@@ -19,7 +19,13 @@ from sqlalchemy.orm import Session
 
 from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.index_version import effective_index_version
-from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase, settings_of
+from app.models.knowledge_base import (
+    SPLIT_STRUCTURE,
+    KnowledgeBase,
+    build_params_of,
+    settings_of,
+)
+from app.services.index_generation import settings_fingerprint
 
 
 async def create(db: AsyncSession, kb: KnowledgeBase) -> KnowledgeBase:
@@ -92,6 +98,23 @@ async def get_split_config(db: AsyncSession, kb_id: str, *, tenant_id: str) -> t
         return SPLIT_STRUCTURE, values["chunk_size"], values["section_part_max_chars"]
     values = settings_of(kb)
     return kb.split_strategy, values["chunk_size"], values["section_part_max_chars"]
+
+
+async def get_settings_fingerprint(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> str | None:
+    """该库**当前设置**的参数指纹（第 17 步现场九）；库不在或跨租户时回 ``None``。
+
+    为什么放在仓库而不是索引服务里：它要读 ``KnowledgeBase`` 并与 ``build_params_of``
+    对齐口径，而这两件事都是模型层的事。索引服务只该拿到一个可以比较的串。
+
+    ``None`` 的语义是「说不清」，调用方一律按落后处理——与「需重建」那条提示同一条纪律。
+    """
+
+    kb: KnowledgeBase | None = await db.get(KnowledgeBase, kb_id)
+    if kb is None or kb.tenant_id != tenant_id:
+        return None
+    return settings_fingerprint(build_params_of(kb))
 
 
 async def get_effective_index_version(db: AsyncSession, kb_id: str, *, tenant_id: str) -> str:

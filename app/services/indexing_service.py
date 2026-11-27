@@ -96,6 +96,7 @@ from app.models.document import Document
 from app.models.document_version import DOCUMENT_VERSION_CURRENT, DocumentVersion
 from app.models.knowledge_base import SPLIT_SIZE, SPLIT_STRUCTURE, SplitStrategy
 from app.providers.embedding import EmbeddingProvider, get_embedding_provider
+from app.services.index_generation import next_generation
 from app.providers.keyword_search import get_keyword_search_provider
 from app.providers.parsers.base import ParsedDocument
 from app.providers.vectorstores import get_vector_store
@@ -564,6 +565,14 @@ class IndexingService:
                 f"embedding count mismatch: {len(retrieval_texts)} texts -> {len(vectors)} vectors"
             )
 
+        # 这一跑要写第几代（现场九·第二步）：在上一份产物上加一。必须在**构造切片之前**算好
+        # （每一片都要带上它），也必须在 purge 之前——purge 之后旧切片就没了，再也读不出
+        # 这一篇原来是第几代。
+        # 用 ``getattr`` 读这一列：离线替身（``SimpleNamespace``）只镜像它关心的那几列，
+        # 缺这一列时按「还没有任何一代产物」起算——``next_generation(None)`` 正好是第一代，
+        # 与迁移回填的口径同一个号。生产路径上这一列永远存在（列可空，ORM 属性恒在）。
+        generation = next_generation(getattr(doc, "current_index_generation", None))
+
         chunks: list[dict[str, Any]] = [
             {
                 "id": new_chunk_id(),
@@ -618,6 +627,10 @@ class IndexingService:
                     "index": index,
                     "source_type": parsed.source_type,
                 },
+                # 这一片属于该文档的第几代**索引产物**（第 17 步现场九·第二步）。
+                # 与 ``doc_version`` 正交：那个说「装的是哪一稿正文」，这个说「哪一次索引
+                # 跑出来的」。检索侧只认「等于文档当前代」的那些片。
+                "generation": generation,
             }
             for index, (piece, vector) in enumerate(zip(pieces, vectors))
         ]
@@ -688,6 +701,17 @@ class IndexingService:
         # 而计量没写）会让下一次容量判定按一个偏小的数放行。
         await document_repository.update_token_count(
             db, document_id, tenant_id=doc.tenant_id, token_count=tokens
+        )
+        # 指针推进与指纹回写必须与切片同一笔事务：分开写会出现「切片已经是第 3 代、文档还
+        # 指着第 2 代」的中间态，而那段时间这一篇在检索里是**查不到的**（按代数对齐不上）。
+        await document_repository.advance_index_generation(
+            db,
+            document_id,
+            tenant_id=doc.tenant_id,
+            generation=generation,
+            settings_hash=await knowledge_base_repository.get_settings_fingerprint(
+                db, doc.kb_id, tenant_id=doc.tenant_id
+            ),
         )
         written = await document_repository.update_status(db, doc, DocumentStatus.SUCCESS)
         if written != 1:

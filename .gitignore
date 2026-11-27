@@ -46,3 +46,6 @@ desktop.ini
 
 # ── 临时脚本与日志（不入库）──
 .work/
+
+# 浏览器实测用的独立 profile（第 17 步现场九的界面验证），不进仓库。
+.tmp-chrome-test/

@@ -41,6 +41,7 @@ from app.services import indexing_service
 from app.services.indexing_service import IndexingService
 from app.utils.text_splitter import SplitPiece
 from tests.fake_db import AsyncRecordingSession, ZERO_COUNT
+from tests.support.sqlite_schema import KNOWLEDGE_BASES_DDL
 
 TENANT_ID = "tenant_demo"
 KB_ID = "kb-1"
@@ -79,6 +80,9 @@ async def chunk_session() -> AsyncIterator[AsyncSession]:
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as connection:
         await connection.execute(text(CHUNKS_DDL))
+        # 索引写完要按该库的**当前设置**算指纹（现场九·第二步）。不塞行时那条查询回
+        # ``None``（= 来路不明 = 落后），正是这些用例要的缺省。
+        await connection.execute(text(KNOWLEDGE_BASES_DDL))
     async with AsyncSession(engine) as session:
         try:
             yield session
@@ -620,6 +624,9 @@ async def test_reindexing_the_second_draft_keeps_the_first_drafts_slices(
         # 这条用例会在「no such table: tenants」上炸，而它想验的是「每稿各留切片」。
         await connection.run_sync(Tenant.__table__.create)
         await connection.run_sync(Plan.__table__.create)
+        # 库表（现场九·第二步）：写完切片要按该库的当前设置算指纹，所以会按主键读一次
+        # ``knowledge_bases``。手写 DDL 的理由见 ``tests/support/sqlite_schema.py``。
+        await connection.execute(text(KNOWLEDGE_BASES_DDL))
     try:
         async with AsyncSession(engine) as session:
             # free 档：容量上限 3 万 token，用例的正文远小于它（不会误撞容量闸门）。

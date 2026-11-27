@@ -251,6 +251,32 @@ def set_content(db: Session, document_id: str, content: str) -> None:
     db.flush()
 
 
+async def advance_index_generation(
+    db: AsyncSession,
+    document_id: str,
+    *,
+    tenant_id: str,
+    generation: int,
+    settings_hash: str | None,
+) -> None:
+    """把这篇文档的「当前代」推到 ``generation``，并记下这一代用的设置指纹（现场九·第二步）。
+
+    **必须与切片写入同一笔事务**：分开写会出现「切片已经是第 3 代、文档还指着第 2 代」的
+    中间态，而那段时间这一篇在检索里对齐不上任何一个代——症状是「刚重建完，这篇查不到」，
+    而它不报错。
+
+    租户条件不是装饰：这条 UPDATE 按 id 走，少了它一次跨租户的 id 猜测就能改别人的指针。
+    影响行数由调用方核对（与 ``update_status`` 同一个纪律：写得「成功」而实际一行没动，
+    正是最难查的那类静默失效）。
+    """
+
+    await db.execute(
+        update(Document)
+        .where(Document.id == document_id, Document.tenant_id == tenant_id)
+        .values(current_index_generation=generation, settings_hash=settings_hash)
+    )
+
+
 async def list_with_expired_versions(
     db: AsyncSession, *, retain: int, kb_id: str | None = None, limit: int | None = None
 ) -> list[Document]:

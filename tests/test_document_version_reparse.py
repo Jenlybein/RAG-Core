@@ -19,13 +19,14 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.models.plan import Plan
 from app.models.tenant import Tenant
+from tests.support.sqlite_schema import KNOWLEDGE_BASES_DDL
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.checksum import checksum_of
@@ -111,6 +112,8 @@ async def test_reconciliation_holds_after_reparse_document_content_equals_curren
     database_path = tmp_path / "docver-reparse.db"
     engine = create_async_engine(f"sqlite+aiosqlite:///{database_path.as_posix()}")
     async with engine.begin() as connection:
+        # 现场九·第二步：写完切片要按该库的当前设置算指纹，所以会读 ``knowledge_bases``。
+        await connection.execute(text(KNOWLEDGE_BASES_DDL))
         await connection.run_sync(Document.__table__.create)
         await connection.run_sync(DocumentVersion.__table__.create)
         # 租户与套餐（#220）：索引流水线要读租户套餐来判单库 token 容量。

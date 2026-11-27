@@ -32,7 +32,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
@@ -42,6 +42,7 @@ from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.models.plan import Plan
 from app.models.tenant import Tenant
+from tests.support.sqlite_schema import KNOWLEDGE_BASES_DDL
 from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
@@ -131,6 +132,9 @@ def rollback_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
 
     database_path = tmp_path / "rollback.db"
     seed_engine = create_engine(f"sqlite:///{database_path}")
+    # 现场九·第二步：写完切片要按该库的当前设置算指纹，所以会读 ``knowledge_bases``。
+    with seed_engine.begin() as connection:
+        connection.execute(text(KNOWLEDGE_BASES_DDL))
     Document.__table__.create(seed_engine)
     DocumentVersion.__table__.create(seed_engine)
     # 租户与套餐（#220）：索引流水线要读租户套餐来判单库 token 容量。
