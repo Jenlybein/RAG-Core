@@ -36,6 +36,18 @@ class Document(Base):
     # 应用层不缓存它——缓存里的指针过期只在切稿那一瞬间成立，而那种 bug 只表现为
     # 「多召回一份旧稿」。
     current_version: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # 这一篇现在生效的是第几代**索引产物**（第 17 步现场九）。
+    #
+    # 与上面的 ``current_version`` 是两根正交的轴：那个管「正文改过几次」，这个管「索引
+    # 算过几次」。改造之前产物是库级的（``knowledge_bases.active_index_version``），于是
+    # 起一次构建要取全库稿号最大值当「统一稿号」套到每一篇头上——库级判据引用了篇级数据，
+    # 稿次落后那几篇必然取不到正文（20030）。下放到篇级之后两根轴各自闭环。
+    current_index_generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # 这一代产物是用**哪份切块参数**算出来的（:func:`app.services.index_generation.settings_fingerprint`）。
+    #
+    # 允许为空，空 = 「来路不明」（例如那条生效版本没有参数快照）。空一律按落后处理：
+    # 界面会提示更新，而不是悄悄认为它是最新的——「少提示一次」与「永远不再提示」不是一回事。
+    settings_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
     # 索引租约开始时间（Worker 抢占时写）。它区分「已入队但 Worker 还没开工」
     # （NULL）与「已经被抢占、正在跑」（有时间戳）；没有这一列，仅凭 status 与
     # 刚写过的 updated_at 无法区分两者，CAS 会永远抢不到或永远抢到，任务去重

@@ -54,6 +54,9 @@ CREATE TABLE documents (
     source_filename VARCHAR(512),
     status INTEGER NOT NULL,
     current_version INTEGER NOT NULL DEFAULT 1,
+    -- 现场九新增的两列（模型会读它们，夹具要跟着长）。
+    current_index_generation INTEGER NOT NULL DEFAULT 1,
+    settings_hash VARCHAR(64),
     index_claimed_at DATETIME,
     index_heartbeat_at DATETIME,
     redispatch_count INTEGER NOT NULL DEFAULT 0,
@@ -74,7 +77,9 @@ CREATE TABLE chunks (
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
     index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
-    doc_version INTEGER NOT NULL DEFAULT 1
+    doc_version INTEGER NOT NULL DEFAULT 1,
+    -- 现场九新增：这一片属于该文档的第几代索引产物（模型 insert 会带上它）。
+    generation INTEGER NOT NULL DEFAULT 1
 )
 """
 

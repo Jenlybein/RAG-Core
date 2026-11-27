@@ -33,6 +33,9 @@ DEFAULT_INDEX_VERSION = "v1"
 #: 切片默认稿号（第 1 稿）：列默认值、关键词文档缺省值与迁移回填共用这一个常量。
 DEFAULT_DOC_VERSION = 1
 
+#: 切片「属于第几代索引产物」的缺省值。与迁移回填的第 1 代同源（现场九）。
+DEFAULT_GENERATION = 1
+
 #: 路标切片的类型名：除了一句「参见别处」之外没有实质内容的片。
 #:
 #: **它现在只剩「消费端」**：轻量图谱（ADR-0027）撤销之后，索引链路不再把哪一片标成
@@ -96,6 +99,8 @@ class Chunk(Base):
     __table_args__ = (
         Index("ix_chunks_tenant_id_kb_id_index_version", "tenant_id", "kb_id", "index_version"),
         Index("ix_chunks_document_id_doc_version", "document_id", "doc_version"),
+        # 按「租户 + 库 + 代」收窄：检索与「保留最近 N 代」的回收都走它。
+        Index("ix_chunks_tenant_id_kb_id_generation", "tenant_id", "kb_id", "generation"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
@@ -121,4 +126,18 @@ class Chunk(Base):
         nullable=False,
         default=DEFAULT_DOC_VERSION,
         server_default=str(DEFAULT_DOC_VERSION),
+    )
+    # 这一片属于该文档的第几代**索引产物**（第 17 步现场九）。
+    #
+    # 与 ``doc_version`` 正交：那个管「这一片装的是哪一稿正文」，这个管「这一片是哪一次
+    # 索引跑出来的」。改造前它由库级的 ``index_version`` 承担，而库级判据要与篇级稿次对齐
+    # 时就只能靠「统一稿号」硬凑——那正是本步要拆掉的东西。
+    #
+    # 检索侧按它和 ``documents.current_index_generation`` 做列比较（与
+    # :func:`current_draft_filter` 同一套写法，不传参、不在应用层缓存）。
+    generation: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        default=DEFAULT_GENERATION,
+        server_default=str(DEFAULT_GENERATION),
     )

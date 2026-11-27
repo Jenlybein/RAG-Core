@@ -61,7 +61,9 @@ CREATE TABLE chunks (
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
     index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
-    doc_version INTEGER NOT NULL DEFAULT '1'
+    doc_version INTEGER NOT NULL DEFAULT '1',
+    -- 现场九：切片多了一列「属于该文档的第几代产物」，夹具必须与模型同形。
+    generation INTEGER NOT NULL DEFAULT 1
 )
 """
 
