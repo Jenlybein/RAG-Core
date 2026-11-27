@@ -21,8 +21,10 @@ import {
   IDLE_HEARTBEAT_MS,
   intervalOf,
   kbIsLive,
+  kbRefreshReason,
   LIVE_INTERVAL_MS,
   listRefreshMode,
+  listRefreshReason,
   refreshModeLabel,
   type RefreshMode,
 } from '../refreshPolicy'
@@ -135,7 +137,8 @@ describe('buildJustFinished', () => {
   })
 
   it('没有生效时刻就退回起建时刻', () => {
-    const justFinished = build('failed', { created_at: '2026-11-27T05:59:00.000Z' })
+    // 15 秒前起建（在 30 秒活动窗内）。取 05:59:00 会落在窗外——那是 60 秒前。
+    const justFinished = build('failed', { created_at: '2026-11-27T05:59:45.000Z' })
     expect(buildJustFinished(justFinished, NOW)).toBe(true)
   })
 
@@ -257,8 +260,8 @@ describe('intervalOf', () => {
     expect(IDLE_HEARTBEAT_MS).toBeGreaterThanOrEqual(10 * LIVE_INTERVAL_MS)
   })
 
-  it('活动窗比快刷间隔长得多（否则「刚收尾」那条规则等于没写）', () => {
-    expect(ACTIVITY_WINDOW_MS).toBeGreaterThan(10 * LIVE_INTERVAL_MS)
+  it('活动窗至少容得下十来轮快刷（否则「刚收尾」那条规则等于没写）', () => {
+    expect(ACTIVITY_WINDOW_MS).toBeGreaterThanOrEqual(10 * LIVE_INTERVAL_MS)
   })
 })
 
@@ -270,5 +273,59 @@ describe('refreshModeLabel', () => {
     expect(refreshModeLabel(idle)).toContain('60 秒')
     // 光写「每 60 秒」不够：读的人要知道这屏不会自己跳到最新。
     expect(refreshModeLabel(idle)).toContain('不会自己跳到最新')
+  })
+})
+
+describe('kbRefreshReason / listRefreshReason（横幅按真实理由写话）', () => {
+  it('真有在途工作 → running', () => {
+    expect(kbRefreshReason(summary({ build: build('building') }), NOW)).toBe('running')
+    expect(
+      kbRefreshReason(
+        summary({ status_counts: { success: 9, failed: 0, processing: 1, queued: 0 } }),
+        NOW,
+      ),
+    ).toBe('running')
+  })
+
+  it('刚收尾、已生效 → recent（不是 running）', () => {
+    // 这就是用户看到「两个库都写着已生效，顶上却说有构建在跑」的那一格：状态是对的
+    // （活动窗内确实要再跟几轮），错的是把它说成 running。
+    const justActivated = summary({
+      build: build('active', { activated_at: '2026-11-27T05:59:30.000Z' }),
+    })
+    expect(kbIsLive(justActivated, NOW)).toBe(true)
+    expect(kbRefreshReason(justActivated, NOW)).toBe('recent')
+  })
+
+  it('running 优先于 recent：同时发生时横幅说有东西在跑', () => {
+    const both = [
+      summary({ kb_id: 'kb-a', build: build('active', { activated_at: '2026-11-27T05:59:30.000Z' }) }),
+      summary({ kb_id: 'kb-b', build: build('building') }),
+    ]
+    expect(listRefreshReason(listOf(both), NOW)).toBe('running')
+  })
+
+  it('只有刚收尾那一档 → recent，且仍是 live（要快刷）', () => {
+    const recentOnly = [
+      summary({ kb_id: 'kb-a', build: build('active', { activated_at: '2026-11-27T05:59:30.000Z' }) }),
+      summary({ kb_id: 'kb-b' }),
+    ]
+    expect(listRefreshReason(listOf(recentOnly), NOW)).toBe('recent')
+    expect(listRefreshMode(listOf(recentOnly), NOW)).toBe('live')
+  })
+
+  it('都不在跑也不刚收尾 → idle（横幅不出现）', () => {
+    expect(listRefreshReason(listOf([summary(), summary({ kb_id: 'kb-2' })]), NOW)).toBe('idle')
+    expect(listRefreshReason(undefined, NOW)).toBe('idle')
+  })
+
+  it('活动窗是 30 秒：收尾过了窗就回 idle，不能一直说「在跑」', () => {
+    // 第一版写 120 秒，用户看到「已生效」却还挂着「有构建在跑」那条横幅。
+    expect(ACTIVITY_WINDOW_MS).toBe(30_000)
+    const finished40sAgo = summary({
+      build: build('active', { activated_at: '2026-11-27T05:59:30.000Z' }),
+    })
+    const later = new Date('2026-11-27T06:00:30.000Z').getTime() // 60 秒后
+    expect(kbRefreshReason(finished40sAgo, later)).toBe('idle')
   })
 })

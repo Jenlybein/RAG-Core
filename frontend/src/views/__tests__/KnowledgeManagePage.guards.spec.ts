@@ -167,6 +167,15 @@ describe('列表页：摘要单独一条请求', () => {
     expect(QUERIES).not.toContain('fetchTree')
   })
 
+  it('横幅按**真实理由**写话（recent 不许念 running 那句台词）', () => {
+    // 用户的原话：「明明都写着已生效了，顶上还说有构建在跑」。模式只有两档，文案不能写死
+    // 一句——否则「刚收尾、再跟几轮」这一档就会说错话。
+    expect(PAGE).toContain("listReason === 'running'")
+    expect(PAGE).toContain('刚有构建收尾')
+    expect(PAGE).toContain('有构建在跑或有文档在排队/索引中')
+    expect(PAGE).toContain('listRefreshReason')
+  })
+
   it('列表页也有「更新于几点」+ 两档刷新', () => {
     expect(PAGE).toContain(':updated-at="listUpdatedAt"')
     expect(PAGE).toContain(':mode="listMode"')

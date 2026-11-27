@@ -46,6 +46,7 @@ import {
   useKbListQuery,
 } from '../composables/useKbQueries'
 import { errorText } from '../lib/errorText'
+import { listRefreshReason } from '../lib/refreshPolicy'
 import {
   deleteDocumentConsole,
   deleteKbConsole,
@@ -102,6 +103,12 @@ const queryClient = useQueryClient()
  *   快照，于是「进详情总要按 F5 才看到真状态」。
  */
 const { query: listQuery, items: kbs, mode: listMode, updatedAt: listUpdatedAt } = useKbListQuery()
+/**
+ * 为什么此刻在快刷。横幅按它写话——**不能写死一句台词**：`recent`（刚收尾，再跟几轮）
+ * 与 `running`（真有在途工作）是两种事实，念同一句话就会出现「都写着已生效，顶上还说
+ * 有构建在跑」这种自相矛盾。
+ */
+const listReason = computed(() => listRefreshReason(listQuery.data.value))
 const listPending = listQuery.isPending
 const listError = listQuery.error
 const refetchList = listQuery.refetch
@@ -579,13 +586,18 @@ function goRetrieve(kbId: string): void {
         </div>
       </template>
 
-      <!-- 在途提示：只在确实有文档排队中或索引中时出现，不是常驻横幅。 -->
+      <!--
+        快刷提示：**只在真的快刷时出现**，且按**真实理由**写话。
+        这里曾经写死一句「有构建在跑或有文档在排队/索引中」，于是「刚收尾、再跟几轮」
+        那一档也念同一句话——而卡片上两个库都写着「已生效」。状态对了、解释错了。
+      -->
       <div
         v-if="listMode === 'live'"
         class="mb-4 flex items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span>有构建在跑或有文档在排队/索引中，正在自动刷新</span>
+        <span v-if="listReason === 'running'">有构建在跑或有文档在排队/索引中，正在自动刷新</span>
+        <span v-else>刚有构建收尾，正在再跟几轮确认（约 30 秒后回到每 60 秒慢查）</span>
       </div>
 
       <p v-if="listPending" class="py-8 text-center text-sm text-muted">正在读取知识库…</p>

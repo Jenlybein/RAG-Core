@@ -44,13 +44,30 @@ export const IDLE_HEARTBEAT_MS = 60_000
  * 「刚结束的活动」仍然值得快刷的窗口。
  *
  * 构建从 `building` 收尾成 `ready → active` 是**两次**事务（`mark_ready` 先提交，`activate`
- * 另起一笔，失败还会留在 `ready`）。老规则只看文档状态与 `build_progress`，收尾那一刻两条
- * 都变成空 → 直接掉到「停止」，界面上就停在「重建中 3/10」。所以留一个窗：最近 2 分钟内
- * 有过构建行的时间戳，就继续快刷。
+ * 另起一笔，失败还会留在 `ready`）。收尾那一瞬间文档状态与 `build_progress` 两条都变成空，
+ * 所以留一个窗：最近一段时间内构建行变过，就再跟几轮。
+ *
+ * ## 为什么是 30 秒而不是 2 分钟
+ *
+ * 第一版写 120 秒，用户当场看不下去：「明明都写着**已生效**了，顶上还说有构建在跑」。
+ * 这个窗的职责只有一个——接住 `ready → active` 与失败明细的最终落地，实测都是**秒级**
+ * （一次 10 篇的构建：18.975 秒收敛成 ready，下一秒就 active）。30 秒够跟十来轮，又不至于
+ * 让人看到一句与画面自相矛盾的话。
  */
-export const ACTIVITY_WINDOW_MS = 120_000
+export const ACTIVITY_WINDOW_MS = 30_000
 
 export type RefreshMode = 'live' | 'idle'
+
+/**
+ * **为什么此刻是 live** —— 界面要按这个理由写横幅，而不是念一句写死的台词。
+ *
+ * 这是本轮第二次被用户抓住的同一类错：模式只有 live/idle 两档，而横幅文案写死了
+ * 「有构建在跑或有文档在排队/索引中」——于是「刚收尾、正在再跟几轮」这一档也念同一句话，
+ * 而画面里两个库都写着「已生效」。**状态对了、解释错了**，比不刷新更让人不信。
+ *
+ * 三档：`running`（真有在途工作）/ `recent`（刚收尾，再跟几轮确认）/ `idle`（慢查）。
+ */
+export type RefreshReason = 'running' | 'recent' | 'idle'
 
 /** 构建状态里「还在动」的那几个：`building`（在跑）与 `ready`（建好了、正在切换）。 */
 const BUILD_IN_FLIGHT = new Set(['building', 'ready'])
@@ -66,7 +83,12 @@ export function buildInFlight(build: BuildSummary | null): boolean {
   return build !== null && BUILD_IN_FLIGHT.has(build.status)
 }
 
-/** 这个构建是不是「刚结束」（收尾时间在活动窗内）。 */
+/**
+ * 这个构建是不是「刚结束」（收尾时间在活动窗内）。
+ *
+ * 判的是「离现在多久」，所以负值（服务端时钟略快于浏览器）也按「刚刚」处理——
+ * 否则一次时钟漂移就会让界面掉进 idle，而它其实正在收尾。
+ */
 export function buildJustFinished(build: BuildSummary | null, at: number): boolean {
   if (build === null) return false
   const stamp = build.activated_at ?? build.created_at
@@ -74,6 +96,15 @@ export function buildJustFinished(build: BuildSummary | null, at: number): boole
   const when = new Date(stamp).getTime()
   if (Number.isNaN(when)) return false
   return at - when <= ACTIVITY_WINDOW_MS
+}
+
+/** 这个库此刻「为什么快刷」（见 :type:`RefreshReason`）。 */
+export function kbRefreshReason(kb: KbSummary, at: number = Date.now()): RefreshReason {
+  if (buildInFlight(kb.build)) return 'running'
+  // 这两个是**篇数**不是状态值：大于 0 就是「有文档在这一态里」。
+  if (kb.status_counts.processing > 0 || kb.status_counts.queued > 0) return 'running'
+  if (buildJustFinished(kb.build, at)) return 'recent'
+  return 'idle'
 }
 
 /**
@@ -85,22 +116,35 @@ export function buildJustFinished(build: BuildSummary | null, at: number): boole
  * （列表摘要只带**四态各多少篇**，所以此处判「有没有」：`> 0`。逐个判状态值的是详情页。）
  */
 export function kbIsLive(kb: KbSummary, at: number = Date.now()): boolean {
-  if (buildInFlight(kb.build)) return true
-  if (buildJustFinished(kb.build, at)) return true
-  // 这两个是**篇数**不是状态值：大于 0 就是「有文档在这一态里」。
-  return kb.status_counts.processing > 0 || kb.status_counts.queued > 0
+  return kbRefreshReason(kb, at) !== 'idle'
 }
 
-/** 列表页的刷新档位。 */
+/**
+ * 列表页「为什么快刷」：任一个库在跑 → `running`；都不在跑但有刚收尾的 → `recent`。
+ *
+ * 为什么把 running 优先于 recent：同时有两件事发生时，横幅该说的是**更强的那一件**
+ * （「有东西在跑」比「刚收尾」更需要用户知道）。
+ */
+export function listRefreshReason(
+  payload: KbListPayload | undefined,
+  at: number = Date.now(),
+): RefreshReason {
+  if (payload === undefined) return 'idle'
+  let anyRecent = false
+  for (const kb of payload.items) {
+    const reason = kbRefreshReason(kb, at)
+    if (reason === 'running') return 'running'
+    if (reason === 'recent') anyRecent = true
+  }
+  return anyRecent ? 'recent' : 'idle'
+}
+
+/** 列表页的刷新档位（由理由派生，两者不会各自漂）。 */
 export function listRefreshMode(
   payload: KbListPayload | undefined,
   at: number = Date.now(),
 ): RefreshMode {
-  if (payload === undefined) return 'idle'
-  for (const kb of payload.items) {
-    if (kbIsLive(kb, at)) return 'live'
-  }
-  return 'idle'
+  return listRefreshReason(payload, at) === 'idle' ? 'idle' : 'live'
 }
 
 /**
