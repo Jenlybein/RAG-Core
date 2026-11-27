@@ -14,6 +14,7 @@
  * ② 数据范围（Key 能查什么）→ ③ 能力开关（必须可见：参数想要重排，还得授权位允许）→
  * ④ 限额与结果形状收进「高级设置」折叠（默认收起，标题带实时摘要）。
  */
+import { ElMessage } from 'element-plus'
 import { computed } from 'vue'
 
 import type { ConsolePlanSnapshot } from '../types/console'
@@ -29,7 +30,12 @@ import {
   type KbOption,
   type PolicyForm,
 } from '../types/key'
-import { applyParamPreset } from '../utils/keyPolicy'
+import {
+  applyParamPreset,
+  fundLlmQuota,
+  llmCapabilitiesOpen,
+  llmQuotaUnfunded,
+} from '../utils/keyPolicy'
 
 /** 父级持有的表单对象：子组件直接改它，保存时读的是同一份状态。 */
 const form = defineModel<PolicyForm>({ required: true })
@@ -59,6 +65,32 @@ function capabilityDisabled(field: (typeof POLICY_CAPABILITY_FIELDS)[number]): b
 const rerankDisabled = computed<boolean>(
   () => props.plan !== null && !props.plan.rerank_allowed,
 )
+
+/**
+ * 「打开了用大模型的能力，模型额度却还是 0」—— 这是一份**注定失败**的配置。
+ *
+ * 现场是：勾上「查询改写」、高级设置里的模型额度留着默认 0，一用「改写后检索」就收到
+ * 「操作太频繁，稍等一会儿再试」。那句话会让人一直等下去——真正的原因是这本账没开，
+ * 而它藏在折叠起来的「高级设置」里。所以这里在勾选的同一屏就把话说清。
+ */
+const llmUnfunded = computed<boolean>(() => llmQuotaUnfunded(form.value))
+
+/**
+ * 勾上一个用大模型的能力位时，把模型额度的 0 按套餐上限补上。
+ *
+ * 时机很关键：勾选那一刻就是用户表达「我要用它」的时刻。此时补齐是**看得见**的改动
+ * （那两个输入框就在「高级设置」里，值会变），而不是运行时替他降级或替他拒绝。
+ * 套餐本身给的是 0 时不补（没有上限可补），此时靠上面那条警告 + 后端的 20013 说真话。
+ */
+function onCapabilityChange(): void {
+  if (!llmQuotaUnfunded(form.value) || !llmCapabilitiesOpen(form.value)) return
+  const funded = fundLlmQuota(form.value, props.plan)
+  if (funded === form.value) return
+  form.value = funded
+  if (funded.llm_qps > 0 || funded.llm_daily > 0) {
+    ElMessage.info('已按套餐上限填入模型额度，可在「高级设置」里调小')
+  }
+}
 
 /** 条数上限写进标签里，省掉字段下面那行「套餐封顶 N」：一句话说完，不留第二处解释。 */
 const topKLabel = computed<string>(() => {
@@ -222,12 +254,25 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
           :show-after="200"
         >
           <span class="inline-flex">
-            <el-checkbox v-model="form[field]" :disabled="capabilityDisabled(field)">
+            <el-checkbox
+              v-model="form[field]"
+              :disabled="capabilityDisabled(field)"
+              @change="onCapabilityChange"
+            >
               {{ CAPABILITY_LABELS[field] }}
             </el-checkbox>
           </span>
         </el-tooltip>
       </div>
+      <!--
+        能力位开着、模型额度为 0 = 每次调用都会被拒。这句话必须出现在**勾选的那一屏**：
+        额度输入框在下面的折叠面板里，用户不展开就看不到自己漏了什么。
+      -->
+      <p v-if="llmUnfunded" class="mt-2 rounded bg-amber-50 px-2 py-1 text-xs text-amber-700">
+        打开了「查询改写 / 分解 / 研究」之一，但「模型额度」两格还是 0：这本账没开，
+        每次调用都会被拒（不是「调用太快」）。在「高级设置」里把模型每秒 / 每日上限填上，
+        或者把这两个能力位关掉。
+      </p>
     </section>
 
     <!-- ④ 高级：三本账额度 / 结果形状，默认收起 -->
@@ -243,6 +288,10 @@ const onlyKbId = computed(() => (props.kbOptions.length === 1 ? props.kbOptions[
         <div class="space-y-5 pt-1">
           <div>
             <h4 class="mb-1.5 text-[12px] font-semibold text-slate-700">限额（三本账）</h4>
+            <p class="mb-2 text-xs text-muted">
+              检索与重排的 0 表示「这本账不启用」；<strong>重排</strong>额度用尽时链路会跳过重排并
+              如实标注，而<strong>模型</strong>额度跑到 0 会让改写 / 分解 / Research 直接失败。
+            </p>
             <div class="grid gap-3 sm:grid-cols-2">
               <div v-for="input in QUOTA_INPUTS" :key="input.key">
                 <label class="mb-1 block text-xs text-muted">

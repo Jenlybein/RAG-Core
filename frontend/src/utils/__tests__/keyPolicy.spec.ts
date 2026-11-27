@@ -1,7 +1,15 @@
 import { describe, expect, it } from 'vitest'
 
-import { PARAM_PRESETS, type KeyPolicyData, type PolicyForm } from '../../types/key'
-import { applyParamPreset, buildPolicyPatch, policyFormFrom, toPolicyInput } from '../keyPolicy'
+import { PARAM_PRESETS, type KeyPolicyData, type KeyPolicyInput, type PolicyForm } from '../../types/key'
+import {
+  applyParamPreset,
+  buildPolicyPatch,
+  fundLlmQuota,
+  llmCapabilitiesOpen,
+  llmQuotaUnfunded,
+  policyFormFrom,
+  toPolicyInput,
+} from '../keyPolicy'
 
 /**
  * 编辑器里几件「看起来是界面、其实是规则」的事：表单怎么从线上配置拷出来、
@@ -191,5 +199,72 @@ describe('applyParamPreset', () => {
 
     expect(next.retrieval_mode).toBe('vector')
     expect(next.retrieval_rerank).toBe(false)
+  })
+})
+
+describe('llmQuotaUnfunded / fundLlmQuota（能力位开着、模型额度却是 0）', () => {
+  const base = (overrides: Partial<KeyPolicyInput> = {}): KeyPolicyInput => ({
+    allowed_kb_ids: ['kb-1'],
+    retrieve_allowed: true,
+    rewrite_allowed: false,
+    decompose_allowed: false,
+    research_allowed: false,
+    rerank_allowed: false,
+    retrieve_qps: 1,
+    retrieve_daily: 100,
+    rerank_qps: 0,
+    rerank_daily: 0,
+    llm_qps: 0,
+    llm_daily: 0,
+    retrieval_mode: 'vector',
+    retrieval_top_k: 5,
+    retrieval_rerank: false,
+    include_parent: true,
+    expand_table_rows: true,
+    max_unit_chars: 2000,
+    ...overrides,
+  })
+
+  const plan = { llm_qps: 5, llm_daily: 1500 }
+
+  it('能力位全关时不报警（两本账 0 是合法的「这套不用它」）', () => {
+    expect(llmCapabilitiesOpen(base())).toBe(false)
+    expect(llmQuotaUnfunded(base())).toBe(false)
+  })
+
+  it('勾上改写而模型额度仍是 0 → 这就是那次「操作太频繁」的来源', () => {
+    expect(llmQuotaUnfunded(base({ rewrite_allowed: true }))).toBe(true)
+    expect(llmQuotaUnfunded(base({ decompose_allowed: true }))).toBe(true)
+    expect(llmQuotaUnfunded(base({ research_allowed: true }))).toBe(true)
+  })
+
+  it('重排位开着但额度 0 **不算**这种情形：那是「跳过重排」的合法状态', () => {
+    expect(llmQuotaUnfunded(base({ rerank_allowed: true, retrieval_rerank: true }))).toBe(false)
+  })
+
+  it('只要有一格有额度就不再算「没开」：日额度用尽走 20014，而不是 20013', () => {
+    expect(llmQuotaUnfunded(base({ rewrite_allowed: true, llm_qps: 5 }))).toBe(false)
+    expect(llmQuotaUnfunded(base({ rewrite_allowed: true, llm_daily: 1500 }))).toBe(false)
+  })
+
+  it('补齐只补仍为 0 的那一格，且用套餐上限而不是魔数', () => {
+    const funded = fundLlmQuota(base({ rewrite_allowed: true }), plan)
+    expect(funded.llm_qps).toBe(5)
+    expect(funded.llm_daily).toBe(1500)
+
+    const half = fundLlmQuota(base({ rewrite_allowed: true, llm_qps: 2 }), plan)
+    expect(half.llm_qps).toBe(2)
+    expect(half.llm_daily).toBe(1500)
+  })
+
+  it('套餐本身就是 0 时不编数字（没有上限可补）', () => {
+    const funded = fundLlmQuota(base({ rewrite_allowed: true }), { llm_qps: 0, llm_daily: 0 })
+    expect(funded.llm_qps).toBe(0)
+    expect(funded.llm_daily).toBe(0)
+  })
+
+  it('套餐还没读到时原样返回（不拿猜测的默认值填用户的配置）', () => {
+    const form = base({ rewrite_allowed: true })
+    expect(fundLlmQuota(form, null)).toBe(form)
   })
 })

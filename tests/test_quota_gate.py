@@ -426,3 +426,72 @@ def test_the_probe_and_the_gate_always_agree(cell: str, level: str) -> None:
             await gate.ensure_available()
 
     _run(scenario())
+
+
+# ─────────────────────── 额度为 0 不是「太快了」：说真话，且给得对（第 17 步现场五）
+
+
+def test_a_zero_limit_is_a_capability_error_not_a_rate_error() -> None:
+    """上限为 0 时不许报「太频繁」。
+
+    这一格的现场是：用户的密钥配置**能力位开着、大模型额度 0**，一用「改写后检索」就收到
+    ``20005 操作太频繁：稍等一会儿再试``。而 0 在本仓的约定里是「这本账不启用」——
+    「0 used of 0」永远成立，等多久都不会好。处置应当与「能力位为假」相同：去 Key 管理页
+    改配置，所以码是 ``20013``。
+    """
+
+    async def scenario() -> None:
+        store = _FakeCounterStore()
+        gate = _gate(store, policy=_policy(qps=0), plan=_plan(qps=0))
+
+        with pytest.raises(AppError) as exc:
+            await gate.ensure_available()
+
+        assert exc.value.code is ErrorCode.FEATURE_NOT_ALLOWED, exc.value.msg
+        # 文案必须说出「额度是 0」这件事，否则用户拿不到任何下一步动作。
+        assert "quota is 0" in exc.value.msg
+        assert "not granted" in exc.value.msg
+
+    _run(scenario())
+
+
+def test_a_zero_daily_limit_is_not_reported_as_an_exhausted_daily_quota() -> None:
+    """日额度为 0 也不许报 ``20014 今天的调用额度已用尽``。
+
+    两句文案的处置不同：``20014`` 说「等 UTC 零点重置」，而 0 额度重置之后还是 0。
+    所以同样是「不授权」，与 qps 那格给同一个码、同一句真话。
+    """
+
+    async def scenario() -> None:
+        store = _FakeCounterStore()
+        gate = _gate(store, policy=_policy(daily=0), plan=_plan(daily=0))
+
+        with pytest.raises(AppError) as exc:
+            await gate.ensure_available()
+
+        assert exc.value.code is ErrorCode.FEATURE_NOT_ALLOWED, exc.value.msg
+        assert "quota is 0" in exc.value.msg
+
+    _run(scenario())
+
+
+def test_a_zero_limit_does_not_depend_on_how_many_calls_are_counted() -> None:
+    """上限为 0 时，无论计数是 0 还是很大，答案都是「没授权」而不是「超额」。
+
+    这一条防的是「先判 used / limit」那种写法：used=0、limit=0 时若按「已用 < 上限」
+    判，会放行一次（除以零的直觉版本），而放行之后这次调用注定在下游失败。
+    """
+
+    async def scenario() -> None:
+        store = _FakeCounterStore()
+        gate = _gate(store, policy=_policy(qps=0), plan=_plan(qps=0))
+        window = _counting_at(store, MOMENT).window()
+        store.values[f"quota:qps:key:{KEY_ID}:{window.qps}"] = 7
+
+        with pytest.raises(AppError) as exc:
+            await gate.ensure_available()
+
+        assert exc.value.code is ErrorCode.FEATURE_NOT_ALLOWED
+        assert "used 7" in exc.value.msg
+
+    _run(scenario())

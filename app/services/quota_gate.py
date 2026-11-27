@@ -105,7 +105,7 @@ from typing import Any, Final, Protocol
 
 from app.core import redis_client
 from app.core.config import settings
-from app.core.exceptions import ErrorCode
+from app.core.exceptions import AppError, ErrorCode
 from app.models.key_policy import KeyPolicySnapshot
 from app.models.plan import PlanSpec
 from app.services.quota_limits import ensure_under_limit, has_room
@@ -411,6 +411,23 @@ class QuotaLedger:
         # 一起看。日配额**比的是当前额度**，不是某个记下来的快照：管理员把日配额改小，
         # 下一次调用就按新值判（AC「改小日配额后立刻生效，不需要重启」）。
         for cell in await self._cells():
+            # **上限为 0 ≠ 「太快了」**（第 17 步现场五的紧急修复）。
+            #
+            # 0 在本仓的既有约定里是「这套集成不用这本书」（见
+            # :func:`app.services.profile_policy.ensure_policy_consistent` 第三段），于是
+            # 「0 used of 0」永远成立、每一次调用都会被拒。把它报成 ``20005``（限流）等于
+            # 说「稍等一会儿再试」——而等多久都没用，用户等一辈子也不会好。
+            #
+            # 这种情形的处置是「去 Key 管理页改配置」（与能力位为假同一件事），所以码用
+            # :attr:`ErrorCode.FEATURE_NOT_ALLOWED`，文案也把「额度是 0」说出来，而不是
+            # 一串 ``0 used of 0``。
+            if cell.limit <= 0:
+                raise AppError(
+                    ErrorCode.FEATURE_NOT_ALLOWED,
+                    f"{cell.what} is not granted: quota is 0 in this key policy "
+                    f"(used {cell.used}) —— 这把 Key 的密钥配置没有开这本账的额度"
+                    f"（不是「调用太快」）：去 Key 管理页把额度填上，或把对应能力位关掉",
+                )
             ensure_under_limit(
                 used=cell.used,
                 limit=cell.limit,
