@@ -736,8 +736,11 @@ class IndexBuildService:
         * ``documents_done`` 只数**真的写进切片**的篇数（返回值 > 0），抢不到的不计；
         * 它**只做进度条**，收不收尾由 :meth:`converge` 读真值决定。
 
-        投递形状**这一票不改**（仍是一个任务跑完整个库；按篇投递是 #215）：因此循环跑完
-        就等于「这一轮不会有人再补了」，收敛时 ``final=True``。
+        **它不再是生产路径**（#215 起构建是「派活 + 按篇投递」，由 `build_document_task`
+        逐篇驱动）。留下它是因为「一次跑完整个库」作为**服务层能力**仍有用：
+        `scripts/rebuild_kb_version.py --in-process` 与运维排障会直接调它——
+        没有 Broker 也要能把一个库建出来。而它循环跑完就等于「这一轮不会有人再补了」，
+        所以收敛时 ``final=True``。
         """
 
         row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)

@@ -193,7 +193,15 @@ async def inspect_build(
             doc_version=truth.doc_version,
         )
         missing = tuple(sorted(expected - indexed))
-    verdict = decide_convergence(truth=truth.documents, planned=truth.planned, failed=0, final=True)
+    # 失败明细必须与 `converge` 同源：那边读 `row.failed_documents`，脚本原来写死 0，
+    # 于是「有明细但真值够」的构建会被脚本判 ready、被服务判 failed——正是本步要消灭的
+    # 「两个真相」。
+    verdict = decide_convergence(
+        truth=truth.documents,
+        planned=truth.planned,
+        failed=len(row.failed_documents or ()),
+        final=True,
+    )
     # 「0 篇参与」时脚本与服务必须给同一个结论，所以守卫是**共用的纯函数**（#226 的现场就
     # 是脚本报 ready、而服务写下去该是 failed——照脚本执行会激活一个空版本）。
     if verdict == INDEX_BUILD_READY and truth.planned == 0:
