@@ -49,6 +49,10 @@ CONSOLE_WRITE_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/console/documents/{document_id}/versions/{version}/rollback"),
     ("POST", "/console/keys"),
     ("DELETE", "/console/keys/{key_id}"),
+    # 轮换密钥本体与提前作废过渡密钥（第 17 步 #227 现场五）：两条都是写路径，
+    # 都必须走显式事务入口（GET 之外一律要求 get_async_transaction）。
+    ("POST", "/console/keys/{key_id}/regenerate"),
+    ("POST", "/console/keys/{key_id}/revoke-previous"),
     ("PATCH", "/console/key-policies/{policy_id}"),
     ("PATCH", "/console/settings"),
     ("POST", "/console/model-configs"),

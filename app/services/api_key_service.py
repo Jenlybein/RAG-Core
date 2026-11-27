@@ -20,6 +20,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
@@ -34,10 +35,17 @@ from app.utils.id_generator import api_key_tail_of, new_api_key_value, new_id, s
 #: 带着一个没人预期的状态，而签发路径不会有任何异常。
 API_KEY_STATUS_ACTIVE = "active"
 
+#: **过渡密钥**的存活窗口：重新生成之后，旧密钥本体还能用多久。
+#:
+#: 24 小时是「线上业务来得及换配置」与「泄露的钥匙不能一直能用」之间的折中。它写在服务层
+#: 而不是列上：列里存的是**那一把 Key 在轮换那一刻**按当时策略算出的截止时刻，于是以后调整
+#: 这个常量不会追溯改变已在窗口里的行（审计才讲得清「它为什么在某个时刻还能用」）。
+PREV_KEY_TTL = timedelta(hours=24)
+
 
 @dataclass(frozen=True)
 class MintedKey:
-    """一次生成的产物：**要落库的那一行** + **只在签发这一刻存在的原文**。
+    """一次签发的产物：**要落库的那一行** + **只在签发这一刻存在的原文**。
 
     两个字段刻意并排：``api_key`` 里没有原文可读（只有哈希与末 5 位），想把它交回给人的
     调用方必须显式用 ``plaintext``，于是「原文从哪来」在类型上就只有一条路。
@@ -45,6 +53,20 @@ class MintedKey:
 
     api_key: ApiKey
     plaintext: str
+
+
+@dataclass(frozen=True)
+class RemintedSecret:
+    """一次**重新生成**的产物：同一把 Key 的新密钥本体 + 只在这一次存在的原文。
+
+    与 :class:`MintedKey` 的差别只有一条：那个是「拼一行新的」（``key_id`` 也是新的），
+    这个是「给已有的那把 Key 换一份密钥本体」。两者都遵守同一条纪律——原文只在这一层出现，
+    调用方必须显式把它交回给人。
+    """
+
+    plaintext: str
+    key_hash: str
+    key_tail: str
 
 
 def issue_api_key(
@@ -72,6 +94,31 @@ def issue_api_key(
     minted = create_api_key_row(db, tenant_id=tenant_id, policy_id=policy_id, label=label)
     # 提交点不在这里：脚本用 ``with transaction(db)`` 圈住，请求路径由路由的事务依赖兜住。
     return minted
+
+
+def mint_secret(*, key_id: str) -> RemintedSecret:
+    """给**已存在的** Key 生成一份新密钥本体（纯函数：不碰会话）。
+
+    ## 为什么复用 ``new_api_key_value(key_id)`` 而不是自己拼哈希
+
+    Key 串的格式只有 :func:`app.utils.id_generator.new_api_key_value` 一处定义。这里把它
+    拆回去取出那个 secret 再哈希——于是「串里那个 secret」与「被落库的那个哈希」在构造上
+    不可能不是同一个（这正是 :func:`_mint` 里那条断言的同一道理）。
+
+    过渡三列（旧哈希 / 旧末 5 位 / 截止时刻）**不在这里排**：它们来自那一行现有的值，
+    由 :func:`app.services.key_admin_service.regenerate_key` 在原事务里搬——本函数手里
+    没有那一行，凭猜补值只会造出「过渡密钥不是原来那把」的隐患。
+    """
+
+    plaintext = new_api_key_value(key_id)
+    parsed = split_api_key_value(plaintext)
+    assert parsed is not None, "自己刚生成的 Key 必须能被自己的格式拆开"
+    _parsed_key_id, secret = parsed
+    return RemintedSecret(
+        plaintext=plaintext,
+        key_hash=hash_password(secret),
+        key_tail=api_key_tail_of(secret),
+    )
 
 
 def _mint(*, tenant_id: str, policy_id: str, label: str | None) -> MintedKey:

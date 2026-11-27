@@ -13,7 +13,7 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Path
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.console_deps import (
@@ -22,6 +22,7 @@ from app.api.console_deps import (
 )
 from app.core.console_auth import ConsoleIdentity
 from app.db.async_session import get_async_db, get_async_transaction
+from app.db.base import now as now_of
 from app.db.transaction import AsyncTransaction
 from app.schemas.common import ApiResponse, ok
 from app.schemas.console_keys import (
@@ -31,6 +32,7 @@ from app.schemas.console_keys import (
     KeyListData,
     KeyPolicyPatchData,
     KeyPolicyPatchRequest,
+    RevokePreviousData,
     issued_key_data_of,
     key_data_of,
 )
@@ -84,6 +86,53 @@ async def issue_key(
         policy_values=payload.policy.provided(),
     )
     return ok(issued_key_data_of(issued.api_key, issued.policy, issued.plaintext))
+
+
+@router.post(
+    "/keys/{key_id}/regenerate",
+    response_model=ApiResponse[IssuedKeyData],
+    summary="重新生成这把 Key 的密钥本体（旧 Key 进入 24 小时过渡期）",
+)
+async def regenerate_key(
+    key_id: str = Path(..., min_length=1),
+    identity: ConsoleIdentity = Depends(require_console_tenant_write),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
+) -> ApiResponse[IssuedKeyData]:
+    """轮换：**同一把 Key**（``key_id`` / 名字 / 白名单 / 额度都不变）换一份密钥本体。
+
+    旧密钥本体进入 **24 小时过渡期**（窗口内新旧都能过校验），过渡期只保留最近一把：
+    窗口内再调一次本接口，上一把过渡密钥直接作废。
+
+    ``key_plaintext`` 同样是**唯一**一次能看到完整 Key 的地方。响应里的
+    ``prev_key_expires_at`` 是这次写进那一列的过渡截止时刻，前端据此说清「旧 Key 还能用到几点」。
+    """
+
+    regenerated = await key_admin_service.regenerate_key(
+        db, actor=identity, key_id=key_id, now=now_of()
+    )
+    return ok(
+        issued_key_data_of(regenerated.api_key, regenerated.policy, regenerated.plaintext)
+    )
+
+
+@router.post(
+    "/keys/{key_id}/revoke-previous",
+    response_model=ApiResponse[RevokePreviousData],
+    summary="把过渡密钥提前作废（不必等 24 小时窗口到期）",
+)
+async def revoke_previous_secret(
+    key_id: str = Path(..., min_length=1),
+    identity: ConsoleIdentity = Depends(require_console_tenant_write),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
+) -> ApiResponse[RevokePreviousData]:
+    """立刻让过渡密钥失效。**幂等**：没有过渡密钥时回 ``revoked=false``，不报错。"""
+
+    revoked = await key_admin_service.revoke_previous_secret(
+        db, actor=identity, key_id=key_id, now=now_of()
+    )
+    return ok(RevokePreviousData(key_id=key_id, revoked=revoked))
 
 
 @router.delete(

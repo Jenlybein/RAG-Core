@@ -46,3 +46,18 @@ class ApiKey(Base):
     # 所以它可以为 NULL、也允许滞后。
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now)
+
+    # ── 「重新生成」（轮换密钥本体）留下的三列 + 一个时刻（第 17 步 #227 现场五）──
+    #
+    # 为什么旧哈希要**单独留一份**：重新生成的那一刻，正在跑的业务还拿着旧 Key。立刻让它
+    # 失效等于当场把所有集成打断，而「丢了钥匙」的场景又不能让泄露的那把继续能用很久。
+    # 所以折中：旧哈希留一个 24 小时窗口（判据是 `prev_key_expires_at`），窗口内新旧都能过
+    # 校验，窗口外只认新的。**只保留最近一把**——留一串旧址等于同时允许一串凭证有效，
+    # 那与「一把 Key 只有一份有效密钥」的原则正好相反。
+    #
+    # 三列可以为 NULL：从没轮换过的 Key 就是 NULL（NULL = 「没有过渡密钥」，不是「很久以前
+    # 有过」）。`rotated_at` 同理，它是**给人和审计看**的时刻，不参与任何判定。
+    prev_key_hash: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    prev_key_tail: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    prev_key_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    rotated_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)

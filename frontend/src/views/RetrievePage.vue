@@ -1,18 +1,21 @@
 <script setup lang="ts">
 /**
- * 检索页：选 Key → 勾库 → 发检索 → 结果卡片 + 只读运行摘要。
+ * 检索页：应用 Key → 勾库 → 发检索 → 结果卡片 + 只读运行摘要。
  *
- * 四条不许越过的线（issue #87 / #92 / spec #82）：
+ * 五条不许越过的线（issue #87 / #92 / spec #82）：
  * 1. 请求体只有 `kb_ids` + `query`：本页没有任何档位按钮或高级参数输入，
  *    `profile` / `top_k` / `mode` / `rerank` / `rewrite` 一律不进请求体；
  * 2. 运行摘要只读响应 `metadata`，**不看页面输入**——摘要回答的是「后端这次实际
  *    生效了什么」，拿页面配置冒充它就等于把调试台变成许愿台；
- * 3. 身份只有「选中的那把 Key」：本页是全仓库唯一的数据面入口的使用者
- *    （`ragService.retrieve()`），未选 Key 时请求层会抛可操作的错误；
- * 4. 可勾选的库由**服务端**决定：选完 Key 先调 `GET /api/v1/knowledge-bases`（Bearer 这把
+ * 3. 身份只有用户在**主面板常驻输入框**里粘贴、点「应用」的那把 Key：本页是全仓库唯一
+ *    的数据面入口的使用者（`ragService.retrieve()`），未应用 Key 时请求层会抛可操作的错误；
+ * 4. 可勾选的库由**服务端**决定：应用 Key 后先调 `GET /api/v1/knowledge-bases`（Bearer 这把
  *    Key），拿回来的就是这把 Key 真正能查的库。不再用控制面的库树 + 前端筛白名单——
  *    那是客户端算的答案，与服务端判定漂了会显示一个并不被认可的集合（详见
- *    `services/scopeService.ts`）。
+ *    `services/scopeService.ts`）；
+ * 5. 本页**不拉** `GET /console/keys`：列表里没有原文，而「这把 Key 有没有效」只有拿它
+ *    真的打一次数据面请求才作数。拉一份列表回来再本地比对，会把「服务端还没说话」
+ *    误当成「Key 不对」。
  *
  * 结果卡片只展示契约里有的字段；`latency_ms` / `log_id` 后端没有（00-facts §5 明确列过），
  * 这里也不编造。`metadata.trace_id` 从 #101 起有了，但本页不摊它——它在这张卡上的用途只有
@@ -21,7 +24,7 @@
 import { useMutation, useQuery } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { computed, ref, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import CollapsibleCard from '../components/CollapsibleCard.vue'
 import ComparePanel from '../components/ComparePanel.vue'
@@ -30,11 +33,11 @@ import PageHeader from '../components/PageHeader.vue'
 import ResponseFields from '../components/ResponseFields.vue'
 import RunSummary from '../components/RunSummary.vue'
 import StageWaterfall from '../components/StageWaterfall.vue'
-import { ApiError } from '../lib/envelope'
+import { readRetrieveApiKey, writeRetrieveApiKey } from '../lib/apiKeySession'
 import { keyIdOf } from '../lib/apiKey'
+import { ApiError } from '../lib/envelope'
 import { fetchWaterfall, resolveLogId } from '../services/consoleTraces'
 import { submitFeedback } from '../services/feedbackService'
-import { KEYS_QUERY_KEY, fetchKeys } from '../services/keyService'
 import { decomposeRetrieve, research, retrieve, rewriteRetrieve } from '../services/ragService'
 import {
   MY_KB_QUERY_KEY,
@@ -43,13 +46,13 @@ import {
 } from '../services/scopeService'
 import { fetchRuntimeInfo, runtimeInfoQueryKey } from '../services/traceService'
 import { useRetrieveStore } from '../stores/retrieve'
-import type { KbOption, KeyData } from '../types/key'
 import type { ResearchData } from '../types/research'
 import type { RetrieveData, RetrieveRequest } from '../types/retrieval'
 import type { RetrievalWaterfall } from '../types/traceWaterfall'
 import { feedbackErrorCopy, isValidScore, scoreStars } from '../utils/feedback'
 import { DATA_PLANE_ENDPOINTS } from '../utils/dataPlaneEndpoints'
 import { pushHistory, type CompareHistoryEntry } from '../utils/retrieveCompare'
+import { selectedKbSummary } from '../utils/retrieveSelection'
 import {
   describeEmptyReason,
   formatPercent,
@@ -58,6 +61,7 @@ import {
 } from '../utils/format'
 
 const route = useRoute()
+const router = useRouter()
 const store = useRetrieveStore()
 
 function errorText(error: unknown): string {
@@ -68,13 +72,71 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-// —— ① 选 Key 与检索范围 ——
+/**
+ * 「后端原话」优先的错误文案。
+ *
+ * 应用 Key 失败时要摊在输入框下面的是**服务端说了什么**，不是前端按错误码表猜的一句话：
+ * 数据面 20010 有四种成因（缺 token / Key 不存在 / Key 停用 / 服务端还在开发身份模式），
+ * 只有后端那句话能分清是哪一种。后端没给原文（纯 HTTP 失败、连不上）时才退回通用文案。
+ */
+function backendErrorText(error: unknown): string {
+  if (error instanceof ApiError && error.backendMsg !== '') return error.backendMsg
+  return errorText(error)
+}
+
+
+// —— ① 应用 Key 与检索范围 ——
+
+/** 上一次会话留在 `sessionStorage` 里的 Key：有就预填，刷新不必重粘。 */
+const initialStoredKey = readRetrieveApiKey()
+const keyInput = ref(initialStoredKey ?? '')
+/** 原文已经写进请求层（`lib/activeKey`）。它不是「服务端认可」的同义词，后者看库清单。 */
+const keyApplied = ref(false)
+/** 上一次成功应用的原值：用来判断这次是否算「换了 Key」，决定要不要提示「请重新选库」。 */
+const lastAppliedValue = ref<string | null>(null)
+/** 每次应用 +1：查询键跟着变，同一把 Key 再点一次「应用」也会重新问一遍服务端。 */
+const applySerial = ref(0)
+
+/**
+ * 应用（或更换）Key。
+ *
+ * 顺序是刻意的：**先清空已选库，再去拉库清单**。留着旧选择会让下一次检索撞 20008，
+ * 而那个错误要等请求之后才出现；新 Key 能查什么只有服务端知道，所以「先清空、再问」
+ * 是唯一不会显示出一个过期集合的顺序。
+ *
+ * 原文同时写进 `sessionStorage`：刷新后调试台还认得这把 Key。它只活在这次浏览器会话，
+ * 换一个会话就没了——长期凭据不该因为「上次来过」在另一天自动复活。
+ */
+function applyKey(options: { silent?: boolean } = {}): void {
+  const raw = keyInput.value.trim()
+  if (raw === '') {
+    ElMessage.warning('先把 Key 粘进来')
+    return
+  }
+  const changed = lastAppliedValue.value !== raw
+  const hadSelection = store.selectedCount > 0
+
+  // `selectKey` 一次写完「请求层认哪把」与「页面选哪把」，并顺手按新白名单裁掉已选库；
+  // 这里给空白名单 = 全部裁空（服务端清单回来之前，没有任何库可以被认为是可查的）。
+  store.selectKey({ keyId: keyIdOf(raw), keyValue: raw, allowedKbIds: [] })
+  writeRetrieveApiKey(raw)
+  lastAppliedValue.value = raw
+  keyApplied.value = true
+  applySerial.value += 1
+
+  if (options.silent !== true && (changed || hadSelection)) {
+    ElMessage.info('Key 已更换，请重新选库')
+  }
+}
+
+// 挂载时若上次留过 Key：预填并自动应用一次（静默，不弹「请重新选库」）。
+// 放在预填 `?kb_id=` 之前：应用会清空选择，深链预填必须排在这次清空之后才不会白丢。
+if (initialStoredKey !== null) applyKey({ silent: true })
 
 /**
  * `?kb_id=` 预填。同样的坑上传页已经踩过：同一路由只改 query 不会重新挂载组件，
  * 只读一次会让勾选停在上一个库，所以初次读一次、之后再 watch。
- * 预填发生在选 Key 之前时可能落在空里（不在任何白名单）；那是「未选 Key」的正常状态，
- * 选 Key 之后由 store 的白名单裁剪统一处理。
+ * 预填可能落在「这把 Key 查不到」的库里；那是正常状态，服务端清单回来后会再裁一次。
  */
 function prefillFromQuery(value: unknown): void {
   const raw = Array.isArray(value) ? value[0] : value
@@ -85,19 +147,6 @@ prefillFromQuery(route.query.kb_id)
 watch(
   () => route.query.kb_id,
   (value) => prefillFromQuery(value),
-)
-
-// 本页自己的缓存键：与 /keys、列表页共用同一份 Key / 树缓存，失效时一起更新。
-const keysQuery = useQuery({
-  queryKey: KEYS_QUERY_KEY,
-  queryFn: fetchKeys,
-  retry: false,
-})
-const keys = computed<KeyData[]>(() => keysQuery.data.value ?? [])
-const keysPending = keysQuery.isPending
-const keysLoaded = keysQuery.isSuccess
-const keysError = computed(() =>
-  keysQuery.error.value === null ? '' : errorText(keysQuery.error.value),
 )
 
 /**
@@ -122,21 +171,23 @@ const authDisabled = computed(() => runtimeQuery.data.value?.auth_enabled === fa
  * 现在这条 `GET /api/v1/knowledge-bases`（Bearer 这把 Key）返回的就是服务端按同一份
  * policy 过滤后的结果，与检索用的是同一个判定。链路上服务端是唯一真相。
  *
- * 没有选 Key 时不发请求（`enabled`）：那时请求头里没有可用的 Key，发出去只会换一个
- * 看起来像「Key 失效」的 20010。
+ * 没有应用 Key 时不发请求（`enabled`）：那时请求头里没有可用的 Key，发出去只会换一个
+ * 看起来像「Key 失效」的 20010，而实际只是「还没应用」。
+ *
+ * 查询键里带 `applySerial` 而不是只带 Key 的 id：一个是同一把 Key 可能被重新应用
+ * （用户想再问一次），另一个是格式不对的串解不出 id（`null`）——两种情况下只按 id
+ * 区分就会命中旧缓存，界面会停在上一次的结果上。
  */
 const myKbsQuery = useQuery({
-  queryKey: computed(() => [...MY_KB_QUERY_KEY, store.selectedKeyId ?? '']),
+  queryKey: computed(() => [...MY_KB_QUERY_KEY, store.selectedKeyId ?? '', applySerial.value]),
   queryFn: fetchMyKnowledgeBases,
-  enabled: computed(() => store.selectedKeyId !== null),
+  enabled: computed(() => keyApplied.value),
   retry: false,
 })
 const myKbs = computed<MyKnowledgeBase[]>(
   () => myKbsQuery.data.value?.knowledge_bases ?? [],
 )
-const kbs = computed<KbOption[]>(() =>
-  myKbs.value.map((kb) => ({ kb_id: kb.kb_id, name: kb.name })),
-)
+const kbs = computed<MyKnowledgeBase[]>(() => myKbs.value)
 /**
  * 三个状态都显式标 `computed<boolean>`：它们是**布尔**，不是 vue-query 的 ref。
  *
@@ -145,24 +196,24 @@ const kbs = computed<KbOption[]>(() =>
  * 有 200），界面却永远停在「正在问服务端…」。TypeScript 也拦不住：`boolean | Ref`
  * 对模板里的真值判断完全合法。标上 `computed<boolean>` 之后，同样的笔误会是类型错误。
  */
-const treePending = computed<boolean>(
-  () => store.selectedKeyId !== null && myKbsQuery.isPending.value,
-)
+const treePending = computed<boolean>(() => keyApplied.value && myKbsQuery.isPending.value)
 const treeLoaded = computed<boolean>(() => myKbsQuery.isSuccess.value)
-const treeError = computed(() =>
-  myKbsQuery.error.value === null ? '' : errorText(myKbsQuery.error.value),
-)
-
-const selectedKey = computed<KeyData | null>(
-  () => keys.value.find((key) => key.key_id === store.selectedKeyId) ?? null,
-)
-const policy = computed(() => selectedKey.value?.policy ?? null)
+/** 应用后拉库清单失败：输入框下面摊的就是这段，而且「选择知识库」要跟着置灰。 */
+const keyApplyError = computed<string>(() => {
+  const error = myKbsQuery.error.value
+  return error === null ? '' : backendErrorText(error)
+})
+/** 应用成功（服务端认可这把 Key，库清单回来了）。 */
+const keyVerified = computed<boolean>(() => keyApplied.value && myKbsQuery.isSuccess.value)
+/** 正在应用 / 验证。 */
+const keyVerifying = computed<boolean>(() => keyApplied.value && myKbsQuery.isPending.value)
+/** 选库入口的可用性只看一件事：这把 Key 能不能列出库。列不出来就不让选。 */
+const pickerDisabled = computed<boolean>(() => !keyVerified.value)
 /**
  * 「当前可勾的库」= 服务端刚返回的那一份。
  *
- * 注意它**不是** `policy.allowed_kb_ids`：那是控制面配置里的白名单，是配置的**意图**；
- * 服务端返回的是同一份 policy 应用到真实库表之后的**结果**（库可能被删、可能被租户过滤）。
- * 能否勾选看结果，不看意图。
+ * 注意它**不是**配置里的白名单：那是配置的**意图**；服务端返回的是同一份 policy 应用到
+ * 真实库表之后的**结果**（库可能被删、可能被租户过滤）。能否勾选看结果，不看意图。
  */
 const availableKbIds = computed(() => new Set(kbs.value.map((kb) => kb.kb_id)))
 
@@ -174,172 +225,66 @@ const trialableCount = computed(
 )
 
 /**
- * 把用户粘进来的 Key 落到请求层：id + 原文 + 白名单，一次写完，并把白名单外的已选库摘掉。
+ * 「选择知识库」弹窗的草稿：取消 = 不改动主面板上的选择。
  *
- * 原文从哪来：**用户自己粘**。库里只存 scrypt 哈希与末 5 位，列表接口没有原文可给，
- * 所以这里先本地解出串里的行身份证（`lib/apiKey`），再在已拉取的列表里找到那一行——
- * 于是「这把 Key 的配置」仍然显示得出来，而密钥本体只在 `Authorization` 头里出现。
- *
- * 解不出来 / 列表里没有这一行，都不落请求层：请求层里放一把明知不对的 Key，只会让下一次
- * 检索拿到 20010，而那个码看起来像「你粘的 Key 失效了」——事实是它压根没粘对。
+ * 为什么不直接把勾选框绑到 store（原来的做法）：底部按钮既然是「取消 / 确定」，
+ * 取消就必须真的什么也没发生。绑 store 的话，勾一下立刻生效，「取消」只是一句谎话。
  */
-const pasteDialogOpen = ref(false)
-const pastedKey = ref('')
+const dialogSelection = ref<string[]>([])
 
-function openPasteDialog(): void {
-  pastedKey.value = ''
-  pasteDialogOpen.value = true
+function openKbDialog(): void {
+  if (pickerDisabled.value) return
+  // 打开时拷一份当前选择：改勾选只动草稿，点「确定」才落到 store。
+  dialogSelection.value = [...store.selectedKbIds]
+  configDialogOpen.value = true
 }
 
-function submitPastedKey(): void {
-  const raw = pastedKey.value.trim()
-  if (raw === '') {
-    ElMessage.warning('先把 Key 粘进来')
-    return
-  }
-  const keyId = keyIdOf(raw)
-  if (keyId === null) {
-    ElMessage.error(
-      '格式不对：应当是 rc_live_<key_id>.<32 位密钥>。列表里显示的是打码形态（rc_live_…4f3a2），不能拿来调用。',
-    )
-    return
-  }
-  const key = keys.value.find((item) => item.key_id === keyId)
-  if (key === undefined) {
-    ElMessage.error('这把 Key 不在本租户的列表里：可能已被删除，或者它来自另一套环境')
-    return
-  }
-  const removed = store.selectKey({
-    keyId,
-    keyValue: raw,
-    allowedKbIds: key.policy?.allowed_kb_ids ?? [],
-  })
-  if (removed.length > 0) {
-    ElMessage.warning(`这些库不在新 Key 的白名单里，已移出选择：${removed.join('、')}`)
-  }
-  pastedKey.value = ''
-  pasteDialogOpen.value = false
+function confirmKbDialog(): void {
+  store.setSelection(dialogSelection.value)
+  configDialogOpen.value = false
+}
+
+function dropUnpickable(): void {
+  dialogSelection.value = dialogSelection.value.filter((kbId) => availableKbIds.value.has(kbId))
 }
 
 /**
- * 列表刷新之后只同步白名单，**不碰原文**。
+ * 服务端清单回来之后**再裁一次**选择——这一次用的是真答案。
  *
- * 走 `store.resyncScope` 而不是 `selectKey`：这一侧手里没有原文，若沿用后者就得给一个
- * 空串，而那会把请求层的 Key 清掉——下一次检索于是变成「还没选 Key」。
- */
-function resyncSelectedScope(key: KeyData): void {
-  const removed = store.resyncScope(key.policy?.allowed_kb_ids ?? [])
-  if (removed.length > 0) {
-    ElMessage.warning(`这些库不在新 Key 的白名单里，已移出选择：${removed.join('、')}`)
-  }
-}
-
-watch(
-  selectedKey,
-  (key) => {
-    if (key === null) return
-    // 只在「页面认定的那把」与 store 里的一致时同步：切换 Key 由 submitPastedKey 负责，
-    // 这里管的是「同一把 Key 的数据刷新了」（例如刚在 /keys 改过白名单）。
-    if (key.key_id !== store.selectedKeyId) return
-    resyncSelectedScope(key)
-  },
-  { immediate: true },
-)
-
-/**
- * 服务端清单回来之后**再裁一次**——这一次用的是真答案。
+ * 第一轮裁剪是应用 Key 那一刻的「全部清空」，因为那时网络还没回来；服务端返回的是
+ * 「意图应用到真实库表之后的结果」（库可能被删、可能被租户过滤）。两轮都走同一个
+ * `store.resyncScope`，所以不会出现两套裁剪逻辑。
  *
- * 第一轮（`resyncSelectedScope`）只能按配置里的白名单裁，因为那时网络还没回来；而配置是
- * 「意图」，服务端返回的是「意图应用到真实库表之后的结果」（库可能被删、被租户过滤）。
- * 两轮都走同一个 `store.resyncScope`，所以不会出现两套裁剪逻辑。
- *
- * 只在 `isSuccess` 时裁：请求还在飞时 `myKbs` 是空数组，拿它当「一个库都没有」会把用户
+ * 只在 `isSuccess` 时裁：请求还在飞时 `kbs` 是空数组，拿它当「一个库都没有」会把用户
  * 的选择清空——那是把「还没问到」当成「没有」。
  */
 watch(
   [myKbs, () => myKbsQuery.isSuccess.value],
   ([rows, loaded]) => {
     if (!loaded) return
-    const key = selectedKey.value
-    if (key === null) return
     const removed = store.resyncScope(rows.map((kb) => kb.kb_id))
     if (removed.length > 0) {
-      ElMessage.warning(
-        `这些库已不在这把 Key 的可用范围内，已移出选择：${removed.join('、')}`,
-      )
+      ElMessage.warning(`这些库已不在这把 Key 的可用范围内，已移出选择：${removed.join('、')}`)
     }
   },
 )
 
-// 之前选中的 Key 被删掉（例如在 /keys 删了它）：清掉选择并说明原因，别让下一次检索
-// 拿一把已删除的 Key 去撞 20010（那个码看起来像「Key 失效」）。
-watch(
-  [keys, keysLoaded],
-  ([rows, loaded]) => {
-    if (!loaded || !store.selectedKeyId) return
-    if (rows.some((key) => key.key_id === store.selectedKeyId)) return
-    ElMessage.warning('之前选中的 Key 已不在列表里（可能已被删除），请重新选择一把')
-    store.clearKey()
-  },
-  { immediate: true },
-)
+
 
 /**
- * 选中 Key 的**只读**配置摘要：检索参数 / 能力 / 限额 / 结果形状。
- *
- * 这里**故意不列数据范围**：那把 Key 圈了哪些库，下方「勾选知识库」逐条摆着同一份
- * 信息（名字 + id + 能不能勾）。同一件事在一屏里写两遍，读者要花时间确认「这两处
- * 是不是一回事」——去重比补全更重要。
- */
-const policyRows = computed(() => {
-  const value = policy.value
-  if (value === null) return []
-  const capabilities: string[] = []
-  if (value.retrieve_allowed) capabilities.push('retrieve')
-  if (value.rewrite_allowed) capabilities.push('rewrite')
-  if (value.decompose_allowed) capabilities.push('decompose')
-  if (value.research_allowed) capabilities.push('research')
-  if (value.rerank_allowed) capabilities.push('rerank')
-  return [
-    {
-      label: '检索参数',
-      value: `${value.retrieval_mode} · top_k ${value.retrieval_top_k} · ${
-        value.retrieval_rerank ? '重排' : '不重排'
-      }`,
-    },
-    {
-      label: '生效能力',
-      value: capabilities.length === 0 ? '全关' : capabilities.join(' / '),
-    },
-    { label: '限额', value: `${value.retrieve_qps} 次/秒 · ${value.retrieve_daily} 次/天` },
-    {
-      // 用**概念名**而不是请求体字段名：这两个开关在界面上叫 small-to-big / rows-to-table
-      // （与 Key 编辑器同一套说法）。一屏里两处用不同名字，用户会以为它们是两个东西。
-      label: '形状',
-      value: `${value.include_parent ? 'small-to-big' : '不折叠'} · ${
-        value.expand_table_rows ? 'rows-to-table' : '表格行不折回'
-      }`,
-    },
-  ]
-})
-
-/**
- * 已选但这一次勾不上的库（例如 URL 预填了一个不在这把 Key 白名单里的旧库 ID）。
+ * 已选但这一次勾不上的库（例如 URL 预填了一个不在这把 Key 可用范围里的旧库 ID）。
  *
  * 不静默删掉它们：用户可能正想查一个不在这把 Key 范围里的库；但必须提前说明检索
- * 大概率会失败，并给一个「移除」的动作。
+ * 大概率会失败，并给一个「移除」的动作。判断依据是草稿，因为它决定用户接下来会保存
+ * 什么——拿主面板上的旧选择提示，会提示一件点「确定」之后才会发生的事。
  */
 const unpickableSelected = computed(() =>
-  store.selectedKbIds.filter((kbId) => !availableKbIds.value.has(kbId)),
+  dialogSelection.value.filter((kbId) => !availableKbIds.value.has(kbId)),
 )
-
-function dropUnpickable(): void {
-  store.setSelection(store.selectedKbIds.filter((kbId) => availableKbIds.value.has(kbId)))
-}
 
 /** el-checkbox-group 的事件载荷是联合类型；本页的选项值全是字符串，这里只做类型收窄。 */
 function onSelectionChange(values: Array<string | number | boolean>): void {
-  store.setSelection(values.filter((value): value is string => typeof value === 'string'))
+  dialogSelection.value = values.filter((value): value is string => typeof value === 'string')
 }
 
 // —— ② 用哪一项能力（四条端点）与问题 ——
@@ -349,8 +294,9 @@ function onSelectionChange(values: Array<string | number | boolean>): void {
  * `decompose` 各一次模型调用 + N 次内核、`research` 多轮补证。所以「用哪条」是发起
  * 检索前的一个决定，而不是页面的固定行为——调试台要能换着比。
  *
- * 能不能选由**授权位**决定（不在前端猜）：位是假的直接置灰，点不了也就不可能拿到
- * 20013 才回头查配置。
+ * 能不能选**不再由前端置灰**：本页不拉 `/console/keys`，手里没有这把 Key 的授权位。
+ * 猜一个「没开这个能力」并灰掉按钮，就是把「不知道」显示成「不行」；真实结论只有
+ * 服务端能回——没开这个能力时是 20013，报错文案会直接说清是哪一个。
  */
 type Capability = 'retrieve' | 'rewrite' | 'decompose' | 'research'
 
@@ -359,43 +305,16 @@ interface CapabilityOption {
   label: string
   /** 一句话说清这条链路花什么，用来选。 */
   hint: string
-  bit:
-    | 'retrieve_allowed'
-    | 'rewrite_allowed'
-    | 'decompose_allowed'
-    | 'research_allowed'
 }
 
 const CAPABILITY_OPTIONS: readonly CapabilityOption[] = [
-  { key: 'retrieve', label: '检索', hint: '原句直查，零模型调用', bit: 'retrieve_allowed' },
-  { key: 'rewrite', label: '改写后检索', hint: '一次改写，原句与改写句并池', bit: 'rewrite_allowed' },
-  { key: 'decompose', label: '分解后检索', hint: '拆子问题，各查一次再合并', bit: 'decompose_allowed' },
-  { key: 'research', label: '研究模式', hint: '多轮补证 + 引用块，最贵', bit: 'research_allowed' },
+  { key: 'retrieve', label: '检索', hint: '原句直查，零模型调用' },
+  { key: 'rewrite', label: '改写后检索', hint: '一次改写，原句与改写句并池' },
+  { key: 'decompose', label: '分解后检索', hint: '拆子问题，各查一次再合并' },
+  { key: 'research', label: '研究模式', hint: '多轮补证 + 引用块，最贵' },
 ]
 
 const runCapability = ref<Capability>('retrieve')
-
-/** 这套配置允许哪些能力（位为假即不支持）。没有配置时一个都不允许。 */
-function capabilityAllowed(option: CapabilityOption): boolean {
-  return policy.value?.[option.bit] === true
-}
-
-/** 换 Key 后落在不支持的能力上时，退到第一个支持的（否则按钮指向一条必 20013 的路）。 */
-watch(
-  [policy, runCapability],
-  () => {
-    if (policy.value === null) return
-    const current = CAPABILITY_OPTIONS.find((item) => item.key === runCapability.value)
-    if (current !== undefined && capabilityAllowed(current)) return
-    const fallback = CAPABILITY_OPTIONS.find((item) => capabilityAllowed(item))
-    if (fallback !== undefined) runCapability.value = fallback.key
-  },
-  { immediate: true },
-)
-
-const currentCapability = computed<CapabilityOption>(
-  () => CAPABILITY_OPTIONS.find((item) => item.key === runCapability.value) ?? CAPABILITY_OPTIONS[0],
-)
 
 /** 这次响应用的是哪条链路：渲染分支与「摘要能不能用」都读它，不读页面当前选择。 */
 const lastCapability = ref<Capability>('retrieve')
@@ -420,15 +339,19 @@ function callCapability(
 const queryText = ref('')
 
 const trimmedQuery = computed(() => queryText.value.trim())
-/** 按钮禁用时把原因说出来：只灰掉按钮不说原因，用户会以为自己点错了。 */
+/**
+ * 按钮禁用时把原因说出来：只灰掉按钮不说原因，用户会以为自己点错了。
+ *
+ * 能力授权位不在前端判定（本页不拉 Key 列表，也就看不到它）；这个按钮只需要回答
+ * 「现在为什么点不了」——没应用 Key / Key 还在验证 / Key 被拒 / 没选库 / 没问题。
+ * 授权不足会由服务端在检索时给出 20013 与后端原文，那是唯一作数的答案。
+ */
 const blockReason = computed(() => {
-  if (selectedKey.value === null) return '还没粘 Key —— 点「修改配置」把它粘进来'
-  if (policy.value === null) return '这把 Key 没有可用的密钥配置 —— 去 Key 管理页改一下'
-  if (store.selectedCount === 0) return '还没勾库 —— 点「修改配置」勾选至少一个知识库'
+  if (!keyApplied.value) return '还没应用 Key —— 在上面粘贴 API Key 后点「应用」'
+  if (keyVerifying.value) return '正在验证这把 Key 能查哪些库…'
+  if (keyApplyError.value !== '') return 'Key 不可用 —— 看输入框下面那句报错'
+  if (store.selectedCount === 0) return '还没选库 —— 点「选择知识库」勾选至少一个知识库'
   if (trimmedQuery.value === '') return '先写要检索的问题（全空白不算问题）'
-  if (!capabilityAllowed(currentCapability.value)) {
-    return `这把 Key 没开「${currentCapability.value.label}」这个能力`
-  }
   return ''
 })
 
@@ -548,23 +471,12 @@ function shortId(value: string): string {
 const summaryOpen = ref(false)
 
 /**
- * 「修改配置」弹窗。选 Key 这件事被收进弹窗之后，卡片上只留一行只读摘要。
+ * 「选择知识库」弹窗。
  *
- * 为什么这样分：选 Key 与改 Key 的配置属于「**设置**」，而勾库、写问题、点检索是
- * 「**动作**」。设置是做一次就不再碰的东西，把它常驻在动作流的最上方，会让每次检索
- * 都先经过一个与本次无关的下拉框。
+ * Key 不再进弹窗：它已经是主面板上常驻的输入框与「应用」按钮。弹窗只负责一件事——
+ * 从服务端认可的那份库清单里挑要查的库，底部按钮「取消 / 确定」对应草稿与提交。
  */
 const configDialogOpen = ref(false)
-
-/** 卡片上那一行只读摘要：当前这把 Key 是谁、检索方式是什么。 */
-const currentKeySummary = computed(() => {
-  if (selectedKey.value === null) return null
-  return {
-    label: selectedKey.value.label ?? '（未命名）',
-    masked: selectedKey.value.key_masked,
-    mode: policy.value?.retrieval_mode ?? null,
-  }
-})
 
 
 /**
@@ -788,19 +700,17 @@ async function sendRating(): Promise<void> {
   <PageHeader
     title="调试台"
   />
-    <!-- ① 选 Key 与检索范围 -->
+    <!-- ① 应用 Key 与检索范围 -->
     <!--
-      卡片只留「动作」：读一行当前配置、写问题、点检索。
-      选 Key、改它的配置、勾库都属于「设置」——设置做一次就不再碰，全部收进
-      「修改配置」弹窗；常驻在动作流最上方，会让每次检索都先经过一组与本次无关的控件。
+      Key 常驻在主面板，而不是收进弹窗：调试台的每一步都要身份，粘一把 Key 再开弹窗
+      确认「现在用的是哪把」，等于把身份藏起来。输入框只负责写请求层；能不能用由服务端
+      说了算——拉一次知识库列表就是那次验证。弹窗里于是只剩「选哪些库」。
     -->
     <el-card shadow="never">
       <template #header>
         <h2 class="text-sm font-semibold text-ink">发起检索</h2>
       </template>
 
-      <!-- 一行只读摘要。不显示的话，用户每次检索前都得开弹窗确认用的是哪把 Key、哪些库。 -->
-      <p v-if="keysPending" class="text-xs text-muted">正在读取 Key 列表…</p>
       <!--
         服务端是「开发身份模式」时，控制台签发的 Key **一把都不生效**（只认内置占位 Key）。
         必须在检索前说，否则失败时看到的「Key 无效」会把人送去反复重签一把永远不会生效的 Key。
@@ -808,10 +718,11 @@ async function sendRating(): Promise<void> {
       -->
       <div
         v-if="authDisabled"
-        class="flex flex-wrap items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
+        class="mb-3 flex flex-wrap items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
       >
-        <strong>开发身份模式</strong>
-        <span>· 所选 Key 不参与鉴权</span>
+        <span>
+          当前是开发身份模式：这里填任何值都能看到全部知识库，检索不会按它的白名单或额度过滤。
+        </span>
         <el-tooltip
           content="把 AUTH_ENABLED 设为 true 并重启 API，控制台签发的 Key 才会生效"
           placement="top"
@@ -820,49 +731,41 @@ async function sendRating(): Promise<void> {
           <span class="cursor-help underline decoration-dotted underline-offset-2">怎么改</span>
         </el-tooltip>
       </div>
-      <div
-        v-else-if="keysError !== ''"
-        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
-      >
-        {{ keysError }}
+
+      <div class="flex flex-wrap items-center gap-2">
+        <el-input
+          v-model="keyInput"
+          type="password"
+          show-password
+          autocomplete="off"
+          spellcheck="false"
+          placeholder="粘贴 API Key（rc_live_…）"
+          class="max-w-md font-mono"
+          @keyup.enter="applyKey()"
+        />
+        <el-button :loading="keyVerifying" @click="applyKey()">应用</el-button>
+        <span v-if="keyVerified" class="text-xs text-emerald-700">已应用</span>
+        <button
+          type="button"
+          class="text-xs text-brand underline underline-offset-2 transition hover:text-ink"
+          @click="router.push('/keys')"
+        >
+          去 API Key 页获取
+        </button>
       </div>
-      <div
-        v-else-if="keys.length === 0"
-        class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
-      >
-        还没有 API Key ——
-        <RouterLink to="/keys" class="text-brand underline">去签发一把</RouterLink>
-      </div>
-      <div v-else class="flex flex-wrap items-center justify-between gap-2">
-        <!-- 摘要用 chip 而不是一句话：三个值各自可辨，扫一眼就够，不用读句子。 -->
-        <span class="flex flex-wrap items-center gap-1.5">
-          <template v-if="currentKeySummary !== null">
-            <span class="chip font-mono">{{ currentKeySummary.label }}</span>
-            <span class="chip font-mono text-slate-400">{{ currentKeySummary.masked }}</span>
-            <span
-              class="chip font-mono"
-              :class="currentKeySummary.mode === null ? 'text-[#7a5b00]' : ''"
-            >
-              {{ currentKeySummary.mode ?? '配置缺失' }}
-            </span>
-          </template>
-          <span v-else class="text-xs text-[#7a5b00]">未选 Key</span>
-          <span class="chip">库 {{ store.selectedCount }}</span>
-        </span>
-        <!--
-          入口按它**真正能改的东西**命名。`mode` / `top_k` / `rerank` 已经从这里撤走
-          （那是 Key 配置，改它去 Key 管理页），所以这里只剩「选 Key 与库」——继续叫
-          「换检索方式」会让人点进来找一个已经不存在的下拉。
-        -->
-        <span class="flex items-center gap-3 text-xs">
-          <button
-            type="button"
-            class="text-brand underline underline-offset-2 transition hover:text-ink"
-            @click="configDialogOpen = true"
-          >
-            选 Key 与库
-          </button>
-        </span>
+      <!--
+        失败时摊的是**后端原话**：数据面的「Key 无效」有四种成因，前端按错误码表猜一句
+        会盖掉唯一能分清的那条线索；也不偷偷降级成「按公开库继续查」——身份不对就停。
+      -->
+      <p v-if="keyApplyError !== ''" class="mt-2 text-xs leading-relaxed text-red-700">
+        {{ keyApplyError }}
+      </p>
+
+      <div class="mt-4 flex flex-wrap items-center gap-2">
+        <el-button size="small" :disabled="pickerDisabled" @click="openKbDialog">
+          选择知识库
+        </el-button>
+        <span class="text-xs text-muted">{{ selectedKbSummary(store.selectedCount) }}</span>
       </div>
 
       <div class="mt-5 border-t border-line pt-5">
@@ -873,15 +776,12 @@ async function sendRating(): Promise<void> {
             <el-tooltip
               v-for="option in CAPABILITY_OPTIONS"
               :key="option.key"
-              :content="capabilityAllowed(option) ? option.hint : '这把 Key 没开这个能力'"
+              :content="option.hint"
               placement="top"
               :show-after="200"
             >
               <span class="inline-flex">
-                <el-radio-button
-                  :value="option.key"
-                  :disabled="policy !== null && !capabilityAllowed(option)"
-                >
+                <el-radio-button :value="option.key">
                   {{ option.label }}
                 </el-radio-button>
               </span>
@@ -899,17 +799,11 @@ async function sendRating(): Promise<void> {
               placeholder="要检索的问题（可多行）· 例如：退款申请提交后，一般几天能到账？"
             />
           </el-form-item>
-          <!--
-            动作行右对齐：左端是「为什么现在点不了」，右端是这一卡的两个出口。
-            「修改配置」在「检索」左边——改配置是为检索服务的准备动作，主按钮永远在最右。
-          -->
+          <!-- 动作行右对齐：左端是「为什么现在点不了」，右端是这一卡唯一的动作。 -->
           <div class="flex flex-wrap items-center justify-end gap-2">
             <span v-if="blockReason !== ''" class="mr-auto text-xs text-muted">
               {{ blockReason }}
             </span>
-            <el-button :disabled="keys.length === 0" @click="configDialogOpen = true">
-              修改配置
-            </el-button>
             <el-button
               type="primary"
               native-type="submit"
@@ -924,162 +818,74 @@ async function sendRating(): Promise<void> {
     </el-card>
 
     <!--
-      「修改配置」弹窗：这张卡的所有「设置」都在这儿——选 Key、读它的密钥配置、勾要查的库。
-      改动立即生效（change 即同步 store），所以底部只有「关闭」：这里没有「保存」这回事，
-      多一个确认按钮反而让人以为刚才的选择还没落地。
+      「选择知识库」弹窗：只放勾选。底部是「取消 / 确定」——勾选改的是草稿，
+      确定才落到主面板上的选择；取消 = 什么也没发生。
     -->
     <el-dialog
       v-model="configDialogOpen"
       append-to-body
-      title="修改检索配置"
+      title="选择知识库"
       width="880px"
     >
-      <div class="space-y-5 text-sm">
-        <!-- ① Key：由用户自己粘（库里只存哈希，列表接口没有原文） -->
-        <div>
-          <label class="mb-1.5 block text-xs text-muted">当前 Key</label>
-          <p v-if="keysPending" class="text-xs text-muted">正在读取 Key 列表…</p>
-          <p v-else-if="keys.length === 0" class="text-xs text-[#7a5b00]">
-            还没有任何 API Key：先去
-            <RouterLink to="/keys" class="text-brand underline">Key 管理页</RouterLink>
-            签发一把——签发成功的那一次窗口里会把它显示出来，复制下来再到这儿粘贴。
-          </p>
-          <div v-else class="flex flex-wrap items-center gap-2">
-            <el-button @click="openPasteDialog">
-              {{ selectedKey === null ? '粘贴 API Key' : '换一把 Key' }}
-            </el-button>
-            <span v-if="selectedKey !== null" class="text-xs text-muted">
-              当前：
-              <code class="font-mono">{{ selectedKey.label ?? '（未命名）' }}</code>
-              ·
-              <code class="font-mono">{{ selectedKey.key_masked }}</code>
-            </span>
-            <span v-else class="text-xs text-muted">还没粘：把签发时那一整条复制过来</span>
-          </div>
+      <div class="space-y-4 text-sm">
+        <div class="flex flex-wrap items-baseline justify-between gap-2">
+          <span class="text-xs font-medium text-ink">要查的知识库</span>
+          <span class="text-xs text-muted">
+            已选 {{ dialogSelection.length }} / 共 {{ kbs.length }}
+          </span>
         </div>
+        <p v-if="!keyApplied" class="text-xs text-muted">先在上面粘贴并应用一把 Key</p>
+        <p v-else-if="treePending" class="text-xs text-muted">
+          正在问服务端：这把 Key 能查哪些库…
+        </p>
+        <div
+          v-else-if="keyApplyError !== ''"
+          class="rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
+        >
+          {{ keyApplyError }}
+        </div>
+        <div
+          v-else-if="kbs.length === 0"
+          class="rounded-control border border-line bg-surface-muted px-3 py-2 text-xs text-slate-600"
+        >
+          这把 Key 目前查不到任何库。
+          <RouterLink to="/keys" class="text-brand underline">去 Key 管理页调整</RouterLink>
+        </div>
+        <el-checkbox-group
+          v-else
+          class="grid gap-2 sm:grid-cols-2"
+          :model-value="dialogSelection"
+          @update:model-value="onSelectionChange"
+        >
+          <template v-for="kb in kbs" :key="kb.kb_id">
+            <!-- 可点的小卡而不是裸复选框：有边框才读得出「这是一个可以点的对象」。 -->
+            <el-checkbox
+              :value="kb.kb_id"
+              class="kb-option !mr-0"
+              :class="{ 'kb-option--on': dialogSelection.includes(kb.kb_id) }"
+            >
+              <span class="flex flex-col leading-tight">
+                <span class="text-[13px] text-ink">{{ kb.name }}</span>
+                <span class="mt-0.5 font-mono text-xs text-slate-400">{{ kb.kb_id }}</span>
+              </span>
+            </el-checkbox>
+          </template>
+        </el-checkbox-group>
 
         <div
-          v-if="policy === null && selectedKey !== null"
+          v-if="treeLoaded && unpickableSelected.length > 0"
           class="rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
         >
-          这把 Key 没有绑定的密钥配置。去
-          <RouterLink
-            :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
-            class="text-brand underline"
-          >
-            Key 管理页
-          </RouterLink>
-          重新签发一把，或选中另一把。
-        </div>
-
-        <div v-else-if="policy !== null">
-          <p class="mb-1.5 text-xs text-muted">这把 Key 的密钥配置（只读）</p>
-          <dl
-            class="grid gap-x-6 gap-y-2 rounded-control bg-surface-muted px-3 py-2.5 text-xs sm:grid-cols-2"
-          >
-            <div v-for="row in policyRows" :key="row.label" class="flex flex-col gap-0.5">
-              <dt class="text-muted">{{ row.label }}</dt>
-              <dd class="break-all font-mono text-slate-700">{{ row.value }}</dd>
-            </div>
-          </dl>
-        </div>
-
-        <!-- ② 要查的知识库 -->
-        <div class="border-t border-line pt-4">
-          <div class="flex flex-wrap items-baseline justify-between gap-2">
-            <span class="text-xs font-medium text-ink">要查的知识库</span>
-            <span class="text-xs text-muted">
-              已选 {{ store.selectedCount }} / 共 {{ kbs.length }}
-            </span>
-          </div>
-          <p v-if="store.selectedKeyId === null" class="mt-2.5 text-xs text-muted">
-            先粘一把 Key
-          </p>
-          <p v-else-if="treePending" class="mt-2.5 text-xs text-muted">
-            正在问服务端：这把 Key 能查哪些库…
-          </p>
-          <div
-            v-else-if="treeError !== ''"
-            class="mt-2.5 rounded-control border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700"
-          >
-            {{ treeError }}
-          </div>
-          <div
-            v-else-if="kbs.length === 0"
-            class="mt-2.5 rounded-control border border-line bg-surface-muted px-3 py-2 text-xs text-slate-600"
-          >
-            这把 Key 目前查不到任何库。
-            <RouterLink to="/keys" class="text-brand underline">去改 Key 配置</RouterLink>
-          </div>
-          <el-checkbox-group
-            v-else
-            class="mt-2.5 grid gap-2 sm:grid-cols-2"
-            :model-value="store.selectedKbIds"
-            @update:model-value="onSelectionChange"
-          >
-            <template v-for="kb in kbs" :key="kb.kb_id">
-              <!-- 可点的小卡而不是裸复选框：有边框才读得出「这是一个可以点的对象」。 -->
-              <el-checkbox
-                :value="kb.kb_id"
-                class="kb-option !mr-0"
-                :class="{ 'kb-option--on': store.selectedKbIds.includes(kb.kb_id) }"
-              >
-                <span class="flex flex-col leading-tight">
-                  <span class="text-[13px] text-ink">{{ kb.name }}</span>
-                  <span class="mt-0.5 font-mono text-xs text-slate-400">{{ kb.kb_id }}</span>
-                </span>
-              </el-checkbox>
-            </template>
-          </el-checkbox-group>
-
-          <div
-            v-if="treeLoaded && unpickableSelected.length > 0"
-            class="mt-3 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs leading-relaxed text-[#7a5b00]"
-          >
-            <p>这些已选库不在当前 Key 的白名单里，带它们检索大概率会失败：</p>
-            <p class="mt-1 text-slate-700">{{ unpickableSelected.join('、') }}</p>
-            <el-button class="mt-2" size="small" @click="dropUnpickable">移除这些选择</el-button>
-          </div>
+          <p>这些已选库不在这把 Key 的可用范围内，带它们检索大概率会失败：</p>
+          <p class="mt-1 text-slate-700">{{ unpickableSelected.join('、') }}</p>
+          <el-button class="mt-2" size="small" @click="dropUnpickable">移除这些选择</el-button>
         </div>
       </div>
 
       <template #footer>
-        <RouterLink
-          v-if="selectedKey !== null"
-          :to="{ path: '/keys', query: { key_id: selectedKey.key_id } }"
-          class="mr-auto text-xs text-brand underline underline-offset-2"
-        >
-          去 Key 管理页改配置 →
-        </RouterLink>
-        <el-button @click="configDialogOpen = false">关闭</el-button>
-      </template>
-    </el-dialog>
-
-    <!-- 粘贴 Key：原文只停在这个输入框与文件内的内存里，不写 storage、不进 URL -->
-    <el-dialog v-model="pasteDialogOpen" append-to-body title="粘贴 API Key" width="620px">
-      <p class="mb-2 text-sm text-ink">
-        完整 Key 只在签发时显示一次（列表里只有
-        <code class="font-mono">rc_live_…4f3a2</code>）。把那一整条
-        <code class="font-mono">rc_live_&lt;key_id&gt;.&lt;32 位密钥&gt;</code> 粘进来，
-        这一页才能拿它去调数据面。
-      </p>
-      <el-input
-        v-model="pastedKey"
-        type="password"
-        show-password
-        autocomplete="off"
-        spellcheck="false"
-        placeholder="rc_live_…"
-        class="font-mono"
-        @keyup.enter="submitPastedKey"
-      />
-      <p class="mt-2 text-xs text-muted">
-        只留在内存：刷新页面就要重新粘一次。别把它写进任何文档或聊天记录。
-      </p>
-      <template #footer>
         <div class="flex justify-end gap-2">
-          <el-button @click="pasteDialogOpen = false">取消</el-button>
-          <el-button type="primary" @click="submitPastedKey">用它发起检索</el-button>
+          <el-button @click="configDialogOpen = false">取消</el-button>
+          <el-button type="primary" @click="confirmKbDialog">确定</el-button>
         </div>
       </template>
     </el-dialog>
@@ -1460,7 +1266,7 @@ async function sendRating(): Promise<void> {
       <template #actions>
         <span class="chip">只读 {{ trialableCount }} 条可试</span>
       </template>
-      <DataPlanePanel :kb-id="firstSelectedKbId" :has-key="store.selectedKeyId !== null" />
+      <DataPlanePanel :kb-id="firstSelectedKbId" :has-key="keyApplied" />
     </CollapsibleCard>
 
 

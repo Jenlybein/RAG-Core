@@ -12,6 +12,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from app.core.exceptions import ErrorCode
 from tests.support.policy import policy_row
 
@@ -745,3 +747,96 @@ def test_the_parameters_are_patched_one_at_a_time_without_touching_the_others(
     assert row.retrieval_mode == "bm25"
     assert row.retrieval_top_k == 9
     assert row.retrieval_rerank == before.retrieval_rerank
+
+
+# ───────────────────────────────────── 重新生成（#227 现场五）：端到端一次
+
+REGENERATE_PATH = "/console/keys/{key_id}/regenerate"
+REVOKE_PREVIOUS_PATH = "/console/keys/{key_id}/revoke-previous"
+
+
+def test_regenerating_rotates_the_secret_but_keeps_the_key_and_its_policy(
+    console: _Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """重新生成：身份与配置不动，只有凭证换；旧的一串先能过、作废后立刻不能过。
+
+    这条端到端用例把四件事拴在一起——**换的是凭证不是身份**（``key_id`` / ``policy_id``
+    不变）、**旧串在过渡期内还能用**、**作废后立刻拒绝且文案是专用的**、**列表里能看出
+    过渡密钥的存在与截止时刻**。少任何一条，界面里那句「过渡 Key 仍可用至几点」就没有
+    可核对的依据。
+    """
+
+    monkeypatch.setattr(settings, "AUTH_ENABLED", True)
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+    issued = console.data(_issue(console))
+    key_id = issued["key_id"]
+    old_plaintext = issued["key_plaintext"]
+
+    regenerated = console.data(
+        console.client.post(REGENERATE_PATH.format(key_id=key_id), headers=WRITE_HEADERS)
+    )
+    new_plaintext = regenerated["key_plaintext"]
+
+    # 身份与配置不动，凭证换了。
+    assert regenerated["key_id"] == key_id
+    assert regenerated["policy"] is not None
+    assert new_plaintext != old_plaintext
+    assert regenerated["prev_key_masked"] == f"rc_live_…{old_plaintext[-5:]}"
+    assert regenerated["prev_key_expires_at"] is not None
+    assert regenerated["rotated_at"] is not None
+    #: 作废前那一刻算出来的窗口截止（下面用它证明「作废 = 把窗口关到过去」）。
+    window_end = _parse(regenerated["prev_key_expires_at"])
+    assert new_plaintext not in console.client.get("/console/keys").text
+
+    # 过渡期内：新旧两串都能过鉴权。这是「线上业务来得及换配置」的全部机器侧。
+    for plaintext in (old_plaintext, new_plaintext):
+        response = console.client.get(ME_PATH, headers={"Authorization": f"Bearer {plaintext}"})
+        assert response.json()["code"] == 0, response.json()
+
+    # 提前作废是幂等的：第一次真的作废，第二次回 false 而不是错误。
+    revoked = console.data(
+        console.client.post(REVOKE_PREVIOUS_PATH.format(key_id=key_id), headers=WRITE_HEADERS)
+    )
+    assert revoked == {"key_id": key_id, "revoked": True}
+    again = console.data(
+        console.client.post(REVOKE_PREVIOUS_PATH.format(key_id=key_id), headers=WRITE_HEADERS)
+    )
+    assert again["revoked"] is False
+
+    # 作废之后旧串立刻不能用了，且**必须**是那句专用文案——不是「Key 不存在」。
+    rejected = console.client.get(ME_PATH, headers={"Authorization": f"Bearer {old_plaintext}"})
+    assert rejected.json()["code"] == int(ErrorCode.UNAUTHORIZED)
+    assert "已重新生成" in rejected.json()["msg"]
+
+    # 新串不受影响。
+    still_ok = console.client.get(ME_PATH, headers={"Authorization": f"Bearer {new_plaintext}"})
+    assert still_ok.json()["code"] == 0
+
+    # 列表里能看出「过渡期已经结束」：判据是**截止时刻已过去**，而不是「过渡列被清空」。
+    #
+    # 这个判据同时覆盖「自然到期」与「人为作废」两种结束方式——界面上只需要
+    # `prev_key_expires_at > 现在` 一个条件，不必再区分是哪一个把窗口关掉的。
+    listed = console.data(console.client.get("/console/keys"))["keys"]
+    row = next(item for item in listed if item["key_id"] == key_id)
+    assert row["prev_key_expires_at"] is not None
+    # 「比作废前更早」= 作废只是把窗口提前关掉；与机器时区无关（本机 +08 而容器是 UTC，
+    # 拿 `datetime.now(UTC)` 直接比会比出一个假失败）。
+    assert _parse(row["prev_key_expires_at"]) < window_end
+    assert row["rotated_at"] is not None
+
+
+def _parse(value: str) -> datetime:
+    """列表里的 ISO 时刻 → 带时区的 datetime（后端一律贴 UTC 标签）。"""
+
+    return datetime.fromisoformat(value)
+
+
+def test_regenerating_someone_elses_key_is_not_found(console: _Harness) -> None:
+    """跨租户按「不存在」：20016，而不是 20011 或 500。"""
+
+    assert console.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = console.client.post(REGENERATE_PATH.format(key_id=KEY_BETA), headers=WRITE_HEADERS)
+
+    assert console.code(response) == int(ErrorCode.NOT_FOUND)

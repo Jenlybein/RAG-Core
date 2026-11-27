@@ -33,7 +33,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Final, Mapping, Protocol
+
+import structlog
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,12 +45,15 @@ from app.core.exceptions import AppError, ErrorCode
 from app.core.key_verify_cache import KeyVerifyCache, get_default_key_verify_cache
 from app.core.plan_cache import PlanCache
 from app.core.passwords import verify_password
+from app.db.base import now as now_of
 from app.models.key_policy import KeyPolicySnapshot, policy_snapshot_of
 from app.models.plan import PLAN_PRO, PLAN_PRESETS, PlanSpec
 from app.providers.rerank import rerank_capability
 from app.repositories import api_key_repository, key_policy_repository, tenant_repository
 from app.services.plan_service import resolve_plan
 from app.utils.id_generator import split_api_key_value
+
+logger = structlog.get_logger(__name__)
 
 
 class HttpRequestLike(Protocol):
@@ -149,6 +155,15 @@ MSG_KEY_MALFORMED = (
 )
 MSG_UNKNOWN_KEY = "这把 API Key 不存在：去 Key 管理页确认它是否已被删除，或重新签发一把"
 MSG_KEY_DISABLED = "这把 API Key 已被停用：去 Key 管理页把它启用，或换一把"
+#: 这把 Key 的**密钥本体**被重新生成过，而请求里带的是过期/被作废的那一份。
+#:
+#: 与 ``MSG_UNKNOWN_KEY`` 刻意分开：运维拿着旧 Key 突然收 401 时，「Key 不存在」会让人去
+#: 查一条其实好好活着的记录，而这句话直接指出「凭证换了」。它只在**密钥确实匹配过旧哈希**
+#: 时才出现——对不匹配的串仍然回「不存在」，不泄露任何内部状态。
+MSG_KEY_ROTATED = (
+    "这把 Key 的密钥已重新生成，请使用新 Key："
+    "在 Key 管理页拿到当前 Key 后把业务里的那一份换掉"
+)
 MSG_TENANT_DISABLED = "这把 Key 所属的租户已被停用：联系管理员恢复租户后再用"
 #: 开发身份模式下收到了一把**真实 Key**。它与「Key 不存在」是两件事，必须分开说。
 #:
@@ -236,7 +251,15 @@ async def _identity_from_key(
         raise AppError(ErrorCode.UNAUTHORIZED, MSG_UNKNOWN_KEY)
 
     await _ensure_secret_matches(
-        token, secret, key_id=key_id, key_hash=key.key_hash, verify_cache=verify_cache
+        token,
+        secret,
+        key_id=key_id,
+        key_hash=key.key_hash,
+        # 过渡密钥（重新生成后 24 小时内的旧密钥本体）：窗口内接受，过期给专用文案。
+        # 三列一起传，是因为判据是「哈希匹配 + 截止时刻」两件事，缺一不可。
+        prev_key_hash=key.prev_key_hash,
+        prev_key_expires_at=key.prev_key_expires_at,
+        verify_cache=verify_cache,
     )
 
     if key.status != "active":
@@ -272,7 +295,10 @@ async def _ensure_secret_matches(
     *,
     key_id: str,
     key_hash: str,
-    verify_cache: KeyVerifyCache | None,
+    prev_key_hash: str | None = None,
+    prev_key_expires_at: datetime | None = None,
+    now: datetime | None = None,
+    verify_cache: KeyVerifyCache | None = None,
 ) -> None:
     """密钥本体过 scrypt 校验，同一个 token 在缓存窗口内只算一次。
 
@@ -287,9 +313,34 @@ async def _ensure_secret_matches(
     cache = verify_cache if verify_cache is not None else get_default_key_verify_cache()
     if await cache.key_id_of(token) == key_id:
         return
-    if not verify_password(secret, key_hash):
-        raise AppError(ErrorCode.UNAUTHORIZED, MSG_UNKNOWN_KEY)
-    await cache.remember(token, key_id)
+    if verify_password(secret, key_hash):
+        await cache.remember(token, key_id)
+        return
+
+    # 当前密钥不匹配：再看它是不是那把**过渡密钥**（重新生成后 24 小时内的旧密钥本体）。
+    #
+    # 为什么过期了还要先比对一次：只有确认「这串确实是那把旧密钥」，才能回
+    # :data:`MSG_KEY_ROTATED` 而不是「不存在」——后者会让拿着旧 Key 的运维去核对一把
+    # 其实完全正常的 Key。代价是过期路径多烧一次 scrypt，而它只出现在换 Key 之后的
+    # 旧业务上（正常路径一次都不多）。
+    if prev_key_hash is not None and verify_password(secret, prev_key_hash):
+        when = now if now is not None else now_of()
+        if prev_key_expires_at is None or when <= prev_key_expires_at:
+            logger.warning(
+                "api key accepted via previous secret",
+                key_id=key_id,
+                prev_key_expires_at=prev_key_expires_at.isoformat()
+                if prev_key_expires_at is not None
+                else None,
+            )
+            # **不缓存**：这条支路走的是「即将作废的凭证」，缓存会把它变成一把 60 秒有效
+            # 的钱包——用户点了「作废旧 Key」之后，旧串还能靠缓存再活一个 TTL，而
+            # :mod:`app.core.key_verify_cache` 的承诺恰恰是「撤销一律立即生效」。
+            # 代价只是过渡期内旧串每请求多烧一次 scrypt：那本来就是一段要被赶快的状态。
+            return
+        raise AppError(ErrorCode.UNAUTHORIZED, MSG_KEY_ROTATED)
+
+    raise AppError(ErrorCode.UNAUTHORIZED, MSG_UNKNOWN_KEY)
 
 
 def _bearer_token(request: HttpRequestLike) -> str | None:

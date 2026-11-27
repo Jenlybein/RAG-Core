@@ -111,8 +111,9 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     # 「文档 → 稿号」映射列（``add_trace_doc_versions``）再接在版本表之后。
     # 按仓库惯例，加最后一条迁移的人改这一行：第 16 步 #207 之后依次是 #214 的构建收敛四列、
     # #217 的排队中状态、#218 删并发名额、#215 的构建失败明细、#220 的单库 token 容量，
-    # #222 的每日切块账、#215 的构建自动激活、#225 的重投计数与心跳——当前链尾。
-    assert heads == [_revision_of(_migration_path("add_document_index_heartbeat"))], (
+    # #222 的每日切块账、#215 的构建自动激活、#225 的重投计数与心跳、第 17 步 #227 现场五的
+    # 过渡密钥四列——当前链尾。
+    assert heads == [_revision_of(_migration_path("add_api_key_previous_secret"))], (
         f"链尾应当是「构建收敛四列」那条迁移，实际 {heads}"
     )
 

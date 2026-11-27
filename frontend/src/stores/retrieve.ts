@@ -11,8 +11,9 @@ import { setActiveKey } from '../lib/activeKey'
  *
  * **Key 是用户自己粘进来的**（库里只存 scrypt 哈希，列表接口拿不到原文）：
  *
- * - 原文**只进内存**（本 store 不存它，只有 `lib/activeKey` 的模块变量），不落
- *   `localStorage` / `sessionStorage`，也不进 URL。刷新页面即失效——这是有意的；
+ * - 原文**不进本 store**，只由 :func:`selectKey` 一次性写入 `lib/activeKey` 的模块变量
+ *   （请求层认的那一把）；调试台另有一份 `sessionStorage`（`lib/apiKeySession`）用于
+ *   页面挂载时的预填，不进 URL、不写 `localStorage`；
  * - 原文与 id 由 :func:`selectKey` **一次性**写入 `lib/activeKey`：请求层认的 Key
  *   与页面显示的 Key 因此只有一条同步路径，不会出现「页面换了、请求还带旧 Key」；
  * - 选中一把 Key 同时确定了 `allowedKbIds`，而**换 Key 必须把不在新白名单里的已勾库
@@ -26,7 +27,14 @@ import { setActiveKey } from '../lib/activeKey'
  * 真实问题——页面重新读一次可见库清单才更可信。
  */
 export interface SelectKeyInput {
-  keyId: string
+  /**
+   * 这串原文解出的行身份证；解不出来时是 `null`。
+   *
+   * 调试台现在**不再拉 Key 列表**（它一进来就是「粘贴 / 应用」），所以「这把 Key 是哪一行」
+   * 只有从原文里解一条路。解不出来不等于不能用：格式不对的串由服务端自己拒绝，
+   * 前端在这里编一个 id 只会让「这个 id 对应的配置」看起来存在而实际不存在。
+   */
+  keyId: string | null
   /** Key 原文（用户粘进来的那一串）。 */
   keyValue: string
   /** 这把 Key 的配置白名单；配置缺失时传空列表。 */

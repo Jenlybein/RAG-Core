@@ -11,7 +11,14 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../lib/consoleHttp', () => ({ consoleHttp: mocks }))
 
 import type { IssuedKeyData, KeyData, KeyPolicyInput } from '../../types/key'
-import { createKey, deleteKey, fetchKeys, patchPolicy } from '../keyService'
+import {
+  createKey,
+  deleteKey,
+  fetchKeys,
+  patchPolicy,
+  regenerateKey,
+  revokePreviousKey,
+} from '../keyService'
 
 beforeEach(() => {
   mocks.get.mockReset()
@@ -25,6 +32,9 @@ const KEY_ROW: KeyData = {
   label: '集成 A',
   key_masked: 'rc_live_…4f3a2',
   status: 'active',
+  prev_key_masked: null,
+  prev_key_expires_at: null,
+  rotated_at: null,
   policy: {
     policy_id: 'policy_1',
     name: '集成 A',
@@ -142,5 +152,36 @@ describe('patchPolicy', () => {
     await patchPolicy('policy_1', { retrieval_top_k: 8 })
 
     expect(mocks.patch.mock.calls[0][1]).toEqual({ retrieval_top_k: 8 })
+  })
+})
+
+describe('regenerateKey', () => {
+  it('POST /console/keys/{key_id}/regenerate，不发明请求体，回执原样返回', async () => {
+    mocks.post.mockResolvedValue({
+      ...ISSUED_KEY,
+      prev_key_masked: 'rc_live_…00000',
+      prev_key_expires_at: '2026-11-27T12:00:00+08:00',
+      rotated_at: '2026-11-26T12:00:00+08:00',
+    })
+
+    const regenerated = await regenerateKey('key_1')
+
+    expect(mocks.post).toHaveBeenCalledTimes(1)
+    // 路径写死：轮换与「签发一把新的」是两个端点，混用会把「多加一把」做成「换凭证」。
+    expect(mocks.post.mock.calls[0][0]).toBe('/console/keys/key_1/regenerate')
+    expect(mocks.post.mock.calls[0][1]).toBeUndefined()
+    // 回执里三个过渡字段照原样透出：界面靠它们判断窗口还在不在。
+    expect(regenerated.prev_key_expires_at).toBe('2026-11-27T12:00:00+08:00')
+    expect(regenerated.rotated_at).toBe('2026-11-26T12:00:00+08:00')
+    expect(regenerated.key_plaintext).toBe(ISSUED_KEY.key_plaintext)
+  })
+})
+
+describe('revokePreviousKey', () => {
+  it('POST /console/keys/{key_id}/revoke-previous，revoked=false 也照常返回（幂等）', async () => {
+    mocks.post.mockResolvedValue({ key_id: 'key_1', revoked: false })
+
+    await expect(revokePreviousKey('key_1')).resolves.toEqual({ key_id: 'key_1', revoked: false })
+    expect(mocks.post.mock.calls[0][0]).toBe('/console/keys/key_1/revoke-previous')
   })
 })

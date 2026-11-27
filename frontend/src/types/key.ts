@@ -135,6 +135,23 @@ export interface KeyData {
   status: string
   /** 配置缺失（或指向别的租户的坏数据）时如实为 `null`，不是编一套默认值。 */
   policy: KeyPolicyData | null
+  /**
+   * 过渡密钥（重新生成后 24 小时内仍可用的旧密钥本体）的打码形态。
+   *
+   * 没轮换过是 `null`；**轮换过就一直在**——哪怕窗口自然到期、或被提前作废之后，
+   * 后端仍保留这一列（显示旧址末 5 位、审计也靠它）。所以它只回答「轮换过没有」，
+   * 「现在还能不能用」必须看 `prev_key_expires_at > now`。
+   */
+  prev_key_masked: string | null
+  /**
+   * 过渡窗口的截止时刻（带时区 ISO 串）；`null` = 从没轮换过。
+   *
+   * 提前作废实现成「把截止时刻改到过去」，因此这个值仍然存在、只是已经小于现在——
+   * 界面上「过渡期还在不在」的唯一判据就是它，而不是 `prev_key_masked`。
+   */
+  prev_key_expires_at: string | null
+  /** 最近一次重新生成的时刻；`null` = 从没轮换过。 */
+  rotated_at: string | null
 }
 
 /**
@@ -172,6 +189,17 @@ export interface KeyPolicyPatchResult {
 export interface KeyDeleteReceipt {
   key_id: string
   deleted: boolean
+}
+
+/**
+ * 作废过渡密钥的回执。
+ *
+ * `revoked=false` 是**幂等**答案（已经没有过渡密钥可作废），不是失败：按钮只在窗口期内
+ * 出现，但重试、双击、两个标签页同时点都不该变成一个错误码，界面也就不该弹红字。
+ */
+export interface KeyRevokePreviousReceipt {
+  key_id: string
+  revoked: boolean
 }
 
 /**

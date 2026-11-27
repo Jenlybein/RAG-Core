@@ -1,16 +1,19 @@
 <script setup lang="ts">
 /**
- * `/keys`：本租户的 Key 列表 + 签发 + 编辑密钥配置 + 删除。
+ * `/keys`：本租户的 Key 列表 + 签发 + 获取 Key（重新生成）+ 编辑密钥配置 + 删除。
  *
  * 页面自己只做三件事：什么时候请求（`useQuery` / 直接 await 的写操作）、弹哪个框、
- * 把结果放到哪。请求形状归 `services/keyService.ts`，判定（哪些字段算改动、预设怎么填）
- * 归 `utils/keyPolicy.ts`——组件里不再写第二份。
+ * 把结果放到哪。请求形状归 `services/keyService.ts`，判定（哪些字段算改动、预设怎么填、
+ * 过渡期还剩多久）归 `utils/keyPolicy.ts` / `utils/keyRotation.ts`——组件里不再写第二份。
  *
- * 两条与安全相关的取舍（issue #92，ADR-0004 修订版）：
+ * 三条与安全相关的取舍（issue #92，ADR-0004 修订版）：
  *
- * - **列表里只有打码形态**。库里只存 scrypt 哈希与末 5 位，原文只在**签发那一刻**的
- *   响应里出现过一次（`key_plaintext`），所以页面没有「显示原文」这个动作可做；能做的是
- *   在签发成功后当场把那一串联交给人（复制 / 直接去调试台试一把），弹窗关掉就不再保留；
+ * - **列表里只有打码形态**。库里只存 scrypt 哈希与末 5 位，原文只在**签发 / 重新生成
+ *   那一刻**的响应里出现过一次（`key_plaintext`），所以页面没有「显示原文」这个动作可做；
+ *   能做的是在弹窗里当场把那一串联交给人（复制 / 直接去调试台试一把），关掉就不再保留；
+ * - **重新生成 ≠ 签发**：前者给同一把 Key 换凭证，旧明文进入 24 小时过渡期；后者是新增
+ *   一把，不影响任何旧 Key。两条路径的警示文案因此不能共用——签发路径里提「过渡 Key」
+ *   会让用户以为签发会动到别的 Key；
  * - 管理员的 `tenant_id` 为空，用户面板接口对他一律 20011；路由守卫（#85）已经把他挡在
  *   `/admin/*`，本页不重写这道判定。
  */
@@ -21,10 +24,20 @@ import { useRoute, useRouter } from 'vue-router'
 
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import KeyPolicyEditor from '../components/KeyPolicyEditor.vue'
+import OneTimeKeyDialog from '../components/OneTimeKeyDialog.vue'
 import PageHeader from '../components/PageHeader.vue'
+import { writeRetrieveApiKey } from '../lib/apiKeySession'
 import { ApiError } from '../lib/envelope'
 import { CONSOLE_ME_QUERY_KEY, fetchMe } from '../services/console'
-import { KEYS_QUERY_KEY, createKey, deleteKey, fetchKeys, patchPolicy } from '../services/keyService'
+import {
+  KEYS_QUERY_KEY,
+  createKey,
+  deleteKey,
+  fetchKeys,
+  patchPolicy,
+  regenerateKey,
+  revokePreviousKey,
+} from '../services/keyService'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY, fetchTree } from '../services/knowledgeBaseService'
 import { useRetrieveStore } from '../stores/retrieve'
 import {
@@ -37,6 +50,7 @@ import {
   type PolicyForm,
 } from '../types/key'
 import { buildPolicyPatch, policyFormFrom, toPolicyInput } from '../utils/keyPolicy'
+import { isTransitionActive, prevKeyTooltip } from '../utils/keyRotation'
 import { keyStatusLabel, statusPillStyle } from '../utils/statusPill'
 
 const route = useRoute()
@@ -132,6 +146,31 @@ function keyLabel(row: unknown): string {
   return key.label === null || key.label.trim() === '' ? '（未命名）' : key.label
 }
 
+/**
+ * 这一行此刻还有过渡窗口吗。
+ *
+ * 判据是 `prev_key_expires_at > now`，**不是** `prev_key_masked !== null`：提前作废实现成
+ * 「把截止时刻改到过去」，旧址的打码形态会保留（还要继续显示末 5 位、继续给审计用）。
+ * 只看打码形态会让图标与「作废旧 Key」在窗口结束后继续挂着，点下去只剩一句
+ * 「已经没有可作废的过渡 Key」。
+ *
+ * `now` 在渲染时取：tooltip 的内容必须跟着「此刻」走，而这一行的截止时刻是后端在轮换
+ * 那一刻写死的。
+ */
+function transitionActive(row: KeyData): boolean {
+  return isTransitionActive(row.prev_key_expires_at, Date.now())
+}
+
+/**
+ * 状态徽标旁 `ⓘ` 的 tooltip。
+ *
+ * 只在窗口内调用（模板里有同一个 `transitionActive` 守着，图标与文案因此不会各自出现）。
+ */
+function prevKeyTooltipOf(row: KeyData): string {
+  if (row.prev_key_masked === null) return ''
+  return prevKeyTooltip(row.prev_key_masked, row.prev_key_expires_at, Date.now())
+}
+
 // —— 签发 / 编辑对话框 ——
 
 /** `null` 表示「签发一把新的」，否则是在编辑这一把 Key 的配置。 */
@@ -211,22 +250,20 @@ const canSave = computed(() => {
 
 async function save(): Promise<void> {
   if (!canSave.value) return
+  const target = editingKey.value
+  if (target === null) {
+    // 签发是不可撤销的一步，而且明文只显示一次：先把这句话摆在用户面前，确认之后才真正
+    // 发请求。警示放在请求之后，就等于把承诺写成事后通知。
+    //
+    // 为什么挂在「签发」这个提交动作上、而不是页面顶部的「签发新 Key」按钮上：那个按钮
+    // 先打开的是**配置表单**，请求根本还没发。若在按钮上弹警示，用户确认完还要再填一遍
+    // 表单，那份「我知道」就成了一次路标而不是承诺；而这里弹出的正是真正的最后一步，
+    // 确认后立刻走请求、成功后同一弹窗切到展示态。表单内容此时已经就绪，不会丢。
+    openKeyDialog('issue', null)
+    return
+  }
   saving.value = true
   try {
-    const target = editingKey.value
-    if (target === null) {
-      const created = await createKey({
-        label: issueLabel.value,
-        policy: toPolicyInput(form.value),
-      })
-      // 失效后**等**刷新完成再关框：本票验收里的「保存后立刻回显」就是这个等待。
-      await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
-      // 原文只在这一个响应里存在过一次：先把它交给弹窗，关框即丢弃。
-      issuedKey.value = created
-      closeEditor()
-      return
-    }
-
     if (target.policy === null) return
     const patch = buildPolicyPatch(form.value, target.policy)
     if (Object.keys(patch).length === 0) {
@@ -251,6 +288,145 @@ async function save(): Promise<void> {
   } finally {
     saving.value = false
   }
+}
+
+// —— 「获取 Key」：警示态 →（确认请求）→ 展示态 ——
+
+type KeyDialogMode = 'regenerate' | 'issue'
+
+const keyDialogOpen = ref(false)
+const keyDialogMode = ref<KeyDialogMode>('regenerate')
+/** 重新生成的目标行；签发路径为 `null`（新 Key 的 id 要等响应回来才知道）。 */
+const keyDialogTarget = ref<KeyData | null>(null)
+/**
+ * 响应里那串**唯一**的明文。
+ *
+ * 它是原文在本页唯一的副本：库里没有、列表接口也不会再给。关掉弹窗即置空——不写
+ * storage、不进 URL、不留在别的 ref；想再用只能重新生成或重签一把。
+ */
+const keyDialogResult = ref<IssuedKeyData | null>(null)
+const keyDialogLoading = ref(false)
+
+function openKeyDialog(mode: KeyDialogMode, target: KeyData | null): void {
+  keyDialogMode.value = mode
+  keyDialogTarget.value = target
+  keyDialogResult.value = null
+  keyDialogOpen.value = true
+}
+
+/** 行内的「获取 Key」：重新生成当前这把（key_id / 配置 / 白名单都不变）。 */
+function openGetKey(row: unknown): void {
+  if (!isKeyRow(row)) return
+  openKeyDialog('regenerate', row)
+}
+
+function closeKeyDialog(): void {
+  keyDialogOpen.value = false
+  keyDialogTarget.value = null
+  keyDialogResult.value = null
+}
+
+/**
+ * 警示态点了确认：这时才发请求。
+ *
+ * 两种模式共用同一个弹窗与同一段「关掉就看不到」的流程；区别只在调哪个接口、以及成功后
+ * 列表里该出现什么（签发多一行，重新生成是同一行换了凭证并出现过渡 Key）。
+ */
+async function confirmKeyDialog(): Promise<void> {
+  if (keyDialogLoading.value) return
+  keyDialogLoading.value = true
+  try {
+    if (keyDialogMode.value === 'issue') {
+      const created = await createKey({
+        label: issueLabel.value,
+        policy: toPolicyInput(form.value),
+      })
+      // 失效后**等**刷新完成再切展示态：列表先跟上，用户关掉弹窗时看到的已经是新状态。
+      await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
+      closeEditor()
+      keyDialogResult.value = created
+      return
+    }
+
+    const target = keyDialogTarget.value
+    if (target === null) return
+    const regenerated = await regenerateKey(target.key_id)
+    await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
+    keyDialogResult.value = regenerated
+  } catch (error) {
+    // 失败时留在警示态：请求没成，没有任何不可挽回的事发生，用户关掉重试即可。
+    ElMessage.error({
+      message: errorText(error),
+      duration: 8000,
+      showClose: true,
+    })
+  } finally {
+    keyDialogLoading.value = false
+  }
+}
+
+// —— 提前作废过渡 Key ——
+
+const pendingRevoke = ref<KeyData | null>(null)
+const revokeOpen = ref(false)
+const revoking = ref(false)
+
+const revokeMessage = computed(() => {
+  const key = pendingRevoke.value
+  if (key === null || key.prev_key_masked === null) return ''
+  // 后果说在前面：仍在使用旧 Key 的业务会立即失败，而且作废不能撤销——这句话必须在点
+  // 「作废」之前被读到，而不是在失败之后才出现在错误提示里。
+  return `确认让过渡 Key ${key.prev_key_masked} 立刻失效？仍在使用旧 Key 的业务会立即失败，且无法撤销。`
+})
+
+function askRevoke(row: unknown): void {
+  if (!isKeyRow(row) || row.prev_key_masked === null) return
+  // 入口只在窗口内出现（模板里有 `transitionActive` 守着）；这里再挡一次，是为了不依赖
+  // 「模板的条件恰好和这里一致」。窗口已关时作废没有任何可作废的东西。
+  if (!transitionActive(row)) return
+  pendingRevoke.value = row
+  revokeOpen.value = true
+}
+
+async function confirmRevoke(): Promise<void> {
+  const key = pendingRevoke.value
+  if (key === null) return
+  revoking.value = true
+  try {
+    const receipt = await revokePreviousKey(key.key_id)
+    await queryClient.invalidateQueries({ queryKey: KEYS_QUERY_KEY })
+    // `revoked=false` 是**幂等答案**而不是错误，且有两种成因：本来就没有过渡密钥，或者
+    // 窗口已经到期 / 已经被作废过。两种对用户都是同一件事——没有可作废的东西了，所以
+    // 一句 info 就够，不该红字，也不该让人以为操作失败。
+    if (receipt.revoked) ElMessage.success('旧 Key 已作废')
+    else ElMessage.info('这把 Key 已经没有可作废的过渡 Key')
+    revokeOpen.value = false
+    pendingRevoke.value = null
+  } catch (error) {
+    ElMessage.error(errorText(error))
+  } finally {
+    revoking.value = false
+  }
+}
+
+/**
+ * 「去调试台试用」：把这串交给检索页的请求层，然后跳过去。
+ *
+ * 除了内存里的 `lib/activeKey`，还要写进调试台读取的 `sessionStorage` 键：刷新调试台
+ * 之后它得还在——否则「签发完顺手去试」这一步会在 F5 之后变回「请粘贴 Key」，
+ * 而用户刚才明明拿到的就是这一串。
+ */
+function goToDebug(): void {
+  const result = keyDialogResult.value
+  if (result === null) return
+  retrieveStore.selectKey({
+    keyId: result.key_id,
+    keyValue: result.key_plaintext,
+    allowedKbIds: result.policy?.allowed_kb_ids ?? [],
+  })
+  writeRetrieveApiKey(result.key_plaintext)
+  closeKeyDialog()
+  void router.push('/retrieve')
 }
 
 // —— 删除 ——
@@ -290,60 +466,6 @@ async function confirmDelete(): Promise<void> {
   } finally {
     deleting.value = false
   }
-}
-
-// —— 签发成功后的「只此一次」 ——
-
-/**
- * 刚签发的那个响应。**它是原文在本页唯一的副本**：库里没有、列表接口也不会再给。
- *
- * 关窗即置空——不写 storage、不进 URL、不留在别的 ref。想再用只能重签一把，所以弹窗里
- * 给的是「复制」和「去调试台试用」两个出口，而不是一句「请妥善保存」。
- */
-const issuedKey = ref<IssuedKeyData | null>(null)
-/** 复制成功/失败的即时反馈（按钮文案换一下，比 toast 更近）。 */
-const copied = ref(false)
-
-const issuedOpen = computed({
-  get: () => issuedKey.value !== null,
-  set: (open: boolean) => {
-    if (!open) closeIssued()
-  },
-})
-
-function closeIssued(): void {
-  issuedKey.value = null
-  copied.value = false
-}
-
-async function copyIssuedKey(): Promise<void> {
-  const key = issuedKey.value
-  if (key === null) return
-  try {
-    await navigator.clipboard.writeText(key.key_plaintext)
-    copied.value = true
-  } catch {
-    // 剪贴板被浏览器拒绝（非 https、缺权限）时不要假装成功：让用户自己从输入框里选。
-    ElMessage.error('复制失败：请手动选中输入框里的内容复制')
-  }
-}
-
-/**
- * 「去调试台试用」：把这串交给检索页的请求层，然后跳过去。
- *
- * 只写进内存（`lib/activeKey`）——调试台那台机器上的 Key 一律由用户自己粘贴，这里是
- * 唯一一次「不用再粘」的例外，因为它就发生在签发之后的同一屏里。
- */
-function goToDebug(): void {
-  const key = issuedKey.value
-  if (key === null) return
-  retrieveStore.selectKey({
-    keyId: key.key_id,
-    keyValue: key.key_plaintext,
-    allowedKbIds: key.policy?.allowed_kb_ids ?? [],
-  })
-  closeIssued()
-  void router.push('/retrieve')
 }
 
 // —— 「去改这把 Key 的配置」深链：`/keys?key_id=...` 直接打开它的编辑器 ——
@@ -421,6 +543,24 @@ watch(
               >
                 {{ keyStatusLabel(row.status) }}
               </span>
+              <!--
+                过渡 Key 的提示只在**过渡窗口还没结束时**出现。判据是 `prev_key_expires_at > now`，
+                不是 `prev_key_masked !== null`：作废实现成「把窗口截止时刻改到过去」，旧址的
+                打码形态会保留（显示末 5 位、给审计用）。窗口关掉之后这里什么都不剩——不写
+                「旧 Key 已失效」这类追认文案：用户要的是「现在还能不能过校验」，不是变更史。
+              -->
+              <el-tooltip
+                v-if="transitionActive(row)"
+                :content="prevKeyTooltipOf(row)"
+                placement="top"
+                :show-after="200"
+              >
+                <span
+                  class="cursor-help text-xs text-muted"
+                  aria-label="过渡 Key 的可用情况"
+                  data-testid="prev-key-hint"
+                >ⓘ</span>
+              </el-tooltip>
             </div>
 
             <!-- 第二层：配置摘要拆成 chips，换行只在块之间发生 -->
@@ -432,6 +572,24 @@ watch(
           </div>
 
           <div class="flex shrink-0 flex-wrap items-center gap-1">
+            <!--
+              「获取 Key」只在行内出现：空状态页继续用「签发新 Key」，那里没有「已有一把
+              可以重新生成」可言。这两个动作用的是同一段警示 → 展示流程（同一个组件）。
+            -->
+            <el-button link type="primary" size="small" @click="openGetKey(row)">获取 Key</el-button>
+            <!--
+              作废入口与过渡期提示同进同退：窗口结束后链接不出现，用户不会看到一个
+              点下去只会回「已经没有可作废的过渡 Key」的按钮。
+            -->
+            <el-button
+              v-if="transitionActive(row)"
+              link
+              type="primary"
+              size="small"
+              @click="askRevoke(row)"
+            >
+              作废旧 Key
+            </el-button>
             <el-button
               link
               type="primary"
@@ -503,38 +661,29 @@ watch(
       @confirm="confirmDelete"
     />
 
+    <!-- 作废过渡 Key 的轻确认：说清「在用旧 Key 的业务会立即失败、且无法撤销」 -->
+    <ConfirmDialog
+      v-model="revokeOpen"
+      title="作废旧 Key"
+      :message="revokeMessage"
+      confirm-text="作废"
+      danger
+      :loading="revoking"
+      @confirm="confirmRevoke"
+    />
+
     <!--
-      签发成功后的一次性弹窗：完整 Key 只在这里出现。关掉之后库里只剩 scrypt 哈希，
-      所以出口给两个——复制走，或者直接去调试台拿它打一次真实接口。
+      「获取 Key」的唯一出口：警示态 → 展示态。签发与重新生成共用这一个组件——
+      两者的共同点（明文只显示这一次、关掉不再保存）必须由同一段流程来兑现。
     -->
-    <el-dialog
-      v-model="issuedOpen"
-      append-to-body
-      title="这把 Key 只显示这一次"
-      width="640px"
-    >
-      <p class="mb-2 text-sm text-ink">
-        服务端只保存它的哈希与末 5 位（列表里显示为
-        <code class="font-mono">{{ issuedKey?.key_masked }}</code>）。关掉这个窗口后就再也
-        取不回来了，丢了只能重新签发一把。
-      </p>
-      <el-input
-        :model-value="issuedKey?.key_plaintext ?? ''"
-        readonly
-        type="textarea"
-        :rows="3"
-        class="font-mono"
-        @focus="($event.target as HTMLTextAreaElement | null)?.select()"
-      />
-      <template #footer>
-        <div class="flex flex-wrap justify-end gap-2">
-          <el-button @click="closeIssued">我已保存</el-button>
-          <el-button type="primary" plain @click="copyIssuedKey">
-            {{ copied ? '已复制' : '复制' }}
-          </el-button>
-          <el-button type="primary" @click="goToDebug">去调试台试用</el-button>
-        </div>
-      </template>
-    </el-dialog>
+    <OneTimeKeyDialog
+      v-model="keyDialogOpen"
+      :mode="keyDialogMode"
+      :plaintext="keyDialogResult?.key_plaintext ?? null"
+      :loading="keyDialogLoading"
+      @cancel="closeKeyDialog"
+      @confirm="confirmKeyDialog"
+      @debug="goToDebug"
+    />
   </section>
 </template>

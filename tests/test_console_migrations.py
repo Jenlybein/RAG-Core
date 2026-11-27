@@ -60,6 +60,8 @@ class _RecordingOp:
     def __init__(self) -> None:
         self.created: list[str] = []
         self.dropped: list[str] = []
+        self.added: list[tuple[str, Any]] = []
+        self.removed: list[tuple[str, str]] = []
         self.tables: dict[str, tuple[Any, ...]] = {}
 
     def f(self, name: str) -> str:
@@ -78,8 +80,16 @@ class _RecordingOp:
     def drop_index(self, index_name: str, table_name: str | None = None, **_kwargs: Any) -> None:
         self.dropped.append(f"index:{table_name}.{index_name}")
 
+    #: 加列 / 删列（纯列迁移：不建表、不回填数据）。
+    def add_column(self, table_name: str, column: Any, **_kwargs: Any) -> None:
+        self.added.append((table_name, column))
+
+    def drop_column(self, table_name: str, column_name: str, **_kwargs: Any) -> None:
+        self.removed.append((table_name, column_name))
+
     def __getattr__(self, name: str) -> Any:
-        raise AssertionError(f"本次迁移不该用到 op.{name}：两条迁移只建表与索引")
+        # ``execute`` 之类仍然直接失败：真有迁移往里塞数据回填，这条测试应当先炸。
+        raise AssertionError(f"本次迁移不该用到 op.{name}：这些迁移只建表、建索引、加减列")
 
 
 def _load_migration(path: Path) -> ModuleType:
@@ -163,9 +173,9 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # 是第 16 步 #207 的单条结果上限与构建参数（``unit_cap_and_build_params``），再接 #214 的
     # 构建失败明细与重投次数（``add_build_failure_detail``）之后是 #220 的单库 token 容量
     # （``add_kb_token_capacity``）、#222 的每日切块账、#215 的构建自动激活列、#225 的
-    # 重投计数与心跳三列
+    # 重投计数与心跳三列、#227 现场五的过渡密钥四列（``add_api_key_previous_secret``）
     # ——当前链尾。
-    assert heads == {_revision_of(_migration_path("add_document_index_heartbeat"))}
+    assert heads == {_revision_of(_migration_path("add_api_key_previous_secret"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:
@@ -231,3 +241,37 @@ def test_new_migrations_never_touch_any_existing_table(slug: str, _table: str) -
     touched = " ".join(recorder.created + recorder.dropped)
     for existing in EXISTING_TABLES:
         assert f":{existing}" not in touched, f"{slug}: 迁移碰到了 {existing}"
+
+
+# ───────────────────────────────── 第 17 步 #227 现场五：过渡密钥四列
+
+#: 重新生成（轮换密钥本体）留下的四列：旧哈希 / 旧末 5 位 / 过渡窗口截止 / 最近轮换时刻。
+PREVIOUS_SECRET_COLUMNS = (
+    "prev_key_hash",
+    "prev_key_tail",
+    "prev_key_expires_at",
+    "rotated_at",
+)
+
+
+def test_the_previous_secret_migration_adds_exactly_the_four_columns() -> None:
+    """过渡密钥这件事只需要四列，且**只在 `api_keys` 上**。
+
+    为什么这条断言值得写：这四列是「一线一票」的典型——多一列（比如
+    `prev_key_revoked_at`）就意味着多一个状态位，而窗口的判据只能是
+    `prev_key_expires_at` 一个时刻；少一列则「旧密钥还在不在用」与「它什么时候过期」
+    会被迫挤进同一格，届时界面里那句「过渡 Key 仍可用至几点」就没数据可算。
+    """
+
+    recorder, module = _record(_migration_path("add_api_key_previous_secret"))
+
+    module.upgrade()
+
+    added = [(table, column.name) for table, column in recorder.added]
+    assert added == [("api_keys", name) for name in PREVIOUS_SECRET_COLUMNS]
+    assert recorder.created == [], "这条迁移只加列，不建表"
+
+    # downgrade 必须把这四列全部删掉——顺序与 upgrade 相反（Postgres 上四列互不相依，
+    # 但「成对加减」这条纪律要一致）。少删一列，回滚会留下一批看起来还能用的旧哈希。
+    module.downgrade()
+    assert recorder.removed == [("api_keys", name) for name in reversed(PREVIOUS_SECRET_COLUMNS)]

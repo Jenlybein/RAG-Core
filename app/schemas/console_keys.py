@@ -22,6 +22,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from datetime import UTC, datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.models.key_policy import KeyPolicy
@@ -76,6 +78,12 @@ class KeyData(BaseModel):
     key_masked: str
     status: str
     policy: KeyPolicyData | None
+    #: 过渡密钥（重新生成后 24 小时内仍可用的旧密钥本体）的打码形态；没轮换过就是 ``None``。
+    prev_key_masked: str | None = None
+    #: 过渡窗口的截止时刻（带时区的 ISO 串）；``None`` = 没有过渡密钥。
+    prev_key_expires_at: str | None = None
+    #: 最近一次重新生成的时刻；``None`` = 从没轮换过。
+    rotated_at: str | None = None
 
 
 class IssuedKeyData(KeyData):
@@ -90,6 +98,17 @@ class IssuedKeyData(KeyData):
 
 class KeyListData(BaseModel):
     keys: list[KeyData]
+
+
+class RevokePreviousData(BaseModel):
+    """作废过渡密钥的回执。
+
+    ``revoked=False`` 是**幂等**的答案（没有过渡密钥可作废），不是错误：界面上的按钮只在
+    窗口期内出现，但重试、双击、两个标签页同时点都不该变成一个错误码。
+    """
+
+    key_id: str
+    revoked: bool
 
 
 class KeyPolicyInput(BaseModel):
@@ -223,6 +242,22 @@ def policy_data_of(policy: KeyPolicy) -> KeyPolicyData:
     )
 
 
+def _isoformat(value: datetime | None) -> str | None:
+    """datetime → 带时区的 ISO 串（``None`` 原样传）。
+
+    与 `console_kb_service._isoformat` 同一条纪律：naive 一律按 UTC 贴标签，否则
+    `new Date()` 在 +08 的浏览器里会把「过渡窗口到几点」算错 8 小时——而那一格正是
+    用户判断「旧 Key 还能用多久」的唯一依据。
+    """
+
+    if value is None:
+        return None
+    # DB 里存的是 naive 的 UTC（与应用同一份 `now()`），一律按 UTC 贴标签。
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
+
+
 def key_data_of(api_key: ApiKey, policy: KeyPolicy | None) -> KeyData:
     return KeyData(
         key_id=api_key.id,
@@ -230,6 +265,13 @@ def key_data_of(api_key: ApiKey, policy: KeyPolicy | None) -> KeyData:
         key_masked=key_masked_of(api_key.key_tail),
         status=api_key.status,
         policy=policy_data_of(policy) if policy is not None else None,
+        prev_key_masked=(
+            key_masked_of(api_key.prev_key_tail)
+            if api_key.prev_key_tail is not None
+            else None
+        ),
+        prev_key_expires_at=_isoformat(api_key.prev_key_expires_at),
+        rotated_at=_isoformat(api_key.rotated_at),
     )
 
 
