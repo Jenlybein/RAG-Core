@@ -44,7 +44,7 @@ from __future__ import annotations
 import threading
 import uuid
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Final
 
 import structlog
@@ -53,11 +53,12 @@ from app.core import redis_client
 from app.core.config import settings
 from app.db.base import now
 from app.db.session_factory import async_session_factory
-from app.db.transaction import async_commit_now
+from app.db.transaction import async_commit_now, async_transaction
 from app.db.worker_loop import run_in_worker_loop
 from app.repositories import document_repository
 from app.services.index_build_service import MAX_REDISPATCH, IndexBuildService
 from app.services.index_dispatch import enqueue_document
+from app.services.usage_rollup import rollup_day
 
 logger = structlog.get_logger(__name__)
 
@@ -69,6 +70,18 @@ SWEEP_INTERVAL_SECONDS: Final[int] = 60
 #: ``kill -9`` 之后最多等一个周期就能有人接手（不会留下一个永远不释放的锁）。
 SWEEP_LOCK_KEY: Final[str] = "lock:index:sweeper"
 SWEEP_LOCK_TTL_SECONDS: Final[int] = SWEEP_INTERVAL_SECONDS * 2
+
+#: **用量汇总**的节流锁（第 17 步现场七）。
+#:
+#: 为什么汇总要挂在清扫器上：看板的 7d / 30d 两个窗口读的是按天汇总表 ``usage_daily``，
+#: 而它只有一个**人工**脚本（``scripts/rollup_usage_daily.py``）会填。没人跑脚本，看板上
+#: 「最近 7 天」就永远是空的——而「用量数据不显示」这件事，用户看不出「缺了一个运维步骤」，
+#: 只会以为统计坏了。这个仓没有 beat（ADR-0034），兜底靠的就是这条守护线程，所以这里顺手
+#: 把「今天的账压成格」也做掉。
+#:
+#: 节流 5 分钟：汇总本身幂等（同一天的格会被覆写），没必要每 60 秒扫一遍今天的明细。
+ROLLUP_LOCK_KEY: Final[str] = "lock:usage:rollup"
+ROLLUP_INTERVAL_SECONDS: Final[int] = 300
 
 #: 单篇文档的租约过期后最多重投几次。超过就把它标成失败——「一直重投也救不回来」必须有个
 #: 尽头，否则一篇坏掉的文档会让清扫器变成永动机，而用户看到的是永远转圈。
@@ -100,6 +113,51 @@ async def _try_lock(ttl: int = SWEEP_LOCK_TTL_SECONDS) -> bool:
     except Exception:  # noqa: BLE001 - 抢锁失败不该让清扫器停摆
         logger.warning("index sweeper could not acquire the lock; skipping this round")
         return False
+
+
+async def rollup_usage_once(
+    *, session_factory: Callable[[], Any] | None = None, today: date | None = None
+) -> dict[str, int]:
+    """把**今天与昨天**的明细压成 ``usage_daily`` 的格（幂等）。
+
+    只做这两天：更早的天一旦过了就不再变（明细也不会再写进去），没有重算的必要；而看板
+    的 7d / 30d 需要的是「最近几天能看见」，不是「历史全对」。
+
+    为什么与清扫器同一个节流锁而不是自己开线程：这个仓刻意**没有 beat**（ADR-0034 的
+    「兜底任务的形状」），再开一条守护线程就等于多一份生命周期要管；而清扫器本来就每
+    60 秒醒一次、本来就有单实例锁。汇总只多一条 ``SET NX``：抢不到就跳过，5 分钟后再说。
+    """
+
+    try:
+        client = redis_client.get_redis_client()
+        # 同一把**固定**键 + 5 分钟 TTL：跨进程也只有一个人在这 5 分钟里做汇总。
+        got = bool(
+            await client.set(
+                ROLLUP_LOCK_KEY, uuid.uuid4().hex, nx=True, ex=ROLLUP_INTERVAL_SECONDS
+            )
+        )
+    except Exception:  # noqa: BLE001 - Redis 抽风不该让用量汇总停摆
+        logger.warning("usage rollup could not acquire the throttle; skipping")
+        got = False
+    if not got:
+        return {"rolled": 0}
+
+    # 「今天」按 UTC 日历天算：与 ``usage_rollup.day_bounds`` 同一口径（列的标签是 UTC 天）。
+    moment = today or datetime.now(timezone.utc).date()
+    days = [moment - timedelta(days=1), moment]
+    factory = session_factory or async_session_factory
+    rolled = 0
+    for day in days:
+        try:
+            async with factory()() as db:
+                async with async_transaction(db):
+                    await rollup_day(db, day)
+            rolled += 1
+        except Exception as exc:  # noqa: BLE001 - 汇总失败不许影响清扫
+            logger.warning("usage rollup failed", day=str(day), error=type(exc).__name__)
+    if rolled:
+        logger.info("usage rolled up", days=[str(day) for day in days], rolled=rolled)
+    return {"rolled": rolled}
 
 
 async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dict[str, int]:
@@ -214,7 +272,18 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
                 redispatched=redispatched,
                 revived=revived,
             )
-        return {"settled": settled, "redispatched": redispatched, "revived": revived}
+
+        # ── 4) 用量汇总：看板的 7d / 30d 靠它（现场七）─────────────────────
+        #
+        # 放在**清扫之后**、用同一个 ``session_factory``：它不该与「救一篇卡住的文档」抢先后，
+        # 而且它失败时只留一条 warning——最坏情况下看板的长窗口晚 5 分钟才更新。
+        rolled = await rollup_usage_once(session_factory=factory)
+        return {
+            "settled": settled,
+            "redispatched": redispatched,
+            "revived": revived,
+            "rolled": rolled["rolled"],
+        }
 
 
 def _sweeper_loop() -> None:

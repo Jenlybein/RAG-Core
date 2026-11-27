@@ -283,3 +283,34 @@ def test_the_meter_tally_accumulates_and_is_absent_outside_the_gate() -> None:
         assert current_meter_counts() == (3, 0, 1)
 
     assert current_meter_counts() is None, "作用域结束就还回去，不泄漏到下一个请求"
+
+
+# ─────────────────── 写账那一刻 tally 还是空的：全 0 要当成「没有信号」（现场七）
+
+
+def test_an_empty_tally_is_not_a_zero_cost() -> None:
+    """门禁作用域里、还没扣账时读 tally，必须回 ``None`` 而不是 ``(0, 0, 0)``。
+
+    现场（2026-11-27）：用量页上「检索 / 重排 / 大模型」三本账一直是 0，而数据面明明调了
+    十几次。原因是顺序——组合根在响应成形时就写下那一行账，门禁的 ``record_success`` /
+    ``record_n`` 要等它**返回之后**才执行，于是写账那一刻 tally 必然全 0。
+
+    把 0 当成事实写进库，比「没有这一列」更坏：看板会给出一个**确定的错数**。所以全 0 时
+    回 ``None``，写账方据此回落「这次用了哪些能力」的推断值（与门禁真扣的值相等）。
+    """
+
+    with meter_tally():
+        # 什么都没扣（门禁还没走到那一步）。
+        assert current_meter_counts() is None
+
+        count_meter(BOOK_R, 1)
+        # 一旦有信号，它就是权威值。
+        assert current_meter_counts() == (1, 0, 0)
+
+
+def test_a_zero_book_alone_is_still_no_signal() -> None:
+    """只记了 0 次（例如重排被跳过）仍然是「没信号」：``count_meter(BOOK_RR, 0)`` 不算证据。"""
+
+    with meter_tally():
+        count_meter(BOOK_RR, 0)
+        assert current_meter_counts() is None

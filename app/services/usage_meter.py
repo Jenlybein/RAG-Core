@@ -122,7 +122,20 @@ def current_meter_counts() -> tuple[int, int, int] | None:
     tally = _meter_tally.get()
     if tally is None:
         return None
-    return tally[BOOK_R], tally[BOOK_RR], tally[BOOK_LLM]
+    counts = (tally[BOOK_R], tally[BOOK_RR], tally[BOOK_LLM])
+    # **全 0 不等于「这次没花钱」**（第 17 步现场七）。
+    #
+    # 顺序是这样的：组合根（``rag_service`` / ``decompose_gate``）在响应成形时就写下这一行账，
+    # 而门禁的 ``record_success`` / ``record_n`` 是在响应之上**再往上走一层**才执行的——
+    # 于是写账那一刻，这份 tally 一定是全 0。把 0 当成事实写进库里，就是「检索 / 重排 / 大模型
+    # 三本账」在看板上永远是 0（用户看到的现象：用过几次，用量页没有数）。
+    #
+    # 所以：**全 0 时返回 ``None``**，让写账方按「这次用了哪些能力」推一遍——那三个路径的推断值
+    # 与门禁真扣的值本来就相等（r=1 / 改写再加 llm=1 / 重排 applied 时 rr=1；分解检索 r=N）。
+    # 有信号时才用 tally，这样以后真把扣账搬到写账之前，这份数自动变成权威值。
+    if counts == (0, 0, 0):
+        return None
+    return counts
 
 
 async def record_refusal(
