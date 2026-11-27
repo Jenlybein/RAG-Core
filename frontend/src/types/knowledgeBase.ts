@@ -60,6 +60,15 @@ export interface UpdateKbSettingsRequest {
 }
 
 /** 改设置的回执：新设置 + 这次重建的版本。 */
+/** 重建一个库的回执（设置没变，所以不回吐设置）。 */
+export interface RebuildKbReceipt {
+  kb_id: string
+  build_id: string
+  build_version: string
+  /** 这次要重切多少篇（起跑快照）。 */
+  documents_planned: number
+}
+
 export interface UpdateKbSettingsReceipt {
   kb_id: string
   name: string

@@ -111,6 +111,11 @@ ACTION_KB_CREATE: Final[str] = "kb.create"
 ACTION_KB_DELETE: Final[str] = "kb.delete"
 #: 改库的切块设置并重建（第 16 步 #207）：账本里要能看出「改了什么、为什么要重建」。
 ACTION_KB_SETTINGS_UPDATE: Final[str] = "kb.settings_update"
+#: 单纯重建一个库（不改任何设置）：账本里要能看出「有人主动重切了一次」。
+#:
+#: 为什么不复用 ``kb.settings_update``：那条动作的 before/after 是**设置快照**，而这条什么
+#: 都没改——写成 settings_update 会得到一条 before == after 的记录，读账的人会以为是改坏了。
+ACTION_KB_REBUILD: Final[str] = "kb.rebuild"
 ACTION_DOC_UPLOAD: Final[str] = "doc.upload"
 ACTION_DOC_REINDEX: Final[str] = "doc.reindex"
 ACTION_DOC_DELETE: Final[str] = "doc.delete"
@@ -486,6 +491,73 @@ async def update_kb_settings(
         "section_part_max_chars": new_part_max,
         "build_id": build.id,
         "build_version": build.version,
+    }
+
+
+async def rebuild_kb(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    kb_id: str,
+    actor: ConsoleIdentity,
+    request_id: str | None,
+) -> dict[str, Any]:
+    """按**当前的切块设置**重建整个库，建完自动激活（第 17 步）。
+
+    ## 它解决的是「设置改了但没生效」
+
+    切块参数是**索引期**的旋钮，而「生效版本」里存的是一份参数快照。两者不一致时列表上会挂
+    一条「当前切块设置与生效索引版本不一致，需要重建后才生效」。让用户自己去猜「怎么才能让
+    它生效」是不合理的，所以给一个显式的入口。
+
+    ## 为什么不能靠「逐篇重建」了事
+
+    逐篇重建（``doc/reindex``）写回的是**当前生效版本**——它的参数快照与版本名都不变。所以
+    文档都重切了一遍，那条「需重建」提示仍然挂着（快照没变），而且生效版本里会混进两种切法
+    的切片，``params`` 快照从此失真。要让新设置真正生效，只能产出**新版本**并激活它。
+
+    ## 与 ``update_kb_settings`` 的分工
+
+    那条是「改设置 + 重建」，这条**不改设置**。所以它不校验参数、不写设置，只写一条
+    ``kb.rebuild`` 审计 + 起一个 ``auto_activate=True`` 的构建。并发与「库里没有可参与文档」
+    的拒绝都由 :meth:`IndexBuildService.start_build` 自己守（``50001`` / ``20038``）。
+    """
+
+    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
+    if kb is None:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+    build = await IndexBuildService().start_build(
+        db, kb_id=kb_id, tenant_id=tenant_id, auto_activate=True
+    )
+    await append_audit(
+        db,
+        actor=actor,
+        action=ACTION_KB_REBUILD,
+        target=f"kb:{kb_id}",
+        # before/after 记的是**这次重建**的定位信息（设置本身没变，所以不重复记一遍）。
+        before={"active_index_version": kb.active_index_version},
+        after={
+            "build_id": str(build.id),
+            "build_version": str(build.version),
+            "documents_planned": int(build.documents_planned or 0),
+        },
+    )
+    # 投递登记在提交之后：先让「构建行已存在」落库，再让 Worker 去抢（与改设置那条一致）。
+    after_commit(
+        db,
+        lambda: enqueue_index_build_after_commit(
+            publish=enqueue_index_build,
+            build_id=build.id,
+            tenant_id=tenant_id,
+            request_id=request_id,
+        ),
+    )
+    return {
+        "kb_id": kb_id,
+        "build_id": str(build.id),
+        "build_version": str(build.version),
+        "documents_planned": int(build.documents_planned or 0),
     }
 
 

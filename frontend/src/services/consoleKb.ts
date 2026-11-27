@@ -17,6 +17,7 @@ import type {
   KbSettingsPreview,
   KnowledgeBaseDeleteReceipt,
   KnowledgeBaseNode,
+  RebuildKbReceipt,
   UpdateKbSettingsReceipt,
   UpdateKbSettingsRequest,
 } from '../types/knowledgeBase'
@@ -53,6 +54,16 @@ export function updateKbSettingsConsole(
   payload: UpdateKbSettingsRequest,
 ): Promise<UpdateKbSettingsReceipt> {
   return consoleHttp.patch<UpdateKbSettingsReceipt>(kbSettingsPath(kbId), payload)
+}
+
+/**
+ * 按**当前**切块设置重建整个库（建完自动激活）。
+ *
+ * 它不是「逐篇重建」：逐篇写回的是当前生效版本，参数快照不变，所以「需重建」那条提示
+ * 消不掉。要让新设置生效只能产出新版本——这条接口做的是后者。
+ */
+export function rebuildKbConsole(kbId: string): Promise<RebuildKbReceipt> {
+  return consoleHttp.post<RebuildKbReceipt>(`/console/knowledge-bases/${kbId}/rebuild`)
 }
 
 /** 读树：租户来自会话，后端不做白名单收窄（控制面要看整个租户）。 */

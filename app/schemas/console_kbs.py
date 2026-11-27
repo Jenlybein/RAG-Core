@@ -143,6 +143,16 @@ class UpdateKBSettingsData(BaseModel):
     build_version: str
 
 
+class RebuildKBData(BaseModel):
+    """重建一个库的回执：这次构建的定位信息（设置没变，所以不回吐设置）。"""
+
+    kb_id: str
+    build_id: str
+    build_version: str
+    #: 起跑那一刻快照的可参与文档数（= 这次要重切多少篇）。
+    documents_planned: int
+
+
 class KBSettingsPreviewData(BaseModel):
     """改设置前的确认弹窗：当前设置、生效版本参数、以及这次重建的量。"""
 

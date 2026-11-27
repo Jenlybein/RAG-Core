@@ -27,40 +27,41 @@ import PAGE from '../KnowledgeManagePage.vue?raw'
 import CHART from '../../components/UsageChart.vue?raw'
 
 
+
 describe('知识库卡片的操作区', () => {
-  it('「详情」必须是一个真按钮，并显式打开详情弹窗', () => {
-    // 反例（曾经的写法）：按钮组里一行裸文字 `详情 →`，被外层 `@click.stop` 吞掉点击。
-    // 定位用**绑定**而不是文案：模板上方的注释里也提到「详情 →」，按文案找会命中注释。
-    // 取**最后一次**：第一次是整卡的 `@click`（那正是能正常工作的那条路径），
-    // 我们要守的是按钮组里那个单独的「详情」按钮。
-    const binding = PAGE.lastIndexOf('@click="openDetail(row)"')
-    expect(binding).toBeGreaterThan(0)
+  it('整卡可点 = 详情入口，且按钮组里不再有那个多余的「详情」', () => {
+    const card = PAGE.indexOf('role="button"')
+    expect(card).toBeGreaterThan(0)
+    expect(PAGE.slice(card, card + 900)).toContain('@click="openDetail(row)"')
 
-    const element = PAGE.slice(binding - 160, binding + 120)
-    expect(element).toContain('<el-button')
-    expect(element).toContain('详情 →')
+    // 反例（曾经的样子）：按钮组里又放了一个「详情 →」。它要么是**裸文字**（被外层
+    // `@click.stop` 吞掉点击，点了没反应），要么与整卡点击完全重复——用户的原话是
+    // 「一点用都没有这个按钮」。所以这里守的是「别再加回来」。
+    const groupStart = PAGE.indexOf('pt-2.5')
+    const groupEnd = PAGE.indexOf('</el-card>', groupStart)
+    expect(groupStart).toBeGreaterThan(0)
+    expect(groupEnd).toBeGreaterThan(groupStart)
+    expect(PAGE.slice(groupStart, groupEnd)).not.toContain('详情')
   })
 
-  it('「一键重建」调的是逐篇投递，而不是整库构建', () => {
-    // 按钮本身只**开确认框**（它会覆盖整库已有索引），真正的循环在确认之后。
-    const binding = PAGE.indexOf('@click="askReindexAll(row)"')
+  it('「重建」调的是整库重建，不是逐篇重新投递', () => {
+    const binding = PAGE.indexOf('@click="askRebuild(row)"')
     expect(binding).toBeGreaterThan(0)
 
-    const element = PAGE.slice(binding - 500, binding + 40)
-    expect(element).toContain('一键重建')
-    // 逐篇投递的实现必须在页面里（调的是单篇重建接口，不是 start_build）
-    expect(PAGE).toContain('reindexDocumentConsole(')
-    // 反例：换成「起一次整库构建」。那会走 start_build → 新版本 → 收敛 → 激活，
-    // 与用户要的「把这些篇重新排进队列」是两件事。
-    expect(element).not.toContain('startBuild')
+    const element = PAGE.slice(binding - 700, binding + 40)
+    expect(element).toContain('重建')
+    // 判据是**调哪个接口**：只有产出新版本才消得掉「需重建」提示；逐篇重建写回旧版本，
+    // 文档都重切了一遍、提示还挂着（第一版就是这个毛病）。
+    expect(PAGE).toContain('rebuildKbConsole(')
+    expect(PAGE).not.toContain('reindexAllDocuments(')
   })
 
-  it('构建进行中禁用「一键重建」（构建正在重切这个库，两批写会互相打）', () => {
-    const binding = PAGE.indexOf('@click="askReindexAll(row)"')
-    const element = PAGE.slice(binding - 500, binding + 40)
+  it('构建进行中禁用「重建」（并发构建由后端守，这里别给注定失败的按钮）', () => {
+    const binding = PAGE.indexOf('@click="askRebuild(row)"')
+    const element = PAGE.slice(binding - 700, binding + 40)
 
     expect(element).toContain(':disabled=')
-    expect(element).toContain('bulkReindexing')
+    expect(element).toContain('rebuildingKbId')
     expect(element).toContain('row.build_progress')
   })
 })

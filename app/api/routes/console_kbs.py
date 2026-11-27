@@ -50,6 +50,7 @@ from app.schemas.console_kbs import (
     DocumentContentData,
     KnowledgeBaseNode,
     KnowledgeBaseTreeData,
+    RebuildKBData,
     UpdateKBSettingsData,
     UpdateKBSettingsRequest,
 )
@@ -159,6 +160,34 @@ async def update_knowledge_base_settings(
         description=payload.description,
     )
     return ok(UpdateKBSettingsData.model_validate(data))
+
+
+@router.post(
+    "/knowledge-bases/{kb_id}/rebuild",
+    response_model=ApiResponse[RebuildKBData],
+    summary="按当前切块设置重建整个库（建完自动激活）",
+)
+async def rebuild_knowledge_base(
+    request: Request,
+    kb_id: str = Path(..., min_length=1),
+    identity: ConsoleIdentity = Depends(require_console_tenant_write),
+    db: AsyncSession = Depends(get_async_db),
+    tx: AsyncTransaction = Depends(get_async_transaction),
+) -> ApiResponse[RebuildKBData]:
+    """不改设置，只按**当前**设置重切一遍并让新版本生效。
+
+    它是「需重建」那条提示的配套动作：切块参数是索引期旋钮，改完必须产出新版本才生效，
+    而逐篇重建只会写回旧版本（参数快照不变，提示消不掉）。
+    """
+
+    data = await console_kb_service.rebuild_kb(
+        db,
+        tenant_id=tenant_id_of(identity),
+        kb_id=kb_id,
+        actor=identity,
+        request_id=submitted_request_id(request),
+    )
+    return ok(RebuildKBData.model_validate(data))
 
 
 @router.post(

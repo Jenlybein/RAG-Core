@@ -38,6 +38,9 @@ CONSOLE_WRITE_ROUTES: tuple[tuple[str, str], ...] = (
     # 改切块设置并自动重建（第 16 步 #207）：设置、审计、building 行同一笔提交，
     # 投递登记在 after_commit 上——所以它也必须走异步事务依赖。
     ("PATCH", "/console/knowledge-bases/{kb_id}/settings"),
+    # 单纯重建（第 17 步）：写一条 kb.rebuild 审计 + 建一个 building 行，同一笔提交，
+    # 投递登记在 after_commit 上——与改设置那条同构，所以同样必须走异步事务依赖。
+    ("POST", "/console/knowledge-bases/{kb_id}/rebuild"),
     ("POST", "/console/knowledge-bases/{kb_id}/documents"),
     ("POST", "/console/documents/{document_id}/reindex"),
     ("DELETE", "/console/documents/{document_id}"),

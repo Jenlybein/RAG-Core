@@ -107,6 +107,8 @@ class _KbRepo:
 class _FakeBuild:
     id = "build-1"
     version = "v2"
+    #: 起跑快照的可参与篇数：`rebuild_kb` 的回执要把它交回去（前端据它说「N 篇」）。
+    documents_planned = 3
 
 
 class _FakeBuildService:
@@ -344,3 +346,96 @@ def test_a_build_that_rebuilt_nothing_is_refused() -> None:
     from app.services.index_build_service import BUILD_COUNTS_MISMATCH_MESSAGE
 
     assert error.msg != BUILD_COUNTS_MISMATCH_MESSAGE
+
+
+# ─────────────────────────────────────── 单纯重建（第 17 步 / 现场 #226）
+
+
+@pytest.mark.asyncio
+async def test_rebuild_starts_a_build_without_touching_the_settings(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """「重建」只起构建：设置一个字段都不改，审计**单独一条**动作。
+
+    为什么不复用改设置那条：它的 before/after 是设置快照，而这条什么都没改——写成
+    `kb.settings_update` 会得到一条 before == after 的记录，读账的人会以为改坏了。
+    """
+
+    kb = _kb()
+    repo = _KbRepo(kb)
+    audits: list[dict[str, Any]] = []
+    scheduled: list[Any] = []
+    _FakeBuildService.calls = []
+    before_settings = dict(kb.settings)
+    before_strategy = kb.split_strategy
+
+    monkeypatch.setattr(
+        console_kb_service.knowledge_base_repository,
+        "get_by_id_for_tenant",
+        repo.get_by_id_for_tenant,
+    )
+    monkeypatch.setattr(
+        console_kb_service, "append_audit", lambda *a, **kw: audits.append(kw) or _noop()
+    )
+    monkeypatch.setattr(console_kb_service, "IndexBuildService", _FakeBuildService)
+    monkeypatch.setattr(
+        console_kb_service, "after_commit", lambda _db, thunk: scheduled.append(thunk)
+    )
+
+    data = await console_kb_service.rebuild_kb(
+        object(),  # type: ignore[arg-type]
+        tenant_id="tenant_demo",
+        kb_id="kb-1",
+        actor=_actor(),
+        request_id=None,
+    )
+
+    assert kb.settings == before_settings, "「重建」不改任何设置"
+    assert kb.split_strategy == before_strategy
+    assert _FakeBuildService.calls == [
+        {"kb_id": "kb-1", "tenant_id": "tenant_demo", "auto_activate": True}
+    ], "重建这条路径必须自动激活——否则新版本停在 ready，「需重建」提示还是消不掉"
+    assert len(audits) == 1
+    assert audits[0]["action"] == console_kb_service.ACTION_KB_REBUILD
+    assert audits[0]["target"] == "kb:kb-1"
+    assert audits[0]["after"]["build_version"] == "v2"
+    assert data == {
+        "kb_id": "kb-1",
+        "build_id": "build-1",
+        "build_version": "v2",
+        "documents_planned": 3,
+    }
+    assert len(scheduled) == 1, "投递登记在提交之后，不是当场发"
+
+
+@pytest.mark.asyncio
+async def test_rebuild_of_a_missing_knowledge_base_is_not_found(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺失 / 跨租户的库 → 20008，且不动任何东西（不建构建行、不写审计）。"""
+
+    audits: list[dict[str, Any]] = []
+    _FakeBuildService.calls = []
+
+    monkeypatch.setattr(
+        console_kb_service.knowledge_base_repository,
+        "get_by_id_for_tenant",
+        _KbRepo(None).get_by_id_for_tenant,
+    )
+    monkeypatch.setattr(
+        console_kb_service, "append_audit", lambda *a, **kw: audits.append(kw) or _noop()
+    )
+    monkeypatch.setattr(console_kb_service, "IndexBuildService", _FakeBuildService)
+
+    with pytest.raises(AppError) as ctx:
+        await console_kb_service.rebuild_kb(
+            object(),  # type: ignore[arg-type]
+            tenant_id="tenant_demo",
+            kb_id="kb-1",
+            actor=_actor(),
+            request_id=None,
+        )
+
+    assert ctx.value.code == ErrorCode.KNOWLEDGE_BASE_NOT_FOUND
+    assert _FakeBuildService.calls == []
+    assert audits == []

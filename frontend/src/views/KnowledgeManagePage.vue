@@ -39,12 +39,13 @@ import {
   type UploadRowStatus,
 } from '../composables/useUploadDocuments'
 import { useTreePolling } from '../composables/useTreePolling'
-import { errorCodeOf, errorText } from '../lib/errorText'
+import { errorText } from '../lib/errorText'
 import {
   deleteDocumentConsole,
   deleteKbConsole,
   fetchDocumentContentConsole,
   reindexDocumentConsole,
+  rebuildKbConsole,
   uploadConsole,
 } from '../services/consoleKb'
 import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
@@ -285,7 +286,7 @@ type PendingAction =
   | { kind: 'deleteKb'; kb: KnowledgeBaseNode }
   | { kind: 'deleteDoc'; document: DocumentListItem }
   | { kind: 'reindex'; document: DocumentListItem }
-  | { kind: 'reindexAll'; kb: KnowledgeBaseNode }
+  | { kind: 'rebuild'; kb: KnowledgeBaseNode }
 
 const pendingAction = ref<PendingAction | null>(null)
 const confirmOpen = ref(false)
@@ -295,7 +296,7 @@ const dialogTitle = computed(() => {
   if (action === null) return ''
   if (action.kind === 'deleteKb') return '删除知识库'
   if (action.kind === 'deleteDoc') return '删除文档'
-  if (action.kind === 'reindexAll') return '把这个库的所有文档重新排进重建队列'
+  if (action.kind === 'rebuild') return '重建这个知识库'
   // 排队中不是「重试」（没有失败过），而是「替换排队」——换一份内容或换一次解析。
   if (action.document.status === DOCUMENT_STATUS.QUEUED) return '重新提交（替换排队）'
   return action.document.status === DOCUMENT_STATUS.SUCCESS ? '重建索引（覆盖现有索引）' : '重试索引'
@@ -310,20 +311,14 @@ const dialogMessage = computed(() => {
     // 非空库后端会拒绝；提前说清规则与做法，比让用户撞一次 20015 更好。
     return `《${action.kb.name}》里还有 ${count} 篇文档，删不掉。先在这个库的详情里把文档删空，再删库。`
   }
-  if (action.kind === 'reindexAll') {
+  if (action.kind === 'rebuild') {
     const count = action.kb.documents.length
-    const overrides = action.kb.documents.filter(
-      (document) => document.status === DOCUMENT_STATUS.SUCCESS,
-    ).length
-    // 逐篇重建会写回**当前生效版本**——它清不掉「需重建」横幅（那条要重新起一次构建），
-    // 也不能把「正在索引的那一篇」重排。这两点必须在确认框里说清，否则用户点完会以为
-    // 「设置已经生效了」。
+    // 重建 = 产出新版本并激活：全库重嵌入 + 重写 ES，代价是服务器时间与钱。这句必须说清，
+    // 否则「一次误点」在用户心里只是一次刷新。
     return (
-      `确认把《${action.kb.name}》里的 ${count} 篇文档逐篇重新排进重建队列？` +
-      (overrides > 0
-        ? `其中 ${overrides} 篇已有可用索引，会被新的切块结果覆盖（旧索引丢弃）。`
-        : '') +
-      '正在索引的那几篇会被后端跳过。注意：这不会让新切块设置生效——那要改一次设置再保存。'
+      `按**当前切块设置**重建《${action.kb.name}》里的 ${count} 篇文档？` +
+      '这会新建一个索引版本、跑完全部文档后自动切换过去（全库重嵌入，需要一段时间）。' +
+      '重建期间这个库的检索仍走旧版本，不受影响。'
     )
   }
   if (action.kind === 'deleteDoc') {
@@ -348,7 +343,7 @@ const dialogMessage = computed(() => {
 const dialogConfirmText = computed(() => {
   const action = pendingAction.value
   if (action === null) return '确认'
-  if (action.kind === 'reindexAll') return '全部重排'
+  if (action.kind === 'rebuild') return '开始重建'
   if (action.kind === 'reindex') {
     if (action.document.status === DOCUMENT_STATUS.QUEUED) return '替换排队'
     return action.document.status === DOCUMENT_STATUS.SUCCESS ? '覆盖重建' : '重试'
@@ -358,7 +353,7 @@ const dialogConfirmText = computed(() => {
 
 const dialogDanger = computed(
   () =>
-    pendingAction.value?.kind !== 'reindex' && pendingAction.value?.kind !== 'reindexAll',
+    pendingAction.value?.kind !== 'reindex' && pendingAction.value?.kind !== 'rebuild',
 )
 /** 非空库不允许点删除确认：规则来自后端，这里只是别给一个注定失败的按钮。 */
 const confirmDisabled = computed(
@@ -377,9 +372,9 @@ function askDeleteDoc(row: unknown): void {
   confirmOpen.value = true
 }
 
-function askReindexAll(row: unknown): void {
+function askRebuild(row: unknown): void {
   if (!isKbRow(row)) return
-  pendingAction.value = { kind: 'reindexAll', kb: row }
+  pendingAction.value = { kind: 'rebuild', kb: row }
   confirmOpen.value = true
 }
 
@@ -437,79 +432,39 @@ const reindexMutation = useMutation({
 })
 
 /**
- * 一键重建这个库里的**所有**文档（第 17 步）。
+ * 重建这个库（第 17 步）：**按当前切块设置**产出新版本，建完自动激活。
  *
- * ## 为什么是「逐篇投递」而不是「起一个整库构建」
+ * ## 为什么不是「把每篇文档重新投一遍」
  *
- * 用户要的是「把这些失败的、旧的篇重新排进队列」——那不是一次整库构建，也不需要它：
- * 整库构建会产出**新的索引版本**（v3）并要求四项计数对账才上线，而这个库现在的处境往往是
- * 「版本 v2 是好的，只是里面有几篇当初失败了」。用构建去救它们，等于为了补几篇重切整个库，
- * 还要等收敛与激活。
+ * 第一版就是那么做的（逐篇调 `documents/{id}/reindex`），而用户点完当场发现：「需重建」
+ * 那条提示一直挂着。原因在语义里——逐篇重建写回的是**当前生效版本**，它的参数快照与版本名
+ * 都不变。于是文档确实都重切了一遍，但「生效版本用的是哪套参数」这件事没变，提示当然消不掉；
+ * 顺带还让生效版本里混进了两种切法的切片（`params` 快照从此失真）。
  *
- * 逐篇走的是**现有**的单篇重建接口（`POST /console/documents/{id}/reindex`），语义与用户
- * 一篇篇点「重建」完全一致：不新增后端能力、不新增状态机，只是把点击循环起来。
+ * 要让新设置真正生效只有一条路：**产出新版本并激活它**。那就是
+ * `POST /console/knowledge-bases/{id}/rebuild`（后端 `rebuild_kb`：不改设置，只写一条
+ * `kb.rebuild` 审计 + 起一个 `auto_activate=True` 的构建）。所以这个按钮的语义是
+ * 「重切整个库」，不是「重排一批任务」。
  *
- * ## 为什么按状态决定 force
+ * ## 为什么只转被点的那个库
  *
- * 与单篇那条同一判据（见 `reindexMutation`）：已成功（1）的文档必须显式 `force`，否则后端
- * 回 20027 替用户保住能用的索引；失败（2）/ 排队中（4）/ 索引中（3，租约已过期那种）本来
- * 就在可重建那一档。
- *
- * **索引中且租约新鲜的那几篇**会被后端拒（20025「正在索引」）：`alreadyRunning` 计数，
- * 不计入失败——它本来就在队列里，把它报成「没能提交」会让用户以为要再点一次。
- *
- * ## 并发与失败的处置
- *
- * 串行发（一篇一条，最多几十篇）：并发发会让后端同时接到 N 个重建请求，而它们每一个都会走
- * 「置排队中 + 投递」，服务端的限流/审计日志会瞬间多出 N 条噪声。
- *
- * 单篇失败不中断：继续投其余，最后把失败的那几条**列出来**。把「9 篇成功、1 篇被拒」报成
- * 「操作失败」是不诚实的——用户再点一次那一篇就行。
+ * 一次重建要跑完整个库（几十篇就是几十次嵌入）。`rebuildingKbId` 只让被点那张卡片的按钮
+ * 转圈；用一个全页布尔量会让**所有**库的按钮一起转，用户会以为点了全部。
  */
-const bulkReindexing = ref(false)
+const rebuildingKbId = ref<string | null>(null)
 
-async function reindexAllDocuments(kb: KnowledgeBaseNode): Promise<void> {
-  const documents = kb.documents
-  if (documents.length === 0) return
-  bulkReindexing.value = true
-  const failed: string[] = []
-  let submitted = 0
-  let alreadyRunning = 0
+async function rebuildKb(kb: KnowledgeBaseNode): Promise<void> {
+  rebuildingKbId.value = kb.kb_id
   try {
-    for (const document of documents) {
-      try {
-        await reindexDocumentConsole(document.document_id, {
-          force: document.status === DOCUMENT_STATUS.SUCCESS,
-        })
-        submitted += 1
-      } catch (error) {
-        // 20025 = 正在索引（租约新鲜）：它本来就在队列里，跳过而不算失败。
-        if (errorCodeOf(error) === 20025) {
-          alreadyRunning += 1
-          continue
-        }
-        failed.push(`${document.title}：${errorText(error)}`)
-      }
-    }
-    if (submitted > 0) {
-      ElMessage.success(
-        `已把 ${submitted} 篇文档提交重建` +
-          (alreadyRunning > 0 ? `（${alreadyRunning} 篇正在索引，已跳过）` : '') +
-          '，稍后自动刷新',
-      )
-    }
-    if (failed.length > 0) {
-      // 逐条列出来：只说「有 N 篇失败」等于让用户自己去翻哪几篇。
-      ElMessage.warning({
-        message: `有 ${failed.length} 篇没能提交：${failed.slice(0, 3).join('；')}${
-          failed.length > 3 ? ' …' : ''
-        }`,
-        duration: 6000,
-      })
-    }
+    const receipt = await rebuildKbConsole(kb.kb_id)
+    ElMessage.success(
+      `已开始重建（${receipt.build_version}，${receipt.documents_planned} 篇），完成后自动生效`,
+    )
     void refresh()
+  } catch (error) {
+    ElMessage.error(errorText(error))
   } finally {
-    bulkReindexing.value = false
+    rebuildingKbId.value = null
   }
 }
 
@@ -525,11 +480,10 @@ function confirmAction(): void {
   if (action === null) return
   if (action.kind === 'deleteKb') deleteKbMutation.mutate(action.kb)
   else if (action.kind === 'deleteDoc') deleteDocMutation.mutate(action.document)
-  else if (action.kind === 'reindexAll') {
-    // 一键重建是**逐篇**投递（不新增后端能力），但它一次覆盖整库，所以要过同一个确认框
-    // ——单篇重建都要确认「旧索引会被丢弃」，整库重建没有理由更宽松。
+  else if (action.kind === 'rebuild') {
+    // 整库重建要过确认框：它一次覆盖全库（旧版本会被归档，新版本跑完自动接管）。
     closeDialog()
-    void reindexAllDocuments(action.kb)
+    void rebuildKb(action.kb)
   } else reindexMutation.mutate(action.document)
 }
 
@@ -726,36 +680,28 @@ function goRetrieve(kbId: string): void {
             <el-button link type="primary" size="small" @click="goRetrieve(row.kb_id)">检索</el-button>
             <el-button link type="primary" size="small" @click="openSettings(row)">设置</el-button>
             <!--
-              一键重建（第 17 步）：把库里**所有**文档逐篇投进现有的单篇重建队列。
-              `build_progress` 非空（这个库正在跑构建）时禁用——构建正在重切整个库，再插一批
-              单篇重建会与之互相打（同一篇被两条路径同时抢租约，两边都以为自己该写）。
+              重建（第 17 步）：按**当前**切块设置产出新版本，建完自动激活。
+
+              它同时是「需重建」那条提示的配套动作——那条横幅说的是「生效版本的参数快照与当前
+              设置不一致」，只有产出新版本才消得掉；逐篇重建写回的是旧版本，消不掉（第一版就
+              踩了这个坑，用户点完发现提示还在）。
+
+              `build_progress` 非空（这个库正在跑构建）时禁用：并发构建由后端守（50001），
+              这里只是别给一个注定失败的按钮。
             -->
             <el-button
               link
               type="primary"
               size="small"
-              :disabled="bulkReindexing || row.build_progress !== null || row.documents.length === 0"
-              :loading="bulkReindexing"
-              @click="askReindexAll(row)"
+              :disabled="
+                rebuildingKbId !== null || Boolean(row.build_progress) || row.documents.length === 0
+              "
+              :loading="rebuildingKbId === row.kb_id"
+              @click="askRebuild(row)"
             >
-              一键重建
+              重建
             </el-button>
             <el-button link type="danger" size="small" @click="askDeleteKb(row)">删除</el-button>
-            <!--
-              「详情」必须是个**真按钮**（第 17 步修）：
-              它以前是一行纯文字（`详情 →`），而它所在的按钮组有 `@click.stop`（防误触发整卡），
-              于是点它既不发请求、也不冒泡到卡片的 `@click` —— 用户看到的就是「点了没反应」。
-              现在显式调 `openDetail(row)`，与整卡点击同一条路径。
-            -->
-            <el-button
-              class="ml-auto"
-              link
-              type="primary"
-              size="small"
-              @click="openDetail(row)"
-            >
-              详情 →
-            </el-button>
           </div>
         </div>
       </div>
