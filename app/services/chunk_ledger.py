@@ -210,7 +210,9 @@ async def charge_chunk_tokens(
             CHUNK_DAILY_QUOTA_EXCEEDED_MESSAGE.format(
                 used=used, limit=limit, plan=f"{plan_name}（{plan_code}）"
             ),
-            {"reason": "chunk_daily_tokens", "used": used, "limit": limit, "plan": plan_code},
+            # ``data`` 是**仅关键字**参数：写成位置参数会在这一行抛 TypeError，
+            # 于是「额度用尽 → 20037」变成「额度用尽 → 500」。mypy 抓到的就是这个。
+            data={"reason": "chunk_daily_tokens", "used": used, "limit": limit, "plan": plan_code},
         )
 
     # 桶：按量 +（不是 +1）。

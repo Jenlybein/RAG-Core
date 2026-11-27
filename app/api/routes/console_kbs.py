@@ -49,6 +49,9 @@ from app.schemas.console_kbs import (
     DeleteKnowledgeBaseData,
     DocumentContentData,
     KnowledgeBaseNode,
+    KbBuildData,
+    KbDocumentsData,
+    KnowledgeBaseListData,
     KnowledgeBaseTreeData,
     RebuildKBData,
     UpdateKBSettingsData,
@@ -108,6 +111,78 @@ async def knowledge_base_tree(
 
     nodes = await console_kb_service.list_tree(db, tenant_id=tenant_id_of(identity))
     return ok(KnowledgeBaseTreeData(knowledge_bases=[_node_data(node) for node in nodes]))
+
+
+@router.get(
+    "/knowledge-bases",
+    response_model=ApiResponse[KnowledgeBaseListData],
+    summary="库列表（摘要：四个数字 + 需重建 + 构建状态，不含文档）",
+)
+async def list_knowledge_bases(
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: AsyncSession = Depends(get_async_db),
+) -> ApiResponse[KnowledgeBaseListData]:
+    """卡片网格的那一份数据。
+
+    与 ``/knowledge-bases/tree`` 的差别只有一条：**不回文档数组**。卡片只显示四个数字，
+    为一个 5000 篇的库把 5000 行读出来再丢掉，是「列表与详情被迫共用一份数据」的根因
+    ——那种耦合让两边都没法有合适的刷新节奏。
+    """
+
+    data = await console_kb_service.list_summaries(db, tenant_id=tenant_id_of(identity))
+    return ok(KnowledgeBaseListData.model_validate(data))
+
+
+@router.get(
+    "/knowledge-bases/{kb_id}/documents",
+    response_model=ApiResponse[KbDocumentsData],
+    summary="详情页一页：库摘要 + 构建摘要 + 文档（含「本次构建」第二根轴）",
+)
+async def list_knowledge_base_documents(
+    kb_id: str = Path(..., min_length=1),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(
+        console_kb_service.DEFAULT_DOCUMENTS_PAGE_SIZE,
+        ge=1,
+        le=console_kb_service.MAX_DOCUMENTS_PAGE_SIZE,
+    ),
+    status: int | None = Query(None, ge=1, le=4),
+    keyword: str | None = Query(None, max_length=200),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: AsyncSession = Depends(get_async_db),
+) -> ApiResponse[KbDocumentsData]:
+    """详情弹窗**打开即取**的那一份：分页、可筛状态与标题。
+
+    这是「进详情要不要按 F5」的正面回答：它有自己的请求，所以永远是打开那一刻的数据；
+    响应带 ``generated_at``，界面据此显示「数据更新于 14:03:12」。
+    """
+
+    data = await console_kb_service.list_documents_page(
+        db,
+        tenant_id=tenant_id_of(identity),
+        kb_id=kb_id,
+        page=page,
+        page_size=page_size,
+        status=status,
+        keyword=keyword,
+    )
+    return ok(KbDocumentsData.model_validate(data))
+
+
+@router.get(
+    "/knowledge-bases/{kb_id}/build",
+    response_model=ApiResponse[KbBuildData],
+    summary="这个库的构建状态（进行中优先，否则最近一次）",
+)
+async def knowledge_base_build(
+    kb_id: str = Path(..., min_length=1),
+    identity: ConsoleIdentity = Depends(require_console_tenant),
+    db: AsyncSession = Depends(get_async_db),
+) -> ApiResponse[KbBuildData]:
+    """只回答「这一版建到哪儿了」。细粒度刷新时只问这一格，不必重取整页文档。"""
+
+    data = await console_kb_service.build_of(db, tenant_id=tenant_id_of(identity), kb_id=kb_id)
+    return ok(KbBuildData.model_validate(data))
 
 
 @router.get(

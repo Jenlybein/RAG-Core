@@ -372,7 +372,11 @@ def can_transition(current: str, target: str) -> bool:
 
 #: 「失败原因文案 ⇄ 异常类」的唯一一张表：:func:`_failure_reason_of` 按数字选文案，
 #: ``IndexBuildService._aborted`` 按文案选异常类。两个方向共用一个映射。
-_FAILURE_BY_REASON: dict[str, type[AppError]] = {
+#: 值的类型收窄成这两个**无参可构造**的子类：写成 ``type[AppError]`` 会让 mypy 认为
+#: 构造需要 ``code``（AppError 的必填位），于是 ``error_type()`` 一行报 no-any-return。
+_FAILURE_BY_REASON: dict[
+    str, type[IndexBuildNothingToRebuild] | type[IndexBuildIncomplete]
+] = {
     BUILD_NOTHING_TO_REBUILD_MESSAGE: IndexBuildNothingToRebuild,
     BUILD_INCOMPLETE_MESSAGE: IndexBuildIncomplete,
     BUILD_FAILED_MESSAGE: IndexBuildIncomplete,

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import cast, func, select, update
+from sqlalchemy import case, cast, func, select, update
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -65,6 +65,37 @@ async def list_for_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> list[I
         .order_by(IndexBuildVersion.created_at)
     )
     return list((await db.execute(statement)).scalars().all())
+
+
+async def latest_for_kb(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> IndexBuildVersion | None:
+    """这个库**最近一次值得说**的构建行：进行中的优先，否则最新那一行。
+
+    ## 为什么「进行中」要优先于「更新」
+
+    时间上最新的那行可能是刚起的 ``building``（那正是界面要给进度条的那次），
+    也可能是刚刚 ``failed`` 的一次——后者更"新"但用户此刻要看的往往是那条还在跑的。
+    反过来，如果只看 ``building``，构建一收尾界面就失去上下文（实测 10 篇只要 9.5 秒，
+    用户点进详情时构建早就结束了，于是「刚才那次成没成」无从回答）。
+
+    两条合起来排序：``ORDER BY (status = building) DESC, created_at DESC LIMIT 1``。
+    部分唯一索引保证 ``building`` 最多一行，所以这个排序没有歧义。
+    """
+
+    statement = (
+        select(IndexBuildVersion)
+        .where(
+            IndexBuildVersion.kb_id == kb_id,
+            IndexBuildVersion.tenant_id == tenant_id,
+        )
+        .order_by(
+            case((IndexBuildVersion.status == INDEX_BUILD_BUILDING, 0), else_=1),
+            IndexBuildVersion.created_at.desc(),
+        )
+        .limit(1)
+    )
+    return (await db.execute(statement)).scalars().first()
 
 
 async def find_active(db: AsyncSession, kb_id: str, *, tenant_id: str) -> IndexBuildVersion | None:

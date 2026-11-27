@@ -75,6 +75,137 @@ class BuildProgressData(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class BuildSummaryData(BaseModel):
+    """**一次构建的摘要**：不只是「在跑的那次」，也包括最近一次**已有结论**的。
+
+    与 :class:`BuildProgressData` 的分工：
+
+    * :class:`BuildProgressData` 只服务「还在跑」——没有 ``building`` 行就是 ``None``。
+      它回答的是「这一批还剩多少」，所以没有 ``status``；
+    * 这一个带着 ``status``（``building`` / ``ready`` / ``active`` / ``failed`` /
+      ``archived``），因为详情页要回答另一个问题：「这一版建成了吗？我这一篇进去了吗？」
+
+    为什么详情页需要后者：构建收尾是一瞬间的事（实测 10 篇的库 9.5 秒建完），如果只回
+    「在跑的那次」，用户一进去就只剩一张没有上下文的文档表——「刚才那次成没成」无从回答。
+    """
+
+    build_id: str
+    version: str
+    #: 构建状态之一（见 `app.models.index_version` 的常量）。
+    status: str
+    #: 参与篇数快照（分母）。
+    planned: int
+    #: 已有结果的篇数（进度条；失败也算「有结果」）。
+    done: int
+    #: 还没有结果的篇数 = ``max(planned - done, 0)``。
+    pending: int
+    #: 这一版对应的统一稿号（缺省 ``None`` = 老行没留快照）。
+    doc_version: int | None = None
+    failures: list[BuildFailureData] = []
+    failure_count: int = 0
+    #: 起建时刻（ISO 串）：界面用它说「建于 14:03」。
+    created_at: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class DocumentStatusCountsData(BaseModel):
+    """四态各有多少篇。字段名写死而不是 ``dict[int, int]``：JSON 的键只能是字符串，
+    一个 ``{"1": 10}`` 会在前端变成「看不见的字符串键」，而这里每个字段名都是一句人话。
+    """
+
+    success: int = 0
+    failed: int = 0
+    processing: int = 0
+    queued: int = 0
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class KnowledgeBaseSummaryData(BaseModel):
+    """**库级摘要**：卡片网格与详情页 header 用的那一份，**不含文档数组**。
+
+    为什么把它从 :class:`KnowledgeBaseNode` 里拆出来：树接口一次把整个租户的所有文档
+    咽下去（一个 5000 篇的库就是 5000 行 × 每个库），而卡片上只显示四个数字。拆开之后
+    「看库」与「看库里的文档」是两个请求、两种刷新节奏——这正是「进详情总要刷新一次」
+    的根：详情以前没有自己的请求，只能读列表那一份。
+    """
+
+    kb_id: str
+    name: str
+    split_strategy: str
+    allowed_formats: list[str]
+    chunk_size: int
+    section_part_max_chars: int = 2000
+    #: 文档总数（**不随分页变**）。
+    document_count: int = 0
+    #: 四态各有多少篇：卡片上「3 篇失败」与顶部「有文档在跑」都读它。
+    status_counts: DocumentStatusCountsData = DocumentStatusCountsData()
+    #: 这个库在**生效版本 × 当前稿**下的切片总数（与检索口径一致）。
+    chunk_count: int = 0
+    needs_rebuild: bool = False
+    token_usage: TokenUsageData | None = None
+    #: 进行中**或最近一次**的构建摘要（没有构建过就是 ``None``）。
+    build: BuildSummaryData | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class KbDocumentRowData(BaseModel):
+    """详情表的一行：文档自身状态 + 它在**当前这一版构建**里的位置。
+
+    两根轴刻意分开（ADR-0034 决策九）：``status`` 是文档自己的生命周期（构建失败**不改**
+    它）；``build_state`` 是「它与这一版的关系」，由构建的记账算出来。合并成一个状态会让
+    「构建失败」污染文档状态，而那正是这条 ADR 拦住的事。
+    """
+
+    document_id: str
+    title: str
+    source_type: str
+    #: 四态：1 成功 / 2 失败 / 3 索引中 / 4 排队中。
+    status: int
+    #: 当前稿的切片数（**生效版本 × 当前稿**）。
+    chunk_count: int = 0
+    token_count: int = 0
+    error_message: str | None = None
+    #: 当前稿号（回滚过的那篇会往回走）。
+    current_version: int = 1
+    created_at: str | None = None
+    #: 它与**当前这一版构建**的关系：``done`` 已入这一版 / ``pending`` 还没进去 /
+    #: ``failed`` 这一版明确没收它 / ``None`` 没有构建可参照（从没建过，或与本次无关）。
+    build_state: str | None = None
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class KnowledgeBaseListData(BaseModel):
+    """库列表（卡片网格）：只有摘要，没有文档数组。"""
+
+    items: list[KnowledgeBaseSummaryData]
+    #: 服务端给这份数据打的时间戳（ISO 串）。前端拿它显示「数据更新于 14:03:12」——
+    #: 没有这一格，「自动刷新停了」与「数据卡住了」在界面上长得一模一样。
+    generated_at: str
+
+
+class KbDocumentsData(BaseModel):
+    """详情页一次拿全：库摘要 + 构建 + 一页文档。"""
+
+    kb: KnowledgeBaseSummaryData
+    build: BuildSummaryData | None = None
+    documents: list[KbDocumentRowData]
+    total: int
+    page: int
+    page_size: int
+    generated_at: str
+
+
+class KbBuildData(BaseModel):
+    """单个库的构建状态（独立接口：详情页轮询时只关心这一格也可以只问它）。"""
+
+    build: BuildSummaryData | None = None
+    generated_at: str
+
+
 class TokenUsageData(BaseModel):
     """一个库的 token 容量占用（#221 / 用户故事 #13）。
 

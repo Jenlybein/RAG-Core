@@ -17,8 +17,13 @@ export const KNOWLEDGE_BASE_TREE_QUERY_KEY = ['knowledge-bases', 'tree'] as cons
  *
  * 签名**刻意保持** `Promise<KnowledgeBaseNode[]>`：页面、轮询、
  * `KNOWLEDGE_BASE_TREE_QUERY_KEY` 都只认这个类型与这个函数，所以从阶段 1
- * （1 次列库 + 每库 1 次列文档）切到一次请求时，`KnowledgeManagePage.vue` 与
- * `useTreePolling.ts` 一行都不用改——变的是「怎么拿」而不是「拿到什么」。
+ * （1 次列库 + 每库 1 次列文档）切到一次请求时，`KnowledgeManagePage.vue` 一行都不用改
+ * ——变的是「怎么拿」而不是「拿到什么」。
+ *
+ * **第 17 步 #227 之后它不再是列表页的主读路径**：列表页改用 `consoleKb.fetchKbList`
+ * （库摘要，不带文档数组）、详情页改用 `fetchKbDocuments`（分页），两者各有自己的刷新
+ * 节奏。树接口留着是因为**密钥页**（`KeysPage.vue`：勾选这把 Key 能查哪些库）仍需要
+ * 「库 + 文档」一次拿全，那里不涉及轮询与分页。
  *
  * 为什么页面能安全地用会话身份读树：路由守卫（#85）已让列表页只在登录控制面后
  * 才可达，未登录会被跳 `/login`；控制面树按会话租户取全量，不按某把 Key 的白名单收窄。

@@ -1,22 +1,22 @@
 /**
- * 知识库页的**模板结构守卫**（第 17 步，现场 #226 的回归）。
+ * 知识库页的**模板结构守卫**（第 17 步 #226 / #227 的回归）。
  *
  * ## 为什么是结构断言而不是挂载测试
  *
- * 这里守的两处都是「模板里少一个东西、页面就静默失效」的形态，而它们的失效**不报错**：
+ * 这里守的几处都是「模板里少一个东西、页面就静默失效」的形态，而它们的失效**不报错**：
  *
  * 1. 卡片底部的「详情 →」曾经是一行**裸文字**，而它所在的按钮组带 `@click.stop`（防误触发
  *    整卡点击）。于是点它既不发请求、也不冒泡到卡片的 `@click` —— 用户看到的是「点了没反应」，
- *    控制台没有任何报错，请求也没有。这种缺陷用挂载测试能抓，但整页挂载要拖进 vue-query、
- *    router、Element Plus 与 API 层四套替身；而它真正的判据只有一句「它必须是个带 click 的
- *    按钮」，扫源码比挂载更直接，也更快。
+ *    控制台没有任何报错，请求也没有。
+ * 2. 「重建」曾经调的是逐篇重投（`reindexAllDocuments`），用户点完发现「需重建」提示还挂着
+ *    —— 逐篇写回的是**当前生效版本**，参数快照不变，提示当然消不掉。判据是**调哪个接口**。
+ * 3. 详情弹窗曾经没有自己的请求（读列表上一次轮询的快照），而列表在「全终态」时会静默停掉
+ *    轮询——于是「进详情要按 F5 才看到真状态」。判据是「详情里有自己的查询与一句更新时刻」。
  *
- * 2. 「一键重建」必须调 `reindexAllDocuments`（逐篇投递），不能悄悄换成「起一个整库构建」——
- *    那是另一种语义（新版本 + 收敛 + 激活），用户要的是「把这些篇重新排进队列」。
- *
- * 这两条都是**结构性**的（模板里有没有那个绑定），不是数值性的，所以断言源码是诚实的做法。
- * 反过来说：这个文件**不能**替代对 `reindexAllDocuments` 行为本身的测试——那需要一组真请求，
- * 目前没有，写在 `docs/第17步-改造报告.md` 的已知缺口里。
+ * 这些缺陷用挂载测试能抓，但整页挂载要拖进 vue-query、router、Element Plus 与 API 层四套
+ * 替身；而真正的判据只有积木级的几句话，扫源码比挂载更直接，也更快。反过来说：这个文件
+ * **不能**替代对接口行为的测试——那在 `tests/test_console_kb_read_model.py`（后端口径）与
+ * `lib/__tests__/refreshPolicy.spec.ts`（刷新策略）里。
  */
 
 import { describe, expect, it } from 'vitest'
@@ -25,8 +25,9 @@ import { describe, expect, it } from 'vitest'
 // （镜像里不做全量 dev 依赖安装），而 `?raw` 是打包器自己的能力，两边行为一致。
 import PAGE from '../KnowledgeManagePage.vue?raw'
 import CHART from '../../components/UsageChart.vue?raw'
-
-
+import LIVE_STATUS from '../../components/LiveStatus.vue?raw'
+import QUERIES from '../../composables/useKbQueries.ts?raw'
+import CONSOLE_KB from '../../services/consoleKb.ts?raw'
 
 describe('知识库卡片的操作区', () => {
   it('整卡可点 = 详情入口，且按钮组里不再有那个多余的「详情」', () => {
@@ -62,7 +63,100 @@ describe('知识库卡片的操作区', () => {
 
     expect(element).toContain(':disabled=')
     expect(element).toContain('rebuildingKbId')
-    expect(element).toContain('row.build_progress')
+    // 判据跟着契约走：`build` 摘要带 `status`（第 17 步 #227 之后不再有 build_progress）。
+    expect(element).toContain("row.build?.status === 'building'")
+  })
+
+  it('卡片上的四个数字读**聚合字段**，不再按文档数组求和', () => {
+    // 摘要不再带 documents 数组（一个 5000 篇的库不该为了四个数字读 5000 行）。
+    // 这条会抓住「有人偷偷把文档数组加回来」与「模板回退成 documents.length」。
+    const metrics = PAGE.indexOf('个分块')
+    expect(metrics).toBeGreaterThan(0)
+    const block = PAGE.slice(metrics - 900, metrics + 60)
+    expect(block).toContain('row.document_count')
+    expect(block).toContain('row.chunk_count')
+    expect(block).not.toContain('documents.length')
+    expect(block).not.toContain('chunkTotal(')
+  })
+
+  it('有失败文档时卡片上直接说数量（不用点进详情去数）', () => {
+    expect(PAGE).toContain('row.status_counts.failed')
+  })
+})
+
+describe('详情弹窗：自己的请求、自己的节奏', () => {
+  const dialogStart = PAGE.indexOf('v-model="detailOpen"')
+  const dialog = PAGE.slice(dialogStart, PAGE.indexOf('原文：只读', dialogStart))
+
+  it('弹窗用的是自己的查询（不是列表那一份）', () => {
+    expect(dialogStart).toBeGreaterThan(0)
+    expect(QUERIES).toContain('useKbDocumentsQuery')
+    expect(QUERIES).toContain('fetchKbDocuments')
+    // 反例：详情读列表的树（那是「进详情要按 F5」的根）。
+    expect(PAGE).not.toContain('useTreePolling')
+    expect(PAGE).not.toContain('treeQuery')
+  })
+
+  it('弹窗里有「更新于几点」+ 手动刷新', () => {
+    // 一段会停的刷新必须在界面上自证它停在哪一刻；这一条比把间隔调多小重要得多。
+    expect(dialog).toContain('<LiveStatus')
+    expect(dialog).toContain(':updated-at="detailUpdatedAt"')
+    expect(dialog).toContain(':mode="detailMode"')
+    expect(LIVE_STATUS).toContain('更新于')
+    expect(LIVE_STATUS).toContain("emit('refresh')")
+  })
+
+  it('弹窗里有构建进度（它以前只在卡片上，一开弹窗就被盖住了）', () => {
+    expect(dialog).toContain('detailBuild')
+    expect(dialog).toContain('重建中')
+    expect(dialog).toContain('progressPercent(detailBuild)')
+  })
+
+  it('文档表有「本次构建」第二根轴，且不改文档自己的状态列', () => {
+    // 构建期间文档状态几乎一直是「成功」（每篇只有自己那一秒是「索引中」），
+    // 所以「还在重建」只能靠第二列说出来。合并成一个状态会污染文档的状态机。
+    expect(dialog).toContain('本次构建')
+    expect(dialog).toContain("row.build_state === 'done'")
+    expect(dialog).toContain("row.build_state === 'pending'")
+    expect(dialog).toContain("row.build_state === 'failed'")
+    expect(dialog).toContain('<StatusBadge')
+  })
+
+  it('文档表分页（库可能几千篇，一次全取会把弹窗做成几 MB）', () => {
+    expect(dialog).toContain('<el-pagination')
+    expect(dialog).toContain(':total="detailTotal"')
+    expect(QUERIES).toContain('pageSize')
+  })
+
+  it('关键字交给服务端筛（有防抖），不是前端过滤一页', () => {
+    expect(dialog).toContain('服务端筛选')
+    expect(QUERIES).toContain('KEYWORD_DEBOUNCE_MS')
+    // 反例：详情里自己 filter 一遍（那只会在**当前页**里找，用户以为「没有这篇」）。
+    expect(dialog).not.toContain('.filter((doc) =>')
+  })
+})
+
+describe('列表页：摘要单独一条请求', () => {
+  it('列表用 fetchKbList（摘要，不带文档数组）', () => {
+    expect(QUERIES).toContain('fetchKbList')
+    expect(QUERIES).toContain('KB_LIST_QUERY_KEY')
+    expect(CONSOLE_KB).toContain('KB_LIST_PATH')
+    // 反例：列表又回去读树（一次把整个租户的文档读出来）。
+    expect(QUERIES).not.toContain('fetchTree')
+  })
+
+  it('列表页也有「更新于几点」+ 两档刷新', () => {
+    expect(PAGE).toContain(':updated-at="listUpdatedAt"')
+    expect(PAGE).toContain(':mode="listMode"')
+    expect(QUERIES).toContain('listRefreshMode')
+  })
+
+  it('写操作之后失效**整组**读模型（列表 / 详情 / 构建一起）', () => {
+    // 少失效一个键，症状就是「改完这一屏那一屏还是旧的」。
+    expect(PAGE).toContain('invalidateQueries({ queryKey: KB_QUERY_PREFIX })')
+    expect(CONSOLE_KB).toContain("KB_QUERY_PREFIX = ['knowledge-bases']")
+    expect(CONSOLE_KB).toContain("KB_LIST_QUERY_KEY = ['knowledge-bases', 'list']")
+    expect(CONSOLE_KB).toContain("KB_DOCUMENTS_QUERY_KEY = ['knowledge-bases', 'documents']")
   })
 })
 

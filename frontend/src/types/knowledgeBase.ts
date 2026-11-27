@@ -190,3 +190,107 @@ export type ConsoleTreeKnowledgeBase = Omit<
 export interface ConsoleTreeData {
   knowledge_bases: ConsoleTreeKnowledgeBase[]
 }
+
+/**
+ * 构建摘要（第 17 步 #227）：**进行中优先，否则最近一次**。
+ *
+ * 与 `BuildProgress` 的差别只有一条，但很关键：它带 `status`。`BuildProgress` 只描述
+ * 「还在跑的那次」，构建一收尾就是 `null`——实测 10 篇的库 9.5 秒建完，用户点进详情时
+ * 那次构建早就结束了，于是「刚才那次成没成」无从回答。
+ */
+export interface BuildSummary {
+  build_id: string
+  version: string
+  /** `building` / `ready` / `active` / `failed` / `archived`。 */
+  status: string
+  planned: number
+  done: number
+  pending: number
+  /** 这一版对应的统一稿号；`null` = 老行没留快照。 */
+  doc_version: number | null
+  failures: BuildFailure[]
+  failure_count: number
+  created_at: string | null
+}
+
+/** 四态各有多少篇（卡片上的「3 篇失败」与顶部「有文档在跑」都读它）。 */
+export interface DocumentStatusCounts {
+  success: number
+  failed: number
+  processing: number
+  queued: number
+}
+
+/**
+ * **库摘要**：卡片网格与详情 header 用的那一份，**不含文档数组**。
+ *
+ * 为什么从 `KnowledgeBaseNode` 里拆出来：树接口一次把整个租户的所有文档读出来，
+ * 一个 5000 篇的库就是 5000 行；而卡片只显示四个数字。拆开之后「看库」与「看库里的
+ * 文档」是两个请求、两种刷新节奏——详情因此才可能有「打开即取」这个动作。
+ */
+export interface KbSummary {
+  kb_id: string
+  name: string
+  split_strategy: string
+  allowed_formats: string[]
+  chunk_size: number
+  section_part_max_chars: number
+  document_count: number
+  status_counts: DocumentStatusCounts
+  /** 生效版本 × 当前稿的切片总数（与检索口径一致，不是留存版本之和）。 */
+  chunk_count: number
+  needs_rebuild: boolean
+  token_usage: { used: number; limit: number } | null
+  /** 进行中**或最近一次**的构建；`null` = 这个库从没建过。 */
+  build: BuildSummary | null
+}
+
+/** 它与**当前这一版构建**的关系（第二根轴，与文档自己的 `status` 无关）。 */
+export type BuildState = 'done' | 'pending' | 'failed' | null
+
+/** 详情表的一行。 */
+export interface KbDocumentRow {
+  document_id: string
+  title: string
+  source_type: string
+  /** 四态：1 成功 / 2 失败 / 3 索引中 / 4 排队中。 */
+  status: number
+  chunk_count: number
+  token_count: number
+  error_message: string | null
+  current_version: number
+  created_at: string | null
+  build_state: BuildState
+}
+
+/** 库列表（卡片网格）：只有摘要 + 服务端时间戳。 */
+export interface KbListPayload {
+  items: KbSummary[]
+  /** 界面显示「数据更新于 14:03:12」用。没有它，「自动刷新停了」与「卡住了」长得一样。 */
+  generated_at: string
+}
+
+/** 详情页一次拿全：库摘要 + 构建 + 一页文档。 */
+export interface KbDocumentsPayload {
+  kb: KbSummary
+  build: BuildSummary | null
+  documents: KbDocumentRow[]
+  total: number
+  page: number
+  page_size: number
+  generated_at: string
+}
+
+/** 单个库的构建状态。 */
+export interface KbBuildPayload {
+  build: BuildSummary | null
+  generated_at: string
+}
+
+/** 详情页取文档时的筛选。 */
+export interface KbDocumentsQuery {
+  page?: number
+  pageSize?: number
+  status?: number
+  keyword?: string
+}

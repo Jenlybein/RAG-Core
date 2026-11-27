@@ -230,6 +230,9 @@ def _kb(kb_id: str, tenant_id: str) -> KnowledgeBase:
         allowed_formats=["markdown"],
         settings={"chunk_size": 512, "section_part_max_chars": 2000},
         created_at=datetime(2026, 1, 1, 9, 0, 0),
+        # 计数口径要「生效版本 × 当前稿」两轴（#227）：库行必须给出生效版本，
+        # 否则树里那条分组计数会拿到 None 而回落 0——用例看到的就是「全 0 片」。
+        active_index_version="v1",
     )
 
 
@@ -411,8 +414,12 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         doc.error_message = None
         return True
 
-    def _count_chunks(_db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
+    def _count_chunks(
+        _db: Any, document_ids: list[str], *, tenant_id: str, index_version: str | None
+    ) -> dict[str, int]:
         assert tenant_id == Tenants.alpha_or_beta(document_ids), "切片计数必须强制带租户"
+        # 两轴都要传：只传租户就是「把留存版本的切片也数进来」的老写法。
+        assert index_version == "v1", "计数必须锁生效版本"
         count_calls.append(list(document_ids))
         return {document_id: CHUNK_COUNTS.get(document_id, 0) for document_id in document_ids}
 
@@ -442,9 +449,9 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         return _prepare(db, document_id, tenant_id=tenant_id, allow_success=allow_success, **kwargs)
 
     async def _count_chunks_async(
-        _db: Any, document_ids: list[str], *, tenant_id: str
+        _db: Any, document_ids: list[str], *, tenant_id: str, index_version: str | None
     ) -> dict[str, int]:
-        return _count_chunks(_db, document_ids, tenant_id=tenant_id)
+        return _count_chunks(_db, document_ids, tenant_id=tenant_id, index_version=index_version)
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
     # 控制面的读与写都已经在异步栈上（票 #130）：被替换的仓储函数因此**只有一个面**，

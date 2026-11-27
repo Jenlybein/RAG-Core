@@ -960,6 +960,114 @@ async def count_by_kb_in_states(
     return int(result.scalar_one())
 
 
+def _kb_scoped_conditions(
+    kb_id: str,
+    *,
+    tenant_id: str,
+    status: int | None = None,
+    keyword: str | None = None,
+) -> list[ColumnElement[bool]]:
+    """「这个库、这个租户、可选状态、可选标题关键字」这一组条件。
+
+    列表与计数**共用**同一组条件：分页最容易出的错是「总数用一套条件、这一页用另一套」
+    ——页数因此与实际行数对不上，而界面上只会表现为「翻到第 3 页是空的」。
+
+    ``keyword`` 用 ``ILIKE``（大小写不敏感）：标题是中文 + 英文混排，用户不会为了一次
+    搜索去在意大小写。走的是顺序扫描，但它是**按库收窄后**的扫描（单库几千行），
+    与「整租户全表扫」不是一回事。
+    """
+
+    conditions: list[ColumnElement[bool]] = [
+        Document.kb_id == kb_id,
+        Document.tenant_id == tenant_id,
+    ]
+    if status is not None:
+        conditions.append(Document.status == status)
+    if keyword:
+        conditions.append(Document.title.ilike(f"%{_escape_like(keyword)}%", escape="\\"))
+    return conditions
+
+
+#: LIKE 模式里的三个元字符（`%`、`_`、转义符本身）。用户搜什么就是搜什么。
+_LIKE_SPECIALS = ("\\", "%", "_")
+
+
+def _escape_like(value: str) -> str:
+    r"""把用户输入里的 LIKE 元字符转成字面量。
+
+    ## 为什么要转
+
+    ``%`` 与 ``_`` 是 LIKE 的通配符，而标题里真的会出现下划线（`api_reference.md`）。
+    不转义时用户搜 ``policy_`` 会命中 ``billing_policy.md``（``_`` 吃掉了那个句点），
+    搜 ``%`` 会**返回整库**——这两种都不会报错，只会让「搜索没搜到 / 全都搜到了」变成
+    说不清的事。
+
+    转义符本身要**最先**替换：先替换 `%` 会把用户自己输入的 ``\%`` 变成 ``\\%``，
+    最后再处理转义符时又把刚插进去的那个也吃掉。
+    """
+
+    escaped = value
+    for special in _LIKE_SPECIALS:
+        escaped = escaped.replace(special, "\\" + special)
+    return escaped
+
+
+async def count_by_kb_by_status(
+    db: AsyncSession, kb_id: str, *, tenant_id: str
+) -> dict[int, int]:
+    """该库每个状态各有多少篇（一次 GROUP BY，四态一个都不落）。
+
+    为什么要这个数：拆开读模型之后，列表接口不再带文档数组，于是「这个库里有没有在跑、
+    有几篇失败」在卡片上就没有来源了——而那两件事恰恰是用户决定「要不要点进去」的理由。
+    一个按状态分组的聚合就能把它们留在卡片上，代价是一次索引扫描（单库，按 kb_id 收窄）。
+    """
+
+    statement = (
+        select(Document.status, func.count())
+        .where(Document.kb_id == kb_id, Document.tenant_id == tenant_id)
+        .group_by(Document.status)
+    )
+    return {int(status): int(count) for status, count in (await db.execute(statement)).all()}
+
+
+async def list_page_by_kb(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    offset: int = 0,
+    limit: int = 50,
+    status: int | None = None,
+    keyword: str | None = None,
+) -> list[Document]:
+    """该库的一页文档（按创建时间倒序：最新传的排前面）。"""
+
+    statement = (
+        select(Document)
+        .where(*_kb_scoped_conditions(kb_id, tenant_id=tenant_id, status=status, keyword=keyword))
+        .order_by(Document.created_at.desc(), Document.id.desc())
+        .offset(max(offset, 0))
+        .limit(max(limit, 1))
+    )
+    return list((await db.execute(statement)).scalars().all())
+
+
+async def count_by_kb_filtered(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    status: int | None = None,
+    keyword: str | None = None,
+) -> int:
+    """同一组条件下的**总行数**（分页用；与 :func:`list_page_by_kb` 共用条件）。"""
+
+    statement = select(func.count()).select_from(Document).where(
+        *_kb_scoped_conditions(kb_id, tenant_id=tenant_id, status=status, keyword=keyword)
+    )
+    return int((await db.execute(statement)).scalar_one() or 0)
+
+
 async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
     """该租户在该知识库下的文档总数（静态配额「单库文档数」的唯一计数处，票 #79）。"""
 

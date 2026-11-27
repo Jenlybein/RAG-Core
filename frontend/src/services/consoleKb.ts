@@ -11,6 +11,10 @@ import type {
 import { KB_SECTION_PART_DEFAULT } from '../types/knowledgeBase'
 import type {
   ConsoleTreeData,
+  KbBuildPayload,
+  KbDocumentsPayload,
+  KbDocumentsQuery,
+  KbListPayload,
   ConsoleTreeDocument,
   CreatedKnowledgeBase,
   CreateKnowledgeBaseRequest,
@@ -64,6 +68,57 @@ export function updateKbSettingsConsole(
  */
 export function rebuildKbConsole(kbId: string): Promise<RebuildKbReceipt> {
   return consoleHttp.post<RebuildKbReceipt>(`/console/knowledge-bases/${kbId}/rebuild`)
+}
+
+// ── 读模型（第 17 步 #227）：库摘要 / 详情一页 / 构建状态 ────────────────
+
+/**
+ * 三个查询键。**前缀刻意相同**（`['knowledge-bases', ...]`）：写操作之后一次
+ * `invalidateQueries({ queryKey: ['knowledge-bases'] })` 就能把列表、详情、构建与老树接口
+ * 一起失效——少一个键没失效，症状就是「改完这一屏那一屏还是旧的」。
+ */
+export const KB_LIST_QUERY_KEY = ['knowledge-bases', 'list'] as const
+export const KB_DOCUMENTS_QUERY_KEY = ['knowledge-bases', 'documents'] as const
+export const KB_BUILD_QUERY_KEY = ['knowledge-bases', 'build'] as const
+/** 所有知识库读模型共同的前缀（失效用）。 */
+export const KB_QUERY_PREFIX = ['knowledge-bases'] as const
+
+export const KB_LIST_PATH = '/console/knowledge-bases'
+
+/** 库列表（卡片网格）：只有摘要，不读文档行。 */
+export function fetchKbList(): Promise<KbListPayload> {
+  return consoleHttp.get<KbListPayload>(KB_LIST_PATH)
+}
+
+function _documentsQueryString(query: KbDocumentsQuery): string {
+  const params = new URLSearchParams()
+  if (query.page !== undefined) params.set('page', String(query.page))
+  if (query.pageSize !== undefined) params.set('page_size', String(query.pageSize))
+  if (query.status !== undefined) params.set('status', String(query.status))
+  const keyword = query.keyword?.trim()
+  if (keyword) params.set('keyword', keyword)
+  const encoded = params.toString()
+  return encoded === '' ? '' : `?${encoded}`
+}
+
+/**
+ * 详情页**打开即取**的那一份：库摘要 + 构建摘要 + 一页文档。
+ *
+ * 「进详情要不要按 F5」的正面回答就是这个函数存在本身：它以前没有自己的请求，只能读
+ * 列表页那份树，而树只在「有在途工作时」每 3 秒刷一次、一旦全终态就**永久停止**。
+ */
+export function fetchKbDocuments(
+  kbId: string,
+  query: KbDocumentsQuery = {},
+): Promise<KbDocumentsPayload> {
+  return consoleHttp.get<KbDocumentsPayload>(
+    `${KB_LIST_PATH}/${kbId}/documents${_documentsQueryString(query)}`,
+  )
+}
+
+/** 只问「这个库的构建到哪儿了」。 */
+export function fetchKbBuild(kbId: string): Promise<KbBuildPayload> {
+  return consoleHttp.get<KbBuildPayload>(`${KB_LIST_PATH}/${kbId}/build`)
 }
 
 /** 读树：租户来自会话，后端不做白名单收窄（控制面要看整个租户）。 */

@@ -53,10 +53,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.console_auth import ConsoleIdentity
 from app.core.exceptions import AppError, ErrorCode
 from app.core.plan_cache import PlanCache
+from app.db.base import now
 from app.db.transaction import after_commit
 from app.models.document import Document
 from app.models.index_version import INDEX_BUILD_BUILDING
-from app.schemas.console_kbs import BuildFailureData, BuildProgressData, TokenUsageData
+from app.schemas.console_kbs import (
+    BuildFailureData,
+    BuildProgressData,
+    BuildSummaryData,
+    DocumentStatusCountsData,
+    KbDocumentRowData,
+    KnowledgeBaseSummaryData,
+    TokenUsageData,
+)
 from app.models.knowledge_base import (
     MAX_CHUNK_SIZE,
     MAX_SECTION_PART_MAX_CHARS,
@@ -188,7 +197,10 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
     for kb in await knowledge_base_repository.list_by_tenant(db, tenant_id):
         documents = await document_repository.list_by_kb_async(db, kb.id, tenant_id=tenant_id)
         counts = await chunk_repository.count_by_document_ids(
-            db, [document.id for document in documents], tenant_id=tenant_id
+            db,
+            [document.id for document in documents],
+            tenant_id=tenant_id,
+            index_version=kb.active_index_version,
         )
         nodes.append(
             TreeKnowledgeBase(
@@ -219,6 +231,253 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
             )
         )
     return nodes
+
+
+# ── 读模型：库摘要 / 详情一页 / 构建状态（第 17 步 #227）──────────────
+
+#: 详情页默认一页多少行。50 是一屏多一点：翻页成本低，一页也够看。
+DEFAULT_DOCUMENTS_PAGE_SIZE: Final[int] = 50
+#: 一页最多多少行（防「page_size=100000」把一次响应做成几 MB）。
+MAX_DOCUMENTS_PAGE_SIZE: Final[int] = 200
+
+
+def _isoformat(value: Any) -> str | None:
+    """datetime → ISO 串（``None`` 原样传）。界面只需要「能显示成几点」的那一层。"""
+
+    return None if value is None else value.isoformat()
+
+
+async def _build_summary_of(
+    db: AsyncSession, *, kb_id: str, tenant_id: str
+) -> BuildSummaryData | None:
+    """这个库**最近一次值得说**的构建（进行中优先，否则最新那次）。
+
+    与 :func:`_build_progress_of` 的分工：那条只答「还在跑吗、还剩多少」；这条连
+    ``status`` 一起给，因为详情页在构建**已经收尾**时也需要上下文（用户点进去的那一刻，
+    一次 10 篇的构建多半早就跑完了）。
+    """
+
+    row = await index_version_repository.latest_for_kb(db, kb_id, tenant_id=tenant_id)
+    if row is None:
+        return None
+    planned = max(int(row.documents_planned or 0), 0)
+    done = min(max(int(row.documents_done or 0), 0), planned)
+    failures = list(row.failed_documents or ())
+    return BuildSummaryData(
+        build_id=str(row.id),
+        version=str(row.version),
+        status=str(row.status),
+        planned=planned,
+        done=done,
+        pending=max(planned - done, 0),
+        doc_version=None if row.doc_version is None else int(row.doc_version),
+        failures=[
+            BuildFailureData(**entry) for entry in failures[:BUILD_FAILURES_IN_PROGRESS]
+        ],
+        failure_count=len(failures),
+        created_at=_isoformat(row.created_at),
+    )
+
+
+async def _summary_of(
+    db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str, plan: PlanSpec
+) -> KnowledgeBaseSummaryData:
+    """一个库的摘要：四个数字 + 需重建 + 构建。**不读文档数组**。
+
+    ``chunk_count`` 走 :func:`chunk_repository.count_in_kb`（一条聚合），与详情表每一行的
+    ``chunk_count`` 共用同一个「生效版本 × 当前稿」谓词——卡片上的合计与表格里每行之和对
+    得上，是这两个数能被相信的前提。
+    """
+
+    counts = await document_repository.count_by_kb_by_status(
+        db, str(kb.id), tenant_id=tenant_id
+    )
+    return KnowledgeBaseSummaryData(
+        kb_id=str(kb.id),
+        name=kb.name,
+        split_strategy=kb.split_strategy,
+        allowed_formats=formats_of(kb),
+        chunk_size=settings_of(kb)["chunk_size"],
+        section_part_max_chars=settings_of(kb)["section_part_max_chars"],
+        document_count=sum(counts.values()),
+        status_counts=DocumentStatusCountsData(
+            success=counts.get(int(DocumentStatus.SUCCESS), 0),
+            failed=counts.get(int(DocumentStatus.FAILED), 0),
+            processing=counts.get(int(DocumentStatus.PROCESSING), 0),
+            queued=counts.get(int(DocumentStatus.QUEUED), 0),
+        ),
+        chunk_count=await chunk_repository.count_in_kb(
+            db, str(kb.id), tenant_id=tenant_id, index_version=kb.active_index_version
+        ),
+        needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
+        token_usage=await _token_usage_of(
+            db, kb_id=str(kb.id), tenant_id=tenant_id, plan=plan
+        ),
+        build=await _build_summary_of(db, kb_id=str(kb.id), tenant_id=tenant_id),
+    )
+
+
+async def list_summaries(db: AsyncSession, *, tenant_id: str) -> dict[str, Any]:
+    """库列表（卡片网格）：只有摘要。
+
+    与 :func:`list_tree` 的差别就是**没有文档数组**：卡片只显示四个数字，为它把整个租户的
+    文档行（一个 5000 篇的库就是 5000 行）读出来再丢掉，是「进详情总要刷新一次」那类问题的
+    一半原因——列表与详情共用一份太重、太重的东西，就没法各自定刷新节奏。
+    """
+
+    plan = await plan_service.resolve_plan(db, await _tenant_plan_id(db, tenant_id=tenant_id))
+    items = [
+        await _summary_of(db, kb, tenant_id=tenant_id, plan=plan)
+        for kb in await knowledge_base_repository.list_by_tenant(db, tenant_id)
+    ]
+    return {"items": items, "generated_at": _isoformat(now())}
+
+
+async def _build_state_of(
+    db: AsyncSession,
+    *,
+    kb_id: str,
+    tenant_id: str,
+    build: BuildSummaryData | None,
+    documents: list[Document],
+) -> dict[str, str | None]:
+    """每篇文档与**这一版构建**的关系：``done`` / ``pending`` / ``failed`` / ``None``。
+
+    ## 为什么这是第二根轴，而不是给文档状态加一个值
+
+    ``documents.status`` 是文档自己的生命周期（四态），构建失败**不改它**（ADR-0034 决策九：
+    那篇文档本身没坏，线上旧版本照常可查）。而「它进没进这一版」是**构建与它的关系**，
+    由构建的记账算：真值（这一版这一稿下有切片的文档）∩ 失败明细 ∩ 它是否本该参与。
+
+    合并成一个状态会同时坏掉两件事：文档状态被构建污染；以及「构建在跑」这件事在状态列
+    根本表达不出来（构建期间文档几乎一直是「成功」，只有它自己那一秒是「索引中」）。
+
+    ## 三种结论的判据
+
+    * 在失败明细里 → ``failed``（这一版明确没收它）；
+    * 在这一版的切片真值里 → ``done``；
+    * 本来该参与（``status`` 是成功）却不在真值里 → ``pending``（还没跑到它）；
+    * 其余（失败 / 排队中的文档）→ ``None``：它本来就不参与这一版，说「待重建」是误导。
+    """
+
+    if build is None:
+        return {str(document.id): None for document in documents}
+
+    done = await chunk_repository.list_document_ids_in_version(
+        db,
+        kb_id,
+        tenant_id=tenant_id,
+        index_version=build.version,
+        doc_version=build.doc_version,
+    )
+    failed_ids = {str(entry.document_id) for entry in build.failures}
+    # 失败明细可能被截断（只回前几条），所以「总失败数」不能只看这个集合——
+    # 但**逐篇判定**只能靠它。截断的那几篇会落到 pending，这比把成功的篇报成失败安全。
+    states: dict[str, str | None] = {}
+    for document in documents:
+        document_id = str(document.id)
+        if document_id in failed_ids:
+            states[document_id] = "failed"
+        elif document_id in done:
+            states[document_id] = "done"
+        elif document.status == DocumentStatus.SUCCESS:
+            states[document_id] = "pending"
+        else:
+            states[document_id] = None
+    return states
+
+
+async def list_documents_page(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    kb_id: str,
+    page: int = 1,
+    page_size: int = DEFAULT_DOCUMENTS_PAGE_SIZE,
+    status: int | None = None,
+    keyword: str | None = None,
+) -> dict[str, Any]:
+    """详情页一次拿全：库摘要 + 构建摘要 + **一页**文档（每行带第二根轴）。
+
+    ## 为什么详情要有自己的请求
+
+    它以前读列表那一份树，而树只在「有在途工作时」每 3 秒刷一次、一旦全终态就**永久停止**。
+    于是「进详情 → 数据是几十秒前的 → 只能 F5」不是缓存问题，是**没有自己的请求**：
+    详情从来没有「打开即取」这个动作。
+
+    现在它有：打开就取一页（并带上 ``generated_at``），之后按自己的节奏刷新。
+
+    ## 分页是 SQL 层的
+
+    ``total`` 与 ``documents`` 用**同一组条件**（:func:`document_repository._kb_scoped_conditions`），
+    所以页数不会与实际行数打架。
+    """
+
+    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
+    if kb is None:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+
+    plan = await plan_service.resolve_plan(db, await _tenant_plan_id(db, tenant_id=tenant_id))
+    summary = await _summary_of(db, kb, tenant_id=tenant_id, plan=plan)
+    build = summary.build
+
+    safe_page = max(int(page), 1)
+    safe_size = min(max(int(page_size), 1), MAX_DOCUMENTS_PAGE_SIZE)
+    documents = await document_repository.list_page_by_kb(
+        db,
+        kb_id,
+        tenant_id=tenant_id,
+        offset=(safe_page - 1) * safe_size,
+        limit=safe_size,
+        status=status,
+        keyword=keyword,
+    )
+    counts = await chunk_repository.count_by_document_ids(
+        db,
+        [str(document.id) for document in documents],
+        tenant_id=tenant_id,
+        index_version=kb.active_index_version,
+    )
+    states = await _build_state_of(
+        db, kb_id=kb_id, tenant_id=tenant_id, build=build, documents=documents
+    )
+    return {
+        "kb": summary,
+        "build": build,
+        "documents": [
+            KbDocumentRowData(
+                document_id=str(document.id),
+                title=document.title,
+                source_type=document.source_type,
+                status=int(document.status),
+                chunk_count=counts.get(str(document.id), 0),
+                token_count=int(getattr(document, "token_count", 0) or 0),
+                error_message=document.error_message,
+                current_version=int(getattr(document, "current_version", 1) or 1),
+                created_at=_isoformat(document.created_at),
+                build_state=states.get(str(document.id)),
+            )
+            for document in documents
+        ],
+        "total": await document_repository.count_by_kb_filtered(
+            db, kb_id, tenant_id=tenant_id, status=status, keyword=keyword
+        ),
+        "page": safe_page,
+        "page_size": safe_size,
+        "generated_at": _isoformat(now()),
+    }
+
+
+async def build_of(db: AsyncSession, *, tenant_id: str, kb_id: str) -> dict[str, Any]:
+    """只回答「这个库的构建现在什么状态」（详情页细粒度刷新时只问这一格）。"""
+
+    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
+    if kb is None:
+        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
+    return {
+        "build": await _build_summary_of(db, kb_id=kb_id, tenant_id=tenant_id),
+        "generated_at": _isoformat(now()),
+    }
 
 
 async def create_kb(
@@ -367,7 +626,10 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
     # 把它们算进「将重建 N 篇」会让人以为这次能修好它们。
     rebuildable = [document for document in documents if document.status == DocumentStatus.SUCCESS]
     counts = await chunk_repository.count_by_document_ids(
-        db, [document.id for document in rebuildable], tenant_id=tenant_id
+        db,
+        [document.id for document in rebuildable],
+        tenant_id=tenant_id,
+        index_version=kb.active_index_version,
     )
     rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
     live = next((row for row in rows if row.version == kb.active_index_version), None)

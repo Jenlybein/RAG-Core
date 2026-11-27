@@ -38,19 +38,25 @@ import {
   type UploadResultRow,
   type UploadRowStatus,
 } from '../composables/useUploadDocuments'
-import { useTreePolling } from '../composables/useTreePolling'
+import LiveStatus from '../components/LiveStatus.vue'
+import {
+  PAGE_SIZE_OPTIONS,
+  useKbDocumentsFilter,
+  useKbDocumentsQuery,
+  useKbListQuery,
+} from '../composables/useKbQueries'
 import { errorText } from '../lib/errorText'
 import {
   deleteDocumentConsole,
   deleteKbConsole,
   fetchDocumentContentConsole,
+  KB_QUERY_PREFIX,
   reindexDocumentConsole,
   rebuildKbConsole,
   uploadConsole,
 } from '../services/consoleKb'
-import { KNOWLEDGE_BASE_TREE_QUERY_KEY } from '../services/knowledgeBaseService'
-import type { DocumentContent, DocumentListItem } from '../types/document'
-import type { BuildProgress, KnowledgeBaseNode } from '../types/knowledgeBase'
+import type { DocumentContent } from '../types/document'
+import type { BuildSummary, KbDocumentRow, KbSummary } from '../types/knowledgeBase'
 import { DOCUMENT_STATUS, isDocumentBusy } from '../utils/documentStatus'
 import { formatTokens } from '../utils/usageFormat'
 
@@ -75,93 +81,124 @@ const STATUS_TEXT: Record<UploadRowStatus, string> = {
  * 比在模板里堆类型断言可读得多——而且判定本身就是安全网：把库对象当文档发删除请求，
  * 在后端是一次 20016，在这里就是被拦下的一次空操作。
  */
-function isKbRow(row: unknown): row is KnowledgeBaseNode {
-  return typeof row === 'object' && row !== null && 'kb_id' in row && 'documents' in row
+function isKbRow(row: unknown): row is KbSummary {
+  // `document_count` 而不是 `documents`：列表摘要**不再带文档数组**（第 17 步 #227）。
+  // 判定条件跟着契约走——拿旧字段判会让每次点击都静默变成空操作。
+  return typeof row === 'object' && row !== null && 'kb_id' in row && 'document_count' in row
 }
 
-function isDocRow(row: unknown): row is DocumentListItem {
+function isDocRow(row: unknown): row is KbDocumentRow {
   return typeof row === 'object' && row !== null && 'document_id' in row
 }
 
 const router = useRouter()
 const queryClient = useQueryClient()
 
-const { treeQuery, hasPendingDocuments } = useTreePolling()
-const treePending = treeQuery.isPending
-const treeError = treeQuery.error
-const refetchTree = treeQuery.refetch
-const tree = computed<KnowledgeBaseNode[]>(() => treeQuery.data.value ?? [])
+/**
+ * 列表与详情是**两条查询、两种节奏**（第 17 步 #227）：
+ *
+ * - 列表只读库摘要（四个数字 + 构建状态），空闲时 60 秒慢查一次；
+ * - 详情只在弹窗打开时启用，**打开即取**——它以前没有自己的请求，只能读列表上一次轮询的
+ *   快照，于是「进详情总要按 F5 才看到真状态」。
+ */
+const { query: listQuery, items: kbs, mode: listMode, updatedAt: listUpdatedAt } = useKbListQuery()
+const listPending = listQuery.isPending
+const listError = listQuery.error
+const refetchList = listQuery.refetch
 
-/** 分块总数：详情与列表都要，按行求和放在一处，避免两个地方各算一遍。 */
 /** 容量占用百分比；上限为 0 时按 0 处理（那是异常配置，不该除以零让页面炸掉）。 */
-function usagePercent(row: KnowledgeBaseNode): number {
+function usagePercent(row: KbSummary): number {
   const usage = row.token_usage
   if (!usage || usage.limit <= 0) return 0
   return Math.round((usage.used / usage.limit) * 100)
 }
 
 /**
- * token 数的量级写法（「12.4 万」/「3 万」）。
+ * 构建进度百分比。
  *
- * 精确到个位在容量条上只是噪音：用户要判断的是「还剩多少」，不是「还差 137 个」。
- * 与后端的 `_format_tokens` 同一个取舍（那边也是量级 + 一位小数），两处显示才一致。
+ * 两个边界都必须显式处理，否则进度条会给错误信号：`planned === 0` 时回 0 而不是 NaN
+ * （空库建版本是合法情形，`0 / 0` 不是）；`done === planned` 时回 100（断言「满了」，
+ * 而不是留一格空白让人以为还差一点）。
  */
-function chunkTotal(documents: DocumentListItem[]): number {
-  return documents.reduce((sum, doc) => sum + (doc.chunk_count ?? 0), 0)
-}
-
-/**
- * 构建进度百分比（#216）。
- *
- * 两个边界都必须显式处理，否则进度条会给错误信号：
- * - `planned === 0` 时回 0 而不是 NaN（空库建版本是合法情形，`0 / 0` 不是）；
- * - `done === planned` 时回 100（断言「满了」，而不是留一格空白让人以为还差一点）。
- */
-function progressPercent(progress: BuildProgress): number {
+function progressPercent(progress: BuildSummary): number {
   if (progress.planned <= 0) return 0
   const ratio = (progress.done / progress.planned) * 100
   return Math.max(0, Math.min(100, Math.round(ratio)))
 }
 
-// 搜索只在客户端过滤知识库名称：没有搜索参数的后端接口，前端不能自己发明一个 query。
+// 库名搜索仍在客户端：列表是整个租户的（十几到几十条），没有搜索参数的后端接口，
+// 前端不能自己发明一个 query。文档搜索不一样——那是分页的，必须交给服务端。
 const keyword = ref('')
-const filteredTree = computed(() => {
+const filteredKbs = computed(() => {
   const needle = keyword.value.trim().toLowerCase()
-  if (needle === '') return tree.value
-  return tree.value.filter((kb) => kb.name.toLowerCase().includes(needle))
+  if (needle === '') return kbs.value
+  return kbs.value.filter((kb) => kb.name.toLowerCase().includes(needle))
 })
-
-async function refresh(): Promise<void> {
-  // 失效而不是手动 refetch：轮询、弹窗后的即时刷新走同一份缓存，避开两份状态互相对打。
-  await queryClient.invalidateQueries({ queryKey: KNOWLEDGE_BASE_TREE_QUERY_KEY })
-}
-
-// ───────── 详情弹窗 ─────────
-const detailKbId = ref<string | null>(null)
-const detailOpen = ref(false)
-const docKeyword = ref('')
 
 /**
- * 详情认 `kb_id` 而不是把整个对象存下来：树会被轮询刷新，存对象会拿一份旧快照渲染
- * （刚传完的文档不出现，删除后还留着）。从当前树里按 id 取，永远是新的。
+ * 写操作之后刷新：**失效整组读模型**（列表 / 详情 / 构建都在 `['knowledge-bases']` 前缀下）。
+ *
+ * 为什么用失效而不是 `refetch`：轮询、弹窗关闭后的即时刷新、手动刷新三条路径必须落在同一份
+ * 缓存上，否则它们会互相覆盖（上一版就是两份状态互相对打）。
  */
-const detailKb = computed<KnowledgeBaseNode | null>(() => {
-  if (detailKbId.value === null) return null
-  return tree.value.find((kb) => kb.kb_id === detailKbId.value) ?? null
-})
+async function refresh(): Promise<void> {
+  await queryClient.invalidateQueries({ queryKey: KB_QUERY_PREFIX })
+}
 
-const detailDocuments = computed<DocumentListItem[]>(() => {
-  const kb = detailKb.value
-  if (kb === null) return []
-  const needle = docKeyword.value.trim().toLowerCase()
-  if (needle === '') return kb.documents
-  return kb.documents.filter((doc) => doc.title.toLowerCase().includes(needle))
-})
+// ───────── 详情弹窗：自己的查询、自己的节奏 ─────────
+const detailKbId = ref<string | null>(null)
+const detailOpen = ref(false)
+const detailFilter = useKbDocumentsFilter()
+
+/**
+ * 详情一条查询：**打开即取**（`enabled` 由 `detailKbId` 控制，键里带页码与筛选）。
+ *
+ * 这一条是本轮「进详情要按 F5」的正面回答：它有请求，所以永远是打开那一刻的数据；
+ * 响应带 `generated_at`，界面上就写得出「更新于 14:03:12」。
+ */
+const {
+  query: detailQuery,
+  payload: detailPayload,
+  mode: detailMode,
+  updatedAt: detailUpdatedAt,
+} = useKbDocumentsQuery(detailKbId, detailFilter)
+
+/**
+ * 四个筛选参数单独拆出来给模板用：`useKbDocumentsFilter()` 返回的是装在普通对象里的 ref，
+ * 模板不会自动解包对象内的 ref（只有顶层 ref 才会）——所以要么到处写 `.value`，
+ * 要么在这里拆一次。这里拆。
+ */
+const docKeyword = detailFilter.keyword
+const detailStatus = detailFilter.status
+const detailPage = detailFilter.page
+const detailPageSize = detailFilter.pageSize
+
+const detailKb = computed<KbSummary | null>(() => detailPayload.value?.kb ?? null)
+const detailBuild = computed<BuildSummary | null>(() => detailPayload.value?.build ?? null)
+const detailDocuments = computed<KbDocumentRow[]>(() => detailPayload.value?.documents ?? [])
+const detailTotal = computed(() => detailPayload.value?.total ?? 0)
+const detailPending = detailQuery.isPending
+const detailError = detailQuery.error
+const detailFetching = detailQuery.isFetching
+
+/**
+ * 当前页里「还没被这一版收进去」的篇数。
+ *
+ * 只数 `pending`：`failed` 那一批是**已经有结论**的（这一版明确没收它），把它们算进
+ * 「还剩多少」会让人一直等一个不会变的数。进度条的分母/分子另有构建行自己记的
+ * `done` / `planned`，这一格只是「你正在看的这一页还有几篇没落地」。
+ */
+const detailOutstanding = computed(
+  () => detailDocuments.value.filter((row) => row.build_state === 'pending').length,
+)
 
 function openDetail(row: unknown): void {
   if (!isKbRow(row)) return
   detailKbId.value = row.kb_id
-  docKeyword.value = ''
+  // 换库就回第一页并清掉筛选：带着上一个库的关键字打开新库，多半是空表。
+  detailFilter.keyword.value = ''
+  detailFilter.status.value = undefined
+  detailFilter.page.value = 1
   detailOpen.value = true
 }
 
@@ -232,9 +269,9 @@ const uploadOpen = ref(false)
 const uploadPresetKbId = ref('')
 
 const kbOptions = computed(() =>
-  tree.value.map((kb) => ({
+  kbs.value.map((kb) => ({
     value: kb.kb_id,
-    label: `${kb.name}（${kb.documents.length} 篇）`,
+    label: `${kb.name}（${kb.document_count} 篇）`,
   })),
 )
 
@@ -283,10 +320,10 @@ function rowErrorText(row: UploadResultRow): string {
 
 // ───────── 删除知识库 / 删除文档 / 重建索引 ─────────
 type PendingAction =
-  | { kind: 'deleteKb'; kb: KnowledgeBaseNode }
-  | { kind: 'deleteDoc'; document: DocumentListItem }
-  | { kind: 'reindex'; document: DocumentListItem }
-  | { kind: 'rebuild'; kb: KnowledgeBaseNode }
+  | { kind: 'deleteKb'; kb: KbSummary }
+  | { kind: 'deleteDoc'; document: KbDocumentRow }
+  | { kind: 'reindex'; document: KbDocumentRow }
+  | { kind: 'rebuild'; kb: KbSummary }
 
 const pendingAction = ref<PendingAction | null>(null)
 const confirmOpen = ref(false)
@@ -306,13 +343,13 @@ const dialogMessage = computed(() => {
   const action = pendingAction.value
   if (action === null) return ''
   if (action.kind === 'deleteKb') {
-    const count = action.kb.documents.length
+    const count = action.kb.document_count
     if (count === 0) return `确认删除空知识库《${action.kb.name}》？删除后无法恢复。`
     // 非空库后端会拒绝；提前说清规则与做法，比让用户撞一次 20015 更好。
     return `《${action.kb.name}》里还有 ${count} 篇文档，删不掉。先在这个库的详情里把文档删空，再删库。`
   }
   if (action.kind === 'rebuild') {
-    const count = action.kb.documents.length
+    const count = action.kb.document_count
     // 重建 = 产出新版本并激活：全库重嵌入 + 重写 ES，代价是服务器时间与钱。这句必须说清，
     // 否则「一次误点」在用户心里只是一次刷新。
     return (
@@ -357,7 +394,7 @@ const dialogDanger = computed(
 )
 /** 非空库不允许点删除确认：规则来自后端，这里只是别给一个注定失败的按钮。 */
 const confirmDisabled = computed(
-  () => pendingAction.value?.kind === 'deleteKb' && pendingAction.value.kb.documents.length > 0,
+  () => pendingAction.value?.kind === 'deleteKb' && pendingAction.value.kb.document_count > 0,
 )
 
 function askDeleteKb(row: unknown): void {
@@ -390,7 +427,7 @@ function closeDialog(): void {
 }
 
 const deleteKbMutation = useMutation({
-  mutationFn: (kb: KnowledgeBaseNode) => deleteKbConsole(kb.kb_id),
+  mutationFn: (kb: KbSummary) => deleteKbConsole(kb.kb_id),
   onSuccess: () => {
     ElMessage.success('知识库已删除')
     closeDialog()
@@ -403,7 +440,7 @@ const deleteKbMutation = useMutation({
 })
 
 const deleteDocMutation = useMutation({
-  mutationFn: (document: DocumentListItem) => deleteDocumentConsole(document.document_id),
+  mutationFn: (document: KbDocumentRow) => deleteDocumentConsole(document.document_id),
   onSuccess: () => {
     ElMessage.success('文档已删除')
     closeDialog()
@@ -415,7 +452,7 @@ const deleteDocMutation = useMutation({
 })
 
 const reindexMutation = useMutation({
-  mutationFn: (document: DocumentListItem) =>
+  mutationFn: (document: KbDocumentRow) =>
     // 已成功的文档必须显式 force：后端否则回 20027，替用户保住还能用的索引。
     // 排队中 / 失败 / 索引中（租约已过期那种）都不带 force——它们本来就在可重建那一档。
     reindexDocumentConsole(document.document_id, {
@@ -453,7 +490,7 @@ const reindexMutation = useMutation({
  */
 const rebuildingKbId = ref<string | null>(null)
 
-async function rebuildKb(kb: KnowledgeBaseNode): Promise<void> {
+async function rebuildKb(kb: KbSummary): Promise<void> {
   rebuildingKbId.value = kb.kb_id
   try {
     const receipt = await rebuildKbConsole(kb.kb_id)
@@ -503,7 +540,13 @@ function goRetrieve(kbId: string): void {
     <el-card shadow="never">
       <template #header>
         <div class="flex flex-wrap items-center justify-between gap-3">
-          <span class="th-label">{{ tree.length }} 个知识库</span>
+          <span class="th-label">{{ kbs.length }} 个知识库</span>
+          <LiveStatus
+            :updated-at="listUpdatedAt"
+            :mode="listMode"
+            :refreshing="listQuery.isFetching.value"
+            @refresh="refresh()"
+          />
           <el-input v-model="keyword" class="w-64" placeholder="搜索知识库" clearable>
             <template #prefix>
               <el-icon><Search /></el-icon>
@@ -514,30 +557,30 @@ function goRetrieve(kbId: string): void {
 
       <!-- 在途提示：只在确实有文档排队中或索引中时出现，不是常驻横幅。 -->
       <div
-        v-if="hasPendingDocuments"
+        v-if="listMode === 'live'"
         class="mb-4 flex items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span>有文档在排队中或索引中，正在自动刷新</span>
+        <span>有构建在跑或有文档在排队/索引中，正在自动刷新</span>
       </div>
 
-      <p v-if="treePending" class="py-8 text-center text-sm text-muted">正在读取知识库…</p>
+      <p v-if="listPending" class="py-8 text-center text-sm text-muted">正在读取知识库…</p>
 
       <!-- 读取失败不假装空列表：空列表会让人以为库被删了。 -->
       <div
-        v-else-if="treeError !== null"
+        v-else-if="listError !== null"
         class="rounded-control border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-700"
       >
-        <p class="m-0">{{ errorText(treeError) }}</p>
-        <el-button class="mt-2" size="small" @click="refetchTree()">重试</el-button>
+        <p class="m-0">{{ errorText(listError) }}</p>
+        <el-button class="mt-2" size="small" @click="refetchList()">重试</el-button>
       </div>
 
-      <div v-else-if="tree.length === 0" class="py-12 text-center">
+      <div v-else-if="kbs.length === 0" class="py-12 text-center">
         <p class="text-base font-semibold text-ink">还没有知识库</p>
         <el-button type="primary" class="!mt-5" @click="createOpen = true">新建知识库</el-button>
       </div>
 
-      <p v-else-if="filteredTree.length === 0" class="py-8 text-center text-sm text-muted">
+      <p v-else-if="filteredKbs.length === 0" class="py-8 text-center text-sm text-muted">
         没有名称匹配「{{ keyword.trim() }}」的知识库。
       </p>
 
@@ -551,7 +594,7 @@ function goRetrieve(kbId: string): void {
           是非法结构（浏览器会重排 DOM，点击行为变得难预测）。用 role+tabindex 保留键盘可达。
         -->
         <div
-          v-for="row in filteredTree"
+          v-for="row in filteredKbs"
           :key="row.kb_id"
           role="button"
           tabindex="0"
@@ -572,11 +615,11 @@ function goRetrieve(kbId: string): void {
 
           <div class="flex items-end gap-5">
             <div>
-              <p class="metric-value">{{ row.documents.length }}</p>
+              <p class="metric-value">{{ row.document_count }}</p>
               <p class="metric-label">篇文档</p>
             </div>
             <div>
-              <p class="metric-value">{{ chunkTotal(row.documents) }}</p>
+              <p class="metric-value">{{ row.chunk_count }}</p>
               <p class="metric-label">个分块</p>
             </div>
             <div>
@@ -620,35 +663,41 @@ function goRetrieve(kbId: string): void {
           </div>
 
           <!--
-            「重建中 37 / 500」（第 17 步 #216）：之前只有一个转圈图标，用户既判断不出还剩
-            多久，也看不出是不是卡住了。进度条读的是后端记的 documents_done / planned；旁边
-            那行「N 篇未入新版本」直接来自构建行的失败明细，点开能看到具体是哪几篇、为什么。
+            「重建中 37 / 500」（第 17 步 #216 / #227 改）：进度条读构建行自己记的
+            documents_done / planned；旁边那行「N 篇未入新版本」直接来自失败明细。
+
+            现在 `build` 也带**已有结论**的那一次（`ready` / `active` / `failed`），
+            所以收尾之后还能说一句「v5 已生效」——以前构建一结束这一块整块消失，
+            用户既看不出刚才成没成，也看不出新旧版本换没换。
           -->
-          <div v-if="row.build_progress" class="mt-1 rounded-md bg-sky-50 px-2 py-1.5">
+          <div
+            v-if="row.build && row.build.status === 'building'"
+            class="mt-1 rounded-md bg-sky-50 px-2 py-1.5"
+          >
             <div class="flex items-center justify-between gap-2 text-xs text-sky-800">
               <span>
-                重建中 {{ row.build_progress.done }} / {{ row.build_progress.planned }}
-                <span class="text-sky-600">（{{ row.build_progress.version }}）</span>
+                重建中 {{ row.build.done }} / {{ row.build.planned }}
+                <span class="text-sky-600">（{{ row.build.version }}）</span>
               </span>
-              <span v-if="row.build_progress.failure_count > 0" class="font-medium text-amber-700">
-                {{ row.build_progress.failure_count }} 篇未入新版本
+              <span v-if="row.build.failure_count > 0" class="font-medium text-amber-700">
+                {{ row.build.failure_count }} 篇未入新版本
               </span>
             </div>
             <div
               class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sky-100"
               role="progressbar"
-              :aria-valuenow="progressPercent(row.build_progress)"
+              :aria-valuenow="progressPercent(row.build)"
               aria-valuemin="0"
               aria-valuemax="100"
             >
               <div
                 class="h-full rounded-full bg-sky-500 transition-[width] duration-500"
-                :style="{ width: progressPercent(row.build_progress) + '%' }"
+                :style="{ width: progressPercent(row.build) + '%' }"
               />
             </div>
-            <ul v-if="row.build_progress.failures.length > 0" class="mt-1 space-y-0.5">
+            <ul v-if="row.build.failures.length > 0" class="mt-1 space-y-0.5">
               <li
-                v-for="failure in row.build_progress.failures"
+                v-for="failure in row.build.failures"
                 :key="failure.document_id"
                 class="truncate text-[11px] text-amber-700"
               >
@@ -656,12 +705,37 @@ function goRetrieve(kbId: string): void {
               </li>
             </ul>
             <p
-              v-if="row.build_progress.failure_count > row.build_progress.failures.length"
+              v-if="row.build.failure_count > row.build.failures.length"
               class="mt-0.5 text-[11px] text-muted"
             >
-              还有 {{ row.build_progress.failure_count - row.build_progress.failures.length }} 篇未列出
+              还有 {{ row.build.failure_count - row.build.failures.length }} 篇未列出
             </p>
           </div>
+
+          <!-- 收尾之后的那句话：这一版成没成、现在服务的是哪一版。 -->
+          <p
+            v-else-if="row.build && row.build.status === 'active'"
+            class="mt-1 rounded-md bg-emerald-50 px-2 py-1 text-xs text-emerald-700"
+          >
+            {{ row.build.version }} 已生效（{{ row.build.done }} / {{ row.build.planned }} 篇）
+            <span v-if="row.build.failure_count > 0" class="text-amber-700">
+              · {{ row.build.failure_count }} 篇未入这一版
+            </span>
+          </p>
+          <p
+            v-else-if="row.build && row.build.status === 'failed'"
+            class="mt-1 rounded-md bg-red-50 px-2 py-1 text-xs text-red-700"
+          >
+            上次构建未完成（{{ row.build.done }} / {{ row.build.planned }} 篇），检索仍走上一版。
+          </p>
+
+          <!-- 四态里最该被看见的那一个：有失败就要能一眼看到，而不是点进详情去数。 -->
+          <p
+            v-if="row.status_counts.failed > 0"
+            class="mt-1 text-xs text-red-600"
+          >
+            {{ row.status_counts.failed }} 篇索引失败（点开详情看原因）
+          </p>
 
           <!--
             「需重建」（第 16 步 #207）：切块设置是索引期旋钮，改了不重建，读到的还是旧切法。
@@ -686,15 +760,15 @@ function goRetrieve(kbId: string): void {
               设置不一致」，只有产出新版本才消得掉；逐篇重建写回的是旧版本，消不掉（第一版就
               踩了这个坑，用户点完发现提示还在）。
 
-              `build_progress` 非空（这个库正在跑构建）时禁用：并发构建由后端守（50001），
-              这里只是别给一个注定失败的按钮。
+              `build.status === 'building'`（这个库正在跑构建）时禁用：并发构建由后端守
+              （50001），这里只是别给一个注定失败的按钮。
             -->
             <el-button
               link
               type="primary"
               size="small"
               :disabled="
-                rebuildingKbId !== null || Boolean(row.build_progress) || row.documents.length === 0
+                rebuildingKbId !== null || row.build?.status === 'building' || row.document_count === 0
               "
               :loading="rebuildingKbId === row.kb_id"
               @click="askRebuild(row)"
@@ -738,19 +812,31 @@ function goRetrieve(kbId: string): void {
       </ul>
     </el-card>
 
-    <!-- ───────── 详情：库内文档的增删查改 ───────── -->
+    <!-- ───────── 详情：库内文档的增删查改（自己的查询、自己的节奏）───────── -->
     <el-dialog v-model="detailOpen" append-to-body width="880px" :close-on-click-modal="false">
       <template #header>
-        <div class="flex flex-wrap items-center justify-between gap-3 pr-6">
-          <div>
+        <div class="flex flex-wrap items-start justify-between gap-3 pr-6">
+          <div class="min-w-0">
             <h2 class="text-[17px] font-semibold tracking-tight text-ink">
               {{ detailKb?.name ?? '知识库详情' }}
             </h2>
             <p v-if="detailKb !== null" class="mt-0.5 text-xs text-muted">
               {{ SPLIT_LABELS[detailKb.split_strategy] ?? detailKb.split_strategy }} ·
-              {{ detailKb.documents.length }} 篇 /
-              {{ chunkTotal(detailKb.documents) }} 块 · 窗口 {{ detailKb.chunk_size }} token
+              {{ detailKb.document_count }} 篇 /
+              {{ detailKb.chunk_count }} 块 · 窗口 {{ detailKb.chunk_size }} token
             </p>
+            <!--
+              弹窗里也必须有一句「数据更新于几点」：这个弹窗以前完全没有自己的请求，
+              读到的是列表页上一次轮询的快照，而列表页在「全终态」时会静默停掉轮询——
+              于是「已经刷新完了」与「停在十分钟前」在这屏长得一模一样，唯一出路是 F5。
+            -->
+            <LiveStatus
+              class="mt-1"
+              :updated-at="detailUpdatedAt"
+              :mode="detailMode"
+              :refreshing="detailFetching"
+              @refresh="detailQuery.refetch()"
+            />
           </div>
           <el-button
             v-if="detailKb !== null"
@@ -764,80 +850,180 @@ function goRetrieve(kbId: string): void {
       </template>
 
       <div class="space-y-3">
-        <el-input v-model="docKeyword" placeholder="搜索文档标题" clearable>
-          <template #prefix>
-            <el-icon><Search /></el-icon>
-          </template>
-        </el-input>
+        <!--
+          构建进度也在弹窗里（以前只在卡片上）：弹窗一开就把它盖住了，而它恰恰是
+          「这个库到底在不在动」的唯一真信号——文档状态在构建期间几乎一直是「成功」。
+        -->
+        <div
+          v-if="detailBuild !== null && detailBuild.status === 'building'"
+          class="rounded-control bg-sky-50 px-3 py-2"
+        >
+          <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-sky-800">
+            <span>
+              重建中 {{ detailBuild.done }} / {{ detailBuild.planned }}
+              <span class="text-sky-600">（{{ detailBuild.version }}，完成后自动切换）</span>
+            </span>
+            <span v-if="detailOutstanding > 0" class="text-amber-700">
+              本页还有 {{ detailOutstanding }} 篇未入这一版
+            </span>
+          </div>
+          <div
+            class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sky-100"
+            role="progressbar"
+            :aria-valuenow="progressPercent(detailBuild)"
+            aria-valuemin="0"
+            aria-valuemax="100"
+          >
+            <div
+              class="h-full rounded-full bg-sky-500 transition-[width] duration-500"
+              :style="{ width: progressPercent(detailBuild) + '%' }"
+            />
+          </div>
+        </div>
+        <p
+          v-else-if="detailBuild !== null && detailBuild.status === 'active'"
+          class="rounded-control bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700"
+        >
+          {{ detailBuild.version }} 已生效（{{ detailBuild.done }} / {{ detailBuild.planned }} 篇）
+          <span v-if="detailBuild.failure_count > 0" class="text-amber-700">
+            · {{ detailBuild.failure_count }} 篇未入这一版
+          </span>
+        </p>
+        <p
+          v-else-if="detailBuild !== null && detailBuild.status === 'failed'"
+          class="rounded-control bg-red-50 px-3 py-1.5 text-xs text-red-700"
+        >
+          上次构建未完成（{{ detailBuild.done }} / {{ detailBuild.planned }} 篇），检索仍走上一版。
+        </p>
 
-        <p v-if="detailKb === null" class="py-6 text-center text-sm text-slate-500">
-          这个知识库已不在列表里。
+        <div class="flex flex-wrap items-center gap-2">
+          <!-- 关键字交给**服务端**（库可能几千篇，前端只拿一页）：输入有 300ms 防抖。 -->
+          <el-input
+            v-model="docKeyword"
+            class="min-w-[200px] flex-1"
+            placeholder="搜索文档标题（服务端筛选）"
+            clearable
+          >
+            <template #prefix>
+              <el-icon><Search /></el-icon>
+            </template>
+          </el-input>
+          <el-select
+            v-model="detailStatus"
+            class="w-32"
+            placeholder="全部状态"
+            clearable
+          >
+            <el-option label="成功" :value="1" />
+            <el-option label="失败" :value="2" />
+            <el-option label="索引中" :value="3" />
+            <el-option label="排队中" :value="4" />
+          </el-select>
+        </div>
+
+        <p v-if="detailError !== null" class="py-4 text-center text-sm text-red-600">
+          {{ errorText(detailError) }}
+        </p>
+
+        <p v-else-if="detailPending" class="py-6 text-center text-sm text-slate-500">
+          正在读取文档…
         </p>
 
         <p
-          v-else-if="detailKb.documents.length === 0"
+          v-else-if="detailKb !== null && detailKb.document_count === 0"
           class="rounded-control border border-line px-3 py-6 text-center text-sm text-slate-500"
         >
           这个库还没有文档。
         </p>
 
-        <p
-          v-else-if="detailDocuments.length === 0"
-          class="py-4 text-center text-sm text-slate-500"
-        >
-          没有标题匹配「{{ docKeyword.trim() }}」的文档。
+        <p v-else-if="detailDocuments.length === 0" class="py-4 text-center text-sm text-slate-500">
+          没有匹配的文档。
         </p>
 
-        <el-table v-else :data="detailDocuments" row-key="document_id" class="w-full">
-          <el-table-column label="文档" min-width="240">
-            <template #default="{ row }">
-              <span class="break-all text-sm text-ink">{{ row.title }}</span>
-              <p class="mt-0.5 text-xs text-muted">{{ row.source_type }}</p>
-            </template>
-          </el-table-column>
+        <template v-else>
+          <el-table :data="detailDocuments" row-key="document_id" class="w-full">
+            <el-table-column label="文档" min-width="220">
+              <template #default="{ row }">
+                <span class="break-all text-sm text-ink">{{ row.title }}</span>
+                <p class="mt-0.5 text-xs text-muted">{{ row.source_type }}</p>
+              </template>
+            </el-table-column>
 
-          <el-table-column label="状态" width="120">
-            <template #default="{ row }">
-              <StatusBadge :status="row.status" :error-message="row.error_message" />
-            </template>
-          </el-table-column>
+            <el-table-column label="状态" width="110">
+              <template #default="{ row }">
+                <StatusBadge :status="row.status" :error-message="row.error_message" />
+              </template>
+            </el-table-column>
 
-          <el-table-column label="分块数" width="90">
-            <template #default="{ row }">
-              <span class="text-sm text-slate-700">{{ row.chunk_count }} 块</span>
-            </template>
-          </el-table-column>
-
-          <el-table-column label="操作" width="260">
-            <template #default="{ row }">
-              <div class="flex flex-wrap items-center gap-1">
-                <!-- 查看原文对排队中 / 索引中也可用：读不改状态。失败文档的原文恰恰是判断
-                     「为什么解析出错」的唯一依据，所以它不跟写操作一起被藏起来。 -->
-                <el-button link type="primary" size="small" @click="openContent(row)">
-                  查看原文
-                </el-button>
-                <!-- 版本列表同样只读：任何时候都能看「这篇文档改过几稿」。 -->
-                <el-button link type="primary" size="small" @click="openVersions(row)">
-                  版本
-                </el-button>
-                <!-- 索引中（3）没有任何写操作：此刻重建 / 删除都会回 20025（有人在写这篇的切片）。
-                     排队中（4）**可以删、可以重交**：那是撤回排队与替换排队（ADR-0034 决策一），
-                     按钮照给；失败与成功也在这一档。 -->
-                <span v-if="isDocumentBusy(row.status)" class="text-xs text-slate-400">索引中</span>
-                <template v-else-if="row.status === 1 || row.status === 2 || row.status === 4">
-                  <el-button link type="primary" size="small" @click="askReindex(row)">
-                    重建
-                  </el-button>
-                  <el-button link type="danger" size="small" @click="askDeleteDoc(row)">
-                    删除
-                  </el-button>
-                </template>
-                <!-- 未知状态不提供任何写操作：后端将来新增状态时，宁可少一个入口也别乱删。 -->
+            <!--
+              第二根轴（第 17 步 #227）：它与**当前这一版构建**的关系。
+              构建期间文档状态几乎一直是「成功」（每篇只有自己那一秒是「索引中」），
+              所以「还在重建」这件事只能靠这一列说出来。
+            -->
+            <el-table-column label="本次构建" width="110">
+              <template #default="{ row }">
+                <span v-if="row.build_state === 'done'" class="text-xs text-emerald-700">
+                  ✓ 已重建
+                </span>
+                <span v-else-if="row.build_state === 'pending'" class="text-xs text-amber-700">
+                  ⏳ 待重建
+                </span>
+                <span v-else-if="row.build_state === 'failed'" class="text-xs text-red-600">
+                  ✗ 未入版
+                </span>
                 <span v-else class="text-xs text-slate-400">—</span>
-              </div>
-            </template>
-          </el-table-column>
-        </el-table>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="分块数" width="90">
+              <template #default="{ row }">
+                <span class="text-sm text-slate-700">{{ row.chunk_count }} 块</span>
+              </template>
+            </el-table-column>
+
+            <el-table-column label="操作" width="250">
+              <template #default="{ row }">
+                <div class="flex flex-wrap items-center gap-1">
+                  <!-- 查看原文对排队中 / 索引中也可用：读不改状态。失败文档的原文恰恰是判断
+                       「为什么解析出错」的唯一依据，所以它不跟写操作一起被藏起来。 -->
+                  <el-button link type="primary" size="small" @click="openContent(row)">
+                    查看原文
+                  </el-button>
+                  <!-- 版本列表同样只读：任何时候都能看「这篇文档改过几稿」。 -->
+                  <el-button link type="primary" size="small" @click="openVersions(row)">
+                    版本
+                  </el-button>
+                  <!-- 索引中（3）没有任何写操作：此刻重建 / 删除都会回 20025（有人在写这篇的切片）。
+                       排队中（4）**可以删、可以重交**：那是撤回排队与替换排队（ADR-0034 决策一），
+                       按钮照给；失败与成功也在这一档。 -->
+                  <span v-if="isDocumentBusy(row.status)" class="text-xs text-slate-400">索引中</span>
+                  <template v-else-if="row.status === 1 || row.status === 2 || row.status === 4">
+                    <el-button link type="primary" size="small" @click="askReindex(row)">
+                      重建
+                    </el-button>
+                    <el-button link type="danger" size="small" @click="askDeleteDoc(row)">
+                      删除
+                    </el-button>
+                  </template>
+                  <!-- 未知状态不提供任何写操作：后端将来新增状态时，宁可少一个入口也别乱删。 -->
+                  <span v-else class="text-xs text-slate-400">—</span>
+                </div>
+              </template>
+            </el-table-column>
+          </el-table>
+
+          <!-- 分页：库可能几千篇，一次全取会把这个弹窗做成几 MB 的表格。 -->
+          <el-pagination
+            class="justify-end"
+            layout="total, sizes, prev, pager, next"
+            :total="detailTotal"
+            :current-page="detailPage"
+            :page-size="detailPageSize"
+            :page-sizes="[...PAGE_SIZE_OPTIONS]"
+            @current-change="(page: number) => (detailPage = page)"
+            @size-change="(size: number) => { detailPageSize = size; detailPage = 1 }"
+          />
+        </template>
       </div>
 
       <template #footer>

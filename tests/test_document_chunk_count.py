@@ -53,12 +53,16 @@ CREATE TABLE chunks (
 )
 """
 
-#: 三篇文档、留两稿的现场：
+#: 三篇文档、**留两稿 × 留两版**的现场（两轴各有一个"不该数"的格子）：
 #:
 #: * ``doc-1``：指针在第 2 稿，第 1 稿 3 片（保留窗口内还在）、第 2 稿 2 片 → 只该数 **2**；
 #: * ``doc-2``：只长到第 1 稿、1 片 → **1**；
 #: * ``doc-3``：指针已切到第 2 稿、但第 2 稿的切片还没建好（D5 的在途窗口）→ 数 **0**，
 #:   且按仓储契约「没有切片的文档不在字典里」，它整条不该出现。
+#:
+#: 另外每个"当前稿"都复制了一份到 **v0**（被重建替下来的旧版本，留着给回滚）：
+#: 那一片属于「同一稿、别的版本」，**也不该被数进来**——否则一个建过 N 版的库，
+#: 界面上的分块数就是生效版本的 N 倍（实测 152 vs 38）。
 SEEDED_ROWS = (
     f"INSERT INTO documents (id, tenant_id, kb_id, current_version) "
     f"VALUES ('doc-1', '{TENANT}', '{KB}', 2)",
@@ -91,6 +95,16 @@ SEEDED_ROWS = (
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
     f"index_version, doc_version) VALUES ('c1-v1-d3', '{TENANT}', '{KB}', 'doc-3', '上一稿', '[]', "
     f"'{{}}', 'v1', 1)",
+    # 同一稿、**旧版本**（v0）的两片：留着给回滚，但一个都不许数进来
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c1-v0-old', '{TENANT}', '{KB}', 'doc-1', '旧版一', '[]', "
+    f"'{{}}', 'v0', 2)",
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c2-v0-old', '{TENANT}', '{KB}', 'doc-1', '旧版二', '[]', "
+    f"'{{}}', 'v0', 2)",
+    f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
+    f"index_version, doc_version) VALUES ('c1-v0-d2', '{TENANT}', '{KB}', 'doc-2', '旧版', '[]', "
+    f"'{{}}', 'v0', 1)",
 )
 
 
@@ -118,7 +132,11 @@ def _sql(statement: Any) -> str:
 
 async def _counts(drafts: AsyncSession) -> dict[str, int]:
     return await chunk_repository.count_by_document_ids(
-        drafts, ["doc-1", "doc-2", "doc-3"], tenant_id=TENANT
+        drafts,
+        ["doc-1", "doc-2", "doc-3"],
+        tenant_id=TENANT,
+        # 生效版本是 v1；v0 是被重建替下来的那一版（留着给回滚），不参与计数。
+        index_version="v1",
     )
 
 
@@ -161,7 +179,10 @@ async def test_the_grouped_count_still_forces_the_tenant(drafts: AsyncSession) -
 
     assert (
         await chunk_repository.count_by_document_ids(
-            drafts, ["doc-1", "doc-2", "doc-3"], tenant_id=OTHER_TENANT
+            drafts,
+            ["doc-1", "doc-2", "doc-3"],
+            tenant_id=OTHER_TENANT,
+            index_version="v1",
         )
         == {}
     )
@@ -175,9 +196,14 @@ def test_the_statement_joins_the_document_row_and_compiles_the_draft_predicate()
     某次真库上多召回一稿。
     """
 
-    sql = _sql(chunk_repository._count_by_document_ids_statement(["doc-1"], tenant_id=TENANT))
+    sql = _sql(
+        chunk_repository._count_by_document_ids_statement(
+            ["doc-1"], tenant_id=TENANT, index_version="v1"
+        )
+    )
     assert "JOIN documents ON documents.id = chunks.document_id" in sql
     assert "chunks.doc_version = documents.current_version" in sql
+    assert "chunks.index_version = " in sql, "版本那一条也在 WHERE 里（两轴都要锁）"
     assert "chunks.tenant_id = " in sql
 
 
@@ -194,7 +220,51 @@ def test_an_empty_document_list_does_not_send_a_statement() -> None:
                 _NoStatementSession(),
                 [],
                 tenant_id=TENANT,  # type: ignore[arg-type]
+                index_version="v1",
             )
+        )
+        == {}
+    )
+
+
+@pytest.mark.asyncio
+async def test_chunks_from_a_superseded_version_are_not_counted(
+    drafts: AsyncSession,
+) -> None:
+    """同一稿、**旧版本**的切片不数：否则界面分块数 = 生效版本 × 留存版本数。
+
+    现场就是这么爆的：一个建过 4 版的库，界面显示 152 片，而生效版本只有 38 片——正好 4 倍。
+    每次重建成功都会涨一份，且永不回落（旧版本按 ADR-0025 留着给回滚，留着是对的，
+    错的是把它们的切片算进「这份文档现在有多少内容」）。
+    """
+
+    counts = await _counts(drafts)
+
+    assert counts == {"doc-1": 2, "doc-2": 1}, (
+        "doc-1 当前稿 2 片（v0 的两片不算）、doc-2 一片（v0 那一片不算）"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_kb_without_an_active_version_counts_zero_without_a_query(
+    drafts: AsyncSession,
+) -> None:
+    """库还没有生效版本（新建、只写了文件没建索引）：不发语句，直接回空。
+
+    「回空」在调用方等价于全 0，而**不能**退化成「把所有版本的切片都数一遍」——
+    那正是这条口径要拦的事。
+    """
+
+    class _NoStatementSession:
+        async def execute(self, statement: Any) -> Any:  # pragma: no cover - 不许被调用
+            raise AssertionError("没有生效版本时不该发语句")
+
+    assert (
+        await chunk_repository.count_by_document_ids(
+            _NoStatementSession(),  # type: ignore[arg-type]
+            ["doc-1"],
+            tenant_id=TENANT,
+            index_version=None,
         )
         == {}
     )

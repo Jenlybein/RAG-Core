@@ -479,13 +479,59 @@ async def list_section_identity_rows(
     ]
 
 
+async def count_in_kb(
+    db: AsyncSession, kb_id: str, *, tenant_id: str, index_version: str | None
+) -> int:
+    """一个库在「生效版本 × 当前稿」下有多少片（卡片上那个合计）。
+
+    为什么不是「先列全部文档 id，再调 :func:`count_by_document_ids` 求和」：那要先把
+    5000 个 id 传进 ``IN (...)``，再用应用层求和。这里一条聚合就够，而且与逐文档计数
+    **共用同一个谓词**（:func:`serving_chunk_filters`），不会出现「合计」与「每行之和」
+    两个数不一致这种最容易被当成巧合的情况。
+
+    ``index_version`` 为 ``None``（还没有生效版本）时回 0，与逐文档计数同一条约定。
+    """
+
+    if index_version is None:
+        return 0
+    statement = (
+        _join_documents(select(func.count()).select_from(Chunk))
+        .where(
+            Chunk.kb_id == kb_id,
+            Chunk.tenant_id == tenant_id,
+            *serving_chunk_filters(index_version=index_version),
+        )
+    )
+    return int((await db.execute(statement)).scalar_one() or 0)
+
+
 async def count_by_document_ids(
-    db: AsyncSession, document_ids: list[str], *, tenant_id: str
+    db: AsyncSession,
+    document_ids: list[str],
+    *,
+    tenant_id: str,
+    index_version: str | None,
 ) -> dict[str, int]:
     """一次分组查询拿回 ``{document_id: 当前稿的切片数}``；当前稿没有切片的文档不在字典里。
 
     文档列表接口（数据面与控制面树）必须用它，不能对每个文档各查一次（N+1）。
     ``tenant_id`` 是强制过滤参数（ADR-0006）：即使文档 id 已被上游按租户筛过，计数也不跨租户。
+
+    **数的是「生效版本 × 当前稿」这一格**，不是留存稿之和、也不是留存版本之和：
+
+    多稿并存（ADR-0031）之后又多了多版本并存（构建出 v5 时 v4 仍留着给回滚），于是
+    「这份文档现在有多少片」有**两个**必须一起锁的维度：
+
+    * ``doc_version``：由 :func:`current_draft_filter` 交 JOIN 的文档行算；
+    * ``index_version``：由调用方传**该库当前生效版本**（``knowledge_bases.active_index_version``）。
+
+    只锁前者（本函数在 #17x 那版的写法）会让界面把每个留存版本的切片都数一遍——实测一个
+    建过 4 版的库显示 152 片，而生效版本只有 38 片，**每次重建都涨一份且永不回落**。而检索
+    链路上每一条语句都带 ``Chunk.index_version == <生效版本>``：界面与检索因此说着两个数。
+
+    ``index_version`` 是**必填关键字**（没有默认值）：这个数是对外可见的，让调用方必须
+    当场回答「哪一版」比给一个会静默算错的默认值强。没有生效版本（新建库、只写了文件还没
+    建索引）时传 ``None``，本函数直接回零——那种库里没有任何可服务的切片。
 
     **数的是当前稿**（:func:`app.models.chunk.current_draft_filter`），不是各留存稿之和：
     每稿各留一套切片（ADR-0031 决策一）之后，同一篇文档库里可以有两三稿的切片同时存在，
@@ -494,13 +540,34 @@ async def count_by_document_ids(
     指针那一稿还没切片时（D5 的在途窗口）这份文档不出现，调用方回落 0。
     """
 
-    if not document_ids:
+    if not document_ids or index_version is None:
         return {}
-    stmt = _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
+    stmt = _count_by_document_ids_statement(
+        document_ids, tenant_id=tenant_id, index_version=index_version
+    )
     return {document_id: int(count) for document_id, count in (await db.execute(stmt)).all()}
 
 
-def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str):
+def serving_chunk_filters(*, index_version: str) -> tuple[Any, ...]:
+    """「**生效版本 × 当前稿**」那两轴——检索、界面计数、构建真值共用的口径。
+
+    ## 为什么抽成一个函数
+
+    这两条条件在本仓出现过三种写法：只有稿号（界面计数，错）、只有版本（构建真值，
+    口径不同）、两条都有（检索）。三种写法各自都能跑通，只是答的不是同一个问题——
+    而界面上那个数字被误信了一整轮（显示 152 片，生效版本只有 38 片）。
+
+    所以口径只有这一处：**要么两条都有，要么调用方明确说明它问的不是「现在有多少内容」**。
+    前置条件与 :func:`app.models.chunk.current_draft_filter` 相同：语句必须 JOIN 了
+    ``documents``。
+    """
+
+    return (Chunk.index_version == index_version, current_draft_filter())
+
+
+def _count_by_document_ids_statement(
+    document_ids: list[str], *, tenant_id: str, index_version: str
+):
     """「每份文档**当前稿**各有几片」的那一条分组计数。
 
     JOIN 文档表是为了让当前稿指针由库来算（与检索链路上那五处同一个谓词，见
@@ -513,7 +580,7 @@ def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str)
         .where(
             Chunk.document_id.in_(document_ids),
             Chunk.tenant_id == tenant_id,
-            current_draft_filter(),
+            *serving_chunk_filters(index_version=index_version),
         )
         .group_by(Chunk.document_id)
     )
