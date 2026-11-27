@@ -58,7 +58,7 @@ from app.db.worker_loop import run_in_worker_loop
 from app.repositories import document_repository
 from app.services.index_build_service import MAX_REDISPATCH, IndexBuildService
 from app.services.index_dispatch import enqueue_document
-from app.services.usage_rollup import rollup_day
+from app.services.usage_rollup import days_missing_rollup, rollup_day
 
 logger = structlog.get_logger(__name__)
 
@@ -82,6 +82,10 @@ SWEEP_LOCK_TTL_SECONDS: Final[int] = SWEEP_INTERVAL_SECONDS * 2
 #: 节流 5 分钟：汇总本身幂等（同一天的格会被覆写），没必要每 60 秒扫一遍今天的明细。
 ROLLUP_LOCK_KEY: Final[str] = "lock:usage:rollup"
 ROLLUP_INTERVAL_SECONDS: Final[int] = 300
+
+#: 补射窗口：最近多少天里「有明细、没汇总格」的日子要顺手补。30 天与看板最长的窗口一致——
+#: 比它更早的洞补了也看不见，只会白做一次聚合。
+MISSED_DAY_LOOKBACK: Final[int] = 30
 
 #: 单篇文档的租约过期后最多重投几次。超过就把它标成失败——「一直重投也救不回来」必须有个
 #: 尽头，否则一篇坏掉的文档会让清扫器变成永动机，而用户看到的是永远转圈。
@@ -120,8 +124,9 @@ async def rollup_usage_once(
 ) -> dict[str, int]:
     """把**今天与昨天**的明细压成 ``usage_daily`` 的格（幂等）。
 
-    只做这两天：更早的天一旦过了就不再变（明细也不会再写进去），没有重算的必要；而看板
-    的 7d / 30d 需要的是「最近几天能看见」，不是「历史全对」。
+    固定做「今天与昨天」，**再加上最近 30 天里所有有明细却没有汇总格的日子**：前两者会变，
+    后者是洞（整栈停过一天、或上线之前的历史）。洞不补，看板的 7d / 30d 会永远少一块，
+    而界面上只会说「最近 7 天是 2 次调用」这种半真话。
 
     为什么与清扫器同一个节流锁而不是自己开线程：这个仓刻意**没有 beat**（ADR-0034 的
     「兜底任务的形状」），再开一条守护线程就等于多一份生命周期要管；而清扫器本来就每
@@ -144,8 +149,18 @@ async def rollup_usage_once(
 
     # 「今天」按 UTC 日历天算：与 ``usage_rollup.day_bounds`` 同一口径（列的标签是 UTC 天）。
     moment = today or datetime.now(timezone.utc).date()
-    days = [moment - timedelta(days=1), moment]
     factory = session_factory or async_session_factory
+    days = [moment - timedelta(days=1), moment]
+    try:
+        async with factory()() as db:
+            days.extend(
+                day
+                for day in await days_missing_rollup(db, days=MISSED_DAY_LOOKBACK, today=moment)
+                if day not in days
+            )
+    except Exception as exc:  # noqa: BLE001 - 问一句「有没有洞」失败不该挡住今天与昨天
+        logger.warning("usage rollup gap scan failed", error=type(exc).__name__)
+
     rolled = 0
     for day in days:
         try:

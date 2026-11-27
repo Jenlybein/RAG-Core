@@ -77,7 +77,16 @@ def rolled(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
     monkeypatch.setattr(index_sweeper, "rollup_day", _rollup_day)
     monkeypatch.setattr(index_sweeper, "async_transaction", _noop_transaction())
+    # 补射默认查不到洞（真实实现要打库），各用例按需覆盖。
+    monkeypatch.setattr(index_sweeper, "days_missing_rollup", _no_gaps())
     return recorded
+
+
+def _no_gaps() -> Any:
+    async def _probe(_db: Any, *, days: int, today: date | None = None) -> list[date]:
+        return []
+
+    return _probe
 
 
 def _noop_transaction() -> Any:
@@ -163,3 +172,67 @@ async def test_one_failing_day_does_not_stop_the_other(
 
     assert done == [str(TODAY)]
     assert stats == {"rolled": 1}
+
+
+@pytest.mark.asyncio
+async def test_a_missed_day_is_rolled_up_as_a_catch_up(
+    monkeypatch: pytest.MonkeyPatch, rolled: list[str]
+) -> None:
+    """「有明细、没汇总格」的日子会被顺手补上——这是整栈停过一天之后的唯一补救。
+
+    只做「今天与昨天」的话，那一天永远不会长出来，看板的 7d / 30d 就永远少一块，而界面上
+    只会说「最近 7 天是 2 次调用」这种半真话。
+    """
+
+    gap = date(2026, 11, 17)
+
+    async def _probe(_db: Any, *, days: int, today: date | None = None) -> list[date]:
+        return [gap]
+
+    monkeypatch.setattr(index_sweeper, "days_missing_rollup", _probe)
+    _patched_redis(monkeypatch, _Throttle())
+
+    stats = await index_sweeper.rollup_usage_once(session_factory=_factory(), today=TODAY)
+
+    assert rolled == [str(TODAY - timedelta(days=1)), str(TODAY), str(gap)]
+    assert stats == {"rolled": 3}
+
+
+@pytest.mark.asyncio
+async def test_a_catch_up_never_duplicates_today_or_yesterday(
+    monkeypatch: pytest.MonkeyPatch, rolled: list[str]
+) -> None:
+    """补射名单里如果混进了今天/昨天（不该发生），也不许压两遍。
+
+    重复压不会错（幂等），但会把「这一轮压了几天」这个读数弄成假的；而读数正是运维判断
+    「补射到底干没干活」的唯一依据。
+    """
+
+    async def _probe(_db: Any, *, days: int, today: date | None = None) -> list[date]:
+        return [TODAY, TODAY - timedelta(days=1), date(2026, 11, 10)]
+
+    monkeypatch.setattr(index_sweeper, "days_missing_rollup", _probe)
+    _patched_redis(monkeypatch, _Throttle())
+
+    stats = await index_sweeper.rollup_usage_once(session_factory=_factory(), today=TODAY)
+
+    assert rolled == [str(TODAY - timedelta(days=1)), str(TODAY), "2026-11-10"]
+    assert stats == {"rolled": 3}
+
+
+@pytest.mark.asyncio
+async def test_a_broken_gap_scan_still_rolls_up_today_and_yesterday(
+    monkeypatch: pytest.MonkeyPatch, rolled: list[str]
+) -> None:
+    """补射的「探洞」炸了，不该挡住今天与昨天——最坏情况只是洞晚 5 分钟再补。"""
+
+    async def _probe(_db: Any, *, days: int, today: date | None = None) -> list[date]:
+        raise RuntimeError("bad probe")
+
+    monkeypatch.setattr(index_sweeper, "days_missing_rollup", _probe)
+    _patched_redis(monkeypatch, _Throttle())
+
+    stats = await index_sweeper.rollup_usage_once(session_factory=_factory(), today=TODAY)
+
+    assert rolled == [str(TODAY - timedelta(days=1)), str(TODAY)]
+    assert stats == {"rolled": 2}

@@ -203,6 +203,61 @@ async def _fetch_page(
     return [dict(row._mapping) for row in result]
 
 
+async def days_missing_rollup(
+    db: AsyncSession, *, days: int = 30, today: date | None = None
+) -> list[date]:
+    """最近 ``days`` 天里**有明细、却没有汇总格**的那些天（第 17 步现场七的补射）。
+
+    ## 为什么需要这一条
+
+    自动汇总只做「今天与昨天」——那是会变的两天。但它有一个盲区：**整个栈停了一天以上**，
+    或上线那一刻之前的历史，都会留下「有明细、没汇总格」的洞。洞里的日子不会自己长出来，
+    看板的 7d / 30d 就永远少一块，而界面上只会说「最近 7 天是 2 次调用」这种半真话。
+
+    所以每轮汇总顺手问一句「最近 30 天有没有洞」，有就补。洞补完一次之后，这条查询每次
+    只回空列表——它是一句廉价的问话，不是一件持续的活。
+
+    ## 为什么按天逐格探问而不是一条 SQL 算出来
+
+    ``usage_events.created_at`` 存的是**本地裸时间**，而 ``usage_daily.day`` 是 **UTC 日历天**
+    的标签；两者的换算只有 :func:`day_bounds` 一处。在 SQL 里再做一次日期运算等于把那份换算
+    写第二遍——而「差一天」只会在跨时区的部署上偶发，是最难查的那种错。逐天探问走的是同一
+    份换算，代价是每天一条 ``LIMIT 1`` 的索引探查（30 条，都很轻）。
+
+    ``today`` 不进候选：今天与昨天由调用方按固定顺序压，今天的格还在长，不该参与「缺不缺」。
+    """
+
+    moment = today or datetime.now(timezone.utc).date()
+    oldest = moment - timedelta(days=days - 1)
+    covered = {
+        row
+        for row in (
+            await db.execute(
+                select(UsageDaily.day)
+                .where(UsageDaily.day >= oldest, UsageDaily.day < moment)
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    }
+
+    gaps: list[date] = []
+    for offset in range((moment - oldest).days):
+        day = oldest + timedelta(days=offset)
+        if day in covered:
+            continue
+        start_at, end_at = day_bounds(day)
+        probe = await db.execute(
+            select(UsageEvent.id)
+            .where(UsageEvent.created_at >= start_at, UsageEvent.created_at < end_at)
+            .limit(1)
+        )
+        if probe.scalars().first() is not None:
+            gaps.append(day)
+    return gaps
+
+
 async def rollup_day(db: AsyncSession, day: date) -> list[dict[str, Any]]:
     """把 ``day`` 这一天的明细压成若干格并 upsert；返回写入的那些行（便于打印统计）。"""
 
