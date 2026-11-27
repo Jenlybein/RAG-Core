@@ -23,7 +23,7 @@ from typing import Any, AsyncIterator
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.index_version import (
@@ -32,6 +32,8 @@ from app.models.index_version import (
     INDEX_BUILD_BUILDING,
     INDEX_BUILD_FAILED,
 )
+from app.models.chunk import Chunk, current_draft_filter, scope_filter
+from app.models.document import Document
 from app.repositories import chunk_repository, document_repository, index_version_repository
 from app.utils.status import DocumentStatus
 
@@ -465,3 +467,53 @@ async def test_latest_never_crosses_tenant_or_kb(session: AsyncSession) -> None:
 
     assert await index_version_repository.latest_for_kb(session, OTHER_KB, tenant_id=TENANT) is None
     assert await index_version_repository.latest_for_kb(session, KB, tenant_id=OTHER_TENANT) is None
+
+
+@pytest.mark.asyncio
+async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunks(
+    session: AsyncSession,
+) -> None:
+    """**两种拼写，一个谓词**：多库召回那一侧与单库计数这一侧必须切出同一批切片。
+
+    ## 为什么要专门比一次
+
+    检索（``PgVectorStore.similarity_search_scope``）没法写成单个相等条件——它一次跨库召回，
+    版本过滤是 ``scope_filter({kb_id: 生效版本})``（每库一个版本的 OR 配对）。而界面/
+    详情页的计数是 ``serving_chunk_filters(index_version=生效版本)``（单个相等条件）。
+
+    两处都在「锁生效版本 + 锁当前稿」，但**没有一个函数能把它们合并**（一个收映射、一个收标量）。
+    合并不了就得有一条用例证明二者等价——否则「检索命中的那句正文」与「界面上说这篇有 N 片」
+    会各自漂，而漂出来时两边都自洽，谁也不报错。
+
+    这条用例在同一批数据上跑两种拼写，要求行集合逐条相同。
+    """
+
+    rows_scope = await session.execute(
+        select(Chunk.id)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(
+            Chunk.tenant_id == TENANT,
+            Chunk.kb_id == KB,
+            scope_filter({KB: "v2"}),
+            current_draft_filter(),
+        )
+        .order_by(Chunk.id)
+    )
+    rows_count = await session.execute(
+        select(Chunk.id)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(
+            Chunk.tenant_id == TENANT,
+            Chunk.kb_id == KB,
+            *chunk_repository.serving_chunk_filters(index_version="v2"),
+        )
+        .order_by(Chunk.id)
+    )
+
+    scope_ids = [row[0] for row in rows_scope.all()]
+    count_ids = [row[0] for row in rows_count.all()]
+    assert scope_ids == count_ids, (
+        "多库召回（scope_filter + 当前稿）与单库计数（serving_chunk_filters）"
+        "必须是同一个谓词的两种拼写"
+    )
+    assert len(scope_ids) == 4, "v2 下该库 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片"

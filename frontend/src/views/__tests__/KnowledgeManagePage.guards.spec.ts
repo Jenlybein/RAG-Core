@@ -70,9 +70,10 @@ describe('知识库卡片的操作区', () => {
   it('卡片上的四个数字读**聚合字段**，不再按文档数组求和', () => {
     // 摘要不再带 documents 数组（一个 5000 篇的库不该为了四个数字读 5000 行）。
     // 这条会抓住「有人偷偷把文档数组加回来」与「模板回退成 documents.length」。
-    const metrics = PAGE.indexOf('个分块')
+    // 锚在**模板里那一格**（脚本里 `dialogMessage` 也出现过「篇文档」，锚错地方会拿到脚本段）。
+    const metrics = PAGE.indexOf('metric-label">篇文档')
     expect(metrics).toBeGreaterThan(0)
-    const block = PAGE.slice(metrics - 900, metrics + 60)
+    const block = PAGE.slice(metrics - 400, metrics + 800)
     expect(block).toContain('row.document_count')
     expect(block).toContain('row.chunk_count')
     expect(block).not.toContain('documents.length')
@@ -130,9 +131,30 @@ describe('详情弹窗：自己的请求、自己的节奏', () => {
 
   it('关键字交给服务端筛（有防抖），不是前端过滤一页', () => {
     expect(dialog).toContain('服务端筛选')
+    // 防抖本身是**纯函数**（`createDebouncer`），在 `composables/__tests__/kbQueries.spec.ts`
+    // 里用假定时器钉住；这里只守「它确实被接进这条查询」。
+    expect(QUERIES).toContain('createDebouncer')
     expect(QUERIES).toContain('KEYWORD_DEBOUNCE_MS')
     // 反例：详情里自己 filter 一遍（那只会在**当前页**里找，用户以为「没有这篇」）。
     expect(dialog).not.toContain('.filter((doc) =>')
+  })
+
+  it('没生效版本时说实话（「未建索引」而不是「0 个分块」）', () => {
+    // 「还没建过索引」要去做一件事（重建），「索引里有 0 片」是另一件事（去查）。
+    // 一个 0 会让人以为后者，而它其实连版本都还没有。
+    expect(PAGE).toContain('has_active_version')
+    expect(PAGE).toContain('未建')
+  })
+
+  it('关窗即停：清掉 kb_id，别让关掉的弹窗继续轮询', () => {
+    // `enabled` 只看 kbId：只把 detailOpen 置 false，那条查询还在按 3 秒/60 秒打后端。
+    expect(PAGE).toContain('@closed="closeDetail"')
+    expect(PAGE).toContain('detailKbId.value = null')
+  })
+
+  it('「已生效」要配一个可核对的时刻', () => {
+    expect(PAGE).toContain('activated_at')
+    expect(PAGE).toContain('clockOf(')
   })
 })
 

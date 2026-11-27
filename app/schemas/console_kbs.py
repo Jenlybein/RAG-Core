@@ -98,13 +98,19 @@ class BuildSummaryData(BaseModel):
     #: 已有结果的篇数（进度条；失败也算「有结果」）。
     done: int
     #: 还没有结果的篇数 = ``max(planned - done, 0)``。
-    pending: int
+    #:
+    #: 叫 ``remaining`` 而不是 ``pending``：行级的 ``build_state`` 里也有一个 ``pending``
+    #: （「这一版还没收它」），两个 pending 一个数是、一个是枚举值，读代码的人会串。
+    remaining: int
     #: 这一版对应的统一稿号（缺省 ``None`` = 老行没留快照）。
     doc_version: int | None = None
     failures: list[BuildFailureData] = []
     failure_count: int = 0
-    #: 起建时刻（ISO 串）：界面用它说「建于 14:03」。
+    #: 起建时刻（带时区的 ISO 串）：界面用它说「建于 14:03」。
     created_at: str | None = None
+    #: 生效时刻（``active`` 的行才有值）：界面用它说「v5 已生效 · 14:03:12」。
+    #: 没有这个时刻，「已生效」只是一句话——用户没有任何办法核对它是刚刚还是十分钟前。
+    activated_at: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -136,13 +142,18 @@ class KnowledgeBaseSummaryData(BaseModel):
     split_strategy: str
     allowed_formats: list[str]
     chunk_size: int
-    section_part_max_chars: int = 2000
+    #: 节段阈值。**必填**：给默认 2000 会让「漏传」与「真的是 2000」长得一样，
+    #: 而界面把它当事实显示（「节段上限 2000」）——那是在替库编一个设置。
+    section_part_max_chars: int
     #: 文档总数（**不随分页变**）。
-    document_count: int = 0
+    document_count: int
     #: 四态各有多少篇：卡片上「3 篇失败」与顶部「有文档在跑」都读它。
     status_counts: DocumentStatusCountsData = DocumentStatusCountsData()
     #: 这个库在**生效版本 × 当前稿**下的切片总数（与检索口径一致）。
-    chunk_count: int = 0
+    chunk_count: int
+    #: 这个库有生效版本吗。``False`` 时界面必须说「未建索引」而不是「0 个分块」
+    #: ——「还没有索引」与「索引里有 0 片」是两句话，处置也不同（前者要建、后者要查）。
+    has_active_version: bool
     needs_rebuild: bool = False
     token_usage: TokenUsageData | None = None
     #: 进行中**或最近一次**的构建摘要（没有构建过就是 ``None``）。
@@ -169,7 +180,7 @@ class KbDocumentRowData(BaseModel):
     token_count: int = 0
     error_message: str | None = None
     #: 当前稿号（回滚过的那篇会往回走）。
-    current_version: int = 1
+    current_version: int
     created_at: str | None = None
     #: 它与**当前这一版构建**的关系：``done`` 已入这一版 / ``pending`` 还没进去 /
     #: ``failed`` 这一版明确没收它 / ``None`` 没有构建可参照（从没建过，或与本次无关）。
@@ -196,13 +207,6 @@ class KbDocumentsData(BaseModel):
     total: int
     page: int
     page_size: int
-    generated_at: str
-
-
-class KbBuildData(BaseModel):
-    """单个库的构建状态（独立接口：详情页轮询时只关心这一格也可以只问它）。"""
-
-    build: BuildSummaryData | None = None
     generated_at: str
 
 

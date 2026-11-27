@@ -202,6 +202,30 @@ function openDetail(row: unknown): void {
   detailOpen.value = true
 }
 
+/**
+ * 关窗即停：把 `kb_id` 清空，详情查询的 `enabled` 变 false，轮询也就停了。
+ *
+ * 只把 `detailOpen` 置 false 不够——`enabled` 只看 `kb_id`，弹窗关了但 id 还在，
+ * 那条查询会继续按 3 秒/60 秒的节奏打后端（用户已经不在看了）。
+ */
+function closeDetail(): void {
+  detailKbId.value = null
+  detailFilter.page.value = 1
+}
+
+/**
+ * 只显示时分秒：这一格的读者在判断「刚不刚」，不在读日历。
+ *
+ * `activated_at` / `created_at` 都是**带时区**的 ISO 串，交给 `toLocaleTimeString`
+ * 走本地时区——直接截字符串会让 UTC 的 05:33 在 +08 的屏幕上显示成 05:33。
+ */
+function clockOf(stamp: string | null): string {
+  if (stamp === null) return '时间未知'
+  const at = new Date(stamp)
+  if (Number.isNaN(at.getTime())) return '时间未知'
+  return at.toLocaleTimeString('zh-CN', { hour12: false })
+}
+
 // ───────── 查看原文 ─────────
 const contentOpen = ref(false)
 const contentLoading = ref(false)
@@ -619,8 +643,14 @@ function goRetrieve(kbId: string): void {
               <p class="metric-label">篇文档</p>
             </div>
             <div>
-              <p class="metric-value">{{ row.chunk_count }}</p>
-              <p class="metric-label">个分块</p>
+              <!--
+                没有生效版本时显示「未建索引」而不是「0 个分块」：这是两句话——
+                「还没建过索引」要去做一件事（重建），「索引里有 0 片」是另一件事（去查）。
+                一个 0 会让人以为后者，而它其实连版本都还没有。
+              -->
+              <p v-if="!row.has_active_version" class="metric-value text-amber-600">未建</p>
+              <p v-else class="metric-value">{{ row.chunk_count }}</p>
+              <p class="metric-label">{{ row.has_active_version ? '个分块' : '索引' }}</p>
             </div>
             <div>
               <p class="metric-value">{{ row.chunk_size }}</p>
@@ -712,12 +742,24 @@ function goRetrieve(kbId: string): void {
             </p>
           </div>
 
-          <!-- 收尾之后的那句话：这一版成没成、现在服务的是哪一版。 -->
+          <p
+            v-else-if="row.build && row.build.status === 'ready'"
+            class="mt-1 rounded-md bg-sky-50 px-2 py-1 text-xs text-sky-800"
+          >
+            {{ row.build.version }} 已建好（{{ row.build.done }} / {{ row.build.planned }} 篇），
+            正在切换为生效版本…
+          </p>
+
+          <!-- 收尾之后的那句话：这一版成没成、现在服务的是哪一版、**什么时候生效的**。
+               「已生效」不配时刻只是一句话——用户没法核对它是刚刚还是十分钟前。 -->
           <p
             v-else-if="row.build && row.build.status === 'active'"
             class="mt-1 rounded-md bg-emerald-50 px-2 py-1 text-xs text-emerald-700"
           >
             {{ row.build.version }} 已生效（{{ row.build.done }} / {{ row.build.planned }} 篇）
+            <span v-if="row.build.activated_at" class="text-emerald-600">
+              · {{ clockOf(row.build.activated_at) }}
+            </span>
             <span v-if="row.build.failure_count > 0" class="text-amber-700">
               · {{ row.build.failure_count }} 篇未入这一版
             </span>
@@ -813,7 +855,13 @@ function goRetrieve(kbId: string): void {
     </el-card>
 
     <!-- ───────── 详情：库内文档的增删查改（自己的查询、自己的节奏）───────── -->
-    <el-dialog v-model="detailOpen" append-to-body width="880px" :close-on-click-modal="false">
+    <el-dialog
+      v-model="detailOpen"
+      append-to-body
+      width="880px"
+      :close-on-click-modal="false"
+      @closed="closeDetail"
+    >
       <template #header>
         <div class="flex flex-wrap items-start justify-between gap-3 pr-6">
           <div class="min-w-0">
@@ -823,7 +871,9 @@ function goRetrieve(kbId: string): void {
             <p v-if="detailKb !== null" class="mt-0.5 text-xs text-muted">
               {{ SPLIT_LABELS[detailKb.split_strategy] ?? detailKb.split_strategy }} ·
               {{ detailKb.document_count }} 篇 /
-              {{ detailKb.chunk_count }} 块 · 窗口 {{ detailKb.chunk_size }} token
+              <span v-if="detailKb.has_active_version">{{ detailKb.chunk_count }} 块</span>
+              <span v-else class="text-amber-600">未建索引</span>
+              · 窗口 {{ detailKb.chunk_size }} token
             </p>
             <!--
               弹窗里也必须有一句「数据更新于几点」：这个弹窗以前完全没有自己的请求，
@@ -881,10 +931,20 @@ function goRetrieve(kbId: string): void {
           </div>
         </div>
         <p
+          v-else-if="detailBuild !== null && detailBuild.status === 'ready'"
+          class="rounded-control bg-sky-50 px-3 py-1.5 text-xs text-sky-800"
+        >
+          {{ detailBuild.version }} 已建好（{{ detailBuild.done }} / {{ detailBuild.planned }} 篇），
+          正在切换为生效版本…
+        </p>
+        <p
           v-else-if="detailBuild !== null && detailBuild.status === 'active'"
           class="rounded-control bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700"
         >
           {{ detailBuild.version }} 已生效（{{ detailBuild.done }} / {{ detailBuild.planned }} 篇）
+          <span v-if="detailBuild.activated_at" class="text-emerald-600">
+            · {{ clockOf(detailBuild.activated_at) }}
+          </span>
           <span v-if="detailBuild.failure_count > 0" class="text-amber-700">
             · {{ detailBuild.failure_count }} 篇未入这一版
           </span>

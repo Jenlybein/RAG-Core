@@ -44,7 +44,7 @@ import structlog
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -211,7 +211,11 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                 chunk_size=settings_of(kb)["chunk_size"],
                 section_part_max_chars=settings_of(kb)["section_part_max_chars"],
                 needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
-                build_progress=await _build_progress_of(db, kb_id=kb.id, tenant_id=tenant_id),
+                # 进度从构建摘要派生（同一次构建的读数只有一处）：
+                # 卡片上的「3 / 10」与详情里的构建摘要必须是同一个时刻的数。
+                build_progress=_progress_from(
+                    await _build_summary_of(db, kb_id=kb.id, tenant_id=tenant_id)
+                ),
                 token_usage=await _token_usage_of(db, kb_id=kb.id, tenant_id=tenant_id, plan=plan),
                 documents=[
                     TreeDocument(
@@ -242,9 +246,19 @@ MAX_DOCUMENTS_PAGE_SIZE: Final[int] = 200
 
 
 def _isoformat(value: Any) -> str | None:
-    """datetime → ISO 串（``None`` 原样传）。界面只需要「能显示成几点」的那一层。"""
+    """datetime → **带时区**的 ISO 串（``None`` 原样传）。
 
-    return None if value is None else value.isoformat()
+    为什么一定要带时区：界面拿它算「更新于 14:03:12」，而 ``new Date("2026-11-27T13:33:00")``
+    （没有 Z、没有偏移）会被浏览器当成**本地时间**解析。数据库里存的是 naive 的 UTC
+    （容器 ``TZ`` 就是 UTC），于是 +08 的浏览器会把 05:33 显示成 05:33——差 8 小时，而这一格
+    正是「这份数据有多旧」的唯一证据。所以 naïve 一律按 UTC 贴标签，绝不原样吐出去。
+    """
+
+    if value is None:
+        return None
+    if isinstance(value, datetime) and value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.isoformat()
 
 
 async def _build_summary_of(
@@ -252,9 +266,9 @@ async def _build_summary_of(
 ) -> BuildSummaryData | None:
     """这个库**最近一次值得说**的构建（进行中优先，否则最新那次）。
 
-    与 :func:`_build_progress_of` 的分工：那条只答「还在跑吗、还剩多少」；这条连
-    ``status`` 一起给，因为详情页在构建**已经收尾**时也需要上下文（用户点进去的那一刻，
-    一次 10 篇的构建多半早就跑完了）。
+    **一次构建的读数只有这一处**：进度（列表/卡片那条 ``BuildProgressData``）也从它派生
+    （见 :func:`_progress_from`）。两处各读一遍那一行、各算一遍 ``planned / done / pending``
+    的写法会漂——而漂出来的两个数是「同一个构建」的两个进度，用户只会觉得两个都在瞎报。
     """
 
     row = await index_version_repository.latest_for_kb(db, kb_id, tenant_id=tenant_id)
@@ -269,13 +283,50 @@ async def _build_summary_of(
         status=str(row.status),
         planned=planned,
         done=done,
-        pending=max(planned - done, 0),
+        remaining=max(planned - done, 0),
         doc_version=None if row.doc_version is None else int(row.doc_version),
-        failures=[
-            BuildFailureData(**entry) for entry in failures[:BUILD_FAILURES_IN_PROGRESS]
-        ],
+        failures=[BuildFailureData(**_failure_entry(entry)) for entry in failures[:BUILD_FAILURES_IN_PROGRESS]],
         failure_count=len(failures),
         created_at=_isoformat(row.created_at),
+        activated_at=_isoformat(getattr(row, "activated_at", None)),
+    )
+
+
+def _failure_entry(entry: Any) -> dict[str, str]:
+    """把 ``failed_documents`` 里的一条整成 ``BuildFailureData`` 的三个字段。
+
+    历史行里存的不一定是完整的三个键（早期只写 ``document_id`` 与 ``reason``），
+    所以逐键取值 + ``str()``，而不是 ``BuildFailureData(**entry)``——后者遇到缺键会
+    抛 TypeError，把「有一条老明细」变成「整个接口 500」。
+    """
+
+    if isinstance(entry, dict):
+        return {
+            "document_id": str(entry.get("document_id") or ""),
+            "title": str(entry.get("title") or ""),
+            "reason": str(entry.get("reason") or ""),
+        }
+    return {"document_id": "", "title": "", "reason": str(entry)}
+
+
+def _progress_from(build: BuildSummaryData | None) -> BuildProgressData | None:
+    """构建摘要 → 列表页的进度条视图（只在 ``building`` 时有值）。
+
+    为什么不再单独读一遍那一行：界面上的进度条与详情里的构建摘要说的是**同一个构建**。
+    分开读会造出两个时刻的读数（进度 3/10、摘要 4/10），而它们在一个「有没有卡住」的问题是
+    致命的——用户无法判断哪个是真的。
+    """
+
+    if build is None or build.status != INDEX_BUILD_BUILDING:
+        return None
+    return BuildProgressData(
+        build_id=build.build_id,
+        version=build.version,
+        planned=build.planned,
+        done=build.done,
+        pending=build.remaining,  # 列表页的进度契约仍叫 pending（界面已按它渲染）
+        failures=build.failures,
+        failure_count=build.failure_count,
     )
 
 
@@ -283,6 +334,14 @@ async def _summary_of(
     db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str, plan: PlanSpec
 ) -> KnowledgeBaseSummaryData:
     """一个库的摘要：四个数字 + 需重建 + 构建。**不读文档数组**。
+
+    ## 每库五条查询，但都不是 N+1
+
+    ``count_by_kb_by_status`` / ``count_in_kb`` / ``find_active`` / ``count_tokens_in_kb`` /
+    ``latest_for_kb`` 各是一条**聚合或单行**查询，与库里有几百篇还是几千篇无关。本仓禁止的
+    N+1 是「每篇文档各查一次」——那种成本随文档数线性涨；这里随库数线性涨（十几到几十）。
+    真要再压下去得按租户批量聚合（``GROUP BY kb_id`` 五个），收益是常数级、代价是五个
+    仓储函数各长一个批量版；在 live 档每 3 秒一次的量级上不值得，记在这里而不是悄悄留着。
 
     ``chunk_count`` 走 :func:`chunk_repository.count_in_kb`（一条聚合），与详情表每一行的
     ``chunk_count`` 共用同一个「生效版本 × 当前稿」谓词——卡片上的合计与表格里每行之和对
@@ -299,6 +358,9 @@ async def _summary_of(
         allowed_formats=formats_of(kb),
         chunk_size=settings_of(kb)["chunk_size"],
         section_part_max_chars=settings_of(kb)["section_part_max_chars"],
+        # 总数取状态分组之和：再单独调一次 `count_by_kb` 就是**两套总数口径**，
+        # 而它们只会在「有一篇状态是我们不认识的」时候分叉——那时两个数都「对」，
+        # 谁也不报错，用户看到的是「4 篇文档、状态加起来 3 篇」。
         document_count=sum(counts.values()),
         status_counts=DocumentStatusCountsData(
             success=counts.get(int(DocumentStatus.SUCCESS), 0),
@@ -306,6 +368,7 @@ async def _summary_of(
             processing=counts.get(int(DocumentStatus.PROCESSING), 0),
             queued=counts.get(int(DocumentStatus.QUEUED), 0),
         ),
+        has_active_version=kb.active_index_version is not None,
         chunk_count=await chunk_repository.count_in_kb(
             db, str(kb.id), tenant_id=tenant_id, index_version=kb.active_index_version
         ),
@@ -352,12 +415,19 @@ async def _build_state_of(
     合并成一个状态会同时坏掉两件事：文档状态被构建污染；以及「构建在跑」这件事在状态列
     根本表达不出来（构建期间文档几乎一直是「成功」，只有它自己那一秒是「索引中」）。
 
-    ## 三种结论的判据
+    ## 四种结论的判据
 
     * 在失败明细里 → ``failed``（这一版明确没收它）；
     * 在这一版的切片真值里 → ``done``；
     * 本来该参与（``status`` 是成功）却不在真值里 → ``pending``（还没跑到它）；
     * 其余（失败 / 排队中的文档）→ ``None``：它本来就不参与这一版，说「待重建」是误导。
+
+    ## 失败明细为什么在这里重新读一遍
+
+    ``build.failures`` 是**给界面看的截断列表**（只回前 5 条，否则一次 500 篇失败的构建会把
+    响应撑到几 MB）。拿它当判据会让第 6 篇以后的失败一律显示成「待重建」——一个永远不会
+    动的「待重建」，比「未入版」这句实话糟得多。所以这里读该构建行的**全量**失败明细，
+    与展示用的那一份分开取。
     """
 
     if build is None:
@@ -370,9 +440,9 @@ async def _build_state_of(
         index_version=build.version,
         doc_version=build.doc_version,
     )
-    failed_ids = {str(entry.document_id) for entry in build.failures}
-    # 失败明细可能被截断（只回前几条），所以「总失败数」不能只看这个集合——
-    # 但**逐篇判定**只能靠它。截断的那几篇会落到 pending，这比把成功的篇报成失败安全。
+    failed_ids = await _all_failed_document_ids(
+        db, build_id=build.build_id, tenant_id=tenant_id
+    )
     states: dict[str, str | None] = {}
     for document in documents:
         document_id = str(document.id)
@@ -385,6 +455,20 @@ async def _build_state_of(
         else:
             states[document_id] = None
     return states
+
+
+async def _all_failed_document_ids(
+    db: AsyncSession, *, build_id: str, tenant_id: str
+) -> set[str]:
+    """该构建行记下的**全部**失败文档 id（不截断）。
+
+    只读一列（``failed_documents``），不读整行：判据要的是「有没有它」，不是那行其它字段。
+    """
+
+    row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
+    if row is None:
+        return set()
+    return {str(entry.get("document_id")) for entry in (row.failed_documents or ()) if entry}
 
 
 async def list_documents_page(
@@ -468,18 +552,6 @@ async def list_documents_page(
     }
 
 
-async def build_of(db: AsyncSession, *, tenant_id: str, kb_id: str) -> dict[str, Any]:
-    """只回答「这个库的构建现在什么状态」（详情页细粒度刷新时只问这一格）。"""
-
-    kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
-    if kb is None:
-        raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
-    return {
-        "build": await _build_summary_of(db, kb_id=kb_id, tenant_id=tenant_id),
-        "generated_at": _isoformat(now()),
-    }
-
-
 async def create_kb(
     db: AsyncSession,
     *,
@@ -526,49 +598,6 @@ async def create_kb(
 BUILD_FAILURES_IN_PROGRESS: Final[int] = 5
 
 
-async def _build_progress_of(
-    db: AsyncSession, *, kb_id: str, tenant_id: str
-) -> BuildProgressData | None:
-    """这个库**进行中**的那次构建的进度与失败明细；没有就 ``None``（#216）。
-
-    ## 为什么读三列而不是「去数已有切片的文档」
-
-    数真值（``COUNT(DISTINCT document_id)``）是**收尾判据**要的，它回答「该不该 ready」。
-    界面要回答的是另一个问题：「这一批还剩多少没结果」。两者口径不同：真值里续建早就有的
-    篇不算「这轮刚建的」，而进度里它们是「有结果」的。所以界面读构建行自己记的进度，不去
-    重算真值——重算在界面上只会显示一个让人困惑的数字（比如刚起构建就 100 / 500）。
-
-    ## 为什么不查 ``ready`` / ``failed`` 的行
-
-    进度只服务「还在跑」这一种状态。已经收尾的那一次如果也回，界面上就会出现一条永远
-    不会动的进度条（而且它多半停在不对的数字上，比如失败那轮 3 / 500）。
-    """
-
-    rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
-    running = next((row for row in rows if row.status == INDEX_BUILD_BUILDING), None)
-    if running is None:
-        return None
-    planned = max(int(running.documents_planned or 0), 0)
-    done = min(max(int(running.documents_done or 0), 0), planned)
-    failures = list(running.failed_documents or ())
-    return BuildProgressData(
-        build_id=running.id,
-        version=running.version,
-        planned=planned,
-        done=done,
-        pending=max(planned - done, 0),
-        failures=[
-            BuildFailureData(
-                document_id=str(entry.get("document_id") or ""),
-                title=str(entry.get("title") or ""),
-                reason=str(entry.get("reason") or ""),
-            )
-            for entry in failures[:BUILD_FAILURES_IN_PROGRESS]
-        ],
-        failure_count=len(failures),
-    )
-
-
 async def _token_usage_of(
     db: AsyncSession, *, kb_id: str, tenant_id: str, plan: PlanSpec
 ) -> TokenUsageData | None:
@@ -599,9 +628,12 @@ async def _needs_rebuild(db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str)
     live = kb.active_index_version
     if live is None:
         return True
-    rows = await index_version_repository.list_for_kb(db, kb.id, tenant_id=tenant_id)
-    row = next((item for item in rows if item.version == live), None)
-    if row is None:
+    # 只读**生效那一行**（`find_active`），不读全版本清单：后者是「还能回到哪一版」用的，
+    # 一个建过 20 版的库会带回 20 行只为拿其中一行。`needs_rebuild` 问的是「生效版本用的
+    # 是不是当前设置」，答案只在那一行上。
+    row = await index_version_repository.find_active(db, kb.id, tenant_id=tenant_id)
+    if row is None or row.version != live:
+        # 库行记着 v5 而版本表里找不到 v5：账对不上了，按需要重建（宁可多提示一次）。
         return True
     return needs_rebuild(kb, row.params)
 

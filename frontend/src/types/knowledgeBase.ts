@@ -205,12 +205,21 @@ export interface BuildSummary {
   status: string
   planned: number
   done: number
-  pending: number
+  /**
+   * 还没有结果的篇数（= `planned - done`）。
+   *
+   * 叫 `remaining` 而不是 `pending`：行级的 `build_state` 里也有一个 `pending`
+   * （「这一版还没收它」），两个 pending 一个数是、一个是枚举值，读代码的人会串。
+   */
+  remaining: number
   /** 这一版对应的统一稿号；`null` = 老行没留快照。 */
   doc_version: number | null
   failures: BuildFailure[]
   failure_count: number
+  /** 起建时刻（带时区的 ISO 串）。 */
   created_at: string | null
+  /** 生效时刻（`active` 的行才有值）：界面据此说「v5 已生效 · 14:03:12」。 */
+  activated_at: string | null
 }
 
 /** 四态各有多少篇（卡片上的「3 篇失败」与顶部「有文档在跑」都读它）。 */
@@ -237,6 +246,11 @@ export interface KbSummary {
   section_part_max_chars: number
   document_count: number
   status_counts: DocumentStatusCounts
+  /**
+   * 这个库有生效版本吗。`false` 时界面说「未建索引」而**不是**「0 个分块」——
+   * 「还没有索引」与「索引里有 0 片」是两句话，要做的处置也不同。
+   */
+  has_active_version: boolean
   /** 生效版本 × 当前稿的切片总数（与检索口径一致，不是留存版本之和）。 */
   chunk_count: number
   needs_rebuild: boolean
@@ -278,12 +292,6 @@ export interface KbDocumentsPayload {
   total: number
   page: number
   page_size: number
-  generated_at: string
-}
-
-/** 单个库的构建状态。 */
-export interface KbBuildPayload {
-  build: BuildSummary | null
   generated_at: string
 }
 

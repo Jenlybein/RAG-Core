@@ -155,7 +155,16 @@ def _install(
     recorder = _Recorder()
     rows = documents or []
     chunks = chunk_totals or {}
-    state = {"build": build}
+    # `find_active` 的替身：库行记着 v2 时，生效版本行就是这一份（`params` 与当前设置一致）。
+    active_row = SimpleNamespace(
+        version=getattr(kb, "active_index_version", None),
+        params={
+            "chunk_size": 512,
+            "split_strategy": "structure",
+            "section_part_max_chars": 2000,
+        },
+    )
+    state = {"build": build, "active_row": active_row if kb is not None else None}
 
     async def _get_kb(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return kb if kb is not None and kb.tenant_id == tenant_id else None
@@ -215,21 +224,11 @@ def _install(
     async def _latest(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
         return state["build"]
 
-    async def _list_for_kb(_db: Any, kb_id: str, *, tenant_id: str) -> list[Any]:
-        recorder.listed_versions.append({"kb_id": kb_id})
-        live = getattr(kb, "active_index_version", None)
-        if live is None:
-            return []
-        return [
-            SimpleNamespace(
-                version=live,
-                params={
-                    "chunk_size": 512,
-                    "split_strategy": "structure",
-                    "section_part_max_chars": 2000,
-                },
-            )
-        ]
+    async def _get_build(_db: Any, build_id: str, *, tenant_id: str) -> Any:
+        return state["build"]
+
+    async def _find_active(_db: Any, kb_id: str, *, tenant_id: str) -> Any:
+        return state["active_row"]
 
     async def _done_ids(
         _db: Any, kb_id: str, *, tenant_id: str, index_version: str, doc_version: int | None
@@ -269,7 +268,8 @@ def _install(
         console_kb_service.chunk_repository, "list_document_ids_in_version", _done_ids
     )
     monkeypatch.setattr(console_kb_service.index_version_repository, "latest_for_kb", _latest)
-    monkeypatch.setattr(console_kb_service.index_version_repository, "list_for_kb", _list_for_kb)
+    monkeypatch.setattr(console_kb_service.index_version_repository, "get_for_tenant", _get_build)
+    monkeypatch.setattr(console_kb_service.index_version_repository, "find_active", _find_active)
     monkeypatch.setattr(console_kb_service.plan_service, "resolve_plan", _plan)
     monkeypatch.setattr(console_kb_service, "_tenant_plan_id", _plan_id)
     return recorder
@@ -342,14 +342,14 @@ async def test_the_build_summary_carries_the_status_and_the_failure_count(
         ),
     )
 
-    data = await console_kb_service.build_of(object(), tenant_id=TENANT, kb_id=KB_ID)  # type: ignore[arg-type]
+    data = await console_kb_service.list_summaries(object(), tenant_id=TENANT)  # type: ignore[arg-type]
 
-    build = data["build"]
+    build = data["items"][0].build
     assert build is not None
     assert build.status == INDEX_BUILD_FAILED
     assert build.planned == 10
     assert build.done == 10
-    assert build.pending == 0
+    assert build.remaining == 0
     assert build.failure_count == 1
     assert build.failures[0].document_id == "doc-3"
     assert build.created_at is not None
@@ -579,3 +579,48 @@ async def test_the_summary_keeps_the_four_status_counts(monkeypatch: pytest.Monk
     assert summary.status_counts.failed == 1
     assert summary.status_counts.processing == 1
     assert summary.status_counts.queued == 1
+
+
+@pytest.mark.asyncio
+async def test_a_failure_beyond_the_display_truncation_is_still_failed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """失败明细被截断（界面只回前 5 条）时，第 6 篇仍要显示「未入版」而不是「待重建」。
+
+    ## 为什么这条必须单独钉
+
+    ``build.failures`` 是**给界面看的**截断列表（否则一次 500 篇失败的构建会把响应撑到几 MB）。
+    如果拿它当判据，第 6 篇以后的失败会一律落到 ``pending``——一个永远不会动的「待重建」。
+    用户会一直等，而构建早就结束了。所以判据读构建行的**全量**失败明细。
+
+    这条同时钉住「两处读同一行」：展示用的那份可以截断，判据用的那份不行。
+    """
+
+    documents = [_document(f"doc-{index}") for index in range(1, 8)]
+    full_failures = [
+        {"document_id": f"doc-{index}", "title": f"doc-{index}.md", "reason": "boom"}
+        for index in range(1, 8)
+    ]
+    _install(
+        monkeypatch,
+        kb=_kb(),
+        documents=documents,
+        build=_build(failed=full_failures[: full_failures.__len__()]),
+    )
+
+    data = await console_kb_service.list_documents_page(
+        object(),  # type: ignore[arg-type]
+        tenant_id=TENANT,
+        kb_id=KB_ID,
+    )
+
+    # 展示那一份被截到前 5 条
+    build = data["build"]
+    assert build is not None
+    assert len(build.failures) == 5
+    assert build.failure_count == 7
+
+    # 判据那一份是全量：第 6、7 篇也是 failed，不是 pending
+    states = {row.document_id: row.build_state for row in data["documents"]}
+    assert states["doc-6"] == "failed"
+    assert states["doc-7"] == "failed"

@@ -11,7 +11,6 @@ import type {
 import { KB_SECTION_PART_DEFAULT } from '../types/knowledgeBase'
 import type {
   ConsoleTreeData,
-  KbBuildPayload,
   KbDocumentsPayload,
   KbDocumentsQuery,
   KbListPayload,
@@ -79,7 +78,6 @@ export function rebuildKbConsole(kbId: string): Promise<RebuildKbReceipt> {
  */
 export const KB_LIST_QUERY_KEY = ['knowledge-bases', 'list'] as const
 export const KB_DOCUMENTS_QUERY_KEY = ['knowledge-bases', 'documents'] as const
-export const KB_BUILD_QUERY_KEY = ['knowledge-bases', 'build'] as const
 /** 所有知识库读模型共同的前缀（失效用）。 */
 export const KB_QUERY_PREFIX = ['knowledge-bases'] as const
 
@@ -114,11 +112,6 @@ export function fetchKbDocuments(
   return consoleHttp.get<KbDocumentsPayload>(
     `${KB_LIST_PATH}/${kbId}/documents${_documentsQueryString(query)}`,
   )
-}
-
-/** 只问「这个库的构建到哪儿了」。 */
-export function fetchKbBuild(kbId: string): Promise<KbBuildPayload> {
-  return consoleHttp.get<KbBuildPayload>(`${KB_LIST_PATH}/${kbId}/build`)
 }
 
 /** 读树：租户来自会话，后端不做白名单收窄（控制面要看整个租户）。 */

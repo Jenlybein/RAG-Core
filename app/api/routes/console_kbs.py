@@ -49,7 +49,6 @@ from app.schemas.console_kbs import (
     DeleteKnowledgeBaseData,
     DocumentContentData,
     KnowledgeBaseNode,
-    KbBuildData,
     KbDocumentsData,
     KnowledgeBaseListData,
     KnowledgeBaseTreeData,
@@ -167,22 +166,6 @@ async def list_knowledge_base_documents(
         keyword=keyword,
     )
     return ok(KbDocumentsData.model_validate(data))
-
-
-@router.get(
-    "/knowledge-bases/{kb_id}/build",
-    response_model=ApiResponse[KbBuildData],
-    summary="这个库的构建状态（进行中优先，否则最近一次）",
-)
-async def knowledge_base_build(
-    kb_id: str = Path(..., min_length=1),
-    identity: ConsoleIdentity = Depends(require_console_tenant),
-    db: AsyncSession = Depends(get_async_db),
-) -> ApiResponse[KbBuildData]:
-    """只回答「这一版建到哪儿了」。细粒度刷新时只问这一格，不必重取整页文档。"""
-
-    data = await console_kb_service.build_of(db, tenant_id=tenant_id_of(identity), kb_id=kb_id)
-    return ok(KbBuildData.model_validate(data))
 
 
 @router.get(
