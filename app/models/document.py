@@ -42,7 +42,10 @@ class Document(Base):
     # 算过几次」。改造之前产物是库级的（``knowledge_bases.active_index_version``），于是
     # 起一次构建要取全库稿号最大值当「统一稿号」套到每一篇头上——库级判据引用了篇级数据，
     # 稿次落后那几篇必然取不到正文（20030）。下放到篇级之后两根轴各自闭环。
-    current_index_generation: Mapped[int] = mapped_column(Integer, default=1, server_default="1")
+    # 允许为空：``NULL`` = 「这篇还没有任何一代产物」。与「第 1 代但恰好是空结果」分开——
+    # 两者在检索侧的处理不同（前者跳过并计数，后者是一次正常的空结果），用一个值表示
+    # 两件事，第三根轴还没上线就已经说不清了。
+    current_index_generation: Mapped[int | None] = mapped_column(Integer, nullable=True)
     # 这一代产物是用**哪份切块参数**算出来的（:func:`app.services.index_generation.settings_fingerprint`）。
     #
     # 允许为空，空 = 「来路不明」（例如那条生效版本没有参数快照）。空一律按落后处理：

@@ -114,7 +114,7 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     # #222 的每日切块账、#215 的构建自动激活、#225 的重投计数与心跳、第 17 步 #227 现场五的
     # 过渡密钥四列，第 17 步现场九的「索引代」三列（``add_index_generation``）——当前链尾。
     assert heads == [_revision_of(_migration_path("add_index_generation"))], (
-        f"链尾应当是「构建收敛四列」那条迁移，实际 {heads}"
+        f"链尾应当是现场九的「索引代三列」那条迁移，实际 {heads}"
     )
 
 

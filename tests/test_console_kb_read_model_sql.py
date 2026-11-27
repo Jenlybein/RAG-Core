@@ -55,7 +55,7 @@ CREATE TABLE documents (
     status INTEGER NOT NULL,
     current_version INTEGER NOT NULL DEFAULT 1,
     -- 现场九新增的两列（模型会读它们，夹具要跟着长）。
-    current_index_generation INTEGER NOT NULL DEFAULT 1,
+    current_index_generation INTEGER,
     settings_hash VARCHAR(64),
     index_claimed_at DATETIME,
     index_heartbeat_at DATETIME,
