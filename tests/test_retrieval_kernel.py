@@ -31,7 +31,7 @@ from typing import Any
 import pytest
 
 from app.core.config import settings
-from app.models.chunk import DEFAULT_DOC_VERSION, DEFAULT_INDEX_VERSION
+from app.models.chunk import DEFAULT_DOC_VERSION
 from app.observability import reset_trace_sink, set_trace_sink
 from app.observability.stage_timing import (
     STAGE_COLLAPSE,
@@ -466,7 +466,7 @@ def test_the_kernel_delivers_whole_sections_after_top_k() -> None:
     session = _FoldSession(
         metas={("kb-a", "c-1"): _meta(heading), ("kb-a", "c-2"): _meta(heading)},
         units={
-            DEFAULT_INDEX_VERSION: [
+            "v1": [
                 ("doc-1", heading, 0, 0, "第一句。", "c-1", "prose", 0),
                 ("doc-1", heading, 0, 1, "第二句。", "c-2", "prose", 0),
             ]
@@ -691,7 +691,6 @@ def _install_retrieve_stubs(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             settings={},
             name="",
             description="",
-            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     monkeypatch.setattr(service, "ensure_visible", _visible)

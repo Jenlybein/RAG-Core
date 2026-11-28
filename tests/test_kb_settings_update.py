@@ -1,17 +1,17 @@
-"""改库切块设置 + 自动重建（第 16 步 #207 的 C 部分）。
+"""改库切块设置 + 按篇重建（第 16 步 #207 的 C 部分 / 第 17 步口径）。
 
 这一票里最容易「看起来没问题、实际很贵」的地方就是这里：改设置会触发**整库重建**
 （全库重嵌入 + 重写 ES）。所以守三件事：
 
-1. 没确认就拒（``20002``），不落库、不起构建；
-2. 确认后一次落三样——设置、审计、构建行——且构建的投递登记在**提交之后**；
-3. 构建参数留档（``index_build_versions.params``），库当前设置与生效版本不一致时
-   能判出「需重建」，而不是靠人记忆。
+1. 没确认就拒（``20002``），不落库、不投递；
+2. 确认后一次落两样——设置、审计——并**逐篇**投递重建，投递登记在**提交之后**；
+3. 库级构建的版本行 / 四计数 / 激活已经整层删除：回执不再有 ``build_id``，只有
+   「投了多少篇、库里一共多少篇」。进度看每篇自己的 ``status``。
 """
 
 from __future__ import annotations
 
-import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -21,7 +21,6 @@ from app.models.knowledge_base import (
     DEFAULT_SECTION_PART_MAX_CHARS,
     KnowledgeBase,
     build_params_of,
-    needs_rebuild,
 )
 from app.services import console_kb_service
 
@@ -31,7 +30,6 @@ def _kb(
     split_strategy: str = "structure",
     chunk_size: int = 512,
     section_part_max_chars: int = DEFAULT_SECTION_PART_MAX_CHARS,
-    active_index_version: str | None = "v1",
 ) -> KnowledgeBase:
     return KnowledgeBase(
         id="kb-1",
@@ -44,14 +42,13 @@ def _kb(
             "chunk_size": chunk_size,
             "section_part_max_chars": section_part_max_chars,
         },
-        active_index_version=active_index_version,
     )
 
 
 def test_build_params_carry_only_the_knobs_that_change_the_artifacts() -> None:
     """构建参数只收「改了就必须重建」的那三项，名称与描述不进。
 
-    把它们算进去的话，每个库都会永远显示「需重建」——一次误报就够让人学会忽略提示。
+    把它们算进去的话，每篇的指纹都会永远对不上库设置——一次误报就够让人学会忽略提示。
     """
 
     assert build_params_of(_kb()) == {
@@ -59,34 +56,6 @@ def test_build_params_carry_only_the_knobs_that_change_the_artifacts() -> None:
         "chunk_size": 512,
         "section_part_max_chars": 2000,
     }
-
-
-def test_a_version_without_params_counts_as_needing_a_rebuild() -> None:
-    """老版本行没留参数（``params`` 为 NULL）→ 判「需重建」。
-
-    宁可多提示一次：猜一个「大概就是当时的默认值」写进去，会让该重建的库显示成已就绪，
-    而症状是「我明明改了阈值，怎么还是整节」。
-    """
-
-    assert needs_rebuild(_kb(), None) is True
-    assert needs_rebuild(_kb(), {}) is True
-
-
-def test_matching_params_do_not_ask_for_a_rebuild() -> None:
-    kb = _kb()
-    assert needs_rebuild(kb, build_params_of(kb)) is False
-
-
-def test_changing_the_section_threshold_asks_for_a_rebuild() -> None:
-    """阈值是索引期旋钮：改了而版本参数还是旧的 → 必须重建才生效。"""
-
-    kb = _kb(section_part_max_chars=1600)
-    assert (
-        needs_rebuild(
-            kb, {"split_strategy": "structure", "chunk_size": 512, "section_part_max_chars": 2000}
-        )
-        is True
-    )
 
 
 # ────────────────────────── 服务层的两道门
@@ -104,38 +73,24 @@ class _KbRepo:
         return self._kb
 
 
-class _FakeBuild:
-    id = "build-1"
-    version = "v2"
-    #: 起跑快照的可参与篇数：`rebuild_kb` 的回执要把它交回去（前端据它说「N 篇」）。
-    documents_planned = 3
+class _DispatchRecorder:
+    """``_dispatch_kb_rebuild`` 的替身：只记「被叫了几次、参数对不对」，不碰仓储。"""
 
+    def __init__(self, *, dispatched: int = 3, total: int = 3) -> None:
+        self.calls: list[dict[str, Any]] = []
+        self._dispatched = dispatched
+        self._total = total
 
-class _FakeBuildService:
-    """``IndexBuildService`` 的替身：只回答「起了一个构建」，不真连库/ES。"""
-
-    calls: list[dict[str, Any]] = []
-
-    async def start_build(
-        self,
-        _db: Any,
-        *,
-        kb_id: str,
-        tenant_id: str,
-        version: str | None = None,
-        auto_activate: bool = False,
-    ) -> Any:
-        _FakeBuildService.calls.append(
-            {"kb_id": kb_id, "tenant_id": tenant_id, "auto_activate": auto_activate}
-        )
-        return _FakeBuild()
+    async def __call__(self, _db: Any, kb: Any, *, tenant_id: str, request_id: str | None) -> Any:
+        self.calls.append({"kb_id": kb.id, "tenant_id": tenant_id, "request_id": request_id})
+        return self._dispatched, self._total
 
 
 @pytest.mark.asyncio
 async def test_an_unconfirmed_change_is_rejected_and_writes_nothing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """没确认 → 20002，且库一行没改、构建一次没起。
+    """没确认 → 20002，且库一行没改、一篇都没投。
 
     这次改动的代价是整库重嵌入；「顺手改一下」不能悄悄变成那个代价。
     """
@@ -143,7 +98,7 @@ async def test_an_unconfirmed_change_is_rejected_and_writes_nothing(
     kb = _kb()
     repo = _KbRepo(kb)
     audits: list[dict[str, Any]] = []
-    _FakeBuildService.calls = []
+    dispatch = _DispatchRecorder()
 
     monkeypatch.setattr(
         console_kb_service.knowledge_base_repository,
@@ -153,7 +108,7 @@ async def test_an_unconfirmed_change_is_rejected_and_writes_nothing(
     monkeypatch.setattr(
         console_kb_service, "append_audit", lambda *a, **kw: audits.append(kw) or _noop()
     )
-    monkeypatch.setattr(console_kb_service, "IndexBuildService", _FakeBuildService)
+    monkeypatch.setattr(console_kb_service, "_dispatch_kb_rebuild", dispatch)
 
     with pytest.raises(AppError) as caught:
         await console_kb_service.update_kb_settings(
@@ -171,20 +126,19 @@ async def test_an_unconfirmed_change_is_rejected_and_writes_nothing(
     assert caught.value.code == ErrorCode.PARAM_ERROR
     assert kb.settings["section_part_max_chars"] == 2000, "设置没被改"
     assert audits == [], "没写审计"
-    assert _FakeBuildService.calls == [], "没起构建"
+    assert dispatch.calls == [], "没投任何篇"
 
 
 @pytest.mark.asyncio
-async def test_a_confirmed_change_writes_settings_audit_and_starts_one_build(
+async def test_a_confirmed_change_writes_settings_audit_and_dispatches_a_rebuild(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """确认后：设置落库、审计一条、构建起一个，且投递登记在提交之后。"""
+    """确认后：设置落库、审计一条、逐篇投递一次，回执带投递篇数。"""
 
     kb = _kb()
     repo = _KbRepo(kb)
     audits: list[dict[str, Any]] = []
-    scheduled: list[Any] = []
-    _FakeBuildService.calls = []
+    dispatch = _DispatchRecorder()
 
     monkeypatch.setattr(
         console_kb_service.knowledge_base_repository,
@@ -194,10 +148,7 @@ async def test_a_confirmed_change_writes_settings_audit_and_starts_one_build(
     monkeypatch.setattr(
         console_kb_service, "append_audit", lambda *a, **kw: audits.append(kw) or _noop()
     )
-    monkeypatch.setattr(console_kb_service, "IndexBuildService", _FakeBuildService)
-    monkeypatch.setattr(
-        console_kb_service, "after_commit", lambda _db, thunk: scheduled.append(thunk)
-    )
+    monkeypatch.setattr(console_kb_service, "_dispatch_kb_rebuild", dispatch)
 
     data = await console_kb_service.update_kb_settings(
         object(),  # type: ignore[arg-type]
@@ -217,28 +168,29 @@ async def test_a_confirmed_change_writes_settings_audit_and_starts_one_build(
     assert audits[0]["action"] == console_kb_service.ACTION_KB_SETTINGS_UPDATE
     assert audits[0]["before"]["section_part_max_chars"] == 2000
     assert audits[0]["after"]["section_part_max_chars"] == 1600
-    assert _FakeBuildService.calls == [
-        # 改设置这条路径**要**自动激活（#215 的回归修法：布尔量记在构建行上，不靠载荷传）
-        {"kb_id": "kb-1", "tenant_id": "tenant_demo", "auto_activate": True}
-    ]
-    assert data["build_id"] == "build-1"
-    assert len(scheduled) == 1, "投递登记在提交之后，不是当场发"
+    assert dispatch.calls == [{"kb_id": "kb-1", "tenant_id": "tenant_demo", "request_id": None}], (
+        "一次改动只投递一批"
+    )
+    assert data["documents_dispatched"] == 3
+    assert data["documents_total"] == 3
 
 
 @pytest.mark.asyncio
 async def test_an_out_of_range_threshold_is_rejected_before_any_write(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """越界值在校验处就拒：不能先写设置、再让构建用一个非法阈值。"""
+    """越界值在校验处就拒：不能先写设置、再让重建用一个非法阈值。"""
 
     kb = _kb()
     repo = _KbRepo(kb)
+    dispatch = _DispatchRecorder()
     monkeypatch.setattr(
         console_kb_service.knowledge_base_repository,
         "get_by_id_for_tenant",
         repo.get_by_id_for_tenant,
     )
     monkeypatch.setattr(console_kb_service, "append_audit", lambda *a, **kw: _noop())
+    monkeypatch.setattr(console_kb_service, "_dispatch_kb_rebuild", dispatch)
 
     with pytest.raises(AppError) as caught:
         await console_kb_service.update_kb_settings(
@@ -255,6 +207,7 @@ async def test_an_out_of_range_threshold_is_rejected_before_any_write(
 
     assert caught.value.code == ErrorCode.PARAM_ERROR
     assert kb.settings["section_part_max_chars"] == 2000
+    assert dispatch.calls == []
 
 
 def _actor() -> Any:
@@ -268,94 +221,105 @@ async def _noop() -> None:
     return None
 
 
+# ────────────────────────────── 投递本身：按篇、有上限、登记在提交之后
+
+
 @pytest.mark.asyncio
-async def test_the_rebuild_is_enqueued_with_auto_activation(
+async def test_the_dispatch_helper_prepares_and_registers_one_enqueue_per_document(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """改设置起的那个构建**带激活**（第 16 步 #207）。
+    """``_dispatch_kb_rebuild`` 每篇一次「置排队中」+ 一次 after_commit 投递。
 
-    这是定稿里那句「完成自动激活」的落点：改完设置停在 ``ready`` 等于把「设置页已保存」
-    变成半句话，用户还得再点一次「激活」才知道生效。常规重建不这样（ADR-0025 让
-    ``ready`` 是运维可见的一步），所以这条必须只对「改设置」这条路径成立。
+    这是全库重建**唯一**的写路径（改设置与单纯重建都走它）：少登记一次就是一篇永远不跑，
+    多登记一次就是同一篇被投两遍（CAS 会挡，但白占一条消息）。
     """
 
-    kb = _kb()
-    repo = _KbRepo(kb)
-    thunks: list[Any] = []
-    enqueued: list[dict[str, Any]] = []
-    _FakeBuildService.calls = []
-
-    monkeypatch.setattr(
-        console_kb_service.knowledge_base_repository,
-        "get_by_id_for_tenant",
-        repo.get_by_id_for_tenant,
-    )
-    monkeypatch.setattr(console_kb_service, "append_audit", lambda *a, **kw: _noop())
-    monkeypatch.setattr(console_kb_service, "IndexBuildService", _FakeBuildService)
-
-    async def _fake_enqueue(**kwargs: Any) -> None:
-        enqueued.append(kwargs)
-
-    monkeypatch.setattr(console_kb_service, "after_commit", lambda _db, thunk: thunks.append(thunk))
-    monkeypatch.setattr(console_kb_service, "enqueue_index_build_after_commit", _fake_enqueue)
-
-    await console_kb_service.update_kb_settings(
-        object(),  # type: ignore[arg-type]
-        tenant_id="tenant_demo",
-        kb_id="kb-1",
-        actor=_actor(),
-        request_id=None,
-        split_strategy=None,
-        chunk_size=None,
-        section_part_max_chars=1600,
-        confirmed=True,
-    )
-
-    assert len(thunks) == 1, "投递登记在 after_commit 上，不是当场发"
-    # 执行那个回调：它才是真正把任务投出去的那一步。
-    await asyncio.wait_for(thunks[0](), timeout=5)
-    assert enqueued == [
-        {
-            "publish": console_kb_service.enqueue_index_build,
-            "build_id": "build-1",
-            "tenant_id": "tenant_demo",
-            "request_id": None,
-            # 这里**不再**有 ``activate``：它记在构建行上（``start_build(auto_activate=True)``，
-            # 见上一个用例），而载荷里带一个「决定激活与否」的布尔量在改成按篇投递时断过一次。
-            # 本用例现在守的是「投递仍然只登记一次、且走 after_commit」。
-        }
+    documents = [
+        SimpleNamespace(id="doc-0", current_version=1),
+        SimpleNamespace(id="doc-1", current_version=1),
     ]
 
+    prepared: list[str] = []
+    scheduled: list[Any] = []
 
-def test_a_build_that_rebuilt_nothing_is_refused() -> None:
-    """库里有文档、却一篇都没重建成功 → 构建立刻失败，绝不产出一个「空版本」（#207）。
+    async def _count(_db: Any, _kb_id: str, *, tenant_id: str, status: int | None = None) -> int:
+        return 5
 
-    空版本的四项计数自洽（0=0=0=0），能一路通过计数闸门变成 ``ready``；它一旦被激活，
-    检索会诚实地返回空结果，而读起来像「这个库没内容」。症状不报错、只是全空。
-    """
+    async def _list(_db: Any, _kb_id: str, *, tenant_id: str, offset: int, limit: int, status: Any):
+        assert limit == console_kb_service.MAX_REBUILD_DOCUMENTS_PER_REQUEST
+        return documents
 
-    from app.services.index_build_service import (
-        BUILD_NOTHING_TO_REBUILD_MESSAGE,
-        IndexBuildNothingToRebuild,
+    async def _prepare(_db: Any, document_id: str, *, tenant_id: str, allow_success: bool) -> bool:
+        assert allow_success is True, "重建要能抢占 SUCCESS 的篇"
+        prepared.append(document_id)
+        return True
+
+    monkeypatch.setattr(console_kb_service.document_repository, "count_by_kb_filtered", _count)
+    monkeypatch.setattr(console_kb_service.document_repository, "list_page_by_kb", _list)
+    monkeypatch.setattr(
+        console_kb_service.document_repository, "prepare_for_indexing_async", _prepare
+    )
+    monkeypatch.setattr(
+        console_kb_service, "after_commit", lambda _db, thunk: scheduled.append(thunk)
     )
 
-    error = IndexBuildNothingToRebuild()
+    dispatched, total = await console_kb_service._dispatch_kb_rebuild(
+        object(),  # type: ignore[arg-type]
+        _kb(),
+        tenant_id="tenant_demo",
+        request_id=None,
+    )
 
-    assert error.msg == BUILD_NOTHING_TO_REBUILD_MESSAGE
-    # 与「计数对不上」是两个码：前者是数据卡住，后者是写坏了。
-    from app.services.index_build_service import BUILD_COUNTS_MISMATCH_MESSAGE
+    assert dispatched == 2
+    assert total == 5, "库里有 5 篇，本次只投上限内能投的那些"
+    assert prepared == ["doc-0", "doc-1"]
+    assert len(scheduled) == 2, "每篇一个提交后动作"
 
-    assert error.msg != BUILD_COUNTS_MISMATCH_MESSAGE
+
+@pytest.mark.asyncio
+async def test_the_dispatch_helper_skips_a_document_whose_cas_was_lost(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """抢不到（别处刚置成排队 / 索引中）→ 跳过、不投、不计入投递数。"""
+
+    document = SimpleNamespace(id="doc-0", current_version=1)
+    scheduled: list[Any] = []
+
+    async def _count(_db: Any, _kb_id: str, *, tenant_id: str, status: int | None = None) -> int:
+        return 1
+
+    async def _list(_db: Any, _kb_id: str, *, tenant_id: str, offset: int, limit: int, status: Any):
+        return [document]
+
+    async def _prepare(_db: Any, document_id: str, *, tenant_id: str, allow_success: bool) -> bool:
+        return False
+
+    monkeypatch.setattr(console_kb_service.document_repository, "count_by_kb_filtered", _count)
+    monkeypatch.setattr(console_kb_service.document_repository, "list_page_by_kb", _list)
+    monkeypatch.setattr(
+        console_kb_service.document_repository, "prepare_for_indexing_async", _prepare
+    )
+    monkeypatch.setattr(
+        console_kb_service, "after_commit", lambda _db, thunk: scheduled.append(thunk)
+    )
+
+    dispatched, total = await console_kb_service._dispatch_kb_rebuild(
+        object(),  # type: ignore[arg-type]
+        _kb(),
+        tenant_id="tenant_demo",
+        request_id=None,
+    )
+
+    assert (dispatched, total) == (0, 1)
+    assert scheduled == [], "抢不到就一个字都不投"
 
 
 # ─────────────────────────────────────── 单纯重建（第 17 步 / 现场 #226）
 
 
 @pytest.mark.asyncio
-async def test_rebuild_starts_a_build_without_touching_the_settings(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """「重建」只起构建：设置一个字段都不改，审计**单独一条**动作。
+async def test_rebuild_does_not_touch_the_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    """「重建」只按当前设置投递：设置一个字段都不改，审计**单独一条**动作。
 
     为什么不复用改设置那条：它的 before/after 是设置快照，而这条什么都没改——写成
     `kb.settings_update` 会得到一条 before == after 的记录，读账的人会以为改坏了。
@@ -364,8 +328,7 @@ async def test_rebuild_starts_a_build_without_touching_the_settings(
     kb = _kb()
     repo = _KbRepo(kb)
     audits: list[dict[str, Any]] = []
-    scheduled: list[Any] = []
-    _FakeBuildService.calls = []
+    dispatch = _DispatchRecorder(dispatched=4, total=4)
     before_settings = dict(kb.settings)
     before_strategy = kb.split_strategy
 
@@ -377,10 +340,7 @@ async def test_rebuild_starts_a_build_without_touching_the_settings(
     monkeypatch.setattr(
         console_kb_service, "append_audit", lambda *a, **kw: audits.append(kw) or _noop()
     )
-    monkeypatch.setattr(console_kb_service, "IndexBuildService", _FakeBuildService)
-    monkeypatch.setattr(
-        console_kb_service, "after_commit", lambda _db, thunk: scheduled.append(thunk)
-    )
+    monkeypatch.setattr(console_kb_service, "_dispatch_kb_rebuild", dispatch)
 
     data = await console_kb_service.rebuild_kb(
         object(),  # type: ignore[arg-type]
@@ -392,30 +352,24 @@ async def test_rebuild_starts_a_build_without_touching_the_settings(
 
     assert kb.settings == before_settings, "「重建」不改任何设置"
     assert kb.split_strategy == before_strategy
-    assert _FakeBuildService.calls == [
-        {"kb_id": "kb-1", "tenant_id": "tenant_demo", "auto_activate": True}
-    ], "重建这条路径必须自动激活——否则新版本停在 ready，「需重建」提示还是消不掉"
+    assert dispatch.calls == [{"kb_id": "kb-1", "tenant_id": "tenant_demo", "request_id": None}]
     assert len(audits) == 1
     assert audits[0]["action"] == console_kb_service.ACTION_KB_REBUILD
     assert audits[0]["target"] == "kb:kb-1"
-    assert audits[0]["after"]["build_version"] == "v2"
-    assert data == {
-        "kb_id": "kb-1",
-        "build_id": "build-1",
-        "build_version": "v2",
-        "documents_planned": 3,
-    }
-    assert len(scheduled) == 1, "投递登记在提交之后，不是当场发"
+    assert audits[0]["after"]["documents_dispatched"] == 4
+    assert audits[0]["after"]["documents_total"] == 4
+    assert audits[0]["after"]["batch_limit"] == console_kb_service.MAX_REBUILD_DOCUMENTS_PER_REQUEST
+    assert data == {"kb_id": "kb-1", "documents_dispatched": 4, "documents_total": 4}
 
 
 @pytest.mark.asyncio
 async def test_rebuild_of_a_missing_knowledge_base_is_not_found(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """缺失 / 跨租户的库 → 20008，且不动任何东西（不建构建行、不写审计）。"""
+    """缺失 / 跨租户的库 → 20008，且不动任何东西（不投递、不写审计）。"""
 
     audits: list[dict[str, Any]] = []
-    _FakeBuildService.calls = []
+    dispatch = _DispatchRecorder()
 
     monkeypatch.setattr(
         console_kb_service.knowledge_base_repository,
@@ -425,7 +379,7 @@ async def test_rebuild_of_a_missing_knowledge_base_is_not_found(
     monkeypatch.setattr(
         console_kb_service, "append_audit", lambda *a, **kw: audits.append(kw) or _noop()
     )
-    monkeypatch.setattr(console_kb_service, "IndexBuildService", _FakeBuildService)
+    monkeypatch.setattr(console_kb_service, "_dispatch_kb_rebuild", dispatch)
 
     with pytest.raises(AppError) as ctx:
         await console_kb_service.rebuild_kb(
@@ -437,5 +391,5 @@ async def test_rebuild_of_a_missing_knowledge_base_is_not_found(
         )
 
     assert ctx.value.code == ErrorCode.KNOWLEDGE_BASE_NOT_FOUND
-    assert _FakeBuildService.calls == []
+    assert dispatch.calls == []
     assert audits == []

@@ -27,7 +27,6 @@ CREATE TABLE knowledge_bases (
     split_strategy VARCHAR(32) NOT NULL DEFAULT 'structure',
     allowed_formats JSON,
     settings JSON,
-    active_index_version VARCHAR(32),
     created_at DATETIME NOT NULL,
     updated_at DATETIME NOT NULL
 )

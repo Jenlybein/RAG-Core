@@ -17,8 +17,6 @@ from sqlalchemy import Select, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
-from app.models.index_version import effective_index_version
 from app.models.knowledge_base import (
     SPLIT_STRUCTURE,
     KnowledgeBase,
@@ -67,9 +65,8 @@ def get_owner_tenant_id(db: Session, kb_id: str) -> str | None:
     """**仅供运维脚本**：按 ``kb_id`` 取它的归属租户，供 ``--tenant-id`` 缺省时发现租户。
 
     这是本模块唯一不带租户的查询，因此刻意只回答「归谁」，不回答「这个库长什么样」：它
-    返回 ``str | None``，拿不到行，也就没法被数据面借去读别人的库。运维脚本
-    （当年那个全库重建脚本，已随库级版本能力删除）直连数据库、不走 API Key，先在「不知道租户」
-    的处境里，随后每一处查询都显式带上这个租户。
+    返回 ``str | None``，拿不到行，也就没法被数据面借去读别人的库。运维脚本直连数据库、
+    不走 API Key，先在「不知道租户」的处境里，随后每一处查询都显式带上这个租户。
 
     数据面路径**不得调用**：它们手里已经有租户了，该用 :func:`get_by_id_for_tenant`。
     """
@@ -117,24 +114,6 @@ async def get_settings_fingerprint(
     if kb is None or kb.tenant_id != tenant_id:
         return None
     return settings_fingerprint(build_params_of(kb))
-
-
-async def get_effective_index_version(db: AsyncSession, kb_id: str, *, tenant_id: str) -> str:
-    """该库当前生效的索引版本 = 索引写入的**缺省目标**（#142）。
-
-    与 :func:`get_split_config` 同一口径：库不存在或跨租户时回落到
-    ``DEFAULT_INDEX_VERSION``，而不是抛错。索引任务是异步的，库在这期间被删掉时应当
-    让后续流程报出「库不存在」这个真正的原因，而不是在取版本这一步先炸。
-
-    **回落到默认值不等于「没有版本也能写」**：检索侧对「库上没有生效版本」是硬拦
-    （``resolve_index_versions``），那一条守的是「回填漏做」；这里守的是「写入时按哪个
-    版本落库」，新库在 D1 建库时已经声明了 ``v1``，所以正常路径上读到的永远是那一列。
-    """
-
-    kb: KnowledgeBase | None = await db.get(KnowledgeBase, kb_id)
-    if kb is None or kb.tenant_id != tenant_id:
-        return DEFAULT_INDEX_VERSION
-    return effective_index_version(kb) or DEFAULT_INDEX_VERSION
 
 
 async def list_by_tenant(db: AsyncSession, tenant_id: str) -> list[KnowledgeBase]:

@@ -36,7 +36,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.llm.base import LLMProvider
 from app.services.query.optimizer import (
     QueryProcessResult,
@@ -277,7 +276,6 @@ def _offline_client(
             name="",
             description="",
             # 真行上有的两列（票 #141）：检索范围从库行里读生效版本。
-            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     monkeypatch.setattr(kb_repo, "get_by_id_for_tenant", _kb_for_tenant)

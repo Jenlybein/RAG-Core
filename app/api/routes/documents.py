@@ -516,7 +516,6 @@ async def search_document_version(
             document_id=document_id,
             version=version,
             kb_id=None,
-            index_version=None,
             chunk_ids=(),
             latency_ms=int((time.perf_counter() - started_at) * 1000),
             code=exc.code,

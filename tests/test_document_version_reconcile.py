@@ -308,7 +308,7 @@ KB = "kb-1"
 OTHER_KB = "kb-2"
 
 #: 切片表在 SQLite 上要手写 DDL：``Vector(1536)`` 与 ``JSONB`` 在这里换成 TEXT / JSON
-#: （与 ``test_retrieval_current_draft.py``、``test_index_version.py`` 同一套做法）。
+#: （与 ``test_retrieval_current_draft.py`` 同一套做法）。
 CHUNKS_DDL = """
 CREATE TABLE chunks (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
@@ -318,7 +318,6 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
-    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
     doc_version INTEGER NOT NULL DEFAULT '1',
     generation INTEGER NOT NULL DEFAULT 1
 )
@@ -413,8 +412,8 @@ async def reconcile_db() -> AsyncIterator[AsyncSession]:
             await connection.execute(
                 text(
                     "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding,"
-                    " metadata, index_version, doc_version) VALUES"
-                    " (:id, :tenant_id, :kb_id, :document_id, '片正文。', '[]', '{}', 'v1',"
+                    " metadata, doc_version) VALUES"
+                    " (:id, :tenant_id, :kb_id, :document_id, '片正文。', '[]', '{}',"
                     " :doc_version)"
                 ),
                 {
@@ -562,8 +561,8 @@ def test_the_provider_returns_the_drafts_marked_current_per_document() -> None:
     )
 
     assert versions == {"doc-1": [2], "doc-2": [1]}
-    assert client.calls[0]["index"] == "rag_chunks__*", (
-        "查全部物理索引：每篇的当前代可能写在别的版本里，只读别名会漏掉它们"
+    assert client.calls[0]["index"] == "rag_chunks", (
+        "查那一个物理索引：库级版本层删除后每篇的当前稿只写在一处"
     )
 
 
@@ -703,8 +702,8 @@ async def test_each_of_the_four_checks_fires_on_its_own_kind_of_drift(
     await reconcile_db.execute(
         text(
             "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata,"
-            " index_version, doc_version) VALUES ('chunk-orphan', :tenant, :kb, 'doc-2', '孤儿片。',"
-            " '[]', '{}', 'v1', 9)"
+            " doc_version) VALUES ('chunk-orphan', :tenant, :kb, 'doc-2', '孤儿片。',"
+            " '[]', '{}', 9)"
         ),
         {"tenant": TENANT, "kb": KB},
     )

@@ -21,7 +21,6 @@ from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
     DEFAULT_DOC_VERSION,
     DEFAULT_GENERATION,
-    DEFAULT_INDEX_VERSION,
     Chunk,
     current_draft_filter,
     current_generation_filter,
@@ -46,10 +45,10 @@ def not_reference_pointer() -> ColumnElement[bool]:
 
 
 def build_scope_filter(kb_ids: Sequence[str]) -> ColumnElement[bool]:
-    """范围条件：``chunks.kb_id IN (...)``（现场九·第四步起不再带版本）。
+    """范围条件：``chunks.kb_id IN (...)``（不再带库级版本）。
 
-    改造前这里是「库 → 生效版本」的**配对映射**（ADR-0010 §5：不能写成两个独立的 ``IN``，
-    否则会拼出「A 库配 B 库版本」）。代下放到篇级之后配对不再存在——一次检索里每篇各有
+    历史上这里是「库 → 生效版本」的**配对映射**（ADR-0010 §5：不能写成两个独立的 ``IN``，
+    否则会拼出「A 库配 B 库版本」）。库级版本层删除之后配对不再存在——一次检索里每篇各有
     自己的当前代，可见性由 ``current_generation_filter()`` 表达，范围只剩「哪几个库」。
     """
 
@@ -68,8 +67,6 @@ class PgVectorStore(VectorStore):
                     content=c["content"],
                     embedding=c["embedding"],
                     meta=c.get("meta", {}),
-                    # 索引版本随行落库；调用方没给时用列默认值，不写 NULL。
-                    index_version=c.get("index_version", DEFAULT_INDEX_VERSION),
                     # 稿号是**真实列**（#172 的迁移加的），写入侧在这一票跟上（#173）：
                     # 调用方把「这一片属于第几稿」放在切片字典的顶层。缺省值与列默认值
                     # 同源（第 1 稿），绝不写 NULL——列是非空的。
@@ -258,59 +255,28 @@ class PgVectorStore(VectorStore):
             for r in rows
         ]
 
-    async def count_by_scope(
-        self, db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
-    ) -> int:
-        """数该库在某版本里的向量条数（``ready`` 前的四项计数之一）。
-
-        在 pgvector 实现里向量就存在切片行上，所以这个数字与「切片数」天然相等——
-        它仍然是**独立的一次读数**：换成外部向量库时两者会分叉，而「四项计数相等」这道
-        闸门必须在那种实现上照旧成立（ADR-0025 决策一）。带租户、带库、带版本，一个都
-        不能省：少了任何一个都会把别的范围的行数算进来，闸门于是静默失灵。
-        """
-
-        stmt = (
-            select(func.count())
-            .select_from(Chunk)
-            .where(
-                Chunk.tenant_id == tenant_id,
-                Chunk.kb_id == kb_id,
-                Chunk.index_version == index_version,
-            )
-        )
-        return int((await db.execute(stmt)).scalar_one())
-
     async def delete_by_document_id(
         self,
         db: AsyncSession,
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
-        """删该文档的切片行；三个范围参数都可缺省，缺省即「不按这一维收窄」。
+        """删该文档的切片行；两个范围参数都可缺省，缺省即「不按这一维收窄」。
 
         ``generation`` 非空时只删那一代（现场九·第五步）：重建写的是**新一代**，所以这条
         让上一代原样留着给回滚——「保留最近 2 代」就是靠它成立的。
 
-        ``index_version`` 非空时只删那一版（#142）。
-
-        **带版本删是为了不弄空线上那一版**：重建 v2 时若把这份文档的 v1 行也删了，
-        构建期间的检索会在一段时间里查不到它——而「构建期间线上照旧查旧版本」恰恰要求
-        旧行原样不动。
-
         ``doc_version`` 非空时只删那一稿（#173）：重建第 2 稿时第 1 稿的切片一个字节都
-        不动（ADR-0005 D4 选 B「每稿各留切片」）。两者正交：**同一稿可能被多轮索引版本
-        各写一遍**，所以两个条件要同时带。
+        不动（ADR-0005 D4 选 B「每稿各留切片」）。两者正交：同一稿可以有多代产物，
+        所以两个条件可以同时带。
         """
 
         statement = delete(Chunk).where(
             Chunk.document_id == document_id, Chunk.tenant_id == tenant_id
         )
-        if index_version is not None:
-            statement = statement.where(Chunk.index_version == index_version)
         if doc_version is not None:
             statement = statement.where(Chunk.doc_version == doc_version)
         if generation is not None:

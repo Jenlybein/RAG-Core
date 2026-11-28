@@ -3,7 +3,7 @@
 建版本这条路径要动 ``document_versions`` 四件事：算下一个稿号、落新行、把旧稿转归档、
 按稿号列版本。它们全部收在仓储里，所以这里用 ``sqlite+aiosqlite`` 的真实会话验——
 唯一约束、``UPDATE ... WHERE``、``ORDER BY`` 都是数据库才有答案的东西，替身会话对这些
-只会点头（先例：``tests/test_index_version.py`` / ``tests/test_document_version_delete.py``）。
+只会点头（先例：``tests/test_document_version_delete.py``）。
 
 #182 的重解析写回也在这里验：它动的是**同一行**（正文 + 校验和），稿号 / 状态 / 行数
 一个都不许变——那是「正文真值在版本表」这条不变量成立的条件。

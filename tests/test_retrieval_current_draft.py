@@ -15,7 +15,7 @@
 会把旧稿的切片当成当前稿的。症状全是「结果看起来正常，只是多了一份/少了一份」。
 
 接缝：与既有用例一致——纯函数编译成 SQL 断言（``test_vector_scope_search`` 的路子），
-执行层用注入的假客户端 / 只记账的会话（``test_keyword_versioned_index`` 的路子）。
+执行层用注入的假客户端 / 只记账的会话（``test_keyword_current_draft`` 的路子）。
 不上真库、不连 ES。
 """
 
@@ -118,7 +118,6 @@ def _chunk(chunk_id: str, **overrides: Any) -> dict:
         "document_id": "doc-1",
         "content": "退款申请流程：提交工单后 3 个工作日内到账。",
         "retrieval_text": "文档：售后手册 章节：退款 > 流程 正文：退款申请流程。",
-        "index_version": "v1",
         "meta": {"title": "售后手册"},
     }
     chunk.update(overrides)
@@ -215,7 +214,7 @@ def test_keyword_mapping_declares_the_current_draft_fields() -> None:
 
 
 def test_an_existing_physical_index_gets_the_additive_mapping() -> None:
-    """第 11 步建好的物理索引没有这两个字段：``ensure_index`` 要补一次 mapping。
+    """第 11 步建好的物理索引没有这两个字段：``ensure_index`` 要补一次 mapping（打那一个索引）。
 
     补的是 **mapping 不是数据**：这是 additive ``put_mapping``，不重建索引、不动已有
     文档。少了这一步，``is_current`` 的 term 会命中 0 条——关键词路静默全空，而向量路
@@ -226,12 +225,12 @@ def test_an_existing_physical_index_gets_the_additive_mapping() -> None:
     client.indices.exists_result = True  # 物理索引是上一版就建好的
     provider = _KeywordProvider(client)
 
-    asyncio.run(provider.ensure_index("rag_chunks__v1"))
+    asyncio.run(provider.ensure_index())
 
     assert client.indices.create_calls == [], "索引已存在：不重建"
     assert client.indices.put_mapping_calls == [
         {
-            "index": "rag_chunks__v1",
+            "index": "rag_chunks",
             "properties": {
                 "doc_version": {"type": "keyword"},
                 "is_current": {"type": "boolean"},
@@ -247,7 +246,7 @@ def test_a_freshly_created_index_does_not_need_the_patch() -> None:
     client.indices.exists_result = False
     provider = _KeywordProvider(client)
 
-    asyncio.run(provider.ensure_index("rag_chunks__v2"))
+    asyncio.run(provider.ensure_index())
 
     assert len(client.indices.create_calls) == 1
     assert client.indices.put_mapping_calls == [], "建索引时已经带上这两个字段了"
@@ -260,8 +259,8 @@ def test_the_mapping_patch_is_applied_once_per_process() -> None:
     client.indices.exists_result = True
     provider = _KeywordProvider(client)
 
-    asyncio.run(provider.ensure_index("rag_chunks__v1"))
-    asyncio.run(provider.ensure_index("rag_chunks__v1"))
+    asyncio.run(provider.ensure_index())
+    asyncio.run(provider.ensure_index())
 
     assert len(client.indices.put_mapping_calls) == 1
 
@@ -283,7 +282,7 @@ def test_a_failed_mapping_patch_does_not_fail_indexing() -> None:
     client.indices.exists_result = True
     provider = _KeywordProvider(client)
 
-    asyncio.run(provider.ensure_index("rag_chunks__v1"))
+    asyncio.run(provider.ensure_index())
     asyncio.run(provider.add_chunks([_chunk("chunk-1")]))
 
     assert len(client.indices.put_mapping_calls) >= 1, "确实试过补"
@@ -347,7 +346,7 @@ def test_without_a_keyword_engine_the_current_draft_dimension_is_not_judged() ->
 # ───────────────────────────────────── 三～五、折叠 / 计数 / 溯源（真 SQL 跑一遍）
 # 上面两节用「编译出来的 SQL」钉结构；这一节起**真的把两稿写进一张表**再查一次，
 # 因为「只返回当前稿」是关于**行**的断言，光看 SQL 文本挡不住「JOIN 了但条件写反了」。
-# 表用 SQLite 建（与 ``test_index_version.py`` 同一套做法：``JSONB`` / ``Vector`` 换成
+# 表用 SQLite 建（与 ``test_retrieval_current_draft`` 同一套做法：``JSONB`` / ``Vector`` 换成
 # SQLite 能接受的类型），语句本身是仓储里那几条**生产语句**，不是复制品。
 
 DOCUMENTS_DDL = """
@@ -369,7 +368,6 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
-    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
     doc_version INTEGER NOT NULL DEFAULT '1',
     generation INTEGER NOT NULL DEFAULT 1
 )
@@ -383,11 +381,11 @@ SEEDED_ROWS = (
     "INSERT INTO documents (id, tenant_id, kb_id, current_version, current_index_generation) "
     f"VALUES ('doc-1', '{TENANT}', '{KB}', 2, 1)",
     "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('chunk-v1', '{TENANT}', '{KB}', 'doc-1', "
-    f"'旧稿正文：三个工作日到账。', '[]', '{{\"heading_path\": \"{UNIT_PATH}\"}}', 'v1', 1)",
+    f"doc_version) VALUES ('chunk-v1', '{TENANT}', '{KB}', 'doc-1', "
+    f"'旧稿正文：三个工作日到账。', '[]', '{{\"heading_path\": \"{UNIT_PATH}\"}}', 1)",
     "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('chunk-v2', '{TENANT}', '{KB}', 'doc-1', "
-    f"'当前稿正文：五个工作日到账。', '[]', '{{\"heading_path\": \"{UNIT_PATH}\"}}', 'v1', 2)",
+    f"doc_version) VALUES ('chunk-v2', '{TENANT}', '{KB}', 'doc-1', "
+    f"'当前稿正文：五个工作日到账。', '[]', '{{\"heading_path\": \"{UNIT_PATH}\"}}', 2)",
 )
 
 

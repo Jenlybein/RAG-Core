@@ -20,7 +20,7 @@
 向量侧的默认召回带 ``current_draft_filter``（``chunks.doc_version =
 documents.current_version``，唯一的「当前稿」谓词）。历史稿的切片与指针不相等，所以直查
 必须走 :meth:`VectorStore.similarity_search_document_version` —— 那条路按
-``(document_id, doc_version, index_version)`` 收窄、不带当前稿谓词。**默认路径的语义一个字
+``(document_id, doc_version, generation)`` 收窄、不带当前稿谓词。**默认路径的语义一个字
 没改**：不传稿号时检索仍只看当前稿。
 
 ## 只走向量路（边界，写在这里免得被误解）
@@ -108,7 +108,6 @@ async def search_document_version(
             document_id=document_id,
             version=version,
             kb_id=None,
-            index_version=None,
             chunk_ids=(),
             latency_ms=_elapsed_ms(started_at),
             code=ErrorCode.NOT_FOUND,
@@ -123,7 +122,6 @@ async def search_document_version(
             document_id=document_id,
             version=version,
             kb_id=doc.kb_id,
-            index_version=None,
             chunk_ids=(),
             latency_ms=_elapsed_ms(started_at),
             code=ErrorCode.DOCUMENT_VERSION_NOT_FOUND,
@@ -161,8 +159,7 @@ async def search_document_version(
                 document_id=document_id,
                 version=version,
                 kb_id=doc.kb_id,
-                index_version=None,
-                chunk_ids=(),
+                    chunk_ids=(),
                 latency_ms=_elapsed_ms(started_at),
                 code=exc.code,
             )
@@ -182,8 +179,7 @@ async def search_document_version(
                 document_id=document_id,
                 version=version,
                 kb_id=doc.kb_id,
-                index_version=None,
-                chunk_ids=(),
+                    chunk_ids=(),
                 latency_ms=_elapsed_ms(started_at),
                 code=ErrorCode.RETRIEVAL_FAILED,
             )
@@ -198,7 +194,6 @@ async def search_document_version(
         kb_id=doc.kb_id,
         # 归属索引不再记库级版本（那一列已改记篇级代，见 :func:`record_version_search`）；
         # 这个形参只是路由侧旧签名的兼容口，不再被消费。
-        index_version=None,
         chunk_ids=chunk_ids,
         latency_ms=_elapsed_ms(started_at),
         code=0,
@@ -234,7 +229,6 @@ async def record_version_search(
     document_id: str,
     version: int,
     kb_id: str | None,
-    index_version: str | None,
     chunk_ids: Sequence[str],
     latency_ms: int,
     code: int,
@@ -245,13 +239,9 @@ async def record_version_search(
     没有任何一行能回答「谁在拿 Key 白用它」。它**不扣任何额度**——三本账全 0、也不过配额
     门禁——所以把它记成一次 ``retrieve`` 才会污染统计；记成自己的 ``version_search`` 不会。
 
-    ``index_version`` 这个形参**保留但不再进账本**：它的唯一调用点是路由层
-    （``app/api/routes/documents.py``，不在本票范围内），那条调用点仍按旧签名传 ``None``。
-    归属索引那一列已经改成 ``index_generations``（``{document_id: 代数}``，ADR-0025 第
-    2 次修订第 5 条），而直查**没有可按当前代语义写进去的值**：这条路径落在「该稿现存
-    最高的代」上——当前稿时它恰好等于当前代，历史稿时却是最后一回算出它的那一代。把后者
-    写进 ``index_generations`` 会让读侧把它当「这一篇的当前代」，那是静默错归因；
-    干脆留**空映射**（诚实答案：这条直查不属于「篇的当前代交付」这件事），要查「查了哪一稿」
+    归属索引的 ``index_generations`` 留**空映射**：直查落在「该稿现存最高的代」上——当前稿时
+    它恰好等于当前代，历史稿时却是最后一回算出它的那一代。把后者写进
+    ``index_generations`` 会让读侧把它当「这一篇的当前代」，那是静默错归因；要查「查了哪一稿」
     读 ``doc_versions`` 那一列。
 
     失败也要记：``code`` 是这次的真实结局（``0`` = 成功，其余是业务码）。写账走

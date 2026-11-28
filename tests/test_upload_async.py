@@ -117,9 +117,6 @@ def offline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleN
         split_strategy=SPLIT_STRUCTURE,
         allowed_formats=[FORMAT_MARKDOWN],
         settings={},
-        # 切片计数按「生效版本 × 当前稿」两轴数（#227）：库行必须给出生效版本，
-        # 缺了这一格，列表里的 chunk_count 会静默回落 0。
-        active_index_version="v1",
     )
 
     async def _visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:

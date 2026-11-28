@@ -36,85 +36,6 @@ class ConsoleUploadDocumentRequest(BaseModel):
     content: str = Field(min_length=1)
 
 
-class BuildFailureData(BaseModel):
-    """「未入新版本」的一条明细：哪一篇、叫什么、为什么。"""
-
-    document_id: str
-    title: str
-    reason: str
-
-
-class BuildProgressData(BaseModel):
-    """一次进行中的整库构建的进度与失败明细（#216）。
-
-    ## 为什么「未入新版本」跟着进度一起回
-
-    用户看到的两个问题其实是同一个：「还要等多久」与「为什么有些篇没进来」。分两次请求
-    去问，就会在两次之间看见不一致的中间态（进度 500/500，明细还是上一轮的）。这里一次
-    给全，前端一次渲染。
-
-    ``done`` 是**进度条**（抢不到的不计、续建跳过的不计），``planned`` 是起构建那刻的快照，
-    所以 ``done < planned`` 里既有「还在跑」也有「失败了」。判断「还剩多少要跑」看
-    ``pending``，判断「有没有出问题」看 ``failures``——两个字段语义不同，别互相替代。
-    """
-
-    build_id: str
-    version: str
-    #: 参与篇数快照（分母）。
-    planned: int
-    #: 已有结果的篇数（进度条；失败也算「有结果」）。
-    done: int
-    #: 还没有结果的篇数 = ``max(planned - done, 0)``。
-    pending: int
-    #: 未入新版本的明细（最多回这么多条：界面只给前几条，其余折叠成「还有 N 篇」）。
-    failures: list[BuildFailureData] = []
-    #: 失败总数（``failures`` 可能被截断，这个数不截断）。
-    failure_count: int = 0
-
-    #: 与其它控制面 schema 同一条纪律：多余字段不许悄悄进来。
-    model_config = ConfigDict(extra="forbid")
-
-
-class BuildSummaryData(BaseModel):
-    """**一次构建的摘要**：不只是「在跑的那次」，也包括最近一次**已有结论**的。
-
-    与 :class:`BuildProgressData` 的分工：
-
-    * :class:`BuildProgressData` 只服务「还在跑」——没有 ``building`` 行就是 ``None``。
-      它回答的是「这一批还剩多少」，所以没有 ``status``；
-    * 这一个带着 ``status``（``building`` / ``ready`` / ``active`` / ``failed`` /
-      ``archived``），因为详情页要回答另一个问题：「这一版建成了吗？我这一篇进去了吗？」
-
-    为什么详情页需要后者：构建收尾是一瞬间的事（实测 10 篇的库 9.5 秒建完），如果只回
-    「在跑的那次」，用户一进去就只剩一张没有上下文的文档表——「刚才那次成没成」无从回答。
-    """
-
-    build_id: str
-    version: str
-    #: 构建状态之一（见 `app.models.index_version` 的常量）。
-    status: str
-    #: 参与篇数快照（分母）。
-    planned: int
-    #: 已有结果的篇数（进度条；失败也算「有结果」）。
-    done: int
-    #: 还没有结果的篇数 = ``max(planned - done, 0)``。
-    #:
-    #: 叫 ``remaining`` 而不是 ``pending``：行级的 ``build_state`` 里也有一个 ``pending``
-    #: （「这一版还没收它」），两个 pending 一个数是、一个是枚举值，读代码的人会串。
-    remaining: int
-    #: 这一版对应的统一稿号（缺省 ``None`` = 老行没留快照）。
-    doc_version: int | None = None
-    failures: list[BuildFailureData] = []
-    failure_count: int = 0
-    #: 起建时刻（带时区的 ISO 串）：界面用它说「建于 14:03」。
-    created_at: str | None = None
-    #: 生效时刻（``active`` 的行才有值）：界面用它说「v5 已生效 · 14:03:12」。
-    #: 没有这个时刻，「已生效」只是一句话——用户没有任何办法核对它是刚刚还是十分钟前。
-    activated_at: str | None = None
-
-    model_config = ConfigDict(extra="forbid")
-
-
 class DocumentStatusCountsData(BaseModel):
     """四态各有多少篇。字段名写死而不是 ``dict[int, int]``：JSON 的键只能是字符串，
     一个 ``{"1": 10}`` 会在前端变成「看不见的字符串键」，而这里每个字段名都是一句人话。
@@ -149,29 +70,21 @@ class KnowledgeBaseSummaryData(BaseModel):
     document_count: int
     #: 四态各有多少篇：卡片上「3 篇失败」与顶部「有文档在跑」都读它。
     status_counts: DocumentStatusCountsData = DocumentStatusCountsData()
-    #: 这个库在**生效版本 × 当前稿**下的切片总数（与检索口径一致）。
+    #: 这个库在**当前代 × 当前稿**下的切片总数（与检索口径一致）。
     chunk_count: int
-    #: 这个库有生效版本吗。``False`` 时界面必须说「未建索引」而不是「0 个分块」
-    #: ——「还没有索引」与「索引里有 0 片」是两句话，处置也不同（前者要建、后者要查）。
-    has_active_version: bool
-    needs_rebuild: bool = False
     #: 「N 篇待更新」（现场九·第三步）：按篇比设置指纹得出的篇数。0 = 全部是最新的。
-    #: 与 ``needs_rebuild`` 并存而不是替代：后者回答「库这一级要不要重建」，前者回答
-    #: 「按篇看差几篇」——两句话的处置不同（一个点按钮，一个看列表）。
     stale_documents: int = 0
     token_usage: TokenUsageData | None = None
-    #: 进行中**或最近一次**的构建摘要（没有构建过就是 ``None``）。
-    build: BuildSummaryData | None = None
 
     model_config = ConfigDict(extra="forbid")
 
 
 class KbDocumentRowData(BaseModel):
-    """详情表的一行：文档自身状态 + 它在**当前这一版构建**里的位置。
+    """详情表的一行：文档自身状态 + 当前稿 / 切片数。
 
-    两根轴刻意分开（ADR-0034 决策九）：``status`` 是文档自己的生命周期（构建失败**不改**
-    它）；``build_state`` 是「它与这一版的关系」，由构建的记账算出来。合并成一个状态会让
-    「构建失败」污染文档状态，而那正是这条 ADR 拦住的事。
+    文档状态是**文档自己的生命周期**（四态），不掺任何「它与某次整库构建的关系」——那个
+    第二根轴随库级版本层删除，一篇文档现在只有「我算到第几代、正文是第几稿」这两个事实，
+    都表达在文档行自己身上。
     """
 
     document_id: str
@@ -179,16 +92,13 @@ class KbDocumentRowData(BaseModel):
     source_type: str
     #: 四态：1 成功 / 2 失败 / 3 索引中 / 4 排队中。
     status: int
-    #: 当前稿的切片数（**生效版本 × 当前稿**）。
+    #: 当前代 × 当前稿的切片数。
     chunk_count: int = 0
     token_count: int = 0
     error_message: str | None = None
     #: 当前稿号（回滚过的那篇会往回走）。
     current_version: int
     created_at: str | None = None
-    #: 它与**当前这一版构建**的关系：``done`` 已入这一版 / ``pending`` 还没进去 /
-    #: ``failed`` 这一版明确没收它 / ``None`` 没有构建可参照（从没建过，或与本次无关）。
-    build_state: str | None = None
 
     model_config = ConfigDict(extra="forbid")
 
@@ -203,10 +113,9 @@ class KnowledgeBaseListData(BaseModel):
 
 
 class KbDocumentsData(BaseModel):
-    """详情页一次拿全：库摘要 + 构建 + 一页文档。"""
+    """详情页一次拿全：库摘要 + 一页文档。"""
 
     kb: KnowledgeBaseSummaryData
-    build: BuildSummaryData | None = None
     documents: list[KbDocumentRowData]
     total: int
     page: int
@@ -236,12 +145,8 @@ class KnowledgeBaseNode(BaseModel):
     chunk_size: int
     #: 节段阈值（第 16 步 #207）：库的切块设置之一，读侧要回显才能「改了再改」。
     section_part_max_chars: int = 2000
-    #: 库当前设置与**生效那一版**的构建参数已不一致 → 这个库需要重建才生效。
-    #: 老版本行没留参数（``params`` 为 NULL）时也判 ``True``：宁可多提示一次。
-    needs_rebuild: bool = False
-    #: 进行中的构建（没有就是 ``None``）。列表与详情都靠它显示「重建中 37 / 500」，
-    #: 前端在它非空时轮询（#216）。
-    build_progress: BuildProgressData | None = None
+    #: 「N 篇待更新」：按篇比设置指纹得出的篇数。0 = 全部最新。
+    stale_documents: int = 0
     #: 这个库的 token 容量占用；``None`` 只出现在「拿不到套餐」的降级路径上。
     token_usage: TokenUsageData | None = None
     documents: list[DocumentListItem]
@@ -270,7 +175,7 @@ class UpdateKBSettingsRequest(BaseModel):
 
 
 class UpdateKBSettingsData(BaseModel):
-    """改设置的回执：新设置 + 这次重建的版本。"""
+    """改设置的回执：新设置 + 这次投递了多少篇重建。"""
 
     kb_id: str
     name: str
@@ -278,22 +183,26 @@ class UpdateKBSettingsData(BaseModel):
     allowed_formats: list[str]
     chunk_size: int
     section_part_max_chars: int
-    build_id: str
-    build_version: str
+    #: 本次真的投进队列的篇数（``prepare_for_indexing`` 抢不到的篇不计）。
+    documents_dispatched: int
+    #: 库里可重建的总篇数；大于 ``documents_dispatched`` 说明超过单次上限，再点一次继续。
+    documents_total: int
 
 
 class RebuildKBData(BaseModel):
-    """重建一个库的回执：这次构建的定位信息（设置没变，所以不回吐设置）。"""
+    """重建一个库的回执：**按篇投递**的结果（设置没变，所以不回吐设置）。
+
+    进度不再由服务端记账：前端看每篇自己的 ``status``。回执里两个数回答「这一批投了多少、
+    库里一共有多少」——两者不等就是碰到了单次上限，再点一次。
+    """
 
     kb_id: str
-    build_id: str
-    build_version: str
-    #: 起跑那一刻快照的可参与文档数（= 这次要重切多少篇）。
-    documents_planned: int
+    documents_dispatched: int
+    documents_total: int
 
 
 class KBSettingsPreviewData(BaseModel):
-    """改设置前的确认弹窗：当前设置、生效版本参数、以及这次重建的量。"""
+    """改设置前的确认弹窗：当前设置 + 这次重建的量。"""
 
     kb_id: str
     name: str
@@ -301,11 +210,6 @@ class KBSettingsPreviewData(BaseModel):
     allowed_formats: list[str]
     chunk_size: int
     section_part_max_chars: int
-    #: 生效那一版的构建参数；``None`` = 老版本没留参数（不是「没有参数」）。
-    live_params: dict[str, object] | None = None
-    live_version: str | None = None
-    needs_rebuild: bool
-    build_running: bool
     documents_to_rebuild: int
     chunks_to_rebuild: int
 

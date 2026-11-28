@@ -45,6 +45,7 @@ import structlog
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
@@ -56,11 +57,7 @@ from app.core.plan_cache import PlanCache
 from app.db.base import now
 from app.db.transaction import after_commit
 from app.models.document import Document
-from app.models.index_version import INDEX_BUILD_BUILDING
 from app.schemas.console_kbs import (
-    BuildFailureData,
-    BuildProgressData,
-    BuildSummaryData,
     DocumentStatusCountsData,
     KbDocumentRowData,
     KnowledgeBaseSummaryData,
@@ -74,7 +71,6 @@ from app.models.knowledge_base import (
     MIN_SECTION_PART_MAX_CHARS,
     KnowledgeBase,
     formats_of,
-    needs_rebuild,
     resolve_formats,
     settings_of,
 )
@@ -85,7 +81,6 @@ from app.repositories import (
     chunk_repository,
     document_repository,
     document_version_repository,
-    index_version_repository,
     knowledge_base_repository,
     tenant_repository,
 )
@@ -105,10 +100,7 @@ from app.services.document_storage import remove_document_file
 from app.services.index_dispatch import (
     enqueue_document,
     enqueue_document_after_commit,
-    enqueue_index_build,
-    enqueue_index_build_after_commit,
 )
-from app.services.index_build_service import IndexBuildService
 
 from app.services.indexing_service import purge_document_chunks
 from app.utils.status import DocumentStatus
@@ -174,15 +166,10 @@ class TreeKnowledgeBase:
     chunk_size: int
     #: 节段阈值（第 16 步 #207）：前端要能回显，否则「改设置」的弹窗只能显示默认值。
     section_part_max_chars: int
-    #: 库当前设置与生效那一版的构建参数不一致 → 这个库要重建才生效（见 ``needs_rebuild``）。
-    needs_rebuild: bool
     documents: list[TreeDocument]
     #: 「N 篇待更新」：按篇比设置指纹得出的篇数（现场九·第三步）。0 = 全部最新。
     #: 放在 ``documents`` 之后是因为 dataclass 的「带默认值的字段必须在后」。
     stale_documents: int = 0
-    #: 进行中的构建进度与失败明细（#216）；``None`` = 这个库没有构建在跑。
-    #: 放在最后是因为 dataclass 的「带默认值的字段必须在后」——顺序不是随便放的。
-    build_progress: BuildProgressData | None = None
     #: 这个库的 token 容量占用（#221 / 用户故事 #13）；``None`` 只出现在容量读不到的降级路径上。
     token_usage: TokenUsageData | None = None
 
@@ -214,13 +201,7 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                 allowed_formats=formats_of(kb),
                 chunk_size=settings_of(kb)["chunk_size"],
                 section_part_max_chars=settings_of(kb)["section_part_max_chars"],
-                needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
                 stale_documents=await _stale_documents_of(db, kb, tenant_id=tenant_id),
-                # 进度从构建摘要派生（同一次构建的读数只有一处）：
-                # 卡片上的「3 / 10」与详情里的构建摘要必须是同一个时刻的数。
-                build_progress=_progress_from(
-                    await _build_summary_of(db, kb_id=kb.id, tenant_id=tenant_id)
-                ),
                 token_usage=await _token_usage_of(db, kb_id=kb.id, tenant_id=tenant_id, plan=plan),
                 documents=[
                     TreeDocument(
@@ -266,90 +247,22 @@ def _isoformat(value: Any) -> str | None:
     return value.isoformat()
 
 
-async def _build_summary_of(
-    db: AsyncSession, *, kb_id: str, tenant_id: str
-) -> BuildSummaryData | None:
-    """这个库**最近一次值得说**的构建（进行中优先，否则最新那次）。
-
-    **一次构建的读数只有这一处**：进度（列表/卡片那条 ``BuildProgressData``）也从它派生
-    （见 :func:`_progress_from`）。两处各读一遍那一行、各算一遍 ``planned / done / pending``
-    的写法会漂——而漂出来的两个数是「同一个构建」的两个进度，用户只会觉得两个都在瞎报。
-    """
-
-    row = await index_version_repository.latest_for_kb(db, kb_id, tenant_id=tenant_id)
-    if row is None:
-        return None
-    planned = max(int(row.documents_planned or 0), 0)
-    done = min(max(int(row.documents_done or 0), 0), planned)
-    failures = list(row.failed_documents or ())
-    return BuildSummaryData(
-        build_id=str(row.id),
-        version=str(row.version),
-        status=str(row.status),
-        planned=planned,
-        done=done,
-        remaining=max(planned - done, 0),
-        doc_version=None if row.doc_version is None else int(row.doc_version),
-        failures=[BuildFailureData(**_failure_entry(entry)) for entry in failures[:BUILD_FAILURES_IN_PROGRESS]],
-        failure_count=len(failures),
-        created_at=_isoformat(row.created_at),
-        activated_at=_isoformat(getattr(row, "activated_at", None)),
-    )
-
-
-def _failure_entry(entry: Any) -> dict[str, str]:
-    """把 ``failed_documents`` 里的一条整成 ``BuildFailureData`` 的三个字段。
-
-    历史行里存的不一定是完整的三个键（早期只写 ``document_id`` 与 ``reason``），
-    所以逐键取值 + ``str()``，而不是 ``BuildFailureData(**entry)``——后者遇到缺键会
-    抛 TypeError，把「有一条老明细」变成「整个接口 500」。
-    """
-
-    if isinstance(entry, dict):
-        return {
-            "document_id": str(entry.get("document_id") or ""),
-            "title": str(entry.get("title") or ""),
-            "reason": str(entry.get("reason") or ""),
-        }
-    return {"document_id": "", "title": "", "reason": str(entry)}
-
-
-def _progress_from(build: BuildSummaryData | None) -> BuildProgressData | None:
-    """构建摘要 → 列表页的进度条视图（只在 ``building`` 时有值）。
-
-    为什么不再单独读一遍那一行：界面上的进度条与详情里的构建摘要说的是**同一个构建**。
-    分开读会造出两个时刻的读数（进度 3/10、摘要 4/10），而它们在一个「有没有卡住」的问题是
-    致命的——用户无法判断哪个是真的。
-    """
-
-    if build is None or build.status != INDEX_BUILD_BUILDING:
-        return None
-    return BuildProgressData(
-        build_id=build.build_id,
-        version=build.version,
-        planned=build.planned,
-        done=build.done,
-        pending=build.remaining,  # 列表页的进度契约仍叫 pending（界面已按它渲染）
-        failures=build.failures,
-        failure_count=build.failure_count,
-    )
-
-
 async def _summary_of(
     db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str, plan: PlanSpec
 ) -> KnowledgeBaseSummaryData:
-    """一个库的摘要：四个数字 + 需重建 + 构建。**不读文档数组**。
+    """一个库的摘要：四个数字 + 待更新篇数 + 切片合计。**不读文档数组**。
 
-    ## 每库五条查询，但都不是 N+1
+    ## 每库四条查询，但都不是 N+1
 
-    ``count_by_kb_by_status`` / ``count_in_kb`` / ``find_active`` / ``count_tokens_in_kb`` /
-    ``latest_for_kb`` 各是一条**聚合或单行**查询，与库里有几百篇还是几千篇无关。本仓禁止的
-    N+1 是「每篇文档各查一次」——那种成本随文档数线性涨；这里随库数线性涨（十几到几十）。
-    真要再压下去得按租户批量聚合（``GROUP BY kb_id`` 五个），收益是常数级、代价是五个
-    仓储函数各长一个批量版；在 live 档每 3 秒一次的量级上不值得，记在这里而不是悄悄留着。
+    ``count_by_kb_by_status`` / ``count_in_kb`` / ``count_tokens_in_kb`` /
+    ``count_stale_generations`` 各是一条**聚合**查询，与库里有几百篇还是几千篇无关。本仓
+    禁止的 N+1 是「每篇文档各查一次」——那种成本随文档数线性涨；这里随库数线性涨（十几到
+    几十）。真要再压下去得按租户批量聚合（``GROUP BY kb_id`` 四个），收益是常数级、代价是
+    四个仓储函数各长一个批量版；在 live 档每 3 秒一次的量级上不值得，记在这里而不是悄悄
+    留着。
 
     ``chunk_count`` 走 :func:`chunk_repository.count_in_kb`（一条聚合），与详情表每一行的
-    ``chunk_count`` 共用同一个「生效版本 × 当前稿」谓词——卡片上的合计与表格里每行之和对
+    ``chunk_count`` 共用同一个「当前代 × 当前稿」谓词——卡片上的合计与表格里每行之和对
     得上，是这两个数能被相信的前提。
     """
 
@@ -373,18 +286,14 @@ async def _summary_of(
             processing=counts.get(int(DocumentStatus.PROCESSING), 0),
             queued=counts.get(int(DocumentStatus.QUEUED), 0),
         ),
-        has_active_version=kb.active_index_version is not None,
         chunk_count=await chunk_repository.count_in_kb(
             db, str(kb.id), tenant_id=tenant_id
         ),
-        needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
-        # 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。与 ``needs_rebuild`` 读的不是
-        # 同一个东西——那一个问「库这一级要不要重建」，这一个问「按篇看差几篇」。
+        # 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。
         stale_documents=await _stale_documents_of(db, kb, tenant_id=tenant_id),
         token_usage=await _token_usage_of(
             db, kb_id=str(kb.id), tenant_id=tenant_id, plan=plan
         ),
-        build=await _build_summary_of(db, kb_id=str(kb.id), tenant_id=tenant_id),
     )
 
 
@@ -404,81 +313,6 @@ async def list_summaries(db: AsyncSession, *, tenant_id: str) -> dict[str, Any]:
     return {"items": items, "generated_at": _isoformat(now())}
 
 
-async def _build_state_of(
-    db: AsyncSession,
-    *,
-    kb_id: str,
-    tenant_id: str,
-    build: BuildSummaryData | None,
-    documents: list[Document],
-) -> dict[str, str | None]:
-    """每篇文档与**这一版构建**的关系：``done`` / ``pending`` / ``failed`` / ``None``。
-
-    ## 为什么这是第二根轴，而不是给文档状态加一个值
-
-    ``documents.status`` 是文档自己的生命周期（四态），构建失败**不改它**（ADR-0034 决策九：
-    那篇文档本身没坏，线上旧版本照常可查）。而「它进没进这一版」是**构建与它的关系**，
-    由构建的记账算：真值（这一版这一稿下有切片的文档）∩ 失败明细 ∩ 它是否本该参与。
-
-    合并成一个状态会同时坏掉两件事：文档状态被构建污染；以及「构建在跑」这件事在状态列
-    根本表达不出来（构建期间文档几乎一直是「成功」，只有它自己那一秒是「索引中」）。
-
-    ## 四种结论的判据
-
-    * 在失败明细里 → ``failed``（这一版明确没收它）；
-    * 在这一版的切片真值里 → ``done``；
-    * 本来该参与（``status`` 是成功）却不在真值里 → ``pending``（还没跑到它）；
-    * 其余（失败 / 排队中的文档）→ ``None``：它本来就不参与这一版，说「待重建」是误导。
-
-    ## 失败明细为什么在这里重新读一遍
-
-    ``build.failures`` 是**给界面看的截断列表**（只回前 5 条，否则一次 500 篇失败的构建会把
-    响应撑到几 MB）。拿它当判据会让第 6 篇以后的失败一律显示成「待重建」——一个永远不会
-    动的「待重建」，比「未入版」这句实话糟得多。所以这里读该构建行的**全量**失败明细，
-    与展示用的那一份分开取。
-    """
-
-    if build is None:
-        return {str(document.id): None for document in documents}
-
-    done = await chunk_repository.list_document_ids_in_version(
-        db,
-        kb_id,
-        tenant_id=tenant_id,
-        index_version=build.version,
-        doc_version=build.doc_version,
-    )
-    failed_ids = await _all_failed_document_ids(
-        db, build_id=build.build_id, tenant_id=tenant_id
-    )
-    states: dict[str, str | None] = {}
-    for document in documents:
-        document_id = str(document.id)
-        if document_id in failed_ids:
-            states[document_id] = "failed"
-        elif document_id in done:
-            states[document_id] = "done"
-        elif document.status == DocumentStatus.SUCCESS:
-            states[document_id] = "pending"
-        else:
-            states[document_id] = None
-    return states
-
-
-async def _all_failed_document_ids(
-    db: AsyncSession, *, build_id: str, tenant_id: str
-) -> set[str]:
-    """该构建行记下的**全部**失败文档 id（不截断）。
-
-    只读一列（``failed_documents``），不读整行：判据要的是「有没有它」，不是那行其它字段。
-    """
-
-    row = await index_version_repository.get_for_tenant(db, build_id, tenant_id=tenant_id)
-    if row is None:
-        return set()
-    return {str(entry.get("document_id")) for entry in (row.failed_documents or ()) if entry}
-
-
 async def list_documents_page(
     db: AsyncSession,
     *,
@@ -489,7 +323,7 @@ async def list_documents_page(
     status: int | None = None,
     keyword: str | None = None,
 ) -> dict[str, Any]:
-    """详情页一次拿全：库摘要 + 构建摘要 + **一页**文档（每行带第二根轴）。
+    """详情页一次拿全：库摘要 + **一页**文档。
 
     ## 为什么详情要有自己的请求
 
@@ -511,7 +345,6 @@ async def list_documents_page(
 
     plan = await plan_service.resolve_plan(db, await _tenant_plan_id(db, tenant_id=tenant_id))
     summary = await _summary_of(db, kb, tenant_id=tenant_id, plan=plan)
-    build = summary.build
 
     safe_page = max(int(page), 1)
     safe_size = min(max(int(page_size), 1), MAX_DOCUMENTS_PAGE_SIZE)
@@ -529,12 +362,8 @@ async def list_documents_page(
         [str(document.id) for document in documents],
         tenant_id=tenant_id,
     )
-    states = await _build_state_of(
-        db, kb_id=kb_id, tenant_id=tenant_id, build=build, documents=documents
-    )
     return {
         "kb": summary,
-        "build": build,
         "documents": [
             KbDocumentRowData(
                 document_id=str(document.id),
@@ -546,7 +375,6 @@ async def list_documents_page(
                 error_message=document.error_message,
                 current_version=int(getattr(document, "current_version", 1) or 1),
                 created_at=_isoformat(document.created_at),
-                build_state=states.get(str(document.id)),
             )
             for document in documents
         ],
@@ -600,9 +428,74 @@ async def create_kb(
     return data
 
 
-#: 进度里最多回几条失败明细。界面只给前几条、其余折成「还有 N 篇」；回全量会让一次 500
-#: 篇失败的构建把树接口的响应撑到几 MB，而用户从来不会去读第 300 条。
-BUILD_FAILURES_IN_PROGRESS: Final[int] = 5
+#: 单次「全库重建」最多投多少篇（见 :func:`rebuild_kb` 的模块说明）。
+#:
+#: 上限存在是因为：全库重建已经不再由服务端记一笔账，它就是 N 条队列消息。一个 5000 篇的库
+#: 一键全投会把队列压几十分钟，而操作者在这一刻看到的只是一句「已提交」——出了事也说不清
+#: 是这一次点的还是别的原因。300 是「一次点击能在一轮排空内看到反馈」与「不用点几十次」的
+#: 折中：再多的篇数分批点，每一批的后果都能单独追溯。超过上限的篇**不投**，回执里的
+#: ``documents_total`` 与 ``documents_dispatched`` 之差就是「还要再点几次」。
+MAX_REBUILD_DOCUMENTS_PER_REQUEST: Final[int] = 300
+
+
+async def _dispatch_kb_rebuild(
+    db: AsyncSession,
+    kb: KnowledgeBase,
+    *,
+    tenant_id: str,
+    request_id: str | None,
+) -> tuple[int, int]:
+    """把该库需要重建的篇**逐篇**投进索引队列，返回 ``(已投篇数, 可投总篇数)``。
+
+    判据只有一条：``status == SUCCESS``。非 SUCCESS 的篇没有可切的正文（失败篇本来就没
+    切出来，排队中 / 索引中的篇已经在队列里），再投一次要么白跑一次解析、要么被
+    ``prepare_for_indexing`` 的 CAS 拒绝——所以「全库重建」不提供「连非 SUCCESS 也投」的
+    开关（旧版 ``force`` 参数随整库构建闸门一起删除，理由见 :func:`rebuild_kb`）。
+
+    每一篇走的是与人工点「重建」**完全相同**的那条链路（``prepare_for_indexing`` 置排队中、
+    不盖租约 → 投递登记在提交之后），只是省掉了逐篇审计：一次全库重建写一条 ``kb.rebuild``
+    就够，写 N 条既撑爆账本，也把「这是一次操作」拆成了 N 次看不出关系的改动。
+
+    为什么没有配额入口预检：逐篇预检 = N 次查询（一个 5000 篇的库就是 5000 次往返），而
+    Worker 里的真值容量判据仍然照跑（``ensure_kb_token_quota``）。重建不新增内容量，预检
+    在这里省掉的只是「注定失败的那一次解析」，代价远大于它挡下的浪费。
+    """
+
+    total = await document_repository.count_by_kb_filtered(
+        db, str(kb.id), tenant_id=tenant_id, status=DocumentStatus.SUCCESS
+    )
+    documents = await document_repository.list_page_by_kb(
+        db,
+        str(kb.id),
+        tenant_id=tenant_id,
+        offset=0,
+        limit=MAX_REBUILD_DOCUMENTS_PER_REQUEST,
+        status=DocumentStatus.SUCCESS,
+    )
+    dispatched = 0
+    for document in documents:
+        prepared = await document_repository.prepare_for_indexing_async(
+            db, str(document.id), tenant_id=tenant_id, allow_success=True
+        )
+        if not prepared:
+            # 刚被别处（单篇重建、夜间重投）置成排队 / 索引中：跳过，不重复投。
+            continue
+        dispatched += 1
+        after_commit(
+            db,
+            # ``partial`` 而不是带默认参数的 lambda：默认参数让 mypy 推不出这个
+            # ``Callable`` 的类型（而 ``after_commit`` 需要它可判类型）。
+            partial(
+                enqueue_document_after_commit,
+                publish=enqueue_document,
+                document_id=str(document.id),
+                tenant_id=tenant_id,
+                kb_id=str(kb.id),
+                request_id=request_id,
+                doc_version=int(document.current_version),
+            ),
+        )
+    return dispatched, total
 
 
 async def _token_usage_of(
@@ -643,36 +536,16 @@ async def _stale_documents_of(
     )
 
 
-async def _needs_rebuild(db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str) -> bool:
-    """这个库的切块设置是否已经**没被生效版本用上**（第 16 步 #207）。
-
-    从**生效那一版**的 ``params`` 比，不是从最新版本比：``ready`` 但没激活的版本还没在服务，
-    拿它做基准会让一个已经该重建的库显示成「已就绪」。生效版本找不到行（建库只写了库列）
-    时按需要重建——宁可多提示一次，也不要少提示。
-    """
-
-    live = kb.active_index_version
-    if live is None:
-        return True
-    # 只读**生效那一行**（`find_active`），不读全版本清单：后者是「还能回到哪一版」用的，
-    # 一个建过 20 版的库会带回 20 行只为拿其中一行。`needs_rebuild` 问的是「生效版本用的
-    # 是不是当前设置」，答案只在那一行上。
-    row = await index_version_repository.find_active(db, kb.id, tenant_id=tenant_id)
-    if row is None or row.version != live:
-        # 库行记着 v5 而版本表里找不到 v5：账对不上了，按需要重建（宁可多提示一次）。
-        return True
-    return needs_rebuild(kb, row.params)
-
-
 async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> dict[str, Any]:
-    """确认弹窗要的那份事实：当前设置、生效版本用的参数、以及**这次重建的量**（第 16 步 #207）。
+    """确认弹窗要的那份事实：当前设置 + **这次重建的量**（第 16 步 #207）。
 
     为什么要单独一次读：确认弹窗里必须写清「这次会重建多少篇、多少片」。让人对着一个
     「确定要重建吗？」点「确定」，等于把一次可能几十分钟的 Worker 变成盲盒——而误点的
     代价是服务器和钱，不是一次刷新。
 
-    ``build_running`` 不是给前端做样子的：真有构建在跑时后端也会拒（``50001``），这一栏
-    只是让人在点之前就知道。
+    没有「生效版本的参数」「有没有构建在跑」这两栏：库级构建已经不存在，重建就是按篇投递
+    N 条消息，能不能投只看库里有多少篇成功文档、以及单次上限
+    （``MAX_REBUILD_DOCUMENTS_PER_REQUEST``）。
     """
 
     kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
@@ -688,8 +561,6 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
         [document.id for document in rebuildable],
         tenant_id=tenant_id,
     )
-    rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
-    live = next((row for row in rows if row.version == kb.active_index_version), None)
     values = settings_of(kb)
     return {
         "kb_id": kb.id,
@@ -698,11 +569,6 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
         "allowed_formats": formats_of(kb),
         "chunk_size": values["chunk_size"],
         "section_part_max_chars": values["section_part_max_chars"],
-        # 生效版本的参数：NULL（老版本）时也如实回 None，前端据此显示「这一版没留参数」。
-        "live_params": live.params if live is not None else None,
-        "live_version": kb.active_index_version,
-        "needs_rebuild": needs_rebuild(kb, live.params if live is not None else None),
-        "build_running": any(row.status == INDEX_BUILD_BUILDING for row in rows),
         "documents_to_rebuild": len(rebuildable),
         "chunks_to_rebuild": sum(counts.values()),
     }
@@ -722,17 +588,19 @@ async def update_kb_settings(
     name: str | None = None,
     description: str | None = None,
 ) -> dict[str, Any]:
-    """改切块设置并**自动重建**（第 16 步 #207）。
+    """改切块设置并**按篇重建**（第 16 步 #207）。
 
     切块参数是**索引期**的旋钮：改了不重建，读到的仍是旧切法，而页面看起来「已经改好了」。
-    所以这里一次做三件事：写设置、记一条审计、起一个构建——三者同一笔事务，构建的投递
-    登记在 ``after_commit`` 上（先让「已排队」落库，再让 Worker 去抢）。
+    所以这里一次做两件事：写设置 + 逐篇投递重建任务——同一笔事务，投递登记在
+    ``after_commit`` 上（先让「已排队」落库，再让 Worker 去抢）。
 
-    **正在构建时拒绝**（``50001``）：排队会让「两次修改谁先谁后」变成不可预测，而设置只有
-    最后一份、构建产物却有多个版本，先后一乱就没人能说出「这个库现在到底按哪套参数切」。
+    **没有「正在构建时拒绝」**：整库构建的状态机已经删除，并发在这里的表现是「同一篇被
+    投两次」，而 ``prepare_for_indexing`` 的 CAS 会拒掉后到的那一次——不会有两个 Worker
+    同时写同一篇。代价是：改动可以连着做两次，第二次会基于第二次的设置重建（旧任务可能在
+    新设置生效后才抢到，于是它也按新设置切——这是「重建幂等」而不是「顺序错乱」）。
 
-    **设置不回滚**：构建失败时旧版本继续服务、库上标「需重建」，但设置本身留着——回滚设置
-    会让人以为自己刚才没改成，反而更糊涂。失败由 Worker 自己落 ``failed`` + 原因。
+    **设置不回滚**：重建失败时这一篇的旧代继续服务（旧代按保留策略还在），设置本身留着
+    ——回滚设置会让人以为自己刚才没改成，反而更糊涂。
     """
 
     kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
@@ -784,22 +652,10 @@ async def update_kb_settings(
         after=_kb_snapshot(kb),
     )
 
-    # 起构建：它就是「这次设置何时生效」的时间点。并发由 start_build 自己守（50001）。
-    #
-    # ``auto_activate=True`` 记在**构建行**上（迁移 ``f1a4b8d6c392``）：这条路径的语义就是
-    # 「改完就该生效」。之前它作为载荷传给派活任务，而 #215 改按篇投递之后那个布尔量在半路
-    # 丢了——症状是构建跑完停在 ready 不激活，前端「需重建」提示一直挂着（#215 的回归）。
-    build = await IndexBuildService().start_build(
-        db, kb_id=kb_id, tenant_id=tenant_id, auto_activate=True
-    )
-    after_commit(
-        db,
-        lambda: enqueue_index_build_after_commit(
-            publish=enqueue_index_build,
-            build_id=build.id,
-            tenant_id=tenant_id,
-            request_id=request_id,
-        ),
+    # 逐篇投递重建：新设置在这批篇被 Worker 抢到的那一刻生效（它们写新一代，旧代照旧
+    # 服务——这就是代模型对「改设置」这件事的回答，不需要「等整库切过去」）。
+    dispatched, total = await _dispatch_kb_rebuild(
+        db, kb, tenant_id=tenant_id, request_id=request_id
     )
     return {
         "kb_id": kb_id,
@@ -808,8 +664,8 @@ async def update_kb_settings(
         "allowed_formats": formats_of(kb),
         "chunk_size": new_chunk,
         "section_part_max_chars": new_part_max,
-        "build_id": build.id,
-        "build_version": build.version,
+        "documents_dispatched": dispatched,
+        "documents_total": total,
     }
 
 
@@ -821,62 +677,63 @@ async def rebuild_kb(
     actor: ConsoleIdentity,
     request_id: str | None,
 ) -> dict[str, Any]:
-    """按**当前的切块设置**重建整个库，建完自动激活（第 17 步）。
+    """按**当前的切块设置**重建整个库 = 逐篇投递单篇重建任务（第 17 步）。
 
     ## 它解决的是「设置改了但没生效」
 
-    切块参数是**索引期**的旋钮，而「生效版本」里存的是一份参数快照。两者不一致时列表上会挂
-    一条「当前切块设置与生效索引版本不一致，需要重建后才生效」。让用户自己去猜「怎么才能让
-    它生效」是不合理的，所以给一个显式的入口。
+    切块参数是**索引期**的旋钮，而每篇的产物记着它当时用的参数指纹。两者不一致时列表上会
+    挂「N 篇待更新」。让用户自己去猜「怎么才能让它生效」是不合理的，所以给一个显式的入口。
 
-    ## 为什么不能靠「逐篇重建」了事
+    ## 为什么是「按篇投递」而不是「起一个整库构建」
 
-    逐篇重建（``doc/reindex``）写回的是**当前生效版本**——它的参数快照与版本名都不变。所以
-    文档都重切了一遍，那条「需重建」提示仍然挂着（快照没变），而且生效版本里会混进两种切法
-    的切片，``params`` 快照从此失真。要让新设置真正生效，只能产出**新版本**并激活它。
+    库级构建的版本行状态机（building → ready → active / failed、四计数对账、激活、别名
+    切换）已经整层删除：一次全库重建不再有「一次操作」这个实体，它就是 N 条消息。这样做的
+    代价写在明处：**进度不再由服务端记账**，看的是每篇自己的 ``status``；一次点击就是 N 条
+    消息（``_dispatch_kb_rebuild`` 有单次上限，超出的分批再点）；两条消息之间没有「这一批
+    何时算完成」的结论，只有每篇各自的成败。
 
-    ## 与 ``update_kb_settings`` 的分工
+    换来的是「重建期间照旧服务旧内容」不再需要等整库切换：每篇重建完就按新一代服务（这是
+    代模型的性质，不是这条入口的功劳）。
 
-    那条是「改设置 + 重建」，这条**不改设置**。所以它不校验参数、不写设置，只写一条
-    ``kb.rebuild`` 审计 + 起一个 ``auto_activate=True`` 的构建。并发与「库里没有可参与文档」
-    的拒绝都由 :meth:`IndexBuildService.start_build` 自己守（``50001`` / ``20038``）。
+    ## 判据与 ``force``
+
+    只投 ``SUCCESS`` 的篇。旧版的 ``force``（「连有效处理中的也重建」）随整库构建的并发闸门
+    一起删除：那时它绕的是「同一库只能有一个构建在跑」；现在没有闸门，非 SUCCESS 的篇
+    （失败篇没有可切的正文、排队 / 索引中的篇本来就在队列里）再投一次只会白跑或撞 CAS。
+    想让失败篇重来，走单篇重建（``doc/reindex``，那条入口有 force 语义）。
+
+    ## 上限
+
+    一次最多投 ``MAX_REBUILD_DOCUMENTS_PER_REQUEST`` 篇（理由见那个常量）。超出的篇不投，
+    回执里的 ``documents_total`` 会大于 ``documents_dispatched``——再点一次就继续往下投。
     """
 
     kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
-    build = await IndexBuildService().start_build(
-        db, kb_id=kb_id, tenant_id=tenant_id, auto_activate=True
+    dispatched, total = await _dispatch_kb_rebuild(
+        db, kb, tenant_id=tenant_id, request_id=request_id
     )
     await append_audit(
         db,
         actor=actor,
         action=ACTION_KB_REBUILD,
         target=f"kb:{kb_id}",
-        # before/after 记的是**这次重建**的定位信息（设置本身没变，所以不重复记一遍）。
-        before={"active_index_version": kb.active_index_version},
+        # 设置本身没变，所以只记「这一次投了多少、库里有多少」——事后能回答「那次点了
+        # 多少篇、还剩多少没投」。
+        before=None,
         after={
-            "build_id": str(build.id),
-            "build_version": str(build.version),
-            "documents_planned": int(build.documents_planned or 0),
+            "kb_id": kb_id,
+            "documents_dispatched": dispatched,
+            "documents_total": total,
+            "batch_limit": MAX_REBUILD_DOCUMENTS_PER_REQUEST,
         },
-    )
-    # 投递登记在提交之后：先让「构建行已存在」落库，再让 Worker 去抢（与改设置那条一致）。
-    after_commit(
-        db,
-        lambda: enqueue_index_build_after_commit(
-            publish=enqueue_index_build,
-            build_id=build.id,
-            tenant_id=tenant_id,
-            request_id=request_id,
-        ),
     )
     return {
         "kb_id": kb_id,
-        "build_id": str(build.id),
-        "build_version": str(build.version),
-        "documents_planned": int(build.documents_planned or 0),
+        "documents_dispatched": dispatched,
+        "documents_total": total,
     }
 
 

@@ -1,23 +1,29 @@
-"""#143 · 全量重建走 #142 的构建流水线，v1 与 v2 **逐节同一身份**。
+"""按篇重建后 v1 与 v2 **逐节同一身份**（#143 的身份判据）。
 
 这张票要求的两件事在这里落地：
 
-1. **全量重建不许另写一套**——用 ``IndexBuildService`` 的 ``start_build → build →
-   activate``，也就是线上那条流水线；本文件的 v2 就是这么来的。
+1. **重建不许另写一套**——两次都走真实的 ``IndexingService`` 索引流水线（与上传 / 单篇重建
+   同一条），本文件的第二份产物就是这么来的；
 2. **改造前后语义一致**：重建后同一节的 ``section_id`` 与改造前**语义**一致——父子关系
-   与折叠分组都不变，只有 id 的算法换了（带上文档 id）。这正是「可逐节对比新旧构建」
-   的前提（ADR-0025 决策五）。
+   与折叠分组都不变，只有 id 的算法换了（带上文档 id）。这正是「可逐节对比新旧产物」的前提
+   （ADR-0025 决策五）。
 
-接缝是构建流水线本身 + 真实的 ``IndexingService`` / 真实切块器：只把 embedding、向量
-存储、关键词 Provider 与「库配置 / 文档行」的读取换成替身，不连 PostgreSQL、不连 ES。
+接缝是索引流水线本身 + 真实的 ``IndexingService`` / 真实切块器：只把 embedding、向量
+存储、关键词 Provider 与「库配置 / 文档行 / 租约」的读取换成替身，不连 PostgreSQL、不连 ES。
 
 **为什么父子关系用「路径对」来断言**：父子关系由``标题路径``决定（上一级路径），与 id
 用哪种算法无关。所以「两版之间 (子路径, 父路径) 的集合相同」才是「父子关系不变」的准确
 说法；直接比 id 值只会在两种算法下都成立（因为两边各自自洽），验不出东西。
 
-原先还有两节验「发起入口 / 回滚入口」，靠加载 ``scripts/rebuild_kb_version.py`` 跑起跑与
-``--rollback``；那个脚本已随库级索引版本能力一起删除（ADR-0025 第二次修订），那两节用例
-也一并删掉了。这里只留构建流水线本身的语义。
+**库级构建那一层已经删除**：本文件原先用的是 ``IndexBuildService`` 的
+``start_build → build → activate``，那条状态机（版本行、四计数、激活、别名切换）随第 17 步
+整层退场，全库重建现在就是「按篇投递单篇重建任务」。于是这里改成直接跑两次索引流水线：
+第二份产物落在**下一代**（``chunks.generation``），判据换成按代收集切片——节身份与折叠
+口径一个字都没变，变的只是产物归属的表达。
+
+原先还有两节验「发起入口 / 回滚入口」（靠 ``scripts/rebuild_kb_version.py``）与一节验
+``app.services.index_verification``；前者随库级版本能力删除、后者随核对模块整层删除，
+一并删掉。这里只留索引流水线本身的语义。
 """
 
 from __future__ import annotations
@@ -31,15 +37,8 @@ from app.core.config import settings
 from app.db.base import now
 from app.models.chunk import Chunk
 from app.models.document import Document
-from app.models.index_version import (
-    INDEX_BUILD_ACTIVE,
-    INDEX_BUILD_ARCHIVED,
-    IndexBuildVersion,
-)
 from app.models.knowledge_base import SPLIT_STRUCTURE, KnowledgeBase
-from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.repositories import document_repository, knowledge_base_repository
-from app.services.index_build_service import IndexBuildService
 from app.services.indexing_service import IndexingService
 from app.services.result_collapse import Hit, unit_key
 from app.utils.section_identity import parent_heading_path, section_id_of
@@ -90,19 +89,17 @@ class _StubEmbeddings:
         raise AssertionError("索引链路不应调用单条查询向量化")
 
 
-class _VersionedStore:
-    """向量存储替身 + 观测点：按版本收住写入的切片，并按版本回答条数。
+class _GenerationalStore:
+    """向量存储替身 + 观测点：按**代**收住写入的切片。
 
-    它同时冒充「切片计数」的来源：每次写入都把对应行 ``add`` 进会话，于是
-    ``chunk_repository.count_by_index_version``（真 SQL 形状）与自己的向量数一致，
-    构建才能走到 ``ready``——否则四项计数不等，构建会被拒（那是 #142 的闸门，不是本
-    票要验的东西）。
+    判据从「库级版本」换成「篇级代」（现场九）：每次索引写下一代，上一代留在库里给回滚。
+    所以这里按 ``chunk["generation"]`` 分组——索引流的两次在不同代上，节身份因此可逐代对比。
     """
 
     def __init__(self, session: AsyncRecordingSession) -> None:
         self._session = session
-        self.by_version: dict[str, list[dict[str, Any]]] = {}
-        self.purged: list[tuple[str, str | None]] = []
+        self.by_generation: dict[int, list[dict[str, Any]]] = {}
+        self.purged: list[tuple[str, int | None]] = []
 
     async def delete_by_document_id(
         self,
@@ -110,15 +107,15 @@ class _VersionedStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
-        self.purged.append((document_id, index_version))
+        self.purged.append((document_id, generation))
 
     async def add_chunks(self, _db: Any, chunks: list[dict[str, Any]]) -> None:
         for chunk in chunks:
-            self.by_version.setdefault(str(chunk["index_version"]), []).append(chunk)
+            generation = int(chunk["generation"])
+            self.by_generation.setdefault(generation, []).append(chunk)
             self._session.add(
                 Chunk(
                     id=chunk["id"],
@@ -128,36 +125,27 @@ class _VersionedStore:
                     content=chunk["content"],
                     embedding=[0.0] * 1536,
                     meta=chunk["meta"],
-                    index_version=chunk["index_version"],
-                    # 稿号也照抄（#214）：收敛真值按「该版本 + 该稿」数已有切片的文档数，
-                    # 少了这一列，真库上一条都匹配不上，构建会被判成「一篇都没重建」。
+                    # 稿号与代都照抄：真库上这两列非空，替身缺它们就不再等价于真行。
                     doc_version=chunk["doc_version"],
+                    generation=generation,
                 )
             )
-
-    async def count_by_scope(
-        self, _db: Any, *, tenant_id: str, kb_id: str, index_version: str
-    ) -> int:
-        return sum(
-            1
-            for chunk in self.by_version.get(index_version, [])
-            if chunk["tenant_id"] == tenant_id and chunk["kb_id"] == kb_id
-        )
 
 
 # ──────────────────────────────────────────────────────────────── 夹具
 
 
 def _kb() -> KnowledgeBase:
-    """还没激活过任何版本的库（第一次构建时库上那一列是 NULL）。"""
+    """还没算过任何产物的库（每篇的 ``current_index_generation`` 从 NULL 起算）。"""
 
     return KnowledgeBase(
         id=KB_ID,
         tenant_id=TENANT_ID,
         name="售后",
         description="",
+        split_strategy=SPLIT_STRUCTURE,
+        allowed_formats=["markdown"],
         settings={},
-        active_index_version=None,
     )
 
 
@@ -170,21 +158,21 @@ def _document(document_id: str) -> Document:
         content=MARKDOWN,
         source_type="text",
         status=DocumentStatus.SUCCESS,
-        # 当前稿指针显式给 1（真行上这一列非空、默认 1）：#214 起构建开始时要快照一个统一
-        # 稿号，而收敛真值按「该版本 + 该稿」数已有的切片。假行留成 NULL 的话，快照与切片
-        # 的稿号就对不上，构建会被判成「一篇都没重建」——那不是真库会发生的事。
         current_version=1,
     )
 
 
 def _session(*, kb: KnowledgeBase, documents: list[Document]) -> AsyncRecordingSession:
-    return AsyncRecordingSession(
-        rows={KnowledgeBase: [kb], Document: list(documents), IndexBuildVersion: [], Chunk: []}
-    )
+    return AsyncRecordingSession(rows={KnowledgeBase: [kb], Document: list(documents), Chunk: []})
 
 
 def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, documents: dict[str, Document]) -> None:
-    """把「读文档行 / 抢租约 / 读库配置」换成替身，其余全部走真实现。"""
+    """把「读文档行 / 抢租约 / 读库配置 / 推代指针」换成替身，其余全部走真实现。
+
+    ``advance_index_generation`` 的替身除了放行，还要**在文档对象上推指针**：
+    生产里它是一条 UPDATE，而本文件用的是内存替身（写语句不改行的值），不推指针的话
+    第二次索引会看到同一个当前代、又写一遍第 1 代——两次产物落在同一代上就比不了节身份。
+    """
 
     async def _get_by_id(_db: Any, document_id: str) -> Any:
         return documents.get(document_id)
@@ -197,45 +185,37 @@ def _patch_pipeline(monkeypatch: pytest.MonkeyPatch, *, documents: dict[str, Doc
     async def _holds_index_claim(*_args: Any, **_kwargs: Any) -> bool:
         return True
 
-    async def _split_config(*_args: Any, **_kwargs: Any) -> tuple[str, int]:
+    async def _split_config(*_args: Any, **_kwargs: Any) -> tuple[str, int, int]:
         return SPLIT_STRUCTURE, 800, 2000
 
-    async def _effective_version(*_args: Any, **_kwargs: Any) -> str:
-        return "v1"
+    async def _advance_generation(
+        _db: Any, document_id: str, *, tenant_id: str, generation: int, settings_hash: str | None
+    ) -> None:
+        document = documents.get(document_id)
+        if document is not None:
+            document.current_index_generation = generation
+            document.settings_hash = settings_hash
 
     monkeypatch.setattr(document_repository, "get_by_id", _get_by_id)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
     monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
+    monkeypatch.setattr(document_repository, "advance_index_generation", _advance_generation)
     monkeypatch.setattr(knowledge_base_repository, "get_split_config", _split_config)
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
     # 节说明会调模型：本票与它无关，钉死成关闭（检索文本因此逐字可比）。
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", False)
 
 
-def _service(store: _VersionedStore) -> IndexBuildService:
-    return IndexBuildService(
-        indexing=IndexingService(embeddings=_StubEmbeddings(), stores=[store]),
-        vector_store=store,
-        keyword_search=NoopKeywordSearchProvider(),
+def _service(store: _GenerationalStore) -> IndexingService:
+    return IndexingService(
+        embeddings=_StubEmbeddings(),
+        stores=[store],
     )
 
 
-def _build_and_activate(
-    service: IndexBuildService,
-    session: AsyncRecordingSession,
-    *,
-    version: str | None = None,
-) -> IndexBuildVersion:
-    """跑一次完整构建：起版本行 → 逐文档重建 → 四项计数 → 单事务激活。"""
+def _rebuild(service: IndexingService, session: AsyncRecordingSession, document: Document) -> None:
+    """跑一次真实的单篇索引（按篇重建走的就是这一段）。"""
 
-    row = asyncio.run(
-        service.start_build(session, kb_id=KB_ID, tenant_id=TENANT_ID, version=version)
-    )
-    asyncio.run(service.build(session, row.id, tenant_id=TENANT_ID))
-    asyncio.run(service.activate(session, row.id, tenant_id=TENANT_ID))
-    return row
+    asyncio.run(service.index_existing_document(session, document.id, allow_success=True))
 
 
 def _by_section(chunks: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str, Any]]:
@@ -247,45 +227,43 @@ def _by_section(chunks: list[dict[str, Any]]) -> dict[tuple[str, str], dict[str,
     return grouped
 
 
-# ─────────────────────────────────────────── 全量重建：v2 来自构建流水线本身
+# ─────────────────────────────────────────── 按篇重建：两代产物逐节同一身份
 
 
-def test_a_full_rebuild_through_the_build_pipeline_keeps_every_section_id(
+def test_a_second_indexing_pass_keeps_every_section_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """同库同文档重建一次（v1 → v2），每一节的 id 与父 id 都不变。"""
+    """同库同文档重建一次（第 1 代 → 第 2 代），每一节的 id 与父 id 都不变。"""
 
     document = _document(DOC_A)
     session = _session(kb=_kb(), documents=[document])
-    store = _VersionedStore(session)
+    store = _GenerationalStore(session)
     service = _service(store)
     _patch_pipeline(monkeypatch, documents={DOC_A: document})
 
-    first = _build_and_activate(service, session)
-    second = _build_and_activate(service, session, version="v2")
+    _rebuild(service, session, document)
+    _rebuild(service, session, document)
 
-    assert (first.version, second.version) == ("v1", "v2")
-    assert first.status == INDEX_BUILD_ARCHIVED
-    assert second.status == INDEX_BUILD_ACTIVE
+    assert sorted(store.by_generation) == [1, 2], "两次索引必须落在两代上（上一代留着给回滚）"
 
-    v1 = _by_section(store.by_version["v1"])
-    v2 = _by_section(store.by_version["v2"])
+    first = _by_section(store.by_generation[1])
+    second = _by_section(store.by_generation[2])
 
-    assert set(v1) == set(v2), "两次构建的节集合必须一样，否则「逐节对比」无从谈起"
-    for key in v1:
-        assert v2[key]["meta"]["section_id"] == v1[key]["meta"]["section_id"], (
-            f"{key} 的 section_id 在重建后变了：{v1[key]['meta']['section_id']} → "
-            f"{v2[key]['meta']['section_id']}"
+    assert set(first) == set(second), "两次索引的节集合必须一样，否则「逐节对比」无从谈起"
+    for key in first:
+        assert second[key]["meta"]["section_id"] == first[key]["meta"]["section_id"], (
+            f"{key} 的 section_id 在重建后变了：{first[key]['meta']['section_id']} → "
+            f"{second[key]['meta']['section_id']}"
         )
-        assert v2[key]["meta"]["parent_section_id"] == v1[key]["meta"]["parent_section_id"]
-        assert v2[key]["content"] == v1[key]["content"], "正文必须逐字相同（切法没变）"
-        assert v2[key]["retrieval_text"] == v1[key]["retrieval_text"]
+        assert second[key]["meta"]["parent_section_id"] == first[key]["meta"]["parent_section_id"]
+        assert second[key]["content"] == first[key]["content"], "正文必须逐字相同（切法没变）"
+        assert second[key]["retrieval_text"] == first[key]["retrieval_text"]
 
 
-def test_parent_child_relation_is_the_same_graph_in_both_versions(
+def test_parent_child_relation_is_the_same_graph_in_both_generations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """父子关系由标题路径决定，改造前后是同一张图（只换了 id 的算法）。
+    """父子关系由标题路径决定，两代产物是同一张图（只换了 id 的算法）。
 
     改造前的算法是 ``sha256(标题路径)``，改造后是 ``sha256(文档 id : 标题路径)``。两种
     算法下「子节父 id == 父节自己的 id」都成立——这就是「语义一致」：换的是编码，不是关系。
@@ -293,23 +271,23 @@ def test_parent_child_relation_is_the_same_graph_in_both_versions(
 
     document = _document(DOC_A)
     session = _session(kb=_kb(), documents=[document])
-    store = _VersionedStore(session)
+    store = _GenerationalStore(session)
     service = _service(store)
     _patch_pipeline(monkeypatch, documents={DOC_A: document})
 
-    _build_and_activate(service, session)
-    v1 = _by_section(store.by_version["v1"])
-    _build_and_activate(service, session, version="v2")
-    v2 = _by_section(store.by_version["v2"])
+    _rebuild(service, session, document)
+    first = _by_section(store.by_generation[1])
+    _rebuild(service, session, document)
+    second = _by_section(store.by_generation[2])
 
     def _pairs(sections: dict[tuple[str, str], dict[str, Any]]) -> set[tuple[str, str | None]]:
         return {(path, parent_heading_path(path)) for (_doc, path) in sections}
 
-    assert _pairs(v1) == _pairs(v2)
-    assert ("售后手册 > 退款", "售后手册") in _pairs(v2)
-    assert ("售后手册 > 退款 > 流程", "售后手册 > 退款") in _pairs(v2)
+    assert _pairs(first) == _pairs(second)
+    assert ("售后手册 > 退款", "售后手册") in _pairs(second)
+    assert ("售后手册 > 退款 > 流程", "售后手册 > 退款") in _pairs(second)
 
-    for (_doc, path), chunk in v2.items():
+    for (_doc, path), chunk in second.items():
         parent_path = parent_heading_path(path)
         if parent_path is None:
             assert chunk["meta"]["parent_section_id"] is None
@@ -319,21 +297,21 @@ def test_parent_child_relation_is_the_same_graph_in_both_versions(
         )
 
 
-def test_collapse_grouping_is_unchanged_between_builds(
+def test_collapse_grouping_is_unchanged_between_two_generations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """折叠的归组键（单元）在两版之间完全相同——本次改造不碰折叠口径。"""
+    """折叠的归组键（单元）在两代之间完全相同——重建不碰折叠口径。"""
 
     document = _document(DOC_A)
     session = _session(kb=_kb(), documents=[document])
-    store = _VersionedStore(session)
+    store = _GenerationalStore(session)
     service = _service(store)
     _patch_pipeline(monkeypatch, documents={DOC_A: document})
 
-    _build_and_activate(service, session)
-    v1 = list(store.by_version["v1"])
-    _build_and_activate(service, session, version="v2")
-    v2 = list(store.by_version["v2"])
+    _rebuild(service, session, document)
+    first = list(store.by_generation[1])
+    _rebuild(service, session, document)
+    second = list(store.by_generation[2])
 
     def _groups(chunks: list[dict[str, Any]]) -> list[tuple[str, ...]]:
         hits = [
@@ -352,27 +330,28 @@ def test_collapse_grouping_is_unchanged_between_builds(
         ]
         return sorted(unit_key(hit) for hit in hits)
 
-    assert _groups(v1) == _groups(v2)
+    assert _groups(first) == _groups(second)
 
 
-# ─────────────────────────────────────────── 跨文档不撞：同一库、同一批构建
+# ─────────────────────────────────────────── 跨文档不撞：同一批重建
 
 
-def test_two_documents_rebuilt_in_the_same_build_do_not_share_section_ids(
+def test_two_documents_indexed_together_do_not_share_section_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """两份文档都有「售后手册 > 退款 > 流程」，构建后是两节，不是一个。"""
+    """两份文档都有「售后手册 > 退款 > 流程」，索引后是两节，不是一个。"""
 
     first_document = _document(DOC_A)
     second_document = _document(DOC_B)
     session = _session(kb=_kb(), documents=[first_document, second_document])
-    store = _VersionedStore(session)
+    store = _GenerationalStore(session)
     service = _service(store)
     _patch_pipeline(monkeypatch, documents={DOC_A: first_document, DOC_B: second_document})
 
-    _build_and_activate(service, session)
+    _rebuild(service, session, first_document)
+    _rebuild(service, session, second_document)
 
-    sections = _by_section(store.by_version["v1"])
+    sections = _by_section(store.by_generation[1])
     assert {(DOC_A, "售后手册 > 退款 > 流程"), (DOC_B, "售后手册 > 退款 > 流程")} <= set(sections)
 
     a_id = sections[(DOC_A, "售后手册 > 退款 > 流程")]["meta"]["section_id"]
@@ -391,66 +370,14 @@ def test_written_section_ids_are_not_the_old_path_only_hash(
 
     document = _document(DOC_A)
     session = _session(kb=_kb(), documents=[document])
-    store = _VersionedStore(session)
+    store = _GenerationalStore(session)
     service = _service(store)
     _patch_pipeline(monkeypatch, documents={DOC_A: document})
 
-    _build_and_activate(service, session)
+    _rebuild(service, session, document)
 
-    for chunk in store.by_version["v1"]:
+    for chunk in store.by_generation[1]:
         path = str(chunk["meta"]["heading_path"])
         old_style = hashlib.sha256(path.encode("utf-8")).hexdigest()
         assert chunk["meta"]["section_id"] != old_style
         assert chunk["meta"]["section_id"] == section_id_of(document_id=DOC_A, heading_path=path)
-
-
-def test_the_verification_check_agrees_with_what_the_build_actually_wrote(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """核对逻辑（``app.services.index_verification``）的两端对得上：真实构建产物**通过**
-    核对，掺一条旧 id 就**不通过**。
-
-    这条用例把两个模块钉在一起：切块器写 ``section_id``（M1）、构建流水线把它落库（M2）、
-    核对逻辑按同一份算法验它（M3）。三处任何一处漂移，这里都会红——而单看任何一处都绿。
-    """
-
-    import hashlib
-
-    from app.services.index_verification import IdentityRow, verify_identity
-
-    document = _document(DOC_A)
-    session = _session(kb=_kb(), documents=[document])
-    store = _VersionedStore(session)
-    service = _service(store)
-    _patch_pipeline(monkeypatch, documents={DOC_A: document})
-
-    _build_and_activate(service, session)
-
-    rows: dict[tuple[str, str], IdentityRow] = {}
-    for chunk in store.by_version["v1"]:
-        meta = chunk["meta"]
-        key = (str(chunk["document_id"]), str(meta["heading_path"]))
-        rows[key] = IdentityRow(
-            document_id=key[0],
-            heading_path=key[1],
-            section_id=str(meta["section_id"]),
-            parent_section_id=(
-                str(meta["parent_section_id"]) if meta["parent_section_id"] else None
-            ),
-        )
-
-    report = verify_identity(rows.values())
-    assert report.ok, report.render_problems()
-    assert report.sections == len(rows)
-    assert report.parent_without_body >= 1, "「售后手册」只有标题，父节无正文这一档必须出现"
-
-    poisoned = dict(rows)
-    first_key = next(iter(poisoned))
-    poisoned[first_key] = IdentityRow(
-        document_id=first_key[0],
-        heading_path=first_key[1],
-        section_id=hashlib.sha256(first_key[1].encode("utf-8")).hexdigest(),
-        parent_section_id=poisoned[first_key].parent_section_id,
-    )
-
-    assert not verify_identity(poisoned.values()).ok

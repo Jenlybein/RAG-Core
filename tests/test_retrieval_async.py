@@ -38,7 +38,6 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.services.retrieval_options import RetrievalOptions
 from tests.fake_db import AsyncRecordingSession, RecordingSession
 from tests.retrieval_identity import RetrievalIdentity
@@ -75,7 +74,7 @@ class _FakeVectorStore:
         self.db_seen: Any = None
 
     async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
-        self.calls.append({"tenant_id": tenant_id, "index_versions": list(kb_ids)})
+        self.calls.append({"tenant_id": tenant_id, "kb_ids": list(kb_ids)})
         self.db_seen = db
         return [{**row, "kb_id": next(iter(kb_ids))} for row in self.rows]
 
@@ -112,7 +111,6 @@ async def _kb_for_tenant(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
         settings={},
         name="",
         description="",
-        active_index_version=DEFAULT_INDEX_VERSION,
     )
 
 
@@ -296,7 +294,6 @@ async def _cancelled_retrieval(
             settings={},
             name="",
             description="",
-            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     monkeypatch.setattr(service, "get_embedding_provider", lambda: embedding)

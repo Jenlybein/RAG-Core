@@ -25,10 +25,9 @@ from fastapi.testclient import TestClient
 from app.api.deps import get_current_key
 from app.core.auth import DevKeyContext
 from app.db.base import now
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.keyword_search.noop import NoopKeywordSearchProvider
 from app.providers.parsers.base import ParsedDocument
-from app.repositories import document_repository, knowledge_base_repository
+from app.repositories import document_repository
 from app.services import indexing_service
 from app.services.chunk_store import KeywordSearchChunkStore, build_chunk_stores
 from app.services.indexing_service import IndexingService, purge_document_chunks
@@ -124,7 +123,6 @@ class _RecordingStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -132,7 +130,6 @@ class _RecordingStore:
         self.deleted.append((document_id, tenant_id))
         self.purged = {
             "tenant_id": tenant_id,
-            "index_version": index_version,
             "doc_version": doc_version,
         }
 
@@ -166,7 +163,6 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -174,7 +170,6 @@ class _RecordingKeywordProvider(NoopKeywordSearchProvider):
         self.deleted.append((document_id, tenant_id))
         self.purged = {
             "tenant_id": tenant_id,
-            "index_version": index_version,
             "doc_version": doc_version,
         }
 
@@ -234,15 +229,6 @@ def _patch_indexing(
         lambda _doc, *, reparse=False: ParsedDocument(content="raw", source_type="markdown"),
     )
 
-    # 写入目标版本来自库上的生效版本（#142）：本文件的会话替身不落库，于是把这一处
-    # 协作者换成固定值（与迁移回填同值）。版本解析本身见 ``tests/test_index_build_writes.py``。
-    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
-        return DEFAULT_INDEX_VERSION
-
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
-
 
 # ─────────────────────────────────────── 写入契约：向量与关键词同形状
 
@@ -284,8 +270,8 @@ def test_purge_scopes_both_stores_by_document_and_draft() -> None:
 
     assert calls == ["purge:vector", "purge:keyword"]
     assert [store.purged for store in (vector, provider)] == [
-        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": 2},
-        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": 2},
+        {"tenant_id": TENANT_ID, "doc_version": 2},
+        {"tenant_id": TENANT_ID, "doc_version": 2},
     ], "两处存储收到的必须是同一个稿号"
 
 
@@ -306,8 +292,8 @@ def test_purge_without_a_draft_keeps_deleting_the_whole_document() -> None:
     )
 
     assert [store.purged for store in (vector, provider)] == [
-        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": None},
-        {"tenant_id": TENANT_ID, "index_version": None, "doc_version": None},
+        {"tenant_id": TENANT_ID, "doc_version": None},
+        {"tenant_id": TENANT_ID, "doc_version": None},
     ]
 
 
@@ -365,7 +351,6 @@ def test_indexing_writes_to_both_stores_through_the_same_list(
     assert written[0]["document_id"] == DOC_ID
     assert written[0]["kb_id"] == KB_ID
     assert written[0]["tenant_id"] == TENANT_ID
-    assert written[0]["index_version"] == "v1"
     assert written[0]["meta"]["title"] == "售后手册"
 
 
@@ -375,7 +360,7 @@ def test_slice_carries_the_draft_number_at_top_level_and_never_in_meta(
     """稿号只有一个来源：切片字典**顶层**的 ``doc_version``（落真实列），meta 里那份删掉。
 
     ``chunks.doc_version`` 是真实列（#172 的迁移建的），写它要的是顶层这个键——
-    向量存储按列写入时读的就是它（见 ``tests/test_index_version.py`` 的落库断言）。
+    向量存储按列写入时读的就是它（见 ``tests/test_document_chunk_count.py`` 的分组计数）。
     JSONB 里再留一份就有了两个来源，而两个来源迟早不一致：一个说第 3 稿、列上说第 2 稿，
     排查的人根本看不出哪个算数。值仍是「这一片属于第几稿」，来自文档行的当前稿指针。
     """

@@ -8,8 +8,9 @@ content 是**切片原文**（原样返回给调用方）；送进 embedding 的
 
 ``generation`` 是**可见性**的一部分（现场九·第四步 / ADR-0025 第 2 次修订）：它记这一片
 属于该篇的第几代产物，与 ``documents.current_index_generation`` 一比就决定「这一片算不算
-现在服务的那一份」。改造前这件事由库级的 ``index_version = 生效版本`` 表达——代下放到篇级
-之后那条相等条件不再等价（构建期间新代写在还没上线的版本里）。
+现在服务的那一份」。**它是唯一的可见性判据**：库级索引版本那一层（``chunks.index_version``、
+``knowledge_bases.active_index_version``、``index_build_versions``）已经整层删除——同一件事
+留两个来源，只会在某一刻让两套判据各说一个答案，而那一刻不会报错，只会「多召回一份旧产物」。
 
 **可见性条件只有一份**（:func:`current_generation_filter` + :func:`current_draft_filter`）：
 向量召回、界面片数、折叠取整节、补父节、空结果判定都编译同一条。写两遍的下场是其中一遍
@@ -25,9 +26,6 @@ from sqlalchemy.sql.elements import ColumnElement
 
 from app.db.base import Base
 from app.models.document import Document
-
-# 切片默认索引版本；列默认值、索引期写入与迁移回填共用这一个常量。
-DEFAULT_INDEX_VERSION = "v1"
 
 #: 切片默认稿号（第 1 稿）：列默认值、关键词文档缺省值与迁移回填共用这一个常量。
 DEFAULT_DOC_VERSION = 1
@@ -77,24 +75,23 @@ def current_generation_filter() -> ColumnElement[bool]:
     * 稿次那一条回答「这一片装的是不是现在生效的那份正文」；
     * 这一条回答「这一片是不是现在生效的那份产物」。
 
-    改造之前「哪份产物生效」是**库级**的（``index_version = 生效版本``），所以一条相等条件
-    就够了。代下放到篇级之后，每篇各有自己的当前代，库级的相等条件**不再等价于**它——少了
-    这一条，留在库里的旧代切片会被当成现行内容一起召回（症状是同一段内容回答两次，或者引用
-    了上一版已经删掉的条款），而它不报错。
+    改造之前「哪份产物生效」是**库级**的（``index_version = 生效版本``，那一层已整体删除），
+    所以一条相等条件就够了。代下放到篇级之后，每篇各有自己的当前代，库级的相等条件**不再
+    等价于**它——少了这一条，留在库里的旧代切片会被当成现行内容一起召回（症状是同一段
+    内容回答两次，或者引用了上一版已经删掉的条款），而它不报错。
 
     为什么不把当前代读出来当参数传：指针在文档行上，由库来比就不会出现「缓存里的代过期」，
     调用方也不必先查一次文档表（多一次往返、多一个能传错的值）。
 
-    ## 为什么它必须**替代**版本条件，而不是乘在旁边
+    ## 它必须**替代**版本条件，而不是乘在旁边
 
-    单独把这一条乘到「``index_version = 生效版本``」旁边是**错的**，症状很具体：起一次构建
-    往新版本 v5 写时，写路径（``advance_index_generation``）会把该篇指针推到第 2 代，而
-    v5 还没上线、线上仍是 v4——于是这篇在 v4 里「当前代 = 2」的切片一片也没有，检索与计数
-    双双归零（真库实测过：``count_in_kb`` = 0）。也就是说它会**破坏「构建期间照旧服务旧
-    内容」**这条已经成立的性质。
+    历史上曾经把这一条乘到「``index_version = 生效版本``」旁边，那是**错的**，症状很具体：
+    起一次构建往新版本 v5 写时，写路径（``advance_index_generation``）会把该篇指针推到
+    第 2 代，而 v5 还没上线、线上仍是 v4——于是这篇在 v4 里「当前代 = 2」的切片一片也没有，
+    检索与计数双双归零（真库实测过：``count_in_kb`` = 0）。也就是说它会**破坏「构建期间
+    照旧服务旧内容」**这条已经成立的性质。
 
-    所以第四步是把版本条件**换掉**（ADR-0025 第 2 次修订）：产物只按代看，库级版本轴退居
-    构建真值。
+    所以收口是**换掉**版本条件（ADR-0025 第 2 次修订）：产物只按代看。
 
     ## 关键词那一路为什么不需要它
 
@@ -108,7 +105,6 @@ def current_generation_filter() -> ColumnElement[bool]:
 class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (
-        Index("ix_chunks_tenant_id_kb_id_index_version", "tenant_id", "kb_id", "index_version"),
         Index("ix_chunks_document_id_doc_version", "document_id", "doc_version"),
         # 按「租户 + 库 + 代」收窄：**读路径**（库范围 + 当前代）走它。
         Index("ix_chunks_tenant_id_kb_id_generation", "tenant_id", "kb_id", "generation"),
@@ -124,13 +120,7 @@ class Chunk(Base):
     content: Mapped[str] = mapped_column(Text)
     embedding: Mapped[list[float]] = mapped_column(Vector(1536))
     meta: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
-    index_version: Mapped[str] = mapped_column(
-        String(32),
-        nullable=False,
-        default=DEFAULT_INDEX_VERSION,
-        server_default=DEFAULT_INDEX_VERSION,
-    )
-    # 稿号：这一片属于第几稿（与「索引版本」正交，见 ADR-0005）。
+    # 稿号：这一片属于第几稿（与「代」正交，见 ADR-0005）。
     #
     # 它是**真实列**而不是 JSONB 里的一个键（#172）：稿号只有一个来源。检索侧自
     # #174 起按它与文档的当前稿指针对齐（:func:`current_draft_filter`），所以这一列
@@ -144,8 +134,8 @@ class Chunk(Base):
     # 这一片属于该文档的第几代**索引产物**（第 17 步现场九）。
     #
     # 与 ``doc_version`` 正交：那个管「这一片装的是哪一稿正文」，这个管「这一片是哪一次
-    # 索引跑出来的」。改造前它由库级的 ``index_version`` 承担，而库级判据要与篇级稿次对齐
-    # 时就只能靠「统一稿号」硬凑——那正是本步要拆掉的东西。
+    # 索引跑出来的」。库级版本那一套（库列 + 版本表 + 版本化物理索引）删除之后，这一列
+    # 就是「哪份产物在服务」的唯一来源；再留一个库级判据只会让两处迟早各说一个答案。
     #
     # 检索侧按它和 ``documents.current_index_generation`` 做列比较（与
     # :func:`current_draft_filter` 同一套写法，不传参、不在应用层缓存）。

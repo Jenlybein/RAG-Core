@@ -114,10 +114,6 @@ async def test_ensure_knowledge_base_inserts_once(monkeypatch: pytest.MonkeyPatc
     created = db.added[0]
     assert created.id == "kb-eval"
     assert created.split_strategy == "structure"
-    assert created.active_index_version == "v1", (
-        "建库必须写生效索引版本（ADR-0025 决策四）：不写的话新库每个请求都被守卫拦下，"
-        "全量重建路径（非 --reuse）根本跑不起来"
-    )
     # 白名单按策略推导（不在脚本里另写一份）：structure → 只收 markdown。
     assert created.allowed_formats == ["markdown"]
     assert db.commits == 1
@@ -495,95 +491,7 @@ async def test_a_dead_keyword_leg_fails_the_probe_and_surfaces_the_degraded_reas
     assert report["degraded_reason"] == "keyword search failed"
 
 
-# ──────────────────────────────── 版本化写入：索引完要把别名切到刚写出的版本
-
-
-class _ScalarRows:
-    """``execute(...).scalars().all()`` 的最小替身（只回一组版本名）。"""
-
-    def __init__(self, values: list[str]) -> None:
-        self._values = list(values)
-
-    def scalars(self) -> _ScalarRows:
-        return self
-
-    def all(self) -> list[str]:
-        return list(self._values)
-
-
-class _VersionDb:
-    """只回答 ``select(Chunk.index_version)`` 的假会话。"""
-
-    def __init__(self, versions: list[str]) -> None:
-        self._versions = versions
-        self.statements: list[str] = []
-
-    async def execute(self, statement: object) -> _ScalarRows:
-        self.statements.append(str(statement))
-        return _ScalarRows(self._versions)
-
-
-class _VersionProvider:
-    """关键词 Provider 的替身：只记「建了哪些版本、切了哪些版本」。"""
-
-    def __init__(self) -> None:
-        self.ensured: list[str] = []
-        self.activated: list[str] = []
-
-    async def ensure_version_index(self, version: str) -> str:
-        self.ensured.append(version)
-        return f"physical__{version}"
-
-    async def activate_version(self, version: str) -> None:
-        self.activated.append(version)
-
-
-def _patch_keyword_provider(monkeypatch: pytest.MonkeyPatch, provider: object) -> None:
-    monkeypatch.setattr(
-        "app.providers.keyword_search.get_keyword_search_provider", lambda: provider
-    )
-
-
-@pytest.mark.asyncio
-async def test_activate_keyword_versions_switches_the_alias_per_version(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """索引完必须把别名切过去（#157 §②）：``add_chunks`` 只写物理索引，不动别名。
-
-    漏了这一步的症状是「关键词一路搜不到」——不报错。版本号从 ``chunks`` 列读，
-    多个版本时按序各切一次、最后一个生效（库里是事实，内存猜会与物理索引名错位）。
-    """
-
-    provider = _VersionProvider()
-    _patch_keyword_provider(monkeypatch, provider)
-
-    versions = await eval_retrieval._activate_keyword_versions(_VersionDb(["v2", "v1", "v1"]))
-
-    assert provider.ensured == ["v1", "v2"], "去重后按版本名排序；先建索引再切别名"
-    assert provider.activated == ["v1", "v2"], "多个版本各切一次，最后切的是最大版本"
-    assert versions["activated"] == [
-        {"version": "v1", "physical": "physical__v1"},
-        {"version": "v2", "physical": "physical__v2"},
-    ]
-
-
-@pytest.mark.asyncio
-async def test_activate_keyword_versions_is_a_noop_when_no_chunks_exist(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """库里一个切片都没有时：不建空索引、不切别名（全新环境不该被这一步弄出脏索引）。"""
-
-    provider = _VersionProvider()
-    _patch_keyword_provider(monkeypatch, provider)
-
-    result = await eval_retrieval._activate_keyword_versions(_VersionDb([]))
-
-    assert provider.ensured == []
-    assert provider.activated == []
-    assert result["activated"] == []
-
-
-# ────────────────────────────────────────────────── 清索引：版本化形状也要清得干净
+# ────────────────────────────────────────────────── 清索引：一条 DELETE 就够
 
 
 class _EsResponse:
@@ -604,53 +512,39 @@ class _EsResponse:
             raise RuntimeError(f"HTTP {self.status_code}: {self.text}")
 
 
-def test_reset_deletes_every_physical_version_behind_the_alias(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """清索引必须删**具体物理索引**，而不是那个别名（别名发 DELETE 会被 ES 拒）。
+def test_reset_deletes_the_single_physical_index(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清索引就是一条 ``DELETE /<名字>``：不再有别名与按版本隔离的物理索引。
 
-    版本化之后 ``rag_chunks_eval`` 是别名，真正要删的是 ``rag_chunks_eval__v1`` 之类；
-    只删别名指向的那一张会漏掉旧版本，下一轮构建再写一版，两张就同时在集群里。
+    库级索引版本层删除之后 ``ELASTICSEARCH_INDEX`` 就是那一个物理索引，所以不需要
+    ``_cat`` 解析、也不需要覆盖 ``<名字>__*`` 的兄弟索引。
     """
 
-    seen: dict[str, object] = {}
-
-    def fake_get(url: str, **kwargs: object) -> _EsResponse:
-        seen["get_url"] = url
-        seen["params"] = kwargs.get("params")
-        return _EsResponse(
-            200, [{"index": "rag_chunks_eval__v1"}, {"index": "rag_chunks_eval__v2"}]
-        )
+    seen: dict[str, str] = {}
 
     def fake_delete(url: str, **kwargs: object) -> _EsResponse:
         seen["delete_url"] = url
         return _EsResponse(200, {"acknowledged": True})
 
-    monkeypatch.setattr(eval_retrieval.httpx, "get", fake_get)
     monkeypatch.setattr(eval_retrieval.httpx, "delete", fake_delete)
 
     state = eval_retrieval._reset_elasticsearch("rag_chunks_eval")
 
-    assert str(seen["get_url"]).endswith("/_cat/indices/rag_chunks_eval,rag_chunks_eval__*"), (
-        "要靠 _cat 把别名解析成具体物理索引，且版本前缀一起覆盖"
-    )
-    assert str(seen["delete_url"]).endswith("/rag_chunks_eval__v1,rag_chunks_eval__v2")
-    assert state.startswith("deleted(")
+    assert seen["delete_url"].endswith("/rag_chunks_eval"), "删的就是配置里那一个索引"
+    assert state == "deleted(rag_chunks_eval)"
 
 
-def test_reset_reports_absent_when_nothing_is_there(monkeypatch: pytest.MonkeyPatch) -> None:
-    """什么都不存在 → ``absent``（全新环境上不该报错，也不该发一条 DELETE）。"""
+def test_reset_reports_absent_when_the_index_does_not_exist(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """索引不存在（404）→ ``absent``：全新环境上不该报错。"""
 
-    deleted: list[str] = []
-    monkeypatch.setattr(eval_retrieval.httpx, "get", lambda url, **kwargs: _EsResponse(200, []))
     monkeypatch.setattr(
         eval_retrieval.httpx,
         "delete",
-        lambda url, **kwargs: deleted.append(url) or _EsResponse(200, {}),
+        lambda url, **kwargs: _EsResponse(404, "index_not_found_exception"),
     )
 
     assert eval_retrieval._reset_elasticsearch("rag_chunks_eval") == "absent"
-    assert deleted == []
 
 
 def test_reset_refuses_a_name_that_is_not_the_eval_index() -> None:
@@ -660,85 +554,7 @@ def test_reset_refuses_a_name_that_is_not_the_eval_index() -> None:
         eval_retrieval._reset_elasticsearch("rag_chunks")
 
 
-# ──────────────────────────────── --reuse 守卫：旧索引会静默空跑，必须当场停下
-
-
-def _patch_es_counts(
-    monkeypatch: pytest.MonkeyPatch, *, total: int, versioned: int
-) -> list[dict[str, object]]:
-    """把 ``GET .../_count`` 与 ``POST .../_count``（exists 过滤）换成固定读数。"""
-
-    posts: list[dict[str, object]] = []
-
-    def fake_get(url: str, **kwargs: object) -> _EsResponse:
-        return _EsResponse(200, {"count": total})
-
-    def fake_post(url: str, **kwargs: object) -> _EsResponse:
-        posts.append(dict(kwargs.get("json") or {}))
-        return _EsResponse(200, {"count": versioned})
-
-    monkeypatch.setattr(eval_retrieval.httpx, "get", fake_get)
-    monkeypatch.setattr(eval_retrieval.httpx, "post", fake_post)
-    return posts
-
-
-def test_reuse_guard_refuses_an_unversioned_keyword_index(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """索引里有 469 条、却一条都没 ``index_version`` → 当场停下，别等花了 128 次调用才发现。
-
-    这正是本票之前的现场：查询按 ``(库, 版本)`` 过滤，而旧索引的文档没有这一列，于是
-    关键词这一路**静默空跑**（ADR-0025 决策四）——不报错，只是 `q05` 这种字面题归零。
-    ``--reuse`` 的守卫要在这里响，指向迁移脚本，而不是让整轮跑完再归因。
-    """
-
-    posts = _patch_es_counts(monkeypatch, total=469, versioned=0)
-
-    with pytest.raises(SystemExit, match="index_version"):
-        eval_retrieval._assert_keyword_index_is_versioned("rag_chunks_eval")
-
-    assert posts and posts[0]["query"]["exists"]["field"] == "index_version"  # type: ignore[index]
-
-
-def test_reuse_guard_accepts_a_versioned_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    """全部文档都带版本 → 放行（这就是本票迁移之后的状态：469/469）。"""
-
-    _patch_es_counts(monkeypatch, total=469, versioned=469)
-
-    assert eval_retrieval._assert_keyword_index_is_versioned("rag_chunks_eval") == 469
-
-
-def test_reuse_guard_allows_an_empty_index(monkeypatch: pytest.MonkeyPatch) -> None:
-    """索引还不存在 / 一条都没有：那是「全新环境还没建」，不是迁移漏做，放行且不发第二条请求。"""
-
-    posts = _patch_es_counts(monkeypatch, total=0, versioned=0)
-
-    assert eval_retrieval._assert_keyword_index_is_versioned("rag_chunks_eval") == 0
-    assert posts == []
-
-
-def test_both_reuse_paths_call_the_keyword_version_guard() -> None:
-    """守卫必须接在**两个** ``--reuse`` 入口上：只写函数不接线，等于没做。
-
-    接线位置也要在「花查询嵌入之前」——接线挪到跑完再查，就退化成事后归因，
-    本票要消的正是那笔钱。所以这里扫源码：两个脚本的 reuse 分支都要出现调用。
-    """
-
-    retrieval = _source(REPO_ROOT / "scripts" / "eval_retrieval.py")
-    runner = _source(REPO_ROOT / "scripts" / "eval_runner.py")
-
-    assert retrieval.count("_assert_keyword_index_is_versioned") >= 2, (
-        "eval_retrieval 里要有定义 + reuse 分支的调用"
-    )
-    assert "_assert_keyword_index_is_versioned(live.elasticsearch_index)" in runner, (
-        "eval_runner 的 --reuse 路径也要接同一个守卫"
-    )
-    # 两个入口的 reuse 分支都还保留 mapping 守卫（索引代际不同也不能复用）。
-    assert "_assert_query_analyzer(index_name)" in retrieval
-    assert "_assert_query_analyzer(live.elasticsearch_index)" in runner
-
-
-# ──────────────────────────────── mapping 守卫：别名要先解析成物理索引再读 settings
+# ──────────────────────────────── mapping 守卫：按索引名读 settings
 
 
 def _analyzer_settings(*, analyzer: str) -> dict[str, object]:
@@ -747,7 +563,7 @@ def _analyzer_settings(*, analyzer: str) -> dict[str, object]:
     return {"settings": {"index": {"analysis": {"analyzer": {analyzer: {}}}}}}
 
 
-def test_mapping_guard_resolves_the_alias_to_the_physical_index(
+def test_mapping_guard_reads_settings_under_the_index_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """别名返回的 settings 键是物理索引名（``别名__v1``），不能按别名取键。
@@ -758,7 +574,7 @@ def test_mapping_guard_resolves_the_alias_to_the_physical_index(
 
     from app.providers.keyword_search.query_builder import QUERY_ANALYZER
 
-    payload = {"rag_chunks_eval__v1": _analyzer_settings(analyzer=QUERY_ANALYZER)}
+    payload = {"rag_chunks_eval": _analyzer_settings(analyzer=QUERY_ANALYZER)}
     monkeypatch.setattr(
         eval_retrieval.httpx, "get", lambda url, **kwargs: _EsResponse(200, payload)
     )
@@ -769,7 +585,7 @@ def test_mapping_guard_resolves_the_alias_to_the_physical_index(
 def test_mapping_guard_still_refuses_a_legacy_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     """旧 mapping（缺查询分析器）仍要拒：复用等于用旧口径跑新代码。"""
 
-    payload = {"rag_chunks_eval__v1": _analyzer_settings(analyzer="ik_max_word")}
+    payload = {"rag_chunks_eval": _analyzer_settings(analyzer="ik_max_word")}
     monkeypatch.setattr(
         eval_retrieval.httpx, "get", lambda url, **kwargs: _EsResponse(200, payload)
     )

@@ -44,10 +44,8 @@ describe('toKnowledgeBaseNodes', () => {
           allowed_formats: ['text'],
           chunk_size: 1024,
           section_part_max_chars: 2000,
-          needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
-        token_usage: null,
+          stale_documents: 0,
+          token_usage: null,
           documents: [],
         },
       ],
@@ -61,9 +59,7 @@ describe('toKnowledgeBaseNodes', () => {
         allowed_formats: ['text'],
         chunk_size: 1024,
         section_part_max_chars: 2000,
-        needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
+        stale_documents: 0,
         token_usage: null,
         documents: [],
       },
@@ -80,10 +76,8 @@ describe('toKnowledgeBaseNodes', () => {
           allowed_formats: ['markdown'],
           chunk_size: 512,
           section_part_max_chars: 2000,
-          needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
-        token_usage: null,
+          stale_documents: 0,
+          token_usage: null,
           documents: [
             {
               document_id: 'doc_1',
@@ -91,7 +85,7 @@ describe('toKnowledgeBaseNodes', () => {
               status: 3,
               chunk_count: 0,
               error_message: null,
-      token_count: 0,
+              token_count: 0,
               source_type: 'markdown',
               created_at: '2026-01-01T00:00:00Z',
             },
@@ -104,10 +98,8 @@ describe('toKnowledgeBaseNodes', () => {
           allowed_formats: ['text', 'pdf'],
           chunk_size: 1024,
           section_part_max_chars: 2000,
-          needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
-        token_usage: null,
+          stale_documents: 0,
+          token_usage: null,
           documents: [
             {
               document_id: 'doc_2',
@@ -124,7 +116,7 @@ describe('toKnowledgeBaseNodes', () => {
               status: 1,
               chunk_count: 18,
               error_message: null,
-      token_count: 0,
+              token_count: 0,
               source_type: 'text',
               created_at: '2026-01-03T00:00:00Z',
             },
@@ -141,9 +133,7 @@ describe('toKnowledgeBaseNodes', () => {
         allowed_formats: ['markdown'],
         chunk_size: 512,
         section_part_max_chars: 2000,
-        needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
+        stale_documents: 0,
         token_usage: null,
         documents: [
           {
@@ -165,9 +155,7 @@ describe('toKnowledgeBaseNodes', () => {
         allowed_formats: ['text', 'pdf'],
         chunk_size: 1024,
         section_part_max_chars: 2000,
-        needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
+        stale_documents: 0,
         token_usage: null,
         documents: [
           {
@@ -205,10 +193,8 @@ describe('toKnowledgeBaseNodes', () => {
           split_strategy: 'size',
           chunk_size: 512,
           section_part_max_chars: 2000,
-          needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
-        token_usage: null,
+          stale_documents: 0,
+          token_usage: null,
           documents: [
             {
               document_id: 'doc_old',
@@ -231,9 +217,7 @@ describe('toKnowledgeBaseNodes', () => {
         allowed_formats: [],
         chunk_size: 512,
         section_part_max_chars: 2000,
-        needs_rebuild: false,
-      stale_documents: 0,
-  build_progress: null,
+        stale_documents: 0,
         token_usage: null,
         documents: [
           {

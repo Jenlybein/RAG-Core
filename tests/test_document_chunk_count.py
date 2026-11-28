@@ -50,7 +50,6 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
-    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
     doc_version INTEGER NOT NULL DEFAULT '1',
     generation INTEGER NOT NULL DEFAULT 1
 )
@@ -78,39 +77,39 @@ SEEDED_ROWS = (
     f"VALUES ('doc-3', '{TENANT}', '{KB}', 2, 1)",
     # doc-1 第 1 稿：三片（旧稿，读不到但要占着存储）
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('c1-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿一', '[]', "
-    f"'{{}}', 'v1', 1)",
+    f"doc_version) VALUES ('c1-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿一', '[]', "
+    f"'{{}}', 1)",
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('c2-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿二', '[]', "
-    f"'{{}}', 'v1', 1)",
+    f"doc_version) VALUES ('c2-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿二', '[]', "
+    f"'{{}}', 1)",
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('c3-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿三', '[]', "
-    f"'{{}}', 'v1', 1)",
+    f"doc_version) VALUES ('c3-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿三', '[]', "
+    f"'{{}}', 1)",
     # doc-1 第 2 稿：两片（当前稿）
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('c1-v2', '{TENANT}', '{KB}', 'doc-1', '当前稿一', '[]', "
-    f"'{{}}', 'v1', 2)",
+    f"doc_version) VALUES ('c1-v2', '{TENANT}', '{KB}', 'doc-1', '当前稿一', '[]', "
+    f"'{{}}', 2)",
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('c2-v2', '{TENANT}', '{KB}', 'doc-1', '当前稿二', '[]', "
-    f"'{{}}', 'v1', 2)",
+    f"doc_version) VALUES ('c2-v2', '{TENANT}', '{KB}', 'doc-1', '当前稿二', '[]', "
+    f"'{{}}', 2)",
     # doc-2 第 1 稿：一片
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('c1-v1-d2', '{TENANT}', '{KB}', 'doc-2', '只有一稿', "
-    f"'[]', '{{}}', 'v1', 1)",
+    f"doc_version) VALUES ('c1-v1-d2', '{TENANT}', '{KB}', 'doc-2', '只有一稿', "
+    f"'[]', '{{}}', 1)",
     # doc-3：上一稿的切片还在，当前稿那一片还没建出来
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version) VALUES ('c1-v1-d3', '{TENANT}', '{KB}', 'doc-3', '上一稿', '[]', "
-    f"'{{}}', 'v1', 1)",
+    f"doc_version) VALUES ('c1-v1-d3', '{TENANT}', '{KB}', 'doc-3', '上一稿', '[]', "
+    f"'{{}}', 1)",
     # 同一稿、**上一代**（第 0 代）的三片：留着给回滚，但一个都不许数进来
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version, generation) VALUES ('c1-v0-old', '{TENANT}', '{KB}', 'doc-1', '旧版一', '[]', "
-    f"'{{}}', 'v1', 2, 0)",
+    f"doc_version, generation) VALUES ('c1-v0-old', '{TENANT}', '{KB}', 'doc-1', '旧版一', '[]', "
+    f"'{{}}', 2, 0)",
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version, generation) VALUES ('c2-v0-old', '{TENANT}', '{KB}', 'doc-1', '旧版二', '[]', "
-    f"'{{}}', 'v1', 2, 0)",
+    f"doc_version, generation) VALUES ('c2-v0-old', '{TENANT}', '{KB}', 'doc-1', '旧版二', '[]', "
+    f"'{{}}', 2, 0)",
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-    f"index_version, doc_version, generation) VALUES ('c1-v0-d2', '{TENANT}', '{KB}', 'doc-2', '旧版', '[]', "
-    f"'{{}}', 'v1', 1, 0)",
+    f"doc_version, generation) VALUES ('c1-v0-d2', '{TENANT}', '{KB}', 'doc-2', '旧版', '[]', "
+    f"'{{}}', 1, 0)",
 )
 
 
@@ -266,8 +265,8 @@ async def test_a_document_without_any_generation_counts_zero(drafts: AsyncSessio
     await drafts.execute(
         text(
             f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
-            f"index_version, doc_version) VALUES ('c-nogen', '{TENANT}', '{KB}', 'doc-nogen', "
-            f"'有片但指针空', '[]', '{{}}', 'v1', 1)"
+            f"doc_version) VALUES ('c-nogen', '{TENANT}', '{KB}', 'doc-nogen', "
+            f"'有片但指针空', '[]', '{{}}', 1)"
         )
     )
 

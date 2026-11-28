@@ -435,7 +435,6 @@ class _RecordingStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:

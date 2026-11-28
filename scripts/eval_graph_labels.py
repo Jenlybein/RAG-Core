@@ -280,7 +280,6 @@ def build_corpus(labels: LabelSet, tier: str, root: Path) -> TierCorpus:
     scope = EdgeScope(
         tenant_id="tenant-eval",
         kb_id=str(labels.tiers[tier]["kb_id"]),
-        index_version="v1",
     )
     documents = _documents_for(labels, tier, root)
     records: list[SectionRecord] = []
@@ -297,7 +296,6 @@ def build_corpus(labels: LabelSet, tier: str, root: Path) -> TierCorpus:
                     record=SectionRecord(
                         tenant_id=scope.tenant_id,
                         kb_id=scope.kb_id,
-                        index_version=scope.index_version,
                         document_id=key,
                         document_title=title,
                         section_id=str(piece.metadata.get("section_id") or ""),

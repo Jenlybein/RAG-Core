@@ -657,14 +657,14 @@ def test_control_run_disables_rejudge_only_while_it_runs(monkeypatch: pytest.Mon
     seen: dict[str, Any] = {}
     original = research_service._Run._rejudge
 
-    async def fake_run_case(case: ev.EvalCase, *, index_versions: Any, fivefold: bool = True):
+    async def fake_run_case(case: ev.EvalCase, *, kb_scope: Any, fivefold: bool = True):
         seen["rejudge"] = research_service._Run._rejudge
         seen["fivefold"] = fivefold
         return {"case": case.case_id}
 
     monkeypatch.setattr(ev, "run_case", fake_run_case)
 
-    record = asyncio.run(ev._run_without_rejudge(ev.load_cases()[0], index_versions={}))
+    record = asyncio.run(ev._run_without_rejudge(ev.load_cases()[0], kb_scope=[]))
 
     assert record["case"] == "A01"
     assert seen["fivefold"] is False

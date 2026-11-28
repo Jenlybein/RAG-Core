@@ -37,13 +37,12 @@ from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.config import settings
-from app.models.chunk import DEFAULT_INDEX_VERSION, Chunk, current_draft_filter
+from app.models.chunk import Chunk, current_draft_filter
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.models.plan import Plan
 from app.models.tenant import Tenant
 from tests.support.sqlite_schema import KNOWLEDGE_BASES_DDL
-from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
@@ -99,7 +98,6 @@ class _RecordingStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -108,7 +106,6 @@ class _RecordingStore:
             {
                 "document_id": document_id,
                 "tenant_id": tenant_id,
-                "index_version": index_version,
                 "doc_version": doc_version,
             }
         )
@@ -173,15 +170,6 @@ def rollback_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Si
     async def _request_session() -> Any:
         async with AsyncSession(request_engine) as session:
             yield session
-
-    # 写入目标版本来自库上的生效版本（#142）。这条用例的临时库里没有 knowledge_bases 表，
-    # 于是把「问库要版本」换成固定的 v1——与迁移回填、索引流水线的老行为同值。
-    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
-        return DEFAULT_INDEX_VERSION
-
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
 
     main.app.dependency_overrides[get_async_db] = _request_session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)
@@ -268,7 +256,6 @@ def test_after_rolling_back_to_draft_one_every_retrievable_slice_is_draft_one(
         {
             "document_id": DOC_ID,
             "tenant_id": TENANT_ID,
-            "index_version": DEFAULT_INDEX_VERSION,
             # 清除按「这一稿」收窄：第 3 稿的切片一个字节都不动（#173）。
             "doc_version": 1,
         }

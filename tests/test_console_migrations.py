@@ -176,8 +176,9 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # 重投计数与心跳三列、#227 现场五的过渡密钥四列（``add_api_key_previous_secret``），
     # 再接第 17 步现场九的「索引代」三列（``add_index_generation``）、旧代回收的索引
     # （``add_chunk_document_generation_index``）与归属索引改记篇级代 + 缺代计数列
-    # （``usage_events_index_generations``）——当前链尾。
-    assert heads == {_revision_of(_migration_path("usage_events_index_generations"))}
+    # （``usage_events_index_generations``）；最后是库级索引版本整层退场的
+    # （``drop_index_version_layer``——删表 + 删三列）——当前链尾。
+    assert heads == {_revision_of(_migration_path("drop_index_version_layer"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

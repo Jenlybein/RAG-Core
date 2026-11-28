@@ -46,7 +46,6 @@ KB_ID = "kb-it"
 OTHER_KB_ID = "kb-it-other"
 DOC_A = "doc-it-a"
 DOC_B = "doc-it-b"
-INDEX_VERSION = "v1"
 
 
 def _url() -> str:
@@ -68,7 +67,6 @@ def _chunk(chunk_id: str, document_id: str, text: str, retrieval_text: str) -> d
         "document_id": document_id,
         "content": text,
         "retrieval_text": retrieval_text,
-        "index_version": INDEX_VERSION,
         "meta": {"title": "售后手册"},
     }
 

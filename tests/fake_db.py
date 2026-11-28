@@ -29,8 +29,6 @@ from typing import Any
 
 from sqlalchemy.sql import operators
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
-
 
 async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     """「库可见」的**异步**替身：租户原样回传，``settings`` 为空、名称与描述为空。
@@ -40,10 +38,8 @@ async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
     ``lambda db, kb_id, *, tenant_id: SimpleNamespace(tenant_id=tenant_id)``
     换成它即可——返回的东西与原来那份等价，只是可 ``await``。
 
-    ``id`` 与 ``active_index_version`` 是**真行上也有的两列**（票 #141）：检索范围从
-    「所有库配 v1」改成「读各库的生效版本」之后，替身缺这两列就不再等价于真行——
-    它会变成「一个还没回填的库」，而那正是检索守卫要拦下的状态。默认给 ``v1``：
-    与迁移的回填值、与索引流水线写下的版本同值。
+    ``id`` 是**真行上也有的列**：检索范围与账本按 ``kb.id`` 组装条件，替身缺它就不再等价
+    于真行。库级索引版本层删除之后，真行上没有任何版本字段可镜像了。
     """
 
     return SimpleNamespace(
@@ -52,7 +48,6 @@ async def async_visible_kb(_db: Any, _kb_id: str, *, tenant_id: str) -> Any:
         settings={},
         name="",
         description="",
-        active_index_version=DEFAULT_INDEX_VERSION,
     )
 
 
@@ -184,9 +179,9 @@ class CountResult:
     静态资源配额（票 #79）在写路径上数行，用的是 ``scalar_one()``；替身会话因此需要
     能回答「这个租户 / 这个库现在有多少行」。缺省 0 行，需要别的数字时由测试自己注入。
 
-    ``MAX`` 那条聚合读（票 #214 起 ``start_build`` 用 ``SELECT max(current_version)`` 快照
-    稿号）也落在这一类：空行时它回答 ``None``——真 SQL 的 ``max()`` 在空集上就是 NULL，
-    而「没有稿号」与「稿号是 0」是两件事。
+    ``MAX`` 那条聚合读（票 #214 起整库构建用它快照统一稿号——该能力已整层删除）也落在
+    这一类：空行时它回答 ``None``——真 SQL 的 ``max()`` 在空集上就是 NULL，而「没有值」
+    与「值是 0」是两件事。
     """
 
     def __init__(self, value: int | None = 0) -> None:
@@ -263,7 +258,7 @@ def _matches_where(row: Any, criterion: Any) -> bool:
     与 ``_FakeQuery._matches`` 同一条口径，只是补上了仓储层真的用到的几种写法：
     ``audit_logs.action = ?``、``usage_events.trace_id = ? AND tenant_id = ?``、
     ``retrieval_feedback.log_id IN (...)``、以及「比某个时刻更早」这类**时间比较**
-    （``index_build_versions.created_at < cutoff``，见 #142 的「有行、没任务」检测）。
+    （``documents.index_claimed_at < cutoff`` 这一类租约判据）。
     """
 
     clauses = getattr(criterion, "clauses", None) or (criterion,)
@@ -481,7 +476,7 @@ class RecordingSession(EmptySession):
         raise TypeError(
             f"假会话认不出这条读语句：{type(statement).__name__}。"
             "要么补一条等价的 ORM select，要么这个用例该用真库"
-            "（见 tests/test_index_version.py 的 aiosqlite 写法）。"
+            "（aiosqlite 的写法见 tests/test_document_chunk_count.py）。"
         )
 
     def _select_rows(self, statement: Any, model: type) -> list[Any]:
@@ -523,8 +518,7 @@ class RecordingSession(EmptySession):
     def _max_rows(self, statement: Any) -> Any:
         """``SELECT max(列)`` 的最小口径：预置行里那一列的最大值，空集回 ``None``。
 
-        票 #214 起 ``start_build`` 用 ``max(documents.current_version)`` 快照统一稿号，而这
-        条读**没有 ORM 映射类**（``select(func.max(Model.列))`` 的 ``column_descriptions``
+        这条读**没有 ORM 映射类**（``select(func.max(Model.列))`` 的 ``column_descriptions``
         给不出实体），所以既走不到 ``_select_rows``，也不是 ``SELECT COUNT(`` 那一支。
         这里按「从语句里读出表名与列名，再在预置行上求最大值」实现——与 :meth:`_count_rows`
         同一条思路：替身只回答**仓储层真的用到的那几种形状**，别的一律炸。
@@ -714,10 +708,6 @@ class AsyncRecordingSession(RecordingSession):
     要 ``await``）。替身照着把 ``add`` 写成 ``async def``，症状是「生产代码写了 ``db.add(row)``
     而用例全绿」——行其实没进去，因为那个协程根本没人 await。票 #128 迁移反馈写入时踩到了
     这一条，所以这里按真实 API 的形状钉住。
-
-    **还没有 ``AsyncTransactionalSession``**：票 #124 的事务语义（提交才落库、回滚撤销写入）
-    目前只有同步版 ``TransactionalSession``。异步写路径开始被断言的那一票按同样的形状加一个
-    即可；先把「同一组方法可 await」这条地基铺好，不预先造第二个变体。
     """
 
     async def execute(self, statement: Any, *_args: Any, **_kwargs: Any) -> _Rows | CountResult:
@@ -740,43 +730,6 @@ class AsyncRecordingSession(RecordingSession):
 
     async def close(self) -> None:
         super().close()
-
-
-class AsyncTransactionalSession(AsyncRecordingSession):
-    """有**事务语义**的异步替身：提交才落库，回滚把这一笔的改动撤掉。
-
-    与同步的 :class:`TransactionalSession` 同一口径（提交即留下、回滚即复原），再多一件
-    事：**行上的列值也一起恢复**。
-
-    为什么列值必须恢复（#156）：``IndexBuildService`` 在提交之前就把新版本写进了库行
-    （``kb.active_index_version = row.version``），真库靠 ``ROLLBACK`` 撤销它。替身不恢复
-    列值时，「提交失败之后重读库列」读到的是**这一笔自己写进去、却从未提交**的值——与真库
-    正好相反，于是「输掉的那一方回切别名」那条用例会验错方向：它以为读到了旧版本，实际
-    读到了那笔被撤销的写入。
-
-    快照在**构造时**拍：本类只服务「先摆好状态、再跑一次会失败的写入」这类用例，构造点
-    就是那一笔的开始。用例要在回滚之后模拟「别人已经提交」，自己不变量再覆盖一次即可
-    （见 ``test_index_build_rollback.py`` 的 ``_RacedCommitSession``）。
-    """
-
-    def __init__(
-        self,
-        *,
-        rows: dict[type, list[Any]] | None = None,
-        tenant_ids: list[str] | None = None,
-    ) -> None:
-        super().__init__(rows=rows, tenant_ids=tenant_ids)
-        self._rows_before = {model: list(items) for model, items in self._rows.items()}
-        self._values_before = [
-            (row, dict(vars(row))) for items in self._rows.values() for row in items
-        ]
-
-    async def rollback(self) -> None:
-        self._rows = {model: list(items) for model, items in self._rows_before.items()}
-        for row, values in self._values_before:
-            vars(row).clear()
-            vars(row).update(values)
-        await super().rollback()
 
 
 def override_all_db(app: Any, session: Any) -> AsyncSessionAdapter:

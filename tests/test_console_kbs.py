@@ -135,7 +135,6 @@ class _RecordingStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -231,9 +230,6 @@ def _kb(kb_id: str, tenant_id: str) -> KnowledgeBase:
         allowed_formats=["markdown"],
         settings={"chunk_size": 512, "section_part_max_chars": 2000},
         created_at=datetime(2026, 1, 1, 9, 0, 0),
-        # 计数口径要「生效版本 × 当前稿」两轴（#227）：库行必须给出生效版本，
-        # 否则树里那条分组计数会拿到 None 而回落 0——用例看到的就是「全 0 片」。
-        active_index_version="v1",
     )
 
 
@@ -593,11 +589,10 @@ def test_tree_returns_all_kbs_with_documents_and_grouped_chunk_counts(
         "split_strategy",
         "allowed_formats",
         "chunk_size",
-        # 第 16 步 #207：切块设置的回显 + 「这一版参数与当前设置不一致」的提示。
+        # 第 16 步 #207：切块设置的回显。
         "section_part_max_chars",
-        "needs_rebuild",
-        # 第 17 步 #216：进行中的构建进度与未入新版本的明细（没有构建时是 null）。
-        "build_progress",
+        # 现场九·第三步：「N 篇待更新」——库级唯一还活着的「该重建」信号。
+        "stale_documents",
         # 第 17 步 #221：库级 token 容量占用「已用 / 上限」（用户故事 #13）。
         "token_usage",
         "documents",
@@ -606,10 +601,9 @@ def test_tree_returns_all_kbs_with_documents_and_grouped_chunk_counts(
     assert populated["allowed_formats"] == ["markdown"]
     assert populated["chunk_size"] == 512
     assert populated["section_part_max_chars"] == 2000
-    # 没有构建在跑时必须是 null，不是空对象：前端按「null 才不轮询」判定。
-    assert populated["build_progress"] is None
-    # 假行没有生效版本行 → 按「需要重建」处理（宁可多提示一次，也不要少提示）。
-    assert populated["needs_rebuild"] is True
+    # 夹具的计数替身回 0（它不模拟 settings_hash 比较）；判据本身在真 SQL 用例
+    # ``test_console_kb_read_model_sql.py`` 与 ``test_index_generation_stale.py`` 里验。
+    assert populated["stale_documents"] == 0
 
     documents = populated["documents"]
     assert [doc["document_id"] for doc in documents] == [DOC_ALPHA_DONE, DOC_ALPHA_FAILED]

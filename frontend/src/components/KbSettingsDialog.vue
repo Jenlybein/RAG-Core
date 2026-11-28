@@ -2,10 +2,15 @@
 /**
  * 改知识库的切块设置（第 16 步 #207）。
  *
- * 这个弹窗的重点不是表单，而是**说清代价**：切块参数是索引期旋钮，改完必须整库重建
- * （全库重嵌入 + 重写 ES）。所以打开时先读一次 `/settings/preview`，把「这次会重建
+ * 这个弹窗的重点不是表单，而是**说清代价**：切块参数是索引期旋钮，改完必须重切整库
+ * （全库重嵌入 + 重写 ES）。所以打开时先读一次 `/settings/preview`，把「这次会重切
  * 多少篇、多少片」摆在确认按钮旁边——让人对着一个「确定要重建吗？」点确定，等于把
  * 几分钟到几十分钟的 Worker 变成盲盒。
+ *
+ * 第 17 步·最后一批：索引产物下放到篇级后，**库级构建 / 生效版本那一层没有了**，所以这里
+ * 不再显示「生效版本用的是哪套参数」与「当前设置与生效版本不一致」——那两句话的参照物
+ * （库的生效版本参数快照）已经退场。改设置的后果变成「按当前设置把全库文档逐篇重新排队
+ * 重切」，弹窗只说这件事与量。
  */
 import { computed, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
@@ -52,8 +57,6 @@ const changed = computed(() => {
   )
 })
 
-const buildRunning = computed(() => preview.value?.build_running ?? false)
-
 watch(
   () => props.kbId,
   async (kbId) => {
@@ -87,10 +90,6 @@ async function load(kbId: string): Promise<void> {
 
 function requestConfirm(): void {
   errors.value = []
-  if (buildRunning.value) {
-    errors.value = ['这个库正在重建，等它结束再改设置']
-    return
-  }
   if (!changed.value) {
     errors.value = ['设置没有变化']
     return
@@ -111,7 +110,15 @@ async function submit(): Promise<void> {
       // 唯一的确认就是在上面那个 `confirming` 分支里点的这一下。
       confirm: true,
     })
-    ElMessage.success(`已保存，重建已排队（版本 ${receipt.build_version}）`)
+    // 回执里没有「构建版本」：改设置现在也是按篇投递重切，只说投了多少、还差多少。
+    // 两个数不等就是碰到单次上限——说清「再点一次继续」，否则用户会以为剩下的篇被漏了。
+    const remainingNote =
+      receipt.documents_dispatched < receipt.documents_total
+        ? '，剩余篇请再点一次「重建」继续'
+        : ''
+    ElMessage.success(
+      `已保存，重建已按篇排队：投递 ${receipt.documents_dispatched} / ${receipt.documents_total} 篇${remainingNote}`,
+    )
     open.value = false
     emit('updated', kbId)
   } catch (error) {
@@ -172,33 +179,24 @@ const strategyHint = computed(() =>
       </el-form-item>
 
       <!--
-        生效版本参数：让人能看到「现在线上用的是哪套参数」。老版本没留参数时显式说
-        「没留参数」，而不是显示成默认值——那会让人以为它一直是这样。
+        改设置没有「生效版本参数」可比了（库级版本层已退场），所以这里只说清代价：
+        这次会把库里**当前可切**的文档逐篇重新排队重切，旧产物继续服务到新的落成为止。
       -->
       <div class="rounded-md bg-slate-50 px-3 py-2 text-xs text-slate-600">
         <p>
-          生效版本：
-          <span class="font-medium">{{ preview?.live_version ?? '（无）' }}</span>
-          <span v-if="preview?.live_params === null"> · 这一版没留切块参数</span>
-          <span v-else-if="preview?.live_params">
-            · 策略 {{ preview.live_params.split_strategy }} · 窗口
-            {{ preview.live_params.chunk_size }} · 节段上限
-            {{ preview.live_params.section_part_max_chars }}
-          </span>
-        </p>
-        <p v-if="preview?.needs_rebuild" class="mt-1 text-amber-700">
-          当前设置与这个版本不一致，需要重建后才生效。
+          改完之后会按新设置把全库文档逐篇重新排队重切；每一篇的新产物建好即生效，
+          旧的产物在它落成之前继续服务。
         </p>
       </div>
     </el-form>
 
     <!-- 第二步：确认。这里才出现「会重建多少」——第一步不该被这堆数字淹没。 -->
     <div v-if="confirming" class="mt-3 rounded-md border border-amber-200 bg-amber-50 p-3">
-      <p class="text-sm font-semibold text-amber-800">改设置会触发整库重建</p>
+      <p class="text-sm font-semibold text-amber-800">改设置会触发全库重切</p>
       <p class="mt-1 text-xs leading-relaxed text-amber-700">
         将重嵌入 {{ preview?.documents_to_rebuild ?? 0 }} 篇文档、重写
-        {{ preview?.chunks_to_rebuild ?? 0 }} 个切片；期间旧索引继续服务，完成后自动切换。
-        构建失败时旧版本照旧生效，设置会留着（不回滚）。
+        {{ preview?.chunks_to_rebuild ?? 0 }} 个切片；重建期间旧索引继续服务，新产物逐篇建成后生效。
+        某一篇失败不影响其它篇，设置会留着（不回滚）。
       </p>
     </div>
 

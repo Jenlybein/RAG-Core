@@ -81,7 +81,7 @@ def _node_data(node: console_kb_service.TreeKnowledgeBase) -> KnowledgeBaseNode:
         allowed_formats=node.allowed_formats,
         chunk_size=node.chunk_size,
         section_part_max_chars=node.section_part_max_chars,
-        needs_rebuild=node.needs_rebuild,
+        stale_documents=node.stale_documents,
         documents=[
             DocumentListItem(
                 document_id=document.document_id,
@@ -115,7 +115,7 @@ async def knowledge_base_tree(
 @router.get(
     "/knowledge-bases",
     response_model=ApiResponse[KnowledgeBaseListData],
-    summary="库列表（摘要：四个数字 + 需重建 + 构建状态，不含文档）",
+    summary="库列表（摘要：四个数字 + 待更新篇数，不含文档）",
 )
 async def list_knowledge_bases(
     identity: ConsoleIdentity = Depends(require_console_tenant),
@@ -135,7 +135,7 @@ async def list_knowledge_bases(
 @router.get(
     "/knowledge-bases/{kb_id}/documents",
     response_model=ApiResponse[KbDocumentsData],
-    summary="详情页一页：库摘要 + 构建摘要 + 文档（含「本次构建」第二根轴）",
+    summary="详情页一页：库摘要 + 文档（当前稿 / 当前代切片数）",
 )
 async def list_knowledge_base_documents(
     kb_id: str = Path(..., min_length=1),
@@ -171,7 +171,7 @@ async def list_knowledge_base_documents(
 @router.get(
     "/knowledge-bases/{kb_id}/settings/preview",
     response_model=ApiResponse[KBSettingsPreviewData],
-    summary="改切块设置前的确认信息（当前设置、生效参数、重建量）",
+    summary="改切块设置前的确认信息（当前设置、重建量）",
 )
 async def knowledge_base_settings_preview(
     kb_id: str = Path(..., min_length=1),
@@ -199,7 +199,7 @@ async def update_knowledge_base_settings(
     db: AsyncSession = Depends(get_async_db),
     tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[UpdateKBSettingsData]:
-    """一次改完并重建：设置、审计、构建行同一笔事务；投递登记在提交之后。
+    """一次改完并按篇重建：设置、审计、逐篇投递登记同一笔事务。
 
     ``confirm=false`` 直接 20002 —— 不确认就不动（这次改动的代价是整库重嵌入）。
     """
@@ -223,7 +223,7 @@ async def update_knowledge_base_settings(
 @router.post(
     "/knowledge-bases/{kb_id}/rebuild",
     response_model=ApiResponse[RebuildKBData],
-    summary="按当前切块设置重建整个库（建完自动激活）",
+    summary="按当前切块设置重建整个库（按篇投递，单次有上限）",
 )
 async def rebuild_knowledge_base(
     request: Request,
@@ -232,10 +232,11 @@ async def rebuild_knowledge_base(
     db: AsyncSession = Depends(get_async_db),
     tx: AsyncTransaction = Depends(get_async_transaction),
 ) -> ApiResponse[RebuildKBData]:
-    """不改设置，只按**当前**设置重切一遍并让新版本生效。
+    """不改设置，只按**当前**设置把库里每篇成功的文档各投一条重建任务。
 
-    它是「需重建」那条提示的配套动作：切块参数是索引期旋钮，改完必须产出新版本才生效，
-    而逐篇重建只会写回旧版本（参数快照不变，提示消不掉）。
+    库级构建（版本行、激活、别名切换）已经整层删除：这个入口现在就是「逐篇投递」，单次
+    最多 ``MAX_REBUILD_DOCUMENTS_PER_REQUEST`` 篇、分批可重复点。进度看每篇自己的
+    ``status``，没有服务端记账。
     """
 
     data = await console_kb_service.rebuild_kb(

@@ -306,16 +306,10 @@ def _index_one_document(
     async def _split_config(*_args: Any, **_kwargs: Any) -> tuple[str, int]:
         return SPLIT_STRUCTURE, 800, 2000
 
-    async def _effective_version(*_args: Any, **_kwargs: Any) -> str:
-        return "v1"
-
     monkeypatch.setattr(indexing_service, "build_splitter", _recording_build_splitter)
     monkeypatch.setattr(document_repository, "try_claim_for_indexing_async", _claim)
     monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     monkeypatch.setattr(knowledge_base_repository, "get_split_config", _split_config)
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
     monkeypatch.setattr(settings, "SECTION_CONTEXT_ENABLED", False)
 
     store = _RecordingStore()

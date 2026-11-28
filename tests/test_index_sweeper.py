@@ -2,17 +2,20 @@
 
 ## 为什么必须在真库上跑
 
-清扫器的三个分支**全部以「库里那几行变成了什么样」为判据**：
+清扫器的分支**全部以「库里那几行变成了什么样」为判据**：
 
-* 逾期构建被收尾 → ``index_build_versions.status`` 从 ``building`` 变成 ``ready`` / ``failed``；
-* 缺篇补投 → ``redispatch_count`` 加一，而「缺了哪几篇」是读 ``chunks`` 真值算出来的；
-* 租约过期重投 → ``documents.status`` 回到 ``4``、``index_claimed_at`` 变 NULL、
-  而判「过期」用的是 ``COALESCE(index_heartbeat_at, index_claimed_at)`` 这个**由数据库求值**
-  的表达式。
+* 租约过期重投 → ``documents.status`` 回到 ``4``、``index_claimed_at`` 变 NULL，
+  而判「过期」用的是 ``COALESCE(index_heartbeat_at, index_claimed_at)`` 这个**由数据库
+  求值**的表达式；
+* 代落后重投 → 按篇比设置指纹，再置「排队中」并投递（判据在
+  ``tests/test_index_generation_stale.py``；这里验它没有把正跑着的篇一起投出去）。
 
-离线替身（``tests/fake_db.py``）明写「写语句不模拟行的变化」，在那条缝上断言这三件事只会
-得到假绿——而假绿正是这一票要消灭的东西（改造前的用例把状态回写换成记录器并断言「调用过」，
-真实缺陷是「调用了但没写进去」）。所以这里跑真库。
+离线替身（``tests/fake_db.py``）明写「写语句不模拟行的变化」，在那条缝上断言这些事只会
+得到假绿——而假绿正是这一票要消灭的东西（改造前的用例把状态回写换成记录器并断言「调用
+过」，真实缺陷是「调用了但没写进去」）。所以这里跑真库。
+
+整库构建的「收尾逾期构建」「补投缺篇」两步已随版本层删除，本文件因此不再种构建行——
+那两张表的集成断言也随之删掉（它们测的是已经不存在的状态机）。
 
 与 ``tests/test_integration_queue_state.py`` 同一套纪律：``RAG_INTEGRATION_DATABASE_URL``
 未设置时整模块 skip；只建自己用到的表、只删自己种下的行（按本文件专用的 ``tenant_id``
@@ -40,9 +43,7 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session
 
 from app.db.base import Base, now
-from app.models.chunk import Chunk
 from app.models.document import Document
-from app.models.index_version import IndexBuildVersion
 from app.models.knowledge_base import KnowledgeBase
 from app.models.tenant import Tenant
 from app.tasks import index_sweeper
@@ -76,7 +77,6 @@ def _async_url() -> str:
 #: 本文件专用的租户与库：清理只按它们收口，绝不扫别人的行。
 TENANT_ID = "tenant_sweeper"
 KB_ID = "kb-sweeper"
-BUILD_ID = "build-sweeper-1"
 
 #: 三篇文档，各自代表清扫器要处理的一种处境。
 DOC_EXPIRED = "sw-doc-expired"
@@ -101,8 +101,6 @@ def sync_engine() -> Iterator[Engine]:
         tables=[
             Document.__table__,
             KnowledgeBase.__table__,
-            IndexBuildVersion.__table__,
-            Chunk.__table__,
             Tenant.__table__,
         ],
     )
@@ -146,8 +144,6 @@ def _clean(db: Session) -> None:
     """只删本文件种下的行：按专用租户 + 专用 id 收口。"""
 
     try:
-        db.execute(delete(Chunk).where(Chunk.tenant_id == TENANT_ID))
-        db.execute(delete(IndexBuildVersion).where(IndexBuildVersion.tenant_id == TENANT_ID))
         db.execute(delete(Document).where(Document.tenant_id == TENANT_ID))
         db.execute(delete(KnowledgeBase).where(KnowledgeBase.tenant_id == TENANT_ID))
         db.execute(delete(Tenant).where(Tenant.id == TENANT_ID))
@@ -158,7 +154,7 @@ def _clean(db: Session) -> None:
 
 
 def _seed(db: Session) -> None:
-    """种下一个 building 构建 + 三篇处境不同的文档。"""
+    """种下三篇处境不同的文档（都是「处理中」，差别只在租约与重投次数）。"""
 
     claim_at = now()
     db.merge(Tenant(id=TENANT_ID, name="清扫器集成租户", plan_id=1, status="active"))
@@ -170,7 +166,6 @@ def _seed(db: Session) -> None:
             split_strategy="structure",
             allowed_formats=["markdown"],
             settings={},
-            active_index_version="v1",
         )
     )
     db.merge(
@@ -212,37 +207,6 @@ def _seed(db: Session) -> None:
             redispatch_count=index_sweeper.MAX_LEASE_REDISPATCH,
         )
     )
-    db.merge(
-        IndexBuildVersion(
-            id=BUILD_ID,
-            tenant_id=TENANT_ID,
-            kb_id=KB_ID,
-            version="v2",
-            status="building",
-            documents_planned=2,
-            doc_version=1,
-            documents_done=0,
-            # 期限已过：清扫器应当按真值收尾，而不是继续等。
-            converge_deadline=claim_at - timedelta(seconds=60),
-            created_at=claim_at,
-            params={},
-        )
-    )
-    # 「已入新版本」的那一篇：让它有一行切片，于是真值 != 0，收尾结论是「不完整」而不是
-    # 「一篇都没进来」——两个结论走的是两条不同的文案与异常类，这里验其中一条。
-    db.merge(
-        Chunk(
-            id="sw-chunk-1",
-            tenant_id=TENANT_ID,
-            kb_id=KB_ID,
-            document_id=DOC_EXPIRED,
-            index_version="v2",
-            doc_version=1,
-            content="清扫器真值样本",
-            embedding=[0.0] * 1536,
-            meta={},
-        )
-    )
     db.commit()
 
 
@@ -250,13 +214,6 @@ def _row(db: Session, document_id: str) -> Document:
     db.expire_all()
     row = db.execute(select(Document).where(Document.id == document_id)).scalar_one()
     return row
-
-
-def _build(db: Session) -> IndexBuildVersion:
-    db.expire_all()
-    return db.execute(
-        select(IndexBuildVersion).where(IndexBuildVersion.id == BUILD_ID)
-    ).scalar_one()
 
 
 def test_the_sweeper_requeues_an_expired_document_and_leaves_the_live_one_alone(
@@ -293,21 +250,22 @@ def test_the_sweeper_gives_up_on_a_document_that_kept_dying(
     assert row.error_message, "失败必须带一句人话，否则用户只看到一个红点"
 
 
-def test_the_sweeper_settles_an_overdue_build_against_the_truth(
+def test_the_sweep_result_no_longer_carries_build_counters(
     db: Session, session_factory: Any
 ) -> None:
-    """逾期构建 → 按**真值**收尾（不是按进度计数），于是「一篇都没真重建」不可能 ready。"""
+    """返回值只剩「篇级」的计数：``settled`` / ``redispatched`` 随构建记账一起删。
+
+    它们是**构建行**的读数（收尾了几笔、补投了几篇），库级版本层删除之后没有对应的东西
+    可数。留着两格恒 0 的键会让日志读起来像「清扫器还在管构建」——那正是这次要消掉的假象。
+    """
 
     _seed(db)
-    assert _build(db).status == "building"
+    result = asyncio.get_event_loop().run_until_complete(_run_sweep(session_factory))
 
-    asyncio.get_event_loop().run_until_complete(_run_sweep(session_factory))
-
-    build = _build(db)
-    # 真值是 1（只有 DOC_EXPIRED 有切片），参与篇数是 2 → 收成 failed 而不是 ready。
-    # 这条断言正是改造前的核心缺陷：计数器说「跑了 2 篇」，真值说「只有 1 篇」。
-    assert build.status == "failed"
-    assert build.error_message, "失败要留下原因文案（不拼异常原文）"
+    assert result["revived"] == 1, "只有那篇租约过期的被救回"
+    assert "settled" not in result
+    assert "redispatched" not in result
+    assert "stale_redispatched" in result
 
 
 async def _run_sweep(session_factory: Any) -> dict[str, int]:

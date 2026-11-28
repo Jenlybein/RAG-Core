@@ -2,17 +2,22 @@
 
 ## 它解决的问题
 
-改造前，「卡住」的处置全靠人手跑脚本：一次构建停在 ``building``、一篇文档的租约过期
-没人再抢——两种状态都没有任何东西会主动发现，症状是「文档一直显示索引中」「构建一直
-显示重建中」，而运维只能靠用户报障来发现，再翻手册找脚本。
+改造前，「卡住」的处置全靠人手跑脚本：一篇文档的租约过期没人再抢，没有任何东西会主动
+发现，症状是「文档一直显示索引中」，而运维只能靠用户报障来发现，再翻手册找脚本。
 
-## 它做三件事（与 ADR-0034 决策七逐一对应）
+## 它做四件事（与 ADR-0034 决策七对应，整库构建那两步已随版本层删除）
 
 | 症状 | 判据 | 处置 |
 | --- | --- | --- |
-| 构建过了收敛期限仍是 ``building`` | ``index_build_versions.converge_deadline`` | 按**真值**收尾（``converge``，``final=True``） |
-| 构建还在期限内但缺篇 | 真值 vs 参与篇数快照 | 补投缺的那几篇（``dispatch(skip_existing=True)``），重投次数封顶 |
+| 产物不是最新一代 | 设置指纹不一致 / ``current_index_generation IS NULL`` | 按篇重投（``generation_sweep``），每轮有上限 |
 | 文档停在 ``3`` 且租约已过期 | ``documents.index_claimed_at`` | 清空租约并重投一次；超过重投上限就把这篇标成失败 |
+| 看板 7d / 30d 没有汇总格 | ``usage_daily`` 缺当天的格 | 压今天的明细 + 补最近 30 天的洞 |
+| 保留期到了的行还占着盘 | 归档稿 / 旧代 / 旧用量 | 每天一次清理 |
+
+整库构建的「收尾过期构建」「补投缺篇构建」两步已经删除：库级构建状态机
+（``index_build_versions``）整层退场，没有构建行可收尾、也没有「这一批缺哪几篇」的真值。
+全库重建现在就是逐篇投递（``console_kb_service.rebuild_kb``），每篇自己的状态由单篇租约
+那一套兜住——清扫器不再需要第二个记账本。
 
 ## 为什么它住在 Worker 进程里，而不是一个 `beat` 进程（#225 的翻案与再翻案）
 
@@ -25,18 +30,18 @@ Out of Scope 正面冲突（「不引入 Celery beat / 新的调度基础设施�
 ``SWEEP_INTERVAL_SECONDS`` 秒醒一次，用 Redis 的 ``SET NX EX`` 抢一把**单实例锁**——抢到
 才跑，抢不到就跳过。这正面回答了「N 核 × 周期」那个问题：多出来的是**抢锁失败的次数**，
 不是**真的跑了几遍**。锁是短 TTL 且不主动释放（谁也别删别人的锁），代价上限是「锁过期与
-本轮重叠时两个线程同时跑一次」——而 :func:`sweep_once` 的每一步都幂等（收尾有真值表守门、
-重投有次数上限），重叠只可能让同一批任务被多投一次，不会被多收拾一次。
+本轮重叠时两个线程同时跑一次」——而 :func:`sweep_once` 的每一步都幂等，重叠只可能让同一批
+任务被多投一次，不会被多收拾一次。
 
 **为什么线程而不是任务**：清扫器必须能在「所有并发槽位都被长任务占满」时也跑。作为任务
 它会被自己的队列堵住（那是最讽刺的失败模式）；作为线程它跟槽位无关。
 
 ## 为什么它不改状态、只调既有动作
 
-清扫器**不发明任何新语义**：收尾调 ``IndexBuildService.converge``（幂等、真值判据、四项
-计数闸门照旧），重投调既有的 ``enqueue_build_document`` / ``enqueue_document``。这样
-「清扫出来的结论」与「最后一篇自己收的尾」永远是同一个结论——两个实现会在某一天给出
-两个答案，而那一天正好是线上出事的日子。
+清扫器**不发明任何新语义**：重投调既有的 ``enqueue_document``，救租约调既有的
+``clear_stale_claim`` / ``mark_stale_as_failed``。这样「清扫出来的结论」与「人工点重建
+走出来的结论」永远是同一个条路径——两份实现会在某一天给出两个答案，而那一天正好是线上
+出事的日子。
 """
 
 from __future__ import annotations
@@ -56,7 +61,6 @@ from app.db.session_factory import async_session_factory
 from app.db.transaction import async_commit_now, async_transaction
 from app.db.worker_loop import run_in_worker_loop
 from app.repositories import document_repository
-from app.services.index_build_service import MAX_REDISPATCH, IndexBuildService
 from app.services import generation_sweep, retention
 from app.services.index_dispatch import enqueue_document
 from app.services.usage_rollup import days_missing_rollup, rollup_day
@@ -288,12 +292,13 @@ async def retention_once(
 async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dict[str, int]:
     """跑一遍清扫，返回这一轮各项处置的计数（给日志与测试断言用）。
 
-    顺序固定：**先收尾、再补投、再扫代落后、最后救租约**。
+    顺序固定：**先扫代落后，再救租约，最后汇总与清理**。
 
-    * 先收尾：一个过了期限的构建，重投它的缺失篇只是把注定要失败的活再跑一遍（「过期限」
-      本身就是「别再等了」的结论）。
-    * 再补投：期限没到但缺篇——补上就还有救。
-    * 最后救租约：单篇的租约过期与构建无关，放最后。
+    * 先扫代落后：它处理「压根没赶上」，救租约处理「接了但没声」。顺序反过来的话，一篇
+      刚被救回、正排队中的文档会被代落后那一步当成「待更新」再投一次——虽然
+      ``prepare_for_indexing`` 会挡住（它抢不到），但那次白打一次库。
+    * 救租约处理的是单篇的租约过期，与代无关。
+    * 用量汇总与保留期清理是日节流的后台活儿，排在最后，不与上面两步抢先后。
 
     ``session_factory`` 只为**测试**留：它让用例能把这一趟绑到真库上，而不是绑到进程级的
     那个工厂（离线套件把它换成了不写库的替身，见 ``tests/conftest.py``）。生产路径不传，
@@ -302,52 +307,9 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
 
     factory = session_factory or async_session_factory
     async with factory()() as db:
-        service = IndexBuildService()
-        settled = 0
-        redispatched = 0
-        stale_redispatched = 0
         revived = 0
 
-        # ── 1) 过了收敛期限仍是 building：按真值收尾 ──────────────────────
-        for row in await service.list_overdue_builds(db):
-            converged = await service.converge(db, row.id, tenant_id=str(row.tenant_id), final=True)
-            settled += 1
-            logger.info(
-                "sweeper settled an overdue index build",
-                build_id=row.id,
-                tenant_id=str(row.tenant_id),
-                kb_id=str(row.kb_id),
-                version=str(row.version),
-                verdict=None if converged is None else converged.status,
-            )
-
-        # ── 2) 期限未到但缺篇：补投（这是 spec 要的「排了队没人接」那条）──────
-        for row in await service.list_undone_builds(db):
-            if int(row.redispatch_count or 0) >= MAX_REDISPATCH:
-                # 到顶了：交给下一轮的「过期收尾」或人工，不再投必然失败的消息。
-                continue
-            truth = await service.collect_truth(db, row=row, tenant_id=str(row.tenant_id))
-            if truth.shortfall <= 0:
-                continue
-            dispatched = await service.dispatch(
-                db, str(row.id), tenant_id=str(row.tenant_id), skip_existing=True
-            )
-            if dispatched:
-                await service.mark_redispatched(db, str(row.id), tenant_id=str(row.tenant_id))
-                redispatched += dispatched
-                logger.info(
-                    "sweeper redispatched missing build documents",
-                    build_id=row.id,
-                    tenant_id=str(row.tenant_id),
-                    dispatched=dispatched,
-                    shortfall=truth.shortfall,
-                )
-
-        # ── 3) 代落后：产物不是最新一代的篇，按篇重投（现场九·第七步）────────
-        #
-        # 放在救租约**之前**：救租约处理的是「接了但没声」，这一步处理「压根没赶上」。
-        # 顺序反过来的话，一篇刚被救回、正排队中的文档会被这一步当成「待更新」再投一次
-        # ——虽然 `prepare_for_indexing` 会挡住（它抢不到），但那是白打一次库。
+        # ── 1) 代落后：产物不是最新一代的篇，按篇重投（现场九·第七步）────────
         stale_redispatched = await generation_sweep.redispatch_stale_documents(db)
         if stale_redispatched:
             logger.info(
@@ -355,7 +317,7 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
                 count=stale_redispatched,
             )
 
-        # ── 4) 单篇租约过期：清掉租约再重投（spec 的「接了之后没声了」）────────
+        # ── 2) 单篇租约过期：清掉租约再重投（spec 的「接了之后没声了」）────────
         stale_before = now() - timedelta(seconds=LEASE_GRACE_SECONDS)
         for document in await document_repository.list_stale_claims(
             db, claimed_before=stale_before
@@ -394,7 +356,7 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
                 attempts=attempts,
             )
 
-        # 三个阶段的写都在这一笔事务里（收尾那一步自己提交过，重复提交是 no-op）。
+        # 两个阶段的写都在这一笔事务里（代落后的置排队中也在同一笔）。
         # **必须提交**：不提交的话，「清租约 + 回排队中」与「重投次数加一」会随会话关闭被
         # 回滚——症状是清扫器日志说有动作、库里一行没变，与「清扫器没跑」一模一样。
         #
@@ -403,11 +365,9 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
         # 心跳同一种形状。
         await async_commit_now(db)
 
-        if settled or redispatched or stale_redispatched or revived:
+        if stale_redispatched or revived:
             logger.info(
                 "index sweeper finished",
-                settled=settled,
-                redispatched=redispatched,
                 stale_redispatched=stale_redispatched,
                 revived=revived,
             )
@@ -427,8 +387,6 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
         # 「记得敲命令」不是一种可靠性，而它们的失败方式是安静地慢慢变坏（磁盘涨、检索变慢）。
         retention_stats = await retention_once(session_factory=factory)
         return {
-            "settled": settled,
-            "redispatched": redispatched,
             "stale_redispatched": stale_redispatched,
             "revived": revived,
             "rolled": rolled["rolled"],

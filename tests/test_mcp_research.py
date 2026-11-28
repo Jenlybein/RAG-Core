@@ -445,7 +445,6 @@ def test_the_tool_function_holds_no_business_decision() -> None:
         "research_quota",
         "resolve_retrieval_options",
         "ensure_visible",
-        "resolve_index_versions",
         "build_kernel_search",
         "run_research",
     }

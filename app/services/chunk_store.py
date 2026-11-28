@@ -28,21 +28,19 @@ from app.providers.keyword_search import KeywordSearchProvider
 class ChunkStore(Protocol):
     """切片写入契约：两处存储都满足它，索引编排只认它。
 
-    三个删除范围，**顺序就是语义边界**：
+    两个删除范围，**顺序就是语义边界**：
 
     ``doc_version`` 是**第一个**（#173）：给了稿号只清那一稿（重建第 2 稿时第 1 稿的切片
     原样留着——「每稿各留切片」），``None`` 清这篇文档所有稿（删文档）。
 
     ``generation`` 是**第二个**（现场九·第五步）：给了代就只清那一代。重建时写的是
     **新一代**，所以这一条让「上一代」留在库里给单篇回滚用（保留最近 2 代，夜间回收）。
-    改造前它是按「(版本, 稿) 全删」清的——那样每重建一次就把回滚落点一起删了。
 
-    ``index_version`` 是**第三个**，而且**只剩构建真值与归档清理用它**：给了版本只清
-    那个版本的物理索引。读路径已经不看版本（ADR-0010 第 17 步修订），于是重建时不必再
-    怕「删掉线上那一版」——线上指的是「当前代」，而新代是另一个值。
+    没有库级版本范围：``chunks.index_version`` 那一列与服务它的版本层一起删了；可见性
+    只由「代 + 稿」两轴表达。
 
-    关键词那一路**两个范围都不认**：它是镜像（每篇只有一份），清理永远按文档全清、
-    跨全部物理索引，见 ``KeywordSearchChunkStore``。
+    关键词那一路**两个范围都不认**：它是镜像（每篇只有一份），清理永远按文档全清，
+    见 ``KeywordSearchChunkStore``。
     """
 
     async def add_chunks(self, db: AsyncSession, chunks: list[dict]) -> None: ...
@@ -53,7 +51,6 @@ class ChunkStore(Protocol):
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None: ...
@@ -75,22 +72,19 @@ class KeywordSearchChunkStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
         # 关键词侧是**镜像**，不是另一个存储（现场九·第五步）：既没有「代」这一维，也不保留
-        # 多份。所以两个范围都不往下传：
+        # 多份。所以只往下传稿号：
         #
         # * ``generation``：这一侧没有代轴，重建就先按文档清空再写新的一份；
-        # * ``index_version``：**故意传 None**。写了版本，清除只会碰目标版本的物理索引，
-        #   而读侧查的是 ``<别名>__*``（每次重建写进哪张物理索引由当时的版本决定）——
-        #   别的物理索引里那同一篇会留下来，于是同一条内容从 BM25 路回来两次，而 RRF
-        #   合并并不去重（chunk id 每次新生成，去不掉）。
+        # * 也没有库级版本：物理索引只有一个（配置里的那个名字），版本化物理索引与别名
+        #   切换已随库级版本层删除。
         #
-        # 代价说清楚：归档版本里这一篇的旧稿切片也一并清掉了。关键词侧本来就不为归档版本
-        # 服务（读侧只认当前代），这正是「镜像」的含义。
-        del generation, index_version
+        # 代价说清楚：归档稿（同稿的旧产物）在关键词侧不保留。关键词侧本来就不为归档产物
+        # 服务（读侧只认当前镜像），这正是「镜像」的含义。
+        del generation
         await self._provider.delete_by_document_id(
             document_id,
             tenant_id=tenant_id,

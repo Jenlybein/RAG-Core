@@ -27,7 +27,6 @@ from app.models.document_version import DocumentVersion
 from app.models.plan import Plan
 from app.models.tenant import Tenant
 from tests.support.sqlite_schema import KNOWLEDGE_BASES_DDL
-from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.checksum import checksum_of
 from app.utils.status import DocumentStatus
@@ -69,7 +68,6 @@ class _RecordingStore:
         _document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -158,15 +156,6 @@ async def test_reconciliation_holds_after_reparse_document_content_equals_curren
             )
         )
         await seed.commit()
-
-    # 写入目标版本取自库上的生效版本（#142）：这条临时库里没有 knowledge_bases 表，
-    # 于是把「问库要版本」换成固定的 v1——与其余索引用例同一做法。
-    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
-        return "v1"
-
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
 
     service = IndexingService(
         splitter=_StubSplitter(),

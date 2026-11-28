@@ -865,38 +865,6 @@ async def run_live(
     return outcomes
 
 
-async def active_index_versions(
-    kb_ids: Sequence[str], *, tenant_id: str | None = None
-) -> dict[str, str]:
-    """这一轮查的是哪个索引版本（``kb_id → 生效版本``）：报告里「哪一次构建」的答案。
-
-    读的是知识库行上的那一列——与检索侧 ``resolve_index_versions`` 同一个来源。
-    读不到（库不存在 / 无权）就返回空映射：它是旁证，不该让整份报告崩掉。
-    """
-
-    from sqlalchemy import select
-
-    from app.core.config import settings
-    from app.db.async_session import AsyncSessionLocal
-    from app.models.index_version import effective_index_version
-    from app.models.knowledge_base import KnowledgeBase
-
-    scope_tenant = tenant_id or settings.DEV_TENANT_ID
-    try:
-        async with AsyncSessionLocal() as db:
-            rows = (
-                await db.execute(
-                    select(KnowledgeBase).where(
-                        KnowledgeBase.tenant_id == scope_tenant,
-                        KnowledgeBase.id.in_(list(kb_ids)),
-                    )
-                )
-            ).scalars()
-            return {str(kb.id): effective_index_version(kb) or "" for kb in rows.all()}
-    except Exception:  # noqa: BLE001 - 旁证读不到不该让报告失败
-        return {}
-
-
 # ─────────────────────────────────────────────────────────────────── 四类指标
 
 
@@ -1423,7 +1391,6 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
     questions_payload = load_questions()
     questions: Sequence[dict[str, Any]] = questions_payload["questions"]
 
-    index_versions: dict[str, str] = {}
     model_chain: dict[str, Any] = {}
     if config.source == SOURCE_DRY_RUN:
         outcomes = run_dry(questions=questions, top_k=config.top_k)
@@ -1447,10 +1414,6 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
                 rerank=config.rerank,
                 api_key=config.api_key,
             )
-        )
-        # 「这一次查的是哪一次构建」：报告的每个数字都要能对到某个版本上（ADR-0025）。
-        index_versions = asyncio.run(
-            active_index_versions(config.kb_ids, tenant_id=config.tenant_id)
         )
 
     statuses = capability_status()
@@ -1476,7 +1439,6 @@ def run_batch(config: RunConfig) -> dict[str, Any]:
         # 与 capabilities 并列、不合并：前者是「代码里有没有」，这里是「这次跑有没有走那条路」
         # （#156）。两份事实都要进 results.json，否则事后分不清「没采集」与「没能力」。
         "exercised": exercised,
-        "index_versions": dict(sorted(index_versions.items())),
         # 这一轮 Research 用的是哪条模型接入（``model_configs`` 的角色指针 / 回落 .env）。
         # 它不是能力读数，而是「这组数字在什么前提下调出来的」——不记它，degraded 的那一组
         # 事后无法归因到「评测没接生产链」还是「Research 本身不行」。
@@ -1675,14 +1637,6 @@ def render_report(payload: dict[str, Any], config: RunConfig) -> str:
         f"- 开关：graph={config.graph} / research={config.research} / "
         f"rerank={config.rerank}（实际 {'开' if payload.get('rerank_effective') else '关'}）"
     )
-    if payload.get("index_versions"):
-        add(
-            "- 索引版本（这一次查的是哪一次构建）："
-            + "、".join(
-                f"`{kb_id}` → `{version or '未解析'}`"
-                for kb_id, version in payload["index_versions"].items()
-            )
-        )
     add(
         f"- 语料：`eval/corpus-refs/`（{len(payload['corpus']['documents'])} 篇，"
         f"{payload['corpus']['reference_edges']} 条引用边，指纹 `{payload['corpus']['digest']}`）"

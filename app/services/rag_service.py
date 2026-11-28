@@ -114,7 +114,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
-from app.models.index_version import resolve_index_versions
 from app.observability import emit_retrieval_trace_off_loop
 from app.observability.stage_timing import STAGE_QUERY_OPTIMIZATION, StageTimer
 from app.providers.embedding import get_embedding_provider
@@ -246,12 +245,11 @@ async def retrieve(
 
     # 范围由**这一次调用**解析一次，内核与 Research 都吃这一份，不各自去造。
     #
-    # 读路径只用它的**键**（哪几个库）：范围的形状从「库 → 生效版本」的配对条件改成了
-    # ``kb_id IN (...)``，可见性交给篇级当前代（现场九·第四步）。**值不再进账本**：
-    # ``usage_events`` 那一列已改记篇级代（``{document_id: 代数}``，见 ADR-0025 第 2 次
-    # 修订第 5 条）。这里保留这次调用只为那条「库还没有生效版本就拦下」的守卫——它守的是
-    # 回填漏做，与可见性无关，留到第二支迁移删列那天。
-    resolve_index_versions(visible_kbs)
+    # 读路径只用它的**键**（哪几个库）：范围的形状是 ``kb_id IN (...)``，可见性交给篇级
+    # 当前代（现场九·第四步）。**值不再进账本**：``usage_events`` 那一列已改记篇级代
+    # （``{document_id: 代数}``，见 ADR-0025 第 2 次修订第 5 条）。库级索引版本那一层
+    # （含「库还没有生效版本就拦下」的守卫）已整层删除——那一条守的是回填漏做，现在没有
+    # 可回填的东西。
 
     outcome = await retrieve_kernel(
         db,

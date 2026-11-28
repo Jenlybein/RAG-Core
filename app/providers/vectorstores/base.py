@@ -59,8 +59,8 @@ class VectorStore(ABC):
         """范围版召回：一次覆盖多个知识库。
 
         ``kb_ids`` 是**库集合**，可见性不在这里判（现场九·第四步）：哪一代产物在服务由
-        ``current_generation_filter()`` 交 JOIN 的文档行求值，当前稿同理。改造前这里收的是
-        「kb_id → 索引版本」的配对映射——代下放到篇级之后没有库级版本可传了。
+        ``current_generation_filter()`` 交 JOIN 的文档行求值，当前稿同理。库级索引版本
+        那一层（「kb_id → 索引版本」的配对映射）已经整层删除，这里没有版本可传。
 
         返回的每行必须**自带 ``kb_id``**：一次跨库召回的结果要能归属到某个库。
         排序口径与单库版一致（score = 1 - 余弦距离），但 ``top_k`` 是**全局**的
@@ -87,27 +87,15 @@ class VectorStore(ABC):
           所以**必须绕过**「只看当前稿」谓词（``current_draft_filter``）：那是用
           ``chunks.doc_version = documents.current_version`` 做的列与列比较，历史稿一片
           都对不上，不绕过去直查永远是空结果；
-        * 范围由**文档 + 稿号 + 索引版本**三件确定，而不是 ``kb_id → version`` 映射：
+        * 范围由**文档 + 稿号 + 索引代**三件确定，而不是库级版本映射：
           一次只看一篇文档，库是它的库。
 
         ``tenant_id`` 照样必带（ADR-0006）：少了它就是把别的租户的片召回来。
-        ``index_version`` 也必带——旧索引版本的行还在库里，不按版本收窄会把两次构建的
+        ``generation`` 也必带——同一稿可以有多代产物，不按代收窄会把两次重建的
         结果混在一起。
 
         **默认路径的语义不受影响**：不传稿号的召回仍走 :meth:`similarity_search_scope`，
         仍然只看当前稿。多出来的这个方法是额外的一条路，不是把老路改宽。
-        """
-
-    @abstractmethod
-    async def count_by_scope(
-        self, db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
-    ) -> int:
-        """该库在**某一个版本**里有多少条可检索的向量（``ready`` 前的四项计数之一）。
-
-        「切片数」问的是库里的行，「向量数」问的是**向量存储里的可检索载体**：同一个
-        pgvector 实现上两者天然相等（向量就存在切片行里），换一个向量库实现就会分叉。
-        分成两次读数不是冗余——写失败的那一半会在这里露出来，而「四项计数相等」正是
-        为了不让半成品上线（ADR-0025 决策一）。
         """
 
     @abstractmethod
@@ -117,15 +105,15 @@ class VectorStore(ABC):
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
         """删某文档的切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。
 
-        ``index_version`` 是**删除范围**（#142）：给了版本只删那一版（重建新版本时绝不
-        碰线上那一版），``None`` 删全部版本（删文档）。
+        ``doc_version`` 是**稿号范围**（#173）：给了稿号只删那一稿（重建第 2 稿绝不碰
+        第 1 稿的切片），``None`` 删这篇文档的所有稿（删文档那条老路径）。
 
-        ``doc_version`` 是**第二个删除范围**（#173，与索引版本正交）：给了稿号只删那一稿
-        （重建第 2 稿绝不碰第 1 稿的切片），``None`` 删这篇文档的所有稿（删文档那条老路径）。
+        ``generation`` 是**代的范围**（现场九·第五步）：重建写的是新一代，只清这一代就
+        让上一代原样留着给回滚。没有库级版本范围：``chunks.index_version`` 列已随版本层
+        删除，可见性只由代表达。
         """

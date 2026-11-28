@@ -54,10 +54,10 @@
 不做降级：任一处写失败就是索引失败（由 Celery 任务回滚并置为失败），否则会留下
 「向量库有、关键词库没有」的数据不一致。
 
-**写入目标版本是必填参数的一部分（#142）**: 切片行与关键词文档都带
-``index_version``，它来自调用方（整库构建写新版本）或库上的生效版本（上传 / 单篇
-重建写回线上那一版），**不是**写死的常量。删除同样按版本收窄：重建只清目标版本的
-旧行，线上那一版在构建期间原样可查（ADR-0025 决策二）。
+**这一片属于第几代（现场九·第二步）**：切片字典顶层的 ``generation`` 落 ``chunks.generation``
+真实列，可见性由它和 ``documents.current_index_generation`` 的列比较决定。库级索引版本
+那一层（``chunks.index_version`` / 库的生效版本 / 版本表 / 版本化物理索引）已经整层删除：
+写入不再有「目标版本」这个参数，产物属于哪一代由这一篇自己的代表达。
 
 **这一片属于第几稿（#173）**：切片字典顶层的 ``doc_version`` 落 ``chunks.doc_version``
 真实列，清除也按它收窄——重建第 2 稿时第 1 稿的切片原样留着（ADR-0005 D4 选 B）。
@@ -138,7 +138,6 @@ async def purge_document_chunks(
     *,
     tenant_id: str,
     stores: list[ChunkStore],
-    index_version: str | None = None,
     doc_version: int | None = None,
     generation: int | None = None,
 ) -> None:
@@ -149,15 +148,15 @@ async def purge_document_chunks(
     往 ``stores`` 追加一个元素，调用方一行都不用改。``tenant_id`` 是强制过滤参数
     （ADR-0006），连删除也必须带租户。
 
-    ``index_version`` 是**删除范围**（#142）：重建写到目标版本时只清目标版本的旧行，
-    线上那一版一个字节都不动；``None`` 表示「这份文档的所有版本」——删文档才这样。
-
-    ``generation`` 是**第三个删除范围**（现场九·第五步）：重建写新代时只清新代（通常是
+    ``generation`` 是**代的范围**（现场九·第五步）：重建写新代时只清新代（通常是
     空集），上一代原样留着——「保留最近 2 代」与「单篇切回上一代」都靠它成立。
 
-    ``doc_version`` 是**第二个删除范围**（#173）：重建第 2 稿时只清第 2 稿的切片，
+    ``doc_version`` 是**稿号范围**（#173）：重建第 2 稿时只清第 2 稿的切片，
     第 1 稿原样留着（ADR-0005 D4 选 B「每稿各留切片」）；``None`` 表示「这篇文档的
     所有稿」——删文档那条老路径仍用它，行为与引入稿号前逐字相同。
+
+    没有库级版本范围（``chunks.index_version`` 已随版本层删除）：清理只按「代 + 稿」
+    收窄，可见性也只由这两轴表达。
 
     会话类型是 ``AsyncSession``：Worker 索引、数据面删除与控制面删除都在异步栈上
     （第 11 步票 #132 / #130）。
@@ -168,7 +167,6 @@ async def purge_document_chunks(
             db,
             document_id,
             tenant_id=tenant_id,
-            index_version=index_version,
             doc_version=doc_version,
             generation=generation,
         )
@@ -405,7 +403,6 @@ class IndexingService:
         document_id: str,
         *,
         reparse: bool = False,
-        index_version: str | None = None,
         doc_version: int | None = None,
         allow_success: bool = False,
     ) -> int:
@@ -415,15 +412,9 @@ class IndexingService:
         Worker 正在跑），以及 Tx2 开头令牌核对失败（租约已被接走，见模块文档 #213）。
 
         ``reparse=True`` 强制重解析原始文件（忽略库内正文）；``allow_success=True`` 让
-        **已经是 SUCCESS 的文档**也能被抢占——那是「整库重建到新版本」（#142）要的：
-        重建的输入本来就是成功文档。上传 / 重建路由仍走默认值（路由先用
-        ``prepare_for_indexing`` 做过「成功 → 排队中」的准备），迟到重复投递不能
-        重新抢占成功文档。
-
-        ``index_version`` 是**写入目标**（#142）：构建写它自己的新版本；不传时取该库
-        当前的生效版本（上传、单篇重建都写回线上那一版）。**绝不写死常量 `v1`**——
-        激活 v2 之后再上传的文档若写进 v1，检索按 (库, 生效版本) 配对时就一条都匹配
-        不上，而症状是「这个库没内容」（ADR-0025 决策七）。
+        **已经是 SUCCESS 的文档**也能被抢占——那是「按篇重建」要的：重建的输入本来就是
+        成功文档。上传 / 重建路由仍走默认值（路由先用 ``prepare_for_indexing`` 做过
+        「成功 → 排队中」的准备），迟到重复投递不能重新抢占成功文档。
 
         ``doc_version`` 是**这一片属于第几稿**（#173）：调用方显式给（任务载荷，见
         ``app.services.index_dispatch``）时一律以它为准；不传时回落文档行的当前稿指针
@@ -431,6 +422,9 @@ class IndexingService:
         迟到——回滚刚把指针切回第 1 稿时，一个还在路上、本来算的是第 2 稿的任务若去读
         指针，就会把第 2 稿的内容写成第 1 稿的切片。稿号在投递那一刻就固定下来，
         Worker 不再向指针二次确认。
+
+        写入哪一代由这一篇自己的指针算（``next_generation``），不由调用方指定：整库构建
+        已经不存在，就没有「写进哪一版」这件事——每次索引都是这一篇的下一代。
 
         会话是 ``AsyncSession``（Worker 常驻循环里那一个），两段事务的提交点是
         ``app.db.transaction`` 的异步孪生 ``async_commit_now``；**提交次数与改造前
@@ -444,12 +438,6 @@ class IndexingService:
 
         # 这次索引写的是哪一稿：调用方给的优先（迟到任务不许改口），否则读指针。
         draft = doc_version if doc_version is not None else doc.current_version
-
-        # 目标版本在**抢占之前**定下来：抢占了却不写（版本解析失败）会留下一份新鲜租约，
-        # 下一次尝试反而抢不到。
-        version = index_version or await knowledge_base_repository.get_effective_index_version(
-            db, doc.kb_id, tenant_id=doc.tenant_id
-        )
 
         # Tx1：抢占后立刻提交，只持锁一瞬间。抢不到说明另一个 Worker 已经在跑
         # 这份文档（重复投递 / 重试），直接跳过，绝不重复向量化。
@@ -590,8 +578,6 @@ class IndexingService:
                 "content": piece.text,
                 "retrieval_text": retrieval_texts[index],
                 "embedding": vector,
-                # 写入目标版本：构建写新版本，上传 / 单篇重建写库上的生效版本（#142）。
-                "index_version": version,
                 # 稿号与「当前稿」标记（#173 + #174）：两者都在**切片字典顶层**，不是 meta 里。
                 #
                 # ``doc_version``：这一片属于第几稿，落 ``chunks.doc_version`` 这个**真实列**。
@@ -671,7 +657,6 @@ class IndexingService:
             document_id,
             tenant_id=doc.tenant_id,
             stores=self._stores,
-            index_version=version,
             doc_version=draft,
             # 只清**这一代**（现场九·第五步）：重建写的是新代，上一代留着给回滚，由夜间
             # 保留策略（留最近 2 代）收口。关键词那一路不受这一维影响，它镜像当前代。
@@ -738,7 +723,7 @@ class IndexingService:
             kb_id=doc.kb_id,
             chunk_count=len(chunks),
             token_count=tokens,
-            index_version=version,
+            generation=generation,
         )
         return len(chunks)
 

@@ -18,7 +18,6 @@ from __future__ import annotations
 import json
 
 from app.providers.keyword_search.query_builder import (
-    DEFAULT_INDEX_VERSION,
     MINIMUM_SHOULD_MATCH,
     QUERY_ANALYZER,
     QUERY_STOPWORDS,
@@ -42,11 +41,11 @@ def _properties() -> dict:
 
 
 def test_mapping_keeps_every_filter_field_as_keyword() -> None:
-    """租户 / 库 / 版本 / 文档 / 切片是过滤维度：keyword，不做分词。"""
+    """租户 / 库 / 文档 / 切片是过滤维度：keyword，不做分词。"""
 
     properties = _properties()
 
-    for field in ("tenant_id", "kb_id", "index_version", "document_id", "chunk_id"):
+    for field in ("tenant_id", "kb_id", "document_id", "chunk_id"):
         assert properties[field] == {"type": "keyword"}, f"{field} 必须是 keyword"
 
 
@@ -207,11 +206,7 @@ def test_bm25_query_filters_by_the_kb_scope_inside_filter() -> None:
     bool_query = query["query"]["bool"]
 
     assert {"terms": {"kb_id": [KB_A, KB_B]}} in bool_query["filter"]
-    # ``index_version`` 仍出现在 ``_source`` 里（命中了要能回报是哪一版写的），但**不许**
-    # 出现在任何过滤条件里——它一旦回来，构建期间刚建好的那篇就会从关键词路消失。
-    dumped = json.dumps(query)
-    assert '"term": {"index_version"' not in dumped
-    assert '"terms": {"index_version"' not in dumped
+    # 版本 / 代都不出现在过滤条件里：关键词侧每篇只有一份镜像，查到的就是当前代。
 
 
 def test_bm25_query_scores_with_multi_match_and_title_weight() -> None:
@@ -269,7 +264,6 @@ def test_bm25_query_carries_size_and_the_source_fields() -> None:
     assert set(query["_source"]) == {
         "tenant_id",
         "kb_id",
-        "index_version",
         "document_id",
         "chunk_id",
         "title",
@@ -345,7 +339,6 @@ def _chunk(**overrides) -> dict:
         "content": "退款申请流程：提交工单后 3 个工作日内到账。",
         "retrieval_text": "文档：售后手册 章节：退款 > 流程 正文：退款申请流程：提交工单后 3 个工作日内到账。",
         "embedding": [0.1, 0.2],
-        "index_version": "v1",
         "meta": {"title": "售后手册", "heading_path": "退款 > 流程"},
     }
     chunk.update(overrides)
@@ -370,13 +363,12 @@ def test_keyword_documents_keep_the_raw_content_for_the_response() -> None:
 
 
 def test_keyword_documents_carry_every_scope_field() -> None:
-    """与 mapping 一一对应：租户 / 库 / 版本 / 文档 / 切片 / 标题一个都不能少。"""
+    """与 mapping 一一对应：租户 / 库 / 文档 / 切片 / 标题一个都不能少。"""
 
     document = build_keyword_documents([_chunk()])[0]
 
     assert document["tenant_id"] == TENANT_ID
     assert document["kb_id"] == KB_A
-    assert document["index_version"] == "v1"
     assert document["document_id"] == "doc-1"
     assert document["chunk_id"] == "chunk-1"
     assert document["title"] == "售后手册"
@@ -403,14 +395,3 @@ def test_keyword_documents_fall_back_to_the_first_draft() -> None:
     document = build_keyword_documents([_chunk()])[0]
 
     assert document["doc_version"] == 1
-
-
-def test_keyword_documents_fall_back_to_the_default_index_version() -> None:
-    """调用方没给版本时用列默认值相同的常量，绝不写空串。"""
-
-    chunk = _chunk()
-    chunk.pop("index_version")
-
-    document = build_keyword_documents([chunk])[0]
-
-    assert document["index_version"] == DEFAULT_INDEX_VERSION == "v1"

@@ -3,8 +3,8 @@
 **为什么单独一个文件**：这里要钉的不是「距离算得对不对」，而是「查询条件会不会
 拼出一个不存在的组合」。两种写法的诱惑就在于此：
 
-* 配对条件：``(kb_id = 'kb-a' AND index_version = 'v1') OR (kb_id = 'kb-b' AND ...)``
-* 两个独立 IN：``kb_id IN ('kb-a','kb-b') AND index_version IN ('v1','v2')``
+* 错误写法一：按 (kb, 版本) 配对——库级版本已删除，范围只按库
+* 错误写法二：两个独立 IN 再拼版本
 
 单库单版本时两者**完全等价**，怎么测都绿；只有多库多版本才分叉——后者会匹配出
 「A 库 + B 的版本」这种组合，在多版本并存时就是越权或脏数据。所以只有把编译器
@@ -12,7 +12,7 @@
 
 接缝：``build_scope_filter`` 是纯函数（返回 SQLAlchemy 表达式，不碰数据库、不发
 SQL）。用 SQLite 方言编译即可离线断言；真要跑 SQL 得先有 pgvector 的
-``cosine_distance``，那是另一层的事（见 ``tests/test_index_version.py``）。
+``cosine_distance``，那是另一层的事（见 ``tests/test_vector_search.py``）。
 
 最后一个用例直接调真实实现（``PgVectorStore.similarity_search_scope``），用一个
 只记账的会话替身接住语句：不上真库，但断言的是**真的会发出去的那条 SQL**——它只

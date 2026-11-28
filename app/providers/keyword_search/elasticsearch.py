@@ -7,6 +7,13 @@
 
 ``refresh=True`` 是刻意的：文档索引完必须立刻能查到，否则「上传完马上提问」
 会稳定地查不到内容。批量导入的吞吐优化留给后续步骤。
+
+**只有一个索引**（库级索引版本层删除后的形状）：读写都用配置里的
+``ELASTICSEARCH_INDEX``。历史上它是别名，指向 ``<别名>__vN`` 的某一版物理索引，
+激活时把别名挪来挪去；那套版本化物理命名 / 别名切换已经整层删除，这个名字现在
+就是**唯一的物理索引**。代价写在明处：既有部署里那些 ``<别名>__vN`` 物理索引不再
+被读，关键词索引必须**清空重建一次**（否则旧数据留在别的版本索引里、新数据写进
+这一个，两半各查一半）。
 """
 
 from __future__ import annotations
@@ -31,21 +38,12 @@ from app.providers.keyword_search.query_builder import (
     build_mapping_update,
     build_purge_query,
 )
-from app.providers.keyword_search.versioned_index import (
-    build_alias_actions,
-    physical_index_name,
-    version_index_pattern,
-)
 
 logger = structlog.get_logger(__name__)
 
 
 class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
     """ES 8.x 实现。客户端惰性构造：装配阶段绝不发网络请求。
-
-    **``index_name`` 是别名，不是物理索引**（#142，ADR-0025 决策二）：检索与删除都认
-    这个名字，而写入落到 ``<别名>__<版本>``。激活时把别名从旧物理索引挪到新物理索引，
-    于是「构建期间线上照旧查旧版本」由名字解析本身保证，不需要任何开关或降级标记。
 
     ``timeout_s`` 是**查询的时间预算**，由组合根从配置注入（不在这里读全局配置：这个类
     因此能在测试里被直接构造，也就不用 monkeypatch 环境）。
@@ -68,15 +66,14 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         timeout_s: float = 2.0,
     ) -> None:
         self._url = url
-        #: 别名（配置里的 ``ELASTICSEARCH_INDEX``）。写入落在它派生出的物理索引上。
+        #: 唯一的物理索引名（配置里的 ``ELASTICSEARCH_INDEX``）：读、写、删都认它。
         self._index_name = index_name
         self._client = client
-        #: 已经确认存在的**物理索引名**集合。按版本分，因为每个版本是一张新索引；
-        #: 只记一个布尔会让「v2 的索引还没建」在第一次写 v2 时被跳过。
-        self._index_ready: set[str] = set()
-        #: 已经补过「当前稿」mapping 的物理索引（#174）。补丁幂等，但没必要每次写入
-        #: 都发一趟；失败的不记，于是下一次写入会重试。
-        self._mapping_patched: set[str] = set()
+        #: 本进程是否已经确认过这个索引存在。只有一个索引，所以只记一个布尔。
+        self._index_ready = False
+        #: 是否已经补过「当前稿」mapping（#174）。补丁幂等，但没必要每次写入都发一趟；
+        #: 失败的不记，于是下一次写入会重试。
+        self._mapping_patched = False
         self._timeout_s = timeout_s
         # **一个事件循环一个客户端**。见 `_get_client` 的注释：Celery 每个任务各
         # `asyncio.run` 一次，跨 loop 复用同一个 `AsyncElasticsearch` 会让连接池绑在
@@ -90,14 +87,9 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
 
     @property
     def index_name(self) -> str:
-        """别名（检索 / 删除认的那个名字）。"""
+        """唯一的物理索引名（读 / 写 / 删除都认的那个名字）。"""
 
         return self._index_name
-
-    def physical_index_name(self, version: str) -> str:
-        """某个版本对应的物理索引名（命名规则只在 ``versioned_index`` 里写一次）。"""
-
-        return physical_index_name(self._index_name, version)
 
     def _get_client(self) -> AsyncElasticsearch:
         """取当前事件循环该用的客户端。
@@ -146,11 +138,8 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             except Exception:  # pragma: no cover - 退出路径不因关闭失败而中断
                 logger.warning("keyword client close failed")
 
-    async def ensure_index(self, index_name: str) -> None:
-        """幂等建**物理索引**：已存在就跳过；并发建索引时把「已存在」当作成功。
-
-        参数是物理索引名而不是别名：建完之后**不**自动挂别名——挂别名是激活的事
-        （:meth:`activate_version`）。构建期间新建的 v2 索引没人指向它，正是想要的。
+    async def ensure_index(self) -> None:
+        """幂等建**那个物理索引**：已存在就跳过；并发建索引时把「已存在」当作成功。
 
         **已存在的索引要补一次 mapping**（#174）：第 11 步建好的物理索引里没有
         ``doc_version`` / ``is_current`` 两个字段，而 ES 对未映射字段的 ``term``
@@ -158,13 +147,13 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         不重建索引也不动已有文档，见 :func:`build_mapping_update`。
         """
 
-        if index_name in self._index_ready:
+        if self._index_ready:
             return
         client = self._get_client()
         created = False
-        if not await client.indices.exists(index=index_name):
+        if not await client.indices.exists(index=self._index_name):
             try:
-                await client.indices.create(index=index_name, **build_es_mapping())
+                await client.indices.create(index=self._index_name, **build_es_mapping())
                 created = True
             except BadRequestError as exc:
                 # 两个 Worker 同时第一次索引时，后手会拿到 400
@@ -173,144 +162,66 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
                 if exc.error != "resource_already_exists_exception":
                     raise
         if not created:
-            await self._patch_mapping(index_name)
-        self._index_ready.add(index_name)
+            await self._patch_mapping()
+        self._index_ready = True
 
-    async def _patch_mapping(self, index_name: str) -> None:
-        """给存量物理索引补上「当前稿」两个字段（每张索引每进程只试一次）。
+    async def _patch_mapping(self) -> None:
+        """给存量索引补上「当前稿」两个字段（每进程只试一次）。
 
         **失败不升级**：这是给老索引打的补丁，不是写入本身。集群只读、字段类型冲突这类
         拒绝确实会让关键词路继续少一路结果，但让整篇文档因为一次元数据补丁而索引失败，
-        代价比它治的问题大——所以降级成一条 warning（带索引名，便于对账脚本与运维发现），
-        并且**不记进已补集合**：下次再遇到这张索引会重试。
+        代价比它治的问题大——所以降级成一条 warning（带索引名，便于运维发现），
+        并且**不记进已补标记**：下次再遇到这张索引会重试。
         """
 
-        if index_name in self._mapping_patched:
+        if self._mapping_patched:
             return
         try:
-            await self._get_client().indices.put_mapping(index=index_name, **build_mapping_update())
+            await self._get_client().indices.put_mapping(
+                index=self._index_name, **build_mapping_update()
+            )
         except Exception as exc:  # noqa: BLE001 - 见上：补丁失败不拖垮写入
             logger.warning(
                 "keyword index mapping patch skipped",
-                index=index_name,
+                index=self._index_name,
                 error=type(exc).__name__,
             )
             return
-        self._mapping_patched.add(index_name)
-
-    async def ensure_version_index(self, version: str) -> str:
-        """确保该版本的物理索引存在，返回它的名字（给激活用）。"""
-
-        index_name = self.physical_index_name(version)
-        await self.ensure_index(index_name)
-        return index_name
-
-    async def physical_index_exists(self, version: str) -> bool:
-        """该版本的物理索引还在不在（回滚守卫，#155）。
-
-        **不查 ``_index_ready`` 缓存**：那份缓存记的是「本进程建过它」，而回滚要问的是
-        「它此刻还在不在」。缓存说在、实际被清掉了（运维清理磁盘、集群重建过），别名切
-        过去就是一张空索引——检索不报错，只是永远搜不到。
-        """
-
-        exists = await self._get_client().indices.exists(index=self.physical_index_name(version))
-        return bool(exists)
-
-    async def activate_version(self, version: str) -> None:
-        """把别名切到该版本（一次 ``update_aliases``：摘旧 + 挂新）。
-
-        目标物理索引不存在时**先建**再切：一个指向不存在索引的别名会让关键词召回
-        一直 ``NotFoundError``（被当成「诚实空结果」），那比一次显式失败难查得多。
-        """
-
-        client = self._get_client()
-        target = await self.ensure_version_index(version)
-        current = await self._alias_targets()
-        actions = build_alias_actions(alias=self._index_name, target=target, current=current)
-        if not actions:
-            # 已经指向目标：重复激活是幂等的 no-op，不多发一次可能失败的写。
-            return
-        await client.indices.update_aliases(actions=actions)
-        logger.info(
-            "keyword index alias switched",
-            alias=self._index_name,
-            target=target,
-            previous=current,
-        )
-
-    async def _alias_targets(self) -> list[str]:
-        """别名当前指向哪些物理索引（还没建过别名时为空）。"""
-
-        try:
-            response = await self._get_client().indices.get_alias(name=self._index_name)
-        except NotFoundError:
-            return []
-        return [str(name) for name in response.keys()]
+        self._mapping_patched = True
 
     async def add_chunks(self, chunks: list[dict]) -> None:
-        """按版本分组写入**各自的物理索引**（不在同一张索引里双写两个版本）。"""
+        """把切片文档写进**那一个物理索引**（``_id`` 取 chunk_id，重复写入幂等）。"""
 
         documents = build_keyword_documents(chunks)
         if not documents:
             return
 
-        by_index: dict[str, list[dict]] = {}
+        await self.ensure_index()
+        operations: list[dict] = []
         for document in documents:
-            index_name = self.physical_index_name(document["index_version"])
-            by_index.setdefault(index_name, []).append(document)
-
-        for index_name, group in by_index.items():
-            await self.ensure_index(index_name)
-            operations: list[dict] = []
-            for document in group:
-                operations.append({"index": {"_index": index_name, "_id": document["chunk_id"]}})
-                operations.append(document)
-
-            response = await self._get_client().bulk(operations=operations, refresh=True)
-            if response.get("errors"):
-                # bulk 是「部分成功」的接口：不主动抛就会留下半边数据，索引阶段必须失败。
-                #
-                # 用 ``AppError(API_REQUEST_ERROR)`` 而不是裸 ``RuntimeError``：这个码在
-                # ``app/tasks/indexing.py`` 的 ``RETRYABLE_ERROR_CODES`` 里，Worker 会把
-                # 「ES 抖了一下」当成可重试的瞬时故障；抛 RuntimeError 则被判定为不可重试，
-                # 一次 bulk 分片失败就把文档钉成失败态。文案固定、不带响应体——失败留痕
-                # 只存固定文案，绝不把 ES 的内部报错写进库里或回给调用方。
-                raise AppError(
-                    ErrorCode.API_REQUEST_ERROR, "elasticsearch bulk indexing reported errors"
-                )
-
-    async def count_documents(self, *, tenant_id: str, kb_id: str, index_version: str) -> int:
-        """数目标版本物理索引里这个租户 / 库 / 版本的文档数（``ready`` 前的校验）。
-
-        版本条件在这层**看着冗余**（物理索引本来就只装一个版本），但它挡住的是最贵的一
-        种错：写进了错误的物理索引。少了它，那种错会让四项计数「全都相等却都是错的」。
-        """
-
-        try:
-            response = await self._get_client().count(
-                index=self.physical_index_name(index_version),
-                query={
-                    "bool": {
-                        "filter": [
-                            {"term": {"tenant_id": tenant_id}},
-                            {"term": {"kb_id": kb_id}},
-                            {"term": {"index_version": index_version}},
-                        ]
-                    }
-                },
+            operations.append(
+                {"index": {"_index": self._index_name, "_id": document["chunk_id"]}}
             )
-        except NotFoundError:
-            # 物理索引还不存在 = 这个版本一个文档都没有。0 是诚实数字。
-            return 0
-        return int(response.get("count") or 0)
+            operations.append(document)
+
+        response = await self._get_client().bulk(operations=operations, refresh=True)
+        if response.get("errors"):
+            # bulk 是「部分成功」的接口：不主动抛就会留下半边数据，索引阶段必须失败。
+            #
+            # 用 ``AppError(API_REQUEST_ERROR)`` 而不是裸 ``RuntimeError``：这个码在
+            # ``app/tasks/indexing.py`` 的 ``RETRYABLE_ERROR_CODES`` 里，Worker 会把
+            # 「ES 抖了一下」当成可重试的瞬时故障；抛 RuntimeError 则被判定为不可重试，
+            # 一次 bulk 分片失败就把文档钉成失败态。文案固定、不带响应体——失败留痕
+            # 只存固定文案，绝不把 ES 的内部报错写进库里或回给调用方。
+            raise AppError(
+                ErrorCode.API_REQUEST_ERROR, "elasticsearch bulk indexing reported errors"
+            )
 
     async def keyword_search(
         self, query: str, *, tenant_id: str, kb_ids: Sequence[str], top_k: int
     ) -> list[dict]:
-        # 查的是**全部物理索引**（现场九·第四步）。改造前查别名——别名指着库的生效版本，
-        # 而代下放到篇级之后「哪一份生效」不再由库决定：一篇重建完就写进新索引，别名却还
-        # 指着旧的，于是它从关键词路消失。每篇在索引里**只有一份**（写入总是先按文档全清
-        # 再写新的一份），所以跨索引查不会重复。
+        # 查的是**那一个物理索引**（库级版本层删除之后没有第二张可选）：每篇在索引里
+        # **只有一份**（写入总是先按文档全清、再写新的一份），所以不需要版本 / 代过滤。
         payload = build_bm25_query(
             tenant_id=tenant_id,
             kb_ids=kb_ids,
@@ -319,7 +230,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         )
         try:
             response = await asyncio.wait_for(
-                self._get_client().search(index=version_index_pattern(self._index_name), **payload),
+                self._get_client().search(index=self._index_name, **payload),
                 # 有界预算见类文档。超时抛 ``TimeoutError``，由调用方按「这一路挂了」处理
                 # ——不在这里翻译成业务码：Provider 不认识业务码。
                 timeout=self._timeout_s,
@@ -352,37 +263,20 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
-        generation: int | None = None,
     ) -> None:
-        # ``generation`` 在这里**故意不参与过滤**（现场九·第五步）：关键词引擎没有「代」
-        # 这一维，它永远是**当前代的镜像**——重建时先按文档清空、再写新的一份。让这一侧
-        # 也保留多代的话，同一条内容会从 BM25 路回来两次，而 RRF 合并并不去重。
-        del generation
-        # 给了版本只清那一张物理索引；没给版本时用 ``<别名>__*`` 覆盖**全部**索引。
-        # 生产路径（``KeywordSearchChunkStore``）永远不给版本：关键词侧是「每篇一份」的
-        # 镜像，只清一张会留下别的索引里的同一篇，而读侧查的是 ``__*``——于是同一条内容
-        # 从 BM25 路回来两次，chunk id 每次新生成，RRF 合并去不掉。
-        scoped = index_version is not None
-        index = (
-            self.physical_index_name(str(index_version))
-            if index_version is not None
-            else version_index_pattern(self._index_name)
-        )
+        # 关键词引擎没有「代」这一维（现场九·第五步）：它永远是**当前代的镜像**——重建时
+        # 先按文档清空、再写新的一份。也只有一个物理索引可删，不再需要版本范围。
         try:
             await self._get_client().delete_by_query(
-                index=index,
+                index=self._index_name,
                 **build_purge_query(
                     document_id=document_id,
                     tenant_id=tenant_id,
-                    index_version=index_version,
-                    # 稿号是第二个删除范围（#173）：重建第 2 稿只清第 2 稿，旧稿原样留着。
+                    # 稿号是唯一的删除范围（#173）：重建第 2 稿只清第 2 稿，旧稿原样留着。
                     doc_version=doc_version,
                 ),
                 refresh=True,
-                # 通配符匹配到零张索引时 ES 会报「no such index」；那是「本来就没有可删的」。
-                ignore_unavailable=not scoped,
             )
         except NotFoundError:
             # 索引不存在 = 本来就没有可删的文档。
@@ -393,10 +287,8 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
     ) -> None:
         """把这篇文档的关键词切片里「当前稿」标记翻到 ``doc_version``（#175）。
 
-        **打的是 ``<别名>__*``**（现场九·第四步），与检索同范围：检索不再只认别名（每篇
-        的当前代写在哪张物理索引由重建时的版本决定），只翻别名指向的那一张会留下别的物理
-        索引里 ``is_current`` 仍为真的旧稿切片——它们照样会被 ``__*`` 查出来，症状是引用
-        上一稿已经删掉的条款，而且不报错。
+        **打的是那一个物理索引**，与检索同范围：只有一份镜像，所以翻转的范围就是检索的
+        范围，不存在「别的物理索引里 ``is_current`` 仍为真的旧稿切片」这种漏网。
 
         ``refresh=True``：这次翻转之后马上就会有人提问，索引刷新不及时的表现是「关键词路
         偶发少了新稿的命中」。
@@ -412,7 +304,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
 
         try:
             await self._get_client().update_by_query(
-                index=version_index_pattern(self._index_name),
+                index=self._index_name,
                 **build_current_draft_update(
                     document_id=document_id,
                     tenant_id=tenant_id,
@@ -432,9 +324,6 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         一条两层聚合打完整批（先按文档分组、组内数稿号），因此**不取命中行**：一篇文档
         的当前稿切片可能有几百片，把正文捞回来只为读两个字段是白花带宽。
 
-        查的是 ``<别名>__*``（与检索、翻转同范围）：别名只指向一张物理索引，而每篇的当前代
-        可能写在别的版本里。
-
         桶的 key 是**字符串**（mapping 里 ``doc_version`` 是 keyword），所以这里显式
         ``int()``——把 ``"3"`` 直接交给判据去和整数指针比，那一维会永远显示「相等」。
 
@@ -448,7 +337,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             return {}
         try:
             response = await self._get_client().search(
-                index=version_index_pattern(self._index_name),
+                index=self._index_name,
                 **build_current_draft_versions_query(
                     tenant_id=tenant_id, document_ids=ids
                 ),

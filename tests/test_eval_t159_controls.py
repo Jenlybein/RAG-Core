@@ -410,7 +410,6 @@ def _chunk_row(
     section_id: str,
     content: str = "正文",
     chunk_type: str = "prose",
-    index_version: str = "v1",
 ) -> eval_t159_split_versions.ChunkRow:
     return eval_t159_split_versions.ChunkRow(
         chunk_id=chunk_id,
@@ -420,7 +419,6 @@ def _chunk_row(
         section_id=section_id,
         chunk_type=chunk_type,
         content=content,
-        index_version=index_version,
     )
 
 

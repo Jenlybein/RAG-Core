@@ -52,7 +52,6 @@ INTEGRATION_DATABASE_URL = os.environ.get("RAG_INTEGRATION_DATABASE_URL")
 
 TENANT_ID = "tenant_it_lease"
 KB_ID = "kb-it-lease"
-TARGET_VERSION = "v-it-1"
 SEED_IDS = (
     "it-state-build-shape",
     "it-state-single-document",
@@ -285,7 +284,6 @@ def test_build_shaped_rebuild_leaves_the_document_success_with_a_fresh_timestamp
         ).index_existing_document(
             session,
             "it-state-build-shape",
-            index_version=TARGET_VERSION,
             allow_success=True,
         )
     )
@@ -314,7 +312,7 @@ def test_single_document_shape_still_reaches_success(db: Session) -> None:
 
     written = _run(
         lambda session: _service(pieces=[_piece("唯一一片")]).index_existing_document(
-            session, "it-state-single-document", index_version=TARGET_VERSION
+            session, "it-state-single-document"
         )
     )
 
@@ -385,7 +383,7 @@ def test_a_zombie_worker_cannot_overwrite_the_new_owner(db: Session) -> None:
         )
         await async_commit_now(owner_session)
         replaced = await _service(pieces=owner_pieces).index_existing_document(
-            owner_session, "it-lease-zombie", index_version=TARGET_VERSION
+            owner_session, "it-lease-zombie"
         )
         assert replaced == 1, "接管者自己必须写成功，否则这条用例验的是别的东西"
 
@@ -398,7 +396,6 @@ def test_a_zombie_worker_cannot_overwrite_the_new_owner(db: Session) -> None:
         ).index_existing_document(
             zombie_session,
             "it-lease-zombie",
-            index_version=TARGET_VERSION,
             allow_success=True,
         )
 

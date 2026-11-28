@@ -60,20 +60,23 @@ export function updateKbSettingsConsole(
 }
 
 /**
- * 按**当前**切块设置重建整个库（建完自动激活）。
+ * 按**当前**切块设置重建整个库。
  *
- * 它不是「逐篇重建」：逐篇写回的是当前生效版本，参数快照不变，所以「需重建」那条提示
- * 消不掉。要让新设置生效只能产出新版本——这条接口做的是后者。
+ * 语义是「整库范围内按篇投递」：后端不再起一个库级构建，而是把每篇文档按其当前设置
+ * 重新排队重切（每篇各自推进自己的索引代）。所以回执里没有构建行，只有投了多少篇
+ * （见 :type:`RebuildKbReceipt`）。
+ *
+ * 这不是「逐篇点重建」的替代品：它是一次全库操作，代价仍是全库重嵌入。
  */
 export function rebuildKbConsole(kbId: string): Promise<RebuildKbReceipt> {
   return consoleHttp.post<RebuildKbReceipt>(`/console/knowledge-bases/${kbId}/rebuild`)
 }
 
-// ── 读模型（第 17 步 #227）：库摘要 / 详情一页 / 构建状态 ────────────────
+// ── 读模型（第 17 步 #227）：库摘要 / 详情一页 ────────────────
 
 /**
- * 三个查询键。**前缀刻意相同**（`['knowledge-bases', ...]`）：写操作之后一次
- * `invalidateQueries({ queryKey: ['knowledge-bases'] })` 就能把列表、详情、构建与老树接口
+ * 两个查询键。**前缀刻意相同**（`['knowledge-bases', ...]`）：写操作之后一次
+ * `invalidateQueries({ queryKey: ['knowledge-bases'] })` 就能把列表、详情与老树接口
  * 一起失效——少一个键没失效，症状就是「改完这一屏那一屏还是旧的」。
  */
 export const KB_LIST_QUERY_KEY = ['knowledge-bases', 'list'] as const
@@ -100,10 +103,12 @@ function _documentsQueryString(query: KbDocumentsQuery): string {
 }
 
 /**
- * 详情页**打开即取**的那一份：库摘要 + 构建摘要 + 一页文档。
+ * 详情页**打开即取**的那一份：库摘要 + 一页文档。
  *
  * 「进详情要不要按 F5」的正面回答就是这个函数存在本身：它以前没有自己的请求，只能读
  * 列表页那份树，而树只在「有在途工作时」每 3 秒刷一次、一旦全终态就**永久停止**。
+ *
+ * 响应里没有构建摘要：库级构建层已退场，每篇文档的状态四态就是它的进度。
  */
 export function fetchKbDocuments(
   kbId: string,
@@ -267,13 +272,9 @@ export function toKnowledgeBaseNodes(data: ConsoleTreeData): KnowledgeBaseNode[]
     split_strategy: node.split_strategy,
     allowed_formats: node.allowed_formats ?? [],
     chunk_size: node.chunk_size,
-    // 第 16 步 #207：老缓存里没有这两项时给安全默认——阈值按后端默认 2000，
-    // 而「需重建」缺省成 `false`：这里没有库的版本参数可比，猜 `true` 会让列表上
-    // 每一条都挂一个「需重建」，那种噪音会让人学会忽略这个提示。
+    // 第 16 步 #207：老缓存里没有这一项时给安全默认。
     section_part_max_chars: node.section_part_max_chars ?? KB_SECTION_PART_DEFAULT,
-    build_progress: node.build_progress ?? null,
     token_usage: node.token_usage ?? null,
-    needs_rebuild: node.needs_rebuild ?? false,
     // 老缓存里没有这个字段时按 0（= 都是最新的）：这里猜一个非零会让每张卡片都挂一条
     // 「N 篇待更新」，而那种噪音会让人学会永久忽略它。
     stale_documents: node.stale_documents ?? 0,

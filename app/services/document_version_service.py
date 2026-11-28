@@ -50,9 +50,9 @@
 * 窗口按**稿数**算（``当前稿号 - 保留稿数``），不按时间：一天改十稿的文档不会保留几十个
   工作日的切片；
 * 只删 ``archived``，**当前稿永不删**——哪怕它是 v1 而指针在 v9（库里残留的低稿号当前行）；
-* 删除走两维键：``doc_version=这一稿`` + ``index_version=None``。这一稿的切片可能散落在
-  **多个索引版本**里（每重建一次写一套），只删当前索引版本会留下旧索引版本下的幽灵切片，
-  而它们永远不会被任何查询命中（检索 pin 在生效版本上），只会一直占着存储。
+* 删除走两维键：``doc_version=这一稿`` + ``generation=None``。这一稿的切片可能散落在
+  **多个代**里（每重建一次写一套），按代收窄会留下旧代的幽灵切片，而它们永远不会被任何
+  查询命中（检索按当前代取数），只会一直占着存储。
 
 清理是**幂等**的：跑第二遍没有候选、不发语句。触发靠运维脚本
 （``scripts/purge_document_versions.py``），本模块不引入任何调度。
@@ -208,10 +208,10 @@ async def purge_expired_versions(
     命中，也无法再被定位到属于哪一稿，比半份更坏。事务边界在调用方（脚本按**每篇文档
     一笔** ``async with async_transaction(db)``），失败时整笔回滚，不留半份。
 
-    **删除键是两维的**：``doc_version=这一稿`` 且 ``index_version=None``。这一稿的切片
-    可能散落在多个索引版本里（每重建一次写一套），只删当前索引版本会留下旧索引版本下的
-    幽灵切片——检索 pin 在生效版本上，它们永远不会被召回，却会一直占着向量库与关键词
-    索引。反过来「稿号不收窄」更不行：那会把还在窗口内的稿一起清掉。
+    **删除键是两维的**：``doc_version=这一稿`` 且 ``generation=None``。这一稿的切片
+    可能散落在多个代里（每重建一次写一套），按代收窄会留下旧代下的幽灵切片——检索按当前
+    代取数，它们永远不会被召回，却会一直占着向量库与关键词索引。反过来「稿号不收窄」更
+    不行：那会把还在窗口内的稿一起清掉。
 
     ``stores`` 只在测试里注入（默认按 ``build_chunk_stores`` 现建）。没有候选稿时连存储
     都不建：清理脚本在「没什么可清」的库上不该去连向量库 / 关键词引擎。
@@ -231,8 +231,7 @@ async def purge_expired_versions(
             plan.document_id,
             tenant_id=tenant_id,
             stores=resolved,
-            # 见上面的「删除键是两维的」：索引版本放开，只收窄稿号。
-            index_version=None,
+            # 见上面的「删除键是两维的」：代放开，只收窄稿号。
             doc_version=version,
         )
     await document_version_repository.delete_versions(db, plan.document_id, plan.expired_versions)

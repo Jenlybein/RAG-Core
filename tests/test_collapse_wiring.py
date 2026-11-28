@@ -33,7 +33,6 @@ def _chunk(chunk_id: str, content: str, score: float) -> dict[str, Any]:
         "title": "部署实施指南",
         "content": content,
         "score": score,
-        "index_version": "v1",
     }
 
 

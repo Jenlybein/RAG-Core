@@ -117,7 +117,6 @@ def _seed_kb(db: Session) -> None:
             split_strategy="structure",
             allowed_formats=["markdown"],
             settings={},
-            active_index_version="v1",
         )
     )
     db.commit()

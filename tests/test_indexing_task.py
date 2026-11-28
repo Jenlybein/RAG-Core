@@ -32,9 +32,8 @@ from structlog.testing import capture_logs
 from app.celery_app import celery_app
 from app.core.exceptions import AppError, ErrorCode
 from app.db.base import now
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.providers.parsers.base import ParsedDocument
-from app.repositories import document_repository, knowledge_base_repository
+from app.repositories import document_repository
 from app.services import indexing_service
 from app.services.indexing_service import INDEXING_FAILED_MESSAGE, IndexingService
 from app.tasks import indexing as tasks
@@ -146,7 +145,6 @@ class _RecordingStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -260,16 +258,6 @@ def _patch_service_environment(
     monkeypatch.setattr(document_repository, "holds_index_claim_async", _holds_index_claim)
     if patch_parse:
         monkeypatch.setattr(indexing_service, "prepare_document_content", _prepare)
-
-    # 写入目标版本取自库上的生效版本（#142）：会话替身刻意不回答 ``get``（「取行由仓储
-    # 替身接管」），所以这一个协作者也换成替身。它自己的行为由
-    # ``tests/test_index_build_writes.py`` 用会回答的会话覆盖。
-    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
-        return DEFAULT_INDEX_VERSION
-
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
 
     # 心跳用**独立会话**（#225）：与流水线会话分开。分开之后这条用例同时钉住两件事——
     # 心跳真的写了一次、而它**没有**经过流水线会话（Tx2 的提交次数因此不变）。
@@ -657,7 +645,6 @@ class _FailingService:
         *,
         reparse: bool = False,
         doc_version=None,
-        index_version=None,
         allow_success: bool = False,
     ) -> int:
         raise self.exc
@@ -840,7 +827,6 @@ def test_task_passes_the_draft_number_from_the_payload_to_the_pipeline(
             *,
             reparse: bool = False,
             doc_version: int | None = None,
-            index_version: str | None = None,
             allow_success: bool = False,
         ) -> int:
             observed.append(doc_version)
@@ -869,7 +855,6 @@ def test_task_passes_no_draft_when_the_payload_carries_none(
             *,
             reparse: bool = False,
             doc_version: int | None = None,
-            index_version: str | None = None,
             allow_success: bool = False,
         ) -> int:
             observed.append(doc_version)
@@ -898,7 +883,6 @@ def test_task_binds_request_id_for_the_duration_of_the_run(
             *,
             reparse: bool = False,
             doc_version=None,
-            index_version=None,
             allow_success: bool = False,
         ) -> int:
             observed.append(get_contextvars())

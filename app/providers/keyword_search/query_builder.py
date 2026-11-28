@@ -7,16 +7,15 @@
 
 四处最容易被写错的地方，都在这里钉死：
 
-1. **过滤维度用 keyword、可检索文本用中文分词**。租户 / 库 / 版本 / 文档 /
-   切片只做精确匹配，分词只会让它们变慢且匹配不到。
+1. **过滤维度用 keyword、可检索文本用中文分词**。租户 / 库 / 文档 / 切片只做精确匹配，
+   分词只会让它们变慢且匹配不到。
 2. **写入与查询用两个分析器**。写入 ``ik_max_word``（细粒度，尽量多建词）；
    查询 ``ik_smart`` 之后接一道中文停用词（``QUERY_ANALYZER``）。只写
    ``analyzer`` 不写 ``search_analyzer`` 时查询也会走细粒度，问句被切碎、
    召回率反而下降；而查询侧不去掉疑问词，BM25 会把「只出现一次的常见词」
    当成罕见特征打分（见 ``QUERY_STOPWORDS`` 的注释）。
-3. **「库 + 版本」是配对条件**。每对之间是 ``should`` + ``minimum_should_match=1``；
-   写成两个独立的 ``terms``（即两个 ``IN``）会匹配出「A 库配 B 库的版本」这种
-   不存在的组合。
+3. **范围只剩「哪几个库」**。库级索引版本那一层（物理索引按版本隔离、别名指向生效版本）
+   已经整层删除：单一物理索引 + 每篇只有一份镜像，就是「查到的即当前代」的全部表达。
 4. **多词查询要命中不止一个词**（``MINIMUM_SHOULD_MATCH``）。停用词去掉的是
    「问句框架」，域内高频词（``设备`` / ``证书`` 这类）去不掉，只沾上一个的切片
    必须被这道闸拦在外面。
@@ -26,11 +25,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 
-from app.models.chunk import (
-    CHUNK_TYPE_REFERENCE_POINTER,
-    DEFAULT_DOC_VERSION,
-    DEFAULT_INDEX_VERSION,
-)
+from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, DEFAULT_DOC_VERSION
 
 # 可检索文本的字段名。切片原文另存 ``content``（只存不索引），用来原样回给调用方。
 RETRIEVAL_TEXT_FIELD = "retrieval_text"
@@ -193,7 +188,6 @@ MINIMUM_SHOULD_MATCH = "50%"
 SOURCE_FIELDS = (
     "tenant_id",
     "kb_id",
-    "index_version",
     "document_id",
     "chunk_id",
     "title",
@@ -264,7 +258,6 @@ def build_es_mapping() -> dict:
                 # 过滤维度：精确匹配，不参与分词。
                 "tenant_id": {"type": "keyword"},
                 "kb_id": {"type": "keyword"},
-                "index_version": {"type": "keyword"},
                 "document_id": {"type": "keyword"},
                 "chunk_id": {"type": "keyword"},
                 # 切片类型：只做精确匹配（过滤路标切片），不参加打分也不分词。
@@ -300,9 +293,9 @@ def build_bm25_query(
 ) -> dict:
     """返回 ``search`` 的请求体：租户过滤 + 库范围 + multi_match 打分。
 
-    ``kb_ids`` 是这次要查的库（现场九·第四步起不再带版本）：代下放到篇级之后，一次检索
-    里每篇各有自己的当前代，库级版本不再是可见性判据。关键词索引里每篇**只有一份**
-    （写入总是「先按文档全清、再写新的一份」），所以按库过滤就够了，不会重复。
+    ``kb_ids`` 是这次要查的库（库级索引版本那一层删除之后只剩这一维范围）：关键词索引里
+    每篇**只有一份**（写入总是「先按文档全清、再写新的一份」），所以按库过滤就够了，
+    不会重复，也不需要任何版本 / 代过滤。
     """
 
     scope = {"terms": {"kb_id": list(kb_ids)}}
@@ -347,7 +340,6 @@ def build_purge_query(
     *,
     document_id: str,
     tenant_id: str,
-    index_version: str | None = None,
     doc_version: int | None = None,
 ) -> dict:
     """返回 ``delete_by_query`` 的请求体：只删这个租户的这一份文档。
@@ -355,22 +347,16 @@ def build_purge_query(
     ``tenant_id`` 与 ``document_id`` 都是 ``term`` 且都在 ``filter`` 里：
     少一个就会删到别的租户同 id 的行（ADR-0006 的强制过滤同样适用于删除）。
 
-    ``index_version`` 非空时再加一条版本过滤（#142）：重建新版本只清目标版本，
-    线上那一版原样留着。物理索引本来就按版本隔离，这条过滤是第二道防线——它会在
-    「写进了错误物理索引」时把误删挡住，而那种错一旦发生，删掉的就是线上数据。
-
     ``doc_version`` 非空时再加一条稿号过滤（#173）：重建第 2 稿只清第 2 稿的关键词文档，
-    旧稿原样留着。这条过滤是**必须的**（不像版本过滤只是第二道防线）：同一张物理索引里
-    本来就同时装着这篇文档的每一稿，少了它，重建一次就把旧稿从关键词那一路抹掉了，
-    而向量那一路还在——两路对同一稿给出不同答案。``None`` = 这篇文档的所有稿。
+    旧稿原样留着。这条过滤是**必须的**：同一张物理索引里本来就同时装着这篇文档的每一稿，
+    少了它，重建一次就把旧稿从关键词那一路抹掉了，而向量那一路还在——两路对同一稿给出
+    不同答案。``None`` = 这篇文档的所有稿。
     """
 
     filters: list[dict] = [
         {"term": {"tenant_id": tenant_id}},
         {"term": {"document_id": document_id}},
     ]
-    if index_version is not None:
-        filters.append({"term": {"index_version": index_version}})
     if doc_version is not None:
         filters.append({"term": {DOC_VERSION_FIELD: doc_version}})
 
@@ -494,8 +480,6 @@ def build_keyword_documents(chunks: list[dict]) -> list[dict]:
         {
             "tenant_id": chunk["tenant_id"],
             "kb_id": chunk["kb_id"],
-            # 索引版本是数据范围的一部分：缺省值与 chunks 列默认值同源。
-            "index_version": chunk.get("index_version") or DEFAULT_INDEX_VERSION,
             "document_id": chunk["document_id"],
             "chunk_id": chunk["id"],
             "title": (chunk.get("meta") or {}).get("title", ""),

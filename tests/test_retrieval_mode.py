@@ -132,7 +132,7 @@ class _FakeKeywordSearch:
         raise AssertionError("检索链路不应写索引")
 
     async def delete_by_document_id(
-        self, document_id, *, tenant_id, index_version=None, doc_version=None
+        self, document_id, *, tenant_id, doc_version=None, generation=None
     ):  # pragma: no cover
         raise AssertionError("检索链路不应删索引")
 

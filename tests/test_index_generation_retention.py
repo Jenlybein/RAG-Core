@@ -40,7 +40,6 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
-    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
     doc_version INTEGER NOT NULL DEFAULT '1',
     generation INTEGER NOT NULL DEFAULT 1
 )

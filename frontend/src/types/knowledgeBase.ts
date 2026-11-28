@@ -5,6 +5,19 @@ import type { DocumentListItem } from './document'
  *
  * 字段照 `step8/00-facts.md` §4；数值边界照 `app/models/knowledge_base.py`
  * （MIN/MAX/DEFAULT_CHUNK_SIZE 是同一个来源，前端只是把它显式化成可校验的副本）。
+ *
+ * ## 为什么这里没有「构建 / 版本」那一层（第 17 步·最后一批）
+ *
+ * 索引产物已经下放到**篇级**（`documents.current_index_generation` / `chunks.generation`）：
+ * 每一篇各有自己的第几代产物，「整个库当前是第几版」这件事不再存在。于是控制面读模型里
+ * 那一层字段——`build_state`（这篇与「当前这一版构建」的关系）、`needs_rebuild`（库级
+ * 「该重建了」的判断，靠库的生效版本算）、`has_active_version`（库有没有生效版本）、
+ * 构建行的进度（`documents_planned` / `documents_done` / `remaining` / `status` /
+ * `activated_at`）——全部退场，本文件不再声明它们。
+ *
+ * 留下来的库级读数只有三个（都是**与构建无关**的聚合）：`document_count` / `chunk_count`
+ * / `stale_documents`。最后一个是这次改造的对外读数：按篇比设置指纹，「N 篇的设置与产物
+ * 不一致，重建后生效」。
  */
 
 /** 切块策略。**必填无默认**：它同时决定这个库收哪些格式，替用户选等于替他决定语料类型。 */
@@ -59,16 +72,27 @@ export interface UpdateKbSettingsRequest {
   confirm: boolean
 }
 
-/** 改设置的回执：新设置 + 这次重建的版本。 */
-/** 重建一个库的回执（设置没变，所以不回吐设置）。 */
+/**
+ * 重建一个库的回执。
+ *
+ * 语义已经不是「起一个构建」而是**按篇投递**：后端不做整库构建账本了，也没有单次请求
+ * 无上限地投整个库——超过上限时分批，回执里两个数告诉你「这批投了多少、库里一共有多少」，
+ * 两者不等就是碰到了上限，再点一次继续。
+ */
 export interface RebuildKbReceipt {
   kb_id: string
-  build_id: string
-  build_version: string
-  /** 这次要重切多少篇（起跑快照）。 */
-  documents_planned: number
+  /** 本次真的投进队列的篇数（抢不到的篇不计）。 */
+  documents_dispatched: number
+  /** 库里可重建的总篇数；大于 `documents_dispatched` 说明超过单次上限，再点一次继续。 */
+  documents_total: number
 }
 
+/**
+ * 改设置的回执：新设置 + 这次按篇投递了多少篇。
+ *
+ * 以前这里带 `build_id` / `build_version`（那次改设置起的整库构建）；构建层退场后
+ * 改设置的效果也是「按篇重切」，回执只说投递量，别再让界面念一个不存在的版本号。
+ */
 export interface UpdateKbSettingsReceipt {
   kb_id: string
   name: string
@@ -76,11 +100,19 @@ export interface UpdateKbSettingsReceipt {
   allowed_formats: string[]
   chunk_size: number
   section_part_max_chars: number
-  build_id: string
-  build_version: string
+  /** 本次真的投进队列的篇数。 */
+  documents_dispatched: number
+  /** 库里可重建的总篇数；大于 `documents_dispatched` 说明要再点一次继续。 */
+  documents_total: number
 }
 
-/** 确认弹窗读的那份事实（`GET .../settings/preview`）。 */
+/**
+ * 确认弹窗读的那份事实（`GET .../settings/preview`）。
+ *
+ * 只剩「当前设置」与「这次要重切多少」——`live_params` / `live_version` / `needs_rebuild`
+ * 那一组是「库级生效版本」的读数，随构建层一起退场；`build_running` 同理（按篇投递之后
+ * 没有「整库构建正在跑」这种东西可等）。
+ */
 export interface KbSettingsPreview {
   kb_id: string
   name: string
@@ -88,12 +120,9 @@ export interface KbSettingsPreview {
   allowed_formats: string[]
   chunk_size: number
   section_part_max_chars: number
-  /** 生效那一版的构建参数；`null` = 老版本没留参数。 */
-  live_params: Record<string, unknown> | null
-  live_version: string | null
-  needs_rebuild: boolean
-  build_running: boolean
+  /** 这次会重切多少篇（起跑量，不是进度）。 */
   documents_to_rebuild: number
+  /** 这次会重写多少片（同上，让人知道代价的量纲）。 */
   chunks_to_rebuild: number
 }
 
@@ -106,39 +135,13 @@ export interface KnowledgeBaseDeleteReceipt {
 /**
  * 列表页的两级树节点：父是知识库，`documents` 是它的子行。
  *
- * 字段清单来自 `step8/00-facts.md` §11 的接缝约定：阶段 1 由客户端拼装，
- * #89 的 `/console/knowledge-bases/tree` 会直出同一形状。页面与轮询只认这个类型，
- * 所以换实现时它们不需要改。
+ * 字段清单来自 `step8/00-facts.md` §11 的接缝约定。**第 17 步 #227 之后它不再是列表页的
+ * 主读路径**（列表改用 `fetchKbList` 摘要、详情改用 `fetchKbDocuments` 分页），但密钥页
+ * （勾选这把 Key 能查哪些库）仍然要「库 + 文档」一次拿全，所以类型留着。
  *
  * 数据面的 `GET /knowledge-bases` 列表类型（`KnowledgeBaseSummary` / `KnowledgeBaseListData`）
  * 已随 #92 删除：那个端点前端不再调用，留着只会让人以为还有第二个取库入口。
  */
-/** 「未入新版本」的一条明细（#216）：哪一篇、叫什么、为什么。 */
-export interface BuildFailure {
-  document_id: string
-  title: string
-  reason: string
-}
-
-/**
- * 进行中的整库构建（#216）。**没有构建时后端回 `null`，不是空对象**——
- * 页面按 `null` 才不显示进度条，空对象会让「进度 0/0」的假条长期挂在那里。
- */
-export interface BuildProgress {
-  build_id: string
-  version: string
-  /** 参与篇数快照（分母）。 */
-  planned: number
-  /** 已有结果的篇数（失败也算有结果）。 */
-  done: number
-  /** 还没有结果的篇数。 */
-  pending: number
-  /** 未入新版本的明细（后端最多回 5 条）。 */
-  failures: BuildFailure[]
-  /** 失败总数（`failures` 可能被截断，这个数不截断）。 */
-  failure_count: number
-}
-
 export interface KnowledgeBaseNode {
   kb_id: string
   name: string
@@ -147,17 +150,13 @@ export interface KnowledgeBaseNode {
   chunk_size: number
   /** 节段阈值（第 16 步 #207）：超过就在片边界把一节切成几段。改它必须重建索引。 */
   section_part_max_chars: number
-  /** 库当前设置与生效那一版的构建参数已不一致 → 这个库需要重建才生效。 */
-  needs_rebuild: boolean
   /**
    * 「N 篇待更新」（现场九·第三步）：按篇比设置指纹得出的篇数。0 = 全部最新。
    *
-   * 与 `needs_rebuild` 并存而不是替代：后者回答「库这一级要不要重建」，它回答「按篇看
-   * 差几篇」——一个点按钮，一个是给人看进度。
+   * 这是**这次改造的对外读数**：构建层退场之后，「要不要重建」只剩这一个按篇可数的数
+   * （库级那句「需重建」靠生效版本参数，随版本一起没了）。
    */
   stale_documents: number
-  /** 进行中的构建（#216）；`null` = 这个库没有构建在跑。 */
-  build_progress: BuildProgress | null
   /**
    * 库级 token 容量占用（第 17 步 #221 / 用户故事 #13）；`null` = 容量读不到的降级路径。
    *
@@ -174,7 +173,7 @@ export interface KnowledgeBaseNode {
  * 与 `KnowledgeBaseNode` 是同一形状——这正是 #89 只换实现、不动页面的前提
  * （`app/schemas/console_kbs.py` 的 `KnowledgeBaseTreeData` 照着前端类型定的）。
  *
- * 数组与 `error_message` 标成可选，是因为下面三个类型同时是**映射层的入参**：
+ * 数组与 `error_message` 标成可选，是因为下面两个类型同时是**映射层的入参**：
  * 后端契约里它们恒在，但映射是页面渲染前最后一个能给安全默认的地方，
  * 老缓存或半截负载缺字段时宁可给 `[]`/`null`，也别让页面读到 `undefined`。
  */
@@ -185,49 +184,18 @@ export type ConsoleTreeDocument = Omit<DocumentListItem, 'error_message'> & {
 
 export type ConsoleTreeKnowledgeBase = Omit<
   KnowledgeBaseNode,
-  'allowed_formats' | 'documents' | 'section_part_max_chars' | 'needs_rebuild'
+  'allowed_formats' | 'documents' | 'section_part_max_chars' | 'stale_documents'
 > & {
   allowed_formats?: string[]
   documents?: ConsoleTreeDocument[]
   /** 第 16 步 #207：老缓存 / 半截负载可能没有这两项，映射层给安全默认。 */
   section_part_max_chars?: number
-  needs_rebuild?: boolean
+  /** 「N 篇待更新」：老缓存里没有时映射层按 0（= 都是最新的）。 */
   stale_documents?: number
 }
 
 export interface ConsoleTreeData {
   knowledge_bases: ConsoleTreeKnowledgeBase[]
-}
-
-/**
- * 构建摘要（第 17 步 #227）：**进行中优先，否则最近一次**。
- *
- * 与 `BuildProgress` 的差别只有一条，但很关键：它带 `status`。`BuildProgress` 只描述
- * 「还在跑的那次」，构建一收尾就是 `null`——实测 10 篇的库 9.5 秒建完，用户点进详情时
- * 那次构建早就结束了，于是「刚才那次成没成」无从回答。
- */
-export interface BuildSummary {
-  build_id: string
-  version: string
-  /** `building` / `ready` / `active` / `failed` / `archived`。 */
-  status: string
-  planned: number
-  done: number
-  /**
-   * 还没有结果的篇数（= `planned - done`）。
-   *
-   * 叫 `remaining` 而不是 `pending`：行级的 `build_state` 里也有一个 `pending`
-   * （「这一版还没收它」），两个 pending 一个数是、一个是枚举值，读代码的人会串。
-   */
-  remaining: number
-  /** 这一版对应的统一稿号；`null` = 老行没留快照。 */
-  doc_version: number | null
-  failures: BuildFailure[]
-  failure_count: number
-  /** 起建时刻（带时区的 ISO 串）。 */
-  created_at: string | null
-  /** 生效时刻（`active` 的行才有值）：界面据此说「v5 已生效 · 14:03:12」。 */
-  activated_at: string | null
 }
 
 /** 四态各有多少篇（卡片上的「3 篇失败」与顶部「有文档在跑」都读它）。 */
@@ -254,25 +222,25 @@ export interface KbSummary {
   section_part_max_chars: number
   document_count: number
   status_counts: DocumentStatusCounts
-  /**
-   * 这个库有生效版本吗。`false` 时界面说「未建索引」而**不是**「0 个分块」——
-   * 「还没有索引」与「索引里有 0 片」是两句话，要做的处置也不同。
-   */
-  has_active_version: boolean
-  /** 生效版本 × 当前稿的切片总数（与检索口径一致，不是留存版本之和）。 */
+  /** 这个库**当前代 × 当前稿**的切片总数（与检索口径一致，不是留存版本之和）。 */
   chunk_count: number
-  needs_rebuild: boolean
-  /** 「N 篇待更新」（现场九·第三步）：按篇比设置指纹得出的篇数。0 = 全部最新。 */
+  /**
+   * 「N 篇待更新」（现场九·第三步）：按篇比设置指纹得出的篇数。0 = 全部最新。
+   *
+   * 构建层退场后这是**唯一**一句「该重建了」的库级提示：它按篇可数，所以能直接说
+   * 差几篇；原来那句「库级需重建」靠生效版本的参数快照，随版本一起没了。
+   */
   stale_documents: number
   token_usage: { used: number; limit: number } | null
-  /** 进行中**或最近一次**的构建；`null` = 这个库从没建过。 */
-  build: BuildSummary | null
 }
 
-/** 它与**当前这一版构建**的关系（第二根轴，与文档自己的 `status` 无关）。 */
-export type BuildState = 'done' | 'pending' | 'failed' | null
-
-/** 详情表的一行。 */
+/**
+ * 详情表的一行。
+ *
+ * 以前这里还有第二根轴 `build_state`（「这一篇与**当前这一版构建**的关系」）。构建层
+ * 退场后参照物没了：每一篇自己就有当前代，状态四态本身就是它的进度。所以只剩文档自己
+ * 的那一根轴。
+ */
 export interface KbDocumentRow {
   document_id: string
   title: string
@@ -283,8 +251,8 @@ export interface KbDocumentRow {
   token_count: number
   error_message: string | null
   current_version: number
+  /** 这份文档落库的时刻（上传时写的）；刷新策略拿它判「最近一次写入」。 */
   created_at: string | null
-  build_state: BuildState
 }
 
 /** 库列表（卡片网格）：只有摘要 + 服务端时间戳。 */
@@ -294,10 +262,9 @@ export interface KbListPayload {
   generated_at: string
 }
 
-/** 详情页一次拿全：库摘要 + 构建 + 一页文档。 */
+/** 详情页一次拿全：库摘要 + 一页文档。 */
 export interface KbDocumentsPayload {
   kb: KbSummary
-  build: BuildSummary | null
   documents: KbDocumentRow[]
   total: number
   page: number

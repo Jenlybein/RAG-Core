@@ -152,7 +152,6 @@ from app.db.base import Base, now  # noqa: E402
 from app.db.async_session import AsyncSessionLocal, async_engine  # noqa: E402
 from app.db.transaction import async_transaction  # noqa: E402
 from app.models import Chunk, Document, KnowledgeBase  # noqa: E402
-from app.models.chunk import DEFAULT_INDEX_VERSION  # noqa: E402
 from app.services.result_collapse import MAX_UNIT_CHARS_DEFAULT  # noqa: E402
 from app.models.knowledge_base import (  # noqa: E402
     SPLIT_STRATEGIES,
@@ -512,56 +511,22 @@ def _load_questions() -> tuple[list[Question], int]:
 def _reset_elasticsearch(index_name: str) -> str:
     """删掉评测关键词索引（下次写入时由 Provider 幂等重建）。
 
-    ## 为什么不是一条 ``DELETE /<名字>``（票 #157 §②）
+    **只有一个物理索引**：库级索引版本层删除之后，``ELASTICSEARCH_INDEX`` 不再是别名，
+    也没有 ``<别名>__<版本>`` 的兄弟索引。于是这里就是一条普通的 ``DELETE /<名字>``：
+    删掉它，下一次写入时由 Provider 的 ``ensure_index`` 用当前 mapping 建回来。
 
-    ``ELASTICSEARCH_INDEX`` 从 #142（ADR-0025 决策二）起是**别名**，写入落到
-    ``<别名>__<版本>`` 的物理索引。于是这个名字在集群里可能有两种形态：
-
-    * **旧部署**：它本身是个物理索引（本次实测就是这种：469 篇文档、没有别名、
-      也没有 ``__v1`` 兄弟）；
-    * **版本化之后**：它是别名，指向 ````<别名>__<版本>``。
-
-    对别名发 ``DELETE`` 会被 ES 拒绝（别名不能当索引删），而**只**删别名指向的那一张
-    又会漏掉旧版本——下一轮构建写出另一个版本时，两张物理索引同时存在，别名却只指向
-    其中一张，症状是「有的片永远搜不到，不报错」。
-
-    所以这里先问 ``_cat/indices`` **具体有哪些物理索引**（``_cat`` 会把别名解析成它指向
-    的索引），再把它们一次删干净。名字里的 ``__`` 是版本分隔符（与
-    ``versioned_index.VERSION_SEPARATOR`` 同源），不用手写字符串。
+    为什么以前要绕一圈问 ``_cat``：旧实现里这个名字是别名，写入落到按版本隔离的物理
+    索引上，只删别名指向的那一张会漏掉旧版本（下一轮写另一版时两张索引同时在集群里）。
+    那条运维负担随版本层一起消失。
     """
-
-    from app.providers.keyword_search.versioned_index import VERSION_SEPARATOR
 
     _assert_eval_index(index_name)
-    targets = _es_concrete_indices(index_name, separator=VERSION_SEPARATOR)
-    if not targets:
-        return "absent"
-    response = httpx.delete(f"{_es_base()}/{','.join(targets)}", timeout=30.0)
+    response = httpx.delete(f"{_es_base()}/{index_name}", timeout=30.0)
     if response.status_code == 200:
-        return f"deleted({','.join(targets)})"
-    raise SystemExit(f"failed to delete {targets}: {response.status_code} {response.text}")
-
-
-def _es_concrete_indices(index_name: str, *, separator: str) -> list[str]:
-    """这个名字下**具体存在**的物理索引（别名会被解析成它指向的索引）。
-
-    ``_cat/indices`` 而不是 ``GET /<名字>``：后者对别名只回别名本身，拿它去 ``DELETE``
-    会被拒；``_cat`` 回的是真正要删的那些名字。模式里带 ``<名字><分隔符>*`` 才能把
-    同名旧版本一起覆盖到（这正是「版本化之后残留的旧索引」那一类脏数据）。
-    """
-
-    response = httpx.get(
-        f"{_es_base()}/_cat/indices/{index_name},{index_name}{separator}*",
-        params={"h": "index", "format": "json"},
-        timeout=30.0,
-    )
+        return f"deleted({index_name})"
     if response.status_code == 404:
-        return []
-    if response.status_code != 200:
-        raise SystemExit(
-            f"failed to list indices for {index_name}: {response.status_code} {response.text}"
-        )
-    return sorted({str(item["index"]) for item in response.json() if item.get("index")})
+        return "absent"
+    raise SystemExit(f"failed to delete {index_name}: {response.status_code} {response.text}")
 
 
 def _assert_query_analyzer(index_name: str) -> None:
@@ -581,7 +546,6 @@ def _assert_query_analyzer(index_name: str) -> None:
     """
 
     from app.providers.keyword_search.query_builder import QUERY_ANALYZER
-    from app.providers.keyword_search.versioned_index import VERSION_SEPARATOR
 
     response = httpx.get(f"{_es_base()}/{index_name}/_settings", timeout=30.0)
     if response.status_code == 404:
@@ -592,11 +556,7 @@ def _assert_query_analyzer(index_name: str) -> None:
         )
 
     entries = response.json()
-    prefix = f"{index_name}{VERSION_SEPARATOR}"
-    resolved = next(
-        (value for key, value in entries.items() if key == index_name or key.startswith(prefix)),
-        None,
-    )
+    resolved = entries.get(index_name)
     if resolved is None:
         raise SystemExit(
             f"--reuse 的索引 {index_name} 读不到 settings（集群返回的键：{sorted(entries)}）。"
@@ -610,44 +570,6 @@ def _assert_query_analyzer(index_name: str) -> None:
             f"--reuse 的索引 {index_name} 是旧 mapping 建的（没有 {QUERY_ANALYZER} 分析器），"
             "复用它会让查询侧停用词与 minimum_should_match 白改。去掉 --reuse 重建索引。"
         )
-
-
-def _assert_keyword_index_is_versioned(index_name: str) -> int:
-    """``--reuse`` 的版本化守卫：索引里有文档却一条都没 ``index_version`` → 当场停下。
-
-    ## 为什么非停不可（票 #157 §②）
-
-    查询侧按 ``(kb, 版本)`` 过滤（ADR-0025），而旧部署的评测索引是**物理索引**、
-    文档没有这一列。别名的存在让「查得到」看起来正常，实际每一条 ``term`` 过滤都不命中：
-    关键词这一路返回**空**，且不报错——ADR-0025 决策四说的「不报错但配对错了」。
-    症状是本票实测到的 ``q05``：hybrid 的 5 条全是向量那一路给的，字面题归零。
-
-    不守卫的代价很具体：整轮 127 道题的嵌入钱**先花掉**，最后才在关键词探针那里发现
-    「这一路其实没跑」——那是本票想消灭的归因成本。守卫是一次 ES 查询（0 次模型调用），
-    在花任何钱之前就能分辨「迁移漏做」与「全新环境还没建」。
-
-    返回**带版本的文档数**（放行时它等于总条数；总条数为 0 时返回 0，代表「还没有东西」）。
-    """
-
-    total = _es_count(index_name)
-    if total == 0:
-        # 全新环境：第一次构建会自己建 ``<别名>__<版本>`` 并写带版本的文档。
-        return 0
-    response = httpx.post(
-        f"{_es_base()}/{index_name}/_count",
-        json={"query": {"exists": {"field": "index_version"}}},
-        timeout=30.0,
-    )
-    response.raise_for_status()
-    versioned = int(response.json()["count"])
-    if versioned == 0:
-        raise SystemExit(
-            f"--reuse 的索引 {index_name} 有 {total} 条文档，但一条都没有 index_version："
-            "关键词一路会静默空跑（不报错、只表现为字面题归零）。先跑 "
-            "`uv run python scripts/migrate_keyword_alias.py --alias <该索引> --execute` "
-            "把旧索引迁成别名并回填版本，或去掉 --reuse 重建。"
-        )
-    return versioned
 
 
 async def _reset_postgres(db: Any) -> dict[str, int]:
@@ -735,12 +657,6 @@ async def _ensure_knowledge_base(
                 # 同义词表留空：本票的对比里同义词扩展是关的（第三变量），
                 # 留空也顺便证明「默认配置下同义词题只能靠语义兜」。
                 settings={},
-                # 生效索引版本必须显式写（票 #157）：检索范围只认库行上的这一列
-                # （ADR-0025 决策四），而建库那一刻还没有任何东西会替它回填。漏了它，
-                # 这条路只有「--reuse」能跑——全量重建会先删库再建库，于是新库的每个
-                # 请求都被 ``IndexVersionUnresolved``（5xxxx）拦下，看起来像检索坏了。
-                # 写 ``v1`` 与真实索引流水线一致：切片列的默认值与迁移回填值都是它。
-                active_index_version=DEFAULT_INDEX_VERSION,
             )
         )
 
@@ -780,52 +696,15 @@ async def _ensure_document(db: Any, doc: CorpusDoc) -> None:
 async def _index_documents(db: Any, docs: Sequence[CorpusDoc]) -> dict[str, int]:
     """走**真实**索引流水线：切块 → 拼检索文本 → 真实嵌入 → 双写（PG + ES）。
 
-    索引完顺手把**关键词别名切到刚写出来的那一版**（票 #157 §②）。这一步不能留给调用方：
-
-    ``add_chunks`` 按 ``index_version`` 把文档写进各自的**物理**索引
-    （``<别名>__<版本>``），但按 ADR-0025 决策二它**不动别名**——切别名是「激活」的动作
-    （构建流水线里由 ``index_build_service.activate_version`` 做）。评测这条路是自己拼的
-    索引流水线，没有构建服务，所以这里必须自己补上；漏了它，检索查的还是那个名字，
-    而名字要么不存在、要么指向上一轮残留的数据，症状是「关键词一路搜不到，不报错」。
+    ``add_chunks`` 现在直接写进配置里的那一个物理索引（库级版本层删除后不再有按版本
+    隔离的物理索引与别名切换）；索引完之后检索查的就是刚写进去的那份。
     """
 
     service = IndexingService()
     result: dict[str, int] = {}
     for doc in docs:
         result[doc.stem] = await service.index_existing_document(db, doc.document_id)
-    await _activate_keyword_versions(db)
     return result
-
-
-async def _activate_keyword_versions(db: Any) -> dict[str, Any]:
-    """把评测关键词别名指向库里**实际存在的那些版本**（每个版本各切一次，最后一个生效）。
-
-    版本号从 ``chunks`` 列读、不从内存猜：索引写入是这条流水线**刚刚**做的事，库里那一列
-    才是事实（``<别名>__<版本>`` 的物理索引名也由它派生，两处同源才不会错位）。
-    """
-
-    from sqlalchemy import select
-
-    from app.providers.keyword_search import get_keyword_search_provider
-
-    stmt = (
-        select(Chunk.index_version)
-        .where(Chunk.tenant_id == settings.DEV_TENANT_ID, Chunk.kb_id.in_(_eval_kb_ids()))
-        .distinct()
-    )
-    versions = sorted({str(value) for value in (await db.execute(stmt)).scalars().all()})
-    if not versions:
-        return {"alias": settings.ELASTICSEARCH_INDEX, "activated": []}
-
-    provider = get_keyword_search_provider()
-    activated: list[dict[str, Any]] = []
-    for version in versions:
-        # 目标物理索引不存在时先建再切：指向不存在索引的别名会让关键词召回一直
-        # ``NotFoundError``，而那被当成「诚实的空结果」，比一次显式失败难查得多。
-        physical = await provider.ensure_version_index(version)
-        await provider.activate_version(version)
-        activated.append({"version": version, "physical": physical})
-    return {"alias": settings.ELASTICSEARCH_INDEX, "activated": activated}
 
 
 # ─────────────────────────────────────────────────── 标签解析与切片索引（真实切片）
@@ -2238,10 +2117,7 @@ async def _run(args: argparse.Namespace) -> int:
                 raise SystemExit("--reuse 需要已有切片，但评测库里是空的；去掉 --reuse 重跑。")
             # 只复用**同代 mapping** 的索引：跨分析器版本复用会静默测出旧口径的分数。
             _assert_query_analyzer(index_name)
-            # 旧索引没有 index_version 时关键词一路会静默空跑（#157 §②）：先花 0 次模型
-            # 调用把这件事问清楚，别等整轮跑完才在探针那里发现。
-            versioned = _assert_keyword_index_is_versioned(index_name)
-            print(f"reuse    : {len(existing)} chunks (no re-indexing; ES 带版本 {versioned})")
+            print(f"reuse    : {len(existing)} chunks (no re-indexing)")
         else:
             began = time.perf_counter()
             es_state = _reset_elasticsearch(index_name)

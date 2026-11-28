@@ -544,56 +544,37 @@ def test_downgrade_drops_the_added_columns_even_though_they_carried_data() -> No
 # ─────────────────────────────────────────────────────── 模型与迁移必须是同一份契约
 
 
-def test_the_model_declares_the_same_table_as_the_migration() -> None:
-    """ORM 与迁移各写一遍列名，两者一旦漂移，检索读到的就是一张另一张表。"""
+def test_the_version_table_is_no_longer_in_the_model() -> None:
+    """这张表已经整层退场：模型里没有它，``Base.metadata`` 里也没有。
 
-    from app.models.index_version import INDEX_BUILD_STATUSES, IndexBuildVersion
+    历史迁移 ``e41b7c9d2a63`` 一个字都不改（它记录的是当时的事实），但**当前 schema** 里
+    这张表必须已经不存在——否则「库级索引版本身状态机」就只是从代码里搬进了模型。
+    """
 
-    assert IndexBuildVersion.__tablename__ == "index_build_versions"
-    # 本迁移建的十一列之外，这张表后来又加了七列：
-    # * ``params``：第 16 步 #207（这一版构建用的切块参数）；
-    # * ``documents_planned`` / ``doc_version`` / ``documents_done`` / ``converge_deadline``：
-    #   票 #214（构建收敛的四列，迁移 ``b2c7d4e91a35``）；
-    # * ``failed_documents`` / ``redispatch_count``：票 #215 / #225（未入新版本的明细与重投次数，
-    #   迁移 ``c4e8f1b6a2d7``）；
-    # * ``auto_activate``：票 #215 的回归修法（改切块设置收敛成 ready 后立刻激活，迁移
-    #   ``f1a4b8d6c392``）。
-    # 名单仍然是「逐列核对」而不是「至少包含」：漂移的方向可能是**少**一列（迁移漏写），
-    # 那一种用「至少包含」永远验不出来。
-    added_later = {
-        "params",
-        "documents_planned",
-        "doc_version",
-        "documents_done",
-        "converge_deadline",
-        "failed_documents",
-        "redispatch_count",
-        "auto_activate",
-    }
-    assert {column.key for column in IndexBuildVersion.__table__.columns} == set(
-        EXPECTED_VERSION_COLUMNS
-    ) | added_later
-    assert set(EXPECTED_STATUSES) == set(INDEX_BUILD_STATUSES)
+    import importlib
 
-    # 两条部分唯一索引也在模型上：迁移只是把模型里的约束照抄进库。
-    partial = {
-        str(index.dialect_options["postgresql"]["where"])
-        for index in IndexBuildVersion.__table__.indexes
-        if index.dialect_options["postgresql"]["where"] is not None
-    }
-    assert partial == {"status = 'active'", "status = 'building'"}
+    import pytest
+
+    from app.db.base import Base
+
+    assert "index_build_versions" not in Base.metadata.tables
+    with pytest.raises(ModuleNotFoundError):
+        importlib.import_module("app.models.index_version")
 
 
-def test_the_two_existing_tables_declare_the_columns_this_migration_adds() -> None:
+def test_the_two_existing_tables_no_longer_carry_the_version_columns() -> None:
+    """本迁移当年加的两列已经不在当前模型上（删列迁移 ``e8b2c47d91f5``）。
+
+    ``knowledge_bases.active_index_version`` 与 ``usage_events.index_versions`` 都随库级
+    版本层退场；后者早已被 ``b4e7c1a9d2f3`` 换成篇级代，前者是被删掉的那一列。
+    """
+
     from app.models.knowledge_base import KnowledgeBase
     from app.models.usage_event import UsageEvent
 
-    kb_column = KnowledgeBase.__table__.columns["active_index_version"]
-    trace_column = UsageEvent.__table__.columns["index_generations"]
+    assert "active_index_version" not in {column.key for column in KnowledgeBase.__table__.columns}
 
-    assert kb_column.nullable is True, "「还没有生效构建」必须是可表达的状态"
+    trace_column = UsageEvent.__table__.columns["index_generations"]
     assert trace_column.nullable is True, "迁移之前的行没有篇级代可记"
     assert str(trace_column.type) == "JSONB", "映射必须是一个 JSON 对象，不是两个数组"
-    # 库级版本那一列已被 ``b4e7c1a9d2f3`` 换成篇级代（ADR-0025 第 2 次修订第 5 条）：
-    # 「这次查的是哪次构建」在新模型里没有对应物，模型上因此不再有那一列。
     assert "index_versions" not in {column.key for column in UsageEvent.__table__.columns}

@@ -24,7 +24,6 @@ import { useMutation, useQueryClient } from '@tanstack/vue-query'
 import { ElMessage } from 'element-plus'
 import { computed, ref } from 'vue'
 import { useRouter } from 'vue-router'
-
 import ConfirmDialog from '../components/ConfirmDialog.vue'
 import KbSettingsDialog from '../components/KbSettingsDialog.vue'
 import CreateKbDialog from '../components/CreateKbDialog.vue'
@@ -57,7 +56,7 @@ import {
   uploadConsole,
 } from '../services/consoleKb'
 import type { DocumentContent } from '../types/document'
-import type { BuildSummary, KbDocumentRow, KbSummary } from '../types/knowledgeBase'
+import type { KbDocumentRow, KbSummary } from '../types/knowledgeBase'
 import { DOCUMENT_STATUS, isDocumentBusy } from '../utils/documentStatus'
 import { formatTokens } from '../utils/usageFormat'
 
@@ -96,19 +95,30 @@ const router = useRouter()
 const queryClient = useQueryClient()
 
 /**
+ * **本页最近一次写操作**的时刻（上传 / 重建 / 重交 / 回滚 / 删文档 / 改设置成功时打点）。
+ *
+ * 它是刷新策略里「刚写完、再跟几轮」那个活动窗的信号：读模型里没有「谁在写」的时间戳，
+ * 所以这个时刻只能由页面自己记；`useKbQueries` 把它塞进 `refetchInterval`，详见
+ * `lib/refreshPolicy.ts` 的文件头。跨库共用一格——活动窗说的是「这一屏刚动过」，
+ * 不必按库分开（而且分开也不会改变任何一次请求）。
+ */
+const lastWriteAt = ref<number | null>(null)
+
+/**
  * 列表与详情是**两条查询、两种节奏**（第 17 步 #227）：
  *
- * - 列表只读库摘要（四个数字 + 构建状态），空闲时 60 秒慢查一次；
+ * - 列表只读库摘要（篇数 / 切片数 / 待更新数 + 四态计数），空闲时 60 秒慢查一次；
  * - 详情只在弹窗打开时启用，**打开即取**——它以前没有自己的请求，只能读列表上一次轮询的
  *   快照，于是「进详情总要按 F5 才看到真状态」。
  */
-const { query: listQuery, items: kbs, mode: listMode, updatedAt: listUpdatedAt } = useKbListQuery()
+const { query: listQuery, items: kbs, mode: listMode, updatedAt: listUpdatedAt } =
+  useKbListQuery(lastWriteAt)
 /**
- * 为什么此刻在快刷。横幅按它写话——**不能写死一句台词**：`recent`（刚收尾，再跟几轮）
- * 与 `running`（真有在途工作）是两种事实，念同一句话就会出现「都写着已生效，顶上还说
- * 有构建在跑」这种自相矛盾。
+ * 为什么此刻在快刷。横幅按它写话——**不能写死一句台词**：`recent`（刚写完，再跟几轮）
+ * 与 `running`（真有文档在跑）是两种事实，念同一句话就会出现「卡片都写着成功，顶上还说
+ * 有东西在跑」这种自相矛盾。
  */
-const listReason = computed(() => listRefreshReason(listQuery.data.value))
+const listReason = computed(() => listRefreshReason(listQuery.data.value, { writeAt: lastWriteAt.value }))
 const listPending = listQuery.isPending
 const listError = listQuery.error
 const refetchList = listQuery.refetch
@@ -118,19 +128,6 @@ function usagePercent(row: KbSummary): number {
   const usage = row.token_usage
   if (!usage || usage.limit <= 0) return 0
   return Math.round((usage.used / usage.limit) * 100)
-}
-
-/**
- * 构建进度百分比。
- *
- * 两个边界都必须显式处理，否则进度条会给错误信号：`planned === 0` 时回 0 而不是 NaN
- * （空库建版本是合法情形，`0 / 0` 不是）；`done === planned` 时回 100（断言「满了」，
- * 而不是留一格空白让人以为还差一点）。
- */
-function progressPercent(progress: BuildSummary): number {
-  if (progress.planned <= 0) return 0
-  const ratio = (progress.done / progress.planned) * 100
-  return Math.max(0, Math.min(100, Math.round(ratio)))
 }
 
 // 库名搜索仍在客户端：列表是整个租户的（十几到几十条），没有搜索参数的后端接口，
@@ -143,13 +140,25 @@ const filteredKbs = computed(() => {
 })
 
 /**
- * 写操作之后刷新：**失效整组读模型**（列表 / 详情 / 构建都在 `['knowledge-bases']` 前缀下）。
+ * 写操作之后刷新：**失效整组读模型**（列表与详情都在 `['knowledge-bases']` 前缀下）。
  *
  * 为什么用失效而不是 `refetch`：轮询、弹窗关闭后的即时刷新、手动刷新三条路径必须落在同一份
  * 缓存上，否则它们会互相覆盖（上一版就是两份状态互相对打）。
  */
 async function refresh(): Promise<void> {
   await queryClient.invalidateQueries({ queryKey: KB_QUERY_PREFIX })
+}
+
+/**
+ * 写操作成功之后的统一收尾：先打「刚写过」的点，再失效读模型。
+ *
+ * 打点必须**在**刷新之前：`invalidateQueries` 会立即发一次请求，而下一轮 3 秒/60 秒的档位
+ * 是在那次请求收尾时按 `lastWriteAt` 重新算出来的——顺序反了就会先排一轮慢查，
+ * 那一轮最长 60 秒，用户会以为「点了没反应」。
+ */
+async function afterWrite(): Promise<void> {
+  lastWriteAt.value = Date.now()
+  await refresh()
 }
 
 // ───────── 详情弹窗：自己的查询、自己的节奏 ─────────
@@ -168,7 +177,7 @@ const {
   payload: detailPayload,
   mode: detailMode,
   updatedAt: detailUpdatedAt,
-} = useKbDocumentsQuery(detailKbId, detailFilter)
+} = useKbDocumentsQuery(detailKbId, detailFilter, lastWriteAt)
 
 /**
  * 四个筛选参数单独拆出来给模板用：`useKbDocumentsFilter()` 返回的是装在普通对象里的 ref，
@@ -181,23 +190,11 @@ const detailPage = detailFilter.page
 const detailPageSize = detailFilter.pageSize
 
 const detailKb = computed<KbSummary | null>(() => detailPayload.value?.kb ?? null)
-const detailBuild = computed<BuildSummary | null>(() => detailPayload.value?.build ?? null)
 const detailDocuments = computed<KbDocumentRow[]>(() => detailPayload.value?.documents ?? [])
 const detailTotal = computed(() => detailPayload.value?.total ?? 0)
 const detailPending = detailQuery.isPending
 const detailError = detailQuery.error
 const detailFetching = detailQuery.isFetching
-
-/**
- * 当前页里「还没被这一版收进去」的篇数。
- *
- * 只数 `pending`：`failed` 那一批是**已经有结论**的（这一版明确没收它），把它们算进
- * 「还剩多少」会让人一直等一个不会变的数。进度条的分母/分子另有构建行自己记的
- * `done` / `planned`，这一格只是「你正在看的这一页还有几篇没落地」。
- */
-const detailOutstanding = computed(
-  () => detailDocuments.value.filter((row) => row.build_state === 'pending').length,
-)
 
 function openDetail(row: unknown): void {
   if (!isKbRow(row)) return
@@ -218,19 +215,6 @@ function openDetail(row: unknown): void {
 function closeDetail(): void {
   detailKbId.value = null
   detailFilter.page.value = 1
-}
-
-/**
- * 只显示时分秒：这一格的读者在判断「刚不刚」，不在读日历。
- *
- * `activated_at` / `created_at` 都是**带时区**的 ISO 串，交给 `toLocaleTimeString`
- * 走本地时区——直接截字符串会让 UTC 的 05:33 在 +08 的屏幕上显示成 05:33。
- */
-function clockOf(stamp: string | null): string {
-  if (stamp === null) return '时间未知'
-  const at = new Date(stamp)
-  if (Number.isNaN(at.getTime())) return '时间未知'
-  return at.toLocaleTimeString('zh-CN', { hour12: false })
 }
 
 // ───────── 查看原文 ─────────
@@ -275,7 +259,7 @@ const versionsDocTitle = ref('')
 const versionsDocumentStatus = ref<number | null>(null)
 
 /**
- * 版本弹窗认 `document_id`（不是整行）：树每 3 秒被轮询替换，存下来的行会是一份旧快照
+ * 版本弹窗认 `document_id`（不是整行）：详情每 3 秒被轮询替换，存下来的行会是一份旧快照
  * ——「刚回滚完，弹窗里还是旧的当前稿」正是那种只在轮询窗口里出现的假象。
  *
  * 状态取的是点击那一刻的行状态；文档在后端开始重建后行会变成排队中（4），而排队中仍然
@@ -290,8 +274,8 @@ function openVersions(row: unknown): void {
 }
 
 function afterRolledBack(): void {
-  // 回滚只是**受理**（回执 status=4 排队中），切块要重建；进度与终态都靠树轮询，这里先刷一次。
-  void refresh()
+  // 回滚只是**受理**（回执 status=4 排队中），切块要重建成新的一代；终态靠轮询看到。
+  void afterWrite()
 }
 
 // ───────── 新建 / 上传弹窗 ─────────
@@ -320,11 +304,11 @@ function openSettings(row: unknown): void {
 }
 
 function afterCreated(): void {
-  void refresh()
+  void afterWrite()
 }
 
 function continueUploadTo(kbId: string): void {
-  void refresh()
+  void afterWrite()
   openUpload(kbId)
 }
 
@@ -339,8 +323,8 @@ const showResults = computed(() => results.value.length > 0)
 
 async function handleUpload(targetKbId: string, files: UploadFileItem[]): Promise<void> {
   await uploadAll(targetKbId, files)
-  // 上传只登记 + 投递，行状态要等轮询看到终态；这里先刷一次让新文档立刻出现在详情里。
-  void refresh()
+  // 上传只登记 + 投递，行状态要等轮询看到终态；这里先打点 + 刷一次，让新文档立刻出现。
+  void afterWrite()
 }
 
 function rowErrorText(row: UploadResultRow): string {
@@ -381,12 +365,12 @@ const dialogMessage = computed(() => {
   }
   if (action.kind === 'rebuild') {
     const count = action.kb.document_count
-    // 重建 = 产出新版本并激活：全库重嵌入 + 重写 ES，代价是服务器时间与钱。这句必须说清，
+    // 重建 = 按当前设置重切整个库：全库重嵌入 + 重写 ES，代价是服务器时间与钱。这句必须说清，
     // 否则「一次误点」在用户心里只是一次刷新。
     return (
-      `按**当前切块设置**重建《${action.kb.name}》里的 ${count} 篇文档？` +
-      '这会新建一个索引版本、跑完全部文档后自动切换过去（全库重嵌入，需要一段时间）。' +
-      '重建期间这个库的检索仍走旧版本，不受影响。'
+      `按**当前切块设置**重切《${action.kb.name}》里的 ${count} 篇文档？` +
+      '这会把这批文档逐篇重新排队重切（全库重嵌入，需要一段时间）；' +
+      '新产物逐篇建好后自动生效，重建期间检索仍用上一代产物，不受影响。'
     )
   }
   if (action.kind === 'deleteDoc') {
@@ -462,7 +446,7 @@ const deleteKbMutation = useMutation({
   onSuccess: () => {
     ElMessage.success('知识库已删除')
     closeDialog()
-    void refresh()
+    void afterWrite()
   },
   onError: (error) => {
     // 20015 的原文要说给用户听（先删文档），不要翻译成「删除失败」。
@@ -475,7 +459,7 @@ const deleteDocMutation = useMutation({
   onSuccess: () => {
     ElMessage.success('文档已删除')
     closeDialog()
-    void refresh()
+    void afterWrite()
   },
   onError: (error) => {
     ElMessage.error(errorText(error))
@@ -492,7 +476,7 @@ const reindexMutation = useMutation({
   onSuccess: () => {
     ElMessage.success('已重新提交索引，稍后自动刷新')
     closeDialog()
-    void refresh()
+    void afterWrite()
   },
   onError: (error) => {
     ElMessage.error(errorText(error))
@@ -500,19 +484,19 @@ const reindexMutation = useMutation({
 })
 
 /**
- * 重建这个库（第 17 步）：**按当前切块设置**产出新版本，建完自动激活。
+ * 重建这个库（第 17 步·最后一批）：**按当前切块设置**把全库文档逐篇重新排队重切。
  *
- * ## 为什么不是「把每篇文档重新投一遍」
+ * ## 入口语义变了，按钮还是同一个
  *
- * 第一版就是那么做的（逐篇调 `documents/{id}/reindex`），而用户点完当场发现：「需重建」
- * 那条提示一直挂着。原因在语义里——逐篇重建写回的是**当前生效版本**，它的参数快照与版本名
- * 都不变。于是文档确实都重切了一遍，但「生效版本用的是哪套参数」这件事没变，提示当然消不掉；
- * 顺带还让生效版本里混进了两种切法的切片（`params` 快照从此失真）。
+ * 构建层退场前，这条接口会产出一个库级新版本并整版激活；现在它只做「按篇投递」——
+ * 每篇文档各自推进自己的索引代（`documents.current_index_generation`），建好一篇生效一篇。
+ * 所以这个按钮的语义从「重切整个库、等整版切换」变成「重切整个库、逐篇生效」，
+ * 但对用户来说是同一个动作：让**当前切块设置**真正用到每一篇上。
  *
- * 要让新设置真正生效只有一条路：**产出新版本并激活它**。那就是
- * `POST /console/knowledge-bases/{id}/rebuild`（后端 `rebuild_kb`：不改设置，只写一条
- * `kb.rebuild` 审计 + 起一个 `auto_activate=True` 的构建）。所以这个按钮的语义是
- * 「重切整个库」，不是「重排一批任务」。
+ * ## 为什么不能只让用户逐篇点「重建」
+ *
+ * 一个几百篇的库就是几百次点击。全库入口必须存在；逐篇入口（详情表的「重建」）服务的是
+ * 「就这一篇有问题」的场景。
  *
  * ## 为什么只转被点的那个库
  *
@@ -525,10 +509,17 @@ async function rebuildKb(kb: KbSummary): Promise<void> {
   rebuildingKbId.value = kb.kb_id
   try {
     const receipt = await rebuildKbConsole(kb.kb_id)
+    // 回执只剩「这批投了多少、库里一共多少」——没有构建行、没有版本号。
+    // 两个数不等就是碰到单次上限：说清「再点一次继续」，否则用户会以为漏了一部分文档。
+    const dispatchedNote =
+      receipt.documents_dispatched < receipt.documents_total
+        ? `（超过单次上限，完成后再点一次继续）`
+        : ''
     ElMessage.success(
-      `已开始重建（${receipt.build_version}，${receipt.documents_planned} 篇），完成后自动生效`,
+      `已开始重建：这次投递 ${receipt.documents_dispatched} / ${receipt.documents_total} 篇，` +
+        `逐篇建好后生效${dispatchedNote}`,
     )
-    void refresh()
+    void afterWrite()
   } catch (error) {
     ElMessage.error(errorText(error))
   } finally {
@@ -588,16 +579,16 @@ function goRetrieve(kbId: string): void {
 
       <!--
         快刷提示：**只在真的快刷时出现**，且按**真实理由**写话。
-        这里曾经写死一句「有构建在跑或有文档在排队/索引中」，于是「刚收尾、再跟几轮」
-        那一档也念同一句话——而卡片上两个库都写着「已生效」。状态对了、解释错了。
+        这里曾经写死一句台词，于是「刚写完、再跟几轮」那一档也念同一句话——而卡片上都
+        写着成功。状态对了、解释错了。
       -->
       <div
         v-if="listMode === 'live'"
         class="mb-4 flex items-center gap-2 rounded-control border border-[#f0dfae] bg-[#fff8e6] px-3 py-2 text-xs text-[#7a5b00]"
       >
         <el-icon class="is-loading"><Loading /></el-icon>
-        <span v-if="listReason === 'running'">有构建在跑或有文档在排队/索引中，正在自动刷新</span>
-        <span v-else>刚有构建收尾，正在再跟几轮确认（约 30 秒后回到每 60 秒慢查）</span>
+        <span v-if="listReason === 'running'">有文档在排队或索引中，正在自动刷新</span>
+        <span v-else>刚有写入，正在再跟几轮确认（约 30 秒后回到每 60 秒慢查）</span>
       </div>
 
       <p v-if="listPending" class="py-8 text-center text-sm text-muted">正在读取知识库…</p>
@@ -656,13 +647,11 @@ function goRetrieve(kbId: string): void {
             </div>
             <div>
               <!--
-                没有生效版本时显示「未建索引」而不是「0 个分块」：这是两句话——
-                「还没建过索引」要去做一件事（重建），「索引里有 0 片」是另一件事（去查）。
-                一个 0 会让人以为后者，而它其实连版本都还没有。
+                切片数是「当前代 × 当前稿」的合计（与检索口径一致）：没有生效版本这个概念之后，
+                0 就是真的 0 片——「这个库里现在检索得到的东西是 0 片」，不再是「还没建」的委婉说法。
               -->
-              <p v-if="!row.has_active_version" class="metric-value text-amber-600">未建</p>
-              <p v-else class="metric-value">{{ row.chunk_count }}</p>
-              <p class="metric-label">{{ row.has_active_version ? '个分块' : '索引' }}</p>
+              <p class="metric-value">{{ row.chunk_count }}</p>
+              <p class="metric-label">个分块</p>
             </div>
             <div>
               <p class="metric-value">{{ row.chunk_size }}</p>
@@ -705,96 +694,10 @@ function goRetrieve(kbId: string): void {
           </div>
 
           <!--
-            「重建中 37 / 500」（第 17 步 #216 / #227 改）：进度条读构建行自己记的
-            documents_done / planned；旁边那行「N 篇未入新版本」直接来自失败明细。
-
-            现在 `build` 也带**已有结论**的那一次（`ready` / `active` / `failed`），
-            所以收尾之后还能说一句「v5 已生效」——以前构建一结束这一块整块消失，
-            用户既看不出刚才成没成，也看不出新旧版本换没换。
+            两条按篇可数的提示，**各自都是独立的 `v-if`**（不组成 v-if / v-else-if 链）：
+            链式条件里插一条会把后面那条挂到新条件上，「没有待更新篇」时失败提示就整条消失
+            ——而那正是最该被看见的一个。
           -->
-          <div
-            v-if="row.build && row.build.status === 'building'"
-            class="mt-1 rounded-md bg-sky-50 px-2 py-1.5"
-          >
-            <div class="flex items-center justify-between gap-2 text-xs text-sky-800">
-              <span>
-                重建中 {{ row.build.done }} / {{ row.build.planned }}
-                <span class="text-sky-600">（{{ row.build.version }}）</span>
-              </span>
-              <span v-if="row.build.failure_count > 0" class="font-medium text-amber-700">
-                {{ row.build.failure_count }} 篇未入新版本
-              </span>
-            </div>
-            <div
-              class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sky-100"
-              role="progressbar"
-              :aria-valuenow="progressPercent(row.build)"
-              aria-valuemin="0"
-              aria-valuemax="100"
-            >
-              <div
-                class="h-full rounded-full bg-sky-500 transition-[width] duration-500"
-                :style="{ width: progressPercent(row.build) + '%' }"
-              />
-            </div>
-            <ul v-if="row.build.failures.length > 0" class="mt-1 space-y-0.5">
-              <li
-                v-for="failure in row.build.failures"
-                :key="failure.document_id"
-                class="truncate text-[11px] text-amber-700"
-              >
-                · {{ failure.title }}（{{ failure.reason }}）
-              </li>
-            </ul>
-            <p
-              v-if="row.build.failure_count > row.build.failures.length"
-              class="mt-0.5 text-[11px] text-muted"
-            >
-              还有 {{ row.build.failure_count - row.build.failures.length }} 篇未列出
-            </p>
-          </div>
-
-          <p
-            v-else-if="row.build && row.build.status === 'ready'"
-            class="mt-1 rounded-md bg-sky-50 px-2 py-1 text-xs text-sky-800"
-          >
-            {{ row.build.version }} 已建好（{{ row.build.done }} / {{ row.build.planned }} 篇），
-            正在切换为生效版本…
-          </p>
-
-          <!-- 收尾之后的那句话：这一版成没成、现在服务的是哪一版、**什么时候生效的**。
-               「已生效」不配时刻只是一句话——用户没法核对它是刚刚还是十分钟前。 -->
-          <p
-            v-else-if="row.build && row.build.status === 'active'"
-            class="mt-1 rounded-md bg-emerald-50 px-2 py-1 text-xs text-emerald-700"
-          >
-            {{ row.build.version }} 已生效（{{ row.build.done }} / {{ row.build.planned }} 篇）
-            <span v-if="row.build.activated_at" class="text-emerald-600">
-              · {{ clockOf(row.build.activated_at) }}
-            </span>
-            <span v-if="row.build.failure_count > 0" class="text-amber-700">
-              · {{ row.build.failure_count }} 篇未入这一版
-            </span>
-          </p>
-
-          <p
-            v-else-if="row.build && row.build.status === 'failed'"
-            class="mt-1 rounded-md bg-red-50 px-2 py-1 text-xs text-red-700"
-          >
-            上次构建未完成（{{ row.build.done }} / {{ row.build.planned }} 篇），检索仍走上一版。
-          </p>
-          <!-- 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。**必须放在整条 v-if 链之外**——
-               插在 `v-else-if` 之间会把后面那条「上次构建未完成」挂到新条件上，于是构建失败
-               的库在「没有待更新篇」时看不到失败提示，而那正是最该被看见的一个。
-               文案写「设置与产物不一致」而不是「设置改过」：判据里也包含从没记过指纹的
-               存量篇，那批不是「改过」。 -->
-          <p
-            v-if="row.stale_documents > 0"
-            class="mt-1 text-xs text-amber-700"
-            data-testid="kb-stale-documents"
-          >
-            {{ row.stale_documents }} 篇的设置与产物不一致，重建后生效
-          </p>
 
           <!-- 四态里最该被看见的那一个：有失败就要能一眼看到，而不是点进详情去数。 -->
           <p
@@ -804,18 +707,16 @@ function goRetrieve(kbId: string): void {
             {{ row.status_counts.failed }} 篇索引失败（点开详情看原因）
           </p>
 
-          <!--
-            「需重建」（第 16 步 #207）：切块设置是索引期旋钮，改了不重建，读到的还是旧切法。
-            这条提示必须看得见——否则「我明明改了阈值」只能在评测数字上慢慢发现。
-          -->
-          <!-- 库级那句只在「没有按篇可数的待更新篇」时才出现：有 N 篇时上面那行已经说了
-               同一件事，而且说得更具体（差几篇）。两句都亮的结果是同一张卡片挂两条一样的
-               提示，处置也一样——那种重复会让人开始跳过这一整块。 -->
+          <!-- 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。这是构建层退场后**唯一**一句
+               库级「该重建了」的提示（库级需重建靠生效版本参数，随版本一起没了），也是这次
+               改造的对外读数。文案写「设置与产物不一致」而不是「设置改过」：判据里也包含
+               从没记过指纹的存量篇，那批不是「改过」。 -->
           <p
-            v-if="row.needs_rebuild && !(row.stale_documents > 0)"
-            class="mt-1 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-700"
+            v-if="row.stale_documents > 0"
+            class="mt-1 text-xs text-amber-700"
+            data-testid="kb-stale-documents"
           >
-            当前切块设置与生效索引版本不一致，需要重建后才生效。
+            {{ row.stale_documents }} 篇的设置与产物不一致，重建后生效
           </p>
 
           <!-- 按钮要阻止冒泡，否则会顺带触发整卡的「详情」 -->
@@ -824,22 +725,19 @@ function goRetrieve(kbId: string): void {
             <el-button link type="primary" size="small" @click="goRetrieve(row.kb_id)">检索</el-button>
             <el-button link type="primary" size="small" @click="openSettings(row)">设置</el-button>
             <!--
-              重建（第 17 步）：按**当前**切块设置产出新版本，建完自动激活。
+              重建（第 17 步·最后一批）：按**当前**切块设置把全库文档逐篇重新排队重切。
 
-              它同时是「需重建」那条提示的配套动作——那条横幅说的是「生效版本的参数快照与当前
-              设置不一致」，只有产出新版本才消得掉；逐篇重建写回的是旧版本，消不掉（第一版就
-              踩了这个坑，用户点完发现提示还在）。
+              它同时是「N 篇待更新」那条提示的配套动作——只有按当前设置重切一遍，那批篇的产物
+              才会与设置一致；逐篇点「重建」也能做到，但几百篇的库就是几百次点击。
 
-              `build.status === 'building'`（这个库正在跑构建）时禁用：并发构建由后端守
-              （50001），这里只是别给一个注定失败的按钮。
+              空库时禁掉按钮是有意义的（后端会拒「没有可投递的文档」），正被点的那一次也不允许
+              再点（同一张卡片连点两次会发两次全库投递）。
             -->
             <el-button
               link
               type="primary"
               size="small"
-              :disabled="
-                rebuildingKbId !== null || row.build?.status === 'building' || row.document_count === 0
-              "
+              :disabled="rebuildingKbId !== null || row.document_count === 0"
               :loading="rebuildingKbId === row.kb_id"
               @click="askRebuild(row)"
             >
@@ -898,9 +796,7 @@ function goRetrieve(kbId: string): void {
             </h2>
             <p v-if="detailKb !== null" class="mt-0.5 text-xs text-muted">
               {{ SPLIT_LABELS[detailKb.split_strategy] ?? detailKb.split_strategy }} ·
-              {{ detailKb.document_count }} 篇 /
-              <span v-if="detailKb.has_active_version">{{ detailKb.chunk_count }} 块</span>
-              <span v-else class="text-amber-600">未建索引</span>
+              {{ detailKb.document_count }} 篇 / {{ detailKb.chunk_count }} 块
               · 窗口 {{ detailKb.chunk_size }} token
             </p>
             <!--
@@ -928,62 +824,6 @@ function goRetrieve(kbId: string): void {
       </template>
 
       <div class="space-y-3">
-        <!--
-          构建进度也在弹窗里（以前只在卡片上）：弹窗一开就把它盖住了，而它恰恰是
-          「这个库到底在不在动」的唯一真信号——文档状态在构建期间几乎一直是「成功」。
-        -->
-        <div
-          v-if="detailBuild !== null && detailBuild.status === 'building'"
-          class="rounded-control bg-sky-50 px-3 py-2"
-        >
-          <div class="flex flex-wrap items-center justify-between gap-2 text-xs text-sky-800">
-            <span>
-              重建中 {{ detailBuild.done }} / {{ detailBuild.planned }}
-              <span class="text-sky-600">（{{ detailBuild.version }}，完成后自动切换）</span>
-            </span>
-            <span v-if="detailOutstanding > 0" class="text-amber-700">
-              本页还有 {{ detailOutstanding }} 篇未入这一版
-            </span>
-          </div>
-          <div
-            class="mt-1 h-1.5 w-full overflow-hidden rounded-full bg-sky-100"
-            role="progressbar"
-            :aria-valuenow="progressPercent(detailBuild)"
-            aria-valuemin="0"
-            aria-valuemax="100"
-          >
-            <div
-              class="h-full rounded-full bg-sky-500 transition-[width] duration-500"
-              :style="{ width: progressPercent(detailBuild) + '%' }"
-            />
-          </div>
-        </div>
-        <p
-          v-else-if="detailBuild !== null && detailBuild.status === 'ready'"
-          class="rounded-control bg-sky-50 px-3 py-1.5 text-xs text-sky-800"
-        >
-          {{ detailBuild.version }} 已建好（{{ detailBuild.done }} / {{ detailBuild.planned }} 篇），
-          正在切换为生效版本…
-        </p>
-        <p
-          v-else-if="detailBuild !== null && detailBuild.status === 'active'"
-          class="rounded-control bg-emerald-50 px-3 py-1.5 text-xs text-emerald-700"
-        >
-          {{ detailBuild.version }} 已生效（{{ detailBuild.done }} / {{ detailBuild.planned }} 篇）
-          <span v-if="detailBuild.activated_at" class="text-emerald-600">
-            · {{ clockOf(detailBuild.activated_at) }}
-          </span>
-          <span v-if="detailBuild.failure_count > 0" class="text-amber-700">
-            · {{ detailBuild.failure_count }} 篇未入这一版
-          </span>
-        </p>
-        <p
-          v-else-if="detailBuild !== null && detailBuild.status === 'failed'"
-          class="rounded-control bg-red-50 px-3 py-1.5 text-xs text-red-700"
-        >
-          上次构建未完成（{{ detailBuild.done }} / {{ detailBuild.planned }} 篇），检索仍走上一版。
-        </p>
-
         <div class="flex flex-wrap items-center gap-2">
           <!-- 关键字交给**服务端**（库可能几千篇，前端只拿一页）：输入有 300ms 防抖。 -->
           <el-input
@@ -1040,26 +880,6 @@ function goRetrieve(kbId: string): void {
             <el-table-column label="状态" width="110">
               <template #default="{ row }">
                 <StatusBadge :status="row.status" :error-message="row.error_message" />
-              </template>
-            </el-table-column>
-
-            <!--
-              第二根轴（第 17 步 #227）：它与**当前这一版构建**的关系。
-              构建期间文档状态几乎一直是「成功」（每篇只有自己那一秒是「索引中」），
-              所以「还在重建」这件事只能靠这一列说出来。
-            -->
-            <el-table-column label="本次构建" width="110">
-              <template #default="{ row }">
-                <span v-if="row.build_state === 'done'" class="text-xs text-emerald-700">
-                  ✓ 已重建
-                </span>
-                <span v-else-if="row.build_state === 'pending'" class="text-xs text-amber-700">
-                  ⏳ 待重建
-                </span>
-                <span v-else-if="row.build_state === 'failed'" class="text-xs text-red-600">
-                  ✗ 未入版
-                </span>
-                <span v-else class="text-xs text-slate-400">—</span>
               </template>
             </el-table-column>
 
@@ -1201,7 +1021,7 @@ function goRetrieve(kbId: string): void {
       @upload="handleUpload"
     />
 
-    <KbSettingsDialog :kb-id="settingsKbId" @updated="refresh" />
+    <KbSettingsDialog :kb-id="settingsKbId" @updated="afterWrite" />
 
     <ConfirmDialog
       v-model="confirmOpen"

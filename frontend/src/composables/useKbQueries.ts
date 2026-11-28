@@ -24,14 +24,26 @@ import type { KbDocumentsQuery } from '../types/knowledgeBase'
  * 「什么时候快刷」是纯函数（`lib/refreshPolicy.ts`），这里只负责把它的结果塞进
  * `refetchInterval`。判定留在 composable 里就没法单测——它要么依赖定时器，要么依赖组件
  * 生命周期，而这类 bug（「停了但看不出来」）恰好只在那两处显形。
+ *
+ * ## `writeAt` 为什么要从外面传进来
+ *
+ * 构建层退场后，「刚写完、再跟几轮」这个活动窗需要一个写入时刻，而读模型里没有它
+ * （摘要只带计数，详情带的是每篇的落库时刻）。所以由页面在写操作成功时打一个点
+ * （`Date.now()`）传进来：它是**本页最近一次写操作**的时刻，跨库共用一格。
+ * `refetchInterval` 的回调在每次取数收尾时都会被重新求值，而写操作之后页面一定会
+ * `invalidateQueries` 立即取一次——所以这一格一改，下一次排的就是 3 秒，而不是等慢查那一档
+ * 的 60 秒走完。窗口过期后，3 秒那一轮自己会把它算成 idle 并换回 60 秒（判据是纯函数，
+ * 时间在每次求值时重新读）。
  */
 
-/** 列表查询：卡片网格。 */
-export function useKbListQuery() {
+/** 列表查询：卡片网格。`writeAt` = 本页最近一次写操作的时刻（见文件头）。 */
+export function useKbListQuery(writeAt: Ref<number | null>) {
   const query = useQuery({
     queryKey: KB_LIST_QUERY_KEY,
     queryFn: fetchKbList,
-    refetchInterval: (q) => intervalOf(listRefreshMode(q.state.data)),
+    // 时间信号在每次排定下一轮时重新读：`at` 缺省，走真实的 Date.now()。
+    refetchInterval: (q) =>
+      intervalOf(listRefreshMode(q.state.data, { writeAt: writeAt.value })),
     // 后台也要跑：慢查那一档的职责是「别人动过这个库」，而别人的动作不分你的窗口在不在前台。
     // 默认 false 会让「切到另一个标签页」时心跳整段不发——那正是验收第 6 条要的场景。
     refetchIntervalInBackground: true,
@@ -40,7 +52,9 @@ export function useKbListQuery() {
   })
 
   const items = computed(() => query.data.value?.items ?? [])
-  const mode = computed<RefreshMode>(() => listRefreshMode(query.data.value))
+  const mode = computed<RefreshMode>(() =>
+    listRefreshMode(query.data.value, { writeAt: writeAt.value }),
+  )
   const updatedAt = computed(() => query.data.value?.generated_at ?? null)
 
   return { query, items, mode, updatedAt }
@@ -146,7 +160,11 @@ export function useKbDocumentsFilter(): KbDocumentsFilter {
 }
 
 /** 详情查询：只在弹窗打开（`kbId` 非空）时启用，打开即取。 */
-export function useKbDocumentsQuery(kbId: Ref<string | null>, filter: KbDocumentsFilter) {
+export function useKbDocumentsQuery(
+  kbId: Ref<string | null>,
+  filter: KbDocumentsFilter,
+  writeAt: Ref<number | null>,
+) {
   const debouncer = createDebouncer(KEYWORD_DEBOUNCE_MS)
   const debouncedKeyword = ref('')
   watch(filter.keyword, (value) => {
@@ -180,13 +198,16 @@ export function useKbDocumentsQuery(kbId: Ref<string | null>, filter: KbDocument
       return fetchKbDocuments(id, params.value)
     },
     enabled: computed(() => kbId.value !== null),
-    refetchInterval: (q) => intervalOf(documentsRefreshMode(q.state.data)),
+    refetchInterval: (q) =>
+      intervalOf(documentsRefreshMode(q.state.data, { writeAt: writeAt.value })),
     refetchIntervalInBackground: true,
     refetchOnWindowFocus: true,
   })
 
   const payload = computed(() => query.data.value ?? null)
-  const mode = computed<RefreshMode>(() => documentsRefreshMode(query.data.value))
+  const mode = computed<RefreshMode>(() =>
+    documentsRefreshMode(query.data.value, { writeAt: writeAt.value }),
+  )
   const updatedAt = computed(() => query.data.value?.generated_at ?? null)
 
   // 只回页面真正用得到的东西：`debouncedKeyword` 是内部状态（页面不该看到一个"半成品关键字"）。

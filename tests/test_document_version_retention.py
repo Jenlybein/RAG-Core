@@ -5,7 +5,7 @@
 * **仓储层**（``sqlite+aiosqlite`` 的真 SQL）：窗口查询只挑「这篇文档、稿号在某条界
   以下、状态是归档」的行；删除只按给定稿号打，且**不提交**（提交点只有事务入口那一处）；
 * **服务层**（真 SQL + 一个记账用的切片存储替身）：五稿造出来 → 清理后剩 3/4/5；
-  切片的删除键是两个维度（``doc_version`` 给了、``index_version`` 留空）；先删切片再删
+  切片的删除键是两个维度（``doc_version`` 给了、``generation`` 留空）；先删切片再删
   版本行；中途失败整笔回滚，不留「切片已删、版本行还在」的半份；
 * **运维脚本**（``main(argv) -> int``）：默认 dry-run 只打印将删什么、``--apply`` 才动手、
   ``--retain`` 覆盖默认 3、退出码沿用 ``_ops_common.exit_code_for``。
@@ -361,7 +361,6 @@ class _RecordingStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -369,7 +368,7 @@ class _RecordingStore:
             {
                 "document_id": document_id,
                 "tenant_id": tenant_id,
-                "index_version": index_version,
+                "generation": generation,
                 "doc_version": doc_version,
             }
         )
@@ -423,14 +422,14 @@ async def test_five_drafts_shrink_to_the_last_three(retention_db: AsyncSession) 
 
 
 @pytest.mark.asyncio
-async def test_chunk_deletion_key_carries_the_draft_and_leaves_index_version_open(
+async def test_chunk_deletion_key_carries_the_draft_and_leaves_the_generation_open(
     retention_db: AsyncSession,
 ) -> None:
-    """删切片的键是**两维**的：``doc_version=这一稿``、``index_version=None``。
+    """删切片的键是**两维**的：``doc_version=这一稿``、``generation=None``。
 
-    这一稿的切片可能散落在**多个索引版本**里（每次重建写一套），只删当前索引版本会留下
-    旧索引版本下的幽灵切片——它们永远不会被任何查询命中（检索 pin 在生效版本上），
-    却会一直占着向量库与关键词索引。所以清理必须按稿号清、版本放开。
+    这一稿的切片可能散落在**多个代**里（每次重建写一套），只删当前代会留下旧代的幽灵切片
+    ——它们永远不会被任何查询命中（检索只认文档当前代），却会一直占着向量库与关键词索引。
+    所以清理必须按稿号清、代放开。
     """
 
     await _seed_five_drafts(retention_db)
@@ -443,7 +442,7 @@ async def test_chunk_deletion_key_carries_the_draft_and_leaves_index_version_ope
             retention_db, document=document, retain=3, stores=[store]
         )
 
-    assert [call["index_version"] for call in store.calls] == [None, None]
+    assert [call["generation"] for call in store.calls] == [None, None]
     assert [call["doc_version"] for call in store.calls] == [2, 1]
     assert {call["tenant_id"] for call in store.calls} == {TENANT_ID}, (
         "清除也强制带租户（ADR-0006）"

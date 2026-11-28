@@ -16,7 +16,6 @@ from typing import Any
 import pdf_inspector
 import pytest
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.providers.parsers.pdf import PdfParser
 from app.utils.markdown_splitter import MarkdownStructuredSplitter
@@ -147,14 +146,12 @@ def test_the_pointer_column_is_named_current_version() -> None:
     assert column.server_default.arg == "1", "存量行迁移后按第 1 稿解释"
 
 
-def test_current_version_is_versioned_separately_from_index_version() -> None:
+def test_current_version_is_versioned_separately_from_the_index_generation() -> None:
     """稿次随切片走：引用三元组（文档 + 稿次 + 切片）里要能写稿次。
 
-    这里只钉住「默认第 1 稿」与「与索引版本是两个概念」。doc_versions 表与
-    「默认只查当前稿」的约束属后续的票，见 ADR-0005。
+    这里只钉住「默认第 1 稿」，以及它和**索引代**（``documents.current_index_generation``）
+    不是同一个值域的概念。doc_versions 表与「默认只查当前稿」的约束见 ADR-0005。
     """
 
     column = Document.__table__.c.current_version
-    assert column.server_default.arg == "1", "存量行迁移后按第 1 稿解释"
-    # 索引版本是重建批次标识（v1 / v2），与稿号不是同一个值域的概念。
-    assert DEFAULT_INDEX_VERSION == "v1"
+    assert column.server_default.arg == "1", "存量迁移后按第 1 稿解释"

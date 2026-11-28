@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.exceptions import AppError, ErrorCode
-from app.models.index_version import resolve_index_versions
 from app.observability import emit_retrieval_trace_off_loop
 from app.observability.stage_timing import StageTimer
 from app.services.decompose import merge_sub_query_results
@@ -87,10 +86,10 @@ async def decompose_retrieve(
     log_id = new_retrieval_log_id()
     trace_id = trace_id_for(log_id)
 
-    visible_kbs = [await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
-    # 只为那条「库还没有生效版本就拦下」的守卫：版本值已不进召回条件、也不进归属索引
-    # （后者改记篇级代，ADR-0025 第 2 次修订第 5 条）；守卫留到第二支删列迁移那天。
-    resolve_index_versions(visible_kbs)
+    for kb_id in kb_ids:
+        # 可见性守卫（缺失 / 跨租户 / 不在 Key 的数据范围 → 20008）；返回值不承载版本信息，
+        # 库级版本层删除后也没有别的值要读。
+        await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id)
 
     # ① 分解：复用 Research 的 Planner（同一份提示词与收敛规则），只取子查询文本。
     factory = llm_factory or _default_llm_factory

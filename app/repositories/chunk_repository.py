@@ -25,7 +25,7 @@ documents.current_version`` 由 :func:`app.models.chunk.current_draft_filter` �
 from collections.abc import Iterable, Sequence
 from typing import Any
 
-from sqlalchemy import Integer, Select, and_, delete, distinct, func, or_, select
+from sqlalchemy import Integer, Select, and_, delete, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
@@ -295,124 +295,6 @@ async def count_by_kb_ids(
     return int((await db.execute(stmt)).scalar_one())
 
 
-async def count_by_index_version(
-    db: AsyncSession, kb_id: str, *, tenant_id: str, index_version: str
-) -> int:
-    """该库在**某一个版本**里有多少切片（``ready`` 前的四项计数之一，ADR-0025）。
-
-    与 ``count_by_kb_ids`` 的区别只有一个：这里问的是「某一次构建产出了多少片」，而那
-    一条问的是「按生效版本能不能召回」。两者都带租户，也都不许省。
-    """
-
-    stmt = (
-        select(func.count())
-        .select_from(Chunk)
-        .where(
-            Chunk.tenant_id == tenant_id,
-            Chunk.kb_id == kb_id,
-            Chunk.index_version == index_version,
-        )
-    )
-    return int((await db.execute(stmt)).scalar_one())
-
-
-async def list_indexed_document_ids(
-    db: AsyncSession,
-    kb_id: str,
-    *,
-    tenant_id: str,
-    index_version: str,
-    doc_version: int | None = None,
-) -> set[str]:
-    """**续建的判据**：这一版（可选：这一稿）下已经有切片的文档 id 集合。
-
-    一次读回整批，而不是逐篇问 ``count``：续建要判几百上千篇，逐篇问会让「派活」这一步
-    自己变成一次 N+1 扫描（而它本来就只是投递前的一步准备）。
-
-    ``COUNT(DISTINCT ...)`` 那条（:func:`count_documents_in_version`）回答「够不够」，
-    这一条回答「哪几篇够了」——两者共用同一份过滤条件，不许各自漂移。
-    """
-
-    stmt = (
-        select(Chunk.document_id)
-        .distinct()
-        .where(
-            Chunk.kb_id == kb_id,
-            Chunk.tenant_id == tenant_id,
-            Chunk.index_version == index_version,
-        )
-    )
-    if doc_version is not None:
-        stmt = stmt.where(Chunk.doc_version == doc_version)
-    rows = (await db.execute(stmt)).scalars().all()
-    return {str(row) for row in rows}
-
-
-async def count_documents_in_version(
-    db: AsyncSession,
-    kb_id: str,
-    *,
-    tenant_id: str,
-    index_version: str,
-    doc_version: int | None = None,
-) -> int:
-    """**构建收敛的真值**：该库在这一版（可选：这一稿）下已经有切片的**文档数**。
-
-    为什么数文档而不是数切片：「这次构建把该建的篇都建了吗」问的是篇。数切片会把「一篇
-    切了很多片」读成「建了很多篇」，一篇成功、其余全丢的构建照样显得够——那正是
-    [ADR-0034](../../docs/adr/0034-queue-state-and-build-convergence.md) 决策四要堵的
-    判据漂移。所以是 ``COUNT(DISTINCT document_id)``，不是 ``COUNT(*)``。
-
-    ``doc_version`` 为 ``None`` 时**不按稿过滤**（把这一版里出现的全部文档数进来）。这是给
-    「没有稿号快照的老行」留的一支：没有快照就没有立场替它挑一稿，而这一版里的切片本来就
-    只能是这一轮构建产出的（新版本号的第一次写入）。正常构建都会带上快照。
-
-    与 :func:`count_by_index_version` 的分工：那一条数**片**（四项计数对账要的是片的数量
-    与向量 / 关键词一致），这一条数**篇**（收敛判据）。两个口径各说各的事，不许互相冒名。
-    """
-
-    stmt = select(func.count(distinct(Chunk.document_id))).where(
-        Chunk.tenant_id == tenant_id,
-        Chunk.kb_id == kb_id,
-        Chunk.index_version == index_version,
-    )
-    if doc_version is not None:
-        stmt = stmt.where(Chunk.doc_version == doc_version)
-    return int((await db.execute(stmt)).scalar_one())
-
-
-async def list_document_ids_in_version(
-    db: AsyncSession,
-    kb_id: str,
-    *,
-    tenant_id: str,
-    index_version: str,
-    doc_version: int | None = None,
-) -> set[str]:
-    """:func:`count_documents_in_version` 的**名单**版本：这一版里已经有切片的文档 id。
-
-    三个调用方，问的都是「还差哪几篇」：
-
-    * 清扫器的**缺篇重投**（数够了就够了，但它要知道重投哪几篇）；
-    * 运维脚本的排查（「这几篇为什么没进来」）；
-    * 控制面详情页的**第二根轴**（``console_kb_service._build_state_of``：逐篇判
-      「它进没进这一版」）。查询接口 #227 之后这一处也成了生产调用方，
-      所以这个函数不再是「只服务运维脚本」。
-
-    取集合而不是列表：调用方要做的是差集。
-    """
-
-    stmt = select(Chunk.document_id).where(
-        Chunk.tenant_id == tenant_id,
-        Chunk.kb_id == kb_id,
-        Chunk.index_version == index_version,
-    )
-    if doc_version is not None:
-        stmt = stmt.where(Chunk.doc_version == doc_version)
-    stmt = stmt.distinct()
-    return {str(value) for value in (await db.execute(stmt)).scalars().all()}
-
-
 def _draft_counts_statement(document_ids: Sequence[str]) -> Select[Any]:
     """对账用的分组语句：``(文档, 稿号) → 几片``（#179）。
 
@@ -452,39 +334,6 @@ async def draft_counts(
     rows = (await db.execute(_draft_counts_statement(document_ids))).all()
     return [
         (str(document_id), int(doc_version), int(count)) for document_id, doc_version, count in rows
-    ]
-
-
-async def list_section_identity_rows(
-    db: AsyncSession, *, tenant_id: str, kb_id: str, index_version: str
-) -> list[tuple[str, str, str, str | None]]:
-    """这个版本里**每个节**的 ``(文档 id, 标题路径, section_id, parent_section_id)``。
-
-    核对脚本用它验「节的身份证」自洽（#143）：同一节的多片共享同一份 meta，所以先
-    ``distinct`` 再判——一片一行会让「这条节被判了 20 次」变成报错条数虚高。
-
-    读的是 ``metadata``（JSONB）里的三个键，不是新增的列：节的身份从第 3 步起就随切片
-    落在那份 meta 里，核对不该为了它改表（改表要连带改迁移与回填，而这里只需要「读得到」）。
-    """
-
-    stmt = (
-        select(
-            Chunk.document_id,
-            Chunk.meta["heading_path"].astext,
-            Chunk.meta["section_id"].astext,
-            Chunk.meta["parent_section_id"].astext,
-        )
-        .where(
-            Chunk.tenant_id == tenant_id,
-            Chunk.kb_id == kb_id,
-            Chunk.index_version == index_version,
-        )
-        .distinct()
-    )
-    rows = (await db.execute(stmt)).all()
-    return [
-        (str(document_id), str(path or ""), str(section_id or ""), parent or None)
-        for document_id, path, section_id, parent in rows
     ]
 
 
@@ -574,17 +423,14 @@ async def count_by_document_ids(
 
 
 def serving_chunk_filters() -> tuple[Any, ...]:
-    """「**当前代 × 当前稿**」那两轴——检索、界面计数、构建真值共用的口径（现场九·第四步）。
+    """「**当前代 × 当前稿**」那两轴——检索、界面计数共用同一份口径（现场九·第四步）。
 
     ## 为什么这里不再有 ``index_version``
 
-    改造前「哪一份产物生效」是**库级**的（``index_version = 生效版本``），一条相等条件就够。
-    下放到篇级之后，那一条件不再等价于「这篇现在用哪一代」：构建往新版本写时，切片在新版本里、
-    而库的生效版本还是旧的——两个条件相乘会把刚建好的那篇从检索里**整个抹掉**（真库实测
-    ``count_in_kb("v4") = 0``）。所以这里只看代，**不再看库级版本**。
-
-    代价写在明处：一篇重建完就立刻按新一代服务，不再等整个库切过去。这正是本步的取舍
-    ——放弃「全库原子切换」，接受「重建进行到一半」的中间态（ADR-0025 第 2 次修订）。
+    「哪一份产物生效」曾经是**库级**的（``chunks.index_version = 库的生效版本``），一条
+    相等条件就够；那一层（库列 + 版本表 + 版本化物理索引）现在已经整层删除。判据只剩代：
+    一篇重建完就立刻按新一代服务，不再等整个库切过去。这正是本步的取舍——放弃「全库原子
+    切换」，接受「重建进行到一半」的中间态（ADR-0025 第 2 次修订）。
 
     前置条件与 :func:`app.models.chunk.current_draft_filter` 相同：语句必须 JOIN 了
     ``documents``（两条都由库求值：``chunks.doc_version = documents.current_version`` 与

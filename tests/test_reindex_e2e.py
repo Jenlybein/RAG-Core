@@ -30,13 +30,11 @@ from sqlalchemy.ext.asyncio import async_sessionmaker, create_async_engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.core.config import settings
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.models.plan import PLAN_FREE, Plan
 from app.models.tenant import Tenant
 from tests.support.sqlite_schema import KNOWLEDGE_BASES_DDL
-from app.repositories import knowledge_base_repository
 from app.services.indexing_service import IndexingService
 from app.utils.status import DocumentStatus
 from app.utils.text_splitter import SplitPiece
@@ -82,7 +80,6 @@ class _RecordingStore:
         document_id: str,
         *,
         tenant_id: str,
-        index_version: str | None = None,
         doc_version: int | None = None,
         generation: int | None = None,
     ) -> None:
@@ -181,15 +178,6 @@ def reindex_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Sim
     enqueued: list[dict[str, Any]] = []
     store = _RecordingStore()
     monkeypatch.setattr(routes, "enqueue_document", lambda **kwargs: enqueued.append(kwargs))
-
-    # 写入目标版本来自库上的生效版本（#142）。这条用例的临时库里只有 ``documents``，
-    # 于是把「问库要版本」这一步换成固定的 v1——与迁移回填、索引流水线的老行为同值。
-    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
-        return DEFAULT_INDEX_VERSION
-
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
 
     main.app.dependency_overrides[get_async_db] = _request_session
     main.app.dependency_overrides[get_current_key] = lambda: DevKeyContext(tenant_id=TENANT_ID)

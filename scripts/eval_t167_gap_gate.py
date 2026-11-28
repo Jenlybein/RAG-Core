@@ -1194,16 +1194,15 @@ def _retrieval_options() -> Any:
     )
 
 
-async def _resolve_scope(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> dict[str, str]:
-    """``kb_id → 生效索引版本``：走生产那一个构造点（``resolve_index_versions``）。
+async def _resolve_scope(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> list[str]:
+    """这次评测覆盖哪些库（读库行确认它们确实在）：范围只剩「库」这一维。
 
-    不手写 ``"v1"``：版本是服务端的决定，评测抄一个常量就等于把「这次查的是哪一版」写成
-    一个随时会过期的假设。
+    库级索引版本删除之后，检索范围不再要求「每库一个生效版本」——按篇级代对齐就够了，
+    所以这里返回的是**库 id 列表**，不是 ``kb_id → 版本`` 的映射。
     """
 
     from sqlalchemy import select
 
-    from app.models.index_version import resolve_index_versions
     from app.models.knowledge_base import KnowledgeBase
 
     rows = (
@@ -1217,7 +1216,9 @@ async def _resolve_scope(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> d
         .scalars()
         .all()
     )
-    return dict(resolve_index_versions(list(rows)))
+    return [str(kb.id) for kb in rows]
+
+
 
 
 async def _db_evidence_fetch(sql: str, params: Mapping[str, Any]) -> Mapping[str, int]:
@@ -1292,7 +1293,7 @@ def case_record(case: EvalCase, outcome: Any) -> dict[str, Any]:
 
 
 async def run_case(
-    case: EvalCase, *, index_versions: Mapping[str, str], fivefold: bool = True
+    case: EvalCase, *, kb_scope: Sequence[str], fivefold: bool = True
 ) -> dict[str, Any]:
     """跑**生产完整链路**一次：真实检索内核 + 真实模型角色 + 完整五步状态机。
 
@@ -1309,7 +1310,7 @@ async def run_case(
         search = build_kernel_search(
             db,
             tenant_id=TENANT_ID,
-            kb_ids=list(index_versions),
+            kb_ids=list(kb_scope),
             options=_retrieval_options(),
             on_degraded=degraded.append,
         )
@@ -1328,7 +1329,7 @@ async def run_case(
 
 
 async def _run_without_rejudge(
-    case: EvalCase, *, index_versions: Mapping[str, str]
+    case: EvalCase, *, kb_scope: Sequence[str]
 ) -> dict[str, Any]:
     """跑一次**关掉 ⑤** 的 Research——对照条件，只在评测进程内生效。
 
@@ -1348,7 +1349,7 @@ async def _run_without_rejudge(
 
     research_service._Run._rejudge = _noop  # type: ignore[method-assign]
     try:
-        return await run_case(case, index_versions=index_versions, fivefold=False)
+        return await run_case(case, kb_scope=kb_scope, fivefold=False)
     finally:
         research_service._Run._rejudge = original  # type: ignore[method-assign]
 
@@ -1357,7 +1358,7 @@ async def run_cases(
     cases: Sequence[EvalCase],
     *,
     budget: Budget,
-    index_versions: Mapping[str, str],
+    kb_scope: Sequence[str],
     fivefold: bool = True,
 ) -> list[dict[str, Any]]:
     """逐题跑，**先预留再发**：预留不到就不跑下一题（预算是一条上限，不是一句愿望）。"""
@@ -1369,9 +1370,9 @@ async def run_cases(
             budget.skip(case.case_id, per_case)
             continue
         if fivefold:
-            record = await run_case(case, index_versions=index_versions)
+            record = await run_case(case, kb_scope=kb_scope)
         else:
-            record = await _run_without_rejudge(case, index_versions=index_versions)
+            record = await _run_without_rejudge(case, kb_scope=kb_scope)
         budget.charge(int(record["model_calls"]))
         records.append(record)
         print(
@@ -2097,9 +2098,9 @@ async def run_all(
     from app.db.async_session import AsyncSessionLocal
 
     async with AsyncSessionLocal() as db:
-        index_versions = await _resolve_scope(db, tenant_id=TENANT_ID, kb_ids=KB_IDS)
-    print(f"索引版本：{index_versions}")
-    environment["index_versions"] = index_versions
+        kb_scope = await _resolve_scope(db, tenant_id=TENANT_ID, kb_ids=KB_IDS)
+    print(f"检索范围（库）：{kb_scope}")
+    environment["kb_scope"] = kb_scope
 
     budget = Budget()
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -2164,7 +2165,7 @@ async def run_all(
                 await run_cases(
                     cases,
                     budget=budget,
-                    kb_ids=list(index_versions),
+                    kb_ids=list(kb_scope),
                     fivefold=fivefold,
                 )
             )

@@ -1,14 +1,14 @@
-"""控制面读模型**真 SQL**（第 17 步 #227）：分页 / 过滤计数 / 状态分组 / 库级切片数 / 构建行。
+"""控制面读模型**真 SQL**（第 17 步 #227）：分页 / 过滤计数 / 状态分组 / 库级切片数。
 
 ## 为什么另起一个文件
 
-`tests/test_console_kb_read_model.py` 验的是**服务层口径**（把哪个参数交给仓储、第二根轴
-怎么判），为了盯住那个它把仓储全换成了记账替身——于是**这四条新 SQL 一行都没被执行过**。
-而分页最容易出的错恰好只在真 SQL 上显形：
+`tests/test_console_kb_read_model.py` 验的是**服务层口径**（把哪个参数交给仓储），为了盯住
+那个它把仓储全换成了记账替身——于是**这几条 SQL 一行都没被执行过**。而分页最容易出的错恰好
+只在真 SQL 上显形：
 
 * `total` 与这一页用**不是同一组条件** → 页数与实际行数打架，界面上表现为「翻到第 3 页是空的」；
 * `offset/limit` 写反、`ORDER BY` 少了 tiebreaker → 同一页在两次请求之间重复或漏行；
-* 建树那条聚合会把「别的库 / 别的租户 / 别的版本」的切片数算进来。
+* 建树那条聚合会把「别的库 / 别的租户 / 别的代」的切片数算进来。
 
 所以这里在**内存 SQLite** 上真跑一遍（与 `test_document_chunk_count.py` 同一套办法：
 `create_async_engine("sqlite+aiosqlite://")` + 手写 DDL + 播种）。SQLite 与 PostgreSQL 在这
@@ -23,19 +23,13 @@ from typing import Any, AsyncIterator
 
 import pytest
 import pytest_asyncio
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
-from app.models.index_version import (
-    INDEX_BUILD_ACTIVE,
-    INDEX_BUILD_ARCHIVED,
-    INDEX_BUILD_BUILDING,
-    INDEX_BUILD_FAILED,
-)
-from app.models.chunk import Chunk, current_draft_filter
+from app.models.chunk import Chunk
 from app.models.document import Document
 from app.providers.vectorstores.pgvector import build_scope_filter
-from app.repositories import chunk_repository, document_repository, index_version_repository
+from app.repositories import chunk_repository, document_repository
 from app.utils.status import DocumentStatus
 
 TENANT = "tenant-read-model-sql"
@@ -77,35 +71,9 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
-    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
     doc_version INTEGER NOT NULL DEFAULT 1,
-    -- 现场九新增：这一片属于该文档的第几代索引产物（模型 insert 会带上它）。
+    -- 现场九：这一片属于该文档的第几代索引产物（模型 insert 会带上它）。
     generation INTEGER NOT NULL DEFAULT 1
-)
-"""
-
-BUILD_VERSIONS_DDL = """
-CREATE TABLE index_build_versions (
-    id VARCHAR(36) NOT NULL PRIMARY KEY,
-    tenant_id VARCHAR(64) NOT NULL,
-    kb_id VARCHAR(36) NOT NULL,
-    version VARCHAR(32) NOT NULL,
-    status VARCHAR(32) NOT NULL,
-    document_count INTEGER NOT NULL DEFAULT 0,
-    chunk_count INTEGER NOT NULL DEFAULT 0,
-    error_message TEXT,
-    activated_at DATETIME,
-    archived_at DATETIME,
-    redispatch_count INTEGER NOT NULL DEFAULT 0,
-    documents_planned INTEGER NOT NULL DEFAULT 0,
-    documents_done INTEGER NOT NULL DEFAULT 0,
-    failed_documents JSON,
-    doc_version INTEGER,
-    params JSON,
-    auto_activate BOOLEAN NOT NULL DEFAULT 0,
-    converge_deadline DATETIME,
-    created_at DATETIME NOT NULL,
-    updated_at DATETIME NOT NULL
 )
 """
 
@@ -153,24 +121,24 @@ def _documents() -> list[dict[str, Any]]:
 def _chunks() -> list[dict[str, Any]]:
     """切片：**两轴各留一个"不该数"的格子"**，外加别的库 / 别的租户。
 
-    * ``doc-1`` 当前稿 2 片（v2 生效版本）+ v1 旧版本 3 片 → 只该数 2；
-    * ``doc-2`` 当前稿 1 片；
-    * ``doc-3`` 当前稿在 v2 下 0 片（失败那篇）；
-    * ``doc-4`` 指针在第 2 稿，v2 下有 1 片；第 1 稿的两片不该数；
+    * ``doc-1`` 当前代（第 2 代）2 片 + 上一代（第 1 代）3 片 → 只该数 2；
+    * ``doc-2`` 当前代 1 片；
+    * ``doc-4`` 指针在第 2 稿，当前代下有 1 片；第 1 稿那一片不该数；
     * ``doc-6`` / ``doc-7`` 各有切片，但属于别的库 / 别的租户。
     """
 
     layout = [
-        ("c-doc1-v2-a", TENANT, KB, "doc-1", "v2", 1),
-        ("c-doc1-v2-b", TENANT, KB, "doc-1", "v2", 1),
-        ("c-doc1-v1-a", TENANT, KB, "doc-1", "v1", 1),
-        ("c-doc1-v1-b", TENANT, KB, "doc-1", "v1", 1),
-        ("c-doc1-v1-c", TENANT, KB, "doc-1", "v1", 1),
-        ("c-doc2-v2", TENANT, KB, "doc-2", "v2", 1),
-        ("c-doc4-v2", TENANT, KB, "doc-4", "v2", 2),
-        ("c-doc4-v1-old", TENANT, KB, "doc-4", "v2", 1),
-        ("c-doc6-v2", TENANT, OTHER_KB, "doc-6", "v2", 1),
-        ("c-doc7-v2", OTHER_TENANT, KB, "doc-7", "v2", 1),
+        ("c-doc1-g2-a", TENANT, KB, "doc-1", 2, 1),
+        ("c-doc1-g2-b", TENANT, KB, "doc-1", 2, 1),
+        ("c-doc1-g1-a", TENANT, KB, "doc-1", 1, 1),
+        ("c-doc1-g1-b", TENANT, KB, "doc-1", 1, 1),
+        ("c-doc1-g1-c", TENANT, KB, "doc-1", 1, 1),
+        ("c-doc2-g2", TENANT, KB, "doc-2", 2, 1),
+        ("c-doc4-g2", TENANT, KB, "doc-4", 2, 2),
+        # 同一代下的旧稿：稿号谓词要把它挡住。
+        ("c-doc4-old-draft", TENANT, KB, "doc-4", 2, 1),
+        ("c-doc6-g2", TENANT, OTHER_KB, "doc-6", 2, 1),
+        ("c-doc7-g2", OTHER_TENANT, KB, "doc-7", 2, 1),
     ]
     return [
         {
@@ -178,53 +146,20 @@ def _chunks() -> list[dict[str, Any]]:
             "tenant_id": tenant_id,
             "kb_id": kb_id,
             "document_id": document_id,
-            "index_version": index_version,
+            "generation": generation,
             "doc_version": doc_version,
-            # 「哪一代」取代了「哪个版本」成为可见性判据（现场九·第四步）：v2 那批是**当前
-            # 代**（第 2 代），v1 那批是被替下来的**上一代**（第 1 代，留着给回滚，不参与任何
-            # 现行读数）。生产的代从 1 起（``DEFAULT_GENERATION``），不是从 0 起。
-            "generation": 2 if index_version == "v2" else 1,
         }
-        for chunk_id, tenant_id, kb_id, document_id, index_version, doc_version in layout
-    ]
-
-
-def _build_versions() -> list[dict[str, Any]]:
-    """四行构建：``building`` 最旧、``failed`` 最新——``latest_for_kb`` 必须选 ``building``。
-
-    「最新」与「进行中」在这里**故意冲突**：若实现按时间取最新，它会拿到 ``failed``，
-    而那正是要防的错（用户点进详情时，界面要看的往往是还在跑的那次）。
-    """
-
-    layout = [
-        ("build-v1", "v1", INDEX_BUILD_ARCHIVED, 5, 5, BASE),
-        ("build-v2", "v2", INDEX_BUILD_ACTIVE, 5, 5, BASE + timedelta(hours=1)),
-        ("build-v3", "v3", INDEX_BUILD_BUILDING, 5, 2, BASE + timedelta(hours=2)),
-        ("build-v4", "v4", INDEX_BUILD_FAILED, 5, 5, BASE + timedelta(hours=3)),
-    ]
-    return [
-        {
-            "id": build_id,
-            "tenant_id": TENANT,
-            "kb_id": KB,
-            "version": version,
-            "status": status,
-            "planned": planned,
-            "done": done,
-            "created_at": created,
-            "updated_at": created,
-        }
-        for build_id, version, status, planned, done, created in layout
+        for chunk_id, tenant_id, kb_id, document_id, generation, doc_version in layout
     ]
 
 
 @pytest_asyncio.fixture
 async def session() -> AsyncIterator[AsyncSession]:
-    """一个干净的**内存库**，播种上面那三张表。"""
+    """一个干净的**内存库**，播种上面那两张表。"""
 
     engine = create_async_engine("sqlite+aiosqlite://")
     async with engine.begin() as connection:
-        for ddl in (DOCUMENTS_DDL, CHUNKS_DDL, BUILD_VERSIONS_DDL):
+        for ddl in (DOCUMENTS_DDL, CHUNKS_DDL):
             await connection.exec_driver_sql(ddl)
         for row in _documents():
             await connection.exec_driver_sql(
@@ -234,7 +169,7 @@ async def session() -> AsyncIterator[AsyncSession]:
                 "token_count, error_message, created_at, updated_at) VALUES "
                 f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', '{row['title']}', "
                 f"'body', 'markdown', {row['status']}, {row['current_version']}, "
-                # 每篇都**有产物**：当前代是第 2 代（切片的 v2 那批），第 1 代是留下的上一代。
+                # 每篇都**有产物**：当前代是第 2 代（切片的 g2 那批），第 1 代是留下的上一代。
                 # 计数口径要「当前代 × 当前稿」两条齐全，旧代那一份不许进来。
                 f"2, NULL, NULL, 0, 0, "
                 f"NULL, '{row['created_at'].strftime('%Y-%m-%d %H:%M:%S')}', "
@@ -243,20 +178,10 @@ async def session() -> AsyncIterator[AsyncSession]:
         for row in _chunks():
             await connection.exec_driver_sql(
                 "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, "
-                "metadata, index_version, doc_version, generation) VALUES "
+                "metadata, doc_version, generation) VALUES "
                 f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', "
                 f"'{row['document_id']}', 'body', '[]', '{{}}', "
-                f"'{row['index_version']}', {row['doc_version']}, {row['generation']})"
-            )
-        for row in _build_versions():
-            await connection.exec_driver_sql(
-                "INSERT INTO index_build_versions (id, tenant_id, kb_id, version, status, "
-                "documents_planned, documents_done, failed_documents, doc_version, params, "
-                "auto_activate, converge_deadline, created_at, updated_at) VALUES "
-                f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', '{row['version']}', "
-                f"'{row['status']}', {row['planned']}, {row['done']}, '[]', 1, NULL, 1, NULL, "
-                f"'{row['created_at'].strftime('%Y-%m-%d %H:%M:%S')}', "
-                f"'{row['updated_at'].strftime('%Y-%m-%d %H:%M:%S')}')"
+                f"{row['doc_version']}, {row['generation']})"
             )
     async with AsyncSession(engine, expire_on_commit=False) as active:
         yield active
@@ -403,12 +328,12 @@ async def test_the_kb_chunk_total_is_the_generation_times_the_current_draft(
     """``kb-main`` 的合计 = 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片。
 
     不该算的：doc-1 那三片**旧代**、doc-4 第 1 稿那一片（旧稿）、doc-6（别的库）、
-    doc-7（别的租户）。只锁稿号的老实现在这里会给出 9，只锁版本也会给出别的数。
+    doc-7（别的租户）。只锁稿号的老实现在这里会给出 9；只锁「有产物」也会给出别的数。
     """
 
     assert await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 4
 
-    # 旧代不算：把 doc-1 的第 0 代切片算进来会变成 7——每次重建都涨一份，永不回落。
+    # 旧代不算：把 doc-1 第 1 代的切片算进来会变成 7——每次重建都涨一份，永不回落。
     assert await chunk_repository.count_by_document_ids(session, ["doc-1"], tenant_id=TENANT) == {
         "doc-1": 2
     }, "同一篇的旧代切片不参与「现在有多少内容」"
@@ -441,62 +366,14 @@ async def test_the_kb_chunk_total_matches_the_sum_of_the_per_document_counts(
     assert sum(per_document.values()) == total
 
 
-# ── 构建行 ────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-async def test_latest_returns_the_building_row_even_when_a_newer_one_exists(
-    session: AsyncSession,
-) -> None:
-    """进行中优先于更新：``v3``（building）赢过更晚创建的 ``v4``（failed）。
-
-    只看时间会让界面在「还在跑」的时候显示那条已经失败的行——进度条变成一句「未完成」，
-    而实际上工人正在跑。
-    """
-
-    row = await index_version_repository.latest_for_kb(session, KB, tenant_id=TENANT)
-    assert row is not None
-    assert row.version == "v3"
-    assert row.status == INDEX_BUILD_BUILDING
-
-
-@pytest.mark.asyncio
-async def test_when_nothing_is_building_latest_returns_the_newest_row(
-    session: AsyncSession,
-) -> None:
-    """没有进行中的行时取最新：``v4``。收尾之后详情页仍需要上下文（刚才那次成没成）。"""
-
-    # 把 building 那行改成 archived，模拟「这一次收尾了」。
-    await session.execute(
-        text("UPDATE index_build_versions SET status = 'archived' WHERE id = 'build-v3'")
-    )
-    row = await index_version_repository.latest_for_kb(session, KB, tenant_id=TENANT)
-    assert row is not None
-    assert row.version == "v4"
-
-
-@pytest.mark.asyncio
-async def test_latest_never_crosses_tenant_or_kb(session: AsyncSession) -> None:
-    """别的库 / 别的租户的构建行不参与：不存在的组合回 ``None``。"""
-
-    assert await index_version_repository.latest_for_kb(session, OTHER_KB, tenant_id=TENANT) is None
-    assert await index_version_repository.latest_for_kb(session, KB, tenant_id=OTHER_TENANT) is None
-
-
 @pytest.mark.asyncio
 async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunks(
     session: AsyncSession,
 ) -> None:
     """**召回与计数切出同一批切片**：两处用的是同一组谓词，不是两种等价拼写。
 
-    ## 改造后它们真的同形
-
-    改造前两处各写一套：召回是 ``scope_filter({kb_id: 生效版本})``（每库一个版本的 OR
-    配对），计数是「当前稿 + 生效版本」。要证明二者等价得靠一条用例——而那正是隐患
-    所在：它们只是**碰巧**在「每篇一份产物且恰在生效版本里」时一致。
-
-    现在召回与计数都是 ``kb 范围 + 当前代 + 当前稿`` 三条
-    （``build_scope_filter`` + ``serving_chunk_filters``），库里算出来的就是同一批行。
+    召回是 ``kb 范围 + 当前代 + 当前稿``（``build_scope_filter`` + ``serving_chunk_filters``），
+    计数是 ``kb + 当前代 + 当前稿``——库里算出来的就是同一批行。
     """
 
     rows_scope = await session.execute(
@@ -527,68 +404,6 @@ async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunk
 
 
 @pytest.mark.asyncio
-async def test_the_version_axis_would_have_missed_a_freshly_built_document(
-    session: AsyncSession,
-) -> None:
-    """**为什么版本那根轴必须退场**：构建期间刚建好的一篇，版本谓词会把它整篇漏掉。
-
-    造法就是生产里真实发生的顺序：某篇的指针推到第 3 代、切片写在 ``v3`` 里，而库的
-    ``active_index_version`` 还停在 ``v2``（还没切换）。这时：
-
-    * 按版本取（改造前的召回）：0 片——这篇从检索里整个消失；
-    * 按代取（改造后）：2 片，与新指针一致。
-
-    这不是理论差别：真库上量到过 ``count_in_kb`` = 0，因为代数与版本两个条件相乘。
-    """
-
-    await session.execute(
-        text(
-            "UPDATE documents SET current_index_generation = 3, current_version = 1 "
-            "WHERE id = 'doc-2'"
-        )
-    )
-    await session.execute(
-        text(
-            "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, "
-            "metadata, index_version, doc_version, generation) VALUES "
-            "('c-doc2-v3-a', :tenant, :kb, 'doc-2', '正文', '[]', '{}', 'v3', 1, 3), "
-            "('c-doc2-v3-b', :tenant, :kb, 'doc-2', '正文', '[]', '{}', 'v3', 1, 3)"
-        ),
-        {"tenant": TENANT, "kb": KB},
-    )
-
-    by_version = await session.execute(
-        select(Chunk.id)
-        .join(Document, Document.id == Chunk.document_id)
-        .where(
-            Chunk.tenant_id == TENANT,
-            Chunk.kb_id == KB,
-            Chunk.index_version == "v2",
-            Chunk.document_id == "doc-2",
-            current_draft_filter(),
-        )
-    )
-    by_generation = await session.execute(
-        select(Chunk.id)
-        .join(Document, Document.id == Chunk.document_id)
-        .where(
-            Chunk.tenant_id == TENANT,
-            Chunk.kb_id == KB,
-            Chunk.document_id == "doc-2",
-            *chunk_repository.serving_chunk_filters(),
-        )
-    )
-
-    assert [row[0] for row in by_version.all()] == ["c-doc2-v2"], (
-        "版本谓词只看见**旧代**那一份：它按库级版本取，而新代写在还没上线的 v3 里"
-    )
-    assert sorted(row[0] for row in by_generation.all()) == [
-        "c-doc2-v3-a",
-        "c-doc2-v3-b",
-    ], "代谓词按新指针取回新代那两片——版本轴给的答案已经过期了"
-
-
-@pytest.mark.asyncio
 async def test_only_the_current_generation_comes_back_when_three_are_present(
     session: AsyncSession,
 ) -> None:
@@ -600,17 +415,28 @@ async def test_only_the_current_generation_comes_back_when_three_are_present(
     """
 
     await session.execute(
-        text("UPDATE documents SET current_index_generation = 3 WHERE id = 'doc-2'")
+        Document.__table__.update().where(Document.id == "doc-2").values(current_index_generation=3)
     )
-    for generation in (1, 2, 3):
+    for generation, chunk_id in (
+        (1, "c-doc2-old-g1"),
+        # 第 2 代已经有播种时写下的 ``c-doc2-g2``（指针还在 2 时它是当前代）。
+        (3, "c-doc2-g3"),
+    ):
         await session.execute(
-            text(
-                "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, "
-                "metadata, index_version, doc_version, generation) VALUES "
-                f"('c-doc2-g{generation}', :tenant, :kb, 'doc-2', '正文', '[]', '{{}}', "
-                f"'v3', 1, {generation})"
-            ),
-            {"tenant": TENANT, "kb": KB},
+            Chunk.__table__.insert().values(
+                **{
+                    "id": chunk_id,
+                    "tenant_id": TENANT,
+                    "kb_id": KB,
+                    "document_id": "doc-2",
+                    "content": "正文",
+                    "embedding": [0.0] * 1536,
+                    # 列名是 ``metadata``（ORM 属性叫 ``meta``）；Core insert 认列名。
+                    "metadata": {},
+                    "doc_version": 1,
+                    "generation": generation,
+                }
+            )
         )
 
     rows = await session.execute(

@@ -626,7 +626,7 @@ def load_archived_max_rounds(path: Path | None = None) -> dict[str, Any]:
     return {
         "run": (path or ARCHIVED_RUN).relative_to(REPO_ROOT).as_posix(),
         "generated_at": payload.get("generated_at"),
-        "index_versions": payload.get("index_versions"),
+        "kb_scope": payload.get("kb_scope"),
         "llm_chain": payload.get("llm_chain"),
         "max_rounds_ids": [str(item["id"]) for item in chosen],
         "questions": questions,
@@ -828,16 +828,15 @@ def _scope_of(source: str) -> dict[str, Any]:
     }
 
 
-async def _resolve_scope(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> dict[str, str]:
-    """``kb_id → 生效索引版本``：走生产那一个构造点（``resolve_index_versions``）。
+async def _resolve_scope(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> list[str]:
+    """这次评测覆盖哪些库（读库行确认它们确实在）：范围只剩「库」这一维。
 
-    不手写 ``"v2"``：版本是服务端的决定，评测抄一个常量就等于把「这次查的是哪一版」写成一个
-    随时会过期的假设。
+    库级索引版本删除之后，检索范围不再要求「每库一个生效版本」——按篇级代对齐就够了，
+    所以这里返回的是**库 id 列表**，不是 ``kb_id → 版本`` 的映射。
     """
 
     from sqlalchemy import select
 
-    from app.models.index_version import resolve_index_versions
     from app.models.knowledge_base import KnowledgeBase
 
     rows = (
@@ -851,7 +850,9 @@ async def _resolve_scope(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> d
         .scalars()
         .all()
     )
-    return dict(resolve_index_versions(list(rows)))
+    return [str(kb.id) for kb in rows]
+
+
 
 
 async def _document_stems(db: Any, *, tenant_id: str, kb_ids: Sequence[str]) -> dict[str, str]:
@@ -948,7 +949,7 @@ async def probe_candidates(
 async def collect_probes(*, top_k: int = B_TOP_K) -> tuple[list[Probe], dict[str, Any]]:
     """两组候选各跑一趟探针（0 次模型调用），返回探针结果与本轮环境。
 
-    两套语料的关键词别名不同（物理索引是 ``<别名>__<版本>``），所以**按语料分两趟**：换别名
+    两套语料的关键词索引不同（各有一个独立的索引名），所以**按语料分两趟**：换索引名
     必须换 ``settings``，而一次进程只有一个 ``settings``——这与「一次只查一套语料」的生产形态
     一致，不是评测的取巧。
     """
@@ -965,7 +966,7 @@ async def collect_probes(*, top_k: int = B_TOP_K) -> tuple[list[Probe], dict[str
         ):
             scope = _scope_of(source)
             _apply_eval_settings(keyword_alias=scope["keyword_alias"])
-            versions = await _resolve_scope(
+            kb_scope = await _resolve_scope(
                 db, tenant_id=scope["tenant_id"], kb_ids=scope["kb_ids"]
             )
             stems = await _document_stems(db, tenant_id=scope["tenant_id"], kb_ids=scope["kb_ids"])
@@ -973,7 +974,7 @@ async def collect_probes(*, top_k: int = B_TOP_K) -> tuple[list[Probe], dict[str
             search = build_kernel_search(
                 db,
                 tenant_id=scope["tenant_id"],
-                kb_ids=list(versions),
+                kb_ids=list(kb_scope),
                 options=_retrieval_options(top_k),
                 on_degraded=degraded.append,
             )
@@ -993,7 +994,7 @@ async def collect_probes(*, top_k: int = B_TOP_K) -> tuple[list[Probe], dict[str
                 "tenant_id": scope["tenant_id"],
                 "kb_ids": scope["kb_ids"],
                 "keyword_alias": scope["keyword_alias"],
-                "index_versions": versions,
+                "kb_scope": kb_scope,
                 "documents": len(stems),
                 "candidates": len(candidates),
             }
@@ -1434,7 +1435,7 @@ async def run_case(
     case: EvalCase,
     *,
     fivefold: bool,
-    index_versions: Mapping[str, str],
+    kb_scope: Sequence[str],
     stems: Mapping[str, str],
     archive: Mapping[str, Any] | None = None,
     condition: str | None = None,
@@ -1460,7 +1461,7 @@ async def run_case(
             inner = build_kernel_search(
                 db,
                 tenant_id=scope["tenant_id"],
-                kb_ids=list(index_versions),
+                kb_ids=list(kb_scope),
                 options=_retrieval_options(case.top_k),
                 on_degraded=degraded.append,
             )
@@ -1636,7 +1637,7 @@ async def run_cases(
     *,
     budget: Budget,
     fivefold: bool,
-    versions_by_source: Mapping[str, Mapping[str, str]],
+    kb_scope_by_source: Mapping[str, Mapping[str, str]],
     stems_by_source: Mapping[str, Mapping[str, str]],
     archive: Mapping[str, Any] | None = None,
     condition: str | None = None,
@@ -1652,7 +1653,7 @@ async def run_cases(
         record = await run_case(
             case,
             fivefold=fivefold,
-            kb_ids=list(versions_by_source[case.source]),
+            kb_ids=list(kb_scope_by_source[case.source]),
             stems=stems_by_source[case.source],
             archive=archive,
             condition=condition,
@@ -1799,21 +1800,21 @@ def a_cases(archive: Mapping[str, Any]) -> list[EvalCase]:
 async def _scopes_by_source() -> tuple[
     dict[str, dict[str, str]], dict[str, dict[str, str]], dict[str, Any]
 ]:
-    """两套语料各自的索引版本与文档词干（一次进程只查一遍）。"""
+    """两套语料各自的检索库与文档词干（一次进程只查一遍）。"""
 
     from app.db.async_session import AsyncSessionLocal
 
-    versions_by_source: dict[str, dict[str, str]] = {}
+    kb_scope_by_source: dict[str, dict[str, str]] = {}
     stems_by_source: dict[str, dict[str, str]] = {}
     environment: dict[str, Any] = {"sources": {}}
     async with AsyncSessionLocal() as db:
         for source in (REFS_SOURCE, EVAL_SOURCE):
             scope = _scope_of(source)
             _apply_eval_settings(keyword_alias=scope["keyword_alias"])
-            versions = await _resolve_scope(
+            kb_scope = await _resolve_scope(
                 db, tenant_id=scope["tenant_id"], kb_ids=scope["kb_ids"]
             )
-            versions_by_source[source] = versions
+            kb_scope_by_source[source] = kb_scope
             stems_by_source[source] = await _document_stems(
                 db, tenant_id=scope["tenant_id"], kb_ids=scope["kb_ids"]
             )
@@ -1821,10 +1822,10 @@ async def _scopes_by_source() -> tuple[
                 "tenant_id": scope["tenant_id"],
                 "kb_ids": scope["kb_ids"],
                 "keyword_alias": scope["keyword_alias"],
-                "index_versions": versions,
+                "kb_scope": kb_scope,
                 "documents": len(stems_by_source[source]),
             }
-    return versions_by_source, stems_by_source, environment
+    return kb_scope_by_source, stems_by_source, environment
 
 
 async def run_all(*, groups: Sequence[str], out_dir: Path) -> dict[str, Any]:
@@ -1838,7 +1839,7 @@ async def run_all(*, groups: Sequence[str], out_dir: Path) -> dict[str, Any]:
         f"（硬顶 {predicted['budget']}）"
     )
     chain = await _bind_model_chain()
-    versions_by_source, stems_by_source, environment = await _scopes_by_source()
+    kb_scope_by_source, stems_by_source, environment = await _scopes_by_source()
 
     probes: list[Probe] = []
     cases_b: list[EvalCase] = []
@@ -1873,7 +1874,7 @@ async def run_all(*, groups: Sequence[str], out_dir: Path) -> dict[str, Any]:
             "archive": {
                 "run": archive.get("run"),
                 "generated_at": archive.get("generated_at"),
-                "index_versions": archive.get("index_versions"),
+                "kb_scope": archive.get("kb_scope"),
                 "llm_chain": archive.get("llm_chain"),
                 "max_rounds_ids": archive.get("max_rounds_ids"),
             },
@@ -1905,7 +1906,7 @@ async def run_all(*, groups: Sequence[str], out_dir: Path) -> dict[str, Any]:
                 cases_a,
                 budget=budget,
                 fivefold=True,
-                versions_by_source=versions_by_source,
+                kb_scope_by_source=kb_scope_by_source,
                 stems_by_source=stems_by_source,
                 archive=archive,
             )
@@ -1920,7 +1921,7 @@ async def run_all(*, groups: Sequence[str], out_dir: Path) -> dict[str, Any]:
                     cases_b,
                     budget=budget,
                     fivefold=fivefold,
-                    versions_by_source=versions_by_source,
+                    kb_scope_by_source=kb_scope_by_source,
                     stems_by_source=stems_by_source,
                     archive=archive,
                 )
@@ -1941,7 +1942,7 @@ async def run_all(*, groups: Sequence[str], out_dir: Path) -> dict[str, Any]:
                 tight_cases,
                 budget=budget,
                 fivefold=True,
-                versions_by_source=versions_by_source,
+                kb_scope_by_source=kb_scope_by_source,
                 stems_by_source=stems_by_source,
                 archive=archive,
                 condition=CONDITION_TIGHT,
@@ -2270,9 +2271,9 @@ def render_report(payload: Mapping[str, Any]) -> str:
         f"- 检索：`hybrid`（不重排、不改写）⏐ B 组 `top_k={B_TOP_K}`、A 组 `top_k={A_TOP_K}`"
     )
     lines.append(
-        f"- 语料：refs（租户 `{refs_env.get('tenant_id')}`、别名 `{refs_env.get('keyword_alias')}`、"
-        f"索引 `{refs_env.get('index_versions')}`）⏐ eval（租户 `{eval_env.get('tenant_id')}`、"
-        f"别名 `{eval_env.get('keyword_alias')}`、索引 `{eval_env.get('index_versions')}`）"
+        f"- 语料：refs（租户 `{refs_env.get('tenant_id')}`、索引 `{refs_env.get('keyword_alias')}`、"
+        f"库 `{refs_env.get('kb_scope')}`）⏐ eval（租户 `{eval_env.get('tenant_id')}`、"
+        f"索引 `{eval_env.get('keyword_alias')}`、库 `{eval_env.get('kb_scope')}`）"
     )
     lines.append("")
 

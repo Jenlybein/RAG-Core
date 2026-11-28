@@ -65,7 +65,6 @@ CREATE TABLE chunks (
     content TEXT NOT NULL,
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
-    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
     doc_version INTEGER NOT NULL DEFAULT '1',
     generation INTEGER NOT NULL DEFAULT 1
 )
@@ -285,8 +284,8 @@ def _seed(engine: Any) -> None:
                 session.execute(
                     text(
                         "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, "
-                        "embedding, metadata, index_version, doc_version, generation) VALUES "
-                        "(:id, :tenant, :kb, :doc, :content, '[]', '{}', 'v1', :draft, :gen)"
+                        "embedding, metadata, doc_version, generation) VALUES "
+                        "(:id, :tenant, :kb, :doc, :content, '[]', '{}', :draft, :gen)"
                     ),
                     {
                         "id": f"c-v{number}-g{generation}",

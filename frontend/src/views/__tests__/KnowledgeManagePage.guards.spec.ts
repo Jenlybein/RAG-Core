@@ -8,10 +8,12 @@
  * 1. 卡片底部的「详情 →」曾经是一行**裸文字**，而它所在的按钮组带 `@click.stop`（防误触发
  *    整卡点击）。于是点它既不发请求、也不冒泡到卡片的 `@click` —— 用户看到的是「点了没反应」，
  *    控制台没有任何报错，请求也没有。
- * 2. 「重建」曾经调的是逐篇重投（`reindexAllDocuments`），用户点完发现「需重建」提示还挂着
- *    —— 逐篇写回的是**当前生效版本**，参数快照不变，提示当然消不掉。判据是**调哪个接口**。
+ * 2. 「重建」曾经调的是逐篇重投（`reindexAllDocuments`），用户点完发现「待更新」提示还挂着。
+ *    判据是**调哪个接口**：全库重切是 `rebuildKbConsole`，逐篇是 `reindexDocumentConsole`。
  * 3. 详情弹窗曾经没有自己的请求（读列表上一次轮询的快照），而列表在「全终态」时会静默停掉
  *    轮询——于是「进详情要按 F5 才看到真状态」。判据是「详情里有自己的查询与一句更新时刻」。
+ * 4. 「N 篇待更新」那句按篇读数曾经被插进 v-if / v-else-if 链中间，把后面那条「失败」提示
+ *    挂到新条件上——链里少一个分支比多一个分支危险得多，因为它**只在某种数据下**消失。
  *
  * 这些缺陷用挂载测试能抓，但整页挂载要拖进 vue-query、router、Element Plus 与 API 层四套
  * 替身；而真正的判据只有积木级的几句话，扫源码比挂载更直接，也更快。反过来说：这个文件
@@ -26,7 +28,9 @@ import { describe, expect, it } from 'vitest'
 import PAGE from '../KnowledgeManagePage.vue?raw'
 import CHART from '../../components/UsageChart.vue?raw'
 import LIVE_STATUS from '../../components/LiveStatus.vue?raw'
+import SETTINGS_DIALOG from '../../components/KbSettingsDialog.vue?raw'
 import QUERIES from '../../composables/useKbQueries.ts?raw'
+import REFRESH_POLICY from '../../lib/refreshPolicy.ts?raw'
 import CONSOLE_KB from '../../services/consoleKb.ts?raw'
 
 describe('知识库卡片的操作区', () => {
@@ -45,26 +49,28 @@ describe('知识库卡片的操作区', () => {
     expect(PAGE.slice(groupStart, groupEnd)).not.toContain('详情')
   })
 
-  it('「重建」调的是整库重建，不是逐篇重新投递', () => {
+  it('「重建」调的是整库重切入口，不是逐篇重新投递', () => {
     const binding = PAGE.indexOf('@click="askRebuild(row)"')
     expect(binding).toBeGreaterThan(0)
 
     const element = PAGE.slice(binding - 700, binding + 40)
     expect(element).toContain('重建')
-    // 判据是**调哪个接口**：只有产出新版本才消得掉「需重建」提示；逐篇重建写回旧版本，
-    // 文档都重切了一遍、提示还挂着（第一版就是这个毛病）。
+    // 判据是**调哪个接口**：整库重切走 `/rebuild`（后端按篇投递整个库），逐篇重建走
+    // `documents/{id}/reindex`。一个几百篇的库不该让用户点几百次。
     expect(PAGE).toContain('rebuildKbConsole(')
     expect(PAGE).not.toContain('reindexAllDocuments(')
   })
 
-  it('构建进行中禁用「重建」（并发构建由后端守，这里别给注定失败的按钮）', () => {
+  it('空库与正在请求重建时禁用「重建」（别给注定失败 / 会连点的按钮）', () => {
     const binding = PAGE.indexOf('@click="askRebuild(row)"')
     const element = PAGE.slice(binding - 700, binding + 40)
 
     expect(element).toContain(':disabled=')
     expect(element).toContain('rebuildingKbId')
-    // 判据跟着契约走：`build` 摘要带 `status`（第 17 步 #227 之后不再有 build_progress）。
-    expect(element).toContain("row.build?.status === 'building'")
+    // 空库没有可投递的文档（后端会拒），正被点的那个库也不该允许再点一次。
+    expect(element).toContain('row.document_count === 0')
+    // 构建层已经退场：禁用条件里不能再出现 `build.status` 这种参照物。
+    expect(element).not.toContain('build?.status')
   })
 
   it('卡片上的四个数字读**聚合字段**，不再按文档数组求和', () => {
@@ -107,20 +113,14 @@ describe('详情弹窗：自己的请求、自己的节奏', () => {
     expect(LIVE_STATUS).toContain("emit('refresh')")
   })
 
-  it('弹窗里有构建进度（它以前只在卡片上，一开弹窗就被盖住了）', () => {
-    expect(dialog).toContain('detailBuild')
-    expect(dialog).toContain('重建中')
-    expect(dialog).toContain('progressPercent(detailBuild)')
-  })
-
-  it('文档表有「本次构建」第二根轴，且不改文档自己的状态列', () => {
-    // 构建期间文档状态几乎一直是「成功」（每篇只有自己那一秒是「索引中」），
-    // 所以「还在重建」只能靠第二列说出来。合并成一个状态会污染文档的状态机。
-    expect(dialog).toContain('本次构建')
-    expect(dialog).toContain("row.build_state === 'done'")
-    expect(dialog).toContain("row.build_state === 'pending'")
-    expect(dialog).toContain("row.build_state === 'failed'")
+  it('文档表只有文档自己的一根轴：状态徽章 + 分块数，没有「本次构建」列', () => {
+    // 构建层退场后参照物没了：每一篇自己就有当前代，状态四态就是它的进度。
+    // 这里守的是「别把那一列加回来」（那意味着又引入了一份库级构建账本）。
     expect(dialog).toContain('<StatusBadge')
+    expect(dialog).toContain('row.status')
+    expect(dialog).toContain('row.chunk_count')
+    expect(dialog).not.toContain('本次构建')
+    expect(dialog).not.toContain('build_state')
   })
 
   it('文档表分页（库可能几千篇，一次全取会把弹窗做成几 MB）', () => {
@@ -139,22 +139,18 @@ describe('详情弹窗：自己的请求、自己的节奏', () => {
     expect(dialog).not.toContain('.filter((doc) =>')
   })
 
-  it('没生效版本时说实话（「未建索引」而不是「0 个分块」）', () => {
-    // 「还没建过索引」要去做一件事（重建），「索引里有 0 片」是另一件事（去查）。
-    // 一个 0 会让人以为后者，而它其实连版本都还没有。
-    expect(PAGE).toContain('has_active_version')
-    expect(PAGE).toContain('未建')
+  it('详情 header 直接说切片数，不再有「未建索引」这个库级版本状态', () => {
+    // 「这个库有没有生效版本」随版本层一起退场：切片数 0 就是现在检索得到 0 片，
+    // 不再有「还没建过」这种要说两句话的状态。
+    expect(dialog).toContain('detailKb.chunk_count')
+    expect(PAGE).not.toContain('has_active_version')
+    expect(PAGE).not.toContain('未建索引')
   })
 
   it('关窗即停：清掉 kb_id，别让关掉的弹窗继续轮询', () => {
     // `enabled` 只看 kbId：只把 detailOpen 置 false，那条查询还在按 3 秒/60 秒打后端。
     expect(PAGE).toContain('@closed="closeDetail"')
     expect(PAGE).toContain('detailKbId.value = null')
-  })
-
-  it('「已生效」要配一个可核对的时刻', () => {
-    expect(PAGE).toContain('activated_at')
-    expect(PAGE).toContain('clockOf(')
   })
 })
 
@@ -169,11 +165,12 @@ describe('列表页：摘要单独一条请求', () => {
 
   it('横幅按**真实理由**写话（recent 不许念 running 那句台词）', () => {
     // 用户的原话：「明明都写着已生效了，顶上还说有构建在跑」。模式只有两档，文案不能写死
-    // 一句——否则「刚收尾、再跟几轮」这一档就会说错话。
+    // 一句——否则「刚写完、再跟几轮」这一档就会说错话。判据只剩两条数据：文档状态与最近写入。
     expect(PAGE).toContain("listReason === 'running'")
-    expect(PAGE).toContain('刚有构建收尾')
-    expect(PAGE).toContain('有构建在跑或有文档在排队/索引中')
+    expect(PAGE).toContain('有文档在排队或索引中')
+    expect(PAGE).toContain('刚有写入')
     expect(PAGE).toContain('listRefreshReason')
+    expect(PAGE).not.toContain('有构建在跑')
   })
 
   it('列表页也有「更新于几点」+ 两档刷新', () => {
@@ -182,12 +179,54 @@ describe('列表页：摘要单独一条请求', () => {
     expect(QUERIES).toContain('listRefreshMode')
   })
 
-  it('写操作之后失效**整组**读模型（列表 / 详情 / 构建一起）', () => {
+  it('刷新判据里有两个时间信号：文档状态与最近写入（都不是构建行）', () => {
+    // 构建层退场后「有在途工作」只能从数据里读：四态计数 + 写操作时刻/文档落库时刻。
+    expect(REFRESH_POLICY).toContain('hasPendingDocuments')
+    expect(REFRESH_POLICY).toContain('recentlyWritten')
+    expect(REFRESH_POLICY).toContain('latestWriteAt')
+    // 本页写操作的打点必须在刷新**之前**：顺序反了会先排一轮 60 秒慢查。
+    // （判的是 `afterWrite` 函数体里的顺序，不是文件里的距离——`refresh` 定义在它前面。）
+    const afterWrite = PAGE.indexOf('async function afterWrite')
+    expect(afterWrite).toBeGreaterThan(0)
+    const body = PAGE.slice(afterWrite, afterWrite + 220)
+    const stamp = body.indexOf('lastWriteAt.value = Date.now()')
+    const refreshCall = body.indexOf('await refresh()')
+    expect(stamp).toBeGreaterThan(0)
+    expect(refreshCall).toBeGreaterThan(stamp)
+  })
+
+  it('写操作之后失效**整组**读模型（列表与详情一起）', () => {
     // 少失效一个键，症状就是「改完这一屏那一屏还是旧的」。
     expect(PAGE).toContain('invalidateQueries({ queryKey: KB_QUERY_PREFIX })')
     expect(CONSOLE_KB).toContain("KB_QUERY_PREFIX = ['knowledge-bases']")
     expect(CONSOLE_KB).toContain("KB_LIST_QUERY_KEY = ['knowledge-bases', 'list']")
     expect(CONSOLE_KB).toContain("KB_DOCUMENTS_QUERY_KEY = ['knowledge-bases', 'documents']")
+  })
+})
+
+describe('构建层已经退场（旧版不再兼容）', () => {
+  it('页面与设置弹窗里不再有任何构建 / 生效版本 / 本次构建的残留', () => {
+    // 第 17 步·最后一批：整库「构建版本」层退场，索引产物下放到篇级。这些字段与提示
+    // 在旧契约里存在过，留一句在模板上就等于把一个已经不存在的概念摆给用户看。
+    for (const legacy of [
+      'build_state',
+      'build_progress',
+      'needs_rebuild',
+      'has_active_version',
+      'activated_at',
+      '上次构建未完成',
+      '重建中',
+      '本次构建',
+      '已生效',
+    ]) {
+      expect(PAGE).not.toContain(legacy)
+      expect(SETTINGS_DIALOG).not.toContain(legacy)
+    }
+    // 契约层（服务与映射）也不能把它加回来。
+    expect(CONSOLE_KB).not.toContain('build_progress')
+    expect(CONSOLE_KB).not.toContain('needs_rebuild')
+    expect(REFRESH_POLICY).not.toContain('buildInFlight')
+    expect(REFRESH_POLICY).not.toContain('buildJustFinished')
   })
 })
 
@@ -205,12 +244,12 @@ describe('用量曲线图', () => {
 })
 
 describe('卡片上的「N 篇待更新」（第 17 步现场九·第三步）', () => {
-  it('那句话挂在整条构建状态链**之外**，不会顶掉「上次构建未完成」', () => {
+  it('那句话挂在整条提示链**之外**，不会顶掉「N 篇索引失败」', () => {
     // 曾经的样子：`<p v-if="stale_documents > 0">` 插在 `v-else-if(active)` 与
     // `v-else-if(failed)` 之间。Vue 的 v-if / v-else-if 是**链式**的，插进中间会把
-    // 后面那条挂到新条件上——于是构建失败、又没有待更新篇的库**看不到失败提示**，
-    // 而那正是最该被看见的一个。这里守的就是位置：它必须排在 failed 分支之后。
-    const failed = PAGE.indexOf('上次构建未完成')
+    // 后面那条挂到新条件上——于是失败、又没有待更新篇的库**看不到失败提示**，
+    // 而那正是最该被看见的一个。这里守的就是位置：它必须排在失败提示之后。
+    const failed = PAGE.indexOf('篇索引失败')
     const stale = PAGE.indexOf('data-testid="kb-stale-documents"')
     expect(failed).toBeGreaterThan(0)
     expect(stale).toBeGreaterThan(failed)

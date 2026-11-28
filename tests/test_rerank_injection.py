@@ -24,7 +24,6 @@ from typing import Any
 
 import pytest
 
-from app.models.chunk import DEFAULT_INDEX_VERSION
 from app.services.retrieval.rerank import REASON_RERANK_FAILED, rerank_stage
 from app.services.retrieval_options import RetrievalOptions
 
@@ -273,7 +272,6 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
             settings=None,
             name="kb",
             description=None,
-            active_index_version=DEFAULT_INDEX_VERSION,
         )
 
     async def _no_collapse(*args: Any, **kwargs: Any) -> list[dict]:
