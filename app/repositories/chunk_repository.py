@@ -484,21 +484,17 @@ async def list_section_identity_rows(
     ]
 
 
-async def count_in_kb(
-    db: AsyncSession, kb_id: str, *, tenant_id: str, index_version: str | None
-) -> int:
-    """一个库在「生效版本 × 当前稿」下有多少片（卡片上那个合计）。
+async def count_in_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
+    """一个库在「**当前代 × 当前稿**」下有多少片（卡片上那个合计）。
 
     为什么不是「先列全部文档 id，再调 :func:`count_by_document_ids` 求和」：那要先把
     5000 个 id 传进 ``IN (...)``，再用应用层求和。这里一条聚合就够，而且与逐文档计数
     **共用同一个谓词**（:func:`serving_chunk_filters`），不会出现「合计」与「每行之和」
     两个数不一致这种最容易被当成巧合的情况。
 
-    ``index_version`` 为 ``None``（还没有生效版本）时回 0，与逐文档计数同一条约定。
+    还没有任何产物的库自然回 0（每篇的 ``current_index_generation`` 都是 NULL，一条也对不上）。
     """
 
-    if index_version is None:
-        return 0
     statement = (
         _join_documents(select(func.count()).select_from(Chunk))
         .where(

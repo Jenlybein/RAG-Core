@@ -183,18 +183,14 @@ def _install(
             tally[int(row.status)] = tally.get(int(row.status), 0) + 1
         return tally
 
-    async def _count_in_kb(
-        _db: Any, kb_id: str, *, tenant_id: str, index_version: str | None
-    ) -> int:
-        recorder.count_in_kb.append({"kb_id": kb_id, "index_version": index_version})
+    async def _count_in_kb(_db: Any, kb_id: str, *, tenant_id: str) -> int:
+        recorder.count_in_kb.append({"kb_id": kb_id})
         return kb_chunk_total
 
     async def _count_by_document_ids(
-        _db: Any, document_ids: list[str], *, tenant_id: str, index_version: str | None
+        _db: Any, document_ids: list[str], *, tenant_id: str
     ) -> dict[str, int]:
-        recorder.count_by_document_ids.append(
-            {"document_ids": list(document_ids), "index_version": index_version}
-        )
+        recorder.count_by_document_ids.append({"document_ids": list(document_ids)})
         return {document_id: chunks.get(document_id, 0) for document_id in document_ids}
 
     async def _list_page(
@@ -235,6 +231,8 @@ def _install(
     async def _done_ids(
         _db: Any, kb_id: str, *, tenant_id: str, index_version: str, doc_version: int | None
     ) -> set[str]:
+        # 构建真值查询（``list_indexed_document_ids``）仍然按「某一版 × 那一稿」问——
+        # 它问的不是「现在能召回什么」，而是「这一版建到第几篇了」。
         del index_version, doc_version
         return set(done_ids or ())
 
@@ -318,26 +316,35 @@ async def test_the_list_never_reads_documents(monkeypatch: pytest.MonkeyPatch) -
 async def test_the_kb_chunk_total_is_read_under_the_active_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """卡片上的合计也必须锁「生效版本」——与表格里每行之共用一个谓词。"""
+    """卡片上的合计与表格里每行共用同一个谓词（当前代 × 当前稿）。
+
+    它**不再**锁库级生效版本（现场九·第四步）：那一条一旦回来，构建期间刚建好的那篇
+    就会从合计里消失。
+    """
 
     recorder = _install(monkeypatch, kb=_kb(active_index_version="v7"))
 
     await console_kb_service.list_summaries(object(), tenant_id=TENANT)  # type: ignore[arg-type]
 
-    assert recorder.count_in_kb == [{"kb_id": KB_ID, "index_version": "v7"}]
+    assert recorder.count_in_kb == [{"kb_id": KB_ID}], (
+        "计数只看库：版本不再是可见性判据（现场九·第四步）"
+    )
 
 
 @pytest.mark.asyncio
-async def test_a_kb_without_an_active_version_asks_for_no_chunks(
+async def test_a_kb_without_an_active_version_still_counts_under_the_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """没有生效版本（新建库 / 只写了文件）：传 ``None``，仓储回 0，而不是去数全部版本。"""
+    """没有生效版本（新建库 / 只写了文件）时照样查——可见性只看「代 × 稿」。
+
+    改造前这里会传 ``None`` 并跳过查询；现在没有库级版本可传了，空的库自然回 0。
+    """
 
     recorder = _install(monkeypatch, kb=_kb(active_index_version=None, settings={}))
 
     data = await console_kb_service.list_summaries(object(), tenant_id=TENANT)  # type: ignore[arg-type]
 
-    assert recorder.count_in_kb == [{"kb_id": KB_ID, "index_version": None}]
+    assert recorder.count_in_kb == [{"kb_id": KB_ID}]
     assert data["items"][0].chunk_count == 0
     assert data["items"][0].needs_rebuild is True, "没有生效版本 = 一定还需要重建"
 
@@ -458,9 +465,7 @@ async def test_every_row_counts_chunks_under_the_active_version(
         kb_id=KB_ID,
     )
 
-    assert recorder.count_by_document_ids == [
-        {"document_ids": ["doc-1", "doc-2"], "index_version": "v9"}
-    ]
+    assert recorder.count_by_document_ids == [{"document_ids": ["doc-1", "doc-2"]}]
     counts = {row.document_id: row.chunk_count for row in data["documents"]}
     assert counts == {"doc-1": 7, "doc-2": 0}, "没有切片的文档回落 0"
 

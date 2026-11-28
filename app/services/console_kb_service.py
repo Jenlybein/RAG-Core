@@ -375,7 +375,7 @@ async def _summary_of(
         ),
         has_active_version=kb.active_index_version is not None,
         chunk_count=await chunk_repository.count_in_kb(
-            db, str(kb.id), tenant_id=tenant_id, index_version=kb.active_index_version
+            db, str(kb.id), tenant_id=tenant_id
         ),
         needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
         # 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。与 ``needs_rebuild`` 读的不是

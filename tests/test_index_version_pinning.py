@@ -391,7 +391,7 @@ async def test_a_new_kb_declares_the_current_build_as_its_effective_version(
 
 
 @pytest.mark.asyncio
-async def test_the_empty_reason_counts_under_the_pinned_build_not_under_v1(
+async def test_the_empty_reason_counts_under_the_current_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """空结果判定与召回用**同一个版本**：否则「库里有内容」会被说成「这个库是空的」。"""
@@ -423,6 +423,10 @@ async def test_the_empty_reason_counts_under_the_pinned_build_not_under_v1(
 
     assert reason == "no_indexed_chunks"
     assert len(statements) == 1
-    assert "chunks.index_version = 'v2'" in statements[0], "计数必须按生效版本数"
-    assert "chunks.index_version = 'v1'" not in statements[0], "不许退回默认版本常量"
-    assert "chunks.kb_id = 'kb-a'" in statements[0], "配对关系仍从映射里读出来"
+    # 现场九·第四步：空结果计数不再按「库级生效版本」收窄，改成「篇级当前代 × 当前稿」。
+    # 版本那一条一旦回来，构建期间刚建好的那篇就会从计数里消失（真库实测 count_in_kb=0）。
+    assert "chunks.generation = documents.current_index_generation" in statements[0], (
+        "计数必须按当前代数"
+    )
+    assert "chunks.index_version" not in statements[0], "库级版本不再是可见性判据"
+    assert "chunks.kb_id IN ('kb-a')" in statements[0], "范围仍从映射里读出来"

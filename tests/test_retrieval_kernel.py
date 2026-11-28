@@ -428,6 +428,7 @@ class _FoldSession:
         self.metas = metas
         self.units = units
         self.scopes: list[dict[str, Any]] = []
+        self.unit_statements: list[str] = []
 
     def execute(self, statement: Any) -> Any:
         if not self.scopes:
@@ -445,12 +446,10 @@ class _FoldSession:
             )
         compiled = statement.compile()
         self.scopes.append({"kind": "units", "params": dict(compiled.params)})
-        version = next(
-            value
-            for value in compiled.params.values()
-            if isinstance(value, str) and value in self.units
-        )
-        return _Rows(self.units[version])
+        self.unit_statements.append(str(compiled))
+        # 现场九·第四步：取整节不再按「库 → 版本」分组查（那条 SQL 现在按文档行的当前代
+        # 求值），所以替身把请求到的文档对应的行一并回出去。
+        return _Rows([row for rows in self.units.values() for row in rows])
 
 
 def _meta(heading: str, **extra: Any) -> dict:
@@ -494,11 +493,12 @@ def test_the_kernel_delivers_whole_sections_after_top_k() -> None:
     assert unit["content"] == "第一句。\n\n第二句。"
 
 
-def test_the_section_lookup_is_scoped_per_index_version() -> None:
-    """两份文档属于两个版本：单元行回查必须**按版本各查一次**，不许混成一个池。
+def test_the_section_lookup_is_one_query_scoped_by_the_current_generation() -> None:
+    """两份文档、两个库：单元行回查**一次取**，由 SQL 按「文档 + 当前代 + 当前稿」收窄。
 
-    这是索引即构建产物（#141）那条一致性前提在折叠侧的入口：把两个版本的行查进
-    同一个池，重建中途的检索就会拿到「两套切法」拼起来的正文。
+    改造前这里有两条约束要同时满足：「按版本各查一次」、「不许混池」。代下放到篇级之后
+    「版本」不再是分组键——分组反而会把一篇的旧代混进来（同一条 SQL 里代是与文档行比的），
+    所以现在是**一条语句、条件里带代**。这条用例守的就是这个形状。
     """
 
     heading = "退款政策 > 处理流程"
@@ -531,25 +531,23 @@ def test_the_section_lookup_is_scoped_per_index_version() -> None:
     outcome = asyncio.run(go())
 
     unit_scopes = [scope for scope in session.scopes if scope["kind"] == "units"]
-    assert len(unit_scopes) == 2, "两个版本就该有两次回查（同版本仍是一次）"
-    versions = sorted(
-        value
-        for scope in unit_scopes
-        for value in scope["params"].values()
-        if value in ("v1", "v2")
-    )
-    assert versions == ["v1", "v2"]
+    assert len(unit_scopes) == 1, "一次取，不再按版本分组查"
+
+    statement = session.unit_statements[0]
+    assert "chunks.generation = documents.current_index_generation" in statement
+    assert "chunks.doc_version = documents.current_version" in statement
+    assert "chunks.index_version" not in statement, "库级版本不再是可见性判据"
+
     documents = sorted(
-        tuple(sorted(value))
-        for scope in unit_scopes
-        for value in scope["params"].values()
-        if isinstance(value, list)
+        value
+        for values in unit_scopes[0]["params"].values()
+        if isinstance(values, (list, tuple))
+        for value in values
+        if isinstance(value, str)
     )
-    assert documents == [("doc-a",), ("doc-b",)], "两次回查各自只该带上自己那个版本的文档"
-    assert {unit["content"] for unit in outcome.chunks} == {"甲。", "乙。"}
+    assert "doc-a" in documents and "doc-b" in documents, "两篇都要取到"
 
-
-# ──────────────────────────── 四、内核没有副作用：写库、记账、观测都不在这里
+    assert {chunk["chunk_id"] for chunk in outcome.chunks} == {"c-a", "c-b"}
 
 
 def test_calling_the_kernel_twice_writes_nothing_and_emits_nothing() -> None:

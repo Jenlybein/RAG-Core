@@ -355,7 +355,8 @@ CREATE TABLE documents (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL,
     kb_id VARCHAR(36) NOT NULL,
-    current_version INTEGER NOT NULL DEFAULT '1'
+    current_version INTEGER NOT NULL DEFAULT '1',
+    current_index_generation INTEGER
 )
 """
 
@@ -369,7 +370,8 @@ CREATE TABLE chunks (
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
     index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
-    doc_version INTEGER NOT NULL DEFAULT '1'
+    doc_version INTEGER NOT NULL DEFAULT '1',
+    generation INTEGER NOT NULL DEFAULT 1
 )
 """
 
@@ -378,8 +380,8 @@ UNIT_PATH = "退款 > 流程"
 #: 两稿并存的时刻：文档行指着第 2 稿，第 1 稿的切片按保留策略还在（ADR-0005 选 B）。
 #: 这是本票唯一真正危险的窗口——五处条件漏掉任何一处，症状都只是「多了一份/少了一份」。
 SEEDED_ROWS = (
-    "INSERT INTO documents (id, tenant_id, kb_id, current_version) "
-    f"VALUES ('doc-1', '{TENANT}', '{KB}', 2)",
+    "INSERT INTO documents (id, tenant_id, kb_id, current_version, current_index_generation) "
+    f"VALUES ('doc-1', '{TENANT}', '{KB}', 2, 1)",
     "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
     f"index_version, doc_version) VALUES ('chunk-v1', '{TENANT}', '{KB}', 'doc-1', "
     f"'旧稿正文：三个工作日到账。', '[]', '{{\"heading_path\": \"{UNIT_PATH}\"}}', 'v1', 1)",
@@ -456,10 +458,12 @@ async def test_unit_rows_never_stitch_the_two_drafts_together(two_drafts: AsyncS
         document_ids=["doc-1"],
         # 单元是「(路径, 节段号)」（第 16 步 #207）：只按路径取会把整节的片又拼回来。
         units=[(UNIT_PATH, 0)],
-        index_version="v1",
     )
     sql = _sql(statement)
     assert "chunks.doc_version = documents.current_version" in sql
+    assert "chunks.generation = documents.current_index_generation" in sql, (
+        "代那一条也要在（现场九·第四步）"
+    )
 
     rows = (await two_drafts.execute(statement)).all()
     assert [(row.id, row.content) for row in rows] == [("chunk-v2", "当前稿正文：五个工作日到账。")]
@@ -470,9 +474,11 @@ async def test_parent_rows_read_only_the_current_draft(two_drafts: AsyncSession)
     """折叠关闭时补的**父节正文**也只看当前稿（同一个交付口径，第 6 处调用点）。"""
 
     statement = chunk_repository.build_parent_rows_statement(
-        tenant_id=TENANT, document_ids=["doc-1"], heading_paths=[UNIT_PATH], index_version="v1"
+        tenant_id=TENANT, document_ids=["doc-1"], heading_paths=[UNIT_PATH]
     )
-    assert "chunks.doc_version = documents.current_version" in _sql(statement)
+    sql = _sql(statement)
+    assert "chunks.doc_version = documents.current_version" in sql
+    assert "chunks.generation = documents.current_index_generation" in sql
 
     rows = (await two_drafts.execute(statement)).all()
     assert [row.content for row in rows] == ["当前稿正文：五个工作日到账。"]
@@ -488,11 +494,11 @@ async def test_empty_reason_count_uses_the_same_current_draft_predicate(
     于是 ``empty_reason`` 把「这个稿没内容」误报成「检索没命中」。
     """
 
-    statement = chunk_repository._count_by_kb_ids_statement(
-        tenant_id=TENANT, index_versions={KB: "v1"}
-    )
+    statement = chunk_repository._count_by_kb_ids_statement(tenant_id=TENANT, kb_ids=[KB])
     sql = _sql(statement)
     assert "chunks.doc_version = documents.current_version" in sql
+    assert "chunks.generation = documents.current_index_generation" in sql
+    assert "chunks.index_version" not in sql, "库级版本不再是可见性判据"
 
     assert int((await two_drafts.execute(statement)).scalar_one()) == 1
 

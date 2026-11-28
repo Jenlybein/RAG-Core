@@ -179,6 +179,9 @@ def _chunks() -> list[dict[str, Any]]:
             "document_id": document_id,
             "index_version": index_version,
             "doc_version": doc_version,
+            # 「哪一代」取代了「哪个版本」成为可见性判据（现场九·第四步）：v2 那批是这一代
+            # 的产物，v1 那批是被替换下来的旧代（留着给回滚，但不参与任何现行读数）。
+            "generation": 1 if index_version == "v2" else 0,
         }
         for chunk_id, tenant_id, kb_id, document_id, index_version, doc_version in layout
     ]
@@ -240,7 +243,7 @@ async def session() -> AsyncIterator[AsyncSession]:
                 "metadata, index_version, doc_version, generation) VALUES "
                 f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', "
                 f"'{row['document_id']}', 'body', '[]', '{{}}', "
-                f"'{row['index_version']}', {row['doc_version']}, 1)"
+                f"'{row['index_version']}', {row['doc_version']}, {row['generation']})"
             )
         for row in _build_versions():
             await connection.exec_driver_sql(
@@ -391,24 +394,24 @@ async def test_the_status_grouping_is_empty_for_an_unknown_kb(session: AsyncSess
 
 
 @pytest.mark.asyncio
-async def test_the_kb_chunk_total_is_the_active_version_and_the_current_draft(
+async def test_the_kb_chunk_total_is_the_generation_times_the_current_draft(
     session: AsyncSession,
 ) -> None:
-    """``kb-main`` 在 v2 下共 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片。
+    """``kb-main`` 的合计 = 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片。
 
-    不该算的：doc-1 在 v1 的三片（旧版本）、doc-4 第 1 稿那一片（旧稿）、doc-6（别的库）、
-    doc-7（别的租户）。旧实现（只锁稿号）在这里会给出 9。
+    不该算的：doc-1 那三片**旧代**、doc-4 第 1 稿那一片（旧稿）、doc-6（别的库）、
+    doc-7（别的租户）。只锁稿号的老实现在这里会给出 9，只锁版本也会给出别的数。
     """
 
-    assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 4
-    )
-    assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 3
-    ), "换成 v1 就是另一版的读数（3 片旧版本切片）"
-    assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 0
-    ), "没有生效版本 → 0，而不是去数全部版本"
+    assert await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 4
+
+    # 旧代不算：把 doc-1 的第 0 代切片算进来会变成 7——每次重建都涨一份，永不回落。
+    assert await chunk_repository.count_by_document_ids(session, ["doc-1"], tenant_id=TENANT) == {
+        "doc-1": 2
+    }, "同一篇的旧代切片不参与「现在有多少内容」"
+
+    # 空库 / 全无产物的库：0，而不是去数全部代。
+    assert await chunk_repository.count_in_kb(session, "kb-nope", tenant_id=TENANT) == 0
 
 
 @pytest.mark.asyncio
@@ -428,7 +431,8 @@ async def test_the_kb_chunk_total_matches_the_sum_of_the_per_document_counts(
         )
     ]
     per_document = await chunk_repository.count_by_document_ids(
-        session, document_ids, tenant_id=TENANT)
+        session, document_ids, tenant_id=TENANT
+    )
     total = await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT)
 
     assert sum(per_document.values()) == total
@@ -486,7 +490,7 @@ async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunk
 
     检索（``PgVectorStore.similarity_search_scope``）没法写成单个相等条件——它一次跨库召回，
     版本过滤是 ``scope_filter({kb_id: 生效版本})``（每库一个版本的 OR 配对）。而界面/
-    详情页的计数是 ``serving_chunk_filters(index_version=生效版本)``（单个相等条件）。
+    详情页的计数是 ``serving_chunk_filters()``（当前代 × 当前稿，两条都由文档行求值）。
 
     两处都在「锁生效版本 + 锁当前稿」，但**没有一个函数能把它们合并**（一个收映射、一个收标量）。
     合并不了就得有一条用例证明二者等价——否则「检索命中的那句正文」与「界面上说这篇有 N 片」
@@ -512,7 +516,7 @@ async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunk
         .where(
             Chunk.tenant_id == TENANT,
             Chunk.kb_id == KB,
-            *chunk_repository.serving_chunk_filters(index_version="v2"),
+            *chunk_repository.serving_chunk_filters(),
         )
         .order_by(Chunk.id)
     )
