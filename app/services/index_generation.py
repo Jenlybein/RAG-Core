@@ -109,18 +109,3 @@ def next_generation(current: int | None) -> int:
     """
 
     return FIRST_GENERATION if current is None else current + 1
-
-
-def is_stale(settings_hash: str | None, current_fingerprint: str | None) -> bool:
-    """这篇文档的产物是不是落后于库当前设置。
-
-    任一侧是 ``None`` 都算落后：``settings_hash`` 为空是「这批产物的参数来路不明」，
-    ``current_fingerprint`` 为空是「库现在的设置说不清」。宁可多更新一次，也不要让一个
-    说不清来历的产物被当成最新的——「少提示一次」与「永远不再提示」不是一回事。
-    """
-
-    return (
-        settings_hash is None
-        or current_fingerprint is None
-        or settings_hash != current_fingerprint
-    )

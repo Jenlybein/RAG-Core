@@ -11,10 +11,9 @@
 
 from __future__ import annotations
 
-import asyncio
 from collections.abc import AsyncIterator
-from typing import Any
 
+import pytest
 import pytest_asyncio
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
@@ -88,40 +87,38 @@ async def _count(db: AsyncSession, fingerprint: str | None) -> int:
     )
 
 
-def test_a_document_built_with_the_current_settings_is_not_stale(
+@pytest.mark.asyncio
+async def test_a_document_built_with_the_current_settings_is_not_stale(
     session: AsyncSession,
 ) -> None:
-    async def run() -> int:
-        await _add(session, "doc-ok", settings_hash=CURRENT)
-        return await _count(session, CURRENT)
+    await _add(session, "doc-ok", settings_hash=CURRENT)
 
-    assert asyncio.run(run()) == 0
+    assert await _count(session, CURRENT) == 0
 
 
-def test_a_document_built_with_other_settings_is_stale(session: AsyncSession) -> None:
-    async def run() -> int:
-        await _add(session, "doc-ok", settings_hash=CURRENT)
-        await _add(session, "doc-old", settings_hash="f" * 64)
-        return await _count(session, CURRENT)
+@pytest.mark.asyncio
+async def test_a_document_built_with_other_settings_is_stale(session: AsyncSession) -> None:
+    await _add(session, "doc-ok", settings_hash=CURRENT)
+    await _add(session, "doc-old", settings_hash="f" * 64)
 
-    assert asyncio.run(run()) == 1
+    assert await _count(session, CURRENT) == 1
 
 
-def test_a_document_without_any_fingerprint_counts_as_stale(session: AsyncSession) -> None:
+@pytest.mark.asyncio
+async def test_a_document_without_any_fingerprint_counts_as_stale(session: AsyncSession) -> None:
     """``NULL`` = 「说不清它用的是哪套设置」。
 
     不能默认它是最新的：那会让第一批上线前的存量文档全部显示「已最新」，而它们恰恰是
     最可能用旧切法建出来的那批。
     """
 
-    async def run() -> int:
-        await _add(session, "doc-legacy", settings_hash=None)
-        return await _count(session, CURRENT)
+    await _add(session, "doc-legacy", settings_hash=None)
 
-    assert asyncio.run(run()) == 1
+    assert await _count(session, CURRENT) == 1
 
 
-def test_an_unknown_current_fingerprint_counts_only_the_ones_never_recorded(
+@pytest.mark.asyncio
+async def test_an_unknown_current_fingerprint_counts_only_the_ones_never_recorded(
     session: AsyncSession,
 ) -> None:
     """库的当前设置读不到时，只数「从没记过指纹」的篇，**不**做全库推断。
@@ -130,62 +127,45 @@ def test_an_unknown_current_fingerprint_counts_only_the_ones_never_recorded(
     把整库标红只会让这条平时都是对的提示失去可信度。
     """
 
-    async def run() -> int:
-        await _add(session, "doc-recorded", settings_hash=CURRENT)
-        await _add(session, "doc-never", settings_hash=None)
-        return await _count(session, None)
+    await _add(session, "doc-recorded", settings_hash=CURRENT)
+    await _add(session, "doc-never", settings_hash=None)
 
-    assert asyncio.run(run()) == 1
+    assert await _count(session, None) == 1
 
 
-def test_only_successful_documents_are_counted(session: AsyncSession) -> None:
+@pytest.mark.asyncio
+async def test_only_successful_documents_are_counted(session: AsyncSession) -> None:
     """排队 / 在跑 / 失败的篇不进这个数。
 
     它们本来就会被别的机制处理（队列在跑、清扫器在捡），混进来只会让这个数字跳动而没有
     可对应的动作——而一个不会稳定下来的数字，人看一眼就不再看了。
     """
 
-    async def run() -> int:
-        await _add(session, "doc-ok", settings_hash=CURRENT)
-        await _add(session, "doc-queued", settings_hash=CURRENT, status=DocumentStatus.QUEUED)
-        await _add(session, "doc-failed", settings_hash=CURRENT, status=DocumentStatus.FAILED)
-        return await _count(session, CURRENT)
+    await _add(session, "doc-ok", settings_hash=CURRENT)
+    await _add(session, "doc-queued", settings_hash=CURRENT, status=DocumentStatus.QUEUED)
+    await _add(session, "doc-failed", settings_hash=CURRENT, status=DocumentStatus.FAILED)
 
-    assert asyncio.run(run()) == 0
+    assert await _count(session, CURRENT) == 0
 
 
-def test_another_kb_or_tenant_is_not_counted(session: AsyncSession) -> None:
+@pytest.mark.asyncio
+async def test_another_kb_or_tenant_is_not_counted(session: AsyncSession) -> None:
     """跨库、跨租户一行都不能数进来：这个数字是要拿去指导「点哪个按钮」的。"""
 
-    async def run() -> int:
-        await _add(session, "doc-ok", settings_hash=CURRENT)
-        await session.execute(
-            text(
-                "INSERT INTO documents (id, tenant_id, kb_id, status, settings_hash) "
-                "VALUES ('doc-other-kb', :tenant, 'kb-2', 1, NULL)"
-            ),
-            {"tenant": TENANT},
-        )
-        await session.execute(
-            text(
-                "INSERT INTO documents (id, tenant_id, kb_id, status, settings_hash) "
-                "VALUES ('doc-other-tenant', 'tenant_other', :kb, 1, NULL)"
-            ),
-            {"kb": KB},
-        )
-        return await _count(session, CURRENT)
+    await _add(session, "doc-ok", settings_hash=CURRENT)
+    await session.execute(
+        text(
+            "INSERT INTO documents (id, tenant_id, kb_id, status, settings_hash) "
+            "VALUES ('doc-other-kb', :tenant, 'kb-2', 1, NULL)"
+        ),
+        {"tenant": TENANT},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO documents (id, tenant_id, kb_id, status, settings_hash) "
+            "VALUES ('doc-other-tenant', 'tenant_other', :kb, 1, NULL)"
+        ),
+        {"kb": KB},
+    )
 
-    assert asyncio.run(run()) == 0
-
-
-def test_the_count_survives_a_missing_table_shape() -> None:
-    """这条守卫的意图：``stale`` 条件的两种拼法都不能把参数拼进 SQL。
-
-    ``settings_hash`` 是参数、不是字符串拼接——本仓所有查询都走绑定参数，这条只是把
-    「两分支各拼一次」这件事钉住，免得有人图省事改成 f-string。
-    """
-
-    from app.models.document import Document
-
-    assert Document.settings_hash.type.length == 64, "指纹列宽与 FINGERPRINT_HEX_LENGTH 同源"
-    assert isinstance(Any, object)  # 保持文件里 typing 的用法（Any 已在上面用到）
+    assert await _count(session, CURRENT) == 0

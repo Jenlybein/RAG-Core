@@ -67,6 +67,7 @@ from app.schemas.console_kbs import (
     TokenUsageData,
 )
 from app.models.knowledge_base import (
+    build_params_of,
     MAX_CHUNK_SIZE,
     MAX_SECTION_PART_MAX_CHARS,
     MIN_CHUNK_SIZE,
@@ -97,6 +98,7 @@ from app.services import (
 )
 from app.services import chunk_ledger, static_quota
 from app.services.chunk_store import build_chunk_stores
+from app.services.index_generation import settings_fingerprint
 from app.services.console_service import append_audit
 from app.services.document_ingestion import prepare_document_content
 from app.services.document_storage import remove_document_file
@@ -633,13 +635,13 @@ async def _stale_documents_of(
     一次分组计数，不按篇查——一个库几百篇时那是几百次往返。
     """
 
+    # 指纹由**已加载的这行库**直接算：再走一次 ``get_settings_fingerprint`` 就是一次多余的
+    # 主键查询（列表页 N 个库 → N 次），而调用方手里正好有这个对象。
     return await document_repository.count_stale_generations(
         db,
         kb.id,
         tenant_id=tenant_id,
-        settings_hash=await knowledge_base_repository.get_settings_fingerprint(
-            db, kb.id, tenant_id=tenant_id
-        ),
+        settings_hash=settings_fingerprint(build_params_of(kb)),
     )
 
 

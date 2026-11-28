@@ -777,21 +777,23 @@ function goRetrieve(kbId: string): void {
             </span>
           </p>
 
-          <!-- 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。与上面那句「已生效」不冲突
-               ——那一句说的是「哪一版在服务」，这一句说的是「有几篇的设置已经落后了」。
-               0 不显示：没有落后时不该占一行。 -->
-          <p
-            v-if="row.stale_documents > 0"
-            class="mt-1 text-xs text-amber-700"
-            data-testid="kb-stale-documents"
-          >
-            {{ row.stale_documents }} 篇待更新（切块设置改过，重建才生效）
-          </p>
           <p
             v-else-if="row.build && row.build.status === 'failed'"
             class="mt-1 rounded-md bg-red-50 px-2 py-1 text-xs text-red-700"
           >
             上次构建未完成（{{ row.build.done }} / {{ row.build.planned }} 篇），检索仍走上一版。
+          </p>
+          <!-- 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。**必须放在整条 v-if 链之外**——
+               插在 `v-else-if` 之间会把后面那条「上次构建未完成」挂到新条件上，于是构建失败
+               的库在「没有待更新篇」时看不到失败提示，而那正是最该被看见的一个。
+               文案写「设置与产物不一致」而不是「设置改过」：判据里也包含从没记过指纹的
+               存量篇，那批不是「改过」。 -->
+          <p
+            v-if="row.stale_documents > 0"
+            class="mt-1 text-xs text-amber-700"
+            data-testid="kb-stale-documents"
+          >
+            {{ row.stale_documents }} 篇的设置与产物不一致，重建后生效
           </p>
 
           <!-- 四态里最该被看见的那一个：有失败就要能一眼看到，而不是点进详情去数。 -->

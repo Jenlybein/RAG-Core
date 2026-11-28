@@ -108,7 +108,9 @@ async def get_settings_fingerprint(
     为什么放在仓库而不是索引服务里：它要读 ``KnowledgeBase`` 并与 ``build_params_of``
     对齐口径，而这两件事都是模型层的事。索引服务只该拿到一个可以比较的串。
 
-    ``None`` 的语义是「说不清」，调用方一律按落后处理——与「需重建」那条提示同一条纪律。
+    ``None`` 的语义是「说不清」（库不存在 / 跨租户）。**调用方要自己决定怎么处置**：
+    「N 篇待更新」那条按「只数从没记过指纹的篇」处理——库这一侧读不到的真正问题是「这个库
+    不见了」，那时把整库标红只会让一条平时都对的提示失去可信度。
     """
 
     kb: KnowledgeBase | None = await db.get(KnowledgeBase, kb_id)

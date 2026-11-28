@@ -28,7 +28,6 @@ from app.services import index_generation
 from app.services.index_generation import (
     CANONICAL_PARAM_KEYS,
     SUPERSEDED_GENERATION,
-    is_stale,
     settings_fingerprint,
 )
 
@@ -440,22 +439,3 @@ def test_the_canonical_keys_come_from_one_place() -> None:
     """规范键集必须就是 ``build_params_of`` 那三项，不另抄一份。"""
 
     assert CANONICAL_PARAM_KEYS == ("split_strategy", "chunk_size", "section_part_max_chars")
-
-
-# ───────────────────────────────────────────────────── 纯函数：是否落后
-
-
-@pytest.mark.parametrize(
-    ("stored", "current", "stale"),
-    [
-        ("abc", "abc", False),
-        ("abc", "def", True),
-        (None, "abc", True),
-        ("abc", None, True),
-        (None, None, True),
-    ],
-)
-def test_a_document_is_stale_unless_both_fingerprints_are_known_and_equal(
-    stored: str | None, current: str | None, stale: bool
-) -> None:
-    assert is_stale(stored, current) is stale
