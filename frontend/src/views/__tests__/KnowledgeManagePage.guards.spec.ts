@@ -203,3 +203,29 @@ describe('用量曲线图', () => {
     expect(chunkSeries).not.toContain("stack: 'meters'")
   })
 })
+
+describe('卡片上的「N 篇待更新」（第 17 步现场九·第三步）', () => {
+  it('那句话挂在整条构建状态链**之外**，不会顶掉「上次构建未完成」', () => {
+    // 曾经的样子：`<p v-if="stale_documents > 0">` 插在 `v-else-if(active)` 与
+    // `v-else-if(failed)` 之间。Vue 的 v-if / v-else-if 是**链式**的，插进中间会把
+    // 后面那条挂到新条件上——于是构建失败、又没有待更新篇的库**看不到失败提示**，
+    // 而那正是最该被看见的一个。这里守的就是位置：它必须排在 failed 分支之后。
+    const failed = PAGE.indexOf('上次构建未完成')
+    const stale = PAGE.indexOf('data-testid="kb-stale-documents"')
+    expect(failed).toBeGreaterThan(0)
+    expect(stale).toBeGreaterThan(failed)
+
+    // 并且它自己必须是独立的 `v-if`（写成 v-else-if 就又回到链里了）。
+    const tagStart = PAGE.lastIndexOf('<p', stale)
+    expect(PAGE.slice(tagStart, stale)).toContain('v-if')
+    expect(PAGE.slice(tagStart, stale)).not.toContain('v-else-if')
+  })
+
+  it('文案说「设置与产物不一致」而不是「设置改过」', () => {
+    // 判据里也包含**从没记过指纹**的存量篇，那批不是「改过」。文案与判据对不上时，
+    // 用户会去查「谁改了设置」，而那件事根本没发生。
+    const stale = PAGE.indexOf('data-testid="kb-stale-documents"')
+    expect(PAGE.slice(stale, stale + 300)).toContain('设置与产物不一致')
+    expect(PAGE.slice(stale, stale + 300)).not.toContain('设置改过')
+  })
+})
