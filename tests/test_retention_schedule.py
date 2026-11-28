@@ -96,6 +96,11 @@ def outcomes(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         return UsageRetentionOutcome(events_deleted=120, daily_deleted=7, skipped_days=[])
 
     monkeypatch.setattr(index_sweeper.retention, "purge_versions", _purge_versions)
+
+    async def _purge_generations(_db):
+        return index_sweeper.retention.GenerationRetentionOutcome()
+
+    monkeypatch.setattr(index_sweeper.retention, "purge_generations", _purge_generations)
     monkeypatch.setattr(index_sweeper.retention, "purge_usage", _purge_usage)
     monkeypatch.setattr(index_sweeper, "async_transaction", _noop_tx())
     return state
@@ -113,7 +118,13 @@ async def test_one_round_purges_both_kinds_and_reports_them_separately(
 
     assert outcomes["versions_calls"] == 1
     assert outcomes["usage_calls"] == 1
-    assert stats == {"events_deleted": 120, "daily_deleted": 7, "versions_purged": 5}
+    assert stats == {
+        "events_deleted": 120,
+        "daily_deleted": 7,
+        "versions_purged": 5,
+        # 旧代回收（现场九·第六步）：这一轮里没有可回收的代，读数是 0。
+        "generations_purged": 0,
+    }
 
 
 @pytest.mark.asyncio
@@ -128,7 +139,12 @@ async def test_the_daily_throttle_makes_it_run_once_a_day(
 
     assert outcomes["versions_calls"] == 0
     assert outcomes["usage_calls"] == 0
-    assert stats == {"events_deleted": 0, "daily_deleted": 0, "versions_purged": 0}
+    assert stats == {
+        "events_deleted": 0,
+        "daily_deleted": 0,
+        "versions_purged": 0,
+        "generations_purged": 0,
+    }
 
 
 @pytest.mark.asyncio

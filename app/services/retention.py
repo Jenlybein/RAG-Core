@@ -37,6 +37,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.transaction import async_transaction
+from app.models.chunk import Chunk
 from app.models.usage_daily import UsageDaily
 from app.models.usage_event import UsageEvent
 from app.repositories import document_repository
@@ -172,6 +173,92 @@ async def purge_versions(
                 error=type(exc).__name__,
             )
     return outcome
+
+
+#: 每篇文档保留几代**索引产物**（现场九·第六步）。2 = 当前代 + 上一代。
+#:
+#: 为什么是 2 而不是 1：1 就没有回滚的落点了——单篇切回上一代需要上一代还在库里；
+#: 为什么不是 3 以上：每多留一代，PG 里就多一整份切片与向量（一篇 100 片 × 1536 维），
+#: 而「再往前那一代」在实践里从没被用上。
+RETAIN_GENERATIONS = 2
+
+
+@dataclass
+class GenerationRetentionOutcome:
+    """一轮索引代回收的读数。"""
+
+    documents: int = 0
+    purged_generations: int = 0
+    purged_chunks: int = 0
+
+    def as_dict(self) -> dict[str, int]:
+        return {
+            "documents": self.documents,
+            "purged_generations": self.purged_generations,
+            "purged_chunks": self.purged_chunks,
+        }
+
+
+async def purge_generations(
+    db: AsyncSession, *, keep: int = RETAIN_GENERATIONS
+) -> GenerationRetentionOutcome:
+    """把每篇文档保留窗口之外的**旧代**切片清掉（现场九·第六步）。
+
+    ## 判据是集合式的，不是算术减法
+
+    保留的是「该篇**存在的**最高 N 个代」，不是「代 >= 当前代 - N + 1」。两者在代有空洞时
+    给出不同答案：某篇的产代依次是 0 / 1 / 5（中间两次失败或跳过），算术减法会算成
+    ``>= 3``，把第 1 代一并删掉——而它才是「上一代」，回滚要用；集合式口径保留 {5, 1}，
+    删掉 0，正好是想要的那一份。
+
+    用 ``DENSE_RANK() OVER (PARTITION BY document_id ORDER BY generation DESC)`` 一次算完：
+    一条语句、按篇排名、排名超过 ``keep`` 的整代删除。分篇循环也能写对，但那是 N 条语句，
+    而这里的 N 是「有产物的文档数」。
+
+    ## 为什么按文档（而不是按库）
+
+    代是**篇级**的属性：同一个库里一篇刚重建到第 9 代、另一篇还停在第 1 代，窗口必须各算
+    各的。按库取最大值会把慢那篇的唯一一份产物删掉——它还在被检索读。
+
+    ## 关键词侧不参与
+
+    ES 永远只镜像**当前代**（重建时按文档清空再写），库里没有多代可回收。
+    """
+
+    if keep < 1:
+        raise ValueError("keep 至少是 1：0 会把当前代也删掉")
+
+    ranked = (
+        select(
+            Chunk.id.label("id"),
+            func.dense_rank()
+            .over(partition_by=Chunk.document_id, order_by=Chunk.generation.desc())
+            .label("rank"),
+        )
+        .subquery()
+    )
+    doomed = select(ranked.c.id).where(ranked.c.rank > keep)
+
+    purged_chunks = int(
+        (await db.execute(select(func.count()).select_from(doomed.subquery()))).scalar_one()
+        or 0
+    )
+    documents = int(
+        (
+            await db.execute(
+                select(func.count(func.distinct(Chunk.document_id))).where(Chunk.id.in_(doomed))
+            )
+        ).scalar_one()
+        or 0
+    )
+    if purged_chunks:
+        await db.execute(delete(Chunk).where(Chunk.id.in_(doomed)))
+
+    return GenerationRetentionOutcome(
+        documents=documents,
+        purged_generations=0,
+        purged_chunks=purged_chunks,
+    )
 
 
 #: 明细清理往回扫的上界：第一次上线时库里可能已经堆了几年的明细，分几晚扫完比一次扫死好。

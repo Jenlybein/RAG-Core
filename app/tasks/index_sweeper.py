@@ -212,10 +212,20 @@ async def retention_once(
         logger.warning("retention could not acquire the throttle; skipping")
         got = False
     if not got:
-        return {"events_deleted": 0, "daily_deleted": 0, "versions_purged": 0}
+        return {
+            "events_deleted": 0,
+            "daily_deleted": 0,
+            "versions_purged": 0,
+            "generations_purged": 0,
+        }
 
     factory = session_factory or async_session_factory
-    stats = {"events_deleted": 0, "daily_deleted": 0, "versions_purged": 0}
+    stats = {
+        "events_deleted": 0,
+        "daily_deleted": 0,
+        "versions_purged": 0,
+        "generations_purged": 0,
+    }
 
     try:
         async with factory()() as db:
@@ -230,6 +240,22 @@ async def retention_once(
             )
     except Exception as exc:  # noqa: BLE001 - 清版本失败不许挡住清用量
         logger.warning("retention could not purge archived drafts", error=type(exc).__name__)
+
+    # 旧代回收（现场九·第六步）：每篇保留最近 2 代，超出的切片删掉。放在用量清理之前——
+    # 它不依赖任何日期窗口，而用量清理可能因为某天的汇总缺失而提前退出，不该连累它。
+    try:
+        async with factory()() as db:
+            async with async_transaction(db):
+                generation_outcome = await retention.purge_generations(db)
+        stats["generations_purged"] = generation_outcome.purged_chunks
+        if generation_outcome.purged_chunks:
+            logger.info(
+                "retention purged superseded index generations",
+                documents=generation_outcome.documents,
+                purged_chunks=generation_outcome.purged_chunks,
+            )
+    except Exception as exc:  # noqa: BLE001 - 回收旧代失败不许挡住用量清理
+        logger.warning("retention could not purge old generations", error=type(exc).__name__)
 
     try:
         async with factory()() as db:
