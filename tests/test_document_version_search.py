@@ -156,7 +156,7 @@ def test_the_default_recall_path_still_only_sees_the_current_draft() -> None:
             session,  # type: ignore[arg-type]
             [0.1, 0.2, 0.3],
             tenant_id=TENANT_ID,
-            index_versions={KB_ID: DEFAULT_INDEX_VERSION},
+            kb_ids=[KB_ID],
             top_k=5,
         )
     )

@@ -123,7 +123,7 @@ class _FakeEmbedding:
 
 class _FakeVectorStore:
     async def similarity_search_scope(
-        self, _db: Any, _vector: Any, *, tenant_id: str, index_versions: dict, top_k: int
+        self, _db: Any, _vector: Any, *, tenant_id: str, kb_ids: dict, top_k: int
     ) -> list[dict]:
         return [
             {
@@ -134,7 +134,7 @@ class _FakeVectorStore:
                 "content": f"{kb_id} 的内容",
                 "score": 0.9 - index * 0.1,
             }
-            for index, kb_id in enumerate(index_versions)
+            for index, kb_id in enumerate(kb_ids)
         ]
 
     async def similarity_search(self, *_args: Any, **_kwargs: Any) -> list[dict]:

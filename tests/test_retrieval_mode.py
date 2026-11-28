@@ -79,12 +79,10 @@ class _FakeVectorStore:
             }
         ]
 
-    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
-        self.scope_calls.append(
-            {"tenant_id": tenant_id, "index_versions": dict(index_versions), "top_k": top_k}
-        )
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
+        self.scope_calls.append({"tenant_id": tenant_id, "kb_ids": list(kb_ids), "top_k": top_k})
         rows: list[dict[str, Any]] = []
-        for kb_id in index_versions:
+        for kb_id in kb_ids:
             self.calls.append({"tenant_id": tenant_id, "kb_id": kb_id, "top_k": top_k})
             score = 0.9 if kb_id == KB_A else 0.5
             rows.append(
@@ -108,12 +106,12 @@ class _FakeKeywordSearch:
         self.fail = fail
         self.calls: list[dict[str, Any]] = []
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
         self.calls.append(
             {
                 "query": query,
                 "tenant_id": tenant_id,
-                "index_versions": index_versions,
+                "kb_ids": list(kb_ids),
                 "top_k": top_k,
             }
         )
@@ -234,7 +232,7 @@ def test_vector_mode_covers_all_kbs_in_one_scope_call(offline_retrieval) -> None
     assert offline_retrieval["vector"].scope_calls == [
         {
             "tenant_id": TENANT_ID,
-            "index_versions": {KB_A: "v1", KB_B: "v1"},
+            "kb_ids": [KB_A, KB_B],
             "top_k": settings.TOP_K * OVERFETCH_FACTOR,
         }
     ]
@@ -255,7 +253,7 @@ def test_bm25_mode_uses_only_the_keyword_channel(offline_retrieval) -> None:
         {
             "query": "E1024",
             "tenant_id": TENANT_ID,
-            "index_versions": {KB_A: "v1"},
+            "kb_ids": [KB_A],
             "top_k": settings.TOP_K * OVERFETCH_FACTOR,
         }
     ]
@@ -272,15 +270,12 @@ def test_bm25_mode_uses_only_the_keyword_channel(offline_retrieval) -> None:
     assert chunk["rrf_score"] is None
 
 
-def test_bm25_mode_pairs_every_kb_with_its_index_version(offline_retrieval) -> None:
-    """多库时传的是映射而不是两个平行数组：一个库一条配对。"""
+def test_bm25_mode_passes_the_kb_scope(offline_retrieval) -> None:
+    """多库时传的是「哪几个库」（现场九·第四步）：版本那根轴已经不在关键词路上。"""
 
     _post(offline_retrieval["client"], mode="bm25", kb_ids=[KB_A, KB_B])
 
-    assert offline_retrieval["keyword"].calls[0]["index_versions"] == {
-        KB_A: "v1",
-        KB_B: "v1",
-    }
+    assert offline_retrieval["keyword"].calls[0]["kb_ids"] == [KB_A, KB_B]
 
 
 def test_bm25_mode_fails_loudly_when_the_engine_is_not_configured(

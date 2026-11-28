@@ -84,7 +84,7 @@ class _FakeVectorStore:
     def __init__(self, rows: list[dict]) -> None:
         self.rows = rows
 
-    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
         return list(self.rows)
 
 
@@ -93,7 +93,7 @@ class _FakeKeyword:
 
     available = True
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
         return []
 
 

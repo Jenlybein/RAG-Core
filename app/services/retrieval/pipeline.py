@@ -40,7 +40,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -96,7 +96,7 @@ async def hybrid_retrieve(
     *,
     db: AsyncSession,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     recall_queries: Sequence[str],
     rerank_query: str,
     top_k: int,
@@ -120,7 +120,7 @@ async def hybrid_retrieve(
     ``rag_service``）传给测试的替换点因此仍然只有一处（沿用既有 monkeypatch 接缝，
     不新造接缝）。
 
-    ``index_versions`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
+    ``kb_ids`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
     本模块不再自己造一份——范围是「一次调用」的属性，而这条链路会被多查询各调一次。
 
     **两条通道拿同一组查询**（``vector_queries`` / ``keyword_queries``）：查询优化在召回
@@ -165,7 +165,7 @@ async def hybrid_retrieve(
             _vector_branch(
                 db,
                 tenant_id=tenant_id,
-                index_versions=index_versions,
+                kb_ids=list(kb_ids),
                 queries=recall_queries,
                 top_k=depth,
                 embedding_factory=embedding_factory,
@@ -174,7 +174,7 @@ async def hybrid_retrieve(
             ),
             _keyword_branch(
                 tenant_id=tenant_id,
-                index_versions=index_versions,
+                kb_ids=list(kb_ids),
                 queries=recall_queries,
                 top_k=depth,
                 keyword_factory=keyword_factory,
@@ -195,7 +195,7 @@ async def hybrid_retrieve(
         logger.warning(
             "hybrid retrieval failed on both channels",
             tenant_id=tenant_id,
-            kb_ids=list(index_versions),
+            kb_ids=list(kb_ids),
             vector_error=type(vector_error).__name__,
             keyword_error=type(keyword_error).__name__,
         )
@@ -211,7 +211,7 @@ async def hybrid_retrieve(
         logger.warning(
             "hybrid retrieval degraded",
             tenant_id=tenant_id,
-            kb_ids=list(index_versions),
+            kb_ids=list(kb_ids),
             degraded_reason=degraded_reason,
         )
 
@@ -275,7 +275,7 @@ async def _vector_branch(
     db: AsyncSession,
     *,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
@@ -299,7 +299,7 @@ async def _vector_branch(
         return await vector_recall(
             db=db,
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=list(kb_ids),
             queries=queries,
             top_k=top_k,
             embedding_factory=embedding_factory,
@@ -312,7 +312,9 @@ async def _vector_branch(
 async def _keyword_branch(
     *,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    # 关键词路只需要「查哪几个库」（现场九·第四步）：代下放到篇级之后库级版本不再是
+    # 可见性判据，索引里每篇只有一份（写入先按文档全清再写新的）。
+    kb_ids: Sequence[str],
     queries: Sequence[str],
     top_k: int,
     keyword_factory: Callable[[], Any],
@@ -339,7 +341,8 @@ async def _keyword_branch(
         return await keyword_recall(
             provider=keyword_factory(),
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            # 关键词路的范围只剩「哪几个库」（现场九·第四步）。
+            kb_ids=kb_ids,
             queries=queries,
             top_k=top_k,
         )

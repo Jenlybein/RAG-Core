@@ -24,6 +24,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from app.models.chunk import (
     CHUNK_TYPE_REFERENCE_POINTER,
     DEFAULT_DOC_VERSION,
@@ -292,28 +294,18 @@ def build_es_mapping() -> dict:
 def build_bm25_query(
     *,
     tenant_id: str,
-    index_versions: dict[str, str],
+    kb_ids: Sequence[str],
     search_query: str,
     top_k: int,
 ) -> dict:
-    """返回 ``search`` 的请求体：租户过滤 + 库/版本配对 + multi_match 打分。
+    """返回 ``search`` 的请求体：租户过滤 + 库范围 + multi_match 打分。
 
-    ``index_versions`` 是「kb_id → 索引版本」的映射（与向量侧的范围版签名同形状），
-    不是两个平行数组：配对关系只能从映射里读出来，数组一旦错位就会静默越权。
+    ``kb_ids`` 是这次要查的库（现场九·第四步起不再带版本）：代下放到篇级之后，一次检索
+    里每篇各有自己的当前代，库级版本不再是可见性判据。关键词索引里每篇**只有一份**
+    （写入总是「先按文档全清、再写新的一份」），所以按库过滤就够了，不会重复。
     """
 
-    # 每对「库 + 版本」是一个独立的必须同时成立的子句；子句之间才是 should。
-    pairing = [
-        {
-            "bool": {
-                "filter": [
-                    {"term": {"kb_id": kb_id}},
-                    {"term": {"index_version": version}},
-                ]
-            }
-        }
-        for kb_id, version in index_versions.items()
-    ]
+    scope = {"terms": {"kb_id": list(kb_ids)}}
 
     return {
         "size": top_k,
@@ -335,10 +327,9 @@ def build_bm25_query(
                 ],
                 "filter": [
                     {"term": {"tenant_id": tenant_id}},
-                    # 配对条件必须留在 filter 里：若把 should 放在顶层 bool，同时又
-                    # 有 must，ES 的默认 minimum_should_match 会退化成 0，
-                    # 于是「库 + 版本」这对条件变成了纯加分项——过滤形同虚设。
-                    {"bool": {"should": pairing, "minimum_should_match": 1}},
+                    # 库范围（现场九·第四步）：一次检索里每篇各有自己的当前代，库级版本
+                    # 不再是可见性判据，范围只剩「哪几个库」。
+                    scope,
                     # 只看当前稿（#174）：与向量侧 ``current_draft_filter()`` 同一个口径，
                     # 只是一个布尔 term。漏掉它，两稿切片并存时关键词路会多召回一份旧稿，
                     # 而结果看起来完全正常（同一段内容出现两次）。

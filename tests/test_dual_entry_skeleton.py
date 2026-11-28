@@ -127,7 +127,7 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
     """``kb_ids`` 是列表：一次范围召回覆盖全部库，再按分数排序后截到 TOP_K。
 
     票 5 起不再是「逐库检索再合并」：分库召回会让不相关的库也各占名额。这里的
-    断言因此变成「一次调用 + 配对映射覆盖两个库」，合并排序的口径不变。
+    断言因此变成「一次调用 + 库集合覆盖两个库」，合并排序的口径不变。
     """
 
     rag_service = importlib.import_module("app.services.rag_service")
@@ -147,12 +147,10 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
         def __init__(self):
             self.scopes: list[dict[str, str]] = []
 
-        async def similarity_search_scope(
-            self, db, query_vector, *, tenant_id, index_versions, top_k
-        ):
-            self.scopes.append(dict(index_versions))
+        async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
+            self.scopes.append(dict.fromkeys(kb_ids))
             rows = []
-            for kb_id in index_versions:
+            for kb_id in kb_ids:
                 score = 0.9 if kb_id == "kb-a" else 0.5
                 rows.append(
                     {
@@ -183,8 +181,8 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
     body = response.json()
     assert body["code"] == 0
     assert body["data"]["kb_ids"] == ["kb-b", "kb-a"]
-    assert fake_store.scopes == [{"kb-b": "v1", "kb-a": "v1"}], (
-        "一次范围调用；每个显式传入的库都在配对映射里"
+    assert sorted(fake_store.scopes[0]) == ["kb-a", "kb-b"], (
+        "一次范围调用；每个显式传入的库都在范围里（现场九·第四步起范围只看库）"
     )
     chunks = body["data"]["retrieved_chunks"]
     assert [c["document_id"] for c in chunks] == ["doc-kb-a", "doc-kb-b"], "按分数合并排序"

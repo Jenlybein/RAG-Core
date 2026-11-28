@@ -21,7 +21,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping, Sequence
+from collections.abc import Sequence
 from typing import Any
 
 import structlog
@@ -36,13 +36,13 @@ async def keyword_recall(
     *,
     provider: Any,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     queries: Sequence[str],
     top_k: int,
 ) -> list[dict]:
     """每句各查一次，并成一个池后截到 ``top_k``。
 
-    ``index_versions`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：这里不再
+    ``kb_ids`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：这里不再
     自己造一份——范围是「一次调用」的属性，而这个函数会被多句各调一次。
 
     单句（改写关闭 / 失败 / 两句相同）时走快路径：一次 ``keyword_search``，结果原样返回、
@@ -67,7 +67,9 @@ async def keyword_recall(
                 provider.keyword_search(
                     query,
                     tenant_id=tenant_id,
-                    index_versions=dict(index_versions),
+                    # 范围只剩「哪几个库」（现场九·第四步）：代下放到篇级之后，库级版本
+                    # 不再是可见性判据；索引里每篇只有一份（写入先按文档全清再写）。
+                    kb_ids=list(kb_ids),
                     top_k=top_k,
                 )
                 for query in wanted
@@ -79,7 +81,7 @@ async def keyword_recall(
         logger.warning(
             "keyword search failed",
             tenant_id=tenant_id,
-            kb_ids=list(index_versions),
+            kb_ids=list(kb_ids),
             error=type(exc).__name__,
         )
         raise AppError(ErrorCode.RETRIEVAL_FAILED, "keyword search failed") from exc

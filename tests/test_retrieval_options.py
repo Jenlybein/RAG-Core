@@ -256,10 +256,8 @@ class _FakeVectorStore:
     def __init__(self) -> None:
         self.scope_calls: list[dict[str, Any]] = []
 
-    async def similarity_search_scope(self, _db, _vector, *, tenant_id, index_versions, top_k):
-        self.scope_calls.append(
-            {"tenant_id": tenant_id, "index_versions": dict(index_versions), "top_k": top_k}
-        )
+    async def similarity_search_scope(self, _db, _vector, *, tenant_id, kb_ids, top_k):
+        self.scope_calls.append({"tenant_id": tenant_id, "kb_ids": list(kb_ids), "top_k": top_k})
         return [
             {
                 "document_id": f"doc-{kb_id}",
@@ -269,7 +267,7 @@ class _FakeVectorStore:
                 "content": "错误码 E1024 表示证书过期。",
                 "score": 0.9,
             }
-            for kb_id in index_versions
+            for kb_id in kb_ids
         ]
 
 
@@ -279,12 +277,12 @@ class _FakeKeyword:
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
         self.calls.append(
             {
                 "query": query,
                 "tenant_id": tenant_id,
-                "index_versions": index_versions,
+                "kb_ids": list(kb_ids),
                 "top_k": top_k,
             }
         )

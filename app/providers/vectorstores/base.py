@@ -16,6 +16,7 @@
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +26,11 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def add_chunks(self, db: AsyncSession, chunks: list[dict]) -> None:
-        """批量写入切片向量。"""
+        """批量写入切片向量。
+
+        每个切片的键里带 ``generation``（这一片属于该篇的第几代产物）：由调用方给值，
+        写入侧不猜。
+        """
 
     @abstractmethod
     async def similarity_search(
@@ -47,7 +52,7 @@ class VectorStore(ABC):
         query_vector: list[float],
         *,
         tenant_id: str,
-        index_versions: dict[str, str],
+        kb_ids: Sequence[str],
         top_k: int,
     ) -> list[dict]:
         """范围版召回：一次覆盖多个知识库，每库带自己的索引版本。
@@ -114,6 +119,7 @@ class VectorStore(ABC):
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
         """删某文档的切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。
 

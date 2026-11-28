@@ -437,6 +437,7 @@ class _RecordingStore:
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
         self.calls.append(f"purge:{self.name}")
         self.deleted.append(document_id)

@@ -74,10 +74,10 @@ class _FakeVectorStore:
         self.calls: list[dict[str, Any]] = []
         self.db_seen: Any = None
 
-    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
-        self.calls.append({"tenant_id": tenant_id, "index_versions": dict(index_versions)})
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
+        self.calls.append({"tenant_id": tenant_id, "index_versions": dict.fromkeys(kb_ids)})
         self.db_seen = db
-        return [{**row, "kb_id": next(iter(index_versions))} for row in self.rows]
+        return [{**row, "kb_id": next(iter(kb_ids))} for row in self.rows]
 
     async def similarity_search(self, *args: Any, **kwargs: Any) -> list[dict]:
         raise AssertionError("检索走范围召回，不许按库循环")
@@ -90,7 +90,7 @@ class _FakeKeyword:
         self.rows = rows or []
         self.queries: list[str] = []
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k) -> list[dict]:
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k) -> list[dict]:
         self.queries.append(query)
         return [dict(row) for row in self.rows]
 

@@ -313,7 +313,7 @@ async def test_the_list_never_reads_documents(monkeypatch: pytest.MonkeyPatch) -
 
 
 @pytest.mark.asyncio
-async def test_the_kb_chunk_total_is_read_under_the_active_version(
+async def test_the_kb_chunk_total_is_read_under_the_current_generation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """卡片上的合计与表格里每行共用同一个谓词（当前代 × 当前稿）。

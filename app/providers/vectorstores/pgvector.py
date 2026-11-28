@@ -11,6 +11,8 @@ score = 1 - 余弦距离，在 Python 侧换算成「越大越相关」；SQL �
 数据面删除与控制面删除都已经是异步栈，迁移期那个联合类型已经收窄成这一种。
 """
 
+from collections.abc import Sequence
+
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.sql.elements import ColumnElement
@@ -22,7 +24,7 @@ from app.models.chunk import (
     DEFAULT_INDEX_VERSION,
     Chunk,
     current_draft_filter,
-    scope_filter,
+    current_generation_filter,
 )
 from app.models.document import Document
 from app.providers.vectorstores.base import VectorStore
@@ -43,16 +45,15 @@ def not_reference_pointer() -> ColumnElement[bool]:
     return chunk_type != CHUNK_TYPE_REFERENCE_POINTER
 
 
-def build_scope_filter(index_versions: dict[str, str]) -> ColumnElement[bool]:
-    """把「kb_id → 索引版本」编译成**配对条件**（实现见 :func:`app.models.chunk.scope_filter`）。
+def build_scope_filter(kb_ids: Sequence[str]) -> ColumnElement[bool]:
+    """范围条件：``chunks.kb_id IN (...)``（现场九·第四步起不再带版本）。
 
-    为什么必须配对、为什么不能写成两个独立的 ``IN``：见 :func:`app.models.chunk.scope_filter`
-    的说明。这里只是它的转发，保留本模块的公开名字——范围条件的**唯一实现**在模型层，
-    因为「空结果」计数（``chunk_repository.count_by_kb_ids``）也要编译同一条条件，
-    而仓储层不该 import 一个 Provider。
+    改造前这里是「库 → 生效版本」的**配对映射**（ADR-0010 §5：不能写成两个独立的 ``IN``，
+    否则会拼出「A 库配 B 库版本」）。代下放到篇级之后配对不再存在——一次检索里每篇各有
+    自己的当前代，可见性由 ``current_generation_filter()`` 表达，范围只剩「哪几个库」。
     """
 
-    return scope_filter(index_versions)
+    return Chunk.kb_id.in_(list(kb_ids))
 
 
 class PgVectorStore(VectorStore):
@@ -106,6 +107,9 @@ class PgVectorStore(VectorStore):
                 Chunk.kb_id == kb_id,
                 not_reference_pointer(),
                 current_draft_filter(),
+                # 只召回该篇**当前代**的产物（现场九·第四步）：旧代按保留策略留在库里给
+                # 回滚，少了这一条它们会以同等分数挤进 TopK——同一段内容两份，而 RRF 不去重。
+                current_generation_filter(),
             )
             .order_by(distance)
             .limit(top_k)
@@ -128,7 +132,7 @@ class PgVectorStore(VectorStore):
         query_vector: list[float],
         *,
         tenant_id: str,
-        index_versions: dict[str, str],
+        kb_ids: Sequence[str],
         top_k: int,
     ) -> list[dict]:
         """范围版召回：一条 SQL 覆盖「kb_id → 索引版本」里的全部配对。
@@ -158,9 +162,12 @@ class PgVectorStore(VectorStore):
             .join(Document, Document.id == Chunk.document_id)
             .where(
                 Chunk.tenant_id == tenant_id,
-                build_scope_filter(index_versions),
+                # 范围就是「这几个库」（现场九·第四步）：库级生效版本不再是可见性判据，
+                # 否则构建写新版本期间这篇会整个从召回里消失（真库实测 count_in_kb = 0）。
+                Chunk.kb_id.in_(list(kb_ids)),
                 not_reference_pointer(),
                 current_draft_filter(),
+                current_generation_filter(),
             )
             .order_by(distance)
             .limit(top_k)
@@ -277,8 +284,12 @@ class PgVectorStore(VectorStore):
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
-        """删该文档的切片行；两个范围参数都可缺省，缺省即「不按这一维收窄」。
+        """删该文档的切片行；三个范围参数都可缺省，缺省即「不按这一维收窄」。
+
+        ``generation`` 非空时只删那一代（现场九·第五步）：重建写的是**新一代**，所以这条
+        让上一代原样留着给回滚——「保留最近 2 代」就是靠它成立的。
 
         ``index_version`` 非空时只删那一版（#142）。
 
@@ -298,5 +309,7 @@ class PgVectorStore(VectorStore):
             statement = statement.where(Chunk.index_version == index_version)
         if doc_version is not None:
             statement = statement.where(Chunk.doc_version == doc_version)
+        if generation is not None:
+            statement = statement.where(Chunk.generation == generation)
         await db.execute(statement)
         await db.flush()

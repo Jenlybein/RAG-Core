@@ -129,16 +129,16 @@ class _FakeVectorStore:
         return [{**_row(), "kb_id": kb_id}]
 
     async def similarity_search_scope(
-        self, db, query_vector, *, tenant_id, index_versions, top_k
+        self, db, query_vector, *, tenant_id, kb_ids, top_k
     ) -> list[dict]:
         structlog.get_logger("t7.retrieval.vectorstore").info(
             "chunks retrieved",
             tenant_id=tenant_id,
-            kb_ids=sorted(index_versions),
+            kb_ids=sorted(kb_ids),
             top_k=top_k,
             returned=1,
         )
-        (kb_id,) = index_versions or (None,)
+        (kb_id,) = kb_ids or (None,)
         return [{**_row(), "kb_id": kb_id}]
 
 

@@ -90,11 +90,11 @@ class _RecordingVectorStore:
         self.depths: list[int] = []
 
     async def similarity_search_scope(
-        self, db: Any, query_vector: Any, *, tenant_id: str, index_versions: Any, top_k: int
+        self, db: Any, query_vector: Any, *, tenant_id: str, kb_ids: Any, top_k: int
     ) -> list[dict]:
-        self.scopes.append(dict(index_versions))
+        self.scopes.append(list(kb_ids))
         self.depths.append(top_k)
-        kb_id = next(iter(index_versions))
+        kb_id = next(iter(kb_ids))
         # 行自带 ``kb_id`` 时以它为准（范围是映射，一个查询可以覆盖多个库）。
         return [dict(row) if row.get("kb_id") else dict(row, kb_id=kb_id) for row in self.rows][
             :top_k
@@ -113,10 +113,10 @@ class _RecordingKeyword:
         self.queries: list[str] = []
 
     async def keyword_search(
-        self, query: str, *, tenant_id: str, index_versions: Any, top_k: int
+        self, query: str, *, tenant_id: str, kb_ids: Any, top_k: int
     ) -> list[dict]:
         self.queries.append(query)
-        self.scopes.append(dict(index_versions))
+        self.scopes.append(list(kb_ids))
         return [dict(row) for row in self.rows][:top_k]
 
 
@@ -208,7 +208,7 @@ def _kernel_kwargs(**overrides: Any) -> dict[str, Any]:
 
     kwargs: dict[str, Any] = {
         "tenant_id": TENANT,
-        "index_versions": {KB_A: DEFAULT_INDEX_VERSION},
+        "kb_ids": [KB_A],
         "query": QUERY,
         "mode": "vector",
         "recall_queries": (QUERY,),
@@ -264,7 +264,7 @@ def test_the_kernel_takes_the_scope_queries_switches_and_timer_explicitly() -> N
 
     required = {
         "tenant_id",
-        "index_versions",
+        "kb_ids",
         "query",
         "mode",
         "recall_queries",
@@ -342,15 +342,15 @@ def test_the_scope_mapping_is_what_both_recall_paths_receive() -> None:
 
     async def go() -> SimpleNamespace:
         outcome, stubs = await _run_kernel(
-            mode="hybrid", index_versions=scope, recall_top_k=2, recall_depth=2
+            mode="hybrid", kb_ids=scope, recall_top_k=2, recall_depth=2
         )
         assert outcome.chunks
         return stubs
 
     stubs = asyncio.run(go())
 
-    assert stubs.vector.scopes == [scope], "向量一路拿到的范围必须就是本次的映射"
-    assert stubs.keyword.scopes == [scope], "关键词一路同理"
+    assert stubs.vector.scopes == [list(scope)], "向量一路拿到的范围就是本次那几个库"
+    assert stubs.keyword.scopes == [list(scope)], "关键词一路同理"
 
 
 # ───────────────────────────────── 二、六段耗时：段名与顺序由内核这一层记下
@@ -447,8 +447,9 @@ class _FoldSession:
         compiled = statement.compile()
         self.scopes.append({"kind": "units", "params": dict(compiled.params)})
         self.unit_statements.append(str(compiled))
-        # 现场九·第四步：取整节不再按「库 → 版本」分组查（那条 SQL 现在按文档行的当前代
-        # 求值），所以替身把请求到的文档对应的行一并回出去。
+        # 替身**故意不过滤**：它只接住语句、把预置的行全回出去（谁该被取回由 SQL 断言守，
+        # 见 ``test_the_section_lookup_is_one_query_scoped_by_the_current_generation``）。
+        # 想让替身真的按请求过滤，就得在这里把编译出来的参数解出来——那是在测替身自己。
         return _Rows([row for rows in self.units.values() for row in rows])
 
 
@@ -516,7 +517,7 @@ def test_the_section_lookup_is_one_query_scoped_by_the_current_generation() -> N
     async def go() -> Any:
         outcome, _stubs = await _run_kernel(
             db=AsyncSessionAdapter(session),
-            index_versions={KB_A: "v1", KB_B: "v2"},
+            kb_ids=[KB_A, KB_B],
             vector=_RecordingVectorStore(
                 [
                     _vector_row("c-a", score=0.9, document_id="doc-a", kb_id=KB_A),

@@ -127,7 +127,6 @@ def _seed(db: Session) -> None:
                 endpoint="retrieve",
                 code=0,
                 kb_ids=[],
-                index_versions={},
                 doc_versions={},
                 chunk_ids=[],
                 top_k=5,

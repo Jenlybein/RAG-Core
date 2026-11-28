@@ -56,20 +56,20 @@ CREATE TABLE chunks (
 )
 """
 
-#: 三篇文档、**留两稿 × 留两版**的现场（两轴各有一个"不该数"的格子）：
+#: 三篇文档、**留两稿 × 留两代**的现场（两轴各有一个「不该数」的格子）：
 #:
 #: * ``doc-1``：指针在第 2 稿，第 1 稿 3 片（保留窗口内还在）、第 2 稿 2 片 → 只该数 **2**；
 #: * ``doc-2``：只长到第 1 稿、1 片 → **1**；
 #: * ``doc-3``：指针已切到第 2 稿、但第 2 稿的切片还没建好（D5 的在途窗口）→ 数 **0**，
 #:   且按仓储契约「没有切片的文档不在字典里」，它整条不该出现。
 #:
-#: 另外每篇的当前稿都多留了一份**第 0 代**（上一次重建替下来的旧代，留着给回滚）：
+#: 另外每篇的当前稿都多留了一份**上一代**（上一次重建替下来的，留着给回滚）：
 #: 那几片属于「同一稿、别的代」，**也不该被数进来**——否则每重建一次，界面上的分块数
 #: 就涨一份（实测 152 vs 38）。
 SEEDED_ROWS = (
-    # ``current_index_generation`` 也写成 1：这些文档**有产物**，而计数口径要
-    # 「版本 × 当前稿 × 当前代」三条齐全（现场九·第三步）。写成 NULL 等于「还没有产物」，
-    # 计数会诚实地回 0——那是另一条用例要覆盖的情形。
+    # ``current_index_generation`` 写成 1：这些文档**有产物**，而计数口径要「当前代 ×
+    # 当前稿」两条齐全。写成 NULL 等于「还没有产物」，计数会诚实地回 0——那是另一条用例
+    # 要覆盖的情形。
     f"INSERT INTO documents (id, tenant_id, kb_id, current_version, current_index_generation) "
     f"VALUES ('doc-1', '{TENANT}', '{KB}', 2, 1)",
     f"INSERT INTO documents (id, tenant_id, kb_id, current_version, current_index_generation) "
@@ -101,7 +101,7 @@ SEEDED_ROWS = (
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
     f"index_version, doc_version) VALUES ('c1-v1-d3', '{TENANT}', '{KB}', 'doc-3', '上一稿', '[]', "
     f"'{{}}', 'v1', 1)",
-    # 同一稿、**旧代**（第 0 代）的三片：留着给回滚，但一个都不许数进来
+    # 同一稿、**上一代**（第 0 代）的三片：留着给回滚，但一个都不许数进来
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
     f"index_version, doc_version, generation) VALUES ('c1-v0-old', '{TENANT}', '{KB}', 'doc-1', '旧版一', '[]', "
     f"'{{}}', 'v1', 2, 0)",
@@ -141,7 +141,6 @@ async def _counts(drafts: AsyncSession) -> dict[str, int]:
         drafts,
         ["doc-1", "doc-2", "doc-3"],
         tenant_id=TENANT,
-        # 生效版本是 v1；v0 是被重建替下来的那一版（留着给回滚），不参与计数。
     )
 
 

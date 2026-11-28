@@ -43,11 +43,7 @@ def test_noop_returns_empty_results_and_writes_nothing() -> None:
     provider = NoopKeywordSearchProvider()
 
     assert (
-        asyncio.run(
-            provider.keyword_search(
-                "E1024", tenant_id=TENANT_ID, index_versions={KB_ID: "v1"}, top_k=5
-            )
-        )
+        asyncio.run(provider.keyword_search("E1024", tenant_id=TENANT_ID, kb_ids=[KB_ID], top_k=5))
         == []
     )
     assert asyncio.run(provider.add_chunks([{"id": "chunk-1"}])) is None
@@ -173,19 +169,20 @@ def test_keyword_search_sends_the_pure_query_and_maps_the_hits() -> None:
         _provider(client).keyword_search(
             "退款申请流程",
             tenant_id=TENANT_ID,
-            index_versions={KB_ID: "v1"},
+            kb_ids=[KB_ID],
             top_k=3,
         )
     )
 
     sent = client.search_calls[0]
-    assert sent["index"] == "rag_chunks"
+    # 查全部物理索引（现场九·第四步）：哪一份生效由篇级代决定，而别名指着库级生效版本。
+    assert sent["index"] == "rag_chunks__*"
     assert sent["size"] == 3
     assert (
         sent["query"]
         == build_bm25_query(
             tenant_id=TENANT_ID,
-            index_versions={KB_ID: "v1"},
+            kb_ids=[KB_ID],
             search_query="退款申请流程",
             top_k=3,
         )["query"]

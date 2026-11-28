@@ -34,6 +34,10 @@ class ChunkStore(Protocol):
       一起删掉，构建期间的检索就会**空一阵**（这正是「构建期间线上照旧查旧版本」要防的）；
     * ``None`` → 清该文档的全部版本。删文档走这条：文档没了，任何版本里的切片都不该留下。
 
+    ``generation`` 是**第三个删除范围**（现场九·第五步）：给了代就只清那一代。重建时
+    写的是**新一代**，所以这一条让「上一代」留在库里给回滚用（保留最近 2 代）。关键词那
+    一路不认这一维——它永远镜像「当前代」，见 ``KeywordSearchChunkStore``。
+
     ``doc_version`` 是**第二个删除范围**（#173，与索引版本正交）：给了稿号只清那一稿
     （重建第 2 稿时第 1 稿的切片原样留着——「每稿各留切片」），``None`` 清这篇文档的
     所有稿（删文档）。两条范围会同时给：同一稿可能被多个索引版本各写过一遍。
@@ -49,6 +53,7 @@ class ChunkStore(Protocol):
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None: ...
 
 
@@ -70,7 +75,12 @@ class KeywordSearchChunkStore:
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
+        # ``generation`` 故意不往下传：关键词引擎没有「代」这一维，它永远只镜像**当前代**
+        # （重建时先按文档清空再写新的一份）。这一侧一旦也保留多代，同一条内容会从 BM25
+        # 路回来两次——而 RRF 合并并不去重。
+        del generation
         await self._provider.delete_by_document_id(
             document_id,
             tenant_id=tenant_id,

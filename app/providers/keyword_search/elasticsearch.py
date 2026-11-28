@@ -305,19 +305,21 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         return int(response.get("count") or 0)
 
     async def keyword_search(
-        self, query: str, *, tenant_id: str, index_versions: dict[str, str], top_k: int
+        self, query: str, *, tenant_id: str, kb_ids: Sequence[str], top_k: int
     ) -> list[dict]:
-        # 查的是**别名**：它此刻指向哪个物理索引就是哪一版。构建期间别名仍指着旧的，
-        # 于是「构建中照旧查旧版本」不需要任何额外判断（ADR-0025 决策二）。
+        # 查的是**全部物理索引**（现场九·第四步）。改造前查别名——别名指着库的生效版本，
+        # 而代下放到篇级之后「哪一份生效」不再由库决定：一篇重建完就写进新索引，别名却还
+        # 指着旧的，于是它从关键词路消失。每篇在索引里**只有一份**（写入总是先按文档全清
+        # 再写新的一份），所以跨索引查不会重复。
         payload = build_bm25_query(
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=kb_ids,
             search_query=query,
             top_k=top_k,
         )
         try:
             response = await asyncio.wait_for(
-                self._get_client().search(index=self._index_name, **payload),
+                self._get_client().search(index=version_index_pattern(self._index_name), **payload),
                 # 有界预算见类文档。超时抛 ``TimeoutError``，由调用方按「这一路挂了」处理
                 # ——不在这里翻译成业务码：Provider 不认识业务码。
                 timeout=self._timeout_s,
@@ -352,7 +354,12 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
+        # ``generation`` 在这里**故意不参与过滤**（现场九·第五步）：关键词引擎没有「代」
+        # 这一维，它永远是**当前代的镜像**——重建时先按文档清空、再写新的一份。让这一侧
+        # 也保留多代的话，同一条内容会从 BM25 路回来两次，而 RRF 合并并不去重。
+        del generation
         # 给了版本只清那一张物理索引（重建新版本时绝不碰线上那一版）；没给版本时用
         # ``<别名>__*`` 覆盖**全部**版本——删文档要在每个版本里都清掉，否则某个归档版本
         # 被重新启用时，那些已删文档会原样回来。

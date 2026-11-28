@@ -141,7 +141,7 @@ def test_vector_recall_reads_only_the_current_draft() -> None:
             session,
             [0.1, 0.2, 0.3],
             tenant_id=TENANT,
-            index_versions={KB: "v1"},
+            kb_ids=[KB],
             top_k=5,
         )
     )
@@ -186,7 +186,7 @@ def test_keyword_recall_filters_on_a_single_is_current_term() -> None:
 
     query = build_bm25_query(
         tenant_id=TENANT,
-        index_versions={KB: "v1"},
+        kb_ids=[KB],
         search_query="退款申请流程",
         top_k=5,
     )
@@ -420,7 +420,7 @@ def test_only_the_two_recall_paths_deliver_the_current_draft() -> None:
     session = _CapturingSession()
     asyncio.run(
         PgVectorStore().similarity_search_scope(
-            session, [0.1, 0.2, 0.3], tenant_id=TENANT, index_versions={KB: "v1"}, top_k=5
+            session, [0.1, 0.2, 0.3], tenant_id=TENANT, kb_ids=[KB], top_k=5
         )
     )
     sql = _sql(session.statement)
@@ -437,9 +437,7 @@ def test_only_the_two_recall_paths_deliver_the_current_draft() -> None:
         "chunk-v2"
     ], "旧稿切片写进去时就标成「不是当前稿」"
 
-    query = build_bm25_query(
-        tenant_id=TENANT, index_versions={KB: "v1"}, search_query="退款", top_k=5
-    )
+    query = build_bm25_query(tenant_id=TENANT, kb_ids=[KB], search_query="退款", top_k=5)
     assert {"term": {"is_current": True}} in query["query"]["bool"]["filter"], (
         "关键词路只认当前稿：这一个 term 就是两稿切片的分界线"
     )
@@ -563,7 +561,7 @@ def test_a_replaced_chunk_is_reported_as_expired_not_as_the_current_draft() -> N
             session,
             tenant_id=TENANT,
             chunks=[stale_hit],
-            index_versions={KB: "v1"},
+            kb_ids=[KB],
             top_k=5,
             fold_to_sections=True,
             expand_table_rows=True,
@@ -616,7 +614,7 @@ def test_the_response_draft_number_ignores_the_jsonb_copy() -> None:
                     "score": 0.9,
                 }
             ],
-            index_versions={KB: "v1"},
+            kb_ids=[KB],
             top_k=5,
             fold_to_sections=True,
             expand_table_rows=True,

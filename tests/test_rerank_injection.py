@@ -218,7 +218,7 @@ def test_the_pipeline_forwards_the_rerank_factory_to_the_stage(
         pipeline.hybrid_retrieve(
             db=None,  # 两路分支都被替身接住，这条用例不需要真会话
             tenant_id="t",
-            index_versions={"kb-a": DEFAULT_INDEX_VERSION},
+            kb_ids=[],
             recall_queries=["q"],
             rerank_query="q",
             top_k=3,

@@ -92,14 +92,12 @@ class _ScopedVectorStore:
         self.scopes: list[dict[str, str]] = []
 
     async def similarity_search_scope(
-        self, _db: Any, _query_vector: Any, *, tenant_id: str, index_versions: dict, top_k: int
+        self, _db: Any, _query_vector: Any, *, tenant_id: str, kb_ids: dict, top_k: int
     ) -> list[dict]:
-        self.scopes.append(dict(index_versions))
-        matched = [
-            row
-            for row in self._rows
-            if index_versions.get(str(row["kb_id"])) == row["index_version"]
-        ]
+        self.scopes.append(list(kb_ids))
+        # 范围只剩「哪几个库」（现场九·第四步）：可见性由篇级代决定，而这一层是存储替身，
+        # 由它决定「库里现在有哪些行」——版本列退化成它自己的观察工具。
+        matched = [row for row in self._rows if row["kb_id"] in kb_ids]
         # 版本列是本文件的观察工具，不是响应字段：归属索引与响应契约都不许因此多一个字。
         return [
             {key: value for key, value in row.items() if key != "index_version"}
@@ -228,20 +226,22 @@ def test_effective_index_version_treats_blank_as_missing() -> None:
     assert effective_index_version(_kb(KB_A, "v2")) == "v2"
 
 
-def test_the_scope_filter_pairs_each_kb_with_its_resolved_version() -> None:
-    """解析出来的映射喂给范围条件后，仍是「每对内部 AND、对与对之间 OR」。"""
+def test_the_scope_filter_is_the_resolved_kb_set() -> None:
+    """解析出来的库集合喂给范围条件，编译成一条 ``IN``（现场九·第四步）。
+
+    改造前这里是「库 + 生效版本」的配对 OR；代下放到篇级之后配对不存在了——一次检索里
+    每篇各有自己的当前代，可见性由 ``current_generation_filter()`` 表达。
+    """
 
     resolved = resolve_index_versions([_kb(KB_A, "v2"), _kb(KB_B, "v1")])
     sql = str(
-        build_scope_filter(dict(resolved)).compile(
+        build_scope_filter(list(resolved)).compile(
             dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}
         )
     )
 
-    assert "chunks.kb_id = 'kb-a' AND chunks.index_version = 'v2'" in sql
-    assert "chunks.kb_id = 'kb-b' AND chunks.index_version = 'v1'" in sql
-    assert " OR " in sql, "两对之间是 OR"
-    assert " IN " not in sql.upper(), "两个独立 IN 会拼出「A 库配 B 库版本」这种不存在的组合"
+    assert sql == "chunks.kb_id IN ('kb-a', 'kb-b')"
+    assert "index_version" not in sql, "库级版本不再是可见性判据"
 
 
 # ────────────────────────────────────────────────── ASGI：检索 pin 在哪一次构建上
@@ -250,7 +250,7 @@ def test_the_scope_filter_pairs_each_kb_with_its_resolved_version() -> None:
 def test_retrieval_sends_each_kb_with_its_own_effective_version(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """多库多版本：向量库收到的是配对映射，调用方无法指定版本。"""
+    """多库：向量库收到的是库集合（现场九·第四步起不再带版本）。"""
 
     with _offline(
         monkeypatch,
@@ -259,7 +259,7 @@ def test_retrieval_sends_each_kb_with_its_own_effective_version(
     ) as fake:
         body = _retrieve(fake["client"], [KB_A, KB_B])
 
-    assert fake["store"].scopes == [{KB_A: "v2", KB_B: "v1"}]
+    assert fake["store"].scopes == [[KB_A, KB_B]], "向量库收到的是「哪几个库」"
     assert [chunk["kb_id"] for chunk in body["data"]["retrieved_chunks"]] == [KB_A, KB_B]
     assert all("index_version" not in chunk for chunk in body["data"]["retrieved_chunks"]), (
         "版本不进响应：要查「哪次构建」读归属索引，不扩响应契约"
@@ -281,11 +281,16 @@ def test_switching_the_effective_version_moves_the_hits_to_the_new_build(
     with _offline(monkeypatch, kbs=kbs, rows=rows) as fake:
         before = _retrieve(fake["client"], [KB_A])
         kbs[KB_A] = "v2"  # 激活：库上的生效版本列被单事务改掉
-        after = _retrieve(fake["client"], [KB_A])
+        _retrieve(fake["client"], [KB_A])
 
-    assert [chunk["chunk_id"] for chunk in before["data"]["retrieved_chunks"]] == ["chunk-old"]
-    assert [chunk["chunk_id"] for chunk in after["data"]["retrieved_chunks"]] == ["chunk-new"]
-    assert fake["store"].scopes == [{KB_A: "v1"}, {KB_A: "v2"}]
+    # 范围只看库（现场九·第四步）：两行都来自同一个库，所以两次都取回两条；
+    # 「只命中新代那条」现在由**读路径的代谓词**保证（见 test_document_chunk_count 与
+    # test_console_kb_read_model_sql 的真 SQL 用例），不再靠切换库级生效版本。
+    assert [chunk["chunk_id"] for chunk in before["data"]["retrieved_chunks"]] == [
+        "chunk-old",
+        "chunk-new",
+    ]
+    assert fake["store"].scopes == [[KB_A], [KB_A]]
 
 
 def test_a_kb_that_was_never_backfilled_is_refused_before_any_recall(
@@ -417,7 +422,7 @@ async def test_the_empty_reason_counts_under_the_current_generation(
     reason = await service._empty_reason(
         _CountingDb(),
         tenant_id=TENANT_ID,
-        index_versions={KB_A: "v2"},
+        kb_ids=[KB_A],
         chunks=[],
     )
 

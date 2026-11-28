@@ -45,12 +45,13 @@ class KeywordSearchProvider(ABC):
 
     @abstractmethod
     async def keyword_search(
-        self, query: str, *, tenant_id: str, index_versions: dict[str, str], top_k: int
+        self, query: str, *, tenant_id: str, kb_ids: Sequence[str], top_k: int
     ) -> list[dict]:
         """按关键词召回切片，score 越大越相关；必须带租户过滤，否则会跨租户召回。
 
-        ``index_versions`` 是「kb_id → 索引版本」；租户 + 库/版本配对是硬过滤条件，
-        打分只来自关键词命中。
+        ``kb_ids`` 是这次要查的库；租户 + 库范围是硬过滤条件，打分只来自关键词命中。
+        写法上曾经是「kb_id → 索引版本」的配对映射（ADR-0010 §5），代下放到篇级之后
+        版本不再是可见性判据，范围只剩库。
         """
 
     @abstractmethod

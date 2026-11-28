@@ -78,7 +78,7 @@ ADR-0026「影响范围」把这条钉死：一次 Research = 一个 ``log_id`` 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -139,7 +139,7 @@ def build_kernel_search(
     db: AsyncSession,
     *,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     options: RetrievalOptions,
     on_degraded: Callable[[str], None] | None = None,
     on_rerank: Callable[[], None] | None = None,
@@ -181,7 +181,7 @@ def build_kernel_search(
         outcome = await retrieve_kernel(
             db,
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=list(kb_ids),
             query=sub_query,
             mode=options.mode,
             # 不做改写：召回用句与重排用句都是这一条子查询。
@@ -346,7 +346,7 @@ async def _gated_research(
         or build_kernel_search(
             db,
             tenant_id=key.tenant_id,
-            index_versions=index_versions,
+            kb_ids=list(kb_ids),
             options=options,
             on_degraded=sub_search_degraded.append,
             on_rerank=_count_rerank,

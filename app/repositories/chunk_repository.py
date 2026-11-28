@@ -233,8 +233,8 @@ async def fetch_parent_rows(
 ) -> dict[tuple[str, str], list[str]]:
     """``{(文档 id, 父节路径): [父节自己那几片的正文…]}``，按文档顺序。
 
-    只在这一版本身份里取（``index_version`` 由调用方按「这份文档所属库」给出）：
-    跨版本拼父节会让重建中途的检索拿到两套切法拼起来的上下文。
+    只在**当前代 × 当前稿**里取（判据见 :func:`serving_chunk_filters`）：跨代拼父节会让
+    重建中途的检索拿到两套切法拼起来的上下文——同一个小节一半是旧切法的片、一半是新的。
     """
 
     if not document_ids or not heading_paths:
@@ -245,7 +245,7 @@ async def fetch_parent_rows(
                 tenant_id=tenant_id,
                 document_ids=list(document_ids),
                 heading_paths=list(heading_paths),
-                    )
+            )
         )
     ).all()
     parents: dict[tuple[str, str], list[str]] = {}
@@ -517,21 +517,18 @@ async def count_by_document_ids(
     文档列表接口（数据面与控制面树）必须用它，不能对每个文档各查一次（N+1）。
     ``tenant_id`` 是强制过滤参数（ADR-0006）：即使文档 id 已被上游按租户筛过，计数也不跨租户。
 
-    **数的是「生效版本 × 当前稿」这一格**，不是留存稿之和、也不是留存版本之和：
+    **数的是「当前代 × 当前稿」这一格**（现场九·第四步）：
 
-    多稿并存（ADR-0031）之后又多了多版本并存（构建出 v5 时 v4 仍留着给回滚），于是
-    「这份文档现在有多少片」有**两个**必须一起锁的维度：
+    * ``generation``：由 :func:`current_generation_filter` 交 JOIN 的文档行算
+      （``chunks.generation = documents.current_index_generation``）；
+    * ``doc_version``：由 :func:`current_draft_filter` 交同一行算。
 
-    * ``doc_version``：由 :func:`current_draft_filter` 交 JOIN 的文档行算；
-    * ``index_version``：由调用方传**该库当前生效版本**（``knowledge_bases.active_index_version``）。
+    两根轴都由数据库求值，调用方**不用传任何范围参数**——这也是改造的一个结果：以前要传
+    「该库当前生效版本」，现在「哪一代生效」是每篇文档自己的事，没有库级的答案可传。
 
-    只锁前者（本函数在 #17x 那版的写法）会让界面把每个留存版本的切片都数一遍——实测一个
-    建过 4 版的库显示 152 片，而生效版本只有 38 片，**每次重建都涨一份且永不回落**。而检索
-    链路上每一条语句都带 ``Chunk.index_version == <生效版本>``：界面与检索因此说着两个数。
-
-    ``index_version`` 是**必填关键字**（没有默认值）：这个数是对外可见的，让调用方必须
-    当场回答「哪一版」比给一个会静默算错的默认值强。没有生效版本（新建库、只写了文件还没
-    建索引）时传 ``None``，本函数直接回零——那种库里没有任何可服务的切片。
+    只锁后者（改造前那种写法）会把每篇留存的旧代切片都数一遍——实测一个建过 4 版的库显示
+    152 片，而当前代只有 38 片，**每次重建都涨一份且永不回落**。旧代按保留策略留在库里
+    （给单篇回滚用），它们不该出现在这个数里。
 
     **数的是当前稿**（:func:`app.models.chunk.current_draft_filter`），不是各留存稿之和：
     每稿各留一套切片（ADR-0031 决策一）之后，同一篇文档库里可以有两三稿的切片同时存在，

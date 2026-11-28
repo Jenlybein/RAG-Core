@@ -140,7 +140,7 @@ async def decompose_retrieve(
     search = build_kernel_search(
         db,
         tenant_id=tenant_id,
-        index_versions=index_versions,
+        kb_ids=list(index_versions),
         options=options,
         on_degraded=degraded_reasons.append,
         on_rerank=_count_rerank,
@@ -168,7 +168,7 @@ async def decompose_retrieve(
     from app.services.rag_service import _empty_reason
 
     empty_reason = await _empty_reason(
-        db, tenant_id=tenant_id, index_versions=index_versions, chunks=merged
+        db, tenant_id=tenant_id, kb_ids=list(index_versions), chunks=merged
     )
 
     retrieval_meta: dict[str, object] = {

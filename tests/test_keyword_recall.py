@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import asyncio
 
 import pytest
@@ -23,7 +25,7 @@ from app.services.retrieval.keyword_recall import keyword_recall
 
 TENANT = "tenant_demo"
 KB = "kb_a"
-VERSIONS = {KB: "v1"}
+KBS = [KB]
 
 
 class _StubProvider:
@@ -48,7 +50,7 @@ class _StubProvider:
         return self._available
 
     async def keyword_search(
-        self, query: str, *, tenant_id: str, index_versions: dict[str, str], top_k: int
+        self, query: str, *, tenant_id: str, kb_ids: Sequence[str], top_k: int
     ) -> list[dict]:
         self.queries.append(query)
         self.in_flight += 1
@@ -78,7 +80,7 @@ def _recall(provider: _StubProvider, queries: list[str], *, top_k: int = 5) -> l
         keyword_recall(
             provider=provider,
             tenant_id=TENANT,
-            index_versions=VERSIONS,
+            kb_ids=KBS,
             queries=queries,
             top_k=top_k,
         )
@@ -212,5 +214,5 @@ def test_the_provider_contract_is_unchanged() -> None:
     from app.providers.keyword_search.base import KeywordSearchProvider
 
     signature = inspect.signature(KeywordSearchProvider.keyword_search)
-    assert list(signature.parameters) == ["self", "query", "tenant_id", "index_versions", "top_k"]
+    assert list(signature.parameters) == ["self", "query", "tenant_id", "kb_ids", "top_k"]
     assert signature.parameters["query"].annotation is str

@@ -20,7 +20,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal
 
 from app.services.retrieval.merge import merge_rows
@@ -30,7 +30,7 @@ async def vector_recall(
     *,
     db: Any,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
@@ -39,7 +39,7 @@ async def vector_recall(
 ) -> list[dict]:
     """每句各嵌一次、各做一次范围召回，并成一个池后截到 ``top_k``。
 
-    ``index_versions`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
+    ``kb_ids`` 是**调用方解析好的范围**（``kb_id → 索引版本``的映射）：
     这里不再自己造一份。范围由「一次调用」决定（索引即构建产物之后还要读库里的生效
     版本，那是每次调用一次的事），而本函数会被多查询各调一次——两处各造一遍，
     「这次查的是哪个版本」就有了两个来源。
@@ -73,7 +73,7 @@ async def vector_recall(
                 query_vector,
                 tenant_id=tenant_id,
                 # 映射而不是两个平行数组：配对关系只能从映射里读出来。
-                index_versions=dict(index_versions),
+                kb_ids=list(kb_ids),
                 top_k=top_k,
             )
             for query_vector in vectors

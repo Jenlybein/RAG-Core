@@ -223,9 +223,9 @@ class _FakeVectorStore:
         self._rows = list(rows)
 
     async def similarity_search_scope(
-        self, _db: Any, _vector: Any, *, tenant_id: str, index_versions: dict, top_k: int
+        self, _db: Any, _vector: Any, *, tenant_id: str, kb_ids: dict, top_k: int
     ) -> list[dict]:
-        (kb_id,) = index_versions
+        (kb_id,) = kb_ids
         return [{**row, "kb_id": kb_id} for row in self._rows[:top_k]]
 
 

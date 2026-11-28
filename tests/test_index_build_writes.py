@@ -77,6 +77,7 @@ class _RecordingStore:
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
         self.purge_versions.append(index_version)
 

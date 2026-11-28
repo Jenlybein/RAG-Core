@@ -25,7 +25,7 @@ Research」在统计里消失、trace 碎成 N 份让阶段预算失准、配额
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -66,7 +66,7 @@ async def retrieve_kernel(
     db: AsyncSession,
     *,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     query: str,
     mode: str,
     recall_queries: Sequence[str],
@@ -91,7 +91,7 @@ async def retrieve_kernel(
 ) -> KernelOutcome:
     """跑一遍「召回 → 融合 → 重排 → TopK → 折叠」，只返回这一步能看到的事实。
 
-    ``index_versions`` 是**本次的范围**（``kb_id → 索引版本``的映射，不是两个平行数组）：
+    ``kb_ids`` 是**本次的范围**（``kb_id → 索引版本``的映射，不是两个平行数组）：
     它由调用方解析好递进来，内核自己不去查「这个库现在生效哪个版本」——那是每次调用
     一次的事（ADR-0025），而内核会被调 N 次。
 
@@ -125,7 +125,7 @@ async def retrieve_kernel(
         outcome = await hybrid_retrieve(
             db=db,
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=kb_ids,
             # 两路都逐句搜这一组；重排看 rerank_query（原句）。
             recall_queries=recall_queries,
             rerank_query=rerank_query,
@@ -151,7 +151,7 @@ async def retrieve_kernel(
         chunks = await _retrieve_by_keyword(
             db,
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=kb_ids,
             queries=recall_queries,
             top_k=recall_top_k,
             keyword_factory=keyword_factory,
@@ -161,7 +161,7 @@ async def retrieve_kernel(
         chunks = await _retrieve_by_vector(
             db,
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=kb_ids,
             queries=recall_queries,
             top_k=recall_top_k,
             embedding_factory=embedding_factory,
@@ -174,7 +174,7 @@ async def retrieve_kernel(
             db,
             tenant_id=tenant_id,
             chunks=chunks,
-            index_versions=index_versions,
+            kb_ids=kb_ids,
             top_k=top_k,
             fold_to_sections=fold_to_sections,
             expand_table_rows=expand_table_rows,
@@ -188,7 +188,7 @@ async def _retrieve_by_vector(
     db: AsyncSession,
     *,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     queries: Sequence[str],
     top_k: int,
     embedding_factory: Callable[[], Any],
@@ -205,7 +205,7 @@ async def _retrieve_by_vector(
         rows = await vector_recall(
             db=db,
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=kb_ids,
             queries=queries,
             top_k=top_k,
             embedding_factory=embedding_factory,
@@ -226,7 +226,7 @@ async def _retrieve_by_keyword(
     db: AsyncSession,
     *,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     queries: Sequence[str],
     top_k: int,
     keyword_factory: Callable[[], Any],
@@ -243,7 +243,7 @@ async def _retrieve_by_keyword(
         rows = await keyword_recall(
             provider=keyword_factory(),
             tenant_id=tenant_id,
-            index_versions=index_versions,
+            kb_ids=kb_ids,
             queries=queries,
             top_k=top_k,
         )
