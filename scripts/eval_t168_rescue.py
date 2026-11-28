@@ -973,7 +973,7 @@ async def collect_probes(*, top_k: int = B_TOP_K) -> tuple[list[Probe], dict[str
             search = build_kernel_search(
                 db,
                 tenant_id=scope["tenant_id"],
-                index_versions=versions,
+                kb_ids=list(versions),
                 options=_retrieval_options(top_k),
                 on_degraded=degraded.append,
             )
@@ -1460,7 +1460,7 @@ async def run_case(
             inner = build_kernel_search(
                 db,
                 tenant_id=scope["tenant_id"],
-                index_versions=index_versions,
+                kb_ids=list(index_versions),
                 options=_retrieval_options(case.top_k),
                 on_degraded=degraded.append,
             )
@@ -1652,7 +1652,7 @@ async def run_cases(
         record = await run_case(
             case,
             fivefold=fivefold,
-            index_versions=versions_by_source[case.source],
+            kb_ids=list(versions_by_source[case.source]),
             stems=stems_by_source[case.source],
             archive=archive,
             condition=condition,

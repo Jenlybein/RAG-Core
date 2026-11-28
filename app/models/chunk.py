@@ -6,20 +6,19 @@ embedding 是硬约束 Vector(1536)：维度改了就要改列 + 迁移 + 全量
 content 是**切片原文**（原样返回给调用方）；送进 embedding 的检索文本不落库，
 只在索引期由 ``app.utils.retrieval_text`` 算出来。
 
-``index_version`` 是数据范围的一部分（ADR-0010 §5 / ADR-0025）：它与 ``kb_id`` 组成
-**配对映射**（``kb_id → version``），检索永远 pin 在各库的**生效版本**上，构建期间照旧
-查旧的 active。版本由服务端从库行解析（:func:`app.models.index_version.resolve_index_versions`），
-**不是请求参数**。复合索引 ``(tenant_id, kb_id, index_version)`` 供范围检索使用。
+``generation`` 是**可见性**的一部分（现场九·第四步 / ADR-0025 第 2 次修订）：它记这一片
+属于该篇的第几代产物，与 ``documents.current_index_generation`` 一比就决定「这一片算不算
+现在服务的那一份」。改造前这件事由库级的 ``index_version = 生效版本`` 表达——代下放到篇级
+之后那条相等条件不再等价（构建期间新代写在还没上线的版本里）。
 
-**范围条件只有一份**（:func:`scope_filter`）：向量召回与「空结果」计数都编译同一条
-配对条件。写两遍的下场是其中一遍迟早退化成两个独立 ``IN``——那会匹配出「A 库配 B 库
-版本」这种根本不存在的组合，而且不报错。
+**可见性条件只有一份**（:func:`current_generation_filter` + :func:`current_draft_filter`）：
+向量召回、界面片数、折叠取整节、补父节、空结果判定都编译同一条。写两遍的下场是其中一遍
+迟早漏掉一条轴——那会让旧代或旧稿的切片混进结果，而且不报错。
 """
 
-from collections.abc import Mapping
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Index, Integer, String, Text, and_, false, or_
+from sqlalchemy import Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql.elements import ColumnElement
@@ -46,31 +45,6 @@ DEFAULT_GENERATION = 1
 CHUNK_TYPE_REFERENCE_POINTER = "reference_pointer"
 
 
-def scope_filter(index_versions: Mapping[str, str]) -> ColumnElement[bool]:
-    """把「kb_id → 索引版本」编译成**配对条件**：每对内部 AND，对与对之间 OR。
-
-    为什么不写成两个独立的 ``IN``：``kb_id IN ('kb-a','kb-b')`` 配
-    ``index_version IN ('v1','v2')`` 会匹配出「kb-a 的 v2」这种根本不存在的组合。
-    单版本时两种写法完全等价，多版本并存时就分叉——那是越权或脏数据，而且不会
-    报错。配对关系只能从映射里读出来，不能从两个平行数组拼（与关键词侧的
-    ``build_bm25_query`` 同一条规矩）。
-
-    空映射返回**恒假**而不是恒真：拿不到范围却不过滤，等于把整个租户的库都召回，
-    比空结果严重得多。
-
-    调用它之前，映射必须已经由 ``resolve_index_versions`` 解析过——那个函数会拒绝
-    「有库没有生效版本」的情况，于是这里不会收到一个值为 ``None`` 的配对。
-    """
-
-    pairs = [
-        and_(Chunk.kb_id == kb_id, Chunk.index_version == index_version)
-        for kb_id, index_version in index_versions.items()
-    ]
-    if not pairs:
-        return false()
-    return or_(*pairs)
-
-
 def current_draft_filter() -> ColumnElement[bool]:
     """「这一片属于当前稿」：``chunks.doc_version = documents.current_version``（#174）。
 
@@ -88,7 +62,7 @@ def current_draft_filter() -> ColumnElement[bool]:
     不用 ``JOIN`` 的写法（先把当前稿号读出来再传参）会把「读指针」与「按指针过滤」
     拆成两个时刻，中间正好是别人翻指针的窗口（ADR-0005）。
 
-    与 :func:`scope_filter` 正交：那个管「哪一次重建」（索引版本），这个管「哪一稿」。
+    与 :func:`current_generation_filter` 正交：那个管「哪一次重建」（代），这个管「哪一稿」。
     """
 
     return Chunk.doc_version == Document.current_version
@@ -111,20 +85,21 @@ def current_generation_filter() -> ColumnElement[bool]:
     为什么不把当前代读出来当参数传：指针在文档行上，由库来比就不会出现「缓存里的代过期」，
     调用方也不必先查一次文档表（多一次往返、多一个能传错的值）。
 
-    ## 为什么它现在还**没有**接进读路径（第四步才接）
+    ## 为什么它必须**替代**版本条件，而不是乘在旁边
 
     单独把这一条乘到「``index_version = 生效版本``」旁边是**错的**，症状很具体：起一次构建
     往新版本 v5 写时，写路径（``advance_index_generation``）会把该篇指针推到第 2 代，而
     v5 还没上线、线上仍是 v4——于是这篇在 v4 里「当前代 = 2」的切片一片也没有，检索与计数
-    双双归零。也就是说它会**破坏「构建期间照旧服务旧版本」**这条已经成立的性质。
+    双双归零（真库实测过：``count_in_kb`` = 0）。也就是说它会**破坏「构建期间照旧服务旧
+    内容」**这条已经成立的性质。
 
-    正确的前提是「产物只按代看」：库级版本轴退居构建真值（第四步连同 ES 的 ``is_live``
-    一起做）。在那之前，篇级代数是**写侧的记账**，不是读侧的可见性判据。
+    所以第四步是把版本条件**换掉**（ADR-0025 第 2 次修订）：产物只按代看，库级版本轴退居
+    构建真值。
 
-    ## 关键词那一路为什么将来用它对应的翻转标记
+    ## 关键词那一路为什么不需要它
 
-    ES 无法 JOIN 文档表，所以同一件事在那里写成**翻转标记**（写新代时把旧代文档的
-    ``is_live`` 翻成假）。两个后端、两种实现、同一个语义。
+    ES 无法 JOIN 文档表，但它也不需要：索引里每篇**只有一份**（写入总是「先按文档全清、
+    再写新的一份」），所以「查到的就是当前代」。两个后端、两种实现、同一个语义。
     """
 
     return Chunk.generation == Document.current_index_generation

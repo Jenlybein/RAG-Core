@@ -16,6 +16,7 @@
 """
 
 from abc import ABC, abstractmethod
+from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -25,7 +26,12 @@ class VectorStore(ABC):
 
     @abstractmethod
     async def add_chunks(self, db: AsyncSession, chunks: list[dict]) -> None:
-        """批量写入切片向量。"""
+        """批量写入切片向量。
+
+        每个切片的键里带 ``generation``（这一片属于该篇的第几代产物）：**调用方必须给**。
+        缺键时实现会落 ``DEFAULT_GENERATION``（第 1 代，与迁移回填同源）——那是个合法代，
+        写错不报错，只表现为「这篇永远查不到新代」或「旧代冒充当前代」。
+        """
 
     @abstractmethod
     async def similarity_search(
@@ -47,15 +53,14 @@ class VectorStore(ABC):
         query_vector: list[float],
         *,
         tenant_id: str,
-        index_versions: dict[str, str],
+        kb_ids: Sequence[str],
         top_k: int,
     ) -> list[dict]:
-        """范围版召回：一次覆盖多个知识库，每库带自己的索引版本。
+        """范围版召回：一次覆盖多个知识库。
 
-        ``index_versions`` 是「kb_id → 索引版本」的**映射**，不是两个平行数组：
-        过滤条件必须是配对的（每对内部 AND、对之间 OR），写成两个独立的 ``IN``
-        会匹配出「A 库的 v2」这种不存在的组合——单版本时看不出问题，多版本并存
-        时就是越权或脏数据。形状与 ``KeywordSearchProvider.keyword_search`` 一致。
+        ``kb_ids`` 是**库集合**，可见性不在这里判（现场九·第四步）：哪一代产物在服务由
+        ``current_generation_filter()`` 交 JOIN 的文档行求值，当前稿同理。改造前这里收的是
+        「kb_id → 索引版本」的配对映射——代下放到篇级之后没有库级版本可传了。
 
         返回的每行必须**自带 ``kb_id``**：一次跨库召回的结果要能归属到某个库。
         排序口径与单库版一致（score = 1 - 余弦距离），但 ``top_k`` 是**全局**的
@@ -71,10 +76,10 @@ class VectorStore(ABC):
         tenant_id: str,
         document_id: str,
         doc_version: int,
-        index_version: str,
+        generation: int,
         top_k: int,
     ) -> list[dict]:
-        """**锁定某篇某稿**的召回：只返回这一篇文档这一稿的切片（#176）。
+        """**锁定某篇某稿**的召回：只返回这一篇文档这一稿这一代的切片（#176）。
 
         与 :meth:`similarity_search_scope` 的两处差别都是刻意的：
 
@@ -114,6 +119,7 @@ class VectorStore(ABC):
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
         """删某文档的切片向量；必须带 tenant_id 过滤，否则会删到其他租户的行。
 

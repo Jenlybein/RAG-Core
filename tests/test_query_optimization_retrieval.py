@@ -96,8 +96,8 @@ class _FakeVectorStore:
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows = rows or []
 
-    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
-        kb_id = next(iter(index_versions), None)
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
+        kb_id = next(iter(kb_ids), None)
         return [{**row, "kb_id": row.get("kb_id", kb_id)} for row in self.rows]
 
     async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
@@ -112,7 +112,7 @@ class _RecordingKeyword:
         self.available = True
         self.queries: list[str] = []
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
         self.queries.append(query)
         return [dict(row) for row in self.rows]
 
@@ -340,7 +340,7 @@ def test_a_failed_rewrite_happens_before_any_channel_failure(
     monkeypatch.setattr(settings, "QUERY_REWRITE_ENABLED", True)
 
     class _BrokenKeyword(_RecordingKeyword):
-        async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+        async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
             raise RuntimeError("connection refused: elasticsearch")
 
     llm = _SchemaAwareLLM(error=RuntimeError("模型服务 502"))

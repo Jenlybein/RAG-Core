@@ -32,8 +32,9 @@ from app.models.index_version import (
     INDEX_BUILD_BUILDING,
     INDEX_BUILD_FAILED,
 )
-from app.models.chunk import Chunk, current_draft_filter, scope_filter
+from app.models.chunk import Chunk, current_draft_filter
 from app.models.document import Document
+from app.providers.vectorstores.pgvector import build_scope_filter
 from app.repositories import chunk_repository, document_repository, index_version_repository
 from app.utils.status import DocumentStatus
 
@@ -179,6 +180,10 @@ def _chunks() -> list[dict[str, Any]]:
             "document_id": document_id,
             "index_version": index_version,
             "doc_version": doc_version,
+            # 「哪一代」取代了「哪个版本」成为可见性判据（现场九·第四步）：v2 那批是**当前
+            # 代**（第 2 代），v1 那批是被替下来的**上一代**（第 1 代，留着给回滚，不参与任何
+            # 现行读数）。生产的代从 1 起（``DEFAULT_GENERATION``），不是从 0 起。
+            "generation": 2 if index_version == "v2" else 1,
         }
         for chunk_id, tenant_id, kb_id, document_id, index_version, doc_version in layout
     ]
@@ -229,8 +234,9 @@ async def session() -> AsyncIterator[AsyncSession]:
                 "token_count, error_message, created_at, updated_at) VALUES "
                 f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', '{row['title']}', "
                 f"'body', 'markdown', {row['status']}, {row['current_version']}, "
-                # 每篇都**有产物**（第 1 代）：计数口径要「版本 × 当前稿 × 当前代」三条齐全。
-                f"1, NULL, NULL, 0, 0, "
+                # 每篇都**有产物**：当前代是第 2 代（切片的 v2 那批），第 1 代是留下的上一代。
+                # 计数口径要「当前代 × 当前稿」两条齐全，旧代那一份不许进来。
+                f"2, NULL, NULL, 0, 0, "
                 f"NULL, '{row['created_at'].strftime('%Y-%m-%d %H:%M:%S')}', "
                 f"'{row['updated_at'].strftime('%Y-%m-%d %H:%M:%S')}')"
             )
@@ -240,7 +246,7 @@ async def session() -> AsyncIterator[AsyncSession]:
                 "metadata, index_version, doc_version, generation) VALUES "
                 f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', "
                 f"'{row['document_id']}', 'body', '[]', '{{}}', "
-                f"'{row['index_version']}', {row['doc_version']}, 1)"
+                f"'{row['index_version']}', {row['doc_version']}, {row['generation']})"
             )
         for row in _build_versions():
             await connection.exec_driver_sql(
@@ -391,24 +397,24 @@ async def test_the_status_grouping_is_empty_for_an_unknown_kb(session: AsyncSess
 
 
 @pytest.mark.asyncio
-async def test_the_kb_chunk_total_is_the_active_version_and_the_current_draft(
+async def test_the_kb_chunk_total_is_the_generation_times_the_current_draft(
     session: AsyncSession,
 ) -> None:
-    """``kb-main`` 在 v2 下共 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片。
+    """``kb-main`` 的合计 = 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片。
 
-    不该算的：doc-1 在 v1 的三片（旧版本）、doc-4 第 1 稿那一片（旧稿）、doc-6（别的库）、
-    doc-7（别的租户）。旧实现（只锁稿号）在这里会给出 9。
+    不该算的：doc-1 那三片**旧代**、doc-4 第 1 稿那一片（旧稿）、doc-6（别的库）、
+    doc-7（别的租户）。只锁稿号的老实现在这里会给出 9，只锁版本也会给出别的数。
     """
 
-    assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version="v2") == 4
-    )
-    assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version="v1") == 3
-    ), "换成 v1 就是另一版的读数（3 片旧版本切片）"
-    assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version=None) == 0
-    ), "没有生效版本 → 0，而不是去数全部版本"
+    assert await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 4
+
+    # 旧代不算：把 doc-1 的第 0 代切片算进来会变成 7——每次重建都涨一份，永不回落。
+    assert await chunk_repository.count_by_document_ids(session, ["doc-1"], tenant_id=TENANT) == {
+        "doc-1": 2
+    }, "同一篇的旧代切片不参与「现在有多少内容」"
+
+    # 空库 / 全无产物的库：0，而不是去数全部代。
+    assert await chunk_repository.count_in_kb(session, "kb-nope", tenant_id=TENANT) == 0
 
 
 @pytest.mark.asyncio
@@ -428,9 +434,9 @@ async def test_the_kb_chunk_total_matches_the_sum_of_the_per_document_counts(
         )
     ]
     per_document = await chunk_repository.count_by_document_ids(
-        session, document_ids, tenant_id=TENANT, index_version="v2"
+        session, document_ids, tenant_id=TENANT
     )
-    total = await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version="v2")
+    total = await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT)
 
     assert sum(per_document.values()) == total
 
@@ -481,19 +487,16 @@ async def test_latest_never_crosses_tenant_or_kb(session: AsyncSession) -> None:
 async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunks(
     session: AsyncSession,
 ) -> None:
-    """**两种拼写，一个谓词**：多库召回那一侧与单库计数这一侧必须切出同一批切片。
+    """**召回与计数切出同一批切片**：两处用的是同一组谓词，不是两种等价拼写。
 
-    ## 为什么要专门比一次
+    ## 改造后它们真的同形
 
-    检索（``PgVectorStore.similarity_search_scope``）没法写成单个相等条件——它一次跨库召回，
-    版本过滤是 ``scope_filter({kb_id: 生效版本})``（每库一个版本的 OR 配对）。而界面/
-    详情页的计数是 ``serving_chunk_filters(index_version=生效版本)``（单个相等条件）。
+    改造前两处各写一套：召回是 ``scope_filter({kb_id: 生效版本})``（每库一个版本的 OR
+    配对），计数是「当前稿 + 生效版本」。要证明二者等价得靠一条用例——而那正是隐患
+    所在：它们只是**碰巧**在「每篇一份产物且恰在生效版本里」时一致。
 
-    两处都在「锁生效版本 + 锁当前稿」，但**没有一个函数能把它们合并**（一个收映射、一个收标量）。
-    合并不了就得有一条用例证明二者等价——否则「检索命中的那句正文」与「界面上说这篇有 N 片」
-    会各自漂，而漂出来时两边都自洽，谁也不报错。
-
-    这条用例在同一批数据上跑两种拼写，要求行集合逐条相同。
+    现在召回与计数都是 ``kb 范围 + 当前代 + 当前稿`` 三条
+    （``build_scope_filter`` + ``serving_chunk_filters``），库里算出来的就是同一批行。
     """
 
     rows_scope = await session.execute(
@@ -501,9 +504,8 @@ async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunk
         .join(Document, Document.id == Chunk.document_id)
         .where(
             Chunk.tenant_id == TENANT,
-            Chunk.kb_id == KB,
-            scope_filter({KB: "v2"}),
-            current_draft_filter(),
+            build_scope_filter([KB]),
+            *chunk_repository.serving_chunk_filters(),
         )
         .order_by(Chunk.id)
     )
@@ -513,15 +515,116 @@ async def test_the_retrieval_spelling_and_the_count_spelling_pick_the_same_chunk
         .where(
             Chunk.tenant_id == TENANT,
             Chunk.kb_id == KB,
-            *chunk_repository.serving_chunk_filters(index_version="v2"),
+            *chunk_repository.serving_chunk_filters(),
         )
         .order_by(Chunk.id)
     )
 
     scope_ids = [row[0] for row in rows_scope.all()]
     count_ids = [row[0] for row in rows_count.all()]
-    assert scope_ids == count_ids, (
-        "多库召回（scope_filter + 当前稿）与单库计数（serving_chunk_filters）"
-        "必须是同一个谓词的两种拼写"
+    assert scope_ids == count_ids, "召回（库范围 + 当前代 + 当前稿）与计数必须是同一批行"
+    assert len(scope_ids) == 4, "当前代下该库 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片"
+
+
+@pytest.mark.asyncio
+async def test_the_version_axis_would_have_missed_a_freshly_built_document(
+    session: AsyncSession,
+) -> None:
+    """**为什么版本那根轴必须退场**：构建期间刚建好的一篇，版本谓词会把它整篇漏掉。
+
+    造法就是生产里真实发生的顺序：某篇的指针推到第 3 代、切片写在 ``v3`` 里，而库的
+    ``active_index_version`` 还停在 ``v2``（还没切换）。这时：
+
+    * 按版本取（改造前的召回）：0 片——这篇从检索里整个消失；
+    * 按代取（改造后）：2 片，与新指针一致。
+
+    这不是理论差别：真库上量到过 ``count_in_kb`` = 0，因为代数与版本两个条件相乘。
+    """
+
+    await session.execute(
+        text(
+            "UPDATE documents SET current_index_generation = 3, current_version = 1 "
+            "WHERE id = 'doc-2'"
+        )
     )
-    assert len(scope_ids) == 4, "v2 下该库 4 片：doc-1 两片 + doc-2 一片 + doc-4 一片"
+    await session.execute(
+        text(
+            "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, "
+            "metadata, index_version, doc_version, generation) VALUES "
+            "('c-doc2-v3-a', :tenant, :kb, 'doc-2', '正文', '[]', '{}', 'v3', 1, 3), "
+            "('c-doc2-v3-b', :tenant, :kb, 'doc-2', '正文', '[]', '{}', 'v3', 1, 3)"
+        ),
+        {"tenant": TENANT, "kb": KB},
+    )
+
+    by_version = await session.execute(
+        select(Chunk.id)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(
+            Chunk.tenant_id == TENANT,
+            Chunk.kb_id == KB,
+            Chunk.index_version == "v2",
+            Chunk.document_id == "doc-2",
+            current_draft_filter(),
+        )
+    )
+    by_generation = await session.execute(
+        select(Chunk.id)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(
+            Chunk.tenant_id == TENANT,
+            Chunk.kb_id == KB,
+            Chunk.document_id == "doc-2",
+            *chunk_repository.serving_chunk_filters(),
+        )
+    )
+
+    assert [row[0] for row in by_version.all()] == ["c-doc2-v2"], (
+        "版本谓词只看见**旧代**那一份：它按库级版本取，而新代写在还没上线的 v3 里"
+    )
+    assert sorted(row[0] for row in by_generation.all()) == [
+        "c-doc2-v3-a",
+        "c-doc2-v3-b",
+    ], "代谓词按新指针取回新代那两片——版本轴给的答案已经过期了"
+
+
+@pytest.mark.asyncio
+async def test_only_the_current_generation_comes_back_when_three_are_present(
+    session: AsyncSession,
+) -> None:
+    """真 SQL 端到端：库里同时有第 1 / 2 / 3 代，指针指第 3 代 → 只有第 3 代回来。
+
+    这条补的是「代谓词在真实语句里到底切出什么」。改造前可见性靠库级版本，一条相等条件
+    就够，所以只需要断言 SQL 字符串；现在判据要 JOIN 文档行求值，「读的是不是 SQL 里那
+    一条」就成了会漂的地方——字符串断言看不出这个。
+    """
+
+    await session.execute(
+        text("UPDATE documents SET current_index_generation = 3 WHERE id = 'doc-2'")
+    )
+    for generation in (1, 2, 3):
+        await session.execute(
+            text(
+                "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, "
+                "metadata, index_version, doc_version, generation) VALUES "
+                f"('c-doc2-g{generation}', :tenant, :kb, 'doc-2', '正文', '[]', '{{}}', "
+                f"'v3', 1, {generation})"
+            ),
+            {"tenant": TENANT, "kb": KB},
+        )
+
+    rows = await session.execute(
+        select(Chunk.id)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(
+            Chunk.tenant_id == TENANT,
+            Chunk.kb_id == KB,
+            Chunk.document_id == "doc-2",
+            *chunk_repository.serving_chunk_filters(),
+        )
+    )
+
+    assert [row[0] for row in rows.all()] == ["c-doc2-g3"], "旧代（1、2）一片都不许回来"
+    assert await chunk_repository.count_by_document_ids(session, ["doc-2"], tenant_id=TENANT) == {
+        "doc-2": 1
+    }, "计数与召回同一批行：一次重建只多一份，不随代数涨"

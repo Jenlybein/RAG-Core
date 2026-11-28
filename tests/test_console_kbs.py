@@ -137,6 +137,7 @@ class _RecordingStore:
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
         self.calls.append("purge")
         self.deleted.append(document_id)
@@ -414,12 +415,11 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         doc.error_message = None
         return True
 
-    def _count_chunks(
-        _db: Any, document_ids: list[str], *, tenant_id: str, index_version: str | None
-    ) -> dict[str, int]:
+    def _count_chunks(_db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
         assert tenant_id == Tenants.alpha_or_beta(document_ids), "切片计数必须强制带租户"
         # 两轴都要传：只传租户就是「把留存版本的切片也数进来」的老写法。
-        assert index_version == "v1", "计数必须锁生效版本"
+        # 计数不再锁库级生效版本（现场九·第四步）：可见性由「篇级当前代 + 当前稿」决定，
+        # 版本那一条一旦回到这里，构建期间刚建好的那篇就会从计数里消失。
         count_calls.append(list(document_ids))
         return {document_id: CHUNK_COUNTS.get(document_id, 0) for document_id in document_ids}
 
@@ -449,9 +449,9 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
         return _prepare(db, document_id, tenant_id=tenant_id, allow_success=allow_success, **kwargs)
 
     async def _count_chunks_async(
-        _db: Any, document_ids: list[str], *, tenant_id: str, index_version: str | None
+        _db: Any, document_ids: list[str], *, tenant_id: str
     ) -> dict[str, int]:
-        return _count_chunks(_db, document_ids, tenant_id=tenant_id, index_version=index_version)
+        return _count_chunks(_db, document_ids, tenant_id=tenant_id)
 
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
     # 控制面的读与写都已经在异步栈上（票 #130）：被替换的仓储函数因此**只有一个面**，

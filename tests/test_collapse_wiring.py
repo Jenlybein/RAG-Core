@@ -11,7 +11,7 @@ import importlib
 from types import SimpleNamespace
 from typing import Any
 
-from app.models.chunk import DEFAULT_DOC_VERSION, DEFAULT_INDEX_VERSION
+from app.models.chunk import DEFAULT_DOC_VERSION
 from app.services import result_collapse
 from app.services.result_collapse import OVERFETCH_FACTOR
 from tests.fake_db import AsyncSessionAdapter
@@ -102,7 +102,6 @@ def _run(session: _Session, chunks: list[dict], **kwargs) -> list[dict]:
             AsyncSessionAdapter(session),
             tenant_id=TENANT,
             chunks=chunks,
-            index_versions={KB: DEFAULT_INDEX_VERSION},
             **call,
         )
 

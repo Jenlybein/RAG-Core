@@ -81,9 +81,9 @@ class _FakeVectorStore:
         self.scopes: list[dict[str, str]] = []
 
     async def similarity_search_scope(
-        self, _db: Any, vector: Any, *, tenant_id: str, index_versions: Any, top_k: int
+        self, _db: Any, vector: Any, *, tenant_id: str, kb_ids: Any, top_k: int
     ) -> list[dict]:
-        self.scopes.append(dict(index_versions))
+        self.scopes.append(list(kb_ids))
         query = self.embedding.vectors.get(tuple(vector), "")
         return [{**row, "kb_id": KB} for row in self.rows_for.get(query, ())][:top_k]
 
@@ -91,7 +91,7 @@ class _FakeVectorStore:
 class _FakeKeyword:
     available = True
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
         return []
 
 

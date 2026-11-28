@@ -205,7 +205,6 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
             db,
             [document.id for document in documents],
             tenant_id=tenant_id,
-            index_version=kb.active_index_version,
         )
         nodes.append(
             TreeKnowledgeBase(
@@ -376,7 +375,7 @@ async def _summary_of(
         ),
         has_active_version=kb.active_index_version is not None,
         chunk_count=await chunk_repository.count_in_kb(
-            db, str(kb.id), tenant_id=tenant_id, index_version=kb.active_index_version
+            db, str(kb.id), tenant_id=tenant_id
         ),
         needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
         # 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。与 ``needs_rebuild`` 读的不是
@@ -529,7 +528,6 @@ async def list_documents_page(
         db,
         [str(document.id) for document in documents],
         tenant_id=tenant_id,
-        index_version=kb.active_index_version,
     )
     states = await _build_state_of(
         db, kb_id=kb_id, tenant_id=tenant_id, build=build, documents=documents
@@ -689,7 +687,6 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
         db,
         [document.id for document in rebuildable],
         tenant_id=tenant_id,
-        index_version=kb.active_index_version,
     )
     rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
     live = next((row for row in rows if row.version == kb.active_index_version), None)

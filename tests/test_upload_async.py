@@ -548,12 +548,10 @@ def test_list_documents_returns_status_and_grouped_chunk_counts(
 
     counter_calls: list[list[str]] = []
 
-    async def fake_counts(
-        db: Any, document_ids: list[str], *, tenant_id: str, index_version: str | None
-    ) -> dict[str, int]:
+    async def fake_counts(db: Any, document_ids: list[str], *, tenant_id: str) -> dict[str, int]:
         assert tenant_id == TENANT_ID, "切片计数必须强制带租户（ADR-0006）"
-        # 第二轴：数的是「生效版本 × 当前稿」，少了这一条就是把留存版本也数进来。
-        assert index_version == "v1", "切片计数必须锁该库的生效版本"
+        # 第二轴（现场九·第四步）：数的是「当前代 × 当前稿」，版本不再是判据——
+        # 由 SQL 按文档行求值，路由这一层没有版本可传，也不该传。
         counter_calls.append(list(document_ids))
         return {"doc-a": 5, "doc-b": 2}
 

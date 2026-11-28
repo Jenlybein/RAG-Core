@@ -197,18 +197,21 @@ def test_writes_go_into_the_physical_index_of_each_version() -> None:
     ]
 
 
-def test_search_always_queries_the_alias_not_a_physical_index() -> None:
-    """检索只认别名：它是「当前生效版本」的唯一入口，也是切换不需要改代码的原因。"""
+def test_search_spans_every_physical_index_not_the_alias() -> None:
+    """检索查 ``<别名>__*`` 而不是别名本身（现场九·第四步）。
+
+    改造前查别名：别名指着**库级生效版本**，而代下放到篇级之后「哪一份生效」由每篇自己
+    决定——一篇重建完写进新索引、别名还指旧的，它就从关键词路消失了。每篇在索引里只有
+    一份（写入先按文档全清再写新的），所以跨索引查不会重复。
+    """
 
     client = _FakeClient()
 
     asyncio.run(
-        _provider(client).keyword_search(
-            "退款", tenant_id=TENANT_ID, index_versions={KB_ID: "v1"}, top_k=3
-        )
+        _provider(client).keyword_search("退款", tenant_id=TENANT_ID, kb_ids=[KB_ID], top_k=3)
     )
 
-    assert client.search_calls[0]["index"] == ALIAS
+    assert client.search_calls[0]["index"] == f"{ALIAS}__*"
 
 
 # ─────────────────────────────────────────────────── 激活：别名切换

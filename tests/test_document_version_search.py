@@ -31,22 +31,16 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 from sqlalchemy.dialects import postgresql
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 
 from app.core.exceptions import ErrorCode
-from app.models.chunk import (
-    CHUNK_TYPE_REFERENCE_POINTER,
-    Chunk,
-    DEFAULT_INDEX_VERSION,
-    current_draft_filter,
-)
+from app.models.chunk import CHUNK_TYPE_REFERENCE_POINTER, Chunk, current_draft_filter
 from app.models.document import Document
 from app.models.document_version import DocumentVersion
 from app.providers.vectorstores.pgvector import PgVectorStore
-from app.repositories import knowledge_base_repository
 from app.services import version_search
 from app.utils.status import DocumentStatus
 
@@ -59,6 +53,23 @@ CONTENTS = {
     2: "第 2 稿正文：退款流程见附件，另需工单号。",
     3: "第 3 稿正文：退款流程改为线上申请。",
 }
+
+
+#: 临时库里的 ``chunks`` 表：真表带 PG 的 JSONB，SQLite 渲不出来，所以用裸 DDL。
+CHUNKS_DDL = """
+CREATE TABLE chunks (
+    id VARCHAR(36) NOT NULL PRIMARY KEY,
+    tenant_id VARCHAR(64) NOT NULL,
+    kb_id VARCHAR(36) NOT NULL,
+    document_id VARCHAR(36) NOT NULL,
+    content TEXT NOT NULL,
+    embedding TEXT NOT NULL,
+    metadata JSON NOT NULL,
+    index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
+    doc_version INTEGER NOT NULL DEFAULT '1',
+    generation INTEGER NOT NULL DEFAULT 1
+)
+"""
 
 
 def _checksum(text: str) -> str:
@@ -116,7 +127,7 @@ def test_the_locked_query_is_pinned_to_one_document_and_one_draft() -> None:
             tenant_id=TENANT_ID,
             document_id=DOC_ID,
             doc_version=3,
-            index_version=DEFAULT_INDEX_VERSION,
+            generation=2,
             top_k=7,
         )
     )
@@ -126,7 +137,7 @@ def test_the_locked_query_is_pinned_to_one_document_and_one_draft() -> None:
 
     assert "chunks.document_id = " in sql
     assert "chunks.doc_version = " in sql
-    assert "chunks.index_version = " in sql
+    assert "chunks.generation = " in sql, "按代收窄：同一稿可能并存多代（旧代留着给回滚）"
     assert "chunks.tenant_id = " in sql, "租户必须在条件里（ADR-0006）"
     assert "documents.current_version" not in sql, "直查必须绕过「只看当前稿」谓词"
 
@@ -135,7 +146,7 @@ def test_the_locked_query_is_pinned_to_one_document_and_one_draft() -> None:
     assert DOC_ID in bound.values()
     assert TENANT_ID in bound.values()
     assert 3 in bound.values()
-    assert DEFAULT_INDEX_VERSION in bound.values()
+    assert 2 in bound.values(), "代也是值的一部分：不是形状对就算"
     assert 7 in bound.values(), "LIMIT 来自 top_k"
     assert CHUNK_TYPE_REFERENCE_POINTER in bound.values(), (
         "路标切片在默认召回里被排除，直查也不该放回来"
@@ -156,7 +167,7 @@ def test_the_default_recall_path_still_only_sees_the_current_draft() -> None:
             session,  # type: ignore[arg-type]
             [0.1, 0.2, 0.3],
             tenant_id=TENANT_ID,
-            index_versions={KB_ID: DEFAULT_INDEX_VERSION},
+            kb_ids=[KB_ID],
             top_k=5,
         )
     )
@@ -226,7 +237,7 @@ class _StubVectorStore:
         tenant_id: str,
         document_id: str,
         doc_version: int,
-        index_version: str,
+        generation: int,
         top_k: int,
     ) -> list[dict[str, Any]]:
         self.calls.append(
@@ -234,7 +245,7 @@ class _StubVectorStore:
                 "tenant_id": tenant_id,
                 "document_id": document_id,
                 "doc_version": doc_version,
-                "index_version": index_version,
+                "generation": generation,
                 "top_k": top_k,
             }
         )
@@ -268,6 +279,25 @@ def _seed(engine: Any) -> None:
                 current_version=2,
             )
         )
+        # 每稿两代：旧代（1）+ 最新一代（2）。按稿直查必须取 **2**，取 1 就是旧切法。
+        for number in (1, 2, 3):
+            for generation in (1, 2):
+                session.execute(
+                    text(
+                        "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, "
+                        "embedding, metadata, index_version, doc_version, generation) VALUES "
+                        "(:id, :tenant, :kb, :doc, :content, '[]', '{}', 'v1', :draft, :gen)"
+                    ),
+                    {
+                        "id": f"c-v{number}-g{generation}",
+                        "tenant": TENANT_ID,
+                        "kb": KB_ID,
+                        "doc": DOC_ID,
+                        "content": CONTENTS[number],
+                        "draft": number,
+                        "gen": generation,
+                    },
+                )
         for number in (1, 2, 3):
             session.add(
                 DocumentVersion(
@@ -292,6 +322,11 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNames
     sync_engine = create_engine(f"sqlite:///{db_path.as_posix()}")
     Document.__table__.create(sync_engine)
     DocumentVersion.__table__.create(sync_engine)
+    # 按稿直查现在要问「这一稿现存最高的代」——那是一次真实 SQL，所以临时库里必须有
+    # chunks 表。用裸 DDL 而不是 ``Chunk.__table__.create``：真表的 ``metadata`` 列是
+    # PG 的 JSONB，SQLite 渲不出来（同 tests/support/sqlite_schema.py 的做法）。
+    with sync_engine.begin() as connection:
+        connection.execute(text(CHUNKS_DDL))
     _seed(sync_engine)
 
     main = importlib.import_module("app.main")
@@ -311,15 +346,8 @@ def api(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[SimpleNames
         finally:
             await engine.dispose()
 
-    async def _effective_version(_db: Any, _kb_id: str, *, tenant_id: str) -> str:
-        # 临时库里没有 knowledge_bases 表：生效版本按迁移回填后的值给（v1）。
-        return DEFAULT_INDEX_VERSION
-
     monkeypatch.setattr(version_search, "get_vector_store", lambda: store)
     monkeypatch.setattr(version_search, "get_embedding_provider", lambda: embeddings)
-    monkeypatch.setattr(
-        knowledge_base_repository, "get_effective_index_version", _effective_version
-    )
 
     identity: dict[str, DevKeyContext] = {"key": DevKeyContext(tenant_id=TENANT_ID)}
     main.app.dependency_overrides[async_session_mod.get_async_db] = _db
@@ -412,7 +440,8 @@ def test_searching_two_drafts_with_the_same_query_returns_each_draft_and_leaves_
     # 服务确实按请求的稿号去问向量存储，一次一个稿号（不是「查完再过滤」）。
     assert [call["doc_version"] for call in api.store.calls] == [1, 3]
     assert {call["document_id"] for call in api.store.calls} == {DOC_ID}
-    assert {call["index_version"] for call in api.store.calls} == {DEFAULT_INDEX_VERSION}
+    # 每一稿问的都是**这一稿现存最高的代**（种子数据里两稿都是第 2 代）。
+    assert [call["generation"] for call in api.store.calls] == [2, 2]
     assert api.embeddings.queries == ["退款流程", "退款流程"]
 
     # 只读：指针、状态、版本行一个字节都不动，也没有任何重建被投递。
@@ -551,7 +580,8 @@ def test_a_successful_version_search_writes_one_ledger_row(
     assert row["code"] == 0
     assert (row["meter_r"], row["meter_rr"], row["meter_llm"]) == (0, 0, 0)
     assert row["kb_ids"] == [KB_ID]
-    assert row["index_versions"] == {KB_ID: DEFAULT_INDEX_VERSION}
+    # 归属索引这一列现在没有库级答案可记（按稿直查不落在某一版构建上），落的是空映射。
+    assert not row["index_versions"], "按稿直查不属于任何一版构建"
     assert row["doc_versions"] == {DOC_ID: 1}
     assert row["chunk_ids"] == ["chunk-1-0", "chunk-1-1"]
     assert row["top_k"] == version_search.VERSION_SEARCH_TOP_K

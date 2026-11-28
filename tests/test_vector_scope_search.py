@@ -45,72 +45,49 @@ def _normalized(sql: str) -> str:
     return " ".join(sql.split())
 
 
-# ─────────────────────────────────────────── 配对：每对内部 AND，对之间 OR
+# ─────────────────────────────────────────── 范围：库集合（不再带版本）
 
 
-def test_scope_filter_pairs_each_kb_with_its_own_version() -> None:
-    """两对「库 + 版本」时，编译结果必须是「每对内部 AND、对之间 OR」的形状。
+def test_scope_filter_is_the_kb_set() -> None:
+    """范围条件编译成 ``chunks.kb_id IN (...)``（现场九·第四步）。
 
-    SQLAlchemy 不在 ``OR`` 的每个分支外面加括号——SQL 里 ``AND`` 的优先级本来就
-    高于 ``OR``，``A AND B OR C AND D`` 与 ``(A AND B) OR (C AND D)`` 等价。所以
-    这里断言渲染出的字符串，另有一个结构化断言（下一个用例）兜住优先级这件事。
+    改造前它是「库 + 生效版本」的配对条件（每对内部 AND、对之间 OR）。代下放到篇级之后
+    配对不再存在：一次检索里每篇各有自己的当前代，可见性由 ``current_generation_filter()``
+    表达，范围只剩「哪几个库」。
     """
 
-    sql = _normalized(_compiled(build_scope_filter({KB_A: "v1", KB_B: "v2"})))
+    sql = _normalized(_compiled(build_scope_filter([KB_A, KB_B])))
 
-    # 期望值按父 spec「关键词通道 / 数据模型」手写：配对条件就该是这两段 AND 由一个
-    # OR 连起来，而不是从实现里回读。
-    assert sql == (
-        "chunks.kb_id = 'kb-a' AND chunks.index_version = 'v1'"
-        " OR "
-        "chunks.kb_id = 'kb-b' AND chunks.index_version = 'v2'"
-    )
+    assert sql == "chunks.kb_id IN ('kb-a', 'kb-b')"
 
 
-def test_scope_filter_is_an_or_of_ands_not_two_in_lists() -> None:
-    """结构化断言：条件树的根是 ``OR``，下面每个分支都是 ``AND``（库 + 版本同时成立）。"""
+def test_scope_filter_never_carries_index_version() -> None:
+    """版本一旦回到范围条件里，构建期间刚建好的那篇就会从召回里消失。
 
-    from sqlalchemy.sql import operators
+    真库实测过：那篇的切片在新版本里、库的生效版本还是旧的，两个条件相乘 → 0 片。
+    """
 
-    clause = build_scope_filter({KB_A: "v1", KB_B: "v2"})
+    sql = _normalized(_compiled(build_scope_filter([KB_A, KB_B])))
 
-    assert clause.operator is operators.or_, "对与对之间必须是 OR"
-    assert [branch.operator for branch in clause.clauses] == [operators.and_, operators.and_]
-    # 两对 = 两个分支；三个分支就说明有人把「每对」拆成了独立条件。
-    assert len(clause.clauses) == 2
-    # 每个分支里恰好两个叶子：库与版本，缺一个就是漏过滤。
-    assert [len(branch.clauses) for branch in clause.clauses] == [2, 2]
+    assert "index_version" not in sql
 
 
-def test_scope_filter_never_degrades_into_two_independent_in_lists() -> None:
-    """反例守卫：两个独立 ``IN`` 正是本票要禁止的写法。"""
+def test_scope_filter_for_a_single_kb() -> None:
+    sql = _normalized(_compiled(build_scope_filter([KB_A])))
 
-    sql = _normalized(_compiled(build_scope_filter({KB_A: "v1", KB_B: "v2"}))).upper()
-
-    assert " IN " not in sql, "独立 IN 会匹配出「A 库的 v2」这种不存在的组合"
-    assert sql.count(" OR ") == 1, "两对之间恰好一个 OR；再多就是在堆独立条件"
-    assert " AND " in sql, "每对内部必须是 AND（库与版本同时成立）"
-
-
-def test_scope_filter_for_a_single_pair_is_a_plain_and() -> None:
-    """一个库时退化成普通 AND：与单库版 ``similarity_search`` 的口径一致。"""
-
-    sql = _normalized(_compiled(build_scope_filter({KB_A: "v1"})))
-
-    assert sql == "chunks.kb_id = 'kb-a' AND chunks.index_version = 'v1'"
-    assert " OR " not in sql
+    assert sql == "chunks.kb_id IN ('kb-a')"
 
 
 def test_scope_filter_with_empty_scope_matches_nothing() -> None:
     """空范围必须编译成「什么都不匹配」，绝不能退化成「不过滤」。
 
-    ``false()`` 在 SQLite 方言下渲染成常量 ``0``；关键断言是它渲染出了一个**恒假
-    条件**，而不是空片段——空片段意味着 ``WHERE tenant_id = ?`` 之后什么都不剩。
+    ``IN ()`` 在 SQLAlchemy 里渲染成一个恒假条件；关键断言是它渲染出了**恒假**，
+    而不是空片段——空片段意味着 ``WHERE tenant_id = ?`` 之后什么都不剩。
     """
 
-    sql = _normalized(_compiled(build_scope_filter({})))
+    sql = _normalized(_compiled(build_scope_filter([]))).upper()
 
-    assert sql == "0", "不过滤等于跨库召回，是比空结果严重得多的事故"
+    assert "WHERE 1!=1" in sql or "IN (NULL)" in sql, "不过滤等于跨库召回，是比空结果严重得多的事故"
 
 
 # ───────────────────────────── 真的会发出去的那条 SQL：只有一条、一个 LIMIT
@@ -142,7 +119,7 @@ def test_scope_search_sends_one_statement_with_one_global_limit() -> None:
             session,
             [0.1, 0.2, 0.3],
             tenant_id="tenant-1",
-            index_versions={KB_A: "v1", KB_B: "v2"},
+            kb_ids=[KB_A, KB_B],
             top_k=7,
         )
     )
@@ -152,7 +129,11 @@ def test_scope_search_sends_one_statement_with_one_global_limit() -> None:
 
     assert sql.upper().count("LIMIT") == 1, "一个 LIMIT = 一次全局截断"
     assert " ORDER BY DISTANCE LIMIT " in sql.upper(), "先全局按距离排序，再截断"
-    assert " IN " not in sql.upper(), "配对条件不是独立的 IN"
-    assert sql.count("chunks.kb_id = ") == 2 and sql.count("chunks.index_version = ") == 2
-    assert "chunks.tenant_id = " in sql, "租户过滤是强制条件（ADR-0006）"
-    assert " OR " in sql.upper()
+    upper = sql.upper()
+    # 范围是「库集合」，可见性是「当前代 × 当前稿」（现场九·第四步）：三条都在 WHERE 里，
+    # 版本那条一个都不许回来。
+    assert "CHUNKS.KB_ID IN (" in upper and "KB_ID_1" in upper, "范围是库集合"
+    assert "CHUNKS.GENERATION = DOCUMENTS.CURRENT_INDEX_GENERATION" in upper, "按代的可见性"
+    assert "CHUNKS.DOC_VERSION = DOCUMENTS.CURRENT_VERSION" in upper, "按稿的可见性"
+    assert "INDEX_VERSION" not in upper, "库级版本不再是可见性判据"
+    assert "CHUNKS.TENANT_ID = " in upper, "租户过滤是强制条件（ADR-0006）"

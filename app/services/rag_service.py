@@ -105,7 +105,7 @@
 from __future__ import annotations
 
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Sequence
 from typing import Literal
 
 import structlog
@@ -240,20 +240,18 @@ async def retrieve(
         else:
             optimized = direct_query(query)
 
-    # 范围由**这一次调用**解析一次：``kb_id → 索引版本`` 的映射（不是两个平行数组，
-    # 配对关系只能从映射里读出来）。内核与将来的 Research 都吃这一份，不各自去造。
+    # 范围由**这一次调用**解析一次，内核与 Research 都吃这一份，不各自去造。
     #
-    # 版本**从上面那几行库行里读**（ADR-0025 决策四）：不再是一个常量。这是「这次查的是
-    # 哪一次构建」的唯一来源，也是本步相对上一版唯一的取值变化——范围条件的形状一个字
-    # 没改。某个库还没有生效版本（回填漏做 / 还没激活过任何构建）时它会抛
-    # ``IndexVersionUnresolved``：**在召回之前**拦下，而不是拼出一条恒不匹配的条件、
-    # 交回一份「看起来像没命中」的空结果。
+    # 读路径只用它的**键**（哪几个库）：范围的形状从「库 → 生效版本」的配对条件改成了
+    # ``kb_id IN (...)``，可见性交给篇级当前代（现场九·第四步）。值（版本）现在只剩两个
+    # 用处：归属索引那一列，以及下面那条「库还没有生效版本就拦下」的守卫——守卫留到第二
+    # 支迁移删列那天（它守的是回填漏做，与可见性无关）。
     index_versions = resolve_index_versions(visible_kbs)
 
     outcome = await retrieve_kernel(
         db,
         tenant_id=tenant_id,
-        index_versions=index_versions,
+        kb_ids=list(index_versions),
         query=query,
         mode=resolved_mode,
         # 内核拿一组召回用句（原句 + 改写句，**两路都逐句搜**，第 15 步起对称），
@@ -292,10 +290,10 @@ async def retrieve(
     degraded_reason = outcome.degraded_reason
     degraded = degraded_reason is not None
 
-    # 空结果判定用**同一个范围**（``kb_id → 生效版本`` 的映射）：换一个版本口径去数，
-    # 就会把「这个库有内容、只是本次没命中」说成「这个库是空的」。
+    # 空结果判定用**同一个范围、同一组谓词**（当前代 × 当前稿）：换一个口径去数，就会把
+    # 「这个库有内容、只是本次没命中」说成「这个库是空的」。
     empty_reason = await _empty_reason(
-        db, tenant_id=tenant_id, index_versions=index_versions, chunks=collapsed
+        db, tenant_id=tenant_id, kb_ids=list(kb_ids), chunks=collapsed
     )
     retrieval_meta: dict[str, object] = {
         "mode": resolved_mode,
@@ -387,9 +385,9 @@ async def retrieve(
             meter_rr=meter_rr,
             meter_llm=meter_llm,
             kb_ids=list(kb_ids),
-            # 「这次查的是哪次构建」（ADR-0025 决策六）：与本次范围**同一份映射**，
-            # 不是另算一遍。版本一旦会变，同一个 ``kb_ids + query`` 两次调用的差异
-            # 就只剩这一列能归因——切法变了？文档变了？还是召回抖了？
+            # 「这次查的是哪次构建」：与本次范围**同一份映射**，不是另算一遍。同一个
+            # ``kb_ids + query`` 两次调用的差异，只剩这一列能归因——切法变了？文档变了？
+            # 还是召回抖了？（第 17 步下一步改成 ``{document_id: 代数}``。）
             index_versions=dict(index_versions),
             # 「这次命中的是哪几稿」（#179）：与上面那份交付单元**同一份映射**
             # （``document_id → doc_version``），值来自 ``chunks.doc_version`` 列（#174）。
@@ -477,7 +475,7 @@ async def _empty_reason(
     db: AsyncSession,
     *,
     tenant_id: str,
-    index_versions: Mapping[str, str],
+    kb_ids: Sequence[str],
     chunks: list[dict],
 ) -> str | None:
     """空结果的原因：查一次 count，绝不按结果条数猜。
@@ -487,14 +485,14 @@ async def _empty_reason(
 
     有结果时返回 ``None``——``empty_reason`` 只在真为空时出现，不是一个常驻字段。
 
-    计数与召回**同一条范围条件**（``kb_id → 生效版本`` 的配对映射）：库里可能有别的
-    索引版本的切片，但它们对这次检索不可见。用一个版本常量去数会让「本该叫用户换问法」
-    的库被误判成「空库」，而那正是这个字段唯一要说清的事。
+    计数与召回**同一条范围条件**：同样那几个库、同样只数**当前代 × 当前稿**。旧代切片
+    按保留策略留在库里，但它们对这次检索不可见——把它们数进来会让「本该叫用户换问法」的
+    库被误判成「空库」，而那正是这个字段唯一要说清的事。
     """
 
     if chunks:
         return None
     indexed = await chunk_repository.count_by_kb_ids(
-        db, tenant_id=tenant_id, index_versions=index_versions
+        db, tenant_id=tenant_id, kb_ids=list(kb_ids)
     )
     return EMPTY_NO_INDEXED_CHUNKS if indexed == 0 else EMPTY_NO_CHUNKS_MATCHED

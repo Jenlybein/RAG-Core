@@ -122,11 +122,11 @@ class _FakeVectorStore:
         self.calls: list[dict[str, Any]] = []
         self.db_seen: Any = None
 
-    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
         self.calls.append(
             {
                 "tenant_id": tenant_id,
-                "index_versions": dict(index_versions),
+                "kb_ids": list(kb_ids),
                 "top_k": top_k,
             }
         )
@@ -134,9 +134,7 @@ class _FakeVectorStore:
         if self.fail:
             raise RuntimeError("psycopg: connection refused")
         # 一次范围召回：结果按配对顺序拼接，每行自带 kb_id（跨库结果要能归属）。
-        return [
-            {**row, "kb_id": kb_id} for kb_id in index_versions for row in self.rows.get(kb_id, [])
-        ]
+        return [{**row, "kb_id": kb_id} for kb_id in kb_ids for row in self.rows.get(kb_id, [])]
 
     async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
         raise AssertionError("混合模式必须一次范围召回，不许按库循环")
@@ -153,12 +151,12 @@ class _FakeKeyword:
         self.fail = fail
         self.calls: list[dict[str, Any]] = []
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
         self.calls.append(
             {
                 "query": query,
                 "tenant_id": tenant_id,
-                "index_versions": index_versions,
+                "kb_ids": kb_ids,
                 "top_k": top_k,
             }
         )
@@ -311,13 +309,13 @@ def test_hybrid_is_the_server_default_and_calls_both_channels(monkeypatch) -> No
     recall_depth = max(settings.TOP_K, settings.HYBRID_RECALL_TOP_K)
     assert recall_depth > settings.TOP_K, "默认配置下召回深度应大于返回条数"
     assert fake["vector"].calls == [
-        {"tenant_id": TENANT_ID, "index_versions": {KB_A: "v1"}, "top_k": recall_depth}
+        {"tenant_id": TENANT_ID, "kb_ids": [KB_A], "top_k": recall_depth}
     ]
     assert fake["keyword"].calls == [
         {
             "query": "E1024",
             "tenant_id": TENANT_ID,
-            "index_versions": {KB_A: "v1"},
+            "kb_ids": [KB_A],
             "top_k": recall_depth,
         }
     ]
@@ -398,12 +396,14 @@ def test_two_knowledge_bases_cost_one_vector_query_and_one_embedding(monkeypatch
 
     assert body["code"] == 0
     assert len(fake["vector"].calls) == 1, "两个库也只查一次向量"
-    assert fake["vector"].calls[0]["index_versions"] == {KB_A: "v1", KB_B: "v1"}, (
-        "一次调用覆盖全部「库 + 版本」配对"
+    assert fake["vector"].calls[0]["kb_ids"] == [KB_A, KB_B], (
+        "一次调用覆盖全部库（现场九·第四步起范围只看库）"
     )
     assert fake["embedding"].queries == ["E1024"], "嵌入只算一次，不随库数量增加"
     assert len(fake["keyword"].calls) == 1
-    assert fake["keyword"].calls[0]["index_versions"] == {KB_A: "v1", KB_B: "v1"}
+    assert fake["keyword"].calls[0]["kb_ids"] == [KB_A, KB_B], (
+        "关键词路的范围只剩「哪几个库」（现场九·第四步）"
+    )
 
 
 def test_two_knowledge_bases_both_contribute_chunks_with_their_own_kb_id(monkeypatch) -> None:

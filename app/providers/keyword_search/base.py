@@ -3,11 +3,11 @@
 判据与向量侧一致：关键词索引的写入与检索归它，普通 CRUD 归 Repository。
 业务层只依赖这个 ABC，换引擎（ES / OpenSearch / 别的 BM25 实现）只改实现与工厂。
 
-**签名为什么是范围版**：一次检索可以覆盖多个知识库，每个库有自己的索引版本。
-``index_versions`` 是「kb_id → 索引版本」的映射，不是两个平行数组——配对关系
-只能从映射里读出来，数组错位会静默越权。返回值与 ``VectorStore`` 一样是
-``list[dict]``（``chunk_id`` / ``document_id`` / ``title`` / ``content`` / ``score``），
-融合层不需要区分两路的数据形状。
+**签名为什么是范围版**：一次检索可以覆盖多个知识库，所以范围是一个**库集合**
+（``kb_ids``）。改造前它是「kb_id → 索引版本」的配对映射（ADR-0010 §5）；代下放到篇级
+之后，哪一份产物在服务由每篇自己的当前代决定，关键词侧靠「每篇只有一份」的镜像表达同一
+件事，库级版本不再参与。返回值与 ``VectorStore`` 一样是 ``list[dict]``（``chunk_id`` /
+``document_id`` / ``title`` / ``content`` / ``score``），融合层不需要区分两路的数据形状。
 
 ``available`` 是**能力存在性**，不是「这次查到了没有」：空实现返回 ``False``，
 单模式检索据此硬失败（``RETRIEVAL_FAILED``），绝不偷偷退回向量。
@@ -45,12 +45,13 @@ class KeywordSearchProvider(ABC):
 
     @abstractmethod
     async def keyword_search(
-        self, query: str, *, tenant_id: str, index_versions: dict[str, str], top_k: int
+        self, query: str, *, tenant_id: str, kb_ids: Sequence[str], top_k: int
     ) -> list[dict]:
         """按关键词召回切片，score 越大越相关；必须带租户过滤，否则会跨租户召回。
 
-        ``index_versions`` 是「kb_id → 索引版本」；租户 + 库/版本配对是硬过滤条件，
-        打分只来自关键词命中。
+        ``kb_ids`` 是这次要查的库；租户 + 库范围是硬过滤条件，打分只来自关键词命中。
+        写法上曾经是「kb_id → 索引版本」的配对映射（ADR-0010 §5），代下放到篇级之后
+        版本不再是可见性判据，范围只剩库。
         """
 
     @abstractmethod

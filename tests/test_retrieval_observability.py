@@ -96,9 +96,9 @@ class _FakeEmbedding:
 
 class _FakeVectorStore:
     async def similarity_search_scope(
-        self, db, query_vector, *, tenant_id, index_versions, top_k
+        self, db, query_vector, *, tenant_id, kb_ids, top_k
     ) -> list[dict]:
-        (kb_id,) = index_versions
+        (kb_id,) = kb_ids
         return [
             {
                 "document_id": "doc-obs",
@@ -120,7 +120,7 @@ class _FakeKeyword:
 
     available = True
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k) -> list[dict]:
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k) -> list[dict]:
         return [
             {
                 "document_id": "doc-obs",

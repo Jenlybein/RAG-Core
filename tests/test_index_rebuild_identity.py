@@ -113,6 +113,7 @@ class _VersionedStore:
         tenant_id: str,
         index_version: str | None = None,
         doc_version: int | None = None,
+        generation: int | None = None,
     ) -> None:
         self.purged.append((document_id, index_version))
 

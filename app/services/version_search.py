@@ -52,9 +52,9 @@ from app.core.exceptions import AppError, ErrorCode
 from app.providers.embedding import get_embedding_provider
 from app.providers.vectorstores import get_vector_store
 from app.repositories import (
+    chunk_repository,
     document_repository,
     document_version_repository,
-    knowledge_base_repository,
 )
 from app.services.retrieval_trace import record_retrieval_trace
 from app.services.trace_identity import trace_id_for
@@ -134,55 +134,60 @@ async def search_document_version(
             data={"version": version},
         )
 
-    index_version = await knowledge_base_repository.get_effective_index_version(
-        db, doc.kb_id, tenant_id=tenant_id
+    # 这一稿**现存最高的代**（现场九·第四步）：当前稿就是当前代；历史稿则是最后一回把它
+    # 算出来的那一代。改造前这里按库级生效版本收窄——版本不再决定可见性之后，那样查会把
+    # 同一稿并存的旧代混进来（旧切法的片可能挤掉新的，结论变成「这一稿里就是这些内容」）。
+    generation = await chunk_repository.max_generation_for_draft(
+        db, document_id, tenant_id=tenant_id, doc_version=version
     )
-
-    try:
-        vector = await get_embedding_provider().embed_query(query)
-        rows = await get_vector_store().similarity_search_document_version(
-            db,
-            vector,
-            tenant_id=tenant_id,
-            document_id=document_id,
-            doc_version=version,
-            index_version=index_version,
-            top_k=VERSION_SEARCH_TOP_K,
-        )
-    except AppError as exc:
-        await record_version_search(
-            tenant_id=tenant_id,
-            key_id=key_id,
-            document_id=document_id,
-            version=version,
-            kb_id=doc.kb_id,
-            index_version=index_version,
-            chunk_ids=(),
-            latency_ms=_elapsed_ms(started_at),
-            code=exc.code,
-        )
-        raise
-    except Exception as exc:  # noqa: BLE001 - 外部服务失败统一成 50002，见模块文档
-        # 只记类型与范围：异常原文可能带着上游响应体（mapping 细节、内部字段名）。
-        logger.warning(
-            "version search failed",
-            document_id=document_id,
-            tenant_id=tenant_id,
-            doc_version=version,
-            error=type(exc).__name__,
-        )
-        await record_version_search(
-            tenant_id=tenant_id,
-            key_id=key_id,
-            document_id=document_id,
-            version=version,
-            kb_id=doc.kb_id,
-            index_version=index_version,
-            chunk_ids=(),
-            latency_ms=_elapsed_ms(started_at),
-            code=ErrorCode.RETRIEVAL_FAILED,
-        )
-        raise AppError(ErrorCode.RETRIEVAL_FAILED, "version search failed") from exc
+    # 没有产物时**不发任何检索语句**：一个常量条件换不回东西，而空命中是诚实答案。
+    rows: list[dict] = []
+    if generation is not None:
+        try:
+            vector = await get_embedding_provider().embed_query(query)
+            rows = await get_vector_store().similarity_search_document_version(
+                db,
+                vector,
+                tenant_id=tenant_id,
+                document_id=document_id,
+                doc_version=version,
+                generation=generation,
+                top_k=VERSION_SEARCH_TOP_K,
+            )
+        except AppError as exc:
+            await record_version_search(
+                tenant_id=tenant_id,
+                key_id=key_id,
+                document_id=document_id,
+                version=version,
+                kb_id=doc.kb_id,
+                index_version=None,
+                chunk_ids=(),
+                latency_ms=_elapsed_ms(started_at),
+                code=exc.code,
+            )
+            raise
+        except Exception as exc:  # noqa: BLE001 - 外部服务失败统一成 50002，见模块文档
+            # 只记类型与范围：异常原文可能带着上游响应体（mapping 细节、内部字段名）。
+            logger.warning(
+                "version search failed",
+                document_id=document_id,
+                tenant_id=tenant_id,
+                doc_version=version,
+                error=type(exc).__name__,
+            )
+            await record_version_search(
+                tenant_id=tenant_id,
+                key_id=key_id,
+                document_id=document_id,
+                version=version,
+                kb_id=doc.kb_id,
+                index_version=None,
+                chunk_ids=(),
+                latency_ms=_elapsed_ms(started_at),
+                code=ErrorCode.RETRIEVAL_FAILED,
+            )
+            raise AppError(ErrorCode.RETRIEVAL_FAILED, "version search failed") from exc
 
     chunk_ids = [str(item["chunk_id"]) for item in rows]
     await record_version_search(
@@ -191,7 +196,9 @@ async def search_document_version(
         document_id=document_id,
         version=version,
         kb_id=doc.kb_id,
-        index_version=index_version,
+        # 归属索引记的是「哪次构建」；现在没有库级答案可记（按稿直查不落在某一版构建上），
+        # 第二支迁移把这一列改成 ``{document_id: 代数}`` 时会写这篇的那一代。
+        index_version=None,
         chunk_ids=chunk_ids,
         latency_ms=_elapsed_ms(started_at),
         code=0,

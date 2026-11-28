@@ -97,7 +97,7 @@ def _es_provider(client: _FakeClient) -> ElasticsearchKeywordSearchProvider:
     )
 
 
-def test_the_provider_updates_through_the_alias_and_refreshes() -> None:
+def test_the_provider_updates_across_every_physical_index_and_refreshes() -> None:
     """打的是**别名**（检索认的那个名字）并立刻可见。
 
     打物理索引名（``rag_chunks__v1``）在激活 v2 之后就会翻错地方：检索查的是别名指向的
@@ -110,7 +110,9 @@ def test_the_provider_updates_through_the_alias_and_refreshes() -> None:
 
     assert len(client.calls) == 1
     call = client.calls[0]
-    assert call["index"] == "rag_chunks", "别名，不是物理索引名"
+    assert call["index"] == "rag_chunks__*", (
+        "打全部物理索引：只翻别名会留下别处仍为真的旧稿标记，而读侧查的是 __*"
+    )
     assert call["refresh"] is True, "上传完立刻提问必须能查到"
     assert call["conflicts"] == "proceed", "并发重建会撞版本冲突：整批失败等于把这次翻转丢给运气"
     assert call["script"]["params"] == {"doc_version": 3}

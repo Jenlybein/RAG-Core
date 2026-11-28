@@ -562,7 +562,9 @@ def test_the_provider_returns_the_drafts_marked_current_per_document() -> None:
     )
 
     assert versions == {"doc-1": [2], "doc-2": [1]}
-    assert client.calls[0]["index"] == "rag_chunks", "查的是**别名**（线上那一份）"
+    assert client.calls[0]["index"] == "rag_chunks__*", (
+        "查全部物理索引：每篇的当前代可能写在别的版本里，只读别名会漏掉它们"
+    )
 
 
 def test_a_document_outside_the_aggregation_is_absent_from_the_answer() -> None:

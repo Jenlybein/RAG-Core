@@ -19,7 +19,7 @@ class NoopKeywordSearchProvider(KeywordSearchProvider):
         return None
 
     async def keyword_search(
-        self, query: str, *, tenant_id: str, index_versions: dict[str, str], top_k: int
+        self, query: str, *, tenant_id: str, kb_ids: Sequence[str], top_k: int
     ) -> list[dict]:
         return []
 

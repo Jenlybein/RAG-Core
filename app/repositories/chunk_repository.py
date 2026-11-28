@@ -22,14 +22,18 @@ documents.current_version`` 由 :func:`app.models.chunk.current_draft_filter` �
 （``app/services/chunk_store.py``），不经过它。
 """
 
-from collections.abc import Iterable, Mapping, Sequence
+from collections.abc import Iterable, Sequence
 from typing import Any
 
 from sqlalchemy import Integer, Select, and_, delete, distinct, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import Chunk, current_draft_filter, scope_filter
+from app.models.chunk import (
+    Chunk,
+    current_draft_filter,
+    current_generation_filter,
+)
 from app.models.document import Document
 
 
@@ -51,9 +55,12 @@ def _meta_statement(
     **稿号也在这里取**（``chunks.doc_version`` 列）：它是引用三元组（文档 + 稿次 + 切片）
     的第三段，而 JSONB 里那份副本在 #172 的迁移里已经删掉。
 
-    **带当前稿条件**（#174）：切片被重建替换之后，旧 id 在这一条查询里查不到——调用方
-    据此把 ``doc_version`` 落成 ``null``（明确的「已过期」），而不是拿到当前稿那一行的
-    元数据、把当前稿的页码与稿号当成旧切片的。
+    **带当前稿与当前代两条条件**（#174 + 现场九·第四步）：切片被重建替换之后，旧 id 在
+    这一条查询里查不到——调用方据此把 ``doc_version`` 落成 ``null``（明确的「已过期」），
+    而不是拿到当前稿那一行（或旧代那一行）的元数据、把别人的页码与稿号当成这条切片的。
+
+    代这条与折叠取整节、补父节同源：漏了它，同一次重建留下的旧代切片仍会被回查命中，
+    而那种错不会报错、只表现为「页码/小节对不上」。
     """
 
     # 唯一键是 ``(kb_id, chunk_id)``（ADR-0010），不是单独的 chunk_id：跨库同 ID
@@ -63,6 +70,7 @@ def _meta_statement(
         Chunk.kb_id.in_(kb_ids),
         Chunk.id.in_(chunk_ids),
         current_draft_filter(),
+        current_generation_filter(),
     )
 
 
@@ -96,7 +104,6 @@ def _unit_rows_statement(
     tenant_id: str,
     document_ids: list[str],
     units: Sequence[tuple[str, int]],
-    index_version: str | None,
 ) -> Select[tuple[str, str, int, int, str, str, str, int]]:
     """折叠取一节段：按 h2 级章节路径**加节段号**取该单元下的全部切片。
 
@@ -136,8 +143,9 @@ def _unit_rows_statement(
     stmt = stmt.order_by(
         Chunk.document_id, Chunk.meta["chunk_index"].astext.cast(Integer), Chunk.id
     )
-    if index_version is not None:
-        stmt = stmt.where(Chunk.index_version == index_version)
+    # 「哪一代」由库按文档行求值（现场九·第四步）：不再按库级生效版本收窄——构建期间新代
+    # 已在库里、生效版本还是旧的，两个条件相乘会把刚建好的那篇整个抹掉。
+    stmt = stmt.where(current_generation_filter())
     return stmt
 
 
@@ -170,7 +178,6 @@ async def fetch_unit_rows(
     tenant_id: str,
     document_ids: list[str],
     units: Sequence[tuple[str, int]],
-    index_version: str | None = None,
 ) -> dict[tuple[str, str, int], list[tuple[int, str, str, str, int]]]:
     """:func:`fetch_unit_rows` 的异步面（检索链路，第 11 步票 #127）。
 
@@ -183,7 +190,6 @@ async def fetch_unit_rows(
         tenant_id=tenant_id,
         document_ids=document_ids,
         units=units,
-        index_version=index_version,
     )
     return _group_unit_rows(list((await db.execute(stmt)).all()))
 
@@ -193,7 +199,6 @@ def build_parent_rows_statement(
     tenant_id: str,
     document_ids: Sequence[str],
     heading_paths: Sequence[str],
-    index_version: str | None = None,
 ) -> Select[tuple[str, str, int, str]]:
     """**父节自己的**正文：按 ``(文档, 精确标题路径)`` 取，供「折叠关闭时补父节」用（#144）。
 
@@ -217,8 +222,9 @@ def build_parent_rows_statement(
         current_draft_filter(),
     )
     stmt = stmt.order_by(Chunk.document_id, chunk_index, Chunk.id)
-    if index_version is not None:
-        stmt = stmt.where(Chunk.index_version == index_version)
+    # 「哪一代」由库按文档行求值（现场九·第四步）：不再按库级生效版本收窄——构建期间新代
+    # 已在库里、生效版本还是旧的，两个条件相乘会把刚建好的那篇整个抹掉。
+    stmt = stmt.where(current_generation_filter())
     return stmt
 
 
@@ -228,12 +234,11 @@ async def fetch_parent_rows(
     tenant_id: str,
     document_ids: Sequence[str],
     heading_paths: Sequence[str],
-    index_version: str | None = None,
 ) -> dict[tuple[str, str], list[str]]:
     """``{(文档 id, 父节路径): [父节自己那几片的正文…]}``，按文档顺序。
 
-    只在这一版本身份里取（``index_version`` 由调用方按「这份文档所属库」给出）：
-    跨版本拼父节会让重建中途的检索拿到两套切法拼起来的上下文。
+    只在**当前代 × 当前稿**里取（判据见 :func:`serving_chunk_filters`）：跨代拼父节会让
+    重建中途的检索拿到两套切法拼起来的上下文——同一个小节一半是旧切法的片、一半是新的。
     """
 
     if not document_ids or not heading_paths:
@@ -244,7 +249,6 @@ async def fetch_parent_rows(
                 tenant_id=tenant_id,
                 document_ids=list(document_ids),
                 heading_paths=list(heading_paths),
-                index_version=index_version,
             )
         )
     ).all()
@@ -255,13 +259,12 @@ async def fetch_parent_rows(
 
 
 def _count_by_kb_ids_statement(
-    *, tenant_id: str, index_versions: Mapping[str, str]
+    *, tenant_id: str, kb_ids: Sequence[str]
 ) -> Select[tuple[int]]:
-    """空结果判定的计数语句：租户 + 范围 + 当前稿。
+    """空结果判定的计数语句：租户 + 范围 + 当前稿 + **当前代**。
 
-    范围用的是**召回时那一条配对条件**（``app.models.chunk.scope_filter``），不是
-    「所有库 × 所有版本」：口径一旦与召回不同，「库里有内容、本次没命中」就会被
-    误判成「空库」，而这正是 ``empty_reason`` 唯一要说清的事。
+    范围就是召回时那几个库（``kb_id IN (...)``）：口径一旦与召回不同，「库里有内容、本次
+    没命中」就会被误判成「空库」，而这正是 ``empty_reason`` 唯一要说清的事。
 
     「当前稿」同理（#174）：数的是**召回真能看见的行**。少了这一条，两稿并存时计数会
     说「库里有内容」（2 片）而召回一条都没有（当前稿那 0 片），于是
@@ -270,26 +273,25 @@ def _count_by_kb_ids_statement(
 
     return _join_documents(select(func.count()).select_from(Chunk)).where(
         Chunk.tenant_id == tenant_id,
-        scope_filter(index_versions),
+        Chunk.kb_id.in_(list(kb_ids)),
         current_draft_filter(),
+        # 旧代切片按保留策略留在库里，它们不是「现在能召回的内容」——不算进来的话，
+        # 「库里有内容、这次没命中」会被一条早就淘汰的产物撑成假象。
+        current_generation_filter(),
     )
 
 
 async def count_by_kb_ids(
-    db: AsyncSession, *, tenant_id: str, index_versions: Mapping[str, str]
+    db: AsyncSession, *, tenant_id: str, kb_ids: Sequence[str]
 ) -> int:
     """:func:`count_by_kb_ids` 的异步面（检索链路，第 11 步票 #127）。
 
-    口径与召回逐字相同：同一条配对条件、同一个强制租户参数。
-
-    ``index_versions`` 是 ``kb_id → 生效版本`` 的映射（ADR-0025），**不是**一个版本
-    常量：多库各自 pin 在不同构建上时，用一个常量的计数会把「别的版本有内容」算成
-    「这个库没有内容」。
+    口径与召回逐字相同：同样那几个库、同一个强制租户参数、同样只数当前代 × 当前稿。
     """
 
-    if not index_versions:
+    if not kb_ids:
         return 0
-    stmt = _count_by_kb_ids_statement(tenant_id=tenant_id, index_versions=index_versions)
+    stmt = _count_by_kb_ids_statement(tenant_id=tenant_id, kb_ids=kb_ids)
     return int((await db.execute(stmt)).scalar_one())
 
 
@@ -486,30 +488,52 @@ async def list_section_identity_rows(
     ]
 
 
-async def count_in_kb(
-    db: AsyncSession, kb_id: str, *, tenant_id: str, index_version: str | None
-) -> int:
-    """一个库在「生效版本 × 当前稿」下有多少片（卡片上那个合计）。
+async def count_in_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
+    """一个库在「**当前代 × 当前稿**」下有多少片（卡片上那个合计）。
 
     为什么不是「先列全部文档 id，再调 :func:`count_by_document_ids` 求和」：那要先把
     5000 个 id 传进 ``IN (...)``，再用应用层求和。这里一条聚合就够，而且与逐文档计数
     **共用同一个谓词**（:func:`serving_chunk_filters`），不会出现「合计」与「每行之和」
     两个数不一致这种最容易被当成巧合的情况。
 
-    ``index_version`` 为 ``None``（还没有生效版本）时回 0，与逐文档计数同一条约定。
+    还没有任何产物的库自然回 0（每篇的 ``current_index_generation`` 都是 NULL，一条也对不上）。
     """
 
-    if index_version is None:
-        return 0
     statement = (
         _join_documents(select(func.count()).select_from(Chunk))
         .where(
             Chunk.kb_id == kb_id,
             Chunk.tenant_id == tenant_id,
-            *serving_chunk_filters(index_version=index_version),
+            *serving_chunk_filters(),
         )
     )
     return int((await db.execute(statement)).scalar_one() or 0)
+
+
+async def max_generation_for_draft(
+    db: AsyncSession, document_id: str, *, tenant_id: str, doc_version: int
+) -> int | None:
+    """这一稿**现存最高的代**；一片都没有时返回 ``None``。
+
+    按稿直查（``/documents/{id}/versions/{n}/search``）用它定位范围：当前稿就是当前代，
+    历史稿则是「最后一回把它算出来的那一代」。为什么要「最高」而不是「当前代」——旧代按
+    保留策略留着（给单篇回滚），于是历史稿的片可能只存在于旧代里；而旧代里也可能留着
+    同一稿的**更早**一份（两代都说这一稿），取最高才是这一稿的最后形态。
+
+    ``None`` 是「这一稿没有产物」，与「第 1 代恰好零片」不同：调用方要回空的命中列表，
+    而不是拿一个常量去查（那会把别的稿的片捞回来）。
+    """
+
+    value = (
+        await db.execute(
+            select(func.max(Chunk.generation)).where(
+                Chunk.tenant_id == tenant_id,
+                Chunk.document_id == document_id,
+                Chunk.doc_version == doc_version,
+            )
+        )
+    ).scalar_one()
+    return int(value) if value is not None else None
 
 
 async def count_by_document_ids(
@@ -517,28 +541,24 @@ async def count_by_document_ids(
     document_ids: list[str],
     *,
     tenant_id: str,
-    index_version: str | None,
 ) -> dict[str, int]:
     """一次分组查询拿回 ``{document_id: 当前稿的切片数}``；当前稿没有切片的文档不在字典里。
 
     文档列表接口（数据面与控制面树）必须用它，不能对每个文档各查一次（N+1）。
     ``tenant_id`` 是强制过滤参数（ADR-0006）：即使文档 id 已被上游按租户筛过，计数也不跨租户。
 
-    **数的是「生效版本 × 当前稿」这一格**，不是留存稿之和、也不是留存版本之和：
+    **数的是「当前代 × 当前稿」这一格**（现场九·第四步）：
 
-    多稿并存（ADR-0031）之后又多了多版本并存（构建出 v5 时 v4 仍留着给回滚），于是
-    「这份文档现在有多少片」有**两个**必须一起锁的维度：
+    * ``generation``：由 :func:`current_generation_filter` 交 JOIN 的文档行算
+      （``chunks.generation = documents.current_index_generation``）；
+    * ``doc_version``：由 :func:`current_draft_filter` 交同一行算。
 
-    * ``doc_version``：由 :func:`current_draft_filter` 交 JOIN 的文档行算；
-    * ``index_version``：由调用方传**该库当前生效版本**（``knowledge_bases.active_index_version``）。
+    两根轴都由数据库求值，调用方**不用传任何范围参数**——这也是改造的一个结果：以前要传
+    「该库当前生效版本」，现在「哪一代生效」是每篇文档自己的事，没有库级的答案可传。
 
-    只锁前者（本函数在 #17x 那版的写法）会让界面把每个留存版本的切片都数一遍——实测一个
-    建过 4 版的库显示 152 片，而生效版本只有 38 片，**每次重建都涨一份且永不回落**。而检索
-    链路上每一条语句都带 ``Chunk.index_version == <生效版本>``：界面与检索因此说着两个数。
-
-    ``index_version`` 是**必填关键字**（没有默认值）：这个数是对外可见的，让调用方必须
-    当场回答「哪一版」比给一个会静默算错的默认值强。没有生效版本（新建库、只写了文件还没
-    建索引）时传 ``None``，本函数直接回零——那种库里没有任何可服务的切片。
+    只锁后者（改造前那种写法）会把每篇留存的旧代切片都数一遍——实测一个建过 4 版的库显示
+    152 片，而当前代只有 38 片，**每次重建都涨一份且永不回落**。旧代按保留策略留在库里
+    （给单篇回滚用），它们不该出现在这个数里。
 
     **数的是当前稿**（:func:`app.models.chunk.current_draft_filter`），不是各留存稿之和：
     每稿各留一套切片（ADR-0031 决策一）之后，同一篇文档库里可以有两三稿的切片同时存在，
@@ -547,41 +567,34 @@ async def count_by_document_ids(
     指针那一稿还没切片时（D5 的在途窗口）这份文档不出现，调用方回落 0。
     """
 
-    if not document_ids or index_version is None:
+    if not document_ids:
         return {}
-    stmt = _count_by_document_ids_statement(
-        document_ids, tenant_id=tenant_id, index_version=index_version
-    )
+    stmt = _count_by_document_ids_statement(document_ids, tenant_id=tenant_id)
     return {document_id: int(count) for document_id, count in (await db.execute(stmt)).all()}
 
 
-def serving_chunk_filters(*, index_version: str) -> tuple[Any, ...]:
-    """「**生效版本 × 当前稿**」那两轴——检索、界面计数、构建真值共用的口径。
+def serving_chunk_filters() -> tuple[Any, ...]:
+    """「**当前代 × 当前稿**」那两轴——检索、界面计数、构建真值共用的口径（现场九·第四步）。
 
-    ## 本仓里「现在有多少内容」的两种拼写
+    ## 为什么这里不再有 ``index_version``
 
-    单库一侧用本函数（``index_version == 生效版本`` + 当前稿）；**多库召回**那一侧用
-    ``build_scope_filter(kb → 生效版本)`` + 当前稿（:meth:`PgVectorStore.similarity_search_scope`
-    一次跨库取数，没法写成单个相等条件）。两者是**同一个谓词**的两种拼写，语义必须逐字一致
-    ——`tests/test_console_kb_read_model_sql.py` 里有一条用例把两种拼写在同一批数据上跑一遍、
-    要求切出来的行集合相同。
+    改造前「哪一份产物生效」是**库级**的（``index_version = 生效版本``），一条相等条件就够。
+    下放到篇级之后，那一条件不再等价于「这篇现在用哪一代」：构建往新版本写时，切片在新版本里、
+    而库的生效版本还是旧的——两个条件相乘会把刚建好的那篇从检索里**整个抹掉**（真库实测
+    ``count_in_kb("v4") = 0``）。所以这里只看代，**不再看库级版本**。
 
-    第三种拼写是「只有稿号」（本函数在 #17x 那版的写法）：界面因此显示 152 片而生效版本只有
-    38 片，且每次重建涨一份。还有第四种「只有版本」——那是**构建真值**
-    （:func:`count_documents_in_version`），它问的是「这一版那一稿下有没有片」，与「现在能召回
-    什么」不是同一个问题，所以它刻意不带当前稿指针（快照稿号由调用方传）。
+    代价写在明处：一篇重建完就立刻按新一代服务，不再等整个库切过去。这正是本步的取舍
+    ——放弃「全库原子切换」，接受「重建进行到一半」的中间态（ADR-0025 第 2 次修订）。
 
-    所以口径只有这一处：**要么两条都有，要么调用方明确说明它问的不是「现在有多少内容」**。
     前置条件与 :func:`app.models.chunk.current_draft_filter` 相同：语句必须 JOIN 了
-    ``documents``。
+    ``documents``（两条都由库求值：``chunks.doc_version = documents.current_version`` 与
+    ``chunks.generation = documents.current_index_generation``）。
     """
 
-    return (Chunk.index_version == index_version, current_draft_filter())
+    return (current_generation_filter(), current_draft_filter())
 
 
-def _count_by_document_ids_statement(
-    document_ids: list[str], *, tenant_id: str, index_version: str
-):
+def _count_by_document_ids_statement(document_ids: list[str], *, tenant_id: str):
     """「每份文档**当前稿**各有几片」的那一条分组计数。
 
     JOIN 文档表是为了让当前稿指针由库来算（与检索链路上那五处同一个谓词，见
@@ -594,7 +607,7 @@ def _count_by_document_ids_statement(
         .where(
             Chunk.document_id.in_(document_ids),
             Chunk.tenant_id == tenant_id,
-            *serving_chunk_filters(index_version=index_version),
+            *serving_chunk_filters(),
         )
         .group_by(Chunk.document_id)
     )

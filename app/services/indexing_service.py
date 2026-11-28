@@ -140,6 +140,7 @@ async def purge_document_chunks(
     stores: list[ChunkStore],
     index_version: str | None = None,
     doc_version: int | None = None,
+    generation: int | None = None,
 ) -> None:
     """先删后写的第一半：遍历**存储列表**，逐个清除该文档的旧切片。
 
@@ -150,6 +151,9 @@ async def purge_document_chunks(
 
     ``index_version`` 是**删除范围**（#142）：重建写到目标版本时只清目标版本的旧行，
     线上那一版一个字节都不动；``None`` 表示「这份文档的所有版本」——删文档才这样。
+
+    ``generation`` 是**第三个删除范围**（现场九·第五步）：重建写新代时只清新代（通常是
+    空集），上一代原样留着——「保留最近 2 代」与「单篇切回上一代」都靠它成立。
 
     ``doc_version`` 是**第二个删除范围**（#173）：重建第 2 稿时只清第 2 稿的切片，
     第 1 稿原样留着（ADR-0005 D4 选 B「每稿各留切片」）；``None`` 表示「这篇文档的
@@ -166,6 +170,7 @@ async def purge_document_chunks(
             tenant_id=tenant_id,
             index_version=index_version,
             doc_version=doc_version,
+            generation=generation,
         )
 
 
@@ -668,6 +673,9 @@ class IndexingService:
             stores=self._stores,
             index_version=version,
             doc_version=draft,
+            # 只清**这一代**（现场九·第五步）：重建写的是新代，上一代留着给回滚，由夜间
+            # 保留策略（留最近 2 代）收口。关键词那一路不受这一维影响，它镜像当前代。
+            generation=generation,
         )
         # ── 第四本账：每日切块额度（#222 / ADR-0035 决策三）──────────────
         #

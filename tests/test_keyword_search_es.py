@@ -43,6 +43,7 @@ pytestmark = [
 TENANT_ID = "tenant_it"
 OTHER_TENANT_ID = "tenant_other"
 KB_ID = "kb-it"
+OTHER_KB_ID = "kb-it-other"
 DOC_A = "doc-it-a"
 DOC_B = "doc-it-b"
 INDEX_VERSION = "v1"
@@ -146,28 +147,32 @@ async def _end_to_end(url: str, index_name: str) -> None:
 
         # 3) 精确字面命中：E1024。
         literal_hits = await provider.keyword_search(
-            "E1024", tenant_id=TENANT_ID, index_versions={KB_ID: INDEX_VERSION}, top_k=5
+            "E1024", tenant_id=TENANT_ID, kb_ids=[KB_ID], top_k=5
         )
         assert [hit["chunk_id"] for hit in literal_hits][:1] == ["chunk-a1"]
         assert literal_hits[0]["content"] == "错误码 E1024 表示证书过期。", "返回的是切片原文"
 
         # 4) 中文词命中：「退款」不是整句，也不是单字。
         chinese_hits = await provider.keyword_search(
-            "退款", tenant_id=TENANT_ID, index_versions={KB_ID: INDEX_VERSION}, top_k=5
+            "退款", tenant_id=TENANT_ID, kb_ids=[KB_ID], top_k=5
         )
         assert "chunk-a2" in [hit["chunk_id"] for hit in chinese_hits]
 
         # 5) 租户过滤：别的租户一条都看不到。
         other_tenant = await provider.keyword_search(
-            "E1024", tenant_id=OTHER_TENANT_ID, index_versions={KB_ID: INDEX_VERSION}, top_k=5
+            "E1024", tenant_id=OTHER_TENANT_ID, kb_ids=[KB_ID], top_k=5
         )
         assert other_tenant == []
 
-        # 6) 库 + 版本配对：版本对不上就召回不到。
-        wrong_version = await provider.keyword_search(
-            "E1024", tenant_id=TENANT_ID, index_versions={KB_ID: "v2"}, top_k=5
+        # 6) 范围只剩库：把该库排除在外就召回不到（版本那根轴已退场，现场九·第四步）。
+        out_of_scope = await provider.keyword_search(
+            "E1024", tenant_id=TENANT_ID, kb_ids=[OTHER_KB_ID], top_k=5
         )
-        assert wrong_version == []
+        assert out_of_scope == []
+
+        # 6b) 不重复：同一条内容从 BM25 路回来两次会让 RRF 的候选池被占掉，
+        #     而 chunk id 每次新生成，合并时去不掉——这条守的是「每篇只有一份」。
+        assert len({hit["chunk_id"] for hit in literal_hits}) == len(literal_hits)
 
         # 7) 按文档删除：只删 DOC_A 的两条，另一份文档还在。
         await provider.delete_by_document_id(DOC_A, tenant_id=TENANT_ID)
@@ -231,7 +236,7 @@ async def _query_side_guards(url: str, index_name: str) -> None:
         hits = await provider.keyword_search(
             "E1025 是什么意思",
             tenant_id=TENANT_ID,
-            index_versions={KB_ID: INDEX_VERSION},
+            kb_ids=[KB_ID],
             top_k=5,
         )
         assert [hit["chunk_id"] for hit in hits][:1] == ["chunk-a5"], "编号必须排第一"
@@ -241,7 +246,7 @@ async def _query_side_guards(url: str, index_name: str) -> None:
 
         # 4) 单词查询照旧 100% 命中：minimum_should_match 不许误伤精确编号题。
         single = await provider.keyword_search(
-            "E1025", tenant_id=TENANT_ID, index_versions={KB_ID: INDEX_VERSION}, top_k=5
+            "E1025", tenant_id=TENANT_ID, kb_ids=[KB_ID], top_k=5
         )
         assert [hit["chunk_id"] for hit in single][:1] == ["chunk-a5"]
 
@@ -251,7 +256,7 @@ async def _query_side_guards(url: str, index_name: str) -> None:
         multi = await provider.keyword_search(
             "退款申请流程要多久到账",
             tenant_id=TENANT_ID,
-            index_versions={KB_ID: INDEX_VERSION},
+            kb_ids=[KB_ID],
             top_k=5,
         )
         returned = [hit["chunk_id"] for hit in multi]

@@ -17,15 +17,14 @@
 ``content``：小片读不懂的原因是缺上下文，不是缺一条新名次。折叠开着时不补：折叠已经
 把整节给了，再补一份父节就是材料量翻倍。
 
-**版本范围是逐文档的，不是整次请求一个值**：``index_versions`` 是 ``kb_id → version``
-的映射，回查整节时按「这份文档所属库的版本」各查一次。把多个版本的行查进同一个池，
-重建中途的检索就会拿到两套切法拼起来的正文——而索引即构建产物（#141）要的正是
-「检索永远 pin 在 active 上」这条一致快照。
+**哪一代的正文由 SQL 按文档行求值，不是调用方传进来的常量**（现场九·第四步）：折叠取
+整节、补父节这两处都走 :func:`app.models.chunk.current_generation_filter`。改造前按
+「这份文档所属库的生效版本」各查一次——代下放到篇级之后没有库级答案可传，而用错一代
+（拿上一版）会把旧切法的正文拼进这一条结果，症状是同一节一半旧一半新。
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -47,40 +46,11 @@ def _meta_of(chunk: dict, metas: dict[tuple[str, str], dict]) -> dict:
     return metas.get((kb_id, chunk_id)) or {}
 
 
-def _unit_row_scopes(
-    chunks: list[dict], index_versions: Mapping[str, str]
-) -> list[tuple[str, list[str]]]:
-    """按「这份文档所属库的版本」把文档分组：``[(version, [document_id…])…]``。
-
-    配对关系只能从**映射**里读出来（ADR-0025）：两个平行数组错位就会静默越权，而
-    「整次请求一个版本」会在多库各 pin 不同版本时把两个版本的行混进同一个池。
-
-    映射里没有的库直接跳过，不猜一个版本：召回按同一份映射过滤，正常走不到这里；
-    真要走到，少折一片也比跨版本取行安全。
-    """
-
-    documents_by_version: dict[str, list[str]] = {}
-    for chunk in chunks:
-        kb_id = chunk.get("kb_id")
-        document_id = chunk.get("document_id")
-        if not kb_id or not document_id:
-            continue
-        version = index_versions.get(str(kb_id))
-        if version is None:
-            continue
-        documents_by_version.setdefault(version, []).append(str(document_id))
-    return [
-        (version, sorted(set(documents)))
-        for version, documents in sorted(documents_by_version.items())
-    ]
-
-
 async def collapse_results(
     db: AsyncSession,
     *,
     tenant_id: str,
     chunks: list[dict],
-    index_versions: Mapping[str, str],
     top_k: int,
     fold_to_sections: bool,
     expand_table_rows: bool,
@@ -106,7 +76,6 @@ async def collapse_results(
             tenant_id=tenant_id,
             chunks=with_locating,
             metas=metas,
-            index_versions=index_versions,
             max_unit_chars=max_unit_chars,
         )
 
@@ -159,16 +128,16 @@ async def collapse_results(
     )
     raw_rows: dict[tuple[str, str, int], list] = {}
     if unit_keys:
-        for version, scoped_documents in _unit_row_scopes(chunks, index_versions):
-            raw_rows.update(
-                await chunk_repository.fetch_unit_rows(
-                    db,
-                    tenant_id=tenant_id,
-                    document_ids=scoped_documents,
-                    units=unit_keys,
-                    index_version=version,
-                )
+        # 不再按「库 → 版本」分组（现场九·第四步）：「哪一代生效」由文档行决定，取整节用的
+        # 那条 SQL 会 JOIN 文档按代过滤——分组反而会把一篇的旧代也拉进来拼进交付单元。
+        raw_rows.update(
+            await chunk_repository.fetch_unit_rows(
+                db,
+                tenant_id=tenant_id,
+                document_ids=[str(c["document_id"]) for c in chunks if c.get("document_id")],
+                units=unit_keys,
             )
+        )
 
     # 一个单元键 = (种类, 文档, 单元 id[, table_part][, 节段号])。单元 id 由路径算出来
     # （sha256(前两段)），所以不需要新增列，重建索引前后都稳定。
@@ -285,7 +254,6 @@ async def _with_parent_content(
     tenant_id: str,
     chunks: list[dict],
     metas: dict[tuple[str, str], dict],
-    index_versions: Mapping[str, str],
     max_unit_chars: int = result_collapse.MAX_UNIT_CHARS_DEFAULT,
 ) -> list[dict]:
     """折叠关闭时补**父节自己的**正文（ADR-0027 决策 7）：只附加内容，不改分数与排名。
@@ -300,36 +268,34 @@ async def _with_parent_content(
     * **不替换 ``content``**：``content`` 永远是切片原文（ADR-0012 决策 3），引用要能
       指回那一片；父节正文单独放 ``parent_content``。
 
-    版本是**逐文档**的（``kb_id → 版本``的映射）：拿一个版本常量去查，多库各 pin 不同
-    构建时会把两个版本的父节拼进同一条结果。
+    哪一代的父节由 SQL 按文档行求值（现场九·第四步）：同一篇的旧代切片留在库里，用常量
+    去查就会把上一版的父节正文拼进这一条结果。
     """
 
-    wanted: dict[str, dict[str, set[str]]] = {}
+    wanted_documents: set[str] = set()
+    wanted_paths: set[str] = set()
     targets: dict[int, tuple[str, str]] = {}
     for index, chunk in enumerate(chunks):
         meta = _meta_of(chunk, metas) or {}
         path = str(meta.get("heading_path") or "")
         parent_path = parent_heading_path(path)
         document_id = str(chunk.get("document_id") or "")
-        version = index_versions.get(str(chunk.get("kb_id") or ""))
-        if parent_path is None or not document_id or version is None:
+        if parent_path is None or not document_id:
             continue
-        wanted.setdefault(version, {}).setdefault(document_id, set()).add(parent_path)
+        wanted_documents.add(document_id)
+        wanted_paths.add(parent_path)
         targets[index] = (document_id, parent_path)
     if not targets:
         return chunks
 
-    parents: dict[tuple[str, str], list[str]] = {}
-    for version, documents in sorted(wanted.items()):
-        parents.update(
-            await chunk_repository.fetch_parent_rows(
-                db,
-                tenant_id=tenant_id,
-                document_ids=sorted(documents),
-                heading_paths=sorted({path for paths in documents.values() for path in paths}),
-                index_version=version,
-            )
+    parents: dict[tuple[str, str], list[str]] = (
+        await chunk_repository.fetch_parent_rows(
+            db,
+            tenant_id=tenant_id,
+            document_ids=sorted(wanted_documents),
+            heading_paths=sorted(wanted_paths),
         )
+    )
 
     for index, (document_id, parent_path) in targets.items():
         rows = parents.get((document_id, parent_path))

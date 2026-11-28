@@ -498,7 +498,7 @@ class LatencyKeyword:
         query: str,
         *,
         tenant_id: str,
-        index_versions: dict[str, str],
+        kb_ids: Sequence[str],
         top_k: int,
     ) -> list[dict]:
         self.calls += 1
@@ -523,7 +523,7 @@ class LatencyVectorStore:
         query_vector: Sequence[float],
         *,
         tenant_id: str,
-        index_versions: dict[str, str],
+        kb_ids: Sequence[str],
         top_k: int,
     ) -> list[dict]:
         self.calls += 1
@@ -532,7 +532,7 @@ class LatencyVectorStore:
         rows = []
         for row in result.all():
             row = dict(row)
-            row["kb_id"] = next(iter(index_versions))
+            row["kb_id"] = next(iter(kb_ids))
             rows.append(row)
         return rows
 

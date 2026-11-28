@@ -1309,7 +1309,7 @@ async def run_case(
         search = build_kernel_search(
             db,
             tenant_id=TENANT_ID,
-            index_versions=dict(index_versions),
+            kb_ids=list(index_versions),
             options=_retrieval_options(),
             on_degraded=degraded.append,
         )
@@ -2164,7 +2164,7 @@ async def run_all(
                 await run_cases(
                     cases,
                     budget=budget,
-                    index_versions=index_versions,
+                    kb_ids=list(index_versions),
                     fivefold=fivefold,
                 )
             )

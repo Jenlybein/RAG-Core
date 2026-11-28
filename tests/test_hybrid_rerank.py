@@ -89,8 +89,8 @@ class _FakeVectorStore:
     def __init__(self, rows: list[dict] | None = None) -> None:
         self.rows = rows or []
 
-    async def similarity_search_scope(self, db, query_vector, *, tenant_id, index_versions, top_k):
-        kb_id = next(iter(index_versions), None)
+    async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
+        kb_id = next(iter(kb_ids), None)
         return [{**row, "kb_id": row.get("kb_id", kb_id)} for row in self.rows]
 
     async def similarity_search(self, db, query_vector, *, tenant_id, kb_id, top_k):
@@ -102,7 +102,7 @@ class _FakeKeyword:
         self.rows = rows or []
         self.available = available
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
         return [dict(row) for row in self.rows]
 
 
@@ -371,7 +371,7 @@ def test_rerank_failure_does_not_override_an_earlier_channel_failure(
     monkeypatch.setattr(settings, "RERANK_API_KEY", "test-rerank-key")
 
     class _BrokenKeyword(_FakeKeyword):
-        async def keyword_search(self, query, *, tenant_id, index_versions, top_k):
+        async def keyword_search(self, query, *, tenant_id, kb_ids, top_k):
             raise RuntimeError("connection refused: elasticsearch")
 
     with _offline_client(

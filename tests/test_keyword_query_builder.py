@@ -177,7 +177,7 @@ def test_mapping_stores_the_original_content_without_indexing_it() -> None:
 def _bm25(**overrides) -> dict:
     payload = {
         "tenant_id": TENANT_ID,
-        "index_versions": {KB_A: "v1", KB_B: "v1"},
+        "kb_ids": [KB_A, KB_B],
         "search_query": "退款申请流程",
         "top_k": 5,
     }
@@ -195,45 +195,23 @@ def test_bm25_query_filters_by_tenant_inside_filter() -> None:
     assert "tenant_id" not in json.dumps(bool_query.get("must", [])), "租户不进 must"
 
 
-def test_bm25_query_pairs_kb_and_index_version_with_should() -> None:
-    """「库 + 版本」必须是配对条件：每对之间是 should，msm=1。
+def test_bm25_query_filters_by_the_kb_scope_inside_filter() -> None:
+    """库范围是 ``filter`` 里的一条 ``terms``（现场九·第四步起不再带版本）。
 
-    写成两个独立的 ``IN``（kb_id IN (...) AND index_version IN (...)）会匹配出
-    「A 库配 B 库的版本」这种不存在的组合，越权与脏数据都从这里来。
+    改造前这里是「库 + 索引版本」的配对 should（ADR-0010 §5：两个独立 ``IN`` 会拼出
+    「A 库配 B 库版本」）。代下放到篇级之后每篇各有自己的当前代，库级版本不再是可见性
+    判据；而索引里每篇**只有一份**（写入总是先按文档全清再写新的），所以按库过滤就够了。
     """
 
     query = _bm25()
     bool_query = query["query"]["bool"]
-    pairing = bool_query["filter"][1]
 
-    assert pairing["bool"]["minimum_should_match"] == 1
-    should = pairing["bool"]["should"]
-    assert len(should) == 2, "一个库一条配对条件，不是两个独立 IN"
-    assert {
-        "bool": {"filter": [{"term": {"kb_id": KB_A}}, {"term": {"index_version": "v1"}}]}
-    } in should
-    assert {
-        "bool": {"filter": [{"term": {"kb_id": KB_B}}, {"term": {"index_version": "v1"}}]}
-    } in should
-
-    # 任何形式的 terms 查询都会退化成「两个独立 IN」，这里一次都不许出现。
-    assert '"terms"' not in json.dumps(query)
-
-
-def test_bm25_query_uses_different_versions_per_kb() -> None:
-    """同一对必须是「这个库 + 这个版本」；两个库可以有不同版本。"""
-
-    query = _bm25(index_versions={KB_A: "v1", KB_B: "v2"})
-    should = query["query"]["bool"]["filter"][1]["bool"]["should"]
-
-    pairs = [
-        (
-            clause["bool"]["filter"][0]["term"]["kb_id"],
-            clause["bool"]["filter"][1]["term"]["index_version"],
-        )
-        for clause in should
-    ]
-    assert pairs == [(KB_A, "v1"), (KB_B, "v2")]
+    assert {"terms": {"kb_id": [KB_A, KB_B]}} in bool_query["filter"]
+    # ``index_version`` 仍出现在 ``_source`` 里（命中了要能回报是哪一版写的），但**不许**
+    # 出现在任何过滤条件里——它一旦回来，构建期间刚建好的那篇就会从关键词路消失。
+    dumped = json.dumps(query)
+    assert '"term": {"index_version"' not in dumped
+    assert '"terms": {"index_version"' not in dumped
 
 
 def test_bm25_query_scores_with_multi_match_and_title_weight() -> None:
@@ -300,13 +278,15 @@ def test_bm25_query_carries_size_and_the_source_fields() -> None:
 
 
 def test_bm25_query_with_no_scope_matches_nothing_by_construction() -> None:
-    """一个库都没传时 msm=1 + 空 should = 匹配不到任何文档，绝不退化成全量。"""
+    """一个库都没传时空 ``terms`` = 匹配不到任何文档，绝不退化成全量。
 
-    query = _bm25(index_versions={})
-    pairing = query["query"]["bool"]["filter"][1]["bool"]
+    ES 对 ``{"terms": {"kb_id": []}}`` 的处理是「不匹配任何文档」——这正是想要的：
+    调用方把范围算错成空集合时，**结果为空**，而不是把整个租户捞回来。
+    """
 
-    assert pairing["should"] == []
-    assert pairing["minimum_should_match"] == 1
+    query = _bm25(kb_ids=[])
+
+    assert {"terms": {"kb_id": []}} in query["query"]["bool"]["filter"]
 
 
 # ───────────────────────────────────────────────────────── build_purge_query

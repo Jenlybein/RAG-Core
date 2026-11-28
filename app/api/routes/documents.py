@@ -164,21 +164,20 @@ async def list_documents(
     知识库不存在或不属于调用方租户，一律按「不存在」（20008）处理，不泄露存在性；
     列表查询也强制带 ``tenant_id``，绝不返回其他租户的行。
     ``chunk_count`` 用一次分组计数批量取回，不对每份文档各查一次（N+1）；它数的是
-    **生效版本 × 当前稿**那一格（多稿、多版本并存时其余格子都不算，见
-    ``chunk_repository.count_by_document_ids``）——与检索命中的口径逐字一致。
+    **当前代 × 当前稿**那一格（留存的旧代、旧稿都不算，见
+    ``chunk_repository.count_by_document_ids``），与检索命中的口径同一组谓词。
     """
 
     # 第二道关卡：白名单（先于任何库行查询），然后才是租户可见性。
     ensure_kb_scope(policy=key.policy, kb_ids=[kb_id])
-    kb = await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
+    # 只做可见性检查（返回值这里用不到）：跨租户的 kb_id 在这一行就被挡住。
+    await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
 
     rows = await document_repository.list_by_kb_async(db, kb_id, tenant_id=key.tenant_id)
     counts = await chunk_repository.count_by_document_ids(
         db,
         [row.id for row in rows],
         tenant_id=key.tenant_id,
-        # 数的是**生效版本 × 当前稿**：留存的旧版本切片不算（否则重建一次数字就涨一份）。
-        index_version=kb.active_index_version,
     )
     data = DocumentListData(
         items=[

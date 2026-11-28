@@ -90,11 +90,11 @@ class _RecordingVectorStore:
         self.depths: list[int] = []
 
     async def similarity_search_scope(
-        self, db: Any, query_vector: Any, *, tenant_id: str, index_versions: Any, top_k: int
+        self, db: Any, query_vector: Any, *, tenant_id: str, kb_ids: Any, top_k: int
     ) -> list[dict]:
-        self.scopes.append(dict(index_versions))
+        self.scopes.append(list(kb_ids))
         self.depths.append(top_k)
-        kb_id = next(iter(index_versions))
+        kb_id = next(iter(kb_ids))
         # 行自带 ``kb_id`` 时以它为准（范围是映射，一个查询可以覆盖多个库）。
         return [dict(row) if row.get("kb_id") else dict(row, kb_id=kb_id) for row in self.rows][
             :top_k
@@ -113,10 +113,10 @@ class _RecordingKeyword:
         self.queries: list[str] = []
 
     async def keyword_search(
-        self, query: str, *, tenant_id: str, index_versions: Any, top_k: int
+        self, query: str, *, tenant_id: str, kb_ids: Any, top_k: int
     ) -> list[dict]:
         self.queries.append(query)
-        self.scopes.append(dict(index_versions))
+        self.scopes.append(list(kb_ids))
         return [dict(row) for row in self.rows][:top_k]
 
 
@@ -208,7 +208,7 @@ def _kernel_kwargs(**overrides: Any) -> dict[str, Any]:
 
     kwargs: dict[str, Any] = {
         "tenant_id": TENANT,
-        "index_versions": {KB_A: DEFAULT_INDEX_VERSION},
+        "kb_ids": [KB_A],
         "query": QUERY,
         "mode": "vector",
         "recall_queries": (QUERY,),
@@ -264,7 +264,7 @@ def test_the_kernel_takes_the_scope_queries_switches_and_timer_explicitly() -> N
 
     required = {
         "tenant_id",
-        "index_versions",
+        "kb_ids",
         "query",
         "mode",
         "recall_queries",
@@ -335,22 +335,22 @@ def test_the_kernel_does_not_read_global_settings(monkeypatch: pytest.MonkeyPatc
     assert stubs.keyword.queries == [QUERY]
 
 
-def test_the_scope_mapping_is_what_both_recall_paths_receive() -> None:
+def test_the_kb_scope_is_what_both_recall_paths_receive() -> None:
     """``kb_id → version`` 映射原样交给两路召回：范围只有这一个来源，且不是 ``v1`` 焊死的。"""
 
     scope = {KB_A: "v7", KB_B: "v8"}
 
     async def go() -> SimpleNamespace:
         outcome, stubs = await _run_kernel(
-            mode="hybrid", index_versions=scope, recall_top_k=2, recall_depth=2
+            mode="hybrid", kb_ids=scope, recall_top_k=2, recall_depth=2
         )
         assert outcome.chunks
         return stubs
 
     stubs = asyncio.run(go())
 
-    assert stubs.vector.scopes == [scope], "向量一路拿到的范围必须就是本次的映射"
-    assert stubs.keyword.scopes == [scope], "关键词一路同理"
+    assert stubs.vector.scopes == [list(scope)], "向量一路拿到的范围就是本次那几个库"
+    assert stubs.keyword.scopes == [list(scope)], "关键词一路同理"
 
 
 # ───────────────────────────────── 二、六段耗时：段名与顺序由内核这一层记下
@@ -428,6 +428,7 @@ class _FoldSession:
         self.metas = metas
         self.units = units
         self.scopes: list[dict[str, Any]] = []
+        self.unit_statements: list[str] = []
 
     def execute(self, statement: Any) -> Any:
         if not self.scopes:
@@ -445,12 +446,11 @@ class _FoldSession:
             )
         compiled = statement.compile()
         self.scopes.append({"kind": "units", "params": dict(compiled.params)})
-        version = next(
-            value
-            for value in compiled.params.values()
-            if isinstance(value, str) and value in self.units
-        )
-        return _Rows(self.units[version])
+        self.unit_statements.append(str(compiled))
+        # 替身**故意不过滤**：它只接住语句、把预置的行全回出去（谁该被取回由 SQL 断言守，
+        # 见 ``test_the_section_lookup_is_one_query_scoped_by_the_current_generation``）。
+        # 想让替身真的按请求过滤，就得在这里把编译出来的参数解出来——那是在测替身自己。
+        return _Rows([row for rows in self.units.values() for row in rows])
 
 
 def _meta(heading: str, **extra: Any) -> dict:
@@ -494,11 +494,12 @@ def test_the_kernel_delivers_whole_sections_after_top_k() -> None:
     assert unit["content"] == "第一句。\n\n第二句。"
 
 
-def test_the_section_lookup_is_scoped_per_index_version() -> None:
-    """两份文档属于两个版本：单元行回查必须**按版本各查一次**，不许混成一个池。
+def test_the_section_lookup_is_one_query_scoped_by_the_current_generation() -> None:
+    """两份文档、两个库：单元行回查**一次取**，由 SQL 按「文档 + 当前代 + 当前稿」收窄。
 
-    这是索引即构建产物（#141）那条一致性前提在折叠侧的入口：把两个版本的行查进
-    同一个池，重建中途的检索就会拿到「两套切法」拼起来的正文。
+    改造前这里有两条约束要同时满足：「按版本各查一次」、「不许混池」。代下放到篇级之后
+    「版本」不再是分组键——分组反而会把一篇的旧代混进来（同一条 SQL 里代是与文档行比的），
+    所以现在是**一条语句、条件里带代**。这条用例守的就是这个形状。
     """
 
     heading = "退款政策 > 处理流程"
@@ -516,7 +517,7 @@ def test_the_section_lookup_is_scoped_per_index_version() -> None:
     async def go() -> Any:
         outcome, _stubs = await _run_kernel(
             db=AsyncSessionAdapter(session),
-            index_versions={KB_A: "v1", KB_B: "v2"},
+            kb_ids=[KB_A, KB_B],
             vector=_RecordingVectorStore(
                 [
                     _vector_row("c-a", score=0.9, document_id="doc-a", kb_id=KB_A),
@@ -531,25 +532,23 @@ def test_the_section_lookup_is_scoped_per_index_version() -> None:
     outcome = asyncio.run(go())
 
     unit_scopes = [scope for scope in session.scopes if scope["kind"] == "units"]
-    assert len(unit_scopes) == 2, "两个版本就该有两次回查（同版本仍是一次）"
-    versions = sorted(
-        value
-        for scope in unit_scopes
-        for value in scope["params"].values()
-        if value in ("v1", "v2")
-    )
-    assert versions == ["v1", "v2"]
+    assert len(unit_scopes) == 1, "一次取，不再按版本分组查"
+
+    statement = session.unit_statements[0]
+    assert "chunks.generation = documents.current_index_generation" in statement
+    assert "chunks.doc_version = documents.current_version" in statement
+    assert "chunks.index_version" not in statement, "库级版本不再是可见性判据"
+
     documents = sorted(
-        tuple(sorted(value))
-        for scope in unit_scopes
-        for value in scope["params"].values()
-        if isinstance(value, list)
+        value
+        for values in unit_scopes[0]["params"].values()
+        if isinstance(values, (list, tuple))
+        for value in values
+        if isinstance(value, str)
     )
-    assert documents == [("doc-a",), ("doc-b",)], "两次回查各自只该带上自己那个版本的文档"
-    assert {unit["content"] for unit in outcome.chunks} == {"甲。", "乙。"}
+    assert "doc-a" in documents and "doc-b" in documents, "两篇都要取到"
 
-
-# ──────────────────────────── 四、内核没有副作用：写库、记账、观测都不在这里
+    assert {chunk["chunk_id"] for chunk in outcome.chunks} == {"c-a", "c-b"}
 
 
 def test_calling_the_kernel_twice_writes_nothing_and_emits_nothing() -> None:

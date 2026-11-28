@@ -179,18 +179,18 @@ class _FakeVectorStore:
         self.calls: list[dict[str, Any]] = []
 
     async def similarity_search_scope(
-        self, db, query_vector, *, tenant_id, index_versions, top_k
+        self, db, query_vector, *, tenant_id, kb_ids, top_k
     ) -> list[dict]:
         marker = float(query_vector[0])
         self.seen.append(marker)
         self.calls.append(
             {
                 "tenant_id": tenant_id,
-                "index_versions": dict(index_versions),
+                "kb_ids": list(kb_ids),
                 "top_k": top_k,
             }
         )
-        kb_id = next(iter(index_versions), None)
+        kb_id = next(iter(kb_ids), None)
         rows = self.pools.get(marker, self.rows)
         return [{**row, "kb_id": row.get("kb_id", kb_id)} for row in rows]
 
@@ -204,7 +204,7 @@ class _FakeKeyword:
         self.available = True
         self.queries: list[str] = []
 
-    async def keyword_search(self, query, *, tenant_id, index_versions, top_k) -> list[dict]:
+    async def keyword_search(self, query, *, tenant_id, kb_ids, top_k) -> list[dict]:
         self.queries.append(query)
         return [dict(row) for row in self.rows]
 
