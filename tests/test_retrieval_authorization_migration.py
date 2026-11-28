@@ -111,10 +111,11 @@ def test_it_chains_onto_the_single_head() -> None:
     heads = set(revisions) - pointed
     # 链尾后来前移过：I 阶段的物化迁移接在 T1 之后，「API Key 只存哈希」再接在物化迁移之后
     # （历史迁移不改，新增一条）；第 16 步 #207 之后是 #214 的构建收敛四列。
-    new_head_files = sorted(VERSIONS_DIR.glob("*_add_index_generation.py"))
+    # 现场九之后又接了一条（旧代回收的索引），链尾随之前移。
+    new_head_files = sorted(VERSIONS_DIR.glob("*_add_chunk_document_generation_index.py"))
     assert len(new_head_files) == 1
     assert heads == {_revision_of(new_head_files[0])}, (
-        f"链尾应当是现场九的「索引代三列」，实际 {sorted(heads)}"
+        f"链尾应当是现场九的「回收索引」，实际 {sorted(heads)}"
     )
 
 

@@ -18,7 +18,11 @@ from typing import Any
 
 import pytest
 
-from app.services.retention import UsageRetentionOutcome, VersionRetentionOutcome
+from app.services.retention import (
+    GenerationRetentionOutcome,
+    UsageRetentionOutcome,
+    VersionRetentionOutcome,
+)
 from app.tasks import index_sweeper
 
 
@@ -83,7 +87,13 @@ def _noop_tx() -> Any:
 def outcomes(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """把两个清理动作换成记录器：这一层只关心「做没做、谁失败、账怎么记」。"""
 
-    state: dict[str, Any] = {"versions_calls": 0, "usage_calls": 0, "fail_versions": False}
+    state: dict[str, Any] = {
+        "versions_calls": 0,
+        "generation_calls": 0,
+        "usage_calls": 0,
+        "fail_versions": False,
+        "fail_generations": False,
+    }
 
     async def _purge_versions(_db: Any, **_kwargs: Any) -> VersionRetentionOutcome:
         state["versions_calls"] += 1
@@ -97,8 +107,11 @@ def outcomes(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
     monkeypatch.setattr(index_sweeper.retention, "purge_versions", _purge_versions)
 
-    async def _purge_generations(_db):
-        return index_sweeper.retention.GenerationRetentionOutcome()
+    async def _purge_generations(_db: Any) -> GenerationRetentionOutcome:
+        state["generation_calls"] += 1
+        if state["fail_generations"]:
+            raise RuntimeError("chunks table locked")
+        return GenerationRetentionOutcome(documents=2, purged_chunks=40)
 
     monkeypatch.setattr(index_sweeper.retention, "purge_generations", _purge_generations)
     monkeypatch.setattr(index_sweeper.retention, "purge_usage", _purge_usage)
@@ -117,13 +130,14 @@ async def test_one_round_purges_both_kinds_and_reports_them_separately(
     stats = await index_sweeper.retention_once(session_factory=_factory(), now=date(2026, 11, 27))
 
     assert outcomes["versions_calls"] == 1
+    assert outcomes["generation_calls"] == 1
     assert outcomes["usage_calls"] == 1
     assert stats == {
         "events_deleted": 120,
         "daily_deleted": 7,
         "versions_purged": 5,
-        # 旧代回收（现场九·第六步）：这一轮里没有可回收的代，读数是 0。
-        "generations_purged": 0,
+        # 旧代回收（现场九·第六步）：这一格是**片**数，名字里写明（`purged_chunks=40`）。
+        "generation_chunks_purged": 40,
     }
 
 
@@ -138,12 +152,13 @@ async def test_the_daily_throttle_makes_it_run_once_a_day(
     stats = await index_sweeper.retention_once(session_factory=_factory(), now=date(2026, 11, 27))
 
     assert outcomes["versions_calls"] == 0
+    assert outcomes["generation_calls"] == 0
     assert outcomes["usage_calls"] == 0
     assert stats == {
         "events_deleted": 0,
         "daily_deleted": 0,
         "versions_purged": 0,
-        "generations_purged": 0,
+        "generation_chunks_purged": 0,
     }
 
 
@@ -246,3 +261,24 @@ async def test_one_broken_document_does_not_stop_the_others(
     assert outcome.documents == 3
     assert outcome.purged_versions == 4, "两篇各清 2 稿"
     assert outcome.failed_documents == 1
+
+
+@pytest.mark.asyncio
+async def test_failing_generation_purge_does_not_stop_the_usage_purge(
+    monkeypatch: pytest.MonkeyPatch, outcomes: dict[str, Any]
+) -> None:
+    """回收旧代失败（语句超时 / 锁等待）：只丢那一格，版本清理与用量明细照走。
+
+    这条正是清扫器里那个 ``try/except`` 存在的理由，而旧代回收是「整批 all-or-nothing」
+    ——一次失败就是一整批作废，所以它必须有这层隔离，否则一个锁超时能带走当晚所有清理。
+    """
+
+    outcomes["fail_generations"] = True
+    _patched_redis(monkeypatch, _Throttle())
+
+    stats = await index_sweeper.retention_once(session_factory=_factory(), now=date(2026, 11, 27))
+
+    assert outcomes["usage_calls"] == 1, "用量明细照清"
+    assert stats["generation_chunks_purged"] == 0
+    assert stats["versions_purged"] == 5, "版本那一格也照报"
+    assert stats["events_deleted"] == 120

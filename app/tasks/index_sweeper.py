@@ -190,10 +190,11 @@ async def retention_once(
     ``purge_document_versions.py``）——「记得敲命令」不是一种可靠性，而它们的失败方式都是
     **安静地慢慢变坏**（磁盘涨、检索变慢）。这里把它们挂到同一条守护线程上，每天一次。
 
-    ## 顺序：先清版本、再清用量
+    ## 顺序：先清版本、再回收旧代、最后清用量
 
-    版本清理会落库（删切片 + 删版本行），每一篇一笔事务；用量清理也是落库。两者互不相干，
-    但没有理由让它们同开一个长事务——**分开两笔**，任一方失败另一方照走。
+    三块都会落库，但没有理由让它们同开一个长事务——**各自一笔**，任一方失败另两方照走。
+    前两块（版本回收、旧代回收）都不依赖日期窗口，所以排在日期活儿（用量明细）之前：
+    跨年、回补这类日期异常不会把它们带偏。
 
     ## 节流 24 小时且**失败不重试**
 
@@ -216,7 +217,7 @@ async def retention_once(
             "events_deleted": 0,
             "daily_deleted": 0,
             "versions_purged": 0,
-            "generations_purged": 0,
+            "generation_chunks_purged": 0,
         }
 
     factory = session_factory or async_session_factory
@@ -224,7 +225,7 @@ async def retention_once(
         "events_deleted": 0,
         "daily_deleted": 0,
         "versions_purged": 0,
-        "generations_purged": 0,
+        "generation_chunks_purged": 0,
     }
 
     try:
@@ -241,13 +242,17 @@ async def retention_once(
     except Exception as exc:  # noqa: BLE001 - 清版本失败不许挡住清用量
         logger.warning("retention could not purge archived drafts", error=type(exc).__name__)
 
-    # 旧代回收（现场九·第六步）：每篇保留最近 2 代，超出的切片删掉。放在用量清理之前——
-    # 它不依赖任何日期窗口，而用量清理可能因为某天的汇总缺失而提前退出，不该连累它。
+    # 旧代回收（现场九·第六步）：每篇保留最近 2 代，超出的切片删掉。
+    #
+    # 顺序放在这里（版本回收之后、用量清理之前）不是为了隔离——三块各自 try/except，谁也
+    # 连累不到谁。理由是没有日期依赖的两块排在一起：旧代回收按「存在的代」判，与「今天
+    # 几号」无关，跑在日期窗口那些活儿之前，跨年/回补时也不会被它带偏。
     try:
         async with factory()() as db:
             async with async_transaction(db):
                 generation_outcome = await retention.purge_generations(db)
-        stats["generations_purged"] = generation_outcome.purged_chunks
+        # 键名写清单：它是**片**数，不是代数（`purged_chunks`，见 outcome 的文档）。
+        stats["generation_chunks_purged"] = generation_outcome.purged_chunks
         if generation_outcome.purged_chunks:
             logger.info(
                 "retention purged superseded index generations",

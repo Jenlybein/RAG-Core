@@ -90,7 +90,8 @@ async def test_the_two_newest_generations_survive(session: AsyncSession) -> None
     await session.commit()
 
     assert await _generations_left(session, "doc-1") == [3, 2]
-    assert outcome.purged_chunks == 2
+    # 读数：篇数与片数各归各的量纲（清扫器只报后者，名字里写明是「片」）。
+    assert (outcome.documents, outcome.purged_chunks) == (1, 2)
 
 
 @pytest.mark.asyncio
@@ -147,20 +148,61 @@ async def test_a_zero_window_is_refused(session: AsyncSession) -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_same_generation_in_two_drafts_is_ranked_once(session: AsyncSession) -> None:
-    """同一代在两稿里各有一份切片时，仍是**同一个**代（排名按代去重）。
+async def test_a_generation_spread_over_several_rows_is_ranked_once(
+    session: AsyncSession,
+) -> None:
+    """同一代有好几片时，这几片**共用一个名次**（排名对象是代，不是行）。
 
-    这条防的是「按行排名」的写法：那样第 2 代的两片会占掉两个名额，把第 1 代挤出去。
+    这条防的是 ``row_number`` 的写法：那样第 2 代的 5 片会各自占一个名额，把第 1 代挤出去，
+    于是「留 2 代」实际只留了 1 代——回滚落点被删掉，而且不报错。
+
+    用的是**同一稿**的多片：代排名根本不看稿轴（稿由 ``purge_versions`` 管），所以拿两稿
+    去构造反而会把「同代不拆」这件事说糊。
     """
 
-    await _chunk(session, "a-1", "doc-1", 1)
-    await _chunk(session, "b-1", "doc-1", 1)
-    await _chunk(session, "a-2", "doc-1", 2)
-    await _chunk(session, "b-2", "doc-1", 2)
-    await _chunk(session, "a-3", "doc-1", 3)
+    for suffix in ("a", "b"):
+        await _chunk(session, f"{suffix}-1", "doc-1", 1)
+        await _chunk(session, f"{suffix}-2", "doc-1", 2)
+        await _chunk(session, f"{suffix}-3", "doc-1", 3)
     await session.commit()
 
     await retention.purge_generations(session)
     await session.commit()
 
-    assert await _generations_left(session, "doc-1") == [3, 2, 2]
+    assert await _generations_left(session, "doc-1") == [3, 3, 2, 2], (
+        "第 1 代的两片一起删掉；第 2、3 代各两片原样留着"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_chunks_table_is_a_no_op(session: AsyncSession) -> None:
+    """空库：读数全 0，而且**不发第二条语句**（稳态成本只有那一条候选查询）。
+
+    稳态是常态——大多数夜里没有一篇超窗。这条把「稳态不碰 chunks 的正文与向量列」钉住，
+    否则每晚两次全表扫会变成没人注意到的固定开销。
+    """
+
+    outcome = await retention.purge_generations(session)
+
+    assert (outcome.documents, outcome.purged_chunks) == (0, 0)
+
+
+@pytest.mark.asyncio
+async def test_the_batch_cap_bounds_one_night(session: AsyncSession) -> None:
+    """``limit`` 封顶一次回收的**篇数**：首次上线的历史库不会变成一次无界删除。
+
+    一撞语句超时就是整批回滚（见函数 docstring 的「失败是整批的」），没有封顶就永远删不完。
+    """
+
+    for document_id in ("doc-1", "doc-2"):
+        for generation in range(4):
+            await _chunk(session, f"{document_id}-g{generation}", document_id, generation)
+    await session.commit()
+
+    outcome = await retention.purge_generations(session, limit=1)
+
+    assert outcome.documents == 1, "只处理一批"
+    left = [await _generations_left(session, "doc-1"), await _generations_left(session, "doc-2")]
+    assert sorted(len(generations) for generations in left) == [2, 4], (
+        "一篇被回收，另一篇原样——下一次再扫它"
+    )
