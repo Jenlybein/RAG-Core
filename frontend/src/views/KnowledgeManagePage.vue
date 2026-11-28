@@ -808,8 +808,11 @@ function goRetrieve(kbId: string): void {
             「需重建」（第 16 步 #207）：切块设置是索引期旋钮，改了不重建，读到的还是旧切法。
             这条提示必须看得见——否则「我明明改了阈值」只能在评测数字上慢慢发现。
           -->
+          <!-- 库级那句只在「没有按篇可数的待更新篇」时才出现：有 N 篇时上面那行已经说了
+               同一件事，而且说得更具体（差几篇）。两句都亮的结果是同一张卡片挂两条一样的
+               提示，处置也一样——那种重复会让人开始跳过这一整块。 -->
           <p
-            v-if="row.needs_rebuild"
+            v-if="row.needs_rebuild && !(row.stale_documents > 0)"
             class="mt-1 rounded-md bg-amber-50 px-2 py-1 text-xs text-amber-700"
           >
             当前切块设置与生效索引版本不一致，需要重建后才生效。
