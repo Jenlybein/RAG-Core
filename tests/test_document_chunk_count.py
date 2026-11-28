@@ -35,7 +35,9 @@ CREATE TABLE documents (
     id VARCHAR(36) NOT NULL PRIMARY KEY,
     tenant_id VARCHAR(64) NOT NULL,
     kb_id VARCHAR(36) NOT NULL,
-    current_version INTEGER NOT NULL DEFAULT '1'
+    current_version INTEGER NOT NULL DEFAULT '1',
+    current_index_generation INTEGER,
+    settings_hash VARCHAR(64)
 )
 """
 
@@ -49,7 +51,8 @@ CREATE TABLE chunks (
     embedding TEXT NOT NULL,
     metadata JSON NOT NULL,
     index_version VARCHAR(32) NOT NULL DEFAULT 'v1',
-    doc_version INTEGER NOT NULL DEFAULT '1'
+    doc_version INTEGER NOT NULL DEFAULT '1',
+    generation INTEGER NOT NULL DEFAULT 1
 )
 """
 
@@ -64,12 +67,15 @@ CREATE TABLE chunks (
 #: 那一片属于「同一稿、别的版本」，**也不该被数进来**——否则一个建过 N 版的库，
 #: 界面上的分块数就是生效版本的 N 倍（实测 152 vs 38）。
 SEEDED_ROWS = (
-    f"INSERT INTO documents (id, tenant_id, kb_id, current_version) "
-    f"VALUES ('doc-1', '{TENANT}', '{KB}', 2)",
-    f"INSERT INTO documents (id, tenant_id, kb_id, current_version) "
-    f"VALUES ('doc-2', '{TENANT}', '{KB}', 1)",
-    f"INSERT INTO documents (id, tenant_id, kb_id, current_version) "
-    f"VALUES ('doc-3', '{TENANT}', '{KB}', 2)",
+    # ``current_index_generation`` 也写成 1：这些文档**有产物**，而计数口径要
+    # 「版本 × 当前稿 × 当前代」三条齐全（现场九·第三步）。写成 NULL 等于「还没有产物」，
+    # 计数会诚实地回 0——那是另一条用例要覆盖的情形。
+    f"INSERT INTO documents (id, tenant_id, kb_id, current_version, current_index_generation) "
+    f"VALUES ('doc-1', '{TENANT}', '{KB}', 2, 1)",
+    f"INSERT INTO documents (id, tenant_id, kb_id, current_version, current_index_generation) "
+    f"VALUES ('doc-2', '{TENANT}', '{KB}', 1, 1)",
+    f"INSERT INTO documents (id, tenant_id, kb_id, current_version, current_index_generation) "
+    f"VALUES ('doc-3', '{TENANT}', '{KB}', 2, 1)",
     # doc-1 第 1 稿：三片（旧稿，读不到但要占着存储）
     f"INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, metadata, "
     f"index_version, doc_version) VALUES ('c1-v1', '{TENANT}', '{KB}', 'doc-1', '旧稿一', '[]', "

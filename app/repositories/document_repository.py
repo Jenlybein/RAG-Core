@@ -251,6 +251,41 @@ def set_content(db: Session, document_id: str, content: str) -> None:
     db.flush()
 
 
+async def count_stale_generations(
+    db: AsyncSession, kb_id: str, *, tenant_id: str, settings_hash: str | None
+) -> int:
+    """这个库里**「N 篇待更新」**的那个 N（现场九·第三步）。
+
+    判据：文档记下的 ``settings_hash`` 与**库当前设置**的指纹不一致，或者从没记过。
+
+    ``settings_hash`` 传 ``None``（库不存在 / 跨租户读不到）时**只数「从没记过」的那批**，
+    不做「全库待更新」的推断：那种状态下真正的问题不是「设置变了」而是「这个库不见了」，
+    界面另有提示；而在异常态里把整库标红，只会教会人忽略这条提示——它平时是对的。
+
+    只数 ``SUCCESS`` 的篇：正在跑、排队、失败的篇本来就会被别的机制处理，混进来会让数字
+    跳动而无法据此行动。
+
+    为什么按指纹而不按「版本号」：版本号只增不减，答不了那个更常见的问题——把设置**改回
+    原样**之后还要不要重算（答案是不用，而版本号会说要）。
+    """
+
+    # 「没记过指纹」永远算待更新；指纹说得出时才再加一条「与当前不一致」。
+    stale: ColumnElement[bool] = Document.settings_hash.is_(None)
+    if settings_hash is not None:
+        stale = or_(stale, Document.settings_hash != settings_hash)
+    statement = (
+        select(func.count())
+        .select_from(Document)
+        .where(
+            Document.kb_id == kb_id,
+            Document.tenant_id == tenant_id,
+            Document.status == DocumentStatus.SUCCESS,
+            stale,
+        )
+    )
+    return int((await db.execute(statement)).scalar_one() or 0)
+
+
 async def advance_index_generation(
     db: AsyncSession,
     document_id: str,

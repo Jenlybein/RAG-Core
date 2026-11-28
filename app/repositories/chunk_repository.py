@@ -29,7 +29,7 @@ from sqlalchemy import Integer, Select, and_, delete, distinct, func, or_, selec
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import Session
 
-from app.models.chunk import Chunk, current_draft_filter, scope_filter
+from app.models.chunk import Chunk, current_draft_filter, current_generation_filter, scope_filter
 from app.models.document import Document
 
 
@@ -576,7 +576,14 @@ def serving_chunk_filters(*, index_version: str) -> tuple[Any, ...]:
     ``documents``。
     """
 
-    return (Chunk.index_version == index_version, current_draft_filter())
+    return (
+        Chunk.index_version == index_version,
+        current_draft_filter(),
+        # 第三轴（现场九·第三步）：这一片得是该篇**当前代**的产物。留在库里的旧代切片
+        # （保留 2 份策略要留的那一份）不参与「现在有多少内容」，否则界面会把两份产物加在
+        # 一起，而那个数字每次重建都会涨一截。
+        current_generation_filter(),
+    )
 
 
 def _count_by_document_ids_statement(

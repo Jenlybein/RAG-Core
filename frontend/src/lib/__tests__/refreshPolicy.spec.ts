@@ -51,6 +51,7 @@ function summary(overrides: Partial<KbSummary> = {}): KbSummary {
     has_active_version: true,
     chunk_count: 0,
     needs_rebuild: false,
+      stale_documents: 0,
     token_usage: null,
     build: null,
     ...overrides,

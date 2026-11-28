@@ -45,6 +45,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 1024,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
           documents: [],
@@ -61,6 +62,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 1024,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
         documents: [],
@@ -79,6 +81,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 512,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
           documents: [
@@ -102,6 +105,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 1024,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
           documents: [
@@ -138,6 +142,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 512,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
         documents: [
@@ -161,6 +166,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 1024,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
         documents: [
@@ -200,6 +206,7 @@ describe('toKnowledgeBaseNodes', () => {
           chunk_size: 512,
           section_part_max_chars: 2000,
           needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
           documents: [
@@ -225,6 +232,7 @@ describe('toKnowledgeBaseNodes', () => {
         chunk_size: 512,
         section_part_max_chars: 2000,
         needs_rebuild: false,
+      stale_documents: 0,
   build_progress: null,
         token_usage: null,
         documents: [

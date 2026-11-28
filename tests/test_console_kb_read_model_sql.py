@@ -224,20 +224,23 @@ async def session() -> AsyncIterator[AsyncSession]:
         for row in _documents():
             await connection.exec_driver_sql(
                 "INSERT INTO documents (id, tenant_id, kb_id, title, content, source_type, "
-                "status, current_version, index_claimed_at, index_heartbeat_at, redispatch_count, "
+                "status, current_version, current_index_generation, index_claimed_at, index_heartbeat_at, "
+                "redispatch_count, "
                 "token_count, error_message, created_at, updated_at) VALUES "
                 f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', '{row['title']}', "
-                f"'body', 'markdown', {row['status']}, {row['current_version']}, NULL, NULL, 0, 0, "
+                f"'body', 'markdown', {row['status']}, {row['current_version']}, "
+                # 每篇都**有产物**（第 1 代）：计数口径要「版本 × 当前稿 × 当前代」三条齐全。
+                f"1, NULL, NULL, 0, 0, "
                 f"NULL, '{row['created_at'].strftime('%Y-%m-%d %H:%M:%S')}', "
                 f"'{row['updated_at'].strftime('%Y-%m-%d %H:%M:%S')}')"
             )
         for row in _chunks():
             await connection.exec_driver_sql(
                 "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, "
-                "metadata, index_version, doc_version) VALUES "
+                "metadata, index_version, doc_version, generation) VALUES "
                 f"('{row['id']}', '{row['tenant_id']}', '{row['kb_id']}', "
                 f"'{row['document_id']}', 'body', '[]', '{{}}', "
-                f"'{row['index_version']}', {row['doc_version']})"
+                f"'{row['index_version']}', {row['doc_version']}, 1)"
             )
         for row in _build_versions():
             await connection.exec_driver_sql(

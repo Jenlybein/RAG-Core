@@ -149,6 +149,13 @@ export interface KnowledgeBaseNode {
   section_part_max_chars: number
   /** 库当前设置与生效那一版的构建参数已不一致 → 这个库需要重建才生效。 */
   needs_rebuild: boolean
+  /**
+   * 「N 篇待更新」（现场九·第三步）：按篇比设置指纹得出的篇数。0 = 全部最新。
+   *
+   * 与 `needs_rebuild` 并存而不是替代：后者回答「库这一级要不要重建」，它回答「按篇看
+   * 差几篇」——一个点按钮，一个是给人看进度。
+   */
+  stale_documents: number
   /** 进行中的构建（#216）；`null` = 这个库没有构建在跑。 */
   build_progress: BuildProgress | null
   /**
@@ -185,6 +192,7 @@ export type ConsoleTreeKnowledgeBase = Omit<
   /** 第 16 步 #207：老缓存 / 半截负载可能没有这两项，映射层给安全默认。 */
   section_part_max_chars?: number
   needs_rebuild?: boolean
+  stale_documents?: number
 }
 
 export interface ConsoleTreeData {
@@ -254,6 +262,8 @@ export interface KbSummary {
   /** 生效版本 × 当前稿的切片总数（与检索口径一致，不是留存版本之和）。 */
   chunk_count: number
   needs_rebuild: boolean
+  /** 「N 篇待更新」（现场九·第三步）：按篇比设置指纹得出的篇数。0 = 全部最新。 */
+  stale_documents: number
   token_usage: { used: number; limit: number } | null
   /** 进行中**或最近一次**的构建；`null` = 这个库从没建过。 */
   build: BuildSummary | null

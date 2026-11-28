@@ -274,6 +274,9 @@ export function toKnowledgeBaseNodes(data: ConsoleTreeData): KnowledgeBaseNode[]
     build_progress: node.build_progress ?? null,
     token_usage: node.token_usage ?? null,
     needs_rebuild: node.needs_rebuild ?? false,
+    // 老缓存里没有这个字段时按 0（= 都是最新的）：这里猜一个非零会让每张卡片都挂一条
+    // 「N 篇待更新」，而那种噪音会让人学会永久忽略它。
+    stale_documents: node.stale_documents ?? 0,
     documents: (node.documents ?? []).map(toDocumentListItem),
   }))
 }

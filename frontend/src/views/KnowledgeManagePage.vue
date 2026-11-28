@@ -776,6 +776,17 @@ function goRetrieve(kbId: string): void {
               · {{ row.build.failure_count }} 篇未入这一版
             </span>
           </p>
+
+          <!-- 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。与上面那句「已生效」不冲突
+               ——那一句说的是「哪一版在服务」，这一句说的是「有几篇的设置已经落后了」。
+               0 不显示：没有落后时不该占一行。 -->
+          <p
+            v-if="row.stale_documents > 0"
+            class="mt-1 text-xs text-amber-700"
+            data-testid="kb-stale-documents"
+          >
+            {{ row.stale_documents }} 篇待更新（切块设置改过，重建才生效）
+          </p>
           <p
             v-else-if="row.build && row.build.status === 'failed'"
             class="mt-1 rounded-md bg-red-50 px-2 py-1 text-xs text-red-700"

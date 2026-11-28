@@ -143,6 +143,8 @@ def _install(
     monkeypatch: pytest.MonkeyPatch,
     *,
     kb: KnowledgeBase | None,
+    #: 「N 篇待更新」的读数（现场九·第三步）；判据本身用真 SQL 在另一处验。
+    stale_documents: int = 0,
     documents: list[Any] | None = None,
     build: SimpleNamespace | None = None,
     done_ids: set[str] | None = None,
@@ -239,6 +241,17 @@ def _install(
     async def _count_tokens(_db: Any, kb_id: str, *, tenant_id: str) -> int:
         return 1234
 
+    async def _settings_fingerprint(_db: Any, kb_id: str, *, tenant_id: str) -> str | None:
+        # 库当前设置的指纹（现场九）：这一层只负责取，判据在真 SQL 那边验。
+        return None
+
+    async def _count_stale(
+        _db: Any, kb_id: str, *, tenant_id: str, settings_hash: str | None
+    ) -> int:
+        # 「N 篇待更新」（现场九·第三步）：服务层只是把它搬出去，判据本身在
+        # ``tests/test_index_generation_stale.py`` 里用真 SQL 验。
+        return stale_documents
+
     async def _plan(_db: Any, _plan_id: int) -> PlanSpec:
         return PLAN
 
@@ -256,6 +269,14 @@ def _install(
         console_kb_service.document_repository, "count_by_kb_by_status", _count_by_status
     )
     monkeypatch.setattr(console_kb_service.document_repository, "count_tokens_in_kb", _count_tokens)
+    monkeypatch.setattr(
+        console_kb_service.document_repository, "count_stale_generations", _count_stale
+    )
+    monkeypatch.setattr(
+        console_kb_service.knowledge_base_repository,
+        "get_settings_fingerprint",
+        _settings_fingerprint,
+    )
     monkeypatch.setattr(console_kb_service.document_repository, "list_page_by_kb", _list_page)
     monkeypatch.setattr(
         console_kb_service.document_repository, "count_by_kb_filtered", _count_filtered

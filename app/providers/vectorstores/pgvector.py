@@ -22,6 +22,7 @@ from app.models.chunk import (
     DEFAULT_INDEX_VERSION,
     Chunk,
     current_draft_filter,
+    current_generation_filter,
     scope_filter,
 )
 from app.models.document import Document
@@ -161,6 +162,10 @@ class PgVectorStore(VectorStore):
                 build_scope_filter(index_versions),
                 not_reference_pointer(),
                 current_draft_filter(),
+                # 第三轴（现场九·第三步）：只召回该篇**当前代**的产物。旧代切片按保留策略
+                # 留在库里（回滚要用），少了这一条它们会以同等分数挤进 TopK，而结果看起来
+                # 完全正常——只是同一段内容出现两份。
+                current_generation_filter(),
             )
             .order_by(distance)
             .limit(top_k)

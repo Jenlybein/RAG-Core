@@ -175,6 +175,9 @@ class TreeKnowledgeBase:
     #: 库当前设置与生效那一版的构建参数不一致 → 这个库要重建才生效（见 ``needs_rebuild``）。
     needs_rebuild: bool
     documents: list[TreeDocument]
+    #: 「N 篇待更新」：按篇比设置指纹得出的篇数（现场九·第三步）。0 = 全部最新。
+    #: 放在 ``documents`` 之后是因为 dataclass 的「带默认值的字段必须在后」。
+    stale_documents: int = 0
     #: 进行中的构建进度与失败明细（#216）；``None`` = 这个库没有构建在跑。
     #: 放在最后是因为 dataclass 的「带默认值的字段必须在后」——顺序不是随便放的。
     build_progress: BuildProgressData | None = None
@@ -211,6 +214,7 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
                 chunk_size=settings_of(kb)["chunk_size"],
                 section_part_max_chars=settings_of(kb)["section_part_max_chars"],
                 needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
+                stale_documents=await _stale_documents_of(db, kb, tenant_id=tenant_id),
                 # 进度从构建摘要派生（同一次构建的读数只有一处）：
                 # 卡片上的「3 / 10」与详情里的构建摘要必须是同一个时刻的数。
                 build_progress=_progress_from(
@@ -373,6 +377,9 @@ async def _summary_of(
             db, str(kb.id), tenant_id=tenant_id, index_version=kb.active_index_version
         ),
         needs_rebuild=await _needs_rebuild(db, kb, tenant_id=tenant_id),
+        # 「N 篇待更新」（现场九·第三步）：按篇比设置指纹。与 ``needs_rebuild`` 读的不是
+        # 同一个东西——那一个问「库这一级要不要重建」，这一个问「按篇看差几篇」。
+        stale_documents=await _stale_documents_of(db, kb, tenant_id=tenant_id),
         token_usage=await _token_usage_of(
             db, kb_id=str(kb.id), tenant_id=tenant_id, plan=plan
         ),
@@ -615,6 +622,25 @@ async def _token_usage_of(
         logger.warning("kb token usage unavailable", kb_id=kb_id, tenant_id=tenant_id)
         return None
     return TokenUsageData(used=used, limit=int(plan.max_tokens_per_kb))
+
+
+async def _stale_documents_of(
+    db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str
+) -> int:
+    """这个库「有几篇待更新」（现场九·第三步）。
+
+    口径：文档行上记的 ``settings_hash`` 与**库当前设置**的指纹不一致（或从没记过）。
+    一次分组计数，不按篇查——一个库几百篇时那是几百次往返。
+    """
+
+    return await document_repository.count_stale_generations(
+        db,
+        kb.id,
+        tenant_id=tenant_id,
+        settings_hash=await knowledge_base_repository.get_settings_fingerprint(
+            db, kb.id, tenant_id=tenant_id
+        ),
+    )
 
 
 async def _needs_rebuild(db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str) -> bool:

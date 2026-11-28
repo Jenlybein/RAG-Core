@@ -155,6 +155,10 @@ class KnowledgeBaseSummaryData(BaseModel):
     #: ——「还没有索引」与「索引里有 0 片」是两句话，处置也不同（前者要建、后者要查）。
     has_active_version: bool
     needs_rebuild: bool = False
+    #: 「N 篇待更新」（现场九·第三步）：按篇比设置指纹得出的篇数。0 = 全部是最新的。
+    #: 与 ``needs_rebuild`` 并存而不是替代：后者回答「库这一级要不要重建」，前者回答
+    #: 「按篇看差几篇」——两句话的处置不同（一个点按钮，一个看列表）。
+    stale_documents: int = 0
     token_usage: TokenUsageData | None = None
     #: 进行中**或最近一次**的构建摘要（没有构建过就是 ``None``）。
     build: BuildSummaryData | None = None

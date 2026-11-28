@@ -94,6 +94,32 @@ def current_draft_filter() -> ColumnElement[bool]:
     return Chunk.doc_version == Document.current_version
 
 
+def current_generation_filter() -> ColumnElement[bool]:
+    """「这一片属于该文档的**当前代**产物」：``chunks.generation = documents.current_index_generation``。
+
+    与 :func:`current_draft_filter` 是同一种写法（列与列比较、由库求值、语句必须 JOIN
+    ``documents``），因为它们是两根**正交**轴的同一套纪律：
+
+    * 稿次那一条回答「这一片装的是不是现在生效的那份正文」；
+    * 这一条回答「这一片是不是现在生效的那份产物」。
+
+    改造之前「哪份产物生效」是**库级**的（``index_version = 生效版本``），所以一条相等条件
+    就够了。代下放到篇级之后，每篇各有自己的当前代，库级的相等条件**不再等价于**它——少了
+    这一条，留在库里的旧代切片会被当成现行内容一起召回（症状是同一段内容回答两次，或者引用
+    了上一版已经删掉的条款），而它不报错。
+
+    为什么不把当前代读出来当参数传：指针在文档行上，由库来比就不会出现「缓存里的代过期」，
+    调用方也不必先查一次文档表（多一次往返、多一个能传错的值）。
+
+    ## 关键词那一路为什么不用它
+
+    ES 无法 JOIN 文档表，所以它用**翻转标记**（写新代时把旧代文档的 ``is_live`` 翻成假）
+    表达同一件事。两个后端、两种实现、同一个语义——见 ``app/providers/keyword_search``。
+    """
+
+    return Chunk.generation == Document.current_index_generation
+
+
 class Chunk(Base):
     __tablename__ = "chunks"
     __table_args__ = (
