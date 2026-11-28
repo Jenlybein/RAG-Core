@@ -71,7 +71,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 - **切块策略即语料准入**（ADR-0014）：建库时必须选 `structure` 或 `size`，它同时决定该库收哪些格式。`structure` 只收 markdown（它的能力全建立在标题语法上，收 pdf 只会退化成窗口硬切还不自知），`size` 默认五种全开、一律固定窗口切。上传格式不在白名单当场 `422` + `UNSUPPORTED_DOCUMENT_FORMAT`（ADR-0007「业务失败一律 200」的唯一例外）。
 - 异步索引：`POST /api/v1/documents/upload`（JSON 与 multipart 双模式）只做「登记 + 投递」，立即返回 `status=3`；Celery Worker 拉取后解析 / 切块 / 向量化，写库是「先删后写 + 状态回写」的单事务。终态靠 `GET /api/v1/documents?kb_id=` 轮询。
 - 幂等与租约：数据库 CAS 抢占 + 600 秒租约（`documents.index_claimed_at` 区分「已入队未开工」与「正在跑」）；`acks_late=True` 的重投由后到者 `rowcount=0` 直接跳过。入队侧只置队、**只有 Worker 抢占**，重试前归还租约。
-- 运维能力：`POST /documents/{id}/reindex?reparse=&force=`（有效处理中拒绝 `20025`，成功态需 `force` 否则 `20027`）、`DELETE /documents/{id}`、`scripts/reindex_knowledge_base.py`、`scripts/requeue_stuck_documents.py`。
+- 运维能力：`POST /documents/{id}/reindex?reparse=&force=`（有效处理中拒绝 `20025`，成功态需 `force` 否则 `20027`）、`DELETE /documents/{id}`、`scripts/requeue_stuck_documents.py`（整库重建/切版本那批脚本已在索引代改造里删除：重建现在按篇走）。
 - OCR 运行时：Linux 容器内预装 PDFium + ONNX Runtime + PP-OCRv6 Small 模型，运行期不联网；构建与启动见 [deploy/README.md](deploy/README.md)，测试口径见 [tests/README.md](tests/README.md)。
 - 切块策略自评：scripts/eval_chunking.py 复用第 4 步的 eval/corpus 与 eval/questions.json，对比**朴素基线**（评测侧自带实现，只存在于评测）与生产的结构化切块，并跑四组交叉（算法 × 单位）的检索指标（实测 R@1 0.688 → 0.761、切片均长 744 → 148 字）。
 
@@ -120,7 +120,7 @@ score = 本次最终排序分（见下表）
 
 查询侧分析器改成了 `ik_smart_query`（`ik_smart` + 75 条中文停用词）并加了 `minimum_should_match="50%"`，用来止住「问句里的疑问词被当成罕见特征」的 BM25 噪声。
 
-代价是 **mapping 变了，既有索引不能原地升级**：必须删掉 `rag_chunks` 重新入库。`scripts/reindex_knowledge_base.py` 只重投索引任务，**不重建 mapping**。修复前后数字见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
+代价是 **mapping 变了，既有索引不能原地升级**：必须删掉 `rag_chunks` 重新入库。当年那个只重投索引任务的脚本（`scripts/reindex_knowledge_base.py`）已在索引代改造里删除；现在重建按篇走，`POST /documents/{id}/reindex` 即可。修复前后数字见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
 
 ### 验收
 

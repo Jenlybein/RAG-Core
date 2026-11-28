@@ -526,7 +526,7 @@ _Avoid_: MCP 服务, 工具网关
 ## 观测与评测
 
 **归属索引**：
-每次检索在中台业务库里留下的**结构记录**：谁调用的、查了哪些知识库、查的是哪一次构建、命中的是第几稿、命中哪些切片（只记 id）、多慢、有没有降级、为什么为空。**十二列**（[ADR-0021](docs/adr/0021-observability-data-boundary.md) 决策 2 的十列 + 两次契约变更）：身份（`id` / `tenant_id` / `trace_id`）、范围与规模（`kb_ids` / `top_k`）、版本（`index_versions`、`doc_versions`）、结果指针（`chunk_ids`）、结局（`latency_ms` / `degraded_reason` / `empty_reason`）、时间（`created_at`）。两个版本列都是**映射**、形状同构：`index_versions` 是 `{kb_id: version}`（哪次构建），`doc_versions` 是 `{document_id: doc_version}`（哪几稿）——**绝不能写成两个平行数组**，错位就是静默错归因（ADR-0010 §5）。它**只存结构，不存原文**——问句、改写句、切片正文一律不在其中，所以它答不了「那次问了什么」，只答「那次发生了什么」。对外的身份是 `log_id`，一次检索一行，与响应里的 `trace_id` 一一对应。`doc_versions` 的存在理由：片会被保留策略物理删掉，删掉之后 `chunk_ids` 再也答不出「那次查的是第几稿」。
+每次检索在中台业务库里留下的**结构记录**：谁调用的、查了哪些知识库、交付的每一篇在第几代产物上、命中的是第几稿、命中哪些切片（只记 id）、多慢、有没有降级、为什么为空、有几篇因为还没有产物被跳过。**列**（[ADR-0021](docs/adr/0021-observability-data-boundary.md) 决策 2 的十列 + 三次契约变更）：身份（`id` / `tenant_id` / `trace_id`）、范围与规模（`kb_ids` / `top_k`）、产物与稿次（`index_generations`、`doc_versions`）、结果指针（`chunk_ids`）、结局（`latency_ms` / `degraded_reason` / `empty_reason`）、被跳过的篇数（`missing_generation_documents`）、时间（`created_at`）。两个映射列**形状同构**：`index_generations` 是 `{document_id: 代数}`（哪一篇在第几代交付），`doc_versions` 是 `{document_id: doc_version}`（哪几稿）——**绝不能写成两个平行数组**，错位就是静默错归因（ADR-0010 §5）。第 17 步现场九把它从「哪一次构建」（`{kb_id: version}`）改成「每篇在第几代」：版本轴退场之后，「这次查的是哪一版」在新模型里没有对应物（[ADR-0025](docs/adr/0025-index-as-build-artifact.md) 第 2 次修订）。它**只存结构，不存原文**——问句、改写句、切片正文一律不在其中，所以它答不了「那次问了什么」，只答「那次发生了什么」。对外的身份是 `log_id`，一次检索一行，与响应里的 `trace_id` 一一对应。`doc_versions` 的存在理由：片会被保留策略物理删掉，删掉之后 `chunk_ids` 再也答不出「那次查的是第几稿」。
 _Avoid_: 记录表, 调用记录, 埋点表
 
 **trace**：
