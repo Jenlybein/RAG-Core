@@ -495,6 +495,6 @@ async def _empty_reason(
     if chunks:
         return None
     indexed = await chunk_repository.count_by_kb_ids(
-        db, tenant_id=tenant_id, index_versions=index_versions
+        db, tenant_id=tenant_id, kb_ids=list(index_versions)
     )
     return EMPTY_NO_INDEXED_CHUNKS if indexed == 0 else EMPTY_NO_CHUNKS_MATCHED

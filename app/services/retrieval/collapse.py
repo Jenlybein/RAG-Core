@@ -159,16 +159,16 @@ async def collapse_results(
     )
     raw_rows: dict[tuple[str, str, int], list] = {}
     if unit_keys:
-        for version, scoped_documents in _unit_row_scopes(chunks, index_versions):
-            raw_rows.update(
-                await chunk_repository.fetch_unit_rows(
-                    db,
-                    tenant_id=tenant_id,
-                    document_ids=scoped_documents,
-                    units=unit_keys,
-                    index_version=version,
-                )
+        # 不再按「库 → 版本」分组（现场九·第四步）：「哪一代生效」由文档行决定，取整节用的
+        # 那条 SQL 会 JOIN 文档按代过滤——分组反而会把一篇的旧代也拉进来拼进交付单元。
+        raw_rows.update(
+            await chunk_repository.fetch_unit_rows(
+                db,
+                tenant_id=tenant_id,
+                document_ids=[str(c["document_id"]) for c in chunks if c.get("document_id")],
+                units=unit_keys,
             )
+        )
 
     # 一个单元键 = (种类, 文档, 单元 id[, table_part][, 节段号])。单元 id 由路径算出来
     # （sha256(前两段)），所以不需要新增列，重建索引前后都稳定。
@@ -300,36 +300,35 @@ async def _with_parent_content(
     * **不替换 ``content``**：``content`` 永远是切片原文（ADR-0012 决策 3），引用要能
       指回那一片；父节正文单独放 ``parent_content``。
 
-    版本是**逐文档**的（``kb_id → 版本``的映射）：拿一个版本常量去查，多库各 pin 不同
-    构建时会把两个版本的父节拼进同一条结果。
+    哪一代的父节由 SQL 按文档行求值（现场九·第四步）：同一篇的旧代切片留在库里，用常量
+    去查就会把上一版的父节正文拼进这一条结果。
     """
 
-    wanted: dict[str, dict[str, set[str]]] = {}
+    wanted_documents: set[str] = set()
+    wanted_paths: set[str] = set()
     targets: dict[int, tuple[str, str]] = {}
     for index, chunk in enumerate(chunks):
         meta = _meta_of(chunk, metas) or {}
         path = str(meta.get("heading_path") or "")
         parent_path = parent_heading_path(path)
         document_id = str(chunk.get("document_id") or "")
-        version = index_versions.get(str(chunk.get("kb_id") or ""))
-        if parent_path is None or not document_id or version is None:
+        if parent_path is None or not document_id:
             continue
-        wanted.setdefault(version, {}).setdefault(document_id, set()).add(parent_path)
+        wanted_documents.add(document_id)
+        wanted_paths.add(parent_path)
         targets[index] = (document_id, parent_path)
     if not targets:
         return chunks
 
     parents: dict[tuple[str, str], list[str]] = {}
-    for version, documents in sorted(wanted.items()):
-        parents.update(
-            await chunk_repository.fetch_parent_rows(
-                db,
-                tenant_id=tenant_id,
-                document_ids=sorted(documents),
-                heading_paths=sorted({path for paths in documents.values() for path in paths}),
-                index_version=version,
-            )
+    parents.update(
+        await chunk_repository.fetch_parent_rows(
+            db,
+            tenant_id=tenant_id,
+            document_ids=sorted(wanted_documents),
+            heading_paths=sorted(wanted_paths),
         )
+    )
 
     for index, (document_id, parent_path) in targets.items():
         rows = parents.get((document_id, parent_path))

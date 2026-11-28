@@ -401,13 +401,13 @@ async def test_the_kb_chunk_total_is_the_active_version_and_the_current_draft(
     """
 
     assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version="v2") == 4
+        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 4
     )
     assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version="v1") == 3
+        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 3
     ), "换成 v1 就是另一版的读数（3 片旧版本切片）"
     assert (
-        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version=None) == 0
+        await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT) == 0
     ), "没有生效版本 → 0，而不是去数全部版本"
 
 
@@ -428,9 +428,8 @@ async def test_the_kb_chunk_total_matches_the_sum_of_the_per_document_counts(
         )
     ]
     per_document = await chunk_repository.count_by_document_ids(
-        session, document_ids, tenant_id=TENANT, index_version="v2"
-    )
-    total = await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT, index_version="v2")
+        session, document_ids, tenant_id=TENANT)
+    total = await chunk_repository.count_in_kb(session, KB, tenant_id=TENANT)
 
     assert sum(per_document.values()) == total
 

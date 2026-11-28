@@ -142,7 +142,6 @@ async def _counts(drafts: AsyncSession) -> dict[str, int]:
         ["doc-1", "doc-2", "doc-3"],
         tenant_id=TENANT,
         # 生效版本是 v1；v0 是被重建替下来的那一版（留着给回滚），不参与计数。
-        index_version="v1",
     )
 
 
@@ -188,7 +187,6 @@ async def test_the_grouped_count_still_forces_the_tenant(drafts: AsyncSession) -
             drafts,
             ["doc-1", "doc-2", "doc-3"],
             tenant_id=OTHER_TENANT,
-            index_version="v1",
         )
         == {}
     )

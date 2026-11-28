@@ -205,7 +205,6 @@ async def list_tree(db: AsyncSession, *, tenant_id: str) -> list[TreeKnowledgeBa
             db,
             [document.id for document in documents],
             tenant_id=tenant_id,
-            index_version=kb.active_index_version,
         )
         nodes.append(
             TreeKnowledgeBase(
@@ -529,7 +528,6 @@ async def list_documents_page(
         db,
         [str(document.id) for document in documents],
         tenant_id=tenant_id,
-        index_version=kb.active_index_version,
     )
     states = await _build_state_of(
         db, kb_id=kb_id, tenant_id=tenant_id, build=build, documents=documents
@@ -689,7 +687,6 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
         db,
         [document.id for document in rebuildable],
         tenant_id=tenant_id,
-        index_version=kb.active_index_version,
     )
     rows = await index_version_repository.list_for_kb(db, kb_id, tenant_id=tenant_id)
     live = next((row for row in rows if row.version == kb.active_index_version), None)

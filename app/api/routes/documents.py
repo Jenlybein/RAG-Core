@@ -170,15 +170,16 @@ async def list_documents(
 
     # 第二道关卡：白名单（先于任何库行查询），然后才是租户可见性。
     ensure_kb_scope(policy=key.policy, kb_ids=[kb_id])
-    kb = await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
+    # 只做可见性检查（返回值这里用不到）：跨租户的 kb_id 在这一行就被挡住。
+    await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id)
 
     rows = await document_repository.list_by_kb_async(db, kb_id, tenant_id=key.tenant_id)
     counts = await chunk_repository.count_by_document_ids(
         db,
         [row.id for row in rows],
         tenant_id=key.tenant_id,
-        # 数的是**生效版本 × 当前稿**：留存的旧版本切片不算（否则重建一次数字就涨一份）。
-        index_version=kb.active_index_version,
+        # 数的是**当前代 × 当前稿**（现场九·第四步）：留存的旧代切片不算，否则重建一次
+        # 数字就涨一份。
     )
     data = DocumentListData(
         items=[
