@@ -167,7 +167,7 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # #215 的构建失败明细与重投次数（``add_build_failure_detail``）、#220 的单库 token 容量
     # （``add_kb_token_capacity``）、#222 的每日切块账、#225 的心跳，以及第 17 步 #227 现场五
     # 的过渡密钥四列（当前链尾）——当前链尾。
-    assert heads == {_revision_of(_migration_path("add_index_generation"))}
+    assert heads == {_revision_of(_migration_path("add_chunk_document_generation_index"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

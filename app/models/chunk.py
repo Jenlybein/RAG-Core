@@ -110,8 +110,11 @@ class Chunk(Base):
     __table_args__ = (
         Index("ix_chunks_tenant_id_kb_id_index_version", "tenant_id", "kb_id", "index_version"),
         Index("ix_chunks_document_id_doc_version", "document_id", "doc_version"),
-        # 按「租户 + 库 + 代」收窄：检索与「保留最近 N 代」的回收都走它。
+        # 按「租户 + 库 + 代」收窄：**读路径**（库范围 + 当前代）走它。
         Index("ix_chunks_tenant_id_kb_id_generation", "tenant_id", "kb_id", "generation"),
+        # 按「篇 + 代」收窄：**旧代回收**的候选查询走它（那个查询不带租户与库，判据只看
+        # 「这一篇存在几代」）。没有它，回收的候选查询每晚全表扫 chunks——稳态也扫。
+        Index("ix_chunks_document_id_generation", "document_id", "generation"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

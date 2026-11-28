@@ -78,7 +78,8 @@ _DOCUMENT_GENERATION_COLUMN = "current_index_generation"
 _DOCUMENT_SETTINGS_HASH_COLUMN = "settings_hash"
 _CHUNK_GENERATION_COLUMN = "generation"
 
-#: 切片上「按库收代」的索引。检索与回收都按 ``(租户, 库, 代)`` 收窄。
+#: 切片上「按库收代」的索引。**读路径**按 ``(租户, 库, 代)`` 收窄走它；旧代回收的候选查询
+#: 不带租户与库，走的是后加的 ``ix_chunks_document_id_generation``（见 ``d91f4b7c3e28``）。
 _CHUNK_GENERATION_INDEX = "ix_chunks_tenant_id_kb_id_generation"
 
 #: 离线渲染的拒绝文案：逐行算指纹需要真库，异地渲染 SQL 再执行的玩法对它不适用。
