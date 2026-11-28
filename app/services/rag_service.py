@@ -39,8 +39,8 @@
 * ``vector`` 按 ``recall_queries`` 逐句 ``embed_query``、逐句一次范围召回覆盖全部
   「库 + 版本」配对，并成一个池后按分数排序截到 ``top_k``；关闭改写时只有一句，
   调用次数、顺序与 ``score`` 口径全部与票 4 逐字节一致（回归红线）。
-* ``bm25`` 只走关键词一路：不向量化、不查向量库，``index_versions`` 是
-  「kb_id → 索引版本」的映射（配对关系只能来自映射，不能是两个平行数组）。
+* ``bm25`` 只走关键词一路：不向量化、不查向量库；它交付的同样是「当前代 × 当前稿」的片
+  （可见性由篇级当前代决定，范围只有 ``kb_id IN (...)``，见 ADR-0025 第 2 次修订）。
 * ``hybrid`` 两路并行召回，RRF 融合（融合与降级判定在
   ``app/services/retrieval/``，本模块只负责把结果翻译成响应契约）。
 * **多库是每个查询一次全局召回**：两路都按 ``recall_queries`` 逐句各查一次再并成一个池
@@ -132,7 +132,11 @@ from app.services.retrieval_options import (
     RetrievalOptions,
     tenant_policy_echo,
 )
-from app.services.retrieval_trace import record_retrieval_trace
+from app.services.retrieval_trace import (
+    delivered_generations,
+    missing_generation_count,
+    record_retrieval_trace,
+)
 from app.services.usage_meter import current_key_id, current_meter_counts
 from app.services.trace_identity import (
     delivered_chunk_ids,
@@ -243,15 +247,16 @@ async def retrieve(
     # 范围由**这一次调用**解析一次，内核与 Research 都吃这一份，不各自去造。
     #
     # 读路径只用它的**键**（哪几个库）：范围的形状从「库 → 生效版本」的配对条件改成了
-    # ``kb_id IN (...)``，可见性交给篇级当前代（现场九·第四步）。值（版本）现在只剩两个
-    # 用处：归属索引那一列，以及下面那条「库还没有生效版本就拦下」的守卫——守卫留到第二
-    # 支迁移删列那天（它守的是回填漏做，与可见性无关）。
-    index_versions = resolve_index_versions(visible_kbs)
+    # ``kb_id IN (...)``，可见性交给篇级当前代（现场九·第四步）。**值不再进账本**：
+    # ``usage_events`` 那一列已改记篇级代（``{document_id: 代数}``，见 ADR-0025 第 2 次
+    # 修订第 5 条）。这里保留这次调用只为那条「库还没有生效版本就拦下」的守卫——它守的是
+    # 回填漏做，与可见性无关，留到第二支迁移删列那天。
+    resolve_index_versions(visible_kbs)
 
     outcome = await retrieve_kernel(
         db,
         tenant_id=tenant_id,
-        kb_ids=list(index_versions),
+        kb_ids=list(kb_ids),
         query=query,
         mode=resolved_mode,
         # 内核拿一组召回用句（原句 + 改写句，**两路都逐句搜**，第 15 步起对称），
@@ -360,6 +365,21 @@ async def retrieve(
     if write_trace:
         rerank_meta = retrieval_meta.get("rerank") or {}
         rerank_applied = bool(rerank_meta.get("applied") if isinstance(rerank_meta, dict) else None)
+        # 「每篇落在第几代」与「命中的是哪几稿」取自**同一批交付单元**（三列严格同源）：
+        # 前者从 ``documents`` 的当前代指针读（关键词路没有代这一维，两路形状必须一致），
+        # 后者从交付单元上的真实列读。两次主键级读换的是「事后还答得出这次落在第几代」。
+        generations = await delivered_generations(db, collapsed, tenant_id=tenant_id)
+        # 缺代计数只在**结果不足**时才算（未满额或已经算出空结果原因）：满额说明缺代没有
+        # 伤害这次调用，为每个请求多打一次库是没换来东西的固定成本。这条取舍写在
+        # ``missing_generation_count`` 的文档里，判据共享同一份实现。
+        missing_generation_documents = await missing_generation_count(
+            db,
+            tenant_id=tenant_id,
+            kb_ids=kb_ids,
+            delivered_count=len(collapsed),
+            top_k=resolved_top_k,
+            empty_reason=empty_reason,
+        )
         # 三本账**优先取门禁扣账那一刻记下的数字**（``meter_tally``）：那才是「额度被扣了几次」。
         # 只有没过门禁的路径（内部评测的召回、Research 的子检索）上下文里没有 tally，
         # 才回落到按「这次用了哪些能力」推一遍——推断只在没有真相的时候用。
@@ -385,16 +405,16 @@ async def retrieve(
             meter_rr=meter_rr,
             meter_llm=meter_llm,
             kb_ids=list(kb_ids),
-            # 「这次查的是哪次构建」：与本次范围**同一份映射**，不是另算一遍。同一个
-            # ``kb_ids + query`` 两次调用的差异，只剩这一列能归因——切法变了？文档变了？
-            # 还是召回抖了？（第 17 步下一步改成 ``{document_id: 代数}``。）
-            index_versions=dict(index_versions),
+            # 「这次每篇落在第几代」（ADR-0025 第 2 次修订第 5 条）：不是库级版本——版本轴
+            # 已退场，账上留它只会与「检索按篇级当前代取数」自相矛盾。只记交付过的篇。
+            index_generations=generations,
             # 「这次命中的是哪几稿」（#179）：与上面那份交付单元**同一份映射**
             # （``document_id → doc_version``），值来自 ``chunks.doc_version`` 列（#174）。
             # 片会被保留策略物理删掉（#178），删掉之后 ``chunk_ids`` 只是一串 id——
             # 「那次查的是第几稿」只剩这一列能答。
             doc_versions=delivered_doc_versions(collapsed),
             chunk_ids=delivered_chunk_ids(collapsed),
+            missing_generation_documents=missing_generation_documents,
             top_k=resolved_top_k,
             latency_ms=int((time.perf_counter() - started_at) * 1000),
             # 两个原因都从本次响应的那一层取，不另算一遍：库里那一行与回给调用方的响应

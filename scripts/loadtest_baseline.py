@@ -115,6 +115,12 @@ class Corpus:
     keyword_rows: list[dict]
     meta_rows: list[Any]
     unit_rows: list[tuple]
+    #: 「篇 → 当前代」的读数。归属索引那一列记的是「这次交付的每篇在第几代」
+    #: （现场九·第五步），它按主键取 ``documents``——这是检索主循环上**新增**的一条
+    #: 库访问，靠这份替身数据把它算进读数（而不是让它隐形成本）。
+    doc_generations: list[tuple]
+    #: 范围内「一片产物都没有」的篇数（缺代计数，只在结果不足时才查）。
+    missing_generations: int
 
 
 def _build_corpus() -> Corpus:
@@ -205,6 +211,8 @@ def _build_corpus() -> Corpus:
             active_index_version="v1",
         ),
         count=len(unit_rows),
+        doc_generations=[(document_id, 1) for document_id in sorted({row[0] for row in unit_rows})],
+        missing_generations=0,
         vector_rows=vector_rows,
         keyword_rows=keyword_rows,
         meta_rows=meta_rows,
@@ -345,6 +353,10 @@ class ScriptedSession:
             return ScriptedResult(rows=self._corpus.unit_rows)
         if shape == "chunk_meta":
             return ScriptedResult(rows=self._corpus.meta_rows)
+        if shape == "doc_generations":
+            return ScriptedResult(rows=self._corpus.doc_generations)
+        if shape == "missing_generation_count":
+            return ScriptedResult(count=self._corpus.missing_generations)
         raise AssertionError(
             "压测替身不认识这条语句形状——检索路径上多了一次数据库访问，"
             "先确认它该不该在主循环上，再补这条形状：\n" + _describe(statement)[:400]
@@ -428,7 +440,11 @@ def _shape_of(statement: Any) -> str:
     * ``kb_row``：``SELECT ... FROM knowledge_bases ...``（可见性校验，每库一次）；
     * ``chunk_meta``：``SELECT chunks.kb_id, chunks.id, chunks.metadata ...``（折叠回查）；
     * ``unit_rows``：``SELECT ... chunks.content ...``（折叠取整节）；
-    * ``vector``：向量分支那条 pgvector 语句（``<=>``，在**执行池线程**上）。
+    * ``vector``：向量分支那条 pgvector 语句（``<=>``，在**执行池线程**上）；
+    * ``doc_generations``：``SELECT documents.id, documents.current_index_generation ...``
+      （归属索引按篇取代，现场九·第五步新增的一条主循环访问，**代价要算进读数**）；
+    * ``missing_generation_count``：``SELECT count(*) FROM documents ...``（缺代计数，
+      只在结果不足时才发）。
 
     三条读自 #174 起都 JOIN 了 ``documents``（当前稿条件），所以表的判断走
     :func:`_table_names` 而不是「第一张表」。
@@ -447,6 +463,14 @@ def _shape_of(statement: Any) -> str:
     if "knowledge_bases" in tables:
         return "kb_row"
     if "chunks" not in tables:
+        if "documents" in tables:
+            # 归属索引那一列按篇取当前代（`delivered_generations`）与缺代计数
+            # （`count_missing_generation_documents`）。两条都在**结果不足**或交付之后
+            # 才发，形状按「有没有 count」分开。
+            names = {
+                getattr(column, "name", "") or "" for column in statement.selected_columns
+            }
+            return "missing_generation_count" if "count" in names else "doc_generations"
         return "unknown"
     names = {getattr(column, "name", "") or "" for column in statement.selected_columns}
     if "count" in names:

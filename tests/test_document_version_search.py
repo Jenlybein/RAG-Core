@@ -580,10 +580,13 @@ def test_a_successful_version_search_writes_one_ledger_row(
     assert row["code"] == 0
     assert (row["meter_r"], row["meter_rr"], row["meter_llm"]) == (0, 0, 0)
     assert row["kb_ids"] == [KB_ID]
-    # 归属索引这一列现在没有库级答案可记（按稿直查不落在某一版构建上），落的是空映射。
-    assert not row["index_versions"], "按稿直查不属于任何一版构建"
+    # 归属索引这一列现在记的是「每篇落在第几代」（ADR-0025 第 2 次修订第 5 条），而直查
+    # 落在「该稿现存最高代」上——历史稿时它不等于「篇的当前代」。把那个数写进来会被读侧
+    # 当成当前代，是静默错归因；空映射才是诚实答案。
+    assert not row["index_generations"], "按稿直查不属于「篇的当前代交付」"
     assert row["doc_versions"] == {DOC_ID: 1}
     assert row["chunk_ids"] == ["chunk-1-0", "chunk-1-1"]
+    assert row["missing_generation_documents"] == 0, "直查范围是一篇、且它必然有产物，不数缺代"
     assert row["top_k"] == version_search.VERSION_SEARCH_TOP_K
 
 

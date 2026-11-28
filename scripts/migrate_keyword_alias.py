@@ -51,9 +51,13 @@ uv run python scripts/migrate_keyword_alias.py --execute
 
 ## 能不能不用这个脚本
 
-能，而且**更干净**：拿 ``scripts/rebuild_kb_version.py`` 全量重建一次再激活。区别是
-代价——重建要把全部文档重新解析 + embedding（贵、慢），迁移只搬关键词那一份数据。语料
-不大的部署优先选重建：它连「历史遗留的脏 mapping」一起解决掉了。
+能，而且**更干净**：把全部文档重建一次。区别是代价——重建要把全部文档重新解析 +
+embedding（贵、慢），迁移只搬关键词那一份数据。语料不大的部署优先选重建：它连「历史
+遗留的脏 mapping」一起解决掉了。
+
+（原先这条「全量重建 + 激活」由 ``scripts/rebuild_kb_version.py`` 提供入口；那个脚本已随
+库级索引版本能力一起删除（ADR-0025 第二次修订）。今天重建按篇走（如
+``POST /documents/{id}/reindex``），不再有整库切版本这个动作。）
 """
 
 from __future__ import annotations

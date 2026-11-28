@@ -36,9 +36,9 @@ VERSIONS_DIR = Path(__file__).resolve().parent.parent / "migrations" / "versions
 #: 本步的迁移（slug 与文件名的后半段一致）。
 NEW_MIGRATION_SLUG = "add_index_generation"
 
-#: 链尾：接在本条迁移后面的那一条（旧代回收的索引）。本条不再是 head 之后，
-#: 「全链只有一个 head」仍然要守，只是那个 head 换成了它。
-CHAIN_TAIL_SLUG = "add_chunk_document_generation_index"
+#: 链尾：接在本条迁移后面的那几条（旧代回收的索引、归属索引改记篇级代）。本条不再是 head
+#: 之后，「全链只有一个 head」仍然要守，只是那个 head 换成了最后那一条。
+CHAIN_TAIL_SLUG = "usage_events_index_generations"
 
 #: 上一条 head（现场五的过渡密钥四列）。
 PREVIOUS_HEAD = "e4b1d7a9c2f5"
@@ -198,7 +198,7 @@ def test_the_whole_chain_has_exactly_one_head() -> None:
     heads = revisions - downs
     assert len(heads) == 1, f"迁移链必须只有一个 head，实际 {sorted(heads)}"
     assert heads == {_revision_of(_migration_path(CHAIN_TAIL_SLUG))}, (
-        "本条后面还有一条（旧代回收的索引），head 是它"
+        "本条后面还有两条（旧代回收的索引、归属索引改记篇级代），head 是最后那一条"
     )
 
 

@@ -174,9 +174,10 @@ def test_the_whole_chain_still_has_exactly_one_head_and_it_is_the_profile_preset
     # 构建失败明细与重投次数（``add_build_failure_detail``）之后是 #220 的单库 token 容量
     # （``add_kb_token_capacity``）、#222 的每日切块账、#215 的构建自动激活列、#225 的
     # 重投计数与心跳三列、#227 现场五的过渡密钥四列（``add_api_key_previous_secret``），
-    # 再接第 17 步现场九的「索引代」三列（``add_index_generation``）与旧代回收的索引
-    # （``add_chunk_document_generation_index``）——当前链尾。
-    assert heads == {_revision_of(_migration_path("add_chunk_document_generation_index"))}
+    # 再接第 17 步现场九的「索引代」三列（``add_index_generation``）、旧代回收的索引
+    # （``add_chunk_document_generation_index``）与归属索引改记篇级代 + 缺代计数列
+    # （``usage_events_index_generations``）——当前链尾。
+    assert heads == {_revision_of(_migration_path("usage_events_index_generations"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

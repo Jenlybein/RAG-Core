@@ -57,7 +57,7 @@ from app.db.transaction import async_commit_now, async_transaction
 from app.db.worker_loop import run_in_worker_loop
 from app.repositories import document_repository
 from app.services.index_build_service import MAX_REDISPATCH, IndexBuildService
-from app.services import retention
+from app.services import generation_sweep, retention
 from app.services.index_dispatch import enqueue_document
 from app.services.usage_rollup import days_missing_rollup, rollup_day
 
@@ -288,7 +288,7 @@ async def retention_once(
 async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dict[str, int]:
     """跑一遍清扫，返回这一轮各项处置的计数（给日志与测试断言用）。
 
-    顺序固定：**先收尾、再补投、最后救租约**。
+    顺序固定：**先收尾、再补投、再扫代落后、最后救租约**。
 
     * 先收尾：一个过了期限的构建，重投它的缺失篇只是把注定要失败的活再跑一遍（「过期限」
       本身就是「别再等了」的结论）。
@@ -305,6 +305,7 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
         service = IndexBuildService()
         settled = 0
         redispatched = 0
+        stale_redispatched = 0
         revived = 0
 
         # ── 1) 过了收敛期限仍是 building：按真值收尾 ──────────────────────
@@ -342,7 +343,19 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
                     shortfall=truth.shortfall,
                 )
 
-        # ── 3) 单篇租约过期：清掉租约再重投（spec 的「接了之后没声了」）────────
+        # ── 3) 代落后：产物不是最新一代的篇，按篇重投（现场九·第七步）────────
+        #
+        # 放在救租约**之前**：救租约处理的是「接了但没声」，这一步处理「压根没赶上」。
+        # 顺序反过来的话，一篇刚被救回、正排队中的文档会被这一步当成「待更新」再投一次
+        # ——虽然 `prepare_for_indexing` 会挡住（它抢不到），但那是白打一次库。
+        stale_redispatched = await generation_sweep.redispatch_stale_documents(db)
+        if stale_redispatched:
+            logger.info(
+                "sweeper requeued documents whose generation is behind",
+                count=stale_redispatched,
+            )
+
+        # ── 4) 单篇租约过期：清掉租约再重投（spec 的「接了之后没声了」）────────
         stale_before = now() - timedelta(seconds=LEASE_GRACE_SECONDS)
         for document in await document_repository.list_stale_claims(
             db, claimed_before=stale_before
@@ -390,11 +403,12 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
         # 心跳同一种形状。
         await async_commit_now(db)
 
-        if settled or redispatched or revived:
+        if settled or redispatched or stale_redispatched or revived:
             logger.info(
                 "index sweeper finished",
                 settled=settled,
                 redispatched=redispatched,
+                stale_redispatched=stale_redispatched,
                 revived=revived,
             )
 
@@ -415,6 +429,7 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
         return {
             "settled": settled,
             "redispatched": redispatched,
+            "stale_redispatched": stale_redispatched,
             "revived": revived,
             "rolled": rolled["rolled"],
             **retention_stats,

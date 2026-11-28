@@ -486,7 +486,7 @@ def guard_against_an_empty_version(verdict: str, *, planned: int, documents_in_k
     回答「库里到底有没有文档」——那是另一次读。混进纯函数会让它不再纯，也就不再能用四条真值
     组合把它钉死。
 
-    但它必须**只有一处**：任务体（``converge``）、运维脚本（``reconcile_build.py``）、清扫器
+    但它必须**只有一处**：任务体（``converge``）、清扫器
     都算这一句话。否则会出现「脚本说该 ready、服务写下去却是 failed」这种两个真相并存。
 
     ## 三种情况的区分
@@ -742,7 +742,7 @@ class IndexBuildService:
 
         **它不再是生产路径**（#215 起构建是「派活 + 按篇投递」，由 `build_document_task`
         逐篇驱动）。留下它是因为「一次跑完整个库」作为**服务层能力**仍有用：
-        `scripts/rebuild_kb_version.py --in-process` 与运维排障会直接调它——
+        当年 `scripts/rebuild_kb_version.py --in-process`（已删）与运维排障会直接调它——
         没有 Broker 也要能把一个库建出来。而它循环跑完就等于「这一轮不会有人再补了」，
         所以收敛时 ``final=True``。
         """
@@ -995,7 +995,7 @@ class IndexBuildService:
         )
         # ── 守卫：``planned == 0`` 但库里**有**文档 → 不许 ready ──
         #
-        # 判据本身在 ``guard_against_an_empty_version``（纯函数，与 ``reconcile_build.py``
+        # 判据本身在 ``guard_against_an_empty_version``（纯函数，当年与 ``reconcile_build.py``
         # 共用同一处）：`start_build` 已经在起构建那一刻拒掉这种请求，这条守卫守的是**已经
         # 躺在库里的存量行**（升级前卡住的构建、以及清扫器按期限收尾那条路径）。
         if verdict == INDEX_BUILD_READY and truth.planned == 0:
@@ -1620,7 +1620,7 @@ class IndexBuildService:
     ) -> IndexBuildVersion | None:
         """按异常挑一个原因，把这次构建收成 ``failed``。
 
-        **映射只有这一处**：任务体（:meth:`build`）与运维脚本（``scripts/reconcile_build.py``）
+        **映射只有这一处**：任务体（:meth:`build`）与当年那个对账脚本（已删）
         都会在一次收尾失败之后落到这里，两处各写一份 ``isinstance`` 判断的下场是——某一天
         其中一处把「四项计数不一致」降级成了笼统的「跑崩了」，而运维照原因去查时查错了方向
         （一因一码：这两种失败的处置完全不同）。

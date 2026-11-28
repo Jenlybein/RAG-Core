@@ -68,7 +68,7 @@ def get_owner_tenant_id(db: Session, kb_id: str) -> str | None:
 
     这是本模块唯一不带租户的查询，因此刻意只回答「归谁」，不回答「这个库长什么样」：它
     返回 ``str | None``，拿不到行，也就没法被数据面借去读别人的库。运维脚本
-    （``scripts/reindex_knowledge_base.py``）直连数据库、不走 API Key，先在「不知道租户」
+    （当年那个全库重建脚本，已随库级版本能力删除）直连数据库、不走 API Key，先在「不知道租户」
     的处境里，随后每一处查询都显式带上这个租户。
 
     数据面路径**不得调用**：它们手里已经有租户了，该用 :func:`get_by_id_for_tenant`。

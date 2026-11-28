@@ -316,8 +316,16 @@ def test_a_kb_that_was_never_backfilled_is_refused_before_any_recall(
     assert rows[0].chunk_ids == [] and rows[0].top_k == 0, "没走到召回，就不许有交付物"
 
 
-def test_the_trace_row_records_which_build_was_queried(monkeypatch: pytest.MonkeyPatch) -> None:
-    """归属索引那一行要能回答「这次查的是哪次构建」：``{kb_id: version}`` 映射。"""
+def test_the_trace_row_carries_no_library_level_version_any_more(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """归属索引不再记「这次查的是哪次构建」：那一列已换成「每篇落在第几代」。
+
+    库级版本轴退场之后（ADR-0025 第 2 次修订第 5 条），「A 库配 B 库版本」这个问题在新模型里
+    没有对应物，留着那一列只会与「检索按篇级当前代取数」自相矛盾。本文件的替身不回答
+    ``documents`` 行、也不带稿号，所以两份映射都是空的；**有值时**的形状与端到端写入由
+    ``tests/test_retrieval_trace_doc_versions.py`` 守。
+    """
 
     with _offline(
         monkeypatch,
@@ -328,9 +336,8 @@ def test_the_trace_row_records_which_build_was_queried(monkeypatch: pytest.Monke
         rows = fake["trace_session"].added_of(UsageEvent)
 
     assert len(rows) == 1, "一次检索一行（与 trace_id 一一对应）"
-    assert rows[0].index_versions == {KB_A: "v2", KB_B: "v1"}, (
-        "存的是映射：两个并列数组会拼出「A 库配 B 库版本」那种不存在的组合"
-    )
+    assert rows[0].index_generations == {}, "替身回答不了 documents 行，映射因此为空（不是编一个）"
+    assert not hasattr(rows[0], "index_versions"), "库级版本那一列已经从账本上退场"
     assert rows[0].kb_ids == [KB_A, KB_B]
 
 

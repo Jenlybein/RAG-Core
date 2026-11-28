@@ -271,7 +271,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     setup_logging()
     # psycopg 的异步连接在 Windows 的缺省 Proactor 循环上跑不起来（第一条查询就
     # InterfaceError）。运维脚本多半在开发机上被敲，所以这里换成 Selector 循环——
-    # 与 ``rebuild_kb_version`` / 离线套件 conftest 里那一行同一个理由。
+    # 与离线套件 conftest 里那一行同一个理由（当年 ``rebuild_kb_version`` 也这么做，
+    # 那个脚本已删除）。
     if sys.platform == "win32":
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     try:

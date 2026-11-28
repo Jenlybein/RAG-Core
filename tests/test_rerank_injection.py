@@ -285,10 +285,20 @@ def test_the_retrieval_entry_forwards_the_rerank_factory(monkeypatch: pytest.Mon
     async def _no_trace(**kwargs: Any) -> None:
         return None
 
+    async def _no_generations(*_args: Any, **_kwargs: Any) -> dict[str, int]:
+        # 写账前的两次主键读（每篇的当前代 / 缺代篇数）也走请求会话：本用例的会话是 ``None``，
+        # 它们与归属索引写入一起被接住——这里测的是「工厂有没有一路往下走」。
+        return {}
+
+    async def _no_missing(*_args: Any, **_kwargs: Any) -> int:
+        return 0
+
     monkeypatch.setattr(service, "ensure_visible", _visible)
     monkeypatch.setattr(kernel, "collapse_results", _no_collapse)
     monkeypatch.setattr(service, "_empty_reason", _empty)
     monkeypatch.setattr(service, "record_retrieval_trace", _no_trace)
+    monkeypatch.setattr(service, "delivered_generations", _no_generations)
+    monkeypatch.setattr(service, "missing_generation_count", _no_missing)
     monkeypatch.setattr(service, "emit_retrieval_trace_off_loop", _no_trace)
 
     factory = _matching_factory(_StubRerank())

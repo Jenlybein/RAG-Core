@@ -110,7 +110,8 @@ async def test_a_refused_row_carries_no_delivery(recorder: AsyncRecordingSession
     row = _rows(recorder)[0]
     assert row.chunk_ids == []
     assert row.doc_versions == {}
-    assert row.index_versions == {}
+    assert row.index_generations == {}
+    assert row.missing_generation_documents == 0, "被拒的请求没走到召回，不该为它去数缺代"
     assert row.top_k == 0
     assert (row.meter_r, row.meter_rr, row.meter_llm) == (0, 0, 0)
 
@@ -183,9 +184,10 @@ async def test_a_successful_row_carries_code_zero_and_the_meters(
         meter_rr=2,
         meter_llm=1,
         kb_ids=["kb-usage"],
-        index_versions={"kb-usage": "v1"},
+        index_generations={"doc-1": 3},
         doc_versions={"doc-1": 2},
         chunk_ids=["chunk-1"],
+        missing_generation_documents=1,
         top_k=5,
         latency_ms=812,
         degraded_reason=None,
@@ -195,6 +197,9 @@ async def test_a_successful_row_carries_code_zero_and_the_meters(
     row = _rows(recorder)[0]
     assert (row.code, row.meter_r, row.meter_rr, row.meter_llm) == (0, 3, 2, 1)
     assert row.endpoint == "decompose"
+    # 归属索引的两列各记各的：篇级代与稿号是同一篇文档上的两个事实（ADR-0025 修订 #5 / #179）。
+    assert row.index_generations == {"doc-1": 3}
+    assert row.missing_generation_documents == 1
 
 
 @pytest.mark.asyncio
@@ -220,10 +225,11 @@ async def test_the_successful_row_pushes_last_used_at(
         endpoint="retrieve",
         code=0,
         meter_r=1,
-        index_versions={},
+        index_generations={},
         kb_ids=["kb-usage"],
         doc_versions={},
         chunk_ids=[],
+        missing_generation_documents=0,
         top_k=1,
         latency_ms=12,
         degraded_reason=None,
@@ -252,10 +258,11 @@ async def test_a_row_without_a_key_does_not_touch_any_key_row(
         log_id="log-usage-3",
         trace_id="trace-usage-3",
         tenant_id=TENANT_ID,
-        index_versions={},
+        index_generations={},
         kb_ids=[],
         doc_versions={},
         chunk_ids=[],
+        missing_generation_documents=0,
         top_k=0,
         latency_ms=0,
         degraded_reason=None,
@@ -314,3 +321,164 @@ def test_a_zero_book_alone_is_still_no_signal() -> None:
     with meter_tally():
         count_meter(BOOK_RR, 0)
         assert current_meter_counts() is None
+
+
+# ─────────────────────── 缺代计数：只在结果不满额时发那条查询（ADR-0025 修订 #5）
+
+
+def _patch_count(
+    monkeypatch: pytest.MonkeyPatch, *, value: int, calls: list[tuple[str, ...]]
+) -> None:
+    """把仓储那条计数换成捕获：本用例关心的是「发没发」与「回了什么」，不是 SQL。"""
+
+    from app.repositories import document_repository
+
+    async def _count(_db: Any, *, tenant_id: str, kb_ids: list[str]) -> int:
+        assert tenant_id == TENANT_ID
+        calls.append(tuple(kb_ids))
+        return value
+
+    monkeypatch.setattr(document_repository, "count_missing_generation_documents", _count)
+
+
+@pytest.mark.asyncio
+async def test_a_full_page_never_asks_how_many_documents_have_no_product(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """满额说明缺代没有伤害这次调用：**一条计数查询都不发**。
+
+    这是这条列的取舍本身：满额时多打一次 ``documents`` 是每个请求都要付的固定成本，
+    而它换不回任何信息；只有结果少了时，它才回答「是不是有几篇还没有产物」。
+    """
+
+    from app.services.retrieval_trace import missing_generation_count
+
+    calls: list[tuple[str, ...]] = []
+    _patch_count(monkeypatch, value=7, calls=calls)
+
+    missing = await missing_generation_count(
+        None,  # type: ignore[arg-type]
+        tenant_id=TENANT_ID,
+        kb_ids=["kb-usage"],
+        delivered_count=5,
+        top_k=5,
+        empty_reason=None,
+    )
+
+    assert missing == 0, "满额时这一列恒 0"
+    assert calls == [], "满额时不许发那条查询"
+
+
+@pytest.mark.asyncio
+async def test_a_short_page_counts_the_scope_and_returns_the_number(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """结果不满额 → 数一次，数字原样落进 ``usage_events``。"""
+
+    from app.services.retrieval_trace import missing_generation_count
+
+    calls: list[tuple[str, ...]] = []
+    _patch_count(monkeypatch, value=3, calls=calls)
+
+    missing = await missing_generation_count(
+        None,  # type: ignore[arg-type]
+        tenant_id=TENANT_ID,
+        kb_ids=["kb-usage"],
+        delivered_count=2,
+        top_k=5,
+        empty_reason=None,
+    )
+
+    assert missing == 3
+    assert calls == [("kb-usage",)], "只数一次，且按本次范围"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_reason_also_triggers_the_count(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``empty_reason`` 已经算出来时同样要数——它来自响应里那个字段，是最硬的「结果不足」。"""
+
+    from app.services.retrieval_trace import missing_generation_count
+
+    calls: list[tuple[str, ...]] = []
+    _patch_count(monkeypatch, value=1, calls=calls)
+
+    missing = await missing_generation_count(
+        None,  # type: ignore[arg-type]
+        tenant_id=TENANT_ID,
+        kb_ids=["kb-usage"],
+        delivered_count=0,
+        top_k=0,
+        empty_reason="no_indexed_chunks",
+    )
+
+    assert missing == 1
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_missing_generation_count_only_logs_numbers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺代 > 0 时留一条 warning：**只记数字与库数**，签名里连放问句的地方都没有。"""
+
+    import inspect
+
+    from structlog.testing import capture_logs
+
+    from app.services.retrieval_trace import missing_generation_count
+
+    calls: list[tuple[str, ...]] = []
+    _patch_count(monkeypatch, value=4, calls=calls)
+
+    with capture_logs() as logs:
+        await missing_generation_count(
+            None,  # type: ignore[arg-type]
+            tenant_id=TENANT_ID,
+            kb_ids=["kb-usage", "kb-other"],
+            delivered_count=1,
+            top_k=5,
+            empty_reason=None,
+        )
+
+    warnings = [
+        record
+        for record in logs
+        if record.get("event") == "documents without any index generation were skipped"
+    ]
+    assert len(warnings) == 1
+    assert warnings[0]["log_level"] == "warning"
+    assert warnings[0]["kb_count"] == 2
+    assert warnings[0]["missing_generation_documents"] == 4
+    # 结构性守卫：这个函数没有接收问句的形参，调用点就无从把它带进日志。
+    parameters = set(inspect.signature(missing_generation_count).parameters)
+    assert not {"query", "question", "content", "text"} & parameters
+
+
+@pytest.mark.asyncio
+async def test_a_zero_count_leaves_no_warning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """数出来是 0 就不打 warning：每一条「检索没满额」的日志都会把真正的告警淹掉。"""
+
+    from structlog.testing import capture_logs
+
+    from app.services.retrieval_trace import missing_generation_count
+
+    calls: list[tuple[str, ...]] = []
+    _patch_count(monkeypatch, value=0, calls=calls)
+
+    with capture_logs() as logs:
+        missing = await missing_generation_count(
+            None,  # type: ignore[arg-type]
+            tenant_id=TENANT_ID,
+            kb_ids=["kb-usage"],
+            delivered_count=2,
+            top_k=5,
+            empty_reason=None,
+        )
+
+    assert missing == 0
+    assert calls == [("kb-usage",)], "结果不足时仍然要数（0 也是答案）"
+    assert [record for record in logs if record.get("log_level") == "warning"] == []

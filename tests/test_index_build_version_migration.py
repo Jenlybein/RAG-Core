@@ -589,8 +589,11 @@ def test_the_two_existing_tables_declare_the_columns_this_migration_adds() -> No
     from app.models.usage_event import UsageEvent
 
     kb_column = KnowledgeBase.__table__.columns["active_index_version"]
-    trace_column = UsageEvent.__table__.columns["index_versions"]
+    trace_column = UsageEvent.__table__.columns["index_generations"]
 
     assert kb_column.nullable is True, "「还没有生效构建」必须是可表达的状态"
-    assert trace_column.nullable is True, "迁移之前的行没有版本可记"
+    assert trace_column.nullable is True, "迁移之前的行没有篇级代可记"
     assert str(trace_column.type) == "JSONB", "映射必须是一个 JSON 对象，不是两个数组"
+    # 库级版本那一列已被 ``b4e7c1a9d2f3`` 换成篇级代（ADR-0025 第 2 次修订第 5 条）：
+    # 「这次查的是哪次构建」在新模型里没有对应物，模型上因此不再有那一列。
+    assert "index_versions" not in {column.key for column in UsageEvent.__table__.columns}

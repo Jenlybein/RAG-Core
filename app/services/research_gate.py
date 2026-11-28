@@ -105,7 +105,11 @@ from app.services.research import Clock, LLMFactory, SearchCallable, run_researc
 from app.services.research_limits import PLAN_NAME
 from app.services.retrieval.kernel import retrieve_kernel
 from app.services.retrieval_options import RetrievalOptions
-from app.services.retrieval_trace import record_retrieval_trace
+from app.services.retrieval_trace import (
+    delivered_generations,
+    missing_generation_count,
+    record_retrieval_trace,
+)
 from app.services.usage_meter import ENDPOINT_RESEARCH, current_key, current_key_id, record_refusal
 from app.services.trace_identity import (
     delivered_chunk_ids,
@@ -323,7 +327,9 @@ async def _gated_research(
     visible_kbs = [
         await ensure_visible(db, tenant_id=key.tenant_id, kb_id=kb_id) for kb_id in kb_ids
     ]
-    index_versions = resolve_index_versions(visible_kbs)
+    # 只为那条「库还没有生效版本就拦下」的守卫：版本值已不进召回条件、也不进归属索引
+    # （后者改记篇级代，ADR-0025 第 2 次修订第 5 条）；守卫留到第二支删列迁移那天。
+    resolve_index_versions(visible_kbs)
 
     # 第 7 步：身份先于旁路。``log_id`` / ``trace_id`` 在任何一次写库尝试之前就有值：
     # 那一次写入是旁路（失败只留 warning），而响应里的 ``trace_id`` 是契约的一部分。
@@ -359,6 +365,21 @@ async def _gated_research(
     # 第 9 步：归属索引——**一次 Research 一行**。放在这里而不是更早，是因为它要记「这一
     # 次的结局」；而 ``trace_id`` 早在第 7 步就派生好了，所以这次写入失败不影响响应。
     # 耗时用状态机自己那份（``duration_ms``）：库里那一行与回给调用方的那个数字必须同一个。
+    #
+    # 映射取自**最终证据**那一批交付单元（三列严格同源）：代从 ``documents`` 的当前代指针
+    # 读（关键词路没有代这一维，两路形状必须一致）；子检索各自命中的代不在这里记——
+    # 它们不单独成行。Research 不产出 ``empty_reason``，所以「结果不足」只看材料条数。
+    generations = await delivered_generations(
+        db, outcome.materials, tenant_id=key.tenant_id
+    )
+    missing_generation_documents = await missing_generation_count(
+        db,
+        tenant_id=key.tenant_id,
+        kb_ids=kb_ids,
+        delivered_count=len(outcome.materials),
+        top_k=options.top_k,
+        empty_reason=None,
+    )
     await record_retrieval_trace(
         log_id=log_id,
         trace_id=trace_id,
@@ -372,11 +393,12 @@ async def _gated_research(
         meter_rr=rerank_count,
         meter_llm=outcome.model_calls,
         kb_ids=list(kb_ids),
-        index_versions=dict(index_versions),
+        index_generations=generations,
         # 一次 Research = 一行归属索引（ADR-0028）：稿号同样取**最终证据**那些单元上的
-        # 真实列（#179）。子检索各自命中的稿不在这里记——它们不单独成行。
+        # 真实列（#179）。
         doc_versions=delivered_doc_versions(outcome.materials),
         chunk_ids=delivered_chunk_ids(outcome.materials),
+        missing_generation_documents=missing_generation_documents,
         top_k=options.top_k,
         latency_ms=outcome.duration_ms,
         degraded_reason=_degraded_reason_of(outcome),

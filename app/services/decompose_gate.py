@@ -7,8 +7,8 @@
 
 「一次调用只做一次的五件事」与 `/rag/retrieve` 同构，全部留在外层：可见性校验、配额
 记账、归属索引写入、观测提交各一次；子查询只复用内核，不各写一行（ADR-0028）。
-归属索引的 ``chunk_ids`` 存合并后的最终交付单元，``index_versions`` / ``doc_versions``
-仍是映射而不是平行数组。
+归属索引的 ``chunk_ids`` 存合并后的最终交付单元；``index_generations`` / ``doc_versions``
+仍是映射而不是平行数组（前者记「每篇落在第几代」，后者记「命中的是第几稿」）。
 """
 
 from __future__ import annotations
@@ -37,7 +37,11 @@ from app.services.research import (
 )
 from app.services.research_gate import build_kernel_search
 from app.services.retrieval_options import RetrievalOptions
-from app.services.retrieval_trace import record_retrieval_trace
+from app.services.retrieval_trace import (
+    delivered_generations,
+    missing_generation_count,
+    record_retrieval_trace,
+)
 from app.services.usage_meter import current_key_id, current_meter_counts
 from app.services.trace_identity import (
     delivered_chunk_ids,
@@ -84,7 +88,9 @@ async def decompose_retrieve(
     trace_id = trace_id_for(log_id)
 
     visible_kbs = [await ensure_visible(db, tenant_id=tenant_id, kb_id=kb_id) for kb_id in kb_ids]
-    index_versions = resolve_index_versions(visible_kbs)
+    # 只为那条「库还没有生效版本就拦下」的守卫：版本值已不进召回条件、也不进归属索引
+    # （后者改记篇级代，ADR-0025 第 2 次修订第 5 条）；守卫留到第二支删列迁移那天。
+    resolve_index_versions(visible_kbs)
 
     # ① 分解：复用 Research 的 Planner（同一份提示词与收敛规则），只取子查询文本。
     factory = llm_factory or _default_llm_factory
@@ -140,7 +146,7 @@ async def decompose_retrieve(
     search = build_kernel_search(
         db,
         tenant_id=tenant_id,
-        kb_ids=list(index_versions),
+        kb_ids=kb_ids,
         options=options,
         on_degraded=degraded_reasons.append,
         on_rerank=_count_rerank,
@@ -168,7 +174,7 @@ async def decompose_retrieve(
     from app.services.rag_service import _empty_reason
 
     empty_reason = await _empty_reason(
-        db, tenant_id=tenant_id, kb_ids=list(index_versions), chunks=merged
+        db, tenant_id=tenant_id, kb_ids=kb_ids, chunks=merged
     )
 
     retrieval_meta: dict[str, object] = {
@@ -206,6 +212,17 @@ async def decompose_retrieve(
         # r 账按**内核调用次数**记 N（ADR-0032：分解检索真的跑了 N 次召回，只记 1 次就是少扣）；
         # llm 账是那次规划调用；rerank 账是子检索真跑过的次数。
         meter_r, meter_rr, meter_llm = len(sub_queries), rerank_count, 1
+    # 与 /rag/retrieve 同一条纪律：映射取自**同一批交付单元**（三列严格同源），代从
+    # ``documents`` 的当前代指针读（关键词路没有代这一维，两路形状必须一致）。
+    generations = await delivered_generations(db, merged, tenant_id=tenant_id)
+    missing_generation_documents = await missing_generation_count(
+        db,
+        tenant_id=tenant_id,
+        kb_ids=kb_ids,
+        delivered_count=len(merged),
+        top_k=options.top_k,
+        empty_reason=empty_reason,
+    )
     await record_retrieval_trace(
         log_id=log_id,
         trace_id=trace_id,
@@ -218,9 +235,10 @@ async def decompose_retrieve(
         meter_rr=meter_rr,
         meter_llm=meter_llm,
         kb_ids=list(kb_ids),
-        index_versions=dict(index_versions),
+        index_generations=generations,
         doc_versions=delivered_doc_versions(merged),
         chunk_ids=delivered_chunk_ids(merged),
+        missing_generation_documents=missing_generation_documents,
         top_k=options.top_k,
         latency_ms=int((time.perf_counter() - started_at) * 1000),
         degraded_reason=degraded_reason,

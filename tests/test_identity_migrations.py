@@ -166,8 +166,9 @@ def test_the_whole_chain_has_exactly_one_head_and_it_is_the_last_table() -> None
     # （``queue_document_status``）、#218 删并发名额（``drop_plans_max_processing_documents``）、
     # #215 的构建失败明细与重投次数（``add_build_failure_detail``）、#220 的单库 token 容量
     # （``add_kb_token_capacity``）、#222 的每日切块账、#225 的心跳，以及第 17 步 #227 现场五
-    # 的过渡密钥四列（当前链尾）——当前链尾。
-    assert heads == {_revision_of(_migration_path("add_chunk_document_generation_index"))}
+    # 的过渡密钥四列、现场九的「索引代」三列与旧代回收的索引（``add_chunk_document_generation_index``）
+    # 之后，又接上归属索引改记篇级代 + 缺代计数列（``usage_events_index_generations``）——当前链尾。
+    assert heads == {_revision_of(_migration_path("usage_events_index_generations"))}
 
 
 def test_the_new_migrations_chain_onto_the_previous_head_in_table_order() -> None:

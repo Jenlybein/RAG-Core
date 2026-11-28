@@ -148,9 +148,10 @@ async def record_refusal(
 ) -> None:
     """记一行「被拒」：业务码 + 已经烧掉的耗时，其余字段留空。
 
-    为什么交付类字段（``chunk_ids`` / 稿号 / 版本）在这里是空的：被拒的请求**没有交付**
-    任何东西，它不是「空结果」，而是「没走到召回」。用空值表达这件事，比让它们看起来
-    像一次 0 命中的检索要诚实。
+    为什么交付类字段（``chunk_ids`` / ``index_generations`` / 稿号）在这里是空的：被拒的请求
+    **没有交付**任何东西，它不是「空结果」，而是「没走到召回」。用空值表达这件事，比让它们
+    看起来像一次 0 命中的检索要诚实。``missing_generation_documents`` 同样是 0：缺代计数是
+    「结果不足时解释为什么少了几篇」的那次查询，被拒的请求连召回都没走到，不该为它打库。
 
     为什么三本账都是 0：六道关卡里「先判、后记账」是硬约束（ADR-0018），被拒的请求
     一次都不扣额度——账上没扣，这里就不能记。
@@ -167,9 +168,10 @@ async def record_refusal(
         endpoint=endpoint,
         code=code,
         kb_ids=list(kb_ids),
-        index_versions={},
+        index_generations={},
         doc_versions={},
         chunk_ids=[],
+        missing_generation_documents=0,
         top_k=0,
         latency_ms=int((time.perf_counter() - started_at) * 1000),
         degraded_reason=None,

@@ -24,14 +24,19 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Mapping, Sequence
+
 import structlog
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.base import now
 from app.db.session_factory import async_session_factory, close_quietly
 from app.db.transaction import async_transaction
+from app.models.document import Document
 from app.models.usage_event import UsageEvent
-from app.repositories import api_key_repository, retrieval_trace_repository
+from app.repositories import api_key_repository, document_repository, retrieval_trace_repository
+from app.services.trace_identity import delivered_doc_versions
 
 logger = structlog.get_logger(__name__)
 
@@ -46,9 +51,10 @@ async def record_retrieval_trace(
     trace_id: str,
     tenant_id: str,
     kb_ids: list[str],
-    index_versions: dict[str, str],
+    index_generations: dict[str, int],
     doc_versions: dict[str, int],
     chunk_ids: list[str],
+    missing_generation_documents: int,
     top_k: int,
     latency_ms: int,
     degraded_reason: str | None,
@@ -66,9 +72,12 @@ async def record_retrieval_trace(
     ``degraded_reason`` / ``empty_reason`` 直接来自本次响应的 ``metadata.retrieval``，
     于是「库里那一行」与「回给调用方的那个响应」不会各说一套。
 
-    ``index_versions`` 是「这次查的是哪次构建」（ADR-0025 决策六）：与本次检索范围
-    **同一份映射**（``kb_id → version``），由调用方在召回之前解析好递进来。它只存
-    版本名（结构），不存原文；多这一列不改变「独立短事务、失败只留 warning」的性质。
+    ``index_generations`` 是「这次**每篇**落在第几代」（ADR-0025 第 2 次修订第 5 条）：
+    ``{document_id: 代数}``，值来自交付单元上的 ``document_id`` → 该篇的**当前代**
+    （:func:`delivered_generations`，一次按主键取 ``documents``）。**不从切片上读代**：
+    关键词路的行里没有这一维，两路形状必须一致；也不从库级版本换算——版本轴已经退场。
+    没有默认值：这个参数一旦可以省略，「某条路径忘了记代」就会变成一列安静的 ``{}``。
+    只记**交付过的篇**，与 ``doc_versions`` / ``chunk_ids`` 同一批交付物（三列严格同源）。
 
     ``doc_versions`` 是「这次命中的是哪几稿」（#179）：与交付单元**同一份映射**
     （``document_id → doc_version``），由调用方从交付单元上那个真实列收口
@@ -76,9 +85,14 @@ async def record_retrieval_trace(
     这个参数一旦可以省略，「某条路径忘了记稿号」就会变成一列安静的 NULL，而这一列
     存在的全部意义正是「事后还答得出那次查的是第几稿」。多条路径都要显式给值。
 
+    ``missing_generation_documents`` 是本次范围内「还没有任何产物」的篇数
+    （``documents.current_index_generation IS NULL``，检索时整篇被跳过）。它由
+    :func:`missing_generation_count` 决定：**只在结果不满额时**才有值，满额时恒 0。
+    没有默认值，同样是为了让每条路径显式说出「这次我没有交付、也没有数缺代」。
+
     ``endpoint`` / ``code`` / ``key_id`` / 三本账是第 14 步（#200）补的六个字段：它们让这一行
-    同时是**账**。默认值是给「迁移期还有老调用方」留的兼容口，**新的调用点必须全部显式给**——
-    尤其是 ``code``：写成默认的 ``None`` 等于「这条不是一次调用」，看板会把它归进历史汇总。
+    同时是**账**。新的调用点必须全部显式给——尤其是 ``code``：写成默认的 ``None`` 等于
+    「这条不是一次调用」，看板会把它归进历史汇总。
 
     ``key_id`` 非空时顺手把 ``api_keys.last_used_at`` 推到这一刻：那一列从建表起就没人写过，
     而记账点恰好知道「这把 Key 刚刚用了一次」。
@@ -102,9 +116,10 @@ async def record_retrieval_trace(
                     meter_rr=meter_rr,
                     meter_llm=meter_llm,
                     kb_ids=list(kb_ids),
-                    index_versions=dict(index_versions),
+                    index_generations=dict(index_generations),
                     doc_versions=dict(doc_versions),
                     chunk_ids=list(chunk_ids),
+                    missing_generation_documents=missing_generation_documents,
                     top_k=top_k,
                     latency_ms=latency_ms,
                     degraded_reason=degraded_reason,
@@ -122,6 +137,86 @@ async def record_retrieval_trace(
         )
     finally:
         await close_quietly(session, on_failure=_report_close_failure)
+
+
+async def delivered_generations(
+    db: AsyncSession,
+    units: Iterable[Mapping[str, object]],
+    *,
+    tenant_id: str,
+) -> dict[str, int]:
+    """这次交付的每篇文档落在**第几代**：``{document_id: current_index_generation}``。
+
+    为什么读的是 ``documents.current_index_generation``（一次按主键取库），而不是切片上的
+    ``chunks.generation``：关键词路的行里**没有**这一维（ES 只镜像当前代，不带代数），
+    两路形状必须一致，所以只能从「这一篇现在指着哪一代」这个库级指针回答。指针就是
+    检索那次用到的可见性判据的另一半（``chunks.generation = documents.current_index_generation``），
+    读它不会与「实际取数的那一代」漂开。
+
+    ``NULL`` 的篇**不写进映射**：那是「这篇还没有任何产物」，检索时整篇被跳过——它本来就
+    一片都没交付，给它编一个代数正是审计账本要抓的静默错归因。于是这份映射是
+    :func:`app.services.trace_identity.delivered_doc_versions` 的**子集**（那一边同样只收
+    能读出售价值的单元），三列同源但允许这一列更短。
+
+    ``tenant_id`` 是强制过滤（ADR-0006）：按 id 读文档的数据面路径必须带租户，跨租户的
+    id 猜测不该在这里读到别人的指针。代价是一次主键 + 租户的读，由每个交付路径各付一次。
+    """
+
+    # 文档 id 集合直接取自稿号那一份映射：两条列必须严格同源，谁也不许多出一篇。
+    document_ids = sorted(delivered_doc_versions(units))
+    if not document_ids:
+        return {}
+
+    statement = select(Document.id, Document.current_index_generation).where(
+        Document.id.in_(document_ids),
+        Document.tenant_id == tenant_id,
+        Document.current_index_generation.is_not(None),
+    )
+    generations: dict[str, int] = {}
+    for row in (await db.execute(statement)).all():
+        document_id = getattr(row, "id", None)
+        generation = getattr(row, "current_index_generation", None)
+        if isinstance(document_id, str) and isinstance(generation, int):
+            generations[document_id] = generation
+    return generations
+
+
+async def missing_generation_count(
+    db: AsyncSession,
+    *,
+    tenant_id: str,
+    kb_ids: Sequence[str],
+    delivered_count: int,
+    top_k: int,
+    empty_reason: str | None,
+) -> int:
+    """本次范围内「还没有任何产物」的篇数；**只在结果不足时**才去数。
+
+    为什么只在结果不足时数：满额（``delivered_count >= top_k`` 且没有 ``empty_reason``）
+    说明缺代没有伤害这次调用——为每一个成功请求多打一次 ``documents`` 是没换来东西的固定
+    成本。而结果少了时，这个数正好回答「是不是有几篇还没有产物，所以凑不满」，
+    它是这次调用的结局的一部分，不是常驻统计。
+
+    ``empty_reason`` 参与判据看起来与「不足」重复（空结果必然不满足额），但它来自
+    **响应里那个字段**：两条判据任一成立都要数，宁可多打一次库，也不要因为某个路径把
+    ``top_k`` 传成 0 之类的边角而漏数——那个数正是这次调用要解释的东西。
+
+    计数 > 0 时留一条 warning（只记数字与库数，**不记问句原文**，见日志纪律）。
+    """
+
+    if empty_reason is None and delivered_count >= top_k:
+        return 0
+
+    missing = await document_repository.count_missing_generation_documents(
+        db, tenant_id=tenant_id, kb_ids=kb_ids
+    )
+    if missing > 0:
+        logger.warning(
+            "documents without any index generation were skipped",
+            kb_count=len(kb_ids),
+            missing_generation_documents=missing,
+        )
+    return missing
 
 
 def _report_close_failure(error_type: str) -> None:

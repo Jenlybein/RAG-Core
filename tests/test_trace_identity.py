@@ -45,10 +45,12 @@ KB_ID = "kb-trace"
 QUERY_SENTINEL = "T101-QUERY-SENTINEL-4f7c"
 CONTENT_SENTINEL = "T101-CONTENT-SENTINEL-9a1e"
 
-#: 归属索引只允许这十二列（顺序由模型定义，集合不许多也不许少）。
-#: 第十一列 ``index_versions`` 是 ADR-0025 决策六声明的契约变更（``{kb_id: version}`` 映射）；
-#: 第十二列 ``doc_versions`` 是 #179 的契约变更（``{document_id: doc_version}`` 映射，
-#: 同一个形状）：片被保留策略清掉之后，「那次查的是第几稿」只剩这一列能答。
+#: 归属索引只允许这二十列（顺序由模型定义，集合不许多也不许少）。
+#: ``index_generations`` 是 ADR-0025 第 2 次修订第 5 条声明的契约变更
+#: （``{document_id: 代数}`` 映射）：库级版本轴已退场，账本改记**每篇落在第几代**；
+#: ``doc_versions`` 是 #179 的契约变更（``{document_id: doc_version}`` 映射，同一个形状）：
+#: 片被保留策略清掉之后，「那次查的是第几稿」只剩这一列能答。
+#: ``missing_generation_documents`` 记「本次范围内有几篇还没有产物」（只在结果不足时才算）。
 EXPECTED_COLUMNS = frozenset(
     {
         "id",
@@ -65,9 +67,10 @@ EXPECTED_COLUMNS = frozenset(
         # 第 17 步 #222：第四本账的计量列（索引行带它，检索行恒 0）。
         "meter_chunk",
         "kb_ids",
-        "index_versions",
+        "index_generations",
         "doc_versions",
         "chunk_ids",
+        "missing_generation_documents",
         "top_k",
         "latency_ms",
         "degraded_reason",

@@ -196,8 +196,8 @@ async def search_document_version(
         document_id=document_id,
         version=version,
         kb_id=doc.kb_id,
-        # 归属索引记的是「哪次构建」；现在没有库级答案可记（按稿直查不落在某一版构建上），
-        # 第二支迁移把这一列改成 ``{document_id: 代数}`` 时会写这篇的那一代。
+        # 归属索引不再记库级版本（那一列已改记篇级代，见 :func:`record_version_search`）；
+        # 这个形参只是路由侧旧签名的兼容口，不再被消费。
         index_version=None,
         chunk_ids=chunk_ids,
         latency_ms=_elapsed_ms(started_at),
@@ -245,8 +245,14 @@ async def record_version_search(
     没有任何一行能回答「谁在拿 Key 白用它」。它**不扣任何额度**——三本账全 0、也不过配额
     门禁——所以把它记成一次 ``retrieve`` 才会污染统计；记成自己的 ``version_search`` 不会。
 
-    ``index_versions`` 与 ``doc_versions`` 各一格：直查的语义就是「落在本次**某个构建**的
-    **某一稿**上」，这两项正是排查结论的依据（哪一版的数据、哪一稿的切片）。
+    ``index_version`` 这个形参**保留但不再进账本**：它的唯一调用点是路由层
+    （``app/api/routes/documents.py``，不在本票范围内），那条调用点仍按旧签名传 ``None``。
+    归属索引那一列已经改成 ``index_generations``（``{document_id: 代数}``，ADR-0025 第
+    2 次修订第 5 条），而直查**没有可按当前代语义写进去的值**：这条路径落在「该稿现存
+    最高的代」上——当前稿时它恰好等于当前代，历史稿时却是最后一回算出它的那一代。把后者
+    写进 ``index_generations`` 会让读侧把它当「这一篇的当前代」，那是静默错归因；
+    干脆留**空映射**（诚实答案：这条直查不属于「篇的当前代交付」这件事），要查「查了哪一稿」
+    读 ``doc_versions`` 那一列。
 
     失败也要记：``code`` 是这次的真实结局（``0`` = 成功，其余是业务码）。写账走
     ``record_retrieval_trace`` 的独立短事务，任何失败只降级成一条 warning——账本坏了
@@ -266,9 +272,13 @@ async def record_version_search(
         meter_rr=0,
         meter_llm=0,
         kb_ids=[kb_id] if kb_id else [],
-        index_versions={kb_id: index_version} if kb_id and index_version else {},
+        # 空映射的理由见上：直查的代数轴是「该稿现存最高代」，不是「篇的当前代」。
+        index_generations={},
         doc_versions={document_id: version},
         chunk_ids=list(chunk_ids),
+        # 缺代计数是**检索范围**的事（「范围内有几篇还没有产物」），而直查的范围是**一篇**、
+        # 且答案恒定（能查到稿就说明这一篇有产物）。所以这一列恒 0，也不发那条计数查询。
+        missing_generation_documents=0,
         top_k=VERSION_SEARCH_TOP_K,
         latency_ms=latency_ms,
         degraded_reason=None,

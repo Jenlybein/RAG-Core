@@ -539,7 +539,12 @@ def test_one_research_writes_exactly_one_attribution_row(entry: _Entry) -> None:
     assert row.trace_id == data["metadata"]["trace_id"]
     assert row.tenant_id == TENANT_ID
     assert row.kb_ids == [KB]
-    assert row.index_versions == {KB: "v1"}
+    # 归属索引不再记库级版本（那一列已换成「每篇落在第几代」，ADR-0025 第 2 次修订第 5 条）；
+    # 本文件的请求会话替身是 ``EmptySession``——既不回答 ``documents`` 行、也不带稿号，
+    # 所以两列映射都是空的。「有值时」的形状与端到端写入由
+    # ``tests/test_retrieval_trace_doc_versions.py`` 守，这里只钉住「旧的库级版本列不存在」。
+    assert row.index_generations == {}
+    assert not hasattr(row, "index_versions"), "库级版本那一列已经从账本上退场"
     # ``chunk_ids`` 存**最终证据的节**：代表片 + 溯源片，去重保序。
     assert row.chunk_ids == ["chunk-a", "chunk-b"]
     # 条数是这套集成自己的参数（``.env`` 的 TOP_K），与子检索逐次用的是同一个值。

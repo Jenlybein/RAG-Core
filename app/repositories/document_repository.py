@@ -42,13 +42,14 @@ SQL——CAS 的判定条件与租约语义因此不可能在两套入口之间�
 僵尸任务醒来时看到的已经是别人的时间戳，整笔放弃。
 
 同步的那几个**仍有读者，但不与上面的异步路径共用**：运维脚本
-（``reindex_knowledge_base`` / ``requeue_stuck_documents`` /
-``backfill_document_content``）与启动期装载是独立进程 / 线程池里的同步读；
+（``requeue_stuck_documents`` / ``backfill_document_content``）与启动期装载是独立进程 /
+线程池里的同步读（``reindex_knowledge_base`` 已在库级版本能力收敛时删除）；
 ``get_by_id_for_tenant`` / ``list_by_kb``
 两个同步孪生现在只剩测试在用（生产零调用点），留着是为了让状态机的 SQL 级用例能直接
 读行，不作为第二套生产写法。
 """
 
+from collections.abc import Sequence
 from datetime import datetime, timedelta
 from typing import NamedTuple
 
@@ -87,9 +88,9 @@ def list_by_kb_and_status(
 ) -> list[Document]:
     """该租户在该知识库下、处于指定状态的文档，按创建时间升序。
 
-    运维脚本「全知识库重建」（``scripts/reindex_knowledge_base.py``）用它取出所有
-    ``SUCCESS`` 的文档；``tenant_id`` 同样是强制参数（ADR-0006），脚本在扫描时
-    显式传入，绝不跨租户。
+    读者是运维脚本（``scripts/requeue_stuck_documents.py`` 这类按库扫的活）；原来那位
+    「全知识库重建」脚本已在库级版本能力收敛时删除——重建现在按篇走。
+    ``tenant_id`` 同样是强制参数（ADR-0006），脚本在扫描时显式传入，绝不跨租户。
     """
 
     stmt = (
@@ -993,6 +994,46 @@ async def count_tokens_in_kb(
     if isinstance(value, (int, float)):
         return int(value)
     return int(getattr(value, "token_count", 0) or 0)
+
+
+async def count_missing_generation_documents(
+    db: AsyncSession, *, tenant_id: str, kb_ids: Sequence[str]
+) -> int:
+    """本次检索范围内有多少篇**还没有任何产物**（``current_index_generation IS NULL``）。
+
+    这是 ``usage_events.missing_generation_documents`` 的唯一来源（ADR-0025 第 2 次修订
+    第 5 条）：判据与读路径的可见性**同源**——``documents.current_index_generation`` 为
+    NULL 就是「检索时整篇被跳过」，不需要另算一遍切片。
+
+    ## 为什么不过滤 ``status``
+
+    四态里每一种都可能落在这一列上：``SUCCESS`` 但代数 NULL = 「建过、却没有产物」，
+    ``QUEUED`` = 「还在排队」，``PROCESSING`` / ``FAILED`` 同理。**它们都能解释「为什么这次
+    少了几篇」**，而这一列记的是「被跳过的篇数」，不是状态分布。按状态过滤等于在账本上
+    抹掉一部分原因：当那些篇恰好是排队中的（重启后刚重投、一时没产出），过滤完就变成
+    「一篇都没跳」，而这个数正是调用方/运维用来解释「凑不满」的唯一线索。
+
+    ## 租户与库都是强制条件
+
+    ``tenant_id`` 不是可选过滤器（ADR-0006）：一次跨租户的计数会把这个租户的「凑不满」
+    归到另一个租户头上；``kb_ids`` 为空时直接回 0，不发一条必然为空的查询。
+
+    **只在结果不足时调用**（调用方 ``app/services/retrieval_trace.missing_generation_count``
+    负责这条纪律）：它是一次纯固定成本，满额时它换不回任何信息。
+    """
+
+    if not kb_ids:
+        return 0
+    statement = (
+        select(func.count())
+        .select_from(Document)
+        .where(
+            Document.tenant_id == tenant_id,
+            Document.kb_id.in_(list(kb_ids)),
+            Document.current_index_generation.is_(None),
+        )
+    )
+    return int((await db.execute(statement)).scalar_one() or 0)
 
 
 async def count_by_kb_in_states(

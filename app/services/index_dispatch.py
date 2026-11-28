@@ -266,7 +266,8 @@ def enqueue_index_build(
 
     旧的一次跑完整个库的任务（``build_index_version_task``）**已随 #215 删除**：它既是另一种
     构建语义（进度不可见、失败粒度是整个库），又没有任何入口会投它——留着只会让人以为
-    「构建有两种形状」。运维要按需推进某一次构建的入口是 ``scripts/reconcile_build.py``：
+    「构建有两种形状」。运维要按需推进某一次构建的入口当年是 ``scripts/reconcile_build.py``
+（已随库级版本能力删除）；
     它按 ``build_id`` 收敛/续建，不产生第二种语义。
 
     与 :func:`enqueue_document` 一样是**同步**的 ``apply_async``：调用方是运维脚本

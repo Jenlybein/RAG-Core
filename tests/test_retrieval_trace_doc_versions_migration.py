@@ -209,11 +209,16 @@ def test_upgrade_adds_exactly_one_mapping_column_next_to_the_index_versions_one(
 
 
 def test_the_model_puts_the_two_mapping_columns_side_by_side() -> None:
-    """模型里的顺序是给读代码的人看的：两个映射列挨着（形状同源的东西放一起）。"""
+    """模型里的顺序是给读代码的人看的：两个映射列挨着（形状同源的东西放一起）。
+
+    本迁移加的是 ``index_versions``（库级版本），它后来被 ``b4e7c1a9d2f3`` 换成了
+    ``index_generations``（篇级代，ADR-0025 第 2 次修订第 5 条）；这条性质不变——两个
+    「文档 id → 整数」的映射列在模型定义里仍然挨着。
+    """
 
     keys = [column.key for column in UsageEvent.__table__.columns]
 
-    assert keys.index("doc_versions") == keys.index("index_versions") + 1
+    assert keys.index("doc_versions") == keys.index("index_generations") + 1
 
 
 def test_the_new_column_is_a_nullable_jsonb_mapping_without_a_default() -> None:

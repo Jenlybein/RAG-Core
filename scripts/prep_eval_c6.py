@@ -109,7 +109,6 @@ from app.core.logging import setup_logging  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _ops_common import print_summary  # noqa: E402
-from rebuild_kb_version import run_rebuild  # noqa: E402
 
 logger = structlog.get_logger(__name__)
 
@@ -656,16 +655,17 @@ async def ensure_build(db: Any, *, kb_id: str, tenant_id: str) -> dict[str, Any]
             "status": current.status,
         }
 
-    row = await run_rebuild(
-        db,
-        kb_id=kb_id,
-        tenant_id=tenant_id,
-        # 版本名交给流水线算（它会先把 v1 收养成 active 行，再把这轮命名为 v2）。
-        version=None,
-        # 就地跑 + 顺带激活：本脚本跑在没有 Worker 的机器上，而「激活」本身是独立一步
-        # （ADR-0025 决策三），这里只是把两步顺序跑完。
-        activate=True,
-    )
+    # 就地跑 + 顺带激活：本脚本跑在没有 Worker 的机器上，而「激活」本身是独立一步
+    # （ADR-0025 决策三），这里只是把两步按顺序跑完。原先这两步由
+    # ``scripts/rebuild_kb_version.py`` 的 ``run_rebuild(activate=True)`` 包着；那个脚本已随
+    # 库级索引版本能力一起删除（ADR-0025 第二次修订），所以这里直接调构建流水线。
+    from app.services.index_build_service import IndexBuildService
+
+    service = IndexBuildService()
+    # 版本名交给流水线算（它会把已有的 active 行收养成 archived，再把这轮命名为 v2）。
+    row = await service.start_build(db, kb_id=kb_id, tenant_id=tenant_id)
+    await service.build(db, row.id, tenant_id=tenant_id)
+    await service.activate(db, row.id, tenant_id=tenant_id)
     return {
         "created": True,
         "build_id": row.id,
@@ -1039,8 +1039,10 @@ async def _prepare(
         note=(
             "NOTE: v1 是逐篇摄入的产物，v2 是 #142 流水线原样重建的结果——两边逐节身份相同、"
             "切片数相同，差别只在「谁建的」。引用边那一栏随图谱撤销（#138）恒为空，"
-            f"要复现当年的读数回到 tag `{REJECTED_SCHEME_TAG}`。切版本用 "
-            "`uv run python scripts/rebuild_kb_version.py --kb-id <kb> --rollback v1`。"
+            f"要复现当年的读数回到 tag `{REJECTED_SCHEME_TAG}`。按版本名切库级生效版本的能力"
+            "已随 ADR-0025 第二次修订放弃（当年那条命令是 "
+            "`uv run python scripts/rebuild_kb_version.py --kb-id <kb> --rollback v1`，"
+            "那个脚本已删除）。"
         ),
     )
     return 0
@@ -1092,7 +1094,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     setup_logging()
     if sys.platform == "win32":
         # psycopg 的异步连接在 Windows 的缺省 Proactor 循环上跑不起来（第一条查询就
-        # InterfaceError），与 scripts/rebuild_kb_version.py 同一个理由。
+        # InterfaceError），与离线套件 conftest 里那一行同一个理由（当年
+        # ``scripts/rebuild_kb_version.py`` 也是这个理由，那个脚本已删除）。
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     session = _open_session()

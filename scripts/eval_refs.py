@@ -2225,7 +2225,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     if sys.platform == "win32" and args.command == "run":
         # psycopg 的异步连接在 Windows 的缺省 Proactor 循环上跑不起来（第一条查询就
         # InterfaceError）。空跑 / 回放不碰数据库，但这条线一旦切到 ``--source live``
-        # 就是第一条查询：与 scripts/rebuild_kb_version.py、conftest 同一行理由。
+        # 就是第一条查询：与离线套件 conftest 同一行理由（当年
+        # ``scripts/rebuild_kb_version.py`` 也这么做，那个脚本已删除）。
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
     return int(args.func(args))
 

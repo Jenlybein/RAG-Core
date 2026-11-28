@@ -18,41 +18,62 @@
 两个身份共用一行的代价写在 ADR-0021 的修订里：观测页看「全部」时总量会包含被挡下的请求，
 所以那个页面拆成「全部 / 只看成功 / 只看失败」三档，而不是偷偷换掉旧语义。
 
-## 十八列全部可枚举
+## 二十列全部可枚举
 
-====================  ==========================================================
-``id``                行 id，**对外即 ``log_id``**；由中台用 UUID v4 生成
-``tenant_id``         谁调用的
-``trace_id``          ``log_id`` 的确定性派生（32 位十六进制），NOT NULL
-``key_id``            哪把 Key（第 14 步新增；老行为 NULL，归「历史汇总」）
-``endpoint``          哪条端点：``retrieve`` / ``rewrite`` / ``decompose`` / ``research``
-``code``              业务码：0 = 成功；``20010`` / ``20013`` / ``20014`` / ``5xxxx``
-``meter_r``           检索账这次计几次（decompose 是 N 次）
-``meter_rr``          重排账这次计几次
-``meter_llm``         大模型账这次计几次（research 是 M 次）
-``kb_ids``            这次查了哪些库（一次检索可以多库）
-``index_versions``    这次查的是**哪一次构建**：``{kb_id: version}`` 映射
-``doc_versions``      这次命中的是**第几稿**：``{document_id: doc_version}`` 映射
-``chunk_ids``         交付单元的代表片 + 溯源片 id，**只存 id**
-``top_k``             这次要了几条
-``latency_ms``        这次多慢
-``degraded_reason``   降级原因，没有就是 NULL
-``empty_reason``      空结果原因，没有就是 NULL
-``created_at``        什么时候
-====================  ==========================================================
+===============================  ===============================================
+``id``                           行 id，**对外即 ``log_id``**；由中台用 UUID v4 生成
+``tenant_id``                    谁调用的
+``trace_id``                     ``log_id`` 的确定性派生（32 位十六进制），NOT NULL
+``key_id``                       哪把 Key（第 14 步新增；老行为 NULL，归「历史汇总」）
+``endpoint``                     哪条端点：``retrieve`` / ``rewrite`` / ``decompose`` / ``research``
+``code``                         业务码：0 = 成功；``20010`` / ``20013`` / ``20014`` / ``5xxxx``
+``meter_r``                      检索账这次计几次（decompose 是 N 次）
+``meter_rr``                     重排账这次计几次
+``meter_chunk``                  第四本账：这次消耗多少检索文本 token
+``meter_llm``                    大模型账这次计几次（research 是 M 次）
+``kb_ids``                       这次查了哪些库（一次检索可以多库）
+``index_generations``            这次**每篇**落在第几代：``{document_id: 代数}`` 映射
+``doc_versions``                 这次命中的是**第几稿**：``{document_id: doc_version}`` 映射
+``chunk_ids``                    交付单元的代表片 + 溯源片 id，**只存 id**
+``missing_generation_documents`` 本次范围内有多少篇**还没有产物**（``current_index_generation`` 为 NULL，被跳过）
+``top_k``                        这次要了几条
+``latency_ms``                   这次多慢
+``degraded_reason``              降级原因，没有就是 NULL
+``empty_reason``                 空结果原因，没有就是 NULL
+``created_at``                   什么时候
+===============================  ===============================================
 
-``index_versions`` 是**契约变更**（ADR-0025 决策六，本表因此从十列变十一列）：版本一旦
-会变，同一个 ``kb_ids + query`` 两次调用的差异就无从归因——切法变了？文档变了？还是召回
-抖了？它存的是**映射**而不是两个并列数组（``kb_ids`` 一个、``versions`` 一个）：那正是
-ADR-0010 §5 明令禁止的「两个独立集合」，``['kb-a','kb-b']`` 配 ``['v1','v2']`` 拼得出
-「A 库配 B 库版本」这种不存在的组合，而且不报错。版本名是结构（``v1``），不是原文，
-所以 ADR-0021「只存结构」的红线不受影响。
+## ``index_versions`` 为什么改成了 ``index_generations``
 
-``doc_versions`` 是**又一次契约变更**（#179，本表因此从十一列变十二列），形状与
-``index_versions`` **完全同形**，理由也同一条：**文档 → 稿号**的配对关系只能从映射里
-读出来。为什么要它（用户故事第 3 条）：``chunk_ids`` 只答得出「命中过哪些片」，而片会被
-保留策略物理删掉（#178），删掉之后那一串 id 就再也答不出「那次查的是第几稿」——
-稿号必须自己留在这一行上。稿号是整数、文档 id 是结构，两者都不是原文。
+旧列是 ``{kb_id: version}``（ADR-0025 决策六），回答「这次查的是**哪个库的哪一版构建**」。
+那个问题在新模型里**不存在了**：可见性判据已经从「库级索引版本」下放到「篇级当前代 ×
+当前稿」（``chunks.generation = documents.current_index_generation`` + 稿号对齐，见
+ADR-0025 第 2 次修订），库级版本轴正在被第二支迁移删掉。留着旧列会让这本账**自相矛盾**：
+账上写着「这次查的是 v4」，而检索实际按每篇各自的当前代取数——两个说法各指一件事，事后
+拿它归因必然归错。所以列名与含义一起换成了 ``{document_id: 代数}``：只记**交付过的篇**
+各自落在第几代（与 ``doc_versions`` / ``chunk_ids`` 同一批交付物，三列严格同源）。
+
+**代价写在这里，也是迁移里的取舍**：历史行「哪一次构建」的归因能力随这次迁移**消失**了
+——旧值没有可映射的篇级对应物，迁移不做数据搬运，所以升级后的老行拿到 ``{}``。换来的是
+「每篇在第几代交付」，那是新模型里唯一能回答这个问题的形状；承认旧能力退场，比留一列
+没人能正确读懂的字段要好。
+
+``doc_versions`` 是**又一次契约变更**（#179），形状与 ``index_generations`` **完全同形**
+（两者都是「某类 id → 一个整数版本号」）：「文档 → 稿号」的配对关系只能从映射里读出来
+（ADR-0010 §5：两个并列数组会拼出不存在的组合，而且不报错）。为什么要它（用户故事
+第 3 条）：``chunk_ids`` 只答得出「命中过哪些片」，而片会被保留策略物理删掉（#178），
+删掉之后那一串 id 就再也答不出「那次查的是第几稿」——稿号必须自己留在这一行上。
+
+``missing_generation_documents`` 回答的是**另一个问题**：这次调用范围内有多少篇
+``current_index_generation IS NULL``（= 还没有任何产物，检索时整篇被跳过）。它不是
+「空结果原因」的替代品，而是它的**分母补充**：结果不满额时，调用方/运维要能一眼看出
+「是库里真的没内容，还是有几篇还没产物所以凑不满」。所以它**只在结果不足时**才去数
+（见 ``app/services/retrieval_trace.missing_generation_count``），满额时恒为 0 且**不发
+查询**：满额说明缺代没有伤害这次调用，为每个请求多打一次库是没换来东西的固定成本。
+
+缺代计数**不按 ``status`` 过滤**：``SUCCESS`` 但代数 NULL = 「建过、却没有产物」，
+``QUEUED`` = 「还在排队」，``PROCESSING`` / ``FAILED`` 同理——它们都能解释「为什么少了几
+篇」，而这一列记的是「被跳过的篇数」，不是状态分布。按状态过滤会把一部分原因从账上抹掉。
 
 ## 三条不能改的性质
 
@@ -79,7 +100,7 @@ ADR-0010 §5 明令禁止的「两个独立集合」，``['kb-a','kb-b']`` 配 `
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Index, Integer, String
+from sqlalchemy import DateTime, Index, Integer, String, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -119,15 +140,32 @@ class UsageEvent(Base):
     meter_llm: Mapped[int] = mapped_column(Integer, default=0)
     #: 一次检索可以查多个库，所以是列表而不是单值（旧表的 ``kb_id`` 单列已在 #101 删除）。
     kb_ids: Mapped[list] = mapped_column(JSONB, default=list)
-    #: 「这次查的是哪次构建」——``{kb_id: version}``，与检索范围**同一个形状**。
-    #: 可空：迁移之前写下的行没有版本可记（那时版本恒为 v1，没人需要在日志里记它）。
-    index_versions: Mapped[dict | None] = mapped_column(JSONB, default=dict, nullable=True)
-    #: 「这次命中的是哪几稿」——``{document_id: doc_version}``，与 ``index_versions``
+    #: 「这次每篇落在第几代」——``{document_id: 代数}``（ADR-0025 第 2 次修订第 5 条）。
+    #: 只记**交付过的篇**，与 ``doc_versions`` / ``chunk_ids`` 同一批交付物（三列严格同源）。
+    #: 形状是映射而不是两个并列数组（ADR-0010 §5）；文档 id 与整数代数是结构，不是原文。
+    #:
+    #: ``server_default`` 是空对象：旧列 ``index_versions`` 的值没有篇级对应物，迁移不做
+    #: 数据搬运（见模块文档「``index_versions`` 为什么改成了 ``index_generations``」），
+    #: 于是升级后的老行落在 ``{}``——「这一行没有
+    #: 篇级代可记」，这正是它当时的真实处境。可空是给迁移之前的行留的（它们连库级版本都
+    #: 没记），应用侧写入永远给 ``dict``。
+    index_generations: Mapped[dict | None] = mapped_column(
+        JSONB, default=dict, nullable=True, server_default=text("'{}'::jsonb")
+    )
+    #: 「这次命中的是哪几稿」——``{document_id: doc_version}``，与 ``index_generations``
     #: **同一个形状**（#179）。可空：迁移之前写下的行没有稿号可记（那时稿号恒为 1）。
     #: 值来自交付单元上那个真实列（``chunks.doc_version``，#174），不是另算一遍。
     doc_versions: Mapped[dict | None] = mapped_column(JSONB, default=dict, nullable=True)
     #: 只存 id：正文在切片表里有一份，分数明细属于评测与 trace。重复存只会多一份会过期的副本。
     chunk_ids: Mapped[list] = mapped_column(JSONB, default=list)
+    #: 本次范围内「还没有任何产物」的篇数（``documents.current_index_generation IS NULL``）。
+    #:
+    #: 只在结果不满额时才算（推理与代价见 ``app/services/retrieval_trace.py`` 的同名辅助）：
+    #: 满额时恒 0 且不发那条查询。默认 0 而不是 NULL：新行必须显式说出「这次数过没有」，
+    #: 而 NULL 会让「0 篇缺代」与「没有数」混成一个读数；被拒 / 未走到召回的请求就是 0。
+    missing_generation_documents: Mapped[int] = mapped_column(
+        Integer, default=0, server_default="0"
+    )
     top_k: Mapped[int] = mapped_column(Integer)
     latency_ms: Mapped[int] = mapped_column(Integer)
     #: 可空：没有降级 / 不是空结果时它就是 NULL。它不是常驻字段，调用方别拿它当枚举兜底。

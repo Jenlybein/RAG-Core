@@ -67,8 +67,8 @@ def delivered_doc_versions(results: Iterable[Mapping[str, object]]) -> dict[str,
     为什么归属索引需要它：``chunk_ids`` 只答得出「命中过哪些片」，而片会被保留策略物理
     删掉（#178），删掉之后那一串 id 再也答不出「那次查的是第几稿」（用户故事第 3 条）。
 
-    **映射，不是两个并列数组**：与 ``index_versions``（``{kb_id: 版本}``）同一条规矩
-    （ADR-0010 §5）——``['doc-a','doc-b']`` 配 ``[2,1]`` 拼得出「A 文档配 B 文档稿号」
+    **映射，不是两个并列数组**：与 ``index_generations``（``{document_id: 代数}``）同一条
+    规矩（ADR-0010 §5）——``['doc-a','doc-b']`` 配 ``[2,1]`` 拼得出「A 文档配 B 文档稿号」
     这种不存在的组合，而且不报错。
 
     为什么读的是**交付单元上的 ``doc_version``**：它是 ``chunks.doc_version`` 列的副本
