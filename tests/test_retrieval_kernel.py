@@ -335,7 +335,7 @@ def test_the_kernel_does_not_read_global_settings(monkeypatch: pytest.MonkeyPatc
     assert stubs.keyword.queries == [QUERY]
 
 
-def test_the_scope_mapping_is_what_both_recall_paths_receive() -> None:
+def test_the_kb_scope_is_what_both_recall_paths_receive() -> None:
     """``kb_id → version`` 映射原样交给两路召回：范围只有这一个来源，且不是 ``v1`` 焊死的。"""
 
     scope = {KB_A: "v7", KB_B: "v8"}

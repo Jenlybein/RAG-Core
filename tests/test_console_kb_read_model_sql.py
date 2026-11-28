@@ -586,3 +586,45 @@ async def test_the_version_axis_would_have_missed_a_freshly_built_document(
         "c-doc2-v3-a",
         "c-doc2-v3-b",
     ], "代谓词按新指针取回新代那两片——版本轴给的答案已经过期了"
+
+
+@pytest.mark.asyncio
+async def test_only_the_current_generation_comes_back_when_three_are_present(
+    session: AsyncSession,
+) -> None:
+    """真 SQL 端到端：库里同时有第 1 / 2 / 3 代，指针指第 3 代 → 只有第 3 代回来。
+
+    这条补的是「代谓词在真实语句里到底切出什么」。改造前可见性靠库级版本，一条相等条件
+    就够，所以只需要断言 SQL 字符串；现在判据要 JOIN 文档行求值，「读的是不是 SQL 里那
+    一条」就成了会漂的地方——字符串断言看不出这个。
+    """
+
+    await session.execute(
+        text("UPDATE documents SET current_index_generation = 3 WHERE id = 'doc-2'")
+    )
+    for generation in (1, 2, 3):
+        await session.execute(
+            text(
+                "INSERT INTO chunks (id, tenant_id, kb_id, document_id, content, embedding, "
+                "metadata, index_version, doc_version, generation) VALUES "
+                f"('c-doc2-g{generation}', :tenant, :kb, 'doc-2', '正文', '[]', '{{}}', "
+                f"'v3', 1, {generation})"
+            ),
+            {"tenant": TENANT, "kb": KB},
+        )
+
+    rows = await session.execute(
+        select(Chunk.id)
+        .join(Document, Document.id == Chunk.document_id)
+        .where(
+            Chunk.tenant_id == TENANT,
+            Chunk.kb_id == KB,
+            Chunk.document_id == "doc-2",
+            *chunk_repository.serving_chunk_filters(),
+        )
+    )
+
+    assert [row[0] for row in rows.all()] == ["c-doc2-g3"], "旧代（1、2）一片都不许回来"
+    assert await chunk_repository.count_by_document_ids(session, ["doc-2"], tenant_id=TENANT) == {
+        "doc-2": 1
+    }, "计数与召回同一批行：一次重建只多一份，不随代数涨"

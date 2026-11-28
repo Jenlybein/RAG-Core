@@ -25,7 +25,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -52,7 +51,6 @@ async def collapse_results(
     *,
     tenant_id: str,
     chunks: list[dict],
-    kb_ids: Sequence[str],
     top_k: int,
     fold_to_sections: bool,
     expand_table_rows: bool,

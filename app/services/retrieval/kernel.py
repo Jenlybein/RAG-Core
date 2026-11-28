@@ -174,7 +174,6 @@ async def retrieve_kernel(
             db,
             tenant_id=tenant_id,
             chunks=chunks,
-            kb_ids=kb_ids,
             top_k=top_k,
             fold_to_sections=fold_to_sections,
             expand_table_rows=expand_table_rows,

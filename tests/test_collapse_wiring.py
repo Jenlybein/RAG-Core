@@ -102,7 +102,6 @@ def _run(session: _Session, chunks: list[dict], **kwargs) -> list[dict]:
             AsyncSessionAdapter(session),
             tenant_id=TENANT,
             chunks=chunks,
-            kb_ids=[KB],
             **call,
         )
 

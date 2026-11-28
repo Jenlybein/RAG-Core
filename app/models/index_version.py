@@ -256,12 +256,13 @@ def resolve_index_versions(kbs: Sequence[KnowledgeBase]) -> Mapping[str, str]:
     * 不读请求——版本由服务端决定，**永远不是请求参数**（否则调用方能让检索回到旧切法）；
     * 不读配置——没有「默认版本」这个旋钮，缺就拦。
 
-    **配对形状一个字不改**：返回的是映射，不是两个平行数组。``kb_id`` 与 ``version``
-    的配对关系只能从映射里读出来（下游 ``build_scope_filter`` / ``build_bm25_query``
-    都按 ``(kb AND version) OR (kb AND version)`` 编译），拼不出「A 库配 B 库版本」。
+    **读路径只用它的键**（现场九·第四步）：范围的形状从「库 → 生效版本」的配对条件改成
+    ``kb_id IN (...)``，可见性交给篇级当前代。值（版本）现在只有两个用处：归属索引那一列，
+    以及下面这条守卫。
 
-    任何一行没有生效版本 → :class:`IndexVersionUnresolved`。这是**回填守卫**：
-    迁移漏做时，运维看到的是明确的一次 5xxxx（外加一条 warning），而不是「这个库没内容」。
+    任何一行没有生效版本 → :class:`IndexVersionUnresolved`。这条守卫守的是**回填漏做**，
+    与可见性无关：迁移/建库漏了回填时运维看到的是明确的一次 5xxxx，而不是一份「看起来像
+    没命中」的空结果。它随第二支迁移删列一起退场（那时新库只按代建）。
     """
 
     versions: dict[str, str] = {}

@@ -75,7 +75,7 @@ class _FakeVectorStore:
         self.db_seen: Any = None
 
     async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
-        self.calls.append({"tenant_id": tenant_id, "index_versions": dict.fromkeys(kb_ids)})
+        self.calls.append({"tenant_id": tenant_id, "index_versions": list(kb_ids)})
         self.db_seen = db
         return [{**row, "kb_id": next(iter(kb_ids))} for row in self.rows]
 

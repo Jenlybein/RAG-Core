@@ -360,9 +360,10 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         # 这一维，它永远是**当前代的镜像**——重建时先按文档清空、再写新的一份。让这一侧
         # 也保留多代的话，同一条内容会从 BM25 路回来两次，而 RRF 合并并不去重。
         del generation
-        # 给了版本只清那一张物理索引（重建新版本时绝不碰线上那一版）；没给版本时用
-        # ``<别名>__*`` 覆盖**全部**版本——删文档要在每个版本里都清掉，否则某个归档版本
-        # 被重新启用时，那些已删文档会原样回来。
+        # 给了版本只清那一张物理索引；没给版本时用 ``<别名>__*`` 覆盖**全部**索引。
+        # 生产路径（``KeywordSearchChunkStore``）永远不给版本：关键词侧是「每篇一份」的
+        # 镜像，只清一张会留下别的索引里的同一篇，而读侧查的是 ``__*``——于是同一条内容
+        # 从 BM25 路回来两次，chunk id 每次新生成，RRF 合并去不掉。
         scoped = index_version is not None
         index = (
             self.physical_index_name(str(index_version))
@@ -392,8 +393,10 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
     ) -> None:
         """把这篇文档的关键词切片里「当前稿」标记翻到 ``doc_version``（#175）。
 
-        **打的是别名**（``self._index_name``）而不是物理索引名：检索永远只认别名，翻到一张
-        没人查的物理索引上等于没翻，而且不报错。别的物理版本保持原样——它们不被检索。
+        **打的是 ``<别名>__*``**（现场九·第四步），与检索同范围：检索不再只认别名（每篇
+        的当前代写在哪张物理索引由重建时的版本决定），只翻别名指向的那一张会留下别的物理
+        索引里 ``is_current`` 仍为真的旧稿切片——它们照样会被 ``__*`` 查出来，症状是引用
+        上一稿已经删掉的条款，而且不报错。
 
         ``refresh=True``：这次翻转之后马上就会有人提问，索引刷新不及时的表现是「关键词路
         偶发少了新稿的命中」。
@@ -409,7 +412,7 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
 
         try:
             await self._get_client().update_by_query(
-                index=self._index_name,
+                index=version_index_pattern(self._index_name),
                 **build_current_draft_update(
                     document_id=document_id,
                     tenant_id=tenant_id,
@@ -429,7 +432,8 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
         一条两层聚合打完整批（先按文档分组、组内数稿号），因此**不取命中行**：一篇文档
         的当前稿切片可能有几百片，把正文捞回来只为读两个字段是白花带宽。
 
-        查的是**别名**（``self._index_name``）：线上那一份才是「关键词索引认为的当前稿」。
+        查的是 ``<别名>__*``（与检索、翻转同范围）：别名只指向一张物理索引，而每篇的当前代
+        可能写在别的版本里。
 
         桶的 key 是**字符串**（mapping 里 ``doc_version`` 是 keyword），所以这里显式
         ``int()``——把 ``"3"`` 直接交给判据去和整数指针比，那一维会永远显示「相等」。
@@ -444,8 +448,10 @@ class ElasticsearchKeywordSearchProvider(KeywordSearchProvider):
             return {}
         try:
             response = await self._get_client().search(
-                index=self._index_name,
-                **build_current_draft_versions_query(tenant_id=tenant_id, document_ids=ids),
+                index=version_index_pattern(self._index_name),
+                **build_current_draft_versions_query(
+                    tenant_id=tenant_id, document_ids=ids
+                ),
             )
         except NotFoundError:
             return {}

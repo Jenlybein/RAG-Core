@@ -148,7 +148,7 @@ def test_retrieve_covers_every_kb_in_one_scope_call(client, monkeypatch) -> None
             self.scopes: list[dict[str, str]] = []
 
         async def similarity_search_scope(self, db, query_vector, *, tenant_id, kb_ids, top_k):
-            self.scopes.append(dict.fromkeys(kb_ids))
+            self.scopes.append(list(kb_ids))
             rows = []
             for kb_id in kb_ids:
                 score = 0.9 if kb_id == "kb-a" else 0.5

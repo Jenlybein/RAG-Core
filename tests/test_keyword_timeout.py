@@ -85,7 +85,9 @@ def test_the_provider_abandons_a_hanging_query_within_its_budget() -> None:
     started = time.perf_counter()
     with pytest.raises(TimeoutError):
         asyncio.run(
-            provider.keyword_search("退款多久到账", tenant_id="tenant_demo", kb_ids=[], top_k=5)
+            provider.keyword_search(
+                "退款多久到账", tenant_id="tenant_demo", kb_ids=["kb-a"], top_k=5
+            )
         )
     elapsed = time.perf_counter() - started
 
@@ -98,7 +100,9 @@ def test_the_provider_still_returns_hits_when_the_budget_is_ample() -> None:
 
     provider = _provider(_FastClient(), timeout_s=2.0)
 
-    rows = asyncio.run(provider.keyword_search("退款", tenant_id="tenant_demo", kb_ids=[], top_k=5))
+    rows = asyncio.run(
+        provider.keyword_search("退款", tenant_id="tenant_demo", kb_ids=["kb-a"], top_k=5)
+    )
 
     assert [row["chunk_id"] for row in rows] == ["chunk-a"]
 
@@ -117,7 +121,7 @@ def test_the_hybrid_keyword_channel_degrades_fast_instead_of_waiting() -> None:
         asyncio.run(
             pipeline._keyword_branch(
                 tenant_id="tenant_demo",
-                kb_ids=[],
+                kb_ids=["kb-a"],
                 queries=["退款多久到账"],
                 top_k=5,
                 keyword_factory=lambda: provider,
@@ -141,7 +145,7 @@ def test_the_hybrid_keyword_channel_records_the_failed_stage() -> None:
         asyncio.run(
             pipeline._keyword_branch(
                 tenant_id="tenant_demo",
-                kb_ids=[],
+                kb_ids=["kb-a"],
                 queries=["退款"],
                 top_k=5,
                 keyword_factory=lambda: provider,

@@ -43,6 +43,7 @@ pytestmark = [
 TENANT_ID = "tenant_it"
 OTHER_TENANT_ID = "tenant_other"
 KB_ID = "kb-it"
+OTHER_KB_ID = "kb-it-other"
 DOC_A = "doc-it-a"
 DOC_B = "doc-it-b"
 INDEX_VERSION = "v1"
@@ -163,11 +164,15 @@ async def _end_to_end(url: str, index_name: str) -> None:
         )
         assert other_tenant == []
 
-        # 6) 库 + 版本配对：版本对不上就召回不到。
-        wrong_version = await provider.keyword_search(
-            "E1024", tenant_id=TENANT_ID, kb_ids=[KB_ID], top_k=5
+        # 6) 范围只剩库：把该库排除在外就召回不到（版本那根轴已退场，现场九·第四步）。
+        out_of_scope = await provider.keyword_search(
+            "E1024", tenant_id=TENANT_ID, kb_ids=[OTHER_KB_ID], top_k=5
         )
-        assert wrong_version == []
+        assert out_of_scope == []
+
+        # 6b) 不重复：同一条内容从 BM25 路回来两次会让 RRF 的候选池被占掉，
+        #     而 chunk id 每次新生成，合并时去不掉——这条守的是「每篇只有一份」。
+        assert len({hit["chunk_id"] for hit in literal_hits}) == len(literal_hits)
 
         # 7) 按文档删除：只删 DOC_A 的两条，另一份文档还在。
         await provider.delete_by_document_id(DOC_A, tenant_id=TENANT_ID)

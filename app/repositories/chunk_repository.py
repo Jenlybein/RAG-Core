@@ -55,9 +55,12 @@ def _meta_statement(
     **稿号也在这里取**（``chunks.doc_version`` 列）：它是引用三元组（文档 + 稿次 + 切片）
     的第三段，而 JSONB 里那份副本在 #172 的迁移里已经删掉。
 
-    **带当前稿条件**（#174）：切片被重建替换之后，旧 id 在这一条查询里查不到——调用方
-    据此把 ``doc_version`` 落成 ``null``（明确的「已过期」），而不是拿到当前稿那一行的
-    元数据、把当前稿的页码与稿号当成旧切片的。
+    **带当前稿与当前代两条条件**（#174 + 现场九·第四步）：切片被重建替换之后，旧 id 在
+    这一条查询里查不到——调用方据此把 ``doc_version`` 落成 ``null``（明确的「已过期」），
+    而不是拿到当前稿那一行（或旧代那一行）的元数据、把别人的页码与稿号当成这条切片的。
+
+    代这条与折叠取整节、补父节同源：漏了它，同一次重建留下的旧代切片仍会被回查命中，
+    而那种错不会报错、只表现为「页码/小节对不上」。
     """
 
     # 唯一键是 ``(kb_id, chunk_id)``（ADR-0010），不是单独的 chunk_id：跨库同 ID
@@ -67,6 +70,7 @@ def _meta_statement(
         Chunk.kb_id.in_(kb_ids),
         Chunk.id.in_(chunk_ids),
         current_draft_filter(),
+        current_generation_filter(),
     )
 
 
@@ -504,6 +508,32 @@ async def count_in_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
         )
     )
     return int((await db.execute(statement)).scalar_one() or 0)
+
+
+async def max_generation_for_draft(
+    db: AsyncSession, document_id: str, *, tenant_id: str, doc_version: int
+) -> int | None:
+    """这一稿**现存最高的代**；一片都没有时返回 ``None``。
+
+    按稿直查（``/documents/{id}/versions/{n}/search``）用它定位范围：当前稿就是当前代，
+    历史稿则是「最后一回把它算出来的那一代」。为什么要「最高」而不是「当前代」——旧代按
+    保留策略留着（给单篇回滚），于是历史稿的片可能只存在于旧代里；而旧代里也可能留着
+    同一稿的**更早**一份（两代都说这一稿），取最高才是这一稿的最后形态。
+
+    ``None`` 是「这一稿没有产物」，与「第 1 代恰好零片」不同：调用方要回空的命中列表，
+    而不是拿一个常量去查（那会把别的稿的片捞回来）。
+    """
+
+    value = (
+        await db.execute(
+            select(func.max(Chunk.generation)).where(
+                Chunk.tenant_id == tenant_id,
+                Chunk.document_id == document_id,
+                Chunk.doc_version == doc_version,
+            )
+        )
+    ).scalar_one()
+    return int(value) if value is not None else None
 
 
 async def count_by_document_ids(

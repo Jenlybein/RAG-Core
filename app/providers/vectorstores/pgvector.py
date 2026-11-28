@@ -135,15 +135,16 @@ class PgVectorStore(VectorStore):
         kb_ids: Sequence[str],
         top_k: int,
     ) -> list[dict]:
-        """范围版召回：一条 SQL 覆盖「kb_id → 索引版本」里的全部配对。
+        """范围版召回：一条 SQL 覆盖全部目标库。
 
-        与 :meth:`similarity_search` 的差别只有两处：库/版本过滤换成配对条件，
-        以及每行**自带 ``kb_id``**（一次跨库召回，结果必须能归属到某个库）。
-        打分口径完全一致：``score = 1 - 余弦距离``。
+        与 :meth:`similarity_search` 的差别只有两处：库过滤换成库集合，以及每行
+        **自带 ``kb_id``**（一次跨库召回，结果必须能归属到某个库）。打分口径完全一致：
+        ``score = 1 - 余弦距离``。
 
-        两条路径都带「只看当前稿」（``current_draft_filter``，#174）：两稿切片并存的
-        时刻（切稿之后、保留策略删掉旧稿之前）漏掉这一条，旧稿切片会以同等分数挤进
-        TopK，而结果看起来完全正常——只是同一段内容出现了两份。
+        两条路径都带「当前代 × 当前稿」（``current_generation_filter`` +
+        ``current_draft_filter``）：旧稿、旧代的切片都还留在库里（分别给回滚与切稿用），
+        漏掉任何一条都会让它们以同等分数挤进 TopK，而结果看起来完全正常——只是同一段
+        内容出现了两份，或者引用的是上一版已经删掉的条款。
 
         排序只按距离升序、一次取 ``top_k``：这是「一次全局召回」。分库各取
         ``top_k`` 再合并看着公平，实际让不相关的库也各占名额。
@@ -164,7 +165,7 @@ class PgVectorStore(VectorStore):
                 Chunk.tenant_id == tenant_id,
                 # 范围就是「这几个库」（现场九·第四步）：库级生效版本不再是可见性判据，
                 # 否则构建写新版本期间这篇会整个从召回里消失（真库实测 count_in_kb = 0）。
-                Chunk.kb_id.in_(list(kb_ids)),
+                build_scope_filter(kb_ids),
                 not_reference_pointer(),
                 current_draft_filter(),
                 current_generation_filter(),
@@ -193,13 +194,13 @@ class PgVectorStore(VectorStore):
         tenant_id: str,
         document_id: str,
         doc_version: int,
-        index_version: str,
+        generation: int,
         top_k: int,
     ) -> list[dict]:
-        """锁定某篇某稿的召回：按版本只读直查的底层（#176）。
+        """锁定某篇某稿的召回：按稿直查的底层（#176）。
 
-        与 :meth:`similarity_search_scope` 的差别只有条件：范围从「``kb_id → 索引版本``
-        的配对映射」换成「一篇文档 + 一个稿号 + 一个索引版本」，而**``current_draft_filter``
+        与 :meth:`similarity_search_scope` 的差别只有条件：范围从「库集合 + 当前代」换成
+        「一篇文档 + 一个稿号 + 一个代」，而**``current_draft_filter``
         被刻意去掉**——它的实现是 ``chunks.doc_version = documents.current_version``
         （列与列比较），历史稿的切片一片都对不上；直查历史稿却带着它，结果永远是空，
         而那看起来完全像「这一稿没内容」——正是这条路径要排查的那种误判。
@@ -207,8 +208,11 @@ class PgVectorStore(VectorStore):
         去掉它带来两个必须由参数兜住的约束：
 
         * ``tenant_id``：少了它就是跨租户召回（ADR-0006）；
-        * ``index_version``：旧索引版本的行还留在库里（#142 的「构建期间查旧版本」），
-          不按版本收窄会把两次构建的切片混进结果。
+        * ``generation``：同一稿可以有多代产物（重建一次多一代，旧代按保留策略留着给
+          回滚），不按代收窄会把旧切法的片混进结果——症状是「这一稿里明明删掉的那段又
+          回来了」，且看起来完全正常。调用方传的是「这一稿**现存最高的代**」
+          （``chunk_repository.max_generation_for_draft``）：当前稿就是当前代，历史稿则
+          是最后一回把它算出来的那一代。
 
         **默认路径一个字没改**：不传稿号的召回仍走 :meth:`similarity_search_scope`，
         仍然只看当前稿（``tests/test_retrieval_current_draft.py`` 与
@@ -234,7 +238,7 @@ class PgVectorStore(VectorStore):
                 Chunk.tenant_id == tenant_id,
                 Chunk.document_id == document_id,
                 Chunk.doc_version == doc_version,
-                Chunk.index_version == index_version,
+                Chunk.generation == generation,
                 not_reference_pointer(),
             )
             .order_by(distance)

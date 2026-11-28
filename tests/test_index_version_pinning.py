@@ -89,10 +89,10 @@ class _ScopedVectorStore:
 
     def __init__(self, rows: Sequence[dict]) -> None:
         self._rows = list(rows)
-        self.scopes: list[dict[str, str]] = []
+        self.scopes: list[list[str]] = []
 
     async def similarity_search_scope(
-        self, _db: Any, _query_vector: Any, *, tenant_id: str, kb_ids: dict, top_k: int
+        self, _db: Any, _query_vector: Any, *, tenant_id: str, kb_ids: list[str], top_k: int
     ) -> list[dict]:
         self.scopes.append(list(kb_ids))
         # 范围只剩「哪几个库」（现场九·第四步）：可见性由篇级代决定，而这一层是存储替身，
@@ -247,10 +247,10 @@ def test_the_scope_filter_is_the_resolved_kb_set() -> None:
 # ────────────────────────────────────────────────── ASGI：检索 pin 在哪一次构建上
 
 
-def test_retrieval_sends_each_kb_with_its_own_effective_version(
+def test_retrieval_sends_the_kb_set_to_the_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """多库：向量库收到的是库集合（现场九·第四步起不再带版本）。"""
+    """多库：向量库收到的是库集合，调用方无法指定版本（版本已不在读路径上）。"""
 
     with _offline(
         monkeypatch,
@@ -266,7 +266,7 @@ def test_retrieval_sends_each_kb_with_its_own_effective_version(
     )
 
 
-def test_switching_the_effective_version_moves_the_hits_to_the_new_build(
+def test_switching_the_kb_level_version_no_longer_changes_the_hits(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """同一个库造两个版本各一条，切换生效版本后**只**命中新版本那条。

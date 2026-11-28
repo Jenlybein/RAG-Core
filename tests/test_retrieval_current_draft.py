@@ -561,7 +561,6 @@ def test_a_replaced_chunk_is_reported_as_expired_not_as_the_current_draft() -> N
             session,
             tenant_id=TENANT,
             chunks=[stale_hit],
-            kb_ids=[KB],
             top_k=5,
             fold_to_sections=True,
             expand_table_rows=True,
@@ -614,7 +613,6 @@ def test_the_response_draft_number_ignores_the_jsonb_copy() -> None:
                     "score": 0.9,
                 }
             ],
-            kb_ids=[KB],
             top_k=5,
             fold_to_sections=True,
             expand_table_rows=True,
