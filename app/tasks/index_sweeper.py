@@ -67,8 +67,8 @@ from app.services.usage_rollup import days_missing_rollup, rollup_day
 
 logger = structlog.get_logger(__name__)
 
-#: 清扫周期（秒）。一分钟：比任何合理的人工反应都快，而期限的最小值也有 15 分钟，所以
-#: 正常跑着的构建永远扫不到（不会误伤）。
+#: 清扫周期（秒）。一分钟：比任何合理的人工反应都快，而单篇租约的宽限期是 15 分钟量级，
+#: 所以刚被 Worker 接走的篇扫不到（不会误伤）。
 SWEEP_INTERVAL_SECONDS: Final[int] = 60
 
 #: 单实例锁的键与 TTL。TTL 比周期长一半：持锁那一位跑完之前不会被别人抢走，而进程被
@@ -356,7 +356,7 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
                 attempts=attempts,
             )
 
-        # 两个阶段的写都在这一笔事务里（代落后的置排队中也在同一笔）。
+        # 两步的写都在这一笔事务里（代落后的置排队中也在同一笔）。
         # **必须提交**：不提交的话，「清租约 + 回排队中」与「重投次数加一」会随会话关闭被
         # 回滚——症状是清扫器日志说有动作、库里一行没变，与「清扫器没跑」一模一样。
         #
@@ -372,7 +372,7 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
                 revived=revived,
             )
 
-        # ── 4) 用量汇总：看板的 7d / 30d 靠它，也是保留期清理的前提（现场七）──
+        # ── 3) 用量汇总：看板的 7d / 30d 靠它，也是保留期清理的前提（现场七）──
         #
         # 放在**清扫之后**、用同一个 ``session_factory``：它不该与「救一篇卡住的文档」抢先后，
         # 而且它失败时只留一条 warning——最坏情况下看板的长窗口晚 5 分钟才更新。
@@ -381,7 +381,7 @@ async def sweep_once(*, session_factory: Callable[[], Any] | None = None) -> dic
         # 兜着（``retention.purge_usage`` 自己也会按天复核一遍，这里是第二道保险）。
         rolled = await rollup_usage_once(session_factory=factory)
 
-        # ── 5) 保留期清理：每天一次（现场八）──────────────────────────────
+        # ── 4) 保留期清理：每天一次（现场八）──────────────────────────────
         #
         # 它是两个人工脚本（``purge_usage_events.py`` / ``purge_document_versions.py``）的自动版：
         # 「记得敲命令」不是一种可靠性，而它们的失败方式是安静地慢慢变坏（磁盘涨、检索变慢）。
@@ -433,7 +433,8 @@ def start_sweeper_thread() -> None:
         return
     if not settings.RATE_LIMIT_ENABLED:
         # 限流开关关着时 Redis 不一定在（离线套件与评测环境就是这样）：这时清扫器不启动。
-        # 清扫器是**兜底**，不是正确性依赖——真正的一致性由收敛判据与租约围栏守。
+        # 清扫器是**兜底**，不是正确性依赖——真正的一致性由「当前代 × 当前稿」判据与
+        # 租约围栏守。
         logger.info("index sweeper not started: RATE_LIMIT_ENABLED is off")
         return
     _sweeper_stop.clear()

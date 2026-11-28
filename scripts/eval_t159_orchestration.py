@@ -391,7 +391,9 @@ async def _refs_kb_id() -> str:
         ).scalar_one_or_none()
     if row is None:
         raise SystemExit(
-            f"找不到引用语料库（{REFS_TENANT} / {REFS_KB_NAME}）：先跑 prep_eval_c6.py"
+            f"找不到引用语料库（{REFS_TENANT} / {REFS_KB_NAME}）：它的准备脚本 "
+            "scripts/prep_eval_c6.py 只活在 tag `step11-with-graph-and-orchestration`"
+            "（本分支已随库级索引版本层整层删除；本脚本本身也是归档脚本，要复跑先回到那个 tag）。"
         )
     return str(row.id)
 

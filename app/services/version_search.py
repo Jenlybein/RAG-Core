@@ -86,8 +86,8 @@ async def search_document_version(
     1. **按 ``(id, tenant_id)`` 取文档**：缺失与跨租户统一「不存在」（20016），不泄露存在性；
     2. **这一稿存在吗**：版本行读不到就是「稿不存在」（20030）。保留策略物理删除过的稿
        也走这一条——不做墓碑，所以「查一个删掉的稿」与「查一个从没存在过的稿号」同一个答案；
-    3. **索引版本**：直查也要落在**线上那一版**上（旧索引版本的行还在库里），版本由库行
-       解析、不是请求参数；
+    3. **产物代**：这一稿**现存最高的代**从切片表算出来（同一稿可能有旧代残留），不是
+       请求参数——库级「生效版本」那一层已经删除，可见性只剩「篇级当前代 × 当前稿」；
     4. **向量路召回**：一次嵌入 + 一次锁定稿号的查询。
 
     回包带 ``is_current``：调用方要能一眼看出「查的这稿是不是当前稿」。它不是权限也不是
@@ -159,7 +159,7 @@ async def search_document_version(
                 document_id=document_id,
                 version=version,
                 kb_id=doc.kb_id,
-                    chunk_ids=(),
+                chunk_ids=(),
                 latency_ms=_elapsed_ms(started_at),
                 code=exc.code,
             )
@@ -179,7 +179,7 @@ async def search_document_version(
                 document_id=document_id,
                 version=version,
                 kb_id=doc.kb_id,
-                    chunk_ids=(),
+                chunk_ids=(),
                 latency_ms=_elapsed_ms(started_at),
                 code=ErrorCode.RETRIEVAL_FAILED,
             )
@@ -192,8 +192,9 @@ async def search_document_version(
         document_id=document_id,
         version=version,
         kb_id=doc.kb_id,
-        # 归属索引不再记库级版本（那一列已改记篇级代，见 :func:`record_version_search`）；
-        # 这个形参只是路由侧旧签名的兼容口，不再被消费。
+        # 归属索引的 ``index_generations`` 留空映射（理由见 :func:`record_version_search`）；
+        # ``chunk_ids`` 照写：排查要能回答「这次命中了哪几片」，它进的是归属索引的
+        # ``chunk_ids`` 那一列。
         chunk_ids=chunk_ids,
         latency_ms=_elapsed_ms(started_at),
         code=0,

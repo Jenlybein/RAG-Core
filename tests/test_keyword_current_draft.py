@@ -8,10 +8,10 @@
 
 * 请求体（第 ① 层纯函数）：只碰这篇文档、这个租户的切片，脚本把 ``is_current`` 置成
   「这一片的稿号 == 目标稿号」；
-* Provider（第 ② 层，注入假客户端，不连 ES）：打的是**别名**、``refresh=True``、
-  版本冲突不整批失败；索引还不存在时是诚实 no-op；
+* Provider（第 ② 层，注入假客户端，不连 ES）：打的是**那一个索引**（没有别名、没有
+  ``__vN`` 物理索引）、``refresh=True``、版本冲突不整批失败；索引还不存在时是诚实 no-op；
 * 降级（``app.services.keyword_draft``）：任何异常都只记 warning，绝不把一次派生视图的
-  维护失败升级成「版本没建成」。
+  维护失败升级成「这篇索引失败」。
 """
 
 from __future__ import annotations

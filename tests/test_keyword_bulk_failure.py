@@ -60,7 +60,6 @@ def _chunk() -> dict:
         "document_id": "doc-1",
         "content": "切片原文",
         "retrieval_text": "文档：售后手册 正文：切片原文",
-        "index_version": "v1",
         "meta": {"title": "售后手册"},
     }
 

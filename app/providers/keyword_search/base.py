@@ -98,9 +98,10 @@ class KeywordSearchProvider(ABC):
         同一个）；**多于一个就是分歧的现场**，由调用方（``app.services.document_version_reconcile``）
         判，Provider 只如实回答。
 
-        为什么这条读能力必须挂在 Provider 上，而不是让脚本自己去连 ES：查询体、别名、
-        版本命名都是这一层的事（``build_current_draft_versions_query`` 就在旁边）；脚本
-        自己拼一遍，就是第二套「关键词索引长什么样」的知识，而它只会在 ES 升级时过期。
+        为什么这条读能力必须挂在 Provider 上，而不是让脚本自己去连 ES：查询体与 mapping 的
+        形状都是这一层的事（``build_current_draft_versions_query`` 就在旁边）；脚本自己拼
+        一遍，就是第二套「关键词索引长什么样」的知识，而它只会在 ES 升级 / mapping 改字段
+        时过期。
 
         **查的是那一个物理索引**（``self._index_name``）：线上那一份才是「关键词索引认为的
         当前稿」，别的索引已经不存在（版本化物理索引随库级版本层一并删除）。

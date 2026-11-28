@@ -71,13 +71,27 @@ async def _add(
     *,
     settings_hash: str | None,
     status: int = DocumentStatus.SUCCESS,
+    generation: int | None = 1,
 ) -> None:
+    """`generation` 缺省 1：**有产物**才算「可能已经建好」那一批。
+
+    传 `None` 的是「一次都没建成过」的篇（`SUCCESS` 但一片产物都没有）——它们也是待更新，
+    判据里那一条（`current_index_generation IS NULL`）就是为它们写的。
+    """
+
     await db.execute(
         text(
-            "INSERT INTO documents (id, tenant_id, kb_id, status, settings_hash) "
-            "VALUES (:id, :tenant, :kb, :status, :hash)"
+            "INSERT INTO documents (id, tenant_id, kb_id, status, settings_hash, "
+            "current_index_generation) VALUES (:id, :tenant, :kb, :status, :hash, :generation)"
         ),
-        {"id": document_id, "tenant": TENANT, "kb": KB, "status": status, "hash": settings_hash},
+        {
+            "id": document_id,
+            "tenant": TENANT,
+            "kb": KB,
+            "status": status,
+            "hash": settings_hash,
+            "generation": generation,
+        },
     )
 
 
@@ -169,3 +183,39 @@ async def test_another_kb_or_tenant_is_not_counted(session: AsyncSession) -> Non
     )
 
     assert await _count(session, CURRENT) == 0
+
+
+@pytest.mark.asyncio
+async def test_a_successful_document_without_any_product_is_stale(
+    session: AsyncSession,
+) -> None:
+    """指纹恰好对得上、但**一片产物都没有**：也是待更新。
+
+    只比指纹会漏掉这一批（迁移回填的指纹就是按当时的参数算的，可能正好等于当前设置），
+    于是界面说「都建好了」、点重建却按落后判据投出去一批——两个数对着看是自相矛盾的。
+    这条把界面的「N 篇待更新」与回执里的 ``documents_total`` 钉在同一个口径上。
+    """
+
+    await _add(session, "doc-empty", settings_hash=CURRENT, generation=None)
+
+    assert await _count(session, CURRENT) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_tree_count_agrees_with_the_rebuild_targets(
+    session: AsyncSession,
+) -> None:
+    """同一批数据：树上的「N 篇待更新」与「点重建会投几篇」必须是同一个数。"""
+
+    from app.repositories.document_repository import count_stale_for_rebuild
+    from app.services.generation_sweep import _stale_predicate
+
+    await _add(session, "doc-ok", settings_hash=CURRENT)
+    await _add(session, "doc-empty", settings_hash=CURRENT, generation=None)
+    await _add(session, "doc-old", settings_hash="f" * 64)
+
+    tree = await _count(session, CURRENT)
+    rebuild = await count_stale_for_rebuild(
+        session, KB, tenant_id=TENANT, stale=_stale_predicate(CURRENT)
+    )
+    assert tree == rebuild == 2, (tree, rebuild)

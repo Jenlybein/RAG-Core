@@ -201,8 +201,9 @@ RESCUE_LABELS: Final[dict[str, str]] = {
     RESCUE_UNRESOLVED: "仍 unknown（复查失败，不进分母）",
 }
 
-#: 检索侧：评测租户 / 库 / 关键词别名，按**语料**分组（两个语料各自的别名不同）。
-#: 别名必须与建索引时用的一致：物理索引是 ``<别名>__<版本>``，写错别名 = 关键词一路查不到。
+#: 检索侧：评测租户 / 库 / 关键词索引名，按**语料**分组（两个语料各自的名字不同）。
+#: 名字必须与建索引时用的一致：``ELASTICSEARCH_INDEX`` 现在就是那**唯一**的物理索引名
+#: （库级版本层删除后没有别名、也没有 ``<名字>__<版本>``），写错名字 = 关键词一路查不到。
 REFS_SOURCE: Final[str] = "refs"
 EVAL_SOURCE: Final[str] = "eval"
 
@@ -1653,7 +1654,7 @@ async def run_cases(
         record = await run_case(
             case,
             fivefold=fivefold,
-            kb_ids=list(kb_scope_by_source[case.source]),
+            kb_scope=list(kb_scope_by_source[case.source]),
             stems=stems_by_source[case.source],
             archive=archive,
             condition=condition,

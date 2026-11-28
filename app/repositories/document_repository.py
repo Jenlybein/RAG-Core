@@ -257,7 +257,12 @@ async def count_stale_generations(
 ) -> int:
     """这个库里**「N 篇待更新」**的那个 N（现场九·第三步）。
 
-    判据：文档记下的 ``settings_hash`` 与**库当前设置**的指纹不一致，或者从没记过。
+    判据三条并集（与夜间清扫器的 ``_stale_predicate`` 同一个口径）：
+    ``settings_hash`` 从没记过 / 与**库当前设置**的指纹不一致 / **根本没有产物**
+    （``current_index_generation IS NULL``）。第三条是这次补上的：只比指纹会漏掉「建过但
+    没有产物」那一批（迁移回填的指纹可能恰好等于当前设置），于是界面说「都建好了」、
+    「点重建」却按落后判据投出去一批——两处数字对不上，用户在界面上看到的是自相矛盾。
+    「库里 N 篇待更新」与回执里的 ``documents_total`` 必须是同一个数。
 
     ``settings_hash`` 传 ``None``（库不存在 / 跨租户读不到）时**只数「从没记过」的那批**，
     不做「全库待更新」的推断：那种状态下真正的问题不是「设置变了」而是「这个库不见了」，
@@ -270,8 +275,12 @@ async def count_stale_generations(
     原样**之后还要不要重算（答案是不用，而版本号会说要）。
     """
 
-    # 「没记过指纹」永远算待更新；指纹说得出时才再加一条「与当前不一致」。
-    stale: ColumnElement[bool] = Document.settings_hash.is_(None)
+    # 「没记过指纹」永远算待更新；「压根没有产物」也永远算；指纹说得出时才再加一条
+    # 「与当前不一致」。
+    stale: ColumnElement[bool] = or_(
+        Document.settings_hash.is_(None),
+        Document.current_index_generation.is_(None),
+    )
     if settings_hash is not None:
         stale = or_(stale, Document.settings_hash != settings_hash)
     statement = (
@@ -1036,32 +1045,6 @@ async def count_missing_generation_documents(
     return int((await db.execute(statement)).scalar_one() or 0)
 
 
-async def count_by_kb_in_states(
-    db: AsyncSession,
-    kb_id: str,
-    *,
-    tenant_id: str,
-    statuses: tuple[int, ...],
-) -> int:
-    """该库下处于给定状态的文档数（「还在排队 / 正在索引」这类计数用）。
-
-    单独一个函数而不是给 ``count_by_kb`` 加可选参数：那个函数是**配额**的唯一计数处
-    （单库文档数上限），它要读的永远是「全部」。把状态塞进去会让「配额算的是不是全量」
-    变成每次调用都要重新确认的问题。
-    """
-
-    result = await db.execute(
-        select(func.count())
-        .select_from(Document)
-        .where(
-            Document.kb_id == kb_id,
-            Document.tenant_id == tenant_id,
-            Document.status.in_(list(statuses)),
-        )
-    )
-    return int(result.scalar_one())
-
-
 def _kb_scoped_conditions(
     kb_id: str,
     *,
@@ -1177,36 +1160,71 @@ async def count_by_kb(db: AsyncSession, kb_id: str, *, tenant_id: str) -> int:
     return int(result.scalar_one())
 
 
-async def participating_snapshot(
-    db: AsyncSession, kb_id: str, *, tenant_id: str
-) -> tuple[int, int | None]:
-    """起构建那一刻的**参与篇数与统一稿号**：``(count, max(current_version))``。
+async def count_stale_for_rebuild(
+    db: AsyncSession, kb_id: str, *, tenant_id: str, stale: ColumnElement[bool]
+) -> int:
+    """这个库里**产物落后、可参与整库重建**的篇数（回执 ``documents_total`` 的唯一来源）。
 
-    这是 #214 那两列快照的唯一来源，两条聚合读共用同一份过滤条件（``status=1``：只有成功
-    的文档有可切的正文；失败 / 排队中的文档该由单篇重试解决，不属于构建）。
+    为什么判据由调用方给（``stale`` 是 SQLAlchemy 条件）而不是在这里按 ``settings_hash``
+    再拼一遍：判据的唯一来源是夜间清扫器的 :func:`app.services.generation_sweep._stale_predicate`
+    ——人工点「全库重建」与夜里自动重投必须是**同一批篇**，否则会出现「预览说 5 篇、点下去
+    投 7 篇」这类只能在现场解释的分歧。仓储这层只负责把它落到 SQL 上。
 
-    **为什么是两条语句而不是把文档行读一遍**：``start_build`` 跑在请求路径上（控制台改设置
-    就会发起），一次把整库文档连同正文读进内存，等于让一次设置保存去背起整库的正文体积。
-    两条 ``SELECT count / max`` 只读索引与指针；而「入口不遍历文档行」也正是 ADR-0034
-    决策三写下的形状（按篇投递之后更是如此）。
-
-    **为什么稿号取最大值**：库里的文档各自演进（回滚会把某篇的指针往回切），而一次构建产出
-    的切片必须统一算一稿——混着数的后果是同一批切片一半旧稿一半新稿（ADR-0031 决策七）。
-    取最大值是「这一库的稿号已经走到第几」唯一不需要猜的口径；真值判据按它数，缺一篇就是
-    缺一篇，不会因为某篇往回滚过就把一次正常的构建判成完成。没有可参与的文档时回 ``None``
-    （不是 0）：``None`` 的意思才是「这一稿没法挑」。
+    为什么另算一个数、而不是复用 ``count_by_kb_filtered(status=SUCCESS)``：后者数的是
+    「库里所有已建成的篇」，而这里要的是「这一轮**真的该重切**的篇」。回执里的 total
+    用全库 SUCCESS 篇数时，「再点几次」这一步永远算不完——跑完的篇还是 SUCCESS，
+    永远被算进总数。
     """
 
-    conditions = (
-        Document.kb_id == kb_id,
-        Document.tenant_id == tenant_id,
-        Document.status == DocumentStatus.SUCCESS,
+    statement = (
+        select(func.count())
+        .select_from(Document)
+        .where(
+            Document.kb_id == kb_id,
+            Document.tenant_id == tenant_id,
+            Document.status == DocumentStatus.SUCCESS,
+            stale,
+        )
     )
-    count_statement = select(func.count()).select_from(Document).where(*conditions)
-    draft_statement = select(func.max(Document.current_version)).where(*conditions)
-    count = int((await db.execute(count_statement)).scalar_one())
-    draft = (await db.execute(draft_statement)).scalar_one()
-    return count, (int(draft) if draft is not None else None)
+    return int((await db.execute(statement)).scalar_one() or 0)
+
+
+async def list_stale_for_rebuild(
+    db: AsyncSession,
+    kb_id: str,
+    *,
+    tenant_id: str,
+    stale: ColumnElement[bool],
+    limit: int | None,
+) -> list[Document]:
+    """按 ``updated_at`` **最旧优先**取一页「产物落后」的篇（人工整库重建的分批来源）。
+
+    排序与夜间清扫器同向（最旧优先），于是「同一次点击投哪几篇」是稳定的，而不是每次
+    重新点都换一批。
+
+    为什么不需要游标 / 偏移来续投：投出去的篇会被置成「排队中」，而本查询只取 ``SUCCESS``；
+    跑完的篇指纹对齐、也有产物，同样不在结果里。于是「落后」这个集合本身会随着投递缩小，
+    第二次点击自然从剩下的篇开始——偏移量在这里只会制造「跳过了刚变新鲜的篇」的洞。
+
+    ``limit=None`` 取全部（设置预览要按篇把切片数加起来）；预览那条路径本来就要读这一批
+    文档，与旧的 ``list_by_kb_async`` 是同一个量级。
+    """
+
+    statement = (
+        select(Document)
+        .where(
+            Document.kb_id == kb_id,
+            Document.tenant_id == tenant_id,
+            Document.status == DocumentStatus.SUCCESS,
+            stale,
+        )
+        # 与 ``list_page_by_kb`` 同一条纪律：主键做 tiebreaker，让「同一页」在两次查询里
+        # 不重不漏（同一时刻上传的几篇 ``updated_at`` 会完全相同）。
+        .order_by(Document.updated_at, Document.id)
+    )
+    if limit is not None:
+        statement = statement.limit(max(limit, 1))
+    return list((await db.execute(statement)).scalars().all())
 
 
 # ──────────────── 写路径的行锁（第 12 步票 #175：建版本）

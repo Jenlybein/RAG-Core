@@ -49,6 +49,7 @@ from functools import partial
 from pathlib import Path
 from typing import Any, Final
 
+from sqlalchemy import ColumnElement
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.console_auth import ConsoleIdentity
@@ -93,6 +94,7 @@ from app.services import (
 )
 from app.services import chunk_ledger, static_quota
 from app.services.chunk_store import build_chunk_stores
+from app.services.generation_sweep import _stale_predicate
 from app.services.index_generation import settings_fingerprint
 from app.services.console_service import append_audit
 from app.services.document_ingestion import prepare_document_content
@@ -433,9 +435,57 @@ async def create_kb(
 #: 上限存在是因为：全库重建已经不再由服务端记一笔账，它就是 N 条队列消息。一个 5000 篇的库
 #: 一键全投会把队列压几十分钟，而操作者在这一刻看到的只是一句「已提交」——出了事也说不清
 #: 是这一次点的还是别的原因。300 是「一次点击能在一轮排空内看到反馈」与「不用点几十次」的
-#: 折中：再多的篇数分批点，每一批的后果都能单独追溯。超过上限的篇**不投**，回执里的
-#: ``documents_total`` 与 ``documents_dispatched`` 之差就是「还要再点几次」。
+#: 折中：再多的篇数分批点，每一批的后果都能单独追溯。
+#:
+#: 超过上限的**落后篇**这一轮不投；回执里的 ``documents_total`` 仍是**落后篇总数**，所以
+#: 「再点一次能推进到剩下的篇」是可核对的。但它不是「还差几次」的计数器：投出去的篇立刻
+#: 变成排队中、跑完的篇指纹对齐，两者都不再算落后——可投的落完就没了，再点会回
+#: ``20038``（没有需要重建的篇），而不是一直回 ``0 / 0``。
 MAX_REBUILD_DOCUMENTS_PER_REQUEST: Final[int] = 300
+
+#: 批量重建投递用的队列名。
+#:
+#: 与上传 / 单篇重建分开：一次全库重建是 N 条任务、可能连续占满常规 Worker 好几轮，而用户
+#: 的上传与单篇重建不该排在它后面。部署侧 ``worker-build`` 只消费这条队列（``-Q build``），
+#: 于是「构建再长，也只占它自己那一槽」（ADR-0034 决策八）。**只有批量重建走它**：上传与
+#: 单篇重建保持 ``queue=None``（常规队列），否则一次上传也要为「一次全库重建」付隔离的代价。
+REBUILD_QUEUE: Final[str] = "build"
+
+#: 可投 0 篇时的对外提示。
+#:
+#: 与「投递 0 / 0 篇」的回执相比，这个码给了用户一个原因与下一步；前端已有 20038 的翻译。
+MSG_KB_NOTHING_TO_REBUILD: Final[str] = (
+    "这个库里没有需要重建的文档：没有一篇的产物落后于当前设置"
+)
+
+
+def _stale_filter_of(kb: KnowledgeBase) -> ColumnElement[bool]:
+    """这个库「产物落后」的 SQL 判据——**与夜间清扫器同一份**。
+
+    三条并集：``settings_hash IS NULL``（从没记过）、与库当前设置指纹不一致（改过没重建）、
+    ``current_index_generation IS NULL``（一片产物都没有）。按库算指纹
+    （``settings_fingerprint(build_params_of(kb))``），不把规则写进 SQL——两份规则要能对得上，
+    只能共用一个函数；写在 SQL 里的话，改一处忘了另一处不会报错，只会在某个夜里多算一批。
+
+    返回值是 SQLAlchemy 条件，由仓储层原样拼进 ``WHERE``（仓储不做判据）。
+    """
+
+    return _stale_predicate(settings_fingerprint(build_params_of(kb)))
+
+
+async def _stale_rebuild_targets(
+    db: AsyncSession, kb: KnowledgeBase, *, tenant_id: str, limit: int | None
+) -> tuple[int, list[Document]]:
+    """「产物落后」的篇：``(落后总数, 这一批)``；``limit=None`` 取全部。"""
+
+    stale = _stale_filter_of(kb)
+    total = await document_repository.count_stale_for_rebuild(
+        db, str(kb.id), tenant_id=tenant_id, stale=stale
+    )
+    documents = await document_repository.list_stale_for_rebuild(
+        db, str(kb.id), tenant_id=tenant_id, stale=stale, limit=limit
+    )
+    return total, documents
 
 
 async def _dispatch_kb_rebuild(
@@ -444,34 +494,61 @@ async def _dispatch_kb_rebuild(
     *,
     tenant_id: str,
     request_id: str | None,
+    raise_when_empty: bool = True,
 ) -> tuple[int, int]:
-    """把该库需要重建的篇**逐篇**投进索引队列，返回 ``(已投篇数, 可投总篇数)``。
+    """把该库**产物落后**的篇逐篇投进索引队列，返回 ``(已投篇数, 落后篇总数)``。
 
-    判据只有一条：``status == SUCCESS``。非 SUCCESS 的篇没有可切的正文（失败篇本来就没
-    切出来，排队中 / 索引中的篇已经在队列里），再投一次要么白跑一次解析、要么被
+    ## 判据是「产物是不是最新一代」（与夜间清扫器同一份）
+
+    不再是「库里所有 ``SUCCESS`` 的篇」：那样第二次点击会重新选中同一批最新的篇——它们跑完
+    回到 ``SUCCESS`` 之后，又原样落在「最新 300 篇」里，第 301 篇之后永远轮不到；而已建好的
+    篇还会被重新切块重嵌入一轮（白烧 embedding，违反 tag #209 用户故事 21「失败重试时已经
+    建好的篇不重算」）。判据现在由 :func:`_stale_filter_of` 给出，与
+    ``app.services.generation_sweep`` 共用同一个 ``_stale_predicate``。
+
+    只投 ``SUCCESS`` 的篇里**落后**的那批：非 SUCCESS 的篇没有可切的正文（失败篇本来就没切
+    出来，排队中 / 索引中的篇已经在队列里），再投一次要么白跑一次解析、要么被
     ``prepare_for_indexing`` 的 CAS 拒绝——所以「全库重建」不提供「连非 SUCCESS 也投」的
     开关（旧版 ``force`` 参数随整库构建闸门一起删除，理由见 :func:`rebuild_kb`）。
+
+    ## 为什么第二次点击自然「继续」，不需要游标 / 偏移
+
+    投出去的篇被置成「排队中」→ 不在只取 ``SUCCESS`` 的落后集合里；跑完的篇指纹对齐、也有
+    产物 → 也不在。于是**落后集合自己会缩小**，第二次点击从剩下最旧的篇开始。用偏移量反而
+    有洞：前一批跑完变新鲜之后，按 ``offset=300`` 会跳过还没投的篇。
+
+    ## 回执语义（``documents_total``）
+
+    ``total`` 是**落后篇总数**，不是全库 ``SUCCESS`` 篇数：用后者时「跑完的篇还是 SUCCESS」，
+    「再点几次」永远算不对。``dispatched < total`` 只代表「这次没投完」——撞上单次上限，或
+    个别篇刚被别处投走、CAS 抢不到。它**不代表**还要点几次：可投的落后篇投完了，就是投完了
+    （再点一次会 ``20038``）。抢不到（``rowcount=0``）的篇不计入 ``dispatched``：那不是这次
+    投的。
 
     每一篇走的是与人工点「重建」**完全相同**的那条链路（``prepare_for_indexing`` 置排队中、
     不盖租约 → 投递登记在提交之后），只是省掉了逐篇审计：一次全库重建写一条 ``kb.rebuild``
     就够，写 N 条既撑爆账本，也把「这是一次操作」拆成了 N 次看不出关系的改动。
+
+    投递走 ``build`` 队列（:data:`REBUILD_QUEUE`）：批量重建不该把常规队列占满，让用户的上传
+    与单篇重建排在它后面（ADR-0034 决策八的隔离承诺；``deploy/`` 里的 ``worker-build`` 就是
+    这条队列的唯一消费者）。上传 / 单篇重建仍是常规队列，不付这份隔离代价。
 
     为什么没有配额入口预检：逐篇预检 = N 次查询（一个 5000 篇的库就是 5000 次往返），而
     Worker 里的真值容量判据仍然照跑（``ensure_kb_token_quota``）。重建不新增内容量，预检
     在这里省掉的只是「注定失败的那一次解析」，代价远大于它挡下的浪费。
     """
 
-    total = await document_repository.count_by_kb_filtered(
-        db, str(kb.id), tenant_id=tenant_id, status=DocumentStatus.SUCCESS
+    total, documents = await _stale_rebuild_targets(
+        db, kb, tenant_id=tenant_id, limit=MAX_REBUILD_DOCUMENTS_PER_REQUEST
     )
-    documents = await document_repository.list_page_by_kb(
-        db,
-        str(kb.id),
-        tenant_id=tenant_id,
-        offset=0,
-        limit=MAX_REBUILD_DOCUMENTS_PER_REQUEST,
-        status=DocumentStatus.SUCCESS,
-    )
+    if total == 0 and raise_when_empty:
+        # 「点下去什么都没发生」不能回成 200 + 0/0：那在界面上就是一句「这次投递 0 / 0 篇」，
+        # 没有原因也没有下一步。20038 的文案与前端翻译已经在，缺的只是这个抛出点。
+        #
+        # ``raise_when_empty=False`` 只给**改设置**那条路用：一个空库先配好切块策略是正常
+        # 操作，没有可重建的篇不代表设置不该落库（那条路径的取舍见 ``update_kb_settings``）。
+        raise AppError(ErrorCode.KB_NOTHING_TO_REBUILD, MSG_KB_NOTHING_TO_REBUILD)
+
     dispatched = 0
     for document in documents:
         prepared = await document_repository.prepare_for_indexing_async(
@@ -493,6 +570,7 @@ async def _dispatch_kb_rebuild(
                 kb_id=str(kb.id),
                 request_id=request_id,
                 doc_version=int(document.current_version),
+                queue=REBUILD_QUEUE,
             ),
         )
     return dispatched, total
@@ -543,8 +621,19 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
     「确定要重建吗？」点「确定」，等于把一次可能几十分钟的 Worker 变成盲盒——而误点的
     代价是服务器和钱，不是一次刷新。
 
+    ## 两个数用的是哪份判据（与点下去之后的回执同一个）
+
+    ``documents_to_rebuild`` 与 ``_dispatch_kb_rebuild`` 回执里的 ``documents_total`` 是
+    **同一个数**：**产物落后**的篇数（判据见 :func:`_stale_filter_of`，与夜间清扫器同一份）。
+    用「库里所有 ``SUCCESS`` 篇」会多报——已建好、指纹对齐的篇会被算进「将重建 N 篇」，
+    而点下去它们一篇都不会投。预览与回执一旦各算各的，用户就会看到「说 12 篇、投 5 篇」，
+    然后不再相信这个弹窗。
+
+    ``chunks_to_rebuild`` 只加**落后那批篇**的当前代切片数：把已建好的篇算进来，会让人以为
+    这次要重切一个比实际更大的库。
+
     没有「生效版本的参数」「有没有构建在跑」这两栏：库级构建已经不存在，重建就是按篇投递
-    N 条消息，能不能投只看库里有多少篇成功文档、以及单次上限
+    N 条消息，能不能投只看有多少篇的产物落后、以及单次上限
     （``MAX_REBUILD_DOCUMENTS_PER_REQUEST``）。
     """
 
@@ -552,13 +641,16 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
     if kb is None:
         raise AppError(ErrorCode.KNOWLEDGE_BASE_NOT_FOUND)
 
-    documents = await document_repository.list_by_kb_async(db, kb_id, tenant_id=tenant_id)
-    # 参与重建的只有能切出正文的那些：失败 / 处理中的文档没有可切的正文，
-    # 把它们算进「将重建 N 篇」会让人以为这次能修好它们。
-    rebuildable = [document for document in documents if document.status == DocumentStatus.SUCCESS]
+    documents = await document_repository.list_stale_for_rebuild(
+        db,
+        str(kb.id),
+        tenant_id=tenant_id,
+        stale=_stale_filter_of(kb),
+        limit=None,
+    )
     counts = await chunk_repository.count_by_document_ids(
         db,
-        [document.id for document in rebuildable],
+        [document.id for document in documents],
         tenant_id=tenant_id,
     )
     values = settings_of(kb)
@@ -569,7 +661,7 @@ async def settings_preview(db: AsyncSession, *, tenant_id: str, kb_id: str) -> d
         "allowed_formats": formats_of(kb),
         "chunk_size": values["chunk_size"],
         "section_part_max_chars": values["section_part_max_chars"],
-        "documents_to_rebuild": len(rebuildable),
+        "documents_to_rebuild": len(documents),
         "chunks_to_rebuild": sum(counts.values()),
     }
 
@@ -601,6 +693,16 @@ async def update_kb_settings(
 
     **设置不回滚**：重建失败时这一篇的旧代继续服务（旧代按保留策略还在），设置本身留着
     ——回滚设置会让人以为自己刚才没改成，反而更糊涂。
+
+    ## 没有落后篇时**不拒**（与「点重建」刻意不同）
+
+    设置写完之后判据可能说「一篇都不用重建」（空库、或新设置与旧设置完全相同）。这条路径
+    仍然成功落库，回执是 ``0 / 0``：**先给一个空库配好切块策略**是正常操作，把它拒掉会让
+    人只能先上传一篇再回来改设置。
+
+    与「点重建」的差别在这里，理由也在这里：点重建是**要求一件要发生的事发生**（没有要发生
+    的事就回 ``20038``，否则界面上就是一句没有原因的「投递 0 / 0 篇」）；改设置是**要求在
+    改一件将来才生效的配置**，没有可重建的篇只说明「暂时没有证据」，不说明「请求错了」。
     """
 
     kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
@@ -655,7 +757,13 @@ async def update_kb_settings(
     # 逐篇投递重建：新设置在这批篇被 Worker 抢到的那一刻生效（它们写新一代，旧代照旧
     # 服务——这就是代模型对「改设置」这件事的回答，不需要「等整库切过去」）。
     dispatched, total = await _dispatch_kb_rebuild(
-        db, kb, tenant_id=tenant_id, request_id=request_id
+        db,
+        kb,
+        tenant_id=tenant_id,
+        request_id=request_id,
+        # 空库 / 全失败库上先配好切块策略是正常操作：没有可重建的篇不该让整笔请求回滚。
+        # 「点重建却无事可做」仍然照抛（那条路径见 ``rebuild_kb``）。
+        raise_when_empty=False,
     )
     return {
         "kb_id": kb_id,
@@ -697,15 +805,21 @@ async def rebuild_kb(
 
     ## 判据与 ``force``
 
-    只投 ``SUCCESS`` 的篇。旧版的 ``force``（「连有效处理中的也重建」）随整库构建的并发闸门
-    一起删除：那时它绕的是「同一库只能有一个构建在跑」；现在没有闸门，非 SUCCESS 的篇
-    （失败篇没有可切的正文、排队 / 索引中的篇本来就在队列里）再投一次只会白跑或撞 CAS。
-    想让失败篇重来，走单篇重建（``doc/reindex``，那条入口有 force 语义）。
+    只投 ``SUCCESS`` 的篇里**产物落后**的那批（判据与夜间清扫器同一份，见
+    :func:`_dispatch_kb_rebuild`）。不投已建好的篇：「全库重建」在这个改造之后唯一的含义是
+    **让每篇的产物变新**，不是「把所有篇重算一遍」——后者会白烧一轮 embedding，而结果与
+    现在完全一样。旧版的 ``force``（「连有效处理中的也重建」）随整库构建的并发闸门一起
+    删除：那时它绕的是「同一库只能有一个构建在跑」；现在没有闸门，非 SUCCESS 的篇（失败篇
+    没有可切的正文、排队 / 索引中的篇本来就在队列里）再投一次只会白跑或撞 CAS。想让失败篇
+    重来，走单篇重建（``doc/reindex``，那条入口有 force 语义）。
 
-    ## 上限
+    ## 上限与「再点一次」
 
-    一次最多投 ``MAX_REBUILD_DOCUMENTS_PER_REQUEST`` 篇（理由见那个常量）。超出的篇不投，
-    回执里的 ``documents_total`` 会大于 ``documents_dispatched``——再点一次就继续往下投。
+    一次最多投 ``MAX_REBUILD_DOCUMENTS_PER_REQUEST`` 篇落后篇（理由见那个常量）。超出的篇
+    这一轮不投，回执里的 ``documents_total`` 仍是**落后篇总数**——再点一次会从剩下的落后篇
+    继续，因为投出去的篇已经不在落后集合里了（不需要游标 / 偏移，理由见
+    :func:`_dispatch_kb_rebuild`）。库里一篇落后都没有时回 ``20038``（没有需要重建的篇），
+    不是一个看起来成功的 ``0 / 0``。
     """
 
     kb = await knowledge_base_repository.get_by_id_for_tenant(db, kb_id, tenant_id=tenant_id)
@@ -720,8 +834,9 @@ async def rebuild_kb(
         actor=actor,
         action=ACTION_KB_REBUILD,
         target=f"kb:{kb_id}",
-        # 设置本身没变，所以只记「这一次投了多少、库里有多少」——事后能回答「那次点了
-        # 多少篇、还剩多少没投」。
+        # 设置本身没变，所以只记「这一次投了多少、落后篇一共多少」——事后能回答「那次点了
+        # 多少篇、还剩多少落后篇」，而 total 是落后篇数（不是全库成功篇数，理由见
+        # `_dispatch_kb_rebuild` 的回执语义）。
         before=None,
         after={
             "kb_id": kb_id,
@@ -833,7 +948,9 @@ async def reindex_document(
 
     # 没有配额门禁：重建跳过「单库文档数」（文档本来就在库里），也不再数「同时处理中篇数」
     # ——那条配额已随 #218 删除，理由与代价见 ADR-0034 决策八（没有按租户的公平调度，
-    # 批量提交会占满常规 Worker；缓解是构建走专用队列）。
+    # 批量提交会占满常规 Worker；缓解是**批量重建**走专用队列 ``build``
+    # （``_dispatch_kb_rebuild`` 那条路径），单篇重建与上传仍走常规队列——这里就是单篇，
+    # 所以它只和「另一篇重建 / 一次上传」抢槽位，不会被一整库的重建压住）。
     # ── 入口预检（#220）：库已经装满了就不再收新的重建请求 ──
     #
     # 重建是「重新算这一篇」，不新增容量，所以**不排除它自己**——它占的空间要算它自己的
@@ -945,7 +1062,7 @@ async def delete_document(
 # 建版本（新稿）与回滚（切回旧版本）**没有**容量与日额度的入口预检，这不是漏的：
 #
 # * 建版本是「同一份内容换一个稿号」，库里的总 token 量**不变**；
-# * 回滚是把生效版本切回去，库里一个字节都没多也没少。
+# * 回滚是把**当前稿指针**拨回旧稿（不回填旧产物、也不复制旧切片），库里一个字节都没多也没少。
 #
 # 给它们加容量门禁的后果很具体：一个已经超限的存量库（#220 明确允许它继续存在、继续检索），
 # 用户在那个时候**恰恰最需要**回滚到一个容量更小的旧版本——而门禁会把他拒在门外。这不是

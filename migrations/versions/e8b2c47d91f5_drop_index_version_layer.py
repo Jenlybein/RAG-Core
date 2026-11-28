@@ -64,16 +64,30 @@ depends_on: Union[str, Sequence[str], None] = None
 _CHUNK_VERSION_INDEX = "ix_chunks_tenant_id_kb_id_index_version"
 
 
+#: 删列 / 删表要拿 ``ACCESS EXCLUSIVE`` 锁，而 ``chunks`` 是稳态最大的那张表：
+#: 一条排在慢查询后面的 DDL 会把**后面所有写入**一起堵住（症状是上线期间上传全部超时，
+#: 而迁移日志还停在第一条语句上）。``lock_timeout`` 让它在排队超时后**直接失败**，
+#: 由部署方重跑——失败比「悄悄锁表十分钟」好，因为失败是可重试的，堵住是别人受害。
+#:
+#: 5 秒是「正常写入间隔」的量级：真库上这条 upgrade 本身是毫秒级的，5 秒只用来筛掉
+#: 「排在一条长查询后面」那种情况。``downgrade`` 也设同一道（它要建表、建索引）。
+_LOCK_TIMEOUT = "5s"
+
+
 def upgrade() -> None:
-    # 先删依赖列的索引，再删列；表在最后删（它不引用别的表，也没有别的东西引用它）。
-    op.drop_index(_CHUNK_VERSION_INDEX, table_name="chunks")
-    op.drop_column("chunks", "index_version")
-    op.drop_column("knowledge_bases", "active_index_version")
-    op.drop_table("index_build_versions")
+    op.execute(f"SET lock_timeout = '{_LOCK_TIMEOUT}'")
+    # ``IF EXISTS``：这条迁移删的是三样**已经被代码彻底不再引用**的东西，如果某个部署
+    # 被人为动过（例如手工删了列），迁移不该在中途炸掉、留下「删了一半」的状态。
+    # 反过来，缺了东西也不该静默成功——所以只放宽「已经不在」这一种情况，别的不吞。
+    op.execute(f"DROP INDEX IF EXISTS {_CHUNK_VERSION_INDEX}")
+    op.execute("ALTER TABLE chunks DROP COLUMN IF EXISTS index_version")
+    op.execute("ALTER TABLE knowledge_bases DROP COLUMN IF EXISTS active_index_version")
+    op.execute("DROP TABLE IF EXISTS index_build_versions")
 
 
 def downgrade() -> None:
     # 只重建结构：见模块文档「停点」——数据不会回来，不要在生产上随手跑。
+    op.execute(f"SET lock_timeout = '{_LOCK_TIMEOUT}'")
     op.create_table(
         "index_build_versions",
         sa.Column("id", sa.String(length=36), nullable=False),

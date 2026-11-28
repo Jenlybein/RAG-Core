@@ -449,6 +449,18 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     ) -> dict[str, int]:
         return _count_chunks(_db, document_ids, tenant_id=tenant_id)
 
+    # 「全库重建」取的是**产物落后**的篇（判据在 generation_sweep，SQL 由仓储落地）；
+    # 世界里的文档替身没有 settings_hash / current_index_generation 两列，所以直接说
+    # 「一篇都不落后」——这一层的判据本身在 test_kb_settings_update.py 的真 SQLite 用例里
+    # 验，这里验的是「没有落后篇时端点回什么」。
+    async def _count_stale(_db: Any, kb_id: str, *, tenant_id: str, stale: Any) -> int:
+        return 0
+
+    async def _list_stale(
+        _db: Any, kb_id: str, *, tenant_id: str, stale: Any, limit: int | None
+    ) -> list[Any]:
+        return []
+
     monkeypatch.setattr(settings, "DOCUMENT_STORAGE_PATH", str(uploads_dir))
     # 控制面的读与写都已经在异步栈上（票 #130）：被替换的仓储函数因此**只有一个面**，
     # 全部是 ``async`` 的那份（``_async`` 后缀只在同步版还活着时才留）。
@@ -457,6 +469,8 @@ def kbs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[_Harness]:
     monkeypatch.setattr(document_repository, "list_by_kb_async", _list_documents_async)
     monkeypatch.setattr(document_repository, "count_by_kb", _count_documents_async)
     monkeypatch.setattr(document_repository, "prepare_for_indexing_async", _prepare_async)
+    monkeypatch.setattr(document_repository, "count_stale_for_rebuild", _count_stale)
+    monkeypatch.setattr(document_repository, "list_stale_for_rebuild", _list_stale)
     monkeypatch.setattr(chunk_repository, "count_by_document_ids", _count_chunks_async)
     monkeypatch.setattr(console_kb_service, "get_vector_store", lambda: store)
     monkeypatch.setattr(console_kb_service, "enqueue_document", _enqueue)
@@ -1041,6 +1055,29 @@ def test_reindex_of_another_tenant_or_missing_document_is_not_found(
     assert kbs.prepares == []
     assert kbs.enqueued == []
     assert kbs.audit_entries() == []
+
+
+# ──────────────────────────────── 全库重建：没有落后篇时要说清「没什么可重建」
+
+REBUILD_PATH = f"{CREATE_PATH}/{{kb_id}}/rebuild"
+
+
+def test_rebuild_with_no_stale_documents_is_nothing_to_rebuild(kbs: _Harness) -> None:
+    """可投 0 篇 → ``20038`` + 一句人话；不是「200 + 投递 0 / 0 篇」。
+
+    那个空回执在界面上只会变成「这次投递 0 / 0 篇」，没有原因也没有下一步——评审把它叫做
+    「点了没反应」。错误码与前端的翻译都在，缺的就是后端这个抛出点。
+    """
+
+    assert kbs.login("alice", USER_PASSWORD).json()["code"] == 0
+
+    response = kbs.client.post(REBUILD_PATH.format(kb_id=KB_ALPHA_ONE), headers=WRITE_HEADERS)
+
+    body = response.json()
+    assert body["code"] == ErrorCode.KB_NOTHING_TO_REBUILD
+    assert "没有需要重建" in body["msg"], "错误码之外还要给出一句「为什么、下一步」"
+    assert kbs.enqueued == [], "没有落后篇就一篇都不投"
+    assert kbs.audit_entries() == [], "一次没投出去的点击不写 kb.rebuild 账本"
 
 
 # ─────────────────────────────────────────────────────────────────────── 删除文档

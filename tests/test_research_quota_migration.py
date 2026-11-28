@@ -115,7 +115,7 @@ def test_the_research_quota_migration_sits_on_top_of_the_single_head() -> None:
     # 过渡密钥四列，第 17 步现场九的「索引代」三列（``add_index_generation``），现场九
     # 第六步的回收索引（``add_chunk_document_generation_index``），再接归属索引改记篇级代 +
     # 缺代计数列（``usage_events_index_generations``），最后是库级索引版本整层退场的
-    # 删表 + 删三列（``drop_index_version_layer``）——当前链尾。
+    # 删表 + 删两列（``drop_index_version_layer``）——当前链尾。
     assert heads == [_revision_of(_migration_path("drop_index_version_layer"))], (
         f"链尾应当是库级索引版本退场那条迁移，实际 {heads}"
     )

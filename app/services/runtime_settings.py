@@ -332,8 +332,8 @@ SETTING_SPECS: Final[dict[str, SettingSpec]] = {
     "ELASTICSEARCH_INDEX": _spec(
         TIER_RESTART,
         TARGET_SETTINGS,
-        "索引**别名**决定查哪份数据（物理索引按版本隔离，激活时切换别名）；"
-        "换名字要连带迁移数据，不能只改这一项",
+        "**唯一的物理索引名**：读 / 写 / 删都打它（不再是别名 + 版本化物理索引）；"
+        "换名字等于换一份数据，旧索引不会被自动迁移，要清空重建一次",
     ),
     "CHUNK_SIZE": _spec(
         TIER_RESTART,

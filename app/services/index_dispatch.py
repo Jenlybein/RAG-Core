@@ -42,7 +42,9 @@ from typing import Any, Protocol
 class TaskPublisher(Protocol):
     """Celery 任务对象上我们只用这一个方法；测试注入一个记账实现即可。"""
 
-    def apply_async(self, *, kwargs: dict[str, Any], task_id: str) -> Any: ...
+    def apply_async(
+        self, *, kwargs: dict[str, Any], task_id: str, queue: str | None = None
+    ) -> Any: ...
 
 
 class PublisherSlot:
@@ -115,6 +117,7 @@ def enqueue_document(
     request_id: str | None,
     reparse: bool = False,
     doc_version: int | None = None,
+    queue: str | None = None,
 ) -> None:
     """把索引任务投递到 Broker，带上请求关联标识以便 Worker 续用同一个号牌。
 
@@ -126,21 +129,30 @@ def enqueue_document(
     键始终出现在载荷里（哪怕值是 ``None``）：任务记录里因此一眼看得出「这次投递有没有
     指定稿号」，而不是靠键的缺席去表达。
 
+    ``queue`` 是**投递到哪条队列**：``None`` 保持原行为（默认队列，上传与单篇重建走它）；
+    非空时由 ``apply_async(queue=...)`` 指到那条队列（批量全库重建走 ``build``，
+    部署侧的 ``worker-build`` 只消费它——ADR-0034 决策八的隔离承诺）。默认值必须是
+    ``None`` 而不是队列名：否则一次上传也要为「一整库的重建」付隔离的部署代价。
+
     全库重建不再有另一种任务形状：它就是把这一条按篇投 N 次（见
-    ``console_kb_service.rebuild_kb``）。
+    ``console_kb_service.rebuild_kb``），只是换了队列。
     """
 
-    get_task_publisher().apply_async(
-        kwargs={
-            "document_id": document_id,
-            "tenant_id": tenant_id,
-            "kb_id": kb_id,
-            "request_id": request_id,
-            "reparse": reparse,
-            "doc_version": doc_version,
-        },
-        task_id=f"doc:{document_id}",
-    )
+    publisher = get_task_publisher()
+    payload = {
+        "document_id": document_id,
+        "tenant_id": tenant_id,
+        "kb_id": kb_id,
+        "request_id": request_id,
+        "reparse": reparse,
+        "doc_version": doc_version,
+    }
+    # 只有真的换了队列才带 ``queue`` 关键字：``None`` 时连这个关键字都不出现，于是
+    # 「默认队列」是**原来的那次调用**，而不是「显式指定了一个叫 None 的队列」。
+    if queue is None:
+        publisher.apply_async(kwargs=payload, task_id=f"doc:{document_id}")
+    else:
+        publisher.apply_async(kwargs=payload, task_id=f"doc:{document_id}", queue=queue)
 
 
 async def enqueue_document_after_commit(
@@ -152,6 +164,7 @@ async def enqueue_document_after_commit(
     request_id: str | None,
     reparse: bool = False,
     doc_version: int | None = None,
+    queue: str | None = None,
 ) -> None:
     """``after_commit`` 用的异步版本：参数与 :func:`enqueue_document` 逐字一致。
 
@@ -160,14 +173,22 @@ async def enqueue_document_after_commit(
     ``from ... import enqueue_document``，测试 monkeypatch 的是**那些模块的属性**。若这里
     用本模块的绑定，替身就绕不过去，用例会在 ``to_thread`` 里真连 Broker——那正是这层
     包装最不该制造的假绿。
+
+    ``queue`` 只在**非空**时透传给 ``publish``（语义见 :func:`enqueue_document`）：批量重建
+    在这里指到 ``build`` 队列；上传与单篇重建传 ``None``，于是它们调 ``publish`` 的关键字
+    参数形状与改造前**逐字一致**（投递接线的用例断言的就是那份形状，多出一个 ``queue=None``
+    会让它们全部变成「顺手改了契约」）。
     """
 
-    await asyncio.to_thread(
-        publish,
-        document_id=document_id,
-        tenant_id=tenant_id,
-        kb_id=kb_id,
-        request_id=request_id,
-        reparse=reparse,
-        doc_version=doc_version,
-    )
+    kwargs: dict[str, Any] = {
+        "document_id": document_id,
+        "tenant_id": tenant_id,
+        "kb_id": kb_id,
+        "request_id": request_id,
+        "reparse": reparse,
+        "doc_version": doc_version,
+    }
+    # 与 :func:`enqueue_document` 同一条规矩：``None`` 不写进调用形状。
+    if queue is not None:
+        kwargs["queue"] = queue
+    await asyncio.to_thread(publish, **kwargs)

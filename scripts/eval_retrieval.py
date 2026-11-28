@@ -536,13 +536,13 @@ def _assert_query_analyzer(index_name: str) -> None:
     复用它等于「用旧口径跑新代码」：指标看着正常，新逻辑一点没生效——这是最难
     发现的一类假绿，所以宁可拒绝执行。
 
-    ## 为什么不能直接 ``response.json()[index_name]``（票 #157 实测）
+    ## 为什么按**这个名字本身**取 settings（票 #157 实测）
 
-    ``ELASTICSEARCH_INDEX`` 现在是**别名**（ADR-0025 决策二）：``GET /<别名>/_settings``
-    的响应键是它解析出的**物理索引名**（``rag_chunks_eval__v1``），不是别名本身。
-    按别名取键会读到空 dict，于是「分析器没装」这个判定在**正确的**新索引上也会响——
-    一条守卫把好索引拒之门外，比没有守卫更糟。所以按「名字本身，或 ``<名字>__`` 的
-    任一物理版本」取那一段 settings。
+    库级索引版本层删除之后，``ELASTICSEARCH_INDEX`` 是**唯一的物理索引名**（不再是别名，
+    也没有 ``<名字>__<版本>`` 的兄弟）：``GET /<名字>/_settings`` 的响应键就是这个名字。
+    旧实现里名字是别名，响应键是它解析出的物理索引名（``rag_chunks_eval__v1``），按别名取
+    键会读到空 dict、把**正确的**新索引也判成「分析器没装」——那条兼容逻辑随版本层一起删了，
+    现在只有「名字本身」这一种答案。
     """
 
     from app.providers.keyword_search.query_builder import QUERY_ANALYZER

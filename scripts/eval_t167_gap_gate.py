@@ -2165,7 +2165,7 @@ async def run_all(
                 await run_cases(
                     cases,
                     budget=budget,
-                    kb_ids=list(kb_scope),
+                    kb_scope=list(kb_scope),
                     fivefold=fivefold,
                 )
             )

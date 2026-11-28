@@ -72,6 +72,8 @@
 且带 `index_version` 过滤（与召回口径一致）。否则哪张整表胜出取决于 PG 的行序，
 违反 ADR-0010 的「同一份输入两次返回同一顺序」。
 
+> （历史：`index_version` 该列已在迁移 `e8b2c47d91f5` 删除——现在这条谓词是「当前代 × 当前稿」两条，即 `chunks.generation = documents.current_index_generation` 与稿号对齐；正文按当时的论证保留。）
+
 ## 后果
 
 - 旧调用方响应变大；需要旧体积时两个开关都传 `false`。

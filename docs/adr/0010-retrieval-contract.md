@@ -1,6 +1,6 @@
 # 0010. 检索契约：RRF 融合、三种结局与索引范围
 
-- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**；**§5 的索引版本已在第 11 步接上版本生命周期（取值改为各库生效版本，映射形状不变），见 [ADR-0025](0025-index-as-build-artifact.md)**；**响应 `data` 曾在第 11 步 #147 增加可选的 `orchestration` 块、回显增加 `orchestration`、降级原因多一条（见文末「第七次修订」），该块已在第 11 步收窄中**整条撤销**（[ADR-0029](0029-scope-down-to-controlled-research.md)），见文末「第十一次修订」**
+- 状态：已采纳（第 4 步）；**§1「请求体字段」与 §4「`score` 语义」已由 ADR-0013 修订，见文末「后续修订」**；**请求体字段又被第 7 步砍到只剩 `kb_ids` + `query`，见文末「第三次修订」**；**响应回显字段 `requested_tier` 已在第 7 步收尾改名为 `requested_profile`，见文末「第四次修订」**；**响应 `metadata` 已在第 9 步增加 `trace_id`（六段耗时仍不进响应），见文末「第五次修订」**；**`metadata.retrieval.rerank` 已在第 10 步增加 `provider` / `model`，见文末「第六次修订」**；**§5 的索引版本已在第 11 步接上版本生命周期（取值改为各库生效版本，映射形状不变），见 [ADR-0025](0025-index-as-build-artifact.md)**；**§5 又已在第 17 步现场九被收窄：范围只剩 `kb_ids`，可见性交给「当前代 × 当前稿」，见文末「第 17 步修订」**；**响应 `data` 曾在第 11 步 #147 增加可选的 `orchestration` 块、回显增加 `orchestration`、降级原因多一条（见文末「第七次修订」），该块已在第 11 步收窄中**整条撤销**（[ADR-0029](0029-scope-down-to-controlled-research.md)），见文末「第十一次修订」**
 - 日期：2026-11-08
 - 相关：父 spec #20「第 4 步」、**父 spec #72「第 7 步」、ADR-0018「三层授权与配置自洽校验」**、ADR-0007「业务失败 HTTP 200」、ADR-0011「LangChain 只进 LLM 与 Embedding」、**ADR-0012「检索结果装饰」、ADR-0013「一条结果代表一节」**、`GLOSSARY.md`「检索链路」「混合检索」「召回深度」「融合池」「降级原因」「诚实空」「索引版本」、`app/services/retrieval/fusion.py`、`app/services/retrieval/pipeline.py`、`app/services/retrieval/rerank.py`、`app/services/rag_service.py`、`app/services/result_collapse.py`、`app/models/chunk.py`、`app/providers/vectorstores/pgvector.py`、`app/providers/keyword_search/query_builder.py`、`app/schemas/rag.py`
 
@@ -114,6 +114,8 @@ score(d) = 1 / (k + rank_vector(d)) + 1 / (k + rank_keyword(d))
 
 ## 5. 索引范围：`index_versions` 是配对映射
 
+> **第 17 步现场九修订注（现状以此为准）**：范围现在只有 `kb_ids`（`build_scope_filter(kb_ids)`），可见性谓词是 `chunks.generation = documents.current_index_generation`（`current_generation_filter()`），且必须与当前稿那一条同时出现；`index_version` 列已在迁移 `e8b2c47d91f5` 删除。本节下面的配对写法**是历史**，保留用于读老 ADR 与老日志——细节见文末「第 17 步修订」。
+
 检索范围由 `kb_id → index_version` 的**映射**表示，唯一构造点是 `app/models/chunk.py::default_index_versions`。本步的构造点返回常量 `v1`，请求体里没有 `index_version` 字段。**这两件事的后续**：版本生命周期在第 11 步接上（[ADR-0025](0025-index-as-build-artifact.md)）——取值来源从常量改成「每个库自己的生效版本」，而**映射形状与「绝不能写成两个独立 `IN`」这条一字不改**；`index_version` 仍永远不是请求参数。
 
 ### SQL / 查询条件必须是配对
@@ -127,7 +129,7 @@ or_(*[
 ])
 ```
 
-关键词侧：每一对是一个 `bool.filter`（`term kb_id` + `term index_version`），对与对之间是 `should` + `minimum_should_match=1`。
+关键词侧：每一对是一个 `bool.filter`（`term kb_id` + `term index_version`），对与对之间是 `should` + `minimum_should_match=1`。（历史写法；现在关键词侧是一条 `terms kb_id`，且只查那**一个**物理索引——见文末「第 17 步修订」第 4 条。）
 
 **绝不能写成两个独立的 `IN`：**
 
@@ -636,3 +638,20 @@ ES 的 `minimum_should_match=50%` 门槛会把「扩展进来的词」也算进�
 跨索引查 BM25 比查别名贵（索引数 = 版本数），换来的是「重建完就能被关键词路看见」。
 关键词侧靠**镜像**（每篇只有一份：写入先按文档全清再写新的）保证不重复，这条不变量由
 `KeywordSearchChunkStore.delete_by_document_id` 保证（它故意不传版本收窄）。
+
+### 4. 第五批（最后一批）再修订：关键词侧回到单一物理索引
+
+上面第 1 条写「查全部物理索引（`<别名>__*`）而不是别名」，那是**第四步**的形状；最后一批（迁移
+`e8b2c47d91f5`）把版本化命名整层删掉，关键词侧回到**那一个物理索引**：
+
+* `ELASTICSEARCH_INDEX`（缺省 `rag_chunks`）就是那一个索引，读写删都打它，不再有
+  `<别名>__vN`，也不再有「激活时把别名挪过去」（[ADR-0025](0025-index-as-build-artifact.md)
+  第 2 次修订·第五批）；
+* 因此第 3 条「跨索引查 BM25 比查别名贵」这笔代价**不再存在**——查的就是一个索引；
+  关键词侧的「不重复」仍靠镜像（每篇只有一份：写入先按文档全清再写新的），这条不变量照旧由
+  `KeywordSearchChunkStore.delete_by_document_id` 保证；
+* **部署动作是必须的**：清空 `ELASTICSEARCH_INDEX` 并重建全部文档——旧 `<别名>__vN` 物理索引
+  不再被读，不清就是「旧数据在一个索引、新数据写进另一个，两半各查一半」。若老部署里
+  `ELASTICSEARCH_INDEX` 是**别名**，注意「删别名」不是「删索引」（重建脚本会连别名下的物理索引
+  一起删，只删别名会留下那张物理索引、新代码不再写它，症状是关键词路永久空）；步骤与脚本见
+  `deploy/README.md` 的「升级到「索引代」之后的一步」。

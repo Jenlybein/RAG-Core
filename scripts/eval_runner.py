@@ -1499,7 +1499,7 @@ async def _run(args: argparse.Namespace) -> int:
             f"关键词这一路一次相关片都没命中（探针 {keyword_hit['question_id']}："
             f"返回 {keyword_hit['returned_count']} 条、命中 {keyword_hit['hit_count']} 条、"
             f"empty_reason={keyword_hit['empty_reason']}、degraded={keyword_hit['degraded']}）："
-            "本轮读数来自「纯向量冒名的混检」，不能当门禁。先查索引版本 / 别名 / ES 超时。"
+            "本轮读数来自「纯向量冒名的混检」，不能当门禁。先查索引名 / ES 超时。"
         )
 
     write_run_dir(run_dir, payload)

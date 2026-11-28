@@ -22,6 +22,22 @@ Worker 启动入口：
 时只会 import 这里显式列出的模块；缺了它，``enqueue_document`` 投出去的任务会被
 当作 "Received unregistered task" 消费掉，整条索引流水线静默不跑。
 
+**同一个任务、两条队列**（这里**故意不写** ``task_routes``：路由由投递点在
+``apply_async(queue=...)`` 上决定，同一个 ``index_document_task`` 因此可以按场景选队列）：
+
+* **常规队列**（缺省 ``celery``）：上传与单篇重建。常规 ``worker`` 消费它。
+* **``build`` 队列**：批量全库重建（改设置 / 点「重建」触发的按篇投递，
+  ``console_kb_service.REBUILD_QUEUE``）。``deploy/docker-compose.yml`` 的 ``worker-build``
+  以 ``-Q build`` 只消费这一条，常规 ``worker`` 不消费它。
+
+隔离买到的正是 ADR-0034 决策三 / 八 承诺的那件事：一次几百篇的重建跑得再久、把
+``worker-build`` 那一个槽占满，用户的上传与单篇重建在常规 worker 的槽位上照跑。两个
+Worker 跑的是**同一份代码**（同一镜像），差别只有 ``-Q``——所以没有「构建任务的实现」
+与「普通任务的实现」两套东西要同步。
+
+代价要说在前面：不部署 ``worker-build`` 时，投进 ``build`` 队列的消息不会丢，而是留在
+broker（Redis 列表）里排队，直到有消费者——症状是「点了全库重建，文档一直排队中」。
+
 **Worker 子进程的事件循环在这里起、也在这里收**（第 11 步票 #132 / ADR-0023）：
 
 * ``worker_process_init`` → :func:`app.db.worker_loop.get_worker_loop`：让「起不来」暴露在

@@ -85,7 +85,7 @@ docker exec -it pg16-pgvector psql -U postgres -d rag_db \
 
 ### 做了什么
 
-- **两条通道**：向量（pgvector，`1 - 余弦距离`）与关键词（Elasticsearch 8.17.10 + IK 分词，BM25）并行召回。默认（改写关闭）每条通道只查**一次**、嵌入也只算一次；改写开启时向量一路按原句 / 改写句各查一次（#31，见下一条），但每次仍一次覆盖全部「知识库 + 索引版本」配对，**不按库循环**。
+- **两条通道**：向量（pgvector，`1 - 余弦距离`）与关键词（Elasticsearch 8.17.10 + IK 分词，BM25）并行召回。默认（改写关闭）每条通道只查**一次**、嵌入也只算一次；改写开启时向量一路按原句 / 改写句各查一次（#31，见下一条），但每次仍**一次覆盖本次要检索的全部知识库**（`kb_ids` 一次给全，`build_scope_filter`），可见性由每篇的**当前代 × 当前稿**表达，**不按库循环**。
 - **融合契约**：`k=60` 服务端写死、不进请求体；唯一键 `(kb_id, chunk_id)`；同分顺序固定为 融合分降序 → 双路命中优先 → 最佳名次 → `kb_id` → `chunk_id`。完整契约见 [ADR-0010](docs/adr/0010-retrieval-contract.md)。
 - **查询优化与重排**：改写、重排**默认关闭**，失败一律降级、不把整单打挂。改写开启时**两路都搜「原句 + 改写句」**（向量各嵌一次、关键词各查一次，各自并成一个池再进 RRF；不再是「改写句替换原句」），关闭 / 改写失败时只搜原句；重排看**原句**（改写只负责召回）。第 15 步起**同义词扩展已下线**——词表靠人工维护，实测是帮倒忙的。
 - **模型接入**：大模型与嵌入走 LangChain（`fast` / `strong` 两个**模型角色**）；**检索层不引入框架**——召回、融合、重排编排、降级与响应契约全部自写，理由与可执行判据见 [ADR-0011](docs/adr/0011-langchain-boundary.md)。
@@ -121,6 +121,18 @@ score = 本次最终排序分（见下表）
 查询侧分析器改成了 `ik_smart_query`（`ik_smart` + 75 条中文停用词）并加了 `minimum_should_match="50%"`，用来止住「问句里的疑问词被当成罕见特征」的 BM25 噪声。
 
 代价是 **mapping 变了，既有索引不能原地升级**：必须删掉 `rag_chunks` 重新入库。当年那个只重投索引任务的脚本（`scripts/reindex_knowledge_base.py`）已在索引代改造里删除；现在重建按篇走，`POST /documents/{id}/reindex` 即可。修复前后数字见 [eval/ACCEPTANCE.md](eval/ACCEPTANCE.md)。
+
+**第 17 步上线还必须做一步（必须做，不挂自动流程）**：关键词索引已去掉版本化命名，`ELASTICSEARCH_INDEX`（缺省 `rag_chunks`）就是**那一个物理索引**，读写删都打它；迁移只动 PostgreSQL、管不到 ES，所以**起栈之后要清空该索引并重建全部文档**。先查形态再动手：
+
+```bash
+curl -s 'http://127.0.0.1:9200/_cat/aliases/rag_chunks?v'   # 有输出 = 它是别名
+curl -s 'http://127.0.0.1:9200/_cat/indices/rag_chunks?v'   # 有输出 = 它是物理索引
+```
+
+- 老部署里它多半是**别名**，指向 `<别名>__vN`：**「删别名」不是「删索引」**——只删别名会留下那张物理索引，而新代码不再写它，症状是关键词路**永久空**（混合检索只剩向量路，召回变少，但不报错）；
+- 是物理索引：删掉即可，下一次写入会自己建。
+
+不做这一步的后果同样不是报错：旧 `<别名>__vN` 物理索引不再被读，新数据写进另一个索引，**两半各查一半**（检索静默变少）。这一步与上面的重新入库是同一次动作；**操作步骤与脚本见 [deploy/README.md](deploy/README.md) 的「升级到「索引代」之后的一步」**（`scripts/rebuild_keyword_index.py`：默认 dry-run 只打印计划，`--apply` 才动手，可 `--limit N` 分批）。
 
 ### 验收
 
@@ -319,10 +331,10 @@ CI 在 push / PR 触发，依次跑 `uv sync --all-groups --frozen` → ruff 检
 - [技术栈](docs/技术栈.md) —— 八个分层、完整版本矩阵、六个版本陷阱、替代方案代价、环境变量
 - [设计决策](docs/设计决策.md) —— 五个「一改就全盘皆变」的决策与各自代价，附错误码全表（第 2 步一次性落地，`3xxxx` 预留）
 - [ADR-0008 双入口错误契约](docs/adr/0008-dual-entry-error-contract.md) —— 共享错误词汇、各自翻译、协议级不对称及其代价
-- [ADR-0010 检索契约](docs/adr/0010-retrieval-contract.md) —— RRF `k=60`、tie-breaker、三种结局、`score` 语义变更与索引配对范围
+- [ADR-0010 检索契约](docs/adr/0010-retrieval-contract.md) —— RRF `k=60`、tie-breaker、三种结局、`score` 语义变更；检索范围从「库 + 索引版本」配对收窄到 `kb_ids`（可见性交给当前代 × 当前稿，见该文「第 17 步修订」）
 - [ADR-0011 LangChain 边界](docs/adr/0011-langchain-boundary.md) —— 框架只进 LLM / Embedding，检索链路零框架代码
 - [ADR-0017 套餐定义进库](docs/adr/0017-plans-in-database.md) / [ADR-0018 三层授权](docs/adr/0018-three-layer-authority.md) —— 第 7 步的两条核心决策
-- [ADR-0034 排队状态、构建按篇化与自愈](docs/adr/0034-queue-state-and-build-convergence.md) —— 文档状态四态、构建用真值收敛、租约令牌与自愈三件套，以及删除「并发处理名额」的代价
+- [ADR-0034 排队状态、构建按篇化与自愈](docs/adr/0034-queue-state-and-build-convergence.md) —— 文档状态四态、租约令牌、清扫器自愈四件事，以及删除「并发处理名额」的代价；**整库构建的收敛与库级版本层已在第 17 步现场九退场**（文末有修订节）
 - [ADR-0035 容量上限与第四本账](docs/adr/0035-capacity-limits-and-chunk-ledger.md) —— 两种 token 口径、四本账并列、三道容量门禁与四个新错误码（`20014` 收窄是破坏性变更）
 - [评测验收记录](eval/ACCEPTANCE.md) —— 切块改造的双口径对照、四组交叉与验收留痕
 - [GLOSSARY](GLOSSARY.md) —— 领域术语：正名与禁用词

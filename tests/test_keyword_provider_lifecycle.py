@@ -33,19 +33,12 @@ class _RecordingProvider(KeywordSearchProvider):
         self.closed += 1
 
     # 其余抽象方法在这一组用例里用不到，但 ABC 要求实现
+    # （`count_documents` / `physical_index_exists` / `activate_version` 三个已随
+    #  版本化索引一起从 ABC 删除，替身不要替不存在的方法兜底）
     async def add_chunks(self, chunks: list[dict]) -> None:  # pragma: no cover
         raise AssertionError("not used")
 
     async def keyword_search(self, *args: Any, **kwargs: Any) -> list[dict]:  # pragma: no cover
-        raise AssertionError("not used")
-
-    async def count_documents(self, *args: Any, **kwargs: Any) -> int:  # pragma: no cover
-        raise AssertionError("not used")
-
-    async def physical_index_exists(self, version: str) -> bool:  # pragma: no cover
-        raise AssertionError("not used")
-
-    async def activate_version(self, version: str) -> None:  # pragma: no cover
         raise AssertionError("not used")
 
     async def delete_by_document_id(self, *args: Any, **kwargs: Any) -> None:  # pragma: no cover

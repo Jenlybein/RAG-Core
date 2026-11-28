@@ -170,6 +170,8 @@ grep -rnE '^\s*(from|import)\s+langchain' app/ --include=*.py | grep -vE 'app/pr
 | 用 `BM25Retriever`（纯 Python）替掉 Elasticsearch | 第 4 步的核心就是 ES + IK 中文分词；纯 Python BM25 给不了中文分词与倒排索引。 |
 | 用 `RecursiveCharacterTextSplitter` **替掉整个**切块器 | 第 3 步的标题栈、`section_id` 内容哈希、表格整组保留，它一样都给不了。所以只让它接管「片内怎么再切」，结构判断仍自研（见「索引侧的例外」）。 |
 
+> （历史：上表第三行（`PGVector` 那一行）里的 `(kb_id, index_version)` 配对随库级版本层在迁移 `e8b2c47d91f5` 删除——现在范围只有 `kb_ids`，可见性由每篇的当前代 × 当前稿表达，租户过滤与「先删后写」这两条结论不变。正文按当时的论证保留。）
+
 ## 代价
 
 - 依赖面变大：`langchain` 1.x 连带 `langgraph` 全家、`langsmith`、`langchain-classic`。

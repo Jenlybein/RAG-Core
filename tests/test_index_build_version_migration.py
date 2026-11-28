@@ -61,7 +61,8 @@ TRACE_COLUMNS = {
     "created_at": False,
 }
 
-#: 新表只允许这十一列（与 ``app/models/index_version.py`` 逐字一致）。
+#: 新表只允许这十一列（与当时那张表逐列一致；模型 ``app/models/index_version.py`` 后来
+#: 随库级版本层整层删除，所以这里对的是迁移当时的事实，不是现在的代码）。
 EXPECTED_VERSION_COLUMNS = frozenset(
     {
         "id",
